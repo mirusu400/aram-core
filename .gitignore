@@ -1,0 +1,26 @@
+/build/
+/dist/
+/coverage.*
+*.test
+*.out
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# User-supplied and proprietary inputs
+/roms/
+/firmware/
+/dumps/
+/games/
+/reference/
+*.bin
+*.dat
+*.wbin
+*.wbt
+*.fnt
+*.rom
+*.img
+*.mbn
+*.i64
+*.idb
