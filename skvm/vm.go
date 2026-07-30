@@ -15,6 +15,12 @@ import (
 
 const DefaultInstructionLimit = uint64(10_000_000)
 
+const (
+	applicationRootClass      = "javax/microedition/midlet/MIDlet"
+	applicationRootField      = "__aramActiveApplication"
+	applicationRootDescriptor = "Ljava/lang/Object;"
+)
+
 var (
 	ErrInstructionLimit = errors.New("SKVM instruction limit reached")
 	ErrHalted           = errors.New("SKVM halted")
@@ -638,6 +644,11 @@ func (vm *VM) Start(ctx context.Context, mainClass string) (uint32, error) {
 			return 0, err
 		}
 	}
+	vm.hostStatic[fieldStorageKey(
+		applicationRootClass,
+		applicationRootField,
+		applicationRootDescriptor,
+	)] = ReferenceValue(reference)
 	return reference, nil
 }
 

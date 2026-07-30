@@ -442,7 +442,10 @@ func minimumStateEncodingSize(valueType reflect.Type, depth int) (uint64, error)
 	case reflect.String:
 		return 4, nil
 	case reflect.Slice:
-		return 5, nil
+		// A nil slice is encoded by its one-byte presence marker only. This
+		// function supplies a lower bound for collection preflight checks, so
+		// it must not assume that a nested slice carries a count.
+		return 1, nil
 	case reflect.Pointer:
 		return 1, nil
 	case reflect.Map:
@@ -452,7 +455,8 @@ func minimumStateEncodingSize(valueType reflect.Type, depth int) (uint64, error)
 				valueType,
 			)
 		}
-		return 5, nil
+		// As with slices, nil maps contain only their presence marker.
+		return 1, nil
 	case reflect.Array:
 		element, err := minimumStateEncodingSize(valueType.Elem(), depth+1)
 		if err != nil {

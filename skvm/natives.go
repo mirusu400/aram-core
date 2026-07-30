@@ -672,10 +672,11 @@ func (vm *VM) installThreadNatives() {
 				return Value{}, false, err
 			}
 			if state.active {
-				return Value{}, false, vm.newThrowable(
-					"java/lang/IllegalThreadStateException",
-					"thread already started",
-				)
+				// Several SK-VM MIDlets call startApp again after a lifecycle
+				// resume and unconditionally start their long-lived worker.
+				// The legacy runtime treated an already-active start as a
+				// resume no-op.
+				return Value{}, false, nil
 			}
 			state.active = true
 			state.wakeAt = vm.services.Clock.Monotonic()
@@ -2323,6 +2324,12 @@ func (vm *VM) installSKTNatives() {
 }
 
 func (vm *VM) installHostStaticFields() {
+	vm.RegisterStaticField(
+		applicationRootClass,
+		applicationRootField,
+		applicationRootDescriptor,
+		ReferenceValue(0),
+	)
 	font := ReferenceValue(vm.NewObject("javax/microedition/lcdui/Font", nil))
 	vm.RegisterStaticField(
 		"com/xce/lcdui/Toolkit",

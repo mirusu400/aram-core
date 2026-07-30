@@ -3,6 +3,7 @@ package application
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -82,6 +83,17 @@ func TestReferenceSKVMApplicationFrameSoak(t *testing.T) {
 				)
 				return nil
 			}
+			if frame == 63 {
+				if err := roundTripReferenceSKVMState(machine); err != nil {
+					t.Errorf(
+						"%s: state round trip: %v; recent trace: %+v",
+						name,
+						err,
+						recentTrace,
+					)
+					return nil
+				}
+			}
 		}
 		packages++
 		return nil
@@ -96,6 +108,28 @@ func TestReferenceSKVMApplicationFrameSoak(t *testing.T) {
 		"ran %d SKVM packages for 2048 frames; this is not a gameplay compatibility claim",
 		packages,
 	)
+}
+
+func roundTripReferenceSKVMState(machine *skvmMachine) error {
+	if err := machine.Pause(); err != nil {
+		return err
+	}
+	before := append([]byte(nil), machine.vm.FrameRGBA()...)
+	var saved bytes.Buffer
+	if err := machine.SaveState(&saved); err != nil {
+		return err
+	}
+	if err := machine.StepFrame(context.Background()); err != nil {
+		return err
+	}
+	if err := machine.LoadState(bytes.NewReader(saved.Bytes())); err != nil {
+		return err
+	}
+	after := machine.vm.FrameRGBA()
+	if !bytes.Equal(after, before) {
+		return fmt.Errorf("framebuffer changed across state restoration")
+	}
+	return machine.Resume()
 }
 
 func firstSKVMReferenceDirectory(candidates ...string) string {

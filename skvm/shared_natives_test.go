@@ -376,6 +376,33 @@ func TestSKVMSystemGCReleasesUnreachableImageSurfaces(t *testing.T) {
 	}
 }
 
+func TestSKVMSystemGCRetainsActiveApplicationRoot(t *testing.T) {
+	vm, err := New(map[string][]byte{"Game": syntheticClass(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	application := vm.NewObject("Game", nil)
+	vm.hostStatic[fieldStorageKey(
+		applicationRootClass,
+		applicationRootField,
+		applicationRootDescriptor,
+	)] = ReferenceValue(application)
+	invokeTestNative(t, vm, "java/lang/System", "gc", "()V", 0)
+	if _, ok := vm.Object(application); !ok {
+		t.Fatal("active application root was collected")
+	}
+	saved, err := vm.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.UnmarshalBinary(saved); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := vm.Object(application); !ok {
+		t.Fatal("active application root was not restored")
+	}
+}
+
 func TestSKVMXDisplayCopyLCDUsesSharedGraphics(t *testing.T) {
 	vm, err := New(map[string][]byte{"Game": syntheticClass(t)})
 	if err != nil {
@@ -612,6 +639,18 @@ func TestSKVMThreadsRunCooperativelyOnVirtualTime(t *testing.T) {
 	}
 	if !state.active || state.wakeAt != time.Millisecond {
 		t.Fatalf("thread after start = %+v", state)
+	}
+	invokeTestNative(
+		t,
+		vm,
+		"java/lang/Thread",
+		"start",
+		"()V",
+		thread,
+	)
+	value, err = vm.classes["Worker"].static[counter].Int()
+	if err != nil || value != 1 {
+		t.Fatalf("counter after duplicate active start = %d, %v; want 1", value, err)
 	}
 
 	saved, err := vm.MarshalBinary()

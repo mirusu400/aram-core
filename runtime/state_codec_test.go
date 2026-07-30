@@ -50,6 +50,38 @@ func TestServicesBinaryStateRoundTrip(t *testing.T) {
 	}
 }
 
+func TestServicesBinaryStateRoundTripWithEmptyMediaClip(t *testing.T) {
+	services, err := NewServices(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, err := services.Coordinator.Register("media-state", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clip, err := services.Media.CreateClip(owner, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := services.Media.Info(owner, clip); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := services.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone, err := NewServices(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := clone.UnmarshalBinary(encoded); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(clone.Snapshot(), services.Snapshot()) {
+		t.Fatal("service state with an empty media clip did not round-trip")
+	}
+}
+
 func TestServicesBinaryStateRejectsCorruptionBeforeMutation(t *testing.T) {
 	services, err := NewServices(Config{})
 	if err != nil {
