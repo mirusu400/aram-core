@@ -304,10 +304,11 @@ var ktfJavaExceptionParents = map[string]string{
 }
 
 type ktfGraphics struct {
-	target    draw.Image
-	clip      image.Rectangle
-	color     color.RGBA
-	translate image.Point
+	target      draw.Image
+	clip        image.Rectangle
+	color       color.RGBA
+	translate   image.Point
+	pixelsDirty bool
 }
 
 // ktfWIPICFramebuffer describes the provider-private MC_GRP object layout
@@ -7260,9 +7261,10 @@ func (r *ktfRuntime) ensureScreenGraphics() (uint32, error) {
 	}
 	r.screenGraphics = instance
 	r.graphics[instance] = &ktfGraphics{
-		target: r.frame,
-		clip:   r.frame.Bounds(),
-		color:  color.RGBA{A: 0xff},
+		target:      r.frame,
+		clip:        r.frame.Bounds(),
+		color:       color.RGBA{A: 0xff},
+		pixelsDirty: true,
 	}
 	surface, err := r.services.Graphics.CreateSurface(
 		r.serviceOwner,
@@ -7321,12 +7323,15 @@ func (r *ktfRuntime) syncKTFGraphics(instance uint32) error {
 			instance,
 		)
 	}
-	if err := r.services.Graphics.ReplacePixels(
-		r.serviceOwner,
-		serviceID,
-		ktfRGBABytes(state.target),
-	); err != nil {
-		return err
+	if state.pixelsDirty {
+		if err := r.services.Graphics.ReplacePixels(
+			r.serviceOwner,
+			serviceID,
+			ktfRGBABytes(state.target),
+		); err != nil {
+			return err
+		}
+		state.pixelsDirty = false
 	}
 	if state.translate.X < -(1<<31) || state.translate.X > 1<<31-1 ||
 		state.translate.Y < -(1<<31) || state.translate.Y > 1<<31-1 {
@@ -7352,16 +7357,11 @@ func (r *ktfRuntime) syncKTFGraphics(instance uint32) error {
 
 func (r *ktfRuntime) handleGraphicsMethod(
 	name, descriptor string,
-) (result uint32, returnedErr error) {
+) (uint32, error) {
 	instance, err := r.parameter(1)
 	if err != nil {
 		return 0, err
 	}
-	defer func() {
-		if returnedErr == nil {
-			returnedErr = r.syncKTFGraphics(instance)
-		}
-	}()
 	state := r.graphics[instance]
 	switch name + descriptor {
 	case "<init>(Lorg/kwis/msp/lcdui/Display;)V",
@@ -7434,6 +7434,7 @@ func (r *ktfRuntime) handleGraphicsMethod(
 			return 0, valueErr
 		}
 		draw.Draw(state.target, rect.Intersect(state.clip), image.NewUniform(state.color), image.Point{}, draw.Src)
+		state.pixelsDirty = true
 		return 0, nil
 	case "drawLine(IIII)V":
 		if state == nil {
@@ -7462,6 +7463,7 @@ func (r *ktfRuntime) handleGraphicsMethod(
 			x2+state.translate.X,
 			y2+state.translate.Y,
 		)
+		state.pixelsDirty = true
 		return 0, nil
 	case "drawRect(IIII)V", "drawRoundRect(IIIIII)V", "drawArc(IIIIII)V":
 		if state == nil {
@@ -7472,6 +7474,7 @@ func (r *ktfRuntime) handleGraphicsMethod(
 			return 0, valueErr
 		}
 		r.drawGraphicsRectangle(state, rect)
+		state.pixelsDirty = true
 		return 0, nil
 	case "drawChar(CIII)V":
 		character, valueErr := r.parameter(2)
@@ -7577,6 +7580,7 @@ func (r *ktfRuntime) handleGraphicsMethod(
 			source.Bounds().Min,
 			draw.Over,
 		)
+		state.pixelsDirty = true
 		return 0, nil
 	case "setClip(IIII)V":
 		if state == nil {
@@ -7713,6 +7717,7 @@ func (r *ktfRuntime) handleGraphicsMethod(
 		point := image.Pt(x+state.translate.X, y+state.translate.Y)
 		if point.In(state.clip) {
 			state.target.Set(point.X, point.Y, state.color)
+			state.pixelsDirty = true
 		}
 		return 0, nil
 	case "setGrayScale(I)V":
@@ -7762,14 +7767,19 @@ func (r *ktfRuntime) drawGraphicsTextShared(
 	anchor uint32,
 ) error {
 	var serviceID shared.ServiceID
+	var graphicsInstance uint32
 	for instance, candidate := range r.graphics {
 		if candidate == state {
+			graphicsInstance = instance
 			serviceID = r.graphicsServices[instance]
 			break
 		}
 	}
 	if serviceID == 0 {
 		return fmt.Errorf("KTF graphics text target has no shared surface")
+	}
+	if err := r.syncKTFGraphics(graphicsInstance); err != nil {
+		return err
 	}
 	font, err := r.ensureDefaultFont()
 	if err != nil {
@@ -7824,6 +7834,7 @@ func (r *ktfRuntime) drawGraphicsTextShared(
 	source := image.NewRGBA(image.Rect(0, 0, bounds.Dx(), bounds.Dy()))
 	copy(source.Pix, pixels)
 	draw.Draw(state.target, bounds, source, image.Point{}, draw.Src)
+	state.pixelsDirty = false
 	return nil
 }
 

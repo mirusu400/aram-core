@@ -411,6 +411,15 @@ func (m *Machine) writeKTFState(writer *stateWriter) error {
 	if r.executionDepth != 0 || r.activeTask != nil {
 		return fmt.Errorf("save KTF state while an adapter continuation is active")
 	}
+	for _, instance := range sortedUint32Keys(r.graphics) {
+		if err := r.syncKTFGraphics(instance); err != nil {
+			return fmt.Errorf(
+				"sync KTF graphics 0x%08x before save: %w",
+				instance,
+				err,
+			)
+		}
+	}
 	serviceState, err := r.services.MarshalBinary()
 	if err != nil {
 		return fmt.Errorf("save KTF shared services: %w", err)

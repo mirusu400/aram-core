@@ -706,6 +706,22 @@ func TestKTFGraphicsFillRectUpdatesFramebuffer(t *testing.T) {
 	if got.R != 0x33 || got.G != 0x66 || got.B != 0xcc || got.A != 0xff {
 		t.Fatalf("filled pixel = %#v", got)
 	}
+	servicePixels, err := runtime.services.Graphics.RGBA(
+		runtime.serviceOwner,
+		runtime.graphicsServices[graphics],
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceOffset := (2*16 + 3) * 4
+	if servicePixels[serviceOffset] != 0 ||
+		servicePixels[serviceOffset+1] != 0 ||
+		servicePixels[serviceOffset+2] != 0 {
+		t.Fatalf(
+			"unpresented shared pixel = %v, want batched black",
+			servicePixels[serviceOffset:serviceOffset+4],
+		)
+	}
 	pixels, err := runtime.newJavaByteArray(make([]byte, 4))
 	if err != nil {
 		t.Fatal(err)
@@ -768,6 +784,14 @@ func TestKTFGraphicsFillRectUpdatesFramebuffer(t *testing.T) {
 		A: 0xff,
 	}) {
 		t.Fatalf("text pixel = %#v", got)
+	}
+	if got := runtime.frame.RGBAAt(3, 2); got != (color.RGBA{
+		R: 0x33,
+		G: 0x66,
+		B: 0xcc,
+		A: 0xff,
+	}) {
+		t.Fatalf("shared text erased batched fill pixel: %#v", got)
 	}
 }
 

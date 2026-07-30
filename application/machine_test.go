@@ -103,6 +103,13 @@ func TestKTFSaveStateRestoresAdapterAndSharedServices(t *testing.T) {
 		t.Fatal(err)
 	}
 	machine.ktf.tickMS = 17
+	graphics, err := machine.ktf.ensureScreenGraphics()
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedPixel := color.RGBA{R: 1, G: 2, B: 3, A: 0xff}
+	machine.frame.SetRGBA(2, 3, savedPixel)
+	machine.ktf.graphics[graphics].pixelsDirty = true
 
 	var saved bytes.Buffer
 	if err := machine.SaveState(&saved); err != nil {
@@ -149,6 +156,26 @@ func TestKTFSaveStateRestoresAdapterAndSharedServices(t *testing.T) {
 			machine.ktf.tickMS,
 			machine.ktf.services.Clock.Monotonic(),
 			machine.ktf.fileData["/state.dat"],
+		)
+	}
+	if got := machine.frame.RGBAAt(2, 3); got != savedPixel {
+		t.Fatalf("restored KTF framebuffer pixel = %#v", got)
+	}
+	surfacePixels, err := machine.ktf.services.Graphics.RGBA(
+		machine.ktf.serviceOwner,
+		machine.ktf.graphicsServices[graphics],
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offset := (3*machine.frame.Bounds().Dx() + 2) * 4
+	if !bytes.Equal(
+		surfacePixels[offset:offset+4],
+		[]byte{savedPixel.R, savedPixel.G, savedPixel.B, savedPixel.A},
+	) {
+		t.Fatalf(
+			"restored KTF shared pixel = %v",
+			surfacePixels[offset:offset+4],
 		)
 	}
 }
