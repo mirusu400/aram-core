@@ -13,6 +13,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"path"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -10275,6 +10276,30 @@ func (r *ktfRuntime) handleFileSystemMethod(
 			return 0, err
 		}
 		filename := normalizeKTFFileName(r.javaStringValue(nameAddress))
+		// KTF applications commonly retain the File object after closing its
+		// derived stream and then remove the path through FileSystem. The
+		// handset invalidates that File object as part of the removal. Close
+		// the adapter-owned handles first so shared Storage can keep its strict
+		// no-delete-while-open invariant.
+		var instances []uint32
+		for instance, file := range r.files {
+			if file != nil && file.name == filename && !file.closed {
+				instances = append(instances, instance)
+			}
+		}
+		slices.Sort(instances)
+		for _, instance := range instances {
+			if serviceID := r.fileServices[instance]; serviceID != 0 {
+				if err := r.services.Storage.Close(
+					r.serviceOwner,
+					serviceID,
+				); err != nil {
+					return 0, err
+				}
+				delete(r.fileServices, instance)
+			}
+			r.files[instance].closed = true
+		}
 		if err := r.services.Storage.Delete(
 			shared.NamespacePrivate,
 			filename,
@@ -10282,6 +10307,14 @@ func (r *ktfRuntime) handleFileSystemMethod(
 			return 0, err
 		}
 		delete(r.fileData, filename)
+		r.hostTrace = append(
+			r.hostTrace,
+			fmt.Sprintf(
+				"java_file_remove:%s:closed=%d",
+				filename,
+				len(instances),
+			),
+		)
 		return 0, nil
 	case "getFreeSpace()J":
 		limit := r.services.Config.Limits.Storage.MaxStorageBytes

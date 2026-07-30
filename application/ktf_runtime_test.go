@@ -4519,6 +4519,91 @@ func TestKTFFileReadOnlyOpenRequiresExistingFile(t *testing.T) {
 	}
 }
 
+func TestKTFFileSystemRemoveClosesMatchingJavaFile(t *testing.T) {
+	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.cpu.Close()
+	if err := runtime.mapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	runtime.jvmContext, err = runtime.allocateWords(3 + 128)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const filename = "/install.dat"
+	if err := runtime.services.Storage.WriteFile(
+		shared.NamespacePrivate,
+		filename,
+		[]byte("installed"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	runtime.fileData[filename] = []byte("installed")
+	file, err := runtime.newHostJavaObject("org/kwis/msp/io/File")
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, err := runtime.newJavaString(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR1: file,
+		cpu.RegisterR2: name,
+		cpu.RegisterR3: ktfFileReadOnly,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := runtime.handleFileMethod(
+		"<init>",
+		"(Ljava/lang/String;I)V",
+	); err != nil {
+		t.Fatal(err)
+	}
+	serviceID := runtime.fileServices[file]
+	if serviceID == 0 {
+		t.Fatal("File constructor did not open shared storage")
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR1, name); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.handleFileSystemMethod(
+		"remove",
+		"(Ljava/lang/String;)V",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.services.Storage.Stat(
+		shared.NamespacePrivate,
+		filename,
+	); !errors.Is(err, shared.ErrNotFound) {
+		t.Fatalf("removed file stat error = %v", err)
+	}
+	if !runtime.files[file].closed ||
+		runtime.fileServices[file] != 0 ||
+		runtime.fileData[filename] != nil {
+		t.Fatalf(
+			"removed Java file state: file=%+v service=%d data=%v",
+			runtime.files[file],
+			runtime.fileServices[file],
+			runtime.fileData[filename],
+		)
+	}
+	if err := runtime.services.Storage.Close(
+		runtime.serviceOwner,
+		serviceID,
+	); !errors.Is(err, shared.ErrNotFound) {
+		t.Fatalf("removed file service remained open: %v", err)
+	}
+}
+
 func TestKTFDataBaseHonorsCreateFlag(t *testing.T) {
 	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
 		ClientName: "client.bin0",
