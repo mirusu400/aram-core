@@ -1403,6 +1403,100 @@ func TestKTFDynamicHostMethodsPreserveOccupiedCompatibilitySlots(
 	}
 }
 
+func TestKTFHostVTableExpansionPreservesLargeGuestTable(t *testing.T) {
+	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.cpu.Close()
+	if err := runtime.mapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	runtime.jvmContext, err = runtime.allocateWords(3 + 128)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const (
+		logicalSize = uint32(579)
+		guestSlot   = uint32(540)
+		guestMethod = uint32(0x13579bdf)
+		hostMethod  = uint32(0x2468ace0)
+	)
+	entries := make([]uint32, logicalSize)
+	entries[guestSlot] = guestMethod
+	guestVTable, err := runtime.allocateWords(logicalSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.writeWords(guestVTable, entries); err != nil {
+		t.Fatal(err)
+	}
+	classAddress, err := runtime.allocateWords(5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.writeWords(classAddress, []uint32{
+		classAddress + 4,
+		0,
+		0,
+		guestVTable,
+		logicalSize,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.ensureJavaVTableIndex(
+		classAddress,
+		guestVTable,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runtime.installHostJavaVirtualMethodForClass(
+		classAddress,
+		hostMethod,
+		ktfHostVirtualSlotBase,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if got := runtime.javaVTableCapacity[classAddress]; got < logicalSize {
+		t.Fatalf("expanded vtable capacity = %d, want at least %d", got, logicalSize)
+	}
+	expanded, err := runtime.readU32(classAddress + 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotGuest, err := runtime.readU32(expanded + guestSlot*4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotGuest != guestMethod {
+		t.Fatalf(
+			"guest vtable slot %d = 0x%08x, want 0x%08x",
+			guestSlot,
+			gotGuest,
+			guestMethod,
+		)
+	}
+	gotHost, err := runtime.readU32(
+		expanded + uint32(ktfHostVirtualSlotBase)*4,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotHost != hostMethod {
+		t.Fatalf(
+			"host vtable slot %d = 0x%08x, want 0x%08x",
+			ktfHostVirtualSlotBase,
+			gotHost,
+			hostMethod,
+		)
+	}
+}
+
 func TestKTFLWCFoundationMethodsTrackState(t *testing.T) {
 	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
 		ClientName: "client.bin0",

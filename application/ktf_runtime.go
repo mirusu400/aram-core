@@ -5078,9 +5078,10 @@ func (r *ktfRuntime) installHostJavaVirtualMethodForClass(
 	capacity := r.javaVTableCapacity[classAddress]
 	if capacity < required {
 		newCapacity := ktfHostVirtualTableReserve
-		for newCapacity < required {
+		requiredCapacity := max(required, logicalSize)
+		for newCapacity < requiredCapacity {
 			if newCapacity > uint32(^uint16(0))/2 {
-				newCapacity = required
+				newCapacity = requiredCapacity
 				break
 			}
 			newCapacity *= 2
