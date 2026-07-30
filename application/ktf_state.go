@@ -254,7 +254,8 @@ type ktfTaskSnapshot struct {
 	LastJavaMethod              string
 	Done, PresentOnReturn       bool
 	BestEffortPaint, WIPICTimer bool
-	PaintCard, LayoutOnReturn   uint32
+	PaintCard, KeyCard          uint32
+	LayoutOnReturn              uint32
 	StartBlocker                int32
 	ChildStartGrace             uint64
 }
@@ -934,6 +935,7 @@ func snapshotKTFMetadata(
 			BestEffortPaint: task.bestEffortPaint,
 			WIPICTimer:      task.wipicTimer,
 			PaintCard:       task.paintCard,
+			KeyCard:         task.keyCard,
 			LayoutOnReturn:  task.layoutOnReturn,
 			StartBlocker:    blocker,
 			ChildStartGrace: task.childStartGrace,
@@ -1649,6 +1651,7 @@ func (m *Machine) restoreKTFState(saved *ktfSavedState) error {
 			bestEffortPaint: task.BestEffortPaint,
 			wipicTimer:      task.WIPICTimer,
 			paintCard:       task.PaintCard,
+			keyCard:         task.KeyCard,
 			layoutOnReturn:  task.LayoutOnReturn,
 			childStartGrace: task.ChildStartGrace,
 		}

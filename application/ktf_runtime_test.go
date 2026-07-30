@@ -515,6 +515,27 @@ func TestKTFMachineQueuesDueInputToDockedCard(t *testing.T) {
 	if len(runtime.tasks) != 1 {
 		t.Fatalf("KTF tasks = %d, want 1", len(runtime.tasks))
 	}
+	if runtime.tasks[0].keyCard != card {
+		t.Fatalf(
+			"KTF key task card = 0x%08x, want 0x%08x",
+			runtime.tasks[0].keyCard,
+			card,
+		)
+	}
+	if queued, queueErr := runtime.queueKeyEvent(false, -5); queueErr != nil {
+		t.Fatal(queueErr)
+	} else if queued {
+		t.Fatal("overlapping card key event was queued")
+	}
+	runtime.tasks[0].done = true
+	runtime.paintTasks[card] = &ktfTask{}
+	if queued, queueErr := runtime.queueKeyEvent(false, -5); queueErr != nil {
+		t.Fatal(queueErr)
+	} else if queued {
+		t.Fatal("card key event overlapped a pending paint")
+	}
+	runtime.tasks[0].done = false
+	delete(runtime.paintTasks, card)
 	if err := runtime.cpu.RestoreContext(runtime.tasks[0].context); err != nil {
 		t.Fatal(err)
 	}
@@ -1855,6 +1876,46 @@ func TestKTFCallNativePrefersExplicitHostTargetOverStaleOverride(t *testing.T) {
 	}
 	if !slices.Equal(values, []uint32{42, 0}) {
 		t.Fatalf("explicit native target return = %08x", values)
+	}
+}
+
+func TestKTFCallNativeOverridesNullThreadSleepTarget(t *testing.T) {
+	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.cpu.Close()
+	if err := runtime.mapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	parameters, err := runtime.allocateWords(4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.deferThreads = true
+	runtime.activeTask = &ktfTask{}
+	runtime.lastJavaMethod = "java/lang/Thread.sleep(J)V"
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR1, parameters); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ktfCallNative(context.Background(), runtime); err != nil {
+		t.Fatal(err)
+	}
+	if !runtime.yieldRequested {
+		t.Fatal("null-target Thread.sleep did not yield its Java task")
+	}
+	if !slices.Contains(
+		runtime.hostTrace,
+		"java.native_override.java/lang/Thread.sleep(J)V",
+	) {
+		t.Fatalf("Thread.sleep override trace = %v", runtime.hostTrace)
 	}
 }
 
@@ -3376,6 +3437,39 @@ func TestKTFPaintCardCoalescesWhilePaintTaskIsPending(t *testing.T) {
 	if len(runtime.hostTrace) != 1 ||
 		runtime.hostTrace[0] != "java_paint_coalesce:card=0x10001000" {
 		t.Fatalf("coalesce trace = %v", runtime.hostTrace)
+	}
+}
+
+func TestKTFPaintCardWaitsForPendingKeyCallback(t *testing.T) {
+	const card = uint32(0x10001000)
+	keyTask := &ktfTask{keyCard: card}
+	runtime := &ktfRuntime{
+		tasks:              []*ktfTask{keyTask},
+		dirtyCards:         map[uint32]bool{card: true},
+		deferredPaintCards: make(map[*ktfTask][]uint32),
+		deferredShownCards: make(map[*ktfTask]map[uint32]bool),
+		paintTasks:         make(map[uint32]*ktfTask),
+	}
+
+	if err := runtime.paintCard(context.Background(), card); err != nil {
+		t.Fatal(err)
+	}
+	if !runtime.dirtyCards[card] {
+		t.Fatal("key-blocked card was cleared before its paint could run")
+	}
+	if got := runtime.deferredPaintCards[keyTask]; !slices.Equal(
+		got,
+		[]uint32{card},
+	) {
+		t.Fatalf("key-blocked paints = %08x, want [%08x]", got, card)
+	}
+	if len(runtime.paintTasks) != 0 {
+		t.Fatalf("key-blocked card queued a paint task: %#v", runtime.paintTasks)
+	}
+	if len(runtime.hostTrace) != 1 ||
+		runtime.hostTrace[0] !=
+			"java_paint_defer_key:card=0x10001000" {
+		t.Fatalf("key-blocked paint trace = %v", runtime.hostTrace)
 	}
 }
 

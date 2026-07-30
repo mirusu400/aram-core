@@ -387,6 +387,7 @@ type ktfTask struct {
 	bestEffortPaint bool
 	wipicTimer      bool
 	paintCard       uint32
+	keyCard         uint32
 	layoutOnReturn  uint32
 	startBlocker    *ktfTask
 	childStartGrace uint64
@@ -2062,22 +2063,28 @@ func (r *ktfRuntime) hasJavaTaskCapacity() bool {
 // input queue until a card or a task slot becomes available.
 func (r *ktfRuntime) queueKeyEvent(pressed bool, key int32) (bool, error) {
 	card := r.displayCards[r.defaultDisplay]
-	if card == 0 || !r.hasJavaTaskCapacity() {
+	if card == 0 || r.pendingKeyTask(card) != nil ||
+		!r.hasJavaTaskCapacity() {
+		return false, nil
+	}
+	if task := r.paintTasks[card]; task != nil && !task.done {
 		return false, nil
 	}
 	eventType := ktfKeyReleased
 	if pressed {
 		eventType = ktfKeyPressed
 	}
-	if err := r.queueJavaVirtual(
+	task, err := r.queueJavaVirtualTask(
 		card,
 		"keyNotify",
 		"(II)Z",
 		eventType,
 		uint32(key),
-	); err != nil {
+	)
+	if err != nil {
 		return false, err
 	}
+	task.keyCard = card
 	r.hostTrace = append(
 		r.hostTrace,
 		fmt.Sprintf(
@@ -2088,6 +2095,15 @@ func (r *ktfRuntime) queueKeyEvent(pressed bool, key int32) (bool, error) {
 		),
 	)
 	return true, nil
+}
+
+func (r *ktfRuntime) pendingKeyTask(card uint32) *ktfTask {
+	for _, task := range r.tasks {
+		if task != nil && !task.done && task.keyCard == card {
+			return task
+		}
+	}
+	return nil
 }
 
 func (r *ktfRuntime) canAwaitEvents() bool {
@@ -5359,6 +5375,17 @@ func ktfJavaNativeOverride(signature string) (ktfHostCall, bool) {
 				"(Ljava/lang/Object;ILjava/lang/Object;II)V",
 			),
 		}, true
+	case "java/lang/Thread.sleep(J)V", "java/lang/Thread.yield()V":
+		method := strings.TrimPrefix(signature, "java/lang/Thread.")
+		separator := strings.IndexByte(method, '(')
+		return ktfHostCall{
+			name: "java.native_override." + signature,
+			handler: ktfHostJavaMethod(
+				"java/lang/Thread",
+				method[:separator],
+				method[separator:],
+			),
+		}, true
 	case "java/lang/String.valueOf([C)Ljava/lang/String;",
 		"java/lang/String.valueOf([CII)Ljava/lang/String;":
 		method := strings.TrimPrefix(signature, "java/lang/String.")
@@ -6775,6 +6802,14 @@ func (r *ktfRuntime) notifyCardShown(
 
 func (r *ktfRuntime) paintCard(ctx context.Context, card uint32) error {
 	if card == 0 || !r.dirtyCards[card] {
+		return nil
+	}
+	if task := r.pendingKeyTask(card); task != nil {
+		r.deferCardPaint(task, card, false)
+		r.hostTrace = append(
+			r.hostTrace,
+			fmt.Sprintf("java_paint_defer_key:card=0x%08x", card),
+		)
 		return nil
 	}
 	if task := r.paintTasks[card]; task != nil && !task.done {
