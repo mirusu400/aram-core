@@ -160,6 +160,8 @@ type RNGAlgorithm string
 const (
 	RNGXoshiro256StarStar RNGAlgorithm = "xoshiro256**"
 	RNGJava48             RNGAlgorithm = "java-lcg48"
+	javaRandomMultiplier               = uint64(0x5deece66d)
+	javaRandomMask                     = uint64(1<<48 - 1)
 )
 
 func (a RNGAlgorithm) valid() bool {
@@ -221,11 +223,32 @@ func (r *Random) SetJavaSeed(name string, seed int64) error {
 		return err
 	}
 	stream.algorithm = RNGJava48
-	stream.state = [4]uint64{
-		(uint64(seed) ^ 0x5deece66d) & ((uint64(1) << 48) - 1),
-	}
+	stream.state = [4]uint64{JavaRandomSeed(seed)}
 	stream.draws = 0
 	return nil
+}
+
+// JavaRandomSeed converts a public java.util.Random seed to its scrambled
+// 48-bit state. Adapters with many short-lived Random objects can serialize
+// that state themselves without consuming an unbounded number of named
+// service streams.
+func JavaRandomSeed(seed int64) uint64 {
+	return (uint64(seed) ^ javaRandomMultiplier) & javaRandomMask
+}
+
+// JavaRandomBits advances a serialized java.util.Random state and returns the
+// requested high bits.
+func JavaRandomBits(state *uint64, bits uint8) (uint32, error) {
+	if state == nil || bits == 0 || bits > 32 {
+		return 0, fmt.Errorf(
+			"%w: Java random state %p bit count %d",
+			ErrInvalidArgument,
+			state,
+			bits,
+		)
+	}
+	*state = (*state*javaRandomMultiplier + 0xb) & javaRandomMask
+	return uint32(*state >> (48 - bits)), nil
 }
 
 // JavaInt advances a java.util.Random-compatible stream and returns next(32).
@@ -259,10 +282,12 @@ func (r *Random) JavaBits(name string, bits uint8) (uint32, error) {
 	if stream.draws == math.MaxUint64 {
 		return 0, fmt.Errorf("%w: random stream %q exhausted", ErrLimitExceeded, name)
 	}
-	stream.state[0] = (stream.state[0]*0x5deece66d + 0xb) &
-		((uint64(1) << 48) - 1)
+	value, err := JavaRandomBits(&stream.state[0], bits)
+	if err != nil {
+		return 0, err
+	}
 	stream.draws++
-	return uint32(stream.state[0] >> (48 - bits)), nil
+	return value, nil
 }
 
 func (r *Random) Uint32(name string) (uint32, error) {

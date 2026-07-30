@@ -41,9 +41,10 @@ const (
 	// KTF games commonly start their render thread before startApp has
 	// published the images that thread paints. The handset scheduler let the
 	// starting task continue much longer than ARAM's small host-facing slice.
-	// Prefer the real return/yield boundary, but cap the compatibility delay
-	// so games whose starting task is a permanent loop cannot starve children.
-	ktfThreadStartGrace = uint64(128 * 1024)
+	// Allow a longer initialization window until the first card is published,
+	// then use a small cap so permanent loops cannot starve child threads.
+	ktfThreadStartGrace        = uint64(128 * 1024)
+	ktfInitialThreadStartGrace = uint64(2 * 1024 * 1024)
 
 	ktfJavaClassInitializing = uint8(1)
 	ktfJavaClassInitialized  = uint8(2)
@@ -2135,13 +2136,17 @@ func (r *ktfRuntime) deferStartedThread(task *ktfTask) {
 	if task == nil || parent == nil || parent == task || parent.done {
 		return
 	}
+	grace := ktfThreadStartGrace
+	if r.defaultDisplay == 0 || r.displayCards[r.defaultDisplay] == 0 {
+		grace = ktfInitialThreadStartGrace
+	}
 	task.startBlocker = parent
-	parent.childStartGrace = ktfThreadStartGrace + r.activeInstructions
+	parent.childStartGrace = grace + r.activeInstructions
 	r.hostTrace = append(
 		r.hostTrace,
 		fmt.Sprintf(
 			"java_thread_start_defer:grace=%d",
-			ktfThreadStartGrace,
+			grace,
 		),
 	)
 }
@@ -4057,7 +4062,10 @@ func (r *ktfRuntime) javaArrayClass(elementType uint32) (string, uint32, error) 
 	}
 	switch {
 	case strings.HasPrefix(class.Name, "["):
-		return "[" + class.Name, 4, nil
+		// The KTF multi-array helper passes the full array class for each
+		// recursive level. Unlike anewarray, it does not pass the component
+		// class, so prepending another '[' creates an extra dimension.
+		return class.Name, 4, nil
 	case strings.HasPrefix(class.Name, "L") &&
 		strings.HasSuffix(class.Name, ";"):
 		return "[" + class.Name, 4, nil
@@ -9219,41 +9227,24 @@ func (r *ktfRuntime) handleRandomMethod(
 	if err != nil {
 		return 0, err
 	}
-	const (
-		multiplier = uint64(0x5deece66d)
-		mask       = uint64(1<<48 - 1)
-	)
-	stream := fmt.Sprintf("ktf.java.random.%08x", instance)
-	syncSeed := func() {
-		for _, current := range r.services.Random.Snapshot().Streams {
-			if current.Name == stream {
-				r.randomSeeds[instance] = current.State[0]
-				return
-			}
-		}
-	}
-	setSeed := func(seed uint64) error {
-		if err := r.services.Random.SetJavaSeed(stream, int64(seed)); err != nil {
-			return err
-		}
-		r.randomSeeds[instance] = (seed ^ multiplier) & mask
-		return nil
+	setSeed := func(seed uint64) {
+		r.randomSeeds[instance] = shared.JavaRandomSeed(int64(seed))
 	}
 	next := func(bits uint8) (uint32, error) {
-		if _, ok := r.randomSeeds[instance]; !ok {
-			if err := setSeed(uint64(instance)); err != nil {
-				return 0, err
-			}
+		state, ok := r.randomSeeds[instance]
+		if !ok {
+			state = shared.JavaRandomSeed(int64(instance))
 		}
-		value, err := r.services.Random.JavaBits(stream, bits)
+		value, err := shared.JavaRandomBits(&state, bits)
 		if err == nil {
-			syncSeed()
+			r.randomSeeds[instance] = state
 		}
 		return value, err
 	}
 	switch name + descriptor {
 	case "<init>()V":
-		return 0, setSeed(uint64(instance))
+		setSeed(uint64(instance))
+		return 0, nil
 	case "<init>(J)V", "setSeed(J)V":
 		low, valueErr := r.parameter(2)
 		if valueErr != nil {
@@ -9263,7 +9254,8 @@ func (r *ktfRuntime) handleRandomMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		return 0, setSeed(uint64(high)<<32 | uint64(low))
+		setSeed(uint64(high)<<32 | uint64(low))
+		return 0, nil
 	case "nextInt()I":
 		return next(32)
 	case "nextInt(I)I":

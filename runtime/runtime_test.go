@@ -213,6 +213,27 @@ func TestJavaRandomCompatibilityStreamRoundTrip(t *testing.T) {
 	}
 }
 
+func TestJavaRandomSerializedStateMatchesNamedStream(t *testing.T) {
+	random := NewRandom(0, 1)
+	if err := random.SetJavaSeed("java", 123); err != nil {
+		t.Fatal(err)
+	}
+	state := JavaRandomSeed(123)
+	for _, bits := range []uint8{1, 16, 31, 32} {
+		want, err := random.JavaBits("java", bits)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := JavaRandomBits(&state, bits)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("Java random next(%d) = %d, want %d", bits, got, want)
+		}
+	}
+}
+
 func TestEventInputAndTimersHaveDeterministicOrdering(t *testing.T) {
 	registry := NewRegistry(16)
 	bus := NewEventBus(32, 64)

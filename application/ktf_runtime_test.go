@@ -987,6 +987,49 @@ func TestKTFJavaArrayNewCreatesPrimitiveArray(t *testing.T) {
 	}
 }
 
+func TestKTFJavaArrayNewPreservesMultidimensionalArrayClass(t *testing.T) {
+	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.cpu.Close()
+	if err := runtime.mapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	runtime.jvmContext, err = runtime.allocateWords(3 + 128)
+	if err != nil {
+		t.Fatal(err)
+	}
+	arrayClass, err := runtime.ensureJavaClass("[[B")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR0, arrayClass); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR1, 3); err != nil {
+		t.Fatal(err)
+	}
+	instance, err := ktfJavaArrayNew(context.Background(), runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instanceWords, err := runtime.readWords(instance, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	class, err := runtime.inspectJavaClass(instanceWords[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if class.Name != "[[B" {
+		t.Fatalf("multidimensional array class = %q, want %q", class.Name, "[[B")
+	}
+}
+
 func TestKTFJavaCheckTypeFollowsClassHierarchyAndArrayRule(t *testing.T) {
 	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
 		ClientName: "client.bin0",
@@ -3081,7 +3124,7 @@ func TestKTFStartedThreadWaitsForParentInitializationGrace(t *testing.T) {
 	if child.startBlocker != parent {
 		t.Fatal("new thread was not blocked behind its starting task")
 	}
-	if got, want := parent.childStartGrace, ktfThreadStartGrace+123; got != want {
+	if got, want := parent.childStartGrace, ktfInitialThreadStartGrace+123; got != want {
 		t.Fatalf("parent start grace = %d, want %d", got, want)
 	}
 	if got := runtime.nextRunnableTask(); got != parent {
@@ -3091,10 +3134,10 @@ func TestKTFStartedThreadWaitsForParentInitializationGrace(t *testing.T) {
 	// Instructions executed before Thread.start in the current slice must not
 	// consume the new thread's grace period.
 	runtime.chargeThreadStartGrace(parent, 123)
-	if got := parent.childStartGrace; got != ktfThreadStartGrace {
-		t.Fatalf("remaining start grace = %d, want %d", got, ktfThreadStartGrace)
+	if got := parent.childStartGrace; got != ktfInitialThreadStartGrace {
+		t.Fatalf("remaining start grace = %d, want %d", got, ktfInitialThreadStartGrace)
 	}
-	runtime.chargeThreadStartGrace(parent, ktfThreadStartGrace-1)
+	runtime.chargeThreadStartGrace(parent, ktfInitialThreadStartGrace-1)
 	if child.startBlocker != parent {
 		t.Fatal("child was released before the grace period expired")
 	}
@@ -3104,6 +3147,24 @@ func TestKTFStartedThreadWaitsForParentInitializationGrace(t *testing.T) {
 	}
 	if got := runtime.nextRunnableTask(); got != child {
 		t.Fatalf("scheduler selected task %p after release, want child %p", got, child)
+	}
+}
+
+func TestKTFStartedThreadUsesShortGraceAfterCardIsShown(t *testing.T) {
+	parent := &ktfTask{}
+	child := &ktfTask{}
+	runtime := &ktfRuntime{
+		tasks:              []*ktfTask{parent, child},
+		taskCursor:         1,
+		activeTask:         parent,
+		activeInstructions: 123,
+		defaultDisplay:     1,
+		displayCards:       map[uint32]uint32{1: 2},
+	}
+
+	runtime.deferStartedThread(child)
+	if got, want := parent.childStartGrace, ktfThreadStartGrace+123; got != want {
+		t.Fatalf("parent start grace = %d, want %d", got, want)
 	}
 }
 
@@ -4416,6 +4477,27 @@ func TestKTFIntegerRandomAndDataOutputSemantics(t *testing.T) {
 	}
 	if randomValue >= 7 {
 		t.Fatalf("Random.nextInt(7) = %d", randomValue)
+	}
+	for range 128 {
+		shortLived, valueErr := runtime.newHostJavaObject("java/util/Random")
+		if valueErr != nil {
+			t.Fatal(valueErr)
+		}
+		if valueErr := runtime.cpu.WriteRegister(
+			cpu.RegisterR1,
+			shortLived,
+		); valueErr != nil {
+			t.Fatal(valueErr)
+		}
+		if _, valueErr := runtime.handleRandomMethod(
+			"<init>",
+			"()V",
+		); valueErr != nil {
+			t.Fatal(valueErr)
+		}
+	}
+	if streams := runtime.services.Random.Snapshot().Streams; len(streams) != 0 {
+		t.Fatalf("short-lived Java Random objects allocated service streams: %v", streams)
 	}
 
 	target, err := runtime.newHostJavaObject("java/io/ByteArrayOutputStream")
