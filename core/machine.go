@@ -2,13 +2,18 @@ package core
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"image"
 	"io"
+	"strings"
 	"time"
 )
 
 var ErrBackendUnavailable = errors.New("emulation backend unavailable")
+
+const MaxControlNameBytes = 255
 
 type State uint8
 
@@ -40,6 +45,10 @@ func (s State) String() string {
 	}
 }
 
+func (s State) Valid() bool {
+	return s >= StateEmpty && s <= StateFaulted
+}
+
 type Source struct {
 	Name      string
 	Path      string
@@ -50,16 +59,70 @@ type Source struct {
 	Size      int64
 }
 
+func (s Source) Validate() error {
+	if strings.TrimSpace(s.Name) == "" {
+		return fmt.Errorf("source name is empty")
+	}
+	if s.ReaderAt == nil {
+		return fmt.Errorf("source %q has no random-access reader", s.Name)
+	}
+	if s.Size <= 0 {
+		return fmt.Errorf("source %q has invalid size %d", s.Name, s.Size)
+	}
+	if s.SHA256 != "" {
+		if len(s.SHA256) != 64 {
+			return fmt.Errorf("source %q SHA-256 must contain 64 hexadecimal characters", s.Name)
+		}
+		if _, err := hex.DecodeString(s.SHA256); err != nil {
+			return fmt.Errorf("source %q has invalid SHA-256: %w", s.Name, err)
+		}
+	}
+	return nil
+}
+
 type InputEvent struct {
 	Control string
 	Pressed bool
 	At      time.Duration
 }
 
+func (e InputEvent) Validate() error {
+	if strings.TrimSpace(e.Control) == "" {
+		return fmt.Errorf("input control is empty")
+	}
+	if len(e.Control) > MaxControlNameBytes {
+		return fmt.Errorf("input control exceeds %d bytes", MaxControlNameBytes)
+	}
+	if e.At < 0 {
+		return fmt.Errorf("input event time %s is negative", e.At)
+	}
+	return nil
+}
+
 type AudioChunk struct {
 	SampleRate int
 	Channels   int
 	PCM16      []int16
+}
+
+func (c AudioChunk) Validate() error {
+	if c.SampleRate == 0 && c.Channels == 0 && len(c.PCM16) == 0 {
+		return nil
+	}
+	if c.SampleRate <= 0 {
+		return fmt.Errorf("invalid audio sample rate %d", c.SampleRate)
+	}
+	if c.Channels <= 0 {
+		return fmt.Errorf("invalid audio channel count %d", c.Channels)
+	}
+	if len(c.PCM16)%c.Channels != 0 {
+		return fmt.Errorf(
+			"audio sample count %d is not divisible by %d channels",
+			len(c.PCM16),
+			c.Channels,
+		)
+	}
+	return nil
 }
 
 type Machine interface {
