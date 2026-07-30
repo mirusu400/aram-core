@@ -1,17 +1,19 @@
 package loader
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 )
+
+const MarkerLimit = 64
 
 type Kind string
 
@@ -22,6 +24,8 @@ const (
 	KindEADS     Kind = "eads"
 	KindELF      Kind = "elf"
 	KindJava     Kind = "java-archive"
+	KindKTF      Kind = "ktf-wipi"
+	KindRaptor   Kind = "raptor-wipi-c"
 	KindWBIN     Kind = "samsung-wbin"
 	KindWBT      Kind = "samsung-wbt"
 	KindFont     Kind = "samsung-font"
@@ -31,6 +35,20 @@ const (
 type Marker struct {
 	Magic  string `json:"magic"`
 	Offset int64  `json:"offset"`
+}
+
+type OffsetError struct {
+	Offset int64
+	Op     string
+	Err    error
+}
+
+func (e *OffsetError) Error() string {
+	return fmt.Sprintf("%s at offset 0x%x: %v", e.Op, e.Offset, e.Err)
+}
+
+func (e *OffsetError) Unwrap() error {
+	return e.Err
 }
 
 type Report struct {
@@ -60,8 +78,32 @@ func InspectFile(path string) (Report, error) {
 		return Report{}, fmt.Errorf("%q is not a regular file", path)
 	}
 
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		absolute = path
+	}
+	report, err := Inspect(absolute, file, info.Size())
+	if err != nil {
+		return Report{}, fmt.Errorf("inspect %q: %w", path, err)
+	}
+	return report, nil
+}
+
+func InspectBytes(name string, data []byte) (Report, error) {
+	return Inspect(name, bytes.NewReader(data), int64(len(data)))
+}
+
+// Inspect identifies and hashes a bounded byte source without assuming that it
+// is backed by a normal filesystem path. It reads exactly size bytes.
+func Inspect(name string, reader io.ReaderAt, size int64) (Report, error) {
+	if reader == nil {
+		return Report{}, fmt.Errorf("inspect: reader is nil")
+	}
+	if size < 0 {
+		return Report{}, fmt.Errorf("inspect: negative size %d", size)
+	}
+
 	hash := sha256.New()
-	reader := bufio.NewReaderSize(io.TeeReader(file, hash), 1024*1024)
 	var (
 		first   []byte
 		carry   []byte
@@ -69,10 +111,14 @@ func InspectFile(path string) (Report, error) {
 		markers []Marker
 	)
 	buffer := make([]byte, 1024*1024)
-	for {
-		count, readErr := reader.Read(buffer)
+	for offset < size {
+		want := min(int64(len(buffer)), size-offset)
+		count, readErr := reader.ReadAt(buffer[:want], offset)
 		if count > 0 {
 			chunk := append(append([]byte(nil), carry...), buffer[:count]...)
+			if _, err := hash.Write(buffer[:count]); err != nil {
+				return Report{}, &OffsetError{Offset: offset, Op: "hash", Err: err}
+			}
 			if len(first) < 64 {
 				needed := min(64-len(first), count)
 				first = append(first, buffer[:needed]...)
@@ -86,44 +132,46 @@ func InspectFile(path string) (Report, error) {
 			}
 			offset += int64(count)
 		}
-		if readErr == io.EOF {
-			break
-		}
 		if readErr != nil {
-			return Report{}, fmt.Errorf("read %q: %w", path, readErr)
+			if errors.Is(readErr, io.EOF) && offset == size {
+				break
+			}
+			if errors.Is(readErr, io.EOF) {
+				readErr = io.ErrUnexpectedEOF
+			}
+			return Report{}, &OffsetError{Offset: offset, Op: "read", Err: readErr}
+		}
+		if count == 0 {
+			return Report{}, &OffsetError{Offset: offset, Op: "read", Err: io.ErrNoProgress}
 		}
 	}
 
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		absolute = path
-	}
 	return Report{
-		Path:    absolute,
-		Size:    info.Size(),
+		Path:    name,
+		Size:    size,
 		SHA256:  hex.EncodeToString(hash.Sum(nil)),
-		Kind:    detectKind(path, first, markers),
+		Kind:    detectKind(name, first, markers),
 		Markers: markers,
 	}, nil
 }
 
 func appendMarkers(markers []Marker, data []byte, base int64) []Marker {
-	if len(markers) >= 64 {
+	if len(markers) >= MarkerLimit {
 		return markers
 	}
-	for _, magic := range []string{"ABHS", "EADS"} {
-		search := []byte(magic)
-		for start := 0; len(markers) < 64; {
-			index := bytes.Index(data[start:], search)
-			if index < 0 {
-				break
-			}
-			position := start + index
-			absolute := base + int64(position)
-			if absolute >= 0 && !hasMarker(markers, magic, absolute) {
-				markers = append(markers, Marker{Magic: magic, Offset: absolute})
-			}
-			start = position + 1
+	for position := 0; position+4 <= len(data) && len(markers) < MarkerLimit; position++ {
+		var magic string
+		switch string(data[position : position+4]) {
+		case "ABHS":
+			magic = "ABHS"
+		case "EADS":
+			magic = "EADS"
+		default:
+			continue
+		}
+		absolute := base + int64(position)
+		if absolute >= 0 && !hasMarker(markers, magic, absolute) {
+			markers = append(markers, Marker{Magic: magic, Offset: absolute})
 		}
 	}
 	return markers

@@ -2,6 +2,7 @@ package abhs
 
 import (
 	"encoding/binary"
+	"errors"
 	"testing"
 )
 
@@ -28,6 +29,70 @@ func TestParseRejectsBadRelocation(t *testing.T) {
 	if _, err := Parse(data, 0); err == nil {
 		t.Fatal("Parse accepted an invalid relocation table")
 	}
+}
+
+func TestLoadAppliesRelocationsAndEntryModes(t *testing.T) {
+	data := syntheticModule()
+	binary.LittleEndian.PutUint32(data[0x80:0x84], 0x24)
+	module, err := Parse(data, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(data, module, 0x1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint32(loaded.Image[:4]); got != 0x1024 {
+		t.Fatalf("relocated word = %#x, want %#x", got, 0x1024)
+	}
+	if loaded.GuestInit != 0x1001 || loaded.GuestFini != 0x1001 ||
+		loaded.GuestEntry() != loaded.GuestFini {
+		t.Fatalf("loaded entry points = init %#x fini %#x", loaded.GuestInit, loaded.GuestFini)
+	}
+	if got := binary.LittleEndian.Uint32(data[0x80:0x84]); got != 0x24 {
+		t.Fatalf("Load modified source code: %#x", got)
+	}
+}
+
+func TestLoadRejectsStaleMetadataAndGuestOverflow(t *testing.T) {
+	data := syntheticModule()
+	module, err := Parse(data, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stale := module
+	stale.EntryOffset = 3
+	if _, err := Load(data, stale, 0x1000); err == nil {
+		t.Fatal("Load accepted stale module metadata")
+	}
+	if _, err := Load(data, module, ^uint32(0)-3); err == nil {
+		t.Fatal("Load accepted a wrapping guest range")
+	}
+}
+
+func TestFormatErrorCarriesOffendingOffset(t *testing.T) {
+	data := syntheticModule()
+	binary.LittleEndian.PutUint32(data[0xa0:0xa4], 2)
+	_, err := Parse(data, 0)
+	var formatErr *FormatError
+	if !errors.As(err, &formatErr) {
+		t.Fatalf("Parse error = %v, want FormatError", err)
+	}
+	if formatErr.Offset != 0xa0 {
+		t.Fatalf("FormatError.Offset = %#x, want %#x", formatErr.Offset, 0xa0)
+	}
+}
+
+func FuzzParse(f *testing.F) {
+	f.Add(syntheticModule(), uint32(0))
+	f.Add([]byte("ABHS"), uint32(0))
+	f.Fuzz(func(t *testing.T, data []byte, offset uint32) {
+		if uint64(offset) > uint64(len(data)) {
+			return
+		}
+		_, _ = Parse(data, offset)
+	})
 }
 
 func syntheticModule() []byte {
