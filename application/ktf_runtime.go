@@ -174,15 +174,16 @@ type ktfRuntime struct {
 	presentCount            uint32
 	tickMS                  uint64
 
-	nativeParameterBase uint32
-	deferThreads        bool
-	yieldRequested      bool
-	tasks               []*ktfTask
-	pendingJavaCalls    []ktfPendingJavaCall
-	taskCursor          int
-	activeTask          *ktfTask
-	activeInstructions  uint64
-	executionDepth      int
+	nativeParameterBase  uint32
+	deferThreads         bool
+	yieldRequested       bool
+	terminationRequested bool
+	tasks                []*ktfTask
+	pendingJavaCalls     []ktfPendingJavaCall
+	taskCursor           int
+	activeTask           *ktfTask
+	activeInstructions   uint64
+	executionDepth       int
 }
 
 type ktfHostHandler func(context.Context, *ktfRuntime) (uint32, error)
@@ -1872,6 +1873,10 @@ func (r *ktfRuntime) call(
 		if strings.HasPrefix(host.name, "java.method.") {
 			r.lastJavaReturn = value
 		}
+		if r.terminationRequested {
+			run.Reason = cpu.StopExited
+			return run, value, nil
+		}
 		if err := r.cpu.WriteRegister(cpu.RegisterR0, value); err != nil {
 			return cpu.Result{Reason: cpu.StopFault, PC: trap, Err: err}, 0, err
 		}
@@ -2086,8 +2091,27 @@ func (r *ktfRuntime) queueKeyEvent(pressed bool, key int32) (bool, error) {
 }
 
 func (r *ktfRuntime) canAwaitEvents() bool {
-	return r.defaultDisplay != 0 &&
+	return !r.terminationRequested &&
+		r.defaultDisplay != 0 &&
 		r.displayCards[r.defaultDisplay] != 0
+}
+
+func (r *ktfRuntime) requestJavaTermination(instance uint32) {
+	if r.terminationRequested {
+		return
+	}
+	r.terminationRequested = true
+	r.pendingJavaCalls = nil
+	for _, task := range r.tasks {
+		task.done = true
+	}
+	r.hostTrace = append(
+		r.hostTrace,
+		fmt.Sprintf(
+			"java_lifecycle:notifyDestroyed:instance=0x%08x",
+			instance,
+		),
+	)
 }
 
 func (r *ktfRuntime) deferStartedThread(task *ktfTask) {
@@ -2212,6 +2236,12 @@ func (r *ktfRuntime) runTaskSlice(
 			Reason: cpu.StopFault,
 			Err:    errors.New("KTF task instruction limit is zero"),
 		}
+	}
+	if r.terminationRequested {
+		for _, task := range r.tasks {
+			task.done = true
+		}
+		return cpu.Result{Reason: cpu.StopExited}
 	}
 	r.executionDepth++
 	defer func() {
@@ -2423,6 +2453,10 @@ func (r *ktfRuntime) runTaskSlice(
 		}
 		if strings.HasPrefix(host.name, "java.method.") {
 			r.lastJavaReturn = value
+		}
+		if r.terminationRequested {
+			run.Reason = cpu.StopExited
+			return run
 		}
 		if err := r.cpu.WriteRegister(cpu.RegisterR0, value); err != nil {
 			return cpu.Result{
@@ -5690,8 +5724,12 @@ func ktfHostJavaMethod(className, name, descriptor string) ktfHostHandler {
 				)
 				return runtime.newJavaString(value)
 			}
-		case "org/kwis/msp/lcdui/Jlet",
-			"com/ktf/kfc/GForm":
+		case "org/kwis/msp/lcdui/Jlet":
+			if name+descriptor == "notifyDestroyed()V" {
+				runtime.requestJavaTermination(registers[1])
+			}
+			return 0, nil
+		case "com/ktf/kfc/GForm":
 			return 0, nil
 		case "org/kwis/msp/handset/BackLight":
 			switch name + descriptor {

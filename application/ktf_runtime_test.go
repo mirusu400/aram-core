@@ -247,6 +247,80 @@ func TestKTFTaskSliceRunsToReturnSentinel(t *testing.T) {
 	}
 }
 
+func TestKTFJletNotifyDestroyedStopsNestedAndScheduledExecution(t *testing.T) {
+	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.cpu.Close()
+	if err := runtime.mapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	const (
+		display = uint32(0x10001000)
+		card    = uint32(0x10002000)
+		jlet    = uint32(0x10003000)
+	)
+	runtime.defaultDisplay = display
+	runtime.displayCards[display] = card
+	if !runtime.canAwaitEvents() {
+		t.Fatal("docked card could not receive events before Jlet termination")
+	}
+	notify := runtime.registerHostCall(
+		"java.method.org/kwis/msp/lcdui/Jlet.notifyDestroyed()V",
+		ktfHostJavaMethod(
+			"org/kwis/msp/lcdui/Jlet",
+			"notifyDestroyed",
+			"()V",
+		),
+	)
+	result, _, err := runtime.call(
+		context.Background(),
+		notify,
+		[]uint32{0, jlet},
+		16,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Reason != cpu.StopExited {
+		t.Fatalf("nested notifyDestroyed result = %+v, want exited", result)
+	}
+	if !runtime.terminationRequested || runtime.canAwaitEvents() {
+		t.Fatalf(
+			"Jlet termination state: requested=%t can_await=%t",
+			runtime.terminationRequested,
+			runtime.canAwaitEvents(),
+		)
+	}
+
+	task, err := runtime.newTask(ktfImageBase|1, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.tasks = append(runtime.tasks, task)
+	result = runtime.runTaskSlice(context.Background(), 16)
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if result.Reason != cpu.StopExited || !task.done {
+		t.Fatalf(
+			"terminated Jlet task result = %+v, done=%t",
+			result,
+			task.done,
+		)
+	}
+	if !slices.Contains(
+		runtime.hostTrace,
+		"java_lifecycle:notifyDestroyed:instance=0x10003000",
+	) {
+		t.Fatalf("Jlet lifecycle trace = %v", runtime.hostTrace)
+	}
+}
+
 func TestKTFMachineRemainsPausedWhileDockedCardCanReceiveEvents(t *testing.T) {
 	for _, test := range []struct {
 		name      string
