@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -253,6 +254,35 @@ func (vm *VM) installExtendedStringBufferNatives() {
 				return Value{}, false, err
 			}
 			return IntValue(int32(len(utf16.Encode([]rune(state.value))))), true, nil
+		},
+	)
+	vm.RegisterNative(
+		"java/lang/StringBuffer",
+		"setCharAt",
+		"(IC)V",
+		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+			state, err := vm.stringBuffer(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			index, err := intArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			character, err := intArgument(args, 1)
+			if err != nil {
+				return Value{}, false, err
+			}
+			units := utf16.Encode([]rune(state.value))
+			if index < 0 || int(index) >= len(units) {
+				return Value{}, false, vm.newThrowable(
+					"java/lang/StringIndexOutOfBoundsException",
+					"",
+				)
+			}
+			units[index] = uint16(character)
+			state.value = string(utf16.Decode(units))
+			return Value{}, false, nil
 		},
 	)
 }
@@ -631,6 +661,71 @@ func (vm *VM) installStringNatives() {
 	} {
 		vm.RegisterNative("java/lang/String", "valueOf", method.descriptor, method.native)
 	}
+	vm.RegisterNative(
+		"java/lang/String",
+		"valueOf",
+		"([CII)Ljava/lang/String;",
+		func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
+			offset, err := intArgument(args, 1)
+			if err != nil {
+				return Value{}, false, err
+			}
+			length, err := intArgument(args, 2)
+			if err != nil {
+				return Value{}, false, err
+			}
+			value, err := vm.charArrayArgument(args, 0, offset, length)
+			if err != nil {
+				return Value{}, false, err
+			}
+			return ReferenceValue(vm.NewString(value)), true, nil
+		},
+	)
+	vm.RegisterNative(
+		"java/lang/String",
+		"getChars",
+		"(II[CI)V",
+		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+			value, err := vm.String(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			begin, err := intArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			end, err := intArgument(args, 1)
+			if err != nil {
+				return Value{}, false, err
+			}
+			destinationReference, err := referenceArgument(args, 2)
+			if err != nil {
+				return Value{}, false, err
+			}
+			destinationOffset, err := intArgument(args, 3)
+			if err != nil {
+				return Value{}, false, err
+			}
+			destination, ok := vm.Object(destinationReference)
+			units := utf16.Encode([]rune(value))
+			if !ok || destination.Array == nil ||
+				destination.Array.Descriptor != "[C" ||
+				begin < 0 || end < begin || int(end) > len(units) ||
+				destinationOffset < 0 ||
+				int64(destinationOffset)+int64(end-begin) >
+					int64(len(destination.Array.Elements)) {
+				return Value{}, false, vm.newThrowable(
+					"java/lang/IndexOutOfBoundsException",
+					"",
+				)
+			}
+			for index, unit := range units[begin:end] {
+				destination.Array.Elements[int(destinationOffset)+index] =
+					IntValue(int32(unit))
+			}
+			return Value{}, false, nil
+		},
+	)
 }
 
 func (vm *VM) installNumberNatives() {
@@ -708,6 +803,80 @@ func (vm *VM) installNumberNatives() {
 			return ReferenceValue(vm.NewString(strconv.FormatUint(uint64(uint32(value)), 16))), true, nil
 		},
 	)
+	vm.RegisterNative(
+		"java/lang/Integer",
+		"valueOf",
+		"(Ljava/lang/String;)Ljava/lang/Integer;",
+		func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
+			value, err := vm.stringArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			parsed, err := strconv.ParseInt(value, 10, 32)
+			if err != nil {
+				return Value{}, false, vm.newThrowable(
+					"java/lang/NumberFormatException",
+					err.Error(),
+				)
+			}
+			return ReferenceValue(vm.NewObject(
+				"java/lang/Integer",
+				&integerState{value: int32(parsed)},
+			)), true, nil
+		},
+	)
+	vm.RegisterNative(
+		"java/lang/Byte",
+		"parseByte",
+		"(Ljava/lang/String;)B",
+		func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
+			value, err := vm.stringArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			parsed, err := strconv.ParseInt(value, 10, 8)
+			if err != nil {
+				return Value{}, false, vm.newThrowable(
+					"java/lang/NumberFormatException",
+					err.Error(),
+				)
+			}
+			return IntValue(int32(int8(parsed))), true, nil
+		},
+	)
+	vm.RegisterNative(
+		"java/lang/Byte",
+		"toString",
+		"(B)Ljava/lang/String;",
+		func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
+			value, err := intArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			return ReferenceValue(vm.NewString(
+				strconv.FormatInt(int64(int8(value)), 10),
+			)), true, nil
+		},
+	)
+	vm.RegisterNative(
+		"java/lang/Long",
+		"parseLong",
+		"(Ljava/lang/String;)J",
+		func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
+			value, err := vm.stringArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			parsed, err := strconv.ParseInt(value, 10, 64)
+			if err != nil {
+				return Value{}, false, vm.newThrowable(
+					"java/lang/NumberFormatException",
+					err.Error(),
+				)
+			}
+			return LongValue(parsed), true, nil
+		},
+	)
 }
 
 func (vm *VM) installRuntimeNatives() {
@@ -777,6 +946,101 @@ func (vm *VM) installVectorNatives() {
 				return Value{}, false, err
 			}
 			state.values = append(state.values, value)
+			return Value{}, false, nil
+		},
+	)
+	vm.RegisterNative(
+		"java/util/Vector",
+		"contains",
+		"(Ljava/lang/Object;)Z",
+		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+			state, err := vm.vector(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			value, err := referenceArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			for _, current := range state.values {
+				if vm.referencesEqual(current, value) {
+					return IntValue(1), true, nil
+				}
+			}
+			return IntValue(0), true, nil
+		},
+	)
+	vm.RegisterNative(
+		"java/util/Vector",
+		"removeElement",
+		"(Ljava/lang/Object;)Z",
+		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+			state, err := vm.vector(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			value, err := referenceArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			for index, current := range state.values {
+				if vm.referencesEqual(current, value) {
+					copy(state.values[index:], state.values[index+1:])
+					state.values = state.values[:len(state.values)-1]
+					return IntValue(1), true, nil
+				}
+			}
+			return IntValue(0), true, nil
+		},
+	)
+	vm.RegisterNative(
+		"java/util/Vector",
+		"removeElementAt",
+		"(I)V",
+		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+			state, err := vm.vector(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			index, err := intArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			if index < 0 || int(index) >= len(state.values) {
+				return Value{}, false, vm.newThrowable(
+					"java/lang/ArrayIndexOutOfBoundsException",
+					"",
+				)
+			}
+			copy(state.values[index:], state.values[index+1:])
+			state.values = state.values[:len(state.values)-1]
+			return Value{}, false, nil
+		},
+	)
+	vm.RegisterNative(
+		"java/util/Vector",
+		"setElementAt",
+		"(Ljava/lang/Object;I)V",
+		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+			state, err := vm.vector(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			value, err := referenceArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			index, err := intArgument(args, 1)
+			if err != nil {
+				return Value{}, false, err
+			}
+			if index < 0 || int(index) >= len(state.values) {
+				return Value{}, false, vm.newThrowable(
+					"java/lang/ArrayIndexOutOfBoundsException",
+					"",
+				)
+			}
+			state.values[index] = value
 			return Value{}, false, nil
 		},
 	)
@@ -959,6 +1223,62 @@ func (vm *VM) installHashtableNatives() {
 			return Value{}, false, nil
 		},
 	)
+	vm.RegisterNative(
+		"java/util/Hashtable",
+		"keys",
+		"()Ljava/util/Enumeration;",
+		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+			state, err := vm.hashtable(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			identities := make([]string, 0, len(state.keys))
+			for identity := range state.keys {
+				identities = append(identities, identity)
+			}
+			sort.Strings(identities)
+			values := make([]uint32, 0, len(identities))
+			for _, identity := range identities {
+				values = append(values, state.keys[identity])
+			}
+			return ReferenceValue(vm.NewObject(
+				"java/util/Enumeration",
+				&vectorState{values: values},
+			)), true, nil
+		},
+	)
+	vm.RegisterNative(
+		"java/util/Enumeration",
+		"hasMoreElements",
+		"()Z",
+		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+			state, err := vm.vector(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			return boolValue(len(state.values) != 0), true, nil
+		},
+	)
+	vm.RegisterNative(
+		"java/util/Enumeration",
+		"nextElement",
+		"()Ljava/lang/Object;",
+		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+			state, err := vm.vector(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			if len(state.values) == 0 {
+				return Value{}, false, vm.newThrowable(
+					"java/util/NoSuchElementException",
+					"",
+				)
+			}
+			value := state.values[0]
+			state.values = state.values[1:]
+			return ReferenceValue(value), true, nil
+		},
+	)
 }
 
 func (vm *VM) installExceptionNatives() {
@@ -969,6 +1289,8 @@ func (vm *VM) installExceptionNatives() {
 		"java/lang/NullPointerException",
 		"java/lang/IllegalArgumentException",
 		"java/lang/ArrayIndexOutOfBoundsException",
+		"java/lang/NumberFormatException",
+		"java/util/NoSuchElementException",
 		"java/io/IOException",
 	} {
 		vm.RegisterNative(class, "<init>", "()V", nativeVoid)
@@ -986,6 +1308,22 @@ func (vm *VM) installExceptionNatives() {
 		})
 	}
 	vm.RegisterNative("java/lang/Throwable", "printStackTrace", "()V", nativeVoid)
+	vm.RegisterNative(
+		"java/lang/Throwable",
+		"toString",
+		"()Ljava/lang/String;",
+		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+			object, ok := vm.Object(receiver)
+			if !ok {
+				return Value{}, false, fmt.Errorf("invalid Throwable reference")
+			}
+			value := strings.ReplaceAll(object.Class, "/", ".")
+			if message, ok := object.Native.(string); ok && message != "" {
+				value += ": " + message
+			}
+			return ReferenceValue(vm.NewString(value)), true, nil
+		},
+	)
 }
 
 func (vm *VM) installKWISNatives() {
@@ -1371,6 +1709,44 @@ func (vm *VM) installTimeNatives() {
 	)
 	vm.RegisterNative(
 		"java/util/Calendar",
+		"getInstance",
+		"(Ljava/util/TimeZone;)Ljava/util/Calendar;",
+		func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
+			if _, err := referenceArgument(args, 0); err != nil {
+				return Value{}, false, err
+			}
+			return ReferenceValue(vm.NewObject(
+				"java/util/Calendar",
+				&dateState{millis: vm.services.Clock.WallMillis()},
+			)), true, nil
+		},
+	)
+	vm.RegisterNative(
+		"java/util/Calendar",
+		"setTimeZone",
+		"(Ljava/util/TimeZone;)V",
+		func(_ context.Context, _ *VM, _ uint32, args []Value) (Value, bool, error) {
+			_, err := referenceArgument(args, 0)
+			return Value{}, false, err
+		},
+	)
+	vm.RegisterNative(
+		"java/util/TimeZone",
+		"getTimeZone",
+		"(Ljava/lang/String;)Ljava/util/TimeZone;",
+		func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
+			identifier, err := vm.stringArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			return ReferenceValue(vm.NewObject(
+				"java/util/TimeZone",
+				identifier,
+			)), true, nil
+		},
+	)
+	vm.RegisterNative(
+		"java/util/Calendar",
 		"setTime",
 		"(Ljava/util/Date;)V",
 		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
@@ -1633,6 +2009,18 @@ func (vm *VM) objectKey(reference uint32) string {
 		return "string:" + value
 	}
 	return fmt.Sprintf("ref:%d", reference)
+}
+
+func (vm *VM) referencesEqual(left, right uint32) bool {
+	if left == right {
+		return true
+	}
+	if left == 0 || right == 0 {
+		return false
+	}
+	leftString, leftErr := vm.String(left)
+	rightString, rightErr := vm.String(right)
+	return leftErr == nil && rightErr == nil && leftString == rightString
 }
 
 func (vm *VM) charArrayArgument(

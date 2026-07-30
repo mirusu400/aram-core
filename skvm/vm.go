@@ -401,7 +401,11 @@ func (vm *VM) IsInstance(reference uint32, class string) bool {
 	if strings.HasPrefix(class, "[") {
 		return object.Array != nil && object.Array.Descriptor == class
 	}
-	pending := []string{object.Class}
+	return vm.classAssignable(object.Class, class)
+}
+
+func (vm *VM) classAssignable(actual, target string) bool {
+	pending := []string{actual}
 	visited := make(map[string]struct{})
 	for len(pending) != 0 {
 		current := pending[len(pending)-1]
@@ -413,7 +417,7 @@ func (vm *VM) IsInstance(reference uint32, class string) bool {
 			continue
 		}
 		visited[current] = struct{}{}
-		if current == class {
+		if current == target {
 			return true
 		}
 		if runtime := vm.classes[current]; runtime != nil {
@@ -424,7 +428,37 @@ func (vm *VM) IsInstance(reference uint32, class string) bool {
 		pending = append(pending, vm.hostSupers[current])
 		pending = append(pending, hostInterfaces(current)...)
 	}
-	return class == "java/lang/Object"
+	return target == "java/lang/Object"
+}
+
+// SupportsNativeReference reports whether a host method reference can resolve
+// to a registered native directly or through a registered host implementor.
+// It is intended for inspectors and compatibility audits, not invocation.
+func (vm *VM) SupportsNativeReference(class, name, descriptor string) bool {
+	for current := class; current != ""; current = vm.superName(current) {
+		if _, ok := vm.natives[nativeKey{current, name, descriptor}]; ok {
+			return true
+		}
+	}
+	for key := range vm.natives {
+		if key.name == name && key.descriptor == descriptor &&
+			vm.classAssignable(key.class, class) {
+			return true
+		}
+	}
+	return false
+}
+
+// SupportsHostFieldReference reports whether a host static field is registered.
+// Guest instance fields do not need registration because their storage is
+// allocated lazily on each object.
+func (vm *VM) SupportsHostFieldReference(class, name, descriptor string) bool {
+	for current := class; current != ""; current = vm.superName(current) {
+		if _, ok := vm.hostStatic[fieldStorageKey(current, name, descriptor)]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func hostInterfaces(class string) []string {
@@ -433,11 +467,20 @@ func hostInterfaces(class string) []string {
 		"javax/microedition/io/OutputConnection":
 		return []string{"javax/microedition/io/Connection"}
 	case "javax/microedition/io/SocketConnection":
+		return []string{"javax/microedition/io/StreamConnection"}
+	case "javax/microedition/io/HttpConnection":
+		return []string{"javax/microedition/io/ContentConnection"}
+	case "javax/microedition/io/ContentConnection":
+		return []string{"javax/microedition/io/StreamConnection"}
+	case "javax/microedition/io/StreamConnection":
 		return []string{
-			"javax/microedition/io/Connection",
 			"javax/microedition/io/InputConnection",
 			"javax/microedition/io/OutputConnection",
 		}
+	case "java/io/DataInputStream":
+		return []string{"java/io/DataInput"}
+	case "java/io/DataOutputStream":
+		return []string{"java/io/DataOutput"}
 	default:
 		return nil
 	}
@@ -842,6 +885,9 @@ func defaultHostSupers() map[string]string {
 		"javax/microedition/io/Connection":            "java/lang/Object",
 		"javax/microedition/io/InputConnection":       "java/lang/Object",
 		"javax/microedition/io/OutputConnection":      "java/lang/Object",
+		"javax/microedition/io/StreamConnection":      "java/lang/Object",
+		"javax/microedition/io/ContentConnection":     "java/lang/Object",
+		"javax/microedition/io/HttpConnection":        "java/lang/Object",
 		"javax/microedition/io/SocketConnection":      "java/lang/Object",
 		"javax/microedition/midlet/MIDlet":            "java/lang/Object",
 		"javax/microedition/lcdui/Display":            "java/lang/Object",
@@ -854,12 +900,14 @@ func defaultHostSupers() map[string]string {
 		"com/skt/m/AudioClip":                         "java/lang/Object",
 		"com/skt/m/Graphics2D":                        "java/lang/Object",
 		"com/skt/m/ProgressBar":                       "java/lang/Object",
+		"com/sun/midp/lcdui/InputMethodHandler":       "java/lang/Object",
 		"com/xce/io/XFile":                            "java/lang/Object",
 		"com/xce/io/FileInputStream":                  "java/io/InputStream",
 		"com/xce/io/FileOutputStream":                 "java/io/OutputStream",
 		"com/xce/io/ByteToCharConverter":              "java/lang/Object",
 		"com/xce/io/ByteToCharEUC_KR":                 "com/xce/io/ByteToCharConverter",
 		"com/xce/lcdui/XTextField":                    "java/lang/Object",
+		"com/xce/lcdui/TextComponentHandler":          "java/lang/Object",
 		"org/kwis/msp/io/File":                        "java/lang/Object",
 		"org/kwis/msp/io/FileSystem":                  "java/lang/Object",
 		"org/kwis/msp/lcdui/Jlet":                     "java/lang/Object",
@@ -868,6 +916,9 @@ func defaultHostSupers() map[string]string {
 		"org/kwis/msp/lcdui/Graphics":                 "java/lang/Object",
 		"org/kwis/msp/lcdui/Image":                    "java/lang/Object",
 		"org/kwis/msp/lcdui/Font":                     "java/lang/Object",
+		"org/kwis/msf/io/Network":                     "java/lang/Object",
+		"org/kwis/msf/io/Socket":                      "java/lang/Object",
+		"org/kwis/msf/io/URL":                         "java/lang/Object",
 		"java/lang/Throwable":                         "java/lang/Object",
 		"java/lang/Exception":                         "java/lang/Throwable",
 		"java/lang/RuntimeException":                  "java/lang/Exception",
@@ -878,9 +929,11 @@ func defaultHostSupers() map[string]string {
 		"java/lang/ClassCastException":                "java/lang/RuntimeException",
 		"java/lang/ArrayStoreException":               "java/lang/RuntimeException",
 		"java/lang/IllegalArgumentException":          "java/lang/RuntimeException",
+		"java/lang/NumberFormatException":             "java/lang/IllegalArgumentException",
 		"java/lang/IllegalStateException":             "java/lang/RuntimeException",
 		"java/lang/IllegalThreadStateException":       "java/lang/IllegalArgumentException",
 		"java/lang/UnsupportedOperationException":     "java/lang/RuntimeException",
+		"java/util/NoSuchElementException":            "java/lang/RuntimeException",
 		"java/lang/IndexOutOfBoundsException":         "java/lang/RuntimeException",
 		"java/lang/StringIndexOutOfBoundsException":   "java/lang/IndexOutOfBoundsException",
 		"java/io/IOException":                         "java/lang/Exception",

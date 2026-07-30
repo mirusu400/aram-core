@@ -318,15 +318,26 @@ func (vm *VM) installDataIONatives() {
 }
 
 func (vm *VM) dataInput(reference uint32) (*inputStreamState, error) {
-	object, ok := vm.Object(reference)
-	if !ok {
-		return nil, fmt.Errorf("invalid DataInputStream reference")
+	visited := make(map[uint32]struct{})
+	for reference != 0 {
+		if _, duplicate := visited[reference]; duplicate {
+			return nil, fmt.Errorf("cyclic DataInputStream wrapper")
+		}
+		visited[reference] = struct{}{}
+		object, ok := vm.Object(reference)
+		if !ok {
+			return nil, fmt.Errorf("invalid DataInputStream reference")
+		}
+		switch state := object.Native.(type) {
+		case *dataInputState:
+			reference = state.stream
+		case *inputStreamState:
+			return vm.inputStream(reference)
+		default:
+			return nil, fmt.Errorf("object %d is not an InputStream", reference)
+		}
 	}
-	state, ok := object.Native.(*dataInputState)
-	if !ok {
-		return nil, fmt.Errorf("object %d is not a DataInputStream", reference)
-	}
-	return vm.inputStream(state.stream)
+	return nil, fmt.Errorf("null DataInputStream delegate")
 }
 
 func (vm *VM) dataInputRead(
@@ -379,19 +390,26 @@ func (vm *VM) dataInputRead(
 }
 
 func (vm *VM) dataOutputWrite(reference uint32, data []byte) error {
-	object, ok := vm.Object(reference)
-	if !ok {
-		return fmt.Errorf("invalid DataOutputStream reference")
+	visited := make(map[uint32]struct{})
+	for reference != 0 {
+		if _, duplicate := visited[reference]; duplicate {
+			return fmt.Errorf("cyclic DataOutputStream wrapper")
+		}
+		visited[reference] = struct{}{}
+		object, ok := vm.Object(reference)
+		if !ok {
+			return fmt.Errorf("invalid DataOutputStream reference")
+		}
+		switch state := object.Native.(type) {
+		case *dataOutputState:
+			reference = state.stream
+		case *outputStreamState:
+			return vm.writeOutputStream(state, data)
+		default:
+			return fmt.Errorf("object %d is not an OutputStream", reference)
+		}
 	}
-	state, ok := object.Native.(*dataOutputState)
-	if !ok {
-		return fmt.Errorf("object %d is not a DataOutputStream", reference)
-	}
-	output, err := vm.outputStream(state.stream)
-	if err != nil {
-		return err
-	}
-	return vm.writeOutputStream(output, data)
+	return fmt.Errorf("null DataOutputStream delegate")
 }
 
 func readStreamBytes(stream *inputStreamState, count int) ([]byte, error) {

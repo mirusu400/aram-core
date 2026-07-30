@@ -504,6 +504,7 @@ func (vm *VM) installCoreNatives() {
 	vm.installSKTNatives()
 	vm.installHostStaticFields()
 	vm.installExtendedCoreNatives()
+	vm.installCompatibilityNatives()
 }
 
 func (vm *VM) installInputStreamNatives() {

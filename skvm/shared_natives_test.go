@@ -522,6 +522,25 @@ func TestSKVMConnectorUsesSharedDeterministicNetwork(t *testing.T) {
 		output,
 		IntValue(0x01020304),
 	)
+	outerOutput := vm.NewObject("java/io/DataOutputStream", nil)
+	invokeTestNative(
+		t,
+		vm,
+		"java/io/DataOutputStream",
+		"<init>",
+		"(Ljava/io/OutputStream;)V",
+		outerOutput,
+		ReferenceValue(output),
+	)
+	invokeTestNative(
+		t,
+		vm,
+		"java/io/DataOutputStream",
+		"writeInt",
+		"(I)V",
+		outerOutput,
+		IntValue(0x11121314),
+	)
 	written, err := vm.services.Network.SocketWritten(
 		vm.serviceOwner,
 		connection.socket,
@@ -529,7 +548,7 @@ func TestSKVMConnectorUsesSharedDeterministicNetwork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(written, []byte{1, 2, 3, 4}) {
+	if !bytes.Equal(written, []byte{1, 2, 3, 4, 0x11, 0x12, 0x13, 0x14}) {
 		t.Fatalf("shared socket write = %v", written)
 	}
 
@@ -553,13 +572,23 @@ func TestSKVMConnectorUsesSharedDeterministicNetwork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	outerInput := vm.NewObject("java/io/DataInputStream", nil)
+	invokeTestNative(
+		t,
+		vm,
+		"java/io/DataInputStream",
+		"<init>",
+		"(Ljava/io/InputStream;)V",
+		outerInput,
+		ReferenceValue(input),
+	)
 	got := invokeTestNative(
 		t,
 		vm,
 		"java/io/DataInputStream",
 		"readInt",
 		"()I",
-		input,
+		outerInput,
 	)
 	integer, err := got.Int()
 	if err != nil {
@@ -598,6 +627,251 @@ func TestSKVMConnectorUsesSharedDeterministicNetwork(t *testing.T) {
 	)
 	if !connection.closed || connection.socket != 0 {
 		t.Fatalf("closed connection = %+v", connection)
+	}
+}
+
+func TestSKVMHTTPConnectionUsesSharedDeterministicNetwork(t *testing.T) {
+	vm, err := New(map[string][]byte{"Game": syntheticClass(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := vm.NewString("https://example.test/game")
+	connectionValue := invokeTestNative(
+		t,
+		vm,
+		"javax/microedition/io/Connector",
+		"open",
+		"(Ljava/lang/String;IZ)Ljavax/microedition/io/Connection;",
+		0,
+		ReferenceValue(name),
+		IntValue(3),
+		IntValue(1),
+	)
+	connectionReference, err := connectionValue.Reference()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, class := range []string{
+		"javax/microedition/io/Connection",
+		"javax/microedition/io/InputConnection",
+		"javax/microedition/io/OutputConnection",
+		"javax/microedition/io/StreamConnection",
+		"javax/microedition/io/ContentConnection",
+		"javax/microedition/io/HttpConnection",
+	} {
+		if !vm.IsInstance(connectionReference, class) {
+			t.Fatalf("HTTP connection is not an instance of %s", class)
+		}
+	}
+	method := vm.NewString("POST")
+	invokeTestNative(
+		t,
+		vm,
+		"javax/microedition/io/HttpConnection",
+		"setRequestMethod",
+		"(Ljava/lang/String;)V",
+		connectionReference,
+		ReferenceValue(method),
+	)
+	headerName := vm.NewString("X-Test")
+	headerValue := vm.NewString("aram")
+	invokeTestNative(
+		t,
+		vm,
+		"javax/microedition/io/HttpConnection",
+		"setRequestProperty",
+		"(Ljava/lang/String;Ljava/lang/String;)V",
+		connectionReference,
+		ReferenceValue(headerName),
+		ReferenceValue(headerValue),
+	)
+	outputValue := invokeTestNative(
+		t,
+		vm,
+		"javax/microedition/io/HttpConnection",
+		"openOutputStream",
+		"()Ljava/io/OutputStream;",
+		connectionReference,
+	)
+	output, err := outputValue.Reference()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := vm.NewByteArray([]byte("payload"))
+	invokeTestNative(
+		t,
+		vm,
+		"java/io/OutputStream",
+		"write",
+		"([B)V",
+		output,
+		ReferenceValue(body),
+	)
+	connection, err := vm.openHTTPConnection(connectionReference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := vm.httpRequestSnapshot(connection.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.State != shared.ConnectionNew ||
+		request.Method != "POST" ||
+		!bytes.Equal(request.RequestBody, []byte("payload")) ||
+		len(request.RequestHeaders) != 1 ||
+		request.RequestHeaders[0] != (shared.HTTPProperty{Name: "x-test", Value: "aram"}) {
+		t.Fatalf("shared HTTP request = %+v", request)
+	}
+
+	saved, err := vm.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.UnmarshalBinary(saved); err != nil {
+		t.Fatal(err)
+	}
+	length := invokeTestNative(
+		t,
+		vm,
+		"javax/microedition/io/HttpConnection",
+		"getLength",
+		"()J",
+		connectionReference,
+	)
+	if value, valueErr := length.Long(); valueErr != nil || value != 0 {
+		t.Fatalf("HTTP response length = %d, %v", value, valueErr)
+	}
+	contentTypeValue := invokeTestNative(
+		t,
+		vm,
+		"javax/microedition/io/HttpConnection",
+		"getType",
+		"()Ljava/lang/String;",
+		connectionReference,
+	)
+	contentTypeReference, err := contentTypeValue.Reference()
+	if err != nil {
+		t.Fatal(err)
+	}
+	contentType, err := vm.String(contentTypeReference)
+	if err != nil || contentType != "application/octet-stream" {
+		t.Fatalf("HTTP response content type = %q, %v", contentType, err)
+	}
+	inputValue := invokeTestNative(
+		t,
+		vm,
+		"javax/microedition/io/HttpConnection",
+		"openInputStream",
+		"()Ljava/io/InputStream;",
+		connectionReference,
+	)
+	input, err := inputValue.Reference()
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := invokeTestNative(
+		t,
+		vm,
+		"java/io/InputStream",
+		"read",
+		"()I",
+		input,
+	)
+	if value, valueErr := read.Int(); valueErr != nil || value != -1 {
+		t.Fatalf("empty HTTP response read = %d, %v", value, valueErr)
+	}
+	invokeTestNative(
+		t,
+		vm,
+		"javax/microedition/io/HttpConnection",
+		"close",
+		"()V",
+		connectionReference,
+	)
+	connection, ok := vm.heap[connectionReference].Native.(*httpConnectionState)
+	if !ok || !connection.closed || connection.request != 0 {
+		t.Fatalf("closed HTTP connection = %+v", connection)
+	}
+}
+
+func TestSKVMCompatibilityGraphicsUseSharedServices(t *testing.T) {
+	vm, err := New(map[string][]byte{"Game": syntheticClass(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	graphicsReference := vm.ScreenGraphics()
+	graphics, err := vm.graphics(graphicsReference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	graphics2D := vm.NewObject("com/skt/m/Graphics2D", graphics)
+	invokeTestNative(
+		t,
+		vm,
+		"com/skt/m/Graphics2D",
+		"setPixel",
+		"(III)V",
+		graphics2D,
+		IntValue(2),
+		IntValue(3),
+		IntValue(0x123456),
+	)
+	pixel, err := vm.services.Graphics.Pixel(
+		vm.serviceOwner,
+		graphics.surface,
+		2,
+		3,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pixel != (shared.Color{R: 0x12, G: 0x34, B: 0x56, A: 0xff}) {
+		t.Fatalf("Graphics2D pixel = %+v", pixel)
+	}
+
+	kwisGraphics := vm.NewObject("org/kwis/msp/lcdui/Graphics", graphics)
+	firstColor := int32(-5588020)   // 0xffaabbcc
+	secondColor := int32(-16711165) // 0xff010203
+	values := vm.newArray("[I", []Value{
+		IntValue(firstColor),
+		IntValue(secondColor),
+	})
+	invokeTestNative(
+		t,
+		vm,
+		"org/kwis/msp/lcdui/Graphics",
+		"setRGBPixels",
+		"(IIII[III)V",
+		kwisGraphics,
+		IntValue(4),
+		IntValue(5),
+		IntValue(2),
+		IntValue(1),
+		ReferenceValue(values),
+		IntValue(0),
+		IntValue(2),
+	)
+	roundTrip := vm.newArray("[I", []Value{IntValue(0), IntValue(0)})
+	invokeTestNative(
+		t,
+		vm,
+		"org/kwis/msp/lcdui/Graphics",
+		"getRGBPixels",
+		"(IIII[III)V",
+		kwisGraphics,
+		IntValue(4),
+		IntValue(5),
+		IntValue(2),
+		IntValue(1),
+		ReferenceValue(roundTrip),
+		IntValue(0),
+		IntValue(2),
+	)
+	object, ok := vm.Object(roundTrip)
+	if !ok || object.Array == nil ||
+		object.Array.Elements[0] != IntValue(firstColor) ||
+		object.Array.Elements[1] != IntValue(secondColor) {
+		t.Fatalf("KWIS RGB round trip = %+v", object)
 	}
 }
 

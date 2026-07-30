@@ -175,6 +175,18 @@ func (vm *VM) collectGarbage() error {
 			state.closed = true
 			state.socket = 0
 		}
+		if state, ok := object.Native.(*httpConnectionState); ok &&
+			!state.closed && state.request != 0 {
+			if err := vm.services.Network.CloseHTTP(
+				vm.serviceOwner,
+				state.request,
+				vm.services.Events,
+			); err != nil {
+				return fmt.Errorf("collect SKVM HTTP connection %d: %w", reference, err)
+			}
+			state.closed = true
+			state.request = 0
+		}
 		delete(vm.heap, reference)
 	}
 	return nil

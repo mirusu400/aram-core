@@ -359,6 +359,10 @@ func snapshotNative(
 		return nativeState{
 			Kind: "socket-connection", Service: state.socket, Flag: state.closed,
 		}, nil
+	case *httpConnectionState:
+		return nativeState{
+			Kind: "http-connection", Service: state.request, Flag: state.closed,
+		}, nil
 	case *audioClipState:
 		return nativeState{Kind: "audio-clip", Service: state.clip}, nil
 	case *inputStreamReaderState:
@@ -739,6 +743,14 @@ func restoreNative(saved nativeState) (any, nativeLink, error) {
 			socket: saved.Service,
 			closed: saved.Flag,
 		}, nativeLink{}, nil
+	case "http-connection":
+		if saved.Flag && saved.Service != 0 || !saved.Flag && saved.Service == 0 {
+			return nil, nativeLink{}, fmt.Errorf("invalid HTTP connection state")
+		}
+		return &httpConnectionState{
+			request: saved.Service,
+			closed:  saved.Flag,
+		}, nativeLink{}, nil
 	case "audio-clip":
 		return &audioClipState{clip: saved.Service}, nativeLink{}, nil
 	case "input-stream-reader":
@@ -961,6 +973,24 @@ func (vm *VM) validateNative(reference uint32, native any) error {
 		if err != nil || info.State != shared.ConnectionConnected {
 			return fmt.Errorf(
 				"load SKVM state: object %d invalid socket connection",
+				reference,
+			)
+		}
+		return nil
+	case *httpConnectionState:
+		if state.closed {
+			if state.request != 0 {
+				return fmt.Errorf(
+					"load SKVM state: object %d closed HTTP connection has a service",
+					reference,
+				)
+			}
+			return nil
+		}
+		info, err := vm.services.Network.HTTPInfo(vm.serviceOwner, state.request)
+		if err != nil || info.State == shared.ConnectionClosed {
+			return fmt.Errorf(
+				"load SKVM state: object %d invalid HTTP connection",
 				reference,
 			)
 		}
