@@ -14,13 +14,7 @@ This repository owns:
 The current application-mode milestone includes a bounds-checked EADS loader,
 a pure-Go ARMv5TE/Thumb interpreter, and a native application machine that maps
 text, zeroed BSS, a guarded execution stack, deterministic guest heaps, and
-hash-keyed OEM services. It deliberately faults on unknown instructions. For
-the authorized Magic Hole DAT, the machine executes the recovered
-`0x1100`, `0x1101`, `0x0504`, `0x0505`, `0x0505` lifecycle, dispatches the
-observed EADS services, and renders the first visible `MinigameQVGAOEM` frame.
-The private integration oracle verifies exact instruction/API-call counts and
-RGBA SHA-256
-`0ae34e616ac40a0dab1e35d907acfef63fb47bd2b065875f17631f0bbeb915a7`.
+hash-keyed OEM services. It deliberately faults on unknown instructions.
 
 The usable library baseline now includes:
 
@@ -54,11 +48,6 @@ go test ./...
 go vet ./...
 ```
 
-Set `ARAM_REFERENCE_REPO` to a local `anycall_magichole` checkout to enable the
-private real-DAT integration tests. They validate all six ABHS loads plus the
-hash-keyed EADS lifecycle, first-frame pixel oracle, reset, save-state restore,
-and deterministic next-frame replay. No proprietary input is part of this
-repository.
 
 The standard-facing design basis is recorded in
 [`docs/wipi-1.2.1-foundation.md`](docs/wipi-1.2.1-foundation.md).
