@@ -121,6 +121,43 @@ func TestInspectAcceptsNullEncryptedOMADCFJar(t *testing.T) {
 	}
 }
 
+func TestInspectRetainsCompleteResourceWithBadChecksum(t *testing.T) {
+	jar := makeZIP(t, map[string][]byte{
+		"client.bin64": {0x70, 0x47},
+		"icon.png":     {1, 2, 3},
+	})
+	jar = corruptZIPMemberChecksum(t, jar, "icon.png")
+	archive := makeZIP(t, map[string][]byte{
+		"01020304.jar": jar,
+		"__adf__":      []byte("PID:pid\nAID:01020304\nMClass:Main\n"),
+	})
+
+	pkg, err := Inspect(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(pkg.Resources["icon.png"], []byte{1, 2, 3}) {
+		t.Fatalf("bad-checksum resource = %x", pkg.Resources["icon.png"])
+	}
+	if len(pkg.Warnings) != 1 ||
+		pkg.Warnings[0] !=
+			"icon.png: checksum mismatch; retained complete payload" {
+		t.Fatalf("bad-checksum warnings = %v", pkg.Warnings)
+	}
+
+	jar = makeZIP(t, map[string][]byte{
+		"client.bin64": {0x70, 0x47},
+	})
+	jar = corruptZIPMemberChecksum(t, jar, "client.bin64")
+	archive = makeZIP(t, map[string][]byte{
+		"01020304.jar": jar,
+		"__adf__":      []byte("PID:pid\nAID:01020304\nMClass:Main\n"),
+	})
+	if _, err := Inspect(archive); err == nil {
+		t.Fatal("Inspect accepted a client image with a bad checksum")
+	}
+}
+
 func TestInspectReportsEncryptedOMADCFJarAsProtected(t *testing.T) {
 	const contentID = "00WIPI00000000000001020304"
 	encrypted := make([]byte, 16+32)
@@ -190,6 +227,37 @@ func makeZIP(t testingTB, files map[string][]byte) []byte {
 		t.Fatal(err)
 	}
 	return output.Bytes()
+}
+
+func corruptZIPMemberChecksum(
+	t testingTB,
+	archive []byte,
+	name string,
+) []byte {
+	t.Helper()
+	output := bytes.Clone(archive)
+	for offset := 0; offset+46 <= len(output); {
+		index := bytes.Index(output[offset:], []byte("PK\x01\x02"))
+		if index < 0 {
+			break
+		}
+		offset += index
+		nameLength := int(binary.LittleEndian.Uint16(output[offset+28:]))
+		extraLength := int(binary.LittleEndian.Uint16(output[offset+30:]))
+		commentLength := int(binary.LittleEndian.Uint16(output[offset+32:]))
+		end := offset + 46 + nameLength + extraLength + commentLength
+		if end > len(output) {
+			t.Fatal("ZIP central directory entry is truncated")
+		}
+		if string(output[offset+46:offset+46+nameLength]) == name {
+			checksum := binary.LittleEndian.Uint32(output[offset+16:])
+			binary.LittleEndian.PutUint32(output[offset+16:], checksum^0xffffffff)
+			return output
+		}
+		offset = end
+	}
+	t.Fatal("ZIP member not found:", name)
+	return nil
 }
 
 func makeOMADCF(

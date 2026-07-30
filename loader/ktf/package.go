@@ -312,11 +312,21 @@ func readZIP(data []byte, label string, tolerateResourceErrors bool) (map[string
 		payload, readErr := io.ReadAll(io.LimitReader(stream, int64(size)+1))
 		closeErr := stream.Close()
 		if readErr != nil {
-			if tolerateResourceErrors && !strings.HasPrefix(name, "client.bin") {
+			if tolerateResourceErrors &&
+				!strings.HasPrefix(name, "client.bin") &&
+				errors.Is(readErr, zip.ErrChecksum) &&
+				uint64(len(payload)) == size {
+				warnings = append(
+					warnings,
+					name+": checksum mismatch; retained complete payload",
+				)
+			} else if tolerateResourceErrors &&
+				!strings.HasPrefix(name, "client.bin") {
 				warnings = append(warnings, fmt.Sprintf("%s: read member: %v", name, readErr))
 				continue
+			} else {
+				return nil, nil, &FormatError{Path: name, Reason: "read member: " + readErr.Error()}
 			}
-			return nil, nil, &FormatError{Path: name, Reason: "read member: " + readErr.Error()}
 		}
 		if closeErr != nil {
 			if tolerateResourceErrors && !strings.HasPrefix(name, "client.bin") {
