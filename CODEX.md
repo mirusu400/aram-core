@@ -9,7 +9,18 @@ The sibling repositories are:
 
 - `aram-frontend`: cross-platform presentation, input, and product shell;
 - `aram-emu`: ecosystem roadmap, integration, packaging, and release policy;
+- `aram-test`: black-box corpus orchestration, compatibility deltas, and
+  failure triage;
 - `anycall_magichole`: reverse-engineering evidence and executable reference.
+
+WIPI API documentation reference:
+
+- `llms.txt`: https://mirusu400.github.io/wipi-wiki/llms.txt
+
+Shared runtime architecture:
+
+- `docs/shared-runtime-services.md`: service and adapter boundaries for KTF,
+  LGT/LGTP WIPI-C, Raptor, and SKVM.
 
 ## Portability contract
 
