@@ -2934,6 +2934,40 @@ func TestKTFTaskRecordsPresentationAfterPaintReturns(t *testing.T) {
 	}
 }
 
+func TestKTFJavaPresentationRetakesScreenFromWIPIC(t *testing.T) {
+	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.cpu.Close()
+	if err := runtime.mapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	graphics, err := runtime.ensureScreenGraphics()
+	if err != nil {
+		t.Fatal(err)
+	}
+	javaSurface := runtime.graphicsServices[graphics]
+	if javaSurface == 0 {
+		t.Fatal("Java screen graphics has no shared surface")
+	}
+	if _, err := runtime.ensureWIPICScreenFramebuffer(); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.services.Graphics.Screen() == javaSurface {
+		t.Fatal("WIPI-C screen did not take presentation ownership")
+	}
+	if err := runtime.recordPresentation(); err != nil {
+		t.Fatal(err)
+	}
+	if got := runtime.services.Graphics.Screen(); got != javaSurface {
+		t.Fatalf("presented surface = %s, want Java screen %s", got, javaSurface)
+	}
+}
+
 func TestKTFReturningTaskDoesNotSkipNextRunnableTask(t *testing.T) {
 	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
 		ClientName: "client.bin0",
@@ -3789,6 +3823,45 @@ func TestKTFStringMethodsProduceGuestStringsAndArrays(t *testing.T) {
 	}
 	if !bytes.Equal(data, []byte("abc")) {
 		t.Fatalf("string bytes = %q", data)
+	}
+	koreanBytes := []byte{0xb0, 0xa1}
+	koreanArray, err := runtime.newJavaByteArray(koreanBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	korean, err := runtime.newHostJavaObject("java/lang/String")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR1, korean); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR2, koreanArray); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.handleStringMethod("<init>", "([B)V"); err != nil {
+		t.Fatal(err)
+	}
+	if got := runtime.javaStringValue(korean); got != "가" {
+		t.Fatalf("EUC-KR String(byte[]) = %q, want %q", got, "가")
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR1, korean); err != nil {
+		t.Fatal(err)
+	}
+	encodedKorean, err := runtime.handleStringMethod("getBytes", "()[B")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedKoreanBytes, err := runtime.readJavaByteArray(encodedKorean)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(encodedKoreanBytes, koreanBytes) {
+		t.Fatalf(
+			"EUC-KR String.getBytes = %x, want %x",
+			encodedKoreanBytes,
+			koreanBytes,
+		)
 	}
 	empty, err := runtime.newHostJavaObject("java/lang/String")
 	if err != nil {
@@ -5752,6 +5825,21 @@ func TestKTFWIPICOffscreenFramebufferLifecycle(t *testing.T) {
 		runtime,
 	); err != nil {
 		t.Fatal(err)
+	}
+	if err := runtime.presentWIPICFramebuffer(object); err != nil {
+		t.Fatal(err)
+	}
+	screenSurface := runtime.wipicSurfaceServices[screen]
+	if got := runtime.services.Graphics.Screen(); got != screenSurface {
+		t.Fatalf("presented surface = %s, want screen %s", got, screenSurface)
+	}
+	if got := runtime.frame.RGBAAt(0, 0); got != (color.RGBA{
+		R: 0xff,
+		G: 0xff,
+		B: 0xff,
+		A: 0xff,
+	}) {
+		t.Fatalf("presented offscreen pixel = %#v", got)
 	}
 	for register, value := range []uint32{screen, 0, 0, 32} {
 		if err := runtime.cpu.WriteRegister(

@@ -6843,6 +6843,14 @@ func (r *ktfRuntime) recordPresentation() error {
 			return err
 		}
 		if serviceID := r.graphicsServices[r.screenGraphics]; serviceID != 0 {
+			if r.services.Graphics.Screen() != serviceID {
+				if err := r.services.Graphics.SetScreen(
+					r.serviceOwner,
+					serviceID,
+				); err != nil {
+					return err
+				}
+			}
 			if _, err := r.services.Graphics.Present(
 				r.serviceOwner,
 				serviceID,
@@ -10393,7 +10401,11 @@ func (r *ktfRuntime) handleStringMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		r.javaStrings[instance] = string(data)
+		value, valueErr = r.services.Text.Decode(data, shared.EncodingEUCKR)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		r.javaStrings[instance] = value
 		return 0, nil
 	case "<init>([BII)V":
 		array, valueErr := r.parameter(2)
@@ -10416,7 +10428,11 @@ func (r *ktfRuntime) handleStringMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		r.javaStrings[instance] = string(data)
+		value, valueErr = r.services.Text.Decode(data, shared.EncodingEUCKR)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		r.javaStrings[instance] = value
 		return 0, nil
 	case "<init>([C)V":
 		array, valueErr := r.parameter(2)
@@ -10494,7 +10510,14 @@ func (r *ktfRuntime) handleStringMethod(
 	case "trim()Ljava/lang/String;":
 		return r.newJavaString(strings.TrimSpace(value))
 	case "getBytes()[B":
-		return r.newJavaByteArray([]byte(value))
+		encoded, valueErr := r.services.Text.Encode(
+			value,
+			shared.EncodingEUCKR,
+		)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		return r.newJavaByteArray(encoded)
 	case "toCharArray()[C":
 		return r.newJavaCharArray(value)
 	case "equals(Ljava/lang/Object;)Z":
@@ -14720,9 +14743,50 @@ func (r *ktfRuntime) presentWIPICFramebuffer(handle uint32) error {
 	if surface == 0 {
 		return fmt.Errorf("KTF WIPI-C framebuffer 0x%08x has no shared surface", handle)
 	}
+	presentationSurface := surface
+	if !framebuffer.screen {
+		screenHandle, err := r.ensureWIPICScreenFramebuffer()
+		if err != nil {
+			return err
+		}
+		screen := r.wipicFramebuffers[screenHandle]
+		presentationSurface = r.wipicSurfaceServices[screenHandle]
+		if screen == nil || presentationSurface == 0 {
+			return errors.New("KTF WIPI-C screen framebuffer is unavailable")
+		}
+		width := min(framebuffer.width, screen.width)
+		height := min(framebuffer.height, screen.height)
+		if width > 0 && height > 0 {
+			if err := r.services.Graphics.Blit(
+				r.serviceOwner,
+				presentationSurface,
+				surface,
+				0,
+				0,
+				shared.Rectangle{
+					Width:  int32(width),
+					Height: int32(height),
+				},
+			); err != nil {
+				return fmt.Errorf(
+					"flush KTF WIPI-C framebuffer 0x%08x to screen: %w",
+					handle,
+					err,
+				)
+			}
+		}
+	}
+	if r.services.Graphics.Screen() != presentationSurface {
+		if err := r.services.Graphics.SetScreen(
+			r.serviceOwner,
+			presentationSurface,
+		); err != nil {
+			return err
+		}
+	}
 	frame, err := r.services.Graphics.Present(
 		r.serviceOwner,
-		surface,
+		presentationSurface,
 		shared.Rectangle{},
 	)
 	if err != nil {
