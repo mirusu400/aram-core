@@ -527,6 +527,15 @@ func TestKTFMachineQueuesDueInputToDockedCard(t *testing.T) {
 	} else if queued {
 		t.Fatal("overlapping card key event was queued")
 	}
+	runtime.tasks[0].keyCard = 0
+	runtime.tasks[0].wipicTimer = true
+	if queued, queueErr := runtime.queueKeyEvent(false, -5); queueErr != nil {
+		t.Fatal(queueErr)
+	} else if queued {
+		t.Fatal("card key event overlapped a WIPI-C timer callback")
+	}
+	runtime.tasks[0].keyCard = card
+	runtime.tasks[0].wipicTimer = false
 	runtime.tasks[0].done = true
 	runtime.paintTasks[card] = &ktfTask{}
 	if queued, queueErr := runtime.queueKeyEvent(false, -5); queueErr != nil {
@@ -6818,6 +6827,33 @@ func TestKTFWIPICTimerFiresAndReusesCompletedTask(t *testing.T) {
 	}
 	if runtime.tasks[reusableTask].done {
 		t.Fatal("timer callback did not reuse the completed task slot")
+	}
+
+	runtime.tasks = []*ktfTask{{keyCard: 0x10002000}}
+	runtime.wipicTimers = map[uint32]*ktfWIPICTimer{
+		0x10003000: {
+			callback: callback,
+			deadline: 400,
+			active:   true,
+		},
+	}
+	runtime.tickMS = 400
+	if err := runtime.activateDueWIPICTimers(); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.tasks) != 1 ||
+		!runtime.wipicTimers[0x10003000].active {
+		t.Fatal("timer callback overlapped a card key event")
+	}
+	runtime.tasks[0].done = true
+	if err := runtime.activateDueWIPICTimers(); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.tasks) != 1 ||
+		runtime.tasks[0].done ||
+		!runtime.tasks[0].wipicTimer ||
+		runtime.wipicTimers[0x10003000].active {
+		t.Fatal("timer callback did not run after card key event completed")
 	}
 
 	runtime.tasks = nil

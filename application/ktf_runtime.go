@@ -2071,6 +2071,7 @@ func (r *ktfRuntime) hasJavaTaskCapacity() bool {
 func (r *ktfRuntime) queueKeyEvent(pressed bool, key int32) (bool, error) {
 	card := r.displayCards[r.defaultDisplay]
 	if card == 0 || r.pendingKeyTask(card) != nil ||
+		r.pendingWIPICTimerTask() != nil ||
 		!r.hasJavaTaskCapacity() {
 		return false, nil
 	}
@@ -2107,6 +2108,15 @@ func (r *ktfRuntime) queueKeyEvent(pressed bool, key int32) (bool, error) {
 func (r *ktfRuntime) pendingKeyTask(card uint32) *ktfTask {
 	for _, task := range r.tasks {
 		if task != nil && !task.done && task.keyCard == card {
+			return task
+		}
+	}
+	return nil
+}
+
+func (r *ktfRuntime) pendingWIPICTimerTask() *ktfTask {
+	for _, task := range r.tasks {
+		if task != nil && !task.done && task.wipicTimer {
 			return task
 		}
 	}
@@ -2572,7 +2582,8 @@ func (r *ktfRuntime) activateDueWIPICTimers() error {
 	// expose partially initialized Clet globals that the handset scheduler
 	// would not make concurrently observable.
 	for _, task := range r.tasks {
-		if task != nil && task.wipicTimer && !task.done {
+		if task != nil && !task.done &&
+			(task.wipicTimer || task.keyCard != 0) {
 			return nil
 		}
 	}
