@@ -95,6 +95,7 @@ type VM struct {
 	screenSurface    shared.ServiceID
 	defaultFont      shared.ServiceID
 	classDigest      [sha256.Size]byte
+	runningThread    uint32
 }
 
 type frame struct {
@@ -394,12 +395,46 @@ func (vm *VM) IsInstance(reference uint32, class string) bool {
 	if strings.HasPrefix(class, "[") {
 		return object.Array != nil && object.Array.Descriptor == class
 	}
-	for current := object.Class; current != ""; current = vm.superName(current) {
+	pending := []string{object.Class}
+	visited := make(map[string]struct{})
+	for len(pending) != 0 {
+		current := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if current == "" {
+			continue
+		}
+		if _, seen := visited[current]; seen {
+			continue
+		}
+		visited[current] = struct{}{}
 		if current == class {
 			return true
 		}
+		if runtime := vm.classes[current]; runtime != nil {
+			pending = append(pending, runtime.class.SuperName)
+			pending = append(pending, runtime.class.Interfaces...)
+			continue
+		}
+		pending = append(pending, vm.hostSupers[current])
+		pending = append(pending, hostInterfaces(current)...)
 	}
 	return class == "java/lang/Object"
+}
+
+func hostInterfaces(class string) []string {
+	switch class {
+	case "javax/microedition/io/InputConnection",
+		"javax/microedition/io/OutputConnection":
+		return []string{"javax/microedition/io/Connection"}
+	case "javax/microedition/io/SocketConnection":
+		return []string{
+			"javax/microedition/io/Connection",
+			"javax/microedition/io/InputConnection",
+			"javax/microedition/io/OutputConnection",
+		}
+	default:
+		return nil
+	}
 }
 
 func (vm *VM) InvokeStatic(
@@ -506,6 +541,9 @@ func (vm *VM) Advance(
 		return err
 	}
 	if err := vm.services.Advance(vm.serviceOwner, delta); err != nil {
+		return err
+	}
+	if err := vm.runReadyThreads(ctx); err != nil {
 		return err
 	}
 	now := vm.services.Clock.Monotonic()
@@ -790,6 +828,10 @@ func defaultHostSupers() map[string]string {
 		"java/io/DataInputStream":                     "java/io/InputStream",
 		"java/io/DataOutputStream":                    "java/io/OutputStream",
 		"java/io/InputStreamReader":                   "java/lang/Object",
+		"javax/microedition/io/Connection":            "java/lang/Object",
+		"javax/microedition/io/InputConnection":       "java/lang/Object",
+		"javax/microedition/io/OutputConnection":      "java/lang/Object",
+		"javax/microedition/io/SocketConnection":      "java/lang/Object",
 		"javax/microedition/midlet/MIDlet":            "java/lang/Object",
 		"javax/microedition/lcdui/Display":            "java/lang/Object",
 		"javax/microedition/lcdui/Displayable":        "java/lang/Object",
@@ -826,10 +868,12 @@ func defaultHostSupers() map[string]string {
 		"java/lang/ArrayStoreException":               "java/lang/RuntimeException",
 		"java/lang/IllegalArgumentException":          "java/lang/RuntimeException",
 		"java/lang/IllegalStateException":             "java/lang/RuntimeException",
+		"java/lang/IllegalThreadStateException":       "java/lang/IllegalArgumentException",
 		"java/lang/UnsupportedOperationException":     "java/lang/RuntimeException",
 		"java/lang/IndexOutOfBoundsException":         "java/lang/RuntimeException",
 		"java/lang/StringIndexOutOfBoundsException":   "java/lang/IndexOutOfBoundsException",
 		"java/io/IOException":                         "java/lang/Exception",
+		"java/io/UnsupportedEncodingException":        "java/io/IOException",
 		"javax/microedition/rms/RecordStoreException": "java/lang/Exception",
 	}
 }

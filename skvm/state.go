@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	shared "github.com/mirusu400/aram-core/runtime"
 )
@@ -320,11 +321,17 @@ func snapshotNative(
 		return nativeState{
 			Kind: "input-stream", Data: append([]byte(nil), state.data...),
 			Offset: int64(state.offset), Flag: state.closed,
+			Reference: state.connection,
 		}, nil
 	case *randomState:
 		return nativeState{Kind: "random", Text: state.stream}, nil
 	case *threadState:
-		return nativeState{Kind: "thread", Reference: state.target}, nil
+		return nativeState{
+			Kind:      "thread",
+			Reference: state.target,
+			Flag:      state.active,
+			Long:      int64(state.wakeAt),
+		}, nil
 	case *recordStoreState:
 		return nativeState{Kind: "record-store", Text: state.name, Service: state.id}, nil
 	case *xFileState:
@@ -346,6 +353,11 @@ func snapshotNative(
 		return nativeState{
 			Kind: "output-stream", Data: append([]byte(nil), state.data...),
 			Text: state.name, Reference: link,
+			References: []uint32{state.connection},
+		}, nil
+	case *socketConnectionState:
+		return nativeState{
+			Kind: "socket-connection", Service: state.socket, Flag: state.closed,
 		}, nil
 	case *audioClipState:
 		return nativeState{Kind: "audio-clip", Service: state.clip}, nil
@@ -679,6 +691,7 @@ func restoreNative(saved nativeState) (any, nativeLink, error) {
 		return &inputStreamState{
 			data:   append([]byte(nil), saved.Data...),
 			offset: int(saved.Offset), closed: saved.Flag,
+			connection: saved.Reference,
 		}, nativeLink{}, nil
 	case "random":
 		if strings.TrimSpace(saved.Text) == "" || len(saved.Text) > 64 {
@@ -686,7 +699,14 @@ func restoreNative(saved nativeState) (any, nativeLink, error) {
 		}
 		return &randomState{stream: saved.Text}, nativeLink{}, nil
 	case "thread":
-		return &threadState{target: saved.Reference}, nativeLink{}, nil
+		if saved.Long < 0 {
+			return nil, nativeLink{}, fmt.Errorf("invalid thread wake time")
+		}
+		return &threadState{
+			target: saved.Reference,
+			active: saved.Flag,
+			wakeAt: time.Duration(saved.Long),
+		}, nativeLink{}, nil
 	case "record-store":
 		return &recordStoreState{name: saved.Text, id: saved.Service}, nativeLink{}, nil
 	case "x-file":
@@ -700,9 +720,25 @@ func restoreNative(saved nativeState) (any, nativeLink, error) {
 	case "x-text-field":
 		return &xTextFieldState{text: saved.Text, focus: saved.Flag}, nativeLink{}, nil
 	case "output-stream":
+		connection := uint32(0)
+		if len(saved.References) > 1 {
+			return nil, nativeLink{}, fmt.Errorf("invalid output stream references")
+		}
+		if len(saved.References) == 1 {
+			connection = saved.References[0]
+		}
 		return &outputStreamState{
 			data: append([]byte(nil), saved.Data...), name: saved.Text,
+			connection: connection,
 		}, nativeLink{file: saved.Reference}, nil
+	case "socket-connection":
+		if saved.Flag && saved.Service != 0 || !saved.Flag && saved.Service == 0 {
+			return nil, nativeLink{}, fmt.Errorf("invalid socket connection state")
+		}
+		return &socketConnectionState{
+			socket: saved.Service,
+			closed: saved.Flag,
+		}, nativeLink{}, nil
 	case "audio-clip":
 		return &audioClipState{clip: saved.Service}, nativeLink{}, nil
 	case "input-stream-reader":
@@ -858,9 +894,11 @@ func (vm *VM) validateNative(reference uint32, native any) error {
 		return nil
 	}
 	switch state := native.(type) {
-	case nil, string, *stringBufferState, *inputStreamState,
+	case nil, string, *stringBufferState,
 		*integerState, *dateState, *xTextFieldState:
 		return nil
+	case *inputStreamState:
+		return validateRef(state.connection, "input stream connection")
 	case *xFileState:
 		if state.name == "" {
 			return nil
@@ -891,6 +929,9 @@ func (vm *VM) validateNative(reference uint32, native any) error {
 		}
 		return nil
 	case *outputStreamState:
+		if err := validateRef(state.connection, "output stream connection"); err != nil {
+			return err
+		}
 		if state.name != "" {
 			normalized, err := vm.services.Storage.NormalizePath(state.name)
 			data, readErr := vm.services.Storage.ReadFile(
@@ -904,6 +945,24 @@ func (vm *VM) validateNative(reference uint32, native any) error {
 					reference,
 				)
 			}
+		}
+		return nil
+	case *socketConnectionState:
+		if state.closed {
+			if state.socket != 0 {
+				return fmt.Errorf(
+					"load SKVM state: object %d closed socket has a service",
+					reference,
+				)
+			}
+			return nil
+		}
+		info, err := vm.services.Network.SocketInfo(vm.serviceOwner, state.socket)
+		if err != nil || info.State != shared.ConnectionConnected {
+			return fmt.Errorf(
+				"load SKVM state: object %d invalid socket connection",
+				reference,
+			)
 		}
 		return nil
 	case *audioClipState:

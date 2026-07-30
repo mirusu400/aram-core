@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf16"
@@ -17,9 +18,10 @@ type stringBufferState struct {
 }
 
 type inputStreamState struct {
-	data   []byte
-	offset int
-	closed bool
+	data       []byte
+	offset     int
+	closed     bool
+	connection uint32
 }
 
 type randomState struct {
@@ -28,6 +30,16 @@ type randomState struct {
 
 type threadState struct {
 	target uint32
+	active bool
+	wakeAt time.Duration
+}
+
+type threadYield struct {
+	delay time.Duration
+}
+
+func (e *threadYield) Error() string {
+	return fmt.Sprintf("SKVM thread yielded for %s", e.delay)
 }
 
 type recordStoreState struct {
@@ -47,9 +59,10 @@ type xTextFieldState struct {
 }
 
 type outputStreamState struct {
-	data []byte
-	file *xFileState
-	name string
+	data       []byte
+	file       *xFileState
+	name       string
+	connection uint32
 }
 
 type audioClipState struct {
@@ -155,7 +168,11 @@ func (vm *VM) installCoreNatives() {
 		if err != nil {
 			return Value{}, false, err
 		}
-		return Value{}, false, vm.setNative(receiver, string(data))
+		value, err := vm.services.Text.Decode(data, shared.EncodingEUCKR)
+		if err != nil {
+			return Value{}, false, err
+		}
+		return Value{}, false, vm.setNative(receiver, value)
 	})
 	vm.RegisterNative("java/lang/String", "<init>", "([BII)V", func(
 		_ context.Context,
@@ -183,7 +200,14 @@ func (vm *VM) installCoreNatives() {
 			int64(offset)+int64(length) > int64(len(data)) {
 			return Value{}, false, vm.newThrowable("java/lang/IndexOutOfBoundsException", "")
 		}
-		return Value{}, false, vm.setNative(receiver, string(data[offset:offset+length]))
+		value, err := vm.services.Text.Decode(
+			data[offset:offset+length],
+			shared.EncodingEUCKR,
+		)
+		if err != nil {
+			return Value{}, false, err
+		}
+		return Value{}, false, vm.setNative(receiver, value)
 	})
 	vm.RegisterNative(
 		"java/lang/String",
@@ -403,7 +427,14 @@ func (vm *VM) installCoreNatives() {
 			return LongValue(vm.services.Clock.WallMillis()), true, nil
 		},
 	)
-	vm.RegisterNative("java/lang/System", "gc", "()V", nativeVoid)
+	vm.RegisterNative(
+		"java/lang/System",
+		"gc",
+		"()V",
+		func(_ context.Context, vm *VM, _ uint32, _ []Value) (Value, bool, error) {
+			return Value{}, false, vm.collectGarbage()
+		},
+	)
 	vm.RegisterNative("java/lang/System", "exit", "(I)V", nativeVoid)
 	vm.RegisterNative(
 		"java/lang/System",
@@ -463,6 +494,7 @@ func (vm *VM) installCoreNatives() {
 	vm.installInputStreamNatives()
 	vm.installOutputStreamNatives()
 	vm.installDataIONatives()
+	vm.installConnectionNatives()
 	vm.installThreadNatives()
 	vm.installRandomNatives()
 	vm.installMIDletNatives()
@@ -630,17 +662,48 @@ func (vm *VM) installThreadNatives() {
 			return Value{}, false, vm.setNative(receiver, &threadState{target: target})
 		},
 	)
-	// The first portable milestone keeps Thread.start cooperative. A frontend
-	// scheduler can invoke run() explicitly without creating host OS threads.
-	vm.RegisterNative("java/lang/Thread", "start", "()V", nativeVoid)
-	vm.RegisterNative("java/lang/Thread", "yield", "()V", nativeVoid)
+	vm.RegisterNative(
+		"java/lang/Thread",
+		"start",
+		"()V",
+		func(ctx context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+			state, err := vm.thread(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			if state.active {
+				return Value{}, false, vm.newThrowable(
+					"java/lang/IllegalThreadStateException",
+					"thread already started",
+				)
+			}
+			state.active = true
+			state.wakeAt = vm.services.Clock.Monotonic()
+			return Value{}, false, vm.runThread(ctx, receiver, state)
+		},
+	)
+	vm.RegisterNative(
+		"java/lang/Thread",
+		"yield",
+		"()V",
+		func(_ context.Context, vm *VM, _ uint32, _ []Value) (Value, bool, error) {
+			if vm.runningThread != 0 {
+				return Value{}, false, &threadYield{delay: time.Nanosecond}
+			}
+			return Value{}, false, nil
+		},
+	)
 	vm.RegisterNative("java/lang/Thread", "setPriority", "(I)V", nativeVoid)
 	vm.RegisterNative(
 		"java/lang/Thread",
 		"isAlive",
 		"()Z",
-		func(_ context.Context, _ *VM, _ uint32, _ []Value) (Value, bool, error) {
-			return IntValue(0), true, nil
+		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+			state, err := vm.thread(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			return boolValue(state.active), true, nil
 		},
 	)
 	vm.RegisterNative(
@@ -661,15 +724,87 @@ func (vm *VM) installThreadNatives() {
 			if duration > int64((^uint64(0)>>1)/uint64(time.Millisecond)) {
 				return Value{}, false, vm.newThrowable("java/lang/IllegalArgumentException", "")
 			}
+			delay := time.Duration(duration) * time.Millisecond
+			if vm.runningThread != 0 {
+				return Value{}, false, &threadYield{delay: delay}
+			}
 			if err := vm.services.Advance(
 				vm.serviceOwner,
-				time.Duration(duration)*time.Millisecond,
+				delay,
 			); err != nil {
 				return Value{}, false, err
 			}
 			return Value{}, false, nil
 		},
 	)
+}
+
+func (vm *VM) thread(reference uint32) (*threadState, error) {
+	object, ok := vm.Object(reference)
+	if !ok {
+		return nil, fmt.Errorf("invalid Thread reference")
+	}
+	state, ok := object.Native.(*threadState)
+	if !ok {
+		return nil, fmt.Errorf("object %d is not a Thread", reference)
+	}
+	return state, nil
+}
+
+func (vm *VM) runThread(
+	ctx context.Context,
+	reference uint32,
+	state *threadState,
+) error {
+	if !state.active {
+		return nil
+	}
+	previous := vm.runningThread
+	vm.runningThread = reference
+	_, _, err := vm.InvokeVirtual(ctx, state.target, "run", "()V")
+	vm.runningThread = previous
+	var yielded *threadYield
+	if errors.As(err, &yielded) {
+		now := vm.services.Clock.Monotonic()
+		if yielded.delay < 0 || yielded.delay > time.Duration(^uint64(0)>>1)-now {
+			state.active = false
+			return fmt.Errorf("invalid thread yield duration %s", yielded.delay)
+		}
+		state.wakeAt = now + yielded.delay
+		return nil
+	}
+	state.active = false
+	if errors.Is(err, ErrMethodNotFound) {
+		return nil
+	}
+	return err
+}
+
+func (vm *VM) runReadyThreads(ctx context.Context) error {
+	now := vm.services.Clock.Monotonic()
+	references := make([]uint32, 0)
+	for reference, object := range vm.heap {
+		state, ok := object.Native.(*threadState)
+		if ok && state.active && state.wakeAt <= now &&
+			reference != vm.runningThread {
+			references = append(references, reference)
+		}
+	}
+	sort.Slice(references, func(left, right int) bool {
+		return references[left] < references[right]
+	})
+	for _, reference := range references {
+		state, err := vm.thread(reference)
+		if err != nil {
+			return err
+		}
+		if state.active && state.wakeAt <= vm.services.Clock.Monotonic() {
+			if err := vm.runThread(ctx, reference, state); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (vm *VM) installRandomNatives() {
@@ -1031,6 +1166,25 @@ func (vm *VM) installGraphicsNatives() {
 			}
 			graphics.font = font.font
 			return Value{}, false, nil
+		},
+	)
+	vm.RegisterNative(
+		"javax/microedition/lcdui/Graphics",
+		"getFont",
+		"()Ljavax/microedition/lcdui/Font;",
+		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+			graphics, err := vm.graphics(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			font := graphics.font
+			if font == 0 {
+				font = vm.defaultFont
+			}
+			return ReferenceValue(vm.NewObject(
+				"javax/microedition/lcdui/Font",
+				&fontState{font: font},
+			)), true, nil
 		},
 	)
 	for _, method := range []struct {
@@ -1572,6 +1726,62 @@ func (vm *VM) installSKTNatives() {
 	)
 	vm.RegisterNative("com/xce/lcdui/XDisplay", "refresh", "(IIII)V", nativeVoid)
 	vm.RegisterNative(
+		"com/xce/lcdui/XDisplay",
+		"copyLCD",
+		"(Ljavax/microedition/lcdui/Graphics;Ljavax/microedition/lcdui/Image;IIII)V",
+		func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
+			graphicsReference, err := referenceArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			imageReference, err := referenceArgument(args, 1)
+			if err != nil {
+				return Value{}, false, err
+			}
+			graphics, err := vm.graphics(graphicsReference)
+			if err != nil {
+				return Value{}, false, err
+			}
+			image, err := vm.image(imageReference)
+			if err != nil {
+				return Value{}, false, err
+			}
+			values := [4]int{}
+			for index := range values {
+				value, intErr := intArgument(args, index+2)
+				if intErr != nil {
+					return Value{}, false, intErr
+				}
+				values[index] = int(value)
+			}
+			x, y, width, height := values[0], values[1], values[2], values[3]
+			if width <= 0 || height <= 0 {
+				return Value{}, false, nil
+			}
+			sourceLeft := max(0, x)
+			sourceTop := max(0, y)
+			sourceRight := min(graphics.width, x+width, x+image.width)
+			sourceBottom := min(graphics.height, y+height, y+image.height)
+			if sourceRight <= sourceLeft || sourceBottom <= sourceTop {
+				return Value{}, false, nil
+			}
+			err = vm.services.Graphics.Blit(
+				vm.serviceOwner,
+				image.surface,
+				graphics.surface,
+				int32(sourceLeft-x),
+				int32(sourceTop-y),
+				shared.Rectangle{
+					X:      int32(sourceLeft),
+					Y:      int32(sourceTop),
+					Width:  int32(sourceRight - sourceLeft),
+					Height: int32(sourceBottom - sourceTop),
+				},
+			)
+			return Value{}, false, err
+		},
+	)
+	vm.RegisterNative(
 		"com/xce/io/XFile",
 		"exists",
 		"(Ljava/lang/String;)Z",
@@ -2081,6 +2291,9 @@ func (vm *VM) installSKTNatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
+			if state.clip == 0 {
+				return Value{}, false, nil
+			}
 			return Value{}, false, vm.services.Media.Stop(vm.serviceOwner, state.clip)
 		},
 	)
@@ -2503,30 +2716,8 @@ func nativeStreamWrite(
 			data = data[offset : offset+length]
 		}
 	}
-	if state.file != nil {
-		end := state.file.offset + len(data)
-		if end > len(state.file.data) {
-			state.file.data = append(
-				state.file.data,
-				make([]byte, end-len(state.file.data))...,
-			)
-		}
-		copy(state.file.data[state.file.offset:end], data)
-		state.file.offset = end
-		if err := vm.persistXFile(state.file); err != nil {
-			return Value{}, false, err
-		}
-	} else {
-		state.data = append(state.data, data...)
-		if state.name != "" {
-			if err := vm.services.Storage.WriteFile(
-				shared.NamespacePrivate,
-				state.name,
-				state.data,
-			); err != nil {
-				return Value{}, false, err
-			}
-		}
+	if err := vm.writeOutputStream(state, data); err != nil {
+		return Value{}, false, err
 	}
 	return Value{}, false, nil
 }
@@ -2610,6 +2801,9 @@ func (vm *VM) inputStream(reference uint32) (*inputStreamState, error) {
 	state, ok := object.Native.(*inputStreamState)
 	if !ok {
 		return nil, fmt.Errorf("object %d is not an InputStream", reference)
+	}
+	if err := vm.refreshSocketInput(state); err != nil {
+		return nil, err
 	}
 	return state, nil
 }

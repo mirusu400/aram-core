@@ -391,20 +391,7 @@ func (vm *VM) dataOutputWrite(reference uint32, data []byte) error {
 	if err != nil {
 		return err
 	}
-	if output.file != nil {
-		end := output.file.offset + len(data)
-		if end > len(output.file.data) {
-			output.file.data = append(
-				output.file.data,
-				make([]byte, end-len(output.file.data))...,
-			)
-		}
-		copy(output.file.data[output.file.offset:end], data)
-		output.file.offset = end
-	} else {
-		output.data = append(output.data, data...)
-	}
-	return nil
+	return vm.writeOutputStream(output, data)
 }
 
 func readStreamBytes(stream *inputStreamState, count int) ([]byte, error) {

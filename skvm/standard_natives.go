@@ -59,8 +59,6 @@ func (vm *VM) installObjectNatives() {
 	}{
 		{"notify", "()V"},
 		{"notifyAll", "()V"},
-		{"wait", "()V"},
-		{"wait", "(J)V"},
 	} {
 		vm.RegisterNative(
 			"java/lang/Object",
@@ -69,6 +67,43 @@ func (vm *VM) installObjectNatives() {
 			nativeVoid,
 		)
 	}
+	vm.RegisterNative(
+		"java/lang/Object",
+		"wait",
+		"()V",
+		func(_ context.Context, vm *VM, _ uint32, _ []Value) (Value, bool, error) {
+			if vm.runningThread != 0 {
+				return Value{}, false, &threadYield{delay: time.Nanosecond}
+			}
+			return Value{}, false, nil
+		},
+	)
+	vm.RegisterNative(
+		"java/lang/Object",
+		"wait",
+		"(J)V",
+		func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
+			milliseconds, err := args[0].Long()
+			if err != nil {
+				return Value{}, false, err
+			}
+			if milliseconds < 0 ||
+				milliseconds > int64((^uint64(0)>>1)/uint64(time.Millisecond)) {
+				return Value{}, false, vm.newThrowable(
+					"java/lang/IllegalArgumentException",
+					"invalid wait duration",
+				)
+			}
+			if vm.runningThread != 0 {
+				delay := time.Duration(milliseconds) * time.Millisecond
+				if delay == 0 {
+					delay = time.Nanosecond
+				}
+				return Value{}, false, &threadYield{delay: delay}
+			}
+			return Value{}, false, nil
+		},
+	)
 	vm.RegisterNative(
 		"java/lang/Object",
 		"equals",
@@ -516,19 +551,35 @@ func (vm *VM) installStringNatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
-			return ReferenceValue(vm.NewByteArray([]byte(value))), true, nil
+			data, err := vm.services.Text.Encode(value, shared.EncodingEUCKR)
+			if err != nil {
+				return Value{}, false, err
+			}
+			return ReferenceValue(vm.NewByteArray(data)), true, nil
 		},
 	)
 	vm.RegisterNative(
 		"java/lang/String",
 		"getBytes",
 		"(Ljava/lang/String;)[B",
-		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
 			value, err := vm.String(receiver)
 			if err != nil {
 				return Value{}, false, err
 			}
-			return ReferenceValue(vm.NewByteArray([]byte(value))), true, nil
+			name, err := vm.stringArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			encoding, err := vm.textEncoding(name)
+			if err != nil {
+				return Value{}, false, err
+			}
+			data, err := vm.services.Text.Encode(value, encoding)
+			if err != nil {
+				return Value{}, false, err
+			}
+			return ReferenceValue(vm.NewByteArray(data)), true, nil
 		},
 	)
 	vm.RegisterNative(
@@ -661,6 +712,12 @@ func (vm *VM) installNumberNatives() {
 
 func (vm *VM) installRuntimeNatives() {
 	runtime := vm.NewObject("java/lang/Runtime", nil)
+	vm.RegisterStaticField(
+		"java/lang/Runtime",
+		"__aramSingleton",
+		"Ljava/lang/Runtime;",
+		ReferenceValue(runtime),
+	)
 	vm.RegisterNative(
 		"java/lang/Runtime",
 		"getRuntime",
@@ -669,7 +726,14 @@ func (vm *VM) installRuntimeNatives() {
 			return ReferenceValue(runtime), true, nil
 		},
 	)
-	vm.RegisterNative("java/lang/Runtime", "gc", "()V", nativeVoid)
+	vm.RegisterNative("java/lang/Runtime", "gc", "()V", func(
+		_ context.Context,
+		vm *VM,
+		_ uint32,
+		_ []Value,
+	) (Value, bool, error) {
+		return Value{}, false, vm.collectGarbage()
+	})
 	for _, method := range []string{"freeMemory", "totalMemory"} {
 		value := int64(32 << 20)
 		if method == "totalMemory" {
@@ -1020,6 +1084,12 @@ func (vm *VM) installKWISNatives() {
 	vm.RegisterNative("org/kwis/msp/lcdui/Jlet", "notifyDestroyed", "()V", nativeVoid)
 	vm.RegisterNative("org/kwis/msp/lcdui/Card", "<init>", "()V", nativeVoid)
 	display := vm.NewObject("org/kwis/msp/lcdui/Display", nil)
+	vm.RegisterStaticField(
+		"org/kwis/msp/lcdui/Display",
+		"__aramSingleton",
+		"Lorg/kwis/msp/lcdui/Display;",
+		ReferenceValue(display),
+	)
 	vm.RegisterNative(
 		"org/kwis/msp/lcdui/Display",
 		"getDefaultDisplay",
@@ -1627,4 +1697,24 @@ func boolValue(value bool) Value {
 		return IntValue(1)
 	}
 	return IntValue(0)
+}
+
+func (vm *VM) textEncoding(name string) (shared.TextEncoding, error) {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	normalized = strings.ReplaceAll(normalized, "_", "-")
+	switch normalized {
+	case "euc-kr", "euckr", "ksc5601", "ks-c-5601-1987", "ms949", "cp949":
+		return shared.EncodingEUCKR, nil
+	case "utf-8", "utf8":
+		return shared.EncodingUTF8, nil
+	case "utf-16", "utf-16be", "utf16", "utf16be":
+		return shared.EncodingUTF16BE, nil
+	case "utf-16le", "utf16le":
+		return shared.EncodingUTF16LE, nil
+	default:
+		return "", vm.newThrowable(
+			"java/io/UnsupportedEncodingException",
+			name,
+		)
+	}
 }
