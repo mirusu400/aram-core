@@ -1,5 +1,7 @@
 # ARAM Core
 
+[![ci](https://github.com/mirusu400/aram-core/actions/workflows/ci.yml/badge.svg)](https://github.com/mirusu400/aram-core/actions/workflows/ci.yml)
+
 Headless, frontend-independent emulation core for **ARAM (Archived Runtime for
 ARM Mobiles)**.
 
@@ -48,6 +50,11 @@ go test ./...
 go vet ./...
 ```
 
+Every push and pull request tests, vets, and compiles all core packages on
+Windows x64, Linux x64, and macOS arm64. The workflow also publishes compressed
+development artifacts containing `aram-debug`, `aram-skvm-inspect`, and
+`aram-skvm-run`; artifacts are retained for 14 days. Android/arm64 remains a
+separate pure-Go compile gate.
 
 The standard-facing design basis is recorded in
 [`docs/wipi-1.2.1-foundation.md`](docs/wipi-1.2.1-foundation.md).

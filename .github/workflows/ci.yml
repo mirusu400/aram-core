@@ -3,28 +3,92 @@ name: ci
 on:
   push:
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   native:
+    name: ${{ matrix.name }}
     strategy:
+      fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+        include:
+          - name: Windows x64
+            runner: windows-latest
+            platform: windows-amd64
+            executable_suffix: .exe
+            archive: aram-core-windows-amd64.zip
+          - name: Linux x64
+            runner: ubuntu-latest
+            platform: linux-amd64
+            executable_suffix: ""
+            archive: aram-core-linux-amd64.tar.gz
+          - name: macOS arm64
+            runner: macos-latest
+            platform: macos-arm64
+            executable_suffix: ""
+            archive: aram-core-macos-arm64.tar.gz
+    runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25.x"
-      - run: go test ./...
-      - run: go vet ./...
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Test
+        run: go test ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Compile all core packages
+        run: go build ./...
+      - name: Build headless tools
+        shell: bash
+        run: |
+          mkdir -p build/package dist
+          go build -trimpath -ldflags="-s -w" \
+            -o "build/package/aram-debug${{ matrix.executable_suffix }}" \
+            ./cmd/aram-debug
+          go build -trimpath -ldflags="-s -w" \
+            -o "build/package/aram-skvm-inspect${{ matrix.executable_suffix }}" \
+            ./cmd/aram-skvm-inspect
+          go build -trimpath -ldflags="-s -w" \
+            -o "build/package/aram-skvm-run${{ matrix.executable_suffix }}" \
+            ./cmd/aram-skvm-run
+          cp README.md THIRD_PARTY_NOTICES.md build/package/
+          cp -R third_party build/package/
+      - name: Package Windows tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path 'build/package/*' `
+            -DestinationPath 'dist/${{ matrix.archive }}'
+      - name: Package Unix tools
+        if: runner.os != 'Windows'
+        shell: bash
+        run: tar -C build/package -czf "dist/${{ matrix.archive }}" .
+      - name: Upload core tools
+        uses: actions/upload-artifact@v7
+        with:
+          name: aram-core-${{ matrix.platform }}
+          path: dist/${{ matrix.archive }}
+          if-no-files-found: error
+          retention-days: 14
 
   android-core:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25.x"
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
       - name: Compile pure-Go core for Android arm64
         env:
           GOOS: android
@@ -35,7 +99,7 @@ jobs:
   input-policy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Reject proprietary inputs
         run: |
           if git ls-files | grep -E '\.(bin|dat|wbin|wbt|fnt|rom|img|mbn|i64|idb)$'; then
