@@ -82,6 +82,100 @@ func TestTextStateRoundTripPreservesGlyphCache(t *testing.T) {
 	}
 }
 
+func TestTextRasterizesReadableDoubleWidthHangul(t *testing.T) {
+	services, err := NewServices(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	font, err := services.Text.CreateFont(1, FontDescriptor{Size: 12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hangul, err := services.Text.Glyph(1, font, '한')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hangul.Width != 12 || hangul.Height != 12 || hangul.Advance != 12 {
+		t.Fatalf(
+			"Hangul geometry = %dx%d advance %d, want 12x12 advance 12",
+			hangul.Width,
+			hangul.Height,
+			hangul.Advance,
+		)
+	}
+	if bytes.Count(hangul.Alpha, []byte{0xff}) < 12 {
+		t.Fatal("Hangul glyph has too few visible pixels")
+	}
+	other, err := services.Text.Glyph(1, font, '글')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(hangul.Alpha, other.Alpha) {
+		t.Fatal("different Hangul syllables rasterized identically")
+	}
+	width, err := services.Text.Measure(1, font, "A한")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if width != 18 {
+		t.Fatalf("mixed text width = %d, want 18", width)
+	}
+}
+
+func TestTextHandsetGlyphsPreserveEdgeStrokesAndSymbols(t *testing.T) {
+	services, err := NewServices(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	font, err := services.Text.CreateFont(1, FontDescriptor{Size: 12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ga, err := services.Text.Glyph(1, font, '\uac00')
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, offset := range []int{8, 9, 10*12 + 8, 10*12 + 9} {
+		if ga.Alpha[offset] != 0xff {
+			t.Fatalf("monochrome-hinted Hangul edge stroke %d is missing", offset)
+		}
+	}
+	exclamation, err := services.Text.Glyph(1, font, '!')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exclamation.Width != 6 ||
+		exclamation.Height != 12 ||
+		exclamation.Advance != 6 ||
+		bytes.Count(exclamation.Alpha, []byte{0xff}) < 3 {
+		t.Fatalf(
+			"exclamation glyph = %dx%d advance %d, visible %d",
+			exclamation.Width,
+			exclamation.Height,
+			exclamation.Advance,
+			bytes.Count(exclamation.Alpha, []byte{0xff}),
+		)
+	}
+	leftQuote, err := services.Text.Glyph(1, font, '\u201c')
+	if err != nil {
+		t.Fatal(err)
+	}
+	rightQuote, err := services.Text.Glyph(1, font, '\u201d')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(leftQuote.Alpha, rightQuote.Alpha) {
+		t.Fatal("curly quotation marks rasterized identically")
+	}
+	width, err := services.Text.Measure(1, font, "\u201c\uac04\uc218!\u201d")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if width != 42 {
+		t.Fatalf("symbol-rich handset text width = %d, want 42", width)
+	}
+}
+
 func TestTextDecodeRejectsMalformedAndOversizedUTF16(t *testing.T) {
 	services, err := NewServices(Config{})
 	if err != nil {

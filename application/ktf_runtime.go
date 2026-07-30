@@ -80,6 +80,7 @@ type ktfRuntime struct {
 	wipicSurfaceServices map[uint32]shared.ServiceID
 	wipicAssetServices   map[uint32]shared.ServiceID
 	wipicTimerServices   map[uint32]shared.ServiceID
+	wipicMediaServices   map[uint32]shared.ServiceID
 	clipServices         map[uint32]shared.ServiceID
 	databaseServices     map[string]shared.ServiceID
 	fileServices         map[uint32]shared.ServiceID
@@ -168,6 +169,7 @@ type ktfRuntime struct {
 	wipicResourceIDs        map[string]uint32
 	wipicMemory             map[uint32]ktfWIPICMemory
 	wipicTimers             map[uint32]*ktfWIPICTimer
+	wipicMediaClips         map[uint32]*ktfWIPICMediaClip
 	wipicSystemProperties   map[string]string
 	wipicFiles              map[uint32]*ktfFile
 	nextWIPICFile           uint32
@@ -357,6 +359,16 @@ type ktfWIPICTimer struct {
 	parameter uint32
 	deadline  uint64
 	active    bool
+}
+
+type ktfWIPICMediaClip struct {
+	mediaType string
+	capacity  uint32
+	callback  uint32
+	data      []byte
+	volume    int32
+	state     uint8
+	repeat    bool
 }
 
 type ktfLWCComponent struct {
@@ -804,6 +816,7 @@ var ktfHostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 			{name: "isEmpty", descriptor: "()Z"},
 			{name: "contains", descriptor: "(Ljava/lang/Object;)Z"},
 			{name: "indexOf", descriptor: "(Ljava/lang/Object;)I"},
+			{name: "copyInto", descriptor: "([Ljava/lang/Object;)V"},
 			{name: "elements", descriptor: "()Ljava/util/Enumeration;"},
 		},
 	},
@@ -1409,6 +1422,7 @@ func newKTFRuntimeForProfile(
 		wipicSurfaceServices:  make(map[uint32]shared.ServiceID),
 		wipicAssetServices:    make(map[uint32]shared.ServiceID),
 		wipicTimerServices:    make(map[uint32]shared.ServiceID),
+		wipicMediaServices:    make(map[uint32]shared.ServiceID),
 		clipServices:          make(map[uint32]shared.ServiceID),
 		databaseServices:      databaseServices,
 		fileServices:          make(map[uint32]shared.ServiceID),
@@ -1461,6 +1475,7 @@ func newKTFRuntimeForProfile(
 		wipicResourceIDs:      make(map[string]uint32),
 		wipicMemory:           make(map[uint32]ktfWIPICMemory),
 		wipicTimers:           make(map[uint32]*ktfWIPICTimer),
+		wipicMediaClips:       make(map[uint32]*ktfWIPICMediaClip),
 		wipicSystemProperties: make(map[string]string),
 		wipicFiles:            make(map[uint32]*ktfFile),
 		nextWIPICFile:         1,
@@ -6968,6 +6983,12 @@ func (r *ktfRuntime) recordPresentation() error {
 		r.hostTrace,
 		fmt.Sprintf("java_present:%d", r.presentCount),
 	)
+	if r.activeTask != nil {
+		// A handset display update is a scheduler boundary. Yield after the
+		// host call returns so a paint loop cannot submit many invisible
+		// intermediate frames inside one StepFrame.
+		r.yieldRequested = true
+	}
 	return nil
 }
 
@@ -7278,7 +7299,10 @@ func (r *ktfRuntime) newJavaEncodedImage(data []byte) (uint32, error) {
 		_ = r.services.Assets.Release(r.serviceOwner, asset)
 		return 0, err
 	}
-	source := image.NewRGBA(image.Rect(
+	// Assets exposes straight-alpha RGBA bytes. Keep them in NRGBA form:
+	// image.RGBA expects premultiplied channels, and storing transparent
+	// magenta there makes draw.Over leak the RGB color through alpha zero.
+	source := image.NewNRGBA(image.Rect(
 		0,
 		0,
 		int(info.Width),
@@ -9446,6 +9470,33 @@ func (r *ktfRuntime) handleVectorMethod(
 			}
 		}
 		return ^uint32(0), nil
+	case "copyInto([Ljava/lang/Object;)V":
+		array, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if array == 0 {
+			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
+		}
+		length, valueErr := r.javaArrayLength(array)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if uint32(len(values)) > length {
+			return 0, r.raiseHostJavaException(
+				"java/lang/ArrayIndexOutOfBoundsException",
+			)
+		}
+		fields, valueErr := r.readU32(array)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if len(values) != 0 {
+			if valueErr = r.writeWords(fields+8, values); valueErr != nil {
+				return 0, valueErr
+			}
+		}
+		return 0, nil
 	case "pop()Ljava/lang/Object;":
 		if len(values) == 0 {
 			return 0, nil
@@ -9643,6 +9694,16 @@ func (r *ktfRuntime) handleMediaMethod(
 					return 0, valueErr
 				}
 			}
+		} else {
+			resource, found, valueErr := r.ktfClipConstructorResource(
+				descriptor,
+			)
+			if valueErr != nil {
+				return 0, valueErr
+			}
+			if found {
+				clip.data = resource
+			}
 		}
 		r.clips[instance] = clip
 		return 0, r.syncKTFClip(instance)
@@ -9806,6 +9867,33 @@ func (r *ktfRuntime) handleMediaMethod(
 	default:
 		return 0, nil
 	}
+}
+
+func (r *ktfRuntime) ktfClipConstructorResource(
+	descriptor string,
+) ([]byte, bool, error) {
+	stringParameters := []uint32{2}
+	if descriptor == "(Ljava/lang/String;Ljava/lang/String;)V" {
+		stringParameters = append(stringParameters, 3)
+	}
+	for _, parameter := range stringParameters {
+		address, err := r.parameter(parameter)
+		if err != nil {
+			return nil, false, err
+		}
+		name := strings.TrimPrefix(
+			strings.ReplaceAll(r.javaStringValue(address), `\`, "/"),
+			"/",
+		)
+		name = path.Clean(name)
+		if name == "." || name == ".." || strings.HasPrefix(name, "../") {
+			continue
+		}
+		if data, ok := r.findKTFResource(name); ok {
+			return append([]byte(nil), data...), true, nil
+		}
+	}
+	return nil, false, nil
 }
 
 func (r *ktfRuntime) ensureKTFClip(instance uint32) *ktfClip {
@@ -13138,10 +13226,11 @@ func ktfGetResourceID(
 	runtime.hostTrace = append(
 		runtime.hostTrace,
 		fmt.Sprintf(
-			"wipic_resource_id:%s:id=%d:size=%d",
+			"wipic_resource_id:%s:id=%d:size=%d:lr=0x%08x",
 			name,
 			id,
 			len(resource),
+			mustKTFRegister(runtime, cpu.RegisterLR),
 		),
 	)
 	return id, nil
@@ -13179,9 +13268,19 @@ func ktfGetResource(
 	}
 	runtime.hostTrace = append(
 		runtime.hostTrace,
-		fmt.Sprintf("wipic_resource_read:id=%d:size=%d", id, len(resource)),
+		fmt.Sprintf(
+			"wipic_resource_read:id=%d:size=%d:lr=0x%08x",
+			id,
+			len(resource),
+			mustKTFRegister(runtime, cpu.RegisterLR),
+		),
 	)
 	return 0, nil
+}
+
+func mustKTFRegister(runtime *ktfRuntime, register uint32) uint32 {
+	value, _ := runtime.cpu.ReadRegister(register)
+	return value
 }
 
 func (r *ktfRuntime) resolveKTFResourceOutput(
@@ -13268,6 +13367,7 @@ func (r *ktfRuntime) buildWIPICInterface() (uint32, error) {
 const (
 	ktfWIPICMasterGraphics = 2
 	ktfWIPICMasterFS       = 6
+	ktfWIPICMasterMedia    = 9
 )
 
 func ktfWIPICHandler(table, slot int) ktfHostHandler {
@@ -13353,7 +13453,386 @@ func ktfWIPICHandler(table, slot int) ktfHostHandler {
 			return ktfWIPICFileIsExist
 		}
 	}
+	if table == ktfWIPICMasterMedia {
+		switch slot {
+		case 0:
+			return ktfWIPICMediaCreate
+		case 3:
+			return ktfWIPICMediaDestroy
+		case 4:
+			return ktfWIPICMediaPutData
+		case 5:
+			return ktfWIPICMediaGetData
+		case 6:
+			return ktfWIPICMediaAvailableDataSize
+		case 7:
+			return ktfWIPICMediaClearData
+		case 8:
+			return ktfWIPICMediaPlay
+		case 9:
+			return ktfWIPICMediaPause
+		case 10:
+			return ktfWIPICMediaResume
+		case 11:
+			return ktfWIPICMediaStop
+		case 13:
+			return ktfWIPICMediaSetPosition
+		}
+	}
 	return ktfWIPICNoop(table, slot)
+}
+
+func ktfWIPICMediaCreate(
+	_ context.Context,
+	runtime *ktfRuntime,
+) (uint32, error) {
+	mediaTypeAddress, err := runtime.parameter(0)
+	if err != nil {
+		return 0, err
+	}
+	capacity, err := runtime.parameter(1)
+	if err != nil {
+		return 0, err
+	}
+	callback, err := runtime.parameter(2)
+	if err != nil {
+		return 0, err
+	}
+	if mediaTypeAddress == 0 || capacity == 0 ||
+		uint64(capacity) > runtime.serviceConfig.Limits.Media.MaxSourceBytes {
+		return 0, nil
+	}
+	mediaType, err := runtime.readCString(mediaTypeAddress, 256)
+	if err != nil {
+		return 0, err
+	}
+	serviceMediaType := ""
+	switch strings.ToLower(strings.TrimSpace(mediaType)) {
+	case "yamaha_ma3", "audio/x-smaf", "audio/smaf", "audio/mmf":
+		serviceMediaType = "audio/x-smaf"
+	case "audio/midi", "audio/sp-midi":
+		serviceMediaType = "audio/midi"
+	case "audio/wav", "audio/x-wav":
+		serviceMediaType = "audio/wav"
+	default:
+		return 0, nil
+	}
+	handle, err := runtime.allocateWords(24)
+	if err != nil {
+		return 0, err
+	}
+	serviceID, err := runtime.services.Media.CreateClip(
+		runtime.serviceOwner,
+		serviceMediaType,
+		uint64(capacity),
+	)
+	if err != nil {
+		runtime.heap.release(handle)
+		return 0, err
+	}
+	runtime.wipicMediaClips[handle] = &ktfWIPICMediaClip{
+		mediaType: serviceMediaType,
+		capacity:  capacity,
+		callback:  callback,
+		volume:    100,
+	}
+	runtime.wipicMediaServices[handle] = serviceID
+	runtime.hostTrace = append(
+		runtime.hostTrace,
+		fmt.Sprintf(
+			"wipic_media_create:handle=0x%08x:type=%s:capacity=%d:"+
+				"callback=0x%08x",
+			handle,
+			mediaType,
+			capacity,
+			callback,
+		),
+	)
+	return handle, nil
+}
+
+func ktfWIPICMediaDestroy(
+	_ context.Context,
+	runtime *ktfRuntime,
+) (uint32, error) {
+	handle, clip, serviceID, err := runtime.ktfWIPICMediaParameter()
+	if err != nil {
+		return ktfWIPICErrorInvalid, err
+	}
+	if clip == nil {
+		return ktfWIPICErrorInvalid, nil
+	}
+	if err := runtime.services.Media.DestroyClip(
+		runtime.serviceOwner,
+		serviceID,
+		runtime.services.Events,
+	); err != nil {
+		return 0, err
+	}
+	delete(runtime.wipicMediaClips, handle)
+	delete(runtime.wipicMediaServices, handle)
+	runtime.heap.release(handle)
+	return 0, nil
+}
+
+func ktfWIPICMediaPutData(
+	_ context.Context,
+	runtime *ktfRuntime,
+) (uint32, error) {
+	_, clip, serviceID, err := runtime.ktfWIPICMediaParameter()
+	if err != nil {
+		return ktfWIPICErrorInvalid, err
+	}
+	if clip == nil {
+		return ktfWIPICErrorInvalid, nil
+	}
+	input, err := runtime.parameter(1)
+	if err != nil {
+		return 0, err
+	}
+	count, err := runtime.parameter(2)
+	if err != nil {
+		return 0, err
+	}
+	if input == 0 || count > clip.capacity ||
+		uint64(len(clip.data))+uint64(count) > uint64(clip.capacity) {
+		return ktfWIPICErrorInvalid, nil
+	}
+	data := make([]byte, count)
+	if err := runtime.cpu.ReadMemory(input, data); err != nil {
+		return 0, err
+	}
+	if _, err := runtime.services.Media.Append(
+		runtime.serviceOwner,
+		serviceID,
+		data,
+	); err != nil {
+		return 0, err
+	}
+	clip.data = append(clip.data, data...)
+	return 0, nil
+}
+
+func ktfWIPICMediaGetData(
+	_ context.Context,
+	runtime *ktfRuntime,
+) (uint32, error) {
+	_, clip, serviceID, err := runtime.ktfWIPICMediaParameter()
+	if err != nil {
+		return ktfWIPICErrorInvalid, err
+	}
+	if clip == nil {
+		return ktfWIPICErrorInvalid, nil
+	}
+	output, err := runtime.parameter(1)
+	if err != nil {
+		return 0, err
+	}
+	count, err := runtime.parameter(2)
+	if err != nil {
+		return 0, err
+	}
+	count = min(count, uint32(len(clip.data)))
+	if output == 0 && count != 0 {
+		return ktfWIPICErrorInvalid, nil
+	}
+	if err := runtime.cpu.WriteMemory(output, clip.data[:count]); err != nil {
+		return 0, err
+	}
+	clip.data = append(clip.data[:0], clip.data[count:]...)
+	if err := runtime.services.Media.Clear(
+		runtime.serviceOwner,
+		serviceID,
+	); err != nil {
+		return 0, err
+	}
+	if _, err := runtime.services.Media.Append(
+		runtime.serviceOwner,
+		serviceID,
+		clip.data,
+	); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func ktfWIPICMediaAvailableDataSize(
+	_ context.Context,
+	runtime *ktfRuntime,
+) (uint32, error) {
+	_, clip, _, err := runtime.ktfWIPICMediaParameter()
+	if err != nil {
+		return ktfWIPICErrorInvalid, err
+	}
+	if clip == nil {
+		return ktfWIPICErrorInvalid, nil
+	}
+	return uint32(len(clip.data)), nil
+}
+
+func ktfWIPICMediaClearData(
+	_ context.Context,
+	runtime *ktfRuntime,
+) (uint32, error) {
+	_, clip, serviceID, err := runtime.ktfWIPICMediaParameter()
+	if err != nil {
+		return ktfWIPICErrorInvalid, err
+	}
+	if clip == nil {
+		return ktfWIPICErrorInvalid, nil
+	}
+	if err := runtime.services.Media.Clear(
+		runtime.serviceOwner,
+		serviceID,
+	); err != nil {
+		return 0, err
+	}
+	clip.data = nil
+	clip.state = 0
+	clip.repeat = false
+	return 0, nil
+}
+
+func ktfWIPICMediaPlay(
+	_ context.Context,
+	runtime *ktfRuntime,
+) (uint32, error) {
+	handle, clip, serviceID, err := runtime.ktfWIPICMediaParameter()
+	if err != nil {
+		return ktfWIPICErrorInvalid, err
+	}
+	if clip == nil || len(clip.data) == 0 {
+		return ktfWIPICErrorInvalid, nil
+	}
+	repeat, err := runtime.parameter(1)
+	if err != nil {
+		return 0, err
+	}
+	plays := int32(1)
+	if repeat != 0 {
+		plays = -1
+	}
+	if err := runtime.services.Media.Play(
+		runtime.serviceOwner,
+		serviceID,
+		plays,
+	); err != nil {
+		return 0, err
+	}
+	clip.state = 1
+	clip.repeat = repeat != 0
+	runtime.hostTrace = append(
+		runtime.hostTrace,
+		fmt.Sprintf(
+			"wipic_media_play:handle=0x%08x:size=%d:repeat=%t",
+			handle,
+			len(clip.data),
+			clip.repeat,
+		),
+	)
+	return 0, nil
+}
+
+func ktfWIPICMediaPause(
+	_ context.Context,
+	runtime *ktfRuntime,
+) (uint32, error) {
+	_, clip, serviceID, err := runtime.ktfWIPICMediaParameter()
+	if err != nil {
+		return ktfWIPICErrorInvalid, err
+	}
+	if clip == nil {
+		return ktfWIPICErrorInvalid, nil
+	}
+	if err := runtime.services.Media.Pause(
+		runtime.serviceOwner,
+		serviceID,
+	); err != nil {
+		return 0, err
+	}
+	clip.state = 2
+	return 0, nil
+}
+
+func ktfWIPICMediaResume(
+	_ context.Context,
+	runtime *ktfRuntime,
+) (uint32, error) {
+	_, clip, serviceID, err := runtime.ktfWIPICMediaParameter()
+	if err != nil {
+		return ktfWIPICErrorInvalid, err
+	}
+	if clip == nil {
+		return ktfWIPICErrorInvalid, nil
+	}
+	if err := runtime.services.Media.Resume(
+		runtime.serviceOwner,
+		serviceID,
+	); err != nil {
+		return 0, err
+	}
+	clip.state = 1
+	return 0, nil
+}
+
+func ktfWIPICMediaStop(
+	_ context.Context,
+	runtime *ktfRuntime,
+) (uint32, error) {
+	_, clip, serviceID, err := runtime.ktfWIPICMediaParameter()
+	if err != nil {
+		return ktfWIPICErrorInvalid, err
+	}
+	if clip == nil {
+		return ktfWIPICErrorInvalid, nil
+	}
+	if err := runtime.services.Media.Stop(
+		runtime.serviceOwner,
+		serviceID,
+	); err != nil {
+		return 0, err
+	}
+	clip.state = 0
+	clip.repeat = false
+	return 0, nil
+}
+
+func ktfWIPICMediaSetPosition(
+	_ context.Context,
+	runtime *ktfRuntime,
+) (uint32, error) {
+	_, clip, serviceID, err := runtime.ktfWIPICMediaParameter()
+	if err != nil {
+		return ktfWIPICErrorInvalid, err
+	}
+	if clip == nil {
+		return ktfWIPICErrorInvalid, nil
+	}
+	position, err := runtime.parameter(1)
+	if err != nil {
+		return 0, err
+	}
+	if err := runtime.services.Media.Seek(
+		runtime.serviceOwner,
+		serviceID,
+		time.Duration(position)*time.Millisecond,
+	); err != nil {
+		return ktfWIPICErrorInvalid, nil
+	}
+	return 0, nil
+}
+
+func (r *ktfRuntime) ktfWIPICMediaParameter() (
+	uint32,
+	*ktfWIPICMediaClip,
+	shared.ServiceID,
+	error,
+) {
+	handle, err := r.parameter(0)
+	if err != nil {
+		return 0, nil, 0, err
+	}
+	return handle, r.wipicMediaClips[handle], r.wipicMediaServices[handle], nil
 }
 
 const (

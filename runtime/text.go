@@ -608,6 +608,17 @@ func (t *Text) font(owner OwnerID, id ServiceID) (*serviceFont, error) {
 }
 
 func rasterFallbackGlyph(descriptor FontDescriptor, character rune) Glyph {
+	if character >= 0xac00 && character <= 0xd7a3 {
+		return rasterHangulGlyph(descriptor, character)
+	}
+	if sourceAdvance, bitmap, ok := handsetExtraGlyphBitmap(character); ok {
+		return rasterHandsetGlyph(
+			descriptor,
+			character,
+			int32(sourceAdvance),
+			bitmap,
+		)
+	}
 	height := descriptor.Size
 	scale := max(int32(1), height/8)
 	width := 5 * scale
@@ -629,6 +640,65 @@ func rasterFallbackGlyph(descriptor FontDescriptor, character rune) Glyph {
 					y := int32(row)*scale + dy
 					glyph.Alpha[y*glyph.Width+x] = 0xff
 				}
+			}
+		}
+	}
+	if descriptor.Style&FontBold != 0 {
+		for y := int32(0); y < glyph.Height; y++ {
+			for x := glyph.Width - 1; x > 0; x-- {
+				if glyph.Alpha[y*glyph.Width+x-1] != 0 {
+					glyph.Alpha[y*glyph.Width+x] = 0xff
+				}
+			}
+		}
+	}
+	return glyph
+}
+
+func rasterHangulGlyph(descriptor FontDescriptor, character rune) Glyph {
+	return rasterHandsetGlyph(
+		descriptor,
+		character,
+		handsetGlyphSourceWidth,
+		handsetHangulGlyphBitmap(character),
+	)
+}
+
+func rasterHandsetGlyph(
+	descriptor FontDescriptor,
+	character rune,
+	sourceAdvance int32,
+	bitmap []byte,
+) Glyph {
+	height := max(int32(8), descriptor.Size)
+	sourceWidth := sourceAdvance
+	if sourceWidth == 0 {
+		sourceWidth = handsetGlyphSourceWidth
+	}
+	width := max(
+		int32(1),
+		(sourceWidth*height+handsetGlyphSourceHeight/2)/
+			handsetGlyphSourceHeight,
+	)
+	advance := max(
+		int32(0),
+		(sourceAdvance*height+handsetGlyphSourceHeight/2)/
+			handsetGlyphSourceHeight,
+	)
+	glyph := Glyph{
+		Rune: character, Width: width, Height: height,
+		Advance: advance,
+		Alpha:   make([]byte, width*height),
+	}
+	if sourceAdvance == 0 {
+		glyph.BearingX = -width
+	}
+	for y := int32(0); y < height; y++ {
+		sourceY := y * handsetGlyphSourceHeight / height
+		for x := int32(0); x < width; x++ {
+			sourceX := x * sourceWidth / width
+			if handsetBitmapPixel(bitmap, sourceX, sourceY) {
+				glyph.Alpha[y*width+x] = 0xff
 			}
 		}
 	}

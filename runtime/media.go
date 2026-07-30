@@ -99,6 +99,7 @@ type decodedPCM struct {
 	channels   uint8
 	samples    []int16
 	duration   time.Duration
+	smaf       *smafRenderStream
 }
 
 type mediaClip struct {
@@ -236,6 +237,12 @@ func (m *Media) Play(owner OwnerID, id ServiceID, plays int32) error {
 	}
 	if plays == 0 || plays < -1 {
 		return fmt.Errorf("%w: invalid media play count %d", ErrInvalidArgument, plays)
+	}
+	if clip.decoded == nil && looksLikeSMAF(clip.source) {
+		clip.decoded = decodeSMAFLazyPCM16(
+			clip.source,
+			m.limits.OutputSampleRate,
+		)
 	}
 	if clip.decoded != nil && clip.position >= clip.decoded.duration {
 		clip.position = 0
@@ -524,6 +531,14 @@ func (m *Media) Restore(state MediaState) error {
 			remainingPlays: saved.RemainingPlays,
 		}
 		clip.decoded = decodeWavePCM16(clip.source)
+		if clip.decoded == nil &&
+			(saved.State == ClipPlaying || saved.State == ClipPaused) &&
+			looksLikeSMAF(clip.source) {
+			clip.decoded = decodeSMAFLazyPCM16(
+				clip.source,
+				state.Limits.OutputSampleRate,
+			)
+		}
 		if clip.decoded != nil && clip.position > clip.decoded.duration {
 			return fmt.Errorf("%w: media clip %d position exceeds duration", ErrInvalidState, index)
 		}
@@ -577,6 +592,7 @@ func (m *Media) clipSampleAt(clip *mediaClip, offset time.Duration) (int16, int1
 		position %= duration
 	}
 	frame := uint64(position) * uint64(clip.decoded.sampleRate) / uint64(time.Second)
+	clip.decoded.ensureFrame(frame)
 	availableFrames := uint64(len(clip.decoded.samples)) / uint64(clip.decoded.channels)
 	if frame >= availableFrames {
 		return 0, 0, false
@@ -586,6 +602,19 @@ func (m *Media) clipSampleAt(clip *mediaClip, offset time.Duration) (int16, int1
 		return value, value, true
 	}
 	return clip.decoded.samples[frame*2], clip.decoded.samples[frame*2+1], true
+}
+
+func (decoded *decodedPCM) ensureFrame(frame uint64) {
+	if decoded == nil || decoded.smaf == nil ||
+		frame < uint64(len(decoded.samples))/uint64(decoded.channels) {
+		return
+	}
+	target := frame + 1
+	current := uint64(len(decoded.samples)) / uint64(decoded.channels)
+	if target < current+2_048 {
+		target = current + 2_048
+	}
+	decoded.samples = decoded.smaf.renderUntil(decoded.samples, target)
 }
 
 func applyGain(left, right int16, gain uint32, pan int8) (int16, int16) {

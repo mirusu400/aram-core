@@ -359,7 +359,7 @@ func TestKTFMachineRemainsPausedWhileDockedCardCanReceiveEvents(t *testing.T) {
 			}
 			if err := machine.runKTFSlice(
 				context.Background(),
-				16,
+				16*time.Millisecond,
 			); err != nil {
 				t.Fatal(err)
 			}
@@ -425,6 +425,82 @@ func TestKTFTaskSliceScopesPendingJavaMethodPerTask(t *testing.T) {
 	}
 	if runtime.lastJavaMethod != "ambient" {
 		t.Fatalf("ambient Java method = %q", runtime.lastJavaMethod)
+	}
+}
+
+func TestKTFMachineRunsCooperativeTasksWithinOneClockQuantum(t *testing.T) {
+	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.cpu.Close()
+	if err := runtime.mapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+
+	var observed []string
+	newTask := func(name string, stackIndex int) *ktfTask {
+		t.Helper()
+		procedure := runtime.registerHostCall(
+			"test.quantum."+name,
+			func(context.Context, *ktfRuntime) (uint32, error) {
+				observed = append(observed, name)
+				return 0, nil
+			},
+		)
+		task, taskErr := runtime.newTask(procedure, nil, stackIndex)
+		if taskErr != nil {
+			t.Fatal(taskErr)
+		}
+		return task
+	}
+	runtime.tasks = []*ktfTask{
+		newTask("first", 0),
+		newTask("second", 1),
+	}
+	runtime.defaultDisplay = 1
+	runtime.displayCards[1] = 2
+	machine := &Machine{
+		cpu:        runtime.cpu,
+		state:      machinecore.StatePaused,
+		runBudget:  ktfRunBudgetMin,
+		ktf:        runtime,
+		ktfStarted: true,
+	}
+
+	if err := machine.runKTFSlice(
+		context.Background(),
+		16*time.Millisecond,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"first", "second"}; !slices.Equal(observed, want) {
+		t.Fatalf("tasks run in quantum = %q, want %q", observed, want)
+	}
+	if got := runtime.services.Clock.Monotonic(); got != 16*time.Millisecond {
+		t.Fatalf("clock after cooperative quantum = %s, want 16ms", got)
+	}
+	if machine.State() != machinecore.StatePaused ||
+		machine.LastResult().Reason != cpu.StopExited {
+		t.Fatalf(
+			"machine after cooperative quantum = %s, result=%+v",
+			machine.State(),
+			machine.LastResult(),
+		)
+	}
+}
+
+func TestKTFFrameDurationTracksSixtyHertz(t *testing.T) {
+	got := 60 * ktfFrameDuration
+	delta := got - time.Second
+	if delta < 0 {
+		delta = -delta
+	}
+	if delta > time.Microsecond {
+		t.Fatalf("60 KTF frames advance %s, want approximately 1s", got)
 	}
 }
 
@@ -3430,6 +3506,25 @@ func TestKTFJavaPresentationRetakesScreenFromWIPIC(t *testing.T) {
 	}
 }
 
+func TestKTFPresentationRequestsTaskYield(t *testing.T) {
+	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.cpu.Close()
+	runtime.activeTask = &ktfTask{}
+
+	if err := runtime.recordPresentation(); err != nil {
+		t.Fatal(err)
+	}
+	if !runtime.yieldRequested {
+		t.Fatal("presentation did not request a task yield")
+	}
+}
+
 func TestKTFReturningTaskDoesNotSkipNextRunnableTask(t *testing.T) {
 	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
 		ClientName: "client.bin0",
@@ -5187,6 +5282,33 @@ func TestKTFCollectionsReturnStoredObjectsAndEnumeration(t *testing.T) {
 	) {
 		t.Fatalf("Vector insertion = %08x", got)
 	}
+	target, err := runtime.newJavaReferenceArray(
+		"[Ljava/lang/Object;",
+		[]uint32{0, 0, 0},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR2, target); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.handleVectorMethod(
+		"copyInto",
+		"([Ljava/lang/Object;)V",
+	); err != nil {
+		t.Fatal(err)
+	}
+	fields, err := runtime.readU32(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copied, err := runtime.readWords(fields+8, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(copied, []uint32{inserted, first, 0}) {
+		t.Fatalf("Vector.copyInto = %08x", copied)
+	}
 
 	table, err := runtime.newHostJavaObject("java/util/Hashtable")
 	if err != nil {
@@ -5446,6 +5568,36 @@ func TestKTFRareJavaAndMediaCompatibilityMethods(t *testing.T) {
 	}
 
 	clip, err := runtime.newHostJavaObject("org/kwis/msp/media/Clip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.pkg.Resources == nil {
+		runtime.pkg.Resources = make(map[string][]byte)
+	}
+	runtime.pkg.Resources["snd/test.mmf"] = []byte{0x4d, 0x4d, 0x4d, 0x44}
+	resourceName, err := runtime.newJavaString("/snd/test.mmf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR1, clip); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR2, resourceName); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.handleMediaMethod(
+		"<init>",
+		"(Ljava/lang/String;)V",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(
+		runtime.clips[clip].data,
+		runtime.pkg.Resources["snd/test.mmf"],
+	) {
+		t.Fatalf("Clip resource constructor data = %x", runtime.clips[clip].data)
+	}
+	clip, err = runtime.newHostJavaObject("org/kwis/msp/media/Clip")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -6101,6 +6253,125 @@ func TestKTFWIPICFileRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	} else if result != 0 {
 		t.Fatalf("MC_fsClose = 0x%08x", result)
+	}
+}
+
+func TestKTFWIPICMediaMA3LoadAndPlayback(t *testing.T) {
+	for slot, want := range map[int]ktfHostHandler{
+		0:  ktfWIPICMediaCreate,
+		3:  ktfWIPICMediaDestroy,
+		4:  ktfWIPICMediaPutData,
+		7:  ktfWIPICMediaClearData,
+		8:  ktfWIPICMediaPlay,
+		9:  ktfWIPICMediaPause,
+		10: ktfWIPICMediaResume,
+		11: ktfWIPICMediaStop,
+	} {
+		if got := ktfWIPICHandler(ktfWIPICMasterMedia, slot); reflect.ValueOf(
+			got,
+		).Pointer() != reflect.ValueOf(want).Pointer() {
+			t.Fatalf("WIPI-C media slot %d has the wrong handler", slot)
+		}
+	}
+
+	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.cpu.Close()
+	if err := runtime.mapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	writeParameters := func(values ...uint32) {
+		t.Helper()
+		for index, value := range values {
+			if err := runtime.cpu.WriteRegister(
+				cpu.RegisterR0+uint32(index),
+				value,
+			); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	mediaType, err := runtime.allocateBytes([]byte("Yamaha_MA3"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeParameters(mediaType, 4096, ktfImageBase|1)
+	handle, err := ktfWIPICMediaCreate(context.Background(), runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clip := runtime.wipicMediaClips[handle]
+	serviceID := runtime.wipicMediaServices[handle]
+	if handle == 0 || clip == nil || serviceID == 0 ||
+		clip.mediaType != "audio/x-smaf" ||
+		clip.capacity != 4096 ||
+		clip.callback != ktfImageBase|1 {
+		t.Fatalf(
+			"WIPI-C media clip handle=%08x service=%d clip=%+v",
+			handle,
+			serviceID,
+			clip,
+		)
+	}
+
+	source := []byte("MMMD-test")
+	input, err := runtime.allocateBytes(source, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeParameters(handle)
+	if result, err := ktfWIPICMediaClearData(
+		context.Background(),
+		runtime,
+	); err != nil || result != 0 {
+		t.Fatalf("clear result=%08x err=%v", result, err)
+	}
+	writeParameters(handle, input, uint32(len(source)))
+	if result, err := ktfWIPICMediaPutData(
+		context.Background(),
+		runtime,
+	); err != nil || result != 0 {
+		t.Fatalf("put result=%08x err=%v", result, err)
+	}
+	stored, err := runtime.services.Media.Source(runtime.serviceOwner, serviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stored, source) {
+		t.Fatalf("WIPI-C media source = %q", stored)
+	}
+
+	writeParameters(handle, 1)
+	if result, err := ktfWIPICMediaPlay(
+		context.Background(),
+		runtime,
+	); err != nil || result != 0 {
+		t.Fatalf("play result=%08x err=%v", result, err)
+	}
+	info, err := runtime.services.Media.Info(runtime.serviceOwner, serviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.State != shared.ClipPlaying || info.RemainingPlays != -1 {
+		t.Fatalf("WIPI-C media playback = %+v", info)
+	}
+
+	writeParameters(handle)
+	if _, err := ktfWIPICMediaStop(context.Background(), runtime); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ktfWIPICMediaDestroy(context.Background(), runtime); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.wipicMediaClips[handle] != nil ||
+		runtime.wipicMediaServices[handle] != 0 {
+		t.Fatal("WIPI-C media clip survived destruction")
 	}
 }
 
@@ -6898,5 +7169,50 @@ func TestKTFWIPICTimerFiresAndReusesCompletedTask(t *testing.T) {
 		!runtime.tasks[0].wipicTimer ||
 		runtime.wipicTimers[0x10004000].active {
 		t.Fatal("second timer did not run after the first callback completed")
+	}
+}
+
+func TestKTFEncodedImageKeepsStraightAlphaTransparent(t *testing.T) {
+	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.cpu.Close()
+	if err := runtime.mapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	source := image.NewNRGBA(image.Rect(0, 0, 2, 1))
+	source.SetNRGBA(0, 0, color.NRGBA{R: 0xff, B: 0xff, A: 0})
+	source.SetNRGBA(1, 0, color.NRGBA{G: 0xff, A: 0xff})
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, source); err != nil {
+		t.Fatal(err)
+	}
+	instance, err := runtime.newJavaEncodedImage(encoded.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	red, green, blue, alpha := runtime.images[instance].At(0, 0).RGBA()
+	if red != 0 || green != 0 || blue != 0 || alpha != 0 {
+		t.Fatalf(
+			"transparent magenta RGBA16 = %04x,%04x,%04x,%04x",
+			red,
+			green,
+			blue,
+			alpha,
+		)
+	}
+	red, green, blue, alpha = runtime.images[instance].At(1, 0).RGBA()
+	if red != 0 || green != 0xffff || blue != 0 || alpha != 0xffff {
+		t.Fatalf(
+			"opaque green RGBA16 = %04x,%04x,%04x,%04x",
+			red,
+			green,
+			blue,
+			alpha,
+		)
 	}
 }

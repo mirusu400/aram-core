@@ -27,18 +27,25 @@ import (
 )
 
 const (
-	DefaultProfileID   = "wipi-1.2.1/generic"
-	DefaultStackBase   = uint32(0x7ff00000)
-	DefaultStackSize   = uint32(0x00100000)
-	DefaultRunBudget   = uint64(1)
-	DefaultMemoryLimit = uint64(512 << 20)
-	maxApplicationSize = int64(512 << 20)
-	ktfProfileID       = "wipi-1.2.1/ktf/generic"
+	DefaultProfileID = "wipi-1.2.1/generic"
+	DefaultStackBase = uint32(0x7ff00000)
+	DefaultStackSize = uint32(0x00100000)
+	DefaultRunBudget = uint64(1)
+	// DefaultKTFHandsetRunBudget models the application CPU time available on
+	// a mid-2000s ARM9 KTF handset during one 60 Hz video quantum. It is kept
+	// separate from DefaultRunBudget so deterministic tools can still request
+	// deliberately tiny execution slices.
+	DefaultKTFHandsetRunBudget = uint64(1_000_000)
+	DefaultMemoryLimit         = uint64(512 << 20)
+	maxApplicationSize         = int64(512 << 20)
+	ktfProfileID               = "wipi-1.2.1/ktf/generic"
 	// KTF Java applications need enough instructions per host video quantum
 	// for their cooperative game and paint threads to make visible progress.
 	// A 1K slice leaves several real titles in initialization indefinitely at
 	// ordinary 60 Hz frontend scheduling.
-	ktfRunBudgetMin = uint64(10_000)
+	ktfRunBudgetMin            = uint64(10_000)
+	ktfTaskSlicesPerQuantumMax = 64
+	ktfFrameDuration           = (time.Second + 30) / 60
 )
 
 var (
@@ -54,6 +61,7 @@ type CPUFactory func() cpu.Backend
 type Factory struct {
 	NewCPU          CPUFactory
 	RunBudget       uint64
+	KTFRunBudget    uint64
 	MemoryLimit     uint64
 	FramebufferSize image.Point
 	Resources       map[string][]byte
@@ -102,6 +110,7 @@ func (f Factory) Create(ctx context.Context, source machinecore.Source) (machine
 		cpu:              backend,
 		state:            machinecore.StateEmpty,
 		runBudget:        budget,
+		ktfRunBudget:     f.KTFRunBudget,
 		memoryLimit:      memoryLimit,
 		frame:            image.NewRGBA(image.Rect(0, 0, size.X, size.Y)),
 		initialResources: cloneByteMap(f.Resources),
@@ -141,6 +150,7 @@ type Machine struct {
 	initialResources map[string][]byte
 	lastResult       cpu.Result
 	runBudget        uint64
+	ktfRunBudget     uint64
 	memoryLimit      uint64
 	frame            *image.RGBA
 	input            []machinecore.InputEvent
@@ -842,7 +852,7 @@ func (m *Machine) StepFrame(ctx context.Context) error {
 		return m.stepMinigameFrame(ctx)
 	}
 	if isKTF {
-		return m.runKTFSlice(ctx, 16)
+		return m.runKTFSlice(ctx, ktfFrameDuration)
 	}
 	if isRaptor {
 		return m.stepRaptorFrame(ctx)
@@ -864,7 +874,7 @@ func (m *Machine) StepFrame(ctx context.Context) error {
 	return err
 }
 
-func (m *Machine) runKTFSlice(ctx context.Context, elapsedMS uint64) error {
+func (m *Machine) runKTFSlice(ctx context.Context, elapsed time.Duration) error {
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -877,13 +887,16 @@ func (m *Machine) runKTFSlice(ctx context.Context, elapsedMS uint64) error {
 		m.mu.Unlock()
 		return fmt.Errorf("execute KTF application from %s: %w", state, ErrInvalidState)
 	}
-	if elapsedMS > uint64((time.Duration(1<<63-1))/time.Millisecond) {
+	if elapsed < 0 {
 		m.mu.Unlock()
-		return fmt.Errorf("advance KTF clock: elapsed time overflows")
+		return fmt.Errorf("advance KTF clock: negative elapsed time %s", elapsed)
 	}
 	runtime := m.ktf
 	started := m.ktfStarted
 	budget := m.runBudget
+	if m.ktfRunBudget != 0 {
+		budget = m.ktfRunBudget
+	}
 	if budget < ktfRunBudgetMin {
 		budget = ktfRunBudgetMin
 	}
@@ -927,7 +940,7 @@ func (m *Machine) runKTFSlice(ctx context.Context, elapsedMS uint64) error {
 	}
 	if err := runtime.services.Advance(
 		runtime.serviceOwner,
-		time.Duration(elapsedMS)*time.Millisecond,
+		elapsed,
 	); err != nil {
 		_ = runtime.services.Coordinator.Fault(
 			runtime.serviceOwner,
@@ -957,27 +970,80 @@ func (m *Machine) runKTFSlice(ctx context.Context, elapsedMS uint64) error {
 		m.mu.Unlock()
 		return err
 	}
-	result := runtime.runTaskSlice(ctx, budget)
+	result := cpu.Result{Reason: cpu.StopBudget}
+	var instructions uint64
+	var consumeErr error
+taskLoop:
+	for slices := 0; slices < ktfTaskSlicesPerQuantumMax &&
+		instructions < budget; slices++ {
+		remaining := budget - instructions
+		presentations := runtime.presentCount
+		sliceResult := runtime.runTaskSlice(ctx, remaining)
+		if sliceResult.Instructions > remaining {
+			sliceResult = cpu.Result{
+				Reason:       cpu.StopFault,
+				PC:           sliceResult.PC,
+				Instructions: remaining,
+				Err: fmt.Errorf(
+					"KTF task exceeded quantum budget: used %d, remaining %d",
+					sliceResult.Instructions,
+					remaining,
+				),
+			}
+		}
+		instructions += sliceResult.Instructions
+		if err := runtime.services.Coordinator.Consume(
+			runtime.serviceOwner,
+			sliceResult.Instructions,
+		); err != nil {
+			consumeErr = err
+			result = cpu.Result{
+				Reason:       cpu.StopFault,
+				PC:           sliceResult.PC,
+				Instructions: instructions,
+				Err:          err,
+			}
+			break
+		}
+		sliceResult.Instructions = instructions
+		result = sliceResult
+		if sliceResult.Err != nil {
+			break
+		}
+		if runtime.presentCount != presentations {
+			// StepFrame is a presentation quantum. Once the guest submits a
+			// frame, return it to the frontend instead of allowing an
+			// uncapped paint loop to render many invisible intermediate
+			// frames in one host update.
+			break
+		}
+		switch sliceResult.Reason {
+		case cpu.StopBudget:
+			// A Java task can yield or return before consuming the CPU
+			// quantum. Continue with the next runnable task without advancing
+			// virtual time, matching the handset's cooperative scheduler.
+			continue
+		default:
+			break taskLoop
+		}
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.lastResult = result
-	if err := runtime.services.Coordinator.Consume(
-		runtime.serviceOwner,
-		result.Instructions,
-	); err != nil {
+	if consumeErr != nil {
 		m.state = machinecore.StateFaulted
 		m.lastResult = cpu.Result{
 			Reason: cpu.StopFault,
-			PC:     result.PC, Instructions: result.Instructions, Err: err,
+			PC:     result.PC, Instructions: result.Instructions, Err: consumeErr,
 		}
 		_ = runtime.services.Coordinator.Fault(
 			runtime.serviceOwner,
-			err.Error(),
+			consumeErr.Error(),
 			runtime.services.Clock.Monotonic(),
 			runtime.services.Events,
 		)
-		return err
+		return consumeErr
 	}
 	switch result.Reason {
 	case cpu.StopBudget, cpu.StopBreakpoint:
