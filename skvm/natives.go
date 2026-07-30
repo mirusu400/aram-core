@@ -2018,10 +2018,32 @@ func (vm *VM) installSKTNatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
-			if err := vm.services.Media.Clear(vm.serviceOwner, state.clip); err != nil {
+			created := false
+			if state.clip == 0 {
+				state.clip, err = vm.services.Media.CreateClip(
+					vm.serviceOwner,
+					"",
+					0,
+				)
+				if err != nil {
+					return Value{}, false, err
+				}
+				created = true
+			} else if err := vm.services.Media.Clear(
+				vm.serviceOwner,
+				state.clip,
+			); err != nil {
 				return Value{}, false, err
 			}
 			_, err = vm.services.Media.Append(vm.serviceOwner, state.clip, data)
+			if err != nil && created {
+				_ = vm.services.Media.DestroyClip(
+					vm.serviceOwner,
+					state.clip,
+					vm.services.Events,
+				)
+				state.clip = 0
+			}
 			return Value{}, false, err
 		},
 	)

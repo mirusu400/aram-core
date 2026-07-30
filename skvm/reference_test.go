@@ -51,20 +51,28 @@ func TestReferenceSKVMLifecycleSmoke(t *testing.T) {
 			t.Errorf("%s: create VM: %v", name, err)
 			return nil
 		}
+		var recentTrace []skvm.TraceEvent
+		machine.SetTraceHook(func(event skvm.TraceEvent) error {
+			recentTrace = append(recentTrace, event)
+			if len(recentTrace) > 16 {
+				recentTrace = recentTrace[1:]
+			}
+			return nil
+		})
 		machine.InstructionLimit = 2_000_000
 		machine.SetResources(pkg.Resources)
 		machine.SetProperties(pkg.Descriptor.Raw)
 		if _, err := machine.Start(context.Background(), pkg.Descriptor.MainClass); err != nil {
-			t.Errorf("%s: start: %v", name, err)
+			t.Errorf("%s: start: %v; recent trace: %+v", name, err, recentTrace)
 			return nil
 		}
 		if machine.CurrentDisplay() != 0 {
 			if err := machine.ShowCurrent(context.Background()); err != nil {
-				t.Errorf("%s: show: %v", name, err)
+				t.Errorf("%s: show: %v; recent trace: %+v", name, err, recentTrace)
 				return nil
 			}
 			if err := machine.PaintCurrent(context.Background()); err != nil {
-				t.Errorf("%s: paint: %v", name, err)
+				t.Errorf("%s: paint: %v; recent trace: %+v", name, err, recentTrace)
 				return nil
 			}
 		}

@@ -167,3 +167,64 @@ func TestSKVMDeviceAndAudioNativesUseSharedServices(t *testing.T) {
 		t.Fatalf("shared audio clip = %+v, %v", info, err)
 	}
 }
+
+func TestSKVMAudioClipCanReopenAfterClose(t *testing.T) {
+	vm, err := New(map[string][]byte{"Game": syntheticClass(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := vm.NewString("tone.wav")
+	clipValue := invokeTestNative(
+		t,
+		vm,
+		"com/skt/m/AudioSystem",
+		"getAudioClip",
+		"(Ljava/lang/String;)Lcom/skt/m/AudioClip;",
+		0,
+		ReferenceValue(name),
+	)
+	clipReference, err := clipValue.Reference()
+	if err != nil {
+		t.Fatal(err)
+	}
+	clip, err := vm.audioClip(clipReference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closedService := clip.clip
+	invokeTestNative(
+		t,
+		vm,
+		"com/skt/m/AudioClip",
+		"close",
+		"()V",
+		clipReference,
+	)
+	if clip.clip != 0 {
+		t.Fatalf("closed clip service = %s, want zero", clip.clip)
+	}
+
+	payload := []byte("reopened")
+	data := vm.NewByteArray(payload)
+	invokeTestNative(
+		t,
+		vm,
+		"com/skt/m/AudioClip",
+		"open",
+		"([BII)V",
+		clipReference,
+		ReferenceValue(data),
+		IntValue(0),
+		IntValue(int32(len(payload))),
+	)
+	if clip.clip == 0 || clip.clip == closedService {
+		t.Fatalf("reopened clip service = %s, closed service = %s", clip.clip, closedService)
+	}
+	source, err := vm.services.Media.Source(vm.serviceOwner, clip.clip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(source, payload) {
+		t.Fatalf("reopened clip source = %q, want %q", source, payload)
+	}
+}
