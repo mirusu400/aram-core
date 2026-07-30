@@ -1605,6 +1605,87 @@ func TestKTFLWCHierarchyAndAnnunciatorGeometry(t *testing.T) {
 	}
 }
 
+func TestKTFOpaqueAnnunciatorReservesDefaultCardHeight(t *testing.T) {
+	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.cpu.Close()
+	if err := runtime.mapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	runtime.jvmContext, err = runtime.allocateWords(3 + 128)
+	if err != nil {
+		t.Fatal(err)
+	}
+	annunciator, err := runtime.newHostJavaObject(
+		"org/kwis/msp/lwc/AnnunciatorComponent",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registers := make([]uint32, cpu.RegisterR12+1)
+	registers[1] = annunciator
+	if _, err := runtime.handleLWCMethod(
+		context.Background(),
+		"org/kwis/msp/lwc/AnnunciatorComponent",
+		"<init>",
+		"(Z)V",
+		registers,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.handleLWCMethod(
+		context.Background(),
+		"org/kwis/msp/lwc/AnnunciatorComponent",
+		"show",
+		"()V",
+		registers,
+	); err != nil {
+		t.Fatal(err)
+	}
+	card, err := runtime.newHostJavaObject("org/kwis/msp/lcdui/Card")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.initializeCard(card, 0x10004000); err != nil {
+		t.Fatal(err)
+	}
+	height, err := runtime.readJavaFieldWord(card, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if height != ktfDisplayHeight-uint32(ktfAnnunciatorHeight) {
+		t.Fatalf("opaque-annunciator card height = %d", height)
+	}
+
+	runtime.setLWCShown(annunciator, false)
+	transparent, err := runtime.newHostJavaObject(
+		"org/kwis/msp/lwc/AnnunciatorComponent",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registers[1] = transparent
+	registers[2] = 1
+	if _, err := runtime.handleLWCMethod(
+		context.Background(),
+		"org/kwis/msp/lwc/AnnunciatorComponent",
+		"<init>",
+		"(Z)V",
+		registers,
+	); err != nil {
+		t.Fatal(err)
+	}
+	runtime.setLWCShown(transparent, true)
+	if got := runtime.defaultCardHeight(); got != ktfDisplayHeight {
+		t.Fatalf("transparent-annunciator card height = %d", got)
+	}
+}
+
 func TestKTFLWCFormLaysOutChildrenAndScreenCoordinates(t *testing.T) {
 	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
 		ClientName: "client.bin0",

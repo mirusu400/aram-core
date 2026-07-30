@@ -46,6 +46,10 @@ const (
 	ktfThreadStartGrace        = uint64(128 * 1024)
 	ktfInitialThreadStartGrace = uint64(2 * 1024 * 1024)
 
+	ktfDisplayWidth      = uint32(240)
+	ktfDisplayHeight     = uint32(320)
+	ktfAnnunciatorHeight = int32(20)
+
 	ktfJavaClassInitializing = uint8(1)
 	ktfJavaClassInitialized  = uint8(2)
 
@@ -377,6 +381,8 @@ type ktfLWCComponent struct {
 	focused         bool
 	vertical        bool
 	packed          bool
+	annunciator     bool
+	transparent     bool
 }
 
 type ktfTask struct {
@@ -6039,6 +6045,7 @@ func (r *ktfRuntime) handleLWCMethod(
 	case "org/kwis/msp/lwc/AnnunciatorComponent":
 		if method == "<init>(Z)V" {
 			r.initializeLWCAnnunciator(state)
+			state.transparent = registers[2] != 0
 			return 0, nil
 		}
 	case "org/kwis/msp/lwc/TextFieldComponent":
@@ -6318,10 +6325,11 @@ func (r *ktfRuntime) initializeLWCShell(state *ktfLWCComponent) {
 
 func (r *ktfRuntime) initializeLWCAnnunciator(state *ktfLWCComponent) {
 	r.initializeLWCShell(state)
+	state.annunciator = true
 	state.x = 0
 	state.y = 0
-	state.height = 20
-	state.preferredHeight = 20
+	state.height = ktfAnnunciatorHeight
+	state.preferredHeight = ktfAnnunciatorHeight
 	state.shown = false
 }
 
@@ -11359,9 +11367,9 @@ func (r *ktfRuntime) handleDisplayMethod(
 		delete(r.displayCards, instance)
 		return 0, nil
 	case "getWidth()I":
-		return 240, nil
+		return ktfDisplayWidth, nil
 	case "getHeight()I":
-		return 320, nil
+		return ktfDisplayHeight, nil
 	case "callSerially(Ljava/lang/Runnable;)V",
 		"callSerially(Ljava/lang/Runnable;I)V":
 		runnable, err := r.parameter(2)
@@ -11936,10 +11944,19 @@ func (r *ktfRuntime) initializeCard(instance, display uint32) error {
 	if err := r.writeJavaFieldWord(instance, 4, display); err != nil {
 		return err
 	}
-	if err := r.writeJavaFieldWord(instance, 16, 240); err != nil {
+	if err := r.writeJavaFieldWord(instance, 16, ktfDisplayWidth); err != nil {
 		return err
 	}
-	return r.writeJavaFieldWord(instance, 20, 320)
+	return r.writeJavaFieldWord(instance, 20, r.defaultCardHeight())
+}
+
+func (r *ktfRuntime) defaultCardHeight() uint32 {
+	for _, state := range r.lwcComponents {
+		if state.annunciator && state.shown && !state.transparent {
+			return ktfDisplayHeight - uint32(ktfAnnunciatorHeight)
+		}
+	}
+	return ktfDisplayHeight
 }
 
 func (r *ktfRuntime) readJavaFieldWord(instance, offset uint32) (uint32, error) {
