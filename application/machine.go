@@ -23,6 +23,7 @@ import (
 	"github.com/mirusu400/aram-core/loader/eads"
 	"github.com/mirusu400/aram-core/loader/ktf"
 	"github.com/mirusu400/aram-core/loader/raptor"
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 const (
@@ -73,6 +74,9 @@ func NewFactory() Factory {
 func (f Factory) Create(ctx context.Context, source machinecore.Source) (machinecore.Machine, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if machine, matched, err := f.createSKVMMachine(ctx, source); matched || err != nil {
+		return machine, err
 	}
 	newCPU := f.NewCPU
 	if newCPU == nil {
@@ -271,7 +275,24 @@ func (m *Machine) Load(ctx context.Context, source machinecore.Source) error {
 	if err := mapWIPIRuntimeMemory(m.cpu); err != nil {
 		return err
 	}
-	publicRuntime, err := newWIPIRuntime(m.cpu, m.frame)
+	profileID := source.ProfileID
+	carrier := "unknown"
+	if profileID == "" {
+		if useMinigameRuntime {
+			profileID = minigameProfileID
+			carrier = "skt"
+		} else {
+			profileID = DefaultProfileID
+		}
+	}
+	publicRuntime, err := newWIPIRuntimeForProfile(
+		m.cpu,
+		m.frame,
+		profileID,
+		carrier,
+		32,
+		"wipi-c",
+	)
 	if err != nil {
 		return fmt.Errorf("initialize public WIPI runtime: %w", err)
 	}
@@ -319,14 +340,6 @@ func (m *Machine) Load(ctx context.Context, source machinecore.Source) error {
 		return fmt.Errorf("capture initial CPU context: %w", err)
 	}
 
-	profileID := source.ProfileID
-	if profileID == "" {
-		if useMinigameRuntime {
-			profileID = minigameProfileID
-		} else {
-			profileID = DefaultProfileID
-		}
-	}
 	source.ProfileID = profileID
 	m.source = source
 	m.info = ImageInfo{
@@ -381,11 +394,21 @@ func (m *Machine) loadRaptor(
 	if err := mapWIPIRuntimeMemory(m.cpu); err != nil {
 		return err
 	}
-	publicRuntime, err := newWIPIRuntime(m.cpu, m.frame)
+	profileID := source.ProfileID
+	if profileID == "" {
+		profileID = raptorProfileID
+	}
+	publicRuntime, err := newWIPIRuntimeForProfile(
+		m.cpu,
+		m.frame,
+		profileID,
+		"lgt",
+		16,
+		"lgt-raptor",
+	)
 	if err != nil {
 		return fmt.Errorf("initialize public WIPI runtime for Raptor: %w", err)
 	}
-	publicRuntime.framebufferBits = 16
 	m.wipi = publicRuntime
 	publicRuntime.invokeSync = func(
 		callbackContext context.Context,
@@ -420,10 +443,6 @@ func (m *Machine) loadRaptor(
 	initialContext, err := m.cpu.SaveContext()
 	if err != nil {
 		return fmt.Errorf("capture initial Raptor CPU context: %w", err)
-	}
-	profileID := source.ProfileID
-	if profileID == "" {
-		profileID = raptorProfileID
 	}
 	source.ProfileID = profileID
 	m.source = source
@@ -463,12 +482,20 @@ func (m *Machine) loadKTF(
 			m.memoryLimit,
 		)
 	}
-	runtime, err := newKTFRuntime(m.cpu, pkg)
+	profileID := source.ProfileID
+	if profileID == "" {
+		profileID = ktfProfileID
+	}
+	runtime, err := newKTFRuntimeForProfile(
+		m.cpu,
+		pkg,
+		m.frame,
+		profileID,
+	)
 	if err != nil {
 		return err
 	}
 	runtime.deferThreads = true
-	runtime.frame = m.frame
 	if err := runtime.mapImageAndHost(); err != nil {
 		return err
 	}
@@ -483,10 +510,6 @@ func (m *Machine) loadKTF(
 	}
 	if err := runtime.initialize(ctx); err != nil {
 		return err
-	}
-	profileID := source.ProfileID
-	if profileID == "" {
-		profileID = ktfProfileID
 	}
 	source.ProfileID = profileID
 	m.source = source
@@ -566,6 +589,26 @@ func (m *Machine) Pause() error {
 		if err := m.cpu.Stop(); err != nil {
 			return err
 		}
+		if m.wipi != nil {
+			if err := m.wipi.services.Coordinator.Transition(
+				m.wipi.serviceOwner,
+				shared.LifecyclePaused,
+				m.wipi.services.Clock.Monotonic(),
+				m.wipi.services.Events,
+			); err != nil {
+				return err
+			}
+		}
+		if m.ktf != nil {
+			if err := m.ktf.services.Coordinator.Transition(
+				m.ktf.serviceOwner,
+				shared.LifecyclePaused,
+				m.ktf.services.Clock.Monotonic(),
+				m.ktf.services.Events,
+			); err != nil {
+				return err
+			}
+		}
 		m.state = machinecore.StatePaused
 		return nil
 	case machinecore.StatePaused:
@@ -601,6 +644,26 @@ func (m *Machine) Stop() error {
 	if err := m.cpu.Stop(); err != nil {
 		return err
 	}
+	if m.wipi != nil {
+		if err := m.wipi.services.Coordinator.Transition(
+			m.wipi.serviceOwner,
+			shared.LifecycleStopped,
+			m.wipi.services.Clock.Monotonic(),
+			m.wipi.services.Events,
+		); err != nil {
+			return err
+		}
+	}
+	if m.ktf != nil {
+		if err := m.ktf.services.Coordinator.Transition(
+			m.ktf.serviceOwner,
+			shared.LifecycleStopped,
+			m.ktf.services.Clock.Monotonic(),
+			m.ktf.services.Events,
+		); err != nil {
+			return err
+		}
+	}
 	m.state = machinecore.StateStopped
 	return nil
 }
@@ -618,10 +681,78 @@ func (m *Machine) Reset(ctx context.Context) error {
 		return err
 	}
 	if m.ktf != nil {
-		return errors.New("reset KTF application: runtime reset is not implemented")
+		persistence, err := m.ktf.capturePersistentState()
+		if err != nil {
+			m.state = machinecore.StateFaulted
+			return fmt.Errorf("capture KTF persistence for reset: %w", err)
+		}
+		pkg := m.ktf.pkg
+		profileID := m.info.ProfileID
+		runtime, err := newKTFRuntimeForProfile(
+			m.cpu,
+			pkg,
+			m.frame,
+			profileID,
+		)
+		if err != nil {
+			m.state = machinecore.StateFaulted
+			return fmt.Errorf("reset KTF services: %w", err)
+		}
+		if err := runtime.restorePersistentState(persistence); err != nil {
+			m.state = machinecore.StateFaulted
+			return err
+		}
+		runtime.deferThreads = true
+		if err := runtime.resetMappedMemory(); err != nil {
+			m.state = machinecore.StateFaulted
+			return err
+		}
+		result, executable, err := runtime.bootstrap(ctx)
+		if err != nil {
+			m.state = machinecore.StateFaulted
+			return fmt.Errorf(
+				"reset KTF bootstrap at PC 0x%08x after %d instructions: %w",
+				result.PC,
+				result.Instructions,
+				err,
+			)
+		}
+		if executable == 0 {
+			m.state = machinecore.StateFaulted
+			return errors.New("reset KTF bootstrap returned a null executable")
+		}
+		if err := runtime.initialize(ctx); err != nil {
+			m.state = machinecore.StateFaulted
+			return fmt.Errorf("reset KTF runtime: %w", err)
+		}
+		m.ktf = runtime
+		m.ktfStarted = false
+		m.lastResult = cpu.Result{}
+		m.input = nil
+		draw.Draw(
+			m.frame,
+			m.frame.Bounds(),
+			image.NewUniform(color.Black),
+			image.Point{},
+			draw.Src,
+		)
+		m.state = machinecore.StateReady
+		return nil
 	}
 	if len(m.initialContext) == 0 {
 		return fmt.Errorf("reset without initial context: %w", ErrInvalidState)
+	}
+	var persistence wipiPersistentState
+	if m.wipi != nil {
+		var err error
+		persistence, err = m.wipi.capturePersistentState()
+		if err != nil {
+			m.state = machinecore.StateFaulted
+			return fmt.Errorf(
+				"capture public WIPI persistence for reset: %w",
+				err,
+			)
+		}
 	}
 	if m.raptor != nil {
 		if err := m.raptor.restoreImage(); err != nil {
@@ -635,6 +766,10 @@ func (m *Machine) Reset(ctx context.Context) error {
 		if err := m.wipi.reset(); err != nil {
 			m.state = machinecore.StateFaulted
 			return fmt.Errorf("reset public WIPI runtime: %w", err)
+		}
+		if err := m.wipi.restorePersistentState(persistence); err != nil {
+			m.state = machinecore.StateFaulted
+			return err
 		}
 		if err := m.installWIPIResources(); err != nil {
 			m.state = machinecore.StateFaulted
@@ -670,6 +805,10 @@ func (m *Machine) Reset(ctx context.Context) error {
 		if err := m.wipi.reset(); err != nil {
 			m.state = machinecore.StateFaulted
 			return fmt.Errorf("reset public WIPI runtime: %w", err)
+		}
+		if err := m.wipi.restorePersistentState(persistence); err != nil {
+			m.state = machinecore.StateFaulted
+			return err
 		}
 		if err := m.installWIPIResources(); err != nil {
 			m.state = machinecore.StateFaulted
@@ -738,17 +877,44 @@ func (m *Machine) runKTFSlice(ctx context.Context, elapsedMS uint64) error {
 		m.mu.Unlock()
 		return fmt.Errorf("execute KTF application from %s: %w", state, ErrInvalidState)
 	}
+	if elapsedMS > uint64((time.Duration(1<<63-1))/time.Millisecond) {
+		m.mu.Unlock()
+		return fmt.Errorf("advance KTF clock: elapsed time overflows")
+	}
 	runtime := m.ktf
 	started := m.ktfStarted
 	budget := m.runBudget
 	if budget < ktfRunBudgetMin {
 		budget = ktfRunBudgetMin
 	}
+	if _, err := runtime.services.Coordinator.BeginQuantum(); err != nil {
+		m.state = machinecore.StateFaulted
+		m.lastResult = cpu.Result{Reason: cpu.StopFault, Err: err}
+		m.mu.Unlock()
+		return err
+	}
+	if err := runtime.services.Coordinator.Transition(
+		runtime.serviceOwner,
+		shared.LifecycleRunning,
+		runtime.services.Clock.Monotonic(),
+		runtime.services.Events,
+	); err != nil {
+		m.state = machinecore.StateFaulted
+		m.lastResult = cpu.Result{Reason: cpu.StopFault, Err: err}
+		m.mu.Unlock()
+		return err
+	}
 	m.state = machinecore.StateRunning
 	m.mu.Unlock()
 
 	if !started {
 		if err := runtime.startMainClass(ctx); err != nil {
+			_ = runtime.services.Coordinator.Fault(
+				runtime.serviceOwner,
+				err.Error(),
+				runtime.services.Clock.Monotonic(),
+				runtime.services.Events,
+			)
 			m.mu.Lock()
 			m.state = machinecore.StateFaulted
 			m.lastResult = cpu.Result{Reason: cpu.StopFault, Err: err}
@@ -759,8 +925,32 @@ func (m *Machine) runKTFSlice(ctx context.Context, elapsedMS uint64) error {
 		m.ktfStarted = true
 		m.mu.Unlock()
 	}
-	runtime.tickMS += elapsedMS
+	if err := runtime.services.Advance(
+		runtime.serviceOwner,
+		time.Duration(elapsedMS)*time.Millisecond,
+	); err != nil {
+		_ = runtime.services.Coordinator.Fault(
+			runtime.serviceOwner,
+			err.Error(),
+			runtime.services.Clock.Monotonic(),
+			runtime.services.Events,
+		)
+		m.mu.Lock()
+		m.state = machinecore.StateFaulted
+		m.lastResult = cpu.Result{Reason: cpu.StopFault, Err: err}
+		m.mu.Unlock()
+		return err
+	}
+	runtime.tickMS = uint64(
+		runtime.services.Clock.Monotonic() / time.Millisecond,
+	)
 	if err := m.queueKTFInput(runtime); err != nil {
+		_ = runtime.services.Coordinator.Fault(
+			runtime.serviceOwner,
+			err.Error(),
+			runtime.services.Clock.Monotonic(),
+			runtime.services.Events,
+		)
 		m.mu.Lock()
 		m.state = machinecore.StateFaulted
 		m.lastResult = cpu.Result{Reason: cpu.StopFault, Err: err}
@@ -772,6 +962,23 @@ func (m *Machine) runKTFSlice(ctx context.Context, elapsedMS uint64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.lastResult = result
+	if err := runtime.services.Coordinator.Consume(
+		runtime.serviceOwner,
+		result.Instructions,
+	); err != nil {
+		m.state = machinecore.StateFaulted
+		m.lastResult = cpu.Result{
+			Reason: cpu.StopFault,
+			PC:     result.PC, Instructions: result.Instructions, Err: err,
+		}
+		_ = runtime.services.Coordinator.Fault(
+			runtime.serviceOwner,
+			err.Error(),
+			runtime.services.Clock.Monotonic(),
+			runtime.services.Events,
+		)
+		return err
+	}
 	switch result.Reason {
 	case cpu.StopBudget, cpu.StopBreakpoint:
 		m.state = machinecore.StatePaused
@@ -786,6 +993,33 @@ func (m *Machine) runKTFSlice(ctx context.Context, elapsedMS uint64) error {
 	default:
 		m.state = machinecore.StateFaulted
 	}
+	if m.state == machinecore.StateFaulted {
+		message := "KTF guest execution fault"
+		if result.Err != nil {
+			message = result.Err.Error()
+		}
+		_ = runtime.services.Coordinator.Fault(
+			runtime.serviceOwner,
+			message,
+			runtime.services.Clock.Monotonic(),
+			runtime.services.Events,
+		)
+	} else {
+		target := shared.LifecyclePaused
+		if m.state == machinecore.StateStopped {
+			target = shared.LifecycleStopped
+		}
+		if err := runtime.services.Coordinator.Transition(
+			runtime.serviceOwner,
+			target,
+			runtime.services.Clock.Monotonic(),
+			runtime.services.Events,
+		); err != nil {
+			m.state = machinecore.StateFaulted
+			m.lastResult.Err = err
+			return err
+		}
+	}
 	if result.Err != nil && !errors.Is(result.Err, cpu.ErrStopped) {
 		return fmt.Errorf("execute KTF guest at 0x%08x: %w", result.PC, result.Err)
 	}
@@ -795,30 +1029,28 @@ func (m *Machine) runKTFSlice(ctx context.Context, elapsedMS uint64) error {
 func (m *Machine) queueKTFInput(runtime *ktfRuntime) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if len(m.input) == 0 {
-		return nil
-	}
 	now := time.Duration(runtime.tickMS) * time.Millisecond
 	for index, event := range m.input {
 		if event.At > now {
 			continue
 		}
-		key, ok := inputKeyCode(event.Control)
-		if !ok {
-			m.input = append(m.input[:index], m.input[index+1:]...)
-			return nil
+		if _, known := inputKeyCode(event.Control); known &&
+			(runtime.displayCards[runtime.defaultDisplay] == 0 ||
+				!runtime.hasJavaTaskCapacity()) {
+			break
 		}
-		queued, err := runtime.queueKeyEvent(event.Pressed, int32(key))
-		if err != nil {
-			return fmt.Errorf("queue KTF input %q: %w", event.Control, err)
-		}
-		if !queued {
-			return nil
+		if err := runtime.services.QueueInput(
+			runtime.serviceOwner,
+			event.Control,
+			event.Pressed,
+			event.At,
+		); err != nil {
+			return fmt.Errorf("queue shared KTF input %q: %w", event.Control, err)
 		}
 		m.input = append(m.input[:index], m.input[index+1:]...)
-		return nil
+		break
 	}
-	return nil
+	return runtime.drainServiceEvents(now)
 }
 
 func (m *Machine) QueueInput(event machinecore.InputEvent) error {
@@ -833,7 +1065,12 @@ func (m *Machine) QueueInput(event machinecore.InputEvent) error {
 	if len(m.input) >= 1024 {
 		return fmt.Errorf("input queue is full")
 	}
-	m.input = append(m.input, event)
+	index := sort.Search(len(m.input), func(index int) bool {
+		return m.input[index].At > event.At
+	})
+	m.input = append(m.input, machinecore.InputEvent{})
+	copy(m.input[index+1:], m.input[index:])
+	m.input[index] = event
 	return nil
 }
 
@@ -846,7 +1083,22 @@ func (m *Machine) Framebuffer() image.Image {
 }
 
 func (m *Machine) DrainAudio() machinecore.AudioChunk {
-	return machinecore.AudioChunk{}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var audio shared.AudioBuffer
+	switch {
+	case m.ktf != nil && m.ktf.services != nil:
+		audio = m.ktf.services.Media.Drain()
+	case m.wipi != nil && m.wipi.services != nil:
+		audio = m.wipi.services.Media.Drain()
+	default:
+		return machinecore.AudioChunk{}
+	}
+	return machinecore.AudioChunk{
+		SampleRate: audio.SampleRate,
+		Channels:   audio.Channels,
+		PCM16:      audio.PCM16,
+	}
 }
 
 func (m *Machine) Close() error {
@@ -865,6 +1117,30 @@ func (m *Machine) Close() error {
 	err := m.cpu.Close()
 
 	m.mu.Lock()
+	if m.wipi != nil {
+		if adapter, adapterErr := m.wipi.services.Coordinator.Adapter(
+			m.wipi.serviceOwner,
+		); adapterErr == nil && adapter.Lifecycle != shared.LifecycleDestroyed {
+			_ = m.wipi.services.Coordinator.Transition(
+				m.wipi.serviceOwner,
+				shared.LifecycleDestroyed,
+				m.wipi.services.Clock.Monotonic(),
+				nil,
+			)
+		}
+	}
+	if m.ktf != nil {
+		if adapter, adapterErr := m.ktf.services.Coordinator.Adapter(
+			m.ktf.serviceOwner,
+		); adapterErr == nil && adapter.Lifecycle != shared.LifecycleDestroyed {
+			_ = m.ktf.services.Coordinator.Transition(
+				m.ktf.serviceOwner,
+				shared.LifecycleDestroyed,
+				m.ktf.services.Clock.Monotonic(),
+				nil,
+			)
+		}
+	}
 	m.state = machinecore.StateStopped
 	m.mu.Unlock()
 	return err
@@ -981,6 +1257,13 @@ func (m *Machine) RenderFirstFrame(ctx context.Context) error {
 	}
 	runtime := m.minigame
 	m.state = machinecore.StateRunning
+	if m.wipi != nil {
+		if err := m.wipi.beginServiceExecution(); err != nil {
+			m.state = machinecore.StateFaulted
+			m.mu.Unlock()
+			return err
+		}
+	}
 	m.mu.Unlock()
 
 	err := runtime.renderFirstFrame(ctx)
@@ -1003,6 +1286,13 @@ func (m *Machine) RenderFirstFrame(ctx context.Context) error {
 				Err:    err,
 			}
 		}
+		if m.wipi != nil {
+			_ = m.wipi.finishServiceExecution(
+				m.state,
+				m.lastResult.Instructions,
+				err.Error(),
+			)
+		}
 		return err
 	}
 	last := runtime.stats.Events[len(runtime.stats.Events)-1]
@@ -1013,6 +1303,16 @@ func (m *Machine) RenderFirstFrame(ctx context.Context) error {
 		PC:           returnSentinel,
 	}
 	m.state = machinecore.StatePaused
+	if m.wipi != nil {
+		if err := m.wipi.finishServiceExecution(
+			m.state,
+			m.lastResult.Instructions,
+			"",
+		); err != nil {
+			m.state = machinecore.StateFaulted
+			return err
+		}
+	}
 	return nil
 }
 
@@ -1035,6 +1335,13 @@ func (m *Machine) stepMinigameFrame(ctx context.Context) error {
 	}
 	runtime := m.minigame
 	m.state = machinecore.StateRunning
+	if m.wipi != nil {
+		if err := m.wipi.beginServiceExecution(); err != nil {
+			m.state = machinecore.StateFaulted
+			m.mu.Unlock()
+			return err
+		}
+	}
 	m.mu.Unlock()
 
 	result, err := runtime.stepFrame(ctx)
@@ -1051,6 +1358,13 @@ func (m *Machine) stepMinigameFrame(ctx context.Context) error {
 			m.state = machinecore.StateFaulted
 			m.lastResult = cpu.Result{Reason: cpu.StopFault, Err: err}
 		}
+		if m.wipi != nil {
+			_ = m.wipi.finishServiceExecution(
+				m.state,
+				m.lastResult.Instructions,
+				err.Error(),
+			)
+		}
 		return err
 	}
 	runtime.syncFrame()
@@ -1060,6 +1374,16 @@ func (m *Machine) stepMinigameFrame(ctx context.Context) error {
 		PC:           returnSentinel,
 	}
 	m.state = machinecore.StatePaused
+	if m.wipi != nil {
+		if err := m.wipi.finishServiceExecution(
+			m.state,
+			m.lastResult.Instructions,
+			"",
+		); err != nil {
+			m.state = machinecore.StateFaulted
+			return err
+		}
+	}
 	return nil
 }
 
@@ -1101,6 +1425,13 @@ func (m *Machine) runSlice(ctx context.Context, singleStep bool) error {
 		budget = 1
 	}
 	m.state = machinecore.StateRunning
+	if m.wipi != nil {
+		if err := m.wipi.beginServiceExecution(); err != nil {
+			m.state = machinecore.StateFaulted
+			m.mu.Unlock()
+			return err
+		}
+	}
 	m.mu.Unlock()
 
 	result := m.runWIPISlice(ctx, pc, mode, budget)
@@ -1132,6 +1463,20 @@ func (m *Machine) runSlice(ctx context.Context, singleStep bool) error {
 		m.state = machinecore.StateFaulted
 	default:
 		m.state = machinecore.StateFaulted
+	}
+	if m.wipi != nil {
+		fault := ""
+		if result.Err != nil {
+			fault = result.Err.Error()
+		}
+		if err := m.wipi.finishServiceExecution(
+			m.state,
+			result.Instructions,
+			fault,
+		); err != nil {
+			m.state = machinecore.StateFaulted
+			return err
+		}
 	}
 	if result.Err != nil && !errors.Is(result.Err, cpu.ErrStopped) {
 		return fmt.Errorf("execute guest at 0x%08x: %w", result.PC, result.Err)
@@ -1248,51 +1593,117 @@ func (m *Machine) pumpWIPICallbacks(
 	}
 	previousState := m.state
 	m.state = machinecore.StateRunning
-	m.wipi.tickMS += elapsedMS
+	if err := m.wipi.beginServiceExecution(); err != nil {
+		m.state = machinecore.StateFaulted
+		m.lastResult = cpu.Result{Reason: cpu.StopFault, Err: err}
+		m.mu.Unlock()
+		return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+	}
 	callbacks := append([]wipiGuestCallback(nil), m.wipi.pendingCallbacks...)
 	m.wipi.pendingCallbacks = nil
-	if m.raptor != nil && m.raptor.started && m.raptor.clet.HandleEvent != 0 {
-		now := time.Duration(m.wipi.tickMS) * time.Millisecond
-		pending := m.input[:0]
-		for _, event := range m.input {
-			if event.At > now {
-				pending = append(pending, event)
+	target := m.wipi.services.Clock.Monotonic() +
+		time.Duration(elapsedMS)*time.Millisecond
+	pendingInput := m.input[:0]
+	for _, event := range m.input {
+		if event.At > target {
+			pendingInput = append(pendingInput, event)
+			continue
+		}
+		if err := m.wipi.services.QueueInput(
+			m.wipi.serviceOwner,
+			event.Control,
+			event.Pressed,
+			event.At,
+		); err != nil {
+			m.state = machinecore.StateFaulted
+			m.lastResult = cpu.Result{Reason: cpu.StopFault, Err: err}
+			_ = m.wipi.finishServiceExecution(
+				m.state,
+				0,
+				err.Error(),
+			)
+			m.mu.Unlock()
+			return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+		}
+	}
+	m.input = pendingInput
+	if err := m.wipi.services.Advance(
+		m.wipi.serviceOwner,
+		time.Duration(elapsedMS)*time.Millisecond,
+	); err != nil {
+		m.state = machinecore.StateFaulted
+		m.lastResult = cpu.Result{Reason: cpu.StopFault, Err: err}
+		_ = m.wipi.finishServiceExecution(m.state, 0, err.Error())
+		m.mu.Unlock()
+		return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+	}
+	m.wipi.tickMS = uint64(m.wipi.services.Clock.Monotonic() / time.Millisecond)
+	for {
+		event, ready := m.wipi.services.Events.PopReady(
+			m.wipi.services.Clock.Monotonic(),
+		)
+		if !ready {
+			break
+		}
+		switch event.Kind {
+		case shared.EventInputPress, shared.EventInputRelease, shared.EventInputRepeat:
+			if m.raptor == nil || !m.raptor.started ||
+				m.raptor.clet.HandleEvent == 0 {
 				continue
 			}
-			if callback, ok := raptorInputCallback(
+			callback, ok := raptorInputCallback(
 				m.raptor.clet.HandleEvent,
-				event,
-			); ok {
+				machinecore.InputEvent{
+					Control: event.Control,
+					Pressed: event.Kind != shared.EventInputRelease,
+					At:      event.At,
+				},
+			)
+			if ok {
 				callbacks = append(callbacks, callback)
 			}
-		}
-		m.input = pending
-	}
-	addresses := make([]uint32, 0, len(m.wipi.timers))
-	for address, timer := range m.wipi.timers {
-		if timer.deadline <= m.wipi.tickMS {
-			addresses = append(addresses, address)
-		}
-	}
-	sort.Slice(addresses, func(i, j int) bool { return addresses[i] < addresses[j] })
-	for _, address := range addresses {
-		timer := m.wipi.timers[address]
-		delete(m.wipi.timers, address)
-		if address != 0 {
-			if err := m.wipi.writeU32(address+24, 0); err != nil {
-				m.state = machinecore.StateFaulted
-				m.lastResult = cpu.Result{Reason: cpu.StopFault, Err: err}
-				m.mu.Unlock()
-				return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+		case shared.EventTimer:
+			address := uint32(event.Value)
+			timer, active := m.wipi.timers[address]
+			if !active || m.wipi.timerServices[address] != event.ServiceID {
+				continue
+			}
+			delete(m.wipi.timers, address)
+			if address != 0 {
+				if err := m.wipi.writeU32(address+24, 0); err != nil {
+					m.state = machinecore.StateFaulted
+					m.lastResult = cpu.Result{Reason: cpu.StopFault, Err: err}
+					_ = m.wipi.finishServiceExecution(
+						m.state,
+						0,
+						err.Error(),
+					)
+					m.mu.Unlock()
+					return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+				}
+			}
+			if timer.callback != 0 {
+				callbacks = append(callbacks, wipiGuestCallback{
+					procedure: timer.callback,
+					args:      [4]uint32{address, timer.parameter},
+				})
+			}
+		case shared.EventAudioComplete:
+			for handle, serviceID := range m.wipi.mediaServices {
+				if serviceID != event.ServiceID {
+					continue
+				}
+				if clip := m.wipi.mediaClips[handle]; clip != nil {
+					clip.state = 0
+					clip.repeat = false
+					m.wipi.enqueueCallback(clip.callback, handle, 0)
+				}
+				break
 			}
 		}
-		if timer.callback != 0 {
-			callbacks = append(callbacks, wipiGuestCallback{
-				procedure: timer.callback,
-				args:      [4]uint32{address, timer.parameter},
-			})
-		}
 	}
+	callbacks = append(callbacks, m.wipi.pendingCallbacks...)
+	m.wipi.pendingCallbacks = nil
 	m.mu.Unlock()
 
 	var callbackResult cpu.Result
@@ -1320,19 +1731,48 @@ func (m *Machine) pumpWIPICallbacks(
 		} else {
 			m.state = machinecore.StateFaulted
 		}
+		if serviceErr := m.wipi.finishServiceExecution(
+			m.state,
+			callbackResult.Instructions,
+			callbackErr.Error(),
+		); serviceErr != nil && m.state != machinecore.StateFaulted {
+			m.state = machinecore.StateFaulted
+			return callbackResult, false, serviceErr
+		}
 		return callbackResult, false, callbackErr
 	}
 	if callbackResult.Reason == cpu.StopExited {
 		m.lastResult = callbackResult
 		m.state = machinecore.StateStopped
+		if err := m.wipi.finishServiceExecution(
+			m.state,
+			callbackResult.Instructions,
+			"",
+		); err != nil {
+			m.state = machinecore.StateFaulted
+			return callbackResult, false, err
+		}
 		return callbackResult, true, nil
 	}
 	if m.closed {
 		m.state = machinecore.StateStopped
+		_ = m.wipi.finishServiceExecution(
+			m.state,
+			callbackResult.Instructions,
+			"",
+		)
 		return callbackResult, true, cpu.ErrClosed
 	}
 	if m.state == machinecore.StateRunning {
 		m.state = previousState
+	}
+	if err := m.wipi.finishServiceExecution(
+		m.state,
+		callbackResult.Instructions,
+		"",
+	); err != nil {
+		m.state = machinecore.StateFaulted
+		return callbackResult, false, err
 	}
 	return callbackResult, m.state == machinecore.StateStopped, nil
 }

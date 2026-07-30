@@ -3,6 +3,7 @@ package profile
 import (
 	"encoding/hex"
 	"fmt"
+	"math"
 	"math/bits"
 	"strings"
 )
@@ -72,7 +73,8 @@ type Screen struct {
 }
 
 func (s Screen) Validate() error {
-	if s.Width <= 0 || s.Height <= 0 {
+	if s.Width <= 0 || s.Height <= 0 ||
+		int64(s.Width) > math.MaxInt32 || int64(s.Height) > math.MaxInt32 {
 		return fmt.Errorf("invalid screen geometry %dx%d", s.Width, s.Height)
 	}
 	switch s.Orientation {
@@ -93,8 +95,10 @@ func (s Screen) Validate() error {
 	if s.Depth <= 0 || s.Depth > s.BitsPerPixel {
 		return fmt.Errorf("invalid color depth %d for %d bits per pixel", s.Depth, s.BitsPerPixel)
 	}
-	minimumBytesPerLine := (s.Width*s.BitsPerPixel + 7) / 8
-	if s.BytesPerLine < minimumBytesPerLine {
+	rowBits := int64(s.Width) * int64(s.BitsPerPixel)
+	minimumBytesPerLine := (rowBits + 7) / 8
+	if int64(s.BytesPerLine) < minimumBytesPerLine ||
+		int64(s.BytesPerLine) > math.MaxInt32 {
 		return fmt.Errorf(
 			"bytes per line %d is smaller than packed width %d",
 			s.BytesPerLine,
@@ -239,28 +243,118 @@ func (m KeyMap) Validate() error {
 	return nil
 }
 
+// Capability names are stable profile data. Unknown non-empty capability
+// names are retained so carrier or manufacturer extensions do not require
+// code changes in the profile composer.
+type Capability string
+
+const (
+	CapabilityGraphics  Capability = "graphics"
+	CapabilityImages    Capability = "images"
+	CapabilityText      Capability = "text"
+	CapabilityAudio     Capability = "audio"
+	CapabilityVibration Capability = "vibration"
+	CapabilityBacklight Capability = "backlight"
+	CapabilityLED       Capability = "led"
+	CapabilityNetwork   Capability = "network"
+	CapabilityHTTP      Capability = "http"
+	CapabilitySerial    Capability = "serial"
+	CapabilityPhone     Capability = "phone"
+	CapabilitySMS       Capability = "sms"
+	CapabilityBrowser   Capability = "browser"
+)
+
+type Capabilities map[Capability]bool
+
+func (c Capabilities) Validate() error {
+	for capability := range c {
+		value := string(capability)
+		if strings.TrimSpace(value) == "" || len(value) > 64 ||
+			strings.IndexByte(value, 0) >= 0 {
+			return fmt.Errorf("invalid capability name %q", capability)
+		}
+	}
+	return nil
+}
+
+// Limit names are stable profile data. Values are byte, object, descriptor,
+// or duration counts according to the named service contract.
+type Limit string
+
+const (
+	LimitGuestMemory      Limit = "guest-memory-bytes"
+	LimitSurfaceCount     Limit = "surface-count"
+	LimitSurfacePixels    Limit = "surface-pixels"
+	LimitDecodedAssetSize Limit = "decoded-asset-bytes"
+	LimitEventCount       Limit = "event-count"
+	LimitTraceCount       Limit = "trace-count"
+	LimitStorageBytes     Limit = "storage-bytes"
+	LimitOpenFiles        Limit = "open-files"
+	LimitRecordStores     Limit = "record-stores"
+	LimitAudioBytes       Limit = "audio-queued-bytes"
+	LimitMediaClips       Limit = "media-clips"
+	LimitSockets          Limit = "sockets"
+	LimitHTTPRequests     Limit = "http-requests"
+	LimitSerialPorts      Limit = "serial-ports"
+	LimitNetworkBytes     Limit = "network-buffer-bytes"
+	LimitDeviceRequests   Limit = "device-requests"
+	LimitTimers           Limit = "timers"
+	LimitServiceObjects   Limit = "service-objects"
+	LimitAssets           Limit = "decoded-assets"
+)
+
+type Limits map[Limit]uint64
+
+func (l Limits) Validate() error {
+	for limit, value := range l {
+		name := string(limit)
+		if strings.TrimSpace(name) == "" || len(name) > 64 ||
+			strings.IndexByte(name, 0) >= 0 {
+			return fmt.Errorf("invalid service limit name %q", limit)
+		}
+		if value == 0 {
+			return fmt.Errorf("service limit %q is zero", limit)
+		}
+	}
+	return nil
+}
+
 type Layer struct {
-	ID         string            `json:"id"`
-	Properties map[string]string `json:"properties,omitempty"`
-	Quirks     map[string]bool   `json:"quirks,omitempty"`
-	Keys       KeyMap            `json:"keys,omitempty"`
+	ID           string            `json:"id"`
+	Properties   map[string]string `json:"properties,omitempty"`
+	Quirks       map[string]bool   `json:"quirks,omitempty"`
+	Keys         KeyMap            `json:"keys,omitempty"`
+	Capabilities Capabilities      `json:"capabilities,omitempty"`
+	Limits       Limits            `json:"limits,omitempty"`
 }
 
 func (l Layer) validate(kind string) error {
-	if strings.TrimSpace(l.ID) == "" {
-		return fmt.Errorf("%s layer ID is empty", kind)
+	if !validBoundedString(l.ID, 255, false) {
+		return fmt.Errorf("%s layer ID is invalid", kind)
 	}
-	for key := range l.Properties {
-		if strings.TrimSpace(key) == "" {
-			return fmt.Errorf("%s layer %q has an empty property name", kind, l.ID)
+	if len(l.Properties) > 1024 || len(l.Quirks) > 1024 ||
+		len(l.Keys) > 1024 || len(l.Capabilities) > 1024 ||
+		len(l.Limits) > 1024 {
+		return fmt.Errorf("%s layer %q exceeds entry limits", kind, l.ID)
+	}
+	for key, value := range l.Properties {
+		if !validBoundedString(key, 255, false) ||
+			!validBoundedString(value, 4096, true) {
+			return fmt.Errorf("%s layer %q has an invalid property", kind, l.ID)
 		}
 	}
 	for key := range l.Quirks {
-		if strings.TrimSpace(key) == "" {
-			return fmt.Errorf("%s layer %q has an empty quirk name", kind, l.ID)
+		if !validBoundedString(key, 255, false) {
+			return fmt.Errorf("%s layer %q has an invalid quirk name", kind, l.ID)
 		}
 	}
 	if err := l.Keys.Validate(); err != nil {
+		return fmt.Errorf("%s layer %q: %w", kind, l.ID, err)
+	}
+	if err := l.Capabilities.Validate(); err != nil {
+		return fmt.Errorf("%s layer %q: %w", kind, l.ID, err)
+	}
+	if err := l.Limits.Validate(); err != nil {
 		return fmt.Errorf("%s layer %q: %w", kind, l.ID, err)
 	}
 	return nil
@@ -311,12 +405,21 @@ type Profile struct {
 	Properties   map[string]string `json:"properties,omitempty"`
 	Quirks       map[string]bool   `json:"quirks,omitempty"`
 	Keys         KeyMap            `json:"keys,omitempty"`
+	Capabilities Capabilities      `json:"capabilities,omitempty"`
+	Limits       Limits            `json:"limits,omitempty"`
 	Layers       []string          `json:"layers,omitempty"`
 }
 
 func (p Profile) Validate() error {
-	if strings.TrimSpace(p.ID) == "" {
-		return fmt.Errorf("profile ID is empty")
+	if !validBoundedString(p.ID, 255, false) {
+		return fmt.Errorf("profile ID is invalid")
+	}
+	if !validBoundedString(p.Manufacturer, 127, true) ||
+		!validBoundedString(p.Model, 127, true) ||
+		len(p.Properties) > 1024 || len(p.Quirks) > 1024 ||
+		len(p.Keys) > 1024 || len(p.Capabilities) > 1024 ||
+		len(p.Limits) > 1024 || len(p.Layers) > 16 {
+		return fmt.Errorf("profile %q exceeds metadata limits", p.ID)
 	}
 	if p.Version != "" {
 		if err := p.Version.Validate(); err != nil {
@@ -337,21 +440,31 @@ func (p Profile) Validate() error {
 			return fmt.Errorf("profile %q: %w", p.ID, err)
 		}
 	}
-	for key := range p.Properties {
-		if strings.TrimSpace(key) == "" {
-			return fmt.Errorf("profile %q has an empty property name", p.ID)
+	for key, value := range p.Properties {
+		if !validBoundedString(key, 255, false) ||
+			!validBoundedString(value, 4096, true) {
+			return fmt.Errorf("profile %q has an invalid property", p.ID)
 		}
 	}
 	for key := range p.Quirks {
-		if strings.TrimSpace(key) == "" {
-			return fmt.Errorf("profile %q has an empty quirk name", p.ID)
+		if !validBoundedString(key, 255, false) {
+			return fmt.Errorf("profile %q has an invalid quirk name", p.ID)
 		}
 	}
 	if err := p.Keys.Validate(); err != nil {
 		return fmt.Errorf("profile %q: %w", p.ID, err)
 	}
+	if err := p.Capabilities.Validate(); err != nil {
+		return fmt.Errorf("profile %q: %w", p.ID, err)
+	}
+	if err := p.Limits.Validate(); err != nil {
+		return fmt.Errorf("profile %q: %w", p.ID, err)
+	}
 	seen := make(map[string]struct{}, len(p.Layers))
 	for _, layer := range p.Layers {
+		if !validBoundedString(layer, 255, false) {
+			return fmt.Errorf("profile %q has an invalid layer ID", p.ID)
+		}
 		if _, exists := seen[layer]; exists {
 			return fmt.Errorf("profile %q repeats layer %q", p.ID, layer)
 		}
@@ -371,12 +484,14 @@ func (s Stack) Resolve() (Profile, error) {
 	}
 
 	result := Profile{
-		ID:         s.Standard.ID,
-		Version:    s.Standard.Version,
-		Carrier:    CarrierUnknown,
-		Properties: make(map[string]string),
-		Quirks:     make(map[string]bool),
-		Keys:       make(KeyMap),
+		ID:           s.Standard.ID,
+		Version:      s.Standard.Version,
+		Carrier:      CarrierUnknown,
+		Properties:   make(map[string]string),
+		Quirks:       make(map[string]bool),
+		Keys:         make(KeyMap),
+		Capabilities: make(Capabilities),
+		Limits:       make(Limits),
 	}
 	applyLayer(&result, s.Standard.Layer)
 
@@ -401,6 +516,9 @@ func (s Stack) Resolve() (Profile, error) {
 		if strings.TrimSpace(s.Manufacturer.Manufacturer) == "" {
 			return Profile{}, fmt.Errorf("manufacturer layer %q has an empty manufacturer", s.Manufacturer.ID)
 		}
+		if !validBoundedString(s.Manufacturer.Manufacturer, 127, false) {
+			return Profile{}, fmt.Errorf("manufacturer layer %q has an invalid manufacturer", s.Manufacturer.ID)
+		}
 		result.Manufacturer = s.Manufacturer.Manufacturer
 		applyLayer(&result, s.Manufacturer.Layer)
 	}
@@ -411,6 +529,9 @@ func (s Stack) Resolve() (Profile, error) {
 		}
 		if strings.TrimSpace(s.Device.Model) == "" {
 			return Profile{}, fmt.Errorf("device layer %q has an empty model", s.Device.ID)
+		}
+		if !validBoundedString(s.Device.Model, 127, false) {
+			return Profile{}, fmt.Errorf("device layer %q has an invalid model", s.Device.ID)
 		}
 		if err := s.Device.Screen.Validate(); err != nil {
 			return Profile{}, fmt.Errorf("device layer %q: %w", s.Device.ID, err)
@@ -449,6 +570,12 @@ func applyLayer(profile *Profile, layer Layer) {
 	for virtual, physical := range layer.Keys {
 		profile.Keys[virtual] = physical
 	}
+	for capability, enabled := range layer.Capabilities {
+		profile.Capabilities[capability] = enabled
+	}
+	for limit, value := range layer.Limits {
+		profile.Limits[limit] = value
+	}
 }
 
 func validateSHA256(value string) error {
@@ -459,4 +586,11 @@ func validateSHA256(value string) error {
 		return fmt.Errorf("invalid SHA-256: %w", err)
 	}
 	return nil
+}
+
+func validBoundedString(value string, limit int, allowEmpty bool) bool {
+	if len(value) > limit || strings.IndexByte(value, 0) >= 0 {
+		return false
+	}
+	return allowEmpty || strings.TrimSpace(value) != ""
 }

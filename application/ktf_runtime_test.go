@@ -19,6 +19,7 @@ import (
 	"github.com/mirusu400/aram-core/cpu"
 	"github.com/mirusu400/aram-core/cpu/interpreter"
 	"github.com/mirusu400/aram-core/loader/ktf"
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 func TestKTFRuntimeMapsAndCallsClientEntry(t *testing.T) {
@@ -5426,6 +5427,156 @@ func TestKTFWIPICFileRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	} else if result != 0 {
 		t.Fatalf("MC_fsClose = 0x%08x", result)
+	}
+}
+
+func TestKTFWIPICDirectoryOperationsUseSharedStorage(t *testing.T) {
+	for slot, want := range map[int]ktfHostHandler{
+		8: ktfWIPICFileMakeDirectory,
+		9: ktfWIPICFileRemoveDirectory,
+	} {
+		if got := ktfWIPICHandler(ktfWIPICMasterFS, slot); reflect.ValueOf(
+			got,
+		).Pointer() != reflect.ValueOf(want).Pointer() {
+			t.Fatalf("WIPI-C filesystem slot %d has the wrong handler", slot)
+		}
+	}
+
+	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.cpu.Close()
+	if err := runtime.mapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	writeParameters := func(values ...uint32) {
+		t.Helper()
+		for index, value := range values {
+			if err := runtime.cpu.WriteRegister(
+				cpu.RegisterR0+uint32(index),
+				value,
+			); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	directory, err := runtime.allocateBytes([]byte("/saves"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeParameters(directory)
+	if result, err := ktfWIPICFileMakeDirectory(
+		context.Background(),
+		runtime,
+	); err != nil || result != 0 {
+		t.Fatalf("MC_fsMakeDirectory result=%08x err=%v", result, err)
+	}
+	writeParameters(directory)
+	if result, err := ktfWIPICFileIsExist(
+		context.Background(),
+		runtime,
+	); err != nil || result != 0 {
+		t.Fatalf("MC_fsIsExist directory result=%08x err=%v", result, err)
+	}
+	if err := runtime.services.Storage.WriteFile(
+		shared.NamespacePrivate,
+		"/saves/state.dat",
+		[]byte("state"),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	output, err := runtime.allocateBytes(make([]byte, 64), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeParameters(directory, output, 64)
+	if result, err := ktfWIPICFileList(
+		context.Background(),
+		runtime,
+	); err != nil || result != 0 {
+		t.Fatalf("MC_fsList result=%08x err=%v", result, err)
+	}
+	listed := make([]byte, len("state.dat")+2)
+	if err := runtime.cpu.ReadMemory(output, listed); err != nil {
+		t.Fatal(err)
+	}
+	if want := append([]byte("state.dat"), 0, 0); !bytes.Equal(listed, want) {
+		t.Fatalf("MC_fsList bytes = %v; want %v", listed, want)
+	}
+	writeParameters(directory)
+	if count, err := ktfWIPICFileGetCounts(
+		context.Background(),
+		runtime,
+	); err != nil || count != 1 {
+		t.Fatalf("MC_fsGetCounts count=%d err=%v", count, err)
+	}
+	writeParameters(directory)
+	if result, err := ktfWIPICFileRemoveDirectory(
+		context.Background(),
+		runtime,
+	); err != nil || result != ktfWIPICError {
+		t.Fatalf("remove nonempty directory result=%08x err=%v", result, err)
+	}
+	if err := runtime.services.Storage.Delete(
+		shared.NamespacePrivate,
+		"/saves/state.dat",
+	); err != nil {
+		t.Fatal(err)
+	}
+	writeParameters(directory)
+	if result, err := ktfWIPICFileRemoveDirectory(
+		context.Background(),
+		runtime,
+	); err != nil || result != 0 {
+		t.Fatalf("remove empty directory result=%08x err=%v", result, err)
+	}
+}
+
+func TestKTFMetadataFixedWidthRoundTripPreservesIncrementalMemory(t *testing.T) {
+	input := ktfMetadataSnapshot{
+		IncrementalMemory: []ktfIncrementalMemoryRegionSnapshot{
+			{Base: 0x1000, Size: 0x100},
+			{Base: 0x2000, Size: 0x200},
+		},
+		ImageServices: map[uint32]shared.ServiceID{
+			9: shared.ServiceID(0x100000002),
+			2: shared.ServiceID(0x100000001),
+		},
+		TaskCursor: 1,
+	}
+	encoded, err := shared.MarshalStateComponent(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded ktfMetadataSnapshot
+	if err := shared.UnmarshalStateComponent(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(decoded, input) {
+		t.Fatalf("KTF metadata round-trip:\ngot  %+v\nwant %+v", decoded, input)
+	}
+	heaps := []ktfIncrementalHeapSnapshot{
+		{Base: 0x1000, Size: 0x100},
+		{Base: 0x2000, Size: 0x200},
+	}
+	if err := validateKTFIncrementalMemory(
+		decoded.IncrementalMemory,
+		heaps,
+	); err != nil {
+		t.Fatal(err)
+	}
+	heaps[1].Size++
+	if err := validateKTFIncrementalMemory(
+		decoded.IncrementalMemory,
+		heaps,
+	); err == nil {
+		t.Fatal("incremental-memory validator accepted mismatched heap geometry")
 	}
 }
 

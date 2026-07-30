@@ -21,6 +21,8 @@ import (
 	"github.com/mirusu400/aram-core/cpu"
 	"github.com/mirusu400/aram-core/loader"
 	"github.com/mirusu400/aram-core/loader/raptor"
+	skloader "github.com/mirusu400/aram-core/loader/skvm"
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 func TestFactoryLoadsKTFPackageWithLeadingCoverImage(t *testing.T) {
@@ -49,6 +51,249 @@ func TestFactoryLoadsKTFPackageWithLeadingCoverImage(t *testing.T) {
 	machine := created.(*Machine)
 	if info := machine.ImageInfo(); info.SourceKind != loader.KindKTF {
 		t.Fatalf("source kind = %q", info.SourceKind)
+	}
+}
+
+func TestKTFSaveStateRestoresAdapterAndSharedServices(t *testing.T) {
+	client := syntheticKTFClient()
+	jar := testZIP(t, map[string][]byte{
+		"client.bin4096": client,
+	})
+	archive := testZIP(t, map[string][]byte{
+		"01020304.jar": jar,
+		"__adf__": []byte(
+			"PID:PD000001\nAID:01020304\nMClass:GameMain\n",
+		),
+	})
+	created, err := NewFactory().Create(
+		context.Background(),
+		machinecore.Source{
+			Name: "state.zip", ReaderAt: bytes.NewReader(archive),
+			Size: int64(len(archive)),
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	machine := created.(*Machine)
+	t.Cleanup(func() { _ = machine.Close() })
+
+	allocation, err := machine.ktf.heap.allocate(16, true)
+	if err != nil || allocation == 0 {
+		t.Fatalf("allocate KTF state fixture = 0x%08x, %v", allocation, err)
+	}
+	if err := machine.cpu.WriteMemory(
+		allocation,
+		[]byte{1, 2, 3, 4},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.ktf.services.Storage.WriteFile(
+		shared.NamespacePrivate,
+		"/state.dat",
+		[]byte("saved"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	machine.ktf.fileData["/state.dat"] = []byte("saved")
+	if err := machine.ktf.services.Advance(
+		machine.ktf.serviceOwner,
+		17*time.Millisecond,
+	); err != nil {
+		t.Fatal(err)
+	}
+	machine.ktf.tickMS = 17
+
+	var saved bytes.Buffer
+	if err := machine.SaveState(&saved); err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.cpu.WriteMemory(
+		allocation,
+		[]byte{9, 9, 9, 9},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.ktf.services.Storage.WriteFile(
+		shared.NamespacePrivate,
+		"/state.dat",
+		[]byte("changed"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	machine.ktf.fileData = map[string][]byte{}
+	machine.ktf.tickMS = 99
+
+	if err := machine.LoadState(bytes.NewReader(saved.Bytes())); err != nil {
+		t.Fatal(err)
+	}
+	var memory [4]byte
+	if err := machine.cpu.ReadMemory(allocation, memory[:]); err != nil {
+		t.Fatal(err)
+	}
+	if memory != [4]byte{1, 2, 3, 4} {
+		t.Fatalf("restored KTF heap bytes = %v", memory)
+	}
+	stored, err := machine.ktf.services.Storage.ReadFile(
+		shared.NamespacePrivate,
+		"/state.dat",
+	)
+	if err != nil || string(stored) != "saved" {
+		t.Fatalf("restored KTF storage = %q, %v", stored, err)
+	}
+	if machine.ktf.tickMS != 17 ||
+		machine.ktf.services.Clock.Monotonic() != 17*time.Millisecond ||
+		string(machine.ktf.fileData["/state.dat"]) != "saved" {
+		t.Fatalf(
+			"restored KTF mirrors = tick %d, clock %s, file %q",
+			machine.ktf.tickMS,
+			machine.ktf.services.Clock.Monotonic(),
+			machine.ktf.fileData["/state.dat"],
+		)
+	}
+}
+
+func TestKTFResetRebuildsAdapterAndServices(t *testing.T) {
+	client := syntheticKTFClient()
+	jar := testZIP(t, map[string][]byte{"client.bin4096": client})
+	archive := testZIP(t, map[string][]byte{
+		"01020304.jar": jar,
+		"__adf__": []byte(
+			"PID:PD000001\nAID:01020304\nMClass:GameMain\n",
+		),
+	})
+	created, err := NewFactory().Create(
+		context.Background(),
+		machinecore.Source{
+			Name: "reset.zip", ReaderAt: bytes.NewReader(archive),
+			Size: int64(len(archive)),
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	machine := created.(*Machine)
+	t.Cleanup(func() { _ = machine.Close() })
+	allocation, err := machine.ktf.heap.allocate(8, true)
+	if err != nil || allocation == 0 {
+		t.Fatalf("allocate KTF reset fixture = 0x%08x, %v", allocation, err)
+	}
+	if err := machine.cpu.WriteMemory(allocation, []byte{0xaa}); err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.ktf.services.Advance(
+		machine.ktf.serviceOwner,
+		25*time.Millisecond,
+	); err != nil {
+		t.Fatal(err)
+	}
+	machine.ktf.tickMS = 25
+	machine.ktfStarted = true
+	if err := machine.ktf.services.Storage.WriteFile(
+		shared.NamespacePrivate,
+		"/persist.dat",
+		[]byte("persistent KTF file"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	machine.ktf.fileData["/persist.dat"] = []byte("persistent KTF file")
+	if err := machine.ktf.services.Storage.WriteFile(
+		shared.NamespaceTemporary,
+		"/discard.tmp",
+		[]byte("temporary"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	database := &ktfDatabase{
+		name:       "scores",
+		recordSize: 4,
+		records:    [][]byte{{1, 2, 3, 4}},
+	}
+	databaseService, err := machine.ktf.services.Storage.CreateRecordStore(
+		machine.ktf.serviceOwner,
+		database.name,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.ktf.services.Storage.ReplaceRecords(
+		machine.ktf.serviceOwner,
+		databaseService,
+		1,
+		map[uint32][]byte{0: {1, 2, 3, 4}},
+	); err != nil {
+		t.Fatal(err)
+	}
+	machine.ktf.databaseStores[database.name] = database
+	machine.ktf.databaseServices[database.name] = databaseService
+
+	if err := machine.Reset(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var restored [1]byte
+	if err := machine.cpu.ReadMemory(allocation, restored[:]); err != nil {
+		t.Fatal(err)
+	}
+	if restored[0] != 0 || machine.ktf.tickMS != 0 {
+		t.Fatalf(
+			"reset KTF state = byte %#x allocations %d tick %d",
+			restored[0],
+			len(machine.ktf.heap.allocations),
+			machine.ktf.tickMS,
+		)
+	}
+	if machine.ktfStarted || machine.State() != machinecore.StateReady ||
+		machine.ktf.services.Clock.Monotonic() != 0 {
+		t.Fatalf(
+			"reset KTF lifecycle = started %t state %s clock %s",
+			machine.ktfStarted,
+			machine.State(),
+			machine.ktf.services.Clock.Monotonic(),
+		)
+	}
+	persisted, err := machine.ktf.services.Storage.ReadFile(
+		shared.NamespacePrivate,
+		"/persist.dat",
+	)
+	if err != nil || string(persisted) != "persistent KTF file" ||
+		string(machine.ktf.fileData["/persist.dat"]) != "persistent KTF file" {
+		t.Fatalf(
+			"reset KTF persistent file = %q, mirror %q, %v",
+			persisted,
+			machine.ktf.fileData["/persist.dat"],
+			err,
+		)
+	}
+	if _, err := machine.ktf.services.Storage.ReadFile(
+		shared.NamespaceTemporary,
+		"/discard.tmp",
+	); !errors.Is(err, shared.ErrNotFound) {
+		t.Fatalf("reset KTF temporary file error = %v", err)
+	}
+	persistedDatabase := machine.ktf.databaseStores["scores"]
+	persistedService, err := machine.ktf.services.Storage.OpenRecordStore(
+		machine.ktf.serviceOwner,
+		"scores",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistedRecord, err := machine.ktf.services.Storage.Record(
+		machine.ktf.serviceOwner,
+		persistedService,
+		0,
+	)
+	if err != nil || persistedDatabase == nil ||
+		persistedDatabase.recordSize != 4 ||
+		len(persistedDatabase.records) != 1 ||
+		!bytes.Equal(persistedDatabase.records[0], []byte{1, 2, 3, 4}) ||
+		!bytes.Equal(persistedRecord, []byte{1, 2, 3, 4}) {
+		t.Fatalf(
+			"reset KTF database = %+v, service record %v, %v",
+			persistedDatabase,
+			persistedRecord,
+			err,
+		)
 	}
 }
 
@@ -229,6 +474,14 @@ func TestFactoryDoesNotMisclassifyMalformedJavaArchiveAsRaptor(t *testing.T) {
 	var formatErr *raptor.FormatError
 	if errors.As(err, &formatErr) {
 		t.Fatalf("malformed Java archive was classified as Raptor: %v", err)
+	}
+	var skvmFormatErr *skloader.FormatError
+	if errors.As(err, &skvmFormatErr) {
+		t.Fatalf("unclaimed Java archive was classified as SKVM: %v", err)
+	}
+	if !errors.Is(err, ErrUnsupportedSource) &&
+		!errors.Is(err, loader.ErrNoContainerRecords) {
+		t.Fatalf("malformed Java archive error = %v", err)
 	}
 }
 
@@ -758,6 +1011,133 @@ func TestResetRestoresInitialCPUAndMemoryState(t *testing.T) {
 		machine.State() != machinecore.StateReady {
 		t.Fatalf("reset observable state = input %v pixel %v state %s",
 			machine.input, machine.frame.RGBAAt(0, 0), machine.State())
+	}
+}
+
+func TestResetPreservesPublicWIPIPersistence(t *testing.T) {
+	machine := newSyntheticMachine(t)
+	runtime := machine.wipi
+	if err := runtime.services.Storage.MakeDirectory(
+		shared.NamespacePrivate,
+		"/saves",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.services.Storage.WriteFile(
+		shared.NamespacePrivate,
+		"/saves/slot.dat",
+		[]byte("persistent WIPI file"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	runtime.directories["/private/saves"] = true
+	runtime.files["/private/saves/slot.dat"] = []byte("persistent WIPI file")
+	runtime.fileTimes["/private/saves"] = 123
+	runtime.fileTimes["/private/saves/slot.dat"] = 456
+	if err := runtime.services.Storage.WriteFile(
+		shared.NamespaceTemporary,
+		"/discard.tmp",
+		[]byte("temporary"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	const databaseKey = "0:scores"
+	database := &wipiDatabase{
+		name:       "scores",
+		recordSize: 4,
+		mode:       0,
+		nextRecord: 2,
+		records: map[int32][]byte{
+			1: {4, 3, 2, 1},
+		},
+	}
+	databaseService, err := runtime.services.Storage.CreateRecordStore(
+		runtime.serviceOwner,
+		databaseKey,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.services.Storage.ReplaceRecords(
+		runtime.serviceOwner,
+		databaseService,
+		2,
+		map[uint32][]byte{1: {4, 3, 2, 1}},
+	); err != nil {
+		t.Fatal(err)
+	}
+	runtime.databases[databaseKey] = database
+	runtime.databaseServices[databaseKey] = databaseService
+	if err := runtime.services.Advance(
+		runtime.serviceOwner,
+		25*time.Millisecond,
+	); err != nil {
+		t.Fatal(err)
+	}
+	runtime.tickMS = 25
+
+	if err := machine.Reset(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := machine.wipi.services.Storage.ReadFile(
+		shared.NamespacePrivate,
+		"/saves/slot.dat",
+	)
+	if err != nil || string(persisted) != "persistent WIPI file" ||
+		string(machine.wipi.files["/private/saves/slot.dat"]) !=
+			"persistent WIPI file" ||
+		!machine.wipi.directories["/private/saves"] ||
+		machine.wipi.fileTimes["/private/saves"] != 123 ||
+		machine.wipi.fileTimes["/private/saves/slot.dat"] != 456 {
+		t.Fatalf(
+			"reset WIPI persistence = file %q mirror %q directory %t times %d/%d, %v",
+			persisted,
+			machine.wipi.files["/private/saves/slot.dat"],
+			machine.wipi.directories["/private/saves"],
+			machine.wipi.fileTimes["/private/saves"],
+			machine.wipi.fileTimes["/private/saves/slot.dat"],
+			err,
+		)
+	}
+	if _, err := machine.wipi.services.Storage.ReadFile(
+		shared.NamespaceTemporary,
+		"/discard.tmp",
+	); !errors.Is(err, shared.ErrNotFound) {
+		t.Fatalf("reset WIPI temporary file error = %v", err)
+	}
+	persistedDatabase := machine.wipi.databases[databaseKey]
+	persistedService, err := machine.wipi.services.Storage.OpenRecordStore(
+		machine.wipi.serviceOwner,
+		databaseKey,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistedRecord, err := machine.wipi.services.Storage.Record(
+		machine.wipi.serviceOwner,
+		persistedService,
+		1,
+	)
+	if err != nil || persistedDatabase == nil ||
+		persistedDatabase.nextRecord != 2 ||
+		!bytes.Equal(persistedDatabase.records[1], []byte{4, 3, 2, 1}) ||
+		!bytes.Equal(persistedRecord, []byte{4, 3, 2, 1}) {
+		t.Fatalf(
+			"reset WIPI database = %+v, service record %v, %v",
+			persistedDatabase,
+			persistedRecord,
+			err,
+		)
+	}
+	if machine.wipi.tickMS != 0 ||
+		machine.wipi.services.Clock.Monotonic() != 0 ||
+		machine.State() != machinecore.StateReady {
+		t.Fatalf(
+			"reset WIPI transient state = tick %d clock %s lifecycle %s",
+			machine.wipi.tickMS,
+			machine.wipi.services.Clock.Monotonic(),
+			machine.State(),
+		)
 	}
 }
 

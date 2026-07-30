@@ -3,7 +3,10 @@ package application
 import (
 	"encoding/binary"
 	"net"
+	"sort"
 	"strings"
+
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 func (r *wipiRuntime) dispatchNetwork(name string) (wipiReturn, bool, error) {
@@ -24,14 +27,24 @@ func (r *wipiRuntime) dispatchNetwork(name string) (wipiReturn, bool, error) {
 	switch name {
 	case "MC_netConnect":
 		r.networkConnected = true
+		r.services.Device.SetNetworkAvailable(true)
 		r.networkCallback = arg(0)
 		r.networkParameter = arg(1)
 		r.enqueueCallback(arg(0), 0, arg(1))
 		return wipiReturn{}, true, nil
 	case "MC_netClose":
 		r.networkConnected = false
+		r.services.Device.SetNetworkAvailable(false)
 		return wipiReturn{}, true, nil
 	case "MC_netSocket":
+		serviceID, serviceErr := r.services.Network.OpenSocket(
+			r.serviceOwner,
+			int32(arg(0)),
+			int32(arg(1)),
+		)
+		if serviceErr != nil {
+			return wipiReturn{low: ^uint32(0)}, true, nil
+		}
 		descriptor := r.nextSocket
 		r.nextSocket++
 		r.sockets[descriptor] = &wipiSocket{
@@ -39,11 +52,22 @@ func (r *wipiRuntime) dispatchNetwork(name string) (wipiReturn, bool, error) {
 			domain:     int32(arg(0)),
 			socketType: int32(arg(1)),
 		}
+		r.socketServices[descriptor] = serviceID
 		return wipiReturn{low: uint32(descriptor)}, true, nil
 	case "MC_netSocketClose":
 		descriptor := int32(arg(0))
 		if r.sockets[descriptor] == nil {
 			return wipiReturn{low: ^uint32(0)}, true, nil
+		}
+		if serviceID := r.socketServices[descriptor]; serviceID != 0 {
+			if err := r.services.Network.CloseSocket(
+				r.serviceOwner,
+				serviceID,
+				r.services.Events,
+			); err != nil {
+				return wipiReturn{}, true, err
+			}
+			delete(r.socketServices, descriptor)
 		}
 		delete(r.sockets, descriptor)
 		return wipiReturn{}, true, nil
@@ -54,6 +78,24 @@ func (r *wipiRuntime) dispatchNetwork(name string) (wipiReturn, bool, error) {
 		}
 		socket.address = arg(1)
 		socket.port = uint16(arg(2))
+		serviceID := r.socketServices[socket.descriptor]
+		host := wipiNetworkAddress(socket.address)
+		if err := r.services.Network.ConnectSocket(
+			r.serviceOwner,
+			serviceID,
+			host,
+			socket.port,
+		); err != nil {
+			return wipiReturn{low: ^uint32(0)}, true, nil
+		}
+		if err := r.services.CompleteSocketResponse(
+			r.serviceOwner,
+			serviceID,
+			true,
+			r.services.Clock.Monotonic(),
+		); err != nil {
+			return wipiReturn{low: ^uint32(0)}, true, nil
+		}
 		socket.connected = true
 		r.enqueueCallback(arg(3), arg(0), 0, arg(4))
 		return wipiReturn{}, true, nil
@@ -64,6 +106,14 @@ func (r *wipiRuntime) dispatchNetwork(name string) (wipiReturn, bool, error) {
 		}
 		socket.address = arg(1)
 		socket.port = uint16(arg(2))
+		if err := r.services.Network.BindSocket(
+			r.serviceOwner,
+			r.socketServices[socket.descriptor],
+			wipiNetworkAddress(socket.address),
+			socket.port,
+		); err != nil {
+			return wipiReturn{low: ^uint32(0)}, true, nil
+		}
 		return wipiReturn{}, true, nil
 	case "MC_netSocketAccept":
 		listener := r.sockets[int32(arg(0))]
@@ -78,6 +128,34 @@ func (r *wipiRuntime) dispatchNetwork(name string) (wipiReturn, bool, error) {
 		accepted.readData = nil
 		accepted.writeData = nil
 		r.sockets[descriptor] = &accepted
+		serviceID, serviceErr := r.services.Network.OpenSocket(
+			r.serviceOwner,
+			accepted.domain,
+			accepted.socketType,
+		)
+		if serviceErr != nil {
+			delete(r.sockets, descriptor)
+			return wipiReturn{low: ^uint32(0)}, true, nil
+		}
+		if serviceErr = r.services.Network.ConnectSocket(
+			r.serviceOwner,
+			serviceID,
+			wipiNetworkAddress(accepted.address),
+			accepted.port,
+		); serviceErr == nil {
+			serviceErr = r.services.CompleteSocketResponse(
+				r.serviceOwner,
+				serviceID,
+				true,
+				r.services.Clock.Monotonic(),
+			)
+		}
+		if serviceErr != nil {
+			_ = r.services.Network.CloseSocket(r.serviceOwner, serviceID, r.services.Events)
+			delete(r.sockets, descriptor)
+			return wipiReturn{low: ^uint32(0)}, true, nil
+		}
+		r.socketServices[descriptor] = serviceID
 		return wipiReturn{low: uint32(descriptor)}, true, nil
 	case "MC_netSocketWrite", "MC_netSocketSendTo":
 		socket := r.sockets[int32(arg(0))]
@@ -94,6 +172,13 @@ func (r *wipiRuntime) dispatchNetwork(name string) (wipiReturn, bool, error) {
 		if name == "MC_netSocketSendTo" {
 			socket.address = arg(3)
 			socket.port = uint16(arg(4))
+		}
+		if _, err := r.services.Network.SocketWrite(
+			r.serviceOwner,
+			r.socketServices[socket.descriptor],
+			data,
+		); err != nil {
+			return wipiReturn{low: ^uint32(0)}, true, nil
 		}
 		return wipiReturn{low: uint32(len(data))}, true, nil
 	case "MC_netSocketRead", "MC_netSocketRcvFrom":
@@ -198,6 +283,12 @@ func deterministicHostAddress(host string) (uint32, bool) {
 	return binary.BigEndian.Uint32(ip), true
 }
 
+func wipiNetworkAddress(address uint32) string {
+	var encoded [4]byte
+	binary.BigEndian.PutUint32(encoded[:], address)
+	return net.IP(encoded[:]).String()
+}
+
 func (r *wipiRuntime) dispatchHTTP(name string) (wipiReturn, bool, error) {
 	count, ok := httpArgumentCount(name)
 	if !ok {
@@ -220,6 +311,13 @@ func (r *wipiRuntime) dispatchHTTP(name string) (wipiReturn, bool, error) {
 		if err != nil {
 			return wipiReturn{}, true, err
 		}
+		serviceID, serviceErr := r.services.Network.OpenHTTP(
+			r.serviceOwner,
+			string(url),
+		)
+		if serviceErr != nil {
+			return wipiReturn{low: ^uint32(0)}, true, nil
+		}
 		descriptor := r.nextHTTP
 		r.nextHTTP++
 		r.http[descriptor] = &wipiHTTP{
@@ -228,11 +326,22 @@ func (r *wipiRuntime) dispatchHTTP(name string) (wipiReturn, bool, error) {
 			method:     []byte("GET"),
 			properties: make(map[string][]byte),
 		}
+		r.httpServices[descriptor] = serviceID
 		return wipiReturn{low: uint32(descriptor)}, true, nil
 	case "MC_netHttpClose":
 		descriptor := int32(arg(0))
 		if r.http[descriptor] == nil {
 			return wipiReturn{low: ^uint32(0)}, true, nil
+		}
+		if serviceID := r.httpServices[descriptor]; serviceID != 0 {
+			if err := r.services.Network.CloseHTTP(
+				r.serviceOwner,
+				serviceID,
+				r.services.Events,
+			); err != nil {
+				return wipiReturn{}, true, err
+			}
+			delete(r.httpServices, descriptor)
 		}
 		delete(r.http, descriptor)
 		return wipiReturn{}, true, nil
@@ -244,6 +353,23 @@ func (r *wipiRuntime) dispatchHTTP(name string) (wipiReturn, bool, error) {
 		current.connected = true
 		current.code = 204
 		current.response = nil
+		serviceID := r.httpServices[current.descriptor]
+		if err := r.syncHTTPRequest(current); err != nil {
+			return wipiReturn{low: ^uint32(0)}, true, nil
+		}
+		if err := r.services.Network.BeginHTTP(r.serviceOwner, serviceID); err != nil {
+			return wipiReturn{low: ^uint32(0)}, true, nil
+		}
+		if err := r.services.CompleteHTTPResponse(
+			r.serviceOwner,
+			serviceID,
+			204,
+			nil,
+			nil,
+			r.services.Clock.Monotonic(),
+		); err != nil {
+			return wipiReturn{low: ^uint32(0)}, true, nil
+		}
 		r.enqueueCallback(arg(1), arg(0), ^uint32(0), 0, arg(2))
 		return wipiReturn{}, true, nil
 	case "MC_netHttpSetRequestMethod":
@@ -261,6 +387,9 @@ func (r *wipiRuntime) dispatchHTTP(name string) (wipiReturn, bool, error) {
 		}
 		current.method = append(current.method[:0], method...)
 		current.request = message
+		if err := r.syncHTTPRequest(current); err != nil {
+			return wipiReturn{low: ^uint32(0)}, true, nil
+		}
 		return wipiReturn{}, true, nil
 	case "MC_netHttpGetRequestMethod":
 		return r.httpString(request(), arg(1), int32(arg(2)), func(current *wipiHTTP) []byte {
@@ -280,6 +409,9 @@ func (r *wipiRuntime) dispatchHTTP(name string) (wipiReturn, bool, error) {
 			return wipiReturn{}, true, err
 		}
 		current.properties[string(key)] = append([]byte(nil), value...)
+		if err := r.syncHTTPRequest(current); err != nil {
+			return wipiReturn{low: ^uint32(0)}, true, nil
+		}
 		return wipiReturn{}, true, nil
 	case "MC_netHttpGetRequestProperty":
 		current := request()
@@ -363,6 +495,31 @@ func (r *wipiRuntime) dispatchHTTP(name string) (wipiReturn, bool, error) {
 	default:
 		return wipiReturn{}, false, nil
 	}
+}
+
+func (r *wipiRuntime) syncHTTPRequest(current *wipiHTTP) error {
+	if current == nil {
+		return nil
+	}
+	names := make([]string, 0, len(current.properties))
+	for name := range current.properties {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	properties := make([]shared.HTTPProperty, 0, len(names))
+	for _, name := range names {
+		properties = append(properties, shared.HTTPProperty{
+			Name:  name,
+			Value: string(current.properties[name]),
+		})
+	}
+	return r.services.Network.SetHTTPRequest(
+		r.serviceOwner,
+		r.httpServices[current.descriptor],
+		string(current.method),
+		properties,
+		current.request,
+	)
 }
 
 func httpArgumentCount(name string) (int, bool) {

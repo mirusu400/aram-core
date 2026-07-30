@@ -2,8 +2,10 @@ package application
 
 import (
 	"encoding/binary"
-	"image/color"
+	"fmt"
 	"net"
+
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 func (r *wipiRuntime) dispatchUtility(name string) (wipiReturn, bool, error) {
@@ -69,6 +71,15 @@ func (r *wipiRuntime) dispatchGraphics(name string) (wipiReturn, bool, error) {
 	case "MC_grpDestroyOffScreenFrameBuffer":
 		fb, ok := r.framebuffers[args[0]]
 		if ok && fb.handle != r.screenHandle {
+			if serviceID := r.surfaceServices[args[0]]; serviceID != 0 {
+				if err := r.services.Graphics.DestroySurface(
+					r.serviceOwner,
+					serviceID,
+				); err != nil {
+					return wipiReturn{}, true, err
+				}
+				delete(r.surfaceServices, args[0])
+			}
 			r.heap.release(fb.pixels)
 			r.heap.release(fb.handle)
 			delete(r.framebuffers, args[0])
@@ -261,6 +272,36 @@ func (r *wipiRuntime) newFramebuffer(width, height int, owns bool) (uint32, erro
 		bitsPerPixel: bytesPerPixel * 8,
 		owns:         owns,
 	}
+	format := shared.PixelBGRX8888
+	if bytesPerPixel == 2 {
+		format = shared.PixelRGB565
+	}
+	serviceID, err := r.services.Graphics.CreateSurface(
+		r.serviceOwner,
+		shared.SurfaceDescriptor{
+			Width:  int32(width),
+			Height: int32(height),
+			Stride: int32(width * bytesPerPixel),
+			Format: format,
+		},
+	)
+	if err != nil {
+		delete(r.framebuffers, handle)
+		r.heap.release(handle)
+		r.heap.release(pixels)
+		return 0, err
+	}
+	r.surfaceServices[handle] = serviceID
+	if !owns {
+		if err := r.services.Graphics.SetScreen(r.serviceOwner, serviceID); err != nil {
+			_ = r.services.Graphics.DestroySurface(r.serviceOwner, serviceID)
+			delete(r.surfaceServices, handle)
+			delete(r.framebuffers, handle)
+			r.heap.release(handle)
+			r.heap.release(pixels)
+			return 0, err
+		}
+	}
 	return handle, nil
 }
 
@@ -405,9 +446,35 @@ func (r *wipiRuntime) writeFramebufferPixel(
 	if fb.bitsPerPixel == 16 {
 		var encoded [2]byte
 		binary.LittleEndian.PutUint16(encoded[:], uint16(pixel))
-		return r.cpu.WriteMemory(address, encoded[:])
+		if err := r.cpu.WriteMemory(address, encoded[:]); err != nil {
+			return err
+		}
+		if serviceID := r.surfaceServices[fb.handle]; serviceID != 0 {
+			offset := uint64((y*fb.width + x) * 2)
+			return r.services.Graphics.WritePixelBytes(
+				r.serviceOwner,
+				serviceID,
+				offset,
+				encoded[:],
+			)
+		}
+		return nil
 	}
-	return r.writeU32(address, pixel&0xffffff)
+	var encoded [4]byte
+	binary.LittleEndian.PutUint32(encoded[:], pixel&0xffffff)
+	if err := r.cpu.WriteMemory(address, encoded[:]); err != nil {
+		return err
+	}
+	if serviceID := r.surfaceServices[fb.handle]; serviceID != 0 {
+		offset := uint64((y*fb.width + x) * 4)
+		return r.services.Graphics.WritePixelBytes(
+			r.serviceOwner,
+			serviceID,
+			offset,
+			encoded[:],
+		)
+	}
+	return nil
 }
 
 func (r *wipiRuntime) pixelFromRGB(red, green, blue uint32) uint32 {
@@ -747,23 +814,61 @@ func (r *wipiRuntime) present(handle uint32) error {
 	if !ok {
 		return nil
 	}
-	for y := 0; y < min(fb.height, r.frame.Bounds().Dy()); y++ {
-		for x := 0; x < min(fb.width, r.frame.Bounds().Dx()); x++ {
-			pixel, err := r.framebufferPixel(fb, x, y)
-			if err != nil {
-				return err
-			}
-			red, green, blue := r.rgbFromPixel(pixel)
-			r.frame.SetRGBA(x, y, color.RGBA{
-				R: uint8(red),
-				G: uint8(green),
-				B: uint8(blue),
-				A: 0xff,
-			})
-		}
+	serviceID := r.surfaceServices[handle]
+	if serviceID == 0 {
+		return nil
+	}
+	if err := r.syncFramebufferToService(fb); err != nil {
+		return err
+	}
+	if r.services.Coordinator.PresentationOwner() != r.serviceOwner {
+		return nil
+	}
+	snapshot, err := r.services.Graphics.Present(
+		r.serviceOwner,
+		serviceID,
+		shared.Rectangle{},
+	)
+	if err != nil {
+		return err
+	}
+	width := min(int(snapshot.Width), r.frame.Bounds().Dx())
+	height := min(int(snapshot.Height), r.frame.Bounds().Dy())
+	for y := 0; y < height; y++ {
+		source := y * int(snapshot.Width) * 4
+		destination := y * r.frame.Stride
+		copy(r.frame.Pix[destination:destination+width*4], snapshot.RGBA[source:source+width*4])
 	}
 	r.stats.PresentCount++
 	return nil
+}
+
+func (r *wipiRuntime) syncFramebufferToService(fb wipiFramebuffer) error {
+	serviceID := r.surfaceServices[fb.handle]
+	if serviceID == 0 {
+		return nil
+	}
+	size := uint64(fb.width) * uint64(fb.height) * uint64(fb.bytesPerPixel())
+	if size > uint64(^uint(0)>>1) {
+		return fmt.Errorf("WIPI framebuffer byte size exceeds host limit")
+	}
+	pixels := make([]byte, int(size))
+	if err := r.cpu.ReadMemory(fb.pixels, pixels); err != nil {
+		return err
+	}
+	return r.services.Graphics.ReplacePixels(r.serviceOwner, serviceID, pixels)
+}
+
+func (r *wipiRuntime) syncFramebufferFromService(fb wipiFramebuffer) error {
+	serviceID := r.surfaceServices[fb.handle]
+	if serviceID == 0 {
+		return nil
+	}
+	pixels, err := r.services.Graphics.Pixels(r.serviceOwner, serviceID)
+	if err != nil {
+		return err
+	}
+	return r.cpu.WriteMemory(fb.pixels, pixels)
 }
 
 func fontHeight(font uint32) int {

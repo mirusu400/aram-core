@@ -6,6 +6,8 @@ import (
 	"path"
 	"sort"
 	"strings"
+
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 const wipiFilesystemCapacity = 16 << 20
@@ -34,6 +36,12 @@ func (r *wipiRuntime) dispatchFilesystem(name string) (wipiReturn, bool, error) 
 		if _, ok := r.fileHandles[fd]; !ok {
 			return wipiReturn{low: ^uint32(0)}, true, nil
 		}
+		if serviceID := r.fileServices[fd]; serviceID != 0 {
+			if err := r.services.Storage.Close(r.serviceOwner, serviceID); err != nil {
+				return wipiReturn{}, true, err
+			}
+			delete(r.fileServices, fd)
+		}
 		delete(r.fileHandles, fd)
 		return wipiReturn{}, true, nil
 	case "MC_fsSeek":
@@ -54,6 +62,10 @@ func (r *wipiRuntime) dispatchFilesystem(name string) (wipiReturn, bool, error) 
 		if _, ok := r.files[name]; !ok {
 			return wipiReturn{low: ^uint32(0)}, true, nil
 		}
+		namespace, servicePath := wipiStoragePath(name)
+		if err := r.services.Storage.Delete(namespace, servicePath); err != nil {
+			return wipiReturn{low: ^uint32(0)}, true, nil
+		}
 		delete(r.files, name)
 		delete(r.fileTimes, name)
 		return wipiReturn{}, true, nil
@@ -68,13 +80,27 @@ func (r *wipiRuntime) dispatchFilesystem(name string) (wipiReturn, bool, error) 
 		if r.directories[name] || fileExists {
 			return wipiReturn{low: ^uint32(0)}, true, nil
 		}
+		namespace, servicePath := wipiStoragePath(name)
+		if err := r.services.Storage.MakeDirectory(
+			namespace,
+			servicePath,
+		); err != nil {
+			return wipiReturn{low: ^uint32(0)}, true, nil
+		}
 		r.ensureDirectory(path.Dir(name))
 		r.directories[name] = true
-		r.fileTimes[name] = uint32(wipiEpochUnix + int64(r.tickMS/1000))
+		r.fileTimes[name] = uint32(r.services.Clock.WallMillis() / 1000)
 		return wipiReturn{}, true, nil
 	case "MC_fsRmDir":
 		name, err := r.guestPath(arg(0), int32(arg(1)))
 		if err != nil || !r.directories[name] || r.hasDirectoryChildren(name) {
+			return wipiReturn{low: ^uint32(0)}, true, nil
+		}
+		namespace, servicePath := wipiStoragePath(name)
+		if err := r.services.Storage.RemoveDirectory(
+			namespace,
+			servicePath,
+		); err != nil {
 			return wipiReturn{low: ^uint32(0)}, true, nil
 		}
 		delete(r.directories, name)
@@ -85,7 +111,15 @@ func (r *wipiRuntime) dispatchFilesystem(name string) (wipiReturn, bool, error) 
 	case "MC_fsTotalSpace":
 		return wipiReturn{low: wipiFilesystemCapacity}, true, nil
 	case "MC_fsAvailable":
-		return wipiReturn{low: uint32(max(0, wipiFilesystemCapacity-r.filesystemUsed()))}, true, nil
+		used := r.services.Storage.Used(shared.NamespacePrivate) +
+			r.services.Storage.Used(shared.NamespaceShared)
+		available := uint64(wipiFilesystemCapacity)
+		if used >= available {
+			available = 0
+		} else {
+			available -= used
+		}
+		return wipiReturn{low: uint32(available)}, true, nil
 	case "MC_fsSetMode":
 		name, err := r.guestPath(arg(0), int32(arg(2)))
 		_, fileExists := r.files[name]
@@ -173,10 +207,36 @@ func (r *wipiRuntime) openFile(nameAddress uint32, flag, accessMode int32) (wipi
 	if !exists && !writable {
 		return wipiReturn{low: ^uint32(0)}, true, nil
 	}
+	mode := shared.OpenMode(0)
+	if readable {
+		mode |= shared.OpenRead
+	}
+	if writable {
+		mode |= shared.OpenWrite
+	}
+	if !exists {
+		mode |= shared.OpenCreate
+	}
+	if truncate {
+		mode |= shared.OpenTruncate
+	}
+	if appendMode {
+		mode |= shared.OpenAppend
+	}
+	namespace, servicePath := wipiStoragePath(name)
+	serviceID, serviceErr := r.services.Storage.Open(
+		r.serviceOwner,
+		namespace,
+		servicePath,
+		mode,
+	)
+	if serviceErr != nil {
+		return wipiReturn{low: ^uint32(0)}, true, nil
+	}
 	if !exists {
 		r.ensureDirectory(path.Dir(name))
 		r.files[name] = nil
-		r.fileTimes[name] = uint32(wipiEpochUnix + int64(r.tickMS/1000))
+		r.fileTimes[name] = uint32(r.services.Clock.WallMillis() / 1000)
 		data = nil
 	}
 	if truncate {
@@ -195,6 +255,7 @@ func (r *wipiRuntime) openFile(nameAddress uint32, flag, accessMode int32) (wipi
 		readable: readable,
 		writable: writable,
 	}
+	r.fileServices[fd] = serviceID
 	return wipiReturn{low: uint32(fd)}, true, nil
 }
 
@@ -208,7 +269,23 @@ func (r *wipiRuntime) readFile(fd int32, destination uint32, length int32) (wipi
 		handle.offset = len(data)
 	}
 	count := min(int(length), len(data)-handle.offset)
-	if err := r.cpu.WriteMemory(destination, data[handle.offset:handle.offset+count]); err != nil {
+	serviceData, serviceErr := r.services.Storage.Read(
+		r.serviceOwner,
+		r.fileServices[fd],
+		uint64(count),
+	)
+	if serviceErr != nil {
+		return wipiReturn{low: ^uint32(0)}, true, nil
+	}
+	if len(serviceData) != count {
+		return wipiReturn{}, true, fmt.Errorf(
+			"shared WIPI file %q read %d bytes, want %d",
+			handle.path,
+			len(serviceData),
+			count,
+		)
+	}
+	if err := r.cpu.WriteMemory(destination, serviceData); err != nil {
 		return wipiReturn{}, true, err
 	}
 	handle.offset += count
@@ -229,6 +306,13 @@ func (r *wipiRuntime) writeFile(fd int32, source uint32, length int32) (wipiRetu
 	data := make([]byte, length)
 	if err := r.cpu.ReadMemory(source, data); err != nil {
 		return wipiReturn{}, true, err
+	}
+	if _, serviceErr := r.services.Storage.Write(
+		r.serviceOwner,
+		r.fileServices[fd],
+		data,
+	); serviceErr != nil {
+		return wipiReturn{low: ^uint32(0)}, true, nil
 	}
 	file := r.files[handle.path]
 	end := handle.offset + len(data)
@@ -259,6 +343,22 @@ func (r *wipiRuntime) seekFile(fd, offset, whence int32) (wipiReturn, bool, erro
 	}
 	target := int64(base) + int64(offset)
 	if target < 0 || target > wipiFilesystemCapacity {
+		return wipiReturn{low: ^uint32(0)}, true, nil
+	}
+	serviceWhence := shared.SeekStart
+	switch whence {
+	case 1:
+		serviceWhence = shared.SeekCurrent
+	case 2:
+		serviceWhence = shared.SeekEnd
+	}
+	serviceTarget, serviceErr := r.services.Storage.Seek(
+		r.serviceOwner,
+		r.fileServices[fd],
+		int64(offset),
+		serviceWhence,
+	)
+	if serviceErr != nil || serviceTarget != uint64(target) {
 		return wipiReturn{low: ^uint32(0)}, true, nil
 	}
 	handle.offset = int(target)
@@ -296,8 +396,20 @@ func (r *wipiRuntime) renamePath(oldAddress, newAddress uint32, accessMode int32
 	if err != nil || r.directories[newName] || fileExists {
 		return wipiReturn{low: ^uint32(0)}, true, nil
 	}
-	r.ensureDirectory(path.Dir(newName))
 	if data, ok := r.files[oldName]; ok {
+		namespace, oldPath := wipiStoragePath(oldName)
+		newNamespace, newPath := wipiStoragePath(newName)
+		if namespace != newNamespace {
+			return wipiReturn{low: ^uint32(0)}, true, nil
+		}
+		if err := r.services.Storage.Rename(
+			namespace,
+			oldPath,
+			newPath,
+		); err != nil {
+			return wipiReturn{low: ^uint32(0)}, true, nil
+		}
+		r.ensureDirectory(path.Dir(newName))
 		r.files[newName] = data
 		delete(r.files, oldName)
 		r.fileTimes[newName] = r.fileTimes[oldName]
@@ -313,20 +425,77 @@ func (r *wipiRuntime) renamePath(oldAddress, newAddress uint32, accessMode int32
 	if !r.directories[oldName] {
 		return wipiReturn{low: ^uint32(0)}, true, nil
 	}
+	namespace, oldPath := wipiStoragePath(oldName)
+	newNamespace, newPath := wipiStoragePath(newName)
+	if namespace != newNamespace {
+		return wipiReturn{low: ^uint32(0)}, true, nil
+	}
+	if err := r.services.Storage.RenameDirectory(
+		namespace,
+		oldPath,
+		newPath,
+	); err != nil {
+		return wipiReturn{low: ^uint32(0)}, true, nil
+	}
+	r.ensureDirectory(path.Dir(newName))
+	directories := make([]string, 0)
 	for directory := range r.directories {
 		if directory == oldName || strings.HasPrefix(directory, oldName+"/") {
-			r.directories[newName+strings.TrimPrefix(directory, oldName)] = true
-			delete(r.directories, directory)
+			directories = append(directories, directory)
 		}
 	}
-	for name, data := range r.files {
+	sort.Strings(directories)
+	for _, directory := range directories {
+		replacement := newName + strings.TrimPrefix(directory, oldName)
+		r.directories[replacement] = true
+		delete(r.directories, directory)
+		if modified, ok := r.fileTimes[directory]; ok {
+			r.fileTimes[replacement] = modified
+			delete(r.fileTimes, directory)
+		}
+	}
+	files := make([]string, 0)
+	for name := range r.files {
 		if strings.HasPrefix(name, oldName+"/") {
-			replacement := newName + strings.TrimPrefix(name, oldName)
-			r.files[replacement] = data
-			delete(r.files, name)
+			files = append(files, name)
+		}
+	}
+	sort.Strings(files)
+	for _, name := range files {
+		replacement := newName + strings.TrimPrefix(name, oldName)
+		r.files[replacement] = r.files[name]
+		delete(r.files, name)
+		if modified, ok := r.fileTimes[name]; ok {
+			r.fileTimes[replacement] = modified
+			delete(r.fileTimes, name)
+		}
+	}
+	for descriptor, handle := range r.fileHandles {
+		if strings.HasPrefix(handle.path, oldName+"/") {
+			handle.path = newName + strings.TrimPrefix(handle.path, oldName)
+			r.fileHandles[descriptor] = handle
 		}
 	}
 	return wipiReturn{}, true, nil
+}
+
+func wipiStoragePath(name string) (shared.Namespace, string) {
+	for _, mapping := range []struct {
+		prefix    string
+		namespace shared.Namespace
+	}{
+		{"/private", shared.NamespacePrivate},
+		{"/shared", shared.NamespaceShared},
+		{"/system", shared.NamespacePackage},
+	} {
+		if name == mapping.prefix {
+			return mapping.namespace, "/"
+		}
+		if strings.HasPrefix(name, mapping.prefix+"/") {
+			return mapping.namespace, strings.TrimPrefix(name, mapping.prefix)
+		}
+	}
+	return shared.NamespacePrivate, name
 }
 
 func (r *wipiRuntime) listDirectory(nameAddress, output uint32, size, accessMode int32) (wipiReturn, bool, error) {

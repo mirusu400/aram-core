@@ -2,10 +2,15 @@ package skvm
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"sort"
 	"strings"
+	"time"
+
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 const DefaultInstructionLimit = uint64(10_000_000)
@@ -79,16 +84,17 @@ type VM struct {
 	frames           []*frame
 	InstructionLimit uint64
 	Instructions     uint64
-	TimeMillis       int64
 	ScreenWidth      int
 	ScreenHeight     int
-	resources        map[string][]byte
 	displayReference uint32
 	currentDisplay   uint32
-	recordStores     map[string][][]byte
 	properties       map[string]string
-	screen           []uint32
 	screenGraphics   uint32
+	services         *shared.Services
+	serviceOwner     shared.OwnerID
+	screenSurface    shared.ServiceID
+	defaultFont      shared.ServiceID
+	classDigest      [sha256.Size]byte
 }
 
 type frame struct {
@@ -113,6 +119,24 @@ func (e *thrown) Error() string {
 }
 
 func New(classData map[string][]byte) (*VM, error) {
+	services, err := shared.NewServices(shared.Config{})
+	if err != nil {
+		return nil, fmt.Errorf("initialize SKVM services: %w", err)
+	}
+	return NewWithServices(classData, services, 1)
+}
+
+// NewWithServices constructs an SKVM interpreter adapter over the shared
+// deterministic runtime services. Java references remain VM-private and map to
+// guest-neutral service IDs through native payloads.
+func NewWithServices(
+	classData map[string][]byte,
+	services *shared.Services,
+	owner shared.OwnerID,
+) (*VM, error) {
+	if services == nil {
+		return nil, fmt.Errorf("initialize SKVM: shared services are nil")
+	}
 	vm := &VM{
 		classes:          make(map[string]*runtimeClass, len(classData)),
 		heap:             make(map[uint32]*Object),
@@ -121,13 +145,13 @@ func New(classData map[string][]byte) (*VM, error) {
 		hostSupers:       defaultHostSupers(),
 		hostStatic:       make(map[string]Value),
 		InstructionLimit: DefaultInstructionLimit,
-		ScreenWidth:      240,
-		ScreenHeight:     320,
-		resources:        make(map[string][]byte),
-		recordStores:     make(map[string][][]byte),
+		ScreenWidth:      int(services.Config.Device.ScreenWidth),
+		ScreenHeight:     int(services.Config.Device.ScreenHeight),
 		properties:       make(map[string]string),
+		services:         services,
+		serviceOwner:     owner,
+		classDigest:      digestClassData(classData),
 	}
-	vm.screen = make([]uint32, vm.ScreenWidth*vm.ScreenHeight)
 	names := make([]string, 0, len(classData))
 	for name := range classData {
 		names = append(names, name)
@@ -175,8 +199,53 @@ func New(classData map[string][]byte) (*VM, error) {
 		}
 		vm.classes[class.Name] = runtime
 	}
+	screen, err := services.Graphics.CreateSurface(owner, shared.SurfaceDescriptor{
+		Width:  int32(vm.ScreenWidth),
+		Height: int32(vm.ScreenHeight),
+		Format: shared.PixelRGBA8888,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("initialize SKVM screen: %w", err)
+	}
+	if err := services.Graphics.SetScreen(owner, screen); err != nil {
+		_ = services.Graphics.DestroySurface(owner, screen)
+		return nil, fmt.Errorf("select SKVM screen: %w", err)
+	}
+	font, err := services.Text.CreateFont(owner, shared.FontDescriptor{
+		Family: "aram-fallback",
+		Size:   8,
+	})
+	if err != nil {
+		_ = services.Graphics.SetScreen(owner, 0)
+		_ = services.Graphics.DestroySurface(owner, screen)
+		return nil, fmt.Errorf("initialize SKVM font: %w", err)
+	}
+	vm.screenSurface = screen
+	vm.defaultFont = font
 	vm.installCoreNatives()
 	return vm, nil
+}
+
+func digestClassData(classData map[string][]byte) [sha256.Size]byte {
+	names := make([]string, 0, len(classData))
+	for name := range classData {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	hash := sha256.New()
+	var encoded [8]byte
+	for _, name := range names {
+		binary.LittleEndian.PutUint64(encoded[:], uint64(len(name)))
+		_, _ = hash.Write(encoded[:])
+		_, _ = hash.Write([]byte(name))
+		data := classData[name]
+		binary.LittleEndian.PutUint64(encoded[:], uint64(len(data)))
+		_, _ = hash.Write(encoded[:])
+		_, _ = hash.Write(data)
+	}
+	var digest [sha256.Size]byte
+	copy(digest[:], hash.Sum(nil))
+	return digest
 }
 
 func (vm *VM) SetTraceHook(hook TraceHook) {
@@ -214,10 +283,21 @@ func (vm *VM) SetProperties(properties map[string]string) {
 }
 
 func (vm *VM) SetResources(resources map[string][]byte) {
-	vm.resources = make(map[string][]byte, len(resources))
-	for name, data := range resources {
-		vm.resources[name] = append([]byte(nil), data...)
+	_ = vm.SetResourcesChecked(resources)
+}
+
+// SetResourcesChecked mounts validated package resources in the shared
+// read-only namespace and reports malformed paths or quota failures.
+func (vm *VM) SetResourcesChecked(resources map[string][]byte) error {
+	if err := vm.services.Storage.MountPackage(resources); err != nil {
+		return err
 	}
+	return nil
+}
+
+func (vm *VM) resource(name string) ([]byte, bool) {
+	data, err := vm.services.Storage.ReadFile(shared.NamespacePackage, name)
+	return data, err == nil
 }
 
 func (vm *VM) CurrentDisplay() uint32 {
@@ -225,14 +305,23 @@ func (vm *VM) CurrentDisplay() uint32 {
 }
 
 func (vm *VM) FrameRGBA() []byte {
-	pixels := make([]byte, len(vm.screen)*4)
-	for index, color := range vm.screen {
-		pixels[index*4+0] = byte(color >> 16)
-		pixels[index*4+1] = byte(color >> 8)
-		pixels[index*4+2] = byte(color)
-		pixels[index*4+3] = byte(color >> 24)
+	pixels, err := vm.services.Graphics.RGBA(vm.serviceOwner, vm.screenSurface)
+	if err != nil {
+		return nil
 	}
 	return pixels
+}
+
+func (vm *VM) Services() *shared.Services {
+	return vm.services
+}
+
+func (vm *VM) ServiceOwner() shared.OwnerID {
+	return vm.serviceOwner
+}
+
+func (vm *VM) ScreenSurface() shared.ServiceID {
+	return vm.screenSurface
 }
 
 func (vm *VM) Object(reference uint32) (*Object, bool) {
@@ -403,6 +492,66 @@ func (vm *VM) KeyEvent(ctx context.Context, key int32, pressed bool) error {
 		return nil
 	}
 	return err
+}
+
+// Advance is the SKVM adapter's explicit coordinator operation. It advances
+// shared virtual time, delivers timer callbacks through the Java invocation
+// gate, and offers other ready events to the adapter callback.
+func (vm *VM) Advance(
+	ctx context.Context,
+	delta time.Duration,
+	handle func(shared.Event) error,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := vm.services.Advance(vm.serviceOwner, delta); err != nil {
+		return err
+	}
+	now := vm.services.Clock.Monotonic()
+	for {
+		event, ok := vm.services.Events.PopReady(now)
+		if !ok {
+			return nil
+		}
+		if event.Owner != vm.serviceOwner {
+			if handle == nil {
+				return fmt.Errorf(
+					"SKVM event %d for owner %d has no adapter",
+					event.Sequence,
+					event.Owner,
+				)
+			}
+			if err := handle(event); err != nil {
+				return err
+			}
+			continue
+		}
+		if event.Kind == shared.EventTimer {
+			taskReference := uint32(event.Value)
+			task, err := vm.timerTask(taskReference)
+			if err != nil || task.timer != event.ServiceID || task.cancelled {
+				if err != nil {
+					return err
+				}
+				continue
+			}
+			if _, _, err := vm.InvokeVirtual(
+				ctx,
+				taskReference,
+				"run",
+				"()V",
+			); err != nil && !errors.Is(err, ErrMethodNotFound) {
+				return err
+			}
+			continue
+		}
+		if handle != nil {
+			if err := handle(event); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 // Start constructs the descriptor main class and executes its MIDlet

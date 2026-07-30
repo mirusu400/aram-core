@@ -461,6 +461,11 @@ func (m *Machine) runRaptorStart(ctx context.Context) error {
 	}
 	runtime := m.raptor
 	m.state = machinecore.StateRunning
+	if err := m.wipi.beginServiceExecution(); err != nil {
+		m.state = machinecore.StateFaulted
+		m.mu.Unlock()
+		return err
+	}
 	m.mu.Unlock()
 
 	var (
@@ -507,7 +512,7 @@ func (m *Machine) runRaptorStart(ctx context.Context) error {
 			PC:     returnSentinel,
 		}
 	}
-	return m.finishRaptorCall(result, err)
+	return m.finishRaptorCall(result, err, result.Instructions)
 }
 
 func (m *Machine) startRaptor(ctx context.Context) error {
@@ -580,6 +585,11 @@ func (m *Machine) stepRaptorFrame(ctx context.Context) error {
 	runtime := m.raptor
 	bounds := m.frame.Bounds()
 	m.state = machinecore.StateRunning
+	if err := m.wipi.beginServiceExecution(); err != nil {
+		m.state = machinecore.StateFaulted
+		m.mu.Unlock()
+		return err
+	}
 	m.mu.Unlock()
 	result, _, callErr := m.invokeWIPICallback(ctx, wipiGuestCallback{
 		procedure: runtime.clet.Paint,
@@ -590,11 +600,16 @@ func (m *Machine) stepRaptorFrame(ctx context.Context) error {
 			uint32(bounds.Dy()),
 		},
 	})
+	paintInstructions := result.Instructions
 	result.Instructions += callbackResult.Instructions
-	return m.finishRaptorCall(result, callErr)
+	return m.finishRaptorCall(result, callErr, paintInstructions)
 }
 
-func (m *Machine) finishRaptorCall(result cpu.Result, err error) error {
+func (m *Machine) finishRaptorCall(
+	result cpu.Result,
+	err error,
+	serviceInstructions uint64,
+) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.lastResult = result
@@ -605,6 +620,18 @@ func (m *Machine) finishRaptorCall(result cpu.Result, err error) error {
 		m.state = machinecore.StateStopped
 	default:
 		m.state = machinecore.StatePaused
+	}
+	fault := ""
+	if err != nil {
+		fault = err.Error()
+	}
+	if serviceErr := m.wipi.finishServiceExecution(
+		m.state,
+		serviceInstructions,
+		fault,
+	); serviceErr != nil {
+		m.state = machinecore.StateFaulted
+		return serviceErr
 	}
 	if err != nil {
 		return fmt.Errorf("execute Raptor Clet at 0x%08x: %w", result.PC, err)

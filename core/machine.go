@@ -93,6 +93,9 @@ func (e InputEvent) Validate() error {
 	if len(e.Control) > MaxControlNameBytes {
 		return fmt.Errorf("input control exceeds %d bytes", MaxControlNameBytes)
 	}
+	if strings.IndexByte(e.Control, 0) >= 0 {
+		return fmt.Errorf("input control contains NUL")
+	}
 	if e.At < 0 {
 		return fmt.Errorf("input event time %s is negative", e.At)
 	}

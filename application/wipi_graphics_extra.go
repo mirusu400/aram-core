@@ -10,6 +10,9 @@ import (
 	"image/gif"
 	"image/png"
 	"sort"
+	"time"
+
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 const (
@@ -159,11 +162,25 @@ func (r *wipiRuntime) createImage(
 	if err := r.cpu.ReadMemory(bufferID+uint32(offset), data); err != nil {
 		return wipiBadFormat, err
 	}
-	decoded, err := decodeWIPIImage(data, 0)
+	assetID, err := r.services.Assets.Decode(
+		r.serviceOwner,
+		data,
+		shared.DecodeOptions{},
+	)
 	if err != nil {
 		return wipiBadFormat, nil
 	}
-	framebuffer, err := r.newFramebuffer(decoded.width, decoded.height, true)
+	releaseAsset := true
+	defer func() {
+		if releaseAsset {
+			_ = r.services.Assets.Release(r.serviceOwner, assetID)
+		}
+	}()
+	info, err := r.services.Assets.Info(r.serviceOwner, assetID)
+	if err != nil || len(info.Frames) == 0 {
+		return wipiBadFormat, err
+	}
+	framebuffer, err := r.newFramebuffer(int(info.Width), int(info.Height), true)
 	if err != nil {
 		return wipiNoMemory, err
 	}
@@ -176,7 +193,7 @@ func (r *wipiRuntime) createImage(
 			r.destroyOwnedFramebuffer(framebuffer)
 		}
 	}()
-	if err := r.paintImageFrame(framebuffer, decoded.frame, true); err != nil {
+	if err := r.paintServiceImageFrame(framebuffer, info.Frames[0].Surface, true); err != nil {
 		return wipiBadFormat, err
 	}
 	handle, err := r.heap.allocate(wipiImageDescriptorSize, true)
@@ -189,12 +206,12 @@ func (r *wipiRuntime) createImage(
 	descriptor := wipiImageDescriptor{
 		framebuffer: framebuffer,
 		frameIndex:  0,
-		frameCount:  decoded.frameCount,
-		animated:    decoded.animated,
-		delayMS:     decoded.delayMS,
-		loopCount:   decoded.loopCount,
+		frameCount:  uint32(len(info.Frames)),
+		animated:    len(info.Frames) > 1,
+		delayMS:     durationMillis(info.Frames[0].Delay),
+		loopCount:   info.LoopCount,
 	}
-	if decoded.animated {
+	if descriptor.animated {
 		descriptor.bufferID = bufferID
 		descriptor.offset = uint32(offset)
 		descriptor.length = uint32(length)
@@ -207,9 +224,11 @@ func (r *wipiRuntime) createImage(
 		r.heap.release(handle)
 		return wipiInvalid, err
 	}
-	if !decoded.animated {
+	if !descriptor.animated {
 		r.heap.release(bufferID)
 	}
+	r.assetServices[handle] = assetID
+	releaseAsset = false
 	cleanupFramebuffer = false
 	return wipiImageDone, nil
 }
@@ -218,6 +237,12 @@ func (r *wipiRuntime) destroyImage(handle uint32) error {
 	descriptor, ok, err := r.readImage(handle)
 	if err != nil || !ok {
 		return err
+	}
+	if assetID := r.assetServices[handle]; assetID != 0 {
+		if err := r.services.Assets.Release(r.serviceOwner, assetID); err != nil {
+			return err
+		}
+		delete(r.assetServices, handle)
 	}
 	r.destroyOwnedFramebuffer(descriptor.framebuffer)
 	if descriptor.bufferID != 0 {
@@ -231,6 +256,12 @@ func (r *wipiRuntime) destroyOwnedFramebuffer(handle uint32) {
 	framebuffer, ok := r.framebuffers[handle]
 	if !ok || handle == r.screenHandle || !framebuffer.owns {
 		return
+	}
+	if serviceID := r.surfaceServices[handle]; serviceID != 0 {
+		if err := r.services.Graphics.DestroySurface(r.serviceOwner, serviceID); err != nil {
+			return
+		}
+		delete(r.surfaceServices, handle)
 	}
 	r.heap.release(framebuffer.pixels)
 	r.heap.release(framebuffer.handle)
@@ -249,20 +280,21 @@ func (r *wipiRuntime) decodeNextImage(handle uint32) (int32, error) {
 		descriptor.frameIndex+1 >= descriptor.frameCount {
 		return wipiImageDone, nil
 	}
-	data := make([]byte, descriptor.length)
-	if err := r.cpu.ReadMemory(descriptor.bufferID+descriptor.offset, data); err != nil {
-		return wipiBadFormat, err
-	}
 	nextIndex := descriptor.frameIndex + 1
-	decoded, err := decodeWIPIImage(data, nextIndex)
-	if err != nil {
+	assetID := r.assetServices[handle]
+	if assetID == 0 {
 		return wipiBadFormat, nil
 	}
-	if err := r.paintImageFrame(descriptor.framebuffer, decoded.frame, true); err != nil {
+	info, err := r.services.Assets.Info(r.serviceOwner, assetID)
+	if err != nil || nextIndex >= uint32(len(info.Frames)) {
+		return wipiBadFormat, err
+	}
+	frame := info.Frames[nextIndex]
+	if err := r.paintServiceImageFrame(descriptor.framebuffer, frame.Surface, true); err != nil {
 		return wipiBadFormat, err
 	}
 	descriptor.frameIndex = nextIndex
-	descriptor.delayMS = decoded.delayMS
+	descriptor.delayMS = durationMillis(frame.Delay)
 	if err := r.writeImage(handle, descriptor); err != nil {
 		return wipiBadFormat, err
 	}
@@ -270,6 +302,65 @@ func (r *wipiRuntime) decodeNextImage(handle uint32) (int32, error) {
 		return wipiImageDone, nil
 	}
 	return wipiImageFrameDone, nil
+}
+
+func durationMillis(value time.Duration) int32 {
+	milliseconds := value / time.Millisecond
+	if milliseconds > time.Duration(^uint32(0)>>1) {
+		return int32(^uint32(0) >> 1)
+	}
+	return int32(milliseconds)
+}
+
+func (r *wipiRuntime) paintServiceImageFrame(
+	handle uint32,
+	surface shared.ServiceID,
+	clear bool,
+) error {
+	framebuffer, ok := r.framebuffers[handle]
+	if !ok {
+		return nil
+	}
+	descriptor, err := r.services.Graphics.Descriptor(r.serviceOwner, surface)
+	if err != nil {
+		return err
+	}
+	pixels, err := r.services.Graphics.RGBA(r.serviceOwner, surface)
+	if err != nil {
+		return err
+	}
+	if clear {
+		size := uint32(framebuffer.width*framebuffer.height) *
+			framebuffer.bytesPerPixel()
+		if err := zeroGuestMemory(r.cpu, framebuffer.pixels, size); err != nil {
+			return err
+		}
+		if serviceID := r.surfaceServices[handle]; serviceID != 0 {
+			if err := r.services.Graphics.ReplacePixels(
+				r.serviceOwner,
+				serviceID,
+				make([]byte, size),
+			); err != nil {
+				return err
+			}
+		}
+	}
+	width := min(framebuffer.width, int(descriptor.Width))
+	height := min(framebuffer.height, int(descriptor.Height))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			offset := (y*int(descriptor.Width) + x) * 4
+			pixel := r.pixelFromRGB(
+				uint32(pixels[offset]),
+				uint32(pixels[offset+1]),
+				uint32(pixels[offset+2]),
+			)
+			if err := r.writeFramebufferPixel(framebuffer, x, y, pixel); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func decodeWIPIImage(data []byte, frameIndex uint32) (decodedWIPIImage, error) {
@@ -700,41 +791,24 @@ func (r *wipiRuntime) encodeImage(args []uint32) (uint32, error) {
 		x+width > framebuffer.width || y+height > framebuffer.height {
 		return 0, nil
 	}
-	rowBytes := (width*3 + 3) &^ 3
-	total := uint64(54) + uint64(rowBytes)*uint64(height)
-	if total > uint64(guestHeapSize) {
+	if err := r.syncFramebufferToService(framebuffer); err != nil {
+		return 0, err
+	}
+	encoded, err := r.services.Assets.EncodeSurface(
+		r.serviceOwner,
+		r.surfaceServices[framebuffer.handle],
+		"image/bmp",
+		shared.Rectangle{
+			X:      int32(x),
+			Y:      int32(y),
+			Width:  int32(width),
+			Height: int32(height),
+		},
+	)
+	if err != nil || uint64(len(encoded)) > uint64(guestHeapSize) {
 		return 0, nil
 	}
-	encoded := make([]byte, int(total))
-	copy(encoded[:2], "BM")
-	binary.LittleEndian.PutUint32(encoded[2:6], uint32(total))
-	binary.LittleEndian.PutUint32(encoded[10:14], 54)
-	binary.LittleEndian.PutUint32(encoded[14:18], 40)
-	binary.LittleEndian.PutUint32(encoded[18:22], uint32(width))
-	binary.LittleEndian.PutUint32(encoded[22:26], uint32(height))
-	binary.LittleEndian.PutUint16(encoded[26:28], 1)
-	binary.LittleEndian.PutUint16(encoded[28:30], 24)
-	binary.LittleEndian.PutUint32(encoded[34:38], uint32(rowBytes*height))
-	for destinationY := 0; destinationY < height; destinationY++ {
-		sourceY := y + height - 1 - destinationY
-		row := 54 + destinationY*rowBytes
-		for column := 0; column < width; column++ {
-			pixel, err := r.framebufferPixel(
-				framebuffer,
-				x+column,
-				sourceY,
-			)
-			if err != nil {
-				return 0, err
-			}
-			red, green, blue := r.rgbFromPixel(pixel)
-			position := row + column*3
-			encoded[position] = byte(blue)
-			encoded[position+1] = byte(green)
-			encoded[position+2] = byte(red)
-		}
-	}
-	buffer, err := r.heap.allocate(uint32(total), false)
+	buffer, err := r.heap.allocate(uint32(len(encoded)), false)
 	if err != nil || buffer == 0 {
 		return 0, err
 	}
@@ -743,7 +817,7 @@ func (r *wipiRuntime) encodeImage(args []uint32) (uint32, error) {
 		return 0, err
 	}
 	if args[5] != 0 {
-		if err := r.writeU32(args[5], uint32(total)); err != nil {
+		if err := r.writeU32(args[5], uint32(len(encoded))); err != nil {
 			r.heap.release(buffer)
 			return 0, err
 		}

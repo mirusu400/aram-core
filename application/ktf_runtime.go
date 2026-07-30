@@ -13,13 +13,16 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf16"
 
 	"github.com/mirusu400/aram-core/cpu"
 	"github.com/mirusu400/aram-core/loader/ktf"
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 const (
@@ -59,6 +62,22 @@ type ktfRuntime struct {
 	imageSz uint32
 	exe     ktfExecutable
 	heap    guestHeap
+
+	services             *shared.Services
+	serviceConfig        shared.Config
+	serviceOwner         shared.OwnerID
+	serviceName          string
+	imageServices        map[uint32]shared.ServiceID
+	javaAssetServices    map[uint32]shared.ServiceID
+	fontServices         map[uint32]shared.ServiceID
+	graphicsServices     map[uint32]shared.ServiceID
+	wipicSurfaceServices map[uint32]shared.ServiceID
+	wipicAssetServices   map[uint32]shared.ServiceID
+	wipicTimerServices   map[uint32]shared.ServiceID
+	clipServices         map[uint32]shared.ServiceID
+	databaseServices     map[string]shared.ServiceID
+	fileServices         map[uint32]shared.ServiceID
+	wipicFileServices    map[uint32]shared.ServiceID
 
 	nextHostCall uint32
 	hostCalls    map[uint32]ktfHostCall
@@ -1254,6 +1273,20 @@ var ktfHostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 }
 
 func newKTFRuntime(backend cpu.Backend, pkg ktf.Package) (*ktfRuntime, error) {
+	return newKTFRuntimeForProfile(
+		backend,
+		pkg,
+		nil,
+		ktfProfileID,
+	)
+}
+
+func newKTFRuntimeForProfile(
+	backend cpu.Backend,
+	pkg ktf.Package,
+	frame *image.RGBA,
+	profileID string,
+) (*ktfRuntime, error) {
 	if backend == nil {
 		return nil, fmt.Errorf("initialize KTF runtime: CPU is nil")
 	}
@@ -1266,10 +1299,109 @@ func newKTFRuntime(backend cpu.Backend, pkg ktf.Package) (*ktfRuntime, error) {
 	}
 	databaseStores := loadKTFDatabaseStores(pkg.Files)
 	fileData := loadKTFPrivateFiles(pkg.JARName, pkg.Files)
+	if profileID == "" {
+		profileID = ktfProfileID
+	}
+	serviceConfig := shared.DefaultConfig()
+	serviceConfig.Device.ProfileID = profileID
+	serviceConfig.Device.Carrier = "ktf"
+	serviceConfig.Device.Manufacturer = "LG"
+	serviceConfig.Device.Model = "LG-KH1300"
+	serviceConfig.Device.ScreenFormat = shared.PixelRGBA8888
+	if frame != nil {
+		serviceConfig.Device.ScreenWidth = int32(frame.Bounds().Dx())
+		serviceConfig.Device.ScreenHeight = int32(frame.Bounds().Dy())
+	}
+	serviceConfig.Device.Capabilities = []shared.DeviceCapability{
+		{Name: "audio", Enabled: true},
+		{Name: "backlight", Enabled: true},
+		{Name: "graphics", Enabled: true},
+		{Name: "images", Enabled: true},
+		{Name: "text", Enabled: true},
+		{Name: "vibration", Enabled: true},
+	}
+	services, err := shared.NewServices(serviceConfig)
+	if err != nil {
+		return nil, fmt.Errorf("initialize KTF shared services: %w", err)
+	}
+	owner, err := services.Coordinator.Register(
+		"ktf",
+		serviceConfig.Limits.Coordinator.MaxRunBudget,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("register KTF adapter: %w", err)
+	}
+	if err := services.Coordinator.Transition(
+		owner,
+		shared.LifecycleReady,
+		services.Clock.Monotonic(),
+		services.Events,
+	); err != nil {
+		return nil, fmt.Errorf("ready KTF adapter: %w", err)
+	}
+	if err := services.Storage.MountPackage(pkg.Resources); err != nil {
+		return nil, fmt.Errorf("mount KTF package resources: %w", err)
+	}
+	fileNames := make([]string, 0, len(fileData))
+	for name := range fileData {
+		fileNames = append(fileNames, name)
+	}
+	sort.Strings(fileNames)
+	for _, name := range fileNames {
+		if err := services.Storage.WriteFile(
+			shared.NamespacePrivate,
+			name,
+			fileData[name],
+		); err != nil {
+			return nil, fmt.Errorf("import KTF private file %q: %w", name, err)
+		}
+	}
+	databaseServices := make(map[string]shared.ServiceID, len(databaseStores))
+	databaseNames := make([]string, 0, len(databaseStores))
+	for name := range databaseStores {
+		databaseNames = append(databaseNames, name)
+	}
+	sort.Strings(databaseNames)
+	for _, name := range databaseNames {
+		store, err := services.Storage.CreateRecordStore(owner, name)
+		if err != nil {
+			return nil, fmt.Errorf("import KTF database %q: %w", name, err)
+		}
+		records := make(map[uint32][]byte, len(databaseStores[name].records))
+		for recordID, record := range databaseStores[name].records {
+			records[uint32(recordID)] = record
+		}
+		nextID := max(uint32(1), uint32(len(records)))
+		if err := services.Storage.ReplaceRecords(
+			owner,
+			store,
+			nextID,
+			records,
+		); err != nil {
+			return nil, fmt.Errorf("import KTF database %q: %w", name, err)
+		}
+		databaseServices[name] = store
+	}
 	return &ktfRuntime{
 		cpu:                   backend,
 		pkg:                   pkg,
 		imageSz:               uint32(imageSize),
+		frame:                 frame,
+		services:              services,
+		serviceConfig:         services.Config,
+		serviceOwner:          owner,
+		serviceName:           "ktf",
+		imageServices:         make(map[uint32]shared.ServiceID),
+		javaAssetServices:     make(map[uint32]shared.ServiceID),
+		fontServices:          make(map[uint32]shared.ServiceID),
+		graphicsServices:      make(map[uint32]shared.ServiceID),
+		wipicSurfaceServices:  make(map[uint32]shared.ServiceID),
+		wipicAssetServices:    make(map[uint32]shared.ServiceID),
+		wipicTimerServices:    make(map[uint32]shared.ServiceID),
+		clipServices:          make(map[uint32]shared.ServiceID),
+		databaseServices:      databaseServices,
+		fileServices:          make(map[uint32]shared.ServiceID),
+		wipicFileServices:     make(map[uint32]shared.ServiceID),
 		nextHostCall:          ktfHostBase + 4,
 		hostCalls:             make(map[uint32]ktfHostCall),
 		javaClasses:           make(map[string]uint32),
@@ -1505,6 +1637,39 @@ func (r *ktfRuntime) mapImageAndHost() error {
 		cpu.PermissionRead|cpu.PermissionWrite,
 	); err != nil {
 		return fmt.Errorf("map KTF guest heap: %w", err)
+	}
+	r.heap = newGuestHeap(r.cpu, guestHeapBase, guestHeapSize)
+	r.mapped = true
+	return nil
+}
+
+// resetMappedMemory installs a pristine KTF image into mappings already owned
+// by the machine. It is the reset counterpart of mapImageAndHost; remapping is
+// deliberately avoided because CPU backends reject overlapping regions.
+func (r *ktfRuntime) resetMappedMemory() error {
+	for _, region := range []struct {
+		address uint32
+		size    uint32
+		label   string
+	}{
+		{ktfImageBase, r.imageSz, "client image"},
+		{DefaultStackBase, DefaultStackSize, "application stack"},
+		{ktfHostBase, ktfHostSize, "host-call page"},
+		{guestHeapBase, guestHeapSize, "guest heap"},
+	} {
+		if err := zeroGuestMemory(r.cpu, region.address, region.size); err != nil {
+			return fmt.Errorf("reset KTF %s: %w", region.label, err)
+		}
+	}
+	if err := r.cpu.WriteMemory(ktfImageBase, r.pkg.Client); err != nil {
+		return fmt.Errorf("restore KTF client image: %w", err)
+	}
+	stubs := make([]byte, ktfHostSize)
+	for offset := 0; offset < len(stubs); offset += 4 {
+		copy(stubs[offset:], []byte{0x00, 0xbe, 0x00, 0xbf})
+	}
+	if err := r.cpu.WriteMemory(ktfHostBase, stubs); err != nil {
+		return fmt.Errorf("restore KTF host-call stubs: %w", err)
 	}
 	r.heap = newGuestHeap(r.cpu, guestHeapBase, guestHeapSize)
 	r.mapped = true
@@ -2179,7 +2344,11 @@ func (r *ktfRuntime) runTaskSlice(
 			if task.presentOnReturn {
 				task.presentOnReturn = false
 				r.paintInitializedCards[task.paintCard] = true
-				r.recordPresentation()
+				if err := r.recordPresentation(); err != nil {
+					run.Reason = cpu.StopFault
+					run.Err = err
+					return run
+				}
 			}
 			if !r.hasRunnableTask() {
 				run.Reason = cpu.StopExited
@@ -2410,6 +2579,61 @@ func (r *ktfRuntime) activateDueWIPICTimers() error {
 		// Only one native timer callback may be live at a time. Other expired
 		// timers remain active and are selected after this callback returns.
 		return nil
+	}
+}
+
+func (r *ktfRuntime) drainServiceEvents(now time.Duration) error {
+	for {
+		event, ok := r.services.Events.Peek()
+		if !ok || event.At > now {
+			return nil
+		}
+		if event.Owner != 0 && event.Owner != r.serviceOwner {
+			return fmt.Errorf(
+				"KTF service event %d belongs to owner %d",
+				event.Sequence,
+				event.Owner,
+			)
+		}
+		switch event.Kind {
+		case shared.EventInputPress,
+			shared.EventInputRelease,
+			shared.EventInputRepeat:
+			key, known := inputKeyCode(event.Control)
+			if !known {
+				continue
+			}
+			queued, err := r.queueKeyEvent(
+				event.Kind != shared.EventInputRelease,
+				int32(key),
+			)
+			if err != nil {
+				return fmt.Errorf(
+					"deliver shared KTF input %q: %w",
+					event.Control,
+					err,
+				)
+			}
+			if !queued {
+				return nil
+			}
+		case shared.EventAudioComplete:
+			for instance, serviceID := range r.clipServices {
+				if serviceID == event.ServiceID {
+					if clip := r.clips[instance]; clip != nil {
+						clip.playing = false
+					}
+					break
+				}
+			}
+		}
+		popped, ok := r.services.Events.PopReady(now)
+		if !ok || popped.Sequence != event.Sequence {
+			return fmt.Errorf(
+				"KTF service event queue changed while delivering event %d",
+				event.Sequence,
+			)
+		}
 	}
 }
 
@@ -5168,29 +5392,45 @@ func ktfJavaNativeOverride(signature string) (ktfHostCall, bool) {
 	case "org/kwis/msp/media/Volume.get()I":
 		return ktfHostCall{
 			name: "java.native_override." + signature,
-			handler: func(context.Context, *ktfRuntime) (uint32, error) {
-				return 5, nil
+			handler: func(_ context.Context, runtime *ktfRuntime) (uint32, error) {
+				return uint32(
+					runtime.services.Media.Snapshot().GlobalVolume / 20,
+				), nil
 			},
 		}, true
 	case "org/kwis/msf/io/Network.connect()I":
 		return ktfHostCall{
 			name: "java.native_override." + signature,
-			handler: func(context.Context, *ktfRuntime) (uint32, error) {
+			handler: func(_ context.Context, runtime *ktfRuntime) (uint32, error) {
+				runtime.services.Device.SetNetworkAvailable(true)
 				return 1, nil
 			},
 		}, true
 	case "org/kwis/msf/io/Network.disconnect()V":
 		return ktfHostCall{
 			name: "java.native_override." + signature,
-			handler: func(context.Context, *ktfRuntime) (uint32, error) {
+			handler: func(_ context.Context, runtime *ktfRuntime) (uint32, error) {
+				runtime.services.Device.SetNetworkAvailable(false)
 				return 0, nil
 			},
 		}, true
 	case "org/kwis/msp/media/Vibrator.on(II)V":
 		return ktfHostCall{
 			name: "java.native_override." + signature,
-			handler: func(context.Context, *ktfRuntime) (uint32, error) {
-				return 0, nil
+			handler: func(_ context.Context, runtime *ktfRuntime) (uint32, error) {
+				level, err := runtime.parameter(0)
+				if err != nil {
+					return 0, err
+				}
+				millis, err := runtime.parameter(1)
+				if err != nil {
+					return 0, err
+				}
+				return 0, runtime.services.Device.Vibrate(
+					uint8(min(level, uint32(100))),
+					time.Duration(millis)*time.Millisecond,
+					runtime.services.Clock.Monotonic(),
+				)
 			},
 		}, true
 	default:
@@ -5307,7 +5547,9 @@ func ktfHostJavaMethod(className, name, descriptor string) ktfHostHandler {
 					registers[5],
 				)
 			case "currentTimeMillis()J":
-				return runtime.javaLongResult(runtime.tickMS), nil
+				return runtime.javaLongResult(
+					runtime.tickMS,
+				), nil
 			case "gc()V":
 				return 0, nil
 			case "getProperty(Ljava/lang/String;)Ljava/lang/String;":
@@ -5447,9 +5689,31 @@ func ktfHostJavaMethod(className, name, descriptor string) ktfHostHandler {
 				return runtime.newJavaString(value)
 			}
 		case "org/kwis/msp/lcdui/Jlet",
-			"org/kwis/msp/handset/BackLight",
-			"org/kwis/msp/handset/LED",
 			"com/ktf/kfc/GForm":
+			return 0, nil
+		case "org/kwis/msp/handset/BackLight":
+			switch name + descriptor {
+			case "alwaysOn()V", "on()V":
+				return 0, runtime.services.Device.SetBacklight(
+					true,
+					0,
+					runtime.services.Clock.Monotonic(),
+				)
+			case "off()V":
+				return 0, runtime.services.Device.SetBacklight(
+					false,
+					0,
+					runtime.services.Clock.Monotonic(),
+				)
+			}
+			return 0, nil
+		case "org/kwis/msp/handset/LED":
+			if name+descriptor == "set(I)V" {
+				return 0, runtime.services.Device.SetLED(
+					0,
+					int32(registers[1]),
+				)
+			}
 			return 0, nil
 		case "org/kwis/msp/lwc/Component",
 			"org/kwis/msp/lwc/ContainerComponent",
@@ -5652,7 +5916,10 @@ func (r *ktfRuntime) handsetSystemProperty(key string) string {
 		// LG-KH1300 was a common 240x320 KTF WIPI target. Some games use
 		// this property to select resource geometry and otherwise leave
 		// array dimensions uninitialized.
-		return "LG-KH1300"
+		if r.services == nil || r.services.Device == nil {
+			return "LG-KH1300"
+		}
+		return r.services.Device.Config().Model
 	default:
 		return ""
 	}
@@ -6516,7 +6783,9 @@ func (r *ktfRuntime) paintCard(ctx context.Context, card uint32) error {
 	); err != nil {
 		return err
 	}
-	r.recordPresentation()
+	if err := r.recordPresentation(); err != nil {
+		return err
+	}
 	r.paintInitializedCards[card] = true
 	return nil
 }
@@ -6565,16 +6834,30 @@ func (r *ktfRuntime) serviceCardRepaints(
 		return nil
 	}
 	r.paintInitializedCards[card] = true
-	r.recordPresentation()
-	return nil
+	return r.recordPresentation()
 }
 
-func (r *ktfRuntime) recordPresentation() {
+func (r *ktfRuntime) recordPresentation() error {
+	if r.screenGraphics != 0 {
+		if err := r.syncKTFGraphics(r.screenGraphics); err != nil {
+			return err
+		}
+		if serviceID := r.graphicsServices[r.screenGraphics]; serviceID != 0 {
+			if _, err := r.services.Graphics.Present(
+				r.serviceOwner,
+				serviceID,
+				shared.Rectangle{},
+			); err != nil {
+				return err
+			}
+		}
+	}
 	r.presentCount++
 	r.hostTrace = append(
 		r.hostTrace,
 		fmt.Sprintf("java_present:%d", r.presentCount),
 	)
+	return nil
 }
 
 func (r *ktfRuntime) handleFontMethod(name, descriptor string) (uint32, error) {
@@ -6583,16 +6866,59 @@ func (r *ktfRuntime) handleFontMethod(name, descriptor string) (uint32, error) {
 		"getFont(III)Lorg/kwis/msp/lcdui/Font;":
 		return r.ensureDefaultFont()
 	case "getHeight()I":
-		return 12, nil
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		fontID, err := r.ensureKTFFontService(instance)
+		if err != nil {
+			return 0, err
+		}
+		metrics, err := r.services.Text.Metrics(r.serviceOwner, fontID)
+		return uint32(metrics.Height), err
 	case "charWidth(C)I":
-		return 6, nil
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		character, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		fontID, err := r.ensureKTFFontService(instance)
+		if err != nil {
+			return 0, err
+		}
+		glyph, err := r.services.Text.Glyph(
+			r.serviceOwner,
+			fontID,
+			rune(character),
+		)
+		return uint32(glyph.Advance), err
 	case "stringWidth(Ljava/lang/String;)I":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
 		value, err := r.parameter(2)
 		if err != nil {
 			return 0, err
 		}
-		return uint32(len([]rune(r.javaStringValue(value))) * 6), nil
+		fontID, err := r.ensureKTFFontService(instance)
+		if err != nil {
+			return 0, err
+		}
+		width, err := r.services.Text.Measure(
+			r.serviceOwner,
+			fontID,
+			r.javaStringValue(value),
+		)
+		return uint32(width), err
 	case "substringWidth(Ljava/lang/String;II)I":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
 		value, err := r.parameter(2)
 		if err != nil {
 			return 0, err
@@ -6610,7 +6936,16 @@ func (r *ktfRuntime) handleFontMethod(name, descriptor string) (uint32, error) {
 			count > uint32(len(runes))-offset {
 			return 0, nil
 		}
-		return count * 6, nil
+		fontID, err := r.ensureKTFFontService(instance)
+		if err != nil {
+			return 0, err
+		}
+		width, err := r.services.Text.Measure(
+			r.serviceOwner,
+			fontID,
+			string(runes[offset:offset+count]),
+		)
+		return uint32(width), err
 	default:
 		return 0, nil
 	}
@@ -6632,7 +6967,38 @@ func (r *ktfRuntime) ensureDefaultFont() (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
+	fontID, err := r.services.Text.CreateFont(
+		r.serviceOwner,
+		shared.FontDescriptor{
+			Family: "aram-fallback",
+			Size:   12,
+		},
+	)
+	if err != nil {
+		return 0, err
+	}
+	r.fontServices[r.defaultFont] = fontID
 	return r.defaultFont, nil
+}
+
+func (r *ktfRuntime) ensureKTFFontService(
+	instance uint32,
+) (shared.ServiceID, error) {
+	if serviceID := r.fontServices[instance]; serviceID != 0 {
+		return serviceID, nil
+	}
+	serviceID, err := r.services.Text.CreateFont(
+		r.serviceOwner,
+		shared.FontDescriptor{
+			Family: "aram-fallback",
+			Size:   12,
+		},
+	)
+	if err != nil {
+		return 0, err
+	}
+	r.fontServices[instance] = serviceID
+	return serviceID, nil
 }
 
 func (r *ktfRuntime) handleImageMethod(name, descriptor string) (uint32, error) {
@@ -6673,11 +7039,11 @@ func (r *ktfRuntime) handleImageMethod(name, descriptor string) (uint32, error) 
 			)
 			return r.newJavaImage(image.NewRGBA(image.Rect(0, 0, 1, 1)))
 		}
-		decoded, _, decodeErr := image.Decode(bytes.NewReader(data))
+		instance, decodeErr := r.newJavaEncodedImage(data)
 		if decodeErr != nil {
 			return r.newJavaImage(image.NewRGBA(image.Rect(0, 0, 1, 1)))
 		}
-		return r.newJavaImage(decoded)
+		return instance, nil
 	case "createImage([BII)Lorg/kwis/msp/lcdui/Image;":
 		array, err := r.parameter(1)
 		if err != nil {
@@ -6695,11 +7061,11 @@ func (r *ktfRuntime) handleImageMethod(name, descriptor string) (uint32, error) 
 		if err != nil {
 			return 0, err
 		}
-		decoded, _, decodeErr := image.Decode(bytes.NewReader(data))
+		instance, decodeErr := r.newJavaEncodedImage(data)
 		if decodeErr != nil {
 			return r.newJavaImage(image.NewRGBA(image.Rect(0, 0, 1, 1)))
 		}
-		return r.newJavaImage(decoded)
+		return instance, nil
 	case "getWidth()I":
 		instance, err := r.parameter(1)
 		if err != nil {
@@ -6739,6 +7105,7 @@ func (r *ktfRuntime) handleImageMethod(name, descriptor string) (uint32, error) 
 			clip:   target.Bounds(),
 			color:  color.RGBA{A: 0xff},
 		}
+		r.graphicsServices[graphics] = r.imageServices[instance]
 		return graphics, nil
 	default:
 		return 0, nil
@@ -6751,12 +7118,99 @@ func (r *ktfRuntime) newJavaImage(source image.Image) (uint32, error) {
 		return 0, err
 	}
 	r.images[instance] = source
+	bounds := source.Bounds()
+	surface, err := r.services.Graphics.CreateSurface(
+		r.serviceOwner,
+		shared.SurfaceDescriptor{
+			Width:  int32(bounds.Dx()),
+			Height: int32(bounds.Dy()),
+			Format: shared.PixelRGBA8888,
+		},
+	)
+	if err != nil {
+		return 0, err
+	}
+	if err := r.services.Graphics.ReplacePixels(
+		r.serviceOwner,
+		surface,
+		ktfRGBABytes(source),
+	); err != nil {
+		_ = r.services.Graphics.DestroySurface(r.serviceOwner, surface)
+		return 0, err
+	}
+	r.imageServices[instance] = surface
 	return instance, nil
+}
+
+func (r *ktfRuntime) newJavaEncodedImage(data []byte) (uint32, error) {
+	asset, err := r.services.Assets.Decode(
+		r.serviceOwner,
+		data,
+		shared.DecodeOptions{},
+	)
+	if err != nil {
+		return 0, err
+	}
+	info, err := r.services.Assets.Info(r.serviceOwner, asset)
+	if err != nil || len(info.Frames) == 0 {
+		_ = r.services.Assets.Release(r.serviceOwner, asset)
+		if err == nil {
+			err = fmt.Errorf("decoded KTF image has no frames")
+		}
+		return 0, err
+	}
+	pixels, err := r.services.Graphics.RGBA(
+		r.serviceOwner,
+		info.Frames[0].Surface,
+	)
+	if err != nil {
+		_ = r.services.Assets.Release(r.serviceOwner, asset)
+		return 0, err
+	}
+	source := image.NewRGBA(image.Rect(
+		0,
+		0,
+		int(info.Width),
+		int(info.Height),
+	))
+	copy(source.Pix, pixels)
+	instance, err := r.newJavaInstance("org/kwis/msp/lcdui/Image", 8)
+	if err != nil {
+		_ = r.services.Assets.Release(r.serviceOwner, asset)
+		return 0, err
+	}
+	r.images[instance] = source
+	r.imageServices[instance] = info.Frames[0].Surface
+	r.javaAssetServices[instance] = asset
+	return instance, nil
+}
+
+func ktfRGBABytes(source image.Image) []byte {
+	bounds := source.Bounds()
+	pixels := make([]byte, bounds.Dx()*bounds.Dy()*4)
+	offset := 0
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			red, green, blue, alpha := source.At(x, y).RGBA()
+			pixels[offset+0] = uint8(red >> 8)
+			pixels[offset+1] = uint8(green >> 8)
+			pixels[offset+2] = uint8(blue >> 8)
+			pixels[offset+3] = uint8(alpha >> 8)
+			offset += 4
+		}
+	}
+	return pixels
 }
 
 func (r *ktfRuntime) findKTFResource(name string) ([]byte, bool) {
 	if name == "." || name == ".." || strings.HasPrefix(name, "../") {
 		return nil, false
+	}
+	if data, err := r.services.Storage.ReadFile(
+		shared.NamespacePackage,
+		name,
+	); err == nil {
+		return data, true
 	}
 	if data, ok := r.pkg.Resources[name]; ok {
 		return data, true
@@ -6764,6 +7218,12 @@ func (r *ktfRuntime) findKTFResource(name string) ([]byte, bool) {
 	for candidate, data := range r.pkg.Resources {
 		if strings.EqualFold(candidate, name) ||
 			strings.EqualFold(path.Base(candidate), path.Base(name)) {
+			if mounted, err := r.services.Storage.ReadFile(
+				shared.NamespacePackage,
+				candidate,
+			); err == nil {
+				return mounted, true
+			}
 			return data, true
 		}
 	}
@@ -6795,6 +7255,28 @@ func (r *ktfRuntime) ensureScreenGraphics() (uint32, error) {
 		clip:   r.frame.Bounds(),
 		color:  color.RGBA{A: 0xff},
 	}
+	surface, err := r.services.Graphics.CreateSurface(
+		r.serviceOwner,
+		shared.SurfaceDescriptor{
+			Width:  int32(r.frame.Bounds().Dx()),
+			Height: int32(r.frame.Bounds().Dy()),
+			Format: shared.PixelRGBA8888,
+		},
+	)
+	if err != nil {
+		return 0, err
+	}
+	if err := r.services.Graphics.SetScreen(
+		r.serviceOwner,
+		surface,
+	); err != nil {
+		_ = r.services.Graphics.DestroySurface(r.serviceOwner, surface)
+		return 0, err
+	}
+	r.graphicsServices[instance] = surface
+	if err := r.syncKTFGraphics(instance); err != nil {
+		return 0, err
+	}
 	return instance, nil
 }
 
@@ -6808,11 +7290,69 @@ func (r *ktfRuntime) resetScreenGraphics(instance uint32) {
 	state.color = color.RGBA{A: 0xff}
 }
 
-func (r *ktfRuntime) handleGraphicsMethod(name, descriptor string) (uint32, error) {
+func (r *ktfRuntime) syncKTFGraphics(instance uint32) error {
+	state := r.graphics[instance]
+	serviceID := r.graphicsServices[instance]
+	if state == nil || serviceID == 0 {
+		return nil
+	}
+	bounds := state.target.Bounds()
+	descriptor, err := r.services.Graphics.Descriptor(
+		r.serviceOwner,
+		serviceID,
+	)
+	if err != nil {
+		return err
+	}
+	if descriptor.Width != int32(bounds.Dx()) ||
+		descriptor.Height != int32(bounds.Dy()) ||
+		descriptor.Format != shared.PixelRGBA8888 {
+		return fmt.Errorf(
+			"KTF graphics 0x%08x service geometry differs",
+			instance,
+		)
+	}
+	if err := r.services.Graphics.ReplacePixels(
+		r.serviceOwner,
+		serviceID,
+		ktfRGBABytes(state.target),
+	); err != nil {
+		return err
+	}
+	if state.translate.X < -(1<<31) || state.translate.X > 1<<31-1 ||
+		state.translate.Y < -(1<<31) || state.translate.Y > 1<<31-1 {
+		return fmt.Errorf("KTF graphics translation overflows service state")
+	}
+	return r.services.Graphics.SetDrawState(
+		r.serviceOwner,
+		serviceID,
+		shared.SurfaceDrawState{
+			Clip: shared.Rectangle{
+				X:      int32(state.clip.Min.X),
+				Y:      int32(state.clip.Min.Y),
+				Width:  int32(state.clip.Dx()),
+				Height: int32(state.clip.Dy()),
+			},
+			TranslateX:  int32(state.translate.X),
+			TranslateY:  int32(state.translate.Y),
+			Raster:      shared.RasterCopy,
+			GlobalAlpha: state.color.A,
+		},
+	)
+}
+
+func (r *ktfRuntime) handleGraphicsMethod(
+	name, descriptor string,
+) (result uint32, returnedErr error) {
 	instance, err := r.parameter(1)
 	if err != nil {
 		return 0, err
 	}
+	defer func() {
+		if returnedErr == nil {
+			returnedErr = r.syncKTFGraphics(instance)
+		}
+	}()
 	state := r.graphics[instance]
 	switch name + descriptor {
 	case "<init>(Lorg/kwis/msp/lcdui/Display;)V",
@@ -6826,6 +7366,11 @@ func (r *ktfRuntime) handleGraphicsMethod(name, descriptor string) (uint32, erro
 				clip:   r.frame.Bounds(),
 				color:  color.RGBA{A: 0xff},
 			}
+			screen, screenErr := r.ensureScreenGraphics()
+			if screenErr != nil {
+				return 0, screenErr
+			}
+			r.graphicsServices[instance] = r.graphicsServices[screen]
 		}
 		return 0, nil
 	case "getFont()Lorg/kwis/msp/lcdui/Font;":
@@ -7198,10 +7743,83 @@ func (r *ktfRuntime) drawGraphicsTextParameters(
 	if err != nil {
 		return err
 	}
-	r.drawGraphicsText(state, text, x, y, anchor)
+	return r.drawGraphicsTextShared(state, text, x, y, anchor)
+}
+
+func (r *ktfRuntime) drawGraphicsTextShared(
+	state *ktfGraphics,
+	text string,
+	x, y int,
+	anchor uint32,
+) error {
+	var serviceID shared.ServiceID
+	for instance, candidate := range r.graphics {
+		if candidate == state {
+			serviceID = r.graphicsServices[instance]
+			break
+		}
+	}
+	if serviceID == 0 {
+		return fmt.Errorf("KTF graphics text target has no shared surface")
+	}
+	font, err := r.ensureDefaultFont()
+	if err != nil {
+		return err
+	}
+	fontID, err := r.ensureKTFFontService(font)
+	if err != nil {
+		return err
+	}
+	textAnchor := shared.AnchorLeft | shared.AnchorTop
+	switch {
+	case anchor&8 != 0:
+		textAnchor = textAnchor&^shared.AnchorLeft | shared.AnchorRight
+	case anchor&1 != 0:
+		textAnchor = textAnchor&^shared.AnchorLeft |
+			shared.AnchorHorizontalCenter
+	}
+	switch {
+	case anchor&32 != 0:
+		textAnchor = textAnchor&^shared.AnchorTop | shared.AnchorBottom
+	case anchor&2 != 0:
+		textAnchor = textAnchor&^shared.AnchorTop |
+			shared.AnchorVerticalCenter
+	case anchor&64 != 0:
+		textAnchor = textAnchor&^shared.AnchorTop | shared.AnchorBaseline
+	}
+	if err := r.services.Text.Draw(
+		r.serviceOwner,
+		fontID,
+		serviceID,
+		text,
+		int32(x),
+		int32(y),
+		textAnchor,
+		shared.Color{
+			R: state.color.R,
+			G: state.color.G,
+			B: state.color.B,
+			A: 0xff,
+		},
+	); err != nil {
+		return err
+	}
+	pixels, err := r.services.Graphics.RGBA(r.serviceOwner, serviceID)
+	if err != nil {
+		return err
+	}
+	bounds := state.target.Bounds()
+	if len(pixels) != bounds.Dx()*bounds.Dy()*4 {
+		return fmt.Errorf("KTF text surface geometry changed")
+	}
+	source := image.NewRGBA(image.Rect(0, 0, bounds.Dx(), bounds.Dy()))
+	copy(source.Pix, pixels)
+	draw.Draw(state.target, bounds, source, image.Point{}, draw.Src)
 	return nil
 }
 
+// drawGraphicsText is retained as a compatibility reference for the handset
+// bitmap metrics; active drawing goes through the shared Text service above.
 func (r *ktfRuntime) drawGraphicsText(
 	state *ktfGraphics,
 	text string,
@@ -8510,25 +9128,39 @@ func (r *ktfRuntime) handleRandomMethod(
 	}
 	const (
 		multiplier = uint64(0x5deece66d)
-		addend     = uint64(0xb)
 		mask       = uint64(1<<48 - 1)
 	)
-	setSeed := func(seed uint64) {
-		r.randomSeeds[instance] = (seed ^ multiplier) & mask
-	}
-	next := func(bits uint) uint32 {
-		seed, ok := r.randomSeeds[instance]
-		if !ok {
-			seed = (uint64(instance) ^ multiplier) & mask
+	stream := fmt.Sprintf("ktf.java.random.%08x", instance)
+	syncSeed := func() {
+		for _, current := range r.services.Random.Snapshot().Streams {
+			if current.Name == stream {
+				r.randomSeeds[instance] = current.State[0]
+				return
+			}
 		}
-		seed = (seed*multiplier + addend) & mask
-		r.randomSeeds[instance] = seed
-		return uint32(seed >> (48 - bits))
+	}
+	setSeed := func(seed uint64) error {
+		if err := r.services.Random.SetJavaSeed(stream, int64(seed)); err != nil {
+			return err
+		}
+		r.randomSeeds[instance] = (seed ^ multiplier) & mask
+		return nil
+	}
+	next := func(bits uint8) (uint32, error) {
+		if _, ok := r.randomSeeds[instance]; !ok {
+			if err := setSeed(uint64(instance)); err != nil {
+				return 0, err
+			}
+		}
+		value, err := r.services.Random.JavaBits(stream, bits)
+		if err == nil {
+			syncSeed()
+		}
+		return value, err
 	}
 	switch name + descriptor {
 	case "<init>()V":
-		setSeed(uint64(instance))
-		return 0, nil
+		return 0, setSeed(uint64(instance))
 	case "<init>(J)V", "setSeed(J)V":
 		low, valueErr := r.parameter(2)
 		if valueErr != nil {
@@ -8538,10 +9170,9 @@ func (r *ktfRuntime) handleRandomMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		setSeed(uint64(high)<<32 | uint64(low))
-		return 0, nil
+		return 0, setSeed(uint64(high)<<32 | uint64(low))
 	case "nextInt()I":
-		return next(32), nil
+		return next(32)
 	case "nextInt(I)I":
 		bound, valueErr := r.parameter(2)
 		if valueErr != nil {
@@ -8550,9 +9181,13 @@ func (r *ktfRuntime) handleRandomMethod(
 		if int32(bound) <= 0 {
 			return 0, nil
 		}
-		return uint32(uint64(next(31)) * uint64(bound) >> 31), nil
+		value, valueErr := next(31)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		return uint32(uint64(value) * uint64(bound) >> 31), nil
 	case "nextBoolean()Z":
-		return next(1), nil
+		return next(1)
 	default:
 		return 0, nil
 	}
@@ -8565,7 +9200,7 @@ func (r *ktfRuntime) handleDateMethod(name, descriptor string) (uint32, error) {
 	}
 	switch name + descriptor {
 	case "<init>()V":
-		r.dates[instance] = 0
+		r.dates[instance] = int64(r.tickMS)
 		return 0, nil
 	case "<init>(J)V", "setTime(J)V":
 		low, valueErr := r.parameter(2)
@@ -8905,7 +9540,7 @@ func (r *ktfRuntime) handleMediaMethod(
 			}
 		}
 		r.clips[instance] = clip
-		return 0, nil
+		return 0, r.syncKTFClip(instance)
 	case "availableDataSize()I":
 		instance, err := r.parameter(1)
 		if err != nil {
@@ -8918,7 +9553,7 @@ func (r *ktfRuntime) handleMediaMethod(
 			return 0, err
 		}
 		r.ensureKTFClip(instance).data = nil
-		return 0, nil
+		return 0, r.syncKTFClip(instance)
 	case "putData([BII)I":
 		instance, err := r.parameter(1)
 		if err != nil {
@@ -8942,7 +9577,7 @@ func (r *ktfRuntime) handleMediaMethod(
 		}
 		clip := r.ensureKTFClip(instance)
 		clip.data = append(clip.data, data...)
-		return count, nil
+		return count, r.syncKTFClip(instance)
 	case "getData([BII)I":
 		instance, err := r.parameter(1)
 		if err != nil {
@@ -8972,7 +9607,7 @@ func (r *ktfRuntime) handleMediaMethod(
 			return 0, err
 		}
 		clip.data = append(clip.data[:0], clip.data[count:]...)
-		return count, nil
+		return count, r.syncKTFClip(instance)
 	case "setBuffer([BI)Z":
 		instance, err := r.parameter(1)
 		if err != nil {
@@ -8991,7 +9626,7 @@ func (r *ktfRuntime) handleMediaMethod(
 			return 0, err
 		}
 		r.ensureKTFClip(instance).data = data
-		return 1, nil
+		return 1, r.syncKTFClip(instance)
 	case "setVolume(I)Z":
 		instance, err := r.parameter(1)
 		if err != nil {
@@ -9007,7 +9642,7 @@ func (r *ktfRuntime) handleMediaMethod(
 			r.clips[instance] = clip
 		}
 		clip.volume = int32(volume)
-		return 1, nil
+		return 1, r.syncKTFClip(instance)
 	case "getVolume()I":
 		instance, err := r.parameter(1)
 		if err != nil {
@@ -9045,7 +9680,24 @@ func (r *ktfRuntime) handleMediaMethod(
 			r.clips[instance] = clip
 		}
 		clip.playing = name == "play"
-		return 1, nil
+		serviceID, serviceErr := r.ensureKTFClipService(instance)
+		if serviceErr != nil {
+			return 0, serviceErr
+		}
+		if clip.playing {
+			plays := int32(1)
+			if repeat, valueErr := r.parameter(2); valueErr == nil && repeat != 0 {
+				plays = -1
+			}
+			serviceErr = r.services.Media.Play(
+				r.serviceOwner,
+				serviceID,
+				plays,
+			)
+		} else {
+			serviceErr = r.services.Media.Stop(r.serviceOwner, serviceID)
+		}
+		return 1, serviceErr
 	default:
 		return 0, nil
 	}
@@ -9060,6 +9712,50 @@ func (r *ktfRuntime) ensureKTFClip(instance uint32) *ktfClip {
 	return clip
 }
 
+func (r *ktfRuntime) ensureKTFClipService(
+	instance uint32,
+) (shared.ServiceID, error) {
+	if serviceID := r.clipServices[instance]; serviceID != 0 {
+		return serviceID, nil
+	}
+	serviceID, err := r.services.Media.CreateClip(
+		r.serviceOwner,
+		"",
+		0,
+	)
+	if err != nil {
+		return 0, err
+	}
+	r.clipServices[instance] = serviceID
+	return serviceID, nil
+}
+
+func (r *ktfRuntime) syncKTFClip(instance uint32) error {
+	clip := r.ensureKTFClip(instance)
+	serviceID, err := r.ensureKTFClipService(instance)
+	if err != nil {
+		return err
+	}
+	if err := r.services.Media.Clear(r.serviceOwner, serviceID); err != nil {
+		return err
+	}
+	if _, err := r.services.Media.Append(
+		r.serviceOwner,
+		serviceID,
+		clip.data,
+	); err != nil {
+		return err
+	}
+	volume := max(int32(0), min(int32(100), clip.volume*20))
+	return r.services.Media.SetClipGain(
+		r.serviceOwner,
+		serviceID,
+		uint8(volume),
+		false,
+		0,
+	)
+}
+
 func (r *ktfRuntime) handleCalendarMethod(
 	name, descriptor string,
 ) (uint32, error) {
@@ -9071,7 +9767,7 @@ func (r *ktfRuntime) handleCalendarMethod(
 	case "getInstance()Ljava/util/Calendar;":
 		calendar, valueErr := r.newHostJavaObject("java/util/Calendar")
 		if valueErr == nil {
-			r.dates[calendar] = 0
+			r.dates[calendar] = int64(r.tickMS)
 		}
 		return calendar, valueErr
 	case "get(I)I":
@@ -9134,9 +9830,25 @@ func (r *ktfRuntime) handleFileMethod(
 		}
 		filename := normalizeKTFFileName(r.javaStringValue(nameAddress))
 		file := &ktfFile{name: filename, mode: mode}
-		_, exists := r.fileData[filename]
+		legacyData, exists := r.fileData[filename]
+		if exists {
+			if _, statErr := r.services.Storage.Stat(
+				shared.NamespacePrivate,
+				filename,
+			); statErr != nil {
+				if writeErr := r.services.Storage.WriteFile(
+					shared.NamespacePrivate,
+					filename,
+					legacyData,
+				); writeErr != nil {
+					return 0, writeErr
+				}
+			}
+		}
+		openMode := shared.OpenMode(0)
 		switch mode {
 		case ktfFileReadOnly:
+			openMode = shared.OpenRead
 			if !exists {
 				r.hostTrace = append(
 					r.hostTrace,
@@ -9145,16 +9857,13 @@ func (r *ktfRuntime) handleFileMethod(
 				return 0, r.raiseHostJavaException("java/io/IOException")
 			}
 		case ktfFileWrite:
-			if !exists {
-				r.fileData[filename] = nil
-			}
-			file.position = uint32(len(r.fileData[filename]))
+			openMode = shared.OpenRead | shared.OpenWrite |
+				shared.OpenCreate | shared.OpenAppend
 		case ktfFileWriteTrunc:
-			r.fileData[filename] = nil
+			openMode = shared.OpenRead | shared.OpenWrite |
+				shared.OpenCreate | shared.OpenTruncate
 		case ktfFileReadWrite:
-			if !exists {
-				r.fileData[filename] = nil
-			}
+			openMode = shared.OpenRead | shared.OpenWrite | shared.OpenCreate
 		default:
 			r.hostTrace = append(
 				r.hostTrace,
@@ -9166,7 +9875,29 @@ func (r *ktfRuntime) handleFileMethod(
 			)
 			return 0, r.raiseHostJavaException("java/io/IOException")
 		}
+		serviceID, serviceErr := r.services.Storage.Open(
+			r.serviceOwner,
+			shared.NamespacePrivate,
+			filename,
+			openMode,
+		)
+		if serviceErr != nil {
+			return 0, r.raiseHostJavaException("java/io/IOException")
+		}
+		data, serviceErr := r.services.Storage.ReadFile(
+			shared.NamespacePrivate,
+			filename,
+		)
+		if serviceErr != nil {
+			_ = r.services.Storage.Close(r.serviceOwner, serviceID)
+			return 0, serviceErr
+		}
+		r.fileData[filename] = data
+		if mode == ktfFileWrite {
+			file.position = uint32(len(data))
+		}
 		r.files[instance] = file
+		r.fileServices[instance] = serviceID
 		r.hostTrace = append(
 			r.hostTrace,
 			fmt.Sprintf("java_file_open:%s:mode=%d", filename, mode),
@@ -9178,6 +9909,15 @@ func (r *ktfRuntime) handleFileMethod(
 			return 0, err
 		}
 		if file := r.files[instance]; file != nil {
+			if serviceID := r.fileServices[instance]; serviceID != 0 {
+				if err := r.services.Storage.Close(
+					r.serviceOwner,
+					serviceID,
+				); err != nil {
+					return 0, err
+				}
+				delete(r.fileServices, instance)
+			}
 			file.closed = true
 		}
 		return 0, nil
@@ -9197,7 +9937,13 @@ func (r *ktfRuntime) handleFileMethod(
 		}
 		var data []byte
 		if file := r.files[fileInstance]; file != nil {
-			data = append(data, r.fileData[file.name]...)
+			data, err = r.services.Storage.ReadFile(
+				shared.NamespacePrivate,
+				file.name,
+			)
+			if err != nil {
+				return 0, err
+			}
 		}
 		r.inputStreams[instance] = &ktfInputStream{data: data}
 		return instance, nil
@@ -9224,7 +9970,14 @@ func (r *ktfRuntime) handleFileMethod(
 			return 0, err
 		}
 		if file := r.files[instance]; file != nil {
-			return uint32(len(r.fileData[file.name])), nil
+			info, err := r.services.Storage.Stat(
+				shared.NamespacePrivate,
+				file.name,
+			)
+			if err != nil {
+				return 0, err
+			}
+			return uint32(min(info.Size, uint64(^uint32(0)))), nil
 		}
 		return 0, nil
 	case "seek(I)V":
@@ -9237,6 +9990,18 @@ func (r *ktfRuntime) handleFileMethod(
 			return 0, err
 		}
 		if file := r.files[instance]; file != nil {
+			serviceID, serviceErr := r.ensureKTFFileService(instance)
+			if serviceErr != nil {
+				return 0, serviceErr
+			}
+			if _, serviceErr := r.services.Storage.Seek(
+				r.serviceOwner,
+				serviceID,
+				int64(position),
+				shared.SeekStart,
+			); serviceErr != nil {
+				return 0, serviceErr
+			}
 			file.position = position
 		}
 		return 0, nil
@@ -9343,21 +10108,29 @@ func (r *ktfRuntime) readKTFFile(
 	if count == 0 {
 		return 0, nil
 	}
-	data := r.fileData[file.name]
-	if file.position >= uint32(len(data)) {
+	serviceID, err := r.ensureKTFFileService(instance)
+	if err != nil {
+		return 0, err
+	}
+	data, err := r.services.Storage.Read(
+		r.serviceOwner,
+		serviceID,
+		uint64(count),
+	)
+	if err != nil {
+		return 0, err
+	}
+	if len(data) == 0 {
 		return ^uint32(0), nil
 	}
-	remaining := uint32(len(data)) - file.position
-	if count > remaining {
-		count = remaining
-	}
+	count = uint32(len(data))
 	fields, err := r.readU32(array)
 	if err != nil {
 		return 0, err
 	}
 	if err := r.cpu.WriteMemory(
 		fields+8+offset,
-		data[file.position:file.position+count],
+		data,
 	); err != nil {
 		return 0, err
 	}
@@ -9382,11 +10155,32 @@ func (r *ktfRuntime) writeKTFFile(
 	if end > uint64(^uint32(0)) {
 		return 0, errors.New("KTF File.write range overflows uint32")
 	}
-	stored := r.fileData[file.name]
-	if end > uint64(len(stored)) {
-		stored = append(stored, make([]byte, int(end)-len(stored))...)
+	serviceID, err := r.ensureKTFFileService(instance)
+	if err != nil {
+		return 0, err
 	}
-	copy(stored[file.position:uint32(end)], data)
+	written, err := r.services.Storage.Write(
+		r.serviceOwner,
+		serviceID,
+		data,
+	)
+	if err != nil {
+		return 0, err
+	}
+	if written != len(data) {
+		return 0, fmt.Errorf(
+			"shared KTF file wrote %d bytes, want %d",
+			written,
+			len(data),
+		)
+	}
+	stored, err := r.services.Storage.ReadFile(
+		shared.NamespacePrivate,
+		file.name,
+	)
+	if err != nil {
+		return 0, err
+	}
 	r.fileData[file.name] = stored
 	file.position = uint32(end)
 	r.hostTrace = append(
@@ -9394,6 +10188,56 @@ func (r *ktfRuntime) writeKTFFile(
 		fmt.Sprintf("java_file_write:%s:%d", file.name, len(data)),
 	)
 	return uint32(len(data)), nil
+}
+
+func (r *ktfRuntime) ensureKTFFileService(
+	instance uint32,
+) (shared.ServiceID, error) {
+	if serviceID := r.fileServices[instance]; serviceID != 0 {
+		return serviceID, nil
+	}
+	file := r.files[instance]
+	if file == nil {
+		return 0, fmt.Errorf("KTF file object 0x%08x is missing", instance)
+	}
+	if _, err := r.services.Storage.Stat(
+		shared.NamespacePrivate,
+		file.name,
+	); err != nil {
+		if data, ok := r.fileData[file.name]; ok {
+			if err := r.services.Storage.WriteFile(
+				shared.NamespacePrivate,
+				file.name,
+				data,
+			); err != nil {
+				return 0, err
+			}
+		}
+	}
+	mode := shared.OpenRead
+	if file.mode != ktfFileReadOnly {
+		mode |= shared.OpenWrite | shared.OpenCreate
+	}
+	serviceID, err := r.services.Storage.Open(
+		r.serviceOwner,
+		shared.NamespacePrivate,
+		file.name,
+		mode,
+	)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := r.services.Storage.Seek(
+		r.serviceOwner,
+		serviceID,
+		int64(file.position),
+		shared.SeekStart,
+	); err != nil {
+		_ = r.services.Storage.Close(r.serviceOwner, serviceID)
+		return 0, err
+	}
+	r.fileServices[instance] = serviceID
+	return serviceID, nil
 }
 
 func (r *ktfRuntime) handleFileSystemMethod(
@@ -9409,7 +10253,10 @@ func (r *ktfRuntime) handleFileSystemMethod(
 			return 0, err
 		}
 		filename := normalizeKTFFileName(r.javaStringValue(nameAddress))
-		if _, ok := r.fileData[filename]; ok {
+		if _, err := r.services.Storage.Stat(
+			shared.NamespacePrivate,
+			filename,
+		); err == nil {
 			return 1, nil
 		}
 		return 0, nil
@@ -9419,13 +10266,22 @@ func (r *ktfRuntime) handleFileSystemMethod(
 		if err != nil {
 			return 0, err
 		}
-		delete(
-			r.fileData,
-			normalizeKTFFileName(r.javaStringValue(nameAddress)),
-		)
+		filename := normalizeKTFFileName(r.javaStringValue(nameAddress))
+		if err := r.services.Storage.Delete(
+			shared.NamespacePrivate,
+			filename,
+		); err != nil && !errors.Is(err, shared.ErrNotFound) {
+			return 0, err
+		}
+		delete(r.fileData, filename)
 		return 0, nil
 	case "getFreeSpace()J":
-		return r.javaLongResult(uint64(guestHeapSize / 2)), nil
+		limit := r.services.Config.Limits.Storage.MaxStorageBytes
+		used := r.services.Storage.Used(shared.NamespacePrivate)
+		if used >= limit {
+			return r.javaLongResult(0), nil
+		}
+		return r.javaLongResult(limit - used), nil
 	default:
 		return 0, nil
 	}
@@ -10642,6 +11498,14 @@ func (r *ktfRuntime) handleDataBaseMethod(name, descriptor string) (uint32, erro
 			}
 			store = &ktfDatabase{name: databaseName, recordSize: recordSize}
 			r.databaseStores[databaseName] = store
+			serviceID, serviceErr := r.services.Storage.CreateRecordStore(
+				r.serviceOwner,
+				databaseName,
+			)
+			if serviceErr != nil {
+				return 0, serviceErr
+			}
+			r.databaseServices[databaseName] = serviceID
 		}
 		classAddress, err := r.ensureJavaClass("org/kwis/msp/db/DataBase")
 		if err != nil {
@@ -10680,6 +11544,9 @@ func (r *ktfRuntime) handleDataBaseMethod(name, descriptor string) (uint32, erro
 			}
 		}
 		store.records = append(store.records, data)
+		if err := r.syncKTFDatabase(store); err != nil {
+			return 0, err
+		}
 		return uint32(len(store.records) - 1), nil
 	case "insertRecord([BII)I":
 		store, err := r.databaseParameter(1)
@@ -10706,6 +11573,9 @@ func (r *ktfRuntime) handleDataBaseMethod(name, descriptor string) (uint32, erro
 			}
 		}
 		store.records = append(store.records, data)
+		if err := r.syncKTFDatabase(store); err != nil {
+			return 0, err
+		}
 		return uint32(len(store.records) - 1), nil
 	case "selectRecord(I)[B":
 		store, err := r.databaseParameter(1)
@@ -10768,17 +11638,55 @@ func (r *ktfRuntime) handleDataBaseMethod(name, descriptor string) (uint32, erro
 			)
 		}
 		store.records[recordID] = data
-		return 0, nil
+		return 0, r.syncKTFDatabase(store)
 	case "deleteDataBase(Ljava/lang/String;)V":
 		nameAddress, err := r.parameter(1)
 		if err != nil {
 			return 0, err
 		}
-		delete(r.databaseStores, r.javaStrings[nameAddress])
+		databaseName := r.javaStrings[nameAddress]
+		if serviceID := r.databaseServices[databaseName]; serviceID != 0 {
+			if err := r.services.Storage.DeleteRecordStore(
+				r.serviceOwner,
+				serviceID,
+			); err != nil {
+				return 0, err
+			}
+			delete(r.databaseServices, databaseName)
+		}
+		delete(r.databaseStores, databaseName)
 		return 0, nil
 	default:
 		return 0, nil
 	}
+}
+
+func (r *ktfRuntime) syncKTFDatabase(store *ktfDatabase) error {
+	if store == nil || store.name == "" {
+		return fmt.Errorf("KTF database metadata is invalid")
+	}
+	serviceID := r.databaseServices[store.name]
+	if serviceID == 0 {
+		var err error
+		serviceID, err = r.services.Storage.CreateRecordStore(
+			r.serviceOwner,
+			store.name,
+		)
+		if err != nil {
+			return err
+		}
+		r.databaseServices[store.name] = serviceID
+	}
+	records := make(map[uint32][]byte, len(store.records))
+	for recordID, data := range store.records {
+		records[uint32(recordID)] = data
+	}
+	return r.services.Storage.ReplaceRecords(
+		r.serviceOwner,
+		serviceID,
+		max(uint32(1), uint32(len(records))),
+		records,
+	)
 }
 
 func (r *ktfRuntime) databaseParameter(index uint32) (*ktfDatabase, error) {
@@ -11531,9 +12439,21 @@ func ktfIncrementalMemoryAdd(
 	if err := runtime.cpu.ReadMemory(base+size-1, probe[:]); err != nil {
 		return 0, fmt.Errorf("read KTF incremental memory region end: %w", err)
 	}
+	start, end := uint64(base), uint64(base)+uint64(size)
 	for _, region := range runtime.incrementalMemory {
 		if region.base == base && region.size == size {
 			return 0, nil
+		}
+		regionStart := uint64(region.base)
+		regionEnd := regionStart + uint64(region.size)
+		if start < regionEnd && regionStart < end {
+			return 0, fmt.Errorf(
+				"KTF incremental memory region 0x%08x+0x%x overlaps 0x%08x+0x%x",
+				base,
+				size,
+				region.base,
+				region.size,
+			)
 		}
 	}
 	runtime.incrementalMemory = append(
@@ -11752,6 +12672,22 @@ func ktfKernelDefineTimer(
 		timer = &ktfWIPICTimer{}
 		runtime.wipicTimers[address] = timer
 	}
+	serviceID := runtime.wipicTimerServices[address]
+	if serviceID == 0 {
+		serviceID, err = runtime.services.Timers.Define(
+			runtime.serviceOwner,
+			fmt.Sprintf("ktf.wipic.timer.%08x", address),
+		)
+		if err != nil {
+			return 0, err
+		}
+		runtime.wipicTimerServices[address] = serviceID
+	} else if err := runtime.services.Timers.Cancel(
+		serviceID,
+		runtime.serviceOwner,
+	); err != nil {
+		return 0, err
+	}
 	timer.callback = callback
 	timer.active = false
 	runtime.hostTrace = append(
@@ -11790,9 +12726,27 @@ func ktfKernelSetTimer(
 		return ^uint32(7), nil
 	}
 	timeout := uint64(timeoutHigh)<<32 | uint64(timeoutLow)
+	maxMillis := uint64((time.Duration(1<<63 - 1)) / time.Millisecond)
+	if timeout > maxMillis || runtime.tickMS > maxMillis-timeout {
+		return ^uint32(7), nil
+	}
 	timer.parameter = parameter
 	timer.deadline = runtime.tickMS + timeout
 	timer.active = true
+	serviceID := runtime.wipicTimerServices[address]
+	if serviceID == 0 {
+		return ^uint32(7), nil
+	}
+	if err := runtime.services.Timers.Set(
+		serviceID,
+		runtime.serviceOwner,
+		time.Duration(timer.deadline)*time.Millisecond,
+		0,
+		int64(address),
+	); err != nil {
+		timer.active = false
+		return 0, err
+	}
 	runtime.hostTrace = append(
 		runtime.hostTrace,
 		fmt.Sprintf(
@@ -11816,6 +12770,14 @@ func ktfKernelUnsetTimer(
 	}
 	if timer := runtime.wipicTimers[address]; timer != nil {
 		timer.active = false
+	}
+	if serviceID := runtime.wipicTimerServices[address]; serviceID != 0 {
+		if err := runtime.services.Timers.Cancel(
+			serviceID,
+			runtime.serviceOwner,
+		); err != nil {
+			return 0, err
+		}
 	}
 	return 0, nil
 }
@@ -11926,23 +12888,41 @@ func (r *ktfRuntime) wipicSystemProperty(key string) (string, bool) {
 	case "NID", "SID", "BASEID", "BASELAT", "BASELONG", "CURRENTCH":
 		return "0", true
 	case "PHONENUMBER":
-		return "", true
+		return r.services.Device.Config().PhoneNumber, true
 	case "WIPIVERSION":
-		return "1.2.1", true
-	case "RSSILEVEL", "BATTERYLEVEL":
-		return "4", true
+		return r.services.Device.Config().WIPIVersion, true
+	case "RSSILEVEL":
+		_, signal, _ := r.services.Device.Status()
+		return strconv.Itoa(int(signal) * 5 / 100), true
+	case "BATTERYLEVEL":
+		battery, _, _ := r.services.Device.Status()
+		return strconv.Itoa(int(battery) * 5 / 100), true
 	case "MAXRSSILEVEL", "MAXBATTLEVEL":
 		return "5", true
 	case "MAXSERIALNUM":
 		return "0", true
 	case "MAXSOCKETNUM":
-		return "4", true
+		return strconv.FormatUint(
+			uint64(r.services.Config.Limits.Network.MaxSockets),
+			10,
+		), true
 	case "MEDIADEVICES":
 		return "audio/MIDI,audio/MP3", true
 	case "DNS":
 		return "127.0.0.1", true
 	case "TIMEZONE":
-		return "GMT+09:00", true
+		minutes := r.services.Device.Config().TimezoneMins
+		sign := "+"
+		if minutes < 0 {
+			sign = "-"
+			minutes = -minutes
+		}
+		return fmt.Sprintf(
+			"GMT%s%02d:%02d",
+			sign,
+			minutes/60,
+			minutes%60,
+		), true
 	case "KEYREPEAT":
 		return "600:250", true
 	case "VIBRATORLEVEL":
@@ -12192,8 +13172,10 @@ func ktfWIPICHandler(table, slot int) ktfHostHandler {
 			return ktfWIPICFileRemove
 		case 7:
 			return ktfWIPICFileRename
-		case 8, 9:
-			return ktfWIPICFileDirectory
+		case 8:
+			return ktfWIPICFileMakeDirectory
+		case 9:
+			return ktfWIPICFileRemoveDirectory
 		case 10:
 			return ktfWIPICFileList
 		case 11:
@@ -12245,9 +13227,14 @@ func ktfWIPICFileOpen(
 		return 0, err
 	}
 	name = normalizeKTFFileName(name)
+	openMode := shared.OpenMode(0)
 	switch flag {
 	case ktfWIPICFileReadOnly:
-		if _, ok := runtime.fileData[name]; !ok {
+		openMode = shared.OpenRead
+		if _, err := runtime.services.Storage.Stat(
+			shared.NamespacePrivate,
+			name,
+		); err != nil {
 			runtime.hostTrace = append(
 				runtime.hostTrace,
 				fmt.Sprintf(
@@ -12258,15 +13245,33 @@ func ktfWIPICFileOpen(
 			)
 			return ktfWIPICErrorNoEntry, nil
 		}
-	case ktfWIPICFileWriteOnly, ktfWIPICFileTruncate,
-		ktfWIPICFileReadWrite:
-		if _, ok := runtime.fileData[name]; !ok ||
-			flag == ktfWIPICFileTruncate {
-			runtime.fileData[name] = nil
-		}
+	case ktfWIPICFileWriteOnly:
+		openMode = shared.OpenWrite | shared.OpenCreate | shared.OpenAppend
+	case ktfWIPICFileTruncate:
+		openMode = shared.OpenWrite | shared.OpenCreate | shared.OpenTruncate
+	case ktfWIPICFileReadWrite:
+		openMode = shared.OpenRead | shared.OpenWrite | shared.OpenCreate
 	default:
 		return ktfWIPICErrorInvalid, nil
 	}
+	serviceID, serviceErr := runtime.services.Storage.Open(
+		runtime.serviceOwner,
+		shared.NamespacePrivate,
+		name,
+		openMode,
+	)
+	if serviceErr != nil {
+		return ktfWIPICError, nil
+	}
+	data, serviceErr := runtime.services.Storage.ReadFile(
+		shared.NamespacePrivate,
+		name,
+	)
+	if serviceErr != nil {
+		_ = runtime.services.Storage.Close(runtime.serviceOwner, serviceID)
+		return 0, serviceErr
+	}
+	runtime.fileData[name] = data
 	handle := runtime.nextWIPICFile
 	for handle == 0 || runtime.wipicFiles[handle] != nil {
 		handle++
@@ -12274,9 +13279,10 @@ func ktfWIPICFileOpen(
 	runtime.nextWIPICFile = handle + 1
 	file := &ktfFile{name: name, mode: flag}
 	if flag == ktfWIPICFileWriteOnly {
-		file.position = uint32(len(runtime.fileData[name]))
+		file.position = uint32(len(data))
 	}
 	runtime.wipicFiles[handle] = file
+	runtime.wipicFileServices[handle] = serviceID
 	runtime.hostTrace = append(
 		runtime.hostTrace,
 		fmt.Sprintf(
@@ -12313,25 +13319,26 @@ func ktfWIPICFileRead(
 		file.mode != ktfWIPICFileReadWrite {
 		return ktfWIPICErrorInvalid, nil
 	}
-	data := runtime.fileData[file.name]
-	if file.position >= uint32(len(data)) {
-		if count == 0 {
-			return 0, nil
-		}
+	if count == 0 {
+		return 0, nil
+	}
+	serviceID := runtime.wipicFileServices[handle]
+	data, serviceErr := runtime.services.Storage.Read(
+		runtime.serviceOwner,
+		serviceID,
+		uint64(count),
+	)
+	if serviceErr != nil {
+		return ktfWIPICError, nil
+	}
+	if len(data) == 0 {
 		return ktfWIPICErrorEOF, nil
 	}
-	available := uint32(len(data)) - file.position
-	if count > available {
-		count = available
-	}
-	if err := runtime.cpu.WriteMemory(
-		output,
-		data[file.position:file.position+count],
-	); err != nil {
+	if err := runtime.cpu.WriteMemory(output, data); err != nil {
 		return 0, err
 	}
-	file.position += count
-	return count, nil
+	file.position += uint32(len(data))
+	return uint32(len(data)), nil
 }
 
 func ktfWIPICFileWrite(
@@ -12367,14 +13374,24 @@ func ktfWIPICFileWrite(
 	if err := runtime.cpu.ReadMemory(input, inputData); err != nil {
 		return 0, err
 	}
-	end := file.position + count
-	stored := runtime.fileData[file.name]
-	if uint32(len(stored)) < end {
-		stored = append(stored, make([]byte, end-uint32(len(stored)))...)
+	serviceID := runtime.wipicFileServices[handle]
+	written, serviceErr := runtime.services.Storage.Write(
+		runtime.serviceOwner,
+		serviceID,
+		inputData,
+	)
+	if serviceErr != nil || written != len(inputData) {
+		return ktfWIPICError, nil
 	}
-	copy(stored[file.position:end], inputData)
+	stored, serviceErr := runtime.services.Storage.ReadFile(
+		shared.NamespacePrivate,
+		file.name,
+	)
+	if serviceErr != nil {
+		return 0, serviceErr
+	}
 	runtime.fileData[file.name] = stored
-	file.position = end
+	file.position += uint32(written)
 	return count, nil
 }
 
@@ -12389,6 +13406,15 @@ func ktfWIPICFileClose(
 	file := runtime.wipicFiles[handle]
 	if file == nil || file.closed {
 		return ktfWIPICErrorBadHandle, nil
+	}
+	if serviceID := runtime.wipicFileServices[handle]; serviceID != 0 {
+		if err := runtime.services.Storage.Close(
+			runtime.serviceOwner,
+			serviceID,
+		); err != nil {
+			return ktfWIPICError, nil
+		}
+		delete(runtime.wipicFileServices, handle)
 	}
 	file.closed = true
 	delete(runtime.wipicFiles, handle)
@@ -12416,19 +13442,26 @@ func ktfWIPICFileSeek(
 		return ktfWIPICErrorBadHandle, nil
 	}
 	position := int64(int32(rawPosition))
+	whence := shared.SeekStart
 	switch origin {
 	case 0:
 	case 1:
-		position += int64(file.position)
+		whence = shared.SeekCurrent
 	case 2:
-		position += int64(len(runtime.fileData[file.name]))
+		whence = shared.SeekEnd
 	default:
 		return ktfWIPICErrorInvalid, nil
 	}
-	if position < 0 || position > 8*1024*1024 {
+	servicePosition, serviceErr := runtime.services.Storage.Seek(
+		runtime.serviceOwner,
+		runtime.wipicFileServices[handle],
+		position,
+		whence,
+	)
+	if serviceErr != nil || servicePosition > 8*1024*1024 {
 		return ktfWIPICErrorBadSeek, nil
 	}
-	file.position = uint32(position)
+	file.position = uint32(servicePosition)
 	return file.position, nil
 }
 
@@ -12444,8 +13477,11 @@ func ktfWIPICFileAttribute(
 	if err != nil {
 		return 0, err
 	}
-	data, ok := runtime.fileData[name]
-	if !ok {
+	info, serviceErr := runtime.services.Storage.Stat(
+		shared.NamespacePrivate,
+		name,
+	)
+	if serviceErr != nil {
 		return ktfWIPICErrorNoEntry, nil
 	}
 	if output == 0 {
@@ -12453,7 +13489,7 @@ func ktfWIPICFileAttribute(
 	}
 	if err := runtime.writeWords(
 		output,
-		[]uint32{0, 0, uint32(len(data))},
+		[]uint32{0, uint32(info.Modified / time.Second), uint32(info.Size)},
 	); err != nil {
 		return 0, err
 	}
@@ -12470,6 +13506,12 @@ func ktfWIPICFileRemove(
 	}
 	if _, ok := runtime.fileData[name]; !ok {
 		return ktfWIPICErrorNoEntry, nil
+	}
+	if err := runtime.services.Storage.Delete(
+		shared.NamespacePrivate,
+		name,
+	); err != nil {
+		return ktfWIPICError, nil
 	}
 	delete(runtime.fileData, name)
 	return 0, nil
@@ -12494,15 +13536,59 @@ func ktfWIPICFileRename(
 	if _, exists := runtime.fileData[newName]; exists {
 		return ^uint32(4), nil
 	}
+	if err := runtime.services.Storage.Rename(
+		shared.NamespacePrivate,
+		oldName,
+		newName,
+	); err != nil {
+		return ktfWIPICError, nil
+	}
 	runtime.fileData[newName] = data
 	delete(runtime.fileData, oldName)
+	for _, file := range runtime.files {
+		if file != nil && file.name == oldName {
+			file.name = newName
+		}
+	}
+	for _, file := range runtime.wipicFiles {
+		if file != nil && file.name == oldName {
+			file.name = newName
+		}
+	}
 	return 0, nil
 }
 
-func ktfWIPICFileDirectory(
-	context.Context,
-	*ktfRuntime,
+func ktfWIPICFileMakeDirectory(
+	_ context.Context,
+	runtime *ktfRuntime,
 ) (uint32, error) {
+	name, err := runtime.wipicFileNameParameter(0)
+	if err != nil {
+		return 0, err
+	}
+	if err := runtime.services.Storage.MakeDirectory(
+		shared.NamespacePrivate,
+		name,
+	); err != nil {
+		return ktfWIPICError, nil
+	}
+	return 0, nil
+}
+
+func ktfWIPICFileRemoveDirectory(
+	_ context.Context,
+	runtime *ktfRuntime,
+) (uint32, error) {
+	name, err := runtime.wipicFileNameParameter(0)
+	if err != nil {
+		return 0, err
+	}
+	if err := runtime.services.Storage.RemoveDirectory(
+		shared.NamespacePrivate,
+		name,
+	); err != nil {
+		return ktfWIPICError, nil
+	}
 	return 0, nil
 }
 
@@ -12510,6 +13596,10 @@ func ktfWIPICFileList(
 	_ context.Context,
 	runtime *ktfRuntime,
 ) (uint32, error) {
+	name, err := runtime.wipicFileNameParameter(0)
+	if err != nil {
+		return 0, err
+	}
 	output, err := runtime.parameter(1)
 	if err != nil {
 		return 0, err
@@ -12521,7 +13611,23 @@ func ktfWIPICFileList(
 	if output == 0 || size < 2 {
 		return ktfWIPICErrorShortBuf, nil
 	}
-	if err := runtime.cpu.WriteMemory(output, []byte{0, 0}); err != nil {
+	entries, serviceErr := runtime.services.Storage.List(
+		shared.NamespacePrivate,
+		name,
+	)
+	if serviceErr != nil {
+		return ktfWIPICErrorNoEntry, nil
+	}
+	encoded := make([]byte, 0)
+	for _, entry := range entries {
+		encoded = append(encoded, entry...)
+		encoded = append(encoded, 0)
+	}
+	encoded = append(encoded, 0)
+	if uint32(len(encoded)) > size {
+		return ktfWIPICErrorShortBuf, nil
+	}
+	if err := runtime.cpu.WriteMemory(output, encoded); err != nil {
 		return 0, err
 	}
 	return 0, nil
@@ -12538,10 +13644,7 @@ func ktfWIPICFileAvailable(
 	_ context.Context,
 	runtime *ktfRuntime,
 ) (uint32, error) {
-	used := uint64(0)
-	for _, data := range runtime.fileData {
-		used += uint64(len(data))
-	}
+	used := runtime.services.Storage.Used(shared.NamespacePrivate)
 	const total = uint64(16 * 1024 * 1024)
 	if used >= total {
 		return 0, nil
@@ -12557,10 +13660,21 @@ func ktfWIPICFileSetMode(
 }
 
 func ktfWIPICFileGetCounts(
-	context.Context,
-	*ktfRuntime,
+	_ context.Context,
+	runtime *ktfRuntime,
 ) (uint32, error) {
-	return 0, nil
+	name, err := runtime.wipicFileNameParameter(0)
+	if err != nil {
+		return 0, err
+	}
+	entries, err := runtime.services.Storage.List(
+		shared.NamespacePrivate,
+		name,
+	)
+	if err != nil {
+		return ktfWIPICErrorNoEntry, nil
+	}
+	return uint32(len(entries)), nil
 }
 
 func ktfWIPICFileIsExist(
@@ -12571,7 +13685,13 @@ func ktfWIPICFileIsExist(
 	if err != nil {
 		return 0, err
 	}
-	if _, ok := runtime.fileData[name]; !ok {
+	if _, err := runtime.services.Storage.Stat(
+		shared.NamespacePrivate,
+		name,
+	); err != nil && !runtime.services.Storage.DirectoryExists(
+		shared.NamespacePrivate,
+		name,
+	) {
 		return ktfWIPICErrorNoEntry, nil
 	}
 	return 0, nil
@@ -12714,17 +13834,22 @@ func ktfWIPICGraphicsCreateImage(
 	if err := runtime.cpu.ReadMemory(allocation.data+offset, encoded); err != nil {
 		return 0, err
 	}
-	decoded, _, err := image.Decode(bytes.NewReader(encoded))
-	if err != nil && len(encoded) >= 2 &&
-		encoded[0] == 'B' && encoded[1] == 'M' {
-		decoded, err = decodeWIPIBMP(encoded)
-	}
+	assetID, err := runtime.services.Assets.Decode(
+		runtime.serviceOwner,
+		encoded,
+		shared.DecodeOptions{},
+	)
 	if err != nil {
 		return ^uint32(15), nil
 	}
-	bounds := decoded.Bounds()
-	width, height := bounds.Dx(), bounds.Dy()
+	asset, err := runtime.services.Assets.Info(runtime.serviceOwner, assetID)
+	if err != nil {
+		_ = runtime.services.Assets.Release(runtime.serviceOwner, assetID)
+		return 0, err
+	}
+	width, height := int(asset.Width), int(asset.Height)
 	if width <= 0 || height <= 0 || width > 4096 || height > 4096 {
+		_ = runtime.services.Assets.Release(runtime.serviceOwner, assetID)
 		return ^uint32(15), nil
 	}
 	framebufferObject, err := runtime.createWIPICFramebuffer(
@@ -12733,22 +13858,29 @@ func ktfWIPICGraphicsCreateImage(
 		false,
 	)
 	if err != nil {
+		_ = runtime.services.Assets.Release(runtime.serviceOwner, assetID)
 		return 0, err
 	}
 	framebuffer := runtime.wipicFramebuffers[framebufferObject]
+	rgba, err := runtime.services.Graphics.RGBA(
+		runtime.serviceOwner,
+		asset.Frames[0].Surface,
+	)
+	if err != nil {
+		_ = runtime.services.Assets.Release(runtime.serviceOwner, assetID)
+		return 0, err
+	}
 	pixels := make([]byte, framebuffer.stride*framebuffer.height)
 	for y := 0; y < height; y++ {
 		for x := 0; x < width; x++ {
-			red, green, blue, alpha := decoded.At(
-				bounds.Min.X+x,
-				bounds.Min.Y+y,
-			).RGBA()
-			red = red * alpha / 0xffff
-			green = green * alpha / 0xffff
-			blue = blue * alpha / 0xffff
-			value := uint16(red>>11)<<11 |
-				uint16(green>>10)<<5 |
-				uint16(blue>>11)
+			offset := (y*width + x) * 4
+			alpha := uint32(rgba[offset+3])
+			red := uint32(rgba[offset+0]) * alpha / 0xff
+			green := uint32(rgba[offset+1]) * alpha / 0xff
+			blue := uint32(rgba[offset+2]) * alpha / 0xff
+			value := uint16(red>>3)<<11 |
+				uint16(green>>2)<<5 |
+				uint16(blue>>3)
 			binary.LittleEndian.PutUint16(
 				pixels[y*framebuffer.stride+x*2:],
 				value,
@@ -12756,6 +13888,11 @@ func ktfWIPICGraphicsCreateImage(
 		}
 	}
 	if err := runtime.cpu.WriteMemory(framebuffer.pixels, pixels); err != nil {
+		_ = runtime.services.Assets.Release(runtime.serviceOwner, assetID)
+		return 0, err
+	}
+	if err := runtime.syncKTFWIPICFramebuffer(framebufferObject); err != nil {
+		_ = runtime.services.Assets.Release(runtime.serviceOwner, assetID)
 		return 0, err
 	}
 	// KTF's provider-private MC_GrpImage is a pointer wrapper around an image
@@ -12786,6 +13923,7 @@ func ktfWIPICGraphicsCreateImage(
 		framebuffer: framebufferObject,
 		source:      memoryID,
 	}
+	runtime.wipicAssetServices[object] = assetID
 	if err := runtime.writeU32(output, object); err != nil {
 		return 0, err
 	}
@@ -12815,11 +13953,22 @@ func ktfWIPICGraphicsDestroyImage(
 		return 0, nil
 	}
 	if framebuffer := runtime.wipicFramebuffers[imageState.framebuffer]; framebuffer != nil {
+		if serviceID := runtime.wipicSurfaceServices[framebuffer.object]; serviceID != 0 {
+			_ = runtime.services.Graphics.DestroySurface(
+				runtime.serviceOwner,
+				serviceID,
+			)
+			delete(runtime.wipicSurfaceServices, framebuffer.object)
+		}
 		runtime.heap.release(framebuffer.pixelHeader)
 		runtime.heap.release(framebuffer.pixelObject)
 		runtime.heap.release(framebuffer.body)
 		runtime.heap.release(framebuffer.object)
 		delete(runtime.wipicFramebuffers, framebuffer.object)
+	}
+	if assetID := runtime.wipicAssetServices[object]; assetID != 0 {
+		_ = runtime.services.Assets.Release(runtime.serviceOwner, assetID)
+		delete(runtime.wipicAssetServices, object)
 	}
 	if allocation, ok := runtime.wipicMemory[imageState.source]; ok {
 		runtime.heap.release(allocation.base)
@@ -12892,6 +14041,15 @@ func ktfWIPICGraphicsDestroyOffscreenFramebuffer(
 	if framebuffer == nil || framebuffer.screen {
 		return 0, nil
 	}
+	if serviceID := runtime.wipicSurfaceServices[object]; serviceID != 0 {
+		if err := runtime.services.Graphics.DestroySurface(
+			runtime.serviceOwner,
+			serviceID,
+		); err != nil {
+			return 0, err
+		}
+		delete(runtime.wipicSurfaceServices, object)
+	}
 	runtime.heap.release(framebuffer.pixelHeader)
 	runtime.heap.release(framebuffer.pixelObject)
 	runtime.heap.release(framebuffer.body)
@@ -12960,7 +14118,26 @@ func (r *ktfRuntime) createWIPICFramebuffer(
 		bits:        bits,
 		screen:      screen,
 	}
+	surface, err := r.services.Graphics.CreateSurface(
+		r.serviceOwner,
+		shared.SurfaceDescriptor{
+			Width:  int32(width),
+			Height: int32(height),
+			Stride: int32(stride),
+			Format: shared.PixelRGB565,
+		},
+	)
+	if err != nil {
+		return 0, err
+	}
+	if screen {
+		if err := r.services.Graphics.SetScreen(r.serviceOwner, surface); err != nil {
+			_ = r.services.Graphics.DestroySurface(r.serviceOwner, surface)
+			return 0, err
+		}
+	}
 	r.wipicFramebuffers[object] = framebuffer
+	r.wipicSurfaceServices[object] = surface
 	r.hostTrace = append(
 		r.hostTrace,
 		fmt.Sprintf(
@@ -13136,12 +14313,15 @@ func ktfWIPICGraphicsPutPixel(
 	if err != nil {
 		return 0, err
 	}
-	return 0, runtime.writeWIPICPixel(
+	if err := runtime.writeWIPICPixel(
 		framebuffer,
 		int(int32(x))+state.offsetX,
 		int(int32(y))+state.offsetY,
 		state,
-	)
+	); err != nil {
+		return 0, err
+	}
+	return 0, runtime.syncKTFWIPICFramebuffer(framebuffer)
 }
 
 func ktfWIPICGraphicsDrawLine(
@@ -13168,7 +14348,10 @@ func ktfWIPICGraphicsDrawLine(
 	y1 := int(int32(values[2])) + state.offsetY
 	x2 := int(int32(values[3])) + state.offsetX
 	y2 := int(int32(values[4])) + state.offsetY
-	return 0, runtime.drawWIPICLine(values[0], x1, y1, x2, y2, state)
+	if err := runtime.drawWIPICLine(values[0], x1, y1, x2, y2, state); err != nil {
+		return 0, err
+	}
+	return 0, runtime.syncKTFWIPICFramebuffer(values[0])
 }
 
 func (r *ktfRuntime) drawWIPICLine(
@@ -13246,7 +14429,7 @@ func ktfWIPICGraphicsDrawRect(
 			return 0, err
 		}
 	}
-	return 0, nil
+	return 0, runtime.syncKTFWIPICFramebuffer(values[0])
 }
 
 func ktfWIPICGraphicsFillRect(
@@ -13308,7 +14491,7 @@ func ktfWIPICGraphicsFillRect(
 			)
 		}
 	}
-	return 0, nil
+	return 0, runtime.syncKTFWIPICFramebuffer(values[0])
 }
 
 func ktfWIPICGraphicsCopyFramebuffer(
@@ -13397,7 +14580,7 @@ func ktfWIPICGraphicsCopyFramebuffer(
 			return 0, err
 		}
 	}
-	return 0, nil
+	return 0, runtime.syncKTFWIPICFramebuffer(values[0])
 }
 
 func (r *ktfRuntime) writeWIPICPixel(
@@ -13530,33 +14713,64 @@ func (r *ktfRuntime) presentWIPICFramebuffer(handle uint32) error {
 	if framebuffer == nil || r.frame == nil {
 		return nil
 	}
-	data := make([]byte, framebuffer.stride*framebuffer.height)
-	if err := r.cpu.ReadMemory(framebuffer.pixels, data); err != nil {
+	if err := r.syncKTFWIPICFramebuffer(handle); err != nil {
+		return err
+	}
+	surface := r.wipicSurfaceServices[handle]
+	if surface == 0 {
+		return fmt.Errorf("KTF WIPI-C framebuffer 0x%08x has no shared surface", handle)
+	}
+	frame, err := r.services.Graphics.Present(
+		r.serviceOwner,
+		surface,
+		shared.Rectangle{},
+	)
+	if err != nil {
 		return err
 	}
 	bounds := r.frame.Bounds()
-	width := min(framebuffer.width, bounds.Dx())
-	height := min(framebuffer.height, bounds.Dy())
+	width := min(int(frame.Width), bounds.Dx())
+	height := min(int(frame.Height), bounds.Dy())
 	for y := 0; y < height; y++ {
-		row := data[y*framebuffer.stride:]
 		for x := 0; x < width; x++ {
-			pixel := uint32(binary.LittleEndian.Uint16(row[x*2:]))
-			red := pixel >> 11 & 0x1f
-			green := pixel >> 5 & 0x3f
-			blue := pixel & 0x1f
+			offset := (y*int(frame.Width) + x) * 4
 			r.frame.SetRGBA(
 				bounds.Min.X+x,
 				bounds.Min.Y+y,
 				color.RGBA{
-					R: uint8(red<<3 | red>>2),
-					G: uint8(green<<2 | green>>4),
-					B: uint8(blue<<3 | blue>>2),
-					A: 0xff,
+					R: frame.RGBA[offset+0],
+					G: frame.RGBA[offset+1],
+					B: frame.RGBA[offset+2],
+					A: frame.RGBA[offset+3],
 				},
 			)
 		}
 	}
 	r.presentCount++
+	return nil
+}
+
+func (r *ktfRuntime) syncKTFWIPICFramebuffer(handle uint32) error {
+	framebuffer := r.wipicFramebuffers[handle]
+	serviceID := r.wipicSurfaceServices[handle]
+	if framebuffer == nil || serviceID == 0 {
+		return nil
+	}
+	data := make([]byte, framebuffer.stride*framebuffer.height)
+	if err := r.cpu.ReadMemory(framebuffer.pixels, data); err != nil {
+		return err
+	}
+	if err := r.services.Graphics.ReplacePixels(
+		r.serviceOwner,
+		serviceID,
+		data,
+	); err != nil {
+		return fmt.Errorf(
+			"sync KTF WIPI-C framebuffer 0x%08x: %w",
+			handle,
+			err,
+		)
+	}
 	return nil
 }
 

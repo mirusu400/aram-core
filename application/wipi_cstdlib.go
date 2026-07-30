@@ -187,9 +187,11 @@ func (r *wipiRuntime) dispatchCStdlib(name string) (wipiReturn, bool, error) {
 		}
 		return wipiU64(math.Float64bits(number)), true, nil
 	case "clock":
-		return wipiReturn{low: uint32(r.tickMS)}, true, nil
+		return wipiReturn{
+			low: uint32(r.services.Clock.Monotonic() / time.Millisecond),
+		}, true, nil
 	case "time":
-		value := uint64(wipiEpochUnix) + r.tickMS/1000
+		value := uint64(r.services.Clock.WallMillis() / 1000)
 		if a0 != 0 {
 			if err := r.writeU64(a0, value); err != nil {
 				return wipiReturn{}, true, err
@@ -316,7 +318,7 @@ func integerToken(raw string, base int) (string, int, int) {
 }
 
 func (r *wipiRuntime) breakDownTime(pointer uint32) (wipiReturn, bool, error) {
-	seconds := uint64(wipiEpochUnix) + r.tickMS/1000
+	seconds := uint64(r.services.Clock.WallMillis() / 1000)
 	if pointer != 0 {
 		low, err := r.readU32(pointer)
 		if err != nil {

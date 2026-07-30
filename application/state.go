@@ -6,7 +6,6 @@ import (
 	"crypto/subtle"
 	"encoding/binary"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"hash"
 	"io"
@@ -16,11 +15,12 @@ import (
 
 	machinecore "github.com/mirusu400/aram-core/core"
 	"github.com/mirusu400/aram-core/cpu"
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 const (
 	stateMagic         = "ARAMAPP\x00"
-	stateVersion       = uint32(5)
+	stateVersion       = uint32(7)
 	stateChecksumSize  = 32
 	maxStateContext    = 1 << 20
 	maxStateInputs     = 1024
@@ -36,12 +36,6 @@ func (m *Machine) SaveState(output io.Writer) error {
 
 	if m.closed {
 		return cpu.ErrClosed
-	}
-	if m.ktf != nil {
-		return errors.New("save KTF application state: not implemented")
-	}
-	if m.raptor != nil {
-		return errors.New("save Raptor application state: not implemented")
 	}
 	switch m.state {
 	case machinecore.StateReady, machinecore.StatePaused, machinecore.StateStopped:
@@ -129,6 +123,12 @@ func (m *Machine) SaveState(output io.Writer) error {
 	if err := m.writeMinigameState(writer); err != nil {
 		return err
 	}
+	if err := m.writeRaptorState(writer); err != nil {
+		return err
+	}
+	if err := m.writeKTFState(writer); err != nil {
+		return err
+	}
 	if writer.err != nil {
 		return fmt.Errorf("save state at offset 0x%x: %w", writer.offset, writer.err)
 	}
@@ -179,6 +179,11 @@ func (m *Machine) LoadState(input io.Reader) error {
 		return fmt.Errorf("load from %s: %w", m.state, ErrInvalidState)
 	}
 	maximum := m.memoryLimit + uint64(len(m.frame.Pix)) + stateOverheadLimit
+	if maximum <= math.MaxUint64-shared.MaxServicesStateBytes {
+		maximum += shared.MaxServicesStateBytes
+	} else {
+		maximum = math.MaxUint64
+	}
 	if maximum > math.MaxInt64-1 {
 		maximum = math.MaxInt64 - 1
 	}
@@ -216,6 +221,12 @@ func (m *Machine) LoadState(input io.Reader) error {
 			return err
 		}
 	}
+	if err := m.restoreRaptorState(parsed.raptor); err != nil {
+		return err
+	}
+	if err := m.restoreKTFState(parsed.ktf); err != nil {
+		return err
+	}
 	copy(m.frame.Pix, parsed.frame)
 	m.input = parsed.input
 	m.lastResult = parsed.lastResult
@@ -234,6 +245,8 @@ type parsedState struct {
 	input      []machinecore.InputEvent
 	wipi       *wipiSavedState
 	minigame   *minigameSavedState
+	raptor     *raptorSavedState
+	ktf        *ktfSavedState
 }
 
 func (m *Machine) parseState(data []byte) (parsedState, error) {
@@ -339,26 +352,45 @@ func (m *Machine) parseState(data []byte) (parsedState, error) {
 		))
 	}
 	input := make([]machinecore.InputEvent, 0, inputCount)
+	var previousInputAt time.Duration
 	for index := uint32(0); index < inputCount; index++ {
+		control := decoder.string16()
+		pressed := decoder.u8()
 		event := machinecore.InputEvent{
-			Control: decoder.string16(),
-			Pressed: decoder.u8() != 0,
+			Control: control,
+			Pressed: pressed != 0,
 		}
 		decoder.reserved(1)
 		event.At = time.Duration(int64(decoder.u64()))
 		if decoder.err != nil {
 			return parsedState{}, decoder.err
 		}
-		if err := event.Validate(); err != nil {
+		if pressed > 1 {
+			return parsedState{}, decoder.fail(fmt.Sprintf(
+				"invalid input event %d boolean",
+				index,
+			))
+		}
+		if err := event.Validate(); err != nil ||
+			(index != 0 && event.At < previousInputAt) {
 			return parsedState{}, decoder.fail(fmt.Sprintf("invalid input event %d: %v", index, err))
 		}
 		input = append(input, event)
+		previousInputAt = event.At
 	}
 	public, err := m.parseWIPIState(&decoder)
 	if err != nil {
 		return parsedState{}, err
 	}
 	minigame, err := m.parseMinigameState(&decoder)
+	if err != nil {
+		return parsedState{}, err
+	}
+	raptorState, err := m.parseRaptorState(&decoder)
+	if err != nil {
+		return parsedState{}, err
+	}
+	ktfState, err := m.parseKTFState(&decoder)
 	if err != nil {
 		return parsedState{}, err
 	}
@@ -386,6 +418,8 @@ func (m *Machine) parseState(data []byte) (parsedState, error) {
 		input:    input,
 		wipi:     public,
 		minigame: minigame,
+		raptor:   raptorState,
+		ktf:      ktfState,
 	}, nil
 }
 

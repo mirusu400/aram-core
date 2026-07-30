@@ -17,6 +17,14 @@ func TestStackResolveAppliesLayersInSpecificityOrder(t *testing.T) {
 				Properties: standardProperties,
 				Quirks:     map[string]bool{"legacy-timer": true},
 				Keys:       KeyMap{VirtualUp: KeyUp},
+				Capabilities: Capabilities{
+					CapabilityGraphics: true,
+					CapabilityNetwork:  false,
+				},
+				Limits: Limits{
+					LimitEventCount:   128,
+					LimitStorageBytes: 1 << 20,
+				},
 			},
 			Version: Version121,
 		},
@@ -24,6 +32,9 @@ func TestStackResolveAppliesLayersInSpecificityOrder(t *testing.T) {
 			Layer: Layer{
 				ID:         "ktf",
 				Properties: map[string]string{"shared": "carrier"},
+				Capabilities: Capabilities{
+					CapabilityNetwork: true,
+				},
 			},
 			Carrier: CarrierKTF,
 		},
@@ -40,6 +51,7 @@ func TestStackResolveAppliesLayersInSpecificityOrder(t *testing.T) {
 				Properties: map[string]string{"PHONEMODEL": "SCH-W830"},
 				Quirks:     map[string]bool{"legacy-timer": false},
 				Keys:       KeyMap{VirtualUp: Key2},
+				Limits:     Limits{LimitEventCount: 256},
 			},
 			Model: "SCH-W830",
 			Screen: Screen{
@@ -87,6 +99,16 @@ func TestStackResolveAppliesLayersInSpecificityOrder(t *testing.T) {
 	if resolved.Keys[VirtualUp] != Key2 {
 		t.Fatalf("resolved key map = %+v", resolved.Keys)
 	}
+	if !resolved.Capabilities[CapabilityGraphics] ||
+		!resolved.Capabilities[CapabilityNetwork] ||
+		resolved.Limits[LimitEventCount] != 256 ||
+		resolved.Limits[LimitStorageBytes] != 1<<20 {
+		t.Fatalf(
+			"resolved service profile = capabilities %+v limits %+v",
+			resolved.Capabilities,
+			resolved.Limits,
+		)
+	}
 	wantLayers := []string{"wipi-1.2.1", "ktf", "samsung", "sch-w830", "synthetic-title"}
 	if strings.Join(resolved.Layers, ",") != strings.Join(wantLayers, ",") {
 		t.Fatalf("Layers = %v, want %v", resolved.Layers, wantLayers)
@@ -95,6 +117,12 @@ func TestStackResolveAppliesLayersInSpecificityOrder(t *testing.T) {
 	standardProperties["shared"] = "mutated"
 	if resolved.Properties["shared"] != "carrier" {
 		t.Fatal("resolved profile aliases an input property map")
+	}
+	stack.Standard.Capabilities[CapabilityGraphics] = false
+	stack.Standard.Limits[LimitStorageBytes] = 1
+	if !resolved.Capabilities[CapabilityGraphics] ||
+		resolved.Limits[LimitStorageBytes] != 1<<20 {
+		t.Fatal("resolved profile aliases input capability or limit maps")
 	}
 }
 
@@ -138,6 +166,19 @@ func TestScreenValidation(t *testing.T) {
 	screen.BlueMask = 0x001f
 	if err := screen.Validate(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestProfileRejectsInvalidCapabilityAndLimit(t *testing.T) {
+	stack := validStack()
+	stack.Standard.Capabilities = Capabilities{"": true}
+	if _, err := stack.Resolve(); err == nil {
+		t.Fatal("Resolve accepted an empty capability")
+	}
+	stack = validStack()
+	stack.Standard.Limits = Limits{LimitStorageBytes: 0}
+	if _, err := stack.Resolve(); err == nil {
+		t.Fatal("Resolve accepted a zero service limit")
 	}
 }
 

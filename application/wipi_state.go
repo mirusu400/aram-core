@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	shared "github.com/mirusu400/aram-core/runtime"
 	"github.com/mirusu400/aram-core/wipi"
 )
 
@@ -75,6 +76,20 @@ type wipiSavedState struct {
 
 	systemMemory []byte
 	heapMemory   []byte
+
+	serviceOwner      shared.OwnerID
+	serviceName       string
+	services          []byte
+	surfaceServices   map[uint32]shared.ServiceID
+	assetServices     map[uint32]shared.ServiceID
+	timerServices     map[uint32]shared.ServiceID
+	fileServices      map[int32]shared.ServiceID
+	databaseServices  map[string]shared.ServiceID
+	mediaServices     map[uint32]shared.ServiceID
+	serialServices    map[int32]shared.ServiceID
+	socketServices    map[int32]shared.ServiceID
+	httpServices      map[int32]shared.ServiceID
+	validatedServices *shared.Services
 }
 
 func (m *Machine) writeWIPIState(writer *stateWriter) error {
@@ -83,6 +98,10 @@ func (m *Machine) writeWIPIState(writer *stateWriter) error {
 		writer.u8(0)
 		writer.write([]byte{0, 0, 0})
 		return nil
+	}
+	serviceState, err := runtime.prepareServicesForSave()
+	if err != nil {
+		return fmt.Errorf("save public WIPI shared services: %w", err)
 	}
 	if len(runtime.heap.allocations) > maxSavedHeapAllocations ||
 		len(runtime.framebuffers) > maxSavedWIPIFramebuffers ||
@@ -146,6 +165,7 @@ func (m *Machine) writeWIPIState(writer *stateWriter) error {
 		writer.u32(framebuffer.pixels)
 		writer.u32(uint32(framebuffer.width))
 		writer.u32(uint32(framebuffer.height))
+		writer.u32(uint32(framebuffer.bitsPerPixel))
 		if framebuffer.owns {
 			writer.u8(1)
 		} else {
@@ -518,6 +538,19 @@ func (m *Machine) writeWIPIState(writer *stateWriter) error {
 	if err := m.writeMemoryState(writer, guestHeapBase, guestHeapSize); err != nil {
 		return err
 	}
+	writer.u32(uint32(runtime.serviceOwner))
+	writeWIPIBytes(writer, []byte(runtime.serviceName))
+	writer.u64(uint64(len(serviceState)))
+	writer.write(serviceState)
+	writeWIPIUint32ServiceMap(writer, runtime.surfaceServices)
+	writeWIPIUint32ServiceMap(writer, runtime.assetServices)
+	writeWIPIUint32ServiceMap(writer, runtime.timerServices)
+	writeWIPIInt32ServiceMap(writer, runtime.fileServices)
+	writeWIPIStringServiceMap(writer, runtime.databaseServices)
+	writeWIPIUint32ServiceMap(writer, runtime.mediaServices)
+	writeWIPIInt32ServiceMap(writer, runtime.serialServices)
+	writeWIPIInt32ServiceMap(writer, runtime.socketServices)
+	writeWIPIInt32ServiceMap(writer, runtime.httpServices)
 	return nil
 }
 
@@ -588,14 +621,20 @@ func (m *Machine) parseWIPIState(decoder *stateDecoder) (*wipiSavedState, error)
 			pixels:       decoder.u32(),
 			width:        int(decoder.u32()),
 			height:       int(decoder.u32()),
-			bitsPerPixel: 32,
+			bitsPerPixel: int(decoder.u32()),
 			owns:         decoder.u8() != 0,
 		}
 		decoder.reserved(3)
-		pixelSize := uint64(framebuffer.width) * uint64(framebuffer.height) * 4
+		bytesPerPixel := uint64(4)
+		if framebuffer.bitsPerPixel == 16 {
+			bytesPerPixel = 2
+		}
+		pixelSize := uint64(framebuffer.width) * uint64(framebuffer.height) *
+			bytesPerPixel
 		if framebuffer.handle == 0 || framebuffer.pixels == 0 ||
 			framebuffer.width <= 0 || framebuffer.height <= 0 ||
 			framebuffer.width > 4096 || framebuffer.height > 4096 ||
+			(framebuffer.bitsPerPixel != 16 && framebuffer.bitsPerPixel != 32) ||
 			allocationSizes[framebuffer.handle] < 24 ||
 			pixelSize > uint64(allocationSizes[framebuffer.pixels]) {
 			return nil, decoder.fail(fmt.Sprintf("invalid public WIPI framebuffer %d", index))
@@ -1189,8 +1228,29 @@ func (m *Machine) parseWIPIState(decoder *stateDecoder) (*wipiSavedState, error)
 
 	saved.systemMemory = append([]byte(nil), decoder.bytes(int(wipi.SystemSize))...)
 	saved.heapMemory = append([]byte(nil), decoder.bytes(int(guestHeapSize))...)
+	saved.serviceOwner = shared.OwnerID(decoder.u32())
+	saved.serviceName = string(readWIPIBytes(decoder))
+	serviceSize := decoder.u64()
+	if serviceSize > shared.MaxServicesStateBytes ||
+		serviceSize > uint64(decoder.reader.Len()) ||
+		serviceSize > uint64(^uint(0)>>1) {
+		return nil, decoder.fail("invalid public WIPI shared-service state size")
+	}
+	saved.services = append([]byte(nil), decoder.bytes(int(serviceSize))...)
+	saved.surfaceServices = readWIPIUint32ServiceMap(decoder)
+	saved.assetServices = readWIPIUint32ServiceMap(decoder)
+	saved.timerServices = readWIPIUint32ServiceMap(decoder)
+	saved.fileServices = readWIPIInt32ServiceMap(decoder)
+	saved.databaseServices = readWIPIStringServiceMap(decoder)
+	saved.mediaServices = readWIPIUint32ServiceMap(decoder)
+	saved.serialServices = readWIPIInt32ServiceMap(decoder)
+	saved.socketServices = readWIPIInt32ServiceMap(decoder)
+	saved.httpServices = readWIPIInt32ServiceMap(decoder)
 	if decoder.err != nil {
 		return nil, decoder.err
+	}
+	if err := m.wipi.validateSavedServices(saved); err != nil {
+		return nil, decoder.fail(fmt.Sprintf("invalid public WIPI shared services: %v", err))
 	}
 	return saved, nil
 }
@@ -1198,6 +1258,17 @@ func (m *Machine) parseWIPIState(decoder *stateDecoder) (*wipiSavedState, error)
 func (r *wipiRuntime) restoreState(saved *wipiSavedState) error {
 	if saved == nil {
 		return fmt.Errorf("restore public WIPI runtime: state is missing")
+	}
+	restoredServices := saved.validatedServices
+	if restoredServices == nil {
+		var err error
+		restoredServices, err = shared.NewServices(r.serviceConfig)
+		if err != nil {
+			return fmt.Errorf("restore public WIPI shared services: %w", err)
+		}
+		if err := restoredServices.UnmarshalBinary(saved.services); err != nil {
+			return fmt.Errorf("restore public WIPI shared services: %w", err)
+		}
 	}
 	if err := r.cpu.WriteMemory(wipi.SystemBase, saved.systemMemory); err != nil {
 		return fmt.Errorf("restore public WIPI system memory: %w", err)
@@ -1282,6 +1353,18 @@ func (r *wipiRuntime) restoreState(saved *wipiSavedState) error {
 	r.exitRequested = saved.exitRequested
 	r.exitCode = saved.exitCode
 	r.stats = saved.stats
+	r.services = restoredServices
+	r.serviceOwner = saved.serviceOwner
+	r.serviceName = saved.serviceName
+	r.surfaceServices = cloneUint32ServiceMap(saved.surfaceServices)
+	r.assetServices = cloneUint32ServiceMap(saved.assetServices)
+	r.timerServices = cloneUint32ServiceMap(saved.timerServices)
+	r.fileServices = cloneInt32ServiceMap(saved.fileServices)
+	r.databaseServices = cloneStringServiceMap(saved.databaseServices)
+	r.mediaServices = cloneUint32ServiceMap(saved.mediaServices)
+	r.serialServices = cloneInt32ServiceMap(saved.serialServices)
+	r.socketServices = cloneInt32ServiceMap(saved.socketServices)
+	r.httpServices = cloneInt32ServiceMap(saved.httpServices)
 	return nil
 }
 
@@ -1455,6 +1538,121 @@ func readWIPIUint32Map(decoder *stateDecoder) map[uint32]uint32 {
 	return result
 }
 
+func writeWIPIUint32ServiceMap(
+	writer *stateWriter,
+	values map[uint32]shared.ServiceID,
+) {
+	keys := sortedUint32Keys(values)
+	writer.u32(uint32(len(keys)))
+	for _, key := range keys {
+		writer.u32(key)
+		writer.u64(uint64(values[key]))
+	}
+}
+
+func readWIPIUint32ServiceMap(
+	decoder *stateDecoder,
+) map[uint32]shared.ServiceID {
+	count := decoder.u32()
+	if count > maxSavedWIPIEntries {
+		decoder.err = decoder.fail("public WIPI service-map count exceeds limit")
+		return nil
+	}
+	result := make(map[uint32]shared.ServiceID, count)
+	for index := uint32(0); index < count; index++ {
+		key := decoder.u32()
+		value := shared.ServiceID(decoder.u64())
+		if !value.Valid() {
+			decoder.err = decoder.fail("invalid public WIPI service identifier")
+			return result
+		}
+		if _, duplicate := result[key]; duplicate {
+			decoder.err = decoder.fail("duplicate public WIPI service-map key")
+			return result
+		}
+		result[key] = value
+	}
+	return result
+}
+
+func writeWIPIInt32ServiceMap(
+	writer *stateWriter,
+	values map[int32]shared.ServiceID,
+) {
+	keys := make([]int, 0, len(values))
+	for key := range values {
+		keys = append(keys, int(key))
+	}
+	sort.Ints(keys)
+	writer.u32(uint32(len(keys)))
+	for _, key := range keys {
+		writer.u32(uint32(int32(key)))
+		writer.u64(uint64(values[int32(key)]))
+	}
+}
+
+func readWIPIInt32ServiceMap(
+	decoder *stateDecoder,
+) map[int32]shared.ServiceID {
+	count := decoder.u32()
+	if count > maxSavedWIPIEntries {
+		decoder.err = decoder.fail("public WIPI signed service-map count exceeds limit")
+		return nil
+	}
+	result := make(map[int32]shared.ServiceID, count)
+	for index := uint32(0); index < count; index++ {
+		key := int32(decoder.u32())
+		value := shared.ServiceID(decoder.u64())
+		if !value.Valid() {
+			decoder.err = decoder.fail("invalid public WIPI service identifier")
+			return result
+		}
+		if _, duplicate := result[key]; duplicate {
+			decoder.err = decoder.fail("duplicate public WIPI signed service-map key")
+			return result
+		}
+		result[key] = value
+	}
+	return result
+}
+
+func writeWIPIStringServiceMap(
+	writer *stateWriter,
+	values map[string]shared.ServiceID,
+) {
+	keys := sortedStringKeys(values)
+	writer.u32(uint32(len(keys)))
+	for _, key := range keys {
+		writeWIPIBytes(writer, []byte(key))
+		writer.u64(uint64(values[key]))
+	}
+}
+
+func readWIPIStringServiceMap(
+	decoder *stateDecoder,
+) map[string]shared.ServiceID {
+	count := decoder.u32()
+	if count > maxSavedWIPIEntries {
+		decoder.err = decoder.fail("public WIPI named service-map count exceeds limit")
+		return nil
+	}
+	result := make(map[string]shared.ServiceID, count)
+	for index := uint32(0); index < count; index++ {
+		key := string(readWIPIBytes(decoder))
+		value := shared.ServiceID(decoder.u64())
+		if key == "" || !value.Valid() {
+			decoder.err = decoder.fail("invalid public WIPI named service mapping")
+			return result
+		}
+		if _, duplicate := result[key]; duplicate {
+			decoder.err = decoder.fail("duplicate public WIPI named service-map key")
+			return result
+		}
+		result[key] = value
+	}
+	return result
+}
+
 func writeWIPIStringUint64Map(writer *stateWriter, values map[string]uint64) {
 	keys := sortedStringKeys(values)
 	writer.u32(uint32(len(keys)))
@@ -1534,6 +1732,36 @@ func cloneStringUint32Map(source map[string]uint32) map[string]uint32 {
 
 func cloneStringBoolMap(source map[string]bool) map[string]bool {
 	result := make(map[string]bool, len(source))
+	for key, value := range source {
+		result[key] = value
+	}
+	return result
+}
+
+func cloneUint32ServiceMap(
+	source map[uint32]shared.ServiceID,
+) map[uint32]shared.ServiceID {
+	result := make(map[uint32]shared.ServiceID, len(source))
+	for key, value := range source {
+		result[key] = value
+	}
+	return result
+}
+
+func cloneInt32ServiceMap(
+	source map[int32]shared.ServiceID,
+) map[int32]shared.ServiceID {
+	result := make(map[int32]shared.ServiceID, len(source))
+	for key, value := range source {
+		result[key] = value
+	}
+	return result
+}
+
+func cloneStringServiceMap(
+	source map[string]shared.ServiceID,
+) map[string]shared.ServiceID {
+	result := make(map[string]shared.ServiceID, len(source))
 	for key, value := range source {
 		result[key] = value
 	}

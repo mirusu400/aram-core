@@ -2,7 +2,11 @@ package application
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"time"
+
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 func (r *wipiRuntime) dispatchKernel(name string) (wipiReturn, bool, error) {
@@ -119,10 +123,17 @@ func (r *wipiRuntime) dispatchKernel(name string) (wipiReturn, bool, error) {
 		if a1 == 0 || size < 0 {
 			return wipiReturn{low: wipiReturnCode(wipiInvalid)}, true, nil
 		}
-		if int(size) < len(resource.data) {
+		data, serviceErr := r.services.Storage.ReadFile(
+			shared.NamespacePackage,
+			resource.name,
+		)
+		if serviceErr != nil {
+			return wipiReturn{low: wipiReturnCode(wipiNoEntry)}, true, nil
+		}
+		if int(size) < len(data) {
 			return wipiReturn{low: wipiReturnCode(wipiShortBuffer)}, true, nil
 		}
-		if err := r.cpu.WriteMemory(a1, resource.data); err != nil {
+		if err := r.cpu.WriteMemory(a1, data); err != nil {
 			return wipiReturn{}, true, err
 		}
 		return wipiReturn{}, true, nil
@@ -180,7 +191,8 @@ func (r *wipiRuntime) dispatchKernel(name string) (wipiReturn, bool, error) {
 			return wipiReturn{}, true, err
 		}
 		timeout := uint64(args[2]) | uint64(args[3])<<32
-		if a0 == 0 || int64(timeout) < 0 {
+		if a0 == 0 || int64(timeout) < 0 ||
+			timeout > uint64((time.Duration(1<<63-1)-r.services.Clock.Monotonic())/time.Millisecond) {
 			return wipiReturn{low: wipiReturnCode(wipiInvalid)}, true, nil
 		}
 		if _, active := r.timers[a0]; active {
@@ -205,16 +217,46 @@ func (r *wipiRuntime) dispatchKernel(name string) (wipiReturn, bool, error) {
 		if err := r.writeU32(a0+24, 1); err != nil {
 			return wipiReturn{}, true, err
 		}
+		serviceID := r.timerServices[a0]
+		if serviceID == 0 {
+			serviceID, err = r.services.Timers.Define(
+				r.serviceOwner,
+				fmt.Sprintf("wipi.timer.%08x", a0),
+			)
+			if err != nil {
+				return wipiReturn{low: wipiReturnCode(wipiNoMemory)}, true, nil
+			}
+			r.timerServices[a0] = serviceID
+		}
+		deadline := r.services.Clock.Monotonic() +
+			time.Duration(timeout)*time.Millisecond
+		if err := r.services.Timers.Set(
+			serviceID,
+			r.serviceOwner,
+			deadline,
+			0,
+			int64(a0),
+		); err != nil {
+			return wipiReturn{}, true, err
+		}
 		r.timers[a0] = wipiTimer{callback: callback, parameter: parameter, deadline: r.tickMS + timeout}
 		return wipiReturn{}, true, nil
 	case "MC_knlUnsetTimer":
 		delete(r.timers, a0)
+		if serviceID := r.timerServices[a0]; serviceID != 0 {
+			if err := r.services.Timers.Cancel(serviceID, r.serviceOwner); err != nil &&
+				!errors.Is(err, shared.ErrNotFound) {
+				return wipiReturn{}, true, err
+			}
+		}
 		if a0 != 0 {
 			return wipiReturn{}, true, r.writeU32(a0+24, 0)
 		}
 		return wipiReturn{}, true, nil
 	case "MC_knlCurrentTime":
-		return wipiU64(r.tickMS), true, nil
+		return wipiU64(
+			uint64(r.services.Clock.Monotonic() / time.Millisecond),
+		), true, nil
 	case "MC_knlGetSystemProperty":
 		return r.getSystemProperty(a0, a1, a2)
 	case "MC_knlSetSystemProperty":

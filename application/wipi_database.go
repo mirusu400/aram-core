@@ -58,6 +58,15 @@ func (r *wipiRuntime) dispatchDatabase(name string) (wipiReturn, bool, error) {
 		if _, ok := r.databases[key]; !ok {
 			return wipiReturn{low: ^uint32(0)}, true, nil
 		}
+		if serviceID := r.databaseServices[key]; serviceID != 0 {
+			if err := r.services.Storage.DeleteRecordStore(
+				r.serviceOwner,
+				serviceID,
+			); err != nil {
+				return wipiReturn{low: ^uint32(0)}, true, nil
+			}
+			delete(r.databaseServices, key)
+		}
 		delete(r.databases, key)
 		return wipiReturn{}, true, nil
 	case "MC_dbInsertRecord":
@@ -70,6 +79,16 @@ func (r *wipiRuntime) dispatchDatabase(name string) (wipiReturn, bool, error) {
 			return wipiReturn{}, true, err
 		}
 		recordID := database.nextRecord
+		key := r.databaseHandles[int32(arg(0))]
+		serviceID := r.databaseServices[key]
+		sharedID, serviceErr := r.services.Storage.AddRecord(
+			r.serviceOwner,
+			serviceID,
+			record,
+		)
+		if serviceErr != nil || sharedID != uint32(recordID) {
+			return wipiReturn{low: ^uint32(0)}, true, nil
+		}
 		database.nextRecord++
 		database.records[recordID] = record
 		return wipiReturn{low: uint32(recordID)}, true, nil
@@ -85,6 +104,15 @@ func (r *wipiRuntime) dispatchDatabase(name string) (wipiReturn, bool, error) {
 		if err := r.cpu.ReadMemory(arg(2), record[:arg(3)]); err != nil {
 			return wipiReturn{}, true, err
 		}
+		key := r.databaseHandles[int32(arg(0))]
+		if err := r.services.Storage.SetRecord(
+			r.serviceOwner,
+			r.databaseServices[key],
+			uint32(int32(arg(1))),
+			record,
+		); err != nil {
+			return wipiReturn{low: ^uint32(0)}, true, nil
+		}
 		return wipiReturn{}, true, nil
 	case "MC_dbDeleteRecord":
 		database, ok := r.openDatabaseByHandle(int32(arg(0)))
@@ -93,6 +121,14 @@ func (r *wipiRuntime) dispatchDatabase(name string) (wipiReturn, bool, error) {
 		}
 		recordID := int32(arg(1))
 		if _, exists := database.records[recordID]; !exists {
+			return wipiReturn{low: ^uint32(0)}, true, nil
+		}
+		key := r.databaseHandles[int32(arg(0))]
+		if err := r.services.Storage.DeleteRecord(
+			r.serviceOwner,
+			r.databaseServices[key],
+			uint32(recordID),
+		); err != nil {
 			return wipiReturn{low: ^uint32(0)}, true, nil
 		}
 		delete(database.records, recordID)
@@ -187,6 +223,14 @@ func (r *wipiRuntime) openDatabase(nameAddress uint32, recordSize int32, create 
 			nextRecord: 1,
 			records:    make(map[int32][]byte),
 		}
+		serviceID, serviceErr := r.services.Storage.CreateRecordStore(
+			r.serviceOwner,
+			key,
+		)
+		if serviceErr != nil {
+			return wipiReturn{low: ^uint32(0)}, true, nil
+		}
+		r.databaseServices[key] = serviceID
 		r.databases[key] = database
 	}
 	handle := r.nextDatabase
@@ -218,7 +262,16 @@ func (r *wipiRuntime) selectDatabaseRecord(handle, recordID int32, output uint32
 	if !ok || !exists || length < int32(database.recordSize) {
 		return wipiReturn{low: ^uint32(0)}, true, nil
 	}
-	if err := r.cpu.WriteMemory(output, record); err != nil {
+	key := r.databaseHandles[handle]
+	serviceRecord, serviceErr := r.services.Storage.Record(
+		r.serviceOwner,
+		r.databaseServices[key],
+		uint32(recordID),
+	)
+	if serviceErr != nil || !bytes.Equal(serviceRecord, record) {
+		return wipiReturn{low: ^uint32(0)}, true, nil
+	}
+	if err := r.cpu.WriteMemory(output, serviceRecord); err != nil {
 		return wipiReturn{}, true, err
 	}
 	return wipiReturn{}, true, nil

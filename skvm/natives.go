@@ -1,16 +1,15 @@
 package skvm
 
 import (
-	"bytes"
 	"context"
+	"errors"
 	"fmt"
-	"image"
-	_ "image/gif"
-	_ "image/jpeg"
-	_ "image/png"
 	"path"
 	"strings"
+	"time"
 	"unicode/utf16"
+
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 type stringBufferState struct {
@@ -24,7 +23,7 @@ type inputStreamState struct {
 }
 
 type randomState struct {
-	seed uint64
+	stream string
 }
 
 type threadState struct {
@@ -33,9 +32,11 @@ type threadState struct {
 
 type recordStoreState struct {
 	name string
+	id   shared.ServiceID
 }
 
 type xFileState struct {
+	name   string
 	data   []byte
 	offset int
 }
@@ -48,6 +49,11 @@ type xTextFieldState struct {
 type outputStreamState struct {
 	data []byte
 	file *xFileState
+	name string
+}
+
+type audioClipState struct {
+	clip shared.ServiceID
 }
 
 type inputStreamReaderState struct {
@@ -55,16 +61,22 @@ type inputStreamReaderState struct {
 }
 
 type imageState struct {
-	width  int
-	height int
-	pixels []uint32
+	width   int
+	height  int
+	asset   shared.ServiceID
+	surface shared.ServiceID
+}
+
+type fontState struct {
+	font shared.ServiceID
 }
 
 type graphicsState struct {
-	width  int
-	height int
-	pixels []uint32
-	color  uint32
+	width   int
+	height  int
+	surface shared.ServiceID
+	font    shared.ServiceID
+	color   uint32
 }
 
 func (vm *VM) installCoreNatives() {
@@ -99,7 +111,7 @@ func (vm *VM) installCoreNatives() {
 			if !strings.HasPrefix(name, "/") && strings.Contains(className, "/") {
 				resourceName = path.Join(path.Dir(className), resourceName)
 			}
-			data, ok := vm.resources[resourceName]
+			data, ok := vm.resource(resourceName)
 			if !ok {
 				return ReferenceValue(0), true, nil
 			}
@@ -388,7 +400,7 @@ func (vm *VM) installCoreNatives() {
 		"currentTimeMillis",
 		"()J",
 		func(_ context.Context, vm *VM, _ uint32, _ []Value) (Value, bool, error) {
-			return LongValue(vm.TimeMillis), true, nil
+			return LongValue(vm.services.Clock.WallMillis()), true, nil
 		},
 	)
 	vm.RegisterNative("java/lang/System", "gc", "()V", nativeVoid)
@@ -404,19 +416,31 @@ func (vm *VM) installCoreNatives() {
 			}
 			value, ok := vm.properties[name]
 			if !ok {
+				value, ok = vm.services.Device.Property(name)
+			}
+			if !ok {
+				config := vm.services.Device.Config()
 				switch name {
 				case "MIN":
-					value, ok = "MIN0000000000", true
+					value = config.PhoneNumber
+					if value == "" {
+						value = "MIN0000000000"
+					}
+					ok = true
 				case "com.xce.wipi.version":
-					value, ok = "1.1", true
+					value, ok = config.WIPIVersion, true
 				case "microedition.platform":
-					value, ok = "SKVM", true
+					value = config.Model
+					if value == "" {
+						value = "SKVM"
+					}
+					ok = true
 				case "microedition.configuration":
 					value, ok = "M_Configuration-1.0", true
 				case "microedition.profiles":
 					value, ok = "M_Profile-1.0 SKTP-1.0", true
 				case "microedition.locale":
-					value, ok = "ko-KR", true
+					value, ok = config.Locale, true
 				case "microedition.encoding":
 					value, ok = "EUC-KR", true
 				default:
@@ -634,7 +658,15 @@ func (vm *VM) installThreadNatives() {
 			if duration < 0 {
 				return Value{}, false, vm.newThrowable("java/lang/IllegalArgumentException", "")
 			}
-			vm.TimeMillis += duration
+			if duration > int64((^uint64(0)>>1)/uint64(time.Millisecond)) {
+				return Value{}, false, vm.newThrowable("java/lang/IllegalArgumentException", "")
+			}
+			if err := vm.services.Advance(
+				vm.serviceOwner,
+				time.Duration(duration)*time.Millisecond,
+			); err != nil {
+				return Value{}, false, err
+			}
 			return Value{}, false, nil
 		},
 	)
@@ -650,9 +682,11 @@ func (vm *VM) installRandomNatives() {
 				return Value{}, false, err
 			}
 		}
-		return Value{}, false, vm.setNative(receiver, &randomState{
-			seed: (uint64(value) ^ 0x5deece66d) & ((1 << 48) - 1),
-		})
+		stream := fmt.Sprintf("skvm.java.random.%08x", receiver)
+		if err := vm.services.Random.SetJavaSeed(stream, value); err != nil {
+			return Value{}, false, err
+		}
+		return Value{}, false, vm.setNative(receiver, &randomState{stream: stream})
 	}
 	vm.RegisterNative("java/util/Random", "<init>", "()V", seed)
 	vm.RegisterNative("java/util/Random", "<init>", "(J)V", seed)
@@ -668,11 +702,19 @@ func (vm *VM) installRandomNatives() {
 			}
 			state, ok := object.Native.(*randomState)
 			if !ok {
-				state = &randomState{seed: 0x5deece66d}
+				state = &randomState{
+					stream: fmt.Sprintf("skvm.java.random.%08x", receiver),
+				}
+				if err := vm.services.Random.SetJavaSeed(state.stream, 0); err != nil {
+					return Value{}, false, err
+				}
 				object.Native = state
 			}
-			state.seed = (state.seed*0x5deece66d + 0xb) & ((1 << 48) - 1)
-			return IntValue(int32(state.seed >> 16)), true, nil
+			value, err := vm.services.Random.JavaInt(state.stream)
+			if err != nil {
+				return Value{}, false, err
+			}
+			return IntValue(value), true, nil
 		},
 	)
 }
@@ -722,7 +764,11 @@ func (vm *VM) installDisplayNatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
-			return IntValue(int32(len(vm.recordStores[state.name]))), true, nil
+			count, err := vm.services.Storage.RecordCount(vm.serviceOwner, state.id)
+			if err != nil {
+				return Value{}, false, vm.rmsThrowable(err)
+			}
+			return IntValue(int32(count)), true, nil
 		},
 	)
 	vm.RegisterNative(
@@ -738,14 +784,18 @@ func (vm *VM) installDisplayNatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
-			records := vm.recordStores[state.name]
-			if recordID <= 0 || int(recordID) > len(records) {
-				return Value{}, false, vm.newThrowable(
-					"javax/microedition/rms/RecordStoreException",
-					"invalid record",
-				)
+			if recordID <= 0 {
+				return Value{}, false, vm.rmsThrowable(shared.ErrInvalidArgument)
 			}
-			return ReferenceValue(vm.NewByteArray(records[recordID-1])), true, nil
+			record, err := vm.services.Storage.Record(
+				vm.serviceOwner,
+				state.id,
+				uint32(recordID),
+			)
+			if err != nil {
+				return Value{}, false, vm.rmsThrowable(err)
+			}
+			return ReferenceValue(vm.NewByteArray(record)), true, nil
 		},
 	)
 	vm.RegisterNative(
@@ -808,10 +858,9 @@ func (vm *VM) installGraphicsNatives() {
 			if width <= 0 || height <= 0 {
 				return Value{}, false, vm.newThrowable("java/lang/IllegalArgumentException", "")
 			}
-			state := &imageState{
-				width:  int(width),
-				height: int(height),
-				pixels: make([]uint32, int(width)*int(height)),
+			state, err := vm.newImageState(int(width), int(height))
+			if err != nil {
+				return Value{}, false, err
 			}
 			return ReferenceValue(
 				vm.NewObject("javax/microedition/lcdui/Image", state),
@@ -827,7 +876,8 @@ func (vm *VM) installGraphicsNatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
-			return ReferenceValue(vm.newImage(data)), true, nil
+			reference, err := vm.newImage(data)
+			return ReferenceValue(reference), true, err
 		},
 	)
 	vm.RegisterNative(
@@ -840,8 +890,9 @@ func (vm *VM) installGraphicsNatives() {
 				return Value{}, false, err
 			}
 			name = strings.TrimPrefix(strings.ReplaceAll(name, `\`, "/"), "/")
-			data := vm.resources[name]
-			return ReferenceValue(vm.newImage(data)), true, nil
+			data, _ := vm.resource(name)
+			reference, err := vm.newImage(data)
+			return ReferenceValue(reference), true, err
 		},
 	)
 	vm.RegisterNative(
@@ -878,10 +929,11 @@ func (vm *VM) installGraphicsNatives() {
 				return Value{}, false, err
 			}
 			graphics := &graphicsState{
-				width:  state.width,
-				height: state.height,
-				pixels: state.pixels,
-				color:  0xff000000,
+				width:   state.width,
+				height:  state.height,
+				surface: state.surface,
+				font:    vm.defaultFont,
+				color:   0xff000000,
 			}
 			return ReferenceValue(
 				vm.NewObject("javax/microedition/lcdui/Graphics", graphics),
@@ -893,31 +945,58 @@ func (vm *VM) installGraphicsNatives() {
 		"getDefaultFont",
 		"()Ljavax/microedition/lcdui/Font;",
 		func(_ context.Context, vm *VM, _ uint32, _ []Value) (Value, bool, error) {
-			return ReferenceValue(vm.NewObject("javax/microedition/lcdui/Font", nil)), true, nil
+			return ReferenceValue(vm.NewObject(
+				"javax/microedition/lcdui/Font",
+				&fontState{font: vm.defaultFont},
+			)), true, nil
 		},
 	)
 	vm.RegisterNative(
 		"javax/microedition/lcdui/Font",
 		"charWidth",
 		"(C)I",
-		func(_ context.Context, _ *VM, _ uint32, _ []Value) (Value, bool, error) {
-			return IntValue(6), true, nil
+		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+			font, err := vm.font(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			character, err := intArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			glyph, err := vm.services.Text.Glyph(
+				vm.serviceOwner,
+				font.font,
+				rune(character),
+			)
+			if err != nil {
+				return Value{}, false, err
+			}
+			return IntValue(glyph.Advance), true, nil
 		},
 	)
 	vm.RegisterNative(
 		"javax/microedition/lcdui/Font",
 		"getHeight",
 		"()I",
-		func(_ context.Context, _ *VM, _ uint32, _ []Value) (Value, bool, error) {
-			return IntValue(8), true, nil
+		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+			font, err := vm.font(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			metrics, err := vm.services.Text.Metrics(vm.serviceOwner, font.font)
+			if err != nil {
+				return Value{}, false, err
+			}
+			return IntValue(metrics.Height), true, nil
 		},
 	)
 	vm.RegisterNative(
 		"javax/microedition/lcdui/Font",
 		"getFont",
 		"(III)Ljavax/microedition/lcdui/Font;",
-		func(_ context.Context, vm *VM, _ uint32, _ []Value) (Value, bool, error) {
-			return ReferenceValue(vm.NewObject("javax/microedition/lcdui/Font", nil)), true, nil
+		func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
+			return vm.newFontObject("javax/microedition/lcdui/Font", args)
 		},
 	)
 	vm.RegisterNative("javax/microedition/lcdui/Graphics", "reset", "()V", func(
@@ -937,7 +1016,22 @@ func (vm *VM) installGraphicsNatives() {
 		"javax/microedition/lcdui/Graphics",
 		"setFont",
 		"(Ljavax/microedition/lcdui/Font;)V",
-		nativeVoid,
+		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+			graphics, err := vm.graphics(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			reference, err := referenceArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			font, err := vm.font(reference)
+			if err != nil {
+				return Value{}, false, err
+			}
+			graphics.font = font.font
+			return Value{}, false, nil
+		},
 	)
 	for _, method := range []struct {
 		name       string
@@ -984,12 +1078,20 @@ func (vm *VM) installGraphicsNatives() {
 		"javax/microedition/lcdui/Font",
 		"stringWidth",
 		"(Ljava/lang/String;)I",
-		func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
+		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
 			value, err := vm.stringArgument(args, 0)
 			if err != nil {
 				return Value{}, false, err
 			}
-			return IntValue(int32(len(utf16.Encode([]rune(value))) * 6)), true, nil
+			font, err := vm.font(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			width, err := vm.services.Text.Measure(vm.serviceOwner, font.font, value)
+			if err != nil {
+				return Value{}, false, err
+			}
+			return IntValue(width), true, nil
 		},
 	)
 	vm.RegisterNative(
@@ -1087,10 +1189,9 @@ func (vm *VM) installGraphicsNatives() {
 			if width <= 0 || height <= 0 {
 				return Value{}, false, vm.newThrowable("java/lang/IllegalArgumentException", "")
 			}
-			state := &imageState{
-				width:  int(width),
-				height: int(height),
-				pixels: make([]uint32, int(width)*int(height)),
+			state, err := vm.newImageState(int(width), int(height))
+			if err != nil {
+				return Value{}, false, err
 			}
 			return ReferenceValue(
 				vm.NewObject("javax/microedition/lcdui/Image", state),
@@ -1119,21 +1220,32 @@ func (vm *VM) installGraphicsNatives() {
 				return Value{}, false, err
 			}
 			if width < 0 || height < 0 {
-				return ReferenceValue(vm.newImage(nil)), true, nil
+				reference, imageErr := vm.newImage(nil)
+				return ReferenceValue(reference), true, imageErr
 			}
-			state := &imageState{
-				width:  int(width),
-				height: int(height),
-				pixels: make([]uint32, int(width)*int(height)),
+			state, err := vm.newImageState(int(width), int(height))
+			if err != nil {
+				return Value{}, false, err
 			}
-			for row := 0; row < int(height); row++ {
-				for column := 0; column < int(width); column++ {
-					sourceX, sourceY := int(x)+column, int(y)+row
-					if sourceX >= 0 && sourceX < vm.ScreenWidth &&
-						sourceY >= 0 && sourceY < vm.ScreenHeight {
-						state.pixels[row*int(width)+column] =
-							vm.screen[sourceY*vm.ScreenWidth+sourceX]
-					}
+			sourceLeft := max(0, int(x))
+			sourceTop := max(0, int(y))
+			sourceRight := min(vm.ScreenWidth, int(x)+int(width))
+			sourceBottom := min(vm.ScreenHeight, int(y)+int(height))
+			if sourceRight > sourceLeft && sourceBottom > sourceTop {
+				if err := vm.services.Graphics.Blit(
+					vm.serviceOwner,
+					state.surface,
+					vm.screenSurface,
+					int32(sourceLeft-int(x)),
+					int32(sourceTop-int(y)),
+					shared.Rectangle{
+						X:      int32(sourceLeft),
+						Y:      int32(sourceTop),
+						Width:  int32(sourceRight - sourceLeft),
+						Height: int32(sourceBottom - sourceTop),
+					},
+				); err != nil {
+					return Value{}, false, err
 				}
 			}
 			return ReferenceValue(
@@ -1163,18 +1275,16 @@ func (vm *VM) installRecordStoreNatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
-			if _, ok := vm.recordStores[name]; !ok && create == 0 {
-				return Value{}, false, vm.newThrowable(
-					"javax/microedition/rms/RecordStoreException",
-					"record store does not exist",
-				)
+			id, openErr := vm.services.Storage.OpenRecordStore(vm.serviceOwner, name)
+			if openErr != nil && create != 0 {
+				id, openErr = vm.services.Storage.CreateRecordStore(vm.serviceOwner, name)
 			}
-			if _, ok := vm.recordStores[name]; !ok {
-				vm.recordStores[name] = nil
+			if openErr != nil {
+				return Value{}, false, vm.rmsThrowable(openErr)
 			}
 			reference := vm.NewObject(
 				"javax/microedition/rms/RecordStore",
-				&recordStoreState{name: name},
+				&recordStoreState{name: name, id: id},
 			)
 			return ReferenceValue(reference), true, nil
 		},
@@ -1188,7 +1298,12 @@ func (vm *VM) installRecordStoreNatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
-			delete(vm.recordStores, name)
+			if err := vm.services.Storage.DeleteRecordStoreNamed(
+				vm.serviceOwner,
+				name,
+			); err != nil {
+				return Value{}, false, vm.rmsThrowable(err)
+			}
 			return Value{}, false, nil
 		},
 	)
@@ -1202,7 +1317,11 @@ func (vm *VM) installRecordStoreNatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
-			return IntValue(int32(len(vm.recordStores[state.name]) + 1)), true, nil
+			next, err := vm.services.Storage.NextRecordID(vm.serviceOwner, state.id)
+			if err != nil {
+				return Value{}, false, vm.rmsThrowable(err)
+			}
+			return IntValue(int32(next)), true, nil
 		},
 	)
 	vm.RegisterNative(
@@ -1218,8 +1337,15 @@ func (vm *VM) installRecordStoreNatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
-			vm.recordStores[state.name] = append(vm.recordStores[state.name], data)
-			return IntValue(int32(len(vm.recordStores[state.name]))), true, nil
+			recordID, err := vm.services.Storage.AddRecord(
+				vm.serviceOwner,
+				state.id,
+				data,
+			)
+			if err != nil {
+				return Value{}, false, vm.rmsThrowable(err)
+			}
+			return IntValue(int32(recordID)), true, nil
 		},
 	)
 	vm.RegisterNative(
@@ -1239,14 +1365,17 @@ func (vm *VM) installRecordStoreNatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
-			records := vm.recordStores[state.name]
-			if recordID <= 0 || int(recordID) > len(records) {
-				return Value{}, false, vm.newThrowable(
-					"javax/microedition/rms/RecordStoreException",
-					"invalid record",
-				)
+			if recordID <= 0 {
+				return Value{}, false, vm.rmsThrowable(shared.ErrInvalidArgument)
 			}
-			records[recordID-1] = data
+			if err := vm.services.Storage.SetRecord(
+				vm.serviceOwner,
+				state.id,
+				uint32(recordID),
+				data,
+			); err != nil {
+				return Value{}, false, vm.rmsThrowable(err)
+			}
 			return Value{}, false, nil
 		},
 	)
@@ -1263,12 +1392,16 @@ func (vm *VM) installRecordStoreNatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
-			records := vm.recordStores[state.name]
-			if recordID <= 0 || int(recordID) > len(records) {
-				return Value{}, false, vm.newThrowable(
-					"javax/microedition/rms/RecordStoreException",
-					"invalid record",
-				)
+			if recordID <= 0 {
+				return Value{}, false, vm.rmsThrowable(shared.ErrInvalidArgument)
+			}
+			record, err := vm.services.Storage.Record(
+				vm.serviceOwner,
+				state.id,
+				uint32(recordID),
+			)
+			if err != nil {
+				return Value{}, false, vm.rmsThrowable(err)
 			}
 			destination, err := referenceArgument(args, 1)
 			if err != nil {
@@ -1289,7 +1422,6 @@ func (vm *VM) installRecordStoreNatives() {
 					"",
 				)
 			}
-			record := records[recordID-1]
 			count := min(
 				len(record),
 				len(object.Array.Elements)-int(destinationOffset),
@@ -1309,14 +1441,89 @@ func (vm *VM) installSKTNatives() {
 	}{
 		{"com/skt/m/Device", "setColorMode", "(I)V"},
 		{"com/skt/m/Device", "setKeyToneEnabled", "(Z)V"},
-		{"com/skt/m/Device", "setBacklightEnabled", "(Z)V"},
 		{"com/skt/m/Device", "enableRestoreLCD", "(Z)V"},
-		{"com/skt/m/Device", "invokeWapBrowser", "(Ljava/lang/String;)V"},
-		{"com/skt/m/BackLight", "on", "(I)V"},
-		{"com/skt/m/Vibration", "start", "(II)V"},
 	} {
 		vm.RegisterNative(method.class, method.name, method.descriptor, nativeVoid)
 	}
+	vm.RegisterNative(
+		"com/skt/m/Device",
+		"setBacklightEnabled",
+		"(Z)V",
+		func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
+			enabled, err := intArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			err = vm.services.Device.SetBacklight(
+				enabled != 0,
+				0,
+				vm.services.Clock.Monotonic(),
+			)
+			return Value{}, false, err
+		},
+	)
+	vm.RegisterNative(
+		"com/skt/m/Device",
+		"invokeWapBrowser",
+		"(Ljava/lang/String;)V",
+		func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
+			target, err := vm.stringArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			_, err = vm.services.Device.Request(
+				vm.serviceOwner,
+				shared.RequestBrowser,
+				target,
+				nil,
+				vm.services.Clock.Monotonic(),
+			)
+			return Value{}, false, err
+		},
+	)
+	vm.RegisterNative(
+		"com/skt/m/BackLight",
+		"on",
+		"(I)V",
+		func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
+			millis, err := intArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			if millis < 0 {
+				millis = 0
+			}
+			err = vm.services.Device.SetBacklight(
+				true,
+				time.Duration(millis)*time.Millisecond,
+				vm.services.Clock.Monotonic(),
+			)
+			return Value{}, false, err
+		},
+	)
+	vm.RegisterNative(
+		"com/skt/m/Vibration",
+		"start",
+		"(II)V",
+		func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
+			level, err := intArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			millis, err := intArgument(args, 1)
+			if err != nil {
+				return Value{}, false, err
+			}
+			level = max(0, min(100, level))
+			millis = max(0, millis)
+			err = vm.services.Device.Vibrate(
+				uint8(level),
+				time.Duration(millis)*time.Millisecond,
+				vm.services.Clock.Monotonic(),
+			)
+			return Value{}, false, err
+		},
+	)
 	vm.RegisterNative(
 		"com/skt/m/Vibration",
 		"getLevelNum",
@@ -1329,11 +1536,16 @@ func (vm *VM) installSKTNatives() {
 		"isBacklightEnabled",
 		"isKeyToneEnabled",
 	} {
+		methodName := method
 		vm.RegisterNative(
 			"com/skt/m/Device",
-			method,
+			methodName,
 			"()Z",
-			func(_ context.Context, _ *VM, _ uint32, _ []Value) (Value, bool, error) {
+			func(_ context.Context, vm *VM, _ uint32, _ []Value) (Value, bool, error) {
+				if methodName == "isBacklightEnabled" {
+					enabled, _ := vm.services.Device.Backlight()
+					return boolValue(enabled), true, nil
+				}
 				return IntValue(1), true, nil
 			},
 		)
@@ -1342,39 +1554,84 @@ func (vm *VM) installSKTNatives() {
 		"com/skt/m/Vibration",
 		"isSupported",
 		"()Z",
-		func(_ context.Context, _ *VM, _ uint32, _ []Value) (Value, bool, error) {
-			return IntValue(1), true, nil
+		func(_ context.Context, vm *VM, _ uint32, _ []Value) (Value, bool, error) {
+			return boolValue(vm.services.Device.Capability("vibration")), true, nil
 		},
 	)
-	vm.RegisterNative("com/skt/m/Vibration", "stop", "()V", nativeVoid)
+	vm.RegisterNative(
+		"com/skt/m/Vibration",
+		"stop",
+		"()V",
+		func(_ context.Context, vm *VM, _ uint32, _ []Value) (Value, bool, error) {
+			return Value{}, false, vm.services.Device.Vibrate(
+				0,
+				0,
+				vm.services.Clock.Monotonic(),
+			)
+		},
+	)
 	vm.RegisterNative("com/xce/lcdui/XDisplay", "refresh", "(IIII)V", nativeVoid)
 	vm.RegisterNative(
 		"com/xce/io/XFile",
 		"exists",
 		"(Ljava/lang/String;)Z",
-		func(_ context.Context, _ *VM, _ uint32, _ []Value) (Value, bool, error) {
+		func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
+			name, err := vm.fileNameArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			_, err = vm.services.Storage.Stat(shared.NamespacePrivate, name)
+			return boolValue(err == nil), true, nil
+		},
+	)
+	vm.RegisterNative(
+		"com/xce/io/XFile",
+		"fsavail",
+		"()I",
+		func(_ context.Context, vm *VM, _ uint32, _ []Value) (Value, bool, error) {
+			limit := vm.services.Config.Limits.Storage.MaxStorageBytes
+			used := vm.services.Storage.Used(shared.NamespacePrivate)
+			available := uint64(0)
+			if used < limit {
+				available = limit - used
+			}
+			return IntValue(int32(min(available, uint64(1<<31-1)))), true, nil
+		},
+	)
+	vm.RegisterNative(
+		"com/xce/io/XFile",
+		"filesize",
+		"(Ljava/lang/String;)I",
+		func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
+			name, err := vm.fileNameArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			info, err := vm.services.Storage.Stat(shared.NamespacePrivate, name)
+			if err != nil {
+				return IntValue(-1), true, nil
+			}
+			return IntValue(int32(min(info.Size, uint64(1<<31-1)))), true, nil
+		},
+	)
+	vm.RegisterNative(
+		"com/xce/io/XFile",
+		"unlink",
+		"(Ljava/lang/String;)I",
+		func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
+			name, err := vm.fileNameArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			if err := vm.services.Storage.Delete(
+				shared.NamespacePrivate,
+				name,
+			); err != nil {
+				return IntValue(-1), true, nil
+			}
 			return IntValue(0), true, nil
 		},
 	)
-	for _, method := range []struct {
-		name       string
-		descriptor string
-		value      int32
-	}{
-		{"fsavail", "()I", 1 << 20},
-		{"filesize", "(Ljava/lang/String;)I", 0},
-		{"unlink", "(Ljava/lang/String;)I", 0},
-	} {
-		spec := method
-		vm.RegisterNative(
-			"com/xce/io/XFile",
-			spec.name,
-			spec.descriptor,
-			func(_ context.Context, _ *VM, _ uint32, _ []Value) (Value, bool, error) {
-				return IntValue(spec.value), true, nil
-			},
-		)
-	}
 	vm.RegisterNative("com/xce/io/XFile", "flush", "()V", nativeVoid)
 	vm.RegisterNative(
 		"com/xce/io/XFile",
@@ -1445,16 +1702,44 @@ func (vm *VM) installSKTNatives() {
 		"com/xce/io/FileOutputStream",
 		"<init>",
 		"(Ljava/lang/String;)V",
-		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
-			return Value{}, false, vm.setNative(receiver, &outputStreamState{})
+		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+			name, err := vm.fileNameArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			if err := vm.services.Storage.WriteFile(
+				shared.NamespacePrivate,
+				name,
+				nil,
+			); err != nil {
+				return Value{}, false, err
+			}
+			return Value{}, false, vm.setNative(
+				receiver,
+				&outputStreamState{name: name},
+			)
 		},
 	)
 	vm.RegisterNative(
 		"com/xce/io/FileInputStream",
 		"<init>",
 		"(Ljava/lang/String;)V",
-		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
-			return Value{}, false, vm.setNative(receiver, &inputStreamState{})
+		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+			name, err := vm.fileNameArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			data, err := vm.services.Storage.ReadFile(
+				shared.NamespacePrivate,
+				name,
+			)
+			if err != nil {
+				return Value{}, false, err
+			}
+			return Value{}, false, vm.setNative(
+				receiver,
+				&inputStreamState{data: data},
+			)
 		},
 	)
 	vm.RegisterNative(
@@ -1564,8 +1849,12 @@ func (vm *VM) installSKTNatives() {
 		"com/xce/io/XFile",
 		"<init>",
 		"(Ljava/lang/String;I)V",
-		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
-			return Value{}, false, vm.setNative(receiver, &xFileState{})
+		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+			state, err := vm.newXFile(args)
+			if err != nil {
+				return Value{}, false, err
+			}
+			return Value{}, false, vm.setNative(receiver, state)
 		},
 	)
 	vm.RegisterNative(
@@ -1587,6 +1876,9 @@ func (vm *VM) installSKTNatives() {
 			}
 			copy(state.data[state.offset:end], data)
 			state.offset = end
+			if err := vm.persistXFile(state); err != nil {
+				return Value{}, false, err
+			}
 			return IntValue(int32(len(data))), true, nil
 		},
 	)
@@ -1636,51 +1928,163 @@ func (vm *VM) installSKTNatives() {
 		"com/xce/io/XFile",
 		"available",
 		"()I",
-		func(_ context.Context, _ *VM, _ uint32, _ []Value) (Value, bool, error) {
-			return IntValue(0), true, nil
+		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+			state, err := vm.xFile(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			return IntValue(int32(max(0, len(state.data)-state.offset))), true, nil
 		},
 	)
 	vm.RegisterNative(
 		"com/skt/m/AudioSystem",
 		"getAudioClip",
 		"(Ljava/lang/String;)Lcom/skt/m/AudioClip;",
-		func(_ context.Context, vm *VM, _ uint32, _ []Value) (Value, bool, error) {
-			return ReferenceValue(vm.NewObject("com/skt/m/AudioClip", nil)), true, nil
+		func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
+			name, err := vm.stringArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			data, _ := vm.resource(name)
+			mediaType := strings.TrimPrefix(strings.ToLower(path.Ext(name)), ".")
+			clip, err := vm.services.Media.CreateClip(
+				vm.serviceOwner,
+				mediaType,
+				0,
+			)
+			if err != nil {
+				return Value{}, false, err
+			}
+			if len(data) != 0 {
+				if _, err := vm.services.Media.Append(
+					vm.serviceOwner,
+					clip,
+					data,
+				); err != nil {
+					_ = vm.services.Media.DestroyClip(
+						vm.serviceOwner,
+						clip,
+						vm.services.Events,
+					)
+					return Value{}, false, err
+				}
+			}
+			return ReferenceValue(vm.NewObject(
+				"com/skt/m/AudioClip",
+				&audioClipState{clip: clip},
+			)), true, nil
 		},
 	)
-	for _, method := range []string{"getMaxVolume", "getVolume"} {
-		vm.RegisterNative(
-			"com/skt/m/AudioSystem",
-			method,
-			"(Ljava/lang/String;)I",
-			func(_ context.Context, _ *VM, _ uint32, _ []Value) (Value, bool, error) {
-				return IntValue(10), true, nil
-			},
-		)
-	}
+	vm.RegisterNative(
+		"com/skt/m/AudioSystem",
+		"getMaxVolume",
+		"(Ljava/lang/String;)I",
+		func(_ context.Context, _ *VM, _ uint32, _ []Value) (Value, bool, error) {
+			return IntValue(10), true, nil
+		},
+	)
+	vm.RegisterNative(
+		"com/skt/m/AudioSystem",
+		"getVolume",
+		"(Ljava/lang/String;)I",
+		func(_ context.Context, vm *VM, _ uint32, _ []Value) (Value, bool, error) {
+			return IntValue(int32(vm.services.Media.Snapshot().GlobalVolume / 10)), true, nil
+		},
+	)
 	vm.RegisterNative(
 		"com/skt/m/AudioSystem",
 		"setVolume",
 		"(Ljava/lang/String;I)V",
-		nativeVoid,
+		func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
+			volume, err := intArgument(args, 1)
+			if err != nil {
+				return Value{}, false, err
+			}
+			volume = max(0, min(10, volume))
+			err = vm.services.Media.SetGlobalGain(uint8(volume*10), false)
+			return Value{}, false, err
+		},
+	)
+	vm.RegisterNative(
+		"com/skt/m/AudioClip",
+		"open",
+		"([BII)V",
+		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+			state, err := vm.audioClip(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			data, err := vm.byteSliceArgument(args)
+			if err != nil {
+				return Value{}, false, err
+			}
+			if err := vm.services.Media.Clear(vm.serviceOwner, state.clip); err != nil {
+				return Value{}, false, err
+			}
+			_, err = vm.services.Media.Append(vm.serviceOwner, state.clip, data)
+			return Value{}, false, err
+		},
 	)
 	for _, method := range []struct {
-		name       string
-		descriptor string
+		name  string
+		plays int32
 	}{
-		{"open", "([BII)V"},
-		{"play", "()V"},
-		{"loop", "()V"},
-		{"stop", "()V"},
-		{"close", "()V"},
+		{name: "play", plays: 1},
+		{name: "loop", plays: -1},
 	} {
+		spec := method
 		vm.RegisterNative(
 			"com/skt/m/AudioClip",
-			method.name,
-			method.descriptor,
-			nativeVoid,
+			spec.name,
+			"()V",
+			func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+				state, err := vm.audioClip(receiver)
+				if err != nil {
+					return Value{}, false, err
+				}
+				return Value{}, false, vm.services.Media.Play(
+					vm.serviceOwner,
+					state.clip,
+					spec.plays,
+				)
+			},
 		)
 	}
+	vm.RegisterNative(
+		"com/skt/m/AudioClip",
+		"stop",
+		"()V",
+		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+			state, err := vm.audioClip(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			return Value{}, false, vm.services.Media.Stop(vm.serviceOwner, state.clip)
+		},
+	)
+	vm.RegisterNative(
+		"com/skt/m/AudioClip",
+		"close",
+		"()V",
+		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+			state, err := vm.audioClip(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			if state.clip == 0 {
+				return Value{}, false, nil
+			}
+			err = vm.services.Media.DestroyClip(
+				vm.serviceOwner,
+				state.clip,
+				vm.services.Events,
+			)
+			if err == nil {
+				state.clip = 0
+			}
+			return Value{}, false, err
+		},
+	)
 }
 
 func (vm *VM) installHostStaticFields() {
@@ -1745,32 +2149,55 @@ func (vm *VM) installHostStaticFields() {
 	}
 }
 
-func (vm *VM) newImage(data []byte) uint32 {
-	state := &imageState{
-		width:  1,
-		height: 1,
-		pixels: []uint32{0x00000000},
-	}
-	if decoded, _, err := image.Decode(bytes.NewReader(data)); err == nil {
-		bounds := decoded.Bounds()
-		state.width = bounds.Dx()
-		state.height = bounds.Dy()
-		state.pixels = make([]uint32, state.width*state.height)
-		for y := 0; y < state.height; y++ {
-			for x := 0; x < state.width; x++ {
-				red, green, blue, alpha := decoded.At(
-					bounds.Min.X+x,
-					bounds.Min.Y+y,
-				).RGBA()
-				state.pixels[y*state.width+x] =
-					uint32(alpha>>8)<<24 |
-						uint32(red>>8)<<16 |
-						uint32(green>>8)<<8 |
-						uint32(blue>>8)
+func (vm *VM) newImage(data []byte) (uint32, error) {
+	if len(data) != 0 {
+		asset, decodeErr := vm.services.Assets.Decode(
+			vm.serviceOwner,
+			data,
+			shared.DecodeOptions{},
+		)
+		if decodeErr == nil {
+			info, infoErr := vm.services.Assets.Info(vm.serviceOwner, asset)
+			if infoErr != nil {
+				_ = vm.services.Assets.Release(vm.serviceOwner, asset)
+				return 0, infoErr
 			}
+			state := &imageState{
+				width:   int(info.Width),
+				height:  int(info.Height),
+				asset:   asset,
+				surface: info.Frames[0].Surface,
+			}
+			return vm.NewObject("javax/microedition/lcdui/Image", state), nil
 		}
 	}
-	return vm.NewObject("javax/microedition/lcdui/Image", state)
+	state, err := vm.newImageState(1, 1)
+	if err != nil {
+		return 0, err
+	}
+	return vm.NewObject("javax/microedition/lcdui/Image", state), nil
+}
+
+func (vm *VM) newImageState(width, height int) (*imageState, error) {
+	if width <= 0 || height <= 0 {
+		return nil, fmt.Errorf("invalid image geometry %dx%d", width, height)
+	}
+	surface, err := vm.services.Graphics.CreateSurface(
+		vm.serviceOwner,
+		shared.SurfaceDescriptor{
+			Width:  int32(width),
+			Height: int32(height),
+			Format: shared.PixelRGBA8888,
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &imageState{
+		width:   width,
+		height:  height,
+		surface: surface,
+	}, nil
 }
 
 func (vm *VM) image(reference uint32) (*imageState, error) {
@@ -1783,6 +2210,60 @@ func (vm *VM) image(reference uint32) (*imageState, error) {
 		return nil, fmt.Errorf("object %d is not an Image", reference)
 	}
 	return state, nil
+}
+
+func (vm *VM) font(reference uint32) (*fontState, error) {
+	object, ok := vm.Object(reference)
+	if !ok || (object.Class != "javax/microedition/lcdui/Font" &&
+		object.Class != "org/kwis/msp/lcdui/Font") {
+		return nil, fmt.Errorf("invalid Font reference")
+	}
+	if state, ok := object.Native.(*fontState); ok {
+		return state, nil
+	}
+	if object.Native == nil {
+		state := &fontState{font: vm.defaultFont}
+		object.Native = state
+		return state, nil
+	}
+	return nil, fmt.Errorf("object %d is not a Font", reference)
+}
+
+func (vm *VM) newFontObject(class string, args []Value) (Value, bool, error) {
+	style, err := intArgument(args, 1)
+	if err != nil {
+		return Value{}, false, err
+	}
+	sizeValue, err := intArgument(args, 2)
+	if err != nil {
+		return Value{}, false, err
+	}
+	size := int32(12)
+	switch {
+	case sizeValue&16 != 0:
+		size = 16
+	case sizeValue&8 != 0:
+		size = 8
+	}
+	var fontStyle shared.FontStyle
+	if style&1 != 0 {
+		fontStyle |= shared.FontBold
+	}
+	if style&2 != 0 {
+		fontStyle |= shared.FontItalic
+	}
+	if style&4 != 0 {
+		fontStyle |= shared.FontUnderlined
+	}
+	id, err := vm.services.Text.CreateFont(vm.serviceOwner, shared.FontDescriptor{
+		Family: "aram-fallback",
+		Size:   size,
+		Style:  fontStyle,
+	})
+	if err != nil {
+		return Value{}, false, err
+	}
+	return ReferenceValue(vm.NewObject(class, &fontState{font: id})), true, nil
 }
 
 func (vm *VM) graphics(reference uint32) (*graphicsState, error) {
@@ -2010,8 +2491,20 @@ func nativeStreamWrite(
 		}
 		copy(state.file.data[state.file.offset:end], data)
 		state.file.offset = end
+		if err := vm.persistXFile(state.file); err != nil {
+			return Value{}, false, err
+		}
 	} else {
 		state.data = append(state.data, data...)
+		if state.name != "" {
+			if err := vm.services.Storage.WriteFile(
+				shared.NamespacePrivate,
+				state.name,
+				state.data,
+			); err != nil {
+				return Value{}, false, err
+			}
+		}
 	}
 	return Value{}, false, nil
 }
@@ -2111,6 +2604,17 @@ func (vm *VM) recordStore(reference uint32) (*recordStoreState, error) {
 	return state, nil
 }
 
+func (vm *VM) rmsThrowable(err error) error {
+	message := "record store operation failed"
+	if err != nil {
+		message = err.Error()
+	}
+	return vm.newThrowable(
+		"javax/microedition/rms/RecordStoreException",
+		message,
+	)
+}
+
 func (vm *VM) xFile(reference uint32) (*xFileState, error) {
 	object, ok := vm.Object(reference)
 	if !ok {
@@ -2119,6 +2623,67 @@ func (vm *VM) xFile(reference uint32) (*xFileState, error) {
 	state, ok := object.Native.(*xFileState)
 	if !ok {
 		return nil, fmt.Errorf("object %d is not an XFile", reference)
+	}
+	return state, nil
+}
+
+func (vm *VM) fileNameArgument(args []Value, index int) (string, error) {
+	name, err := vm.stringArgument(args, index)
+	if err != nil {
+		return "", err
+	}
+	name = strings.ReplaceAll(name, `\`, "/")
+	name = strings.TrimPrefix(name, "file://")
+	normalized, err := vm.services.Storage.NormalizePath(name)
+	if err != nil {
+		return "", vm.newThrowable("java/io/IOException", "invalid file path")
+	}
+	return normalized, nil
+}
+
+func (vm *VM) newXFile(args []Value) (*xFileState, error) {
+	name, err := vm.fileNameArgument(args, 0)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := intArgument(args, 1); err != nil {
+		return nil, err
+	}
+	data, err := vm.services.Storage.ReadFile(shared.NamespacePrivate, name)
+	if errors.Is(err, shared.ErrNotFound) {
+		if err := vm.services.Storage.WriteFile(
+			shared.NamespacePrivate,
+			name,
+			nil,
+		); err != nil {
+			return nil, err
+		}
+		data = nil
+	} else if err != nil {
+		return nil, err
+	}
+	return &xFileState{name: name, data: data}, nil
+}
+
+func (vm *VM) persistXFile(state *xFileState) error {
+	if state == nil || state.name == "" {
+		return nil
+	}
+	return vm.services.Storage.WriteFile(
+		shared.NamespacePrivate,
+		state.name,
+		state.data,
+	)
+}
+
+func (vm *VM) audioClip(reference uint32) (*audioClipState, error) {
+	object, ok := vm.Object(reference)
+	if !ok {
+		return nil, fmt.Errorf("invalid AudioClip reference")
+	}
+	state, ok := object.Native.(*audioClipState)
+	if !ok {
+		return nil, fmt.Errorf("object %d is not an AudioClip", reference)
 	}
 	return state, nil
 }

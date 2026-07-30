@@ -3,6 +3,8 @@ package skvm
 import (
 	"context"
 	"fmt"
+
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 func (vm *VM) ScreenGraphics() uint32 {
@@ -10,10 +12,11 @@ func (vm *VM) ScreenGraphics() uint32 {
 		vm.screenGraphics = vm.NewObject(
 			"javax/microedition/lcdui/Graphics",
 			&graphicsState{
-				width:  vm.ScreenWidth,
-				height: vm.ScreenHeight,
-				pixels: vm.screen,
-				color:  0xff000000,
+				width:   vm.ScreenWidth,
+				height:  vm.ScreenHeight,
+				surface: vm.screenSurface,
+				font:    vm.defaultFont,
+				color:   0xff000000,
 			},
 		)
 	}
@@ -34,7 +37,9 @@ func nativeFillRect(
 	if err != nil {
 		return Value{}, false, err
 	}
-	fillRectangle(state, x, y, width, height, state.color)
+	if err := fillRectangle(vm, state, x, y, width, height, state.color); err != nil {
+		return Value{}, false, err
+	}
 	return Value{}, false, nil
 }
 
@@ -52,10 +57,16 @@ func nativeDrawRect(
 	if err != nil {
 		return Value{}, false, err
 	}
-	drawLine(state, x, y, x+width, y, state.color)
-	drawLine(state, x, y+height, x+width, y+height, state.color)
-	drawLine(state, x, y, x, y+height, state.color)
-	drawLine(state, x+width, y, x+width, y+height, state.color)
+	for _, line := range [][4]int{
+		{x, y, x + width, y},
+		{x, y + height, x + width, y + height},
+		{x, y, x, y + height},
+		{x + width, y, x + width, y + height},
+	} {
+		if err := drawLine(vm, state, line[0], line[1], line[2], line[3], state.color); err != nil {
+			return Value{}, false, err
+		}
+	}
 	return Value{}, false, nil
 }
 
@@ -85,7 +96,9 @@ func nativeDrawLine(
 	if err != nil {
 		return Value{}, false, err
 	}
-	drawLine(state, int(x1), int(y1), int(x2), int(y2), state.color)
+	if err := drawLine(vm, state, int(x1), int(y1), int(x2), int(y2), state.color); err != nil {
+		return Value{}, false, err
+	}
 	return Value{}, false, nil
 }
 
@@ -126,7 +139,19 @@ func nativeDrawImage(
 		source.height,
 		int(anchor),
 	)
-	blit(state, source, destinationX, destinationY, 0, 0, source.width, source.height)
+	if err := blit(
+		vm,
+		state,
+		source,
+		destinationX,
+		destinationY,
+		0,
+		0,
+		source.width,
+		source.height,
+	); err != nil {
+		return Value{}, false, err
+	}
 	return Value{}, false, nil
 }
 
@@ -156,10 +181,36 @@ func nativeDrawString(
 	if err != nil {
 		return Value{}, false, err
 	}
-	width := len([]rune(value)) * 6
-	startX, startY := anchored(int(x), int(y), width, 8, int(anchor))
-	for index, character := range []rune(value) {
-		drawPlaceholderGlyph(state, startX+index*6, startY, character, state.color)
+	font := state.font
+	if font == 0 {
+		font = vm.defaultFont
+	}
+	width, err := vm.services.Text.Measure(vm.serviceOwner, font, value)
+	if err != nil {
+		return Value{}, false, err
+	}
+	metrics, err := vm.services.Text.Metrics(vm.serviceOwner, font)
+	if err != nil {
+		return Value{}, false, err
+	}
+	startX, startY := anchored(
+		int(x),
+		int(y),
+		int(width),
+		int(metrics.Height),
+		int(anchor),
+	)
+	if err := vm.services.Text.Draw(
+		vm.serviceOwner,
+		font,
+		state.surface,
+		value,
+		int32(startX),
+		int32(startY),
+		shared.AnchorLeft|shared.AnchorTop,
+		skvmColor(state.color),
+	); err != nil {
+		return Value{}, false, err
 	}
 	return Value{}, false, nil
 }
@@ -206,7 +257,8 @@ func nativeGraphics2DDrawImage(
 	if err != nil {
 		return Value{}, false, err
 	}
-	blit(
+	if err := blit(
+		vm,
 		state,
 		source,
 		int(destinationX),
@@ -215,7 +267,9 @@ func nativeGraphics2DDrawImage(
 		int(sourceY),
 		int(width),
 		int(height),
-	)
+	); err != nil {
+		return Value{}, false, err
+	}
 	return Value{}, false, nil
 }
 
@@ -234,70 +288,77 @@ func rectangleArguments(args []Value) (int, int, int, int, error) {
 	return values[0], values[1], values[2], values[3], nil
 }
 
-func fillRectangle(state *graphicsState, x, y, width, height int, color uint32) {
+func fillRectangle(
+	vm *VM,
+	state *graphicsState,
+	x, y, width, height int,
+	color uint32,
+) error {
 	if width <= 0 || height <= 0 {
-		return
+		return nil
 	}
-	startX := max(0, x)
-	startY := max(0, y)
-	endX := min(state.width, x+width)
-	endY := min(state.height, y+height)
-	for row := startY; row < endY; row++ {
-		for column := startX; column < endX; column++ {
-			state.pixels[row*state.width+column] = color
-		}
-	}
+	return vm.services.Graphics.Rectangle(
+		vm.serviceOwner,
+		state.surface,
+		shared.Rectangle{
+			X:      int32(x),
+			Y:      int32(y),
+			Width:  int32(width),
+			Height: int32(height),
+		},
+		skvmColor(color),
+		true,
+	)
 }
 
-func drawLine(state *graphicsState, x0, y0, x1, y1 int, color uint32) {
-	dx := absInt(x1 - x0)
-	sx := -1
-	if x0 < x1 {
-		sx = 1
-	}
-	dy := -absInt(y1 - y0)
-	sy := -1
-	if y0 < y1 {
-		sy = 1
-	}
-	err := dx + dy
-	for {
-		setPixel(state, x0, y0, color)
-		if x0 == x1 && y0 == y1 {
-			break
-		}
-		twice := 2 * err
-		if twice >= dy {
-			err += dy
-			x0 += sx
-		}
-		if twice <= dx {
-			err += dx
-			y0 += sy
-		}
-	}
+func drawLine(
+	vm *VM,
+	state *graphicsState,
+	x0, y0, x1, y1 int,
+	color uint32,
+) error {
+	return vm.services.Graphics.Line(
+		vm.serviceOwner,
+		state.surface,
+		int32(x0),
+		int32(y0),
+		int32(x1),
+		int32(y1),
+		skvmColor(color),
+	)
 }
 
 func blit(
+	vm *VM,
 	destination *graphicsState,
 	source *imageState,
 	destinationX, destinationY, sourceX, sourceY, width, height int,
-) {
-	for row := 0; row < height; row++ {
-		for column := 0; column < width; column++ {
-			sx, sy := sourceX+column, sourceY+row
-			dx, dy := destinationX+column, destinationY+row
-			if sx < 0 || sy < 0 || sx >= source.width || sy >= source.height ||
-				dx < 0 || dy < 0 || dx >= destination.width || dy >= destination.height {
-				continue
-			}
-			color := source.pixels[sy*source.width+sx]
-			if color>>24 == 0 {
-				continue
-			}
-			destination.pixels[dy*destination.width+dx] = color
-		}
+) error {
+	if width <= 0 || height <= 0 {
+		return nil
 	}
+	sourceLeft := max(0, sourceX)
+	sourceTop := max(0, sourceY)
+	sourceRight := min(source.width, sourceX+width)
+	sourceBottom := min(source.height, sourceY+height)
+	if sourceRight <= sourceLeft || sourceBottom <= sourceTop {
+		return nil
+	}
+	destinationX += sourceLeft - sourceX
+	destinationY += sourceTop - sourceY
+	return vm.services.Graphics.Blit(
+		vm.serviceOwner,
+		destination.surface,
+		source.surface,
+		int32(destinationX),
+		int32(destinationY),
+		shared.Rectangle{
+			X:      int32(sourceLeft),
+			Y:      int32(sourceTop),
+			Width:  int32(sourceRight - sourceLeft),
+			Height: int32(sourceBottom - sourceTop),
+		},
+	)
 }
 
 func anchored(x, y, width, height, anchor int) (int, int) {
@@ -314,34 +375,24 @@ func anchored(x, y, width, height, anchor int) (int, int) {
 	return x, y
 }
 
-func drawPlaceholderGlyph(
-	state *graphicsState,
-	x, y int,
-	character rune,
-	color uint32,
-) {
-	if character == ' ' {
-		return
-	}
-	for row := 0; row < 7; row++ {
-		for column := 0; column < 5; column++ {
-			if row == 0 || row == 6 || column == 0 || column == 4 {
-				setPixel(state, x+column, y+row, color)
-			}
-		}
-	}
-}
-
-func setPixel(state *graphicsState, x, y int, color uint32) {
+func setPixel(vm *VM, state *graphicsState, x, y int, color uint32) error {
 	if x < 0 || y < 0 || x >= state.width || y >= state.height {
-		return
+		return nil
 	}
-	state.pixels[y*state.width+x] = color
+	return vm.services.Graphics.SetPixel(
+		vm.serviceOwner,
+		state.surface,
+		int32(x),
+		int32(y),
+		skvmColor(color),
+	)
 }
 
-func absInt(value int) int {
-	if value < 0 {
-		return -value
+func skvmColor(value uint32) shared.Color {
+	return shared.Color{
+		A: uint8(value >> 24),
+		R: uint8(value >> 16),
+		G: uint8(value >> 8),
+		B: uint8(value),
 	}
-	return value
 }

@@ -9,6 +9,7 @@ import (
 	"sort"
 
 	"github.com/mirusu400/aram-core/cpu"
+	shared "github.com/mirusu400/aram-core/runtime"
 	"github.com/mirusu400/aram-core/wipi"
 )
 
@@ -204,6 +205,20 @@ type wipiRuntime struct {
 	layout wipi.Layout
 	heap   guestHeap
 
+	services         *shared.Services
+	serviceConfig    shared.Config
+	serviceOwner     shared.OwnerID
+	serviceName      string
+	surfaceServices  map[uint32]shared.ServiceID
+	assetServices    map[uint32]shared.ServiceID
+	timerServices    map[uint32]shared.ServiceID
+	fileServices     map[int32]shared.ServiceID
+	databaseServices map[string]shared.ServiceID
+	mediaServices    map[uint32]shared.ServiceID
+	serialServices   map[int32]shared.ServiceID
+	socketServices   map[int32]shared.ServiceID
+	httpServices     map[int32]shared.ServiceID
+
 	framebuffers     map[uint32]wipiFramebuffer
 	framebufferBits  int
 	screenHandle     uint32
@@ -290,29 +305,101 @@ func mapWIPIRuntimeMemory(backend cpu.Backend) error {
 }
 
 func newWIPIRuntime(backend cpu.Backend, frame *image.RGBA) (*wipiRuntime, error) {
+	return newWIPIRuntimeForProfile(
+		backend,
+		frame,
+		DefaultProfileID,
+		"unknown",
+		32,
+		"wipi-c",
+	)
+}
+
+func newWIPIRuntimeForProfile(
+	backend cpu.Backend,
+	frame *image.RGBA,
+	profileID string,
+	carrier string,
+	framebufferBits int,
+	serviceName string,
+) (*wipiRuntime, error) {
 	layout, err := wipi.NewLayout()
 	if err != nil {
 		return nil, fmt.Errorf("build WIPI import layout: %w", err)
 	}
+	serviceConfig := shared.DefaultConfig()
+	serviceConfig.Device.ProfileID = profileID
+	serviceConfig.Device.Carrier = carrier
+	serviceConfig.Device.ScreenWidth = int32(frame.Bounds().Dx())
+	serviceConfig.Device.ScreenHeight = int32(frame.Bounds().Dy())
+	serviceConfig.Device.ScreenFormat = shared.PixelBGRX8888
+	if framebufferBits == 16 {
+		serviceConfig.Device.ScreenFormat = shared.PixelRGB565
+	}
+	serviceConfig.Device.Capabilities = []shared.DeviceCapability{
+		{Name: "audio", Enabled: true},
+		{Name: "backlight", Enabled: true},
+		{Name: "graphics", Enabled: true},
+		{Name: "http", Enabled: true},
+		{Name: "images", Enabled: true},
+		{Name: "led", Enabled: true},
+		{Name: "network", Enabled: true},
+		{Name: "phone", Enabled: true},
+		{Name: "serial", Enabled: true},
+		{Name: "text", Enabled: true},
+		{Name: "vibration", Enabled: true},
+	}
+	services, err := shared.NewServices(serviceConfig)
+	if err != nil {
+		return nil, fmt.Errorf("initialize public WIPI shared services: %w", err)
+	}
+	owner, err := services.Coordinator.Register(
+		serviceName,
+		serviceConfig.Limits.Coordinator.MaxRunBudget,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("register public WIPI adapter: %w", err)
+	}
+	if err := services.Coordinator.Transition(
+		owner,
+		shared.LifecycleReady,
+		services.Clock.Monotonic(),
+		services.Events,
+	); err != nil {
+		return nil, fmt.Errorf("ready public WIPI adapter: %w", err)
+	}
 	runtime := &wipiRuntime{
-		cpu:             backend,
-		frame:           frame,
-		layout:          layout,
-		heap:            newGuestHeap(backend, guestHeapBase, guestHeapSize),
-		framebuffers:    make(map[uint32]wipiFramebuffer),
-		framebufferBits: 32,
-		properties:      make(map[string][]byte),
-		shared:          make(map[string]uint32),
-		sharedSizes:     make(map[uint32]uint32),
-		timers:          make(map[uint32]wipiTimer),
-		resources:       make(map[string]*wipiResource),
-		resourceIDs:     make(map[int32]string),
-		nextResource:    1,
-		programs:        defaultWIPIPrograms(),
-		nextProgram:     2,
-		currentProgram:  1,
-		appManager:      1,
-		files:           make(map[string][]byte),
+		cpu:              backend,
+		frame:            frame,
+		layout:           layout,
+		heap:             newGuestHeap(backend, guestHeapBase, guestHeapSize),
+		services:         services,
+		serviceConfig:    services.Config,
+		serviceOwner:     owner,
+		serviceName:      serviceName,
+		surfaceServices:  make(map[uint32]shared.ServiceID),
+		assetServices:    make(map[uint32]shared.ServiceID),
+		timerServices:    make(map[uint32]shared.ServiceID),
+		fileServices:     make(map[int32]shared.ServiceID),
+		databaseServices: make(map[string]shared.ServiceID),
+		mediaServices:    make(map[uint32]shared.ServiceID),
+		serialServices:   make(map[int32]shared.ServiceID),
+		socketServices:   make(map[int32]shared.ServiceID),
+		httpServices:     make(map[int32]shared.ServiceID),
+		framebuffers:     make(map[uint32]wipiFramebuffer),
+		framebufferBits:  framebufferBits,
+		properties:       make(map[string][]byte),
+		shared:           make(map[string]uint32),
+		sharedSizes:      make(map[uint32]uint32),
+		timers:           make(map[uint32]wipiTimer),
+		resources:        make(map[string]*wipiResource),
+		resourceIDs:      make(map[int32]string),
+		nextResource:     1,
+		programs:         defaultWIPIPrograms(),
+		nextProgram:      2,
+		currentProgram:   1,
+		appManager:       1,
+		files:            make(map[string][]byte),
 		directories: map[string]bool{
 			"/private": true,
 			"/shared":  true,
@@ -372,6 +459,36 @@ func (r *wipiRuntime) reset() error {
 		}
 	}
 	r.heap = newGuestHeap(r.cpu, guestHeapBase, guestHeapSize)
+	services, err := shared.NewServices(r.serviceConfig)
+	if err != nil {
+		return fmt.Errorf("reset public WIPI shared services: %w", err)
+	}
+	owner, err := services.Coordinator.Register(
+		r.serviceName,
+		r.serviceConfig.Limits.Coordinator.MaxRunBudget,
+	)
+	if err != nil {
+		return fmt.Errorf("register reset public WIPI adapter: %w", err)
+	}
+	if err := services.Coordinator.Transition(
+		owner,
+		shared.LifecycleReady,
+		services.Clock.Monotonic(),
+		services.Events,
+	); err != nil {
+		return fmt.Errorf("ready reset public WIPI adapter: %w", err)
+	}
+	r.services = services
+	r.serviceOwner = owner
+	r.surfaceServices = make(map[uint32]shared.ServiceID)
+	r.assetServices = make(map[uint32]shared.ServiceID)
+	r.timerServices = make(map[uint32]shared.ServiceID)
+	r.fileServices = make(map[int32]shared.ServiceID)
+	r.databaseServices = make(map[string]shared.ServiceID)
+	r.mediaServices = make(map[uint32]shared.ServiceID)
+	r.serialServices = make(map[int32]shared.ServiceID)
+	r.socketServices = make(map[int32]shared.ServiceID)
+	r.httpServices = make(map[int32]shared.ServiceID)
 	r.framebuffers = make(map[uint32]wipiFramebuffer)
 	r.screenHandle = 0
 	r.screenPixels = 0
@@ -473,6 +590,16 @@ func (r *wipiRuntime) registerResource(name string, data []byte) int32 {
 		}
 	}
 	if totalBytes > uint64(maxWIPICopy) {
+		return wipiNoMemory
+	}
+	packageFiles := make(map[string][]byte, len(r.resources)+1)
+	for currentName, resource := range r.resources {
+		if resource != nil {
+			packageFiles[currentName] = resource.data
+		}
+	}
+	packageFiles[name] = data
+	if err := r.services.Storage.ReplacePackage(packageFiles); err != nil {
 		return wipiNoMemory
 	}
 	if resource := r.resources[name]; resource != nil {

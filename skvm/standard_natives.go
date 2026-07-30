@@ -3,10 +3,13 @@ package skvm
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
 	"unicode/utf16"
+
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 type vectorState struct {
@@ -24,6 +27,15 @@ type dateState struct {
 type hashtableState struct {
 	values map[string]uint32
 	keys   map[string]uint32
+}
+
+type timerObjectState struct {
+	timers []shared.ServiceID
+}
+
+type timerTaskState struct {
+	timer     shared.ServiceID
+	cancelled bool
 }
 
 func (vm *VM) installExtendedCoreNatives() {
@@ -917,14 +929,24 @@ func (vm *VM) installKWISNatives() {
 		"org/kwis/msp/handset/BackLight",
 		"alwaysOn",
 		"()V",
-		nativeVoid,
+		func(_ context.Context, vm *VM, _ uint32, _ []Value) (Value, bool, error) {
+			return Value{}, false, vm.services.Device.SetBacklight(
+				true,
+				0,
+				vm.services.Clock.Monotonic(),
+			)
+		},
 	)
 	vm.RegisterNative(
 		"org/kwis/msp/io/File",
 		"<init>",
 		"(Ljava/lang/String;I)V",
-		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
-			return Value{}, false, vm.setNative(receiver, &xFileState{})
+		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+			state, err := vm.newXFile(args)
+			if err != nil {
+				return Value{}, false, err
+			}
+			return Value{}, false, vm.setNative(receiver, state)
 		},
 	)
 	vm.RegisterNative(
@@ -946,6 +968,9 @@ func (vm *VM) installKWISNatives() {
 			}
 			state.data = append(state.data, data...)
 			state.offset = len(state.data)
+			if err := vm.persistXFile(state); err != nil {
+				return Value{}, false, err
+			}
 			return IntValue(int32(len(data))), true, nil
 		},
 	)
@@ -1036,41 +1061,66 @@ func (vm *VM) installKWISNatives() {
 		"getDefaultFont",
 		"()Lorg/kwis/msp/lcdui/Font;",
 		func(_ context.Context, vm *VM, _ uint32, _ []Value) (Value, bool, error) {
-			return ReferenceValue(vm.NewObject("org/kwis/msp/lcdui/Font", nil)), true, nil
+			return ReferenceValue(vm.NewObject(
+				"org/kwis/msp/lcdui/Font",
+				&fontState{font: vm.defaultFont},
+			)), true, nil
 		},
 	)
 	vm.RegisterNative(
 		"org/kwis/msp/io/FileSystem",
 		"isFile",
 		"(Ljava/lang/String;)Z",
-		func(_ context.Context, _ *VM, _ uint32, _ []Value) (Value, bool, error) {
-			return IntValue(0), true, nil
+		func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
+			name, err := vm.fileNameArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			_, err = vm.services.Storage.Stat(shared.NamespacePrivate, name)
+			return boolValue(err == nil), true, nil
 		},
 	)
 	vm.RegisterNative(
 		"org/kwis/msp/io/FileSystem",
 		"remove",
 		"(Ljava/lang/String;)V",
-		nativeVoid,
+		func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
+			name, err := vm.fileNameArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			return Value{}, false, vm.services.Storage.Delete(
+				shared.NamespacePrivate,
+				name,
+			)
+		},
 	)
 	vm.RegisterNative(
 		"org/kwis/msp/lcdui/Font",
 		"getFont",
 		"(III)Lorg/kwis/msp/lcdui/Font;",
-		func(_ context.Context, vm *VM, _ uint32, _ []Value) (Value, bool, error) {
-			return ReferenceValue(vm.NewObject("org/kwis/msp/lcdui/Font", nil)), true, nil
+		func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
+			return vm.newFontObject("org/kwis/msp/lcdui/Font", args)
 		},
 	)
 	vm.RegisterNative(
 		"org/kwis/msp/lcdui/Font",
 		"stringWidth",
 		"(Ljava/lang/String;)I",
-		func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
+		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
 			value, err := vm.stringArgument(args, 0)
 			if err != nil {
 				return Value{}, false, err
 			}
-			return IntValue(int32(len([]rune(value)) * 6)), true, nil
+			font, err := vm.font(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			width, err := vm.services.Text.Measure(vm.serviceOwner, font.font, value)
+			if err != nil {
+				return Value{}, false, err
+			}
+			return IntValue(width), true, nil
 		},
 	)
 	vm.RegisterNative(
@@ -1083,7 +1133,11 @@ func (vm *VM) installKWISNatives() {
 				return Value{}, false, err
 			}
 			name = strings.TrimPrefix(strings.ReplaceAll(name, `\`, "/"), "/")
-			reference := vm.newImage(vm.resources[name])
+			data, _ := vm.resource(name)
+			reference, err := vm.newImage(data)
+			if err != nil {
+				return Value{}, false, err
+			}
 			object, _ := vm.Object(reference)
 			object.Class = "org/kwis/msp/lcdui/Image"
 			return ReferenceValue(reference), true, nil
@@ -1102,10 +1156,9 @@ func (vm *VM) installKWISNatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
-			state := &imageState{
-				width:  int(max(1, width)),
-				height: int(max(1, height)),
-				pixels: make([]uint32, int(max(1, width))*int(max(1, height))),
+			state, err := vm.newImageState(int(max(1, width)), int(max(1, height)))
+			if err != nil {
+				return Value{}, false, err
 			}
 			return ReferenceValue(
 				vm.NewObject("org/kwis/msp/lcdui/Image", state),
@@ -1146,7 +1199,8 @@ func (vm *VM) installKWISNatives() {
 				"org/kwis/msp/lcdui/Graphics",
 				&graphicsState{
 					width: state.width, height: state.height,
-					pixels: state.pixels, color: 0xff000000,
+					surface: state.surface, font: vm.defaultFont,
+					color: 0xff000000,
 				},
 			)), true, nil
 		},
@@ -1189,7 +1243,10 @@ func (vm *VM) installTimeNatives() {
 		"<init>",
 		"()V",
 		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
-			return Value{}, false, vm.setNative(receiver, &dateState{millis: vm.TimeMillis})
+			return Value{}, false, vm.setNative(
+				receiver,
+				&dateState{millis: vm.services.Clock.WallMillis()},
+			)
 		},
 	)
 	vm.RegisterNative(
@@ -1235,7 +1292,10 @@ func (vm *VM) installTimeNatives() {
 		"()Ljava/util/Calendar;",
 		func(_ context.Context, vm *VM, _ uint32, _ []Value) (Value, bool, error) {
 			return ReferenceValue(
-				vm.NewObject("java/util/Calendar", &dateState{millis: vm.TimeMillis}),
+				vm.NewObject(
+					"java/util/Calendar",
+					&dateState{millis: vm.services.Clock.WallMillis()},
+				),
 			), true, nil
 		},
 	)
@@ -1297,29 +1357,145 @@ func (vm *VM) installTimeNatives() {
 }
 
 func (vm *VM) installTimerNatives() {
-	vm.RegisterNative("java/util/Timer", "<init>", "()V", nativeVoid)
-	vm.RegisterNative("java/util/Timer", "cancel", "()V", nativeVoid)
+	vm.RegisterNative("java/util/Timer", "<init>", "()V", func(
+		_ context.Context,
+		vm *VM,
+		receiver uint32,
+		_ []Value,
+	) (Value, bool, error) {
+		return Value{}, false, vm.setNative(receiver, &timerObjectState{})
+	})
+	vm.RegisterNative("java/util/Timer", "cancel", "()V", func(
+		_ context.Context,
+		vm *VM,
+		receiver uint32,
+		_ []Value,
+	) (Value, bool, error) {
+		state, err := vm.timerObject(receiver)
+		if err != nil {
+			return Value{}, false, err
+		}
+		for _, id := range state.timers {
+			if err := vm.services.Timers.Cancel(id, vm.serviceOwner); err != nil {
+				return Value{}, false, err
+			}
+		}
+		return Value{}, false, nil
+	})
 	vm.RegisterNative(
 		"java/util/Timer",
 		"schedule",
 		"(Ljava/util/TimerTask;JJ)V",
-		nativeVoid,
+		nativeTimerSchedule,
 	)
 	vm.RegisterNative(
 		"java/util/Timer",
 		"scheduleAtFixedRate",
 		"(Ljava/util/TimerTask;JJ)V",
-		nativeVoid,
+		nativeTimerSchedule,
 	)
-	vm.RegisterNative("java/util/TimerTask", "<init>", "()V", nativeVoid)
+	vm.RegisterNative("java/util/TimerTask", "<init>", "()V", func(
+		_ context.Context,
+		vm *VM,
+		receiver uint32,
+		_ []Value,
+	) (Value, bool, error) {
+		return Value{}, false, vm.setNative(receiver, &timerTaskState{})
+	})
 	vm.RegisterNative(
 		"java/util/TimerTask",
 		"cancel",
 		"()Z",
-		func(_ context.Context, _ *VM, _ uint32, _ []Value) (Value, bool, error) {
-			return IntValue(1), true, nil
+		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+			state, err := vm.timerTask(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			wasActive := false
+			if state.timer != 0 {
+				timer, getErr := vm.services.Timers.Get(state.timer, vm.serviceOwner)
+				if getErr != nil {
+					return Value{}, false, getErr
+				}
+				wasActive = timer.Active
+				if err := vm.services.Timers.Cancel(
+					state.timer,
+					vm.serviceOwner,
+				); err != nil {
+					return Value{}, false, err
+				}
+			}
+			state.cancelled = true
+			if wasActive {
+				return IntValue(1), true, nil
+			}
+			return IntValue(0), true, nil
 		},
 	)
+}
+
+func nativeTimerSchedule(
+	_ context.Context,
+	vm *VM,
+	receiver uint32,
+	args []Value,
+) (Value, bool, error) {
+	timer, err := vm.timerObject(receiver)
+	if err != nil {
+		return Value{}, false, err
+	}
+	taskReference, err := referenceArgument(args, 0)
+	if err != nil {
+		return Value{}, false, err
+	}
+	task, err := vm.timerTask(taskReference)
+	if err != nil {
+		return Value{}, false, err
+	}
+	delay, err := args[1].Long()
+	if err != nil {
+		return Value{}, false, err
+	}
+	period, err := args[2].Long()
+	if err != nil {
+		return Value{}, false, err
+	}
+	maxMillis := int64(math.MaxInt64 / int64(time.Millisecond))
+	if task.cancelled || task.timer != 0 || delay < 0 || period < 0 ||
+		delay > maxMillis || period > maxMillis {
+		return Value{}, false, vm.newThrowable(
+			"java/lang/IllegalArgumentException",
+			"invalid timer schedule",
+		)
+	}
+	id, err := vm.services.Timers.Define(
+		vm.serviceOwner,
+		fmt.Sprintf("skvm.timer.%08x", taskReference),
+	)
+	if err != nil {
+		return Value{}, false, err
+	}
+	deadline := vm.services.Clock.Monotonic() + time.Duration(delay)*time.Millisecond
+	if deadline < vm.services.Clock.Monotonic() {
+		_ = vm.services.Timers.Destroy(id, vm.serviceOwner, vm.services.Events)
+		return Value{}, false, vm.newThrowable(
+			"java/lang/IllegalArgumentException",
+			"timer deadline overflow",
+		)
+	}
+	if err := vm.services.Timers.Set(
+		id,
+		vm.serviceOwner,
+		deadline,
+		time.Duration(period)*time.Millisecond,
+		int64(taskReference),
+	); err != nil {
+		_ = vm.services.Timers.Destroy(id, vm.serviceOwner, vm.services.Events)
+		return Value{}, false, err
+	}
+	task.timer = id
+	timer.timers = append(timer.timers, id)
+	return Value{}, false, nil
 }
 
 func (vm *VM) vector(reference uint32) (*vectorState, error) {
@@ -1342,6 +1518,30 @@ func (vm *VM) date(reference uint32) (*dateState, error) {
 	state, ok := object.Native.(*dateState)
 	if !ok {
 		return nil, fmt.Errorf("object %d has no date state", reference)
+	}
+	return state, nil
+}
+
+func (vm *VM) timerObject(reference uint32) (*timerObjectState, error) {
+	object, ok := vm.Object(reference)
+	if !ok {
+		return nil, fmt.Errorf("invalid Timer reference")
+	}
+	state, ok := object.Native.(*timerObjectState)
+	if !ok {
+		return nil, fmt.Errorf("object %d is not a Timer", reference)
+	}
+	return state, nil
+}
+
+func (vm *VM) timerTask(reference uint32) (*timerTaskState, error) {
+	object, ok := vm.Object(reference)
+	if !ok {
+		return nil, fmt.Errorf("invalid TimerTask reference")
+	}
+	state, ok := object.Native.(*timerTaskState)
+	if !ok {
+		return nil, fmt.Errorf("object %d is not a TimerTask", reference)
 	}
 	return state, nil
 }
