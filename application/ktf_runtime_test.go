@@ -465,6 +465,64 @@ func TestKTFMachineQueuesDueInputToDockedCard(t *testing.T) {
 	}
 }
 
+func TestKTFMachineLateInputDoesNotBackfillRepeats(t *testing.T) {
+	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.cpu.Close()
+	if err := runtime.mapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	runtime.jvmContext, err = runtime.allocateWords(3 + 128)
+	if err != nil {
+		t.Fatal(err)
+	}
+	card, err := runtime.newHostJavaObject("org/kwis/msp/lcdui/Card")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const display = uint32(0x10004000)
+	runtime.defaultDisplay = display
+	runtime.displayCards[display] = card
+	if err := runtime.services.Advance(
+		runtime.serviceOwner,
+		2*time.Second,
+	); err != nil {
+		t.Fatal(err)
+	}
+	runtime.tickMS = 2000
+	machine := &Machine{
+		ktf: runtime,
+		input: []machinecore.InputEvent{{
+			Control: "ok",
+			Pressed: true,
+		}},
+	}
+
+	if err := machine.queueKTFInput(runtime); err != nil {
+		t.Fatal(err)
+	}
+	if len(machine.input) != 0 || len(runtime.tasks) != 1 {
+		t.Fatalf("late input=%#v tasks=%d", machine.input, len(runtime.tasks))
+	}
+	inputState := runtime.services.Input.Snapshot()
+	if len(inputState.Controls) != 1 ||
+		inputState.Controls[0].NextRepeat !=
+			int64(2500*time.Millisecond) {
+		t.Fatalf("late input state = %+v", inputState)
+	}
+	if runtime.services.Events.Len() != 0 {
+		t.Fatalf(
+			"late input left %d backfilled events",
+			runtime.services.Events.Len(),
+		)
+	}
+}
+
 func TestKTFMachineKeepsInputUntilCardExists(t *testing.T) {
 	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
 		ClientName: "client.bin0",

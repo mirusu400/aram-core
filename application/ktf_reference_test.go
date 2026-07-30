@@ -920,15 +920,28 @@ func TestReferenceKTFFactoryRunsQueuedGameThread(t *testing.T) {
 			}
 		}
 		delivered := 0
+		released := 0
 		for _, trace := range machine.ktf.hostTrace {
 			if strings.HasPrefix(trace, "java_key_event:") {
 				delivered++
 			}
+			if strings.HasPrefix(
+				trace,
+				fmt.Sprintf("java_key_event:type=%d:", ktfKeyReleased),
+			) {
+				released++
+			}
 		}
-		if delivered != queued || len(machine.input) != 0 {
+		// Holding a control long enough legitimately adds repeat events between
+		// its physical press and release. Require both queued transitions while
+		// allowing those handset-generated repeats.
+		if delivered < queued || released != queued/2 ||
+			len(machine.input) != 0 {
 			t.Fatalf(
-				"KTF input delivery: delivered=%d queued=%d pending=%#v",
+				"KTF input delivery: delivered=%d released=%d "+
+					"queued=%d pending=%#v",
 				delivered,
+				released,
 				queued,
 				machine.input,
 			)

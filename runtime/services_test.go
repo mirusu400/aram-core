@@ -130,6 +130,41 @@ func TestServicesAdvanceRollsBackWhenEventQueueIsFull(t *testing.T) {
 	}
 }
 
+func TestServicesQueueInputAnchorsLateTransitionAtCurrentTime(t *testing.T) {
+	config := DefaultConfig()
+	config.RepeatDelay = 100 * time.Millisecond
+	config.RepeatPeriod = 50 * time.Millisecond
+	services, err := NewServices(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const owner = OwnerID(1)
+	if err := services.Advance(owner, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if err := services.QueueInput(owner, "ok", true, 0); err != nil {
+		t.Fatal(err)
+	}
+	event, ok := services.Events.PopReady(time.Second)
+	if !ok || event.Kind != EventInputPress || event.At != time.Second {
+		t.Fatalf("late input event = %+v, %t", event, ok)
+	}
+	if err := services.Advance(owner, 99*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	if event, ok := services.Events.PopReady(1099 * time.Millisecond); ok {
+		t.Fatalf("input repeated before the configured delay: %+v", event)
+	}
+	if err := services.Advance(owner, time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	event, ok = services.Events.PopReady(1100 * time.Millisecond)
+	if !ok || event.Kind != EventInputRepeat ||
+		event.At != 1100*time.Millisecond {
+		t.Fatalf("first input repeat = %+v, %t", event, ok)
+	}
+}
+
 func TestServicesRestoreDoesNotRestoreObservationalTrace(t *testing.T) {
 	services, err := NewServices(Config{})
 	if err != nil {

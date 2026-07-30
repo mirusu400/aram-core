@@ -749,6 +749,14 @@ func (s *Services) QueueInput(
 	if s == nil {
 		return fmt.Errorf("%w: services are nil", ErrInvalidArgument)
 	}
+	// Frontends commonly use a zero timestamp for an immediate transition.
+	// Once virtual time has advanced, applying that transition in the past
+	// would make Input.Advance synthesize a backlog of repeats that never
+	// occurred. Preserve future scheduling, but anchor late input at the
+	// current service time.
+	if now := s.Clock.Monotonic(); at < now {
+		at = now
+	}
 	eventState := s.Events.Snapshot()
 	inputState := s.Input.Snapshot()
 	replayState := s.Replay.Snapshot()
