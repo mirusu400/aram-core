@@ -401,6 +401,7 @@ type ktfTask struct {
 	context         []byte
 	exceptionFrame  uint32
 	lastJavaMethod  string
+	wakeAtMS        uint64
 	done            bool
 	presentOnReturn bool
 	bestEffortPaint bool
@@ -2307,7 +2308,11 @@ func (r *ktfRuntime) runTaskSlice(
 	}
 	task := r.nextRunnableTask()
 	if task == nil {
-		return cpu.Result{Reason: cpu.StopExited}
+		reason := cpu.StopExited
+		if r.hasLiveTask() {
+			reason = cpu.StopBudget
+		}
+		return cpu.Result{Reason: reason}
 	}
 	lastJavaMethod := r.lastJavaMethod
 	r.lastJavaMethod = task.lastJavaMethod
@@ -2434,7 +2439,7 @@ func (r *ktfRuntime) runTaskSlice(
 					return run
 				}
 			}
-			if !r.hasRunnableTask() {
+			if !r.hasLiveTask() {
 				run.Reason = cpu.StopExited
 				return run
 			}
@@ -2479,7 +2484,7 @@ func (r *ktfRuntime) runTaskSlice(
 				)
 				run.Reason = cpu.StopBudget
 				run.Err = nil
-				if !r.hasRunnableTask() {
+				if !r.hasLiveTask() {
 					run.Reason = cpu.StopExited
 				}
 				return run
@@ -2737,7 +2742,10 @@ func (r *ktfRuntime) nextRunnableTask() *ktfTask {
 			(task.startBlocker.done || task.startBlocker.childStartGrace == 0) {
 			task.startBlocker = nil
 		}
-		if !task.done && task.startBlocker == nil {
+		if task.wakeAtMS != 0 && task.wakeAtMS <= r.tickMS {
+			task.wakeAtMS = 0
+		}
+		if !task.done && task.startBlocker == nil && task.wakeAtMS == 0 {
 			r.taskCursor = (index + 1) % len(r.tasks)
 			return task
 		}
@@ -2751,7 +2759,19 @@ func (r *ktfRuntime) hasRunnableTask() bool {
 			(task.startBlocker.done || task.startBlocker.childStartGrace == 0) {
 			task.startBlocker = nil
 		}
-		if !task.done && task.startBlocker == nil {
+		if task.wakeAtMS != 0 && task.wakeAtMS <= r.tickMS {
+			task.wakeAtMS = 0
+		}
+		if !task.done && task.startBlocker == nil && task.wakeAtMS == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *ktfRuntime) hasLiveTask() bool {
+	for _, task := range r.tasks {
+		if task != nil && !task.done {
 			return true
 		}
 	}
@@ -11362,7 +11382,40 @@ func (r *ktfRuntime) handleThreadMethod(
 		return r.invokeJavaVirtual(ctx, target, "run", "()V")
 	case "join()V", "setPriority(I)V":
 		return 0, nil
-	case "sleep(J)V", "yield()V":
+	case "sleep(J)V":
+		low, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		high, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		millis := int64(uint64(high)<<32 | uint64(low))
+		if millis < 0 {
+			return r.raiseJavaException("java/lang/IllegalArgumentException", 0)
+		}
+		if r.deferThreads {
+			if r.activeTask != nil && millis != 0 {
+				delay := uint64(millis)
+				if delay > ^uint64(0)-r.tickMS {
+					r.activeTask.wakeAtMS = ^uint64(0)
+				} else {
+					r.activeTask.wakeAtMS = r.tickMS + delay
+				}
+				r.hostTrace = append(
+					r.hostTrace,
+					fmt.Sprintf(
+						"java_thread_sleep:duration_ms=%d:wake_at_ms=%d",
+						millis,
+						r.activeTask.wakeAtMS,
+					),
+				)
+			}
+			r.yieldRequested = true
+		}
+		return 0, nil
+	case "yield()V":
 		if r.deferThreads {
 			r.yieldRequested = true
 		}

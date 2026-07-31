@@ -103,6 +103,12 @@ func TestKTFSaveStateRestoresAdapterAndSharedServices(t *testing.T) {
 		t.Fatal(err)
 	}
 	machine.ktf.tickMS = 17
+	sleepingTask, err := machine.ktf.newTask(ktfImageBase|1, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sleepingTask.wakeAtMS = 77
+	machine.ktf.tasks = []*ktfTask{sleepingTask}
 	graphics, err := machine.ktf.ensureScreenGraphics()
 	if err != nil {
 		t.Fatal(err)
@@ -130,6 +136,7 @@ func TestKTFSaveStateRestoresAdapterAndSharedServices(t *testing.T) {
 	}
 	machine.ktf.fileData = map[string][]byte{}
 	machine.ktf.tickMS = 99
+	machine.ktf.tasks[0].wakeAtMS = 0
 
 	if err := machine.LoadState(bytes.NewReader(saved.Bytes())); err != nil {
 		t.Fatal(err)
@@ -157,6 +164,10 @@ func TestKTFSaveStateRestoresAdapterAndSharedServices(t *testing.T) {
 			machine.ktf.services.Clock.Monotonic(),
 			machine.ktf.fileData["/state.dat"],
 		)
+	}
+	if len(machine.ktf.tasks) != 1 ||
+		machine.ktf.tasks[0].wakeAtMS != 77 {
+		t.Fatalf("restored KTF sleep deadlines = %+v", machine.ktf.tasks)
 	}
 	if got := machine.frame.RGBAAt(2, 3); got != savedPixel {
 		t.Fatalf("restored KTF framebuffer pixel = %#v", got)

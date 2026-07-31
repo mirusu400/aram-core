@@ -13,7 +13,8 @@ import (
 )
 
 const (
-	ktfStateSchema       = uint32(2)
+	ktfStateSchemaV2     = uint32(2)
+	ktfStateSchema       = uint32(3)
 	maxKTFStateMetadata  = uint32(64 << 20)
 	maxKTFStateEntries   = 16_384
 	maxKTFStateHostCalls = int(ktfHostSize / 4)
@@ -28,6 +29,7 @@ type ktfSavedState struct {
 	heapAllocations   []heapBlock
 	incrementalHeaps  []ktfIncrementalHeapSnapshot
 	metadata          ktfMetadataSnapshot
+	taskWakeAtMS      []uint64
 	resolvedHostCalls map[uint32]ktfHostCall
 }
 
@@ -484,6 +486,10 @@ func (m *Machine) writeKTFState(writer *stateWriter) error {
 	}
 	writer.u32(uint32(len(metadataBytes)))
 	writer.write(metadataBytes)
+	writer.u32(uint32(len(r.tasks)))
+	for _, task := range r.tasks {
+		writer.u64(task.wakeAtMS)
+	}
 	return nil
 }
 
@@ -504,7 +510,8 @@ func (m *Machine) parseKTFState(
 	if m.ktf == nil {
 		return nil, decoder.fail("unexpected KTF state component")
 	}
-	if schema := decoder.u32(); schema != ktfStateSchema {
+	schema := decoder.u32()
+	if schema != ktfStateSchemaV2 && schema != ktfStateSchema {
 		return nil, decoder.fail(fmt.Sprintf("unsupported KTF state schema %d", schema))
 	}
 	owner := shared.OwnerID(decoder.u32())
@@ -579,6 +586,18 @@ func (m *Machine) parseKTFState(
 	if err := validateKTFMetadata(m.ktf, candidate, owner, metadata); err != nil {
 		return nil, decoder.fail(fmt.Sprintf("invalid KTF adapter graph: %v", err))
 	}
+	var taskWakeAtMS []uint64
+	if schema >= ktfStateSchema {
+		taskCount := decoder.u32()
+		if taskCount > maxKTFStateEntries ||
+			int(taskCount) != len(metadata.Tasks) {
+			return nil, decoder.fail("KTF sleeping task count differs")
+		}
+		taskWakeAtMS = make([]uint64, taskCount)
+		for index := range taskWakeAtMS {
+			taskWakeAtMS[index] = decoder.u64()
+		}
+	}
 	resolvedCalls, err := resolveKTFHostCalls(m.ktf, metadata.HostCalls)
 	if err != nil {
 		return nil, decoder.fail(fmt.Sprintf("invalid KTF host-call graph: %v", err))
@@ -595,6 +614,7 @@ func (m *Machine) parseKTFState(
 		heapAllocations:   heapAllocations,
 		incrementalHeaps:  incremental,
 		metadata:          metadata,
+		taskWakeAtMS:      taskWakeAtMS,
 		resolvedHostCalls: resolvedCalls,
 	}, nil
 }
@@ -1654,6 +1674,9 @@ func (m *Machine) restoreKTFState(saved *ktfSavedState) error {
 			keyCard:         task.KeyCard,
 			layoutOnReturn:  task.LayoutOnReturn,
 			childStartGrace: task.ChildStartGrace,
+		}
+		if len(saved.taskWakeAtMS) != 0 {
+			r.tasks[index].wakeAtMS = saved.taskWakeAtMS[index]
 		}
 	}
 	for index, task := range meta.Tasks {

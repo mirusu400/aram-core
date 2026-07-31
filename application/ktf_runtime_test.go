@@ -2259,8 +2259,14 @@ func TestKTFCallNativeOverridesNullThreadSleepTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := runtime.writeWords(parameters, []uint32{60, 0, 0, 0}); err != nil {
+		t.Fatal(err)
+	}
 	runtime.deferThreads = true
-	runtime.activeTask = &ktfTask{}
+	task := &ktfTask{}
+	runtime.activeTask = task
+	runtime.tasks = []*ktfTask{task}
+	runtime.tickMS = 1_000
 	runtime.lastJavaMethod = "java/lang/Thread.sleep(J)V"
 	if err := runtime.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
 		t.Fatal(err)
@@ -2274,6 +2280,29 @@ func TestKTFCallNativeOverridesNullThreadSleepTarget(t *testing.T) {
 	}
 	if !runtime.yieldRequested {
 		t.Fatal("null-target Thread.sleep did not yield its Java task")
+	}
+	if task.wakeAtMS != 1_060 {
+		t.Fatalf("Thread.sleep wake deadline = %d, want 1060", task.wakeAtMS)
+	}
+	runtime.activeTask = nil
+	if got := runtime.nextRunnableTask(); got != nil {
+		t.Fatalf("sleeping scheduler selected task %p", got)
+	}
+	result := runtime.runTaskSlice(context.Background(), 16)
+	if result.Reason != cpu.StopBudget || result.Instructions != 0 {
+		t.Fatalf("all-sleeping task slice = %+v", result)
+	}
+	runtime.tickMS = 1_059
+	if got := runtime.nextRunnableTask(); got != nil {
+		t.Fatalf("scheduler woke task early at %dms", runtime.tickMS)
+	}
+	runtime.tickMS = 1_060
+	if got := runtime.nextRunnableTask(); got != task || task.wakeAtMS != 0 {
+		t.Fatalf(
+			"scheduler wake at deadline = task %p, deadline %d",
+			got,
+			task.wakeAtMS,
+		)
 	}
 	if !slices.Contains(
 		runtime.hostTrace,
