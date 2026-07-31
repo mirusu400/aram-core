@@ -7054,6 +7054,223 @@ func TestKTFWIPICImageDecodesBMP(t *testing.T) {
 	}
 }
 
+func TestKTFWIPICDrawStringPaintsMeasuredRun(t *testing.T) {
+	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.cpu.Close()
+	if err := runtime.mapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR0, 64); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR1, 32); err != nil {
+		t.Fatal(err)
+	}
+	object, err := ktfWIPICGraphicsCreateOffscreenFramebuffer(
+		context.Background(),
+		runtime,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contextAddress, err := runtime.heap.allocate(60, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.writeWords(contextAddress, []uint32{
+		0, 0, 64, 32, 1, 0xf800,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// "가A" in the handset's EUC-KR encoding, terminated for a negative length.
+	textAddress, err := runtime.heap.allocate(4, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteMemory(
+		textAddress,
+		[]byte{0xb0, 0xa1, 'A', 0},
+	); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range []uint32{0, textAddress, ^uint32(0)} {
+		if err := runtime.cpu.WriteRegister(
+			cpu.RegisterR0+uint32(register),
+			value,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	width, err := ktfWIPICGraphicsGetStringWidth(context.Background(), runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if width == 0 || width > 64 {
+		t.Fatalf("measured EUC-KR run width = %d", width)
+	}
+	for register, value := range []uint32{object, 1, 1, textAddress} {
+		if err := runtime.cpu.WriteRegister(
+			cpu.RegisterR0+uint32(register),
+			value,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stack, err := runtime.heap.allocate(8, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.writeWords(stack, []uint32{
+		^uint32(0),
+		contextAddress,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterSP, stack); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ktfWIPICGraphicsDrawString(
+		context.Background(),
+		runtime,
+	); err != nil {
+		t.Fatal(err)
+	}
+	framebuffer := runtime.wipicFramebuffers[object]
+	pixels := make([]byte, framebuffer.stride*framebuffer.height)
+	if err := runtime.cpu.ReadMemory(framebuffer.pixels, pixels); err != nil {
+		t.Fatal(err)
+	}
+	painted, right := 0, 0
+	for y := 0; y < framebuffer.height; y++ {
+		for x := 0; x < framebuffer.width; x++ {
+			value := binary.LittleEndian.Uint16(
+				pixels[y*framebuffer.stride+x*2:],
+			)
+			if value == 0 {
+				continue
+			}
+			if value != 0xf800 {
+				t.Fatalf("glyph pixel at %d,%d = %04x", x, y, value)
+			}
+			painted++
+			right = max(right, x)
+		}
+	}
+	if painted == 0 {
+		t.Fatal("drawn EUC-KR run painted no pixels")
+	}
+	if right >= 1+int(width) {
+		t.Fatalf("run reached x=%d beyond measured width %d", right, width)
+	}
+}
+
+func TestKTFWIPICFontMetricsFollowTheHandsetHandle(t *testing.T) {
+	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.cpu.Close()
+	if err := runtime.mapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range []uint32{0x20, 16, 1} {
+		if err := runtime.cpu.WriteRegister(
+			cpu.RegisterR0+uint32(register),
+			value,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	font, err := ktfWIPICGraphicsGetFont(context.Background(), runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if font != 0x20|1<<8|16 {
+		t.Fatalf("packed font handle = %08x", font)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR0, font); err != nil {
+		t.Fatal(err)
+	}
+	height, err := ktfWIPICGraphicsGetFontHeight(context.Background(), runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ascent, err := ktfWIPICGraphicsGetFontAscent(context.Background(), runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descent, err := ktfWIPICGraphicsGetFontDescent(context.Background(), runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if height != uint32(fontHeight(font)) || ascent+descent != height {
+		t.Fatalf(
+			"font metrics height=%d ascent=%d descent=%d",
+			height,
+			ascent,
+			descent,
+		)
+	}
+	// A second handle with the same height and style reuses one text service.
+	services := len(runtime.fontServices)
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR0, font|0x40); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ktfWIPICGraphicsGetFontHeight(
+		context.Background(),
+		runtime,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.fontServices) != services {
+		t.Fatalf("font services = %d, want %d", len(runtime.fontServices), services)
+	}
+}
+
+func TestKTFWIPICStringRejectsUnterminatedRun(t *testing.T) {
+	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.cpu.Close()
+	if err := runtime.mapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	address, err := runtime.heap.allocate(ktfWIPICStringLimit+16, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filled := make([]byte, ktfWIPICStringLimit+16)
+	for index := range filled {
+		filled[index] = 'A'
+	}
+	if err := runtime.cpu.WriteMemory(address, filled); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.wipicText(address, -1, false); err == nil {
+		t.Fatal("unterminated WIPI-C string was accepted")
+	}
+	if _, err := runtime.wipicText(
+		address,
+		int32(ktfWIPICStringLimit)+1,
+		false,
+	); err == nil {
+		t.Fatal("oversized WIPI-C string was accepted")
+	}
+}
+
 func TestKTFWIPICTimerFiresAndReusesCompletedTask(t *testing.T) {
 	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
 		ClientName: "client.bin0",

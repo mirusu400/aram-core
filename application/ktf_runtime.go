@@ -13456,6 +13456,10 @@ func ktfWIPICHandler(table, slot int) ktfHostHandler {
 			return ktfWIPICGraphicsFillRect
 		case 12:
 			return ktfWIPICGraphicsCopyFramebuffer
+		case 17:
+			return ktfWIPICGraphicsDrawString
+		case 18:
+			return ktfWIPICGraphicsDrawUnicodeString
 		case 21:
 			return ktfWIPICGraphicsFlushLCD
 		case 22:
@@ -13466,6 +13470,18 @@ func ktfWIPICHandler(table, slot int) ktfHostHandler {
 			return ktfWIPICGraphicsGetDisplayInfo
 		case 25:
 			return ktfWIPICGraphicsRepaint
+		case 26:
+			return ktfWIPICGraphicsGetFont
+		case 27:
+			return ktfWIPICGraphicsGetFontHeight
+		case 28:
+			return ktfWIPICGraphicsGetFontAscent
+		case 29:
+			return ktfWIPICGraphicsGetFontDescent
+		case 30:
+			return ktfWIPICGraphicsGetStringWidth
+		case 31:
+			return ktfWIPICGraphicsGetUnicodeStringWidth
 		case 32:
 			return ktfWIPICGraphicsCreateImage
 		case 33:
@@ -14954,6 +14970,7 @@ type ktfWIPICGraphicsContext struct {
 	left, top, right, bottom int
 	clipEnabled              bool
 	foreground               uint16
+	font                     uint32
 	offsetX, offsetY         int
 }
 
@@ -14981,6 +14998,7 @@ func (r *ktfRuntime) wipicGraphicsContext(
 	state.bottom = int(int32(binary.LittleEndian.Uint32(encoded[12:16])))
 	state.clipEnabled = binary.LittleEndian.Uint32(encoded[16:20]) != 0
 	state.foreground = uint16(binary.LittleEndian.Uint32(encoded[20:24]))
+	state.font = binary.LittleEndian.Uint32(encoded[40:44])
 	state.offsetX = int(int32(binary.LittleEndian.Uint32(encoded[52:56])))
 	state.offsetY = int(int32(binary.LittleEndian.Uint32(encoded[56:60])))
 	return state, nil
@@ -15302,6 +15320,316 @@ func (r *ktfRuntime) writeWIPICPixel(
 		framebuffer.pixels+uint32(y*framebuffer.stride+x*2),
 		encoded[:],
 	)
+}
+
+// KTF hands WIPI-C text to the same shared fallback font the Java surface
+// draws with, so a Clet that measures a run and then paints it observes one
+// set of advances. Glyphs are blitted straight into the guest framebuffer
+// because Clets read those pixels back through the framebuffer object.
+func ktfWIPICGraphicsDrawString(
+	_ context.Context,
+	runtime *ktfRuntime,
+) (uint32, error) {
+	return runtime.drawWIPICString(false)
+}
+
+func ktfWIPICGraphicsDrawUnicodeString(
+	_ context.Context,
+	runtime *ktfRuntime,
+) (uint32, error) {
+	return runtime.drawWIPICString(true)
+}
+
+func (r *ktfRuntime) drawWIPICString(unicode bool) (uint32, error) {
+	values := make([]uint32, 6)
+	for index := range values {
+		value, err := r.parameter(uint32(index))
+		if err != nil {
+			return 0, fmt.Errorf(
+				"read KTF WIPI-C string parameter %d: %w",
+				index,
+				err,
+			)
+		}
+		values[index] = value
+	}
+	if r.wipicFramebuffers[values[0]] == nil {
+		return 0, nil
+	}
+	state, err := r.wipicGraphicsContext(values[5])
+	if err != nil {
+		return 0, err
+	}
+	text, err := r.wipicText(values[3], int32(values[4]), unicode)
+	if err != nil || text == "" {
+		return 0, err
+	}
+	fontID, err := r.ensureWIPICFontService(state.font)
+	if err != nil {
+		return 0, err
+	}
+	if err := r.drawWIPICGlyphs(
+		values[0],
+		int(int32(values[1]))+state.offsetX,
+		int(int32(values[2]))+state.offsetY,
+		text,
+		fontID,
+		state,
+	); err != nil {
+		return 0, err
+	}
+	return 0, r.syncKTFWIPICFramebuffer(values[0])
+}
+
+// drawWIPICGlyphs places the run with the top-left origin WIPI-C uses, so the
+// glyph bearings stay relative to the requested y rather than a baseline.
+func (r *ktfRuntime) drawWIPICGlyphs(
+	handle uint32,
+	x, y int,
+	text string,
+	fontID shared.ServiceID,
+	state ktfWIPICGraphicsContext,
+) error {
+	cursor := x
+	for _, character := range text {
+		glyph, err := r.services.Text.Glyph(r.serviceOwner, fontID, character)
+		if err != nil {
+			return fmt.Errorf(
+				"rasterize KTF WIPI-C glyph %q: %w",
+				character,
+				err,
+			)
+		}
+		for row := int32(0); row < glyph.Height; row++ {
+			for column := int32(0); column < glyph.Width; column++ {
+				if glyph.Alpha[row*glyph.Width+column] == 0 {
+					continue
+				}
+				if err := r.writeWIPICPixel(
+					handle,
+					cursor+int(glyph.BearingX+column),
+					y+int(glyph.BearingY+row),
+					state,
+				); err != nil {
+					return err
+				}
+			}
+		}
+		cursor += int(glyph.Advance)
+	}
+	return nil
+}
+
+func ktfWIPICGraphicsGetStringWidth(
+	_ context.Context,
+	runtime *ktfRuntime,
+) (uint32, error) {
+	return runtime.measureWIPICString(false)
+}
+
+func ktfWIPICGraphicsGetUnicodeStringWidth(
+	_ context.Context,
+	runtime *ktfRuntime,
+) (uint32, error) {
+	return runtime.measureWIPICString(true)
+}
+
+func (r *ktfRuntime) measureWIPICString(unicode bool) (uint32, error) {
+	font, err := r.parameter(0)
+	if err != nil {
+		return 0, err
+	}
+	address, err := r.parameter(1)
+	if err != nil {
+		return 0, err
+	}
+	length, err := r.parameter(2)
+	if err != nil {
+		return 0, err
+	}
+	text, err := r.wipicText(address, int32(length), unicode)
+	if err != nil || text == "" {
+		return 0, err
+	}
+	fontID, err := r.ensureWIPICFontService(font)
+	if err != nil {
+		return 0, err
+	}
+	width, err := r.services.Text.Measure(r.serviceOwner, fontID, text)
+	if err != nil {
+		return 0, err
+	}
+	return uint32(max(int32(0), width)), nil
+}
+
+func ktfWIPICGraphicsGetFont(
+	_ context.Context,
+	runtime *ktfRuntime,
+) (uint32, error) {
+	face, err := runtime.parameter(0)
+	if err != nil {
+		return 0, err
+	}
+	size, err := runtime.parameter(1)
+	if err != nil {
+		return 0, err
+	}
+	style, err := runtime.parameter(2)
+	if err != nil {
+		return 0, err
+	}
+	return face&0xe0 | style<<8 | size&0x1f, nil
+}
+
+func ktfWIPICGraphicsGetFontHeight(
+	_ context.Context,
+	runtime *ktfRuntime,
+) (uint32, error) {
+	metrics, err := runtime.wipicFontMetrics()
+	if err != nil {
+		return 0, err
+	}
+	return uint32(metrics.Height), nil
+}
+
+func ktfWIPICGraphicsGetFontAscent(
+	_ context.Context,
+	runtime *ktfRuntime,
+) (uint32, error) {
+	metrics, err := runtime.wipicFontMetrics()
+	if err != nil {
+		return 0, err
+	}
+	return uint32(metrics.Ascent), nil
+}
+
+func ktfWIPICGraphicsGetFontDescent(
+	_ context.Context,
+	runtime *ktfRuntime,
+) (uint32, error) {
+	metrics, err := runtime.wipicFontMetrics()
+	if err != nil {
+		return 0, err
+	}
+	return uint32(metrics.Descent), nil
+}
+
+func (r *ktfRuntime) wipicFontMetrics() (shared.FontMetrics, error) {
+	font, err := r.parameter(0)
+	if err != nil {
+		return shared.FontMetrics{}, err
+	}
+	fontID, err := r.ensureWIPICFontService(font)
+	if err != nil {
+		return shared.FontMetrics{}, err
+	}
+	return r.services.Text.Metrics(r.serviceOwner, fontID)
+}
+
+// WIPI-C font handles are plain integers rather than guest objects, so their
+// shared text services are cached under a reserved key range that no guest
+// allocation can produce.
+const ktfWIPICFontServiceKey = uint32(0xffff0000)
+
+func (r *ktfRuntime) ensureWIPICFontService(
+	font uint32,
+) (shared.ServiceID, error) {
+	height := int32(fontHeight(font))
+	var style shared.FontStyle
+	if font&0x0100 != 0 {
+		style |= shared.FontBold
+	}
+	if font&0x0200 != 0 {
+		style |= shared.FontItalic
+	}
+	if font&0x0400 != 0 {
+		style |= shared.FontUnderlined
+	}
+	key := ktfWIPICFontServiceKey | uint32(height)<<8 | uint32(style)
+	if serviceID := r.fontServices[key]; serviceID != 0 {
+		return serviceID, nil
+	}
+	serviceID, err := r.services.Text.CreateFont(
+		r.serviceOwner,
+		shared.FontDescriptor{
+			Family: "aram-fallback",
+			Size:   height,
+			Style:  style,
+		},
+	)
+	if err != nil {
+		return 0, err
+	}
+	r.fontServices[key] = serviceID
+	return serviceID, nil
+}
+
+// KTF passes M_Char runs in the handset's EUC-KR encoding and M_UCode runs as
+// UTF-16LE. A negative length means the run is terminated instead of counted.
+const ktfWIPICStringLimit = uint32(4096)
+
+func (r *ktfRuntime) wipicText(
+	address uint32,
+	length int32,
+	unicode bool,
+) (string, error) {
+	if address == 0 {
+		return "", nil
+	}
+	unit, encoding := uint32(1), shared.EncodingEUCKR
+	if unicode {
+		unit, encoding = 2, shared.EncodingUTF16LE
+	}
+	limit := ktfWIPICStringLimit / unit
+	count := uint32(0)
+	if length >= 0 {
+		count = uint32(length)
+		if count > limit {
+			return "", fmt.Errorf(
+				"KTF WIPI-C string at 0x%08x spans %d units",
+				address,
+				count,
+			)
+		}
+	} else {
+		// Truncating an unterminated run would hand the decoder a partial
+		// multi-byte sequence, so report the bad pointer instead.
+		var element [2]byte
+		for ; count < limit; count++ {
+			if err := r.cpu.ReadMemory(
+				address+count*unit,
+				element[:unit],
+			); err != nil {
+				return "", fmt.Errorf(
+					"read KTF WIPI-C string at 0x%08x: %w",
+					address+count*unit,
+					err,
+				)
+			}
+			if element[0] == 0 && (unit == 1 || element[1] == 0) {
+				break
+			}
+		}
+		if count == limit {
+			return "", fmt.Errorf(
+				"KTF WIPI-C string at 0x%08x is not terminated within %d units",
+				address,
+				limit,
+			)
+		}
+	}
+	if count == 0 {
+		return "", nil
+	}
+	data := make([]byte, count*unit)
+	if err := r.cpu.ReadMemory(address, data); err != nil {
+		return "", fmt.Errorf(
+			"read KTF WIPI-C string at 0x%08x: %w",
+			address,
+			err,
+		)
+	}
+	return r.services.Text.Decode(data, encoding)
 }
 
 func ktfWIPICGraphicsGetPixelFromRGB(
