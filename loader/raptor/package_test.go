@@ -55,6 +55,74 @@ func TestInspectPackage(t *testing.T) {
 	}
 }
 
+// Modules built with the ARM RVCT toolchain name their regions ER_RO/ER_RW/
+// ER_ZI instead of .text/.data/.bss, so the code section has to be recognized
+// by its flags rather than by one toolchain's spelling.
+func TestInspectAcceptsRVCTRegionNames(t *testing.T) {
+	module := makeELF(t, "wild", nil)
+	renamed := bytes.Replace(module, []byte(".text\x00"), []byte("ER_RO\x00"), 1)
+	if bytes.Equal(module, renamed) {
+		t.Fatal("synthetic module does not carry a .text section name")
+	}
+	image, err := InspectELF("binary.mod", renamed)
+	if err != nil {
+		t.Fatalf("RVCT-named module rejected: %v", err)
+	}
+	if _, ok := image.Section(".text"); ok {
+		t.Fatal("renamed module still reports a .text section")
+	}
+	code, ok := image.CodeSection()
+	if !ok || code.Name != "ER_RO" || !code.Executable() {
+		t.Fatalf("code section = %+v ok=%t", code, ok)
+	}
+	data, ok := image.DataSection()
+	if !ok || data.Name != ".data" {
+		t.Fatalf("data section = %+v ok=%t", data, ok)
+	}
+	zero, ok := image.ZeroSection()
+	if !ok || zero.Name != ".bss" {
+		t.Fatalf("zero section = %+v ok=%t", zero, ok)
+	}
+}
+
+// A writable-and-executable .data must not shadow .text: several shipped
+// modules mark both, and picking the wrong one moves the entry point.
+func TestCodeSectionPrefersTheEntryRegion(t *testing.T) {
+	image := Image{Sections: []Section{
+		{Index: 0},
+		{
+			Index: 1,
+			Name:  ".text",
+			Type:  sectionProgBits,
+			Flags: sectionAlloc | sectionExec,
+			Size:  16,
+		},
+		{
+			Index: 2,
+			Name:  ".data",
+			Type:  sectionProgBits,
+			Flags: sectionAlloc | sectionWrite | sectionExec,
+			Size:  8,
+		},
+		{
+			Index: 3,
+			Name:  ".bss",
+			Type:  sectionNoBits,
+			Flags: sectionAlloc | sectionWrite,
+			Size:  4,
+		},
+	}}
+	if code, ok := image.CodeSection(); !ok || code.Name != ".text" {
+		t.Fatalf("code section = %+v ok=%t", code, ok)
+	}
+	if data, ok := image.DataSection(); !ok || data.Name != ".data" {
+		t.Fatalf("data section = %+v ok=%t", data, ok)
+	}
+	if zero, ok := image.ZeroSection(); !ok || zero.Name != ".bss" {
+		t.Fatalf("zero section = %+v ok=%t", zero, ok)
+	}
+}
+
 func TestInspectWrappedPackageAndMIE(t *testing.T) {
 	module := makeELF(t, "game", []string{"kernel"})
 	archive := makeZIP(t, map[string][]byte{

@@ -114,13 +114,15 @@ func newRaptorRuntime(
 }
 
 func inspectRaptorClet(image raptor.Image) (raptorClet, error) {
-	data, ok := image.Section(".data")
-	if !ok || !data.Allocated() || len(data.Data) < int(raptorCletHeaderSize) {
-		return raptorClet{}, fmt.Errorf("initialize Raptor Clet: .data lifecycle header is missing")
+	data, ok := image.DataSection()
+	if !ok || len(data.Data) < int(raptorCletHeaderSize) {
+		return raptorClet{}, fmt.Errorf(
+			"initialize Raptor Clet: read-write lifecycle header is missing",
+		)
 	}
-	text, ok := image.Section(".text")
+	text, ok := image.CodeSection()
 	if !ok {
-		return raptorClet{}, fmt.Errorf("initialize Raptor Clet: .text is missing")
+		return raptorClet{}, fmt.Errorf("initialize Raptor Clet: code section is missing")
 	}
 	if version := binary.LittleEndian.Uint32(data.Data[0:4]); version != 3 {
 		return raptorClet{}, fmt.Errorf(
@@ -755,13 +757,13 @@ func raptorPrimarySections(image raptor.Image) (
 	err error,
 ) {
 	var ok bool
-	text, ok = image.Section(".text")
+	text, ok = image.CodeSection()
 	if !ok {
-		return raptor.Section{}, raptor.Section{}, fmt.Errorf("Raptor .text section is missing")
+		return raptor.Section{}, raptor.Section{}, fmt.Errorf("Raptor code section is missing")
 	}
-	bss, ok = image.Section(".bss")
+	bss, ok = image.ZeroSection()
 	if !ok {
-		return raptor.Section{}, raptor.Section{}, fmt.Errorf("Raptor .bss section is missing")
+		return raptor.Section{}, raptor.Section{}, fmt.Errorf("Raptor zero-fill section is missing")
 	}
 	return text, bss, nil
 }

@@ -133,6 +133,39 @@ func (i Image) Section(name string) (Section, bool) {
 	return Section{}, false
 }
 
+// Raptor modules ship from two toolchains. GNU binutils emits .text/.data/.bss
+// while ARM RVCT emits its region names ER_RO/ER_RW/ER_ZI, so a module built
+// with the ARM chain carries no section called .text at all. Select the roles
+// from the section flags, which both layouts set identically, and fall back to
+// the lowest matching index so a module keeps one canonical answer.
+func (i Image) role(match func(Section) bool) (Section, bool) {
+	for _, section := range i.Sections {
+		if section.Allocated() && section.Size != 0 && match(section) {
+			return section, true
+		}
+	}
+	return Section{}, false
+}
+
+// CodeSection returns the allocated executable region holding the entry point.
+func (i Image) CodeSection() (Section, bool) {
+	return i.role(func(section Section) bool {
+		return section.Executable() && !section.ZeroFill()
+	})
+}
+
+// DataSection returns the initialized read-write region.
+func (i Image) DataSection() (Section, bool) {
+	return i.role(func(section Section) bool {
+		return section.Writable() && !section.ZeroFill()
+	})
+}
+
+// ZeroSection returns the zero-filled region.
+func (i Image) ZeroSection() (Section, bool) {
+	return i.role(Section.ZeroFill)
+}
+
 type Package struct {
 	Descriptor Descriptor
 	JARName    string
@@ -437,16 +470,16 @@ func InspectELF(name string, data []byte) (Image, error) {
 		}
 	}
 
-	code, ok := image.Section(".text")
-	if !ok || !code.Allocated() || !code.Executable() || code.Size == 0 {
-		return Image{}, formatError(name, -1, "allocated executable .text section is missing")
+	code, ok := image.CodeSection()
+	if !ok {
+		return Image{}, formatError(name, -1, "allocated executable code section is missing")
 	}
 	expectedEntry := uint64(code.Address) + uint64(metadata.EntryOffset)
 	if expectedEntry > math.MaxUint32 || uint32(expectedEntry) != image.Entry {
 		return Image{}, formatError(name, 24, "ELF entry does not match .raptor entry offset")
 	}
 	if image.Entry < code.Address || uint64(image.Entry) >= uint64(code.Address)+uint64(code.Size) {
-		return Image{}, formatError(name, 24, "ELF entry is outside .text")
+		return Image{}, formatError(name, 24, "ELF entry is outside the code section")
 	}
 	return image, nil
 }
