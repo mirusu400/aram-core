@@ -169,6 +169,20 @@ jobs:
           mapfile -t assets < <(find release-assets -type f -print)
           test "${#assets[@]}" -gt 0
           gh release upload nightly "${assets[@]}" --clobber
+      - name: Check out the integrated product notifier
+        uses: actions/checkout@v6
+        with:
+          repository: mirusu400/aram-emu
+          ref: main
+          path: aram-emu-notify
+          ssh-key: ${{ secrets.ARAM_EMU_DEPLOY_KEY }}
+      - name: Notify the integrated product
+        working-directory: aram-emu-notify
+        shell: bash
+        run: |
+          trigger_tag="component-updated/aram-core-${GITHUB_SHA}"
+          git tag "${trigger_tag}"
+          git push origin "refs/tags/${trigger_tag}"
 
   publish-stable:
     if: github.event_name == 'release' && github.event.release.tag_name != 'nightly'
