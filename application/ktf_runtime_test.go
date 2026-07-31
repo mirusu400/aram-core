@@ -9,6 +9,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"math"
 	"reflect"
 	"slices"
 	"strings"
@@ -5159,6 +5160,60 @@ func TestKTFFileReadOnlyOpenRequiresExistingFile(t *testing.T) {
 		opened.name != "/missing.dat" ||
 		opened.mode != ktfFileReadOnly {
 		t.Fatalf("opened read-only file = %#v", opened)
+	}
+}
+
+func TestKTFFileSystemReportsAvailableStorage(t *testing.T) {
+	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.cpu.Close()
+	if err := runtime.mapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	free := runtime.ktfFreeStorageBytes()
+	if free == 0 {
+		t.Fatal("empty private storage reports no free space")
+	}
+	available, err := runtime.handleFileSystemMethod("available", "()I")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if available != uint32(min(free, math.MaxInt32)) {
+		t.Fatalf("FileSystem.available = %d, want %d", available, free)
+	}
+	low, err := runtime.handleFileSystemMethod("getFreeSpace", "()J")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if uint64(runtime.javaReturnHigh)<<32|uint64(low) != free {
+		t.Fatalf(
+			"getFreeSpace = 0x%08x%08x, want %d",
+			runtime.javaReturnHigh,
+			low,
+			free,
+		)
+	}
+	// An unmodeled method must surface in diagnostics rather than passing a
+	// silent zero back to the Clet as if it were an answer.
+	if _, err := runtime.handleFileSystemMethod(
+		"unmodeledProbe",
+		"()I",
+	); err != nil {
+		t.Fatal(err)
+	}
+	const signature = "org/kwis/msp/io/FileSystem.unmodeledProbe()I"
+	if runtime.unimplementedJava[signature] != 1 ||
+		runtime.lastUnimplementedJava != signature {
+		t.Fatalf(
+			"unimplemented record = %v / %q",
+			runtime.unimplementedJava,
+			runtime.lastUnimplementedJava,
+		)
 	}
 }
 

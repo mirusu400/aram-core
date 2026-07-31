@@ -12,6 +12,7 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"math"
 	"path"
 	"slices"
 	"sort"
@@ -10288,6 +10289,7 @@ func (r *ktfRuntime) handleFileMethod(
 		}
 		return r.writeKTFFile(instance, data)
 	default:
+		r.recordUnimplementedJava("org/kwis/msp/io/File", name, descriptor)
 		return 0, nil
 	}
 }
@@ -10525,15 +10527,37 @@ func (r *ktfRuntime) handleFileSystemMethod(
 		)
 		return 0, nil
 	case "getFreeSpace()J":
-		limit := r.services.Config.Limits.Storage.MaxStorageBytes
-		used := r.services.Storage.Used(shared.NamespacePrivate)
-		if used >= limit {
-			return r.javaLongResult(0), nil
-		}
-		return r.javaLongResult(limit - used), nil
+		return r.javaLongResult(r.ktfFreeStorageBytes()), nil
+	case "available()I":
+		// KTF titles gate startup on the int form of the free-space query and
+		// abort with a "not enough space" card when it reports zero.
+		return uint32(min(r.ktfFreeStorageBytes(), math.MaxInt32)), nil
 	default:
+		r.recordUnimplementedJava("org/kwis/msp/io/FileSystem", name, descriptor)
 		return 0, nil
 	}
+}
+
+func (r *ktfRuntime) ktfFreeStorageBytes() uint64 {
+	limit := r.services.Config.Limits.Storage.MaxStorageBytes
+	used := r.services.Storage.Used(shared.NamespacePrivate)
+	if used >= limit {
+		return 0
+	}
+	return limit - used
+}
+
+// recordUnimplementedJava keeps modeled-class methods that fall through their
+// handler visible in diagnostics. Without it a silent zero looks like a real
+// answer, which is how a missing free-space query reads as an empty disk.
+func (r *ktfRuntime) recordUnimplementedJava(className, name, descriptor string) {
+	signature := className + "." + name + descriptor
+	r.unimplementedJava[signature]++
+	r.lastUnimplementedJava = signature
+	r.hostTrace = append(
+		r.hostTrace,
+		fmt.Sprintf("java_unimplemented:%s", signature),
+	)
 }
 
 func (r *ktfRuntime) newHostJavaObject(className string) (uint32, error) {
