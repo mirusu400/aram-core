@@ -85,6 +85,27 @@ func TestInspectAcceptsRVCTRegionNames(t *testing.T) {
 	}
 }
 
+// 붕어빵타이쿤3 stores its entry offset with the Thumb bit set while its ELF
+// header keeps the aligned address, so the two only agree once the
+// interworking bit is taken out of the comparison.
+func TestInspectAcceptsThumbFlaggedEntryOffset(t *testing.T) {
+	module := makeELF(t, "thumb", nil)
+	// makeELF puts .text at 0x1000 with an entry offset of zero, so flagging
+	// the offset alone reproduces the mismatch.
+	offset := bytes.Index(module, raptorMagic)
+	if offset < 0 {
+		t.Fatal("synthetic module carries no .raptor section")
+	}
+	binary.LittleEndian.PutUint32(module[offset+0x0c:offset+0x10], 1)
+	image, err := InspectELF("binary.mod", module)
+	if err != nil {
+		t.Fatalf("Thumb-flagged entry offset rejected: %v", err)
+	}
+	if image.Entry != 0x1000 {
+		t.Fatalf("entry = 0x%08x", image.Entry)
+	}
+}
+
 // A writable-and-executable .data must not shadow .text: several shipped
 // modules mark both, and picking the wrong one moves the entry point.
 func TestCodeSectionPrefersTheEntryRegion(t *testing.T) {

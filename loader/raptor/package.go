@@ -474,11 +474,17 @@ func InspectELF(name string, data []byte) (Image, error) {
 	if !ok {
 		return Image{}, formatError(name, -1, "allocated executable code section is missing")
 	}
-	expectedEntry := uint64(code.Address) + uint64(metadata.EntryOffset)
-	if expectedEntry > math.MaxUint32 || uint32(expectedEntry) != image.Entry {
+	// The interworking bit belongs to the entry address, and modules disagree
+	// about where it is written down: some carry the Thumb-flagged offset in
+	// .raptor while the ELF header keeps the aligned address. Compare the
+	// addresses themselves and leave the mode to the runtime, which enters
+	// Raptor code in Thumb either way.
+	entry := image.Entry &^ 1
+	expectedEntry := (uint64(code.Address) + uint64(metadata.EntryOffset)) &^ 1
+	if expectedEntry > math.MaxUint32 || uint32(expectedEntry) != entry {
 		return Image{}, formatError(name, 24, "ELF entry does not match .raptor entry offset")
 	}
-	if image.Entry < code.Address || uint64(image.Entry) >= uint64(code.Address)+uint64(code.Size) {
+	if entry < code.Address || uint64(entry) >= uint64(code.Address)+uint64(code.Size) {
 		return Image{}, formatError(name, 24, "ELF entry is outside the code section")
 	}
 	return image, nil
