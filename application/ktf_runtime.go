@@ -7698,11 +7698,15 @@ func (r *ktfRuntime) handleGraphicsMethod(
 		}
 		point := image.Pt(x+state.translate.X, y+state.translate.Y)
 		targetRect := source.Bounds().Add(point.Sub(source.Bounds().Min))
+		clippedRect := targetRect.Intersect(state.clip)
+		sourcePoint := source.Bounds().Min.Add(
+			clippedRect.Min.Sub(targetRect.Min),
+		)
 		draw.Draw(
 			state.target,
-			targetRect.Intersect(state.clip),
+			clippedRect,
 			source,
-			source.Bounds().Min,
+			sourcePoint,
 			draw.Over,
 		)
 		state.pixelsDirty = true

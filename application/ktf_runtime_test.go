@@ -975,6 +975,67 @@ func TestKTFGraphicsFillRectUpdatesFramebuffer(t *testing.T) {
 	}
 }
 
+func TestKTFGraphicsDrawImageAdvancesSourceWhenClipped(t *testing.T) {
+	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.cpu.Close()
+	if err := runtime.mapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	runtime.jvmContext, err = runtime.allocateWords(3 + 128)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.frame = image.NewRGBA(image.Rect(0, 0, 1, 1))
+	graphics, err := runtime.ensureScreenGraphics()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	source := image.NewRGBA(image.Rect(10, 20, 11, 23))
+	source.SetRGBA(10, 20, color.RGBA{R: 0xff, A: 0xff})
+	source.SetRGBA(10, 21, color.RGBA{G: 0xff, A: 0xff})
+	source.SetRGBA(10, 22, color.RGBA{B: 0xff, A: 0xff})
+	javaImage, err := runtime.newJavaImage(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stack := DefaultStackBase + 0x100
+	if err := runtime.cpu.WriteRegister(cpu.RegisterSP, stack); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.writeWords(stack, []uint32{^uint32(0), 0}); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR1: graphics,
+		cpu.RegisterR2: javaImage,
+		cpu.RegisterR3: 0,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := runtime.handleGraphicsMethod(
+		"drawImage",
+		"(Lorg/kwis/msp/lcdui/Image;III)V",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if got := runtime.frame.RGBAAt(0, 0); got != (color.RGBA{
+		G: 0xff,
+		A: 0xff,
+	}) {
+		t.Fatalf("clipped image pixel = %#v, want second source row", got)
+	}
+}
+
 func TestKTFStringBufferDeleteClampsEndToLength(t *testing.T) {
 	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
 		ClientName: "client.bin0",
