@@ -1205,44 +1205,61 @@ func (vm *VM) installGraphicsNatives() {
 	for _, method := range []struct {
 		name       string
 		descriptor string
+		native     NativeFunc
 	}{
-		{"setClip", "(IIII)V"},
-		{"clipRect", "(IIII)V"},
-		{"translate", "(II)V"},
+		{"setClip", "(IIII)V", nativeSetClip},
+		{"clipRect", "(IIII)V", nativeClipRect},
+		{"translate", "(II)V", nativeTranslate},
 	} {
 		vm.RegisterNative(
 			"javax/microedition/lcdui/Graphics",
 			method.name,
 			method.descriptor,
-			nativeVoid,
+			method.native,
 		)
 	}
 	for _, method := range []struct {
-		name  string
-		value func(*graphicsState) int32
+		name   string
+		native NativeFunc
 	}{
-		{"getClipX", func(*graphicsState) int32 { return 0 }},
-		{"getClipY", func(*graphicsState) int32 { return 0 }},
-		{"getClipWidth", func(state *graphicsState) int32 { return int32(state.width) }},
-		{"getClipHeight", func(state *graphicsState) int32 { return int32(state.height) }},
-		{"getTranslateX", func(*graphicsState) int32 { return 0 }},
-		{"getTranslateY", func(*graphicsState) int32 { return 0 }},
-		{"getColor", func(state *graphicsState) int32 { return int32(state.color & 0xffffff) }},
+		{"getClipX", nativeGraphicsState(func(state shared.SurfaceDrawState) int32 {
+			return state.Clip.X - state.TranslateX
+		})},
+		{"getClipY", nativeGraphicsState(func(state shared.SurfaceDrawState) int32 {
+			return state.Clip.Y - state.TranslateY
+		})},
+		{"getClipWidth", nativeGraphicsState(func(state shared.SurfaceDrawState) int32 {
+			return state.Clip.Width
+		})},
+		{"getClipHeight", nativeGraphicsState(func(state shared.SurfaceDrawState) int32 {
+			return state.Clip.Height
+		})},
+		{"getTranslateX", nativeGraphicsState(func(state shared.SurfaceDrawState) int32 {
+			return state.TranslateX
+		})},
+		{"getTranslateY", nativeGraphicsState(func(state shared.SurfaceDrawState) int32 {
+			return state.TranslateY
+		})},
 	} {
-		spec := method
 		vm.RegisterNative(
 			"javax/microedition/lcdui/Graphics",
-			spec.name,
+			method.name,
 			"()I",
-			func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
-				state, err := vm.graphics(receiver)
-				if err != nil {
-					return Value{}, false, err
-				}
-				return IntValue(spec.value(state)), true, nil
-			},
+			method.native,
 		)
 	}
+	vm.RegisterNative(
+		"javax/microedition/lcdui/Graphics",
+		"getColor",
+		"()I",
+		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+			state, err := vm.graphics(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			return IntValue(int32(state.color & 0xffffff)), true, nil
+		},
+	)
 	vm.RegisterNative(
 		"javax/microedition/lcdui/Font",
 		"stringWidth",

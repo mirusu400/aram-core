@@ -319,12 +319,18 @@ func (vm *VM) installGraphicsCompatibilityNatives() {
 		"(Ljava/lang/String;III)V",
 		nativeDrawString,
 	)
-	for _, name := range []string{"setClip", "clipRect"} {
+	for _, method := range []struct {
+		name   string
+		native NativeFunc
+	}{
+		{"setClip", nativeSetClip},
+		{"clipRect", nativeClipRect},
+	} {
 		vm.RegisterNative(
 			"org/kwis/msp/lcdui/Graphics",
-			name,
+			method.name,
 			"(IIII)V",
-			nativeVoid,
+			method.native,
 		)
 	}
 	vm.RegisterNative(

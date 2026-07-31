@@ -215,6 +215,167 @@ func nativeDrawString(
 	return Value{}, false, nil
 }
 
+func nativeSetClip(
+	_ context.Context,
+	vm *VM,
+	receiver uint32,
+	args []Value,
+) (Value, bool, error) {
+	graphics, err := vm.graphics(receiver)
+	if err != nil {
+		return Value{}, false, err
+	}
+	x, y, width, height, err := rectangleArguments(args)
+	if err != nil {
+		return Value{}, false, err
+	}
+	state, err := vm.services.Graphics.DrawState(
+		vm.serviceOwner,
+		graphics.surface,
+	)
+	if err != nil {
+		return Value{}, false, err
+	}
+	state.Clip = graphicsClipRectangle(
+		graphics,
+		state,
+		int32(x),
+		int32(y),
+		int32(width),
+		int32(height),
+	)
+	err = vm.services.Graphics.SetDrawState(
+		vm.serviceOwner,
+		graphics.surface,
+		state,
+	)
+	return Value{}, false, err
+}
+
+func nativeClipRect(
+	_ context.Context,
+	vm *VM,
+	receiver uint32,
+	args []Value,
+) (Value, bool, error) {
+	graphics, err := vm.graphics(receiver)
+	if err != nil {
+		return Value{}, false, err
+	}
+	x, y, width, height, err := rectangleArguments(args)
+	if err != nil {
+		return Value{}, false, err
+	}
+	state, err := vm.services.Graphics.DrawState(
+		vm.serviceOwner,
+		graphics.surface,
+	)
+	if err != nil {
+		return Value{}, false, err
+	}
+	requested := graphicsClipRectangle(
+		graphics,
+		state,
+		int32(x),
+		int32(y),
+		int32(width),
+		int32(height),
+	)
+	state.Clip = state.Clip.Intersect(requested)
+	err = vm.services.Graphics.SetDrawState(
+		vm.serviceOwner,
+		graphics.surface,
+		state,
+	)
+	return Value{}, false, err
+}
+
+func nativeTranslate(
+	_ context.Context,
+	vm *VM,
+	receiver uint32,
+	args []Value,
+) (Value, bool, error) {
+	graphics, err := vm.graphics(receiver)
+	if err != nil {
+		return Value{}, false, err
+	}
+	x, err := intArgument(args, 0)
+	if err != nil {
+		return Value{}, false, err
+	}
+	y, err := intArgument(args, 1)
+	if err != nil {
+		return Value{}, false, err
+	}
+	state, err := vm.services.Graphics.DrawState(
+		vm.serviceOwner,
+		graphics.surface,
+	)
+	if err != nil {
+		return Value{}, false, err
+	}
+	state.TranslateX += x
+	state.TranslateY += y
+	err = vm.services.Graphics.SetDrawState(
+		vm.serviceOwner,
+		graphics.surface,
+		state,
+	)
+	return Value{}, false, err
+}
+
+func nativeGraphicsState(
+	value func(shared.SurfaceDrawState) int32,
+) NativeFunc {
+	return func(
+		_ context.Context,
+		vm *VM,
+		receiver uint32,
+		_ []Value,
+	) (Value, bool, error) {
+		graphics, err := vm.graphics(receiver)
+		if err != nil {
+			return Value{}, false, err
+		}
+		state, err := vm.services.Graphics.DrawState(
+			vm.serviceOwner,
+			graphics.surface,
+		)
+		if err != nil {
+			return Value{}, false, err
+		}
+		return IntValue(value(state)), true, nil
+	}
+}
+
+func graphicsClipRectangle(
+	graphics *graphicsState,
+	state shared.SurfaceDrawState,
+	x, y, width, height int32,
+) shared.Rectangle {
+	if width <= 0 || height <= 0 {
+		return shared.Rectangle{}
+	}
+	left := int64(x) + int64(state.TranslateX)
+	top := int64(y) + int64(state.TranslateY)
+	right := left + int64(width)
+	bottom := top + int64(height)
+	left = max(left, 0)
+	top = max(top, 0)
+	right = min(right, int64(graphics.width))
+	bottom = min(bottom, int64(graphics.height))
+	if right <= left || bottom <= top {
+		return shared.Rectangle{}
+	}
+	return shared.Rectangle{
+		X:      int32(left),
+		Y:      int32(top),
+		Width:  int32(right - left),
+		Height: int32(bottom - top),
+	}
+}
+
 func nativeGraphics2DDrawImage(
 	_ context.Context,
 	vm *VM,
@@ -253,11 +414,56 @@ func nativeGraphics2DDrawImage(
 	if err != nil {
 		return Value{}, false, err
 	}
+	mode, err := intArgument(args, 7)
+	if err != nil {
+		return Value{}, false, err
+	}
+	if mode < 0 || mode > 3 {
+		return Value{}, false, vm.newThrowable(
+			"java/lang/IllegalArgumentException",
+			"invalid Graphics2D draw mode",
+		)
+	}
+	if width < 0 || height < 0 {
+		return Value{}, false, vm.newThrowable(
+			"java/lang/IllegalArgumentException",
+			"negative Graphics2D source size",
+		)
+	}
+	if width == 0 || height == 0 {
+		return Value{}, false, nil
+	}
 	source, err := vm.image(imageReference)
 	if err != nil {
 		return Value{}, false, err
 	}
-	if err := blit(
+	drawState, err := vm.services.Graphics.DrawState(
+		vm.serviceOwner,
+		state.surface,
+	)
+	if err != nil {
+		return Value{}, false, err
+	}
+	originalRaster := drawState.Raster
+	// SKT Graphics2D uses COPY=0, AND=1, OR=2, and XOR=3.
+	switch mode {
+	case 0:
+		drawState.Raster = shared.RasterCopy
+	case 1:
+		drawState.Raster = shared.RasterAND
+	case 2:
+		drawState.Raster = shared.RasterOR
+	case 3:
+		drawState.Raster = shared.RasterXOR
+	}
+	if err := vm.services.Graphics.SetDrawState(
+		vm.serviceOwner,
+		state.surface,
+		drawState,
+	); err != nil {
+		return Value{}, false, err
+	}
+	blitErr := blit(
 		vm,
 		state,
 		source,
@@ -267,10 +473,17 @@ func nativeGraphics2DDrawImage(
 		int(sourceY),
 		int(width),
 		int(height),
-	); err != nil {
-		return Value{}, false, err
+	)
+	drawState.Raster = originalRaster
+	restoreErr := vm.services.Graphics.SetDrawState(
+		vm.serviceOwner,
+		state.surface,
+		drawState,
+	)
+	if blitErr != nil {
+		return Value{}, false, blitErr
 	}
-	return Value{}, false, nil
+	return Value{}, false, restoreErr
 }
 
 func rectangleArguments(args []Value) (int, int, int, int, error) {

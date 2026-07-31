@@ -875,6 +875,231 @@ func TestSKVMCompatibilityGraphicsUseSharedServices(t *testing.T) {
 	}
 }
 
+func TestSKVMGraphicsClipAndTranslationUseSharedDrawState(t *testing.T) {
+	vm, err := New(map[string][]byte{"Game": syntheticClass(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	graphicsReference := vm.ScreenGraphics()
+	graphics, err := vm.graphics(graphicsReference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.services.Graphics.Clear(
+		vm.serviceOwner,
+		graphics.surface,
+		shared.RGB(0, 0, 0),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	invokeTestNative(
+		t,
+		vm,
+		"javax/microedition/lcdui/Graphics",
+		"setClip",
+		"(IIII)V",
+		graphicsReference,
+		IntValue(2),
+		IntValue(3),
+		IntValue(2),
+		IntValue(2),
+	)
+	invokeTestNative(
+		t,
+		vm,
+		"javax/microedition/lcdui/Graphics",
+		"setColor",
+		"(I)V",
+		graphicsReference,
+		IntValue(0xff0000),
+	)
+	invokeTestNative(
+		t,
+		vm,
+		"javax/microedition/lcdui/Graphics",
+		"fillRect",
+		"(IIII)V",
+		graphicsReference,
+		IntValue(0),
+		IntValue(0),
+		IntValue(10),
+		IntValue(10),
+	)
+	inside, err := vm.services.Graphics.Pixel(
+		vm.serviceOwner,
+		graphics.surface,
+		2,
+		3,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside, err := vm.services.Graphics.Pixel(
+		vm.serviceOwner,
+		graphics.surface,
+		1,
+		3,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inside != shared.RGB(0xff, 0, 0) || outside != shared.RGB(0, 0, 0) {
+		t.Fatalf("clipped fill pixels = inside %+v, outside %+v", inside, outside)
+	}
+
+	invokeTestNative(
+		t,
+		vm,
+		"javax/microedition/lcdui/Graphics",
+		"translate",
+		"(II)V",
+		graphicsReference,
+		IntValue(1),
+		IntValue(-1),
+	)
+	getter := func(name string) int32 {
+		t.Helper()
+		value := invokeTestNative(
+			t,
+			vm,
+			"javax/microedition/lcdui/Graphics",
+			name,
+			"()I",
+			graphicsReference,
+		)
+		result, valueErr := value.Int()
+		if valueErr != nil {
+			t.Fatal(valueErr)
+		}
+		return result
+	}
+	if getter("getClipX") != 1 ||
+		getter("getClipY") != 4 ||
+		getter("getClipWidth") != 2 ||
+		getter("getClipHeight") != 2 ||
+		getter("getTranslateX") != 1 ||
+		getter("getTranslateY") != -1 {
+		t.Fatalf(
+			"translated graphics state = clip (%d,%d %dx%d), translate (%d,%d)",
+			getter("getClipX"),
+			getter("getClipY"),
+			getter("getClipWidth"),
+			getter("getClipHeight"),
+			getter("getTranslateX"),
+			getter("getTranslateY"),
+		)
+	}
+
+	invokeTestNative(
+		t,
+		vm,
+		"javax/microedition/lcdui/Graphics",
+		"clipRect",
+		"(IIII)V",
+		graphicsReference,
+		IntValue(1),
+		IntValue(4),
+		IntValue(1),
+		IntValue(1),
+	)
+	if getter("getClipX") != 1 ||
+		getter("getClipY") != 4 ||
+		getter("getClipWidth") != 1 ||
+		getter("getClipHeight") != 1 {
+		t.Fatalf(
+			"intersected clip = (%d,%d %dx%d)",
+			getter("getClipX"),
+			getter("getClipY"),
+			getter("getClipWidth"),
+			getter("getClipHeight"),
+		)
+	}
+}
+
+func TestSKVMGraphics2DDrawImageAppliesRasterMode(t *testing.T) {
+	vm, err := New(map[string][]byte{"Game": syntheticClass(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	graphicsReference := vm.ScreenGraphics()
+	graphics, err := vm.graphics(graphicsReference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	graphics2D := vm.NewObject("com/skt/m/Graphics2D", graphics)
+	image, err := vm.newImageState(1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageReference := vm.NewObject("javax/microedition/lcdui/Image", image)
+	source := shared.RGB(0xf0, 0x0f, 0xaa)
+	if err := vm.services.Graphics.SetPixel(
+		vm.serviceOwner,
+		image.surface,
+		0,
+		0,
+		source,
+	); err != nil {
+		t.Fatal(err)
+	}
+	destination := shared.RGB(0x55, 0x33, 0x0f)
+	if err := vm.services.Graphics.SetPixel(
+		vm.serviceOwner,
+		graphics.surface,
+		0,
+		0,
+		destination,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	invokeTestNative(
+		t,
+		vm,
+		"com/skt/m/Graphics2D",
+		"drawImage",
+		"(IILjavax/microedition/lcdui/Image;IIIII)V",
+		graphics2D,
+		IntValue(0),
+		IntValue(0),
+		ReferenceValue(imageReference),
+		IntValue(0),
+		IntValue(0),
+		IntValue(1),
+		IntValue(1),
+		IntValue(3),
+	)
+	pixel, err := vm.services.Graphics.Pixel(
+		vm.serviceOwner,
+		graphics.surface,
+		0,
+		0,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := shared.Color{
+		R: destination.R ^ source.R,
+		G: destination.G ^ source.G,
+		B: destination.B ^ source.B,
+		A: 0xff,
+	}
+	if pixel != want {
+		t.Fatalf("Graphics2D XOR pixel = %+v, want %+v", pixel, want)
+	}
+	state, err := vm.services.Graphics.DrawState(
+		vm.serviceOwner,
+		graphics.surface,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Raster != shared.RasterCopy {
+		t.Fatalf("Graphics2D raster state leaked as %v", state.Raster)
+	}
+}
+
 func TestSKVMThreadsRunCooperativelyOnVirtualTime(t *testing.T) {
 	vm, err := New(map[string][]byte{"Worker": syntheticThreadClass(t)})
 	if err != nil {
