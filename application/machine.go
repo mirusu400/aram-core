@@ -31,11 +31,16 @@ const (
 	DefaultStackBase = uint32(0x7ff00000)
 	DefaultStackSize = uint32(0x00100000)
 	DefaultRunBudget = uint64(1)
+	// DefaultHandsetRunBudget models the application CPU time available on a
+	// mid-2000s ARM9 handset during one 60 Hz video quantum. Product adapters
+	// use this value while deterministic tools can retain DefaultRunBudget or
+	// request another deliberately small slice.
+	DefaultHandsetRunBudget = uint64(1_000_000)
 	// DefaultKTFHandsetRunBudget models the application CPU time available on
 	// a mid-2000s ARM9 KTF handset during one 60 Hz video quantum. It is kept
 	// separate from DefaultRunBudget so deterministic tools can still request
 	// deliberately tiny execution slices.
-	DefaultKTFHandsetRunBudget = uint64(1_000_000)
+	DefaultKTFHandsetRunBudget = DefaultHandsetRunBudget
 	DefaultMemoryLimit         = uint64(512 << 20)
 	maxApplicationSize         = int64(512 << 20)
 	ktfProfileID               = "wipi-1.2.1/ktf/generic"
@@ -59,8 +64,11 @@ type CPUFactory func() cpu.Backend
 // interpreter is the default so product portability does not depend on CGO or
 // executable host memory.
 type Factory struct {
-	NewCPU          CPUFactory
-	RunBudget       uint64
+	NewCPU    CPUFactory
+	RunBudget uint64
+	// FrameRunBudget is the generic native-WIPI execution budget for one
+	// presentation quantum. Zero inherits RunBudget.
+	FrameRunBudget  uint64
 	KTFRunBudget    uint64
 	MemoryLimit     uint64
 	FramebufferSize image.Point
@@ -98,6 +106,10 @@ func (f Factory) Create(ctx context.Context, source machinecore.Source) (machine
 	if budget == 0 {
 		budget = DefaultRunBudget
 	}
+	frameBudget := f.FrameRunBudget
+	if frameBudget == 0 {
+		frameBudget = budget
+	}
 	memoryLimit := f.MemoryLimit
 	if memoryLimit == 0 {
 		memoryLimit = DefaultMemoryLimit
@@ -114,6 +126,7 @@ func (f Factory) Create(ctx context.Context, source machinecore.Source) (machine
 		memoryLimit:      memoryLimit,
 		frame:            image.NewRGBA(image.Rect(0, 0, size.X, size.Y)),
 		initialResources: cloneByteMap(f.Resources),
+		frameRunBudget:   frameBudget,
 	}
 	if err := machine.Load(ctx, source); err != nil {
 		_ = backend.Close()
@@ -150,6 +163,7 @@ type Machine struct {
 	initialResources map[string][]byte
 	lastResult       cpu.Result
 	runBudget        uint64
+	frameRunBudget   uint64
 	ktfRunBudget     uint64
 	memoryLimit      uint64
 	frame            *image.RGBA
@@ -1457,7 +1471,7 @@ func (m *Machine) ReadRegister(id uint32) (uint32, error) {
 	return m.cpu.ReadRegister(id)
 }
 
-func (m *Machine) runSlice(ctx context.Context, singleStep bool) error {
+func (m *Machine) runSlice(ctx context.Context, frame bool) error {
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -1487,8 +1501,8 @@ func (m *Machine) runSlice(ctx context.Context, singleStep bool) error {
 		mode = cpu.ModeThumb
 	}
 	budget := m.runBudget
-	if singleStep {
-		budget = 1
+	if frame {
+		budget = m.frameRunBudget
 	}
 	m.state = machinecore.StateRunning
 	if m.wipi != nil {
@@ -1500,7 +1514,7 @@ func (m *Machine) runSlice(ctx context.Context, singleStep bool) error {
 	}
 	m.mu.Unlock()
 
-	result := m.runWIPISlice(ctx, pc, mode, budget)
+	result := m.runWIPISlice(ctx, pc, mode, budget, true)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1555,8 +1569,14 @@ func (m *Machine) runWIPISlice(
 	pc uint32,
 	mode cpu.Mode,
 	budget uint64,
+	stopOnPresent bool,
 ) cpu.Result {
 	var instructions uint64
+	presentations := uint32(0)
+	stopOnPresent = stopOnPresent && m.wipi != nil
+	if stopOnPresent {
+		presentations = m.wipi.stats.PresentCount
+	}
 	for instructions < budget {
 		run := m.cpu.Run(ctx, pc, mode, budget-instructions)
 		instructions += run.Instructions
@@ -1596,6 +1616,16 @@ func (m *Machine) runWIPISlice(
 				Instructions: instructions,
 				PC:           run.PC,
 				Err:          err,
+			}
+		}
+		if stopOnPresent && m.wipi.stats.PresentCount != presentations {
+			// A frontend frame is a presentation quantum. Yield immediately
+			// after the guest submits visible output instead of running the
+			// remainder of the handset budget and hiding intermediate frames.
+			return cpu.Result{
+				Reason:       cpu.StopBudget,
+				Instructions: instructions,
+				PC:           nextPC,
 			}
 		}
 		if instructions >= budget {
@@ -1893,6 +1923,7 @@ func (m *Machine) invokeWIPICallback(
 		callback.procedure&^1,
 		mode,
 		instructionLimit,
+		false,
 	)
 	if result.Err != nil {
 		return result, 0, result.Err
