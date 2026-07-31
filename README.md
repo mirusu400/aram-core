@@ -32,6 +32,9 @@ The usable library baseline now includes:
 - checksummed application save states containing source identity, CPU context,
   text/BSS/stack bytes, framebuffer contents, queued input, deterministic
   title-runtime counters, allocator metadata, and service-owned heap bytes.
+- bounded diagnostic snapshots containing CPU registers, the last execution
+  result, guest log output, and runtime trace tails without source bytes,
+  guest memory, framebuffers, persistence, or media payloads.
 
 It does not own windows, menus, native file dialogs, touch overlays, or product
 navigation. Those live in
