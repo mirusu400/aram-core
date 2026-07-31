@@ -514,6 +514,11 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 		return "MC_grpGetPixelFromRGB", true
 	case 225:
 		return "MC_grpGetDisplayInfo", true
+	// 영웅서기3 asks for a font handle here with (face, size, style) and feeds
+	// the result straight into MC_grpSetContext index 7, the context's font
+	// field, so an unresolved import leaves the Clet drawing with font 0.
+	case 227:
+		return "MC_grpGetFont", true
 	case 233:
 		return "MC_grpCreateImage", true
 	case 117:
@@ -532,6 +537,10 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 		return "MC_knlGetResource", true
 	case 1029:
 		return "strcpy", true
+	// The C string family is contiguous from strcpy, so the ordinal between
+	// strcpy and strcat is strncpy.
+	case 1030:
+		return "strncpy", true
 	case 1031:
 		return "strcat", true
 	case 1040:
