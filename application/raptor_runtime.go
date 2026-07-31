@@ -18,6 +18,10 @@ const (
 	raptorDletBase   = uint32(0x01008400)
 	raptorWIPICBase  = uint32(0x01008800)
 
+	raptorVolumeTable = uint32(0x01008c00)
+	raptorLocalVolume = uint32(0x01008c08)
+	raptorShareVolume = uint32(0x01008c0b)
+
 	raptorImportStubBase  = uint32(0x0110a000)
 	raptorImportStubSize  = uint32(0x00004000)
 	raptorDletModuleStub  = uint32(0x0110e000)
@@ -246,6 +250,14 @@ func (r *raptorRuntime) installInterfaces() error {
 	if err := r.cpu.WriteMemory(raptorDletBase, dlet); err != nil {
 		return fmt.Errorf("install Raptor dlet interface: %w", err)
 	}
+	volumes := make([]byte, 14)
+	binary.LittleEndian.PutUint32(volumes[0:4], raptorLocalVolume)
+	binary.LittleEndian.PutUint32(volumes[4:8], raptorShareVolume)
+	copy(volumes[8:11], "/L\x00")
+	copy(volumes[11:14], "/S\x00")
+	if err := r.cpu.WriteMemory(raptorVolumeTable, volumes); err != nil {
+		return fmt.Errorf("install Raptor volume interface: %w", err)
+	}
 	return nil
 }
 
@@ -361,7 +373,7 @@ func (r *raptorRuntime) dispatchPrivateImport(
 	ordinal uint32,
 ) (wipiReturn, string, bool, error) {
 	switch ordinal {
-	case 50, 51, 52:
+	case 50, 51, 52, 53, 54:
 		handle, err := r.cpu.ReadRegister(cpu.RegisterR0)
 		if err != nil {
 			return wipiReturn{}, "", true, err
@@ -373,6 +385,19 @@ func (r *raptorRuntime) dispatchPrivateImport(
 			}
 		}
 		framebuffer := r.public.framebuffers[handle]
+		if framebuffer.handle == 0 {
+			for _, candidate := range r.public.framebuffers {
+				if candidate.pixels == handle {
+					framebuffer = candidate
+					break
+				}
+			}
+		}
+		// LGT's BPL/BPP veneers leave the preceding helper's return value in
+		// R0, so those two device-wide properties cannot rely on a descriptor.
+		if framebuffer.handle == 0 && ordinal >= 53 {
+			framebuffer = r.public.framebuffers[r.public.screenHandle]
+		}
 		if framebuffer.handle == 0 {
 			return wipiReturn{}, "", true, fmt.Errorf(
 				"unknown framebuffer handle 0x%08x",
@@ -386,10 +411,66 @@ func (r *raptorRuntime) dispatchPrivateImport(
 		case 51:
 			return wipiReturn{low: uint32(framebuffer.width)},
 				"RAPTOR.grpGetFrameBufferWidth", true, nil
-		default:
+		case 52:
 			return wipiReturn{low: uint32(framebuffer.height)},
 				"RAPTOR.grpGetFrameBufferHeight", true, nil
+		case 53:
+			bytesPerPixel := framebuffer.bitsPerPixel / 8
+			return wipiReturn{low: uint32(framebuffer.width * bytesPerPixel)},
+				"RAPTOR.grpGetFrameBufferBytesPerLine", true, nil
+		default:
+			return wipiReturn{low: uint32(framebuffer.bitsPerPixel)},
+				"RAPTOR.grpGetFrameBufferBitsPerPixel", true, nil
 		}
+	case 300:
+		return wipiReturn{low: 2},
+			"RAPTOR.fsGetVolumeCount", true, nil
+	case 301:
+		return wipiReturn{low: raptorVolumeTable},
+			"RAPTOR.fsGetVolumeList", true, nil
+	case 302:
+		// LGT's filesystem adapter accepts a volume index here. The public
+		// virtual filesystem presents both advertised roots through one
+		// namespace, so no host-side selection is necessary.
+		return wipiReturn{},
+			"RAPTOR.fsSelectVolume", true, nil
+	case 122:
+		timer, err := r.cpu.ReadRegister(cpu.RegisterR0)
+		if err != nil {
+			return wipiReturn{}, "", true, err
+		}
+		callback, err := r.cpu.ReadRegister(cpu.RegisterR1)
+		if err != nil {
+			return wipiReturn{}, "", true, err
+		}
+		// LGT defines MCTimer as one callback word. The generic public runtime
+		// also supports a larger guest-visible timer layout for other ABIs.
+		if timer != 0 {
+			err = r.public.writeU32(timer, callback)
+		}
+		return wipiReturn{}, "RAPTOR.knlDefTimer", true, err
+	case 123:
+		timer, err := r.cpu.ReadRegister(cpu.RegisterR0)
+		if err != nil {
+			return wipiReturn{}, "", true, err
+		}
+		timeout, err := r.cpu.ReadRegister(cpu.RegisterR1)
+		if err != nil {
+			return wipiReturn{}, "", true, err
+		}
+		parameter, err := r.cpu.ReadRegister(cpu.RegisterR3)
+		if err != nil {
+			return wipiReturn{}, "", true, err
+		}
+		result, err := r.public.setTimer(timer, uint64(timeout), parameter, false)
+		return result, "RAPTOR.knlSetTimer", true, err
+	case 124:
+		timer, err := r.cpu.ReadRegister(cpu.RegisterR0)
+		if err != nil {
+			return wipiReturn{}, "", true, err
+		}
+		err = r.public.unsetTimer(timer, false)
+		return wipiReturn{}, "RAPTOR.knlUnsetTimer", true, err
 	default:
 		return wipiReturn{}, "", false, nil
 	}
@@ -397,8 +478,18 @@ func (r *raptorRuntime) dispatchPrivateImport(
 
 func raptorWIPIImportName(ordinal uint32) (string, bool) {
 	switch ordinal {
+	case 100:
+		return "MC_knlPrintk", true
 	case 101:
 		return "MC_knlSprintk", true
+	case 120:
+		return "MC_knlGetTotalMemory", true
+	case 121:
+		return "MC_knlGetFreeMemory", true
+	case 125:
+		return "MC_knlCurrentTime", true
+	case 127:
+		return "MC_knlSetSystemProperty", true
 	case 200:
 		return "MC_grpGetImageProperty", true
 	case 201:
@@ -419,10 +510,14 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 		return "MC_grpFlushLcd", true
 	case 223:
 		return "MC_grpGetPixelFromRGB", true
+	case 225:
+		return "MC_grpGetDisplayInfo", true
 	case 233:
 		return "MC_grpCreateImage", true
-	case 118:
+	case 117:
 		return "MC_knlAlloc", true
+	case 118:
+		return "MC_knlCalloc", true
 	case 119:
 		return "MC_knlFree", true
 	case 122:
@@ -433,8 +528,12 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 		return "MC_knlGetResourceID", true
 	case 129:
 		return "MC_knlGetResource", true
+	case 1029:
+		return "strcpy", true
 	case 1031:
 		return "strcat", true
+	case 1040:
+		return "strstr", true
 	case 1041:
 		return "strlen", true
 	case 1044:

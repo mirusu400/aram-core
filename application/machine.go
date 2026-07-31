@@ -1765,7 +1765,10 @@ func (m *Machine) pumpWIPICallbacks(
 				continue
 			}
 			delete(m.wipi.timers, address)
-			if address != 0 {
+			// Public WIPI timers expose an active field at +24. LGT Raptor's
+			// MCTimer is only a callback word, so adjacent application memory
+			// must remain untouched when the timer fires.
+			if address != 0 && m.raptor == nil {
 				if err := m.wipi.writeU32(address+24, 0); err != nil {
 					m.state = machinecore.StateFaulted
 					m.lastResult = cpu.Result{Reason: cpu.StopFault, Err: err}

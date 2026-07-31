@@ -191,68 +191,10 @@ func (r *wipiRuntime) dispatchKernel(name string) (wipiReturn, bool, error) {
 			return wipiReturn{}, true, err
 		}
 		timeout := uint64(args[2]) | uint64(args[3])<<32
-		if a0 == 0 || int64(timeout) < 0 ||
-			timeout > uint64((time.Duration(1<<63-1)-r.services.Clock.Monotonic())/time.Millisecond) {
-			return wipiReturn{low: wipiReturnCode(wipiInvalid)}, true, nil
-		}
-		if _, active := r.timers[a0]; active {
-			return wipiReturn{low: wipiReturnCode(wipiExists)}, true, nil
-		}
-		callback, err := r.readU32(a0)
-		if err != nil {
-			return wipiReturn{}, true, err
-		}
-		if callback == 0 {
-			return wipiReturn{low: wipiReturnCode(wipiInvalid)}, true, nil
-		}
-		if err := r.writeU32(a0+4, parameter); err != nil {
-			return wipiReturn{}, true, err
-		}
-		if err := r.writeU64(a0+8, timeout); err != nil {
-			return wipiReturn{}, true, err
-		}
-		if err := r.writeU64(a0+16, r.tickMS+timeout); err != nil {
-			return wipiReturn{}, true, err
-		}
-		if err := r.writeU32(a0+24, 1); err != nil {
-			return wipiReturn{}, true, err
-		}
-		serviceID := r.timerServices[a0]
-		if serviceID == 0 {
-			serviceID, err = r.services.Timers.Define(
-				r.serviceOwner,
-				fmt.Sprintf("wipi.timer.%08x", a0),
-			)
-			if err != nil {
-				return wipiReturn{low: wipiReturnCode(wipiNoMemory)}, true, nil
-			}
-			r.timerServices[a0] = serviceID
-		}
-		deadline := r.services.Clock.Monotonic() +
-			time.Duration(timeout)*time.Millisecond
-		if err := r.services.Timers.Set(
-			serviceID,
-			r.serviceOwner,
-			deadline,
-			0,
-			int64(a0),
-		); err != nil {
-			return wipiReturn{}, true, err
-		}
-		r.timers[a0] = wipiTimer{callback: callback, parameter: parameter, deadline: r.tickMS + timeout}
-		return wipiReturn{}, true, nil
+		result, err := r.setTimer(a0, timeout, parameter, true)
+		return result, true, err
 	case "MC_knlUnsetTimer":
-		delete(r.timers, a0)
-		if serviceID := r.timerServices[a0]; serviceID != 0 {
-			if err := r.services.Timers.Cancel(serviceID, r.serviceOwner); err != nil &&
-				!errors.Is(err, shared.ErrNotFound) {
-				return wipiReturn{}, true, err
-			}
-		}
-		if a0 != 0 {
-			return wipiReturn{}, true, r.writeU32(a0+24, 0)
-		}
-		return wipiReturn{}, true, nil
+		return wipiReturn{}, true, r.unsetTimer(a0, true)
 	case "MC_knlCurrentTime":
 		return wipiU64(
 			uint64(r.services.Clock.Monotonic() / time.Millisecond),
@@ -273,6 +215,84 @@ func (r *wipiRuntime) dispatchKernel(name string) (wipiReturn, bool, error) {
 	default:
 		return wipiReturn{}, false, nil
 	}
+}
+
+func (r *wipiRuntime) setTimer(
+	address uint32,
+	timeout uint64,
+	parameter uint32,
+	writeGuestState bool,
+) (wipiReturn, error) {
+	if address == 0 || int64(timeout) < 0 ||
+		timeout > uint64((time.Duration(1<<63-1)-r.services.Clock.Monotonic())/time.Millisecond) {
+		return wipiReturn{low: wipiReturnCode(wipiInvalid)}, nil
+	}
+	if _, active := r.timers[address]; active {
+		return wipiReturn{low: wipiReturnCode(wipiExists)}, nil
+	}
+	callback, err := r.readU32(address)
+	if err != nil {
+		return wipiReturn{}, err
+	}
+	if callback == 0 {
+		return wipiReturn{low: wipiReturnCode(wipiInvalid)}, nil
+	}
+	if writeGuestState {
+		if err := r.writeU32(address+4, parameter); err != nil {
+			return wipiReturn{}, err
+		}
+		if err := r.writeU64(address+8, timeout); err != nil {
+			return wipiReturn{}, err
+		}
+		if err := r.writeU64(address+16, r.tickMS+timeout); err != nil {
+			return wipiReturn{}, err
+		}
+		if err := r.writeU32(address+24, 1); err != nil {
+			return wipiReturn{}, err
+		}
+	}
+	serviceID := r.timerServices[address]
+	if serviceID == 0 {
+		serviceID, err = r.services.Timers.Define(
+			r.serviceOwner,
+			fmt.Sprintf("wipi.timer.%08x", address),
+		)
+		if err != nil {
+			return wipiReturn{low: wipiReturnCode(wipiNoMemory)}, nil
+		}
+		r.timerServices[address] = serviceID
+	}
+	deadline := r.services.Clock.Monotonic() +
+		time.Duration(timeout)*time.Millisecond
+	if err := r.services.Timers.Set(
+		serviceID,
+		r.serviceOwner,
+		deadline,
+		0,
+		int64(address),
+	); err != nil {
+		return wipiReturn{}, err
+	}
+	r.timers[address] = wipiTimer{
+		callback:  callback,
+		parameter: parameter,
+		deadline:  r.tickMS + timeout,
+	}
+	return wipiReturn{}, nil
+}
+
+func (r *wipiRuntime) unsetTimer(address uint32, writeGuestState bool) error {
+	delete(r.timers, address)
+	if serviceID := r.timerServices[address]; serviceID != 0 {
+		if err := r.services.Timers.Cancel(serviceID, r.serviceOwner); err != nil &&
+			!errors.Is(err, shared.ErrNotFound) {
+			return err
+		}
+	}
+	if address != 0 && writeGuestState {
+		return r.writeU32(address+24, 0)
+	}
+	return nil
 }
 
 func (r *wipiRuntime) resizeSharedBuffer(address, size uint32) (wipiReturn, bool, error) {
