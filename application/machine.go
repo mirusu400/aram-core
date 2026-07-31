@@ -35,12 +35,12 @@ const (
 	// mid-2000s ARM9 handset during one 60 Hz video quantum. Product adapters
 	// use this value while deterministic tools can retain DefaultRunBudget or
 	// request another deliberately small slice.
-	DefaultHandsetRunBudget = uint64(1_000_000)
+	DefaultHandsetRunBudget = uint64(750_000)
 	// DefaultKTFHandsetRunBudget models the application CPU time available on
 	// a mid-2000s ARM9 KTF handset during one 60 Hz video quantum. It is kept
 	// separate from DefaultRunBudget so deterministic tools can still request
 	// deliberately tiny execution slices.
-	DefaultKTFHandsetRunBudget = DefaultHandsetRunBudget
+	DefaultKTFHandsetRunBudget = uint64(1_000_000)
 	DefaultMemoryLimit         = uint64(512 << 20)
 	maxApplicationSize         = int64(512 << 20)
 	ktfProfileID               = "wipi-1.2.1/ktf/generic"
