@@ -56,5 +56,12 @@ development artifacts containing `aram-debug`, `aram-skvm-inspect`, and
 `aram-skvm-run`; artifacts are retained for 14 days. Android/arm64 remains a
 separate pure-Go compile gate.
 
+A successful push to `main` moves the `nightly` tag to that commit and updates
+the rolling Nightly prerelease with the exact Windows, Linux, and macOS
+archives from the workflow plus `SHA256SUMS.txt`. The release is only updated
+after every native build, the Android compile gate, and the input policy pass.
+Publishing any GitHub Release other than `nightly` builds the tagged source and
+attaches the same archives for the Stable channel.
+
 The standard-facing design basis is recorded in
 [`docs/wipi-1.2.1-foundation.md`](docs/wipi-1.2.1-foundation.md).
