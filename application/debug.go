@@ -1,10 +1,12 @@
 package application
 
 import (
+	"crypto/sha256"
 	"fmt"
 
 	machinecore "github.com/mirusu400/aram-core/core"
 	"github.com/mirusu400/aram-core/cpu"
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 const (
@@ -85,12 +87,29 @@ type DebugRaptorImportCall struct {
 }
 
 type DebugSKVMSnapshot struct {
-	MainClass      string `json:"main_class"`
-	Started        bool   `json:"started"`
-	MIDlet         uint32 `json:"midlet"`
-	CurrentDisplay uint32 `json:"current_display"`
-	Instructions   uint64 `json:"instructions"`
-	QueuedInput    int    `json:"queued_input"`
+	MainClass      string                    `json:"main_class"`
+	Started        bool                      `json:"started"`
+	MIDlet         uint32                    `json:"midlet"`
+	CurrentDisplay uint32                    `json:"current_display"`
+	Instructions   uint64                    `json:"instructions"`
+	QueuedInput    int                       `json:"queued_input"`
+	Framebuffer    *DebugFramebufferSnapshot `json:"framebuffer,omitempty"`
+}
+
+// DebugFramebufferSnapshot identifies a presented frame without including its
+// pixels. The canonical RGBA digest can be compared with a separately captured
+// screenshot to distinguish core rendering from downstream frame corruption.
+type DebugFramebufferSnapshot struct {
+	Surface         string `json:"surface"`
+	Sequence        uint64 `json:"sequence"`
+	Width           int32  `json:"width"`
+	Height          int32  `json:"height"`
+	Stride          int32  `json:"stride"`
+	Format          uint8  `json:"format"`
+	RGBABytes       int    `json:"rgba_bytes"`
+	RGBASHA256      string `json:"rgba_sha256"`
+	SnapshotHashOK  bool   `json:"snapshot_hash_ok"`
+	DescriptorValid bool   `json:"descriptor_valid"`
 }
 
 // DebugSnapshot returns a consistent diagnostic snapshot. Callers should
@@ -180,6 +199,36 @@ func (m *skvmMachine) DebugSnapshot(maxEntries int) DebugSnapshot {
 	if m.vm != nil {
 		snapshot.SKVM.CurrentDisplay = m.vm.CurrentDisplay()
 		snapshot.SKVM.Instructions = m.vm.Instructions
+	}
+	if m.vm != nil && m.services != nil {
+		frame := m.services.Graphics.LastFrame()
+		if frame.Sequence != 0 {
+			actualHash := sha256.Sum256(frame.RGBA)
+			framebuffer := &DebugFramebufferSnapshot{
+				Surface:        frame.SurfaceID.String(),
+				Sequence:       frame.Sequence,
+				Width:          frame.Width,
+				Height:         frame.Height,
+				RGBABytes:      len(frame.RGBA),
+				RGBASHA256:     fmt.Sprintf("%x", actualHash),
+				SnapshotHashOK: actualHash == frame.Hash,
+			}
+			if descriptor, err := m.services.Graphics.Descriptor(
+				m.owner,
+				m.vm.ScreenSurface(),
+			); err == nil {
+				framebuffer.Stride = descriptor.Stride
+				framebuffer.Format = uint8(descriptor.Format)
+				framebuffer.DescriptorValid =
+					descriptor.Width == frame.Width &&
+						descriptor.Height == frame.Height &&
+						descriptor.Stride == frame.Width*4 &&
+						descriptor.Format == shared.PixelRGBA8888 &&
+						uint64(len(frame.RGBA)) ==
+							uint64(frame.Width)*uint64(frame.Height)*4
+			}
+			snapshot.SKVM.Framebuffer = framebuffer
+		}
 	}
 	return snapshot
 }

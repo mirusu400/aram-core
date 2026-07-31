@@ -1,13 +1,17 @@
 package application
 
 import (
+	"bytes"
+	"context"
 	"errors"
+	"image"
 	"reflect"
 	"testing"
 
 	machinecore "github.com/mirusu400/aram-core/core"
 	"github.com/mirusu400/aram-core/cpu"
 	"github.com/mirusu400/aram-core/cpu/interpreter"
+	shared "github.com/mirusu400/aram-core/runtime"
 	skengine "github.com/mirusu400/aram-core/skvm"
 )
 
@@ -97,6 +101,40 @@ func TestSKVMDebugSnapshotReportsInterpreterProgress(t *testing.T) {
 		snapshot.SKVM.Instructions != 987 ||
 		snapshot.SKVM.QueuedInput != 3 {
 		t.Fatalf("SKVM snapshot = %+v", snapshot)
+	}
+}
+
+func TestSKVMDebugSnapshotReportsFramebufferIntegrityWithoutPixels(t *testing.T) {
+	data := syntheticSKVMPackage(t)
+	factory := NewFactory()
+	factory.FramebufferSize = image.Pt(17, 19)
+	created, err := factory.Create(context.Background(), machinecore.Source{
+		Name:     "game.zip",
+		ReaderAt: bytes.NewReader(data),
+		Size:     int64(len(data)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	machine := created.(*skvmMachine)
+	t.Cleanup(func() { _ = machine.Close() })
+	if err := machine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot := machine.DebugSnapshot(10)
+	framebuffer := snapshot.SKVM.Framebuffer
+	if framebuffer == nil ||
+		framebuffer.Sequence == 0 ||
+		framebuffer.Width != 17 ||
+		framebuffer.Height != 19 ||
+		framebuffer.Stride != 17*4 ||
+		framebuffer.Format != uint8(shared.PixelRGBA8888) ||
+		framebuffer.RGBABytes != 17*19*4 ||
+		len(framebuffer.RGBASHA256) != 64 ||
+		!framebuffer.SnapshotHashOK ||
+		!framebuffer.DescriptorValid {
+		t.Fatalf("SKVM framebuffer snapshot = %+v", framebuffer)
 	}
 }
 
