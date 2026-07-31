@@ -124,54 +124,65 @@ func inspectRaptorClet(image raptor.Image) (raptorClet, error) {
 	if !ok {
 		return raptorClet{}, fmt.Errorf("initialize Raptor Clet: code section is missing")
 	}
-	if version := binary.LittleEndian.Uint32(data.Data[0:4]); version != 3 {
-		return raptorClet{}, fmt.Errorf(
-			"initialize Raptor Clet: lifecycle version %d is unsupported",
-			version,
-		)
-	}
-	if base := binary.LittleEndian.Uint32(data.Data[4:8]); base != text.Address {
-		return raptorClet{}, fmt.Errorf(
-			"initialize Raptor Clet: text base 0x%08x does not match 0x%08x",
-			base,
-			text.Address,
-		)
-	}
-	nameAddress := binary.LittleEndian.Uint32(data.Data[8:12])
-	name, ok := raptorImageCString(image, nameAddress, 255)
-	if !ok || name == "" {
-		return raptorClet{}, fmt.Errorf(
-			"initialize Raptor Clet: invalid lifecycle name at 0x%08x",
-			nameAddress,
-		)
-	}
-	clet := raptorClet{
-		Table:       data.Address,
-		Name:        name,
-		Start:       binary.LittleEndian.Uint32(data.Data[0x18:0x1c]),
-		Destroy:     binary.LittleEndian.Uint32(data.Data[0x1c:0x20]),
-		Pause:       binary.LittleEndian.Uint32(data.Data[0x20:0x24]),
-		Resume:      binary.LittleEndian.Uint32(data.Data[0x24:0x28]),
-		Paint:       binary.LittleEndian.Uint32(data.Data[0x28:0x2c]),
-		HandleEvent: binary.LittleEndian.Uint32(data.Data[0x2c:0x30]),
-	}
-	for label, address := range map[string]uint32{
-		"startClet":       clet.Start,
-		"destroyClet":     clet.Destroy,
-		"pauseClet":       clet.Pause,
-		"resumeClet":      clet.Resume,
-		"paintClet":       clet.Paint,
-		"CletHandleEvent": clet.HandleEvent,
-	} {
-		if address&1 == 0 || !raptorExecutableAddress(image, address&^1) {
-			return raptorClet{}, fmt.Errorf(
-				"initialize Raptor Clet: %s address 0x%08x is not Thumb code",
-				label,
-				address,
-			)
+	// Most modules put the lifecycle header at the start of the read-write
+	// region, but some place it further in, so find it by its shape rather
+	// than by a fixed offset: version 3, the code base, a readable name, and
+	// six Thumb entry points. The base may carry the interworking bit, the
+	// same way entry offsets do.
+	limit := len(data.Data) - int(raptorCletHeaderSize)
+	for offset := 0; offset <= limit; offset += 4 {
+		if clet, ok := raptorCletAt(image, data, text, offset); ok {
+			return clet, nil
 		}
 	}
-	return clet, nil
+	return raptorClet{}, fmt.Errorf(
+		"initialize Raptor Clet: %s holds no version 3 lifecycle header",
+		data.Name,
+	)
+}
+
+func raptorCletAt(
+	image raptor.Image,
+	data raptor.Section,
+	text raptor.Section,
+	offset int,
+) (raptorClet, bool) {
+	header := data.Data[offset:]
+	if binary.LittleEndian.Uint32(header[0:4]) != 3 ||
+		binary.LittleEndian.Uint32(header[4:8])&^1 != text.Address {
+		return raptorClet{}, false
+	}
+	name, ok := raptorImageCString(
+		image,
+		binary.LittleEndian.Uint32(header[8:12]),
+		255,
+	)
+	if !ok || name == "" {
+		return raptorClet{}, false
+	}
+	clet := raptorClet{
+		Table:       data.Address + uint32(offset),
+		Name:        name,
+		Start:       binary.LittleEndian.Uint32(header[0x18:0x1c]),
+		Destroy:     binary.LittleEndian.Uint32(header[0x1c:0x20]),
+		Pause:       binary.LittleEndian.Uint32(header[0x20:0x24]),
+		Resume:      binary.LittleEndian.Uint32(header[0x24:0x28]),
+		Paint:       binary.LittleEndian.Uint32(header[0x28:0x2c]),
+		HandleEvent: binary.LittleEndian.Uint32(header[0x2c:0x30]),
+	}
+	for _, address := range []uint32{
+		clet.Start,
+		clet.Destroy,
+		clet.Pause,
+		clet.Resume,
+		clet.Paint,
+		clet.HandleEvent,
+	} {
+		if address&1 == 0 || !raptorExecutableAddress(image, address&^1) {
+			return raptorClet{}, false
+		}
+	}
+	return clet, true
 }
 
 func raptorImageCString(
