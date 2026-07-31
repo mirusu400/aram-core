@@ -18,7 +18,7 @@ import (
 
 const (
 	vmStateMagic       = "ARAMSKV\x00"
-	vmStateVersion     = uint32(3)
+	vmStateVersion     = uint32(4)
 	maxVMStateBytes    = uint64(1024 << 20)
 	maxVMMetadataBytes = uint64(512 << 20)
 	maxVMHeapObjects   = uint32(4_000_000)
@@ -86,6 +86,12 @@ type frameState struct {
 	Locals     []valueState
 	Stack      []valueState
 	PC         int32
+	InvokePC   int32
+}
+
+type threadContinuationState struct {
+	Reference uint32
+	Frames    []frameState
 }
 
 type propertyState struct {
@@ -94,24 +100,25 @@ type propertyState struct {
 }
 
 type vmMetadataState struct {
-	Schema           uint32
-	ClassDigest      [sha256.Size]byte
-	Classes          []classRuntimeState
-	Heap             []objectState
-	NextReference    uint32
-	HostStatic       []namedValueState
-	Frames           []frameState
-	InstructionLimit uint64
-	Instructions     uint64
-	ScreenWidth      int32
-	ScreenHeight     int32
-	DisplayReference uint32
-	CurrentDisplay   uint32
-	Properties       []propertyState
-	ScreenGraphics   uint32
-	ServiceOwner     shared.OwnerID
-	ScreenSurface    shared.ServiceID
-	DefaultFont      shared.ServiceID
+	Schema              uint32
+	ClassDigest         [sha256.Size]byte
+	Classes             []classRuntimeState
+	Heap                []objectState
+	NextReference       uint32
+	HostStatic          []namedValueState
+	Frames              []frameState
+	ThreadContinuations []threadContinuationState
+	InstructionLimit    uint64
+	Instructions        uint64
+	ScreenWidth         int32
+	ScreenHeight        int32
+	DisplayReference    uint32
+	CurrentDisplay      uint32
+	Properties          []propertyState
+	ScreenGraphics      uint32
+	ServiceOwner        shared.OwnerID
+	ScreenSurface       shared.ServiceID
+	DefaultFont         shared.ServiceID
 }
 
 type nativeLink struct {
@@ -125,7 +132,8 @@ func (vm *VM) MarshalBinary() ([]byte, error) {
 	if vm == nil || vm.services == nil {
 		return nil, fmt.Errorf("save SKVM state: VM is not initialized")
 	}
-	if len(vm.frames) > int(maxVMFrames) || len(vm.heap) > int(maxVMHeapObjects) {
+	if vm.executionFrameCount() > int(maxVMFrames) ||
+		len(vm.heap) > int(maxVMHeapObjects) {
 		return nil, fmt.Errorf("save SKVM state: object or frame limit exceeded")
 	}
 	if err := vm.validateReferences(); err != nil {
@@ -280,23 +288,67 @@ func (vm *VM) snapshotMetadata() (vmMetadataState, error) {
 		}
 		saved.Native = native
 		state.Heap = append(state.Heap, saved)
+		thread, ok := object.Native.(*threadState)
+		if ok && firstPointer[object.Native] == reference &&
+			len(thread.continuation) != 0 {
+			frames, err := snapshotFrames(
+				thread.continuation,
+				fmt.Sprintf("thread %d", reference),
+			)
+			if err != nil {
+				return vmMetadataState{}, err
+			}
+			state.ThreadContinuations = append(
+				state.ThreadContinuations,
+				threadContinuationState{Reference: reference, Frames: frames},
+			)
+		}
 	}
-	for index, current := range vm.frames {
+	frames, err := snapshotFrames(vm.frames, "frame")
+	if err != nil {
+		return vmMetadataState{}, err
+	}
+	state.Frames = frames
+	return state, nil
+}
+
+func (vm *VM) executionFrameCount() int {
+	count := len(vm.frames)
+	limit := int(maxVMFrames)
+	if count > limit {
+		return limit + 1
+	}
+	for _, object := range vm.heap {
+		if state, ok := object.Native.(*threadState); ok {
+			if len(state.continuation) > limit-count {
+				return limit + 1
+			}
+			count += len(state.continuation)
+		}
+	}
+	return count
+}
+
+func snapshotFrames(frames []*frame, label string) ([]frameState, error) {
+	saved := make([]frameState, 0, len(frames))
+	for index, current := range frames {
 		if current == nil || current.class == nil {
-			return vmMetadataState{}, fmt.Errorf("save SKVM frame %d: invalid frame", index)
+			return nil, fmt.Errorf("save SKVM %s %d: invalid frame", label, index)
 		}
-		if current.pc < math.MinInt32 || current.pc > math.MaxInt32 {
-			return vmMetadataState{}, fmt.Errorf("save SKVM frame %d: PC exceeds limit", index)
+		if current.pc < math.MinInt32 || current.pc > math.MaxInt32 ||
+			current.invokePC < math.MinInt32 || current.invokePC > math.MaxInt32 {
+			return nil, fmt.Errorf("save SKVM %s %d: PC exceeds limit", label, index)
 		}
-		state.Frames = append(state.Frames, frameState{
+		saved = append(saved, frameState{
 			Class: current.class.Name, Method: current.method.Name,
 			Descriptor: current.method.Descriptor,
 			Locals:     snapshotValues(current.locals),
 			Stack:      snapshotValues(current.stack),
 			PC:         int32(current.pc),
+			InvokePC:   int32(current.invokePC),
 		})
 	}
-	return state, nil
+	return saved, nil
 }
 
 func snapshotNative(
@@ -499,6 +551,13 @@ func (vm *VM) buildCandidate(
 		state.ScreenWidth > math.MaxInt32 || state.ScreenHeight > math.MaxInt32 {
 		return nil, fmt.Errorf("load SKVM state: invalid metadata limits")
 	}
+	frameCount := len(state.Frames)
+	for _, continuation := range state.ThreadContinuations {
+		if len(continuation.Frames) > int(maxVMFrames)-frameCount {
+			return nil, fmt.Errorf("load SKVM state: thread frame limit exceeded")
+		}
+		frameCount += len(continuation.Frames)
+	}
 	if len(state.Classes) != len(vm.classes) {
 		return nil, fmt.Errorf("load SKVM state: class table size mismatch")
 	}
@@ -632,34 +691,159 @@ func (vm *VM) buildCandidate(
 			stream.file = file
 		}
 	}
+	var previousThread uint32
+	for index, saved := range state.ThreadContinuations {
+		if saved.Reference == 0 ||
+			(index != 0 && saved.Reference <= previousThread) ||
+			len(saved.Frames) == 0 {
+			return nil, fmt.Errorf(
+				"load SKVM state: invalid thread continuation %d",
+				index,
+			)
+		}
+		object := candidate.heap[saved.Reference]
+		thread, ok := object.Native.(*threadState)
+		if !ok || !thread.active || len(thread.continuation) != 0 {
+			return nil, fmt.Errorf(
+				"load SKVM state: invalid thread continuation object %d",
+				saved.Reference,
+			)
+		}
+		for frameIndex, savedFrame := range saved.Frames {
+			current, err := restoreFrame(
+				candidate,
+				savedFrame,
+				fmt.Sprintf(
+					"thread %d frame %d",
+					saved.Reference,
+					frameIndex,
+				),
+			)
+			if err != nil {
+				return nil, err
+			}
+			if current.invokePC < 0 {
+				return nil, fmt.Errorf(
+					"load SKVM state: thread %d frame %d has no pending invocation",
+					saved.Reference,
+					frameIndex,
+				)
+			}
+			thread.continuation = append(thread.continuation, current)
+		}
+		if err := validateContinuationFrames(thread.continuation); err != nil {
+			return nil, fmt.Errorf(
+				"load SKVM state: thread %d continuation: %w",
+				saved.Reference,
+				err,
+			)
+		}
+		previousThread = saved.Reference
+	}
 	for index, saved := range state.Frames {
-		runtime := candidate.classes[saved.Class]
-		if runtime == nil {
-			return nil, fmt.Errorf("load SKVM state: frame %d class is missing", index)
-		}
-		method, ok := runtime.class.Method(saved.Method, saved.Descriptor)
-		if !ok || saved.PC < 0 || int(saved.PC) > len(method.Code) ||
-			len(saved.Locals) != int(method.MaxLocals) ||
-			len(saved.Stack) > int(method.MaxStack) {
-			return nil, fmt.Errorf("load SKVM state: invalid frame %d", index)
-		}
-		locals, err := restoreValues(saved.Locals)
+		current, err := restoreFrame(candidate, saved, fmt.Sprintf("frame %d", index))
 		if err != nil {
-			return nil, fmt.Errorf("load SKVM state: frame %d locals: %w", index, err)
+			return nil, err
 		}
-		stack, err := restoreValues(saved.Stack)
-		if err != nil {
-			return nil, fmt.Errorf("load SKVM state: frame %d stack: %w", index, err)
-		}
-		candidate.frames = append(candidate.frames, &frame{
-			class: runtime.class, method: method, locals: locals,
-			stack: stack, pc: int(saved.PC),
-		})
+		candidate.frames = append(candidate.frames, current)
 	}
 	if err := candidate.validateReferences(); err != nil {
 		return nil, err
 	}
 	return candidate, nil
+}
+
+func restoreFrame(vm *VM, saved frameState, label string) (*frame, error) {
+	runtime := vm.classes[saved.Class]
+	if runtime == nil {
+		return nil, fmt.Errorf("load SKVM state: %s class is missing", label)
+	}
+	method, ok := runtime.class.Method(saved.Method, saved.Descriptor)
+	if !ok || saved.PC < 0 || int(saved.PC) > len(method.Code) ||
+		len(saved.Locals) != int(method.MaxLocals) ||
+		len(saved.Stack) > int(method.MaxStack) ||
+		saved.InvokePC < -1 || int(saved.InvokePC) >= len(method.Code) {
+		return nil, fmt.Errorf("load SKVM state: invalid %s", label)
+	}
+	if saved.InvokePC >= 0 {
+		opcode := method.Code[saved.InvokePC]
+		if opcode < 0xb6 || opcode > 0xb9 ||
+			saved.InvokePC >= saved.PC {
+			return nil, fmt.Errorf("load SKVM state: invalid %s invocation", label)
+		}
+	}
+	locals, err := restoreValues(saved.Locals)
+	if err != nil {
+		return nil, fmt.Errorf("load SKVM state: %s locals: %w", label, err)
+	}
+	stack, err := restoreValues(saved.Stack)
+	if err != nil {
+		return nil, fmt.Errorf("load SKVM state: %s stack: %w", label, err)
+	}
+	return &frame{
+		class: runtime.class, method: method, locals: locals,
+		stack: stack, pc: int(saved.PC), invokePC: int(saved.InvokePC),
+	}, nil
+}
+
+func validateContinuationFrames(frames []*frame) error {
+	if len(frames) == 0 {
+		return fmt.Errorf("empty continuation")
+	}
+	for index, current := range frames {
+		reference, result, err := pendingInvocation(current)
+		if err != nil {
+			return fmt.Errorf("frame %d: %w", index, err)
+		}
+		if index+1 < len(frames) {
+			if reference.Descriptor != frames[index+1].method.Descriptor {
+				return fmt.Errorf(
+					"frame %d invokes %s but child descriptor is %s",
+					index,
+					reference.Descriptor,
+					frames[index+1].method.Descriptor,
+				)
+			}
+			continue
+		}
+		if result.kind != 'V' {
+			return fmt.Errorf("yielding invocation returns a value")
+		}
+	}
+	return nil
+}
+
+func pendingInvocation(current *frame) (Reference, valueType, error) {
+	if current == nil || current.class == nil ||
+		current.invokePC < 0 || current.invokePC+2 >= len(current.method.Code) {
+		return Reference{}, valueType{}, fmt.Errorf("invalid pending invocation")
+	}
+	opcode := current.method.Code[current.invokePC]
+	instructionSize := 3
+	if opcode == 0xb9 {
+		instructionSize = 5
+	} else if opcode < 0xb6 || opcode > 0xb8 {
+		return Reference{}, valueType{}, fmt.Errorf(
+			"pending opcode 0x%02x is not an invocation",
+			opcode,
+		)
+	}
+	if current.pc != current.invokePC+instructionSize ||
+		current.invokePC+instructionSize > len(current.method.Code) {
+		return Reference{}, valueType{}, fmt.Errorf("invalid invocation return PC")
+	}
+	index := binary.BigEndian.Uint16(
+		current.method.Code[current.invokePC+1 : current.invokePC+3],
+	)
+	reference, err := current.class.Reference(index)
+	if err != nil {
+		return Reference{}, valueType{}, err
+	}
+	_, result, err := parseMethodDescriptor(reference.Descriptor)
+	if err != nil {
+		return Reference{}, valueType{}, err
+	}
+	return reference, result, nil
 }
 
 func sameValueMapShape(saved, current map[string]Value) bool {
@@ -872,6 +1056,63 @@ func (vm *VM) validateReferences() error {
 			}
 		}
 	}
+	for reference, object := range vm.heap {
+		state, ok := object.Native.(*threadState)
+		if !ok {
+			continue
+		}
+		if !state.active && len(state.continuation) != 0 {
+			return fmt.Errorf(
+				"load SKVM state: inactive thread %d has a continuation",
+				reference,
+			)
+		}
+		if state.active && len(state.continuation) == 0 &&
+			vm.runningThread != reference {
+			return fmt.Errorf(
+				"load SKVM state: active thread %d has no continuation",
+				reference,
+			)
+		}
+		if len(state.continuation) == 0 {
+			continue
+		}
+		if err := validateContinuationFrames(state.continuation); err != nil {
+			return fmt.Errorf(
+				"load SKVM state: thread %d continuation: %w",
+				reference,
+				err,
+			)
+		}
+		for frameIndex, current := range state.continuation {
+			for index, value := range current.locals {
+				if err := validateValue(
+					value,
+					fmt.Sprintf(
+						"thread %d frame %d local %d",
+						reference,
+						frameIndex,
+						index,
+					),
+				); err != nil {
+					return err
+				}
+			}
+			for index, value := range current.stack {
+				if err := validateValue(
+					value,
+					fmt.Sprintf(
+						"thread %d frame %d stack %d",
+						reference,
+						frameIndex,
+						index,
+					),
+				); err != nil {
+					return err
+				}
+			}
+		}
+	}
 	for name, reference := range map[string]uint32{
 		"display":         vm.displayReference,
 		"current-display": vm.currentDisplay,
@@ -933,6 +1174,12 @@ func (vm *VM) validateNative(reference uint32, native any) error {
 		}
 		return fmt.Errorf("load SKVM state: object %d random stream is missing", reference)
 	case *threadState:
+		if state.wakeAt < 0 {
+			return fmt.Errorf(
+				"load SKVM state: object %d has a negative thread wake time",
+				reference,
+			)
+		}
 		return validateRef(state.target, "thread target")
 	case *recordStoreState:
 		id, err := vm.services.Storage.OpenRecordStore(vm.serviceOwner, state.name)

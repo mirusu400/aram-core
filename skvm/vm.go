@@ -102,14 +102,16 @@ type VM struct {
 	defaultFont      shared.ServiceID
 	classDigest      [sha256.Size]byte
 	runningThread    uint32
+	threadFrameBase  int
 }
 
 type frame struct {
-	class  *Class
-	method Method
-	locals []Value
-	stack  []Value
-	pc     int
+	class    *Class
+	method   Method
+	locals   []Value
+	stack    []Value
+	pc       int
+	invokePC int
 }
 
 type thrown struct {

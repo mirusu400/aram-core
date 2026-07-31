@@ -122,6 +122,14 @@ func (vm *VM) collectGarbage() error {
 		switch state := object.Native.(type) {
 		case *threadState:
 			markReference(state.target)
+			for _, current := range state.continuation {
+				for _, value := range current.locals {
+					markValue(value)
+				}
+				for _, value := range current.stack {
+					markValue(value)
+				}
+			}
 		case *inputStreamState:
 			markReference(state.connection)
 		case *inputStreamReaderState:

@@ -29,9 +29,10 @@ type randomState struct {
 }
 
 type threadState struct {
-	target uint32
-	active bool
-	wakeAt time.Duration
+	target       uint32
+	active       bool
+	wakeAt       time.Duration
+	continuation []*frame
 }
 
 type threadYield struct {
@@ -762,9 +763,20 @@ func (vm *VM) runThread(
 		return nil
 	}
 	previous := vm.runningThread
+	previousBase := vm.threadFrameBase
 	vm.runningThread = reference
-	_, _, err := vm.InvokeVirtual(ctx, state.target, "run", "()V")
+	vm.threadFrameBase = len(vm.frames)
+	var err error
+	if len(state.continuation) != 0 {
+		continuation := state.continuation
+		state.continuation = nil
+		budget := vm.remainingBudget()
+		_, _, err = vm.resumeFrames(ctx, continuation, 0, &budget)
+	} else {
+		_, _, err = vm.InvokeVirtual(ctx, state.target, "run", "()V")
+	}
 	vm.runningThread = previous
+	vm.threadFrameBase = previousBase
 	var yielded *threadYield
 	if errors.As(err, &yielded) {
 		now := vm.services.Clock.Monotonic()
@@ -776,6 +788,7 @@ func (vm *VM) runThread(
 		return nil
 	}
 	state.active = false
+	state.continuation = nil
 	if errors.Is(err, ErrMethodNotFound) {
 		return nil
 	}

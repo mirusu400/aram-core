@@ -3,6 +3,7 @@ package skvm
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 )
@@ -40,7 +41,7 @@ func (vm *VM) execute(
 	args []Value,
 	budget *uint64,
 ) (Value, bool, error) {
-	parameters, resultType, err := parseMethodDescriptor(method.Descriptor)
+	parameters, _, err := parseMethodDescriptor(method.Descriptor)
 	if err != nil {
 		return Value{}, false, err
 	}
@@ -90,37 +91,53 @@ func (vm *VM) execute(
 		localIndex += parameters[index].slots()
 	}
 	current := &frame{
-		class:  class,
-		method: method,
-		locals: locals,
-		stack:  make([]Value, 0, method.MaxStack),
+		class:    class,
+		method:   method,
+		locals:   locals,
+		stack:    make([]Value, 0, method.MaxStack),
+		invokePC: -1,
 	}
+	return vm.executeFrame(ctx, current, budget)
+}
+
+func (vm *VM) executeFrame(
+	ctx context.Context,
+	current *frame,
+	budget *uint64,
+) (Value, bool, error) {
 	vm.frames = append(vm.frames, current)
 	defer func() {
 		vm.frames = vm.frames[:len(vm.frames)-1]
 	}()
+	return vm.runFrame(ctx, current, budget)
+}
 
+func (vm *VM) runFrame(
+	ctx context.Context,
+	current *frame,
+	budget *uint64,
+) (Value, bool, error) {
+	_, resultType, err := parseMethodDescriptor(current.method.Descriptor)
+	if err != nil {
+		return Value{}, false, err
+	}
 	for {
 		opcodePC := current.pc
 		result, stepErr := vm.step(ctx, current, budget)
 		if stepErr != nil {
+			var yielded *threadYield
+			if errors.As(stepErr, &yielded) {
+				if err := vm.captureThreadContinuation(); err != nil {
+					return Value{}, false, err
+				}
+				return Value{}, false, stepErr
+			}
 			var exception *thrown
 			if !AsThrown(stepErr, &exception) {
 				return Value{}, false, stepErr
 			}
-			handled := false
-			for _, handler := range method.Handlers {
-				if opcodePC < int(handler.StartPC) || opcodePC >= int(handler.EndPC) ||
-					!vm.throwableMatches(exception.reference, handler.CatchType) {
-					continue
-				}
-				current.stack = current.stack[:0]
-				current.stack = append(current.stack, ReferenceValue(exception.reference))
-				current.pc = int(handler.HandlerPC)
-				handled = true
-				break
-			}
-			if handled {
+			current.invokePC = -1
+			if vm.handleThrown(current, opcodePC, exception) {
 				continue
 			}
 			return Value{}, false, stepErr
@@ -137,15 +154,94 @@ func (vm *VM) execute(
 		if !result.hasValue || result.value.Kind != resultType.valueKind() {
 			return Value{}, false, fmt.Errorf(
 				"SKVM %s.%s%s returned %s, want %s",
-				class.Name,
-				method.Name,
-				method.Descriptor,
+				current.class.Name,
+				current.method.Name,
+				current.method.Descriptor,
 				result.value.Kind,
 				resultType.valueKind(),
 			)
 		}
 		return result.value, true, nil
 	}
+}
+
+func (vm *VM) handleThrown(current *frame, opcodePC int, exception *thrown) bool {
+	for _, handler := range current.method.Handlers {
+		if opcodePC < int(handler.StartPC) || opcodePC >= int(handler.EndPC) ||
+			!vm.throwableMatches(exception.reference, handler.CatchType) {
+			continue
+		}
+		current.stack = current.stack[:0]
+		current.stack = append(current.stack, ReferenceValue(exception.reference))
+		current.pc = int(handler.HandlerPC)
+		return true
+	}
+	return false
+}
+
+func (vm *VM) captureThreadContinuation() error {
+	if vm.runningThread == 0 {
+		return nil
+	}
+	state, err := vm.thread(vm.runningThread)
+	if err != nil {
+		return err
+	}
+	if vm.threadFrameBase < 0 || vm.threadFrameBase >= len(vm.frames) {
+		return fmt.Errorf("SKVM thread has no resumable frame")
+	}
+	current := vm.frames[vm.threadFrameBase:]
+	if len(current) <= len(state.continuation) {
+		return nil
+	}
+	state.continuation = cloneFrames(current)
+	return nil
+}
+
+func cloneFrames(frames []*frame) []*frame {
+	cloned := make([]*frame, len(frames))
+	for index, current := range frames {
+		cloned[index] = &frame{
+			class:    current.class,
+			method:   current.method,
+			locals:   append([]Value(nil), current.locals...),
+			stack:    append([]Value(nil), current.stack...),
+			pc:       current.pc,
+			invokePC: current.invokePC,
+		}
+	}
+	return cloned
+}
+
+func (vm *VM) resumeFrames(
+	ctx context.Context,
+	frames []*frame,
+	index int,
+	budget *uint64,
+) (Value, bool, error) {
+	if index < 0 || index >= len(frames) {
+		return Value{}, false, fmt.Errorf("SKVM invalid thread continuation")
+	}
+	current := frames[index]
+	vm.frames = append(vm.frames, current)
+	defer func() {
+		vm.frames = vm.frames[:len(vm.frames)-1]
+	}()
+
+	if index+1 < len(frames) {
+		value, hasValue, err := vm.resumeFrames(ctx, frames, index+1, budget)
+		if err != nil {
+			var exception *thrown
+			if !AsThrown(err, &exception) ||
+				!vm.handleThrown(current, current.invokePC, exception) {
+				return Value{}, false, err
+			}
+		} else if hasValue {
+			current.push(value)
+		}
+	}
+	current.invokePC = -1
+	return vm.runFrame(ctx, current, budget)
 }
 
 func AsThrown(err error, target **thrown) bool {
@@ -960,10 +1056,12 @@ func (vm *VM) step(
 				return stepResult{}, fmt.Errorf("SKVM invokeinterface reserved byte is nonzero")
 			}
 		}
+		current.invokePC = opcodePC
 		value, hasValue, err := vm.invoke(ctx, current, index, opcode, budget)
 		if err != nil {
 			return stepResult{}, err
 		}
+		current.invokePC = -1
 		if hasValue {
 			current.push(value)
 		}

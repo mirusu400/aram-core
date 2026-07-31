@@ -911,7 +911,8 @@ func TestSKVMThreadsRunCooperativelyOnVirtualTime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !state.active || state.wakeAt != time.Millisecond {
+	if !state.active || state.wakeAt != time.Millisecond ||
+		len(state.continuation) != 2 {
 		t.Fatalf("thread after start = %+v", state)
 	}
 	invokeTestNative(
@@ -934,12 +935,26 @@ func TestSKVMThreadsRunCooperativelyOnVirtualTime(t *testing.T) {
 	if err := vm.UnmarshalBinary(saved); err != nil {
 		t.Fatal(err)
 	}
+	roundTripped, err := vm.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(roundTripped, saved) {
+		t.Fatal("thread continuation state changed across round trip")
+	}
 	if err := vm.Advance(context.Background(), time.Millisecond, nil); err != nil {
 		t.Fatal(err)
 	}
 	value, err = vm.classes["Worker"].static[counter].Int()
-	if err != nil || value != 2 {
-		t.Fatalf("counter after advance = %d, %v; want 2", value, err)
+	if err != nil || value != 11 {
+		t.Fatalf("counter after advance = %d, %v; want 11", value, err)
+	}
+	state, err = vm.thread(thread)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.active || len(state.continuation) != 0 {
+		t.Fatalf("thread after return = %+v", state)
 	}
 }
 
@@ -976,7 +991,7 @@ func syntheticThreadClass(t *testing.T) []byte {
 	u4(0xcafebabe)
 	u2(3)
 	u2(45)
-	u2(18)
+	u2(22)
 	utf("Worker")           // 1
 	class(1)                // 2
 	utf("java/lang/Object") // 3
@@ -997,7 +1012,13 @@ func syntheticThreadClass(t *testing.T) []byte {
 	nameAndType(14, 15)     // 16
 	output.WriteByte(constantMethodref)
 	u2(13)
-	u2(16) // 17
+	u2(16)              // 17
+	utf("pause")        // 18
+	utf("()I")          // 19
+	nameAndType(18, 19) // 20
+	output.WriteByte(constantMethodref)
+	u2(2)
+	u2(20) // 21
 
 	u2(AccessPublic)
 	u2(2)
@@ -1008,28 +1029,44 @@ func syntheticThreadClass(t *testing.T) []byte {
 	u2(8)
 	u2(9)
 	u2(0)
-	u2(1) // methods
-	u2(AccessPublic)
-	u2(5)
-	u2(6)
-	u2(1)
-	u2(7)
-	code := []byte{
+	u2(2) // methods
+	writeMethod := func(
+		access, name, descriptor, maxStack, maxLocals uint16,
+		code []byte,
+	) {
+		t.Helper()
+		u2(access)
+		u2(name)
+		u2(descriptor)
+		u2(1)
+		u2(7)
+		u4(uint32(2 + 2 + 4 + len(code) + 2 + 2))
+		u2(maxStack)
+		u2(maxLocals)
+		u4(uint32(len(code)))
+		output.Write(code)
+		u2(0) // handlers
+		u2(0) // code attributes
+	}
+	runCode := []byte{
 		0xb2, 0, 11, // getstatic Worker.counter
 		0x04,        // iconst_1
 		0x60,        // iadd
 		0xb3, 0, 11, // putstatic Worker.counter
-		0x0a,        // lconst_1
-		0xb8, 0, 17, // invokestatic Thread.sleep
+		0xb8, 0, 21, // invokestatic Worker.pause
+		0xb2, 0, 11, // getstatic Worker.counter
+		0x60,        // iadd
+		0xb3, 0, 11, // putstatic Worker.counter
 		0xb1, // return
 	}
-	u4(uint32(2 + 2 + 4 + len(code) + 2 + 2))
-	u2(2)
-	u2(1)
-	u4(uint32(len(code)))
-	output.Write(code)
-	u2(0) // handlers
-	u2(0) // code attributes
+	writeMethod(AccessPublic, 5, 6, 2, 1, runCode)
+	pauseCode := []byte{
+		0x0a,        // lconst_1
+		0xb8, 0, 17, // invokestatic Thread.sleep
+		0x10, 10, // bipush 10
+		0xac, // ireturn
+	}
+	writeMethod(AccessPublic|AccessStatic, 18, 19, 2, 0, pauseCode)
 	u2(0) // class attributes
 	return output.Bytes()
 }
