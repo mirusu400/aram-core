@@ -54,6 +54,51 @@ func TestFactoryLoadsKTFPackageWithLeadingCoverImage(t *testing.T) {
 	}
 }
 
+func TestFactorySizesKTFFramebufferFromDescriptor(t *testing.T) {
+	build := func(displaySize string) *Machine {
+		t.Helper()
+		jar := testZIP(t, map[string][]byte{
+			"client.bin4096": syntheticKTFClient(),
+		})
+		descriptor := "PID:PD000001\nAID:01020304\nMClass:GameMain\n" + displaySize
+		archive := testZIP(t, map[string][]byte{
+			"01020304.jar": jar,
+			"__adf__":      []byte(descriptor),
+		})
+		created, err := NewFactory().Create(
+			context.Background(),
+			machinecore.Source{
+				Name:     "sized.zip",
+				ReaderAt: bytes.NewReader(archive),
+				Size:     int64(len(archive)),
+			},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = created.Close() })
+		return created.(*Machine)
+	}
+
+	machine := build("DisplaySize:176*220\n")
+	if bounds := machine.Framebuffer().Bounds(); bounds.Dx() != 176 ||
+		bounds.Dy() != 220 {
+		t.Fatalf("declared framebuffer = %v", bounds)
+	}
+	if got := machine.ktf.displayWidth(); got != 176 {
+		t.Fatalf("display width = %d", got)
+	}
+	if got := machine.ktf.defaultCardHeight(); got != 220 {
+		t.Fatalf("default card height = %d", got)
+	}
+
+	// A descriptor without the field keeps the factory's own framebuffer.
+	if bounds := build("").Framebuffer().Bounds(); bounds.Dx() != 240 ||
+		bounds.Dy() != 320 {
+		t.Fatalf("default framebuffer = %v", bounds)
+	}
+}
+
 func TestKTFSaveStateRestoresAdapterAndSharedServices(t *testing.T) {
 	client := syntheticKTFClient()
 	jar := testZIP(t, map[string][]byte{

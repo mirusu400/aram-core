@@ -11548,9 +11548,9 @@ func (r *ktfRuntime) handleDisplayMethod(
 		delete(r.displayCards, instance)
 		return 0, nil
 	case "getWidth()I":
-		return ktfDisplayWidth, nil
+		return r.displayWidth(), nil
 	case "getHeight()I":
-		return ktfDisplayHeight, nil
+		return r.displayHeight(), nil
 	case "callSerially(Ljava/lang/Runnable;)V",
 		"callSerially(Ljava/lang/Runnable;I)V":
 		runnable, err := r.parameter(2)
@@ -12125,19 +12125,40 @@ func (r *ktfRuntime) initializeCard(instance, display uint32) error {
 	if err := r.writeJavaFieldWord(instance, 4, display); err != nil {
 		return err
 	}
-	if err := r.writeJavaFieldWord(instance, 16, ktfDisplayWidth); err != nil {
+	if err := r.writeJavaFieldWord(instance, 16, r.displayWidth()); err != nil {
 		return err
 	}
 	return r.writeJavaFieldWord(instance, 20, r.defaultCardHeight())
 }
 
-func (r *ktfRuntime) defaultCardHeight() uint32 {
-	for _, state := range r.lwcComponents {
-		if state.annunciator && state.shown && !state.transparent {
-			return ktfDisplayHeight - uint32(ktfAnnunciatorHeight)
-		}
+// displayWidth and displayHeight report the screen the title actually runs on.
+// KTF descriptors may name a smaller handset than the default, and a Clet that
+// asks for the card size has to be told the same one the framebuffer uses.
+func (r *ktfRuntime) displayWidth() uint32 {
+	if r.frame != nil {
+		return uint32(r.frame.Bounds().Dx())
+	}
+	return ktfDisplayWidth
+}
+
+func (r *ktfRuntime) displayHeight() uint32 {
+	if r.frame != nil {
+		return uint32(r.frame.Bounds().Dy())
 	}
 	return ktfDisplayHeight
+}
+
+func (r *ktfRuntime) defaultCardHeight() uint32 {
+	height := r.displayHeight()
+	for _, state := range r.lwcComponents {
+		if state.annunciator && state.shown && !state.transparent {
+			if height > uint32(ktfAnnunciatorHeight) {
+				return height - uint32(ktfAnnunciatorHeight)
+			}
+			return height
+		}
+	}
+	return height
 }
 
 func (r *ktfRuntime) readJavaFieldWord(instance, offset uint32) (uint32, error) {

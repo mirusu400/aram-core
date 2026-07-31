@@ -30,6 +30,12 @@ type Descriptor struct {
 	AID       string
 	PID       string
 	MainClass string
+
+	// DisplayWidth and DisplayHeight carry the handset screen the title was
+	// built for, from the descriptor's "DisplaySize:W*H" line. Titles that
+	// omit it leave both zero.
+	DisplayWidth  int
+	DisplayHeight int
 }
 
 type Package struct {
@@ -158,6 +164,10 @@ func ParseDescriptor(data []byte) (Descriptor, error) {
 			descriptor.PID = string(line[4:])
 		case bytes.HasPrefix(line, []byte("MClass:")):
 			descriptor.MainClass = string(line[7:])
+		case bytes.HasPrefix(line, []byte("DisplaySize:")):
+			descriptor.DisplayWidth, descriptor.DisplayHeight = parseDisplaySize(
+				string(line[12:]),
+			)
 		}
 	}
 	if err := validateDescriptorValue("AID", descriptor.AID, true); err != nil {
@@ -170,6 +180,27 @@ func ParseDescriptor(data []byte) (Descriptor, error) {
 		return Descriptor{}, err
 	}
 	return descriptor, nil
+}
+
+// parseDisplaySize reads the "W*H" form KTF descriptors use. Anything that is
+// not two positive in-range numbers is reported as absent rather than as an
+// error, because the field is optional and a malformed one should not keep an
+// otherwise loadable title from starting.
+func parseDisplaySize(value string) (int, int) {
+	const maxDisplayEdge = 4096
+	width, height, ok := strings.Cut(strings.TrimSpace(value), "*")
+	if !ok {
+		return 0, 0
+	}
+	parsed := make([]int, 0, 2)
+	for _, field := range []string{width, height} {
+		number, err := strconv.Atoi(strings.TrimSpace(field))
+		if err != nil || number <= 0 || number > maxDisplayEdge {
+			return 0, 0
+		}
+		parsed = append(parsed, number)
+	}
+	return parsed[0], parsed[1]
 }
 
 func ParseBSSSize(filename string) (uint32, error) {

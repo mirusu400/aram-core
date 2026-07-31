@@ -178,6 +178,52 @@ func TestInspectReportsEncryptedOMADCFJarAsProtected(t *testing.T) {
 	}
 }
 
+func TestParseDescriptorReadsDisplaySize(t *testing.T) {
+	descriptor, err := ParseDescriptor([]byte(
+		"PID:PD005263\r\nAID:01038900\r\nMClass:Maple\r\nDisplaySize:176*220\r\n",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if descriptor.DisplayWidth != 176 || descriptor.DisplayHeight != 220 {
+		t.Fatalf(
+			"display size = %dx%d",
+			descriptor.DisplayWidth,
+			descriptor.DisplayHeight,
+		)
+	}
+}
+
+// The field is optional, and a descriptor that spells it oddly still has to
+// load; the caller falls back to its own default when it reads back as absent.
+func TestParseDescriptorIgnoresUnusableDisplaySize(t *testing.T) {
+	for _, value := range []string{
+		"",
+		"176",
+		"176*",
+		"176*0",
+		"0*220",
+		"-176*220",
+		"wide*tall",
+		"99999*99999",
+	} {
+		descriptor, err := ParseDescriptor([]byte(
+			"AID:01020304\nMClass:Main\nDisplaySize:" + value + "\n",
+		))
+		if err != nil {
+			t.Fatalf("descriptor %q: %v", value, err)
+		}
+		if descriptor.DisplayWidth != 0 || descriptor.DisplayHeight != 0 {
+			t.Fatalf(
+				"display size for %q = %dx%d, want absent",
+				value,
+				descriptor.DisplayWidth,
+				descriptor.DisplayHeight,
+			)
+		}
+	}
+}
+
 func TestParseBSSSizeRejectsMissingAndExcessiveValues(t *testing.T) {
 	for _, name := range []string{
 		"client.bin",
