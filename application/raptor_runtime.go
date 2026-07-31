@@ -506,6 +506,10 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 		return "MC_grpSetContext", true
 	case 209:
 		return "MC_grpDrawLine", true
+	// Bracketed by DrawLine and FillRect, so this is the vtable slot between
+	// them. The title only reaches it once the save file loads.
+	case 210:
+		return "MC_grpDrawRect", true
 	case 211:
 		return "MC_grpFillRect", true
 	case 222:
@@ -521,6 +525,24 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 		return "MC_grpGetFont", true
 	case 233:
 		return "MC_grpCreateImage", true
+	// The 400 block is MC_FS in vtable order. 영웅서기3 pins every entry from
+	// its own call sites: open takes a name and a mode, write is reached
+	// through a helper that prints "===> FileWrite Error", close is called on
+	// both the success and failure paths, seek is used with SEEK_END to size a
+	// file, read takes (fd, buffer, length), and the attribute call takes the
+	// name with a stack buffer whose word at +8 is then used as the length.
+	case 400:
+		return "MC_fsOpen", true
+	case 401:
+		return "MC_fsRead", true
+	case 402:
+		return "MC_fsWrite", true
+	case 403:
+		return "MC_fsClose", true
+	case 404:
+		return "MC_fsSeek", true
+	case 405:
+		return "MC_fsFileAttribute", true
 	case 117:
 		return "MC_knlAlloc", true
 	case 118:
