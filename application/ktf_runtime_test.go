@@ -7109,6 +7109,122 @@ func TestKTFWIPICImageDecodesBMP(t *testing.T) {
 	}
 }
 
+func TestKTFWIPICDrawImageBlitsAndClips(t *testing.T) {
+	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.cpu.Close()
+	if err := runtime.mapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	destination, err := runtime.createWIPICFramebuffer(16, 16, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := runtime.createWIPICFramebuffer(4, 4, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceBuffer := runtime.wipicFramebuffers[source]
+	pixels := make([]byte, sourceBuffer.stride*sourceBuffer.height)
+	for offset := 0; offset < len(pixels); offset += 2 {
+		binary.LittleEndian.PutUint16(pixels[offset:], 0x1234)
+	}
+	if err := runtime.cpu.WriteMemory(sourceBuffer.pixels, pixels); err != nil {
+		t.Fatal(err)
+	}
+	const imageObject = uint32(0x4000)
+	runtime.wipicImages[imageObject] = &ktfWIPICImage{
+		object:      imageObject,
+		framebuffer: source,
+	}
+	contextAddress, err := runtime.heap.allocate(60, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	draw := func(clip []uint32) {
+		t.Helper()
+		if err := runtime.writeWords(contextAddress, clip); err != nil {
+			t.Fatal(err)
+		}
+		for register, value := range []uint32{destination, 2, 3, 4} {
+			if err := runtime.cpu.WriteRegister(
+				cpu.RegisterR0+uint32(register),
+				value,
+			); err != nil {
+				t.Fatal(err)
+			}
+		}
+		stack, err := runtime.heap.allocate(20, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := runtime.writeWords(stack, []uint32{
+			4,
+			imageObject,
+			0,
+			0,
+			contextAddress,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := runtime.cpu.WriteRegister(cpu.RegisterSP, stack); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ktfWIPICGraphicsDrawImage(
+			context.Background(),
+			runtime,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	pixelAt := func(x, y int) uint16 {
+		t.Helper()
+		buffer := runtime.wipicFramebuffers[destination]
+		var encoded [2]byte
+		if err := runtime.cpu.ReadMemory(
+			buffer.pixels+uint32(y*buffer.stride+x*2),
+			encoded[:],
+		); err != nil {
+			t.Fatal(err)
+		}
+		return binary.LittleEndian.Uint16(encoded[:])
+	}
+
+	draw([]uint32{0, 0, 0, 0, 0})
+	for _, point := range [][2]int{{2, 3}, {5, 3}, {2, 6}, {5, 6}} {
+		if got := pixelAt(point[0], point[1]); got != 0x1234 {
+			t.Fatalf("blitted pixel at %v = %04x", point, got)
+		}
+	}
+	for _, point := range [][2]int{{1, 3}, {6, 3}, {2, 2}, {2, 7}} {
+		if got := pixelAt(point[0], point[1]); got != 0 {
+			t.Fatalf("pixel outside the blit at %v = %04x", point, got)
+		}
+	}
+
+	// A clip that admits one column must leave the rest of the run alone.
+	if err := runtime.cpu.WriteMemory(
+		runtime.wipicFramebuffers[destination].pixels,
+		make([]byte, runtime.wipicFramebuffers[destination].stride*16),
+	); err != nil {
+		t.Fatal(err)
+	}
+	draw([]uint32{2, 3, 3, 7, 1})
+	if got := pixelAt(2, 3); got != 0x1234 {
+		t.Fatalf("clipped pixel = %04x", got)
+	}
+	if got := pixelAt(3, 3); got != 0 {
+		t.Fatalf("pixel beyond the clip = %04x", got)
+	}
+}
+
 func TestKTFWIPICDrawStringPaintsMeasuredRun(t *testing.T) {
 	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
 		ClientName: "client.bin0",

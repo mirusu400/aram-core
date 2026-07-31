@@ -13501,6 +13501,8 @@ func ktfWIPICHandler(table, slot int) ktfHostHandler {
 			return ktfWIPICGraphicsFillRect
 		case 12:
 			return ktfWIPICGraphicsCopyFramebuffer
+		case 13:
+			return ktfWIPICGraphicsDrawImage
 		case 17:
 			return ktfWIPICGraphicsDrawString
 		case 18:
@@ -15341,6 +15343,104 @@ func ktfWIPICGraphicsCopyFramebuffer(
 		}
 	}
 	return 0, runtime.syncKTFWIPICFramebuffer(values[0])
+}
+
+// ktfWIPICGraphicsDrawImage blits an MC_GrpImage into a framebuffer. The image
+// wrapper carries its pixels in a framebuffer of its own, so the copy is the
+// framebuffer-to-framebuffer one with the source resolved through the image and
+// the destination rectangle clipped by the graphics context.
+func ktfWIPICGraphicsDrawImage(
+	_ context.Context,
+	runtime *ktfRuntime,
+) (uint32, error) {
+	values := make([]uint32, 9)
+	for index := range values {
+		value, err := runtime.parameter(uint32(index))
+		if err != nil {
+			return 0, fmt.Errorf(
+				"read KTF WIPI-C draw-image parameter %d: %w",
+				index,
+				err,
+			)
+		}
+		values[index] = value
+	}
+	image := runtime.wipicImages[values[5]]
+	if image == nil {
+		return 0, nil
+	}
+	state, err := runtime.wipicGraphicsContext(values[8])
+	if err != nil {
+		return 0, err
+	}
+	if err := runtime.blitWIPICFramebuffer(
+		values[0],
+		image.framebuffer,
+		int64(int32(values[1]))+int64(state.offsetX),
+		int64(int32(values[2]))+int64(state.offsetY),
+		int64(int32(values[3])),
+		int64(int32(values[4])),
+		int64(int32(values[6])),
+		int64(int32(values[7])),
+		state,
+	); err != nil {
+		return 0, err
+	}
+	return 0, runtime.syncKTFWIPICFramebuffer(values[0])
+}
+
+// blitWIPICFramebuffer copies a rectangle between two 16bpp framebuffers,
+// clamping it into both and against the context clip.
+func (r *ktfRuntime) blitWIPICFramebuffer(
+	destinationHandle, sourceHandle uint32,
+	dx, dy, width, height, sx, sy int64,
+	state ktfWIPICGraphicsContext,
+) error {
+	destination := r.wipicFramebuffers[destinationHandle]
+	source := r.wipicFramebuffers[sourceHandle]
+	if destination == nil || source == nil || width <= 0 || height <= 0 {
+		return nil
+	}
+	if sx < 0 {
+		width += sx
+		dx -= sx
+		sx = 0
+	}
+	if sy < 0 {
+		height += sy
+		dy -= sy
+		sy = 0
+	}
+	left, top := dx, dy
+	right, bottom := dx+width, dy+height
+	if state.clipEnabled {
+		left = max(left, int64(state.left))
+		top = max(top, int64(state.top))
+		right = min(right, int64(state.right))
+		bottom = min(bottom, int64(state.bottom))
+	}
+	left = max(left, 0)
+	top = max(top, 0)
+	right = min(right, int64(destination.width), dx+int64(source.width)-sx)
+	bottom = min(bottom, int64(destination.height), dy+int64(source.height)-sy)
+	if left >= right || top >= bottom {
+		return nil
+	}
+	rowBytes := int(right-left) * 2
+	row := make([]byte, rowBytes)
+	for y := top; y < bottom; y++ {
+		sourceAddress := source.pixels +
+			uint32((sy+y-dy)*int64(source.stride)+(sx+left-dx)*2)
+		if err := r.cpu.ReadMemory(sourceAddress, row); err != nil {
+			return err
+		}
+		destinationAddress := destination.pixels +
+			uint32(y*int64(destination.stride)+left*2)
+		if err := r.cpu.WriteMemory(destinationAddress, row); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *ktfRuntime) writeWIPICPixel(
