@@ -484,6 +484,16 @@ func (r *raptorRuntime) dispatchPrivateImport(
 		}
 		err = r.public.unsetTimer(timer, false)
 		return wipiReturn{}, "RAPTOR.knlUnsetTimer", true, err
+	case 1233:
+		// The KTF Raptor title 얍 invokes this provider-private startup hook
+		// once with (3, 1) and discards the result before querying handset
+		// properties. No guest-visible state is exchanged.
+		return wipiReturn{}, "RAPTOR.privateStartup1233", true, nil
+	case 1400:
+		// Raptor modules may invoke this provider-private runtime initializer
+		// with (0, 2, 0, 0) before their public imports are resolved. Its
+		// result is ignored, so model the provider's successful no-op boundary.
+		return wipiReturn{}, "RAPTOR.privateRuntimeInit1400", true, nil
 	default:
 		return wipiReturn{}, "", false, nil
 	}
@@ -501,6 +511,8 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 		return "MC_knlGetFreeMemory", true
 	case 125:
 		return "MC_knlCurrentTime", true
+	case 126:
+		return "MC_knlGetSystemProperty", true
 	case 127:
 		return "MC_knlSetSystemProperty", true
 	case 200:

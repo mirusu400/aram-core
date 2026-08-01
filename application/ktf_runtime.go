@@ -57,6 +57,15 @@ const (
 	ktfKeyPressed  = uint32(1)
 	ktfKeyReleased = uint32(2)
 
+	ktfDialogTypeNone     = int32(0)
+	ktfDialogTypeOK       = int32(1)
+	ktfDialogTypeOKCancel = int32(2)
+	ktfDialogTimeout      = int32(10)
+	ktfDialogOK           = int32(11)
+	ktfDialogCancel       = int32(12)
+	ktfDialogOKButton     = int32(20)
+	ktfDialogCancelButton = int32(21)
+
 	// KTF's Java execution environment ends with native state fields at
 	// offsets 0x24 and 0x28. The current exception-frame pointer is at 0x20.
 	ktfJavaEnvironmentWords = 11
@@ -267,10 +276,11 @@ type ktfInputStream struct {
 }
 
 type ktfFile struct {
-	name     string
-	position uint32
-	mode     uint32
-	closed   bool
+	namespace shared.Namespace
+	name      string
+	position  uint32
+	mode      uint32
+	closed    bool
 }
 
 const (
@@ -311,6 +321,7 @@ var ktfJavaExceptionParents = map[string]string{
 	"java/lang/StringIndexOutOfBoundsException": "java/lang/IndexOutOfBoundsException",
 	"java/lang/NullPointerException":            "java/lang/RuntimeException",
 	"java/lang/NumberFormatException":           "java/lang/IllegalArgumentException",
+	"java/lang/SecurityException":               "java/lang/RuntimeException",
 	"java/io/IOException":                       "java/lang/Exception",
 	"java/io/EOFException":                      "java/io/IOException",
 	"java/io/UTFDataFormatException":            "java/io/IOException",
@@ -348,6 +359,7 @@ type ktfWIPICImage struct {
 	body        uint32
 	framebuffer uint32
 	source      uint32
+	frameIndex  uint32
 }
 
 type ktfWIPICMemory struct {
@@ -395,6 +407,16 @@ type ktfLWCComponent struct {
 	focus           uint32
 	text            uint32
 	gap             int32
+	progressValue   int32
+	progressMax     int32
+	progressStep    int32
+	progressTop     int32
+	progressBottom  int32
+	dialogType      int32
+	dialogTimeout   int32
+	dialogAction    int32
+	dialogOK        uint32
+	dialogCancel    uint32
 	shown           bool
 	valid           bool
 	focused         bool
@@ -402,6 +424,7 @@ type ktfLWCComponent struct {
 	packed          bool
 	annunciator     bool
 	transparent     bool
+	progressInput   bool
 }
 
 type ktfTask struct {
@@ -963,14 +986,36 @@ var ktfHostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 			{name: "<init>", descriptor: "(Ljava/lang/String;)V"},
 		},
 	},
+	"org/kwis/msp/lwc/ProgressComponent": {
+		parent: "org/kwis/msp/lwc/Component",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "(ZI)V"},
+			{name: "setStep", descriptor: "(I)V"},
+			{name: "getStep", descriptor: "()I"},
+			{name: "setMargin", descriptor: "(II)V"},
+			{name: "setMaxValue", descriptor: "(I)V"},
+			{name: "getMaxValue", descriptor: "()I"},
+			{name: "setValue", descriptor: "(I)I"},
+			{name: "getValue", descriptor: "()I"},
+			{name: "keyNotify", descriptor: "(II)Z"},
+		},
+	},
 	"org/kwis/msp/lwc/DialogComponent": {
 		parent: "org/kwis/msp/lwc/ShellComponent",
 		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "(I)V"},
 			{
 				name: "<init>",
 				descriptor: "(Lorg/kwis/msp/lwc/Component;" +
 					"Ljava/lang/String;I)V",
 			},
+			{name: "setButtonString", descriptor: "(ILjava/lang/String;)V"},
+			{name: "setType", descriptor: "(I)V"},
+			{name: "getType", descriptor: "()I"},
+			{name: "setTimeout", descriptor: "(I)V"},
+			{name: "getTimeout", descriptor: "()I"},
+			{name: "doModal", descriptor: "()I"},
+			{name: "getActionState", descriptor: "()I"},
 		},
 	},
 	"com/ktf/kfc/GForm": {
@@ -5339,7 +5384,11 @@ func (r *ktfRuntime) nativeSignatureMatches(
 				method.NativeBody&^1 != target {
 				continue
 			}
-			signature := class.Name + "." + method.Name + method.Descriptor
+			declaring, inspectErr := r.inspectJavaClass(method.DeclaringClass)
+			if inspectErr != nil {
+				continue
+			}
+			signature := declaring.Name + "." + method.Name + method.Descriptor
 			if seenSignatures[signature] {
 				continue
 			}
@@ -5565,11 +5614,23 @@ func ktfHostJavaMethod(className, name, descriptor string) ktfHostHandler {
 		}()
 		registers := make([]uint32, cpu.RegisterR12+1)
 		for register := range registers {
-			if runtime.nativeParameterBase != 0 {
-				registers[register], _ = runtime.parameter(uint32(register))
-			} else {
-				registers[register], _ = runtime.cpu.ReadRegister(uint32(register))
-			}
+			registers[register], _ = runtime.parameter(uint32(register))
+		}
+		declaredClass := className
+		className = runtime.correctHostJavaReceiverClass(
+			className,
+			name,
+			descriptor,
+			registers,
+		)
+		if className != declaredClass {
+			runtime.tracef(
+				"java_host_receiver_correct:%s.%s%s->%s",
+				declaredClass,
+				name,
+				descriptor,
+				className,
+			)
 		}
 		runtime.lastJavaCallLR, _ = runtime.cpu.ReadRegister(cpu.RegisterLR)
 		runtime.tracef(
@@ -5827,6 +5888,7 @@ func ktfHostJavaMethod(className, name, descriptor string) ktfHostHandler {
 			"org/kwis/msp/lwc/TextBoxComponent",
 			"org/kwis/msp/lwc/TextFieldComponent",
 			"org/kwis/msp/lwc/LabelComponent",
+			"org/kwis/msp/lwc/ProgressComponent",
 			"org/kwis/msp/lwc/DialogComponent":
 			return runtime.handleLWCMethod(
 				ctx,
@@ -5858,6 +5920,18 @@ func ktfHostJavaMethod(className, name, descriptor string) ktfHostHandler {
 			return runtime.handleFileMethod(name, descriptor)
 		case "org/kwis/msp/io/FileSystem":
 			return runtime.handleFileSystemMethod(name, descriptor)
+		case "org/kwis/msf/io/URL":
+			if name+descriptor ==
+				"find(Ljava/lang/String;)Lorg/kwis/msf/io/Socket;" {
+				url := runtime.javaStringValue(registers[1])
+				runtime.tracef("java_url_find_unavailable:%s", url)
+				return 0, nil
+			}
+		case "wec/OEMDevice":
+			if name+descriptor == "getSYSTheme()Lwec/SYSTheme;" {
+				runtime.trace("java_oem_sys_theme_unavailable")
+				return 0, nil
+			}
 		case "org/kwis/msp/db/DataBase":
 			return runtime.handleDataBaseMethod(name, descriptor)
 		case "org/kwis/msp/lcdui/Display":
@@ -5879,8 +5953,6 @@ func ktfHostJavaMethod(className, name, descriptor string) ktfHostHandler {
 			return value, err
 		}
 		signature := className + "." + name + descriptor
-		runtime.unimplementedJava[signature]++
-		runtime.lastUnimplementedJava = signature
 		receiverClass := ""
 		if len(registers) > 1 && registers[1] != 0 {
 			if receiverWords, receiverErr := runtime.readWords(
@@ -5894,6 +5966,8 @@ func ktfHostJavaMethod(className, name, descriptor string) ktfHostHandler {
 				}
 			}
 		}
+		runtime.unimplementedJava[signature]++
+		runtime.lastUnimplementedJava = signature
 		runtime.tracef(
 			"java_unimplemented:%s:receiver=0x%08x:class=%s",
 			signature,
@@ -5902,6 +5976,65 @@ func ktfHostJavaMethod(className, name, descriptor string) ktfHostHandler {
 		)
 		return 0, nil
 	}
+}
+
+// correctHostJavaReceiverClass repairs a KTF AOT cache quirk where an
+// invokevirtual occasionally reuses a method stub resolved through an
+// unrelated class. The argument container still carries the real receiver,
+// so only incompatible, non-static calls are redirected, and only to an
+// already modeled host method present on that receiver's hierarchy.
+func (r *ktfRuntime) correctHostJavaReceiverClass(
+	className, name, descriptor string,
+	registers []uint32,
+) string {
+	if strings.HasPrefix(name, "<") || len(registers) < 2 || registers[1] == 0 {
+		return className
+	}
+	declaredAddress := r.javaClasses[className]
+	if declaredAddress == 0 {
+		return className
+	}
+	declared, err := r.inspectJavaClass(declaredAddress)
+	if err != nil {
+		return className
+	}
+	if method, ok := findKTFJavaMethod(declared, name, descriptor); ok &&
+		method.AccessFlags&0x0008 != 0 {
+		return className
+	}
+	receiverWords, err := r.readWords(registers[1], 2)
+	if err != nil || receiverWords[1] == 0 {
+		return className
+	}
+	actual, err := r.inspectJavaClass(receiverWords[1])
+	if err != nil {
+		return className
+	}
+	if compatible, compatibilityErr := r.javaClassExtends(
+		actual.Address,
+		declared.Address,
+	); compatibilityErr == nil && compatible {
+		return className
+	}
+	for depth := 0; actual.Address != 0 && depth < 256; depth++ {
+		if method, ok := findKTFJavaMethod(actual, name, descriptor); ok &&
+			(method.Body != 0 || method.NativeBody != 0) &&
+			r.hostJavaClass[method.DeclaringClass] {
+			declaring, inspectErr := r.inspectJavaClass(method.DeclaringClass)
+			if inspectErr == nil {
+				return declaring.Name
+			}
+			return className
+		}
+		if actual.Parent == 0 {
+			break
+		}
+		actual, err = r.inspectJavaClass(actual.Parent)
+		if err != nil {
+			break
+		}
+	}
+	return className
 }
 
 func (r *ktfRuntime) redispatchGuestJavaMethod(
@@ -6059,9 +6192,12 @@ func (r *ktfRuntime) handleLWCMethod(
 			return 0, nil
 		}
 	case "org/kwis/msp/lwc/AnnunciatorComponent":
-		if method == "<init>(Z)V" {
+		switch method {
+		case "<init>(Z)V":
 			r.initializeLWCAnnunciator(state)
 			state.transparent = registers[2] != 0
+			return 0, nil
+		case "performed(LXTimer;)V":
 			return 0, nil
 		}
 	case "org/kwis/msp/lwc/TextFieldComponent":
@@ -6080,12 +6216,40 @@ func (r *ktfRuntime) handleLWCMethod(
 			r.initializeLWCTextSize(state, registers[2], false)
 			return 0, nil
 		}
+	case "org/kwis/msp/lwc/ProgressComponent":
+		if method == "<init>(ZI)V" {
+			maximum := int32(registers[3])
+			if maximum <= 0 {
+				return 0, r.raiseHostJavaException(
+					"java/lang/IllegalArgumentException",
+				)
+			}
+			state.progressInput = registers[2] != 0
+			state.progressMax = maximum
+			state.progressStep = 1
+			state.preferredWidth = 100
+			state.preferredHeight = 16
+			state.width = state.preferredWidth
+			state.height = state.preferredHeight
+			return 0, nil
+		}
 	case "org/kwis/msp/lwc/DialogComponent":
-		if method == "<init>(Lorg/kwis/msp/lwc/Component;"+
-			"Ljava/lang/String;I)V" {
+		switch method {
+		case "<init>(I)V":
+			r.initializeLWCShell(state)
+			if err := r.setLWCDialogType(state, int32(registers[2])); err != nil {
+				return 0, err
+			}
+			return 0, nil
+		case "<init>(Lorg/kwis/msp/lwc/Component;" +
+			"Ljava/lang/String;I)V":
 			r.initializeLWCShell(state)
 			state.work = registers[2]
+			state.text = registers[3]
 			r.setLWCParent(registers[2], instance)
+			if err := r.setLWCDialogType(state, int32(registers[4])); err != nil {
+				return 0, err
+			}
 			return 0, nil
 		}
 	}
@@ -6267,8 +6431,98 @@ func (r *ktfRuntime) handleLWCMethod(
 		return 0, nil
 	case "getString()Ljava/lang/String;", "getLabel()Ljava/lang/String;":
 		return state.text, nil
+	case "setStep(I)V":
+		step := int32(registers[2])
+		if step <= 0 || state.progressMax > 0 && step > state.progressMax {
+			return 0, r.raiseHostJavaException(
+				"java/lang/IllegalArgumentException",
+			)
+		}
+		state.progressStep = step
+		state.progressValue -= state.progressValue % step
+		r.invalidateLWC(instance)
+		return 0, nil
+	case "getStep()I":
+		return uint32(max(state.progressStep, 1)), nil
+	case "setMargin(II)V":
+		state.progressTop = max(int32(registers[2]), 0)
+		state.progressBottom = max(int32(registers[3]), 0)
+		r.invalidateLWC(instance)
+		return 0, nil
+	case "setMaxValue(I)V":
+		maximum := int32(registers[2])
+		if maximum <= 0 {
+			return 0, r.raiseHostJavaException(
+				"java/lang/IllegalArgumentException",
+			)
+		}
+		state.progressMax = maximum
+		state.progressValue = min(state.progressValue, maximum)
+		r.invalidateLWC(instance)
+		return 0, nil
+	case "getMaxValue()I":
+		return uint32(state.progressMax), nil
+	case "setValue(I)I":
+		value := max(int32(registers[2]), 0)
+		value = min(value, state.progressMax)
+		step := max(state.progressStep, 1)
+		value -= value % step
+		state.progressValue = value
+		r.invalidateLWC(instance)
+		return uint32(value), nil
+	case "getValue()I":
+		return uint32(state.progressValue), nil
+	case "setButtonString(ILjava/lang/String;)V":
+		switch int32(registers[2]) {
+		case ktfDialogOKButton:
+			state.dialogOK = registers[3]
+		case ktfDialogCancelButton:
+			state.dialogCancel = registers[3]
+		default:
+			return 0, r.raiseHostJavaException(
+				"java/lang/IllegalArgumentException",
+			)
+		}
+		return 0, nil
+	case "setType(I)V":
+		return 0, r.setLWCDialogType(state, int32(registers[2]))
+	case "getType()I":
+		return uint32(state.dialogType), nil
+	case "setTimeout(I)V":
+		state.dialogTimeout = int32(registers[2])
+		return 0, nil
+	case "getTimeout()I":
+		return uint32(state.dialogTimeout), nil
+	case "doModal()I":
+		r.setLWCShown(instance, true)
+		r.markLWCRepaint(instance)
+		if state.dialogType == ktfDialogTypeNone {
+			state.dialogAction = ktfDialogTimeout
+		} else {
+			state.dialogAction = ktfDialogOK
+		}
+		r.setLWCShown(instance, false)
+		return uint32(state.dialogAction), nil
+	case "getActionState()I":
+		return uint32(state.dialogAction), nil
 	case "keyNotify(II)Z", "pointerNotify(III)Z",
 		"processEvent(IIII)Z":
+		if className == "org/kwis/msp/lwc/ProgressComponent" &&
+			method == "keyNotify(II)Z" && state.progressInput {
+			key := int32(registers[3])
+			value := state.progressValue
+			switch key {
+			case -1, -3:
+				value -= max(state.progressStep, 1)
+			case -2, -4:
+				value += max(state.progressStep, 1)
+			default:
+				return 0, nil
+			}
+			state.progressValue = min(max(value, 0), state.progressMax)
+			r.invalidateLWC(instance)
+			return 1, nil
+		}
 		return 0, nil
 	case "paint(Lorg/kwis/msp/lcdui/Graphics;)V",
 		"paintContent(Lorg/kwis/msp/lcdui/Graphics;)V",
@@ -6347,6 +6601,26 @@ func (r *ktfRuntime) initializeLWCAnnunciator(state *ktfLWCComponent) {
 	state.height = ktfAnnunciatorHeight
 	state.preferredHeight = ktfAnnunciatorHeight
 	state.shown = false
+}
+
+func (r *ktfRuntime) setLWCDialogType(
+	state *ktfLWCComponent,
+	dialogType int32,
+) error {
+	if state == nil {
+		return nil
+	}
+	switch dialogType {
+	case ktfDialogTypeNone:
+		state.dialogTimeout = 3_000
+	case ktfDialogTypeOK, ktfDialogTypeOKCancel:
+		state.dialogTimeout = -1
+	default:
+		return r.raiseHostJavaException("java/lang/IllegalArgumentException")
+	}
+	state.dialogType = dialogType
+	state.dialogAction = -2
+	return nil
 }
 
 func (r *ktfRuntime) initializeLWCTextSize(
@@ -10052,22 +10326,33 @@ func (r *ktfRuntime) handleFileMethod(
 			return 0, err
 		}
 		mode := uint32(1)
+		namespace := shared.NamespacePrivate
 		if descriptor != "(Ljava/lang/String;)V" {
 			mode, err = r.parameter(3)
 			if err != nil {
 				return 0, err
 			}
 		}
+		if descriptor == "(Ljava/lang/String;II)V" {
+			flag, flagErr := r.parameter(4)
+			if flagErr != nil {
+				return 0, flagErr
+			}
+			namespace, err = r.ktfStorageNamespace(flag)
+			if err != nil {
+				return 0, err
+			}
+		}
 		filename := normalizeKTFFileName(r.javaStringValue(nameAddress))
-		file := &ktfFile{name: filename, mode: mode}
-		legacyData, exists := r.fileData[filename]
-		if exists {
+		file := &ktfFile{namespace: namespace, name: filename, mode: mode}
+		legacyData, legacyExists := r.fileData[filename]
+		if namespace == shared.NamespacePrivate && legacyExists {
 			if _, statErr := r.services.Storage.Stat(
-				shared.NamespacePrivate,
+				namespace,
 				filename,
 			); statErr != nil {
 				if writeErr := r.services.Storage.WriteFile(
-					shared.NamespacePrivate,
+					namespace,
 					filename,
 					legacyData,
 				); writeErr != nil {
@@ -10075,6 +10360,8 @@ func (r *ktfRuntime) handleFileMethod(
 				}
 			}
 		}
+		_, statErr := r.services.Storage.Stat(namespace, filename)
+		exists := statErr == nil
 		openMode := shared.OpenMode(0)
 		switch mode {
 		case ktfFileReadOnly:
@@ -10101,7 +10388,7 @@ func (r *ktfRuntime) handleFileMethod(
 		}
 		serviceID, serviceErr := r.services.Storage.Open(
 			r.serviceOwner,
-			shared.NamespacePrivate,
+			namespace,
 			filename,
 			openMode,
 		)
@@ -10109,14 +10396,16 @@ func (r *ktfRuntime) handleFileMethod(
 			return 0, r.raiseHostJavaException("java/io/IOException")
 		}
 		data, serviceErr := r.services.Storage.ReadFile(
-			shared.NamespacePrivate,
+			namespace,
 			filename,
 		)
 		if serviceErr != nil {
 			_ = r.services.Storage.Close(r.serviceOwner, serviceID)
 			return 0, serviceErr
 		}
-		r.fileData[filename] = data
+		if namespace == shared.NamespacePrivate {
+			r.fileData[filename] = data
+		}
 		if mode == ktfFileWrite {
 			file.position = uint32(len(data))
 		}
@@ -10159,7 +10448,7 @@ func (r *ktfRuntime) handleFileMethod(
 		var data []byte
 		if file := r.files[fileInstance]; file != nil {
 			data, err = r.services.Storage.ReadFile(
-				shared.NamespacePrivate,
+				ktfFileNamespace(file),
 				file.name,
 			)
 			if err != nil {
@@ -10192,7 +10481,7 @@ func (r *ktfRuntime) handleFileMethod(
 		}
 		if file := r.files[instance]; file != nil {
 			info, err := r.services.Storage.Stat(
-				shared.NamespacePrivate,
+				ktfFileNamespace(file),
 				file.name,
 			)
 			if err != nil {
@@ -10226,6 +10515,28 @@ func (r *ktfRuntime) handleFileMethod(
 			file.position = position
 		}
 		return 0, nil
+	case "tell()I":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		if file := r.files[instance]; file != nil {
+			return file.position, nil
+		}
+		return 0, nil
+	case "read()I":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		data, err := r.readKTFFileBytes(instance, 1)
+		if err != nil {
+			return 0, err
+		}
+		if len(data) == 0 {
+			return ^uint32(0), nil
+		}
+		return uint32(data[0]), nil
 	case "read([B)I", "read([BII)I":
 		instance, err := r.parameter(1)
 		if err != nil {
@@ -10311,10 +10622,6 @@ func normalizeKTFFileName(filename string) string {
 func (r *ktfRuntime) readKTFFile(
 	instance, array, offset, count uint32,
 ) (uint32, error) {
-	file := r.files[instance]
-	if file == nil {
-		return ^uint32(0), nil
-	}
 	length, err := r.javaArrayLength(array)
 	if err != nil {
 		return 0, err
@@ -10330,15 +10637,7 @@ func (r *ktfRuntime) readKTFFile(
 	if count == 0 {
 		return 0, nil
 	}
-	serviceID, err := r.ensureKTFFileService(instance)
-	if err != nil {
-		return 0, err
-	}
-	data, err := r.services.Storage.Read(
-		r.serviceOwner,
-		serviceID,
-		uint64(count),
-	)
+	data, err := r.readKTFFileBytes(instance, count)
 	if err != nil {
 		return 0, err
 	}
@@ -10356,9 +10655,31 @@ func (r *ktfRuntime) readKTFFile(
 	); err != nil {
 		return 0, err
 	}
-	file.position += count
-	r.tracef("java_file_read:%s:%d", file.name, count)
 	return count, nil
+}
+
+func (r *ktfRuntime) readKTFFileBytes(
+	instance, count uint32,
+) ([]byte, error) {
+	file := r.files[instance]
+	if file == nil || count == 0 {
+		return nil, nil
+	}
+	serviceID, err := r.ensureKTFFileService(instance)
+	if err != nil {
+		return nil, err
+	}
+	data, err := r.services.Storage.Read(
+		r.serviceOwner,
+		serviceID,
+		uint64(count),
+	)
+	if err != nil {
+		return nil, err
+	}
+	file.position += uint32(len(data))
+	r.tracef("java_file_read:%s:%d", file.name, len(data))
+	return data, nil
 }
 
 func (r *ktfRuntime) writeKTFFile(
@@ -10367,7 +10688,10 @@ func (r *ktfRuntime) writeKTFFile(
 ) (uint32, error) {
 	file := r.files[instance]
 	if file == nil {
-		file = &ktfFile{name: fmt.Sprintf("/unnamed-%08x", instance)}
+		file = &ktfFile{
+			namespace: shared.NamespacePrivate,
+			name:      fmt.Sprintf("/unnamed-%08x", instance),
+		}
 		r.files[instance] = file
 	}
 	end := uint64(file.position) + uint64(len(data))
@@ -10394,13 +10718,15 @@ func (r *ktfRuntime) writeKTFFile(
 		)
 	}
 	stored, err := r.services.Storage.ReadFile(
-		shared.NamespacePrivate,
+		ktfFileNamespace(file),
 		file.name,
 	)
 	if err != nil {
 		return 0, err
 	}
-	r.fileData[file.name] = stored
+	if ktfFileNamespace(file) == shared.NamespacePrivate {
+		r.fileData[file.name] = stored
+	}
 	file.position = uint32(end)
 	r.tracef("java_file_write:%s:%d", file.name, len(data))
 	return uint32(len(data)), nil
@@ -10416,13 +10742,14 @@ func (r *ktfRuntime) ensureKTFFileService(
 	if file == nil {
 		return 0, fmt.Errorf("KTF file object 0x%08x is missing", instance)
 	}
+	namespace := ktfFileNamespace(file)
 	if _, err := r.services.Storage.Stat(
-		shared.NamespacePrivate,
+		namespace,
 		file.name,
 	); err != nil {
-		if data, ok := r.fileData[file.name]; ok {
+		if data, ok := r.fileData[file.name]; namespace == shared.NamespacePrivate && ok {
 			if err := r.services.Storage.WriteFile(
-				shared.NamespacePrivate,
+				namespace,
 				file.name,
 				data,
 			); err != nil {
@@ -10436,7 +10763,7 @@ func (r *ktfRuntime) ensureKTFFileService(
 	}
 	serviceID, err := r.services.Storage.Open(
 		r.serviceOwner,
-		shared.NamespacePrivate,
+		namespace,
 		file.name,
 		mode,
 	)
@@ -10456,29 +10783,154 @@ func (r *ktfRuntime) ensureKTFFileService(
 	return serviceID, nil
 }
 
+func ktfFileNamespace(file *ktfFile) shared.Namespace {
+	if file != nil && file.namespace.Valid() {
+		return file.namespace
+	}
+	return shared.NamespacePrivate
+}
+
+func (r *ktfRuntime) ktfStorageNamespace(
+	flag uint32,
+) (shared.Namespace, error) {
+	switch flag {
+	case 1:
+		return shared.NamespacePrivate, nil
+	case 2:
+		return shared.NamespaceShared, nil
+	case 3:
+		return shared.NamespacePackage, nil
+	default:
+		return 0, r.raiseHostJavaException("java/lang/SecurityException")
+	}
+}
+
 func (r *ktfRuntime) handleFileSystemMethod(
 	name, descriptor string,
 ) (uint32, error) {
 	switch name + descriptor {
-	case "exists(Ljava/lang/String;)Z",
-		"exists(Ljava/lang/String;I)Z",
-		"isFile(Ljava/lang/String;)Z",
-		"isFile(Ljava/lang/String;I)Z":
+	case "<init>()V":
+		return 0, nil
+	case "getMaxFilenameLength()I":
+		return uint32(min(
+			r.services.Config.Limits.Storage.MaxPathBytes,
+			uint32(math.MaxInt32),
+		)), nil
+	case "list(Ljava/lang/String;)Ljava/util/Vector;",
+		"list(Ljava/lang/String;I)Ljava/util/Vector;":
 		nameAddress, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		namespace, err := r.ktfFileSystemNamespace(descriptor, 2)
+		if err != nil {
+			return 0, err
+		}
+		directory := normalizeKTFFileName(r.javaStringValue(nameAddress))
+		entries, err := r.services.Storage.List(namespace, directory)
+		if err != nil {
+			return 0, r.raiseHostJavaException("java/io/IOException")
+		}
+		values := make([]uint32, 0, len(entries))
+		for _, entry := range entries {
+			value, valueErr := r.newJavaString(entry)
+			if valueErr != nil {
+				return 0, valueErr
+			}
+			values = append(values, value)
+		}
+		vector, err := r.newHostJavaObject("java/util/Vector")
+		if err != nil {
+			return 0, err
+		}
+		r.vectors[vector] = values
+		return vector, nil
+	case "exists(Ljava/lang/String;)Z",
+		"exists(Ljava/lang/String;I)Z":
+		nameAddress, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		namespace, err := r.ktfFileSystemNamespace(descriptor, 2)
 		if err != nil {
 			return 0, err
 		}
 		filename := normalizeKTFFileName(r.javaStringValue(nameAddress))
 		if _, err := r.services.Storage.Stat(
-			shared.NamespacePrivate,
+			namespace,
 			filename,
 		); err == nil {
 			return 1, nil
 		}
+		return boolWord(r.services.Storage.DirectoryExists(namespace, filename)), nil
+	case "isFile(Ljava/lang/String;)Z",
+		"isFile(Ljava/lang/String;I)Z":
+		nameAddress, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		namespace, err := r.ktfFileSystemNamespace(descriptor, 2)
+		if err != nil {
+			return 0, err
+		}
+		filename := normalizeKTFFileName(r.javaStringValue(nameAddress))
+		if _, err := r.services.Storage.Stat(namespace, filename); err == nil {
+			return 1, nil
+		}
+		return 0, nil
+	case "isDirectory(Ljava/lang/String;)Z",
+		"isDirectory(Ljava/lang/String;I)Z":
+		nameAddress, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		namespace, err := r.ktfFileSystemNamespace(descriptor, 2)
+		if err != nil {
+			return 0, err
+		}
+		filename := normalizeKTFFileName(r.javaStringValue(nameAddress))
+		return boolWord(
+			r.services.Storage.DirectoryExists(namespace, filename),
+		), nil
+	case "mkdir(Ljava/lang/String;)V",
+		"mkdir(Ljava/lang/String;I)V":
+		nameAddress, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		namespace, err := r.ktfFileSystemNamespace(descriptor, 2)
+		if err != nil {
+			return 0, err
+		}
+		directory := normalizeKTFFileName(r.javaStringValue(nameAddress))
+		if err := r.services.Storage.MakeDirectory(namespace, directory); err != nil {
+			return 0, r.raiseHostJavaException("java/io/IOException")
+		}
+		r.tracef("java_directory_make:%s:%s", namespace, directory)
+		return 0, nil
+	case "rmdir(Ljava/lang/String;)V",
+		"rmdir(Ljava/lang/String;I)V":
+		nameAddress, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		namespace, err := r.ktfFileSystemNamespace(descriptor, 2)
+		if err != nil {
+			return 0, err
+		}
+		directory := normalizeKTFFileName(r.javaStringValue(nameAddress))
+		if err := r.services.Storage.RemoveDirectory(namespace, directory); err != nil {
+			return 0, r.raiseHostJavaException("java/io/IOException")
+		}
+		r.tracef("java_directory_remove:%s:%s", namespace, directory)
 		return 0, nil
 	case "remove(Ljava/lang/String;)V",
 		"remove(Ljava/lang/String;I)V":
 		nameAddress, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		namespace, err := r.ktfFileSystemNamespace(descriptor, 2)
 		if err != nil {
 			return 0, err
 		}
@@ -10490,7 +10942,8 @@ func (r *ktfRuntime) handleFileSystemMethod(
 		// no-delete-while-open invariant.
 		var instances []uint32
 		for instance, file := range r.files {
-			if file != nil && file.name == filename && !file.closed {
+			if file != nil && ktfFileNamespace(file) == namespace &&
+				file.name == filename && !file.closed {
 				instances = append(instances, instance)
 			}
 		}
@@ -10508,17 +10961,76 @@ func (r *ktfRuntime) handleFileSystemMethod(
 			r.files[instance].closed = true
 		}
 		if err := r.services.Storage.Delete(
-			shared.NamespacePrivate,
+			namespace,
 			filename,
 		); err != nil && !errors.Is(err, shared.ErrNotFound) {
 			return 0, err
 		}
-		delete(r.fileData, filename)
+		if namespace == shared.NamespacePrivate {
+			delete(r.fileData, filename)
+		}
 		r.tracef(
 			"java_file_remove:%s:closed=%d",
 			filename,
 			len(instances),
 		)
+		return 0, nil
+	case "toCString(Ljava/lang/String;)[B":
+		nameAddress, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		value := append([]byte(r.javaStringValue(nameAddress)), 0)
+		return r.newJavaByteArray(value)
+	case "getCreationTime(Ljava/lang/String;)I",
+		"getCreationTime(Ljava/lang/String;I)I":
+		nameAddress, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		namespace, err := r.ktfFileSystemNamespace(descriptor, 2)
+		if err != nil {
+			return 0, err
+		}
+		filename := normalizeKTFFileName(r.javaStringValue(nameAddress))
+		info, err := r.services.Storage.Stat(namespace, filename)
+		if err != nil {
+			return ^uint32(0), nil
+		}
+		seconds := info.Modified / time.Second
+		return uint32(min(seconds, time.Duration(math.MaxInt32))), nil
+	case "rename(Ljava/lang/String;Ljava/lang/String;)V",
+		"rename(Ljava/lang/String;Ljava/lang/String;I)V":
+		oldAddress, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		newAddress, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		namespace, err := r.ktfFileSystemNamespace(descriptor, 3)
+		if err != nil {
+			return 0, err
+		}
+		oldName := normalizeKTFFileName(r.javaStringValue(oldAddress))
+		newName := normalizeKTFFileName(r.javaStringValue(newAddress))
+		if err := r.services.Storage.Rename(namespace, oldName, newName); err != nil {
+			return 0, r.raiseHostJavaException("java/io/IOException")
+		}
+		for _, file := range r.files {
+			if file != nil && ktfFileNamespace(file) == namespace &&
+				file.name == oldName {
+				file.name = newName
+			}
+		}
+		if namespace == shared.NamespacePrivate {
+			if data, ok := r.fileData[oldName]; ok {
+				delete(r.fileData, oldName)
+				r.fileData[newName] = data
+			}
+		}
+		r.tracef("java_file_rename:%s:%s->%s", namespace, oldName, newName)
 		return 0, nil
 	case "getFreeSpace()J":
 		return r.javaLongResult(r.ktfFreeStorageBytes()), nil
@@ -10530,6 +11042,20 @@ func (r *ktfRuntime) handleFileSystemMethod(
 		r.recordUnimplementedJava("org/kwis/msp/io/FileSystem", name, descriptor)
 		return 0, nil
 	}
+}
+
+func (r *ktfRuntime) ktfFileSystemNamespace(
+	descriptor string,
+	flagParameter uint32,
+) (shared.Namespace, error) {
+	if !strings.Contains(descriptor, ";I") {
+		return shared.NamespacePrivate, nil
+	}
+	flag, err := r.parameter(flagParameter)
+	if err != nil {
+		return 0, err
+	}
+	return r.ktfStorageNamespace(flag)
 }
 
 func (r *ktfRuntime) ktfFreeStorageBytes() uint64 {
@@ -13573,10 +14099,20 @@ func ktfWIPICHandler(table, slot int) ktfHostHandler {
 			return ktfWIPICGraphicsCopyFramebuffer
 		case 13:
 			return ktfWIPICGraphicsDrawImage
+		case 14:
+			return ktfWIPICGraphicsCopyArea
+		case 15:
+			return ktfWIPICGraphicsDrawArc
+		case 16:
+			return ktfWIPICGraphicsFillArc
 		case 17:
 			return ktfWIPICGraphicsDrawString
 		case 18:
 			return ktfWIPICGraphicsDrawUnicodeString
+		case 19:
+			return ktfWIPICGraphicsGetRGBPixels
+		case 20:
+			return ktfWIPICGraphicsSetRGBPixels
 		case 21:
 			return ktfWIPICGraphicsFlushLCD
 		case 22:
@@ -13603,8 +14139,16 @@ func ktfWIPICHandler(table, slot int) ktfHostHandler {
 			return ktfWIPICGraphicsCreateImage
 		case 33:
 			return ktfWIPICGraphicsDestroyImage
+		case 34:
+			return ktfWIPICGraphicsDecodeNextImage
 		case 35:
 			return ktfWIPICGraphicsEncodeImage
+		case 36:
+			return ktfWIPICGraphicsPostEvent
+		case 37:
+			return ktfWIPICGraphicsDrawPolygon
+		case 38:
+			return ktfWIPICGraphicsDrawFillPolygon
 		}
 	}
 	if table == ktfWIPICMasterFS {
@@ -14100,7 +14644,11 @@ func ktfWIPICFileOpen(
 		handle++
 	}
 	runtime.nextWIPICFile = handle + 1
-	file := &ktfFile{name: name, mode: flag}
+	file := &ktfFile{
+		namespace: shared.NamespacePrivate,
+		name:      name,
+		mode:      flag,
+	}
 	if flag == ktfWIPICFileWriteOnly {
 		file.position = uint32(len(data))
 	}
@@ -14678,37 +15226,10 @@ func ktfWIPICGraphicsCreateImage(
 		_ = runtime.services.Assets.Release(runtime.serviceOwner, assetID)
 		return 0, err
 	}
-	framebuffer := runtime.wipicFramebuffers[framebufferObject]
-	rgba, err := runtime.services.Graphics.RGBA(
-		runtime.serviceOwner,
+	if err := runtime.paintWIPICImageFrame(
+		framebufferObject,
 		asset.Frames[0].Surface,
-	)
-	if err != nil {
-		_ = runtime.services.Assets.Release(runtime.serviceOwner, assetID)
-		return 0, err
-	}
-	pixels := make([]byte, framebuffer.stride*framebuffer.height)
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
-			offset := (y*width + x) * 4
-			alpha := uint32(rgba[offset+3])
-			red := uint32(rgba[offset+0]) * alpha / 0xff
-			green := uint32(rgba[offset+1]) * alpha / 0xff
-			blue := uint32(rgba[offset+2]) * alpha / 0xff
-			value := uint16(red>>3)<<11 |
-				uint16(green>>2)<<5 |
-				uint16(blue>>3)
-			binary.LittleEndian.PutUint16(
-				pixels[y*framebuffer.stride+x*2:],
-				value,
-			)
-		}
-	}
-	if err := runtime.cpu.WriteMemory(framebuffer.pixels, pixels); err != nil {
-		_ = runtime.services.Assets.Release(runtime.serviceOwner, assetID)
-		return 0, err
-	}
-	if err := runtime.syncKTFWIPICFramebuffer(framebufferObject); err != nil {
+	); err != nil {
 		_ = runtime.services.Assets.Release(runtime.serviceOwner, assetID)
 		return 0, err
 	}
@@ -15258,6 +15779,18 @@ func (r *ktfRuntime) drawWIPICLine(
 	x1, y1, x2, y2 int,
 	state ktfWIPICGraphicsContext,
 ) error {
+	var visible bool
+	x1, y1, x2, y2, visible = r.clipWIPICLine(
+		handle,
+		x1,
+		y1,
+		x2,
+		y2,
+		state,
+	)
+	if !visible {
+		return nil
+	}
 	dx := abs(x2 - x1)
 	dy := -abs(y2 - y1)
 	stepX, stepY := -1, -1
@@ -15397,7 +15930,7 @@ func ktfWIPICGraphicsCopyFramebuffer(
 	_ context.Context,
 	runtime *ktfRuntime,
 ) (uint32, error) {
-	values := make([]uint32, 8)
+	values := make([]uint32, 9)
 	for index := range values {
 		value, err := runtime.parameter(uint32(index))
 		if err != nil {
@@ -15405,79 +15938,22 @@ func ktfWIPICGraphicsCopyFramebuffer(
 		}
 		values[index] = value
 	}
-	destination := runtime.wipicFramebuffers[values[0]]
-	source := runtime.wipicFramebuffers[values[5]]
-	if destination == nil || source == nil {
-		return 0, nil
+	state, err := runtime.wipicGraphicsContext(values[8])
+	if err != nil {
+		return 0, err
 	}
-	dx, dy := int64(int32(values[1])), int64(int32(values[2]))
-	width, height := int64(int32(values[3])), int64(int32(values[4]))
-	sx, sy := int64(int32(values[6])), int64(int32(values[7]))
-	if width <= 0 || height <= 0 {
-		return 0, nil
-	}
-	if sx < 0 {
-		delta := -sx
-		sx = 0
-		dx += delta
-		width -= delta
-	}
-	if sy < 0 {
-		delta := -sy
-		sy = 0
-		dy += delta
-		height -= delta
-	}
-	if dx < 0 {
-		delta := -dx
-		dx = 0
-		sx += delta
-		width -= delta
-	}
-	if dy < 0 {
-		delta := -dy
-		dy = 0
-		sy += delta
-		height -= delta
-	}
-	width = min(
-		width,
-		int64(source.width)-sx,
-		int64(destination.width)-dx,
-	)
-	height = min(
-		height,
-		int64(source.height)-sy,
-		int64(destination.height)-dy,
-	)
-	if width <= 0 || height <= 0 {
-		return 0, nil
-	}
-	byteCount := width * height * 2
-	if byteCount > 32<<20 {
-		return 0, errors.New("KTF WIPI-C framebuffer copy exceeds 32 MiB")
-	}
-	data := make([]byte, int(byteCount))
-	rowBytes := int(width * 2)
-	for row := int64(0); row < height; row++ {
-		sourceAddress := source.pixels +
-			uint32((sy+row)*int64(source.stride)+sx*2)
-		if err := runtime.cpu.ReadMemory(
-			sourceAddress,
-			data[int(row)*rowBytes:(int(row)+1)*rowBytes],
-		); err != nil {
-			return 0, err
-		}
-	}
-	for row := int64(0); row < height; row++ {
-		destinationAddress := destination.pixels +
-			uint32((dy+row)*int64(destination.stride)+dx*2)
-		if err := runtime.cpu.WriteMemory(
-			destinationAddress,
-			data[int(row)*rowBytes:(int(row)+1)*rowBytes],
-		); err != nil {
-			return 0, err
-		}
+	if err := runtime.blitWIPICFramebuffer(
+		values[0],
+		values[5],
+		int64(int32(values[1]))+int64(state.offsetX),
+		int64(int32(values[2]))+int64(state.offsetY),
+		int64(int32(values[3])),
+		int64(int32(values[4])),
+		int64(int32(values[6])),
+		int64(int32(values[7])),
+		state,
+	); err != nil {
+		return 0, err
 	}
 	return 0, runtime.syncKTFWIPICFramebuffer(values[0])
 }
@@ -15564,16 +16040,34 @@ func (r *ktfRuntime) blitWIPICFramebuffer(
 		return nil
 	}
 	rowBytes := int(right-left) * 2
-	row := make([]byte, rowBytes)
+	rowCount := int(bottom - top)
+	byteCount := int64(rowBytes) * int64(rowCount)
+	if byteCount > 32<<20 {
+		return errors.New("KTF WIPI-C framebuffer copy exceeds 32 MiB")
+	}
+	// Read the entire source rectangle before writing any destination row.
+	// CopyArea commonly moves pixels inside one framebuffer and must have
+	// memmove semantics for vertical as well as horizontal overlap.
+	data := make([]byte, int(byteCount))
 	for y := top; y < bottom; y++ {
 		sourceAddress := source.pixels +
 			uint32((sy+y-dy)*int64(source.stride)+(sx+left-dx)*2)
-		if err := r.cpu.ReadMemory(sourceAddress, row); err != nil {
+		rowOffset := int(y-top) * rowBytes
+		if err := r.cpu.ReadMemory(
+			sourceAddress,
+			data[rowOffset:rowOffset+rowBytes],
+		); err != nil {
 			return err
 		}
+	}
+	for y := top; y < bottom; y++ {
 		destinationAddress := destination.pixels +
 			uint32(y*int64(destination.stride)+left*2)
-		if err := r.cpu.WriteMemory(destinationAddress, row); err != nil {
+		rowOffset := int(y-top) * rowBytes
+		if err := r.cpu.WriteMemory(
+			destinationAddress,
+			data[rowOffset:rowOffset+rowBytes],
+		); err != nil {
 			return err
 		}
 	}
@@ -15584,6 +16078,15 @@ func (r *ktfRuntime) writeWIPICPixel(
 	handle uint32,
 	x, y int,
 	state ktfWIPICGraphicsContext,
+) error {
+	return r.writeWIPICPixelValue(handle, x, y, state, state.foreground)
+}
+
+func (r *ktfRuntime) writeWIPICPixelValue(
+	handle uint32,
+	x, y int,
+	state ktfWIPICGraphicsContext,
+	value uint16,
 ) error {
 	framebuffer := r.wipicFramebuffers[handle]
 	if framebuffer == nil ||
@@ -15597,7 +16100,7 @@ func (r *ktfRuntime) writeWIPICPixel(
 		return nil
 	}
 	var encoded [2]byte
-	binary.LittleEndian.PutUint16(encoded[:], state.foreground)
+	binary.LittleEndian.PutUint16(encoded[:], value)
 	return r.cpu.WriteMemory(
 		framebuffer.pixels+uint32(y*framebuffer.stride+x*2),
 		encoded[:],

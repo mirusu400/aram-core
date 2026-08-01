@@ -199,9 +199,14 @@ type ktfLWCSnapshot struct {
 	PreferredWidth, PreferredHeight      int32
 	Background, Foreground, Parent, Card uint32
 	Title, Command, Work, Focus, Text    uint32
-	Gap                                  int32
+	Gap, ProgressValue, ProgressMax      int32
+	ProgressStep, ProgressTop            int32
+	ProgressBottom, DialogType           int32
+	DialogTimeout, DialogAction          int32
+	DialogOK, DialogCancel               uint32
 	Shown, Valid, Focused                bool
-	Vertical, Packed                     bool
+	Vertical, Packed, Annunciator        bool
+	Transparent, ProgressInput           bool
 }
 
 type ktfDatabaseSnapshot struct {
@@ -217,10 +222,11 @@ type ktfInputStreamSnapshot struct {
 }
 
 type ktfFileSnapshot struct {
-	Name     string
-	Position uint32
-	Mode     uint32
-	Closed   bool
+	Namespace uint8
+	Name      string
+	Position  uint32
+	Mode      uint32
+	Closed    bool
 }
 
 type ktfGraphicsSnapshot struct {
@@ -239,6 +245,7 @@ type ktfWIPICFramebufferSnapshot struct {
 
 type ktfWIPICImageSnapshot struct {
 	Object, Body, Framebuffer, Source uint32
+	FrameIndex                        uint32
 }
 
 type ktfWIPICMemorySnapshot struct {
@@ -913,6 +920,7 @@ func snapshotKTFMetadata(
 			meta.WIPICImages[object] = ktfWIPICImageSnapshot{
 				Object: value.object, Body: value.body,
 				Framebuffer: value.framebuffer, Source: value.source,
+				FrameIndex: value.frameIndex,
 			}
 		}
 	}
@@ -1068,6 +1076,14 @@ func snapshotKTFLWC(value *ktfLWCComponent) ktfLWCSnapshot {
 		Text: value.text, Gap: value.gap, Shown: value.shown,
 		Valid: value.valid, Focused: value.focused,
 		Vertical: value.vertical, Packed: value.packed,
+		Annunciator: value.annunciator, Transparent: value.transparent,
+		ProgressValue: value.progressValue,
+		ProgressMax:   value.progressMax, ProgressStep: value.progressStep,
+		ProgressTop: value.progressTop, ProgressBottom: value.progressBottom,
+		DialogType: value.dialogType, DialogTimeout: value.dialogTimeout,
+		DialogAction: value.dialogAction,
+		DialogOK:     value.dialogOK, DialogCancel: value.dialogCancel,
+		ProgressInput: value.progressInput,
 	}
 }
 
@@ -1084,7 +1100,8 @@ func snapshotKTFFiles(values map[uint32]*ktfFile) map[uint32]ktfFileSnapshot {
 	for handle, file := range values {
 		if file != nil {
 			result[handle] = ktfFileSnapshot{
-				Name: file.name, Position: file.position,
+				Namespace: uint8(file.namespace),
+				Name:      file.name, Position: file.position,
 				Mode: file.mode, Closed: file.closed,
 			}
 		}
@@ -1267,10 +1284,15 @@ func validateKTFMetadata(
 		}
 	}
 	for object, value := range meta.WIPICImages {
+		assetID := meta.WIPICAssetServices[object]
 		if object == 0 || value.Object != object ||
 			meta.WIPICFramebuffers[value.Framebuffer].Object == 0 ||
-			meta.WIPICAssetServices[object] == 0 {
+			assetID == 0 {
 			return fmt.Errorf("invalid WIPI-C image 0x%08x", object)
+		}
+		asset, err := services.Assets.Info(owner, assetID)
+		if err != nil || value.FrameIndex >= uint32(len(asset.Frames)) {
+			return fmt.Errorf("invalid WIPI-C image 0x%08x frame", object)
 		}
 	}
 	for instance, name := range meta.Databases {
@@ -1632,6 +1654,7 @@ func (m *Machine) restoreKTFState(saved *ktfSavedState) error {
 		r.wipicImages[object] = &ktfWIPICImage{
 			object: value.Object, body: value.Body,
 			framebuffer: value.Framebuffer, source: value.Source,
+			frameIndex: value.FrameIndex,
 		}
 	}
 	r.wipicResources = cloneKTFUint32BytesMap(meta.WIPICResources)
@@ -1746,6 +1769,14 @@ func restoreKTFLWC(value ktfLWCSnapshot) *ktfLWCComponent {
 		text: value.Text, gap: value.Gap, shown: value.Shown,
 		valid: value.Valid, focused: value.Focused,
 		vertical: value.Vertical, packed: value.Packed,
+		annunciator: value.Annunciator, transparent: value.Transparent,
+		progressValue: value.ProgressValue,
+		progressMax:   value.ProgressMax, progressStep: value.ProgressStep,
+		progressTop: value.ProgressTop, progressBottom: value.ProgressBottom,
+		dialogType: value.DialogType, dialogTimeout: value.DialogTimeout,
+		dialogAction: value.DialogAction,
+		dialogOK:     value.DialogOK, dialogCancel: value.DialogCancel,
+		progressInput: value.ProgressInput,
 	}
 }
 
@@ -1760,8 +1791,13 @@ func restoreKTFDatabase(value ktfDatabaseSnapshot) *ktfDatabase {
 func restoreKTFFiles(values map[uint32]ktfFileSnapshot) map[uint32]*ktfFile {
 	result := make(map[uint32]*ktfFile, len(values))
 	for handle, file := range values {
+		namespace := shared.Namespace(file.Namespace)
+		if !namespace.Valid() {
+			namespace = shared.NamespacePrivate
+		}
 		result[handle] = &ktfFile{
-			name: file.Name, position: file.Position,
+			namespace: namespace,
+			name:      file.Name, position: file.Position,
 			mode: file.Mode, closed: file.Closed,
 		}
 	}
