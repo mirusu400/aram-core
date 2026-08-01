@@ -697,16 +697,19 @@ func rasterHandsetGlyph(
 		sourceY := y * handsetGlyphSourceHeight / height
 		for x := int32(0); x < width; x++ {
 			sourceX := x * sourceWidth / width
-			if handsetBitmapPixel(bitmap, sourceX, sourceY) {
-				glyph.Alpha[y*width+x] = 0xff
-			}
+			glyph.Alpha[y*width+x] = handsetBitmapAlpha(
+				bitmap,
+				sourceX,
+				sourceY,
+			)
 		}
 	}
 	if descriptor.Style&FontBold != 0 {
 		for y := int32(0); y < glyph.Height; y++ {
 			for x := glyph.Width - 1; x > 0; x-- {
-				if glyph.Alpha[y*glyph.Width+x-1] != 0 {
-					glyph.Alpha[y*glyph.Width+x] = 0xff
+				previous := glyph.Alpha[y*glyph.Width+x-1]
+				if previous > glyph.Alpha[y*glyph.Width+x] {
+					glyph.Alpha[y*glyph.Width+x] = previous
 				}
 			}
 		}

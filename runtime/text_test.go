@@ -122,7 +122,7 @@ func TestTextRasterizesReadableDoubleWidthHangul(t *testing.T) {
 	}
 }
 
-func TestTextHandsetGlyphsPreserveEdgeStrokesAndSymbols(t *testing.T) {
+func TestTextHandsetGlyphsPreserveAntialiasedEdgesAndSymbols(t *testing.T) {
 	services, err := NewServices(Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -135,10 +135,26 @@ func TestTextHandsetGlyphsPreserveEdgeStrokesAndSymbols(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, offset := range []int{8, 9, 10*12 + 8, 10*12 + 9} {
-		if ga.Alpha[offset] != 0xff {
-			t.Fatalf("monochrome-hinted Hangul edge stroke %d is missing", offset)
+	for offset, want := range map[int]byte{
+		8: 0x22, 9: 0x44, 10*12 + 8: 0x44, 10*12 + 9: 0x88,
+	} {
+		if ga.Alpha[offset] != want {
+			t.Fatalf(
+				"antialiased Hangul edge stroke %d = %02x, want %02x",
+				offset,
+				ga.Alpha[offset],
+				want,
+			)
 		}
+	}
+	partial := 0
+	for _, alpha := range ga.Alpha {
+		if alpha != 0 && alpha != 0xff {
+			partial++
+		}
+	}
+	if partial < 20 {
+		t.Fatalf("Hangul glyph has only %d antialiased edge pixels", partial)
 	}
 	exclamation, err := services.Text.Glyph(1, font, '!')
 	if err != nil {
@@ -173,6 +189,67 @@ func TestTextHandsetGlyphsPreserveEdgeStrokesAndSymbols(t *testing.T) {
 	}
 	if width != 42 {
 		t.Fatalf("symbol-rich handset text width = %d, want 42", width)
+	}
+}
+
+func TestTextDrawsReadableAntialiasedHandsetDialogue(t *testing.T) {
+	services, err := NewServices(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	font, err := services.Text.CreateFont(1, FontDescriptor{Size: 12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const dialogue = "\uc5b4\ub9b0! \uc544\uc774\ub9b0!"
+	width, err := services.Text.Measure(1, font, dialogue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if width != 78 {
+		t.Fatalf("reported dialogue width = %d, want 78", width)
+	}
+	surface, err := services.Graphics.CreateSurface(1, SurfaceDescriptor{
+		Width: 96, Height: 16, Format: PixelRGBA8888,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := services.Graphics.Clear(1, surface, RGB(0, 0, 64)); err != nil {
+		t.Fatal(err)
+	}
+	if err := services.Text.Draw(
+		1,
+		font,
+		surface,
+		dialogue,
+		0,
+		0,
+		AnchorLeft|AnchorTop,
+		RGB(255, 255, 255),
+	); err != nil {
+		t.Fatal(err)
+	}
+	pixels, err := services.Graphics.RGBA(1, surface)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opaque, antialiased := 0, 0
+	for offset := 0; offset < len(pixels); offset += 4 {
+		red, green, blue := pixels[offset], pixels[offset+1], pixels[offset+2]
+		switch {
+		case red == 0xff && green == 0xff && blue == 0xff:
+			opaque++
+		case red != 0 && red == green && blue > red:
+			antialiased++
+		}
+	}
+	if opaque < 50 || antialiased < 100 {
+		t.Fatalf(
+			"reported dialogue has %d opaque and %d antialiased pixels",
+			opaque,
+			antialiased,
+		)
 	}
 }
 

@@ -7394,7 +7394,7 @@ func TestKTFWIPICDrawStringPaintsMeasuredRun(t *testing.T) {
 	if err := runtime.cpu.ReadMemory(framebuffer.pixels, pixels); err != nil {
 		t.Fatal(err)
 	}
-	painted, right := 0, 0
+	painted, antialiased, right := 0, 0, 0
 	for y := 0; y < framebuffer.height; y++ {
 		for x := 0; x < framebuffer.width; x++ {
 			value := binary.LittleEndian.Uint16(
@@ -7403,15 +7403,21 @@ func TestKTFWIPICDrawStringPaintsMeasuredRun(t *testing.T) {
 			if value == 0 {
 				continue
 			}
-			if value != 0xf800 {
-				t.Fatalf("glyph pixel at %d,%d = %04x", x, y, value)
+			if value&0x07ff != 0 {
+				t.Fatalf("glyph pixel at %d,%d is not red: %04x", x, y, value)
 			}
 			painted++
+			if value != 0xf800 {
+				antialiased++
+			}
 			right = max(right, x)
 		}
 	}
 	if painted == 0 {
 		t.Fatal("drawn EUC-KR run painted no pixels")
+	}
+	if antialiased == 0 {
+		t.Fatal("drawn EUC-KR run has no antialiased edge pixels")
 	}
 	if right >= 1+int(width) {
 		t.Fatalf("run reached x=%d beyond measured width %d", right, width)

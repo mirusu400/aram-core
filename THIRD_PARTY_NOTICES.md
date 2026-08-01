@@ -25,7 +25,7 @@ Licensed under the MIT License. A copy is provided at
 
 ## ARAM handset Hangul bitmap
 
-The compressed 12x12 Hangul and symbol glyph data in
+The compressed antialiased 12x12 Hangul and symbol glyph data in
 `runtime/hangul_bitmap.go` was generated from NeoDunggeunmo. The derived
 bitmap uses the neutral "ARAM handset bitmap" name rather than a reserved
 font name.

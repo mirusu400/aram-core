@@ -16093,6 +16093,55 @@ func (r *ktfRuntime) writeWIPICPixelValue(
 	)
 }
 
+func (r *ktfRuntime) writeWIPICPixelAlpha(
+	handle uint32,
+	x, y int,
+	state ktfWIPICGraphicsContext,
+	alpha byte,
+) error {
+	if alpha == 0 {
+		return nil
+	}
+	if alpha == 0xff {
+		return r.writeWIPICPixel(handle, x, y, state)
+	}
+	framebuffer := r.wipicFramebuffers[handle]
+	if framebuffer == nil ||
+		x < 0 || y < 0 ||
+		x >= framebuffer.width || y >= framebuffer.height {
+		return nil
+	}
+	if state.clipEnabled &&
+		(x < state.left || y < state.top ||
+			x >= state.right || y >= state.bottom) {
+		return nil
+	}
+	address := framebuffer.pixels + uint32(y*framebuffer.stride+x*2)
+	var encoded [2]byte
+	if err := r.cpu.ReadMemory(address, encoded[:]); err != nil {
+		return err
+	}
+	destination := binary.LittleEndian.Uint16(encoded[:])
+	binary.LittleEndian.PutUint16(
+		encoded[:],
+		blendKTFWIPICRGB565(destination, state.foreground, alpha),
+	)
+	return r.cpu.WriteMemory(address, encoded[:])
+}
+
+func blendKTFWIPICRGB565(destination, source uint16, alpha byte) uint16 {
+	blend := func(destination, source uint16) uint16 {
+		coverage := uint32(alpha)
+		return uint16(
+			(uint32(source)*coverage +
+				uint32(destination)*(0xff-coverage) + 127) / 0xff,
+		)
+	}
+	return blend(destination>>11, source>>11)<<11 |
+		blend(destination>>5&0x3f, source>>5&0x3f)<<5 |
+		blend(destination&0x1f, source&0x1f)
+}
+
 // KTF hands WIPI-C text to the same shared fallback font the Java surface
 // draws with, so a Clet that measures a run and then paints it observes one
 // set of advances. Glyphs are blitted straight into the guest framebuffer
@@ -16173,14 +16222,16 @@ func (r *ktfRuntime) drawWIPICGlyphs(
 		}
 		for row := int32(0); row < glyph.Height; row++ {
 			for column := int32(0); column < glyph.Width; column++ {
-				if glyph.Alpha[row*glyph.Width+column] == 0 {
+				alpha := glyph.Alpha[row*glyph.Width+column]
+				if alpha == 0 {
 					continue
 				}
-				if err := r.writeWIPICPixel(
+				if err := r.writeWIPICPixelAlpha(
 					handle,
 					cursor+int(glyph.BearingX+column),
 					y+int(glyph.BearingY+row),
 					state,
+					alpha,
 				); err != nil {
 					return err
 				}
