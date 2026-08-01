@@ -8935,9 +8935,15 @@ func (r *ktfRuntime) handleInputStreamReaderMethod(
 		if stream == nil || stream.position >= uint32(len(stream.data)) {
 			return ^uint32(0), nil
 		}
-		value := stream.data[stream.position]
-		stream.position++
-		return uint32(value), nil
+		characters, next, valueErr := r.decodeInputStreamReaderChars(stream, 1)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if len(characters) == 0 {
+			return ^uint32(0), nil
+		}
+		stream.position = next
+		return uint32(characters[0]), nil
 	case "read([C)I":
 		array, valueErr := r.parameter(2)
 		if valueErr != nil {
@@ -8985,12 +8991,19 @@ func (r *ktfRuntime) handleInputStreamReaderMethod(
 			return r.javaLongResult(0), nil
 		}
 		remaining := uint64(len(stream.data)) - uint64(stream.position)
-		skipped := uint64(requested)
-		if skipped > remaining {
-			skipped = remaining
+		count := uint64(requested)
+		if count > remaining {
+			count = remaining
 		}
-		stream.position += uint32(skipped)
-		return r.javaLongResult(skipped), nil
+		characters, next, valueErr := r.decodeInputStreamReaderChars(
+			stream,
+			uint32(count),
+		)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		stream.position = next
+		return r.javaLongResult(uint64(len(characters))), nil
 	case "close()V":
 		delete(r.inputTargets, instance)
 		return 0, nil
@@ -9026,30 +9039,71 @@ func (r *ktfRuntime) readInputStreamReaderChars(
 			length,
 		)
 	}
+	if count == 0 {
+		return 0, nil
+	}
 	stream := r.inputStreams[r.inputReaderSource(instance)]
 	if stream == nil || stream.position >= uint32(len(stream.data)) {
 		return ^uint32(0), nil
 	}
-	remaining := uint32(len(stream.data)) - stream.position
-	if count > remaining {
-		count = remaining
+	characters, next, err := r.decodeInputStreamReaderChars(stream, count)
+	if err != nil {
+		return 0, err
 	}
 	fields, err := r.readU32(array)
 	if err != nil {
 		return 0, err
 	}
-	encoded := make([]byte, count*2)
-	for index := uint32(0); index < count; index++ {
+	encoded := make([]byte, len(characters)*2)
+	for index, character := range characters {
 		binary.LittleEndian.PutUint16(
 			encoded[index*2:],
-			uint16(stream.data[stream.position+index]),
+			character,
 		)
 	}
 	if err := r.cpu.WriteMemory(fields+8+offset*2, encoded); err != nil {
 		return 0, err
 	}
-	stream.position += count
-	return count, nil
+	stream.position = next
+	return uint32(len(characters)), nil
+}
+
+func (r *ktfRuntime) decodeInputStreamReaderChars(
+	stream *ktfInputStream,
+	count uint32,
+) ([]uint16, uint32, error) {
+	if stream == nil {
+		return nil, 0, nil
+	}
+	if count == 0 || stream.position >= uint32(len(stream.data)) {
+		return nil, stream.position, nil
+	}
+	remaining := uint32(len(stream.data)) - stream.position
+	characters := make([]uint16, 0, min(count, remaining))
+	position := stream.position
+	for uint32(len(characters)) < count && position < uint32(len(stream.data)) {
+		encodedSize := uint32(1)
+		if stream.data[position]&0x80 != 0 {
+			encodedSize = 2
+		}
+		if encodedSize > uint32(len(stream.data))-position {
+			return nil, stream.position, fmt.Errorf("KTF Java InputStreamReader has truncated EUC-KR input")
+		}
+		value, err := r.services.Text.Decode(
+			stream.data[position:position+encodedSize],
+			shared.EncodingEUCKR,
+		)
+		if err != nil {
+			return nil, stream.position, err
+		}
+		decoded := []rune(value)
+		if len(decoded) != 1 || decoded[0] > math.MaxUint16 {
+			return nil, stream.position, fmt.Errorf("KTF Java InputStreamReader decoded an invalid character")
+		}
+		characters = append(characters, uint16(decoded[0]))
+		position += encodedSize
+	}
+	return characters, position, nil
 }
 
 func (r *ktfRuntime) handleByteArrayOutputStreamMethod(

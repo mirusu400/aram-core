@@ -7978,6 +7978,89 @@ func newScratchKTFRuntime(t *testing.T) *ktfRuntime {
 	return runtime
 }
 
+func TestKTFInputStreamReaderDecodesEUCKRCharacters(t *testing.T) {
+	runtime := newScratchKTFRuntime(t)
+	const (
+		reader = uint32(0x1234)
+		source = uint32(0x5678)
+	)
+	runtime.inputTargets[reader] = source
+	runtime.inputStreams[source] = &ktfInputStream{
+		data: []byte{0xb0, 0xa1, 'A'}, // "가A" in EUC-KR.
+	}
+	characters, err := runtime.newJavaArray("[C", 4, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.nativeParameterBase, err = runtime.allocateWords(4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.writeWords(
+		runtime.nativeParameterBase,
+		[]uint32{reader, characters, 1, 2},
+	); err != nil {
+		t.Fatal(err)
+	}
+	read, err := runtime.handleInputStreamReaderMethod("read", "([CII)I")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields, err := runtime.readU32(characters)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := make([]byte, 8)
+	if err := runtime.cpu.ReadMemory(fields+8, encoded); err != nil {
+		t.Fatal(err)
+	}
+	if read != 2 ||
+		binary.LittleEndian.Uint16(encoded[0:2]) != 0 ||
+		binary.LittleEndian.Uint16(encoded[2:4]) != '가' ||
+		binary.LittleEndian.Uint16(encoded[4:6]) != 'A' ||
+		binary.LittleEndian.Uint16(encoded[6:8]) != 0 ||
+		runtime.inputStreams[source].position != 3 {
+		t.Fatalf(
+			"Reader.read(char[], 1, 2) = %d, %x, position=%d",
+			read,
+			encoded,
+			runtime.inputStreams[source].position,
+		)
+	}
+	runtime.inputStreams[source].position = 0
+	if err := runtime.writeWords(
+		runtime.nativeParameterBase,
+		[]uint32{reader, 1, 0},
+	); err != nil {
+		t.Fatal(err)
+	}
+	skipped, err := runtime.handleInputStreamReaderMethod("skip", "(J)J")
+	if err != nil || skipped != 1 || runtime.inputStreams[source].position != 2 {
+		t.Fatalf(
+			"Reader.skip(1) = %d, position=%d, %v",
+			skipped,
+			runtime.inputStreams[source].position,
+			err,
+		)
+	}
+	if err := runtime.writeWords(runtime.nativeParameterBase, []uint32{reader}); err != nil {
+		t.Fatal(err)
+	}
+	value, err := runtime.handleInputStreamReaderMethod("read", "()I")
+	if err != nil || value != 'A' || runtime.inputStreams[source].position != 3 {
+		t.Fatalf(
+			"Reader.read() = 0x%08x, position=%d, %v",
+			value,
+			runtime.inputStreams[source].position,
+			err,
+		)
+	}
+	value, err = runtime.handleInputStreamReaderMethod("read", "()I")
+	if err != nil || value != ^uint32(0) {
+		t.Fatalf("Reader.read() at EOF = 0x%08x, %v", value, err)
+	}
+}
+
 func TestKTFStringBufferEditsCharactersInPlace(t *testing.T) {
 	runtime := newScratchKTFRuntime(t)
 	const instance = uint32(0x1234)
