@@ -7867,6 +7867,52 @@ func TestKTFEncodedImageKeepsStraightAlphaTransparent(t *testing.T) {
 	}
 }
 
+func TestKTFClipSetVolumePreservesPlayback(t *testing.T) {
+	runtime := newScratchKTFRuntime(t)
+	clip, err := runtime.newHostJavaObject("org/kwis/msp/media/Clip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := []byte("MMMD-test")
+	runtime.clips[clip] = &ktfClip{
+		volume:  5,
+		playing: true,
+		data:    append([]byte(nil), source...),
+	}
+	if err := runtime.syncKTFClip(clip); err != nil {
+		t.Fatal(err)
+	}
+	serviceID := runtime.clipServices[clip]
+	if err := runtime.services.Media.Play(
+		runtime.serviceOwner,
+		serviceID,
+		-1,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR1, clip); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR2, 3); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.handleMediaMethod("setVolume", "(I)Z"); err != nil {
+		t.Fatal(err)
+	}
+	info, err := runtime.services.Media.Info(runtime.serviceOwner, serviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := runtime.services.Media.Source(runtime.serviceOwner, serviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.State != shared.ClipPlaying || info.RemainingPlays != -1 ||
+		info.Volume != 60 || !bytes.Equal(stored, source) {
+		t.Fatalf("Clip after setVolume: info=%+v source=%q", info, stored)
+	}
+}
+
 func TestKTFClipServiceRecyclingSurvivesTheMediaPoolCap(t *testing.T) {
 	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
 		ClientName: "client.bin0",

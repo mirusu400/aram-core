@@ -10230,7 +10230,7 @@ func (r *ktfRuntime) handleMediaMethod(
 			r.clips[instance] = clip
 		}
 		clip.volume = int32(volume)
-		return 1, r.syncKTFClip(instance)
+		return 1, r.syncKTFClipGain(instance)
 	case "getVolume()I":
 		instance, err := r.parameter(1)
 		if err != nil {
@@ -10415,6 +10415,15 @@ func (r *ktfRuntime) syncKTFClip(instance uint32) error {
 		serviceID,
 		clip.data,
 	); err != nil {
+		return err
+	}
+	return r.syncKTFClipGain(instance)
+}
+
+func (r *ktfRuntime) syncKTFClipGain(instance uint32) error {
+	clip := r.ensureKTFClip(instance)
+	serviceID, err := r.ensureKTFClipService(instance)
+	if err != nil {
 		return err
 	}
 	volume := max(int32(0), min(int32(100), clip.volume*20))
