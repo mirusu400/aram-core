@@ -13,8 +13,32 @@ import (
 	machinecore "github.com/mirusu400/aram-core/core"
 	"github.com/mirusu400/aram-core/cpu"
 	"github.com/mirusu400/aram-core/cpu/interpreter"
+	"github.com/mirusu400/aram-core/profile"
 	shared "github.com/mirusu400/aram-core/runtime"
 )
+
+func TestSKVMKeyCode(t *testing.T) {
+	tests := []struct {
+		name string
+		key  profile.KeyCode
+		want int32
+	}{
+		{name: "up", key: profile.KeyUp, want: 141},
+		{name: "left", key: profile.KeyLeft, want: 142},
+		{name: "right", key: profile.KeyRight, want: 145},
+		{name: "down", key: profile.KeyDown, want: 146},
+		{name: "select", key: profile.KeySelect, want: 148},
+		{name: "digit", key: profile.Key1, want: '1'},
+		{name: "soft key", key: profile.KeySoft1, want: -6},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := skvmKeyCode(test.key); got != test.want {
+				t.Fatalf("skvmKeyCode(%d) = %d, want %d", test.key, got, test.want)
+			}
+		})
+	}
+}
 
 func TestFactoryCreatesSKVMMachineWithSharedServices(t *testing.T) {
 	data := syntheticSKVMPackage(t)
@@ -49,6 +73,24 @@ func TestFactoryCreatesSKVMMachineWithSharedServices(t *testing.T) {
 	}
 	if got := machine.services.Config.Device.ProfileID; got != skvmProfileID {
 		t.Fatalf("profile = %q, want %q", got, skvmProfileID)
+	}
+	store, err := machine.services.Storage.OpenRecordStore(
+		machine.owner,
+		"installedData",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := machine.services.Storage.Record(machine.owner, store, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextID, err := machine.services.Storage.NextRecordID(machine.owner, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(record, []byte("second")) || nextID != 9 {
+		t.Fatalf("installed record store: record=%q next_id=%d", record, nextID)
 	}
 }
 
@@ -198,9 +240,17 @@ func syntheticSKVMPackage(t *testing.T) []byte {
 				"MicroEdition-Profile: SKTP-1.0\n" +
 				"MIDlet-1: Synthetic,,Game\n",
 		),
-		"game.jar": jar,
-		"game.mod": {1},
-		"game.wmr": {2},
+		"game.jar":           jar,
+		"game.mod":           {1},
+		"game.wmr":           {2},
+		"rs/install#Data.db": []byte("firstsecond"),
+		"rs/install#Data.sb": syntheticSKVMRecordStoreMetadata(
+			t,
+			"installedData",
+			9,
+			11,
+			[][3]uint32{{1, 0, 5}, {4, 5, 6}},
+		),
 	})
 }
 
@@ -219,6 +269,37 @@ func syntheticSKVMZIP(t *testing.T, files map[string][]byte) []byte {
 	}
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
+	}
+	return output.Bytes()
+}
+
+func syntheticSKVMRecordStoreMetadata(
+	t *testing.T,
+	name string,
+	nextID, databaseSize uint32,
+	records [][3]uint32,
+) []byte {
+	t.Helper()
+	var output bytes.Buffer
+	for _, value := range []any{
+		uint32(2),
+		uint16(len(name)),
+		[]byte(name),
+		nextID,
+		uint32(len(records)),
+		databaseSize,
+		uint64(0x0102030405060708),
+	} {
+		if err := binary.Write(&output, binary.BigEndian, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, record := range records {
+		for _, value := range record {
+			if err := binary.Write(&output, binary.BigEndian, value); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	return output.Bytes()
 }

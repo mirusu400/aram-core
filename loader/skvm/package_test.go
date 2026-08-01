@@ -29,9 +29,17 @@ func TestInspectWrappedPackage(t *testing.T) {
 				"DD-ProgName: 12345\n" +
 				"DD-MIME-Type: application/x-wipi-jar\n",
 		),
-		"12345.jar": wrapped,
-		"12345.mod": {4, 5},
-		"12345.wmr": {0xad, 0xde, 0xce, 0xfa},
+		"12345.jar":       wrapped,
+		"12345.mod":       {4, 5},
+		"12345.wmr":       {0xad, 0xde, 0xce, 0xfa},
+		"rs/game#Data.db": []byte("firstsecond"),
+		"rs/game#Data.sb": recordStoreMetadata(
+			t,
+			"gameData",
+			9,
+			11,
+			[][3]uint32{{1, 0, 5}, {4, 5, 6}},
+		),
 	})
 
 	pkg, err := Inspect(archive)
@@ -49,6 +57,16 @@ func TestInspectWrappedPackage(t *testing.T) {
 	}
 	if !bytes.Equal(pkg.Resources["image.dat"], []byte{1, 2, 3}) {
 		t.Fatalf("resource = %v", pkg.Resources["image.dat"])
+	}
+	if len(pkg.RecordStores) != 1 ||
+		pkg.RecordStores[0].Name != "gameData" ||
+		pkg.RecordStores[0].NextID != 9 ||
+		len(pkg.RecordStores[0].Records) != 2 ||
+		pkg.RecordStores[0].Records[0].ID != 1 ||
+		!bytes.Equal(pkg.RecordStores[0].Records[0].Data, []byte("first")) ||
+		pkg.RecordStores[0].Records[1].ID != 4 ||
+		!bytes.Equal(pkg.RecordStores[0].Records[1].Data, []byte("second")) {
+		t.Fatalf("record stores = %#v", pkg.RecordStores)
 	}
 }
 
@@ -120,4 +138,35 @@ func makeZIP(t *testing.T, files map[string][]byte) []byte {
 		t.Fatal(err)
 	}
 	return buffer.Bytes()
+}
+
+func recordStoreMetadata(
+	t *testing.T,
+	name string,
+	nextID, databaseSize uint32,
+	records [][3]uint32,
+) []byte {
+	t.Helper()
+	var output bytes.Buffer
+	for _, value := range []any{
+		uint32(2),
+		uint16(len(name)),
+		[]byte(name),
+		nextID,
+		uint32(len(records)),
+		databaseSize,
+		uint64(0x0102030405060708),
+	} {
+		if err := binary.Write(&output, binary.BigEndian, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, record := range records {
+		for _, value := range record {
+			if err := binary.Write(&output, binary.BigEndian, value); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	return output.Bytes()
 }

@@ -16,8 +16,10 @@ import (
 	"io/fs"
 	"math"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf16"
 )
 
 const (
@@ -50,19 +52,34 @@ type Class struct {
 	Data         []byte
 }
 
+type Record struct {
+	ID   uint32
+	Data []byte
+}
+
+// RecordStore is an SKT installer-provided RMS image. NextID is kept from
+// the handset metadata because RMS record IDs are never reused after records
+// are deleted.
+type RecordStore struct {
+	Name    string
+	NextID  uint32
+	Records []Record
+}
+
 type Package struct {
-	Descriptor Descriptor
-	BaseName   string
-	MSDName    string
-	MODName    string
-	WMRName    string
-	JARName    string
-	JARHeader  []byte
-	Module     []byte
-	WMR        []byte
-	Classes    map[string]Class
-	Resources  map[string][]byte
-	Files      map[string][]byte
+	Descriptor   Descriptor
+	BaseName     string
+	MSDName      string
+	MODName      string
+	WMRName      string
+	JARName      string
+	JARHeader    []byte
+	Module       []byte
+	WMR          []byte
+	Classes      map[string]Class
+	Resources    map[string][]byte
+	Files        map[string][]byte
+	RecordStores []RecordStore
 }
 
 type FormatError struct {
@@ -167,6 +184,10 @@ func Inspect(data []byte) (Package, error) {
 	if len(classes) == 0 {
 		return Package{}, formatError(selected.jarName, -1, "JAR contains no class files")
 	}
+	recordStores, err := inspectRecordStores(files)
+	if err != nil {
+		return Package{}, err
+	}
 	mainName := strings.ReplaceAll(selected.descriptor.MainClass, ".", "/")
 	if _, ok := classes[mainName]; !ok {
 		return Package{}, formatError(
@@ -177,19 +198,169 @@ func Inspect(data []byte) (Package, error) {
 	}
 
 	return Package{
-		Descriptor: selected.descriptor,
-		BaseName:   selected.base,
-		MSDName:    selected.msdName,
-		MODName:    selected.modName,
-		WMRName:    selected.wmrName,
-		JARName:    selected.jarName,
-		JARHeader:  jarHeader,
-		Module:     files[selected.modName],
-		WMR:        files[selected.wmrName],
-		Classes:    classes,
-		Resources:  resources,
-		Files:      files,
+		Descriptor:   selected.descriptor,
+		BaseName:     selected.base,
+		MSDName:      selected.msdName,
+		MODName:      selected.modName,
+		WMRName:      selected.wmrName,
+		JARName:      selected.jarName,
+		JARHeader:    jarHeader,
+		Module:       files[selected.modName],
+		WMR:          files[selected.wmrName],
+		Classes:      classes,
+		Resources:    resources,
+		Files:        files,
+		RecordStores: recordStores,
 	}, nil
+}
+
+func inspectRecordStores(files map[string][]byte) ([]RecordStore, error) {
+	metadataNames := make([]string, 0)
+	for name := range files {
+		if strings.EqualFold(path.Dir(name), "rs") &&
+			strings.EqualFold(path.Ext(name), ".sb") {
+			metadataNames = append(metadataNames, name)
+		}
+	}
+	sort.Slice(metadataNames, func(i, j int) bool {
+		return strings.ToLower(metadataNames[i]) < strings.ToLower(metadataNames[j])
+	})
+	stores := make([]RecordStore, 0, len(metadataNames))
+	seen := make(map[string]bool, len(metadataNames))
+	for _, metadataName := range metadataNames {
+		databaseName := strings.TrimSuffix(
+			metadataName,
+			path.Ext(metadataName),
+		) + ".db"
+		matchedName, ok := findCaseInsensitive(files, databaseName)
+		if !ok {
+			return nil, formatError(metadataName, -1, "record store data file is missing")
+		}
+		store, err := inspectRecordStore(
+			metadataName,
+			files[metadataName],
+			files[matchedName],
+		)
+		if err != nil {
+			return nil, err
+		}
+		if seen[store.Name] {
+			return nil, formatError(metadataName, -1, "duplicate record store name")
+		}
+		seen[store.Name] = true
+		stores = append(stores, store)
+	}
+	sort.Slice(stores, func(i, j int) bool {
+		return stores[i].Name < stores[j].Name
+	})
+	return stores, nil
+}
+
+func inspectRecordStore(
+	metadataName string,
+	metadata, database []byte,
+) (RecordStore, error) {
+	if len(metadata) < 6 || binary.BigEndian.Uint32(metadata) != 2 {
+		return RecordStore{}, formatError(metadataName, 0, "unsupported record store metadata")
+	}
+	nameSize := int(binary.BigEndian.Uint16(metadata[4:]))
+	header := 6 + nameSize
+	if nameSize == 0 || header < 6 || header+20 > len(metadata) {
+		return RecordStore{}, formatError(metadataName, 4, "truncated record store name")
+	}
+	name, ok := decodeModifiedUTF8(metadata[6:header])
+	if !ok || strings.TrimSpace(name) == "" || strings.IndexByte(name, 0) >= 0 {
+		return RecordStore{}, formatError(metadataName, 6, "invalid record store name")
+	}
+	nextID := binary.BigEndian.Uint32(metadata[header:])
+	recordCount := binary.BigEndian.Uint32(metadata[header+4:])
+	databaseSize := binary.BigEndian.Uint32(metadata[header+8:])
+	expected := uint64(header) + 20 + uint64(recordCount)*12
+	if nextID == 0 || nextID == math.MaxUint32 ||
+		expected != uint64(len(metadata)) ||
+		uint64(databaseSize) != uint64(len(database)) {
+		return RecordStore{}, formatError(metadataName, int64(header), "invalid record store layout")
+	}
+	records := make([]Record, 0, recordCount)
+	seen := make(map[uint32]bool, recordCount)
+	for index := uint32(0); index < recordCount; index++ {
+		offset := header + 20 + int(index)*12
+		recordID := binary.BigEndian.Uint32(metadata[offset:])
+		dataOffset := binary.BigEndian.Uint32(metadata[offset+4:])
+		dataSize := binary.BigEndian.Uint32(metadata[offset+8:])
+		dataEnd := uint64(dataOffset) + uint64(dataSize)
+		if recordID == 0 || recordID >= nextID || seen[recordID] ||
+			dataEnd > uint64(len(database)) {
+			return RecordStore{}, formatError(
+				metadataName,
+				int64(offset),
+				"invalid record store entry",
+			)
+		}
+		seen[recordID] = true
+		records = append(records, Record{
+			ID: recordID,
+			Data: append(
+				[]byte(nil),
+				database[dataOffset:uint32(dataEnd)]...,
+			),
+		})
+	}
+	sort.Slice(records, func(i, j int) bool {
+		return records[i].ID < records[j].ID
+	})
+	return RecordStore{Name: name, NextID: nextID, Records: records}, nil
+}
+
+// Java DataOutputStream.writeUTF uses modified UTF-8: NUL is a two-byte
+// sequence and supplementary code points are encoded as UTF-16 surrogates.
+func decodeModifiedUTF8(data []byte) (string, bool) {
+	units := make([]uint16, 0, len(data))
+	for offset := 0; offset < len(data); {
+		first := data[offset]
+		switch {
+		case first > 0 && first < 0x80:
+			units = append(units, uint16(first))
+			offset++
+		case first&0xe0 == 0xc0 && offset+1 < len(data):
+			second := data[offset+1]
+			if second&0xc0 != 0x80 {
+				return "", false
+			}
+			value := uint16(first&0x1f)<<6 | uint16(second&0x3f)
+			if value != 0 && value < 0x80 {
+				return "", false
+			}
+			units = append(units, value)
+			offset += 2
+		case first&0xf0 == 0xe0 && offset+2 < len(data):
+			second, third := data[offset+1], data[offset+2]
+			if second&0xc0 != 0x80 || third&0xc0 != 0x80 {
+				return "", false
+			}
+			value := uint16(first&0x0f)<<12 |
+				uint16(second&0x3f)<<6 | uint16(third&0x3f)
+			if value < 0x800 {
+				return "", false
+			}
+			units = append(units, value)
+			offset += 3
+		default:
+			return "", false
+		}
+	}
+	for index, unit := range units {
+		if 0xd800 <= unit && unit <= 0xdbff {
+			if index+1 >= len(units) || units[index+1] < 0xdc00 ||
+				units[index+1] > 0xdfff {
+				return "", false
+			}
+		} else if 0xdc00 <= unit && unit <= 0xdfff &&
+			(index == 0 || units[index-1] < 0xd800 || units[index-1] > 0xdbff) {
+			return "", false
+		}
+	}
+	return string(utf16.Decode(units)), true
 }
 
 func ParseDescriptor(data []byte) (Descriptor, error) {

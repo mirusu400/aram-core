@@ -20,6 +20,7 @@ import (
 	"github.com/mirusu400/aram-core/loader/ktf"
 	"github.com/mirusu400/aram-core/loader/raptor"
 	skloader "github.com/mirusu400/aram-core/loader/skvm"
+	"github.com/mirusu400/aram-core/profile"
 	shared "github.com/mirusu400/aram-core/runtime"
 	skengine "github.com/mirusu400/aram-core/skvm"
 )
@@ -168,6 +169,32 @@ func newSKVMMachine(
 	owner, err := services.Coordinator.Register("skvm", budget)
 	if err != nil {
 		return nil, fmt.Errorf("register SKVM adapter: %w", err)
+	}
+	for _, packaged := range pkg.RecordStores {
+		store, err := services.Storage.CreateRecordStore(owner, packaged.Name)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"install SKVM record store %q: %w",
+				packaged.Name,
+				err,
+			)
+		}
+		records := make(map[uint32][]byte, len(packaged.Records))
+		for _, record := range packaged.Records {
+			records[record.ID] = record.Data
+		}
+		if err := services.Storage.ReplaceRecords(
+			owner,
+			store,
+			packaged.NextID,
+			records,
+		); err != nil {
+			return nil, fmt.Errorf(
+				"install SKVM record store %q records: %w",
+				packaged.Name,
+				err,
+			)
+		}
 	}
 	classData := make(map[string][]byte, len(pkg.Classes))
 	for name, class := range pkg.Classes {
@@ -594,9 +621,26 @@ func (m *skvmMachine) handleEventLocked(
 			return nil
 		}
 		pressed := event.Kind != shared.EventInputRelease
-		return m.vm.KeyEvent(ctx, int32(key), pressed)
+		return m.vm.KeyEvent(ctx, skvmKeyCode(key), pressed)
 	default:
 		return nil
+	}
+}
+
+func skvmKeyCode(key profile.KeyCode) int32 {
+	switch key {
+	case profile.KeyUp:
+		return 141
+	case profile.KeyLeft:
+		return 142
+	case profile.KeyRight:
+		return 145
+	case profile.KeyDown:
+		return 146
+	case profile.KeySelect:
+		return 148
+	default:
+		return int32(key)
 	}
 }
 

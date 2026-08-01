@@ -63,15 +63,15 @@ func (vm *VM) installDisplayCompatibilityNatives() {
 
 func gameActionForKey(key int32) int32 {
 	switch key {
-	case -1, '2':
+	case -1, '2', 141:
 		return 1 // UP
-	case -3, '4':
+	case -3, '4', 142:
 		return 2 // LEFT
-	case -4, '6':
+	case -4, '6', 145:
 		return 5 // RIGHT
-	case -2, '8':
+	case -2, '8', 146:
 		return 6 // DOWN
-	case -5, '5':
+	case -5, '5', 148:
 		return 8 // FIRE
 	default:
 		return 0

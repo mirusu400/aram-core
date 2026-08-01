@@ -10,6 +10,24 @@ import (
 	shared "github.com/mirusu400/aram-core/runtime"
 )
 
+func TestGameActionForSKTKeyCodes(t *testing.T) {
+	tests := []struct {
+		key  int32
+		want int32
+	}{
+		{key: 141, want: 1},
+		{key: 142, want: 2},
+		{key: 145, want: 5},
+		{key: 146, want: 6},
+		{key: 148, want: 8},
+	}
+	for _, test := range tests {
+		if got := gameActionForKey(test.key); got != test.want {
+			t.Errorf("gameActionForKey(%d) = %d, want %d", test.key, got, test.want)
+		}
+	}
+}
+
 func invokeTestNative(
 	t *testing.T,
 	vm *VM,
