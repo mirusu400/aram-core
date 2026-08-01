@@ -190,3 +190,82 @@ func TestDirectMediaAdvanceQueueFailureIsAtomic(t *testing.T) {
 		t.Fatal("failed direct media advance was not atomic")
 	}
 }
+
+func TestMediaRetainsNewestSamplesWhenTheHostNeverDrains(t *testing.T) {
+	limits := DefaultMediaLimits()
+	limits.OutputSampleRate = 8_000
+	limits.OutputChannels = 1
+	limits.MaxQueuedSamples = 8
+	registry := NewRegistry(32)
+	media, err := NewMedia(registry, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bus := NewEventBus(16, 32)
+	clip, err := media.CreateClip(3, "audio/wav", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := media.Append(
+		3,
+		clip,
+		pcmWave(8_000, 1, []int16{2, 4, 6, 8, 10, 12}),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := media.Play(3, clip, -1); err != nil {
+		t.Fatal(err)
+	}
+	// Six one-sample advances produce twelve samples into an eight-sample
+	// window without the host ever draining. The guest must keep running.
+	for step := range 6 {
+		start := time.Duration(step) * 250 * time.Microsecond
+		if err := media.Advance(start, start+250*time.Microsecond, bus); err != nil {
+			t.Fatalf("advance %d: %v", step, err)
+		}
+	}
+	audio := media.Drain()
+	if !reflect.DeepEqual(audio.PCM16, []int16{10, 12, 2, 4, 6, 8, 10, 12}) {
+		t.Fatalf("retained audio = %v", audio.PCM16)
+	}
+	if media.DroppedSamples() != 4 {
+		t.Fatalf("dropped samples = %d, want 4", media.DroppedSamples())
+	}
+}
+
+func TestMediaAdvanceLongerThanRetentionKeepsOnlyTheTail(t *testing.T) {
+	limits := DefaultMediaLimits()
+	limits.OutputSampleRate = 8_000
+	limits.OutputChannels = 1
+	limits.MaxQueuedSamples = 4
+	registry := NewRegistry(32)
+	media, err := NewMedia(registry, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bus := NewEventBus(16, 32)
+	clip, err := media.CreateClip(3, "audio/wav", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := media.Append(
+		3,
+		clip,
+		pcmWave(8_000, 1, []int16{2, 4, 6, 8, 10, 12, 14, 16}),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := media.Play(3, clip, -1); err != nil {
+		t.Fatal(err)
+	}
+	if err := media.Advance(0, time.Millisecond, bus); err != nil {
+		t.Fatal(err)
+	}
+	audio := media.Drain()
+	if !reflect.DeepEqual(audio.PCM16, []int16{10, 12, 14, 16}) {
+		t.Fatalf("tail audio = %v", audio.PCM16)
+	}
+	if media.DroppedSamples() != 4 {
+		t.Fatalf("dropped samples = %d, want 4", media.DroppedSamples())
+	}
+}

@@ -127,6 +127,7 @@ type Media struct {
 	globalMute      bool
 	outputRemainder uint64
 	queuedPCM16     []int16
+	dropped         uint64
 }
 
 func NewMedia(registry *Registry, limits MediaLimits) (*Media, error) {
@@ -352,9 +353,11 @@ func (m *Media) Advance(start, end time.Duration, bus *EventBus) error {
 	}
 	mediaBefore := m.Snapshot()
 	busBefore := bus.Snapshot()
+	droppedBefore := m.dropped
 	rollback := func(err error) error {
 		_ = m.Restore(mediaBefore)
 		_ = bus.Restore(busBefore)
+		m.dropped = droppedBefore
 		return err
 	}
 	delta := end - start
@@ -388,12 +391,16 @@ func (m *Media) Advance(start, end time.Duration, bus *EventBus) error {
 	if frameCount > uint64(math.MaxInt) {
 		return fmt.Errorf("%w: media advance exceeds host limits", ErrLimitExceeded)
 	}
+	// The mixer retains the newest MaxQueuedSamples samples. Frames older than
+	// that window cannot survive this advance, so they are neither mixed nor
+	// stored: rendering them would only produce work that retention discards.
+	firstFrame := uint64(0)
+	if maxFrames := m.retainedFrames(); audible && frameCount > maxFrames {
+		firstFrame = frameCount - maxFrames
+	}
 	sampleCount := uint64(0)
 	if audible {
-		sampleCount = frameCount * uint64(m.limits.OutputChannels)
-	}
-	if sampleCount > uint64(m.limits.MaxQueuedSamples)-uint64(len(m.queuedPCM16)) {
-		return fmt.Errorf("%w: queued audio exceeds %d samples", ErrLimitExceeded, m.limits.MaxQueuedSamples)
+		sampleCount = (frameCount - firstFrame) * uint64(m.limits.OutputChannels)
 	}
 
 	mixed := make([]int64, int(sampleCount))
@@ -404,7 +411,7 @@ func (m *Media) Advance(start, end time.Duration, bus *EventBus) error {
 			clip.volume == 0 || m.globalVolume == 0 {
 			continue
 		}
-		for frame := uint64(0); frame < frameCount; frame++ {
+		for frame := firstFrame; frame < frameCount; frame++ {
 			offset := durationForFrame(frame, m.limits.OutputSampleRate)
 			left, right, ok := m.clipSampleAt(clip, offset)
 			if !ok {
@@ -416,17 +423,17 @@ func (m *Media) Advance(start, end time.Duration, bus *EventBus) error {
 				uint32(clip.volume)*uint32(m.globalVolume),
 				clip.pan,
 			)
+			slot := frame - firstFrame
 			if m.limits.OutputChannels == 1 {
-				mixed[frame] += int64(left)/2 + int64(right)/2
+				mixed[slot] += int64(left)/2 + int64(right)/2
 			} else {
-				mixed[frame*2] += int64(left)
-				mixed[frame*2+1] += int64(right)
+				mixed[slot*2] += int64(left)
+				mixed[slot*2+1] += int64(right)
 			}
 		}
 	}
-	for _, sample := range mixed {
-		m.queuedPCM16 = append(m.queuedPCM16, clampInt16(sample))
-	}
+	m.dropped += firstFrame * uint64(m.limits.OutputChannels)
+	m.queueOutput(mixed)
 	if activeDecoded {
 		m.outputRemainder = remainder
 	}
@@ -450,13 +457,44 @@ func (m *Media) Advance(start, end time.Duration, bus *EventBus) error {
 	return nil
 }
 
+// retainedFrames reports how many output frames fit in the retention window.
+func (m *Media) retainedFrames() uint64 {
+	return uint64(m.limits.MaxQueuedSamples) / uint64(m.limits.OutputChannels)
+}
+
+// queueOutput stores mixed samples, keeping the newest MaxQueuedSamples and
+// discarding whatever no longer fits. A host that stops draining audio - a
+// headless probe, a minimised window, a frontend between presentations - must
+// not be able to fault the guest, so the queue behaves as a bounded ring
+// rather than as a hard limit.
+func (m *Media) queueOutput(mixed []int64) {
+	retention := int(m.limits.MaxQueuedSamples)
+	if len(mixed) >= retention {
+		m.dropped += uint64(len(m.queuedPCM16) + len(mixed) - retention)
+		mixed = mixed[len(mixed)-retention:]
+		m.queuedPCM16 = m.queuedPCM16[:0]
+	} else if overflow := len(m.queuedPCM16) + len(mixed) - retention; overflow > 0 {
+		m.dropped += uint64(overflow)
+		m.queuedPCM16 = append(m.queuedPCM16[:0], m.queuedPCM16[overflow:]...)
+	}
+	for _, sample := range mixed {
+		m.queuedPCM16 = append(m.queuedPCM16, clampInt16(sample))
+	}
+}
+
+// DroppedSamples reports how many mixed samples retention has discarded
+// because the host did not drain them in time.
+func (m *Media) DroppedSamples() uint64 {
+	return m.dropped
+}
+
 func (m *Media) Drain() AudioBuffer {
 	result := AudioBuffer{
 		SampleRate: int(m.limits.OutputSampleRate),
 		Channels:   int(m.limits.OutputChannels),
 		PCM16:      append([]int16(nil), m.queuedPCM16...),
 	}
-	m.queuedPCM16 = nil
+	m.queuedPCM16 = m.queuedPCM16[:0]
 	return result
 }
 
