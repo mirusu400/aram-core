@@ -7694,3 +7694,52 @@ func TestKTFEncodedImageKeepsStraightAlphaTransparent(t *testing.T) {
 		)
 	}
 }
+
+func TestKTFClipServiceRecyclingSurvivesTheMediaPoolCap(t *testing.T) {
+	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.cpu.Close()
+	limit := int(runtime.services.Config.Limits.Media.MaxClips)
+	if limit == 0 {
+		t.Fatal("media clip limit is unset")
+	}
+	first := uint32(0)
+	for index := range limit + 8 {
+		instance := uint32(0x10000000 + index*0x100)
+		if index == 0 {
+			first = instance
+		}
+		runtime.clips[instance] = &ktfClip{volume: 5}
+		if _, err := runtime.ensureKTFClipService(instance); err != nil {
+			t.Fatalf("clip %d: %v", index, err)
+		}
+	}
+	if len(runtime.clipServices) != limit {
+		t.Fatalf("live clip services = %d, want %d", len(runtime.clipServices), limit)
+	}
+	if runtime.clipServices[first] != 0 {
+		t.Fatal("the oldest idle clip kept its host service")
+	}
+	// A playing clip must never be recycled out from under the guest.
+	playing := uint32(0x20000000)
+	runtime.clips[playing] = &ktfClip{volume: 5, playing: true}
+	if _, err := runtime.ensureKTFClipService(playing); err != nil {
+		t.Fatal(err)
+	}
+	service := runtime.clipServices[playing]
+	for index := range 8 {
+		instance := uint32(0x30000000 + index*0x100)
+		runtime.clips[instance] = &ktfClip{volume: 5}
+		if _, err := runtime.ensureKTFClipService(instance); err != nil {
+			t.Fatalf("post-playing clip %d: %v", index, err)
+		}
+	}
+	if runtime.clipServices[playing] != service {
+		t.Fatal("a playing clip lost its host service to recycling")
+	}
+}

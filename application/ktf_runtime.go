@@ -9941,11 +9941,53 @@ func (r *ktfRuntime) ensureKTFClipService(
 		"",
 		0,
 	)
+	if errors.Is(err, shared.ErrLimitExceeded) && r.recycleKTFClipService() {
+		serviceID, err = r.services.Media.CreateClip(
+			r.serviceOwner,
+			"",
+			0,
+		)
+	}
 	if err != nil {
 		return 0, err
 	}
 	r.clipServices[instance] = serviceID
 	return serviceID, nil
+}
+
+// recycleKTFClipService frees the host media service backing the
+// oldest idle Java clip and reports whether it freed one. The KTF runtime has
+// no Java collector, so a title that keeps constructing Clip objects for its
+// sound effects would otherwise exhaust the bounded media pool and fault. The
+// Java-side sample data stays in ktfClip, so a recycled clip reallocates and
+// refills its service the next time it is touched. Instances are numbered in
+// allocation order, so choosing the lowest idle handle retires the oldest clip
+// and keeps the choice deterministic.
+func (r *ktfRuntime) recycleKTFClipService() bool {
+	victim := uint32(0)
+	for instance, serviceID := range r.clipServices {
+		if serviceID == 0 {
+			continue
+		}
+		if clip := r.clips[instance]; clip != nil && clip.playing {
+			continue
+		}
+		if victim == 0 || instance < victim {
+			victim = instance
+		}
+	}
+	if victim == 0 {
+		return false
+	}
+	if err := r.services.Media.DestroyClip(
+		r.serviceOwner,
+		r.clipServices[victim],
+		r.services.Events,
+	); err != nil {
+		return false
+	}
+	delete(r.clipServices, victim)
+	return true
 }
 
 func (r *ktfRuntime) syncKTFClip(instance uint32) error {
