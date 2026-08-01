@@ -711,7 +711,7 @@ func (m *Machine) stepRaptorFrame(ctx context.Context) error {
 			return err
 		}
 	}
-	callbackResult, stopped, err := m.pumpWIPICallbacks(ctx, 16)
+	callbackResult, stopped, err := m.pumpWIPICallbacks(ctx, wipiFrameDuration)
 	if err != nil || stopped {
 		return err
 	}

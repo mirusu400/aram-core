@@ -51,6 +51,9 @@ const (
 	ktfRunBudgetMin            = uint64(10_000)
 	ktfTaskSlicesPerQuantumMax = 64
 	ktfFrameDuration           = (time.Second + 30) / 60
+	// wipiFrameDuration is the guest time one native-WIPI, Raptor, or EADS
+	// presentation quantum advances.
+	wipiFrameDuration = 16 * time.Millisecond
 )
 
 var (
@@ -880,7 +883,7 @@ func (m *Machine) StepFrame(ctx context.Context) error {
 	if isRaptor {
 		return m.stepRaptorFrame(ctx)
 	}
-	_, stopped, err := m.pumpWIPICallbacks(ctx, 16)
+	_, stopped, err := m.pumpWIPICallbacks(ctx, wipiFrameDuration)
 	if err != nil || stopped {
 		return err
 	}
@@ -1687,7 +1690,7 @@ type wipiGuestCallback struct {
 
 func (m *Machine) pumpWIPICallbacks(
 	ctx context.Context,
-	elapsedMS uint64,
+	elapsed time.Duration,
 ) (cpu.Result, bool, error) {
 	m.mu.Lock()
 	if m.closed {
@@ -1715,8 +1718,7 @@ func (m *Machine) pumpWIPICallbacks(
 	}
 	callbacks := append([]wipiGuestCallback(nil), m.wipi.pendingCallbacks...)
 	m.wipi.pendingCallbacks = nil
-	target := m.wipi.services.Clock.Monotonic() +
-		time.Duration(elapsedMS)*time.Millisecond
+	target := m.wipi.services.Clock.Monotonic() + elapsed
 	pendingInput := m.input[:0]
 	for _, event := range m.input {
 		if event.At > target {
@@ -1743,7 +1745,7 @@ func (m *Machine) pumpWIPICallbacks(
 	m.input = pendingInput
 	if err := m.wipi.services.Advance(
 		m.wipi.serviceOwner,
-		time.Duration(elapsedMS)*time.Millisecond,
+		elapsed,
 	); err != nil {
 		m.state = machinecore.StateFaulted
 		m.lastResult = cpu.Result{Reason: cpu.StopFault, Err: err}

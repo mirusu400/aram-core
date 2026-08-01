@@ -308,7 +308,7 @@ func TestRaptorTimerExpiryPreservesAdjacentGuestMemory(t *testing.T) {
 	machine.raptor = &raptorRuntime{}
 	if _, stopped, err := machine.pumpWIPICallbacks(
 		context.Background(),
-		16,
+		wipiFrameDuration,
 	); err != nil || stopped {
 		t.Fatalf("pump callbacks: stopped=%t, err=%v", stopped, err)
 	}
