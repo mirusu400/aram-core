@@ -902,6 +902,17 @@ func (b *Backend) stepThumb() (*cpu.StopReason, error) {
 		if readErr != nil {
 			return nil, readErr
 		}
+		if suffix&0xf801 == 0xe800 { // BLX immediate
+			high := int32(instruction & 0x7ff)
+			if high&(1<<10) != 0 {
+				high |= ^int32(0x7ff)
+			}
+			target := uint32(int32((pc+4)&^uint32(3))+(high<<12)) +
+				uint32(suffix&0x7fe)*2
+			b.regs[cpu.RegisterLR] = (pc + 4) | 1
+			b.branchExchange(target)
+			return nil, nil
+		}
 		if suffix&0xf800 != 0xf800 {
 			return nil, b.unsupportedThumb(pc, instruction)
 		}

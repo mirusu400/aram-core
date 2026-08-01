@@ -7,9 +7,23 @@ import (
 
 	machinecore "github.com/mirusu400/aram-core/core"
 	"github.com/mirusu400/aram-core/cpu"
+	"github.com/mirusu400/aram-core/loader/raptor"
 	"github.com/mirusu400/aram-core/profile"
 	"github.com/mirusu400/aram-core/wipi"
 )
+
+func TestRaptorRVCTImportVeneerSectionIsExecutable(t *testing.T) {
+	section := raptor.Section{Data: make([]byte, 8)}
+	binary.LittleEndian.PutUint32(section.Data[0:4], 0xe52de004)
+	binary.LittleEndian.PutUint32(section.Data[4:8], 0xeb000000)
+	if !raptorSectionExecutable(section) {
+		t.Fatal("RVCT import veneer section is not executable")
+	}
+	section.Data[0] = 0
+	if raptorSectionExecutable(section) {
+		t.Fatal("ordinary writable data section is executable")
+	}
+}
 
 func TestRaptorWIPIImportsResolveToPublicCatalog(t *testing.T) {
 	expected := map[uint32]string{

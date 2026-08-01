@@ -227,10 +227,24 @@ func raptorExecutableAddress(image raptor.Image, address uint32) bool {
 	return false
 }
 
+func raptorSectionExecutable(section raptor.Section) bool {
+	if section.Executable() {
+		return true
+	}
+	// ARM RVCT Raptor modules place their statically linked import veneers in
+	// ER_RW without setting SHF_EXECINSTR. Each 16-byte veneer starts by saving
+	// LR and branching to the common import dispatcher. The handset executes
+	// these records directly, so grant execute permission to the containing
+	// section when that unmistakable prologue is present.
+	return len(section.Data) >= 8 &&
+		binary.LittleEndian.Uint32(section.Data[0:4]) == 0xe52de004 &&
+		binary.LittleEndian.Uint32(section.Data[4:8])&0xff000000 == 0xeb000000
+}
+
 func mapRaptorImage(backend cpu.Backend, image raptor.Image) error {
 	for _, section := range image.AllocatedSections() {
 		permissions := cpu.PermissionRead | cpu.PermissionWrite
-		if section.Executable() {
+		if raptorSectionExecutable(section) {
 			permissions |= cpu.PermissionExecute
 		}
 		if err := backend.Map(section.Address, section.Size, permissions); err != nil {
