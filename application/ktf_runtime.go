@@ -181,6 +181,7 @@ type ktfRuntime struct {
 	dirtyCards              map[uint32]bool
 	paintInitializedCards   map[uint32]bool
 	paintTasks              map[uint32]*ktfTask
+	paintStalled            bool
 	deferredPaintCards      map[*ktfTask][]uint32
 	deferredShownCards      map[*ktfTask]map[uint32]bool
 	presentCount            uint32
@@ -6831,6 +6832,13 @@ func (r *ktfRuntime) paintCard(ctx context.Context, card uint32) error {
 	}
 	if task := r.paintTasks[card]; task != nil && !task.done {
 		delete(r.dirtyCards, card)
+		if task.wakeAtMS > r.tickMS {
+			// The card's paint is mid-flight inside a guest Thread.sleep and
+			// virtual time only advances between presentation quanta, so
+			// nothing else the guest runs in this quantum can wake it or
+			// produce a frame.
+			r.paintStalled = true
+		}
 		r.tracef("java_paint_coalesce:card=0x%08x", card)
 		return nil
 	}

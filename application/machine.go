@@ -996,6 +996,7 @@ func (m *Machine) runKTFSlice(ctx context.Context, elapsed time.Duration) error 
 	result := cpu.Result{Reason: cpu.StopBudget}
 	var instructions uint64
 	var consumeErr error
+	runtime.paintStalled = false
 taskLoop:
 	for slices := 0; slices < ktfTaskSlicesPerQuantumMax &&
 		instructions < budget; slices++ {
@@ -1038,6 +1039,14 @@ taskLoop:
 			// frame, return it to the frontend instead of allowing an
 			// uncapped paint loop to render many invisible intermediate
 			// frames in one host update.
+			break
+		}
+		if runtime.paintStalled {
+			// The card the guest keeps asking to repaint is waiting on a
+			// paint task that is inside Thread.sleep, and the virtual clock
+			// does not move until this quantum ends. Spending the remaining
+			// slices re-running the guest's event loop cannot produce a
+			// frame, so return the quantum and let time advance instead.
 			break
 		}
 		switch sliceResult.Reason {
