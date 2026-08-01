@@ -1004,6 +1004,178 @@ func (b *Backend) stepARM() (*cpu.StopReason, error) {
 		b.regs[cpu.RegisterPC] = uint32(int32(pc+8) + offset)
 		return nil, nil
 
+	case instruction&0x0fff0ff0 == 0x016f0f10: // CLZ
+		rd := uint32(instruction>>12) & 0xf
+		rm := uint32(instruction) & 0xf
+		if rd == cpu.RegisterPC || rm == cpu.RegisterPC {
+			return nil, b.unsupportedARM(pc, instruction)
+		}
+		b.regs[rd] = uint32(bits.LeadingZeros32(b.regs[rm]))
+		return nil, nil
+
+	case instruction&0x0fb00ff0 == 0x01000090: // SWP / SWPB
+		byteTransfer := instruction&(1<<22) != 0
+		rn := uint32(instruction>>16) & 0xf
+		rd := uint32(instruction>>12) & 0xf
+		rm := uint32(instruction) & 0xf
+		if rn == cpu.RegisterPC || rd == cpu.RegisterPC || rm == cpu.RegisterPC {
+			return nil, b.unsupportedARM(pc, instruction)
+		}
+		address := b.regs[rn]
+		stored := b.regs[rm]
+		if byteTransfer {
+			loaded, readErr := b.read8(address, cpu.PermissionRead)
+			if readErr != nil {
+				return nil, readErr
+			}
+			if writeErr := b.write8(
+				address,
+				byte(stored),
+				cpu.PermissionWrite,
+			); writeErr != nil {
+				return nil, writeErr
+			}
+			b.regs[rd] = uint32(loaded)
+			return nil, nil
+		}
+		loaded, readErr := b.read32(address, cpu.PermissionRead)
+		if readErr != nil {
+			return nil, readErr
+		}
+		if writeErr := b.write32(
+			address,
+			stored,
+			cpu.PermissionWrite,
+		); writeErr != nil {
+			return nil, writeErr
+		}
+		b.regs[rd] = loaded
+		return nil, nil
+
+	case instruction&0x0fc000f0 == 0x00000090: // MUL / MLA
+		accumulate := instruction&(1<<21) != 0
+		setFlags := instruction&(1<<20) != 0
+		rd := uint32(instruction>>16) & 0xf
+		rn := uint32(instruction>>12) & 0xf
+		rs := uint32(instruction>>8) & 0xf
+		rm := uint32(instruction) & 0xf
+		if rd == cpu.RegisterPC || rs == cpu.RegisterPC ||
+			rm == cpu.RegisterPC || (accumulate && rn == cpu.RegisterPC) {
+			return nil, b.unsupportedARM(pc, instruction)
+		}
+		result := b.regs[rm] * b.regs[rs]
+		if accumulate {
+			result += b.regs[rn]
+		}
+		b.regs[rd] = result
+		if setFlags {
+			b.setNZ(result)
+		}
+		return nil, nil
+
+	case instruction&0x0f8000f0 == 0x00800090: // UMULL / UMLAL / SMULL / SMLAL
+		signed := instruction&(1<<22) != 0
+		accumulate := instruction&(1<<21) != 0
+		setFlags := instruction&(1<<20) != 0
+		rdHi := uint32(instruction>>16) & 0xf
+		rdLo := uint32(instruction>>12) & 0xf
+		rs := uint32(instruction>>8) & 0xf
+		rm := uint32(instruction) & 0xf
+		if rdHi == cpu.RegisterPC || rdLo == cpu.RegisterPC ||
+			rs == cpu.RegisterPC || rm == cpu.RegisterPC || rdHi == rdLo {
+			return nil, b.unsupportedARM(pc, instruction)
+		}
+		var product uint64
+		if signed {
+			product = uint64(int64(int32(b.regs[rm])) * int64(int32(b.regs[rs])))
+		} else {
+			product = uint64(b.regs[rm]) * uint64(b.regs[rs])
+		}
+		if accumulate {
+			product += uint64(b.regs[rdHi])<<32 | uint64(b.regs[rdLo])
+		}
+		b.regs[rdHi] = uint32(product >> 32)
+		b.regs[rdLo] = uint32(product)
+		if setFlags {
+			b.regs[cpu.RegisterCPSR] &^= flagN | flagZ
+			if product == 0 {
+				b.regs[cpu.RegisterCPSR] |= flagZ
+			}
+			if product&(uint64(1)<<63) != 0 {
+				b.regs[cpu.RegisterCPSR] |= flagN
+			}
+		}
+		return nil, nil
+
+	case instruction&0x0e000090 == 0x00000090 &&
+		instruction&0x00000060 != 0: // halfword / signed byte transfer
+		preIndex := instruction&(1<<24) != 0
+		up := instruction&(1<<23) != 0
+		immediate := instruction&(1<<22) != 0
+		writeBack := instruction&(1<<21) != 0
+		load := instruction&(1<<20) != 0
+		rn := uint32(instruction>>16) & 0xf
+		rd := uint32(instruction>>12) & 0xf
+		operation := uint8(instruction>>5) & 3
+		// LDRD and STRD transfer a register pair and are not part of the
+		// ARMv5TE subset the WIPI toolchains emit for these titles.
+		if rd == cpu.RegisterPC || (!load && operation != 1) {
+			return nil, b.unsupportedARM(pc, instruction)
+		}
+		var offset uint32
+		if immediate {
+			offset = uint32(instruction>>4)&0xf0 | uint32(instruction&0xf)
+		} else {
+			rm := uint32(instruction) & 0xf
+			if instruction&0x00000f00 != 0 || rm == cpu.RegisterPC {
+				return nil, b.unsupportedARM(pc, instruction)
+			}
+			offset = b.regs[rm]
+		}
+		base := b.readOperandRegister(rn, pc, cpu.ModeARM)
+		indexedAddress := base
+		if up {
+			indexedAddress += offset
+		} else {
+			indexedAddress -= offset
+		}
+		address := base
+		if preIndex {
+			address = indexedAddress
+		}
+		switch {
+		case !load: // STRH
+			if writeErr := b.write16(
+				address,
+				uint16(b.regs[rd]),
+				cpu.PermissionWrite,
+			); writeErr != nil {
+				return nil, writeErr
+			}
+		case operation == 1: // LDRH
+			value, readErr := b.read16(address, cpu.PermissionRead)
+			if readErr != nil {
+				return nil, readErr
+			}
+			b.regs[rd] = uint32(value)
+		case operation == 2: // LDRSB
+			value, readErr := b.read8(address, cpu.PermissionRead)
+			if readErr != nil {
+				return nil, readErr
+			}
+			b.regs[rd] = uint32(int32(int8(value)))
+		default: // LDRSH
+			value, readErr := b.read16(address, cpu.PermissionRead)
+			if readErr != nil {
+				return nil, readErr
+			}
+			b.regs[rd] = uint32(int32(int16(value)))
+		}
+		if (!preIndex || writeBack) && !(load && rd == rn) {
+			b.regs[rn] = indexedAddress
+		}
+		return nil, nil
+
 	case instruction&0x0c000000 == 0x00000000: // data processing
 		immediate := instruction&(1<<25) != 0
 		opcode := uint8(instruction >> 21 & 0xf)

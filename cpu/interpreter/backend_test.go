@@ -874,3 +874,140 @@ func register(t *testing.T, backend *Backend, id uint32) uint32 {
 	}
 	return value
 }
+
+func TestARMHalfwordAndSignedByteTransfers(t *testing.T) {
+	backend := New()
+	defer backend.Close()
+	if err := backend.Map(
+		0x1000,
+		0x1000,
+		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
+	); err != nil {
+		t.Fatal(err)
+	}
+	var code [20]byte
+	binary.LittleEndian.PutUint32(code[0:4], 0xe1de30d0)  // ldrsb r3, [lr]
+	binary.LittleEndian.PutUint32(code[4:8], 0xe1de40f2)  // ldrsh r4, [lr, #2]
+	binary.LittleEndian.PutUint32(code[8:12], 0xe1de50b2) // ldrh r5, [lr, #2]
+	binary.LittleEndian.PutUint32(code[12:16], 0xe0ce60b4)
+	// strh r6, [lr], #4
+	binary.LittleEndian.PutUint32(code[16:20], 0xe1200070) // bkpt
+	if err := backend.WriteMemory(0x1000, code[:]); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.WriteMemory(0x1800, []byte{0x80, 0x00, 0x00, 0xff}); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.WriteRegister(cpu.RegisterLR, 0x1800); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.WriteRegister(cpu.RegisterR6, 0xdead1234); err != nil {
+		t.Fatal(err)
+	}
+	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 8)
+	if result.Err != nil || result.Reason != cpu.StopBreakpoint {
+		t.Fatalf("result = %+v", result)
+	}
+	for id, want := range map[uint32]uint32{
+		cpu.RegisterR3: 0xffffff80,
+		cpu.RegisterR4: 0xffffff00,
+		cpu.RegisterR5: 0x0000ff00,
+		cpu.RegisterLR: 0x1804,
+	} {
+		if got := register(t, backend, id); got != want {
+			t.Fatalf("register %d = 0x%08x, want 0x%08x", id, got, want)
+		}
+	}
+	var stored [2]byte
+	if err := backend.ReadMemory(0x1800, stored[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint16(stored[:]); got != 0x1234 {
+		t.Fatalf("stored halfword = 0x%04x", got)
+	}
+}
+
+func TestARMMultipliesAndCountsLeadingZeros(t *testing.T) {
+	backend := New()
+	defer backend.Close()
+	if err := backend.Map(
+		0x1000,
+		0x1000,
+		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
+	); err != nil {
+		t.Fatal(err)
+	}
+	var code [20]byte
+	binary.LittleEndian.PutUint32(code[0:4], 0xe0030291)   // mul r3, r1, r2
+	binary.LittleEndian.PutUint32(code[4:8], 0xe0242391)   // mla r4, r1, r3, r2
+	binary.LittleEndian.PutUint32(code[8:12], 0xe0c65291)  // smull r5, r6, r1, r2
+	binary.LittleEndian.PutUint32(code[12:16], 0xe16f7f11) // clz r7, r1
+	binary.LittleEndian.PutUint32(code[16:20], 0xe1200070) // bkpt
+	if err := backend.WriteMemory(0x1000, code[:]); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.WriteRegister(cpu.RegisterR1, 0xfffffffe); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.WriteRegister(cpu.RegisterR2, 3); err != nil {
+		t.Fatal(err)
+	}
+	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 8)
+	if result.Err != nil || result.Reason != cpu.StopBreakpoint {
+		t.Fatalf("result = %+v", result)
+	}
+	for id, want := range map[uint32]uint32{
+		cpu.RegisterR3: 0xfffffffa,
+		cpu.RegisterR4: 0x0000000f,
+		cpu.RegisterR5: 0xfffffffa,
+		cpu.RegisterR6: 0xffffffff,
+		cpu.RegisterR7: 0,
+	} {
+		if got := register(t, backend, id); got != want {
+			t.Fatalf("register %d = 0x%08x, want 0x%08x", id, got, want)
+		}
+	}
+}
+
+func TestARMSwapExchangesMemoryAndRegister(t *testing.T) {
+	backend := New()
+	defer backend.Close()
+	if err := backend.Map(
+		0x1000,
+		0x1000,
+		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
+	); err != nil {
+		t.Fatal(err)
+	}
+	var code [8]byte
+	binary.LittleEndian.PutUint32(code[0:4], 0xe1013092) // swp r3, r2, [r1]
+	binary.LittleEndian.PutUint32(code[4:8], 0xe1200070) // bkpt
+	if err := backend.WriteMemory(0x1000, code[:]); err != nil {
+		t.Fatal(err)
+	}
+	var value [4]byte
+	binary.LittleEndian.PutUint32(value[:], 0xaabbccdd)
+	if err := backend.WriteMemory(0x1800, value[:]); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.WriteRegister(cpu.RegisterR1, 0x1800); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.WriteRegister(cpu.RegisterR2, 0x11223344); err != nil {
+		t.Fatal(err)
+	}
+	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 4)
+	if result.Err != nil || result.Reason != cpu.StopBreakpoint {
+		t.Fatalf("result = %+v", result)
+	}
+	if got := register(t, backend, cpu.RegisterR3); got != 0xaabbccdd {
+		t.Fatalf("r3 = 0x%08x", got)
+	}
+	var swapped [4]byte
+	if err := backend.ReadMemory(0x1800, swapped[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint32(swapped[:]); got != 0x11223344 {
+		t.Fatalf("swapped word = 0x%08x", got)
+	}
+}
