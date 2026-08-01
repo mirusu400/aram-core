@@ -623,6 +623,8 @@ func TestReferenceKTFFactoryRunsQueuedGameThread(t *testing.T) {
 	slices := 4096
 	if os.Getenv("ARAM_TEST_MATCH_RUNNER") != "" {
 		factory.RunBudget = DefaultRunBudget
+		factory.FrameRunBudget = DefaultHandsetRunBudget
+		factory.KTFRunBudget = DefaultKTFHandsetRunBudget
 	}
 	if configured := os.Getenv("ARAM_TEST_SLICES"); configured != "" {
 		value, parseErr := strconv.Atoi(configured)
@@ -831,6 +833,18 @@ func TestReferenceKTFFactoryRunsQueuedGameThread(t *testing.T) {
 				ktfLogJavaThrowStack(t, machine.ktf)
 				ktfLogJavaExceptionSummary(t, machine.ktf.hostTrace)
 				t.Fatal(err)
+			}
+			if machine.State() != machinecore.StatePaused {
+				t.Logf(
+					"KTF stopped after %d/%d post-frame slices: trace_tail=%v",
+					index+1,
+					postFrameSlices,
+					ktfTraceTail(machine.ktf.hostTrace, 128),
+				)
+				ktfLogCPUState(t, machine.ktf)
+				ktfLogJavaThrowStack(t, machine.ktf)
+				ktfLogJavaExceptionSummary(t, machine.ktf.hostTrace)
+				t.Fatalf("KTF machine state = %s, want paused", machine.State())
 			}
 		}
 		t.Logf(

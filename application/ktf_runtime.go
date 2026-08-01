@@ -2663,7 +2663,12 @@ func (r *ktfRuntime) drainServiceEvents(now time.Duration) error {
 			shared.EventInputRepeat:
 			key, known := inputKeyCode(event.Control)
 			if !known {
-				continue
+				r.tracef(
+					"java_input_drop:control=%q:kind=%s",
+					event.Control,
+					event.Kind,
+				)
+				break
 			}
 			queued, err := r.queueKeyEvent(
 				event.Kind != shared.EventInputRelease,
@@ -12744,62 +12749,56 @@ func ktfKernelAllocate(clear bool) ktfHostHandler {
 		if err != nil {
 			return 0, err
 		}
-		if size == 0 {
-			size = 1
-		}
-		if size > ^uint32(0)-8 {
-			return 0, errors.New("KTF kernel allocation size overflows")
-		}
-		// KTF's indirect-buffer allocation reserves a two-word
-		// INDIRECT_BUF_HEAD before the caller payload. The memory ID points at
-		// that header; resource APIs and the carrier Clet support library use
-		// the payload at header+8.
-		if size == 0 {
-			size = 1
-		}
-		if size > ^uint32(0)-8 {
-			return 0, errors.New("KTF kernel allocation size overflows")
-		}
-		// KTF's indirect-buffer allocation reserves a two-word
-		// INDIRECT_BUF_HEAD before the caller payload. The memory ID points at
-		// that header; resource APIs and the carrier Clet support library use
-		// the payload at header+8.
-		base, err := runtime.heap.allocate(size+8, clear)
-		if err != nil || base == 0 {
-			runtime.tracef(
-				"wipic_memory_alloc_failed:size=%d:clear=%t:error=%v",
-				size,
-				clear,
-				err,
-			)
-			return 0, err
-		}
-		data := base + 8
-		memoryID, err := runtime.allocateWords(2)
-		if err != nil {
-			runtime.heap.release(base)
-			return 0, err
-		}
-		if err := runtime.writeWords(memoryID, []uint32{base, size}); err != nil {
-			runtime.heap.release(base)
-			runtime.heap.release(memoryID)
-			return 0, err
-		}
-		runtime.wipicMemory[memoryID] = ktfWIPICMemory{
-			base: base,
-			data: data,
-			size: size,
-		}
-		runtime.tracef(
-			"wipic_memory_alloc:id=0x%08x:base=0x%08x:data=0x%08x:size=%d:clear=%t",
-			memoryID,
-			base,
-			data,
+		return runtime.allocateWIPICMemory(size, clear)
+	}
+}
+
+// allocateWIPICMemory creates the two-level buffer shape returned by KTF's
+// kernel allocator and by provider APIs such as MC_grpEncodeImage. Clet support
+// code dereferences the returned ID to find the INDIRECT_BUF_HEAD, then uses
+// the payload at head+8.
+func (r *ktfRuntime) allocateWIPICMemory(size uint32, clear bool) (uint32, error) {
+	if size == 0 {
+		size = 1
+	}
+	if size > ^uint32(0)-8 {
+		return 0, errors.New("KTF kernel allocation size overflows")
+	}
+	base, err := r.heap.allocate(size+8, clear)
+	if err != nil || base == 0 {
+		r.tracef(
+			"wipic_memory_alloc_failed:size=%d:clear=%t:error=%v",
 			size,
 			clear,
+			err,
 		)
-		return memoryID, nil
+		return 0, err
 	}
+	data := base + 8
+	memoryID, err := r.allocateWords(2)
+	if err != nil {
+		r.heap.release(base)
+		return 0, err
+	}
+	if err := r.writeWords(memoryID, []uint32{base, size}); err != nil {
+		r.heap.release(base)
+		r.heap.release(memoryID)
+		return 0, err
+	}
+	r.wipicMemory[memoryID] = ktfWIPICMemory{
+		base: base,
+		data: data,
+		size: size,
+	}
+	r.tracef(
+		"wipic_memory_alloc:id=0x%08x:base=0x%08x:data=0x%08x:size=%d:clear=%t",
+		memoryID,
+		base,
+		data,
+		size,
+		clear,
+	)
+	return memoryID, nil
 }
 
 func ktfKernelGetDLLInterface(
@@ -13604,6 +13603,8 @@ func ktfWIPICHandler(table, slot int) ktfHostHandler {
 			return ktfWIPICGraphicsCreateImage
 		case 33:
 			return ktfWIPICGraphicsDestroyImage
+		case 35:
+			return ktfWIPICGraphicsEncodeImage
 		}
 	}
 	if table == ktfWIPICMasterFS {
@@ -14792,6 +14793,92 @@ func ktfWIPICGraphicsDestroyImage(
 	runtime.heap.release(imageState.object)
 	delete(runtime.wipicImages, object)
 	return 0, nil
+}
+
+// ktfWIPICGraphicsEncodeImage returns a KTF indirect-memory ID containing a
+// BMP representation of the requested framebuffer rectangle. Although public
+// WIPI references describe a small status return, KTF Clet support code treats
+// this provider slot as an allocating call: it dereferences the returned ID and
+// consumes the payload at the resulting buffer head+8.
+func ktfWIPICGraphicsEncodeImage(
+	_ context.Context,
+	runtime *ktfRuntime,
+) (uint32, error) {
+	values := make([]uint32, 6)
+	for index := range values {
+		value, err := runtime.parameter(uint32(index))
+		if err != nil {
+			return 0, err
+		}
+		values[index] = value
+	}
+	lengthAddress := values[5]
+	if lengthAddress != 0 {
+		if err := runtime.writeU32(lengthAddress, 0); err != nil {
+			return 0, err
+		}
+	}
+	framebuffer := runtime.wipicFramebuffers[values[0]]
+	x, y := int64(int32(values[1])), int64(int32(values[2]))
+	width, height := int64(int32(values[3])), int64(int32(values[4]))
+	if framebuffer == nil || x < 0 || y < 0 || width <= 0 || height <= 0 ||
+		x+width > int64(framebuffer.width) ||
+		y+height > int64(framebuffer.height) {
+		return 0, nil
+	}
+	if err := runtime.syncKTFWIPICFramebuffer(values[0]); err != nil {
+		return 0, err
+	}
+	surface := runtime.wipicSurfaceServices[values[0]]
+	if surface == 0 {
+		return 0, nil
+	}
+	encoded, err := runtime.services.Assets.EncodeSurface(
+		runtime.serviceOwner,
+		surface,
+		"image/bmp",
+		shared.Rectangle{
+			X:      int32(x),
+			Y:      int32(y),
+			Width:  int32(width),
+			Height: int32(height),
+		},
+	)
+	if err != nil || len(encoded) == 0 || uint64(len(encoded)) > 32<<20 {
+		return 0, nil
+	}
+	memoryID, err := runtime.allocateWIPICMemory(uint32(len(encoded)), false)
+	if err != nil || memoryID == 0 {
+		return 0, err
+	}
+	allocation := runtime.wipicMemory[memoryID]
+	release := func() {
+		runtime.heap.release(allocation.base)
+		runtime.heap.release(memoryID)
+		delete(runtime.wipicMemory, memoryID)
+	}
+	if err := runtime.cpu.WriteMemory(allocation.data, encoded); err != nil {
+		release()
+		return 0, err
+	}
+	if lengthAddress != 0 {
+		if err := runtime.writeU32(lengthAddress, uint32(len(encoded))); err != nil {
+			release()
+			return 0, err
+		}
+	}
+	runtime.tracef(
+		"wipic_graphics_encode:framebuffer=0x%08x:memory=0x%08x:"+
+			"rect=%d,%d,%d,%d:size=%d",
+		values[0],
+		memoryID,
+		x,
+		y,
+		width,
+		height,
+		len(encoded),
+	)
+	return memoryID, nil
 }
 
 func ktfWIPICGraphicsGetScreenFramebuffer(

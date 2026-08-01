@@ -7109,6 +7109,83 @@ func TestKTFWIPICImageDecodesBMP(t *testing.T) {
 	}
 }
 
+func TestKTFWIPICEncodeImageReturnsIndirectBMPBuffer(t *testing.T) {
+	runtime := newScratchKTFRuntime(t)
+	framebufferObject, err := runtime.createWIPICFramebuffer(2, 1, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	framebuffer := runtime.wipicFramebuffers[framebufferObject]
+	var pixels [4]byte
+	binary.LittleEndian.PutUint16(pixels[0:2], 0xf800)
+	binary.LittleEndian.PutUint16(pixels[2:4], 0x07e0)
+	if err := runtime.cpu.WriteMemory(framebuffer.pixels, pixels[:]); err != nil {
+		t.Fatal(err)
+	}
+	lengthAddress, err := runtime.allocateWords(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stack, err := runtime.allocateWords(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.writeWords(stack, []uint32{1, lengthAddress}); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range []uint32{framebufferObject, 0, 0, 2} {
+		if err := runtime.cpu.WriteRegister(
+			cpu.RegisterR0+uint32(register),
+			value,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterSP, stack); err != nil {
+		t.Fatal(err)
+	}
+	memoryID, err := ktfWIPICHandler(
+		ktfWIPICMasterGraphics,
+		35,
+	)(context.Background(), runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allocation, ok := runtime.wipicMemory[memoryID]
+	if memoryID == 0 || !ok {
+		t.Fatalf("encoded memory ID = 0x%08x, registered=%t", memoryID, ok)
+	}
+	words, err := runtime.readWords(memoryID, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	length, err := runtime.readU32(lengthAddress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if words[0] != allocation.base || words[1] != allocation.size ||
+		length != allocation.size || allocation.data != allocation.base+8 {
+		t.Fatalf(
+			"encoded memory words=%08x allocation=%+v length=%d",
+			words,
+			allocation,
+			length,
+		)
+	}
+	if allocation.size < 26 {
+		t.Fatalf("encoded BMP size = %d", allocation.size)
+	}
+	header := make([]byte, 26)
+	if err := runtime.cpu.ReadMemory(allocation.data, header); err != nil {
+		t.Fatal(err)
+	}
+	if string(header[:2]) != "BM" ||
+		binary.LittleEndian.Uint32(header[18:22]) != 2 ||
+		binary.LittleEndian.Uint32(header[22:26]) != 1 {
+		t.Fatalf("encoded BMP header = %x", header)
+	}
+}
+
 func TestKTFWIPICDrawImageBlitsAndClips(t *testing.T) {
 	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
 		ClientName: "client.bin0",
