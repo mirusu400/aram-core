@@ -13597,7 +13597,7 @@ func ktfTotalMemory(context.Context, *ktfRuntime) (uint32, error) {
 
 func ktfFreeMemory(_ context.Context, runtime *ktfRuntime) (uint32, error) {
 	var available uint64
-	for _, block := range runtime.heap.free {
+	for _, block := range runtime.heap.root().free {
 		available += uint64(block.size)
 	}
 	if available > uint64(^uint32(0)) {

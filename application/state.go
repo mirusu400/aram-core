@@ -45,6 +45,9 @@ func (m *Machine) SaveState(output io.Writer) error {
 	if m.lastResult.Err != nil {
 		return fmt.Errorf("save state with pending execution error: %w", m.lastResult.Err)
 	}
+	if m.raptor != nil && m.raptor.java != nil {
+		return fmt.Errorf("save state: Raptor Java adapter state is not supported")
+	}
 	identity := m.cpu.Identity()
 	if err := identity.Validate(); err != nil {
 		return fmt.Errorf("save state: %w", err)
@@ -177,6 +180,9 @@ func (m *Machine) LoadState(input io.Reader) error {
 	}
 	if m.state == machinecore.StateRunning || m.state == machinecore.StateEmpty {
 		return fmt.Errorf("load from %s: %w", m.state, ErrInvalidState)
+	}
+	if m.raptor != nil && m.raptor.java != nil {
+		return fmt.Errorf("load state: Raptor Java adapter state is not supported")
 	}
 	maximum := m.memoryLimit + uint64(len(m.frame.Pix)) + stateOverheadLimit
 	if maximum <= math.MaxUint64-shared.MaxServicesStateBytes {

@@ -124,6 +124,7 @@ type guestHeap struct {
 	cpu         cpu.Backend
 	free        []heapBlock
 	allocations map[uint32]uint32
+	shared      *guestHeap
 }
 
 type heapBlock struct {
@@ -139,7 +140,19 @@ func newGuestHeap(backend cpu.Backend, base, size uint32) guestHeap {
 	}
 }
 
+// root returns the allocator that owns this heap's free list. Some runtimes
+// share one guest address space, so copying a guestHeap would otherwise copy
+// only the slice header and let their free lists diverge into overlapping
+// allocations.
+func (h *guestHeap) root() *guestHeap {
+	for h.shared != nil {
+		h = h.shared
+	}
+	return h
+}
+
 func (h *guestHeap) allocate(size uint32, clearMemory bool) (uint32, error) {
+	h = h.root()
 	if size == 0 {
 		size = 1
 	}
@@ -170,6 +183,7 @@ func (h *guestHeap) allocate(size uint32, clearMemory bool) (uint32, error) {
 }
 
 func (h *guestHeap) release(address uint32) bool {
+	h = h.root()
 	size, ok := h.allocations[address]
 	if !ok {
 		return false

@@ -2,11 +2,10 @@ package application
 
 import (
 	"fmt"
-	"sort"
 )
 
 const (
-	raptorStateSchema      = uint32(1)
+	raptorStateSchema      = uint32(2)
 	maxRaptorStateSections = 1024
 )
 
@@ -19,7 +18,8 @@ type raptorSavedState struct {
 	moduleInitialized bool
 	started           bool
 	sections          []raptorSectionState
-	resolvedImports   map[uint32]uint64
+	resolvedImports   map[raptorImportKey]uint64
+	importSlots       []raptorImportKey
 	importTrace       []raptorImportCall
 }
 
@@ -32,6 +32,7 @@ func (m *Machine) writeRaptorState(writer *stateWriter) error {
 	sections := m.raptor.pkg.Image.AllocatedSections()
 	if len(sections) > maxRaptorStateSections ||
 		len(m.raptor.resolvedImports) > maxSavedWIPIEntries ||
+		len(m.raptor.importSlots) != len(m.raptor.resolvedImports) ||
 		len(m.raptor.importTrace) > maxSavedWIPIEntries {
 		return fmt.Errorf("save Raptor state: metadata exceeds format limits")
 	}
@@ -57,18 +58,15 @@ func (m *Machine) writeRaptorState(writer *stateWriter) error {
 			return fmt.Errorf("save Raptor section %q: %w", section.Name, err)
 		}
 	}
-	ordinals := make([]uint32, 0, len(m.raptor.resolvedImports))
-	for ordinal := range m.raptor.resolvedImports {
-		ordinals = append(ordinals, ordinal)
-	}
-	sort.Slice(ordinals, func(i, j int) bool { return ordinals[i] < ordinals[j] })
-	writer.u32(uint32(len(ordinals)))
-	for _, ordinal := range ordinals {
-		writer.u32(ordinal)
-		writer.u64(m.raptor.resolvedImports[ordinal])
+	writer.u32(uint32(len(m.raptor.importSlots)))
+	for _, key := range m.raptor.importSlots {
+		writer.u32(key.Module)
+		writer.u32(key.Ordinal)
+		writer.u64(m.raptor.resolvedImports[key])
 	}
 	writer.u32(uint32(len(m.raptor.importTrace)))
 	for _, call := range m.raptor.importTrace {
+		writer.u32(call.Module)
 		writer.u32(call.Ordinal)
 		for _, argument := range call.Args {
 			writer.u32(argument)
@@ -101,7 +99,7 @@ func (m *Machine) parseRaptorState(
 	state := &raptorSavedState{
 		moduleInitialized: decoder.u8() != 0,
 		started:           decoder.u8() != 0,
-		resolvedImports:   make(map[uint32]uint64),
+		resolvedImports:   make(map[raptorImportKey]uint64),
 	}
 	decoder.reserved(2)
 	sections := m.raptor.pkg.Image.AllocatedSections()
@@ -127,15 +125,17 @@ func (m *Machine) parseRaptorState(
 	if importCount > maxSavedWIPIEntries {
 		return nil, decoder.fail("Raptor resolved-import table exceeds limit")
 	}
-	var previous uint32
 	for index := uint32(0); index < importCount; index++ {
-		ordinal, calls := decoder.u32(), decoder.u64()
-		if (index != 0 && ordinal <= previous) || calls == 0 ||
-			ordinal >= raptorImportStubSize/4 {
+		key := raptorImportKey{Module: decoder.u32(), Ordinal: decoder.u32()}
+		calls := decoder.u64()
+		if key.Module == 0 || calls == 0 {
 			return nil, decoder.fail("invalid Raptor resolved-import entry")
 		}
-		state.resolvedImports[ordinal] = calls
-		previous = ordinal
+		if _, exists := state.resolvedImports[key]; exists {
+			return nil, decoder.fail("duplicate Raptor resolved-import entry")
+		}
+		state.resolvedImports[key] = calls
+		state.importSlots = append(state.importSlots, key)
 	}
 	traceCount := decoder.u32()
 	if traceCount > maxSavedWIPIEntries {
@@ -144,12 +144,13 @@ func (m *Machine) parseRaptorState(
 	state.importTrace = make([]raptorImportCall, traceCount)
 	for index := range state.importTrace {
 		call := &state.importTrace[index]
+		call.Module = decoder.u32()
 		call.Ordinal = decoder.u32()
 		for argument := range call.Args {
 			call.Args[argument] = decoder.u32()
 		}
 		call.LR = decoder.u32()
-		if call.Ordinal >= raptorImportStubSize/4 {
+		if call.Module == 0 {
 			return nil, decoder.fail("invalid Raptor import trace ordinal")
 		}
 	}
@@ -176,9 +177,12 @@ func (m *Machine) restoreRaptorState(state *raptorSavedState) error {
 	}
 	m.raptor.moduleInitialized = state.moduleInitialized
 	m.raptor.started = state.started
-	m.raptor.resolvedImports = make(map[uint32]uint64, len(state.resolvedImports))
-	for ordinal, calls := range state.resolvedImports {
-		m.raptor.resolvedImports[ordinal] = calls
+	m.raptor.resolvedImports = make(map[raptorImportKey]uint64, len(state.resolvedImports))
+	m.raptor.importSlots = append([]raptorImportKey(nil), state.importSlots...)
+	m.raptor.importSlotByKey = make(map[raptorImportKey]uint32, len(state.importSlots))
+	for slot, key := range state.importSlots {
+		m.raptor.resolvedImports[key] = state.resolvedImports[key]
+		m.raptor.importSlotByKey[key] = uint32(slot)
 	}
 	m.raptor.importTrace = append([]raptorImportCall(nil), state.importTrace...)
 	return nil

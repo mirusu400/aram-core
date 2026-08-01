@@ -478,7 +478,7 @@ func (m *Machine) writeKTFState(writer *stateWriter) error {
 	if err := m.writeMemoryState(writer, ktfHostBase, ktfHostSize); err != nil {
 		return fmt.Errorf("save KTF host memory: %w", err)
 	}
-	writeHeapAllocations(writer, r.heap.allocations)
+	writeHeapAllocations(writer, r.heap.root().allocations)
 	if err := m.writeMemoryState(writer, guestHeapBase, guestHeapSize); err != nil {
 		return fmt.Errorf("save KTF heap memory: %w", err)
 	}

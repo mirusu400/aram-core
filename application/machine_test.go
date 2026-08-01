@@ -1440,6 +1440,28 @@ func TestMagicholeReferenceEADSEntryPoint(t *testing.T) {
 	}
 }
 
+func TestRaptorJavaSaveStateFailsBeforeWriting(t *testing.T) {
+	machine := newSyntheticMachine(t)
+	var valid bytes.Buffer
+	if err := machine.SaveState(&valid); err != nil {
+		t.Fatal(err)
+	}
+	machine.raptor = &raptorRuntime{java: &raptorJavaRuntime{}}
+
+	var rejected bytes.Buffer
+	err := machine.SaveState(&rejected)
+	if err == nil || !strings.Contains(err.Error(), "Raptor Java adapter") {
+		t.Fatalf("SaveState error = %v", err)
+	}
+	if rejected.Len() != 0 {
+		t.Fatalf("SaveState wrote %d bytes before rejecting Java state", rejected.Len())
+	}
+	err = machine.LoadState(bytes.NewReader(valid.Bytes()))
+	if err == nil || !strings.Contains(err.Error(), "Raptor Java adapter") {
+		t.Fatalf("LoadState error = %v", err)
+	}
+}
+
 func newSyntheticMachine(t *testing.T) *Machine {
 	t.Helper()
 	data := syntheticEADS()

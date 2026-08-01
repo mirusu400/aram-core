@@ -4,6 +4,7 @@ package application
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -1235,7 +1236,11 @@ func (m *Machine) Close() error {
 	if running {
 		_ = m.cpu.Stop()
 	}
-	err := m.cpu.Close()
+	var javaErr error
+	if m.raptor != nil {
+		javaErr = m.raptor.destroyRaptorJava()
+	}
+	err := errors.Join(m.cpu.Close(), javaErr)
 
 	m.mu.Lock()
 	if m.wipi != nil {
@@ -1614,9 +1619,13 @@ func (m *Machine) runWIPISlice(
 ) cpu.Result {
 	var instructions uint64
 	presentations := uint32(0)
+	javaPresentations := uint32(0)
 	stopOnPresent = stopOnPresent && m.wipi != nil
 	if stopOnPresent {
 		presentations = m.wipi.stats.PresentCount
+		if m.raptor != nil && m.raptor.java != nil {
+			javaPresentations = m.raptor.java.host.presentCount
+		}
 	}
 	for instructions < budget {
 		run := m.cpu.Run(ctx, pc, mode, budget-instructions)
@@ -1659,7 +1668,9 @@ func (m *Machine) runWIPISlice(
 				Err:          err,
 			}
 		}
-		if stopOnPresent && m.wipi.stats.PresentCount != presentations {
+		javaPresented := m.raptor != nil && m.raptor.java != nil &&
+			m.raptor.java.host.presentCount != javaPresentations
+		if stopOnPresent && (m.wipi.stats.PresentCount != presentations || javaPresented) {
 			// A frontend frame is a presentation quantum. Yield immediately
 			// after the guest submits visible output instead of running the
 			// remainder of the handset budget and hiding intermediate frames.
@@ -1783,18 +1794,21 @@ func (m *Machine) pumpWIPICallbacks(
 		}
 		switch event.Kind {
 		case shared.EventInputPress, shared.EventInputRelease, shared.EventInputRepeat:
-			if m.raptor == nil || !m.raptor.started ||
-				m.raptor.clet.HandleEvent == 0 {
+			if m.raptor == nil || !m.raptor.started {
 				continue
 			}
-			callback, ok := raptorInputCallback(
-				m.raptor.clet.HandleEvent,
-				machinecore.InputEvent{
-					Control: event.Control,
-					Pressed: event.Kind != shared.EventInputRelease,
-					At:      event.At,
-				},
-			)
+			input := machinecore.InputEvent{
+				Control: event.Control,
+				Pressed: event.Kind != shared.EventInputRelease,
+				At:      event.At,
+			}
+			callback, ok := m.raptor.raptorJavaInputCallback(input)
+			if !ok {
+				callback, ok = raptorInputCallback(
+					m.raptor.clet.HandleEvent,
+					input,
+				)
+			}
 			if ok {
 				callbacks = append(callbacks, callback)
 			}
@@ -1969,6 +1983,33 @@ func (m *Machine) invokeWIPICallback(
 		false,
 	)
 	if result.Err != nil {
+		if m.raptor != nil {
+			registers := make([]uint32, cpu.RegisterR12+1)
+			for register := range registers {
+				registers[register], _ = m.cpu.ReadRegister(uint32(register))
+			}
+			sp, _ := m.cpu.ReadRegister(cpu.RegisterSP)
+			lr, _ := m.cpu.ReadRegister(cpu.RegisterLR)
+			status, _ := m.cpu.ReadRegister(cpu.RegisterCPSR)
+			stack := make([]uint32, 16)
+			data := make([]byte, len(stack)*4)
+			if readErr := m.cpu.ReadMemory(sp, data); readErr == nil {
+				for index := range stack {
+					stack[index] = binary.LittleEndian.Uint32(data[index*4:])
+				}
+			} else {
+				stack = nil
+			}
+			result.Err = fmt.Errorf(
+				"%w (r0-r12=%08x sp=%08x lr=%08x cpsr=%08x stack=%08x)",
+				result.Err,
+				registers,
+				sp,
+				lr,
+				status,
+				stack,
+			)
+		}
 		return result, 0, result.Err
 	}
 	if result.Reason == cpu.StopExited {

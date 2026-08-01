@@ -43,6 +43,7 @@ const (
 type raptorClet struct {
 	Table       uint32
 	Name        string
+	Initialize  uint32
 	Start       uint32
 	Destroy     uint32
 	Pause       uint32
@@ -56,14 +57,23 @@ type raptorRuntime struct {
 	public *wipiRuntime
 	pkg    raptor.Package
 	clet   raptorClet
+	java   *raptorJavaRuntime
 
 	moduleInitialized bool
 	started           bool
-	resolvedImports   map[uint32]uint64
+	resolvedImports   map[raptorImportKey]uint64
+	importSlots       []raptorImportKey
+	importSlotByKey   map[raptorImportKey]uint32
 	importTrace       []raptorImportCall
 }
 
+type raptorImportKey struct {
+	Module  uint32
+	Ordinal uint32
+}
+
 type raptorImportCall struct {
+	Module  uint32
 	Ordinal uint32
 	Args    [4]uint32
 	LR      uint32
@@ -105,7 +115,8 @@ func newRaptorRuntime(
 		public:          public,
 		pkg:             pkg,
 		clet:            clet,
-		resolvedImports: make(map[uint32]uint64),
+		resolvedImports: make(map[raptorImportKey]uint64),
+		importSlotByKey: make(map[raptorImportKey]uint32),
 	}
 	if err := runtime.installInterfaces(); err != nil {
 		return nil, err
@@ -130,10 +141,19 @@ func inspectRaptorClet(image raptor.Image) (raptorClet, error) {
 	// six Thumb entry points. The base may carry the interworking bit, the
 	// same way entry offsets do.
 	limit := len(data.Data) - int(raptorCletHeaderSize)
+	var module raptorClet
 	for offset := 0; offset <= limit; offset += 4 {
 		if clet, ok := raptorCletAt(image, data, text, offset); ok {
-			return clet, nil
+			if clet.Start != 0 {
+				return clet, nil
+			}
+			if module.Table == 0 {
+				module = clet
+			}
 		}
+	}
+	if module.Table != 0 {
+		return module, nil
 	}
 	return raptorClet{}, fmt.Errorf(
 		"initialize Raptor Clet: %s holds no version 3 lifecycle header",
@@ -148,8 +168,12 @@ func raptorCletAt(
 	offset int,
 ) (raptorClet, bool) {
 	header := data.Data[offset:]
+	initialize := binary.LittleEndian.Uint32(header[4:8])
 	if binary.LittleEndian.Uint32(header[0:4]) != 3 ||
-		binary.LittleEndian.Uint32(header[4:8])&^1 != text.Address {
+		!raptorExecutableAddress(image, initialize&^1) ||
+		binary.LittleEndian.Uint32(header[0x0c:0x10]) != 0 ||
+		binary.LittleEndian.Uint32(header[0x10:0x14]) != 0 ||
+		binary.LittleEndian.Uint32(header[0x14:0x18]) != 0 {
 		return raptorClet{}, false
 	}
 	name, ok := raptorImageCString(
@@ -163,6 +187,7 @@ func raptorCletAt(
 	clet := raptorClet{
 		Table:       data.Address + uint32(offset),
 		Name:        name,
+		Initialize:  initialize,
 		Start:       binary.LittleEndian.Uint32(header[0x18:0x1c]),
 		Destroy:     binary.LittleEndian.Uint32(header[0x1c:0x20]),
 		Pause:       binary.LittleEndian.Uint32(header[0x20:0x24]),
@@ -179,7 +204,13 @@ func raptorCletAt(
 		clet.HandleEvent,
 	} {
 		if address&1 == 0 || !raptorExecutableAddress(image, address&^1) {
-			return raptorClet{}, false
+			clet.Start = 0
+			clet.Destroy = 0
+			clet.Pause = 0
+			clet.Resume = 0
+			clet.Paint = 0
+			clet.HandleEvent = 0
+			return clet, true
 		}
 	}
 	return clet, true
@@ -289,6 +320,9 @@ func (r *raptorRuntime) installInterfaces() error {
 }
 
 func (r *raptorRuntime) restoreImage() error {
+	if err := r.destroyRaptorJava(); err != nil {
+		return fmt.Errorf("destroy Raptor Java adapter: %w", err)
+	}
 	for _, section := range r.pkg.Image.AllocatedSections() {
 		if err := zeroGuestMemory(r.cpu, section.Address, section.Size); err != nil {
 			return fmt.Errorf("clear Raptor section %q: %w", section.Name, err)
@@ -301,7 +335,9 @@ func (r *raptorRuntime) restoreImage() error {
 	}
 	r.moduleInitialized = false
 	r.started = false
-	r.resolvedImports = make(map[uint32]uint64)
+	r.resolvedImports = make(map[raptorImportKey]uint64)
+	r.importSlots = nil
+	r.importSlotByKey = make(map[raptorImportKey]uint32)
 	r.importTrace = nil
 	return nil
 }
@@ -322,15 +358,20 @@ func (r *raptorRuntime) dispatchTrap(
 		return true, r.public.returnFromTrap(wipiReturn{low: module})
 
 	case raptorDletResolveStub:
+		module, err := r.cpu.ReadRegister(cpu.RegisterR0)
+		if err != nil {
+			return true, err
+		}
 		ordinal, err := r.cpu.ReadRegister(cpu.RegisterR1)
 		if err != nil {
 			return true, err
 		}
-		if ordinal >= raptorImportStubSize/4 {
-			return true, fmt.Errorf("Raptor import ordinal 0x%x exceeds trampoline range", ordinal)
+		key := raptorImportKey{Module: module, Ordinal: ordinal}
+		stub, err := r.importStub(key)
+		if err != nil {
+			return true, err
 		}
-		r.resolvedImports[ordinal]++
-		stub := raptorImportStubBase + ordinal*4
+		r.resolvedImports[key]++
 		return true, r.public.returnFromTrap(wipiReturn{low: stub | 1})
 
 	case raptorDletWaitStub:
@@ -341,15 +382,18 @@ func (r *raptorRuntime) dispatchTrap(
 		(trap-raptorImportStubBase)%4 != 0 {
 		return false, nil
 	}
-	ordinal := (trap - raptorImportStubBase) / 4
-	return true, r.dispatchImport(ctx, ordinal)
+	slot := (trap - raptorImportStubBase) / 4
+	if slot >= uint32(len(r.importSlots)) {
+		return true, fmt.Errorf("Raptor import trampoline slot %d is unresolved", slot)
+	}
+	return true, r.dispatchImport(ctx, r.importSlots[slot])
 }
 
 func (r *raptorRuntime) dispatchImport(
 	ctx context.Context,
-	ordinal uint32,
+	key raptorImportKey,
 ) error {
-	call := raptorImportCall{Ordinal: ordinal}
+	call := raptorImportCall{Module: key.Module, Ordinal: key.Ordinal}
 	for register := cpu.RegisterR0; register <= cpu.RegisterR3; register++ {
 		value, err := r.cpu.ReadRegister(register)
 		if err != nil {
@@ -364,10 +408,14 @@ func (r *raptorRuntime) dispatchImport(
 	call.LR = lr
 	if len(r.importTrace) < maxSavedWIPIEntries {
 		r.importTrace = append(r.importTrace, call)
+	} else {
+		keep := len(r.importTrace) / 2
+		copy(r.importTrace, r.importTrace[len(r.importTrace)-keep:])
+		r.importTrace = append(r.importTrace[:keep], call)
 	}
-	if result, name, handled, privateErr := r.dispatchPrivateImport(ordinal); handled {
-		if privateErr != nil {
-			return fmt.Errorf("%s: %w", name, privateErr)
+	if result, name, handled, javaErr := r.dispatchJavaImport(ctx, key); handled {
+		if javaErr != nil {
+			return fmt.Errorf("%s: %w", name, javaErr)
 		}
 		r.public.stats.APICalls++
 		r.public.stats.ImplementedCalls++
@@ -375,18 +423,31 @@ func (r *raptorRuntime) dispatchImport(
 		r.public.observed[name]++
 		return r.public.returnFromTrap(result)
 	}
-	if publicName, ok := raptorWIPIImportName(ordinal); ok {
+	if key.Module == 507 {
+		if result, name, handled, privateErr := r.dispatchPrivateImport(key.Ordinal); handled {
+			if privateErr != nil {
+				return fmt.Errorf("%s: %w", name, privateErr)
+			}
+			r.public.stats.APICalls++
+			r.public.stats.ImplementedCalls++
+			r.public.stats.LastAPI = name
+			r.public.observed[name]++
+			return r.public.returnFromTrap(result)
+		}
+	}
+	if publicName, ok := raptorWIPIImportName(key.Ordinal); ok &&
+		(key.Module == 1 || key.Module == 507) {
 		api, found := wipi.Lookup(publicName)
 		if !found {
 			return fmt.Errorf(
 				"Raptor import %d names unknown public WIPI API %q",
-				ordinal,
+				key.Ordinal,
 				publicName,
 			)
 		}
 		return r.public.dispatchAPI(ctx, api)
 	}
-	name := fmt.Sprintf("RAPTOR.wipic#%d", ordinal)
+	name := fmt.Sprintf("RAPTOR.module%d#%d", key.Module, key.Ordinal)
 	r.public.stats.APICalls++
 	r.public.stats.UnimplementedCalls++
 	r.public.stats.LastAPI = name
@@ -668,9 +729,16 @@ func (m *Machine) runRaptorStart(ctx context.Context) error {
 		}
 	}
 	if err == nil && !runtime.started {
+		procedure := runtime.clet.Start
+		if procedure == 0 {
+			procedure = runtime.clet.Initialize
+		}
 		result, _, err = m.invokeWIPICallback(ctx, wipiGuestCallback{
-			procedure: runtime.clet.Start,
+			procedure: procedure,
 		})
+		if err == nil {
+			err = m.startRaptorJava(ctx)
+		}
 		if err == nil {
 			runtime.started = true
 		}
@@ -740,6 +808,22 @@ func (m *Machine) stepRaptorFrame(ctx context.Context) error {
 	callbackResult, stopped, err := m.pumpWIPICallbacks(ctx, wipiFrameDuration)
 	if err != nil || stopped {
 		return err
+	}
+	if m.raptor.java != nil {
+		m.raptor.java.host.tickMS = m.raptor.public.tickMS
+	}
+	javaResult, ranJava, javaErr := m.stepRaptorJavaTask(ctx)
+	if javaErr != nil {
+		return m.finishRaptorCall(javaResult, javaErr, javaResult.Instructions)
+	}
+	if ranJava {
+		m.mu.Lock()
+		m.lastResult = javaResult
+		m.state = machinecore.StatePaused
+		m.mu.Unlock()
+	}
+	if m.raptor.clet.Paint == 0 {
+		return nil
 	}
 	m.mu.Lock()
 	if m.closed {
