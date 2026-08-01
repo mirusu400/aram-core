@@ -1878,6 +1878,13 @@ func restoreKTFImagesAndGraphics(
 			),
 		}
 	}
+	if r.menuForegroundCompat != nil {
+		// The compatibility cache is derived from live image objects and draw
+		// calls. Rebuild it after restoring those objects instead of retaining
+		// coordinates from the state that was active before this load.
+		r.menuForegroundCompat.overlayImage = 0
+		r.menuForegroundCompat.pending = nil
+	}
 	return nil
 }
 

@@ -176,6 +176,7 @@ type ktfRuntime struct {
 	frame                   *image.RGBA
 	graphics                map[uint32]*ktfGraphics
 	screenGraphics          uint32
+	menuForegroundCompat    *ktfMenuForegroundCompat
 	wipicFramebuffers       map[uint32]*ktfWIPICFramebuffer
 	wipicScreenFramebuffer  uint32
 	wipicImages             map[uint32]*ktfWIPICImage
@@ -1522,6 +1523,7 @@ func newKTFRuntimeForProfile(
 		fileStreamTargets:     make(map[uint32]uint32),
 		images:                make(map[uint32]image.Image),
 		graphics:              make(map[uint32]*ktfGraphics),
+		menuForegroundCompat:  newKTFMenuForegroundCompat(pkg),
 		wipicFramebuffers:     make(map[uint32]*ktfWIPICFramebuffer),
 		wipicImages:           make(map[uint32]*ktfWIPICImage),
 		wipicResources:        make(map[uint32][]byte),
@@ -7801,6 +7803,13 @@ func (r *ktfRuntime) handleGraphicsMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
+		if name == "fillRect" && r.menuForegroundCompat != nil {
+			bounds := state.target.Bounds()
+			if rect.Min.X <= bounds.Min.X && rect.Min.Y <= bounds.Min.Y &&
+				rect.Max.X >= bounds.Max.X && rect.Max.Y >= bounds.Max.Y-20 {
+				r.menuForegroundCompat.pending = nil
+			}
+		}
 		draw.Draw(state.target, rect.Intersect(state.clip), image.NewUniform(state.color), image.Point{}, draw.Src)
 		state.pixelsDirty = true
 		return 0, nil
@@ -7929,30 +7938,7 @@ func (r *ktfRuntime) handleGraphicsMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		if anchor&8 != 0 {
-			x -= source.Bounds().Dx()
-		} else if anchor&1 != 0 {
-			x -= source.Bounds().Dx() / 2
-		}
-		if anchor&32 != 0 {
-			y -= source.Bounds().Dy()
-		} else if anchor&2 != 0 {
-			y -= source.Bounds().Dy() / 2
-		}
-		point := image.Pt(x+state.translate.X, y+state.translate.Y)
-		targetRect := source.Bounds().Add(point.Sub(source.Bounds().Min))
-		clippedRect := targetRect.Intersect(state.clip)
-		sourcePoint := source.Bounds().Min.Add(
-			clippedRect.Min.Sub(targetRect.Min),
-		)
-		draw.Draw(
-			state.target,
-			clippedRect,
-			source,
-			sourcePoint,
-			draw.Over,
-		)
-		state.pixelsDirty = true
+		r.drawKTFJavaImage(state, imageAddress, source, x, y, anchor)
 		return 0, nil
 	case "setClip(IIII)V":
 		if state == nil {
