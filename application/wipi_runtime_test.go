@@ -579,6 +579,39 @@ func TestWIPIRuntimeGraphicsPresentsGuestFramebuffer(t *testing.T) {
 	}
 }
 
+// A context colour is 24-bit RGB, so on a 16bpp screen it has to be converted
+// rather than written straight through. 영웅서기3 fills with 0x4ba81c, whose
+// low half reads back as a magenta that has nothing to do with the colour it
+// asked for.
+func TestWIPIRuntimeConvertsContextColourForRGB565(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	runtime.framebufferBits = 16
+	screen := dispatchPublicAPI(t, runtime, "MC_grpGetScreenFrameBuffer", 0).low
+	framebuffer := runtime.framebuffers[screen]
+	context, err := runtime.heap.allocate(60, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatchPublicAPI(t, runtime, "MC_grpInitContext", context)
+	dispatchPublicAPI(t, runtime, "MC_grpSetContext", context, 1, 0x4ba81c)
+	dispatchPublicAPI(t, runtime, "MC_grpPutPixel", screen, 1, 1, context)
+
+	var raw [2]byte
+	if err := runtime.cpu.ReadMemory(
+		framebuffer.pixels+uint32(1*framebuffer.width+1)*2,
+		raw[:],
+	); err != nil {
+		t.Fatal(err)
+	}
+	got := binary.LittleEndian.Uint16(raw[:])
+	if want := uint16(0x4d43); got != want {
+		t.Fatalf("converted pixel = 0x%04x, want 0x%04x", got, want)
+	}
+	if got == uint16(0x4ba81c&0xffff) {
+		t.Fatal("context colour was truncated instead of converted")
+	}
+}
+
 func TestWIPIRuntimeGraphicsSupportsRGB565Framebuffer(t *testing.T) {
 	runtime := newPublicRuntime(t)
 	runtime.framebufferBits = 16
@@ -598,6 +631,8 @@ func TestWIPIRuntimeGraphicsSupportsRGB565Framebuffer(t *testing.T) {
 		t.Fatalf("framebuffer descriptor bits = %d", bits)
 	}
 
+	// Colours cross the API as 24-bit RGB whatever the screen depth; the
+	// RGB565 packing belongs to the framebuffer and is applied on the way in.
 	red := dispatchPublicAPI(
 		t,
 		runtime,
@@ -606,8 +641,8 @@ func TestWIPIRuntimeGraphicsSupportsRGB565Framebuffer(t *testing.T) {
 		0,
 		0,
 	).low
-	if red != 0xf800 {
-		t.Fatalf("RGB565 red = 0x%04x", red)
+	if red != 0xff0000 {
+		t.Fatalf("API red = 0x%06x", red)
 	}
 	context, err := runtime.heap.allocate(60, true)
 	if err != nil {

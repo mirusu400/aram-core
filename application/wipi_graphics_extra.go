@@ -1,4 +1,4 @@
-package application
+﻿package application
 
 import (
 	"bytes"
@@ -350,7 +350,7 @@ func (r *wipiRuntime) paintServiceImageFrame(
 	for y := 0; y < height; y++ {
 		for x := 0; x < width; x++ {
 			offset := (y*int(descriptor.Width) + x) * 4
-			pixel := r.pixelFromRGB(
+			pixel := r.devicePixelFromRGB(
 				uint32(pixels[offset]),
 				uint32(pixels[offset+1]),
 				uint32(pixels[offset+2]),
@@ -586,7 +586,7 @@ func (r *wipiRuntime) paintImageFrame(handle uint32, decoded image.Image, clear 
 	for y := max(0, bounds.Min.Y); y < min(framebuffer.height, bounds.Max.Y); y++ {
 		for x := max(0, bounds.Min.X); x < min(framebuffer.width, bounds.Max.X); x++ {
 			red, green, blue, _ := decoded.At(x, y).RGBA()
-			pixel := r.pixelFromRGB(
+			pixel := r.devicePixelFromRGB(
 				uint32(red>>8),
 				uint32(green>>8),
 				uint32(blue>>8),

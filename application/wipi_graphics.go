@@ -477,7 +477,20 @@ func (r *wipiRuntime) writeFramebufferPixel(
 	return nil
 }
 
+// The WIPI-C graphics API hands colours around as 24-bit RGB, which is what a
+// graphics context stores and what MC_grpGetPixelFromRGB hands back. That is
+// the same spelling as a pixel on a 32bpp screen but not on a 16bpp one, where
+// the framebuffer keeps RGB565, so the two spellings are kept apart: the pair
+// below is the API's, and the device pair converts at the framebuffer edge.
 func (r *wipiRuntime) pixelFromRGB(red, green, blue uint32) uint32 {
+	return red&0xff<<16 | green&0xff<<8 | blue&0xff
+}
+
+func (r *wipiRuntime) rgbFromPixel(pixel uint32) (uint32, uint32, uint32) {
+	return pixel >> 16 & 0xff, pixel >> 8 & 0xff, pixel & 0xff
+}
+
+func (r *wipiRuntime) devicePixelFromRGB(red, green, blue uint32) uint32 {
 	red &= 0xff
 	green &= 0xff
 	blue &= 0xff
@@ -487,7 +500,7 @@ func (r *wipiRuntime) pixelFromRGB(red, green, blue uint32) uint32 {
 	return red<<16 | green<<8 | blue
 }
 
-func (r *wipiRuntime) rgbFromPixel(pixel uint32) (uint32, uint32, uint32) {
+func (r *wipiRuntime) rgbFromDevicePixel(pixel uint32) (uint32, uint32, uint32) {
 	if r.framebufferBits == 16 {
 		red := pixel >> 11 & 0x1f
 		green := pixel >> 5 & 0x3f
@@ -495,6 +508,13 @@ func (r *wipiRuntime) rgbFromPixel(pixel uint32) (uint32, uint32, uint32) {
 		return red<<3 | red>>2, green<<2 | green>>4, blue<<3 | blue>>2
 	}
 	return pixel >> 16 & 0xff, pixel >> 8 & 0xff, pixel & 0xff
+}
+
+// devicePixelFromColor converts an API colour into the pixel the framebuffer
+// stores. Writing the colour straight through would drop the red channel on a
+// 16bpp screen and leave the low half reading back as an unrelated colour.
+func (r *wipiRuntime) devicePixelFromColor(color uint32) uint32 {
+	return r.devicePixelFromRGB(color>>16, color>>8, color)
 }
 
 func (r *wipiRuntime) putPixel(handle uint32, x, y int, contextAddress uint32, override *uint32) error {
@@ -515,7 +535,9 @@ func (r *wipiRuntime) putPixel(handle uint32, x, y int, contextAddress uint32, o
 		!(x >= context.left && x < context.right && y >= context.top && y < context.bottom) {
 		return nil
 	}
-	foreground := context.foreground
+	// Callers that already hold a framebuffer pixel pass it through untouched;
+	// the context carries an API colour that still needs converting.
+	foreground := r.devicePixelFromColor(context.foreground)
 	if override != nil {
 		foreground = *override
 	}
@@ -541,12 +563,12 @@ func (r *wipiRuntime) putPixel(handle uint32, x, y int, contextAddress uint32, o
 	case context.alpha < 255:
 		alpha := uint32(context.alpha)
 		inverse := uint32(255) - alpha
-		sourceRed, sourceGreen, sourceBlue := r.rgbFromPixel(foreground)
-		destRed, destGreen, destBlue := r.rgbFromPixel(destination)
+		sourceRed, sourceGreen, sourceBlue := r.rgbFromDevicePixel(foreground)
+		destRed, destGreen, destBlue := r.rgbFromDevicePixel(destination)
 		red := (sourceRed*alpha + destRed*inverse) / 255
 		green := (sourceGreen*alpha + destGreen*inverse) / 255
 		blue := (sourceBlue*alpha + destBlue*inverse) / 255
-		foreground = r.pixelFromRGB(red, green, blue)
+		foreground = r.devicePixelFromRGB(red, green, blue)
 	}
 	return r.writeFramebufferPixel(fb, x, y, foreground)
 }
@@ -704,7 +726,7 @@ func (r *wipiRuntime) getRGBPixels(args []uint32) error {
 			if err != nil {
 				return err
 			}
-			red, green, blue := r.rgbFromPixel(value)
+			red, green, blue := r.rgbFromDevicePixel(value)
 			rgb := red<<16 | green<<8 | blue
 			if err := r.writeU32(
 				output+uint32((row*pitch+column)*4),
@@ -737,7 +759,7 @@ func (r *wipiRuntime) setRGBPixels(args []uint32) error {
 			if err != nil {
 				return err
 			}
-			native := r.pixelFromRGB(value>>16, value>>8, value)
+			native := r.devicePixelFromRGB(value>>16, value>>8, value)
 			if err := r.putPixel(
 				fb.handle,
 				x+column,
