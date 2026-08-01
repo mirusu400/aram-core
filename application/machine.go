@@ -1178,6 +1178,26 @@ func (m *Machine) QueueInput(event machinecore.InputEvent) error {
 func (m *Machine) Framebuffer() image.Image {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.ktf != nil && m.ktf.services != nil {
+		// KTF Java paint callbacks draw cooperatively across several host
+		// quanta. Exposing their shared working buffer here lets frontends see
+		// partially cleared or half-drawn screens before recordPresentation
+		// commits them. The graphics service keeps an immutable copy of the
+		// most recently submitted frame for exactly this boundary.
+		presented := m.ktf.services.Graphics.LastFrame()
+		if presented.Sequence != 0 {
+			return presented.Image()
+		}
+		blank := image.NewRGBA(m.frame.Bounds())
+		draw.Draw(
+			blank,
+			blank.Bounds(),
+			image.NewUniform(color.Black),
+			image.Point{},
+			draw.Src,
+		)
+		return blank
+	}
 	snapshot := image.NewRGBA(m.frame.Bounds())
 	copy(snapshot.Pix, m.frame.Pix)
 	return snapshot
