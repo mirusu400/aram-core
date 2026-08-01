@@ -99,6 +99,9 @@ type ktfRuntime struct {
 	incrementalMemory       []ktfIncrementalMemoryRegion
 	incrementalHeaps        map[uint32]*guestHeap
 	javaClasses             map[string]uint32
+	javaClassGeneration     uint64
+	nativeSignatures        map[uint32]*ktfNativeSignatureMatches
+	nativeSignatureGen      uint64
 	javaStrings             map[uint32]string
 	javaClassObjs           map[uint32]uint32
 	classObjTarget          map[uint32]uint32
@@ -4139,6 +4142,7 @@ func (r *ktfRuntime) ensureJavaClass(name string) (uint32, error) {
 		return 0, err
 	}
 	r.javaClasses[name] = class
+	r.javaClassGeneration++
 	r.hostJavaClass[class] = true
 	if err := r.rebuildHostJavaVTable(class); err != nil {
 		return 0, err
@@ -5266,13 +5270,55 @@ func ktfCallNative(ctx context.Context, runtime *ktfRuntime) (uint32, error) {
 // through ktfGetJavaMethod first. lastJavaMethod can consequently describe an
 // unrelated earlier lookup; using it for framework overrides would dispatch
 // the native call to the wrong implementation.
+// ktfNativeSignatureMatches records every Java signature whose native body
+// resolves to one guest address, alongside the methods that produced them so a
+// cached answer can be revalidated without another full scan.
+type ktfNativeSignatureMatches struct {
+	methods    []uint32
+	signatures []string
+}
+
 func (r *ktfRuntime) javaNativeMethodSignature(address uint32) (string, bool) {
 	target := address &^ 1
 	if target == 0 {
 		return "", false
 	}
+	matches := r.nativeSignatureMatches(target)
+	// A single native body can back several signatures. The most recently
+	// dispatched method wins so the caller keeps resolving the method it is
+	// already executing; otherwise only an unambiguous match resolves.
+	for _, signature := range matches.signatures {
+		if signature == r.lastJavaMethod {
+			return signature, true
+		}
+	}
+	if len(matches.signatures) == 1 {
+		return matches.signatures[0], true
+	}
+	return "", false
+}
+
+// nativeSignatureMatches resolves target against every loaded class, caching
+// the result. Rescanning per native call meant re-reading each class name,
+// method name, and descriptor out of guest memory, which dominated KTF
+// dispatch. The cache is dropped whenever the class set changes, and a cached
+// entry is revalidated against the method words it came from so a guest that
+// relinks a method in place cannot be served a stale signature.
+func (r *ktfRuntime) nativeSignatureMatches(
+	target uint32,
+) *ktfNativeSignatureMatches {
+	if r.nativeSignatures == nil ||
+		r.nativeSignatureGen != r.javaClassGeneration {
+		r.nativeSignatures = make(map[uint32]*ktfNativeSignatureMatches)
+		r.nativeSignatureGen = r.javaClassGeneration
+	}
+	if cached, ok := r.nativeSignatures[target]; ok &&
+		r.nativeSignatureMatchesValid(target, cached) {
+		return cached
+	}
+	matches := &ktfNativeSignatureMatches{}
 	seenClasses := make(map[uint32]bool)
-	matches := make(map[string]bool)
+	seenSignatures := make(map[string]bool)
 	for _, classAddress := range r.javaClasses {
 		if classAddress == 0 || seenClasses[classAddress] {
 			continue
@@ -5287,21 +5333,33 @@ func (r *ktfRuntime) javaNativeMethodSignature(address uint32) (string, bool) {
 				method.NativeBody&^1 != target {
 				continue
 			}
-			signature := class.Name + "." +
-				method.Name + method.Descriptor
-			if signature == r.lastJavaMethod {
-				return signature, true
+			signature := class.Name + "." + method.Name + method.Descriptor
+			if seenSignatures[signature] {
+				continue
 			}
-			matches[signature] = true
+			seenSignatures[signature] = true
+			matches.methods = append(matches.methods, method.Address)
+			matches.signatures = append(matches.signatures, signature)
 		}
 	}
-	if len(matches) != 1 {
-		return "", false
+	r.nativeSignatures[target] = matches
+	return matches
+}
+
+// nativeSignatureMatchesValid re-reads the native body of every method behind
+// a cached entry. This is one small guest read per match instead of walking
+// every loaded class.
+func (r *ktfRuntime) nativeSignatureMatchesValid(
+	target uint32,
+	matches *ktfNativeSignatureMatches,
+) bool {
+	for _, methodAddress := range matches.methods {
+		words, err := r.readWords(methodAddress, 3)
+		if err != nil || words[2] == 0 || words[2]&^1 != target {
+			return false
+		}
 	}
-	for signature := range matches {
-		return signature, true
-	}
-	return "", false
+	return true
 }
 
 func ktfJavaNativeOverride(signature string) (ktfHostCall, bool) {
@@ -12363,6 +12421,7 @@ func ktfRegisterJavaClass(ctx context.Context, runtime *ktfRuntime) (uint32, err
 
 func (r *ktfRuntime) rememberRegisteredJavaClass(name string, class uint32) {
 	r.javaClasses[name] = class
+	r.javaClassGeneration++
 	if strings.HasPrefix(name, "java/") ||
 		strings.HasPrefix(name, "javax/") ||
 		strings.HasPrefix(name, "org/kwis/") {

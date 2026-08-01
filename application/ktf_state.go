@@ -1494,6 +1494,9 @@ func (m *Machine) restoreKTFState(saved *ktfSavedState) error {
 	}
 
 	r.javaClasses = cloneStringUint32Map(meta.JavaClasses)
+	// A restored class set invalidates any resolved native signature. The
+	// counter is host bookkeeping, so it stays out of the save format.
+	r.javaClassGeneration++
 	r.javaStrings = cloneKTFUint32StringMap(meta.JavaStrings)
 	r.javaClassObjs = cloneUint32Map(meta.JavaClassObjs)
 	r.classObjTarget = cloneUint32Map(meta.ClassObjTarget)
