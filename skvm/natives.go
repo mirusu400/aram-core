@@ -974,7 +974,39 @@ func (vm *VM) installDisplayNatives() {
 		"javax/microedition/lcdui/Display",
 		"callSerially",
 		"(Ljava/lang/Runnable;)V",
-		nativeVoid,
+		func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
+			target, err := referenceArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			if target == 0 {
+				return Value{}, false, vm.newThrowable(
+					"java/lang/NullPointerException",
+					"",
+				)
+			}
+			if _, ok := vm.Object(target); !ok {
+				return Value{}, false, fmt.Errorf(
+					"invalid callSerially target %d",
+					target,
+				)
+			}
+			now := vm.services.Clock.Monotonic()
+			if now == time.Duration(1<<63-1) {
+				return Value{}, false, fmt.Errorf("callSerially deadline overflow")
+			}
+			// A callback must run after this native call returns. Advancing the
+			// deadline by one virtual nanosecond also prevents a Runnable that
+			// reschedules itself from spinning inside one event-pump pass.
+			_, err = vm.services.Events.Enqueue(shared.Event{
+				At:    now + time.Nanosecond,
+				Kind:  shared.EventApplication,
+				Owner: vm.serviceOwner,
+				Name:  callSeriallyEventName,
+				Value: int64(target),
+			})
+			return Value{}, false, err
+		},
 	)
 	vm.RegisterNative(
 		"javax/microedition/lcdui/Display",

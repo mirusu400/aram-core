@@ -19,6 +19,7 @@ const (
 	applicationRootClass      = "javax/microedition/midlet/MIDlet"
 	applicationRootField      = "__aramActiveApplication"
 	applicationRootDescriptor = "Ljava/lang/Object;"
+	callSeriallyEventName     = "skvm.display.callSerially"
 )
 
 var (
@@ -631,6 +632,21 @@ func (vm *VM) Advance(
 				"run",
 				"()V",
 			); err != nil && !errors.Is(err, ErrMethodNotFound) {
+				return err
+			}
+			continue
+		}
+		if event.Kind == shared.EventApplication &&
+			event.Name == callSeriallyEventName {
+			if event.Value <= 0 || uint64(event.Value) > uint64(^uint32(0)) {
+				return fmt.Errorf("invalid SKVM callSerially reference %d", event.Value)
+			}
+			if _, _, err := vm.InvokeVirtual(
+				ctx,
+				uint32(event.Value),
+				"run",
+				"()V",
+			); err != nil {
 				return err
 			}
 			continue

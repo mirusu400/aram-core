@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"image"
+	"image/png"
 	"testing"
 	"time"
 
@@ -37,6 +38,61 @@ func TestSKVMKeyCode(t *testing.T) {
 				t.Fatalf("skvmKeyCode(%d) = %d, want %d", test.key, got, test.want)
 			}
 		})
+	}
+}
+
+func TestInferSKVMFramebufferSize(t *testing.T) {
+	fallback := image.Pt(240, 320)
+	tests := []struct {
+		name      string
+		resources map[string][]byte
+		want      image.Point
+	}{
+		{
+			name:      "120 pixel handset background",
+			resources: map[string][]byte{"background.png": syntheticSKVMPNG(t, 120, 146)},
+			want:      image.Pt(120, 160),
+		},
+		{
+			name: "larger background wins",
+			resources: map[string][]byte{
+				"small.png":  syntheticSKVMPNG(t, 120, 160),
+				"large1.png": syntheticSKVMPNG(t, 176, 202),
+				"large2.png": syntheticSKVMPNG(t, 176, 202),
+			},
+			want: image.Pt(176, 208),
+		},
+		{
+			name:      "no screen-sized image",
+			resources: map[string][]byte{"icon.png": syntheticSKVMPNG(t, 23, 23)},
+			want:      fallback,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := inferSKVMFramebufferSize(fallback, test.resources); got != test.want {
+				t.Fatalf("inferSKVMFramebufferSize() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestFactoryInfersSKVMFramebufferFromResources(t *testing.T) {
+	data := syntheticSKVMPackageWithResources(t, map[string][]byte{
+		"background.png": syntheticSKVMPNG(t, 120, 146),
+	})
+	created, err := NewFactory().Create(context.Background(), machinecore.Source{
+		Name:     "game.zip",
+		ReaderAt: bytes.NewReader(data),
+		Size:     int64(len(data)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = created.Close() })
+	if bounds := created.Framebuffer().Bounds(); bounds.Dx() != 120 ||
+		bounds.Dy() != 160 {
+		t.Fatalf("inferred framebuffer bounds = %v, want 120x160", bounds)
 	}
 }
 
@@ -227,11 +283,22 @@ func TestSKVMMachineLifecycleResetAndStateRoundTrip(t *testing.T) {
 }
 
 func syntheticSKVMPackage(t *testing.T) []byte {
+	return syntheticSKVMPackageWithResources(t, nil)
+}
+
+func syntheticSKVMPackageWithResources(
+	t *testing.T,
+	resources map[string][]byte,
+) []byte {
 	t.Helper()
-	jar := syntheticSKVMZIP(t, map[string][]byte{
+	jarFiles := map[string][]byte{
 		"Game.class": syntheticSKVMLifecycleClass(t),
 		"data.bin":   {1, 2, 3},
-	})
+	}
+	for name, data := range resources {
+		jarFiles[name] = data
+	}
+	jar := syntheticSKVMZIP(t, jarFiles)
 	return syntheticSKVMZIP(t, map[string][]byte{
 		"game.msd": []byte(
 			"MIDlet-Name: Synthetic\n" +
@@ -300,6 +367,18 @@ func syntheticSKVMRecordStoreMetadata(
 				t.Fatal(err)
 			}
 		}
+	}
+	return output.Bytes()
+}
+
+func syntheticSKVMPNG(t *testing.T, width, height int) []byte {
+	t.Helper()
+	var output bytes.Buffer
+	if err := png.Encode(
+		&output,
+		image.NewRGBA(image.Rect(0, 0, width, height)),
+	); err != nil {
+		t.Fatal(err)
 	}
 	return output.Bytes()
 }

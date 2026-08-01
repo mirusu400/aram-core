@@ -143,6 +143,7 @@ func newSKVMMachine(
 	if size.X <= 0 || size.Y <= 0 {
 		size = image.Pt(240, 320)
 	}
+	size = inferSKVMFramebufferSize(size, pkg.Resources)
 	config := shared.DefaultConfig()
 	config.Device.ProfileID = skvmProfileID
 	config.Device.Carrier = "skt"
@@ -642,6 +643,48 @@ func skvmKeyCode(key profile.KeyCode) int32 {
 	default:
 		return int32(key)
 	}
+}
+
+func inferSKVMFramebufferSize(
+	fallback image.Point,
+	resources map[string][]byte,
+) image.Point {
+	// SKT descriptors do not consistently declare a display size. Full-screen
+	// images commonly omit only a small handset status/soft-key strip, so use
+	// those package assets to select the matching legacy canvas geometry.
+	candidates := [...]image.Point{
+		image.Pt(120, 160),
+		image.Pt(128, 160),
+		image.Pt(176, 208),
+		image.Pt(176, 220),
+		image.Pt(240, 320),
+	}
+	scores := make([]uint64, len(candidates))
+	for _, data := range resources {
+		config, _, err := image.DecodeConfig(bytes.NewReader(data))
+		if err != nil {
+			continue
+		}
+		for index, candidate := range candidates {
+			if config.Width == candidate.X &&
+				config.Height <= candidate.Y &&
+				config.Height >= candidate.Y-16 {
+				scores[index] += uint64(config.Width * config.Height)
+			}
+		}
+	}
+	best := -1
+	var bestScore uint64
+	for index, score := range scores {
+		if score > bestScore {
+			best = index
+			bestScore = score
+		}
+	}
+	if best < 0 {
+		return fallback
+	}
+	return candidates[best]
 }
 
 func (m *skvmMachine) consumeInstructionsLocked(before uint64) error {

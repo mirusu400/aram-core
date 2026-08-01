@@ -1201,6 +1201,52 @@ func TestSKVMThreadsRunCooperativelyOnVirtualTime(t *testing.T) {
 	}
 }
 
+func TestDisplayCallSeriallyDefersRunnable(t *testing.T) {
+	vm, err := New(map[string][]byte{"Worker": syntheticThreadClass(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := vm.allocateObject("Worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	display := vm.NewObject("javax/microedition/lcdui/Display", nil)
+	invokeTestNative(
+		t,
+		vm,
+		"javax/microedition/lcdui/Display",
+		"callSerially",
+		"(Ljava/lang/Runnable;)V",
+		display,
+		ReferenceValue(target),
+	)
+	counter := fieldStorageKey("Worker", "counter", "I")
+	value, err := vm.classes["Worker"].static[counter].Int()
+	if err != nil || value != 0 {
+		t.Fatalf("counter before advance = %d, %v; want 0", value, err)
+	}
+	event, ok := vm.services.Events.Peek()
+	if !ok || event.Kind != shared.EventApplication ||
+		event.Name != callSeriallyEventName || event.Value != int64(target) ||
+		event.At != time.Nanosecond {
+		t.Fatalf("callSerially event = %+v, present=%v", event, ok)
+	}
+	saved, err := vm.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.UnmarshalBinary(saved); err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.Advance(context.Background(), time.Nanosecond, nil); err != nil {
+		t.Fatal(err)
+	}
+	value, err = vm.classes["Worker"].static[counter].Int()
+	if err != nil || value != 11 {
+		t.Fatalf("counter after advance = %d, %v; want 11", value, err)
+	}
+}
+
 func syntheticThreadClass(t *testing.T) []byte {
 	t.Helper()
 	var output bytes.Buffer
