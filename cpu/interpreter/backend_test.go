@@ -763,6 +763,81 @@ func TestMemoryPermissionsAndUnsupportedInstructionFault(t *testing.T) {
 	}
 }
 
+func TestScalarMemoryAccessCrossesAdjacentMappings(t *testing.T) {
+	backend := New()
+	defer backend.Close()
+	permissions := cpu.PermissionRead | cpu.PermissionWrite
+	if err := backend.Map(0x1000, 1, permissions); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Map(0x1001, 3, permissions); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.write32(0x1000, 0x78563412, cpu.PermissionWrite); err != nil {
+		t.Fatal(err)
+	}
+	value, err := backend.read32(0x1000, cpu.PermissionRead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value != 0x78563412 {
+		t.Fatalf("cross-mapping value = 0x%08x", value)
+	}
+}
+
+func TestRegionHintIsInvalidatedWhenMappingsAreSorted(t *testing.T) {
+	backend := New()
+	defer backend.Close()
+	permissions := cpu.PermissionRead | cpu.PermissionWrite
+	if err := backend.Map(0x2000, 4, permissions); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.write32(0x2000, 0x22222222, cpu.PermissionWrite); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Map(0x1000, 4, permissions); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.write32(0x1000, 0x11111111, cpu.PermissionWrite); err != nil {
+		t.Fatal(err)
+	}
+	for address, want := range map[uint32]uint32{
+		0x1000: 0x11111111,
+		0x2000: 0x22222222,
+	} {
+		got, err := backend.read32(address, cpu.PermissionRead)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("value at 0x%08x = 0x%08x, want 0x%08x", address, got, want)
+		}
+	}
+}
+
+func TestRunHonorsCanceledContextBeforeExecuting(t *testing.T) {
+	backend := New()
+	defer backend.Close()
+	if err := backend.Map(
+		0x1000,
+		2,
+		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.WriteMemory(0x1000, []byte{0xfe, 0xe7}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := backend.Run(ctx, 0x1000, cpu.ModeThumb, 0)
+	if !errors.Is(result.Err, context.Canceled) ||
+		result.Reason != cpu.StopRequested ||
+		result.Instructions != 0 {
+		t.Fatalf("canceled Run result = %+v", result)
+	}
+}
+
 func TestIdentityAndMemoryLimit(t *testing.T) {
 	backend := NewWithMemoryLimit(0x1000)
 	if err := backend.Identity().Validate(); err != nil {

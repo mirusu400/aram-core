@@ -29,6 +29,92 @@ const (
 	DefaultMemoryLimit = uint64(512 << 20)
 )
 
+type thumbInstructionClass uint8
+
+const (
+	thumbUnsupported thumbInstructionClass = iota
+	thumbBreakpoint
+	thumbShiftImmediate
+	thumbMoveImmediate
+	thumbCompareImmediate
+	thumbAddImmediate
+	thumbSubtractImmediate
+	thumbAddSubtract
+	thumbALU
+	thumbHighRegister
+	thumbLiteralLoad
+	thumbRegisterTransfer
+	thumbImmediateTransfer
+	thumbHalfwordTransfer
+	thumbStackTransfer
+	thumbAdjustStack
+	thumbPush
+	thumbPop
+	thumbAddPCSP
+	thumbMultipleTransfer
+	thumbConditionalBranch
+	thumbLongBranch
+	thumbLongBranchSuffix
+	thumbUnconditionalBranch
+)
+
+var thumbInstructionClasses = func() [1 << 16]thumbInstructionClass {
+	var classes [1 << 16]thumbInstructionClass
+	for raw := range classes {
+		instruction := uint16(raw)
+		switch {
+		case instruction&0xff00 == 0xbe00:
+			classes[raw] = thumbBreakpoint
+		case instruction&0xe000 == 0x0000 &&
+			instruction&0x1800 != 0x1800:
+			classes[raw] = thumbShiftImmediate
+		case instruction&0xf800 == 0x2000:
+			classes[raw] = thumbMoveImmediate
+		case instruction&0xf800 == 0x2800:
+			classes[raw] = thumbCompareImmediate
+		case instruction&0xf800 == 0x3000:
+			classes[raw] = thumbAddImmediate
+		case instruction&0xf800 == 0x3800:
+			classes[raw] = thumbSubtractImmediate
+		case instruction&0xf800 == 0x1800:
+			classes[raw] = thumbAddSubtract
+		case instruction&0xfc00 == 0x4000:
+			classes[raw] = thumbALU
+		case instruction&0xfc00 == 0x4400:
+			classes[raw] = thumbHighRegister
+		case instruction&0xf800 == 0x4800:
+			classes[raw] = thumbLiteralLoad
+		case instruction&0xf000 == 0x5000:
+			classes[raw] = thumbRegisterTransfer
+		case instruction&0xe000 == 0x6000:
+			classes[raw] = thumbImmediateTransfer
+		case instruction&0xf000 == 0x8000:
+			classes[raw] = thumbHalfwordTransfer
+		case instruction&0xf000 == 0x9000:
+			classes[raw] = thumbStackTransfer
+		case instruction&0xff00 == 0xb000:
+			classes[raw] = thumbAdjustStack
+		case instruction&0xfe00 == 0xb400:
+			classes[raw] = thumbPush
+		case instruction&0xfe00 == 0xbc00:
+			classes[raw] = thumbPop
+		case instruction&0xf000 == 0xa000:
+			classes[raw] = thumbAddPCSP
+		case instruction&0xf000 == 0xc000:
+			classes[raw] = thumbMultipleTransfer
+		case instruction&0xf000 == 0xd000:
+			classes[raw] = thumbConditionalBranch
+		case instruction&0xf800 == 0xf000:
+			classes[raw] = thumbLongBranch
+		case instruction&0xf800 == 0xf800:
+			classes[raw] = thumbLongBranchSuffix
+		case instruction&0xf800 == 0xe000:
+			classes[raw] = thumbUnconditionalBranch
+		}
+	}
+	return classes
+}()
+
 type region struct {
 	address     uint32
 	size        uint32
@@ -40,14 +126,17 @@ type region struct {
 // the ARM/Thumb control-flow and integer instructions needed by the first
 // application-entry milestone; unsupported encodings produce a precise fault.
 type Backend struct {
-	mu          sync.Mutex
-	regions     []region
-	regs        [17]uint32
-	mode        cpu.Mode
-	stopped     atomic.Bool
-	closed      bool
-	mapped      uint64
-	memoryLimit uint64
+	mu             sync.Mutex
+	regions        []region
+	regionHints    [8]int
+	executeAddress uint32
+	executeData    []byte
+	regs           [17]uint32
+	mode           cpu.Mode
+	stopped        atomic.Bool
+	closed         bool
+	mapped         uint64
+	memoryLimit    uint64
 }
 
 func New() *Backend {
@@ -104,6 +193,8 @@ func (b *Backend) Map(address, size uint32, permissions cpu.Permissions) error {
 	sort.Slice(b.regions, func(i, j int) bool {
 		return b.regions[i].address < b.regions[j].address
 	})
+	clear(b.regionHints[:])
+	b.executeData = nil
 	return nil
 }
 
@@ -182,23 +273,27 @@ func (b *Backend) Run(ctx context.Context, address uint32, mode cpu.Mode, budget
 
 	var executed uint64
 	for budget == 0 || executed < budget {
-		if b.stopped.Load() {
-			return cpu.Result{
-				Reason:       cpu.StopRequested,
-				Instructions: executed,
-				PC:           b.regs[cpu.RegisterPC],
-				Err:          cpu.ErrStopped,
+		// Poll host cancellation in bounded batches instead of performing a
+		// channel select for every guest instruction. At the portable
+		// interpreter's throughput this remains promptly interruptible while
+		// keeping the inner dispatch loop inexpensive.
+		if executed&0xff == 0 {
+			if b.stopped.Load() {
+				return cpu.Result{
+					Reason:       cpu.StopRequested,
+					Instructions: executed,
+					PC:           b.regs[cpu.RegisterPC],
+					Err:          cpu.ErrStopped,
+				}
 			}
-		}
-		select {
-		case <-ctx.Done():
-			return cpu.Result{
-				Reason:       cpu.StopRequested,
-				Instructions: executed,
-				PC:           b.regs[cpu.RegisterPC],
-				Err:          ctx.Err(),
+			if err := ctx.Err(); err != nil {
+				return cpu.Result{
+					Reason:       cpu.StopRequested,
+					Instructions: executed,
+					PC:           b.regs[cpu.RegisterPC],
+					Err:          err,
+				}
 			}
-		default:
 		}
 
 		var (
@@ -225,6 +320,22 @@ func (b *Backend) Run(ctx context.Context, address uint32, mode cpu.Mode, budget
 				Instructions: executed,
 				PC:           b.regs[cpu.RegisterPC],
 			}
+		}
+	}
+	if b.stopped.Load() {
+		return cpu.Result{
+			Reason:       cpu.StopRequested,
+			Instructions: executed,
+			PC:           b.regs[cpu.RegisterPC],
+			Err:          cpu.ErrStopped,
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return cpu.Result{
+			Reason:       cpu.StopRequested,
+			Instructions: executed,
+			PC:           b.regs[cpu.RegisterPC],
+			Err:          err,
 		}
 	}
 	return cpu.Result{
@@ -292,26 +403,40 @@ func (b *Backend) Close() error {
 	}
 	b.closed = true
 	b.regions = nil
+	clear(b.regionHints[:])
+	b.executeData = nil
 	b.mapped = 0
 	return nil
 }
 
 func (b *Backend) stepThumb() (*cpu.StopReason, error) {
 	pc := b.regs[cpu.RegisterPC]
-	instruction, err := b.read16(pc, cpu.PermissionExecute)
+	var instruction uint16
+	var err error
+	if pc >= b.executeAddress {
+		offset := uint64(pc - b.executeAddress)
+		if offset+2 <= uint64(len(b.executeData)) {
+			index := int(offset)
+			instruction = uint16(b.executeData[index]) |
+				uint16(b.executeData[index+1])<<8
+		} else {
+			instruction, err = b.fetch16(pc)
+		}
+	} else {
+		instruction, err = b.fetch16(pc)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("Thumb fetch at 0x%08x: %w", pc, err)
 	}
 	next := pc + 2
 	b.regs[cpu.RegisterPC] = next
 
-	switch {
-	case instruction&0xff00 == 0xbe00: // BKPT
+	switch thumbInstructionClasses[instruction] {
+	case thumbBreakpoint: // BKPT
 		reason := cpu.StopBreakpoint
 		return &reason, nil
 
-	case instruction&0xe000 == 0x0000 &&
-		instruction&0x1800 != 0x1800: // LSL/LSR/ASR immediate
+	case thumbShiftImmediate: // LSL/LSR/ASR immediate
 		op := uint32(instruction>>11) & 3
 		shift := uint32(instruction>>6) & 0x1f
 		rs := uint32(instruction>>3) & 7
@@ -353,34 +478,34 @@ func (b *Backend) stepThumb() (*cpu.StopReason, error) {
 		b.setNZC(result, carry)
 		return nil, nil
 
-	case instruction&0xf800 == 0x2000: // MOVS Rd, #imm8
+	case thumbMoveImmediate: // MOVS Rd, #imm8
 		rd := uint32(instruction>>8) & 7
 		value := uint32(instruction & 0xff)
 		b.regs[rd] = value
 		b.setNZ(value)
 		return nil, nil
 
-	case instruction&0xf800 == 0x2800: // CMP Rd, #imm8
+	case thumbCompareImmediate: // CMP Rd, #imm8
 		rd := uint32(instruction>>8) & 7
 		result, carry, overflow := addWithCarry(b.regs[rd], ^uint32(instruction&0xff), 1)
 		b.setNZCV(result, carry, overflow)
 		return nil, nil
 
-	case instruction&0xf800 == 0x3000: // ADDS Rd, #imm8
+	case thumbAddImmediate: // ADDS Rd, #imm8
 		rd := uint32(instruction>>8) & 7
 		result, carry, overflow := addWithCarry(b.regs[rd], uint32(instruction&0xff), 0)
 		b.regs[rd] = result
 		b.setNZCV(result, carry, overflow)
 		return nil, nil
 
-	case instruction&0xf800 == 0x3800: // SUBS Rd, #imm8
+	case thumbSubtractImmediate: // SUBS Rd, #imm8
 		rd := uint32(instruction>>8) & 7
 		result, carry, overflow := addWithCarry(b.regs[rd], ^uint32(instruction&0xff), 1)
 		b.regs[rd] = result
 		b.setNZCV(result, carry, overflow)
 		return nil, nil
 
-	case instruction&0xf800 == 0x1800: // ADD/SUB register or immediate3
+	case thumbAddSubtract: // ADD/SUB register or immediate3
 		immediate := instruction&(1<<10) != 0
 		subtract := instruction&(1<<9) != 0
 		rnOrImmediate := uint32(instruction>>6) & 7
@@ -401,7 +526,7 @@ func (b *Backend) stepThumb() (*cpu.StopReason, error) {
 		b.setNZCV(result, carry, overflow)
 		return nil, nil
 
-	case instruction&0xfc00 == 0x4000: // ALU operations
+	case thumbALU: // ALU operations
 		op := (instruction >> 6) & 0xf
 		rs := uint32(instruction>>3) & 7
 		rd := uint32(instruction) & 7
@@ -474,7 +599,7 @@ func (b *Backend) stepThumb() (*cpu.StopReason, error) {
 		}
 		return nil, nil
 
-	case instruction&0xfc00 == 0x4400: // high-register ops / BX
+	case thumbHighRegister: // high-register ops / BX
 		op := (instruction >> 8) & 3
 		rs := uint32(instruction>>3)&7 | uint32(instruction>>6)&1<<3
 		rd := uint32(instruction)&7 | uint32(instruction>>7)&1<<3
@@ -508,7 +633,7 @@ func (b *Backend) stepThumb() (*cpu.StopReason, error) {
 		}
 		return nil, nil
 
-	case instruction&0xf800 == 0x4800: // LDR Rd, [PC, #imm]
+	case thumbLiteralLoad: // LDR Rd, [PC, #imm]
 		rd := uint32(instruction>>8) & 7
 		address := ((pc + 4) &^ uint32(3)) +
 			uint32(instruction&0xff)*4
@@ -519,7 +644,7 @@ func (b *Backend) stepThumb() (*cpu.StopReason, error) {
 		b.regs[rd] = value
 		return nil, nil
 
-	case instruction&0xf000 == 0x5000: // register-offset load/store
+	case thumbRegisterTransfer: // register-offset load/store
 		op := uint32(instruction>>9) & 7
 		ro := uint32(instruction>>6) & 7
 		rb := uint32(instruction>>3) & 7
@@ -535,19 +660,19 @@ func (b *Backend) stepThumb() (*cpu.StopReason, error) {
 				return nil, writeErr
 			}
 		case 2: // STRB
-			if writeErr := b.copyIn(
+			if writeErr := b.write8(
 				address,
-				[]byte{byte(b.regs[rd])},
+				byte(b.regs[rd]),
 				cpu.PermissionWrite,
 			); writeErr != nil {
 				return nil, writeErr
 			}
 		case 3: // LDRSB
-			var value [1]byte
-			if readErr := b.copyOut(address, value[:], cpu.PermissionRead); readErr != nil {
+			value, readErr := b.read8(address, cpu.PermissionRead)
+			if readErr != nil {
 				return nil, readErr
 			}
-			b.regs[rd] = uint32(int32(int8(value[0])))
+			b.regs[rd] = uint32(int32(int8(value)))
 		case 4: // LDR
 			value, readErr := b.read32(address, cpu.PermissionRead)
 			if readErr != nil {
@@ -561,11 +686,11 @@ func (b *Backend) stepThumb() (*cpu.StopReason, error) {
 			}
 			b.regs[rd] = uint32(value)
 		case 6: // LDRB
-			var value [1]byte
-			if readErr := b.copyOut(address, value[:], cpu.PermissionRead); readErr != nil {
+			value, readErr := b.read8(address, cpu.PermissionRead)
+			if readErr != nil {
 				return nil, readErr
 			}
-			b.regs[rd] = uint32(value[0])
+			b.regs[rd] = uint32(value)
 		case 7: // LDRSH
 			value, readErr := b.read16(address, cpu.PermissionRead)
 			if readErr != nil {
@@ -575,7 +700,7 @@ func (b *Backend) stepThumb() (*cpu.StopReason, error) {
 		}
 		return nil, nil
 
-	case instruction&0xe000 == 0x6000: // immediate word/byte load/store
+	case thumbImmediateTransfer: // immediate word/byte load/store
 		byteTransfer := instruction&(1<<12) != 0
 		load := instruction&(1<<11) != 0
 		offset := uint32(instruction>>6) & 0x1f
@@ -587,11 +712,11 @@ func (b *Backend) stepThumb() (*cpu.StopReason, error) {
 		address := b.regs[rb] + offset
 		switch {
 		case load && byteTransfer:
-			var value [1]byte
-			if readErr := b.copyOut(address, value[:], cpu.PermissionRead); readErr != nil {
+			value, readErr := b.read8(address, cpu.PermissionRead)
+			if readErr != nil {
 				return nil, readErr
 			}
-			b.regs[rd] = uint32(value[0])
+			b.regs[rd] = uint32(value)
 		case load:
 			value, readErr := b.read32(address, cpu.PermissionRead)
 			if readErr != nil {
@@ -599,9 +724,9 @@ func (b *Backend) stepThumb() (*cpu.StopReason, error) {
 			}
 			b.regs[rd] = value
 		case byteTransfer:
-			if writeErr := b.copyIn(
+			if writeErr := b.write8(
 				address,
-				[]byte{byte(b.regs[rd])},
+				byte(b.regs[rd]),
 				cpu.PermissionWrite,
 			); writeErr != nil {
 				return nil, writeErr
@@ -613,7 +738,7 @@ func (b *Backend) stepThumb() (*cpu.StopReason, error) {
 		}
 		return nil, nil
 
-	case instruction&0xf000 == 0x8000: // immediate halfword load/store
+	case thumbHalfwordTransfer: // immediate halfword load/store
 		load := instruction&(1<<11) != 0
 		offset := uint32(instruction>>6) & 0x1f
 		rb := uint32(instruction>>3) & 7
@@ -634,7 +759,7 @@ func (b *Backend) stepThumb() (*cpu.StopReason, error) {
 		}
 		return nil, nil
 
-	case instruction&0xf000 == 0x9000: // SP-relative word load/store
+	case thumbStackTransfer: // SP-relative word load/store
 		load := instruction&(1<<11) != 0
 		rd := uint32(instruction>>8) & 7
 		address := b.regs[cpu.RegisterSP] + uint32(instruction&0xff)*4
@@ -653,7 +778,7 @@ func (b *Backend) stepThumb() (*cpu.StopReason, error) {
 		}
 		return nil, nil
 
-	case instruction&0xff00 == 0xb000: // ADD/SUB SP, #imm7*4
+	case thumbAdjustStack: // ADD/SUB SP, #imm7*4
 		offset := uint32(instruction&0x7f) * 4
 		if instruction&(1<<7) != 0 {
 			b.regs[cpu.RegisterSP] -= offset
@@ -662,7 +787,7 @@ func (b *Backend) stepThumb() (*cpu.StopReason, error) {
 		}
 		return nil, nil
 
-	case instruction&0xfe00 == 0xb400: // PUSH
+	case thumbPush: // PUSH
 		registers := uint16(instruction & 0xff)
 		includeLR := instruction&(1<<8) != 0
 		count := bits.OnesCount16(registers)
@@ -688,7 +813,7 @@ func (b *Backend) stepThumb() (*cpu.StopReason, error) {
 		b.regs[cpu.RegisterSP] = start
 		return nil, nil
 
-	case instruction&0xfe00 == 0xbc00: // POP
+	case thumbPop: // POP
 		registers := uint16(instruction & 0xff)
 		includePC := instruction&(1<<8) != 0
 		address := b.regs[cpu.RegisterSP]
@@ -714,7 +839,7 @@ func (b *Backend) stepThumb() (*cpu.StopReason, error) {
 		b.regs[cpu.RegisterSP] = address
 		return nil, nil
 
-	case instruction&0xf000 == 0xa000: // ADD Rd, PC/SP, #imm
+	case thumbAddPCSP: // ADD Rd, PC/SP, #imm
 		rd := uint32(instruction>>8) & 7
 		base := b.regs[cpu.RegisterSP]
 		if instruction&(1<<11) == 0 {
@@ -723,7 +848,7 @@ func (b *Backend) stepThumb() (*cpu.StopReason, error) {
 		b.regs[rd] = base + uint32(instruction&0xff)*4
 		return nil, nil
 
-	case instruction&0xf000 == 0xc000: // STMIA/LDMIA Rb!, register list
+	case thumbMultipleTransfer: // STMIA/LDMIA Rb!, register list
 		load := instruction&(1<<11) != 0
 		rb := uint32(instruction>>8) & 7
 		registers := uint16(instruction & 0xff)
@@ -757,7 +882,7 @@ func (b *Backend) stepThumb() (*cpu.StopReason, error) {
 		}
 		return nil, nil
 
-	case instruction&0xf000 == 0xd000: // conditional branch / SWI
+	case thumbConditionalBranch: // conditional branch / SWI
 		condition := uint8(instruction>>8) & 0xf
 		if condition == 0xf {
 			reason := cpu.StopBreakpoint
@@ -772,8 +897,8 @@ func (b *Backend) stepThumb() (*cpu.StopReason, error) {
 		}
 		return nil, nil
 
-	case instruction&0xf800 == 0xf000: // BL (two-halfword Thumb instruction)
-		suffix, readErr := b.read16(pc+2, cpu.PermissionExecute)
+	case thumbLongBranch: // BL (two-halfword Thumb instruction)
+		suffix, readErr := b.fetch16(pc + 2)
 		if readErr != nil {
 			return nil, readErr
 		}
@@ -790,10 +915,10 @@ func (b *Backend) stepThumb() (*cpu.StopReason, error) {
 		b.regs[cpu.RegisterPC] = target
 		return nil, nil
 
-	case instruction&0xf800 == 0xf800:
+	case thumbLongBranchSuffix:
 		return nil, b.unsupportedThumb(pc, instruction)
 
-	case instruction&0xf800 == 0xe000: // unconditional branch
+	case thumbUnconditionalBranch: // unconditional branch
 		offset := int32(instruction & 0x7ff)
 		if offset&(1<<10) != 0 {
 			offset |= ^int32(0x7ff)
@@ -808,7 +933,22 @@ func (b *Backend) stepThumb() (*cpu.StopReason, error) {
 
 func (b *Backend) stepARM() (*cpu.StopReason, error) {
 	pc := b.regs[cpu.RegisterPC]
-	instruction, err := b.read32(pc, cpu.PermissionExecute)
+	var instruction uint32
+	var err error
+	if pc >= b.executeAddress {
+		offset := uint64(pc - b.executeAddress)
+		if offset+4 <= uint64(len(b.executeData)) {
+			index := int(offset)
+			instruction = uint32(b.executeData[index]) |
+				uint32(b.executeData[index+1])<<8 |
+				uint32(b.executeData[index+2])<<16 |
+				uint32(b.executeData[index+3])<<24
+		} else {
+			instruction, err = b.fetch32(pc)
+		}
+	} else {
+		instruction, err = b.fetch32(pc)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("ARM fetch at 0x%08x: %w", pc, err)
 	}
@@ -1065,14 +1205,14 @@ func (b *Backend) stepARM() (*cpu.StopReason, error) {
 		}
 		if load {
 			if byteTransfer {
-				var value [1]byte
-				if readErr := b.copyOut(address, value[:], cpu.PermissionRead); readErr != nil {
+				value, readErr := b.read8(address, cpu.PermissionRead)
+				if readErr != nil {
 					return nil, readErr
 				}
 				if rd == cpu.RegisterPC {
-					b.branchExchange(uint32(value[0]))
+					b.branchExchange(uint32(value))
 				} else {
-					b.regs[rd] = uint32(value[0])
+					b.regs[rd] = uint32(value)
 				}
 			} else {
 				value, readErr := b.read32(address, cpu.PermissionRead)
@@ -1090,7 +1230,7 @@ func (b *Backend) stepARM() (*cpu.StopReason, error) {
 			if rd == cpu.RegisterPC {
 				value = pc + 12
 			}
-			if writeErr := b.copyIn(address, []byte{byte(value)}, cpu.PermissionWrite); writeErr != nil {
+			if writeErr := b.write8(address, byte(value), cpu.PermissionWrite); writeErr != nil {
 				return nil, writeErr
 			}
 		} else {
@@ -1359,6 +1499,16 @@ func (b *Backend) unsupportedARM(pc, instruction uint32) error {
 }
 
 func (b *Backend) read16(address uint32, permission cpu.Permissions) (uint16, error) {
+	if permission == cpu.PermissionExecute {
+		return b.fetch16(address)
+	}
+	mapped, offset, err := b.findRegion(address, permission)
+	if err != nil {
+		return 0, err
+	}
+	if len(mapped.data)-offset >= 2 {
+		return binary.LittleEndian.Uint16(mapped.data[offset : offset+2]), nil
+	}
 	var data [2]byte
 	if err := b.copyOut(address, data[:], permission); err != nil {
 		return 0, err
@@ -1367,6 +1517,16 @@ func (b *Backend) read16(address uint32, permission cpu.Permissions) (uint16, er
 }
 
 func (b *Backend) read32(address uint32, permission cpu.Permissions) (uint32, error) {
+	if permission == cpu.PermissionExecute {
+		return b.fetch32(address)
+	}
+	mapped, offset, err := b.findRegion(address, permission)
+	if err != nil {
+		return 0, err
+	}
+	if len(mapped.data)-offset >= 4 {
+		return binary.LittleEndian.Uint32(mapped.data[offset : offset+4]), nil
+	}
 	var data [4]byte
 	if err := b.copyOut(address, data[:], permission); err != nil {
 		return 0, err
@@ -1374,16 +1534,105 @@ func (b *Backend) read32(address uint32, permission cpu.Permissions) (uint32, er
 	return binary.LittleEndian.Uint32(data[:]), nil
 }
 
+func (b *Backend) fetch16(address uint32) (uint16, error) {
+	if address >= b.executeAddress {
+		offset := uint64(address - b.executeAddress)
+		if offset+2 <= uint64(len(b.executeData)) {
+			index := int(offset)
+			return uint16(b.executeData[index]) |
+				uint16(b.executeData[index+1])<<8, nil
+		}
+	}
+	mapped, offset, err := b.findRegion(address, cpu.PermissionExecute)
+	if err != nil {
+		return 0, err
+	}
+	if len(mapped.data)-offset < 2 {
+		var data [2]byte
+		if err := b.copyOut(address, data[:], cpu.PermissionExecute); err != nil {
+			return 0, err
+		}
+		return binary.LittleEndian.Uint16(data[:]), nil
+	}
+	b.executeAddress = mapped.address
+	b.executeData = mapped.data
+	return uint16(mapped.data[offset]) |
+		uint16(mapped.data[offset+1])<<8, nil
+}
+
+func (b *Backend) fetch32(address uint32) (uint32, error) {
+	if address >= b.executeAddress {
+		offset := uint64(address - b.executeAddress)
+		if offset+4 <= uint64(len(b.executeData)) {
+			index := int(offset)
+			return uint32(b.executeData[index]) |
+				uint32(b.executeData[index+1])<<8 |
+				uint32(b.executeData[index+2])<<16 |
+				uint32(b.executeData[index+3])<<24, nil
+		}
+	}
+	mapped, offset, err := b.findRegion(address, cpu.PermissionExecute)
+	if err != nil {
+		return 0, err
+	}
+	if len(mapped.data)-offset < 4 {
+		var data [4]byte
+		if err := b.copyOut(address, data[:], cpu.PermissionExecute); err != nil {
+			return 0, err
+		}
+		return binary.LittleEndian.Uint32(data[:]), nil
+	}
+	b.executeAddress = mapped.address
+	b.executeData = mapped.data
+	return uint32(mapped.data[offset]) |
+		uint32(mapped.data[offset+1])<<8 |
+		uint32(mapped.data[offset+2])<<16 |
+		uint32(mapped.data[offset+3])<<24, nil
+}
+
 func (b *Backend) write16(address uint32, value uint16, permission cpu.Permissions) error {
+	mapped, offset, err := b.findRegion(address, permission)
+	if err != nil {
+		return err
+	}
+	if len(mapped.data)-offset >= 2 {
+		binary.LittleEndian.PutUint16(mapped.data[offset:offset+2], value)
+		return nil
+	}
 	var data [2]byte
 	binary.LittleEndian.PutUint16(data[:], value)
 	return b.copyIn(address, data[:], permission)
 }
 
 func (b *Backend) write32(address, value uint32, permission cpu.Permissions) error {
+	mapped, offset, err := b.findRegion(address, permission)
+	if err != nil {
+		return err
+	}
+	if len(mapped.data)-offset >= 4 {
+		binary.LittleEndian.PutUint32(mapped.data[offset:offset+4], value)
+		return nil
+	}
 	var data [4]byte
 	binary.LittleEndian.PutUint32(data[:], value)
 	return b.copyIn(address, data[:], permission)
+}
+
+func (b *Backend) read8(address uint32, permission cpu.Permissions) (byte, error) {
+	mapped, offset, err := b.findRegion(address, permission)
+	if err != nil {
+		return 0, err
+	}
+	return mapped.data[offset], nil
+}
+
+func (b *Backend) write8(address uint32, value byte, permission cpu.Permissions) error {
+	mapped, offset, err := b.findRegion(address, permission)
+	if err != nil {
+		return err
+	}
+	mapped.data[offset] = value
+	return nil
 }
 
 func (b *Backend) copyOut(address uint32, destination []byte, permission cpu.Permissions) error {
@@ -1437,17 +1686,40 @@ func (b *Backend) copyIn(address uint32, source []byte, permission cpu.Permissio
 }
 
 func (b *Backend) findRegion(address uint32, permission cpu.Permissions) (*region, int, error) {
-	for index := range b.regions {
-		mapped := &b.regions[index]
-		if address < mapped.address || uint64(address) >= uint64(mapped.address)+uint64(mapped.size) {
-			continue
+	hintSlot := int(permission)
+	if hintSlot >= 0 && hintSlot < len(b.regionHints) {
+		index := b.regionHints[hintSlot]
+		if index >= 0 && index < len(b.regions) {
+			mapped := &b.regions[index]
+			if address >= mapped.address &&
+				uint64(address) < uint64(mapped.address)+uint64(mapped.size) {
+				if mapped.permissions&permission != permission {
+					return nil, 0, fmt.Errorf(
+						"%w at 0x%08x",
+						cpu.ErrPermissionDenied,
+						address,
+					)
+				}
+				return mapped, int(address - mapped.address), nil
+			}
 		}
-		if mapped.permissions&permission != permission {
-			return nil, 0, fmt.Errorf("%w at 0x%08x", cpu.ErrPermissionDenied, address)
-		}
-		return mapped, int(address - mapped.address), nil
 	}
-	return nil, 0, fmt.Errorf("%w: 0x%08x", cpu.ErrInvalidAddress, address)
+	index := sort.Search(len(b.regions), func(index int) bool {
+		mapped := &b.regions[index]
+		return uint64(address) <
+			uint64(mapped.address)+uint64(mapped.size)
+	})
+	if index >= len(b.regions) || address < b.regions[index].address {
+		return nil, 0, fmt.Errorf("%w: 0x%08x", cpu.ErrInvalidAddress, address)
+	}
+	mapped := &b.regions[index]
+	if hintSlot >= 0 && hintSlot < len(b.regionHints) {
+		b.regionHints[hintSlot] = index
+	}
+	if mapped.permissions&permission != permission {
+		return nil, 0, fmt.Errorf("%w at 0x%08x", cpu.ErrPermissionDenied, address)
+	}
+	return mapped, int(address - mapped.address), nil
 }
 
 var _ cpu.Backend = (*Backend)(nil)
