@@ -213,6 +213,7 @@ type ktfDatabaseSnapshot struct {
 type ktfInputStreamSnapshot struct {
 	Data     []byte
 	Position uint32
+	Mark     uint32
 }
 
 type ktfFileSnapshot struct {
@@ -851,6 +852,7 @@ func snapshotKTFMetadata(
 			meta.InputStreams[instance] = ktfInputStreamSnapshot{
 				Data:     append([]byte(nil), stream.data...),
 				Position: stream.position,
+				Mark:     stream.mark,
 			}
 		}
 	}
@@ -1600,6 +1602,7 @@ func (m *Machine) restoreKTFState(saved *ktfSavedState) error {
 		r.inputStreams[instance] = &ktfInputStream{
 			data:     append([]byte(nil), stream.Data...),
 			position: stream.Position,
+			mark:     stream.Mark,
 		}
 	}
 	r.inputTargets = cloneUint32Map(meta.InputTargets)

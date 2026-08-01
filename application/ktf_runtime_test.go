@@ -7743,3 +7743,252 @@ func TestKTFClipServiceRecyclingSurvivesTheMediaPoolCap(t *testing.T) {
 		t.Fatal("a playing clip lost its host service to recycling")
 	}
 }
+
+func newScratchKTFRuntime(t *testing.T) *ktfRuntime {
+	t.Helper()
+	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.cpu.Close() })
+	if err := runtime.mapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	return runtime
+}
+
+func TestKTFStringBufferEditsCharactersInPlace(t *testing.T) {
+	runtime := newScratchKTFRuntime(t)
+	const instance = uint32(0x1234)
+	runtime.stringBuffers[instance] = string(make([]rune, 4))
+	for index, character := range []rune("res/") {
+		for register, value := range map[uint32]uint32{
+			cpu.RegisterR1: instance,
+			cpu.RegisterR2: uint32(index),
+			cpu.RegisterR3: uint32(character),
+		} {
+			if err := runtime.cpu.WriteRegister(register, value); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := runtime.handleStringBufferMethod(
+			"setCharAt",
+			"(IC)V",
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := runtime.stringBuffers[instance]; got != "res/" {
+		t.Fatalf("StringBuffer after setCharAt = %q", got)
+	}
+	name, err := runtime.newJavaString("map")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR1: instance,
+		cpu.RegisterR2: 4,
+		cpu.RegisterR3: name,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := runtime.handleStringBufferMethod(
+		"insert",
+		"(ILjava/lang/String;)Ljava/lang/StringBuffer;",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if got := runtime.stringBuffers[instance]; got != "res/map" {
+		t.Fatalf("StringBuffer after insert = %q", got)
+	}
+}
+
+func TestKTFStringBufferRecordsUnmodelledMethods(t *testing.T) {
+	runtime := newScratchKTFRuntime(t)
+	if _, err := runtime.handleStringBufferMethod(
+		"substring",
+		"(II)Ljava/lang/String;",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if got := runtime.lastUnimplementedJava; got !=
+		"java/lang/StringBuffer.substring(II)Ljava/lang/String;" {
+		t.Fatalf("last unimplemented method = %q", got)
+	}
+}
+
+func TestKTFReadsStringsTheGuestBuiltForItself(t *testing.T) {
+	runtime := newScratchKTFRuntime(t)
+	instance, err := runtime.newJavaString("resource/map.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Drop the host memo so only the guest-visible fields remain, which is
+	// what a title that assembles a name through its own code leaves behind.
+	delete(runtime.javaStrings, instance)
+	if got := runtime.javaText(instance); got != "resource/map.bin" {
+		t.Fatalf("guest string = %q", got)
+	}
+	if got := runtime.javaStringValue(instance); got != "resource/map.bin" {
+		t.Fatalf("guest string value = %q", got)
+	}
+	if got := runtime.javaText(0); got != "" {
+		t.Fatalf("null string = %q", got)
+	}
+}
+
+func TestKTFInputStreamResetReturnsToTheMark(t *testing.T) {
+	runtime := newScratchKTFRuntime(t)
+	stream, err := runtime.newHostJavaObject("java/io/DataInputStream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.inputStreams[stream] = &ktfInputStream{
+		data: []byte{1, 2, 3, 4, 5, 6},
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR1, stream); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for range 3 {
+		if _, err := runtime.handleInputStreamMethod(
+			ctx,
+			"readByte",
+			"()B",
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := runtime.handleInputStreamMethod(ctx, "mark", "(I)V"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.handleInputStreamMethod(ctx, "readByte", "()B"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.handleInputStreamMethod(ctx, "reset", "()V"); err != nil {
+		t.Fatal(err)
+	}
+	value, err := runtime.handleInputStreamMethod(ctx, "readByte", "()B")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value != 4 {
+		t.Fatalf("byte after reset = %d, want 4", value)
+	}
+	supported, err := runtime.handleInputStreamMethod(
+		ctx,
+		"markSupported",
+		"()Z",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if supported != 1 {
+		t.Fatalf("markSupported = %d", supported)
+	}
+}
+
+func TestKTFExceptionDispatchMovesTheFrameToTheHandler(t *testing.T) {
+	runtime := newScratchKTFRuntime(t)
+	entry, err := runtime.allocateWords(4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Protected region [115,432] with its handler at 435, the shape emitted
+	// for `try { ... } catch (Throwable t) { throw new Error(...); }`.
+	if err := runtime.writeWords(entry, []uint32{115, 432, 435, 0}); err != nil {
+		t.Fatal(err)
+	}
+	table, err := runtime.allocateWords(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.writeU32(table, entry); err != nil {
+		t.Fatal(err)
+	}
+	method, err := runtime.allocateWords(7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.writeWords(method, []uint32{0, 0, table, 0, 1, 0, 0}); err != nil {
+		t.Fatal(err)
+	}
+	functions, err := runtime.allocateWords(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.writeWords(functions, []uint32{0, 0x00123457}); err != nil {
+		t.Fatal(err)
+	}
+	frame, err := runtime.allocateWords(17)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.writeWords(frame, []uint32{method, 0, 0, 429, 0, functions}); err != nil {
+		t.Fatal(err)
+	}
+	exceptionContext, err := runtime.allocateWords(ktfJavaEnvironmentWords)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.exceptionContext = exceptionContext
+	if err := runtime.writeU32(exceptionContext+8*4, frame); err != nil {
+		t.Fatal(err)
+	}
+	target, caught, err := runtime.dispatchJavaException("java/lang/Error", 0x11223344)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !caught || target.handler != 435 {
+		t.Fatalf("first dispatch = target %+v, caught %t", target, caught)
+	}
+	bytecodePC, err := runtime.readU32(frame + 3*4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytecodePC != 435 {
+		t.Fatalf("frame bytecode PC = %d, want 435", bytecodePC)
+	}
+	// An exception raised by the handler body must escape the try it belongs
+	// to instead of being caught by it again.
+	if _, caught, err = runtime.dispatchJavaException(
+		"java/lang/Error",
+		0x55667788,
+	); err != nil {
+		t.Fatal(err)
+	} else if caught {
+		t.Fatal("the handler caught the exception it raised itself")
+	}
+}
+
+func TestKTFClipRecyclingTakesAPlayingClipWhenNoneAreIdle(t *testing.T) {
+	runtime := newScratchKTFRuntime(t)
+	limit := int(runtime.services.Config.Limits.Media.MaxClips)
+	first := uint32(0)
+	for index := range limit {
+		instance := uint32(0x10000000 + index*0x100)
+		if index == 0 {
+			first = instance
+		}
+		runtime.clips[instance] = &ktfClip{volume: 5, playing: true}
+		if _, err := runtime.ensureKTFClipService(instance); err != nil {
+			t.Fatalf("clip %d: %v", index, err)
+		}
+	}
+	extra := uint32(0x20000000)
+	runtime.clips[extra] = &ktfClip{volume: 5}
+	if _, err := runtime.ensureKTFClipService(extra); err != nil {
+		t.Fatalf("clip past a fully playing pool: %v", err)
+	}
+	if runtime.clipServices[first] != 0 {
+		t.Fatal("the oldest playing clip kept its host service")
+	}
+	if runtime.clips[first].playing {
+		t.Fatal("a recycled clip is still marked as playing")
+	}
+}

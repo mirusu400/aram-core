@@ -124,8 +124,8 @@ func (m *Machine) DebugSnapshot(maxEntries int) DebugSnapshot {
 		Runtime:   machineRuntimeName(m),
 		State:     m.state.String(),
 		CPU:       debugCPUSnapshot(m.cpu),
-		GuestLog:  debugLogSnapshot(nil, limit),
-		HostTrace: debugLogSnapshot(nil, limit),
+		GuestLog:  debugLogSnapshot(nil, 0, limit),
+		HostTrace: debugLogSnapshot(nil, 0, limit),
 	}
 	if m.lastResult.Instructions != 0 ||
 		m.lastResult.PC != 0 ||
@@ -134,10 +134,14 @@ func (m *Machine) DebugSnapshot(maxEntries int) DebugSnapshot {
 		snapshot.LastResult = debugExecutionResult(m.lastResult)
 	}
 	if m.wipi != nil {
-		snapshot.GuestLog = debugLogSnapshot(m.wipi.logs, limit)
+		snapshot.GuestLog = debugLogSnapshot(m.wipi.logs, 0, limit)
 	}
 	if m.ktf != nil {
-		snapshot.HostTrace = debugLogSnapshot(m.ktf.hostTrace, limit)
+		snapshot.HostTrace = debugLogSnapshot(
+			m.ktf.hostTrace,
+			m.ktf.hostTraceDropped,
+			limit,
+		)
 		snapshot.KTF = &DebugKTFSnapshot{
 			PresentCount:          m.ktf.presentCount,
 			TickMS:                m.ktf.tickMS,
@@ -187,8 +191,8 @@ func (m *skvmMachine) DebugSnapshot(maxEntries int) DebugSnapshot {
 	snapshot := DebugSnapshot{
 		Runtime:   "skvm",
 		State:     m.state.String(),
-		GuestLog:  debugLogSnapshot(nil, normalizeDebugSnapshotLimit(maxEntries)),
-		HostTrace: debugLogSnapshot(nil, normalizeDebugSnapshotLimit(maxEntries)),
+		GuestLog:  debugLogSnapshot(nil, 0, normalizeDebugSnapshotLimit(maxEntries)),
+		HostTrace: debugLogSnapshot(nil, 0, normalizeDebugSnapshotLimit(maxEntries)),
 		SKVM: &DebugSKVMSnapshot{
 			MainClass:   m.mainClass,
 			Started:     m.started,
@@ -330,11 +334,14 @@ func debugStopReason(reason cpu.StopReason) string {
 	}
 }
 
-func debugLogSnapshot(entries []string, limit int) DebugLogSnapshot {
+// debugLogSnapshot returns the newest entries within limit. dropped counts
+// entries a bounded log already discarded before this call, so Total and
+// Omitted stay truthful for logs that roll over during a long session.
+func debugLogSnapshot(entries []string, dropped, limit int) DebugLogSnapshot {
 	start := max(0, len(entries)-limit)
 	return DebugLogSnapshot{
-		Total:   len(entries),
-		Omitted: start,
+		Total:   dropped + len(entries),
+		Omitted: dropped + start,
 		Entries: append([]string(nil), entries[start:]...),
 	}
 }

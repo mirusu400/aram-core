@@ -87,9 +87,10 @@ type ktfRuntime struct {
 	fileServices         map[uint32]shared.ServiceID
 	wipicFileServices    map[uint32]shared.ServiceID
 
-	nextHostCall uint32
-	hostCalls    map[uint32]ktfHostCall
-	hostTrace    []string
+	nextHostCall     uint32
+	hostCalls        map[uint32]ktfHostCall
+	hostTrace        []string
+	hostTraceDropped int
 
 	knlInterface            uint32
 	jbInterface             uint32
@@ -258,6 +259,7 @@ type ktfDatabase struct {
 type ktfInputStream struct {
 	data     []byte
 	position uint32
+	mark     uint32
 }
 
 type ktfFile struct {
@@ -1875,13 +1877,13 @@ func (r *ktfRuntime) call(
 			run.Err = err
 			return run, 0, err
 		}
-		r.hostTrace = append(r.hostTrace, host.name)
+		r.trace(host.name)
 		value, err := host.handler(ctx, r)
 		if err != nil {
 			var unwind *ktfJavaExceptionUnwind
 			if errors.As(err, &unwind) &&
 				r.callOwnsJavaExceptionUnwind(callerStack, unwind) {
-				r.hostTrace = append(r.hostTrace, "java_exception_unwind_boundary:call")
+				r.trace("java_exception_unwind_boundary:call")
 				pc, mode, err = r.applyJavaExceptionUnwind(unwind)
 				if err != nil {
 					run.Reason = cpu.StopFault
@@ -1970,15 +1972,12 @@ func (r *ktfRuntime) queueJavaVirtual(
 			descriptor: descriptor,
 			args:       append([]uint32(nil), args...),
 		})
-		r.hostTrace = append(
-			r.hostTrace,
-			fmt.Sprintf(
-				"java_task_defer:%s%s:instance=0x%08x:pending=%d",
-				name,
-				descriptor,
-				instance,
-				len(r.pendingJavaCalls),
-			),
+		r.tracef(
+			"java_task_defer:%s%s:instance=0x%08x:pending=%d",
+			name,
+			descriptor,
+			instance,
+			len(r.pendingJavaCalls),
 		)
 		return nil
 	}
@@ -2057,15 +2056,12 @@ func (r *ktfRuntime) queueJavaVirtualTask(
 	} else {
 		r.tasks = append(r.tasks, task)
 	}
-	r.hostTrace = append(
-		r.hostTrace,
-		fmt.Sprintf(
-			"java_task_queue:%s%s:instance=0x%08x:procedure=0x%08x",
-			name,
-			descriptor,
-			instance,
-			method.Body,
-		),
+	r.tracef(
+		"java_task_queue:%s%s:instance=0x%08x:procedure=0x%08x",
+		name,
+		descriptor,
+		instance,
+		method.Body,
 	)
 	return task, nil
 }
@@ -2110,14 +2106,11 @@ func (r *ktfRuntime) queueKeyEvent(pressed bool, key int32) (bool, error) {
 		return false, err
 	}
 	task.keyCard = card
-	r.hostTrace = append(
-		r.hostTrace,
-		fmt.Sprintf(
-			"java_key_event:type=%d:key=%d:card=0x%08x",
-			eventType,
-			key,
-			card,
-		),
+	r.tracef(
+		"java_key_event:type=%d:key=%d:card=0x%08x",
+		eventType,
+		key,
+		card,
 	)
 	return true, nil
 }
@@ -2155,12 +2148,9 @@ func (r *ktfRuntime) requestJavaTermination(instance uint32) {
 	for _, task := range r.tasks {
 		task.done = true
 	}
-	r.hostTrace = append(
-		r.hostTrace,
-		fmt.Sprintf(
-			"java_lifecycle:notifyDestroyed:instance=0x%08x",
-			instance,
-		),
+	r.tracef(
+		"java_lifecycle:notifyDestroyed:instance=0x%08x",
+		instance,
 	)
 }
 
@@ -2175,12 +2165,9 @@ func (r *ktfRuntime) deferStartedThread(task *ktfTask) {
 	}
 	task.startBlocker = parent
 	parent.childStartGrace = grace + r.activeInstructions
-	r.hostTrace = append(
-		r.hostTrace,
-		fmt.Sprintf(
-			"java_thread_start_defer:grace=%d",
-			grace,
-		),
+	r.tracef(
+		"java_thread_start_defer:grace=%d",
+		grace,
 	)
 }
 
@@ -2208,13 +2195,10 @@ func (r *ktfRuntime) releaseStartedThreads(parent *ktfTask, reason string) {
 	}
 	parent.childStartGrace = 0
 	if released != 0 {
-		r.hostTrace = append(
-			r.hostTrace,
-			fmt.Sprintf(
-				"java_thread_start_release:reason=%s:tasks=%d",
-				reason,
-				released,
-			),
+		r.tracef(
+			"java_thread_start_release:reason=%s:tasks=%d",
+			reason,
+			released,
 		)
 	}
 }
@@ -2354,16 +2338,13 @@ func (r *ktfRuntime) runTaskSlice(
 	stack, _ := r.cpu.ReadRegister(cpu.RegisterSP)
 	register10, _ := r.cpu.ReadRegister(cpu.RegisterR10)
 	link, _ := r.cpu.ReadRegister(cpu.RegisterLR)
-	r.hostTrace = append(
-		r.hostTrace,
-		fmt.Sprintf(
-			"java_task_slice:index=%d:pc=0x%08x:sp=0x%08x:r10=0x%08x:lr=0x%08x",
-			taskIndex,
-			pc,
-			stack,
-			register10,
-			link,
-		),
+	r.tracef(
+		"java_task_slice:index=%d:pc=0x%08x:sp=0x%08x:r10=0x%08x:lr=0x%08x",
+		taskIndex,
+		pc,
+		stack,
+		register10,
+		link,
 	)
 	r.yieldRequested = false
 	var instructions uint64
@@ -2374,14 +2355,11 @@ func (r *ktfRuntime) runTaskSlice(
 		r.activeInstructions = instructions
 		run.Instructions = instructions
 		if run.Err != nil {
-			r.hostTrace = append(
-				r.hostTrace,
-				fmt.Sprintf(
-					"java_task_fault:index=%d:pc=0x%08x:error=%v",
-					taskIndex,
-					run.PC,
-					run.Err,
-				),
+			r.tracef(
+				"java_task_fault:index=%d:pc=0x%08x:error=%v",
+				taskIndex,
+				run.PC,
+				run.Err,
 			)
 			return run
 		}
@@ -2418,12 +2396,9 @@ func (r *ktfRuntime) runTaskSlice(
 					run.Err = err
 					return run
 				}
-				r.hostTrace = append(
-					r.hostTrace,
-					fmt.Sprintf(
-						"java_main_layout:instance=0x%08x",
-						instance,
-					),
+				r.tracef(
+					"java_main_layout:instance=0x%08x",
+					instance,
 				)
 			}
 			if err := r.releaseDeferredCardPaints(ctx, task); err != nil {
@@ -2453,17 +2428,14 @@ func (r *ktfRuntime) runTaskSlice(
 			run.Err = fmt.Errorf("unknown KTF host call at 0x%08x", trap)
 			return run
 		}
-		r.hostTrace = append(r.hostTrace, host.name)
+		r.trace(host.name)
 		value, err := host.handler(ctx, r)
 		if err != nil {
 			var unwind *ktfJavaExceptionUnwind
 			if errors.As(err, &unwind) {
-				r.hostTrace = append(
-					r.hostTrace,
-					fmt.Sprintf(
-						"java_exception_unwind_boundary:task=%d",
-						taskIndex,
-					),
+				r.tracef(
+					"java_exception_unwind_boundary:task=%d",
+					taskIndex,
 				)
 				pc, mode, err = r.applyJavaExceptionUnwind(unwind)
 				if err == nil {
@@ -2475,13 +2447,10 @@ func (r *ktfRuntime) runTaskSlice(
 				task.done = true
 				task.bestEffortPaint = false
 				delete(r.paintTasks, task.paintCard)
-				r.hostTrace = append(
-					r.hostTrace,
-					fmt.Sprintf(
-						"java_initial_paint_discard:%s:card=0x%08x",
-						unhandled.name,
-						task.paintCard,
-					),
+				r.tracef(
+					"java_initial_paint_discard:%s:card=0x%08x",
+					unhandled.name,
+					task.paintCard,
 				)
 				run.Reason = cpu.StopBudget
 				run.Err = nil
@@ -2498,15 +2467,12 @@ func (r *ktfRuntime) runTaskSlice(
 			register10, _ := r.cpu.ReadRegister(cpu.RegisterR10)
 			link, _ := r.cpu.ReadRegister(cpu.RegisterLR)
 			stack, _ := r.cpu.ReadRegister(cpu.RegisterSP)
-			r.hostTrace = append(
-				r.hostTrace,
-				fmt.Sprintf(
-					"java_bridge_return:%s:r10=0x%08x:sp=0x%08x:lr=0x%08x",
-					host.name,
-					register10,
-					stack,
-					link,
-				),
+			r.tracef(
+				"java_bridge_return:%s:r10=0x%08x:sp=0x%08x:lr=0x%08x",
+				host.name,
+				register10,
+				stack,
+				link,
 			)
 		}
 		if strings.HasPrefix(host.name, "java.method.") {
@@ -2661,15 +2627,12 @@ func (r *ktfRuntime) activateDueWIPICTimers() error {
 			r.tasks = append(r.tasks, task)
 		}
 		task.wipicTimer = true
-		r.hostTrace = append(
-			r.hostTrace,
-			fmt.Sprintf(
-				"wipic_timer_fire:timer=0x%08x:callback=0x%08x:parameter=0x%08x:tick=%d",
-				selected,
-				timer.callback,
-				timer.parameter,
-				r.tickMS,
-			),
+		r.tracef(
+			"wipic_timer_fire:timer=0x%08x:callback=0x%08x:parameter=0x%08x:tick=%d",
+			selected,
+			timer.callback,
+			timer.parameter,
+			r.tickMS,
 		)
 		// Only one native timer callback may be live at a time. Other expired
 		// timers remain active and are selected after this callback returns.
@@ -2834,14 +2797,11 @@ func (r *ktfRuntime) applyJavaExceptionUnwind(
 	); err != nil {
 		return 0, cpu.ModeARM, err
 	}
-	r.hostTrace = append(
-		r.hostTrace,
-		fmt.Sprintf(
-			"java_exception_unwind:context=0x%08x:handler=0x%08x:restore=0x%08x",
-			unwind.target.contextBase,
-			unwind.target.handler,
-			unwind.target.restore,
-		),
+	r.tracef(
+		"java_exception_unwind:context=0x%08x:handler=0x%08x:restore=0x%08x",
+		unwind.target.contextBase,
+		unwind.target.handler,
+		unwind.target.restore,
 	)
 	return pc, mode, nil
 }
@@ -2988,10 +2948,7 @@ func (r *ktfRuntime) loadClass(ctx context.Context, name string) (ktfJavaClass, 
 		}
 		if address != 0 {
 			if candidate != name {
-				r.hostTrace = append(
-					r.hostTrace,
-					fmt.Sprintf("java_main_class_alias:%s=%s", name, candidate),
-				)
+				r.tracef("java_main_class_alias:%s=%s", name, candidate)
 			}
 			class, err := r.inspectJavaClass(address)
 			if err != nil {
@@ -3139,15 +3096,12 @@ func (r *ktfRuntime) startMainClass(ctx context.Context) error {
 			task.layoutOnReturn = instance
 		}
 		r.tasks = append(r.tasks, task)
-		r.hostTrace = append(
-			r.hostTrace,
-			fmt.Sprintf(
-				"java_task_queue:%s.startApp([Ljava/lang/String;)V:"+
-					"instance=0x%08x:procedure=0x%08x",
-				class.Name,
-				instance,
-				start.Body,
-			),
+		r.tracef(
+			"java_task_queue:%s.startApp([Ljava/lang/String;)V:"+
+				"instance=0x%08x:procedure=0x%08x",
+			class.Name,
+			instance,
+			start.Body,
 		)
 		return nil
 	}
@@ -3236,10 +3190,7 @@ func (r *ktfRuntime) ensureJavaClassInitialized(
 		"()V",
 	)
 	if !ok || initializer.Body == 0 {
-		r.hostTrace = append(
-			r.hostTrace,
-			fmt.Sprintf("java_class_initialized:%s:no_clinit", class.Name),
-		)
+		r.tracef("java_class_initialized:%s:no_clinit", class.Name)
 		return nil
 	}
 	result, _, err := r.call(
@@ -3258,13 +3209,10 @@ func (r *ktfRuntime) ensureJavaClassInitialized(
 			err,
 		)
 	}
-	r.hostTrace = append(
-		r.hostTrace,
-		fmt.Sprintf(
-			"java_class_initialized:%s:<clinit>@0x%08x",
-			class.Name,
-			initializer.Body,
-		),
+	r.tracef(
+		"java_class_initialized:%s:<clinit>@0x%08x",
+		class.Name,
+		initializer.Body,
 	)
 	return nil
 }
@@ -3490,7 +3438,7 @@ func ktfGetInterface(_ context.Context, runtime *ktfRuntime) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
-	runtime.hostTrace = append(runtime.hostTrace, "interface:"+name)
+	runtime.trace("interface:" + name)
 	return runtime.lookupInterface(name)
 }
 
@@ -3605,10 +3553,7 @@ func (r *ktfRuntime) snapshotJavaThrow() {
 	}
 	r.lastJavaThrowSP, _ = r.cpu.ReadRegister(cpu.RegisterSP)
 	r.lastJavaThrowStack, _ = r.readWords(r.lastJavaThrowSP, 64)
-	r.hostTrace = append(
-		r.hostTrace,
-		fmt.Sprintf("java_throw_snapshot:sp=0x%08x", r.lastJavaThrowSP),
-	)
+	r.tracef("java_throw_snapshot:sp=0x%08x", r.lastJavaThrowSP)
 }
 
 func (r *ktfRuntime) rememberJavaThrowName(name string) {
@@ -3649,14 +3594,11 @@ func (r *ktfRuntime) raiseJavaException(
 		return 0, fmt.Errorf("dispatch KTF Java exception %s: %w", name, dispatchErr)
 	}
 	if caught {
-		r.hostTrace = append(
-			r.hostTrace,
-			fmt.Sprintf(
-				"java_exception_caught:%s@0x%08x:restore=0x%08x",
-				name,
-				target.handler,
-				target.restore,
-			),
+		r.tracef(
+			"java_exception_caught:%s@0x%08x:restore=0x%08x",
+			name,
+			target.handler,
+			target.restore,
 		)
 		return 0, &ktfJavaExceptionUnwind{target: target}
 	}
@@ -3738,7 +3680,7 @@ func (r *ktfRuntime) dispatchJavaException(
 			bytecodePC,
 			frame,
 		)
-		r.hostTrace = append(r.hostTrace, frameTrace)
+		r.trace(frameTrace)
 		r.javaExceptionFrames = append(r.javaExceptionFrames, frameTrace)
 		exceptionCount := int(methodWords[4] & 0xffff)
 		if exceptionCount > 4096 {
@@ -3778,6 +3720,20 @@ func (r *ktfRuntime) dispatchJavaException(
 			if err := r.writeU32(frame+4*4, detail); err != nil {
 				return ktfJavaExceptionTarget{}, false, err
 			}
+			handler := entry[2]
+			if handler == 0 {
+				handler = 1
+			}
+			// Move the frame's bytecode cursor to the handler before
+			// resuming. Compiled KTF methods only publish a bytecode PC at
+			// the points that can throw inside the protected region, so a
+			// frame left pointing at the original throw makes any exception
+			// raised by the handler body look like it came from inside the
+			// same try. This method wraps and rethrows in its catch block,
+			// which then caught itself forever until the guest heap ran out.
+			if err := r.writeU32(frame+3*4, handler); err != nil {
+				return ktfJavaExceptionTarget{}, false, err
+			}
 			if err := r.writeU32(r.exceptionContext+8*4, frame); err != nil {
 				return ktfJavaExceptionTarget{}, false, err
 			}
@@ -3794,10 +3750,6 @@ func (r *ktfRuntime) dispatchJavaException(
 					"Java exception frame 0x%08x has no restore function",
 					frame,
 				)
-			}
-			handler := entry[2]
-			if handler == 0 {
-				handler = 1
 			}
 			return ktfJavaExceptionTarget{
 				contextBase: frame + 6*4,
@@ -3950,10 +3902,7 @@ func ktfJavaClassLoad(_ context.Context, runtime *ktfRuntime) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
-	runtime.hostTrace = append(
-		runtime.hostTrace,
-		fmt.Sprintf("java_class_load:%s@0x%08x", name, target),
-	)
+	runtime.tracef("java_class_load:%s@0x%08x", name, target)
 	class, err := runtime.ensureJavaClass(name)
 	if err != nil {
 		return 0, err
@@ -3985,15 +3934,12 @@ func ktfJavaNew(ctx context.Context, runtime *ktfRuntime) (uint32, error) {
 	}
 	instanceWords, _ := runtime.readWords(instance, 2)
 	header, _ := runtime.readU32(instanceWords[0])
-	runtime.hostTrace = append(
-		runtime.hostTrace,
-		fmt.Sprintf(
-			"java_new:%s@0x%08x:fields=0x%08x:header=0x%08x",
-			class.Name,
-			instance,
-			instanceWords[0],
-			header,
-		),
+	runtime.tracef(
+		"java_new:%s@0x%08x:fields=0x%08x:header=0x%08x",
+		class.Name,
+		instance,
+		instanceWords[0],
+		header,
 	)
 	return instance, nil
 }
@@ -4020,14 +3966,11 @@ func ktfJavaArrayNew(_ context.Context, runtime *ktfRuntime) (uint32, error) {
 			err,
 		)
 	}
-	runtime.hostTrace = append(
-		runtime.hostTrace,
-		fmt.Sprintf(
-			"java_array_new:%s[%d]@0x%08x",
-			className,
-			count,
-			instance,
-		),
+	runtime.tracef(
+		"java_array_new:%s[%d]@0x%08x",
+		className,
+		count,
+		instance,
 	)
 	return instance, nil
 }
@@ -4069,16 +4012,13 @@ func ktfJavaStringCopy(
 	if err := runtime.cpu.WriteMemory(destination, output); err != nil {
 		return 0, fmt.Errorf("copy KTF Java string: %w", err)
 	}
-	runtime.hostTrace = append(
-		runtime.hostTrace,
-		fmt.Sprintf(
-			"java_string_copy:source=0x%08x:destination=0x%08x:"+
-				"capacity=%d:bytes=%d",
-			source,
-			destination,
-			capacity,
-			copyCount,
-		),
+	runtime.tracef(
+		"java_string_copy:source=0x%08x:destination=0x%08x:"+
+			"capacity=%d:bytes=%d",
+		source,
+		destination,
+		capacity,
+		copyCount,
 	)
 	return copyCount, nil
 }
@@ -4373,16 +4313,13 @@ func (r *ktfRuntime) rebuildHostJavaVTable(classAddress uint32) error {
 				return hierarchyErr
 			}
 			if !compatible {
-				r.hostTrace = append(
-					r.hostTrace,
-					fmt.Sprintf(
-						"java_compat_vtable_collision:class=%s:slot=%d:"+
-							"guest=0x%08x:host=0x%08x:preserved",
-						hierarchy[0].Name,
-						slot,
-						entries[slot],
-						methodAddress,
-					),
+				r.tracef(
+					"java_compat_vtable_collision:class=%s:slot=%d:"+
+						"guest=0x%08x:host=0x%08x:preserved",
+					hierarchy[0].Name,
+					slot,
+					entries[slot],
+					methodAddress,
 				)
 				continue
 			}
@@ -4428,16 +4365,13 @@ func (r *ktfRuntime) rebuildHostJavaVTable(classAddress uint32) error {
 		err = r.writeU32(classAddress+4, (vtableIndex*4)<<5)
 	}
 	if err == nil {
-		r.hostTrace = append(
-			r.hostTrace,
-			fmt.Sprintf(
-				"java_vtable:%s:class=0x%08x:slot=%d@0x%08x[%d]",
-				hierarchy[0].Name,
-				classAddress,
-				vtableIndex,
-				vtable,
-				len(methods),
-			),
+		r.tracef(
+			"java_vtable:%s:class=0x%08x:slot=%d@0x%08x[%d]",
+			hierarchy[0].Name,
+			classAddress,
+			vtableIndex,
+			vtable,
+			len(methods),
 		)
 	}
 	return err
@@ -4605,16 +4539,13 @@ func ktfGetJavaMethod(ctx context.Context, runtime *ktfRuntime) (uint32, error) 
 		}
 	}
 	lr, _ := runtime.cpu.ReadRegister(cpu.RegisterLR)
-	runtime.hostTrace = append(
-		runtime.hostTrace,
-		fmt.Sprintf(
-			"java_method:%s%s@0x%08x:from=0x%08x:lr=0x%08x",
-			name,
-			descriptor,
-			method,
-			class,
-			lr,
-		),
+	runtime.tracef(
+		"java_method:%s%s@0x%08x:from=0x%08x:lr=0x%08x",
+		name,
+		descriptor,
+		method,
+		class,
+		lr,
 	)
 	return method, nil
 }
@@ -4653,15 +4584,12 @@ func ktfGetJavaField(ctx context.Context, runtime *ktfRuntime) (uint32, error) {
 			return 0, err
 		}
 	}
-	runtime.hostTrace = append(
-		runtime.hostTrace,
-		fmt.Sprintf(
-			"java_field:%s.%s%s@0x%08x",
-			class.Name,
-			name,
-			descriptor,
-			field,
-		),
+	runtime.tracef(
+		"java_field:%s.%s%s@0x%08x",
+		class.Name,
+		name,
+		descriptor,
+		field,
 	)
 	return field, nil
 }
@@ -5183,16 +5111,13 @@ func (r *ktfRuntime) installHostJavaVirtualMethodForClass(
 			return hierarchyErr
 		}
 		if !compatible {
-			r.hostTrace = append(
-				r.hostTrace,
-				fmt.Sprintf(
-					"java_compat_vtable_collision:class=%s:slot=%d:"+
-						"guest=0x%08x:host=0x%08x:preserved",
-					className,
-					slot,
-					existing,
-					methodAddress,
-				),
+			r.tracef(
+				"java_compat_vtable_collision:class=%s:slot=%d:"+
+					"guest=0x%08x:host=0x%08x:preserved",
+				className,
+				slot,
+				existing,
+				methodAddress,
 			)
 			return nil
 		}
@@ -5242,25 +5167,19 @@ func ktfCallNative(ctx context.Context, runtime *ktfRuntime) (uint32, error) {
 	}
 	if signature, ok := runtime.javaNativeMethodSignature(address); ok {
 		if runtime.lastJavaMethod != signature {
-			runtime.hostTrace = append(
-				runtime.hostTrace,
-				fmt.Sprintf(
-					"java_native_method_correct:%s->%s@0x%08x",
-					runtime.lastJavaMethod,
-					signature,
-					address,
-				),
+			runtime.tracef(
+				"java_native_method_correct:%s->%s@0x%08x",
+				runtime.lastJavaMethod,
+				signature,
+				address,
 			)
 		}
 		runtime.lastJavaMethod = signature
 	}
-	runtime.hostTrace = append(
-		runtime.hostTrace,
-		fmt.Sprintf(
-			"java_native_call:%s@0x%08x",
-			runtime.lastJavaMethod,
-			address,
-		),
+	runtime.tracef(
+		"java_native_call:%s@0x%08x",
+		runtime.lastJavaMethod,
+		address,
 	)
 	override, hasOverride := ktfJavaNativeOverride(runtime.lastJavaMethod)
 	if address == 0 && !hasOverride {
@@ -5282,7 +5201,7 @@ func ktfCallNative(ctx context.Context, runtime *ktfRuntime) (uint32, error) {
 		hostMethod = true
 	}
 	if hostMethod {
-		runtime.hostTrace = append(runtime.hostTrace, host.name)
+		runtime.trace(host.name)
 		nativeParameterBase := runtime.nativeParameterBase
 		runtime.nativeParameterBase = parameters
 		value, err = host.handler(ctx, runtime)
@@ -5300,12 +5219,9 @@ func ktfCallNative(ctx context.Context, runtime *ktfRuntime) (uint32, error) {
 		if runtime.javaEnvironment != 0 {
 			environment, _ := runtime.readU32(runtime.javaEnvironment)
 			if environment == 0 {
-				runtime.hostTrace = append(
-					runtime.hostTrace,
-					fmt.Sprintf(
-						"java_native_environment_null:%s",
-						runtime.lastJavaMethod,
-					),
+				runtime.tracef(
+					"java_native_environment_null:%s",
+					runtime.lastJavaMethod,
 				)
 			}
 		}
@@ -5592,16 +5508,13 @@ func ktfHostJavaMethod(className, name, descriptor string) ktfHostHandler {
 			}
 		}
 		runtime.lastJavaCallLR, _ = runtime.cpu.ReadRegister(cpu.RegisterLR)
-		runtime.hostTrace = append(
-			runtime.hostTrace,
-			fmt.Sprintf(
-				"java_method_call:%s.%s%s:lr=0x%08x:%08x",
-				className,
-				name,
-				descriptor,
-				runtime.lastJavaCallLR,
-				registers,
-			),
+		runtime.tracef(
+			"java_method_call:%s.%s%s:lr=0x%08x:%08x",
+			className,
+			name,
+			descriptor,
+			runtime.lastJavaCallLR,
+			registers,
 		)
 		switch className {
 		case "java/lang/Object":
@@ -5807,10 +5720,7 @@ func ktfHostJavaMethod(className, name, descriptor string) ktfHostHandler {
 				"getSystemProperty(Ljava/lang/String;)Ljava/lang/String;" {
 				key := runtime.javaStringValue(registers[1])
 				value := runtime.handsetSystemProperty(key)
-				runtime.hostTrace = append(
-					runtime.hostTrace,
-					"java_handset_property:"+key+"="+value,
-				)
+				runtime.trace("java_handset_property:" + key + "=" + value)
 				return runtime.newJavaString(value)
 			}
 		case "org/kwis/msp/lcdui/Jlet":
@@ -5920,14 +5830,11 @@ func ktfHostJavaMethod(className, name, descriptor string) ktfHostHandler {
 				}
 			}
 		}
-		runtime.hostTrace = append(
-			runtime.hostTrace,
-			fmt.Sprintf(
-				"java_unimplemented:%s:receiver=0x%08x:class=%s",
-				signature,
-				registers[1],
-				receiverClass,
-			),
+		runtime.tracef(
+			"java_unimplemented:%s:receiver=0x%08x:class=%s",
+			signature,
+			registers[1],
+			receiverClass,
 		)
 		return 0, nil
 	}
@@ -5972,16 +5879,13 @@ func (r *ktfRuntime) redispatchGuestJavaMethod(
 	if !ok || parameterWords > len(registers)-2 {
 		return 0, false, nil
 	}
-	r.hostTrace = append(
-		r.hostTrace,
-		fmt.Sprintf(
-			"java_virtual_redispatch:%s.%s%s:actual=%s:body=0x%08x",
-			declaredClass,
-			name,
-			descriptor,
-			actual.Name,
-			method.Body,
-		),
+	r.tracef(
+		"java_virtual_redispatch:%s.%s%s:actual=%s:body=0x%08x",
+		declaredClass,
+		name,
+		descriptor,
+		actual.Name,
+		method.Body,
 	)
 	value, err := r.invokeJavaVirtual(
 		ctx,
@@ -6718,19 +6622,16 @@ func (r *ktfRuntime) javaArrayCopy(
 		return err
 	}
 	if sourceSize != targetSize {
-		r.hostTrace = append(
-			r.hostTrace,
-			fmt.Sprintf(
-				"java_arraycopy_type_mismatch:source=0x%08x[%d]:%s:"+
-					"target=0x%08x[%d]:%s:count=%d",
-				source,
-				sourcePosition,
-				sourceClass.Name,
-				target,
-				targetPosition,
-				targetClass.Name,
-				count,
-			),
+		r.tracef(
+			"java_arraycopy_type_mismatch:source=0x%08x[%d]:%s:"+
+				"target=0x%08x[%d]:%s:count=%d",
+			source,
+			sourcePosition,
+			sourceClass.Name,
+			target,
+			targetPosition,
+			targetClass.Name,
+			count,
 		)
 		return r.raiseHostJavaException("java/lang/ArrayStoreException")
 	}
@@ -6744,20 +6645,17 @@ func (r *ktfRuntime) javaArrayCopy(
 	}
 	if uint64(sourcePosition)+uint64(count) > uint64(sourceLength) ||
 		uint64(targetPosition)+uint64(count) > uint64(targetLength) {
-		r.hostTrace = append(
-			r.hostTrace,
-			fmt.Sprintf(
-				"java_arraycopy_bounds:source=0x%08x[%d:%d]/%d:"+
-					"target=0x%08x[%d:%d]/%d",
-				source,
-				sourcePosition,
-				uint64(sourcePosition)+uint64(count),
-				sourceLength,
-				target,
-				targetPosition,
-				uint64(targetPosition)+uint64(count),
-				targetLength,
-			),
+		r.tracef(
+			"java_arraycopy_bounds:source=0x%08x[%d:%d]/%d:"+
+				"target=0x%08x[%d:%d]/%d",
+			source,
+			sourcePosition,
+			uint64(sourcePosition)+uint64(count),
+			sourceLength,
+			target,
+			targetPosition,
+			uint64(targetPosition)+uint64(count),
+			targetLength,
 		)
 		return r.raiseHostJavaException(
 			"java/lang/ArrayIndexOutOfBoundsException",
@@ -6870,18 +6768,12 @@ func (r *ktfRuntime) paintCard(ctx context.Context, card uint32) error {
 	}
 	if task := r.pendingKeyTask(card); task != nil {
 		r.deferCardPaint(task, card, false)
-		r.hostTrace = append(
-			r.hostTrace,
-			fmt.Sprintf("java_paint_defer_key:card=0x%08x", card),
-		)
+		r.tracef("java_paint_defer_key:card=0x%08x", card)
 		return nil
 	}
 	if task := r.paintTasks[card]; task != nil && !task.done {
 		delete(r.dirtyCards, card)
-		r.hostTrace = append(
-			r.hostTrace,
-			fmt.Sprintf("java_paint_coalesce:card=0x%08x", card),
-		)
+		r.tracef("java_paint_coalesce:card=0x%08x", card)
 		return nil
 	}
 	delete(r.paintTasks, card)
@@ -6905,10 +6797,7 @@ func (r *ktfRuntime) paintCard(ctx context.Context, card uint32) error {
 		task.paintCard = card
 		task.bestEffortPaint = !r.paintInitializedCards[card]
 		if task.bestEffortPaint {
-			r.hostTrace = append(
-				r.hostTrace,
-				fmt.Sprintf("java_initial_paint_arm:card=0x%08x", card),
-			)
+			r.tracef("java_initial_paint_arm:card=0x%08x", card)
 		}
 		r.paintTasks[card] = task
 		return nil
@@ -6939,10 +6828,7 @@ func (r *ktfRuntime) serviceCardRepaints(
 	if task := r.paintTasks[card]; task != nil && !task.done {
 		task.done = true
 		delete(r.paintTasks, card)
-		r.hostTrace = append(
-			r.hostTrace,
-			fmt.Sprintf("java_paint_force_cancel:card=0x%08x", card),
-		)
+		r.tracef("java_paint_force_cancel:card=0x%08x", card)
 	}
 	delete(r.dirtyCards, card)
 	graphics, err := r.ensureScreenGraphics()
@@ -6962,13 +6848,10 @@ func (r *ktfRuntime) serviceCardRepaints(
 		if r.paintInitializedCards[card] || !errors.As(err, &unhandled) {
 			return err
 		}
-		r.hostTrace = append(
-			r.hostTrace,
-			fmt.Sprintf(
-				"java_initial_paint_discard:%s:card=0x%08x",
-				unhandled.name,
-				card,
-			),
+		r.tracef(
+			"java_initial_paint_discard:%s:card=0x%08x",
+			unhandled.name,
+			card,
 		)
 		return nil
 	}
@@ -7000,10 +6883,7 @@ func (r *ktfRuntime) recordPresentation() error {
 		}
 	}
 	r.presentCount++
-	r.hostTrace = append(
-		r.hostTrace,
-		fmt.Sprintf("java_present:%d", r.presentCount),
-	)
+	r.tracef("java_present:%d", r.presentCount)
 	if r.activeTask != nil {
 		// A handset display update is a scheduler boundary. Yield after the
 		// host call returns so a paint loop cannot submit many invisible
@@ -7186,10 +7066,7 @@ func (r *ktfRuntime) handleImageMethod(name, descriptor string) (uint32, error) 
 		resourceName = path.Clean(resourceName)
 		data, ok := r.findKTFResource(resourceName)
 		if !ok {
-			r.hostTrace = append(
-				r.hostTrace,
-				"java_image_missing:"+resourceName,
-			)
+			r.trace("java_image_missing:" + resourceName)
 			return r.newJavaImage(image.NewRGBA(image.Rect(0, 0, 1, 1)))
 		}
 		instance, decodeErr := r.newJavaEncodedImage(data)
@@ -8446,10 +8323,21 @@ func (r *ktfRuntime) handleInputStreamMethod(
 		stream.position += uint32(requested)
 		return r.javaLongResult(requested), nil
 	case "mark(I)V":
-		return 0, nil
-	case "reset()V":
+		// Streams are fully buffered in host memory, so the read-ahead limit
+		// carries no obligation and every mark stays valid.
 		if stream != nil {
-			stream.position = 0
+			stream.mark = stream.position
+		}
+		return 0, nil
+	case "markSupported()Z":
+		return 1, nil
+	case "reset()V":
+		// reset returns to the last mark, not to the start. Rewinding to zero
+		// silently desynchronised every subsequent read for titles that scan
+		// a resource with mark/reset, which then decoded record lengths from
+		// the wrong offset.
+		if stream != nil {
+			stream.position = stream.mark
 		}
 		return 0, nil
 	case "readBoolean()Z", "readUnsignedByte()I":
@@ -9201,13 +9089,10 @@ func (r *ktfRuntime) handleThrowableMethod(
 		return r.throwableMessages[instance], nil
 	case "printStackTrace()V":
 		message := r.javaStringValue(r.throwableMessages[instance])
-		r.hostTrace = append(
-			r.hostTrace,
-			fmt.Sprintf(
-				"java_stack_trace:instance=0x%08x:message=%q",
-				instance,
-				message,
-			),
+		r.tracef(
+			"java_stack_trace:instance=0x%08x:message=%q",
+			instance,
+			message,
 		)
 		return 0, nil
 	case "toString()Ljava/lang/String;":
@@ -9955,26 +9840,37 @@ func (r *ktfRuntime) ensureKTFClipService(
 	return serviceID, nil
 }
 
-// recycleKTFClipService frees the host media service backing the
-// oldest idle Java clip and reports whether it freed one. The KTF runtime has
-// no Java collector, so a title that keeps constructing Clip objects for its
-// sound effects would otherwise exhaust the bounded media pool and fault. The
-// Java-side sample data stays in ktfClip, so a recycled clip reallocates and
-// refills its service the next time it is touched. Instances are numbered in
-// allocation order, so choosing the lowest idle handle retires the oldest clip
-// and keeps the choice deterministic.
+// recycleKTFClipService frees the host media service backing the oldest Java
+// clip and reports whether it freed one. The KTF runtime has no Java
+// collector, so a title that constructs a Clip per sound effect would
+// otherwise exhaust the bounded media pool and fault. Instances are numbered
+// in allocation order, so the lowest handle is the oldest clip and the choice
+// stays deterministic.
+//
+// Idle clips are retired first. When every clip is playing the oldest one is
+// stopped and taken anyway, which is what a handset mixer does when a title
+// asks for more simultaneous voices than the device has. The Java-side sample
+// data lives in ktfClip, so a recycled clip reallocates and refills its
+// service the next time the guest touches it.
 func (r *ktfRuntime) recycleKTFClipService() bool {
-	victim := uint32(0)
+	idle, playing := uint32(0), uint32(0)
 	for instance, serviceID := range r.clipServices {
 		if serviceID == 0 {
 			continue
 		}
 		if clip := r.clips[instance]; clip != nil && clip.playing {
+			if playing == 0 || instance < playing {
+				playing = instance
+			}
 			continue
 		}
-		if victim == 0 || instance < victim {
-			victim = instance
+		if idle == 0 || instance < idle {
+			idle = instance
 		}
+	}
+	victim := idle
+	if victim == 0 {
+		victim = playing
 	}
 	if victim == 0 {
 		return false
@@ -9985,6 +9881,9 @@ func (r *ktfRuntime) recycleKTFClipService() bool {
 		r.services.Events,
 	); err != nil {
 		return false
+	}
+	if clip := r.clips[victim]; clip != nil {
+		clip.playing = false
 	}
 	delete(r.clipServices, victim)
 	return true
@@ -10110,10 +10009,7 @@ func (r *ktfRuntime) handleFileMethod(
 		case ktfFileReadOnly:
 			openMode = shared.OpenRead
 			if !exists {
-				r.hostTrace = append(
-					r.hostTrace,
-					fmt.Sprintf("java_file_open_missing:%s", filename),
-				)
+				r.tracef("java_file_open_missing:%s", filename)
 				return 0, r.raiseHostJavaException("java/io/IOException")
 			}
 		case ktfFileWrite:
@@ -10125,13 +10021,10 @@ func (r *ktfRuntime) handleFileMethod(
 		case ktfFileReadWrite:
 			openMode = shared.OpenRead | shared.OpenWrite | shared.OpenCreate
 		default:
-			r.hostTrace = append(
-				r.hostTrace,
-				fmt.Sprintf(
-					"java_file_open_invalid_mode:%s:mode=%d",
-					filename,
-					mode,
-				),
+			r.tracef(
+				"java_file_open_invalid_mode:%s:mode=%d",
+				filename,
+				mode,
 			)
 			return 0, r.raiseHostJavaException("java/io/IOException")
 		}
@@ -10158,10 +10051,7 @@ func (r *ktfRuntime) handleFileMethod(
 		}
 		r.files[instance] = file
 		r.fileServices[instance] = serviceID
-		r.hostTrace = append(
-			r.hostTrace,
-			fmt.Sprintf("java_file_open:%s:mode=%d", filename, mode),
-		)
+		r.tracef("java_file_open:%s:mode=%d", filename, mode)
 		return 0, nil
 	case "close()V":
 		instance, err := r.parameter(1)
@@ -10396,10 +10286,7 @@ func (r *ktfRuntime) readKTFFile(
 		return 0, err
 	}
 	file.position += count
-	r.hostTrace = append(
-		r.hostTrace,
-		fmt.Sprintf("java_file_read:%s:%d", file.name, count),
-	)
+	r.tracef("java_file_read:%s:%d", file.name, count)
 	return count, nil
 }
 
@@ -10444,10 +10331,7 @@ func (r *ktfRuntime) writeKTFFile(
 	}
 	r.fileData[file.name] = stored
 	file.position = uint32(end)
-	r.hostTrace = append(
-		r.hostTrace,
-		fmt.Sprintf("java_file_write:%s:%d", file.name, len(data)),
-	)
+	r.tracef("java_file_write:%s:%d", file.name, len(data))
 	return uint32(len(data)), nil
 }
 
@@ -10559,13 +10443,10 @@ func (r *ktfRuntime) handleFileSystemMethod(
 			return 0, err
 		}
 		delete(r.fileData, filename)
-		r.hostTrace = append(
-			r.hostTrace,
-			fmt.Sprintf(
-				"java_file_remove:%s:closed=%d",
-				filename,
-				len(instances),
-			),
+		r.tracef(
+			"java_file_remove:%s:closed=%d",
+			filename,
+			len(instances),
 		)
 		return 0, nil
 	case "getFreeSpace()J":
@@ -10596,10 +10477,7 @@ func (r *ktfRuntime) recordUnimplementedJava(className, name, descriptor string)
 	signature := className + "." + name + descriptor
 	r.unimplementedJava[signature]++
 	r.lastUnimplementedJava = signature
-	r.hostTrace = append(
-		r.hostTrace,
-		fmt.Sprintf("java_unimplemented:%s", signature),
-	)
+	r.tracef("java_unimplemented:%s", signature)
 }
 
 func (r *ktfRuntime) newHostJavaObject(className string) (uint32, error) {
@@ -11126,6 +11004,10 @@ func (r *ktfRuntime) handleStringBufferMethod(
 		return 0, nil
 	case "length()I":
 		return uint32(len([]rune(r.stringBuffers[instance]))), nil
+	case "capacity()I":
+		return uint32(len([]rune(r.stringBuffers[instance]))), nil
+	case "ensureCapacity(I)V":
+		return 0, nil
 	case "charAt(I)C":
 		index, valueErr := r.parameter(2)
 		if valueErr != nil {
@@ -11136,7 +11018,103 @@ func (r *ktfRuntime) handleStringBufferMethod(
 			return 0, nil
 		}
 		return uint32(runes[index]), nil
+	case "setCharAt(IC)V":
+		index, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		character, valueErr := r.parameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		runes := []rune(r.stringBuffers[instance])
+		if index >= uint32(len(runes)) {
+			return 0, fmt.Errorf(
+				"KTF StringBuffer setCharAt index %d exceeds %d",
+				index,
+				len(runes),
+			)
+		}
+		runes[index] = rune(uint16(character))
+		r.stringBuffers[instance] = string(runes)
+		return 0, nil
+	case "deleteCharAt(I)Ljava/lang/StringBuffer;":
+		index, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		runes := []rune(r.stringBuffers[instance])
+		if index >= uint32(len(runes)) {
+			return 0, fmt.Errorf(
+				"KTF StringBuffer deleteCharAt index %d exceeds %d",
+				index,
+				len(runes),
+			)
+		}
+		r.stringBuffers[instance] = string(
+			append(runes[:index:index], runes[index+1:]...),
+		)
+		return instance, nil
+	case "reverse()Ljava/lang/StringBuffer;":
+		runes := []rune(r.stringBuffers[instance])
+		for left, right := 0, len(runes)-1; left < right; left, right = left+1, right-1 {
+			runes[left], runes[right] = runes[right], runes[left]
+		}
+		r.stringBuffers[instance] = string(runes)
+		return instance, nil
+	case "insert(ILjava/lang/String;)Ljava/lang/StringBuffer;",
+		"insert(ILjava/lang/Object;)Ljava/lang/StringBuffer;",
+		"insert(IC)Ljava/lang/StringBuffer;",
+		"insert(II)Ljava/lang/StringBuffer;",
+		"insert(IZ)Ljava/lang/StringBuffer;",
+		"insert(IJ)Ljava/lang/StringBuffer;":
+		offset, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		value, valueErr := r.parameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		var inserted string
+		switch descriptor {
+		case "(ILjava/lang/String;)Ljava/lang/StringBuffer;":
+			inserted = r.javaStringValue(value)
+		case "(ILjava/lang/Object;)Ljava/lang/StringBuffer;":
+			inserted = r.javaObjectString(value)
+		case "(IC)Ljava/lang/StringBuffer;":
+			inserted = string(rune(uint16(value)))
+		case "(II)Ljava/lang/StringBuffer;":
+			inserted = fmt.Sprintf("%d", int32(value))
+		case "(IZ)Ljava/lang/StringBuffer;":
+			inserted = "false"
+			if value != 0 {
+				inserted = "true"
+			}
+		default: // (IJ)
+			high, highErr := r.parameter(4)
+			if highErr != nil {
+				return 0, highErr
+			}
+			inserted = fmt.Sprintf(
+				"%d",
+				int64(uint64(high)<<32|uint64(value)),
+			)
+		}
+		runes := []rune(r.stringBuffers[instance])
+		if offset > uint32(len(runes)) {
+			return 0, fmt.Errorf(
+				"KTF StringBuffer insert offset %d exceeds %d",
+				offset,
+				len(runes),
+			)
+		}
+		r.stringBuffers[instance] = string(runes[:offset]) +
+			inserted +
+			string(runes[offset:])
+		return instance, nil
 	default:
+		r.recordUnimplementedJava("java/lang/StringBuffer", name, descriptor)
 		return 0, nil
 	}
 }
@@ -11148,7 +11126,59 @@ func (r *ktfRuntime) javaStringValue(instance uint32) string {
 	if value, ok := r.javaStrings[instance]; ok {
 		return value
 	}
+	if value, ok := r.readGuestJavaString(instance); ok {
+		return value
+	}
 	return r.javaObjectString(instance)
+}
+
+// javaText returns the contents of a java/lang/String argument, or the empty
+// string when the reference is null or is not a string. Unlike
+// javaStringValue it never substitutes a diagnostic placeholder, so callers
+// that use the result as a resource, class or database name see an absent name
+// rather than a fabricated one.
+func (r *ktfRuntime) javaText(instance uint32) string {
+	if instance == 0 {
+		return ""
+	}
+	if value, ok := r.javaStrings[instance]; ok {
+		return value
+	}
+	value, _ := r.readGuestJavaString(instance)
+	return value
+}
+
+// readGuestJavaString decodes a java/lang/String the guest built for itself.
+// Host-created strings are memoised in javaStrings, but a title that assembles
+// a name through StringBuffer, substring or concat produces an instance the
+// host has never seen. Reading its value/offset/count fields is the only way
+// those names reach APIs like Class.getResourceAsStream.
+func (r *ktfRuntime) readGuestJavaString(instance uint32) (string, bool) {
+	words, err := r.readWords(instance, 2)
+	if err != nil {
+		return "", false
+	}
+	class, err := r.inspectJavaClass(words[1])
+	if err != nil || class.Name != "java/lang/String" {
+		return "", false
+	}
+	characters, err := r.readJavaFieldWord(instance, 0)
+	if err != nil || characters == 0 {
+		return "", false
+	}
+	offset, err := r.readJavaFieldWord(instance, 4)
+	if err != nil {
+		return "", false
+	}
+	count, err := r.readJavaFieldWord(instance, 8)
+	if err != nil {
+		return "", false
+	}
+	value, err := r.readJavaCharArrayRange(characters, offset, count)
+	if err != nil {
+		return "", false
+	}
+	return value, true
 }
 
 func (r *ktfRuntime) javaObjectString(instance uint32) string {
@@ -11269,7 +11299,7 @@ func (r *ktfRuntime) handleClassMethod(
 				className = class.Name
 			}
 		}
-		resourceName := strings.ReplaceAll(r.javaStrings[nameAddress], `\`, "/")
+		resourceName := strings.ReplaceAll(r.javaText(nameAddress), `\`, "/")
 		resourceName = strings.TrimPrefix(resourceName, "/")
 		resourceName = path.Clean(resourceName)
 		if resourceName == "." || resourceName == ".." ||
@@ -11287,15 +11317,12 @@ func (r *ktfRuntime) handleClassMethod(
 				}
 			}
 		}
-		r.hostTrace = append(
-			r.hostTrace,
-			fmt.Sprintf(
-				"java_resource:%s:class=%s:found=%t:size=%d",
-				resourceName,
-				className,
-				ok,
-				len(data),
-			),
+		r.tracef(
+			"java_resource:%s:class=%s:found=%t:size=%d",
+			resourceName,
+			className,
+			ok,
+			len(data),
 		)
 		if !ok {
 			return 0, nil
@@ -11319,7 +11346,7 @@ func (r *ktfRuntime) handleClassMethod(
 		if err != nil {
 			return 0, err
 		}
-		className := strings.ReplaceAll(r.javaStrings[nameAddress], ".", "/")
+		className := strings.ReplaceAll(r.javaText(nameAddress), ".", "/")
 		if className == "" {
 			return 0, nil
 		}
@@ -11333,22 +11360,16 @@ func (r *ktfRuntime) handleClassMethod(
 			} else {
 				class, loadErr := r.loadClass(ctx, className)
 				if loadErr != nil {
-					r.hostTrace = append(
-						r.hostTrace,
-						fmt.Sprintf(
-							"java_class_for_name:%s:found=false",
-							className,
-						),
+					r.tracef(
+						"java_class_for_name:%s:found=false",
+						className,
 					)
 					return 0, nil
 				}
 				classAddress = class.Address
 			}
 		}
-		r.hostTrace = append(
-			r.hostTrace,
-			fmt.Sprintf("java_class_for_name:%s:found=true", className),
-		)
+		r.tracef("java_class_for_name:%s:found=true", className)
 		return r.javaClassObject(classAddress)
 	default:
 		return 0, nil
@@ -11469,13 +11490,10 @@ func (r *ktfRuntime) handleThreadMethod(
 				} else {
 					r.activeTask.wakeAtMS = r.tickMS + delay
 				}
-				r.hostTrace = append(
-					r.hostTrace,
-					fmt.Sprintf(
-						"java_thread_sleep:duration_ms=%d:wake_at_ms=%d",
-						millis,
-						r.activeTask.wakeAtMS,
-					),
+				r.tracef(
+					"java_thread_sleep:duration_ms=%d:wake_at_ms=%d",
+					millis,
+					r.activeTask.wakeAtMS,
 				)
 			}
 			r.yieldRequested = true
@@ -11545,14 +11563,11 @@ func (r *ktfRuntime) handleDisplayMethod(
 			return 0, err
 		}
 		wasDirty := r.dirtyCards[card]
-		r.hostTrace = append(
-			r.hostTrace,
-			fmt.Sprintf(
-				"java_display_push_card:card=0x%08x:dirty=%t:tasks=%d",
-				card,
-				wasDirty,
-				len(r.tasks),
-			),
+		r.tracef(
+			"java_display_push_card:card=0x%08x:dirty=%t:tasks=%d",
+			card,
+			wasDirty,
+			len(r.tasks),
 		)
 		r.displayCards[instance] = card
 		if card == 0 {
@@ -11572,13 +11587,10 @@ func (r *ktfRuntime) handleDisplayMethod(
 				return 0, err
 			}
 			r.paintInitializedCards[card] = true
-			r.hostTrace = append(
-				r.hostTrace,
-				fmt.Sprintf(
-					"java_initial_paint_discard:%s:card=0x%08x",
-					unhandled.name,
-					card,
-				),
+			r.tracef(
+				"java_initial_paint_discard:%s:card=0x%08x",
+				unhandled.name,
+				card,
 			)
 		}
 		return 0, nil
@@ -11838,19 +11850,16 @@ func (r *ktfRuntime) handleDataBaseMethod(name, descriptor string) (uint32, erro
 		if err != nil {
 			return 0, err
 		}
-		databaseName := r.javaStrings[nameAddress]
+		databaseName := r.javaText(nameAddress)
 		if databaseName == "" {
 			databaseName = fmt.Sprintf("database-%08x", nameAddress)
 		}
 		store := r.databaseStores[databaseName]
-		r.hostTrace = append(
-			r.hostTrace,
-			fmt.Sprintf(
-				"java_database_open:%s:create=%t:exists=%t",
-				databaseName,
-				create != 0,
-				store != nil,
-			),
+		r.tracef(
+			"java_database_open:%s:create=%t:exists=%t",
+			databaseName,
+			create != 0,
+			store != nil,
 		)
 		if store == nil {
 			if create == 0 {
@@ -12007,7 +12016,7 @@ func (r *ktfRuntime) handleDataBaseMethod(name, descriptor string) (uint32, erro
 		if err != nil {
 			return 0, err
 		}
-		databaseName := r.javaStrings[nameAddress]
+		databaseName := r.javaText(nameAddress)
 		if serviceID := r.databaseServices[databaseName]; serviceID != 0 {
 			if err := r.services.Storage.DeleteRecordStore(
 				r.serviceOwner,
@@ -12243,18 +12252,15 @@ func ktfJavaJump(argumentCount uint32) ktfHostHandler {
 			return 0, errors.New("Java jump target is null")
 		}
 		lr, _ := runtime.cpu.ReadRegister(cpu.RegisterLR)
-		runtime.hostTrace = append(
-			runtime.hostTrace,
-			fmt.Sprintf(
-				"java_jump_%d:target=0x%08x:args=%08x:lr=0x%08x",
-				argumentCount,
-				procedure,
-				args,
-				lr,
-			),
+		runtime.tracef(
+			"java_jump_%d:target=0x%08x:args=%08x:lr=0x%08x",
+			argumentCount,
+			procedure,
+			args,
+			lr,
 		)
 		if host, ok := runtime.hostCalls[procedure&^1]; ok {
-			runtime.hostTrace = append(runtime.hostTrace, host.name)
+			runtime.trace(host.name)
 			value, err := host.handler(ctx, runtime)
 			if err != nil {
 				return 0, fmt.Errorf(
@@ -12337,26 +12343,20 @@ func ktfRegisterJavaClass(ctx context.Context, runtime *ktfRuntime) (uint32, err
 			),
 		)
 	}
-	runtime.hostTrace = append(
-		runtime.hostTrace,
-		fmt.Sprintf(
-			"java_register_class:%s:class=0x%08x:parent=0x%08x:fields=%d:methods=%v",
-			name,
-			class,
-			inspected.Parent,
-			inspected.FieldSize,
-			methods,
-		),
+	runtime.tracef(
+		"java_register_class:%s:class=0x%08x:parent=0x%08x:fields=%d:methods=%v",
+		name,
+		class,
+		inspected.Parent,
+		inspected.FieldSize,
+		methods,
 	)
 	// KTF AOT images sometimes register a class while another class
 	// initializer is still wiring the objects that it references. Loading
 	// must remain non-initializing in that case; leave the class pending so
 	// new/getstatic/invokestatic can retry at the first active use.
 	if err := runtime.ensureJavaClassInitialized(ctx, inspected); err != nil {
-		runtime.hostTrace = append(
-			runtime.hostTrace,
-			fmt.Sprintf("java_class_initialization_deferred:%s:%v", inspected.Name, err),
-		)
+		runtime.tracef("java_class_initialization_deferred:%s:%v", inspected.Name, err)
 	}
 	return 0, nil
 }
@@ -12394,15 +12394,12 @@ func (r *ktfRuntime) implementBodylessPlatformMethods(class ktfJavaClass) error 
 		if err := r.writeU32(method.Address+offset, stub); err != nil {
 			return err
 		}
-		r.hostTrace = append(
-			r.hostTrace,
-			fmt.Sprintf(
-				"java_platform_method:%s.%s%s@0x%08x",
-				class.Name,
-				method.Name,
-				method.Descriptor,
-				stub,
-			),
+		r.tracef(
+			"java_platform_method:%s.%s%s@0x%08x",
+			class.Name,
+			method.Name,
+			method.Descriptor,
+			stub,
 		)
 	}
 	return nil
@@ -12441,7 +12438,7 @@ func ktfRegisterJavaString(_ context.Context, runtime *ktfRuntime) (uint32, erro
 	if err != nil {
 		return 0, err
 	}
-	runtime.hostTrace = append(runtime.hostTrace, "java_register_string:"+value)
+	runtime.trace("java_register_string:" + value)
 	return instance, nil
 }
 
@@ -12496,10 +12493,7 @@ func ktfKernelSprintk(
 	); err != nil {
 		return 0, err
 	}
-	runtime.hostTrace = append(
-		runtime.hostTrace,
-		fmt.Sprintf("wipic_sprintk:format=%q:result=%q", format, formatted),
-	)
+	runtime.tracef("wipic_sprintk:format=%q:result=%q", format, formatted)
 	return uint32(len(formatted)), nil
 }
 
@@ -12693,16 +12687,23 @@ func ktfKernelAllocate(clear bool) ktfHostHandler {
 		// INDIRECT_BUF_HEAD before the caller payload. The memory ID points at
 		// that header; resource APIs and the carrier Clet support library use
 		// the payload at header+8.
+		if size == 0 {
+			size = 1
+		}
+		if size > ^uint32(0)-8 {
+			return 0, errors.New("KTF kernel allocation size overflows")
+		}
+		// KTF's indirect-buffer allocation reserves a two-word
+		// INDIRECT_BUF_HEAD before the caller payload. The memory ID points at
+		// that header; resource APIs and the carrier Clet support library use
+		// the payload at header+8.
 		base, err := runtime.heap.allocate(size+8, clear)
 		if err != nil || base == 0 {
-			runtime.hostTrace = append(
-				runtime.hostTrace,
-				fmt.Sprintf(
-					"wipic_memory_alloc_failed:size=%d:clear=%t:error=%v",
-					size,
-					clear,
-					err,
-				),
+			runtime.tracef(
+				"wipic_memory_alloc_failed:size=%d:clear=%t:error=%v",
+				size,
+				clear,
+				err,
 			)
 			return 0, err
 		}
@@ -12722,16 +12723,13 @@ func ktfKernelAllocate(clear bool) ktfHostHandler {
 			data: data,
 			size: size,
 		}
-		runtime.hostTrace = append(
-			runtime.hostTrace,
-			fmt.Sprintf(
-				"wipic_memory_alloc:id=0x%08x:base=0x%08x:data=0x%08x:size=%d:clear=%t",
-				memoryID,
-				base,
-				data,
-				size,
-				clear,
-			),
+		runtime.tracef(
+			"wipic_memory_alloc:id=0x%08x:base=0x%08x:data=0x%08x:size=%d:clear=%t",
+			memoryID,
+			base,
+			data,
+			size,
+			clear,
 		)
 		return memoryID, nil
 	}
@@ -12768,14 +12766,11 @@ func ktfKernelGetDLLInterface(
 	if err != nil {
 		return 0, err
 	}
-	runtime.hostTrace = append(
-		runtime.hostTrace,
-		fmt.Sprintf(
-			"wipic_knl_get_dll_interface:%s:%d.%d",
-			name,
-			int32(requestedMajor),
-			int32(requestedMinor),
-		),
+	runtime.tracef(
+		"wipic_knl_get_dll_interface:%s:%d.%d",
+		name,
+		int32(requestedMajor),
+		int32(requestedMinor),
 	)
 
 	const (
@@ -12858,13 +12853,10 @@ func ktfIncrementalMemoryAdd(
 	}
 	heap := newGuestHeap(runtime.cpu, base, size)
 	runtime.incrementalHeaps[base] = &heap
-	runtime.hostTrace = append(
-		runtime.hostTrace,
-		fmt.Sprintf(
-			"mx_user_mem_add:base=0x%08x:size=%d",
-			base,
-			size,
-		),
+	runtime.tracef(
+		"mx_user_mem_add:base=0x%08x:size=%d",
+		base,
+		size,
 	)
 	return 0, nil
 }
@@ -12892,14 +12884,11 @@ func ktfIncrementalMemoryAllocate(
 	if err != nil {
 		return 0, err
 	}
-	runtime.hostTrace = append(
-		runtime.hostTrace,
-		fmt.Sprintf(
-			"mx_user_mem_alloc:base=0x%08x:size=%d:address=0x%08x",
-			base,
-			size,
-			address,
-		),
+	runtime.tracef(
+		"mx_user_mem_alloc:base=0x%08x:size=%d:address=0x%08x",
+		base,
+		size,
+		address,
 	)
 	return address, nil
 }
@@ -12956,16 +12945,13 @@ func ktfIncrementalMemoryReallocate(
 		return 0, err
 	}
 	heap.release(address)
-	runtime.hostTrace = append(
-		runtime.hostTrace,
-		fmt.Sprintf(
-			"mx_user_mem_realloc:base=0x%08x:address=0x%08x:"+
-				"size=%d:replacement=0x%08x",
-			base,
-			address,
-			size,
-			replacement,
-		),
+	runtime.tracef(
+		"mx_user_mem_realloc:base=0x%08x:address=0x%08x:"+
+			"size=%d:replacement=0x%08x",
+		base,
+		address,
+		size,
+		replacement,
 	)
 	return replacement, nil
 }
@@ -12995,13 +12981,10 @@ func ktfIncrementalMemoryFree(
 			address,
 		)
 	}
-	runtime.hostTrace = append(
-		runtime.hostTrace,
-		fmt.Sprintf(
-			"mx_user_mem_free:base=0x%08x:address=0x%08x",
-			base,
-			address,
-		),
+	runtime.tracef(
+		"mx_user_mem_free:base=0x%08x:address=0x%08x",
+		base,
+		address,
 	)
 	return 0, nil
 }
@@ -13083,13 +13066,10 @@ func ktfKernelDefineTimer(
 	}
 	timer.callback = callback
 	timer.active = false
-	runtime.hostTrace = append(
-		runtime.hostTrace,
-		fmt.Sprintf(
-			"wipic_timer_define:timer=0x%08x:callback=0x%08x",
-			address,
-			callback,
-		),
+	runtime.tracef(
+		"wipic_timer_define:timer=0x%08x:callback=0x%08x",
+		address,
+		callback,
 	)
 	return 0, nil
 }
@@ -13140,15 +13120,12 @@ func ktfKernelSetTimer(
 		timer.active = false
 		return 0, err
 	}
-	runtime.hostTrace = append(
-		runtime.hostTrace,
-		fmt.Sprintf(
-			"wipic_timer_set:timer=0x%08x:timeout=%d:parameter=0x%08x:deadline=%d",
-			address,
-			timeout,
-			parameter,
-			timer.deadline,
-		),
+	runtime.tracef(
+		"wipic_timer_set:timer=0x%08x:timeout=%d:parameter=0x%08x:deadline=%d",
+		address,
+		timeout,
+		parameter,
+		timer.deadline,
 	)
 	return 0, nil
 }
@@ -13212,14 +13189,11 @@ func ktfKernelGetSystemProperty(
 		return 0, err
 	}
 	value, supported := runtime.wipicSystemProperty(key)
-	runtime.hostTrace = append(
-		runtime.hostTrace,
-		fmt.Sprintf(
-			"wipic_system_property_get:%s=%q:supported=%t",
-			key,
-			value,
-			supported,
-		),
+	runtime.tracef(
+		"wipic_system_property_get:%s=%q:supported=%t",
+		key,
+		value,
+		supported,
 	)
 	if !supported {
 		return ^uint32(6), nil
@@ -13260,10 +13234,7 @@ func ktfKernelSetSystemProperty(
 		return 0, err
 	}
 	runtime.wipicSystemProperties[strings.ToUpper(strings.TrimSpace(key))] = value
-	runtime.hostTrace = append(
-		runtime.hostTrace,
-		fmt.Sprintf("wipic_system_property_set:%s=%q", key, value),
-	)
+	runtime.tracef("wipic_system_property_set:%s=%q", key, value)
 	return 0, nil
 }
 
@@ -13348,10 +13319,7 @@ func ktfGetResourceID(
 	}
 	resource, ok := runtime.findKTFResource(name)
 	if !ok {
-		runtime.hostTrace = append(
-			runtime.hostTrace,
-			"wipic_resource_missing:"+name,
-		)
+		runtime.trace("wipic_resource_missing:" + name)
 		return ^uint32(1), nil
 	}
 	if err := runtime.writeU32(sizeAddress, uint32(len(resource))); err != nil {
@@ -13367,15 +13335,12 @@ func ktfGetResourceID(
 		runtime.wipicResourceIDs[key] = id
 		runtime.wipicResources[id] = resource
 	}
-	runtime.hostTrace = append(
-		runtime.hostTrace,
-		fmt.Sprintf(
-			"wipic_resource_id:%s:id=%d:size=%d:lr=0x%08x",
-			name,
-			id,
-			len(resource),
-			mustKTFRegister(runtime, cpu.RegisterLR),
-		),
+	runtime.tracef(
+		"wipic_resource_id:%s:id=%d:size=%d:lr=0x%08x",
+		name,
+		id,
+		len(resource),
+		mustKTFRegister(runtime, cpu.RegisterLR),
 	)
 	return id, nil
 }
@@ -13410,14 +13375,11 @@ func ktfGetResource(
 	if err := runtime.cpu.WriteMemory(output, resource); err != nil {
 		return 0, err
 	}
-	runtime.hostTrace = append(
-		runtime.hostTrace,
-		fmt.Sprintf(
-			"wipic_resource_read:id=%d:size=%d:lr=0x%08x",
-			id,
-			len(resource),
-			mustKTFRegister(runtime, cpu.RegisterLR),
-		),
+	runtime.tracef(
+		"wipic_resource_read:id=%d:size=%d:lr=0x%08x",
+		id,
+		len(resource),
+		mustKTFRegister(runtime, cpu.RegisterLR),
 	)
 	return 0, nil
 }
@@ -13699,16 +13661,13 @@ func ktfWIPICMediaCreate(
 		volume:    100,
 	}
 	runtime.wipicMediaServices[handle] = serviceID
-	runtime.hostTrace = append(
-		runtime.hostTrace,
-		fmt.Sprintf(
-			"wipic_media_create:handle=0x%08x:type=%s:capacity=%d:"+
-				"callback=0x%08x",
-			handle,
-			mediaType,
-			capacity,
-			callback,
-		),
+	runtime.tracef(
+		"wipic_media_create:handle=0x%08x:type=%s:capacity=%d:"+
+			"callback=0x%08x",
+		handle,
+		mediaType,
+		capacity,
+		callback,
 	)
 	return handle, nil
 }
@@ -13883,14 +13842,11 @@ func ktfWIPICMediaPlay(
 	}
 	clip.state = 1
 	clip.repeat = repeat != 0
-	runtime.hostTrace = append(
-		runtime.hostTrace,
-		fmt.Sprintf(
-			"wipic_media_play:handle=0x%08x:size=%d:repeat=%t",
-			handle,
-			len(clip.data),
-			clip.repeat,
-		),
+	runtime.tracef(
+		"wipic_media_play:handle=0x%08x:size=%d:repeat=%t",
+		handle,
+		len(clip.data),
+		clip.repeat,
 	)
 	return 0, nil
 }
@@ -14037,13 +13993,10 @@ func ktfWIPICFileOpen(
 			shared.NamespacePrivate,
 			name,
 		); err != nil {
-			runtime.hostTrace = append(
-				runtime.hostTrace,
-				fmt.Sprintf(
-					"wipic_file_open_missing:%s:flag=%d",
-					name,
-					flag,
-				),
+			runtime.tracef(
+				"wipic_file_open_missing:%s:flag=%d",
+				name,
+				flag,
 			)
 			return ktfWIPICErrorNoEntry, nil
 		}
@@ -14085,14 +14038,11 @@ func ktfWIPICFileOpen(
 	}
 	runtime.wipicFiles[handle] = file
 	runtime.wipicFileServices[handle] = serviceID
-	runtime.hostTrace = append(
-		runtime.hostTrace,
-		fmt.Sprintf(
-			"wipic_file_open:%s:flag=%d:fd=%d",
-			name,
-			flag,
-			handle,
-		),
+	runtime.tracef(
+		"wipic_file_open:%s:flag=%d:fd=%d",
+		name,
+		flag,
+		handle,
 	)
 	return handle, nil
 }
@@ -14533,15 +14483,12 @@ func ktfWIPICNoop(table, slot int) ktfHostHandler {
 			parameters[index], _ = runtime.parameter(uint32(index))
 		}
 		link, _ := runtime.cpu.ReadRegister(cpu.RegisterLR)
-		runtime.hostTrace = append(
-			runtime.hostTrace,
-			fmt.Sprintf(
-				"wipic_call:%d.%d:args=%08x:lr=0x%08x",
-				table,
-				slot,
-				parameters,
-				link,
-			),
+		runtime.tracef(
+			"wipic_call:%d.%d:args=%08x:lr=0x%08x",
+			table,
+			slot,
+			parameters,
+			link,
 		)
 		return 0, nil
 	}
@@ -14729,15 +14676,12 @@ func ktfWIPICGraphicsCreateImage(
 	if err := runtime.writeU32(output, object); err != nil {
 		return 0, err
 	}
-	runtime.hostTrace = append(
-		runtime.hostTrace,
-		fmt.Sprintf(
-			"wipic_graphics_image:object=0x%08x:framebuffer=0x%08x:%dx%d",
-			object,
-			framebufferObject,
-			width,
-			height,
-		),
+	runtime.tracef(
+		"wipic_graphics_image:object=0x%08x:framebuffer=0x%08x:%dx%d",
+		object,
+		framebufferObject,
+		width,
+		height,
 	)
 	return 1, nil
 }
@@ -14940,18 +14884,15 @@ func (r *ktfRuntime) createWIPICFramebuffer(
 	}
 	r.wipicFramebuffers[object] = framebuffer
 	r.wipicSurfaceServices[object] = surface
-	r.hostTrace = append(
-		r.hostTrace,
-		fmt.Sprintf(
-			"wipic_graphics_framebuffer:object=0x%08x:body=0x%08x:pixels=0x%08x:%dx%dx%d:screen=%t",
-			object,
-			body,
-			framebuffer.pixels,
-			width,
-			height,
-			bits,
-			screen,
-		),
+	r.tracef(
+		"wipic_graphics_framebuffer:object=0x%08x:body=0x%08x:pixels=0x%08x:%dx%dx%d:screen=%t",
+		object,
+		body,
+		framebuffer.pixels,
+		width,
+		height,
+		bits,
+		screen,
 	)
 	return object, nil
 }
@@ -16163,15 +16104,34 @@ func (r *ktfRuntime) readCString(address, limit uint32) (string, error) {
 		return "", errors.New("KTF string pointer is null")
 	}
 	data := make([]byte, 0, min(limit, 64))
-	for offset := uint32(0); offset < limit; offset++ {
-		var value [1]byte
-		if err := r.cpu.ReadMemory(address+offset, value[:]); err != nil {
-			return "", fmt.Errorf("read KTF string at 0x%08x: %w", address+offset, err)
+	var chunk [64]byte
+	for offset := uint32(0); offset < limit; {
+		// Read in blocks. A per-byte ReadMemory takes the backend lock and
+		// resolves the mapped region once per character, which dominated
+		// Java method-name resolution on KTF titles.
+		size := min(uint32(len(chunk)), limit-offset)
+		var err error
+		for size > 0 {
+			if err = r.cpu.ReadMemory(address+offset, chunk[:size]); err == nil {
+				break
+			}
+			// The block may straddle the end of a mapped region. Narrow it
+			// until it fits so a string that terminates before the boundary
+			// still reads, and only report the fault once nothing fits.
+			size /= 2
 		}
-		if value[0] == 0 {
-			return string(data), nil
+		if size == 0 {
+			return "", fmt.Errorf(
+				"read KTF string at 0x%08x: %w",
+				address+offset,
+				err,
+			)
 		}
-		data = append(data, value[0])
+		if index := bytes.IndexByte(chunk[:size], 0); index >= 0 {
+			return string(append(data, chunk[:index]...)), nil
+		}
+		data = append(data, chunk[:size]...)
+		offset += size
 	}
 	return "", fmt.Errorf("KTF string at 0x%08x is not terminated within %d bytes", address, limit)
 }
