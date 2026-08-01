@@ -53,6 +53,9 @@ const (
 
 	ktfJavaClassInitializing = uint8(1)
 	ktfJavaClassInitialized  = uint8(2)
+	ktfJavaTimerScheduled    = uint8(1)
+	ktfJavaTimerExecuted     = uint8(2)
+	ktfJavaTimerCancelled    = uint8(3)
 
 	ktfKeyPressed  = uint32(1)
 	ktfKeyReleased = uint32(2)
@@ -160,6 +163,8 @@ type ktfRuntime struct {
 	defaultDisplay          uint32
 	displayCards            map[uint32]uint32
 	threadTargets           map[uint32]uint32
+	javaTimerTasks          map[uint32]*ktfTask
+	javaTimerTaskStates     map[uint32]uint8
 	currentThread           uint32
 	stringBuffers           map[uint32]string
 	inputStreams            map[uint32]*ktfInputStream
@@ -433,6 +438,11 @@ type ktfTask struct {
 	exceptionFrame  uint32
 	lastJavaMethod  string
 	wakeAtMS        uint64
+	timerTask       uint32
+	timerOwner      uint32
+	timerPeriodMS   uint64
+	timerDeadlineMS uint64
+	timerFixedRate  bool
 	done            bool
 	presentOnReturn bool
 	bestEffortPaint bool
@@ -1513,6 +1523,8 @@ func newKTFRuntimeForProfile(
 		databaseStores:        databaseStores,
 		displayCards:          make(map[uint32]uint32),
 		threadTargets:         make(map[uint32]uint32),
+		javaTimerTasks:        make(map[uint32]*ktfTask),
+		javaTimerTaskStates:   make(map[uint32]uint8),
 		stringBuffers:         make(map[uint32]string),
 		inputStreams:          make(map[uint32]*ktfInputStream),
 		inputTargets:          make(map[uint32]uint32),
@@ -2350,6 +2362,7 @@ func (r *ktfRuntime) runTaskSlice(
 		}
 		return cpu.Result{Reason: reason}
 	}
+	r.beginJavaTimerTask(task)
 	lastJavaMethod := r.lastJavaMethod
 	r.lastJavaMethod = task.lastJavaMethod
 	r.activeTask = task
@@ -2434,6 +2447,11 @@ func (r *ktfRuntime) runTaskSlice(
 		trap := run.PC - 2
 		if trap == ktfReturnSentinel {
 			task.done = true
+			if err := r.completeJavaTimerTask(task); err != nil {
+				run.Reason = cpu.StopFault
+				run.Err = err
+				return run
+			}
 			r.releaseStartedThreads(task, "return")
 			if task.layoutOnReturn != 0 {
 				instance := task.layoutOnReturn
@@ -9891,24 +9909,187 @@ func (r *ktfRuntime) handleTimerMethod(
 	name, descriptor string,
 ) (uint32, error) {
 	switch name + descriptor {
-	case "<init>()V", "cancel()V":
+	case "<init>()V":
+		return 0, nil
+	case "cancel()V":
+		timer, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		cancelled := 0
+		for instance, task := range r.javaTimerTasks {
+			if task == nil || task.timerOwner != timer {
+				continue
+			}
+			task.done = true
+			delete(r.javaTimerTasks, instance)
+			r.javaTimerTaskStates[instance] = ktfJavaTimerCancelled
+			cancelled++
+		}
+		r.tracef(
+			"java_timer_cancel:timer=0x%08x:tasks=%d",
+			timer,
+			cancelled,
+		)
 		return 0, nil
 	case "cancel()Z":
-		return 1, nil
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		result := uint32(0)
+		if r.javaTimerTaskStates[instance] == ktfJavaTimerScheduled {
+			result = 1
+		}
+		if task := r.javaTimerTasks[instance]; task != nil {
+			task.done = true
+			delete(r.javaTimerTasks, instance)
+		}
+		r.javaTimerTaskStates[instance] = ktfJavaTimerCancelled
+		r.tracef(
+			"java_timer_task_cancel:task=0x%08x:scheduled=%t",
+			instance,
+			result != 0,
+		)
+		return result, nil
 	case "schedule(Ljava/util/TimerTask;J)V",
 		"schedule(Ljava/util/TimerTask;JJ)V",
 		"scheduleAtFixedRate(Ljava/util/TimerTask;JJ)V":
-		task, err := r.parameter(2)
-		if err != nil || task == 0 {
+		timer, err := r.parameter(1)
+		if err != nil {
 			return 0, err
 		}
-		if r.deferThreads {
-			return 0, r.queueJavaVirtual(task, "run", "()V")
+		task, err := r.parameter(2)
+		if err != nil {
+			return 0, err
 		}
-		return r.invokeJavaVirtual(ctx, task, "run", "()V")
+		if task == 0 {
+			return r.raiseJavaException("java/lang/NullPointerException", 0)
+		}
+		delay, err := r.javaTimerLongParameter(3)
+		if err != nil {
+			return 0, err
+		}
+		period := int64(0)
+		if descriptor != "(Ljava/util/TimerTask;J)V" {
+			period, err = r.javaTimerLongParameter(5)
+			if err != nil {
+				return 0, err
+			}
+		}
+		if delay < 0 || period < 0 ||
+			descriptor != "(Ljava/util/TimerTask;J)V" && period == 0 {
+			return r.raiseJavaException("java/lang/IllegalArgumentException", 0)
+		}
+		if r.javaTimerTaskStates[task] != 0 {
+			return r.raiseJavaException("java/lang/IllegalStateException", 0)
+		}
+		if !r.deferThreads {
+			return r.invokeJavaVirtual(ctx, task, "run", "()V")
+		}
+		queued, err := r.queueJavaVirtualTask(task, "run", "()V")
+		if err != nil {
+			return 0, err
+		}
+		deadline := r.javaTimerDeadline(uint64(delay))
+		queued.timerTask = task
+		queued.timerOwner = timer
+		queued.timerPeriodMS = uint64(period)
+		queued.timerDeadlineMS = deadline
+		queued.timerFixedRate = name == "scheduleAtFixedRate"
+		if delay != 0 {
+			queued.wakeAtMS = deadline
+		}
+		r.javaTimerTasks[task] = queued
+		r.javaTimerTaskStates[task] = ktfJavaTimerScheduled
+		r.tracef(
+			"java_timer_schedule:timer=0x%08x:task=0x%08x:"+
+				"delay_ms=%d:period_ms=%d:fixed_rate=%t",
+			timer,
+			task,
+			delay,
+			period,
+			queued.timerFixedRate,
+		)
+		return 0, nil
 	default:
 		return 0, nil
 	}
+}
+
+func (r *ktfRuntime) javaTimerLongParameter(index uint32) (int64, error) {
+	low, err := r.parameter(index)
+	if err != nil {
+		return 0, err
+	}
+	high, err := r.parameter(index + 1)
+	if err != nil {
+		return 0, err
+	}
+	return int64(uint64(high)<<32 | uint64(low)), nil
+}
+
+func (r *ktfRuntime) javaTimerDeadline(delay uint64) uint64 {
+	if delay > ^uint64(0)-r.tickMS {
+		return ^uint64(0)
+	}
+	return r.tickMS + delay
+}
+
+func (r *ktfRuntime) beginJavaTimerTask(task *ktfTask) {
+	if task == nil || task.timerTask == 0 || task.timerPeriodMS != 0 {
+		return
+	}
+	if r.javaTimerTasks[task.timerTask] == task &&
+		r.javaTimerTaskStates[task.timerTask] == ktfJavaTimerScheduled {
+		delete(r.javaTimerTasks, task.timerTask)
+		r.javaTimerTaskStates[task.timerTask] = ktfJavaTimerExecuted
+	}
+}
+
+func (r *ktfRuntime) completeJavaTimerTask(task *ktfTask) error {
+	if task == nil || task.timerTask == 0 {
+		return nil
+	}
+	instance := task.timerTask
+	if task.timerPeriodMS == 0 {
+		if r.javaTimerTasks[instance] == task {
+			delete(r.javaTimerTasks, instance)
+			r.javaTimerTaskStates[instance] = ktfJavaTimerExecuted
+		}
+		return nil
+	}
+	if r.javaTimerTasks[instance] != task ||
+		r.javaTimerTaskStates[instance] != ktfJavaTimerScheduled {
+		return nil
+	}
+	deadline := r.javaTimerDeadline(task.timerPeriodMS)
+	if task.timerFixedRate {
+		deadline = task.timerDeadlineMS
+		if task.timerPeriodMS > ^uint64(0)-deadline {
+			deadline = ^uint64(0)
+		} else {
+			deadline += task.timerPeriodMS
+		}
+	}
+	queued, err := r.queueJavaVirtualTask(instance, "run", "()V")
+	if err != nil {
+		return fmt.Errorf("reschedule KTF Java TimerTask: %w", err)
+	}
+	queued.wakeAtMS = deadline
+	queued.timerTask = instance
+	queued.timerOwner = task.timerOwner
+	queued.timerPeriodMS = task.timerPeriodMS
+	queued.timerDeadlineMS = deadline
+	queued.timerFixedRate = task.timerFixedRate
+	r.javaTimerTasks[instance] = queued
+	r.tracef(
+		"java_timer_reschedule:timer=0x%08x:task=0x%08x:wake_at_ms=%d",
+		queued.timerOwner,
+		instance,
+		deadline,
+	)
+	return nil
 }
 
 func (r *ktfRuntime) handleMediaMethod(

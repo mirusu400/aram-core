@@ -2313,6 +2313,95 @@ func TestKTFCallNativeOverridesNullThreadSleepTarget(t *testing.T) {
 	}
 }
 
+func TestKTFJavaTimerTaskCancelStopsDelayedCallback(t *testing.T) {
+	runtime := newScratchKTFRuntime(t)
+	classAddress, err := runtime.ensureJavaClass("test/TimerCallback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	class, err := runtime.inspectJavaClass(classAddress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runMethod, err := runtime.addHostJavaMethod(class, "run", "()V")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.writeU32(runMethod, ktfImageBase|1); err != nil {
+		t.Fatal(err)
+	}
+	callback, err := runtime.newJavaInstanceForClass(class)
+	if err != nil {
+		t.Fatal(err)
+	}
+	timer, err := runtime.newHostJavaObject("java/util/Timer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parameters, err := runtime.allocateWords(6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.writeWords(parameters, []uint32{
+		timer, callback, 50, 0, 0, 0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runtime.nativeParameterBase = parameters
+	runtime.deferThreads = true
+	runtime.tickMS = 1_000
+
+	if _, err := runtime.handleTimerMethod(
+		context.Background(),
+		"schedule",
+		"(Ljava/util/TimerTask;J)V",
+	); err != nil {
+		t.Fatal(err)
+	}
+	queued := runtime.javaTimerTasks[callback]
+	if queued == nil || queued.wakeAtMS != 1_050 || queued.done {
+		t.Fatalf("scheduled TimerTask = %#v, want a 1050ms deadline", queued)
+	}
+	if got := runtime.nextRunnableTask(); got != nil {
+		t.Fatalf("TimerTask ran before its deadline: %p", got)
+	}
+
+	if err := runtime.writeU32(parameters, callback); err != nil {
+		t.Fatal(err)
+	}
+	cancelled, err := runtime.handleTimerMethod(
+		context.Background(),
+		"cancel",
+		"()Z",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cancelled != 1 || !queued.done || runtime.javaTimerTasks[callback] != nil {
+		t.Fatalf(
+			"cancelled TimerTask = result %d, done %t, pending %p",
+			cancelled,
+			queued.done,
+			runtime.javaTimerTasks[callback],
+		)
+	}
+	runtime.tickMS = 1_050
+	if got := runtime.nextRunnableTask(); got != nil {
+		t.Fatalf("cancelled TimerTask became runnable: %p", got)
+	}
+	second, err := runtime.handleTimerMethod(
+		context.Background(),
+		"cancel",
+		"()Z",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second != 0 {
+		t.Fatalf("second TimerTask.cancel result = %d, want 0", second)
+	}
+}
+
 func TestKTFCallNativeCorrectsStaleMethodForCachedGuestNative(t *testing.T) {
 	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
 		ClientName: "client.bin0",
