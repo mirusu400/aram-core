@@ -103,6 +103,8 @@ type ktfRuntime struct {
 	hostCalls        map[uint32]ktfHostCall
 	hostTrace        []string
 	hostTraceDropped int
+	hostCallCount    uint64
+	hostTraceSamples map[string]uint64
 
 	knlInterface            uint32
 	jbInterface             uint32
@@ -1949,7 +1951,7 @@ func (r *ktfRuntime) call(
 			run.Err = err
 			return run, 0, err
 		}
-		r.trace(host.name)
+		r.traceHostCall(host.name)
 		value, err := host.handler(ctx, r)
 		if err != nil {
 			var unwind *ktfJavaExceptionUnwind
@@ -2506,7 +2508,7 @@ func (r *ktfRuntime) runTaskSlice(
 			run.Err = fmt.Errorf("unknown KTF host call at 0x%08x", trap)
 			return run
 		}
-		r.trace(host.name)
+		r.traceHostCall(host.name)
 		value, err := host.handler(ctx, r)
 		if err != nil {
 			var unwind *ktfJavaExceptionUnwind
@@ -5291,7 +5293,7 @@ func ktfCallNative(ctx context.Context, runtime *ktfRuntime) (uint32, error) {
 		hostMethod = true
 	}
 	if hostMethod {
-		runtime.trace(host.name)
+		runtime.traceHostCall(host.name)
 		nativeParameterBase := runtime.nativeParameterBase
 		runtime.nativeParameterBase = parameters
 		value, err = host.handler(ctx, runtime)
@@ -5628,6 +5630,12 @@ func ktfJavaNativeOverride(signature string) (ktfHostCall, bool) {
 }
 
 func ktfHostJavaMethod(className, name, descriptor string) ktfHostHandler {
+	sampleDetailedTrace := isKTFHighFrequencyJavaMethod(
+		className,
+		name,
+		descriptor,
+	)
+	var detailedTraceCalls uint64
 	return func(
 		ctx context.Context,
 		runtime *ktfRuntime,
@@ -5668,14 +5676,31 @@ func ktfHostJavaMethod(className, name, descriptor string) ktfHostHandler {
 			)
 		}
 		runtime.lastJavaCallLR, _ = runtime.cpu.ReadRegister(cpu.RegisterLR)
-		runtime.tracef(
-			"java_method_call:%s.%s%s:lr=0x%08x:%08x",
-			className,
-			name,
-			descriptor,
-			runtime.lastJavaCallLR,
-			registers,
-		)
+		if sampleDetailedTrace {
+			detailedTraceCalls++
+			if detailedTraceCalls == 1 ||
+				detailedTraceCalls%ktfHostTraceSampleInterval == 0 {
+				runtime.tracef(
+					"java_method_call:%s.%s%s:lr=0x%08x:%08x",
+					className,
+					name,
+					descriptor,
+					runtime.lastJavaCallLR,
+					registers,
+				)
+			} else {
+				runtime.omitTrace()
+			}
+		} else {
+			runtime.tracef(
+				"java_method_call:%s.%s%s:lr=0x%08x:%08x",
+				className,
+				name,
+				descriptor,
+				runtime.lastJavaCallLR,
+				registers,
+			)
+		}
 		switch className {
 		case "java/lang/Object":
 			switch name + descriptor {
@@ -13328,7 +13353,7 @@ func ktfJavaJump(argumentCount uint32) ktfHostHandler {
 			lr,
 		)
 		if host, ok := runtime.hostCalls[procedure&^1]; ok {
-			runtime.trace(host.name)
+			runtime.traceHostCall(host.name)
 			value, err := host.handler(ctx, runtime)
 			if err != nil {
 				return 0, fmt.Errorf(

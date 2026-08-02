@@ -529,10 +529,8 @@ func TestMachineTreatsReturnToZeroSentinelAsCleanExit(t *testing.T) {
 	}
 	machine := created.(*Machine)
 	t.Cleanup(func() { _ = machine.Close() })
+	machine.runBudget = DefaultHandsetRunBudget
 
-	if err := machine.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
 	if err := machine.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -680,6 +678,24 @@ func TestMachineDispatchesPublicWIPITrampoline(t *testing.T) {
 		coverage.SemanticallyModeled != 239 ||
 		coverage.Observed != 1 {
 		t.Fatalf("public WIPI coverage = %+v, %v", coverage, ok)
+	}
+}
+
+func TestKTFWIPIFrameStatsCountSampledHostCalls(t *testing.T) {
+	runtime := &ktfRuntime{}
+	entry := "java.method.org/kwis/msp/lcdui/Graphics.setRGBPixels(IIII[III)V"
+	total := ktfHostTraceSampleInterval + 1
+	for range total {
+		runtime.traceHostCall(entry)
+	}
+	machine := &Machine{ktf: runtime}
+	stats, ok := machine.WIPIFrameStats()
+	if !ok {
+		t.Fatal("KTF WIPI stats are absent")
+	}
+	if stats.APICalls != uint64(total) ||
+		stats.ImplementedCalls != uint64(total) {
+		t.Fatalf("KTF WIPI stats = %+v, want %d calls", stats, total)
 	}
 }
 

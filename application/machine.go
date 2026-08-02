@@ -354,7 +354,7 @@ func (m *Machine) Load(ctx context.Context, source machinecore.Source) error {
 	if err := m.cpu.WriteRegister(cpu.RegisterSP, DefaultStackBase+DefaultStackSize); err != nil {
 		return fmt.Errorf("initialize stack pointer: %w", err)
 	}
-	if err := m.cpu.WriteRegister(cpu.RegisterLR, 0); err != nil {
+	if err := m.cpu.WriteRegister(cpu.RegisterLR, returnSentinel|1); err != nil {
 		return fmt.Errorf("initialize link register: %w", err)
 	}
 	if err := m.cpu.WriteRegister(cpu.RegisterPC, entry&^uint32(1)); err != nil {
@@ -1302,7 +1302,7 @@ func (m *Machine) WIPIFrameStats() (WIPIFrameStats, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.ktf != nil && m.state != machinecore.StateRunning {
-		calls := uint64(len(m.ktf.hostTrace))
+		calls := m.ktf.hostCallCount
 		var unimplemented uint64
 		for _, count := range m.ktf.unimplementedJava {
 			unimplemented += count
@@ -1564,8 +1564,15 @@ func (m *Machine) runSlice(ctx context.Context, frame bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	requestedState := m.state
-	if result.Err == nil && result.PC == 0 {
-		result.Reason = cpu.StopExited
+	if result.Err == nil {
+		switch {
+		case result.PC == 0:
+			result.Reason = cpu.StopExited
+		case result.Reason == cpu.StopBreakpoint &&
+			result.PC >= 2 && result.PC-2 == returnSentinel:
+			result.Reason = cpu.StopExited
+			result.PC = 0
+		}
 	}
 	m.lastResult = result
 	switch result.Reason {

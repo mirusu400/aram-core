@@ -48,6 +48,47 @@ func TestKTFHostTraceBelowLimitDropsNothing(t *testing.T) {
 	}
 }
 
+func TestKTFHostTraceSamplesHighFrequencyGraphicsCalls(t *testing.T) {
+	runtime := &ktfRuntime{}
+	entry := "java.method.org/kwis/msp/lcdui/Graphics.setRGBPixels(IIII[III)V"
+	total := ktfHostTraceSampleInterval + 1
+	for range total {
+		runtime.traceHostCall(entry)
+	}
+	if runtime.hostCallCount != uint64(total) {
+		t.Fatalf("host calls = %d, want %d", runtime.hostCallCount, total)
+	}
+	if len(runtime.hostTrace) != 2 {
+		t.Fatalf("retained %d entries, want 2", len(runtime.hostTrace))
+	}
+	if got := runtime.hostTraceDropped + len(runtime.hostTrace); got != total {
+		t.Fatalf("dropped+retained = %d, want %d", got, total)
+	}
+	for index, got := range runtime.hostTrace {
+		if got != entry {
+			t.Fatalf("retained entry %d = %q, want %q", index, got, entry)
+		}
+	}
+}
+
+func TestKTFHostTraceDoesNotSampleOrdinaryCalls(t *testing.T) {
+	runtime := &ktfRuntime{}
+	entry := "wipic.2.21"
+	for range 3 {
+		runtime.traceHostCall(entry)
+	}
+	if runtime.hostCallCount != 3 {
+		t.Fatalf("host calls = %d, want 3", runtime.hostCallCount)
+	}
+	if len(runtime.hostTrace) != 3 || runtime.hostTraceDropped != 0 {
+		t.Fatalf(
+			"retained %d, dropped %d; want retained 3, dropped 0",
+			len(runtime.hostTrace),
+			runtime.hostTraceDropped,
+		)
+	}
+}
+
 // TestDebugLogSnapshotCountsDroppedEntries pins the reported totals for a log
 // that already rolled over, so a snapshot still distinguishes an idle session
 // from one whose retention window filled.
