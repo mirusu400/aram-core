@@ -1170,6 +1170,12 @@ var ktfHostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 				access:     0x0008,
 			},
 			{
+				name: "createImage",
+				descriptor: "(Lorg/kwis/msp/lcdui/Image;)" +
+					"Lorg/kwis/msp/lcdui/Image;",
+				access: 0x0008,
+			},
+			{
 				name:       "createImage",
 				descriptor: "(Ljava/lang/String;)Lorg/kwis/msp/lcdui/Image;",
 				access:     0x0008,
@@ -7419,6 +7425,19 @@ func (r *ktfRuntime) handleImageMethod(name, descriptor string) (uint32, error) 
 			int(width),
 			int(height),
 		)))
+	case "createImage(Lorg/kwis/msp/lcdui/Image;)Lorg/kwis/msp/lcdui/Image;":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		source := r.images[instance]
+		if source == nil {
+			return r.raiseJavaException("java/lang/NullPointerException", 0)
+		}
+		bounds := source.Bounds()
+		clone := image.NewNRGBA(image.Rect(0, 0, bounds.Dx(), bounds.Dy()))
+		draw.Draw(clone, clone.Bounds(), source, bounds.Min, draw.Src)
+		return r.newJavaImage(clone)
 	case "createImage(Ljava/lang/String;)Lorg/kwis/msp/lcdui/Image;":
 		nameAddress, err := r.parameter(1)
 		if err != nil {

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
 	"image/png"
 	"math"
 	"reflect"
@@ -4439,6 +4440,33 @@ func TestKTFImageAndFontFactoriesReturnHostObjects(t *testing.T) {
 	if source := runtime.images[imageObject]; source == nil ||
 		source.Bounds().Dx() != 23 || source.Bounds().Dy() != 17 {
 		t.Fatalf("host image = %#v", source)
+	}
+	source := runtime.images[imageObject].(draw.Image)
+	source.Set(4, 5, color.RGBA{R: 0x12, G: 0x34, B: 0x56, A: 0xff})
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR1, imageObject); err != nil {
+		t.Fatal(err)
+	}
+	copyObject, err := runtime.handleImageMethod(
+		"createImage",
+		"(Lorg/kwis/msp/lcdui/Image;)Lorg/kwis/msp/lcdui/Image;",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if copyObject == imageObject ||
+		runtime.imageServices[copyObject] == runtime.imageServices[imageObject] {
+		t.Fatalf(
+			"copied image aliases source: object=%#x service=%s",
+			copyObject,
+			runtime.imageServices[copyObject],
+		)
+	}
+	if got := color.RGBAModel.Convert(runtime.images[copyObject].At(4, 5)); got != (color.RGBA{R: 0x12, G: 0x34, B: 0x56, A: 0xff}) {
+		t.Fatalf("copied image pixel = %v", got)
+	}
+	source.Set(4, 5, color.RGBA{R: 0xff, A: 0xff})
+	if got := color.RGBAModel.Convert(runtime.images[copyObject].At(4, 5)); got != (color.RGBA{R: 0x12, G: 0x34, B: 0x56, A: 0xff}) {
+		t.Fatalf("copied image changed with source = %v", got)
 	}
 	font, err := runtime.ensureDefaultFont()
 	if err != nil {
