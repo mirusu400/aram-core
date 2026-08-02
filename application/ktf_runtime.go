@@ -180,6 +180,7 @@ type ktfRuntime struct {
 	defaultFont             uint32
 	frame                   *image.RGBA
 	graphics                map[uint32]*ktfGraphics
+	graphicsRGBScratch      []byte
 	screenGraphics          uint32
 	menuForegroundCompat    *ktfMenuForegroundCompat
 	wipicFramebuffers       map[uint32]*ktfWIPICFramebuffer
@@ -203,6 +204,7 @@ type ktfRuntime struct {
 	tickMS                  uint64
 
 	nativeParameterBase  uint32
+	parameterScratch     [4]byte
 	deferThreads         bool
 	yieldRequested       bool
 	terminationRequested bool
@@ -3493,7 +3495,11 @@ func (r *ktfRuntime) parameter(index uint32) (uint32, error) {
 		if index == 0 {
 			return 0, nil
 		}
-		return r.readU32(r.nativeParameterBase + (index-1)*4)
+		address := r.nativeParameterBase + (index-1)*4
+		if err := r.cpu.ReadMemory(address, r.parameterScratch[:]); err != nil {
+			return 0, fmt.Errorf("read KTF word at 0x%08x: %w", address, err)
+		}
+		return binary.LittleEndian.Uint32(r.parameterScratch[:]), nil
 	}
 	if index < 4 {
 		return r.cpu.ReadRegister(cpu.RegisterR0 + index)
@@ -3502,11 +3508,13 @@ func (r *ktfRuntime) parameter(index uint32) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
-	var data [4]byte
-	if err := r.cpu.ReadMemory(stack+(index-4)*4, data[:]); err != nil {
+	if err := r.cpu.ReadMemory(
+		stack+(index-4)*4,
+		r.parameterScratch[:],
+	); err != nil {
 		return 0, err
 	}
-	return binary.LittleEndian.Uint32(data[:]), nil
+	return binary.LittleEndian.Uint32(r.parameterScratch[:]), nil
 }
 
 func ktfGetInterface(_ context.Context, runtime *ktfRuntime) (uint32, error) {
@@ -8115,6 +8123,8 @@ func (r *ktfRuntime) handleGraphicsMethod(
 			state.pixelsDirty = true
 		}
 		return 0, nil
+	case "setRGBPixels(IIII[III)V":
+		return 0, r.setGraphicsRGBPixels(state)
 	case "setGrayScale(I)V":
 		if state != nil {
 			value, valueErr := r.parameter(2)
@@ -8126,7 +8136,7 @@ func (r *ktfRuntime) handleGraphicsMethod(
 		}
 		return 0, nil
 	case "encodeImage(IIII)[B":
-		return r.newJavaByteArray(nil)
+		return r.encodeGraphicsImage(instance, state)
 	default:
 		return 0, nil
 	}
@@ -8362,6 +8372,206 @@ var ktfBasicGlyphs = map[rune][7]uint8{
 	']':  {0x0e, 0x02, 0x02, 0x02, 0x02, 0x02, 0x0e},
 	'^':  {0x04, 0x0a, 0x11, 0x00, 0x00, 0x00, 0x00},
 	'_':  {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1f},
+}
+
+func (r *ktfRuntime) setGraphicsRGBPixels(state *ktfGraphics) error {
+	if state == nil {
+		return nil
+	}
+	x, err := r.signedParameter(2)
+	if err != nil {
+		return err
+	}
+	y, err := r.signedParameter(3)
+	if err != nil {
+		return err
+	}
+	width, err := r.signedParameter(4)
+	if err != nil {
+		return err
+	}
+	height, err := r.signedParameter(5)
+	if err != nil {
+		return err
+	}
+	array, err := r.parameter(6)
+	if err != nil {
+		return err
+	}
+	offset, err := r.signedParameter(7)
+	if err != nil {
+		return err
+	}
+	bytesPerLine, err := r.signedParameter(8)
+	if err != nil {
+		return err
+	}
+	if array == 0 {
+		return r.raiseHostJavaException("java/lang/NullPointerException")
+	}
+	if width < 0 || height < 0 || bytesPerLine < 0 ||
+		int64(bytesPerLine) < int64(width)*4 || bytesPerLine%4 != 0 {
+		return r.raiseHostJavaException("java/lang/IllegalArgumentException")
+	}
+	if width == 0 || height == 0 {
+		return nil
+	}
+	destination := image.Rect(
+		x+state.translate.X,
+		y+state.translate.Y,
+		x+state.translate.X+width,
+		y+state.translate.Y+height,
+	)
+	if !destination.In(state.target.Bounds()) {
+		return r.raiseHostJavaException("java/lang/IllegalArgumentException")
+	}
+	fields, err := r.readGraphicsRGBWord(array)
+	if err != nil {
+		return err
+	}
+	length, err := r.readGraphicsRGBWord(fields + 4)
+	if err != nil {
+		return err
+	}
+	stride := bytesPerLine / 4
+	lastExclusive := int64(offset) + int64(height-1)*int64(stride) + int64(width)
+	if offset < 0 || lastExclusive < 0 || lastExclusive > int64(length) {
+		return r.raiseHostJavaException(
+			"java/lang/ArrayIndexOutOfBoundsException",
+		)
+	}
+	visible := destination.Intersect(state.clip).Intersect(state.target.Bounds())
+	if visible.Empty() {
+		return nil
+	}
+	row := r.graphicsRGBBuffer(visible.Dx() * 4)
+	for destinationY := visible.Min.Y; destinationY < visible.Max.Y; destinationY++ {
+		sourceY := destinationY - destination.Min.Y
+		sourceX := visible.Min.X - destination.Min.X
+		sourceIndex := int64(offset) +
+			int64(sourceY)*int64(stride) + int64(sourceX)
+		sourceAddress := uint64(fields) + 8 + uint64(sourceIndex)*4
+		if sourceAddress+uint64(len(row)) > uint64(^uint32(0))+1 {
+			return errors.New("KTF Java RGB pixel source address overflows")
+		}
+		if err := r.cpu.ReadMemory(uint32(sourceAddress), row); err != nil {
+			return err
+		}
+		for column := 0; column < visible.Dx(); column++ {
+			value := binary.LittleEndian.Uint32(row[column*4:])
+			setKTFGraphicsRGBPixel(
+				state.target,
+				visible.Min.X+column,
+				destinationY,
+				value,
+			)
+		}
+	}
+	state.pixelsDirty = true
+	return nil
+}
+
+func (r *ktfRuntime) graphicsRGBBuffer(size int) []byte {
+	if cap(r.graphicsRGBScratch) < size {
+		r.graphicsRGBScratch = make([]byte, size)
+	}
+	r.graphicsRGBScratch = r.graphicsRGBScratch[:size]
+	return r.graphicsRGBScratch
+}
+
+func (r *ktfRuntime) readGraphicsRGBWord(address uint32) (uint32, error) {
+	data := r.graphicsRGBBuffer(4)
+	if err := r.cpu.ReadMemory(address, data); err != nil {
+		return 0, fmt.Errorf("read KTF word at 0x%08x: %w", address, err)
+	}
+	return binary.LittleEndian.Uint32(data), nil
+}
+
+func setKTFGraphicsRGBPixel(target draw.Image, x, y int, value uint32) {
+	red := uint8(value >> 16)
+	green := uint8(value >> 8)
+	blue := uint8(value)
+	switch target := target.(type) {
+	case *image.RGBA:
+		offset := target.PixOffset(x, y)
+		target.Pix[offset+0] = red
+		target.Pix[offset+1] = green
+		target.Pix[offset+2] = blue
+		target.Pix[offset+3] = 0xff
+	case *image.NRGBA:
+		offset := target.PixOffset(x, y)
+		target.Pix[offset+0] = red
+		target.Pix[offset+1] = green
+		target.Pix[offset+2] = blue
+		target.Pix[offset+3] = 0xff
+	default:
+		target.Set(x, y, color.RGBA{R: red, G: green, B: blue, A: 0xff})
+	}
+}
+
+func (r *ktfRuntime) encodeGraphicsImage(
+	instance uint32,
+	state *ktfGraphics,
+) (uint32, error) {
+	if state == nil {
+		return 0, r.raiseHostJavaException(
+			"java/lang/IllegalArgumentException",
+		)
+	}
+	x, err := r.signedParameter(2)
+	if err != nil {
+		return 0, err
+	}
+	y, err := r.signedParameter(3)
+	if err != nil {
+		return 0, err
+	}
+	width, err := r.signedParameter(4)
+	if err != nil {
+		return 0, err
+	}
+	height, err := r.signedParameter(5)
+	if err != nil {
+		return 0, err
+	}
+	if width <= 0 || height <= 0 {
+		return 0, r.raiseHostJavaException(
+			"java/lang/IllegalArgumentException",
+		)
+	}
+	x += state.translate.X
+	y += state.translate.Y
+	region := image.Rect(x, y, x+width, y+height)
+	if !region.In(state.target.Bounds()) {
+		return 0, r.raiseHostJavaException(
+			"java/lang/IllegalArgumentException",
+		)
+	}
+	if err := r.syncKTFGraphics(instance); err != nil {
+		return 0, err
+	}
+	surface := r.graphicsServices[instance]
+	if surface == 0 {
+		return 0, fmt.Errorf(
+			"KTF graphics 0x%08x has no shared surface",
+			instance,
+		)
+	}
+	encoded, err := r.services.Assets.EncodeSurface(
+		r.serviceOwner,
+		surface,
+		"image/bmp",
+		shared.Rectangle{
+			X:      int32(region.Min.X),
+			Y:      int32(region.Min.Y),
+			Width:  int32(region.Dx()),
+			Height: int32(region.Dy()),
+		},
+	)
+	if err != nil {
+		return 0, err
+	}
+	return r.newJavaByteArray(encoded)
 }
 
 func (r *ktfRuntime) copyGraphicsPixelsToByteArray(

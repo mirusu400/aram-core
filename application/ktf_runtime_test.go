@@ -1038,6 +1038,198 @@ func TestKTFGraphicsDrawImageAdvancesSourceWhenClipped(t *testing.T) {
 	}
 }
 
+func TestKTFGraphicsSetRGBPixelsUsesByteStrideAndClip(t *testing.T) {
+	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.cpu.Close()
+	if err := runtime.mapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	runtime.jvmContext, err = runtime.allocateWords(3 + 128)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.frame = image.NewRGBA(image.Rect(0, 0, 4, 3))
+	graphics, err := runtime.ensureScreenGraphics()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.graphics[graphics].clip = image.Rect(2, 0, 3, 2)
+
+	pixels, err := runtime.newJavaArray("[I", 7, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields, err := runtime.readU32(pixels)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.writeWords(fields+8, []uint32{
+		0xdeadbeef,
+		0x00112233,
+		0xff445566,
+		0x0badf00d,
+		0x00778899,
+		0xffaabbcc,
+		0xcafebabe,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	stack := DefaultStackBase + 0x100
+	if err := runtime.cpu.WriteRegister(cpu.RegisterSP, stack); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.writeWords(stack, []uint32{
+		2,
+		2,
+		pixels,
+		1,
+		12,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR1: graphics,
+		cpu.RegisterR2: 1,
+		cpu.RegisterR3: 0,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := runtime.handleGraphicsMethod(
+		"setRGBPixels",
+		"(IIII[III)V",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := runtime.frame.RGBAAt(2, 0); got != (color.RGBA{
+		R: 0x44,
+		G: 0x55,
+		B: 0x66,
+		A: 0xff,
+	}) {
+		t.Fatalf("first clipped RGB pixel = %#v", got)
+	}
+	if got := runtime.frame.RGBAAt(2, 1); got != (color.RGBA{
+		R: 0xaa,
+		G: 0xbb,
+		B: 0xcc,
+		A: 0xff,
+	}) {
+		t.Fatalf("second clipped RGB pixel = %#v", got)
+	}
+	if got := runtime.frame.RGBAAt(1, 0); got != (color.RGBA{}) {
+		t.Fatalf("pixel outside clip = %#v", got)
+	}
+	if !runtime.graphics[graphics].pixelsDirty {
+		t.Fatal("RGB pixel write did not dirty the graphics surface")
+	}
+}
+
+func TestKTFGraphicsEncodeImageRoundTripsTranslatedRegion(t *testing.T) {
+	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.cpu.Close()
+	if err := runtime.mapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	runtime.jvmContext, err = runtime.allocateWords(3 + 128)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.frame = image.NewRGBA(image.Rect(0, 0, 4, 3))
+	graphics, err := runtime.ensureScreenGraphics()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := runtime.graphics[graphics]
+	state.translate = image.Pt(1, 0)
+	state.target.Set(1, 0, color.RGBA{R: 0xff, A: 0xff})
+	state.target.Set(2, 0, color.RGBA{G: 0xff, A: 0xff})
+	state.target.Set(1, 1, color.RGBA{B: 0xff, A: 0xff})
+	state.target.Set(2, 1, color.RGBA{R: 0xff, G: 0xff, A: 0xff})
+	state.pixelsDirty = true
+
+	stack := DefaultStackBase + 0x100
+	if err := runtime.cpu.WriteRegister(cpu.RegisterSP, stack); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.writeWords(stack, []uint32{2, 2}); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR1: graphics,
+		cpu.RegisterR2: 0,
+		cpu.RegisterR3: 0,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	encodedArray, err := runtime.handleGraphicsMethod(
+		"encodeImage",
+		"(IIII)[B",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := runtime.readJavaByteArray(encodedArray)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) < 2 || string(encoded[:2]) != "BM" {
+		t.Fatalf("encoded image is not BMP: %x", encoded)
+	}
+
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR1, encodedArray); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR2, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(
+		cpu.RegisterR3,
+		uint32(len(encoded)),
+	); err != nil {
+		t.Fatal(err)
+	}
+	imageObject, err := runtime.handleImageMethod(
+		"createImage",
+		"([BII)Lorg/kwis/msp/lcdui/Image;",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded := runtime.images[imageObject]
+	if decoded == nil || decoded.Bounds().Dx() != 2 || decoded.Bounds().Dy() != 2 {
+		t.Fatalf("decoded image = %#v", decoded)
+	}
+	want := [][]color.RGBA{
+		{{R: 0xff, A: 0xff}, {G: 0xff, A: 0xff}},
+		{{B: 0xff, A: 0xff}, {R: 0xff, G: 0xff, A: 0xff}},
+	}
+	for y := range want {
+		for x := range want[y] {
+			if got := color.RGBAModel.Convert(decoded.At(x, y)); got != want[y][x] {
+				t.Fatalf("decoded pixel (%d,%d) = %#v, want %#v", x, y, got, want[y][x])
+			}
+		}
+	}
+}
+
 func TestKTFStringBufferDeleteClampsEndToLength(t *testing.T) {
 	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
 		ClientName: "client.bin0",
