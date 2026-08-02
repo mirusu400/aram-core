@@ -514,10 +514,9 @@ func (m *Machine) loadKTF(
 	if profileID == "" {
 		profileID = ktfProfileID
 	}
-	// KTF descriptors name the handset screen the title was built for. Honour
-	// it so a 176x220 title fills its own framebuffer instead of painting into
-	// one corner of a larger default and leaving the rest at the clear colour.
-	if width, height := pkg.Descriptor.DisplayWidth, pkg.Descriptor.DisplayHeight; width > 0 &&
+	// KTF descriptors normally name the handset screen the title was built for.
+	// Apply only exact-package corrections for known mismatched metadata.
+	if width, height := effectiveKTFDisplaySize(pkg); width > 0 &&
 		height > 0 {
 		if bounds := m.frame.Bounds(); bounds.Dx() != width || bounds.Dy() != height {
 			m.frame = image.NewRGBA(image.Rect(0, 0, width, height))
