@@ -158,6 +158,11 @@ func TestKTFSaveStateRestoresAdapterAndSharedServices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	wipicScreen, err := machine.ktf.ensureWIPICScreenFramebuffer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	machine.ktf.wipicScreenPending = true
 	savedPixel := color.RGBA{R: 1, G: 2, B: 3, A: 0xff}
 	machine.frame.SetRGBA(2, 3, savedPixel)
 	machine.ktf.graphics[graphics].pixelsDirty = true
@@ -182,6 +187,7 @@ func TestKTFSaveStateRestoresAdapterAndSharedServices(t *testing.T) {
 	machine.ktf.fileData = map[string][]byte{}
 	machine.ktf.tickMS = 99
 	machine.ktf.tasks[0].wakeAtMS = 0
+	machine.ktf.wipicScreenPending = false
 
 	if err := machine.LoadState(bytes.NewReader(saved.Bytes())); err != nil {
 		t.Fatal(err)
@@ -213,6 +219,14 @@ func TestKTFSaveStateRestoresAdapterAndSharedServices(t *testing.T) {
 	if len(machine.ktf.tasks) != 1 ||
 		machine.ktf.tasks[0].wakeAtMS != 77 {
 		t.Fatalf("restored KTF sleep deadlines = %+v", machine.ktf.tasks)
+	}
+	if machine.ktf.wipicScreenFramebuffer != wipicScreen ||
+		!machine.ktf.wipicScreenPending {
+		t.Fatalf(
+			"restored pending WIPI-C screen = framebuffer 0x%08x pending %t",
+			machine.ktf.wipicScreenFramebuffer,
+			machine.ktf.wipicScreenPending,
+		)
 	}
 	if got := machine.frame.RGBAAt(2, 3); got != savedPixel {
 		t.Fatalf("restored KTF framebuffer pixel = %#v", got)

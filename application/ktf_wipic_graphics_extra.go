@@ -82,7 +82,7 @@ func (r *ktfRuntime) paintWIPICImageFrame(
 	if err := r.cpu.WriteMemory(framebuffer.pixels, pixels); err != nil {
 		return err
 	}
-	return r.syncKTFWIPICFramebuffer(framebufferHandle)
+	return r.commitKTFWIPICFramebuffer(framebufferHandle)
 }
 
 func ktfWIPICGraphicsCopyArea(
@@ -110,7 +110,7 @@ func ktfWIPICGraphicsCopyArea(
 	); err != nil {
 		return 0, err
 	}
-	return 0, runtime.syncKTFWIPICFramebuffer(values[0])
+	return 0, runtime.commitKTFWIPICFramebuffer(values[0])
 }
 
 func ktfWIPICGraphicsDrawArc(
@@ -172,7 +172,7 @@ func (r *ktfRuntime) drawWIPICArc(fill bool) (uint32, error) {
 				}
 			}
 		}
-		return 0, r.syncKTFWIPICFramebuffer(values[0])
+		return 0, r.commitKTFWIPICFramebuffer(values[0])
 	}
 	centerX, centerY := x+radiusX, y+radiusY
 	rxSquared := radiusX * radiusX
@@ -204,7 +204,7 @@ func (r *ktfRuntime) drawWIPICArc(fill bool) (uint32, error) {
 			}
 		}
 	}
-	return 0, r.syncKTFWIPICFramebuffer(values[0])
+	return 0, r.commitKTFWIPICFramebuffer(values[0])
 }
 
 func ktfWIPICGraphicsGetRGBPixels(
@@ -337,7 +337,7 @@ func ktfWIPICGraphicsSetRGBPixels(
 			return 0, err
 		}
 	}
-	return 0, runtime.syncKTFWIPICFramebuffer(values[0])
+	return 0, runtime.commitKTFWIPICFramebuffer(values[0])
 }
 
 func validKTFWIPICRGBTransfer(
@@ -542,7 +542,7 @@ func (r *ktfRuntime) drawWIPICPolygon(fill bool) (uint32, error) {
 			}
 		}
 	}
-	return 0, r.syncKTFWIPICFramebuffer(values[0])
+	return 0, r.commitKTFWIPICFramebuffer(values[0])
 }
 
 func (r *ktfRuntime) readWIPICCoordinates(

@@ -185,6 +185,7 @@ type ktfRuntime struct {
 	menuForegroundCompat    *ktfMenuForegroundCompat
 	wipicFramebuffers       map[uint32]*ktfWIPICFramebuffer
 	wipicScreenFramebuffer  uint32
+	wipicScreenPending      bool
 	wipicImages             map[uint32]*ktfWIPICImage
 	wipicResources          map[uint32][]byte
 	wipicResourceIDs        map[string]uint32
@@ -7161,6 +7162,9 @@ func (r *ktfRuntime) paintCard(ctx context.Context, card uint32) error {
 	if err != nil {
 		return err
 	}
+	if err := r.applyPendingWIPICScreen(); err != nil {
+		return err
+	}
 	r.resetScreenGraphics(graphics)
 	if r.deferThreads {
 		task, err := r.queueJavaVirtualTask(
@@ -7214,6 +7218,9 @@ func (r *ktfRuntime) serviceCardRepaints(
 	if err != nil {
 		return err
 	}
+	if err := r.applyPendingWIPICScreen(); err != nil {
+		return err
+	}
 	r.resetScreenGraphics(graphics)
 	_, err = r.invokeJavaVirtual(
 		ctx,
@@ -7239,6 +7246,11 @@ func (r *ktfRuntime) serviceCardRepaints(
 }
 
 func (r *ktfRuntime) recordPresentation() error {
+	if state := r.graphics[r.screenGraphics]; r.wipicScreenPending && (state == nil || !state.pixelsDirty) {
+		if err := r.applyPendingWIPICScreen(); err != nil {
+			return err
+		}
+	}
 	if r.screenGraphics != 0 {
 		if err := r.syncKTFGraphics(r.screenGraphics); err != nil {
 			return err
@@ -16200,7 +16212,7 @@ func ktfWIPICGraphicsPutPixel(
 	); err != nil {
 		return 0, err
 	}
-	return 0, runtime.syncKTFWIPICFramebuffer(framebuffer)
+	return 0, runtime.commitKTFWIPICFramebuffer(framebuffer)
 }
 
 func ktfWIPICGraphicsDrawLine(
@@ -16230,7 +16242,7 @@ func ktfWIPICGraphicsDrawLine(
 	if err := runtime.drawWIPICLine(values[0], x1, y1, x2, y2, state); err != nil {
 		return 0, err
 	}
-	return 0, runtime.syncKTFWIPICFramebuffer(values[0])
+	return 0, runtime.commitKTFWIPICFramebuffer(values[0])
 }
 
 func (r *ktfRuntime) drawWIPICLine(
@@ -16320,7 +16332,7 @@ func ktfWIPICGraphicsDrawRect(
 			return 0, err
 		}
 	}
-	return 0, runtime.syncKTFWIPICFramebuffer(values[0])
+	return 0, runtime.commitKTFWIPICFramebuffer(values[0])
 }
 
 func ktfWIPICGraphicsFillRect(
@@ -16382,7 +16394,7 @@ func ktfWIPICGraphicsFillRect(
 			)
 		}
 	}
-	return 0, runtime.syncKTFWIPICFramebuffer(values[0])
+	return 0, runtime.commitKTFWIPICFramebuffer(values[0])
 }
 
 func ktfWIPICGraphicsCopyFramebuffer(
@@ -16414,7 +16426,7 @@ func ktfWIPICGraphicsCopyFramebuffer(
 	); err != nil {
 		return 0, err
 	}
-	return 0, runtime.syncKTFWIPICFramebuffer(values[0])
+	return 0, runtime.commitKTFWIPICFramebuffer(values[0])
 }
 
 // ktfWIPICGraphicsDrawImage blits an MC_GrpImage into a framebuffer. The image
@@ -16458,7 +16470,7 @@ func ktfWIPICGraphicsDrawImage(
 	); err != nil {
 		return 0, err
 	}
-	return 0, runtime.syncKTFWIPICFramebuffer(values[0])
+	return 0, runtime.commitKTFWIPICFramebuffer(values[0])
 }
 
 // blitWIPICFramebuffer copies a rectangle between two 16bpp framebuffers,
@@ -16671,7 +16683,7 @@ func (r *ktfRuntime) drawWIPICString(unicode bool) (uint32, error) {
 	); err != nil {
 		return 0, err
 	}
-	return 0, r.syncKTFWIPICFramebuffer(values[0])
+	return 0, r.commitKTFWIPICFramebuffer(values[0])
 }
 
 // drawWIPICGlyphs places the run with the top-left origin WIPI-C uses, so the
@@ -17107,7 +17119,89 @@ func (r *ktfRuntime) presentWIPICFramebuffer(handle uint32) error {
 			)
 		}
 	}
+	r.wipicScreenPending = false
+	if state := r.graphics[r.screenGraphics]; state != nil {
+		state.pixelsDirty = true
+	}
 	r.presentCount++
+	return nil
+}
+
+// commitKTFWIPICFramebuffer publishes guest RGB565 writes to the shared
+// graphics service. Screen writes remain pending until the Java Card paint
+// boundary: KTF Clets commonly render from calcClet through WIPI-C and use an
+// otherwise empty Java paintClet only to submit that native framebuffer.
+func (r *ktfRuntime) commitKTFWIPICFramebuffer(handle uint32) error {
+	if err := r.syncKTFWIPICFramebuffer(handle); err != nil {
+		return err
+	}
+	if framebuffer := r.wipicFramebuffers[handle]; framebuffer != nil && framebuffer.screen {
+		r.wipicScreenPending = true
+	}
+	return nil
+}
+
+// applyPendingWIPICScreen makes the native screen the base of the next Java
+// paint. Java drawing then lands on the same canonical RGBA frame instead of
+// a separate stale surface, preserving the provider's physical-screen model.
+func (r *ktfRuntime) applyPendingWIPICScreen() error {
+	if !r.wipicScreenPending {
+		return nil
+	}
+	handle := r.wipicScreenFramebuffer
+	framebuffer := r.wipicFramebuffers[handle]
+	if framebuffer == nil || !framebuffer.screen || r.frame == nil {
+		return errors.New("pending KTF WIPI-C screen framebuffer is unavailable")
+	}
+	if err := r.syncKTFWIPICFramebuffer(handle); err != nil {
+		return err
+	}
+	surface := r.wipicSurfaceServices[handle]
+	if surface == 0 {
+		return fmt.Errorf(
+			"KTF WIPI-C framebuffer 0x%08x has no shared surface",
+			handle,
+		)
+	}
+	descriptor, err := r.services.Graphics.Descriptor(r.serviceOwner, surface)
+	if err != nil {
+		return err
+	}
+	bounds := r.frame.Bounds()
+	if descriptor.Width != int32(framebuffer.width) ||
+		descriptor.Height != int32(framebuffer.height) ||
+		descriptor.Format != shared.PixelRGB565 ||
+		framebuffer.width != bounds.Dx() || framebuffer.height != bounds.Dy() {
+		return fmt.Errorf(
+			"KTF WIPI-C screen 0x%08x geometry differs from the Java frame",
+			handle,
+		)
+	}
+	pixels, err := r.services.Graphics.RGBA(r.serviceOwner, surface)
+	if err != nil {
+		return err
+	}
+	rowBytes := framebuffer.width * 4
+	if len(pixels) != rowBytes*framebuffer.height {
+		return fmt.Errorf(
+			"KTF WIPI-C screen 0x%08x RGBA payload has %d bytes, want %d",
+			handle,
+			len(pixels),
+			rowBytes*framebuffer.height,
+		)
+	}
+	for y := 0; y < framebuffer.height; y++ {
+		destination := r.frame.PixOffset(bounds.Min.X, bounds.Min.Y+y)
+		copy(
+			r.frame.Pix[destination:destination+rowBytes],
+			pixels[y*rowBytes:(y+1)*rowBytes],
+		)
+	}
+	r.wipicScreenPending = false
+	if state := r.graphics[r.screenGraphics]; state != nil {
+		state.pixelsDirty = true
+	}
+	r.tracef("wipic_screen_merge:framebuffer=0x%08x", handle)
 	return nil
 }
 

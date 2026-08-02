@@ -7083,6 +7083,70 @@ func TestKTFWIPICScreenFramebufferLayoutAndFill(t *testing.T) {
 	}
 }
 
+func TestKTFJavaPresentationConsumesPendingWIPICScreen(t *testing.T) {
+	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.cpu.Close()
+	if err := runtime.mapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	runtime.frame = image.NewRGBA(image.Rect(0, 0, 8, 6))
+	graphics, err := runtime.ensureScreenGraphics()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.syncKTFGraphics(graphics); err != nil {
+		t.Fatal(err)
+	}
+	framebufferAddress, err := runtime.ensureWIPICScreenFramebuffer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	framebuffer := runtime.wipicFramebuffers[framebufferAddress]
+	var pixel [2]byte
+	binary.LittleEndian.PutUint16(pixel[:], 0xf800)
+	if err := runtime.cpu.WriteMemory(
+		framebuffer.pixels+uint32(framebuffer.stride+2*2),
+		pixel[:],
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.commitKTFWIPICFramebuffer(framebufferAddress); err != nil {
+		t.Fatal(err)
+	}
+	if !runtime.wipicScreenPending {
+		t.Fatal("WIPI-C screen write was not queued for the Java paint boundary")
+	}
+	if err := runtime.recordPresentation(); err != nil {
+		t.Fatal(err)
+	}
+	if got := runtime.frame.RGBAAt(2, 1); got != (color.RGBA{
+		R: 0xff,
+		A: 0xff,
+	}) {
+		t.Fatalf("merged WIPI-C screen pixel = %#v", got)
+	}
+	if runtime.wipicScreenPending {
+		t.Fatal("presented WIPI-C screen remained pending")
+	}
+	if got := runtime.services.Graphics.Screen();
+		got != runtime.graphicsServices[graphics] {
+		t.Fatalf(
+			"presented service = %s, want Java screen %s",
+			got,
+			runtime.graphicsServices[graphics],
+		)
+	}
+	if runtime.presentCount != 1 {
+		t.Fatalf("Java present count = %d, want 1", runtime.presentCount)
+	}
+}
+
 func TestKTFWIPICOffscreenFramebufferLifecycle(t *testing.T) {
 	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
 		ClientName: "client.bin0",

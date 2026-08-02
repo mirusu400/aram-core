@@ -14,23 +14,25 @@ import (
 
 const (
 	ktfStateSchemaV2     = uint32(2)
-	ktfStateSchema       = uint32(3)
+	ktfStateSchemaV3     = uint32(3)
+	ktfStateSchema       = uint32(4)
 	maxKTFStateMetadata  = uint32(64 << 20)
 	maxKTFStateEntries   = 16_384
 	maxKTFStateHostCalls = int(ktfHostSize / 4)
 )
 
 type ktfSavedState struct {
-	owner             shared.OwnerID
-	name              string
-	services          *shared.Services
-	hostMemory        []byte
-	heapMemory        []byte
-	heapAllocations   []heapBlock
-	incrementalHeaps  []ktfIncrementalHeapSnapshot
-	metadata          ktfMetadataSnapshot
-	taskWakeAtMS      []uint64
-	resolvedHostCalls map[uint32]ktfHostCall
+	owner              shared.OwnerID
+	name               string
+	services           *shared.Services
+	hostMemory         []byte
+	heapMemory         []byte
+	heapAllocations    []heapBlock
+	incrementalHeaps   []ktfIncrementalHeapSnapshot
+	metadata           ktfMetadataSnapshot
+	taskWakeAtMS       []uint64
+	wipicScreenPending bool
+	resolvedHostCalls  map[uint32]ktfHostCall
 }
 
 type ktfPersistentState struct {
@@ -498,6 +500,12 @@ func (m *Machine) writeKTFState(writer *stateWriter) error {
 	for _, task := range r.tasks {
 		writer.u64(task.wakeAtMS)
 	}
+	if r.wipicScreenPending {
+		writer.u8(1)
+	} else {
+		writer.u8(0)
+	}
+	writer.write([]byte{0, 0, 0})
 	return nil
 }
 
@@ -519,7 +527,8 @@ func (m *Machine) parseKTFState(
 		return nil, decoder.fail("unexpected KTF state component")
 	}
 	schema := decoder.u32()
-	if schema != ktfStateSchemaV2 && schema != ktfStateSchema {
+	if schema != ktfStateSchemaV2 && schema != ktfStateSchemaV3 &&
+		schema != ktfStateSchema {
 		return nil, decoder.fail(fmt.Sprintf("unsupported KTF state schema %d", schema))
 	}
 	owner := shared.OwnerID(decoder.u32())
@@ -595,7 +604,7 @@ func (m *Machine) parseKTFState(
 		return nil, decoder.fail(fmt.Sprintf("invalid KTF adapter graph: %v", err))
 	}
 	var taskWakeAtMS []uint64
-	if schema >= ktfStateSchema {
+	if schema >= ktfStateSchemaV3 {
 		taskCount := decoder.u32()
 		if taskCount > maxKTFStateEntries ||
 			int(taskCount) != len(metadata.Tasks) {
@@ -606,6 +615,20 @@ func (m *Machine) parseKTFState(
 			taskWakeAtMS[index] = decoder.u64()
 		}
 	}
+	var wipicScreenPending bool
+	if schema >= ktfStateSchema {
+		pending := decoder.u8()
+		decoder.reserved(3)
+		if pending > 1 {
+			return nil, decoder.fail("invalid pending KTF WIPI-C screen state")
+		}
+		wipicScreenPending = pending != 0
+		if wipicScreenPending && metadata.WIPICScreenFramebuffer == 0 {
+			return nil, decoder.fail(
+				"pending KTF WIPI-C screen state has no framebuffer",
+			)
+		}
+	}
 	resolvedCalls, err := resolveKTFHostCalls(m.ktf, metadata.HostCalls)
 	if err != nil {
 		return nil, decoder.fail(fmt.Sprintf("invalid KTF host-call graph: %v", err))
@@ -614,16 +637,17 @@ func (m *Machine) parseKTFState(
 		return nil, decoder.err
 	}
 	return &ktfSavedState{
-		owner:             owner,
-		name:              name,
-		services:          candidate,
-		hostMemory:        hostMemory,
-		heapMemory:        heapMemory,
-		heapAllocations:   heapAllocations,
-		incrementalHeaps:  incremental,
-		metadata:          metadata,
-		taskWakeAtMS:      taskWakeAtMS,
-		resolvedHostCalls: resolvedCalls,
+		owner:              owner,
+		name:               name,
+		services:           candidate,
+		hostMemory:         hostMemory,
+		heapMemory:         heapMemory,
+		heapAllocations:    heapAllocations,
+		incrementalHeaps:   incremental,
+		metadata:           metadata,
+		taskWakeAtMS:       taskWakeAtMS,
+		wipicScreenPending: wipicScreenPending,
+		resolvedHostCalls:  resolvedCalls,
 	}, nil
 }
 
@@ -1283,6 +1307,12 @@ func validateKTFMetadata(
 			return fmt.Errorf("invalid WIPI-C framebuffer 0x%08x", handle)
 		}
 	}
+	if meta.WIPICScreenFramebuffer != 0 {
+		framebuffer, ok := meta.WIPICFramebuffers[meta.WIPICScreenFramebuffer]
+		if !ok || !framebuffer.Screen {
+			return fmt.Errorf("invalid WIPI-C screen framebuffer")
+		}
+	}
 	for object, value := range meta.WIPICImages {
 		assetID := meta.WIPICAssetServices[object]
 		if object == 0 || value.Object != object ||
@@ -1646,6 +1676,7 @@ func (m *Machine) restoreKTFState(saved *ktfSavedState) error {
 	r.screenGraphics = meta.ScreenGraphics
 	r.wipicFramebuffers = restoreKTFWIPICFramebuffers(meta.WIPICFramebuffers)
 	r.wipicScreenFramebuffer = meta.WIPICScreenFramebuffer
+	r.wipicScreenPending = saved.wipicScreenPending
 	r.wipicImages = make(
 		map[uint32]*ktfWIPICImage,
 		len(meta.WIPICImages),
