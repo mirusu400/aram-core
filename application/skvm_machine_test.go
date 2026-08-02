@@ -176,10 +176,14 @@ func TestSKVMMachineLifecycleResetAndStateRoundTrip(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	frameStartedAt := machine.services.Clock.Monotonic()
 	if err := machine.StepFrame(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	savedClock := machine.services.Clock.Monotonic()
+	if got, want := machine.FrameQuantum(), savedClock-frameStartedAt; got != want {
+		t.Fatalf("frame quantum = %s, want actual clock advance %s", got, want)
+	}
 	savedInstructions := machine.vm.Instructions
 	var saved bytes.Buffer
 	if err := machine.SaveState(&saved); err != nil {

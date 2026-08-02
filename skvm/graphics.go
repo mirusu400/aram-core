@@ -23,6 +23,31 @@ func (vm *VM) ScreenGraphics() uint32 {
 	return vm.screenGraphics
 }
 
+// resetScreenGraphics establishes the MIDP Canvas.paint entry state. A
+// display Graphics object is valid only for one paint callback; clip,
+// translation, color, font, and compositing changes from an earlier callback
+// must not leak into the next one.
+func (vm *VM) resetScreenGraphics() error {
+	state, err := vm.graphics(vm.ScreenGraphics())
+	if err != nil {
+		return err
+	}
+	state.font = vm.defaultFont
+	state.color = 0xff000000
+	return vm.services.Graphics.SetDrawState(
+		vm.serviceOwner,
+		state.surface,
+		shared.SurfaceDrawState{
+			Clip: shared.Rectangle{
+				Width:  int32(state.width),
+				Height: int32(state.height),
+			},
+			Raster:      shared.RasterCopy,
+			GlobalAlpha: 0xff,
+		},
+	)
+}
+
 func nativeFillRect(
 	_ context.Context,
 	vm *VM,

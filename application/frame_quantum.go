@@ -25,6 +25,9 @@ func (m *Machine) FrameQuantum() time.Duration {
 func (m *skvmMachine) FrameQuantum() time.Duration {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.frameQuantum > 0 {
+		return m.frameQuantum
+	}
 	if m.services == nil || m.services.Config.FrameDuration <= 0 {
 		return wipiFrameDuration
 	}

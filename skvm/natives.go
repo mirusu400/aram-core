@@ -39,6 +39,12 @@ type threadYield struct {
 	delay time.Duration
 }
 
+// CanvasHeightInset16Quirk models SKT handsets whose MIDP Canvas reported the
+// client area without the 16-pixel system strip even though drawing still
+// targeted the complete framebuffer. Some games deliberately add the strip
+// back when allocating their full-screen backbuffer.
+const CanvasHeightInset16Quirk = "skvm.canvas-height-inset-16"
+
 func (e *threadYield) Error() string {
 	return fmt.Sprintf("SKVM thread yielded for %s", e.delay)
 }
@@ -953,7 +959,7 @@ func (vm *VM) installDisplayNatives() {
 		"getHeight",
 		"()I",
 		func(_ context.Context, vm *VM, _ uint32, _ []Value) (Value, bool, error) {
-			return IntValue(int32(vm.ScreenHeight)), true, nil
+			return IntValue(int32(vm.canvasHeight())), true, nil
 		},
 	)
 	vm.RegisterNative("javax/microedition/lcdui/Canvas", "repaint", "(IIII)V", nativeVoid)
@@ -1021,6 +1027,16 @@ func (vm *VM) installDisplayNatives() {
 			return Value{}, false, nil
 		},
 	)
+}
+
+func (vm *VM) canvasHeight() int {
+	height := vm.ScreenHeight
+	if vm.services != nil &&
+		vm.services.Device.Quirk(CanvasHeightInset16Quirk) &&
+		height > 16 {
+		return height - 16
+	}
+	return height
 }
 
 func (vm *VM) installGraphicsNatives() {

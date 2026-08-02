@@ -47,6 +47,7 @@ type skvmMachine struct {
 	midlet       uint32
 	input        []machinecore.InputEvent
 	initialState []byte
+	frameQuantum time.Duration
 	closed       bool
 }
 
@@ -162,6 +163,7 @@ func newSKVMMachine(
 	if source.ProfileID != "" {
 		config.Device.ProfileID = source.ProfileID
 	}
+	applySKVMTitleCompatibility(&config, source, pkg, size)
 	services, err := shared.NewServices(config)
 	if err != nil {
 		return nil, fmt.Errorf("initialize SKVM shared services: %w", err)
@@ -219,13 +221,14 @@ func newSKVMMachine(
 		return nil, fmt.Errorf("ready SKVM adapter: %w", err)
 	}
 	machine := &skvmMachine{
-		state:     machinecore.StateReady,
-		source:    source,
-		mainClass: pkg.Descriptor.MainClass,
-		classData: classData,
-		vm:        vm,
-		services:  services,
-		owner:     owner,
+		state:        machinecore.StateReady,
+		source:       source,
+		mainClass:    pkg.Descriptor.MainClass,
+		classData:    classData,
+		vm:           vm,
+		services:     services,
+		owner:        owner,
+		frameQuantum: config.FrameDuration,
 	}
 	machine.initialState, err = vm.MarshalBinary()
 	if err != nil {
@@ -486,6 +489,7 @@ func (m *skvmMachine) Reset(ctx context.Context) error {
 	m.input = nil
 	m.started = false
 	m.midlet = 0
+	m.frameQuantum = m.services.Config.FrameDuration
 	m.state = machinecore.StateReady
 	return nil
 }
@@ -512,9 +516,15 @@ func (m *skvmMachine) StepFrame(ctx context.Context) error {
 	); err != nil {
 		return m.faultLocked(err)
 	}
+	frameStartedAt := m.services.Clock.Monotonic()
 	if err := m.pumpAndPaintLocked(ctx, m.services.Config.FrameDuration); err != nil {
 		return m.faultLocked(err)
 	}
+	frameFinishedAt := m.services.Clock.Monotonic()
+	if frameFinishedAt <= frameStartedAt {
+		return m.faultLocked(fmt.Errorf("SKVM frame did not advance virtual time"))
+	}
+	m.frameQuantum = frameFinishedAt - frameStartedAt
 	if err := m.consumeInstructionsLocked(before); err != nil {
 		return m.faultLocked(err)
 	}
@@ -882,6 +892,7 @@ func (m *skvmMachine) LoadState(input io.Reader) error {
 	m.started = parsed.started
 	m.midlet = parsed.midlet
 	m.input = parsed.input
+	m.frameQuantum = m.services.Config.FrameDuration
 	return nil
 }
 

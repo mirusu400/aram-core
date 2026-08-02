@@ -550,6 +550,9 @@ func (vm *VM) PaintCurrent(ctx context.Context) error {
 	if vm.currentDisplay == 0 {
 		return fmt.Errorf("SKVM has no current Displayable")
 	}
+	if err := vm.resetScreenGraphics(); err != nil {
+		return fmt.Errorf("reset SKVM paint graphics: %w", err)
+	}
 	_, _, err := vm.InvokeVirtual(
 		ctx,
 		vm.currentDisplay,
