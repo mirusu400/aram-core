@@ -223,7 +223,9 @@ func NewWithServices(
 	}
 	font, err := services.Text.CreateFont(owner, shared.FontDescriptor{
 		Family: "aram-fallback",
-		Size:   8,
+		// The MIDP default is the system face at medium size. Keep this in
+		// sync with the medium branch in newFontObject.
+		Size: 12,
 	})
 	if err != nil {
 		_ = services.Graphics.SetScreen(owner, 0)

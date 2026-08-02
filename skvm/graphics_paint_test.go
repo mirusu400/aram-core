@@ -6,6 +6,27 @@ import (
 	shared "github.com/mirusu400/aram-core/runtime"
 )
 
+func TestDefaultFontUsesReadableMediumHandsetMetrics(t *testing.T) {
+	vm, err := New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metrics, err := vm.services.Text.Metrics(vm.serviceOwner, vm.defaultFont)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metrics.Height != 12 {
+		t.Fatalf("default font height = %d, want medium height 12", metrics.Height)
+	}
+	glyph, err := vm.services.Text.Glyph(vm.serviceOwner, vm.defaultFont, '아')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if glyph.Width != 12 || glyph.Height != 12 || glyph.Advance != 12 {
+		t.Fatalf("default Hangul glyph metrics = %+v, want 12x12 advance 12", glyph)
+	}
+}
+
 func TestResetScreenGraphicsRestoresCanvasPaintState(t *testing.T) {
 	vm, err := New(nil)
 	if err != nil {
