@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/mirusu400/aram-core/cheat"
+	"github.com/mirusu400/aram-core/loader/raptor"
 )
 
 func TestApplicationCheatsUseTitleIdentityAndReapplyAfterReset(t *testing.T) {
@@ -64,5 +65,64 @@ func TestApplicationCheatsUseTitleIdentityAndReapplyAfterReset(t *testing.T) {
 	}
 	if !bytes.Equal(got, value) {
 		t.Fatalf("cheat after application reset = %x, want %x", got, value)
+	}
+}
+
+// ELF section flags as raptor images carry them.
+const (
+	sectionWriteFlag = 1
+	sectionAllocFlag = 2
+	sectionExecFlag  = 4
+)
+
+// Raptor code sections carry no write flag, yet mapRaptorImage maps them
+// read-write because the handset patches import veneers in place. Hash-keyed
+// code patches depend on the cheat region agreeing with that mapping.
+func TestRaptorCheatRegionsAllowCodePatchesWithoutScanningThem(t *testing.T) {
+	machine := &Machine{raptor: &raptorRuntime{pkg: raptor.Package{
+		Image: raptor.Image{Sections: []raptor.Section{
+			{
+				Index:   1,
+				Name:    "ER_RO",
+				Flags:   sectionAllocFlag | sectionExecFlag,
+				Address: 0x00100000,
+				Size:    0x1000,
+			},
+			{
+				Index:   2,
+				Name:    "ER_RW",
+				Flags:   sectionAllocFlag | sectionWriteFlag,
+				Address: 0x00101000,
+				Size:    0x1000,
+			},
+		}},
+	}}}
+
+	regions := make(map[string]cheat.Region)
+	for _, region := range machine.defaultCheatRegionsLocked() {
+		regions[region.Name] = region
+	}
+
+	code, ok := regions["image.raptor.1.ER_RO"]
+	if !ok {
+		t.Fatalf("raptor code region missing from %+v", regions)
+	}
+	if !code.Writable || code.Scannable {
+		t.Fatalf(
+			"raptor code region writable = %t, scannable = %t; want true, false",
+			code.Writable,
+			code.Scannable,
+		)
+	}
+	data, ok := regions["image.raptor.2.ER_RW"]
+	if !ok {
+		t.Fatalf("raptor data region missing from %+v", regions)
+	}
+	if !data.Writable || !data.Scannable {
+		t.Fatalf(
+			"raptor data region writable = %t, scannable = %t; want true, true",
+			data.Writable,
+			data.Scannable,
+		)
 	}
 }

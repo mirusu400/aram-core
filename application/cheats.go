@@ -87,9 +87,14 @@ func (m *Machine) defaultCheatRegionsLocked() []cheat.Region {
 					section.Index,
 					section.Name,
 				),
-				Start:     section.Address,
-				Size:      section.Size,
-				Writable:  section.Writable(),
+				Start: section.Address,
+				Size:  section.Size,
+				// mapRaptorImage maps every allocated section read-write, so a
+				// hash-keyed code patch may target executable sections the way
+				// image.text does for the other loaders. Scanning stays on the
+				// writable data sections so an unknown-value scan never walks
+				// executable bytes.
+				Writable:  true,
 				Scannable: section.Writable(),
 			})
 		}

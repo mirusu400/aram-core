@@ -22,6 +22,12 @@ regions for writable image data, the WIPI heap, and manual access to text and
 stack memory. Executable memory and the stack are not searched unless selected
 explicitly.
 
+Code sections are writable so a hash-keyed patch can retarget a branch, which
+is how a title-specific check is neutralized. They stay unscannable, so an
+unknown-value scan never walks executable bytes. The portable interpreter
+fetches straight from mapped memory and keeps no decoded-instruction cache, so
+a code patch takes effect on the next fetch.
+
 ## Find an address
 
 Start with a known value, change it in game, and filter the previous results:
