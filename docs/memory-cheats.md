@@ -94,3 +94,69 @@ Freeze codes are reapplied after every successful `Start`, `Resume`, and
 `StepFrame`. All enabled codes are reapplied after `Reset` and `LoadState`.
 Cheat definitions remain host-side state and are not embedded in guest save
 states.
+
+## Catalogs and the cheat library
+
+A catalog is the per-title document a cheat database stores. It is keyed by the
+input file's SHA-256, the same identity the engine binds codes to, and its
+addresses and byte strings are hexadecimal so an entry reads like a
+disassembly listing.
+
+```json
+{
+  "version": 1,
+  "title": {
+    "sha256": "3cc7a9b4…",
+    "name": "제노니아 1",
+    "carrier": "lgt",
+    "format": "raptor-wipi-c",
+    "profile_id": "wipi-1.2.1/lgt/raptor"
+  },
+  "cheats": [
+    {
+      "id": "skip-server-authentication",
+      "name": "Skip server authentication",
+      "category": "bypass",
+      "restore_on_disable": true,
+      "patches": [
+        {
+          "address": "0x0004a1c8",
+          "value": "0000a0e1",
+          "expected": "feffffeb",
+          "note": "replace the authentication call with a no-op"
+        }
+      ]
+    }
+  ]
+}
+```
+
+`expected` is required. The catalog is keyed by the input hash, so the original
+bytes are known exactly, and a mismatch means the patch is being applied to
+memory it was not authored against.
+
+`Library` applies a catalog entry as one unit. Every patch of a cheat is
+enabled together, and a patch that fails its expected-original check rolls the
+already-applied patches of that cheat back.
+
+```go
+library, err := cheat.NewLibrary(wrapped.Cheats())
+if err != nil {
+    return err
+}
+catalog, err := cheat.ParseCatalog(document)
+if err != nil {
+    return err
+}
+if err := library.Import(catalog); err != nil {
+    return err
+}
+if err := library.SetEnabled("skip-server-authentication", true); err != nil {
+    return err
+}
+```
+
+Each patch becomes an engine code named `<cheat id>#<patch index>`, so adding a
+patch to a catalog entry never renames the codes that already exist. Importing
+a catalog for a different SHA-256 than the loaded application fails with
+`ErrWrongTarget`.
