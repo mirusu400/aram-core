@@ -7134,8 +7134,7 @@ func TestKTFJavaPresentationConsumesPendingWIPICScreen(t *testing.T) {
 	if runtime.wipicScreenPending {
 		t.Fatal("presented WIPI-C screen remained pending")
 	}
-	if got := runtime.services.Graphics.Screen();
-		got != runtime.graphicsServices[graphics] {
+	if got := runtime.services.Graphics.Screen(); got != runtime.graphicsServices[graphics] {
 		t.Fatalf(
 			"presented service = %s, want Java screen %s",
 			got,
@@ -8151,18 +8150,19 @@ func TestKTFEncodedImageKeepsStraightAlphaTransparent(t *testing.T) {
 	}
 }
 
-func TestKTFClipSetVolumePreservesPlayback(t *testing.T) {
+func TestKTFClipSetVolumeUsesPercentageAndPreservesPlayback(t *testing.T) {
 	runtime := newScratchKTFRuntime(t)
 	clip, err := runtime.newHostJavaObject("org/kwis/msp/media/Clip")
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := []byte("MMMD-test")
-	runtime.clips[clip] = &ktfClip{
-		volume:  5,
-		playing: true,
-		data:    append([]byte(nil), source...),
+	state := runtime.ensureKTFClip(clip)
+	if state.volume != 100 {
+		t.Fatalf("default Clip volume = %d, want 100", state.volume)
 	}
+	source := []byte("MMMD-test")
+	state.playing = true
+	state.data = append([]byte(nil), source...)
 	if err := runtime.syncKTFClip(clip); err != nil {
 		t.Fatal(err)
 	}
@@ -8177,7 +8177,7 @@ func TestKTFClipSetVolumePreservesPlayback(t *testing.T) {
 	if err := runtime.cpu.WriteRegister(cpu.RegisterR1, clip); err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.cpu.WriteRegister(cpu.RegisterR2, 3); err != nil {
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR2, 33); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := runtime.handleMediaMethod("setVolume", "(I)Z"); err != nil {
@@ -8192,7 +8192,7 @@ func TestKTFClipSetVolumePreservesPlayback(t *testing.T) {
 		t.Fatal(err)
 	}
 	if info.State != shared.ClipPlaying || info.RemainingPlays != -1 ||
-		info.Volume != 60 || !bytes.Equal(stored, source) {
+		info.Volume != 33 || !bytes.Equal(stored, source) {
 		t.Fatalf("Clip after setVolume: info=%+v source=%q", info, stored)
 	}
 }

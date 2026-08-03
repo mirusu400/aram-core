@@ -10424,7 +10424,7 @@ func (r *ktfRuntime) handleMediaMethod(
 		if err != nil {
 			return 0, err
 		}
-		clip := &ktfClip{volume: 5}
+		clip := &ktfClip{volume: 100}
 		if descriptor == "(Ljava/lang/String;[B)V" {
 			array, valueErr := r.parameter(3)
 			if valueErr != nil {
@@ -10641,7 +10641,7 @@ func (r *ktfRuntime) ktfClipConstructorResource(
 func (r *ktfRuntime) ensureKTFClip(instance uint32) *ktfClip {
 	clip := r.clips[instance]
 	if clip == nil {
-		clip = &ktfClip{volume: 5}
+		clip = &ktfClip{volume: 100}
 		r.clips[instance] = clip
 	}
 	return clip
@@ -10746,7 +10746,7 @@ func (r *ktfRuntime) syncKTFClipGain(instance uint32) error {
 	if err != nil {
 		return err
 	}
-	volume := max(int32(0), min(int32(100), clip.volume*20))
+	volume := max(int32(0), min(int32(100), clip.volume))
 	return r.services.Media.SetClipGain(
 		r.serviceOwner,
 		serviceID,
