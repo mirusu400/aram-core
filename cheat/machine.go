@@ -45,6 +45,15 @@ func (m *Machine) Cheats() *Engine {
 	return m.engine
 }
 
+// Unwrap returns the wrapped machine so a host can probe the optional
+// interfaces this wrapper does not restate, such as image and diagnostic
+// reporting. Guest execution and memory still belong to the wrapper: reaching
+// through it for anything that runs or mutates the guest loses the guarantee
+// that cheats stay serialized with execution.
+func (m *Machine) Unwrap() machinecore.Machine {
+	return m.machine
+}
+
 func (m *Machine) Load(ctx context.Context, source machinecore.Source) error {
 	return m.engine.runMachine(
 		func() error { return m.machine.Load(ctx, source) },
