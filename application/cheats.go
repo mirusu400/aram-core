@@ -41,6 +41,9 @@ func (m *Machine) WithCheats(options cheat.Options) (*cheat.Machine, error) {
 	if options.TargetSHA256 == "" {
 		options.TargetSHA256 = m.source.SHA256
 	}
+	if options.ImageSHA256 == "" {
+		options.ImageSHA256 = m.info.ImageSHA256
+	}
 	if len(options.Regions) == 0 {
 		options.Regions = m.defaultCheatRegionsLocked()
 	}

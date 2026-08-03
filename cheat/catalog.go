@@ -10,7 +10,8 @@ import (
 )
 
 // CatalogVersion is the catalog schema revision this package reads and writes.
-const CatalogVersion = 1
+// Version 2 keys a catalog on the loaded image rather than the input file.
+const CatalogVersion = 2
 
 var (
 	ErrUnsupportedCatalogVersion = errors.New("unsupported cheat catalog version")
@@ -79,14 +80,38 @@ func (b *Bytes) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// Title identifies the application a catalog belongs to. SHA256 is the hash of
-// the input file, the same identity the engine binds codes to.
+// Title identifies the application a catalog belongs to.
+//
+// ImageSHA256 is the primary key: it names the loaded executable image, so
+// re-archiving or repacking a package does not lose its cheats. FileSHA256
+// lists container hashes known to carry that image; they are how a person
+// finds an entry from a bug report, never how a patch is authorized.
+//
+// AID, PID, Version, and Vendor come from the carrier descriptor. They are
+// recorded for browsing only: measured across a 280-package corpus, one AID
+// covers as many as twelve unrelated titles, and one AID+PID pair still spans
+// two builds with different code.
 type Title struct {
-	SHA256    string `json:"sha256"`
-	Name      string `json:"name,omitempty"`
-	Carrier   string `json:"carrier,omitempty"`
-	Format    string `json:"format,omitempty"`
-	ProfileID string `json:"profile_id,omitempty"`
+	ImageSHA256 string   `json:"image_sha256"`
+	FileSHA256  []string `json:"file_sha256,omitempty"`
+	Name        string   `json:"name,omitempty"`
+	Carrier     string   `json:"carrier,omitempty"`
+	Format      string   `json:"format,omitempty"`
+	ProfileID   string   `json:"profile_id,omitempty"`
+	AID         string   `json:"aid,omitempty"`
+	PID         string   `json:"pid,omitempty"`
+	Version     string   `json:"version,omitempty"`
+	Vendor      string   `json:"vendor,omitempty"`
+}
+
+// Identities lists the hashes a catalog claims to answer for, the image
+// identity first.
+func (t Title) Identities() []string {
+	identities := make([]string, 0, 1+len(t.FileSHA256))
+	if t.ImageSHA256 != "" {
+		identities = append(identities, t.ImageSHA256)
+	}
+	return append(identities, t.FileSHA256...)
 }
 
 // Patch is one guarded byte edit. Expected is required: the catalog is keyed by
@@ -143,12 +168,21 @@ func (c Catalog) Validate() error {
 			CatalogVersion,
 		)
 	}
-	target, err := normalizeSHA256(c.Title.SHA256)
+	target, err := normalizeSHA256(c.Title.ImageSHA256)
 	if err != nil {
 		return fmt.Errorf("cheat catalog title: %w", err)
 	}
 	if target == "" {
 		return fmt.Errorf("cheat catalog title: %w", ErrTargetIdentityUnavailable)
+	}
+	for index, file := range c.Title.FileSHA256 {
+		value, err := normalizeSHA256(file)
+		if err != nil {
+			return fmt.Errorf("cheat catalog file_sha256 %d: %w", index, err)
+		}
+		if value == "" {
+			return fmt.Errorf("cheat catalog file_sha256 %d is empty", index)
+		}
 	}
 	if len(c.Cheats) == 0 {
 		return fmt.Errorf("cheat catalog for %s contains no cheats", target)

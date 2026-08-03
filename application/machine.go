@@ -140,9 +140,13 @@ func (f Factory) Create(ctx context.Context, source machinecore.Source) (machine
 }
 
 type ImageInfo struct {
-	Name        string
-	ProfileID   string
-	SourceKind  loader.Kind
+	Name       string
+	ProfileID  string
+	SourceKind loader.Kind
+	// ImageSHA256 identifies the loaded executable image rather than the file
+	// that delivered it, so it survives re-archiving and repackaging. Cheats
+	// and other hash-keyed data bind to it.
+	ImageSHA256 string
 	EntryPoint  uint32
 	Mode        cpu.Mode
 	TextAddress uint32
@@ -371,9 +375,23 @@ func (m *Machine) Load(ctx context.Context, source machinecore.Source) error {
 	source.ProfileID = profileID
 	m.source = source
 	m.info = ImageInfo{
-		Name:        selected.Name,
-		ProfileID:   profileID,
-		SourceKind:  loader.KindEADS,
+		Name:       selected.Name,
+		ProfileID:  profileID,
+		SourceKind: loader.KindEADS,
+		ImageSHA256: imageSHA256(loader.KindEADS, []imageSegment{
+			{
+				Address:    selected.TextBase,
+				Size:       selected.TextSize,
+				Writable:   true,
+				Executable: true,
+				Data:       text,
+			},
+			{
+				Address:  selected.DataBase,
+				Size:     selected.BSSSize,
+				Writable: true,
+			},
+		}),
 		EntryPoint:  entry,
 		Mode:        cpu.ModeThumb,
 		TextAddress: selected.TextBase,
@@ -478,6 +496,7 @@ func (m *Machine) loadRaptor(
 		Name:        pkg.Descriptor.AID,
 		ProfileID:   profileID,
 		SourceKind:  loader.KindRaptor,
+		ImageSHA256: raptorImageSHA256(pkg.Image),
 		EntryPoint:  pkg.Image.Entry | 1,
 		Mode:        cpu.ModeThumb,
 		TextAddress: text.Address,
@@ -550,9 +569,23 @@ func (m *Machine) loadKTF(
 	source.ProfileID = profileID
 	m.source = source
 	m.info = ImageInfo{
-		Name:        pkg.Descriptor.AID,
-		ProfileID:   profileID,
-		SourceKind:  loader.KindKTF,
+		Name:       pkg.Descriptor.AID,
+		ProfileID:  profileID,
+		SourceKind: loader.KindKTF,
+		ImageSHA256: imageSHA256(loader.KindKTF, []imageSegment{
+			{
+				Address:    ktfImageBase,
+				Size:       uint32(len(pkg.Client)),
+				Writable:   true,
+				Executable: true,
+				Data:       pkg.Client,
+			},
+			{
+				Address:  ktfImageBase + uint32(len(pkg.Client)),
+				Size:     pkg.BSSSize,
+				Writable: true,
+			},
+		}),
 		EntryPoint:  ktfImageBase | 1,
 		Mode:        cpu.ModeThumb,
 		TextAddress: ktfImageBase,

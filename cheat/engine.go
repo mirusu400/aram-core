@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -62,6 +63,7 @@ type Engine struct {
 	mu           sync.Mutex
 	memory       Memory
 	targetSHA256 string
+	imageSHA256  string
 	byteOrder    Endian
 	regions      []Region
 	maxScanBytes uint64
@@ -78,6 +80,10 @@ func New(memory Memory, options Options) (*Engine, error) {
 		return nil, fmt.Errorf("invalid cheat byte order %d", options.ByteOrder)
 	}
 	target, err := normalizeSHA256(options.TargetSHA256)
+	if err != nil {
+		return nil, err
+	}
+	imageIdentity, err := normalizeSHA256(options.ImageSHA256)
 	if err != nil {
 		return nil, err
 	}
@@ -110,6 +116,7 @@ func New(memory Memory, options Options) (*Engine, error) {
 	return &Engine{
 		memory:       memory,
 		targetSHA256: target,
+		imageSHA256:  imageIdentity,
 		byteOrder:    options.ByteOrder,
 		regions:      regions,
 		maxScanBytes: maxScanBytes,
@@ -136,6 +143,68 @@ func (e *Engine) TargetSHA256() string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.targetSHA256
+}
+
+// ImageSHA256 is the loaded executable image's identity, empty when the host
+// did not supply one.
+func (e *Engine) ImageSHA256() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.imageSHA256
+}
+
+// Identities lists every hash a code may bind to, most specific first.
+func (e *Engine) Identities() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.identitiesLocked()
+}
+
+func (e *Engine) identitiesLocked() []string {
+	identities := make([]string, 0, 2)
+	if e.imageSHA256 != "" {
+		identities = append(identities, e.imageSHA256)
+	}
+	if e.targetSHA256 != "" {
+		identities = append(identities, e.targetSHA256)
+	}
+	return identities
+}
+
+// MatchIdentity returns the first candidate this engine accepts. Candidates
+// are compared against the loaded image identity and the input file identity.
+func (e *Engine) MatchIdentity(candidates []string) (string, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	identities := e.identitiesLocked()
+	if len(identities) == 0 {
+		return "", ErrTargetIdentityUnavailable
+	}
+	normalized := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		value, err := normalizeSHA256(candidate)
+		if err != nil {
+			return "", err
+		}
+		if value == "" {
+			continue
+		}
+		for _, identity := range identities {
+			if value == identity {
+				return identity, nil
+			}
+		}
+		normalized = append(normalized, value)
+	}
+	if len(normalized) == 0 {
+		return "", ErrTargetIdentityUnavailable
+	}
+	return "", fmt.Errorf(
+		"%w: got %s, want one of %s",
+		ErrWrongTarget,
+		strings.Join(normalized, ", "),
+		strings.Join(identities, ", "),
+	)
 }
 
 func (e *Engine) Regions() []Region {
@@ -290,23 +359,26 @@ func (e *Engine) AddCode(code Code) (CodeState, error) {
 	if err != nil {
 		return CodeState{}, fmt.Errorf("cheat code %q: %w", code.ID, err)
 	}
-	if target == "" {
-		target = e.targetSHA256
-	}
-	if target == "" {
+	identities := e.identitiesLocked()
+	if len(identities) == 0 {
 		return CodeState{}, fmt.Errorf(
 			"cheat code %q: %w",
 			code.ID,
 			ErrTargetIdentityUnavailable,
 		)
 	}
-	if e.targetSHA256 == "" || target != e.targetSHA256 {
+	if target == "" {
+		// An omitted identity binds to the loaded image when one is known, so
+		// a code written by hand follows the same rule published catalogs do.
+		target = identities[0]
+	}
+	if !slices.Contains(identities, target) {
 		return CodeState{}, fmt.Errorf(
-			"cheat code %q: %w: got %s, want %s",
+			"cheat code %q: %w: got %s, want one of %s",
 			code.ID,
 			ErrWrongTarget,
 			target,
-			e.targetSHA256,
+			strings.Join(identities, ", "),
 		)
 	}
 	code.TargetSHA256 = target

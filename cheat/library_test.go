@@ -30,7 +30,7 @@ func newTestLibrary(t *testing.T) (*Library, *testMemory) {
 func testCatalog() Catalog {
 	return Catalog{
 		Version: CatalogVersion,
-		Title:   Title{SHA256: strings.Repeat("ab", 32), Name: "Synthetic"},
+		Title:   Title{ImageSHA256: strings.Repeat("ab", 32), Name: "Synthetic"},
 		Cheats: []Cheat{{
 			ID:               "skip-auth",
 			Name:             "Skip server authentication",
@@ -122,7 +122,7 @@ func TestLibraryRejectsACatalogForAnotherTitle(t *testing.T) {
 	t.Parallel()
 	library, _ := newTestLibrary(t)
 	catalog := testCatalog()
-	catalog.Title.SHA256 = strings.Repeat("cd", 32)
+	catalog.Title.ImageSHA256 = strings.Repeat("cd", 32)
 	if err := library.Import(catalog); !errors.Is(err, ErrWrongTarget) {
 		t.Fatalf("import for another title = %v", err)
 	}

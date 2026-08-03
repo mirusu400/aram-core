@@ -97,20 +97,24 @@ states.
 
 ## Catalogs and the cheat library
 
-A catalog is the per-title document a cheat database stores. It is keyed by the
-input file's SHA-256, the same identity the engine binds codes to, and its
+A catalog is the per-title document a cheat database stores. It is keyed by
+`ImageInfo.ImageSHA256`, the identity of the loaded executable image, and its
 addresses and byte strings are hexadecimal so an entry reads like a
 disassembly listing.
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "title": {
-    "sha256": "3cc7a9b4…",
+    "image_sha256": "…",
+    "file_sha256": ["3cc7a9b4…"],
     "name": "제노니아 1",
     "carrier": "lgt",
     "format": "raptor-wipi-c",
-    "profile_id": "wipi-1.2.1/lgt/raptor"
+    "profile_id": "wipi-1.2.1/lgt/raptor",
+    "aid": "00027BAA",
+    "pid": "PD116132",
+    "version": "01.00.06"
   },
   "cheats": [
     {
@@ -157,6 +161,25 @@ if err := library.SetEnabled("skip-server-authentication", true); err != nil {
 ```
 
 Each patch becomes an engine code named `<cheat id>#<patch index>`, so adding a
-patch to a catalog entry never renames the codes that already exist. Importing
-a catalog for a different SHA-256 than the loaded application fails with
-`ErrWrongTarget`.
+patch to a catalog entry never renames the codes that already exist.
+
+## Title identity
+
+An engine accepts two identities, most specific first:
+
+- `ImageSHA256`, a digest over the mapped sections of the loaded image: their
+  addresses, sizes, permissions, and initialized bytes. Re-archiving a
+  package, renaming it, or repacking its JAR leaves it unchanged, while any
+  difference in mapped bytes or placement changes it.
+- `TargetSHA256`, the input file's hash, which changes whenever the container
+  is rewritten.
+
+Catalogs key on the image identity and may list container hashes under
+`file_sha256` so a reader can find an entry from a bug report. `Import` binds
+the codes to whichever identity the catalog and the engine share, and fails
+with `ErrWrongTarget` when they share none.
+
+Carrier descriptor fields (`aid`, `pid`, `version`, `vendor`) are recorded for
+browsing only. They are not unique: across a 280-package corpus one AID covers
+as many as twelve unrelated titles, and one AID+PID pair still spans two builds
+with different code.

@@ -55,18 +55,11 @@ func (l *Library) Import(catalog Catalog) error {
 	if err := catalog.Validate(); err != nil {
 		return err
 	}
-	target, err := normalizeSHA256(catalog.Title.SHA256)
+	// The catalog may answer for the loaded image or for a container that
+	// carried it; bind the codes to whichever identity both sides share.
+	target, err := l.engine.MatchIdentity(catalog.Title.Identities())
 	if err != nil {
-		return err
-	}
-	engineTarget := l.engine.TargetSHA256()
-	if engineTarget == "" || target != engineTarget {
-		return fmt.Errorf(
-			"cheat catalog: %w: got %s, want %s",
-			ErrWrongTarget,
-			target,
-			engineTarget,
-		)
+		return fmt.Errorf("cheat catalog: %w", err)
 	}
 
 	l.mu.Lock()

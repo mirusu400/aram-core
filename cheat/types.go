@@ -274,8 +274,14 @@ func (r Region) contains(address uint32, size int) bool {
 
 // Options configures a cheat engine. Regions must describe every address that
 // may be read or changed through the engine.
+//
+// A code may bind to either identity. ImageSHA256 names the loaded executable
+// image and survives re-archiving, so it is what published catalogs key on;
+// TargetSHA256 names the input file and stays for entries written against a
+// particular container.
 type Options struct {
 	TargetSHA256 string
+	ImageSHA256  string
 	ByteOrder    Endian
 	Regions      []Region
 	MaxScanBytes uint64

@@ -9,9 +9,9 @@ import (
 )
 
 const testCatalogJSON = `{
-  "version": 1,
+  "version": 2,
   "title": {
-    "sha256": "abababababababababababababababababababababababababababababababab",
+    "image_sha256": "abababababababababababababababababababababababababababababababab",
     "name": "Synthetic Title",
     "carrier": "lgt",
     "format": "raptor-wipi-c",
@@ -83,18 +83,18 @@ func TestParseCatalogReadsHexAddressesAndBytes(t *testing.T) {
 func TestParseCatalogRejectsMalformedDocuments(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{
-		"unknown field":  `{"version":1,"surprise":true}`,
-		"wrong version":  `{"version":99,"title":{"sha256":"` + strings.Repeat("ab", 32) + `"},"cheats":[]}`,
-		"missing target": `{"version":1,"title":{},"cheats":[]}`,
-		"no cheats": `{"version":1,"title":{"sha256":"` +
+		"unknown field":  `{"version":2,"surprise":true}`,
+		"wrong version":  `{"version":99,"title":{"image_sha256":"` + strings.Repeat("ab", 32) + `"},"cheats":[]}`,
+		"missing target": `{"version":2,"title":{},"cheats":[]}`,
+		"no cheats": `{"version":2,"title":{"image_sha256":"` +
 			strings.Repeat("ab", 32) + `"},"cheats":[]}`,
-		"uppercase id": `{"version":1,"title":{"sha256":"` +
+		"uppercase id": `{"version":2,"title":{"image_sha256":"` +
 			strings.Repeat("ab", 32) + `"},"cheats":[{"id":"Skip","name":"n",` +
 			`"patches":[{"address":"0x0","value":"00","expected":"01"}]}]}`,
-		"expected length mismatch": `{"version":1,"title":{"sha256":"` +
+		"expected length mismatch": `{"version":2,"title":{"image_sha256":"` +
 			strings.Repeat("ab", 32) + `"},"cheats":[{"id":"skip","name":"n",` +
 			`"patches":[{"address":"0x0","value":"0000","expected":"01"}]}]}`,
-		"duplicate id": `{"version":1,"title":{"sha256":"` +
+		"duplicate id": `{"version":2,"title":{"image_sha256":"` +
 			strings.Repeat("ab", 32) + `"},"cheats":[` +
 			`{"id":"skip","name":"n","patches":[{"address":"0x0","value":"00","expected":"01"}]},` +
 			`{"id":"skip","name":"n","patches":[{"address":"0x4","value":"00","expected":"01"}]}]}`,
@@ -108,7 +108,7 @@ func TestParseCatalogRejectsMalformedDocuments(t *testing.T) {
 
 func TestCatalogVersionMismatchIsIdentifiable(t *testing.T) {
 	t.Parallel()
-	document := `{"version":2,"title":{"sha256":"` + strings.Repeat("ab", 32) +
+	document := `{"version":3,"title":{"image_sha256":"` + strings.Repeat("ab", 32) +
 		`"},"cheats":[{"id":"skip","name":"n",` +
 		`"patches":[{"address":"0x0","value":"00","expected":"01"}]}]}`
 	_, err := ParseCatalog([]byte(document))
@@ -123,7 +123,7 @@ func TestCheatCodesCarryTitleIdentityAndStableIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	codes, err := catalog.Cheats[0].Codes(catalog.Title.SHA256)
+	codes, err := catalog.Cheats[0].Codes(catalog.Title.ImageSHA256)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestCheatCodesCarryTitleIdentityAndStableIDs(t *testing.T) {
 	if codes[0].ID != "skip-auth#0" || codes[1].ID != "skip-auth#1" {
 		t.Fatalf("code IDs = %q, %q", codes[0].ID, codes[1].ID)
 	}
-	if codes[0].TargetSHA256 != catalog.Title.SHA256 ||
+	if codes[0].TargetSHA256 != catalog.Title.ImageSHA256 ||
 		codes[0].Address != 0x1000 ||
 		!codes[0].RestoreOnDisable {
 		t.Fatalf("first code = %+v", codes[0])
