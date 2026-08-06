@@ -158,6 +158,19 @@ func TestKTFSaveStateRestoresAdapterAndSharedServices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	smallFont, err := machine.ktf.ensureKTFFont(ktfJavaFont{
+		size: ktfJavaFontSizeSmall,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.ktf.writeJavaFieldWord(
+		graphics,
+		0,
+		smallFont,
+	); err != nil {
+		t.Fatal(err)
+	}
 	wipicScreen, err := machine.ktf.ensureWIPICScreenFramebuffer()
 	if err != nil {
 		t.Fatal(err)
@@ -188,6 +201,9 @@ func TestKTFSaveStateRestoresAdapterAndSharedServices(t *testing.T) {
 	machine.ktf.tickMS = 99
 	machine.ktf.tasks[0].wakeAtMS = 0
 	machine.ktf.wipicScreenPending = false
+	if err := machine.ktf.writeJavaFieldWord(graphics, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := machine.LoadState(bytes.NewReader(saved.Bytes())); err != nil {
 		t.Fatal(err)
@@ -230,6 +246,30 @@ func TestKTFSaveStateRestoresAdapterAndSharedServices(t *testing.T) {
 	}
 	if got := machine.frame.RGBAAt(2, 3); got != savedPixel {
 		t.Fatalf("restored KTF framebuffer pixel = %#v", got)
+	}
+	restoredFont, err := machine.ktf.ktfGraphicsFont(graphics)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restoredFont != smallFont {
+		t.Fatalf(
+			"restored KTF graphics font = 0x%08x, want 0x%08x",
+			restoredFont,
+			smallFont,
+		)
+	}
+	fontMetrics, err := machine.ktf.services.Text.Metrics(
+		machine.ktf.serviceOwner,
+		machine.ktf.fontServices[restoredFont],
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fontMetrics.Height != 8 {
+		t.Fatalf(
+			"restored KTF graphics font height = %d, want 8",
+			fontMetrics.Height,
+		)
 	}
 	surfacePixels, err := machine.ktf.services.Graphics.RGBA(
 		machine.ktf.serviceOwner,

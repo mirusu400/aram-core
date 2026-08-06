@@ -348,6 +348,71 @@ type ktfGraphics struct {
 	pixelsDirty bool
 }
 
+const (
+	ktfJavaFontFaceSystem       = uint32(0)
+	ktfJavaFontFaceMonospace    = uint32(32)
+	ktfJavaFontFaceProportional = uint32(64)
+	ktfJavaFontStyleMask        = uint32(7)
+	ktfJavaFontSizeMedium       = uint32(0)
+	ktfJavaFontSizeSmall        = uint32(8)
+	ktfJavaFontSizeLarge        = uint32(16)
+)
+
+// KTF Font objects retain WIPI's abstract face/style/size values in their
+// guest fields. The selected Graphics font therefore survives save states
+// without a second host-only state table.
+type ktfJavaFont struct {
+	face  uint32
+	style uint32
+	size  uint32
+}
+
+func (font ktfJavaFont) valid() bool {
+	switch font.face {
+	case ktfJavaFontFaceSystem,
+		ktfJavaFontFaceMonospace,
+		ktfJavaFontFaceProportional:
+	default:
+		return false
+	}
+	if font.style&^ktfJavaFontStyleMask != 0 {
+		return false
+	}
+	switch font.size {
+	case ktfJavaFontSizeMedium,
+		ktfJavaFontSizeSmall,
+		ktfJavaFontSizeLarge:
+		return true
+	default:
+		return false
+	}
+}
+
+func (font ktfJavaFont) descriptor() shared.FontDescriptor {
+	height := int32(12)
+	switch font.size {
+	case ktfJavaFontSizeSmall:
+		height = 8
+	case ktfJavaFontSizeLarge:
+		height = 16
+	}
+	var style shared.FontStyle
+	if font.style&1 != 0 {
+		style |= shared.FontBold
+	}
+	if font.style&2 != 0 {
+		style |= shared.FontItalic
+	}
+	if font.style&4 != 0 {
+		style |= shared.FontUnderlined
+	}
+	return shared.FontDescriptor{
+		Family: "aram-fallback",
+		Size:   height,
+		Style:  style,
+	}
+}
+
 // ktfWIPICFramebuffer describes the provider-private MC_GRP object layout
 // exposed by KTF handsets. Native Clet code does not treat MC_GrpFrameBuffer as
 // an opaque integer: it follows object->body and reads the surface dimensions,
@@ -1144,7 +1209,8 @@ var ktfHostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 		},
 	},
 	"org/kwis/msp/lcdui/Font": {
-		parent: "java/lang/Object",
+		parent:    "java/lang/Object",
+		fieldSize: 12,
 		methods: []ktfHostJavaMethodSpec{
 			{
 				name:       "getDefaultFont",
@@ -1163,6 +1229,15 @@ var ktfHostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 				name:       "substringWidth",
 				descriptor: "(Ljava/lang/String;II)I",
 			},
+			{name: "charsWidth", descriptor: "([CII)I"},
+			{name: "getBaselinePosition", descriptor: "()I"},
+			{name: "getFace", descriptor: "()I"},
+			{name: "getSize", descriptor: "()I"},
+			{name: "getStyle", descriptor: "()I"},
+			{name: "isBold", descriptor: "()Z"},
+			{name: "isItalic", descriptor: "()Z"},
+			{name: "isPlain", descriptor: "()Z"},
+			{name: "isUnderlined", descriptor: "()Z"},
 		},
 	},
 	"org/kwis/msp/lcdui/Image": {
@@ -7311,9 +7386,31 @@ func (r *ktfRuntime) recordPresentation() error {
 
 func (r *ktfRuntime) handleFontMethod(name, descriptor string) (uint32, error) {
 	switch name + descriptor {
-	case "getDefaultFont()Lorg/kwis/msp/lcdui/Font;",
-		"getFont(III)Lorg/kwis/msp/lcdui/Font;":
+	case "getDefaultFont()Lorg/kwis/msp/lcdui/Font;":
 		return r.ensureDefaultFont()
+	case "getFont(III)Lorg/kwis/msp/lcdui/Font;":
+		face, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		style, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		size, err := r.parameter(3)
+		if err != nil {
+			return 0, err
+		}
+		font := ktfJavaFont{
+			face: face, style: style, size: size,
+		}
+		if !font.valid() {
+			return r.raiseJavaException(
+				"java/lang/IllegalArgumentException",
+				0,
+			)
+		}
+		return r.ensureKTFFont(font)
 	case "getHeight()I":
 		instance, err := r.parameter(1)
 		if err != nil {
@@ -7325,6 +7422,43 @@ func (r *ktfRuntime) handleFontMethod(name, descriptor string) (uint32, error) {
 		}
 		metrics, err := r.services.Text.Metrics(r.serviceOwner, fontID)
 		return uint32(metrics.Height), err
+	case "getBaselinePosition()I":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		fontID, err := r.ensureKTFFontService(instance)
+		if err != nil {
+			return 0, err
+		}
+		metrics, err := r.services.Text.Metrics(r.serviceOwner, fontID)
+		return uint32(metrics.Ascent), err
+	case "getFace()I", "getSize()I", "getStyle()I",
+		"isBold()Z", "isItalic()Z", "isPlain()Z", "isUnderlined()Z":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		font, err := r.ktfFont(instance)
+		if err != nil {
+			return 0, err
+		}
+		switch name {
+		case "getFace":
+			return font.face, nil
+		case "getSize":
+			return font.size, nil
+		case "getStyle":
+			return font.style, nil
+		case "isBold":
+			return boolWord(font.style&1 != 0), nil
+		case "isItalic":
+			return boolWord(font.style&2 != 0), nil
+		case "isPlain":
+			return boolWord(font.style == 0), nil
+		default:
+			return boolWord(font.style&4 != 0), nil
+		}
 	case "charWidth(C)I":
 		instance, err := r.parameter(1)
 		if err != nil {
@@ -7344,6 +7478,37 @@ func (r *ktfRuntime) handleFontMethod(name, descriptor string) (uint32, error) {
 			rune(character),
 		)
 		return uint32(glyph.Advance), err
+	case "charsWidth([CII)I":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		array, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		offset, err := r.parameter(3)
+		if err != nil {
+			return 0, err
+		}
+		count, err := r.parameter(4)
+		if err != nil {
+			return 0, err
+		}
+		text, err := r.readJavaCharArrayRange(array, offset, count)
+		if err != nil {
+			return 0, err
+		}
+		fontID, err := r.ensureKTFFontService(instance)
+		if err != nil {
+			return 0, err
+		}
+		width, err := r.services.Text.Measure(
+			r.serviceOwner,
+			fontID,
+			text,
+		)
+		return uint32(width), err
 	case "stringWidth(Ljava/lang/String;)I":
 		instance, err := r.parameter(1)
 		if err != nil {
@@ -7404,15 +7569,11 @@ func (r *ktfRuntime) ensureDefaultFont() (uint32, error) {
 	if r.defaultFont != 0 {
 		return r.defaultFont, nil
 	}
-	classAddress, err := r.ensureJavaClass("org/kwis/msp/lcdui/Font")
-	if err != nil {
-		return 0, err
-	}
-	class, err := r.inspectJavaClass(classAddress)
-	if err != nil {
-		return 0, err
-	}
-	r.defaultFont, err = r.newJavaInstanceForClass(class)
+	var err error
+	r.defaultFont, err = r.newJavaInstance(
+		"org/kwis/msp/lcdui/Font",
+		12,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -7430,18 +7591,84 @@ func (r *ktfRuntime) ensureDefaultFont() (uint32, error) {
 	return r.defaultFont, nil
 }
 
+func (r *ktfRuntime) ensureKTFFont(font ktfJavaFont) (uint32, error) {
+	if !font.valid() {
+		return 0, fmt.Errorf(
+			"invalid KTF font face=%d style=%d size=%d",
+			font.face,
+			font.style,
+			font.size,
+		)
+	}
+	if font == (ktfJavaFont{}) {
+		return r.ensureDefaultFont()
+	}
+	for _, instance := range sortedUint32Keys(r.fontServices) {
+		if instance >= ktfWIPICFontServiceKey {
+			continue
+		}
+		current, err := r.ktfFont(instance)
+		if err == nil && current == font {
+			return instance, nil
+		}
+	}
+	instance, err := r.newJavaInstance("org/kwis/msp/lcdui/Font", 12)
+	if err != nil {
+		return 0, err
+	}
+	for offset, value := range []uint32{font.face, font.style, font.size} {
+		if err := r.writeJavaFieldWord(
+			instance,
+			uint32(offset)*4,
+			value,
+		); err != nil {
+			return 0, err
+		}
+	}
+	if _, err := r.ensureKTFFontService(instance); err != nil {
+		return 0, err
+	}
+	return instance, nil
+}
+
+func (r *ktfRuntime) ktfFont(instance uint32) (ktfJavaFont, error) {
+	if instance == 0 {
+		return ktfJavaFont{}, errors.New("KTF Font instance is null")
+	}
+	if instance == r.defaultFont {
+		return ktfJavaFont{}, nil
+	}
+	var font ktfJavaFont
+	values := []*uint32{&font.face, &font.style, &font.size}
+	for offset, target := range values {
+		value, err := r.readJavaFieldWord(instance, uint32(offset)*4)
+		if err != nil {
+			return ktfJavaFont{}, err
+		}
+		*target = value
+	}
+	if !font.valid() {
+		return ktfJavaFont{}, fmt.Errorf(
+			"invalid KTF Font object 0x%08x",
+			instance,
+		)
+	}
+	return font, nil
+}
+
 func (r *ktfRuntime) ensureKTFFontService(
 	instance uint32,
 ) (shared.ServiceID, error) {
 	if serviceID := r.fontServices[instance]; serviceID != 0 {
 		return serviceID, nil
 	}
+	font, err := r.ktfFont(instance)
+	if err != nil {
+		return 0, err
+	}
 	serviceID, err := r.services.Text.CreateFont(
 		r.serviceOwner,
-		shared.FontDescriptor{
-			Family: "aram-fallback",
-			Size:   12,
-		},
+		font.descriptor(),
 	)
 	if err != nil {
 		return 0, err
@@ -7835,7 +8062,25 @@ func (r *ktfRuntime) handleGraphicsMethod(
 		}
 		return 0, nil
 	case "getFont()Lorg/kwis/msp/lcdui/Font;":
-		return r.ensureDefaultFont()
+		return r.ktfGraphicsFont(instance)
+	case "setFont(Lorg/kwis/msp/lcdui/Font;)V":
+		if state == nil {
+			return 0, nil
+		}
+		font, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if font == 0 {
+			font, valueErr = r.ensureDefaultFont()
+			if valueErr != nil {
+				return 0, valueErr
+			}
+		}
+		if _, valueErr = r.ensureKTFFontService(font); valueErr != nil {
+			return 0, valueErr
+		}
+		return 0, r.writeJavaFieldWord(instance, 0, font)
 	case "setColor(I)V":
 		if state == nil {
 			return 0, nil
@@ -8179,6 +8424,20 @@ func (r *ktfRuntime) handleGraphicsMethod(
 	}
 }
 
+func (r *ktfRuntime) ktfGraphicsFont(instance uint32) (uint32, error) {
+	font, err := r.readJavaFieldWord(instance, 0)
+	if err != nil {
+		return 0, err
+	}
+	if font == 0 {
+		return r.ensureDefaultFont()
+	}
+	if _, err := r.ensureKTFFontService(font); err != nil {
+		return 0, err
+	}
+	return font, nil
+}
+
 func (r *ktfRuntime) drawGraphicsTextParameters(
 	state *ktfGraphics,
 	text string,
@@ -8223,7 +8482,7 @@ func (r *ktfRuntime) drawGraphicsTextShared(
 	if err := r.syncKTFGraphics(graphicsInstance); err != nil {
 		return err
 	}
-	font, err := r.ensureDefaultFont()
+	font, err := r.ktfGraphicsFont(graphicsInstance)
 	if err != nil {
 		return err
 	}
