@@ -1,6 +1,7 @@
 package application
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"testing"
@@ -319,12 +320,30 @@ func TestRaptorTimerExpiryPreservesAdjacentGuestMemory(t *testing.T) {
 		result != (wipiReturn{}) {
 		t.Fatalf("set timer = %#v, %v", result, err)
 	}
-	machine.raptor = &raptorRuntime{}
+	machine.raptor = &raptorRuntime{
+		cpu:     machine.cpu,
+		public:  machine.wipi,
+		started: true,
+	}
 	if _, stopped, err := machine.pumpWIPICallbacks(
 		context.Background(),
 		wipiFrameDuration,
 	); err != nil || stopped {
 		t.Fatalf("pump callbacks: stopped=%t, err=%v", stopped, err)
+	}
+	if len(machine.raptor.callbackTasks) != 1 {
+		t.Fatalf(
+			"queued Raptor callback tasks = %d, want 1",
+			len(machine.raptor.callbackTasks),
+		)
+	}
+	for frame := 0; len(machine.raptor.callbackTasks) != 0 && frame < 16; frame++ {
+		if err := machine.StepFrame(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(machine.raptor.callbackTasks) != 0 {
+		t.Fatal("Raptor timer callback did not return")
 	}
 	if got, err := machine.wipi.readU32(marker); err != nil || got != 42 {
 		t.Fatalf("callback marker = %d, %v", got, err)
@@ -332,6 +351,126 @@ func TestRaptorTimerExpiryPreservesAdjacentGuestMemory(t *testing.T) {
 	if got, err := machine.wipi.readU32(timer + 24); err != nil || got != sentinel {
 		t.Fatalf("timer expiry overwrote adjacent word = 0x%08x, %v", got, err)
 	}
+}
+
+func TestRaptorCallbacksResumeAcrossFrameBudgets(t *testing.T) {
+	machine := newSyntheticMachine(t)
+	const callback = uint32(0x04000000)
+	if err := machine.cpu.Map(
+		callback,
+		0x1000,
+		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.cpu.WriteMemory(callback, []byte{
+		0x00, 0x20, // movs r0, #0
+		0x01, 0x30, // loop: adds r0, #1
+		0x0a, 0x28, // cmp r0, #10
+		0xfc, 0xd1, // bne loop
+		0x70, 0x47, // bx lr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	machine.frameRunBudget = 3
+	machine.raptor = &raptorRuntime{
+		cpu:     machine.cpu,
+		public:  machine.wipi,
+		started: true,
+		clet:    raptorClet{Paint: callback | 1},
+	}
+
+	if err := machine.StepFrame(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if machine.State() == machinecore.StateFaulted {
+		t.Fatal("long Raptor callback faulted at its first frame budget")
+	}
+	if len(machine.raptor.callbackTasks) != 1 ||
+		len(machine.raptor.callbackTasks[0].context) == 0 {
+		t.Fatalf(
+			"Raptor callback task after first slice = %#v",
+			machine.raptor.callbackTasks,
+		)
+	}
+	if result := machine.LastResult(); result.Reason != cpu.StopBudget ||
+		result.Instructions != machine.frameRunBudget {
+		t.Fatalf("first callback slice = %+v", result)
+	}
+
+	frames := drainRaptorCallbackTasks(t, machine)
+	if frames < 2 {
+		t.Fatalf("long Raptor callback completed in %d continuation frames", frames)
+	}
+	if machine.State() != machinecore.StatePaused {
+		t.Fatalf("state after Raptor callback return = %s", machine.State())
+	}
+}
+
+func TestRaptorCallbackTaskSurvivesSaveState(t *testing.T) {
+	machine := newSyntheticMachine(t)
+	const callback = uint32(0x04000000)
+	if err := machine.cpu.Map(
+		callback,
+		0x1000,
+		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.cpu.WriteMemory(callback, []byte{
+		0x00, 0x20, // movs r0, #0
+		0x01, 0x30, // loop: adds r0, #1
+		0x0a, 0x28, // cmp r0, #10
+		0xfc, 0xd1, // bne loop
+		0x70, 0x47, // bx lr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	machine.frameRunBudget = 3
+	machine.raptor = &raptorRuntime{
+		cpu:     machine.cpu,
+		public:  machine.wipi,
+		started: true,
+		clet:    raptorClet{Paint: callback | 1},
+	}
+	if err := machine.StepFrame(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	wantContext := append([]byte(nil), machine.raptor.callbackTasks[0].context...)
+	var saved bytes.Buffer
+	if err := machine.SaveState(&saved); err != nil {
+		t.Fatal(err)
+	}
+	wantFrames := drainRaptorCallbackTasks(t, machine)
+
+	if err := machine.LoadState(bytes.NewReader(saved.Bytes())); err != nil {
+		t.Fatal(err)
+	}
+	if len(machine.raptor.callbackTasks) != 1 ||
+		!bytes.Equal(machine.raptor.callbackTasks[0].context, wantContext) {
+		t.Fatalf(
+			"restored Raptor callback task = %#v",
+			machine.raptor.callbackTasks,
+		)
+	}
+	if got := drainRaptorCallbackTasks(t, machine); got != wantFrames {
+		t.Fatalf("replayed callback frames = %d, want %d", got, wantFrames)
+	}
+}
+
+func drainRaptorCallbackTasks(t *testing.T, machine *Machine) int {
+	t.Helper()
+	frames := 0
+	for len(machine.raptor.callbackTasks) != 0 && frames < 64 {
+		if err := machine.StepFrame(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		frames++
+	}
+	if len(machine.raptor.callbackTasks) != 0 {
+		t.Fatal("Raptor callback did not return within 64 frame slices")
+	}
+	return frames
 }
 
 func TestRaptorInputCallbackMapsFrontendControls(t *testing.T) {

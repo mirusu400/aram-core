@@ -52,12 +52,19 @@ type raptorClet struct {
 	HandleEvent uint32
 }
 
+type raptorCallbackTask struct {
+	callback wipiGuestCallback
+	context  []byte
+}
+
 type raptorRuntime struct {
 	cpu    cpu.Backend
 	public *wipiRuntime
 	pkg    raptor.Package
 	clet   raptorClet
 	java   *raptorJavaRuntime
+
+	callbackTasks []*raptorCallbackTask
 
 	moduleInitialized bool
 	started           bool
@@ -339,6 +346,7 @@ func (r *raptorRuntime) restoreImage() error {
 	r.importSlots = nil
 	r.importSlotByKey = make(map[raptorImportKey]uint32)
 	r.importTrace = nil
+	r.callbackTasks = nil
 	return nil
 }
 
@@ -799,15 +807,25 @@ func (m *Machine) raptorFrameVisible() bool {
 func (m *Machine) stepRaptorFrame(ctx context.Context) error {
 	m.mu.Lock()
 	started := m.raptor != nil && m.raptor.started
+	hasCallbackTask := started && len(m.raptor.callbackTasks) != 0
 	m.mu.Unlock()
 	if !started {
 		if err := m.runRaptorStart(ctx); err != nil {
 			return err
 		}
 	}
+	if hasCallbackTask {
+		return m.stepRaptorCallbackTask(ctx, 0)
+	}
 	callbackResult, stopped, err := m.pumpWIPICallbacks(ctx, wipiFrameDuration)
 	if err != nil || stopped {
 		return err
+	}
+	m.mu.Lock()
+	hasCallbackTask = len(m.raptor.callbackTasks) != 0
+	m.mu.Unlock()
+	if hasCallbackTask {
+		return m.stepRaptorCallbackTask(ctx, callbackResult.Instructions)
 	}
 	if m.raptor.java != nil {
 		m.raptor.java.host.tickMS = m.raptor.public.tickMS
@@ -826,17 +844,47 @@ func (m *Machine) stepRaptorFrame(ctx context.Context) error {
 		return nil
 	}
 	m.mu.Lock()
+	runtime := m.raptor
+	bounds := m.frame.Bounds()
+	runtime.callbackTasks = append(runtime.callbackTasks, &raptorCallbackTask{
+		callback: wipiGuestCallback{
+			procedure: runtime.clet.Paint,
+			args: [4]uint32{
+				0,
+				0,
+				uint32(bounds.Dx()),
+				uint32(bounds.Dy()),
+			},
+		},
+	})
+	m.mu.Unlock()
+	return m.stepRaptorCallbackTask(ctx, callbackResult.Instructions)
+}
+
+// Raptor Clets can legitimately spend more than one handset video quantum in
+// a paint or event callback while loading and decoding resources. Preserve the
+// guest CPU context at a budget or presentation yield so the callback resumes
+// on the next frame instead of being faulted at an arbitrary instruction cap.
+func (m *Machine) stepRaptorCallbackTask(
+	ctx context.Context,
+	precedingInstructions uint64,
+) error {
+	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
 		return cpu.ErrClosed
 	}
+	if m.raptor == nil || len(m.raptor.callbackTasks) == 0 {
+		m.mu.Unlock()
+		return nil
+	}
 	if m.state != machinecore.StatePaused && m.state != machinecore.StateReady {
 		state := m.state
 		m.mu.Unlock()
-		return fmt.Errorf("paint Raptor application from %s: %w", state, ErrInvalidState)
+		return fmt.Errorf("resume Raptor callback from %s: %w", state, ErrInvalidState)
 	}
-	runtime := m.raptor
-	bounds := m.frame.Bounds()
+	task := m.raptor.callbackTasks[0]
+	budget := max(m.frameRunBudget, uint64(1))
 	m.state = machinecore.StateRunning
 	if err := m.wipi.beginServiceExecution(); err != nil {
 		m.state = machinecore.StateFaulted
@@ -844,18 +892,112 @@ func (m *Machine) stepRaptorFrame(ctx context.Context) error {
 		return err
 	}
 	m.mu.Unlock()
-	result, _, callErr := m.invokeWIPICallback(ctx, wipiGuestCallback{
-		procedure: runtime.clet.Paint,
-		args: [4]uint32{
-			0,
-			0,
-			uint32(bounds.Dx()),
-			uint32(bounds.Dy()),
-		},
-	})
-	paintInstructions := result.Instructions
-	result.Instructions += callbackResult.Instructions
-	return m.finishRaptorCall(result, callErr, paintInstructions)
+
+	result, completed, callErr := m.runRaptorCallbackTask(ctx, task, budget)
+	serviceInstructions := result.Instructions
+	if completed {
+		m.mu.Lock()
+		if len(m.raptor.callbackTasks) != 0 && m.raptor.callbackTasks[0] == task {
+			m.raptor.callbackTasks = m.raptor.callbackTasks[1:]
+			if len(m.raptor.callbackTasks) == 0 {
+				m.raptor.callbackTasks = nil
+			}
+		}
+		m.mu.Unlock()
+	}
+	result.Instructions += precedingInstructions
+	return m.finishRaptorCall(result, callErr, serviceInstructions)
+}
+
+func (m *Machine) runRaptorCallbackTask(
+	ctx context.Context,
+	task *raptorCallbackTask,
+	budget uint64,
+) (result cpu.Result, completed bool, returnedErr error) {
+	outer, err := m.cpu.SaveContext()
+	if err != nil {
+		return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+	}
+	defer func() {
+		if restoreErr := m.cpu.RestoreContext(outer); restoreErr != nil && returnedErr == nil {
+			result = cpu.Result{Reason: cpu.StopFault, Err: restoreErr}
+			completed = false
+			returnedErr = restoreErr
+		}
+	}()
+
+	if len(task.context) == 0 {
+		for register := cpu.RegisterR0; register <= cpu.RegisterR3; register++ {
+			if err := m.cpu.WriteRegister(register, task.callback.args[register]); err != nil {
+				return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+			}
+		}
+		if err := m.cpu.WriteRegister(cpu.RegisterLR, returnSentinel|1); err != nil {
+			return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+		}
+		if err := m.cpu.WriteRegister(
+			cpu.RegisterPC,
+			task.callback.procedure&^1,
+		); err != nil {
+			return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+		}
+		status, err := m.cpu.ReadRegister(cpu.RegisterCPSR)
+		if err != nil {
+			return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+		}
+		if task.callback.procedure&1 != 0 {
+			status |= cpu.StatusThumb
+		} else {
+			status &^= cpu.StatusThumb
+		}
+		if err := m.cpu.WriteRegister(cpu.RegisterCPSR, status); err != nil {
+			return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+		}
+	} else if err := m.cpu.RestoreContext(task.context); err != nil {
+		return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+	}
+
+	pc, err := m.cpu.ReadRegister(cpu.RegisterPC)
+	if err != nil {
+		return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+	}
+	status, err := m.cpu.ReadRegister(cpu.RegisterCPSR)
+	if err != nil {
+		return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+	}
+	mode := cpu.ModeARM
+	if status&cpu.StatusThumb != 0 {
+		mode = cpu.ModeThumb
+	}
+	result = m.runWIPISlice(ctx, pc, mode, max(budget, uint64(1)), true)
+	if result.Err != nil {
+		return result, false, result.Err
+	}
+	if result.Reason == cpu.StopExited {
+		return result, true, nil
+	}
+	if result.Reason == cpu.StopBreakpoint && result.PC >= 2 &&
+		result.PC-2 == returnSentinel {
+		return result, true, nil
+	}
+	if result.Reason != cpu.StopBudget {
+		err := fmt.Errorf(
+			"Raptor callback 0x%08x stopped before returning (stop %d at 0x%08x)",
+			task.callback.procedure,
+			result.Reason,
+			result.PC,
+		)
+		result.Reason = cpu.StopFault
+		result.Err = err
+		return result, false, err
+	}
+	task.context, err = m.cpu.SaveContext()
+	if err != nil {
+		result.Reason = cpu.StopFault
+		result.Err = err
+		return result, false, err
+	}
+	return result, false, nil
 }
 
 func (m *Machine) finishRaptorCall(

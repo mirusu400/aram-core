@@ -1896,6 +1896,15 @@ func (m *Machine) pumpWIPICallbacks(
 	}
 	callbacks = append(callbacks, m.wipi.pendingCallbacks...)
 	m.wipi.pendingCallbacks = nil
+	if m.raptor != nil && len(callbacks) != 0 {
+		for _, callback := range callbacks {
+			m.raptor.callbackTasks = append(
+				m.raptor.callbackTasks,
+				&raptorCallbackTask{callback: callback},
+			)
+		}
+		callbacks = nil
+	}
 	m.mu.Unlock()
 
 	var callbackResult cpu.Result

@@ -5,8 +5,10 @@ import (
 )
 
 const (
-	raptorStateSchema      = uint32(2)
-	maxRaptorStateSections = 1024
+	raptorStateSchemaLegacy     = uint32(2)
+	raptorStateSchema           = uint32(3)
+	maxRaptorStateSections      = 1024
+	maxRaptorStateCallbackTasks = 1024
 )
 
 type raptorSectionState struct {
@@ -21,6 +23,7 @@ type raptorSavedState struct {
 	resolvedImports   map[raptorImportKey]uint64
 	importSlots       []raptorImportKey
 	importTrace       []raptorImportCall
+	callbackTasks     []*raptorCallbackTask
 }
 
 func (m *Machine) writeRaptorState(writer *stateWriter) error {
@@ -33,8 +36,15 @@ func (m *Machine) writeRaptorState(writer *stateWriter) error {
 	if len(sections) > maxRaptorStateSections ||
 		len(m.raptor.resolvedImports) > maxSavedWIPIEntries ||
 		len(m.raptor.importSlots) != len(m.raptor.resolvedImports) ||
-		len(m.raptor.importTrace) > maxSavedWIPIEntries {
+		len(m.raptor.importTrace) > maxSavedWIPIEntries ||
+		len(m.raptor.callbackTasks) > maxRaptorStateCallbackTasks {
 		return fmt.Errorf("save Raptor state: metadata exceeds format limits")
+	}
+	for _, task := range m.raptor.callbackTasks {
+		if task == nil || task.callback.procedure == 0 ||
+			len(task.context) > maxStateContext {
+			return fmt.Errorf("save Raptor state: invalid callback task")
+		}
 	}
 	writer.u8(1)
 	writer.write([]byte{0, 0, 0})
@@ -73,6 +83,15 @@ func (m *Machine) writeRaptorState(writer *stateWriter) error {
 		}
 		writer.u32(call.LR)
 	}
+	writer.u32(uint32(len(m.raptor.callbackTasks)))
+	for _, task := range m.raptor.callbackTasks {
+		writer.u32(task.callback.procedure)
+		for _, argument := range task.callback.args {
+			writer.u32(argument)
+		}
+		writer.u32(uint32(len(task.context)))
+		writer.write(task.context)
+	}
 	return nil
 }
 
@@ -93,7 +112,8 @@ func (m *Machine) parseRaptorState(
 	if m.raptor == nil {
 		return nil, decoder.fail("unexpected Raptor state component")
 	}
-	if schema := decoder.u32(); schema != raptorStateSchema {
+	schema := decoder.u32()
+	if schema != raptorStateSchemaLegacy && schema != raptorStateSchema {
 		return nil, decoder.fail(fmt.Sprintf("unsupported Raptor state schema %d", schema))
 	}
 	state := &raptorSavedState{
@@ -154,6 +174,26 @@ func (m *Machine) parseRaptorState(
 			return nil, decoder.fail("invalid Raptor import trace ordinal")
 		}
 	}
+	if schema >= raptorStateSchema {
+		callbackCount := decoder.u32()
+		if callbackCount > maxRaptorStateCallbackTasks {
+			return nil, decoder.fail("Raptor callback task table exceeds limit")
+		}
+		state.callbackTasks = make([]*raptorCallbackTask, callbackCount)
+		for index := range state.callbackTasks {
+			task := &raptorCallbackTask{}
+			task.callback.procedure = decoder.u32()
+			for argument := range task.callback.args {
+				task.callback.args[argument] = decoder.u32()
+			}
+			contextSize := decoder.u32()
+			if task.callback.procedure == 0 || contextSize > maxStateContext {
+				return nil, decoder.fail("invalid Raptor callback task")
+			}
+			task.context = append([]byte(nil), decoder.bytes(int(contextSize))...)
+			state.callbackTasks[index] = task
+		}
+	}
 	if decoder.err != nil {
 		return nil, decoder.err
 	}
@@ -185,5 +225,12 @@ func (m *Machine) restoreRaptorState(state *raptorSavedState) error {
 		m.raptor.importSlotByKey[key] = uint32(slot)
 	}
 	m.raptor.importTrace = append([]raptorImportCall(nil), state.importTrace...)
+	m.raptor.callbackTasks = make([]*raptorCallbackTask, len(state.callbackTasks))
+	for index, saved := range state.callbackTasks {
+		m.raptor.callbackTasks[index] = &raptorCallbackTask{
+			callback: saved.callback,
+			context:  append([]byte(nil), saved.context...),
+		}
+	}
 	return nil
 }
