@@ -511,6 +511,15 @@ func decodeImageAsset(
 	limits AssetLimits,
 ) ([]image.Image, []time.Duration, int32, string, error) {
 	mediaType := strings.ToLower(strings.TrimSpace(options.MediaType))
+	isLBMP := mediaType == "image/x-lbmp" ||
+		(mediaType == "" && len(encoded) >= 4 && string(encoded[:4]) == "LBMP")
+	if isLBMP {
+		decoded, err := decodeLBMP(encoded, limits)
+		if err != nil {
+			return nil, nil, 0, "", err
+		}
+		return []image.Image{decoded}, []time.Duration{0}, 0, "image/x-lbmp", nil
+	}
 	isGIF := mediaType == "image/gif" ||
 		(mediaType == "" && len(encoded) >= 6 &&
 			(string(encoded[:6]) == "GIF87a" || string(encoded[:6]) == "GIF89a"))
@@ -591,6 +600,87 @@ func decodeImageAsset(
 		return nil, nil, 0, "", fmt.Errorf("%w: decode image: %v", ErrInvalidArgument, err)
 	}
 	return []image.Image{decoded}, []time.Duration{0}, 0, "image/" + strings.ToLower(format), nil
+}
+
+// decodeLBMP decodes the little-endian LCD bitmap format used by SKVM.
+// Pixels immediately follow the 24-byte header; fixed-size guest buffers may
+// contain trailing mask or padding bytes, which are not part of the pixel data.
+func decodeLBMP(encoded []byte, limits AssetLimits) (*image.NRGBA, error) {
+	const headerSize = 24
+	if len(encoded) < headerSize || string(encoded[:4]) != "LBMP" {
+		return nil, fmt.Errorf("%w: truncated LBMP header", ErrInvalidArgument)
+	}
+	pixelType := binary.LittleEndian.Uint32(encoded[4:8])
+	width := binary.LittleEndian.Uint32(encoded[8:12])
+	height := binary.LittleEndian.Uint32(encoded[12:16])
+	declaredSize := binary.LittleEndian.Uint32(encoded[16:20])
+	hasMask := binary.LittleEndian.Uint32(encoded[20:24]) != 0
+	var bytesPerPixel uint64
+	switch pixelType {
+	case 8:
+		bytesPerPixel = 1
+	case 16:
+		bytesPerPixel = 2
+	default:
+		return nil, fmt.Errorf(
+			"%w: unsupported LBMP pixel type %d",
+			ErrInvalidArgument,
+			pixelType,
+		)
+	}
+	if uint64(width) > uint64(math.MaxInt) || uint64(height) > uint64(math.MaxInt) {
+		return nil, fmt.Errorf("%w: LBMP geometry exceeds host limits", ErrLimitExceeded)
+	}
+	if err := validateDecodedGeometry(int(width), int(height), 1, limits); err != nil {
+		return nil, err
+	}
+	pixelCount := uint64(width) * uint64(height)
+	if pixelCount > math.MaxUint64/bytesPerPixel {
+		return nil, fmt.Errorf("%w: LBMP pixel size overflows", ErrLimitExceeded)
+	}
+	pixelBytes := pixelCount * bytesPerPixel
+	if uint64(declaredSize) != pixelBytes || pixelBytes > uint64(len(encoded)-headerSize) {
+		return nil, fmt.Errorf("%w: invalid LBMP pixel payload", ErrInvalidArgument)
+	}
+	var mask []byte
+	var maskStride uint64
+	if hasMask {
+		maskStride = (uint64(width) + 7) / 8
+		maskBytes := maskStride * uint64(height)
+		remaining := uint64(len(encoded)-headerSize) - pixelBytes
+		if maskBytes > remaining {
+			return nil, fmt.Errorf("%w: truncated LBMP mask", ErrInvalidArgument)
+		}
+		mask = encoded[headerSize+int(pixelBytes) : headerSize+int(pixelBytes+maskBytes)]
+	}
+	decoded := image.NewNRGBA(image.Rect(0, 0, int(width), int(height)))
+	payload := encoded[headerSize : headerSize+int(pixelBytes)]
+	for index := uint64(0); index < pixelCount; index++ {
+		destination := int(index) * 4
+		if pixelType == 8 {
+			value := payload[index]
+			decoded.Pix[destination] = ((value >> 5) & 0x07) * 36
+			decoded.Pix[destination+1] = ((value >> 2) & 0x07) * 36
+			decoded.Pix[destination+2] = (value & 0x03) * 85
+		} else {
+			source := int(index) * 2
+			value := binary.LittleEndian.Uint16(payload[source : source+2])
+			decoded.Pix[destination] = expand5(uint8((value >> 11) & 0x1f))
+			decoded.Pix[destination+1] = expand6(uint8((value >> 5) & 0x3f))
+			decoded.Pix[destination+2] = expand5(uint8(value & 0x1f))
+		}
+		alpha := byte(0xff)
+		if hasMask {
+			x := index % uint64(width)
+			y := index / uint64(width)
+			maskIndex := y*maskStride + x/8
+			if mask[maskIndex]&(1<<uint(x%8)) != 0 {
+				alpha = 0
+			}
+		}
+		decoded.Pix[destination+3] = alpha
+	}
+	return decoded, nil
 }
 
 // inspectGIFFrames walks only the GIF container structure. It establishes the
@@ -928,7 +1018,7 @@ func encodeBMP24(source *image.NRGBA, limit uint64) ([]byte, error) {
 
 func validAssetMediaType(mediaType string) bool {
 	switch mediaType {
-	case "image/bmp", "image/png", "image/jpeg", "image/gif":
+	case "image/bmp", "image/png", "image/jpeg", "image/gif", "image/x-lbmp":
 		return true
 	default:
 		return false

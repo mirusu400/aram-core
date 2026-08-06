@@ -180,6 +180,102 @@ func TestAssetsRejectMalformedInputBeforeMutation(t *testing.T) {
 	}
 }
 
+func testLBMP(pixelType, width, height uint32, pixels []byte) []byte {
+	encoded := make([]byte, 24+len(pixels)+3)
+	copy(encoded[:4], "LBMP")
+	binary.LittleEndian.PutUint32(encoded[4:8], pixelType)
+	binary.LittleEndian.PutUint32(encoded[8:12], width)
+	binary.LittleEndian.PutUint32(encoded[12:16], height)
+	binary.LittleEndian.PutUint32(encoded[16:20], uint32(len(pixels)))
+	copy(encoded[24:], pixels)
+	copy(encoded[len(encoded)-3:], []byte{0xaa, 0xbb, 0xcc})
+	return encoded
+}
+
+func TestAssetsDecodeSKVMLBMP(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		encoded   []byte
+		wantPixel []byte
+	}{
+		{
+			name:      "RGB332 with trailing guest buffer bytes",
+			encoded:   testLBMP(8, 2, 1, []byte{0xe0, 0x1c}),
+			wantPixel: []byte{0xfc, 0, 0, 0xff, 0, 0xfc, 0, 0xff},
+		},
+		{
+			name: "RGB565 little endian",
+			encoded: testLBMP(16, 2, 1, []byte{
+				0x00, 0xf8,
+				0xe0, 0x07,
+			}),
+			wantPixel: []byte{0xff, 0, 0, 0xff, 0, 0xff, 0, 0xff},
+		},
+		{
+			name: "RGB332 mask",
+			encoded: func() []byte {
+				encoded := testLBMP(8, 2, 1, []byte{0xe0, 0x1c})
+				binary.LittleEndian.PutUint32(encoded[20:24], 1)
+				encoded[26] = 0x02
+				return encoded
+			}(),
+			wantPixel: []byte{0xfc, 0, 0, 0xff, 0, 0xfc, 0, 0},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			services, err := NewServices(Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			asset, err := services.Assets.Decode(7, test.encoded, DecodeOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			info, err := services.Assets.Info(7, asset)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Width != 2 || info.Height != 1 || info.MediaType != "image/x-lbmp" {
+				t.Fatalf("decoded LBMP = %+v", info)
+			}
+			pixels, err := services.Graphics.RGBA(7, info.Frames[0].Surface)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(pixels, test.wantPixel) {
+				t.Fatalf("decoded pixels = % x; want % x", pixels, test.wantPixel)
+			}
+		})
+	}
+}
+
+func TestAssetsRejectMalformedSKVMLBMP(t *testing.T) {
+	wrongSize := testLBMP(8, 2, 1, []byte{0xe0})
+	truncated := testLBMP(8, 2, 1, []byte{0xe0, 0x1c})[:25]
+	truncatedMask := testLBMP(8, 2, 1, []byte{0xe0, 0x1c})[:26]
+	binary.LittleEndian.PutUint32(truncatedMask[20:24], 1)
+	for _, test := range []struct {
+		name    string
+		encoded []byte
+	}{
+		{name: "truncated header", encoded: []byte("LBMP")},
+		{name: "unsupported pixel type", encoded: testLBMP(24, 1, 1, []byte{0, 0, 0})},
+		{name: "mismatched size", encoded: wrongSize},
+		{name: "truncated pixels", encoded: truncated},
+		{name: "truncated mask", encoded: truncatedMask},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, _, _, _, err := decodeImageAsset(
+				test.encoded,
+				DecodeOptions{},
+				DefaultAssetLimits(),
+			); !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("malformed LBMP error = %v", err)
+			}
+		})
+	}
+}
+
 func testIndexedBMP(bits uint16, packedPixel byte) []byte {
 	encoded := make([]byte, 66)
 	copy(encoded[:2], "BM")

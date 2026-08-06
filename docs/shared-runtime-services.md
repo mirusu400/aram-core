@@ -200,7 +200,7 @@ frame snapshot, sequence number, dirty region, and optional frame hash.
 
 The asset service owns:
 
-- bounded decoding of BMP, PNG, GIF, and JPEG;
+- bounded decoding of BMP, PNG, GIF, JPEG, and SKVM LBMP;
 - indexed palettes, masks, transparency, and alpha;
 - animated-image frames, loop metadata, and frame timing;
 - decoded-asset caches keyed by content hash and decode options;

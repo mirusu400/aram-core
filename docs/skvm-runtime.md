@@ -157,8 +157,8 @@ and KWIS APIs. RMS and file data are currently in-memory runtime state.
   interleave Java continuations. They are deterministic compatibility stubs.
 - Audio, vibration, backlight, browser launch, and networking have no external
   side effects.
-- PNG, GIF, and JPEG decode through the Go standard library. Proprietary LBM
-  and MMF assets are retained as resources but are not decoded.
+- BMP, PNG, GIF, JPEG, and SKVM LBMP images decode through the bounded shared
+  asset service. Other proprietary LBM and MMF assets remain resources only.
 - Text drawing uses a deterministic placeholder glyph, not a device font.
 - RMS/XCE/KWIS storage is not yet serialized as a save-state component.
 - Unknown device properties return a deterministic compatibility fallback;
