@@ -10,8 +10,9 @@ import (
 )
 
 // CatalogVersion is the catalog schema revision this package reads and writes.
-// Version 2 keys a catalog on the loaded image rather than the input file.
-const CatalogVersion = 2
+// Version 2 keyed a catalog on the loaded image rather than the input file;
+// version 3 lets an entry declare that it applies by default.
+const CatalogVersion = 3
 
 var (
 	ErrUnsupportedCatalogVersion = errors.New("unsupported cheat catalog version")
@@ -125,6 +126,12 @@ type Patch struct {
 }
 
 // Cheat is a user-visible entry that applies its patches as one unit.
+//
+// DefaultEnabled marks a cheat that applies as soon as the title loads. It is
+// for repairs a title cannot run without, such as a check against a server
+// that no longer answers, not for cheats that change how a game plays. A
+// person who turns one off keeps it off; the default only decides the state
+// they have not chosen yet.
 type Cheat struct {
 	ID               string  `json:"id"`
 	Name             string  `json:"name"`
@@ -134,6 +141,7 @@ type Cheat struct {
 	Reference        string  `json:"reference,omitempty"`
 	Freeze           bool    `json:"freeze,omitempty"`
 	RestoreOnDisable bool    `json:"restore_on_disable,omitempty"`
+	DefaultEnabled   bool    `json:"default_enabled,omitempty"`
 	Patches          []Patch `json:"patches"`
 }
 
@@ -209,6 +217,14 @@ func (c Cheat) Validate() error {
 	}
 	if len(c.Patches) == 0 {
 		return fmt.Errorf("cheat %q has no patches", c.ID)
+	}
+	if c.DefaultEnabled && !c.RestoreOnDisable {
+		// Otherwise turning off a cheat nobody asked for would leave its bytes
+		// behind, and the title could not be run unmodified again.
+		return fmt.Errorf(
+			"cheat %q is enabled by default and must set restore_on_disable",
+			c.ID,
+		)
 	}
 	for index, patch := range c.Patches {
 		if len(patch.Value) == 0 || len(patch.Value) > MaxCodeBytes {

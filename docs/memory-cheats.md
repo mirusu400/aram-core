@@ -104,7 +104,7 @@ disassembly listing.
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "title": {
     "image_sha256": "…",
     "file_sha256": ["3cc7a9b4…"],
@@ -142,6 +142,25 @@ memory it was not authored against.
 `Library` applies a catalog entry as one unit. Every patch of a cheat is
 enabled together, and a patch that fails its expected-original check rolls the
 already-applied patches of that cheat back.
+
+## Defaults and choices
+
+A catalog entry may set `default_enabled` for a repair a title cannot run
+without, such as a check against a server that no longer answers. Importing a
+catalog never changes guest memory on its own; the host decides when state is
+applied, and supplies the choices a person has already made:
+
+```go
+if err := library.ApplyState(savedChoices); err != nil {
+    // Report it. Every cheat that did apply is still on.
+}
+```
+
+Each cheat is set to the saved choice when there is one and to
+`default_enabled` otherwise, so turning a default off keeps it off. A cheat
+that fails to apply is reported without stopping the others, since one stale
+patch must not cost a title every other repair it needs. A default-on entry has
+to set `restore_on_disable`, or turning it off could not undo it.
 
 ```go
 library, err := cheat.NewLibrary(wrapped.Cheats())

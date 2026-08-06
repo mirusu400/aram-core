@@ -1,6 +1,7 @@
 package cheat
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 )
@@ -90,6 +91,45 @@ func (l *Library) Import(catalog Catalog) error {
 	}
 	l.title = catalog.Title
 	return nil
+}
+
+// ApplyState brings every cheat to the state a person would expect: the one
+// they chose if they chose, and the catalog's default otherwise.
+//
+// A cheat that fails to apply is reported but does not stop the rest, so one
+// stale patch cannot cost a title every other repair it needs. The returned
+// error joins each failure.
+func (l *Library) ApplyState(overrides map[string]bool) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var errs []error
+	for _, id := range l.order {
+		stored := l.entries[id]
+		if stored == nil {
+			continue
+		}
+		want := stored.cheat.DefaultEnabled
+		if chosen, ok := overrides[id]; ok {
+			want = chosen
+		}
+		if err := l.setEnabledLocked(stored, want); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// Defaults lists the cheats the catalog applies without being asked.
+func (l *Library) Defaults() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var defaults []string
+	for _, id := range l.order {
+		if stored := l.entries[id]; stored != nil && stored.cheat.DefaultEnabled {
+			defaults = append(defaults, id)
+		}
+	}
+	return defaults
 }
 
 // Clear disables and removes every cheat in the library.

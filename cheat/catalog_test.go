@@ -9,7 +9,7 @@ import (
 )
 
 const testCatalogJSON = `{
-  "version": 2,
+  "version": 3,
   "title": {
     "image_sha256": "abababababababababababababababababababababababababababababababab",
     "name": "Synthetic Title",
@@ -83,18 +83,18 @@ func TestParseCatalogReadsHexAddressesAndBytes(t *testing.T) {
 func TestParseCatalogRejectsMalformedDocuments(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{
-		"unknown field":  `{"version":2,"surprise":true}`,
+		"unknown field":  `{"version":3,"surprise":true}`,
 		"wrong version":  `{"version":99,"title":{"image_sha256":"` + strings.Repeat("ab", 32) + `"},"cheats":[]}`,
-		"missing target": `{"version":2,"title":{},"cheats":[]}`,
-		"no cheats": `{"version":2,"title":{"image_sha256":"` +
+		"missing target": `{"version":3,"title":{},"cheats":[]}`,
+		"no cheats": `{"version":3,"title":{"image_sha256":"` +
 			strings.Repeat("ab", 32) + `"},"cheats":[]}`,
-		"uppercase id": `{"version":2,"title":{"image_sha256":"` +
+		"uppercase id": `{"version":3,"title":{"image_sha256":"` +
 			strings.Repeat("ab", 32) + `"},"cheats":[{"id":"Skip","name":"n",` +
 			`"patches":[{"address":"0x0","value":"00","expected":"01"}]}]}`,
-		"expected length mismatch": `{"version":2,"title":{"image_sha256":"` +
+		"expected length mismatch": `{"version":3,"title":{"image_sha256":"` +
 			strings.Repeat("ab", 32) + `"},"cheats":[{"id":"skip","name":"n",` +
 			`"patches":[{"address":"0x0","value":"0000","expected":"01"}]}]}`,
-		"duplicate id": `{"version":2,"title":{"image_sha256":"` +
+		"duplicate id": `{"version":3,"title":{"image_sha256":"` +
 			strings.Repeat("ab", 32) + `"},"cheats":[` +
 			`{"id":"skip","name":"n","patches":[{"address":"0x0","value":"00","expected":"01"}]},` +
 			`{"id":"skip","name":"n","patches":[{"address":"0x4","value":"00","expected":"01"}]}]}`,
@@ -108,7 +108,7 @@ func TestParseCatalogRejectsMalformedDocuments(t *testing.T) {
 
 func TestCatalogVersionMismatchIsIdentifiable(t *testing.T) {
 	t.Parallel()
-	document := `{"version":3,"title":{"image_sha256":"` + strings.Repeat("ab", 32) +
+	document := `{"version":4,"title":{"image_sha256":"` + strings.Repeat("ab", 32) +
 		`"},"cheats":[{"id":"skip","name":"n",` +
 		`"patches":[{"address":"0x0","value":"00","expected":"01"}]}]}`
 	_, err := ParseCatalog([]byte(document))
