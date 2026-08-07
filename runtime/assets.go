@@ -603,8 +603,10 @@ func decodeImageAsset(
 }
 
 // decodeLBMP decodes the little-endian LCD bitmap format used by SKVM.
-// Pixels immediately follow the 24-byte header; fixed-size guest buffers may
-// contain trailing mask or padding bytes, which are not part of the pixel data.
+// Pixels immediately follow the 24-byte header. Optional mask bytes are stored
+// in eight-row pages: each page contains one byte per x coordinate, and each
+// byte's low-to-high bits cover the page's y coordinates. Fixed-size guest
+// buffers may contain additional trailing padding.
 func decodeLBMP(encoded []byte, limits AssetLimits) (*image.NRGBA, error) {
 	const headerSize = 24
 	if len(encoded) < headerSize || string(encoded[:4]) != "LBMP" {
@@ -643,10 +645,11 @@ func decodeLBMP(encoded []byte, limits AssetLimits) (*image.NRGBA, error) {
 		return nil, fmt.Errorf("%w: invalid LBMP pixel payload", ErrInvalidArgument)
 	}
 	var mask []byte
-	var maskStride uint64
+	var maskPageStride uint64
 	if hasMask {
-		maskStride = (uint64(width) + 7) / 8
-		maskBytes := maskStride * uint64(height)
+		maskPageStride = uint64(width)
+		maskPages := (uint64(height) + 7) / 8
+		maskBytes := maskPageStride * maskPages
 		remaining := uint64(len(encoded)-headerSize) - pixelBytes
 		if maskBytes > remaining {
 			return nil, fmt.Errorf("%w: truncated LBMP mask", ErrInvalidArgument)
@@ -673,8 +676,8 @@ func decodeLBMP(encoded []byte, limits AssetLimits) (*image.NRGBA, error) {
 		if hasMask {
 			x := index % uint64(width)
 			y := index / uint64(width)
-			maskIndex := y*maskStride + x/8
-			if mask[maskIndex]&(1<<uint(x%8)) != 0 {
+			maskIndex := (y/8)*maskPageStride + x
+			if mask[maskIndex]&(1<<uint(y%8)) != 0 {
 				alpha = 0
 			}
 		}

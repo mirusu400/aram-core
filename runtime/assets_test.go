@@ -180,28 +180,44 @@ func TestAssetsRejectMalformedInputBeforeMutation(t *testing.T) {
 	}
 }
 
-func testLBMP(pixelType, width, height uint32, pixels []byte) []byte {
-	encoded := make([]byte, 24+len(pixels)+3)
+func testLBMP(
+	pixelType, width, height uint32,
+	pixels []byte,
+	masks ...[]byte,
+) []byte {
+	var mask []byte
+	if len(masks) > 0 {
+		mask = masks[0]
+	}
+	encoded := make([]byte, 24+len(pixels)+len(mask)+3)
 	copy(encoded[:4], "LBMP")
 	binary.LittleEndian.PutUint32(encoded[4:8], pixelType)
 	binary.LittleEndian.PutUint32(encoded[8:12], width)
 	binary.LittleEndian.PutUint32(encoded[12:16], height)
 	binary.LittleEndian.PutUint32(encoded[16:20], uint32(len(pixels)))
+	if mask != nil {
+		binary.LittleEndian.PutUint32(encoded[20:24], 1)
+	}
 	copy(encoded[24:], pixels)
+	copy(encoded[24+len(pixels):], mask)
 	copy(encoded[len(encoded)-3:], []byte{0xaa, 0xbb, 0xcc})
 	return encoded
 }
 
 func TestAssetsDecodeSKVMLBMP(t *testing.T) {
 	for _, test := range []struct {
-		name      string
-		encoded   []byte
-		wantPixel []byte
+		name       string
+		encoded    []byte
+		wantWidth  int32
+		wantHeight int32
+		wantPixel  []byte
 	}{
 		{
-			name:      "RGB332 with trailing guest buffer bytes",
-			encoded:   testLBMP(8, 2, 1, []byte{0xe0, 0x1c}),
-			wantPixel: []byte{0xfc, 0, 0, 0xff, 0, 0xfc, 0, 0xff},
+			name:       "RGB332 with trailing guest buffer bytes",
+			encoded:    testLBMP(8, 2, 1, []byte{0xe0, 0x1c}),
+			wantWidth:  2,
+			wantHeight: 1,
+			wantPixel:  []byte{0xfc, 0, 0, 0xff, 0, 0xfc, 0, 0xff},
 		},
 		{
 			name: "RGB565 little endian",
@@ -209,17 +225,41 @@ func TestAssetsDecodeSKVMLBMP(t *testing.T) {
 				0x00, 0xf8,
 				0xe0, 0x07,
 			}),
-			wantPixel: []byte{0xff, 0, 0, 0xff, 0, 0xff, 0, 0xff},
+			wantWidth:  2,
+			wantHeight: 1,
+			wantPixel:  []byte{0xff, 0, 0, 0xff, 0, 0xff, 0, 0xff},
 		},
 		{
 			name: "RGB332 mask",
-			encoded: func() []byte {
-				encoded := testLBMP(8, 2, 1, []byte{0xe0, 0x1c})
-				binary.LittleEndian.PutUint32(encoded[20:24], 1)
-				encoded[26] = 0x02
-				return encoded
+			encoded: testLBMP(
+				8,
+				2,
+				1,
+				[]byte{0xe0, 0x1c},
+				[]byte{0, 1},
+			),
+			wantWidth:  2,
+			wantHeight: 1,
+			wantPixel:  []byte{0xfc, 0, 0, 0xff, 0, 0xfc, 0, 0},
+		},
+		{
+			name: "RGB332 mask uses vertical eight-row pages",
+			encoded: testLBMP(
+				8,
+				3,
+				9,
+				bytes.Repeat([]byte{0xe0}, 27),
+				[]byte{0, 0x80, 0x01, 0x01, 0, 0},
+			),
+			wantWidth:  3,
+			wantHeight: 9,
+			wantPixel: func() []byte {
+				pixels := bytes.Repeat([]byte{0xfc, 0, 0, 0xff}, 27)
+				for _, index := range []int{2, 22, 24} {
+					pixels[index*4+3] = 0
+				}
+				return pixels
 			}(),
-			wantPixel: []byte{0xfc, 0, 0, 0xff, 0, 0xfc, 0, 0},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -235,7 +275,9 @@ func TestAssetsDecodeSKVMLBMP(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if info.Width != 2 || info.Height != 1 || info.MediaType != "image/x-lbmp" {
+			if info.Width != test.wantWidth ||
+				info.Height != test.wantHeight ||
+				info.MediaType != "image/x-lbmp" {
 				t.Fatalf("decoded LBMP = %+v", info)
 			}
 			pixels, err := services.Graphics.RGBA(7, info.Frames[0].Surface)
