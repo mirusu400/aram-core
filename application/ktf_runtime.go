@@ -16957,10 +16957,14 @@ func (r *ktfRuntime) drawWIPICString(unicode bool) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
+	metrics, err := r.services.Text.Metrics(r.serviceOwner, fontID)
+	if err != nil {
+		return 0, err
+	}
 	if err := r.drawWIPICGlyphs(
 		values[0],
 		int(int32(values[1]))+state.offsetX,
-		int(int32(values[2]))+state.offsetY,
+		int(int32(values[2]))+state.offsetY-int(metrics.Ascent),
 		text,
 		fontID,
 		state,
@@ -16970,8 +16974,10 @@ func (r *ktfRuntime) drawWIPICString(unicode bool) (uint32, error) {
 	return 0, r.commitKTFWIPICFramebuffer(values[0])
 }
 
-// drawWIPICGlyphs places the run with the top-left origin WIPI-C uses, so the
-// glyph bearings stay relative to the requested y rather than a baseline.
+// drawWIPICGlyphs places the run relative to the already baseline-adjusted y.
+// KTF Clets hand MC_grpDrawString a baseline coordinate: 드래곤로드 clips its
+// menu labels to exactly [y-ascent, y+descent), so a top-left origin leaves
+// only the first glyph rows inside the Clet's own clip rectangle.
 func (r *ktfRuntime) drawWIPICGlyphs(
 	handle uint32,
 	x, y int,

@@ -7796,6 +7796,116 @@ func TestKTFWIPICDrawStringPaintsMeasuredRun(t *testing.T) {
 	}
 }
 
+// 드래곤로드 positions each menu label at clipTop+8 with a clip rectangle of
+// exactly one 10-pixel text row, so DrawString must treat y as the baseline:
+// a top-left origin leaves only the first two glyph rows inside the clip.
+func TestKTFWIPICDrawStringAnchorsTheBaseline(t *testing.T) {
+	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.cpu.Close()
+	if err := runtime.mapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR0, 64); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR1, 32); err != nil {
+		t.Fatal(err)
+	}
+	object, err := ktfWIPICGraphicsCreateOffscreenFramebuffer(
+		context.Background(),
+		runtime,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const clipTop, clipBottom = 2, 12
+	contextAddress, err := runtime.heap.allocate(60, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The 10-pixel handset font (handle 8) ascends 8 rows, so a baseline at
+	// clipTop+8 keeps the whole glyph inside the one-row clip rectangle.
+	if err := runtime.writeWords(contextAddress, []uint32{
+		0, clipTop, 64, clipBottom, 1, 0xf800, 0, 0, 0, 0, 8,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// "가" in the handset's EUC-KR encoding, terminated for a negative length.
+	textAddress, err := runtime.heap.allocate(3, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteMemory(
+		textAddress,
+		[]byte{0xb0, 0xa1, 0},
+	); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range []uint32{object, 1, clipTop + 8, textAddress} {
+		if err := runtime.cpu.WriteRegister(
+			cpu.RegisterR0+uint32(register),
+			value,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stack, err := runtime.heap.allocate(8, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.writeWords(stack, []uint32{
+		^uint32(0),
+		contextAddress,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterSP, stack); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ktfWIPICGraphicsDrawString(
+		context.Background(),
+		runtime,
+	); err != nil {
+		t.Fatal(err)
+	}
+	framebuffer := runtime.wipicFramebuffers[object]
+	pixels := make([]byte, framebuffer.stride*framebuffer.height)
+	if err := runtime.cpu.ReadMemory(framebuffer.pixels, pixels); err != nil {
+		t.Fatal(err)
+	}
+	paintedRows := map[int]bool{}
+	for y := 0; y < framebuffer.height; y++ {
+		for x := 0; x < framebuffer.width; x++ {
+			value := binary.LittleEndian.Uint16(
+				pixels[y*framebuffer.stride+x*2:],
+			)
+			if value != 0 {
+				paintedRows[y] = true
+			}
+		}
+	}
+	if len(paintedRows) == 0 {
+		t.Fatal("baseline-anchored run painted no pixels")
+	}
+	for y := range paintedRows {
+		if y < clipTop || y >= clipBottom {
+			t.Fatalf("glyph row %d escaped clip [%d,%d)", y, clipTop, clipBottom)
+		}
+	}
+	if len(paintedRows) < 6 {
+		t.Fatalf(
+			"only %d glyph rows survived the clip; the run is drawn below its baseline",
+			len(paintedRows),
+		)
+	}
+}
+
 func TestKTFWIPICFontMetricsFollowTheHandsetHandle(t *testing.T) {
 	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
 		ClientName: "client.bin0",

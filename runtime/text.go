@@ -198,7 +198,10 @@ func (t *Text) Metrics(owner OwnerID, id ServiceID) (FontMetrics, error) {
 		return FontMetrics{}, err
 	}
 	size := font.descriptor.Size
-	ascent := max(int32(1), size*3/4)
+	// Handset system fonts keep a short descent, so the ascent share rounds
+	// up: the KTF 10-pixel font places its baseline 8 rows below the glyph
+	// top, and truncating to 7 would misplace every baseline-positioned run.
+	ascent := max(int32(1), (size*3+3)/4)
 	descent := max(int32(1), size-ascent)
 	return FontMetrics{
 		Height: size, Ascent: ascent, Descent: descent,
@@ -693,15 +696,29 @@ func rasterHandsetGlyph(
 	if sourceAdvance == 0 {
 		glyph.BearingX = -width
 	}
+	// Each destination pixel keeps the strongest source pixel it covers.
+	// Point sampling instead would drop whole source rows and columns when
+	// shrinking, and a one-pixel vowel stroke that disappears turns one
+	// Hangul syllable into another.
 	for y := int32(0); y < height; y++ {
 		sourceY := y * handsetGlyphSourceHeight / height
+		sourceYEnd := max(
+			sourceY+1,
+			(y+1)*handsetGlyphSourceHeight/height,
+		)
 		for x := int32(0); x < width; x++ {
 			sourceX := x * sourceWidth / width
-			glyph.Alpha[y*width+x] = handsetBitmapAlpha(
-				bitmap,
-				sourceX,
-				sourceY,
-			)
+			sourceXEnd := max(sourceX+1, (x+1)*sourceWidth/width)
+			var alpha byte
+			for row := sourceY; row < sourceYEnd; row++ {
+				for column := sourceX; column < sourceXEnd; column++ {
+					alpha = max(
+						alpha,
+						handsetBitmapAlpha(bitmap, column, row),
+					)
+				}
+			}
+			glyph.Alpha[y*width+x] = alpha
 		}
 	}
 	if descriptor.Style&FontBold != 0 {
