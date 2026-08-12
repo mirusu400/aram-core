@@ -473,6 +473,67 @@ func drainRaptorCallbackTasks(t *testing.T, machine *Machine) int {
 	return frames
 }
 
+// A loading-length callback resumes across hundreds of frames. Every resumed
+// slice enqueues lifecycle service events, so the frame pump must keep
+// draining the event bus while the callback is in progress or 제노니아1's
+// data-loading screen faults with "event queue reached 1024".
+func TestRaptorResumedCallbackKeepsDrainingServiceEvents(t *testing.T) {
+	machine := newSyntheticMachine(t)
+	const callback = uint32(0x04000000)
+	if err := machine.cpu.Map(
+		callback,
+		0x1000,
+		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.cpu.WriteMemory(callback, []byte{
+		0x00, 0x20, // movs r0, #0
+		0x01, 0x30, // loop: adds r0, #1
+		0xc8, 0x28, // cmp r0, #200
+		0xfc, 0xd1, // bne loop
+		0x70, 0x47, // bx lr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	machine.frameRunBudget = 1
+	machine.raptor = &raptorRuntime{
+		cpu:     machine.cpu,
+		public:  machine.wipi,
+		started: true,
+		clet:    raptorClet{Paint: callback | 1},
+	}
+	if err := machine.StepFrame(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	frames := 0
+	for len(machine.raptor.callbackTasks) != 0 && frames < 1500 {
+		if err := machine.StepFrame(context.Background()); err != nil {
+			t.Fatalf("resumed callback frame %d: %v", frames, err)
+		}
+		if queued := machine.wipi.services.Events.Len(); queued > 16 {
+			t.Fatalf(
+				"service event queue grew to %d during resumed callback frame %d",
+				queued,
+				frames,
+			)
+		}
+		frames++
+	}
+	if len(machine.raptor.callbackTasks) != 0 {
+		t.Fatalf("Raptor callback still in progress after %d frames", frames)
+	}
+	if frames < 500 {
+		t.Fatalf(
+			"callback completed in %d resumed frames; too short to cover the queue limit",
+			frames,
+		)
+	}
+	if machine.State() == machinecore.StateFaulted {
+		t.Fatalf("resumed callback faulted: %+v", machine.LastResult())
+	}
+}
+
 func TestRaptorInputCallbackMapsFrontendControls(t *testing.T) {
 	tests := []struct {
 		control string

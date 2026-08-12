@@ -815,6 +815,16 @@ func (m *Machine) stepRaptorFrame(ctx context.Context) error {
 		}
 	}
 	if hasCallbackTask {
+		// The pump still runs while a callback spans frames, with no
+		// elapsed guest time so no timer can interleave: the begin/finish
+		// lifecycle transitions of every resumed slice enqueue service
+		// events, and skipping the pump's drain entirely lets a loading
+		// screen hit the event-queue limit in seconds. New callbacks the
+		// pump discovers queue behind the in-progress task in order.
+		if _, stopped, err := m.pumpWIPICallbacks(ctx, 0); err != nil ||
+			stopped {
+			return err
+		}
 		return m.stepRaptorCallbackTask(ctx, 0)
 	}
 	callbackResult, stopped, err := m.pumpWIPICallbacks(ctx, wipiFrameDuration)
