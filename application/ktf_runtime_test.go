@@ -1134,6 +1134,212 @@ func TestKTFGraphicsSetRGBPixelsUsesByteStrideAndClip(t *testing.T) {
 	}
 }
 
+func TestKTFGraphicsGetRGBPixelsReadsBackSurface(t *testing.T) {
+	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.cpu.Close()
+	if err := runtime.mapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	runtime.jvmContext, err = runtime.allocateWords(3 + 128)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.frame = image.NewRGBA(image.Rect(0, 0, 4, 3))
+	graphics, err := runtime.ensureScreenGraphics()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := runtime.graphics[graphics]
+	state.target.Set(1, 0, color.RGBA{R: 0x44, G: 0x55, B: 0x66, A: 0xff})
+	state.target.Set(2, 0, color.RGBA{R: 0x11, G: 0x22, B: 0x33, A: 0xff})
+	state.target.Set(1, 1, color.RGBA{R: 0xaa, G: 0xbb, B: 0xcc, A: 0xff})
+	// A tight clip must not affect reads; only writes are clipped.
+	state.clip = image.Rect(0, 0, 1, 1)
+
+	pixels, err := runtime.newJavaArray("[I", 7, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields, err := runtime.readU32(pixels)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stack := DefaultStackBase + 0x100
+	if err := runtime.cpu.WriteRegister(cpu.RegisterSP, stack); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.writeWords(stack, []uint32{
+		2,
+		2,
+		pixels,
+		1,
+		12,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR1: graphics,
+		cpu.RegisterR2: 1,
+		cpu.RegisterR3: 0,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := runtime.handleGraphicsMethod(
+		"getRGBPixels",
+		"(IIII[III)V",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	values, err := runtime.readWords(fields+8, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []uint32{
+		0,
+		0x00445566,
+		0x00112233,
+		0,
+		0x00aabbcc,
+		0,
+		0,
+	}
+	if !slices.Equal(values, want) {
+		t.Fatalf("read-back RGB pixels = %08x, want %08x", values, want)
+	}
+}
+
+func TestKTFStringGetCharsCopiesIntoGuestArray(t *testing.T) {
+	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.cpu.Close()
+	if err := runtime.mapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	runtime.jvmContext, err = runtime.allocateWords(3 + 128)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := runtime.newJavaString("ds2.pts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	buffer, err := runtime.newJavaArray("[C", 10, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stack := DefaultStackBase + 0x100
+	if err := runtime.cpu.WriteRegister(cpu.RegisterSP, stack); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.writeWords(stack, []uint32{buffer, 0}); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR1: source,
+		cpu.RegisterR2: 0,
+		cpu.RegisterR3: 7,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := runtime.handleStringMethod(
+		"getChars",
+		"(II[CI)V",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	copied, err := runtime.readJavaCharArrayRange(buffer, 0, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if copied != "ds2.pts" {
+		t.Fatalf("copied characters = %q, want %q", copied, "ds2.pts")
+	}
+}
+
+func TestKTFStringConstructorMaterializesGuestFields(t *testing.T) {
+	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.cpu.Close()
+	if err := runtime.mapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	runtime.jvmContext, err = runtime.allocateWords(3 + 128)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, err := runtime.newJavaInstance("java/lang/String", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("abc.01")
+	array, err := runtime.newJavaArray("[B", uint32(len(data)), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields, err := runtime.readU32(array)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteMemory(fields+8, data); err != nil {
+		t.Fatal(err)
+	}
+
+	stack := DefaultStackBase + 0x100
+	if err := runtime.cpu.WriteRegister(cpu.RegisterSP, stack); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.writeWords(stack, []uint32{uint32(len(data))}); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR1: instance,
+		cpu.RegisterR2: array,
+		cpu.RegisterR3: 0,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := runtime.handleStringMethod(
+		"<init>",
+		"([BII)V",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// The guest-visible fields must expose the same characters the host map
+	// records, so AOT code that reads value/offset/count directly sees the
+	// real text instead of an empty array.
+	delete(runtime.javaStrings, instance)
+	value, ok := runtime.readGuestJavaString(instance)
+	if !ok || value != "abc.01" {
+		t.Fatalf("guest string fields decode = %q, %t", value, ok)
+	}
+}
 func TestKTFGraphicsEncodeImageRoundTripsTranslatedRegion(t *testing.T) {
 	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
 		ClientName: "client.bin0",

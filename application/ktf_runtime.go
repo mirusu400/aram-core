@@ -3484,6 +3484,18 @@ func (r *ktfRuntime) newJavaString(value string) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
+	if err := r.materializeJavaString(instance, value); err != nil {
+		return 0, err
+	}
+	return instance, nil
+}
+
+// materializeJavaString records value for instance host-side and writes the
+// value/offset/count fields plus a fresh char array into guest memory.
+// Platform AOT code (String.getChars, compiled concatenation) reads those
+// fields directly, so a map-only string turns into NUL characters the moment
+// the guest copies it (issue #44).
+func (r *ktfRuntime) materializeJavaString(instance uint32, value string) error {
 	codeUnits := utf16.Encode([]rune(value))
 	characters, err := r.newJavaArray(
 		"[C",
@@ -3491,34 +3503,36 @@ func (r *ktfRuntime) newJavaString(value string) (uint32, error) {
 		2,
 	)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	fields, err := r.readU32(characters)
 	if err != nil {
-		return 0, err
+		return err
 	}
-	encoded := make([]byte, len(codeUnits)*2)
-	for index, codeUnit := range codeUnits {
-		binary.LittleEndian.PutUint16(encoded[index*2:], codeUnit)
-	}
-	if err := r.cpu.WriteMemory(fields+8, encoded); err != nil {
-		return 0, err
+	if len(codeUnits) != 0 {
+		encoded := make([]byte, len(codeUnits)*2)
+		for index, codeUnit := range codeUnits {
+			binary.LittleEndian.PutUint16(encoded[index*2:], codeUnit)
+		}
+		if err := r.cpu.WriteMemory(fields+8, encoded); err != nil {
+			return err
+		}
 	}
 	if err := r.writeJavaFieldWord(instance, 0, characters); err != nil {
-		return 0, err
+		return err
 	}
 	if err := r.writeJavaFieldWord(instance, 4, 0); err != nil {
-		return 0, err
+		return err
 	}
 	if err := r.writeJavaFieldWord(
 		instance,
 		8,
 		uint32(len(codeUnits)),
 	); err != nil {
-		return 0, err
+		return err
 	}
 	r.javaStrings[instance] = value
-	return instance, nil
+	return nil
 }
 
 func (r *ktfRuntime) newJavaReferenceArray(
@@ -8489,6 +8503,8 @@ func (r *ktfRuntime) handleGraphicsMethod(
 		return 0, nil
 	case "setRGBPixels(IIII[III)V":
 		return 0, r.setGraphicsRGBPixels(state)
+	case "getRGBPixels(IIII[III)V":
+		return 0, r.getGraphicsRGBPixels(state)
 	case "setGrayScale(I)V":
 		if state != nil {
 			value, valueErr := r.parameter(2)
@@ -8849,6 +8865,102 @@ func (r *ktfRuntime) setGraphicsRGBPixels(state *ktfGraphics) error {
 	return nil
 }
 
+// getGraphicsRGBPixels is the read half of setGraphicsRGBPixels. Titles
+// composite by reading a region back, transforming it, and writing it again;
+// leaving this unimplemented handed them an untouched array, which turned
+// every such effect black (issue #44).
+func (r *ktfRuntime) getGraphicsRGBPixels(state *ktfGraphics) error {
+	if state == nil {
+		return nil
+	}
+	x, err := r.signedParameter(2)
+	if err != nil {
+		return err
+	}
+	y, err := r.signedParameter(3)
+	if err != nil {
+		return err
+	}
+	width, err := r.signedParameter(4)
+	if err != nil {
+		return err
+	}
+	height, err := r.signedParameter(5)
+	if err != nil {
+		return err
+	}
+	array, err := r.parameter(6)
+	if err != nil {
+		return err
+	}
+	offset, err := r.signedParameter(7)
+	if err != nil {
+		return err
+	}
+	bytesPerLine, err := r.signedParameter(8)
+	if err != nil {
+		return err
+	}
+	if array == 0 {
+		return r.raiseHostJavaException("java/lang/NullPointerException")
+	}
+	if width < 0 || height < 0 || bytesPerLine < 0 ||
+		int64(bytesPerLine) < int64(width)*4 || bytesPerLine%4 != 0 {
+		return r.raiseHostJavaException("java/lang/IllegalArgumentException")
+	}
+	if width == 0 || height == 0 {
+		return nil
+	}
+	source := image.Rect(
+		x+state.translate.X,
+		y+state.translate.Y,
+		x+state.translate.X+width,
+		y+state.translate.Y+height,
+	)
+	if !source.In(state.target.Bounds()) {
+		return r.raiseHostJavaException("java/lang/IllegalArgumentException")
+	}
+	fields, err := r.readGraphicsRGBWord(array)
+	if err != nil {
+		return err
+	}
+	length, err := r.readGraphicsRGBWord(fields + 4)
+	if err != nil {
+		return err
+	}
+	stride := bytesPerLine / 4
+	lastExclusive := int64(offset) + int64(height-1)*int64(stride) + int64(width)
+	if offset < 0 || lastExclusive < 0 || lastExclusive > int64(length) {
+		return r.raiseHostJavaException(
+			"java/lang/ArrayIndexOutOfBoundsException",
+		)
+	}
+	row := r.graphicsRGBBuffer(width * 4)
+	for sourceY := source.Min.Y; sourceY < source.Max.Y; sourceY++ {
+		for column := 0; column < width; column++ {
+			value := getKTFGraphicsRGBPixel(
+				state.target,
+				source.Min.X+column,
+				sourceY,
+			)
+			binary.LittleEndian.PutUint32(row[column*4:], value)
+		}
+		destinationIndex := int64(offset) +
+			int64(sourceY-source.Min.Y)*int64(stride)
+		destinationAddress := uint64(fields) + 8 +
+			uint64(destinationIndex)*4
+		if destinationAddress+uint64(len(row)) > uint64(^uint32(0))+1 {
+			return errors.New(
+				"KTF Java RGB pixel destination address overflows",
+			)
+		}
+		if err := r.cpu.WriteMemory(uint32(destinationAddress), row); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (r *ktfRuntime) graphicsRGBBuffer(size int) []byte {
 	if cap(r.graphicsRGBScratch) < size {
 		r.graphicsRGBScratch = make([]byte, size)
@@ -8884,6 +8996,24 @@ func setKTFGraphicsRGBPixel(target draw.Image, x, y int, value uint32) {
 		target.Pix[offset+3] = 0xff
 	default:
 		target.Set(x, y, color.RGBA{R: red, G: green, B: blue, A: 0xff})
+	}
+}
+
+func getKTFGraphicsRGBPixel(target draw.Image, x, y int) uint32 {
+	switch target := target.(type) {
+	case *image.RGBA:
+		offset := target.PixOffset(x, y)
+		return uint32(target.Pix[offset+0])<<16 |
+			uint32(target.Pix[offset+1])<<8 |
+			uint32(target.Pix[offset+2])
+	case *image.NRGBA:
+		offset := target.PixOffset(x, y)
+		return uint32(target.Pix[offset+0])<<16 |
+			uint32(target.Pix[offset+1])<<8 |
+			uint32(target.Pix[offset+2])
+	default:
+		red, green, blue, _ := target.At(x, y).RGBA()
+		return (red>>8)<<16 | (green>>8)<<8 | blue>>8
 	}
 }
 
@@ -11998,23 +12128,20 @@ func (r *ktfRuntime) handleStringMethod(
 		}
 		return r.newJavaString(text)
 	case "<init>()V":
-		r.javaStrings[instance] = ""
-		return 0, nil
+		return 0, r.materializeJavaString(instance, "")
 	case "<init>(Ljava/lang/String;)V":
 		source, valueErr := r.parameter(2)
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		r.javaStrings[instance] = r.javaStringValue(source)
-		return 0, nil
+		return 0, r.materializeJavaString(instance, r.javaStringValue(source))
 	case "<init>([B)V":
 		array, valueErr := r.parameter(2)
 		if valueErr != nil {
 			return 0, valueErr
 		}
 		if array == 0 {
-			r.javaStrings[instance] = ""
-			return 0, nil
+			return 0, r.materializeJavaString(instance, "")
 		}
 		data, valueErr := r.readJavaByteArray(array)
 		if valueErr != nil {
@@ -12024,16 +12151,14 @@ func (r *ktfRuntime) handleStringMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		r.javaStrings[instance] = value
-		return 0, nil
+		return 0, r.materializeJavaString(instance, value)
 	case "<init>([BII)V":
 		array, valueErr := r.parameter(2)
 		if valueErr != nil {
 			return 0, valueErr
 		}
 		if array == 0 {
-			r.javaStrings[instance] = ""
-			return 0, nil
+			return 0, r.materializeJavaString(instance, "")
 		}
 		offset, valueErr := r.parameter(3)
 		if valueErr != nil {
@@ -12051,8 +12176,7 @@ func (r *ktfRuntime) handleStringMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		r.javaStrings[instance] = value
-		return 0, nil
+		return 0, r.materializeJavaString(instance, value)
 	case "<init>([C)V":
 		array, valueErr := r.parameter(2)
 		if valueErr != nil {
@@ -12066,8 +12190,7 @@ func (r *ktfRuntime) handleStringMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		r.javaStrings[instance] = text
-		return 0, nil
+		return 0, r.materializeJavaString(instance, text)
 	case "<init>([CII)V":
 		array, valueErr := r.parameter(2)
 		if valueErr != nil {
@@ -12085,8 +12208,7 @@ func (r *ktfRuntime) handleStringMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		r.javaStrings[instance] = text
-		return 0, nil
+		return 0, r.materializeJavaString(instance, text)
 	case "length()I":
 		return uint32(len(codeUnits)), nil
 	case "hashCode()I":
@@ -12104,6 +12226,58 @@ func (r *ktfRuntime) handleStringMethod(
 			return 0, nil
 		}
 		return uint32(codeUnits[index]), nil
+	case "getChars(II[CI)V":
+		// Titles copy a name prefix through getChars before appending an
+		// index; leaving it unimplemented silently produced NUL characters
+		// and broke every resource lookup built that way (issue #44).
+		sourceBegin, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		sourceEnd, valueErr := r.parameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		array, valueErr := r.parameter(4)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		destinationBegin, valueErr := r.parameter(5)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if array == 0 {
+			return 0, r.raiseHostJavaException(
+				"java/lang/NullPointerException",
+			)
+		}
+		if sourceBegin > sourceEnd || sourceEnd > uint32(len(codeUnits)) {
+			return 0, r.raiseHostJavaException(
+				"java/lang/IndexOutOfBoundsException",
+			)
+		}
+		length, valueErr := r.javaArrayLength(array)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		count := sourceEnd - sourceBegin
+		if destinationBegin > length || count > length-destinationBegin {
+			return 0, r.raiseHostJavaException(
+				"java/lang/ArrayIndexOutOfBoundsException",
+			)
+		}
+		if count == 0 {
+			return 0, nil
+		}
+		fields, valueErr := r.readU32(array)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		encoded := make([]byte, count*2)
+		for index, codeUnit := range codeUnits[sourceBegin:sourceEnd] {
+			binary.LittleEndian.PutUint16(encoded[index*2:], codeUnit)
+		}
+		return 0, r.cpu.WriteMemory(fields+8+destinationBegin*2, encoded)
 	case "substring(I)Ljava/lang/String;":
 		start, valueErr := r.parameter(2)
 		if valueErr != nil {
@@ -17103,7 +17277,7 @@ func (r *ktfRuntime) drawWIPICString(unicode bool) (uint32, error) {
 }
 
 // drawWIPICGlyphs places the run relative to the already baseline-adjusted y.
-// KTF Clets hand MC_grpDrawString a baseline coordinate: 드래곤로드 clips its
+// KTF Clets hand MC_grpDrawString a baseline coordinate: ??뺤삋?ⓦ끇以??clips its
 // menu labels to exactly [y-ascent, y+descent), so a top-left origin leaves
 // only the first glyph rows inside the Clet's own clip rectangle.
 func (r *ktfRuntime) drawWIPICGlyphs(
