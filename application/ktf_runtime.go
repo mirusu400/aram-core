@@ -5737,6 +5737,15 @@ func ktfJavaNativeOverride(signature string) (ktfHostCall, bool) {
 				"(I)I",
 			),
 		}, true
+	case "org/kwis/msp/lcdui/Display.getGameAction(I)I":
+		return ktfHostCall{
+			name: "java.native_override." + signature,
+			handler: ktfHostJavaMethod(
+				"org/kwis/msp/lcdui/Display",
+				"getGameAction",
+				"(I)I",
+			),
+		}, true
 	case "org/kwis/msp/lcdui/Display.getKeyName(I)Ljava/lang/String;":
 		return ktfHostCall{
 			name: "java.native_override." + signature,
@@ -11124,7 +11133,9 @@ func (r *ktfRuntime) ktfClipConstructorResource(
 		if name == "." || name == ".." || strings.HasPrefix(name, "../") {
 			continue
 		}
-		if data, ok := r.findKTFResource(name); ok {
+		data, ok := r.findKTFResource(name)
+		r.tracef("java_clip_resource:%s:found=%t:size=%d", name, ok, len(data))
+		if ok {
 			return append([]byte(nil), data...), true, nil
 		}
 	}

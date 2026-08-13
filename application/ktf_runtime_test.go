@@ -3188,6 +3188,7 @@ func TestKTFCallNativeOverridesNullFrameworkNative(t *testing.T) {
 		{"org/kwis/msp/media/Vibrator.on(II)V", 0},
 		{"org/kwis/msf/io/Network.connect()I", 1},
 		{"org/kwis/msf/io/Network.disconnect()V", 0},
+		{"org/kwis/msp/lcdui/Display.getGameAction(I)I", 0},
 	}
 	for _, test := range tests {
 		t.Run(test.method, func(t *testing.T) {
