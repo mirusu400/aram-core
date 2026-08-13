@@ -116,6 +116,9 @@ type ktfRuntime struct {
 	javaClassGeneration     uint64
 	nativeSignatures        map[uint32]*ktfNativeSignatureMatches
 	nativeSignatureGen      uint64
+	javaClassInspections    map[uint32]*ktfJavaClassInspection
+	javaMethodInspections   map[uint32]*ktfJavaMethodInspection
+	javaInspectGen          uint64
 	javaStrings             map[uint32]string
 	javaClassObjs           map[uint32]uint32
 	classObjTarget          map[uint32]uint32
@@ -260,6 +263,23 @@ type ktfJavaMethod struct {
 	AccessFlags       uint16
 	ExceptionCount    uint16
 	ExceptionTableRaw uint32
+}
+
+// ktfJavaClassInspection caches a parsed class so the Java bridge does not
+// re-read every method name out of guest memory on each host call. The raw
+// header words are re-read and compared on every hit, so a class whose
+// descriptor, vtable, or size words change in place is re-parsed. Host-side
+// method-body patches bump javaClassGeneration instead, which drops the whole
+// cache.
+type ktfJavaClassInspection struct {
+	class           ktfJavaClass
+	classWords      [5]uint32
+	descriptorWords [9]uint32
+}
+
+type ktfJavaMethodInspection struct {
+	method ktfJavaMethod
+	words  [7]uint32
 }
 
 type ktfHostJavaMethodSpec struct {
@@ -3124,14 +3144,50 @@ func (r *ktfRuntime) loadClass(ctx context.Context, name string) (ktfJavaClass, 
 	return ktfJavaClass{}, fmt.Errorf("KTF Java class %q was not found", name)
 }
 
+// ensureJavaInspectionCache resets the inspection caches whenever the class
+// set changes. javaClassGeneration is bumped by class registration, host
+// method patching, and savestate restore, so a stale parse cannot survive any
+// of those.
+func (r *ktfRuntime) ensureJavaInspectionCache() {
+	if r.javaClassInspections == nil ||
+		r.javaInspectGen != r.javaClassGeneration {
+		r.javaClassInspections = make(map[uint32]*ktfJavaClassInspection)
+		r.javaMethodInspections = make(map[uint32]*ktfJavaMethodInspection)
+		r.javaInspectGen = r.javaClassGeneration
+	}
+}
+
+// readInspectionWords is readWords without the per-call slice allocations;
+// class and method inspection runs on every host Java bridge call.
+func (r *ktfRuntime) readInspectionWords(address uint32, words []uint32) error {
+	var buffer [36]byte
+	data := buffer[:len(words)*4]
+	if err := r.cpu.ReadMemory(address, data); err != nil {
+		return fmt.Errorf("read KTF structure at 0x%08x: %w", address, err)
+	}
+	for index := range words {
+		words[index] = binary.LittleEndian.Uint32(data[index*4:])
+	}
+	return nil
+}
+
 func (r *ktfRuntime) inspectJavaClass(address uint32) (ktfJavaClass, error) {
-	classWords, err := r.readWords(address, 5)
-	if err != nil {
+	r.ensureJavaInspectionCache()
+	var classWords [5]uint32
+	if err := r.readInspectionWords(address, classWords[:]); err != nil {
 		return ktfJavaClass{}, err
 	}
-	descriptorWords, err := r.readWords(classWords[2], 9)
-	if err != nil {
+	var descriptorWords [9]uint32
+	if err := r.readInspectionWords(
+		classWords[2],
+		descriptorWords[:],
+	); err != nil {
 		return ktfJavaClass{}, err
+	}
+	if cached, ok := r.javaClassInspections[address]; ok &&
+		cached.classWords == classWords &&
+		cached.descriptorWords == descriptorWords {
+		return cached.class, nil
 	}
 	name, err := r.readCString(descriptorWords[0], 1024)
 	if err != nil {
@@ -3160,21 +3216,34 @@ func (r *ktfRuntime) inspectJavaClass(address uint32) (ktfJavaClass, error) {
 		}
 		methods = append(methods, method)
 	}
-	return ktfJavaClass{
-		Address:     address,
-		Name:        name,
-		Parent:      descriptorWords[2],
-		VTable:      classWords[3],
-		FieldSize:   uint16(descriptorWords[6] >> 16),
-		AccessFlags: uint16(descriptorWords[7]),
-		Methods:     methods,
-	}, nil
+	entry := &ktfJavaClassInspection{
+		class: ktfJavaClass{
+			Address:     address,
+			Name:        name,
+			Parent:      descriptorWords[2],
+			VTable:      classWords[3],
+			FieldSize:   uint16(descriptorWords[6] >> 16),
+			AccessFlags: uint16(descriptorWords[7]),
+			// Clamp the capacity so a caller appending to the returned
+			// slice copies instead of writing into the cached array.
+			Methods: methods[:len(methods):len(methods)],
+		},
+		classWords:      classWords,
+		descriptorWords: descriptorWords,
+	}
+	r.javaClassInspections[address] = entry
+	return entry.class, nil
 }
 
 func (r *ktfRuntime) inspectJavaMethod(address uint32) (ktfJavaMethod, error) {
-	words, err := r.readWords(address, 7)
-	if err != nil {
+	r.ensureJavaInspectionCache()
+	var words [7]uint32
+	if err := r.readInspectionWords(address, words[:]); err != nil {
 		return ktfJavaMethod{}, err
+	}
+	if cached, ok := r.javaMethodInspections[address]; ok &&
+		cached.words == words {
+		return cached.method, nil
 	}
 	fullName, err := r.readCString(words[3]+1, 4096)
 	if err != nil {
@@ -3188,18 +3257,23 @@ func (r *ktfRuntime) inspectJavaMethod(address uint32) (ktfJavaMethod, error) {
 			fullName,
 		)
 	}
-	return ktfJavaMethod{
-		Address:           address,
-		DeclaringClass:    words[1],
-		Name:              fullName[separator+1:],
-		Descriptor:        fullName[:separator],
-		Body:              words[0],
-		NativeBody:        words[2],
-		ExceptionCount:    uint16(words[4]),
-		ExceptionTableRaw: words[2],
-		VTableIndex:       uint16(words[5]),
-		AccessFlags:       uint16(words[5] >> 16),
-	}, nil
+	entry := &ktfJavaMethodInspection{
+		method: ktfJavaMethod{
+			Address:           address,
+			DeclaringClass:    words[1],
+			Name:              fullName[separator+1:],
+			Descriptor:        fullName[:separator],
+			Body:              words[0],
+			NativeBody:        words[2],
+			ExceptionCount:    uint16(words[4]),
+			ExceptionTableRaw: words[2],
+			VTableIndex:       uint16(words[5]),
+			AccessFlags:       uint16(words[5] >> 16),
+		},
+		words: words,
+	}
+	r.javaMethodInspections[address] = entry
+	return entry.method, nil
 }
 
 func (r *ktfRuntime) startMainClass(ctx context.Context) error {
@@ -5495,8 +5569,13 @@ func (r *ktfRuntime) nativeSignatureMatches(
 			continue
 		}
 		for _, method := range class.Methods {
-			if method.NativeBody == 0 ||
-				method.NativeBody&^1 != target {
+			// The guest relinks resolved native pointers into the method
+			// structure in place, which the class inspection cache does not
+			// observe. Match against the live word, not the cached one.
+			nativeBody, nativeErr := r.readU32(method.Address + 8)
+			if nativeErr != nil ||
+				nativeBody == 0 ||
+				nativeBody&^1 != target {
 				continue
 			}
 			declaring, inspectErr := r.inspectJavaClass(method.DeclaringClass)
@@ -13730,6 +13809,7 @@ func (r *ktfRuntime) rememberRegisteredJavaClass(name string, class uint32) {
 }
 
 func (r *ktfRuntime) implementBodylessPlatformMethods(class ktfJavaClass) error {
+	patched := false
 	for _, method := range class.Methods {
 		if method.Body != 0 || method.NativeBody != 0 {
 			continue
@@ -13750,6 +13830,7 @@ func (r *ktfRuntime) implementBodylessPlatformMethods(class ktfJavaClass) error 
 		if err := r.writeU32(method.Address+offset, stub); err != nil {
 			return err
 		}
+		patched = true
 		r.tracef(
 			"java_platform_method:%s.%s%s@0x%08x",
 			class.Name,
@@ -13757,6 +13838,11 @@ func (r *ktfRuntime) implementBodylessPlatformMethods(class ktfJavaClass) error 
 			method.Descriptor,
 			stub,
 		)
+	}
+	if patched {
+		// The patched method words are cached by inspectJavaMethod and inside
+		// inspectJavaClass results; drop those caches so the stubs are seen.
+		r.javaClassGeneration++
 	}
 	return nil
 }
