@@ -7588,8 +7588,9 @@ func TestKTFWIPICDrawImageBlitsAndClips(t *testing.T) {
 	}
 	const imageObject = uint32(0x4000)
 	runtime.wipicImages[imageObject] = &ktfWIPICImage{
-		object:      imageObject,
-		framebuffer: source,
+		object:         imageObject,
+		framebuffer:    source,
+		transparentKey: -1,
 	}
 	contextAddress, err := runtime.heap.allocate(60, true)
 	if err != nil {
@@ -7671,6 +7672,115 @@ func TestKTFWIPICDrawImageBlitsAndClips(t *testing.T) {
 	}
 	if got := pixelAt(3, 3); got != 0 {
 		t.Fatalf("pixel beyond the clip = %04x", got)
+	}
+}
+
+func TestKTFColorKeyMagentaFamily(t *testing.T) {
+	for _, keyed := range []uint16{0xf81f, 0xf816, 0xf818, 0xf010} {
+		if !ktfIsColorKeyMagenta565(keyed) {
+			t.Errorf("0x%04x should read as a transparent color key", keyed)
+		}
+	}
+	for _, opaque := range []uint16{0x0000, 0xffff, 0x001f, 0x07e0, 0xf800, 0xfc1f} {
+		if ktfIsColorKeyMagenta565(opaque) {
+			t.Errorf("0x%04x should not be treated as a color key", opaque)
+		}
+	}
+}
+
+// A color-keyed sprite (magenta background, decoded from a bitmap) must leave
+// the destination showing through wherever the source is the key color, the
+// way 이노티아's signal and battery icons draw over the title bar.
+func TestKTFWIPICDrawImageKeysOutMagenta(t *testing.T) {
+	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.cpu.Close()
+	if err := runtime.mapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	const (
+		background = uint16(0x001f) // blue, already on the destination
+		sprite     = uint16(0x07e0) // green, the opaque icon pixels
+		key        = uint16(0xf81f) // magenta, the transparent background
+	)
+	destination, err := runtime.createWIPICFramebuffer(8, 8, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destinationBuffer := runtime.wipicFramebuffers[destination]
+	filled := make([]byte, destinationBuffer.stride*destinationBuffer.height)
+	for offset := 0; offset < len(filled); offset += 2 {
+		binary.LittleEndian.PutUint16(filled[offset:], background)
+	}
+	if err := runtime.cpu.WriteMemory(destinationBuffer.pixels, filled); err != nil {
+		t.Fatal(err)
+	}
+	source, err := runtime.createWIPICFramebuffer(2, 2, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceBuffer := runtime.wipicFramebuffers[source]
+	sourcePixels := []uint16{key, sprite, sprite, sprite}
+	sourceBytes := make([]byte, sourceBuffer.stride*sourceBuffer.height)
+	for i, pixel := range sourcePixels {
+		binary.LittleEndian.PutUint16(sourceBytes[(i/2)*sourceBuffer.stride+(i%2)*2:], pixel)
+	}
+	if err := runtime.cpu.WriteMemory(sourceBuffer.pixels, sourceBytes); err != nil {
+		t.Fatal(err)
+	}
+	const imageObject = uint32(0x4000)
+	runtime.wipicImages[imageObject] = &ktfWIPICImage{
+		object:         imageObject,
+		framebuffer:    source,
+		transparentKey: int32(key),
+	}
+	contextAddress, err := runtime.heap.allocate(60, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range []uint32{destination, 1, 1, 2} {
+		if err := runtime.cpu.WriteRegister(cpu.RegisterR0+uint32(register), value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stack, err := runtime.heap.allocate(20, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.writeWords(stack, []uint32{2, imageObject, 0, 0, contextAddress}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterSP, stack); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ktfWIPICGraphicsDrawImage(context.Background(), runtime); err != nil {
+		t.Fatal(err)
+	}
+	pixelAt := func(x, y int) uint16 {
+		var encoded [2]byte
+		if err := runtime.cpu.ReadMemory(
+			destinationBuffer.pixels+uint32(y*destinationBuffer.stride+x*2),
+			encoded[:],
+		); err != nil {
+			t.Fatal(err)
+		}
+		return binary.LittleEndian.Uint16(encoded[:])
+	}
+	if got := pixelAt(1, 1); got != background {
+		t.Fatalf("key pixel = %04x, want the background %04x to show through", got, background)
+	}
+	for _, point := range [][2]int{{2, 1}, {1, 2}, {2, 2}} {
+		if got := pixelAt(point[0], point[1]); got != sprite {
+			t.Fatalf("opaque pixel at %v = %04x, want %04x", point, got, sprite)
+		}
+	}
+	if got := pixelAt(0, 0); got != background {
+		t.Fatalf("pixel outside the blit = %04x", got)
 	}
 }
 

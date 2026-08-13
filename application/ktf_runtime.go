@@ -436,6 +436,9 @@ type ktfWIPICImage struct {
 	framebuffer uint32
 	source      uint32
 	frameIndex  uint32
+	// transparentKey is the RGB565 color a color-keyed bitmap uses for its
+	// transparent background, or -1 when the image draws fully opaque.
+	transparentKey int32
 }
 
 type ktfWIPICMemory struct {
@@ -15981,10 +15984,11 @@ func ktfWIPICGraphicsCreateImage(
 		_ = runtime.services.Assets.Release(runtime.serviceOwner, assetID)
 		return 0, err
 	}
-	if err := runtime.paintWIPICImageFrame(
+	transparentKey, err := runtime.paintWIPICImageFrame(
 		framebufferObject,
 		asset.Frames[0].Surface,
-	); err != nil {
+	)
+	if err != nil {
 		_ = runtime.services.Assets.Release(runtime.serviceOwner, assetID)
 		return 0, err
 	}
@@ -16011,10 +16015,11 @@ func ktfWIPICGraphicsCreateImage(
 		return 0, err
 	}
 	runtime.wipicImages[object] = &ktfWIPICImage{
-		object:      object,
-		body:        body,
-		framebuffer: framebufferObject,
-		source:      memoryID,
+		object:         object,
+		body:           body,
+		framebuffer:    framebufferObject,
+		source:         memoryID,
+		transparentKey: transparentKey,
 	}
 	runtime.wipicAssetServices[object] = assetID
 	if err := runtime.writeU32(output, object); err != nil {
@@ -16741,7 +16746,7 @@ func ktfWIPICGraphicsDrawImage(
 	if err != nil {
 		return 0, err
 	}
-	if err := runtime.blitWIPICFramebuffer(
+	if err := runtime.blitWIPICFramebufferKeyed(
 		values[0],
 		image.framebuffer,
 		int64(int32(values[1]))+int64(state.offsetX),
@@ -16751,6 +16756,7 @@ func ktfWIPICGraphicsDrawImage(
 		int64(int32(values[6])),
 		int64(int32(values[7])),
 		state,
+		image.transparentKey,
 	); err != nil {
 		return 0, err
 	}
@@ -16763,6 +16769,22 @@ func (r *ktfRuntime) blitWIPICFramebuffer(
 	destinationHandle, sourceHandle uint32,
 	dx, dy, width, height, sx, sy int64,
 	state ktfWIPICGraphicsContext,
+) error {
+	return r.blitWIPICFramebufferKeyed(
+		destinationHandle, sourceHandle,
+		dx, dy, width, height, sx, sy, state, -1,
+	)
+}
+
+// blitWIPICFramebufferKeyed copies a rectangle between two 16bpp framebuffers.
+// A transparentKey of 0..0xffff leaves destination pixels untouched wherever
+// the source matches that RGB565 value, which is how KTF renders MC_grpImage
+// sprites decoded from color-keyed bitmaps. A negative key copies opaquely.
+func (r *ktfRuntime) blitWIPICFramebufferKeyed(
+	destinationHandle, sourceHandle uint32,
+	dx, dy, width, height, sx, sy int64,
+	state ktfWIPICGraphicsContext,
+	transparentKey int32,
 ) error {
 	destination := r.wipicFramebuffers[destinationHandle]
 	source := r.wipicFramebuffers[sourceHandle]
@@ -16815,14 +16837,34 @@ func (r *ktfRuntime) blitWIPICFramebuffer(
 			return err
 		}
 	}
+	var destinationRow []byte
+	if transparentKey >= 0 {
+		destinationRow = make([]byte, rowBytes)
+	}
 	for y := top; y < bottom; y++ {
 		destinationAddress := destination.pixels +
 			uint32(y*int64(destination.stride)+left*2)
 		rowOffset := int(y-top) * rowBytes
-		if err := r.cpu.WriteMemory(
-			destinationAddress,
-			data[rowOffset:rowOffset+rowBytes],
-		); err != nil {
+		sourceRow := data[rowOffset : rowOffset+rowBytes]
+		if transparentKey < 0 {
+			if err := r.cpu.WriteMemory(destinationAddress, sourceRow); err != nil {
+				return err
+			}
+			continue
+		}
+		// Merge only the opaque source pixels over the current destination so
+		// the color-keyed background shows whatever was already painted there.
+		if err := r.cpu.ReadMemory(destinationAddress, destinationRow); err != nil {
+			return err
+		}
+		key := uint16(transparentKey)
+		for i := 0; i+1 < rowBytes; i += 2 {
+			if binary.LittleEndian.Uint16(sourceRow[i:]) != key {
+				destinationRow[i] = sourceRow[i]
+				destinationRow[i+1] = sourceRow[i+1]
+			}
+		}
+		if err := r.cpu.WriteMemory(destinationAddress, destinationRow); err != nil {
 			return err
 		}
 	}

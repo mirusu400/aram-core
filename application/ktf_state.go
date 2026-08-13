@@ -1686,6 +1686,10 @@ func (m *Machine) restoreKTFState(saved *ktfSavedState) error {
 			object: value.Object, body: value.Body,
 			framebuffer: value.Framebuffer, source: value.Source,
 			frameIndex: value.FrameIndex,
+			// The color key is derived from the restored pixels rather than
+			// serialized, so an older save without the field still keys its
+			// sprites correctly after loading.
+			transparentKey: r.wipicImageColorKey(value.Framebuffer),
 		}
 	}
 	r.wipicResources = cloneKTFUint32BytesMap(meta.WIPICResources)

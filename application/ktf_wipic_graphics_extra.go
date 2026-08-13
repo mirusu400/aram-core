@@ -39,29 +39,32 @@ func readKTFWIPICParameters(
 
 // paintWIPICImageFrame converts a decoded shared RGBA surface into the
 // provider-private RGB565 framebuffer that native KTF clients dereference.
+// paintWIPICImageFrame returns the RGB565 transparent color key for the frame,
+// or -1 when it draws fully opaque. The key is the top-left pixel when that
+// pixel is in the magenta family color-keyed bitmaps reserve for transparency.
 func (r *ktfRuntime) paintWIPICImageFrame(
 	framebufferHandle uint32,
 	surface shared.ServiceID,
-) error {
+) (int32, error) {
 	framebuffer := r.wipicFramebuffers[framebufferHandle]
 	if framebuffer == nil {
-		return fmt.Errorf(
+		return -1, fmt.Errorf(
 			"KTF WIPI-C image framebuffer 0x%08x is unavailable",
 			framebufferHandle,
 		)
 	}
 	descriptor, err := r.services.Graphics.Descriptor(r.serviceOwner, surface)
 	if err != nil {
-		return err
+		return -1, err
 	}
 	rgba, err := r.services.Graphics.RGBA(r.serviceOwner, surface)
 	if err != nil {
-		return err
+		return -1, err
 	}
 	width, height := int(descriptor.Width), int(descriptor.Height)
 	if width <= 0 || height <= 0 ||
 		uint64(width)*uint64(height)*4 > uint64(len(rgba)) {
-		return errors.New("KTF WIPI-C decoded image surface is malformed")
+		return -1, errors.New("KTF WIPI-C decoded image surface is malformed")
 	}
 	pixels := make([]byte, framebuffer.stride*framebuffer.height)
 	width = min(width, framebuffer.width)
@@ -80,9 +83,15 @@ func (r *ktfRuntime) paintWIPICImageFrame(
 		}
 	}
 	if err := r.cpu.WriteMemory(framebuffer.pixels, pixels); err != nil {
-		return err
+		return -1, err
 	}
-	return r.commitKTFWIPICFramebuffer(framebufferHandle)
+	transparentKey := int32(-1)
+	if width > 0 && height > 0 {
+		if corner := binary.LittleEndian.Uint16(pixels); ktfIsColorKeyMagenta565(corner) {
+			transparentKey = int32(corner)
+		}
+	}
+	return transparentKey, r.commitKTFWIPICFramebuffer(framebufferHandle)
 }
 
 func ktfWIPICGraphicsCopyArea(
@@ -354,6 +363,38 @@ func validKTFWIPICRGBTransfer(
 	return uint64(address)+uint64(pixels*4) <= uint64(^uint32(0))+1
 }
 
+// wipicImageColorKey derives a color-keyed image's transparent RGB565 value
+// from the top-left pixel of its already-painted framebuffer, or -1 when that
+// corner is not in the magenta family. It lets restored images recover their
+// key without serializing it.
+func (r *ktfRuntime) wipicImageColorKey(framebufferHandle uint32) int32 {
+	framebuffer := r.wipicFramebuffers[framebufferHandle]
+	if framebuffer == nil {
+		return -1
+	}
+	var encoded [2]byte
+	if err := r.cpu.ReadMemory(framebuffer.pixels, encoded[:]); err != nil {
+		return -1
+	}
+	if corner := binary.LittleEndian.Uint16(encoded[:]); ktfIsColorKeyMagenta565(corner) {
+		return int32(corner)
+	}
+	return -1
+}
+
+// ktfIsColorKeyMagenta565 reports whether an RGB565 value is in the bright
+// magenta family that KTF color-keyed bitmaps use for their transparent
+// background. Keying only this family, rather than any image's corner pixel,
+// keeps ordinary opaque bitmaps from punching holes where a real color happens
+// to repeat, while tolerating the exact shade each title picks (0xf81f, the
+// 0xf816 이노티아 uses, and similar).
+func ktfIsColorKeyMagenta565(v uint16) bool {
+	red := (v >> 11) & 0x1f
+	green := (v >> 5) & 0x3f
+	blue := v & 0x1f
+	return red >= 28 && green <= 4 && blue >= 16
+}
+
 func ktfWIPICRGB565(red, green, blue uint32) uint16 {
 	return uint16(red&0xff)>>3<<11 |
 		uint16(green&0xff)>>2<<5 |
@@ -391,12 +432,14 @@ func ktfWIPICGraphicsDecodeNextImage(
 	if len(asset.Frames) <= 1 || next >= uint32(len(asset.Frames)) {
 		return wipiReturnCode(wipiImageDone), nil
 	}
-	if err := runtime.paintWIPICImageFrame(
+	transparentKey, err := runtime.paintWIPICImageFrame(
 		imageState.framebuffer,
 		asset.Frames[next].Surface,
-	); err != nil {
+	)
+	if err != nil {
 		return wipiReturnCode(wipiBadFormat), err
 	}
+	imageState.transparentKey = transparentKey
 	imageState.frameIndex = next
 	runtime.tracef(
 		"wipic_graphics_decode_next:image=0x%08x:frame=%d/%d",
