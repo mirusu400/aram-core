@@ -5474,13 +5474,24 @@ func ktfCallNative(ctx context.Context, runtime *ktfRuntime) (uint32, error) {
 			)
 		}
 	} else {
+		environment := uint32(0)
 		if runtime.javaEnvironment != 0 {
-			environment, _ := runtime.readU32(runtime.javaEnvironment)
+			environment, _ = runtime.readU32(runtime.javaEnvironment)
 			if environment == 0 {
 				runtime.tracef(
 					"java_native_environment_null:%s",
 					runtime.lastJavaMethod,
 				)
+			}
+		}
+		if environment != 0 {
+			// Clear the environment's native return slot so a value the
+			// native deposits there can be told apart from a stale one.
+			if err := runtime.writeWords(
+				environment+0x24,
+				[]uint32{0, 0},
+			); err != nil {
+				return 0, err
 			}
 		}
 		result, resultValue, callErr := runtime.call(
@@ -5507,6 +5518,17 @@ func ktfCallNative(ctx context.Context, runtime *ktfRuntime) (uint32, error) {
 			)
 		}
 		value = resultValue
+		if environment != 0 {
+			// KTF natives compiled from the SDK return values through the
+			// execution environment: the value kind goes to env+0x24 and the
+			// value itself to env+0x28. R0 at return is scratch - dnff's
+			// calcClet leaves a structure offset there - so prefer the
+			// deposited value whenever the native produced one (issue #45).
+			state, stateErr := runtime.readWords(environment+0x24, 2)
+			if stateErr == nil && state[0] != 0 {
+				value = state[1]
+			}
+		}
 	}
 	high := uint32(0)
 	if strings.HasSuffix(runtime.lastJavaMethod, ")J") {

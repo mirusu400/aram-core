@@ -2869,6 +2869,79 @@ func TestKTFCallNativeCorrectsStaleMethodForCachedGuestNative(t *testing.T) {
 	}
 }
 
+func TestKTFCallNativeReadsEnvironmentReturnSlot(t *testing.T) {
+	// Thumb stub modeling an SDK-compiled native: it deposits kind 2 at
+	// env+0x24 and its value at env+0x28, then returns with scratch garbage
+	// in R0 the way dnff's calcClet does.
+	client := make([]byte, 24)
+	binary.LittleEndian.PutUint16(client[0:], 0x4B03)  // ldr r3, [pc, #12]
+	binary.LittleEndian.PutUint16(client[2:], 0x2202)  // movs r2, #2
+	binary.LittleEndian.PutUint16(client[4:], 0x625A)  // str r2, [r3, #0x24]
+	binary.LittleEndian.PutUint16(client[6:], 0x4A03)  // ldr r2, [pc, #12]
+	binary.LittleEndian.PutUint16(client[8:], 0x629A)  // str r2, [r3, #0x28]
+	binary.LittleEndian.PutUint16(client[10:], 0x2077) // movs r0, #0x77
+	binary.LittleEndian.PutUint16(client[12:], 0x4770) // bx lr
+	binary.LittleEndian.PutUint16(client[14:], 0x46c0) // nop
+	binary.LittleEndian.PutUint32(client[20:], 1234)
+	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     client,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.cpu.Close()
+	if err := runtime.mapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	environment, err := runtime.allocateWords(ktfJavaEnvironmentWords)
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder, err := runtime.allocateWords(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.writeWords(holder, []uint32{environment}); err != nil {
+		t.Fatal(err)
+	}
+	runtime.javaEnvironment = holder
+	if err := runtime.writeU32(ktfImageBase+16, environment); err != nil {
+		t.Fatal(err)
+	}
+	// Leave a stale value in the slot; ktfCallNative must clear it before
+	// the call so a native that writes nothing is not misread.
+	if err := runtime.writeWords(
+		environment+0x24,
+		[]uint32{2, 0xdead},
+	); err != nil {
+		t.Fatal(err)
+	}
+	parameters, err := runtime.allocateWords(4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR0: ktfImageBase | 1,
+		cpu.RegisterR1: parameters,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := ktfCallNative(context.Background(), runtime); err != nil {
+		t.Fatal(err)
+	}
+
+	value, err := runtime.readU32(parameters)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value != 1234 {
+		t.Fatalf("native return = %d, want 1234 from the environment slot", value)
+	}
+}
 func TestKTFJavaStringExposesNativeLayoutAndCopiesToGuest(t *testing.T) {
 	runtime, err := newKTFRuntime(interpreter.New(), ktf.Package{
 		ClientName: "client.bin0",
