@@ -213,6 +213,10 @@ func (r *Runtime) ensureJavaRuntime() (*JavaRuntime, error) {
 	host.Heap = guest.Heap{CPU: r.CPU, Shared: &r.Public.Heap}
 	host.Mapped = true
 	host.DeferThreads = false
+	// The Raptor AOT-Java bridge cannot deliver a host-raised Java exception to
+	// a guest catch block, so a first-run read-only open of a not-yet-written
+	// private config file must not fault the machine.
+	host.LenientMissingRead = true
 	scratch, err := r.Public.Heap.Allocate(16*4, true)
 	if err != nil || scratch == 0 {
 		return nil, errors.New("allocate Raptor Java call scratch")

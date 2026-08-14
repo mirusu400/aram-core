@@ -72,8 +72,24 @@ func (r *Runtime) handleFileMethod(
 		case ktfFileReadOnly:
 			openMode = shared.OpenRead
 			if !exists {
-				r.tracef("java_file_open_missing:%s", filename)
-				return 0, r.raiseHostJavaException("java/io/IOException")
+				if r.LenientMissingRead && namespace == shared.NamespacePrivate {
+					// No guest exception unwinding is available (Raptor host):
+					// materialize the missing private file empty so the title
+					// reads EOF and falls back to defaults, matching a device
+					// that catches the first-run IOException.
+					if writeErr := r.Services.Storage.WriteFile(
+						namespace,
+						filename,
+						nil,
+					); writeErr != nil {
+						return 0, r.raiseHostJavaException("java/io/IOException")
+					}
+					exists = true
+					r.tracef("java_file_open_missing_lenient:%s", filename)
+				} else {
+					r.tracef("java_file_open_missing:%s", filename)
+					return 0, r.raiseHostJavaException("java/io/IOException")
+				}
 			}
 		case ktfFileWrite:
 			openMode = shared.OpenRead | shared.OpenWrite |

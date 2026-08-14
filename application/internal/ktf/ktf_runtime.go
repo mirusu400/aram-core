@@ -204,9 +204,16 @@ type Runtime struct {
 	PresentCount            uint32
 	TickMS                  uint64
 
-	NativeParameterBase  uint32
-	parameterScratch     [4]byte
-	DeferThreads         bool
+	NativeParameterBase uint32
+	parameterScratch    [4]byte
+	DeferThreads        bool
+	// LenientMissingRead makes a read-only open of a missing private file
+	// succeed with empty contents instead of raising IOException. The Raptor
+	// AOT-Java host sets this because it has no guest exception unwinding: a
+	// shipped title's first-run "open config read-only" would otherwise fault
+	// the machine where a real device catches the exception and falls back to
+	// defaults (월드장기체스 opens /CCCcfg before it is ever written).
+	LenientMissingRead   bool
 	yieldRequested       bool
 	terminationRequested bool
 	Tasks                []*Task
