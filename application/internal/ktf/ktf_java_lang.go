@@ -1,0 +1,880 @@
+package ktf
+
+import (
+	"context"
+	"fmt"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
+	"strconv"
+	"strings"
+
+	shared "github.com/mirusu400/aram-core/runtime"
+)
+
+func (r *Runtime) handleIntegerMethod(
+	name, descriptor string,
+) (uint32, error) {
+	switch name + descriptor {
+	case "<init>(I)V":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		value, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		r.integerValues[instance] = int32(value)
+		return 0, nil
+	case "byteValue()B":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		return uint32(int32(int8(r.integerValues[instance]))), nil
+	case "shortValue()S":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		return uint32(int32(int16(r.integerValues[instance]))), nil
+	case "intValue()I", "longValue()J":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		if name == "longValue" {
+			return r.javaLongResult(
+				uint64(int64(r.integerValues[instance])),
+			), nil
+		}
+		return uint32(r.integerValues[instance]), nil
+	case "toString()Ljava/lang/String;":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		return r.NewJavaString(strconv.FormatInt(int64(r.integerValues[instance]), 10))
+	case "parseInt(Ljava/lang/String;)I", "parseInt(Ljava/lang/String;I)I":
+		text, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		radix := uint32(10)
+		if descriptor == "(Ljava/lang/String;I)I" {
+			radix, err = r.parameter(2)
+			if err != nil {
+				return 0, err
+			}
+		}
+		if radix < 2 || radix > 36 {
+			return 0, nil
+		}
+		value, parseErr := strconv.ParseInt(
+			strings.TrimSpace(r.javaStringValue(text)),
+			int(radix),
+			32,
+		)
+		if parseErr != nil {
+			return 0, nil
+		}
+		return uint32(int32(value)), nil
+	case "toString(I)Ljava/lang/String;":
+		value, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		return r.NewJavaString(strconv.FormatInt(int64(int32(value)), 10))
+	case "toString(II)Ljava/lang/String;":
+		value, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		radix, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		if radix < 2 || radix > 36 {
+			radix = 10
+		}
+		return r.NewJavaString(strconv.FormatInt(
+			int64(int32(value)),
+			int(radix),
+		))
+	case "toHexString(I)Ljava/lang/String;",
+		"toOctalString(I)Ljava/lang/String;",
+		"toBinaryString(I)Ljava/lang/String;":
+		value, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		radix := 16
+		switch name {
+		case "toOctalString":
+			radix = 8
+		case "toBinaryString":
+			radix = 2
+		}
+		return r.NewJavaString(strconv.FormatUint(uint64(value), radix))
+	default:
+		return 0, nil
+	}
+}
+
+func (r *Runtime) handleLongMethod(name, descriptor string) (uint32, error) {
+	switch name + descriptor {
+	case "<init>(J)V":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		low, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		high, err := r.parameter(3)
+		if err != nil {
+			return 0, err
+		}
+		r.longValues[instance] = int64(uint64(high)<<32 | uint64(low))
+		return 0, nil
+	case "longValue()J":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		return r.javaLongResult(uint64(r.longValues[instance])), nil
+	case "toString()Ljava/lang/String;":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		return r.NewJavaString(strconv.FormatInt(r.longValues[instance], 10))
+	case "parseLong(Ljava/lang/String;)J",
+		"parseLong(Ljava/lang/String;I)J":
+		text, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		radix := uint32(10)
+		if descriptor == "(Ljava/lang/String;I)J" {
+			radix, err = r.parameter(2)
+			if err != nil {
+				return 0, err
+			}
+		}
+		if radix < 2 || radix > 36 {
+			return r.javaLongResult(0), nil
+		}
+		value, parseErr := strconv.ParseInt(
+			strings.TrimSpace(r.javaStringValue(text)),
+			int(radix),
+			64,
+		)
+		if parseErr != nil {
+			return r.javaLongResult(0), nil
+		}
+		return r.javaLongResult(uint64(value)), nil
+	case "toString(J)Ljava/lang/String;",
+		"toString(JI)Ljava/lang/String;":
+		low, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		high, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		radix := uint32(10)
+		if descriptor == "(JI)Ljava/lang/String;" {
+			radix, err = r.parameter(3)
+			if err != nil {
+				return 0, err
+			}
+			if radix < 2 || radix > 36 {
+				radix = 10
+			}
+		}
+		value := int64(uint64(high)<<32 | uint64(low))
+		return r.NewJavaString(strconv.FormatInt(value, int(radix)))
+	default:
+		return 0, nil
+	}
+}
+
+func (r *Runtime) handleThrowableMethod(
+	name, descriptor string,
+) (uint32, error) {
+	instance, err := r.parameter(1)
+	if err != nil {
+		return 0, err
+	}
+	switch name + descriptor {
+	case "<init>()V":
+		delete(r.throwableMessages, instance)
+		return 0, nil
+	case "<init>(Ljava/lang/String;)V":
+		message, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		r.throwableMessages[instance] = message
+		return 0, nil
+	case "getMessage()Ljava/lang/String;":
+		return r.throwableMessages[instance], nil
+	case "printStackTrace()V":
+		message := r.javaStringValue(r.throwableMessages[instance])
+		r.tracef(
+			"java_stack_trace:instance=0x%08x:message=%q",
+			instance,
+			message,
+		)
+		return 0, nil
+	case "toString()Ljava/lang/String;":
+		className := "java/lang/Throwable"
+		if instance != 0 {
+			if classAddress, readErr := r.ReadU32(instance + 4); readErr == nil {
+				if class, inspectErr := r.InspectJavaClass(classAddress); inspectErr == nil {
+					className = class.Name
+				}
+			}
+		}
+		text := strings.ReplaceAll(className, "/", ".")
+		if message := r.javaStringValue(r.throwableMessages[instance]); message != "" {
+			text += ": " + message
+		}
+		return r.NewJavaString(text)
+	default:
+		return 0, nil
+	}
+}
+
+func (r *Runtime) handleByteMethod(name, descriptor string) (uint32, error) {
+	switch name + descriptor {
+	case "parseByte(Ljava/lang/String;)B", "parseByte(Ljava/lang/String;I)B":
+		text, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		radix := uint32(10)
+		if descriptor == "(Ljava/lang/String;I)B" {
+			radix, err = r.parameter(2)
+			if err != nil {
+				return 0, err
+			}
+		}
+		if radix < 2 || radix > 36 {
+			return 0, nil
+		}
+		value, parseErr := strconv.ParseInt(
+			strings.TrimSpace(r.javaStringValue(text)),
+			int(radix),
+			8,
+		)
+		if parseErr != nil {
+			return 0, nil
+		}
+		return uint32(int32(int8(value))), nil
+	default:
+		return 0, nil
+	}
+}
+
+func (r *Runtime) handleMathMethod(name, descriptor string) (uint32, error) {
+	left, err := r.signedParameter(1)
+	if err != nil {
+		return 0, err
+	}
+	switch name + descriptor {
+	case "abs(I)I":
+		if left < 0 {
+			left = -left
+		}
+		return uint32(left), nil
+	case "max(II)I", "min(II)I":
+		right, valueErr := r.signedParameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if name == "max" {
+			if right > left {
+				left = right
+			}
+		} else if right < left {
+			left = right
+		}
+		return uint32(left), nil
+	default:
+		return 0, nil
+	}
+}
+
+func (r *Runtime) handleRandomMethod(
+	name, descriptor string,
+) (uint32, error) {
+	instance, err := r.parameter(1)
+	if err != nil {
+		return 0, err
+	}
+	setSeed := func(seed uint64) {
+		r.randomSeeds[instance] = shared.JavaRandomSeed(int64(seed))
+	}
+	next := func(bits uint8) (uint32, error) {
+		state, ok := r.randomSeeds[instance]
+		if !ok {
+			state = shared.JavaRandomSeed(int64(instance))
+		}
+		value, err := shared.JavaRandomBits(&state, bits)
+		if err == nil {
+			r.randomSeeds[instance] = state
+		}
+		return value, err
+	}
+	switch name + descriptor {
+	case "<init>()V":
+		setSeed(uint64(instance))
+		return 0, nil
+	case "<init>(J)V", "setSeed(J)V":
+		low, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		high, valueErr := r.parameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		setSeed(uint64(high)<<32 | uint64(low))
+		return 0, nil
+	case "nextInt()I":
+		return next(32)
+	case "nextInt(I)I":
+		bound, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if int32(bound) <= 0 {
+			return 0, nil
+		}
+		value, valueErr := next(31)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		return uint32(uint64(value) * uint64(bound) >> 31), nil
+	case "nextBoolean()Z":
+		return next(1)
+	default:
+		return 0, nil
+	}
+}
+
+func (r *Runtime) handleDateMethod(name, descriptor string) (uint32, error) {
+	instance, err := r.parameter(1)
+	if err != nil {
+		return 0, err
+	}
+	switch name + descriptor {
+	case "<init>()V":
+		r.dates[instance] = int64(r.TickMS)
+		return 0, nil
+	case "<init>(J)V", "setTime(J)V":
+		low, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		high, valueErr := r.parameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		r.dates[instance] = int64(uint64(high)<<32 | uint64(low))
+		return 0, nil
+	case "getTime()J":
+		return r.javaLongResult(uint64(r.dates[instance])), nil
+	default:
+		return 0, nil
+	}
+}
+
+func (r *Runtime) handleVectorMethod(
+	name, descriptor string,
+) (uint32, error) {
+	instance, err := r.parameter(1)
+	if err != nil {
+		return 0, err
+	}
+	values := r.Vectors[instance]
+	switch name + descriptor {
+	case "<init>()V", "<init>(I)V", "<init>(II)V":
+		r.Vectors[instance] = nil
+		return 0, nil
+	case "addElement(Ljava/lang/Object;)V":
+		value, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		r.Vectors[instance] = append(values, value)
+		return 0, nil
+	case "insertElementAt(Ljava/lang/Object;I)V":
+		value, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		index, valueErr := r.parameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if index > uint32(len(values)) {
+			return 0, nil
+		}
+		values = append(values, 0)
+		copy(values[index+1:], values[index:])
+		values[index] = value
+		r.Vectors[instance] = values
+		return 0, nil
+	case "push(Ljava/lang/Object;)Ljava/lang/Object;":
+		value, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		r.Vectors[instance] = append(values, value)
+		return value, nil
+	case "elementAt(I)Ljava/lang/Object;":
+		index, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if index >= uint32(len(values)) {
+			return 0, nil
+		}
+		return values[index], nil
+	case "setElementAt(Ljava/lang/Object;I)V":
+		value, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		index, valueErr := r.parameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if index < uint32(len(values)) {
+			values[index] = value
+		}
+		return 0, nil
+	case "removeElementAt(I)V":
+		index, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if index < uint32(len(values)) {
+			r.Vectors[instance] = append(values[:index:index], values[index+1:]...)
+		}
+		return 0, nil
+	case "removeElement(Ljava/lang/Object;)Z":
+		target, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		for index, value := range values {
+			if value == target {
+				r.Vectors[instance] = append(
+					values[:index:index],
+					values[index+1:]...,
+				)
+				return 1, nil
+			}
+		}
+		return 0, nil
+	case "removeAllElements()V":
+		r.Vectors[instance] = nil
+		return 0, nil
+	case "size()I", "capacity()I":
+		return uint32(len(values)), nil
+	case "isEmpty()Z", "empty()Z":
+		if len(values) == 0 {
+			return 1, nil
+		}
+		return 0, nil
+	case "contains(Ljava/lang/Object;)Z":
+		target, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		for _, value := range values {
+			if value == target {
+				return 1, nil
+			}
+		}
+		return 0, nil
+	case "indexOf(Ljava/lang/Object;)I":
+		target, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		for index, value := range values {
+			if value == target {
+				return uint32(index), nil
+			}
+		}
+		return ^uint32(0), nil
+	case "copyInto([Ljava/lang/Object;)V":
+		array, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if array == 0 {
+			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
+		}
+		length, valueErr := r.javaArrayLength(array)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if uint32(len(values)) > length {
+			return 0, r.raiseHostJavaException(
+				"java/lang/ArrayIndexOutOfBoundsException",
+			)
+		}
+		fields, valueErr := r.ReadU32(array)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if len(values) != 0 {
+			if valueErr = r.writeWords(fields+8, values); valueErr != nil {
+				return 0, valueErr
+			}
+		}
+		return 0, nil
+	case "pop()Ljava/lang/Object;":
+		if len(values) == 0 {
+			return 0, nil
+		}
+		value := values[len(values)-1]
+		r.Vectors[instance] = values[:len(values)-1]
+		return value, nil
+	case "peek()Ljava/lang/Object;":
+		if len(values) == 0 {
+			return 0, nil
+		}
+		return values[len(values)-1], nil
+	case "elements()Ljava/util/Enumeration;":
+		return r.newJavaEnumeration(values)
+	default:
+		return 0, nil
+	}
+}
+
+func (r *Runtime) javaHashtableKey(instance uint32) string {
+	if value, ok := r.JavaStrings[instance]; ok {
+		return "string:" + value
+	}
+	return fmt.Sprintf("object:%08x", instance)
+}
+
+func (r *Runtime) handleHashtableMethod(
+	name, descriptor string,
+) (uint32, error) {
+	instance, err := r.parameter(1)
+	if err != nil {
+		return 0, err
+	}
+	table := r.hashtables[instance]
+	switch name + descriptor {
+	case "<init>()V", "<init>(I)V":
+		r.hashtables[instance] = make(map[string]ktfHashtableEntry)
+		return 0, nil
+	case "put(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;":
+		key, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		value, valueErr := r.parameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if table == nil {
+			table = make(map[string]ktfHashtableEntry)
+			r.hashtables[instance] = table
+		}
+		normalized := r.javaHashtableKey(key)
+		previous := table[normalized].value
+		table[normalized] = ktfHashtableEntry{key: key, value: value}
+		return previous, nil
+	case "get(Ljava/lang/Object;)Ljava/lang/Object;",
+		"remove(Ljava/lang/Object;)Ljava/lang/Object;",
+		"containsKey(Ljava/lang/Object;)Z":
+		key, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		normalized := r.javaHashtableKey(key)
+		entry, ok := table[normalized]
+		if name == "containsKey" {
+			if ok {
+				return 1, nil
+			}
+			return 0, nil
+		}
+		if name == "remove" {
+			delete(table, normalized)
+		}
+		return entry.value, nil
+	case "contains(Ljava/lang/Object;)Z":
+		target, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		for _, entry := range table {
+			if entry.value == target {
+				return 1, nil
+			}
+		}
+		return 0, nil
+	case "size()I":
+		return uint32(len(table)), nil
+	case "isEmpty()Z":
+		if len(table) == 0 {
+			return 1, nil
+		}
+		return 0, nil
+	case "clear()V":
+		clear(table)
+		return 0, nil
+	case "keys()Ljava/util/Enumeration;",
+		"elements()Ljava/util/Enumeration;":
+		values := make([]uint32, 0, len(table))
+		for _, entry := range table {
+			value := entry.value
+			if name == "keys" {
+				value = entry.key
+			}
+			values = append(values, value)
+		}
+		return r.newJavaEnumeration(values)
+	default:
+		return 0, nil
+	}
+}
+
+func (r *Runtime) newJavaEnumeration(values []uint32) (uint32, error) {
+	instance, err := r.NewHostJavaObject("java/util/Enumeration")
+	if err != nil {
+		return 0, err
+	}
+	r.enumerations[instance] = &ktfEnumeration{
+		values: append([]uint32(nil), values...),
+	}
+	return instance, nil
+}
+
+func (r *Runtime) handleEnumerationMethod(
+	name, descriptor string,
+) (uint32, error) {
+	instance, err := r.parameter(1)
+	if err != nil {
+		return 0, err
+	}
+	enumeration := r.enumerations[instance]
+	switch name + descriptor {
+	case "hasMoreElements()Z":
+		if enumeration != nil && enumeration.index < uint32(len(enumeration.values)) {
+			return 1, nil
+		}
+		return 0, nil
+	case "nextElement()Ljava/lang/Object;":
+		if enumeration == nil || enumeration.index >= uint32(len(enumeration.values)) {
+			return 0, nil
+		}
+		value := enumeration.values[enumeration.index]
+		enumeration.index++
+		return value, nil
+	default:
+		return 0, nil
+	}
+}
+
+func (r *Runtime) handleTimerMethod(
+	ctx context.Context,
+	name, descriptor string,
+) (uint32, error) {
+	switch name + descriptor {
+	case "<init>()V":
+		return 0, nil
+	case "cancel()V":
+		timer, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		cancelled := 0
+		for instance, task := range r.javaTimerTasks {
+			if task == nil || task.timerOwner != timer {
+				continue
+			}
+			task.Done = true
+			delete(r.javaTimerTasks, instance)
+			r.javaTimerTaskStates[instance] = ktfJavaTimerCancelled
+			cancelled++
+		}
+		r.tracef(
+			"java_timer_cancel:timer=0x%08x:tasks=%d",
+			timer,
+			cancelled,
+		)
+		return 0, nil
+	case "cancel()Z":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		result := uint32(0)
+		if r.javaTimerTaskStates[instance] == ktfJavaTimerScheduled {
+			result = 1
+		}
+		if task := r.javaTimerTasks[instance]; task != nil {
+			task.Done = true
+			delete(r.javaTimerTasks, instance)
+		}
+		r.javaTimerTaskStates[instance] = ktfJavaTimerCancelled
+		r.tracef(
+			"java_timer_task_cancel:task=0x%08x:scheduled=%t",
+			instance,
+			result != 0,
+		)
+		return result, nil
+	case "schedule(Ljava/util/TimerTask;J)V",
+		"schedule(Ljava/util/TimerTask;JJ)V",
+		"scheduleAtFixedRate(Ljava/util/TimerTask;JJ)V":
+		timer, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		task, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		if task == 0 {
+			return r.raiseJavaException("java/lang/NullPointerException", 0)
+		}
+		delay, err := r.javaTimerLongParameter(3)
+		if err != nil {
+			return 0, err
+		}
+		period := int64(0)
+		if descriptor != "(Ljava/util/TimerTask;J)V" {
+			period, err = r.javaTimerLongParameter(5)
+			if err != nil {
+				return 0, err
+			}
+		}
+		if delay < 0 || period < 0 ||
+			descriptor != "(Ljava/util/TimerTask;J)V" && period == 0 {
+			return r.raiseJavaException("java/lang/IllegalArgumentException", 0)
+		}
+		if r.javaTimerTaskStates[task] != 0 {
+			return r.raiseJavaException("java/lang/IllegalStateException", 0)
+		}
+		if !r.DeferThreads {
+			return r.invokeJavaVirtual(ctx, task, "run", "()V")
+		}
+		queued, err := r.queueJavaVirtualTask(task, "run", "()V")
+		if err != nil {
+			return 0, err
+		}
+		deadline := r.javaTimerDeadline(uint64(delay))
+		queued.timerTask = task
+		queued.timerOwner = timer
+		queued.timerPeriodMS = uint64(period)
+		queued.timerDeadlineMS = deadline
+		queued.timerFixedRate = name == "scheduleAtFixedRate"
+		if delay != 0 {
+			queued.WakeAtMS = deadline
+		}
+		r.javaTimerTasks[task] = queued
+		r.javaTimerTaskStates[task] = ktfJavaTimerScheduled
+		r.tracef(
+			"java_timer_schedule:timer=0x%08x:task=0x%08x:"+
+				"delay_ms=%d:period_ms=%d:fixed_rate=%t",
+			timer,
+			task,
+			delay,
+			period,
+			queued.timerFixedRate,
+		)
+		return 0, nil
+	default:
+		return 0, nil
+	}
+}
+
+func (r *Runtime) javaTimerLongParameter(index uint32) (int64, error) {
+	low, err := r.parameter(index)
+	if err != nil {
+		return 0, err
+	}
+	high, err := r.parameter(index + 1)
+	if err != nil {
+		return 0, err
+	}
+	return int64(uint64(high)<<32 | uint64(low)), nil
+}
+
+func (r *Runtime) javaTimerDeadline(delay uint64) uint64 {
+	if delay > ^uint64(0)-r.TickMS {
+		return ^uint64(0)
+	}
+	return r.TickMS + delay
+}
+
+func (r *Runtime) beginJavaTimerTask(task *Task) {
+	if task == nil || task.timerTask == 0 || task.timerPeriodMS != 0 {
+		return
+	}
+	if r.javaTimerTasks[task.timerTask] == task &&
+		r.javaTimerTaskStates[task.timerTask] == ktfJavaTimerScheduled {
+		delete(r.javaTimerTasks, task.timerTask)
+		r.javaTimerTaskStates[task.timerTask] = ktfJavaTimerExecuted
+	}
+}
+
+func (r *Runtime) completeJavaTimerTask(task *Task) error {
+	if task == nil || task.timerTask == 0 {
+		return nil
+	}
+	instance := task.timerTask
+	if task.timerPeriodMS == 0 {
+		if r.javaTimerTasks[instance] == task {
+			delete(r.javaTimerTasks, instance)
+			r.javaTimerTaskStates[instance] = ktfJavaTimerExecuted
+		}
+		return nil
+	}
+	if r.javaTimerTasks[instance] != task ||
+		r.javaTimerTaskStates[instance] != ktfJavaTimerScheduled {
+		return nil
+	}
+	deadline := r.javaTimerDeadline(task.timerPeriodMS)
+	if task.timerFixedRate {
+		deadline = task.timerDeadlineMS
+		if task.timerPeriodMS > ^uint64(0)-deadline {
+			deadline = ^uint64(0)
+		} else {
+			deadline += task.timerPeriodMS
+		}
+	}
+	queued, err := r.queueJavaVirtualTask(instance, "run", "()V")
+	if err != nil {
+		return fmt.Errorf("reschedule KTF Java TimerTask: %w", err)
+	}
+	queued.WakeAtMS = deadline
+	queued.timerTask = instance
+	queued.timerOwner = task.timerOwner
+	queued.timerPeriodMS = task.timerPeriodMS
+	queued.timerDeadlineMS = deadline
+	queued.timerFixedRate = task.timerFixedRate
+	r.javaTimerTasks[instance] = queued
+	r.tracef(
+		"java_timer_reschedule:timer=0x%08x:task=0x%08x:wake_at_ms=%d",
+		queued.timerOwner,
+		instance,
+		deadline,
+	)
+	return nil
+}

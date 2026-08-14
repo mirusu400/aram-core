@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	machinecore "github.com/mirusu400/aram-core/core"
-	"github.com/mirusu400/aram-core/loader/raptor"
+	raptorloader "github.com/mirusu400/aram-core/loader/raptor"
 )
 
 func TestReferenceRaptorClet(t *testing.T) {
@@ -36,7 +36,7 @@ func TestReferenceRaptorClet(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if _, err := raptor.Inspect(payload); err != nil {
+		if _, err := raptorloader.Inspect(payload); err != nil {
 			return nil
 		}
 		packagePath, data = path, payload
@@ -62,9 +62,9 @@ func TestReferenceRaptorClet(t *testing.T) {
 	t.Logf(
 		"%s: Clet=%+v initialized=%t started=%t result=%+v error=%v",
 		packagePath,
-		machine.raptor.clet,
-		machine.raptor.moduleInitialized,
-		machine.raptor.started,
+		machine.raptor.Clet,
+		machine.raptor.ModuleInitialized,
+		machine.raptor.Started,
 		machine.LastResult(),
 		err,
 	)
@@ -95,7 +95,7 @@ func TestReferenceRaptorClet(t *testing.T) {
 			}
 			colors[uint32(r)<<16|uint32(g)<<8|uint32(b)] = struct{}{}
 		}
-		gameState, _ := machine.wipi.readU32(0x0152eea0)
+		gameState, _ := machine.wipi.ReadU32(0x0152eea0)
 		if frame < 8 || frame%32 == 31 ||
 			gameState != previousState || frameErr != nil {
 			t.Logf(
@@ -103,7 +103,7 @@ func TestReferenceRaptorClet(t *testing.T) {
 				frame,
 				gameState,
 				machine.LastResult(),
-				machine.wipi.stats.PresentCount,
+				machine.wipi.Stats.PresentCount,
 				nonBlack,
 				len(colors),
 				frameErr,
@@ -129,7 +129,7 @@ func TestReferenceRaptorClet(t *testing.T) {
 		t.Logf("frame PNG: %s", screenshot)
 	}
 	counts := make(map[uint32]int)
-	for _, call := range machine.raptor.importTrace {
+	for _, call := range machine.raptor.ImportTrace {
 		counts[call.Ordinal]++
 	}
 	ordinals := make([]uint32, 0, len(counts))
@@ -141,8 +141,8 @@ func TestReferenceRaptorClet(t *testing.T) {
 	for _, ordinal := range ordinals {
 		t.Logf("  %d=%d", ordinal, counts[ordinal])
 	}
-	traceStart := max(0, len(machine.raptor.importTrace)-128)
-	for index, call := range machine.raptor.importTrace[traceStart:] {
+	traceStart := max(0, len(machine.raptor.ImportTrace)-128)
+	for index, call := range machine.raptor.ImportTrace[traceStart:] {
 		t.Logf(
 			"import[%d]: ordinal=%d args=%08x lr=0x%08x",
 			traceStart+index,

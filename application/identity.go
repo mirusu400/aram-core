@@ -58,7 +58,7 @@ func imageSHA256(kind loader.Kind, segments []imageSegment) string {
 	return hex.EncodeToString(digest.Sum(nil))
 }
 
-// raptorImageSHA256 covers every allocated section in the order mapRaptorImage
+// raptorImageSHA256 covers every allocated section in the order raptorrt.MapRaptorImage
 // maps them, so the digest describes the same address space the guest runs in.
 func raptorImageSHA256(image raptor.Image) string {
 	sections := image.AllocatedSections()

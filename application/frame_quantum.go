@@ -1,6 +1,11 @@
 package application
 
-import "time"
+import (
+	"github.com/mirusu400/aram-core/application/internal/guest"
+	"time"
+
+	ktfrt "github.com/mirusu400/aram-core/application/internal/ktf"
+)
 
 // FrameQuantum reports how much guest time one StepFrame advances.
 //
@@ -14,22 +19,8 @@ func (m *Machine) FrameQuantum() time.Duration {
 	defer m.mu.Unlock()
 	switch {
 	case m.ktf != nil:
-		return ktfFrameDuration
+		return ktfrt.FrameDuration
 	default:
-		return wipiFrameDuration
+		return guest.WIPIFrameDuration
 	}
-}
-
-// FrameQuantum reports how much guest time one StepFrame advances for a SKVM
-// machine, which paces itself from the shared service configuration.
-func (m *skvmMachine) FrameQuantum() time.Duration {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.frameQuantum > 0 {
-		return m.frameQuantum
-	}
-	if m.services == nil || m.services.Config.FrameDuration <= 0 {
-		return wipiFrameDuration
-	}
-	return m.services.Config.FrameDuration
 }

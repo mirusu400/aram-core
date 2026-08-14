@@ -1,6 +1,7 @@
 package application
 
 import (
+	ktfrt "github.com/mirusu400/aram-core/application/internal/ktf"
 	"image"
 	"image/color"
 	"testing"
@@ -11,27 +12,27 @@ import (
 
 func TestKTFMachineFramebufferHidesUnpresentedPaint(t *testing.T) {
 	drawBuffer := image.NewRGBA(image.Rect(0, 0, 2, 1))
-	runtime, err := newKTFRuntimeForProfile(
+	runtime, err := ktfrt.NewRuntimeForProfile(
 		interpreter.New(),
 		ktf.Package{
 			ClientName: "client.bin0",
 			Client:     []byte{0x70, 0x47},
 		},
 		drawBuffer,
-		ktfProfileID,
+		ktfrt.ProfileID,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer runtime.cpu.Close()
-	if err := runtime.mapImageAndHost(); err != nil {
+	defer runtime.CPU.Close()
+	if err := runtime.MapImageAndHost(); err != nil {
 		t.Fatal(err)
 	}
-	runtime.jvmContext, err = runtime.allocateWords(3 + 128)
+	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
 	if err != nil {
 		t.Fatal(err)
 	}
-	graphics, err := runtime.ensureScreenGraphics()
+	graphics, err := runtime.EnsureScreenGraphics()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,8 +43,8 @@ func TestKTFMachineFramebufferHidesUnpresentedPaint(t *testing.T) {
 	}
 
 	drawBuffer.SetRGBA(0, 0, color.RGBA{R: 0xff, A: 0xff})
-	runtime.graphics[graphics].pixelsDirty = true
-	if err := runtime.recordPresentation(); err != nil {
+	runtime.Graphics[graphics].PixelsDirty = true
+	if err := runtime.RecordPresentation(); err != nil {
 		t.Fatal(err)
 	}
 	drawBuffer.SetRGBA(0, 0, color.RGBA{B: 0xff, A: 0xff})

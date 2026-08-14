@@ -1,0 +1,318 @@
+package wipi
+
+import (
+	"github.com/mirusu400/aram-core/application/internal/guest"
+	"time"
+)
+
+func (r *Runtime) dispatchMedia(name string) (guest.WIPIReturn, bool, error) {
+	count := mediaArgumentCount(name)
+	args, err := r.args(count)
+	if err != nil {
+		return guest.WIPIReturn{}, true, err
+	}
+	arg := func(index int) uint32 {
+		if index >= len(args) {
+			return 0
+		}
+		return args[index]
+	}
+	clip := func() *wipiMediaClip { return r.MediaClips[arg(0)] }
+	switch name {
+	case "MC_mdaClipCreate":
+		mediaType, err := r.ReadCString(arg(0))
+		if err != nil {
+			return guest.WIPIReturn{}, true, err
+		}
+		capacity := int32(arg(1))
+		if capacity < 0 || capacity > int32(maxWIPIString) {
+			return guest.WIPIReturn{}, true, nil
+		}
+		handle, err := r.Heap.Allocate(64, true)
+		if err != nil || handle == 0 {
+			return guest.WIPIReturn{}, true, err
+		}
+		r.MediaClips[handle] = &wipiMediaClip{
+			Handle:    handle,
+			mediaType: append([]byte(nil), mediaType...),
+			capacity:  capacity,
+			Callback:  arg(2),
+			volume:    100,
+		}
+		serviceID, serviceErr := r.Services.Media.CreateClip(
+			r.ServiceOwner,
+			string(mediaType),
+			uint64(max(0, int(capacity))),
+		)
+		if serviceErr != nil {
+			delete(r.MediaClips, handle)
+			r.Heap.Release(handle)
+			return guest.WIPIReturn{}, true, nil
+		}
+		r.MediaServices[handle] = serviceID
+		return guest.WIPIReturn{Low: handle}, true, nil
+	case "MC_mdaClipFree":
+		if clip() == nil {
+			return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
+		}
+		if serviceID := r.MediaServices[arg(0)]; serviceID != 0 {
+			if err := r.Services.Media.DestroyClip(
+				r.ServiceOwner,
+				serviceID,
+				r.Services.Events,
+			); err != nil {
+				return guest.WIPIReturn{}, true, err
+			}
+			delete(r.MediaServices, arg(0))
+		}
+		delete(r.MediaClips, arg(0))
+		r.Heap.Release(arg(0))
+		return guest.WIPIReturn{}, true, nil
+	case "MC_mdaClipGetType":
+		current := clip()
+		if current == nil {
+			return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
+		}
+		count, err := r.writeCString(arg(1), current.mediaType, int32(arg(2)))
+		return guest.WIPIReturn{Low: count}, true, err
+	case "MC_mdaClipPutData":
+		return r.putMediaData(clip(), arg(1), int32(arg(2)))
+	case "MC_mdaClipPutDataByFile":
+		current := clip()
+		if current == nil {
+			return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
+		}
+		name, err := r.guestPath(arg(1), int32(arg(3)))
+		if err != nil {
+			return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
+		}
+		data, ok := r.Files[name]
+		if !ok {
+			return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
+		}
+		size := min(len(data), max(0, int(int32(arg(2)))))
+		return r.appendMediaData(current, data[:size])
+	case "MC_mdaClipGetData":
+		current := clip()
+		length := int(int32(arg(2)))
+		if current == nil || length < 0 {
+			return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
+		}
+		count := min(length, len(current.Data))
+		if err := r.CPU.WriteMemory(arg(1), current.Data[:count]); err != nil {
+			return guest.WIPIReturn{}, true, err
+		}
+		current.Data = append(current.Data[:0], current.Data[count:]...)
+		if serviceID := r.MediaServices[current.Handle]; serviceID != 0 {
+			if err := r.Services.Media.Clear(r.ServiceOwner, serviceID); err != nil {
+				return guest.WIPIReturn{}, true, err
+			}
+			if _, err := r.Services.Media.Append(
+				r.ServiceOwner,
+				serviceID,
+				current.Data,
+			); err != nil {
+				return guest.WIPIReturn{}, true, err
+			}
+		}
+		return guest.WIPIReturn{Low: uint32(count)}, true, nil
+	case "MC_mdaClipAvailableDataSize":
+		if current := clip(); current != nil {
+			return guest.WIPIReturn{Low: uint32(len(current.Data))}, true, nil
+		}
+		return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
+	case "MC_mdaClipClearData":
+		if current := clip(); current != nil {
+			if serviceID := r.MediaServices[current.Handle]; serviceID != 0 {
+				if err := r.Services.Media.Clear(r.ServiceOwner, serviceID); err != nil {
+					return guest.WIPIReturn{}, true, err
+				}
+			}
+			current.Data = nil
+			return guest.WIPIReturn{}, true, nil
+		}
+		return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
+	case "MC_mdaClipSetPosition":
+		if current := clip(); current != nil {
+			current.position = int32(arg(1))
+			if serviceID := r.MediaServices[current.Handle]; serviceID != 0 &&
+				current.position >= 0 {
+				_ = r.Services.Media.Seek(
+					r.ServiceOwner,
+					serviceID,
+					time.Duration(current.position)*time.Millisecond,
+				)
+			}
+			return guest.WIPIReturn{}, true, nil
+		}
+		return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
+	case "MC_mdaClipGetVolume":
+		if current := clip(); current != nil {
+			return guest.WIPIReturn{Low: uint32(current.volume)}, true, nil
+		}
+		return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
+	case "MC_mdaClipSetVolume":
+		if current := clip(); current != nil {
+			current.volume = int32(guest.Clamp(int(int32(arg(1))), 0, 100))
+			if serviceID := r.MediaServices[current.Handle]; serviceID != 0 {
+				muted := r.mediaMute[0]
+				if err := r.Services.Media.SetClipGain(
+					r.ServiceOwner,
+					serviceID,
+					uint8(current.volume),
+					muted,
+					0,
+				); err != nil {
+					return guest.WIPIReturn{}, true, err
+				}
+			}
+		}
+		return guest.WIPIReturn{}, true, nil
+	case "MC_mdaPlay":
+		if current := clip(); current != nil {
+			current.State = 1
+			current.Repeat = arg(1) != 0
+			plays := int32(1)
+			if current.Repeat {
+				plays = -1
+			}
+			if serviceID := r.MediaServices[current.Handle]; serviceID != 0 {
+				if err := r.Services.Media.Play(
+					r.ServiceOwner,
+					serviceID,
+					plays,
+				); err != nil {
+					return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
+				}
+			}
+			r.EnqueueCallback(current.Callback, current.Handle, uint32(current.State))
+			return guest.WIPIReturn{}, true, nil
+		}
+		return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
+	case "MC_mdaPause":
+		return r.setMediaState(clip(), 2)
+	case "MC_mdaResume":
+		return r.setMediaState(clip(), 1)
+	case "MC_mdaStop":
+		return r.setMediaState(clip(), 0)
+	case "MC_mdaRecord":
+		return r.setMediaState(clip(), 3)
+	case "MC_mdaGetVolume":
+		return guest.WIPIReturn{Low: uint32(r.mediaVolume)}, true, nil
+	case "MC_mdaSetVolume":
+		r.mediaVolume = int32(guest.Clamp(int(int32(arg(0))), 0, 100))
+		if err := r.Services.Media.SetGlobalGain(
+			uint8(r.mediaVolume),
+			r.mediaMute[0],
+		); err != nil {
+			return guest.WIPIReturn{}, true, err
+		}
+		return guest.WIPIReturn{}, true, nil
+	case "MC_mdaVibrator":
+		r.vibratorLevel = int32(arg(0))
+		r.vibratorTimeout = max(0, int32(arg(1)))
+		level := uint8(guest.Clamp(int(r.vibratorLevel), 0, 100))
+		if err := r.Services.Device.Vibrate(
+			level,
+			time.Duration(r.vibratorTimeout)*time.Millisecond,
+			r.Services.Clock.Monotonic(),
+		); err != nil {
+			return guest.WIPIReturn{}, true, err
+		}
+		return guest.WIPIReturn{}, true, nil
+	case "MC_mdaSetMuteState":
+		r.mediaMute[int32(arg(0))] = arg(1) != 0
+		muted := false
+		for _, value := range r.mediaMute {
+			muted = muted || value
+		}
+		if err := r.Services.Media.SetGlobalGain(
+			uint8(r.mediaVolume),
+			muted,
+		); err != nil {
+			return guest.WIPIReturn{}, true, err
+		}
+		return guest.WIPIReturn{}, true, nil
+	case "MC_mdaGetMuteState":
+		if r.mediaMute[int32(arg(0))] {
+			return guest.WIPIReturn{Low: 1}, true, nil
+		}
+		return guest.WIPIReturn{}, true, nil
+	default:
+		return guest.WIPIReturn{}, false, nil
+	}
+}
+
+func mediaArgumentCount(name string) int {
+	switch name {
+	case "MC_mdaGetVolume":
+		return 0
+	case "MC_mdaClipFree", "MC_mdaClipAvailableDataSize", "MC_mdaClipClearData",
+		"MC_mdaClipGetVolume", "MC_mdaPause", "MC_mdaResume", "MC_mdaStop",
+		"MC_mdaRecord", "MC_mdaSetVolume", "MC_mdaGetMuteState":
+		return 1
+	case "MC_mdaClipSetPosition", "MC_mdaClipSetVolume", "MC_mdaPlay",
+		"MC_mdaVibrator", "MC_mdaSetMuteState":
+		return 2
+	case "MC_mdaClipCreate", "MC_mdaClipPutData", "MC_mdaClipGetType",
+		"MC_mdaClipGetData":
+		return 3
+	case "MC_mdaClipPutDataByFile":
+		return 4
+	default:
+		return 0
+	}
+}
+
+func (r *Runtime) putMediaData(clip *wipiMediaClip, source uint32, length int32) (guest.WIPIReturn, bool, error) {
+	if clip == nil || length < 0 || length > int32(maxWIPIString) {
+		return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
+	}
+	data := make([]byte, length)
+	if err := r.CPU.ReadMemory(source, data); err != nil {
+		return guest.WIPIReturn{}, true, err
+	}
+	return r.appendMediaData(clip, data)
+}
+
+func (r *Runtime) appendMediaData(clip *wipiMediaClip, data []byte) (guest.WIPIReturn, bool, error) {
+	if clip.capacity > 0 && len(clip.Data)+len(data) > int(clip.capacity) {
+		return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
+	}
+	if serviceID := r.MediaServices[clip.Handle]; serviceID != 0 {
+		if _, err := r.Services.Media.Append(r.ServiceOwner, serviceID, data); err != nil {
+			return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
+		}
+	}
+	clip.Data = append(clip.Data, data...)
+	return guest.WIPIReturn{Low: uint32(len(data))}, true, nil
+}
+
+func (r *Runtime) setMediaState(clip *wipiMediaClip, state uint8) (guest.WIPIReturn, bool, error) {
+	if clip == nil {
+		return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
+	}
+	clip.State = state
+	if state == 0 {
+		clip.Repeat = false
+	}
+	if serviceID := r.MediaServices[clip.Handle]; serviceID != 0 {
+		var err error
+		switch state {
+		case 0:
+			err = r.Services.Media.Stop(r.ServiceOwner, serviceID)
+		case 1:
+			err = r.Services.Media.Resume(r.ServiceOwner, serviceID)
+		case 2:
+			err = r.Services.Media.Pause(r.ServiceOwner, serviceID)
+		case 3:
+			// Recording is modeled in the adapter until an input provider is
+			// explicitly supplied; no host microphone is opened.
+		}
+		if err != nil {
+			return guest.WIPIReturn{}, true, err
+		}
+	}
+	r.EnqueueCallback(clip.Callback, clip.Handle, uint32(state))
+	return guest.WIPIReturn{}, true, nil
+}

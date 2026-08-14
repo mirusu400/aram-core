@@ -3,6 +3,7 @@ package application
 import (
 	"bytes"
 	"context"
+	raptorrt "github.com/mirusu400/aram-core/application/internal/raptor"
 	"testing"
 
 	"github.com/mirusu400/aram-core/cheat"
@@ -75,11 +76,11 @@ const (
 	sectionExecFlag  = 4
 )
 
-// Raptor code sections carry no write flag, yet mapRaptorImage maps them
+// Raptor code sections carry no write flag, yet raptorrt.MapRaptorImage maps them
 // read-write because the handset patches import veneers in place. Hash-keyed
 // code patches depend on the cheat region agreeing with that mapping.
 func TestRaptorCheatRegionsAllowCodePatchesWithoutScanningThem(t *testing.T) {
-	machine := &Machine{raptor: &raptorRuntime{pkg: raptor.Package{
+	machine := &Machine{raptor: &raptorrt.Runtime{Pkg: raptor.Package{
 		Image: raptor.Image{Sections: []raptor.Section{
 			{
 				Index:   1,

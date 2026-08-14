@@ -491,7 +491,7 @@ func decodeVMState(data []byte) (vmMetadataState, shared.ServicesState, error) {
 	metadataSize := decoder.u64()
 	if metadataSize > maxVMMetadataBytes ||
 		metadataSize > uint64(decoder.reader.Len()) ||
-		metadataSize > uint64(maxHostInt()) {
+		metadataSize > uint64(MaxHostInt()) {
 		return vmMetadataState{}, shared.ServicesState{},
 			decoder.fail("invalid metadata size")
 	}
@@ -505,7 +505,7 @@ func decodeVMState(data []byte) (vmMetadataState, shared.ServicesState, error) {
 	serviceSize := decoder.u64()
 	if serviceSize > shared.MaxServicesStateBytes ||
 		serviceSize > uint64(decoder.reader.Len()) ||
-		serviceSize > uint64(maxHostInt()) {
+		serviceSize > uint64(MaxHostInt()) {
 		return vmMetadataState{}, shared.ServicesState{},
 			decoder.fail("invalid service state size")
 	}
@@ -1494,6 +1494,6 @@ func writeVMU64(output *bytes.Buffer, value uint64) {
 	output.Write(encoded[:])
 }
 
-func maxHostInt() int {
+func MaxHostInt() int {
 	return int(^uint(0) >> 1)
 }

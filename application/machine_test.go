@@ -8,6 +8,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	ktfrt "github.com/mirusu400/aram-core/application/internal/ktf"
+	raptorrt "github.com/mirusu400/aram-core/application/internal/raptor"
+	wipirt "github.com/mirusu400/aram-core/application/internal/wipi"
 	stdimage "image"
 	"image/color"
 	"math"
@@ -17,6 +20,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mirusu400/aram-core/application/internal/guest"
+	"github.com/mirusu400/aram-core/application/internal/minigame"
 	machinecore "github.com/mirusu400/aram-core/core"
 	"github.com/mirusu400/aram-core/cpu"
 	"github.com/mirusu400/aram-core/loader"
@@ -85,10 +90,10 @@ func TestFactorySizesKTFFramebufferFromDescriptor(t *testing.T) {
 		bounds.Dy() != 220 {
 		t.Fatalf("declared framebuffer = %v", bounds)
 	}
-	if got := machine.ktf.displayWidth(); got != 176 {
+	if got := machine.ktf.DisplayWidth(); got != 176 {
 		t.Fatalf("display width = %d", got)
 	}
-	if got := machine.ktf.defaultCardHeight(); got != 220 {
+	if got := machine.ktf.DefaultCardHeight(); got != 220 {
 		t.Fatalf("default card height = %d", got)
 	}
 
@@ -123,7 +128,7 @@ func TestKTFSaveStateRestoresAdapterAndSharedServices(t *testing.T) {
 	machine := created.(*Machine)
 	t.Cleanup(func() { _ = machine.Close() })
 
-	allocation, err := machine.ktf.heap.allocate(16, true)
+	allocation, err := machine.ktf.Heap.Allocate(16, true)
 	if err != nil || allocation == 0 {
 		t.Fatalf("allocate KTF state fixture = 0x%08x, %v", allocation, err)
 	}
@@ -133,52 +138,52 @@ func TestKTFSaveStateRestoresAdapterAndSharedServices(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := machine.ktf.services.Storage.WriteFile(
+	if err := machine.ktf.Services.Storage.WriteFile(
 		shared.NamespacePrivate,
 		"/state.dat",
 		[]byte("saved"),
 	); err != nil {
 		t.Fatal(err)
 	}
-	machine.ktf.fileData["/state.dat"] = []byte("saved")
-	if err := machine.ktf.services.Advance(
-		machine.ktf.serviceOwner,
+	machine.ktf.FileData["/state.dat"] = []byte("saved")
+	if err := machine.ktf.Services.Advance(
+		machine.ktf.ServiceOwner,
 		17*time.Millisecond,
 	); err != nil {
 		t.Fatal(err)
 	}
-	machine.ktf.tickMS = 17
-	sleepingTask, err := machine.ktf.newTask(ktfImageBase|1, nil, 0)
+	machine.ktf.TickMS = 17
+	sleepingTask, err := machine.ktf.NewTask(ktfrt.ImageBase|1, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sleepingTask.wakeAtMS = 77
-	machine.ktf.tasks = []*ktfTask{sleepingTask}
-	graphics, err := machine.ktf.ensureScreenGraphics()
+	sleepingTask.WakeAtMS = 77
+	machine.ktf.Tasks = []*ktfrt.Task{sleepingTask}
+	graphics, err := machine.ktf.EnsureScreenGraphics()
 	if err != nil {
 		t.Fatal(err)
 	}
-	smallFont, err := machine.ktf.ensureKTFFont(ktfJavaFont{
-		size: ktfJavaFontSizeSmall,
+	smallFont, err := machine.ktf.EnsureKTFFont(ktfrt.JavaFont{
+		Size: ktfrt.JavaFontSizeSmall,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := machine.ktf.writeJavaFieldWord(
+	if err := machine.ktf.WriteJavaFieldWord(
 		graphics,
 		0,
 		smallFont,
 	); err != nil {
 		t.Fatal(err)
 	}
-	wipicScreen, err := machine.ktf.ensureWIPICScreenFramebuffer()
+	wipicScreen, err := machine.ktf.EnsureWIPICScreenFramebuffer()
 	if err != nil {
 		t.Fatal(err)
 	}
-	machine.ktf.wipicScreenPending = true
+	machine.ktf.WipicScreenPending = true
 	savedPixel := color.RGBA{R: 1, G: 2, B: 3, A: 0xff}
 	machine.frame.SetRGBA(2, 3, savedPixel)
-	machine.ktf.graphics[graphics].pixelsDirty = true
+	machine.ktf.Graphics[graphics].PixelsDirty = true
 
 	var saved bytes.Buffer
 	if err := machine.SaveState(&saved); err != nil {
@@ -190,18 +195,18 @@ func TestKTFSaveStateRestoresAdapterAndSharedServices(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := machine.ktf.services.Storage.WriteFile(
+	if err := machine.ktf.Services.Storage.WriteFile(
 		shared.NamespacePrivate,
 		"/state.dat",
 		[]byte("changed"),
 	); err != nil {
 		t.Fatal(err)
 	}
-	machine.ktf.fileData = map[string][]byte{}
-	machine.ktf.tickMS = 99
-	machine.ktf.tasks[0].wakeAtMS = 0
-	machine.ktf.wipicScreenPending = false
-	if err := machine.ktf.writeJavaFieldWord(graphics, 0, 0); err != nil {
+	machine.ktf.FileData = map[string][]byte{}
+	machine.ktf.TickMS = 99
+	machine.ktf.Tasks[0].WakeAtMS = 0
+	machine.ktf.WipicScreenPending = false
+	if err := machine.ktf.WriteJavaFieldWord(graphics, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -215,39 +220,39 @@ func TestKTFSaveStateRestoresAdapterAndSharedServices(t *testing.T) {
 	if memory != [4]byte{1, 2, 3, 4} {
 		t.Fatalf("restored KTF heap bytes = %v", memory)
 	}
-	stored, err := machine.ktf.services.Storage.ReadFile(
+	stored, err := machine.ktf.Services.Storage.ReadFile(
 		shared.NamespacePrivate,
 		"/state.dat",
 	)
 	if err != nil || string(stored) != "saved" {
 		t.Fatalf("restored KTF storage = %q, %v", stored, err)
 	}
-	if machine.ktf.tickMS != 17 ||
-		machine.ktf.services.Clock.Monotonic() != 17*time.Millisecond ||
-		string(machine.ktf.fileData["/state.dat"]) != "saved" {
+	if machine.ktf.TickMS != 17 ||
+		machine.ktf.Services.Clock.Monotonic() != 17*time.Millisecond ||
+		string(machine.ktf.FileData["/state.dat"]) != "saved" {
 		t.Fatalf(
 			"restored KTF mirrors = tick %d, clock %s, file %q",
-			machine.ktf.tickMS,
-			machine.ktf.services.Clock.Monotonic(),
-			machine.ktf.fileData["/state.dat"],
+			machine.ktf.TickMS,
+			machine.ktf.Services.Clock.Monotonic(),
+			machine.ktf.FileData["/state.dat"],
 		)
 	}
-	if len(machine.ktf.tasks) != 1 ||
-		machine.ktf.tasks[0].wakeAtMS != 77 {
-		t.Fatalf("restored KTF sleep deadlines = %+v", machine.ktf.tasks)
+	if len(machine.ktf.Tasks) != 1 ||
+		machine.ktf.Tasks[0].WakeAtMS != 77 {
+		t.Fatalf("restored KTF sleep deadlines = %+v", machine.ktf.Tasks)
 	}
-	if machine.ktf.wipicScreenFramebuffer != wipicScreen ||
-		!machine.ktf.wipicScreenPending {
+	if machine.ktf.WipicScreenFramebuffer != wipicScreen ||
+		!machine.ktf.WipicScreenPending {
 		t.Fatalf(
 			"restored pending WIPI-C screen = framebuffer 0x%08x pending %t",
-			machine.ktf.wipicScreenFramebuffer,
-			machine.ktf.wipicScreenPending,
+			machine.ktf.WipicScreenFramebuffer,
+			machine.ktf.WipicScreenPending,
 		)
 	}
 	if got := machine.frame.RGBAAt(2, 3); got != savedPixel {
 		t.Fatalf("restored KTF framebuffer pixel = %#v", got)
 	}
-	restoredFont, err := machine.ktf.ktfGraphicsFont(graphics)
+	restoredFont, err := machine.ktf.KtfGraphicsFont(graphics)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,9 +263,9 @@ func TestKTFSaveStateRestoresAdapterAndSharedServices(t *testing.T) {
 			smallFont,
 		)
 	}
-	fontMetrics, err := machine.ktf.services.Text.Metrics(
-		machine.ktf.serviceOwner,
-		machine.ktf.fontServices[restoredFont],
+	fontMetrics, err := machine.ktf.Services.Text.Metrics(
+		machine.ktf.ServiceOwner,
+		machine.ktf.FontServices[restoredFont],
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -271,9 +276,9 @@ func TestKTFSaveStateRestoresAdapterAndSharedServices(t *testing.T) {
 			fontMetrics.Height,
 		)
 	}
-	surfacePixels, err := machine.ktf.services.Graphics.RGBA(
-		machine.ktf.serviceOwner,
-		machine.ktf.graphicsServices[graphics],
+	surfacePixels, err := machine.ktf.Services.Graphics.RGBA(
+		machine.ktf.ServiceOwner,
+		machine.ktf.GraphicsServices[graphics],
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -311,58 +316,58 @@ func TestKTFResetRebuildsAdapterAndServices(t *testing.T) {
 	}
 	machine := created.(*Machine)
 	t.Cleanup(func() { _ = machine.Close() })
-	allocation, err := machine.ktf.heap.allocate(8, true)
+	allocation, err := machine.ktf.Heap.Allocate(8, true)
 	if err != nil || allocation == 0 {
 		t.Fatalf("allocate KTF reset fixture = 0x%08x, %v", allocation, err)
 	}
 	if err := machine.cpu.WriteMemory(allocation, []byte{0xaa}); err != nil {
 		t.Fatal(err)
 	}
-	if err := machine.ktf.services.Advance(
-		machine.ktf.serviceOwner,
+	if err := machine.ktf.Services.Advance(
+		machine.ktf.ServiceOwner,
 		25*time.Millisecond,
 	); err != nil {
 		t.Fatal(err)
 	}
-	machine.ktf.tickMS = 25
+	machine.ktf.TickMS = 25
 	machine.ktfStarted = true
-	if err := machine.ktf.services.Storage.WriteFile(
+	if err := machine.ktf.Services.Storage.WriteFile(
 		shared.NamespacePrivate,
 		"/persist.dat",
 		[]byte("persistent KTF file"),
 	); err != nil {
 		t.Fatal(err)
 	}
-	machine.ktf.fileData["/persist.dat"] = []byte("persistent KTF file")
-	if err := machine.ktf.services.Storage.WriteFile(
+	machine.ktf.FileData["/persist.dat"] = []byte("persistent KTF file")
+	if err := machine.ktf.Services.Storage.WriteFile(
 		shared.NamespaceTemporary,
 		"/discard.tmp",
 		[]byte("temporary"),
 	); err != nil {
 		t.Fatal(err)
 	}
-	database := &ktfDatabase{
-		name:       "scores",
-		recordSize: 4,
-		records:    [][]byte{{1, 2, 3, 4}},
+	database := &ktfrt.Database{
+		Name:       "scores",
+		RecordSize: 4,
+		Records:    [][]byte{{1, 2, 3, 4}},
 	}
-	databaseService, err := machine.ktf.services.Storage.CreateRecordStore(
-		machine.ktf.serviceOwner,
-		database.name,
+	databaseService, err := machine.ktf.Services.Storage.CreateRecordStore(
+		machine.ktf.ServiceOwner,
+		database.Name,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := machine.ktf.services.Storage.ReplaceRecords(
-		machine.ktf.serviceOwner,
+	if err := machine.ktf.Services.Storage.ReplaceRecords(
+		machine.ktf.ServiceOwner,
 		databaseService,
 		1,
 		map[uint32][]byte{0: {1, 2, 3, 4}},
 	); err != nil {
 		t.Fatal(err)
 	}
-	machine.ktf.databaseStores[database.name] = database
-	machine.ktf.databaseServices[database.name] = databaseService
+	machine.ktf.DatabaseStores[database.Name] = database
+	machine.ktf.DatabaseServices[database.Name] = databaseService
 
 	if err := machine.Reset(context.Background()); err != nil {
 		t.Fatal(err)
@@ -371,59 +376,59 @@ func TestKTFResetRebuildsAdapterAndServices(t *testing.T) {
 	if err := machine.cpu.ReadMemory(allocation, restored[:]); err != nil {
 		t.Fatal(err)
 	}
-	if restored[0] != 0 || machine.ktf.tickMS != 0 {
+	if restored[0] != 0 || machine.ktf.TickMS != 0 {
 		t.Fatalf(
 			"reset KTF state = byte %#x allocations %d tick %d",
 			restored[0],
-			len(machine.ktf.heap.allocations),
-			machine.ktf.tickMS,
+			len(machine.ktf.Heap.Allocations),
+			machine.ktf.TickMS,
 		)
 	}
 	if machine.ktfStarted || machine.State() != machinecore.StateReady ||
-		machine.ktf.services.Clock.Monotonic() != 0 {
+		machine.ktf.Services.Clock.Monotonic() != 0 {
 		t.Fatalf(
 			"reset KTF lifecycle = started %t state %s clock %s",
 			machine.ktfStarted,
 			machine.State(),
-			machine.ktf.services.Clock.Monotonic(),
+			machine.ktf.Services.Clock.Monotonic(),
 		)
 	}
-	persisted, err := machine.ktf.services.Storage.ReadFile(
+	persisted, err := machine.ktf.Services.Storage.ReadFile(
 		shared.NamespacePrivate,
 		"/persist.dat",
 	)
 	if err != nil || string(persisted) != "persistent KTF file" ||
-		string(machine.ktf.fileData["/persist.dat"]) != "persistent KTF file" {
+		string(machine.ktf.FileData["/persist.dat"]) != "persistent KTF file" {
 		t.Fatalf(
 			"reset KTF persistent file = %q, mirror %q, %v",
 			persisted,
-			machine.ktf.fileData["/persist.dat"],
+			machine.ktf.FileData["/persist.dat"],
 			err,
 		)
 	}
-	if _, err := machine.ktf.services.Storage.ReadFile(
+	if _, err := machine.ktf.Services.Storage.ReadFile(
 		shared.NamespaceTemporary,
 		"/discard.tmp",
 	); !errors.Is(err, shared.ErrNotFound) {
 		t.Fatalf("reset KTF temporary file error = %v", err)
 	}
-	persistedDatabase := machine.ktf.databaseStores["scores"]
-	persistedService, err := machine.ktf.services.Storage.OpenRecordStore(
-		machine.ktf.serviceOwner,
+	persistedDatabase := machine.ktf.DatabaseStores["scores"]
+	persistedService, err := machine.ktf.Services.Storage.OpenRecordStore(
+		machine.ktf.ServiceOwner,
 		"scores",
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	persistedRecord, err := machine.ktf.services.Storage.Record(
-		machine.ktf.serviceOwner,
+	persistedRecord, err := machine.ktf.Services.Storage.Record(
+		machine.ktf.ServiceOwner,
 		persistedService,
 		0,
 	)
 	if err != nil || persistedDatabase == nil ||
-		persistedDatabase.recordSize != 4 ||
-		len(persistedDatabase.records) != 1 ||
-		!bytes.Equal(persistedDatabase.records[0], []byte{1, 2, 3, 4}) ||
+		persistedDatabase.RecordSize != 4 ||
+		len(persistedDatabase.Records) != 1 ||
+		!bytes.Equal(persistedDatabase.Records[0], []byte{1, 2, 3, 4}) ||
 		!bytes.Equal(persistedRecord, []byte{1, 2, 3, 4}) {
 		t.Fatalf(
 			"reset KTF database = %+v, service record %v, %v",
@@ -502,15 +507,15 @@ func TestFactoryInstallsResourcesAndResetRestoresThem(t *testing.T) {
 	machine := created.(*Machine)
 	t.Cleanup(func() { _ = machine.Close() })
 	payload[0] = 0xff
-	if resource := machine.wipi.resources["config.bin"]; resource == nil ||
-		!bytes.Equal(resource.data, []byte{1, 2, 3}) {
+	if resource := machine.wipi.Resources["config.bin"]; resource == nil ||
+		!bytes.Equal(resource.Data, []byte{1, 2, 3}) {
 		t.Fatalf("installed resource = %+v", resource)
 	}
 	if err := machine.Reset(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if resource := machine.wipi.resources["config.bin"]; resource == nil ||
-		!bytes.Equal(resource.data, []byte{1, 2, 3}) {
+	if resource := machine.wipi.Resources["config.bin"]; resource == nil ||
+		!bytes.Equal(resource.Data, []byte{1, 2, 3}) {
 		t.Fatalf("reset resource = %+v", resource)
 	}
 }
@@ -680,11 +685,11 @@ func TestTitleRuntimeRequiresKnownSourceHash(t *testing.T) {
 
 func TestMachineDispatchesPublicWIPITrampoline(t *testing.T) {
 	machine := newSyntheticMachine(t)
-	const source = guestHeapBase + 0x200
+	const source = guest.HeapBase + 0x200
 	if err := machine.cpu.WriteMemory(source, []byte("public-wipi\x00")); err != nil {
 		t.Fatal(err)
 	}
-	stub, ok := machine.wipi.layout.StubByName["strlen"]
+	stub, ok := machine.wipi.Layout.StubByName["strlen"]
 	if !ok {
 		t.Fatal("strlen trampoline is absent")
 	}
@@ -722,11 +727,11 @@ func TestMachineDispatchesPublicWIPITrampoline(t *testing.T) {
 }
 
 func TestKTFWIPIFrameStatsCountSampledHostCalls(t *testing.T) {
-	runtime := &ktfRuntime{}
+	runtime := &ktfrt.Runtime{}
 	entry := "java.method.org/kwis/msp/lcdui/Graphics.setRGBPixels(IIII[III)V"
-	total := ktfHostTraceSampleInterval + 1
+	total := ktfrt.HostTraceSampleInterval + 1
 	for range total {
-		runtime.traceHostCall(entry)
+		runtime.TraceHostCall(entry)
 	}
 	machine := &Machine{ktf: runtime}
 	stats, ok := machine.WIPIFrameStats()
@@ -756,11 +761,11 @@ func TestStepFrameAdvancesClockAndInvokesDueWIPITimer(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	timer, err := machine.wipi.heap.allocate(28, true)
+	timer, err := machine.wipi.Heap.Allocate(28, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	marker, err := machine.wipi.heap.allocate(4, true)
+	marker, err := machine.wipi.Heap.Allocate(4, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -774,8 +779,8 @@ func TestStepFrameAdvancesClockAndInvokesDueWIPITimer(t *testing.T) {
 		16,
 		0,
 		marker,
-	); result.low != 0 {
-		t.Fatalf("MC_knlSetTimer = %d", int32(result.low))
+	); result.Low != 0 {
+		t.Fatalf("MC_knlSetTimer = %d", int32(result.Low))
 	}
 	if err := machine.cpu.WriteRegister(cpu.RegisterR2, 0x99); err != nil {
 		t.Fatal(err)
@@ -787,14 +792,14 @@ func TestStepFrameAdvancesClockAndInvokesDueWIPITimer(t *testing.T) {
 	if err := machine.StepFrame(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	value, err := machine.wipi.readU32(marker)
+	value, err := machine.wipi.ReadU32(marker)
 	if err != nil || value != 42 {
 		t.Fatalf("timer callback marker = %d, %v", value, err)
 	}
-	if machine.wipi.tickMS != 16 || len(machine.wipi.timers) != 0 {
-		t.Fatalf("timer runtime = tick %d, timers %v", machine.wipi.tickMS, machine.wipi.timers)
+	if machine.wipi.TickMS != 16 || len(machine.wipi.Timers) != 0 {
+		t.Fatalf("timer runtime = tick %d, timers %v", machine.wipi.TickMS, machine.wipi.Timers)
 	}
-	active, err := machine.wipi.readU32(timer + 24)
+	active, err := machine.wipi.ReadU32(timer + 24)
 	if err != nil || active != 0 {
 		t.Fatalf("timer active flag = %d, %v", active, err)
 	}
@@ -806,19 +811,19 @@ func TestStepFrameAdvancesClockAndInvokesDueWIPITimer(t *testing.T) {
 		t.Fatalf("post-callback main execution = %+v", machine.LastResult())
 	}
 
-	if err := machine.wipi.writeU32(marker, 0); err != nil {
+	if err := machine.wipi.WriteU32(marker, 0); err != nil {
 		t.Fatal(err)
 	}
-	machine.wipi.enqueueCallback(callbackAddress|1, 0, marker)
+	machine.wipi.EnqueueCallback(callbackAddress|1, 0, marker)
 	if err := machine.StepFrame(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	value, err = machine.wipi.readU32(marker)
-	if err != nil || value != 42 || len(machine.wipi.pendingCallbacks) != 0 {
+	value, err = machine.wipi.ReadU32(marker)
+	if err != nil || value != 42 || len(machine.wipi.PendingCallbacks) != 0 {
 		t.Fatalf(
 			"queued callback = marker %d, pending %v, %v",
 			value,
-			machine.wipi.pendingCallbacks,
+			machine.wipi.PendingCallbacks,
 			err,
 		)
 	}
@@ -847,7 +852,7 @@ func TestWIPISynchronousGuestCallbackReturnsR0AndRestoresContext(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	value, err := machine.wipi.callGuestFunction(callbackAddress|1, 7, 8, 9)
+	value, err := machine.wipi.CallGuestFunction(callbackAddress|1, 7, 8, 9)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -951,80 +956,80 @@ func TestSaveStateRoundTripRestoresSerializableMachineState(t *testing.T) {
 
 func TestSaveStateRoundTripRestoresPublicWIPIRuntime(t *testing.T) {
 	machine := newSyntheticMachine(t)
-	allocation := dispatchPublicAPI(t, machine.wipi, "MC_knlAlloc", 32).low
+	allocation := dispatchPublicAPI(t, machine.wipi, "MC_knlAlloc", 32).Low
 	if allocation == 0 {
 		t.Fatal("public allocation is null")
 	}
 	if err := machine.cpu.WriteMemory(allocation, []byte{1, 2, 3, 4}); err != nil {
 		t.Fatal(err)
 	}
-	machine.wipi.files["/private/save.dat"] = []byte("state")
-	machine.wipi.fileTimes["/private/save.dat"] = uint32(wipiEpochUnix)
-	resourceID := machine.wipi.registerResource("saved.bin", []byte{5, 6, 7})
+	machine.wipi.Files["/private/save.dat"] = []byte("state")
+	machine.wipi.FileTimes["/private/save.dat"] = uint32(wipirt.EpochUnix)
+	resourceID := machine.wipi.RegisterResource("saved.bin", []byte{5, 6, 7})
 	if resourceID < 1 {
 		t.Fatalf("resource ID = %d", resourceID)
 	}
-	programID := machine.wipi.registerProgram(
+	programID := machine.wipi.RegisterProgram(
 		"saved-app",
 		"Saved App",
 		"2.0",
 		"ARAM",
-		wipiProgramTypeCApp,
-		wipiDefaultAccessLevel,
+		wipirt.ProgramTypeCApp,
+		wipirt.DefaultAccessLevel,
 	)
 	if programID < 1 {
 		t.Fatalf("program ID = %d", programID)
 	}
-	machine.wipi.programs[programID].running = true
-	machine.wipi.programs[programID].parentID = machine.wipi.currentProgram
-	machine.wipi.lastExecuteName = "saved-app"
-	machine.wipi.lastExecuteArgs = []string{"--restore"}
-	machine.wipi.lastExecuted = programID
-	machine.wipi.graphicsEvents = []wipiGraphicsEvent{{
-		id: 7, kind: 8, param1: 9, param2: 10,
+	machine.wipi.Programs[programID].Running = true
+	machine.wipi.Programs[programID].ParentID = machine.wipi.CurrentProgram
+	machine.wipi.LastExecuteName = "saved-app"
+	machine.wipi.LastExecuteArgs = []string{"--restore"}
+	machine.wipi.LastExecuted = programID
+	machine.wipi.GraphicsEvents = []wipirt.GraphicsEvent{{
+		ID: 7, Kind: 8, Param1: 9, Param2: 10,
 	}}
-	machine.wipi.enqueueCallback(0x02000003, 1, 2, 3, 4)
-	machine.wipi.databases["0:scores"] = &wipiDatabase{
-		name:       "scores",
-		recordSize: 4,
-		nextRecord: 1,
-		records:    map[int32][]byte{0: {7, 8, 9, 10}},
+	machine.wipi.EnqueueCallback(0x02000003, 1, 2, 3, 4)
+	machine.wipi.Databases["0:scores"] = &wipirt.Database{
+		Name:       "scores",
+		RecordSize: 4,
+		NextRecord: 1,
+		Records:    map[int32][]byte{0: {7, 8, 9, 10}},
 	}
-	machine.wipi.databaseHandles[1] = "0:scores"
-	machine.wipi.nextDatabase = 2
-	uicContext, err := machine.wipi.heap.allocate(64, true)
+	machine.wipi.DatabaseHandles[1] = "0:scores"
+	machine.wipi.NextDatabase = 2
+	uicContext, err := machine.wipi.Heap.Allocate(64, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	uicClass, err := machine.wipi.heap.allocate(16, true)
+	uicClass, err := machine.wipi.Heap.Allocate(16, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	uicComponent, err := machine.wipi.heap.allocate(128, true)
+	uicComponent, err := machine.wipi.Heap.Allocate(128, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	machine.wipi.uicContexts[uicContext] = true
-	machine.wipi.uicClasses["Label"] = uicClass
-	machine.wipi.uicClassNames[uicClass] = "Label"
-	machine.wipi.uicComponents[uicComponent] = &wipiComponent{
-		handle:     uicComponent,
-		className:  "Label",
-		enabled:    true,
-		callbacks:  make(map[int32]wipiUICallback),
-		label:      []byte("saved label"),
-		activeMenu: -1,
-		activeList: -1,
-		maxText:    4096,
+	machine.wipi.UicContexts[uicContext] = true
+	machine.wipi.UicClasses["Label"] = uicClass
+	machine.wipi.UicClassNames[uicClass] = "Label"
+	machine.wipi.UicComponents[uicComponent] = &wipirt.Component{
+		Handle:     uicComponent,
+		ClassName:  "Label",
+		Enabled:    true,
+		Callbacks:  make(map[int32]wipirt.UICallback),
+		Label:      []byte("saved label"),
+		ActiveMenu: -1,
+		ActiveList: -1,
+		MaxText:    4096,
 	}
-	machine.wipi.uicRepaints = []wipiUICRepaint{{
-		component: uicComponent,
-		x:         1,
-		y:         2,
-		width:     3,
-		height:    4,
+	machine.wipi.UicRepaints = []wipirt.UICRepaint{{
+		Component: uicComponent,
+		X:         1,
+		Y:         2,
+		Width:     3,
+		Height:    4,
 	}}
-	screen := dispatchPublicAPI(t, machine.wipi, "MC_grpGetScreenFrameBuffer", 0).low
+	screen := dispatchPublicAPI(t, machine.wipi, "MC_grpGetScreenFrameBuffer", 0).Low
 	dispatchPublicAPI(t, machine.wipi, "MC_grpFlushLcd", 0, screen, 0, 0, 240, 320)
 
 	var saved bytes.Buffer
@@ -1034,15 +1039,15 @@ func TestSaveStateRoundTripRestoresPublicWIPIRuntime(t *testing.T) {
 	if err := machine.cpu.WriteMemory(allocation, []byte{9, 9, 9, 9}); err != nil {
 		t.Fatal(err)
 	}
-	machine.wipi.stats = WIPIFrameStats{}
-	machine.wipi.framebuffers = make(map[uint32]wipiFramebuffer)
-	machine.wipi.resources = make(map[string]*wipiResource)
-	machine.wipi.resourceIDs = make(map[int32]string)
-	machine.wipi.programs = defaultWIPIPrograms()
-	machine.wipi.lastExecuteArgs = nil
-	machine.wipi.graphicsEvents = nil
-	machine.wipi.uicRepaints = nil
-	machine.wipi.pendingCallbacks = nil
+	machine.wipi.Stats = WIPIFrameStats{}
+	machine.wipi.Framebuffers = make(map[uint32]wipirt.Framebuffer)
+	machine.wipi.Resources = make(map[string]*wipirt.Resource)
+	machine.wipi.ResourceIDs = make(map[int32]string)
+	machine.wipi.Programs = wipirt.DefaultPrograms()
+	machine.wipi.LastExecuteArgs = nil
+	machine.wipi.GraphicsEvents = nil
+	machine.wipi.UicRepaints = nil
+	machine.wipi.PendingCallbacks = nil
 	machine.frame.SetRGBA(0, 0, color.RGBA{R: 0xff, A: 0xff})
 
 	if err := machine.LoadState(bytes.NewReader(saved.Bytes())); err != nil {
@@ -1055,60 +1060,60 @@ func TestSaveStateRoundTripRestoresPublicWIPIRuntime(t *testing.T) {
 	if restored != [4]byte{1, 2, 3, 4} {
 		t.Fatalf("restored public heap = %v", restored)
 	}
-	if machine.wipi.stats.PresentCount != 1 ||
-		machine.wipi.stats.APICalls != 3 ||
-		machine.wipi.framebuffers[screen].handle != screen {
+	if machine.wipi.Stats.PresentCount != 1 ||
+		machine.wipi.Stats.APICalls != 3 ||
+		machine.wipi.Framebuffers[screen].Handle != screen {
 		t.Fatalf("restored public runtime = stats %+v, framebuffers %+v",
-			machine.wipi.stats, machine.wipi.framebuffers)
+			machine.wipi.Stats, machine.wipi.Framebuffers)
 	}
-	if got := string(machine.wipi.files["/private/save.dat"]); got != "state" {
+	if got := string(machine.wipi.Files["/private/save.dat"]); got != "state" {
 		t.Fatalf("restored public filesystem = %q", got)
 	}
-	resource := machine.wipi.resources["saved.bin"]
-	if resource == nil || resource.id != resourceID ||
-		!bytes.Equal(resource.data, []byte{5, 6, 7}) {
+	resource := machine.wipi.Resources["saved.bin"]
+	if resource == nil || resource.Id != resourceID ||
+		!bytes.Equal(resource.Data, []byte{5, 6, 7}) {
 		t.Fatalf("restored public resource = %+v", resource)
 	}
-	program := machine.wipi.programs[programID]
-	if program == nil || !program.running || program.execName != "saved-app" ||
-		program.parentID != 1 || machine.wipi.lastExecuted != programID ||
-		machine.wipi.lastExecuteName != "saved-app" ||
-		len(machine.wipi.lastExecuteArgs) != 1 ||
-		machine.wipi.lastExecuteArgs[0] != "--restore" {
+	program := machine.wipi.Programs[programID]
+	if program == nil || !program.Running || program.ExecName != "saved-app" ||
+		program.ParentID != 1 || machine.wipi.LastExecuted != programID ||
+		machine.wipi.LastExecuteName != "saved-app" ||
+		len(machine.wipi.LastExecuteArgs) != 1 ||
+		machine.wipi.LastExecuteArgs[0] != "--restore" {
 		t.Fatalf(
 			"restored public program = %+v, last %d/%q/%v",
 			program,
-			machine.wipi.lastExecuted,
-			machine.wipi.lastExecuteName,
-			machine.wipi.lastExecuteArgs,
+			machine.wipi.LastExecuted,
+			machine.wipi.LastExecuteName,
+			machine.wipi.LastExecuteArgs,
 		)
 	}
-	if len(machine.wipi.graphicsEvents) != 1 ||
-		machine.wipi.graphicsEvents[0] != (wipiGraphicsEvent{
-			id: 7, kind: 8, param1: 9, param2: 10,
+	if len(machine.wipi.GraphicsEvents) != 1 ||
+		machine.wipi.GraphicsEvents[0] != (wipirt.GraphicsEvent{
+			ID: 7, Kind: 8, Param1: 9, Param2: 10,
 		}) {
-		t.Fatalf("restored graphics events = %+v", machine.wipi.graphicsEvents)
+		t.Fatalf("restored graphics events = %+v", machine.wipi.GraphicsEvents)
 	}
-	if len(machine.wipi.pendingCallbacks) != 1 ||
-		machine.wipi.pendingCallbacks[0].procedure != 0x02000003 ||
-		machine.wipi.pendingCallbacks[0].args != [4]uint32{1, 2, 3, 4} {
-		t.Fatalf("restored callbacks = %+v", machine.wipi.pendingCallbacks)
+	if len(machine.wipi.PendingCallbacks) != 1 ||
+		machine.wipi.PendingCallbacks[0].Procedure != 0x02000003 ||
+		machine.wipi.PendingCallbacks[0].Args != [4]uint32{1, 2, 3, 4} {
+		t.Fatalf("restored callbacks = %+v", machine.wipi.PendingCallbacks)
 	}
-	if got := machine.wipi.databases["0:scores"].records[0]; !bytes.Equal(got, []byte{7, 8, 9, 10}) {
+	if got := machine.wipi.Databases["0:scores"].Records[0]; !bytes.Equal(got, []byte{7, 8, 9, 10}) {
 		t.Fatalf("restored public database record = %v", got)
 	}
-	if got := string(machine.wipi.uicComponents[uicComponent].label); got != "saved label" {
+	if got := string(machine.wipi.UicComponents[uicComponent].Label); got != "saved label" {
 		t.Fatalf("restored public UI component label = %q", got)
 	}
-	if len(machine.wipi.uicRepaints) != 1 ||
-		machine.wipi.uicRepaints[0] != (wipiUICRepaint{
-			component: uicComponent,
-			x:         1,
-			y:         2,
-			width:     3,
-			height:    4,
+	if len(machine.wipi.UicRepaints) != 1 ||
+		machine.wipi.UicRepaints[0] != (wipirt.UICRepaint{
+			Component: uicComponent,
+			X:         1,
+			Y:         2,
+			Width:     3,
+			Height:    4,
 		}) {
-		t.Fatalf("restored public repaint trace = %+v", machine.wipi.uicRepaints)
+		t.Fatalf("restored public repaint trace = %+v", machine.wipi.UicRepaints)
 	}
 	if got := machine.frame.RGBAAt(0, 0); got != (color.RGBA{A: 0xff}) {
 		t.Fatalf("restored public frame = %#v", got)
@@ -1170,24 +1175,24 @@ func TestResetRestoresInitialCPUAndMemoryState(t *testing.T) {
 func TestResetPreservesPublicWIPIPersistence(t *testing.T) {
 	machine := newSyntheticMachine(t)
 	runtime := machine.wipi
-	if err := runtime.services.Storage.MakeDirectory(
+	if err := runtime.Services.Storage.MakeDirectory(
 		shared.NamespacePrivate,
 		"/saves",
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.services.Storage.WriteFile(
+	if err := runtime.Services.Storage.WriteFile(
 		shared.NamespacePrivate,
 		"/saves/slot.dat",
 		[]byte("persistent WIPI file"),
 	); err != nil {
 		t.Fatal(err)
 	}
-	runtime.directories["/private/saves"] = true
-	runtime.files["/private/saves/slot.dat"] = []byte("persistent WIPI file")
-	runtime.fileTimes["/private/saves"] = 123
-	runtime.fileTimes["/private/saves/slot.dat"] = 456
-	if err := runtime.services.Storage.WriteFile(
+	runtime.Directories["/private/saves"] = true
+	runtime.Files["/private/saves/slot.dat"] = []byte("persistent WIPI file")
+	runtime.FileTimes["/private/saves"] = 123
+	runtime.FileTimes["/private/saves/slot.dat"] = 456
+	if err := runtime.Services.Storage.WriteFile(
 		shared.NamespaceTemporary,
 		"/discard.tmp",
 		[]byte("temporary"),
@@ -1195,85 +1200,85 @@ func TestResetPreservesPublicWIPIPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 	const databaseKey = "0:scores"
-	database := &wipiDatabase{
-		name:       "scores",
-		recordSize: 4,
-		mode:       0,
-		nextRecord: 2,
-		records: map[int32][]byte{
+	database := &wipirt.Database{
+		Name:       "scores",
+		RecordSize: 4,
+		Mode:       0,
+		NextRecord: 2,
+		Records: map[int32][]byte{
 			1: {4, 3, 2, 1},
 		},
 	}
-	databaseService, err := runtime.services.Storage.CreateRecordStore(
-		runtime.serviceOwner,
+	databaseService, err := runtime.Services.Storage.CreateRecordStore(
+		runtime.ServiceOwner,
 		databaseKey,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.services.Storage.ReplaceRecords(
-		runtime.serviceOwner,
+	if err := runtime.Services.Storage.ReplaceRecords(
+		runtime.ServiceOwner,
 		databaseService,
 		2,
 		map[uint32][]byte{1: {4, 3, 2, 1}},
 	); err != nil {
 		t.Fatal(err)
 	}
-	runtime.databases[databaseKey] = database
-	runtime.databaseServices[databaseKey] = databaseService
-	if err := runtime.services.Advance(
-		runtime.serviceOwner,
+	runtime.Databases[databaseKey] = database
+	runtime.DatabaseServices[databaseKey] = databaseService
+	if err := runtime.Services.Advance(
+		runtime.ServiceOwner,
 		25*time.Millisecond,
 	); err != nil {
 		t.Fatal(err)
 	}
-	runtime.tickMS = 25
+	runtime.TickMS = 25
 
 	if err := machine.Reset(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	persisted, err := machine.wipi.services.Storage.ReadFile(
+	persisted, err := machine.wipi.Services.Storage.ReadFile(
 		shared.NamespacePrivate,
 		"/saves/slot.dat",
 	)
 	if err != nil || string(persisted) != "persistent WIPI file" ||
-		string(machine.wipi.files["/private/saves/slot.dat"]) !=
+		string(machine.wipi.Files["/private/saves/slot.dat"]) !=
 			"persistent WIPI file" ||
-		!machine.wipi.directories["/private/saves"] ||
-		machine.wipi.fileTimes["/private/saves"] != 123 ||
-		machine.wipi.fileTimes["/private/saves/slot.dat"] != 456 {
+		!machine.wipi.Directories["/private/saves"] ||
+		machine.wipi.FileTimes["/private/saves"] != 123 ||
+		machine.wipi.FileTimes["/private/saves/slot.dat"] != 456 {
 		t.Fatalf(
 			"reset WIPI persistence = file %q mirror %q directory %t times %d/%d, %v",
 			persisted,
-			machine.wipi.files["/private/saves/slot.dat"],
-			machine.wipi.directories["/private/saves"],
-			machine.wipi.fileTimes["/private/saves"],
-			machine.wipi.fileTimes["/private/saves/slot.dat"],
+			machine.wipi.Files["/private/saves/slot.dat"],
+			machine.wipi.Directories["/private/saves"],
+			machine.wipi.FileTimes["/private/saves"],
+			machine.wipi.FileTimes["/private/saves/slot.dat"],
 			err,
 		)
 	}
-	if _, err := machine.wipi.services.Storage.ReadFile(
+	if _, err := machine.wipi.Services.Storage.ReadFile(
 		shared.NamespaceTemporary,
 		"/discard.tmp",
 	); !errors.Is(err, shared.ErrNotFound) {
 		t.Fatalf("reset WIPI temporary file error = %v", err)
 	}
-	persistedDatabase := machine.wipi.databases[databaseKey]
-	persistedService, err := machine.wipi.services.Storage.OpenRecordStore(
-		machine.wipi.serviceOwner,
+	persistedDatabase := machine.wipi.Databases[databaseKey]
+	persistedService, err := machine.wipi.Services.Storage.OpenRecordStore(
+		machine.wipi.ServiceOwner,
 		databaseKey,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	persistedRecord, err := machine.wipi.services.Storage.Record(
-		machine.wipi.serviceOwner,
+	persistedRecord, err := machine.wipi.Services.Storage.Record(
+		machine.wipi.ServiceOwner,
 		persistedService,
 		1,
 	)
 	if err != nil || persistedDatabase == nil ||
-		persistedDatabase.nextRecord != 2 ||
-		!bytes.Equal(persistedDatabase.records[1], []byte{4, 3, 2, 1}) ||
+		persistedDatabase.NextRecord != 2 ||
+		!bytes.Equal(persistedDatabase.Records[1], []byte{4, 3, 2, 1}) ||
 		!bytes.Equal(persistedRecord, []byte{4, 3, 2, 1}) {
 		t.Fatalf(
 			"reset WIPI database = %+v, service record %v, %v",
@@ -1282,13 +1287,13 @@ func TestResetPreservesPublicWIPIPersistence(t *testing.T) {
 			err,
 		)
 	}
-	if machine.wipi.tickMS != 0 ||
-		machine.wipi.services.Clock.Monotonic() != 0 ||
+	if machine.wipi.TickMS != 0 ||
+		machine.wipi.Services.Clock.Monotonic() != 0 ||
 		machine.State() != machinecore.StateReady {
 		t.Fatalf(
 			"reset WIPI transient state = tick %d clock %s lifecycle %s",
-			machine.wipi.tickMS,
-			machine.wipi.services.Clock.Monotonic(),
+			machine.wipi.TickMS,
+			machine.wipi.Services.Clock.Monotonic(),
 			machine.State(),
 		)
 	}
@@ -1414,7 +1419,7 @@ func TestMagicholeReferenceEADSEntryPoint(t *testing.T) {
 	image := machine.ImageInfo()
 	if image.Name != "MinigameQVGAOEM" ||
 		image.EntryPoint != 0xf4000001 ||
-		image.ProfileID != minigameProfileID {
+		image.ProfileID != minigame.ProfileID {
 		t.Fatalf("reference image = %+v", image)
 	}
 	if err := created.Start(context.Background()); err != nil {
@@ -1425,11 +1430,11 @@ func TestMagicholeReferenceEADSEntryPoint(t *testing.T) {
 		t.Fatal("reference title did not select the EADS runtime")
 	}
 	expectedEvents := []EADSEventResult{
-		{Event: eadsBootstrapEvent, Instructions: 1771, APICalls: 46, ReturnValue: 0},
-		{Event: eadsSetupEvent, Instructions: 160, APICalls: 16, ReturnValue: 1},
-		{Event: eadsStartEvent, Instructions: 1958, APICalls: 1, ReturnValue: 0},
-		{Event: eadsFrameEvent, Instructions: 194, APICalls: 4, ReturnValue: 0},
-		{Event: eadsFrameEvent, Instructions: 36045, APICalls: 308, ReturnValue: 0},
+		{Event: minigame.BootstrapEvent, Instructions: 1771, APICalls: 46, ReturnValue: 0},
+		{Event: minigame.SetupEvent, Instructions: 160, APICalls: 16, ReturnValue: 1},
+		{Event: minigame.StartEvent, Instructions: 1958, APICalls: 1, ReturnValue: 0},
+		{Event: minigame.FrameEvent, Instructions: 194, APICalls: 4, ReturnValue: 0},
+		{Event: minigame.FrameEvent, Instructions: 36045, APICalls: 308, ReturnValue: 0},
 	}
 	if len(stats.Events) != len(expectedEvents) {
 		t.Fatalf("EADS event count = %d, want %d", len(stats.Events), len(expectedEvents))
@@ -1450,7 +1455,7 @@ func TestMagicholeReferenceEADSEntryPoint(t *testing.T) {
 	result := machine.LastResult()
 	if result.Reason != cpu.StopBreakpoint ||
 		result.Instructions != 36045 ||
-		result.PC != returnSentinel {
+		result.PC != guest.ReturnSentinel {
 		t.Fatalf("reference entry execution = %+v", result)
 	}
 	var state bytes.Buffer
@@ -1469,8 +1474,8 @@ func TestMagicholeReferenceEADSEntryPoint(t *testing.T) {
 	if err := machine.LoadState(bytes.NewReader(state.Bytes())); err != nil {
 		t.Fatal(err)
 	}
-	if got := register(t, machine, cpu.RegisterPC); got != returnSentinel {
-		t.Fatalf("restored reference pc = 0x%08x, want 0x%08x", got, returnSentinel)
+	if got := register(t, machine, cpu.RegisterPC); got != guest.ReturnSentinel {
+		t.Fatalf("restored reference pc = 0x%08x, want 0x%08x", got, guest.ReturnSentinel)
 	}
 	restoredFrame := machine.Framebuffer().(*stdimage.RGBA)
 	if restoredDigest := sha256.Sum256(restoredFrame.Pix); restoredDigest != firstFrameDigest {
@@ -1516,7 +1521,7 @@ func TestRaptorJavaSaveStateFailsBeforeWriting(t *testing.T) {
 	if err := machine.SaveState(&valid); err != nil {
 		t.Fatal(err)
 	}
-	machine.raptor = &raptorRuntime{java: &raptorJavaRuntime{}}
+	machine.raptor = &raptorrt.Runtime{Java: &raptorrt.JavaRuntime{}}
 
 	var rejected bytes.Buffer
 	err := machine.SaveState(&rejected)
@@ -1634,4 +1639,25 @@ func register(t *testing.T, machine *Machine, id uint32) uint32 {
 		t.Fatal(err)
 	}
 	return value
+}
+
+func syntheticKTFClient() []byte {
+	client := make([]byte, 0x200)
+	copy(client, []byte{
+		0x00, 0x48, // ldr r0, [pc, #0]
+		0x70, 0x47, // bx lr
+	})
+	binary.LittleEndian.PutUint32(client[4:8], ktfrt.ImageBase+0x100)
+	copy(client[0x20:], []byte{
+		0x00, 0x20, // movs r0, #0
+		0x70, 0x47, // bx lr
+	})
+	binary.LittleEndian.PutUint32(client[0x100:], ktfrt.ImageBase+0x140)
+	binary.LittleEndian.PutUint32(client[0x104:], ktfrt.ImageBase+0x180)
+	binary.LittleEndian.PutUint32(client[0x114:], (ktfrt.ImageBase+0x20)|1)
+	binary.LittleEndian.PutUint32(client[0x140:], ktfrt.ImageBase+0x160)
+	binary.LittleEndian.PutUint32(client[0x168:], (ktfrt.ImageBase+0x20)|1)
+	binary.LittleEndian.PutUint32(client[0x170:], (ktfrt.ImageBase+0x20)|1)
+	copy(client[0x180:], "SyntheticKTF\x00")
+	return client
 }

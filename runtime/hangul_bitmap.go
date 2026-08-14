@@ -1,3 +1,6 @@
+// Code generated from NeoDunggeunmo-derived bitmap data. DO NOT EDIT the
+// embedded base64 payload below by hand; the generator is not checked in
+// (see KNOWN_ISSUES.md §D D1).
 package runtime
 
 import (

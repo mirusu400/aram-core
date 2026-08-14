@@ -1,6 +1,9 @@
 package application
 
 import (
+	"github.com/mirusu400/aram-core/application/internal/guest"
+	ktfrt "github.com/mirusu400/aram-core/application/internal/ktf"
+	"github.com/mirusu400/aram-core/application/internal/skvmhost"
 	"testing"
 	"time"
 )
@@ -16,13 +19,13 @@ func TestFrameQuantumMatchesTheAdvanceEachRuntimeApplies(t *testing.T) {
 	}{
 		{
 			name:    "KTF",
-			machine: &Machine{ktf: &ktfRuntime{}},
-			want:    ktfFrameDuration,
+			machine: &Machine{ktf: &ktfrt.Runtime{}},
+			want:    ktfrt.FrameDuration,
 		},
 		{
 			name:    "native WIPI",
 			machine: &Machine{},
-			want:    wipiFrameDuration,
+			want:    guest.WIPIFrameDuration,
 		},
 	}
 	for _, test := range tests {
@@ -38,9 +41,9 @@ func TestFrameQuantumMatchesTheAdvanceEachRuntimeApplies(t *testing.T) {
 // or scheduling absurdly, whatever runtime is loaded.
 func TestFrameQuantumIsPositiveAndSubSecond(t *testing.T) {
 	machines := []interface{ FrameQuantum() time.Duration }{
-		&Machine{ktf: &ktfRuntime{}},
+		&Machine{ktf: &ktfrt.Runtime{}},
 		&Machine{},
-		&skvmMachine{},
+		&skvmhost.Machine{},
 	}
 	for _, machine := range machines {
 		quantum := machine.FrameQuantum()
@@ -60,7 +63,7 @@ func TestQuantumAccumulatorTracksRealTime(t *testing.T) {
 		name    string
 		machine *Machine
 	}{
-		{name: "KTF", machine: &Machine{ktf: &ktfRuntime{}}},
+		{name: "KTF", machine: &Machine{ktf: &ktfrt.Runtime{}}},
 		{name: "native WIPI", machine: &Machine{}},
 	}
 	for _, test := range tests {

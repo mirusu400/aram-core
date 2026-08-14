@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"github.com/mirusu400/aram-core/application/internal/guest"
+	wipirt "github.com/mirusu400/aram-core/application/internal/wipi"
 	"testing"
 
 	machinecore "github.com/mirusu400/aram-core/core"
@@ -57,7 +59,7 @@ func TestGenericStepFrameUsesConfiguredRunBudget(t *testing.T) {
 func TestGenericStepFrameYieldsAtPresentation(t *testing.T) {
 	machine := newSyntheticMachine(t)
 	machine.runBudget = 32
-	stub := machine.wipi.layout.StubByName["MC_grpFlushLcd"]
+	stub := machine.wipi.Layout.StubByName["MC_grpFlushLcd"]
 	if stub == 0 {
 		t.Fatal("MC_grpFlushLcd stub is missing")
 	}
@@ -66,7 +68,7 @@ func TestGenericStepFrameYieldsAtPresentation(t *testing.T) {
 		machine.wipi,
 		"MC_grpGetScreenFrameBuffer",
 		0,
-	).low
+	).Low
 	if screen == 0 {
 		t.Fatal("screen framebuffer is null")
 	}
@@ -97,7 +99,7 @@ func TestGenericStepFrameYieldsAtPresentation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	before := machine.wipi.stats.PresentCount
+	before := machine.wipi.Stats.PresentCount
 	if err := machine.StepFrame(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -105,12 +107,12 @@ func TestGenericStepFrameYieldsAtPresentation(t *testing.T) {
 	if result.Reason != cpu.StopBudget ||
 		result.Instructions != 1 ||
 		result.PC != machine.info.TextAddress ||
-		machine.wipi.stats.PresentCount != before+1 {
+		machine.wipi.Stats.PresentCount != before+1 {
 		t.Fatalf(
 			"presentation frame = %+v, presents %d -> %d",
 			result,
 			before,
-			machine.wipi.stats.PresentCount,
+			machine.wipi.Stats.PresentCount,
 		)
 	}
 }
@@ -163,4 +165,55 @@ func BenchmarkGenericHandsetFrame(b *testing.B) {
 		float64(b.N)*float64(DefaultHandsetRunBudget)/b.Elapsed().Seconds(),
 		"guest-insn/s",
 	)
+}
+
+func dispatchPublicAPI(t *testing.T, runtime *wipirt.Runtime, name string, args ...uint32) guest.WIPIReturn {
+	t.Helper()
+	for index := 0; index < 4; index++ {
+		value := uint32(0)
+		if index < len(args) {
+			value = args[index]
+		}
+		if err := runtime.CPU.WriteRegister(uint32(index), value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sp := guest.DefaultStackBase + guest.DefaultStackSize - 0x100
+	if err := runtime.CPU.WriteRegister(cpu.RegisterSP, sp); err != nil {
+		t.Fatal(err)
+	}
+	for index := 4; index < len(args); index++ {
+		var encoded [4]byte
+		binary.LittleEndian.PutUint32(encoded[:], args[index])
+		if err := runtime.CPU.WriteMemory(sp+uint32(index-4)*4, encoded[:]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const link = uint32(0x02000001)
+	if err := runtime.CPU.WriteRegister(cpu.RegisterLR, link); err != nil {
+		t.Fatal(err)
+	}
+	stub, ok := runtime.Layout.StubByName[name]
+	if !ok {
+		t.Fatalf("%s has no stub", name)
+	}
+	handled, err := runtime.DispatchTrap(context.Background(), stub&^1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatalf("%s trap was not handled", name)
+	}
+	low, err := runtime.CPU.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	high, err := runtime.CPU.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pc, _ := runtime.CPU.ReadRegister(cpu.RegisterPC); pc != link&^1 {
+		t.Fatalf("%s returned to PC 0x%08x", name, pc)
+	}
+	return guest.WIPIReturn{Low: low, High: high}
 }

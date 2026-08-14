@@ -4,6 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/mirusu400/aram-core/application/internal/guest"
+	ktfrt "github.com/mirusu400/aram-core/application/internal/ktf"
+	"github.com/mirusu400/aram-core/application/internal/skvmhost"
+	wipirt "github.com/mirusu400/aram-core/application/internal/wipi"
 	"image"
 	"reflect"
 	"testing"
@@ -12,7 +16,6 @@ import (
 	"github.com/mirusu400/aram-core/cpu"
 	"github.com/mirusu400/aram-core/cpu/interpreter"
 	shared "github.com/mirusu400/aram-core/runtime"
-	skengine "github.com/mirusu400/aram-core/skvm"
 )
 
 func TestMachineDebugSnapshotIsBoundedAndDetached(t *testing.T) {
@@ -34,14 +37,14 @@ func TestMachineDebugSnapshotIsBoundedAndDetached(t *testing.T) {
 			PC:           0x12345678,
 			Err:          errors.New("synthetic fault"),
 		},
-		wipi: &wipiRuntime{
-			logs: []string{"guest-1", "guest-2", "guest-3"},
+		wipi: &wipirt.Runtime{
+			Logs: []string{"guest-1", "guest-2", "guest-3"},
 		},
-		ktf: &ktfRuntime{
-			hostTrace:           []string{"host-1", "host-2", "host-3"},
-			lastJavaMethod:      "Game.paint()V",
-			lastJavaThrowName:   "java/lang/RuntimeException",
-			javaExceptionFrames: []string{"Game.paint(Game.java:10)"},
+		ktf: &ktfrt.Runtime{
+			HostTrace:           []string{"host-1", "host-2", "host-3"},
+			LastJavaMethod:      "Game.paint()V",
+			LastJavaThrowName:   "java/lang/RuntimeException",
+			JavaExceptionFrames: []string{"Game.paint(Game.java:10)"},
 		},
 	}
 
@@ -51,7 +54,7 @@ func TestMachineDebugSnapshotIsBoundedAndDetached(t *testing.T) {
 	}
 	if snapshot.CPU == nil ||
 		snapshot.CPU.Mode != "thumb" ||
-		len(snapshot.CPU.Registers) != len(debugRegisterNames) {
+		len(snapshot.CPU.Registers) != len(guest.DebugRegisterNames) {
 		t.Fatalf("CPU snapshot = %+v", snapshot.CPU)
 	}
 	if snapshot.LastResult == nil ||
@@ -78,29 +81,9 @@ func TestMachineDebugSnapshotIsBoundedAndDetached(t *testing.T) {
 
 	snapshot.GuestLog.Entries[0] = "changed"
 	snapshot.HostTrace.Entries[0] = "changed"
-	if machine.wipi.logs[1] != "guest-2" ||
-		machine.ktf.hostTrace[1] != "host-2" {
+	if machine.wipi.Logs[1] != "guest-2" ||
+		machine.ktf.HostTrace[1] != "host-2" {
 		t.Fatal("debug snapshot aliases machine-owned data")
-	}
-}
-
-func TestSKVMDebugSnapshotReportsInterpreterProgress(t *testing.T) {
-	machine := &skvmMachine{
-		state:     machinecore.StatePaused,
-		mainClass: "example/Game",
-		started:   true,
-		midlet:    12,
-		input:     make([]machinecore.InputEvent, 3),
-		vm:        &skengine.VM{Instructions: 987},
-	}
-	snapshot := machine.DebugSnapshot(10)
-	if snapshot.Runtime != "skvm" ||
-		snapshot.State != "paused" ||
-		snapshot.SKVM == nil ||
-		snapshot.SKVM.MainClass != "example/Game" ||
-		snapshot.SKVM.Instructions != 987 ||
-		snapshot.SKVM.QueuedInput != 3 {
-		t.Fatalf("SKVM snapshot = %+v", snapshot)
 	}
 }
 
@@ -116,7 +99,7 @@ func TestSKVMDebugSnapshotReportsFramebufferIntegrityWithoutPixels(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	machine := created.(*skvmMachine)
+	machine := created.(*skvmhost.Machine)
 	t.Cleanup(func() { _ = machine.Close() })
 	if err := machine.Start(context.Background()); err != nil {
 		t.Fatal(err)
@@ -139,10 +122,10 @@ func TestSKVMDebugSnapshotReportsFramebufferIntegrityWithoutPixels(t *testing.T)
 }
 
 func TestDebugSnapshotLimitIsClamped(t *testing.T) {
-	if got := normalizeDebugSnapshotLimit(0); got != DefaultDebugSnapshotEntries {
+	if got := guest.NormalizeDebugSnapshotLimit(0); got != DefaultDebugSnapshotEntries {
 		t.Fatalf("default limit = %d", got)
 	}
-	if got := normalizeDebugSnapshotLimit(MaxDebugSnapshotEntries + 1); got != MaxDebugSnapshotEntries {
+	if got := guest.NormalizeDebugSnapshotLimit(MaxDebugSnapshotEntries + 1); got != MaxDebugSnapshotEntries {
 		t.Fatalf("maximum limit = %d", got)
 	}
 }

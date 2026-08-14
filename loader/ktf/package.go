@@ -15,6 +15,8 @@ import (
 	"path"
 	"strconv"
 	"strings"
+
+	"github.com/mirusu400/aram-core/loader/internal/zipname"
 )
 
 const (
@@ -271,7 +273,7 @@ func findDescriptorEntry(data []byte) (string, error) {
 		if entry.FileInfo().IsDir() {
 			continue
 		}
-		name, ok := safeName(entry.Name)
+		name, ok := zipname.SafeName(entry.Name)
 		if !ok || path.Base(name) != "__adf__" {
 			continue
 		}
@@ -308,7 +310,7 @@ func readZIP(data []byte, label string, tolerateResourceErrors bool) (map[string
 		if entry.FileInfo().Mode()&fs.ModeSymlink != 0 {
 			return nil, nil, &FormatError{Path: entry.Name, Reason: "symbolic link is not allowed"}
 		}
-		name, ok := safeName(entry.Name)
+		name, ok := zipname.SafeName(entry.Name)
 		if !ok {
 			return nil, nil, &FormatError{Path: entry.Name, Reason: "unsafe member path"}
 		}
@@ -376,19 +378,4 @@ func readZIP(data []byte, label string, tolerateResourceErrors bool) (map[string
 		files[name] = payload
 	}
 	return files, warnings, nil
-}
-
-func safeName(name string) (string, bool) {
-	name = strings.ReplaceAll(name, `\`, "/")
-	if name == "" || strings.IndexByte(name, 0) >= 0 || strings.HasPrefix(name, "/") {
-		return "", false
-	}
-	cleaned := path.Clean(name)
-	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
-		return "", false
-	}
-	if strings.Contains(strings.Split(cleaned, "/")[0], ":") {
-		return "", false
-	}
-	return cleaned, cleaned == name
 }

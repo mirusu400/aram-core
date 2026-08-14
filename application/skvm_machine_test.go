@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"github.com/mirusu400/aram-core/application/internal/skvmhost"
 	"image"
 	"image/png"
 	"testing"
@@ -14,68 +15,8 @@ import (
 	machinecore "github.com/mirusu400/aram-core/core"
 	"github.com/mirusu400/aram-core/cpu"
 	"github.com/mirusu400/aram-core/cpu/interpreter"
-	"github.com/mirusu400/aram-core/profile"
 	shared "github.com/mirusu400/aram-core/runtime"
 )
-
-func TestSKVMKeyCode(t *testing.T) {
-	tests := []struct {
-		name string
-		key  profile.KeyCode
-		want int32
-	}{
-		{name: "up", key: profile.KeyUp, want: 141},
-		{name: "left", key: profile.KeyLeft, want: 142},
-		{name: "right", key: profile.KeyRight, want: 145},
-		{name: "down", key: profile.KeyDown, want: 146},
-		{name: "select", key: profile.KeySelect, want: 148},
-		{name: "digit", key: profile.Key1, want: '1'},
-		{name: "soft key", key: profile.KeySoft1, want: -6},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if got := skvmKeyCode(test.key); got != test.want {
-				t.Fatalf("skvmKeyCode(%d) = %d, want %d", test.key, got, test.want)
-			}
-		})
-	}
-}
-
-func TestInferSKVMFramebufferSize(t *testing.T) {
-	fallback := image.Pt(240, 320)
-	tests := []struct {
-		name      string
-		resources map[string][]byte
-		want      image.Point
-	}{
-		{
-			name:      "120 pixel handset background",
-			resources: map[string][]byte{"background.png": syntheticSKVMPNG(t, 120, 146)},
-			want:      image.Pt(120, 160),
-		},
-		{
-			name: "larger background wins",
-			resources: map[string][]byte{
-				"small.png":  syntheticSKVMPNG(t, 120, 160),
-				"large1.png": syntheticSKVMPNG(t, 176, 202),
-				"large2.png": syntheticSKVMPNG(t, 176, 202),
-			},
-			want: image.Pt(176, 208),
-		},
-		{
-			name:      "no screen-sized image",
-			resources: map[string][]byte{"icon.png": syntheticSKVMPNG(t, 23, 23)},
-			want:      fallback,
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if got := inferSKVMFramebufferSize(fallback, test.resources); got != test.want {
-				t.Fatalf("inferSKVMFramebufferSize() = %v, want %v", got, test.want)
-			}
-		})
-	}
-}
 
 func TestFactoryInfersSKVMFramebufferFromResources(t *testing.T) {
 	data := syntheticSKVMPackageWithResources(t, map[string][]byte{
@@ -113,9 +54,9 @@ func TestFactoryCreatesSKVMMachineWithSharedServices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	machine, ok := created.(*skvmMachine)
+	machine, ok := created.(*skvmhost.Machine)
 	if !ok {
-		t.Fatalf("Factory.Create returned %T, want *skvmMachine", created)
+		t.Fatalf("Factory.Create returned %T, want *skvmhost.Machine", created)
 	}
 	t.Cleanup(func() { _ = machine.Close() })
 	if cpuCreations != 0 {
@@ -127,21 +68,21 @@ func TestFactoryCreatesSKVMMachineWithSharedServices(t *testing.T) {
 	if bounds := machine.Framebuffer().Bounds(); bounds.Dx() != 17 || bounds.Dy() != 19 {
 		t.Fatalf("framebuffer bounds = %v, want 17x19", bounds)
 	}
-	if got := machine.services.Config.Device.ProfileID; got != skvmProfileID {
-		t.Fatalf("profile = %q, want %q", got, skvmProfileID)
+	if got := machine.Services().Config.Device.ProfileID; got != skvmhost.ProfileID {
+		t.Fatalf("profile = %q, want %q", got, skvmhost.ProfileID)
 	}
-	store, err := machine.services.Storage.OpenRecordStore(
-		machine.owner,
+	store, err := machine.Services().Storage.OpenRecordStore(
+		machine.Owner(),
 		"installedData",
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	record, err := machine.services.Storage.Record(machine.owner, store, 4)
+	record, err := machine.Services().Storage.Record(machine.Owner(), store, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
-	nextID, err := machine.services.Storage.NextRecordID(machine.owner, store)
+	nextID, err := machine.Services().Storage.NextRecordID(machine.Owner(), store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +101,7 @@ func TestSKVMMachineLifecycleResetAndStateRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	machine := created.(*skvmMachine)
+	machine := created.(*skvmhost.Machine)
 	t.Cleanup(func() { _ = machine.Close() })
 
 	if err := machine.Start(context.Background()); err != nil {
@@ -176,15 +117,15 @@ func TestSKVMMachineLifecycleResetAndStateRoundTrip(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	frameStartedAt := machine.services.Clock.Monotonic()
+	frameStartedAt := machine.Services().Clock.Monotonic()
 	if err := machine.StepFrame(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	savedClock := machine.services.Clock.Monotonic()
+	savedClock := machine.Services().Clock.Monotonic()
 	if got, want := machine.FrameQuantum(), savedClock-frameStartedAt; got != want {
 		t.Fatalf("frame quantum = %s, want actual clock advance %s", got, want)
 	}
-	savedInstructions := machine.vm.Instructions
+	savedInstructions := machine.VM().Instructions
 	var saved bytes.Buffer
 	if err := machine.SaveState(&saved); err != nil {
 		t.Fatal(err)
@@ -193,45 +134,45 @@ func TestSKVMMachineLifecycleResetAndStateRoundTrip(t *testing.T) {
 	if err := machine.StepFrame(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if machine.services.Clock.Monotonic() == savedClock {
+	if machine.Services().Clock.Monotonic() == savedClock {
 		t.Fatal("second frame did not advance virtual time")
 	}
 	if err := machine.LoadState(bytes.NewReader(saved.Bytes())); err != nil {
 		t.Fatal(err)
 	}
-	if machine.services.Clock.Monotonic() != savedClock ||
-		machine.vm.Instructions != savedInstructions ||
+	if machine.Services().Clock.Monotonic() != savedClock ||
+		machine.VM().Instructions != savedInstructions ||
 		machine.State() != machinecore.StatePaused {
 		t.Fatalf(
 			"restored state clock=%s instructions=%d lifecycle=%s",
-			machine.services.Clock.Monotonic(),
-			machine.vm.Instructions,
+			machine.Services().Clock.Monotonic(),
+			machine.VM().Instructions,
 			machine.State(),
 		)
 	}
-	if err := machine.services.Storage.WriteFile(
+	if err := machine.Services().Storage.WriteFile(
 		shared.NamespacePrivate,
 		"/save.dat",
 		[]byte("persistent SKVM file"),
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := machine.services.Storage.WriteFile(
+	if err := machine.Services().Storage.WriteFile(
 		shared.NamespaceTemporary,
 		"/discard.tmp",
 		[]byte("temporary"),
 	); err != nil {
 		t.Fatal(err)
 	}
-	store, err := machine.services.Storage.CreateRecordStore(
-		machine.owner,
+	store, err := machine.Services().Storage.CreateRecordStore(
+		machine.Owner(),
 		"scores",
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	recordID, err := machine.services.Storage.AddRecord(
-		machine.owner,
+	recordID, err := machine.Services().Storage.AddRecord(
+		machine.Owner(),
 		store,
 		[]byte{9, 8, 7, 6},
 	)
@@ -245,35 +186,35 @@ func TestSKVMMachineLifecycleResetAndStateRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	if machine.State() != machinecore.StateReady ||
-		machine.services.Clock.Monotonic() != 0 {
+		machine.Services().Clock.Monotonic() != 0 {
 		t.Fatalf(
 			"reset state clock=%s lifecycle=%s",
-			machine.services.Clock.Monotonic(),
+			machine.Services().Clock.Monotonic(),
 			machine.State(),
 		)
 	}
-	persisted, err := machine.services.Storage.ReadFile(
+	persisted, err := machine.Services().Storage.ReadFile(
 		shared.NamespacePrivate,
 		"/save.dat",
 	)
 	if err != nil || string(persisted) != "persistent SKVM file" {
 		t.Fatalf("reset SKVM persistent file = %q, %v", persisted, err)
 	}
-	if _, err := machine.services.Storage.ReadFile(
+	if _, err := machine.Services().Storage.ReadFile(
 		shared.NamespaceTemporary,
 		"/discard.tmp",
 	); !errors.Is(err, shared.ErrNotFound) {
 		t.Fatalf("reset SKVM temporary file error = %v", err)
 	}
-	persistedStore, err := machine.services.Storage.OpenRecordStore(
-		machine.owner,
+	persistedStore, err := machine.Services().Storage.OpenRecordStore(
+		machine.Owner(),
 		"scores",
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	persistedRecord, err := machine.services.Storage.Record(
-		machine.owner,
+	persistedRecord, err := machine.Services().Storage.Record(
+		machine.Owner(),
 		persistedStore,
 		recordID,
 	)

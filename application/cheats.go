@@ -3,6 +3,8 @@ package application
 import (
 	"fmt"
 
+	"github.com/mirusu400/aram-core/application/internal/guest"
+	"github.com/mirusu400/aram-core/application/internal/minigame"
 	"github.com/mirusu400/aram-core/cheat"
 	machinecore "github.com/mirusu400/aram-core/core"
 	"github.com/mirusu400/aram-core/cpu"
@@ -83,7 +85,7 @@ func (a applicationCheatMemory) WriteMemory(
 func (m *Machine) defaultCheatRegionsLocked() []cheat.Region {
 	regions := make([]cheat.Region, 0, 8)
 	if m.raptor != nil {
-		for _, section := range m.raptor.pkg.Image.AllocatedSections() {
+		for _, section := range m.raptor.Pkg.Image.AllocatedSections() {
 			regions = append(regions, cheat.Region{
 				Name: fmt.Sprintf(
 					"image.raptor.%d.%s",
@@ -92,7 +94,7 @@ func (m *Machine) defaultCheatRegionsLocked() []cheat.Region {
 				),
 				Start: section.Address,
 				Size:  section.Size,
-				// mapRaptorImage maps every allocated section read-write, so a
+				// raptorrt.MapRaptorImage maps every allocated section read-write, so a
 				// hash-keyed code patch may target executable sections the way
 				// image.text does for the other loaders. Scanning stays on the
 				// writable data sections so an unknown-value scan never walks
@@ -123,16 +125,16 @@ func (m *Machine) defaultCheatRegionsLocked() []cheat.Region {
 	}
 	regions = append(regions, cheat.Region{
 		Name:      "wipi.heap",
-		Start:     guestHeapBase,
-		Size:      guestHeapSize,
+		Start:     guest.HeapBase,
+		Size:      guest.HeapSize,
 		Writable:  true,
 		Scannable: true,
 	})
 	if m.minigame != nil {
 		regions = append(regions, cheat.Region{
 			Name:      "eads.image-heap",
-			Start:     eadsImageHeapBase,
-			Size:      eadsImageHeapSize,
+			Start:     minigame.ImageHeapBase,
+			Size:      minigame.ImageHeapSize,
 			Writable:  true,
 			Scannable: false,
 		})

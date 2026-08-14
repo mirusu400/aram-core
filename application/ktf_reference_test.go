@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	ktfrt "github.com/mirusu400/aram-core/application/internal/ktf"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -75,40 +76,40 @@ func TestReferenceKTFBootstrap(t *testing.T) {
 		)
 	}
 
-	runtime, err := newKTFRuntime(interpreter.New(), pkg)
+	runtime, err := ktfrt.NewRuntime(interpreter.New(), pkg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime.deferThreads = os.Getenv("ARAM_TEST_DEFER_THREADS") != ""
-	defer runtime.cpu.Close()
-	if err := runtime.mapImageAndHost(); err != nil {
+	runtime.DeferThreads = os.Getenv("ARAM_TEST_DEFER_THREADS") != ""
+	defer runtime.CPU.Close()
+	if err := runtime.MapImageAndHost(); err != nil {
 		t.Fatal(err)
 	}
-	result, pointer, err := runtime.bootstrap(context.Background())
+	result, pointer, err := runtime.Bootstrap(context.Background())
 	if err != nil {
 		t.Fatalf("%s: %v (result %+v)", packagePath, err, result)
 	}
-	if pointer < ktfImageBase || pointer >= ktfImageBase+runtime.imageSz {
+	if pointer < ktfrt.ImageBase || pointer >= ktfrt.ImageBase+runtime.ImageSz {
 		t.Fatalf("%s: bootstrap pointer 0x%08x is outside client image", packagePath, pointer)
 	}
 	t.Logf("%s: entry returned 0x%08x after %d instructions",
 		packagePath, pointer, result.Instructions)
-	t.Logf("executable: %+v", runtime.exe)
-	if err := runtime.initialize(context.Background()); err != nil {
+	t.Logf("executable: %+v", runtime.Exe)
+	if err := runtime.Initialize(context.Background()); err != nil {
 		t.Logf("initialization frontier: %v", err)
 		t.Logf(
 			"host trace: calls=%d tail=%v",
-			len(runtime.hostTrace),
-			ktfTraceTail(runtime.hostTrace, 32),
+			len(runtime.HostTrace),
+			ktfTraceTail(runtime.HostTrace, 32),
 		)
 		return
 	}
 	t.Logf(
 		"KTF native initialization completed; host calls=%d tail=%v",
-		len(runtime.hostTrace),
-		ktfTraceTail(runtime.hostTrace, 32),
+		len(runtime.HostTrace),
+		ktfTraceTail(runtime.HostTrace, 32),
 	)
-	mainClass, err := runtime.loadClass(context.Background(), pkg.Descriptor.MainClass)
+	mainClass, err := runtime.LoadClass(context.Background(), pkg.Descriptor.MainClass)
 	if err != nil {
 		t.Fatalf("load MClass %q: %v", pkg.Descriptor.MainClass, err)
 	}
@@ -128,25 +129,25 @@ func TestReferenceKTFBootstrap(t *testing.T) {
 			method.NativeBody,
 		)
 	}
-	traceStart := len(runtime.hostTrace)
-	if err := runtime.startMainClass(context.Background()); err != nil {
+	traceStart := len(runtime.HostTrace)
+	if err := runtime.StartMainClass(context.Background()); err != nil {
 		t.Logf("MClass execution frontier: %v", err)
-		if runtime.lastJavaReturn != 0 {
-			words, readErr := runtime.readWords(runtime.lastJavaReturn, 2)
+		if runtime.LastJavaReturn != 0 {
+			words, readErr := runtime.ReadWords(runtime.LastJavaReturn, 2)
 			var classErr error
 			var header uint32
 			var vtable uint32
 			if readErr == nil {
-				_, classErr = runtime.inspectJavaClass(words[1])
-				header, _ = runtime.readU32(words[0])
-				vtable, _ = runtime.readU32(
-					runtime.jvmContext + 12 + (header >> 5),
+				_, classErr = runtime.InspectJavaClass(words[1])
+				header, _ = runtime.ReadU32(words[0])
+				vtable, _ = runtime.ReadU32(
+					runtime.JvmContext + 12 + (header >> 5),
 				)
 			}
 			t.Logf(
 				"last Java return 0x%08x words=%08x header=0x%08x "+
 					"vtable=0x%08x err=%v class_err=%v",
-				runtime.lastJavaReturn,
+				runtime.LastJavaReturn,
 				words,
 				header,
 				vtable,
@@ -154,15 +155,15 @@ func TestReferenceKTFBootstrap(t *testing.T) {
 				classErr,
 			)
 		}
-		if caller := runtime.lastJavaCallLR &^ 1; caller >= 128 {
+		if caller := runtime.LastJavaCallLR &^ 1; caller >= 128 {
 			code := make([]byte, 256)
-			if readErr := runtime.cpu.ReadMemory(caller-128, code); readErr == nil {
+			if readErr := runtime.CPU.ReadMemory(caller-128, code); readErr == nil {
 				t.Logf("last Java call code at 0x%08x: %x", caller-128, code)
 			}
 			var containingClass string
-			var containingMethod ktfJavaMethod
-			for className, address := range runtime.javaClasses {
-				class, inspectErr := runtime.inspectJavaClass(address)
+			var containingMethod ktfrt.JavaMethod
+			for className, address := range runtime.JavaClasses {
+				class, inspectErr := runtime.InspectJavaClass(address)
 				if inspectErr != nil {
 					continue
 				}
@@ -175,11 +176,11 @@ func TestReferenceKTFBootstrap(t *testing.T) {
 				}
 			}
 			if containingMethod.Body != 0 {
-				methodWords, methodErr := runtime.readWords(
+				methodWords, methodErr := runtime.ReadWords(
 					containingMethod.Address,
 					7,
 				)
-				table, tableErr := runtime.readWords(
+				table, tableErr := runtime.ReadWords(
 					containingMethod.ExceptionTableRaw,
 					int(containingMethod.ExceptionCount),
 				)
@@ -202,10 +203,10 @@ func TestReferenceKTFBootstrap(t *testing.T) {
 					methodErr,
 				)
 				for _, entry := range table {
-					words, entryErr := runtime.readWords(entry, 6)
+					words, entryErr := runtime.ReadWords(entry, 6)
 					catchName := ""
 					if len(words) >= 4 && words[3] != 0 {
-						if class, inspectErr := runtime.inspectJavaClass(
+						if class, inspectErr := runtime.InspectJavaClass(
 							words[3],
 						); inspectErr == nil {
 							catchName = class.Name
@@ -222,8 +223,8 @@ func TestReferenceKTFBootstrap(t *testing.T) {
 				}
 			}
 		}
-		for index := len(runtime.hostTrace) - 1; index >= traceStart; index-- {
-			trace := runtime.hostTrace[index]
+		for index := len(runtime.HostTrace) - 1; index >= traceStart; index-- {
+			trace := runtime.HostTrace[index]
 			marker := strings.LastIndex(trace, "lr=0x")
 			if !strings.HasPrefix(trace, "java_jump_2:") || marker < 0 {
 				continue
@@ -235,19 +236,19 @@ func TestReferenceKTFBootstrap(t *testing.T) {
 			}
 			caller &^= 1
 			code := make([]byte, 384)
-			if readErr := runtime.cpu.ReadMemory(caller-256, code); readErr == nil {
+			if readErr := runtime.CPU.ReadMemory(caller-256, code); readErr == nil {
 				t.Logf("fault caller code at 0x%08x: %x", caller-256, code)
 			}
 			break
 		}
 		registers := make([]uint32, cpu.RegisterCPSR+1)
 		for register := range registers {
-			registers[register], _ = runtime.cpu.ReadRegister(uint32(register))
+			registers[register], _ = runtime.CPU.ReadRegister(uint32(register))
 		}
 		t.Logf("frontier registers: %08x", registers)
 		ktfLogJavaThrowStack(t, runtime)
-		for name, address := range runtime.javaClasses {
-			class, inspectErr := runtime.inspectJavaClass(address)
+		for name, address := range runtime.JavaClasses {
+			class, inspectErr := runtime.InspectJavaClass(address)
 			if inspectErr != nil || len(class.Methods) == 0 {
 				continue
 			}
@@ -255,18 +256,18 @@ func TestReferenceKTFBootstrap(t *testing.T) {
 		}
 		t.Logf(
 			"new host trace: calls=%d tail=%v",
-			len(runtime.hostTrace)-traceStart,
-			ktfTraceTail(runtime.hostTrace[traceStart:], 64),
+			len(runtime.HostTrace)-traceStart,
+			ktfTraceTail(runtime.HostTrace[traceStart:], 64),
 		)
-		ktfLogJavaExceptionSummary(t, runtime.hostTrace[traceStart:])
+		ktfLogJavaExceptionSummary(t, runtime.HostTrace[traceStart:])
 		if value := os.Getenv("ARAM_TEST_FIELD_CACHE"); value != "" {
 			cache, parseErr := strconv.ParseUint(value, 0, 32)
-			fieldAddress, readErr := runtime.readU32(uint32(cache))
-			fieldWords, wordsErr := runtime.readWords(fieldAddress, 4)
+			fieldAddress, readErr := runtime.ReadU32(uint32(cache))
+			fieldWords, wordsErr := runtime.ReadWords(fieldAddress, 4)
 			name := ""
 			descriptor := ""
 			if wordsErr == nil {
-				name, descriptor, _ = runtime.readJavaFullName(fieldWords[2])
+				name, descriptor, _ = runtime.ReadJavaFullName(fieldWords[2])
 			}
 			t.Logf(
 				"KTF field cache 0x%08x -> 0x%08x words=%08x "+
@@ -284,12 +285,12 @@ func TestReferenceKTFBootstrap(t *testing.T) {
 		}
 		if value := os.Getenv("ARAM_TEST_METHOD_CACHE"); value != "" {
 			cache, parseErr := strconv.ParseUint(value, 0, 32)
-			methodAddress, readErr := runtime.readU32(uint32(cache))
-			method, methodErr := runtime.inspectJavaMethod(methodAddress)
+			methodAddress, readErr := runtime.ReadU32(uint32(cache))
+			method, methodErr := runtime.InspectJavaMethod(methodAddress)
 			className := ""
 			if methodErr == nil {
-				methodWords, _ := runtime.readWords(methodAddress, 2)
-				if class, classErr := runtime.inspectJavaClass(
+				methodWords, _ := runtime.ReadWords(methodAddress, 2)
+				if class, classErr := runtime.InspectJavaClass(
 					methodWords[1],
 				); classErr == nil {
 					className = class.Name
@@ -320,7 +321,7 @@ func TestReferenceKTFBootstrap(t *testing.T) {
 			words := []uint32(nil)
 			var readErr error
 			if addressErr == nil && countErr == nil && count <= 1024 {
-				words, readErr = runtime.readWords(uint32(address), int(count))
+				words, readErr = runtime.ReadWords(uint32(address), int(count))
 			}
 			t.Logf(
 				"KTF memory %s words=%08x address_err=%v count_err=%v read_err=%v",
@@ -349,8 +350,8 @@ func TestReferenceKTFBootstrap(t *testing.T) {
 			} else {
 				for index := uint64(0); index < count; index++ {
 					cache := uint32(start) + uint32(index)*4
-					target, readErr := runtime.readU32(cache)
-					method, methodErr := runtime.inspectJavaMethod(target)
+					target, readErr := runtime.ReadU32(cache)
+					method, methodErr := runtime.InspectJavaMethod(target)
 					if methodErr == nil {
 						t.Logf(
 							"KTF cache 0x%08x -> method %s%s body=0x%08x",
@@ -361,12 +362,12 @@ func TestReferenceKTFBootstrap(t *testing.T) {
 						)
 						continue
 					}
-					words, wordsErr := runtime.readWords(target, 4)
+					words, wordsErr := runtime.ReadWords(target, 4)
 					name := ""
 					descriptor := ""
 					var fieldErr error
 					if wordsErr == nil {
-						name, descriptor, fieldErr = runtime.readJavaFullName(words[2])
+						name, descriptor, fieldErr = runtime.ReadJavaFullName(words[2])
 					}
 					t.Logf(
 						"KTF cache 0x%08x -> field %s%s words=%08x "+
@@ -384,7 +385,7 @@ func TestReferenceKTFBootstrap(t *testing.T) {
 			}
 		}
 		if match := os.Getenv("ARAM_TEST_JAVA_STRINGS"); match != "" {
-			for address, value := range runtime.javaStrings {
+			for address, value := range runtime.JavaStrings {
 				if strings.Contains(value, match) {
 					t.Logf("KTF Java string 0x%08x=%q", address, value)
 				}
@@ -395,21 +396,21 @@ func TestReferenceKTFBootstrap(t *testing.T) {
 			if len(parts) != 3 {
 				t.Logf("invalid ARAM_TEST_STATIC_FIELD %q", value)
 			} else {
-				classAddress := runtime.javaClasses[parts[0]]
-				class, classErr := runtime.inspectJavaClass(classAddress)
-				fieldAddress, fieldErr := runtime.resolveJavaField(
+				classAddress := runtime.JavaClasses[parts[0]]
+				class, classErr := runtime.InspectJavaClass(classAddress)
+				fieldAddress, fieldErr := runtime.ResolveJavaField(
 					class,
 					parts[1],
 					parts[2],
 				)
-				fieldWords, wordsErr := runtime.readWords(fieldAddress, 4)
+				fieldWords, wordsErr := runtime.ReadWords(fieldAddress, 4)
 				arrayWords := []uint32(nil)
 				if wordsErr == nil && strings.HasPrefix(parts[2], "[") &&
 					fieldWords[3] != 0 {
-					instanceWords, _ := runtime.readWords(fieldWords[3], 2)
-					length, lengthErr := runtime.readU32(instanceWords[0] + 4)
+					instanceWords, _ := runtime.ReadWords(fieldWords[3], 2)
+					length, lengthErr := runtime.ReadU32(instanceWords[0] + 4)
 					if lengthErr == nil && length <= 256 {
-						arrayWords, _ = runtime.readWords(
+						arrayWords, _ = runtime.ReadWords(
 							instanceWords[0]+8,
 							int(length),
 						)
@@ -431,14 +432,14 @@ func TestReferenceKTFBootstrap(t *testing.T) {
 			}
 		}
 		if match := os.Getenv("ARAM_TEST_TRACE_MATCH"); match != "" {
-			for traceIndex, trace := range runtime.hostTrace[traceStart:] {
+			for traceIndex, trace := range runtime.HostTrace[traceStart:] {
 				if !strings.Contains(trace, match) {
 					continue
 				}
 				start := max(0, traceIndex-128)
-				end := min(len(runtime.hostTrace[traceStart:]), traceIndex+17)
+				end := min(len(runtime.HostTrace[traceStart:]), traceIndex+17)
 				window := make([]string, 0, 64)
-				for _, nearby := range runtime.hostTrace[traceStart+start : traceStart+end] {
+				for _, nearby := range runtime.HostTrace[traceStart+start : traceStart+end] {
 					if strings.HasPrefix(nearby, "java_register_class:") {
 						continue
 					}
@@ -456,14 +457,14 @@ func TestReferenceKTFBootstrap(t *testing.T) {
 			}
 		}
 		if os.Getenv("ARAM_TEST_TRACE_FIELDS") != "" {
-			for _, trace := range runtime.hostTrace[traceStart:] {
+			for _, trace := range runtime.HostTrace[traceStart:] {
 				if strings.HasPrefix(trace, "java_field:") {
 					t.Log(trace)
 				}
 			}
 		}
 		if os.Getenv("ARAM_TEST_TRACE_CLASSES") != "" {
-			for _, trace := range runtime.hostTrace[traceStart:] {
+			for _, trace := range runtime.HostTrace[traceStart:] {
 				if strings.HasPrefix(trace, "java_class_load:") ||
 					strings.HasPrefix(trace, "java_register_class:") {
 					t.Log(trace)
@@ -471,14 +472,14 @@ func TestReferenceKTFBootstrap(t *testing.T) {
 			}
 		}
 		if os.Getenv("ARAM_TEST_TRACE_FILES") != "" {
-			for _, trace := range runtime.hostTrace[traceStart:] {
+			for _, trace := range runtime.HostTrace[traceStart:] {
 				if strings.HasPrefix(trace, "java_file_") {
 					t.Log(trace)
 				}
 			}
 		}
 		if os.Getenv("ARAM_TEST_TRACE_RESOURCES") != "" {
-			for _, trace := range runtime.hostTrace[traceStart:] {
+			for _, trace := range runtime.HostTrace[traceStart:] {
 				if strings.HasPrefix(trace, "java_resource:") {
 					t.Log(trace)
 				}
@@ -486,22 +487,22 @@ func TestReferenceKTFBootstrap(t *testing.T) {
 		}
 		return
 	}
-	if runtime.deferThreads {
-		original, saveErr := runtime.cpu.SaveContext()
+	if runtime.DeferThreads {
+		original, saveErr := runtime.CPU.SaveContext()
 		if saveErr != nil {
 			t.Fatal(saveErr)
 		}
-		defer runtime.cpu.RestoreContext(original)
-		for index, task := range runtime.tasks {
-			if restoreErr := runtime.cpu.RestoreContext(
-				task.context,
+		defer runtime.CPU.RestoreContext(original)
+		for index, task := range runtime.Tasks {
+			if restoreErr := runtime.CPU.RestoreContext(
+				task.Context,
 			); restoreErr != nil {
 				t.Fatal(restoreErr)
 			}
-			pc, _ := runtime.cpu.ReadRegister(cpu.RegisterPC)
-			sp, _ := runtime.cpu.ReadRegister(cpu.RegisterSP)
-			lr, _ := runtime.cpu.ReadRegister(cpu.RegisterLR)
-			status, _ := runtime.cpu.ReadRegister(cpu.RegisterCPSR)
+			pc, _ := runtime.CPU.ReadRegister(cpu.RegisterPC)
+			sp, _ := runtime.CPU.ReadRegister(cpu.RegisterSP)
+			lr, _ := runtime.CPU.ReadRegister(cpu.RegisterLR)
+			status, _ := runtime.CPU.ReadRegister(cpu.RegisterCPSR)
 			t.Logf(
 				"queued task %d: pc=0x%08x sp=0x%08x "+
 					"lr=0x%08x cpsr=0x%08x",
@@ -515,8 +516,8 @@ func TestReferenceKTFBootstrap(t *testing.T) {
 	}
 	t.Logf(
 		"MClass startApp completed; new host calls=%d tail=%v",
-		len(runtime.hostTrace)-traceStart,
-		ktfTraceTail(runtime.hostTrace[traceStart:], 64),
+		len(runtime.HostTrace)-traceStart,
+		ktfTraceTail(runtime.HostTrace[traceStart:], 64),
 	)
 }
 
@@ -649,22 +650,22 @@ func TestReferenceKTFFactoryRunsQueuedGameThread(t *testing.T) {
 	defer created.Close()
 	machine := created.(*Machine)
 	if info := machine.ImageInfo(); info.SourceKind != "ktf-wipi" ||
-		info.ProfileID != ktfProfileID {
+		info.ProfileID != ktfrt.ProfileID {
 		t.Fatalf("KTF image info = %+v", info)
 	}
 	if err := machine.Start(context.Background()); err != nil {
-		t.Logf("KTF start trace tail: %v", ktfTraceTail(machine.ktf.hostTrace, 64))
+		t.Logf("KTF start trace tail: %v", ktfTraceTail(machine.ktf.HostTrace, 64))
 		ktfLogCPUState(t, machine.ktf)
 		t.Logf(
 			"KTF Java throw stack at 0x%08x: %08x",
-			machine.ktf.lastJavaThrowSP,
-			machine.ktf.lastJavaThrowStack,
+			machine.ktf.LastJavaThrowSP,
+			machine.ktf.LastJavaThrowStack,
 		)
 		seenCallers := make(map[uint32]bool)
-		for _, value := range machine.ktf.lastJavaThrowStack {
+		for _, value := range machine.ktf.LastJavaThrowStack {
 			caller := value &^ 1
-			if caller < ktfImageBase ||
-				caller >= ktfImageBase+machine.ktf.imageSz ||
+			if caller < ktfrt.ImageBase ||
+				caller >= ktfrt.ImageBase+machine.ktf.ImageSz ||
 				seenCallers[caller] {
 				continue
 			}
@@ -683,13 +684,13 @@ func TestReferenceKTFFactoryRunsQueuedGameThread(t *testing.T) {
 			}
 		}
 		if os.Getenv("ARAM_TEST_TRACE_FIELDS") != "" {
-			for _, trace := range machine.ktf.hostTrace {
+			for _, trace := range machine.ktf.HostTrace {
 				if strings.HasPrefix(trace, "java_field:") {
 					t.Log(trace)
 				}
 			}
 		}
-		if caller := ktfLastJavaThrowCaller(machine.ktf.hostTrace); caller != 0 {
+		if caller := ktfLastJavaThrowCaller(machine.ktf.HostTrace); caller != 0 {
 			className, method := ktfContainingJavaMethod(machine.ktf, caller)
 			t.Logf(
 				"last Java throw caller 0x%08x belongs to %s.%s%s "+
@@ -704,14 +705,14 @@ func TestReferenceKTFFactoryRunsQueuedGameThread(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range slices {
-		if machine.ktf.presentCount != 0 &&
+		if machine.ktf.PresentCount != 0 &&
 			ktfFrameContainsColor(machine.frame.Pix) {
 			break
 		}
 		if err := machine.StepFrame(context.Background()); err != nil {
-			t.Logf("KTF resume trace tail: %v", ktfTraceTail(machine.ktf.hostTrace, 64))
+			t.Logf("KTF resume trace tail: %v", ktfTraceTail(machine.ktf.HostTrace, 64))
 			var wipicTrace, layoutTrace []string
-			for _, trace := range machine.ktf.hostTrace {
+			for _, trace := range machine.ktf.HostTrace {
 				if strings.HasPrefix(trace, "wipic") {
 					wipicTrace = append(wipicTrace, trace)
 				}
@@ -722,23 +723,23 @@ func TestReferenceKTFFactoryRunsQueuedGameThread(t *testing.T) {
 			t.Logf("KTF resume WIPI-C trace: %v", wipicTrace)
 			t.Logf("KTF resume card layout trace: %v", layoutTrace)
 			ktfLogCPUState(t, machine.ktf)
-			ktfLogJavaExceptionSummary(t, machine.ktf.hostTrace)
+			ktfLogJavaExceptionSummary(t, machine.ktf.HostTrace)
 			t.Fatal(err)
 		}
 	}
 	if machine.State() != machinecore.StatePaused {
 		t.Logf(
 			"KTF terminal trace: calls=%d tail=%v",
-			len(machine.ktf.hostTrace),
-			ktfTraceTail(machine.ktf.hostTrace, 128),
+			len(machine.ktf.HostTrace),
+			ktfTraceTail(machine.ktf.HostTrace, 128),
 		)
 		t.Fatalf("KTF machine state = %s, want paused", machine.State())
 	}
-	if !machine.ktfStarted || len(machine.ktf.tasks) == 0 {
+	if !machine.ktfStarted || len(machine.ktf.Tasks) == 0 {
 		t.Fatalf(
 			"KTF task state: started=%t tasks=%d",
 			machine.ktfStarted,
-			len(machine.ktf.tasks),
+			len(machine.ktf.Tasks),
 		)
 	}
 	if os.Getenv("ARAM_TEST_TRACE_MATCH") != "" {
@@ -746,29 +747,29 @@ func TestReferenceKTFFactoryRunsQueuedGameThread(t *testing.T) {
 	}
 	if result := machine.LastResult(); !(result.Reason == cpu.StopBudget && result.Instructions != 0 ||
 		result.Reason == cpu.StopExited &&
-			machine.ktf.canAwaitEvents()) {
+			machine.ktf.CanAwaitEvents()) {
 		t.Fatalf("KTF execution result = %+v", result)
 	}
-	if machine.ktf.presentCount == 0 {
+	if machine.ktf.PresentCount == 0 {
 		t.Fatal("KTF game thread did not present a frame")
 	}
 	if !ktfFrameContainsColor(machine.frame.Pix) {
-		screenState := machine.ktf.graphics[machine.ktf.screenGraphics]
+		screenState := machine.ktf.Graphics[machine.ktf.ScreenGraphics]
 		t.Logf(
 			"KTF black frame diagnostics: tick_ms=%d presents=%d "+
 				"tasks=%d screen_graphics=0x%08x screen_target=%t "+
 				"graphics=%d unimplemented=%v trace_tail=%v",
-			machine.ktf.tickMS,
-			machine.ktf.presentCount,
-			len(machine.ktf.tasks),
-			machine.ktf.screenGraphics,
-			screenState != nil && screenState.target == machine.frame,
-			len(machine.ktf.graphics),
+			machine.ktf.TickMS,
+			machine.ktf.PresentCount,
+			len(machine.ktf.Tasks),
+			machine.ktf.ScreenGraphics,
+			screenState != nil && screenState.Target == machine.frame,
+			len(machine.ktf.Graphics),
 			machine.WIPIUnimplementedAPIs(),
-			ktfTraceTail(machine.ktf.hostTrace, 64),
+			ktfTraceTail(machine.ktf.HostTrace, 64),
 		)
 		var nativeTrace, wipicTrace []string
-		for _, trace := range machine.ktf.hostTrace {
+		for _, trace := range machine.ktf.HostTrace {
 			switch {
 			case strings.HasPrefix(trace, "java_native_method_correct:"),
 				strings.HasPrefix(trace, "java_native_call:"):
@@ -785,7 +786,7 @@ func TestReferenceKTFFactoryRunsQueuedGameThread(t *testing.T) {
 		collectionTrace := make([]string, 0, 32)
 		collectionCounts := make(map[string]int)
 		gameClassTrace := make([]string, 0, 64)
-		for _, trace := range machine.ktf.hostTrace {
+		for _, trace := range machine.ktf.HostTrace {
 			if strings.Contains(trace, "java/util/Vector.") {
 				collectionCounts[strings.SplitN(trace, ":", 2)[0]]++
 				if len(collectionTrace) < cap(collectionTrace) {
@@ -800,7 +801,7 @@ func TestReferenceKTFFactoryRunsQueuedGameThread(t *testing.T) {
 		t.Logf(
 			"KTF black frame vectors=%v collection_counts=%v "+
 				"collection_first=%v game_class_first=%v",
-			machine.ktf.vectors,
+			machine.ktf.Vectors,
 			collectionCounts,
 			collectionTrace,
 			gameClassTrace,
@@ -827,11 +828,11 @@ func TestReferenceKTFFactoryRunsQueuedGameThread(t *testing.T) {
 					"KTF post-frame failure after %d/%d slices: trace_tail=%v",
 					index+1,
 					postFrameSlices,
-					ktfTraceTail(machine.ktf.hostTrace, 128),
+					ktfTraceTail(machine.ktf.HostTrace, 128),
 				)
 				ktfLogCPUState(t, machine.ktf)
 				ktfLogJavaThrowStack(t, machine.ktf)
-				ktfLogJavaExceptionSummary(t, machine.ktf.hostTrace)
+				ktfLogJavaExceptionSummary(t, machine.ktf.HostTrace)
 				t.Fatal(err)
 			}
 			if machine.State() != machinecore.StatePaused {
@@ -839,24 +840,24 @@ func TestReferenceKTFFactoryRunsQueuedGameThread(t *testing.T) {
 					"KTF stopped after %d/%d post-frame slices: trace_tail=%v",
 					index+1,
 					postFrameSlices,
-					ktfTraceTail(machine.ktf.hostTrace, 128),
+					ktfTraceTail(machine.ktf.HostTrace, 128),
 				)
 				ktfLogCPUState(t, machine.ktf)
 				ktfLogJavaThrowStack(t, machine.ktf)
-				ktfLogJavaExceptionSummary(t, machine.ktf.hostTrace)
+				ktfLogJavaExceptionSummary(t, machine.ktf.HostTrace)
 				t.Fatalf("KTF machine state = %s, want paused", machine.State())
 			}
 		}
 		t.Logf(
 			"KTF sustained for %d post-frame slices: tick_ms=%d presents=%d",
 			postFrameSlices,
-			machine.ktf.tickMS,
-			machine.ktf.presentCount,
+			machine.ktf.TickMS,
+			machine.ktf.PresentCount,
 		)
 	}
 	if controls := strings.TrimSpace(os.Getenv("ARAM_TEST_KTF_INPUT")); controls != "" {
 		before := append([]byte(nil), machine.frame.Pix...)
-		inputTraceStart := len(machine.ktf.hostTrace)
+		inputTraceStart := len(machine.ktf.HostTrace)
 		queued := 0
 		for _, control := range strings.Split(controls, ",") {
 			control = strings.TrimSpace(control)
@@ -879,9 +880,9 @@ func TestReferenceKTFFactoryRunsQueuedGameThread(t *testing.T) {
 						"KTF input step diagnostics: state=%s display=0x%08x "+
 							"card=0x%08x trace_tail=%v",
 						machine.State(),
-						machine.ktf.defaultDisplay,
-						machine.ktf.displayCards[machine.ktf.defaultDisplay],
-						ktfTraceTail(machine.ktf.hostTrace, 64),
+						machine.ktf.DefaultDisplay,
+						machine.ktf.DisplayCards[machine.ktf.DefaultDisplay],
+						ktfTraceTail(machine.ktf.HostTrace, 64),
 					)
 					ktfLogCPUState(t, machine.ktf)
 					ktfLogJavaThrowStack(t, machine.ktf)
@@ -921,7 +922,7 @@ func TestReferenceKTFFactoryRunsQueuedGameThread(t *testing.T) {
 			if err := machine.StepFrame(context.Background()); err != nil {
 				t.Logf(
 					"KTF input trace tail: %v",
-					ktfTraceTail(machine.ktf.hostTrace, 128),
+					ktfTraceTail(machine.ktf.HostTrace, 128),
 				)
 				ktfLogCPUState(t, machine.ktf)
 				ktfLogJavaThrowStack(t, machine.ktf)
@@ -935,13 +936,13 @@ func TestReferenceKTFFactoryRunsQueuedGameThread(t *testing.T) {
 		}
 		delivered := 0
 		released := 0
-		for _, trace := range machine.ktf.hostTrace {
+		for _, trace := range machine.ktf.HostTrace {
 			if strings.HasPrefix(trace, "java_key_event:") {
 				delivered++
 			}
 			if strings.HasPrefix(
 				trace,
-				fmt.Sprintf("java_key_event:type=%d:", ktfKeyReleased),
+				fmt.Sprintf("java_key_event:type=%d:", ktfrt.KeyReleased),
 			) {
 				released++
 			}
@@ -962,7 +963,7 @@ func TestReferenceKTFFactoryRunsQueuedGameThread(t *testing.T) {
 		}
 		if bytes.Equal(before, machine.frame.Pix) {
 			inputTrace := make([]string, 0, 32)
-			for _, trace := range machine.ktf.hostTrace {
+			for _, trace := range machine.ktf.HostTrace {
 				if strings.Contains(trace, "keyNotify") ||
 					strings.HasPrefix(trace, "java_key_event:") ||
 					strings.HasPrefix(trace, "java_task_slice:index=0:") {
@@ -974,7 +975,7 @@ func TestReferenceKTFFactoryRunsQueuedGameThread(t *testing.T) {
 			}
 			t.Logf("KTF input trace: %v", inputTrace)
 			inputWindow := make([]string, 0, 128)
-			for _, trace := range machine.ktf.hostTrace[inputTraceStart:] {
+			for _, trace := range machine.ktf.HostTrace[inputTraceStart:] {
 				if strings.HasPrefix(trace, "java_register_class:") {
 					continue
 				}
@@ -997,7 +998,7 @@ func TestReferenceKTFFactoryRunsQueuedGameThread(t *testing.T) {
 	}
 	if match := os.Getenv("ARAM_TEST_LOG_TRACE"); match != "" {
 		matches := make([]string, 0, 128)
-		for _, trace := range machine.ktf.hostTrace {
+		for _, trace := range machine.ktf.HostTrace {
 			if strings.Contains(trace, match) {
 				matches = append(matches, trace)
 				if len(matches) == cap(matches) {
@@ -1027,17 +1028,17 @@ func ktfTraceTail(trace []string, count int) []string {
 	return trace[len(trace)-count:]
 }
 
-func ktfLogCPUState(t *testing.T, runtime *ktfRuntime) {
+func ktfLogCPUState(t *testing.T, runtime *ktfrt.Runtime) {
 	t.Helper()
 	registers := make([]uint32, cpu.RegisterR12+1)
 	for register := range registers {
-		registers[register], _ = runtime.cpu.ReadRegister(uint32(register))
+		registers[register], _ = runtime.CPU.ReadRegister(uint32(register))
 	}
-	sp, _ := runtime.cpu.ReadRegister(cpu.RegisterSP)
-	lr, _ := runtime.cpu.ReadRegister(cpu.RegisterLR)
-	pc, _ := runtime.cpu.ReadRegister(cpu.RegisterPC)
-	status, _ := runtime.cpu.ReadRegister(cpu.RegisterCPSR)
-	stack, _ := runtime.readWords(sp, 64)
+	sp, _ := runtime.CPU.ReadRegister(cpu.RegisterSP)
+	lr, _ := runtime.CPU.ReadRegister(cpu.RegisterLR)
+	pc, _ := runtime.CPU.ReadRegister(cpu.RegisterPC)
+	status, _ := runtime.CPU.ReadRegister(cpu.RegisterCPSR)
+	stack, _ := runtime.ReadWords(sp, 64)
 	t.Logf(
 		"KTF CPU state: r0-r12=%08x r10=0x%08x sp=%08x lr=%08x "+
 			"cpsr=%08x stack=%08x",
@@ -1050,11 +1051,11 @@ func ktfLogCPUState(t *testing.T, runtime *ktfRuntime) {
 	)
 	if len(registers) > int(cpu.RegisterR1) && registers[cpu.RegisterR1] != 0 {
 		instance := registers[cpu.RegisterR1]
-		instanceWords, instanceErr := runtime.readWords(instance, 2)
-		var receiverClass ktfJavaClass
+		instanceWords, instanceErr := runtime.ReadWords(instance, 2)
+		var receiverClass ktfrt.JavaClass
 		var classErr error
 		if instanceErr == nil && len(instanceWords) == 2 {
-			receiverClass, classErr = runtime.inspectJavaClass(instanceWords[1])
+			receiverClass, classErr = runtime.InspectJavaClass(instanceWords[1])
 		}
 		t.Logf(
 			"KTF receiver: instance=0x%08x words=%08x class=%+v "+
@@ -1088,7 +1089,7 @@ func ktfLogCPUState(t *testing.T, runtime *ktfRuntime) {
 		words := []uint32(nil)
 		var readErr error
 		if addressErr == nil && countErr == nil && count <= 1024 {
-			words, readErr = runtime.readWords(uint32(address), int(count))
+			words, readErr = runtime.ReadWords(uint32(address), int(count))
 		}
 		t.Logf(
 			"KTF configured memory %s words=%08x address_err=%v "+
@@ -1102,7 +1103,7 @@ func ktfLogCPUState(t *testing.T, runtime *ktfRuntime) {
 	}
 	if value := os.Getenv("ARAM_TEST_CLASS"); value != "" {
 		address, parseErr := strconv.ParseUint(value, 0, 32)
-		class, inspectErr := runtime.inspectJavaClass(uint32(address))
+		class, inspectErr := runtime.InspectJavaClass(uint32(address))
 		t.Logf(
 			"KTF configured class %s class=%+v parse_err=%v inspect_err=%v",
 			value,
@@ -1112,8 +1113,8 @@ func ktfLogCPUState(t *testing.T, runtime *ktfRuntime) {
 		)
 	}
 	if value := os.Getenv("ARAM_TEST_CLASS_NAME"); value != "" {
-		address := runtime.javaClasses[value]
-		class, inspectErr := runtime.inspectJavaClass(address)
+		address := runtime.JavaClasses[value]
+		class, inspectErr := runtime.InspectJavaClass(address)
 		t.Logf(
 			"KTF configured class name %q address=0x%08x class=%+v "+
 				"inspect_err=%v",
@@ -1128,7 +1129,7 @@ func ktfLogCPUState(t *testing.T, runtime *ktfRuntime) {
 		transitions := make([]string, 0, 64)
 		previous := ""
 		if parseErr == nil && register <= uint64(cpu.RegisterR12) {
-			for traceIndex, trace := range runtime.hostTrace {
+			for traceIndex, trace := range runtime.HostTrace {
 				if !strings.HasPrefix(trace, "java_method_call:") {
 					continue
 				}
@@ -1166,9 +1167,9 @@ func ktfLogCPUState(t *testing.T, runtime *ktfRuntime) {
 	}
 	if value := os.Getenv("ARAM_TEST_TRACE_TAIL"); value != "" {
 		count, parseErr := strconv.Atoi(value)
-		filtered := make([]string, 0, len(runtime.hostTrace))
+		filtered := make([]string, 0, len(runtime.HostTrace))
 		if parseErr == nil && count > 0 && count <= 1024 {
-			for _, trace := range runtime.hostTrace {
+			for _, trace := range runtime.HostTrace {
 				if strings.HasPrefix(trace, "java_register_class:") {
 					continue
 				}
@@ -1188,12 +1189,12 @@ func ktfLogCPUState(t *testing.T, runtime *ktfRuntime) {
 	if match := os.Getenv("ARAM_TEST_TRACE_MATCH"); match != "" {
 		matches := make([]string, 0, 64)
 		lastAppended := -1
-		for traceIndex, trace := range runtime.hostTrace {
+		for traceIndex, trace := range runtime.HostTrace {
 			if !strings.Contains(trace, match) {
 				continue
 			}
 			start := max(0, traceIndex-4)
-			end := min(len(runtime.hostTrace), traceIndex+5)
+			end := min(len(runtime.HostTrace), traceIndex+5)
 			for nearby := start; nearby < end; nearby++ {
 				if nearby <= lastAppended {
 					continue
@@ -1203,7 +1204,7 @@ func ktfLogCPUState(t *testing.T, runtime *ktfRuntime) {
 					fmt.Sprintf(
 						"%d:%s",
 						nearby,
-						runtime.hostTrace[nearby],
+						runtime.HostTrace[nearby],
 					),
 				)
 				lastAppended = nearby
@@ -1216,21 +1217,21 @@ func ktfLogCPUState(t *testing.T, runtime *ktfRuntime) {
 	}
 }
 
-func ktfLogJavaThrowStack(t *testing.T, runtime *ktfRuntime) {
+func ktfLogJavaThrowStack(t *testing.T, runtime *ktfrt.Runtime) {
 	t.Helper()
-	if runtime.firstJavaThrowName != "" {
+	if runtime.FirstJavaThrowName != "" {
 		t.Logf(
 			"KTF first Java throw %s registers=%08x stack at 0x%08x: %08x",
-			runtime.firstJavaThrowName,
-			runtime.firstJavaThrowRegisters,
-			runtime.firstJavaThrowSP,
-			runtime.firstJavaThrowStack,
+			runtime.FirstJavaThrowName,
+			runtime.FirstJavaThrowRegisters,
+			runtime.FirstJavaThrowSP,
+			runtime.FirstJavaThrowStack,
 		)
 		seenCallers := make(map[uint32]bool)
-		for _, value := range runtime.firstJavaThrowStack {
+		for _, value := range runtime.FirstJavaThrowStack {
 			caller := value &^ 1
-			if caller < ktfImageBase ||
-				caller >= ktfImageBase+runtime.imageSz ||
+			if caller < ktfrt.ImageBase ||
+				caller >= ktfrt.ImageBase+runtime.ImageSz ||
 				seenCallers[caller] {
 				continue
 			}
@@ -1252,16 +1253,16 @@ func ktfLogJavaThrowStack(t *testing.T, runtime *ktfRuntime) {
 	}
 	t.Logf(
 		"KTF Java throw %s registers=%08x stack at 0x%08x: %08x",
-		runtime.lastJavaThrowName,
-		runtime.lastJavaThrowRegisters,
-		runtime.lastJavaThrowSP,
-		runtime.lastJavaThrowStack,
+		runtime.LastJavaThrowName,
+		runtime.LastJavaThrowRegisters,
+		runtime.LastJavaThrowSP,
+		runtime.LastJavaThrowStack,
 	)
-	if runtime.lastJavaThrowName == "java/lang/ArrayIndexOutOfBoundsException" &&
-		len(runtime.lastJavaThrowRegisters) > 5 {
-		index := runtime.lastJavaThrowRegisters[4]
-		array := runtime.lastJavaThrowRegisters[5]
-		instanceWords, instanceErr := runtime.readWords(array, 2)
+	if runtime.LastJavaThrowName == "java/lang/ArrayIndexOutOfBoundsException" &&
+		len(runtime.LastJavaThrowRegisters) > 5 {
+		index := runtime.LastJavaThrowRegisters[4]
+		array := runtime.LastJavaThrowRegisters[5]
+		instanceWords, instanceErr := runtime.ReadWords(array, 2)
 		if instanceErr != nil {
 			t.Logf(
 				"KTF failing array index=%d instance=0x%08x: %v",
@@ -1270,9 +1271,9 @@ func ktfLogJavaThrowStack(t *testing.T, runtime *ktfRuntime) {
 				instanceErr,
 			)
 		} else {
-			fields, fieldsErr := runtime.readWords(instanceWords[0], 6)
+			fields, fieldsErr := runtime.ReadWords(instanceWords[0], 6)
 			className := ""
-			if class, classErr := runtime.inspectJavaClass(instanceWords[1]); classErr == nil {
+			if class, classErr := runtime.InspectJavaClass(instanceWords[1]); classErr == nil {
 				className = class.Name
 			}
 			t.Logf(
@@ -1286,18 +1287,18 @@ func ktfLogJavaThrowStack(t *testing.T, runtime *ktfRuntime) {
 				fieldsErr,
 			)
 			needle := fmt.Sprintf("@0x%08x", array)
-			for traceIndex, entry := range runtime.hostTrace {
+			for traceIndex, entry := range runtime.HostTrace {
 				if !strings.Contains(entry, needle) {
 					continue
 				}
 				start := max(0, traceIndex-16)
-				end := min(len(runtime.hostTrace), traceIndex+17)
+				end := min(len(runtime.HostTrace), traceIndex+17)
 				t.Logf(
 					"KTF failing array allocation trace: %v",
-					runtime.hostTrace[start:end],
+					runtime.HostTrace[start:end],
 				)
 				seenAllocationCallers := make(map[uint32]bool)
-				for _, nearby := range runtime.hostTrace[start:end] {
+				for _, nearby := range runtime.HostTrace[start:end] {
 					marker := strings.LastIndex(nearby, "lr=0x")
 					if marker < 0 {
 						continue
@@ -1333,10 +1334,10 @@ func ktfLogJavaThrowStack(t *testing.T, runtime *ktfRuntime) {
 		}
 	}
 	seenCallers := make(map[uint32]bool)
-	for _, value := range runtime.lastJavaThrowStack {
+	for _, value := range runtime.LastJavaThrowStack {
 		caller := value &^ 1
-		if caller < ktfImageBase ||
-			caller >= ktfImageBase+runtime.imageSz ||
+		if caller < ktfrt.ImageBase ||
+			caller >= ktfrt.ImageBase+runtime.ImageSz ||
 			seenCallers[caller] {
 			continue
 		}
@@ -1412,13 +1413,13 @@ func ktfLastJavaThrowCaller(trace []string) uint32 {
 }
 
 func ktfContainingJavaMethod(
-	runtime *ktfRuntime,
+	runtime *ktfrt.Runtime,
 	caller uint32,
-) (string, ktfJavaMethod) {
+) (string, ktfrt.JavaMethod) {
 	var containingClass string
-	var containingMethod ktfJavaMethod
-	for className, address := range runtime.javaClasses {
-		class, err := runtime.inspectJavaClass(address)
+	var containingMethod ktfrt.JavaMethod
+	for className, address := range runtime.JavaClasses {
+		class, err := runtime.InspectJavaClass(address)
 		if err != nil {
 			continue
 		}

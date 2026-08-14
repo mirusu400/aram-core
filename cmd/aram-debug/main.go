@@ -13,7 +13,6 @@ import (
 
 	"github.com/mirusu400/aram-core/application"
 	machinecore "github.com/mirusu400/aram-core/core"
-	"github.com/mirusu400/aram-core/cpu"
 	"github.com/mirusu400/aram-core/debugkit"
 )
 
@@ -217,86 +216,13 @@ func openSession(
 	}
 	session, err := debugkit.New(machine, debugkit.Options{
 		FrameDuration: options.frameDuration,
-		Diagnostics:   applicationDiagnostics(machine),
+		Diagnostics:   application.MachineDiagnostics(machine),
 	})
 	if err != nil {
 		_ = machine.Close()
 		return nil, err
 	}
 	return session, nil
-}
-
-func applicationDiagnostics(
-	machine machinecore.Machine,
-) func() map[string]any {
-	runtime, ok := machine.(*application.Machine)
-	if !ok {
-		return nil
-	}
-	return func() map[string]any {
-		info := runtime.ImageInfo()
-		diagnostics := map[string]any{
-			"image": map[string]any{
-				"name":         info.Name,
-				"profile_id":   info.ProfileID,
-				"source_kind":  string(info.SourceKind),
-				"entry_point":  info.EntryPoint,
-				"mode":         cpuModeName(info.Mode),
-				"text_address": info.TextAddress,
-				"text_size":    info.TextSize,
-				"bss_address":  info.BSSAddress,
-				"bss_size":     info.BSSSize,
-			},
-		}
-		if stats, present := runtime.WIPIFrameStats(); present {
-			diagnostics["wipi"] = map[string]any{
-				"present_count":           stats.PresentCount,
-				"api_calls":               stats.APICalls,
-				"implemented_calls":       stats.ImplementedCalls,
-				"unimplemented_calls":     stats.UnimplementedCalls,
-				"last_api":                stats.LastAPI,
-				"last_unimplemented":      stats.LastUnimplemented,
-				"unimplemented_selectors": runtime.WIPIUnimplementedAPIs(),
-			}
-		}
-		if coverage, present := runtime.WIPIAPICoverage(); present {
-			diagnostics["wipi_coverage"] = map[string]any{
-				"cataloged":              coverage.Cataloged,
-				"dispatch_wired":         coverage.DispatchWired,
-				"semantically_modeled":   coverage.SemanticallyModeled,
-				"observed":               coverage.Observed,
-				"observed_unimplemented": coverage.ObservedUnimplemented,
-			}
-		}
-		if stats, present := runtime.EADSFrameStats(); present {
-			events := make([]any, 0, len(stats.Events))
-			for _, event := range stats.Events {
-				events = append(events, map[string]any{
-					"event":        event.Event,
-					"instructions": event.Instructions,
-					"api_calls":    event.APICalls,
-					"return_value": event.ReturnValue,
-				})
-			}
-			diagnostics["eads"] = map[string]any{
-				"events":        events,
-				"present_count": stats.PresentCount,
-				"tick_ms":       stats.TickMS,
-			}
-		}
-		return diagnostics
-	}
-}
-
-func cpuModeName(mode cpu.Mode) string {
-	switch mode {
-	case cpu.ModeARM:
-		return "ARM"
-	case cpu.ModeThumb:
-		return "Thumb"
-	default:
-		return fmt.Sprintf("unknown(%d)", mode)
-	}
 }
 
 func printUsage(output io.Writer) {

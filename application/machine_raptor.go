@@ -1,0 +1,532 @@
+package application
+
+import (
+	"context"
+	"encoding/binary"
+	"fmt"
+	ktfrt "github.com/mirusu400/aram-core/application/internal/ktf"
+	raptorrt "github.com/mirusu400/aram-core/application/internal/raptor"
+	wipirt "github.com/mirusu400/aram-core/application/internal/wipi"
+
+	"github.com/mirusu400/aram-core/application/internal/guest"
+	machinecore "github.com/mirusu400/aram-core/core"
+	"github.com/mirusu400/aram-core/cpu"
+)
+
+func (m *Machine) runRaptorStart(ctx context.Context) error {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return cpu.ErrClosed
+	}
+	switch m.state {
+	case machinecore.StateReady, machinecore.StatePaused:
+	default:
+		state := m.state
+		m.mu.Unlock()
+		return fmt.Errorf("execute Raptor application from %s: %w", state, ErrInvalidState)
+	}
+	runtime := m.raptor
+	m.state = machinecore.StateRunning
+	if err := m.wipi.BeginServiceExecution(); err != nil {
+		m.state = machinecore.StateFaulted
+		m.mu.Unlock()
+		return err
+	}
+	m.mu.Unlock()
+
+	var (
+		result cpu.Result
+		err    error
+	)
+	if !runtime.ModuleInitialized {
+		result, _, err = m.invokeWIPICallback(ctx, wipirt.GuestCallback{
+			Procedure: runtime.Pkg.Image.Entry | 1,
+			Args: [4]uint32{
+				raptorrt.KernelBase,
+				raptorrt.DletBase,
+				raptorrt.WIPICBase,
+			},
+		})
+		if err == nil {
+			runtime.ModuleInitialized = true
+			var dataBase [4]byte
+			if readErr := m.cpu.ReadMemory(
+				raptorrt.KernelBase+raptorrt.DependencyDataSlot,
+				dataBase[:],
+			); readErr != nil {
+				err = readErr
+			} else if got := binary.LittleEndian.Uint32(dataBase[:]); got != runtime.Clet.Table {
+				err = fmt.Errorf(
+					"Raptor initializer installed data base 0x%08x, want 0x%08x",
+					got,
+					runtime.Clet.Table,
+				)
+			}
+		}
+	}
+	if err == nil && !runtime.Started {
+		procedure := runtime.Clet.Start
+		if procedure == 0 {
+			procedure = runtime.Clet.Initialize
+		}
+		result, _, err = m.invokeWIPICallback(ctx, wipirt.GuestCallback{
+			Procedure: procedure,
+		})
+		if err == nil {
+			err = m.startRaptorJava(ctx)
+		}
+		if err == nil {
+			runtime.Started = true
+		}
+	}
+	if err == nil && runtime.Started && result.Instructions == 0 {
+		result = cpu.Result{
+			Reason: cpu.StopBreakpoint,
+			PC:     guest.ReturnSentinel,
+		}
+	}
+	return m.finishRaptorCall(result, err, result.Instructions)
+}
+
+func (m *Machine) startRaptor(ctx context.Context) error {
+	m.mu.Lock()
+	started := m.raptor != nil && m.raptor.Started
+	m.mu.Unlock()
+	if started {
+		return m.stepRaptorFrame(ctx)
+	}
+	if err := m.runRaptorStart(ctx); err != nil {
+		return err
+	}
+	// Raptor Clets commonly return from startClet after arming a timer. Advance
+	// that event loop to the first visibly changed frame so the product Start
+	// command reaches an actual application screen instead of the callback
+	// return sentinel.
+	for range raptorrt.StartupFrameLimit {
+		if err := m.stepRaptorFrame(ctx); err != nil {
+			return err
+		}
+		if m.raptorFrameVisible() {
+			return nil
+		}
+		m.mu.Lock()
+		stopped := m.state == machinecore.StateStopped
+		m.mu.Unlock()
+		if stopped {
+			return nil
+		}
+	}
+	return nil
+}
+
+func (m *Machine) raptorFrameVisible() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for offset := 0; offset+3 < len(m.frame.Pix); offset += 4 {
+		if m.frame.Pix[offset] != 0 ||
+			m.frame.Pix[offset+1] != 0 ||
+			m.frame.Pix[offset+2] != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Machine) stepRaptorFrame(ctx context.Context) error {
+	m.mu.Lock()
+	started := m.raptor != nil && m.raptor.Started
+	hasCallbackTask := started && len(m.raptor.CallbackTasks) != 0
+	m.mu.Unlock()
+	if !started {
+		if err := m.runRaptorStart(ctx); err != nil {
+			return err
+		}
+	}
+	if hasCallbackTask {
+		// The pump still runs while a callback spans frames, with no
+		// elapsed guest time so no timer can interleave: the begin/finish
+		// lifecycle transitions of every resumed slice enqueue service
+		// events, and skipping the pump's drain entirely lets a loading
+		// screen hit the event-queue limit in seconds. New callbacks the
+		// pump discovers queue behind the in-progress task in order.
+		if _, stopped, err := m.pumpWIPICallbacks(ctx, 0); err != nil ||
+			stopped {
+			return err
+		}
+		return m.stepRaptorCallbackTask(ctx, 0)
+	}
+	callbackResult, stopped, err := m.pumpWIPICallbacks(ctx, guest.WIPIFrameDuration)
+	if err != nil || stopped {
+		return err
+	}
+	m.mu.Lock()
+	hasCallbackTask = len(m.raptor.CallbackTasks) != 0
+	m.mu.Unlock()
+	if hasCallbackTask {
+		return m.stepRaptorCallbackTask(ctx, callbackResult.Instructions)
+	}
+	if m.raptor.Java != nil {
+		m.raptor.Java.Host.TickMS = m.raptor.Public.TickMS
+	}
+	javaResult, ranJava, javaErr := m.stepRaptorJavaTask(ctx)
+	if javaErr != nil {
+		return m.finishRaptorCall(javaResult, javaErr, javaResult.Instructions)
+	}
+	if ranJava {
+		m.mu.Lock()
+		m.lastResult = javaResult
+		m.state = machinecore.StatePaused
+		m.mu.Unlock()
+	}
+	if m.raptor.Clet.Paint == 0 {
+		return nil
+	}
+	m.mu.Lock()
+	runtime := m.raptor
+	bounds := m.frame.Bounds()
+	runtime.CallbackTasks = append(runtime.CallbackTasks, &raptorrt.CallbackTask{
+		Callback: wipirt.GuestCallback{
+			Procedure: runtime.Clet.Paint,
+			Args: [4]uint32{
+				0,
+				0,
+				uint32(bounds.Dx()),
+				uint32(bounds.Dy()),
+			},
+		},
+	})
+	m.mu.Unlock()
+	return m.stepRaptorCallbackTask(ctx, callbackResult.Instructions)
+}
+
+// Raptor Clets can legitimately spend more than one handset video quantum in
+// a paint or event callback while loading and decoding resources. Preserve the
+// guest CPU context at a budget or presentation yield so the callback resumes
+// on the next frame instead of being faulted at an arbitrary instruction cap.
+func (m *Machine) stepRaptorCallbackTask(
+	ctx context.Context,
+	precedingInstructions uint64,
+) error {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return cpu.ErrClosed
+	}
+	if m.raptor == nil || len(m.raptor.CallbackTasks) == 0 {
+		m.mu.Unlock()
+		return nil
+	}
+	if m.state != machinecore.StatePaused && m.state != machinecore.StateReady {
+		state := m.state
+		m.mu.Unlock()
+		return fmt.Errorf("resume Raptor callback from %s: %w", state, ErrInvalidState)
+	}
+	task := m.raptor.CallbackTasks[0]
+	budget := max(m.frameRunBudget, uint64(1))
+	m.state = machinecore.StateRunning
+	if err := m.wipi.BeginServiceExecution(); err != nil {
+		m.state = machinecore.StateFaulted
+		m.mu.Unlock()
+		return err
+	}
+	m.mu.Unlock()
+
+	result, completed, callErr := m.runRaptorCallbackTask(ctx, task, budget)
+	serviceInstructions := result.Instructions
+	if completed {
+		m.mu.Lock()
+		if len(m.raptor.CallbackTasks) != 0 && m.raptor.CallbackTasks[0] == task {
+			m.raptor.CallbackTasks = m.raptor.CallbackTasks[1:]
+			if len(m.raptor.CallbackTasks) == 0 {
+				m.raptor.CallbackTasks = nil
+			}
+		}
+		m.mu.Unlock()
+	}
+	result.Instructions += precedingInstructions
+	return m.finishRaptorCall(result, callErr, serviceInstructions)
+}
+
+func (m *Machine) runRaptorCallbackTask(
+	ctx context.Context,
+	task *raptorrt.CallbackTask,
+	budget uint64,
+) (result cpu.Result, completed bool, returnedErr error) {
+	outer, err := m.cpu.SaveContext()
+	if err != nil {
+		return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+	}
+	defer func() {
+		if restoreErr := m.cpu.RestoreContext(outer); restoreErr != nil && returnedErr == nil {
+			result = cpu.Result{Reason: cpu.StopFault, Err: restoreErr}
+			completed = false
+			returnedErr = restoreErr
+		}
+	}()
+
+	if len(task.Context) == 0 {
+		for register := cpu.RegisterR0; register <= cpu.RegisterR3; register++ {
+			if err := m.cpu.WriteRegister(register, task.Callback.Args[register]); err != nil {
+				return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+			}
+		}
+		if err := m.cpu.WriteRegister(cpu.RegisterLR, guest.ReturnSentinel|1); err != nil {
+			return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+		}
+		if err := m.cpu.WriteRegister(
+			cpu.RegisterPC,
+			task.Callback.Procedure&^1,
+		); err != nil {
+			return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+		}
+		status, err := m.cpu.ReadRegister(cpu.RegisterCPSR)
+		if err != nil {
+			return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+		}
+		if task.Callback.Procedure&1 != 0 {
+			status |= cpu.StatusThumb
+		} else {
+			status &^= cpu.StatusThumb
+		}
+		if err := m.cpu.WriteRegister(cpu.RegisterCPSR, status); err != nil {
+			return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+		}
+	} else if err := m.cpu.RestoreContext(task.Context); err != nil {
+		return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+	}
+
+	pc, err := m.cpu.ReadRegister(cpu.RegisterPC)
+	if err != nil {
+		return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+	}
+	status, err := m.cpu.ReadRegister(cpu.RegisterCPSR)
+	if err != nil {
+		return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+	}
+	mode := cpu.ModeARM
+	if status&cpu.StatusThumb != 0 {
+		mode = cpu.ModeThumb
+	}
+	result = m.runWIPISlice(ctx, pc, mode, max(budget, uint64(1)), true)
+	if result.Err != nil {
+		return result, false, result.Err
+	}
+	if result.Reason == cpu.StopExited {
+		return result, true, nil
+	}
+	if result.Reason == cpu.StopBreakpoint && result.PC >= 2 &&
+		result.PC-2 == guest.ReturnSentinel {
+		return result, true, nil
+	}
+	if result.Reason != cpu.StopBudget {
+		err := fmt.Errorf(
+			"Raptor callback 0x%08x stopped before returning (stop %d at 0x%08x)",
+			task.Callback.Procedure,
+			result.Reason,
+			result.PC,
+		)
+		result.Reason = cpu.StopFault
+		result.Err = err
+		return result, false, err
+	}
+	task.Context, err = m.cpu.SaveContext()
+	if err != nil {
+		result.Reason = cpu.StopFault
+		result.Err = err
+		return result, false, err
+	}
+	return result, false, nil
+}
+
+func (m *Machine) finishRaptorCall(
+	result cpu.Result,
+	err error,
+	serviceInstructions uint64,
+) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastResult = result
+	switch {
+	case err != nil:
+		m.state = machinecore.StateFaulted
+	case result.Reason == cpu.StopExited:
+		m.state = machinecore.StateStopped
+	default:
+		m.state = machinecore.StatePaused
+	}
+	fault := ""
+	if err != nil {
+		fault = err.Error()
+	}
+	if serviceErr := m.wipi.FinishServiceExecution(
+		m.state,
+		serviceInstructions,
+		fault,
+	); serviceErr != nil {
+		m.state = machinecore.StateFaulted
+		return serviceErr
+	}
+	if err != nil {
+		return fmt.Errorf("execute Raptor Clet at 0x%08x: %w", result.PC, err)
+	}
+	return nil
+}
+
+func (m *Machine) stepRaptorJavaTask(ctx context.Context) (cpu.Result, bool, error) {
+	runtime := m.raptor
+	if runtime == nil || runtime.Java == nil {
+		return cpu.Result{}, false, nil
+	}
+	java := runtime.Java
+	var task *raptorrt.JavaTask
+	for _, candidate := range java.Tasks {
+		if !candidate.Done {
+			task = candidate
+			break
+		}
+	}
+	if task == nil {
+		return cpu.Result{}, false, nil
+	}
+	outer, err := m.cpu.SaveContext()
+	if err != nil {
+		return cpu.Result{Reason: cpu.StopFault, Err: err}, true, err
+	}
+	defer func() { _ = m.cpu.RestoreContext(outer) }()
+	if len(task.Context) == 0 {
+		for register := cpu.RegisterR0; register <= cpu.RegisterR12; register++ {
+			if err := m.cpu.WriteRegister(register, 0); err != nil {
+				return cpu.Result{Reason: cpu.StopFault, Err: err}, true, err
+			}
+		}
+		for register, value := range map[uint32]uint32{
+			cpu.RegisterR0:   task.Target,
+			cpu.RegisterSP:   DefaultStackBase + DefaultStackSize - 0x20000,
+			cpu.RegisterLR:   guest.ReturnSentinel | 1,
+			cpu.RegisterPC:   task.Procedure &^ 1,
+			cpu.RegisterCPSR: ktfrt.ModeStatus(task.Procedure),
+		} {
+			if err := m.cpu.WriteRegister(register, value); err != nil {
+				return cpu.Result{Reason: cpu.StopFault, Err: err}, true, err
+			}
+		}
+	} else if err := m.cpu.RestoreContext(task.Context); err != nil {
+		return cpu.Result{Reason: cpu.StopFault, Err: err}, true, err
+	}
+	pc, err := m.cpu.ReadRegister(cpu.RegisterPC)
+	if err != nil {
+		return cpu.Result{Reason: cpu.StopFault, Err: err}, true, err
+	}
+	status, err := m.cpu.ReadRegister(cpu.RegisterCPSR)
+	if err != nil {
+		return cpu.Result{Reason: cpu.StopFault, Err: err}, true, err
+	}
+	mode := cpu.ModeARM
+	if status&cpu.StatusThumb != 0 {
+		mode = cpu.ModeThumb
+	}
+	result := m.runWIPISlice(
+		ctx,
+		pc,
+		mode,
+		raptorrt.JavaTaskInstructionBudget,
+		true,
+	)
+	if result.Err != nil {
+		registers := make([]uint32, cpu.RegisterR12+1)
+		for register := range registers {
+			registers[register], _ = m.cpu.ReadRegister(uint32(register))
+		}
+		sp, _ := m.cpu.ReadRegister(cpu.RegisterSP)
+		lr, _ := m.cpu.ReadRegister(cpu.RegisterLR)
+		result.Err = fmt.Errorf(
+			"%w (r0-r12=%08x sp=%08x lr=%08x)",
+			result.Err,
+			registers,
+			sp,
+			lr,
+		)
+		return result, true, result.Err
+	}
+	if result.Reason == cpu.StopBreakpoint && result.PC >= 2 &&
+		result.PC-2 == guest.ReturnSentinel {
+		task.Done = true
+		return result, true, nil
+	}
+	task.Context, err = m.cpu.SaveContext()
+	if err != nil {
+		result.Reason = cpu.StopFault
+		result.Err = err
+		return result, true, err
+	}
+	return result, true, nil
+}
+
+func (m *Machine) startRaptorJava(ctx context.Context) error {
+	runtime := m.raptor
+	java := runtime.Java
+	if java == nil || !java.LaunchRequested || java.MainInstance != 0 {
+		return nil
+	}
+	class := java.ClassByName[java.MainClass]
+	if class == nil {
+		return fmt.Errorf("Raptor Java main class %q was not registered", java.MainClass)
+	}
+	instance, err := runtime.NewRaptorJavaObject(class.Holder)
+	if err != nil {
+		return fmt.Errorf("allocate Raptor Java main class %q: %w", class.Name, err)
+	}
+	constructor, ok := raptorrt.DeclaredMethod(class, "<init>", "()V")
+	if !ok || constructor.Body == 0 {
+		return fmt.Errorf("Raptor Java main class %q has no default constructor", class.Name)
+	}
+	result, _, err := m.invokeWIPICallback(ctx, wipirt.GuestCallback{
+		Procedure: constructor.Body,
+		Args:      [4]uint32{instance},
+	})
+	if err != nil {
+		return fmt.Errorf(
+			"construct Raptor Java main class %q at PC 0x%08x after %d instructions: %w",
+			class.Name,
+			result.PC,
+			result.Instructions,
+			err,
+		)
+	}
+	values := []string{class.Name, "", "true", "true"}
+	strings := make([]uint32, len(values))
+	for index, value := range values {
+		strings[index], err = runtime.NewRaptorJavaString(value)
+		if err != nil {
+			return err
+		}
+	}
+	arguments, err := runtime.NewRaptorJavaReferenceArray(strings)
+	if err != nil {
+		return err
+	}
+	start, ok := raptorrt.DeclaredMethod(
+		class,
+		"startApp",
+		"([Ljava/lang/String;)V",
+	)
+	if !ok || start.Body == 0 {
+		return fmt.Errorf("Raptor Java main class %q has no startApp(String[])", class.Name)
+	}
+	result, _, err = m.invokeWIPICallback(ctx, wipirt.GuestCallback{
+		Procedure: start.Body,
+		Args:      [4]uint32{instance, arguments},
+	})
+	if err != nil {
+		return fmt.Errorf(
+			"start Raptor Java main class %q at PC 0x%08x after %d instructions: %w",
+			class.Name,
+			result.PC,
+			result.Instructions,
+			err,
+		)
+	}
+	java.MainInstance = instance
+	return runtime.SyncRaptorJavaVTables(java)
+}

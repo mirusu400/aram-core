@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/mirusu400/aram-core/application/internal/skvmhost"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -53,15 +54,15 @@ func TestReferenceSKVMApplicationFrameSoak(t *testing.T) {
 			t.Errorf("%s: create application machine: %v", name, err)
 			return nil
 		}
-		machine, ok := created.(*skvmMachine)
+		machine, ok := created.(*skvmhost.Machine)
 		if !ok {
-			t.Errorf("%s: application machine is %T, want *skvmMachine", name, created)
+			t.Errorf("%s: application machine is %T, want *skvmhost.Machine", name, created)
 			return nil
 		}
 		defer machine.Close()
 
 		var recentTrace []skengine.TraceEvent
-		machine.vm.SetTraceHook(func(event skengine.TraceEvent) error {
+		machine.VM().SetTraceHook(func(event skengine.TraceEvent) error {
 			recentTrace = append(recentTrace, event)
 			if len(recentTrace) > 16 {
 				recentTrace = recentTrace[1:]
@@ -110,11 +111,11 @@ func TestReferenceSKVMApplicationFrameSoak(t *testing.T) {
 	)
 }
 
-func roundTripReferenceSKVMState(machine *skvmMachine) error {
+func roundTripReferenceSKVMState(machine *skvmhost.Machine) error {
 	if err := machine.Pause(); err != nil {
 		return err
 	}
-	before := append([]byte(nil), machine.vm.FrameRGBA()...)
+	before := append([]byte(nil), machine.VM().FrameRGBA()...)
 	var saved bytes.Buffer
 	if err := machine.SaveState(&saved); err != nil {
 		return err
@@ -125,7 +126,7 @@ func roundTripReferenceSKVMState(machine *skvmMachine) error {
 	if err := machine.LoadState(bytes.NewReader(saved.Bytes())); err != nil {
 		return err
 	}
-	after := machine.vm.FrameRGBA()
+	after := machine.VM().FrameRGBA()
 	if !bytes.Equal(after, before) {
 		return fmt.Errorf("framebuffer changed across state restoration")
 	}
