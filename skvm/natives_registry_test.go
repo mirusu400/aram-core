@@ -42,7 +42,10 @@ func TestNativeRegistrySnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read golden (run with ARAM_UPDATE_GOLDEN=1 to create): %v", err)
 	}
-	want := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	// A CRLF-converting checkout (git autocrlf on Windows CI) must not make
+	// every golden line mismatch on a trailing carriage return.
+	normalized := strings.ReplaceAll(string(raw), "\r\n", "\n")
+	want := strings.Split(strings.TrimRight(normalized, "\n"), "\n")
 	got := lines
 	if len(got) != len(want) {
 		t.Errorf("registered native count = %d, want %d", len(got), len(want))
