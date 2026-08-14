@@ -208,6 +208,8 @@ func ktfWIPICHandler(table, slot int) ktfHostHandler {
 			return ktfWIPICMediaStop
 		case 13:
 			return ktfWIPICMediaSetPosition
+		case 16:
+			return ktfWIPICMediaGetState
 		}
 	}
 	return ktfWIPICNoop(table, slot)
@@ -239,13 +241,18 @@ func ktfWIPICMediaCreate(
 	}
 	serviceMediaType := ""
 	switch strings.ToLower(strings.TrimSpace(mediaType)) {
-	case "yamaha_ma3", "audio/x-smaf", "audio/smaf", "audio/mmf":
+	// The MA-2/MA-3/MA-5 identifiers name Yamaha synth generations; their
+	// clip payloads are all SMAF containers (마스터오브소드3 creates its one
+	// clip as Yamaha_MA2 and would otherwise run silent).
+	case "yamaha_ma2", "yamaha_ma3", "yamaha_ma5",
+		"audio/x-smaf", "audio/smaf", "audio/mmf":
 		serviceMediaType = "audio/x-smaf"
 	case "audio/midi", "audio/sp-midi":
 		serviceMediaType = "audio/midi"
 	case "audio/wav", "audio/x-wav":
 		serviceMediaType = "audio/wav"
 	default:
+		runtime.tracef("wipic_media_create_unsupported:type=%q", mediaType)
 		return 0, nil
 	}
 	handle, err := runtime.AllocateWords(24)
@@ -520,6 +527,29 @@ func ktfWIPICMediaStop(
 	clip.state = 0
 	clip.repeat = false
 	return 0, nil
+}
+
+// ktfWIPICMediaGetState reports the clip's playback state (0 stopped,
+// 1 playing, 2 paused). 드래곤로드 shares one clip handle between its BGM and
+// effect sounds and polls this slot to learn when an effect finished so it
+// can reload the background track (issue #48).
+func ktfWIPICMediaGetState(
+	_ context.Context,
+	runtime *Runtime,
+) (uint32, error) {
+	handle, clip, _, err := runtime.ktfWIPICMediaParameter()
+	if err != nil {
+		return ktfWIPICErrorInvalid, err
+	}
+	if clip == nil {
+		return ktfWIPICErrorInvalid, nil
+	}
+	runtime.tracef(
+		"wipic_media_state:handle=0x%08x:state=%d",
+		handle,
+		clip.state,
+	)
+	return uint32(clip.state), nil
 }
 
 func ktfWIPICMediaSetPosition(

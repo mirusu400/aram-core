@@ -890,6 +890,55 @@ func (r *Runtime) activateDueWIPICTimers() error {
 			return nil
 		}
 	}
+	// Media completion callbacks share the timer callbacks' serialization
+	// discipline and take priority over due timers: the handset reports a
+	// finished clip before the next tick so titles that share one clip
+	// handle can reload their background track (issue #48).
+	if len(r.pendingMediaCallbacks) != 0 {
+		handle := r.pendingMediaCallbacks[0]
+		clip := r.wipicMediaClips[handle]
+		if clip == nil || clip.callback == 0 {
+			r.pendingMediaCallbacks = r.pendingMediaCallbacks[1:]
+			return nil
+		}
+		taskIndex := len(r.Tasks)
+		for index, task := range r.Tasks {
+			if task.Done {
+				taskIndex = index
+				break
+			}
+		}
+		if taskIndex >= MaxTasks {
+			return nil
+		}
+		r.pendingMediaCallbacks = r.pendingMediaCallbacks[1:]
+		task, err := r.NewTask(
+			clip.callback,
+			[]uint32{handle, 0},
+			taskIndex,
+		)
+		if err != nil {
+			return fmt.Errorf(
+				"queue KTF WIPI-C media callback 0x%08x for clip 0x%08x: %w",
+				clip.callback,
+				handle,
+				err,
+			)
+		}
+		if taskIndex < len(r.Tasks) {
+			r.Tasks[taskIndex] = task
+		} else {
+			r.Tasks = append(r.Tasks, task)
+		}
+		task.WipicTimer = true
+		r.tracef(
+			"wipic_media_callback:handle=0x%08x:callback=0x%08x:tick=%d",
+			handle,
+			clip.callback,
+			r.TickMS,
+		)
+		return nil
+	}
 	for {
 		var selected uint32
 		found := false
@@ -1001,6 +1050,21 @@ func (r *Runtime) DrainServiceEvents(now time.Duration) error {
 				if serviceID == event.ServiceID {
 					if clip := r.clips[instance]; clip != nil {
 						clip.playing = false
+					}
+					break
+				}
+			}
+			for handle, serviceID := range r.wipicMediaServices {
+				if serviceID == event.ServiceID {
+					if clip := r.wipicMediaClips[handle]; clip != nil && !clip.repeat {
+						clip.state = 0
+						r.tracef("wipic_media_complete:handle=0x%08x", handle)
+						if clip.callback != 0 {
+							r.pendingMediaCallbacks = append(
+								r.pendingMediaCallbacks,
+								handle,
+							)
+						}
 					}
 					break
 				}
