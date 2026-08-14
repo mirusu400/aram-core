@@ -29,8 +29,14 @@ func TestKTFMenuForegroundCompatibilityReplaysLabelsAboveLogo(t *testing.T) {
 	runtime := &Runtime{
 		images: map[uint32]image.Image{1: label, 2: logo},
 		menuForegroundCompat: &ktfMenuForegroundCompat{
-			labelHashes: map[[sha256.Size]byte]struct{}{labelHash: {}},
-			overlayHash: logoHash,
+			labelHashes:    map[[sha256.Size]byte]struct{}{labelHash: {}},
+			labelMaxWidth:  64,
+			labelMaxHeight: 16,
+			overlayHash:    logoHash,
+			overlayX:       23,
+			overlayY:       145,
+			overlayWidth:   195,
+			overlayHeight:  107,
 		},
 	}
 

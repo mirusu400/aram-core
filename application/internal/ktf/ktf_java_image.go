@@ -550,3 +550,45 @@ func (r *Runtime) findKTFResource(name string) ([]byte, bool) {
 	}
 	return nil, false
 }
+
+type ktfJavaImageDraw struct {
+	image  uint32
+	x      int
+	y      int
+	anchor uint32
+}
+
+func (r *Runtime) drawKTFJavaImageRaw(
+	state *ktfGraphics,
+	source image.Image,
+	x, y int,
+	anchor uint32,
+) {
+	if state == nil || source == nil {
+		return
+	}
+	if anchor&8 != 0 {
+		x -= source.Bounds().Dx()
+	} else if anchor&1 != 0 {
+		x -= source.Bounds().Dx() / 2
+	}
+	if anchor&32 != 0 {
+		y -= source.Bounds().Dy()
+	} else if anchor&2 != 0 {
+		y -= source.Bounds().Dy() / 2
+	}
+	point := image.Pt(x+state.translate.X, y+state.translate.Y)
+	targetRect := source.Bounds().Add(point.Sub(source.Bounds().Min))
+	clippedRect := targetRect.Intersect(state.clip)
+	sourcePoint := source.Bounds().Min.Add(
+		clippedRect.Min.Sub(targetRect.Min),
+	)
+	draw.Draw(
+		state.Target,
+		clippedRect,
+		source,
+		sourcePoint,
+		draw.Over,
+	)
+	state.PixelsDirty = true
+}

@@ -18,6 +18,7 @@ import (
 
 	"github.com/mirusu400/aram-core/application/internal/guest"
 	"github.com/mirusu400/aram-core/application/internal/minigame"
+	"github.com/mirusu400/aram-core/application/internal/quirkdb"
 	machinecore "github.com/mirusu400/aram-core/core"
 	"github.com/mirusu400/aram-core/cpu"
 	"github.com/mirusu400/aram-core/loader"
@@ -104,8 +105,8 @@ func (m *Machine) Load(ctx context.Context, source machinecore.Source) error {
 		return fmt.Errorf("inspect WIPI application: %w", err)
 	}
 	selected := container.Images[0]
-	useMinigameRuntime := selected.Name == "MinigameQVGAOEM" &&
-		actualSHA256 == minigame.DAT_SHA256
+	useMinigameRuntime := selected.Name == quirkdb.MinigameQVGAOEM.ImageName &&
+		actualSHA256 == quirkdb.MinigameQVGAOEM.DatSHA256
 	requiredMemory := uint64(selected.TextSize) +
 		uint64(selected.BSSSize) +
 		uint64(DefaultStackSize) +

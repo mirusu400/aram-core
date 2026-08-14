@@ -13,7 +13,6 @@ import (
 )
 
 const (
-	DAT_SHA256     = "955a39b3c09d6228224234dab18b3b38fe89da518c0b614a7cba47e6f9f96900"
 	ProfileID      = "wipi-1.2.1/skt/samsung/sch-w830/minigame-qvga-oem"
 	BootstrapEvent = uint32(0x1100)
 	SetupEvent     = uint32(0x1101)
