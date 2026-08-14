@@ -703,6 +703,23 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 		return "MC_grpDrawRect", true
 	case 211:
 		return "MC_grpFillRect", true
+	// The low MC_grp vtable indices align with the WIPI catalog byte offsets
+	// (ordinal = 200 + slot/4): CopyFrameBuffer 0x30, DrawImage 0x34, CopyArea
+	// 0x38, DrawArc 0x3c, FillArc 0x40, DrawString 0x44. 라그나로크 바이올렛
+	// renders every sprite through DrawImage (213); without it the draws were
+	// silently dropped and the screen stayed black.
+	case 212:
+		return "MC_grpCopyFrameBuffer", true
+	case 213:
+		return "MC_grpDrawImage", true
+	case 214:
+		return "MC_grpCopyArea", true
+	case 215:
+		return "MC_grpDrawArc", true
+	case 216:
+		return "MC_grpFillArc", true
+	case 217:
+		return "MC_grpDrawString", true
 	case 222:
 		return "MC_grpFlushLcd", true
 	case 223:
