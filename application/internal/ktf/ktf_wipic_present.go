@@ -431,6 +431,16 @@ func ktfWIPICGraphicsRepaint(
 	if _, err := runtime.parameter(0); err != nil {
 		return 0, err
 	}
+	// MC_grpRepaint requests a paint event, not just an LCD flush: the
+	// handset re-invokes the clet's paint handler afterwards. Titles that
+	// drive their game loop from paintClet stall on the first frame without
+	// this (issue #47).
+	if card := runtime.DisplayCards[runtime.DefaultDisplay]; card != 0 {
+		runtime.dirtyCards[card] = true
+		if runtime.DeferThreads && runtime.activeTask != nil {
+			runtime.deferCardPaint(runtime.activeTask, card, false)
+		}
+	}
 	return 0, runtime.presentWIPICFramebuffer(runtime.WipicScreenFramebuffer)
 }
 
