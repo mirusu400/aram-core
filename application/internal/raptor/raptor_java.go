@@ -1246,12 +1246,22 @@ func (r *Runtime) buildRaptorJavaVTable(
 	// so Object stubs, declared bodies, and the inline block are all preserved.
 	if methodTable, tableErr := r.Public.ReadU32(class.descriptor + 0x20); tableErr == nil &&
 		methodTable >= 0x01000000 {
-		if tableHolder, _ := r.Public.ReadU32(methodTable + 4); tableHolder == class.Holder {
-			// The table stores its holder back-reference at +0x04, whereas the
-			// runtime vtable stores it at +0x00, so the table is shifted four
-			// bytes ahead of the vtable: vtable[offset] == methodTable[offset+4].
+		// The table stores its holder back-reference within a variable-size
+		// header (observed at +0x04 for some classes, +0x0c for others). The
+		// runtime vtable stores the holder at +0x00, so the table is shifted
+		// ahead of the vtable by that holder offset:
+		// vtable[offset] == methodTable[offset + holderOffset]. Locate the
+		// holder to recover the shift.
+		holderOffset := uint32(0)
+		for probe := uint32(4); probe <= 0x20; probe += 4 {
+			if candidate, _ := r.Public.ReadU32(methodTable + probe); candidate == class.Holder {
+				holderOffset = probe
+				break
+			}
+		}
+		if holderOffset != 0 {
 			for offset := uint32(0x08); offset < vtableSize; offset += 4 {
-				body, readErr := r.Public.ReadU32(methodTable + offset + 4)
+				body, readErr := r.Public.ReadU32(methodTable + offset + holderOffset)
 				if readErr != nil || body == 0 || body >= 0x01000000 {
 					continue
 				}
