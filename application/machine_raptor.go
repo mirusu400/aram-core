@@ -144,14 +144,18 @@ func (m *Machine) stepRaptorFrame(ctx context.Context) error {
 		}
 	}
 	if hasCallbackTask {
-		// The pump still runs while a callback spans frames, with no
-		// elapsed guest time so no timer can interleave: the begin/finish
-		// lifecycle transitions of every resumed slice enqueue service
-		// events, and skipping the pump's drain entirely lets a loading
-		// screen hit the event-queue limit in seconds. New callbacks the
-		// pump discovers queue behind the in-progress task in order.
-		if _, stopped, err := m.pumpWIPICallbacks(ctx, 0); err != nil ||
-			stopped {
+		// A callback that spans frames still advances guest time by one video
+		// quantum per frame: titles that implement a fixed delay as a busy
+		// wait on MC_knlCurrentTime (제노니아1's data-loading screen spins
+		// until the clock reaches a deadline) would otherwise deadlock,
+		// because a frozen clock never reaches the deadline. The pump also
+		// drains ready service events every frame, so timers that come due
+		// during the callback fire and queue behind the in-progress task in
+		// order rather than piling up unboundedly (issue #36).
+		if _, stopped, err := m.pumpWIPICallbacks(
+			ctx,
+			guest.WIPIFrameDuration,
+		); err != nil || stopped {
 			return err
 		}
 		return m.stepRaptorCallbackTask(ctx, 0)
