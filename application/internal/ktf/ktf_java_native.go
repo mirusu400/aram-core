@@ -1107,6 +1107,18 @@ func (r *Runtime) redispatchGuestJavaMethod(
 	if !ok || parameterWords > len(registers)-2 {
 		return 0, false, nil
 	}
+	// A guest override that calls super resolves the parent method through
+	// the same host stub that redispatched into it, which would re-enter
+	// the override forever (observed: 아르덴전기 showNotify). While an
+	// override runs for a given receiver, an inner call to the same
+	// method is a super call and must fall through to the host default.
+	guard := fmt.Sprintf("%08x:%s%s", registers[1], name, descriptor)
+	if r.redispatchActive[guard] {
+		return 0, false, nil
+	}
+	if r.redispatchActive == nil {
+		r.redispatchActive = make(map[string]bool)
+	}
 	r.tracef(
 		"java_virtual_redispatch:%s.%s%s:actual=%s:body=0x%08x",
 		declaredClass,
@@ -1115,6 +1127,7 @@ func (r *Runtime) redispatchGuestJavaMethod(
 		actual.Name,
 		method.Body,
 	)
+	r.redispatchActive[guard] = true
 	value, err := r.invokeJavaVirtual(
 		ctx,
 		registers[1],
@@ -1122,6 +1135,7 @@ func (r *Runtime) redispatchGuestJavaMethod(
 		descriptor,
 		registers[2:2+parameterWords]...,
 	)
+	delete(r.redispatchActive, guard)
 	return value, true, err
 }
 

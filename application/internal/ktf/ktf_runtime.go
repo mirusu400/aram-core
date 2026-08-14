@@ -159,6 +159,7 @@ type Runtime struct {
 	MainJlet                uint32
 	eventQueue              uint32
 	sharedBuffers           map[string]uint32
+	redispatchActive        map[string]bool
 	DisplayCards            map[uint32]uint32
 	ThreadTargets           map[uint32]uint32
 	javaTimerTasks          map[uint32]*Task
