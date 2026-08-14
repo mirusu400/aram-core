@@ -1213,6 +1213,29 @@ func (r *Runtime) buildRaptorJavaVTable(
 			}
 		}
 	}
+	// The guest lays each class's own virtual method bodies inline in the
+	// descriptor starting at +0x2c (right after the Object slots), and
+	// compiler-inlined call sites read vtable+0x2c, +0x30, ... directly. The
+	// flat/fixed passes above populate slots only for methods discovered via the
+	// +0x38 metadata table, which older-SDK helper classes omit entirely — so
+	// copy the descriptor's inline bodies into the still-empty own-method slots
+	// at their matching offsets. Descriptor code pointers live in the low image;
+	// the trailing metadata/table fields point into the class-data region and
+	// terminate the run, as does a zero slot.
+	vtableSize := count*8 + 8
+	for offset := uint32(0x2c); offset < vtableSize; offset += 4 {
+		body, readErr := r.Public.ReadU32(class.descriptor + offset)
+		if readErr != nil || body == 0 || body >= 0x01000000 {
+			break
+		}
+		existing, _ := r.Public.ReadU32(vtable + offset)
+		if existing != 0 {
+			continue
+		}
+		if err := r.Public.WriteU32(vtable+offset, body); err != nil {
+			return err
+		}
+	}
 	class.vtable = vtable
 	if err := r.Public.WriteU32(class.descriptor+0x0c, vtable); err != nil {
 		return err

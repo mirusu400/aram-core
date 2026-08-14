@@ -231,6 +231,69 @@ func TestBuildRaptorJavaVTableUsesFixedAndFlatSlots(t *testing.T) {
 	}
 }
 
+func TestBuildRaptorJavaVTableCopiesInlineOwnMethods(t *testing.T) {
+	public := newPublicRuntime(t)
+	runtime := &Runtime{
+		CPU:             public.CPU,
+		Public:          public,
+		resolvedImports: make(map[raptorImportKey]uint64),
+		importSlotByKey: make(map[raptorImportKey]uint32),
+	}
+	java, err := runtime.ensureJavaRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder, err := public.Heap.Allocate(12, true)
+	if err != nil || holder == 0 {
+		t.Fatalf("allocate holder = 0x%08x, %v", holder, err)
+	}
+	descriptor, err := public.Heap.Allocate(0x60, true)
+	if err != nil || descriptor == 0 {
+		t.Fatalf("allocate descriptor = 0x%08x, %v", descriptor, err)
+	}
+	// A helper class that declares no methods through the +0x38 metadata table
+	// (older-SDK layout) but carries its own virtual bodies inline at +0x2c/+0x30.
+	if err := public.WriteU32(descriptor+0x2c, 0x00001234); err != nil {
+		t.Fatal(err)
+	}
+	if err := public.WriteU32(descriptor+0x30, 0x00005678); err != nil {
+		t.Fatal(err)
+	}
+	// A data-region pointer terminates the inline run (the metadata table field).
+	if err := public.WriteU32(descriptor+0x34, 0x01400abc); err != nil {
+		t.Fatal(err)
+	}
+	leaf := &raptorJavaClass{
+		Holder:     holder,
+		descriptor: descriptor,
+		Name:       "app/Leaf",
+		parentName: "java/lang/Object",
+	}
+	java.classes[holder] = leaf
+	java.ClassByName[leaf.Name] = leaf
+	// Flat entries the class neither declares nor host-implements, so the flat
+	// pass leaves the own-method slots empty for the inline copy to fill.
+	java.flatVirtual = make([]raptorJavaMethod, 8)
+	for i := range java.flatVirtual {
+		java.flatVirtual[i] = raptorJavaMethod{
+			className: "app/Unrelated", Name: "m", descriptor: "()V",
+		}
+	}
+	if err := runtime.buildRaptorJavaVTable(java, leaf, uint32(len(java.flatVirtual))); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := public.ReadU32(leaf.vtable + 0x2c); got != 0x00001234 {
+		t.Fatalf("vtable+0x2c = 0x%08x, want inline body 0x00001234", got)
+	}
+	if got, _ := public.ReadU32(leaf.vtable + 0x30); got != 0x00005678 {
+		t.Fatalf("vtable+0x30 = 0x%08x, want inline body 0x00005678", got)
+	}
+	// The data-region pointer must not be copied as if it were a method body.
+	if got, _ := public.ReadU32(leaf.vtable + 0x34); got != 0 {
+		t.Fatalf("vtable+0x34 = 0x%08x, want 0 (run terminated at data pointer)", got)
+	}
+}
+
 func TestScanGuestStringAndWord(t *testing.T) {
 	public := newPublicRuntime(t)
 	runtime := &Runtime{
