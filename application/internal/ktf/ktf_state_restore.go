@@ -496,6 +496,12 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	}
 	r.defaultRuntime = meta.DefaultRuntime
 	r.DefaultDisplay = meta.DefaultDisplay
+	r.MainJlet = meta.MainJlet
+	r.eventQueue = meta.EventQueue
+	r.sharedBuffers = guest.CloneMap(meta.SharedBuffers)
+	if r.sharedBuffers == nil {
+		r.sharedBuffers = make(map[string]uint32)
+	}
 	r.DisplayCards = guest.CloneMap(meta.DisplayCards)
 	r.ThreadTargets = guest.CloneMap(meta.ThreadTargets)
 	r.currentThread = meta.CurrentThread
@@ -663,6 +669,12 @@ func restoreKTFLWC(value ktfLWCSnapshot) *ktfLWCComponent {
 		dialogAction: value.DialogAction,
 		dialogOK:     value.DialogOK, dialogCancel: value.DialogCancel,
 		progressInput: value.ProgressInput,
+		font:          value.Font, image: value.Image,
+		imageActive: value.ImageActive, group: value.Group,
+		date: value.Date, mode: value.Mode, minimum: value.Minimum,
+		viewAmount: value.ViewAmount, changeAmount: value.ChangeAmount,
+		delay: value.Delay, activeIndex: value.ActiveIndex,
+		selected: value.Selected,
 	}
 }
 

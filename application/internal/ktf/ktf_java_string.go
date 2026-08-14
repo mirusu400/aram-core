@@ -354,6 +354,97 @@ func (r *Runtime) handleStringMethod(
 		return r.NewJavaString(strings.ToLower(value))
 	case "toUpperCase()Ljava/lang/String;":
 		return r.NewJavaString(strings.ToUpper(value))
+	case "toString()Ljava/lang/String;":
+		return instance, nil
+	case "equalsIgnoreCase(Ljava/lang/String;)Z":
+		other, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if other == 0 {
+			return 0, nil
+		}
+		if strings.EqualFold(value, r.javaStringValue(other)) {
+			return 1, nil
+		}
+		return 0, nil
+	case "lastIndexOf(I)I", "lastIndexOf(II)I":
+		target, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		fromIndex := len(codeUnits) - 1
+		if descriptor == "(II)I" {
+			from, parameterErr := r.parameter(3)
+			if parameterErr != nil {
+				return 0, parameterErr
+			}
+			fromIndex = int(int32(from))
+		}
+		if fromIndex > len(codeUnits)-1 {
+			fromIndex = len(codeUnits) - 1
+		}
+		for index := fromIndex; index >= 0; index-- {
+			if uint32(codeUnits[index]) == target {
+				return uint32(index), nil
+			}
+		}
+		return ^uint32(0), nil
+	case "regionMatches(ZILjava/lang/String;II)Z":
+		ignoreCase, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		thisOffset, valueErr := r.parameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		other, valueErr := r.parameter(4)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		otherOffset, valueErr := r.parameter(5)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		count, valueErr := r.parameter(6)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		otherUnits := utf16.Encode([]rune(r.javaStringValue(other)))
+		if int32(thisOffset) < 0 || int32(otherOffset) < 0 ||
+			int32(count) < 0 ||
+			uint64(thisOffset)+uint64(count) > uint64(len(codeUnits)) ||
+			uint64(otherOffset)+uint64(count) > uint64(len(otherUnits)) {
+			return 0, nil
+		}
+		left := string(utf16.Decode(codeUnits[thisOffset : thisOffset+count]))
+		right := string(utf16.Decode(otherUnits[otherOffset : otherOffset+count]))
+		if left == right || (ignoreCase != 0 && strings.EqualFold(left, right)) {
+			return 1, nil
+		}
+		return 0, nil
+	case "replace(CC)Ljava/lang/String;":
+		oldChar, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		newChar, valueErr := r.parameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		replaced := append([]uint16(nil), codeUnits...)
+		changed := false
+		for index, codeUnit := range replaced {
+			if uint32(codeUnit) == oldChar {
+				replaced[index] = uint16(newChar)
+				changed = true
+			}
+		}
+		if !changed {
+			return instance, nil
+		}
+		return r.NewJavaString(string(utf16.Decode(replaced)))
 	default:
 		return 0, nil
 	}
@@ -568,6 +659,56 @@ func (r *Runtime) handleStringBufferMethod(
 			return 0, nil
 		}
 		return uint32(runes[index]), nil
+	case "getChars(II[CI)V":
+		sourceBegin, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		sourceEnd, valueErr := r.parameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		array, valueErr := r.parameter(4)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		destinationBegin, valueErr := r.parameter(5)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if array == 0 {
+			return 0, r.raiseHostJavaException(
+				"java/lang/NullPointerException",
+			)
+		}
+		codeUnits := utf16.Encode([]rune(r.stringBuffers[instance]))
+		if sourceBegin > sourceEnd || sourceEnd > uint32(len(codeUnits)) {
+			return 0, r.raiseHostJavaException(
+				"java/lang/IndexOutOfBoundsException",
+			)
+		}
+		length, valueErr := r.javaArrayLength(array)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		count := sourceEnd - sourceBegin
+		if destinationBegin > length || count > length-destinationBegin {
+			return 0, r.raiseHostJavaException(
+				"java/lang/ArrayIndexOutOfBoundsException",
+			)
+		}
+		if count == 0 {
+			return 0, nil
+		}
+		fields, valueErr := r.ReadU32(array)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		encoded := make([]byte, count*2)
+		for index, codeUnit := range codeUnits[sourceBegin:sourceEnd] {
+			binary.LittleEndian.PutUint16(encoded[index*2:], codeUnit)
+		}
+		return 0, r.CPU.WriteMemory(fields+8+destinationBegin*2, encoded)
 	case "setCharAt(IC)V":
 		index, valueErr := r.parameter(2)
 		if valueErr != nil {

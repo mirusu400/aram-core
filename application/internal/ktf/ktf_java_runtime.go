@@ -150,6 +150,86 @@ func (r *Runtime) handleClassMethod(
 		}
 		r.tracef("java_class_for_name:%s:found=true", className)
 		return r.javaClassObject(classAddress)
+	case "isArray()Z", "isInterface()Z":
+		// Host class objects only model loadable classes; arrays and
+		// interfaces are never materialized through Class objects here.
+		return 0, nil
+	case "isInstance(Ljava/lang/Object;)Z":
+		classObject, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		expected, err := r.javaClassObjectTarget(classObject)
+		if err != nil {
+			return 0, err
+		}
+		object, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		if object == 0 {
+			return 0, nil
+		}
+		actual, err := r.ReadU32(object + 4)
+		if err != nil {
+			return 0, err
+		}
+		for depth := 0; actual != 0; depth++ {
+			if depth >= 256 {
+				return 0, errors.New("KTF Java class hierarchy exceeds limit")
+			}
+			if actual == expected {
+				return 1, nil
+			}
+			class, inspectErr := r.InspectJavaClass(actual)
+			if inspectErr != nil {
+				return 0, nil
+			}
+			actual = class.Parent
+		}
+		return 0, nil
+	case "newInstance()Ljava/lang/Object;":
+		classObject, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		classAddress, err := r.javaClassObjectTarget(classObject)
+		if err != nil {
+			return 0, err
+		}
+		class, err := r.InspectJavaClass(classAddress)
+		if err != nil {
+			return 0, err
+		}
+		instance, err := r.NewJavaInstanceForClass(class)
+		if err != nil {
+			return 0, err
+		}
+		if _, invokeErr := r.invokeJavaVirtual(
+			ctx,
+			instance,
+			"<init>",
+			"()V",
+		); invokeErr != nil {
+			r.tracef("java_class_new_instance_init:%s", invokeErr)
+		}
+		return instance, nil
+	case "toString()Ljava/lang/String;":
+		classObject, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		classAddress, err := r.javaClassObjectTarget(classObject)
+		if err != nil {
+			return 0, err
+		}
+		class, err := r.InspectJavaClass(classAddress)
+		if err != nil {
+			return 0, err
+		}
+		return r.NewJavaString(
+			"class " + strings.ReplaceAll(class.Name, "/", "."),
+		)
 	default:
 		return 0, nil
 	}
@@ -299,6 +379,17 @@ func (r *Runtime) handleThreadMethod(
 		}
 		r.currentThread, err = r.NewJavaInstanceForClass(class)
 		return r.currentThread, err
+	case "activeCount()I":
+		return 1, nil
+	case "getPriority()I":
+		// NORM_PRIORITY; the host scheduler runs one Java thread at a time.
+		return 5, nil
+	case "toString()Ljava/lang/String;":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		return r.NewJavaString(fmt.Sprintf("Thread-%08x", instance))
 	default:
 		return 0, nil
 	}
@@ -415,6 +506,71 @@ func (r *Runtime) handleDisplayMethod(
 			return 0, err
 		}
 		return r.NewJavaString(ktfKeyName(int32(key)))
+	case "countCard()I":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		if r.DisplayCards[instance] != 0 {
+			return 1, nil
+		}
+		return 0, nil
+	case "popCard()Lorg/kwis/msp/lcdui/Card;":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		card := r.DisplayCards[instance]
+		delete(r.DisplayCards, instance)
+		r.tracef("java_display_pop_card:card=0x%08x", card)
+		return card, nil
+	case "removeCard(Lorg/kwis/msp/lcdui/Card;)Z":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		card, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		if card != 0 && r.DisplayCards[instance] == card {
+			delete(r.DisplayCards, instance)
+			r.tracef("java_display_remove_card:card=0x%08x", card)
+			return 1, nil
+		}
+		return 0, nil
+	case "setDockedCard(Lorg/kwis/msp/lcdui/Card;I)V":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		card, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		r.DisplayCards[instance] = card
+		if card != 0 {
+			r.dirtyCards[card] = true
+		}
+		return 0, nil
+	case "flush()V", "where()V", "grabKey(ILorg/kwis/msp/lcdui/JletEventListener;)V",
+		"ungrabKey(I)V",
+		"setJletEventListener(Lorg/kwis/msp/lcdui/JletEventListener;)V",
+		"removeJletEventListener(Lorg/kwis/msp/lcdui/JletEventListener;)V",
+		"addJletEventListener(Lorg/kwis/msp/lcdui/JletEventListener;)V":
+		// Jlet event listeners and key grabs are satisfied through the
+		// Card key-notify path; the display presents every frame already.
+		return 0, nil
+	case "isColor()Z":
+		return 1, nil
+	case "numColors()I":
+		return 65536, nil
+	case "getBitsPerPixel()I":
+		return 16, nil
+	case "hasPointerEvents()Z", "hasPointerMotionEvents()Z":
+		return 0, nil
+	case "hasRepeatEvents()Z":
+		return 1, nil
 	default:
 		return 0, nil
 	}

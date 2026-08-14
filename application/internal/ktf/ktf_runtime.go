@@ -156,6 +156,9 @@ type Runtime struct {
 	DatabaseStores          map[string]*Database
 	defaultRuntime          uint32
 	DefaultDisplay          uint32
+	MainJlet                uint32
+	eventQueue              uint32
+	sharedBuffers           map[string]uint32
 	DisplayCards            map[uint32]uint32
 	ThreadTargets           map[uint32]uint32
 	javaTimerTasks          map[uint32]*Task
@@ -506,6 +509,17 @@ type ktfLWCComponent struct {
 	dialogAction    int32
 	dialogOK        uint32
 	dialogCancel    uint32
+	font            uint32
+	image           uint32
+	imageActive     uint32
+	group           uint32
+	date            uint32
+	mode            int32
+	minimum         int32
+	viewAmount      int32
+	changeAmount    int32
+	delay           int32
+	activeIndex     int32
 	shown           bool
 	valid           bool
 	focused         bool
@@ -514,6 +528,7 @@ type ktfLWCComponent struct {
 	annunciator     bool
 	transparent     bool
 	progressInput   bool
+	selected        bool
 }
 
 type Task struct {

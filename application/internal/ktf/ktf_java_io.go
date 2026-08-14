@@ -217,9 +217,9 @@ func (r *Runtime) handleInputStreamMethod(
 			return uint32(int32(int16(value))), nil
 		}
 		return uint32(value), nil
-	case "readInt()I", "readLong()J":
+	case "readInt()I", "readLong()J", "readFloat()F", "readDouble()D":
 		count := uint32(4)
-		if name == "readLong" {
+		if name == "readLong" || name == "readDouble" {
 			count = 8
 		}
 		data, ok, valueErr := readBytes(count)
@@ -504,9 +504,147 @@ func (r *Runtime) handleInputStreamReaderMethod(
 	case "close()V":
 		delete(r.inputTargets, instance)
 		return 0, nil
+	case "markSupported()Z":
+		return 0, nil
+	case "mark(I)V", "reset()V":
+		// Readers over EUC-KR byte streams do not support repositioning.
+		return 0, nil
 	default:
 		return 0, nil
 	}
+}
+
+// handleOutputStreamWriterMethod encodes characters as EUC-KR into the
+// wrapped output stream. The optional encoding constructor argument is
+// ignored: KTF titles only write EUC-KR text.
+func (r *Runtime) handleOutputStreamWriterMethod(
+	name, descriptor string,
+) (uint32, error) {
+	instance, err := r.parameter(1)
+	if err != nil {
+		return 0, err
+	}
+	target := instance
+	if redirected := r.outputTargets[instance]; redirected != 0 {
+		target = redirected
+	}
+	appendText := func(value string) error {
+		data, encodeErr := r.Services.Text.Encode(
+			value,
+			shared.EncodingEUCKR,
+		)
+		if encodeErr != nil {
+			return encodeErr
+		}
+		r.outputStreams[target] = append(r.outputStreams[target], data...)
+		if fileInstance := r.fileStreamTargets[target]; fileInstance != 0 {
+			_, writeErr := r.writeKTFFile(fileInstance, data)
+			return writeErr
+		}
+		return nil
+	}
+	switch name + descriptor {
+	case "<init>()V":
+		return 0, nil
+	case "<init>(Ljava/io/OutputStream;)V",
+		"<init>(Ljava/io/OutputStream;Ljava/lang/String;)V":
+		redirected, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if redirected == 0 {
+			redirected = instance
+		}
+		r.outputTargets[instance] = redirected
+		return 0, nil
+	case "write(I)V":
+		value, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		return 0, appendText(string(rune(uint16(value))))
+	case "write(Ljava/lang/String;)V":
+		text, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		return 0, appendText(r.javaStringValue(text))
+	case "write(Ljava/lang/String;II)V":
+		text, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		offset, valueErr := r.parameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		count, valueErr := r.parameter(4)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		codeUnits := utf16.Encode([]rune(r.javaStringValue(text)))
+		if uint64(offset)+uint64(count) > uint64(len(codeUnits)) {
+			return 0, r.raiseHostJavaException(
+				"java/lang/IndexOutOfBoundsException",
+			)
+		}
+		return 0, appendText(string(utf16.Decode(
+			codeUnits[offset : offset+count],
+		)))
+	case "write([C)V", "write([CII)V":
+		array, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		offset := uint32(0)
+		count, valueErr := r.javaArrayLength(array)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if descriptor == "([CII)V" {
+			offset, valueErr = r.parameter(3)
+			if valueErr != nil {
+				return 0, valueErr
+			}
+			count, valueErr = r.parameter(4)
+			if valueErr != nil {
+				return 0, valueErr
+			}
+		}
+		text, valueErr := r.readJavaCharArrayRange(array, offset, count)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		return 0, appendText(text)
+	case "flush()V", "close()V":
+		return 0, nil
+	default:
+		return 0, nil
+	}
+}
+
+func encodeKTFModifiedUTF8(value string) []byte {
+	encoded := make([]byte, 0, len(value)*2)
+	for _, codeUnit := range utf16.Encode([]rune(value)) {
+		switch {
+		case codeUnit != 0 && codeUnit < 0x80:
+			encoded = append(encoded, byte(codeUnit))
+		case codeUnit < 0x800:
+			encoded = append(
+				encoded,
+				0xc0|byte(codeUnit>>6),
+				0x80|byte(codeUnit&0x3f),
+			)
+		default:
+			encoded = append(
+				encoded,
+				0xe0|byte(codeUnit>>12),
+				0x80|byte(codeUnit>>6&0x3f),
+				0x80|byte(codeUnit&0x3f),
+			)
+		}
+	}
+	return encoded
 }
 
 func (r *Runtime) inputReaderSource(instance uint32) uint32 {
@@ -658,6 +796,18 @@ func (r *Runtime) handleByteArrayOutputStreamMethod(
 		return r.newJavaByteArray(r.outputStreams[instance])
 	case "size()I":
 		return uint32(len(r.outputStreams[instance])), nil
+	case "reset()V":
+		r.outputStreams[instance] = nil
+		return 0, nil
+	case "toString()Ljava/lang/String;":
+		value, valueErr := r.Services.Text.Decode(
+			r.outputStreams[instance],
+			shared.EncodingEUCKR,
+		)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		return r.NewJavaString(value)
 	case "close()V":
 		return 0, nil
 	default:
@@ -729,7 +879,7 @@ func (r *Runtime) handleOutputStreamMethod(
 		var encoded [4]byte
 		binary.BigEndian.PutUint32(encoded[:], value)
 		return 0, appendBytes(encoded[:])
-	case "writeLong(J)V":
+	case "writeLong(J)V", "writeDouble(D)V":
 		low, valueErr := r.parameter(2)
 		if valueErr != nil {
 			return 0, valueErr
@@ -741,6 +891,43 @@ func (r *Runtime) handleOutputStreamMethod(
 		var encoded [8]byte
 		binary.BigEndian.PutUint64(encoded[:], uint64(high)<<32|uint64(low))
 		return 0, appendBytes(encoded[:])
+	case "writeFloat(F)V":
+		value, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		var encoded [4]byte
+		binary.BigEndian.PutUint32(encoded[:], value)
+		return 0, appendBytes(encoded[:])
+	case "writeChars(Ljava/lang/String;)V":
+		text, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		codeUnits := utf16.Encode([]rune(r.javaStringValue(text)))
+		encoded := make([]byte, len(codeUnits)*2)
+		for index, codeUnit := range codeUnits {
+			binary.BigEndian.PutUint16(encoded[index*2:], codeUnit)
+		}
+		return 0, appendBytes(encoded)
+	case "writeUTF(Ljava/lang/String;)V":
+		text, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		encoded := encodeKTFModifiedUTF8(r.javaStringValue(text))
+		if len(encoded) > 0xffff {
+			return r.raiseJavaException(
+				"java/io/UTFDataFormatException",
+				0,
+			)
+		}
+		var header [2]byte
+		binary.BigEndian.PutUint16(header[:], uint16(len(encoded)))
+		if writeErr := appendBytes(header[:]); writeErr != nil {
+			return 0, writeErr
+		}
+		return 0, appendBytes(encoded)
 	case "write([B)V":
 		array, valueErr := r.parameter(2)
 		if valueErr != nil {

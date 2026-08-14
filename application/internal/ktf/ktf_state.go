@@ -205,9 +205,13 @@ type ktfLWCSnapshot struct {
 	ProgressBottom, DialogType           int32
 	DialogTimeout, DialogAction          int32
 	DialogOK, DialogCancel               uint32
+	Font, Image, ImageActive             uint32
+	Group, Date                          uint32
+	Mode, Minimum, ViewAmount            int32
+	ChangeAmount, Delay, ActiveIndex     int32
 	Shown, Valid, Focused                bool
 	Vertical, Packed, Annunciator        bool
-	Transparent, ProgressInput           bool
+	Transparent, ProgressInput, Selected bool
 }
 
 type ktfDatabaseSnapshot struct {
@@ -365,6 +369,9 @@ type ktfMetadataSnapshot struct {
 	DatabaseStores    map[string]ktfDatabaseSnapshot
 	DefaultRuntime    uint32
 	DefaultDisplay    uint32
+	MainJlet          uint32
+	EventQueue        uint32
+	SharedBuffers     map[string]uint32
 	DisplayCards      map[uint32]uint32
 	ThreadTargets     map[uint32]uint32
 	CurrentThread     uint32
@@ -765,6 +772,9 @@ func snapshotKTFMetadata(
 		LWCMaxLengths:     guest.CloneMap(r.lwcMaxLengths),
 		DefaultRuntime:    r.defaultRuntime,
 		DefaultDisplay:    r.DefaultDisplay,
+		MainJlet:          r.MainJlet,
+		EventQueue:        r.eventQueue,
+		SharedBuffers:     guest.CloneMap(r.sharedBuffers),
 		DisplayCards:      guest.CloneMap(r.DisplayCards),
 		ThreadTargets:     guest.CloneMap(r.ThreadTargets),
 		CurrentThread:     r.currentThread,
@@ -1106,6 +1116,12 @@ func snapshotKTFLWC(value *ktfLWCComponent) ktfLWCSnapshot {
 		DialogAction: value.dialogAction,
 		DialogOK:     value.dialogOK, DialogCancel: value.dialogCancel,
 		ProgressInput: value.progressInput,
+		Font:          value.font, Image: value.image,
+		ImageActive: value.imageActive, Group: value.group,
+		Date: value.date, Mode: value.mode, Minimum: value.minimum,
+		ViewAmount: value.viewAmount, ChangeAmount: value.changeAmount,
+		Delay: value.delay, ActiveIndex: value.activeIndex,
+		Selected: value.selected,
 	}
 }
 

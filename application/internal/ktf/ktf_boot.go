@@ -193,6 +193,7 @@ func NewRuntimeForProfile(
 		javaTimerTasks:        make(map[uint32]*Task),
 		javaTimerTaskStates:   make(map[uint32]uint8),
 		stringBuffers:         make(map[uint32]string),
+		sharedBuffers:         make(map[string]uint32),
 		inputStreams:          make(map[uint32]*ktfInputStream),
 		inputTargets:          make(map[uint32]uint32),
 		outputStreams:         make(map[uint32][]byte),
@@ -735,6 +736,7 @@ func (r *Runtime) StartMainClass(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	r.MainJlet = instance
 	constructor, ok := findKTFJavaMethod(class, "<init>", "()V")
 	if !ok {
 		return fmt.Errorf("KTF MClass %q has no default constructor", class.Name)

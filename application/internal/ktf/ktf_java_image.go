@@ -425,6 +425,28 @@ func (r *Runtime) handleImageMethod(name, descriptor string) (uint32, error) {
 		}
 		r.GraphicsServices[graphics] = r.imageServices[instance]
 		return graphics, nil
+	case "loadImage(Ljava/lang/String;Lorg/kwis/msp/lcdui/ImageObserver;)Lorg/kwis/msp/lcdui/Image;":
+		// The observer never fires: the host decodes synchronously, so the
+		// image is complete before the reference is returned.
+		return r.handleImageMethod(
+			"createImage",
+			"(Ljava/lang/String;)Lorg/kwis/msp/lcdui/Image;",
+		)
+	case "isMutable()Z":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		if _, mutable := r.images[instance].(draw.Image); mutable {
+			return 1, nil
+		}
+		return 0, nil
+	case "isAnimated()Z":
+		// Animated sources decode to their first frame on this host.
+		return 0, nil
+	case "play(Lorg/kwis/msp/lcdui/ImageObserver;)V", "stop()V",
+		"stopImage(Lorg/kwis/msp/lcdui/ImageObserver;)V":
+		return 0, nil
 	default:
 		return 0, nil
 	}

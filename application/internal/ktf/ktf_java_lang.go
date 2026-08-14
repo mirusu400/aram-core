@@ -6,6 +6,8 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"math"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -117,6 +119,74 @@ func (r *Runtime) handleIntegerMethod(
 			radix = 2
 		}
 		return r.NewJavaString(strconv.FormatUint(uint64(value), radix))
+	case "equals(Ljava/lang/Object;)Z":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		other, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		if value, ok := r.integerValues[other]; ok &&
+			value == r.integerValues[instance] {
+			return 1, nil
+		}
+		return 0, nil
+	case "hashCode()I":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		return uint32(r.integerValues[instance]), nil
+	case "floatValue()F":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		return math.Float32bits(float32(r.integerValues[instance])), nil
+	case "doubleValue()D":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		return r.javaLongResult(
+			math.Float64bits(float64(r.integerValues[instance])),
+		), nil
+	case "valueOf(Ljava/lang/String;)Ljava/lang/Integer;",
+		"valueOf(Ljava/lang/String;I)Ljava/lang/Integer;":
+		text, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		radix := uint32(10)
+		if descriptor == "(Ljava/lang/String;I)Ljava/lang/Integer;" {
+			radix, err = r.parameter(2)
+			if err != nil {
+				return 0, err
+			}
+		}
+		if radix < 2 || radix > 36 {
+			return 0, r.raiseHostJavaException(
+				"java/lang/NumberFormatException",
+			)
+		}
+		value, parseErr := strconv.ParseInt(
+			strings.TrimSpace(r.javaStringValue(text)),
+			int(radix),
+			32,
+		)
+		if parseErr != nil {
+			return 0, r.raiseHostJavaException(
+				"java/lang/NumberFormatException",
+			)
+		}
+		boxed, err := r.NewHostJavaObject("java/lang/Integer")
+		if err != nil {
+			return 0, err
+		}
+		r.integerValues[boxed] = int32(value)
+		return boxed, nil
 	default:
 		return 0, nil
 	}
@@ -198,6 +268,41 @@ func (r *Runtime) handleLongMethod(name, descriptor string) (uint32, error) {
 		}
 		value := int64(uint64(high)<<32 | uint64(low))
 		return r.NewJavaString(strconv.FormatInt(value, int(radix)))
+	case "equals(Ljava/lang/Object;)Z":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		other, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		if value, ok := r.longValues[other]; ok &&
+			value == r.longValues[instance] {
+			return 1, nil
+		}
+		return 0, nil
+	case "hashCode()I":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		value := uint64(r.longValues[instance])
+		return uint32(value ^ (value >> 32)), nil
+	case "floatValue()F":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		return math.Float32bits(float32(r.longValues[instance])), nil
+	case "doubleValue()D":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		return r.javaLongResult(
+			math.Float64bits(float64(r.longValues[instance])),
+		), nil
 	default:
 		return 0, nil
 	}
@@ -276,6 +381,52 @@ func (r *Runtime) handleByteMethod(name, descriptor string) (uint32, error) {
 			return 0, nil
 		}
 		return uint32(int32(int8(value))), nil
+	case "<init>(B)V":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		value, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		r.integerValues[instance] = int32(int8(value))
+		return 0, nil
+	case "byteValue()B":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		return uint32(int32(int8(r.integerValues[instance]))), nil
+	case "equals(Ljava/lang/Object;)Z":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		other, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		if value, ok := r.integerValues[other]; ok &&
+			value == r.integerValues[instance] {
+			return 1, nil
+		}
+		return 0, nil
+	case "hashCode()I":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		return uint32(r.integerValues[instance]), nil
+	case "toString()Ljava/lang/String;":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		return r.NewJavaString(strconv.FormatInt(
+			int64(r.integerValues[instance]),
+			10,
+		))
 	default:
 		return 0, nil
 	}
@@ -305,6 +456,27 @@ func (r *Runtime) handleMathMethod(name, descriptor string) (uint32, error) {
 			left = right
 		}
 		return uint32(left), nil
+	case "ceil(D)D", "floor(D)D", "toDegrees(D)D", "toRadians(D)D":
+		low, valueErr := r.parameter(1)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		high, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		value := math.Float64frombits(uint64(high)<<32 | uint64(low))
+		switch name {
+		case "ceil":
+			value = math.Ceil(value)
+		case "floor":
+			value = math.Floor(value)
+		case "toDegrees":
+			value = value * 180 / math.Pi
+		case "toRadians":
+			value = value * math.Pi / 180
+		}
+		return r.javaLongResult(math.Float64bits(value)), nil
 	default:
 		return 0, nil
 	}
@@ -363,6 +535,26 @@ func (r *Runtime) handleRandomMethod(
 		return uint32(uint64(value) * uint64(bound) >> 31), nil
 	case "nextBoolean()Z":
 		return next(1)
+	case "next(I)I":
+		bits, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if bits == 0 || bits > 32 {
+			bits = 32
+		}
+		return next(uint8(bits))
+	case "nextLong()J":
+		high, valueErr := next(32)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		low, valueErr := next(32)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		value := int64(high)<<32 + int64(int32(low))
+		return r.javaLongResult(uint64(value)), nil
 	default:
 		return 0, nil
 	}
@@ -390,6 +582,19 @@ func (r *Runtime) handleDateMethod(name, descriptor string) (uint32, error) {
 		return 0, nil
 	case "getTime()J":
 		return r.javaLongResult(uint64(r.dates[instance])), nil
+	case "equals(Ljava/lang/Object;)Z":
+		other, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if otherTime, ok := r.dates[other]; ok &&
+			otherTime == r.dates[instance] {
+			return 1, nil
+		}
+		return 0, nil
+	case "hashCode()I":
+		value := uint64(r.dates[instance])
+		return uint32(value ^ (value >> 32)), nil
 	default:
 		return 0, nil
 	}
@@ -557,6 +762,77 @@ func (r *Runtime) handleVectorMethod(
 		return values[len(values)-1], nil
 	case "elements()Ljava/util/Enumeration;":
 		return r.newJavaEnumeration(values)
+	case "ensureCapacity(I)V", "trimToSize()V":
+		return 0, nil
+	case "setSize(I)V":
+		size, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if int32(size) < 0 {
+			return 0, r.raiseHostJavaException(
+				"java/lang/ArrayIndexOutOfBoundsException",
+			)
+		}
+		for uint32(len(values)) < size {
+			values = append(values, 0)
+		}
+		r.Vectors[instance] = values[:size]
+		return 0, nil
+	case "firstElement()Ljava/lang/Object;":
+		if len(values) == 0 {
+			return 0, r.raiseHostJavaException(
+				"java/util/NoSuchElementException",
+			)
+		}
+		return values[0], nil
+	case "lastElement()Ljava/lang/Object;":
+		if len(values) == 0 {
+			return 0, r.raiseHostJavaException(
+				"java/util/NoSuchElementException",
+			)
+		}
+		return values[len(values)-1], nil
+	case "lastIndexOf(Ljava/lang/Object;)I",
+		"lastIndexOf(Ljava/lang/Object;I)I":
+		target, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		fromIndex := len(values) - 1
+		if descriptor == "(Ljava/lang/Object;I)I" {
+			from, parameterErr := r.parameter(3)
+			if parameterErr != nil {
+				return 0, parameterErr
+			}
+			fromIndex = int(int32(from))
+		}
+		if fromIndex > len(values)-1 {
+			fromIndex = len(values) - 1
+		}
+		for index := fromIndex; index >= 0; index-- {
+			if values[index] == target {
+				return uint32(index), nil
+			}
+		}
+		return ^uint32(0), nil
+	case "search(Ljava/lang/Object;)I":
+		target, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		for index := len(values) - 1; index >= 0; index-- {
+			if values[index] == target {
+				return uint32(len(values) - index), nil
+			}
+		}
+		return ^uint32(0), nil
+	case "toString()Ljava/lang/String;":
+		parts := make([]string, len(values))
+		for index, value := range values {
+			parts[index] = r.javaObjectString(value)
+		}
+		return r.NewJavaString("[" + strings.Join(parts, ", ") + "]")
 	default:
 		return 0, nil
 	}
@@ -649,6 +925,24 @@ func (r *Runtime) handleHashtableMethod(
 			values = append(values, value)
 		}
 		return r.newJavaEnumeration(values)
+	case "rehash()V":
+		return 0, nil
+	case "toString()Ljava/lang/String;":
+		normalized := make([]string, 0, len(table))
+		for key := range table {
+			normalized = append(normalized, key)
+		}
+		sort.Strings(normalized)
+		parts := make([]string, 0, len(table))
+		for _, key := range normalized {
+			entry := table[key]
+			parts = append(
+				parts,
+				r.javaObjectString(entry.key)+"="+
+					r.javaObjectString(entry.value),
+			)
+		}
+		return r.NewJavaString("{" + strings.Join(parts, ", ") + "}")
 	default:
 		return 0, nil
 	}
@@ -799,6 +1093,15 @@ func (r *Runtime) handleTimerMethod(
 			queued.timerFixedRate,
 		)
 		return 0, nil
+	case "scheduledExecutionTime()J":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		if task := r.javaTimerTasks[instance]; task != nil {
+			return r.javaLongResult(task.timerDeadlineMS), nil
+		}
+		return r.javaLongResult(0), nil
 	default:
 		return 0, nil
 	}

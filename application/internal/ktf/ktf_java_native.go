@@ -645,6 +645,18 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 			return runtime.handleLongMethod(name, descriptor)
 		case "java/lang/Byte":
 			return runtime.handleByteMethod(name, descriptor)
+		case "java/lang/Boolean":
+			return runtime.handleBooleanMethod(name, descriptor)
+		case "java/lang/Character":
+			return runtime.handleCharacterMethod(name, descriptor)
+		case "java/lang/Short":
+			return runtime.handleShortMethod(name, descriptor)
+		case "java/lang/Float":
+			return runtime.handleFloatMethod(name, descriptor)
+		case "java/lang/Double":
+			return runtime.handleDoubleMethod(name, descriptor)
+		case "java/io/Writer", "java/io/OutputStreamWriter":
+			return runtime.handleOutputStreamWriterMethod(name, descriptor)
 		case "java/lang/Math":
 			return runtime.handleMathMethod(name, descriptor)
 		case "java/lang/Thread":
@@ -667,6 +679,11 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 				return 0, nil
 			case "getProperty(Ljava/lang/String;)Ljava/lang/String;":
 				return runtime.NewJavaString("")
+			case "exit(I)V":
+				runtime.requestJavaTermination(0)
+				return 0, nil
+			case "identityHashCode(Ljava/lang/Object;)I":
+				return registers[1], nil
 			}
 		case "java/lang/Runtime":
 			switch name + descriptor {
@@ -693,18 +710,9 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 			return runtime.handleEnumerationMethod(name, descriptor)
 		case "java/util/Timer", "java/util/TimerTask":
 			return runtime.handleTimerMethod(ctx, name, descriptor)
-		case "java/util/TimeZone":
-			if name+descriptor == "getAvailableIDs()[Ljava/lang/String;" {
-				value, err := runtime.NewJavaString("GMT")
-				if err != nil {
-					return 0, err
-				}
-				return runtime.newJavaReferenceArray(
-					"[Ljava/lang/String;",
-					[]uint32{value},
-				)
-			}
-		case "org/kwis/msp/lcdui/Card":
+		case "java/util/TimeZone", "java/util/SimpleTimeZone":
+			return runtime.handleTimeZoneMethod(name, descriptor)
+		case "org/kwis/msp/lcdui/Card", "org/kwis/msp/lwc/ProxyCard":
 			switch name + descriptor {
 			case "<init>()V", "<init>(I)V", "<init>(Z)V":
 				if err := runtime.initializeCard(registers[1], 0); err != nil {
@@ -742,7 +750,7 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 				return 0, runtime.serviceCardRepaints(ctx, registers[1])
 			case "showNotify(Z)V", "setCanvas(Ljavax/microedition/lcdui/Canvas;)V":
 				return 0, nil
-			case "keyNotify(II)Z":
+			case "keyNotify(II)Z", "pointerNotify(III)Z":
 				return 0, nil
 			case "move(II)V":
 				if err := runtime.WriteJavaFieldWord(
@@ -791,29 +799,44 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 		case "java/lang/Throwable":
 			return runtime.handleThrowableMethod(name, descriptor)
 		case "org/kwis/msp/handset/HandsetProperty":
-			if name+descriptor ==
-				"getSystemProperty(Ljava/lang/String;)Ljava/lang/String;" {
+			switch name + descriptor {
+			case "getSystemProperty(Ljava/lang/String;)Ljava/lang/String;":
 				key := runtime.javaStringValue(registers[1])
 				value := runtime.handsetSystemProperty(key)
 				runtime.trace("java_handset_property:" + key + "=" + value)
 				return runtime.NewJavaString(value)
+			case "setSystemProperty(Ljava/lang/String;Ljava/lang/String;)Z":
+				key := strings.ToUpper(strings.TrimSpace(
+					runtime.javaStringValue(registers[1]),
+				))
+				value := runtime.javaStringValue(registers[2])
+				runtime.wipicSystemProperties[key] = value
+				runtime.trace("java_handset_property_set:" + key)
+				return 1, nil
 			}
 		case "org/kwis/msp/lcdui/Jlet":
-			if name+descriptor == "notifyDestroyed()V" {
-				runtime.requestJavaTermination(registers[1])
-			}
+			return runtime.handleJletMethod(name, descriptor)
+		case "org/kwis/msp/lcdui/EventQueue":
+			return runtime.handleEventQueueMethod(name, descriptor)
+		case "org/kwis/msp/lcdui/DisplayProxy":
+			return runtime.handleDisplayMethod(ctx, name, descriptor)
+		case "org/kwis/msp/lcdui/InputMethodHandler":
+			return runtime.handleInputMethodHandlerMethod(name, descriptor)
+		case "org/kwis/msp/lcdui/Main":
+			// The host boots titles through startApp directly; the Main
+			// wrapper never has work to do.
 			return 0, nil
 		case "com/ktf/kfc/GForm":
 			return 0, nil
 		case "org/kwis/msp/handset/BackLight":
 			switch name + descriptor {
-			case "alwaysOn()V", "on()V":
+			case "alwaysOn()V", "on()V", "on(III)V":
 				return 0, runtime.Services.Device.SetBacklight(
 					true,
 					0,
 					runtime.Services.Clock.Monotonic(),
 				)
-			case "off()V":
+			case "off()V", "before()V":
 				return 0, runtime.Services.Device.SetBacklight(
 					false,
 					0,
@@ -822,10 +845,25 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 			}
 			return 0, nil
 		case "org/kwis/msp/handset/LED":
-			if name+descriptor == "set(I)V" {
+			switch name + descriptor {
+			case "set(I)V":
 				return 0, runtime.Services.Device.SetLED(
 					0,
 					int32(registers[1]),
+				)
+			case "get()I":
+				return 0, nil
+			case "getCount()I":
+				return 1, nil
+			}
+			return 0, nil
+		case "org/kwis/msp/handset/Call":
+			// Telephony is absent; call control requests are absorbed the
+			// way a handset in flight mode absorbs them.
+			if name == "place" || name == "place0" {
+				runtime.tracef(
+					"java_call_place_unavailable:%s",
+					runtime.javaStringValue(registers[1]),
 				)
 			}
 			return 0, nil
@@ -839,7 +877,20 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 			"org/kwis/msp/lwc/TextFieldComponent",
 			"org/kwis/msp/lwc/LabelComponent",
 			"org/kwis/msp/lwc/ProgressComponent",
-			"org/kwis/msp/lwc/DialogComponent":
+			"org/kwis/msp/lwc/DialogComponent",
+			"org/kwis/msp/lwc/ButtonComponent",
+			"org/kwis/msp/lwc/CheckboxComponent",
+			"org/kwis/msp/lwc/CheckboxGroup",
+			"org/kwis/msp/lwc/ComboComponent",
+			"org/kwis/msp/lwc/Command",
+			"org/kwis/msp/lwc/CommandBarComponent",
+			"org/kwis/msp/lwc/DateFieldComponent",
+			"org/kwis/msp/lwc/ImageComponent",
+			"org/kwis/msp/lwc/ListComponent",
+			"org/kwis/msp/lwc/ListItemComponent",
+			"org/kwis/msp/lwc/ScrollbarComponent",
+			"org/kwis/msp/lwc/TickerComponent",
+			"org/kwis/msp/lwc/TextComponent$ModeViewer":
 			return runtime.handleLWCMethod(
 				ctx,
 				className,
@@ -847,6 +898,8 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 				descriptor,
 				registers,
 			)
+		case "org/kwis/msp/lwc/Decorator":
+			return runtime.handleLWCDecoratorMethod(name, descriptor)
 		case "com/ktf/kfc/GTextListener":
 			return 0, nil
 		case "com/ktf/kfc/GTextField":
@@ -870,6 +923,14 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 			return runtime.handleFileMethod(name, descriptor)
 		case "org/kwis/msp/io/FileSystem":
 			return runtime.handleFileSystemMethod(name, descriptor)
+		case "org/kwis/msf/core/Kernel":
+			return runtime.handleMSFKernelMethod(name, descriptor)
+		case "org/kwis/msf/core/Shared":
+			return runtime.handleMSFSharedMethod(name, descriptor)
+		case "org/kwis/msf/io/Socket", "org/kwis/msf/io/HttpSocket":
+			return runtime.handleMSFSocketMethod(name, descriptor)
+		case "org/kwis/msf/io/Message":
+			return runtime.handleMSFMessageMethod(name, descriptor)
 		case "org/kwis/msf/io/URL":
 			if name+descriptor ==
 				"find(Ljava/lang/String;)Lorg/kwis/msf/io/Socket;" {
@@ -883,15 +944,24 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 				return 0, nil
 			}
 		case "org/kwis/msp/db/DataBase":
-			return runtime.handleDataBaseMethod(name, descriptor)
+			return runtime.handleDataBaseMethod(ctx, name, descriptor)
+		case "org/kwis/msp/db/DataComparatorInteger",
+			"org/kwis/msp/db/DataComparatorString",
+			"org/kwis/msp/db/DataFilterInteger":
+			return runtime.handleDataComparatorMethod(
+				className,
+				name,
+				descriptor,
+			)
 		case "org/kwis/msp/lcdui/Display":
 			return runtime.handleDisplayMethod(ctx, name, descriptor)
 		}
-		if strings.HasPrefix(className, "java/lang/") &&
-			(strings.HasSuffix(className, "Exception") ||
-				strings.HasSuffix(className, "Error")) &&
-			name == "<init>" {
-			return 0, nil
+		if strings.HasSuffix(className, "Exception") ||
+			strings.HasSuffix(className, "Error") {
+			// Every host-modeled exception behaves like Throwable: the
+			// constructor stores the optional message and the accessors
+			// read it back.
+			return runtime.handleThrowableMethod(name, descriptor)
 		}
 		if value, ok, err := runtime.redispatchGuestJavaMethod(
 			ctx,
@@ -1102,7 +1172,11 @@ func ktfJavaParameterWords(descriptor string) (int, bool) {
 }
 
 func (r *Runtime) handsetSystemProperty(key string) string {
-	switch strings.ToUpper(strings.TrimSpace(key)) {
+	normalized := strings.ToUpper(strings.TrimSpace(key))
+	if value, ok := r.wipicSystemProperties[normalized]; ok {
+		return value
+	}
+	switch normalized {
 	case "PHONEMODEL":
 		// LG-KH1300 was a common 240x320 KTF WIPI target. Some games use
 		// this property to select resource geometry and otherwise leave

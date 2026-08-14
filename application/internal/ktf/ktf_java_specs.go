@@ -232,10 +232,12 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 			{name: "flush", descriptor: "()V"},
 			{name: "close", descriptor: "()V"},
 			{name: "checkError", descriptor: "()Z"},
+			{name: "write", descriptor: "(I)V"},
+			{name: "write", descriptor: "([BII)V"},
 		},
 	},
 	"java/io/InputStreamReader": {
-		Parent:    "java/lang/Object",
+		Parent:    "java/io/Reader",
 		fieldSize: 4,
 		methods: []ktfHostJavaMethodSpec{
 			{name: "<init>", descriptor: "(Ljava/io/InputStream;)V"},
@@ -880,4 +882,236 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 			},
 		},
 	},
+
+	// Parent-only declarations. Method bodies resolve lazily through the
+	// native dispatcher; what matters here is the hierarchy so that guest
+	// checkcast, catch clauses, and receiver-compatibility checks walk the
+	// same tree the reference platform ships.
+	"java/lang/Boolean":   {Parent: "java/lang/Object"},
+	"java/lang/Character": {Parent: "java/lang/Object"},
+	"java/lang/Short":     {Parent: "java/lang/Object"},
+	"java/lang/Float":     {Parent: "java/lang/Object"},
+	"java/lang/Double":    {Parent: "java/lang/Object"},
+	"java/lang/Runnable":  {Parent: "java/lang/Object"},
+
+	"java/lang/Throwable": {Parent: "java/lang/Object"},
+	"java/lang/Exception": {Parent: "java/lang/Throwable"},
+	"java/lang/Error":     {Parent: "java/lang/Throwable"},
+	"java/lang/RuntimeException": {
+		Parent: "java/lang/Exception",
+	},
+	"java/lang/ArithmeticException": {
+		Parent: "java/lang/RuntimeException",
+	},
+	"java/lang/ArrayStoreException": {
+		Parent: "java/lang/RuntimeException",
+	},
+	"java/lang/ClassCastException": {
+		Parent: "java/lang/RuntimeException",
+	},
+	"java/lang/ClassNotFoundException": {
+		Parent: "java/lang/Exception",
+	},
+	"java/lang/IllegalAccessException": {
+		Parent: "java/lang/Exception",
+	},
+	"java/lang/IllegalArgumentException": {
+		Parent: "java/lang/RuntimeException",
+	},
+	"java/lang/IllegalMonitorStateException": {
+		Parent: "java/lang/RuntimeException",
+	},
+	"java/lang/IllegalStateException": {
+		Parent: "java/lang/RuntimeException",
+	},
+	"java/lang/IllegalThreadStateException": {
+		Parent: "java/lang/IllegalArgumentException",
+	},
+	"java/lang/IndexOutOfBoundsException": {
+		Parent: "java/lang/RuntimeException",
+	},
+	"java/lang/ArrayIndexOutOfBoundsException": {
+		Parent: "java/lang/IndexOutOfBoundsException",
+	},
+	"java/lang/StringIndexOutOfBoundsException": {
+		Parent: "java/lang/IndexOutOfBoundsException",
+	},
+	"java/lang/InstantiationException": {
+		Parent: "java/lang/Exception",
+	},
+	"java/lang/InterruptedException": {
+		Parent: "java/lang/Exception",
+	},
+	"java/lang/NegativeArraySizeException": {
+		Parent: "java/lang/RuntimeException",
+	},
+	"java/lang/NullPointerException": {
+		Parent: "java/lang/RuntimeException",
+	},
+	"java/lang/NumberFormatException": {
+		Parent: "java/lang/IllegalArgumentException",
+	},
+	"java/lang/SecurityException": {
+		Parent: "java/lang/RuntimeException",
+	},
+	"java/lang/VirtualMachineError": {
+		Parent: "java/lang/Error",
+	},
+	"java/lang/OutOfMemoryError": {
+		Parent: "java/lang/VirtualMachineError",
+	},
+
+	"java/io/IOException": {Parent: "java/lang/Exception"},
+	"java/io/EOFException": {
+		Parent: "java/io/IOException",
+	},
+	"java/io/InterruptedIOException": {
+		Parent: "java/io/IOException",
+	},
+	"java/io/UTFDataFormatException": {
+		Parent: "java/io/IOException",
+	},
+	"java/io/UnavailableException": {
+		Parent: "java/io/IOException",
+	},
+	"java/io/UnsupportedEncodingException": {
+		Parent: "java/io/IOException",
+	},
+	"java/io/Reader":     {Parent: "java/lang/Object"},
+	"java/io/Writer":     {Parent: "java/lang/Object"},
+	"java/io/DataInput":  {Parent: "java/lang/Object"},
+	"java/io/DataOutput": {Parent: "java/lang/Object"},
+	"java/io/OutputStreamWriter": {
+		Parent: "java/io/Writer",
+	},
+
+	"java/util/EmptyStackException": {
+		Parent: "java/lang/RuntimeException",
+	},
+	"java/util/NoSuchElementException": {
+		Parent: "java/lang/RuntimeException",
+	},
+	"java/util/SimpleTimeZone": {
+		Parent: "java/util/TimeZone",
+	},
+
+	"org/kwis/msf/core/Kernel": {Parent: "java/lang/Object"},
+	"org/kwis/msf/core/Shared": {Parent: "java/lang/Object"},
+	"org/kwis/msf/core/ProgramExitException": {
+		Parent: "java/lang/RuntimeException",
+	},
+	"org/kwis/msf/io/Socket": {Parent: "java/lang/Object"},
+	"org/kwis/msf/io/HttpSocket": {
+		Parent: "org/kwis/msf/io/Socket",
+	},
+	"org/kwis/msf/io/Message": {Parent: "java/lang/Object"},
+	"org/kwis/msf/io/URL":     {Parent: "java/lang/Object"},
+	"org/kwis/msf/io/SchemeNotFoundException": {
+		Parent: "java/io/IOException",
+	},
+
+	"org/kwis/msp/db/DataBaseException": {
+		Parent: "java/lang/Exception",
+	},
+	"org/kwis/msp/db/DataBaseRecordException": {
+		Parent: "org/kwis/msp/db/DataBaseException",
+	},
+	"org/kwis/msp/db/DataComparator": {Parent: "java/lang/Object"},
+	"org/kwis/msp/db/DataComparatorInteger": {
+		Parent: "org/kwis/msp/db/DataComparator",
+	},
+	"org/kwis/msp/db/DataComparatorString": {
+		Parent: "org/kwis/msp/db/DataComparator",
+	},
+	"org/kwis/msp/db/DataFilter": {Parent: "java/lang/Object"},
+	"org/kwis/msp/db/DataFilterInteger": {
+		Parent: "org/kwis/msp/db/DataFilter",
+	},
+
+	"org/kwis/msp/handset/Call": {Parent: "java/lang/Object"},
+	"org/kwis/msp/handset/HandsetProperty": {
+		Parent: "java/lang/Object",
+	},
+	"org/kwis/msp/io/File":       {Parent: "java/lang/Object"},
+	"org/kwis/msp/io/FileSystem": {Parent: "java/lang/Object"},
+
+	"org/kwis/msp/lcdui/DisplayProxy": {Parent: "java/lang/Object"},
+	"org/kwis/msp/lcdui/EventQueue":   {Parent: "java/lang/Object"},
+	"org/kwis/msp/lcdui/ImageObserver": {
+		Parent: "java/lang/Object",
+	},
+	"org/kwis/msp/lcdui/InputMethodHandler": {
+		Parent: "java/lang/Object",
+	},
+	"org/kwis/msp/lcdui/InputMethodListener": {
+		Parent: "java/lang/Object",
+	},
+	"org/kwis/msp/lcdui/JletEventListener": {
+		Parent: "java/lang/Object",
+	},
+	"org/kwis/msp/lcdui/JletStateChangeException": {
+		Parent: "java/lang/Exception",
+	},
+	"org/kwis/msp/lcdui/Main": {Parent: "java/lang/Object"},
+	"org/kwis/msp/lcdui/SystemEventListener": {
+		Parent: "java/lang/Object",
+	},
+
+	"org/kwis/msp/lwc/ActionListener": {Parent: "java/lang/Object"},
+	"org/kwis/msp/lwc/ChangeListener": {Parent: "java/lang/Object"},
+	"org/kwis/msp/lwc/CommandListener": {
+		Parent: "java/lang/Object",
+	},
+	"org/kwis/msp/lwc/EventListener": {Parent: "java/lang/Object"},
+	"org/kwis/msp/lwc/GrabKeyListener": {
+		Parent: "java/lang/Object",
+	},
+	"org/kwis/msp/lwc/ButtonComponent": {
+		Parent: "org/kwis/msp/lwc/Component",
+	},
+	"org/kwis/msp/lwc/CheckboxComponent": {
+		Parent: "org/kwis/msp/lwc/Component",
+	},
+	"org/kwis/msp/lwc/CheckboxGroup": {Parent: "java/lang/Object"},
+	"org/kwis/msp/lwc/ComboComponent": {
+		Parent: "org/kwis/msp/lwc/Component",
+	},
+	"org/kwis/msp/lwc/Command": {Parent: "java/lang/Object"},
+	"org/kwis/msp/lwc/CommandBarComponent": {
+		Parent: "org/kwis/msp/lwc/Component",
+	},
+	"org/kwis/msp/lwc/DateFieldComponent": {
+		Parent: "org/kwis/msp/lwc/Component",
+	},
+	"org/kwis/msp/lwc/Decorator": {Parent: "java/lang/Object"},
+	"org/kwis/msp/lwc/ImageComponent": {
+		Parent: "org/kwis/msp/lwc/Component",
+	},
+	"org/kwis/msp/lwc/ListComponent": {
+		Parent: "org/kwis/msp/lwc/ContainerComponent",
+	},
+	"org/kwis/msp/lwc/ListItemComponent": {
+		Parent: "org/kwis/msp/lwc/Component",
+	},
+	"org/kwis/msp/lwc/ProxyCard": {
+		Parent: "org/kwis/msp/lcdui/Card",
+	},
+	"org/kwis/msp/lwc/ScrollbarComponent": {
+		Parent: "org/kwis/msp/lwc/Component",
+	},
+	"org/kwis/msp/lwc/TextBoxComponent": {
+		Parent: "org/kwis/msp/lwc/TextComponent",
+	},
+	"org/kwis/msp/lwc/TextComponent$ModeViewer": {
+		Parent: "java/lang/Object",
+	},
+	"org/kwis/msp/lwc/TickerComponent": {
+		Parent: "org/kwis/msp/lwc/Component",
+	},
+
+	"org/kwis/msp/media/MediaUnsupportedException": {
+		Parent: "java/lang/Exception",
+	},
+	"org/kwis/msp/media/PlayListener": {Parent: "java/lang/Object"},
+	"org/kwis/msp/media/Vibrator":     {Parent: "java/lang/Object"},
 }

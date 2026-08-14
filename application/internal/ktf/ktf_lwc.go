@@ -8,9 +8,74 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"strings"
+	"time"
 
 	shared "github.com/mirusu400/aram-core/runtime"
 )
+
+// handleLWCDecoratorMethod serves the static Decorator palette. The values
+// derive the requested shade arithmetically from the input color the way the
+// reference implementation grades its widget bevels.
+func (r *Runtime) handleLWCDecoratorMethod(
+	name, descriptor string,
+) (uint32, error) {
+	scaleColor := func(color uint32, numerator, denominator int32) uint32 {
+		result := uint32(0)
+		for shift := 0; shift < 24; shift += 8 {
+			channel := int32(color>>shift&0xff) * numerator / denominator
+			if channel > 0xff {
+				channel = 0xff
+			}
+			result |= uint32(channel) << shift
+		}
+		return result
+	}
+	switch name + descriptor {
+	case "getColor(I)I":
+		index, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		palette := map[uint32]uint32{
+			0: 0xc0c0c0, // BKGND_COLOR
+			1: 0x000000, // TEXT_COLOR
+			2: 0x000080, // FOCUS_COLOR
+			3: 0xffffff, // HIGH_LIGHT_COLOR
+			4: 0xe0e0e0, // LIGHT_COLOR
+			5: 0x808080, // SHADOW_COLOR
+			6: 0x404040, // DARK_SHADOW_COLOR
+			7: 0x0000ff, // SELECTED_COLOR
+			8: 0x000000, // NORMAL_COLOR
+		}
+		return palette[index], nil
+	case "getDarkShadowColor(I)I":
+		color, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		return scaleColor(color, 1, 4), nil
+	case "getShadowColor(I)I":
+		color, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		return scaleColor(color, 1, 2), nil
+	case "getLightColor(I)I":
+		color, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		return scaleColor(color, 5, 4), nil
+	case "getHighLightColor(I)I":
+		color, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		return scaleColor(color, 3, 2), nil
+	default:
+		return 0, nil
+	}
+}
 
 func (r *Runtime) handleLWCMethod(
 	_ context.Context,
@@ -107,6 +172,301 @@ func (r *Runtime) handleLWCMethod(
 			if err := r.setLWCDialogType(state, int32(registers[4])); err != nil {
 				return 0, err
 			}
+			return 0, nil
+		}
+	case "org/kwis/msp/lwc/ButtonComponent":
+		switch method {
+		case "<init>()V":
+			return 0, nil
+		case "<init>(Ljava/lang/String;)V":
+			state.text = registers[2]
+			r.initializeLWCTextSize(state, registers[2], false)
+			return 0, nil
+		case "<init>(Ljava/lang/String;Lorg/kwis/msp/lcdui/Image;)V":
+			state.text = registers[2]
+			state.image = registers[3]
+			r.initializeLWCTextSize(state, registers[2], false)
+			return 0, nil
+		case "<init>(Lorg/kwis/msp/lcdui/Image;)V":
+			state.image = registers[2]
+			return 0, nil
+		}
+	case "org/kwis/msp/lwc/CheckboxComponent":
+		switch method {
+		case "<init>()V":
+			return 0, nil
+		case "<init>(Ljava/lang/String;)V":
+			state.text = registers[2]
+			r.initializeLWCTextSize(state, registers[2], false)
+			return 0, nil
+		case "<init>(Ljava/lang/String;Lorg/kwis/msp/lwc/CheckboxGroup;)V":
+			state.text = registers[2]
+			state.group = registers[3]
+			r.initializeLWCTextSize(state, registers[2], false)
+			return 0, nil
+		}
+	case "org/kwis/msp/lwc/CheckboxGroup":
+		switch method {
+		case "<init>()V":
+			return 0, nil
+		case "getSelectedCheckbox()Lorg/kwis/msp/lwc/CheckboxComponent;":
+			return state.group, nil
+		case "select(Lorg/kwis/msp/lwc/CheckboxComponent;)V":
+			if previous := state.group; previous != 0 {
+				r.lwcComponent(previous).selected = false
+			}
+			state.group = registers[2]
+			if registers[2] != 0 {
+				r.lwcComponent(registers[2]).selected = true
+			}
+			return 0, nil
+		}
+	case "org/kwis/msp/lwc/ComboComponent",
+		"org/kwis/msp/lwc/ListComponent":
+		items := r.Vectors[instance]
+		switch method {
+		case "<init>()V":
+			return 0, nil
+		case "<init>(I)V":
+			state.mode = int32(registers[2])
+			return 0, nil
+		case "append(Ljava/lang/String;)I":
+			r.Vectors[instance] = append(items, registers[2])
+			return uint32(len(items)), nil
+		case "append(Ljava/lang/String;Lorg/kwis/msp/lcdui/Image;)I":
+			r.Vectors[instance] = append(items, registers[2])
+			return uint32(len(items)), nil
+		case "insert(ILjava/lang/String;)I":
+			index := int(int32(registers[2]))
+			if index < 0 || index > len(items) {
+				return ^uint32(0), nil
+			}
+			items = append(items, 0)
+			copy(items[index+1:], items[index:])
+			items[index] = registers[3]
+			r.Vectors[instance] = items
+			return uint32(index), nil
+		case "delete(I)V":
+			index := int(int32(registers[2]))
+			if index >= 0 && index < len(items) {
+				r.Vectors[instance] = append(
+					items[:index:index],
+					items[index+1:]...,
+				)
+			}
+			return 0, nil
+		case "set(ILjava/lang/String;)V":
+			index := int(int32(registers[2]))
+			if index >= 0 && index < len(items) {
+				items[index] = registers[3]
+			}
+			return 0, nil
+		case "getSize()I":
+			return uint32(len(items)), nil
+		case "select(I)V":
+			state.activeIndex = int32(registers[2])
+			return 0, nil
+		case "getSelectedIndex()I":
+			return uint32(state.activeIndex), nil
+		case "getString()Ljava/lang/String;":
+			index := int(state.activeIndex)
+			if index < 0 || index >= len(items) {
+				return 0, nil
+			}
+			return items[index], nil
+		case "getImage(I)Lorg/kwis/msp/lcdui/Image;":
+			// Item images are not retained by the host list model.
+			return 0, nil
+		case "controlNumber(Z)V":
+			return 0, nil
+		}
+	case "org/kwis/msp/lwc/Command":
+		switch method {
+		case "<init>(Ljava/lang/String;)V":
+			state.text = registers[2]
+			return 0, nil
+		case "<init>(Ljava/lang/String;Ljava/lang/Object;)V":
+			state.text = registers[2]
+			r.lwcEventData[instance] = registers[3]
+			return 0, nil
+		case "<init>(Ljava/lang/String;Lorg/kwis/msp/lcdui/Image;" +
+			"Lorg/kwis/msp/lcdui/Image;)V":
+			state.text = registers[2]
+			state.image = registers[3]
+			state.imageActive = registers[4]
+			return 0, nil
+		case "<init>(Ljava/lang/String;Lorg/kwis/msp/lcdui/Image;" +
+			"Lorg/kwis/msp/lcdui/Image;Ljava/lang/Object;)V":
+			state.text = registers[2]
+			state.image = registers[3]
+			state.imageActive = registers[4]
+			r.lwcEventData[instance] = registers[5]
+			return 0, nil
+		case "getString()Ljava/lang/String;":
+			return state.text, nil
+		case "getNormalImage()Lorg/kwis/msp/lcdui/Image;":
+			return state.image, nil
+		case "getActiveImage()Lorg/kwis/msp/lcdui/Image;":
+			return state.imageActive, nil
+		case "getExtObject()Ljava/lang/Object;":
+			return r.lwcEventData[instance], nil
+		}
+	case "org/kwis/msp/lwc/CommandBarComponent":
+		commands := r.Vectors[instance]
+		switch method {
+		case "<init>()V", "<init>(Z)V":
+			return 0, nil
+		case "addCommand(Lorg/kwis/msp/lwc/Command;)I":
+			r.Vectors[instance] = append(commands, registers[2])
+			return uint32(len(commands)), nil
+		case "getCommand(I)Lorg/kwis/msp/lwc/Command;":
+			index := int(int32(registers[2]))
+			if index < 0 || index >= len(commands) {
+				return 0, nil
+			}
+			return commands[index], nil
+		case "removeCommand(Lorg/kwis/msp/lwc/Command;)V":
+			for index, command := range commands {
+				if command == registers[2] {
+					r.Vectors[instance] = append(
+						commands[:index:index],
+						commands[index+1:]...,
+					)
+					break
+				}
+			}
+			return 0, nil
+		case "removeAll()V":
+			r.Vectors[instance] = nil
+			return 0, nil
+		case "getSize()I":
+			return uint32(len(commands)), nil
+		case "setActiveIndex(I)V":
+			state.activeIndex = int32(registers[2])
+			return 0, nil
+		case "getActiveIndex()I":
+			return uint32(state.activeIndex), nil
+		}
+	case "org/kwis/msp/lwc/DateFieldComponent":
+		switch method {
+		case "<init>()V":
+			return 0, nil
+		case "<init>(I)V", "setMode(I)V":
+			state.mode = int32(registers[2])
+			return 0, nil
+		case "getMode()I":
+			return uint32(state.mode), nil
+		case "setDate(Ljava/util/Date;)V":
+			state.date = registers[2]
+			return 0, nil
+		case "getDate()Ljava/util/Date;":
+			if state.date != 0 {
+				return state.date, nil
+			}
+			date, err := r.NewHostJavaObject("java/util/Date")
+			if err != nil {
+				return 0, err
+			}
+			r.dates[date] = int64(r.TickMS)
+			state.date = date
+			return date, nil
+		case "getStringValue(I)Ljava/lang/String;":
+			moment := time.UnixMilli(r.dates[state.date]).UTC()
+			switch int32(registers[2]) {
+			case 2: // MODE_TIME
+				return r.NewJavaString(moment.Format("15:04"))
+			case 3: // MODE_TIME_DATE
+				return r.NewJavaString(moment.Format("2006/01/02 15:04"))
+			default: // MODE_DATE
+				return r.NewJavaString(moment.Format("2006/01/02"))
+			}
+		case "getTimeZone()Ljava/util/TimeZone;":
+			return r.NewHostJavaObject("java/util/TimeZone")
+		case "setTimeZone(Ljava/util/TimeZone;)V":
+			return 0, nil
+		}
+	case "org/kwis/msp/lwc/ImageComponent":
+		switch method {
+		case "<init>()V":
+			return 0, nil
+		case "<init>(Lorg/kwis/msp/lcdui/Image;)V":
+			state.image = registers[2]
+			return 0, nil
+		case "<init>(Ljava/lang/String;)V",
+			"setImage(Ljava/lang/String;)V":
+			resourceName := strings.TrimPrefix(strings.ReplaceAll(
+				r.javaStringValue(registers[2]),
+				`\`,
+				"/",
+			), "/")
+			if data, ok := r.findKTFResource(resourceName); ok {
+				if image, err := r.newJavaEncodedImage(data); err == nil {
+					state.image = image
+				}
+			}
+			return 0, nil
+		case "play()V", "stop()V":
+			return 0, nil
+		}
+	case "org/kwis/msp/lwc/ScrollbarComponent":
+		switch method {
+		case "<init>()V":
+			return 0, nil
+		case "<init>(I)V", "setDirection(I)V":
+			state.mode = int32(registers[2])
+			return 0, nil
+		case "getDirection()I":
+			return uint32(state.mode), nil
+		case "setMinimum(I)V":
+			state.minimum = int32(registers[2])
+			return 0, nil
+		case "getMinimum()I":
+			return uint32(state.minimum), nil
+		case "setMaximum(I)V":
+			state.progressMax = int32(registers[2])
+			return 0, nil
+		case "getMaximum()I":
+			return uint32(state.progressMax), nil
+		case "setCurrentValue(I)V":
+			state.progressValue = int32(registers[2])
+			return 0, nil
+		case "getCurrentValue()I":
+			return uint32(state.progressValue), nil
+		case "setViewAmount(I)V":
+			state.viewAmount = int32(registers[2])
+			return 0, nil
+		case "getViewAmount()I":
+			return uint32(state.viewAmount), nil
+		case "setChangeAmount(I)V":
+			state.changeAmount = int32(registers[2])
+			return 0, nil
+		case "getChangeAmount()I":
+			return uint32(state.changeAmount), nil
+		case "setForegroundColor(I)V":
+			state.foreground = registers[2]
+			return 0, nil
+		case "getForegroundColor()I":
+			return state.foreground, nil
+		}
+	case "org/kwis/msp/lwc/TickerComponent":
+		switch method {
+		case "<init>()V":
+			return 0, nil
+		case "<init>(Ljava/lang/String;)V":
+			state.text = registers[2]
+			r.initializeLWCTextSize(state, registers[2], false)
+			return 0, nil
+		case "setDelay(I)V":
+			state.delay = int32(registers[2])
+			return 0, nil
+		case "setTickerState(Z)Z":
+			state.selected = registers[2] != 0
+			return boolWord(state.selected), nil
+		}
+	case "org/kwis/msp/lwc/TextComponent$ModeViewer":
+		switch method {
+		case "<init>()V", "notifyChangeMode()V",
+			"paint(Lorg/kwis/msp/lcdui/Graphics;)V":
 			return 0, nil
 		}
 	}
@@ -385,11 +745,97 @@ func (r *Runtime) handleLWCMethod(
 		"paintContent(Lorg/kwis/msp/lcdui/Graphics;)V",
 		"paintFrame(Lorg/kwis/msp/lcdui/Graphics;)V",
 		"controlInset(Z)V", "useFrame(Z)V",
-		"setLayout(I)V", "setFont(Lorg/kwis/msp/lcdui/Font;)V",
-		"setImage(Lorg/kwis/msp/lcdui/Image;)V",
+		"setLayout(I)V",
 		"setGrabKeyListener(Lorg/kwis/msp/lwc/GrabKeyListener;" +
 			"Ljava/lang/Object;)V",
-		"grabKey(I)V", "ungrabKey(I)V":
+		"grabKey(I)V", "ungrabKey(I)V", "setParameter()V":
+		return 0, nil
+	case "setFont(Lorg/kwis/msp/lcdui/Font;)V":
+		state.font = registers[2]
+		return 0, nil
+	case "getFont()Lorg/kwis/msp/lcdui/Font;":
+		if state.font != 0 {
+			return state.font, nil
+		}
+		return r.ensureDefaultFont()
+	case "setImage(Lorg/kwis/msp/lcdui/Image;)V":
+		state.image = registers[2]
+		r.invalidateLWC(instance)
+		return 0, nil
+	case "getImage()Lorg/kwis/msp/lcdui/Image;":
+		return state.image, nil
+	case "setActionListener(Lorg/kwis/msp/lwc/ActionListener;" +
+		"Ljava/lang/Object;)V",
+		"setChangeListener(Lorg/kwis/msp/lwc/ChangeListener;" +
+			"Ljava/lang/Object;)V",
+		"setCommandListener(Lorg/kwis/msp/lwc/CommandListener;" +
+			"Ljava/lang/Object;)V":
+		r.listeners[instance] = registers[2]
+		r.lwcEventData[instance] = registers[3]
+		return 0, nil
+	case "getState()Z":
+		return boolWord(state.selected), nil
+	case "setState(Z)V":
+		selected := registers[2] != 0
+		if group := state.group; group != 0 && selected {
+			groupState := r.lwcComponent(group)
+			if previous := groupState.group; previous != 0 &&
+				previous != instance {
+				r.lwcComponent(previous).selected = false
+			}
+			groupState.group = instance
+		}
+		state.selected = selected
+		r.invalidateLWC(instance)
+		return 0, nil
+	case "getNextTraversalComponent()Lorg/kwis/msp/lwc/Component;",
+		"getPrevTraversalComponent()Lorg/kwis/msp/lwc/Component;":
+		return 0, nil
+	case "getConstraint()I":
+		return uint32(state.mode), nil
+	case "setConstraint(I)V":
+		state.mode = int32(registers[2])
+		return 0, nil
+	case "insert([CIII)V":
+		array := registers[2]
+		offset := registers[3]
+		count := registers[4]
+		index := int(int32(registers[5]))
+		inserted, err := r.readJavaCharArrayRange(array, offset, count)
+		if err != nil {
+			return 0, err
+		}
+		runes := []rune(r.javaStringValue(state.text))
+		if index < 0 || index > len(runes) {
+			return 0, r.raiseHostJavaException(
+				"java/lang/StringIndexOutOfBoundsException",
+			)
+		}
+		combined := string(runes[:index]) + inserted + string(runes[index:])
+		text, err := r.NewJavaString(combined)
+		if err != nil {
+			return 0, err
+		}
+		state.text = text
+		r.invalidateLWC(instance)
+		return 0, nil
+	case "delete(II)V":
+		index := int(int32(registers[2]))
+		count := int(int32(registers[3]))
+		runes := []rune(r.javaStringValue(state.text))
+		if index < 0 || count < 0 || index+count > len(runes) {
+			return 0, r.raiseHostJavaException(
+				"java/lang/StringIndexOutOfBoundsException",
+			)
+		}
+		text, err := r.NewJavaString(
+			string(runes[:index]) + string(runes[index+count:]),
+		)
+		if err != nil {
+			return 0, err
+		}
+		state.text = text
+		r.invalidateLWC(instance)
 		return 0, nil
 	}
 

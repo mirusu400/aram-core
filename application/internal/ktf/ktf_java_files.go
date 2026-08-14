@@ -743,6 +743,8 @@ func (r *Runtime) handleFileSystemMethod(
 		// KTF titles gate startup on the int form of the free-space query and
 		// abort with a "not enough space" card when it reports zero.
 		return uint32(min(r.ktfFreeStorageBytes(), math.MaxInt32)), nil
+	case "totalSpace()I":
+		return uint32(min(r.ktfFreeStorageBytes()*2, math.MaxInt32)), nil
 	default:
 		r.recordUnimplementedJava("org/kwis/msp/io/FileSystem", name, descriptor)
 		return 0, nil

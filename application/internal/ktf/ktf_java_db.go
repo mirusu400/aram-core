@@ -1,6 +1,7 @@
 package ktf
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -8,13 +9,17 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"sort"
 	"strings"
 	"unicode/utf16"
 
 	"github.com/mirusu400/aram-core/cpu"
 )
 
-func (r *Runtime) handleDataBaseMethod(name, descriptor string) (uint32, error) {
+func (r *Runtime) handleDataBaseMethod(
+	ctx context.Context,
+	name, descriptor string,
+) (uint32, error) {
 	switch name + descriptor {
 	case "<init>(Ljavax/microedition/rms/RecordStore;)V",
 		"closeDataBase()V":
@@ -211,6 +216,335 @@ func (r *Runtime) handleDataBaseMethod(name, descriptor string) (uint32, error) 
 		}
 		delete(r.DatabaseStores, databaseName)
 		return 0, nil
+	case "deleteRecord(I)V":
+		store, err := r.databaseParameter(1)
+		if err != nil {
+			return 0, err
+		}
+		recordID, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		if recordID >= uint32(len(store.Records)) {
+			return r.raiseJavaException(
+				"org/kwis/msp/db/DataBaseRecordException",
+				0,
+			)
+		}
+		// Record ids are slot indices, so the slot empties in place to
+		// keep every other id stable.
+		store.Records[recordID] = nil
+		return 0, r.syncKTFDatabase(store)
+	case "getDataBaseName()Ljava/lang/String;":
+		store, err := r.databaseParameter(1)
+		if err != nil {
+			return 0, err
+		}
+		return r.NewJavaString(store.Name)
+	case "getDataBaseSize()I":
+		store, err := r.databaseParameter(1)
+		if err != nil {
+			return 0, err
+		}
+		total := 0
+		for _, record := range store.Records {
+			total += len(record)
+		}
+		return uint32(total), nil
+	case "getRecordSize()I":
+		store, err := r.databaseParameter(1)
+		if err != nil {
+			return 0, err
+		}
+		return store.RecordSize, nil
+	case "getSizeAvailable()I":
+		return 1 << 20, nil
+	case "getLastModified()J":
+		return r.javaLongResult(r.TickMS), nil
+	case "getAccessMode(Ljava/lang/String;)I":
+		nameAddress, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		if r.DatabaseStores[r.javaText(nameAddress)] == nil {
+			return ^uint32(0), nil
+		}
+		// Read and write access.
+		return 3, nil
+	case "listDataBases()[Ljava/lang/String;":
+		names := make([]string, 0, len(r.DatabaseStores))
+		for name := range r.DatabaseStores {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		references := make([]uint32, len(names))
+		for index, name := range names {
+			reference, err := r.NewJavaString(name)
+			if err != nil {
+				return 0, err
+			}
+			references[index] = reference
+		}
+		return r.newJavaReferenceArray("[Ljava/lang/String;", references)
+	case "sortRecord(Lorg/kwis/msp/db/DataFilter;" +
+		"Lorg/kwis/msp/db/DataComparator;)[I":
+		store, err := r.databaseParameter(1)
+		if err != nil {
+			return 0, err
+		}
+		filter, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		comparator, err := r.parameter(3)
+		if err != nil {
+			return 0, err
+		}
+		return r.sortKTFDatabase(ctx, store, filter, comparator)
+	default:
+		return 0, nil
+	}
+}
+
+// dbCallbackClass resolves the class name behind a DataFilter or
+// DataComparator reference so host implementations run natively and guest
+// implementations run through their compiled bodies.
+func (r *Runtime) dbCallbackClass(instance uint32) string {
+	if instance == 0 {
+		return ""
+	}
+	classAddress, err := r.ReadU32(instance + 4)
+	if err != nil {
+		return ""
+	}
+	class, err := r.InspectJavaClass(classAddress)
+	if err != nil {
+		return ""
+	}
+	return class.Name
+}
+
+func (r *Runtime) sortKTFDatabase(
+	ctx context.Context,
+	store *Database,
+	filter, comparator uint32,
+) (uint32, error) {
+	filterClass := r.dbCallbackClass(filter)
+	comparatorClass := r.dbCallbackClass(comparator)
+	invokeFilter := func(record []byte) (bool, error) {
+		switch filterClass {
+		case "":
+			return true, nil
+		case "org/kwis/msp/db/DataFilterInteger":
+			state := r.lwcComponent(filter)
+			offset := int(state.mode)
+			if offset < 0 || offset+4 > len(record) {
+				return false, nil
+			}
+			value := int32(binary.BigEndian.Uint32(record[offset:]))
+			return value >= state.minimum && value <= state.progressMax, nil
+		default:
+			array, err := r.newJavaByteArray(record)
+			if err != nil {
+				return false, err
+			}
+			result, err := r.invokeJavaVirtual(
+				ctx,
+				filter,
+				"filter",
+				"([B)Z",
+				array,
+			)
+			return result != 0, err
+		}
+	}
+	compareRecords := func(left, right []byte) (int, error) {
+		switch comparatorClass {
+		case "":
+			return 0, nil
+		case "org/kwis/msp/db/DataComparatorInteger":
+			leftValue, rightValue := int32(0), int32(0)
+			if len(left) >= 4 {
+				leftValue = int32(binary.BigEndian.Uint32(left))
+			}
+			if len(right) >= 4 {
+				rightValue = int32(binary.BigEndian.Uint32(right))
+			}
+			switch {
+			case leftValue < rightValue:
+				return -1, nil
+			case leftValue > rightValue:
+				return 1, nil
+			}
+			return 0, nil
+		case "org/kwis/msp/db/DataComparatorString":
+			return bytes.Compare(left, right), nil
+		default:
+			leftArray, err := r.newJavaByteArray(left)
+			if err != nil {
+				return 0, err
+			}
+			rightArray, err := r.newJavaByteArray(right)
+			if err != nil {
+				return 0, err
+			}
+			result, err := r.invokeJavaVirtual(
+				ctx,
+				comparator,
+				"compare",
+				"([B[B)I",
+				leftArray,
+				rightArray,
+			)
+			return int(int32(result)), err
+		}
+	}
+	selected := make([]uint32, 0, len(store.Records))
+	for recordID, record := range store.Records {
+		if record == nil {
+			continue
+		}
+		keep, err := invokeFilter(record)
+		if err != nil {
+			return 0, err
+		}
+		if keep {
+			selected = append(selected, uint32(recordID))
+		}
+	}
+	var sortErr error
+	sort.SliceStable(selected, func(i, j int) bool {
+		if sortErr != nil {
+			return false
+		}
+		order, err := compareRecords(
+			store.Records[selected[i]],
+			store.Records[selected[j]],
+		)
+		if err != nil {
+			sortErr = err
+		}
+		return order < 0
+	})
+	if sortErr != nil {
+		return 0, sortErr
+	}
+	return r.newJavaIntArray(selected)
+}
+
+func (r *Runtime) newJavaIntArray(values []uint32) (uint32, error) {
+	instance, err := r.NewJavaArray("[I", uint32(len(values)), 4)
+	if err != nil {
+		return 0, err
+	}
+	fields, err := r.ReadU32(instance)
+	if err != nil {
+		return 0, err
+	}
+	if len(values) == 0 {
+		return instance, nil
+	}
+	encoded := make([]byte, len(values)*4)
+	for index, value := range values {
+		binary.LittleEndian.PutUint32(encoded[index*4:], value)
+	}
+	if err := r.CPU.WriteMemory(fields+8, encoded); err != nil {
+		return 0, err
+	}
+	return instance, nil
+}
+
+// handleDataComparatorMethod backs the host comparator and filter classes.
+// Constructor parameters land in the generic per-instance component state:
+// mode carries the field offset, minimum and progressMax carry the filter
+// bounds.
+func (r *Runtime) handleDataComparatorMethod(
+	className, name, descriptor string,
+) (uint32, error) {
+	instance, err := r.parameter(1)
+	if err != nil {
+		return 0, err
+	}
+	switch name + descriptor {
+	case "<init>()V":
+		return 0, nil
+	case "<init>(I)V":
+		offset, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		r.lwcComponent(instance).mode = int32(offset)
+		return 0, nil
+	case "<init>(III)V":
+		offset, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		low, valueErr := r.parameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		high, valueErr := r.parameter(4)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		state := r.lwcComponent(instance)
+		state.mode = int32(offset)
+		state.minimum = int32(low)
+		state.progressMax = int32(high)
+		return 0, nil
+	case "compare([B[B)I":
+		left, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		right, valueErr := r.parameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		leftData, valueErr := r.readJavaByteArray(left)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		rightData, valueErr := r.readJavaByteArray(right)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if className == "org/kwis/msp/db/DataComparatorString" {
+			return uint32(int32(bytes.Compare(leftData, rightData))), nil
+		}
+		leftValue, rightValue := int32(0), int32(0)
+		if len(leftData) >= 4 {
+			leftValue = int32(binary.BigEndian.Uint32(leftData))
+		}
+		if len(rightData) >= 4 {
+			rightValue = int32(binary.BigEndian.Uint32(rightData))
+		}
+		switch {
+		case leftValue < rightValue:
+			return ^uint32(0), nil
+		case leftValue > rightValue:
+			return 1, nil
+		}
+		return 0, nil
+	case "filter([B)Z":
+		array, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		data, valueErr := r.readJavaByteArray(array)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		state := r.lwcComponent(instance)
+		offset := int(state.mode)
+		if offset < 0 || offset+4 > len(data) {
+			return 0, nil
+		}
+		value := int32(binary.BigEndian.Uint32(data[offset:]))
+		return boolWord(
+			value >= state.minimum && value <= state.progressMax,
+		), nil
 	default:
 		return 0, nil
 	}

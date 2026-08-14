@@ -5575,6 +5575,7 @@ func TestKTFDataBaseHonorsCreateFlag(t *testing.T) {
 		t.Fatal(err)
 	}
 	database, err := runtime.handleDataBaseMethod(
+		context.Background(),
 		"openDataBase",
 		"(Ljava/lang/String;IZ)Lorg/kwis/msp/db/DataBase;",
 	)
@@ -5594,6 +5595,7 @@ func TestKTFDataBaseHonorsCreateFlag(t *testing.T) {
 		t.Fatal(err)
 	}
 	database, err = runtime.handleDataBaseMethod(
+		context.Background(),
 		"openDataBase",
 		"(Ljava/lang/String;IZ)Lorg/kwis/msp/db/DataBase;",
 	)
