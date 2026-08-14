@@ -1247,8 +1247,11 @@ func (r *Runtime) buildRaptorJavaVTable(
 	if methodTable, tableErr := r.Public.ReadU32(class.descriptor + 0x20); tableErr == nil &&
 		methodTable >= 0x01000000 {
 		if tableHolder, _ := r.Public.ReadU32(methodTable + 4); tableHolder == class.Holder {
+			// The table stores its holder back-reference at +0x04, whereas the
+			// runtime vtable stores it at +0x00, so the table is shifted four
+			// bytes ahead of the vtable: vtable[offset] == methodTable[offset+4].
 			for offset := uint32(0x08); offset < vtableSize; offset += 4 {
-				body, readErr := r.Public.ReadU32(methodTable + offset)
+				body, readErr := r.Public.ReadU32(methodTable + offset + 4)
 				if readErr != nil || body == 0 || body >= 0x01000000 {
 					continue
 				}

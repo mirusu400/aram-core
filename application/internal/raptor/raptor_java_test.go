@@ -261,7 +261,9 @@ func TestBuildRaptorJavaVTableCopiesMethodTable(t *testing.T) {
 	if err := public.WriteU32(methodTable+0x04, holder); err != nil {
 		t.Fatal(err)
 	}
-	if err := public.WriteU32(methodTable+0x48, 0x00001a2c); err != nil {
+	// The table is shifted 4 bytes ahead of the vtable (holder at +0x04 vs
+	// +0x00), so vtable[0x48] is sourced from methodTable[0x4c].
+	if err := public.WriteU32(methodTable+0x4c, 0x00001a2c); err != nil {
 		t.Fatal(err)
 	}
 	if err := public.WriteU32(descriptor+0x20, methodTable); err != nil {
