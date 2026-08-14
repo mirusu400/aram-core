@@ -40,6 +40,10 @@ var raptorJavaFixedVirtualMethods = map[string][]raptorJavaFixedVirtualMethod{
 		{offset: 0x10, Name: "equals", descriptor: "(Ljava/lang/Object;)Z"},
 		{offset: 0x2c, Name: "length", descriptor: "()I"},
 		{offset: 0x3c, Name: "getBytes", descriptor: "()[B"},
+		// 월드장기체스 CCC uses slot 0x44 as a string switch: it compares a
+		// String against successive one-character String literals and branches
+		// when the result is zero. Only compareTo returns 0 on equality.
+		{offset: 0x44, Name: "compareTo", descriptor: "(Ljava/lang/String;)I"},
 		{offset: 0x74, Name: "substring", descriptor: "(II)Ljava/lang/String;"},
 	},
 	"java/lang/StringBuffer": {
