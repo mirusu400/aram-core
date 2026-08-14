@@ -524,19 +524,35 @@ func (r *Runtime) drawText(unicode bool, args []uint32) error {
 	length := int32(args[4])
 	var characters []uint16
 	if unicode {
-		if length <= 0 || uint64(uint32(length))*2 > uint64(maxWIPIString) {
-			return nil
-		}
-		encoded := make([]byte, int(length)*2)
-		if err := r.CPU.ReadMemory(args[3], encoded); err != nil {
-			return err
-		}
-		for index := 0; index < int(length); index++ {
-			value := binary.LittleEndian.Uint16(encoded[index*2:])
-			if value == 0 {
-				break
+		if length == -1 {
+			// A length of -1 means the UCS-2 string is null-terminated; read
+			// until the terminating zero (검은방2/3 draw all their text this way).
+			for offset := uint32(0); uint64(len(characters))*2 < uint64(maxWIPIString); offset += 2 {
+				var pair [2]byte
+				if err := r.CPU.ReadMemory(args[3]+offset, pair[:]); err != nil {
+					return err
+				}
+				value := binary.LittleEndian.Uint16(pair[:])
+				if value == 0 {
+					break
+				}
+				characters = append(characters, value)
 			}
-			characters = append(characters, value)
+		} else {
+			if length <= 0 || uint64(uint32(length))*2 > uint64(maxWIPIString) {
+				return nil
+			}
+			encoded := make([]byte, int(length)*2)
+			if err := r.CPU.ReadMemory(args[3], encoded); err != nil {
+				return err
+			}
+			for index := 0; index < int(length); index++ {
+				value := binary.LittleEndian.Uint16(encoded[index*2:])
+				if value == 0 {
+					break
+				}
+				characters = append(characters, value)
+			}
 		}
 	} else {
 		var encoded []byte
