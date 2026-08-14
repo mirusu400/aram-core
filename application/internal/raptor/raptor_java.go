@@ -1260,13 +1260,14 @@ func (r *Runtime) buildRaptorJavaVTable(
 			}
 		}
 		if holderOffset != 0 {
-			for offset := uint32(0x08); offset < vtableSize; offset += 4 {
+			// The +0x20 table is the class's fully-linked method vtable and is
+			// authoritative for the slots it fills, so it overrides the inline
+			// descriptor block copied above (which can carry a different method
+			// for the same slot). Its Object-slot region is zero, so the host
+			// Object stubs and flat slots below 0x2c survive (zero is skipped).
+			for offset := uint32(0x2c); offset < vtableSize; offset += 4 {
 				body, readErr := r.Public.ReadU32(methodTable + offset + holderOffset)
 				if readErr != nil || body == 0 || body >= 0x01000000 {
-					continue
-				}
-				existing, _ := r.Public.ReadU32(vtable + offset)
-				if existing != 0 {
 					continue
 				}
 				if err := r.Public.WriteU32(vtable+offset, body); err != nil {
