@@ -589,6 +589,132 @@ func (r *Runtime) registerRaptorJavaClasses(
 	return nil
 }
 
+// RecoverUnregisteredMainClass links the Jlet subclass named by the manifest
+// when an older-SDK Raptor build omitted it from registerClasses. Those builds
+// publish only helper classes through the public registration table, yet the
+// main Clet descriptor still lives in the module image with a valid holder,
+// method table, and startApp body. The class name string sits in the module's
+// read-only data; the descriptor stores a pointer to it at +8 and each holder
+// stores a pointer to its descriptor at +8, so the name locates the descriptor
+// and the descriptor locates the holder. Returns nil without error when no
+// matching descriptor exists (a genuinely absent main class stays a failure).
+func (r *Runtime) RecoverUnregisteredMainClass(
+	java *JavaRuntime,
+	name string,
+) (*raptorJavaClass, error) {
+	if name == "" {
+		return nil, nil
+	}
+	// Class names are stored slash-separated in the descriptor, but a manifest
+	// main class may arrive dot-separated; try both spellings.
+	candidates := []string{name}
+	if slashed := strings.ReplaceAll(name, ".", "/"); slashed != name {
+		candidates = append(candidates, slashed)
+	}
+	for _, candidate := range candidates {
+		if class := java.ClassByName[candidate]; class != nil {
+			return class, nil
+		}
+	}
+	var (
+		nameAddr uint32
+		spelling string
+	)
+	for _, candidate := range candidates {
+		if addr := r.scanGuestCString(candidate, 0x00001000, 0x00120000); addr != 0 {
+			nameAddr, spelling = addr, candidate
+			break
+		}
+	}
+	if nameAddr == 0 {
+		return nil, nil
+	}
+	descriptor := r.scanGuestWord(nameAddr, 0x01000000, 0x01500000)
+	if descriptor < 8 {
+		return nil, nil
+	}
+	descriptor -= 8
+	holder := r.scanGuestWord(descriptor, 0x01000000, 0x01500000)
+	if holder < 8 {
+		return nil, nil
+	}
+	holder -= 8
+	class, err := r.inspectRaptorJavaClass(java, holder)
+	if err != nil {
+		return nil, err
+	}
+	if class == nil || class.Name != spelling {
+		return nil, nil
+	}
+	// Publish under the requested spelling too so the caller's lookup by the
+	// manifest name resolves after a dot/slash normalization.
+	if class.Name != name {
+		java.ClassByName[name] = class
+	}
+	// Link the recovered class's virtual table exactly as linkClasses does for
+	// the public set so its startApp can dispatch inherited virtuals.
+	if class.vtable == 0 && len(java.flatVirtual) > 0 {
+		if err := r.buildRaptorJavaVTable(java, class, uint32(len(java.flatVirtual))); err != nil {
+			return nil, err
+		}
+	}
+	return class, nil
+}
+
+// scanGuestCString returns the guest address of a NUL-terminated copy of want
+// within [start, end), or 0. It reads a page at a time so unmapped gaps in the
+// module image are skipped instead of aborting the whole scan.
+func (r *Runtime) scanGuestCString(want string, start, end uint32) uint32 {
+	target := append([]byte(want), 0)
+	const page = 0x1000
+	buf := make([]byte, page+uint32(len(target)))
+	for base := start; base < end; base += page {
+		n := uint32(len(buf))
+		if base+n > end {
+			n = end - base
+		}
+		if r.CPU.ReadMemory(base, buf[:n]) != nil {
+			continue
+		}
+		for i := 0; i+len(target) <= int(n); i++ {
+			if buf[i] != target[0] {
+				continue
+			}
+			if string(buf[i:i+len(target)]) != string(target) {
+				continue
+			}
+			if i == 0 || buf[i-1] == 0 {
+				return base + uint32(i)
+			}
+		}
+	}
+	return 0
+}
+
+// scanGuestWord returns the guest address of the first 4-byte-aligned word equal
+// to value within [start, end), or 0.
+func (r *Runtime) scanGuestWord(value, start, end uint32) uint32 {
+	const page = 0x1000
+	buf := make([]byte, page)
+	for base := start; base < end; base += page {
+		n := uint32(len(buf))
+		if base+n > end {
+			n = end - base
+		}
+		if r.CPU.ReadMemory(base, buf[:n]) != nil {
+			continue
+		}
+		for i := 0; i+4 <= int(n); i += 4 {
+			w := uint32(buf[i]) | uint32(buf[i+1])<<8 |
+				uint32(buf[i+2])<<16 | uint32(buf[i+3])<<24
+			if w == value {
+				return base + uint32(i)
+			}
+		}
+	}
+	return 0
+}
+
 func (r *Runtime) inspectRaptorJavaClass(
 	java *JavaRuntime,
 	holder uint32,

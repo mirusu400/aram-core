@@ -231,6 +231,44 @@ func TestBuildRaptorJavaVTableUsesFixedAndFlatSlots(t *testing.T) {
 	}
 }
 
+func TestScanGuestStringAndWord(t *testing.T) {
+	public := newPublicRuntime(t)
+	runtime := &Runtime{
+		CPU:             public.CPU,
+		Public:          public,
+		resolvedImports: make(map[raptorImportKey]uint64),
+		importSlotByKey: make(map[raptorImportKey]uint32),
+	}
+	block, err := public.Heap.Allocate(0x400, true)
+	if err != nil || block == 0 {
+		t.Fatalf("allocate = 0x%08x, %v", block, err)
+	}
+	lo := block & ^uint32(0xfff)
+	hi := lo + 0x3000
+	// Preceded by a NUL so the whole-string guard accepts the match; the zeroed
+	// allocation already supplies that leading NUL byte.
+	strAt := block + 0x40
+	if err := public.CPU.WriteMemory(strAt, append([]byte("app/Main"), 0)); err != nil {
+		t.Fatal(err)
+	}
+	if got := runtime.scanGuestCString("app/Main", lo, hi); got != strAt {
+		t.Fatalf("scanGuestCString = 0x%08x, want 0x%08x", got, strAt)
+	}
+	if got := runtime.scanGuestCString("absent/Class", lo, hi); got != 0 {
+		t.Fatalf("scanGuestCString(absent) = 0x%08x, want 0", got)
+	}
+	wordAt := block + 0x100
+	if err := public.WriteU32(wordAt, 0xdeadbeef); err != nil {
+		t.Fatal(err)
+	}
+	if got := runtime.scanGuestWord(0xdeadbeef, lo, hi); got != wordAt {
+		t.Fatalf("scanGuestWord = 0x%08x, want 0x%08x", got, wordAt)
+	}
+	if got := runtime.scanGuestWord(0x12345678, lo, hi); got != 0 {
+		t.Fatalf("scanGuestWord(absent) = 0x%08x, want 0", got)
+	}
+}
+
 func newPublicRuntime(t *testing.T) *wipirt.Runtime {
 	t.Helper()
 	backend := interpreter.New()

@@ -475,6 +475,14 @@ func (m *Machine) startRaptorJava(ctx context.Context) error {
 	}
 	class := java.ClassByName[java.MainClass]
 	if class == nil {
+		recovered, err := runtime.RecoverUnregisteredMainClass(java, java.MainClass)
+		if err != nil {
+			return fmt.Errorf(
+				"recover Raptor Java main class %q: %w", java.MainClass, err)
+		}
+		class = recovered
+	}
+	if class == nil {
 		return fmt.Errorf("Raptor Java main class %q was not registered", java.MainClass)
 	}
 	instance, err := runtime.NewRaptorJavaObject(class.Holder)
