@@ -195,7 +195,10 @@ func TestBuildRaptorJavaVTableUsesFixedAndFlatSlots(t *testing.T) {
 		Name:       "app/Board",
 		parentName: card.Name,
 		methods: []raptorJavaDeclaredMethod{
-			{Name: "paint", descriptor: "(Lorg/kwis/msp/lcdui/Graphics;)V", Body: 0x00001234},
+			// paint's body is an ARM function (even address); its interworking
+			// bit must survive into the vtable so a guest bx into it does not
+			// switch the CPU into Thumb mode.
+			{Name: "paint", descriptor: "(Lorg/kwis/msp/lcdui/Graphics;)V", Body: 0x00002468},
 		},
 	}
 	java.classes[subclass.Holder] = subclass
@@ -215,9 +218,11 @@ func TestBuildRaptorJavaVTableUsesFixedAndFlatSlots(t *testing.T) {
 	if got, _ := public.ReadU32(subclass.vtable); got != subclass.Holder {
 		t.Fatalf("vtable[0] = 0x%08x, want holder 0x%08x", got, subclass.Holder)
 	}
-	// Flat slot 0 dispatches to the subclass override body (declared wins).
-	if got, _ := public.ReadU32(subclass.vtable + 4); got != (0x00001234 | 1) {
-		t.Fatalf("flat slot 0 = 0x%08x, want the override body", got)
+	// Flat slot 0 dispatches to the subclass override body (declared wins), and
+	// the ARM body's clear interworking bit is preserved verbatim — the builder
+	// must not strip it or re-force Thumb.
+	if got, _ := public.ReadU32(subclass.vtable + 4); got != 0x00002468 {
+		t.Fatalf("flat slot 0 = 0x%08x, want the ARM override body 0x00002468", got)
 	}
 	// Fixed Object slots are populated even though the subclass declares none.
 	equals, _ := public.ReadU32(subclass.vtable + 0x10)

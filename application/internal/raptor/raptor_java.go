@@ -1022,22 +1022,27 @@ func (r *Runtime) buildRaptorJavaVTable(
 	for index, method := range java.flatVirtual {
 		procedure := uint32(0)
 		if method.Name != "" && r.raptorClassImplements(java, class, method.className) {
-			procedure, err = r.registerJavaHostMethod(raptorJavaMethod{
+			stub, stubErr := r.registerJavaHostMethod(raptorJavaMethod{
 				className: method.className, Name: method.Name,
 				descriptor: method.descriptor,
 			})
-			if err != nil {
-				return err
+			if stubErr != nil {
+				return stubErr
 			}
+			// Host trampolines are Thumb code; force the interworking bit.
+			procedure = stub | 1
 		}
 		for _, declared := range class.methods {
 			if declared.Name == method.Name && declared.descriptor == method.descriptor {
-				procedure = declared.Body &^ 1
+				// The declared body pointer already carries the ARM/Thumb
+				// interworking bit; preserve it so a bx into an ARM method body
+				// does not switch the CPU into Thumb mode.
+				procedure = declared.Body
 				break
 			}
 		}
 		if procedure != 0 {
-			if err := r.Public.WriteU32(vtable+uint32(index)*8+4, procedure|1); err != nil {
+			if err := r.Public.WriteU32(vtable+uint32(index)*8+4, procedure); err != nil {
 				return err
 			}
 		}
@@ -1059,7 +1064,8 @@ func (r *Runtime) buildRaptorJavaVTable(
 			procedure := uint32(0)
 			for _, declaring := range chain {
 				if declared, found := DeclaredMethod(declaring, method.Name, method.descriptor); found && declared.Body != 0 {
-					procedure = declared.Body &^ 1
+					// Preserve the declared body's interworking bit (ARM or Thumb).
+					procedure = declared.Body
 					break
 				}
 			}
@@ -1071,9 +1077,10 @@ func (r *Runtime) buildRaptorJavaVTable(
 				if registerErr != nil {
 					return registerErr
 				}
-				procedure = registered
+				// Host trampolines are Thumb code.
+				procedure = registered | 1
 			}
-			if err := r.Public.WriteU32(vtable+method.offset, procedure|1); err != nil {
+			if err := r.Public.WriteU32(vtable+method.offset, procedure); err != nil {
 				return err
 			}
 		}
