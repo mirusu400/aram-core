@@ -253,17 +253,10 @@ func Inspect(data []byte) (Package, error) {
 	if err != nil {
 		return Package{}, err
 	}
-	if image.Metadata.Identifier != descriptor.AID {
-		return Package{}, formatError(
-			moduleName,
-			-1,
-			fmt.Sprintf(
-				"Raptor identifier %q does not match descriptor AID %q",
-				image.Metadata.Identifier,
-				descriptor.AID,
-			),
-		)
-	}
+	// The module identifier and descriptor AID routinely disagree in shipped
+	// packages (updated modules keep their build AID while the storefront
+	// descriptor carries the listing AID), and the handset loads them anyway,
+	// so a mismatch is not an error.
 	delete(contents, moduleName)
 	return Package{
 		Descriptor: descriptor,

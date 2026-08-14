@@ -83,6 +83,7 @@ func (m *Machine) DebugSnapshot(maxEntries int) DebugSnapshot {
 		)
 		for _, call := range m.raptor.ImportTrace[start:] {
 			imports = append(imports, DebugRaptorImportCall{
+				Module:  call.Module,
 				Ordinal: call.Ordinal,
 				Args:    call.Args,
 				LR:      call.LR,

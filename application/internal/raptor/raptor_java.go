@@ -5,10 +5,11 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	ktfrt "github.com/mirusu400/aram-core/application/internal/ktf"
-	wipirt "github.com/mirusu400/aram-core/application/internal/wipi"
 	"strings"
 	"unicode/utf16"
+
+	ktfrt "github.com/mirusu400/aram-core/application/internal/ktf"
+	wipirt "github.com/mirusu400/aram-core/application/internal/wipi"
 
 	"github.com/mirusu400/aram-core/application/internal/guest"
 	machinecore "github.com/mirusu400/aram-core/core"
@@ -54,6 +55,71 @@ var raptorJavaFixedVirtualMethods = map[string][]raptorJavaFixedVirtualMethod{
 	},
 	"java/util/Calendar": {
 		{offset: 0x50, Name: "get", descriptor: "(I)I"},
+	},
+	"java/lang/Runtime": {
+		// 체스마스터 SDK glue calls slot 0x38 on the cached Runtime before
+		// allocating and inside its sleep(150) idle loop: that is gc().
+		{offset: 0x2c, Name: "freeMemory", descriptor: "()J"},
+		{offset: 0x30, Name: "totalMemory", descriptor: "()J"},
+		{offset: 0x34, Name: "exit", descriptor: "(I)V"},
+		{offset: 0x38, Name: "gc", descriptor: "()V"},
+	},
+	"java/lang/Class": {
+		// CLDC order after static forName: newInstance, isInstance,
+		// isAssignableFrom, isInterface, isArray, getName,
+		// getResourceAsStream. 체스마스터 SDK glue builds a resource name with
+		// StringBuffer and calls slot 0x44 on a Class with the String.
+		{offset: 0x34, Name: "isAssignableFrom", descriptor: "(Ljava/lang/Class;)Z"},
+		{offset: 0x40, Name: "getName", descriptor: "()Ljava/lang/String;"},
+		{
+			offset:     0x44,
+			Name:       "getResourceAsStream",
+			descriptor: "(Ljava/lang/String;)Ljava/io/InputStream;",
+		},
+	},
+	"java/util/Vector": {
+		// Slot order mirrors the host spec declaration order; 월드장기체스 CCC
+		// constructs Vectors and calls slot 0x44 expecting an int back: size().
+		{offset: 0x2c, Name: "addElement", descriptor: "(Ljava/lang/Object;)V"},
+		{offset: 0x30, Name: "elementAt", descriptor: "(I)Ljava/lang/Object;"},
+		{offset: 0x34, Name: "setElementAt", descriptor: "(Ljava/lang/Object;I)V"},
+		{offset: 0x38, Name: "removeElementAt", descriptor: "(I)V"},
+		{offset: 0x3c, Name: "removeElement", descriptor: "(Ljava/lang/Object;)Z"},
+		{offset: 0x40, Name: "removeAllElements", descriptor: "()V"},
+		{offset: 0x44, Name: "size", descriptor: "()I"},
+		{offset: 0x48, Name: "capacity", descriptor: "()I"},
+		{offset: 0x4c, Name: "isEmpty", descriptor: "()Z"},
+		{offset: 0x50, Name: "contains", descriptor: "(Ljava/lang/Object;)Z"},
+		{offset: 0x54, Name: "indexOf", descriptor: "(Ljava/lang/Object;)I"},
+		{offset: 0x58, Name: "copyInto", descriptor: "([Ljava/lang/Object;)V"},
+		{offset: 0x5c, Name: "elements", descriptor: "()Ljava/util/Enumeration;"},
+	},
+	"java/io/InputStream": {
+		// CLDC order: read(), read([B), read([BII), skip, available, close,
+		// mark, markSupported, reset. 체스마스터 calls slot 0x3c on the stream
+		// from getResourceAsStream before sizing its buffer: available().
+		{offset: 0x2c, Name: "read", descriptor: "()I"},
+		{offset: 0x30, Name: "read", descriptor: "([B)I"},
+		{offset: 0x34, Name: "read", descriptor: "([BII)I"},
+		{offset: 0x38, Name: "skip", descriptor: "(J)J"},
+		{offset: 0x3c, Name: "available", descriptor: "()I"},
+		{offset: 0x40, Name: "close", descriptor: "()V"},
+		{offset: 0x44, Name: "mark", descriptor: "(I)V"},
+		{offset: 0x4c, Name: "reset", descriptor: "()V"},
+	},
+	// The CLDC Object slots occupy bytes 4..0x28 of every vtable; the prebuilt
+	// tables shipped in module .data leave exactly ten leading slots empty and
+	// start their own methods at 0x2c. String.equals at 0x10 and
+	// StringBuffer.toString at 0x14 (an Object.toString override) confirm the
+	// order.
+	"java/lang/Object": {
+		{offset: 0x08, Name: "getClass", descriptor: "()Ljava/lang/Class;"},
+		{offset: 0x0c, Name: "hashCode", descriptor: "()I"},
+		{offset: 0x10, Name: "equals", descriptor: "(Ljava/lang/Object;)Z"},
+		{offset: 0x14, Name: "toString", descriptor: "()Ljava/lang/String;"},
+		{offset: 0x18, Name: "notify", descriptor: "()V"},
+		{offset: 0x1c, Name: "notifyAll", descriptor: "()V"},
+		{offset: 0x28, Name: "wait", descriptor: "()V"},
 	},
 }
 
@@ -407,6 +473,18 @@ func (r *Runtime) dispatchJavaImport(
 		return guest.WIPIReturn{Low: array}, "RAPTOR.Java.newArray", true, err
 	case 18:
 		return r.checkRaptorJavaType()
+	case 225:
+		// 체스마스터 SDK glue feeds this result straight into Java.new while
+		// tokenizing a string into new String objects: the String class.
+		java, err := r.ensureJavaRuntime()
+		if err != nil {
+			return guest.WIPIReturn{}, "RAPTOR.Java.stringClass", true, err
+		}
+		class, err := r.ensureRaptorHostClass(java, "java/lang/String")
+		if err != nil {
+			return guest.WIPIReturn{}, "RAPTOR.Java.stringClass", true, err
+		}
+		return guest.WIPIReturn{Low: class.Holder}, "RAPTOR.Java.stringClass", true, nil
 	case 97, 250:
 		array, err := r.CPU.ReadRegister(cpu.RegisterR0)
 		if err != nil {
@@ -492,6 +570,11 @@ func (r *Runtime) registerRaptorJavaClasses(
 		holder, err := r.Public.ReadU32(address + 8 + index*4)
 		if err != nil {
 			return err
+		}
+		// Some registration tables carry reserved null slots ahead of the real
+		// holders (체스마스터 passes count=4 with the first slot empty).
+		if holder == 0 {
+			continue
 		}
 		if _, err := r.inspectRaptorJavaClass(java, holder); err != nil {
 			return err
@@ -673,24 +756,55 @@ func (r *Runtime) linkRaptorJavaClasses(java *JavaRuntime) error {
 		maxStaticMethod = max(maxStaticMethod, uint32(entry.staticMethodStart)+uint32(entry.staticMethodCount))
 		maxStaticField = max(maxStaticField, uint32(entry.staticFieldStart)+uint32(entry.staticFieldCount))
 	}
-	// The generated output tables themselves give the complete virtual-method
-	// count, including methods declared by the application after its imports.
+	// The virtual offset table runs to the next linker-filled table in the zero
+	// section; SDK revisions order those tables differently, and in the older
+	// layout the virtual table is last, bounded only by the section end.
+	virtualEnd := uint32(0)
+	for _, boundary := range []uint32{
+		fieldOffsets, staticFieldOffsets, staticMethodOffsets, arguments[9],
+	} {
+		if boundary > virtualMethodOffsets && (virtualEnd == 0 || boundary < virtualEnd) {
+			virtualEnd = boundary
+		}
+	}
+	if virtualEnd == 0 {
+		if bss, ok := r.Pkg.Image.ZeroSection(); ok &&
+			virtualMethodOffsets >= bss.Address &&
+			virtualMethodOffsets < bss.Address+bss.Size {
+			virtualEnd = bss.Address + bss.Size
+		}
+	}
 	virtualCount := uint32(0)
-	if staticMethodOffsets > virtualMethodOffsets {
-		virtualCount = (staticMethodOffsets - virtualMethodOffsets) / 2
+	if virtualEnd > virtualMethodOffsets {
+		virtualCount = (virtualEnd - virtualMethodOffsets) / 2
 	}
 	if virtualCount < maxVirtual || virtualCount > 4096 {
 		return fmt.Errorf("invalid Raptor Java virtual method table size %d", virtualCount)
 	}
-	java.flatVirtual = make([]raptorJavaMethod, virtualCount)
+	// The boundary can overshoot the true method count (alignment padding, or
+	// the open-ended older layout), so trim trailing entries with no name.
+	effectiveCount := maxVirtual
+	names := make([]string, virtualCount)
+	descriptors := make([]string, virtualCount)
 	for index := uint32(0); index < virtualCount; index++ {
 		nameAddress, _ := r.Public.ReadU32(virtualMethods + index*8)
 		typeAddress, _ := r.Public.ReadU32(virtualMethods + index*8 + 4)
 		name, _ := r.Public.ReadCString(nameAddress)
 		descriptor, _ := r.Public.ReadCString(typeAddress)
-		java.flatVirtual[index] = raptorJavaMethod{
-			Name: string(name), descriptor: string(descriptor),
+		names[index], descriptors[index] = string(name), string(descriptor)
+		if len(name) != 0 && len(descriptor) != 0 {
+			effectiveCount = index + 1
 		}
+	}
+	java.flatVirtual = make([]raptorJavaMethod, effectiveCount)
+	for index := uint32(0); index < effectiveCount; index++ {
+		java.flatVirtual[index] = raptorJavaMethod{
+			Name: names[index], descriptor: descriptors[index],
+		}
+		// Generated code computes vtable + offset*4 + 4. Compiler-inlined calls
+		// use the SDK's fixed per-class slots (raptorJavaFixedVirtualMethods),
+		// so linked offsets are doubled to keep the flat entries clear of the
+		// fixed slot range.
 		var encoded [2]byte
 		binary.LittleEndian.PutUint16(encoded[:], uint16(index*2))
 		if err := r.CPU.WriteMemory(virtualMethodOffsets+index*2, encoded[:]); err != nil {
@@ -702,7 +816,7 @@ func (r *Runtime) linkRaptorJavaClasses(java *JavaRuntime) error {
 			index := uint32(entry.virtualStart) + offset
 			java.flatVirtual[index].className = entry.class.Name
 		}
-		if err := r.buildRaptorJavaVTable(java, entry.class, virtualCount); err != nil {
+		if err := r.buildRaptorJavaVTable(java, entry.class, effectiveCount); err != nil {
 			return err
 		}
 		for offset := uint32(0); offset < uint32(entry.staticMethodCount); offset++ {
@@ -875,9 +989,16 @@ func (r *Runtime) buildRaptorJavaVTable(
 	if count == 0 {
 		return nil
 	}
-	vtable, err := r.Public.Heap.Allocate(count*8, true)
+	// Guest vtables hold the class holder at +0 followed by 4-byte slots.
+	// Linked flat entries live at index*8+4 (matching the doubled offsets the
+	// link step publishes); SDK classes additionally pin methods at fixed byte
+	// offsets that compiler-inlined call sites hardcode.
+	vtable, err := r.Public.Heap.Allocate(count*8+8, true)
 	if err != nil || vtable == 0 {
 		return errors.New("allocate Raptor Java vtable")
+	}
+	if err := r.Public.WriteU32(vtable, class.Holder); err != nil {
+		return err
 	}
 	for index, method := range java.flatVirtual {
 		procedure := uint32(0)
@@ -902,16 +1023,40 @@ func (r *Runtime) buildRaptorJavaVTable(
 			}
 		}
 	}
-	for _, method := range raptorJavaFixedVirtualMethods[class.Name] {
-		procedure, registerErr := r.registerJavaHostMethod(raptorJavaMethod{
-			className: class.Name,
-			Name:      method.Name, descriptor: method.descriptor,
-		})
-		if registerErr != nil {
-			return registerErr
-		}
-		if err := r.Public.WriteU32(vtable+method.offset, procedure|1); err != nil {
-			return err
+	// SDK slots are inherited: apply fixed layouts root-first along the class
+	// chain so a subclass's own fixed entries override its ancestors', and an
+	// application override declared for a fixed slot dispatches to its Body.
+	var chain []*raptorJavaClass
+	for walk, depth := class, 0; walk != nil && depth < 256; depth++ {
+		chain = append(chain, walk)
+		walk = java.ClassByName[walk.parentName]
+	}
+	fixedNames := []string{"java/lang/Object"}
+	for index := len(chain) - 1; index >= 0; index-- {
+		fixedNames = append(fixedNames, chain[index].Name)
+	}
+	for _, fixedName := range fixedNames {
+		for _, method := range raptorJavaFixedVirtualMethods[fixedName] {
+			procedure := uint32(0)
+			for _, declaring := range chain {
+				if declared, found := DeclaredMethod(declaring, method.Name, method.descriptor); found && declared.Body != 0 {
+					procedure = declared.Body &^ 1
+					break
+				}
+			}
+			if procedure == 0 {
+				registered, registerErr := r.registerJavaHostMethod(raptorJavaMethod{
+					className: fixedName,
+					Name:      method.Name, descriptor: method.descriptor,
+				})
+				if registerErr != nil {
+					return registerErr
+				}
+				procedure = registered
+			}
+			if err := r.Public.WriteU32(vtable+method.offset, procedure|1); err != nil {
+				return err
+			}
 		}
 	}
 	class.vtable = vtable

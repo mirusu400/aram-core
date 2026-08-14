@@ -183,10 +183,16 @@ func TestInspectRejectsNonPackageAndUnsafeMember(t *testing.T) {
 }
 
 func TestInspectELFRejectsEntryMismatchAndOverlap(t *testing.T) {
+	// A header entry that disagrees with .raptor is a dummy left by some
+	// SDKs; the metadata offset wins.
 	entryMismatch := makeELF(t, "game", []string{"kernel"})
 	binary.LittleEndian.PutUint32(entryMismatch[24:28], 0x1004)
-	if _, err := InspectELF("binary.mod", entryMismatch); err == nil {
-		t.Fatal("InspectELF accepted an entry mismatch")
+	image, err := InspectELF("binary.mod", entryMismatch)
+	if err != nil {
+		t.Fatalf("InspectELF rejected a dummy header entry: %v", err)
+	}
+	if image.Entry != 0x1000 {
+		t.Fatalf("InspectELF kept entry 0x%x instead of the .raptor entry", image.Entry)
 	}
 
 	overlap := makeELF(t, "game", []string{"kernel"})

@@ -188,6 +188,7 @@ type DebugRaptorSnapshot struct {
 }
 
 type DebugRaptorImportCall struct {
+	Module  uint32    `json:"module"`
 	Ordinal uint32    `json:"ordinal"`
 	Args    [4]uint32 `json:"args"`
 	LR      uint32    `json:"lr"`

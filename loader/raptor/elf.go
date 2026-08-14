@@ -181,14 +181,19 @@ func InspectELF(name string, data []byte) (Image, error) {
 	}
 	// The interworking bit belongs to the entry address, and modules disagree
 	// about where it is written down: some carry the Thumb-flagged offset in
-	// .raptor while the ELF header keeps the aligned address. Compare the
-	// addresses themselves and leave the mode to the runtime, which enters
-	// Raptor code in Thumb either way.
-	entry := image.Entry &^ 1
-	expectedEntry := (uint64(code.Address) + uint64(metadata.EntryOffset)) &^ 1
-	if expectedEntry > math.MaxUint32 || uint32(expectedEntry) != entry {
-		return Image{}, formatError(name, 24, "ELF entry does not match .raptor entry offset")
+	// .raptor while the ELF header keeps the aligned address. Some SDKs also
+	// leave a dummy header entry (the code base) and only .raptor is real
+	// (SD한국전쟁), so the metadata offset is authoritative when they disagree.
+	// The mode is left to the runtime, which enters Raptor code in Thumb
+	// either way.
+	metadataEntry := uint64(code.Address) + uint64(metadata.EntryOffset)
+	if metadataEntry > math.MaxUint32 {
+		return Image{}, formatError(name, 24, ".raptor entry offset is outside the address space")
 	}
+	if uint32(metadataEntry)&^1 != image.Entry&^1 {
+		image.Entry = uint32(metadataEntry)
+	}
+	entry := image.Entry &^ 1
 	if entry < code.Address || uint64(entry) >= uint64(code.Address)+uint64(code.Size) {
 		return Image{}, formatError(name, 24, "ELF entry is outside the code section")
 	}

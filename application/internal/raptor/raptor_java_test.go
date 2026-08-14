@@ -163,6 +163,69 @@ func TestRaptorImportSlotsIncludeModule(t *testing.T) {
 	}
 }
 
+func TestBuildRaptorJavaVTableUsesFixedAndFlatSlots(t *testing.T) {
+	public := newPublicRuntime(t)
+	runtime := &Runtime{
+		CPU:             public.CPU,
+		Public:          public,
+		resolvedImports: make(map[raptorImportKey]uint64),
+		importSlotByKey: make(map[raptorImportKey]uint32),
+	}
+	java, err := runtime.ensureJavaRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A card subclass whose only declared method overrides an inherited flat
+	// virtual, plus one flat slot the subclass does not implement.
+	card, err := runtime.ensureRaptorHostClass(java, "org/kwis/msp/lcdui/Card")
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder, err := public.Heap.Allocate(12, true)
+	if err != nil || holder == 0 {
+		t.Fatalf("allocate holder = 0x%08x, %v", holder, err)
+	}
+	descriptor, err := public.Heap.Allocate(0x4c, true)
+	if err != nil || descriptor == 0 {
+		t.Fatalf("allocate descriptor = 0x%08x, %v", descriptor, err)
+	}
+	subclass := &raptorJavaClass{
+		Holder:     holder,
+		descriptor: descriptor,
+		Name:       "app/Board",
+		parentName: card.Name,
+		methods: []raptorJavaDeclaredMethod{
+			{Name: "paint", descriptor: "(Lorg/kwis/msp/lcdui/Graphics;)V", Body: 0x00001234},
+		},
+	}
+	java.classes[subclass.Holder] = subclass
+	java.ClassByName[subclass.Name] = subclass
+	java.flatVirtual = []raptorJavaMethod{
+		{className: card.Name, Name: "paint", descriptor: "(Lorg/kwis/msp/lcdui/Graphics;)V"},
+		{className: card.Name, Name: "keyNotify", descriptor: "(II)Z"},
+	}
+
+	if err := runtime.buildRaptorJavaVTable(java, subclass, uint32(len(java.flatVirtual))); err != nil {
+		t.Fatal(err)
+	}
+	if subclass.vtable == 0 {
+		t.Fatal("vtable was not allocated")
+	}
+	// Holder back-reference at +0, so guest object dispatch can recover it.
+	if got, _ := public.ReadU32(subclass.vtable); got != subclass.Holder {
+		t.Fatalf("vtable[0] = 0x%08x, want holder 0x%08x", got, subclass.Holder)
+	}
+	// Flat slot 0 dispatches to the subclass override body (declared wins).
+	if got, _ := public.ReadU32(subclass.vtable + 4); got != (0x00001234 | 1) {
+		t.Fatalf("flat slot 0 = 0x%08x, want the override body", got)
+	}
+	// Fixed Object slots are populated even though the subclass declares none.
+	equals, _ := public.ReadU32(subclass.vtable + 0x10)
+	if equals == 0 {
+		t.Fatal("fixed Object.equals slot 0x10 was left empty")
+	}
+}
+
 func newPublicRuntime(t *testing.T) *wipirt.Runtime {
 	t.Helper()
 	backend := interpreter.New()
