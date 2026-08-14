@@ -856,7 +856,22 @@ func (r *Runtime) linkRaptorJavaClasses(java *JavaRuntime) error {
 	}
 	if bss, ok := r.Pkg.Image.ZeroSection(); ok &&
 		fieldOffsets >= bss.Address && fieldOffsets < bss.Address+bss.Size {
-		fieldCount := (bss.Address + bss.Size - fieldOffsets) / 2
+		// The field-offset table runs to the next linker-filled table, not the
+		// end of the zero section. Older SDK layouts place the resolved
+		// static-method pointer table (and the other offset tables) *after*
+		// fieldOffsets in .bss; overrunning to the section end here would
+		// overwrite those freshly written function pointers with field indices
+		// (메이플스토리2007 crashed constructing its main class because its
+		// staticMethodOffsets table was clobbered right after linkClasses).
+		fieldEnd := bss.Address + bss.Size
+		for _, boundary := range []uint32{
+			staticFieldOffsets, virtualMethodOffsets, staticMethodOffsets, arguments[9],
+		} {
+			if boundary > fieldOffsets && boundary < fieldEnd {
+				fieldEnd = boundary
+			}
+		}
+		fieldCount := (fieldEnd - fieldOffsets) / 2
 		if fieldCount > 4096 {
 			return fmt.Errorf("invalid Raptor Java field table size %d", fieldCount)
 		}
