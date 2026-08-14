@@ -806,6 +806,27 @@ func (r *Runtime) present(handle uint32) error {
 	if !ok {
 		return nil
 	}
+	// Some titles (e.g. 데몬헌터) double-buffer into an offscreen surface and call
+	// MC_grpFlushLcd on that buffer directly. The presentation service only lets
+	// the screen surface present, so redirect the flush onto the screen: copy the
+	// flushed buffer's pixels into the screen framebuffer and present that. Normal
+	// titles flush the screen handle itself and skip this branch entirely.
+	if r.ScreenHandle != 0 && handle != r.ScreenHandle {
+		if screen, ok := r.Framebuffers[r.ScreenHandle]; ok &&
+			screen.Width == fb.Width && screen.Height == fb.Height &&
+			screen.BitsPerPixel == fb.BitsPerPixel {
+			size := uint64(fb.Width) * uint64(fb.Height) * uint64(fb.bytesPerPixel())
+			if size <= uint64(^uint(0)>>1) {
+				buffer := make([]byte, int(size))
+				if readErr := r.CPU.ReadMemory(fb.Pixels, buffer); readErr == nil {
+					if writeErr := r.CPU.WriteMemory(screen.Pixels, buffer); writeErr == nil {
+						handle = r.ScreenHandle
+						fb = screen
+					}
+				}
+			}
+		}
+	}
 	serviceID := r.surfaceServices[handle]
 	if serviceID == 0 {
 		return nil

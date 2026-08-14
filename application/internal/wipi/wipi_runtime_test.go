@@ -580,6 +580,45 @@ func TestWIPIRuntimeGraphicsPresentsGuestFramebuffer(t *testing.T) {
 	}
 }
 
+// Some titles (e.g. 데몬헌터) draw into an offscreen back buffer and call
+// MC_grpFlushLcd on that buffer directly. The presentation service only lets the
+// screen surface present, so the flush must be redirected onto the screen rather
+// than failing the single-owner check.
+func TestWIPIRuntimeFlushLcdRedirectsOffscreenBuffer(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	screen := dispatchPublicAPI(t, runtime, "MC_grpGetScreenFrameBuffer", 0).Low
+	if screen == 0 {
+		t.Fatal("screen framebuffer is null")
+	}
+	offscreen := dispatchPublicAPI(
+		t, runtime, "MC_grpCreateOffScreenFrameBuffer", 16, 12).Low
+	if offscreen == 0 || offscreen == screen {
+		t.Fatalf("offscreen framebuffer = 0x%08x (screen 0x%08x)", offscreen, screen)
+	}
+	context, err := runtime.Heap.Allocate(60, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatchPublicAPI(t, runtime, "MC_grpInitContext", context)
+	colorAddress, err := runtime.Heap.Allocate(4, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.WriteU32(colorAddress, 0x00abcdef); err != nil {
+		t.Fatal(err)
+	}
+	dispatchPublicAPI(t, runtime, "MC_grpSetContext", context, 1, colorAddress)
+	dispatchPublicAPI(t, runtime, "MC_grpFillRect", offscreen, 0, 0, 16, 12, context)
+	// Flush the offscreen buffer, not the screen handle.
+	dispatchPublicAPI(t, runtime, "MC_grpFlushLcd", 0, offscreen, 0, 0, 16, 12)
+	if got := runtime.Frame.RGBAAt(5, 5); got != (color.RGBA{R: 0xab, G: 0xcd, B: 0xef, A: 0xff}) {
+		t.Fatalf("presented pixel = %#v, want the offscreen fill colour", got)
+	}
+	if runtime.Stats.PresentCount != 1 {
+		t.Fatalf("present count = %d", runtime.Stats.PresentCount)
+	}
+}
+
 // A context colour is 24-bit RGB, so on a 16bpp screen it has to be converted
 // rather than written straight through. 영웅서기3 fills with 0x4ba81c, whose
 // low half reads back as a magenta that has nothing to do with the colour it
