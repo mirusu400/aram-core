@@ -337,6 +337,13 @@ func (r *Runtime) getSystemProperty(keyAddress, output, size uint32) (guest.WIPI
 			"SCREENWIDTH":           []byte(fmt.Sprint(r.Frame.Bounds().Dx())),
 			"SCREENHEIGHT":          []byte(fmt.Sprint(r.Frame.Bounds().Dy())),
 			"MAXSERIALNUM":          []byte("0"),
+			// Titles query the handset identity and derive string lengths from
+			// the result; an empty value underflows their `len - N` arithmetic
+			// into a huge memcpy (크로이센 does strlen(PHONEMODEL)-4). Report a
+			// concrete LGT-era model and a placeholder number so the strings are
+			// non-empty.
+			"PHONEMODEL":  []byte("IM-S220L"),
+			"PHONENUMBER": []byte("01000000000"),
 		}
 		value = defaults[string(key)]
 	}
