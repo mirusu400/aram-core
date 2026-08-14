@@ -651,6 +651,15 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 		return "MC_fsSeek", true
 	case 405:
 		return "MC_fsFileAttribute", true
+	// The FS block continues in the public vtable order used by the KTF
+	// bridge: slot 6 is remove and slot 16 is the existence probe. 제노니아1
+	// pins 416 from its call sites — it asks for data/*.zt1 package files
+	// (name, access mode 1, attribute buffer) before deciding whether to
+	// download them from the carrier server.
+	case 406:
+		return "MC_fsRemove", true
+	case 416:
+		return "MC_fsIsExist", true
 	case 117:
 		return "MC_knlAlloc", true
 	case 118:
@@ -673,6 +682,14 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 		return "strncpy", true
 	case 1031:
 		return "strcat", true
+	// The block keeps following string.h declaration order: strncat sits at
+	// 1032, then the comparison pair. 제노니아1 pins 1033/1034 from its call
+	// sites — it compares the handset model property against "SPH-V6900",
+	// "SCH-B590", and the "PT-S" prefix during startup.
+	case 1033:
+		return "strcmp", true
+	case 1034:
+		return "strncmp", true
 	case 1040:
 		return "strstr", true
 	case 1041:

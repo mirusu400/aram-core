@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"image"
 	"math"
+	"path"
 	"sort"
+	"strings"
 
 	"github.com/mirusu400/aram-core/application/internal/guest"
 	"github.com/mirusu400/aram-core/cpu"
@@ -287,6 +289,11 @@ type Runtime struct {
 	ExitRequested    bool
 	exitCode         int32
 	Stats            WIPIFrameStats
+
+	// sharedPackageFiles is a read-only view of package contents addressable
+	// through the shared filesystem namespace; entries materialize into
+	// Files (and the storage service) on first guest access.
+	sharedPackageFiles map[string][]byte
 }
 
 func MapRuntimeMemory(backend cpu.Backend) error {
@@ -580,6 +587,42 @@ func (r *Runtime) CallGuestFunction(procedure uint32, args ...uint32) (uint32, e
 		ctx = context.Background()
 	}
 	return r.InvokeSync(ctx, callback)
+}
+
+// RegisterSharedPackageFiles exposes package contents to the shared
+// filesystem namespace so guests that read their package through MC_fs (LGT
+// Raptor titles address them with access mode 1) can find them. Files are
+// materialized into the storage service lazily on first access — packages
+// can hold more entries than the storage service's file-count limit.
+func (r *Runtime) RegisterSharedPackageFiles(files map[string][]byte) {
+	if r.sharedPackageFiles == nil {
+		r.sharedPackageFiles = make(map[string][]byte, len(files))
+	}
+	for name, data := range files {
+		cleaned := path.Clean("/" + strings.TrimLeft(strings.ReplaceAll(name, "\\", "/"), "/"))
+		if cleaned == "/" || len(cleaned) > 255 || len(data) > int(maxWIPICopy) {
+			continue
+		}
+		r.sharedPackageFiles["/shared"+cleaned] = data
+	}
+}
+
+// ensureSharedPackageFile installs one lazily-registered package file into
+// the mutable filesystem when a guest path lookup would otherwise miss it.
+func (r *Runtime) ensureSharedPackageFile(name string) {
+	if _, exists := r.Files[name]; exists {
+		return
+	}
+	data, ok := r.sharedPackageFiles[name]
+	if !ok {
+		return
+	}
+	namespace, servicePath := wipiStoragePath(name)
+	if err := r.Services.Storage.WriteFile(namespace, servicePath, data); err != nil {
+		return
+	}
+	r.Files[name] = append([]byte(nil), data...)
+	r.ensureDirectory(path.Dir(name))
 }
 
 func (r *Runtime) RegisterResource(name string, data []byte) int32 {

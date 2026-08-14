@@ -192,6 +192,7 @@ func (r *Runtime) guestPath(address uint32, accessMode int32) (string, error) {
 	if cleaned == "/" {
 		return root, nil
 	}
+	r.ensureSharedPackageFile(root + cleaned)
 	return root + cleaned, nil
 }
 

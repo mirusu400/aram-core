@@ -316,6 +316,11 @@ func (m *Machine) loadRaptor(
 	if err := m.installWIPIResources(); err != nil {
 		return err
 	}
+	// LGT titles also address their package contents through MC_fs with the
+	// shared access mode (e.g. 제노니아1 probes data/*.zt1 with MC_fsIsExist
+	// before deciding whether to download them from the carrier server), so
+	// expose the JAR contents to the shared filesystem namespace as well.
+	publicRuntime.RegisterSharedPackageFiles(pkg.Resources)
 	runtime, err := raptorrt.NewRuntime(m.cpu, publicRuntime, pkg)
 	if err != nil {
 		return err
