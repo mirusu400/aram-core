@@ -633,6 +633,15 @@ func (r *Runtime) resolveJavaMethod(
 		return 0, err
 	}
 	if first != classOrVTable+4 {
+		// The reference may be a holder cell whose first word points at a
+		// vtable the runtime has already registered. That mapping is
+		// unambiguous and must win over the object-reference heuristic
+		// below: holder cells live in tables of vtable pointers, so the
+		// word at +4 is the next table entry, which can parse as a class
+		// and hijack virtual dispatch toward an unrelated host class.
+		if classAddress := r.javaVTableClasses[first]; classAddress != 0 {
+			return r.resolveJavaMethod(classAddress, name, descriptor)
+		}
 		// KTF AOT virtual-call helpers may pass an object reference directly
 		// instead of its class descriptor. Object references are two words:
 		// fields pointer followed by the actual class pointer. Prefer that

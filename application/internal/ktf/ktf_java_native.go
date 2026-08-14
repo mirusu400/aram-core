@@ -578,6 +578,19 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 				registers,
 			)
 		}
+		// A guest class can override a host-declared virtual method. The
+		// receiver's implementation must win over the host model, or the
+		// host silently swallows the call (observed: BaseCanvas.performed
+		// resolving to the LWC no-op, killing the game's timer loop).
+		if value, ok, err := runtime.redispatchGuestJavaMethod(
+			ctx,
+			className,
+			name,
+			descriptor,
+			registers,
+		); ok || err != nil {
+			return value, err
+		}
 		switch className {
 		case "java/lang/Object":
 			switch name + descriptor {
@@ -985,6 +998,17 @@ func (r *Runtime) redispatchGuestJavaMethod(
 		len(registers) < 2 ||
 		registers[1] == 0 {
 		return 0, false, nil
+	}
+	if declaredAddress := r.JavaClasses[declaredClass]; declaredAddress != 0 {
+		if declared, err := r.InspectJavaClass(declaredAddress); err == nil {
+			if method, ok := findKTFJavaMethod(
+				declared,
+				name,
+				descriptor,
+			); ok && method.AccessFlags&0x0008 != 0 {
+				return 0, false, nil
+			}
+		}
 	}
 	receiverWords, err := r.ReadWords(registers[1], 2)
 	if err != nil {
