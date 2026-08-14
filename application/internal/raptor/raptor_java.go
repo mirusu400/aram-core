@@ -55,6 +55,8 @@ var raptorJavaFixedVirtualMethods = map[string][]raptorJavaFixedVirtualMethod{
 		{offset: 0x2c, Name: "start", descriptor: "()V"},
 	},
 	"java/util/Random": {
+		// 월드장기체스 seeds its RNG: the slot-0x2c call passes a long in r1:r2.
+		{offset: 0x2c, Name: "setSeed", descriptor: "(J)V"},
 		{offset: 0x34, Name: "nextInt", descriptor: "()I"},
 	},
 	"java/util/Calendar": {
