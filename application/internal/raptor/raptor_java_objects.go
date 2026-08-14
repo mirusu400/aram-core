@@ -319,6 +319,31 @@ func (r *Runtime) callJavaHostMethod(
 				class = java.ClassByName[class.parentName]
 			}
 			return guest.WIPIReturn{}, nil
+		case "org/kwis/msp/lcdui/Display.callSerially(Ljava/lang/Runnable;)V",
+			"org/kwis/msp/lcdui/Display.callSerially(Ljava/lang/Runnable;I)V":
+			// The Runnable is a Raptor Java object; resolve and run its run()
+			// through the Raptor runtime, whose vtable matches the guest. Routing
+			// it through the KTF mirror (the default path below) resolves run() to
+			// a bogus body because the mirror lacks the linked method table.
+			if len(arguments) < 2 || arguments[1] == 0 {
+				return guest.WIPIReturn{}, nil
+			}
+			runnable := arguments[1]
+			class := r.raptorJavaClassForObject(java, runnable)
+			for depth := 0; class != nil && depth < 256; depth++ {
+				if run, found := DeclaredMethod(class, "run", "()V"); found && run.Body != 0 {
+					if r.Public.InvokeSync == nil {
+						break
+					}
+					_, callErr := r.Public.InvokeSync(ctx, wipirt.GuestCallback{
+						Procedure: run.Body,
+						Args:      [4]uint32{runnable},
+					})
+					return guest.WIPIReturn{}, callErr
+				}
+				class = java.ClassByName[class.parentName]
+			}
+			return guest.WIPIReturn{}, nil
 		}
 	}
 	for index, value := range arguments {

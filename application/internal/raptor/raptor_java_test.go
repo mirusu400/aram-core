@@ -231,6 +231,64 @@ func TestBuildRaptorJavaVTableUsesFixedAndFlatSlots(t *testing.T) {
 	}
 }
 
+func TestBuildRaptorJavaVTableCopiesMethodTable(t *testing.T) {
+	public := newPublicRuntime(t)
+	runtime := &Runtime{
+		CPU:             public.CPU,
+		Public:          public,
+		resolvedImports: make(map[raptorImportKey]uint64),
+		importSlotByKey: make(map[raptorImportKey]uint32),
+	}
+	java, err := runtime.ensureJavaRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder, err := public.Heap.Allocate(12, true)
+	if err != nil || holder == 0 {
+		t.Fatalf("allocate holder = 0x%08x, %v", holder, err)
+	}
+	descriptor, err := public.Heap.Allocate(0x60, true)
+	if err != nil || descriptor == 0 {
+		t.Fatalf("allocate descriptor = 0x%08x, %v", descriptor, err)
+	}
+	// Older-SDK classes point descriptor+0x20 at a fuller method table whose
+	// holder back-reference is at +0x04 and whose method bodies sit at the exact
+	// vtable byte offsets the compiler-inlined call sites use (e.g. +0x48).
+	methodTable, err := public.Heap.Allocate(0x60, true)
+	if err != nil || methodTable == 0 {
+		t.Fatalf("allocate method table = 0x%08x, %v", methodTable, err)
+	}
+	if err := public.WriteU32(methodTable+0x04, holder); err != nil {
+		t.Fatal(err)
+	}
+	if err := public.WriteU32(methodTable+0x48, 0x00001a2c); err != nil {
+		t.Fatal(err)
+	}
+	if err := public.WriteU32(descriptor+0x20, methodTable); err != nil {
+		t.Fatal(err)
+	}
+	leaf := &raptorJavaClass{
+		Holder:     holder,
+		descriptor: descriptor,
+		Name:       "app/Runnable",
+		parentName: "java/lang/Object",
+	}
+	java.classes[holder] = leaf
+	java.ClassByName[leaf.Name] = leaf
+	java.flatVirtual = make([]raptorJavaMethod, 24)
+	for i := range java.flatVirtual {
+		java.flatVirtual[i] = raptorJavaMethod{
+			className: "app/Unrelated", Name: "m", descriptor: "()V",
+		}
+	}
+	if err := runtime.buildRaptorJavaVTable(java, leaf, uint32(len(java.flatVirtual))); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := public.ReadU32(leaf.vtable + 0x48); got != 0x00001a2c {
+		t.Fatalf("vtable+0x48 = 0x%08x, want method-table body 0x00001a2c", got)
+	}
+}
+
 func TestBuildRaptorJavaVTableCopiesInlineOwnMethods(t *testing.T) {
 	public := newPublicRuntime(t)
 	runtime := &Runtime{

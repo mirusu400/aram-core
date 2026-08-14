@@ -1236,6 +1236,32 @@ func (r *Runtime) buildRaptorJavaVTable(
 			return err
 		}
 	}
+	// Older-SDK classes also carry a fuller per-class method table pointed to by
+	// descriptor+0x20 (its holder back-reference sits at +0x04, and method bodies
+	// occupy the exact vtable byte offsets the compiler-inlined call sites use,
+	// including inherited/interface slots the inline block above does not cover,
+	// e.g. 월드장기체스 CCC calls vtable+0x48). When that table belongs to this class,
+	// copy its code entries into still-empty vtable slots at matching offsets.
+	// Only empty slots are filled and only guest-image code pointers are copied,
+	// so Object stubs, declared bodies, and the inline block are all preserved.
+	if methodTable, tableErr := r.Public.ReadU32(class.descriptor + 0x20); tableErr == nil &&
+		methodTable >= 0x01000000 {
+		if tableHolder, _ := r.Public.ReadU32(methodTable + 4); tableHolder == class.Holder {
+			for offset := uint32(0x08); offset < vtableSize; offset += 4 {
+				body, readErr := r.Public.ReadU32(methodTable + offset)
+				if readErr != nil || body == 0 || body >= 0x01000000 {
+					continue
+				}
+				existing, _ := r.Public.ReadU32(vtable + offset)
+				if existing != 0 {
+					continue
+				}
+				if err := r.Public.WriteU32(vtable+offset, body); err != nil {
+					return err
+				}
+			}
+		}
+	}
 	class.vtable = vtable
 	if err := r.Public.WriteU32(class.descriptor+0x0c, vtable); err != nil {
 		return err
