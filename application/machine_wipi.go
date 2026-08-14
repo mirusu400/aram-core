@@ -351,6 +351,13 @@ func (m *Machine) pumpWIPICallbacks(
 					clip.Repeat = false
 					m.wipi.EnqueueCallback(clip.Callback, handle, 0)
 				}
+				if m.raptor != nil {
+					// LGT titles allocate a fresh clip per sound and drop the
+					// old handle in their completion callback, so release the
+					// finished clip here to keep the clip table bounded across
+					// a long session (issue #36).
+					m.wipi.RaptorStopClip(handle, true)
+				}
 				break
 			}
 		}

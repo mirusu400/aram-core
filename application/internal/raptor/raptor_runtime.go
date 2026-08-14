@@ -471,6 +471,88 @@ func (r *Runtime) DispatchPrivateImport(
 	ordinal uint32,
 ) (guest.WIPIReturn, string, bool, error) {
 	switch ordinal {
+	case 1200:
+		// MC_sndCreate(typeName, capacity, completionCallback) → handle.
+		// 제노니아1 creates one clip per sound and shares a single handle
+		// stored in its sound object; the completion callback (arg 2) lets it
+		// reload a track after an effect finishes.
+		typeAddr, err := r.CPU.ReadRegister(cpu.RegisterR0)
+		if err != nil {
+			return guest.WIPIReturn{}, "", true, err
+		}
+		capacity, err := r.CPU.ReadRegister(cpu.RegisterR1)
+		if err != nil {
+			return guest.WIPIReturn{}, "", true, err
+		}
+		callback, err := r.CPU.ReadRegister(cpu.RegisterR2)
+		if err != nil {
+			return guest.WIPIReturn{}, "", true, err
+		}
+		mediaType := ""
+		if typeAddr != 0 {
+			raw, readErr := r.Public.ReadCString(typeAddr)
+			if readErr != nil {
+				return guest.WIPIReturn{}, "", true, readErr
+			}
+			mediaType = string(raw)
+		}
+		handle, createErr := r.Public.RaptorCreateClip(mediaType, int32(capacity), callback)
+		if createErr != nil {
+			return guest.WIPIReturn{}, "", true, createErr
+		}
+		return guest.WIPIReturn{Low: handle}, "RAPTOR.sndCreate", true, nil
+	case 1203:
+		// MC_sndPutData(handle, source, length) → positive on success.
+		handle, err := r.CPU.ReadRegister(cpu.RegisterR0)
+		if err != nil {
+			return guest.WIPIReturn{}, "", true, err
+		}
+		source, err := r.CPU.ReadRegister(cpu.RegisterR1)
+		if err != nil {
+			return guest.WIPIReturn{}, "", true, err
+		}
+		length, err := r.CPU.ReadRegister(cpu.RegisterR2)
+		if err != nil {
+			return guest.WIPIReturn{}, "", true, err
+		}
+		if r.Public.RaptorPutClipData(handle, source, int32(length)) {
+			return guest.WIPIReturn{Low: length}, "RAPTOR.sndPutData", true, nil
+		}
+		return guest.WIPIReturn{}, "RAPTOR.sndPutData", true, nil
+	case 1221:
+		// MC_sndRewind(handle, 0) → 0 on success.
+		handle, err := r.CPU.ReadRegister(cpu.RegisterR0)
+		if err != nil {
+			return guest.WIPIReturn{}, "", true, err
+		}
+		r.Public.RaptorRewindClip(handle)
+		return guest.WIPIReturn{}, "RAPTOR.sndRewind", true, nil
+	case 1209:
+		// MC_sndSetVolume(handle, volume).
+		handle, err := r.CPU.ReadRegister(cpu.RegisterR0)
+		if err != nil {
+			return guest.WIPIReturn{}, "", true, err
+		}
+		volume, err := r.CPU.ReadRegister(cpu.RegisterR1)
+		if err != nil {
+			return guest.WIPIReturn{}, "", true, err
+		}
+		r.Public.RaptorSetClipVolume(handle, int32(volume))
+		return guest.WIPIReturn{}, "RAPTOR.sndSetVolume", true, nil
+	case 1210:
+		// MC_sndPlay(handle, loopFlag) → 0 on success.
+		handle, err := r.CPU.ReadRegister(cpu.RegisterR0)
+		if err != nil {
+			return guest.WIPIReturn{}, "", true, err
+		}
+		loop, err := r.CPU.ReadRegister(cpu.RegisterR1)
+		if err != nil {
+			return guest.WIPIReturn{}, "", true, err
+		}
+		if !r.Public.RaptorPlayClip(handle, loop&1 != 0) {
+			return guest.WIPIReturn{Low: ^uint32(0)}, "RAPTOR.sndPlay", true, nil
+		}
+		return guest.WIPIReturn{}, "RAPTOR.sndPlay", true, nil
 	case 50, 51, 52, 53, 54:
 		handle, err := r.CPU.ReadRegister(cpu.RegisterR0)
 		if err != nil {
