@@ -216,7 +216,7 @@ func (m *Machine) runWIPISlice(
 }
 
 const (
-	raptorCallbackInstructionLimit = uint64(128_000_000)
+	raptorCallbackInstructionLimit = uint64(256_000_000)
 )
 
 func (m *Machine) pumpWIPICallbacks(

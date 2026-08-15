@@ -35,7 +35,7 @@ type CoordinatorLimits struct {
 func DefaultCoordinatorLimits() CoordinatorLimits {
 	return CoordinatorLimits{
 		MaxAdapters: 16, DefaultRunBudget: 100_000,
-		MaxRunBudget: 100_000_000, MaxCallbacks: 1024,
+		MaxRunBudget: 256_000_000, MaxCallbacks: 1024,
 	}
 }
 
