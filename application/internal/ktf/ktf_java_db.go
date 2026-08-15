@@ -50,12 +50,16 @@ func (r *Runtime) handleDataBaseMethod(
 			store != nil,
 		)
 		if store == nil {
-			if create == 0 {
+			if create == 0 && !r.LenientMissingRead {
 				return r.raiseJavaException(
 					"org/kwis/msp/db/DataBaseException",
 					0,
 				)
 			}
+			// With no guest exception unwinding (Raptor host), a first-run open
+			// of a not-yet-created database must not fault the machine: create
+			// it empty so the title reads zero records and falls back to
+			// defaults, matching a device that catches DataBaseException.
 			store = &Database{Name: databaseName, RecordSize: recordSize}
 			r.DatabaseStores[databaseName] = store
 			serviceID, serviceErr := r.Services.Storage.CreateRecordStore(
