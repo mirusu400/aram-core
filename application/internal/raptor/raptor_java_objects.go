@@ -211,7 +211,11 @@ func (r *Runtime) storeRaptorJavaArray(
 	array, index, value uint32,
 ) error {
 	if array == 0 {
-		return errors.New("Raptor Java array is null")
+		// Storing into a null array is a NullPointerException on a device, which
+		// the guest catches or guards; the Raptor bridge cannot deliver that
+		// exception, so faulting the machine is worse than the device behavior.
+		// Treat it as a no-op (일지매영웅전기 stores into a null array during startup).
+		return nil
 	}
 	body, err := r.Public.ReadU32(array + 8)
 	if err != nil || body == 0 {
