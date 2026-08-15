@@ -805,8 +805,25 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 		return "strlen", true
 	case 1044:
 		return "memcpy", true
+	// The mem family is contiguous in <string.h> declaration order between the
+	// confirmed anchors memcpy (1044) and memset (1048): memcpy, memmove, memcmp,
+	// memchr, memset. 데몬헌터 calls 1045 with overlapping heap pointers 8 bytes
+	// apart (memmove), and all four route to existing overlap-safe handlers in
+	// dispatchCStdlib.
+	case 1045:
+		return "memmove", true
+	case 1046:
+		return "memcmp", true
+	case 1047:
+		return "memchr", true
 	case 1048:
 		return "memset", true
+	// localtime(const time_t*) -> struct tm*: 4 titles (레이카르나, 블레이드마스터3,
+	// 뮤직팩토리, 2010밴쿠버올림픽) call 1056 with a pointer and immediately deref the
+	// returned struct at tm field offsets (sec/min/hour 0/4/8, mday 12), which
+	// faulted while unimplemented (returned 0).
+	case 1056:
+		return "localtime", true
 	default:
 		return "", false
 	}
