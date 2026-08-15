@@ -644,7 +644,11 @@ func (r *Runtime) RecoverUnregisteredMainClass(
 		spelling string
 	)
 	for _, candidate := range candidates {
-		if addr := r.scanGuestCString(candidate, 0x00001000, 0x00120000); addr != 0 {
+		// The class-name pool can sit well past the first megabyte of the
+		// module image (간호사타이쿤2 stores it near 0x00176000), so scan the whole
+		// low image; scanGuestCString skips unmapped pages, so the wider bound
+		// only costs a page walk when the name is absent.
+		if addr := r.scanGuestCString(candidate, 0x00001000, 0x00400000); addr != 0 {
 			nameAddr, spelling = addr, candidate
 			break
 		}
