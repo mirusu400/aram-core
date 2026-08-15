@@ -348,9 +348,14 @@ func TestBuildRaptorJavaVTableCopiesInlineOwnMethods(t *testing.T) {
 	if got, _ := public.ReadU32(leaf.vtable + 0x30); got != 0x00005678 {
 		t.Fatalf("vtable+0x30 = 0x%08x, want inline body 0x00005678", got)
 	}
-	// The data-region pointer must not be copied as if it were a method body.
-	if got, _ := public.ReadU32(leaf.vtable + 0x34); got != 0 {
-		t.Fatalf("vtable+0x34 = 0x%08x, want 0 (run terminated at data pointer)", got)
+	// The data-region pointer must not be copied as if it were a method body;
+	// the slot is left empty by the inline run and then backfilled with the
+	// no-op trampoline so a call through it cannot branch to address 0.
+	if got, _ := public.ReadU32(leaf.vtable + 0x34); got == 0x01400abc {
+		t.Fatalf("vtable+0x34 = 0x%08x, data pointer copied as a method body", got)
+	}
+	if got, _ := public.ReadU32(leaf.vtable + 0x34); got != java.noopStub {
+		t.Fatalf("vtable+0x34 = 0x%08x, want no-op backstop 0x%08x", got, java.noopStub)
 	}
 }
 

@@ -171,6 +171,10 @@ type JavaRuntime struct {
 	classOrder  []*raptorJavaClass
 	hostMethods map[uint32]raptorJavaMethod
 	nextMethod  uint32
+	// noopStub is a single cached host trampoline reused to fill vtable
+	// own-method slots that no source (flat/fixed/inline/table) resolved. It
+	// keeps a call through an otherwise-null slot from branching to address 0.
+	noopStub uint32
 
 	flatVirtual  []raptorJavaMethod
 	lgtToKTF     map[uint32]uint32
@@ -270,6 +274,21 @@ func (r *Runtime) importStub(key raptorImportKey) (uint32, error) {
 	r.importSlots = append(r.importSlots, key)
 	r.importSlotByKey[key] = slot
 	return raptorImportStubBase + slot*4, nil
+}
+
+// raptorJavaNoopStub returns a cached Thumb host trampoline whose dispatch is a
+// no-op returning 0, used to backfill unresolved vtable own-method slots.
+func (r *Runtime) raptorJavaNoopStub(java *JavaRuntime) (uint32, error) {
+	if java.noopStub != 0 {
+		return java.noopStub, nil
+	}
+	stub, err := r.registerJavaHostMethod(raptorJavaMethod{Name: "<noop>"})
+	if err != nil {
+		return 0, err
+	}
+	// Host trampolines are Thumb code; force the interworking bit.
+	java.noopStub = stub | 1
+	return java.noopStub, nil
 }
 
 func (r *Runtime) registerJavaHostMethod(method raptorJavaMethod) (uint32, error) {
@@ -1140,11 +1159,49 @@ func (r *Runtime) buildRaptorJavaVTable(
 	if count == 0 {
 		return nil
 	}
+	// Resolve the class's +0x20 method table and its holder shift up front. It
+	// is the fully-linked virtual dispatch table, and compiler-inlined call
+	// sites read fixed byte offsets from the vtable (e.g. 놈3 calls vtable+0x88)
+	// that can lie past the flat-metadata slot count. Size the vtable to the
+	// table's real method extent so those slots exist and get filled; a vtable
+	// truncated to count*8+8 leaves them null and the guest branches to 0.
+	methodTable, holderOffset := uint32(0), uint32(0)
+	if mt, tableErr := r.Public.ReadU32(class.descriptor + 0x20); tableErr == nil &&
+		mt >= 0x01000000 {
+		// The holder back-reference sits within a variable-size header (observed
+		// at +0x04 for some classes, +0x0c for others). The runtime vtable stores
+		// the holder at +0x00, so vtable[offset] == methodTable[offset+holderOffset].
+		for probe := uint32(4); probe <= 0x20; probe += 4 {
+			if candidate, _ := r.Public.ReadU32(mt + probe); candidate == class.Holder {
+				methodTable, holderOffset = mt, probe
+				break
+			}
+		}
+	}
 	// Guest vtables hold the class holder at +0 followed by 4-byte slots.
 	// Linked flat entries live at index*8+4 (matching the doubled offsets the
 	// link step publishes); SDK classes additionally pin methods at fixed byte
 	// offsets that compiler-inlined call sites hardcode.
-	vtable, err := r.Public.Heap.Allocate(count*8+8, true)
+	vtableSize := count*8 + 8
+	if methodTable != 0 {
+		// Walk the table's method region (contiguous code pointers in the low
+		// image, interspersed with zero gaps) until it ends at a class-data
+		// pointer (>= 0x01000000) or a hard cap, tracking the last real method.
+		lastCode := uint32(0)
+		for offset := uint32(0x2c); offset < 0x400; offset += 4 {
+			value, readErr := r.Public.ReadU32(methodTable + offset + holderOffset)
+			if readErr != nil || value >= 0x01000000 {
+				break
+			}
+			if value != 0 {
+				lastCode = offset
+			}
+		}
+		if extent := lastCode + 4; extent > vtableSize {
+			vtableSize = extent
+		}
+	}
+	vtable, err := r.Public.Heap.Allocate(vtableSize, true)
 	if err != nil || vtable == 0 {
 		return errors.New("allocate Raptor Java vtable")
 	}
@@ -1226,7 +1283,6 @@ func (r *Runtime) buildRaptorJavaVTable(
 	// at their matching offsets. Descriptor code pointers live in the low image;
 	// the trailing metadata/table fields point into the class-data region and
 	// terminate the run, as does a zero slot.
-	vtableSize := count*8 + 8
 	for offset := uint32(0x2c); offset < vtableSize; offset += 4 {
 		body, readErr := r.Public.ReadU32(class.descriptor + offset)
 		if readErr != nil || body == 0 || body >= 0x01000000 {
@@ -1248,35 +1304,37 @@ func (r *Runtime) buildRaptorJavaVTable(
 	// copy its code entries into still-empty vtable slots at matching offsets.
 	// Only empty slots are filled and only guest-image code pointers are copied,
 	// so Object stubs, declared bodies, and the inline block are all preserved.
-	if methodTable, tableErr := r.Public.ReadU32(class.descriptor + 0x20); tableErr == nil &&
-		methodTable >= 0x01000000 {
-		// The table stores its holder back-reference within a variable-size
-		// header (observed at +0x04 for some classes, +0x0c for others). The
-		// runtime vtable stores the holder at +0x00, so the table is shifted
-		// ahead of the vtable by that holder offset:
-		// vtable[offset] == methodTable[offset + holderOffset]. Locate the
-		// holder to recover the shift.
-		holderOffset := uint32(0)
-		for probe := uint32(4); probe <= 0x20; probe += 4 {
-			if candidate, _ := r.Public.ReadU32(methodTable + probe); candidate == class.Holder {
-				holderOffset = probe
-				break
+	// The table and its holder shift were resolved above to size the vtable.
+	if methodTable != 0 {
+		// The +0x20 table is the class's fully-linked method vtable and is
+		// authoritative for the slots it fills, so it overrides the inline
+		// descriptor block copied above (which can carry a different method
+		// for the same slot). Its Object-slot region is zero, so the host
+		// Object stubs and flat slots below 0x2c survive (zero is skipped).
+		for offset := uint32(0x2c); offset < vtableSize; offset += 4 {
+			body, readErr := r.Public.ReadU32(methodTable + offset + holderOffset)
+			if readErr != nil || body == 0 || body >= 0x01000000 {
+				continue
+			}
+			if err := r.Public.WriteU32(vtable+offset, body); err != nil {
+				return err
 			}
 		}
-		if holderOffset != 0 {
-			// The +0x20 table is the class's fully-linked method vtable and is
-			// authoritative for the slots it fills, so it overrides the inline
-			// descriptor block copied above (which can carry a different method
-			// for the same slot). Its Object-slot region is zero, so the host
-			// Object stubs and flat slots below 0x2c survive (zero is skipped).
-			for offset := uint32(0x2c); offset < vtableSize; offset += 4 {
-				body, readErr := r.Public.ReadU32(methodTable + offset + holderOffset)
-				if readErr != nil || body == 0 || body >= 0x01000000 {
-					continue
-				}
-				if err := r.Public.WriteU32(vtable+offset, body); err != nil {
-					return err
-				}
+	}
+	// Backstop any own-method slot no source resolved. Host classes (String,
+	// collections) and unlinked helpers expose more virtual methods than the
+	// fixed/table sources cover; a compiler-inlined call to such a slot would
+	// otherwise load 0 and branch to address 0 (놈3 calls String.vtable+0x88).
+	// A no-op trampoline keeps the guest running; slots the title never calls
+	// are unaffected, so working titles cannot regress.
+	if noop, noopErr := r.raptorJavaNoopStub(java); noopErr == nil && noop != 0 {
+		for offset := uint32(0x2c); offset < vtableSize; offset += 4 {
+			existing, readErr := r.Public.ReadU32(vtable + offset)
+			if readErr != nil || existing != 0 {
+				continue
+			}
+			if err := r.Public.WriteU32(vtable+offset, noop); err != nil {
+				return err
 			}
 		}
 	}

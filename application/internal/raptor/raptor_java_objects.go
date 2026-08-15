@@ -267,6 +267,12 @@ func (r *Runtime) callJavaHostMethod(
 		}
 		return guest.WIPIReturn{Low: class.Holder}, nil
 	}
+	if method.Name == "<noop>" {
+		// Placeholder installed in a vtable own-method slot that no source
+		// resolved. A real device ships a complete runtime vtable; we lack this
+		// specific entry. Return 0 rather than branch through a null slot.
+		return guest.WIPIReturn{}, nil
+	}
 	argumentCount := raptorJavaDescriptorArgumentCount(method.descriptor)
 	if !method.isStatic {
 		argumentCount++
