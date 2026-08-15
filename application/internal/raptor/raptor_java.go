@@ -20,6 +20,11 @@ import (
 
 const raptorJavaHostModule = ^uint32(0)
 
+// raptorJavaHeapBase is the lowest guest address the shared heap allocates from.
+// A class vtable field below it is the guest's own (unlinked) value rather than
+// a vtable we built, which lives in the heap.
+const raptorJavaHeapBase = uint32(0x10000000)
+
 const JavaTaskInstructionBudget = uint64(250_000)
 
 type raptorJavaMethod struct {

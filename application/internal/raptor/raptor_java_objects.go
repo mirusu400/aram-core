@@ -29,7 +29,13 @@ func (r *Runtime) NewRaptorJavaObject(holder uint32) (uint32, error) {
 			return 0, err
 		}
 	}
-	if class.vtable == 0 && len(java.flatVirtual) != 0 {
+	// Build the vtable unless it is already one we linked (a heap allocation).
+	// An unlinked class's descriptor+0x0c still holds the guest's own value (0
+	// or a module/descriptor address), whose method slots are not populated for
+	// host dispatch; instantiating it and dispatching through it branches to a
+	// null slot (훼밀리마트타이쿤 constructs an object whose vtable is a raw descriptor
+	// pointer and calls vtable+8).
+	if class.vtable < raptorJavaHeapBase && len(java.flatVirtual) != 0 {
 		if err := r.buildRaptorJavaVTable(java, class, uint32(len(java.flatVirtual))); err != nil {
 			return 0, err
 		}

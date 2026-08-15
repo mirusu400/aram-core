@@ -1238,6 +1238,13 @@ func (r *Runtime) javaArrayCopy(
 		// no-op instead of aborting the application.
 		return nil
 	}
+	if count == 0 {
+		// A zero-length copy moves no elements, so the component-type check that
+		// would otherwise reject incompatible arrays never runs — the handset VM
+		// returns immediately. 훼밀리마트타이쿤 issues arraycopy([B, ..., [Object, 0)
+		// at startup and must not fault on the type mismatch.
+		return nil
+	}
 	sourceWords, err := r.ReadWords(source, 2)
 	if err != nil {
 		return err
