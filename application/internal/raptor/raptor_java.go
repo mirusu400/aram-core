@@ -118,6 +118,17 @@ var raptorJavaFixedVirtualMethods = map[string][]raptorJavaFixedVirtualMethod{
 		{offset: 0x44, Name: "mark", descriptor: "(I)V"},
 		{offset: 0x4c, Name: "reset", descriptor: "()V"},
 	},
+	"org/kwis/msp/lcdui/Card": {
+		// A Card is a full-screen Displayable; its dimension getters occupy the
+		// Object-region bytes 0x14/0x18 in the KWIS vtable, not Object.toString/
+		// notify. 서든어택포켓's Card-subclass constructor sizes a back buffer with
+		// Image.createImage(getWidth()..) via these slots; without the entries
+		// the calls fell through to the Object.toString host stub and the guest
+		// divided the returned String pointer into a garbage image size and
+		// faulted. Returning the real screen size makes createImage succeed.
+		{offset: 0x14, Name: "getWidth", descriptor: "()I"},
+		{offset: 0x18, Name: "getHeight", descriptor: "()I"},
+	},
 	// The CLDC Object slots occupy bytes 4..0x28 of every vtable; the prebuilt
 	// tables shipped in module .data leave exactly ten leading slots empty and
 	// start their own methods at 0x2c. String.equals at 0x10 and

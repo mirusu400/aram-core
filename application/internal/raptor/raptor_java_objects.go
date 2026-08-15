@@ -289,7 +289,13 @@ func (r *Runtime) storeRaptorJavaArray(
 		return err
 	}
 	if index >= length {
-		return fmt.Errorf("Raptor Java array index %d exceeds length %d", index, length)
+		// An out-of-bounds store is an ArrayIndexOutOfBoundsException on a device,
+		// which the guest catches or guards, exactly like the null-array store
+		// above; the Raptor bridge cannot deliver that exception, so dropping the
+		// write matches the device's caught-exception path better than faulting
+		// the whole machine (서든어택포켓 stores past a zero-length array during
+		// construct).
+		return nil
 	}
 	if err := r.Public.WriteU32(body+4+index*4, value); err != nil {
 		return err
@@ -386,6 +392,21 @@ func (r *Runtime) callJavaHostMethod(
 	if err != nil {
 		return guest.WIPIReturn{}, err
 	}
+	if method.className == "org/kwis/msp/lcdui/Image" && method.Name == "createImage" &&
+		method.descriptor == "(II)Lorg/kwis/msp/lcdui/Image;" && len(arguments) >= 2 {
+		width, height := arguments[0], arguments[1]
+		if width == 0 || height == 0 || width > 4096 || height > 4096 {
+			// A blank-image request with an out-of-range dimension is an
+			// IllegalArgumentException on a device, which the guest catches or
+			// guards, like the null/out-of-bounds array leniency elsewhere; the
+			// Raptor bridge cannot deliver that exception, so returning a null
+			// image matches the caught-exception path better than faulting the
+			// machine (메이플스토리2007 passes a stale object reference as the height
+			// through a mis-linked instance field, which would otherwise be read
+			// as a ~268-million-pixel image and fault the whole title).
+			return guest.WIPIReturn{}, nil
+		}
+	}
 	if !method.isStatic && len(arguments) != 0 {
 		receiver := arguments[0]
 		switch method.className + "." + method.Name + method.descriptor {
@@ -399,6 +420,18 @@ func (r *Runtime) callJavaHostMethod(
 			}
 			delete(java.dirtyCards, receiver)
 			return guest.WIPIReturn{}, r.paintRaptorJavaCard(ctx, java, receiver)
+		case "org/kwis/msp/lcdui/Card.getWidth()I":
+			handle, hErr := r.Public.EnsureScreenFramebuffer()
+			if hErr != nil {
+				return guest.WIPIReturn{}, hErr
+			}
+			return guest.WIPIReturn{Low: uint32(r.Public.Framebuffers[handle].Width)}, nil
+		case "org/kwis/msp/lcdui/Card.getHeight()I":
+			handle, hErr := r.Public.EnsureScreenFramebuffer()
+			if hErr != nil {
+				return guest.WIPIReturn{}, hErr
+			}
+			return guest.WIPIReturn{Low: uint32(r.Public.Framebuffers[handle].Height)}, nil
 		case "org/kwis/msp/lcdui/Display.getDockedCard()Lorg/kwis/msp/lcdui/Card;":
 			return guest.WIPIReturn{Low: java.currentCard}, nil
 		case "org/kwis/msp/lcdui/Display.pushCard(Lorg/kwis/msp/lcdui/Card;)V":
