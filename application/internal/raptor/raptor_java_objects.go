@@ -322,6 +322,37 @@ func (r *Runtime) checkRaptorJavaType() (guest.WIPIReturn, string, bool, error) 
 	return guest.WIPIReturn{Low: 1}, "RAPTOR.java.checkType", true, nil
 }
 
+// resolveRaptorJavaOverload re-selects an overloaded host method from the actual
+// runtime argument type. The AOT class method table can route an overloaded host
+// method to the wrong descriptor: all four org/kwis/msp/lcdui/Image.createImage
+// overloads share the name, and the slot our linker filled resolved to the (II)
+// blank-image variant, so a createImage(String)/([BII)/(Image) call was treated
+// as createImage(width,height) with the object pointer as the width (메이플스토리2007
+// loads sprites via createImage(String) and faulted with an "invalid image size").
+func (r *Runtime) resolveRaptorJavaOverload(java *JavaRuntime, method raptorJavaMethod) raptorJavaMethod {
+	if method.className != "org/kwis/msp/lcdui/Image" || method.Name != "createImage" ||
+		method.descriptor != "(II)Lorg/kwis/msp/lcdui/Image;" {
+		return method
+	}
+	// createImage is static, so argument 0 is r0. A small value is a real width;
+	// only a heap reference indicates a different (object-argument) overload.
+	arg0, err := r.CPU.ReadRegister(cpu.RegisterR0)
+	if err != nil || arg0 < raptorJavaHeapBase {
+		return method
+	}
+	if class := r.raptorJavaClassForObject(java, arg0); class != nil {
+		switch class.Name {
+		case "java/lang/String":
+			method.descriptor = "(Ljava/lang/String;)Lorg/kwis/msp/lcdui/Image;"
+		case "org/kwis/msp/lcdui/Image":
+			method.descriptor = "(Lorg/kwis/msp/lcdui/Image;)Lorg/kwis/msp/lcdui/Image;"
+		case "[B":
+			method.descriptor = "([BII)Lorg/kwis/msp/lcdui/Image;"
+		}
+	}
+	return method
+}
+
 func (r *Runtime) callJavaHostMethod(
 	ctx context.Context,
 	method raptorJavaMethod,
@@ -346,6 +377,7 @@ func (r *Runtime) callJavaHostMethod(
 		// specific entry. Return 0 rather than branch through a null slot.
 		return guest.WIPIReturn{}, nil
 	}
+	method = r.resolveRaptorJavaOverload(java, method)
 	argumentCount := raptorJavaDescriptorArgumentCount(method.descriptor)
 	if !method.isStatic {
 		argumentCount++
