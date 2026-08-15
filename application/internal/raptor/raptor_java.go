@@ -1351,8 +1351,16 @@ func (r *Runtime) buildRaptorJavaVTable(
 	// otherwise load 0 and branch to address 0 (놈3 calls String.vtable+0x88).
 	// A no-op trampoline keeps the guest running; slots the title never calls
 	// are unaffected, so working titles cannot regress.
+	// Cover every method slot from the first (index 0 at +0x04), not only the
+	// own-method region at +0x2c: a class can dispatch a low/Object-region slot
+	// (e.g. spiderman3's class "d" calls index 0 -> vtable+0x04) that neither the
+	// flat, fixed, nor table passes resolved, leaving 0 and branching to address
+	// 0. Only still-empty slots are filled, so Object stubs, declared bodies, the
+	// inline block, and the +0x20 table all survive and working titles that call
+	// a populated slot are unaffected. Slot +0x00 is the class holder, not a
+	// method, so start at +0x04.
 	if noop, noopErr := r.raptorJavaNoopStub(java); noopErr == nil && noop != 0 {
-		for offset := uint32(0x2c); offset < vtableSize; offset += 4 {
+		for offset := uint32(0x04); offset < vtableSize; offset += 4 {
 			existing, readErr := r.Public.ReadU32(vtable + offset)
 			if readErr != nil || existing != 0 {
 				continue
