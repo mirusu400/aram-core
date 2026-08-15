@@ -180,6 +180,10 @@ type JavaRuntime struct {
 	// own-method slots that no source (flat/fixed/inline/table) resolved. It
 	// keeps a call through an otherwise-null slot from branching to address 0.
 	noopStub uint32
+	// arrayVTable is a shared all-no-op vtable installed in every array header
+	// so a virtual dispatch on an array reference returns 0 instead of branching
+	// to address 0 through the array's zero header.
+	arrayVTable uint32
 
 	flatVirtual  []raptorJavaMethod
 	lgtToKTF     map[uint32]uint32
@@ -294,6 +298,32 @@ func (r *Runtime) raptorJavaNoopStub(java *JavaRuntime) (uint32, error) {
 	// Host trampolines are Thumb code; force the interworking bit.
 	java.noopStub = stub | 1
 	return java.noopStub, nil
+}
+
+// raptorJavaArrayVTable lazily builds the shared no-op vtable installed in array
+// headers. Slot +0x00 is the class holder (0 for arrays); every method slot from
+// +0x04 up holds the no-op stub, so a virtual dispatch on an array reference
+// returns 0 rather than branching to address 0.
+func (r *Runtime) raptorJavaArrayVTable(java *JavaRuntime) (uint32, error) {
+	if java.arrayVTable != 0 {
+		return java.arrayVTable, nil
+	}
+	noop, err := r.raptorJavaNoopStub(java)
+	if err != nil {
+		return 0, err
+	}
+	const arrayVTableSize = 0x200
+	vtable, err := r.Public.Heap.Allocate(arrayVTableSize, true)
+	if err != nil || vtable == 0 {
+		return 0, errors.New("allocate Raptor Java array vtable")
+	}
+	for offset := uint32(0x04); offset < arrayVTableSize; offset += 4 {
+		if err := r.Public.WriteU32(vtable+offset, noop); err != nil {
+			return 0, err
+		}
+	}
+	java.arrayVTable = vtable
+	return java.arrayVTable, nil
 }
 
 func (r *Runtime) registerJavaHostMethod(method raptorJavaMethod) (uint32, error) {

@@ -204,6 +204,17 @@ func (r *Runtime) newRaptorJavaArray(element, count uint32) (uint32, error) {
 	}
 	java.lgtToKTF[instance] = mirror
 	java.ktfToLGT[mirror] = instance
+	// Give the array an object header so a guest that virtual-dispatches on an
+	// array reference (Java array types extend Object; some AOT call sites also
+	// treat an array-typed local as a receiver) loads a real vtable instead of
+	// the zero header, which would branch to address 0. The shared array vtable
+	// is all no-op stubs, so the call returns 0 without touching the array body
+	// (간호사타이쿤2 dispatches a method on a 12-element array during construct).
+	if arrayVTable, vtErr := r.raptorJavaArrayVTable(java); vtErr == nil && arrayVTable != 0 {
+		if err := r.Public.WriteU32(instance, arrayVTable); err != nil {
+			return 0, err
+		}
+	}
 	return instance, nil
 }
 
