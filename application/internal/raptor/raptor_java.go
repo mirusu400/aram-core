@@ -168,6 +168,10 @@ type JavaTask struct {
 	Done      bool
 }
 
+// JavaClass is an exported alias so callers outside this package (the machine
+// launch path) can name the class type returned by ResolveRaptorJletMainClass.
+type JavaClass = raptorJavaClass
+
 type JavaRuntime struct {
 	Host *ktfrt.Runtime
 
@@ -1587,6 +1591,55 @@ func (r *Runtime) NewRaptorJavaReferenceArray(
 		}
 	}
 	return array, nil
+}
+
+// ResolveRaptorJletMainClass returns the class that should receive the Jlet
+// lifecycle. The manifest / launch-supplied main class is authoritative when it
+// declares startApp(String[]), but obfuscated or launcher-wrapped titles name a
+// helper as the main class while the real Jlet subclass has an obfuscated name
+// (배틀몬스터: manifest MClass "Jp", launch names "Game" — a bare helper — while the
+// only class extending org/kwis/msp/lcdui/Jlet with a startApp body is "a"). When
+// the requested class has no startApp and exactly one registered class extends
+// Jlet with a real startApp, use that class instead. Ambiguity (zero or several)
+// keeps the requested class so the caller reports the original precise failure.
+func (r *Runtime) ResolveRaptorJletMainClass(requested *raptorJavaClass) *raptorJavaClass {
+	if requested == nil {
+		return requested
+	}
+	if m, ok := DeclaredMethod(requested, "startApp", "([Ljava/lang/String;)V"); ok && m.Body != 0 {
+		return requested
+	}
+	java := r.Java
+	if java == nil {
+		return requested
+	}
+	var candidate *raptorJavaClass
+	count := 0
+	for _, class := range java.ClassByName {
+		m, ok := DeclaredMethod(class, "startApp", "([Ljava/lang/String;)V")
+		if !ok || m.Body == 0 {
+			continue
+		}
+		if !r.raptorClassExtendsJlet(java, class) {
+			continue
+		}
+		candidate = class
+		count++
+	}
+	if count == 1 {
+		return candidate
+	}
+	return requested
+}
+
+func (r *Runtime) raptorClassExtendsJlet(java *JavaRuntime, class *raptorJavaClass) bool {
+	for walk, depth := class, 0; walk != nil && depth < 256; depth++ {
+		if walk.parentName == "org/kwis/msp/lcdui/Jlet" || walk.Name == "org/kwis/msp/lcdui/Jlet" {
+			return true
+		}
+		walk = java.ClassByName[walk.parentName]
+	}
+	return false
 }
 
 func DeclaredMethod(

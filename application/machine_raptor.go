@@ -485,26 +485,44 @@ func (m *Machine) startRaptorJava(ctx context.Context) error {
 	if class == nil {
 		return fmt.Errorf("Raptor Java main class %q was not registered", java.MainClass)
 	}
-	instance, err := runtime.NewRaptorJavaObject(class.Holder)
-	if err != nil {
-		return fmt.Errorf("allocate Raptor Java main class %q: %w", class.Name, err)
+	// An obfuscated or launcher-wrapped title can name a helper as the main class
+	// while the real Jlet subclass carries an obfuscated name; run the lifecycle
+	// on the class that actually declares startApp when the named one does not.
+	construct := func(cls *raptorrt.JavaClass) (uint32, error) {
+		instance, err := runtime.NewRaptorJavaObject(cls.Holder)
+		if err != nil {
+			return 0, fmt.Errorf("allocate Raptor Java main class %q: %w", cls.Name, err)
+		}
+		constructor, ok := raptorrt.DeclaredMethod(cls, "<init>", "()V")
+		if !ok || constructor.Body == 0 {
+			return 0, fmt.Errorf("Raptor Java main class %q has no default constructor", cls.Name)
+		}
+		result, _, err := m.invokeWIPICallback(ctx, wipirt.GuestCallback{
+			Procedure: constructor.Body,
+			Args:      [4]uint32{instance},
+		})
+		if err != nil {
+			return 0, fmt.Errorf(
+				"construct Raptor Java main class %q at PC 0x%08x after %d instructions: %w",
+				cls.Name, result.PC, result.Instructions, err,
+			)
+		}
+		return instance, nil
 	}
-	constructor, ok := raptorrt.DeclaredMethod(class, "<init>", "()V")
-	if !ok || constructor.Body == 0 {
-		return fmt.Errorf("Raptor Java main class %q has no default constructor", class.Name)
-	}
-	result, _, err := m.invokeWIPICallback(ctx, wipirt.GuestCallback{
-		Procedure: constructor.Body,
-		Args:      [4]uint32{instance},
-	})
+	class = runtime.ResolveRaptorJletMainClass(class)
+	instance, err := construct(class)
 	if err != nil {
-		return fmt.Errorf(
-			"construct Raptor Java main class %q at PC 0x%08x after %d instructions: %w",
-			class.Name,
-			result.PC,
-			result.Instructions,
-			err,
-		)
+		return err
+	}
+	// Constructing a launcher/helper class can register the obfuscated Jlet
+	// subclass only during its <init>; re-resolve and construct the real Jlet
+	// (배틀몬스터: "Game".<init> links class "a", which extends Jlet with startApp).
+	if resolved := runtime.ResolveRaptorJletMainClass(class); resolved != class {
+		class = resolved
+		instance, err = construct(class)
+		if err != nil {
+			return err
+		}
 	}
 	values := []string{class.Name, "", "true", "true"}
 	strings := make([]uint32, len(values))
@@ -526,7 +544,7 @@ func (m *Machine) startRaptorJava(ctx context.Context) error {
 	if !ok || start.Body == 0 {
 		return fmt.Errorf("Raptor Java main class %q has no startApp(String[])", class.Name)
 	}
-	result, _, err = m.invokeWIPICallback(ctx, wipirt.GuestCallback{
+	result, _, err := m.invokeWIPICallback(ctx, wipirt.GuestCallback{
 		Procedure: start.Body,
 		Args:      [4]uint32{instance, arguments},
 	})
