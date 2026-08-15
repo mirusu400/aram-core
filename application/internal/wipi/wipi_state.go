@@ -14,6 +14,12 @@ const (
 	MaxSavedFramebuffers = 1024
 	MaxSavedEntries      = 4096
 	MaxSavedLogs         = 4096
+	// Bundled package resources are trusted content read straight from the
+	// title's JAR and can number in the thousands (아니마 ships 5498 entries),
+	// so they use a higher cap than the general per-collection sanity bound.
+	// Total resource bytes stay limited by maxWIPICopy, so this only relaxes
+	// the entry count, not the memory footprint.
+	MaxResourceEntries = 1 << 16
 )
 
 type SavedState struct {
@@ -110,7 +116,7 @@ func WriteState(r *Runtime, backend cpu.Backend, writer *guest.StateWriter) erro
 		len(runtime.shared) > MaxSavedEntries ||
 		len(runtime.sharedSizes) > MaxSavedEntries ||
 		len(runtime.Timers) > MaxSavedEntries ||
-		len(runtime.Resources) > MaxSavedEntries ||
+		len(runtime.Resources) > MaxResourceEntries ||
 		len(runtime.Programs) > wipiMaxPrograms ||
 		len(runtime.LastExecuteArgs) > wipiMaxExecuteArguments ||
 		len(runtime.GraphicsEvents) > wipiMaxGraphicsEvents ||

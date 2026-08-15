@@ -75,7 +75,9 @@ type StorageLimits struct {
 
 func DefaultStorageLimits() StorageLimits {
 	return StorageLimits{
-		MaxFiles:        4096,
+		// Bundled game packages can hold several thousand resource files
+		// (아니마 ships 5498); the total byte budget below still bounds memory.
+		MaxFiles:        16384,
 		MaxOpenHandles:  1024,
 		MaxPathBytes:    1024,
 		MaxFileBytes:    64 << 20,

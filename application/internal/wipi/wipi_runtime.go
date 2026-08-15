@@ -652,7 +652,7 @@ func (r *Runtime) RegisterResource(name string, data []byte) int32 {
 		resource.Data = append(resource.Data[:0], data...)
 		return resource.Id
 	}
-	if len(r.Resources) >= MaxSavedEntries || r.nextResource < 1 {
+	if len(r.Resources) >= MaxResourceEntries || r.nextResource < 1 {
 		return guest.WIPINoMemory
 	}
 	resource := &Resource{
@@ -664,6 +664,62 @@ func (r *Runtime) RegisterResource(name string, data []byte) int32 {
 	r.Resources[name] = resource
 	r.ResourceIDs[resource.Id] = name
 	return resource.Id
+}
+
+// RegisterResources installs a batch of package resources with a single storage
+// package rebuild. Registering thousands of bundled files one-by-one through
+// RegisterResource is O(n^2) because each call re-materializes the whole
+// package (아니마 ships 5498 files and took ~17s that way); this stages the full
+// set and calls ReplacePackage once. It returns WIPINoMemory or WIPIInvalid on
+// the same conditions as RegisterResource, or 0 on success.
+func (r *Runtime) RegisterResources(resources map[string][]byte) int32 {
+	totalBytes := uint64(0)
+	for _, resource := range r.Resources {
+		if resource != nil {
+			totalBytes += uint64(len(resource.Data))
+		}
+	}
+	for name, data := range resources {
+		if name == "" || len(name) > int(maxWIPIString) || len(data) > int(maxWIPICopy) {
+			return guest.WIPIInvalid
+		}
+		if _, exists := r.Resources[name]; !exists {
+			totalBytes += uint64(len(data))
+		}
+	}
+	if totalBytes > uint64(maxWIPICopy) {
+		return guest.WIPINoMemory
+	}
+	packageFiles := make(map[string][]byte, len(r.Resources)+len(resources))
+	for name, resource := range r.Resources {
+		if resource != nil {
+			packageFiles[name] = resource.Data
+		}
+	}
+	for name, data := range resources {
+		packageFiles[name] = data
+	}
+	if err := r.Services.Storage.ReplacePackage(packageFiles); err != nil {
+		return guest.WIPINoMemory
+	}
+	for name, data := range resources {
+		if resource := r.Resources[name]; resource != nil {
+			resource.Data = append(resource.Data[:0], data...)
+			continue
+		}
+		if len(r.Resources) >= MaxResourceEntries || r.nextResource < 1 {
+			return guest.WIPINoMemory
+		}
+		resource := &Resource{
+			Id:   r.nextResource,
+			name: name,
+			Data: append([]byte(nil), data...),
+		}
+		r.nextResource++
+		r.Resources[name] = resource
+		r.ResourceIDs[resource.Id] = name
+	}
+	return 0
 }
 
 // DispatchTrap exposes trap dispatch to the internal minigame overlay.

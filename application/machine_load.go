@@ -464,15 +464,22 @@ func (m *Machine) installWIPIResources() error {
 	if m.wipi == nil {
 		return nil
 	}
-	resourceNames := make([]string, 0, len(m.initialResources))
-	for name := range m.initialResources {
-		resourceNames = append(resourceNames, name)
+	if len(m.initialResources) == 0 {
+		return nil
 	}
-	sort.Strings(resourceNames)
-	for _, name := range resourceNames {
-		if result := m.wipi.RegisterResource(name, m.initialResources[name]); result < 0 {
-			return fmt.Errorf("register WIPI resource %q: error %d", name, result)
+	if result := m.wipi.RegisterResources(m.initialResources); result < 0 {
+		// Fall back to per-resource registration so the failing entry is named.
+		resourceNames := make([]string, 0, len(m.initialResources))
+		for name := range m.initialResources {
+			resourceNames = append(resourceNames, name)
 		}
+		sort.Strings(resourceNames)
+		for _, name := range resourceNames {
+			if r := m.wipi.RegisterResource(name, m.initialResources[name]); r < 0 {
+				return fmt.Errorf("register WIPI resource %q: error %d", name, r)
+			}
+		}
+		return fmt.Errorf("register WIPI resources: error %d", result)
 	}
 	return nil
 }

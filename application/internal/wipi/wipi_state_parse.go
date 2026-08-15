@@ -121,7 +121,7 @@ func ParseState(r *Runtime, decoder *guest.StateDecoder) (*SavedState, error) {
 		saved.Timers[address] = timer
 	}
 	resourceCount := decoder.U32()
-	if resourceCount > MaxSavedEntries {
+	if resourceCount > MaxResourceEntries {
 		return nil, decoder.Fail(fmt.Sprintf("public WIPI resource count %d exceeds limit", resourceCount))
 	}
 	saved.Resources = make(map[string]*Resource, resourceCount)
