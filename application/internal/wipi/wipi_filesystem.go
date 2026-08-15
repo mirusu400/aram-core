@@ -201,13 +201,23 @@ func (r *Runtime) openFile(nameAddress uint32, flag, accessMode int32) (guest.WI
 	if err != nil {
 		return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
 	}
-	writable := flag != 0
-	readable := flag == 0 || flag&8 != 0
+	// flag bit 0 (MC_FILE_READ = 1) opens for reading only; it must not create a
+	// missing file. A game's existence probe opens with flag 1 and expects the
+	// open to FAIL for a missing file so it can stop enumerating (미니게임천국4 walks
+	// saved "char%02d.dat" via MC_fsOpen(name, 1, 1) until one is absent, and
+	// 던파귀검사편 keys off the same miss for its optional assets). Treating flag 1 as
+	// writable created the missing file and returned a valid handle, so the
+	// enumeration never terminated and the game read empty data it then derefs.
+	writable := flag != 0 && flag != 1
+	readable := flag == 0 || flag == 1 || flag&8 != 0
 	appendMode := flag&2 != 0
 	truncate := flag&4 != 0
 	data, exists := r.Files[name]
 	if !exists && !writable {
-		return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
+		// M_E_NOENT (-12): the LGT WIPI file layer's "no such entry" code, which a
+		// guest compares against exactly (result + 0xC == 0), not the generic -1
+		// handle-error sentinel.
+		return guest.WIPIReturn{Low: 0xFFFFFFF4}, true, nil
 	}
 	mode := shared.OpenMode(0)
 	if readable {
