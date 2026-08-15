@@ -207,6 +207,58 @@ func (r *Runtime) newRaptorJavaArray(element, count uint32) (uint32, error) {
 	return instance, nil
 }
 
+// newRaptorJavaMultiArray allocates a multi-dimensional Java array, mirroring
+// the JVM multianewarray primitive that the LGT AOT compiler emits as Java
+// host ordinal 17. r0 carries the innermost element descriptor, r1 points at a
+// contiguous block of `dimensions` 32-bit counts (outermost first), and r2 is
+// the dimension count. The outer levels are reference arrays whose slots hold
+// the freshly allocated inner arrays, so a guest access like board[i][j] finds
+// a real nested array instead of the null that an unhandled ordinal leaves
+// behind (SD?쒓뎅?꾩웳 builds its board with new X[5][10] during startApp).
+func (r *Runtime) newRaptorJavaMultiArray(
+	element, dimensionsPtr, dimensions uint32,
+) (uint32, error) {
+	if dimensions == 0 {
+		return 0, nil
+	}
+	if dimensions > 8 {
+		return 0, fmt.Errorf("Raptor Java multi-array rank %d exceeds limit", dimensions)
+	}
+	counts := make([]uint32, dimensions)
+	for i := uint32(0); i < dimensions; i++ {
+		count, err := r.Public.ReadU32(dimensionsPtr + i*4)
+		if err != nil {
+			return 0, err
+		}
+		counts[i] = count
+	}
+	return r.buildRaptorJavaMultiArray(element, counts)
+}
+
+func (r *Runtime) buildRaptorJavaMultiArray(
+	element uint32, counts []uint32,
+) (uint32, error) {
+	if len(counts) == 1 {
+		return r.newRaptorJavaArray(element, counts[0])
+	}
+	// Outer levels are object/reference arrays holding the nested arrays. A zero
+	// count leaves an empty outer array, matching the JVM (no inner allocation).
+	outer, err := r.newRaptorJavaArray(0, counts[0])
+	if err != nil {
+		return 0, err
+	}
+	for index := uint32(0); index < counts[0]; index++ {
+		inner, innerErr := r.buildRaptorJavaMultiArray(element, counts[1:])
+		if innerErr != nil {
+			return 0, innerErr
+		}
+		if storeErr := r.storeRaptorJavaArray(outer, index, inner); storeErr != nil {
+			return 0, storeErr
+		}
+	}
+	return outer, nil
+}
+
 func (r *Runtime) storeRaptorJavaArray(
 	array, index, value uint32,
 ) error {

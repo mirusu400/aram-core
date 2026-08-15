@@ -505,6 +505,21 @@ func (r *Runtime) dispatchJavaImport(
 		}
 		array, err := r.newRaptorJavaArray(element, count)
 		return guest.WIPIReturn{Low: array}, "RAPTOR.Java.newArray", true, err
+	case 17:
+		element, err := r.CPU.ReadRegister(cpu.RegisterR0)
+		if err != nil {
+			return guest.WIPIReturn{}, "RAPTOR.Java.newMultiArray", true, err
+		}
+		dimensionsPtr, err := r.CPU.ReadRegister(cpu.RegisterR1)
+		if err != nil {
+			return guest.WIPIReturn{}, "RAPTOR.Java.newMultiArray", true, err
+		}
+		dimensions, err := r.CPU.ReadRegister(cpu.RegisterR2)
+		if err != nil {
+			return guest.WIPIReturn{}, "RAPTOR.Java.newMultiArray", true, err
+		}
+		array, err := r.newRaptorJavaMultiArray(element, dimensionsPtr, dimensions)
+		return guest.WIPIReturn{Low: array}, "RAPTOR.Java.newMultiArray", true, err
 	case 18:
 		return r.checkRaptorJavaType()
 	case 225:
