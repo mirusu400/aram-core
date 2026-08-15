@@ -569,6 +569,9 @@ func (b *Backend) stepThumb() (*cpu.StopReason, error) {
 	case thumbConditionalBranch: // conditional branch / SWI
 		condition := uint8(instruction>>8) & 0xf
 		if condition == 0xf {
+			if uint8(instruction) == semihostingThumbImmediate && b.handleSemihosting() {
+				return nil, nil
+			}
 			reason := cpu.StopBreakpoint
 			return &reason, nil
 		}

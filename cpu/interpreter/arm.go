@@ -561,6 +561,9 @@ func (b *Backend) stepARM() (*cpu.StopReason, error) {
 		return nil, nil
 
 	case instruction&0x0f000000 == 0x0f000000: // SWI
+		if instruction&0x00ffffff == semihostingARMImmediate && b.handleSemihosting() {
+			return nil, nil
+		}
 		reason := cpu.StopBreakpoint
 		return &reason, nil
 
