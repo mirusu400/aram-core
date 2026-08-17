@@ -51,6 +51,7 @@ func TestRaptorWIPIImportsResolveToPublicCatalog(t *testing.T) {
 		403:  "MC_fsClose",
 		404:  "MC_fsSeek",
 		405:  "MC_fsFileAttribute",
+		412:  "MC_fsAvailable",
 		117:  "MC_knlAlloc",
 		118:  "MC_knlCalloc",
 		119:  "MC_knlFree",

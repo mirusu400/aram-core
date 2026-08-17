@@ -767,6 +767,13 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 	// download them from the carrier server.
 	case 406:
 		return "MC_fsRemove", true
+	// Slot 12 of the MC_fs vtable is the free-space query. 블레이드마스터4 guards its
+	// initial save creation with it: it calls (neededBytes) and refuses to create
+	// save0.dat/save2.dat unless the returned free space is >= the requested size,
+	// showing "용량 부족 / 데이터 생성 실패" otherwise. Left unmapped it returned 0, so the
+	// title always reported insufficient space and never reached its title screen.
+	case 412:
+		return "MC_fsAvailable", true
 	case 416:
 		return "MC_fsIsExist", true
 	case 117:
