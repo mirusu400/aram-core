@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	wipirt "github.com/mirusu400/aram-core/application/internal/wipi"
+	"github.com/mirusu400/aram-core/netauth"
 
 	"github.com/mirusu400/aram-core/application/internal/guest"
 	machinecore "github.com/mirusu400/aram-core/core"
@@ -68,6 +69,10 @@ type Runtime struct {
 	Java   *JavaRuntime
 
 	CallbackTasks []*CallbackTask
+
+	// Net services the LGT carrier network/DRM ordinals (106/238). Nil keeps
+	// the runtime's default behavior; aram-emu injects an aram-authd backend.
+	Net netauth.Backend
 
 	ModuleInitialized bool
 	Started           bool
@@ -662,6 +667,18 @@ func (r *Runtime) DispatchPrivateImport(
 		// with (0, 2, 0, 0) before their public imports are resolved. Its
 		// result is ignored, so model the provider's successful no-op boundary.
 		return guest.WIPIReturn{}, "RAPTOR.privateRuntimeInit1400", true, nil
+	case 106, 238:
+		// The LGT carrier network/DRM API. When a NetBackend (aram-authd) is
+		// installed it services the auth handshake; otherwise fall through to
+		// the default so behavior is unchanged.
+		result, handled, err := r.dispatchNet(ordinal)
+		if err != nil {
+			return guest.WIPIReturn{}, "", true, err
+		}
+		if handled {
+			return guest.WIPIReturn{Low: result}, "RAPTOR.net", true, nil
+		}
+		return guest.WIPIReturn{}, "", false, nil
 	default:
 		return guest.WIPIReturn{}, "", false, nil
 	}

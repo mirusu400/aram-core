@@ -325,6 +325,7 @@ func (m *Machine) loadRaptor(
 	if err != nil {
 		return err
 	}
+	runtime.Net = m.raptorNet
 	m.raptor = runtime
 
 	for register, value := range map[uint32]uint32{

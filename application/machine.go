@@ -8,6 +8,7 @@ import (
 	ktfrt "github.com/mirusu400/aram-core/application/internal/ktf"
 	raptorrt "github.com/mirusu400/aram-core/application/internal/raptor"
 	wipirt "github.com/mirusu400/aram-core/application/internal/wipi"
+	"github.com/mirusu400/aram-core/netauth"
 	"image"
 	"image/color"
 	"image/draw"
@@ -69,6 +70,10 @@ type Factory struct {
 	MemoryLimit     uint64
 	FramebufferSize image.Point
 	Resources       map[string][]byte
+	// RaptorNet, when set, services the LGT carrier network/DRM ordinals
+	// (106/238) for raptor titles. The composition root (aram-emu) injects an
+	// aram-authd backend; leaving it nil keeps the default behavior.
+	RaptorNet netauth.Backend
 }
 
 func NewFactory() Factory {
@@ -123,6 +128,7 @@ func (f Factory) Create(ctx context.Context, source machinecore.Source) (machine
 		frame:            image.NewRGBA(image.Rect(0, 0, size.X, size.Y)),
 		initialResources: guest.CloneSliceMap(f.Resources),
 		frameRunBudget:   frameBudget,
+		raptorNet:        f.RaptorNet,
 	}
 	if err := machine.Load(ctx, source); err != nil {
 		_ = backend.Close()
@@ -154,6 +160,7 @@ type Machine struct {
 	minigame         *minigame.Runtime
 	ktf              *ktfrt.Runtime
 	raptor           *raptorrt.Runtime
+	raptorNet        netauth.Backend
 	ktfStarted       bool
 	state            machinecore.State
 	source           machinecore.Source
