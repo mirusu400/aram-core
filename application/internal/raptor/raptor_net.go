@@ -61,6 +61,11 @@ func (r *Runtime) dispatchNet(ordinal uint32) (result uint32, handled bool, err 
 		}
 		args[i] = value
 	}
-	result, handled = r.Net.Handle(netauth.Call{Ordinal: ordinal, Args: args}, cpuNetMemory{r.CPU})
+	sp, _ := r.CPU.ReadRegister(cpu.RegisterSP)
+	lr, _ := r.CPU.ReadRegister(cpu.RegisterLR)
+	result, handled = r.Net.Handle(
+		netauth.Call{Ordinal: ordinal, Args: args, SP: sp, LR: lr},
+		cpuNetMemory{r.CPU},
+	)
 	return result, handled, nil
 }

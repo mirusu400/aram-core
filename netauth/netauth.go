@@ -18,10 +18,13 @@ type Memory interface {
 }
 
 // Call is one raptor network-ordinal invocation. Args holds r0..r2 as the guest
-// passed them.
+// passed them; SP and LR are the guest stack pointer and link register at the
+// call, which a backend may use to walk the caller chain.
 type Call struct {
 	Ordinal uint32
 	Args    [3]uint32
+	SP      uint32
+	LR      uint32
 }
 
 // Backend services the LGT carrier network/DRM ordinals. The runtime calls
