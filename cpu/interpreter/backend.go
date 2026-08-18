@@ -6,6 +6,7 @@ package interpreter
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -49,6 +50,7 @@ type Backend struct {
 	closed         bool
 	mapped         uint64
 	memoryLimit    uint64
+	pcHits         map[uint32]uint64 // env ARAM_PC_TRACE: per-PC execution histogram
 }
 
 func New() *Backend {
@@ -56,7 +58,26 @@ func New() *Backend {
 }
 
 func NewWithMemoryLimit(limit uint64) *Backend {
-	return &Backend{mode: cpu.ModeARM, memoryLimit: limit}
+	b := &Backend{mode: cpu.ModeARM, memoryLimit: limit}
+	if os.Getenv("ARAM_PC_TRACE") != "" {
+		b.pcHits = make(map[uint32]uint64, 1<<16)
+	}
+	return b
+}
+
+// PCHits returns a copy of the per-PC execution histogram (env ARAM_PC_TRACE),
+// a diagnostic for finding which guest code runs. Nil when tracing is off.
+func (b *Backend) PCHits() map[uint32]uint64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.pcHits == nil {
+		return nil
+	}
+	out := make(map[uint32]uint64, len(b.pcHits))
+	for k, v := range b.pcHits {
+		out[k] = v
+	}
+	return out
 }
 
 func (b *Backend) Identity() cpu.Identity {
@@ -208,6 +229,9 @@ func (b *Backend) Run(ctx context.Context, address uint32, mode cpu.Mode, budget
 			}
 		}
 
+		if b.pcHits != nil {
+			b.pcHits[b.regs[cpu.RegisterPC]]++
+		}
 		var (
 			reason *cpu.StopReason
 			err    error
