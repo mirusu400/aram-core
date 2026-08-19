@@ -359,6 +359,37 @@ func (r *Runtime) resolveRaptorJavaOverload(java *JavaRuntime, method raptorJava
 	return method
 }
 
+// copyRaptorArrayBodies performs System.arraycopy directly on the Raptor array
+// bodies (obj+8 -> length word, then elements), which the AOT code reads and
+// writes with plain loads and stores. Both operands are Raptor arrays here, so
+// their element size is taken from the KTF mirror class. A missing body or
+// out-of-range read is treated as a no-op rather than a fault, matching the
+// host VM leniency the rest of the bridge relies on.
+func (r *Runtime) copyRaptorArrayBodies(java *JavaRuntime, arguments []uint32) error {
+	source, sourcePos := arguments[0], arguments[1]
+	target, targetPos, count := arguments[2], arguments[3], arguments[4]
+	if source == 0 || target == 0 || count == 0 {
+		return nil
+	}
+	sourceBody, err := r.Public.ReadU32(source + 8)
+	if err != nil || sourceBody == 0 {
+		return nil
+	}
+	targetBody, err := r.Public.ReadU32(target + 8)
+	if err != nil || targetBody == 0 {
+		return nil
+	}
+	element := uint32(4)
+	if size, sizeErr := java.Host.ArrayElementSize(java.lgtToKTF[target]); sizeErr == nil && size != 0 {
+		element = size
+	}
+	buffer := make([]byte, count*element)
+	if err := r.CPU.ReadMemory(sourceBody+4+sourcePos*element, buffer); err != nil {
+		return nil
+	}
+	return r.CPU.WriteMemory(targetBody+4+targetPos*element, buffer)
+}
+
 func (r *Runtime) callJavaHostMethod(
 	ctx context.Context,
 	method raptorJavaMethod,
@@ -391,6 +422,20 @@ func (r *Runtime) callJavaHostMethod(
 	arguments, err := r.readRaptorJavaArguments(argumentCount)
 	if err != nil {
 		return guest.WIPIReturn{}, err
+	}
+	if method.className == "java/lang/System" && method.Name == "arraycopy" &&
+		len(arguments) >= 5 && java.lgtToKTF[arguments[0]] != 0 && java.lgtToKTF[arguments[2]] != 0 {
+		// System.arraycopy between two Raptor arrays must copy the Raptor array
+		// bodies the AOT code reads and writes directly. Forwarding to the KTF
+		// host instead copies the KTF mirror arrays, which the AOT never reads,
+		// so a game that arraycopies computed data (놈3 freezes a game screen's
+		// element layout by copying its target-position arrays into the live
+		// base arrays on open-animation completion) would keep reading the stale
+		// zero-filled body and render every element collapsed at the origin.
+		if err := r.copyRaptorArrayBodies(java, arguments); err != nil {
+			return guest.WIPIReturn{}, err
+		}
+		return guest.WIPIReturn{}, nil
 	}
 	if method.className == "org/kwis/msp/lcdui/Image" && method.Name == "createImage" &&
 		method.descriptor == "(II)Lorg/kwis/msp/lcdui/Image;" && len(arguments) >= 2 {

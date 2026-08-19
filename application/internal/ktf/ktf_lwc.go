@@ -1345,6 +1345,22 @@ func ktfJavaArrayElementSize(className string) (uint32, error) {
 	}
 }
 
+// ArrayElementSize returns the byte size of one element of the KTF array whose
+// instance handle is mirror. Callers that maintain a parallel guest array (the
+// Raptor bridge keeps its own array body next to each KTF mirror) use it to
+// copy the correct number of bytes.
+func (r *Runtime) ArrayElementSize(mirror uint32) (uint32, error) {
+	words, err := r.ReadWords(mirror, 2)
+	if err != nil {
+		return 0, err
+	}
+	class, err := r.InspectJavaClass(words[1])
+	if err != nil {
+		return 0, err
+	}
+	return ktfJavaArrayElementSize(class.Name)
+}
+
 func (r *Runtime) deferCardPaint(
 	task *Task,
 	card uint32,
