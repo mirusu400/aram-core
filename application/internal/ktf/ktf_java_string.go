@@ -521,9 +521,19 @@ func (r *Runtime) handleStringBufferMethod(
 	if err != nil {
 		return 0, err
 	}
+	// A buffer read out by toString() is treated as consumed: the next append
+	// starts a fresh value. See stringBuffersConsumed for why (Raptor AOT inlines
+	// setLength(0) as a native write this handler never sees).
+	if r.ConsumeStringBufferOnToString && r.stringBuffersConsumed[instance] {
+		if strings.HasPrefix(name, "append") {
+			r.stringBuffers[instance] = ""
+			delete(r.stringBuffersConsumed, instance)
+		}
+	}
 	switch name + descriptor {
 	case "<init>()V", "<init>(I)V":
 		r.stringBuffers[instance] = ""
+		delete(r.stringBuffersConsumed, instance)
 		return 0, nil
 	case "<init>(Ljava/lang/String;)V":
 		value, valueErr := r.parameter(2)
@@ -531,6 +541,7 @@ func (r *Runtime) handleStringBufferMethod(
 			return 0, valueErr
 		}
 		r.stringBuffers[instance] = r.javaStringValue(value)
+		delete(r.stringBuffersConsumed, instance)
 		return 0, nil
 	case "append(Ljava/lang/String;)Ljava/lang/StringBuffer;":
 		value, valueErr := r.parameter(2)
@@ -626,8 +637,10 @@ func (r *Runtime) handleStringBufferMethod(
 		r.stringBuffers[instance] = string(
 			append(runes[:start:start], runes[end:]...),
 		)
+		delete(r.stringBuffersConsumed, instance)
 		return instance, nil
 	case "toString()Ljava/lang/String;":
+		r.stringBuffersConsumed[instance] = true
 		return r.NewJavaString(r.stringBuffers[instance])
 	case "setLength(I)V":
 		length, valueErr := r.parameter(2)
@@ -728,6 +741,7 @@ func (r *Runtime) handleStringBufferMethod(
 		}
 		runes[index] = rune(uint16(character))
 		r.stringBuffers[instance] = string(runes)
+		delete(r.stringBuffersConsumed, instance)
 		return 0, nil
 	case "deleteCharAt(I)Ljava/lang/StringBuffer;":
 		index, valueErr := r.parameter(2)

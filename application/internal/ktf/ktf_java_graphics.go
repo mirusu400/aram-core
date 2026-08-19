@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+
 	"github.com/mirusu400/aram-core/application/internal/guest"
 	"image"
 	"image/color"
@@ -237,6 +238,21 @@ func (r *Runtime) handleGraphicsMethod(
 		draw.Draw(state.Target, rect.Intersect(state.clip), image.NewUniform(state.color), image.Point{}, draw.Src)
 		state.PixelsDirty = true
 		return 0, nil
+	case "setXORMode(Z)V":
+		if state == nil {
+			return 0, nil
+		}
+		mode, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		state.xorMode = mode != 0
+		return 0, nil
+	case "isXORMode()Z":
+		if state == nil || !state.xorMode {
+			return 0, nil
+		}
+		return 1, nil
 	case "drawLine(IIII)V":
 		if state == nil {
 			return 0, nil
@@ -498,7 +514,7 @@ func (r *Runtime) handleGraphicsMethod(
 		}
 		point := image.Pt(x+state.translate.X, y+state.translate.Y)
 		if point.In(state.clip) {
-			state.Target.Set(point.X, point.Y, state.color)
+			state.plot(point.X, point.Y)
 			state.PixelsDirty = true
 		}
 		return 0, nil
@@ -679,7 +695,7 @@ func (r *Runtime) drawGraphicsText(
 				point := image.Pt(x+column, y+glyphTop+row)
 				if point.In(state.clip) &&
 					point.In(state.Target.Bounds()) {
-					state.Target.Set(point.X, point.Y, state.color)
+					state.plot(point.X, point.Y)
 				}
 			}
 		}
@@ -1237,7 +1253,7 @@ func (r *Runtime) drawGraphicsLine(
 	for {
 		point := image.Pt(x1, y1)
 		if point.In(state.clip) && point.In(state.Target.Bounds()) {
-			state.Target.Set(x1, y1, state.color)
+			state.plot(x1, y1)
 		}
 		if x1 == x2 && y1 == y2 {
 			return

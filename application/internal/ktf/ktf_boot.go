@@ -193,6 +193,7 @@ func NewRuntimeForProfile(
 		javaTimerTasks:        make(map[uint32]*Task),
 		javaTimerTaskStates:   make(map[uint32]uint8),
 		stringBuffers:         make(map[uint32]string),
+		stringBuffersConsumed: make(map[uint32]bool),
 		sharedBuffers:         make(map[string]uint32),
 		inputStreams:          make(map[uint32]*ktfInputStream),
 		inputTargets:          make(map[uint32]uint32),

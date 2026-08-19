@@ -166,43 +166,52 @@ type Runtime struct {
 	javaTimerTaskStates     map[uint32]uint8
 	currentThread           uint32
 	stringBuffers           map[uint32]string
-	inputStreams            map[uint32]*ktfInputStream
-	inputTargets            map[uint32]uint32
-	outputStreams           map[uint32][]byte
-	outputTargets           map[uint32]uint32
-	files                   map[uint32]*ktfFile
-	FileData                map[string][]byte
-	fileStreamTargets       map[uint32]uint32
-	systemInputStream       uint32
-	systemPrintStream       uint32
-	images                  map[uint32]image.Image
-	defaultFont             uint32
-	frame                   *image.RGBA
-	Graphics                map[uint32]*ktfGraphics
-	graphicsRGBScratch      []byte
-	ScreenGraphics          uint32
-	menuForegroundCompat    *ktfMenuForegroundCompat
-	wipicFramebuffers       map[uint32]*ktfWIPICFramebuffer
-	WipicScreenFramebuffer  uint32
-	WipicScreenPending      bool
-	wipicImages             map[uint32]*ktfWIPICImage
-	wipicResources          map[uint32][]byte
-	wipicResourceIDs        map[string]uint32
-	wipicMemory             map[uint32]ktfWIPICMemory
-	wipicTimers             map[uint32]*ktfWIPICTimer
-	wipicMediaClips         map[uint32]*ktfWIPICMediaClip
-	pendingMediaCallbacks   []uint32
-	wipicSystemProperties   map[string]string
-	wipicFiles              map[uint32]*ktfFile
-	nextWIPICFile           uint32
-	dirtyCards              map[uint32]bool
-	paintInitializedCards   map[uint32]bool
-	PaintTasks              map[uint32]*Task
-	PaintStalled            bool
-	deferredPaintCards      map[*Task][]uint32
-	deferredShownCards      map[*Task]map[uint32]bool
-	PresentCount            uint32
-	TickMS                  uint64
+	// stringBuffersConsumed marks a StringBuffer whose value was read out by
+	// toString(). The LGT Raptor AOT compiler inlines StringBuffer.setLength(0)
+	// as a direct native write to the buffer object's guest memory, which never
+	// reaches this Go-backed handler, so a reused buffer would otherwise keep
+	// its old text and accumulate (놈3 builds resource names in one buffer:
+	// box.pzx -> box.pzxmenu.pzx -> ... so every .pzx lookup after the first
+	// misses and loading never completes). Treating toString() as the consume
+	// point and clearing on the next append models build->toString->reset->build.
+	stringBuffersConsumed  map[uint32]bool
+	inputStreams           map[uint32]*ktfInputStream
+	inputTargets           map[uint32]uint32
+	outputStreams          map[uint32][]byte
+	outputTargets          map[uint32]uint32
+	files                  map[uint32]*ktfFile
+	FileData               map[string][]byte
+	fileStreamTargets      map[uint32]uint32
+	systemInputStream      uint32
+	systemPrintStream      uint32
+	images                 map[uint32]image.Image
+	defaultFont            uint32
+	frame                  *image.RGBA
+	Graphics               map[uint32]*ktfGraphics
+	graphicsRGBScratch     []byte
+	ScreenGraphics         uint32
+	menuForegroundCompat   *ktfMenuForegroundCompat
+	wipicFramebuffers      map[uint32]*ktfWIPICFramebuffer
+	WipicScreenFramebuffer uint32
+	WipicScreenPending     bool
+	wipicImages            map[uint32]*ktfWIPICImage
+	wipicResources         map[uint32][]byte
+	wipicResourceIDs       map[string]uint32
+	wipicMemory            map[uint32]ktfWIPICMemory
+	wipicTimers            map[uint32]*ktfWIPICTimer
+	wipicMediaClips        map[uint32]*ktfWIPICMediaClip
+	pendingMediaCallbacks  []uint32
+	wipicSystemProperties  map[string]string
+	wipicFiles             map[uint32]*ktfFile
+	nextWIPICFile          uint32
+	dirtyCards             map[uint32]bool
+	paintInitializedCards  map[uint32]bool
+	PaintTasks             map[uint32]*Task
+	PaintStalled           bool
+	deferredPaintCards     map[*Task][]uint32
+	deferredShownCards     map[*Task]map[uint32]bool
+	PresentCount           uint32
+	TickMS                 uint64
 
 	NativeParameterBase uint32
 	parameterScratch    [4]byte
@@ -213,15 +222,23 @@ type Runtime struct {
 	// shipped title's first-run "open config read-only" would otherwise fault
 	// the machine where a real device catches the exception and falls back to
 	// defaults (월드장기체스 opens /CCCcfg before it is ever written).
-	LenientMissingRead   bool
-	yieldRequested       bool
-	terminationRequested bool
-	Tasks                []*Task
-	PendingJavaCalls     []ktfPendingJavaCall
-	taskCursor           int
-	activeTask           *Task
-	ActiveInstructions   uint64
-	executionDepth       int
+	LenientMissingRead bool
+	// ConsumeStringBufferOnToString treats a StringBuffer as reset once its
+	// value has been read out by toString(): the next append starts a fresh
+	// value. Only the Raptor AOT-Java host sets this, because that compiler
+	// inlines StringBuffer.setLength(0) as a native write this handler never
+	// sees, so a reused builder would otherwise accumulate. A plain KTF title
+	// keeps exact Java semantics (its setLength(0) reaches the handler). See
+	// stringBuffersConsumed.
+	ConsumeStringBufferOnToString bool
+	yieldRequested                bool
+	terminationRequested          bool
+	Tasks                         []*Task
+	PendingJavaCalls              []ktfPendingJavaCall
+	taskCursor                    int
+	activeTask                    *Task
+	ActiveInstructions            uint64
+	executionDepth                int
 }
 
 type ktfHostHandler func(context.Context, *Runtime) (uint32, error)
@@ -367,7 +384,27 @@ type ktfGraphics struct {
 	clip        image.Rectangle
 	color       color.RGBA
 	translate   image.Point
+	xorMode     bool
 	PixelsDirty bool
+}
+
+// plot writes one pixel honoring XOR paint mode. Vector-drawn titles (놈3 renders
+// its whole UI with drawLine while setXORMode(true) is active, inverting the
+// white background to draw dark strokes) leave nothing visible if XOR is
+// ignored, because the strokes are painted with a color that XORs to a visible
+// value but overwrites to white.
+func (g *ktfGraphics) plot(x, y int) {
+	if !g.xorMode {
+		g.Target.Set(x, y, g.color)
+		return
+	}
+	old := color.RGBAModel.Convert(g.Target.At(x, y)).(color.RGBA)
+	g.Target.Set(x, y, color.RGBA{
+		R: old.R ^ g.color.R,
+		G: old.G ^ g.color.G,
+		B: old.B ^ g.color.B,
+		A: 255,
+	})
 }
 
 const (

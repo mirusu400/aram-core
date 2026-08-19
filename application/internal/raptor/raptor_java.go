@@ -25,6 +25,12 @@ const raptorJavaHostModule = ^uint32(0)
 // a vtable we built, which lives in the heap.
 const raptorJavaHeapBase = uint32(0x10000000)
 
+// raptorJavaMaxFieldOffset bounds the byte offset accepted by the getfield /
+// putfield accessors. A real object field block is at most a few kilobytes; a
+// larger r2 value is not a field index, so it is ignored rather than used to
+// read or write an unrelated address.
+const raptorJavaMaxFieldOffset = uint32(0x10000)
+
 const JavaTaskInstructionBudget = uint64(250_000)
 
 type raptorJavaMethod struct {
@@ -245,6 +251,12 @@ func (r *Runtime) ensureJavaRuntime() (*JavaRuntime, error) {
 	// a guest catch block, so a first-run read-only open of a not-yet-written
 	// private config file must not fault the machine.
 	host.LenientMissingRead = true
+	// The AOT compiler inlines StringBuffer.setLength(0) as a native write the
+	// KTF StringBuffer handler never sees, so a builder reused after toString()
+	// must be reset at the next append or it keeps accumulating (놈3 builds
+	// every resource name in one buffer and would miss every lookup after the
+	// first, stalling the load).
+	host.ConsumeStringBufferOnToString = true
 	scratch, err := r.Public.Heap.Allocate(16*4, true)
 	if err != nil || scratch == 0 {
 		return nil, errors.New("allocate Raptor Java call scratch")
@@ -594,6 +606,36 @@ func (r *Runtime) dispatchJavaImport(
 		}
 		return guest.WIPIReturn{}, "RAPTOR.java.arrayStore", true,
 			r.storeRaptorJavaArray(array, index, value)
+	case 86: // getfield-style accessor: r0=object, r2=byte offset into fields.
+		// Only small offsets are treated as field-block indices; a large r2 is
+		// not a field offset (some call sites pass an unrelated reference), so
+		// it falls through to the safe zero return the unimplemented path also
+		// gives, rather than reading an out-of-range address.
+		obj, err := r.CPU.ReadRegister(cpu.RegisterR0)
+		if err != nil {
+			return guest.WIPIReturn{}, "RAPTOR.java.getField", true, err
+		}
+		off, _ := r.CPU.ReadRegister(cpu.RegisterR2)
+		var value uint32
+		if obj != 0 && off < raptorJavaMaxFieldOffset {
+			if body, rerr := r.Public.ReadU32(obj + 8); rerr == nil && body != 0 {
+				value, _ = r.Public.ReadU32(body + off)
+			}
+		}
+		return guest.WIPIReturn{Low: value}, "RAPTOR.java.getField", true, nil
+	case 87: // putfield-style accessor: r0=object, r1=value, r2=byte offset.
+		obj, err := r.CPU.ReadRegister(cpu.RegisterR0)
+		if err != nil {
+			return guest.WIPIReturn{}, "RAPTOR.java.putField", true, err
+		}
+		value, _ := r.CPU.ReadRegister(cpu.RegisterR1)
+		off, _ := r.CPU.ReadRegister(cpu.RegisterR2)
+		if obj != 0 && off < raptorJavaMaxFieldOffset {
+			if body, rerr := r.Public.ReadU32(obj + 8); rerr == nil && body != 0 {
+				_ = r.Public.WriteU32(body+off, value)
+			}
+		}
+		return guest.WIPIReturn{}, "RAPTOR.java.putField", true, nil
 	}
 	return guest.WIPIReturn{}, "", false, nil
 }
