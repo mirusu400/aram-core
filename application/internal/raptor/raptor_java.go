@@ -31,6 +31,33 @@ const raptorJavaHeapBase = uint32(0x10000000)
 // read or write an unrelated address.
 const raptorJavaMaxFieldOffset = uint32(0x10000)
 
+// raptorPrimitiveArrayElementChar maps a JVM primitive array type code (the
+// atype operand of newarray) to the field-descriptor character that
+// newRaptorJavaArray decodes into an element width. It returns 0 for values
+// outside the primitive atype range so a non-array use of the same ordinal
+// falls through to its generic behavior.
+func raptorPrimitiveArrayElementChar(atype uint32) uint32 {
+	switch atype {
+	case 4: // T_BOOLEAN
+		return 'Z'
+	case 5: // T_CHAR
+		return 'C'
+	case 6: // T_FLOAT
+		return 'F'
+	case 7: // T_DOUBLE
+		return 'D'
+	case 8: // T_BYTE
+		return 'B'
+	case 9: // T_SHORT
+		return 'S'
+	case 10: // T_INT
+		return 'I'
+	case 11: // T_LONG
+		return 'J'
+	}
+	return 0
+}
+
 const JavaTaskInstructionBudget = uint64(250_000)
 
 type raptorJavaMethod struct {
@@ -541,6 +568,17 @@ func (r *Runtime) dispatchJavaImport(
 		size, err := r.CPU.ReadRegister(cpu.RegisterR2)
 		if err != nil {
 			return guest.WIPIReturn{}, "RAPTOR.java.alloc", true, err
+		}
+		// A primitive array (new byte[]/short[]/int[]) resolves its element type
+		// through this ordinal with r2 = the JVM atype code (T_BOOLEAN=4 ..
+		// T_LONG=11). The result is passed straight to newArray (ordinal 16) as
+		// its element operand, so return the element-descriptor char the array
+		// allocator decodes to the correct element width. Without this the value
+		// was a heap pointer, and newRaptorJavaArray treated every primitive
+		// array as a 4-byte object array — a byte[] read buffer became 4x too
+		// wide and never lined up with the guest's byte-stride accesses.
+		if elementChar := raptorPrimitiveArrayElementChar(size); elementChar != 0 {
+			return guest.WIPIReturn{Low: elementChar}, "RAPTOR.Java.arrayType", true, nil
 		}
 		address, err := r.Public.Heap.Allocate(size, true)
 		return guest.WIPIReturn{Low: address}, "RAPTOR.java.alloc", true, err
