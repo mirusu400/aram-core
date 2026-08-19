@@ -208,6 +208,8 @@ func (r *Runtime) buildKnlInterface() (uint32, error) {
 		switch index {
 		case 1:
 			handler = ktfKernelSprintk
+		case 7:
+			handler = ktfKernelExit
 		case 20:
 			handler = ktfKernelAllocate(false)
 		case 21:

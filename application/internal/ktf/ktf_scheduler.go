@@ -464,6 +464,22 @@ func (r *Runtime) requestJavaTermination(instance uint32) {
 	)
 }
 
+// requestCletTermination ends the running Clet the way MC_knlExit does on a
+// handset: the provider tears the program down and never returns to the caller.
+// A native Clet that reaches its exit path (for example the first-run "restart
+// required" notice in 에픽크로니클PE) otherwise keeps its game-loop timer alive
+// and the handset appears hung, because the host call would simply return.
+func (r *Runtime) requestCletTermination() {
+	if r.terminationRequested {
+		return
+	}
+	r.terminationRequested = true
+	r.PendingJavaCalls = nil
+	for _, task := range r.Tasks {
+		task.Done = true
+	}
+}
+
 func (r *Runtime) deferStartedThread(task *Task) {
 	parent := r.activeTask
 	if task == nil || parent == nil || parent == task || parent.Done {

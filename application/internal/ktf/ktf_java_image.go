@@ -570,6 +570,19 @@ func (r *Runtime) findKTFResource(name string) ([]byte, bool) {
 			return data, true
 		}
 	}
+	// A handset exposes a Clet's own written files back through
+	// MC_knlGetResource: titles persist a save with MC_fsWrite and then decide
+	// on the next launch by looking the same name up as a resource. 에픽크로니클PE
+	// writes its speed calibration to gopt.sav, shows the "restart required"
+	// notice, and exits; on the relaunch it reloads gopt.sav this way to skip
+	// the calibration. Package resources are checked first, so a bundled asset
+	// is never shadowed — only names absent from the jar fall through here.
+	if data, err := r.Services.Storage.ReadFile(
+		shared.NamespacePrivate,
+		normalizeKTFFileName(name),
+	); err == nil {
+		return data, true
+	}
 	return nil, false
 }
 

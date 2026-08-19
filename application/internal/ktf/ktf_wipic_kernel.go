@@ -701,6 +701,24 @@ func ktfKernelUnsetTimer(
 	return 0, nil
 }
 
+// ktfKernelExit implements MC_knlExit (kernel interface slot 0x1c). The clet
+// hands the provider an exit code and expects the program to terminate; the
+// call must not fall through to the guest's post-exit code. Without it a native
+// Clet that exits from its game-loop timer (issue #53) leaves that timer armed
+// and the handset appears frozen on the last drawn frame.
+func ktfKernelExit(
+	_ context.Context,
+	runtime *Runtime,
+) (uint32, error) {
+	exitCode, err := runtime.parameter(0)
+	if err != nil {
+		return 0, err
+	}
+	runtime.tracef("wipic_knl_exit:code=%d", int32(exitCode))
+	runtime.requestCletTermination()
+	return 0, nil
+}
+
 func ktfKernelCurrentTime(
 	_ context.Context,
 	runtime *Runtime,
