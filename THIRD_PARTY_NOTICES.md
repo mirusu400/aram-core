@@ -46,3 +46,15 @@ Copyright (c) 2019-2025 Lee Minseo (quiple@quiple.dev)
 
 The bitmap font data is licensed under the SIL Open Font License, Version 1.1.
 A copy is provided at `third_party/galmuri/LICENSE`.
+
+## ARAM handset bold bitmap
+
+The compressed 12x12 Hangul and symbol glyph data in
+`runtime/mulmaru_bitmap.go` was generated from Mulmaru via
+`internal/cmd/gen-handset-font`. The derived bitmap uses the neutral "ARAM
+handset bold" name rather than a reserved font name.
+
+Copyright (c) 2025, Mushsooni (https://github.com/mushsooni/mulmaru)
+
+The bitmap font data is licensed under the SIL Open Font License, Version 1.1.
+A copy is provided at `third_party/mulmaru/LICENSE`.

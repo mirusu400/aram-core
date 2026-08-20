@@ -19,9 +19,12 @@ func TestHandsetFontRegistryDefaultsToGalmuri9(t *testing.T) {
 	if got := lookupHandsetFont("neodgm").name; got != "neodgm" {
 		t.Fatalf("lookupHandsetFont(neodgm).name = %q", got)
 	}
+	if got := lookupHandsetFont("mulmaru").name; got != "mulmaru" {
+		t.Fatalf("lookupHandsetFont(mulmaru).name = %q", got)
+	}
 	names := handsetFontNames()
-	if len(names) != 2 || names[0] != "galmuri9" || names[1] != "neodgm" {
-		t.Fatalf("handsetFontNames() = %v, want [galmuri9 neodgm]", names)
+	if len(names) != 3 || names[0] != "galmuri9" || names[1] != "mulmaru" || names[2] != "neodgm" {
+		t.Fatalf("handsetFontNames() = %v, want [galmuri9 mulmaru neodgm]", names)
 	}
 }
 
@@ -33,6 +36,7 @@ func TestConfigNormalizesFallbackFont(t *testing.T) {
 		"bogus":    "galmuri9",
 		"neodgm":   "neodgm",
 		"galmuri9": "galmuri9",
+		"mulmaru":  "mulmaru",
 	}
 	for in, want := range cases {
 		services, err := NewServices(Config{FallbackFont: in})
@@ -88,5 +92,20 @@ func TestHandsetFontsRasterizeDistinctly(t *testing.T) {
 
 	if bytes.Equal(crisp.Alpha, soft.Alpha) {
 		t.Fatal("galmuri9 and neodgm rasterized the same syllable identically")
+	}
+
+	// Mulmaru is an integer-grid pixel font rasterized 1:1, so it is crisp
+	// like galmuri9 yet a distinct typeface.
+	bold := glyphFor("mulmaru")
+	for _, a := range bold.Alpha {
+		if a != 0 && a != 0xff {
+			t.Fatalf("mulmaru glyph has partial alpha %#02x, expected 1-bit", a)
+		}
+	}
+	if bytes.Count(bold.Alpha, []byte{0xff}) < 12 {
+		t.Fatal("mulmaru glyph has too few visible pixels")
+	}
+	if bytes.Equal(bold.Alpha, crisp.Alpha) {
+		t.Fatal("mulmaru and galmuri9 rasterized the same syllable identically")
 	}
 }

@@ -52,6 +52,7 @@ var (
 	handsetFonts   = map[string]*handsetFont{
 		"neodgm":   newHandsetFont("neodgm", neodgmBitmapDataBase64, neodgmExtraGlyphCount),
 		"galmuri9": newHandsetFont("galmuri9", galmuri9BitmapDataBase64, galmuri9ExtraGlyphCount),
+		"mulmaru":  newHandsetFont("mulmaru", mulmaruBitmapDataBase64, mulmaruExtraGlyphCount),
 	}
 )
 

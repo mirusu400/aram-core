@@ -230,17 +230,7 @@ func decodeTTFGlyphs(data []byte) (map[rune]sourceGlyph, error) {
 		return nil, fmt.Errorf("%w: parse TrueType font: %v", ErrInvalidArgument, err)
 	}
 
-	// Normalize the em size so the font ascent maps to the cell ascent (9),
-	// matching the built-in fonts' vertical placement.
-	size := float64(handsetGlyphSourceHeight)
-	if probe, perr := opentype.NewFace(parsed, &opentype.FaceOptions{
-		Size: size, DPI: 72, Hinting: font.HintingFull,
-	}); perr == nil {
-		if ascent := probe.Metrics().Ascent.Ceil(); ascent > 0 {
-			size = size * float64(handsetCellAscent) / float64(ascent)
-		}
-		_ = probe.Close()
-	}
+	size, baselineRow, crisp := chooseTTFRender(parsed)
 
 	face, err := opentype.NewFace(parsed, &opentype.FaceOptions{
 		Size: size, DPI: 72, Hinting: font.HintingFull,
@@ -251,7 +241,7 @@ func decodeTTFGlyphs(data []byte) (map[rune]sourceGlyph, error) {
 	defer face.Close()
 
 	out := make(map[rune]sourceGlyph)
-	baseline := fixed.P(0, handsetCellAscent)
+	baseline := fixed.P(0, baselineRow)
 	addGlyph := func(cp rune) {
 		if _, ok := face.GlyphAdvance(cp); !ok {
 			return
@@ -267,7 +257,17 @@ func decodeTTFGlyphs(data []byte) (map[rune]sourceGlyph, error) {
 				if a == 0 {
 					continue
 				}
-				if !setCellPixel(glyph.cell, x, y, byte(a>>12)) { // 16-bit alpha -> 4-bit
+				alpha := byte(a >> 12) // 16-bit alpha -> 4-bit coverage
+				if crisp {
+					// A pixel font rendered 1:1 has only fully-covered
+					// pixels; snap the near-full ones to solid ink so the
+					// result stays perfectly crisp with no gray fringes.
+					if a < 0x8000 {
+						continue
+					}
+					alpha = 0x0f
+				}
+				if !setCellPixel(glyph.cell, x, y, alpha) {
 					glyph.clipped = true
 				}
 			}
@@ -288,6 +288,75 @@ func decodeTTFGlyphs(data []byte) (map[rune]sourceGlyph, error) {
 		return nil, fmt.Errorf("%w: TrueType font produced no usable glyphs", ErrInvalidArgument)
 	}
 	return out, nil
+}
+
+// chooseTTFRender decides how to rasterize a TrueType/OpenType source into the
+// 12x12 handset cell. Pixel fonts (whose outlines are axis-aligned squares on
+// an integer grid) render crisp only when one font pixel maps onto one output
+// pixel, so it scans the integer sizes that fit the cell and, when one renders
+// essentially free of anti-aliased edges, uses it 1:1 with the font's natural
+// baseline. Smooth outline fonts fall back to the legacy behaviour: scale so
+// the ascent lands on the cell ascent and keep the grayscale coverage.
+func chooseTTFRender(parsed *opentype.Font) (size float64, baseline int, crisp bool) {
+	sample := []rune{'가', '한', '국', '방', '글', '음', 'A', 'H', 'g', '8', '@', 'W'}
+	bestSize, bestBaseline, bestRatio := 0, 0, 1.0
+	for px := 8; px <= handsetGlyphSourceHeight; px++ {
+		face, err := opentype.NewFace(parsed, &opentype.FaceOptions{
+			Size: float64(px), DPI: 72, Hinting: font.HintingFull,
+		})
+		if err != nil {
+			continue
+		}
+		ascent := face.Metrics().Ascent.Ceil()
+		partial, ink := ttfEdgeStats(face, sample, ascent)
+		face.Close()
+		if ink == 0 || ascent <= 0 || ascent > handsetGlyphSourceHeight {
+			continue
+		}
+		if ratio := float64(partial) / float64(ink); ratio < bestRatio {
+			bestRatio, bestSize, bestBaseline = ratio, px, ascent
+		}
+	}
+	if bestSize != 0 && bestRatio < 0.05 {
+		return float64(bestSize), bestBaseline, true
+	}
+
+	size = float64(handsetGlyphSourceHeight)
+	if probe, err := opentype.NewFace(parsed, &opentype.FaceOptions{
+		Size: size, DPI: 72, Hinting: font.HintingFull,
+	}); err == nil {
+		if ascent := probe.Metrics().Ascent.Ceil(); ascent > 0 {
+			size = size * float64(handsetCellAscent) / float64(ascent)
+		}
+		probe.Close()
+	}
+	return size, handsetCellAscent, false
+}
+
+// ttfEdgeStats counts, over a sample of glyphs rendered at the given baseline,
+// how many inked pixels are partially covered (anti-aliased edges) versus the
+// total inked pixels. A pixel font rendered 1:1 reports zero partial pixels.
+func ttfEdgeStats(face font.Face, sample []rune, baseline int) (partial, ink int) {
+	dot := fixed.P(0, baseline)
+	for _, cp := range sample {
+		dr, mask, maskp, _, ok := face.Glyph(dot, cp)
+		if !ok {
+			continue
+		}
+		for y := dr.Min.Y; y < dr.Max.Y; y++ {
+			for x := dr.Min.X; x < dr.Max.X; x++ {
+				_, _, _, a := mask.At(maskp.X+(x-dr.Min.X), maskp.Y+(y-dr.Min.Y)).RGBA()
+				if a == 0 {
+					continue
+				}
+				ink++
+				if a > 0x2000 && a < 0xE000 {
+					partial++
+				}
+			}
+		}
+	}
+	return partial, ink
 }
 
 func setCellPixel(cell []byte, x, y int, alpha byte) bool {
