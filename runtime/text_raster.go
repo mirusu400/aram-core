@@ -2,11 +2,11 @@ package runtime
 
 import "unicode"
 
-func rasterFallbackGlyph(descriptor FontDescriptor, character rune) Glyph {
+func rasterFallbackGlyph(font *handsetFont, descriptor FontDescriptor, character rune) Glyph {
 	if character >= 0xac00 && character <= 0xd7a3 {
-		return rasterHangulGlyph(descriptor, character)
+		return rasterHangulGlyph(font, descriptor, character)
 	}
-	if sourceAdvance, bitmap, ok := handsetExtraGlyphBitmap(character); ok {
+	if sourceAdvance, bitmap, ok := font.extraGlyph(character); ok {
 		return rasterHandsetGlyph(
 			descriptor,
 			character,
@@ -50,12 +50,12 @@ func rasterFallbackGlyph(descriptor FontDescriptor, character rune) Glyph {
 	return glyph
 }
 
-func rasterHangulGlyph(descriptor FontDescriptor, character rune) Glyph {
+func rasterHangulGlyph(font *handsetFont, descriptor FontDescriptor, character rune) Glyph {
 	return rasterHandsetGlyph(
 		descriptor,
 		character,
 		handsetGlyphSourceWidth,
-		handsetHangulGlyphBitmap(character),
+		font.hangulGlyph(character),
 	)
 }
 

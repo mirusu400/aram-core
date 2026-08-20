@@ -123,7 +123,10 @@ func TestTextRasterizesReadableDoubleWidthHangul(t *testing.T) {
 }
 
 func TestTextHandsetGlyphsPreserveAntialiasedEdgesAndSymbols(t *testing.T) {
-	services, err := NewServices(Config{})
+	// Pinned to neodgm: this test asserts antialiased edge alphas and metrics
+	// that the softer NeoDunggeunmo fallback produces. The default font is now
+	// the 1-bit-crisp galmuri9, which has no partial-alpha edges.
+	services, err := NewServices(Config{FallbackFont: "neodgm"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +196,9 @@ func TestTextHandsetGlyphsPreserveAntialiasedEdgesAndSymbols(t *testing.T) {
 }
 
 func TestTextDrawsReadableAntialiasedHandsetDialogue(t *testing.T) {
-	services, err := NewServices(Config{})
+	// Pinned to neodgm: asserts NeoDunggeunmo advance widths. See the note on
+	// TestTextHandsetGlyphsPreserveAntialiasedEdgesAndSymbols.
+	services, err := NewServices(Config{FallbackFont: "neodgm"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,6 +287,7 @@ func TestTextDecodeRejectsMalformedAndOversizedUTF16(t *testing.T) {
 		registry,
 		graphics,
 		limits,
+		defaultHandsetFontName,
 	)
 	if err != nil {
 		t.Fatal(err)

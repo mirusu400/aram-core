@@ -74,6 +74,10 @@ type Factory struct {
 	// (106/238) for raptor titles. The composition root (aram-emu) injects an
 	// aram-authd backend; leaving it nil keeps the default behavior.
 	RaptorNet netauth.Backend
+	// FallbackFont selects the embedded handset bitmap font used to render
+	// guest text that has no glyphs of its own. Empty inherits the runtime
+	// default (galmuri9); "neodgm" selects the softer NeoDunggeunmo look.
+	FallbackFont string
 }
 
 func NewFactory() Factory {
@@ -129,6 +133,7 @@ func (f Factory) Create(ctx context.Context, source machinecore.Source) (machine
 		initialResources: guest.CloneSliceMap(f.Resources),
 		frameRunBudget:   frameBudget,
 		raptorNet:        f.RaptorNet,
+		fallbackFont:     f.FallbackFont,
 	}
 	if err := machine.Load(ctx, source); err != nil {
 		_ = backend.Close()
@@ -161,6 +166,7 @@ type Machine struct {
 	ktf              *ktfrt.Runtime
 	raptor           *raptorrt.Runtime
 	raptorNet        netauth.Backend
+	fallbackFont     string
 	ktfStarted       bool
 	state            machinecore.State
 	source           machinecore.Source
@@ -317,6 +323,7 @@ func (m *Machine) Reset(ctx context.Context) error {
 			pkg,
 			m.frame,
 			profileID,
+			m.fallbackFont,
 		)
 		if err != nil {
 			m.state = machinecore.StateFaulted

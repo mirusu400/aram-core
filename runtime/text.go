@@ -131,6 +131,7 @@ type Text struct {
 	registry *Registry
 	graphics *Graphics
 	limits   TextLimits
+	fallback *handsetFont
 	fonts    map[ServiceID]*serviceFont
 	glyphs   uint32
 	pixels   uint64
@@ -140,6 +141,7 @@ func NewText(
 	registry *Registry,
 	graphics *Graphics,
 	limits TextLimits,
+	fallbackFont string,
 ) (*Text, error) {
 	if registry == nil || graphics == nil {
 		return nil, fmt.Errorf("%w: text dependencies are nil", ErrInvalidArgument)
@@ -152,7 +154,8 @@ func NewText(
 	}
 	return &Text{
 		registry: registry, graphics: graphics, limits: limits,
-		fonts: make(map[ServiceID]*serviceFont),
+		fallback: lookupHandsetFont(fallbackFont),
+		fonts:    make(map[ServiceID]*serviceFont),
 	}, nil
 }
 
@@ -219,7 +222,7 @@ func (t *Text) Glyph(owner OwnerID, id ServiceID, character rune) (Glyph, error)
 	if glyph, ok := font.glyphs[character]; ok {
 		return cloneGlyph(glyph), nil
 	}
-	glyph := rasterFallbackGlyph(font.descriptor, character)
+	glyph := rasterFallbackGlyph(t.fallback, font.descriptor, character)
 	if t.glyphs >= t.limits.MaxGlyphs ||
 		uint64(len(glyph.Alpha)) > t.limits.MaxGlyphPixels-t.pixels {
 		return Glyph{}, fmt.Errorf("%w: glyph cache limit", ErrLimitExceeded)
@@ -373,7 +376,7 @@ func (t *Text) prepareGlyphs(
 		if !ok {
 			glyph, ok = pending[character]
 			if !ok {
-				glyph = rasterFallbackGlyph(font.descriptor, character)
+				glyph = rasterFallbackGlyph(t.fallback, font.descriptor, character)
 				pending[character] = glyph
 				pendingPixels += uint64(len(glyph.Alpha))
 			}
@@ -562,7 +565,7 @@ func (t *Text) Restore(state TextState) error {
 					index,
 				)
 			}
-			expected := rasterFallbackGlyph(saved.Descriptor, character)
+			expected := rasterFallbackGlyph(t.fallback, saved.Descriptor, character)
 			if savedGlyph.Width != expected.Width ||
 				savedGlyph.Height != expected.Height ||
 				savedGlyph.Advance != expected.Advance ||

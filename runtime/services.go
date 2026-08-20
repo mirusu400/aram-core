@@ -94,6 +94,7 @@ type Config struct {
 	WallEpochMillis       int64
 	TimezoneOffsetMinutes int32
 	Locale                string
+	FallbackFont          string
 	RepeatDelay           time.Duration
 	RepeatPeriod          time.Duration
 	FrameDuration         time.Duration
@@ -108,6 +109,7 @@ func DefaultConfig() Config {
 		WallEpochMillis:       DefaultWallEpochMillis,
 		TimezoneOffsetMinutes: device.TimezoneMins,
 		Locale:                device.Locale,
+		FallbackFont:          defaultHandsetFontName,
 		RepeatDelay:           500 * time.Millisecond,
 		RepeatPeriod:          50 * time.Millisecond,
 		FrameDuration:         DefaultFrameDuration,
@@ -148,6 +150,10 @@ func normalizeConfig(config Config) (Config, error) {
 	if config.FrameDuration == 0 {
 		config.FrameDuration = defaults.FrameDuration
 	}
+	// Canonicalize the fallback font so an empty or unknown selection maps to
+	// the default. The name is part of the hashed configuration, so it must be
+	// deterministic for identical inputs.
+	config.FallbackFont = lookupHandsetFont(config.FallbackFont).name
 	config.Device = cloneDeviceConfig(config.Device)
 	if err := config.Limits.Validate(); err != nil {
 		return Config{}, err
@@ -294,7 +300,7 @@ func NewServices(config Config) (*Services, error) {
 	if err != nil {
 		return nil, err
 	}
-	text, err := NewText(registry, graphics, normalized.Limits.Text)
+	text, err := NewText(registry, graphics, normalized.Limits.Text, normalized.FallbackFont)
 	if err != nil {
 		return nil, err
 	}

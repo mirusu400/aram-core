@@ -173,6 +173,7 @@ func (m *Machine) Load(ctx context.Context, source machinecore.Source) error {
 		carrier,
 		32,
 		"wipi-c",
+		m.fallbackFont,
 	)
 	if err != nil {
 		return fmt.Errorf("initialize public WIPI runtime: %w", err)
@@ -300,6 +301,7 @@ func (m *Machine) loadRaptor(
 		"lgt",
 		16,
 		"lgt-raptor",
+		m.fallbackFont,
 	)
 	if err != nil {
 		return fmt.Errorf("initialize public WIPI runtime for Raptor: %w", err)
@@ -401,6 +403,7 @@ func (m *Machine) loadKTF(
 		pkg,
 		m.frame,
 		profileID,
+		m.fallbackFont,
 	)
 	if err != nil {
 		return err

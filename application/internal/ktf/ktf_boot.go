@@ -33,6 +33,7 @@ func NewRuntime(backend cpu.Backend, pkg ktf.Package) (*Runtime, error) {
 		pkg,
 		nil,
 		ProfileID,
+		"",
 	)
 }
 
@@ -41,6 +42,7 @@ func NewRuntimeForProfile(
 	pkg ktf.Package,
 	frame *image.RGBA,
 	profileID string,
+	fallbackFont string,
 ) (*Runtime, error) {
 	if backend == nil {
 		return nil, fmt.Errorf("initialize KTF runtime: CPU is nil")
@@ -58,6 +60,9 @@ func NewRuntimeForProfile(
 		profileID = ProfileID
 	}
 	serviceConfig := shared.DefaultConfig()
+	if fallbackFont != "" {
+		serviceConfig.FallbackFont = fallbackFont
+	}
 	serviceConfig.Device.ProfileID = profileID
 	serviceConfig.Device.Carrier = "ktf"
 	serviceConfig.Device.Manufacturer = "LG"

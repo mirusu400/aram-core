@@ -322,7 +322,17 @@ func NewRuntime(backend cpu.Backend, frame *image.RGBA) (*Runtime, error) {
 		"unknown",
 		32,
 		"wipi-c",
+		"",
 	)
+}
+
+// FallbackFontName reports the handset fallback font this runtime renders text
+// with, so an embedded host (the Raptor Java host) can match the selection.
+func (r *Runtime) FallbackFontName() string {
+	if r.Services == nil {
+		return ""
+	}
+	return r.Services.Config.FallbackFont
 }
 
 func NewRuntimeForProfile(
@@ -332,12 +342,16 @@ func NewRuntimeForProfile(
 	carrier string,
 	framebufferBits int,
 	serviceName string,
+	fallbackFont string,
 ) (*Runtime, error) {
 	layout, err := wipicatalog.NewLayout()
 	if err != nil {
 		return nil, fmt.Errorf("build WIPI import layout: %w", err)
 	}
 	serviceConfig := shared.DefaultConfig()
+	if fallbackFont != "" {
+		serviceConfig.FallbackFont = fallbackFont
+	}
 	serviceConfig.Device.ProfileID = profileID
 	serviceConfig.Device.Carrier = carrier
 	serviceConfig.Device.ScreenWidth = int32(frame.Bounds().Dx())

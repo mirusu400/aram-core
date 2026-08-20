@@ -34,3 +34,15 @@ Copyright (c) 2017-2021, Eunbin Jeong (Dalgona.)
 
 The bitmap font data is licensed under the SIL Open Font License, Version 1.1.
 A copy is provided at `third_party/neodgm/LICENSE`.
+
+## ARAM handset crisp bitmap
+
+The compressed 12x12 Hangul and symbol glyph data in
+`runtime/galmuri9_bitmap.go` was generated from Galmuri9 (part of the Galmuri
+bitmap font family) via `internal/cmd/gen-handset-font`. The derived bitmap
+uses the neutral "ARAM handset crisp" name rather than a reserved font name.
+
+Copyright (c) 2019-2025 Lee Minseo (quiple@quiple.dev)
+
+The bitmap font data is licensed under the SIL Open Font License, Version 1.1.
+A copy is provided at `third_party/galmuri/LICENSE`.

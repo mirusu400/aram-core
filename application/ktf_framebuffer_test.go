@@ -20,6 +20,7 @@ func TestKTFMachineFramebufferHidesUnpresentedPaint(t *testing.T) {
 		},
 		drawBuffer,
 		ktfrt.ProfileID,
+		"",
 	)
 	if err != nil {
 		t.Fatal(err)

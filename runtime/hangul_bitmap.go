@@ -1,104 +1,18 @@
-// Code generated from NeoDunggeunmo-derived bitmap data. DO NOT EDIT the
-// embedded base64 payload below by hand; the generator is not checked in
-// (see KNOWN_ISSUES.md §D D1).
+// NeoDunggeunmo-derived fallback bitmap payload. DO NOT EDIT the embedded
+// same outline used by internal/cmd/gen-handset-font for BDF sources). It is
+// decoded and registered by handset_font.go under the "neodgm" name.
 package runtime
 
-import (
-	"bytes"
-	"compress/zlib"
-	"encoding/base64"
-	"encoding/binary"
-	"fmt"
-	"io"
-)
+// neodgmExtraGlyphCount is the number of non-Hangul records in the payload.
+// The shared 12x12 layout constants and the decoder live in handset_font.go.
+const neodgmExtraGlyphCount = 1334
 
-const (
-	handsetHangulFirst       = 0xac00
-	handsetHangulLast        = 0xd7a3
-	handsetGlyphSourceWidth  = 12
-	handsetGlyphSourceHeight = 12
-	handsetGlyphPixels       = handsetGlyphSourceWidth * handsetGlyphSourceHeight
-	handsetGlyphBytes        = handsetGlyphPixels / 2
-	handsetHangulDataBytes   = (handsetHangulLast - handsetHangulFirst + 1) * handsetGlyphBytes
-	handsetExtraGlyphCount   = 1334
-	handsetExtraRecordBytes  = 4 + 1 + handsetGlyphBytes
-	handsetBitmapDataBytes   = handsetHangulDataBytes + handsetExtraGlyphCount*handsetExtraRecordBytes
-)
-
-// handsetBitmapData contains antialiased 12x12 handset glyphs derived from
-// NeoDunggeunmo. Each pixel is a four-bit alpha value, packed high nibble
-// first. The data covers every modern precomposed Hangul syllable plus the
-// font's complete non-Hangul symbol repertoire. The payload uses the neutral
-// ARAM fallback-font name. See third_party/neodgm/LICENSE for the SIL Open
-// Font License 1.1.
-var handsetBitmapData = decodeHandsetBitmapData()
-
-func decodeHandsetBitmapData() []byte {
-	compressed, err := base64.StdEncoding.DecodeString(handsetBitmapDataBase64)
-	if err != nil {
-		panic(fmt.Sprintf("runtime: decode embedded handset bitmap: %v", err))
-	}
-	reader, err := zlib.NewReader(bytes.NewReader(compressed))
-	if err != nil {
-		panic(fmt.Sprintf("runtime: open embedded handset bitmap: %v", err))
-	}
-	data, readErr := io.ReadAll(io.LimitReader(reader, handsetBitmapDataBytes+1))
-	closeErr := reader.Close()
-	if readErr != nil {
-		panic(fmt.Sprintf("runtime: inflate embedded handset bitmap: %v", readErr))
-	}
-	if closeErr != nil {
-		panic(fmt.Sprintf("runtime: close embedded handset bitmap: %v", closeErr))
-	}
-	if len(data) != handsetBitmapDataBytes {
-		panic(fmt.Sprintf(
-			"runtime: embedded handset bitmap is %d bytes, want %d",
-			len(data),
-			handsetBitmapDataBytes,
-		))
-	}
-	return data
-}
-
-func handsetHangulGlyphBitmap(character rune) []byte {
-	index := int(character - handsetHangulFirst)
-	offset := index * handsetGlyphBytes
-	return handsetBitmapData[offset : offset+handsetGlyphBytes]
-}
-
-func handsetExtraGlyphBitmap(character rune) (uint8, []byte, bool) {
-	data := handsetBitmapData[handsetHangulDataBytes:]
-	low, high := 0, handsetExtraGlyphCount
-	for low < high {
-		middle := low + (high-low)/2
-		offset := middle * handsetExtraRecordBytes
-		candidate := rune(binary.BigEndian.Uint32(data[offset : offset+4]))
-		switch {
-		case candidate < character:
-			low = middle + 1
-		case candidate > character:
-			high = middle
-		default:
-			advance := data[offset+4]
-			bitmap := data[offset+5 : offset+handsetExtraRecordBytes]
-			return advance, bitmap, true
-		}
-	}
-	return 0, nil, false
-}
-
-func handsetBitmapAlpha(bitmap []byte, x, y int32) byte {
-	pixel := int(y)*handsetGlyphSourceWidth + int(x)
-	packed := bitmap[pixel/2]
-	if pixel&1 == 0 {
-		packed >>= 4
-	} else {
-		packed &= 0x0f
-	}
-	return packed * 0x11
-}
-
-const handsetBitmapDataBase64 = `eNqsvQ94m9V5N3wsPZYUbCy5cVq6r++igTeya3QY3D+wuLHsCAglwaYkV/+QDrEyln6YxKVlpkvAKjAq6oDCytayz1vC+3bXS/uxxiVQ8n5KIneGkGDZ4ird
+// neodgmBitmapDataBase64 is the compressed, base64-encoded payload for the
+// NeoDunggeunmo-derived fallback font. It is decoded by newHandsetFont in
+// handset_font.go and registered under the "neodgm" name. The payload uses the
+// neutral ARAM fallback-font name; see third_party/neodgm/LICENSE for the SIL
+// Open Font License 1.1.
+const neodgmBitmapDataBase64 = `eNqsvQ94m9V5N3wsPZYUbCy5cVq6r++igTeya3QY3D+wuLHsCAglwaYkV/+QDrEyln6YxKVlpkvAKjAq6oDCytayz1vC+3bXS/uxxiVQ8n5KIneGkGDZ4ird
 2i4EeYOmWx1ihYhYjmTru+/7PJKe59Hz5xy5XN19PZOlX859n/uc+/md+z7nMMZYO+tKTbA4Y+6cmUzpPvFHQXpeY/gM/21g1f/aWXMqT59XZIo/u1O/Ur/f
 AM+p1Bw9xzXyzjpwMoTTTZ9webkOZyXhrCUELtel+DPirFW/Azj03K3KUhRwVnxvoorTy7qmcvA7ppTl0nH+7Jn6F5CuDsYCzJfF72oley6VOs7EcfA/xFmR
 OY4I3YRTeh1x9mlx1hNOgXqEy6UUf/ZM/RRkY5RtaIXfNs8dRYQTYyD9UcDf9nBqj3x7iqjFcvRyhcPhW5kyNDRUYF7ofWjnjDnORgscr4rTE/4MU76eG8JP

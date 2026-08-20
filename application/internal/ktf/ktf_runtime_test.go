@@ -7721,10 +7721,13 @@ func TestKTFWIPICDrawImageKeysOutMagenta(t *testing.T) {
 }
 
 func TestKTFWIPICDrawStringPaintsMeasuredRun(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
+	// Pinned to neodgm: this test asserts antialiased edge blending, which
+	// needs a font with partial-alpha glyphs. The default font is now the
+	// 1-bit-crisp galmuri9.
+	runtime, err := NewRuntimeForProfile(interpreter.New(), ktf.Package{
 		ClientName: "client.bin0",
 		Client:     []byte{0x70, 0x47},
-	})
+	}, nil, ProfileID, "neodgm")
 	if err != nil {
 		t.Fatal(err)
 	}
