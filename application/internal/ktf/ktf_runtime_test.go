@@ -7082,6 +7082,69 @@ func TestKTFJavaPresentationConsumesPendingWIPICScreen(t *testing.T) {
 	}
 }
 
+// TestKTFWIPICCommitDefersSurfaceSync guards the issue #54 performance fix:
+// committing a WIPI-C framebuffer must NOT eagerly read the whole framebuffer
+// into the shared surface. Graphics-heavy titles issue many draw primitives per
+// frame, so an eager per-commit sync makes each draw cost a full-framebuffer
+// read+convert. The commit only queues the write; the surface catches up when it
+// is actually consumed (present / Java paint boundary).
+func TestKTFWIPICCommitDefersSurfaceSync(t *testing.T) {
+	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.CPU.Close()
+	if err := runtime.MapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	runtime.frame = image.NewRGBA(image.Rect(0, 0, 8, 6))
+	framebufferAddress, err := runtime.EnsureWIPICScreenFramebuffer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	framebuffer := runtime.wipicFramebuffers[framebufferAddress]
+	surface := runtime.wipicSurfaceServices[framebufferAddress]
+	if surface == 0 {
+		t.Fatal("WIPI-C screen framebuffer has no shared surface")
+	}
+	var pixel [2]byte
+	binary.LittleEndian.PutUint16(pixel[:], 0xf800)
+	if err := runtime.CPU.WriteMemory(
+		framebuffer.pixels+uint32(framebuffer.stride+2*2),
+		pixel[:],
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.commitKTFWIPICFramebuffer(framebufferAddress); err != nil {
+		t.Fatal(err)
+	}
+	surfaceOffset := (1*framebuffer.width + 2) * 4
+	deferred, err := runtime.Services.Graphics.RGBA(runtime.ServiceOwner, surface)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deferred[surfaceOffset] == 0xff {
+		t.Fatal("commit eagerly synced the framebuffer; sync must be deferred to consumption")
+	}
+	// The consumer path (here, an explicit sync) is what publishes the pixel.
+	if err := runtime.syncKTFWIPICFramebuffer(framebufferAddress); err != nil {
+		t.Fatal(err)
+	}
+	published, err := runtime.Services.Graphics.RGBA(runtime.ServiceOwner, surface)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if published[surfaceOffset] != 0xff {
+		t.Fatalf(
+			"synced shared pixel red = %#02x, want 0xff",
+			published[surfaceOffset],
+		)
+	}
+}
+
 func TestKTFWIPICOffscreenFramebufferLifecycle(t *testing.T) {
 	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
 		ClientName: "client.bin0",

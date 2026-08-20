@@ -531,14 +531,18 @@ func (r *Runtime) presentWIPICFramebuffer(handle uint32) error {
 	return nil
 }
 
-// commitKTFWIPICFramebuffer publishes guest RGB565 writes to the shared
-// graphics service. Screen writes remain pending until the Java Card paint
-// boundary: KTF Clets commonly render from calcClet through WIPI-C and use an
-// otherwise empty Java paintClet only to submit that native framebuffer.
+// commitKTFWIPICFramebuffer marks a guest RGB565 framebuffer as ready to be
+// published to the shared graphics service. The actual CPU-memory read and
+// ReplacePixels conversion is deferred to the point where the surface is
+// consumed (presentWIPICFramebuffer / applyPendingWIPICScreen), both of which
+// call syncKTFWIPICFramebuffer unconditionally before reading. Syncing eagerly
+// here made every draw primitive (DrawImage, FillRect, ...) read and convert
+// the whole framebuffer, so a frame that composited many sprites paid an
+// O(draw-calls * framebuffer) cost and stuttered on graphics-heavy titles
+// (issue #54). Screen writes remain pending until the Java Card paint boundary:
+// KTF Clets commonly render from calcClet through WIPI-C and use an otherwise
+// empty Java paintClet only to submit that native framebuffer.
 func (r *Runtime) commitKTFWIPICFramebuffer(handle uint32) error {
-	if err := r.syncKTFWIPICFramebuffer(handle); err != nil {
-		return err
-	}
 	if framebuffer := r.wipicFramebuffers[handle]; framebuffer != nil && framebuffer.screen {
 		r.WipicScreenPending = true
 	}
