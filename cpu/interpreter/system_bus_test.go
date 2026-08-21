@@ -40,6 +40,44 @@ func TestAttachedSystemBusExecutesCodeAndDispatchesDataAccess(t *testing.T) {
 	}
 }
 
+func TestContextSystemBusAttributesDataAccessesToGuestInstructions(t *testing.T) {
+	bus := &contextTestSystemBus{testSystemBus: testSystemBus{memory: make(map[uint32]byte)}}
+	code := []uint32{
+		0xe59f0008, // LDR r0, [pc, #8] -> 0x2000
+		0xe5901000, // LDR r1, [r0]
+		0xe5801000, // STR r1, [r0]
+		0x00002000,
+	}
+	for index, instruction := range code {
+		var encoded [4]byte
+		binary.LittleEndian.PutUint32(encoded[:], instruction)
+		bus.writeRaw(0x1000+uint32(index*4), encoded[:])
+	}
+	bus.writeU32(0x2000, 41)
+
+	backend := New()
+	if err := backend.AttachSystemBus(bus); err != nil {
+		t.Fatal(err)
+	}
+	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 3)
+	if result.Err != nil || result.Reason != cpu.StopBudget {
+		t.Fatalf("Run result = %+v", result)
+	}
+	if len(bus.dataContexts) != 3 {
+		t.Fatalf("data contexts = %+v", bus.dataContexts)
+	}
+	want := []cpu.MemoryAccessContext{
+		{InstructionAddress: 0x1000, Mode: cpu.ModeARM, Attributed: true},
+		{InstructionAddress: 0x1004, Mode: cpu.ModeARM, Attributed: true},
+		{InstructionAddress: 0x1008, Mode: cpu.ModeARM, Attributed: true},
+	}
+	for index := range want {
+		if bus.dataContexts[index] != want[index] {
+			t.Fatalf("data context %d = %+v, want %+v", index, bus.dataContexts[index], want[index])
+		}
+	}
+}
+
 func TestAttachSystemBusRejectsExistingMappings(t *testing.T) {
 	backend := New()
 	if err := backend.Map(0x1000, 0x1000, cpu.PermissionRead|cpu.PermissionWrite); err != nil {
@@ -131,6 +169,33 @@ type testSystemBus struct {
 	executeReads int
 	dataReads    int
 	dataWrites   int
+}
+
+type contextTestSystemBus struct {
+	testSystemBus
+	dataContexts []cpu.MemoryAccessContext
+}
+
+func (b *contextTestSystemBus) ReadContext(
+	context cpu.MemoryAccessContext,
+	address uint32,
+	destination []byte,
+	permission cpu.Permissions,
+) error {
+	if permission != cpu.PermissionExecute {
+		b.dataContexts = append(b.dataContexts, context)
+	}
+	return b.Read(address, destination, permission)
+}
+
+func (b *contextTestSystemBus) WriteContext(
+	context cpu.MemoryAccessContext,
+	address uint32,
+	source []byte,
+	permission cpu.Permissions,
+) error {
+	b.dataContexts = append(b.dataContexts, context)
+	return b.Write(address, source, permission)
 }
 
 func (b *testSystemBus) Read(address uint32, destination []byte, permission cpu.Permissions) error {

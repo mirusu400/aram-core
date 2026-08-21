@@ -75,6 +75,8 @@ type Backend struct {
 	mapped         uint64
 	memoryLimit    uint64
 	systemBus      cpu.MemoryBus
+	contextBus     cpu.ContextMemoryBus
+	accessContext  cpu.MemoryAccessContext
 	executionTraps map[cpu.ExecutionTrap]struct{}
 	pcHits         map[uint32]uint64 // env ARAM_PC_TRACE: per-PC execution histogram
 }
@@ -246,6 +248,7 @@ func (b *Backend) AttachSystemBus(bus cpu.MemoryBus) error {
 		return fmt.Errorf("attach system bus with private mappings: %w", cpu.ErrInvalidMapping)
 	}
 	b.systemBus = bus
+	b.contextBus, _ = bus.(cpu.ContextMemoryBus)
 	clear(b.regionHints[:])
 	b.executeData = nil
 	b.dataData = nil
@@ -444,6 +447,7 @@ func (b *Backend) Close() error {
 	b.interruptLines.Store(0)
 	b.regions = nil
 	b.systemBus = nil
+	b.contextBus = nil
 	b.executionTraps = nil
 	b.tlb = nil
 	clear(b.regionHints[:])

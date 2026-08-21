@@ -3,9 +3,12 @@ package system
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/mirusu400/aram-core/cpu"
@@ -95,6 +98,10 @@ func TestSCHW830PrivateReferenceRunsOriginalFirmwarePastTimeTickSetup(t *testing
 	})
 
 	bus := NewBus()
+	mmioTrace := newSCHW830MMIOTrace(os.Getenv("ARAM_TRACE_SCHW830_MMIO") != "")
+	if mmioTrace != nil {
+		bus.SetMMIOObserver(mmioTrace.Observe)
+	}
 	if err := board.ApplyMemory(bus); err != nil {
 		t.Fatal(err)
 	}
@@ -193,6 +200,27 @@ func TestSCHW830PrivateReferenceRunsOriginalFirmwarePastTimeTickSetup(t *testing
 	result = runner.Run(context.Background(), result.PC, cpu.ModeARM, 552_000_000)
 	pcBaseline := backend.PCHits()
 	if result.Err == nil && result.Reason == cpu.StopBudget {
+		irqEnable0, irq0Err := interruptController.Read(qualcommIRQEnable0Offset, Width32)
+		irqEnable1, irq1Err := interruptController.Read(qualcommIRQEnable1Offset, Width32)
+		fiqEnable0, fiq0Err := interruptController.Read(qualcommFIQEnable0Offset, Width32)
+		fiqEnable1, fiq1Err := interruptController.Read(qualcommFIQEnable1Offset, Width32)
+		if irq0Err != nil || irq1Err != nil || fiq0Err != nil || fiq1Err != nil {
+			t.Fatalf("read interrupt enables: %v %v %v %v", irq0Err, irq1Err, fiq0Err, fiq1Err)
+		}
+		t.Logf(
+			"interrupt enables after warmup: IRQ=%08x/%08x FIQ=%08x/%08x",
+			irqEnable0, irqEnable1, fiqEnable0, fiqEnable1,
+		)
+		if sourceText := os.Getenv("ARAM_INJECT_IRQ_SOURCE"); sourceText != "" {
+			source, parseErr := strconv.ParseUint(sourceText, 0, 8)
+			if parseErr != nil || source >= 64 {
+				t.Fatalf("invalid ARAM_INJECT_IRQ_SOURCE %q", sourceText)
+			}
+			if err := interruptController.PulseSource(uint8(source)); err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("injected one Qualcomm interrupt source %d pulse", source)
+		}
 		status, statusErr := backend.ReadRegister(cpu.RegisterCPSR)
 		if statusErr != nil {
 			t.Fatal(statusErr)
@@ -249,16 +277,150 @@ func TestSCHW830PrivateReferenceRunsOriginalFirmwarePastTimeTickSetup(t *testing
 			commands, data, panel.CurrentCommand(), panel.LastData(),
 		)
 	}
+	finalStatus, finalStatusErr := backend.ReadRegister(cpu.RegisterCPSR)
+	if finalStatusErr != nil {
+		t.Fatal(finalStatusErr)
+	}
+	finalLink, finalLinkErr := backend.ReadRegister(cpu.RegisterLR)
+	if finalLinkErr != nil {
+		t.Fatal(finalLinkErr)
+	}
 	t.Logf(
-		"post-panel boundary: instructions=%d pc=0x%08x err=%v panel=%d/%d command=0x%x data=0x%x watchdog=%d",
+		"post-panel boundary: instructions=%d pc=0x%08x cpsr=0x%08x lr=0x%08x err=%v panel=%d/%d command=0x%x data=0x%x watchdog=%d irq-status=%08x/%08x",
 		result.Instructions,
 		result.PC,
+		finalStatus,
+		finalLink,
 		result.Err,
 		commands,
 		data,
 		panel.CurrentCommand(),
 		panel.LastData(),
 		bootControl.WatchdogServices(),
+		interruptController.status[0],
+		interruptController.status[1],
+	)
+	if mmioTrace != nil {
+		t.Logf("SCH-W830 focused MMIO trace:\n%s", mmioTrace.String())
+		for _, probe := range []struct {
+			address uint32
+			size    int
+		}{
+			{address: 0x01701db0, size: 0x50},
+			{address: 0x017d2920, size: 0x60},
+		} {
+			code := make([]byte, probe.size)
+			if err := backend.ReadMemory(probe.address, code); err != nil {
+				t.Logf("trace code at 0x%08x: %v", probe.address, err)
+				continue
+			}
+			t.Logf("trace code at 0x%08x: %x", probe.address, code)
+		}
+	}
+}
+
+const schw830MMIOTraceWindow = 64
+
+type schw830MMIOTrace struct {
+	total  uint64
+	first  []MMIOAccess
+	last   []MMIOAccess
+	counts map[schw830MMIOTraceKey]uint64
+}
+
+type schw830MMIOTraceKey struct {
+	context cpu.MemoryAccessContext
+	address uint32
+	width   Width
+	value   uint32
+	write   bool
+}
+
+func newSCHW830MMIOTrace(enabled bool) *schw830MMIOTrace {
+	if !enabled {
+		return nil
+	}
+	return &schw830MMIOTrace{counts: make(map[schw830MMIOTraceKey]uint64)}
+}
+
+func (trace *schw830MMIOTrace) Observe(access MMIOAccess) {
+	interrupt := access.Address >= 0x80000900 && access.Address < 0x80000960
+	timeBlock := access.Address >= 0x80005400 && access.Address < 0x80005500
+	if !interrupt && !timeBlock {
+		return
+	}
+	trace.total++
+	trace.counts[schw830MMIOTraceKey{
+		context: access.Context, address: access.Address, width: access.Width,
+		value: access.Value, write: access.Write,
+	}]++
+	if len(trace.first) < schw830MMIOTraceWindow {
+		trace.first = append(trace.first, access)
+	}
+	if len(trace.last) < schw830MMIOTraceWindow {
+		trace.last = append(trace.last, access)
+		return
+	}
+	trace.last[(trace.total-1)%schw830MMIOTraceWindow] = access
+}
+
+func (trace *schw830MMIOTrace) String() string {
+	var output strings.Builder
+	fmt.Fprintf(
+		&output, "total=%d distinct=%d first=%d last=%d",
+		trace.total, len(trace.counts), len(trace.first), len(trace.last),
+	)
+	keys := make([]schw830MMIOTraceKey, 0, len(trace.counts))
+	for key := range trace.counts {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(left, right int) bool {
+		if keys[left].address != keys[right].address {
+			return keys[left].address < keys[right].address
+		}
+		if keys[left].write != keys[right].write {
+			return !keys[left].write
+		}
+		if keys[left].context.InstructionAddress != keys[right].context.InstructionAddress {
+			return keys[left].context.InstructionAddress < keys[right].context.InstructionAddress
+		}
+		return keys[left].value < keys[right].value
+	})
+	for _, key := range keys {
+		direction := "R"
+		if key.write {
+			direction = "W"
+		}
+		fmt.Fprintf(
+			&output,
+			"\ncount %-5d %s pc=0x%08x/%d address=0x%08x width=%d value=0x%08x",
+			trace.counts[key], direction, key.context.InstructionAddress, key.context.Mode,
+			key.address, key.width, key.value,
+		)
+	}
+	for _, access := range trace.first {
+		fmt.Fprintf(&output, "\nfirst %s", formatSCHW830MMIOAccess(access))
+	}
+	if trace.total <= schw830MMIOTraceWindow {
+		return output.String()
+	}
+	start := int(trace.total % schw830MMIOTraceWindow)
+	for index := range trace.last {
+		access := trace.last[(start+index)%len(trace.last)]
+		fmt.Fprintf(&output, "\nlast  %s", formatSCHW830MMIOAccess(access))
+	}
+	return output.String()
+}
+
+func formatSCHW830MMIOAccess(access MMIOAccess) string {
+	direction := "R"
+	if access.Write {
+		direction = "W"
+	}
+	return fmt.Sprintf(
+		"%s pc=0x%08x/%d address=0x%08x width=%d value=0x%08x err=%v",
+		direction, access.Context.InstructionAddress, access.Context.Mode,
+		access.Address, access.Width, access.Value, access.Err,
 	)
 }
 

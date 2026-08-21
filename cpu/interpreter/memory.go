@@ -6,6 +6,20 @@ import (
 	"github.com/mirusu400/aram-core/cpu"
 )
 
+func (b *Backend) readSystemBus(address uint32, destination []byte, permission cpu.Permissions) error {
+	if b.contextBus != nil {
+		return b.contextBus.ReadContext(b.accessContext, address, destination, permission)
+	}
+	return b.systemBus.Read(address, destination, permission)
+}
+
+func (b *Backend) writeSystemBus(address uint32, source []byte, permission cpu.Permissions) error {
+	if b.contextBus != nil {
+		return b.contextBus.WriteContext(b.accessContext, address, source, permission)
+	}
+	return b.systemBus.Write(address, source, permission)
+}
+
 // dataHit returns the cached data-region slice and the offset of a size-byte
 // access within it when the cache fully covers the access with the required
 // permission. It lets repeated data reads/writes with locality skip the sorted
@@ -43,7 +57,7 @@ func (b *Backend) read16(address uint32, permission cpu.Permissions) (uint16, er
 	}
 	if b.systemBus != nil {
 		var data [2]byte
-		if err := b.systemBus.Read(address, data[:], permission); err != nil {
+		if err := b.readSystemBus(address, data[:], permission); err != nil {
 			return 0, err
 		}
 		return binary.LittleEndian.Uint16(data[:]), nil
@@ -79,7 +93,7 @@ func (b *Backend) read32(address uint32, permission cpu.Permissions) (uint32, er
 	}
 	if b.systemBus != nil {
 		var data [4]byte
-		if err := b.systemBus.Read(address, data[:], permission); err != nil {
+		if err := b.readSystemBus(address, data[:], permission); err != nil {
 			return 0, err
 		}
 		return binary.LittleEndian.Uint32(data[:]), nil
@@ -115,7 +129,7 @@ func (b *Backend) fetch16(address uint32) (uint16, error) {
 	}
 	if b.systemBus != nil {
 		var data [2]byte
-		if err := b.systemBus.Read(address, data[:], cpu.PermissionExecute); err != nil {
+		if err := b.readSystemBus(address, data[:], cpu.PermissionExecute); err != nil {
 			return 0, err
 		}
 		return binary.LittleEndian.Uint16(data[:]), nil
@@ -155,7 +169,7 @@ func (b *Backend) fetch32(address uint32) (uint32, error) {
 	}
 	if b.systemBus != nil {
 		var data [4]byte
-		if err := b.systemBus.Read(address, data[:], cpu.PermissionExecute); err != nil {
+		if err := b.readSystemBus(address, data[:], cpu.PermissionExecute); err != nil {
 			return 0, err
 		}
 		return binary.LittleEndian.Uint32(data[:]), nil
@@ -198,7 +212,7 @@ func (b *Backend) write16(address uint32, value uint16, permission cpu.Permissio
 	if b.systemBus != nil {
 		var data [2]byte
 		binary.LittleEndian.PutUint16(data[:], value)
-		return b.systemBus.Write(address, data[:], permission)
+		return b.writeSystemBus(address, data[:], permission)
 	}
 	if data, offset, ok := b.dataHit(address, 2, permission); ok {
 		binary.LittleEndian.PutUint16(data[offset:offset+2], value)
@@ -227,7 +241,7 @@ func (b *Backend) write32(address, value uint32, permission cpu.Permissions) err
 	if b.systemBus != nil {
 		var data [4]byte
 		binary.LittleEndian.PutUint32(data[:], value)
-		return b.systemBus.Write(address, data[:], permission)
+		return b.writeSystemBus(address, data[:], permission)
 	}
 	if data, offset, ok := b.dataHit(address, 4, permission); ok {
 		binary.LittleEndian.PutUint32(data[offset:offset+4], value)
@@ -257,7 +271,7 @@ func (b *Backend) read8(address uint32, permission cpu.Permissions) (byte, error
 	}
 	if b.systemBus != nil {
 		var data [1]byte
-		if err := b.systemBus.Read(address, data[:], permission); err != nil {
+		if err := b.readSystemBus(address, data[:], permission); err != nil {
 			return 0, err
 		}
 		return data[0], nil
@@ -278,7 +292,7 @@ func (b *Backend) write8(address uint32, value byte, permission cpu.Permissions)
 		return b.writeVirtual(address, []byte{value}, permission)
 	}
 	if b.systemBus != nil {
-		return b.systemBus.Write(address, []byte{value}, permission)
+		return b.writeSystemBus(address, []byte{value}, permission)
 	}
 	if data, offset, ok := b.dataHit(address, 1, permission); ok {
 		data[offset] = value
@@ -302,7 +316,7 @@ func (b *Backend) copyOut(address uint32, destination []byte, permission cpu.Per
 		remaining := destination
 		for len(remaining) > 0 {
 			count := physicalTransferWidth(current, len(remaining))
-			if err := b.systemBus.Read(current, remaining[:count], permission); err != nil {
+			if err := b.readSystemBus(current, remaining[:count], permission); err != nil {
 				return err
 			}
 			current += uint32(count)
@@ -340,7 +354,7 @@ func (b *Backend) copyIn(address uint32, source []byte, permission cpu.Permissio
 		remaining := source
 		for len(remaining) > 0 {
 			count := physicalTransferWidth(current, len(remaining))
-			if err := b.systemBus.Write(current, remaining[:count], permission); err != nil {
+			if err := b.writeSystemBus(current, remaining[:count], permission); err != nil {
 				return err
 			}
 			current += uint32(count)

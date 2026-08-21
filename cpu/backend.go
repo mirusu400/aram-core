@@ -122,6 +122,23 @@ type MemoryBus interface {
 	Write(address uint32, source []byte, permission Permissions) error
 }
 
+// MemoryAccessContext attributes a physical bus access to the guest
+// instruction that caused it. Whole-system buses may use this optional context
+// for diagnostics without coupling CPU backends to platform-specific devices.
+type MemoryAccessContext struct {
+	InstructionAddress uint32
+	Mode               Mode
+	Attributed         bool
+}
+
+// ContextMemoryBus optionally receives the guest instruction context for each
+// physical access. Backends fall back to MemoryBus when it is not implemented.
+type ContextMemoryBus interface {
+	MemoryBus
+	ReadContext(MemoryAccessContext, uint32, []byte, Permissions) error
+	WriteContext(MemoryAccessContext, uint32, []byte, Permissions) error
+}
+
 type SystemBusBackend interface {
 	Backend
 	AttachSystemBus(MemoryBus) error

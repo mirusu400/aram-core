@@ -64,6 +64,23 @@ type Fault struct {
 	Err        error
 }
 
+// MMIOAccess is one completed device access as observed at the physical bus.
+// Context identifies the guest instruction responsible for the access when
+// the CPU backend uses the optional cpu.ContextMemoryBus contract.
+type MMIOAccess struct {
+	Context    cpu.MemoryAccessContext
+	Region     string
+	Address    uint32
+	Offset     uint32
+	Width      Width
+	Permission cpu.Permissions
+	Value      uint32
+	Write      bool
+	Err        error
+}
+
+type MMIOObserver func(MMIOAccess)
+
 func (f *Fault) Error() string {
 	region := f.Region
 	if region == "" {
@@ -107,12 +124,22 @@ func (r *region) end() uint64 {
 }
 
 type Bus struct {
-	mu      sync.Mutex
-	regions []region
+	mu           sync.Mutex
+	regions      []region
+	mmioObserver MMIOObserver
 }
 
 func NewBus() *Bus {
 	return &Bus{}
+}
+
+// SetMMIOObserver replaces the optional diagnostic observer. The observer is
+// called after each MMIO access and may safely inspect the bus, but it must not
+// mutate the byte slices supplied to ReadContext or WriteContext.
+func (b *Bus) SetMMIOObserver(observer MMIOObserver) {
+	b.mu.Lock()
+	b.mmioObserver = observer
+	b.mu.Unlock()
 }
 
 func (b *Bus) MapRAM(name string, address, size uint32) error {
@@ -182,39 +209,82 @@ func (b *Bus) mapRegion(mapped region) error {
 }
 
 func (b *Bus) Read(address uint32, destination []byte, permission cpu.Permissions) error {
+	return b.ReadContext(cpu.MemoryAccessContext{}, address, destination, permission)
+}
+
+func (b *Bus) ReadContext(
+	context cpu.MemoryAccessContext,
+	address uint32,
+	destination []byte,
+	permission cpu.Permissions,
+) error {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	width, mapped, offset, err := b.resolve(address, len(destination), permission)
 	if err != nil {
+		b.mu.Unlock()
 		return err
 	}
 	if mapped.kind != regionMMIO {
 		copy(destination, mapped.data[offset:offset+len(destination)])
+		b.mu.Unlock()
 		return nil
 	}
-	value, err := mapped.device.Read(uint32(offset), width)
+	regionName := mapped.name
+	deviceOffset := uint32(offset)
+	value, err := mapped.device.Read(deviceOffset, width)
+	observer := b.mmioObserver
+	b.mu.Unlock()
 	if err != nil {
-		return &Fault{Region: mapped.name, Address: address, Width: width, Permission: permission, Err: err}
+		err = &Fault{Region: regionName, Address: address, Width: width, Permission: permission, Err: err}
+	} else {
+		putValue(destination, value)
 	}
-	putValue(destination, value)
-	return nil
+	if observer != nil {
+		observer(MMIOAccess{
+			Context: context, Region: regionName, Address: address, Offset: deviceOffset,
+			Width: width, Permission: permission, Value: value, Err: err,
+		})
+	}
+	return err
 }
 
 func (b *Bus) Write(address uint32, source []byte, permission cpu.Permissions) error {
+	return b.WriteContext(cpu.MemoryAccessContext{}, address, source, permission)
+}
+
+func (b *Bus) WriteContext(
+	context cpu.MemoryAccessContext,
+	address uint32,
+	source []byte,
+	permission cpu.Permissions,
+) error {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	width, mapped, offset, err := b.resolve(address, len(source), permission)
 	if err != nil {
+		b.mu.Unlock()
 		return err
 	}
 	if mapped.kind != regionMMIO {
 		copy(mapped.data[offset:offset+len(source)], source)
+		b.mu.Unlock()
 		return nil
 	}
-	if err := mapped.device.Write(uint32(offset), width, valueOf(source)); err != nil {
-		return &Fault{Region: mapped.name, Address: address, Width: width, Permission: permission, Err: err}
+	regionName := mapped.name
+	deviceOffset := uint32(offset)
+	value := valueOf(source)
+	err = mapped.device.Write(deviceOffset, width, value)
+	observer := b.mmioObserver
+	b.mu.Unlock()
+	if err != nil {
+		err = &Fault{Region: regionName, Address: address, Width: width, Permission: permission, Err: err}
 	}
-	return nil
+	if observer != nil {
+		observer(MMIOAccess{
+			Context: context, Region: regionName, Address: address, Offset: deviceOffset,
+			Width: width, Permission: permission, Value: value, Write: true, Err: err,
+		})
+	}
+	return err
 }
 
 func (b *Bus) resolve(

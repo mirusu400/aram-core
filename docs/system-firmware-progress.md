@@ -24,7 +24,9 @@ a complete cold-boot claim.
 - The interpreter implements ARMv5 short-descriptor translation for sections,
   coarse/fine tables, large/small/tiny pages, domains and AP permissions,
   FCSE, CP15 fault state, deterministic software TLB invalidation, and
-  MMU-aware public memory access. Architectural abort delivery is still absent.
+  MMU-aware public memory access. Translation/domain/permission faults enter
+  architectural prefetch/data-abort vectors; external physical-bus aborts are
+  still reported as host execution faults.
 - ARM block transfers implement privileged `^` behavior for user-register-bank
   access and `LDM ... pc^` exception return with CPSR restoration.
 - The interpreter accepts level-sensitive IRQ/FIQ inputs, applies mask and
@@ -38,11 +40,15 @@ a complete cold-boot claim.
   reserved MMIO gaps into read-zero/write-drop space.
 - Qualcomm compatibility devices now cover the NAND/PBL controls, MPMC register
   set, clock/reset latches, sparse clock-regime apertures, evidenced IRQ setup
-  words, a stable-pair free-running timetick, and timetick-match readiness. The
+  words, a stable-pair timetick compatibility counter, and timetick-match
+  synchronization status. The
   separate INTCTL model implements two 32-source sticky status banks,
   IRQ/FIQ enables, source deassert-then-clear acknowledgement, and CPU output
   lines at the family-reference `CHIP_BASE+0x0900` window.
   Unknown addresses and widths still fault.
+- CPU-attributed MMIO observation records the guest ARM/Thumb instruction PC,
+  physical address, width, direction, value, region, and error without changing
+  device behavior. It is optional and inactive during normal execution.
 - The generic 16-bit parallel-panel transport records original command/data
   writes. Panel-controller commands, a pixel surface, scanout, and host input
   are not implemented yet.
@@ -75,10 +81,15 @@ address, provides the bounded PBL IRAM/service-table contract, and starts the
 original QCSBL. QCSBL reads MIBIB and OEMSBL through the modeled NAND device.
 The original firmware then initializes the panel, enables the MMU, performs
 privileged exception return into transformed runtime code, configures clocks
-and IRQ tables, reads the deterministic timetick, and continues transformed
-runtime work without an MMIO or CPU fault during the measured budget. IRQ
-delivery is not implemented yet, so this does not claim interrupt-driven OS
-progress.
+and IRQ tables, reads the timetick, and continues transformed runtime work
+without an MMIO or CPU fault during the measured budget. An attributed trace
+identifies the stable-pair reads at Thumb PCs `0x01701DCC`/`0x01701DD0` and the
+match-write/synchronization loop at `0x017D2942`..`0x017D295C`. The reference
+register contract identifies `0x800054C4` as a 32-bit free-running timetick
+match value and `0x800054C0` bit 0 as its synchronization status. CPU IRQ/FIQ
+entry and INTCTL line delivery are implemented, but the SCH-W830 timer source
+number and clock cadence are not yet evidenced and wired. This does not claim
+interrupt-driven OS progress.
 
 Forward execution also falsified the earlier hypothesis that `0x00107FFC` was
 a required SIM-secure module. It is an OEM fatal/assert diagnostic reached
@@ -102,7 +113,9 @@ fault; a larger instruction budget alone is therefore not evidence of UI boot.
 The next targets are:
 
 1. Add a deterministic system-machine/device clock and use an evidenced timer
-   compare to drive the INTCTL source consumed by SCH-W830 firmware.
+   compare to drive the INTCTL source consumed by SCH-W830 firmware; keep the
+   source number and core-to-sleep-clock ratio profile data rather than family
+   guesses.
 2. Deliver external physical-bus and undefined-instruction exceptions without
    hiding unsupported interpreter or MMIO implementation boundaries.
 3. Decode the SCH-W830 panel-controller command stream into a pixel surface and

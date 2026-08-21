@@ -51,6 +51,47 @@ func TestBusRoutesRAMROMAndTypedMMIO(t *testing.T) {
 	}
 }
 
+func TestBusMMIOObserverReceivesInstructionContext(t *testing.T) {
+	bus := NewBus()
+	if err := bus.MapRAM("ram", 0x1000, 4); err != nil {
+		t.Fatal(err)
+	}
+	device := &registerDevice{value: 0x11223344}
+	if err := bus.MapMMIO("timer", 0x3000, 4, device); err != nil {
+		t.Fatal(err)
+	}
+	var accesses []MMIOAccess
+	bus.SetMMIOObserver(func(access MMIOAccess) {
+		accesses = append(accesses, access)
+	})
+	context := cpu.MemoryAccessContext{
+		InstructionAddress: 0x8004, Mode: cpu.ModeThumb, Attributed: true,
+	}
+	var value [4]byte
+	if err := bus.ReadContext(context, 0x3000, value[:], cpu.PermissionRead); err != nil {
+		t.Fatal(err)
+	}
+	binary.LittleEndian.PutUint32(value[:], 0xaabbccdd)
+	if err := bus.WriteContext(context, 0x3000, value[:], cpu.PermissionWrite); err != nil {
+		t.Fatal(err)
+	}
+	if err := bus.ReadContext(context, 0x1000, value[:], cpu.PermissionRead); err != nil {
+		t.Fatal(err)
+	}
+	if len(accesses) != 2 {
+		t.Fatalf("observed %d MMIO accesses, want 2", len(accesses))
+	}
+	if got := accesses[0]; got.Context != context || got.Region != "timer" ||
+		got.Address != 0x3000 || got.Offset != 0 || got.Width != Width32 ||
+		got.Permission != cpu.PermissionRead || got.Value != 0x11223344 || got.Write || got.Err != nil {
+		t.Fatalf("observed read = %+v", got)
+	}
+	if got := accesses[1]; got.Context != context || got.Permission != cpu.PermissionWrite ||
+		got.Value != 0xaabbccdd || !got.Write || got.Err != nil {
+		t.Fatalf("observed write = %+v", got)
+	}
+}
+
 func TestBusRejectsOverlapAlignmentAndCrossRegionAccess(t *testing.T) {
 	bus := NewBus()
 	if err := bus.MapRAM("ram", 0x1000, 0x101); err != nil {

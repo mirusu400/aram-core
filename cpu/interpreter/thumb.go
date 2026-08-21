@@ -114,6 +114,9 @@ func (b *Backend) runThumb(limit uint64) (uint64, *cpu.StopReason, error) {
 			b.pcHits[b.regs[cpu.RegisterPC]]++
 		}
 		pc := b.regs[cpu.RegisterPC]
+		b.accessContext = cpu.MemoryAccessContext{
+			InstructionAddress: pc, Mode: cpu.ModeThumb, Attributed: true,
+		}
 		var instruction uint16
 		var err error
 		if !b.mmuEnabled() && pc >= b.executeAddress {
