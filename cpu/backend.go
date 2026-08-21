@@ -100,10 +100,11 @@ const (
 	StopFault
 	StopBudget
 	StopExited
+	StopExecutionTrap
 )
 
 func (r StopReason) Valid() bool {
-	return r >= StopRequested && r <= StopExited
+	return r >= StopRequested && r <= StopExecutionTrap
 }
 
 type Result struct {
@@ -126,6 +127,26 @@ type SystemBusBackend interface {
 	AttachSystemBus(MemoryBus) error
 }
 
+// ExecutionTrap identifies an instruction address that whole-system code owns
+// as an explicit host boundary. The trapped instruction is not retired and no
+// guest bytes are changed. Application-mode backends need not implement this
+// optional contract.
+type ExecutionTrap struct {
+	Address uint32
+	Mode    Mode
+}
+
+func (t ExecutionTrap) Valid() bool {
+	return t.Mode.Valid() &&
+		(t.Mode != ModeARM || t.Address&3 == 0) &&
+		(t.Mode != ModeThumb || t.Address&1 == 0)
+}
+
+type ExecutionTrapBackend interface {
+	Backend
+	SetExecutionTraps([]ExecutionTrap) error
+}
+
 type SystemCapability uint64
 
 const (
@@ -135,6 +156,7 @@ const (
 	CapabilityMMU
 	CapabilityExceptions
 	CapabilityInterruptLines
+	CapabilityExecutionTraps
 )
 
 type SystemCapabilities uint64

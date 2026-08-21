@@ -15,6 +15,10 @@ import (
 func (b *Backend) runARM(limit uint64) (uint64, *cpu.StopReason, error) {
 	var executed uint64
 	for executed < limit && b.mode == cpu.ModeARM {
+		if b.executionTrapAt(cpu.ModeARM, b.regs[cpu.RegisterPC]) {
+			reason := cpu.StopExecutionTrap
+			return executed, &reason, nil
+		}
 		if b.pcHits != nil {
 			b.pcHits[b.regs[cpu.RegisterPC]]++
 		}

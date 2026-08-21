@@ -34,12 +34,34 @@ func TestIdentityValidation(t *testing.T) {
 }
 
 func TestStopReasonValidation(t *testing.T) {
-	for reason := StopRequested; reason <= StopExited; reason++ {
+	for reason := StopRequested; reason <= StopExecutionTrap; reason++ {
 		if !reason.Valid() {
 			t.Fatalf("StopReason(%d).Valid() = false", reason)
 		}
 	}
 	if StopReason(0xff).Valid() {
 		t.Fatal("invalid stop reason was accepted")
+	}
+}
+
+func TestExecutionTrapValidation(t *testing.T) {
+	valid := []ExecutionTrap{
+		{Address: 0x1000, Mode: ModeARM},
+		{Address: 0x1002, Mode: ModeThumb},
+	}
+	for _, trap := range valid {
+		if !trap.Valid() {
+			t.Fatalf("ExecutionTrap(%+v).Valid() = false", trap)
+		}
+	}
+	invalid := []ExecutionTrap{
+		{Address: 0x1002, Mode: ModeARM},
+		{Address: 0x1001, Mode: ModeThumb},
+		{Address: 0x1000, Mode: Mode(0xff)},
+	}
+	for _, trap := range invalid {
+		if trap.Valid() {
+			t.Fatalf("ExecutionTrap(%+v).Valid() = true", trap)
+		}
 	}
 }

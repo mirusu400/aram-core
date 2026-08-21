@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/mirusu400/aram-core/cpu"
 )
 
 type MemoryKind string
@@ -19,16 +21,44 @@ type MemoryRegionProfile struct {
 	Size    uint32
 }
 
+type HLEReturn string
+
+const (
+	HLEReturnLinkRegister HLEReturn = "link-register"
+)
+
+type HLECallProfile struct {
+	ID       string
+	Contract string
+	Address  uint32
+	Mode     cpu.Mode
+	Return   HLEReturn
+}
+
+func (p HLECallProfile) validate() error {
+	trap := cpu.ExecutionTrap{Address: p.Address, Mode: p.Mode}
+	if !validProfileID(p.ID) || !validProfileID(p.Contract) || !trap.Valid() ||
+		p.Return != HLEReturnLinkRegister {
+		return fmt.Errorf("invalid HLE call profile %q", p.ID)
+	}
+	return nil
+}
+
 type BoardProfile struct {
 	ID              string
 	PlatformID      string
 	FirmwareBuildID string
+	NANDReadID      uint32
 	Memory          []MemoryRegionProfile
+	HLECalls        []HLECallProfile
 }
 
 func (p BoardProfile) Validate() error {
 	if !validProfileID(p.ID) || !validProfileID(p.PlatformID) || !validProfileID(p.FirmwareBuildID) {
 		return fmt.Errorf("system board profile identity is invalid")
+	}
+	if p.NANDReadID&^uint32(0xffff) != 0 {
+		return fmt.Errorf("board profile %q has invalid NAND read ID 0x%x", p.ID, p.NANDReadID)
 	}
 	memory := append([]MemoryRegionProfile(nil), p.Memory...)
 	for _, region := range memory {
@@ -48,6 +78,22 @@ func (p BoardProfile) Validate() error {
 				memory[index].ID,
 			)
 		}
+	}
+	callIDs := make(map[string]struct{}, len(p.HLECalls))
+	callTraps := make(map[cpu.ExecutionTrap]struct{}, len(p.HLECalls))
+	for _, call := range p.HLECalls {
+		if err := call.validate(); err != nil {
+			return fmt.Errorf("board profile %q: %w", p.ID, err)
+		}
+		if _, duplicate := callIDs[call.ID]; duplicate {
+			return fmt.Errorf("board profile %q repeats HLE call %q", p.ID, call.ID)
+		}
+		trap := cpu.ExecutionTrap{Address: call.Address, Mode: call.Mode}
+		if _, duplicate := callTraps[trap]; duplicate {
+			return fmt.Errorf("board profile %q repeats HLE address 0x%08x", p.ID, call.Address)
+		}
+		callIDs[call.ID] = struct{}{}
+		callTraps[trap] = struct{}{}
 	}
 	return nil
 }
@@ -75,7 +121,14 @@ func SCHW830DL21BoardProfile() BoardProfile {
 		ID:              "samsung.sch-w830",
 		PlatformID:      "qualcomm.arm9-sch-family",
 		FirmwareBuildID: "samsung.sch-w830.dl21",
+		NANDReadID:      0x0000ecaa,
 		Memory: []MemoryRegionProfile{
+			{
+				ID:      "ebi-ram",
+				Kind:    MemoryRAM,
+				Address: 0x00000000,
+				Size:    0x08000000,
+			},
 			{
 				ID:      "pbl-iram",
 				Kind:    MemoryRAM,

@@ -65,14 +65,15 @@ type Backend struct {
 	// flags holds condition N/Z/C/V lazily: setNZCV records the defining
 	// operation here instead of writing CPSR, and resolveFlags materializes it
 	// only when a reader actually needs the bits. See pendingFlags.
-	flags       pendingFlags
-	mode        cpu.Mode
-	stopped     atomic.Bool
-	closed      bool
-	mapped      uint64
-	memoryLimit uint64
-	systemBus   cpu.MemoryBus
-	pcHits      map[uint32]uint64 // env ARAM_PC_TRACE: per-PC execution histogram
+	flags          pendingFlags
+	mode           cpu.Mode
+	stopped        atomic.Bool
+	closed         bool
+	mapped         uint64
+	memoryLimit    uint64
+	systemBus      cpu.MemoryBus
+	executionTraps map[cpu.ExecutionTrap]struct{}
+	pcHits         map[uint32]uint64 // env ARAM_PC_TRACE: per-PC execution histogram
 }
 
 func New() *Backend {
@@ -118,8 +119,37 @@ func (b *Backend) SystemCapabilities() cpu.SystemCapabilities {
 	return cpu.SystemCapabilities(
 		cpu.CapabilityPhysicalBus |
 			cpu.CapabilityPrivilegedModes |
-			cpu.CapabilityCP15Control,
+			cpu.CapabilityCP15Control |
+			cpu.CapabilityExecutionTraps,
 	)
+}
+
+// SetExecutionTraps replaces the host-owned instruction boundaries. Traps are
+// configuration, not guest CPU state, and remain installed across reset-state
+// restoration until the system machine replaces or clears them.
+func (b *Backend) SetExecutionTraps(traps []cpu.ExecutionTrap) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return cpu.ErrClosed
+	}
+	configured := make(map[cpu.ExecutionTrap]struct{}, len(traps))
+	for _, trap := range traps {
+		if !trap.Valid() {
+			return fmt.Errorf("invalid execution trap at 0x%08x", trap.Address)
+		}
+		if _, duplicate := configured[trap]; duplicate {
+			return fmt.Errorf("duplicate execution trap at 0x%08x", trap.Address)
+		}
+		configured[trap] = struct{}{}
+	}
+	b.executionTraps = configured
+	return nil
+}
+
+func (b *Backend) executionTrapAt(mode cpu.Mode, address uint32) bool {
+	_, ok := b.executionTraps[cpu.ExecutionTrap{Address: address, Mode: mode}]
+	return ok
 }
 
 func (b *Backend) Map(address, size uint32, permissions cpu.Permissions) error {
@@ -371,6 +401,7 @@ func (b *Backend) Close() error {
 	b.closed = true
 	b.regions = nil
 	b.systemBus = nil
+	b.executionTraps = nil
 	clear(b.regionHints[:])
 	b.executeData = nil
 	b.dataData = nil
@@ -418,3 +449,4 @@ func (b *Backend) findRegion(address uint32, permission cpu.Permissions) (*regio
 var _ cpu.Backend = (*Backend)(nil)
 var _ cpu.SystemBusBackend = (*Backend)(nil)
 var _ cpu.SystemBackend = (*Backend)(nil)
+var _ cpu.ExecutionTrapBackend = (*Backend)(nil)

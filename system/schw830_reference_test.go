@@ -2,6 +2,7 @@ package system
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,7 +13,7 @@ import (
 	"github.com/mirusu400/aram-core/loader/samsung"
 )
 
-func TestSCHW830PrivateReferenceReachesMissingSecureModuleBoundary(t *testing.T) {
+func TestSCHW830PrivateReferenceReachesMMUEnableBoundary(t *testing.T) {
 	root := os.Getenv("ARAM_REFERENCE_REPO")
 	if root == "" {
 		t.Skip("ARAM_REFERENCE_REPO is not configured")
@@ -38,22 +39,29 @@ func TestSCHW830PrivateReferenceReachesMissingSecureModuleBoundary(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertSCHW830MissingSecurePartition(t, flashImage)
 	flash, err := NewCOWFlash(flashImage, samsung.EraseBlockSize, flashImage.Identity())
 	if err != nil {
 		t.Fatal(err)
 	}
-	nand, err := NewQualcommNAND(flash, samsung.PageSize)
+	board := SCHW830DL21BoardProfile()
+	nandReady := NewLevelSignal()
+	nandConfig := Qualcomm2K8BitNANDConfig(board.NANDReadID, nandReady)
+	if nandConfig.PageSize != samsung.PageSize {
+		t.Fatal("SCH-W830 NAND profile page size does not match normalized flash")
+	}
+	nand, err := NewQualcommNAND(flash, nandConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
 	bootControl, err := NewQualcommBootControl(QualcommBootControlConfig{
 		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
+		EBIMemoryConfiguration: 0x5880, ClockModeStatus: 1, NANDReady: nandReady,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	secondaryClock := NewQualcommSecondaryClockControl()
+	panel := NewParallelPanelInterface()
 	handoff, err := NewQualcommNANDPBLHandoff(QualcommNANDPBLConfig{
 		Entry: image.EntryAddress, TableAddress: 0x78001000,
 		PageSize: samsung.PageSize, EraseBlockSize: samsung.EraseBlockSize,
@@ -62,14 +70,13 @@ func TestSCHW830PrivateReferenceReachesMissingSecureModuleBoundary(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	handoff.Memory = append(handoff.Memory, MemorySeed{
+		Address: image.LoadAddress,
+		Bytes:   append([]byte(nil), image.Bytes...),
+	})
 
 	bus := NewBus()
-	ram := make([]byte, 0x04000000)
-	copy(ram[image.LoadAddress:], image.Bytes)
-	if err := bus.MapRAMImage("ebi-ram", 0, uint32(len(ram)), ram); err != nil {
-		t.Fatal(err)
-	}
-	if err := SCHW830DL21BoardProfile().ApplyMemory(bus); err != nil {
+	if err := board.ApplyMemory(bus); err != nil {
 		t.Fatal(err)
 	}
 	if err := bus.MapMMIO("qualcomm-boot-control", 0x80000000, QualcommBootControlWindowSize, bootControl); err != nil {
@@ -86,6 +93,14 @@ func TestSCHW830PrivateReferenceReachesMissingSecureModuleBoundary(t *testing.T)
 	); err != nil {
 		t.Fatal(err)
 	}
+	if err := bus.MapMMIO(
+		"parallel-panel",
+		0x20000000,
+		ParallelPanelWindowSize,
+		panel,
+	); err != nil {
+		t.Fatal(err)
+	}
 	backend := interpreter.New()
 	if err := backend.AttachSystemBus(bus); err != nil {
 		t.Fatal(err)
@@ -93,69 +108,65 @@ func TestSCHW830PrivateReferenceReachesMissingSecureModuleBoundary(t *testing.T)
 	if err := handoff.Apply(bus, backend); err != nil {
 		t.Fatal(err)
 	}
-	result := backend.Run(context.Background(), handoff.Entry, handoff.Mode, 1_195_629)
-	if result.Err != nil || result.Reason != cpu.StopBudget ||
-		result.Instructions != 1_195_629 || result.PC != 0x000a07d8 {
-		t.Fatalf("unexpected QCSBL-to-OEMSBL handoff: %+v", result)
+	fatalDiagnostic := errors.New("unexpected OEM fatal diagnostic")
+	flashInitFailure := errors.New("OEM flash initialization failed")
+	calls := []HLECallProfile{
+		{
+			ID: "diagnostic-oem-fatal", Contract: "diagnostic.oem-fatal",
+			Address: 0x00107ffc, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+		},
+		{
+			ID: "diagnostic-flash-init-failure", Contract: "diagnostic.flash-init-failure",
+			Address: 0x000a6ae0, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+		},
 	}
-
-	result = backend.Run(context.Background(), result.PC, cpu.ModeARM, 5_402_441)
-	if result.Err != nil || result.Reason != cpu.StopBudget ||
-		result.Instructions != 5_402_441 || result.PC != 0x00107ffc {
-		t.Fatalf("unexpected secure-module boundary: %+v", result)
-	}
-	missingCode := make([]byte, 4)
-	if err := bus.Read(result.PC, missingCode, cpu.PermissionExecute); err != nil {
+	runner, err := NewHLERunner(bus, backend, calls, map[string]HLECallHandler{
+		"diagnostic.oem-fatal": HLECallHandlerFunc(func(HLECallContext) error {
+			return fatalDiagnostic
+		}),
+		"diagnostic.flash-init-failure": HLECallHandlerFunc(func(HLECallContext) error {
+			return flashInitFailure
+		}),
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if missingCode[0] != 0 || missingCode[1] != 0 || missingCode[2] != 0 || missingCode[3] != 0 {
-		t.Fatal("secure-module boundary unexpectedly contains executable input bytes")
+	result := runner.Run(context.Background(), handoff.Entry, handoff.Mode, 1_195_629)
+	if result.Err != nil || result.Reason != cpu.StopBudget ||
+		result.Instructions != 1_195_629 || result.PC != 0x000a07d8 {
+		t.Fatalf("unexpected QCSBL OEM callback boundary: %+v", result)
 	}
-	selector, selectorErr := secondaryClock.Read(0x0430, Width32)
-	data, dataErr := secondaryClock.Read(0x0434, Width32)
-	if selectorErr != nil || dataErr != nil || selector != 0x36 || data != 4 {
-		t.Fatalf("secondary clock terminal state = selector %#x data %#x", selector, data)
+
+	result = runner.Run(context.Background(), result.PC, cpu.ModeARM, 10_000_000)
+	if result.Reason != cpu.StopFault ||
+		!errors.Is(result.Err, interpreter.ErrMMUTranslationUnavailable) ||
+		result.Instructions != 6_036_311 || result.PC != 0x000bc2dc {
+		t.Fatalf("unexpected OEMSBL MMU-enable boundary: %+v", result)
 	}
-	if bootControl.WatchdogServices() == 0 {
-		t.Fatal("original boot stages never serviced the watchdog")
+	if invocations := runner.Invocations(); len(invocations) != 0 {
+		t.Fatalf("diagnostic HLE was invoked: %+v", invocations)
+	}
+	commands, data := panel.WriteCounts()
+	if commands != 57 || data != 110_114 || panel.CurrentCommand() != 0x29 || panel.LastData() != 0xffff {
+		t.Fatalf(
+			"panel terminal state = %d/%d command %#x data %#x",
+			commands, data, panel.CurrentCommand(), panel.LastData(),
+		)
+	}
+	if bootControl.WatchdogServices() != 721 {
+		t.Fatalf("watchdog services = %d", bootControl.WatchdogServices())
 	}
 	t.Logf(
-		"missing secure-module boundary: instructions=%d pc=0x%08x watchdog=%d",
+		"post-panel boundary: instructions=%d pc=0x%08x err=%v panel=%d/%d command=0x%x data=0x%x watchdog=%d",
 		result.Instructions,
 		result.PC,
+		result.Err,
+		commands,
+		data,
+		panel.CurrentCommand(),
+		panel.LastData(),
 		bootControl.WatchdogServices(),
 	)
-}
-
-func assertSCHW830MissingSecurePartition(t *testing.T, flash samsung.FlashImage) {
-	t.Helper()
-	var secure samsung.Partition
-	found := false
-	for _, partition := range flash.Partitions() {
-		if partition.Name == "0:SIM_SECURE" {
-			secure = partition
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatal("normalized flash has no SIM_SECURE partition")
-	}
-	buffer := make([]byte, 4096)
-	for position := uint64(0); position < secure.Size; position += uint64(len(buffer)) {
-		count := min(uint64(len(buffer)), secure.Size-position)
-		if _, err := flash.ReadAt(buffer[:count], int64(secure.Start+position)); err != nil {
-			t.Fatal(err)
-		}
-		for index, value := range buffer[:count] {
-			if value != 0 {
-				t.Fatalf(
-					"SIM_SECURE partition has input data at relative offset 0x%x",
-					position+uint64(index),
-				)
-			}
-		}
-	}
 }
 
 func openSCHW830ReferenceSet(t *testing.T, directory string) firmwareset.Set {

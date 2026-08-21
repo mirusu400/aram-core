@@ -100,6 +100,12 @@ func (b *Backend) writeCP15(crn, crm, op2 uint8, value uint32) error {
 		// Invalidate the instruction cache. Interpreted fetches are coherent.
 		b.executeData = nil
 		return nil
+	case crn == 7 && crm == 7 && op2 == 0:
+		// Invalidate unified instruction and data caches. Guest memory is
+		// coherent in the interpreter; clear both host lookup accelerators.
+		b.executeData = nil
+		b.dataData = nil
+		return nil
 	case crn == 8 && crm == 7 && op2 == 0:
 		// Invalidate unified TLB. No translations exist while MMU enable is
 		// rejected, so this operation has no cached host state yet.

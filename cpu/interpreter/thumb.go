@@ -103,6 +103,10 @@ var thumbInstructionClasses = func() [1 << 16]thumbInstructionClass {
 func (b *Backend) runThumb(limit uint64) (uint64, *cpu.StopReason, error) {
 	var executed uint64
 	for executed < limit {
+		if b.executionTrapAt(cpu.ModeThumb, b.regs[cpu.RegisterPC]) {
+			reason := cpu.StopExecutionTrap
+			return executed, &reason, nil
+		}
 		if b.pcHits != nil {
 			b.pcHits[b.regs[cpu.RegisterPC]]++
 		}

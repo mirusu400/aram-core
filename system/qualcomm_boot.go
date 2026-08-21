@@ -34,8 +34,11 @@ type QualcommNANDPBLConfig struct {
 }
 
 type QualcommBootControlConfig struct {
-	HardwareRevision  uint32
-	NANDInterfaceMode uint32
+	HardwareRevision       uint32
+	NANDInterfaceMode      uint32
+	EBIMemoryConfiguration uint32
+	ClockModeStatus        uint32
+	NANDReady              *LevelSignal
 }
 
 // NewQualcommNANDPBLHandoff builds the bounded PBL service data consumed by
@@ -78,12 +81,15 @@ func NewQualcommNANDPBLHandoff(config QualcommNANDPBLConfig) (BootHandoff, error
 }
 
 var qualcommBootWritableOffsets = []uint32{
-	0x0244, 0x024c, 0x0280, 0x0290, 0x0294, 0x0330,
+	0x0220, 0x0244, 0x024c, 0x0280, 0x0290, 0x0294,
+	0x0330,
 	0x0380, 0x0384, 0x0388, 0x03ac, 0x0414, 0x0900,
 	0x0904, 0x0908, 0x090c, 0x0910, 0x0914, 0x0918,
 	0x091c, 0x0920,
 	0x0924, 0x0934, 0x0938, 0x093c, 0x0940, 0x0aa0,
-	0x0aa8, 0x0aac, 0x0ab0, 0x0ab4, 0x0ab8, 0x0abc,
+	0x0a04, 0x0a48, 0x0aa8, 0x0aac, 0x0ab0, 0x0ab4,
+	0x0ab8,
+	0x0abc,
 	0x0ac0, 0x0ac4,
 	0x0ac8, 0x0acc, 0x0ad0, 0x0ad4, 0x0ad8, 0x0adc,
 	0x0ae0, 0x5300, 0x5344,
@@ -91,24 +97,35 @@ var qualcommBootWritableOffsets = []uint32{
 
 var qualcommSecondaryClockOffsets = []uint32{0x0400, 0x0404, 0x0430, 0x0434}
 
+const qualcommSecondaryClockDisabledStatusOffset = 0x0440
+
 // QualcommBootControl is an explicit early-boot compatibility model. It
 // exposes the hardware revision and latches only the clock/reset writes seen
 // before the next platform boundary; every unknown access fails.
 type QualcommBootControl struct {
-	hardwareRevision  uint32
-	nandInterfaceMode uint32
-	registers         map[uint32]uint32
-	watchdogServices  uint64
+	hardwareRevision       uint32
+	nandInterfaceMode      uint32
+	ebiMemoryConfiguration uint32
+	clockModeStatus        uint32
+	nandReady              *LevelSignal
+	registers              map[uint32]uint32
+	watchdogServices       uint64
 }
 
 func NewQualcommBootControl(config QualcommBootControlConfig) (*QualcommBootControl, error) {
 	if config.HardwareRevision>>28 == 0 ||
-		config.NANDInterfaceMode != 2 && config.NANDInterfaceMode != 4 {
+		config.NANDInterfaceMode != 2 && config.NANDInterfaceMode != 4 ||
+		config.EBIMemoryConfiguration&0x5f80 != 0x5680 &&
+			config.EBIMemoryConfiguration&0x5f80 != 0x5880 ||
+		config.ClockModeStatus > 1 || config.NANDReady == nil {
 		return nil, fmt.Errorf("invalid Qualcomm boot-control configuration")
 	}
 	device := &QualcommBootControl{
-		hardwareRevision:  config.HardwareRevision,
-		nandInterfaceMode: config.NANDInterfaceMode,
+		hardwareRevision:       config.HardwareRevision,
+		nandInterfaceMode:      config.NANDInterfaceMode,
+		ebiMemoryConfiguration: config.EBIMemoryConfiguration,
+		clockModeStatus:        config.ClockModeStatus,
+		nandReady:              config.NANDReady,
 	}
 	if err := device.Reset(); err != nil {
 		return nil, err
@@ -122,6 +139,7 @@ func (d *QualcommBootControl) Reset() error {
 		d.registers[offset] = 0
 	}
 	d.registers[0x0380] = d.nandInterfaceMode
+	d.nandReady.Set(false)
 	d.watchdogServices = 0
 	return nil
 }
@@ -133,7 +151,16 @@ func (d *QualcommBootControl) Read(offset uint32, width Width) (uint32, error) {
 	switch offset {
 	case 0x0a40:
 		return d.hardwareRevision, nil
-	case 0x0274, 0x0488, 0x551c:
+	case 0x1100:
+		return d.ebiMemoryConfiguration, nil
+	case 0x0274:
+		return d.clockModeStatus, nil
+	case 0x0488:
+		if d.nandReady.Asserted() {
+			return 2, nil
+		}
+		return 0, nil
+	case 0x551c:
 		return 0, nil
 	default:
 		if value, ok := d.registers[offset]; ok {
@@ -158,6 +185,11 @@ func (d *QualcommBootControl) Write(offset uint32, width Width, value uint32) er
 		return fmt.Errorf("%w: write32 at 0x%x", ErrQualcommBootControlMMIO, offset)
 	}
 	d.registers[offset] = value
+	if offset == 0x0380 && value&8 != 0 {
+		d.nandReady.Set(true)
+	} else if offset == 0x0414 {
+		d.nandReady.Set(false)
+	}
 	return nil
 }
 
@@ -170,9 +202,16 @@ func (d *QualcommBootControl) SaveState() ([]byte, error) {
 	sort.Slice(offsets, func(left, right int) bool { return offsets[left] < offsets[right] })
 	var output bytes.Buffer
 	output.WriteString("QBTC")
-	_ = binary.Write(&output, binary.LittleEndian, uint32(2))
+	_ = binary.Write(&output, binary.LittleEndian, uint32(5))
 	_ = binary.Write(&output, binary.LittleEndian, d.hardwareRevision)
 	_ = binary.Write(&output, binary.LittleEndian, d.nandInterfaceMode)
+	_ = binary.Write(&output, binary.LittleEndian, d.ebiMemoryConfiguration)
+	_ = binary.Write(&output, binary.LittleEndian, d.clockModeStatus)
+	ready := uint8(0)
+	if d.nandReady.Asserted() {
+		ready = 1
+	}
+	_ = output.WriteByte(ready)
 	_ = binary.Write(&output, binary.LittleEndian, d.watchdogServices)
 	_ = binary.Write(&output, binary.LittleEndian, uint32(len(offsets)))
 	for _, offset := range offsets {
@@ -185,14 +224,20 @@ func (d *QualcommBootControl) SaveState() ([]byte, error) {
 func (d *QualcommBootControl) LoadState(state []byte) error {
 	reader := bytes.NewReader(state)
 	var magic [4]byte
-	var version, revision, nandInterfaceMode uint32
+	var version, revision, nandInterfaceMode, ebiMemoryConfiguration, clockModeStatus uint32
+	var ready uint8
 	var watchdog uint64
 	var count uint32
 	if _, err := io.ReadFull(reader, magic[:]); err != nil || string(magic[:]) != "QBTC" ||
-		binary.Read(reader, binary.LittleEndian, &version) != nil || version != 2 ||
+		binary.Read(reader, binary.LittleEndian, &version) != nil || version != 5 ||
 		binary.Read(reader, binary.LittleEndian, &revision) != nil || revision != d.hardwareRevision ||
 		binary.Read(reader, binary.LittleEndian, &nandInterfaceMode) != nil ||
 		nandInterfaceMode != d.nandInterfaceMode ||
+		binary.Read(reader, binary.LittleEndian, &ebiMemoryConfiguration) != nil ||
+		ebiMemoryConfiguration != d.ebiMemoryConfiguration ||
+		binary.Read(reader, binary.LittleEndian, &clockModeStatus) != nil ||
+		clockModeStatus != d.clockModeStatus ||
+		binary.Read(reader, binary.LittleEndian, &ready) != nil || ready > 1 ||
 		binary.Read(reader, binary.LittleEndian, &watchdog) != nil ||
 		binary.Read(reader, binary.LittleEndian, &count) != nil || count != uint32(len(qualcommBootWritableOffsets)) ||
 		reader.Len() != int(count)*8 {
@@ -214,6 +259,7 @@ func (d *QualcommBootControl) LoadState(state []byte) error {
 		registers[offset] = value
 	}
 	d.registers = registers
+	d.nandReady.Set(ready != 0)
 	d.watchdogServices = watchdog
 	return nil
 }
@@ -241,6 +287,9 @@ func (d *QualcommSecondaryClockControl) Reset() error {
 
 func (d *QualcommSecondaryClockControl) Read(offset uint32, width Width) (uint32, error) {
 	if width == Width32 {
+		if offset == qualcommSecondaryClockDisabledStatusOffset {
+			return 0x10, nil
+		}
 		if value, ok := d.registers[offset]; ok {
 			return value, nil
 		}

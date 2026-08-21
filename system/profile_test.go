@@ -1,18 +1,50 @@
 package system
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/mirusu400/aram-core/cpu"
+)
 
 func TestSCHW830BoardProfileAppliesEvidenceBackedIRAM(t *testing.T) {
 	profile := SCHW830DL21BoardProfile()
 	if err := profile.Validate(); err != nil {
 		t.Fatal(err)
 	}
+	if len(profile.HLECalls) != 0 {
+		t.Fatalf("SCH-W830 unexpectedly enables failure-path HLE calls: %+v", profile.HLECalls)
+	}
+	if profile.NANDReadID != 0xecaa {
+		t.Fatalf("SCH-W830 NAND read ID = %#x", profile.NANDReadID)
+	}
 	bus := NewBus()
 	if err := profile.ApplyMemory(bus); err != nil {
 		t.Fatal(err)
 	}
+	if err := bus.MapRAM("ebi-overlap-check", 0x07fff000, 0x1000); err == nil {
+		t.Fatal("board profile did not map 128 MiB EBI RAM")
+	}
 	if err := bus.MapRAM("overlap-check", 0x7800f000, 0x1000); err == nil {
 		t.Fatal("board profile did not map PBL IRAM")
+	}
+}
+
+func TestBoardProfileRejectsDuplicateHLECallAddress(t *testing.T) {
+	profile := BoardProfile{
+		ID: "board", PlatformID: "platform", FirmwareBuildID: "build",
+		HLECalls: []HLECallProfile{
+			{
+				ID: "one", Contract: "fixture.one", Address: 0x1000,
+				Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+			},
+			{
+				ID: "two", Contract: "fixture.two", Address: 0x1000,
+				Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+			},
+		},
+	}
+	if err := profile.Validate(); err == nil {
+		t.Fatal("BoardProfile accepted duplicate HLE call address")
 	}
 }
 

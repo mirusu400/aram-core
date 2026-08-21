@@ -45,6 +45,7 @@ func TestQualcommNANDPBLHandoffRejectsNon2KPageGeometry(t *testing.T) {
 func TestQualcommBootControlAllowsOnlyEvidencedEarlyBootRegisters(t *testing.T) {
 	device, err := NewQualcommBootControl(QualcommBootControlConfig{
 		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
+		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1, NANDReady: NewLevelSignal(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -64,9 +65,41 @@ func TestQualcommBootControlAllowsOnlyEvidencedEarlyBootRegisters(t *testing.T) 
 	if err != nil || value != 2 {
 		t.Fatalf("NAND interface mode = %#x error %v", value, err)
 	}
+	value, err = device.Read(0x1100, Width32)
+	if err != nil || value != 0x5680 {
+		t.Fatalf("EBI memory configuration = %#x error %v", value, err)
+	}
+	value, err = device.Read(0x0274, Width32)
+	if err != nil || value != 1 {
+		t.Fatalf("clock mode status = %#x error %v", value, err)
+	}
 	value, err = device.Read(0x0488, Width32)
 	if err != nil || value != 0 {
 		t.Fatalf("NAND reset status = %#x error %v", value, err)
+	}
+	if err := device.Write(0x0380, Width32, 2|8); err != nil {
+		t.Fatal(err)
+	}
+	value, err = device.Read(0x0488, Width32)
+	if err != nil || value != 2 {
+		t.Fatalf("NAND ready status = %#x error %v", value, err)
+	}
+	if err := device.Write(0x0380, Width32, 2); err != nil {
+		t.Fatal(err)
+	}
+	value, err = device.Read(0x0488, Width32)
+	if err != nil || value != 2 {
+		t.Fatalf("latched NAND ready status = %#x error %v", value, err)
+	}
+	if err := device.Write(0x0414, Width32, 1); err != nil {
+		t.Fatal(err)
+	}
+	value, err = device.Read(0x0488, Width32)
+	if err != nil || value != 0 {
+		t.Fatalf("cleared NAND ready status = %#x error %v", value, err)
+	}
+	if err := device.Write(0x0380, Width32, 2|8); err != nil {
+		t.Fatal(err)
 	}
 	if err := device.Write(0x540c, Width32, 1); err != nil || device.WatchdogServices() != 1 {
 		t.Fatalf("watchdog service error %v count %d", err, device.WatchdogServices())
@@ -83,6 +116,7 @@ func TestQualcommBootControlAllowsOnlyEvidencedEarlyBootRegisters(t *testing.T) 
 	}
 	restored, _ := NewQualcommBootControl(QualcommBootControlConfig{
 		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
+		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1, NANDReady: NewLevelSignal(),
 	})
 	if err := restored.LoadState(state); err != nil {
 		t.Fatal(err)
@@ -90,8 +124,13 @@ func TestQualcommBootControlAllowsOnlyEvidencedEarlyBootRegisters(t *testing.T) 
 	if restored.WatchdogServices() != 1 {
 		t.Fatalf("restored watchdog count = %d", restored.WatchdogServices())
 	}
+	value, err = restored.Read(0x0488, Width32)
+	if err != nil || value != 2 {
+		t.Fatalf("restored NAND ready status = %#x error %v", value, err)
+	}
 	wrong, _ := NewQualcommBootControl(QualcommBootControlConfig{
 		HardwareRevision: 0x20000000, NANDInterfaceMode: 2,
+		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1, NANDReady: NewLevelSignal(),
 	})
 	if err := wrong.LoadState(state); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("wrong revision state error = %v", err)
@@ -101,10 +140,12 @@ func TestQualcommBootControlAllowsOnlyEvidencedEarlyBootRegisters(t *testing.T) 
 func TestQualcommBootControlRejectsWrongNANDInterfaceState(t *testing.T) {
 	device, _ := NewQualcommBootControl(QualcommBootControlConfig{
 		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
+		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1, NANDReady: NewLevelSignal(),
 	})
 	state, _ := device.SaveState()
 	other, _ := NewQualcommBootControl(QualcommBootControlConfig{
 		HardwareRevision: 0x10000000, NANDInterfaceMode: 4,
+		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1, NANDReady: NewLevelSignal(),
 	})
 	if err := other.LoadState(state); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("wrong NAND-interface state error = %v", err)
@@ -113,9 +154,12 @@ func TestQualcommBootControlRejectsWrongNANDInterfaceState(t *testing.T) {
 
 func TestQualcommBootControlValidatesBoardConfigurationAndReset(t *testing.T) {
 	invalid := []QualcommBootControlConfig{
-		{HardwareRevision: 0x00000001, NANDInterfaceMode: 2},
-		{HardwareRevision: 0x10000000, NANDInterfaceMode: 0},
-		{HardwareRevision: 0x10000000, NANDInterfaceMode: 3},
+		{HardwareRevision: 0x00000001, NANDInterfaceMode: 2, EBIMemoryConfiguration: 0x5680, NANDReady: NewLevelSignal()},
+		{HardwareRevision: 0x10000000, NANDInterfaceMode: 0, EBIMemoryConfiguration: 0x5680, NANDReady: NewLevelSignal()},
+		{HardwareRevision: 0x10000000, NANDInterfaceMode: 3, EBIMemoryConfiguration: 0x5680, NANDReady: NewLevelSignal()},
+		{HardwareRevision: 0x10000000, NANDInterfaceMode: 2, EBIMemoryConfiguration: 0, NANDReady: NewLevelSignal()},
+		{HardwareRevision: 0x10000000, NANDInterfaceMode: 2, EBIMemoryConfiguration: 0x5680, ClockModeStatus: 2, NANDReady: NewLevelSignal()},
+		{HardwareRevision: 0x10000000, NANDInterfaceMode: 2, EBIMemoryConfiguration: 0x5680},
 	}
 	for _, config := range invalid {
 		if _, err := NewQualcommBootControl(config); err == nil {
@@ -125,6 +169,7 @@ func TestQualcommBootControlValidatesBoardConfigurationAndReset(t *testing.T) {
 
 	device, err := NewQualcommBootControl(QualcommBootControlConfig{
 		HardwareRevision: 0x10000000, NANDInterfaceMode: 4,
+		EBIMemoryConfiguration: 0x5880, ClockModeStatus: 1, NANDReady: NewLevelSignal(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -138,6 +183,10 @@ func TestQualcommBootControlValidatesBoardConfigurationAndReset(t *testing.T) {
 	value, err := device.Read(0x0380, Width32)
 	if err != nil || value != 4 {
 		t.Fatalf("reset NAND interface mode = %#x error %v", value, err)
+	}
+	value, err = device.Read(0x0488, Width32)
+	if err != nil || value != 0 {
+		t.Fatalf("reset NAND ready status = %#x error %v", value, err)
 	}
 }
 
@@ -155,6 +204,13 @@ func TestQualcommSecondaryClockControlLatchesOnlyEvidencedRegisters(t *testing.T
 	}
 	if err := device.Write(0x0420, Width32, 0); !errors.Is(err, ErrQualcommSecondaryClockMMIO) {
 		t.Fatalf("unknown secondary clock write error = %v", err)
+	}
+	value, err = device.Read(qualcommSecondaryClockDisabledStatusOffset, Width32)
+	if err != nil || value != 0x10 {
+		t.Fatalf("secondary disabled status = %#x error %v", value, err)
+	}
+	if err := device.Write(qualcommSecondaryClockDisabledStatusOffset, Width32, 0); !errors.Is(err, ErrQualcommSecondaryClockMMIO) {
+		t.Fatalf("secondary status write error = %v", err)
 	}
 	state, err := device.SaveState()
 	if err != nil {

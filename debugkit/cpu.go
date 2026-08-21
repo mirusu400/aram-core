@@ -102,6 +102,8 @@ func stopReasonName(reason cpu.StopReason) string {
 		return "budget"
 	case cpu.StopExited:
 		return "exited"
+	case cpu.StopExecutionTrap:
+		return "execution-trap"
 	default:
 		return fmt.Sprintf("unknown(%d)", reason)
 	}

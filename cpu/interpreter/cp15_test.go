@@ -56,10 +56,11 @@ func TestARMCP15AcceptsExplicitCacheAndTLBMaintenance(t *testing.T) {
 	backend := New()
 	mapARMInstructions(t, backend,
 		0xee070f15, // MCR p15, 0, r0, c7, c5, 0: invalidate I-cache
+		0xee070f17, // MCR p15, 0, r0, c7, c7, 0: invalidate unified caches
 		0xee080f17, // MCR p15, 0, r0, c8, c7, 0: invalidate unified TLB
 	)
-	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 2)
-	if result.Err != nil || result.Instructions != 2 {
+	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 3)
+	if result.Err != nil || result.Instructions != 3 {
 		t.Fatalf("Run result = %+v", result)
 	}
 }
