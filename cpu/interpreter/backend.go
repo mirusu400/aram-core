@@ -44,13 +44,22 @@ type Backend struct {
 	regionHints    [8]int
 	executeAddress uint32
 	executeData    []byte
-	regs           [17]uint32
-	mode           cpu.Mode
-	stopped        atomic.Bool
-	closed         bool
-	mapped         uint64
-	memoryLimit    uint64
-	pcHits         map[uint32]uint64 // env ARAM_PC_TRACE: per-PC execution histogram
+	// dataData caches the most recently accessed data region so repeated
+	// reads/writes with locality (stack frames, a struct, a framebuffer row)
+	// skip the sorted findRegion lookup, mirroring the executeData fetch
+	// cache. It is a value copy of the region's slice/address/permissions and
+	// stays valid across region re-sorts (regions never overlap and their
+	// backing arrays are stable); it is invalidated wherever executeData is.
+	dataAddress     uint32
+	dataPermissions cpu.Permissions
+	dataData        []byte
+	regs            [17]uint32
+	mode            cpu.Mode
+	stopped         atomic.Bool
+	closed          bool
+	mapped          uint64
+	memoryLimit     uint64
+	pcHits          map[uint32]uint64 // env ARAM_PC_TRACE: per-PC execution histogram
 }
 
 func New() *Backend {
@@ -128,6 +137,7 @@ func (b *Backend) Map(address, size uint32, permissions cpu.Permissions) error {
 	})
 	clear(b.regionHints[:])
 	b.executeData = nil
+	b.dataData = nil
 	return nil
 }
 
@@ -296,6 +306,7 @@ func (b *Backend) Close() error {
 	b.regions = nil
 	clear(b.regionHints[:])
 	b.executeData = nil
+	b.dataData = nil
 	b.mapped = 0
 	return nil
 }

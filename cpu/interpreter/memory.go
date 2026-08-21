@@ -6,15 +6,46 @@ import (
 	"github.com/mirusu400/aram-core/cpu"
 )
 
+// dataHit returns the cached data-region slice and the offset of a size-byte
+// access within it when the cache fully covers the access with the required
+// permission. It lets repeated data reads/writes with locality skip the sorted
+// findRegion lookup, mirroring the executeData fetch cache.
+func (b *Backend) dataHit(address uint32, size int, permission cpu.Permissions) ([]byte, int, bool) {
+	if b.dataData == nil ||
+		b.dataPermissions&permission != permission ||
+		address < b.dataAddress {
+		return nil, 0, false
+	}
+	offset := uint64(address - b.dataAddress)
+	if offset+uint64(size) > uint64(len(b.dataData)) {
+		return nil, 0, false
+	}
+	return b.dataData, int(offset), true
+}
+
+// cacheData records a region as the most recently accessed data region. It
+// stores value copies of the region's address/permissions/slice, which stay
+// valid across region re-sorts because regions never overlap and own stable
+// backing arrays; the cache is invalidated wherever executeData is.
+func (b *Backend) cacheData(mapped *region) {
+	b.dataAddress = mapped.address
+	b.dataPermissions = mapped.permissions
+	b.dataData = mapped.data
+}
+
 func (b *Backend) read16(address uint32, permission cpu.Permissions) (uint16, error) {
 	if permission == cpu.PermissionExecute {
 		return b.fetch16(address)
+	}
+	if data, offset, ok := b.dataHit(address, 2, permission); ok {
+		return binary.LittleEndian.Uint16(data[offset : offset+2]), nil
 	}
 	mapped, offset, err := b.findRegion(address, permission)
 	if err != nil {
 		return 0, err
 	}
 	if len(mapped.data)-offset >= 2 {
+		b.cacheData(mapped)
 		return binary.LittleEndian.Uint16(mapped.data[offset : offset+2]), nil
 	}
 	var data [2]byte
@@ -28,11 +59,15 @@ func (b *Backend) read32(address uint32, permission cpu.Permissions) (uint32, er
 	if permission == cpu.PermissionExecute {
 		return b.fetch32(address)
 	}
+	if data, offset, ok := b.dataHit(address, 4, permission); ok {
+		return binary.LittleEndian.Uint32(data[offset : offset+4]), nil
+	}
 	mapped, offset, err := b.findRegion(address, permission)
 	if err != nil {
 		return 0, err
 	}
 	if len(mapped.data)-offset >= 4 {
+		b.cacheData(mapped)
 		return binary.LittleEndian.Uint32(mapped.data[offset : offset+4]), nil
 	}
 	var data [4]byte
@@ -99,11 +134,16 @@ func (b *Backend) fetch32(address uint32) (uint32, error) {
 }
 
 func (b *Backend) write16(address uint32, value uint16, permission cpu.Permissions) error {
+	if data, offset, ok := b.dataHit(address, 2, permission); ok {
+		binary.LittleEndian.PutUint16(data[offset:offset+2], value)
+		return nil
+	}
 	mapped, offset, err := b.findRegion(address, permission)
 	if err != nil {
 		return err
 	}
 	if len(mapped.data)-offset >= 2 {
+		b.cacheData(mapped)
 		binary.LittleEndian.PutUint16(mapped.data[offset:offset+2], value)
 		return nil
 	}
@@ -113,11 +153,16 @@ func (b *Backend) write16(address uint32, value uint16, permission cpu.Permissio
 }
 
 func (b *Backend) write32(address, value uint32, permission cpu.Permissions) error {
+	if data, offset, ok := b.dataHit(address, 4, permission); ok {
+		binary.LittleEndian.PutUint32(data[offset:offset+4], value)
+		return nil
+	}
 	mapped, offset, err := b.findRegion(address, permission)
 	if err != nil {
 		return err
 	}
 	if len(mapped.data)-offset >= 4 {
+		b.cacheData(mapped)
 		binary.LittleEndian.PutUint32(mapped.data[offset:offset+4], value)
 		return nil
 	}
@@ -127,18 +172,27 @@ func (b *Backend) write32(address, value uint32, permission cpu.Permissions) err
 }
 
 func (b *Backend) read8(address uint32, permission cpu.Permissions) (byte, error) {
+	if data, offset, ok := b.dataHit(address, 1, permission); ok {
+		return data[offset], nil
+	}
 	mapped, offset, err := b.findRegion(address, permission)
 	if err != nil {
 		return 0, err
 	}
+	b.cacheData(mapped)
 	return mapped.data[offset], nil
 }
 
 func (b *Backend) write8(address uint32, value byte, permission cpu.Permissions) error {
+	if data, offset, ok := b.dataHit(address, 1, permission); ok {
+		data[offset] = value
+		return nil
+	}
 	mapped, offset, err := b.findRegion(address, permission)
 	if err != nil {
 		return err
 	}
+	b.cacheData(mapped)
 	mapped.data[offset] = value
 	return nil
 }
