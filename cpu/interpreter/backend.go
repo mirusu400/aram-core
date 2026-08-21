@@ -75,6 +75,22 @@ type Backend struct {
 	// for anything it does not translate. It is invalidated on Map/Close and on
 	// a guest write into an executable region (self-modifying code).
 	jitBlocks map[uint32]*jitBlock
+	// nativeBlocks and nativeArena drive the optional native machine-code JIT
+	// (see native_common.go and the per-host native_*.go emitters). Non-nil
+	// nativeBlocks enables it for Thumb, translating straight runs into host
+	// code held in nativeArena and falling back to the interpreter for memory,
+	// ARM, and untranslated instructions. Like jitBlocks it is invalidated on
+	// Map/Close and on a self-modifying write. jitBlocks and nativeBlocks are
+	// mutually exclusive: a backend is the pure-Go JIT or the native JIT, never
+	// both.
+	nativeBlocks map[uint32]*nativeBlock
+	nativeArena  *codeArena
+	// nativeRemain is the remaining instruction budget for the current native
+	// run, passed to translated blocks by pointer so their in-code budget gate
+	// can decrement it and stop exactly at the limit (frame pacing depends on an
+	// exact retired count). It lives on the Backend so &nativeRemain is stable
+	// across the block call and the interpreter tail shares the same counter.
+	nativeRemain uint32
 }
 
 func New() *Backend {
@@ -117,11 +133,16 @@ func (b *Backend) PCHits() map[uint32]uint64 {
 
 func (b *Backend) Identity() cpu.Identity {
 	name := BackendName
-	if b.jitBlocks != nil {
+	switch {
+	case b.jitBlocks != nil:
 		// The JIT is the same architecture and context format as the precise
 		// interpreter (so saves stay portable), but reports a distinct name so
 		// the active core is observable in diagnostics and the settings UI.
 		name = BackendName + "-jit"
+	case b.nativeBlocks != nil:
+		// Same architecture and portable context as the interpreter; a distinct
+		// name makes the active native core observable in diagnostics/UI.
+		name = BackendName + "-native"
 	}
 	return cpu.Identity{
 		Name:         name,
@@ -174,6 +195,7 @@ func (b *Backend) Map(address, size uint32, permissions cpu.Permissions) error {
 	if b.jitBlocks != nil {
 		clear(b.jitBlocks)
 	}
+	b.nativeInvalidate()
 	return nil
 }
 
@@ -292,9 +314,12 @@ func (b *Backend) Run(ctx context.Context, address uint32, mode cpu.Mode, budget
 			err     error
 		)
 		if b.mode == cpu.ModeThumb {
-			if b.jitBlocks != nil {
+			switch {
+			case b.jitBlocks != nil:
 				retired, reason, err = b.runThumbJIT(batch)
-			} else {
+			case b.nativeBlocks != nil:
+				retired, reason, err = b.runThumbNative(batch)
+			default:
 				retired, reason, err = b.runThumb(batch)
 			}
 		} else {
@@ -358,6 +383,11 @@ func (b *Backend) Close() error {
 	b.dataData = nil
 	if b.jitBlocks != nil {
 		clear(b.jitBlocks)
+	}
+	if b.nativeBlocks != nil {
+		clear(b.nativeBlocks)
+		b.nativeCloseArena()
+		b.nativeBlocks = nil
 	}
 	b.mapped = 0
 	return nil

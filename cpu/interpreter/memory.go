@@ -136,7 +136,7 @@ func (b *Backend) fetch32(address uint32) (uint32, error) {
 func (b *Backend) write16(address uint32, value uint16, permission cpu.Permissions) error {
 	if data, offset, ok := b.dataHit(address, 2, permission); ok {
 		binary.LittleEndian.PutUint16(data[offset:offset+2], value)
-		if b.jitBlocks != nil {
+		if b.jitBlocks != nil || b.nativeBlocks != nil {
 			b.smcInvalidate(b.dataPermissions)
 		}
 		return nil
@@ -148,7 +148,7 @@ func (b *Backend) write16(address uint32, value uint16, permission cpu.Permissio
 	if len(mapped.data)-offset >= 2 {
 		b.cacheData(mapped)
 		binary.LittleEndian.PutUint16(mapped.data[offset:offset+2], value)
-		if b.jitBlocks != nil {
+		if b.jitBlocks != nil || b.nativeBlocks != nil {
 			b.smcInvalidate(mapped.permissions)
 		}
 		return nil
@@ -161,7 +161,7 @@ func (b *Backend) write16(address uint32, value uint16, permission cpu.Permissio
 func (b *Backend) write32(address, value uint32, permission cpu.Permissions) error {
 	if data, offset, ok := b.dataHit(address, 4, permission); ok {
 		binary.LittleEndian.PutUint32(data[offset:offset+4], value)
-		if b.jitBlocks != nil {
+		if b.jitBlocks != nil || b.nativeBlocks != nil {
 			b.smcInvalidate(b.dataPermissions)
 		}
 		return nil
@@ -173,7 +173,7 @@ func (b *Backend) write32(address, value uint32, permission cpu.Permissions) err
 	if len(mapped.data)-offset >= 4 {
 		b.cacheData(mapped)
 		binary.LittleEndian.PutUint32(mapped.data[offset:offset+4], value)
-		if b.jitBlocks != nil {
+		if b.jitBlocks != nil || b.nativeBlocks != nil {
 			b.smcInvalidate(mapped.permissions)
 		}
 		return nil
@@ -198,7 +198,7 @@ func (b *Backend) read8(address uint32, permission cpu.Permissions) (byte, error
 func (b *Backend) write8(address uint32, value byte, permission cpu.Permissions) error {
 	if data, offset, ok := b.dataHit(address, 1, permission); ok {
 		data[offset] = value
-		if b.jitBlocks != nil {
+		if b.jitBlocks != nil || b.nativeBlocks != nil {
 			b.smcInvalidate(b.dataPermissions)
 		}
 		return nil
@@ -253,7 +253,7 @@ func (b *Backend) copyIn(address uint32, source []byte, permission cpu.Permissio
 		}
 		count := min(len(remaining), len(mapped.data)-offset)
 		copy(mapped.data[offset:offset+count], remaining[:count])
-		if b.jitBlocks != nil {
+		if b.jitBlocks != nil || b.nativeBlocks != nil {
 			b.smcInvalidate(mapped.permissions)
 		}
 		remaining = remaining[count:]

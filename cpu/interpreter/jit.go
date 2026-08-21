@@ -41,8 +41,14 @@ const jitMaxBlock = 256
 // executable memory, so self-modifying or freshly loaded code never runs from a
 // stale translation. It is a cheap nil check when the JIT is disabled.
 func (b *Backend) smcInvalidate(perms cpu.Permissions) {
-	if b.jitBlocks != nil && perms&cpu.PermissionExecute != 0 {
+	if perms&cpu.PermissionExecute == 0 {
+		return
+	}
+	if b.jitBlocks != nil {
 		clear(b.jitBlocks)
+	}
+	if b.nativeBlocks != nil {
+		b.nativeInvalidate()
 	}
 }
 
