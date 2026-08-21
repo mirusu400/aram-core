@@ -36,9 +36,10 @@ diagnostic entry point, or probe-assisted trace into a cold-boot claim.
   register magic and service table consumed by QCSBL. Its flash geometry is
   derived from the assembled image, and the unavailable mask ROM remains an
   explicit HLE boundary.
-- The early Qualcomm boot-control model exposes the evidenced hardware
-  revision, watchdog service, and a bounded allowlist of clock/reset latches.
-  Every access outside that compatibility contract faults.
+- The early Qualcomm boot-control models expose the board-supplied hardware
+  revision and NAND-interface mode, watchdog service, and bounded primary and
+  secondary clock/reset latches. Every access outside those compatibility
+  contracts faults.
 - `system.Bus` provides non-overlapping RAM, ROM, and typed MMIO regions with
   permissions, alignment and boundary faults, deterministic reset, and
   component state serialization.
@@ -65,9 +66,11 @@ When `ARAM_REFERENCE_REPO` is configured, the private gate currently proves:
 | normalized WBIN / DAT / FNT starts | `0x002A0000` / `0x01C00000` / `0x04F00000` |
 | PBL-HLE service table | 2 KiB NAND geometry at `0x78001000`; `R7=0xA1B2C3D4`, `R8=0x78001000` |
 | original QCSBL to original OEMSBL | `1,195,629` instructions / entry `0x000A07D8` |
-| OEMSBL execution after handoff | `5,400,398` additional instructions |
-| current PC / access boundary | `0x000A7A6C` / write to unmapped `0x84004430` |
-| watchdog services before boundary | `337` |
+| OEMSBL execution after handoff | `5,402,441` additional instructions |
+| secondary clock terminal selector / value | `0x36` / `0x00000004` |
+| current PC / dependency boundary | `0x00107FFC` / missing secure-module entry |
+| `0:SIM_SECURE` input contents | `0x00080000` bytes, all zero |
+| watchdog services before boundary | `338` |
 
 The reset/PBL-HLE path places only reconstructed QCSBL bytes at their profiled
 load address, supplies the `0x78000000..0x78010000` PBL IRAM window and service
@@ -81,21 +84,31 @@ terminator. No host pointers, filenames, dump bytes, or preloaded OEMSBL bytes
 participate in this path. The early boot-control compatibility registers are
 explicit and stateful; they are not a general read-zero/write-drop probe.
 
+After the first OEMSBL clock boundary, the bounded secondary clock model
+accepts only offsets `0x400`, `0x404`, `0x430`, and `0x434`. The original path
+then reaches `0x00107FFC`, while that address contains no executable input
+bytes and the normalized `0:SIM_SECURE` partition is entirely zero. An
+optional companion memory snapshot contains security-test code at that address
+and is used only to identify the missing module class; none of its bytes are
+loaded by the emulator or retained in the product.
+
 This establishes `boot-stage-entry` only. The trace starts at an original
 secondary-boot entry after the named mask-ROM HLE; it does not execute the
-missing mask ROM, reach AMSS, display a frame, or consume keypad input. The
-WBIN is present in reconstructed flash but has not yet been loaded by the
-original boot chain. The current compatibility model cannot support a higher
-milestone.
+missing mask ROM or SIM-secure module, reach AMSS, display a frame, or consume
+keypad input. The WBIN is present in reconstructed flash but has not yet been
+loaded by the original boot chain. The current compatibility model cannot
+support a higher milestone.
 
 The memory dump is not read by either private gate and is not a runtime input.
 
 ## Next measured boundary
 
-The next implementation target is identifying and modeling the device block
-that owns the OEMSBL write at physical `0x84004430`. The boot is rerun from the
-same PBL-HLE boundary after every added contract so each new dependency is
-causal and reproducible.
+The next implementation target is a named HLE contract for the absent
+SIM-secure module, beginning with the call ABI at `0x00107FFC`. It must model
+only evidenced return values and state changes; copying code from a memory
+snapshot into runtime RAM is explicitly disallowed. The boot is rerun from the
+same PBL-HLE boundary after every added contract so each dependency is causal
+and reproducible.
 
 Further OEMSBL and AMSS progress is expected to require interrupt, timer,
 clock, GPIO, and related platform blocks. CP15 translation-table walking,

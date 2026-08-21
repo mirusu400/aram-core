@@ -43,7 +43,9 @@ func TestQualcommNANDPBLHandoffRejectsNon2KPageGeometry(t *testing.T) {
 }
 
 func TestQualcommBootControlAllowsOnlyEvidencedEarlyBootRegisters(t *testing.T) {
-	device, err := NewQualcommBootControl(0x10000000)
+	device, err := NewQualcommBootControl(QualcommBootControlConfig{
+		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,6 +60,14 @@ func TestQualcommBootControlAllowsOnlyEvidencedEarlyBootRegisters(t *testing.T) 
 	if value != 0x55 {
 		t.Fatalf("latched register = %#x", value)
 	}
+	value, err = device.Read(0x0380, Width32)
+	if err != nil || value != 2 {
+		t.Fatalf("NAND interface mode = %#x error %v", value, err)
+	}
+	value, err = device.Read(0x0488, Width32)
+	if err != nil || value != 0 {
+		t.Fatalf("NAND reset status = %#x error %v", value, err)
+	}
 	if err := device.Write(0x540c, Width32, 1); err != nil || device.WatchdogServices() != 1 {
 		t.Fatalf("watchdog service error %v count %d", err, device.WatchdogServices())
 	}
@@ -71,15 +81,94 @@ func TestQualcommBootControlAllowsOnlyEvidencedEarlyBootRegisters(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	restored, _ := NewQualcommBootControl(0x10000000)
+	restored, _ := NewQualcommBootControl(QualcommBootControlConfig{
+		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
+	})
 	if err := restored.LoadState(state); err != nil {
 		t.Fatal(err)
 	}
 	if restored.WatchdogServices() != 1 {
 		t.Fatalf("restored watchdog count = %d", restored.WatchdogServices())
 	}
-	wrong, _ := NewQualcommBootControl(0x20000000)
+	wrong, _ := NewQualcommBootControl(QualcommBootControlConfig{
+		HardwareRevision: 0x20000000, NANDInterfaceMode: 2,
+	})
 	if err := wrong.LoadState(state); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("wrong revision state error = %v", err)
+	}
+}
+
+func TestQualcommBootControlRejectsWrongNANDInterfaceState(t *testing.T) {
+	device, _ := NewQualcommBootControl(QualcommBootControlConfig{
+		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
+	})
+	state, _ := device.SaveState()
+	other, _ := NewQualcommBootControl(QualcommBootControlConfig{
+		HardwareRevision: 0x10000000, NANDInterfaceMode: 4,
+	})
+	if err := other.LoadState(state); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("wrong NAND-interface state error = %v", err)
+	}
+}
+
+func TestQualcommBootControlValidatesBoardConfigurationAndReset(t *testing.T) {
+	invalid := []QualcommBootControlConfig{
+		{HardwareRevision: 0x00000001, NANDInterfaceMode: 2},
+		{HardwareRevision: 0x10000000, NANDInterfaceMode: 0},
+		{HardwareRevision: 0x10000000, NANDInterfaceMode: 3},
+	}
+	for _, config := range invalid {
+		if _, err := NewQualcommBootControl(config); err == nil {
+			t.Fatalf("accepted invalid board configuration %+v", config)
+		}
+	}
+
+	device, err := NewQualcommBootControl(QualcommBootControlConfig{
+		HardwareRevision: 0x10000000, NANDInterfaceMode: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := device.Write(0x0380, Width32, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := device.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	value, err := device.Read(0x0380, Width32)
+	if err != nil || value != 4 {
+		t.Fatalf("reset NAND interface mode = %#x error %v", value, err)
+	}
+}
+
+func TestQualcommSecondaryClockControlLatchesOnlyEvidencedRegisters(t *testing.T) {
+	device := NewQualcommSecondaryClockControl()
+	if err := device.Write(0x0430, Width32, 0x2d); err != nil {
+		t.Fatal(err)
+	}
+	if err := device.Write(0x0434, Width32, 4); err != nil {
+		t.Fatal(err)
+	}
+	value, err := device.Read(0x0430, Width32)
+	if err != nil || value != 0x2d {
+		t.Fatalf("secondary selector = %#x error %v", value, err)
+	}
+	if err := device.Write(0x0420, Width32, 0); !errors.Is(err, ErrQualcommSecondaryClockMMIO) {
+		t.Fatalf("unknown secondary clock write error = %v", err)
+	}
+	state, err := device.SaveState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := NewQualcommSecondaryClockControl()
+	if err := restored.LoadState(state); err != nil {
+		t.Fatal(err)
+	}
+	value, _ = restored.Read(0x0434, Width32)
+	if value != 4 {
+		t.Fatalf("restored secondary data = %#x", value)
+	}
+	if err := restored.LoadState(state[:len(state)-1]); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("truncated secondary clock state error = %v", err)
 	}
 }

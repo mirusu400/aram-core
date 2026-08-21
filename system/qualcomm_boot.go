@@ -12,13 +12,17 @@ import (
 )
 
 const (
-	QualcommBootControlWindowSize = 0x10000
-	qualcommPBLMagic              = 0xa1b2c3d4
-	qualcommPBLServiceEnd         = 0x015d
-	qualcommPBLFlashTypeNAND2K    = 6
+	QualcommBootControlWindowSize    = 0x10000
+	QualcommSecondaryClockWindowSize = 0x1000
+	qualcommPBLMagic                 = 0xa1b2c3d4
+	qualcommPBLServiceEnd            = 0x015d
+	qualcommPBLFlashTypeNAND2K       = 6
 )
 
-var ErrQualcommBootControlMMIO = errors.New("unsupported Qualcomm boot-control register")
+var (
+	ErrQualcommBootControlMMIO    = errors.New("unsupported Qualcomm boot-control register")
+	ErrQualcommSecondaryClockMMIO = errors.New("unsupported Qualcomm secondary-clock register")
+)
 
 type QualcommNANDPBLConfig struct {
 	Entry          uint32
@@ -27,6 +31,11 @@ type QualcommNANDPBLConfig struct {
 	EraseBlockSize uint32
 	FlashSize      uint64
 	BadBlockLimit  uint32
+}
+
+type QualcommBootControlConfig struct {
+	HardwareRevision  uint32
+	NANDInterfaceMode uint32
 }
 
 // NewQualcommNANDPBLHandoff builds the bounded PBL service data consumed by
@@ -70,24 +79,37 @@ func NewQualcommNANDPBLHandoff(config QualcommNANDPBLConfig) (BootHandoff, error
 
 var qualcommBootWritableOffsets = []uint32{
 	0x0244, 0x024c, 0x0280, 0x0290, 0x0294, 0x0330,
-	0x0384, 0x0388, 0x03ac, 0x0920, 0x0924, 0x0aa0,
-	0x0aa8, 0x5300,
+	0x0380, 0x0384, 0x0388, 0x03ac, 0x0414, 0x0900,
+	0x0904, 0x0908, 0x090c, 0x0910, 0x0914, 0x0918,
+	0x091c, 0x0920,
+	0x0924, 0x0934, 0x0938, 0x093c, 0x0940, 0x0aa0,
+	0x0aa8, 0x0aac, 0x0ab0, 0x0ab4, 0x0ab8, 0x0abc,
+	0x0ac0, 0x0ac4,
+	0x0ac8, 0x0acc, 0x0ad0, 0x0ad4, 0x0ad8, 0x0adc,
+	0x0ae0, 0x5300, 0x5344,
 }
+
+var qualcommSecondaryClockOffsets = []uint32{0x0400, 0x0404, 0x0430, 0x0434}
 
 // QualcommBootControl is an explicit early-boot compatibility model. It
 // exposes the hardware revision and latches only the clock/reset writes seen
 // before the next platform boundary; every unknown access fails.
 type QualcommBootControl struct {
-	hardwareRevision uint32
-	registers        map[uint32]uint32
-	watchdogServices uint64
+	hardwareRevision  uint32
+	nandInterfaceMode uint32
+	registers         map[uint32]uint32
+	watchdogServices  uint64
 }
 
-func NewQualcommBootControl(hardwareRevision uint32) (*QualcommBootControl, error) {
-	if hardwareRevision>>28 == 0 {
-		return nil, fmt.Errorf("Qualcomm hardware revision has no major nibble")
+func NewQualcommBootControl(config QualcommBootControlConfig) (*QualcommBootControl, error) {
+	if config.HardwareRevision>>28 == 0 ||
+		config.NANDInterfaceMode != 2 && config.NANDInterfaceMode != 4 {
+		return nil, fmt.Errorf("invalid Qualcomm boot-control configuration")
 	}
-	device := &QualcommBootControl{hardwareRevision: hardwareRevision}
+	device := &QualcommBootControl{
+		hardwareRevision:  config.HardwareRevision,
+		nandInterfaceMode: config.NANDInterfaceMode,
+	}
 	if err := device.Reset(); err != nil {
 		return nil, err
 	}
@@ -99,6 +121,7 @@ func (d *QualcommBootControl) Reset() error {
 	for _, offset := range qualcommBootWritableOffsets {
 		d.registers[offset] = 0
 	}
+	d.registers[0x0380] = d.nandInterfaceMode
 	d.watchdogServices = 0
 	return nil
 }
@@ -110,11 +133,12 @@ func (d *QualcommBootControl) Read(offset uint32, width Width) (uint32, error) {
 	switch offset {
 	case 0x0a40:
 		return d.hardwareRevision, nil
-	case 0x0274, 0x551c:
+	case 0x0274, 0x0488, 0x551c:
 		return 0, nil
-	case 0x024c:
-		return d.registers[offset], nil
 	default:
+		if value, ok := d.registers[offset]; ok {
+			return value, nil
+		}
 		return 0, fmt.Errorf("%w: read32 at 0x%x", ErrQualcommBootControlMMIO, offset)
 	}
 }
@@ -146,8 +170,9 @@ func (d *QualcommBootControl) SaveState() ([]byte, error) {
 	sort.Slice(offsets, func(left, right int) bool { return offsets[left] < offsets[right] })
 	var output bytes.Buffer
 	output.WriteString("QBTC")
-	_ = binary.Write(&output, binary.LittleEndian, uint32(1))
+	_ = binary.Write(&output, binary.LittleEndian, uint32(2))
 	_ = binary.Write(&output, binary.LittleEndian, d.hardwareRevision)
+	_ = binary.Write(&output, binary.LittleEndian, d.nandInterfaceMode)
 	_ = binary.Write(&output, binary.LittleEndian, d.watchdogServices)
 	_ = binary.Write(&output, binary.LittleEndian, uint32(len(offsets)))
 	for _, offset := range offsets {
@@ -160,12 +185,14 @@ func (d *QualcommBootControl) SaveState() ([]byte, error) {
 func (d *QualcommBootControl) LoadState(state []byte) error {
 	reader := bytes.NewReader(state)
 	var magic [4]byte
-	var version, revision uint32
+	var version, revision, nandInterfaceMode uint32
 	var watchdog uint64
 	var count uint32
 	if _, err := io.ReadFull(reader, magic[:]); err != nil || string(magic[:]) != "QBTC" ||
-		binary.Read(reader, binary.LittleEndian, &version) != nil || version != 1 ||
+		binary.Read(reader, binary.LittleEndian, &version) != nil || version != 2 ||
 		binary.Read(reader, binary.LittleEndian, &revision) != nil || revision != d.hardwareRevision ||
+		binary.Read(reader, binary.LittleEndian, &nandInterfaceMode) != nil ||
+		nandInterfaceMode != d.nandInterfaceMode ||
 		binary.Read(reader, binary.LittleEndian, &watchdog) != nil ||
 		binary.Read(reader, binary.LittleEndian, &count) != nil || count != uint32(len(qualcommBootWritableOffsets)) ||
 		reader.Len() != int(count)*8 {
@@ -191,7 +218,90 @@ func (d *QualcommBootControl) LoadState(state []byte) error {
 	return nil
 }
 
+// QualcommSecondaryClockControl is the bounded second clock-register window
+// exercised by OEMSBL. The selector/data and gate-mask registers are explicit
+// stateful latches; accesses outside the evidenced set fail.
+type QualcommSecondaryClockControl struct {
+	registers map[uint32]uint32
+}
+
+func NewQualcommSecondaryClockControl() *QualcommSecondaryClockControl {
+	device := &QualcommSecondaryClockControl{}
+	_ = device.Reset()
+	return device
+}
+
+func (d *QualcommSecondaryClockControl) Reset() error {
+	d.registers = make(map[uint32]uint32, len(qualcommSecondaryClockOffsets))
+	for _, offset := range qualcommSecondaryClockOffsets {
+		d.registers[offset] = 0
+	}
+	return nil
+}
+
+func (d *QualcommSecondaryClockControl) Read(offset uint32, width Width) (uint32, error) {
+	if width == Width32 {
+		if value, ok := d.registers[offset]; ok {
+			return value, nil
+		}
+	}
+	return 0, fmt.Errorf("%w: read%d at 0x%x", ErrQualcommSecondaryClockMMIO, width*8, offset)
+}
+
+func (d *QualcommSecondaryClockControl) Write(offset uint32, width Width, value uint32) error {
+	if width == Width32 {
+		if _, ok := d.registers[offset]; ok {
+			d.registers[offset] = value
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: write%d at 0x%x", ErrQualcommSecondaryClockMMIO, width*8, offset)
+}
+
+func (d *QualcommSecondaryClockControl) SaveState() ([]byte, error) {
+	var output bytes.Buffer
+	output.WriteString("QSCC")
+	_ = binary.Write(&output, binary.LittleEndian, uint32(1))
+	_ = binary.Write(&output, binary.LittleEndian, uint32(len(qualcommSecondaryClockOffsets)))
+	for _, offset := range qualcommSecondaryClockOffsets {
+		_ = binary.Write(&output, binary.LittleEndian, offset)
+		_ = binary.Write(&output, binary.LittleEndian, d.registers[offset])
+	}
+	return output.Bytes(), nil
+}
+
+func (d *QualcommSecondaryClockControl) LoadState(state []byte) error {
+	reader := bytes.NewReader(state)
+	var magic [4]byte
+	var version, count uint32
+	if _, err := io.ReadFull(reader, magic[:]); err != nil || string(magic[:]) != "QSCC" ||
+		binary.Read(reader, binary.LittleEndian, &version) != nil || version != 1 ||
+		binary.Read(reader, binary.LittleEndian, &count) != nil ||
+		count != uint32(len(qualcommSecondaryClockOffsets)) || reader.Len() != int(count)*8 {
+		return ErrInvalidState
+	}
+	registers := make(map[uint32]uint32, count)
+	for index := uint32(0); index < count; index++ {
+		var offset, value uint32
+		if binary.Read(reader, binary.LittleEndian, &offset) != nil ||
+			binary.Read(reader, binary.LittleEndian, &value) != nil {
+			return ErrInvalidState
+		}
+		if _, allowed := d.registers[offset]; !allowed {
+			return ErrInvalidState
+		}
+		if _, duplicate := registers[offset]; duplicate {
+			return ErrInvalidState
+		}
+		registers[offset] = value
+	}
+	d.registers = registers
+	return nil
+}
+
 var (
 	_ Device         = (*QualcommBootControl)(nil)
 	_ StatefulDevice = (*QualcommBootControl)(nil)
+	_ Device         = (*QualcommSecondaryClockControl)(nil)
+	_ StatefulDevice = (*QualcommSecondaryClockControl)(nil)
 )
