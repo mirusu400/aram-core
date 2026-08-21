@@ -28,6 +28,17 @@ diagnostic entry point, or probe-assisted trace into a cold-boot claim.
 - `system.COWFlash` keeps erase-block writes separate from the immutable input,
   enforces NAND's 1-to-0 programming rule, supports factory reset, and binds
   deterministic save states to the normalized flash identity.
+- `system.QualcommNAND` exposes the bounded address, read-command, status, and
+  512-byte data-window behavior used by the original QCSBL. Four commands read
+  one 2 KiB NAND page from the copy-on-write flash view; unsupported commands
+  and registers fail instead of succeeding implicitly.
+- The named `qualcomm.pbl-hle.nand2k-v1` handoff supplies only the PBL-owned
+  register magic and service table consumed by QCSBL. Its flash geometry is
+  derived from the assembled image, and the unavailable mask ROM remains an
+  explicit HLE boundary.
+- The early Qualcomm boot-control model exposes the evidenced hardware
+  revision, watchdog service, and a bounded allowlist of clock/reset latches.
+  Every access outside that compatibility contract faults.
 - `system.Bus` provides non-overlapping RAM, ROM, and typed MMIO regions with
   permissions, alignment and boundary faults, deterministic reset, and
   component state serialization.
@@ -52,38 +63,42 @@ When `ARAM_REFERENCE_REPO` is configured, the private gate currently proves:
 | WBIN progressive ELF | 11 program headers / logical end `0x040CCAF4` |
 | normalized flash geometry | `0x097C0000` bytes / four attributed source regions |
 | normalized WBIN / DAT / FNT starts | `0x002A0000` / `0x01C00000` / `0x04F00000` |
-| original QCSBL execution | `56,069` instructions before current probe boundary |
-| current PC / access boundary | `0x000831A0` / write `0x00000001` to `0x8000540C` |
+| PBL-HLE service table | 2 KiB NAND geometry at `0x78001000`; `R7=0xA1B2C3D4`, `R8=0x78001000` |
+| original QCSBL to original OEMSBL | `1,195,629` instructions / entry `0x000A07D8` |
+| OEMSBL execution after handoff | `5,400,398` additional instructions |
+| current PC / access boundary | `0x000A7A6C` / write to unmapped `0x84004430` |
+| watchdog services before boundary | `337` |
 
-The current diagnostic handoff places reconstructed QCSBL bytes at their
-profiled load address and supplies the `0x78000000..0x78010000` PBL-IRAM
-compatibility window required by QCSBL's `0x7800F000` stack literal. A bounded
-MMIO exploration device records reads at offsets `0x0A40`, `0x551C`, and
-`0x0274`, returning an explicit candidate zero, then rejects the first write
-at offset `0x540C`. Writes are not silently discarded.
+The reset/PBL-HLE path places only reconstructed QCSBL bytes at their profiled
+load address, supplies the `0x78000000..0x78010000` PBL IRAM window and service
+table, and starts the original QCSBL at `0x00080028`. QCSBL reads the selected
+MIBIB and OEMSBL partition through the modeled NAND device, copies OEMSBL into
+RAM, and invokes original OEMSBL code at `0x000A07D8`.
 
-As a negative diagnostic, allowing the observed writes without implementing
-their device semantics reaches QCSBL's reset/error loop at `0x0008015C`; it
-does not advance the boot milestone. This shows that the direct QCSBL entry is
-missing an earlier boot-state contract or takes a hardware-error branch, so
-the exploratory MMIO values must not be promoted into a device model.
+The handoff table entries are the QCSBL-consumed page size, pages per erase
+block, erase-block count, bad-block compatibility value, NAND2K selector, and
+terminator. No host pointers, filenames, dump bytes, or preloaded OEMSBL bytes
+participate in this path. The early boot-control compatibility registers are
+explicit and stateful; they are not a general read-zero/write-drop probe.
 
 This establishes `boot-stage-entry` only. The trace starts at an original
-secondary-boot entry as a diagnostic isolator; it does not yet execute from
-reset/PBL, place the decoded WBIN in reconstructed flash, reach AMSS, display
-a frame, or consume keypad input. The bounded probe values cannot support a
-higher milestone.
+secondary-boot entry after the named mask-ROM HLE; it does not execute the
+missing mask ROM, reach AMSS, display a frame, or consume keypad input. The
+WBIN is present in reconstructed flash but has not yet been loaded by the
+original boot chain. The current compatibility model cannot support a higher
+milestone.
 
 The memory dump is not read by either private gate and is not a runtime input.
 
 ## Next measured boundary
 
-The next implementation target is connecting the bounded progressive flash
-view to a modeled Qualcomm NAND controller and defining the reset/PBL-HLE
-handoff state before QCSBL is rerun from the start of the boot chain.
+The next implementation target is identifying and modeling the device block
+that owns the OEMSBL write at physical `0x84004430`. The boot is rerun from the
+same PBL-HLE boundary after every added contract so each new dependency is
+causal and reproducible.
 
-The Qualcomm-family register block at physical `0x80000000` remains the first
-observed platform MMIO dependency. The bring-up loop must replace each probe
-value with an evidenced register/device contract before claiming the
-corresponding boot milestone. CP15 translation-table walking, abort behavior,
-and MMU-backed virtual accesses remain required before MMU enable can succeed.
+Further OEMSBL and AMSS progress is expected to require interrupt, timer,
+clock, GPIO, and related platform blocks. CP15 translation-table walking,
+abort behavior, and MMU-backed virtual accesses remain required before MMU
+enable can succeed. No access beyond the current boundary will be treated as
+successful until its owner and minimum semantics are evidenced.

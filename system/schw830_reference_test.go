@@ -3,7 +3,6 @@ package system
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,7 +13,7 @@ import (
 	"github.com/mirusu400/aram-core/loader/samsung"
 )
 
-func TestSCHW830QCSBLPrivateReferenceEntersOriginalCode(t *testing.T) {
+func TestSCHW830PrivateReferencePBLHLELoadsOriginalOEMSBL(t *testing.T) {
 	root := os.Getenv("ARAM_REFERENCE_REPO")
 	if root == "" {
 		t.Skip("ARAM_REFERENCE_REPO is not configured")
@@ -36,66 +35,76 @@ func TestSCHW830QCSBLPrivateReferenceEntersOriginalCode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	flashImage, err := samsung.AssembleFlash(set, pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flash, err := NewCOWFlash(flashImage, samsung.EraseBlockSize, flashImage.Identity())
+	if err != nil {
+		t.Fatal(err)
+	}
+	nand, err := NewQualcommNAND(flash, samsung.PageSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootControl, err := NewQualcommBootControl(0x10000000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handoff, err := NewQualcommNANDPBLHandoff(QualcommNANDPBLConfig{
+		Entry: image.EntryAddress, TableAddress: 0x78001000,
+		PageSize: samsung.PageSize, EraseBlockSize: samsung.EraseBlockSize,
+		FlashSize: uint64(flash.Size()), BadBlockLimit: 0x14,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	bus := NewBus()
-	if err := bus.MapRAMImage("qcsbl", image.LoadAddress, uint32(len(image.Bytes)), image.Bytes); err != nil {
+	ram := make([]byte, 0x04000000)
+	copy(ram[image.LoadAddress:], image.Bytes)
+	if err := bus.MapRAMImage("ebi-ram", 0, uint32(len(ram)), ram); err != nil {
 		t.Fatal(err)
 	}
 	if err := SCHW830DL21BoardProfile().ApplyMemory(bus); err != nil {
 		t.Fatal(err)
 	}
-	probe := &boundedMMIOProbe{limit: 32}
-	if err := bus.MapMMIO("qcsbl-hardware-probe", 0x80000000, 0x10000, probe); err != nil {
+	if err := bus.MapMMIO("qualcomm-boot-control", 0x80000000, QualcommBootControlWindowSize, bootControl); err != nil {
+		t.Fatal(err)
+	}
+	if err := bus.MapMMIO("qualcomm-nand", 0x60000000, QualcommNANDWindowSize, nand); err != nil {
 		t.Fatal(err)
 	}
 	backend := interpreter.New()
 	if err := backend.AttachSystemBus(bus); err != nil {
 		t.Fatal(err)
 	}
-	result := backend.Run(context.Background(), image.EntryAddress, cpu.ModeARM, 1_000_000)
-	if result.Instructions == 0 || result.PC == image.EntryAddress {
-		t.Fatalf("QCSBL did not enter original code: %+v", result)
+	if err := handoff.Apply(bus, backend); err != nil {
+		t.Fatal(err)
 	}
-	if result.Instructions == 1 && errors.Is(result.Err, cpu.ErrUnsupportedInstruction) {
-		t.Fatalf("QCSBL stopped on its first instruction: %+v", result)
+	result := backend.Run(context.Background(), handoff.Entry, handoff.Mode, 1_195_629)
+	if result.Err != nil || result.Reason != cpu.StopBudget ||
+		result.Instructions != 1_195_629 || result.PC != 0x000a07d8 {
+		t.Fatalf("unexpected QCSBL-to-OEMSBL handoff: %+v", result)
 	}
+
+	result = backend.Run(context.Background(), result.PC, cpu.ModeARM, 10_000_000)
 	var fault *Fault
-	if result.Instructions != 56069 || result.PC != 0x000831a0 ||
-		!errors.As(result.Err, &fault) || fault.Address != 0x8000540c ||
+	if result.Instructions != 5_400_398 || result.PC != 0x000a7a6c ||
+		!errors.As(result.Err, &fault) || fault.Address != 0x84004430 ||
 		fault.Permission != cpu.PermissionWrite {
-		t.Fatalf("unexpected QCSBL trace boundary: %+v", result)
+		t.Fatalf("unexpected OEMSBL platform boundary: %+v", result)
+	}
+	if bootControl.WatchdogServices() == 0 {
+		t.Fatal("original boot stages never serviced the watchdog")
 	}
 	t.Logf(
-		"QCSBL trace boundary: instructions=%d pc=0x%08x reason=%d err=%v accesses=%v",
+		"original OEMSBL boundary: second-run instructions=%d pc=0x%08x err=%v watchdog=%d",
 		result.Instructions,
 		result.PC,
-		result.Reason,
 		result.Err,
-		probe.accesses,
+		bootControl.WatchdogServices(),
 	)
-}
-
-type boundedMMIOProbe struct {
-	limit    int
-	accesses []string
-}
-
-func (p *boundedMMIOProbe) Reset() error {
-	p.accesses = nil
-	return nil
-}
-
-func (p *boundedMMIOProbe) Read(offset uint32, width Width) (uint32, error) {
-	if len(p.accesses) >= p.limit {
-		return 0, errors.New("MMIO probe access limit reached")
-	}
-	p.accesses = append(p.accesses, fmt.Sprintf("read%d@0x%x=0", width*8, offset))
-	return 0, nil
-}
-
-func (p *boundedMMIOProbe) Write(offset uint32, width Width, value uint32) error {
-	p.accesses = append(p.accesses, fmt.Sprintf("write%d@0x%x=0x%x", width*8, offset, value))
-	return errors.New("unmodeled MMIO write")
 }
 
 func openSCHW830ReferenceSet(t *testing.T, directory string) firmwareset.Set {
