@@ -113,7 +113,7 @@ func (b *Backend) runThumb(limit uint64) (uint64, *cpu.StopReason, error) {
 		pc := b.regs[cpu.RegisterPC]
 		var instruction uint16
 		var err error
-		if pc >= b.executeAddress {
+		if !b.mmuEnabled() && pc >= b.executeAddress {
 			offset := uint64(pc - b.executeAddress)
 			if offset+2 <= uint64(len(b.executeData)) {
 				index := int(offset)

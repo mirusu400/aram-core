@@ -107,20 +107,20 @@ func TestExecutionTrapConfigurationRejectsInvalidAndDuplicateEntries(t *testing.
 	}
 }
 
-func TestSystemCapabilitiesDoNotOverclaimMMUOrExceptions(t *testing.T) {
+func TestSystemCapabilitiesAdvertiseImplementedMMUWithoutExceptions(t *testing.T) {
 	capabilities := New().SystemCapabilities()
 	for _, capability := range []cpu.SystemCapability{
 		cpu.CapabilityPhysicalBus,
 		cpu.CapabilityPrivilegedModes,
 		cpu.CapabilityCP15Control,
+		cpu.CapabilityMMU,
 		cpu.CapabilityExecutionTraps,
 	} {
 		if !capabilities.Has(capability) {
 			t.Fatalf("missing system capability %#x", capability)
 		}
 	}
-	if capabilities.Has(cpu.CapabilityMMU) ||
-		capabilities.Has(cpu.CapabilityExceptions) ||
+	if capabilities.Has(cpu.CapabilityExceptions) ||
 		capabilities.Has(cpu.CapabilityInterruptLines) {
 		t.Fatalf("overclaimed system capabilities %#x", capabilities)
 	}

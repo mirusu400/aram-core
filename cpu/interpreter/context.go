@@ -128,6 +128,9 @@ func (b *Backend) RestoreContext(data []byte) error {
 	b.banks = restoredBanks
 	b.spsr = restoredSPSR
 	b.cp15 = restoredCP15
+	b.invalidateTLB()
+	b.executeData = nil
+	b.dataData = nil
 	b.flags.dirty = false
 	b.mode = mode
 	b.setModeFlag()

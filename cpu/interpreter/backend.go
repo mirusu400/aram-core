@@ -62,6 +62,7 @@ type Backend struct {
 	banks           bankedRegisters
 	spsr            savedProgramStatus
 	cp15            cp15State
+	tlb             map[uint32]mmuTranslation
 	// flags holds condition N/Z/C/V lazily: setNZCV records the defining
 	// operation here instead of writing CPSR, and resolveFlags materializes it
 	// only when a reader actually needs the bits. See pendingFlags.
@@ -120,6 +121,7 @@ func (b *Backend) SystemCapabilities() cpu.SystemCapabilities {
 		cpu.CapabilityPhysicalBus |
 			cpu.CapabilityPrivilegedModes |
 			cpu.CapabilityCP15Control |
+			cpu.CapabilityMMU |
 			cpu.CapabilityExecutionTraps,
 	)
 }
@@ -226,6 +228,9 @@ func (b *Backend) ReadMemory(address uint32, destination []byte) error {
 	if b.closed {
 		return cpu.ErrClosed
 	}
+	if b.mmuEnabled() {
+		return b.readVirtual(address, destination, cpu.PermissionRead)
+	}
 	return b.copyOut(address, destination, cpu.PermissionRead)
 }
 
@@ -234,6 +239,9 @@ func (b *Backend) WriteMemory(address uint32, source []byte) error {
 	defer b.mu.Unlock()
 	if b.closed {
 		return cpu.ErrClosed
+	}
+	if b.mmuEnabled() {
+		return b.writeVirtual(address, source, cpu.PermissionWrite)
 	}
 	return b.copyIn(address, source, cpu.PermissionWrite)
 }
@@ -402,6 +410,7 @@ func (b *Backend) Close() error {
 	b.regions = nil
 	b.systemBus = nil
 	b.executionTraps = nil
+	b.tlb = nil
 	clear(b.regionHints[:])
 	b.executeData = nil
 	b.dataData = nil

@@ -1,13 +1,10 @@
 package interpreter
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/mirusu400/aram-core/cpu"
 )
-
-var ErrMMUTranslationUnavailable = errors.New("MMU translation is not implemented")
 
 type cp15State struct {
 	control                uint32
@@ -76,13 +73,16 @@ func (b *Backend) readCP15(crn, crm, op2 uint8) (uint32, error) {
 func (b *Backend) writeCP15(crn, crm, op2 uint8, value uint32) error {
 	switch {
 	case crn == 1 && crm == 0 && op2 == 0:
-		if value&1 != 0 && b.cp15.control&1 == 0 {
-			return ErrMMUTranslationUnavailable
+		if value != b.cp15.control {
+			b.invalidateTLB()
+			b.executeData = nil
+			b.dataData = nil
 		}
 		b.cp15.control = value
 		return nil
 	case crn == 2 && crm == 0 && op2 == 0:
 		b.cp15.translationTableBase = value
+		b.invalidateTLB()
 		return nil
 	case crn == 3 && crm == 0 && op2 == 0:
 		b.cp15.domainAccessControl = value
@@ -107,11 +107,13 @@ func (b *Backend) writeCP15(crn, crm, op2 uint8, value uint32) error {
 		b.dataData = nil
 		return nil
 	case crn == 8 && crm == 7 && op2 == 0:
-		// Invalidate unified TLB. No translations exist while MMU enable is
-		// rejected, so this operation has no cached host state yet.
+		// Invalidate the unified software TLB. Translation-table contents are
+		// otherwise permitted to remain stale exactly as cached hardware is.
+		b.invalidateTLB()
 		return nil
 	case crn == 13 && crm == 0 && op2 == 0:
 		b.cp15.processID = value
+		b.invalidateTLB()
 		return nil
 	default:
 		return fmt.Errorf("unsupported CP15 write c%d,c%d,%d", crn, crm, op2)

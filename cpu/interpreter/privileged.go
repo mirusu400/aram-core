@@ -114,6 +114,54 @@ func (b *Backend) savedStatus(mode processorMode) *uint32 {
 	}
 }
 
+// readUserRegister returns the unbanked User/System view while the CPU remains
+// in its current privileged mode. ARM block transfers use this view when their
+// S bit is set without loading the program counter.
+func (b *Backend) readUserRegister(register uint32) uint32 {
+	if register < cpu.RegisterR8 {
+		return b.regs[register]
+	}
+	mode := b.currentProcessorMode()
+	if register < cpu.RegisterSP {
+		if mode == processorModeFIQ {
+			return b.banks.userHigh[register-cpu.RegisterR8]
+		}
+		return b.regs[register]
+	}
+	if register < cpu.RegisterPC {
+		if mode == processorModeUser || mode == processorModeSystem {
+			return b.regs[register]
+		}
+		return b.banks.userStackLink[register-cpu.RegisterSP]
+	}
+	return b.regs[register]
+}
+
+func (b *Backend) writeUserRegister(register, value uint32) {
+	if register < cpu.RegisterR8 {
+		b.regs[register] = value
+		return
+	}
+	mode := b.currentProcessorMode()
+	if register < cpu.RegisterSP {
+		if mode == processorModeFIQ {
+			b.banks.userHigh[register-cpu.RegisterR8] = value
+		} else {
+			b.regs[register] = value
+		}
+		return
+	}
+	if register < cpu.RegisterPC {
+		if mode == processorModeUser || mode == processorModeSystem {
+			b.regs[register] = value
+		} else {
+			b.banks.userStackLink[register-cpu.RegisterSP] = value
+		}
+		return
+	}
+	b.regs[register] = value
+}
+
 func (b *Backend) readProgramStatus(saved bool) (uint32, error) {
 	if !saved {
 		b.resolveFlags()

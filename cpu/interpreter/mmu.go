@@ -1,0 +1,275 @@
+package interpreter
+
+import (
+	"encoding/binary"
+	"errors"
+	"fmt"
+
+	"github.com/mirusu400/aram-core/cpu"
+)
+
+var (
+	ErrMMUTranslationFault = errors.New("MMU translation fault")
+	ErrMMUDomainFault      = errors.New("MMU domain fault")
+	ErrMMUPermissionFault  = errors.New("MMU permission fault")
+)
+
+type mmuFaultKind uint8
+
+const (
+	mmuTranslationFault mmuFaultKind = iota
+	mmuDomainFault
+	mmuPermissionFault
+)
+
+// MMUFault records the architectural short-descriptor fault information. The
+// interpreter reports it to the machine until architectural abort delivery is
+// attached; CP15 fault registers are updated before the access returns.
+type MMUFault struct {
+	Address    uint32
+	Domain     uint8
+	Status     uint8
+	Permission cpu.Permissions
+	kind       mmuFaultKind
+}
+
+func (f *MMUFault) Error() string {
+	return fmt.Sprintf(
+		"%v at virtual address 0x%08x (domain %d, status 0x%x, permission 0x%x)",
+		f.Unwrap(), f.Address, f.Domain, f.Status, f.Permission,
+	)
+}
+
+func (f *MMUFault) Unwrap() error {
+	switch f.kind {
+	case mmuDomainFault:
+		return ErrMMUDomainFault
+	case mmuPermissionFault:
+		return ErrMMUPermissionFault
+	default:
+		return ErrMMUTranslationFault
+	}
+}
+
+type mmuTranslation struct {
+	physicalBase uint32
+	domain       uint8
+	access       uint8
+	page         bool
+}
+
+func (b *Backend) mmuEnabled() bool {
+	return b.cp15.control&1 != 0
+}
+
+func (b *Backend) invalidateTLB() {
+	b.tlb = nil
+}
+
+func (b *Backend) translateAddress(address uint32, permission cpu.Permissions) (uint32, error) {
+	if !b.mmuEnabled() {
+		return address, nil
+	}
+	modified := address
+	if address < 0x02000000 {
+		modified |= b.cp15.processID & 0xfe000000
+	}
+	key := modified >> 10
+	translation, ok := b.tlb[key]
+	if !ok {
+		var err error
+		translation, err = b.walkShortDescriptor(modified, address, permission)
+		if err != nil {
+			return 0, err
+		}
+		if b.tlb == nil {
+			b.tlb = make(map[uint32]mmuTranslation)
+		}
+		b.tlb[key] = translation
+	}
+	if err := b.checkTranslationAccess(translation, address, permission); err != nil {
+		return 0, err
+	}
+	return translation.physicalBase | modified&0x3ff, nil
+}
+
+func (b *Backend) walkShortDescriptor(modified, address uint32, permission cpu.Permissions) (mmuTranslation, error) {
+	firstAddress := b.cp15.translationTableBase&0xffffc000 | (modified>>20)*4
+	first, err := b.readPhysical32(firstAddress)
+	if err != nil {
+		return mmuTranslation{}, fmt.Errorf("MMU first-level descriptor at 0x%08x: %w", firstAddress, err)
+	}
+	switch first & 3 {
+	case 0:
+		return mmuTranslation{}, b.recordMMUFault(address, permission, 0, 0x5, mmuTranslationFault)
+	case 1: // coarse page table
+		domain := uint8(first >> 5 & 0xf)
+		secondAddress := first&0xfffffc00 | ((modified>>12)&0xff)*4
+		return b.walkPageDescriptor(secondAddress, modified, address, permission, domain, false)
+	case 2: // 1 MiB section
+		domain := uint8(first >> 5 & 0xf)
+		return mmuTranslation{
+			physicalBase: first&0xfff00000 | modified&0x000ffc00,
+			domain:       domain,
+			access:       uint8(first >> 10 & 3),
+		}, nil
+	case 3: // fine page table
+		domain := uint8(first >> 5 & 0xf)
+		secondAddress := first&0xfffff000 | ((modified>>10)&0x3ff)*4
+		return b.walkPageDescriptor(secondAddress, modified, address, permission, domain, true)
+	default:
+		panic("unreachable first-level descriptor type")
+	}
+}
+
+func (b *Backend) walkPageDescriptor(
+	descriptorAddress, modified, address uint32,
+	permission cpu.Permissions,
+	domain uint8,
+	fine bool,
+) (mmuTranslation, error) {
+	descriptor, err := b.readPhysical32(descriptorAddress)
+	if err != nil {
+		return mmuTranslation{}, fmt.Errorf("MMU second-level descriptor at 0x%08x: %w", descriptorAddress, err)
+	}
+	switch descriptor & 3 {
+	case 0:
+		return mmuTranslation{}, b.recordMMUFault(address, permission, domain, 0x7, mmuTranslationFault)
+	case 1: // 64 KiB large page, with one AP value per 16 KiB subpage
+		shift := uint32(4 + (modified>>14&3)*2)
+		return mmuTranslation{
+			physicalBase: descriptor&0xffff0000 | modified&0x0000fc00,
+			domain:       domain,
+			access:       uint8(descriptor >> shift & 3),
+			page:         true,
+		}, nil
+	case 2: // 4 KiB small page, with one AP value per 1 KiB subpage
+		shift := uint32(4 + (modified>>10&3)*2)
+		return mmuTranslation{
+			physicalBase: descriptor&0xfffff000 | modified&0x00000c00,
+			domain:       domain,
+			access:       uint8(descriptor >> shift & 3),
+			page:         true,
+		}, nil
+	case 3: // 1 KiB tiny page, valid only below a fine first-level entry
+		if !fine {
+			return mmuTranslation{}, b.recordMMUFault(address, permission, domain, 0x7, mmuTranslationFault)
+		}
+		return mmuTranslation{
+			physicalBase: descriptor & 0xfffffc00,
+			domain:       domain,
+			access:       uint8(descriptor >> 4 & 3),
+			page:         true,
+		}, nil
+	default:
+		panic("unreachable second-level descriptor type")
+	}
+}
+
+func (b *Backend) checkTranslationAccess(
+	translation mmuTranslation,
+	address uint32,
+	permission cpu.Permissions,
+) error {
+	domainAccess := uint8(b.cp15.domainAccessControl >> (uint32(translation.domain) * 2) & 3)
+	status := uint8(0x9)
+	if translation.page {
+		status = 0xb
+	}
+	switch domainAccess {
+	case 3: // manager: AP checks are disabled
+		return nil
+	case 1: // client: apply AP and S/R permission controls below
+	case 0, 2:
+		return b.recordMMUFault(address, permission, translation.domain, status, mmuDomainFault)
+	}
+
+	write := permission&cpu.PermissionWrite != 0
+	user := b.currentProcessorMode() == processorModeUser
+	allowed := false
+	switch translation.access {
+	case 0:
+		systemProtection := b.cp15.control&(1<<8) != 0
+		romProtection := b.cp15.control&(1<<9) != 0
+		if !user {
+			allowed = systemProtection && !romProtection || !systemProtection && romProtection && !write
+		}
+	case 1:
+		allowed = !user
+	case 2:
+		allowed = !user || !write
+	case 3:
+		allowed = true
+	}
+	if allowed {
+		return nil
+	}
+	status = 0xd
+	if translation.page {
+		status = 0xf
+	}
+	return b.recordMMUFault(address, permission, translation.domain, status, mmuPermissionFault)
+}
+
+func (b *Backend) recordMMUFault(
+	address uint32,
+	permission cpu.Permissions,
+	domain, status uint8,
+	kind mmuFaultKind,
+) error {
+	faultStatus := uint32(status) | uint32(domain)<<4
+	if permission&cpu.PermissionExecute != 0 {
+		b.cp15.instructionFaultStatus = faultStatus
+	} else {
+		b.cp15.dataFaultStatus = faultStatus
+	}
+	b.cp15.faultAddress = address
+	return &MMUFault{
+		Address: address, Domain: domain, Status: status,
+		Permission: permission, kind: kind,
+	}
+}
+
+func (b *Backend) readPhysical32(address uint32) (uint32, error) {
+	var data [4]byte
+	if err := b.copyOut(address, data[:], cpu.PermissionRead); err != nil {
+		return 0, err
+	}
+	return binary.LittleEndian.Uint32(data[:]), nil
+}
+
+func (b *Backend) readVirtual(address uint32, destination []byte, permission cpu.Permissions) error {
+	current := address
+	remaining := destination
+	for len(remaining) > 0 {
+		physical, err := b.translateAddress(current, permission)
+		if err != nil {
+			return err
+		}
+		count := min(len(remaining), int(0x400-(current&0x3ff)))
+		if err := b.copyOut(physical, remaining[:count], permission); err != nil {
+			return err
+		}
+		remaining = remaining[count:]
+		current += uint32(count)
+	}
+	return nil
+}
+
+func (b *Backend) writeVirtual(address uint32, source []byte, permission cpu.Permissions) error {
+	current := address
+	remaining := source
+	for len(remaining) > 0 {
+		physical, err := b.translateAddress(current, permission)
+		if err != nil {
+			return err
+		}
+		count := min(len(remaining), int(0x400-(current&0x3ff)))
+		if err := b.copyIn(physical, remaining[:count], permission); err != nil {
+			return err
+		}
+		remaining = remaining[count:]
+		current += uint32(count)
+	}
+	return nil
+}

@@ -17,6 +17,18 @@ func TestSCHW830BoardProfileAppliesEvidenceBackedIRAM(t *testing.T) {
 	if profile.NANDReadID != 0xecaa {
 		t.Fatalf("SCH-W830 NAND read ID = %#x", profile.NANDReadID)
 	}
+	if profile.PrimaryClockStatus != 0 {
+		t.Fatalf("SCH-W830 primary clock status = %#x", profile.PrimaryClockStatus)
+	}
+	if profile.BootClockModeStatus != 1 {
+		t.Fatalf("SCH-W830 boot clock mode status = %#x", profile.BootClockModeStatus)
+	}
+	if profile.LegacyTopIdentification != 0 {
+		t.Fatalf("SCH-W830 legacy top identification = %#x", profile.LegacyTopIdentification)
+	}
+	if profile.LegacyTopVersion != 0 {
+		t.Fatalf("SCH-W830 legacy top version = %#x", profile.LegacyTopVersion)
+	}
 	bus := NewBus()
 	if err := profile.ApplyMemory(bus); err != nil {
 		t.Fatal(err)
@@ -26,6 +38,9 @@ func TestSCHW830BoardProfileAppliesEvidenceBackedIRAM(t *testing.T) {
 	}
 	if err := bus.MapRAM("overlap-check", 0x7800f000, 0x1000); err == nil {
 		t.Fatal("board profile did not map PBL IRAM")
+	}
+	if err := bus.MapRAM("high-vector-overlap-check", 0xffff5000, 0x1000); err == nil {
+		t.Fatal("board profile did not map high-vector IRAM")
 	}
 }
 

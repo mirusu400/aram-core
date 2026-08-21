@@ -2,7 +2,6 @@ package interpreter
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/mirusu400/aram-core/cpu"
@@ -37,18 +36,18 @@ func TestARMCP15ControlWriteReadAndStateRoundTrip(t *testing.T) {
 	}
 }
 
-func TestARMCP15RejectsMMUEnableUntilTranslationIsAttached(t *testing.T) {
+func TestARMCP15EnablesImplementedMMUTranslation(t *testing.T) {
 	backend := New()
 	mapARMInstructions(t, backend, 0xee010f10)
 	if err := backend.WriteRegister(cpu.RegisterR0, 1); err != nil {
 		t.Fatal(err)
 	}
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 1)
-	if !errors.Is(result.Err, ErrMMUTranslationUnavailable) {
-		t.Fatalf("MMU enable error = %v", result.Err)
+	if result.Err != nil || result.Instructions != 1 {
+		t.Fatalf("MMU enable result = %+v", result)
 	}
-	if backend.cp15.control != 0 {
-		t.Fatalf("failed MMU enable changed control to %#x", backend.cp15.control)
+	if backend.cp15.control != 1 {
+		t.Fatalf("MMU control = %#x", backend.cp15.control)
 	}
 }
 

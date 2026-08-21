@@ -1,20 +1,24 @@
 package system
 
-// LevelSignal is a deterministic single-machine wire shared by platform
-// devices. The machine owns synchronization; devices only sample or drive the
-// level while executing on that machine.
-type LevelSignal struct {
-	asserted bool
+// StatusSignal is a deterministic bitfield wire shared by platform devices.
+// The machine owns synchronization; devices only sample or drive status bits
+// while executing on that machine.
+type StatusSignal struct {
+	value uint32
 }
 
-func NewLevelSignal() *LevelSignal {
-	return &LevelSignal{}
+func NewStatusSignal() *StatusSignal {
+	return &StatusSignal{}
 }
 
-func (s *LevelSignal) Set(asserted bool) {
-	s.asserted = asserted
+func (s *StatusSignal) Set(value uint32) {
+	s.value = value
 }
 
-func (s *LevelSignal) Asserted() bool {
-	return s.asserted
+func (s *StatusSignal) Clear(mask uint32) {
+	s.value &^= mask
+}
+
+func (s *StatusSignal) Value() uint32 {
+	return s.value
 }

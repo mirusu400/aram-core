@@ -16,7 +16,7 @@ func TestQualcommNANDReadsPageThroughFourDataWindows(t *testing.T) {
 			}
 		}
 	}
-	device, err := NewQualcommNAND(byteStorage{data: data}, Qualcomm2K8BitNANDConfig(0xecaa, NewLevelSignal()))
+	device, err := NewQualcommNAND(byteStorage{data: data}, Qualcomm2K8BitNANDConfig(0xecaa, NewStatusSignal()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestQualcommNANDReadsPageThroughFourDataWindows(t *testing.T) {
 }
 
 func TestQualcommNANDReportsReadFailureAndRejectsUnknownCommand(t *testing.T) {
-	ready := NewLevelSignal()
+	ready := NewStatusSignal()
 	device, err := NewQualcommNAND(
 		byteStorage{data: bytes.Repeat([]byte{0xff}, 0x800)},
 		Qualcomm2K8BitNANDConfig(0xecaa, ready),
@@ -84,14 +84,20 @@ func TestQualcommNANDReportsReadFailureAndRejectsUnknownCommand(t *testing.T) {
 	if err := device.Write(qualcommNANDCommandOffset, Width32, 0); err != nil {
 		t.Fatalf("NAND controller reset command error = %v", err)
 	}
-	if ready.Asserted() {
+	if ready.Value() != 0 {
 		t.Fatal("NAND reset command left the shared ready line asserted")
 	}
 	if err := device.Write(qualcommNANDCommandOffset, Width32, 7); err != nil {
 		t.Fatalf("NAND controller mode command error = %v", err)
 	}
-	if !ready.Asserted() {
+	if ready.Value() != 2 {
 		t.Fatal("NAND mode command did not assert the shared ready line")
+	}
+	if err := device.Write(qualcommNANDCommandOffset, Width32, 4); err != nil {
+		t.Fatalf("NAND command 4 error = %v", err)
+	}
+	if ready.Value() != 1 {
+		t.Fatalf("NAND command 4 status = %#x", ready.Value())
 	}
 	for _, command := range []uint32{5, 6} {
 		if err := device.Write(qualcommNANDCommandOffset, Width32, command); err != nil {
@@ -102,7 +108,7 @@ func TestQualcommNANDReportsReadFailureAndRejectsUnknownCommand(t *testing.T) {
 
 func TestQualcommNANDStateRoundTrip(t *testing.T) {
 	base := byteStorage{data: bytes.Repeat([]byte{0x5a}, 0x800)}
-	device, err := NewQualcommNAND(base, Qualcomm2K8BitNANDConfig(0xecaa, NewLevelSignal()))
+	device, err := NewQualcommNAND(base, Qualcomm2K8BitNANDConfig(0xecaa, NewStatusSignal()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +119,7 @@ func TestQualcommNANDStateRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	restored, err := NewQualcommNAND(base, Qualcomm2K8BitNANDConfig(0xecaa, NewLevelSignal()))
+	restored, err := NewQualcommNAND(base, Qualcomm2K8BitNANDConfig(0xecaa, NewStatusSignal()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +141,7 @@ func TestQualcommNANDReadsControllerWordAtLatchedAddress(t *testing.T) {
 	data := make([]byte, 0x800)
 	data[0x202] = 0x34
 	data[0x203] = 0x12
-	ready := NewLevelSignal()
+	ready := NewStatusSignal()
 	device, err := NewQualcommNAND(byteStorage{data: data}, Qualcomm2K8BitNANDConfig(0xecaa, ready))
 	if err != nil {
 		t.Fatal(err)
@@ -147,13 +153,13 @@ func TestQualcommNANDReadsControllerWordAtLatchedAddress(t *testing.T) {
 		t.Fatal(err)
 	}
 	value, err := device.Read(qualcommNANDReadDataOffset, Width32)
-	if err != nil || value != 0x1234 || !ready.Asserted() {
-		t.Fatalf("controller word = %#x ready %v error %v", value, ready.Asserted(), err)
+	if err != nil || value != 0x1234 || ready.Value() != 2 {
+		t.Fatalf("controller word = %#x ready %#x error %v", value, ready.Value(), err)
 	}
 }
 
 func TestQualcommNANDExposesAndResetsExplicitControllerConfiguration(t *testing.T) {
-	config := Qualcomm2K8BitNANDConfig(0xecaa, NewLevelSignal())
+	config := Qualcomm2K8BitNANDConfig(0xecaa, NewStatusSignal())
 	device, err := NewQualcommNAND(
 		byteStorage{data: bytes.Repeat([]byte{0xff}, int(config.PageSize))},
 		config,

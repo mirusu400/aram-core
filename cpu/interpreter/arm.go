@@ -38,7 +38,7 @@ func (b *Backend) stepARM() (*cpu.StopReason, error) {
 	pc := b.regs[cpu.RegisterPC]
 	var instruction uint32
 	var err error
-	if pc >= b.executeAddress {
+	if !b.mmuEnabled() && pc >= b.executeAddress {
 		offset := uint64(pc - b.executeAddress)
 		if offset+4 <= uint64(len(b.executeData)) {
 			index := int(offset)
@@ -567,13 +567,27 @@ func (b *Backend) stepARM() (*cpu.StopReason, error) {
 	case instruction&0x0e000000 == 0x08000000: // LDM/STM
 		preIndex := instruction&(1<<24) != 0
 		increment := instruction&(1<<23) != 0
-		loadPSR := instruction&(1<<22) != 0
+		userOrPSR := instruction&(1<<22) != 0
 		writeBack := instruction&(1<<21) != 0
 		load := instruction&(1<<20) != 0
 		rn := uint32(instruction>>16) & 0xf
 		registers := uint16(instruction)
-		if loadPSR || registers == 0 || rn == cpu.RegisterPC {
+		if registers == 0 || rn == cpu.RegisterPC {
 			return nil, b.unsupportedARM(pc, instruction)
+		}
+		exceptionReturn := userOrPSR && load && registers&(1<<cpu.RegisterPC) != 0
+		transferUser := userOrPSR && !exceptionReturn
+		currentMode := b.currentProcessorMode()
+		if transferUser && (currentMode == processorModeUser || currentMode == processorModeSystem) {
+			return nil, b.unsupportedARM(pc, instruction)
+		}
+		var restoredStatus uint32
+		if exceptionReturn {
+			status := b.savedStatus(currentMode)
+			if status == nil {
+				return nil, b.unsupportedARM(pc, instruction)
+			}
+			restoredStatus = *status
 		}
 		count := uint32(bits.OnesCount16(registers))
 		base := b.readOperandRegister(rn, pc, cpu.ModeARM)
@@ -589,7 +603,8 @@ func (b *Backend) stepARM() (*cpu.StopReason, error) {
 				address += 4
 			}
 		}
-		var loadedPC *uint32
+		var loadedPC uint32
+		loadedProgramCounter := false
 		for register := uint32(0); register < 16; register++ {
 			if registers&(1<<register) == 0 {
 				continue
@@ -600,16 +615,24 @@ func (b *Backend) stepARM() (*cpu.StopReason, error) {
 					return nil, readErr
 				}
 				if register == cpu.RegisterPC {
-					loadedPC = &value
+					loadedPC = value
+					loadedProgramCounter = true
+				} else if transferUser {
+					b.writeUserRegister(register, value)
 				} else {
 					b.regs[register] = value
 				}
 			} else {
-				value := b.regs[register]
+				var value uint32
 				if register == cpu.RegisterPC {
 					value = pc + 12
-				} else if register == rn {
-					value = base
+				} else if transferUser {
+					value = b.readUserRegister(register)
+				} else {
+					value = b.regs[register]
+					if register == rn {
+						value = base
+					}
 				}
 				if writeErr := b.write32(address, value, cpu.PermissionWrite); writeErr != nil {
 					return nil, writeErr
@@ -624,8 +647,19 @@ func (b *Backend) stepARM() (*cpu.StopReason, error) {
 				b.regs[rn] = base - count*4
 			}
 		}
-		if loadedPC != nil {
-			b.branchExchange(*loadedPC)
+		if loadedProgramCounter {
+			if exceptionReturn {
+				if statusErr := b.writeProgramStatus(false, 0xf, restoredStatus); statusErr != nil {
+					return nil, fmt.Errorf("ARM LDM exception return at 0x%08x: %w", pc, statusErr)
+				}
+				if b.mode == cpu.ModeThumb {
+					b.regs[cpu.RegisterPC] = loadedPC &^ 1
+				} else {
+					b.regs[cpu.RegisterPC] = loadedPC &^ 3
+				}
+			} else {
+				b.branchExchange(loadedPC)
+			}
 		}
 		return nil, nil
 

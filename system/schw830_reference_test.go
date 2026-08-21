@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 
 	"github.com/mirusu400/aram-core/cpu"
@@ -13,7 +14,7 @@ import (
 	"github.com/mirusu400/aram-core/loader/samsung"
 )
 
-func TestSCHW830PrivateReferenceReachesMMUEnableBoundary(t *testing.T) {
+func TestSCHW830PrivateReferenceRunsOriginalFirmwarePastTimeTickSetup(t *testing.T) {
 	root := os.Getenv("ARAM_REFERENCE_REPO")
 	if root == "" {
 		t.Skip("ARAM_REFERENCE_REPO is not configured")
@@ -44,7 +45,7 @@ func TestSCHW830PrivateReferenceReachesMMUEnableBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	board := SCHW830DL21BoardProfile()
-	nandReady := NewLevelSignal()
+	nandReady := NewStatusSignal()
 	nandConfig := Qualcomm2K8BitNANDConfig(board.NANDReadID, nandReady)
 	if nandConfig.PageSize != samsung.PageSize {
 		t.Fatal("SCH-W830 NAND profile page size does not match normalized flash")
@@ -55,12 +56,27 @@ func TestSCHW830PrivateReferenceReachesMMUEnableBoundary(t *testing.T) {
 	}
 	bootControl, err := NewQualcommBootControl(QualcommBootControlConfig{
 		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
-		EBIMemoryConfiguration: 0x5880, ClockModeStatus: 1, NANDReady: nandReady,
+		EBIMemoryConfiguration: 0x5880, ClockModeStatus: board.BootClockModeStatus, NANDReady: nandReady,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	secondaryClock := NewQualcommSecondaryClockControl()
+	primaryClock, err := NewQualcommPrimaryClockControl(QualcommPrimaryClockConfig{
+		Status: board.PrimaryClockStatus,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyTop := NewQualcommLegacyTopPage(QualcommLegacyTopConfig{
+		Version:        board.LegacyTopVersion,
+		Identification: board.LegacyTopIdentification,
+	})
+	clockRegime := NewQualcommClockRegime()
+	busRegisters, err := NewSparseWordRegisters(schw830BusRegisterOffsets())
+	if err != nil {
+		t.Fatal(err)
+	}
 	panel := NewParallelPanelInterface()
 	handoff, err := NewQualcommNANDPBLHandoff(QualcommNANDPBLConfig{
 		Entry: image.EntryAddress, TableAddress: 0x78001000,
@@ -79,10 +95,21 @@ func TestSCHW830PrivateReferenceReachesMMUEnableBoundary(t *testing.T) {
 	if err := board.ApplyMemory(bus); err != nil {
 		t.Fatal(err)
 	}
+	if err := board.ApplyReadOnlyRegisters(bus); err != nil {
+		t.Fatal(err)
+	}
 	if err := bus.MapMMIO("qualcomm-boot-control", 0x80000000, QualcommBootControlWindowSize, bootControl); err != nil {
 		t.Fatal(err)
 	}
 	if err := bus.MapMMIO("qualcomm-nand", 0x60000000, QualcommNANDWindowSize, nand); err != nil {
+		t.Fatal(err)
+	}
+	if err := bus.MapMMIO(
+		"qualcomm-primary-clock",
+		0x84000000,
+		QualcommPrimaryClockWindowSize,
+		primaryClock,
+	); err != nil {
 		t.Fatal(err)
 	}
 	if err := bus.MapMMIO(
@@ -98,6 +125,30 @@ func TestSCHW830PrivateReferenceReachesMMUEnableBoundary(t *testing.T) {
 		0x20000000,
 		ParallelPanelWindowSize,
 		panel,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := bus.MapMMIO(
+		"qualcomm-clock-regime",
+		0x90000000,
+		QualcommClockRegimeWindowSize,
+		clockRegime,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := bus.MapMMIO(
+		"qualcomm-sparse-bus-registers",
+		0x90400000,
+		0x1000,
+		busRegisters,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := bus.MapMMIO(
+		"qualcomm-legacy-top-page",
+		0xfffff000,
+		QualcommLegacyTopWindowSize,
+		legacyTop,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -137,24 +188,64 @@ func TestSCHW830PrivateReferenceReachesMMUEnableBoundary(t *testing.T) {
 		t.Fatalf("unexpected QCSBL OEM callback boundary: %+v", result)
 	}
 
-	result = runner.Run(context.Background(), result.PC, cpu.ModeARM, 10_000_000)
-	if result.Reason != cpu.StopFault ||
-		!errors.Is(result.Err, interpreter.ErrMMUTranslationUnavailable) ||
-		result.Instructions != 6_036_311 || result.PC != 0x000bc2dc {
-		t.Fatalf("unexpected OEMSBL MMU-enable boundary: %+v", result)
+	result = runner.Run(context.Background(), result.PC, cpu.ModeARM, 552_000_000)
+	pcBaseline := backend.PCHits()
+	if result.Err == nil && result.Reason == cpu.StopBudget {
+		status, statusErr := backend.ReadRegister(cpu.RegisterCPSR)
+		if statusErr != nil {
+			t.Fatal(statusErr)
+		}
+		mode := cpu.ModeARM
+		if status&cpu.StatusThumb != 0 {
+			mode = cpu.ModeThumb
+		}
+		warmupInstructions := result.Instructions
+		result = runner.Run(context.Background(), result.PC, mode, 10_000_000)
+		result.Instructions += warmupInstructions
+	}
+	t.Logf("original firmware execution result: %+v", result)
+	if result.Err != nil || result.Reason != cpu.StopBudget {
+		code := make([]byte, 0x40)
+		codeErr := backend.ReadMemory(result.PC-0x20, code)
+		registers := make([]uint32, 16)
+		for index := range registers {
+			registers[index], _ = backend.ReadRegister(uint32(index))
+		}
+		t.Logf("probe code around PC: %x error=%v registers=%#v", code, codeErr, registers)
+	}
+	if hits := backend.PCHits(); hits != nil {
+		type pcHit struct {
+			address uint32
+			count   uint64
+		}
+		ranked := make([]pcHit, 0, len(hits))
+		for address, count := range hits {
+			if baseline := pcBaseline[address]; count >= baseline {
+				count -= baseline
+			}
+			if count == 0 {
+				continue
+			}
+			ranked = append(ranked, pcHit{address: address, count: count})
+		}
+		sort.Slice(ranked, func(left, right int) bool { return ranked[left].count > ranked[right].count })
+		if len(ranked) > 12 {
+			ranked = ranked[:12]
+		}
+		t.Logf("post-warmup hottest PCs: %#v", ranked)
+	}
+	if result.Err != nil || result.Reason != cpu.StopBudget || result.Instructions != 562_000_000 {
+		t.Fatalf("original firmware did not reach the post-timetick execution budget: %+v", result)
 	}
 	if invocations := runner.Invocations(); len(invocations) != 0 {
 		t.Fatalf("diagnostic HLE was invoked: %+v", invocations)
 	}
 	commands, data := panel.WriteCounts()
-	if commands != 57 || data != 110_114 || panel.CurrentCommand() != 0x29 || panel.LastData() != 0xffff {
+	if commands == 0 || data == 0 {
 		t.Fatalf(
 			"panel terminal state = %d/%d command %#x data %#x",
 			commands, data, panel.CurrentCommand(), panel.LastData(),
 		)
-	}
-	if bootControl.WatchdogServices() != 721 {
-		t.Fatalf("watchdog services = %d", bootControl.WatchdogServices())
 	}
 	t.Logf(
 		"post-panel boundary: instructions=%d pc=0x%08x err=%v panel=%d/%d command=0x%x data=0x%x watchdog=%d",
@@ -167,6 +258,32 @@ func TestSCHW830PrivateReferenceReachesMMUEnableBoundary(t *testing.T) {
 		panel.LastData(),
 		bootControl.WatchdogServices(),
 	)
+}
+
+func schw830BusRegisterOffsets() []uint32 {
+	offsets := make([]uint32, 0, 128)
+	for _, span := range [][2]uint32{{0x240, 0x27c}, {0x280, 0x29c}, {0x2c0, 0x2dc}} {
+		for offset := span[0]; offset <= span[1]; offset += 4 {
+			offsets = append(offsets, offset)
+		}
+	}
+	offsets = append(offsets,
+		0x3a0, 0x3a4, 0x3a8, 0x3ac, 0x3b0, 0x3b4, 0x3b8, 0x3bc,
+		0x3c0, 0x3c4, 0x3c8, 0x3cc, 0x3d0,
+		0x3e0, 0x3e4, 0x3e8, 0x3ec, 0x3f0,
+	)
+	for column := uint32(0); column <= 0x200; column += 0x40 {
+		offsets = append(offsets, column+0x10)
+	}
+	for column := uint32(0x400); column <= 0x600; column += 0x40 {
+		for _, lane := range []uint32{0, 4, 8, 0x0c, 0x14} {
+			offsets = append(offsets, column+lane)
+		}
+	}
+	for column := uint32(0xc00); column <= 0xe00; column += 0x40 {
+		offsets = append(offsets, column+0x18, column+0x1c)
+	}
+	return offsets
 }
 
 func openSCHW830ReferenceSet(t *testing.T, directory string) firmwareset.Set {

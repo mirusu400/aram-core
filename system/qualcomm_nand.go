@@ -28,12 +28,12 @@ type QualcommNANDConfig struct {
 	DeviceConfig1   uint32
 	CommandValidity uint32
 	ReadID          uint32
-	Ready           *LevelSignal
+	Ready           *StatusSignal
 }
 
 // Qualcomm2K8BitNANDConfig describes the standard four-codeword, 2 KiB,
 // eight-bit NAND configuration consumed by the early Qualcomm controller.
-func Qualcomm2K8BitNANDConfig(readID uint32, ready *LevelSignal) QualcommNANDConfig {
+func Qualcomm2K8BitNANDConfig(readID uint32, ready *StatusSignal) QualcommNANDConfig {
 	return QualcommNANDConfig{
 		PageSize:        0x0800,
 		DeviceConfig0:   0xe8d408c0,
@@ -59,7 +59,7 @@ type QualcommNAND struct {
 	initialDeviceConfig1   uint32
 	initialCommandValidity uint32
 	readID                 uint32
-	ready                  *LevelSignal
+	ready                  *StatusSignal
 	deviceConfig0          uint32
 	deviceConfig1          uint32
 	commandValidity        uint32
@@ -152,24 +152,37 @@ func (n *QualcommNAND) Write(offset uint32, width Width, value uint32) error {
 	case qualcommNANDCommandOffset:
 		if value == 0 {
 			n.nextChunk = 0
-			n.ready.Set(false)
+			n.ready.Set(0)
+			return nil
+		}
+		if value == 4 {
+			n.nextChunk = 0
+			n.ready.Set(1)
 			return nil
 		}
 		if value == 5 || value == 6 || value == 7 {
 			n.nextChunk = 0
-			n.ready.Set(true)
+			n.ready.Set(2)
 			return nil
 		}
 		if value == 2 {
 			n.readWord()
-			n.ready.Set(n.status == 0)
+			if n.status == 0 {
+				n.ready.Set(2)
+			} else {
+				n.ready.Set(0)
+			}
 			return nil
 		}
 		if value != qualcommNANDCommandRead {
 			return fmt.Errorf("%w: command 0x%x", ErrQualcommNANDMMIO, value)
 		}
 		n.readChunk()
-		n.ready.Set(n.status == 0)
+		if n.status == 0 {
+			n.ready.Set(2)
+		} else {
+			n.ready.Set(0)
+		}
 		return nil
 	case qualcommNANDCommandValidityOffset:
 		if value&^uint32(0x7f) != 0 {

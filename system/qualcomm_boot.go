@@ -38,7 +38,7 @@ type QualcommBootControlConfig struct {
 	NANDInterfaceMode      uint32
 	EBIMemoryConfiguration uint32
 	ClockModeStatus        uint32
-	NANDReady              *LevelSignal
+	NANDReady              *StatusSignal
 }
 
 // NewQualcommNANDPBLHandoff builds the bounded PBL service data consumed by
@@ -80,36 +80,79 @@ func NewQualcommNANDPBLHandoff(config QualcommNANDPBLConfig) (BootHandoff, error
 	return handoff, nil
 }
 
-var qualcommBootWritableOffsets = []uint32{
-	0x0220, 0x0244, 0x024c, 0x0280, 0x0290, 0x0294,
+var qualcommBootWritableOffsets = append(append([]uint32{
+	0x0000, 0x0004, 0x0010, 0x0014,
+	0x0028, 0x002c, 0x0030, 0x0034, 0x0038, 0x003c, 0x0040, 0x0044,
+	0x004c, 0x0050, 0x0054, 0x0058, 0x005c, 0x0060,
+	0x0068, 0x006c, 0x0070, 0x0074, 0x0078, 0x007c,
+	0x0084, 0x0088, 0x008c, 0x0090, 0x0094, 0x0098,
+	0x00a4, 0x00a8, 0x00ac, 0x00b0, 0x00b4, 0x00b8,
+	0x00c4, 0x00c8, 0x00cc, 0x00d0, 0x00d4, 0x00d8, 0x00dc, 0x00e0,
+	0x00e4, 0x00e8, 0x00ec, 0x00f0, 0x00f4, 0x00f8, 0x00fc,
+	0x0100, 0x0114, 0x0124, 0x0128,
+	0x0104, 0x0108, 0x0118, 0x013c,
+	0x0200, 0x021c, 0x0220, 0x0228,
+	0x0244, 0x024c, 0x0260, 0x0280, 0x0290, 0x0294,
 	0x0330,
-	0x0380, 0x0384, 0x0388, 0x03ac, 0x0414, 0x0900,
+	0x0380, 0x0384, 0x0388, 0x03ac,
+	0x0400, 0x0404, 0x0408, 0x040c, 0x0410, 0x0414, 0x0418, 0x041c, 0x0420, 0x0424,
+	0x0430, 0x0434, 0x0438, 0x043c, 0x0440, 0x0444, 0x0448, 0x044c, 0x0450, 0x0454,
+	0x0458, 0x045c, 0x0460, 0x0464, 0x0468, 0x046c, 0x0470,
+	0x0900,
 	0x0904, 0x0908, 0x090c, 0x0910, 0x0914, 0x0918,
 	0x091c, 0x0920,
 	0x0924, 0x0934, 0x0938, 0x093c, 0x0940, 0x0aa0,
-	0x0a04, 0x0a48, 0x0aa8, 0x0aac, 0x0ab0, 0x0ab4,
+	0x0a00, 0x0a04, 0x0a48, 0x0aa8, 0x0aac, 0x0ab0, 0x0ab4,
 	0x0ab8,
 	0x0abc,
 	0x0ac0, 0x0ac4,
 	0x0ac8, 0x0acc, 0x0ad0, 0x0ad4, 0x0ad8, 0x0adc,
-	0x0ae0, 0x5300, 0x5344,
+	0x0ae0, 0x5300, 0x5320, 0x5324, 0x5328, 0x532c, 0x5344, 0x54c4,
+}, qualcommInterruptConfigWritableOffsets...), qualcommMPMCWritableOffsets...)
+
+// The firmware's IRQ configuration routine maps interrupt IDs 0..48 in
+// reverse order onto this word table.
+var qualcommInterruptConfigWritableOffsets = func() []uint32 {
+	offsets := make([]uint32, 0, 49)
+	for offset := uint32(0x04b0); offset <= 0x0570; offset += 4 {
+		offsets = append(offsets, offset)
+	}
+	return offsets
+}()
+
+// These offsets are the ARM PL172-compatible MPMC block at CHIP_BASE+0x1000.
+// Keeping the documented register set explicit permits real timing/configuration
+// sequences while accesses to reserved gaps continue to fault.
+var qualcommMPMCWritableOffsets = []uint32{
+	0x1000, 0x1008,
+	0x1020, 0x1024, 0x1028, 0x1030, 0x1034, 0x1038, 0x103c,
+	0x1040, 0x1044, 0x1048, 0x104c, 0x1050, 0x1054, 0x1058,
+	0x1080,
+	0x1100, 0x1104, 0x1120, 0x1124, 0x1140, 0x1144, 0x1160, 0x1164,
+	0x1200, 0x1204, 0x1208, 0x120c, 0x1210, 0x1214, 0x1218,
+	0x1220, 0x1224, 0x1228, 0x122c, 0x1230, 0x1234, 0x1238,
+	0x1240, 0x1244, 0x1248, 0x124c, 0x1250, 0x1254, 0x1258,
+	0x1260, 0x1264, 0x1268, 0x126c, 0x1270, 0x1274, 0x1278,
 }
 
-var qualcommSecondaryClockOffsets = []uint32{0x0400, 0x0404, 0x0430, 0x0434}
+var qualcommSecondaryClockOffsets = []uint32{0x0400, 0x0404, 0x0408, 0x0430, 0x0434}
 
 const qualcommSecondaryClockDisabledStatusOffset = 0x0440
 
-// QualcommBootControl is an explicit early-boot compatibility model. It
-// exposes the hardware revision and latches only the clock/reset writes seen
-// before the next platform boundary; every unknown access fails.
+// QualcommBootControl is an explicit compatibility bank for the currently
+// evidenced system-control, MPMC, IRQ-configuration, and timetick registers.
+// Registers with understood side effects are modeled separately; every
+// unknown access fails.
 type QualcommBootControl struct {
 	hardwareRevision       uint32
 	nandInterfaceMode      uint32
 	ebiMemoryConfiguration uint32
 	clockModeStatus        uint32
-	nandReady              *LevelSignal
+	nandReady              *StatusSignal
 	registers              map[uint32]uint32
 	watchdogServices       uint64
+	timeTick               uint32
+	timeTickReadPhase      uint8
 }
 
 func NewQualcommBootControl(config QualcommBootControlConfig) (*QualcommBootControl, error) {
@@ -117,7 +160,7 @@ func NewQualcommBootControl(config QualcommBootControlConfig) (*QualcommBootCont
 		config.NANDInterfaceMode != 2 && config.NANDInterfaceMode != 4 ||
 		config.EBIMemoryConfiguration&0x5f80 != 0x5680 &&
 			config.EBIMemoryConfiguration&0x5f80 != 0x5880 ||
-		config.ClockModeStatus > 1 || config.NANDReady == nil {
+		config.ClockModeStatus&^uint32(0x11) != 0 || config.NANDReady == nil {
 		return nil, fmt.Errorf("invalid Qualcomm boot-control configuration")
 	}
 	device := &QualcommBootControl{
@@ -139,8 +182,19 @@ func (d *QualcommBootControl) Reset() error {
 		d.registers[offset] = 0
 	}
 	d.registers[0x0380] = d.nandInterfaceMode
-	d.nandReady.Set(false)
+	d.registers[0x1000] = 1
+	d.registers[0x1020] = 2
+	for _, offset := range []uint32{0x1030, 0x1034, 0x1038, 0x103c, 0x1040, 0x1044} {
+		d.registers[offset] = 0xf
+	}
+	for _, offset := range []uint32{0x1048, 0x104c, 0x1050, 0x1054, 0x1058} {
+		d.registers[offset] = 0x1f
+	}
+	d.registers[0x1100] = d.ebiMemoryConfiguration
+	d.nandReady.Set(0)
 	d.watchdogServices = 0
+	d.timeTick = 0
+	d.timeTickReadPhase = 0
 	return nil
 }
 
@@ -151,15 +205,21 @@ func (d *QualcommBootControl) Read(offset uint32, width Width) (uint32, error) {
 	switch offset {
 	case 0x0a40:
 		return d.hardwareRevision, nil
-	case 0x1100:
-		return d.ebiMemoryConfiguration, nil
+	case 0x1004:
+		return 0, nil
 	case 0x0274:
 		return d.clockModeStatus, nil
 	case 0x0488:
-		if d.nandReady.Asserted() {
-			return 2, nil
+		return d.nandReady.Value(), nil
+	case 0x5408:
+		value := d.timeTick
+		d.timeTickReadPhase ^= 1
+		if d.timeTickReadPhase == 0 {
+			d.timeTick++
 		}
-		return 0, nil
+		return value, nil
+	case 0x54c0:
+		return 1, nil
 	case 0x551c:
 		return 0, nil
 	default:
@@ -171,24 +231,24 @@ func (d *QualcommBootControl) Read(offset uint32, width Width) (uint32, error) {
 }
 
 func (d *QualcommBootControl) Write(offset uint32, width Width, value uint32) error {
-	if width != Width32 {
-		return fmt.Errorf("%w: write%d at 0x%x", ErrQualcommBootControlMMIO, width*8, offset)
-	}
 	if offset == 0x540c {
-		if value != 1 {
+		if width != Width8 && width != Width32 || value != 1 {
 			return fmt.Errorf("%w: watchdog service value 0x%x", ErrQualcommBootControlMMIO, value)
 		}
 		d.watchdogServices++
 		return nil
+	}
+	if width != Width32 {
+		return fmt.Errorf("%w: write%d at 0x%x", ErrQualcommBootControlMMIO, width*8, offset)
 	}
 	if _, ok := d.registers[offset]; !ok {
 		return fmt.Errorf("%w: write32 at 0x%x", ErrQualcommBootControlMMIO, offset)
 	}
 	d.registers[offset] = value
 	if offset == 0x0380 && value&8 != 0 {
-		d.nandReady.Set(true)
+		d.nandReady.Set(d.nandReady.Value() | 2)
 	} else if offset == 0x0414 {
-		d.nandReady.Set(false)
+		d.nandReady.Clear(value & 3)
 	}
 	return nil
 }
@@ -202,17 +262,17 @@ func (d *QualcommBootControl) SaveState() ([]byte, error) {
 	sort.Slice(offsets, func(left, right int) bool { return offsets[left] < offsets[right] })
 	var output bytes.Buffer
 	output.WriteString("QBTC")
-	_ = binary.Write(&output, binary.LittleEndian, uint32(5))
+	_ = binary.Write(&output, binary.LittleEndian, uint32(7))
 	_ = binary.Write(&output, binary.LittleEndian, d.hardwareRevision)
 	_ = binary.Write(&output, binary.LittleEndian, d.nandInterfaceMode)
 	_ = binary.Write(&output, binary.LittleEndian, d.ebiMemoryConfiguration)
 	_ = binary.Write(&output, binary.LittleEndian, d.clockModeStatus)
 	ready := uint8(0)
-	if d.nandReady.Asserted() {
-		ready = 1
-	}
+	ready = uint8(d.nandReady.Value())
 	_ = output.WriteByte(ready)
 	_ = binary.Write(&output, binary.LittleEndian, d.watchdogServices)
+	_ = binary.Write(&output, binary.LittleEndian, d.timeTick)
+	_ = output.WriteByte(d.timeTickReadPhase)
 	_ = binary.Write(&output, binary.LittleEndian, uint32(len(offsets)))
 	for _, offset := range offsets {
 		_ = binary.Write(&output, binary.LittleEndian, offset)
@@ -227,9 +287,11 @@ func (d *QualcommBootControl) LoadState(state []byte) error {
 	var version, revision, nandInterfaceMode, ebiMemoryConfiguration, clockModeStatus uint32
 	var ready uint8
 	var watchdog uint64
+	var timeTick uint32
+	var timeTickReadPhase uint8
 	var count uint32
 	if _, err := io.ReadFull(reader, magic[:]); err != nil || string(magic[:]) != "QBTC" ||
-		binary.Read(reader, binary.LittleEndian, &version) != nil || version != 5 ||
+		binary.Read(reader, binary.LittleEndian, &version) != nil || version != 7 ||
 		binary.Read(reader, binary.LittleEndian, &revision) != nil || revision != d.hardwareRevision ||
 		binary.Read(reader, binary.LittleEndian, &nandInterfaceMode) != nil ||
 		nandInterfaceMode != d.nandInterfaceMode ||
@@ -237,8 +299,10 @@ func (d *QualcommBootControl) LoadState(state []byte) error {
 		ebiMemoryConfiguration != d.ebiMemoryConfiguration ||
 		binary.Read(reader, binary.LittleEndian, &clockModeStatus) != nil ||
 		clockModeStatus != d.clockModeStatus ||
-		binary.Read(reader, binary.LittleEndian, &ready) != nil || ready > 1 ||
+		binary.Read(reader, binary.LittleEndian, &ready) != nil || ready > 3 ||
 		binary.Read(reader, binary.LittleEndian, &watchdog) != nil ||
+		binary.Read(reader, binary.LittleEndian, &timeTick) != nil ||
+		binary.Read(reader, binary.LittleEndian, &timeTickReadPhase) != nil || timeTickReadPhase > 1 ||
 		binary.Read(reader, binary.LittleEndian, &count) != nil || count != uint32(len(qualcommBootWritableOffsets)) ||
 		reader.Len() != int(count)*8 {
 		return ErrInvalidState
@@ -259,8 +323,10 @@ func (d *QualcommBootControl) LoadState(state []byte) error {
 		registers[offset] = value
 	}
 	d.registers = registers
-	d.nandReady.Set(ready != 0)
+	d.nandReady.Set(uint32(ready))
 	d.watchdogServices = watchdog
+	d.timeTick = timeTick
+	d.timeTickReadPhase = timeTickReadPhase
 	return nil
 }
 
@@ -304,7 +370,10 @@ func (d *QualcommSecondaryClockControl) Write(offset uint32, width Width, value 
 			return nil
 		}
 	}
-	return fmt.Errorf("%w: write%d at 0x%x", ErrQualcommSecondaryClockMMIO, width*8, offset)
+	return fmt.Errorf(
+		"%w: write%d value 0x%x at 0x%x",
+		ErrQualcommSecondaryClockMMIO, width*8, value, offset,
+	)
 }
 
 func (d *QualcommSecondaryClockControl) SaveState() ([]byte, error) {
