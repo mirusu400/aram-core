@@ -69,6 +69,8 @@ type Backend struct {
 	flags          pendingFlags
 	mode           cpu.Mode
 	stopped        atomic.Bool
+	interruptLines atomic.Uint32
+	closedState    atomic.Bool
 	closed         bool
 	mapped         uint64
 	memoryLimit    uint64
@@ -122,8 +124,36 @@ func (b *Backend) SystemCapabilities() cpu.SystemCapabilities {
 			cpu.CapabilityPrivilegedModes |
 			cpu.CapabilityCP15Control |
 			cpu.CapabilityMMU |
+			cpu.CapabilityInterruptLines |
 			cpu.CapabilityExecutionTraps,
 	)
+}
+
+// SetInterruptLine drives a level-sensitive architectural IRQ or FIQ input.
+// It is lock-free so an MMIO device can update its output while the backend is
+// executing and holding the CPU mutex.
+func (b *Backend) SetInterruptLine(line cpu.InterruptLine, asserted bool) error {
+	if !line.Valid() {
+		return fmt.Errorf("interrupt line %d: %w", line, cpu.ErrInvalidAddress)
+	}
+	if b.closedState.Load() {
+		return cpu.ErrClosed
+	}
+	mask := uint32(1) << uint32(line)
+	for {
+		current := b.interruptLines.Load()
+		next := current &^ mask
+		if asserted {
+			next |= mask
+		}
+		if b.interruptLines.CompareAndSwap(current, next) {
+			if b.closedState.Load() {
+				b.interruptLines.And(^mask)
+				return cpu.ErrClosed
+			}
+			return nil
+		}
+	}
 }
 
 // SetExecutionTraps replaces the host-owned instruction boundaries. Traps are
@@ -357,6 +387,9 @@ func (b *Backend) Run(ctx context.Context, address uint32, mode cpu.Mode, budget
 		}
 		executed += retired
 		if err != nil {
+			if b.handleCurrentMMUFault(err) {
+				continue
+			}
 			return cpu.Result{
 				Reason:       cpu.StopFault,
 				Instructions: executed,
@@ -407,6 +440,8 @@ func (b *Backend) Close() error {
 		return nil
 	}
 	b.closed = true
+	b.closedState.Store(true)
+	b.interruptLines.Store(0)
 	b.regions = nil
 	b.systemBus = nil
 	b.executionTraps = nil
@@ -459,3 +494,4 @@ var _ cpu.Backend = (*Backend)(nil)
 var _ cpu.SystemBusBackend = (*Backend)(nil)
 var _ cpu.SystemBackend = (*Backend)(nil)
 var _ cpu.ExecutionTrapBackend = (*Backend)(nil)
+var _ cpu.InterruptLineBackend = (*Backend)(nil)

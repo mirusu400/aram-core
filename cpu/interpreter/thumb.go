@@ -103,6 +103,9 @@ var thumbInstructionClasses = func() [1 << 16]thumbInstructionClass {
 func (b *Backend) runThumb(limit uint64) (uint64, *cpu.StopReason, error) {
 	var executed uint64
 	for executed < limit {
+		if b.takePendingInterrupt() {
+			return executed, nil, nil
+		}
 		if b.executionTrapAt(cpu.ModeThumb, b.regs[cpu.RegisterPC]) {
 			reason := cpu.StopExecutionTrap
 			return executed, &reason, nil
@@ -126,6 +129,9 @@ func (b *Backend) runThumb(limit uint64) (uint64, *cpu.StopReason, error) {
 			instruction, err = b.fetch16(pc)
 		}
 		if err != nil {
+			if b.handleMMUFault(err, pc) {
+				return executed, nil, nil
+			}
 			return executed, nil, fmt.Errorf("Thumb fetch at 0x%08x: %w", pc, err)
 		}
 		next := pc + 2
@@ -586,6 +592,10 @@ func (b *Backend) runThumb(limit uint64) (uint64, *cpu.StopReason, error) {
 			condition := uint8(instruction>>8) & 0xf
 			if condition == 0xf {
 				if uint8(instruction) == semihostingThumbImmediate && b.handleSemihosting() {
+					break
+				}
+				if b.systemBus != nil {
+					b.enterException(processorModeSupervisor, vectorSoftware, pc+2)
 					break
 				}
 				reason := cpu.StopBreakpoint

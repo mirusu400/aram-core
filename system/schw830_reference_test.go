@@ -45,6 +45,8 @@ func TestSCHW830PrivateReferenceRunsOriginalFirmwarePastTimeTickSetup(t *testing
 		t.Fatal(err)
 	}
 	board := SCHW830DL21BoardProfile()
+	backend := interpreter.New()
+	interruptController := NewQualcommInterruptController(backend)
 	nandReady := NewStatusSignal()
 	nandConfig := Qualcomm2K8BitNANDConfig(board.NANDReadID, nandReady)
 	if nandConfig.PageSize != samsung.PageSize {
@@ -56,7 +58,8 @@ func TestSCHW830PrivateReferenceRunsOriginalFirmwarePastTimeTickSetup(t *testing
 	}
 	bootControl, err := NewQualcommBootControl(QualcommBootControlConfig{
 		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
-		EBIMemoryConfiguration: 0x5880, ClockModeStatus: board.BootClockModeStatus, NANDReady: nandReady,
+		EBIMemoryConfiguration: 0x5880, ClockModeStatus: board.BootClockModeStatus,
+		NANDReady: nandReady, InterruptController: interruptController,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -152,7 +155,6 @@ func TestSCHW830PrivateReferenceRunsOriginalFirmwarePastTimeTickSetup(t *testing
 	); err != nil {
 		t.Fatal(err)
 	}
-	backend := interpreter.New()
 	if err := backend.AttachSystemBus(bus); err != nil {
 		t.Fatal(err)
 	}

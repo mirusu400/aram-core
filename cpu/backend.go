@@ -147,6 +147,26 @@ type ExecutionTrapBackend interface {
 	SetExecutionTraps([]ExecutionTrap) error
 }
 
+// InterruptLine names the two asynchronous exception inputs exposed by
+// classic ARM cores. Platform interrupt controllers drive these level inputs;
+// the CPU applies CPSR masking and exception priority at instruction
+// boundaries.
+type InterruptLine uint8
+
+const (
+	InterruptIRQ InterruptLine = iota
+	InterruptFIQ
+)
+
+func (l InterruptLine) Valid() bool {
+	return l == InterruptIRQ || l == InterruptFIQ
+}
+
+type InterruptLineBackend interface {
+	Backend
+	SetInterruptLine(InterruptLine, bool) error
+}
+
 type SystemCapability uint64
 
 const (

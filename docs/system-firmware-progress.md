@@ -27,13 +27,21 @@ a complete cold-boot claim.
   MMU-aware public memory access. Architectural abort delivery is still absent.
 - ARM block transfers implement privileged `^` behavior for user-register-bank
   access and `LDM ... pc^` exception return with CPSR restoration.
+- The interpreter accepts level-sensitive IRQ/FIQ inputs, applies mask and
+  priority checks at instruction boundaries, enters low or high ARM vectors,
+  delivers system-mode SWI and MMU prefetch/data aborts, and supports
+  `MOVS/SUBS pc,...` exception return. External physical-bus abort delivery
+  and reset/undefined exception entry remain incomplete.
 - Board profiles describe RAM/IRAM/high-vector windows and exact-width
   read-only board registers. `SparseWordRegisters` provides a reusable,
   stateful device for explicitly evidenced register layouts without turning
   reserved MMIO gaps into read-zero/write-drop space.
 - Qualcomm compatibility devices now cover the NAND/PBL controls, MPMC register
   set, clock/reset latches, sparse clock-regime apertures, evidenced IRQ setup
-  words, a stable-pair free-running timetick, and timetick-match readiness.
+  words, a stable-pair free-running timetick, and timetick-match readiness. The
+  separate INTCTL model implements two 32-source sticky status banks,
+  IRQ/FIQ enables, source deassert-then-clear acknowledgement, and CPU output
+  lines at the family-reference `CHIP_BASE+0x0900` window.
   Unknown addresses and widths still fault.
 - The generic 16-bit parallel-panel transport records original command/data
   writes. Panel-controller commands, a pixel surface, scanout, and host input
@@ -93,10 +101,10 @@ fault; a larger instruction budget alone is therefore not evidence of UI boot.
 
 The next targets are:
 
-1. Separate the IRQ controller from the growing early-boot compatibility bank
-   and implement pending/mask/acknowledge semantics.
-2. Add architectural IRQ/abort entry and return to the interpreter, then drive
-   timer IRQs from a deterministic machine clock.
+1. Add a deterministic system-machine/device clock and use an evidenced timer
+   compare to drive the INTCTL source consumed by SCH-W830 firmware.
+2. Deliver external physical-bus and undefined-instruction exceptions without
+   hiding unsupported interpreter or MMIO implementation boundaries.
 3. Decode the SCH-W830 panel-controller command stream into a pixel surface and
    identify any MDP/framebuffer handoff used after the boot splash.
 4. Add profile-declared keypad/GPIO input only after the firmware reaches its

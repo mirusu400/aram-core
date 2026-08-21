@@ -15,6 +15,9 @@ import (
 func (b *Backend) runARM(limit uint64) (uint64, *cpu.StopReason, error) {
 	var executed uint64
 	for executed < limit && b.mode == cpu.ModeARM {
+		if b.takePendingInterrupt() {
+			continue
+		}
 		if b.executionTrapAt(cpu.ModeARM, b.regs[cpu.RegisterPC]) {
 			reason := cpu.StopExecutionTrap
 			return executed, &reason, nil
@@ -22,8 +25,12 @@ func (b *Backend) runARM(limit uint64) (uint64, *cpu.StopReason, error) {
 		if b.pcHits != nil {
 			b.pcHits[b.regs[cpu.RegisterPC]]++
 		}
+		pc := b.regs[cpu.RegisterPC]
 		reason, err := b.stepARM()
 		if err != nil {
+			if b.handleMMUFault(err, pc) {
+				continue
+			}
 			return executed, nil, err
 		}
 		executed++
@@ -453,10 +460,28 @@ func (b *Backend) stepARM() (*cpu.StopReason, error) {
 		default:
 			return nil, b.unsupportedARM(pc, instruction)
 		}
-		if writeResult {
-			b.regs[rd] = result
+		exceptionReturn := writeResult && rd == cpu.RegisterPC && setFlags
+		if exceptionReturn {
+			status := b.savedStatus(b.currentProcessorMode())
+			if status == nil {
+				return nil, b.unsupportedARM(pc, instruction)
+			}
+			if statusErr := b.writeProgramStatus(false, 0xf, *status); statusErr != nil {
+				return nil, fmt.Errorf("ARM data-processing exception return at 0x%08x: %w", pc, statusErr)
+			}
+			if b.mode == cpu.ModeThumb {
+				b.regs[cpu.RegisterPC] = result &^ 1
+			} else {
+				b.regs[cpu.RegisterPC] = result &^ 3
+			}
+		} else if writeResult {
+			if rd == cpu.RegisterPC {
+				b.regs[rd] = result &^ 3
+			} else {
+				b.regs[rd] = result
+			}
 		}
-		if setFlags {
+		if setFlags && !exceptionReturn {
 			if arithmeticFlags {
 				b.setNZCV(result, carry, overflow)
 			} else {
@@ -665,6 +690,10 @@ func (b *Backend) stepARM() (*cpu.StopReason, error) {
 
 	case instruction&0x0f000000 == 0x0f000000: // SWI
 		if instruction&0x00ffffff == semihostingARMImmediate && b.handleSemihosting() {
+			return nil, nil
+		}
+		if b.systemBus != nil {
+			b.enterException(processorModeSupervisor, vectorSoftware, pc+4)
 			return nil, nil
 		}
 		reason := cpu.StopBreakpoint
