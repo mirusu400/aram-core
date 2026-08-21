@@ -68,3 +68,5 @@ attaches the same archives for the Stable channel.
 
 The standard-facing design basis is recorded in
 [`docs/wipi-1.2.1-foundation.md`](docs/wipi-1.2.1-foundation.md).
+The Magic Hole-first, multi-platform system-mode plan is recorded in
+[`docs/system-firmware-roadmap.md`](docs/system-firmware-roadmap.md).
