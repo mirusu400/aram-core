@@ -7,6 +7,29 @@ import (
 	"github.com/mirusu400/aram-core/cpu"
 )
 
+// runARM executes up to limit ARM instructions from b.regs[PC], stopping early
+// on a stop reason, a fault, or a switch to Thumb mode. ARM decode is a linear
+// mask match rather than a table lookup and is not the hot path for the current
+// corpus, so it keeps the per-instruction stepARM call; batching still amortizes
+// the outer cancellation poll. It returns the number of instructions retired.
+func (b *Backend) runARM(limit uint64) (uint64, *cpu.StopReason, error) {
+	var executed uint64
+	for executed < limit && b.mode == cpu.ModeARM {
+		if b.pcHits != nil {
+			b.pcHits[b.regs[cpu.RegisterPC]]++
+		}
+		reason, err := b.stepARM()
+		if err != nil {
+			return executed, nil, err
+		}
+		executed++
+		if reason != nil {
+			return executed, reason, nil
+		}
+	}
+	return executed, nil, nil
+}
+
 func (b *Backend) stepARM() (*cpu.StopReason, error) {
 	pc := b.regs[cpu.RegisterPC]
 	var instruction uint32

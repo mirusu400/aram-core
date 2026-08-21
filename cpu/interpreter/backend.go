@@ -28,6 +28,11 @@ const (
 	DefaultMemoryLimit = uint64(512 << 20)
 )
 
+// runBatchInstructions bounds how many guest instructions a single batch
+// executes before Run re-polls host cancellation. It matches the previous
+// per-256-instruction poll cadence so interruption latency is unchanged.
+const runBatchInstructions = 256
+
 type region struct {
 	address     uint32
 	size        uint32
@@ -216,41 +221,45 @@ func (b *Backend) Run(ctx context.Context, address uint32, mode cpu.Mode, budget
 
 	var executed uint64
 	for budget == 0 || executed < budget {
-		// Poll host cancellation in bounded batches instead of performing a
-		// channel select for every guest instruction. At the portable
-		// interpreter's throughput this remains promptly interruptible while
-		// keeping the inner dispatch loop inexpensive.
-		if executed&0xff == 0 {
-			if b.stopped.Load() {
-				return cpu.Result{
-					Reason:       cpu.StopRequested,
-					Instructions: executed,
-					PC:           b.regs[cpu.RegisterPC],
-					Err:          cpu.ErrStopped,
-				}
+		// Poll host cancellation between instruction batches instead of before
+		// every guest instruction. Batches are capped at runBatchInstructions so
+		// cancellation latency stays bounded, matching the previous
+		// per-256-instruction cadence, while the batch executor runs the hot
+		// dispatch without re-checking cancellation each instruction.
+		if b.stopped.Load() {
+			return cpu.Result{
+				Reason:       cpu.StopRequested,
+				Instructions: executed,
+				PC:           b.regs[cpu.RegisterPC],
+				Err:          cpu.ErrStopped,
 			}
-			if err := ctx.Err(); err != nil {
-				return cpu.Result{
-					Reason:       cpu.StopRequested,
-					Instructions: executed,
-					PC:           b.regs[cpu.RegisterPC],
-					Err:          err,
-				}
+		}
+		if err := ctx.Err(); err != nil {
+			return cpu.Result{
+				Reason:       cpu.StopRequested,
+				Instructions: executed,
+				PC:           b.regs[cpu.RegisterPC],
+				Err:          err,
 			}
 		}
 
-		if b.pcHits != nil {
-			b.pcHits[b.regs[cpu.RegisterPC]]++
+		batch := uint64(runBatchInstructions)
+		if budget != 0 {
+			if remaining := budget - executed; remaining < batch {
+				batch = remaining
+			}
 		}
 		var (
-			reason *cpu.StopReason
-			err    error
+			retired uint64
+			reason  *cpu.StopReason
+			err     error
 		)
 		if b.mode == cpu.ModeThumb {
-			reason, err = b.stepThumb()
+			retired, reason, err = b.runThumb(batch)
 		} else {
-			reason, err = b.stepARM()
+			retired, reason, err = b.runARM(batch)
 		}
+		executed += retired
 		if err != nil {
 			return cpu.Result{
 				Reason:       cpu.StopFault,
@@ -259,7 +268,6 @@ func (b *Backend) Run(ctx context.Context, address uint32, mode cpu.Mode, budget
 				Err:          err,
 			}
 		}
-		executed++
 		if reason != nil {
 			return cpu.Result{
 				Reason:       *reason,
