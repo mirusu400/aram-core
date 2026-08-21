@@ -87,6 +87,28 @@ func TestSCHW830DL21PrivateReference(t *testing.T) {
 			t.Fatalf("%s image hash = %s", id, image.SHA256)
 		}
 	}
+
+	progressive, err := DecodeWBIN(set, pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if progressive.EncryptedLength != 0x01590000 ||
+		progressive.SHA256 != "13ddb9b3163d426b9a94d21e3d6f4439a06717f7082d5b37728cde2a0c6742ab" {
+		t.Fatalf(
+			"decoded WBIN = encrypted length %#x SHA-256 %s",
+			progressive.EncryptedLength,
+			progressive.SHA256,
+		)
+	}
+	if len(progressive.ELF.ProgramHeaders) != 11 ||
+		progressive.ELF.LogicalFileEnd != 0x040ccaf4 {
+		t.Fatalf("progressive ELF = %+v", progressive.ELF)
+	}
+	last := progressive.ELF.ProgramHeaders[10]
+	if last.Offset != 0x01593000 || last.PhysicalAddress != 0x08000000 ||
+		last.FileSize != 0x02b39af4 {
+		t.Fatalf("progressive ELF final segment = %+v", last)
+	}
 }
 
 func isReferencePieceExtension(extension string) bool {
