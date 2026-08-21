@@ -1,0 +1,113 @@
+//go:build darwin && arm64 && cgo
+
+package interpreter
+
+// darwin/arm64 (Apple Silicon) host bindings for the native Thumb JIT. macOS,
+// unlike iOS, allows JIT, but Apple Silicon enforces W^X in hardware: a page
+// cannot be writable and executable at once. Executable memory is mapped with
+// MAP_JIT and each thread toggles between write and execute with
+// pthread_jit_write_protect_np; freshly written code is published with
+// sys_icache_invalidate. Those are libSystem calls, so this one host file uses
+// cgo (the default on macOS); the windows/android/linux paths stay cgo-free.
+// Without cgo (CGO_ENABLED=0) this file drops out and darwin falls back to the
+// precise interpreter (native_stub.go).
+//
+// The AArch64 machine-code emitter (native_aarch64emit.go) and the whole
+// translator/Run loop (native_jit.go) are shared with linux/android arm64 and
+// are conformance-verified under qemu; only this memory/call glue is
+// macOS-specific. All guest-address arithmetic is done in C so no Go
+// uintptr->unsafe.Pointer cast is needed (keeping `go vet` clean).
+//
+// UNVERIFIED on this dev host (no macOS toolchain here); build and run
+// cpu/conformance on the target Mac to validate.
+
+/*
+#include <pthread.h>
+#include <libkern/OSCacheControl.h>
+#include <sys/mman.h>
+#include <string.h>
+#include <stdint.h>
+
+// jit_alloc maps a MAP_JIT executable region; returns 0 on failure.
+static uintptr_t jit_alloc(size_t size) {
+	void *p = mmap(NULL, size, PROT_READ | PROT_WRITE | PROT_EXEC,
+	               MAP_PRIVATE | MAP_ANON | MAP_JIT, -1, 0);
+	if (p == MAP_FAILED) {
+		return 0;
+	}
+	return (uintptr_t)p;
+}
+
+// jit_write publishes n bytes at base+off: toggle the calling thread's JIT
+// region to writable, copy, toggle back to executable, then invalidate the
+// i-cache for the written range. Doing the whole sequence in one cgo call keeps
+// it on a single OS thread (the write-protect state is per-thread).
+static void jit_write(uintptr_t base, size_t off, const void *src, size_t n) {
+	void *dst = (void *)(base + off);
+	pthread_jit_write_protect_np(0); // writable, not executable
+	memcpy(dst, src, n);
+	pthread_jit_write_protect_np(1); // executable, not writable
+	sys_icache_invalidate(dst, n);
+}
+
+// jit_call invokes a translated block: entry(regs, remain) -> status.
+static uintptr_t jit_call(uintptr_t entry, uint32_t *regs, uint32_t *remain) {
+	uintptr_t (*fn)(uint32_t *, uint32_t *) =
+	    (uintptr_t(*)(uint32_t *, uint32_t *))entry;
+	return fn(regs, remain);
+}
+
+static void jit_free(uintptr_t base, size_t size) {
+	munmap((void *)base, size);
+}
+*/
+import "C"
+
+import "unsafe"
+
+// NewNativeJIT returns a backend that runs Thumb through the native AArch64
+// recompiler, falling back to the interpreter for untranslated instructions and
+// for ARM. If the executable arena cannot be mapped it degrades to the plain
+// interpreter (nativeBlocks stays nil).
+func NewNativeJIT() *Backend {
+	b := NewWithMemoryLimit(DefaultMemoryLimit)
+	if arena := newCodeArena(nativeArenaSize); arena != nil {
+		b.nativeArena = arena
+		b.nativeBlocks = make(map[uint32]*nativeBlock)
+	}
+	return b
+}
+
+func (b *Backend) newEmitter() emitter { return &arm64emitter{} }
+
+func newCodeArena(size uintptr) *codeArena {
+	base := uintptr(C.jit_alloc(C.size_t(size)))
+	if base == 0 {
+		return nil
+	}
+	a := &codeArena{base: base, size: size}
+	a.release = func() { C.jit_free(C.uintptr_t(base), C.size_t(size)) }
+	return a
+}
+
+// arenaAppend copies a finished block into the MAP_JIT arena (toggling W^X and
+// flushing the i-cache for the new range in C) and returns its host entry
+// address, or 0 if the arena is full.
+func (b *Backend) arenaAppend(code []byte) uintptr {
+	a := b.nativeArena
+	n := uintptr(len(code))
+	off := (a.off + 15) &^ 15 // 16-byte align each block entry
+	if off+n > a.size {
+		return 0
+	}
+	C.jit_write(C.uintptr_t(a.base), C.size_t(off), unsafe.Pointer(&code[0]), C.size_t(n))
+	a.off = off + n
+	return a.base + off
+}
+
+// callNativeBlock invokes a translated block, passing &regs[0] and &nativeRemain
+// through a C trampoline (cgo makes the Go->native->Go transition safe).
+func callNativeBlock(entry uintptr, regs, remain *uint32) uintptr {
+	return uintptr(C.jit_call(C.uintptr_t(entry),
+		(*C.uint32_t)(unsafe.Pointer(regs)), (*C.uint32_t)(unsafe.Pointer(remain))))
+}

@@ -1,4 +1,4 @@
-//go:build (windows && amd64) || ((android || linux) && arm64)
+//go:build (windows && amd64) || ((android || linux) && arm64) || (darwin && arm64 && cgo)
 
 package interpreter
 
