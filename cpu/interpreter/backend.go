@@ -116,8 +116,15 @@ func (b *Backend) PCHits() map[uint32]uint64 {
 }
 
 func (b *Backend) Identity() cpu.Identity {
+	name := BackendName
+	if b.jitBlocks != nil {
+		// The JIT is the same architecture and context format as the precise
+		// interpreter (so saves stay portable), but reports a distinct name so
+		// the active core is observable in diagnostics and the settings UI.
+		name = BackendName + "-jit"
+	}
 	return cpu.Identity{
-		Name:         BackendName,
+		Name:         name,
 		Version:      BackendVersion,
 		Architecture: cpu.ARMv5TE,
 	}
