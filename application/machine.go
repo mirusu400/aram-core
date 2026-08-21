@@ -156,6 +156,10 @@ type ImageInfo struct {
 	TextSize    uint32
 	BSSAddress  uint32
 	BSSSize     uint32
+	// CPUBackend is the identity name of the selected CPU backend (see
+	// ARAM_CPU / cpu_select.go). It surfaces which core is executing the guest
+	// so a swap is observable end-to-end through the product.
+	CPUBackend string
 }
 
 type Machine struct {
