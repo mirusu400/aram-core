@@ -35,9 +35,11 @@ a complete cold-boot claim.
   `MOVS/SUBS pc,...` exception return. External physical-bus abort delivery
   and reset/undefined exception entry remain incomplete.
 - Board profiles describe RAM/IRAM/high-vector windows and exact-width
-  read-only board registers. `SparseWordRegisters` provides a reusable,
-  stateful device for explicitly evidenced register layouts without turning
-  reserved MMIO gaps into read-zero/write-drop space.
+  read-only board registers, fixed-width external latches, boot-control
+  halfword/word layouts, SBI instances, and board-specific clock/sleep
+  controllers. `SparseWordRegisters` provides a reusable, stateful device for
+  explicitly evidenced register layouts without turning reserved MMIO gaps
+  into read-zero/write-drop space.
 - Qualcomm compatibility devices now cover the NAND/PBL controls, MPMC register
   set, clock/reset latches, sparse clock-regime apertures, evidenced IRQ setup
   words, a stable-pair timetick compatibility counter, and timetick-match
@@ -49,6 +51,12 @@ a complete cold-boot claim.
 - CPU-attributed MMIO observation records the guest ARM/Thumb instruction PC,
   physical address, width, direction, value, region, and error without changing
   device behavior. It is optional and inactive during normal execution.
+- `ClockedRunner` advances reusable devices in bounded instruction-retirement
+  quanta while preserving ARM/Thumb mode across slices. The Qualcomm timetick
+  can now convert a configured deterministic instruction rate into sleep-clock
+  ticks, synchronize match writes, pulse a profile-selected INTCTL source, and
+  serialize its fractional phase. A synthetic machine executes and
+  acknowledges the resulting timer IRQ end to end.
 - The generic 16-bit parallel-panel transport records original command/data
   writes. Panel-controller commands, a pixel surface, scanout, and host input
   are not implemented yet.
@@ -73,23 +81,27 @@ When `ARAM_REFERENCE_REPO` is configured, the private gate currently proves:
 | PBL-HLE service table | 2 KiB NAND geometry at `0x78001000`; `R7=0xA1B2C3D4`, `R8=0x78001000` |
 | original QCSBL callback boundary | `1,195,629` instructions / `0x000A07D8` |
 | original post-callback firmware execution | `562,000,000` additional instructions, budget stop, no fault |
-| panel transport writes / terminal values | 651 commands, 113,561 data / command `0x2C`, data `0x94B2` |
+| enabled interrupt masks after warmup | IRQ `00000030/08980000`; FIQ `00000000/00000058` |
+| panel transport writes / terminal values | 852 commands, 196,441 data / command `0x2C`, data `0xFFFF` |
+| watchdog service writes | 24,367 |
 | diagnostic HLE invocations | none |
 
 The reset path places only reconstructed QCSBL bytes at the profiled load
 address, provides the bounded PBL IRAM/service-table contract, and starts the
 original QCSBL. QCSBL reads MIBIB and OEMSBL through the modeled NAND device.
-The original firmware then initializes the panel, enables the MMU, performs
-privileged exception return into transformed runtime code, configures clocks
-and IRQ tables, reads the timetick, and continues transformed runtime work
-without an MMIO or CPU fault during the measured budget. An attributed trace
-identifies the stable-pair reads at Thumb PCs `0x01701DCC`/`0x01701DD0` and the
+The original firmware then initializes two sleep controllers, local SBI/SSBI
+paths, three differently shaped controller instances at `0x80004000` through
+`0x8000423C`, the panel, MMU, clocks, timer/control banks, and IRQ/FIQ masks. It
+performs privileged exception return into transformed runtime code, services
+the watchdog, reads the timetick, and continues runtime work without an MMIO
+or CPU fault during the measured budget. An attributed trace identifies the
+stable-pair reads at Thumb PCs `0x01701DCC`/`0x01701DD0` and the
 match-write/synchronization loop at `0x017D2942`..`0x017D295C`. The reference
 register contract identifies `0x800054C4` as a 32-bit free-running timetick
 match value and `0x800054C0` bit 0 as its synchronization status. CPU IRQ/FIQ
 entry and INTCTL line delivery are implemented, but the SCH-W830 timer source
-number and clock cadence are not yet evidenced and wired. This does not claim
-interrupt-driven OS progress.
+number and clock cadence are not yet evidenced and wired. Enabled interrupt
+masks alone do not prove interrupt-driven OS progress.
 
 Forward execution also falsified the earlier hypothesis that `0x00107FFC` was
 a required SIM-secure module. It is an OEM fatal/assert diagnostic reached
@@ -106,16 +118,17 @@ device contracts before they enter the emulator.
 
 This is not a complete phone boot yet. The gate has not demonstrated a decoded
 LCD frame, home screen, keypad input, modem/SIM behavior, audio, persistent
-user storage, or application launch. A 10-million-instruction post-warmup PC
-histogram is dominated by a finite data-transform inner loop rather than a new
-fault; a larger instruction budget alone is therefore not evidence of UI boot.
+user storage, or application launch. The firmware emits a substantial LCD
+command/data stream and reaches a clean 10-million-instruction post-warmup
+budget, but instruction count and transport traffic alone are not evidence of
+a correct UI frame.
 
 The next targets are:
 
-1. Add a deterministic system-machine/device clock and use an evidenced timer
-   compare to drive the INTCTL source consumed by SCH-W830 firmware; keep the
-   source number and core-to-sleep-clock ratio profile data rather than family
-   guesses.
+1. Evidence the SCH-W830 timetick interrupt source and deterministic
+   instruction-rate conversion, put both in its platform profile, and run the
+   private gate through `ClockedRunner`. The generic scheduler, rational
+   timetick advancement, match pulse, and synthetic IRQ/ACK path are complete.
 2. Deliver external physical-bus and undefined-instruction exceptions without
    hiding unsupported interpreter or MMIO implementation boundaries.
 3. Decode the SCH-W830 panel-controller command stream into a pixel surface and

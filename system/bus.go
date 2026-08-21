@@ -81,6 +81,24 @@ type MMIOAccess struct {
 
 type MMIOObserver func(MMIOAccess)
 
+// MemoryAccess is one completed RAM, ROM, or MMIO access inside an explicitly
+// observed physical range. It is intended for bounded watchpoints; normal bus
+// execution does not allocate or call an observer.
+type MemoryAccess struct {
+	Context    cpu.MemoryAccessContext
+	Region     string
+	Address    uint32
+	Offset     uint32
+	Width      Width
+	Permission cpu.Permissions
+	Value      uint32
+	Write      bool
+	MMIO       bool
+	Err        error
+}
+
+type MemoryObserver func(MemoryAccess)
+
 func (f *Fault) Error() string {
 	region := f.Region
 	if region == "" {
@@ -124,9 +142,15 @@ func (r *region) end() uint64 {
 }
 
 type Bus struct {
-	mu           sync.Mutex
-	regions      []region
-	mmioObserver MMIOObserver
+	mu                   sync.Mutex
+	regions              []region
+	mmioObserver         MMIOObserver
+	memoryObserver       MemoryObserver
+	memoryObserverStart  uint32
+	memoryObserverEnd    uint64
+	contextObserver      MemoryObserver
+	contextObserverStart uint32
+	contextObserverEnd   uint64
 }
 
 func NewBus() *Bus {
@@ -140,6 +164,54 @@ func (b *Bus) SetMMIOObserver(observer MMIOObserver) {
 	b.mu.Lock()
 	b.mmioObserver = observer
 	b.mu.Unlock()
+}
+
+// SetMemoryObserver replaces the optional bounded physical-memory observer.
+// A nil observer disables it. The callback is invoked after matching accesses
+// and may safely inspect the bus.
+func (b *Bus) SetMemoryObserver(address, size uint32, observer MemoryObserver) error {
+	end := uint64(address) + uint64(size)
+	if observer != nil && (size == 0 || end > 1<<32) {
+		return fmt.Errorf("memory-observer range 0x%08x+0x%x: %w", address, size, ErrInvalidRegion)
+	}
+	b.mu.Lock()
+	b.memoryObserver = observer
+	b.memoryObserverStart = address
+	b.memoryObserverEnd = end
+	b.mu.Unlock()
+	return nil
+}
+
+func (b *Bus) observesMemory(address uint32, size int) bool {
+	return b.memoryObserver != nil &&
+		uint64(address) < b.memoryObserverEnd &&
+		uint64(b.memoryObserverStart) < uint64(address)+uint64(size)
+}
+
+// SetInstructionMemoryObserver replaces the optional observer for accesses
+// attributed to a bounded guest instruction-address range. Unlike a physical
+// watchpoint, it reports every RAM, ROM, or MMIO access made by matching
+// instructions. A nil observer disables it.
+func (b *Bus) SetInstructionMemoryObserver(
+	address, size uint32,
+	observer MemoryObserver,
+) error {
+	end := uint64(address) + uint64(size)
+	if observer != nil && (size == 0 || end > 1<<32) {
+		return fmt.Errorf("instruction-memory-observer range 0x%08x+0x%x: %w", address, size, ErrInvalidRegion)
+	}
+	b.mu.Lock()
+	b.contextObserver = observer
+	b.contextObserverStart = address
+	b.contextObserverEnd = end
+	b.mu.Unlock()
+	return nil
+}
+
+func (b *Bus) observesInstruction(context cpu.MemoryAccessContext) bool {
+	return b.contextObserver != nil && context.Attributed &&
+		uint64(context.InstructionAddress) >= uint64(b.contextObserverStart) &&
+		uint64(context.InstructionAddress) < b.contextObserverEnd
 }
 
 func (b *Bus) MapRAM(name string, address, size uint32) error {
@@ -226,24 +298,55 @@ func (b *Bus) ReadContext(
 	}
 	if mapped.kind != regionMMIO {
 		copy(destination, mapped.data[offset:offset+len(destination)])
+		observer := b.memoryObserver
+		observed := b.observesMemory(address, len(destination))
+		contextObserver := b.contextObserver
+		contextObserved := b.observesInstruction(context)
+		regionName := mapped.name
+		regionOffset := uint32(offset)
+		value := valueOf(destination)
 		b.mu.Unlock()
+		access := MemoryAccess{
+			Context: context, Region: regionName, Address: address, Offset: regionOffset,
+			Width: width, Permission: permission, Value: value,
+		}
+		if observed {
+			observer(access)
+		}
+		if contextObserved {
+			contextObserver(access)
+		}
 		return nil
 	}
 	regionName := mapped.name
 	deviceOffset := uint32(offset)
 	value, err := mapped.device.Read(deviceOffset, width)
-	observer := b.mmioObserver
+	mmioObserver := b.mmioObserver
+	memoryObserver := b.memoryObserver
+	observed := b.observesMemory(address, len(destination))
+	contextObserver := b.contextObserver
+	contextObserved := b.observesInstruction(context)
 	b.mu.Unlock()
 	if err != nil {
 		err = &Fault{Region: regionName, Address: address, Width: width, Permission: permission, Err: err}
 	} else {
 		putValue(destination, value)
 	}
-	if observer != nil {
-		observer(MMIOAccess{
+	if mmioObserver != nil {
+		mmioObserver(MMIOAccess{
 			Context: context, Region: regionName, Address: address, Offset: deviceOffset,
 			Width: width, Permission: permission, Value: value, Err: err,
 		})
+	}
+	access := MemoryAccess{
+		Context: context, Region: regionName, Address: address, Offset: deviceOffset,
+		Width: width, Permission: permission, Value: value, MMIO: true, Err: err,
+	}
+	if observed {
+		memoryObserver(access)
+	}
+	if contextObserved {
+		contextObserver(access)
 	}
 	return err
 }
@@ -266,23 +369,54 @@ func (b *Bus) WriteContext(
 	}
 	if mapped.kind != regionMMIO {
 		copy(mapped.data[offset:offset+len(source)], source)
+		observer := b.memoryObserver
+		observed := b.observesMemory(address, len(source))
+		contextObserver := b.contextObserver
+		contextObserved := b.observesInstruction(context)
+		regionName := mapped.name
+		regionOffset := uint32(offset)
+		value := valueOf(source)
 		b.mu.Unlock()
+		access := MemoryAccess{
+			Context: context, Region: regionName, Address: address, Offset: regionOffset,
+			Width: width, Permission: permission, Value: value, Write: true,
+		}
+		if observed {
+			observer(access)
+		}
+		if contextObserved {
+			contextObserver(access)
+		}
 		return nil
 	}
 	regionName := mapped.name
 	deviceOffset := uint32(offset)
 	value := valueOf(source)
 	err = mapped.device.Write(deviceOffset, width, value)
-	observer := b.mmioObserver
+	mmioObserver := b.mmioObserver
+	memoryObserver := b.memoryObserver
+	observed := b.observesMemory(address, len(source))
+	contextObserver := b.contextObserver
+	contextObserved := b.observesInstruction(context)
 	b.mu.Unlock()
 	if err != nil {
 		err = &Fault{Region: regionName, Address: address, Width: width, Permission: permission, Err: err}
 	}
-	if observer != nil {
-		observer(MMIOAccess{
+	if mmioObserver != nil {
+		mmioObserver(MMIOAccess{
 			Context: context, Region: regionName, Address: address, Offset: deviceOffset,
 			Width: width, Permission: permission, Value: value, Write: true, Err: err,
 		})
+	}
+	access := MemoryAccess{
+		Context: context, Region: regionName, Address: address, Offset: deviceOffset,
+		Width: width, Permission: permission, Value: value, Write: true, MMIO: true, Err: err,
+	}
+	if observed {
+		memoryObserver(access)
+	}
+	if contextObserved {
+		contextObserver(access)
 	}
 	return err
 }

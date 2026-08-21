@@ -22,12 +22,11 @@ func (b *Backend) runARM(limit uint64) (uint64, *cpu.StopReason, error) {
 			reason := cpu.StopExecutionTrap
 			return executed, &reason, nil
 		}
-		if b.pcHits != nil {
-			b.pcHits[b.regs[cpu.RegisterPC]]++
-		}
+		b.recordPC(b.regs[cpu.RegisterPC])
 		pc := b.regs[cpu.RegisterPC]
 		b.accessContext = cpu.MemoryAccessContext{
-			InstructionAddress: pc, Mode: cpu.ModeARM, Attributed: true,
+			InstructionAddress: pc, LinkAddress: b.regs[cpu.RegisterLR],
+			StackAddress: b.regs[cpu.RegisterSP], Mode: cpu.ModeARM, Attributed: true,
 		}
 		reason, err := b.stepARM()
 		if err != nil {

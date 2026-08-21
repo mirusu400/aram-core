@@ -265,6 +265,317 @@ func TestQualcommBootControlRejectsWrongNANDInterfaceState(t *testing.T) {
 	}
 }
 
+func TestQualcommBootControlProfilesAdditionalWritableOffsets(t *testing.T) {
+	config := QualcommBootControlConfig{
+		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
+		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1,
+		WritableOffsets: []uint32{0x05a0}, NANDReady: NewStatusSignal(),
+	}
+	device, err := NewQualcommBootControl(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := device.Write(0x05a0, Width32, 0x12345678); err != nil {
+		t.Fatal(err)
+	}
+	value, err := device.Read(0x05a0, Width32)
+	if err != nil || value != 0x12345678 {
+		t.Fatalf("profiled boot-control latch = %#x error %v", value, err)
+	}
+	state, err := device.SaveState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, _ := NewQualcommBootControl(config)
+	if err := restored.LoadState(state); err != nil {
+		t.Fatal(err)
+	}
+	value, _ = restored.Read(0x05a0, Width32)
+	if value != 0x12345678 {
+		t.Fatalf("restored profiled boot-control latch = %#x", value)
+	}
+	unprofiledConfig := config
+	unprofiledConfig.WritableOffsets = nil
+	unprofiled, _ := NewQualcommBootControl(unprofiledConfig)
+	if err := unprofiled.LoadState(state); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("mismatched boot-control profile state error = %v", err)
+	}
+	for _, offsets := range [][]uint32{{0x05a0, 0x05a0}, {0x0274}, {2}, {QualcommBootControlWindowSize}} {
+		invalid := config
+		invalid.WritableOffsets = offsets
+		if _, err := NewQualcommBootControl(invalid); err == nil {
+			t.Fatalf("accepted invalid boot-control writable offsets %#v", offsets)
+		}
+	}
+}
+
+func TestQualcommBootControlProfilesHalfwordOffsets(t *testing.T) {
+	config := QualcommBootControlConfig{
+		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
+		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1,
+		HalfwordOffsets: []uint32{0x4038}, NANDReady: NewStatusSignal(),
+	}
+	device, err := NewQualcommBootControl(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := device.Write(0x4038, Width16, 0xabcd); err != nil {
+		t.Fatal(err)
+	}
+	value, err := device.Read(0x4038, Width16)
+	if err != nil || value != 0xabcd {
+		t.Fatalf("profiled halfword latch = %#x error %v", value, err)
+	}
+	if err := device.Write(0x4038, Width32, 0); !errors.Is(err, ErrQualcommBootControlMMIO) {
+		t.Fatalf("word write to halfword error = %v", err)
+	}
+	if err := device.Write(0x4038, Width16, 0x10000); !errors.Is(err, ErrQualcommBootControlMMIO) {
+		t.Fatalf("oversized halfword write error = %v", err)
+	}
+	if _, err := device.Read(0x4038, Width32); !errors.Is(err, ErrQualcommBootControlMMIO) {
+		t.Fatalf("word read from halfword error = %v", err)
+	}
+	state, err := device.SaveState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, _ := NewQualcommBootControl(config)
+	if err := restored.LoadState(state); err != nil {
+		t.Fatal(err)
+	}
+	value, _ = restored.Read(0x4038, Width16)
+	if value != 0xabcd {
+		t.Fatalf("restored halfword latch = %#x", value)
+	}
+	unprofiledConfig := config
+	unprofiledConfig.HalfwordOffsets = nil
+	unprofiled, _ := NewQualcommBootControl(unprofiledConfig)
+	if err := unprofiled.LoadState(state); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("mismatched halfword profile state error = %v", err)
+	}
+
+	for _, offsets := range [][]uint32{
+		{0x4038, 0x4038}, {1}, {QualcommBootControlWindowSize},
+		{0x0000}, {0x0002}, {0x0900}, {0x0a40},
+	} {
+		invalid := config
+		invalid.HalfwordOffsets = offsets
+		if _, err := NewQualcommBootControl(invalid); err == nil {
+			t.Fatalf("accepted invalid boot-control halfword offsets %#v", offsets)
+		}
+	}
+	overlappingExtra := config
+	overlappingExtra.WritableOffsets = []uint32{0x4038}
+	if _, err := NewQualcommBootControl(overlappingExtra); err == nil {
+		t.Fatal("accepted overlapping word and halfword registers")
+	}
+}
+
+func TestQualcommBootControlProfilesReadOnlyRegisters(t *testing.T) {
+	config := QualcommBootControlConfig{
+		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
+		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1,
+		ReadOnlyRegisters: []QualcommBootReadOnlyRegister{{Offset: 0x00bc, Value: 0x12345678}},
+		NANDReady:         NewStatusSignal(),
+	}
+	device, err := NewQualcommBootControl(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := device.Read(0x00bc, Width32)
+	if err != nil || value != 0x12345678 {
+		t.Fatalf("profiled read-only register = %#x error %v", value, err)
+	}
+	if err := device.Write(0x00bc, Width32, 0); !errors.Is(err, ErrQualcommBootControlMMIO) {
+		t.Fatalf("read-only register write error = %v", err)
+	}
+	state, err := device.SaveState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, _ := NewQualcommBootControl(config)
+	if err := restored.LoadState(state); err != nil {
+		t.Fatal(err)
+	}
+	mismatchConfig := config
+	mismatchConfig.ReadOnlyRegisters = []QualcommBootReadOnlyRegister{{Offset: 0x00bc, Value: 1}}
+	mismatch, _ := NewQualcommBootControl(mismatchConfig)
+	if err := mismatch.LoadState(state); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("mismatched read-only profile state error = %v", err)
+	}
+
+	for _, registers := range [][]QualcommBootReadOnlyRegister{
+		{{Offset: 0x00bc}, {Offset: 0x00bc}},
+		{{Offset: 2}},
+		{{Offset: QualcommBootControlWindowSize}},
+		{{Offset: 0x0000}},
+		{{Offset: 0x0900}},
+		{{Offset: 0x0a40}},
+	} {
+		invalid := config
+		invalid.ReadOnlyRegisters = registers
+		if _, err := NewQualcommBootControl(invalid); err == nil {
+			t.Fatalf("accepted invalid boot-control read-only registers %#v", registers)
+		}
+	}
+	overlappingExtra := config
+	overlappingExtra.WritableOffsets = []uint32{0x00bc}
+	if _, err := NewQualcommBootControl(overlappingExtra); err == nil {
+		t.Fatal("accepted overlapping writable and read-only registers")
+	}
+}
+
+func TestQualcommBootControlProfiledSBICompletesAndClearsStatus(t *testing.T) {
+	config := QualcommBootControlConfig{
+		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
+		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1,
+		SBIControllers:      []uint32{0x5000},
+		SBICompletionStatus: 0x0494,
+		NANDReady:           NewStatusSignal(),
+	}
+	device, err := NewQualcommBootControl(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := device.Read(0x5014, Width32)
+	if err != nil || status != 0 {
+		t.Fatalf("reset SBI status = %#x error %v", status, err)
+	}
+	if err := device.Write(0x5008, Width32, 0x01020000); err != nil {
+		t.Fatal(err)
+	}
+	state, err := device.SaveState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, _ := NewQualcommBootControl(config)
+	if err := restored.LoadState(state); err != nil {
+		t.Fatal(err)
+	}
+	status, err = restored.Read(0x0494, Width32)
+	if err != nil || status != qualcommBootSBICompleteStatus {
+		t.Fatalf("completed SBI status = %#x error %v", status, err)
+	}
+	status, _ = restored.Read(0x0494, Width32)
+	if status != 0 {
+		t.Fatalf("cleared SBI status = %#x", status)
+	}
+	result, err := restored.Read(0x5010, Width32)
+	if err != nil || result != 0 {
+		t.Fatalf("SBI result = %#x error %v", result, err)
+	}
+	unprofiled := config
+	unprofiled.SBIControllers = nil
+	unprofiled.SBICompletionStatus = 0
+	withoutSBI, _ := NewQualcommBootControl(unprofiled)
+	if err := withoutSBI.LoadState(state); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("mismatched SBI profile state error = %v", err)
+	}
+	for _, controllers := range [][]uint32{
+		{0x5000, 0x5000}, {2}, {QualcommBootControlWindowSize - 4},
+	} {
+		invalid := config
+		invalid.SBIControllers = controllers
+		if _, err := NewQualcommBootControl(invalid); err == nil {
+			t.Fatalf("accepted invalid SBI controllers %#v", controllers)
+		}
+	}
+	collision := config
+	collision.WritableOffsets = []uint32{0x5008}
+	if _, err := NewQualcommBootControl(collision); err == nil {
+		t.Fatal("accepted overlapping SBI and compatibility register")
+	}
+	missingCompletion := config
+	missingCompletion.SBICompletionStatus = 0
+	if _, err := NewQualcommBootControl(missingCompletion); err == nil {
+		t.Fatal("accepted SBI controllers without completion status")
+	}
+}
+
+func TestQualcommBootControlAdvancesClockedTimeTickAndPulsesProfileSource(t *testing.T) {
+	probe := &interruptLineProbe{}
+	controller := NewQualcommInterruptController(probe)
+	device, err := NewQualcommBootControl(QualcommBootControlConfig{
+		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
+		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1,
+		NANDReady: NewStatusSignal(), InterruptController: controller,
+		TimeTickClock: &QualcommTimeTickClockConfig{
+			InstructionsPerSecond: 10, TimeTickHz: 3, InterruptSource: 5,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Write(qualcommIRQEnable0Offset, Width32, 1<<5); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := device.Read(0x5408, Width32)
+	stable, _ := device.Read(0x5408, Width32)
+	if first != 0 || stable != first {
+		t.Fatalf("clocked timetick reads = %#x/%#x", first, stable)
+	}
+	if err := device.Write(0x54c4, Width32, 2); err != nil {
+		t.Fatal(err)
+	}
+	if ready, _ := device.Read(0x54c0, Width32); ready != 0 {
+		t.Fatalf("new match ready status = %#x, want synchronizing", ready)
+	}
+	if err := device.Advance(3); err != nil {
+		t.Fatal(err)
+	}
+	if ready, _ := device.Read(0x54c0, Width32); ready != 1 {
+		t.Fatalf("advanced match ready status = %#x", ready)
+	}
+	if tick, _ := device.Read(0x5408, Width32); tick != 0 {
+		t.Fatalf("fractional tick = %#x", tick)
+	}
+	if err := device.Advance(1); err != nil {
+		t.Fatal(err)
+	}
+	if tick, _ := device.Read(0x5408, Width32); tick != 1 || probe.irq {
+		t.Fatalf("pre-match tick/IRQ = %#x/%v", tick, probe.irq)
+	}
+	if err := device.Advance(4); err != nil {
+		t.Fatal(err)
+	}
+	if tick, _ := device.Read(0x5408, Width32); tick != 2 || !probe.irq || probe.fiq {
+		t.Fatalf("matched tick outputs = %#x IRQ=%v FIQ=%v", tick, probe.irq, probe.fiq)
+	}
+	state, err := device.SaveState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoredController := NewQualcommInterruptController(&interruptLineProbe{})
+	restored, err := NewQualcommBootControl(QualcommBootControlConfig{
+		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
+		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1,
+		NANDReady: NewStatusSignal(), InterruptController: restoredController,
+		TimeTickClock: &QualcommTimeTickClockConfig{
+			InstructionsPerSecond: 10, TimeTickHz: 3, InterruptSource: 5,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.LoadState(state); err != nil {
+		t.Fatal(err)
+	}
+	if tick, _ := restored.Read(0x5408, Width32); tick != 2 {
+		t.Fatalf("restored clocked tick = %#x", tick)
+	}
+	mismatch, _ := NewQualcommBootControl(QualcommBootControlConfig{
+		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
+		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1,
+		NANDReady: NewStatusSignal(), InterruptController: NewQualcommInterruptController(nil),
+		TimeTickClock: &QualcommTimeTickClockConfig{
+			InstructionsPerSecond: 10, TimeTickHz: 2, InterruptSource: 5,
+		},
+	})
+	if err := mismatch.LoadState(state); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("mismatched timetick clock state error = %v", err)
+	}
+}
+
 func TestQualcommBootControlValidatesBoardConfigurationAndReset(t *testing.T) {
 	invalid := []QualcommBootControlConfig{
 		{HardwareRevision: 0x00000001, NANDInterfaceMode: 2, EBIMemoryConfiguration: 0x5680, NANDReady: NewStatusSignal()},
@@ -273,6 +584,9 @@ func TestQualcommBootControlValidatesBoardConfigurationAndReset(t *testing.T) {
 		{HardwareRevision: 0x10000000, NANDInterfaceMode: 2, EBIMemoryConfiguration: 0, NANDReady: NewStatusSignal()},
 		{HardwareRevision: 0x10000000, NANDInterfaceMode: 2, EBIMemoryConfiguration: 0x5680, ClockModeStatus: 2, NANDReady: NewStatusSignal()},
 		{HardwareRevision: 0x10000000, NANDInterfaceMode: 2, EBIMemoryConfiguration: 0x5680},
+		{HardwareRevision: 0x10000000, NANDInterfaceMode: 2, EBIMemoryConfiguration: 0x5680, NANDReady: NewStatusSignal(), TimeTickClock: &QualcommTimeTickClockConfig{}},
+		{HardwareRevision: 0x10000000, NANDInterfaceMode: 2, EBIMemoryConfiguration: 0x5680, NANDReady: NewStatusSignal(), TimeTickClock: &QualcommTimeTickClockConfig{InstructionsPerSecond: 10, TimeTickHz: 11}},
+		{HardwareRevision: 0x10000000, NANDInterfaceMode: 2, EBIMemoryConfiguration: 0x5680, NANDReady: NewStatusSignal(), TimeTickClock: &QualcommTimeTickClockConfig{InstructionsPerSecond: 10, TimeTickHz: 1, InterruptSource: 64}},
 	}
 	for _, config := range invalid {
 		if _, err := NewQualcommBootControl(config); err == nil {

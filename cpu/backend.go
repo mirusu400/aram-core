@@ -127,6 +127,8 @@ type MemoryBus interface {
 // for diagnostics without coupling CPU backends to platform-specific devices.
 type MemoryAccessContext struct {
 	InstructionAddress uint32
+	LinkAddress        uint32
+	StackAddress       uint32
 	Mode               Mode
 	Attributed         bool
 }

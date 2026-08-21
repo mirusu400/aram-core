@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/mirusu400/aram-core/cpu"
@@ -1054,5 +1055,35 @@ func TestARMSwapExchangesMemoryAndRegister(t *testing.T) {
 	}
 	if got := binary.LittleEndian.Uint32(swapped[:]); got != 0x11223344 {
 		t.Fatalf("swapped word = 0x%08x", got)
+	}
+}
+
+func TestPCHistoryKeepsConfiguredExecutionTail(t *testing.T) {
+	backend := New()
+	defer backend.Close()
+	mapARMInstructions(t, backend,
+		0xe1a00000, // MOV r0, r0
+		0xe1a00000,
+		0xe1a00000,
+		0xe1a00000,
+	)
+	if err := backend.SetPCHistoryLimit(3); err != nil {
+		t.Fatal(err)
+	}
+	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 4)
+	if result.Err != nil || result.Reason != cpu.StopBudget {
+		t.Fatalf("result = %+v", result)
+	}
+	if got, want := backend.PCHistory(), []uint32{0x1004, 0x1008, 0x100c}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("PC history = %#v, want %#v", got, want)
+	}
+	if err := backend.SetPCHistoryLimit(0); err != nil {
+		t.Fatal(err)
+	}
+	if got := backend.PCHistory(); len(got) != 0 {
+		t.Fatalf("disabled PC history = %#v", got)
+	}
+	if err := backend.SetPCHistoryLimit(1<<20 + 1); err == nil {
+		t.Fatal("oversized PC history was accepted")
 	}
 }

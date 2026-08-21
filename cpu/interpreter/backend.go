@@ -79,6 +79,8 @@ type Backend struct {
 	accessContext  cpu.MemoryAccessContext
 	executionTraps map[cpu.ExecutionTrap]struct{}
 	pcHits         map[uint32]uint64 // env ARAM_PC_TRACE: per-PC execution histogram
+	pcHistory      []uint32
+	pcHistoryNext  uint64
 }
 
 func New() *Backend {
@@ -106,6 +108,48 @@ func (b *Backend) PCHits() map[uint32]uint64 {
 		out[k] = v
 	}
 	return out
+}
+
+// SetPCHistoryLimit configures a bounded diagnostic ring of instruction
+// addresses. The history is host instrumentation and is not CPU save state.
+func (b *Backend) SetPCHistoryLimit(limit uint32) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return cpu.ErrClosed
+	}
+	if limit > 1<<20 {
+		return fmt.Errorf("PC history limit %d exceeds diagnostic maximum", limit)
+	}
+	b.pcHistory = make([]uint32, limit)
+	b.pcHistoryNext = 0
+	return nil
+}
+
+// PCHistory returns the configured diagnostic ring in execution order.
+func (b *Backend) PCHistory() []uint32 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	count := min(b.pcHistoryNext, uint64(len(b.pcHistory)))
+	history := make([]uint32, int(count))
+	if count == 0 {
+		return history
+	}
+	start := b.pcHistoryNext - count
+	for index := range history {
+		history[index] = b.pcHistory[(start+uint64(index))%uint64(len(b.pcHistory))]
+	}
+	return history
+}
+
+func (b *Backend) recordPC(address uint32) {
+	if b.pcHits != nil {
+		b.pcHits[address]++
+	}
+	if len(b.pcHistory) != 0 {
+		b.pcHistory[b.pcHistoryNext%uint64(len(b.pcHistory))] = address
+		b.pcHistoryNext++
+	}
 }
 
 func (b *Backend) Identity() cpu.Identity {

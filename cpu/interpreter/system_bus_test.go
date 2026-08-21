@@ -59,6 +59,12 @@ func TestContextSystemBusAttributesDataAccessesToGuestInstructions(t *testing.T)
 	if err := backend.AttachSystemBus(bus); err != nil {
 		t.Fatal(err)
 	}
+	if err := backend.WriteRegister(cpu.RegisterLR, 0x2221); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.WriteRegister(cpu.RegisterSP, 0x1800); err != nil {
+		t.Fatal(err)
+	}
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 3)
 	if result.Err != nil || result.Reason != cpu.StopBudget {
 		t.Fatalf("Run result = %+v", result)
@@ -67,9 +73,9 @@ func TestContextSystemBusAttributesDataAccessesToGuestInstructions(t *testing.T)
 		t.Fatalf("data contexts = %+v", bus.dataContexts)
 	}
 	want := []cpu.MemoryAccessContext{
-		{InstructionAddress: 0x1000, Mode: cpu.ModeARM, Attributed: true},
-		{InstructionAddress: 0x1004, Mode: cpu.ModeARM, Attributed: true},
-		{InstructionAddress: 0x1008, Mode: cpu.ModeARM, Attributed: true},
+		{InstructionAddress: 0x1000, LinkAddress: 0x2221, StackAddress: 0x1800, Mode: cpu.ModeARM, Attributed: true},
+		{InstructionAddress: 0x1004, LinkAddress: 0x2221, StackAddress: 0x1800, Mode: cpu.ModeARM, Attributed: true},
+		{InstructionAddress: 0x1008, LinkAddress: 0x2221, StackAddress: 0x1800, Mode: cpu.ModeARM, Attributed: true},
 	}
 	for index := range want {
 		if bus.dataContexts[index] != want[index] {

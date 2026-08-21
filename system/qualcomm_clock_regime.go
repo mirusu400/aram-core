@@ -20,11 +20,44 @@ var ErrQualcommClockRegimeMMIO = errors.New("unsupported Qualcomm clock-regime r
 // Oscillator lock timing and derived device frequencies remain separate from
 // this register-storage layer.
 type QualcommClockRegime struct {
-	registers [QualcommClockRegimeWindowSize / 4]uint32
+	registers        [QualcommClockRegimeWindowSize / 4]uint32
+	sleepControllers map[uint32]struct{}
 }
 
 func NewQualcommClockRegime() *QualcommClockRegime {
 	return &QualcommClockRegime{}
+}
+
+// NewQualcommClockRegimeWithSleepControllers enables the legacy sleep-control
+// state machine only at profile-declared register-block offsets. A stop
+// command of zero at base+0x30 transitions base+0x24 to the stopped state 1,
+// matching the contract observed in firmware that uses this register layout.
+func NewQualcommClockRegimeWithSleepControllers(offsets []uint32) (*QualcommClockRegime, error) {
+	device := NewQualcommClockRegime()
+	device.sleepControllers = make(map[uint32]struct{}, len(offsets))
+	for _, offset := range offsets {
+		if !validQualcommClockRegimeSleepControllerOffset(offset) {
+			return nil, fmt.Errorf("sleep-controller offset 0x%x: %w", offset, ErrInvalidRegion)
+		}
+		if _, duplicate := device.sleepControllers[offset]; duplicate {
+			return nil, fmt.Errorf("duplicate sleep-controller offset 0x%x: %w", offset, ErrInvalidRegion)
+		}
+		device.sleepControllers[offset] = struct{}{}
+	}
+	return device, nil
+}
+
+const (
+	qualcommClockRegimeSleepStatusOffset  = 0x24
+	qualcommClockRegimeSleepCommandOffset = 0x30
+	qualcommClockRegimeSleepStopCommand   = 0
+	qualcommClockRegimeSleepStoppedStatus = 1
+)
+
+func validQualcommClockRegimeSleepControllerOffset(offset uint32) bool {
+	return isQualcommClockRegimeOffset(offset) &&
+		isQualcommClockRegimeOffset(offset+qualcommClockRegimeSleepStatusOffset) &&
+		isQualcommClockRegimeOffset(offset+qualcommClockRegimeSleepCommandOffset)
 }
 
 var qualcommClockRegimeApertures = [...]struct {
@@ -76,6 +109,14 @@ func (d *QualcommClockRegime) Write(offset uint32, width Width, value uint32) er
 		)
 	}
 	d.registers[offset/4] = value
+	for base := range d.sleepControllers {
+		if offset == base+qualcommClockRegimeSleepCommandOffset &&
+			value == qualcommClockRegimeSleepStopCommand {
+			d.registers[(base+qualcommClockRegimeSleepStatusOffset)/4] =
+				qualcommClockRegimeSleepStoppedStatus
+			break
+		}
+	}
 	return nil
 }
 

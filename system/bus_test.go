@@ -92,6 +92,92 @@ func TestBusMMIOObserverReceivesInstructionContext(t *testing.T) {
 	}
 }
 
+func TestBusMemoryObserverIsBoundedToConfiguredPhysicalRange(t *testing.T) {
+	bus := NewBus()
+	if err := bus.MapRAM("ram", 0x1000, 0x100); err != nil {
+		t.Fatal(err)
+	}
+	var accesses []MemoryAccess
+	if err := bus.SetMemoryObserver(0x1010, 4, func(access MemoryAccess) {
+		accesses = append(accesses, access)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	context := cpu.MemoryAccessContext{
+		InstructionAddress: 0x8000, Mode: cpu.ModeARM, Attributed: true,
+	}
+	var value [4]byte
+	binary.LittleEndian.PutUint32(value[:], 0xaabbccdd)
+	if err := bus.WriteContext(context, 0x1010, value[:], cpu.PermissionWrite); err != nil {
+		t.Fatal(err)
+	}
+	clear(value[:])
+	if err := bus.ReadContext(context, 0x1010, value[:], cpu.PermissionRead); err != nil {
+		t.Fatal(err)
+	}
+	if err := bus.ReadContext(context, 0x1020, value[:], cpu.PermissionRead); err != nil {
+		t.Fatal(err)
+	}
+	if len(accesses) != 2 {
+		t.Fatalf("observed %d bounded memory accesses, want 2", len(accesses))
+	}
+	if got := accesses[0]; got.Context != context || got.Region != "ram" ||
+		got.Address != 0x1010 || got.Offset != 0x10 || got.Width != Width32 ||
+		got.Permission != cpu.PermissionWrite || got.Value != 0xaabbccdd ||
+		!got.Write || got.MMIO || got.Err != nil {
+		t.Fatalf("observed RAM write = %+v", got)
+	}
+	if got := accesses[1]; got.Permission != cpu.PermissionRead || got.Write ||
+		got.Value != 0xaabbccdd {
+		t.Fatalf("observed RAM read = %+v", got)
+	}
+	if err := bus.SetMemoryObserver(^uint32(0), 2, func(MemoryAccess) {}); !errors.Is(err, ErrInvalidRegion) {
+		t.Fatalf("wrapping observer range error = %v", err)
+	}
+	if err := bus.SetMemoryObserver(0, 0, nil); err != nil {
+		t.Fatalf("disable observer: %v", err)
+	}
+}
+
+func TestBusInstructionMemoryObserverFiltersByAttributedGuestPC(t *testing.T) {
+	bus := NewBus()
+	if err := bus.MapRAM("ram", 0x1000, 0x100); err != nil {
+		t.Fatal(err)
+	}
+	var accesses []MemoryAccess
+	if err := bus.SetInstructionMemoryObserver(0x8000, 4, func(access MemoryAccess) {
+		accesses = append(accesses, access)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	matching := cpu.MemoryAccessContext{
+		InstructionAddress: 0x8002, Mode: cpu.ModeThumb, Attributed: true,
+	}
+	outside := matching
+	outside.InstructionAddress = 0x8004
+	var value [4]byte
+	binary.LittleEndian.PutUint32(value[:], 0x11223344)
+	if err := bus.WriteContext(matching, 0x1010, value[:], cpu.PermissionWrite); err != nil {
+		t.Fatal(err)
+	}
+	if err := bus.ReadContext(outside, 0x1010, value[:], cpu.PermissionRead); err != nil {
+		t.Fatal(err)
+	}
+	if err := bus.Read(0x1010, value[:], cpu.PermissionRead); err != nil {
+		t.Fatal(err)
+	}
+	if len(accesses) != 1 || accesses[0].Context != matching || !accesses[0].Write ||
+		accesses[0].Address != 0x1010 || accesses[0].Value != 0x11223344 {
+		t.Fatalf("instruction-attributed accesses = %+v", accesses)
+	}
+	if err := bus.SetInstructionMemoryObserver(^uint32(0), 2, func(MemoryAccess) {}); !errors.Is(err, ErrInvalidRegion) {
+		t.Fatalf("wrapping instruction observer range error = %v", err)
+	}
+	if err := bus.SetInstructionMemoryObserver(0, 0, nil); err != nil {
+		t.Fatalf("disable instruction observer: %v", err)
+	}
+}
+
 func TestBusRejectsOverlapAlignmentAndCrossRegionAccess(t *testing.T) {
 	bus := NewBus()
 	if err := bus.MapRAM("ram", 0x1000, 0x101); err != nil {

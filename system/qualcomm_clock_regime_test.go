@@ -59,3 +59,34 @@ func TestQualcommClockRegimeStateRoundTripAndReset(t *testing.T) {
 		t.Fatalf("reset clock register = %#x", value)
 	}
 }
+
+func TestQualcommClockRegimeProfiledSleepControllerStops(t *testing.T) {
+	device, err := NewQualcommClockRegimeWithSleepControllers([]uint32{0x5200})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := device.Write(0x5230, Width32, 0); err != nil {
+		t.Fatal(err)
+	}
+	status, err := device.Read(0x5224, Width32)
+	if err != nil || status != 1 {
+		t.Fatalf("sleep-controller status = %#x error %v, want stopped state 1", status, err)
+	}
+
+	unprofiled := NewQualcommClockRegime()
+	if err := unprofiled.Write(0x5230, Width32, 0); err != nil {
+		t.Fatal(err)
+	}
+	status, _ = unprofiled.Read(0x5224, Width32)
+	if status != 0 {
+		t.Fatalf("unprofiled sleep-controller status = %#x, want latch-only zero", status)
+	}
+}
+
+func TestQualcommClockRegimeRejectsInvalidSleepControllerProfiles(t *testing.T) {
+	for _, offsets := range [][]uint32{{0x3000}, {0x5202}, {0x5200, 0x5200}} {
+		if _, err := NewQualcommClockRegimeWithSleepControllers(offsets); err == nil {
+			t.Fatalf("accepted invalid sleep-controller offsets %#v", offsets)
+		}
+	}
+}
