@@ -3,6 +3,7 @@ package application
 import (
 	"fmt"
 	"os"
+	"sort"
 	"sync"
 
 	machinecore "github.com/mirusu400/aram-core/core"
@@ -16,10 +17,12 @@ import (
 const PreciseBackend = "precise"
 
 var (
-	cpuMu       sync.RWMutex
+	cpuMu sync.RWMutex
+	// cpuBackends holds the distinct, selectable backends shown to the UI. It
+	// starts with only the precise interpreter; "portable" and the empty string
+	// are aliases for it handled in ResolveCPUBackend, not separate entries.
 	cpuBackends = map[string]CPUFactory{
 		PreciseBackend: newPreciseCPU,
-		"portable":     newPreciseCPU,
 	}
 )
 
@@ -47,8 +50,9 @@ func RegisterCPUBackend(name string, factory CPUFactory) {
 // backend absent from this build) returns ErrBackendUnavailable so the caller
 // can decide whether to fall back.
 func ResolveCPUBackend(name string) (CPUFactory, error) {
-	if name == "" {
-		name = PreciseBackend
+	switch name {
+	case "", PreciseBackend, "portable":
+		return newPreciseCPU, nil
 	}
 	cpuMu.RLock()
 	factory, ok := cpuBackends[name]
@@ -57,6 +61,20 @@ func ResolveCPUBackend(name string) (CPUFactory, error) {
 		return nil, fmt.Errorf("%w: CPU backend %q", machinecore.ErrBackendUnavailable, name)
 	}
 	return factory, nil
+}
+
+// CPUBackendNames returns the distinct selectable backend names in sorted order,
+// for a settings dropdown. The precise interpreter is always present; a
+// registered fast/native core appears once it registers itself.
+func CPUBackendNames() []string {
+	cpuMu.RLock()
+	names := make([]string, 0, len(cpuBackends))
+	for name := range cpuBackends {
+		names = append(names, name)
+	}
+	cpuMu.RUnlock()
+	sort.Strings(names)
+	return names
 }
 
 // selectedCPUFactory resolves the ARAM_CPU environment override, falling back
