@@ -13,13 +13,16 @@ package interpreter
 // precise interpreter (native_stub.go).
 //
 // The AArch64 machine-code emitter (native_aarch64emit.go) and the whole
-// translator/Run loop (native_jit.go) are shared with linux/android arm64 and
-// are conformance-verified under qemu; only this memory/call glue is
-// macOS-specific. All guest-address arithmetic is done in C so no Go
-// uintptr->unsafe.Pointer cast is needed (keeping `go vet` clean).
+// translator/Run loop (native_jit.go) are shared with linux/android arm64; only
+// this memory/call glue is macOS-specific. All guest-address arithmetic is done
+// in C so no Go uintptr->unsafe.Pointer cast is needed (keeping `go vet` clean).
 //
-// UNVERIFIED on this dev host (no macOS toolchain here); build and run
-// cpu/conformance on the target Mac to validate.
+// VERIFIED on real Apple Silicon: cpu/conformance's native differential (corpus,
+// every condition/flag state, all shifts/ALU, self-loop retirement, and 4000
+// random programs) passes bit-for-bit against the interpreter on an M-series Mac.
+// Because Apple Silicon has genuinely incoherent I-/D-caches (unlike qemu),
+// self-modifying JIT code executing correctly here proves the W^X toggle and
+// sys_icache_invalidate are right on real hardware.
 
 /*
 #include <pthread.h>
