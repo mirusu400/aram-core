@@ -23,10 +23,17 @@ var (
 	// are aliases for it handled in ResolveCPUBackend, not separate entries.
 	cpuBackends = map[string]CPUFactory{
 		PreciseBackend: newPreciseCPU,
+		"jit":          newJITCPU,
 	}
 )
 
 func newPreciseCPU() cpu.Backend { return interpreter.New() }
+
+// newJITCPU is the pure-Go dynamic recompiler (interpreter.NewJIT): a second
+// CPU backend that translates and caches Thumb blocks, falling back to the
+// interpreter for anything it does not translate. It is validated against the
+// interpreter oracle by cpu/conformance.
+func newJITCPU() cpu.Backend { return interpreter.NewJIT() }
 
 // RegisterCPUBackend makes a CPU backend selectable by name. A native or cgo
 // recompiler (Unicorn, dynarmic, …) registers itself here from a build-tagged

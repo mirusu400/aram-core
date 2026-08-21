@@ -69,10 +69,27 @@ type Backend struct {
 	mapped      uint64
 	memoryLimit uint64
 	pcHits      map[uint32]uint64 // env ARAM_PC_TRACE: per-PC execution histogram
+	// jitBlocks is the translated-block cache of the optional pure-Go dynamic
+	// recompiler (see jit.go). Nil keeps the precise tree-walking path; non-nil
+	// enables the JIT for Thumb, falling back to the interpreter per instruction
+	// for anything it does not translate. It is invalidated on Map/Close and on
+	// a guest write into an executable region (self-modifying code).
+	jitBlocks map[uint32]*jitBlock
 }
 
 func New() *Backend {
 	return NewWithMemoryLimit(DefaultMemoryLimit)
+}
+
+// NewJIT returns a backend that runs Thumb through the pure-Go dynamic
+// recompiler (jit.go) instead of the tree-walking interpreter, falling back to
+// the interpreter for untranslated instructions and for ARM. It is
+// architecturally a second CPU backend behind the same identity; use
+// cpu/conformance to confirm it reproduces the interpreter exactly.
+func NewJIT() *Backend {
+	b := NewWithMemoryLimit(DefaultMemoryLimit)
+	b.jitBlocks = make(map[uint32]*jitBlock)
+	return b
 }
 
 func NewWithMemoryLimit(limit uint64) *Backend {
@@ -147,6 +164,9 @@ func (b *Backend) Map(address, size uint32, permissions cpu.Permissions) error {
 	clear(b.regionHints[:])
 	b.executeData = nil
 	b.dataData = nil
+	if b.jitBlocks != nil {
+		clear(b.jitBlocks)
+	}
 	return nil
 }
 
@@ -265,7 +285,11 @@ func (b *Backend) Run(ctx context.Context, address uint32, mode cpu.Mode, budget
 			err     error
 		)
 		if b.mode == cpu.ModeThumb {
-			retired, reason, err = b.runThumb(batch)
+			if b.jitBlocks != nil {
+				retired, reason, err = b.runThumbJIT(batch)
+			} else {
+				retired, reason, err = b.runThumb(batch)
+			}
 		} else {
 			retired, reason, err = b.runARM(batch)
 		}
@@ -325,6 +349,9 @@ func (b *Backend) Close() error {
 	clear(b.regionHints[:])
 	b.executeData = nil
 	b.dataData = nil
+	if b.jitBlocks != nil {
+		clear(b.jitBlocks)
+	}
 	b.mapped = 0
 	return nil
 }

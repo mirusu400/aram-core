@@ -9,6 +9,26 @@ import (
 
 func interp() cpu.Backend { return interpreter.New() }
 
+// TestJITMatchesInterpreterOracle runs the corpus on the pure-Go dynamic
+// recompiler and requires it to reproduce the interpreter oracle's architectural
+// state exactly, program by program.
+func TestJITMatchesInterpreterOracle(t *testing.T) {
+	newJIT := func() cpu.Backend { return interpreter.NewJIT() }
+	for _, p := range Corpus {
+		oracle, err := Execute(interp, p)
+		if err != nil {
+			t.Fatalf("%s: oracle: %v", p.Name, err)
+		}
+		jit, err := Execute(newJIT, p)
+		if err != nil {
+			t.Fatalf("%s: jit: %v", p.Name, err)
+		}
+		if d := Diff(oracle, jit); d != "" {
+			t.Fatalf("%s: JIT diverged from interpreter: %s", p.Name, d)
+		}
+	}
+}
+
 // TestCorpusRunsCleanOnInterpreter validates the corpus itself: every program
 // must reach its BKPT on the reference interpreter (a bad encoding would fault),
 // giving a self-checking Tier-1 gate.
