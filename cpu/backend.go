@@ -113,6 +113,41 @@ type Result struct {
 	Err          error
 }
 
+// MemoryBus is the physical-memory boundary used by whole-system machines.
+// Application backends may continue using Backend.Map and private mappings;
+// a backend advertises system support separately through SystemBusBackend.
+type MemoryBus interface {
+	Read(address uint32, destination []byte, permission Permissions) error
+	Write(address uint32, source []byte, permission Permissions) error
+}
+
+type SystemBusBackend interface {
+	Backend
+	AttachSystemBus(MemoryBus) error
+}
+
+type SystemCapability uint64
+
+const (
+	CapabilityPhysicalBus SystemCapability = 1 << iota
+	CapabilityPrivilegedModes
+	CapabilityCP15Control
+	CapabilityMMU
+	CapabilityExceptions
+	CapabilityInterruptLines
+)
+
+type SystemCapabilities uint64
+
+func (c SystemCapabilities) Has(capability SystemCapability) bool {
+	return uint64(c)&uint64(capability) != 0
+}
+
+type SystemBackend interface {
+	SystemBusBackend
+	SystemCapabilities() SystemCapabilities
+}
+
 type Backend interface {
 	Identity() Identity
 	Architecture() Architecture

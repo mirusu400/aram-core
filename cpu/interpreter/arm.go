@@ -62,6 +62,44 @@ func (b *Backend) stepARM() (*cpu.StopReason, error) {
 		reason := cpu.StopBreakpoint
 		return &reason, nil
 
+	case instruction&0x0fbf0fff == 0x010f0000: // MRS Rd, CPSR/SPSR
+		rd := uint32(instruction>>12) & 0xf
+		if rd == cpu.RegisterPC {
+			return nil, b.unsupportedARM(pc, instruction)
+		}
+		value, statusErr := b.readProgramStatus(instruction&(1<<22) != 0)
+		if statusErr != nil {
+			return nil, fmt.Errorf("ARM MRS at 0x%08x: %w", pc, statusErr)
+		}
+		b.regs[rd] = value
+		return nil, nil
+
+	case instruction&0x0fb0fff0 == 0x0120f000: // MSR CPSR/SPSR_fields, Rm
+		rm := uint32(instruction) & 0xf
+		if rm == cpu.RegisterPC {
+			return nil, b.unsupportedARM(pc, instruction)
+		}
+		if statusErr := b.writeProgramStatus(
+			instruction&(1<<22) != 0,
+			uint32(instruction>>16)&0xf,
+			b.regs[rm],
+		); statusErr != nil {
+			return nil, fmt.Errorf("ARM MSR at 0x%08x: %w", pc, statusErr)
+		}
+		return nil, nil
+
+	case instruction&0x0fb0f000 == 0x0320f000: // MSR CPSR/SPSR_fields, #imm
+		rotate := int((instruction >> 8 & 0xf) * 2)
+		value := bits.RotateLeft32(uint32(instruction&0xff), -rotate)
+		if statusErr := b.writeProgramStatus(
+			instruction&(1<<22) != 0,
+			uint32(instruction>>16)&0xf,
+			value,
+		); statusErr != nil {
+			return nil, fmt.Errorf("ARM MSR at 0x%08x: %w", pc, statusErr)
+		}
+		return nil, nil
+
 	case instruction&0x0ffffff0 == 0x012fff10: // BX Rm
 		b.branchExchange(b.readOperandRegister(instruction&0xf, pc, cpu.ModeARM))
 		return nil, nil
@@ -86,10 +124,10 @@ func (b *Backend) stepARM() (*cpu.StopReason, error) {
 		b.setModeFlag()
 		return nil, nil
 
-	case instruction&0x0fff0fff == 0x0e070f15:
-		// MCR p15, 0, Rd, c7, c5, 0 invalidates the instruction cache.
-		// Guest code is interpreted directly from coherent mapped memory, so
-		// the architectural cache-maintenance operation has no host work.
+	case instruction&0x0f000010 == 0x0e000010: // MRC/MCR coprocessor transfer
+		if cpErr := b.executeCP15(pc, instruction); cpErr != nil {
+			return nil, cpErr
+		}
 		return nil, nil
 
 	case instruction&0x0e000000 == 0x0a000000: // B / BL

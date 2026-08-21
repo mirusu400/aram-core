@@ -59,6 +59,9 @@ type Backend struct {
 	dataPermissions cpu.Permissions
 	dataData        []byte
 	regs            [17]uint32
+	banks           bankedRegisters
+	spsr            savedProgramStatus
+	cp15            cp15State
 	// flags holds condition N/Z/C/V lazily: setNZCV records the defining
 	// operation here instead of writing CPSR, and resolveFlags materializes it
 	// only when a reader actually needs the bits. See pendingFlags.
@@ -68,6 +71,7 @@ type Backend struct {
 	closed      bool
 	mapped      uint64
 	memoryLimit uint64
+	systemBus   cpu.MemoryBus
 	pcHits      map[uint32]uint64 // env ARAM_PC_TRACE: per-PC execution histogram
 }
 
@@ -110,12 +114,23 @@ func (b *Backend) Architecture() cpu.Architecture {
 	return cpu.ARMv5TE
 }
 
+func (b *Backend) SystemCapabilities() cpu.SystemCapabilities {
+	return cpu.SystemCapabilities(
+		cpu.CapabilityPhysicalBus |
+			cpu.CapabilityPrivilegedModes |
+			cpu.CapabilityCP15Control,
+	)
+}
+
 func (b *Backend) Map(address, size uint32, permissions cpu.Permissions) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	if b.closed {
 		return cpu.ErrClosed
+	}
+	if b.systemBus != nil {
+		return fmt.Errorf("private mapping with attached system bus: %w", cpu.ErrInvalidMapping)
 	}
 	end := uint64(address) + uint64(size)
 	if size == 0 || end > 1<<32 || !permissions.Valid() ||
@@ -144,6 +159,31 @@ func (b *Backend) Map(address, size uint32, permissions cpu.Permissions) error {
 	sort.Slice(b.regions, func(i, j int) bool {
 		return b.regions[i].address < b.regions[j].address
 	})
+	clear(b.regionHints[:])
+	b.executeData = nil
+	b.dataData = nil
+	return nil
+}
+
+// AttachSystemBus selects bus-backed physical accesses for whole-system
+// execution. It is intentionally one-way for a backend instance so a running
+// machine cannot switch address spaces underneath saved CPU state.
+func (b *Backend) AttachSystemBus(bus cpu.MemoryBus) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return cpu.ErrClosed
+	}
+	if bus == nil {
+		return fmt.Errorf("attach system bus: nil bus")
+	}
+	if b.systemBus != nil {
+		return fmt.Errorf("attach system bus: already attached")
+	}
+	if b.mapped != 0 {
+		return fmt.Errorf("attach system bus with private mappings: %w", cpu.ErrInvalidMapping)
+	}
+	b.systemBus = bus
 	clear(b.regionHints[:])
 	b.executeData = nil
 	b.dataData = nil
@@ -192,16 +232,24 @@ func (b *Backend) WriteRegister(id, value uint32) error {
 	if id >= uint32(len(b.regs)) {
 		return fmt.Errorf("register %d: %w", id, cpu.ErrInvalidAddress)
 	}
-	b.regs[id] = value
 	if id == cpu.RegisterCPSR {
 		// The written value is authoritative; drop any deferred flags so a
 		// stale pending update cannot later clobber it.
+		b.resolveFlags()
 		b.flags.dirty = false
+		oldMode, oldValid := decodeProcessorMode(b.regs[id] & processorModeMask)
+		newMode, newValid := decodeProcessorMode(value & processorModeMask)
+		if oldValid && newValid && oldMode != newMode {
+			b.switchProcessorMode(oldMode, newMode)
+		}
+		b.regs[id] = value
 		if value&cpu.StatusThumb != 0 {
 			b.mode = cpu.ModeThumb
 		} else {
 			b.mode = cpu.ModeARM
 		}
+	} else {
+		b.regs[id] = value
 	}
 	return nil
 }
@@ -322,6 +370,7 @@ func (b *Backend) Close() error {
 	}
 	b.closed = true
 	b.regions = nil
+	b.systemBus = nil
 	clear(b.regionHints[:])
 	b.executeData = nil
 	b.dataData = nil
@@ -367,3 +416,5 @@ func (b *Backend) findRegion(address uint32, permission cpu.Permissions) (*regio
 }
 
 var _ cpu.Backend = (*Backend)(nil)
+var _ cpu.SystemBusBackend = (*Backend)(nil)
+var _ cpu.SystemBackend = (*Backend)(nil)
