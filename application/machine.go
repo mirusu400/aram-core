@@ -82,7 +82,7 @@ type Factory struct {
 
 func NewFactory() Factory {
 	return Factory{
-		NewCPU:      func() cpu.Backend { return interpreter.New() },
+		NewCPU:      selectedCPUFactory(),
 		RunBudget:   DefaultRunBudget,
 		MemoryLimit: DefaultMemoryLimit,
 		FramebufferSize: image.Point{
