@@ -526,6 +526,11 @@ type ktfWIPICMediaClip struct {
 	volume    int32
 	state     uint8
 	repeat    bool
+	// lastTracedState dedups the GetState host trace: a title polls GetState in
+	// a tight loop, so only a change (notably the playing->stopped edge when an
+	// effect finishes) is worth an entry.
+	lastTracedState uint8
+	tracedState     bool
 }
 
 type ktfLWCComponent struct {

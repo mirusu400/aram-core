@@ -314,7 +314,7 @@ func ktfWIPICMediaPutData(
 	_ context.Context,
 	runtime *Runtime,
 ) (uint32, error) {
-	_, clip, serviceID, err := runtime.ktfWIPICMediaParameter()
+	handle, clip, serviceID, err := runtime.ktfWIPICMediaParameter()
 	if err != nil {
 		return ktfWIPICErrorInvalid, err
 	}
@@ -345,6 +345,7 @@ func ktfWIPICMediaPutData(
 		return 0, err
 	}
 	clip.data = append(clip.data, data...)
+	runtime.tracef("wipic_media_putdata:handle=0x%08x:add=%d:total=%d", handle, count, len(clip.data))
 	return 0, nil
 }
 
@@ -409,7 +410,7 @@ func ktfWIPICMediaClearData(
 	_ context.Context,
 	runtime *Runtime,
 ) (uint32, error) {
-	_, clip, serviceID, err := runtime.ktfWIPICMediaParameter()
+	handle, clip, serviceID, err := runtime.ktfWIPICMediaParameter()
 	if err != nil {
 		return ktfWIPICErrorInvalid, err
 	}
@@ -422,6 +423,7 @@ func ktfWIPICMediaClearData(
 	); err != nil {
 		return 0, err
 	}
+	runtime.tracef("wipic_media_clear:handle=0x%08x:had=%d", handle, len(clip.data))
 	clip.data = nil
 	clip.state = 0
 	clip.repeat = false
@@ -469,7 +471,7 @@ func ktfWIPICMediaPause(
 	_ context.Context,
 	runtime *Runtime,
 ) (uint32, error) {
-	_, clip, serviceID, err := runtime.ktfWIPICMediaParameter()
+	handle, clip, serviceID, err := runtime.ktfWIPICMediaParameter()
 	if err != nil {
 		return ktfWIPICErrorInvalid, err
 	}
@@ -482,6 +484,7 @@ func ktfWIPICMediaPause(
 	); err != nil {
 		return 0, err
 	}
+	runtime.tracef("wipic_media_pause:handle=0x%08x", handle)
 	clip.state = 2
 	return 0, nil
 }
@@ -490,7 +493,7 @@ func ktfWIPICMediaResume(
 	_ context.Context,
 	runtime *Runtime,
 ) (uint32, error) {
-	_, clip, serviceID, err := runtime.ktfWIPICMediaParameter()
+	handle, clip, serviceID, err := runtime.ktfWIPICMediaParameter()
 	if err != nil {
 		return ktfWIPICErrorInvalid, err
 	}
@@ -503,6 +506,7 @@ func ktfWIPICMediaResume(
 	); err != nil {
 		return 0, err
 	}
+	runtime.tracef("wipic_media_resume:handle=0x%08x", handle)
 	clip.state = 1
 	return 0, nil
 }
@@ -511,7 +515,7 @@ func ktfWIPICMediaStop(
 	_ context.Context,
 	runtime *Runtime,
 ) (uint32, error) {
-	_, clip, serviceID, err := runtime.ktfWIPICMediaParameter()
+	handle, clip, serviceID, err := runtime.ktfWIPICMediaParameter()
 	if err != nil {
 		return ktfWIPICErrorInvalid, err
 	}
@@ -524,6 +528,7 @@ func ktfWIPICMediaStop(
 	); err != nil {
 		return 0, err
 	}
+	runtime.tracef("wipic_media_stop:handle=0x%08x:repeat=%t", handle, clip.repeat)
 	clip.state = 0
 	clip.repeat = false
 	return 0, nil
@@ -544,11 +549,15 @@ func ktfWIPICMediaGetState(
 	if clip == nil {
 		return ktfWIPICErrorInvalid, nil
 	}
-	runtime.tracef(
-		"wipic_media_state:handle=0x%08x:state=%d",
-		handle,
-		clip.state,
-	)
+	if !clip.tracedState || clip.state != clip.lastTracedState {
+		runtime.tracef(
+			"wipic_media_state:handle=0x%08x:state=%d",
+			handle,
+			clip.state,
+		)
+		clip.lastTracedState = clip.state
+		clip.tracedState = true
+	}
 	return uint32(clip.state), nil
 }
 

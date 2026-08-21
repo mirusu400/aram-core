@@ -76,9 +76,19 @@ func isKTFHighFrequencyHostTrace(entry string) bool {
 		"java.method.org/kwis/msp/lcdui/Graphics.setRGBPixels(IIII[III)V",
 		"java.native_override.org/kwis/msp/lcdui/Graphics.setPixel(II)V",
 		"java.native_override.org/kwis/msp/lcdui/Graphics.setRGBPixels(IIII[III)V",
+		// Per-frame WIPI-C graphics calls a title issues thousands of times:
+		// SetContext (2.6), FillRect (2.11), and the pixel/blit leaves
+		// (2.8/2.22/2.23). Sampling them keeps a representative count without
+		// letting the flood roll the retained trace over and evict the rare
+		// calls (media, files, kernel) that actually matter for diagnostics.
+		"wipic.2.6",
 		"wipic.2.8",
+		"wipic.2.11",
 		"wipic.2.22",
-		"wipic.2.23":
+		"wipic.2.23",
+		// MC_mdaGetState (9.16): a title polls this in a tight loop while it
+		// waits for an effect to finish, so sample it too.
+		"wipic.9.16":
 		return true
 	default:
 		return false
