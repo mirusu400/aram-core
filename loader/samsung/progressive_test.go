@@ -108,6 +108,8 @@ func syntheticEncodedWBIN(t *testing.T) ([]byte, []byte) {
 	binary.LittleEndian.PutUint32(phdr[24:28], 5)
 	binary.LittleEndian.PutUint32(phdr[28:32], 0x10)
 	copy(plaintext[0x80:0x90], "progressive-data")
+	footer := len(plaintext) - 62
+	putU32s(plaintext, footer, 0x6, 0xc, 0x8, 0xe)
 
 	for index, value := range rfc4269B1RoundKeys {
 		binary.LittleEndian.PutUint32(piece[wbinRoundKeyOffset+index*4:], value)

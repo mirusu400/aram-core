@@ -21,6 +21,13 @@ diagnostic entry point, or probe-assisted trace into a cold-boot claim.
   the public RFC 4269 SEED primitive, applies Samsung's per-block key feedback,
   and parses the resulting progressive ARM ELF32 image. It does not consult a
   memory dump or retain a private key table.
+- The normalized flash view places decoded WBIN bytes at the MIBIB `0:AMSS`
+  origin and streams WBT, DAT, and FNT payload bytes from their authenticated
+  input handles. Gaps read as erased `0xFF`; every populated range records its
+  source hash, source offset, transform, and output hash.
+- `system.COWFlash` keeps erase-block writes separate from the immutable input,
+  enforces NAND's 1-to-0 programming rule, supports factory reset, and binds
+  deterministic save states to the normalized flash identity.
 - `system.Bus` provides non-overlapping RAM, ROM, and typed MMIO regions with
   permissions, alignment and boundary faults, deterministic reset, and
   component state serialization.
@@ -43,6 +50,8 @@ When `ARAM_REFERENCE_REPO` is configured, the private gate currently proves:
 | QCSBL logical image and entry | exact profile hash / `0x00080028` |
 | decoded WBIN logical image | `0x015A0000` bytes / exact profile hash match |
 | WBIN progressive ELF | 11 program headers / logical end `0x040CCAF4` |
+| normalized flash geometry | `0x097C0000` bytes / four attributed source regions |
+| normalized WBIN / DAT / FNT starts | `0x002A0000` / `0x01C00000` / `0x04F00000` |
 | original QCSBL execution | `56,069` instructions before current probe boundary |
 | current PC / access boundary | `0x000831A0` / write `0x00000001` to `0x8000540C` |
 
@@ -69,11 +78,9 @@ The memory dump is not read by either private gate and is not a runtime input.
 
 ## Next measured boundary
 
-The next implementation target is a bounded progressive flash view that places
-the decoded WBIN at the MIBIB `0:AMSS` origin and exposes the original DAT and
-FNT payloads at their partition offsets, including erased gaps and a separate
-copy-on-write overlay. That view will be connected to the modeled Qualcomm
-flash controller and the reset/PBL-HLE handoff before QCSBL is rerun.
+The next implementation target is connecting the bounded progressive flash
+view to a modeled Qualcomm NAND controller and defining the reset/PBL-HLE
+handoff state before QCSBL is rerun from the start of the boot chain.
 
 The Qualcomm-family register block at physical `0x80000000` remains the first
 observed platform MMIO dependency. The bring-up loop must replace each probe

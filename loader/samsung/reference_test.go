@@ -1,6 +1,7 @@
 package samsung
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -109,6 +110,26 @@ func TestSCHW830DL21PrivateReference(t *testing.T) {
 		last.FileSize != 0x02b39af4 {
 		t.Fatalf("progressive ELF final segment = %+v", last)
 	}
+
+	flash, err := AssembleFlash(set, pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flash.Size() != 0x097c0000 {
+		t.Fatalf("normalized flash size = %#x", flash.Size())
+	}
+	if len(flash.Identity()) != len("samsung-flash-v1:")+64 {
+		t.Fatalf("normalized flash identity = %q", flash.Identity())
+	}
+	regions := flash.Regions()
+	assertReferenceFlashRegion(t, regions, RoleWBT, 0, 0x00280000, TransformIdentity)
+	assertReferenceFlashRegion(t, regions, RoleWBIN, 0x002a0000, 0x015a0000, TransformSEEDFeedback)
+	assertReferenceFlashRegion(t, regions, RoleDAT, 0x01c00000, 0x02b3c000, TransformIdentity)
+	assertReferenceFlashRegion(t, regions, RoleFont, 0x04f00000, 0x04038000, TransformIdentity)
+	assertReferenceFlashBytes(t, flash, 0x002a0000, []byte{0x7f, 'E', 'L', 'F'})
+	assertReferenceFlashBytes(t, flash, 0x01840000, bytes.Repeat([]byte{0xff}, 16))
+	assertReferenceFlashBytes(t, flash, 0x01c00000, []byte{'A', 'B', 'H', 'S'})
+	assertReferenceFlashBytes(t, flash, 0x04f00000, []byte{1, 0, 0, 0})
 }
 
 func isReferencePieceExtension(extension string) bool {
@@ -131,4 +152,35 @@ func assertReferencePartition(t *testing.T, layout Layout, name string, start, s
 		}
 	}
 	t.Fatalf("partition %s is missing", name)
+}
+
+func assertReferenceFlashRegion(
+	t *testing.T,
+	regions []FlashRegion,
+	role Role,
+	start, size uint64,
+	transform Transform,
+) {
+	t.Helper()
+	for _, region := range regions {
+		if region.Role == role {
+			if region.Start != start || region.Size != size || region.Transform != transform ||
+				len(region.SourceSHA256) != 64 || len(region.OutputSHA256) != 64 {
+				t.Fatalf("%s flash region = %+v", role, region)
+			}
+			return
+		}
+	}
+	t.Fatalf("flash region %s is missing", role)
+}
+
+func assertReferenceFlashBytes(t *testing.T, flash FlashImage, offset int64, want []byte) {
+	t.Helper()
+	got := make([]byte, len(want))
+	if _, err := flash.ReadAt(got, offset); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("flash bytes at %#x = %x, want %x", offset, got, want)
+	}
 }
