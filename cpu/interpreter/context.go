@@ -13,6 +13,7 @@ func (b *Backend) SaveContext() ([]byte, error) {
 	if b.closed {
 		return nil, cpu.ErrClosed
 	}
+	b.resolveFlags()
 	data := make([]byte, 4+4+len(b.regs)*4+4)
 	copy(data, "ARMC")
 	binary.LittleEndian.PutUint32(data[4:8], 1)
@@ -47,6 +48,7 @@ func (b *Backend) RestoreContext(data []byte) error {
 		return fmt.Errorf("CPU context mode: %w", cpu.ErrInvalidAddress)
 	}
 	b.regs = restored
+	b.flags.dirty = false
 	b.mode = mode
 	b.setModeFlag()
 	return nil

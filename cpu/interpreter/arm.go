@@ -196,6 +196,10 @@ func (b *Backend) stepARM() (*cpu.StopReason, error) {
 		b.regs[rdHi] = uint32(product >> 32)
 		b.regs[rdLo] = uint32(product)
 		if setFlags {
+			// Long multiply sets only N and Z (from the 64-bit product) and
+			// leaves C and V; materialize any deferred update first so those
+			// surviving bits are correct.
+			b.resolveFlags()
 			b.regs[cpu.RegisterCPSR] &^= flagN | flagZ
 			if product == 0 {
 				b.regs[cpu.RegisterCPSR] |= flagZ
@@ -617,6 +621,7 @@ func (b *Backend) readOperandRegister(id, instructionAddress uint32, mode cpu.Mo
 }
 
 func (b *Backend) conditionPassed(condition uint8) bool {
+	b.resolveFlags()
 	cpsr := b.regs[cpu.RegisterCPSR]
 	n := cpsr&flagN != 0
 	z := cpsr&flagZ != 0
@@ -666,7 +671,47 @@ func (b *Backend) setModeFlag() {
 	}
 }
 
+// pendingFlags is a deferred N/Z/C/V update: the result and the carry/overflow
+// of the last flag-defining ALU op, kept until a reader materializes the CPSR
+// bits. Feature-phone Thumb code sets flags on nearly every ALU instruction but
+// reads them only at the occasional conditional branch, so most flag updates
+// are dead; deferring skips the CPSR bit-twiddling for them. Materialization is
+// bit-identical to eager evaluation.
+type pendingFlags struct {
+	dirty    bool
+	value    uint32
+	carry    bool
+	overflow bool
+}
+
+// resolveFlags writes any deferred N/Z/C/V into CPSR. Idempotent; every path
+// that reads condition flags (conditionPassed, carry, a CPSR register read, a
+// context snapshot) calls it first.
+func (b *Backend) resolveFlags() {
+	if !b.flags.dirty {
+		return
+	}
+	b.flags.dirty = false
+	cpsr := b.regs[cpu.RegisterCPSR] &^ (flagN | flagZ | flagC | flagV)
+	if b.flags.value == 0 {
+		cpsr |= flagZ
+	}
+	if b.flags.value&(uint32(1)<<31) != 0 {
+		cpsr |= flagN
+	}
+	if b.flags.carry {
+		cpsr |= flagC
+	}
+	if b.flags.overflow {
+		cpsr |= flagV
+	}
+	b.regs[cpu.RegisterCPSR] = cpsr
+}
+
 func (b *Backend) setNZ(value uint32) {
+	// Only C and V survive from whatever set them last; materialize that first,
+	// then overwrite N and Z.
+	b.resolveFlags()
 	b.regs[cpu.RegisterCPSR] &^= flagN | flagZ
 	if value == 0 {
 		b.regs[cpu.RegisterCPSR] |= flagZ
@@ -677,25 +722,29 @@ func (b *Backend) setNZ(value uint32) {
 }
 
 func (b *Backend) setNZCV(value uint32, carry, overflow bool) {
-	b.setNZ(value)
-	b.regs[cpu.RegisterCPSR] &^= flagC | flagV
-	if carry {
-		b.regs[cpu.RegisterCPSR] |= flagC
-	}
-	if overflow {
-		b.regs[cpu.RegisterCPSR] |= flagV
-	}
+	// Defers the whole N/Z/C/V update; it overwrites every flag bit, so any
+	// prior pending update is dead and need not be materialized.
+	b.flags = pendingFlags{dirty: true, value: value, carry: carry, overflow: overflow}
 }
 
 func (b *Backend) setNZC(value uint32, carry bool) {
-	b.setNZ(value)
-	b.regs[cpu.RegisterCPSR] &^= flagC
+	// V survives from whatever set it last; materialize that, then overwrite
+	// N, Z and C.
+	b.resolveFlags()
+	b.regs[cpu.RegisterCPSR] &^= flagN | flagZ | flagC
+	if value == 0 {
+		b.regs[cpu.RegisterCPSR] |= flagZ
+	}
+	if value&(uint32(1)<<31) != 0 {
+		b.regs[cpu.RegisterCPSR] |= flagN
+	}
 	if carry {
 		b.regs[cpu.RegisterCPSR] |= flagC
 	}
 }
 
 func (b *Backend) carry() bool {
+	b.resolveFlags()
 	return b.regs[cpu.RegisterCPSR]&flagC != 0
 }
 

@@ -59,12 +59,16 @@ type Backend struct {
 	dataPermissions cpu.Permissions
 	dataData        []byte
 	regs            [17]uint32
-	mode            cpu.Mode
-	stopped         atomic.Bool
-	closed          bool
-	mapped          uint64
-	memoryLimit     uint64
-	pcHits          map[uint32]uint64 // env ARAM_PC_TRACE: per-PC execution histogram
+	// flags holds condition N/Z/C/V lazily: setNZCV records the defining
+	// operation here instead of writing CPSR, and resolveFlags materializes it
+	// only when a reader actually needs the bits. See pendingFlags.
+	flags       pendingFlags
+	mode        cpu.Mode
+	stopped     atomic.Bool
+	closed      bool
+	mapped      uint64
+	memoryLimit uint64
+	pcHits      map[uint32]uint64 // env ARAM_PC_TRACE: per-PC execution histogram
 }
 
 func New() *Backend {
@@ -173,6 +177,9 @@ func (b *Backend) ReadRegister(id uint32) (uint32, error) {
 	if id >= uint32(len(b.regs)) {
 		return 0, fmt.Errorf("register %d: %w", id, cpu.ErrInvalidAddress)
 	}
+	if id == cpu.RegisterCPSR {
+		b.resolveFlags()
+	}
 	return b.regs[id], nil
 }
 
@@ -187,6 +194,9 @@ func (b *Backend) WriteRegister(id, value uint32) error {
 	}
 	b.regs[id] = value
 	if id == cpu.RegisterCPSR {
+		// The written value is authoritative; drop any deferred flags so a
+		// stale pending update cannot later clobber it.
+		b.flags.dirty = false
 		if value&cpu.StatusThumb != 0 {
 			b.mode = cpu.ModeThumb
 		} else {

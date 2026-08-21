@@ -144,7 +144,7 @@ func (b *Backend) runThumb(limit uint64) (uint64, *cpu.StopReason, error) {
 			case 0: // LSL
 				if shift == 0 {
 					result = value
-					carry = b.regs[cpu.RegisterCPSR]&flagC != 0
+					carry = b.carry()
 				} else {
 					result = value << shift
 					carry = value&(uint32(1)<<(32-shift)) != 0

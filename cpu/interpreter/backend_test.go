@@ -855,6 +855,51 @@ func TestIdentityAndMemoryLimit(t *testing.T) {
 	}
 }
 
+// TestLazyFlagsPreserveCarryOverflowAcrossPartialSetter guards the deferred
+// condition-flag path: an ADDS records N/Z/C/V lazily, and a following MOVS
+// (which sets only N/Z) must materialize that pending update before overwriting
+// N/Z, so C and V survive while N and Z take the MOVS result. If the partial
+// setter failed to resolve first, the later CPSR read would replay the ADDS and
+// wrongly report Z from the add instead of from the MOVS.
+func TestLazyFlagsPreserveCarryOverflowAcrossPartialSetter(t *testing.T) {
+	backend := New()
+	defer backend.Close()
+	mapCodeAndStack(t, backend)
+	code := []byte{
+		0x88, 0x18, // adds r0, r1, r2   ; 0x80000000+0x80000000 -> 0, C=1, V=1, Z=1
+		0x05, 0x23, // movs r3, #5       ; N=0, Z=0, keeps C=1, V=1
+		0x00, 0xbe, // bkpt #0
+	}
+	if err := backend.WriteMemory(0x1000, code); err != nil {
+		t.Fatal(err)
+	}
+	for reg, value := range map[uint32]uint32{
+		cpu.RegisterR1: 0x80000000,
+		cpu.RegisterR2: 0x80000000,
+	} {
+		if err := backend.WriteRegister(reg, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result := backend.Run(context.Background(), 0x1000, cpu.ModeThumb, 8)
+	if result.Err != nil || result.Reason != cpu.StopBreakpoint || result.Instructions != 3 {
+		t.Fatalf("Run result = %+v", result)
+	}
+	if got := register(t, backend, cpu.RegisterR0); got != 0 {
+		t.Fatalf("r0 = 0x%x, want 0", got)
+	}
+	if got := register(t, backend, cpu.RegisterR3); got != 5 {
+		t.Fatalf("r3 = %d, want 5", got)
+	}
+	cpsr := register(t, backend, cpu.RegisterCPSR)
+	if cpsr&flagC == 0 || cpsr&flagV == 0 {
+		t.Fatalf("C/V lost across partial setter: CPSR = 0x%08x", cpsr)
+	}
+	if cpsr&flagZ != 0 || cpsr&flagN != 0 {
+		t.Fatalf("N/Z not taken from MOVS: CPSR = 0x%08x", cpsr)
+	}
+}
+
 func mapCodeAndStack(t *testing.T, backend *Backend) {
 	t.Helper()
 	if err := backend.Map(0x1000, 0x1000,
