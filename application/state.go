@@ -280,7 +280,12 @@ func (m *Machine) parseState(data []byte) (parsedState, error) {
 	}
 
 	currentIdentity := m.cpu.Identity()
-	if identity != currentIdentity || identity.Architecture != m.cpu.Architecture() {
+	// A save is portable across CPU backends of the same architecture: the
+	// backend name and version are recorded for provenance but do not gate
+	// restore, so a state saved under the precise interpreter can load under a
+	// fast backend and vice versa. Context-byte compatibility is still enforced
+	// by the backend's RestoreContext, which rejects a format it cannot decode.
+	if identity.Architecture != m.cpu.Architecture() {
 		return parsedState{}, decoder.Fail(fmt.Sprintf(
 			"CPU backend %s/%s/%s is incompatible with %s/%s/%s",
 			identity.Name,
