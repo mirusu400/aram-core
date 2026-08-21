@@ -180,6 +180,7 @@ type Machine struct {
 	ktfRunBudget     uint64
 	memoryLimit      uint64
 	frame            *image.RGBA
+	presentation     framePresentationCache
 	input            []machinecore.InputEvent
 	closed           bool
 }
