@@ -24,3 +24,8 @@ Thumbs.db
 *.mbn
 *.i64
 *.idb
+
+# Session handoff notes: working documents for the next session, kept local.
+# They are scratch by nature - measurements from one machine, live counters,
+# next-step lists - and go stale the moment the work moves on.
+*_HANDOFF.md
