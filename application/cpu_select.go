@@ -16,6 +16,21 @@ import (
 // fallback whenever a selected backend is absent from this build.
 const PreciseBackend = "precise"
 
+// FastestBackend selects the fastest CPU core this build actually provides,
+// rather than naming one. It resolves to the native machine-code recompiler
+// where an emitter is compiled in and registered, then the pure-Go JIT, then
+// the precise interpreter - so a single stored setting is portable across
+// desktop, mobile, and targets where a JIT is forbidden, instead of failing or
+// silently dropping to the slowest core. Every candidate is validated
+// bit-for-bit against the interpreter oracle by cpu/conformance.
+const FastestBackend = "fastest"
+
+// fastestBackendOrder is the preference order FastestBackend walks. It is a
+// list, not a comparison, because "fastest" is a property of the host and the
+// measurements behind it (cpu/interpreter's Benchmark* suites), not something
+// the code can determine at run time.
+var fastestBackendOrder = []string{"native", "jit"}
+
 var (
 	cpuMu sync.RWMutex
 	// cpuBackends holds the distinct, selectable backends shown to the UI. It
@@ -60,6 +75,8 @@ func ResolveCPUBackend(name string) (CPUFactory, error) {
 	switch name {
 	case "", PreciseBackend, "portable":
 		return newPreciseCPU, nil
+	case FastestBackend:
+		return fastestCPUFactory(), nil
 	}
 	cpuMu.RLock()
 	factory, ok := cpuBackends[name]
@@ -68,6 +85,33 @@ func ResolveCPUBackend(name string) (CPUFactory, error) {
 		return nil, fmt.Errorf("%w: CPU backend %q", machinecore.ErrBackendUnavailable, name)
 	}
 	return factory, nil
+}
+
+// fastestCPUFactory returns the factory for the fastest registered backend,
+// falling back to the precise interpreter when this build registers none.
+func fastestCPUFactory() CPUFactory {
+	cpuMu.RLock()
+	defer cpuMu.RUnlock()
+	for _, name := range fastestBackendOrder {
+		if factory, ok := cpuBackends[name]; ok {
+			return factory
+		}
+	}
+	return newPreciseCPU
+}
+
+// ResolvedFastestBackend reports which concrete backend FastestBackend selects
+// in this build, for diagnostics and for a settings UI that wants to show what
+// "fastest" actually means here.
+func ResolvedFastestBackend() string {
+	cpuMu.RLock()
+	defer cpuMu.RUnlock()
+	for _, name := range fastestBackendOrder {
+		if _, ok := cpuBackends[name]; ok {
+			return name
+		}
+	}
+	return PreciseBackend
 }
 
 // CPUBackendNames returns the distinct selectable backend names in sorted order,

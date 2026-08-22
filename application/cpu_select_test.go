@@ -65,3 +65,60 @@ func TestFactoryFallsBackWhenBackendAbsent(t *testing.T) {
 		t.Fatalf("fallback backend = %q, want interpreter", got)
 	}
 }
+
+// TestFastestBackendResolvesAndNeverFails pins the contract that makes
+// FastestBackend safe as a stored default: it resolves on every build, it never
+// returns ErrBackendUnavailable, and what it picks is a backend this build
+// actually registers. On a target with no fast core compiled in it must degrade
+// to the precise interpreter rather than failing to open a title.
+func TestFastestBackendResolvesAndNeverFails(t *testing.T) {
+	factory, err := ResolveCPUBackend(FastestBackend)
+	if err != nil {
+		t.Fatalf("resolve %q: %v", FastestBackend, err)
+	}
+	backend := factory()
+	if backend == nil {
+		t.Fatalf("resolve %q: nil backend", FastestBackend)
+	}
+	defer backend.Close()
+
+	resolved := ResolvedFastestBackend()
+	if resolved != PreciseBackend {
+		if _, err := ResolveCPUBackend(resolved); err != nil {
+			t.Fatalf("ResolvedFastestBackend reported %q, which does not resolve: %v", resolved, err)
+		}
+	}
+	// The reported name and the returned backend must describe the same core.
+	want, err := ResolveCPUBackend(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reference := want()
+	defer reference.Close()
+	if got, expect := backend.Identity().Name, reference.Identity().Name; got != expect {
+		t.Fatalf("fastest backend identity = %q, but ResolvedFastestBackend named %q (%q)",
+			got, resolved, expect)
+	}
+}
+
+// TestFastestBackendPrefersTheFasterCore checks the preference order actually
+// prefers a registered fast core over the interpreter. Which core that is
+// depends on the build, so this asserts the property rather than a name.
+func TestFastestBackendPrefersTheFasterCore(t *testing.T) {
+	available := map[string]bool{}
+	for _, name := range CPUBackendNames() {
+		available[name] = true
+	}
+	resolved := ResolvedFastestBackend()
+	for _, preferred := range fastestBackendOrder {
+		if available[preferred] {
+			if resolved != preferred {
+				t.Fatalf("fastest resolved to %q while %q is registered", resolved, preferred)
+			}
+			return
+		}
+	}
+	if resolved != PreciseBackend {
+		t.Fatalf("no fast core registered but fastest resolved to %q", resolved)
+	}
+}
