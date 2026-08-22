@@ -32,11 +32,13 @@ import (
 )
 
 const (
-	// nativeTLBEntries is the number of pages cached per half-table. 256 entries
-	// cover a megabyte of hot working set, far more than the interpreter's
-	// single-entry-per-permission dataCache, so a blitter striding across a
-	// framebuffer keeps hitting.
-	nativeTLBEntries = 256
+	// nativeTLBEntries is the number of pages cached per half-table. The table
+	// is direct-mapped, so this is a conflict budget rather than a capacity
+	// one: with 256 entries the hottest loop in a real title evicted itself,
+	// because its literal-pool load and its data load fell in the same set and
+	// knocked each other out about 47000 times per 120 frames each. Sizing it
+	// to cover 16 MiB of distinct pages makes that collision rare.
+	nativeTLBEntries = 4096
 	nativeTLBMask    = nativeTLBEntries - 1
 	// tlbEntryBytes is the fixed stride the emitted code indexes with. It is a
 	// power of two so the index is a shift, and it is spelled out here because
