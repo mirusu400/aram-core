@@ -49,7 +49,10 @@ func (b *Backend) read16(address uint32, permission cpu.Permissions) (uint16, er
 	if permission == cpu.PermissionExecute {
 		return b.fetch16(address)
 	}
-	if data, offset, _, ok := b.dataHit(address, 2, permission); ok {
+	if data, offset, perms, ok := b.dataHit(address, 2, permission); ok {
+		if b.tlb != nil {
+			b.tlbNote(address, address-uint32(offset), data, perms)
+		}
 		return binary.LittleEndian.Uint16(data[offset : offset+2]), nil
 	}
 	mapped, offset, err := b.findRegion(address, permission)
@@ -58,6 +61,9 @@ func (b *Backend) read16(address uint32, permission cpu.Permissions) (uint16, er
 	}
 	if len(mapped.data)-offset >= 2 {
 		b.cacheData(mapped, permission)
+		if b.tlb != nil {
+			b.tlbNote(address, mapped.address, mapped.data, mapped.permissions)
+		}
 		return binary.LittleEndian.Uint16(mapped.data[offset : offset+2]), nil
 	}
 	var data [2]byte
@@ -71,7 +77,10 @@ func (b *Backend) read32(address uint32, permission cpu.Permissions) (uint32, er
 	if permission == cpu.PermissionExecute {
 		return b.fetch32(address)
 	}
-	if data, offset, _, ok := b.dataHit(address, 4, permission); ok {
+	if data, offset, perms, ok := b.dataHit(address, 4, permission); ok {
+		if b.tlb != nil {
+			b.tlbNote(address, address-uint32(offset), data, perms)
+		}
 		return binary.LittleEndian.Uint32(data[offset : offset+4]), nil
 	}
 	mapped, offset, err := b.findRegion(address, permission)
@@ -80,6 +89,9 @@ func (b *Backend) read32(address uint32, permission cpu.Permissions) (uint32, er
 	}
 	if len(mapped.data)-offset >= 4 {
 		b.cacheData(mapped, permission)
+		if b.tlb != nil {
+			b.tlbNote(address, mapped.address, mapped.data, mapped.permissions)
+		}
 		return binary.LittleEndian.Uint32(mapped.data[offset : offset+4]), nil
 	}
 	var data [4]byte
@@ -151,6 +163,9 @@ func (b *Backend) write16(address uint32, value uint16, permission cpu.Permissio
 		if b.jitBlocks != nil || b.nativeBlocks != nil {
 			b.smcInvalidate(address, 2, perms)
 		}
+		if b.tlb != nil {
+			b.tlbNote(address, address-uint32(offset), data, perms)
+		}
 		return nil
 	}
 	mapped, offset, err := b.findRegion(address, permission)
@@ -162,6 +177,9 @@ func (b *Backend) write16(address uint32, value uint16, permission cpu.Permissio
 		binary.LittleEndian.PutUint16(mapped.data[offset:offset+2], value)
 		if b.jitBlocks != nil || b.nativeBlocks != nil {
 			b.smcInvalidate(address, 2, mapped.permissions)
+		}
+		if b.tlb != nil {
+			b.tlbNote(address, mapped.address, mapped.data, mapped.permissions)
 		}
 		return nil
 	}
@@ -176,6 +194,9 @@ func (b *Backend) write32(address, value uint32, permission cpu.Permissions) err
 		if b.jitBlocks != nil || b.nativeBlocks != nil {
 			b.smcInvalidate(address, 4, perms)
 		}
+		if b.tlb != nil {
+			b.tlbNote(address, address-uint32(offset), data, perms)
+		}
 		return nil
 	}
 	mapped, offset, err := b.findRegion(address, permission)
@@ -188,6 +209,9 @@ func (b *Backend) write32(address, value uint32, permission cpu.Permissions) err
 		if b.jitBlocks != nil || b.nativeBlocks != nil {
 			b.smcInvalidate(address, 4, mapped.permissions)
 		}
+		if b.tlb != nil {
+			b.tlbNote(address, mapped.address, mapped.data, mapped.permissions)
+		}
 		return nil
 	}
 	var data [4]byte
@@ -196,7 +220,10 @@ func (b *Backend) write32(address, value uint32, permission cpu.Permissions) err
 }
 
 func (b *Backend) read8(address uint32, permission cpu.Permissions) (byte, error) {
-	if data, offset, _, ok := b.dataHit(address, 1, permission); ok {
+	if data, offset, perms, ok := b.dataHit(address, 1, permission); ok {
+		if b.tlb != nil {
+			b.tlbNote(address, address-uint32(offset), data, perms)
+		}
 		return data[offset], nil
 	}
 	mapped, offset, err := b.findRegion(address, permission)
@@ -204,6 +231,9 @@ func (b *Backend) read8(address uint32, permission cpu.Permissions) (byte, error
 		return 0, err
 	}
 	b.cacheData(mapped, permission)
+	if b.tlb != nil {
+		b.tlbNote(address, mapped.address, mapped.data, mapped.permissions)
+	}
 	return mapped.data[offset], nil
 }
 
@@ -213,6 +243,9 @@ func (b *Backend) write8(address uint32, value byte, permission cpu.Permissions)
 		if b.jitBlocks != nil || b.nativeBlocks != nil {
 			b.smcInvalidate(address, 1, perms)
 		}
+		if b.tlb != nil {
+			b.tlbNote(address, address-uint32(offset), data, perms)
+		}
 		return nil
 	}
 	mapped, offset, err := b.findRegion(address, permission)
@@ -221,8 +254,11 @@ func (b *Backend) write8(address uint32, value byte, permission cpu.Permissions)
 	}
 	b.cacheData(mapped, permission)
 	mapped.data[offset] = value
-	if b.jitBlocks != nil {
+	if b.jitBlocks != nil || b.nativeBlocks != nil {
 		b.smcInvalidate(address, 1, mapped.permissions)
+	}
+	if b.tlb != nil {
+		b.tlbNote(address, mapped.address, mapped.data, mapped.permissions)
 	}
 	return nil
 }

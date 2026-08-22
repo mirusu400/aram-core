@@ -27,17 +27,24 @@ import "github.com/mirusu400/aram-core/cpu"
 type termKind uint8
 
 const (
-	termNone   termKind = iota // fell off the end (untranslatable next / max) -> exit at cur
-	termUncond                 // unconditional branch to a constant target
-	termCond                   // conditional branch (constant taken target + fall-through)
-	termBkpt                   // BKPT
+	termNone       termKind = iota // fell off the end (untranslatable next / max) -> exit at cur
+	termUncond                     // unconditional branch to a constant target
+	termCond                       // conditional branch (constant taken target + fall-through)
+	termBkpt                       // BKPT
+	termBranchLink                 // BL: constant link register + constant target
 )
 
 type terminator struct {
 	kind   termKind
 	cond   uint8  // termCond
-	target uint32 // termUncond target / termCond taken target
+	target uint32 // termUncond target / termCond taken target / termBranchLink target
 	next   uint32 // termCond fall-through PC / termBkpt next PC / termNone cur
+	link   uint32 // termBranchLink: the value BL leaves in LR
+	// width is how many bytes the terminator instruction occupies. Everything
+	// is a 2-byte Thumb instruction except BL, which the interpreter treats as
+	// one instruction spanning two halfwords - it retires 1 but covers 4 bytes,
+	// which the translated-code span has to account for.
+	width uint32
 }
 
 // runThumbNative executes Thumb from b.regs[PC] using translated native blocks,
@@ -61,7 +68,16 @@ func (b *Backend) runThumbNative(limit uint64) (uint64, *cpu.StopReason, error) 
 		b.resolveFlags()
 		status := callNativeBlock(block.entry, &b.regs[0], &b.nativeRemain)
 		b.flags.dirty = false
-		switch status {
+		switch status & 0xff {
+		case nativeStatusBail:
+			// A memory op missed the software TLB. The gate already subtracted
+			// the whole block, so give back everything from the bail point on
+			// and let the interpreter run that one instruction; it installs the
+			// page, so the next execution of this block stays native.
+			b.nativeRemain += uint32(block.count) - uint32(status>>8)
+			if reason, err, done := b.interpretOneNative(); done {
+				return limit - uint64(b.nativeRemain), reason, err
+			}
 		case nativeStatusBKPT:
 			reason := cpu.StopBreakpoint
 			return limit - uint64(b.nativeRemain), &reason, nil
@@ -103,11 +119,16 @@ func (b *Backend) interpretOneNative() (*cpu.StopReason, error, bool) {
 // miss. A nil entry is cached for a PC whose first instruction is untranslatable
 // so it is not re-translated each time.
 func (b *Backend) nativeBlockAt(pc uint32) *nativeBlock {
-	if block, ok := b.nativeBlocks[pc]; ok {
-		return block
+	slot := &b.nativeCache[int(pc>>1)&(nativeCacheSize-1)]
+	if slot.pc == pc && slot.gen == b.nativeGen {
+		return slot.block
 	}
-	block := b.translateNativeBlock(pc)
-	b.nativeBlocks[pc] = block
+	block, ok := b.nativeBlocks[pc]
+	if !ok {
+		block = b.translateNativeBlock(pc)
+		b.nativeBlocks[pc] = block
+	}
+	slot.pc, slot.gen, slot.block = pc, b.nativeGen, block
 	return block
 }
 
@@ -117,6 +138,7 @@ func (b *Backend) translateNativeBlock(pc uint32) *nativeBlock {
 	body := b.newEmitter()
 	cur := pc
 	count := 0
+	end := pc
 	var term terminator
 	term.kind = termNone
 	term.next = pc // overwritten below; the fall-through target if we run out
@@ -125,10 +147,11 @@ func (b *Backend) translateNativeBlock(pc uint32) *nativeBlock {
 		if err != nil {
 			break
 		}
-		kind, t := b.translateOne(body, word, cur)
+		kind, t := b.translateOne(body, word, cur, count)
 		if kind == translateTerminator {
 			count++ // the terminator retires one instruction
 			term = t
+			end = cur + max(t.width, 2)
 			break
 		}
 		if kind == translateBail {
@@ -136,6 +159,7 @@ func (b *Backend) translateNativeBlock(pc uint32) *nativeBlock {
 		}
 		count++
 		cur += 2
+		end = cur
 	}
 	if count == 0 {
 		return nil
@@ -159,6 +183,24 @@ func (b *Backend) translateNativeBlock(pc uint32) *nativeBlock {
 			return nil
 		}
 	}
+	// Grow the translated-code span so smcInvalidate can tell a real
+	// self-modifying write from the guest blitter writing pixels into the same
+	// read-write-execute image. The block covers [pc, end).
+	grew := false
+	b.markCodePages(pc, end-pc)
+	if pc < b.nativeCodeLo {
+		b.nativeCodeLo, grew = pc, true
+	}
+	if end > b.nativeCodeHi {
+		b.nativeCodeHi, grew = end, true
+	}
+	if grew {
+		// Pages that have just become translated code must leave the software
+		// TLB's write half, or a native store could modify code without ever
+		// reaching smcInvalidate. Translation only runs between block
+		// executions, so no block is holding a stale entry.
+		b.tlbClearWrite()
+	}
 	return &nativeBlock{start: pc, count: count, entry: entry}
 }
 
@@ -178,6 +220,8 @@ func emitTerminator(e emitter, t terminator, startPC uint32, gateOff int) {
 		}
 	case termBkpt:
 		e.exitBkpt(t.next)
+	case termBranchLink:
+		e.exitBranchLink(t.link, t.target)
 	default: // termNone: fell off the end
 		e.exitBranch(t.next)
 	}
@@ -193,7 +237,7 @@ const (
 // translateBody, or returns translateTerminator/translateBail (emitting nothing)
 // for a control-flow or unhandled instruction. It mirrors the interpreter and
 // the pure-Go JIT class handling exactly.
-func (b *Backend) translateOne(e emitter, instruction uint16, pc uint32) (int, terminator) {
+func (b *Backend) translateOne(e emitter, instruction uint16, pc uint32, retired int) (int, terminator) {
 	switch thumbInstructionClasses[instruction] {
 	case thumbMoveImmediate:
 		e.moveImm(uint32(instruction>>8)&7, uint32(instruction&0xff))
@@ -248,8 +292,110 @@ func (b *Backend) translateOne(e emitter, instruction uint16, pc uint32) (int, t
 		return translateTerminator, terminator{kind: termUncond, target: target}
 	case thumbBreakpoint:
 		return translateTerminator, terminator{kind: termBkpt, next: pc + 2}
+	case thumbLongBranch:
+		// BL is one interpreter instruction spanning two halfwords: it leaves
+		// (pc+4)|1 in LR and jumps to a target fixed at assembly time, so it
+		// translates to a terminator built entirely from constants. The BLX
+		// immediate form switches to ARM and is left to the interpreter, as is
+		// a malformed pair (which must fault exactly where the interpreter
+		// faults).
+		suffix, err := b.fetch16(pc + 2)
+		if err != nil || suffix&0xf801 == 0xe800 || suffix&0xf800 != 0xf800 {
+			return translateBail, terminator{}
+		}
+		high := int32(instruction & 0x7ff)
+		if high&(1<<10) != 0 {
+			high |= ^int32(0x7ff)
+		}
+		return translateTerminator, terminator{
+			kind:   termBranchLink,
+			target: uint32(int32(pc+4)+(high<<12)) + uint32(suffix&0x7ff)*2,
+			link:   (pc + 4) | 1,
+			width:  4,
+		}
+	case thumbHighRegister:
+		op := uint32(instruction>>8) & 3
+		rs := uint32(instruction>>3)&7 | uint32(instruction>>6)&1<<3
+		rd := uint32(instruction)&7 | uint32(instruction>>7)&1<<3
+		if e.highRegister(op, rd, rs, pc+4) {
+			return translateBody, terminator{}
+		}
+		return translateBail, terminator{}
+	case thumbLiteralLoad, thumbRegisterTransfer, thumbImmediateTransfer,
+		thumbHalfwordTransfer, thumbStackTransfer:
+		access, ok := decodeMemAccess(instruction, pc)
+		if !ok || b.tlb == nil {
+			return translateBail, terminator{}
+		}
+		e.memory(access, pc, retired)
+		return translateBody, terminator{}
 	default:
-		// Memory transfers, high-register ops, BL, semihosting SWI, etc.
+		// High-register ops, BL, block transfers, semihosting SWI, etc.
 		return translateBail, terminator{}
 	}
+}
+
+// decodeMemAccess turns one Thumb single-transfer encoding into the emitters'
+// memAccess form, mirroring the interpreter's operand extraction exactly (see
+// runThumb). Multi-register transfers (PUSH/POP/LDMIA/STMIA) are not single
+// accesses and stay on the interpreter.
+func decodeMemAccess(instruction uint16, pc uint32) (memAccess, bool) {
+	rd := uint32(instruction) & 7
+	rb := uint32(instruction>>3) & 7
+	switch thumbInstructionClasses[instruction] {
+	case thumbLiteralLoad: // LDR Rd, [PC, #imm]
+		return memAccess{
+			size:     4,
+			rd:       uint32(instruction>>8) & 7,
+			offset:   ((pc + 4) &^ uint32(3)) + uint32(instruction&0xff)*4,
+			absolute: true,
+		}, true
+	case thumbRegisterTransfer: // LDR/STR/LDRB/STRB/LDRH/STRH/LDRSB/LDRSH Rd,[Rb,Ro]
+		a := memAccess{rd: rd, base: rb, index: uint32(instruction>>6) & 7, hasIndex: true}
+		switch uint32(instruction>>9) & 7 {
+		case 0: // STR
+			a.store, a.size = true, 4
+		case 1: // STRH
+			a.store, a.size = true, 2
+		case 2: // STRB
+			a.store, a.size = true, 1
+		case 3: // LDRSB
+			a.size, a.signed = 1, true
+		case 4: // LDR
+			a.size = 4
+		case 5: // LDRH
+			a.size = 2
+		case 6: // LDRB
+			a.size = 1
+		default: // 7: LDRSH
+			a.size, a.signed = 2, true
+		}
+		return a, true
+	case thumbImmediateTransfer: // LDR/STR/LDRB/STRB Rd,[Rb,#imm]
+		a := memAccess{rd: rd, base: rb, offset: uint32(instruction>>6) & 0x1f}
+		if instruction&(1<<12) != 0 {
+			a.size = 1
+		} else {
+			a.size, a.offset = 4, a.offset*4
+		}
+		a.store = instruction&(1<<11) == 0
+		return a, true
+	case thumbHalfwordTransfer: // LDRH/STRH Rd,[Rb,#imm]
+		return memAccess{
+			store:  instruction&(1<<11) == 0,
+			size:   2,
+			rd:     rd,
+			base:   rb,
+			offset: (uint32(instruction>>6) & 0x1f) * 2,
+		}, true
+	case thumbStackTransfer: // LDR/STR Rd,[SP,#imm]
+		return memAccess{
+			store:  instruction&(1<<11) == 0,
+			size:   4,
+			rd:     uint32(instruction>>8) & 7,
+			base:   cpu.RegisterSP,
+			offset: uint32(instruction&0xff) * 4,
+		}, true
+	}
+	return memAccess{}, false
 }

@@ -270,3 +270,113 @@ func cloneRegs(m map[uint32]uint32) map[uint32]uint32 {
 	}
 	return out
 }
+
+// hiReg encodes the high-register ADD/CMP/MOV/BX family: op 0 ADD, 1 CMP,
+// 2 MOV, 3 BX/BLX. rd and rs are full 0..15 register numbers.
+func hiReg(op, rd, rs uint16) uint16 {
+	return 0x4400 | op<<8 | (rs&8)>>3<<6 | (rd&8)>>3<<7 | (rs&7)<<3 | rd&7
+}
+
+// TestNativeHighRegisterOps sweeps every high-register ADD/CMP/MOV over every
+// destination and source register, including R15. These end nearly half of all
+// translated blocks in a real title, so the native emitters translate the
+// non-branching forms; the branching ones (BX/BLX, and ADD/MOV writing PC) must
+// still fall back, and this checks both sides agree either way.
+//
+// The flag behaviour is the trap worth pinning: ADD and MOV here set NO flags
+// (unlike their low-register counterparts), while CMP sets all four. The CPSR
+// is seeded both ways so a wrongly-emitted flag update shows up.
+func TestNativeHighRegisterOps(t *testing.T) {
+	values := []uint32{0, 1, 0x7fffffff, 0x80000000, 0xffffffff, 0x1004}
+	for op := uint16(0); op <= 3; op++ {
+		for rd := uint16(0); rd < 16; rd++ {
+			for rs := uint16(0); rs < 16; rs++ {
+				for _, v := range values {
+					for _, c := range []uint32{0, flagCbit} {
+						regs := map[uint32]uint32{
+							cpu.RegisterCPSR: cpu.StatusThumb | c,
+							cpu.RegisterLR:   CodeBase | 1,
+						}
+						for r := uint32(0); r < 13; r++ {
+							regs[r] = v ^ uint32(r)*0x01010101
+						}
+						name := fmt.Sprintf("hi%d/r%d,r%d/%08x/C%d", op, rd, rs, v, c>>29)
+						mustAgree(t, name, Program{
+							Name: name, Mode: cpu.ModeThumb, Regs: regs,
+							// The follow-up must NOT touch flags, or a wrongly
+							// emitted flag update from ADD/MOV would be
+							// overwritten before the snapshot sees it. ADD SP,#0
+							// keeps the op mid-block and leaves CPSR alone.
+							Code: code(hiReg(op, rd, rs), adjSP(false, 0), bkpt),
+						})
+					}
+				}
+			}
+		}
+	}
+}
+
+// blPair encodes the two halfwords of a Thumb BL to a signed byte offset from
+// the instruction, and blxPair the BLX-immediate form (which switches to ARM).
+func blPair(offset int32) []uint16 {
+	imm := offset - 4
+	return []uint16{
+		0xf000 | uint16((imm>>12)&0x7ff),
+		0xf800 | uint16((imm>>1)&0x7ff),
+	}
+}
+
+func blxPair(offset int32) []uint16 {
+	imm := offset - 4
+	return []uint16{
+		0xf000 | uint16((imm>>12)&0x7ff),
+		0xe800 | uint16((imm>>1)&0x7fe),
+	}
+}
+
+// TestNativeBranchLink covers BL, the terminator that ends the most blocks in a
+// real title after the high-register ops. The interpreter treats the pair as ONE
+// instruction spanning four bytes, so this checks the link value, the target,
+// and - through Diff's retired count - that the native block accounts it as a
+// single retired instruction rather than two.
+//
+// The BLX-immediate form and a malformed second halfword must still fall back to
+// the interpreter (BLX switches to ARM; a malformed pair must fault exactly
+// where the interpreter faults), and both are compared here too.
+func TestNativeBranchLink(t *testing.T) {
+	for _, offset := range []int32{4, 6, 8, 12, 64, 0x400, -2, -4, -8, -64} {
+		body := append([]uint16{movImm(0, 1)}, blPair(offset)...)
+		// Pad so the target lands on real code inside the mapped region.
+		for len(body) < 40 {
+			body = append(body, movImm(1, uint16(len(body))))
+		}
+		body = append(body, bkpt)
+		name := fmt.Sprintf("bl/%+d", offset)
+		mustAgree(t, name, Program{
+			Name: name, Mode: cpu.ModeThumb, Budget: 4096,
+			StartPC: CodeBase + 20, Code: code(padFront(body, 10)...),
+		})
+	}
+	for _, tc := range []struct {
+		name  string
+		words []uint16
+	}{
+		{"blx-immediate", blxPair(8)},
+		{"malformed-suffix", []uint16{0xf000, 0x4770}},
+	} {
+		body := append(append([]uint16{movImm(0, 1)}, tc.words...), movImm(2, 9), bkpt)
+		mustAgree(t, tc.name, Program{
+			Name: tc.name, Mode: cpu.ModeThumb, Budget: 4096, Code: code(body...),
+		})
+	}
+}
+
+// padFront prefixes n no-flag filler instructions so a negative BL offset still
+// lands inside the mapped code region.
+func padFront(body []uint16, n int) []uint16 {
+	out := make([]uint16, 0, len(body)+n)
+	for range n {
+		out = append(out, adjSP(false, 0))
+	}
+	return append(out, body...)
+}
