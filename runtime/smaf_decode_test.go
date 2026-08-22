@@ -3,6 +3,7 @@ package runtime
 import (
 	"encoding/binary"
 	"testing"
+	"time"
 )
 
 func TestDecodeSMAFMobileScoreProducesStereoPCM(t *testing.T) {
@@ -50,7 +51,7 @@ func TestDecodeSMAFMobileScoreProducesStereoPCM(t *testing.T) {
 	}
 }
 
-func TestMediaDecodesSMAFEagerlyOnPlay(t *testing.T) {
+func TestMediaSMAFPlaysAtItsNaturalLength(t *testing.T) {
 	registry := NewRegistry(32)
 	const owner OwnerID = 3
 	media, err := NewMedia(registry, DefaultMediaLimits())
@@ -61,7 +62,18 @@ func TestMediaDecodesSMAFEagerlyOnPlay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sequence := []byte{0, 0x90, 60, 100, 25, 25, 0xff, 0x2f}
+	// Four notes half a second apart, so the score's padded end lands past
+	// smafEagerRenderSeconds and decode takes the probe path rather than
+	// rendering it whole.
+	sequence := []byte{
+		0x00, 0xb0, 0x07, 0x7f,
+		0x00, 0xc0, 0x00,
+		0x00, 0x90, 60, 100, 25,
+		0x7d, 0x90, 62, 100, 25,
+		0x7d, 0x90, 64, 100, 25,
+		0x7d, 0x90, 65, 100, 25,
+		0x7d, 0xff, 0x2f,
+	}
 	trackBody := []byte{2, 0, 2, 2}
 	trackBody = append(trackBody, make([]byte, 16)...)
 	trackBody = appendSMAFChunk(trackBody, []byte("Mtsq"), sequence)
@@ -91,11 +103,27 @@ func TestMediaDecodesSMAFEagerlyOnPlay(t *testing.T) {
 		t.Fatalf("decoded = %t, duration = %s", after.Decoded, after.Duration)
 	}
 	internal := media.clips[clip]
-	if len(internal.decoded.samples) == 0 || internal.decoded.smaf != nil {
+	// The clip reports the length its voices actually sound for, not the
+	// stream's padded end, and it reports it without having rendered the score:
+	// decode probes the length and leaves the samples to be synthesized as the
+	// mixer reaches them, so starting music cannot freeze a frame.
+	if internal.decoded.smaf == nil {
+		t.Fatal("SMAF clip rendered eagerly; want an incremental stream")
+	}
+	if len(internal.decoded.samples) != 0 {
 		t.Fatalf(
-			"eager SMAF has %d samples and stream=%v; want fully rendered PCM, no stream",
+			"decode produced %d samples; want none before playback",
 			len(internal.decoded.samples),
-			internal.decoded.smaf != nil,
+		)
+	}
+	padded := time.Duration(
+		internal.decoded.smaf.end * uint64(time.Second) / 44_100,
+	)
+	if after.Duration >= padded {
+		t.Fatalf(
+			"duration = %s, want less than the padded stream end %s",
+			after.Duration,
+			padded,
 		)
 	}
 	bus := NewEventBus(16, 32)
@@ -105,6 +133,9 @@ func TestMediaDecodesSMAFEagerlyOnPlay(t *testing.T) {
 	audio := media.Drain()
 	if len(audio.PCM16) != 44_100*2*20/1000 {
 		t.Fatalf("drained samples = %d", len(audio.PCM16))
+	}
+	if len(internal.decoded.samples) == 0 {
+		t.Fatal("advancing produced no samples; the stream never rendered")
 	}
 	var peak int16
 	for _, sample := range audio.PCM16 {
