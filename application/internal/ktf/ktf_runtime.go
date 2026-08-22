@@ -93,6 +93,8 @@ type Runtime struct {
 	hostCalls        map[uint32]ktfHostCall
 	HostTrace        []string
 	HostTraceDropped int
+	// traceScratch is the reusable buffer traceJavaMethodCall formats into.
+	traceScratch     []byte
 	HostCallCount    uint64
 	hostTraceSamples map[string]uint64
 
@@ -294,6 +296,13 @@ type ktfJavaClassInspection struct {
 	class           JavaClass
 	classWords      [5]uint32
 	descriptorWords [9]uint32
+	// registerTrace is the host-trace line for registering this class, built
+	// on first use. A guest can register the same class thousands of times a
+	// second, and the line names every method, so formatting it per call was
+	// the single most expensive thing a Java-heavy title did. The cache is
+	// keyed with the inspection itself, so a class whose words change is
+	// re-inspected and its line rebuilt.
+	registerTrace string
 }
 
 type ktfJavaMethodInspection struct {
