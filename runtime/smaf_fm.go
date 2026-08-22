@@ -806,7 +806,17 @@ func (voice *smafVoice) modOperator(
 	return output
 }
 
-func (voice *smafVoice) tick() float64 {
+// tick advances the voice one sample and returns its output.
+//
+// silent advances exactly the same state without synthesizing anything: the
+// envelopes still step, the LFO phase still moves, and the voice still retires
+// when its envelopes go idle, but no waveform is sampled and no output is
+// produced. Whether a voice is still sounding depends only on its envelopes -
+// smafOperator.tick advances one per operator the algorithm uses, before it
+// looks at anything else - so a silent pass retires voices on exactly the
+// sample a sounding pass would, which is what lets probeEnd find a score's
+// natural end without synthesizing it. See smafRenderStream.render.
+func (voice *smafVoice) tick(silent bool) float64 {
 	if !voice.active {
 		return 0
 	}
@@ -818,8 +828,22 @@ func (voice *smafVoice) tick() float64 {
 	// mid-note - it cannot, but the phase is also part of the voice's state -
 	// stays where it would have been; only the lookup is skipped.
 	lfo := 0.0
-	if voice.usesLFO {
+	if voice.usesLFO && !silent {
 		lfo = smafSineUnit(voice.lfoPhase)
+	}
+	count := 2
+	if voice.patch.fourOp {
+		count = 4
+	}
+	if silent {
+		// Every branch of the algorithm below ticks each of these operators
+		// exactly once, and each tick advances that operator's envelope before
+		// anything else, so this is the same envelope sequence.
+		for index := 0; index < count; index++ {
+			voice.operators[index].envelope.advance()
+		}
+		voice.retireIfIdle(count)
+		return 0
 	}
 	// Yamaha's mobile FM engine expresses the modulator output in waveform
 	// cycles. Its authored patches assume this four-cycle full-scale depth.
@@ -868,19 +892,17 @@ func (voice *smafVoice) tick() float64 {
 		d := voice.modOperator(3, 0, lfo)
 		output = a + c + d
 	}
-	count := 2
-	if voice.patch.fourOp {
-		count = 4
-	}
-	live := false
+	voice.retireIfIdle(count)
+	return output * voice.velocity * voice.volume * 0.7
+}
+
+// retireIfIdle clears active once none of the count operators the algorithm
+// uses has a live envelope.
+func (voice *smafVoice) retireIfIdle(count int) {
 	for index := 0; index < count; index++ {
 		if voice.operators[index].envelope.phase != smafEnvelopeIdle {
-			live = true
-			break
+			return
 		}
 	}
-	if !live {
-		voice.active = false
-	}
-	return output * voice.velocity * voice.volume * 0.7
+	voice.active = false
 }
