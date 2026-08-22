@@ -50,7 +50,7 @@ func TestDecodeSMAFMobileScoreProducesStereoPCM(t *testing.T) {
 	}
 }
 
-func TestMediaDecodesSMAFLazilyOnPlay(t *testing.T) {
+func TestMediaDecodesSMAFEagerlyOnPlay(t *testing.T) {
 	registry := NewRegistry(32)
 	const owner OwnerID = 3
 	media, err := NewMedia(registry, DefaultMediaLimits())
@@ -78,7 +78,7 @@ func TestMediaDecodesSMAFLazilyOnPlay(t *testing.T) {
 		t.Fatal(err)
 	}
 	if before.Decoded {
-		t.Fatal("SMAF decoded during append; want lazy decoding")
+		t.Fatal("SMAF decoded during append; want decode on play, not append")
 	}
 	if err := media.Play(owner, clip, 1); err != nil {
 		t.Fatal(err)
@@ -91,9 +91,9 @@ func TestMediaDecodesSMAFLazilyOnPlay(t *testing.T) {
 		t.Fatalf("decoded = %t, duration = %s", after.Decoded, after.Duration)
 	}
 	internal := media.clips[clip]
-	if len(internal.decoded.samples) != 0 || internal.decoded.smaf == nil {
+	if len(internal.decoded.samples) == 0 || internal.decoded.smaf != nil {
 		t.Fatalf(
-			"lazy SMAF has %d eager samples and stream=%v",
+			"eager SMAF has %d samples and stream=%v; want fully rendered PCM, no stream",
 			len(internal.decoded.samples),
 			internal.decoded.smaf != nil,
 		)
@@ -116,7 +116,7 @@ func TestMediaDecodesSMAFLazilyOnPlay(t *testing.T) {
 		}
 	}
 	if peak < 100 {
-		t.Fatalf("lazy mixed PCM peak = %d, want audible output", peak)
+		t.Fatalf("eager mixed PCM peak = %d, want audible output", peak)
 	}
 }
 

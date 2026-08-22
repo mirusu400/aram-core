@@ -163,6 +163,31 @@ func decodeSMAFLazyPCM16(data []byte, sampleRate uint32) *decodedPCM {
 	if stream.end == 0 {
 		return nil
 	}
+	// Render the FM score to PCM up front rather than synthesizing it during
+	// playback. Incremental synthesis kept BGM start cheap, but it also meant
+	// the mixer paid FM-voice cost on the emulation goroutine every frame the
+	// music played, so a heavy "flash" frame that delayed the mixer dropped BGM
+	// samples and the music stuttered. A one-time render at decode moves that
+	// cost to the scene transition (masked, and cached by the mixing voice) and
+	// leaves playback a stall-free array read. Determinism is unchanged: eager
+	// and incremental synthesis produce identical samples.
+	//
+	// A minutes-long track (some menu loops run over a minute) is left
+	// incremental so decode never causes a large hitch or holds tens of
+	// megabytes; typical gameplay BGM loops are short and render eagerly.
+	if stream.end <= uint64(sampleRate)*smafEagerRenderSeconds {
+		if samples := stream.renderUntil(nil, stream.end); len(samples) != 0 {
+			return &decodedPCM{
+				sampleRate: sampleRate,
+				channels:   2,
+				samples:    samples,
+				duration: time.Duration(
+					uint64(len(samples)/2) * uint64(time.Second) /
+						uint64(sampleRate),
+				),
+			}
+		}
+	}
 	return &decodedPCM{
 		sampleRate: sampleRate,
 		channels:   2,
@@ -172,6 +197,10 @@ func decodeSMAFLazyPCM16(data []byte, sampleRate uint32) *decodedPCM {
 		smaf: stream,
 	}
 }
+
+// smafEagerRenderSeconds bounds how long an FM score may be while still being
+// rendered eagerly at decode. Above it the score stays incremental.
+const smafEagerRenderSeconds = 30
 
 func (decoder *smafDecoder) parse(data []byte) bool {
 	if !looksLikeSMAF(data) {

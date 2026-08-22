@@ -78,6 +78,12 @@ type Factory struct {
 	// guest text that has no glyphs of its own. Empty inherits the runtime
 	// default (galmuri9); "neodgm" selects the softer NeoDunggeunmo look.
 	FallbackFont string
+	// AudioMixMode selects the enhanced "mixing" audio policy, where a looping
+	// track keeps playing over one-shot effects instead of the title being able
+	// to silence it. False is the default and reproduces the device faithfully.
+	// It is a playback preference, deliberately kept out of the profile
+	// configuration hash so it never changes a title's deterministic identity.
+	AudioMixMode bool
 }
 
 func NewFactory() Factory {
@@ -134,12 +140,39 @@ func (f Factory) Create(ctx context.Context, source machinecore.Source) (machine
 		frameRunBudget:   frameBudget,
 		raptorNet:        f.RaptorNet,
 		fallbackFont:     f.FallbackFont,
+		audioMixMode:     f.AudioMixMode,
 	}
 	if err := machine.Load(ctx, source); err != nil {
 		_ = backend.Close()
 		return nil, err
 	}
+	machine.applyAudioMixMode()
 	return machine, nil
+}
+
+// SetAudioMixMode switches the audio policy on the running machine and
+// remembers it for any later runtime (re)creation. It is safe to call while a
+// title is loaded; the change is audible immediately, matching how mute and
+// volume apply live rather than only on the next launch.
+func (m *Machine) SetAudioMixMode(on bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.audioMixMode = on
+	m.applyAudioMixMode()
+}
+
+// applyAudioMixMode pushes the selected audio policy onto whichever runtime is
+// live. KTF and the shared WIPI runtime (which Raptor titles also boot) own the
+// media service; the call is idempotent so it is safe to re-run after a state
+// restore. The caller holds no lock during Factory.Create; SetAudioMixMode and
+// LoadState call it under m.mu.
+func (m *Machine) applyAudioMixMode() {
+	if m.ktf != nil && m.ktf.Services != nil {
+		m.ktf.Services.Media.SetAudioMixMode(m.audioMixMode)
+	}
+	if m.wipi != nil && m.wipi.Services != nil {
+		m.wipi.Services.Media.SetAudioMixMode(m.audioMixMode)
+	}
 }
 
 type ImageInfo struct {
@@ -171,6 +204,7 @@ type Machine struct {
 	raptor           *raptorrt.Runtime
 	raptorNet        netauth.Backend
 	fallbackFont     string
+	audioMixMode     bool
 	ktfStarted       bool
 	state            machinecore.State
 	source           machinecore.Source
