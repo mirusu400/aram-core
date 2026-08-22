@@ -211,6 +211,9 @@ func (m *Machine) LoadState(input io.Reader) error {
 	m.input = parsed.input
 	m.lastResult = parsed.lastResult
 	m.state = parsed.state
+	// The restored media state carries whatever policy was active when the save
+	// was written; re-apply the current preference so a toggle since then wins.
+	m.applyAudioMixMode()
 	return nil
 }
 
