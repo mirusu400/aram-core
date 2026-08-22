@@ -40,6 +40,14 @@ type region struct {
 	data        []byte
 }
 
+// dataRegionCache is one entry of the per-permission data fast path. Empty data
+// means the slot is cold.
+type dataRegionCache struct {
+	address uint32
+	perms   cpu.Permissions
+	data    []byte
+}
+
 // Backend is a bounds-checked ARMv5TE interpreter. It currently implements
 // the ARM/Thumb control-flow and integer instructions needed by the first
 // application-entry milestone; unsupported encodings produce a precise fault.
@@ -49,16 +57,17 @@ type Backend struct {
 	regionHints    [8]int
 	executeAddress uint32
 	executeData    []byte
-	// dataData caches the most recently accessed data region so repeated
-	// reads/writes with locality (stack frames, a struct, a framebuffer row)
-	// skip the sorted findRegion lookup, mirroring the executeData fetch
-	// cache. It is a value copy of the region's slice/address/permissions and
-	// stays valid across region re-sorts (regions never overlap and their
-	// backing arrays are stable); it is invalidated wherever executeData is.
-	dataAddress     uint32
-	dataPermissions cpu.Permissions
-	dataData        []byte
-	regs            [17]uint32
+	// dataCache caches the most recently accessed data region per access
+	// permission, so a routine that reads one region and writes another - a
+	// software blitter reading source pixels and writing the framebuffer, the
+	// dominant cost of a heavy frame - keeps BOTH on the fast path instead of
+	// thrashing one slot and paying findRegion on every access. Indexed by the
+	// access permission bit (Read=1, Write=2, Execute=4). Each entry is a value
+	// copy of the region's slice/address/permissions and stays valid across
+	// region re-sorts (regions never overlap and their backing arrays are
+	// stable); it is invalidated wherever executeData is.
+	dataCache [8]dataRegionCache
+	regs      [17]uint32
 	// flags holds condition N/Z/C/V lazily: setNZCV records the defining
 	// operation here instead of writing CPSR, and resolveFlags materializes it
 	// only when a reader actually needs the bits. See pendingFlags.
@@ -75,6 +84,21 @@ type Backend struct {
 	// for anything it does not translate. It is invalidated on Map/Close and on
 	// a guest write into an executable region (self-modifying code).
 	jitBlocks map[uint32]*jitBlock
+	// jitCache is a direct-mapped front for jitBlocks: hot loops dispatch the
+	// same few blocks repeatedly, so caching (pc -> block) in a fixed array
+	// skips the map hash+lookup that otherwise dominates block dispatch. jitGen
+	// is bumped on every invalidation of jitBlocks; an entry whose gen no longer
+	// matches is treated as a miss, so the cache never returns a stale block
+	// without touching the array on the (rare) invalidation path.
+	jitCache []jitCacheEntry
+	jitGen   uint64
+	// jitCodeLo/jitCodeHi bound the guest-address span of every translated
+	// block. smcInvalidate uses them to invalidate only on a write that
+	// overlaps translated code, not on the blitter's ordinary framebuffer
+	// writes into the same read-write-execute region. Empty span is
+	// (^uint32(0), 0), which no write overlaps.
+	jitCodeLo uint32
+	jitCodeHi uint32
 	// nativeBlocks and nativeArena drive the optional native machine-code JIT
 	// (see native_common.go and the per-host native_*.go emitters). Non-nil
 	// nativeBlocks enables it for Thumb, translating straight runs into host
@@ -105,6 +129,8 @@ func New() *Backend {
 func NewJIT() *Backend {
 	b := NewWithMemoryLimit(DefaultMemoryLimit)
 	b.jitBlocks = make(map[uint32]*jitBlock)
+	b.jitCache = make([]jitCacheEntry, jitCacheSize)
+	b.jitCodeLo, b.jitCodeHi = ^uint32(0), 0
 	return b
 }
 
@@ -191,9 +217,11 @@ func (b *Backend) Map(address, size uint32, permissions cpu.Permissions) error {
 	})
 	clear(b.regionHints[:])
 	b.executeData = nil
-	b.dataData = nil
+	clear(b.dataCache[:])
 	if b.jitBlocks != nil {
 		clear(b.jitBlocks)
+		b.jitGen++
+		b.jitCodeLo, b.jitCodeHi = ^uint32(0), 0
 	}
 	b.nativeInvalidate()
 	return nil
@@ -380,9 +408,11 @@ func (b *Backend) Close() error {
 	b.regions = nil
 	clear(b.regionHints[:])
 	b.executeData = nil
-	b.dataData = nil
+	clear(b.dataCache[:])
 	if b.jitBlocks != nil {
 		clear(b.jitBlocks)
+		b.jitGen++
+		b.jitCodeLo, b.jitCodeHi = ^uint32(0), 0
 	}
 	if b.nativeBlocks != nil {
 		clear(b.nativeBlocks)

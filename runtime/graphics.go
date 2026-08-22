@@ -525,7 +525,12 @@ func (g *Graphics) Present(owner OwnerID, id ServiceID, requested Rectangle) (Fr
 		Hash:      sha256.Sum256(rgba),
 	}
 	current.dirty = Rectangle{}
-	g.lastFrame = cloneFrame(frame)
+	// frame is a local that owns the freshly copied rgba (surfaceRGBA already
+	// detached it from the surface), so lastFrame can adopt it directly instead
+	// of cloning: this runs on the emulation goroutine every presented frame,
+	// and the second copy was pure per-frame churn. The return is still cloned
+	// so a caller that keeps or mutates it cannot disturb lastFrame.
+	g.lastFrame = frame
 	return cloneFrame(frame), nil
 }
 

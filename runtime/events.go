@@ -178,6 +178,20 @@ func (b *EventBus) Snapshot() EventBusState {
 	return state
 }
 
+// SnapshotInto captures the bus into dst for a same-frame rollback, reusing
+// dst's backing array so the per-frame transaction in Services.Advance does not
+// allocate a fresh event slice every frame (that clone dominated per-frame
+// allocation). Advance only enqueues events, never mutates an existing event's
+// Data, so the copied Event structs may share Data with the live bus; Restore
+// clones the bytes out again. This is for transient rollback only — the
+// save-state path uses Snapshot, which deep-copies.
+func (b *EventBus) SnapshotInto(dst *EventBusState) {
+	dst.MaxEvents = b.maxEvents
+	dst.MaxEventData = b.maxEventData
+	dst.NextSequence = b.nextSequence
+	dst.Events = append(dst.Events[:0], b.events...)
+}
+
 func (b *EventBus) Restore(state EventBusState) error {
 	if state.MaxEvents == 0 || state.MaxEventData == 0 ||
 		state.NextSequence == 0 || len(state.Events) > int(state.MaxEvents) {

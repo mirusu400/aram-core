@@ -246,6 +246,12 @@ type Services struct {
 	Coordinator *Coordinator
 	Text        *Text
 	Trace       *Trace
+
+	// rbEvents is a reusable event-bus rollback buffer for the per-frame Advance
+	// transaction, so the common (no-error) path does not allocate a fresh event
+	// slice every frame. Advance is never re-entered concurrently (the machine
+	// serialises execution), so a single shared buffer is safe.
+	rbEvents EventBusState
 }
 
 func NewServices(config Config) (*Services, error) {
@@ -343,7 +349,8 @@ func (s *Services) Advance(owner OwnerID, delta time.Duration) error {
 		return fmt.Errorf("%w: services are nil", ErrInvalidArgument)
 	}
 	clockState := s.Clock.Snapshot()
-	eventState := s.Events.Snapshot()
+	s.Events.SnapshotInto(&s.rbEvents)
+	eventState := s.rbEvents
 	inputState := s.Input.Snapshot()
 	timerState := s.Timers.Snapshot()
 	mediaState := s.Media.Snapshot()
@@ -363,7 +370,7 @@ func (s *Services) Advance(owner OwnerID, delta time.Duration) error {
 		return err
 	}
 	now := s.Clock.Monotonic()
-	if err := s.Media.Advance(
+	if err := s.Media.advanceLocked(
 		time.Duration(clockState.MonotonicNanos),
 		now,
 		s.Events,
