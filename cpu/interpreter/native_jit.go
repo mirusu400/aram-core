@@ -329,6 +329,13 @@ func (b *Backend) translateOne(e emitter, instruction uint16, pc uint32, retired
 		}
 		e.memory(access, pc, retired)
 		return translateBody, terminator{}
+	case thumbPush, thumbPop, thumbMultipleTransfer:
+		access, ok := decodeMultiAccess(instruction)
+		if !ok || b.tlb == nil {
+			return translateBail, terminator{}
+		}
+		e.multi(access, pc, retired)
+		return translateBody, terminator{}
 	default:
 		// High-register ops, BL, block transfers, semihosting SWI, etc.
 		return translateBail, terminator{}
@@ -398,4 +405,53 @@ func decodeMemAccess(instruction uint16, pc uint32) (memAccess, bool) {
 		}, true
 	}
 	return memAccess{}, false
+}
+
+// decodeMultiAccess turns PUSH/POP/STMIA/LDMIA into the emitters' multiAccess
+// form, mirroring the interpreter's operand extraction exactly (see runThumb).
+// It refuses the forms whose effect the inline path cannot reproduce:
+//
+//   - POP with PC in the list, because that is a branch-exchange and can hand
+//     control to ARM, which only the interpreter can do;
+//   - an empty LDMIA/STMIA list, which the interpreter faults on;
+//   - an empty PUSH/POP list, which transfers nothing and is not worth code.
+func decodeMultiAccess(instruction uint16) (multiAccess, bool) {
+	list := instruction & 0xff
+	low := make([]uint32, 0, 9)
+	for register := uint32(0); register < 8; register++ {
+		if list&(1<<register) != 0 {
+			low = append(low, register)
+		}
+	}
+	switch thumbInstructionClasses[instruction] {
+	case thumbPush:
+		regs := low
+		if instruction&(1<<8) != 0 {
+			regs = append(regs, cpu.RegisterLR)
+		}
+		if len(regs) == 0 {
+			return multiAccess{}, false
+		}
+		return multiAccess{
+			store: true, regs: regs, base: cpu.RegisterSP,
+			preDec: true, writeback: true,
+		}, true
+	case thumbPop:
+		if instruction&(1<<8) != 0 || len(low) == 0 {
+			return multiAccess{}, false // POP with PC branch-exchanges
+		}
+		return multiAccess{regs: low, base: cpu.RegisterSP, writeback: true}, true
+	default: // thumbMultipleTransfer
+		if len(low) == 0 {
+			return multiAccess{}, false
+		}
+		base := uint32(instruction>>8) & 7
+		load := instruction&(1<<11) != 0
+		// ARMv5 Thumb LDM suppresses writeback when the base is in the list;
+		// STM always writes back for these encodings.
+		writeback := !load || list&(1<<base) == 0
+		return multiAccess{
+			store: !load, regs: low, base: base, writeback: writeback,
+		}, true
+	}
 }

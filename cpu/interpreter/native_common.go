@@ -53,6 +53,24 @@ type memAccess struct {
 	absolute bool   // the address is exactly offset (PC-relative literal load)
 }
 
+// multiAccess describes one Thumb multi-register transfer (PUSH, POP, STMIA,
+// LDMIA) for the emitters' inline path. The whole list is a contiguous run of
+// words from one base, so it costs a single software-TLB probe plus a range
+// check covering every word - anything that would leave the page bails and the
+// interpreter services the whole instruction.
+//
+// Bailing on the whole instruction is what keeps a partial fault exact: the
+// interpreter transfers one word at a time and stops at the first bad address,
+// leaving the earlier words written and the base register not yet updated. The
+// inline path only runs when no word can fault, so it is all-or-nothing.
+type multiAccess struct {
+	store     bool     // store the list rather than load it
+	regs      []uint32 // guest registers in ascending transfer order
+	base      uint32   // base register (RegisterSP for PUSH/POP)
+	preDec    bool     // PUSH: the transfer starts 4*len(regs) below the base
+	writeback bool     // write the final address back to base
+}
+
 // emitter appends host machine code for one translated Thumb instruction at a
 // time. Each method hides the host's scratch-register choreography; the decoder
 // (emitThumb, native_jit.go) only extracts operand fields and calls these. A
@@ -108,6 +126,12 @@ type emitter interface {
 	// execution hits. Nothing else in the block is disturbed, so a bail is a
 	// slow path, never a correctness fork.
 	memory(a memAccess, pc uint32, retired int)
+
+	// multi translates one PUSH/POP/STMIA/LDMIA inline, with the same probe,
+	// bail and budget-restore contract as memory. Function prologues and
+	// epilogues are the single largest remaining source of block terminations,
+	// and each one that stays untranslated costs a full dispatch round trip.
+	multi(a multiAccess, pc uint32, retired int)
 
 	// Terminators end a block. exit* set PC and return to the Go dispatcher;
 	// selfLoop* jump back to the gate offset (staying in native code).
