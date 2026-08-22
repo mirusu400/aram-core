@@ -80,6 +80,7 @@ type smafPCMVoice struct {
 	position float64
 	step     float64
 	pan      float64
+	panGains smafPanGains
 	active   bool
 }
 
@@ -1098,6 +1099,17 @@ func (stream *smafRenderStream) renderUntil(
 	}
 	decoder := stream.decoder
 	last := decoder.events[len(decoder.events)-1].sample
+	// A render that starts from nothing - the eager whole-track path - knows
+	// exactly how many samples it will produce, so reserve them instead of
+	// letting append double a multi-megabyte slice a dozen times. An
+	// incremental render is handed the samples rendered so far and must keep
+	// append's amortized growth, or extending it would copy everything again
+	// on every call.
+	if output == nil {
+		if remaining := target - stream.cursor; remaining > 0 {
+			output = make([]int16, 0, int(remaining)*2)
+		}
+	}
 	for stream.cursor < target {
 		for stream.eventIndex < len(decoder.events) &&
 			decoder.events[stream.eventIndex].sample <= stream.cursor {
@@ -1106,46 +1118,64 @@ func (stream *smafRenderStream) renderUntil(
 		}
 		left, right := 0.0, 0.0
 		active := false
-		keptVoices := decoder.activeVoices[:0]
+		// The live lists are rebuilt only on the sample where a voice actually
+		// ends. Re-appending every surviving index on every one of the 44100
+		// samples a second holds was a bounds check and a store per voice per
+		// sample, for a list that changes a handful of times in a whole track.
+		retired := false
 		for _, index := range decoder.activeVoices {
 			voice := &decoder.pool[index]
 			if !voice.active {
 				decoder.voiceListed[index] = false
+				retired = true
 				continue
 			}
 			active = true
 			value := voice.tick() * 0.32
-			panAngle := (math.Max(-1, math.Min(1, voice.pan)) + 1) *
-				math.Pi / 4
-			left += value * math.Cos(panAngle)
-			right += value * math.Sin(panAngle)
-			if voice.active {
-				keptVoices = append(keptVoices, index)
-			} else {
+			panLeft, panRight := voice.panGains.gains(voice.pan)
+			left += value * panLeft
+			right += value * panRight
+			if !voice.active {
 				decoder.voiceListed[index] = false
+				retired = true
 			}
 		}
-		decoder.activeVoices = keptVoices
-		keptPCM := decoder.activePCM[:0]
+		if retired {
+			kept := decoder.activeVoices[:0]
+			for _, index := range decoder.activeVoices {
+				if decoder.pool[index].active {
+					kept = append(kept, index)
+				}
+			}
+			decoder.activeVoices = kept
+		}
+		retired = false
 		for _, index := range decoder.activePCM {
 			voice := &decoder.pcmPool[index]
 			if !voice.active {
 				decoder.pcmListed[index] = false
+				retired = true
 				continue
 			}
 			active = true
 			value := voice.tick() * 0.32
-			panAngle := (math.Max(-1, math.Min(1, voice.pan)) + 1) *
-				math.Pi / 4
-			left += value * math.Cos(panAngle)
-			right += value * math.Sin(panAngle)
-			if voice.active {
-				keptPCM = append(keptPCM, index)
-			} else {
+			panLeft, panRight := voice.panGains.gains(voice.pan)
+			left += value * panLeft
+			right += value * panRight
+			if !voice.active {
 				decoder.pcmListed[index] = false
+				retired = true
 			}
 		}
-		decoder.activePCM = keptPCM
+		if retired {
+			kept := decoder.activePCM[:0]
+			for _, index := range decoder.activePCM {
+				if decoder.pcmPool[index].active {
+					kept = append(kept, index)
+				}
+			}
+			decoder.activePCM = kept
+		}
 		highPassedLeft := stream.highPassCoefficient *
 			(stream.highPassOutputLeft + left - stream.highPassInputLeft)
 		highPassedRight := stream.highPassCoefficient *
@@ -1164,8 +1194,8 @@ func (stream *smafRenderStream) renderUntil(
 		stream.filter2Right += stream.filterCoefficient *
 			(stream.filter1Right - stream.filter2Right)
 		left, right = stream.filter2Left, stream.filter2Right
-		peak := math.Max(math.Abs(left), math.Abs(right))
-		stream.limiterEnvelope = math.Max(
+		peak := max(math.Abs(left), math.Abs(right))
+		stream.limiterEnvelope = max(
 			peak,
 			stream.limiterEnvelope*stream.limiterRelease,
 		)
@@ -1192,7 +1222,7 @@ func (stream *smafRenderStream) renderUntil(
 }
 
 func smafFloatToPCM(value float64) int16 {
-	value = math.Max(-1, math.Min(1, value))
+	value = smafClampUnit(value)
 	if value < 0 {
 		return int16(value*32768 - 0.5)
 	}
