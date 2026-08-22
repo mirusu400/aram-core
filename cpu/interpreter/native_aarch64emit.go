@@ -42,8 +42,17 @@ const (
 	a64MaskN         = 0x12010000 // & 0x80000000 (isolate N)
 	a64MaskTop4      = 0x12040C00 // & 0xF0000000 (isolate N,Z,C,V nibble)
 	a64Mask1         = 0x12000000 // & 0x00000001 (isolate bit 0)
-	a64Mask255       = 0x12001C00 // & 0x000000FF (software-TLB index)
 	a64MaskPageOff   = 0x12002C00 // & 0x00000FFF (in-page offset)
+	// a64MaskTLBIndex isolates the software-TLB index. It is the same 12-bit
+	// mask as a64MaskPageOff only because the table currently holds 4096
+	// entries; the assertion below breaks the build if that stops being true,
+	// rather than letting the emitted code silently index the wrong set.
+	a64MaskTLBIndex = 0x12002C00 // & 0x00000FFF
+)
+
+const (
+	_ = uint(nativeTLBMask - 0xfff)
+	_ = uint(0xfff - nativeTLBMask)
 )
 
 // Condition codes used by the emitted control flow.
@@ -199,11 +208,14 @@ func (e *arm64emitter) prologue() {
 	e.w(0xAA0003E9) // mov x9, x0   (&regs[0])
 	e.w(0xAA0103EA) // mov x10, x1  (&nativeRemain)
 	if e.tlb != 0 {
-		// X11 holds the software-TLB base for the whole block. The self-loop
-		// back-edge targets the gate, which is emitted after this prologue, so
-		// it stays live across loop iterations and a memory op costs no
-		// constant materialisation.
+		// X11 and X12 hold the software TLB's read and write half-tables for
+		// the whole block. The self-loop back-edge targets the gate, which is
+		// emitted after this prologue, so they stay live across loop iterations
+		// and a memory op costs no constant materialisation. The write half
+		// gets its own register rather than an offset from X11 because the
+		// table is far larger than a scaled unsigned-offset immediate reaches.
 		e.loadConst64(11, uint64(e.tlb))
+		e.loadConst64(12, uint64(e.tlb)+tlbWriteOffset)
 	}
 }
 
@@ -597,19 +609,19 @@ func (e *arm64emitter) multi(m multiAccess, pc uint32, retired int) {
 //
 // Registers, all AAPCS64 caller-saved temporaries a leaf block may clobber:
 // W1 = guest page, W2 = table index then in-page offset, X3 = entry address
-// then host page, W4 = scratch. X11 (set by the prologue) is the table base.
-// Permissions are not checked here, because tlbNote installs a page in a half
-// only when that half's access is legal for it.
+// then host page, W4 = scratch. X11 and X12 (set by the prologue) are the read
+// and write half-tables. Permissions are not checked here, because tlbNote
+// installs a page in a half only when that half's access is legal for it.
 func (e *arm64emitter) probeTLB(store bool, span uint32) []int {
-	tagOff, hostOff := uint32(0), uint32(8)
+	table := uint32(11)
 	if store {
-		tagOff, hostOff = tlbWriteOffset, tlbWriteOffset+8
+		table = 12
 	}
-	e.lsrI(1, 0, tlbPageBits)   // w1 = guest page
-	e.andMask(2, 1, a64Mask255) // w2 = page & mask
-	e.addLSL64(3, 11, 2, 4)     // x3 = table + index*tlbEntryBytes
-	e.ldrWoff(4, 3, tagOff)     // w4 = entry.tag
-	e.subsReg(a64WZR, 4, 1)     // cmp w4, w1
+	e.lsrI(1, 0, tlbPageBits)        // w1 = guest page
+	e.andMask(2, 1, a64MaskTLBIndex) // w2 = page & mask
+	e.addLSL64(3, table, 2, 4)       // x3 = half-table + index*tlbEntryBytes
+	e.ldrWoff(4, 3, 0)               // w4 = entry.tag
+	e.subsReg(a64WZR, 4, 1)          // cmp w4, w1
 	misses := []int{e.mark()}
 	e.w(0)                          // placeholder: b.ne bail
 	e.andMask(2, 0, a64MaskPageOff) // w2 = address & 0xfff
@@ -618,7 +630,7 @@ func (e *arm64emitter) probeTLB(store bool, span uint32) []int {
 		misses = append(misses, e.mark())
 		e.w(0) // placeholder: b.hi bail
 	}
-	e.ldrXoff(3, 3, hostOff) // x3 = entry.host
+	e.ldrXoff(3, 3, 8) // x3 = entry.host
 	return misses
 }
 
