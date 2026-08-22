@@ -122,7 +122,7 @@ type Backend struct {
 	// few instructions, so a title dispatches blocks hundreds of thousands of
 	// times per frame and the map hash dominated dispatch. nativeGen is bumped
 	// on invalidation so stale entries miss without walking the array.
-	nativeCache []nativeCacheEntry
+	nativeCache *[nativeCacheSize]nativeCacheEntry
 	nativeGen   uint64
 	// nativeCodePages marks, one bit per 4 KiB guest page, the pages that hold
 	// translated code. The lo/hi span above is only a hull: KTF/WIPI titles run
