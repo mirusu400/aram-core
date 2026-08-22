@@ -115,6 +115,37 @@ func surfaceRGBA(current *surface) ([]byte, error) {
 		return nil, fmt.Errorf("%w: RGBA conversion exceeds host address space", ErrLimitExceeded)
 	}
 	rgba := make([]byte, int(pixelCount)*4)
+	width := int(current.descriptor.Width)
+	height := int(current.descriptor.Height)
+	stride := int(current.descriptor.Stride)
+	// The format is a property of the surface, not of the pixel, so it is
+	// decided once here instead of inside decodeSurfaceColor for every pixel of
+	// every presented frame. The two cases below are the ones the handset
+	// profiles use - RGB565 is the KTF screen and RGBA8888 needs no conversion
+	// at all - and both compute exactly what the general loop computed.
+	switch current.descriptor.Format {
+	case PixelRGB565:
+		for y := 0; y < height; y++ {
+			row := y * stride
+			offset := y * width * 4
+			for x := 0; x < width; x++ {
+				value := binary.LittleEndian.Uint16(current.pixels[row+x*2:])
+				rgba[offset+0] = expand5(uint8((value >> 11) & 0x1f))
+				rgba[offset+1] = expand6(uint8((value >> 5) & 0x3f))
+				rgba[offset+2] = expand5(uint8(value & 0x1f))
+				rgba[offset+3] = 0xff
+				offset += 4
+			}
+		}
+		return rgba, nil
+	case PixelRGBA8888:
+		for y := 0; y < height; y++ {
+			row := y * stride
+			offset := y * width * 4
+			copy(rgba[offset:offset+width*4], current.pixels[row:row+width*4])
+		}
+		return rgba, nil
+	}
 	for y := int32(0); y < current.descriptor.Height; y++ {
 		for x := int32(0); x < current.descriptor.Width; x++ {
 			color := decodeSurfaceColor(current, x, y)

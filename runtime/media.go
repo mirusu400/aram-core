@@ -623,6 +623,74 @@ func (m *Media) Drain() AudioBuffer {
 	return result
 }
 
+// mediaAdvanceState is the part of a Media that advanceLocked can change, kept
+// so Services.Advance can undo the advance when a later step of the same tick
+// fails.
+//
+// It exists because the rollback used the full Snapshot, which clones every
+// clip's source bytes and the persistent music voice's whole encoded track.
+// That runs on every tick whether or not anything fails, and on a title with
+// audio loaded it was 17% of the frame - all of it copying bytes advanceLocked
+// cannot touch. Advancing only moves playback positions and the mixed output
+// queue, so only those are captured, into buffers reused across ticks.
+//
+// Like MediaState, it deliberately does not carry the dropped-sample counter:
+// Restore does not reset it either, so a rolled-back advance leaves the same
+// diagnostic total it always has.
+type mediaAdvanceState struct {
+	outputRemainder uint64
+	queuedPCM16     []int16
+	clips           []mediaClipAdvanceState
+}
+
+// mediaClipAdvanceState is one voice's rollback record. The clip is held by
+// pointer because advanceLocked never adds or removes a voice, so the set is
+// the same when the rollback runs.
+type mediaClipAdvanceState struct {
+	clip           *mediaClip
+	position       time.Duration
+	state          ClipPlaybackState
+	remainingPlays int32
+}
+
+// captureAdvance records what an advance may change, reusing destination's
+// buffers.
+func (m *Media) captureAdvance(destination *mediaAdvanceState) {
+	destination.outputRemainder = m.outputRemainder
+	destination.queuedPCM16 = append(
+		destination.queuedPCM16[:0],
+		m.queuedPCM16...,
+	)
+	destination.clips = destination.clips[:0]
+	for _, clip := range m.clips {
+		destination.clips = append(destination.clips, mediaClipAdvanceState{
+			clip:           clip,
+			position:       clip.position,
+			state:          clip.state,
+			remainingPlays: clip.remainingPlays,
+		})
+	}
+	if m.bgmVoice != nil {
+		destination.clips = append(destination.clips, mediaClipAdvanceState{
+			clip:           m.bgmVoice,
+			position:       m.bgmVoice.position,
+			state:          m.bgmVoice.state,
+			remainingPlays: m.bgmVoice.remainingPlays,
+		})
+	}
+}
+
+// restoreAdvance puts back what captureAdvance recorded.
+func (m *Media) restoreAdvance(saved *mediaAdvanceState) {
+	m.outputRemainder = saved.outputRemainder
+	m.queuedPCM16 = append(m.queuedPCM16[:0], saved.queuedPCM16...)
+	for _, clip := range saved.clips {
+		clip.clip.position = clip.position
+		clip.clip.state = clip.state
+		clip.clip.remainingPlays = clip.remainingPlays
+	}
+}
+
 func (m *Media) Snapshot() MediaState {
 	state := MediaState{
 		Limits:          m.limits,

@@ -721,7 +721,13 @@ type smafVoice struct {
 	channel, note, keyNote int
 	pan                    float64
 	panGains               smafPanGains
-	active                 bool
+	// usesLFO records whether any operator this note plays reads the LFO. A
+	// patch with neither vibrato nor tremolo ignores the value entirely, and
+	// sampling the sine for it was a fifth of all the table lookups the
+	// renderer did. The operators are configured once per note-on and their
+	// depths do not change while it sounds, so the answer is fixed here.
+	usesLFO bool
+	active  bool
 }
 
 func (voice *smafVoice) noteOn(
@@ -744,13 +750,14 @@ func (voice *smafVoice) noteOn(
 	if patch.fourOp {
 		operatorCount = 4
 	}
+	voice.usesLFO = false
 	for index := 0; index < operatorCount; index++ {
-		voice.operators[index].configure(
-			patch.operators[index],
-			voice.sampleRate,
-			frequency,
-		)
-		voice.operators[index].noteOn(frequency)
+		operator := &voice.operators[index]
+		operator.configure(patch.operators[index], voice.sampleRate, frequency)
+		operator.noteOn(frequency)
+		if operator.vibrato != 0 || operator.tremolo != 0 {
+			voice.usesLFO = true
+		}
 	}
 	voice.active = true
 }
@@ -807,7 +814,13 @@ func (voice *smafVoice) tick() float64 {
 	if voice.lfoPhase >= 1 {
 		voice.lfoPhase--
 	}
-	lfo := smafSine(voice.lfoPhase)
+	// The phase advances either way so a patch that starts using the LFO
+	// mid-note - it cannot, but the phase is also part of the voice's state -
+	// stays where it would have been; only the lookup is skipped.
+	lfo := 0.0
+	if voice.usesLFO {
+		lfo = smafSineUnit(voice.lfoPhase)
+	}
 	// Yamaha's mobile FM engine expresses the modulator output in waveform
 	// cycles. Its authored patches assume this four-cycle full-scale depth.
 	const modulationDepth = 4.0
