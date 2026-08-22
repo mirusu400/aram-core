@@ -108,6 +108,9 @@ func (e *arm64emitter) ldrWoff(rt, rn, off uint32) {
 func (e *arm64emitter) ldrXoff(rt, rn, off uint32) {
 	e.w(0xF9400000 | ((off / 8) << 10) | (rn << 5) | rt)
 }
+func (e *arm64emitter) strWoff(rt, rn, off uint32) {
+	e.w(0xB9000000 | ((off / 4) << 10) | (rn << 5) | rt)
+}
 
 func (e *arm64emitter) addImm12(rd, rn, imm uint32)  { e.w(0x11000000 | (imm << 10) | (rn << 5) | rd) } // add  wd,wn,#imm
 func (e *arm64emitter) subImm12(rd, rn, imm uint32)  { e.w(0x51000000 | (imm << 10) | (rn << 5) | rd) } // sub  wd,wn,#imm
@@ -522,30 +525,9 @@ func (e *arm64emitter) memory(m memAccess, pc uint32, retired int) {
 		}
 	}
 
-	// 2. Probe the half-table entry for this page.
-	tagOff, hostOff := uint32(0), uint32(8)
-	if m.store {
-		tagOff, hostOff = tlbWriteOffset, tlbWriteOffset+8
-	}
-	e.lsrI(1, 0, tlbPageBits)   // w1 = guest page
-	e.andMask(2, 1, a64Mask255) // w2 = page & mask
-	e.addLSL64(3, 11, 2, 4)     // x3 = table + index*tlbEntryBytes
-	e.ldrWoff(4, 3, tagOff)     // w4 = entry.tag
-	e.subsReg(a64WZR, 4, 1)     // cmp w4, w1
-	tagMiss := e.mark()
-	e.w(0) // placeholder: b.ne bail
+	misses := e.probeTLB(m.store, uint32(m.size))
 
-	// 3. In-page offset and the page-crossing check.
-	e.andMask(2, 0, a64MaskPageOff) // w2 = address & 0xfff
-	crossMiss := -1
-	if m.size > 1 {
-		e.subsImm12(a64WZR, 2, tlbPageSize-uint32(m.size)) // cmp w2, #4096-size
-		crossMiss = e.mark()
-		e.w(0) // placeholder: b.hi bail
-	}
-	e.ldrXoff(3, 3, hostOff) // x3 = entry.host
-
-	// 4. The access. AArch64 handles unaligned normal memory, matching the
+	// 2. The access. AArch64 handles unaligned normal memory, matching the
 	// interpreter's deliberately linear unaligned reads. The signed loads use
 	// the 64-bit-destination form; only the low word is written back, so it is
 	// the same value the interpreter's int32(int16(...)) produces.
@@ -574,22 +556,90 @@ func (e *arm64emitter) memory(m memAccess, pc uint32, retired int) {
 		}
 		e.strW(0, m.rd)
 	}
+	e.bailStub(pc, retired, misses)
+}
+
+// multi translates PUSH/POP/STMIA/LDMIA: one probe covering the whole list,
+// then a word per register at a fixed displacement, then the base writeback.
+// See multiAccess (native_common.go) for why the instruction is all-or-nothing.
+func (e *arm64emitter) multi(m multiAccess, pc uint32, retired int) {
+	span := uint32(4 * len(m.regs))
+	e.ldrW(0, m.base)
+	if m.preDec {
+		e.subImm12(0, 0, span) // PUSH transfers below the base
+	}
+	misses := e.probeTLB(m.store, span)
+	e.addLSL64(3, 3, 2, 0) // x3 = host page + in-page offset
+	for i, reg := range m.regs {
+		offset := uint32(4 * i)
+		if m.store {
+			e.ldrW(4, reg)
+			e.strWoff(4, 3, offset)
+		} else {
+			e.ldrWoff(4, 3, offset)
+			e.strW(4, reg)
+		}
+	}
+	if m.writeback {
+		// PUSH leaves the base at the bottom of the block it just wrote; the
+		// ascending forms leave it one word past the top.
+		if !m.preDec {
+			e.addImm12(0, 0, span)
+		}
+		e.strW(0, m.base)
+	}
+	e.bailStub(pc, retired, misses)
+}
+
+// probeTLB emits the software-TLB probe for an access of span bytes whose guest
+// address is already in W0, leaving the host page pointer in X3 and the in-page
+// offset in W2. It returns the forward-branch sites bailStub must patch.
+//
+// Registers, all AAPCS64 caller-saved temporaries a leaf block may clobber:
+// W1 = guest page, W2 = table index then in-page offset, X3 = entry address
+// then host page, W4 = scratch. X11 (set by the prologue) is the table base.
+// Permissions are not checked here, because tlbNote installs a page in a half
+// only when that half's access is legal for it.
+func (e *arm64emitter) probeTLB(store bool, span uint32) []int {
+	tagOff, hostOff := uint32(0), uint32(8)
+	if store {
+		tagOff, hostOff = tlbWriteOffset, tlbWriteOffset+8
+	}
+	e.lsrI(1, 0, tlbPageBits)   // w1 = guest page
+	e.andMask(2, 1, a64Mask255) // w2 = page & mask
+	e.addLSL64(3, 11, 2, 4)     // x3 = table + index*tlbEntryBytes
+	e.ldrWoff(4, 3, tagOff)     // w4 = entry.tag
+	e.subsReg(a64WZR, 4, 1)     // cmp w4, w1
+	misses := []int{e.mark()}
+	e.w(0)                          // placeholder: b.ne bail
+	e.andMask(2, 0, a64MaskPageOff) // w2 = address & 0xfff
+	if span > 1 {
+		e.subsImm12(a64WZR, 2, tlbPageSize-span) // cmp w2, #4096-span
+		misses = append(misses, e.mark())
+		e.w(0) // placeholder: b.hi bail
+	}
+	e.ldrXoff(3, 3, hostOff) // x3 = entry.host
+	return misses
+}
+
+// bailStub closes an inline access: branch over the stub on success, then leave
+// PC on this instruction and report how many instructions the block retired
+// before it, so the Run loop can undo the gate's up-front subtraction.
+func (e *arm64emitter) bailStub(pc uint32, retired int, misses []int) {
 	skip := e.mark()
 	e.w(0) // placeholder: b done
-
-	// 5. Bail stub: leave PC on this instruction and report how many
-	// instructions the block retired before it, so the Run loop can undo the
-	// gate's up-front subtraction and let the interpreter service the access.
 	bail := e.mark()
 	e.loadConst(0, pc)
 	e.strW(0, cpu.RegisterPC)
 	e.loadConst(0, nativeBailStatus(retired))
 	e.ret()
 	done := e.mark()
-
-	e.patchBCond(tagMiss, bail, a64CondNE)
-	if crossMiss >= 0 {
-		e.patchBCond(crossMiss, bail, a64CondHI)
+	for i, site := range misses {
+		cond := uint8(a64CondNE)
+		if i > 0 {
+			cond = a64CondHI
+		}
+		e.patchBCond(site, bail, cond)
 	}
 	e.patchB(skip, done)
 }

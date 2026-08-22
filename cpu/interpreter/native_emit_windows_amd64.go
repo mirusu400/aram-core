@@ -552,39 +552,9 @@ func (a *x64emitter) memory(m memAccess, pc uint32, retired int) {
 		}
 	}
 
-	// 2. Probe: ECX = (page & mask) * entry size, EDX = page, compare the tag.
-	a.b(0x89, 0xC1)              // mov ecx, eax
-	a.b(0xC1, 0xE9, tlbPageBits) // shr ecx, 12
-	a.b(0x89, 0xCA)              // mov edx, ecx      (page number)
-	a.b(0x81, 0xE1)              // and ecx, mask
-	a.imm32(nativeTLBMask)       //
-	a.b(0xC1, 0xE1, 4)           // shl ecx, 4        (tlbEntryBytes)
-	table := uint64(a.tlb)       //
-	if m.store {                 //
-		table += tlbWriteOffset // stores probe the write half
-	}
-	a.b(0x49, 0xB9)             // movabs r9, table
-	a.imm64(table)              //
-	a.b(0x41, 0x3B, 0x14, 0x09) // cmp edx, [r9+rcx]  (entry.tag)
-	tagMiss := a.mark()
-	a.b(0x75, 0) // jne bail (patched below)
+	misses := a.probeTLB(m.store, uint32(m.size))
 
-	// 3. In-page offset, and the page-crossing check that keeps a straddling
-	// access - the only case the interpreter would service byte-wise across
-	// regions - on the interpreter.
-	a.b(0x89, 0xC2) // mov edx, eax
-	a.b(0x81, 0xE2) // and edx, 0xfff
-	a.imm32(tlbPageSize - 1)
-	crossMiss := -1
-	if m.size > 1 {
-		a.b(0x81, 0xFA) // cmp edx, 4096-size
-		a.imm32(tlbPageSize - uint32(m.size))
-		crossMiss = a.mark()
-		a.b(0x77, 0) // ja bail (patched below)
-	}
-	a.b(0x4D, 0x8B, 0x4C, 0x09, 0x08) // mov r9, [r9+rcx+8] (entry.host)
-
-	// 4. The access itself. Unaligned is fine on x86-64 and matches the
+	// 2. The access itself. Unaligned is fine on x86-64 and matches the
 	// interpreter's deliberately linear unaligned reads.
 	if m.store {
 		a.b(0x45, 0x8B, 0x43, disp(m.rd)) // mov r8d, [r11+4*rd]
@@ -611,22 +581,96 @@ func (a *x64emitter) memory(m memAccess, pc uint32, retired int) {
 		}
 		a.storeEAX(m.rd)
 	}
-	skip := a.mark()
-	a.b(0xEB, 0) // jmp done (over the bail stub)
+	a.bailStub(pc, retired, misses)
+}
 
-	// 5. Bail stub: PC stays on this instruction and the status carries how many
-	// instructions the block retired before it, so the Run loop can undo the
-	// gate's up-front subtraction for the part that never ran.
+// multi translates PUSH/POP/STMIA/LDMIA: one probe covering the whole list,
+// then a word per register at a fixed displacement, then the base writeback.
+// See multiAccess (native_common.go) for why the instruction is all-or-nothing.
+func (a *x64emitter) multi(m multiAccess, pc uint32, retired int) {
+	span := uint32(4 * len(m.regs))
+	a.loadEAX(m.base)
+	if m.preDec {
+		a.subEAXimm(span) // PUSH transfers below the base
+	}
+	misses := a.probeTLB(m.store, span)
+	for i, reg := range m.regs {
+		offset := byte(4 * i)
+		if m.store {
+			a.b(0x45, 0x8B, 0x43, disp(reg))    // mov r8d, [r11+4*reg]
+			a.b(0x45, 0x89, 0x44, 0x11, offset) // mov [r9+rdx+off], r8d
+		} else {
+			a.b(0x45, 0x8B, 0x44, 0x11, offset) // mov r8d, [r9+rdx+off]
+			a.b(0x45, 0x89, 0x43, disp(reg))    // mov [r11+4*reg], r8d
+		}
+	}
+	if m.writeback {
+		// PUSH leaves the base at the bottom of the block it just wrote; the
+		// ascending forms leave it one word past the top.
+		if !m.preDec {
+			a.addEAXimm(span)
+		}
+		a.storeEAX(m.base)
+	}
+	a.bailStub(pc, retired, misses)
+}
+
+// probeTLB emits the software-TLB probe for an access of span bytes whose guest
+// address is already in EAX, leaving the host page pointer in R9 and the
+// in-page offset in EDX. It returns the forward-jump sites that must land on
+// the bail stub, which bailStub patches.
+//
+// Registers (all volatile under the Windows x64 ABI): ECX = table byte index,
+// EDX = guest page then in-page offset, R9 = half-table base then host page.
+// Region bounds and permissions are not checked, because tlbNote only installs
+// a page that lies wholly inside a region with the matching permission, and
+// never installs a writable page that holds translated code.
+func (a *x64emitter) probeTLB(store bool, span uint32) []int {
+	a.b(0x89, 0xC1)              // mov ecx, eax
+	a.b(0xC1, 0xE9, tlbPageBits) // shr ecx, 12
+	a.b(0x89, 0xCA)              // mov edx, ecx      (page number)
+	a.b(0x81, 0xE1)              // and ecx, mask
+	a.imm32(nativeTLBMask)
+	a.b(0xC1, 0xE1, 4) // shl ecx, 4 (tlbEntryBytes)
+	table := uint64(a.tlb)
+	if store {
+		table += tlbWriteOffset // stores probe the write half
+	}
+	a.b(0x49, 0xB9) // movabs r9, table
+	a.imm64(table)
+	a.b(0x41, 0x3B, 0x14, 0x09) // cmp edx, [r9+rcx]  (entry.tag)
+	misses := []int{a.mark()}
+	a.b(0x75, 0)    // jne bail (patched)
+	a.b(0x89, 0xC2) // mov edx, eax
+	a.b(0x81, 0xE2) // and edx, 0xfff
+	a.imm32(tlbPageSize - 1)
+	if span > 1 {
+		// Keep a straddling access - the only case the interpreter would
+		// service byte-wise across regions - on the interpreter.
+		a.b(0x81, 0xFA) // cmp edx, 4096-span
+		a.imm32(tlbPageSize - span)
+		misses = append(misses, a.mark())
+		a.b(0x77, 0) // ja bail (patched)
+	}
+	a.b(0x4D, 0x8B, 0x4C, 0x09, 0x08) // mov r9, [r9+rcx+8] (entry.host)
+	return misses
+}
+
+// bailStub closes an inline access: jump over the stub on success, then emit a
+// stub that leaves PC on this instruction and returns how many instructions the
+// block retired before it, so the Run loop can undo the gate's up-front
+// subtraction and let the interpreter service the access.
+func (a *x64emitter) bailStub(pc uint32, retired int, misses []int) {
+	skip := a.mark()
+	a.b(0xEB, 0) // jmp done
 	bail := a.mark()
 	a.movMemPC(pc)
 	a.b(0xB8)
 	a.imm32(nativeBailStatus(retired))
 	a.ret1()
 	done := a.mark()
-
-	a.buf[tagMiss+1] = byte(bail - (tagMiss + 2))
-	if crossMiss >= 0 {
-		a.buf[crossMiss+1] = byte(bail - (crossMiss + 2))
+	for _, site := range misses {
+		a.buf[site+1] = byte(bail - (site + 2))
 	}
 	a.buf[skip+1] = byte(done - (skip + 2))
 }

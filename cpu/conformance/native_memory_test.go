@@ -292,3 +292,120 @@ func TestNativeCrossPageAfterWarmTLB(t *testing.T) {
 		}
 	}
 }
+
+// Multi-register transfer encoders.
+func pushList(includeLR bool, list uint16) uint16 {
+	if includeLR {
+		return 0xb500 | list&0xff
+	}
+	return 0xb400 | list&0xff
+}
+
+func popList(includePC bool, list uint16) uint16 {
+	if includePC {
+		return 0xbd00 | list&0xff
+	}
+	return 0xbc00 | list&0xff
+}
+
+func stmia(rb, list uint16) uint16 { return 0xc000 | rb<<8 | list&0xff }
+func ldmia(rb, list uint16) uint16 { return 0xc800 | rb<<8 | list&0xff }
+
+// multiProgram repeats a multi-register transfer three times, for the same
+// reason memProgram does: the first execution always misses the cold software
+// TLB and bails, so a single copy would test only the fall-back path.
+func multiProgram(name string, base uint32, sp uint32, words ...uint16) Program {
+	body := make([]uint16, 0, 3*len(words)+1)
+	for range 3 {
+		body = append(body, words...)
+	}
+	regs := map[uint32]uint32{cpu.RegisterSP: sp}
+	for r := uint32(0); r < 8; r++ {
+		regs[r] = 0x11111111 * (r + 1)
+	}
+	regs[cpu.RegisterR6] = base
+	regs[cpu.RegisterR7] = base
+	regs[cpu.RegisterLR] = 0xfeed0001
+	return Program{
+		Name: name, Mode: cpu.ModeThumb, Regs: regs, Data: memPattern(),
+		Code: code(append(body, bkpt)...), Budget: 4096, CaptureN: DataSize,
+	}
+}
+
+// TestNativeMultiRegisterTransfers sweeps PUSH/POP/STMIA/LDMIA over register
+// lists, base addresses and page edges. The whole list is one contiguous run of
+// words, so the emitters serve it with a single TLB probe plus a range check;
+// what has to match the interpreter is the transfer ORDER (ascending register,
+// ascending address), the base writeback, and the all-or-nothing behaviour when
+// any word of the range would leave the page.
+func TestNativeMultiRegisterTransfers(t *testing.T) {
+	lists := []uint16{0x01, 0x03, 0x0f, 0xff, 0x81, 0xc0, 0x40}
+	bases := []uint32{
+		DataBase, DataBase + 4, DataBase + 2, DataBase + DataSize - 4,
+		DataBase + DataSize - 36, DataBase + DataSize - 40,
+		StackBase, StackTop - 36, StackTop - 4, StackTop, 0x9000,
+	}
+	for _, list := range lists {
+		for _, base := range bases {
+			for _, form := range []struct {
+				name string
+				word uint16
+			}{
+				{"stmia", stmia(6, list)},
+				{"ldmia", ldmia(6, list)},
+				{"stmia-base-in-list", stmia(7, list|0x80)},
+				{"ldmia-base-in-list", ldmia(7, list|0x80)},
+			} {
+				name := fmt.Sprintf("%s/list=%02x/base=%08x", form.name, list, base)
+				mustAgree(t, name, multiProgram(name, base, StackTop-64, form.word))
+			}
+			for _, form := range []struct {
+				name string
+				word uint16
+			}{
+				{"push", pushList(false, list)},
+				{"push-lr", pushList(true, list)},
+				{"pop", popList(false, list)},
+				{"pop-pc", popList(true, list)}, // must fall back: branch-exchange
+			} {
+				name := fmt.Sprintf("%s/list=%02x/sp=%08x", form.name, list, base)
+				mustAgree(t, name, multiProgram(name, DataBase, base, form.word))
+			}
+		}
+	}
+	// Empty lists: LDMIA/STMIA fault, PUSH/POP transfer nothing.
+	for _, word := range []uint16{stmia(6, 0), ldmia(6, 0), pushList(false, 0), popList(false, 0)} {
+		name := fmt.Sprintf("empty/%04x", word)
+		mustAgree(t, name, multiProgram(name, DataBase, StackTop-64, word))
+	}
+}
+
+// TestNativeMultiCrossPageAfterWarmTLB is the multi-register counterpart of
+// TestNativeCrossPageAfterWarmTLB: the page is warmed by an in-page transfer
+// first, so the range check is the only thing standing between the inline path
+// and a list that runs off the end of the page. The base walks up to the very
+// last words of the LAST mapped page, where the interpreter must fault.
+func TestNativeMultiCrossPageAfterWarmTLB(t *testing.T) {
+	for _, count := range []uint32{1, 2, 4, 8} {
+		list := uint16(1<<count - 1)
+		for _, off := range []uint32{4 * count, 4*count - 4, 4, 0} {
+			for _, form := range []struct {
+				name string
+				word uint16
+			}{{"stmia", stmia(6, list)}, {"ldmia", ldmia(6, list)}} {
+				name := fmt.Sprintf("multicross/%s/n=%d/-%d", form.name, count, off)
+				p := multiProgram(name, StackTop-off, StackTop-64, form.word)
+				// Warm the page with an in-range transfer through r7 first.
+				p.Code = code(
+					stmia(7, 0x01), ldmia(7, 0x01),
+					stmia(7, 0x01), ldmia(7, 0x01),
+					form.word, form.word,
+					bkpt,
+				)
+				p.Regs[cpu.RegisterR7] = StackBase
+				p.Regs[cpu.RegisterR6] = StackTop - off
+				mustAgree(t, name, p)
+			}
+		}
+	}
+}
