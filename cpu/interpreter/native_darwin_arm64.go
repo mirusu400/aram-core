@@ -104,7 +104,7 @@ func (b *Backend) arenaAppend(code []byte) uintptr {
 	a := b.nativeArena
 	n := uintptr(len(code))
 	off := (a.off + 15) &^ 15 // 16-byte align each block entry
-	if off+n > a.size {
+	if !a.reserve(off, n) {
 		return 0
 	}
 	C.jit_write(C.uintptr_t(a.base), C.size_t(off), unsafe.Pointer(&code[0]), C.size_t(n))

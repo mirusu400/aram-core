@@ -59,6 +59,12 @@ func NewNativeJIT() *Backend {
 
 func (b *Backend) newEmitter() emitter { return &arm64emitter{tlb: b.tlbBase()} }
 
+// arenaPageSize is the mprotect granularity assumed for the W^X flip. A wrong
+// guess only costs precision - the range is still page-aligned by rounding down
+// to a multiple of it, and arm64 Linux/Android pages are never smaller than 4
+// KiB - so it does not have to be queried at run time.
+const arenaPageSize = uintptr(4096)
+
 func newCodeArena(size uintptr) *codeArena {
 	mem, err := syscall.Mmap(-1, 0, int(size),
 		syscall.PROT_READ|syscall.PROT_WRITE,
@@ -67,11 +73,23 @@ func newCodeArena(size uintptr) *codeArena {
 		return nil
 	}
 	base := uintptr(unsafe.Pointer(&mem[0]))
+	// MAP_ANON pages are faulted in on demand, so the reservation costs only
+	// the code actually emitted and no explicit commit step is needed.
 	a := &codeArena{base: base, size: size, mem: mem}
-	a.protectRW = func() { syscall.Mprotect(mem, syscall.PROT_READ|syscall.PROT_WRITE) }
-	a.protectRX = func() { syscall.Mprotect(mem, syscall.PROT_READ|syscall.PROT_EXEC) }
 	a.release = func() { syscall.Munmap(mem) }
 	return a
+}
+
+// protect flips the pages holding [off,off+n) between writable and
+// executable. Only that range is reprotected: an mprotect walks the page tables
+// for every page it covers, so flipping the whole arena twice per translated
+// block made the syscall cost scale with the arena rather than with the block,
+// which a 128 MiB arena would make ruinous. mem[0] is page-aligned because mmap
+// returned it, so rounding the offset down keeps the sub-slice page-aligned.
+func (a *codeArena) protect(off, n uintptr, prot int) {
+	start := off &^ (arenaPageSize - 1)
+	end := min((off+n+arenaPageSize-1)&^(arenaPageSize-1), a.size)
+	syscall.Mprotect(a.mem[start:end], prot)
 }
 
 // arenaAppend copies a finished block into the arena (flipping W^X around the
@@ -81,12 +99,12 @@ func (b *Backend) arenaAppend(code []byte) uintptr {
 	a := b.nativeArena
 	n := uintptr(len(code))
 	off := (a.off + 15) &^ 15 // 16-byte align each block entry
-	if off+n > a.size {
+	if !a.reserve(off, n) {
 		return 0
 	}
-	a.protectRW()
+	a.protect(off, n, syscall.PROT_READ|syscall.PROT_WRITE)
 	copy(a.mem[off:off+n], code) // a.mem is the mmap'd slice; no uintptr->pointer cast
-	a.protectRX()
+	a.protect(off, n, syscall.PROT_READ|syscall.PROT_EXEC)
 	flushICache(a.base+off, a.base+off+n)
 	a.off = off + n
 	return a.base + off
