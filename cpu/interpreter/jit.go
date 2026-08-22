@@ -32,6 +32,7 @@ type jitInstr struct {
 
 type jitBlock struct {
 	start  uint32
+	end    uint32
 	instrs []jitInstr
 }
 
@@ -40,12 +41,23 @@ const jitMaxBlock = 256
 // smcInvalidate drops the translated-block cache when a write lands in
 // executable memory, so self-modifying or freshly loaded code never runs from a
 // stale translation. It is a cheap nil check when the JIT is disabled.
-func (b *Backend) smcInvalidate(perms cpu.Permissions) {
+func (b *Backend) smcInvalidate(address, size uint32, perms cpu.Permissions) {
 	if perms&cpu.PermissionExecute == 0 {
 		return
 	}
 	if b.jitBlocks != nil {
-		clear(b.jitBlocks)
+		// KTF/WIPI map the guest image read-write-execute, so the blitter's
+		// thousands of framebuffer writes each land in an executable region.
+		// Only a write that overlaps the span of code we have actually
+		// translated can invalidate a block; a write outside it (framebuffer,
+		// heap, stack) leaves the cache intact. jitCodeLo/Hi bound every
+		// translated block, so this never keeps a stale translation.
+		if size != 0 && address < b.jitCodeHi && address+size > b.jitCodeLo {
+			clear(b.jitBlocks)
+			b.jitGen++
+			b.jitCodeLo, b.jitCodeHi = ^uint32(0), 0
+		}
+		return
 	}
 	if b.nativeBlocks != nil {
 		b.nativeInvalidate()
@@ -106,12 +118,43 @@ outer:
 // jitBlockAt returns the translated block at pc, translating and caching on a
 // miss. A nil entry is cached for a PC whose first instruction is untranslatable
 // so it is not re-translated each time.
+// jitCacheSize is the direct-mapped block-dispatch cache depth. A power of two
+// so the index is a mask; large enough that a title's hot block set rarely
+// collides, small enough to stay resident (each entry is 24 bytes).
+const jitCacheSize = 8192
+
+// jitCacheEntry caches one translated block for direct-mapped dispatch. gen ties
+// it to the jitBlocks generation so an invalidation (which bumps b.jitGen) makes
+// every stale entry miss without the invalidation path having to walk the array.
+type jitCacheEntry struct {
+	pc    uint32
+	gen   uint64
+	block *jitBlock
+}
+
 func (b *Backend) jitBlockAt(pc uint32) *jitBlock {
-	if block, ok := b.jitBlocks[pc]; ok {
-		return block
+	slot := &b.jitCache[int(pc>>1)&(jitCacheSize-1)]
+	if slot.block != nil && slot.pc == pc && slot.gen == b.jitGen {
+		return slot.block
 	}
-	block := b.translateThumbBlock(pc)
-	b.jitBlocks[pc] = block
+	block, ok := b.jitBlocks[pc]
+	if !ok {
+		block = b.translateThumbBlock(pc)
+		b.jitBlocks[pc] = block
+		if block != nil {
+			// Grow the translated-code span so smcInvalidate can tell a real
+			// code write from an ordinary data/framebuffer write.
+			if block.start < b.jitCodeLo {
+				b.jitCodeLo = block.start
+			}
+			if block.end > b.jitCodeHi {
+				b.jitCodeHi = block.end
+			}
+		}
+	}
+	slot.pc = pc
+	slot.gen = b.jitGen
+	slot.block = block
 	return block
 }
 
@@ -136,7 +179,7 @@ func (b *Backend) translateThumbBlock(pc uint32) *jitBlock {
 	if len(instrs) == 0 {
 		return nil
 	}
-	return &jitBlock{start: pc, instrs: instrs}
+	return &jitBlock{start: pc, end: cur, instrs: instrs}
 }
 
 // translateThumbInstr returns a closure executing one Thumb instruction, whether
