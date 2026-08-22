@@ -18,13 +18,28 @@ package interpreter
 // emitter and always falls back to the precise interpreter.
 
 const (
-	nativeMaxBlock     = 256              // guest instructions per translated block
-	nativeStatusNorm   = 0                // block completed; resume dispatch at regs[PC]
-	nativeStatusBKPT   = 1                // block hit BKPT; stop with StopBreakpoint
-	nativeStatusBudget = 2                // remaining budget < next block; interpret the tail
-	nativeStatusBail   = 3                // software-TLB miss; interpret this one instruction
-	nativeArenaSize    = uintptr(8 << 20) // executable arena bytes before a flush
+	nativeMaxBlock     = 256 // guest instructions per translated block
+	nativeStatusNorm   = 0   // block completed; resume dispatch at regs[PC]
+	nativeStatusBKPT   = 1   // block hit BKPT; stop with StopBreakpoint
+	nativeStatusBudget = 2   // remaining budget < next block; interpret the tail
+	nativeStatusBail   = 3   // software-TLB miss; interpret this one instruction
 )
+
+// nativeArenaSize is the executable arena's capacity: the bytes of translated
+// code held before a flush drops every block.
+//
+// It is a working-set budget, not a memory-frugality knob. A flush re-emits the
+// whole working set, so an arena smaller than a title's hot code turns
+// translation into a permanent treadmill. The original 8 MiB held about 5900
+// blocks, while 영웅서기3 steadily executes ~23000 (38 MiB of emitted code): it
+// flushed and re-translated everything about every 30 frames, spending 45% of
+// the frame in the translator. At 128 MiB it never flushes and the frame is
+// 2.0x faster.
+//
+// The arena is reserved, not resident. The windows path commits it a chunk at a
+// time and the mmap paths fault pages in on demand, so a title whose code fits
+// in a megabyte (메이플스토리 uses 1.2 MiB) still occupies only that much.
+const nativeArenaSize = uintptr(128 << 20)
 
 // nativeBailStatus packs the block status a software-TLB miss returns: the low
 // byte is nativeStatusBail and the rest is retired, the number of instructions
@@ -157,12 +172,26 @@ type codeArena struct {
 	off  uintptr // next free byte (bump allocator)
 	mem  []byte  // backing slice when the host maps one (android mmap); nil on windows
 
-	// protectRW makes the whole arena writable (W^X: called before emitting a
-	// block), protectRX makes it executable and flushes the i-cache (called
-	// after), and release returns the mapping to the OS.
-	protectRW func()
-	protectRX func()
-	release   func()
+	// commit makes [0,end) usable on a host that reserves the arena without
+	// backing it (windows). It reports whether the range is now committed; a
+	// host that commits the whole arena up front leaves it nil.
+	commit func(end uintptr) bool
+	// release returns the mapping to the OS.
+	release func()
+}
+
+// reserve makes sure the arena is backed up to off+n, growing the committed
+// prefix in chunks so a large reservation costs only the pages a title actually
+// fills. It reports false when the arena is full or the host refuses to back
+// the range.
+func (a *codeArena) reserve(off, n uintptr) bool {
+	if off+n > a.size {
+		return false
+	}
+	if a.commit == nil {
+		return true
+	}
+	return a.commit(off + n)
 }
 
 // nativeBlock is one translated straight-line Thumb run: entry is the host
