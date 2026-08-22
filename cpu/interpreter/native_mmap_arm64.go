@@ -51,7 +51,7 @@ func NewNativeJIT() *Backend {
 		b.nativeBlocks = make(map[uint32]*nativeBlock)
 		b.nativeCodeLo, b.nativeCodeHi = ^uint32(0), 0
 		b.tlb = newNativeTLB()
-		b.nativeCache = make([]nativeCacheEntry, nativeCacheSize)
+		b.nativeCache = new([nativeCacheSize]nativeCacheEntry)
 		b.nativeCodePages = make([]uint64, nativeCodePageWords)
 	}
 	return b

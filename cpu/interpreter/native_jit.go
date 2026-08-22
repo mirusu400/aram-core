@@ -82,12 +82,18 @@ func (b *Backend) runThumbNative(limit uint64) (uint64, *cpu.StopReason, error) 
 			reason := cpu.StopBreakpoint
 			return limit - uint64(b.nativeRemain), &reason, nil
 		case nativeStatusBudget:
-			// Remaining budget < block.count. If any budget is left, interpret one
-			// to make progress on the batch tail (< block.count instructions); if
-			// it is exactly zero the loop condition ends the run without
-			// underflowing the unsigned counter.
+			// Remaining budget < block.count, so no block starting here can
+			// run: interpret the rest of the batch in one go. Taking it one
+			// instruction at a time meant a block lookup, a flag
+			// materialisation and a native call that could only report the
+			// same shortfall between every one of them, and a batch ends this
+			// way on every host-bridge crossing - 20000 times a frame on
+			// 영웅서기3. Zero remaining ends the run through the loop
+			// condition without underflowing the unsigned counter.
 			if b.nativeRemain > 0 {
-				if reason, err, done := b.interpretOneNative(); done {
+				if reason, err, done := b.interpretNative(
+					b.nativeRemain,
+				); done {
 					return limit - uint64(b.nativeRemain), reason, err
 				}
 			}
@@ -101,7 +107,15 @@ func (b *Backend) runThumbNative(limit uint64) (uint64, *cpu.StopReason, error) 
 // budget, and reports whether runThumbNative must return (fault, stop, or a
 // switch to ARM). done==false means keep looping.
 func (b *Backend) interpretOneNative() (*cpu.StopReason, error, bool) {
-	n, reason, err := b.runThumb(1)
+	return b.interpretNative(1)
+}
+
+// interpretNative runs up to count interpreter instructions against the shared
+// budget. The interpreter is the oracle the translated blocks are validated
+// against, so which of the two runs an instruction cannot change the result -
+// only how much per-instruction dispatch it costs.
+func (b *Backend) interpretNative(count uint32) (*cpu.StopReason, error, bool) {
+	n, reason, err := b.runThumb(uint64(count))
 	b.nativeRemain -= uint32(n)
 	if err != nil {
 		return nil, err, true
@@ -119,7 +133,7 @@ func (b *Backend) interpretOneNative() (*cpu.StopReason, error, bool) {
 // miss. A nil entry is cached for a PC whose first instruction is untranslatable
 // so it is not re-translated each time.
 func (b *Backend) nativeBlockAt(pc uint32) *nativeBlock {
-	slot := &b.nativeCache[int(pc>>1)&(nativeCacheSize-1)]
+	slot := &b.nativeCache[pc>>1&(nativeCacheSize-1)]
 	if slot.pc == pc && slot.gen == b.nativeGen {
 		return slot.block
 	}
