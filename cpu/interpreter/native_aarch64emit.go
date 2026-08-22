@@ -42,10 +42,19 @@ const (
 	a64MaskN         = 0x12010000 // & 0x80000000 (isolate N)
 	a64MaskTop4      = 0x12040C00 // & 0xF0000000 (isolate N,Z,C,V nibble)
 	a64Mask1         = 0x12000000 // & 0x00000001 (isolate bit 0)
+	a64Mask255       = 0x12001C00 // & 0x000000FF (software-TLB index)
+	a64MaskPageOff   = 0x12002C00 // & 0x00000FFF (in-page offset)
+)
+
+// Condition codes used by the emitted control flow.
+const (
+	a64CondNE = 1 // not equal
+	a64CondHI = 8 // unsigned higher
 )
 
 type arm64emitter struct {
 	buf []byte
+	tlb uintptr // host address of the backend's software TLB (native_tlb.go)
 }
 
 var _ emitter = (*arm64emitter)(nil)
@@ -70,6 +79,34 @@ func (e *arm64emitter) loadConst(rd, v uint32) {
 	if (v>>16)&0xffff != 0 {
 		e.movk16(rd, (v>>16)&0xffff)
 	}
+}
+
+// loadConst64 materialises a full 64-bit constant into xd (MOVZ plus one MOVK
+// per non-zero 16-bit chunk). Used for the software-TLB base address.
+func (e *arm64emitter) loadConst64(rd uint32, v uint64) {
+	e.w(0xD2800000 | (uint32(v&0xffff) << 5) | rd) // movz xd,#imm16
+	for hw := uint32(1); hw < 4; hw++ {
+		chunk := uint32((v >> (16 * hw)) & 0xffff)
+		if chunk != 0 {
+			e.w(0xF2800000 | (hw << 21) | (chunk << 5) | rd) // movk xd,#imm16,lsl#(16*hw)
+		}
+	}
+}
+
+func (e *arm64emitter) addReg(rd, rn, rm uint32) { e.w(0x0B000000 | (rm << 16) | (rn << 5) | rd) } // add wd,wn,wm
+
+// addLSL64 emits add xd, xn, xm, lsl #shift (64-bit, for TLB entry addressing).
+func (e *arm64emitter) addLSL64(rd, rn, rm, shift uint32) {
+	e.w(0x8B000000 | (rm << 16) | (shift << 10) | (rn << 5) | rd)
+}
+
+// ldrWoff/ldrXoff load a word / doubleword at a byte offset from a base
+// register (scaled unsigned-offset form).
+func (e *arm64emitter) ldrWoff(rt, rn, off uint32) {
+	e.w(0xB9400000 | ((off / 4) << 10) | (rn << 5) | rt)
+}
+func (e *arm64emitter) ldrXoff(rt, rn, off uint32) {
+	e.w(0xF9400000 | ((off / 8) << 10) | (rn << 5) | rt)
 }
 
 func (e *arm64emitter) addImm12(rd, rn, imm uint32)  { e.w(0x11000000 | (imm << 10) | (rn << 5) | rd) } // add  wd,wn,#imm
@@ -155,7 +192,17 @@ func (e *arm64emitter) commitNZCV(bool) {
 // prologue puts the argument pointers in base registers: X9 = &regs[0] (X0),
 // X10 = &nativeRemain (X1). Both are caller-saved temporaries; the leaf block
 // keeps them without saving.
-func (e *arm64emitter) prologue() { e.w(0xAA0003E9); e.w(0xAA0103EA) } // mov x9,x0 ; mov x10,x1
+func (e *arm64emitter) prologue() {
+	e.w(0xAA0003E9) // mov x9, x0   (&regs[0])
+	e.w(0xAA0103EA) // mov x10, x1  (&nativeRemain)
+	if e.tlb != 0 {
+		// X11 holds the software-TLB base for the whole block. The self-loop
+		// back-edge targets the gate, which is emitted after this prologue, so
+		// it stays live across loop iterations and a memory op costs no
+		// constant materialisation.
+		e.loadConst64(11, uint64(e.tlb))
+	}
+}
 
 func (e *arm64emitter) mark() int           { return len(e.buf) }
 func (e *arm64emitter) appendCode(c []byte) { e.buf = append(e.buf, c...) }
@@ -169,6 +216,15 @@ func (e *arm64emitter) bUncond(rel int) { e.w(0x14000000 | (uint32(rel/4) & 0x3F
 // bCond emits B.<cond> to a byte displacement relative to the current instruction.
 func (e *arm64emitter) bCond(cond uint8, rel int) {
 	e.w(0x54000000 | ((uint32(rel/4) & 0x7FFFF) << 5) | uint32(cond))
+}
+
+// patchB rewrites the unconditional B word at byte offset pos to branch to target.
+func (e *arm64emitter) patchB(pos, target int) {
+	word := uint32(0x14000000) | (uint32((target-pos)/4) & 0x3FFFFFF)
+	e.buf[pos] = byte(word)
+	e.buf[pos+1] = byte(word >> 8)
+	e.buf[pos+2] = byte(word >> 16)
+	e.buf[pos+3] = byte(word >> 24)
 }
 
 // patchBCond rewrites the B.cond word at byte offset pos to branch to target.
@@ -419,9 +475,153 @@ func (e *arm64emitter) exitCondBranch(cond uint8, takenPC, nextPC uint32) {
 	e.ret()
 }
 
+// exitBranchLink is the BL terminator: LR and PC are both constants fixed when
+// the block was translated.
+func (e *arm64emitter) exitBranchLink(link, target uint32) {
+	e.loadConst(0, link)
+	e.strW(0, cpu.RegisterLR)
+	e.loadConst(0, target)
+	e.strW(0, cpu.RegisterPC)
+	e.movz(0, nativeStatusNorm)
+	e.ret()
+}
+
 func (e *arm64emitter) exitBkpt(nextPC uint32) {
 	e.loadConst(0, nextPC)
 	e.strW(0, cpu.RegisterPC)
 	e.movz(0, nativeStatusBKPT)
 	e.ret()
+}
+
+// --- inline memory through the software TLB --------------------------------
+//
+// memory is the AArch64 counterpart of the x86-64 emitter's inline load/store
+// (see native_emit_windows_amd64.go for the shared rationale): probe the
+// software TLB (native_tlb.go) with the guest page and access host memory
+// directly, instead of ending the block and letting the interpreter run the
+// access. Registers used, all AAPCS64 caller-saved temporaries a leaf block may
+// clobber: W0 = address then loaded value, W1 = guest page, W2 = table index
+// then in-page offset, X3 = entry address then host page, W4 = tag then stored
+// value. X11 (set by the prologue) is the table base.
+//
+// Both halves of the table live in one allocation, so a store simply probes at
+// tlbWriteOffset; the emitted code never looks at permissions, because tlbNote
+// installs a page in a half only when that half's access is legal for it.
+func (e *arm64emitter) memory(m memAccess, pc uint32, retired int) {
+	// 1. Effective address into W0, exactly as the interpreter computes it.
+	if m.absolute {
+		e.loadConst(0, m.offset)
+	} else {
+		e.ldrW(0, m.base)
+		if m.hasIndex {
+			e.ldrW(1, m.index)
+			e.addReg(0, 0, 1)
+		}
+		if m.offset != 0 {
+			e.addImm12(0, 0, m.offset)
+		}
+	}
+
+	// 2. Probe the half-table entry for this page.
+	tagOff, hostOff := uint32(0), uint32(8)
+	if m.store {
+		tagOff, hostOff = tlbWriteOffset, tlbWriteOffset+8
+	}
+	e.lsrI(1, 0, tlbPageBits)   // w1 = guest page
+	e.andMask(2, 1, a64Mask255) // w2 = page & mask
+	e.addLSL64(3, 11, 2, 4)     // x3 = table + index*tlbEntryBytes
+	e.ldrWoff(4, 3, tagOff)     // w4 = entry.tag
+	e.subsReg(a64WZR, 4, 1)     // cmp w4, w1
+	tagMiss := e.mark()
+	e.w(0) // placeholder: b.ne bail
+
+	// 3. In-page offset and the page-crossing check.
+	e.andMask(2, 0, a64MaskPageOff) // w2 = address & 0xfff
+	crossMiss := -1
+	if m.size > 1 {
+		e.subsImm12(a64WZR, 2, tlbPageSize-uint32(m.size)) // cmp w2, #4096-size
+		crossMiss = e.mark()
+		e.w(0) // placeholder: b.hi bail
+	}
+	e.ldrXoff(3, 3, hostOff) // x3 = entry.host
+
+	// 4. The access. AArch64 handles unaligned normal memory, matching the
+	// interpreter's deliberately linear unaligned reads. The signed loads use
+	// the 64-bit-destination form; only the low word is written back, so it is
+	// the same value the interpreter's int32(int16(...)) produces.
+	if m.store {
+		e.ldrW(4, m.rd)
+		switch m.size {
+		case 4:
+			e.w(0xB8206800 | (2 << 16) | (3 << 5) | 4) // str  w4,[x3,x2]
+		case 2:
+			e.w(0x78206800 | (2 << 16) | (3 << 5) | 4) // strh w4,[x3,x2]
+		default:
+			e.w(0x38206800 | (2 << 16) | (3 << 5) | 4) // strb w4,[x3,x2]
+		}
+	} else {
+		switch {
+		case m.size == 4:
+			e.w(0xB8606800 | (2 << 16) | (3 << 5)) // ldr   w0,[x3,x2]
+		case m.size == 2 && m.signed:
+			e.w(0x78A06800 | (2 << 16) | (3 << 5)) // ldrsh x0,[x3,x2]
+		case m.size == 2:
+			e.w(0x78606800 | (2 << 16) | (3 << 5)) // ldrh  w0,[x3,x2]
+		case m.signed:
+			e.w(0x38A06800 | (2 << 16) | (3 << 5)) // ldrsb x0,[x3,x2]
+		default:
+			e.w(0x38606800 | (2 << 16) | (3 << 5)) // ldrb  w0,[x3,x2]
+		}
+		e.strW(0, m.rd)
+	}
+	skip := e.mark()
+	e.w(0) // placeholder: b done
+
+	// 5. Bail stub: leave PC on this instruction and report how many
+	// instructions the block retired before it, so the Run loop can undo the
+	// gate's up-front subtraction and let the interpreter service the access.
+	bail := e.mark()
+	e.loadConst(0, pc)
+	e.strW(0, cpu.RegisterPC)
+	e.loadConst(0, nativeBailStatus(retired))
+	e.ret()
+	done := e.mark()
+
+	e.patchBCond(tagMiss, bail, a64CondNE)
+	if crossMiss >= 0 {
+		e.patchBCond(crossMiss, bail, a64CondHI)
+	}
+	e.patchB(skip, done)
+}
+
+// highRegister is the AArch64 counterpart of the x86-64 emitter's
+// high-register ADD/CMP/MOV (see native_emit_windows_amd64.go for the
+// semantics). W0 holds the destination operand, W1 the source.
+func (e *arm64emitter) highRegister(op, rd, rs, pcValue uint32) bool {
+	if op == 3 || (rd == cpu.RegisterPC && op != 1) {
+		return false
+	}
+	load := func(reg, gi uint32) {
+		if gi == cpu.RegisterPC {
+			e.loadConst(reg, pcValue)
+		} else {
+			e.ldrW(reg, gi)
+		}
+	}
+	switch op {
+	case 0: // ADD rd, rs (no flags)
+		load(0, rd)
+		load(1, rs)
+		e.addReg(0, 0, 1)
+		e.strW(0, rd)
+	case 1: // CMP rd, rs -> setNZCV(sub), no writeback
+		load(0, rd)
+		load(1, rs)
+		e.subsReg(0, 0, 1)
+		e.commitNZCV(true)
+	default: // 2: MOV rd, rs (no flags)
+		load(0, rs)
+		e.strW(0, rd)
+	}
+	return true
 }

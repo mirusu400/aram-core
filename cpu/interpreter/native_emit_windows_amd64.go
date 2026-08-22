@@ -21,12 +21,18 @@ import "github.com/mirusu400/aram-core/cpu"
 
 type x64emitter struct {
 	buf []byte
+	tlb uintptr // host address of the backend's software TLB (native_tlb.go)
 }
 
 func (a *x64emitter) b(bytes ...byte) { a.buf = append(a.buf, bytes...) }
 
 func (a *x64emitter) imm32(v uint32) {
 	a.buf = append(a.buf, byte(v), byte(v>>8), byte(v>>16), byte(v>>24))
+}
+
+func (a *x64emitter) imm64(v uint64) {
+	a.buf = append(a.buf, byte(v), byte(v>>8), byte(v>>16), byte(v>>24),
+		byte(v>>32), byte(v>>40), byte(v>>48), byte(v>>56))
 }
 
 func (a *x64emitter) code() []byte { return a.buf }
@@ -102,6 +108,16 @@ func (a *x64emitter) exitCondBranch(cond uint8, takenPC, nextPC uint32) {
 	a.cmovnzEAXEDX() // eax = cond ? taken : next
 	a.storeEAXtoPC()
 	a.b(0x31, 0xC0) // xor eax, eax
+	a.ret1()
+}
+
+// exitBranchLink is the BL terminator: both the link value and the target are
+// constants fixed when the block was translated, so it is two immediate stores.
+func (a *x64emitter) exitBranchLink(link, target uint32) {
+	a.movEAXimm(link)
+	a.storeEAX(cpu.RegisterLR)
+	a.movMemPC(target)
+	a.b(0x31, 0xC0) // xor eax, eax (nativeStatusNorm)
 	a.ret1()
 }
 
@@ -499,4 +515,158 @@ func (a *x64emitter) addSPImm(rd, offset uint32) {
 func (a *x64emitter) setRegConst(rd, value uint32) {
 	a.movEAXimm(value)
 	a.storeEAX(rd)
+}
+
+// --- inline memory through the software TLB --------------------------------
+//
+// memory translates one Thumb single load/store into a probe of the software
+// TLB (native_tlb.go) plus a direct host access, instead of ending the block and
+// letting the interpreter run it. This is what makes the native backend win on
+// the guest software blitters that dominate a heavy frame: an access is a
+// handful of host instructions rather than a Go call with a region lookup.
+//
+// Registers (all volatile under the Windows x64 ABI, so the leaf block may
+// clobber them): EAX = address then loaded value, ECX = table byte index,
+// EDX = guest page number then in-page offset, R9 = half-table base then host
+// page pointer, R8D = value to store.
+//
+// The probe is: tag == guest page, and the access does not cross the page. Both
+// failures jump to a bail stub that leaves PC on this instruction and returns
+// nativeBailStatus(retired); the Run loop then hands the instruction to the
+// interpreter, which installs the page. Region bounds and permissions are not
+// checked here because tlbNote only ever installs a page that lies wholly
+// inside a region with the matching permission, and never installs a writable
+// page that overlaps translated code (so an inline store can never be
+// self-modifying).
+func (a *x64emitter) memory(m memAccess, pc uint32, retired int) {
+	// 1. Effective address into EAX, exactly as the interpreter computes it.
+	if m.absolute {
+		a.movEAXimm(m.offset)
+	} else {
+		a.loadEAX(m.base)
+		if m.hasIndex {
+			a.addEAXmem(m.index)
+		}
+		if m.offset != 0 {
+			a.addEAXimm(m.offset)
+		}
+	}
+
+	// 2. Probe: ECX = (page & mask) * entry size, EDX = page, compare the tag.
+	a.b(0x89, 0xC1)              // mov ecx, eax
+	a.b(0xC1, 0xE9, tlbPageBits) // shr ecx, 12
+	a.b(0x89, 0xCA)              // mov edx, ecx      (page number)
+	a.b(0x81, 0xE1)              // and ecx, mask
+	a.imm32(nativeTLBMask)       //
+	a.b(0xC1, 0xE1, 4)           // shl ecx, 4        (tlbEntryBytes)
+	table := uint64(a.tlb)       //
+	if m.store {                 //
+		table += tlbWriteOffset // stores probe the write half
+	}
+	a.b(0x49, 0xB9)             // movabs r9, table
+	a.imm64(table)              //
+	a.b(0x41, 0x3B, 0x14, 0x09) // cmp edx, [r9+rcx]  (entry.tag)
+	tagMiss := a.mark()
+	a.b(0x75, 0) // jne bail (patched below)
+
+	// 3. In-page offset, and the page-crossing check that keeps a straddling
+	// access - the only case the interpreter would service byte-wise across
+	// regions - on the interpreter.
+	a.b(0x89, 0xC2) // mov edx, eax
+	a.b(0x81, 0xE2) // and edx, 0xfff
+	a.imm32(tlbPageSize - 1)
+	crossMiss := -1
+	if m.size > 1 {
+		a.b(0x81, 0xFA) // cmp edx, 4096-size
+		a.imm32(tlbPageSize - uint32(m.size))
+		crossMiss = a.mark()
+		a.b(0x77, 0) // ja bail (patched below)
+	}
+	a.b(0x4D, 0x8B, 0x4C, 0x09, 0x08) // mov r9, [r9+rcx+8] (entry.host)
+
+	// 4. The access itself. Unaligned is fine on x86-64 and matches the
+	// interpreter's deliberately linear unaligned reads.
+	if m.store {
+		a.b(0x45, 0x8B, 0x43, disp(m.rd)) // mov r8d, [r11+4*rd]
+		switch m.size {
+		case 4:
+			a.b(0x45, 0x89, 0x04, 0x11) // mov [r9+rdx], r8d
+		case 2:
+			a.b(0x66, 0x45, 0x89, 0x04, 0x11) // mov [r9+rdx], r8w
+		default:
+			a.b(0x45, 0x88, 0x04, 0x11) // mov [r9+rdx], r8b
+		}
+	} else {
+		switch {
+		case m.size == 4:
+			a.b(0x41, 0x8B, 0x04, 0x11) // mov eax, [r9+rdx]
+		case m.size == 2 && m.signed:
+			a.b(0x41, 0x0F, 0xBF, 0x04, 0x11) // movsx eax, word [r9+rdx]
+		case m.size == 2:
+			a.b(0x41, 0x0F, 0xB7, 0x04, 0x11) // movzx eax, word [r9+rdx]
+		case m.signed:
+			a.b(0x41, 0x0F, 0xBE, 0x04, 0x11) // movsx eax, byte [r9+rdx]
+		default:
+			a.b(0x41, 0x0F, 0xB6, 0x04, 0x11) // movzx eax, byte [r9+rdx]
+		}
+		a.storeEAX(m.rd)
+	}
+	skip := a.mark()
+	a.b(0xEB, 0) // jmp done (over the bail stub)
+
+	// 5. Bail stub: PC stays on this instruction and the status carries how many
+	// instructions the block retired before it, so the Run loop can undo the
+	// gate's up-front subtraction for the part that never ran.
+	bail := a.mark()
+	a.movMemPC(pc)
+	a.b(0xB8)
+	a.imm32(nativeBailStatus(retired))
+	a.ret1()
+	done := a.mark()
+
+	a.buf[tagMiss+1] = byte(bail - (tagMiss + 2))
+	if crossMiss >= 0 {
+		a.buf[crossMiss+1] = byte(bail - (crossMiss + 2))
+	}
+	a.buf[skip+1] = byte(done - (skip + 2))
+}
+
+// highRegister translates the ADD/CMP/MOV high-register forms. ADD and MOV set
+// no flags at all; CMP sets N/Z/C/V from the subtraction exactly as the
+// low-register CMP does. Reading R15 yields pcValue, so a PC operand becomes an
+// immediate. Writing R15 (and BX/BLX) is a branch, which this does not
+// translate - the block ends there and the interpreter takes it.
+func (a *x64emitter) highRegister(op, rd, rs, pcValue uint32) bool {
+	if op == 3 || (rd == cpu.RegisterPC && op != 1) {
+		return false
+	}
+	loadEAXOperand := func(gi uint32) {
+		if gi == cpu.RegisterPC {
+			a.movEAXimm(pcValue)
+		} else {
+			a.loadEAX(gi)
+		}
+	}
+	switch op {
+	case 0: // ADD rd, rs (no flags)
+		loadEAXOperand(rd)
+		if rs == cpu.RegisterPC {
+			a.addEAXimm(pcValue)
+		} else {
+			a.addEAXmem(rs)
+		}
+		a.storeEAX(rd)
+	case 1: // CMP rd, rs -> setNZCV(sub), no writeback
+		loadEAXOperand(rd)
+		if rs == cpu.RegisterPC {
+			a.subEAXimm(pcValue)
+		} else {
+			a.subEAXmem(rs)
+		}
+		a.commitNZCV(true)
+	default: // 2: MOV rd, rs (no flags)
+		loadEAXOperand(rs)
+		a.storeEAX(rd)
+	}
+	return true
 }

@@ -24,11 +24,10 @@ var (
 )
 
 const (
-	memCommit       = 0x1000
-	memReserve      = 0x2000
-	memRelease      = 0x8000
-	pageReadWrite   = 0x04
-	pageExecuteRead = 0x20
+	memCommit            = 0x1000
+	memReserve           = 0x2000
+	memRelease           = 0x8000
+	pageExecuteReadWrite = 0x40
 )
 
 // NewNativeJIT returns a backend that runs Thumb through the native machine-code
@@ -40,41 +39,45 @@ const (
 func NewNativeJIT() *Backend {
 	b := NewWithMemoryLimit(DefaultMemoryLimit)
 	if arena := newCodeArena(nativeArenaSize); arena != nil {
+		b.currentProcess, _, _ = procGetCurrentProcess.Call()
 		b.nativeArena = arena
 		b.nativeBlocks = make(map[uint32]*nativeBlock)
+		b.nativeCodeLo, b.nativeCodeHi = ^uint32(0), 0
+		b.tlb = newNativeTLB()
+		b.nativeCache = make([]nativeCacheEntry, nativeCacheSize)
+		b.nativeCodePages = make([]uint64, nativeCodePageWords)
 	}
 	return b
 }
 
-func (b *Backend) newEmitter() emitter { return &x64emitter{} }
+func (b *Backend) newEmitter() emitter { return &x64emitter{tlb: b.tlbBase()} }
 
+// newCodeArena reserves the executable arena. It is mapped read-write-execute
+// once instead of being flipped W^X around every block: the original per-block
+// VirtualProtect pair plus a whole-arena FlushInstructionCache cost four kernel
+// transitions per translated block, and a real title translates blocks by the
+// hundred thousand (short runs of Thumb, re-translated after every
+// self-modifying write), which made translation - not execution - the frame's
+// dominant cost. x86 instruction and data caches are coherent, so no flush is
+// required for freshly written code either; protectRW/protectRX stay nil and
+// the portable arenaAppend simply skips them.
 func newCodeArena(size uintptr) *codeArena {
-	base, _, _ := procVirtualAlloc.Call(0, size, memCommit|memReserve, pageReadWrite)
+	base, _, _ := procVirtualAlloc.Call(0, size, memCommit|memReserve, pageExecuteReadWrite)
 	if base == 0 {
 		return nil
 	}
 	a := &codeArena{base: base, size: size}
-	a.protectRW = func() {
-		var old uint32
-		procVirtualProtect.Call(base, size, pageReadWrite, uintptr(unsafe.Pointer(&old)))
-	}
-	a.protectRX = func() {
-		var old uint32
-		procVirtualProtect.Call(base, size, pageExecuteRead, uintptr(unsafe.Pointer(&old)))
-		proc, _, _ := procGetCurrentProcess.Call()
-		procFlushInstructionCache.Call(proc, base, size)
-	}
 	a.release = func() {
 		procVirtualFree.Call(base, 0, memRelease)
 	}
 	return a
 }
 
-// arenaAppend copies a finished block into the arena (flipping W^X around the
-// write) and returns its host entry address, or 0 if the arena is full. The copy
-// goes through WriteProcessMemory so no Go pointer is ever derived from the
-// VirtualAlloc'd base address (the destination is passed to the OS as a plain
-// integer address, keeping the write free of uintptr->unsafe.Pointer casts).
+// arenaAppend copies a finished block into the arena and returns its host entry
+// address, or 0 if the arena is full. The copy goes through WriteProcessMemory
+// so no Go pointer is ever derived from the VirtualAlloc'd base address (the
+// destination is passed to the OS as a plain integer address, keeping the write
+// free of uintptr->unsafe.Pointer casts).
 func (b *Backend) arenaAppend(code []byte) uintptr {
 	a := b.nativeArena
 	n := uintptr(len(code))
@@ -82,22 +85,14 @@ func (b *Backend) arenaAppend(code []byte) uintptr {
 	if off+n > a.size {
 		return 0
 	}
-	a.protectRW()
-	proc, _, _ := procGetCurrentProcess.Call()
-	procWriteProcessMemory.Call(proc, a.base+off,
+	procWriteProcessMemory.Call(b.currentProcess, a.base+off,
 		uintptr(unsafe.Pointer(&code[0])), n, 0)
-	a.protectRX()
 	a.off = off + n
 	return a.base + off
 }
 
 // callNativeBlock invokes a translated block, passing &regs[0] in RCX and
 // &nativeRemain in RDX, and returning the status the block leaves in EAX.
-// SyscallN performs the Go->native->Go transition safely (the block runs like an
-// opaque syscall, so the goroutine is not async-preempted while executing host
-// code).
-func callNativeBlock(entry uintptr, regs, remain *uint32) uintptr {
-	status, _, _ := syscall.SyscallN(entry,
-		uintptr(unsafe.Pointer(regs)), uintptr(unsafe.Pointer(remain)))
-	return status
-}
+// Implemented as a Go-assembly trampoline in native_trampoline_amd64.s; see
+// that file for why a direct CALL replaced the original syscall.SyscallN.
+func callNativeBlock(entry uintptr, regs, remain *uint32) uintptr

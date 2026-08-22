@@ -22,8 +22,36 @@ const (
 	nativeStatusNorm   = 0                // block completed; resume dispatch at regs[PC]
 	nativeStatusBKPT   = 1                // block hit BKPT; stop with StopBreakpoint
 	nativeStatusBudget = 2                // remaining budget < next block; interpret the tail
+	nativeStatusBail   = 3                // software-TLB miss; interpret this one instruction
 	nativeArenaSize    = uintptr(8 << 20) // executable arena bytes before a flush
 )
+
+// nativeBailStatus packs the block status a software-TLB miss returns: the low
+// byte is nativeStatusBail and the rest is retired, the number of instructions
+// the block had already retired when it bailed. The budget gate at the top of a
+// block subtracts the WHOLE block's instruction count up front, so the Run loop
+// needs retired to give back the part that never ran.
+func nativeBailStatus(retired int) uint32 {
+	return uint32(nativeStatusBail) | uint32(retired)<<8
+}
+
+// memAccess describes one Thumb single load/store for the emitters' inline
+// software-TLB path. The interpreter's deliberately linear unaligned access is
+// reproduced exactly: the host load/store is unaligned-capable and the emitted
+// page-crossing check sends anything that would straddle two pages (the only
+// case where the interpreter's byte-wise copyOut/copyIn path could differ) back
+// to the interpreter.
+type memAccess struct {
+	store    bool   // store rather than load
+	size     uint8  // 1, 2 or 4 bytes
+	signed   bool   // LDRSB/LDRSH sign-extend the loaded value
+	rd       uint32 // value register (always a low register here)
+	base     uint32 // guest base register; RegisterSP for the SP-relative form
+	index    uint32 // guest index register, when hasIndex
+	hasIndex bool
+	offset   uint32 // constant offset added to the base
+	absolute bool   // the address is exactly offset (PC-relative literal load)
+}
 
 // emitter appends host machine code for one translated Thumb instruction at a
 // time. Each method hides the host's scratch-register choreography; the decoder
@@ -62,6 +90,25 @@ type emitter interface {
 	addSPImm(rd, offset uint32)                         // rd = SP + imm     (no flags)
 	setRegConst(rd, value uint32)                       // rd = const        (no flags; PC-relative add)
 
+	// highRegister translates the ADD/CMP/MOV forms that can name a high
+	// register. pcValue is what reading R15 yields here (the interpreter's
+	// instruction address + 4). It returns false, emitting nothing, for the
+	// forms that are really branches - BX/BLX, and ADD/MOV writing PC - which
+	// stay with the interpreter. These are worth translating because they end
+	// nearly half of all blocks otherwise, and a block that ends is a full
+	// dispatch round trip.
+	highRegister(op, rd, rs, pcValue uint32) bool
+
+	// memory translates one single load/store inline through the software TLB
+	// (native_tlb.go): address computation, a direct-mapped page probe, a
+	// page-crossing check, then the host access. On a miss the emitted code
+	// leaves PC at pc and returns nativeBailStatus(retired), so the Run loop
+	// restores the budget the gate over-subtracted and hands exactly this
+	// instruction to the interpreter - which installs the page, so the next
+	// execution hits. Nothing else in the block is disturbed, so a bail is a
+	// slow path, never a correctness fork.
+	memory(a memAccess, pc uint32, retired int)
+
 	// Terminators end a block. exit* set PC and return to the Go dispatcher;
 	// selfLoop* jump back to the gate offset (staying in native code).
 	selfLoopUncond(gateOff int)                          // B to own start: jump to gate
@@ -69,6 +116,7 @@ type emitter interface {
 	exitBranch(pc uint32)                                // set PC=pc, return NORM
 	exitCondBranch(cond uint8, takenPC, nextPC uint32)   // external Bcc: PC = cond?taken:next, return NORM
 	exitBkpt(nextPC uint32)                              // set PC=nextPC, return BKPT
+	exitBranchLink(link, target uint32)                  // BL: LR=link, PC=target, return NORM
 
 	code() []byte // finished block bytes
 }
@@ -106,18 +154,68 @@ type nativeBlock struct {
 	entry uintptr
 }
 
+// nativeCacheSize is the direct-mapped dispatch cache depth: a power of two so
+// the index is a mask, sized like the pure-Go JIT's equivalent.
+const nativeCacheSize = 8192
+
+// nativeCacheEntry caches one translated block for direct-mapped dispatch. gen
+// ties it to the nativeBlocks generation, so an invalidation makes every stale
+// entry miss without the invalidation path walking the array.
+type nativeCacheEntry struct {
+	pc    uint32
+	gen   uint64
+	block *nativeBlock
+}
+
+// nativeCodePageWords covers the whole 32-bit guest address space at 4 KiB
+// granularity: 2^20 pages, one bit each.
+const nativeCodePageWords = (1 << 20) / 64
+
+// markCodePages records that [address, address+size) now holds translated code.
+func (b *Backend) markCodePages(address, size uint32) {
+	if b.nativeCodePages == nil || size == 0 {
+		return
+	}
+	last := (uint64(address) + uint64(size) - 1) >> tlbPageBits
+	for page := uint64(address) >> tlbPageBits; page <= last; page++ {
+		b.nativeCodePages[page>>6] |= 1 << (page & 63)
+	}
+}
+
+// hasCodePages reports whether any page overlapping [address, address+size)
+// holds translated code. This is what separates a genuine self-modifying write
+// from the guest blitter writing pixels into the same executable image.
+func (b *Backend) hasCodePages(address, size uint32) bool {
+	if b.nativeCodePages == nil {
+		return true // no bitmap: fall back to invalidating
+	}
+	if size == 0 {
+		return false
+	}
+	last := (uint64(address) + uint64(size) - 1) >> tlbPageBits
+	for page := uint64(address) >> tlbPageBits; page <= last; page++ {
+		if b.nativeCodePages[page>>6]&(1<<(page&63)) != 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // nativeInvalidate drops every translated block and rewinds the code arena so
 // the memory is reused. It runs on a guest write into executable memory
 // (self-modifying / freshly loaded code) and on a remap, mirroring the pure-Go
-// JIT's clear(b.jitBlocks). It never runs while a block executes: v1 native
-// blocks never write guest memory (stores fall back to the interpreter), so a
-// store that triggers this is always on the interpreter path with no block on
-// the host stack.
+// JIT's clear(b.jitBlocks). It never runs while a block executes: a native block
+// can only store to a page the software TLB's write half holds, and that half
+// never holds a page overlapping translated code, so any store that can reach
+// here is on the interpreter path with no block on the host stack.
 func (b *Backend) nativeInvalidate() {
 	if b.nativeBlocks == nil {
 		return
 	}
 	clear(b.nativeBlocks)
+	b.nativeGen++
+	clear(b.nativeCodePages)
+	b.nativeCodeLo, b.nativeCodeHi = ^uint32(0), 0
 	if b.nativeArena != nil {
 		b.nativeArena.off = 0
 	}

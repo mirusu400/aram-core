@@ -77,11 +77,15 @@ func NewNativeJIT() *Backend {
 	if arena := newCodeArena(nativeArenaSize); arena != nil {
 		b.nativeArena = arena
 		b.nativeBlocks = make(map[uint32]*nativeBlock)
+		b.nativeCodeLo, b.nativeCodeHi = ^uint32(0), 0
+		b.tlb = newNativeTLB()
+		b.nativeCache = make([]nativeCacheEntry, nativeCacheSize)
+		b.nativeCodePages = make([]uint64, nativeCodePageWords)
 	}
 	return b
 }
 
-func (b *Backend) newEmitter() emitter { return &arm64emitter{} }
+func (b *Backend) newEmitter() emitter { return &arm64emitter{tlb: b.tlbBase()} }
 
 func newCodeArena(size uintptr) *codeArena {
 	base := uintptr(C.jit_alloc(C.size_t(size)))

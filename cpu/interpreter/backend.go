@@ -109,12 +109,44 @@ type Backend struct {
 	// both.
 	nativeBlocks map[uint32]*nativeBlock
 	nativeArena  *codeArena
+	// nativeCodeLo/nativeCodeHi bound the guest-address span of every
+	// translated native block, exactly as jitCodeLo/jitCodeHi do for the
+	// pure-Go JIT. KTF/WIPI map the guest image read-write-execute, so without
+	// the span every framebuffer store the guest blitter makes would look like
+	// self-modifying code and flush the whole translation cache. Empty span is
+	// (^uint32(0), 0), which no write overlaps.
+	nativeCodeLo uint32
+	nativeCodeHi uint32
+	// nativeCache is the direct-mapped dispatch front for nativeBlocks, the
+	// native counterpart of jitCache. Real Thumb ends a translated block every
+	// few instructions, so a title dispatches blocks hundreds of thousands of
+	// times per frame and the map hash dominated dispatch. nativeGen is bumped
+	// on invalidation so stale entries miss without walking the array.
+	nativeCache []nativeCacheEntry
+	nativeGen   uint64
+	// nativeCodePages marks, one bit per 4 KiB guest page, the pages that hold
+	// translated code. The lo/hi span above is only a hull: KTF/WIPI titles run
+	// from a read-write-execute image and allocate their heap and framebuffer
+	// inside it, so the hull covers ordinary data and every pixel write looked
+	// like self-modifying code - which flushed and re-translated the whole
+	// cache several times a frame. The bitmap is the precise test.
+	nativeCodePages []uint64
+	// tlb is the native JIT's software translation-lookaside buffer (see
+	// native_tlb.go): the page table translated blocks probe inline so a guest
+	// load/store is a few host instructions instead of a call back into Go. It
+	// is non-nil exactly when the native JIT is active; the interpreter's memory
+	// path fills it, which is also how a native bail recovers.
+	tlb []tlbEntry
 	// nativeRemain is the remaining instruction budget for the current native
 	// run, passed to translated blocks by pointer so their in-code budget gate
 	// can decrement it and stop exactly at the limit (frame pacing depends on an
 	// exact retired count). It lives on the Backend so &nativeRemain is stable
 	// across the block call and the interpreter tail shares the same counter.
 	nativeRemain uint32
+	// currentProcess caches the windows/amd64 pseudo-handle the code arena's
+	// WriteProcessMemory copy needs, so emitting a block does not re-query it.
+	// It is unused on other hosts.
+	currentProcess uintptr
 }
 
 func New() *Backend {
@@ -218,6 +250,7 @@ func (b *Backend) Map(address, size uint32, permissions cpu.Permissions) error {
 	clear(b.regionHints[:])
 	b.executeData = nil
 	clear(b.dataCache[:])
+	b.tlbClear()
 	if b.jitBlocks != nil {
 		clear(b.jitBlocks)
 		b.jitGen++
@@ -418,6 +451,9 @@ func (b *Backend) Close() error {
 		clear(b.nativeBlocks)
 		b.nativeCloseArena()
 		b.nativeBlocks = nil
+		b.nativeCodeLo, b.nativeCodeHi = ^uint32(0), 0
+		b.tlbClear()
+		b.tlb = nil
 	}
 	b.mapped = 0
 	return nil

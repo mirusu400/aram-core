@@ -60,7 +60,15 @@ func (b *Backend) smcInvalidate(address, size uint32, perms cpu.Permissions) {
 		return
 	}
 	if b.nativeBlocks != nil {
-		b.nativeInvalidate()
+		// Same reasoning as the pure-Go JIT above: only a write that overlaps
+		// the span of code the native JIT has actually translated can leave a
+		// stale block behind. The guest blitter's stores into the same
+		// read-write-execute image are not self-modifying code.
+		if size != 0 && address < b.nativeCodeHi && address+size > b.nativeCodeLo &&
+			b.hasCodePages(address, size) {
+			b.nativeInvalidate()
+		}
+		return
 	}
 }
 
