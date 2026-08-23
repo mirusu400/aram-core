@@ -46,6 +46,12 @@ const (
 	// A 1K slice leaves several real titles in initialization indefinitely at
 	// ordinary 60 Hz frontend scheduling.
 	ktfTaskSlicesPerQuantumMax = 64
+	// ktfQuantumStepsMax bounds how many pieces one KTF presentation quantum
+	// may be handed to the guest in. Stopping the clock on a title's own timer
+	// deadlines needs only one or two pieces; the cap keeps a title that sleeps
+	// in one-millisecond steps from paying for a service advance per
+	// millisecond, at the cost of rounding the rest of that quantum as before.
+	ktfQuantumStepsMax = 8
 	// guest.WIPIFrameDuration is the guest time one native-WIPI, Raptor, or EADS
 	// presentation quantum advances.
 )
