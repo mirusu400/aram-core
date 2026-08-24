@@ -8799,3 +8799,190 @@ func TestKTFClipRecyclingTakesAPlayingClipWhenNoneAreIdle(t *testing.T) {
 		t.Fatal("a recycled clip is still marked as playing")
 	}
 }
+
+// createKTFWIPICImage runs the native create-image entry point over one
+// encoded bitmap and returns the provider-private image object.
+func createKTFWIPICImage(
+	t *testing.T,
+	runtime *Runtime,
+	encoded []byte,
+) uint32 {
+	t.Helper()
+	if err := runtime.CPU.WriteRegister(
+		cpu.RegisterR0,
+		uint32(len(encoded)),
+	); err != nil {
+		t.Fatal(err)
+	}
+	memoryID, err := ktfKernelAllocate(true)(context.Background(), runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.CPU.WriteMemory(
+		runtime.wipicMemory[memoryID].data,
+		encoded,
+	); err != nil {
+		t.Fatal(err)
+	}
+	output, err := runtime.AllocateWords(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range []uint32{
+		output,
+		memoryID,
+		0,
+		uint32(len(encoded)),
+	} {
+		if err := runtime.CPU.WriteRegister(
+			cpu.RegisterR0+uint32(register),
+			value,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if result, err := ktfWIPICGraphicsCreateImage(
+		context.Background(),
+		runtime,
+	); err != nil || result != 1 {
+		t.Fatalf("create image result=%08x err=%v", result, err)
+	}
+	object, err := runtime.ReadU32(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return object
+}
+
+// 메이플스토리 도적편 ships every sprite as an 8-bit bitmap that reserves one
+// palette entry — a green — as its transparent color key, flagged by the file
+// header's first reserved field with the entry's index in biClrImportant.
+// Without the key the reserved green paints as a solid block over the
+// background, which is what the title screen and every map tile showed.
+func TestKTFWIPICImageKeysOutReservedPaletteEntry(t *testing.T) {
+	encoded := make([]byte, 1082)
+	copy(encoded[:2], "BM")
+	binary.LittleEndian.PutUint32(encoded[2:6], uint32(len(encoded)))
+	binary.LittleEndian.PutUint16(encoded[6:8], 1)
+	binary.LittleEndian.PutUint32(encoded[10:14], 1078)
+	binary.LittleEndian.PutUint32(encoded[14:18], 40)
+	binary.LittleEndian.PutUint32(encoded[18:22], 2)
+	binary.LittleEndian.PutUint32(encoded[22:26], 1)
+	binary.LittleEndian.PutUint16(encoded[26:28], 1)
+	binary.LittleEndian.PutUint16(encoded[28:30], 8)
+	binary.LittleEndian.PutUint32(encoded[34:38], 4)
+	binary.LittleEndian.PutUint32(encoded[50:54], 3)
+	copy(encoded[54:58], []byte{0x00, 0x00, 0xff, 0x00})
+	copy(encoded[66:70], []byte{0x20, 0x90, 0x20, 0x00})
+	encoded[1078] = 0
+	encoded[1079] = 3
+
+	runtime := newScratchKTFRuntime(t)
+	object := createKTFWIPICImage(t, runtime, encoded)
+	image := runtime.wipicImages[object]
+	const greenKey = int32(0x2484)
+	if image.transparentKey != greenKey {
+		t.Fatalf(
+			"reserved palette entry key = %#x; want %#x",
+			image.transparentKey,
+			greenKey,
+		)
+	}
+	framebuffer := runtime.wipicFramebuffers[image.framebuffer]
+	var pixels [4]byte
+	if err := runtime.CPU.ReadMemory(framebuffer.pixels, pixels[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint16(pixels[:2]); got != 0xf800 {
+		t.Fatalf("opaque red pixel = %04x", got)
+	}
+	// The keyed pixel keeps its color: a 16bpp framebuffer has no alpha, so
+	// the blit recognizes transparency by this exact value.
+	if got := binary.LittleEndian.Uint16(pixels[2:]); got != uint16(greenKey) {
+		t.Fatalf("keyed pixel = %04x; want %04x", got, greenKey)
+	}
+}
+
+// A straight-alpha PNG normally stores transparent black, and a sprite that
+// also draws with opaque black must not lose those pixels to the color key.
+func TestKTFWIPICImageKeepsBlackWhenTransparentPixelsShareIt(t *testing.T) {
+	source := image.NewNRGBA(image.Rect(0, 0, 2, 1))
+	source.SetNRGBA(0, 0, color.NRGBA{A: 0xff})
+	source.SetNRGBA(1, 0, color.NRGBA{})
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, source); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime := newScratchKTFRuntime(t)
+	object := createKTFWIPICImage(t, runtime, encoded.Bytes())
+	if got := runtime.wipicImages[object].transparentKey; got != -1 {
+		t.Fatalf("color key = %#x; want -1", got)
+	}
+}
+
+// A saved state carries the image's decoded asset but not its color key, so
+// loading has to recover the key. The asset's surface still holds the alpha
+// the 16bpp framebuffer dropped, which is what a keyed bitmap is recognized
+// by; a magenta-keyed bitmap has no alpha and falls back to its painted
+// corner.
+func TestKTFWIPICRestoredImageRecoversColorKey(t *testing.T) {
+	keyed := make([]byte, 1082)
+	copy(keyed[:2], "BM")
+	binary.LittleEndian.PutUint32(keyed[2:6], uint32(len(keyed)))
+	binary.LittleEndian.PutUint16(keyed[6:8], 1)
+	binary.LittleEndian.PutUint32(keyed[10:14], 1078)
+	binary.LittleEndian.PutUint32(keyed[14:18], 40)
+	binary.LittleEndian.PutUint32(keyed[18:22], 2)
+	binary.LittleEndian.PutUint32(keyed[22:26], 1)
+	binary.LittleEndian.PutUint16(keyed[26:28], 1)
+	binary.LittleEndian.PutUint16(keyed[28:30], 8)
+	binary.LittleEndian.PutUint32(keyed[34:38], 4)
+	binary.LittleEndian.PutUint32(keyed[50:54], 3)
+	copy(keyed[54:58], []byte{0x00, 0x00, 0xff, 0x00})
+	copy(keyed[66:70], []byte{0x20, 0x90, 0x20, 0x00})
+	keyed[1078] = 0
+	keyed[1079] = 3
+
+	magenta := image.NewNRGBA(image.Rect(0, 0, 2, 1))
+	magenta.SetNRGBA(0, 0, color.NRGBA{R: 0xff, B: 0xff, A: 0xff})
+	magenta.SetNRGBA(1, 0, color.NRGBA{R: 0xff, A: 0xff})
+	var encodedMagenta bytes.Buffer
+	if err := png.Encode(&encodedMagenta, magenta); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name    string
+		encoded []byte
+		want    int32
+	}{
+		{name: "reserved palette entry", encoded: keyed, want: 0x2484},
+		{name: "magenta corner", encoded: encodedMagenta.Bytes(), want: 0xf81f},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runtime := newScratchKTFRuntime(t)
+			object := createKTFWIPICImage(t, runtime, test.encoded)
+			image := runtime.wipicImages[object]
+			if image.transparentKey != test.want {
+				t.Fatalf(
+					"created key = %#x; want %#x",
+					image.transparentKey,
+					test.want,
+				)
+			}
+			recovered := runtime.wipicRestoredImageColorKey(
+				runtime.wipicAssetServices[object],
+				image.frameIndex,
+				image.framebuffer,
+			)
+			if recovered != test.want {
+				t.Fatalf(
+					"recovered key = %#x; want %#x",
+					recovered,
+					test.want,
+				)
+			}
+		})
+	}
+}
