@@ -1666,3 +1666,58 @@ func TestWIPIRuntimeOfflineNetworkAndHTTPModels(t *testing.T) {
 		t.Fatalf("HTTP response code = %d", code)
 	}
 }
+
+// A Raptor title hands its clip a completion callback and waits to be told the
+// clip finished before it frees the handle and builds the next one, so a stop
+// has to report completion the way the handset does. 제노니아1 played its intro
+// jingle and then stayed silent for the rest of the session without this
+// (issue #49).
+func TestRaptorStopClipReportsCompletionAndFrees(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	handle, err := runtime.RaptorCreateClip("Yamaha_MA3", 64, 0x02000001)
+	if err != nil || handle == 0 {
+		t.Fatalf("RaptorCreateClip = 0x%08x, err=%v", handle, err)
+	}
+	data, err := runtime.Heap.Allocate(16, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.CPU.WriteMemory(data, []byte{1, 2, 3, 4}); err != nil {
+		t.Fatal(err)
+	}
+	if !runtime.RaptorPutClipData(handle, data, 4) {
+		t.Fatal("RaptorPutClipData rejected the clip source")
+	}
+	if !runtime.RaptorPlayClip(handle, true) {
+		t.Fatal("RaptorPlayClip refused to start the clip")
+	}
+	runtime.PendingCallbacks = nil
+
+	runtime.RaptorStopClip(handle, false)
+	clip := runtime.MediaClips[handle]
+	if clip == nil || clip.State != 0 || clip.Repeat {
+		t.Fatalf("stopped clip = %+v", clip)
+	}
+	if len(runtime.PendingCallbacks) != 1 ||
+		runtime.PendingCallbacks[0].Procedure != 0x02000001 ||
+		runtime.PendingCallbacks[0].Args !=
+			[4]uint32{handle, RaptorClipEndCode, 0, 0} {
+		t.Fatalf("completion callback = %+v", runtime.PendingCallbacks)
+	}
+
+	// A clip that already stopped stays stopped and reports once, so a title
+	// that stops the same handle on every scene change is not flooded.
+	runtime.PendingCallbacks = nil
+	runtime.RaptorStopClip(handle, false)
+	if len(runtime.PendingCallbacks) != 0 {
+		t.Fatalf("second stop callback = %+v", runtime.PendingCallbacks)
+	}
+
+	runtime.RaptorStopClip(handle, true)
+	if _, live := runtime.MediaClips[handle]; live {
+		t.Fatal("freed clip is still registered")
+	}
+	if _, live := runtime.MediaServices[handle]; live {
+		t.Fatal("freed clip still owns a media service")
+	}
+}
