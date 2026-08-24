@@ -389,12 +389,38 @@ var ktfJavaExceptionParents = map[string]string{
 }
 
 type ktfGraphics struct {
-	Target      draw.Image
-	clip        image.Rectangle
-	color       color.RGBA
-	translate   image.Point
+	Target draw.Image
+	clip   image.Rectangle
+	color  color.RGBA
+	// translate is the guest's own Graphics.translate offset, in card
+	// coordinates. The guest reads it back with getTranslateX/Y, so it must
+	// never carry a host-imposed offset.
+	translate image.Point
+	// origin places the card inside the physical framebuffer. A handset that
+	// shows an annunciator lays the card out below it, so every guest-issued
+	// coordinate is drawn origin lower than it asks for while the guest still
+	// sees a card whose top-left is (0, 0).
+	origin image.Point
+	// surface bounds every clip this Graphics can express. It is the card
+	// rectangle for the screen Graphics, so a guest clip that reaches above
+	// the card cannot spill into the annunciator strip. The zero value means
+	// the whole target.
+	surface     image.Rectangle
 	xorMode     bool
 	PixelsDirty bool
+}
+
+// drawable is the region of Target this Graphics may touch.
+func (g *ktfGraphics) drawable() image.Rectangle {
+	if g.surface.Empty() {
+		return g.Target.Bounds()
+	}
+	return g.surface
+}
+
+// offset converts a guest card coordinate to a framebuffer coordinate.
+func (g *ktfGraphics) offset() image.Point {
+	return g.translate.Add(g.origin)
 }
 
 // plot writes one pixel honoring XOR paint mode. Vector-drawn titles (놈3 renders

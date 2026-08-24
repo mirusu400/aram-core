@@ -770,6 +770,10 @@ func restoreKTFImagesAndGraphics(
 				R: value.Color[0], G: value.Color[1],
 				B: value.Color[2], A: value.Color[3],
 			},
+			origin: image.Pt(
+				int(value.Origin[0]),
+				int(value.Origin[1]),
+			),
 			translate: image.Pt(
 				int(value.Translate[0]),
 				int(value.Translate[1]),
