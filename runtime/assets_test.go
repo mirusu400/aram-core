@@ -493,3 +493,91 @@ func TestAssetsDecodeBI_RGB32TreatsReservedByteAsOpaque(t *testing.T) {
 		t.Fatalf("BI_RGB32 pixel = % x", pixels)
 	}
 }
+
+// testKeyedBMP builds a 2x1 8-bit BMP whose two pixels use palette entries 0
+// (red) and 1 (green), with the file header's first reserved field set and
+// biClrImportant naming the entry that is the transparent color key.
+func testKeyedBMP(reserved uint16, key uint32) []byte {
+	encoded := make([]byte, 1082)
+	copy(encoded[:2], "BM")
+	binary.LittleEndian.PutUint32(encoded[2:6], uint32(len(encoded)))
+	binary.LittleEndian.PutUint16(encoded[6:8], reserved)
+	binary.LittleEndian.PutUint32(encoded[10:14], 1078)
+	binary.LittleEndian.PutUint32(encoded[14:18], 40)
+	binary.LittleEndian.PutUint32(encoded[18:22], 2)
+	binary.LittleEndian.PutUint32(encoded[22:26], 1)
+	binary.LittleEndian.PutUint16(encoded[26:28], 1)
+	binary.LittleEndian.PutUint16(encoded[28:30], 8)
+	binary.LittleEndian.PutUint32(encoded[34:38], 4)
+	binary.LittleEndian.PutUint32(encoded[50:54], key)
+	copy(encoded[54:62], []byte{
+		0x00, 0x00, 0xff, 0x00,
+		0x00, 0xff, 0x00, 0x00,
+	})
+	encoded[1078] = 0
+	encoded[1079] = 1
+	return encoded
+}
+
+func TestAssetsDecodeBMPHonorsReservedTransparentPaletteEntry(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		reserved uint16
+		key      uint32
+		want     []byte
+	}{
+		{
+			name:     "keyed entry loses only its alpha",
+			reserved: 1,
+			key:      1,
+			want: []byte{
+				0xff, 0x00, 0x00, 0xff,
+				0x00, 0xff, 0x00, 0x00,
+			},
+		},
+		{
+			name:     "unmarked file keeps every entry opaque",
+			reserved: 0,
+			key:      1,
+			want: []byte{
+				0xff, 0x00, 0x00, 0xff,
+				0x00, 0xff, 0x00, 0xff,
+			},
+		},
+		{
+			name:     "key outside the palette keeps every entry opaque",
+			reserved: 1,
+			key:      304,
+			want: []byte{
+				0xff, 0x00, 0x00, 0xff,
+				0x00, 0xff, 0x00, 0xff,
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			services, err := NewServices(Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			asset, err := services.Assets.Decode(
+				3,
+				testKeyedBMP(test.reserved, test.key),
+				DecodeOptions{MediaType: "image/bmp"},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			info, err := services.Assets.Info(3, asset)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pixels, err := services.Graphics.RGBA(3, info.Frames[0].Surface)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(pixels, test.want) {
+				t.Fatalf("decoded pixels = % x, want % x", pixels, test.want)
+			}
+		})
+	}
+}
