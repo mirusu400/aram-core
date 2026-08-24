@@ -240,6 +240,7 @@ type ktfGraphicsSnapshot struct {
 	Clip      [4]int32
 	Color     [4]uint8
 	Translate [2]int32
+	Origin    [2]int32
 }
 
 type ktfWIPICFramebufferSnapshot struct {
@@ -930,6 +931,10 @@ func snapshotKTFMetadata(
 			Translate: [2]int32{
 				int32(graphics.translate.X),
 				int32(graphics.translate.Y),
+			},
+			Origin: [2]int32{
+				int32(graphics.origin.X),
+				int32(graphics.origin.Y),
 			},
 		}
 	}

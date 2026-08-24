@@ -733,6 +733,16 @@ func (r *Runtime) DefaultCardHeight() uint32 {
 	return height
 }
 
+// CardOriginY is the y offset of a Card inside the physical framebuffer. A
+// shown, opaque annunciator owns the top of the handset screen and the card is
+// laid out below it, which is why DefaultCardHeight subtracts it. Painting the
+// card at the top of the framebuffer anyway put every KTF title that shows an
+// annunciator one annunciator too high and left a dead strip along the bottom
+// edge, so the two have to be derived from each other.
+func (r *Runtime) CardOriginY() uint32 {
+	return r.displayHeight() - r.DefaultCardHeight()
+}
+
 func (r *Runtime) readJavaFieldWord(instance, offset uint32) (uint32, error) {
 	if instance == 0 {
 		return 0, errors.New("read KTF Java field: instance is null")

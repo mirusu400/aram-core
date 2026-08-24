@@ -625,7 +625,7 @@ func (r *Runtime) drawKTFJavaImageRaw(
 	} else if anchor&2 != 0 {
 		y -= source.Bounds().Dy() / 2
 	}
-	point := image.Pt(x+state.translate.X, y+state.translate.Y)
+	point := image.Pt(x+state.offset().X, y+state.offset().Y)
 	targetRect := source.Bounds().Add(point.Sub(source.Bounds().Min))
 	clippedRect := targetRect.Intersect(state.clip)
 	sourcePoint := source.Bounds().Min.Add(
