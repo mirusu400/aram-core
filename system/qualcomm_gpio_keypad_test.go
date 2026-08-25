@@ -262,7 +262,8 @@ func TestSCHW830ProfileMapsKnownKeypadControls(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, id := range []string{
-		"soft-left", "soft-right",
+		"soft-left", "soft-right", "up", "down", "left", "right", "ok", "back", "send",
+		"volume-up", "volume-down",
 		"digit-0", "digit-1", "digit-2", "digit-3", "digit-4",
 		"digit-5", "digit-6", "digit-7", "digit-8", "digit-9", "star", "pound",
 	} {
@@ -288,7 +289,7 @@ func TestSCHW830ProfileMapsKnownKeypadControls(t *testing.T) {
 	if err := keypad.SetKey("soft-left", true); err != nil {
 		t.Fatal(err)
 	}
-	if err := interrupt.Write(qualcommGPIOInterruptClear4Offset, Width32, 0x00200000); err != nil {
+	if err := secondary.Write(0x0400, Width32, 0x00000400); err != nil {
 		t.Fatal(err)
 	}
 	if got := primary.InputStatus(); got != 0x1e {
@@ -300,7 +301,34 @@ func TestSCHW830ProfileMapsKnownKeypadControls(t *testing.T) {
 	if err := keypad.SetKey("soft-right", true); err != nil {
 		t.Fatal(err)
 	}
-	if got := primary.InputStatus(); got != 0x1d {
+	if err := secondary.Write(0x0400, Width32, 0x00000800); err != nil {
+		t.Fatal(err)
+	}
+	if got := primary.InputStatus(); got != 0x1e {
 		t.Fatalf("SCH-W830 right soft key selected input = %#x", got)
+	}
+	if err := keypad.SetKey("soft-right", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := keypad.SetKey("volume-up", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := interrupt.Write(qualcommGPIOInterruptClear4Offset, Width32, 0x00200000); err != nil {
+		t.Fatal(err)
+	}
+	if got := primary.InputStatus(); got != 0x1e {
+		t.Fatalf("SCH-W830 volume-up selected input = %#x", got)
+	}
+	if err := keypad.SetKey("volume-up", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := keypad.SetKey("up", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := secondary.Write(0x0400, Width32, 0x00004000); err != nil {
+		t.Fatal(err)
+	}
+	if got := primary.InputStatus(); got != 0x17 {
+		t.Fatalf("SCH-W830 up selected input = %#x", got)
 	}
 }

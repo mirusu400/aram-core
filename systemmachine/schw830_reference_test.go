@@ -37,7 +37,10 @@ func TestSCHW830PrivateReferenceUsesHeadlessMachineAPI(t *testing.T) {
 	for _, id := range machine.Controls() {
 		controls[id] = true
 	}
-	for _, id := range []string{"soft-left", "soft-right", "ok", "digit-0"} {
+	for _, id := range []string{
+		"soft-left", "soft-right", "up", "down", "left", "right", "ok", "back", "send",
+		"volume-up", "volume-down", "digit-0",
+	} {
 		if !controls[id] {
 			t.Fatalf("control list has no %q", id)
 		}
@@ -335,14 +338,14 @@ func TestSCHW830PrivateReferenceProvisionsPowerCyclesAndLaunchesApp(t *testing.T
 		}
 		saveSCHW830E2ESnapshot(t, preInteraction)
 	}
-	if err := machine.SetKey("soft-left", true); err != nil {
+	if err := machine.SetKey("volume-up", true); err != nil {
 		t.Fatal(err)
 	}
-	runSCHW830Budget(t, machine, expectation.keyPressBudget, "soft-left press")
-	if err := machine.SetKey("soft-left", false); err != nil {
+	runSCHW830Budget(t, machine, expectation.keyPressBudget, "volume-up press")
+	if err := machine.SetKey("volume-up", false); err != nil {
 		t.Fatal(err)
 	}
-	runSCHW830Budget(t, machine, expectation.keyReleaseBudget, "soft-left release")
+	runSCHW830Budget(t, machine, expectation.keyReleaseBudget, "volume-up release")
 	runSCHW830Budget(t, machine, expectation.appSettleBudget, "application UI settle")
 	if framePath := os.Getenv("ARAM_SCHW830_E2E_FRAME_PATH"); framePath != "" {
 		file, createErr := os.Create(framePath)

@@ -181,14 +181,30 @@ func TestSCHW830BoardProfileAppliesEvidenceBackedIRAM(t *testing.T) {
 	if profile.Keypad == nil {
 		t.Fatal("SCH-W830 keypad profile is nil")
 	}
-	okFound := false
+	wantKeys := map[string][2]uint8{
+		"soft-left":   {0, 0},
+		"soft-right":  {1, 0},
+		"ok":          {5, 0},
+		"back":        {3, 0},
+		"send":        {2, 0},
+		"up":          {4, 3},
+		"down":        {4, 2},
+		"left":        {4, 1},
+		"right":       {4, 0},
+		"volume-up":   {6, 0},
+		"volume-down": {6, 1},
+	}
 	for _, key := range profile.Keypad.Keys {
-		if key.ID == "ok" {
-			okFound = key.Row == 3 && key.Column == 0
+		if coordinates, ok := wantKeys[key.ID]; ok {
+			if key.Row != coordinates[0] || key.Column != coordinates[1] {
+				t.Fatalf("SCH-W830 %s key = row %d column %d, want row %d column %d",
+					key.ID, key.Row, key.Column, coordinates[0], coordinates[1])
+			}
+			delete(wantKeys, key.ID)
 		}
 	}
-	if !okFound {
-		t.Fatalf("SCH-W830 NATE/OK key profile = %+v", profile.Keypad.Keys)
+	if len(wantKeys) != 0 {
+		t.Fatalf("SCH-W830 keypad profile is missing controls: %v", wantKeys)
 	}
 	if profile.Panel != (DCSPanelConfig{Width: 240, Height: 320, NativeAddressMode: 0x48}) {
 		t.Fatalf("SCH-W830 panel profile = %+v", profile.Panel)

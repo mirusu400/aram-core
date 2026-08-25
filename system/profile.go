@@ -930,14 +930,29 @@ func SCHW830DL21BoardProfile() BoardProfile {
 				{OutputOffset: 0x10, OutputMask: 0x00200000},
 			},
 			Keys: []QualcommGPIOKeyProfile{
-				// The SCH-W830 user manual identifies these as the buttons for
-				// the left and right on-screen soft menus. DL21's key table emits
-				// raw codes 0x54 and 0x55 for these two matrix coordinates.
-				{ID: "soft-left", Row: 6, Column: 0},
-				{ID: "soft-right", Row: 6, Column: 1},
-				// The first post-boot information dialog is dismissed only by
-				// this coordinate; the handset labels the physical key NATE/OK.
-				{ID: "ok", Row: 3, Column: 0},
+				// Native idle-screen probes identify the left/menu and right/memo
+				// soft buttons. This also agrees with the handset manual's B(left)
+				// and B(right) behavior.
+				{ID: "soft-left", Row: 0, Column: 0},
+				{ID: "soft-right", Row: 1, Column: 0},
+				// Native DL21 screen probes identify the four ring directions:
+				// from idle they open the four documented shortcuts, while within
+				// a list they move the selection or change the selected value.
+				{ID: "up", Row: 4, Column: 3},
+				{ID: "down", Row: 4, Column: 2},
+				{ID: "left", Row: 4, Column: 1},
+				{ID: "right", Row: 4, Column: 0},
+				// NATE/OK enters the highlighted menu item. The C/back key returns
+				// from a nested settings list to the grid, and from the grid home.
+				{ID: "ok", Row: 5, Column: 0},
+				{ID: "back", Row: 3, Column: 0},
+				// Dialing a number and pressing this coordinate enters the native
+				// call screen.
+				{ID: "send", Row: 2, Column: 0},
+				// DL21's raw codes 0x54 and 0x55 and its native sound overlay
+				// identify the handset's two side volume buttons.
+				{ID: "volume-up", Row: 6, Column: 0},
+				{ID: "volume-down", Row: 6, Column: 1},
 				{ID: "digit-1", Row: 3, Column: 1},
 				{ID: "digit-2", Row: 3, Column: 2},
 				{ID: "digit-3", Row: 3, Column: 3},

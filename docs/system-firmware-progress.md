@@ -110,10 +110,11 @@ When `ARAM_REFERENCE_REPO` is configured, the private gate currently proves:
 | profiled GPIO keypad scan | full 7-row by 4-column guest scan; press/release events enter and leave the firmware queue |
 | completed-media cold boot | rebuild flag remains zero and the carrier animation reaches the guest home screen at about 2,060,000,000 instructions |
 | numeric keypad input | four real matrix `digit-0` events open the native dialer and render `000-0` |
-| built-in UI launch | a real `soft-left` matrix press from home opens the firmware's `소리 조절` application |
-| second SCH-W830 build | DA18 is independently hash-matched and normalized, reuses the CG23 boot chain and the same board devices, completes native first-boot provisioning, cold-boots to its `S/W:DA18.1029` home frame, and launches `소리 조절` |
+| built-in UI launch | a real side `volume-up` matrix press from home opens the firmware's `소리 조절` application |
+| native navigation input | screen-differential probes identify the left/menu and right/memo soft keys, NATE/OK, send, all four ring directions, C/back, and both side-volume keys; menu opens the native grid, directions select native shortcuts and list items, OK enters a selection, and back returns to its parent |
+| second SCH-W830 build | DA18 is independently hash-matched and normalized, reuses the CG23 boot chain and the same board devices, completes native first-boot provisioning, cold-boots to its `S/W:DA18.1029` home frame, and launches `소리 조절` through the side-volume key |
 | reusable headless machine | DL21 and DA18 both pass `systemmachine.New`: exact set selection, QCSBL boundary, frame/input contracts, media save/load, power cycle, factory reset, and complete snapshot restore |
-| automated erased-media E2E | both builds pass new NAND -> native first-boot success -> guest-created media -> power cycle -> profiled `soft-left` input -> full `소리 조절` frame -> pre-input snapshot restore -> deterministic home frame |
+| automated erased-media E2E | both builds pass new NAND -> native first-boot success -> guest-created media -> power cycle -> profiled `volume-up` input -> full `소리 조절` frame -> pre-input snapshot restore -> deterministic home frame |
 
 The reset path places only reconstructed QCSBL bytes at the profiled load
 address, provides the bounded PBL IRAM/service-table contract, and starts the
