@@ -101,24 +101,69 @@ var thumbInstructionClasses = func() [1 << 16]thumbInstructionClass {
 // number of instructions retired; a fault does not count the faulting one, a
 // stop reason does, matching the previous one-instruction-per-call contract.
 func (b *Backend) runThumb(limit uint64) (uint64, *cpu.StopReason, error) {
+	if b.systemBus != nil {
+		return b.runThumbSystem(limit)
+	}
+	return b.runThumbBatch(limit)
+}
+
+// runThumbSystem retires Thumb for a whole-system machine. The asynchronous
+// interrupt inputs, the host-owned execution traps, and the physical-access
+// attribution a phone needs are all applied here, one instruction at a time,
+// so that none of them sits in the batch loop an application guest runs -
+// paying for them per instruction there cost more than three quarters of its
+// throughput. Whole-system execution defaults to the translated-block backend,
+// which carries the same checks inline; this stays its precise oracle.
+func (b *Backend) runThumbSystem(limit uint64) (uint64, *cpu.StopReason, error) {
 	var executed uint64
 	for executed < limit {
 		if b.takePendingInterrupt() {
 			return executed, nil, nil
 		}
-		if b.executionTrapAt(cpu.ModeThumb, b.regs[cpu.RegisterPC]) {
+		pc := b.regs[cpu.RegisterPC]
+		if b.executionTrapAt(cpu.ModeThumb, pc) {
 			reason := cpu.StopExecutionTrap
 			return executed, &reason, nil
 		}
-		b.recordPC(b.regs[cpu.RegisterPC])
-		pc := b.regs[cpu.RegisterPC]
 		b.accessContext = cpu.MemoryAccessContext{
 			InstructionAddress: pc, LinkAddress: b.regs[cpu.RegisterLR],
 			StackAddress: b.regs[cpu.RegisterSP], Mode: cpu.ModeThumb, Attributed: true,
 		}
+		retired, reason, err := b.runThumbBatch(1)
+		executed += retired
+		if err != nil {
+			return executed, nil, err
+		}
+		if reason != nil {
+			return executed, reason, nil
+		}
+		if b.mode != cpu.ModeThumb {
+			// A branch-exchange handed control to ARM. The batch loop reports
+			// this by returning, and so must this one: continuing would decode
+			// ARM words as Thumb.
+			return executed, nil, nil
+		}
+	}
+	return executed, nil, nil
+}
+
+func (b *Backend) runThumbBatch(limit uint64) (uint64, *cpu.StopReason, error) {
+	var executed uint64
+	// Diagnostics are a batch invariant: every setter that can turn one on
+	// holds the backend mutex, so the check is hoisted out of the loop and the
+	// untraced path keeps the single predicted branch it always had.
+	traced := b.tracing()
+	for executed < limit {
+		if traced {
+			b.recordPC(b.regs[cpu.RegisterPC])
+		}
+		pc := b.regs[cpu.RegisterPC]
 		var instruction uint16
 		var err error
-		if !b.mmuEnabled() && pc >= b.executeAddress {
+		// executeData is only ever filled from a private mapping and Map is
+		// refused once a bus is attached, so a bus-backed machine misses this
+		// fast path on its own without an extra test here.
+		if pc >= b.executeAddress {
 			offset := uint64(pc - b.executeAddress)
 			if offset+2 <= uint64(len(b.executeData)) {
 				index := int(offset)

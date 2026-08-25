@@ -134,6 +134,18 @@ func (b *Backend) executeCP15(pc, instruction uint32) error {
 	if coprocessor != 15 || op1 != 0 {
 		return b.unsupportedARM(pc, instruction)
 	}
+	// An application-mode guest is an unprivileged process on the phone: CP15
+	// system registers are not its to read or write. Accepting them would let
+	// it enable the MMU against an empty translation table, and routing its
+	// cache maintenance through writeCP15 would discard every translated block
+	// on each I-cache invalidation. Keep the historical contract instead --
+	// cache and TLB maintenance retire as no-ops, everything else is undefined.
+	if b.systemBus == nil {
+		if read || (crn != 7 && crn != 8) {
+			return b.unsupportedARM(pc, instruction)
+		}
+		return nil
+	}
 	if read {
 		value, err := b.readCP15(crn, crm, op2)
 		if err != nil {
@@ -195,7 +207,7 @@ func (b *Backend) writeCP15(crn, crm, op2 uint8, value uint32) error {
 			b.executeData = nil
 			clear(b.dataCache[:])
 		}
-		b.cp15.control = value
+		b.setCP15Control(value)
 		return nil
 	case crn == 2 && crm == 0 && op2 == 0:
 		b.cp15.translationTableBase = value

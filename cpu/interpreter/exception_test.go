@@ -51,7 +51,7 @@ func TestInterruptEntryUsesFIQPriorityAndHighVectors(t *testing.T) {
 	if err := backend.AttachSystemBus(bus); err != nil {
 		t.Fatal(err)
 	}
-	backend.cp15.control = 1 << 13
+	backend.setCP15Control(1 << 13)
 	originalStatus := flagN | uint32(processorModeSystem)
 	if err := backend.WriteRegister(cpu.RegisterCPSR, originalStatus); err != nil {
 		t.Fatal(err)
@@ -147,7 +147,7 @@ func TestMMUFaultsEnterPrefetchAndDataAbortVectors(t *testing.T) {
 		}
 		backend.cp15.translationTableBase = tableBase
 		backend.cp15.domainAccessControl = 3
-		backend.cp15.control = 1
+		backend.setCP15Control(1)
 		if err := backend.WriteRegister(cpu.RegisterCPSR, uint32(processorModeSystem)); err != nil {
 			t.Fatal(err)
 		}
@@ -174,7 +174,7 @@ func TestMMUFaultsEnterPrefetchAndDataAbortVectors(t *testing.T) {
 		}
 		backend.cp15.translationTableBase = tableBase
 		backend.cp15.domainAccessControl = 3
-		backend.cp15.control = 1
+		backend.setCP15Control(1)
 		if err := backend.WriteRegister(cpu.RegisterCPSR, uint32(processorModeSystem)); err != nil {
 			t.Fatal(err)
 		}
@@ -216,7 +216,7 @@ func TestUnmappedPhysicalAccessEntersPreciseExternalDataAbort(t *testing.T) {
 	}
 	backend.cp15.translationTableBase = tableBase
 	backend.cp15.domainAccessControl = 3
-	backend.cp15.control = 1
+	backend.setCP15Control(1)
 	if err := backend.WriteRegister(cpu.RegisterCPSR, uint32(processorModeSystem)); err != nil {
 		t.Fatal(err)
 	}

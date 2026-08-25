@@ -174,6 +174,18 @@ func (b *Backend) readProgramStatus(saved bool) (uint32, error) {
 	return *status, nil
 }
 
+// programStatusWriteAllowed reports whether an MSR may retire. An application
+// guest has no banked state of its own and reports an invalid CPSR mode field,
+// so the architectural "ignored in User mode" masking cannot protect it: a
+// control-byte write would be taken as privileged and bank its live stack
+// pointer away. Restrict it to the condition flags, which no mode can change.
+func (b *Backend) programStatusWriteAllowed(saved bool, fields uint32) bool {
+	if b.systemBus != nil {
+		return true
+	}
+	return !saved && fields&^0x8 == 0
+}
+
 func (b *Backend) writeProgramStatus(saved bool, fields uint32, value uint32) error {
 	var mask uint32
 	if fields&1 != 0 {

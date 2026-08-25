@@ -12,7 +12,7 @@ func TestARMCP15ControlWriteReadAndStateRoundTrip(t *testing.T) {
 	if err := backend.SetCP15ControlHistoryLimit(2); err != nil {
 		t.Fatal(err)
 	}
-	mapARMInstructions(t, backend,
+	systemARMInstructions(t, backend,
 		0xee010f10, // MCR p15, 0, r0, c1, c0, 0
 		0xee111f10, // MRC p15, 0, r1, c1, c0, 0
 	)
@@ -30,7 +30,7 @@ func TestARMCP15ControlWriteReadAndStateRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	backend.cp15.control = 0
+	backend.setCP15Control(0)
 	if err := backend.RestoreContext(saved); err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestARMCP15InstructionCachePrefetchHistoryIsBoundedAndOptional(t *testing.T
 
 func TestARMCP15EnablesImplementedMMUTranslation(t *testing.T) {
 	backend := New()
-	mapARMInstructions(t, backend, 0xee010f10)
+	systemARMInstructions(t, backend, 0xee010f10)
 	if err := backend.WriteRegister(cpu.RegisterR0, 1); err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestARMCP15EnablesImplementedMMUTranslation(t *testing.T) {
 
 func TestARMCP15AcceptsExplicitCacheAndTLBMaintenance(t *testing.T) {
 	backend := New()
-	mapARMInstructions(t, backend,
+	systemARMInstructions(t, backend,
 		0xee070f15, // MCR p15, 0, r0, c7, c5, 0: invalidate I-cache
 		0xee070f35, // MCR p15, 0, r0, c7, c5, 1: invalidate I-cache line by MVA
 		0xee070f36, // MCR p15, 0, r0, c7, c6, 1: invalidate D-cache line by MVA

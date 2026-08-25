@@ -91,6 +91,7 @@ func (b *Backend) invalidateTranslations() {
 func (b *Backend) runThumbJIT(limit uint64) (uint64, *cpu.StopReason, error) {
 	var executed uint64
 	wholeSystem := b.systemBus != nil
+	traced := b.tracing()
 outer:
 	for executed < limit {
 		pc := b.regs[cpu.RegisterPC]
@@ -129,8 +130,8 @@ outer:
 					InstructionAddress: pc, LinkAddress: b.regs[cpu.RegisterLR],
 					StackAddress: b.regs[cpu.RegisterSP], Mode: cpu.ModeThumb, Attributed: true,
 				}
-			} else if b.pcHits != nil {
-				b.pcHits[in.pc]++
+			} else if traced {
+				b.recordPC(in.pc)
 			}
 			branched, reason, err := in.exec(b)
 			if err != nil {

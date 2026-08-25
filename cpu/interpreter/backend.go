@@ -76,39 +76,25 @@ type Backend struct {
 	// stable); it is invalidated wherever executeData is.
 	dataCache [8]dataRegionCache
 	regs      [17]uint32
-	banks     bankedRegisters
-	spsr      savedProgramStatus
-	cp15      cp15State
-	mmuTLB    map[uint32]mmuTranslation
 	// flags holds condition N/Z/C/V lazily: setNZCV records the defining
 	// operation here instead of writing CPSR, and resolveFlags materializes it
 	// only when a reader actually needs the bits. See pendingFlags.
-	flags                          pendingFlags
-	mode                           cpu.Mode
-	stopped                        atomic.Bool
-	interruptLines                 atomic.Uint32
-	closedState                    atomic.Bool
-	closed                         bool
-	mapped                         uint64
-	memoryLimit                    uint64
-	systemBus                      cpu.MemoryBus
-	contextBus                     cpu.ContextMemoryBus
-	accessContext                  cpu.MemoryAccessContext
-	executionTraps                 map[cpu.ExecutionTrap]struct{}
-	pcHits                         map[uint32]uint64 // env ARAM_PC_TRACE: per-PC execution histogram
-	pcHistory                      []uint32
-	pcHistoryNext                  uint64
-	pcCaptureAddress               uint32
-	pcCaptureLimit                 uint32
-	pcRegisterCaptures             []PCRegisterCapture
-	cp15ControlHistory             []CP15ControlAccess
-	cp15ControlHistoryNext         uint64
-	instructionPrefetchHistory     []InstructionCachePrefetchAccess
-	instructionPrefetchHistoryNext uint64
-	instructionCache               map[uint32]instructionCacheLine
-	instructionCacheHot            instructionCacheLine
-	instructionCacheHotMVA         uint32
-	instructionCacheHotValid       bool
+	flags   pendingFlags
+	mode    cpu.Mode
+	stopped atomic.Bool
+	closed  bool
+	// physicalAccess is the one-byte summary of "this machine does not resolve
+	// memory through its own private mappings" - a bus is attached, or CP15 has
+	// turned on the MMU or the instruction cache. Every guest load, store, and
+	// fetch tests it to pick the route, so it lives in padding the fields
+	// around it already had: the bus, CP15, and the rest of the whole-system
+	// state sit at the end of this struct instead, which keeps regs, flags, and
+	// the translated-block caches at the offsets they had before whole-system
+	// support and off an extra cache line. See refreshPhysicalAccess.
+	physicalAccess bool
+	mapped         uint64
+	memoryLimit    uint64
+	pcHits         map[uint32]uint64 // env ARAM_PC_TRACE: per-PC execution histogram
 	// jitBlocks is the translated-block cache of the optional pure-Go dynamic
 	// recompiler (see jit.go). Nil keeps the precise tree-walking path; non-nil
 	// enables the JIT for Thumb, falling back to the interpreter per instruction
@@ -178,6 +164,37 @@ type Backend struct {
 	// WriteProcessMemory copy needs, so emitting a block does not re-query it.
 	// It is unused on other hosts.
 	currentProcess uintptr
+
+	// Whole-system state. An application machine never reads any of it, so it
+	// is kept behind the hot fields above rather than between them.
+	systemBus      cpu.MemoryBus
+	contextBus     cpu.ContextMemoryBus
+	cp15           cp15State
+	banks          bankedRegisters
+	spsr           savedProgramStatus
+	mmuTLB         map[uint32]mmuTranslation
+	accessContext  cpu.MemoryAccessContext
+	executionTraps map[cpu.ExecutionTrap]struct{}
+	interruptLines atomic.Uint32
+	closedState    atomic.Bool
+	// instructionCache is the functional ARM926 VIVT shadow, consulted only
+	// while CP15 enables it, which no application machine does.
+	instructionCache         map[uint32]instructionCacheLine
+	instructionCacheHot      instructionCacheLine
+	instructionCacheHotMVA   uint32
+	instructionCacheHotValid bool
+
+	// Diagnostics. Every one of these is off unless a host explicitly turns it
+	// on, and tracing() reports whether any per-instruction ring is armed.
+	pcHistory                      []uint32
+	pcHistoryNext                  uint64
+	pcCaptureAddress               uint32
+	pcCaptureLimit                 uint32
+	pcRegisterCaptures             []PCRegisterCapture
+	cp15ControlHistory             []CP15ControlAccess
+	cp15ControlHistoryNext         uint64
+	instructionPrefetchHistory     []InstructionCachePrefetchAccess
+	instructionPrefetchHistoryNext uint64
 }
 
 func New() *Backend {
@@ -278,6 +295,29 @@ func (b *Backend) PCRegisterCaptures() []PCRegisterCapture {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return append([]PCRegisterCapture(nil), b.pcRegisterCaptures...)
+}
+
+// tracing reports whether any per-instruction diagnostic is configured. Run
+// loops hoist it so an untraced batch never calls recordPC at all; every
+// setter that can turn one on holds the backend mutex, so it cannot change
+// while a batch is executing.
+// setCP15Control is the only writer of the system control register. Routing
+// and the hot summary of it are derived from that word, so keeping the two in
+// one place is what stops them from drifting apart.
+func (b *Backend) setCP15Control(value uint32) {
+	b.cp15.control = value
+	b.refreshPhysicalAccess()
+}
+
+// refreshPhysicalAccess recomputes the hot routing flag. Every writer of the
+// state it summarizes -- the attached bus and the CP15 control register -- has
+// to call it, so it is deliberately the only place the summary is derived.
+func (b *Backend) refreshPhysicalAccess() {
+	b.physicalAccess = b.systemBus != nil || b.mmuEnabled() || b.instructionCacheEnabled()
+}
+
+func (b *Backend) tracing() bool {
+	return b.pcHits != nil || len(b.pcHistory) != 0 || b.pcCaptureLimit != 0
 }
 
 func (b *Backend) recordPC(address uint32) {
@@ -456,6 +496,7 @@ func (b *Backend) AttachSystemBus(bus cpu.MemoryBus) error {
 	}
 	b.systemBus = bus
 	b.contextBus, _ = bus.(cpu.ContextMemoryBus)
+	b.refreshPhysicalAccess()
 	clear(b.regionHints[:])
 	b.executeData = nil
 	clear(b.dataCache[:])
@@ -663,6 +704,7 @@ func (b *Backend) Close() error {
 	b.regions = nil
 	b.systemBus = nil
 	b.contextBus = nil
+	b.physicalAccess = false
 	b.executionTraps = nil
 	b.mmuTLB = nil
 	b.instructionCache = nil

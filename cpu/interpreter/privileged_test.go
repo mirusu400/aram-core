@@ -10,7 +10,7 @@ import (
 
 func TestARMStatusRegisterImmediateAndRead(t *testing.T) {
 	backend := New()
-	mapARMInstructions(t, backend,
+	systemARMInstructions(t, backend,
 		0xe321f0d3, // MSR CPSR_c, #0xd3 (SVC, IRQ/FIQ masked)
 		0xe10f0000, // MRS r0, CPSR
 	)
@@ -25,7 +25,7 @@ func TestARMStatusRegisterImmediateAndRead(t *testing.T) {
 
 func TestARMProcessorModesBankStackAndLinkRegisters(t *testing.T) {
 	backend := New()
-	mapARMInstructions(t, backend,
+	systemARMInstructions(t, backend,
 		0xe321f0d3, // MSR CPSR_c, #0xd3 (SVC)
 		0xe3a0d011, // MOV sp, #0x11
 		0xe3a0e012, // MOV lr, #0x12
@@ -48,7 +48,7 @@ func TestARMProcessorModesBankStackAndLinkRegisters(t *testing.T) {
 
 func TestPrivilegedBanksSurviveContextRoundTrip(t *testing.T) {
 	backend := New()
-	mapARMInstructions(t, backend,
+	systemARMInstructions(t, backend,
 		0xe321f0d3, // SVC
 		0xe3a0d011, // SVC sp
 		0xe321f0d2, // IRQ
@@ -215,6 +215,24 @@ func registerValue(t *testing.T, backend *Backend, id uint32) uint32 {
 		t.Fatal(err)
 	}
 	return value
+}
+
+// systemARMInstructions places code on an attached physical bus. Privileged
+// transfers, CP15 system registers, and exception entry are whole-system
+// behavior, so a test for them has to build the machine that actually gets
+// them rather than an application backend with a private mapping.
+func systemARMInstructions(t *testing.T, backend *Backend, instructions ...uint32) *testSystemBus {
+	t.Helper()
+	bus := &testSystemBus{memory: make(map[uint32]byte)}
+	encoded := make([]byte, len(instructions)*4)
+	for index, instruction := range instructions {
+		binary.LittleEndian.PutUint32(encoded[index*4:], instruction)
+	}
+	bus.writeRaw(0x1000, encoded)
+	if err := backend.AttachSystemBus(bus); err != nil {
+		t.Fatal(err)
+	}
+	return bus
 }
 
 func mapARMInstructions(t *testing.T, backend *Backend, instructions ...uint32) {
