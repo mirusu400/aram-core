@@ -55,6 +55,123 @@ func TestCOWFlashProgramsErasesAndFactoryResets(t *testing.T) {
 	assertStorageBytes(t, flash, 0x22, []byte{0x00})
 }
 
+func TestCOWFlashSparseCapacityTreatsUnrepresentedTailAsErasedAndWritable(t *testing.T) {
+	baseBytes := bytes.Repeat([]byte{0xff}, 0x20)
+	baseBytes[0x03] = 0x5a
+	base := byteStorage{data: baseBytes}
+	flash, err := NewCOWFlashWithCapacity(base, 0x40, 0x10, "sparse-firmware")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flash.Size() != 0x40 {
+		t.Fatalf("sparse flash size = %#x", flash.Size())
+	}
+	assertStorageBytes(t, flash, 0x1e, []byte{0xff, 0xff, 0xff, 0xff})
+	assertStorageBytes(t, flash, 0x30, bytes.Repeat([]byte{0xff}, 0x10))
+	if err := flash.ProgramAt([]byte{0xf0, 0x0f, 0xaa, 0x55}, 0x1e); err != nil {
+		t.Fatal(err)
+	}
+	assertStorageBytes(t, flash, 0x1e, []byte{0xf0, 0x0f, 0xaa, 0x55})
+	if got := flash.DirtyBlocks(); !equalUint32s(got, []uint32{1, 2}) {
+		t.Fatalf("sparse dirty blocks = %v", got)
+	}
+	if err := flash.EraseBlock(3); err != nil {
+		t.Fatal(err)
+	}
+	if err := flash.ProgramAt([]byte{0x7f}, 0x3f); err != nil {
+		t.Fatal(err)
+	}
+	assertStorageBytes(t, flash, 0x3f, []byte{0x7f})
+	flash.FactoryReset()
+	assertStorageBytes(t, flash, 0x03, []byte{0x5a})
+	assertStorageBytes(t, flash, 0x1e, bytes.Repeat([]byte{0xff}, 4))
+	assertStorageBytes(t, flash, 0x3f, []byte{0xff})
+}
+
+func TestCOWFlashFactorySeedsAreImmutableResetBaselineAndBindStateIdentity(t *testing.T) {
+	base := byteStorage{data: bytes.Repeat([]byte{0xff}, 0x20)}
+	seeds := []FlashSeed{
+		{Offset: 0x22, Data: []byte{0xff, 0xfe, 0xaf, 0xbe}},
+		{Offset: 0x03, Data: []byte{0x7f}},
+	}
+	flash, err := NewCOWFlashWithCapacityAndSeeds(base, 0x40, 0x10, "firmware-a", seeds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(flash.DirtyBlocks()) != 0 {
+		t.Fatalf("factory seeds are guest-dirty blocks: %v", flash.DirtyBlocks())
+	}
+	assertStorageBytes(t, flash, 0x03, []byte{0x7f})
+	assertStorageBytes(t, flash, 0x22, []byte{0xff, 0xfe, 0xaf, 0xbe})
+	if err := flash.ProgramAt([]byte{0x7e}, 0x03); err != nil {
+		t.Fatal(err)
+	}
+	if err := flash.EraseBlock(2); err != nil {
+		t.Fatal(err)
+	}
+	assertStorageBytes(t, flash, 0x22, []byte{0xff, 0xff, 0xff, 0xff})
+	flash.FactoryReset()
+	assertStorageBytes(t, flash, 0x03, []byte{0x7f})
+	assertStorageBytes(t, flash, 0x22, []byte{0xff, 0xfe, 0xaf, 0xbe})
+	if err := flash.ProgramAt([]byte{0x0f}, 0x30); err != nil {
+		t.Fatal(err)
+	}
+
+	reordered, err := NewCOWFlashWithCapacityAndSeeds(
+		base, 0x40, 0x10, "firmware-a", []FlashSeed{seeds[1], seeds[0]},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reordered.Identity() != flash.Identity() {
+		t.Fatal("factory seed order changed flash identity")
+	}
+	different, err := NewCOWFlashWithCapacityAndSeeds(
+		base, 0x40, 0x10, "firmware-a", []FlashSeed{{Offset: 0x22, Data: []byte{0xfe}}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if different.Identity() == flash.Identity() {
+		t.Fatal("different factory seeds share a flash identity")
+	}
+	state, err := flash.SaveState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := NewCOWFlashWithCapacityAndSeeds(base, 0x40, 0x10, "firmware-a", seeds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.LoadState(state); err != nil {
+		t.Fatal(err)
+	}
+	assertStorageBytes(t, restored, 0x22, []byte{0xff, 0xfe, 0xaf, 0xbe})
+	assertStorageBytes(t, restored, 0x30, []byte{0x0f})
+	if err := different.LoadState(state); !errors.Is(err, ErrInvalidFlashState) {
+		t.Fatalf("different-seed state error = %v", err)
+	}
+}
+
+func TestCOWFlashRejectsInvalidFactorySeeds(t *testing.T) {
+	baseBytes := bytes.Repeat([]byte{0xff}, 0x20)
+	baseBytes[3] = 0
+	base := byteStorage{data: baseBytes}
+	for _, seeds := range [][]FlashSeed{
+		{{Offset: 0x40, Data: []byte{0}}},
+		{{Offset: 0x3f, Data: []byte{0, 0}}},
+		{{Offset: 1, Data: nil}},
+		{{Offset: 2, Data: []byte{0, 0}}, {Offset: 3, Data: []byte{0}}},
+		{{Offset: 3, Data: []byte{0xff}}},
+	} {
+		if _, err := NewCOWFlashWithCapacityAndSeeds(
+			base, 0x40, 0x10, "firmware-a", seeds,
+		); !errors.Is(err, ErrInvalidFlash) {
+			t.Fatalf("invalid factory seeds %#v error = %v", seeds, err)
+		}
+	}
+}
+
 func TestCOWFlashStateIsDeterministicAndBoundToFirmware(t *testing.T) {
 	base := byteStorage{data: bytes.Repeat([]byte{0xff}, 0x40)}
 	flash, err := NewCOWFlash(base, 0x10, "firmware-a")

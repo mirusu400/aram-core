@@ -58,7 +58,7 @@ func (b *Backend) read16(address uint32, permission cpu.Permissions) (uint16, er
 	if b.systemBus != nil {
 		var data [2]byte
 		if err := b.readSystemBus(address, data[:], permission); err != nil {
-			return 0, err
+			return 0, b.recordExternalAbort(address, permission, err)
 		}
 		return binary.LittleEndian.Uint16(data[:]), nil
 	}
@@ -94,7 +94,7 @@ func (b *Backend) read32(address uint32, permission cpu.Permissions) (uint32, er
 	if b.systemBus != nil {
 		var data [4]byte
 		if err := b.readSystemBus(address, data[:], permission); err != nil {
-			return 0, err
+			return 0, b.recordExternalAbort(address, permission, err)
 		}
 		return binary.LittleEndian.Uint32(data[:]), nil
 	}
@@ -120,6 +120,13 @@ func (b *Backend) read32(address uint32, permission cpu.Permissions) (uint32, er
 }
 
 func (b *Backend) fetch16(address uint32) (uint16, error) {
+	if b.instructionCacheEnabled() {
+		data, err := b.fetchInstructionCache(address, 2)
+		if err != nil {
+			return 0, err
+		}
+		return binary.LittleEndian.Uint16(data), nil
+	}
 	if b.mmuEnabled() {
 		var data [2]byte
 		if err := b.readVirtual(address, data[:], cpu.PermissionExecute); err != nil {
@@ -130,7 +137,7 @@ func (b *Backend) fetch16(address uint32) (uint16, error) {
 	if b.systemBus != nil {
 		var data [2]byte
 		if err := b.readSystemBus(address, data[:], cpu.PermissionExecute); err != nil {
-			return 0, err
+			return 0, b.recordExternalAbort(address, cpu.PermissionExecute, err)
 		}
 		return binary.LittleEndian.Uint16(data[:]), nil
 	}
@@ -160,6 +167,13 @@ func (b *Backend) fetch16(address uint32) (uint16, error) {
 }
 
 func (b *Backend) fetch32(address uint32) (uint32, error) {
+	if b.instructionCacheEnabled() {
+		data, err := b.fetchInstructionCache(address, 4)
+		if err != nil {
+			return 0, err
+		}
+		return binary.LittleEndian.Uint32(data), nil
+	}
 	if b.mmuEnabled() {
 		var data [4]byte
 		if err := b.readVirtual(address, data[:], cpu.PermissionExecute); err != nil {
@@ -170,7 +184,7 @@ func (b *Backend) fetch32(address uint32) (uint32, error) {
 	if b.systemBus != nil {
 		var data [4]byte
 		if err := b.readSystemBus(address, data[:], cpu.PermissionExecute); err != nil {
-			return 0, err
+			return 0, b.recordExternalAbort(address, cpu.PermissionExecute, err)
 		}
 		return binary.LittleEndian.Uint32(data[:]), nil
 	}
@@ -212,7 +226,8 @@ func (b *Backend) write16(address uint32, value uint16, permission cpu.Permissio
 	if b.systemBus != nil {
 		var data [2]byte
 		binary.LittleEndian.PutUint16(data[:], value)
-		return b.writeSystemBus(address, data[:], permission)
+		err := b.writeSystemBus(address, data[:], permission)
+		return b.recordExternalAbort(address, permission, err)
 	}
 	if data, offset, ok := b.dataHit(address, 2, permission); ok {
 		binary.LittleEndian.PutUint16(data[offset:offset+2], value)
@@ -241,7 +256,8 @@ func (b *Backend) write32(address, value uint32, permission cpu.Permissions) err
 	if b.systemBus != nil {
 		var data [4]byte
 		binary.LittleEndian.PutUint32(data[:], value)
-		return b.writeSystemBus(address, data[:], permission)
+		err := b.writeSystemBus(address, data[:], permission)
+		return b.recordExternalAbort(address, permission, err)
 	}
 	if data, offset, ok := b.dataHit(address, 4, permission); ok {
 		binary.LittleEndian.PutUint32(data[offset:offset+4], value)
@@ -272,7 +288,7 @@ func (b *Backend) read8(address uint32, permission cpu.Permissions) (byte, error
 	if b.systemBus != nil {
 		var data [1]byte
 		if err := b.readSystemBus(address, data[:], permission); err != nil {
-			return 0, err
+			return 0, b.recordExternalAbort(address, permission, err)
 		}
 		return data[0], nil
 	}
@@ -292,7 +308,8 @@ func (b *Backend) write8(address uint32, value byte, permission cpu.Permissions)
 		return b.writeVirtual(address, []byte{value}, permission)
 	}
 	if b.systemBus != nil {
-		return b.writeSystemBus(address, []byte{value}, permission)
+		err := b.writeSystemBus(address, []byte{value}, permission)
+		return b.recordExternalAbort(address, permission, err)
 	}
 	if data, offset, ok := b.dataHit(address, 1, permission); ok {
 		data[offset] = value

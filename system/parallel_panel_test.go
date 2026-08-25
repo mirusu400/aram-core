@@ -7,6 +7,10 @@ import (
 
 func TestParallelPanelInterfaceSeparatesCommandAndDataPorts(t *testing.T) {
 	panel := NewParallelPanelInterface()
+	var writes []ParallelPanelWrite
+	panel.SetWriteObserver(func(write ParallelPanelWrite) {
+		writes = append(writes, write)
+	})
 	if err := panel.Write(0, Width16, 0xf0); err != nil {
 		t.Fatal(err)
 	}
@@ -20,6 +24,18 @@ func TestParallelPanelInterfaceSeparatesCommandAndDataPorts(t *testing.T) {
 			"parallel panel state = command %#x data %#x counts %d/%d",
 			panel.CurrentCommand(), panel.LastData(), commands, data,
 		)
+	}
+	wantWrites := []ParallelPanelWrite{
+		{Command: 0xf0, Value: 0xf0},
+		{Command: 0xf0, Value: 0x5a, Data: true},
+	}
+	if len(writes) != len(wantWrites) {
+		t.Fatalf("observed panel writes = %+v", writes)
+	}
+	for index := range writes {
+		if writes[index] != wantWrites[index] {
+			t.Fatalf("observed panel write %d = %+v", index, writes[index])
+		}
 	}
 	if err := panel.Write(4, Width16, 0); !errors.Is(err, ErrParallelPanelMMIO) {
 		t.Fatalf("unknown panel-port error = %v", err)

@@ -52,21 +52,30 @@ type InterruptLineSink interface {
 // GPIO detail registers are retained explicitly, while their group-source
 // routing is left for the GPIO device that eventually drives source 62/63.
 type QualcommInterruptController struct {
-	sink       InterruptLineSink
-	irqEnable  [2]uint32
-	fiqEnable  [2]uint32
-	status     [2]uint32
-	level      [2]uint32
-	gpioEnable [3]uint32
-	polarity   [4]uint32
-	detect     [3]uint32
-	gpioStatus [3]uint32
+	sink              InterruptLineSink
+	gpioWriteObserver QualcommGPIOWriteObserver
+	irqEnable         [2]uint32
+	fiqEnable         [2]uint32
+	status            [2]uint32
+	level             [2]uint32
+	gpioEnable        [3]uint32
+	polarity          [4]uint32
+	detect            [3]uint32
+	gpioStatus        [3]uint32
 }
 
 func NewQualcommInterruptController(sink InterruptLineSink) *QualcommInterruptController {
 	device := &QualcommInterruptController{sink: sink}
 	_ = device.Reset()
 	return device
+}
+
+func (d *QualcommInterruptController) AttachGPIOWriteObserver(observer QualcommGPIOWriteObserver) error {
+	if observer == nil || d.gpioWriteObserver != nil {
+		return fmt.Errorf("attach Qualcomm GPIO write observer: %w", ErrQualcommInterruptControllerMMIO)
+	}
+	d.gpioWriteObserver = observer
+	return nil
 }
 
 func (d *QualcommInterruptController) Reset() error {
@@ -181,7 +190,37 @@ func (d *QualcommInterruptController) Write(offset uint32, width Width, value ui
 			ErrQualcommInterruptControllerMMIO, value, offset,
 		)
 	}
+	if d.gpioWriteObserver != nil {
+		d.gpioWriteObserver.ObserveGPIOWrite(offset, value)
+	}
 	return d.updateOutputs()
+}
+
+func qualcommInterruptControllerSupportsWrite(offset uint32) bool {
+	switch offset {
+	case qualcommInterruptClear0Offset,
+		qualcommInterruptClear1Offset,
+		qualcommGPIOInterruptClear0Offset,
+		qualcommGPIOInterruptClear1Offset,
+		qualcommGPIOInterruptClear4Offset,
+		qualcommIRQEnable0Offset,
+		qualcommIRQEnable1Offset,
+		qualcommFIQEnable0Offset,
+		qualcommFIQEnable1Offset,
+		qualcommGPIOInterruptEnable0,
+		qualcommGPIOInterruptEnable1,
+		qualcommGPIOInterruptEnable4,
+		qualcommInterruptPolarity0,
+		qualcommInterruptPolarity1,
+		qualcommInterruptPolarity2,
+		qualcommInterruptPolarity5,
+		qualcommGPIOInterruptDetect0,
+		qualcommGPIOInterruptDetect1,
+		qualcommGPIOInterruptDetect4:
+		return true
+	default:
+		return false
+	}
 }
 
 func (d *QualcommInterruptController) SetSource(source uint8, asserted bool) error {

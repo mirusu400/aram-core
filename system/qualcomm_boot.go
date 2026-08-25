@@ -35,25 +35,66 @@ type QualcommNANDPBLConfig struct {
 }
 
 type QualcommBootControlConfig struct {
-	HardwareRevision       uint32
-	NANDInterfaceMode      uint32
-	EBIMemoryConfiguration uint32
-	ClockModeStatus        uint32
-	WritableOffsets        []uint32
-	HalfwordOffsets        []uint32
-	ReadOnlyRegisters      []QualcommBootReadOnlyRegister
-	SBIControllers         []uint32
-	SBICompletionStatus    uint32
-	NANDReady              *StatusSignal
-	InterruptController    *QualcommInterruptController
-	TimeTickClock          *QualcommTimeTickClockConfig
+	HardwareRevision            uint32
+	NANDInterfaceMode           uint32
+	EBIMemoryConfiguration      uint32
+	ClockModeStatus             uint32
+	WritableOffsets             []uint32
+	HalfwordOffsets             []uint32
+	MixedWidthOffsets           []uint32
+	ReadOnlyRegisters           []QualcommBootReadOnlyRegister
+	RegisterResets              []QualcommBootRegisterReset
+	CompletionEvents            []QualcommCompletionEventConfig
+	LegacyUARTControllers       []uint32
+	SBIControllers              []uint32
+	SBICompletionStatus         uint32
+	NANDReady                   *StatusSignal
+	InterruptController         *QualcommInterruptController
+	VectoredInterruptController *QualcommVectoredInterruptController
+	TimeTickClock               *QualcommTimeTickClockConfig
 }
 
 // QualcommBootReadOnlyRegister describes a profile-specific word register
-// whose fixed reset/strap value is evidenced but whose writes are not.
+// whose fixed reset, strap, or idle-status value is evidenced but whose writes
+// are not.
 type QualcommBootReadOnlyRegister struct {
 	Offset uint32
 	Value  uint32
+}
+
+// QualcommBootRegisterReset gives a profiled writable word register its
+// hardware reset value. WritableOffsets still defines whether the register is
+// present; keeping reset values separate lets related Qualcomm parts reuse the
+// same sparse register-bank implementation without treating zero as a
+// universal power-on value.
+type QualcommBootRegisterReset struct {
+	Offset uint32
+	Value  uint32
+}
+
+// QualcommCompletionEventConfig describes an evidenced command/status/ack
+// handshake within the shared control window. This keeps device-specific
+// register locations in the board profile while the deterministic completion
+// and interrupt behavior remains reusable.
+type QualcommCompletionEventConfig struct {
+	StartOffset           uint32
+	StartMask             uint32
+	StatusOffset          uint32
+	StatusMask            uint32
+	AcknowledgeOffset     uint32
+	AcknowledgeWidth      Width
+	AcknowledgeMask       uint32
+	InterruptSource       uint8
+	UseVectoredController bool
+}
+
+// QualcommCompletionHandler supplies a deferred side effect for a profiled
+// command/completion register pair. QueueCompletion runs during the MMIO write
+// and must not access the physical bus; Advance runs after a CPU runner slice.
+type QualcommCompletionHandler interface {
+	QueueCompletion(registerValue func(offset uint32) (uint32, bool)) error
+	Advance(retiredInstructions uint64) error
+	Reset() error
 }
 
 // QualcommTimeTickClockConfig relates deterministic instruction retirement to
@@ -64,6 +105,7 @@ type QualcommTimeTickClockConfig struct {
 	InstructionsPerSecond uint64
 	TimeTickHz            uint64
 	InterruptSource       uint8
+	UseVectoredController bool
 }
 
 // NewQualcommNANDPBLHandoff builds the bounded PBL service data consumed by
@@ -164,7 +206,11 @@ var qualcommBootSBIRegisterOffsets = [...]uint32{0x00, 0x04, 0x08, 0x10, 0x14}
 func validateQualcommBootControlConfigurationOffsets(
 	writableOffsets []uint32,
 	halfwordOffsets []uint32,
+	mixedWidthOffsets []uint32,
 	readOnlyRegisters []QualcommBootReadOnlyRegister,
+	registerResets []QualcommBootRegisterReset,
+	completionEvents []QualcommCompletionEventConfig,
+	legacyUARTControllers []uint32,
 	sbiControllers []uint32,
 	sbiCompletionStatus uint32,
 ) error {
@@ -173,11 +219,27 @@ func validateQualcommBootControlConfigurationOffsets(
 	}
 	seen := make(map[uint32]struct{}, len(qualcommBootWritableOffsets)+len(writableOffsets)+
 		len(sbiControllers)*len(qualcommBootSBIRegisterOffsets))
+	wordWritable := make(map[uint32]struct{}, len(qualcommBootWritableOffsets)+len(writableOffsets))
 	for _, offset := range qualcommBootWritableOffsets {
 		seen[offset] = struct{}{}
+		wordWritable[offset] = struct{}{}
 	}
 	for _, offset := range writableOffsets {
 		seen[offset] = struct{}{}
+		wordWritable[offset] = struct{}{}
+	}
+	mixed := make(map[uint32]struct{}, len(mixedWidthOffsets))
+	for _, offset := range mixedWidthOffsets {
+		if offset%4 != 0 || isQualcommBootControlSpecialOffset(offset) {
+			return fmt.Errorf("mixed-width offset 0x%x: %w", offset, ErrInvalidRegion)
+		}
+		if _, writable := seen[offset]; !writable {
+			return fmt.Errorf("mixed-width offset 0x%x is not writable: %w", offset, ErrInvalidRegion)
+		}
+		if _, duplicate := mixed[offset]; duplicate {
+			return fmt.Errorf("duplicate mixed-width offset 0x%x: %w", offset, ErrInvalidRegion)
+		}
+		mixed[offset] = struct{}{}
 	}
 	for _, register := range readOnlyRegisters {
 		offset := register.Offset
@@ -190,6 +252,20 @@ func validateQualcommBootControlConfigurationOffsets(
 			return fmt.Errorf("duplicate read-only offset 0x%x: %w", offset, ErrInvalidRegion)
 		}
 		seen[offset] = struct{}{}
+	}
+	resetOffsets := make(map[uint32]struct{}, len(registerResets))
+	for _, reset := range registerResets {
+		if _, writable := wordWritable[reset.Offset]; !writable {
+			return fmt.Errorf(
+				"reset value for non-writable word offset 0x%x: %w",
+				reset.Offset,
+				ErrInvalidRegion,
+			)
+		}
+		if _, duplicate := resetOffsets[reset.Offset]; duplicate {
+			return fmt.Errorf("duplicate reset value at offset 0x%x: %w", reset.Offset, ErrInvalidRegion)
+		}
+		resetOffsets[reset.Offset] = struct{}{}
 	}
 	bases := make(map[uint32]struct{}, len(sbiControllers))
 	for _, base := range sbiControllers {
@@ -246,12 +322,112 @@ func validateQualcommBootControlConfigurationOffsets(
 		}
 		halfwords[offset] = struct{}{}
 	}
+	completionStarts := make(map[uint32]struct{}, len(completionEvents))
+	for _, event := range completionEvents {
+		if _, duplicate := completionStarts[event.StartOffset]; duplicate {
+			return fmt.Errorf("duplicate completion start 0x%x: %w", event.StartOffset, ErrInvalidRegion)
+		}
+		completionStarts[event.StartOffset] = struct{}{}
+	}
+	completionStatuses := make(map[uint32]struct{}, len(completionEvents))
+	for _, event := range completionEvents {
+		if event.StartOffset%4 != 0 || event.StatusOffset%4 != 0 ||
+			event.StartMask == 0 || event.StatusMask == 0 || event.AcknowledgeMask == 0 ||
+			(event.AcknowledgeWidth != Width16 && event.AcknowledgeWidth != Width32) ||
+			event.AcknowledgeOffset%uint32(event.AcknowledgeWidth) != 0 ||
+			event.StatusOffset >= QualcommBootControlWindowSize ||
+			(event.StatusOffset >= 0x0900 &&
+				event.StatusOffset < 0x0900+QualcommInterruptControllerWindowSize) ||
+			isQualcommBootControlSpecialOffset(event.StartOffset) ||
+			isQualcommBootControlSpecialOffset(event.StatusOffset) ||
+			isQualcommBootControlSpecialOffset(event.AcknowledgeOffset) {
+			return fmt.Errorf("invalid completion event at status 0x%x: %w", event.StatusOffset, ErrInvalidRegion)
+		}
+		if _, writable := wordWritable[event.StartOffset]; !writable {
+			return fmt.Errorf("completion start 0x%x is not writable: %w", event.StartOffset, ErrInvalidRegion)
+		}
+		if _, duplicate := seen[event.StatusOffset]; duplicate {
+			return fmt.Errorf("completion status 0x%x overlaps a register: %w", event.StatusOffset, ErrInvalidRegion)
+		}
+		if _, duplicate := completionStatuses[event.StatusOffset]; duplicate {
+			return fmt.Errorf("duplicate completion status 0x%x: %w", event.StatusOffset, ErrInvalidRegion)
+		}
+		completionStatuses[event.StatusOffset] = struct{}{}
+		if _, startsCompletion := completionStarts[event.AcknowledgeOffset]; startsCompletion {
+			return fmt.Errorf(
+				"completion acknowledge 0x%x overlaps a start register: %w",
+				event.AcknowledgeOffset,
+				ErrInvalidRegion,
+			)
+		}
+		for halfwordOffset := range halfwords {
+			if halfwordOffset&^uint32(3) == event.StatusOffset {
+				return fmt.Errorf(
+					"completion status 0x%x overlaps halfword register 0x%x: %w",
+					event.StatusOffset,
+					halfwordOffset,
+					ErrInvalidRegion,
+				)
+			}
+		}
+		switch event.AcknowledgeWidth {
+		case Width16:
+			if _, configured := halfwords[event.AcknowledgeOffset]; !configured {
+				return fmt.Errorf(
+					"completion acknowledge 0x%x is not a halfword register: %w",
+					event.AcknowledgeOffset,
+					ErrInvalidRegion,
+				)
+			}
+			if event.AcknowledgeMask > 0xffff {
+				return fmt.Errorf("completion acknowledge mask exceeds halfword: %w", ErrInvalidRegion)
+			}
+		case Width32:
+			if _, configured := wordWritable[event.AcknowledgeOffset]; !configured {
+				return fmt.Errorf(
+					"completion acknowledge 0x%x is not a word register: %w",
+					event.AcknowledgeOffset,
+					ErrInvalidRegion,
+				)
+			}
+		}
+	}
+	uartBases := make(map[uint32]struct{}, len(legacyUARTControllers))
+	for _, base := range legacyUARTControllers {
+		if base%4 != 0 || uint64(base)+uint64(qualcommLegacyUARTWindowSize) > QualcommBootControlWindowSize ||
+			(base < 0x0900+QualcommInterruptControllerWindowSize &&
+				base+qualcommLegacyUARTWindowSize > 0x0900) {
+			return fmt.Errorf("legacy UART controller 0x%x: %w", base, ErrInvalidRegion)
+		}
+		if _, duplicate := uartBases[base]; duplicate {
+			return fmt.Errorf("duplicate legacy UART controller 0x%x: %w", base, ErrInvalidRegion)
+		}
+		for sbiBase := range bases {
+			if uint64(base) < uint64(sbiBase)+qualcommBootSBIControllerSize &&
+				uint64(sbiBase) < uint64(base)+uint64(qualcommLegacyUARTWindowSize) {
+				return fmt.Errorf("legacy UART controller 0x%x overlaps SBI controller: %w", base, ErrInvalidRegion)
+			}
+		}
+		for _, relative := range qualcommLegacyUARTHalfwordRegisterOffsets {
+			if _, configured := halfwords[base+relative]; !configured {
+				return fmt.Errorf(
+					"legacy UART controller 0x%x lacks halfword register 0x%x: %w",
+					base,
+					base+relative,
+					ErrInvalidRegion,
+				)
+			}
+		}
+		uartBases[base] = struct{}{}
+	}
 	return nil
 }
 
 func isQualcommBootControlSpecialOffset(offset uint32) bool {
 	switch offset {
-	case 0x0274, 0x0488, 0x0a40, 0x1004,
+	case 0x0274, 0x0400, 0x0404, 0x0430, 0x0434, 0x0474, 0x0478,
+		0x0488, 0x049c, 0x04a0, 0x04a4, 0x04a8,
+		0x0a40, 0x1004,
 		0x5408, 0x540c, 0x54c0, 0x551c:
 		return true
 	default:
@@ -262,13 +438,14 @@ func isQualcommBootControlSpecialOffset(offset uint32) bool {
 func mergedQualcommBootControlWritableOffsets(
 	extra, halfwords []uint32,
 	readOnlyRegisters []QualcommBootReadOnlyRegister,
+	completionEvents []QualcommCompletionEventConfig,
 	sbiControllers []uint32,
 	sbiCompletionStatus uint32,
 ) []uint32 {
 	offsets := make(
 		[]uint32,
 		0,
-		len(qualcommBootWritableOffsets)+len(extra)+len(halfwords)+len(readOnlyRegisters)+
+		len(qualcommBootWritableOffsets)+len(extra)+len(halfwords)+len(readOnlyRegisters)+len(completionEvents)+
 			len(sbiControllers)*len(qualcommBootSBIRegisterOffsets),
 	)
 	offsets = append(offsets, qualcommBootWritableOffsets...)
@@ -276,6 +453,9 @@ func mergedQualcommBootControlWritableOffsets(
 	offsets = append(offsets, halfwords...)
 	for _, register := range readOnlyRegisters {
 		offsets = append(offsets, register.Offset)
+	}
+	for _, event := range completionEvents {
+		offsets = append(offsets, event.StatusOffset)
 	}
 	for _, base := range sbiControllers {
 		for _, relative := range qualcommBootSBIRegisterOffsets {
@@ -318,33 +498,59 @@ var qualcommSecondaryClockOffsets = []uint32{0x0400, 0x0404, 0x0408, 0x0430, 0x0
 
 const qualcommSecondaryClockDisabledStatusOffset = 0x0440
 
+func validateQualcommSecondaryClockWritableOffsets(offsets []uint32) error {
+	seen := make(map[uint32]struct{}, len(qualcommSecondaryClockOffsets)+len(offsets))
+	for _, offset := range qualcommSecondaryClockOffsets {
+		seen[offset] = struct{}{}
+	}
+	for _, offset := range offsets {
+		if offset%4 != 0 || offset >= QualcommSecondaryClockWindowSize ||
+			offset == qualcommSecondaryClockDisabledStatusOffset {
+			return fmt.Errorf("secondary-clock offset 0x%x: %w", offset, ErrInvalidRegion)
+		}
+		if _, duplicate := seen[offset]; duplicate {
+			return fmt.Errorf("duplicate secondary-clock offset 0x%x: %w", offset, ErrInvalidRegion)
+		}
+		seen[offset] = struct{}{}
+	}
+	return nil
+}
+
 // QualcommBootControl is an explicit compatibility bank for the currently
 // evidenced system-control, MPMC, IRQ-configuration, and timetick registers.
 // Registers with understood side effects are modeled separately; every
 // unknown access fails.
 type QualcommBootControl struct {
-	hardwareRevision        uint32
-	nandInterfaceMode       uint32
-	ebiMemoryConfiguration  uint32
-	clockModeStatus         uint32
-	nandReady               *StatusSignal
-	interruptController     *QualcommInterruptController
-	writableOffsets         []uint32
-	halfwordOffsets         map[uint32]struct{}
-	readOnlyRegisters       map[uint32]uint32
-	sbiControllers          map[uint32]struct{}
-	sbiCompletionStatus     uint32
-	registers               map[uint32]uint32
-	watchdogServices        uint64
-	timeTick                uint32
-	timeTickReadPhase       uint8
-	timeTickClocked         bool
-	timeTickInstructionRate uint64
-	timeTickHz              uint64
-	timeTickInterruptSource uint8
-	timeTickPhase           uint64
-	timeTickMatchReady      bool
-	timeTickMatchConfigured bool
+	hardwareRevision            uint32
+	nandInterfaceMode           uint32
+	ebiMemoryConfiguration      uint32
+	clockModeStatus             uint32
+	nandReady                   *StatusSignal
+	interruptController         *QualcommInterruptController
+	vectoredInterruptController *QualcommVectoredInterruptController
+	writableOffsets             []uint32
+	halfwordOffsets             map[uint32]struct{}
+	mixedWidthOffsets           map[uint32]struct{}
+	readOnlyRegisters           map[uint32]uint32
+	registerResets              []QualcommBootRegisterReset
+	completionEvents            []QualcommCompletionEventConfig
+	completionHandlers          map[uint32]QualcommCompletionHandler
+	orderedCompletionHandlers   []QualcommCompletionHandler
+	legacyUARTControllers       map[uint32]struct{}
+	sbiControllers              map[uint32]struct{}
+	sbiCompletionStatus         uint32
+	registers                   map[uint32]uint32
+	watchdogServices            uint64
+	timeTick                    uint32
+	timeTickReadPhase           uint8
+	timeTickClocked             bool
+	timeTickInstructionRate     uint64
+	timeTickHz                  uint64
+	timeTickInterruptSource     uint8
+	timeTickUseVectored         bool
+	timeTickPhase               uint64
+	timeTickMatchReady          bool
+	timeTickMatchConfigured     bool
 }
 
 func NewQualcommBootControl(config QualcommBootControlConfig) (*QualcommBootControl, error) {
@@ -358,7 +564,11 @@ func NewQualcommBootControl(config QualcommBootControlConfig) (*QualcommBootCont
 	if err := validateQualcommBootControlConfigurationOffsets(
 		config.WritableOffsets,
 		config.HalfwordOffsets,
+		config.MixedWidthOffsets,
 		config.ReadOnlyRegisters,
+		config.RegisterResets,
+		config.CompletionEvents,
+		config.LegacyUARTControllers,
 		config.SBIControllers,
 		config.SBICompletionStatus,
 	); err != nil {
@@ -372,28 +582,67 @@ func NewQualcommBootControl(config QualcommBootControlConfig) (*QualcommBootCont
 			clock.InterruptSource >= 64 {
 			return nil, fmt.Errorf("invalid Qualcomm timetick clock configuration")
 		}
+		if clock.UseVectoredController &&
+			(config.VectoredInterruptController == nil ||
+				clock.InterruptSource >= config.VectoredInterruptController.SourceCount()) {
+			return nil, fmt.Errorf("Qualcomm timetick interrupt source exceeds vectored controller")
+		}
 	}
+	for _, event := range config.CompletionEvents {
+		if event.UseVectoredController {
+			if config.VectoredInterruptController == nil ||
+				event.InterruptSource >= config.VectoredInterruptController.SourceCount() {
+				return nil, fmt.Errorf(
+					"Qualcomm completion interrupt source %d exceeds vectored controller",
+					event.InterruptSource,
+				)
+			}
+		} else if event.InterruptSource >= 64 {
+			return nil, fmt.Errorf("invalid Qualcomm completion interrupt source %d", event.InterruptSource)
+		}
+	}
+	completionEvents := append([]QualcommCompletionEventConfig(nil), config.CompletionEvents...)
+	sort.Slice(completionEvents, func(left, right int) bool {
+		return completionEvents[left].StartOffset < completionEvents[right].StartOffset
+	})
+	registerResets := append([]QualcommBootRegisterReset(nil), config.RegisterResets...)
+	sort.Slice(registerResets, func(left, right int) bool {
+		return registerResets[left].Offset < registerResets[right].Offset
+	})
 	device := &QualcommBootControl{
-		hardwareRevision:       config.HardwareRevision,
-		nandInterfaceMode:      config.NANDInterfaceMode,
-		ebiMemoryConfiguration: config.EBIMemoryConfiguration,
-		clockModeStatus:        config.ClockModeStatus,
-		nandReady:              config.NANDReady,
-		interruptController:    config.InterruptController,
+		hardwareRevision:            config.HardwareRevision,
+		nandInterfaceMode:           config.NANDInterfaceMode,
+		ebiMemoryConfiguration:      config.EBIMemoryConfiguration,
+		clockModeStatus:             config.ClockModeStatus,
+		nandReady:                   config.NANDReady,
+		interruptController:         config.InterruptController,
+		vectoredInterruptController: config.VectoredInterruptController,
 		writableOffsets: mergedQualcommBootControlWritableOffsets(
 			config.WritableOffsets,
 			config.HalfwordOffsets,
 			config.ReadOnlyRegisters,
+			config.CompletionEvents,
 			config.SBIControllers,
 			config.SBICompletionStatus,
 		),
-		halfwordOffsets:     make(map[uint32]struct{}, len(config.HalfwordOffsets)),
-		readOnlyRegisters:   make(map[uint32]uint32, len(config.ReadOnlyRegisters)),
-		sbiControllers:      make(map[uint32]struct{}, len(config.SBIControllers)),
-		sbiCompletionStatus: config.SBICompletionStatus,
+		halfwordOffsets:       make(map[uint32]struct{}, len(config.HalfwordOffsets)),
+		mixedWidthOffsets:     make(map[uint32]struct{}, len(config.MixedWidthOffsets)),
+		readOnlyRegisters:     make(map[uint32]uint32, len(config.ReadOnlyRegisters)),
+		registerResets:        registerResets,
+		completionEvents:      completionEvents,
+		completionHandlers:    make(map[uint32]QualcommCompletionHandler),
+		legacyUARTControllers: make(map[uint32]struct{}, len(config.LegacyUARTControllers)),
+		sbiControllers:        make(map[uint32]struct{}, len(config.SBIControllers)),
+		sbiCompletionStatus:   config.SBICompletionStatus,
 	}
 	for _, offset := range config.HalfwordOffsets {
 		device.halfwordOffsets[offset] = struct{}{}
+	}
+	for _, offset := range config.MixedWidthOffsets {
+		device.mixedWidthOffsets[offset] = struct{}{}
+	}
+	for _, base := range config.LegacyUARTControllers {
+		device.legacyUARTControllers[base] = struct{}{}
 	}
 	for _, register := range config.ReadOnlyRegisters {
 		device.readOnlyRegisters[register.Offset] = register.Value
@@ -406,6 +655,7 @@ func NewQualcommBootControl(config QualcommBootControlConfig) (*QualcommBootCont
 		device.timeTickInstructionRate = clock.InstructionsPerSecond
 		device.timeTickHz = clock.TimeTickHz
 		device.timeTickInterruptSource = clock.InterruptSource
+		device.timeTickUseVectored = clock.UseVectoredController
 	}
 	if device.interruptController == nil {
 		device.interruptController = NewQualcommInterruptController(nil)
@@ -420,6 +670,9 @@ func (d *QualcommBootControl) Reset() error {
 	d.registers = make(map[uint32]uint32, len(d.writableOffsets))
 	for _, offset := range d.writableOffsets {
 		d.registers[offset] = 0
+	}
+	for _, reset := range d.registerResets {
+		d.registers[reset.Offset] = reset.Value
 	}
 	for offset, value := range d.readOnlyRegisters {
 		d.registers[offset] = value
@@ -441,18 +694,76 @@ func (d *QualcommBootControl) Reset() error {
 	d.timeTickPhase = 0
 	d.timeTickMatchReady = true
 	d.timeTickMatchConfigured = false
-	return d.interruptController.Reset()
+	if err := d.interruptController.Reset(); err != nil {
+		return err
+	}
+	if d.vectoredInterruptController != nil {
+		if err := d.vectoredInterruptController.Reset(); err != nil {
+			return err
+		}
+	}
+	for _, handler := range d.orderedCompletionHandlers {
+		if err := handler.Reset(); err != nil {
+			return fmt.Errorf("reset Qualcomm completion handler: %w", err)
+		}
+	}
+	return nil
+}
+
+// AttachCompletionHandler connects an evidenced completion event to a device
+// side effect without expanding the boot-control MMIO aperture.
+func (d *QualcommBootControl) AttachCompletionHandler(
+	startOffset uint32,
+	handler QualcommCompletionHandler,
+) error {
+	if handler == nil {
+		return fmt.Errorf("nil Qualcomm completion handler")
+	}
+	profiled := false
+	for _, event := range d.completionEvents {
+		if event.StartOffset == startOffset {
+			profiled = true
+			break
+		}
+	}
+	if !profiled {
+		return fmt.Errorf("completion start 0x%x is not profiled: %w", startOffset, ErrInvalidRegion)
+	}
+	if _, duplicate := d.completionHandlers[startOffset]; duplicate {
+		return fmt.Errorf("completion start 0x%x already has a handler: %w", startOffset, ErrInvalidRegion)
+	}
+	if err := handler.Reset(); err != nil {
+		return fmt.Errorf("reset Qualcomm completion handler: %w", err)
+	}
+	d.completionHandlers[startOffset] = handler
+	d.orderedCompletionHandlers = append(d.orderedCompletionHandlers, handler)
+	return nil
 }
 
 func (d *QualcommBootControl) Read(offset uint32, width Width) (uint32, error) {
 	if offset >= 0x0900 && offset < 0x0900+QualcommInterruptControllerWindowSize {
 		return d.interruptController.Read(offset-0x0900, width)
 	}
+	if d.vectoredInterruptController != nil &&
+		offset >= QualcommVectoredInterruptControllerBaseOffset &&
+		offset < QualcommVectoredInterruptControllerBaseOffset+
+			QualcommVectoredInterruptControllerWindowSize {
+		relative := offset - QualcommVectoredInterruptControllerBaseOffset
+		if d.vectoredInterruptController.Handles(relative) {
+			return d.vectoredInterruptController.Read(relative, width)
+		}
+	}
+	if value, handled, err := d.readLegacyUART(offset, width); handled {
+		return value, err
+	}
 	if _, ok := d.halfwordOffsets[offset]; ok {
 		if width != Width16 {
 			return 0, fmt.Errorf("%w: read%d at 0x%x", ErrQualcommBootControlMMIO, width*8, offset)
 		}
 		return d.registers[offset], nil
+	}
+	if _, ok := d.mixedWidthOffsets[offset]; ok && width == Width16 {
+		return d.registers[offset] & 0xffff, nil
 	}
 	if width != Width32 {
 		return 0, fmt.Errorf("%w: read%d at 0x%x", ErrQualcommBootControlMMIO, width*8, offset)
@@ -499,6 +810,54 @@ func (d *QualcommBootControl) Write(offset uint32, width Width, value uint32) er
 	if offset >= 0x0900 && offset < 0x0900+QualcommInterruptControllerWindowSize {
 		return d.interruptController.Write(offset-0x0900, width, value)
 	}
+	if d.vectoredInterruptController != nil &&
+		offset >= QualcommVectoredInterruptControllerBaseOffset &&
+		offset < QualcommVectoredInterruptControllerBaseOffset+
+			QualcommVectoredInterruptControllerWindowSize {
+		relative := offset - QualcommVectoredInterruptControllerBaseOffset
+		if d.vectoredInterruptController.Handles(relative) {
+			return d.vectoredInterruptController.Write(relative, width, value)
+		}
+	}
+	for _, event := range d.completionEvents {
+		if offset == event.StatusOffset {
+			return fmt.Errorf(
+				"%w: write%d value 0x%x at read-only completion status 0x%x",
+				ErrQualcommBootControlMMIO,
+				width*8,
+				value,
+				offset,
+			)
+		}
+	}
+	acknowledge := false
+	for _, event := range d.completionEvents {
+		if offset != event.AcknowledgeOffset {
+			continue
+		}
+		acknowledge = true
+		if width != event.AcknowledgeWidth || width == Width16 && value > 0xffff {
+			return fmt.Errorf(
+				"%w: write%d value 0x%x at completion acknowledge 0x%x",
+				ErrQualcommBootControlMMIO,
+				width*8,
+				value,
+				offset,
+			)
+		}
+	}
+	if acknowledge {
+		d.registers[offset] = value
+		for _, event := range d.completionEvents {
+			if offset == event.AcknowledgeOffset && value&event.AcknowledgeMask != 0 {
+				d.registers[event.StatusOffset] &^= event.StatusMask
+			}
+		}
+		return nil
+	}
+	if handled, err := d.writeLegacyUART(offset, width, value); handled {
+		return err
+	}
 	if _, ok := d.halfwordOffsets[offset]; ok {
 		if width != Width16 || value > 0xffff {
 			return fmt.Errorf(
@@ -510,6 +869,19 @@ func (d *QualcommBootControl) Write(offset uint32, width Width, value uint32) er
 			)
 		}
 		d.registers[offset] = value
+		return nil
+	}
+	if _, ok := d.mixedWidthOffsets[offset]; ok && width == Width16 {
+		if value > 0xffff {
+			return fmt.Errorf(
+				"%w: write%d value 0x%x at 0x%x",
+				ErrQualcommBootControlMMIO,
+				width*8,
+				value,
+				offset,
+			)
+		}
+		d.registers[offset] = d.registers[offset]&0xffff0000 | value
 		return nil
 	}
 	if offset == 0x540c {
@@ -528,7 +900,36 @@ func (d *QualcommBootControl) Write(offset uint32, width Width, value uint32) er
 	if _, ok := d.registers[offset]; !ok {
 		return fmt.Errorf("%w: write32 at 0x%x", ErrQualcommBootControlMMIO, offset)
 	}
+	previousValue := d.registers[offset]
 	d.registers[offset] = value
+	for _, event := range d.completionEvents {
+		if offset != event.StartOffset || value&event.StartMask == 0 {
+			continue
+		}
+		if handler := d.completionHandlers[event.StartOffset]; handler != nil {
+			if err := handler.QueueCompletion(func(registerOffset uint32) (uint32, bool) {
+				registerValue, ok := d.registers[registerOffset]
+				return registerValue, ok
+			}); err != nil {
+				d.registers[offset] = previousValue
+				return fmt.Errorf("queue Qualcomm completion handler: %w", err)
+			}
+		}
+		previousStatus := d.registers[event.StatusOffset]
+		d.registers[event.StatusOffset] |= event.StatusMask
+		var err error
+		if event.UseVectoredController {
+			err = d.vectoredInterruptController.PulseSource(event.InterruptSource)
+		} else {
+			err = d.interruptController.PulseSource(event.InterruptSource)
+		}
+		if err != nil {
+			d.registers[offset] = previousValue
+			d.registers[event.StatusOffset] = previousStatus
+			return fmt.Errorf("signal Qualcomm completion interrupt: %w", err)
+		}
+		break
+	}
 	for base := range d.sbiControllers {
 		if offset == base+qualcommBootSBICommandOffset {
 			d.registers[base+qualcommBootSBIResultOffset] = 0
@@ -538,7 +939,12 @@ func (d *QualcommBootControl) Write(offset uint32, width Width, value uint32) er
 	}
 	if offset == 0x54c4 {
 		d.timeTickMatchConfigured = true
-		d.timeTickMatchReady = !d.timeTickClocked
+		// Firmware rewrites the match value on every synchronization-poll
+		// iteration. Delaying this register-ready bit until the next coarse CPU
+		// runner slice therefore makes each retry reset its own delay forever.
+		// The write latch is guest-visible immediately; only match expiry and
+		// interrupt delivery advance with the configured sleep clock.
+		d.timeTickMatchReady = true
 	} else if offset == 0x0380 && value&8 != 0 {
 		d.nandReady.Set(d.nandReady.Value() | 2)
 	} else if offset == 0x0414 {
@@ -551,6 +957,18 @@ func (d *QualcommBootControl) Write(offset uint32, width Width, value uint32) er
 // only from retired guest instructions; compatibility profiles retain the older
 // stable-pair read behavior until their clock and interrupt route are known.
 func (d *QualcommBootControl) Advance(retiredInstructions uint64) error {
+	if err := d.advanceTimeTick(retiredInstructions); err != nil {
+		return err
+	}
+	for _, handler := range d.orderedCompletionHandlers {
+		if err := handler.Advance(retiredInstructions); err != nil {
+			return fmt.Errorf("advance Qualcomm completion handler: %w", err)
+		}
+	}
+	return nil
+}
+
+func (d *QualcommBootControl) advanceTimeTick(retiredInstructions uint64) error {
 	if !d.timeTickClocked || retiredInstructions == 0 {
 		return nil
 	}
@@ -577,6 +995,9 @@ func (d *QualcommBootControl) Advance(retiredInstructions uint64) error {
 		distance = uint64(1) << 32
 	}
 	if quotientHigh != 0 || quotientLow >= uint64(1)<<32 || quotientLow >= distance {
+		if d.timeTickUseVectored {
+			return d.vectoredInterruptController.PulseSource(d.timeTickInterruptSource)
+		}
 		return d.interruptController.PulseSource(d.timeTickInterruptSource)
 	}
 	return nil
@@ -586,11 +1007,14 @@ func (d *QualcommBootControl) WatchdogServices() uint64 {
 	return d.watchdogServices
 }
 
-func (d *QualcommBootControl) registerWidth(offset uint32) Width {
+func (d *QualcommBootControl) registerAccessWidths(offset uint32) uint8 {
 	if _, ok := d.halfwordOffsets[offset]; ok {
-		return Width16
+		return uint8(Width16)
 	}
-	return Width32
+	if _, ok := d.mixedWidthOffsets[offset]; ok {
+		return uint8(Width16 | Width32)
+	}
+	return uint8(Width32)
 }
 
 func (d *QualcommBootControl) SaveState() ([]byte, error) {
@@ -598,10 +1022,17 @@ func (d *QualcommBootControl) SaveState() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	var vectoredInterruptState []byte
+	if d.vectoredInterruptController != nil {
+		vectoredInterruptState, err = d.vectoredInterruptController.SaveState()
+		if err != nil {
+			return nil, err
+		}
+	}
 	offsets := d.writableOffsets
 	var output bytes.Buffer
 	output.WriteString("QBTC")
-	_ = binary.Write(&output, binary.LittleEndian, uint32(11))
+	_ = binary.Write(&output, binary.LittleEndian, uint32(17))
 	_ = binary.Write(&output, binary.LittleEndian, d.hardwareRevision)
 	_ = binary.Write(&output, binary.LittleEndian, d.nandInterfaceMode)
 	_ = binary.Write(&output, binary.LittleEndian, d.ebiMemoryConfiguration)
@@ -620,6 +1051,11 @@ func (d *QualcommBootControl) SaveState() ([]byte, error) {
 	_ = binary.Write(&output, binary.LittleEndian, d.timeTickInstructionRate)
 	_ = binary.Write(&output, binary.LittleEndian, d.timeTickHz)
 	_ = output.WriteByte(d.timeTickInterruptSource)
+	useVectored := uint8(0)
+	if d.timeTickUseVectored {
+		useVectored = 1
+	}
+	_ = output.WriteByte(useVectored)
 	_ = binary.Write(&output, binary.LittleEndian, d.timeTickPhase)
 	matchReady := uint8(0)
 	if d.timeTickMatchReady {
@@ -631,18 +1067,53 @@ func (d *QualcommBootControl) SaveState() ([]byte, error) {
 		matchConfigured = 1
 	}
 	_ = output.WriteByte(matchConfigured)
+	_ = binary.Write(&output, binary.LittleEndian, uint32(len(d.completionEvents)))
+	for _, event := range d.completionEvents {
+		_ = binary.Write(&output, binary.LittleEndian, event.StartOffset)
+		_ = binary.Write(&output, binary.LittleEndian, event.StartMask)
+		_ = binary.Write(&output, binary.LittleEndian, event.StatusOffset)
+		_ = binary.Write(&output, binary.LittleEndian, event.StatusMask)
+		_ = binary.Write(&output, binary.LittleEndian, event.AcknowledgeOffset)
+		_ = output.WriteByte(byte(event.AcknowledgeWidth))
+		_ = binary.Write(&output, binary.LittleEndian, event.AcknowledgeMask)
+		_ = output.WriteByte(event.InterruptSource)
+		vectored := uint8(0)
+		if event.UseVectoredController {
+			vectored = 1
+		}
+		_ = output.WriteByte(vectored)
+	}
+	_ = binary.Write(&output, binary.LittleEndian, uint32(len(d.registerResets)))
+	for _, reset := range d.registerResets {
+		_ = binary.Write(&output, binary.LittleEndian, reset.Offset)
+		_ = binary.Write(&output, binary.LittleEndian, reset.Value)
+	}
 	_ = binary.Write(&output, binary.LittleEndian, uint32(len(offsets)))
 	for _, offset := range offsets {
 		_ = binary.Write(&output, binary.LittleEndian, offset)
-		_ = output.WriteByte(byte(d.registerWidth(offset)))
+		_ = output.WriteByte(d.registerAccessWidths(offset))
 		_ = binary.Write(&output, binary.LittleEndian, d.registers[offset])
 	}
 	_ = binary.Write(&output, binary.LittleEndian, uint32(len(interruptState)))
 	output.Write(interruptState)
+	_ = binary.Write(&output, binary.LittleEndian, uint32(len(vectoredInterruptState)))
+	output.Write(vectoredInterruptState)
 	return output.Bytes(), nil
 }
 
 func (d *QualcommBootControl) LoadState(state []byte) error {
+	return d.loadState(state, false)
+}
+
+// LoadStateSubset permits diagnostic snapshots made before a read-only status
+// register or an explicitly reset writable register was added to the board
+// profile. Missing registers take their configured reset values; unreset
+// writable-register and all other profile changes remain incompatible.
+func (d *QualcommBootControl) LoadStateSubset(state []byte) error {
+	return d.loadState(state, true)
+}
+
+func (d *QualcommBootControl) loadState(state []byte, allowMissingProfileRegisters bool) error {
 	reader := bytes.NewReader(state)
 	var magic [4]byte
 	var version, revision, nandInterfaceMode, ebiMemoryConfiguration, clockModeStatus uint32
@@ -650,11 +1121,11 @@ func (d *QualcommBootControl) LoadState(state []byte) error {
 	var watchdog uint64
 	var timeTick uint32
 	var timeTickReadPhase uint8
-	var clocked, interruptSource, matchReady, matchConfigured uint8
+	var clocked, interruptSource, useVectored, matchReady, matchConfigured uint8
 	var instructionRate, timeTickHz, timeTickPhase uint64
-	var count uint32
+	var completionCount, resetCount, count uint32
 	if _, err := io.ReadFull(reader, magic[:]); err != nil || string(magic[:]) != "QBTC" ||
-		binary.Read(reader, binary.LittleEndian, &version) != nil || version != 11 ||
+		binary.Read(reader, binary.LittleEndian, &version) != nil || version != 17 ||
 		binary.Read(reader, binary.LittleEndian, &revision) != nil || revision != d.hardwareRevision ||
 		binary.Read(reader, binary.LittleEndian, &nandInterfaceMode) != nil ||
 		nandInterfaceMode != d.nandInterfaceMode ||
@@ -673,11 +1144,64 @@ func (d *QualcommBootControl) LoadState(state []byte) error {
 		binary.Read(reader, binary.LittleEndian, &timeTickHz) != nil || timeTickHz != d.timeTickHz ||
 		binary.Read(reader, binary.LittleEndian, &interruptSource) != nil ||
 		interruptSource != d.timeTickInterruptSource ||
+		binary.Read(reader, binary.LittleEndian, &useVectored) != nil || useVectored > 1 ||
+		(useVectored == 1) != d.timeTickUseVectored ||
 		binary.Read(reader, binary.LittleEndian, &timeTickPhase) != nil ||
 		(d.timeTickClocked && timeTickPhase >= d.timeTickInstructionRate) ||
 		binary.Read(reader, binary.LittleEndian, &matchReady) != nil || matchReady > 1 ||
 		binary.Read(reader, binary.LittleEndian, &matchConfigured) != nil || matchConfigured > 1 ||
-		binary.Read(reader, binary.LittleEndian, &count) != nil || count != uint32(len(d.writableOffsets)) ||
+		binary.Read(reader, binary.LittleEndian, &completionCount) != nil ||
+		completionCount != uint32(len(d.completionEvents)) {
+		return ErrInvalidState
+	}
+	for index := uint32(0); index < completionCount; index++ {
+		var event QualcommCompletionEventConfig
+		var acknowledgeWidth, vectored uint8
+		if binary.Read(reader, binary.LittleEndian, &event.StartOffset) != nil ||
+			binary.Read(reader, binary.LittleEndian, &event.StartMask) != nil ||
+			binary.Read(reader, binary.LittleEndian, &event.StatusOffset) != nil ||
+			binary.Read(reader, binary.LittleEndian, &event.StatusMask) != nil ||
+			binary.Read(reader, binary.LittleEndian, &event.AcknowledgeOffset) != nil ||
+			binary.Read(reader, binary.LittleEndian, &acknowledgeWidth) != nil ||
+			binary.Read(reader, binary.LittleEndian, &event.AcknowledgeMask) != nil ||
+			binary.Read(reader, binary.LittleEndian, &event.InterruptSource) != nil ||
+			binary.Read(reader, binary.LittleEndian, &vectored) != nil || vectored > 1 {
+			return ErrInvalidState
+		}
+		event.AcknowledgeWidth = Width(acknowledgeWidth)
+		event.UseVectoredController = vectored == 1
+		if event != d.completionEvents[index] {
+			return ErrInvalidState
+		}
+	}
+	if binary.Read(reader, binary.LittleEndian, &resetCount) != nil ||
+		resetCount > uint32(len(d.registerResets)) ||
+		(!allowMissingProfileRegisters && resetCount != uint32(len(d.registerResets))) {
+		return ErrInvalidState
+	}
+	serializedResets := make(map[uint32]uint32, resetCount)
+	configuredResets := make(map[uint32]uint32, len(d.registerResets))
+	for _, reset := range d.registerResets {
+		configuredResets[reset.Offset] = reset.Value
+	}
+	for index := uint32(0); index < resetCount; index++ {
+		var reset QualcommBootRegisterReset
+		if binary.Read(reader, binary.LittleEndian, &reset.Offset) != nil ||
+			binary.Read(reader, binary.LittleEndian, &reset.Value) != nil {
+			return ErrInvalidState
+		}
+		configured, present := configuredResets[reset.Offset]
+		if !present || configured != reset.Value {
+			return ErrInvalidState
+		}
+		if _, duplicate := serializedResets[reset.Offset]; duplicate {
+			return ErrInvalidState
+		}
+		serializedResets[reset.Offset] = reset.Value
+	}
+	if binary.Read(reader, binary.LittleEndian, &count) != nil ||
+		count > uint32(len(d.writableOffsets)) ||
+		(!allowMissingProfileRegisters && count != uint32(len(d.writableOffsets))) ||
 		reader.Len() < int(count)*9+4 {
 		return ErrInvalidState
 	}
@@ -693,7 +1217,7 @@ func (d *QualcommBootControl) LoadState(state []byte) error {
 		if _, allowed := d.registers[offset]; !allowed {
 			return ErrInvalidState
 		}
-		if Width(width) != d.registerWidth(offset) || width == uint8(Width16) && value > 0xffff {
+		if width != d.registerAccessWidths(offset) || width == uint8(Width16) && value > 0xffff {
 			return ErrInvalidState
 		}
 		if configured, readOnly := d.readOnlyRegisters[offset]; readOnly && value != configured {
@@ -704,17 +1228,48 @@ func (d *QualcommBootControl) LoadState(state []byte) error {
 		}
 		registers[offset] = value
 	}
+	for _, offset := range d.writableOffsets {
+		if _, restored := registers[offset]; restored {
+			continue
+		}
+		configured, readOnly := d.readOnlyRegisters[offset]
+		if allowMissingProfileRegisters && readOnly {
+			registers[offset] = configured
+			continue
+		}
+		reset, resetConfigured := configuredResets[offset]
+		_, resetExistedInState := serializedResets[offset]
+		if !allowMissingProfileRegisters || !resetConfigured || resetExistedInState {
+			return ErrInvalidState
+		}
+		registers[offset] = reset
+	}
 	var interruptStateLength uint32
 	if binary.Read(reader, binary.LittleEndian, &interruptStateLength) != nil ||
-		uint64(interruptStateLength) != uint64(reader.Len()) {
+		uint64(interruptStateLength)+4 > uint64(reader.Len()) {
 		return ErrInvalidState
 	}
 	interruptState := make([]byte, interruptStateLength)
-	if _, err := io.ReadFull(reader, interruptState); err != nil || reader.Len() != 0 {
+	if _, err := io.ReadFull(reader, interruptState); err != nil {
+		return ErrInvalidState
+	}
+	var vectoredInterruptStateLength uint32
+	if binary.Read(reader, binary.LittleEndian, &vectoredInterruptStateLength) != nil ||
+		uint64(vectoredInterruptStateLength) != uint64(reader.Len()) ||
+		(d.vectoredInterruptController == nil) != (vectoredInterruptStateLength == 0) {
+		return ErrInvalidState
+	}
+	vectoredInterruptState := make([]byte, vectoredInterruptStateLength)
+	if _, err := io.ReadFull(reader, vectoredInterruptState); err != nil || reader.Len() != 0 {
 		return ErrInvalidState
 	}
 	if err := d.interruptController.LoadState(interruptState); err != nil {
 		return err
+	}
+	if d.vectoredInterruptController != nil {
+		if err := d.vectoredInterruptController.LoadState(vectoredInterruptState); err != nil {
+			return err
+		}
 	}
 	d.registers = registers
 	d.nandReady.Set(uint32(ready))
@@ -731,20 +1286,45 @@ func (d *QualcommBootControl) LoadState(state []byte) error {
 // exercised by OEMSBL. The selector/data and gate-mask registers are explicit
 // stateful latches; accesses outside the evidenced set fail.
 type QualcommSecondaryClockControl struct {
-	registers map[uint32]uint32
+	offsets           []uint32
+	registers         map[uint32]uint32
+	gpioWriteObserver QualcommGPIOWriteObserver
 }
 
 func NewQualcommSecondaryClockControl() *QualcommSecondaryClockControl {
-	device := &QualcommSecondaryClockControl{}
-	_ = device.Reset()
+	device, _ := NewQualcommSecondaryClockControlWithWritableOffsets(nil)
 	return device
 }
 
+// NewQualcommSecondaryClockControlWithWritableOffsets adds registers evidenced
+// for one board without widening the default family contract.
+func NewQualcommSecondaryClockControlWithWritableOffsets(
+	extra []uint32,
+) (*QualcommSecondaryClockControl, error) {
+	if err := validateQualcommSecondaryClockWritableOffsets(extra); err != nil {
+		return nil, err
+	}
+	offsets := append([]uint32(nil), qualcommSecondaryClockOffsets...)
+	offsets = append(offsets, extra...)
+	sort.Slice(offsets, func(left, right int) bool { return offsets[left] < offsets[right] })
+	device := &QualcommSecondaryClockControl{offsets: offsets}
+	_ = device.Reset()
+	return device, nil
+}
+
 func (d *QualcommSecondaryClockControl) Reset() error {
-	d.registers = make(map[uint32]uint32, len(qualcommSecondaryClockOffsets))
-	for _, offset := range qualcommSecondaryClockOffsets {
+	d.registers = make(map[uint32]uint32, len(d.offsets))
+	for _, offset := range d.offsets {
 		d.registers[offset] = 0
 	}
+	return nil
+}
+
+func (d *QualcommSecondaryClockControl) AttachGPIOWriteObserver(observer QualcommGPIOWriteObserver) error {
+	if observer == nil || d.gpioWriteObserver != nil {
+		return fmt.Errorf("attach Qualcomm secondary-clock GPIO write observer: %w", ErrQualcommSecondaryClockMMIO)
+	}
+	d.gpioWriteObserver = observer
 	return nil
 }
 
@@ -764,6 +1344,9 @@ func (d *QualcommSecondaryClockControl) Write(offset uint32, width Width, value 
 	if width == Width32 {
 		if _, ok := d.registers[offset]; ok {
 			d.registers[offset] = value
+			if d.gpioWriteObserver != nil {
+				d.gpioWriteObserver.ObserveGPIOWrite(offset, value)
+			}
 			return nil
 		}
 	}
@@ -777,8 +1360,8 @@ func (d *QualcommSecondaryClockControl) SaveState() ([]byte, error) {
 	var output bytes.Buffer
 	output.WriteString("QSCC")
 	_ = binary.Write(&output, binary.LittleEndian, uint32(1))
-	_ = binary.Write(&output, binary.LittleEndian, uint32(len(qualcommSecondaryClockOffsets)))
-	for _, offset := range qualcommSecondaryClockOffsets {
+	_ = binary.Write(&output, binary.LittleEndian, uint32(len(d.offsets)))
+	for _, offset := range d.offsets {
 		_ = binary.Write(&output, binary.LittleEndian, offset)
 		_ = binary.Write(&output, binary.LittleEndian, d.registers[offset])
 	}
@@ -792,7 +1375,7 @@ func (d *QualcommSecondaryClockControl) LoadState(state []byte) error {
 	if _, err := io.ReadFull(reader, magic[:]); err != nil || string(magic[:]) != "QSCC" ||
 		binary.Read(reader, binary.LittleEndian, &version) != nil || version != 1 ||
 		binary.Read(reader, binary.LittleEndian, &count) != nil ||
-		count != uint32(len(qualcommSecondaryClockOffsets)) || reader.Len() != int(count)*8 {
+		count != uint32(len(d.offsets)) || reader.Len() != int(count)*8 {
 		return ErrInvalidState
 	}
 	registers := make(map[uint32]uint32, count)
@@ -815,8 +1398,9 @@ func (d *QualcommSecondaryClockControl) LoadState(state []byte) error {
 }
 
 var (
-	_ Device         = (*QualcommBootControl)(nil)
-	_ StatefulDevice = (*QualcommBootControl)(nil)
-	_ Device         = (*QualcommSecondaryClockControl)(nil)
-	_ StatefulDevice = (*QualcommSecondaryClockControl)(nil)
+	_ Device               = (*QualcommBootControl)(nil)
+	_ StatefulDevice       = (*QualcommBootControl)(nil)
+	_ SubsetStatefulDevice = (*QualcommBootControl)(nil)
+	_ Device               = (*QualcommSecondaryClockControl)(nil)
+	_ StatefulDevice       = (*QualcommSecondaryClockControl)(nil)
 )

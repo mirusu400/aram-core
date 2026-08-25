@@ -2,7 +2,9 @@ package system
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -23,28 +25,113 @@ type ReadOnlyStorage interface {
 	Size() int64
 }
 
+// FlashSeed describes generated, non-firmware bytes present on a newly
+// provisioned flash device. Seeds are part of the immutable factory baseline:
+// guest writes remain copy-on-write, and FactoryReset reveals the seeds again.
+type FlashSeed struct {
+	Offset uint64
+	Data   []byte
+}
+
 // COWFlash provides byte-addressable NAND programming semantics over an
-// immutable firmware image. Dirty erase blocks live only in the overlay;
-// FactoryReset discards them and reveals the original image again.
+// immutable factory baseline. Dirty erase blocks live only in the overlay;
+// FactoryReset discards them and reveals the firmware image plus any generated
+// provisioning metadata again.
 type COWFlash struct {
 	mu        sync.Mutex
 	base      ReadOnlyStorage
 	size      uint64
 	blockSize uint32
 	identity  string
+	seeds     map[uint32][]byte
 	blocks    map[uint32][]byte
 }
 
 func NewCOWFlash(base ReadOnlyStorage, blockSize uint32, identity string) (*COWFlash, error) {
-	if base == nil || base.Size() <= 0 || uint64(base.Size()) > uint64(^uint32(0)) ||
-		blockSize == 0 || blockSize > 16<<20 || blockSize&(blockSize-1) != 0 ||
-		uint64(base.Size())%uint64(blockSize) != 0 || !validFlashIdentity(identity) {
+	if base == nil || base.Size() <= 0 {
 		return nil, ErrInvalidFlash
 	}
-	return &COWFlash{
-		base: base, size: uint64(base.Size()), blockSize: blockSize,
-		identity: identity, blocks: make(map[uint32][]byte),
-	}, nil
+	return NewCOWFlashWithCapacity(base, uint64(base.Size()), blockSize, identity)
+}
+
+// NewCOWFlashWithCapacity creates a writable physical flash view over a
+// possibly shorter logical image. Bytes after the represented image are
+// erased (0xff) until programmed, which lets normalized downloader packages
+// omit unused NAND tail blocks without making those physical blocks
+// unwritable.
+func NewCOWFlashWithCapacity(
+	base ReadOnlyStorage,
+	capacity uint64,
+	blockSize uint32,
+	identity string,
+) (*COWFlash, error) {
+	return NewCOWFlashWithCapacityAndSeeds(base, capacity, blockSize, identity, nil)
+}
+
+// NewCOWFlashWithCapacityAndSeeds creates a writable flash view whose factory
+// baseline includes generated provisioning metadata in addition to the
+// immutable firmware image. Seed order does not affect the derived identity.
+func NewCOWFlashWithCapacityAndSeeds(
+	base ReadOnlyStorage,
+	capacity uint64,
+	blockSize uint32,
+	identity string,
+	seeds []FlashSeed,
+) (*COWFlash, error) {
+	if base == nil || base.Size() <= 0 || capacity < uint64(base.Size()) ||
+		capacity > uint64(^uint32(0)) || blockSize == 0 || blockSize > 16<<20 ||
+		blockSize&(blockSize-1) != 0 || capacity%uint64(blockSize) != 0 ||
+		!validFlashIdentity(identity) {
+		return nil, ErrInvalidFlash
+	}
+	normalizedSeeds := make([]FlashSeed, len(seeds))
+	for index, seed := range seeds {
+		if len(seed.Data) == 0 || seed.Offset >= capacity ||
+			uint64(len(seed.Data)) > capacity-seed.Offset {
+			return nil, ErrInvalidFlash
+		}
+		normalizedSeeds[index] = FlashSeed{
+			Offset: seed.Offset,
+			Data:   append([]byte(nil), seed.Data...),
+		}
+	}
+	sort.Slice(normalizedSeeds, func(left, right int) bool {
+		return normalizedSeeds[left].Offset < normalizedSeeds[right].Offset
+	})
+	for index := 1; index < len(normalizedSeeds); index++ {
+		previous := normalizedSeeds[index-1]
+		if previous.Offset+uint64(len(previous.Data)) > normalizedSeeds[index].Offset {
+			return nil, ErrInvalidFlash
+		}
+	}
+	flash := &COWFlash{
+		base: base, size: capacity, blockSize: blockSize,
+		identity: identity, seeds: make(map[uint32][]byte), blocks: make(map[uint32][]byte),
+	}
+	for _, seed := range normalizedSeeds {
+		for position, value := range seed.Data {
+			address := seed.Offset + uint64(position)
+			blockIndex := uint32(address / uint64(blockSize))
+			block, ok := flash.seeds[blockIndex]
+			if !ok {
+				var err error
+				block, err = flash.cloneBaseBlock(blockIndex)
+				if err != nil {
+					return nil, ErrInvalidFlash
+				}
+				flash.seeds[blockIndex] = block
+			}
+			blockOffset := uint32(address % uint64(blockSize))
+			if block[blockOffset]&value != value {
+				return nil, ErrInvalidFlash
+			}
+			block[blockOffset] = value
+		}
+	}
+	if len(normalizedSeeds) != 0 {
+		flash.identity = seededFlashIdentity(identity, capacity, normalizedSeeds)
+	}
+	return flash, nil
 }
 
 func (f *COWFlash) Size() int64 {
@@ -81,17 +168,26 @@ func (f *COWFlash) ReadAt(destination []byte, offset int64) (int, error) {
 		return 0, nil
 	}
 	output := destination[:count]
-	read, err := f.base.ReadAt(output, offset)
-	if read != count {
-		if err == nil {
-			err = io.ErrUnexpectedEOF
+	for index := range output {
+		output[index] = 0xff
+	}
+	baseSize := uint64(f.base.Size())
+	start := uint64(offset)
+	if start < baseSize {
+		baseCount := int(min(uint64(count), baseSize-start))
+		read, readErr := f.base.ReadAt(output[:baseCount], offset)
+		if read != baseCount {
+			if readErr == nil {
+				readErr = io.ErrUnexpectedEOF
+			}
+			return read, readErr
 		}
-		return read, err
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return read, readErr
+		}
 	}
-	if err != nil && !errors.Is(err, io.EOF) {
-		return read, err
-	}
-	f.copyOverlay(output, uint64(offset))
+	f.copyBlocks(output, start, f.seeds)
+	f.copyBlocks(output, start, f.blocks)
 	if partial {
 		return count, io.EOF
 	}
@@ -256,24 +352,38 @@ func (f *COWFlash) cloneBlock(index uint32) ([]byte, error) {
 	if block, ok := f.blocks[index]; ok {
 		return append([]byte(nil), block...), nil
 	}
+	if block, ok := f.seeds[index]; ok {
+		return append([]byte(nil), block...), nil
+	}
+	return f.cloneBaseBlock(index)
+}
+
+func (f *COWFlash) cloneBaseBlock(index uint32) ([]byte, error) {
 	block := make([]byte, f.blockSize)
+	for position := range block {
+		block[position] = 0xff
+	}
 	offset := int64(uint64(index) * uint64(f.blockSize))
-	count, err := f.base.ReadAt(block, offset)
-	if count != len(block) || (err != nil && !errors.Is(err, io.EOF)) {
-		if err == nil {
-			err = io.ErrUnexpectedEOF
+	baseSize := uint64(f.base.Size())
+	if uint64(offset) < baseSize {
+		baseCount := int(min(uint64(len(block)), baseSize-uint64(offset)))
+		count, err := f.base.ReadAt(block[:baseCount], offset)
+		if count != baseCount || err != nil && !errors.Is(err, io.EOF) {
+			if err == nil {
+				err = io.ErrUnexpectedEOF
+			}
+			return nil, err
 		}
-		return nil, err
 	}
 	return block, nil
 }
 
-func (f *COWFlash) copyOverlay(destination []byte, start uint64) {
+func (f *COWFlash) copyBlocks(destination []byte, start uint64, blocks map[uint32][]byte) {
 	end := start + uint64(len(destination))
 	first := uint32(start / uint64(f.blockSize))
 	last := uint32((end - 1) / uint64(f.blockSize))
 	for index := first; index <= last; index++ {
-		block, ok := f.blocks[index]
+		block, ok := blocks[index]
 		if !ok {
 			continue
 		}
@@ -293,6 +403,24 @@ func (f *COWFlash) blockCount() uint64 {
 
 func validFlashIdentity(value string) bool {
 	return strings.TrimSpace(value) != "" && len(value) <= 255 && strings.IndexByte(value, 0) < 0
+}
+
+func seededFlashIdentity(identity string, capacity uint64, seeds []FlashSeed) string {
+	hash := sha256.New()
+	_, _ = io.WriteString(hash, "aram-flash-seeds-v1\x00")
+	_, _ = io.WriteString(hash, identity)
+	_, _ = hash.Write([]byte{0})
+	var scalar [8]byte
+	binary.LittleEndian.PutUint64(scalar[:], capacity)
+	_, _ = hash.Write(scalar[:])
+	for _, seed := range seeds {
+		binary.LittleEndian.PutUint64(scalar[:], seed.Offset)
+		_, _ = hash.Write(scalar[:])
+		binary.LittleEndian.PutUint64(scalar[:], uint64(len(seed.Data)))
+		_, _ = hash.Write(scalar[:])
+		_, _ = hash.Write(seed.Data)
+	}
+	return "flash-seeds-v1:" + hex.EncodeToString(hash.Sum(nil))
 }
 
 var _ io.ReaderAt = (*COWFlash)(nil)

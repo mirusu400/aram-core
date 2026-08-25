@@ -1087,3 +1087,38 @@ func TestPCHistoryKeepsConfiguredExecutionTail(t *testing.T) {
 		t.Fatal("oversized PC history was accepted")
 	}
 }
+
+func TestPCRegisterCaptureSamplesWithoutStoppingExecution(t *testing.T) {
+	backend := New()
+	defer backend.Close()
+	mapARMInstructions(t, backend,
+		0xe2800001, // ADD r0, r0, #1
+		0xeafffffd, // B 0x1000
+	)
+	if err := backend.SetPCRegisterCapture(0x1000, 2); err != nil {
+		t.Fatal(err)
+	}
+	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 4)
+	if result.Err != nil || result.Reason != cpu.StopBudget {
+		t.Fatalf("result = %+v", result)
+	}
+	captures := backend.PCRegisterCaptures()
+	if len(captures) != 2 || captures[0].Address != 0x1000 || captures[1].Address != 0x1000 {
+		t.Fatalf("PC register captures = %#v", captures)
+	}
+	if got, want := captures[0].Registers[cpu.RegisterR0], uint32(0); got != want {
+		t.Fatalf("first captured r0 = 0x%08x, want 0x%08x", got, want)
+	}
+	if got, want := captures[1].Registers[cpu.RegisterR0], uint32(1); got != want {
+		t.Fatalf("second captured r0 = 0x%08x, want 0x%08x", got, want)
+	}
+	if err := backend.SetPCRegisterCapture(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if got := backend.PCRegisterCaptures(); len(got) != 0 {
+		t.Fatalf("disabled PC register captures = %#v", got)
+	}
+	if err := backend.SetPCRegisterCapture(0x1000, 4097); err == nil {
+		t.Fatal("oversized PC register capture was accepted")
+	}
+}

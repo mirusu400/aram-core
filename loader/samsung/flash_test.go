@@ -33,11 +33,13 @@ func TestAssembleFlashMapsDecodedAndIdentityRegions(t *testing.T) {
 			t.Fatalf("flash region %d = %+v", index, regions[index])
 		}
 	}
-	if regions[1].Transform != TransformSEEDFeedback || regions[1].SourceOffset != WrapperSize {
+	if regions[0].Transform != TransformBootBlocks ||
+		regions[1].Transform != TransformSEEDFeedback || regions[1].SourceOffset != WrapperSize {
 		t.Fatalf("WBIN attribution = %+v", regions[1])
 	}
 
 	assertFlashBytes(t, image, 0, []byte{0x11})
+	assertFlashBytes(t, image, EraseBlockSize, []byte{0xac, 0x9f, 0x56, 0xfe})
 	assertFlashBytes(t, image, 0x60000, []byte{0x7f, 'E', 'L', 'F'})
 	assertFlashBytes(t, image, 0x70000, bytes.Repeat([]byte{0xff}, 16))
 	assertFlashBytes(t, image, 0x80000, []byte{0xd1})
@@ -57,6 +59,34 @@ func TestAssembleFlashMapsDecodedAndIdentityRegions(t *testing.T) {
 	if count != 1 || !errors.Is(err, io.EOF) || buffer[0] != 0xff {
 		t.Fatalf("partial flash read = count %d bytes %x error %v", count, buffer, err)
 	}
+}
+
+func TestAssembleFlashMapsLogicalRegionsAroundFactoryBadBlocks(t *testing.T) {
+	set, pkg := syntheticFlashSet(t, false)
+	image, err := AssembleFlashWithOptions(set, pkg, FlashAssemblyOptions{
+		FactoryBadBlocks: []uint32{5, 0},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if image.Size() != 0x120000 {
+		t.Fatalf("physical flash size = %#x", image.Size())
+	}
+	regions := image.Regions()
+	if len(regions) != 4 {
+		t.Fatalf("physical flash region count = %d: %+v", len(regions), regions)
+	}
+	wantStarts := []uint64{0, 0x80000, 0xc0000, 0x100000}
+	for index, start := range wantStarts {
+		if regions[index].Start != start {
+			t.Fatalf("physical flash region %d start = %#x, want %#x", index, regions[index].Start, start)
+		}
+	}
+	assertFlashBytes(t, image, 0x60000, bytes.Repeat([]byte{0xff}, 16))
+	assertFlashBytes(t, image, 0x80000, []byte{0x7f, 'E', 'L', 'F'})
+	assertFlashBytes(t, image, 0xa0000, bytes.Repeat([]byte{0xff}, 16))
+	assertFlashBytes(t, image, 0xc0000, []byte{0xd1})
+	assertFlashBytes(t, image, 0x100000, []byte{0xf1})
 }
 
 func TestAssembleFlashRejectsOverlappingNormalizedRegions(t *testing.T) {

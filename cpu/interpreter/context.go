@@ -3,16 +3,18 @@ package interpreter
 import (
 	"encoding/binary"
 	"fmt"
+	"sort"
 
 	"github.com/mirusu400/aram-core/cpu"
 )
 
 const (
-	contextVersion       = 2
-	legacyContextVersion = 1
-	bankedContextWords   = 22
-	spsrContextWords     = 5
-	cp15ContextWords     = 7
+	contextVersion           = 3
+	bankedCP15ContextVersion = 2
+	legacyContextVersion     = 1
+	bankedContextWords       = 22
+	spsrContextWords         = 5
+	cp15ContextWords         = 7
 )
 
 func (b *Backend) SaveContext() ([]byte, error) {
@@ -22,8 +24,15 @@ func (b *Backend) SaveContext() ([]byte, error) {
 		return nil, cpu.ErrClosed
 	}
 	b.resolveFlags()
-	wordCount := len(b.regs) + bankedContextWords + spsrContextWords + cp15ContextWords + 1
-	data := make([]byte, 8+wordCount*4)
+	lineAddresses := make([]uint32, 0, len(b.instructionCache))
+	for address := range b.instructionCache {
+		lineAddresses = append(lineAddresses, address)
+	}
+	sort.Slice(lineAddresses, func(left, right int) bool {
+		return lineAddresses[left] < lineAddresses[right]
+	})
+	fixedWordCount := len(b.regs) + bankedContextWords + spsrContextWords + cp15ContextWords + 2
+	data := make([]byte, 8+fixedWordCount*4+len(lineAddresses)*(4+int(instructionCacheLineSize)))
 	copy(data, "ARMC")
 	binary.LittleEndian.PutUint32(data[4:8], contextVersion)
 	offset := 8
@@ -51,6 +60,15 @@ func (b *Backend) SaveContext() ([]byte, error) {
 		b.cp15.faultAddress,
 		b.cp15.processID,
 	})
+	binary.LittleEndian.PutUint32(data[offset:offset+4], uint32(len(lineAddresses)))
+	offset += 4
+	for _, address := range lineAddresses {
+		binary.LittleEndian.PutUint32(data[offset:offset+4], address)
+		offset += 4
+		line := b.instructionCache[address]
+		copy(data[offset:offset+int(instructionCacheLineSize)], line[:])
+		offset += int(instructionCacheLineSize)
+	}
 	binary.LittleEndian.PutUint32(data[offset:offset+4], uint32(b.mode))
 	return data, nil
 }
@@ -66,18 +84,22 @@ func (b *Backend) RestoreContext(data []byte) error {
 	}
 	version := binary.LittleEndian.Uint32(data[4:8])
 	legacySize := 8 + (len(b.regs)+1)*4
-	currentSize := 8 + (len(b.regs)+bankedContextWords+spsrContextWords+cp15ContextWords+1)*4
+	bankedCP15Size := 8 + (len(b.regs)+bankedContextWords+spsrContextWords+cp15ContextWords+1)*4
+	currentMinimumSize := bankedCP15Size + 4
 	if version == legacyContextVersion && len(data) != legacySize ||
-		version == contextVersion && len(data) != currentSize ||
-		version != legacyContextVersion && version != contextVersion {
+		version == bankedCP15ContextVersion && len(data) != bankedCP15Size ||
+		version == contextVersion && len(data) < currentMinimumSize ||
+		version != legacyContextVersion && version != bankedCP15ContextVersion &&
+			version != contextVersion {
 		return fmt.Errorf("CPU context: %w", cpu.ErrInvalidAddress)
 	}
 
 	var (
-		restoredRegs  [17]uint32
-		restoredBanks bankedRegisters
-		restoredSPSR  savedProgramStatus
-		restoredCP15  cp15State
+		restoredRegs             [17]uint32
+		restoredBanks            bankedRegisters
+		restoredSPSR             savedProgramStatus
+		restoredCP15             cp15State
+		restoredInstructionCache map[uint32]instructionCacheLine
 	)
 	offset := 8
 	readWords := func(values []uint32) {
@@ -87,7 +109,7 @@ func (b *Backend) RestoreContext(data []byte) error {
 		}
 	}
 	readWords(restoredRegs[:])
-	if version == contextVersion {
+	if version == bankedCP15ContextVersion || version == contextVersion {
 		readWords(restoredBanks.userHigh[:])
 		readWords(restoredBanks.userStackLink[:])
 		readWords(restoredBanks.fiq[:])
@@ -120,6 +142,32 @@ func (b *Backend) RestoreContext(data []byte) error {
 			offset += 4
 		}
 	}
+	if version == contextVersion {
+		lineCount := binary.LittleEndian.Uint32(data[offset : offset+4])
+		offset += 4
+		expectedSize := uint64(currentMinimumSize) +
+			uint64(lineCount)*(4+uint64(instructionCacheLineSize))
+		if lineCount > maximumInstructionCacheLines || expectedSize != uint64(len(data)) {
+			return fmt.Errorf("CPU instruction cache context: %w", cpu.ErrInvalidAddress)
+		}
+		if lineCount != 0 {
+			restoredInstructionCache = make(map[uint32]instructionCacheLine, lineCount)
+		}
+		for range lineCount {
+			address := binary.LittleEndian.Uint32(data[offset : offset+4])
+			offset += 4
+			if address&(instructionCacheLineSize-1) != 0 {
+				return fmt.Errorf("CPU instruction cache address: %w", cpu.ErrInvalidAddress)
+			}
+			if _, duplicate := restoredInstructionCache[address]; duplicate {
+				return fmt.Errorf("CPU instruction cache duplicate: %w", cpu.ErrInvalidAddress)
+			}
+			var line instructionCacheLine
+			copy(line[:], data[offset:offset+int(instructionCacheLineSize)])
+			offset += int(instructionCacheLineSize)
+			restoredInstructionCache[address] = line
+		}
+	}
 	mode := cpu.Mode(binary.LittleEndian.Uint32(data[offset : offset+4]))
 	if !mode.Valid() {
 		return fmt.Errorf("CPU context mode: %w", cpu.ErrInvalidAddress)
@@ -128,6 +176,8 @@ func (b *Backend) RestoreContext(data []byte) error {
 	b.banks = restoredBanks
 	b.spsr = restoredSPSR
 	b.cp15 = restoredCP15
+	b.instructionCache = restoredInstructionCache
+	b.instructionCacheHotValid = false
 	b.invalidateTLB()
 	b.executeData = nil
 	b.dataData = nil

@@ -122,6 +122,15 @@ type MemoryBus interface {
 	Write(address uint32, source []byte, permission Permissions) error
 }
 
+// ExternalAbortError marks a physical-bus error which real hardware would
+// deliver to the CPU as an external abort. Unsupported device semantics must
+// not implement this contract: those remain explicit host implementation
+// boundaries instead of being hidden behind a guest exception.
+type ExternalAbortError interface {
+	error
+	ExternalAbort() bool
+}
+
 // MemoryAccessContext attributes a physical bus access to the guest
 // instruction that caused it. Whole-system buses may use this optional context
 // for diagnostics without coupling CPU backends to platform-specific devices.

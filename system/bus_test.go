@@ -1,6 +1,7 @@
 package system
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"testing"
@@ -48,6 +49,14 @@ func TestBusRoutesRAMROMAndTypedMMIO(t *testing.T) {
 	}
 	if device.lastOffset != 2 || device.lastWidth != Width16 || device.value != 0x7788 {
 		t.Fatalf("MMIO write = offset %#x width %d value %#x", device.lastOffset, device.lastWidth, device.value)
+	}
+	if err := bus.Read(0x4000, value[:], cpu.PermissionRead); err == nil {
+		t.Fatal("unmapped physical read succeeded")
+	} else {
+		var external cpu.ExternalAbortError
+		if !errors.As(err, &external) || !external.ExternalAbort() {
+			t.Fatalf("unmapped physical read is not an external abort: %v", err)
+		}
 	}
 }
 
@@ -200,6 +209,90 @@ func TestBusRejectsOverlapAlignmentAndCrossRegionAccess(t *testing.T) {
 	}
 }
 
+func TestBusSparseRAMRoundTripsOnlyTouchedPages(t *testing.T) {
+	bus := NewBus()
+	if err := bus.MapSparseRAM("adsp", 0x70000000, 0x08000000); err != nil {
+		t.Fatal(err)
+	}
+	var value [4]byte
+	for _, address := range []uint32{0x70000000, 0x70001338, 0x77fffffc} {
+		for index := range value {
+			value[index] = 0xff
+		}
+		if err := bus.Read(address, value[:], cpu.PermissionRead); err != nil {
+			t.Fatal(err)
+		}
+		if value != [4]byte{} {
+			t.Fatalf("untouched sparse RAM at 0x%08x = %x", address, value)
+		}
+	}
+	low := [4]byte{1, 2, 3, 4}
+	high := [4]byte{5, 6, 7, 8}
+	if err := bus.Write(0x70001338, low[:], cpu.PermissionWrite); err != nil {
+		t.Fatal(err)
+	}
+	if err := bus.Write(0x77fffffc, high[:], cpu.PermissionWrite); err != nil {
+		t.Fatal(err)
+	}
+	state, err := bus.SaveState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state) >= 3*int(sparseRAMPageSize) {
+		t.Fatalf("two touched sparse pages produced %d-byte state", len(state))
+	}
+	if err := bus.Write(0x70001338, make([]byte, 4), cpu.PermissionWrite); err != nil {
+		t.Fatal(err)
+	}
+	if err := bus.Write(0x77fffffc, make([]byte, 4), cpu.PermissionWrite); err != nil {
+		t.Fatal(err)
+	}
+	if err := bus.LoadState(state); err != nil {
+		t.Fatal(err)
+	}
+	for address, want := range map[uint32][4]byte{
+		0x70001338: low,
+		0x77fffffc: high,
+	} {
+		clear(value[:])
+		if err := bus.Read(address, value[:], cpu.PermissionExecute); err != nil {
+			t.Fatal(err)
+		}
+		if value != want {
+			t.Fatalf("restored sparse RAM at 0x%08x = %x, want %x", address, value, want)
+		}
+	}
+	restoredState, err := bus.SaveState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(restoredState, state) {
+		t.Fatal("sparse RAM state is not deterministic after round trip")
+	}
+	if err := bus.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	if err := bus.Read(0x70001338, value[:], cpu.PermissionRead); err != nil {
+		t.Fatal(err)
+	}
+	if value != [4]byte{} {
+		t.Fatalf("reset sparse RAM = %x", value)
+	}
+}
+
+func TestSparseRAMStateRejectsNonCanonicalZeroPage(t *testing.T) {
+	memory := newSparseRAM()
+	memory.write(0x1000, []byte{1})
+	state, err := memory.saveState(0x3000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clear(state[20:])
+	if _, err := decodeSparseRAMState(0x3000, state); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("zero sparse page state error = %v", err)
+	}
+}
+
 func TestBusResetAndStateRoundTripAreDeterministic(t *testing.T) {
 	bus := NewBus()
 	if err := bus.MapRAM("ram", 0x1000, 0x10); err != nil {
@@ -271,6 +364,51 @@ func TestBusLoadStateIsAtomicWhenDeviceRejectsState(t *testing.T) {
 	}
 	if got[0] != 7 || device.value != 7 {
 		t.Fatalf("failed load changed RAM/device = %v/%d", got, device.value)
+	}
+}
+
+func TestBusLoadStateSubsetLeavesNewRegionsUntouched(t *testing.T) {
+	source := NewBus()
+	if err := source.MapRAM("ram", 0x1000, 4); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Write(0x1000, []byte{1, 2, 3, 4}, cpu.PermissionWrite); err != nil {
+		t.Fatal(err)
+	}
+	state, err := source.SaveState()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	destination := NewBus()
+	if err := destination.MapRAM("ram", 0x1000, 4); err != nil {
+		t.Fatal(err)
+	}
+	if err := destination.MapRAMImage("new", 0x2000, 4, []byte{9, 8, 7, 6}); err != nil {
+		t.Fatal(err)
+	}
+	if err := destination.LoadState(state); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("exact load with added region error = %v", err)
+	}
+	if err := destination.LoadStateSubset(state); err != nil {
+		t.Fatal(err)
+	}
+	var data [4]byte
+	if err := destination.Read(0x1000, data[:], cpu.PermissionRead); err != nil ||
+		!bytes.Equal(data[:], []byte{1, 2, 3, 4}) {
+		t.Fatalf("restored existing RAM = %v error %v", data, err)
+	}
+	if err := destination.Read(0x2000, data[:], cpu.PermissionRead); err != nil ||
+		!bytes.Equal(data[:], []byte{9, 8, 7, 6}) {
+		t.Fatalf("new RAM after subset restore = %v error %v", data, err)
+	}
+
+	missing := NewBus()
+	if err := missing.MapRAM("different", 0x1000, 4); err != nil {
+		t.Fatal(err)
+	}
+	if err := missing.LoadStateSubset(state); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("subset load with missing serialized region error = %v", err)
 	}
 }
 

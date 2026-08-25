@@ -56,6 +56,33 @@ type StatefulDevice interface {
 	LoadState([]byte) error
 }
 
+// SubsetStatefulDevice may accept a state from an older, compatible device
+// profile when the caller explicitly requests a diagnostic subset restore.
+// LoadState must retain the device's exact-profile contract.
+type SubsetStatefulDevice interface {
+	StatefulDevice
+	LoadStateSubset([]byte) error
+}
+
+// ClockedDevices returns MMIO devices that advance from retired guest
+// instructions, in physical-address order. A board can therefore add a
+// profile-created timed peripheral without also exposing a title-specific
+// construction hook to the execution loop.
+func (b *Bus) ClockedDevices() []ClockedDevice {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	devices := make([]ClockedDevice, 0)
+	for index := range b.regions {
+		if b.regions[index].kind != regionMMIO {
+			continue
+		}
+		if device, ok := b.regions[index].device.(ClockedDevice); ok {
+			devices = append(devices, device)
+		}
+	}
+	return devices
+}
+
 type Fault struct {
 	Region     string
 	Address    uint32
@@ -118,12 +145,20 @@ func (f *Fault) Unwrap() error {
 	return f.Err
 }
 
+// ExternalAbort reports only a genuinely unmapped physical address. MMIO
+// register/width errors remain visible emulator faults so missing devices are
+// not silently converted into guest behavior.
+func (f *Fault) ExternalAbort() bool {
+	return f.Region == "" && errors.Is(f.Err, cpu.ErrInvalidAddress)
+}
+
 type regionKind uint8
 
 const (
 	regionRAM regionKind = iota + 1
 	regionROM
 	regionMMIO
+	regionSparseRAM
 )
 
 type region struct {
@@ -135,6 +170,7 @@ type region struct {
 	data        []byte
 	initial     []byte
 	device      Device
+	sparse      *sparseRAM
 }
 
 func (r *region) end() uint64 {
@@ -237,6 +273,18 @@ func (b *Bus) MapRAMImage(name string, address, size uint32, initial []byte) err
 	})
 }
 
+// MapSparseRAM creates a zero-filled writable/executable address window whose
+// storage is allocated one page at a time. It is intended for large coprocessor
+// and banked-memory windows where allocating the entire physical span would be
+// wasteful. Reset discards all allocated pages.
+func (b *Bus) MapSparseRAM(name string, address, size uint32) error {
+	return b.mapRegion(region{
+		name: name, address: address, size: size,
+		permissions: cpu.PermissionRead | cpu.PermissionWrite | cpu.PermissionExecute,
+		kind:        regionSparseRAM, sparse: newSparseRAM(),
+	})
+}
+
 func (b *Bus) MapROM(name string, address uint32, data []byte) error {
 	if uint64(len(data)) > uint64(^uint32(0)) {
 		return ErrInvalidRegion
@@ -297,13 +345,18 @@ func (b *Bus) ReadContext(
 		return err
 	}
 	if mapped.kind != regionMMIO {
-		copy(destination, mapped.data[offset:offset+len(destination)])
+		if mapped.kind == regionSparseRAM {
+			mapped.sparse.read(offset, destination)
+		} else {
+			start := int(offset)
+			copy(destination, mapped.data[start:start+len(destination)])
+		}
 		observer := b.memoryObserver
 		observed := b.observesMemory(address, len(destination))
 		contextObserver := b.contextObserver
 		contextObserved := b.observesInstruction(context)
 		regionName := mapped.name
-		regionOffset := uint32(offset)
+		regionOffset := offset
 		value := valueOf(destination)
 		b.mu.Unlock()
 		access := MemoryAccess{
@@ -319,7 +372,7 @@ func (b *Bus) ReadContext(
 		return nil
 	}
 	regionName := mapped.name
-	deviceOffset := uint32(offset)
+	deviceOffset := offset
 	value, err := mapped.device.Read(deviceOffset, width)
 	mmioObserver := b.mmioObserver
 	memoryObserver := b.memoryObserver
@@ -368,13 +421,18 @@ func (b *Bus) WriteContext(
 		return err
 	}
 	if mapped.kind != regionMMIO {
-		copy(mapped.data[offset:offset+len(source)], source)
+		if mapped.kind == regionSparseRAM {
+			mapped.sparse.write(offset, source)
+		} else {
+			start := int(offset)
+			copy(mapped.data[start:start+len(source)], source)
+		}
 		observer := b.memoryObserver
 		observed := b.observesMemory(address, len(source))
 		contextObserver := b.contextObserver
 		contextObserved := b.observesInstruction(context)
 		regionName := mapped.name
-		regionOffset := uint32(offset)
+		regionOffset := offset
 		value := valueOf(source)
 		b.mu.Unlock()
 		access := MemoryAccess{
@@ -390,7 +448,7 @@ func (b *Bus) WriteContext(
 		return nil
 	}
 	regionName := mapped.name
-	deviceOffset := uint32(offset)
+	deviceOffset := offset
 	value := valueOf(source)
 	err = mapped.device.Write(deviceOffset, width, value)
 	mmioObserver := b.mmioObserver
@@ -425,7 +483,7 @@ func (b *Bus) resolve(
 	address uint32,
 	size int,
 	permission cpu.Permissions,
-) (Width, *region, int, error) {
+) (Width, *region, uint32, error) {
 	width, ok := widthForSize(size)
 	if !ok {
 		return 0, nil, 0, &Fault{Address: address, Permission: permission, Err: ErrInvalidWidth}
@@ -444,7 +502,7 @@ func (b *Bus) resolve(
 	if mapped.permissions&permission != permission {
 		return width, nil, 0, &Fault{Region: mapped.name, Address: address, Width: width, Permission: permission, Err: cpu.ErrPermissionDenied}
 	}
-	return width, mapped, int(address - mapped.address), nil
+	return width, mapped, address - mapped.address, nil
 }
 
 func (b *Bus) Reset() error {
@@ -455,6 +513,8 @@ func (b *Bus) Reset() error {
 		switch mapped.kind {
 		case regionRAM:
 			copy(mapped.data, mapped.initial)
+		case regionSparseRAM:
+			mapped.sparse.reset()
 		case regionMMIO:
 			if err := mapped.device.Reset(); err != nil {
 				return fmt.Errorf("reset device %q: %w", mapped.name, err)
@@ -477,6 +537,12 @@ func (b *Bus) SaveState() ([]byte, error) {
 		switch mapped.kind {
 		case regionRAM:
 			components = append(components, component{region: mapped, state: append([]byte(nil), mapped.data...)})
+		case regionSparseRAM:
+			state, err := mapped.sparse.saveState(mapped.size)
+			if err != nil {
+				return nil, fmt.Errorf("save sparse RAM %q: %w", mapped.name, err)
+			}
+			components = append(components, component{region: mapped, state: state})
 		case regionMMIO:
 			stateful, ok := mapped.device.(StatefulDevice)
 			if !ok {
@@ -510,6 +576,19 @@ func (b *Bus) SaveState() ([]byte, error) {
 }
 
 func (b *Bus) LoadState(state []byte) error {
+	return b.loadState(state, false)
+}
+
+// LoadStateSubset restores a state whose regions are a strict subset of the
+// current bus topology. Every serialized component must still match by name,
+// kind, address, size, and device-specific state contract. Newly added regions
+// remain in their current state. This is intended for explicitly versioned
+// diagnostic snapshots; normal machine snapshots should use LoadState.
+func (b *Bus) LoadStateSubset(state []byte) error {
+	return b.loadState(state, true)
+}
+
+func (b *Bus) loadState(state []byte, allowMissingRegions bool) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	reader := bytes.NewReader(state)
@@ -524,16 +603,19 @@ func (b *Bus) LoadState(state []byte) error {
 	}
 	var expectedCount uint32
 	for index := range b.regions {
-		if b.regions[index].kind == regionRAM || b.regions[index].kind == regionMMIO {
+		if b.regions[index].kind == regionRAM ||
+			b.regions[index].kind == regionSparseRAM ||
+			b.regions[index].kind == regionMMIO {
 			expectedCount++
 		}
 	}
-	if count != expectedCount {
+	if count > expectedCount || !allowMissingRegions && count != expectedCount {
 		return ErrInvalidState
 	}
 	type restored struct {
 		region *region
 		state  []byte
+		sparse *sparseRAM
 	}
 	items := make([]restored, 0, count)
 	seen := make(map[string]struct{}, count)
@@ -575,12 +657,20 @@ func (b *Bus) LoadState(state []byte) error {
 		if mapped.kind == regionRAM && len(componentState) != len(mapped.data) {
 			return ErrInvalidState
 		}
+		var sparse *sparseRAM
+		if mapped.kind == regionSparseRAM {
+			decoded, decodeErr := decodeSparseRAMState(mapped.size, componentState)
+			if decodeErr != nil {
+				return ErrInvalidState
+			}
+			sparse = decoded
+		}
 		if mapped.kind == regionMMIO {
 			if _, ok := mapped.device.(StatefulDevice); !ok {
 				return ErrInvalidState
 			}
 		}
-		items = append(items, restored{region: mapped, state: componentState})
+		items = append(items, restored{region: mapped, state: componentState, sparse: sparse})
 	}
 	if reader.Len() != 0 {
 		return ErrInvalidState
@@ -594,6 +684,14 @@ func (b *Bus) LoadState(state []byte) error {
 			})
 			continue
 		}
+		if item.region.kind == regionSparseRAM {
+			before, err := item.region.sparse.saveState(item.region.size)
+			if err != nil {
+				return fmt.Errorf("save sparse RAM %q before restore: %w", item.region.name, err)
+			}
+			previous = append(previous, restored{region: item.region, state: before})
+			continue
+		}
 		stateful := item.region.device.(StatefulDevice)
 		before, err := stateful.SaveState()
 		if err != nil {
@@ -603,9 +701,15 @@ func (b *Bus) LoadState(state []byte) error {
 	}
 	rollback := func() {
 		for _, item := range previous {
-			if item.region.kind == regionRAM {
+			switch item.region.kind {
+			case regionRAM:
 				copy(item.region.data, item.state)
-			} else {
+			case regionSparseRAM:
+				restored, err := decodeSparseRAMState(item.region.size, item.state)
+				if err == nil {
+					item.region.sparse = restored
+				}
+			default:
 				_ = item.region.device.(StatefulDevice).LoadState(item.state)
 			}
 		}
@@ -615,12 +719,26 @@ func (b *Bus) LoadState(state []byte) error {
 			copy(item.region.data, item.state)
 			continue
 		}
+		if item.region.kind == regionSparseRAM {
+			item.region.sparse = item.sparse
+			continue
+		}
 		stateful, ok := item.region.device.(StatefulDevice)
 		if !ok {
 			rollback()
 			return ErrInvalidState
 		}
-		if err := stateful.LoadState(item.state); err != nil {
+		var err error
+		if allowMissingRegions {
+			if subset, ok := item.region.device.(SubsetStatefulDevice); ok {
+				err = subset.LoadStateSubset(item.state)
+			} else {
+				err = stateful.LoadState(item.state)
+			}
+		} else {
+			err = stateful.LoadState(item.state)
+		}
+		if err != nil {
 			rollback()
 			return fmt.Errorf("load device %q: %w", item.region.name, err)
 		}

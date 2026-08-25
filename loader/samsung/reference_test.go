@@ -122,11 +122,12 @@ func TestSCHW830DL21PrivateReference(t *testing.T) {
 		t.Fatalf("normalized flash identity = %q", flash.Identity())
 	}
 	regions := flash.Regions()
-	assertReferenceFlashRegion(t, regions, RoleWBT, 0, 0x00280000, TransformIdentity)
+	assertReferenceFlashRegion(t, regions, RoleWBT, 0, 0x00280000, TransformBootBlocks)
 	assertReferenceFlashRegion(t, regions, RoleWBIN, 0x002a0000, 0x015a0000, TransformSEEDFeedback)
 	assertReferenceFlashRegion(t, regions, RoleDAT, 0x01c00000, 0x02b3c000, TransformIdentity)
 	assertReferenceFlashRegion(t, regions, RoleFont, 0x04f00000, 0x04038000, TransformIdentity)
 	assertReferenceFlashBytes(t, flash, 0x002a0000, []byte{0x7f, 'E', 'L', 'F'})
+	assertReferenceFlashBytes(t, flash, 0x00020000, []byte{0xac, 0x9f, 0x56, 0xfe})
 	assertReferenceFlashBytes(t, flash, 0x01840000, bytes.Repeat([]byte{0xff}, 16))
 	assertReferenceFlashBytes(t, flash, 0x01c00000, []byte{'A', 'B', 'H', 'S'})
 	assertReferenceFlashBytes(t, flash, 0x04f00000, []byte{1, 0, 0, 0})

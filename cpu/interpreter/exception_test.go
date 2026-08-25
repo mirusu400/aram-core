@@ -192,6 +192,102 @@ func TestMMUFaultsEnterPrefetchAndDataAbortVectors(t *testing.T) {
 	})
 }
 
+func TestUnmappedPhysicalAccessEntersPreciseExternalDataAbort(t *testing.T) {
+	const (
+		tableBase      = uint32(0x4000)
+		instructionVA  = uint32(0x80001000)
+		instructionPA  = uint32(0x00101000)
+		faultVA        = uint32(0x90031c00)
+		faultPA        = uint32(0x68931c00)
+		externalStatus = uint32(0x8)
+	)
+	bus := &externalAbortSystemBus{
+		testSystemBus: testSystemBus{memory: make(map[uint32]byte)},
+		abortAddress:  faultPA,
+	}
+	bus.writeU32(tableBase, 3<<10|2) // VA 0 -> PA 0, manager domain
+	bus.writeU32(tableBase+(instructionVA>>20)*4, 0x00100000|3<<10|2)
+	bus.writeU32(tableBase+(faultVA>>20)*4, 0x68900000|3<<10|2)
+	bus.writeU32(instructionPA, 0xe5910000)   // LDR r0, [r1]
+	bus.writeU32(vectorDataAbort, 0xe3a00010) // MOV r0, #16
+	backend := New()
+	if err := backend.AttachSystemBus(bus); err != nil {
+		t.Fatal(err)
+	}
+	backend.cp15.translationTableBase = tableBase
+	backend.cp15.domainAccessControl = 3
+	backend.cp15.control = 1
+	if err := backend.WriteRegister(cpu.RegisterCPSR, uint32(processorModeSystem)); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.WriteRegister(cpu.RegisterR1, faultVA); err != nil {
+		t.Fatal(err)
+	}
+	result := backend.Run(context.Background(), instructionVA, cpu.ModeARM, 1)
+	if result.Err != nil || result.PC != vectorDataAbort+4 || register(t, backend, cpu.RegisterR0) != 0x10 {
+		t.Fatalf("external data-abort result = %+v r0=%#x", result, register(t, backend, cpu.RegisterR0))
+	}
+	if backend.cp15.dataFaultStatus != externalStatus || backend.cp15.faultAddress != faultVA ||
+		register(t, backend, cpu.RegisterLR) != instructionVA+8 {
+		t.Fatalf("external data-abort state = DFSR %#x FAR %#x LR %#x",
+			backend.cp15.dataFaultStatus, backend.cp15.faultAddress, register(t, backend, cpu.RegisterLR))
+	}
+}
+
+func TestUnmappedPhysicalAccessWithoutMMUEntersPreciseExternalDataAbort(t *testing.T) {
+	const (
+		instructionAddress = uint32(0x1000)
+		faultAddress       = uint32(0x68931c00)
+		externalStatus     = uint32(0x8)
+	)
+	bus := &externalAbortSystemBus{
+		testSystemBus: testSystemBus{memory: make(map[uint32]byte)},
+		abortAddress:  faultAddress,
+	}
+	bus.writeU32(instructionAddress, 0xe5910000) // LDR r0, [r1]
+	bus.writeU32(vectorDataAbort, 0xe3a00010)    // MOV r0, #16
+	backend := New()
+	if err := backend.AttachSystemBus(bus); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.WriteRegister(cpu.RegisterCPSR, uint32(processorModeSystem)); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.WriteRegister(cpu.RegisterR1, faultAddress); err != nil {
+		t.Fatal(err)
+	}
+	result := backend.Run(context.Background(), instructionAddress, cpu.ModeARM, 1)
+	if result.Err != nil || result.PC != vectorDataAbort+4 || register(t, backend, cpu.RegisterR0) != 0x10 {
+		t.Fatalf("external data-abort result = %+v r0=%#x", result, register(t, backend, cpu.RegisterR0))
+	}
+	if backend.cp15.dataFaultStatus != externalStatus || backend.cp15.faultAddress != faultAddress ||
+		register(t, backend, cpu.RegisterLR) != instructionAddress+8 {
+		t.Fatalf("external data-abort state = DFSR %#x FAR %#x LR %#x",
+			backend.cp15.dataFaultStatus, backend.cp15.faultAddress, register(t, backend, cpu.RegisterLR))
+	}
+}
+
+type externalAbortSystemBus struct {
+	testSystemBus
+	abortAddress uint32
+}
+
+func (b *externalAbortSystemBus) Read(
+	address uint32,
+	destination []byte,
+	permission cpu.Permissions,
+) error {
+	if address == b.abortAddress {
+		return externalAbortTestError{}
+	}
+	return b.testSystemBus.Read(address, destination, permission)
+}
+
+type externalAbortTestError struct{}
+
+func (externalAbortTestError) Error() string       { return "test external abort" }
+func (externalAbortTestError) ExternalAbort() bool { return true }
+
 func TestInterruptLineValidationAndClosedState(t *testing.T) {
 	backend := New()
 	if err := backend.SetInterruptLine(cpu.InterruptLine(2), true); !errors.Is(err, cpu.ErrInvalidAddress) {

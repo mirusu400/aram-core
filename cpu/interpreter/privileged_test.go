@@ -64,7 +64,7 @@ func TestPrivilegedBanksSurviveContextRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := binary.LittleEndian.Uint32(saved[4:8]); got != 2 {
+	if got := binary.LittleEndian.Uint32(saved[4:8]); got != 3 {
 		t.Fatalf("context version = %d, want 2", got)
 	}
 	if err := backend.WriteRegister(cpu.RegisterSP, 0x99); err != nil {

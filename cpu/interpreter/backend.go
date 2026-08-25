@@ -40,6 +40,14 @@ type region struct {
 	data        []byte
 }
 
+// PCRegisterCapture is a diagnostic snapshot taken immediately before the
+// instruction at Address executes. Registers contains r0-r15 followed by the
+// stored CPSR value; it deliberately does not alter execution or save state.
+type PCRegisterCapture struct {
+	Address   uint32
+	Registers [17]uint32
+}
+
 // Backend is a bounds-checked ARMv5TE interpreter. It currently implements
 // the ARM/Thumb control-flow and integer instructions needed by the first
 // application-entry milestone; unsupported encodings produce a precise fault.
@@ -66,21 +74,32 @@ type Backend struct {
 	// flags holds condition N/Z/C/V lazily: setNZCV records the defining
 	// operation here instead of writing CPSR, and resolveFlags materializes it
 	// only when a reader actually needs the bits. See pendingFlags.
-	flags          pendingFlags
-	mode           cpu.Mode
-	stopped        atomic.Bool
-	interruptLines atomic.Uint32
-	closedState    atomic.Bool
-	closed         bool
-	mapped         uint64
-	memoryLimit    uint64
-	systemBus      cpu.MemoryBus
-	contextBus     cpu.ContextMemoryBus
-	accessContext  cpu.MemoryAccessContext
-	executionTraps map[cpu.ExecutionTrap]struct{}
-	pcHits         map[uint32]uint64 // env ARAM_PC_TRACE: per-PC execution histogram
-	pcHistory      []uint32
-	pcHistoryNext  uint64
+	flags                          pendingFlags
+	mode                           cpu.Mode
+	stopped                        atomic.Bool
+	interruptLines                 atomic.Uint32
+	closedState                    atomic.Bool
+	closed                         bool
+	mapped                         uint64
+	memoryLimit                    uint64
+	systemBus                      cpu.MemoryBus
+	contextBus                     cpu.ContextMemoryBus
+	accessContext                  cpu.MemoryAccessContext
+	executionTraps                 map[cpu.ExecutionTrap]struct{}
+	pcHits                         map[uint32]uint64 // env ARAM_PC_TRACE: per-PC execution histogram
+	pcHistory                      []uint32
+	pcHistoryNext                  uint64
+	pcCaptureAddress               uint32
+	pcCaptureLimit                 uint32
+	pcRegisterCaptures             []PCRegisterCapture
+	cp15ControlHistory             []CP15ControlAccess
+	cp15ControlHistoryNext         uint64
+	instructionPrefetchHistory     []InstructionCachePrefetchAccess
+	instructionPrefetchHistoryNext uint64
+	instructionCache               map[uint32]instructionCacheLine
+	instructionCacheHot            instructionCacheLine
+	instructionCacheHotMVA         uint32
+	instructionCacheHotValid       bool
 }
 
 func New() *Backend {
@@ -142,6 +161,34 @@ func (b *Backend) PCHistory() []uint32 {
 	return history
 }
 
+// SetPCRegisterCapture configures a bounded, non-stopping register trace for
+// one virtual instruction address. A zero limit disables and clears it.
+func (b *Backend) SetPCRegisterCapture(address, limit uint32) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return cpu.ErrClosed
+	}
+	if limit > 4096 {
+		return fmt.Errorf("PC register capture limit %d exceeds diagnostic maximum", limit)
+	}
+	b.pcCaptureAddress = address
+	b.pcCaptureLimit = limit
+	b.pcRegisterCaptures = nil
+	if limit != 0 {
+		b.pcRegisterCaptures = make([]PCRegisterCapture, 0, limit)
+	}
+	return nil
+}
+
+// PCRegisterCaptures returns the configured diagnostic snapshots in execution
+// order. The returned slice does not alias the backend.
+func (b *Backend) PCRegisterCaptures() []PCRegisterCapture {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]PCRegisterCapture(nil), b.pcRegisterCaptures...)
+}
+
 func (b *Backend) recordPC(address uint32) {
 	if b.pcHits != nil {
 		b.pcHits[address]++
@@ -149,6 +196,12 @@ func (b *Backend) recordPC(address uint32) {
 	if len(b.pcHistory) != 0 {
 		b.pcHistory[b.pcHistoryNext%uint64(len(b.pcHistory))] = address
 		b.pcHistoryNext++
+	}
+	if b.pcCaptureLimit != 0 && address == b.pcCaptureAddress &&
+		uint32(len(b.pcRegisterCaptures)) < b.pcCaptureLimit {
+		b.pcRegisterCaptures = append(b.pcRegisterCaptures, PCRegisterCapture{
+			Address: address, Registers: b.regs,
+		})
 	}
 }
 
@@ -494,6 +547,8 @@ func (b *Backend) Close() error {
 	b.contextBus = nil
 	b.executionTraps = nil
 	b.tlb = nil
+	b.instructionCache = nil
+	b.instructionCacheHotValid = false
 	clear(b.regionHints[:])
 	b.executeData = nil
 	b.dataData = nil

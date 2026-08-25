@@ -36,6 +36,32 @@ func TestRegistryMatchesExactPieceHashes(t *testing.T) {
 	}
 }
 
+func TestBuiltinRegistrySeparatesSCHW830BuildsAndSCHW860Board(t *testing.T) {
+	registry := BuiltinRegistry()
+	if len(registry.profiles) != 3 {
+		t.Fatalf("built-in Samsung profiles = %d, want 3", len(registry.profiles))
+	}
+	profiles := make(map[string]BuildProfile, len(registry.profiles))
+	for _, profile := range registry.profiles {
+		profiles[profile.ID] = profile
+	}
+	dl21, dl21OK := profiles[SCHW830DL21ProfileID]
+	da18, da18OK := profiles[SCHW830DA18ProfileID]
+	w860, w860OK := profiles[SCHW860DA06ProfileID]
+	if !dl21OK || !da18OK || !w860OK {
+		t.Fatalf("built-in Samsung profile IDs = %#v", profiles)
+	}
+	if dl21.Build != "DL21" || da18.Build != "DA18" ||
+		dl21.PieceHashes[RoleWBT] != da18.PieceHashes[RoleWBT] ||
+		dl21.PieceHashes[RoleWBIN] == da18.PieceHashes[RoleWBIN] {
+		t.Fatalf("SCH-W830 build profiles do not preserve shared WBT and distinct AMSS: DL21=%+v DA18=%+v", dl21, da18)
+	}
+	if w860.Model != "SCH-W860" || w860.Build != "DA06" ||
+		w860.PieceHashes[RoleWBT] == dl21.PieceHashes[RoleWBT] {
+		t.Fatalf("SCH-W860 profile is not a distinct exact board build: %+v", w860)
+	}
+}
+
 func TestReconstructBootImageStripsPerBlockHeaders(t *testing.T) {
 	sources := syntheticDownloadSources(t)
 	wbt := readSyntheticSource(t, sources[RoleWBT])

@@ -221,6 +221,7 @@ func (p Partition) End() uint64 {
 type Layout struct {
 	Family          string
 	MIBIBGeneration uint32
+	PackagedEnd     uint64
 	Partitions      []Partition
 	Regions         []DownloadRegion
 }
@@ -302,7 +303,16 @@ func Normalize(set firmwareset.Set, pkg Package) (Layout, error) {
 			Reason: fmt.Sprintf("WBIN start 0x%x does not follow WBT payload end 0x%x", starts[0], wbtSize),
 		}
 	}
-	if starts[1] != font.Start || starts[2] != rsrc.Start || starts[3] != flashEnd {
+	packagedEnd := starts[3]
+	packagedEndIsPartitionBoundary := packagedEnd == flashEnd
+	for _, partition := range selected.Partitions {
+		if partition.Start == packagedEnd {
+			packagedEndIsPartitionBoundary = true
+			break
+		}
+	}
+	if starts[1] != font.Start || starts[2] != rsrc.Start ||
+		packagedEnd == 0 || packagedEnd > flashEnd || !packagedEndIsPartitionBoundary {
 		return Layout{}, &FormatError{
 			Role: RoleWBIN, Piece: pieces[RoleWBIN].Index(), Offset: footerOffset,
 			Reason: "footer layout does not match MIBIB partitions",
@@ -317,7 +327,8 @@ func Normalize(set firmwareset.Set, pkg Package) (Layout, error) {
 	}
 	sort.Slice(regions, func(i, j int) bool { return regions[i].Start < regions[j].Start })
 	for index, region := range regions {
-		if region.Size == 0 || region.Start > ^uint64(0)-region.Size {
+		if region.Size == 0 || region.Start > ^uint64(0)-region.Size ||
+			region.Start+region.Size > packagedEnd {
 			return Layout{}, fmt.Errorf("Samsung %s region has invalid geometry", region.Role)
 		}
 		if index > 0 && regions[index-1].Start+regions[index-1].Size > region.Start {
@@ -327,6 +338,7 @@ func Normalize(set firmwareset.Set, pkg Package) (Layout, error) {
 	return Layout{
 		Family:          FamilySCHDownload,
 		MIBIBGeneration: selected.Generation,
+		PackagedEnd:     packagedEnd,
 		Partitions:      append([]Partition(nil), selected.Partitions...),
 		Regions:         regions,
 	}, nil

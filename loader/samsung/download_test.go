@@ -42,6 +42,9 @@ func TestInspectAndNormalizeSyntheticSCHDownloadSetWithoutFilenames(t *testing.T
 	if layout.Family != FamilySCHDownload || layout.MIBIBGeneration != 2 {
 		t.Fatalf("layout identity = %+v", layout)
 	}
+	if layout.PackagedEnd != 0x0e0000 {
+		t.Fatalf("packaged end = %#x, want %#x", layout.PackagedEnd, uint64(0x0e0000))
+	}
 	if len(layout.Partitions) != 5 {
 		t.Fatalf("partition count = %d, want 5", len(layout.Partitions))
 	}
@@ -57,6 +60,40 @@ func TestInspectAndNormalizeSyntheticSCHDownloadSetWithoutFilenames(t *testing.T
 	}
 	if got := layout.Region(RoleFont); got == nil || got.Start != 0xc0000 {
 		t.Fatalf("FNT region = %+v", got)
+	}
+}
+
+func TestNormalizeAcceptsTrailingWritablePartitionAfterPackagedEnd(t *testing.T) {
+	sources := syntheticDownloadSources(t)
+	wbt := readSyntheticSource(t, sources[RoleWBT])
+	primaryOffset := WrapperSize + 2*EraseBlockSize + PageSize
+	primary := wbt[primaryOffset : primaryOffset+PageSize]
+	binary.LittleEndian.PutUint32(primary[12:16], 6)
+	entryOffset := 16 + 5*mibibEntrySize
+	copy(primary[entryOffset:entryOffset+16], "0:EFS2")
+	putU32s(primary, entryOffset+16, 7, 2, 0x00ffffff)
+	sources[RoleWBT] = firmwareset.Source{ReaderAt: bytes.NewReader(wbt), Size: int64(len(wbt))}
+
+	set, err := firmwareset.NewSet([]firmwareset.Source{
+		sources[RoleWBT], sources[RoleWBIN], sources[RoleDAT], sources[RoleFont],
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := Inspect(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	layout, err := Normalize(set, pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if layout.PackagedEnd != 0x0e0000 || len(layout.Partitions) != 6 {
+		t.Fatalf("layout with trailing writable partition = %+v", layout)
+	}
+	last := layout.Partitions[len(layout.Partitions)-1]
+	if last.Name != "0:EFS2" || last.Start != layout.PackagedEnd || last.End() != 0x120000 {
+		t.Fatalf("trailing writable partition = %+v", last)
 	}
 }
 

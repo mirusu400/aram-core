@@ -10,7 +10,11 @@ import (
 	"github.com/mirusu400/aram-core/firmwareset"
 )
 
-const SCHW830DL21ProfileID = "samsung.sch-w830.dl21"
+const (
+	SCHW830DL21ProfileID = "samsung.sch-w830.dl21"
+	SCHW830DA18ProfileID = "samsung.sch-w830.da18"
+	SCHW860DA06ProfileID = "samsung.sch-w860.da06"
+)
 
 var (
 	ErrUnknownBuild   = errors.New("unknown Samsung firmware build")
@@ -163,11 +167,50 @@ func (r Registry) Match(pkg Package) (BuildProfile, error) {
 }
 
 func BuiltinRegistry() Registry {
-	registry, err := NewRegistry(schW830DL21Profile())
+	registry, err := NewRegistry(schW830DL21Profile(), schW830DA18Profile(), schW860DA06Profile())
 	if err != nil {
 		panic(err)
 	}
 	return registry
+}
+
+func schW860DA06Profile() BuildProfile {
+	profile := schW830DL21Profile()
+	profile.ID = SCHW860DA06ProfileID
+	profile.Model = "SCH-W860"
+	profile.Build = "DA06"
+	profile.PieceHashes = map[Role]string{
+		RoleWBT:  "860cd9467842da3ad7c2722523c02d292ef5f6b4c0eba41e227114cc9e9029e6",
+		RoleWBIN: "3259c3c6e96896eec7e7e7c6d1a6eca25486f54b0795e3b7e370f1aca823f6d8",
+		RoleDAT:  "006fc80de446d7b554e387e837d259e3372c00b35e3219c3dd7d242a77044b09",
+		RoleFont: "f3ce83be78dcf6615aa19e496595743c350c5f4cf372e2767968aee5c8e971a5",
+	}
+	for index := range profile.BootImages {
+		switch profile.BootImages[index].ID {
+		case "oemsbl":
+			profile.BootImages[index].UsedSize = 0x00052986
+			profile.BootImages[index].LogicalSHA256 = "cd1d66be2cbad443b7af8dd23249cc15c90fe2d77bd765f8d8f0ef0b78d9523a"
+		case "qcsbl":
+			profile.BootImages[index].LogicalSHA256 = "c46ec99bd66b005d258df04b17dee4b2bd4ae5cdcb8a9d815e88a489110cce27"
+		}
+	}
+	return profile
+}
+
+func schW830DA18Profile() BuildProfile {
+	// DA18 uses the same CG23 WBT and therefore the same original QCSBL and
+	// OEMSBL block layout as DL21. The remaining exact hashes keep build
+	// selection strict even though the handset board is shared.
+	profile := schW830DL21Profile()
+	profile.ID = SCHW830DA18ProfileID
+	profile.Build = "DA18"
+	profile.PieceHashes = map[Role]string{
+		RoleWBT:  "b9b3e5a8175cff0813b074edec0ab852d6bd2f845900656a1a6521a32f0e8d74",
+		RoleWBIN: "a0fc5f210623ede76f198dd26ef40f0f54ed3aadabc4c1fa2526ead4b5c1a159",
+		RoleDAT:  "ac9383d8ef99facfa6f425057c1bf9349e0870572c3b79867a03ca63a7495ed8",
+		RoleFont: "5eee858d40f1402031ee30aa8c0f724ae2bf36a91eb4c7c0669335967efcbb1c",
+	}
+	return profile
 }
 
 func schW830DL21Profile() BuildProfile {

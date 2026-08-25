@@ -131,11 +131,19 @@ func TestQualcommInterruptControllerRejectsReservedAccessesAndRestoresState(t *t
 
 func TestQualcommBootControlRoutesInterruptWindowToARMCore(t *testing.T) {
 	backend := interpreter.New()
-	controller := NewQualcommInterruptController(backend)
+	controller := NewQualcommInterruptController(nil)
+	vectored, err := NewQualcommVectoredInterruptController(
+		QualcommVectoredInterruptConfig{SourceCount: 49, Bank0Sources: 25},
+		backend,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	bootControl, err := NewQualcommBootControl(QualcommBootControlConfig{
 		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
 		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1,
 		NANDReady: NewStatusSignal(), InterruptController: controller,
+		VectoredInterruptController: vectored,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -166,15 +174,46 @@ func TestQualcommBootControlRoutesInterruptWindowToARMCore(t *testing.T) {
 	if err := backend.WriteRegister(cpu.RegisterCPSR, 0x1f); err != nil {
 		t.Fatal(err)
 	}
-	writeWord(0x80000914, 1<<2)
-	if err := controller.SetSource(2, true); err != nil {
+	writeWord(0x80000430, 1<<2)
+	value, err := bootControl.Read(0x049c, Width32)
+	if err != nil || value != 0x3f {
+		t.Fatalf("idle IRQ vector = %#x error %v", value, err)
+	}
+	value, err = bootControl.Read(0x04a0, Width32)
+	if err != nil || value != 0x3f {
+		t.Fatalf("idle pending IRQ vector = %#x error %v", value, err)
+	}
+	value, err = bootControl.Read(0x04a8, Width32)
+	if err != nil || value != 0xff {
+		t.Fatalf("idle in-service IRQ vector = %#x error %v", value, err)
+	}
+	if err := vectored.SetSource(2, true); err != nil {
 		t.Fatal(err)
+	}
+	value, err = bootControl.Read(0x0474, Width32)
+	if err != nil || value != 1<<2 {
+		t.Fatalf("vectored low status = %#x error %v", value, err)
+	}
+	value, err = bootControl.Read(0x049c, Width32)
+	if err != nil || value != 2 {
+		t.Fatalf("pending IRQ vector = %#x error %v", value, err)
+	}
+	value, err = bootControl.Read(0x04a8, Width32)
+	if err != nil || value != 2 {
+		t.Fatalf("in-service IRQ vector = %#x error %v", value, err)
+	}
+	if err := bootControl.Write(0x04a4, Width32, 0); err != nil {
+		t.Fatal(err)
+	}
+	value, err = bootControl.Read(0x04a8, Width32)
+	if err != nil || value != 0xff {
+		t.Fatalf("completed in-service IRQ vector = %#x error %v", value, err)
 	}
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 1)
 	if result.Err != nil || result.PC != 0x1c {
 		t.Fatalf("controller-driven IRQ result = %+v", result)
 	}
-	value, err := backend.ReadRegister(cpu.RegisterR0)
+	value, err = backend.ReadRegister(cpu.RegisterR0)
 	if err != nil || value != 42 {
 		t.Fatalf("IRQ vector r0 = %d error %v", value, err)
 	}

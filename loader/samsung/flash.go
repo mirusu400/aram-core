@@ -37,6 +37,18 @@ type flashRegion struct {
 	metadata FlashRegion
 	piece    firmwareset.Piece
 	decoded  []byte
+	// dataOffset identifies the first logical byte represented by this
+	// physical span. A downloader region may be split when factory-bad NAND
+	// blocks have to be skipped.
+	dataOffset uint64
+}
+
+// FlashAssemblyOptions describes physical NAND facts which are not retained
+// by a logical Samsung downloader package. WBT boot blocks are already laid
+// out physically and are never remapped. Later downloader regions are logical
+// NAND streams and skip the listed factory-bad erase blocks.
+type FlashAssemblyOptions struct {
+	FactoryBadBlocks []uint32
 }
 
 // FlashImage is a bounded, read-only view of the reconstructed NAND contents.
@@ -115,7 +127,8 @@ func (i FlashImage) ReadAt(destination []byte, offset int64) (int, error) {
 		regionStart := copyStart - region.metadata.Start
 		regionDestination := output[destinationStart : destinationStart+(copyEnd-copyStart)]
 		if region.decoded != nil {
-			copy(regionDestination, region.decoded[regionStart:regionStart+(copyEnd-copyStart)])
+			decodedStart := region.dataOffset + regionStart
+			copy(regionDestination, region.decoded[decodedStart:decodedStart+(copyEnd-copyStart)])
 			continue
 		}
 		if _, err := region.piece.ReadAt(
@@ -136,6 +149,17 @@ func (i FlashImage) ReadAt(destination []byte, offset int64) (int, error) {
 // partition origin; the wrapper's encoded download offset is not treated as a
 // runtime flash address.
 func AssembleFlash(set firmwareset.Set, pkg Package) (FlashImage, error) {
+	return AssembleFlashWithOptions(set, pkg, FlashAssemblyOptions{})
+}
+
+// AssembleFlashWithOptions reconstructs a physical NAND view from Samsung's
+// mixed package: WBT carries physical boot blocks, while WBIN/DAT/FNT carry
+// logical data that the handset downloader writes around factory-bad blocks.
+func AssembleFlashWithOptions(
+	set firmwareset.Set,
+	pkg Package,
+	options FlashAssemblyOptions,
+) (FlashImage, error) {
 	layout, err := Normalize(set, pkg)
 	if err != nil {
 		return FlashImage{}, err
@@ -157,13 +181,30 @@ func AssembleFlash(set firmwareset.Set, pkg Package) (FlashImage, error) {
 		return FlashImage{}, fmt.Errorf("%w: MIBIB has no 0:FONT partition", ErrInvalidFlashLayout)
 	}
 
-	var flashEnd uint64
+	var logicalFlashEnd uint64
 	for _, partition := range layout.Partitions {
-		flashEnd = max(flashEnd, partition.End())
+		logicalFlashEnd = max(logicalFlashEnd, partition.End())
 	}
-	if flashEnd == 0 || flashEnd > MaxFlashImageBytes {
+	if logicalFlashEnd == 0 || logicalFlashEnd > MaxFlashImageBytes {
 		return FlashImage{}, fmt.Errorf(
 			"%w: flash size 0x%x exceeds limit 0x%x",
+			ErrInvalidFlashLayout,
+			logicalFlashEnd,
+			MaxFlashImageBytes,
+		)
+	}
+	badBlocks, err := normalizeFactoryBadBlocks(options.FactoryBadBlocks, logicalFlashEnd)
+	if err != nil {
+		return FlashImage{}, err
+	}
+	bootBlocks, err := reconstructBootBlocks(set, pkg, badBlocks)
+	if err != nil {
+		return FlashImage{}, err
+	}
+	flashEnd, err := physicalFlashEnd(logicalFlashEnd, badBlocks)
+	if err != nil || flashEnd > MaxFlashImageBytes {
+		return FlashImage{}, fmt.Errorf(
+			"%w: physical flash size 0x%x exceeds limit 0x%x",
 			ErrInvalidFlashLayout,
 			flashEnd,
 			MaxFlashImageBytes,
@@ -176,20 +217,21 @@ func AssembleFlash(set firmwareset.Set, pkg Package) (FlashImage, error) {
 		size      uint64
 		transform Transform
 		decoded   []byte
+		physical  bool
 	}{
-		{RoleWBT, 0, pkg.Pieces[RoleWBT].Header.PayloadSize, TransformIdentity, nil},
-		{RoleWBIN, amss.Start, uint64(len(progressive.Bytes)), TransformSEEDFeedback, progressive.Bytes},
-		{RoleDAT, rsrc.Start, pkg.Pieces[RoleDAT].Header.PayloadSize, TransformIdentity, nil},
-		{RoleFont, font.Start, pkg.Pieces[RoleFont].Header.PayloadSize, TransformIdentity, nil},
+		{RoleWBT, 0, uint64(len(bootBlocks)), TransformBootBlocks, bootBlocks, true},
+		{RoleWBIN, amss.Start, uint64(len(progressive.Bytes)), TransformSEEDFeedback, progressive.Bytes, false},
+		{RoleDAT, rsrc.Start, pkg.Pieces[RoleDAT].Header.PayloadSize, TransformIdentity, nil, false},
+		{RoleFont, font.Start, pkg.Pieces[RoleFont].Header.PayloadSize, TransformIdentity, nil, false},
 	}
-	regions := make([]flashRegion, 0, len(regionSpecs))
+	regions := make([]flashRegion, 0, len(regionSpecs)+len(badBlocks))
 	for _, spec := range regionSpecs {
 		metadata := pkg.Pieces[spec.role]
 		piece, err := set.Piece(metadata.Index)
 		if err != nil {
 			return FlashImage{}, err
 		}
-		if spec.size == 0 || spec.start > flashEnd || spec.size > flashEnd-spec.start {
+		if spec.size == 0 || spec.start > logicalFlashEnd || spec.size > logicalFlashEnd-spec.start {
 			return FlashImage{}, fmt.Errorf(
 				"%w: %s range 0x%x..0x%x exceeds flash",
 				ErrInvalidFlashLayout,
@@ -199,25 +241,40 @@ func AssembleFlash(set firmwareset.Set, pkg Package) (FlashImage, error) {
 			)
 		}
 		outputHash := progressive.SHA256
-		if spec.decoded == nil {
+		if spec.role == RoleWBT {
+			digest := sha256.Sum256(spec.decoded)
+			outputHash = hex.EncodeToString(digest[:])
+		} else if spec.decoded == nil {
 			outputHash, err = hashPieceRange(piece, WrapperSize, spec.size)
 			if err != nil {
 				return FlashImage{}, err
 			}
 		}
-		region := flashRegion{
-			metadata: FlashRegion{
-				Role: spec.role, Start: spec.start, Size: spec.size,
-				SourcePiece: metadata.Index, SourceOffset: WrapperSize,
-				Transform: spec.transform, SourceSHA256: metadata.SHA256,
-				OutputSHA256: outputHash,
-			},
-			piece: piece,
+		spans := []physicalFlashSpan{{Start: spec.start, Size: spec.size}}
+		if !spec.physical {
+			spans = mapLogicalFlashSpans(spec.start, spec.size, badBlocks)
 		}
-		if spec.decoded != nil {
-			region.decoded = append([]byte(nil), spec.decoded...)
+		decoded := spec.decoded
+		if decoded != nil {
+			decoded = append([]byte(nil), decoded...)
 		}
-		regions = append(regions, region)
+		var dataOffset uint64
+		for _, span := range spans {
+			sourceOffset := uint64(WrapperSize)
+			if decoded == nil {
+				sourceOffset += dataOffset
+			}
+			regions = append(regions, flashRegion{
+				metadata: FlashRegion{
+					Role: spec.role, Start: span.Start, Size: span.Size,
+					SourcePiece: metadata.Index, SourceOffset: sourceOffset,
+					Transform: spec.transform, SourceSHA256: metadata.SHA256,
+					OutputSHA256: outputHash,
+				},
+				piece: piece, decoded: decoded, dataOffset: dataOffset,
+			})
+			dataOffset += span.Size
+		}
 	}
 	sort.Slice(regions, func(left, right int) bool {
 		return regions[left].metadata.Start < regions[right].metadata.Start
@@ -238,6 +295,112 @@ func AssembleFlash(set firmwareset.Set, pkg Package) (FlashImage, error) {
 		partitions: append([]Partition(nil), layout.Partitions...),
 		regions:    regions, progressive: progressive.ELF, identity: identity,
 	}, nil
+}
+
+func reconstructBootBlocks(
+	set firmwareset.Set,
+	pkg Package,
+	badBlocks []uint32,
+) ([]byte, error) {
+	metadata := pkg.Pieces[RoleWBT]
+	piece, err := set.Piece(metadata.Index)
+	if err != nil {
+		return nil, err
+	}
+	if metadata.Header.PayloadSize > MaxFlashImageBytes ||
+		metadata.Header.PayloadSize%EraseBlockSize != 0 {
+		return nil, fmt.Errorf("%w: WBT payload is not erase-block aligned", ErrInvalidFlashLayout)
+	}
+	data := make([]byte, metadata.Header.PayloadSize)
+	if _, err := piece.ReadAt(data, WrapperSize); err != nil {
+		return nil, err
+	}
+	copies, err := parseMIBIBCopies(piece)
+	if err != nil {
+		return nil, err
+	}
+	selected := copies[0]
+	for _, candidate := range copies[1:] {
+		if candidate.Generation > selected.Generation {
+			selected = candidate
+		}
+	}
+	if selected.Offset < WrapperSize {
+		return nil, fmt.Errorf("%w: MIBIB source precedes WBT payload", ErrInvalidFlashLayout)
+	}
+	source := uint64(selected.Offset - WrapperSize)
+	// QCSBL deliberately opens the second usable boot block. Downloader WBT
+	// pieces retain multiple generation slots, so normalization promotes the
+	// newest valid MIBIB copy into that physical slot without treating an
+	// erased predecessor as a factory-bad NAND block.
+	target := physicalBlockForLogical(1, badBlocks) * EraseBlockSize
+	if source > uint64(len(data))-EraseBlockSize || target > uint64(len(data))-EraseBlockSize {
+		return nil, fmt.Errorf("%w: selected MIBIB placement exceeds WBT payload", ErrInvalidFlashLayout)
+	}
+	copy(data[target:target+EraseBlockSize], data[source:source+EraseBlockSize])
+	return data, nil
+}
+
+type physicalFlashSpan struct {
+	Start uint64
+	Size  uint64
+}
+
+func normalizeFactoryBadBlocks(blocks []uint32, logicalFlashEnd uint64) ([]uint32, error) {
+	result := append([]uint32(nil), blocks...)
+	sort.Slice(result, func(left, right int) bool { return result[left] < result[right] })
+	for index, block := range result {
+		if index > 0 && result[index-1] == block {
+			return nil, fmt.Errorf("%w: duplicate factory-bad block 0x%x", ErrInvalidFlashLayout, block)
+		}
+		if uint64(block)*EraseBlockSize >= MaxFlashImageBytes ||
+			uint64(block) > logicalFlashEnd/EraseBlockSize+uint64(len(result)) {
+			return nil, fmt.Errorf("%w: factory-bad block 0x%x exceeds flash", ErrInvalidFlashLayout, block)
+		}
+	}
+	return result, nil
+}
+
+func physicalBlockForLogical(logical uint64, badBlocks []uint32) uint64 {
+	physical := logical
+	for _, bad := range badBlocks {
+		if uint64(bad) > physical {
+			break
+		}
+		physical++
+	}
+	return physical
+}
+
+func physicalFlashEnd(logicalEnd uint64, badBlocks []uint32) (uint64, error) {
+	if logicalEnd == 0 {
+		return 0, nil
+	}
+	lastLogicalBlock := (logicalEnd - 1) / EraseBlockSize
+	lastPhysicalBlock := physicalBlockForLogical(lastLogicalBlock, badBlocks)
+	physicalEnd := lastPhysicalBlock*EraseBlockSize + (logicalEnd-1)%EraseBlockSize + 1
+	if physicalEnd < logicalEnd {
+		return 0, ErrInvalidFlashLayout
+	}
+	return physicalEnd, nil
+}
+
+func mapLogicalFlashSpans(start, size uint64, badBlocks []uint32) []physicalFlashSpan {
+	spans := make([]physicalFlashSpan, 0, 1+len(badBlocks))
+	for logical, remaining := start, size; remaining != 0; {
+		logicalBlock := logical / EraseBlockSize
+		blockOffset := logical % EraseBlockSize
+		count := min(remaining, EraseBlockSize-blockOffset)
+		physicalStart := physicalBlockForLogical(logicalBlock, badBlocks)*EraseBlockSize + blockOffset
+		if len(spans) != 0 && spans[len(spans)-1].Start+spans[len(spans)-1].Size == physicalStart {
+			spans[len(spans)-1].Size += count
+		} else {
+			spans = append(spans, physicalFlashSpan{Start: physicalStart, Size: count})
+		}
+		logical += count
+		remaining -= count
+	}
+	return spans
 }
 
 func findPartition(layout Layout, name string) (Partition, bool) {

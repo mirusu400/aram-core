@@ -12,6 +12,7 @@ var (
 	ErrMMUTranslationFault = errors.New("MMU translation fault")
 	ErrMMUDomainFault      = errors.New("MMU domain fault")
 	ErrMMUPermissionFault  = errors.New("MMU permission fault")
+	ErrMMUExternalAbort    = errors.New("MMU external abort")
 )
 
 type mmuFaultKind uint8
@@ -20,6 +21,7 @@ const (
 	mmuTranslationFault mmuFaultKind = iota
 	mmuDomainFault
 	mmuPermissionFault
+	mmuExternalFault
 )
 
 // MMUFault records the architectural short-descriptor fault information. The
@@ -46,9 +48,27 @@ func (f *MMUFault) Unwrap() error {
 		return ErrMMUDomainFault
 	case mmuPermissionFault:
 		return ErrMMUPermissionFault
+	case mmuExternalFault:
+		return ErrMMUExternalAbort
 	default:
 		return ErrMMUTranslationFault
 	}
+}
+
+func isExternalAbort(err error) bool {
+	var external cpu.ExternalAbortError
+	return errors.As(err, &external) && external.ExternalAbort()
+}
+
+func (b *Backend) recordExternalAbort(
+	address uint32,
+	permission cpu.Permissions,
+	err error,
+) error {
+	if !isExternalAbort(err) {
+		return err
+	}
+	return b.recordMMUFault(address, permission, 0, 0x8, mmuExternalFault)
 }
 
 type mmuTranslation struct {
@@ -56,6 +76,7 @@ type mmuTranslation struct {
 	domain       uint8
 	access       uint8
 	page         bool
+	cacheable    bool
 }
 
 func (b *Backend) mmuEnabled() bool {
@@ -67,8 +88,16 @@ func (b *Backend) invalidateTLB() {
 }
 
 func (b *Backend) translateAddress(address uint32, permission cpu.Permissions) (uint32, error) {
+	physical, _, err := b.translateAddressWithAttributes(address, permission)
+	return physical, err
+}
+
+func (b *Backend) translateAddressWithAttributes(
+	address uint32,
+	permission cpu.Permissions,
+) (uint32, mmuTranslation, error) {
 	if !b.mmuEnabled() {
-		return address, nil
+		return address, mmuTranslation{physicalBase: address &^ 0x3ff, cacheable: true}, nil
 	}
 	modified := address
 	if address < 0x02000000 {
@@ -80,7 +109,7 @@ func (b *Backend) translateAddress(address uint32, permission cpu.Permissions) (
 		var err error
 		translation, err = b.walkShortDescriptor(modified, address, permission)
 		if err != nil {
-			return 0, err
+			return 0, mmuTranslation{}, err
 		}
 		if b.tlb == nil {
 			b.tlb = make(map[uint32]mmuTranslation)
@@ -88,9 +117,9 @@ func (b *Backend) translateAddress(address uint32, permission cpu.Permissions) (
 		b.tlb[key] = translation
 	}
 	if err := b.checkTranslationAccess(translation, address, permission); err != nil {
-		return 0, err
+		return 0, mmuTranslation{}, err
 	}
-	return translation.physicalBase | modified&0x3ff, nil
+	return translation.physicalBase | modified&0x3ff, translation, nil
 }
 
 func (b *Backend) walkShortDescriptor(modified, address uint32, permission cpu.Permissions) (mmuTranslation, error) {
@@ -112,6 +141,7 @@ func (b *Backend) walkShortDescriptor(modified, address uint32, permission cpu.P
 			physicalBase: first&0xfff00000 | modified&0x000ffc00,
 			domain:       domain,
 			access:       uint8(first >> 10 & 3),
+			cacheable:    first&(1<<3) != 0,
 		}, nil
 	case 3: // fine page table
 		domain := uint8(first >> 5 & 0xf)
@@ -142,6 +172,7 @@ func (b *Backend) walkPageDescriptor(
 			domain:       domain,
 			access:       uint8(descriptor >> shift & 3),
 			page:         true,
+			cacheable:    descriptor&(1<<3) != 0,
 		}, nil
 	case 2: // 4 KiB small page, with one AP value per 1 KiB subpage
 		shift := uint32(4 + (modified>>10&3)*2)
@@ -150,6 +181,7 @@ func (b *Backend) walkPageDescriptor(
 			domain:       domain,
 			access:       uint8(descriptor >> shift & 3),
 			page:         true,
+			cacheable:    descriptor&(1<<3) != 0,
 		}, nil
 	case 3: // 1 KiB tiny page, valid only below a fine first-level entry
 		if !fine {
@@ -160,6 +192,7 @@ func (b *Backend) walkPageDescriptor(
 			domain:       domain,
 			access:       uint8(descriptor >> 4 & 3),
 			page:         true,
+			cacheable:    descriptor&(1<<3) != 0,
 		}, nil
 	default:
 		panic("unreachable second-level descriptor type")
@@ -248,7 +281,7 @@ func (b *Backend) readVirtual(address uint32, destination []byte, permission cpu
 		}
 		count := min(len(remaining), int(0x400-(current&0x3ff)))
 		if err := b.copyOut(physical, remaining[:count], permission); err != nil {
-			return err
+			return b.recordExternalAbort(current, permission, err)
 		}
 		remaining = remaining[count:]
 		current += uint32(count)
@@ -266,7 +299,7 @@ func (b *Backend) writeVirtual(address uint32, source []byte, permission cpu.Per
 		}
 		count := min(len(remaining), int(0x400-(current&0x3ff)))
 		if err := b.copyIn(physical, remaining[:count], permission); err != nil {
-			return err
+			return b.recordExternalAbort(current, permission, err)
 		}
 		remaining = remaining[count:]
 		current += uint32(count)
