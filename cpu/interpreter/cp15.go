@@ -193,7 +193,7 @@ func (b *Backend) writeCP15(crn, crm, op2 uint8, value uint32) error {
 		if value != b.cp15.control {
 			b.invalidateTLB()
 			b.executeData = nil
-			b.dataData = nil
+			clear(b.dataCache[:])
 		}
 		b.cp15.control = value
 		return nil
@@ -222,6 +222,7 @@ func (b *Backend) writeCP15(crn, crm, op2 uint8, value uint32) error {
 		} else {
 			b.invalidateInstructionCache()
 		}
+		b.invalidateTranslations()
 		b.executeData = nil
 		return nil
 	case crn == 7 && crm == 13 && op2 == 1:
@@ -232,7 +233,7 @@ func (b *Backend) writeCP15(crn, crm, op2 uint8, value uint32) error {
 	case crn == 7 && crm == 6 && (op2 == 0 || op2 == 1 || op2 == 2):
 		// Invalidate all or one data-cache entry by MVA or set/way. Guest
 		// memory is coherent; clear only the host data-region lookup.
-		b.dataData = nil
+		clear(b.dataCache[:])
 		return nil
 	case crn == 7 && crm == 10 && (op2 == 1 || op2 == 2 || op2 == 4):
 		// Clean one D-cache entry or drain the write buffer. Interpreter
@@ -241,14 +242,15 @@ func (b *Backend) writeCP15(crn, crm, op2 uint8, value uint32) error {
 	case crn == 7 && crm == 14 && (op2 == 1 || op2 == 2):
 		// Clean and invalidate one D-cache entry. Writes are already visible;
 		// invalidate the host lookup just as for the invalidate-only forms.
-		b.dataData = nil
+		clear(b.dataCache[:])
 		return nil
 	case crn == 7 && crm == 7 && op2 == 0:
 		// Invalidate unified instruction and data caches. Guest memory is
 		// coherent in the interpreter; clear both host lookup accelerators.
 		b.executeData = nil
-		b.dataData = nil
+		clear(b.dataCache[:])
 		b.invalidateInstructionCache()
+		b.invalidateTranslations()
 		return nil
 	case crn == 8 && crm == 7 && op2 == 0:
 		// Invalidate the unified software TLB. Translation-table contents are

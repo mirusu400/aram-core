@@ -733,6 +733,16 @@ func (r *Runtime) DefaultCardHeight() uint32 {
 	return height
 }
 
+// CardOriginY is the y offset of a Card inside the physical framebuffer. A
+// shown, opaque annunciator owns the top of the handset screen and the card is
+// laid out below it, which is why DefaultCardHeight subtracts it. Painting the
+// card at the top of the framebuffer anyway put every KTF title that shows an
+// annunciator one annunciator too high and left a dead strip along the bottom
+// edge, so the two have to be derived from each other.
+func (r *Runtime) CardOriginY() uint32 {
+	return r.displayHeight() - r.DefaultCardHeight()
+}
+
 func (r *Runtime) readJavaFieldWord(instance, offset uint32) (uint32, error) {
 	if instance == 0 {
 		return 0, errors.New("read KTF Java field: instance is null")
@@ -817,6 +827,45 @@ func ktfJavaJump(argumentCount uint32) ktfHostHandler {
 	}
 }
 
+// javaRegisterClassTrace returns the host-trace line for registering class,
+// reusing the one cached with the class inspection when the class has not
+// changed. The text is what tracef used to format on every registration.
+func (r *Runtime) javaRegisterClassTrace(
+	name string,
+	class uint32,
+	inspected JavaClass,
+) string {
+	entry := r.javaClassInspections[class]
+	if entry != nil && entry.registerTrace != "" {
+		return entry.registerTrace
+	}
+	methods := make([]string, 0, len(inspected.Methods))
+	for _, method := range inspected.Methods {
+		methods = append(
+			methods,
+			fmt.Sprintf(
+				"%s%s@0x%08x#%04x",
+				method.Name,
+				method.Descriptor,
+				method.Body,
+				method.AccessFlags,
+			),
+		)
+	}
+	line := fmt.Sprintf(
+		"java_register_class:%s:class=0x%08x:parent=0x%08x:fields=%d:methods=%v",
+		name,
+		class,
+		inspected.Parent,
+		inspected.FieldSize,
+		methods,
+	)
+	if entry != nil {
+		entry.registerTrace = line
+	}
+	return line
+}
+
 func ktfRegisterJavaClass(ctx context.Context, runtime *Runtime) (uint32, error) {
 	class, err := runtime.parameter(0)
 	if err != nil {
@@ -851,27 +900,7 @@ func ktfRegisterJavaClass(ctx context.Context, runtime *Runtime) (uint32, error)
 	if inspected.VTable != 0 {
 		runtime.javaVTableClasses[inspected.VTable] = inspected.Address
 	}
-	methods := make([]string, 0, len(inspected.Methods))
-	for _, method := range inspected.Methods {
-		methods = append(
-			methods,
-			fmt.Sprintf(
-				"%s%s@0x%08x#%04x",
-				method.Name,
-				method.Descriptor,
-				method.Body,
-				method.AccessFlags,
-			),
-		)
-	}
-	runtime.tracef(
-		"java_register_class:%s:class=0x%08x:parent=0x%08x:fields=%d:methods=%v",
-		name,
-		class,
-		inspected.Parent,
-		inspected.FieldSize,
-		methods,
-	)
+	runtime.trace(runtime.javaRegisterClassTrace(name, class, inspected))
 	// KTF AOT images sometimes register a class while another class
 	// initializer is still wiring the objects that it references. Loading
 	// must remain non-initializing in that case; leave the class pending so
@@ -883,8 +912,18 @@ func ktfRegisterJavaClass(ctx context.Context, runtime *Runtime) (uint32, error)
 }
 
 func (r *Runtime) rememberRegisteredJavaClass(name string, class uint32) {
-	r.JavaClasses[name] = class
-	r.javaClassGeneration++
+	// The generation moves only when the class set actually changes. It keys
+	// the inspection and native-signature caches, and a guest that registers a
+	// class it has already registered - which a Java-heavy title does
+	// thousands of times a second - was dropping every cached inspection and
+	// forcing a full re-read of every method of every class it then touched.
+	// Dropping them on a no-op re-registration buys nothing: each of those
+	// caches already revalidates its entry against the live guest words, so a
+	// class or method relinked in place is caught without the generation.
+	if existing, ok := r.JavaClasses[name]; !ok || existing != class {
+		r.JavaClasses[name] = class
+		r.javaClassGeneration++
+	}
 	if strings.HasPrefix(name, "java/") ||
 		strings.HasPrefix(name, "javax/") ||
 		strings.HasPrefix(name, "org/kwis/") {

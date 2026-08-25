@@ -78,10 +78,47 @@ func (m *Machine) runKTFSlice(ctx context.Context, elapsed time.Duration) error 
 		m.ktfStarted = true
 		m.mu.Unlock()
 	}
-	if err := runtime.Services.Advance(
-		runtime.ServiceOwner,
-		elapsed,
-	); err != nil {
+	// The quantum is handed to the guest in as few pieces as the title's own
+	// timers need. A title that is not waiting on one gets the whole quantum at
+	// once, exactly as before; a title parked in Thread.sleep gets the clock
+	// stopped on its deadline first, so a wait it asked to be 40 ms long is not
+	// rounded up to the next whole 16.667 ms presentation quantum.
+	advanced := time.Duration(0)
+	steps := 0
+	advance := func(step time.Duration) error {
+		if step <= 0 {
+			return nil
+		}
+		if err := runtime.Services.Advance(runtime.ServiceOwner, step); err != nil {
+			return err
+		}
+		advanced += step
+		runtime.TickMS = uint64(
+			runtime.Services.Clock.Monotonic() / time.Millisecond,
+		)
+		if step != elapsed {
+			runtime.TraceQuantumStep(step)
+		}
+		return nil
+	}
+	// nextStep sizes the next piece of the quantum: up to the deadline the guest
+	// is sleeping on, or the whole remainder once it has nothing left to wait
+	// for.
+	nextStep := func() time.Duration {
+		remaining := elapsed - advanced
+		if remaining <= 0 {
+			return 0
+		}
+		if steps >= ktfQuantumStepsMax {
+			return remaining
+		}
+		if wake, ok := runtime.NextWakeWithin(remaining); ok {
+			steps++
+			return wake
+		}
+		return remaining
+	}
+	if err := advance(nextStep()); err != nil {
 		_ = runtime.Services.Coordinator.Fault(
 			runtime.ServiceOwner,
 			err.Error(),
@@ -94,9 +131,6 @@ func (m *Machine) runKTFSlice(ctx context.Context, elapsed time.Duration) error 
 		m.mu.Unlock()
 		return err
 	}
-	runtime.TickMS = uint64(
-		runtime.Services.Clock.Monotonic() / time.Millisecond,
-	)
 	if err := m.queueKTFInput(runtime); err != nil {
 		_ = runtime.Services.Coordinator.Fault(
 			runtime.ServiceOwner,
@@ -113,6 +147,7 @@ func (m *Machine) runKTFSlice(ctx context.Context, elapsed time.Duration) error 
 	result := cpu.Result{Reason: cpu.StopBudget}
 	var instructions uint64
 	var consumeErr error
+	var advanceErr error
 	runtime.PaintStalled = false
 taskLoop:
 	for slices := 0; slices < ktfTaskSlicesPerQuantumMax &&
@@ -171,15 +206,46 @@ taskLoop:
 			// A Java task can yield or return before consuming the CPU
 			// quantum. Continue with the next runnable task without advancing
 			// virtual time, matching the handset's cooperative scheduler.
+			if runtime.HasRunnableTask() {
+				continue
+			}
+			// Nothing can run until a timer expires. Give the guest the next
+			// piece of the quantum so a wait it asked to be forty milliseconds
+			// long ends there instead of at the next quantum boundary, which
+			// used to round every guest sleep up to 16.667 ms.
+			step := nextStep()
+			if step <= 0 {
+				break taskLoop
+			}
+			if err := advance(step); err != nil {
+				advanceErr = err
+				result = cpu.Result{
+					Reason:       cpu.StopFault,
+					PC:           result.PC,
+					Instructions: instructions,
+					Err:          err,
+				}
+				break taskLoop
+			}
 			continue
 		default:
 			break taskLoop
 		}
 	}
 
+	// The frontend paces the machine by counting quanta, so a quantum always
+	// hands the guest exactly the time it was given even when the task loop
+	// returned early with some of it unspent.
+	if err := advance(elapsed - advanced); err != nil && advanceErr == nil {
+		advanceErr = err
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.lastResult = result
+	if advanceErr != nil && consumeErr == nil {
+		consumeErr = advanceErr
+	}
 	if consumeErr != nil {
 		m.state = machinecore.StateFaulted
 		m.lastResult = cpu.Result{

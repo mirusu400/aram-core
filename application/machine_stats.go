@@ -14,7 +14,11 @@ import (
 func (m *Machine) ImageInfo() ImageInfo {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.info
+	info := m.info
+	if m.cpu != nil {
+		info.CPUBackend = m.cpu.Identity().Name
+	}
+	return info
 }
 
 func (m *Machine) LastResult() cpu.Result {

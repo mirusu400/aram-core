@@ -371,7 +371,7 @@ func compositeGIF(animation *gif.GIF) []image.Image {
 	return result
 }
 
-func decodeBMP(encoded []byte, limits AssetLimits) (*image.RGBA, error) {
+func decodeBMP(encoded []byte, limits AssetLimits) (*image.NRGBA, error) {
 	if len(encoded) < 54 || string(encoded[:2]) != "BM" {
 		return nil, fmt.Errorf("%w: truncated BMP header", ErrInvalidArgument)
 	}
@@ -411,7 +411,7 @@ func decodeBMP(encoded []byte, limits AssetLimits) (*image.RGBA, error) {
 		rowBytes*uint64(height) > uint64(len(encoded))-pixelOffset {
 		return nil, fmt.Errorf("%w: truncated BMP pixels", ErrInvalidArgument)
 	}
-	var palette []color.RGBA
+	var palette []color.NRGBA
 	if bits <= 8 {
 		count := binary.LittleEndian.Uint32(encoded[46:50])
 		if count == 0 {
@@ -422,18 +422,36 @@ func decodeBMP(encoded []byte, limits AssetLimits) (*image.RGBA, error) {
 			uint64(count)*4 > pixelOffset-paletteStart {
 			return nil, fmt.Errorf("%w: invalid BMP palette", ErrInvalidArgument)
 		}
-		palette = make([]color.RGBA, count)
+		palette = make([]color.NRGBA, count)
 		for index := range palette {
 			offset := paletteStart + uint64(index)*4
-			palette[index] = color.RGBA{
+			palette[index] = color.NRGBA{
 				R: encoded[offset+2],
 				G: encoded[offset+1],
 				B: encoded[offset],
 				A: 0xff,
 			}
 		}
+		// Handset packages ship paletted sprites that reserve one palette
+		// entry as a transparent color key. The file header's first reserved
+		// field — which the BMP format requires to be zero — flags such a
+		// sprite, and biClrImportant then holds that entry's index instead of
+		// a count. Every marked sprite in 메이플스토리 도적편 points the index
+		// at the same green and paints its border with it, so honoring the
+		// flag is what keeps a sprite's surround from covering the background
+		// with a solid green block. The entry keeps its color and only loses
+		// its alpha: a color-keyed consumer that cannot carry alpha needs to
+		// know which color the key is. An index outside the palette is stale
+		// header noise — the stock KTF Annunciator.bmp carries index 304 for a
+		// 256-entry palette — and leaves the image opaque.
+		if binary.LittleEndian.Uint16(encoded[6:8]) != 0 {
+			key := binary.LittleEndian.Uint32(encoded[50:54])
+			if key < uint32(len(palette)) {
+				palette[key].A = 0
+			}
+		}
 	}
-	result := image.NewRGBA(image.Rect(0, 0, int(width), int(height)))
+	result := image.NewNRGBA(image.Rect(0, 0, int(width), int(height)))
 	for y := 0; y < int(height); y++ {
 		sourceY := y
 		if !topDown {
@@ -441,7 +459,7 @@ func decodeBMP(encoded []byte, limits AssetLimits) (*image.RGBA, error) {
 		}
 		row := encoded[pixelOffset+uint64(sourceY)*rowBytes:]
 		for x := 0; x < int(width); x++ {
-			var value color.RGBA
+			var value color.NRGBA
 			switch bits {
 			case 1, 4, 8:
 				var index int
@@ -464,13 +482,13 @@ func decodeBMP(encoded []byte, limits AssetLimits) (*image.RGBA, error) {
 				value = palette[index]
 			case 24:
 				offset := x * 3
-				value = color.RGBA{R: row[offset+2], G: row[offset+1], B: row[offset], A: 0xff}
+				value = color.NRGBA{R: row[offset+2], G: row[offset+1], B: row[offset], A: 0xff}
 			case 32:
 				offset := x * 4
 				// BI_RGB's fourth byte is reserved, not an alpha channel.
-				value = color.RGBA{R: row[offset+2], G: row[offset+1], B: row[offset], A: 0xff}
+				value = color.NRGBA{R: row[offset+2], G: row[offset+1], B: row[offset], A: 0xff}
 			}
-			result.SetRGBA(x, y, value)
+			result.SetNRGBA(x, y, value)
 		}
 	}
 	return result, nil

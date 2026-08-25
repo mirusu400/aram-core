@@ -525,7 +525,12 @@ func (g *Graphics) Present(owner OwnerID, id ServiceID, requested Rectangle) (Fr
 		Hash:      sha256.Sum256(rgba),
 	}
 	current.dirty = Rectangle{}
-	g.lastFrame = cloneFrame(frame)
+	// frame is a local that owns the freshly copied rgba (surfaceRGBA already
+	// detached it from the surface), so lastFrame can adopt it directly instead
+	// of cloning: this runs on the emulation goroutine every presented frame,
+	// and the second copy was pure per-frame churn. The return is still cloned
+	// so a caller that keeps or mutates it cannot disturb lastFrame.
+	g.lastFrame = frame
 	return cloneFrame(frame), nil
 }
 
@@ -541,6 +546,36 @@ func (g *Graphics) RGBA(owner OwnerID, id ServiceID) ([]byte, error) {
 
 func (g *Graphics) LastFrame() FrameSnapshot {
 	return cloneFrame(g.lastFrame)
+}
+
+// LastFramePresentation identifies the most recently presented frame without
+// materializing its pixels. LastFrame copies the whole surface, which is far
+// too expensive for a driver that only needs to ask, once per host tick,
+// whether the presented frame is the one it already holds. The hash is the one
+// Present already computed, so an unchanged screen is recognized exactly rather
+// than being re-copied and re-uploaded.
+func (g *Graphics) LastFramePresentation() (uint64, [sha256.Size]byte) {
+	return g.lastFrame.Sequence, g.lastFrame.Hash
+}
+
+// LastFrameImage materializes the presented frame with a single copy, or nil
+// when nothing has been presented. LastFrame().Image() copies the pixels
+// twice: once to detach the snapshot from the service and again to build the
+// image.
+func (g *Graphics) LastFrameImage() *image.RGBA {
+	if g.lastFrame.Sequence == 0 ||
+		g.lastFrame.Width <= 0 ||
+		g.lastFrame.Height <= 0 {
+		return nil
+	}
+	result := image.NewRGBA(image.Rect(
+		0,
+		0,
+		int(g.lastFrame.Width),
+		int(g.lastFrame.Height),
+	))
+	copy(result.Pix, g.lastFrame.RGBA)
+	return result
 }
 
 func (g *Graphics) Snapshot() GraphicsState {

@@ -80,6 +80,7 @@ type smafPCMVoice struct {
 	position float64
 	step     float64
 	pan      float64
+	panGains smafPanGains
 	active   bool
 }
 
@@ -163,15 +164,69 @@ func decodeSMAFLazyPCM16(data []byte, sampleRate uint32) *decodedPCM {
 	if stream.end == 0 {
 		return nil
 	}
+	// A score short enough that rendering it is not felt is rendered here, so
+	// playback is an array read and the length is exact.
+	if stream.end <= uint64(sampleRate)*smafEagerRenderSeconds {
+		if samples := stream.renderUntil(nil, stream.end); len(samples) != 0 {
+			return &decodedPCM{
+				sampleRate: sampleRate,
+				channels:   2,
+				samples:    samples,
+				duration: time.Duration(
+					uint64(len(samples)/2) * uint64(time.Second) /
+						uint64(sampleRate),
+				),
+			}
+		}
+	}
+	// An FM score's playable length is where its last voice stops sounding,
+	// which is usually well short of stream.end: that is the last event plus a
+	// two-second pad, so a half-second effect would otherwise report two
+	// seconds and a music loop would carry trailing silence around the loop.
+	//
+	// Finding it used to mean rendering the whole score at decode, which is
+	// what Play does synchronously - a freeze of up to 611 ms in the frame a
+	// title starts its music (measured on 메이플스토리). probeEnd walks the
+	// same loop with synthesis switched off and reports the same sample for a
+	// quarter of the cost, so the samples can stay incremental and only the
+	// part actually played is ever synthesized: the worst frame drops to
+	// 196 ms and the mean frame improves too.
+	//
+	// The probe consumes the stream it walks, so it gets its own.
+	length := stream.end
+	if stream.end <= uint64(sampleRate)*smafProbedLengthSeconds {
+		probeDecoder := &smafDecoder{rate: sampleRate}
+		if probeDecoder.parse(data) && probeDecoder.buildEvents() {
+			if probed := newSMAFRenderStream(probeDecoder).probeEnd(); probed != 0 {
+				length = probed
+			}
+		}
+	}
 	return &decodedPCM{
 		sampleRate: sampleRate,
 		channels:   2,
 		duration: time.Duration(
-			stream.end * uint64(time.Second) / uint64(sampleRate),
+			length * uint64(time.Second) / uint64(sampleRate),
 		),
 		smaf: stream,
 	}
 }
+
+// smafEagerRenderSeconds bounds how long an FM score may be while still being
+// rendered whole at decode.
+//
+// It is deliberately just past the two-second pad every score carries, because
+// that pad is what a one-shot effect's stream.end is almost entirely made of:
+// a third-of-a-second hit sound ends at 2.0s and renders in well under a
+// millisecond. Rendering those whole is strictly better than probing them and
+// synthesizing again during playback, which would do the work twice.
+const smafEagerRenderSeconds = 3
+
+// smafProbedLengthSeconds bounds how long an FM score may be before decode
+// stops looking for its natural end and takes stream.end as the length. The
+// probe is cheap relative to a render but still linear in the score, and a
+// minutes-long menu loop plays to its end anyway, so the two agree there.
+const smafProbedLengthSeconds = 30
 
 func (decoder *smafDecoder) parse(data []byte) bool {
 	if !looksLikeSMAF(data) {
@@ -1057,9 +1112,45 @@ func newSMAFRenderStream(decoder *smafDecoder) *smafRenderStream {
 	return stream
 }
 
+// renderUntil synthesizes samples up to target and appends them to output.
 func (stream *smafRenderStream) renderUntil(
 	output []int16,
 	target uint64,
+) []int16 {
+	return stream.render(output, target, false)
+}
+
+// probeEnd reports the sample a full render would stop at: the score's natural
+// end, where the last voice's envelopes go idle, which is usually well before
+// the two-second pad in stream.end.
+//
+// A caller that needs the natural length used to have to render the whole score
+// to find it, which froze the emulation for over half a second when a title
+// started its music. The silent pass costs about a quarter of that - it still
+// advances an envelope per operator per sample, but synthesizes no waveform and
+// mixes nothing. It stops on the same sample because the stop condition reads
+// only the event index and whether any voice is still sounding, and a voice
+// retires purely on its envelopes. TestSMAFProbeEndMatchesRender checks the two
+// against each other, and every score in the local corpus probes to exactly the
+// length a full render produces.
+//
+// The stream is consumed: probing leaves it at its end, so the caller renders
+// from a fresh one.
+func (stream *smafRenderStream) probeEnd() uint64 {
+	if stream == nil || stream.end == 0 {
+		return 0
+	}
+	stream.render(nil, stream.end, true)
+	return stream.cursor
+}
+
+// render is the shared body. When silent is set it advances exactly the same
+// decoder, voice, and stream state, but samples no waveform, runs no filter,
+// and produces no output.
+func (stream *smafRenderStream) render(
+	output []int16,
+	target uint64,
+	silent bool,
 ) []int16 {
 	if stream == nil || stream.finished || stream.end == 0 {
 		return output
@@ -1069,6 +1160,17 @@ func (stream *smafRenderStream) renderUntil(
 	}
 	decoder := stream.decoder
 	last := decoder.events[len(decoder.events)-1].sample
+	// A render that starts from nothing - the eager whole-track path - knows
+	// exactly how many samples it will produce, so reserve them instead of
+	// letting append double a multi-megabyte slice a dozen times. An
+	// incremental render is handed the samples rendered so far and must keep
+	// append's amortized growth, or extending it would copy everything again
+	// on every call.
+	if output == nil && !silent {
+		if remaining := target - stream.cursor; remaining > 0 {
+			output = make([]int16, 0, int(remaining)*2)
+		}
+	}
 	for stream.cursor < target {
 		for stream.eventIndex < len(decoder.events) &&
 			decoder.events[stream.eventIndex].sample <= stream.cursor {
@@ -1077,78 +1179,74 @@ func (stream *smafRenderStream) renderUntil(
 		}
 		left, right := 0.0, 0.0
 		active := false
-		keptVoices := decoder.activeVoices[:0]
+		// The live lists are rebuilt only on the sample where a voice actually
+		// ends. Re-appending every surviving index on every one of the 44100
+		// samples a second holds was a bounds check and a store per voice per
+		// sample, for a list that changes a handful of times in a whole track.
+		retired := false
 		for _, index := range decoder.activeVoices {
 			voice := &decoder.pool[index]
 			if !voice.active {
 				decoder.voiceListed[index] = false
+				retired = true
 				continue
 			}
 			active = true
-			value := voice.tick() * 0.32
-			panAngle := (math.Max(-1, math.Min(1, voice.pan)) + 1) *
-				math.Pi / 4
-			left += value * math.Cos(panAngle)
-			right += value * math.Sin(panAngle)
-			if voice.active {
-				keptVoices = append(keptVoices, index)
-			} else {
+			value := voice.tick(silent) * 0.32
+			if !silent {
+				panLeft, panRight := voice.panGains.gains(voice.pan)
+				left += value * panLeft
+				right += value * panRight
+			}
+			if !voice.active {
 				decoder.voiceListed[index] = false
+				retired = true
 			}
 		}
-		decoder.activeVoices = keptVoices
-		keptPCM := decoder.activePCM[:0]
+		if retired {
+			kept := decoder.activeVoices[:0]
+			for _, index := range decoder.activeVoices {
+				if decoder.pool[index].active {
+					kept = append(kept, index)
+				}
+			}
+			decoder.activeVoices = kept
+		}
+		retired = false
 		for _, index := range decoder.activePCM {
 			voice := &decoder.pcmPool[index]
 			if !voice.active {
 				decoder.pcmListed[index] = false
+				retired = true
 				continue
 			}
 			active = true
 			value := voice.tick() * 0.32
-			panAngle := (math.Max(-1, math.Min(1, voice.pan)) + 1) *
-				math.Pi / 4
-			left += value * math.Cos(panAngle)
-			right += value * math.Sin(panAngle)
-			if voice.active {
-				keptPCM = append(keptPCM, index)
-			} else {
+			if !silent {
+				panLeft, panRight := voice.panGains.gains(voice.pan)
+				left += value * panLeft
+				right += value * panRight
+			}
+			if !voice.active {
 				decoder.pcmListed[index] = false
+				retired = true
 			}
 		}
-		decoder.activePCM = keptPCM
-		highPassedLeft := stream.highPassCoefficient *
-			(stream.highPassOutputLeft + left - stream.highPassInputLeft)
-		highPassedRight := stream.highPassCoefficient *
-			(stream.highPassOutputRight + right - stream.highPassInputRight)
-		stream.highPassInputLeft = left
-		stream.highPassInputRight = right
-		stream.highPassOutputLeft = highPassedLeft
-		stream.highPassOutputRight = highPassedRight
-		left, right = highPassedLeft, highPassedRight
-		stream.filter1Left += stream.filterCoefficient *
-			(left - stream.filter1Left)
-		stream.filter2Left += stream.filterCoefficient *
-			(stream.filter1Left - stream.filter2Left)
-		stream.filter1Right += stream.filterCoefficient *
-			(right - stream.filter1Right)
-		stream.filter2Right += stream.filterCoefficient *
-			(stream.filter1Right - stream.filter2Right)
-		left, right = stream.filter2Left, stream.filter2Right
-		peak := math.Max(math.Abs(left), math.Abs(right))
-		stream.limiterEnvelope = math.Max(
-			peak,
-			stream.limiterEnvelope*stream.limiterRelease,
-		)
-		if stream.limiterEnvelope > 0.92 {
-			gain := 0.92 / stream.limiterEnvelope
-			left *= gain
-			right *= gain
+		if retired {
+			kept := decoder.activePCM[:0]
+			for _, index := range decoder.activePCM {
+				if decoder.pcmPool[index].active {
+					kept = append(kept, index)
+				}
+			}
+			decoder.activePCM = kept
 		}
-		output = append(output,
-			smafFloatToPCM(left),
-			smafFloatToPCM(right),
-		)
+		// A silent pass skips the presentation chain entirely: nothing in it
+		// can change whether a voice is still sounding, which is all the pass
+		// is looking for.
+		if !silent {
+			output = stream.mixSample(output, left, right)
+		}
 		stream.cursor++
 		if stream.eventIndex >= len(decoder.events) && !active &&
 			stream.cursor > last {
@@ -1162,8 +1260,46 @@ func (stream *smafRenderStream) renderUntil(
 	return output
 }
 
+// mixSample runs one mixed stereo sample through the presentation chain - the
+// DC-blocking high pass, the two-pole low pass, and the limiter - and appends
+// it to output.
+func (stream *smafRenderStream) mixSample(
+	output []int16,
+	left, right float64,
+) []int16 {
+	highPassedLeft := stream.highPassCoefficient *
+		(stream.highPassOutputLeft + left - stream.highPassInputLeft)
+	highPassedRight := stream.highPassCoefficient *
+		(stream.highPassOutputRight + right - stream.highPassInputRight)
+	stream.highPassInputLeft = left
+	stream.highPassInputRight = right
+	stream.highPassOutputLeft = highPassedLeft
+	stream.highPassOutputRight = highPassedRight
+	left, right = highPassedLeft, highPassedRight
+	stream.filter1Left += stream.filterCoefficient *
+		(left - stream.filter1Left)
+	stream.filter2Left += stream.filterCoefficient *
+		(stream.filter1Left - stream.filter2Left)
+	stream.filter1Right += stream.filterCoefficient *
+		(right - stream.filter1Right)
+	stream.filter2Right += stream.filterCoefficient *
+		(stream.filter1Right - stream.filter2Right)
+	left, right = stream.filter2Left, stream.filter2Right
+	peak := max(math.Abs(left), math.Abs(right))
+	stream.limiterEnvelope = max(
+		peak,
+		stream.limiterEnvelope*stream.limiterRelease,
+	)
+	if stream.limiterEnvelope > 0.92 {
+		gain := 0.92 / stream.limiterEnvelope
+		left *= gain
+		right *= gain
+	}
+	return append(output, smafFloatToPCM(left), smafFloatToPCM(right))
+}
+
 func smafFloatToPCM(value float64) int16 {
-	value = math.Max(-1, math.Min(1, value))
+	value = smafClampUnit(value)
 	if value < 0 {
 		return int16(value*32768 - 0.5)
 	}

@@ -93,6 +93,8 @@ type Runtime struct {
 	hostCalls        map[uint32]ktfHostCall
 	HostTrace        []string
 	HostTraceDropped int
+	// traceScratch is the reusable buffer traceJavaMethodCall formats into.
+	traceScratch     []byte
 	HostCallCount    uint64
 	hostTraceSamples map[string]uint64
 
@@ -294,6 +296,13 @@ type ktfJavaClassInspection struct {
 	class           JavaClass
 	classWords      [5]uint32
 	descriptorWords [9]uint32
+	// registerTrace is the host-trace line for registering this class, built
+	// on first use. A guest can register the same class thousands of times a
+	// second, and the line names every method, so formatting it per call was
+	// the single most expensive thing a Java-heavy title did. The cache is
+	// keyed with the inspection itself, so a class whose words change is
+	// re-inspected and its line rebuilt.
+	registerTrace string
 }
 
 type ktfJavaMethodInspection struct {
@@ -380,12 +389,38 @@ var ktfJavaExceptionParents = map[string]string{
 }
 
 type ktfGraphics struct {
-	Target      draw.Image
-	clip        image.Rectangle
-	color       color.RGBA
-	translate   image.Point
+	Target draw.Image
+	clip   image.Rectangle
+	color  color.RGBA
+	// translate is the guest's own Graphics.translate offset, in card
+	// coordinates. The guest reads it back with getTranslateX/Y, so it must
+	// never carry a host-imposed offset.
+	translate image.Point
+	// origin places the card inside the physical framebuffer. A handset that
+	// shows an annunciator lays the card out below it, so every guest-issued
+	// coordinate is drawn origin lower than it asks for while the guest still
+	// sees a card whose top-left is (0, 0).
+	origin image.Point
+	// surface bounds every clip this Graphics can express. It is the card
+	// rectangle for the screen Graphics, so a guest clip that reaches above
+	// the card cannot spill into the annunciator strip. The zero value means
+	// the whole target.
+	surface     image.Rectangle
 	xorMode     bool
 	PixelsDirty bool
+}
+
+// drawable is the region of Target this Graphics may touch.
+func (g *ktfGraphics) drawable() image.Rectangle {
+	if g.surface.Empty() {
+		return g.Target.Bounds()
+	}
+	return g.surface
+}
+
+// offset converts a guest card coordinate to a framebuffer coordinate.
+func (g *ktfGraphics) offset() image.Point {
+	return g.translate.Add(g.origin)
 }
 
 // plot writes one pixel honoring XOR paint mode. Vector-drawn titles (놈3 renders
@@ -526,6 +561,11 @@ type ktfWIPICMediaClip struct {
 	volume    int32
 	state     uint8
 	repeat    bool
+	// lastTracedState dedups the GetState host trace: a title polls GetState in
+	// a tight loop, so only a change (notably the playing->stopped edge when an
+	// effect finishes) is worth an entry.
+	lastTracedState uint8
+	tracedState     bool
 }
 
 type ktfLWCComponent struct {

@@ -43,6 +43,50 @@ func (r *Runtime) tracef(format string, args ...any) {
 	r.trace(fmt.Sprintf(format, args...))
 }
 
+// traceJavaMethodCall records the host-trace line for one host Java method
+// invocation, which a Java-heavy title issues tens of thousands of times a
+// second. It builds the same text tracef produced for
+//
+//	"java_method_call:%s.%s%s:lr=0x%08x:%08x"
+//
+// but appends it into a scratch buffer instead of going through fmt: the
+// variadic call boxed five arguments, and formatting the register slice with
+// %08x walked it reflectively. TestKTFJavaMethodTraceMatchesFmt pins the two
+// against each other.
+func (r *Runtime) traceJavaMethodCall(
+	className, name, descriptor string,
+	link uint32,
+	registers []uint32,
+) {
+	buffer := append(r.traceScratch[:0], "java_method_call:"...)
+	buffer = append(buffer, className...)
+	buffer = append(buffer, '.')
+	buffer = append(buffer, name...)
+	buffer = append(buffer, descriptor...)
+	buffer = append(buffer, ":lr=0x"...)
+	buffer = appendTraceHex8(buffer, link)
+	buffer = append(buffer, ":["...)
+	for index, register := range registers {
+		if index != 0 {
+			buffer = append(buffer, ' ')
+		}
+		buffer = appendTraceHex8(buffer, register)
+	}
+	buffer = append(buffer, ']')
+	r.traceScratch = buffer
+	r.trace(string(buffer))
+}
+
+// appendTraceHex8 appends value as eight lowercase hex digits, the way fmt
+// renders %08x for a uint32.
+func appendTraceHex8(destination []byte, value uint32) []byte {
+	const digits = "0123456789abcdef"
+	for shift := 28; shift >= 0; shift -= 4 {
+		destination = append(destination, digits[value>>uint(shift)&0xf])
+	}
+	return destination
+}
+
 // omitTrace accounts for an intentionally sampled-out entry. This preserves
 // the total reported by DebugSnapshot while avoiding its string allocation.
 func (r *Runtime) omitTrace() {
@@ -76,9 +120,19 @@ func isKTFHighFrequencyHostTrace(entry string) bool {
 		"java.method.org/kwis/msp/lcdui/Graphics.setRGBPixels(IIII[III)V",
 		"java.native_override.org/kwis/msp/lcdui/Graphics.setPixel(II)V",
 		"java.native_override.org/kwis/msp/lcdui/Graphics.setRGBPixels(IIII[III)V",
+		// Per-frame WIPI-C graphics calls a title issues thousands of times:
+		// SetContext (2.6), FillRect (2.11), and the pixel/blit leaves
+		// (2.8/2.22/2.23). Sampling them keeps a representative count without
+		// letting the flood roll the retained trace over and evict the rare
+		// calls (media, files, kernel) that actually matter for diagnostics.
+		"wipic.2.6",
 		"wipic.2.8",
+		"wipic.2.11",
 		"wipic.2.22",
-		"wipic.2.23":
+		"wipic.2.23",
+		// MC_mdaGetState (9.16): a title polls this in a tight loop while it
+		// waits for an effect to finish, so sample it too.
+		"wipic.9.16":
 		return true
 	default:
 		return false

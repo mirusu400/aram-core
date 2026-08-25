@@ -525,6 +525,28 @@ func (r *Runtime) DispatchPrivateImport(
 			return guest.WIPIReturn{Low: length}, "RAPTOR.sndPutData", true, nil
 		}
 		return guest.WIPIReturn{}, "RAPTOR.sndPutData", true, nil
+	case 1201:
+		// MC_sndFree(handle) releases a clip. 제노니아1's teardown ends with
+		// this call and then drops the handle from its sound object, so the
+		// clip and its guest allocation have to go with it or the title leaks
+		// one per track it plays.
+		handle, err := r.CPU.ReadRegister(cpu.RegisterR0)
+		if err != nil {
+			return guest.WIPIReturn{}, "", true, err
+		}
+		r.Public.RaptorStopClip(handle, true)
+		return guest.WIPIReturn{}, "RAPTOR.sndFree", true, nil
+	case 1213:
+		// MC_sndStop(handle) silences a clip. Titles call it to drop the
+		// sound a scene owns before asking for the next one, and the handset
+		// answers by reporting completion, which is what lets the caller free
+		// the handle it is still holding.
+		handle, err := r.CPU.ReadRegister(cpu.RegisterR0)
+		if err != nil {
+			return guest.WIPIReturn{}, "", true, err
+		}
+		r.Public.RaptorStopClip(handle, false)
+		return guest.WIPIReturn{}, "RAPTOR.sndStop", true, nil
 	case 1221:
 		// MC_sndRewind(handle, 0) → 0 on success.
 		handle, err := r.CPU.ReadRegister(cpu.RegisterR0)

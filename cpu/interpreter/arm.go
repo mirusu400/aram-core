@@ -855,6 +855,33 @@ func (b *Backend) carry() bool {
 	return b.regs[cpu.RegisterCPSR]&flagC != 0
 }
 
+// thumbFlagsDeadBefore reports that the N/Z/C/V a flag-setting Thumb instruction
+// is about to write are provably dead because the instruction at pc (its
+// sequential successor) unconditionally overwrites all four without reading any.
+// Only the immediate add/sub/compare classes qualify: they always set the full
+// NZCV from their own operands and never read a flag. Because a qualifying
+// successor never reads flags, a chain of them can be skipped safely — the run
+// always reaches a real flag write before any reader, so the earlier writes are
+// genuinely dead. This is a sound one-instruction test needing no control-flow
+// analysis. It peeks only inside the current execute-region slice; if the peek
+// would leave it, it returns false so no executeData refresh (a side effect)
+// happens during the look-ahead.
+func (b *Backend) thumbFlagsDeadBefore(pc uint32) bool {
+	if pc < b.executeAddress {
+		return false
+	}
+	offset := uint64(pc - b.executeAddress)
+	if offset+2 > uint64(len(b.executeData)) {
+		return false
+	}
+	next := uint16(b.executeData[offset]) | uint16(b.executeData[offset+1])<<8
+	switch thumbInstructionClasses[next] {
+	case thumbCompareImmediate, thumbAddImmediate, thumbSubtractImmediate, thumbAddSubtract:
+		return true
+	}
+	return false
+}
+
 func shiftLSL(value uint32, amount uint8, oldCarry bool) (uint32, bool) {
 	switch {
 	case amount == 0:

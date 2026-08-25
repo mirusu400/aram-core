@@ -349,14 +349,19 @@ func (m *Machine) pumpWIPICallbacks(
 				if clip := m.wipi.MediaClips[handle]; clip != nil {
 					clip.State = 0
 					clip.Repeat = false
-					m.wipi.EnqueueCallback(clip.Callback, handle, 0)
-				}
-				if m.raptor != nil {
-					// LGT titles allocate a fresh clip per sound and drop the
-					// old handle in their completion callback, so release the
-					// finished clip here to keep the clip table bounded across
-					// a long session (issue #36).
-					m.wipi.RaptorStopClip(handle, true)
+					// LGT Raptor's provider reports a distinct end-of-media
+					// status. A title reads it to decide that the clip is
+					// finished and that its handle may be freed, which is what
+					// lets it build the next one; the shared WIPI value says
+					// "stopped" instead and leaves the handle owned forever
+					// (issue #49). The title frees the clip itself through
+					// MC_sndFree, so the clip table stays bounded without the
+					// adapter releasing it here (issue #36).
+					code := uint32(0)
+					if m.raptor != nil {
+						code = wipirt.RaptorClipEndCode
+					}
+					m.wipi.EnqueueCallback(clip.Callback, handle, code)
 				}
 				break
 			}

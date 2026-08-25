@@ -180,7 +180,7 @@ func (b *Backend) RestoreContext(data []byte) error {
 	b.instructionCacheHotValid = false
 	b.invalidateTLB()
 	b.executeData = nil
-	b.dataData = nil
+	clear(b.dataCache[:])
 	b.flags.dirty = false
 	b.mode = mode
 	b.setModeFlag()

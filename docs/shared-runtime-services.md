@@ -183,6 +183,14 @@ pixel layout. Converting every surface to RGBA at creation time would break
 native applications that read or write framebuffer bytes directly. RGBA is
 the presentation format, not necessarily the storage format.
 
+Presentation identity is part of the contract because a driver polls the
+machine once per host tick whether or not the guest drew anything.
+`Graphics.LastFramePresentation` reports the committed frame's sequence and
+content hash without copying the surface, and `Machine.FramePresentation`
+republishes the same immutable image for as long as the content is unchanged.
+`Machine.Framebuffer` still copies on every call and stays the API for a
+caller that needs to own or mutate the pixels.
+
 The adapter owns:
 
 - `MC_GrpFrameBuffer` object layout;
