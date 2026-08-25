@@ -178,6 +178,7 @@ func (b *Backend) RestoreContext(data []byte) error {
 	b.cp15 = restoredCP15
 	b.instructionCache = restoredInstructionCache
 	b.instructionCacheHotValid = false
+	b.refreshPhysicalAccess()
 	b.invalidateTLB()
 	b.executeData = nil
 	clear(b.dataCache[:])

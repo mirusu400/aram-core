@@ -60,19 +60,21 @@ func (b *Backend) cacheData(mapped *region, access cpu.Permissions) {
 }
 
 func (b *Backend) read16(address uint32, permission cpu.Permissions) (uint16, error) {
-	if b.mmuEnabled() {
-		var data [2]byte
-		if err := b.readVirtual(address, data[:], permission); err != nil {
-			return 0, err
+	if b.physicalAccess {
+		if b.mmuEnabled() {
+			var data [2]byte
+			if err := b.readVirtual(address, data[:], permission); err != nil {
+				return 0, err
+			}
+			return binary.LittleEndian.Uint16(data[:]), nil
 		}
-		return binary.LittleEndian.Uint16(data[:]), nil
-	}
-	if b.systemBus != nil {
-		var data [2]byte
-		if err := b.readSystemBus(address, data[:], permission); err != nil {
-			return 0, b.recordExternalAbort(address, permission, err)
+		if b.systemBus != nil {
+			var data [2]byte
+			if err := b.readSystemBus(address, data[:], permission); err != nil {
+				return 0, b.recordExternalAbort(address, permission, err)
+			}
+			return binary.LittleEndian.Uint16(data[:]), nil
 		}
-		return binary.LittleEndian.Uint16(data[:]), nil
 	}
 	if permission == cpu.PermissionExecute {
 		return b.fetch16(address)
@@ -102,19 +104,21 @@ func (b *Backend) read16(address uint32, permission cpu.Permissions) (uint16, er
 }
 
 func (b *Backend) read32(address uint32, permission cpu.Permissions) (uint32, error) {
-	if b.mmuEnabled() {
-		var data [4]byte
-		if err := b.readVirtual(address, data[:], permission); err != nil {
-			return 0, err
+	if b.physicalAccess {
+		if b.mmuEnabled() {
+			var data [4]byte
+			if err := b.readVirtual(address, data[:], permission); err != nil {
+				return 0, err
+			}
+			return binary.LittleEndian.Uint32(data[:]), nil
 		}
-		return binary.LittleEndian.Uint32(data[:]), nil
-	}
-	if b.systemBus != nil {
-		var data [4]byte
-		if err := b.readSystemBus(address, data[:], permission); err != nil {
-			return 0, b.recordExternalAbort(address, permission, err)
+		if b.systemBus != nil {
+			var data [4]byte
+			if err := b.readSystemBus(address, data[:], permission); err != nil {
+				return 0, b.recordExternalAbort(address, permission, err)
+			}
+			return binary.LittleEndian.Uint32(data[:]), nil
 		}
-		return binary.LittleEndian.Uint32(data[:]), nil
 	}
 	if permission == cpu.PermissionExecute {
 		return b.fetch32(address)
@@ -144,26 +148,28 @@ func (b *Backend) read32(address uint32, permission cpu.Permissions) (uint32, er
 }
 
 func (b *Backend) fetch16(address uint32) (uint16, error) {
-	if b.instructionCacheEnabled() {
-		data, err := b.fetchInstructionCache(address, 2)
-		if err != nil {
-			return 0, err
+	if b.physicalAccess {
+		if b.instructionCacheEnabled() {
+			data, err := b.fetchInstructionCache(address, 2)
+			if err != nil {
+				return 0, err
+			}
+			return binary.LittleEndian.Uint16(data), nil
 		}
-		return binary.LittleEndian.Uint16(data), nil
-	}
-	if b.mmuEnabled() {
-		var data [2]byte
-		if err := b.readVirtual(address, data[:], cpu.PermissionExecute); err != nil {
-			return 0, err
+		if b.mmuEnabled() {
+			var data [2]byte
+			if err := b.readVirtual(address, data[:], cpu.PermissionExecute); err != nil {
+				return 0, err
+			}
+			return binary.LittleEndian.Uint16(data[:]), nil
 		}
-		return binary.LittleEndian.Uint16(data[:]), nil
-	}
-	if b.systemBus != nil {
-		var data [2]byte
-		if err := b.readSystemBus(address, data[:], cpu.PermissionExecute); err != nil {
-			return 0, b.recordExternalAbort(address, cpu.PermissionExecute, err)
+		if b.systemBus != nil {
+			var data [2]byte
+			if err := b.readSystemBus(address, data[:], cpu.PermissionExecute); err != nil {
+				return 0, b.recordExternalAbort(address, cpu.PermissionExecute, err)
+			}
+			return binary.LittleEndian.Uint16(data[:]), nil
 		}
-		return binary.LittleEndian.Uint16(data[:]), nil
 	}
 	if address >= b.executeAddress {
 		offset := uint64(address - b.executeAddress)
@@ -191,26 +197,28 @@ func (b *Backend) fetch16(address uint32) (uint16, error) {
 }
 
 func (b *Backend) fetch32(address uint32) (uint32, error) {
-	if b.instructionCacheEnabled() {
-		data, err := b.fetchInstructionCache(address, 4)
-		if err != nil {
-			return 0, err
+	if b.physicalAccess {
+		if b.instructionCacheEnabled() {
+			data, err := b.fetchInstructionCache(address, 4)
+			if err != nil {
+				return 0, err
+			}
+			return binary.LittleEndian.Uint32(data), nil
 		}
-		return binary.LittleEndian.Uint32(data), nil
-	}
-	if b.mmuEnabled() {
-		var data [4]byte
-		if err := b.readVirtual(address, data[:], cpu.PermissionExecute); err != nil {
-			return 0, err
+		if b.mmuEnabled() {
+			var data [4]byte
+			if err := b.readVirtual(address, data[:], cpu.PermissionExecute); err != nil {
+				return 0, err
+			}
+			return binary.LittleEndian.Uint32(data[:]), nil
 		}
-		return binary.LittleEndian.Uint32(data[:]), nil
-	}
-	if b.systemBus != nil {
-		var data [4]byte
-		if err := b.readSystemBus(address, data[:], cpu.PermissionExecute); err != nil {
-			return 0, b.recordExternalAbort(address, cpu.PermissionExecute, err)
+		if b.systemBus != nil {
+			var data [4]byte
+			if err := b.readSystemBus(address, data[:], cpu.PermissionExecute); err != nil {
+				return 0, b.recordExternalAbort(address, cpu.PermissionExecute, err)
+			}
+			return binary.LittleEndian.Uint32(data[:]), nil
 		}
-		return binary.LittleEndian.Uint32(data[:]), nil
 	}
 	if address >= b.executeAddress {
 		offset := uint64(address - b.executeAddress)
@@ -242,16 +250,18 @@ func (b *Backend) fetch32(address uint32) (uint32, error) {
 }
 
 func (b *Backend) write16(address uint32, value uint16, permission cpu.Permissions) error {
-	if b.mmuEnabled() {
-		var data [2]byte
-		binary.LittleEndian.PutUint16(data[:], value)
-		return b.writeVirtual(address, data[:], permission)
-	}
-	if b.systemBus != nil {
-		var data [2]byte
-		binary.LittleEndian.PutUint16(data[:], value)
-		err := b.writeSystemBus(address, data[:], permission)
-		return b.recordExternalAbort(address, permission, err)
+	if b.physicalAccess {
+		if b.mmuEnabled() {
+			var data [2]byte
+			binary.LittleEndian.PutUint16(data[:], value)
+			return b.writeVirtual(address, data[:], permission)
+		}
+		if b.systemBus != nil {
+			var data [2]byte
+			binary.LittleEndian.PutUint16(data[:], value)
+			err := b.writeSystemBus(address, data[:], permission)
+			return b.recordExternalAbort(address, permission, err)
+		}
 	}
 	if data, offset, perms, ok := b.dataHit(address, 2, permission); ok {
 		binary.LittleEndian.PutUint16(data[offset:offset+2], value)
@@ -284,16 +294,18 @@ func (b *Backend) write16(address uint32, value uint16, permission cpu.Permissio
 }
 
 func (b *Backend) write32(address, value uint32, permission cpu.Permissions) error {
-	if b.mmuEnabled() {
-		var data [4]byte
-		binary.LittleEndian.PutUint32(data[:], value)
-		return b.writeVirtual(address, data[:], permission)
-	}
-	if b.systemBus != nil {
-		var data [4]byte
-		binary.LittleEndian.PutUint32(data[:], value)
-		err := b.writeSystemBus(address, data[:], permission)
-		return b.recordExternalAbort(address, permission, err)
+	if b.physicalAccess {
+		if b.mmuEnabled() {
+			var data [4]byte
+			binary.LittleEndian.PutUint32(data[:], value)
+			return b.writeVirtual(address, data[:], permission)
+		}
+		if b.systemBus != nil {
+			var data [4]byte
+			binary.LittleEndian.PutUint32(data[:], value)
+			err := b.writeSystemBus(address, data[:], permission)
+			return b.recordExternalAbort(address, permission, err)
+		}
 	}
 	if data, offset, perms, ok := b.dataHit(address, 4, permission); ok {
 		binary.LittleEndian.PutUint32(data[offset:offset+4], value)
@@ -326,19 +338,21 @@ func (b *Backend) write32(address, value uint32, permission cpu.Permissions) err
 }
 
 func (b *Backend) read8(address uint32, permission cpu.Permissions) (byte, error) {
-	if b.mmuEnabled() {
-		var data [1]byte
-		if err := b.readVirtual(address, data[:], permission); err != nil {
-			return 0, err
+	if b.physicalAccess {
+		if b.mmuEnabled() {
+			var data [1]byte
+			if err := b.readVirtual(address, data[:], permission); err != nil {
+				return 0, err
+			}
+			return data[0], nil
 		}
-		return data[0], nil
-	}
-	if b.systemBus != nil {
-		var data [1]byte
-		if err := b.readSystemBus(address, data[:], permission); err != nil {
-			return 0, b.recordExternalAbort(address, permission, err)
+		if b.systemBus != nil {
+			var data [1]byte
+			if err := b.readSystemBus(address, data[:], permission); err != nil {
+				return 0, b.recordExternalAbort(address, permission, err)
+			}
+			return data[0], nil
 		}
-		return data[0], nil
 	}
 	if data, offset, perms, ok := b.dataHit(address, 1, permission); ok {
 		if b.tlb != nil {
@@ -358,12 +372,14 @@ func (b *Backend) read8(address uint32, permission cpu.Permissions) (byte, error
 }
 
 func (b *Backend) write8(address uint32, value byte, permission cpu.Permissions) error {
-	if b.mmuEnabled() {
-		return b.writeVirtual(address, []byte{value}, permission)
-	}
-	if b.systemBus != nil {
-		err := b.writeSystemBus(address, []byte{value}, permission)
-		return b.recordExternalAbort(address, permission, err)
+	if b.physicalAccess {
+		if b.mmuEnabled() {
+			return b.writeVirtual(address, []byte{value}, permission)
+		}
+		if b.systemBus != nil {
+			err := b.writeSystemBus(address, []byte{value}, permission)
+			return b.recordExternalAbort(address, permission, err)
+		}
 	}
 	if data, offset, perms, ok := b.dataHit(address, 1, permission); ok {
 		data[offset] = value

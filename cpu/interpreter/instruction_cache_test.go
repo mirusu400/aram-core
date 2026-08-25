@@ -24,7 +24,7 @@ func TestARM926InstructionCacheRetainsCodeUntilMVAInvalidation(t *testing.T) {
 		}
 	}
 	writeInstruction(0xe3a00001) // MOV r0, #1
-	backend.cp15.control = 1 << 12
+	backend.setCP15Control(1 << 12)
 	if result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 1); result.Err != nil {
 		t.Fatal(result.Err)
 	}
@@ -62,7 +62,7 @@ func TestARM926CP15PrefetchFillsInstructionCacheBeforeCodeIsOverwritten(t *testi
 	if err := backend.WriteMemory(0x1028, code[:]); err != nil {
 		t.Fatal(err)
 	}
-	backend.cp15.control = 1 << 12
+	backend.setCP15Control(1 << 12)
 	if err := backend.writeCP15(7, 13, 1, 0x1028); err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestARM926CP15PrefetchDoesNotFillUncacheableSection(t *testing.T) {
 	}
 	backend.cp15.translationTableBase = tableBase
 	backend.cp15.domainAccessControl = 3
-	backend.cp15.control = 1 | 1<<12
+	backend.setCP15Control(1 | 1<<12)
 	if err := backend.writeCP15(7, 13, 1, virtualBase); err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestARM926InstructionCacheStateRoundTripPreservesStaleLine(t *testing.T) {
 	if err := backend.WriteMemory(0x1000, code[:]); err != nil {
 		t.Fatal(err)
 	}
-	backend.cp15.control = 1 << 12
+	backend.setCP15Control(1 << 12)
 	if result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 1); result.Err != nil {
 		t.Fatal(result.Err)
 	}
@@ -170,7 +170,7 @@ func TestARM926InstructionCacheHonorsSectionCacheability(t *testing.T) {
 	}
 	backend.cp15.translationTableBase = tableBase
 	backend.cp15.domainAccessControl = 3
-	backend.cp15.control = 1 | 1<<12
+	backend.setCP15Control(1 | 1<<12)
 	if result := backend.Run(context.Background(), virtualBase, cpu.ModeARM, 1); result.Err != nil {
 		t.Fatal(result.Err)
 	}

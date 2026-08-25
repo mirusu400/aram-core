@@ -26,7 +26,7 @@ func TestMMUSectionTranslatesInstructionAndDataAccesses(t *testing.T) {
 	}
 	backend.cp15.translationTableBase = tableBase
 	backend.cp15.domainAccessControl = 1 << (domain * 2) // client
-	backend.cp15.control = 1
+	backend.setCP15Control(1)
 	result := backend.Run(context.Background(), virtualBase+0x1000, cpu.ModeARM, 1)
 	if result.Err != nil || result.Instructions != 1 || register(t, backend, cpu.RegisterR0) != 42 {
 		t.Fatalf("section execution result = %+v r0=%d", result, register(t, backend, cpu.RegisterR0))
@@ -72,7 +72,7 @@ func TestMMUCoarseSmallPageChecksDomainAndSubpagePermissions(t *testing.T) {
 	}
 	backend.cp15.translationTableBase = tableBase
 	backend.cp15.domainAccessControl = 1 << (domain * 2) // client
-	backend.cp15.control = 1
+	backend.setCP15Control(1)
 	backend.regs[cpu.RegisterCPSR] = uint32(processorModeUser)
 	value, err := backend.read32(virtual, cpu.PermissionRead)
 	if err != nil || value != 0x55667788 {
@@ -117,7 +117,7 @@ func TestMMUFineTableTranslatesTinyPage(t *testing.T) {
 	}
 	backend.cp15.translationTableBase = tableBase
 	backend.cp15.domainAccessControl = 1 << (domain * 2)
-	backend.cp15.control = 1
+	backend.setCP15Control(1)
 	value, err := backend.read32(virtual, cpu.PermissionRead)
 	if err != nil || value != 0x89abcdef {
 		t.Fatalf("tiny-page read = %#x error %v", value, err)
@@ -143,7 +143,7 @@ func TestMMULargePageSelectsSubpageAccessPermission(t *testing.T) {
 	}
 	backend.cp15.translationTableBase = tableBase
 	backend.cp15.domainAccessControl = 1
-	backend.cp15.control = 1
+	backend.setCP15Control(1)
 	backend.regs[cpu.RegisterCPSR] = uint32(processorModeUser)
 	value, err := backend.read32(virtual, cpu.PermissionRead)
 	if err != nil || value != 0x13579bdf {
@@ -161,7 +161,7 @@ func TestMMUTranslationFaultUpdatesInstructionFaultState(t *testing.T) {
 		t.Fatal(err)
 	}
 	backend.cp15.translationTableBase = 0x4000
-	backend.cp15.control = 1
+	backend.setCP15Control(1)
 	_, err := backend.fetch32(0x90000000)
 	if !errors.Is(err, ErrMMUTranslationFault) {
 		t.Fatalf("instruction translation error = %v", err)
@@ -192,7 +192,7 @@ func TestMMUTLBRetainsTranslationUntilInvalidated(t *testing.T) {
 	}
 	backend.cp15.translationTableBase = tableBase
 	backend.cp15.domainAccessControl = 3 // domain 0 manager
-	backend.cp15.control = 1
+	backend.setCP15Control(1)
 	value, err := backend.read32(virtual, cpu.PermissionRead)
 	if err != nil || value != 1 {
 		t.Fatalf("initial TLB read = %d error %v", value, err)
@@ -229,7 +229,7 @@ func TestMMUFCSEProcessIDModifiesLowVirtualAddresses(t *testing.T) {
 	backend.cp15.translationTableBase = tableBase
 	backend.cp15.domainAccessControl = 3
 	backend.cp15.processID = processID
-	backend.cp15.control = 1
+	backend.setCP15Control(1)
 	value, err := backend.read32(virtual, cpu.PermissionRead)
 	if err != nil || value != 0x12345678 {
 		t.Fatalf("FCSE read = %#x error %v", value, err)

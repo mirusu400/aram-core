@@ -13,20 +13,55 @@ import (
 // corpus, so it keeps the per-instruction stepARM call; batching still amortizes
 // the outer cancellation poll. It returns the number of instructions retired.
 func (b *Backend) runARM(limit uint64) (uint64, *cpu.StopReason, error) {
+	if b.systemBus != nil || b.tracing() {
+		return b.runARMInstrumented(limit)
+	}
+	// ARM has no translated-block path behind it -- the Go and native JITs are
+	// Thumb-only -- so an application batch runs every instruction through this
+	// loop and nothing that only a phone or a diagnostic needs belongs in it.
 	var executed uint64
 	for executed < limit && b.mode == cpu.ModeARM {
-		if b.takePendingInterrupt() {
-			continue
+		reason, err := b.stepARM()
+		if err != nil {
+			return executed, nil, err
 		}
-		if b.executionTrapAt(cpu.ModeARM, b.regs[cpu.RegisterPC]) {
-			reason := cpu.StopExecutionTrap
-			return executed, &reason, nil
+		executed++
+		if reason != nil {
+			return executed, reason, nil
 		}
-		b.recordPC(b.regs[cpu.RegisterPC])
+	}
+	return executed, nil, nil
+}
+
+// runARMInstrumented retires ARM for a whole-system machine or a traced batch.
+// It checks the asynchronous interrupt inputs and host-owned execution traps
+// between instructions, attributes each physical access to the instruction
+// that caused it, and delivers an MMU abort to the guest. Whether any of that
+// applies is fixed for the batch: no setter can run while this loop holds the
+// backend mutex.
+func (b *Backend) runARMInstrumented(limit uint64) (uint64, *cpu.StopReason, error) {
+	wholeSystem := b.systemBus != nil
+	traced := b.tracing()
+	var executed uint64
+	for executed < limit && b.mode == cpu.ModeARM {
+		if wholeSystem {
+			if b.takePendingInterrupt() {
+				continue
+			}
+			if b.executionTrapAt(cpu.ModeARM, b.regs[cpu.RegisterPC]) {
+				reason := cpu.StopExecutionTrap
+				return executed, &reason, nil
+			}
+		}
+		if traced {
+			b.recordPC(b.regs[cpu.RegisterPC])
+		}
 		pc := b.regs[cpu.RegisterPC]
-		b.accessContext = cpu.MemoryAccessContext{
-			InstructionAddress: pc, LinkAddress: b.regs[cpu.RegisterLR],
-			StackAddress: b.regs[cpu.RegisterSP], Mode: cpu.ModeARM, Attributed: true,
+		if wholeSystem {
+			b.accessContext = cpu.MemoryAccessContext{
+				InstructionAddress: pc, LinkAddress: b.regs[cpu.RegisterLR],
+				StackAddress: b.regs[cpu.RegisterSP], Mode: cpu.ModeARM, Attributed: true,
+			}
 		}
 		reason, err := b.stepARM()
 		if err != nil {
@@ -47,7 +82,10 @@ func (b *Backend) stepARM() (*cpu.StopReason, error) {
 	pc := b.regs[cpu.RegisterPC]
 	var instruction uint32
 	var err error
-	if !b.mmuEnabled() && pc >= b.executeAddress {
+	// executeData is only ever filled from a private mapping and Map is refused
+	// once a bus is attached, so a whole-system machine misses this fast path
+	// on its own and needs no test of its own here.
+	if pc >= b.executeAddress {
 		offset := uint64(pc - b.executeAddress)
 		if offset+4 <= uint64(len(b.executeData)) {
 			index := int(offset)
@@ -74,44 +112,6 @@ func (b *Backend) stepARM() (*cpu.StopReason, error) {
 	case instruction&0x0ff000f0 == 0x01200070: // BKPT
 		reason := cpu.StopBreakpoint
 		return &reason, nil
-
-	case instruction&0x0fbf0fff == 0x010f0000: // MRS Rd, CPSR/SPSR
-		rd := uint32(instruction>>12) & 0xf
-		if rd == cpu.RegisterPC {
-			return nil, b.unsupportedARM(pc, instruction)
-		}
-		value, statusErr := b.readProgramStatus(instruction&(1<<22) != 0)
-		if statusErr != nil {
-			return nil, fmt.Errorf("ARM MRS at 0x%08x: %w", pc, statusErr)
-		}
-		b.regs[rd] = value
-		return nil, nil
-
-	case instruction&0x0fb0fff0 == 0x0120f000: // MSR CPSR/SPSR_fields, Rm
-		rm := uint32(instruction) & 0xf
-		if rm == cpu.RegisterPC {
-			return nil, b.unsupportedARM(pc, instruction)
-		}
-		if statusErr := b.writeProgramStatus(
-			instruction&(1<<22) != 0,
-			uint32(instruction>>16)&0xf,
-			b.regs[rm],
-		); statusErr != nil {
-			return nil, fmt.Errorf("ARM MSR at 0x%08x: %w", pc, statusErr)
-		}
-		return nil, nil
-
-	case instruction&0x0fb0f000 == 0x0320f000: // MSR CPSR/SPSR_fields, #imm
-		rotate := int((instruction >> 8 & 0xf) * 2)
-		value := bits.RotateLeft32(uint32(instruction&0xff), -rotate)
-		if statusErr := b.writeProgramStatus(
-			instruction&(1<<22) != 0,
-			uint32(instruction>>16)&0xf,
-			value,
-		); statusErr != nil {
-			return nil, fmt.Errorf("ARM MSR at 0x%08x: %w", pc, statusErr)
-		}
-		return nil, nil
 
 	case instruction&0x0ffffff0 == 0x012fff10: // BX Rm
 		b.branchExchange(b.readOperandRegister(instruction&0xf, pc, cpu.ModeARM))
@@ -330,6 +330,55 @@ func (b *Backend) stepARM() (*cpu.StopReason, error) {
 		}
 		return nil, nil
 
+	// PSR transfers occupy the data-processing opcode space 10xx with S clear,
+	// so they only have to be decoded ahead of data processing itself. Testing
+	// them here instead of at the top of the chain keeps three mask compares
+	// off every branch, coprocessor transfer, multiply, and halfword access.
+	case instruction&0x0fbf0fff == 0x010f0000: // MRS Rd, CPSR/SPSR
+		rd := uint32(instruction>>12) & 0xf
+		if rd == cpu.RegisterPC {
+			return nil, b.unsupportedARM(pc, instruction)
+		}
+		value, statusErr := b.readProgramStatus(instruction&(1<<22) != 0)
+		if statusErr != nil {
+			return nil, fmt.Errorf("ARM MRS at 0x%08x: %w", pc, statusErr)
+		}
+		b.regs[rd] = value
+		return nil, nil
+
+	case instruction&0x0fb0fff0 == 0x0120f000: // MSR CPSR/SPSR_fields, Rm
+		rm := uint32(instruction) & 0xf
+		saved := instruction&(1<<22) != 0
+		fields := uint32(instruction>>16) & 0xf
+		if rm == cpu.RegisterPC || !b.programStatusWriteAllowed(saved, fields) {
+			return nil, b.unsupportedARM(pc, instruction)
+		}
+		if statusErr := b.writeProgramStatus(
+			saved,
+			fields,
+			b.regs[rm],
+		); statusErr != nil {
+			return nil, fmt.Errorf("ARM MSR at 0x%08x: %w", pc, statusErr)
+		}
+		return nil, nil
+
+	case instruction&0x0fb0f000 == 0x0320f000: // MSR CPSR/SPSR_fields, #imm
+		rotate := int((instruction >> 8 & 0xf) * 2)
+		value := bits.RotateLeft32(uint32(instruction&0xff), -rotate)
+		saved := instruction&(1<<22) != 0
+		fields := uint32(instruction>>16) & 0xf
+		if !b.programStatusWriteAllowed(saved, fields) {
+			return nil, b.unsupportedARM(pc, instruction)
+		}
+		if statusErr := b.writeProgramStatus(
+			saved,
+			fields,
+			value,
+		); statusErr != nil {
+			return nil, fmt.Errorf("ARM MSR at 0x%08x: %w", pc, statusErr)
+		}
+		return nil, nil
+
 	case instruction&0x0c000000 == 0x00000000: // data processing
 		immediate := instruction&(1<<25) != 0
 		opcode := uint8(instruction >> 21 & 0xf)
@@ -462,23 +511,31 @@ func (b *Backend) stepARM() (*cpu.StopReason, error) {
 		default:
 			return nil, b.unsupportedARM(pc, instruction)
 		}
-		exceptionReturn := writeResult && rd == cpu.RegisterPC && setFlags
-		if exceptionReturn {
-			status := b.savedStatus(b.currentProcessorMode())
-			if status == nil {
-				return nil, b.unsupportedARM(pc, instruction)
-			}
-			if statusErr := b.writeProgramStatus(false, 0xf, *status); statusErr != nil {
-				return nil, fmt.Errorf("ARM data-processing exception return at 0x%08x: %w", pc, statusErr)
-			}
-			if b.mode == cpu.ModeThumb {
-				b.regs[cpu.RegisterPC] = result &^ 1
-			} else {
-				b.regs[cpu.RegisterPC] = result &^ 3
-			}
-		} else if writeResult {
+		exceptionReturn := false
+		if writeResult {
 			if rd == cpu.RegisterPC {
-				b.regs[rd] = result &^ 3
+				// A write to PC with S set is an exception return only where an
+				// SPSR exists to return through. In User/System mode -- which
+				// is where every application guest runs -- it stays an ordinary
+				// flag-setting branch, as it was before whole-system support
+				// landed. Keeping the whole question behind the PC test leaves
+				// an ordinary destination register on the path it always had.
+				var status *uint32
+				if setFlags {
+					status = b.savedStatus(b.currentProcessorMode())
+				}
+				if status != nil {
+					exceptionReturn = true
+					if statusErr := b.writeProgramStatus(false, 0xf, *status); statusErr != nil {
+						return nil, fmt.Errorf(
+							"ARM data-processing exception return at 0x%08x: %w", pc, statusErr)
+					}
+				}
+				if b.mode == cpu.ModeThumb {
+					b.regs[cpu.RegisterPC] = result &^ 1
+				} else {
+					b.regs[cpu.RegisterPC] = result &^ 3
+				}
 			} else {
 				b.regs[rd] = result
 			}
