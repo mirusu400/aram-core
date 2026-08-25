@@ -73,9 +73,44 @@ func (r *Runtime) ResetScreenGraphics(instance uint32) {
 	if state == nil {
 		return
 	}
-	state.clip = state.Target.Bounds()
+	bounds := state.Target.Bounds()
+	origin := image.Pt(bounds.Min.X, bounds.Min.Y+int(r.CardOriginY()))
+	card := image.Rect(
+		origin.X,
+		origin.Y,
+		bounds.Max.X,
+		origin.Y+int(r.DefaultCardHeight()),
+	).Intersect(bounds)
+	if state.origin != origin {
+		// A title that paints before showing its annunciator has already put
+		// pixels where the card no longer reaches. Nothing clips into that
+		// strip again, so it would keep a frozen slice of an older frame.
+		clearOutside(state.Target, card)
+		state.origin = origin
+		state.PixelsDirty = true
+	}
+	state.surface = card
+	state.clip = card
 	state.translate = image.Point{}
 	state.color = color.RGBA{A: 0xff}
+}
+
+// clearOutside blacks out every part of target that falls outside inside.
+func clearOutside(target draw.Image, inside image.Rectangle) {
+	bounds := target.Bounds()
+	black := image.NewUniform(color.RGBA{A: 0xff})
+	for _, region := range []image.Rectangle{
+		image.Rect(bounds.Min.X, bounds.Min.Y, bounds.Max.X, inside.Min.Y),
+		image.Rect(bounds.Min.X, inside.Max.Y, bounds.Max.X, bounds.Max.Y),
+		image.Rect(bounds.Min.X, inside.Min.Y, inside.Min.X, inside.Max.Y),
+		image.Rect(inside.Max.X, inside.Min.Y, bounds.Max.X, inside.Max.Y),
+	} {
+		region = region.Intersect(bounds)
+		if region.Empty() {
+			continue
+		}
+		draw.Draw(target, region, black, image.Point{}, draw.Src)
+	}
 }
 
 func (r *Runtime) syncKTFGraphics(instance uint32) error {
@@ -110,8 +145,8 @@ func (r *Runtime) syncKTFGraphics(instance uint32) error {
 		}
 		state.PixelsDirty = false
 	}
-	if state.translate.X < -(1<<31) || state.translate.X > 1<<31-1 ||
-		state.translate.Y < -(1<<31) || state.translate.Y > 1<<31-1 {
+	if state.offset().X < -(1<<31) || state.offset().X > 1<<31-1 ||
+		state.offset().Y < -(1<<31) || state.offset().Y > 1<<31-1 {
 		return fmt.Errorf("KTF graphics translation overflows service state")
 	}
 	return r.Services.Graphics.SetDrawState(
@@ -124,8 +159,8 @@ func (r *Runtime) syncKTFGraphics(instance uint32) error {
 				Width:  int32(state.clip.Dx()),
 				Height: int32(state.clip.Dy()),
 			},
-			TranslateX:  int32(state.translate.X),
-			TranslateY:  int32(state.translate.Y),
+			TranslateX:  int32(state.offset().X),
+			TranslateY:  int32(state.offset().Y),
 			Raster:      shared.RasterCopy,
 			GlobalAlpha: state.color.A,
 		},
@@ -147,11 +182,12 @@ func (r *Runtime) handleGraphicsMethod(
 			if r.frame == nil {
 				r.frame = image.NewRGBA(image.Rect(0, 0, 240, 320))
 			}
-			r.Graphics[instance] = &ktfGraphics{
-				Target: r.frame,
-				clip:   r.frame.Bounds(),
-				color:  color.RGBA{A: 0xff},
-			}
+			// A Graphics built from the Display draws the same card the
+			// screen Graphics does, so it has to sit below the annunciator
+			// too; leaving it at the framebuffer origin let a title paint
+			// over the strip the card no longer owns.
+			r.Graphics[instance] = &ktfGraphics{Target: r.frame}
+			r.ResetScreenGraphics(instance)
 			screen, screenErr := r.EnsureScreenGraphics()
 			if screenErr != nil {
 				return 0, screenErr
@@ -275,10 +311,10 @@ func (r *Runtime) handleGraphicsMethod(
 		}
 		r.drawGraphicsLine(
 			state,
-			x1+state.translate.X,
-			y1+state.translate.Y,
-			x2+state.translate.X,
-			y2+state.translate.Y,
+			x1+state.offset().X,
+			y1+state.offset().Y,
+			x2+state.offset().X,
+			y2+state.offset().Y,
 		)
 		state.PixelsDirty = true
 		return 0, nil
@@ -388,7 +424,7 @@ func (r *Runtime) handleGraphicsMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		state.clip = rect.Intersect(state.Target.Bounds())
+		state.clip = rect.Intersect(state.drawable())
 		return 0, nil
 	case "clipRect(IIII)V":
 		if state == nil {
@@ -398,7 +434,7 @@ func (r *Runtime) handleGraphicsMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		state.clip = state.clip.Intersect(rect)
+		state.clip = state.clip.Intersect(rect).Intersect(state.drawable())
 		return 0, nil
 	case "getColor()I":
 		if state == nil {
@@ -446,7 +482,7 @@ func (r *Runtime) handleGraphicsMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		point := image.Pt(x+state.translate.X, y+state.translate.Y)
+		point := image.Pt(x+state.offset().X, y+state.offset().Y)
 		if !point.In(state.Target.Bounds()) {
 			return 0, nil
 		}
@@ -460,12 +496,12 @@ func (r *Runtime) handleGraphicsMethod(
 		if state == nil {
 			return 0, nil
 		}
-		return uint32(int32(state.clip.Min.X - state.translate.X)), nil
+		return uint32(int32(state.clip.Min.X - state.offset().X)), nil
 	case "getClipY()I":
 		if state == nil {
 			return 0, nil
 		}
-		return uint32(int32(state.clip.Min.Y - state.translate.Y)), nil
+		return uint32(int32(state.clip.Min.Y - state.offset().Y)), nil
 	case "getClipWidth()I":
 		if state == nil {
 			return 0, nil
@@ -512,7 +548,7 @@ func (r *Runtime) handleGraphicsMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		point := image.Pt(x+state.translate.X, y+state.translate.Y)
+		point := image.Pt(x+state.offset().X, y+state.offset().Y)
 		if point.In(state.clip) {
 			state.plot(point.X, point.Y)
 			state.PixelsDirty = true
@@ -683,8 +719,8 @@ func (r *Runtime) drawGraphicsText(
 	case anchor&64 != 0:
 		y -= 10
 	}
-	x += state.translate.X
-	y += state.translate.Y
+	x += state.offset().X
+	y += state.offset().Y
 	for _, character := range runes {
 		rows := ktfBasicGlyph(character)
 		for row, bits := range rows {
@@ -828,10 +864,10 @@ func (r *Runtime) setGraphicsRGBPixels(state *ktfGraphics) error {
 		return nil
 	}
 	destination := image.Rect(
-		x+state.translate.X,
-		y+state.translate.Y,
-		x+state.translate.X+width,
-		y+state.translate.Y+height,
+		x+state.offset().X,
+		y+state.offset().Y,
+		x+state.offset().X+width,
+		y+state.offset().Y+height,
 	)
 	if !destination.In(state.Target.Bounds()) {
 		return r.raiseHostJavaException("java/lang/IllegalArgumentException")
@@ -929,10 +965,10 @@ func (r *Runtime) getGraphicsRGBPixels(state *ktfGraphics) error {
 		return nil
 	}
 	source := image.Rect(
-		x+state.translate.X,
-		y+state.translate.Y,
-		x+state.translate.X+width,
-		y+state.translate.Y+height,
+		x+state.offset().X,
+		y+state.offset().Y,
+		x+state.offset().X+width,
+		y+state.offset().Y+height,
 	)
 	if !source.In(state.Target.Bounds()) {
 		return r.raiseHostJavaException("java/lang/IllegalArgumentException")
@@ -1064,8 +1100,8 @@ func (r *Runtime) encodeGraphicsImage(
 			"java/lang/IllegalArgumentException",
 		)
 	}
-	x += state.translate.X
-	y += state.translate.Y
+	x += state.offset().X
+	y += state.offset().Y
 	region := image.Rect(x, y, x+width, y+height)
 	if !region.In(state.Target.Bounds()) {
 		return 0, r.raiseHostJavaException(
@@ -1166,9 +1202,9 @@ func (r *Runtime) copyGraphicsPixelsToByteArray(
 	for rowIndex := 0; rowIndex < height; rowIndex++ {
 		clear(row)
 		if state != nil {
-			sourceY := y + rowIndex + state.translate.Y
+			sourceY := y + rowIndex + state.offset().Y
 			for column := 0; column < width; column++ {
-				sourceX := x + column + state.translate.X
+				sourceX := x + column + state.offset().X
 				point := image.Pt(sourceX, sourceY)
 				if !point.In(state.Target.Bounds()) {
 					continue
@@ -1217,8 +1253,8 @@ func (r *Runtime) graphicsRectangle(
 	if err != nil {
 		return image.Rectangle{}, err
 	}
-	x += state.translate.X
-	y += state.translate.Y
+	x += state.offset().X
+	y += state.offset().Y
 	return image.Rect(x, y, x+width, y+height), nil
 }
 

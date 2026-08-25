@@ -1134,6 +1134,70 @@ func (r *Runtime) hasRunnableTask() bool {
 	return false
 }
 
+// HasRunnableTask reports whether any task can execute at the current mirrored
+// tick. The machine driver uses it to tell "the guest is busy" apart from "the
+// guest is waiting for its next timer deadline", because only the second case
+// may move the clock forward inside a presentation quantum.
+func (r *Runtime) HasRunnableTask() bool {
+	return r.hasRunnableTask()
+}
+
+// NextWakeWithin reports how much guest time has to pass before a sleeping task
+// becomes runnable, when that happens no later than limit. ok is false when no
+// task wakes inside the window.
+//
+// A KTF title paces itself by polling System.currentTimeMillis and sleeping in
+// short steps. The mirrored tick only moved once per presentation quantum, so
+// every such wait was rounded up to a whole 16.667 ms quantum and settings that
+// ask for 40 ms and 50 ms frames produced exactly the same frame rate. Reporting
+// the next deadline lets the driver stop the clock on it instead.
+func (r *Runtime) NextWakeWithin(limit time.Duration) (time.Duration, bool) {
+	if limit <= 0 {
+		return 0, false
+	}
+	limitMS := uint64(limit / time.Millisecond)
+	if limitMS == 0 {
+		return 0, false
+	}
+	best := uint64(0)
+	found := false
+	for _, task := range r.Tasks {
+		if task == nil || task.Done || task.startBlocker != nil {
+			continue
+		}
+		// A zero deadline is a running task and the maximum is a task parked
+		// until something other than the clock releases it.
+		if task.WakeAtMS == 0 || task.WakeAtMS == ^uint64(0) {
+			continue
+		}
+		if task.WakeAtMS <= r.TickMS {
+			continue
+		}
+		delta := task.WakeAtMS - r.TickMS
+		if delta > limitMS {
+			continue
+		}
+		if !found || delta < best {
+			best = delta
+			found = true
+		}
+	}
+	if !found {
+		return 0, false
+	}
+	return time.Duration(best) * time.Millisecond, true
+}
+
+// TraceQuantumStep records one sub-quantum clock advance so a pacing question
+// can be answered from a debug snapshot rather than a rebuild.
+func (r *Runtime) TraceQuantumStep(step time.Duration) {
+	r.tracef(
+		"ktf_quantum_step:advance_ms=%d:tick_ms=%d",
+		step/time.Millisecond,
+		r.TickMS,
+	)
+}
+
 func (r *Runtime) hasLiveTask() bool {
 	for _, task := range r.Tasks {
 		if task != nil && !task.Done {

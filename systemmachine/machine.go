@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -37,6 +38,16 @@ var (
 	ErrUnsupportedMachine = errors.New("recognized firmware has no system machine")
 )
 
+// CPUBackendMode selects one of the portable interpreter execution tiers.
+// An explicitly supplied Options.Backend remains available for research and
+// third-party cores.
+type CPUBackendMode string
+
+const (
+	CPUBackendPrecise CPUBackendMode = "precise"
+	CPUBackendJIT     CPUBackendMode = "jit"
+)
+
 // Identity contains only stable, privacy-safe machine selection facts.
 type Identity struct {
 	Manufacturer    string
@@ -49,11 +60,12 @@ type Identity struct {
 }
 
 // Options customizes construction without changing board facts. A nil Backend
-// selects the portable interpreter. The constructed Machine owns and closes a
-// supplied backend. Media, when supplied, is restored before the first
-// instruction executes.
+// selects BackendMode, with an empty mode retaining the precise interpreter.
+// The constructed Machine owns and closes a supplied backend. Media, when
+// supplied, is restored before the first instruction executes.
 type Options struct {
 	Backend       cpu.Backend
+	BackendMode   CPUBackendMode
 	RunnerQuantum uint64
 	Media         *MediaState
 }
@@ -246,8 +258,14 @@ func newSamsungQualcommMachine(
 	backend := options.Backend
 	ownedBackend := false
 	if backend == nil {
-		backend = interpreter.New()
+		var backendErr error
+		backend, backendErr = newInterpreterBackend(options.BackendMode)
+		if backendErr != nil {
+			return nil, backendErr
+		}
 		ownedBackend = true
+	} else if options.BackendMode != "" {
+		return nil, errors.New("system machine options cannot select both Backend and BackendMode")
 	}
 	fail := func(constructionErr error) (*Machine, error) {
 		if ownedBackend {
@@ -440,6 +458,17 @@ func newSamsungQualcommMachine(
 		}
 	}
 	return machine, nil
+}
+
+func newInterpreterBackend(mode CPUBackendMode) (cpu.Backend, error) {
+	switch mode {
+	case "", CPUBackendPrecise:
+		return interpreter.New(), nil
+	case CPUBackendJIT:
+		return interpreter.NewJIT(), nil
+	default:
+		return nil, fmt.Errorf("%w: CPU backend mode %q", ErrUnsupportedBackend, mode)
+	}
 }
 
 func requireSystemBackend(backend cpu.Backend) error {
@@ -854,7 +883,7 @@ func (m *Machine) LoadSnapshot(snapshot Snapshot) error {
 		snapshot.FirmwareBuildID != m.identity.FirmwareBuildID ||
 		snapshot.BoardID != m.identity.BoardID ||
 		snapshot.PlatformID != m.identity.PlatformID ||
-		snapshot.CPUIdentity != m.identity.CPU ||
+		!compatibleCPUContextIdentity(snapshot.CPUIdentity, m.identity.CPU) ||
 		len(snapshot.CPU) == 0 || len(snapshot.Bus) == 0 || len(snapshot.Flash) == 0 {
 		return ErrIncompatibleState
 	}
@@ -903,6 +932,16 @@ func (m *Machine) LoadSnapshot(snapshot Snapshot) error {
 		m.bootBoundaryLeft = m.bootBoundary.instructions - snapshot.Instructions
 	}
 	return nil
+}
+
+func compatibleCPUContextIdentity(saved, active cpu.Identity) bool {
+	if saved == active {
+		return true
+	}
+	return saved.Architecture == active.Architecture &&
+		saved.Version == active.Version &&
+		strings.HasPrefix(saved.Name, interpreter.BackendName) &&
+		strings.HasPrefix(active.Name, interpreter.BackendName)
 }
 
 func (m *Machine) Close() error {

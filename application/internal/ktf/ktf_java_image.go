@@ -531,6 +531,19 @@ func (r *Runtime) newJavaEncodedImage(data []byte) (uint32, error) {
 func ktfRGBABytes(source image.Image) []byte {
 	bounds := source.Bounds()
 	pixels := make([]byte, bounds.Dx()*bounds.Dy()*4)
+	if rgba, ok := source.(*image.RGBA); ok {
+		// An image.RGBA already holds exactly these premultiplied bytes, so
+		// the rows copy straight out. The generic path below reaches every
+		// pixel through color.Color, which boxes an interface value per pixel
+		// and was 5% of a frame on a title that decodes sprites while it runs.
+		stride := bounds.Dx() * 4
+		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+			start := rgba.PixOffset(bounds.Min.X, y)
+			row := (y - bounds.Min.Y) * stride
+			copy(pixels[row:row+stride], rgba.Pix[start:start+stride])
+		}
+		return pixels
+	}
 	offset := 0
 	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
 		for x := bounds.Min.X; x < bounds.Max.X; x++ {
@@ -612,7 +625,7 @@ func (r *Runtime) drawKTFJavaImageRaw(
 	} else if anchor&2 != 0 {
 		y -= source.Bounds().Dy() / 2
 	}
-	point := image.Pt(x+state.translate.X, y+state.translate.Y)
+	point := image.Pt(x+state.offset().X, y+state.offset().Y)
 	targetRect := source.Bounds().Add(point.Sub(source.Bounds().Min))
 	clippedRect := targetRect.Intersect(state.clip)
 	sourcePoint := source.Bounds().Min.Add(

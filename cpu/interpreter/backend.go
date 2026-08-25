@@ -48,6 +48,14 @@ type PCRegisterCapture struct {
 	Registers [17]uint32
 }
 
+// dataRegionCache is one entry of the per-permission data fast path. Empty data
+// means the slot is cold.
+type dataRegionCache struct {
+	address uint32
+	perms   cpu.Permissions
+	data    []byte
+}
+
 // Backend is a bounds-checked ARMv5TE interpreter. It currently implements
 // the ARM/Thumb control-flow and integer instructions needed by the first
 // application-entry milestone; unsupported encodings produce a precise fault.
@@ -57,20 +65,21 @@ type Backend struct {
 	regionHints    [8]int
 	executeAddress uint32
 	executeData    []byte
-	// dataData caches the most recently accessed data region so repeated
-	// reads/writes with locality (stack frames, a struct, a framebuffer row)
-	// skip the sorted findRegion lookup, mirroring the executeData fetch
-	// cache. It is a value copy of the region's slice/address/permissions and
-	// stays valid across region re-sorts (regions never overlap and their
-	// backing arrays are stable); it is invalidated wherever executeData is.
-	dataAddress     uint32
-	dataPermissions cpu.Permissions
-	dataData        []byte
-	regs            [17]uint32
-	banks           bankedRegisters
-	spsr            savedProgramStatus
-	cp15            cp15State
-	tlb             map[uint32]mmuTranslation
+	// dataCache caches the most recently accessed data region per access
+	// permission, so a routine that reads one region and writes another - a
+	// software blitter reading source pixels and writing the framebuffer, the
+	// dominant cost of a heavy frame - keeps BOTH on the fast path instead of
+	// thrashing one slot and paying findRegion on every access. Indexed by the
+	// access permission bit (Read=1, Write=2, Execute=4). Each entry is a value
+	// copy of the region's slice/address/permissions and stays valid across
+	// region re-sorts (regions never overlap and their backing arrays are
+	// stable); it is invalidated wherever executeData is.
+	dataCache [8]dataRegionCache
+	regs      [17]uint32
+	banks     bankedRegisters
+	spsr      savedProgramStatus
+	cp15      cp15State
+	mmuTLB    map[uint32]mmuTranslation
 	// flags holds condition N/Z/C/V lazily: setNZCV records the defining
 	// operation here instead of writing CPSR, and resolveFlags materializes it
 	// only when a reader actually needs the bits. See pendingFlags.
@@ -100,10 +109,92 @@ type Backend struct {
 	instructionCacheHot            instructionCacheLine
 	instructionCacheHotMVA         uint32
 	instructionCacheHotValid       bool
+	// jitBlocks is the translated-block cache of the optional pure-Go dynamic
+	// recompiler (see jit.go). Nil keeps the precise tree-walking path; non-nil
+	// enables the JIT for Thumb, falling back to the interpreter per instruction
+	// for anything it does not translate. It is invalidated on Map/Close and on
+	// a guest write into an executable region (self-modifying code).
+	jitBlocks map[uint32]*jitBlock
+	// jitCache is a direct-mapped front for jitBlocks: hot loops dispatch the
+	// same few blocks repeatedly, so caching (pc -> block) in a fixed array
+	// skips the map hash+lookup that otherwise dominates block dispatch. jitGen
+	// is bumped on every invalidation of jitBlocks; an entry whose gen no longer
+	// matches is treated as a miss, so the cache never returns a stale block
+	// without touching the array on the (rare) invalidation path.
+	jitCache []jitCacheEntry
+	jitGen   uint64
+	// jitCodeLo/jitCodeHi bound the guest-address span of every translated
+	// block. smcInvalidate uses them to invalidate only on a write that
+	// overlaps translated code, not on the blitter's ordinary framebuffer
+	// writes into the same read-write-execute region. Empty span is
+	// (^uint32(0), 0), which no write overlaps.
+	jitCodeLo uint32
+	jitCodeHi uint32
+	// nativeBlocks and nativeArena drive the optional native machine-code JIT
+	// (see native_common.go and the per-host native_*.go emitters). Non-nil
+	// nativeBlocks enables it for Thumb, translating straight runs into host
+	// code held in nativeArena and falling back to the interpreter for memory,
+	// ARM, and untranslated instructions. Like jitBlocks it is invalidated on
+	// Map/Close and on a self-modifying write. jitBlocks and nativeBlocks are
+	// mutually exclusive: a backend is the pure-Go JIT or the native JIT, never
+	// both.
+	nativeBlocks map[uint32]*nativeBlock
+	nativeArena  *codeArena
+	// nativeCodeLo/nativeCodeHi bound the guest-address span of every
+	// translated native block, exactly as jitCodeLo/jitCodeHi do for the
+	// pure-Go JIT. KTF/WIPI map the guest image read-write-execute, so without
+	// the span every framebuffer store the guest blitter makes would look like
+	// self-modifying code and flush the whole translation cache. Empty span is
+	// (^uint32(0), 0), which no write overlaps.
+	nativeCodeLo uint32
+	nativeCodeHi uint32
+	// nativeCache is the direct-mapped dispatch front for nativeBlocks, the
+	// native counterpart of jitCache. Real Thumb ends a translated block every
+	// few instructions, so a title dispatches blocks hundreds of thousands of
+	// times per frame and the map hash dominated dispatch. nativeGen is bumped
+	// on invalidation so stale entries miss without walking the array.
+	nativeCache *[nativeCacheSize]nativeCacheEntry
+	nativeGen   uint64
+	// nativeCodePages marks, one bit per 4 KiB guest page, the pages that hold
+	// translated code. The lo/hi span above is only a hull: KTF/WIPI titles run
+	// from a read-write-execute image and allocate their heap and framebuffer
+	// inside it, so the hull covers ordinary data and every pixel write looked
+	// like self-modifying code - which flushed and re-translated the whole
+	// cache several times a frame. The bitmap is the precise test.
+	nativeCodePages []uint64
+	// tlb is the native JIT's software translation-lookaside buffer (see
+	// native_tlb.go): the page table translated blocks probe inline so a guest
+	// load/store is a few host instructions instead of a call back into Go. It
+	// is non-nil exactly when the native JIT is active; the interpreter's memory
+	// path fills it, which is also how a native bail recovers.
+	tlb []tlbEntry
+	// nativeRemain is the remaining instruction budget for the current native
+	// run, passed to translated blocks by pointer so their in-code budget gate
+	// can decrement it and stop exactly at the limit (frame pacing depends on an
+	// exact retired count). It lives on the Backend so &nativeRemain is stable
+	// across the block call and the interpreter tail shares the same counter.
+	nativeRemain uint32
+	// currentProcess caches the windows/amd64 pseudo-handle the code arena's
+	// WriteProcessMemory copy needs, so emitting a block does not re-query it.
+	// It is unused on other hosts.
+	currentProcess uintptr
 }
 
 func New() *Backend {
 	return NewWithMemoryLimit(DefaultMemoryLimit)
+}
+
+// NewJIT returns a backend that runs Thumb through the pure-Go dynamic
+// recompiler (jit.go) instead of the tree-walking interpreter, falling back to
+// the interpreter for untranslated instructions and for ARM. It is
+// architecturally a second CPU backend behind the same identity; use
+// cpu/conformance to confirm it reproduces the interpreter exactly.
+func NewJIT() *Backend {
+	b := NewWithMemoryLimit(DefaultMemoryLimit)
+	b.jitBlocks = make(map[uint32]*jitBlock)
+	b.jitCache = make([]jitCacheEntry, jitCacheSize)
+	b.jitCodeLo, b.jitCodeHi = ^uint32(0), 0
+	return b
 }
 
 func NewWithMemoryLimit(limit uint64) *Backend {
@@ -206,8 +297,20 @@ func (b *Backend) recordPC(address uint32) {
 }
 
 func (b *Backend) Identity() cpu.Identity {
+	name := BackendName
+	switch {
+	case b.jitBlocks != nil:
+		// The JIT is the same architecture and context format as the precise
+		// interpreter (so saves stay portable), but reports a distinct name so
+		// the active core is observable in diagnostics and the settings UI.
+		name = BackendName + "-jit"
+	case b.nativeBlocks != nil:
+		// Same architecture and portable context as the interpreter; a distinct
+		// name makes the active native core observable in diagnostics/UI.
+		name = BackendName + "-native"
+	}
 	return cpu.Identity{
-		Name:         BackendName,
+		Name:         name,
 		Version:      BackendVersion,
 		Architecture: cpu.ARMv5TE,
 	}
@@ -322,7 +425,14 @@ func (b *Backend) Map(address, size uint32, permissions cpu.Permissions) error {
 	})
 	clear(b.regionHints[:])
 	b.executeData = nil
-	b.dataData = nil
+	clear(b.dataCache[:])
+	b.tlbClear()
+	if b.jitBlocks != nil {
+		clear(b.jitBlocks)
+		b.jitGen++
+		b.jitCodeLo, b.jitCodeHi = ^uint32(0), 0
+	}
+	b.nativeInvalidate()
 	return nil
 }
 
@@ -348,7 +458,8 @@ func (b *Backend) AttachSystemBus(bus cpu.MemoryBus) error {
 	b.contextBus, _ = bus.(cpu.ContextMemoryBus)
 	clear(b.regionHints[:])
 	b.executeData = nil
-	b.dataData = nil
+	clear(b.dataCache[:])
+	b.tlbClear()
 	return nil
 }
 
@@ -481,7 +592,14 @@ func (b *Backend) Run(ctx context.Context, address uint32, mode cpu.Mode, budget
 			err     error
 		)
 		if b.mode == cpu.ModeThumb {
-			retired, reason, err = b.runThumb(batch)
+			switch {
+			case b.jitBlocks != nil:
+				retired, reason, err = b.runThumbJIT(batch)
+			case b.nativeBlocks != nil:
+				retired, reason, err = b.runThumbNative(batch)
+			default:
+				retired, reason, err = b.runThumb(batch)
+			}
 		} else {
 			retired, reason, err = b.runARM(batch)
 		}
@@ -546,12 +664,25 @@ func (b *Backend) Close() error {
 	b.systemBus = nil
 	b.contextBus = nil
 	b.executionTraps = nil
-	b.tlb = nil
+	b.mmuTLB = nil
 	b.instructionCache = nil
 	b.instructionCacheHotValid = false
 	clear(b.regionHints[:])
 	b.executeData = nil
-	b.dataData = nil
+	clear(b.dataCache[:])
+	if b.jitBlocks != nil {
+		clear(b.jitBlocks)
+		b.jitGen++
+		b.jitCodeLo, b.jitCodeHi = ^uint32(0), 0
+	}
+	if b.nativeBlocks != nil {
+		clear(b.nativeBlocks)
+		b.nativeCloseArena()
+		b.nativeBlocks = nil
+		b.nativeCodeLo, b.nativeCodeHi = ^uint32(0), 0
+		b.tlbClear()
+		b.tlb = nil
+	}
 	b.mapped = 0
 	return nil
 }

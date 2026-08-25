@@ -557,8 +557,7 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 			detailedTraceCalls++
 			if detailedTraceCalls == 1 ||
 				detailedTraceCalls%HostTraceSampleInterval == 0 {
-				runtime.tracef(
-					"java_method_call:%s.%s%s:lr=0x%08x:%08x",
+				runtime.traceJavaMethodCall(
 					className,
 					name,
 					descriptor,
@@ -569,8 +568,7 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 				runtime.omitTrace()
 			}
 		} else {
-			runtime.tracef(
-				"java_method_call:%s.%s%s:lr=0x%08x:%08x",
+			runtime.traceJavaMethodCall(
 				className,
 				name,
 				descriptor,

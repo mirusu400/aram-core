@@ -81,6 +81,22 @@ a complete cold-boot claim.
   boundary at 1,195,629 instructions / `0x000A07D8`, so a frontend's outer run
   budget cannot accidentally erase this platform timing boundary.
 
+### Whole-system CPU execution tiers
+
+The application-mode portable translated-block JIT is also selectable through
+`systemmachine.Options.BackendMode`. Whole-system JIT blocks retain the precise
+backend's per-instruction interrupt, execution-trap, PC-history, and attributed
+MMIO boundaries, and CP15 TLB or instruction-cache invalidation also discards
+translated code. Precise and JIT snapshots are mutually loadable when their
+architecture and context version match.
+
+On the same DL21 home-screen snapshot and a 100,000,000-instruction budget, the
+portable JIT measured 13.83 MIPS versus 11.58 MIPS for the precise interpreter,
+with identical final PC and framebuffer hash. The native-code JIT currently
+falls back to precise execution for a bus-backed system machine: native blocks
+cannot yet observe MMIO-raised interrupts or execution traps between emitted
+host instructions, and forcing that tier was slower in this workload.
+
 ## Private SCH-W830 DL21 evidence gate
 
 When `ARAM_REFERENCE_REPO` is configured, the private gate currently proves:

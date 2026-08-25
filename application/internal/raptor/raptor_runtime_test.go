@@ -4,6 +4,9 @@ import (
 	"encoding/binary"
 	"testing"
 
+	wipirt "github.com/mirusu400/aram-core/application/internal/wipi"
+	"github.com/mirusu400/aram-core/cpu"
+
 	machinecore "github.com/mirusu400/aram-core/core"
 	raptorloader "github.com/mirusu400/aram-core/loader/raptor"
 	"github.com/mirusu400/aram-core/profile"
@@ -141,5 +144,55 @@ func TestRaptorInputCallbackMapsFrontendControls(t *testing.T) {
 		Pressed: true,
 	}); ok {
 		t.Fatal("unknown control was mapped")
+	}
+}
+
+// 제노니아1 drives its sound through the private module-507 ordinals: it builds
+// a clip, plays it, stops the clip a scene owns before asking for the next
+// sound, and frees the handle once the clip reports that it finished. Leaving
+// the stop and the free unimplemented left the title's sound object holding a
+// clip it believed was still playing, and its allocator refuses to build a
+// second clip while that handle is held (issue #49).
+func TestRaptorPrivateSoundOrdinalsStopAndFreeClips(t *testing.T) {
+	public := newPublicRuntime(t)
+	runtime := &Runtime{CPU: public.CPU, Public: public}
+	handle, err := public.RaptorCreateClip("Yamaha_MA3", 64, 0x02000001)
+	if err != nil || handle == 0 {
+		t.Fatalf("RaptorCreateClip = 0x%08x, err=%v", handle, err)
+	}
+	if !public.RaptorPlayClip(handle, true) {
+		t.Fatal("RaptorPlayClip refused to start the clip")
+	}
+	public.PendingCallbacks = nil
+
+	call := func(ordinal uint32) string {
+		t.Helper()
+		if err := runtime.CPU.WriteRegister(cpu.RegisterR0, handle); err != nil {
+			t.Fatal(err)
+		}
+		_, name, handled, err := runtime.DispatchPrivateImport(ordinal)
+		if err != nil || !handled {
+			t.Fatalf("ordinal %d handled=%v err=%v", ordinal, handled, err)
+		}
+		return name
+	}
+
+	if name := call(1213); name != "RAPTOR.sndStop" {
+		t.Fatalf("ordinal 1213 = %q", name)
+	}
+	if clip := public.MediaClips[handle]; clip == nil || clip.State != 0 {
+		t.Fatalf("stopped clip = %+v", public.MediaClips[handle])
+	}
+	if len(public.PendingCallbacks) != 1 ||
+		public.PendingCallbacks[0].Args !=
+			[4]uint32{handle, wipirt.RaptorClipEndCode, 0, 0} {
+		t.Fatalf("stop completion callback = %+v", public.PendingCallbacks)
+	}
+
+	if name := call(1201); name != "RAPTOR.sndFree" {
+		t.Fatalf("ordinal 1201 = %q", name)
+	}
+	if _, live := public.MediaClips[handle]; live {
+		t.Fatal("freed clip is still registered")
 	}
 }

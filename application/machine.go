@@ -46,6 +46,12 @@ const (
 	// A 1K slice leaves several real titles in initialization indefinitely at
 	// ordinary 60 Hz frontend scheduling.
 	ktfTaskSlicesPerQuantumMax = 64
+	// ktfQuantumStepsMax bounds how many pieces one KTF presentation quantum
+	// may be handed to the guest in. Stopping the clock on a title's own timer
+	// deadlines needs only one or two pieces; the cap keeps a title that sleeps
+	// in one-millisecond steps from paying for a service advance per
+	// millisecond, at the cost of rounding the rest of that quantum as before.
+	ktfQuantumStepsMax = 8
 	// guest.WIPIFrameDuration is the guest time one native-WIPI, Raptor, or EADS
 	// presentation quantum advances.
 )
@@ -78,11 +84,17 @@ type Factory struct {
 	// guest text that has no glyphs of its own. Empty inherits the runtime
 	// default (galmuri9); "neodgm" selects the softer NeoDunggeunmo look.
 	FallbackFont string
+	// AudioMixMode selects the enhanced "mixing" audio policy, where a looping
+	// track keeps playing over one-shot effects instead of the title being able
+	// to silence it. False is the default and reproduces the device faithfully.
+	// It is a playback preference, deliberately kept out of the profile
+	// configuration hash so it never changes a title's deterministic identity.
+	AudioMixMode bool
 }
 
 func NewFactory() Factory {
 	return Factory{
-		NewCPU:      func() cpu.Backend { return interpreter.New() },
+		NewCPU:      selectedCPUFactory(),
 		RunBudget:   DefaultRunBudget,
 		MemoryLimit: DefaultMemoryLimit,
 		FramebufferSize: image.Point{
@@ -134,12 +146,39 @@ func (f Factory) Create(ctx context.Context, source machinecore.Source) (machine
 		frameRunBudget:   frameBudget,
 		raptorNet:        f.RaptorNet,
 		fallbackFont:     f.FallbackFont,
+		audioMixMode:     f.AudioMixMode,
 	}
 	if err := machine.Load(ctx, source); err != nil {
 		_ = backend.Close()
 		return nil, err
 	}
+	machine.applyAudioMixMode()
 	return machine, nil
+}
+
+// SetAudioMixMode switches the audio policy on the running machine and
+// remembers it for any later runtime (re)creation. It is safe to call while a
+// title is loaded; the change is audible immediately, matching how mute and
+// volume apply live rather than only on the next launch.
+func (m *Machine) SetAudioMixMode(on bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.audioMixMode = on
+	m.applyAudioMixMode()
+}
+
+// applyAudioMixMode pushes the selected audio policy onto whichever runtime is
+// live. KTF and the shared WIPI runtime (which Raptor titles also boot) own the
+// media service; the call is idempotent so it is safe to re-run after a state
+// restore. The caller holds no lock during Factory.Create; SetAudioMixMode and
+// LoadState call it under m.mu.
+func (m *Machine) applyAudioMixMode() {
+	if m.ktf != nil && m.ktf.Services != nil {
+		m.ktf.Services.Media.SetAudioMixMode(m.audioMixMode)
+	}
+	if m.wipi != nil && m.wipi.Services != nil {
+		m.wipi.Services.Media.SetAudioMixMode(m.audioMixMode)
+	}
 }
 
 type ImageInfo struct {
@@ -156,6 +195,10 @@ type ImageInfo struct {
 	TextSize    uint32
 	BSSAddress  uint32
 	BSSSize     uint32
+	// CPUBackend is the identity name of the selected CPU backend (see
+	// ARAM_CPU / cpu_select.go). It surfaces which core is executing the guest
+	// so a swap is observable end-to-end through the product.
+	CPUBackend string
 }
 
 type Machine struct {
@@ -167,6 +210,7 @@ type Machine struct {
 	raptor           *raptorrt.Runtime
 	raptorNet        netauth.Backend
 	fallbackFont     string
+	audioMixMode     bool
 	ktfStarted       bool
 	state            machinecore.State
 	source           machinecore.Source
@@ -180,6 +224,7 @@ type Machine struct {
 	ktfRunBudget     uint64
 	memoryLimit      uint64
 	frame            *image.RGBA
+	presentation     framePresentationCache
 	input            []machinecore.InputEvent
 	closed           bool
 }

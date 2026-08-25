@@ -543,10 +543,14 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 			object: value.Object, body: value.Body,
 			framebuffer: value.Framebuffer, source: value.Source,
 			frameIndex: value.FrameIndex,
-			// The color key is derived from the restored pixels rather than
-			// serialized, so an older save without the field still keys its
-			// sprites correctly after loading.
-			transparentKey: r.wipicImageColorKey(value.Framebuffer),
+			// The color key is derived from the restored asset and pixels
+			// rather than serialized, so an older save without the field still
+			// keys its sprites correctly after loading.
+			transparentKey: r.wipicRestoredImageColorKey(
+				r.wipicAssetServices[object],
+				value.FrameIndex,
+				value.Framebuffer,
+			),
 		}
 	}
 	r.wipicResources = guest.CloneSliceMap(meta.WIPICResources)
@@ -770,6 +774,10 @@ func restoreKTFImagesAndGraphics(
 				R: value.Color[0], G: value.Color[1],
 				B: value.Color[2], A: value.Color[3],
 			},
+			origin: image.Pt(
+				int(value.Origin[0]),
+				int(value.Origin[1]),
+			),
 			translate: image.Pt(
 				int(value.Translate[0]),
 				int(value.Translate[1]),

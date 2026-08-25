@@ -84,7 +84,8 @@ func (b *Backend) mmuEnabled() bool {
 }
 
 func (b *Backend) invalidateTLB() {
-	b.tlb = nil
+	b.mmuTLB = nil
+	b.invalidateTranslations()
 }
 
 func (b *Backend) translateAddress(address uint32, permission cpu.Permissions) (uint32, error) {
@@ -104,17 +105,17 @@ func (b *Backend) translateAddressWithAttributes(
 		modified |= b.cp15.processID & 0xfe000000
 	}
 	key := modified >> 10
-	translation, ok := b.tlb[key]
+	translation, ok := b.mmuTLB[key]
 	if !ok {
 		var err error
 		translation, err = b.walkShortDescriptor(modified, address, permission)
 		if err != nil {
 			return 0, mmuTranslation{}, err
 		}
-		if b.tlb == nil {
-			b.tlb = make(map[uint32]mmuTranslation)
+		if b.mmuTLB == nil {
+			b.mmuTLB = make(map[uint32]mmuTranslation)
 		}
-		b.tlb[key] = translation
+		b.mmuTLB[key] = translation
 	}
 	if err := b.checkTranslationAccess(translation, address, permission); err != nil {
 		return 0, mmuTranslation{}, err

@@ -16,23 +16,48 @@ const smafTwoPi = 2 * math.Pi
 
 const smafSineTableSize = 4096
 
-var smafSineTable = func() [smafSineTableSize + 1]float64 {
-	var table [smafSineTableSize + 1]float64
-	for index := range table {
-		table[index] = math.Sin(
+// smafSineValues is the interpolated sine table, one entry past a full cycle so
+// the interpolation can read its neighbour.
+//
+// It stores values only. Storing the step to the next entry beside each value
+// would turn the interpolation into one multiply-add over a single 16-byte
+// load, but it also doubles the table to 64 KiB, and measuring it that way was
+// consistently 1-3% slower: the two reads the plain table needs are eight bytes
+// apart and almost always the same cache line, so the extra footprint costs
+// more than the arithmetic saves.
+var smafSineValues = func() [smafSineTableSize + 1]float64 {
+	var values [smafSineTableSize + 1]float64
+	for index := range values {
+		values[index] = math.Sin(
 			smafTwoPi * float64(index) / smafSineTableSize,
 		)
 	}
-	return table
+	return values
 }()
 
+// smafSine samples the table for any phase, reducing it into one cycle first.
 func smafSine(phase float64) float64 {
-	phase -= math.Floor(phase)
+	return smafSineUnit(phase - math.Floor(phase))
+}
+
+// smafSineUnit samples the table for a phase already reduced to [0,1]. Callers
+// inside smafWaveform have just reduced the phase themselves, and repeating the
+// math.Floor there was pure overhead: for a phase in [0,1) the reduction is a
+// subtraction of zero, and for exactly 1.0 - which the reduction can return
+// when the input is a tiny negative number, since 1-1e-20 rounds to 1 - the
+// wrap below produces the same table[0] the reduction would have.
+//
+// The index is masked rather than bounds-checked, which is what makes the
+// table read free of a check. It also removes two latent panics the old
+// indexing had: an unreduced 1.0 read one past the table's end, and a NaN
+// phase indexed with the minimum int.
+func smafSineUnit(phase float64) float64 {
 	position := phase * smafSineTableSize
-	index := int(position)
-	fraction := position - float64(index)
-	return smafSineTable[index] +
-		(smafSineTable[index+1]-smafSineTable[index])*fraction
+	whole := int(position)
+	fraction := position - float64(whole)
+	index := whole & (smafSineTableSize - 1)
+	base := smafSineValues[index]
+	return base + (smafSineValues[index+1]-base)*fraction
 }
 
 type smafOpPatch struct {
@@ -444,28 +469,58 @@ func (operator *smafOperator) tick(modulation, lfo float64) float64 {
 	operator.phase += increment
 	operator.phase -= math.Floor(operator.phase)
 	output := smafWaveform(operator.patch.wave, operator.phase+modulation)
-	amplitude := 1.0
+	value := output * operator.totalGain * operator.keyGain * envelope
+	// An operator without tremolo used to finish by multiplying by a constant
+	// 1.0. Skipping that multiply is exact - x*1.0 is x for every float64,
+	// negative zero and NaN included - and the products above are formed in the
+	// same left-to-right order as before.
 	if operator.tremolo != 0 {
-		amplitude -= operator.tremolo * (0.5 + 0.5*lfo)
+		value *= 1 - operator.tremolo*(0.5+0.5*lfo)
 	}
-	return output * operator.totalGain * operator.keyGain * envelope * amplitude
+	return value
 }
 
+// smafExponentialWave is waveform 7 for a phase reduced to [0,1].
+func smafExponentialWave(phase float64) float64 {
+	index := int(phase * 1024)
+	if index < 512 {
+		return math.Pow(2, -float64(index)/16)
+	}
+	return -math.Pow(2, -float64(1024-index)/16)
+}
+
+// smafExponentialTable holds every value smafExponentialWave can return for a
+// reduced phase: the phase is quantized to 1024 steps, so the pow it evaluated
+// per operator per sample only ever produced one of these 1025 results. The
+// table stores exactly what math.Pow returned. A phase outside the table's
+// range (only reachable from a NaN or infinite modulation) still goes through
+// smafExponentialWave, so even that case is unchanged.
+var smafExponentialTable = func() [1025]float64 {
+	var table [1025]float64
+	for index := range table {
+		table[index] = smafExponentialWave(float64(index) / 1024)
+	}
+	return table
+}()
+
+// smafWaveform reduces the phase into one cycle once, then dispatches to the
+// reduced-phase generators, so none of the branches below pays to reduce it
+// again.
 func smafWaveform(wave uint8, phase float64) float64 {
 	x := phase - math.Floor(phase)
 	switch wave & 31 {
 	case 0:
-		return smafSine(x)
+		return smafSineUnit(x)
 	case 1:
-		return smafHalfWave(smafSine, x)
+		return smafHalfWave(smafSineUnit, x)
 	case 2:
-		return smafAbsoluteWave(smafSine, x)
+		return smafAbsoluteWave(smafSineUnit, x)
 	case 3:
-		return smafQuarterWave(smafSine, x)
+		return smafQuarterWave(smafSineUnit, x)
 	case 4:
-		return smafDoubleHalfWave(smafSine, x)
+		return smafDoubleHalfWave(smafSineUnit, x)
 	case 5:
-		return smafDoubleAbsoluteWave(smafSine, x)
+		return smafDoubleAbsoluteWave(smafSineUnit, x)
 	case 6:
 		if x < 0.5 {
 			return 1
@@ -473,56 +528,56 @@ func smafWaveform(wave uint8, phase float64) float64 {
 		return -1
 	case 7:
 		index := int(x * 1024)
-		if index < 512 {
-			return math.Pow(2, -float64(index)/16)
+		if uint(index) < uint(len(smafExponentialTable)) {
+			return smafExponentialTable[index]
 		}
-		return -math.Pow(2, -float64(1024-index)/16)
+		return smafExponentialWave(x)
 	case 8:
-		return smafClippedSine(x)
+		return smafClippedSineUnit(x)
 	case 9:
-		return smafHalfWave(smafClippedSine, x)
+		return smafHalfWave(smafClippedSineUnit, x)
 	case 10:
-		return smafAbsoluteWave(smafClippedSine, x)
+		return smafAbsoluteWave(smafClippedSineUnit, x)
 	case 11:
-		return smafQuarterWave(smafClippedSine, x)
+		return smafQuarterWave(smafClippedSineUnit, x)
 	case 12:
-		return smafDoubleHalfWave(smafClippedSine, x)
+		return smafDoubleHalfWave(smafClippedSineUnit, x)
 	case 13:
-		return smafDoubleAbsoluteWave(smafClippedSine, x)
+		return smafDoubleAbsoluteWave(smafClippedSineUnit, x)
 	case 14:
 		if x < 0.5 {
 			return 1
 		}
 		return 0
 	case 16:
-		return smafTriangle(x)
+		return smafTriangleUnit(x)
 	case 17:
-		return smafHalfWave(smafTriangle, x)
+		return smafHalfWave(smafTriangleUnit, x)
 	case 18:
-		return smafAbsoluteWave(smafTriangle, x)
+		return smafAbsoluteWave(smafTriangleUnit, x)
 	case 19:
-		return smafQuarterWave(smafTriangle, x)
+		return smafQuarterWave(smafTriangleUnit, x)
 	case 20:
-		return smafDoubleHalfWave(smafTriangle, x)
+		return smafDoubleHalfWave(smafTriangleUnit, x)
 	case 21:
-		return smafDoubleAbsoluteWave(smafTriangle, x)
+		return smafDoubleAbsoluteWave(smafTriangleUnit, x)
 	case 22:
 		if x < 0.25 || x >= 0.5 && x < 0.75 {
 			return 1
 		}
 		return 0
 	case 24:
-		return smafSaw(x)
+		return smafSawUnit(x)
 	case 25:
-		return smafHalfWave(smafSaw, x)
+		return smafHalfWave(smafSawUnit, x)
 	case 26:
-		return smafAbsoluteWave(smafSaw, x)
+		return smafAbsoluteWave(smafSawUnit, x)
 	case 27:
-		return smafQuarterWave(smafSaw, x)
+		return smafQuarterWave(smafSawUnit, x)
 	case 28:
-		return smafDoubleHalfWave(smafSaw, x)
+		return smafDoubleHalfWave(smafSawUnit, x)
 	case 29:
-		return smafDoubleAbsoluteWave(smafSaw, x)
+		return smafDoubleAbsoluteWave(smafSawUnit, x)
 	case 30:
 		if x < 0.25 {
 			return 1
@@ -577,12 +632,30 @@ func smafDoubleAbsoluteWave(base func(float64) float64, phase float64) float64 {
 	return base(phase * 2)
 }
 
-func smafClippedSine(phase float64) float64 {
-	return math.Max(-1, math.Min(1, smafSine(phase)*math.Sqrt2))
+func smafClippedSineUnit(phase float64) float64 {
+	return smafClampUnit(smafSineUnit(phase) * math.Sqrt2)
 }
 
-func smafTriangle(phase float64) float64 {
-	phase -= math.Floor(phase)
+// smafClampUnit limits value to [-1,1]. It replaces math.Max(-1, math.Min(1,
+// value)) on the two hottest clamps in the render: math.Min and math.Max are
+// ordinary calls into math.archMin/archMax, which together were 13% of the
+// render, while the comparisons below inline. The result is identical for every
+// input including NaN (both comparisons are false, so the NaN passes through
+// exactly as math.Min/math.Max propagate it) and negative zero.
+func smafClampUnit(value float64) float64 {
+	if value > 1 {
+		return 1
+	}
+	if value < -1 {
+		return -1
+	}
+	return value
+}
+
+// smafTriangleUnit is smafTriangle for a phase already reduced to [0,1]. An
+// unreduced 1.0 lands on scaled == 4 and returns the same 0 the reduction
+// would have produced, so dropping the reduction changes nothing.
+func smafTriangleUnit(phase float64) float64 {
 	scaled := phase * 4
 	if scaled < 1 {
 		return scaled
@@ -593,12 +666,40 @@ func smafTriangle(phase float64) float64 {
 	return scaled - 4
 }
 
-func smafSaw(phase float64) float64 {
-	phase -= math.Floor(phase)
+// smafSawUnit is smafSaw for a phase already reduced to [0,1]. An unreduced
+// 1.0 returns 2-2 == 0, the same value the reduction would have produced.
+func smafSawUnit(phase float64) float64 {
 	if phase < 0.5 {
 		return phase * 2
 	}
 	return phase*2 - 2
+}
+
+// smafPanGains memoizes a voice's constant-power pan gains. A voice's pan
+// changes only when the score sends a pan control, but the mixer needs its
+// gains for every sample of every live voice; recomputing the cosine and sine
+// there cost 18% of the whole render. The gains are the same values the mixer
+// used to compute inline, so the rendered samples are identical.
+type smafPanGains struct {
+	value float64
+	left  float64
+	right float64
+	valid bool
+}
+
+// gains returns the left and right gain for pan, recomputing them only when
+// pan differs from the memoized one. A NaN pan never compares equal, so it
+// recomputes every sample exactly as the inline version did.
+func (memo *smafPanGains) gains(pan float64) (float64, float64) {
+	if memo.valid && memo.value == pan {
+		return memo.left, memo.right
+	}
+	angle := (max(-1, min(1, pan)) + 1) * math.Pi / 4
+	memo.value = pan
+	memo.left = math.Cos(angle)
+	memo.right = math.Sin(angle)
+	memo.valid = true
+	return memo.left, memo.right
 }
 
 type smafVoice struct {
@@ -611,7 +712,14 @@ type smafVoice struct {
 	lfoPhase, lfoStep      float64
 	channel, note, keyNote int
 	pan                    float64
-	active                 bool
+	panGains               smafPanGains
+	// usesLFO records whether any operator this note plays reads the LFO. A
+	// patch with neither vibrato nor tremolo ignores the value entirely, and
+	// sampling the sine for it was a fifth of all the table lookups the
+	// renderer did. The operators are configured once per note-on and their
+	// depths do not change while it sounds, so the answer is fixed here.
+	usesLFO bool
+	active  bool
 }
 
 func (voice *smafVoice) noteOn(
@@ -634,13 +742,14 @@ func (voice *smafVoice) noteOn(
 	if patch.fourOp {
 		operatorCount = 4
 	}
+	voice.usesLFO = false
 	for index := 0; index < operatorCount; index++ {
-		voice.operators[index].configure(
-			patch.operators[index],
-			voice.sampleRate,
-			frequency,
-		)
-		voice.operators[index].noteOn(frequency)
+		operator := &voice.operators[index]
+		operator.configure(patch.operators[index], voice.sampleRate, frequency)
+		operator.noteOn(frequency)
+		if operator.vibrato != 0 || operator.tremolo != 0 {
+			voice.usesLFO = true
+		}
 	}
 	voice.active = true
 }
@@ -665,6 +774,14 @@ func (voice *smafVoice) setFrequency(frequency float64) {
 	}
 }
 
+// smafFeedbackDepth is indexed by an operator's feedback level. It is a
+// package variable rather than a literal inside modOperator so the hot path
+// does not copy the table onto the stack on every operator tick.
+var smafFeedbackDepth = [8]float64{
+	0, 1.0 / 32, 1.0 / 16, 1.0 / 8,
+	1.0 / 4, 1.0 / 2, 1, 2,
+}
+
 func (voice *smafVoice) modOperator(
 	index int,
 	external, lfo float64,
@@ -672,12 +789,8 @@ func (voice *smafVoice) modOperator(
 	feedback := 0.0
 	if voice.operatorFeedback[index] != 0 {
 		memory := voice.feedbackMemory[index]
-		feedbackDepth := [...]float64{
-			0, 1.0 / 32, 1.0 / 16, 1.0 / 8,
-			1.0 / 4, 1.0 / 2, 1, 2,
-		}
 		feedback = (memory[0] + memory[1]) * 0.5 *
-			feedbackDepth[voice.operatorFeedback[index]&7]
+			smafFeedbackDepth[voice.operatorFeedback[index]&7]
 	}
 	output := voice.operators[index].tick(external+feedback, lfo)
 	voice.feedbackMemory[index][1] = voice.feedbackMemory[index][0]
@@ -685,7 +798,17 @@ func (voice *smafVoice) modOperator(
 	return output
 }
 
-func (voice *smafVoice) tick() float64 {
+// tick advances the voice one sample and returns its output.
+//
+// silent advances exactly the same state without synthesizing anything: the
+// envelopes still step, the LFO phase still moves, and the voice still retires
+// when its envelopes go idle, but no waveform is sampled and no output is
+// produced. Whether a voice is still sounding depends only on its envelopes -
+// smafOperator.tick advances one per operator the algorithm uses, before it
+// looks at anything else - so a silent pass retires voices on exactly the
+// sample a sounding pass would, which is what lets probeEnd find a score's
+// natural end without synthesizing it. See smafRenderStream.render.
+func (voice *smafVoice) tick(silent bool) float64 {
 	if !voice.active {
 		return 0
 	}
@@ -693,7 +816,27 @@ func (voice *smafVoice) tick() float64 {
 	if voice.lfoPhase >= 1 {
 		voice.lfoPhase--
 	}
-	lfo := smafSine(voice.lfoPhase)
+	// The phase advances either way so a patch that starts using the LFO
+	// mid-note - it cannot, but the phase is also part of the voice's state -
+	// stays where it would have been; only the lookup is skipped.
+	lfo := 0.0
+	if voice.usesLFO && !silent {
+		lfo = smafSineUnit(voice.lfoPhase)
+	}
+	count := 2
+	if voice.patch.fourOp {
+		count = 4
+	}
+	if silent {
+		// Every branch of the algorithm below ticks each of these operators
+		// exactly once, and each tick advances that operator's envelope before
+		// anything else, so this is the same envelope sequence.
+		for index := 0; index < count; index++ {
+			voice.operators[index].envelope.advance()
+		}
+		voice.retireIfIdle(count)
+		return 0
+	}
 	// Yamaha's mobile FM engine expresses the modulator output in waveform
 	// cycles. Its authored patches assume this four-cycle full-scale depth.
 	const modulationDepth = 4.0
@@ -741,19 +884,17 @@ func (voice *smafVoice) tick() float64 {
 		d := voice.modOperator(3, 0, lfo)
 		output = a + c + d
 	}
-	count := 2
-	if voice.patch.fourOp {
-		count = 4
-	}
-	live := false
+	voice.retireIfIdle(count)
+	return output * voice.velocity * voice.volume * 0.7
+}
+
+// retireIfIdle clears active once none of the count operators the algorithm
+// uses has a live envelope.
+func (voice *smafVoice) retireIfIdle(count int) {
 	for index := 0; index < count; index++ {
 		if voice.operators[index].envelope.phase != smafEnvelopeIdle {
-			live = true
-			break
+			return
 		}
 	}
-	if !live {
-		voice.active = false
-	}
-	return output * voice.velocity * voice.volume * 0.7
+	voice.active = false
 }

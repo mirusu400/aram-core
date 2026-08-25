@@ -423,8 +423,22 @@ func (r *Runtime) RaptorPlayClip(handle uint32, loop bool) bool {
 	return true
 }
 
+// RaptorClipEndCode is the status LGT Raptor's media provider reports to a
+// clip's completion callback once the clip stops sounding, whether it reached
+// its end or was stopped on request.
+//
+// 제노니아1's callback keeps the status in a four-bit field, so it first
+// rewrites -1 into its own "finished" state — the only state that frees the
+// clip. The statuses it stores verbatim leave the clip owned and playing, and
+// its allocator refuses to build a second clip while the first handle is still
+// held, so a title told anything else plays one sound and then stays silent
+// for the rest of the session (issue #49).
+const RaptorClipEndCode = ^uint32(0)
+
 // RaptorStopClip stops playback and, when free is set, releases the clip and
-// its guest handle.
+// its guest handle. A stop reports completion to the clip's callback the way
+// the handset does, which is how a title learns it may release the handle and
+// load its next track.
 func (r *Runtime) RaptorStopClip(handle uint32, free bool) {
 	clip := r.MediaClips[handle]
 	if clip == nil {
@@ -443,6 +457,10 @@ func (r *Runtime) RaptorStopClip(handle uint32, free bool) {
 		r.Heap.Release(handle)
 		return
 	}
+	playing := clip.State != 0
 	clip.State = 0
 	clip.Repeat = false
+	if playing && clip.Callback != 0 {
+		r.EnqueueCallback(clip.Callback, handle, RaptorClipEndCode)
+	}
 }
