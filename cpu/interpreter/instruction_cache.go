@@ -1,6 +1,10 @@
 package interpreter
 
-import "github.com/mirusu400/aram-core/cpu"
+import (
+	"fmt"
+
+	"github.com/mirusu400/aram-core/cpu"
+)
 
 const (
 	instructionCacheLineSize = uint32(32)
@@ -64,7 +68,13 @@ func (b *Backend) fetchInstructionCache(address uint32, size uint32) ([]byte, er
 	mvaLine := b.modifiedVirtualAddress(address) &^ (instructionCacheLineSize - 1)
 	offset := address & (instructionCacheLineSize - 1)
 	if offset+size > instructionCacheLineSize {
-		panic("instruction fetch crosses an ARM926 cache line")
+		// Aligned ARM and Thumb fetches cannot straddle a 32-byte line, so
+		// reaching this means the guest set an unaligned PC. That is its
+		// mistake to be told about, not the host's to die on.
+		return nil, fmt.Errorf(
+			"instruction fetch at 0x%08x crosses an ARM926 cache line: %w",
+			address, cpu.ErrInvalidAddress,
+		)
 	}
 	b.instructionCacheHot = line
 	b.instructionCacheHotMVA = mvaLine
