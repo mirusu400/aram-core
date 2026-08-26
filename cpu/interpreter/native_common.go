@@ -128,6 +128,18 @@ type nativeARMDataOp struct {
 	carry      int8
 }
 
+// nativeARMDataOpEmittable is the single authority on which data-processing
+// opcodes armDataProcessing covers, consulted by the decoder before it opens a
+// condition site and by both emitters as their own guard. The two must not
+// drift: conditionStart emits a branch that only conditionEnd supplies a target
+// for, so an emitter that declined after the site opened would leave that
+// branch unpatched - a harmless fall-through on x86-64, but a branch-to-itself
+// (a guest hang, not a fault) on AArch64.
+func nativeARMDataOpEmittable(opcode uint8) bool {
+	// ADC/SBC/RSC read the incoming carry, which neither emitter models.
+	return opcode < 5 || opcode > 7
+}
+
 // emitter appends host machine code for one translated Thumb instruction at a
 // time. Each method hides the host's scratch-register choreography; the decoder
 // (emitThumb, native_jit.go) only extracts operand fields and calls these. A

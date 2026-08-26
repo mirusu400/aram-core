@@ -842,7 +842,7 @@ func (e *arm64emitter) highRegister(op, rd, rs, pcValue uint32) bool {
 }
 
 func (e *arm64emitter) armDataProcessing(op nativeARMDataOp) bool {
-	if op.opcode >= 5 && op.opcode <= 7 {
+	if !nativeARMDataOpEmittable(op.opcode) {
 		return false
 	}
 	load := func(host, guest uint32) {
