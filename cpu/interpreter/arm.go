@@ -58,10 +58,7 @@ func (b *Backend) runARMInstrumented(limit uint64) (uint64, *cpu.StopReason, err
 		}
 		pc := b.regs[cpu.RegisterPC]
 		if wholeSystem {
-			b.accessContext = cpu.MemoryAccessContext{
-				InstructionAddress: pc, LinkAddress: b.regs[cpu.RegisterLR],
-				StackAddress: b.regs[cpu.RegisterSP], Mode: cpu.ModeARM, Attributed: true,
-			}
+			b.instructionAddress = pc
 		}
 		reason, err := b.stepARM()
 		if err != nil {

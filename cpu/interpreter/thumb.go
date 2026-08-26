@@ -125,10 +125,7 @@ func (b *Backend) runThumbSystem(limit uint64) (uint64, *cpu.StopReason, error) 
 			reason := cpu.StopExecutionTrap
 			return executed, &reason, nil
 		}
-		b.accessContext = cpu.MemoryAccessContext{
-			InstructionAddress: pc, LinkAddress: b.regs[cpu.RegisterLR],
-			StackAddress: b.regs[cpu.RegisterSP], Mode: cpu.ModeThumb, Attributed: true,
-		}
+		b.instructionAddress = pc
 		retired, reason, err := b.runThumbBatch(1)
 		executed += retired
 		if err != nil {

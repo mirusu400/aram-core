@@ -126,10 +126,7 @@ outer:
 					return executed, &reason, nil
 				}
 				b.recordPC(pc)
-				b.accessContext = cpu.MemoryAccessContext{
-					InstructionAddress: pc, LinkAddress: b.regs[cpu.RegisterLR],
-					StackAddress: b.regs[cpu.RegisterSP], Mode: cpu.ModeThumb, Attributed: true,
-				}
+				b.instructionAddress = pc
 			} else if traced {
 				b.recordPC(in.pc)
 			}
