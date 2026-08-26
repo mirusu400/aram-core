@@ -65,6 +65,12 @@ func (b *Backend) recordExternalAbort(
 	permission cpu.Permissions,
 	err error,
 ) error {
+	// The write accessors call this with whatever the bus returned, success
+	// included. Answering that here keeps errors.As -- and the interface target
+	// it needs -- off the path of every store that works.
+	if err == nil {
+		return nil
+	}
 	if !isExternalAbort(err) {
 		return err
 	}

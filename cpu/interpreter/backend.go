@@ -178,9 +178,16 @@ type Backend struct {
 	// which is cheaper than building the whole attribution per instruction;
 	// see accessAttribution.
 	instructionAddress uint32
-	executionTraps     map[cpu.ExecutionTrap]struct{}
-	interruptLines     atomic.Uint32
-	closedState        atomic.Bool
+	// readScratch and writeScratch back the width-sized transfers a bus-backed
+	// access makes. A local array would be handed to an interface method and so
+	// escape to the heap, putting an allocation on every guest load and store.
+	// Reads and writes keep separate buffers so neither is reused underneath
+	// the other; nothing may hold a slice of these past its own access.
+	readScratch    [4]byte
+	writeScratch   [4]byte
+	executionTraps map[cpu.ExecutionTrap]struct{}
+	interruptLines atomic.Uint32
+	closedState    atomic.Bool
 	// instructionCacheTable is the functional ARM926 VIVT shadow, consulted
 	// only while CP15 enables it, which no application machine does. It is a
 	// pointer so an application backend carries eight bytes rather than the
