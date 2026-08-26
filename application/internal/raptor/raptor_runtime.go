@@ -133,6 +133,9 @@ func NewRuntime(
 		resolvedImports: make(map[raptorImportKey]uint64),
 		importSlotByKey: make(map[raptorImportKey]uint32),
 	}
+	// A Raptor Clet reads its own MC_GrpContext, and LGT's runtime spells the
+	// struct without the SDK's clip_enabled word.
+	public.CompactGraphicsContext = true
 	if err := runtime.InstallInterfaces(); err != nil {
 		return nil, err
 	}

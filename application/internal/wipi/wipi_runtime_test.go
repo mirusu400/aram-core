@@ -1775,3 +1775,81 @@ func TestWIPIRuntimeGetPixelFromRGBReturnsDevicePixel(t *testing.T) {
 		t.Fatalf("decoded RGB = (%d, %d, %d)", red, green, blue)
 	}
 }
+
+// TestWIPIRuntimeCompactGraphicsContextPlacesScalarsWithoutClipFlag pins LGT
+// Raptor's MC_GrpContext spelling. A Raptor Clet reads the struct itself:
+// 블레이드마스터4 fills its text strip with the colour it loads back from
+// offset 0x10 and keys that colour out when it blits the strip, so writing the
+// colour where the SDK struct keeps it (0x14, past a clip_enabled word LGT does
+// not have) filled the strip with the clip flag instead and put every string on
+// a black plate.
+func TestWIPIRuntimeCompactGraphicsContextPlacesScalarsWithoutClipFlag(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	runtime.CompactGraphicsContext = true
+	contextAddress, err := runtime.Heap.Allocate(60, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatchPublicAPI(t, runtime, "MC_grpInitContext", contextAddress)
+	dispatchPublicAPI(t, runtime, "MC_grpSetContext", contextAddress, 1, 0x0000f81f)
+	dispatchPublicAPI(t, runtime, "MC_grpSetContext", contextAddress, 2, 0x00001234)
+
+	foreground, err := runtime.ReadU32(contextAddress + 0x10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if foreground != 0x0000f81f {
+		t.Fatalf("compact foreground word = 0x%08x, want 0x0000f81f", foreground)
+	}
+	background, err := runtime.ReadU32(contextAddress + 0x14)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if background != 0x00001234 {
+		t.Fatalf("compact background word = 0x%08x, want 0x00001234", background)
+	}
+	alpha, err := runtime.ReadU32(contextAddress + 0x18)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alpha != 255 {
+		t.Fatalf("compact alpha word = %d, want 255", alpha)
+	}
+
+	context, err := runtime.context(contextAddress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if context.foreground != 0x0000f81f || context.background != 0x00001234 ||
+		context.alpha != 255 {
+		t.Fatalf("compact context = %+v", context)
+	}
+
+	// MC_grpGetContext must read the same members back.
+	output, err := runtime.Heap.Allocate(4, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatchPublicAPI(t, runtime, "MC_grpGetContext", contextAddress, 1, output)
+	readBack, err := runtime.ReadU32(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readBack != 0x0000f81f {
+		t.Fatalf("compact MC_grpGetContext foreground = 0x%08x", readBack)
+	}
+
+	// An untouched context clips nothing: without a clip_enabled word an empty
+	// rectangle must not blank the screen.
+	blank, err := runtime.Heap.Allocate(60, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty, err := runtime.context(blank)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty.clipEnabled {
+		t.Fatal("zeroed compact context reports an enabled clip rectangle")
+	}
+}
