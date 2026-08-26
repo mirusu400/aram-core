@@ -80,6 +80,8 @@ func TestARM64PrimitiveEncodings(t *testing.T) {
 		{"addLSL64", emit(func(e *arm64emitter) { e.addLSL64(3, 11, 2, 4) }), words(0x8B021163)},
 		{"ldrWoff#0", emit(func(e *arm64emitter) { e.ldrWoff(4, 3, 0) }), words(0xB9400064)},
 		{"ldarW", emit(func(e *arm64emitter) { e.ldarW(1, 8) }), words(0x88DFFD01)},
+		{"ldarX", emit(func(e *arm64emitter) { e.ldarX(0, 0) }), words(0xC8DFFC00)},
+		{"br", emit(func(e *arm64emitter) { e.br(0) }), words(0xD61F0000)},
 		{"ldrWoff#4096", emit(func(e *arm64emitter) { e.ldrWoff(4, 3, 4096) }), words(0xB9500064)},
 		{"ldrXoff#8", emit(func(e *arm64emitter) { e.ldrXoff(3, 3, 8) }), words(0xF9400463)},
 		{"ldrXoff#4104", emit(func(e *arm64emitter) { e.ldrXoff(3, 3, 4104) }), words(0xF9480463)},
@@ -113,6 +115,7 @@ func TestARM64InterruptPollEncoding(t *testing.T) {
 		0xAA0003E9, 0xAA0103EA, // x9 = regs, x10 = remain
 		0xD299BDED, 0xF2B2156D, 0xF2CACF0D, 0xF2E2468D, // x13 = &interruptLines
 		0x88DFFDA1, // ldar w1,[x13]
+		0x34000141, // cbz  w1,continue
 		0xB9404122, // ldr  w2,[x9,#64] (CPSR)
 		0x36080041, // tbz  w1,#1,irq_test
 		0x36300062, // tbz  w2,#6,service

@@ -26,7 +26,69 @@ func (b *Backend) accessAttribution() cpu.MemoryAccessContext {
 // together.
 func (b *Backend) invalidateDirectMemory() {
 	clear(b.dataCache[:])
+	b.virtualData = nil
 	b.tlbClear()
+}
+
+func (b *Backend) virtualDataHit(
+	address uint32,
+	size int,
+	permission cpu.Permissions,
+) ([]byte, int, bool) {
+	cache := b.virtualData
+	if cache == nil || !b.mmuEnabled() || permission&cpu.PermissionExecute != 0 {
+		return nil, 0, false
+	}
+	page := address >> 10
+	var entry *virtualDataCacheEntry
+	if permission&cpu.PermissionWrite != 0 {
+		entry = &cache.write[page&(virtualDataCacheEntries-1)]
+	} else {
+		entry = &cache.read[page&(virtualDataCacheEntries-1)]
+	}
+	if entry.data == nil || entry.virtualPage != page || entry.gen != b.mappingGen ||
+		entry.privileged != b.currentlyPrivileged() {
+		return nil, 0, false
+	}
+	pageOffset := uint64(address & 0x3ff)
+	if pageOffset+uint64(size) > 0x400 {
+		return nil, 0, false
+	}
+	offset := uint64(entry.physicalPage-entry.regionAddress) + pageOffset
+	if offset+uint64(size) > uint64(len(entry.data)) {
+		return nil, 0, false
+	}
+	return entry.data, int(offset), true
+}
+
+func (b *Backend) noteVirtualData(
+	address, physical uint32,
+	permission cpu.Permissions,
+) {
+	if b.directBus == nil || permission&cpu.PermissionExecute != 0 {
+		return
+	}
+	physicalPage := physical &^ uint32(0x3ff)
+	data, offset, _, ok := b.directData(physicalPage, 0x400, permission)
+	if !ok {
+		return
+	}
+	if b.virtualData == nil {
+		b.virtualData = new(virtualDataCache)
+	}
+	page := address >> 10
+	entry := &b.virtualData.read[page&(virtualDataCacheEntries-1)]
+	if permission&cpu.PermissionWrite != 0 {
+		entry = &b.virtualData.write[page&(virtualDataCacheEntries-1)]
+	}
+	*entry = virtualDataCacheEntry{
+		data:          data,
+		virtualPage:   page,
+		physicalPage:  physicalPage,
+		regionAddress: physicalPage - uint32(offset),
+		gen:           b.mappingGen,
+		privileged:    b.currentlyPrivileged(),
+	}
 }
 
 // directData returns a cached or freshly resolved plain-RAM span. Execute
@@ -133,6 +195,9 @@ func (b *Backend) read16(address uint32, permission cpu.Permissions) (uint16, er
 	if b.physicalAccess {
 		data := b.readScratch[:2]
 		if b.mmuEnabled() {
+			if direct, offset, ok := b.virtualDataHit(address, 2, permission); ok {
+				return binary.LittleEndian.Uint16(direct[offset : offset+2]), nil
+			}
 			if err := b.readVirtual(address, data, permission); err != nil {
 				return 0, err
 			}
@@ -176,6 +241,9 @@ func (b *Backend) read32(address uint32, permission cpu.Permissions) (uint32, er
 	if b.physicalAccess {
 		data := b.readScratch[:4]
 		if b.mmuEnabled() {
+			if direct, offset, ok := b.virtualDataHit(address, 4, permission); ok {
+				return binary.LittleEndian.Uint32(direct[offset : offset+4]), nil
+			}
 			if err := b.readVirtual(address, data, permission); err != nil {
 				return 0, err
 			}
@@ -320,6 +388,13 @@ func (b *Backend) write16(address uint32, value uint16, permission cpu.Permissio
 		data := b.writeScratch[:2]
 		binary.LittleEndian.PutUint16(data, value)
 		if b.mmuEnabled() {
+			if direct, offset, ok := b.virtualDataHit(address, 2, permission); ok {
+				binary.LittleEndian.PutUint16(direct[offset:offset+2], value)
+				if !b.instructionCacheEnabled() {
+					b.smcInvalidate(address, 2, cpu.PermissionExecute)
+				}
+				return nil
+			}
 			return b.writeVirtual(address, data, permission)
 		}
 		if b.systemBus != nil {
@@ -362,6 +437,13 @@ func (b *Backend) write32(address, value uint32, permission cpu.Permissions) err
 		data := b.writeScratch[:4]
 		binary.LittleEndian.PutUint32(data, value)
 		if b.mmuEnabled() {
+			if direct, offset, ok := b.virtualDataHit(address, 4, permission); ok {
+				binary.LittleEndian.PutUint32(direct[offset:offset+4], value)
+				if !b.instructionCacheEnabled() {
+					b.smcInvalidate(address, 4, cpu.PermissionExecute)
+				}
+				return nil
+			}
 			return b.writeVirtual(address, data, permission)
 		}
 		if b.systemBus != nil {
@@ -403,6 +485,9 @@ func (b *Backend) read8(address uint32, permission cpu.Permissions) (byte, error
 	if b.physicalAccess {
 		data := b.readScratch[:1]
 		if b.mmuEnabled() {
+			if direct, offset, ok := b.virtualDataHit(address, 1, permission); ok {
+				return direct[offset], nil
+			}
 			if err := b.readVirtual(address, data, permission); err != nil {
 				return 0, err
 			}
@@ -437,6 +522,13 @@ func (b *Backend) write8(address uint32, value byte, permission cpu.Permissions)
 		data := b.writeScratch[:1]
 		data[0] = value
 		if b.mmuEnabled() {
+			if direct, offset, ok := b.virtualDataHit(address, 1, permission); ok {
+				direct[offset] = value
+				if !b.instructionCacheEnabled() {
+					b.smcInvalidate(address, 1, cpu.PermissionExecute)
+				}
+				return nil
+			}
 			return b.writeVirtual(address, data, permission)
 		}
 		if b.systemBus != nil {

@@ -24,6 +24,8 @@ type x64emitter struct {
 	buf            []byte
 	tlb            uintptr // host address of the backend's software TLB (native_tlb.go)
 	interruptLines uintptr // address of Backend.interruptLines for system polls
+	activeCount    uintptr // address of Backend.nativeActiveCount
+	bailAddress    uintptr // address of Backend.nativeBailAddress
 }
 
 func (a *x64emitter) b(bytes ...byte) { a.buf = append(a.buf, bytes...) }
@@ -92,6 +94,12 @@ func (a *x64emitter) gate(count int, startPC uint32) {
 	a.imm32(nativeStatusBudget) // mov eax, 2  (5 bytes)
 	a.ret1()                    // 1 byte
 	a.storeEAXremain()          // body_ok: remain -= count
+	if a.activeCount != 0 {
+		a.b(0x48, 0xB8) // mov rax,activeCount
+		a.imm64(uint64(a.activeCount))
+		a.b(0xC7, 0x00) // mov dword [rax],count
+		a.imm32(uint32(count))
+	}
 }
 
 // interruptPoll exits at this architectural boundary when either input is
@@ -103,6 +111,11 @@ func (a *x64emitter) interruptPoll(pc uint32, retired int) {
 	}
 	// RDI was loaded once by the system prologue; aligned dword load is atomic.
 	a.b(0x8B, 0x0F) // mov ecx,[rdi]
+	// Both lines are normally low. Collapse that overwhelmingly common case
+	// before paying for two individual line tests and any CPSR reads.
+	a.testECXECX()
+	noLines := a.mark()
+	a.b(0x74, 0) // jz continue
 
 	// FIQ has priority. A masked FIQ falls through to the IRQ test.
 	a.b(0xF6, 0xC1, 0x02) // test cl,2
@@ -133,8 +146,31 @@ func (a *x64emitter) interruptPoll(pc uint32, retired int) {
 	a.ret1()
 
 	continuation := a.mark()
+	a.buf[noLines+1] = byte(continuation - (noLines + 2))
 	a.buf[noIRQ+1] = byte(continuation - (noIRQ + 2))
 	a.buf[maskedIRQ+1] = byte(continuation - (maskedIRQ + 2))
+}
+
+func (a *x64emitter) conditionStart(condition uint8) int {
+	if condition >= 0xe {
+		return -1
+	}
+	a.emitCondition(condition)
+	a.testECXECX()
+	site := a.mark()
+	a.b(0x0F, 0x84) // jz skip_instruction
+	a.imm32(0)
+	return site
+}
+
+func (a *x64emitter) conditionEnd(site int) {
+	if site < 0 {
+		return
+	}
+	displacement := int32(a.mark() - (site + 6))
+	for index := 0; index < 4; index++ {
+		a.buf[site+2+index] = byte(uint32(displacement) >> (8 * index))
+	}
 }
 
 func (a *x64emitter) selfLoopUncond(gateOff int) {
@@ -172,6 +208,34 @@ func (a *x64emitter) exitCondBranch(cond uint8, takenPC, nextPC uint32) {
 	a.ret1()
 }
 
+// exitLinked follows a stable pointer slot to another block's budget gate.
+// A zero slot means the target is untranslated or was invalidated, in which
+// case the normal Go dispatcher exit remains the correctness fallback.
+func (a *x64emitter) exitLinked(slot uintptr, pc uint32) {
+	a.b(0x48, 0xB8)
+	a.imm64(uint64(slot))       // mov rax,slot
+	a.b(0x48, 0x8B, 0x00)       // mov rax,[rax]
+	a.b(0x48, 0x85, 0xC0)       // test rax,rax
+	a.b(0x74, 0x02, 0xFF, 0xE0) // jz fallback ; jmp rax
+	a.exitBranch(pc)
+}
+
+func (a *x64emitter) exitCondLinked(
+	cond uint8, takenSlot uintptr, takenPC uint32, nextSlot uintptr, nextPC uint32,
+) {
+	a.emitCondition(cond)
+	a.testECXECX()
+	site := a.mark()
+	a.b(0x0F, 0x84)
+	a.imm32(0) // jz not_taken
+	a.exitLinked(takenSlot, takenPC)
+	displacement := int32(a.mark() - (site + 6))
+	for index := 0; index < 4; index++ {
+		a.buf[site+2+index] = byte(uint32(displacement) >> (8 * index))
+	}
+	a.exitLinked(nextSlot, nextPC)
+}
+
 // exitBranchLink is the BL terminator: both the link value and the target are
 // constants fixed when the block was translated, so it is two immediate stores.
 func (a *x64emitter) exitBranchLink(link, target uint32) {
@@ -180,6 +244,12 @@ func (a *x64emitter) exitBranchLink(link, target uint32) {
 	a.movMemPC(target)
 	a.b(0x31, 0xC0) // xor eax, eax (nativeStatusNorm)
 	a.ret1()
+}
+
+func (a *x64emitter) exitBranchLinkLinked(link uint32, slot uintptr, target uint32) {
+	a.movEAXimm(link)
+	a.storeEAX(cpu.RegisterLR)
+	a.exitLinked(slot, target)
 }
 
 func (a *x64emitter) exitBkpt(nextPC uint32) {
@@ -198,6 +268,8 @@ func (a *x64emitter) storeEAXtoPC()      { a.b(0x41, 0x89, 0x43, pcDisp) }   // 
 
 func (a *x64emitter) movEAXimm(v uint32) { a.b(0xB8); a.imm32(v) } // mov eax, imm32
 func (a *x64emitter) movEDXimm(v uint32) { a.b(0xBA); a.imm32(v) } // mov edx, imm32
+func (a *x64emitter) movECXimm(v uint32) { a.b(0xB9); a.imm32(v) } // mov ecx, imm32
+func (a *x64emitter) movR8Dimm(v uint32) { a.b(0x41, 0xB8); a.imm32(v) }
 
 // --- arithmetic / logic ----------------------------------------------------
 
@@ -206,6 +278,8 @@ func (a *x64emitter) subEAXimm(v uint32) { a.b(0x2D); a.imm32(v) } // sub eax, i
 func (a *x64emitter) addEAXECX()         { a.b(0x01, 0xC8) }       // add eax, ecx
 func (a *x64emitter) subEAXECX()         { a.b(0x29, 0xC8) }       // sub eax, ecx
 func (a *x64emitter) andEAXECX()         { a.b(0x21, 0xC8) }       // and eax, ecx
+func (a *x64emitter) orEAXECX()          { a.b(0x09, 0xC8) }       // or eax, ecx
+func (a *x64emitter) xorEAXECX()         { a.b(0x31, 0xC8) }       // xor eax, ecx
 func (a *x64emitter) xorEAXEAX()         { a.b(0x31, 0xC0) }       // xor eax, eax
 func (a *x64emitter) notEAX()            { a.b(0xF7, 0xD0) }       // not eax
 func (a *x64emitter) notECX()            { a.b(0xF7, 0xD1) }       // not ecx
@@ -606,10 +680,18 @@ func (a *x64emitter) memory(m memAccess, pc uint32, retired int) {
 	} else {
 		a.loadEAX(m.base)
 		if m.hasIndex {
-			a.addEAXmem(m.index)
+			if m.subtract {
+				a.subEAXmem(m.index)
+			} else {
+				a.addEAXmem(m.index)
+			}
 		}
 		if m.offset != 0 {
-			a.addEAXimm(m.offset)
+			if m.subtract {
+				a.subEAXimm(m.offset)
+			} else {
+				a.addEAXimm(m.offset)
+			}
 		}
 	}
 
@@ -725,6 +807,11 @@ func (a *x64emitter) bailStub(pc uint32, retired int, misses []int) {
 	skip := a.mark()
 	a.b(0xEB, 0) // jmp done
 	bail := a.mark()
+	if a.bailAddress != 0 {
+		a.b(0x49, 0xB8) // mov r8,bailAddress
+		a.imm64(uint64(a.bailAddress))
+		a.b(0x41, 0x89, 0x00) // mov [r8],eax
+	}
 	a.movMemPC(pc)
 	a.b(0xB8)
 	a.imm32(nativeBailStatus(retired))
@@ -772,6 +859,107 @@ func (a *x64emitter) highRegister(op, rd, rs, pcValue uint32) bool {
 	default: // 2: MOV rd, rs (no flags)
 		loadEAXOperand(rs)
 		a.storeEAX(rd)
+	}
+	return true
+}
+
+func (a *x64emitter) armDataProcessing(op nativeARMDataOp) bool {
+	if op.opcode >= 5 && op.opcode <= 7 {
+		return false
+	}
+	loadEAX := func(gi uint32) {
+		if gi == cpu.RegisterPC {
+			a.movEAXimm(op.pcValue)
+		} else {
+			a.loadEAX(gi)
+		}
+	}
+	loadECX := func(gi uint32) {
+		if gi == cpu.RegisterPC {
+			a.movECXimm(op.pcValue)
+		} else {
+			a.loadECX(gi)
+		}
+	}
+	loadOperandECX := func() {
+		if op.operandReg {
+			loadECX(op.operand)
+		} else {
+			a.movECXimm(op.operand)
+		}
+	}
+	loadOperandEAX := func() {
+		if op.operandReg {
+			loadEAX(op.operand)
+		} else {
+			a.movEAXimm(op.operand)
+		}
+	}
+
+	writes := op.opcode < 8 || op.opcode >= 12
+	arithmetic := false
+	subtract := false
+	switch op.opcode {
+	case 0: // AND
+		loadEAX(op.rn)
+		loadOperandECX()
+		a.andEAXECX()
+	case 1: // EOR
+		loadEAX(op.rn)
+		loadOperandECX()
+		a.xorEAXECX()
+	case 2, 10: // SUB / CMP
+		loadEAX(op.rn)
+		loadOperandECX()
+		a.subEAXECX()
+		arithmetic, subtract = true, true
+	case 3: // RSB
+		loadOperandEAX()
+		loadECX(op.rn)
+		a.subEAXECX()
+		arithmetic, subtract = true, true
+	case 4, 11: // ADD / CMN
+		loadEAX(op.rn)
+		loadOperandECX()
+		a.addEAXECX()
+		arithmetic = true
+	case 8: // TST
+		loadEAX(op.rn)
+		loadOperandECX()
+		a.andEAXECX()
+	case 9: // TEQ
+		loadEAX(op.rn)
+		loadOperandECX()
+		a.xorEAXECX()
+	case 12: // ORR
+		loadEAX(op.rn)
+		loadOperandECX()
+		a.orEAXECX()
+	case 13: // MOV
+		loadOperandEAX()
+	case 14: // BIC
+		loadEAX(op.rn)
+		loadOperandECX()
+		a.notECX()
+		a.andEAXECX()
+	case 15: // MVN
+		loadOperandEAX()
+		a.notEAX()
+	default:
+		return false
+	}
+	if op.setFlags {
+		if arithmetic {
+			a.commitNZCV(subtract)
+		} else if op.carry >= 0 {
+			a.movR8Dimm(uint32(op.carry))
+			a.commitNZC()
+		} else {
+			a.commitNZ()
+		}
+	}
+	if writes {
+		a.storeEAX(op.rd)
 	}
 	return true
 }
