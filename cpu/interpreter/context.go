@@ -24,10 +24,7 @@ func (b *Backend) SaveContext() ([]byte, error) {
 		return nil, cpu.ErrClosed
 	}
 	b.resolveFlags()
-	lineAddresses := make([]uint32, 0, len(b.instructionCache))
-	for address := range b.instructionCache {
-		lineAddresses = append(lineAddresses, address)
-	}
+	lineAddresses := b.residentInstructionCacheLines()
 	sort.Slice(lineAddresses, func(left, right int) bool {
 		return lineAddresses[left] < lineAddresses[right]
 	})
@@ -65,8 +62,8 @@ func (b *Backend) SaveContext() ([]byte, error) {
 	for _, address := range lineAddresses {
 		binary.LittleEndian.PutUint32(data[offset:offset+4], address)
 		offset += 4
-		line := b.instructionCache[address]
-		copy(data[offset:offset+int(instructionCacheLineSize)], line[:])
+		entry := b.instructionCacheEntry(address)
+		copy(data[offset:offset+int(instructionCacheLineSize)], entry.line[:])
 		offset += int(instructionCacheLineSize)
 	}
 	binary.LittleEndian.PutUint32(data[offset:offset+4], uint32(b.mode))
@@ -176,10 +173,15 @@ func (b *Backend) RestoreContext(data []byte) error {
 	b.banks = restoredBanks
 	b.spsr = restoredSPSR
 	b.cp15 = restoredCP15
-	b.instructionCache = restoredInstructionCache
-	b.instructionCacheHotValid = false
 	b.refreshPhysicalAccess()
+	// invalidateTLB advances the mapping generation, retiring every entry both
+	// tables still hold from the machine this context is replacing. The
+	// restored lines are installed after it, under the new generation.
 	b.invalidateTLB()
+	b.instructionCacheTable = nil
+	for address, line := range restoredInstructionCache {
+		b.restoreInstructionCacheLine(address, line)
+	}
 	b.executeData = nil
 	clear(b.dataCache[:])
 	b.flags.dirty = false

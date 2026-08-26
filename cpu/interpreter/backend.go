@@ -177,12 +177,17 @@ type Backend struct {
 	executionTraps map[cpu.ExecutionTrap]struct{}
 	interruptLines atomic.Uint32
 	closedState    atomic.Bool
-	// instructionCache is the functional ARM926 VIVT shadow, consulted only
-	// while CP15 enables it, which no application machine does.
-	instructionCache         map[uint32]instructionCacheLine
-	instructionCacheHot      instructionCacheLine
-	instructionCacheHotMVA   uint32
-	instructionCacheHotValid bool
+	// instructionCacheTable is the functional ARM926 VIVT shadow, consulted
+	// only while CP15 enables it, which no application machine does. It is a
+	// pointer so an application backend carries eight bytes rather than the
+	// whole table.
+	instructionCacheTable *[instructionCacheSets]instructionCacheEntry
+	mmuTLBTable           *[mmuTLBEntries]mmuTLBEntry
+	// mappingGen validates both tables above. Every change that could alter a
+	// translation or the permission derived from it -- a TLB flush, an I-cache
+	// flush, the control register, the domain access control, the process ID --
+	// advances it, which retires every cached entry in constant time.
+	mappingGen uint32
 
 	// Diagnostics. Every one of these is off unless a host explicitly turns it
 	// on, and tracing() reports whether any per-instruction ring is armed.
@@ -306,6 +311,10 @@ func (b *Backend) PCRegisterCaptures() []PCRegisterCapture {
 // one place is what stops them from drifting apart.
 func (b *Backend) setCP15Control(value uint32) {
 	b.cp15.control = value
+	// The system and ROM protection bits feed the permission check that cached
+	// instruction lines record as passed, and the MMU and cache enables change
+	// what a translation means at all.
+	b.mappingGen++
 	b.refreshPhysicalAccess()
 }
 
@@ -422,6 +431,12 @@ func (b *Backend) SetExecutionTraps(traps []cpu.ExecutionTrap) error {
 }
 
 func (b *Backend) executionTrapAt(mode cpu.Mode, address uint32) bool {
+	// Whole-system execution consults this between instructions, and a machine
+	// with no host boundary installed is the common case. The length test is
+	// inlined; the map lookup it guards is a call.
+	if len(b.executionTraps) == 0 {
+		return false
+	}
 	_, ok := b.executionTraps[cpu.ExecutionTrap{Address: address, Mode: mode}]
 	return ok
 }
@@ -706,9 +721,8 @@ func (b *Backend) Close() error {
 	b.contextBus = nil
 	b.physicalAccess = false
 	b.executionTraps = nil
-	b.mmuTLB = nil
-	b.instructionCache = nil
-	b.instructionCacheHotValid = false
+	b.mmuTLBTable = nil
+	b.instructionCacheTable = nil
 	clear(b.regionHints[:])
 	b.executeData = nil
 	clear(b.dataCache[:])

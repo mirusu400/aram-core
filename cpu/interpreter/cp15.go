@@ -214,7 +214,11 @@ func (b *Backend) writeCP15(crn, crm, op2 uint8, value uint32) error {
 		b.invalidateTLB()
 		return nil
 	case crn == 3 && crm == 0 && op2 == 0:
+		// Cached instruction lines record that their permission check passed;
+		// the domain access control is one of its inputs, so changing it has to
+		// retire them.
 		b.cp15.domainAccessControl = value
+		b.mappingGen++
 		return nil
 	case crn == 5 && crm == 0 && op2 == 0:
 		b.cp15.dataFaultStatus = value
