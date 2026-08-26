@@ -36,9 +36,8 @@ The usable library baseline now includes:
   result, guest log output, and runtime trace tails without source bytes,
   guest memory, framebuffers, persistence, or media payloads.
 
-It does not own windows, menus, native file dialogs, touch overlays, or product
-navigation. Those live in
-[`aram-frontend`](https://github.com/mirusu400/aram-frontend).
+Windows, menus, native file dialogs, touch overlays, and product navigation
+live in [`aram-frontend`](https://github.com/mirusu400/aram-frontend).
 The ecosystem roadmap and release integration live in
 [`aram-emu`](https://github.com/mirusu400/aram-emu).
 
@@ -46,7 +45,7 @@ The ecosystem roadmap and release integration live in
 
 The default module is pure Go and must build on Windows, Linux, macOS, and
 Android/arm64. Optional CPU backends that require C libraries belong behind
-build tags and cannot become mandatory for loaders, profiles, or state formats.
+build tags and stay optional for loaders, profiles, and state formats.
 
 ```powershell
 go test ./...
