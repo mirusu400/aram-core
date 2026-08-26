@@ -6,16 +6,30 @@ import (
 	"github.com/mirusu400/aram-core/cpu"
 )
 
+// accessAttribution names the instruction responsible for a physical access.
+// It is built here rather than in the run loops because a guest retires far
+// more instructions than it makes bus accesses: filling the whole struct per
+// instruction cost more than the accesses it described.
+func (b *Backend) accessAttribution() cpu.MemoryAccessContext {
+	return cpu.MemoryAccessContext{
+		InstructionAddress: b.instructionAddress,
+		LinkAddress:        b.regs[cpu.RegisterLR],
+		StackAddress:       b.regs[cpu.RegisterSP],
+		Mode:               b.mode,
+		Attributed:         true,
+	}
+}
+
 func (b *Backend) readSystemBus(address uint32, destination []byte, permission cpu.Permissions) error {
 	if b.contextBus != nil {
-		return b.contextBus.ReadContext(b.accessContext, address, destination, permission)
+		return b.contextBus.ReadContext(b.accessAttribution(), address, destination, permission)
 	}
 	return b.systemBus.Read(address, destination, permission)
 }
 
 func (b *Backend) writeSystemBus(address uint32, source []byte, permission cpu.Permissions) error {
 	if b.contextBus != nil {
-		return b.contextBus.WriteContext(b.accessContext, address, source, permission)
+		return b.contextBus.WriteContext(b.accessAttribution(), address, source, permission)
 	}
 	return b.systemBus.Write(address, source, permission)
 }

@@ -167,16 +167,19 @@ type Backend struct {
 
 	// Whole-system state. An application machine never reads any of it, so it
 	// is kept behind the hot fields above rather than between them.
-	systemBus      cpu.MemoryBus
-	contextBus     cpu.ContextMemoryBus
-	cp15           cp15State
-	banks          bankedRegisters
-	spsr           savedProgramStatus
-	mmuTLB         map[uint32]mmuTranslation
-	accessContext  cpu.MemoryAccessContext
-	executionTraps map[cpu.ExecutionTrap]struct{}
-	interruptLines atomic.Uint32
-	closedState    atomic.Bool
+	systemBus  cpu.MemoryBus
+	contextBus cpu.ContextMemoryBus
+	cp15       cp15State
+	banks      bankedRegisters
+	spsr       savedProgramStatus
+	// instructionAddress is the guest instruction currently executing. The
+	// whole-system loops record it so a bus access can name what caused it,
+	// which is cheaper than building the whole attribution per instruction;
+	// see accessAttribution.
+	instructionAddress uint32
+	executionTraps     map[cpu.ExecutionTrap]struct{}
+	interruptLines     atomic.Uint32
+	closedState        atomic.Bool
 	// instructionCacheTable is the functional ARM926 VIVT shadow, consulted
 	// only while CP15 enables it, which no application machine does. It is a
 	// pointer so an application backend carries eight bytes rather than the

@@ -178,8 +178,16 @@ func (r *region) end() uint64 {
 }
 
 type Bus struct {
-	mu                   sync.Mutex
-	regions              []region
+	mu      sync.Mutex
+	regions []region
+	// lastRegion is the region the previous access resolved to. Guest memory
+	// traffic has strong locality, so this answers almost every access and
+	// keeps the binary search off the path a CPU takes for each load and store.
+	lastRegion *region
+	// observed is true while any observer is armed. Every access used to
+	// evaluate three observer predicates and materialize the transferred value
+	// for them; a machine that is not being watched now tests one bool.
+	observed             bool
 	mmioObserver         MMIOObserver
 	memoryObserver       MemoryObserver
 	memoryObserverStart  uint32
@@ -199,6 +207,7 @@ func NewBus() *Bus {
 func (b *Bus) SetMMIOObserver(observer MMIOObserver) {
 	b.mu.Lock()
 	b.mmioObserver = observer
+	b.refreshObserved()
 	b.mu.Unlock()
 }
 
@@ -214,8 +223,15 @@ func (b *Bus) SetMemoryObserver(address, size uint32, observer MemoryObserver) e
 	b.memoryObserver = observer
 	b.memoryObserverStart = address
 	b.memoryObserverEnd = end
+	b.refreshObserved()
 	b.mu.Unlock()
 	return nil
+}
+
+// refreshObserved recomputes the armed-observer summary. Every writer of an
+// observer has to call it, so the fast path can trust one field.
+func (b *Bus) refreshObserved() {
+	b.observed = b.mmioObserver != nil || b.memoryObserver != nil || b.contextObserver != nil
 }
 
 func (b *Bus) observesMemory(address uint32, size int) bool {
@@ -240,6 +256,7 @@ func (b *Bus) SetInstructionMemoryObserver(
 	b.contextObserver = observer
 	b.contextObserverStart = address
 	b.contextObserverEnd = end
+	b.refreshObserved()
 	b.mu.Unlock()
 	return nil
 }
@@ -307,7 +324,10 @@ func (b *Bus) MapMMIO(name string, address, size uint32, device Device) error {
 	})
 }
 
+// mapRegion appends to the region slice, which can move its backing array, so
+// the remembered pointer has to be dropped.
 func (b *Bus) mapRegion(mapped region) error {
+	b.lastRegion = nil
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if strings.TrimSpace(mapped.name) == "" || len(mapped.name) > 255 ||
@@ -350,6 +370,10 @@ func (b *Bus) ReadContext(
 		} else {
 			start := int(offset)
 			copy(destination, mapped.data[start:start+len(destination)])
+		}
+		if !b.observed {
+			b.mu.Unlock()
+			return nil
 		}
 		observer := b.memoryObserver
 		observed := b.observesMemory(address, len(destination))
@@ -427,6 +451,10 @@ func (b *Bus) WriteContext(
 			start := int(offset)
 			copy(mapped.data[start:start+len(source)], source)
 		}
+		if !b.observed {
+			b.mu.Unlock()
+			return nil
+		}
 		observer := b.memoryObserver
 		observed := b.observesMemory(address, len(source))
 		contextObserver := b.contextObserver
@@ -491,11 +519,15 @@ func (b *Bus) resolve(
 	if address%uint32(width) != 0 {
 		return width, nil, 0, &Fault{Address: address, Width: width, Permission: permission, Err: ErrUnalignedAccess}
 	}
-	index := sort.Search(len(b.regions), func(index int) bool { return uint64(address) < b.regions[index].end() })
-	if index >= len(b.regions) || address < b.regions[index].address {
-		return width, nil, 0, &Fault{Address: address, Width: width, Permission: permission, Err: cpu.ErrInvalidAddress}
+	mapped := b.lastRegion
+	if mapped == nil || address < mapped.address || uint64(address) >= mapped.end() {
+		index := sort.Search(len(b.regions), func(index int) bool { return uint64(address) < b.regions[index].end() })
+		if index >= len(b.regions) || address < b.regions[index].address {
+			return width, nil, 0, &Fault{Address: address, Width: width, Permission: permission, Err: cpu.ErrInvalidAddress}
+		}
+		mapped = &b.regions[index]
+		b.lastRegion = mapped
 	}
-	mapped := &b.regions[index]
 	if uint64(address)+uint64(size) > mapped.end() {
 		return width, nil, 0, &Fault{Region: mapped.name, Address: address, Width: width, Permission: permission, Err: ErrRegionBoundary}
 	}
