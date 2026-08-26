@@ -97,18 +97,25 @@ type Backend struct {
 	pcHits         map[uint32]uint64 // env ARAM_PC_TRACE: per-PC execution histogram
 	// jitBlocks is the translated-block cache of the optional pure-Go dynamic
 	// recompiler (see jit.go). Nil keeps the precise tree-walking path; non-nil
-	// enables the JIT for Thumb, falling back to the interpreter per instruction
-	// for anything it does not translate. It is invalidated on Map/Close and on
+	// enables the JIT for Thumb alongside armJITBlocks, falling back to the
+	// interpreter per instruction for anything it does not translate. It is invalidated on Map/Close and on
 	// a guest write into an executable region (self-modifying code).
 	jitBlocks map[uint32]*jitBlock
+	// armJITBlocks is the ARM counterpart of jitBlocks. It is separate because
+	// an aligned address can contain either ARM or Thumb code over the lifetime
+	// of a backend, while each cache entry must retain mode-specific decode.
+	// Native-JIT backends also allocate this map: ARM uses portable translated
+	// closures while Thumb continues through native machine code.
+	armJITBlocks map[uint32]*jitBlock
 	// jitCache is a direct-mapped front for jitBlocks: hot loops dispatch the
 	// same few blocks repeatedly, so caching (pc -> block) in a fixed array
 	// skips the map hash+lookup that otherwise dominates block dispatch. jitGen
 	// is bumped on every invalidation of jitBlocks; an entry whose gen no longer
 	// matches is treated as a miss, so the cache never returns a stale block
 	// without touching the array on the (rare) invalidation path.
-	jitCache []jitCacheEntry
-	jitGen   uint64
+	jitCache    []jitCacheEntry
+	armJITCache []jitCacheEntry
+	jitGen      uint64
 	// jitCodeLo/jitCodeHi bound the guest-address span of every translated
 	// block. smcInvalidate uses them to invalidate only on a write that
 	// overlaps translated code, not on the blitter's ordinary framebuffer
@@ -116,11 +123,14 @@ type Backend struct {
 	// (^uint32(0), 0), which no write overlaps.
 	jitCodeLo uint32
 	jitCodeHi uint32
+	// jitCodePages makes the Go/ARM translated span page-precise. It also keeps
+	// native inline stores away from pages containing portable ARM closures.
+	jitCodePages []uint64
 	// nativeBlocks and nativeArena drive the optional native machine-code JIT
 	// (see native_common.go and the per-host native_*.go emitters). Non-nil
 	// nativeBlocks enables it for Thumb, translating straight runs into host
-	// code held in nativeArena and falling back to the interpreter for memory,
-	// ARM, and untranslated instructions. Like jitBlocks it is invalidated on
+	// code held in nativeArena and falling back for untranslated Thumb. ARM uses
+	// armJITBlocks on the same backend. Like jitBlocks it is invalidated on
 	// Map/Close and on a self-modifying write. jitBlocks and nativeBlocks are
 	// mutually exclusive: a backend is the pure-Go JIT or the native JIT, never
 	// both.
@@ -170,6 +180,7 @@ type Backend struct {
 	systemBus  cpu.MemoryBus
 	contextBus cpu.ContextMemoryBus
 	blockBus   cpu.BlockMemoryBus
+	directBus  cpu.DirectMemoryBus
 	cp15       cp15State
 	banks      bankedRegisters
 	spsr       savedProgramStatus
@@ -186,14 +197,21 @@ type Backend struct {
 	readScratch    [4]byte
 	writeScratch   [4]byte
 	executionTraps map[cpu.ExecutionTrap]struct{}
-	interruptLines atomic.Uint32
+	interruptLines uint32
 	closedState    atomic.Bool
 	// instructionCacheTable is the functional ARM926 VIVT shadow, consulted
 	// only while CP15 enables it, which no application machine does. It is a
 	// pointer so an application backend carries eight bytes rather than the
 	// whole table.
 	instructionCacheTable *[instructionCacheSets]instructionCacheEntry
-	mmuTLBTable           *[mmuTLBEntries]mmuTLBEntry
+	// instructionWindow is the line currently feeding the execution loops. A
+	// non-zero tag is (virtual PC >> 5) + 1, so a straight ARM run pays one tag
+	// comparison for seven of the eight words in a 32-byte line instead of
+	// repeating the MVA, privilege, set-index, generation, and resident-tag
+	// checks. Every operation that can change those checks invalidates it.
+	instructionWindow    *instructionCacheLine
+	instructionWindowTag uint32
+	mmuTLBTable          *[mmuTLBEntries]mmuTLBEntry
 	// mappingGen validates both tables above. Every change that could alter a
 	// translation or the permission derived from it -- a TLB flush, an I-cache
 	// flush, the control register, the domain access control, the process ID --
@@ -217,15 +235,18 @@ func New() *Backend {
 	return NewWithMemoryLimit(DefaultMemoryLimit)
 }
 
-// NewJIT returns a backend that runs Thumb through the pure-Go dynamic
-// recompiler (jit.go) instead of the tree-walking interpreter, falling back to
-// the interpreter for untranslated instructions and for ARM. It is
+// NewJIT returns a backend that runs ARM and Thumb through pure-Go translated
+// blocks instead of repeatedly decoding them, falling back to the interpreter
+// for unsupported instructions. It is
 // architecturally a second CPU backend behind the same identity; use
 // cpu/conformance to confirm it reproduces the interpreter exactly.
 func NewJIT() *Backend {
 	b := NewWithMemoryLimit(DefaultMemoryLimit)
 	b.jitBlocks = make(map[uint32]*jitBlock)
 	b.jitCache = make([]jitCacheEntry, jitCacheSize)
+	b.armJITBlocks = make(map[uint32]*jitBlock)
+	b.armJITCache = make([]jitCacheEntry, jitCacheSize)
+	b.jitCodePages = make([]uint64, nativeCodePageWords)
 	b.jitCodeLo, b.jitCodeHi = ^uint32(0), 0
 	return b
 }
@@ -326,6 +347,8 @@ func (b *Backend) setCP15Control(value uint32) {
 	// instruction lines record as passed, and the MMU and cache enables change
 	// what a translation means at all.
 	b.mappingGen++
+	b.invalidateInstructionWindow()
+	b.tlbClear()
 	b.refreshPhysicalAccess()
 }
 
@@ -403,14 +426,14 @@ func (b *Backend) SetInterruptLine(line cpu.InterruptLine, asserted bool) error 
 	}
 	mask := uint32(1) << uint32(line)
 	for {
-		current := b.interruptLines.Load()
+		current := atomic.LoadUint32(&b.interruptLines)
 		next := current &^ mask
 		if asserted {
 			next |= mask
 		}
-		if b.interruptLines.CompareAndSwap(current, next) {
+		if atomic.CompareAndSwapUint32(&b.interruptLines, current, next) {
 			if b.closedState.Load() {
-				b.interruptLines.And(^mask)
+				atomic.AndUint32(&b.interruptLines, ^mask)
 				return cpu.ErrClosed
 			}
 			return nil
@@ -438,6 +461,7 @@ func (b *Backend) SetExecutionTraps(traps []cpu.ExecutionTrap) error {
 		configured[trap] = struct{}{}
 	}
 	b.executionTraps = configured
+	b.invalidateTranslations()
 	return nil
 }
 
@@ -491,11 +515,18 @@ func (b *Backend) Map(address, size uint32, permissions cpu.Permissions) error {
 	})
 	clear(b.regionHints[:])
 	b.executeData = nil
+	b.invalidateInstructionWindow()
 	clear(b.dataCache[:])
 	b.tlbClear()
 	if b.jitBlocks != nil {
 		clear(b.jitBlocks)
+	}
+	if b.armJITBlocks != nil {
+		clear(b.armJITBlocks)
+	}
+	if b.jitBlocks != nil || b.armJITBlocks != nil {
 		b.jitGen++
+		clear(b.jitCodePages)
 		b.jitCodeLo, b.jitCodeHi = ^uint32(0), 0
 	}
 	b.nativeInvalidate()
@@ -523,9 +554,23 @@ func (b *Backend) AttachSystemBus(bus cpu.MemoryBus) error {
 	b.systemBus = bus
 	b.contextBus, _ = bus.(cpu.ContextMemoryBus)
 	b.blockBus, _ = bus.(cpu.BlockMemoryBus)
+	b.directBus, _ = bus.(cpu.DirectMemoryBus)
+	if b.directBus != nil {
+		b.directBus.SetDirectMemoryInvalidator(func() {
+			// Configuration changes may come from a host goroutine. Waiting for
+			// Run's mutex makes sure no generated block is still using a direct
+			// host pointer when the observer/mapping change returns.
+			b.mu.Lock()
+			defer b.mu.Unlock()
+			if !b.closed {
+				b.invalidateDirectMemory()
+			}
+		})
+	}
 	b.refreshPhysicalAccess()
 	clear(b.regionHints[:])
 	b.executeData = nil
+	b.invalidateInstructionWindow()
 	clear(b.dataCache[:])
 	b.tlbClear()
 	return nil
@@ -595,6 +640,8 @@ func (b *Backend) WriteRegister(id, value uint32) error {
 		} else {
 			b.mode = cpu.ModeARM
 		}
+		b.invalidateInstructionWindow()
+		b.tlbClear()
 	} else {
 		b.regs[id] = value
 	}
@@ -668,6 +715,8 @@ func (b *Backend) Run(ctx context.Context, address uint32, mode cpu.Mode, budget
 			default:
 				retired, reason, err = b.runThumb(batch)
 			}
+		} else if b.armJITBlocks != nil {
+			retired, reason, err = b.runARMJIT(batch)
 		} else {
 			retired, reason, err = b.runARM(batch)
 		}
@@ -727,20 +776,26 @@ func (b *Backend) Close() error {
 	}
 	b.closed = true
 	b.closedState.Store(true)
-	b.interruptLines.Store(0)
+	atomic.StoreUint32(&b.interruptLines, 0)
 	b.regions = nil
+	if b.directBus != nil {
+		b.directBus.SetDirectMemoryInvalidator(nil)
+	}
 	b.systemBus = nil
 	b.contextBus = nil
 	b.blockBus = nil
+	b.directBus = nil
 	b.physicalAccess = false
 	b.executionTraps = nil
 	b.mmuTLBTable = nil
 	b.instructionCacheTable = nil
+	b.invalidateInstructionWindow()
 	clear(b.regionHints[:])
 	b.executeData = nil
 	clear(b.dataCache[:])
 	if b.jitBlocks != nil {
 		clear(b.jitBlocks)
+		clear(b.armJITBlocks)
 		b.jitGen++
 		b.jitCodeLo, b.jitCodeHi = ^uint32(0), 0
 	}
@@ -751,6 +806,12 @@ func (b *Backend) Close() error {
 		b.nativeCodeLo, b.nativeCodeHi = ^uint32(0), 0
 		b.tlbClear()
 		b.tlb = nil
+	}
+	if b.armJITBlocks != nil {
+		clear(b.armJITBlocks)
+		b.armJITBlocks = nil
+		b.armJITCache = nil
+		b.jitCodePages = nil
 	}
 	b.mapped = 0
 	return nil

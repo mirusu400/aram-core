@@ -103,6 +103,18 @@ func (b *Backend) tlbClearWrite() {
 	}
 }
 
+func (b *Backend) tlbHit(address uint32, permission cpu.Permissions) bool {
+	if len(b.tlb) == 0 {
+		return false
+	}
+	page := address >> tlbPageBits
+	slot := page & nativeTLBMask
+	if permission&cpu.PermissionWrite != 0 {
+		slot += nativeTLBEntries
+	}
+	return b.tlb[slot].tag == page
+}
+
 // tlbNote installs the page containing address, given the region that satisfied
 // the access (its first byte is guest address regionAddr). It is called from the
 // interpreter's memory path, which is where a native bail lands, so the page a
@@ -118,14 +130,43 @@ func (b *Backend) tlbNote(address, regionAddr uint32, data []byte, perms cpu.Per
 	if start < base || start+tlbPageSize > base+uint64(len(data)) {
 		return
 	}
-	host := uint64(uintptr(unsafe.Pointer(&data[start-base])))
+	b.tlbInstall(page, uint64(uintptr(unsafe.Pointer(&data[start-base]))), perms)
+}
+
+// tlbNoteMapped installs a virtual page whose bytes live at physicalStart in a
+// direct system-RAM slice. Unlike tlbNote, the virtual and backing addresses
+// may differ; the emitted tag is always virtual while host points at the first
+// byte to which that virtual page translates.
+func (b *Backend) tlbNoteMapped(
+	virtualStart, physicalStart, regionAddr uint32,
+	data []byte,
+	perms cpu.Permissions,
+) {
+	if virtualStart&(tlbPageSize-1) != 0 {
+		return
+	}
+	start := uint64(physicalStart)
+	base := uint64(regionAddr)
+	if start < base || start+tlbPageSize > base+uint64(len(data)) {
+		return
+	}
+	b.tlbInstall(
+		virtualStart>>tlbPageBits,
+		uint64(uintptr(unsafe.Pointer(&data[start-base]))),
+		perms,
+	)
+}
+
+func (b *Backend) tlbInstall(page uint32, host uint64, perms cpu.Permissions) {
 	slot := page & nativeTLBMask
 	if perms&cpu.PermissionRead != 0 {
 		b.tlb[slot].tag, b.tlb[slot].host = page, host
 	}
 	// A writable page that overlaps translated code stays off the inline path:
 	// stores there must reach smcInvalidate through the interpreter.
-	if perms&cpu.PermissionWrite != 0 && !b.hasCodePages(uint32(start), tlbPageSize) {
+	virtualStart := page << tlbPageBits
+	if perms&cpu.PermissionWrite != 0 && !b.hasCodePages(virtualStart, tlbPageSize) &&
+		!b.hasJITCodePages(virtualStart, tlbPageSize) {
 		b.tlb[nativeTLBEntries+slot].tag = page
 		b.tlb[nativeTLBEntries+slot].host = host
 	}

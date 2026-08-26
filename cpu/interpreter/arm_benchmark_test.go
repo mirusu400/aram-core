@@ -7,12 +7,11 @@ import (
 	"github.com/mirusu400/aram-core/cpu"
 )
 
-// The ARM decoder has no translated-block path behind it: the Go and native
-// JITs are Thumb-only, so every ARM instruction a guest runs pays the full
-// interpreter loop. This is the regression guard for that loop, mirroring
-// BenchmarkThumbRun's 4-ALU-plus-branch shape so the two are comparable.
-func BenchmarkARMRun(b *testing.B) {
-	backend := New()
+// benchmarkARMRun mirrors BenchmarkThumbRun's 4-ALU-plus-branch shape so the
+// precise decoder and both backends' portable ARM block translator remain
+// directly comparable.
+func benchmarkARMRun(b *testing.B, newBackend func() *Backend) {
+	backend := newBackend()
 	b.Cleanup(func() { _ = backend.Close() })
 	if err := backend.Map(0x1000, 0x1000,
 		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute); err != nil {
@@ -38,3 +37,6 @@ func BenchmarkARMRun(b *testing.B) {
 	}
 	b.ReportMetric(float64(b.N)*float64(budget)/b.Elapsed().Seconds(), "guest-insn/s")
 }
+
+func BenchmarkARMRun(b *testing.B)      { benchmarkARMRun(b, New) }
+func BenchmarkARMRunGoJIT(b *testing.B) { benchmarkARMRun(b, NewJIT) }

@@ -60,6 +60,43 @@ func TestBusRoutesRAMROMAndTypedMMIO(t *testing.T) {
 	}
 }
 
+func TestBusDirectMemoryRegionIsRAMOnlyAndObserverSafe(t *testing.T) {
+	bus := NewBus()
+	invalidations := 0
+	bus.SetDirectMemoryInvalidator(func() { invalidations++ })
+	if err := bus.MapRAM("ram", 0x1000, 0x100); err != nil {
+		t.Fatal(err)
+	}
+	if invalidations != 1 {
+		t.Fatalf("mapping invalidations = %d, want 1", invalidations)
+	}
+	region, ok := bus.DirectMemoryRegion(0x1010, 4, cpu.PermissionWrite)
+	if !ok || region.Address != 0x1000 || len(region.Data) != 0x100 ||
+		region.Permissions&cpu.PermissionWrite == 0 {
+		t.Fatalf("direct RAM region = %+v, ok=%v", region, ok)
+	}
+	copy(region.Data[0x10:0x14], []byte{1, 2, 3, 4})
+	var got [4]byte
+	if err := bus.Read(0x1010, got[:], cpu.PermissionRead); err != nil || got != [4]byte{1, 2, 3, 4} {
+		t.Fatalf("direct RAM write coherence = %v, %v", got, err)
+	}
+	if err := bus.MapROM("rom", 0x2000, []byte{1, 2, 3, 4}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := bus.DirectMemoryRegion(0x2000, 4, cpu.PermissionRead); ok {
+		t.Fatal("ROM was exposed as direct RAM")
+	}
+	if err := bus.SetMemoryObserver(0x1010, 4, func(MemoryAccess) {}); err != nil {
+		t.Fatal(err)
+	}
+	if invalidations != 3 { // RAM map, ROM map, observer install.
+		t.Fatalf("mapping/observer invalidations = %d, want 3", invalidations)
+	}
+	if _, ok := bus.DirectMemoryRegion(0x1010, 4, cpu.PermissionRead); ok {
+		t.Fatal("observed RAM was exposed directly")
+	}
+}
+
 func TestBusMMIOObserverReceivesInstructionContext(t *testing.T) {
 	bus := NewBus()
 	if err := bus.MapRAM("ram", 0x1000, 4); err != nil {

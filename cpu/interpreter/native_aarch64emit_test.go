@@ -79,6 +79,7 @@ func TestARM64PrimitiveEncodings(t *testing.T) {
 		{"addReg", emit(func(e *arm64emitter) { e.addReg(0, 0, 1) }), words(0x0B010000)},
 		{"addLSL64", emit(func(e *arm64emitter) { e.addLSL64(3, 11, 2, 4) }), words(0x8B021163)},
 		{"ldrWoff#0", emit(func(e *arm64emitter) { e.ldrWoff(4, 3, 0) }), words(0xB9400064)},
+		{"ldarW", emit(func(e *arm64emitter) { e.ldarW(1, 8) }), words(0x88DFFD01)},
 		{"ldrWoff#4096", emit(func(e *arm64emitter) { e.ldrWoff(4, 3, 4096) }), words(0xB9500064)},
 		{"ldrXoff#8", emit(func(e *arm64emitter) { e.ldrXoff(3, 3, 8) }), words(0xF9400463)},
 		{"ldrXoff#4104", emit(func(e *arm64emitter) { e.ldrXoff(3, 3, 4104) }), words(0xF9480463)},
@@ -102,6 +103,26 @@ func TestARM64PrimitiveEncodings(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestARM64InterruptPollEncoding(t *testing.T) {
+	e := &arm64emitter{interruptLines: 0x1234567890abcdef}
+	e.prologue()
+	e.interruptPoll(0x1234, 5)
+	compareWords(t, "interrupt-poll", e.code(), words(
+		0xAA0003E9, 0xAA0103EA, // x9 = regs, x10 = remain
+		0xD299BDED, 0xF2B2156D, 0xF2CACF0D, 0xF2E2468D, // x13 = &interruptLines
+		0x88DFFDA1, // ldar w1,[x13]
+		0xB9404122, // ldr  w2,[x9,#64] (CPSR)
+		0x36080041, // tbz  w1,#1,irq_test
+		0x36300062, // tbz  w2,#6,service
+		0x360000C1, // tbz  w1,#0,continue
+		0x373800A2, // tbnz w2,#7,continue
+		0x52824680, // movz w0,#0x1234 (boundary PC)
+		0xB9003D20, // str  w0,[x9,#60]
+		0x5280A080, // movz w0,#0x504 (IRQ status, 5 retired)
+		0xD65F03C0, // ret
+	))
 }
 
 // TestARM64MemoryEncodings pins the whole emitted software-TLB sequence, not

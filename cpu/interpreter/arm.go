@@ -7,6 +7,55 @@ import (
 	"github.com/mirusu400/aram-core/cpu"
 )
 
+// armConditionTable collapses ARM's condition evaluation to one indexed load.
+// The second index is CPSR.NZCV as the natural high nibble (N=8, Z=4, C=2,
+// V=1). Condition 0xf remains false here; the ARM decoder handles its special
+// unconditional encodings before consulting the table.
+var armConditionTable = func() [16][16]bool {
+	var table [16][16]bool
+	for condition := range table {
+		for nzcv := range table[condition] {
+			n := nzcv&8 != 0
+			z := nzcv&4 != 0
+			c := nzcv&2 != 0
+			v := nzcv&1 != 0
+			switch condition {
+			case 0x0:
+				table[condition][nzcv] = z
+			case 0x1:
+				table[condition][nzcv] = !z
+			case 0x2:
+				table[condition][nzcv] = c
+			case 0x3:
+				table[condition][nzcv] = !c
+			case 0x4:
+				table[condition][nzcv] = n
+			case 0x5:
+				table[condition][nzcv] = !n
+			case 0x6:
+				table[condition][nzcv] = v
+			case 0x7:
+				table[condition][nzcv] = !v
+			case 0x8:
+				table[condition][nzcv] = c && !z
+			case 0x9:
+				table[condition][nzcv] = !c || z
+			case 0xa:
+				table[condition][nzcv] = n == v
+			case 0xb:
+				table[condition][nzcv] = n != v
+			case 0xc:
+				table[condition][nzcv] = !z && n == v
+			case 0xd:
+				table[condition][nzcv] = z || n != v
+			case 0xe:
+				table[condition][nzcv] = true
+			}
+		}
+	}
+	return table
+}()
+
 // runARM executes up to limit ARM instructions from b.regs[PC], stopping early
 // on a stop reason, a fault, or a switch to Thumb mode. ARM decode is a linear
 // mask match rather than a table lookup and is not the hot path for the current
@@ -16,9 +65,9 @@ func (b *Backend) runARM(limit uint64) (uint64, *cpu.StopReason, error) {
 	if b.systemBus != nil || b.tracing() {
 		return b.runARMInstrumented(limit)
 	}
-	// ARM has no translated-block path behind it -- the Go and native JITs are
-	// Thumb-only -- so an application batch runs every instruction through this
-	// loop and nothing that only a phone or a diagnostic needs belongs in it.
+	// The precise backend runs every instruction through this loop. Translated
+	// backends call it only as the one-instruction oracle for unsupported ARM
+	// encodings, so nothing that only a phone or diagnostic needs belongs here.
 	var executed uint64
 	for executed < limit && b.mode == cpu.ModeARM {
 		reason, err := b.stepARM()
@@ -101,7 +150,7 @@ func (b *Backend) stepARM() (*cpu.StopReason, error) {
 	}
 	b.regs[cpu.RegisterPC] = pc + 4
 	condition := uint8(instruction >> 28)
-	if condition != 0xf && !b.conditionPassed(condition) {
+	if condition < 0xe && !b.conditionPassed(condition) {
 		return nil, nil
 	}
 
@@ -783,45 +832,10 @@ func (b *Backend) readOperandRegister(id, instructionAddress uint32, mode cpu.Mo
 
 func (b *Backend) conditionPassed(condition uint8) bool {
 	b.resolveFlags()
-	cpsr := b.regs[cpu.RegisterCPSR]
-	n := cpsr&flagN != 0
-	z := cpsr&flagZ != 0
-	c := cpsr&flagC != 0
-	v := cpsr&flagV != 0
-	switch condition {
-	case 0x0:
-		return z
-	case 0x1:
-		return !z
-	case 0x2:
-		return c
-	case 0x3:
-		return !c
-	case 0x4:
-		return n
-	case 0x5:
-		return !n
-	case 0x6:
-		return v
-	case 0x7:
-		return !v
-	case 0x8:
-		return c && !z
-	case 0x9:
-		return !c || z
-	case 0xa:
-		return n == v
-	case 0xb:
-		return n != v
-	case 0xc:
-		return !z && n == v
-	case 0xd:
-		return z || n != v
-	case 0xe:
-		return true
-	default:
+	if condition >= uint8(len(armConditionTable)) {
 		return false
 	}
+	return armConditionTable[condition][b.regs[cpu.RegisterCPSR]>>28]
 }
 
 func (b *Backend) setModeFlag() {

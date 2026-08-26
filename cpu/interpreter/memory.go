@@ -20,7 +20,53 @@ func (b *Backend) accessAttribution() cpu.MemoryAccessContext {
 	}
 }
 
+// invalidateDirectMemory is registered with a DirectMemoryBus. Returned RAM
+// slices are only safe while the bus topology and observer configuration stay
+// unchanged, so both the Go-side region windows and native host pointers leave
+// together.
+func (b *Backend) invalidateDirectMemory() {
+	clear(b.dataCache[:])
+	b.tlbClear()
+}
+
+// directData returns a cached or freshly resolved plain-RAM span. Execute
+// accesses deliberately stay on the instruction-fetch path; this window exists
+// only to remove the bus mutex from ordinary guest loads and stores.
+func (b *Backend) directData(
+	address uint32,
+	size int,
+	permission cpu.Permissions,
+) ([]byte, int, cpu.Permissions, bool) {
+	if b.directBus == nil || permission&cpu.PermissionExecute != 0 {
+		return nil, 0, 0, false
+	}
+	if data, offset, perms, ok := b.dataHit(address, size, permission); ok {
+		return data, offset, perms, true
+	}
+	mapped, ok := b.directBus.DirectMemoryRegion(address, size, permission)
+	if !ok {
+		return nil, 0, 0, false
+	}
+	slot := int(permission)
+	if slot < 0 || slot >= len(b.dataCache) {
+		return nil, 0, 0, false
+	}
+	b.dataCache[slot] = dataRegionCache{
+		address: mapped.Address,
+		perms:   mapped.Permissions,
+		data:    mapped.Data,
+	}
+	return b.dataHit(address, size, permission)
+}
+
 func (b *Backend) readSystemBus(address uint32, destination []byte, permission cpu.Permissions) error {
+	if data, offset, perms, ok := b.directData(address, len(destination), permission); ok {
+		copy(destination, data[offset:offset+len(destination)])
+		if b.tlb != nil && !b.mmuEnabled() {
+			b.tlbNote(address, address-uint32(offset), data, perms)
+		}
+		return nil
+	}
 	if b.contextBus != nil {
 		return b.contextBus.ReadContext(b.accessAttribution(), address, destination, permission)
 	}
@@ -28,6 +74,16 @@ func (b *Backend) readSystemBus(address uint32, destination []byte, permission c
 }
 
 func (b *Backend) writeSystemBus(address uint32, source []byte, permission cpu.Permissions) error {
+	if data, offset, perms, ok := b.directData(address, len(source), permission); ok {
+		copy(data[offset:offset+len(source)], source)
+		if !b.instructionCacheEnabled() {
+			b.smcInvalidate(address, uint32(len(source)), cpu.PermissionExecute)
+		}
+		if b.tlb != nil && !b.mmuEnabled() {
+			b.tlbNote(address, address-uint32(offset), data, perms)
+		}
+		return nil
+	}
 	if b.contextBus != nil {
 		return b.contextBus.WriteContext(b.accessAttribution(), address, source, permission)
 	}
@@ -418,6 +474,10 @@ func (b *Backend) copyOut(address uint32, destination []byte, permission cpu.Per
 		return nil
 	}
 	if b.systemBus != nil {
+		if data, offset, _, ok := b.directData(address, len(destination), permission); ok {
+			copy(destination, data[offset:offset+len(destination)])
+			return nil
+		}
 		if b.blockBus != nil {
 			done, err := b.blockBus.ReadBlock(address, destination, permission)
 			if err != nil {
@@ -465,6 +525,10 @@ func (b *Backend) copyIn(address uint32, source []byte, permission cpu.Permissio
 		return nil
 	}
 	if b.systemBus != nil {
+		if data, offset, _, ok := b.directData(address, len(source), permission); ok {
+			copy(data[offset:offset+len(source)], source)
+			return nil
+		}
 		if b.blockBus != nil {
 			done, err := b.blockBus.WriteBlock(address, source, permission)
 			if err != nil {

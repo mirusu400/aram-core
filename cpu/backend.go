@@ -154,6 +154,32 @@ type BlockMemoryBus interface {
 	WriteBlock(address uint32, source []byte, permission Permissions) (bool, error)
 }
 
+// DirectMemoryRegion describes one stable, plain-memory mapping a CPU may
+// access without re-entering the physical bus. Data is the complete region and
+// Address is its guest-physical base. The bus retains ownership of Data; a CPU
+// must discard it when the invalidator registered through DirectMemoryBus is
+// called.
+type DirectMemoryRegion struct {
+	Address     uint32
+	Data        []byte
+	Permissions Permissions
+}
+
+// DirectMemoryBus optionally exposes ordinary RAM to a CPU backend. It is a
+// cache-fill contract, not a replacement for MemoryBus: MMIO, sparse memory,
+// ROM, observed accesses, region-boundary accesses, and permission failures are
+// declined and continue through the ordinary bus path.
+//
+// SetDirectMemoryInvalidator installs the callback the bus invokes whenever a
+// mapping or observer change could make a previously returned region unsafe to
+// access directly. A system bus has one attached CPU, so replacing the callback
+// replaces the previous attachment.
+type DirectMemoryBus interface {
+	MemoryBus
+	DirectMemoryRegion(address uint32, size int, permission Permissions) (DirectMemoryRegion, bool)
+	SetDirectMemoryInvalidator(func())
+}
+
 // ContextMemoryBus optionally receives the guest instruction context for each
 // physical access. Backends fall back to MemoryBus when it is not implemented.
 type ContextMemoryBus interface {

@@ -8,6 +8,7 @@ package interpreter
 // primitives above them. Register convention is fixed:
 //
 //	R11        = ctx base (&regs[0]); set once by prologue at block entry
+//	RDI        = &interruptLines in whole-system blocks (preserved)
 //	EAX        = working value / result (N,Z read from it in the flag helpers)
 //	ECX, EDX   = scratch (EDX builds CPSR in the flag helpers)
 //	R8D, R9D   = scratch (carry capture, CPSR load, condition evaluation)
@@ -20,8 +21,9 @@ package interpreter
 import "github.com/mirusu400/aram-core/cpu"
 
 type x64emitter struct {
-	buf []byte
-	tlb uintptr // host address of the backend's software TLB (native_tlb.go)
+	buf            []byte
+	tlb            uintptr // host address of the backend's software TLB (native_tlb.go)
+	interruptLines uintptr // address of Backend.interruptLines for system polls
 }
 
 func (a *x64emitter) b(bytes ...byte) { a.buf = append(a.buf, bytes...) }
@@ -46,9 +48,16 @@ const pcDisp = byte(4 * cpu.RegisterPC)     // 60
 // --- setup / control -------------------------------------------------------
 
 // prologue puts the two argument pointers in dedicated base registers: R11 =
-// &regs[0] (RCX), R10 = &nativeRemain (RDX). Both are volatile under the Windows
-// x64 ABI, so the leaf block may keep them without saving.
-func (a *x64emitter) prologue() { a.b(0x49, 0x89, 0xCB, 0x49, 0x89, 0xD2) } // mov r11,rcx ; mov r10,rdx
+// &regs[0] (RCX), R10 = &nativeRemain (RDX). A whole-system block additionally
+// preserves RDI and keeps &interruptLines there, avoiding an imm64 load in every
+// guest instruction's poll.
+func (a *x64emitter) prologue() {
+	a.b(0x49, 0x89, 0xCB, 0x49, 0x89, 0xD2) // mov r11,rcx ; mov r10,rdx
+	if a.interruptLines != 0 {
+		a.b(0x57, 0x48, 0xBF) // push rdi ; mov rdi,imm64
+		a.imm64(uint64(a.interruptLines))
+	}
+}
 
 func (a *x64emitter) mark() int           { return len(a.buf) }
 func (a *x64emitter) appendCode(c []byte) { a.buf = append(a.buf, c...) }
@@ -58,22 +67,74 @@ func (a *x64emitter) storeEAXremain() { a.b(0x41, 0x89, 0x02) } // mov [r10],eax
 func (a *x64emitter) movMemPC(v uint32) {
 	a.b(0x41, 0xC7, 0x43, pcDisp) // REX.B for r11 base
 	a.imm32(v)
-}                           // mov dword [r11+PC], imm32
-func (a *x64emitter) ret1() { a.b(0xC3) } // ret
+} // mov dword [r11+PC], imm32
+func (a *x64emitter) ret1() {
+	if a.interruptLines != 0 {
+		a.b(0x5F) // pop rdi
+	}
+	a.b(0xC3)
+}
 
 // gate: eax = remain - count; if it borrowed (remain < count) exit with
 // nativeStatusBudget (PC = startPC), else commit remain -= count and fall
-// through into the body. The exit block is a fixed 13 bytes, so JAE skips it
-// without a fix-up.
+// through into the body. The exit size differs by one byte in system blocks
+// because they restore RDI before returning.
 func (a *x64emitter) gate(count int, startPC uint32) {
 	a.loadEAXremain()
 	a.subEAXimm(uint32(count)) // sets CF when remain < count
-	a.b(0x73, 14)              // jae body_ok (skip the 14-byte exit)
-	a.movMemPC(startPC)        // 8 bytes
+	exitSize := byte(14)
+	if a.interruptLines != 0 {
+		exitSize++
+	}
+	a.b(0x73, exitSize) // jae body_ok
+	a.movMemPC(startPC) // 8 bytes
 	a.b(0xB8)
 	a.imm32(nativeStatusBudget) // mov eax, 2  (5 bytes)
 	a.ret1()                    // 1 byte
 	a.storeEAXremain()          // body_ok: remain -= count
+}
+
+// interruptPoll exits at this architectural boundary when either input is
+// asserted and its CPSR mask is clear. x86 aligned 32-bit loads are atomic;
+// SetInterruptLine publishes the same word with Go atomics.
+func (a *x64emitter) interruptPoll(pc uint32, retired int) {
+	if a.interruptLines == 0 {
+		return
+	}
+	// RDI was loaded once by the system prologue; aligned dword load is atomic.
+	a.b(0x8B, 0x0F) // mov ecx,[rdi]
+
+	// FIQ has priority. A masked FIQ falls through to the IRQ test.
+	a.b(0xF6, 0xC1, 0x02) // test cl,2
+	noFIQ := a.mark()
+	a.b(0x74, 0) // jz irq_test
+	a.loadEAX(cpu.RegisterCPSR)
+	a.b(0xA9)
+	a.imm32(statusFIQDisable) // test eax, F
+	serviceFIQ := a.mark()
+	a.b(0x74, 0) // jz service
+
+	irqTest := a.mark()
+	a.buf[noFIQ+1] = byte(irqTest - (noFIQ + 2))
+	a.b(0xF6, 0xC1, 0x01) // test cl,1
+	noIRQ := a.mark()
+	a.b(0x74, 0) // jz continue
+	a.loadEAX(cpu.RegisterCPSR)
+	a.b(0xA9)
+	a.imm32(statusIRQDisable) // test eax, I
+	maskedIRQ := a.mark()
+	a.b(0x75, 0) // jnz continue
+
+	service := a.mark()
+	a.buf[serviceFIQ+1] = byte(service - (serviceFIQ + 2))
+	a.movMemPC(pc)
+	a.b(0xB8)
+	a.imm32(nativeInterruptStatus(retired))
+	a.ret1()
+
+	continuation := a.mark()
+	a.buf[noIRQ+1] = byte(continuation - (noIRQ + 2))
+	a.buf[maskedIRQ+1] = byte(continuation - (maskedIRQ + 2))
 }
 
 func (a *x64emitter) selfLoopUncond(gateOff int) {

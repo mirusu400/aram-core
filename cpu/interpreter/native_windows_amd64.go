@@ -54,10 +54,10 @@ const (
 	arenaCommitChunk = uintptr(1 << 20)
 )
 
-// NewNativeJIT returns a backend that runs Thumb through the native machine-code
-// recompiler, falling back to the interpreter for untranslated instructions and
-// for ARM. If the executable arena cannot be allocated it degrades to the plain
-// interpreter (nativeBlocks stays nil). It is architecturally a third CPU
+// NewNativeJIT returns a backend that runs Thumb through native machine code and
+// ARM through portable translated blocks, falling back to the interpreter for
+// unsupported instructions. If the executable arena cannot be allocated it
+// degrades to the plain interpreter (nativeBlocks stays nil). It is architecturally a third CPU
 // backend behind the same identity/context as the interpreter; cpu/conformance
 // confirms it reproduces the interpreter exactly.
 func NewNativeJIT() *Backend {
@@ -66,6 +66,9 @@ func NewNativeJIT() *Backend {
 		b.currentProcess, _, _ = procGetCurrentProcess.Call()
 		b.nativeArena = arena
 		b.nativeBlocks = make(map[uint32]*nativeBlock)
+		b.armJITBlocks = make(map[uint32]*jitBlock)
+		b.armJITCache = make([]jitCacheEntry, jitCacheSize)
+		b.jitCodePages = make([]uint64, nativeCodePageWords)
 		b.nativeCodeLo, b.nativeCodeHi = ^uint32(0), 0
 		b.tlb = newNativeTLB()
 		b.nativeCache = new([nativeCacheSize]nativeCacheEntry)
@@ -74,7 +77,9 @@ func NewNativeJIT() *Backend {
 	return b
 }
 
-func (b *Backend) newEmitter() emitter { return &x64emitter{tlb: b.tlbBase()} }
+func (b *Backend) newEmitter() emitter {
+	return &x64emitter{tlb: b.tlbBase(), interruptLines: b.interruptLinesBase()}
+}
 
 // newCodeArena reserves the executable arena. It is mapped read-write-execute
 // once instead of being flipped W^X around every block: the original per-block

@@ -68,15 +68,18 @@ import "C"
 
 import "unsafe"
 
-// NewNativeJIT returns a backend that runs Thumb through the native AArch64
-// recompiler, falling back to the interpreter for untranslated instructions and
-// for ARM. If the executable arena cannot be mapped it degrades to the plain
-// interpreter (nativeBlocks stays nil).
+// NewNativeJIT returns a backend that runs Thumb through native AArch64 code and
+// ARM through portable translated blocks, falling back to the interpreter for
+// unsupported instructions. If the executable arena cannot be mapped it
+// degrades to the plain interpreter (nativeBlocks stays nil).
 func NewNativeJIT() *Backend {
 	b := NewWithMemoryLimit(DefaultMemoryLimit)
 	if arena := newCodeArena(nativeArenaSize); arena != nil {
 		b.nativeArena = arena
 		b.nativeBlocks = make(map[uint32]*nativeBlock)
+		b.armJITBlocks = make(map[uint32]*jitBlock)
+		b.armJITCache = make([]jitCacheEntry, jitCacheSize)
+		b.jitCodePages = make([]uint64, nativeCodePageWords)
 		b.nativeCodeLo, b.nativeCodeHi = ^uint32(0), 0
 		b.tlb = newNativeTLB()
 		b.nativeCache = new([nativeCacheSize]nativeCacheEntry)
@@ -85,7 +88,9 @@ func NewNativeJIT() *Backend {
 	return b
 }
 
-func (b *Backend) newEmitter() emitter { return &arm64emitter{tlb: b.tlbBase()} }
+func (b *Backend) newEmitter() emitter {
+	return &arm64emitter{tlb: b.tlbBase(), interruptLines: b.interruptLinesBase()}
+}
 
 func newCodeArena(size uintptr) *codeArena {
 	base := uintptr(C.jit_alloc(C.size_t(size)))
