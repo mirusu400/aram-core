@@ -169,6 +169,7 @@ type Backend struct {
 	// is kept behind the hot fields above rather than between them.
 	systemBus  cpu.MemoryBus
 	contextBus cpu.ContextMemoryBus
+	blockBus   cpu.BlockMemoryBus
 	cp15       cp15State
 	banks      bankedRegisters
 	spsr       savedProgramStatus
@@ -514,6 +515,7 @@ func (b *Backend) AttachSystemBus(bus cpu.MemoryBus) error {
 	}
 	b.systemBus = bus
 	b.contextBus, _ = bus.(cpu.ContextMemoryBus)
+	b.blockBus, _ = bus.(cpu.BlockMemoryBus)
 	b.refreshPhysicalAccess()
 	clear(b.regionHints[:])
 	b.executeData = nil
@@ -722,6 +724,7 @@ func (b *Backend) Close() error {
 	b.regions = nil
 	b.systemBus = nil
 	b.contextBus = nil
+	b.blockBus = nil
 	b.physicalAccess = false
 	b.executionTraps = nil
 	b.mmuTLBTable = nil

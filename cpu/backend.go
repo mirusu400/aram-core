@@ -142,6 +142,18 @@ type MemoryAccessContext struct {
 	Attributed         bool
 }
 
+// BlockMemoryBus optionally transfers a whole span in one call. The width-typed
+// access a device needs is wrong for a bulk copy: filling a thirty-two byte
+// instruction-cache line as eight separate word accesses made the bus resolve
+// the region and take its lock eight times for one line. A bus implements this
+// for spans that resolve to plain memory and declines the rest, which keeps
+// device semantics on the per-width path where they belong.
+type BlockMemoryBus interface {
+	MemoryBus
+	ReadBlock(address uint32, destination []byte, permission Permissions) (bool, error)
+	WriteBlock(address uint32, source []byte, permission Permissions) (bool, error)
+}
+
 // ContextMemoryBus optionally receives the guest instruction context for each
 // physical access. Backends fall back to MemoryBus when it is not implemented.
 type ContextMemoryBus interface {
