@@ -275,6 +275,34 @@ func (r *Runtime) newFramebuffer(width, height int, owns bool) (uint32, error) {
 	return handle, nil
 }
 
+// graphicsContextField locates one MC_GrpContext member.
+type graphicsContextField struct {
+	offset uint32
+	size   uint32
+}
+
+// graphicsContextOffsets maps an MC_grpSetContext index to the member it
+// addresses. Two spellings of MC_GrpContext exist in the field: the SDK
+// struct the Samsung WIPI-C runtime uses carries a clip_enabled word between
+// the clip rectangle and the colours, while LGT's Raptor runtime has no such
+// member and packs every scalar four bytes earlier. A Clet that reads the
+// struct itself only agrees with its own vendor: 블레이드마스터4 fills a text
+// strip with the colour it reads back from offset 0x10, so with the
+// clip_enabled spelling it filled with the clip flag (black) instead of the
+// magenta it keys out, and every string arrived on a black plate.
+func (r *Runtime) graphicsContextOffsets() map[int32]graphicsContextField {
+	if r.CompactGraphicsContext {
+		return map[int32]graphicsContextField{
+			0: {0, 16}, 1: {16, 4}, 2: {20, 4}, 4: {24, 4}, 5: {28, 4},
+			6: {32, 4}, 7: {36, 4}, 8: {40, 4}, 9: {44, 4}, 10: {48, 8},
+		}
+	}
+	return map[int32]graphicsContextField{
+		0: {0, 16}, 1: {20, 4}, 2: {24, 4}, 4: {28, 4}, 5: {32, 4},
+		6: {36, 4}, 7: {40, 4}, 8: {44, 4}, 9: {48, 4}, 10: {52, 8},
+	}
+}
+
 func (r *Runtime) initializeGraphicsContext(address uint32) error {
 	if address == 0 {
 		return nil
@@ -282,6 +310,12 @@ func (r *Runtime) initializeGraphicsContext(address uint32) error {
 	values := [...]uint32{
 		0, 0, 0x7fffffff, 0x7fffffff, 0,
 		0, r.deviceWhite(), 255, 0, 0, 0, 0, 0, 0, 0,
+	}
+	if r.CompactGraphicsContext {
+		values = [...]uint32{
+			0, 0, 0x7fffffff, 0x7fffffff,
+			0, r.deviceWhite(), 255, 0, 0, 0, 0, 0, 0, 0, 0,
+		}
 	}
 	var encoded [15 * 4]byte
 	for index, value := range values {
@@ -291,13 +325,7 @@ func (r *Runtime) initializeGraphicsContext(address uint32) error {
 }
 
 func (r *Runtime) transferGraphicsContext(name string, context uint32, index int32, pointer uint32) error {
-	offsets := map[int32]struct {
-		offset uint32
-		size   uint32
-	}{
-		0: {0, 16}, 1: {20, 4}, 2: {24, 4}, 4: {28, 4}, 5: {32, 4},
-		6: {36, 4}, 7: {40, 4}, 8: {44, 4}, 9: {48, 4}, 10: {52, 8},
-	}
+	offsets := r.graphicsContextOffsets()
 	field, ok := offsets[index]
 	if context == 0 || !ok {
 		return nil
@@ -322,7 +350,7 @@ func (r *Runtime) transferGraphicsContext(name string, context uint32, index int
 		if err := r.CPU.WriteMemory(context+field.offset, data); err != nil {
 			return err
 		}
-		if index == 0 {
+		if index == 0 && !r.CompactGraphicsContext {
 			return r.WriteU32(context+16, 1)
 		}
 		return nil
@@ -362,6 +390,33 @@ func (r *Runtime) context(address uint32) (wipiGraphicsContext, error) {
 	var encoded [60]byte
 	if err := r.CPU.ReadMemory(address, encoded[:]); err != nil {
 		return wipiGraphicsContext{}, err
+	}
+	if r.CompactGraphicsContext {
+		left := int(int32(binary.LittleEndian.Uint32(encoded[0:4])))
+		top := int(int32(binary.LittleEndian.Uint32(encoded[4:8])))
+		right := int(int32(binary.LittleEndian.Uint32(encoded[8:12])))
+		bottom := int(int32(binary.LittleEndian.Uint32(encoded[12:16])))
+		return wipiGraphicsContext{
+			left:   left,
+			top:    top,
+			right:  right,
+			bottom: bottom,
+			// Without a clip_enabled word the rectangle speaks for itself. A
+			// context a Clet never initialised holds zeroes, and clipping
+			// every pixel away would blank the screen, so an empty rectangle
+			// reads as "no clip" the way an uninitialised flag used to.
+			clipEnabled:    right > left && bottom > top,
+			foreground:     binary.LittleEndian.Uint32(encoded[16:20]) & 0xffffff,
+			background:     binary.LittleEndian.Uint32(encoded[20:24]) & 0xffffff,
+			alpha:          int32(binary.LittleEndian.Uint32(encoded[24:28])),
+			pixelOperation: binary.LittleEndian.Uint32(encoded[28:32]),
+			pixelParameter: int32(binary.LittleEndian.Uint32(encoded[32:36])),
+			font:           binary.LittleEndian.Uint32(encoded[36:40]),
+			style:          int32(binary.LittleEndian.Uint32(encoded[40:44])),
+			xor:            binary.LittleEndian.Uint32(encoded[44:48]) != 0,
+			offsetX:        int(int32(binary.LittleEndian.Uint32(encoded[48:52]))),
+			offsetY:        int(int32(binary.LittleEndian.Uint32(encoded[52:56]))),
+		}, nil
 	}
 	return wipiGraphicsContext{
 		left:           int(int32(binary.LittleEndian.Uint32(encoded[0:4]))),

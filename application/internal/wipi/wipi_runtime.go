@@ -229,6 +229,12 @@ type Runtime struct {
 	socketServices   map[int32]shared.ServiceID
 	httpServices     map[int32]shared.ServiceID
 
+	// CompactGraphicsContext selects LGT Raptor's MC_GrpContext spelling,
+	// which omits the SDK's clip_enabled word so every scalar member sits
+	// four bytes earlier. A Clet that reads the struct directly needs the
+	// layout its own vendor's runtime wrote.
+	CompactGraphicsContext bool
+
 	Framebuffers     map[uint32]Framebuffer
 	framebufferBits  int
 	ScreenHandle     uint32
