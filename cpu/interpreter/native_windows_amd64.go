@@ -67,10 +67,13 @@ func NewNativeJIT() *Backend {
 		b.currentProcess, _, _ = procGetCurrentProcess.Call()
 		b.nativeArena = arena
 		b.nativeBlocks = make(map[uint32]*nativeBlock)
+		b.nativeBlockPages = make(blockPageIndex)
 		b.nativeARMBlocks = make(map[uint32]*nativeBlock)
+		b.nativeARMBlockPages = make(blockPageIndex)
 		b.nativeLinks = make(map[nativeLinkKey]*atomic.Uintptr)
 		b.nativeSlow = make(map[nativeLinkKey]nativeSlowState)
 		b.armJITBlocks = make(map[uint32]*jitBlock)
+		b.armJITBlockPages = make(blockPageIndex)
 		b.armJITCache = make([]jitCacheEntry, jitCacheSize)
 		b.jitCodePages = make([]uint64, nativeCodePageWords)
 		b.nativeCodeLo, b.nativeCodeHi = ^uint32(0), 0

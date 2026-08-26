@@ -173,7 +173,7 @@ func (b *Backend) nativeBlockAt(pc uint32) *nativeBlock {
 	block, ok := b.nativeBlocks[pc]
 	if !ok {
 		block = b.translateNativeBlock(pc)
-		b.nativeBlocks[pc] = block
+		b.cacheNativeBlock(pc, block)
 	}
 	slot.pc, slot.gen, slot.block = pc, b.nativeGen, block
 	return block

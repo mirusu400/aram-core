@@ -73,28 +73,114 @@ func (b *Backend) smcInvalidate(address, size uint32, perms cpu.Permissions) {
 	}
 }
 
+// blockPageIndex maps a guest page to the start PCs of the translated blocks
+// registered on it. Both kinds of invalidation arrive with an address and a
+// size -- a self-modifying write, or one line of CP15 cache maintenance -- so
+// without an index every one of them costs a walk of every block ever
+// translated. A guest that keeps writing into its own read-write-execute image
+// (KTF/WIPI do) would pay that per store.
+//
+// A block is registered only under the page its start PC lies on, so no entry
+// is ever duplicated and removing one is a single bucket compaction. A scan
+// therefore has to look one page further back than the range it is
+// invalidating, which is exact because no block reaches a whole page past its
+// start (see maxTranslatedBlockBytes).
+//
+// Buckets are compacted in place whenever they are scanned: a PC whose map
+// entry has already gone is dropped then, so a bucket cannot outgrow the number
+// of blocks actually starting on its page.
+type blockPageIndex map[uint32][]uint32
+
+// maxTranslatedBlockBytes bounds how far a translated block's decoded guest
+// bytes reach past its start PC: both translators stop after jitMaxBlock /
+// nativeMaxBlock instructions of at most four bytes each.
+const maxTranslatedBlockBytes = 4 * jitMaxBlock
+
+// Compile-time guards for the one-page lookback in blockPageIndex.scan. These
+// fail to build (constant overflows uint) if a block could span more than one
+// page boundary, or if the two translators stop agreeing about block length.
+const (
+	_ = uint(tlbPageSize - maxTranslatedBlockBytes)
+	_ = uint(jitMaxBlock - nativeMaxBlock)
+	_ = uint(nativeMaxBlock - jitMaxBlock)
+)
+
+// cacheJITBlock and its three siblings are the only sanctioned writes to a
+// block map: each records a translation (or a nil "nothing translatable here"
+// marker) and registers the PC in the matching page index. An entry missing
+// from its index is invisible to range invalidation, so it would outlive the
+// guest code it was decoded from.
+func (b *Backend) cacheJITBlock(pc uint32, block *jitBlock) {
+	b.jitBlocks[pc] = block
+	b.jitBlockPages.add(pc)
+}
+
+func (b *Backend) cacheARMJITBlock(pc uint32, block *jitBlock) {
+	b.armJITBlocks[pc] = block
+	b.armJITBlockPages.add(pc)
+}
+
+func (index blockPageIndex) add(pc uint32) {
+	if index != nil {
+		page := pc >> tlbPageBits
+		index[page] = append(index[page], pc)
+	}
+}
+
+// scan calls visit for every PC that could have decoded bytes inside
+// [address, address+size), and drops the PC from the index when visit reports
+// that it is gone. visit returns whether the entry has disappeared from its
+// block map, either because it was already absent or because visit deleted it.
+func (index blockPageIndex) scan(address, size uint32, visit func(pc uint32) bool) {
+	if index == nil || size == 0 {
+		return
+	}
+	first := uint64(address) >> tlbPageBits
+	if first != 0 {
+		first-- // a block starting on the previous page can reach into this one
+	}
+	last := (uint64(address) + uint64(size) - 1) >> tlbPageBits
+	for page := first; page <= last; page++ {
+		bucket := index[uint32(page)]
+		if len(bucket) == 0 {
+			continue
+		}
+		kept := bucket[:0]
+		for _, pc := range bucket {
+			if !visit(pc) {
+				kept = append(kept, pc)
+			}
+		}
+		if len(kept) == 0 {
+			delete(index, uint32(page))
+			continue
+		}
+		index[uint32(page)] = kept
+	}
+}
+
 func (b *Backend) invalidateJITRange(address, size uint32) bool {
 	changed := false
-	for pc, block := range b.jitBlocks {
-		overlaps := block != nil && rangesOverlap(block.start, block.end, address, size)
-		if block == nil {
-			overlaps = widthRangeOverlap(pc, 2, address, size)
-		}
-		if overlaps {
-			delete(b.jitBlocks, pc)
+	drop := func(blocks map[uint32]*jitBlock, width uint32) func(uint32) bool {
+		return func(pc uint32) bool {
+			block, present := blocks[pc]
+			if !present {
+				return true // stale index entry: compact it away
+			}
+			overlaps := widthRangeOverlap(pc, width, address, size)
+			if block != nil {
+				overlaps = rangesOverlap(block.start, block.end, address, size)
+			}
+			if !overlaps {
+				return false
+			}
+			delete(blocks, pc)
 			changed = true
+			return true
 		}
 	}
-	for pc, block := range b.armJITBlocks {
-		overlaps := block != nil && rangesOverlap(block.start, block.end, address, size)
-		if block == nil {
-			overlaps = widthRangeOverlap(pc, 4, address, size)
-		}
-		if overlaps {
-			delete(b.armJITBlocks, pc)
-			changed = true
-		}
-	}
+	b.jitBlockPages.scan(address, size, drop(b.jitBlocks, 2))
+	b.armJITBlockPages.scan(address, size, drop(b.armJITBlocks, 4))
 	if changed {
 		b.jitGen++
 	}
@@ -139,9 +225,11 @@ func (b *Backend) invalidateTranslationRange(address, size uint32) {
 func (b *Backend) invalidateTranslations() {
 	if b.jitBlocks != nil {
 		clear(b.jitBlocks)
+		clear(b.jitBlockPages)
 	}
 	if b.armJITBlocks != nil {
 		clear(b.armJITBlocks)
+		clear(b.armJITBlockPages)
 	}
 	if b.jitBlocks != nil || b.armJITBlocks != nil {
 		b.jitGen++
@@ -149,6 +237,14 @@ func (b *Backend) invalidateTranslations() {
 		b.jitCodeLo, b.jitCodeHi = ^uint32(0), 0
 	}
 	b.nativeInvalidate()
+	// nativeInvalidate cannot drop the link slots themselves: its other caller
+	// is the arena-full retry inside a translator, which by then has the slot
+	// addresses baked into a buffer it has not appended yet, so releasing the
+	// last Go reference would let the collector free memory that emitted code
+	// is about to jump through. Nothing is mid-translation on this path, and
+	// every block is gone, so here the map can be reclaimed - otherwise it only
+	// ever grows, one entry per branch target ever translated.
+	clear(b.nativeLinks)
 }
 
 // runThumbJIT executes Thumb from b.regs[PC] using translated blocks, retiring
@@ -252,7 +348,7 @@ func (b *Backend) jitBlockAt(pc uint32) *jitBlock {
 	block, ok := b.jitBlocks[pc]
 	if !ok {
 		block = b.translateThumbBlock(pc)
-		b.jitBlocks[pc] = block
+		b.cacheJITBlock(pc, block)
 		if block != nil {
 			b.markJITCodePages(block.start, block.end-block.start)
 			// Grow the translated-code span so smcInvalidate can tell a real
