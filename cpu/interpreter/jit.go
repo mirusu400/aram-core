@@ -105,9 +105,31 @@ func (b *Backend) invalidateJITRange(address, size uint32) bool {
 // persistent native MMIO bail handling. It deliberately leaves conservative
 // code-page bitmaps intact; doing so can cause a later harmless scan, but can
 // never retain stale translated code or reopen a native write TLB entry.
+//
+// It takes smcInvalidate's guards before walking anything. Whole-system guests
+// run CP15 c7,c5,1 as a loop over every line of a buffer they just filled, so
+// an unguarded walk costs O(translated blocks) per 32 bytes maintained: a 1 MiB
+// range is 32768 iterations over four maps. The lo/hi hull and the code-page
+// bitmaps are conservative supersets of everything that has been translated, so
+// short-circuiting on them cannot retain a stale block.
 func (b *Backend) invalidateTranslationRange(address, size uint32) {
-	b.invalidateJITRange(address, size)
-	b.nativeInvalidateRange(address, size)
+	if size == 0 {
+		return
+	}
+	if b.jitBlocks != nil || b.armJITBlocks != nil {
+		if uint64(address) < uint64(b.jitCodeHi) &&
+			uint64(address)+uint64(size) > uint64(b.jitCodeLo) &&
+			b.hasJITCodePages(address, size) {
+			b.invalidateJITRange(address, size)
+		}
+	}
+	if b.nativeBlocks != nil {
+		if uint64(address) < uint64(b.nativeCodeHi) &&
+			uint64(address)+uint64(size) > uint64(b.nativeCodeLo) &&
+			b.hasCodePages(address, size) {
+			b.nativeInvalidateRange(address, size)
+		}
+	}
 }
 
 // invalidateTranslations drops code decoded under an older virtual mapping or

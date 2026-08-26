@@ -864,7 +864,7 @@ func (a *x64emitter) highRegister(op, rd, rs, pcValue uint32) bool {
 }
 
 func (a *x64emitter) armDataProcessing(op nativeARMDataOp) bool {
-	if op.opcode >= 5 && op.opcode <= 7 {
+	if !nativeARMDataOpEmittable(op.opcode) {
 		return false
 	}
 	loadEAX := func(gi uint32) {

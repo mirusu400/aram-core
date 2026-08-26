@@ -174,7 +174,9 @@ func TestNativeRangeInvalidationPreservesUnrelatedBlocksAndLinks(t *testing.T) {
 	if first == nil || second == nil {
 		t.Fatal("failed to translate range-invalidation fixtures")
 	}
-	backend.nativeBlocks[0x3000] = nil
+	// A negative cache entry inside the translated hull is dropped like a real
+	// block, so changed code gets a fresh translation attempt.
+	backend.nativeBlocks[0x1010] = nil
 	backend.invalidateTranslationRange(0x1000, 2)
 	if _, ok := backend.nativeBlocks[0x1000]; ok {
 		t.Fatal("overlapping block survived range invalidation")
@@ -188,9 +190,56 @@ func TestNativeRangeInvalidationPreservesUnrelatedBlocksAndLinks(t *testing.T) {
 	if got := backend.nativeLinks[nativeLinkKey{mode: cpu.ModeThumb, pc: 0x2000}].Load(); got != second.gate {
 		t.Fatalf("unrelated target link = %#x, want %#x", got, second.gate)
 	}
-	backend.invalidateTranslationRange(0x3000, 2)
-	if _, ok := backend.nativeBlocks[0x3000]; ok {
+	backend.invalidateTranslationRange(0x1010, 2)
+	if _, ok := backend.nativeBlocks[0x1010]; ok {
 		t.Fatal("overlapping cached native fallback survived range invalidation")
+	}
+}
+
+// Whole-system guests run CP15 c7,c5,1 as a loop over every line of a buffer
+// they have just filled. Walking the block maps for a range that holds no
+// translated code would make that loop cost O(blocks) per 32 bytes, so the
+// range invalidator has to short-circuit on the same conservative hull and
+// code-page bitmap that self-modifying-write detection uses.
+func TestNativeRangeInvalidationSkipsRangesHoldingNoTranslatedCode(t *testing.T) {
+	backend, bus := newNativeSystemBackend(t)
+	putThumb(bus.ram, 0x1000, 0x2001, 0xbe00)
+	putThumb(bus.ram, 0x7000, 0x2002, 0xbe00)
+	low := backend.nativeBlockAt(0x1000)
+	high := backend.nativeBlockAt(0x7000)
+	if low == nil || high == nil {
+		t.Fatal("failed to translate the hull fixtures")
+	}
+	// The hull now spans 0x1000..0x7004 with only pages 1 and 7 marked, so the
+	// two guards can be exercised apart: 0x4000 sits inside the hull on an
+	// unmarked page, 0xf000 sits past nativeCodeHi entirely. Whether the walk
+	// ran is observable through a negative cache entry, which a walk deletes.
+	backend.nativeBlocks[0x4000] = nil
+	backend.nativeBlocks[0xf000] = nil
+	generation := backend.nativeGen
+
+	backend.invalidateTranslationRange(0x4000, instructionCacheLineSize)
+	if _, ok := backend.nativeBlocks[0x4000]; !ok {
+		t.Fatal("maintenance on an unmarked page inside the hull walked the block maps")
+	}
+	backend.invalidateTranslationRange(0xf000, instructionCacheLineSize)
+	if _, ok := backend.nativeBlocks[0xf000]; !ok {
+		t.Fatal("maintenance past nativeCodeHi walked the block maps")
+	}
+	if backend.nativeGen != generation {
+		t.Fatal("maintenance of an unrelated range advanced the dispatch generation")
+	}
+	if got := backend.nativeBlocks[0x1000]; got != low {
+		t.Fatal("maintenance of an unrelated range discarded a translated block")
+	}
+	if got := backend.nativeLinks[nativeLinkKey{mode: cpu.ModeThumb, pc: 0x1000}].Load(); got != low.gate {
+		t.Fatalf("unrelated maintenance cleared a published link: %#x", got)
+	}
+
+	// The line that actually holds a block still invalidates.
+	backend.invalidateTranslationRange(0x7000, instructionCacheLineSize)
+	if _, ok := backend.nativeBlocks[0x7000]; ok {
+		t.Fatal("maintenance of the translated line kept the block")
 	}
 }
 

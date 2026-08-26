@@ -130,6 +130,11 @@ func (b *Backend) fillInstructionCacheLine(
 	return &entry.line, true, nil
 }
 
+// fetchInstructionCache returns size bytes of instruction stream at address.
+// The result aliases backend-owned storage - a resident cache line, or the
+// shared read scratch for an uncacheable fetch - and stays valid only until the
+// next read through this backend. Callers must consume it before issuing
+// another access; fetch16/fetch32 decode it immediately.
 func (b *Backend) fetchInstructionCache(address uint32, size uint32) ([]byte, error) {
 	// Zero is the cold sentinel; adding one is safe because a 32-bit byte
 	// address has only 27 line-number bits. Keeping the sentinel in the tag lets
