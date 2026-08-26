@@ -560,15 +560,7 @@ func TestWIPIRuntimeGraphicsPresentsGuestFramebuffer(t *testing.T) {
 		t.Fatal(err)
 	}
 	dispatchPublicAPI(t, runtime, "MC_grpInitContext", context)
-	colorValue := uint32(0x00123456)
-	colorAddress, err := runtime.Heap.Allocate(4, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.WriteU32(colorAddress, colorValue); err != nil {
-		t.Fatal(err)
-	}
-	dispatchPublicAPI(t, runtime, "MC_grpSetContext", context, 1, colorAddress)
+	dispatchPublicAPI(t, runtime, "MC_grpSetContext", context, 1, 0x00123456)
 	dispatchPublicAPI(t, runtime, "MC_grpFillRect", screen, 2, 3, 4, 5, context)
 	dispatchPublicAPI(t, runtime, "MC_grpFlushLcd", 0, screen, 0, 0, 16, 12)
 
@@ -600,14 +592,7 @@ func TestWIPIRuntimeFlushLcdRedirectsOffscreenBuffer(t *testing.T) {
 		t.Fatal(err)
 	}
 	dispatchPublicAPI(t, runtime, "MC_grpInitContext", context)
-	colorAddress, err := runtime.Heap.Allocate(4, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.WriteU32(colorAddress, 0x00abcdef); err != nil {
-		t.Fatal(err)
-	}
-	dispatchPublicAPI(t, runtime, "MC_grpSetContext", context, 1, colorAddress)
+	dispatchPublicAPI(t, runtime, "MC_grpSetContext", context, 1, 0x00abcdef)
 	dispatchPublicAPI(t, runtime, "MC_grpFillRect", offscreen, 0, 0, 16, 12, context)
 	// Flush the offscreen buffer, not the screen handle.
 	dispatchPublicAPI(t, runtime, "MC_grpFlushLcd", 0, offscreen, 0, 0, 16, 12)
@@ -619,11 +604,12 @@ func TestWIPIRuntimeFlushLcdRedirectsOffscreenBuffer(t *testing.T) {
 	}
 }
 
-// A context colour is 24-bit RGB, so on a 16bpp screen it has to be converted
-// rather than written straight through. 영웅서기3 fills with 0x4ba81c, whose
-// low half reads back as a magenta that has nothing to do with the colour it
-// asked for.
-func TestWIPIRuntimeConvertsContextColourForRGB565(t *testing.T) {
+// A context colour is already a device pixel: a Clet converts once with
+// MC_grpGetPixelFromRGB and hands that value to MC_grpSetContext. 영웅서기3
+// spells white as MC_grpGetPixelFromRGB(255, 255, 255) and 블레이드마스터4 sets
+// each palette entry the same way, so converting again on the way to the
+// framebuffer would re-encode an already-encoded pixel.
+func TestWIPIRuntimeContextColourIsADevicePixel(t *testing.T) {
 	runtime := newPublicRuntime(t)
 	runtime.framebufferBits = 16
 	screen := dispatchPublicAPI(t, runtime, "MC_grpGetScreenFrameBuffer", 0).Low
@@ -632,8 +618,16 @@ func TestWIPIRuntimeConvertsContextColourForRGB565(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	colour := dispatchPublicAPI(
+		t,
+		runtime,
+		"MC_grpGetPixelFromRGB",
+		0x4b,
+		0xa8,
+		0x1c,
+	).Low
 	dispatchPublicAPI(t, runtime, "MC_grpInitContext", context)
-	dispatchPublicAPI(t, runtime, "MC_grpSetContext", context, 1, 0x4ba81c)
+	dispatchPublicAPI(t, runtime, "MC_grpSetContext", context, 1, colour)
 	dispatchPublicAPI(t, runtime, "MC_grpPutPixel", screen, 1, 1, context)
 
 	var raw [2]byte
@@ -645,10 +639,16 @@ func TestWIPIRuntimeConvertsContextColourForRGB565(t *testing.T) {
 	}
 	got := binary.LittleEndian.Uint16(raw[:])
 	if want := uint16(0x4d43); got != want {
-		t.Fatalf("converted pixel = 0x%04x, want 0x%04x", got, want)
+		t.Fatalf("stored pixel = 0x%04x, want 0x%04x", got, want)
 	}
-	if got == uint16(0x4ba81c&0xffff) {
-		t.Fatal("context colour was truncated instead of converted")
+	dispatchPublicAPI(t, runtime, "MC_grpFlushLcd", 0, screen, 0, 0, 16, 12)
+	if presented := runtime.Frame.RGBAAt(1, 1); presented != (color.RGBA{
+		R: 0x4a,
+		G: 0xaa,
+		B: 0x18,
+		A: 0xff,
+	}) {
+		t.Fatalf("presented pixel = %#v, want the requested colour", presented)
 	}
 }
 
@@ -671,8 +671,8 @@ func TestWIPIRuntimeGraphicsSupportsRGB565Framebuffer(t *testing.T) {
 		t.Fatalf("framebuffer descriptor bits = %d", bits)
 	}
 
-	// Colours cross the API as 24-bit RGB whatever the screen depth; the
-	// RGB565 packing belongs to the framebuffer and is applied on the way in.
+	// Colours reach a context through MC_grpGetPixelFromRGB, which spells them
+	// the way this screen stores them.
 	red := dispatchPublicAPI(
 		t,
 		runtime,
@@ -681,8 +681,8 @@ func TestWIPIRuntimeGraphicsSupportsRGB565Framebuffer(t *testing.T) {
 		0,
 		0,
 	).Low
-	if red != 0xff0000 {
-		t.Fatalf("API red = 0x%06x", red)
+	if red != 0xf800 {
+		t.Fatalf("device red = 0x%06x", red)
 	}
 	context, err := runtime.Heap.Allocate(60, true)
 	if err != nil {
@@ -767,15 +767,7 @@ func TestWIPIRuntimeGraphicsPixelOperationUsesCallbackResult(t *testing.T) {
 
 	setContextValue := func(index uint32, value uint32) {
 		t.Helper()
-		address, allocateErr := runtime.Heap.Allocate(4, true)
-		if allocateErr != nil {
-			t.Fatal(allocateErr)
-		}
-		if writeErr := runtime.WriteU32(address, value); writeErr != nil {
-			t.Fatal(writeErr)
-		}
-		dispatchPublicAPI(t, runtime, "MC_grpSetContext", contextAddress, index, address)
-		runtime.Heap.Release(address)
+		dispatchPublicAPI(t, runtime, "MC_grpSetContext", contextAddress, index, value)
 	}
 	setContextValue(1, 0x00123456)
 	setContextValue(5, 0x02000001)
@@ -1048,14 +1040,7 @@ func TestWIPIRuntimeAdvancedGraphicsPrimitives(t *testing.T) {
 		t.Fatal(err)
 	}
 	dispatchPublicAPI(t, runtime, "MC_grpInitContext", context)
-	foreground, err := runtime.Heap.Allocate(4, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.WriteU32(foreground, 0x00a1b2c3); err != nil {
-		t.Fatal(err)
-	}
-	dispatchPublicAPI(t, runtime, "MC_grpSetContext", context, 1, foreground)
+	dispatchPublicAPI(t, runtime, "MC_grpSetContext", context, 1, 0x00a1b2c3)
 
 	dispatchPublicAPI(
 		t,
@@ -1719,5 +1704,74 @@ func TestRaptorStopClipReportsCompletionAndFrees(t *testing.T) {
 	}
 	if _, live := runtime.MediaServices[handle]; live {
 		t.Fatal("freed clip still owns a media service")
+	}
+}
+
+// MC_grpGetPixelFromRGB converts an RGB triple into the screen's own pixel
+// spelling, which is what makes it useful: a Clet that walks the raw
+// framebuffer through MC_grpGetFrameBufferPixels stores the result directly.
+// 블레이드마스터4 draws its title splash that way, keeping only the low half of
+// the returned word (lsls #16 / lsrs #16) because its screen is 16bpp. Handing
+// it 24-bit RGB left it storing the green and blue bytes as an RGB565 pixel,
+// so the splash kept its shapes but lost every colour.
+func TestWIPIRuntimeGetPixelFromRGBReturnsDevicePixel(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	runtime.framebufferBits = 16
+	screen := dispatchPublicAPI(t, runtime, "MC_grpGetScreenFrameBuffer", 0).Low
+	framebuffer := runtime.Framebuffers[screen]
+
+	pixel := dispatchPublicAPI(
+		t,
+		runtime,
+		"MC_grpGetPixelFromRGB",
+		0xb7,
+		0x31,
+		0x09,
+	).Low
+	if want := uint32(0xb181); pixel != want {
+		t.Fatalf("device pixel = 0x%08x, want 0x%04x", pixel, want)
+	}
+
+	// Store the low half the way the Clet does, then present the buffer.
+	var raw [2]byte
+	binary.LittleEndian.PutUint16(raw[:], uint16(pixel))
+	offset := framebuffer.Pixels + uint32(4*framebuffer.Width+6)*2
+	if err := runtime.CPU.WriteMemory(offset, raw[:]); err != nil {
+		t.Fatal(err)
+	}
+	dispatchPublicAPI(t, runtime, "MC_grpFlushLcd", 0, screen, 0, 0, 16, 12)
+	if got := runtime.Frame.RGBAAt(6, 4); got != (color.RGBA{
+		R: 0xb5,
+		G: 0x30,
+		B: 0x08,
+		A: 0xff,
+	}) {
+		t.Fatalf("presented pixel = %#v, want the requested colour", got)
+	}
+
+	// MC_grpGetRGBFromPixel is the same conversion in reverse, so it has to
+	// read the device spelling back rather than a 24-bit word.
+	components, err := runtime.Heap.Allocate(12, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatchPublicAPI(
+		t,
+		runtime,
+		"MC_grpGetRGBFromPixel",
+		pixel,
+		components,
+		components+4,
+		components+8,
+	)
+	var encoded [12]byte
+	if err := runtime.CPU.ReadMemory(components, encoded[:]); err != nil {
+		t.Fatal(err)
+	}
+	red := binary.LittleEndian.Uint32(encoded[0:4])
+	green := binary.LittleEndian.Uint32(encoded[4:8])
+	blue := binary.LittleEndian.Uint32(encoded[8:12])
+	if red != 0xb5 || green != 0x30 || blue != 0x08 {
+		t.Fatalf("decoded RGB = (%d, %d, %d)", red, green, blue)
 	}
 }
