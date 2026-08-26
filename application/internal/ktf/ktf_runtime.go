@@ -203,6 +203,7 @@ type Runtime struct {
 	wipicTimers            map[uint32]*ktfWIPICTimer
 	wipicMediaClips        map[uint32]*ktfWIPICMediaClip
 	pendingMediaCallbacks  []uint32
+	pendingNetCallbacks    []ktfPendingNetCallback
 	wipicSystemProperties  map[string]string
 	wipicFiles             map[uint32]*ktfFile
 	nextWIPICFile          uint32

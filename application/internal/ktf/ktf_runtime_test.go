@@ -9004,3 +9004,80 @@ func TestKTFWIPICRestoredImageRecoversColorKey(t *testing.T) {
 		})
 	}
 }
+
+// TestKTFWIPICNetConnectReportsFailureThroughItsCallback pins issue #56:
+// 미니게임천국4 asks to authenticate on its first launch, calls MC_netConnect,
+// and then does nothing until that callback arrives. ARAM opens no carrier
+// data session, so the connect must report the failure the way a handset out
+// of coverage does — through the callback — instead of never calling it.
+func TestKTFWIPICNetConnectReportsFailureThroughItsCallback(t *testing.T) {
+	if got := ktfWIPICHandler(ktfWIPICMasterNet, 0); reflect.ValueOf(got).Pointer() !=
+		reflect.ValueOf(ktfWIPICNetConnect).Pointer() {
+		t.Fatal("net slot 0 is not MC_netConnect")
+	}
+	if got := ktfWIPICHandler(ktfWIPICMasterNet, 1); reflect.ValueOf(got).Pointer() !=
+		reflect.ValueOf(ktfWIPICNetClose).Pointer() {
+		t.Fatal("net slot 1 is not MC_netClose")
+	}
+	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.CPU.Close()
+	if err := runtime.MapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	const callback = ImageBase | 1
+	const parameter = uint32(0x1234abcd)
+	for register, value := range []uint32{callback, parameter} {
+		if err := runtime.CPU.WriteRegister(
+			cpu.RegisterR0+uint32(register),
+			value,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if result, err := ktfWIPICNetConnect(context.Background(), runtime); err != nil ||
+		result != 0 {
+		t.Fatalf("MC_netConnect result=%08x err=%v", result, err)
+	}
+	if len(runtime.pendingNetCallbacks) != 1 {
+		t.Fatalf("queued network callbacks = %d", len(runtime.pendingNetCallbacks))
+	}
+	pending := runtime.pendingNetCallbacks[0]
+	if pending.procedure != callback || pending.parameter != parameter ||
+		int32(pending.result) != -1 {
+		t.Fatalf("queued callback = %+v", pending)
+	}
+
+	// The queued callback runs as an ordinary WIPI-C callback task, serialized
+	// with the timer callbacks, so the title observes the verdict on a later
+	// slice rather than re-entering the guest from inside the host call.
+	if err := runtime.activateDueWIPICTimers(); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.pendingNetCallbacks) != 0 {
+		t.Fatal("network callback stayed queued")
+	}
+	if len(runtime.Tasks) != 1 || runtime.Tasks[0] == nil || runtime.Tasks[0].Done {
+		t.Fatalf("network callback task = %+v", runtime.Tasks)
+	}
+	if err := runtime.CPU.RestoreContext(runtime.Tasks[0].Context); err != nil {
+		t.Fatal(err)
+	}
+	registers := []uint32{cpu.RegisterR0, cpu.RegisterR1, cpu.RegisterPC}
+	want := []uint32{^uint32(0), parameter, callback &^ 1}
+	for index, register := range registers {
+		value, err := runtime.CPU.ReadRegister(register)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if value != want[index] {
+			t.Fatalf("callback register %d = 0x%08x, want 0x%08x",
+				index, value, want[index])
+		}
+	}
+}

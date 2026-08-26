@@ -61,6 +61,7 @@ const (
 	ktfWIPICMasterGraphics = 2
 	ktfWIPICMasterFS       = 6
 	ktfWIPICMasterMedia    = 9
+	ktfWIPICMasterNet      = 10
 )
 
 func ktfWIPICHandler(table, slot int) ktfHostHandler {
@@ -182,6 +183,14 @@ func ktfWIPICHandler(table, slot int) ktfHostHandler {
 			return ktfWIPICFileTell
 		case 16:
 			return ktfWIPICFileIsExist
+		}
+	}
+	if table == ktfWIPICMasterNet {
+		switch slot {
+		case 0:
+			return ktfWIPICNetConnect
+		case 1:
+			return ktfWIPICNetClose
 		}
 	}
 	if table == ktfWIPICMasterMedia {
