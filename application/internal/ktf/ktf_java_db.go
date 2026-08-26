@@ -14,6 +14,7 @@ import (
 	"unicode/utf16"
 
 	"github.com/mirusu400/aram-core/cpu"
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 func (r *Runtime) handleDataBaseMethod(
@@ -1023,4 +1024,69 @@ func (r *Runtime) newJavaInstance(className string, fieldSize uint32) (uint32, e
 		class.FieldSize = uint16(fieldSize)
 	}
 	return r.NewJavaInstanceForClass(class)
+}
+
+// AdoptPersistedDatabases rebinds the Java DataBase adapter to the record
+// stores the storage service currently holds. Restoring a title's save data
+// replaces every record store and mints fresh service IDs, so the names and
+// handles the adapter learned at boot no longer describe storage. Leaving them
+// stale makes openDataBase miss a restored store, report it as absent, and then
+// fail to create it because the service still knows the name — the fault a
+// title sees on its second launch.
+//
+// Call it after storage persistence is imported and before the title starts,
+// while no Java DataBase instance is bound to a store yet.
+func (r *Runtime) AdoptPersistedDatabases() error {
+	if r == nil || r.Services == nil || r.Services.Storage == nil {
+		return fmt.Errorf("KTF services are missing")
+	}
+	stores := make(map[string]*Database, len(r.DatabaseStores))
+	services := make(map[string]shared.ServiceID, len(r.DatabaseStores))
+	for _, saved := range r.Services.Storage.Snapshot().RecordStores {
+		if saved.Owner != r.ServiceOwner {
+			continue
+		}
+		// Reuse the existing entry so a store the package shipped keeps its
+		// declared record size and any instance already bound to it observes
+		// the restored records.
+		store := r.DatabaseStores[saved.Name]
+		if store == nil {
+			store = &Database{Name: saved.Name}
+		}
+		store.Records = recordSlots(saved)
+		if store.RecordSize == 0 {
+			// Save data carries records, not the fixed record size the title
+			// declared. The widest restored record is the closest honest
+			// answer for getRecordSize().
+			for _, record := range store.Records {
+				if uint32(len(record)) > store.RecordSize {
+					store.RecordSize = uint32(len(record))
+				}
+			}
+		}
+		stores[saved.Name] = store
+		services[saved.Name] = saved.ID
+	}
+	r.DatabaseStores = stores
+	r.DatabaseServices = services
+	return nil
+}
+
+// recordSlots converts a record store's sparse IDs into the slot-indexed form
+// the KTF adapter keeps, matching deleteRecord's rule that a record ID is a
+// slot index that stays stable when its neighbours change.
+func recordSlots(saved shared.RecordStoreState) [][]byte {
+	// An empty store must stay empty: the service reports next ID 1 for one, so
+	// only the record IDs themselves describe how many slots exist.
+	length := uint32(0)
+	for _, record := range saved.Records {
+		if record.ID+1 > length {
+			length = record.ID + 1
+		}
+	}
+	slots := make([][]byte, length)
+	for _, record := range saved.Records {
+		slots[record.ID] = bytes.Clone(record.Data)
+	}
+	return slots
 }
