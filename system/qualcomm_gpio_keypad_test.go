@@ -322,13 +322,31 @@ func TestSCHW830ProfileMapsKnownKeypadControls(t *testing.T) {
 	if err := keypad.SetKey("volume-up", false); err != nil {
 		t.Fatal(err)
 	}
-	if err := keypad.SetKey("up", true); err != nil {
-		t.Fatal(err)
-	}
-	if err := secondary.Write(0x0400, Width32, 0x00004000); err != nil {
-		t.Fatal(err)
-	}
-	if got := primary.InputStatus(); got != 0x17 {
-		t.Fatalf("SCH-W830 up selected input = %#x", got)
+	// The four ring directions share row 4 and occupy columns 0..3 in
+	// up/down/left/right order, so each pulls a distinct column input low
+	// (base 0x1f minus the column bit). This pins the direction-to-column
+	// mapping the firmware decodes; a reversed assignment rotated on-screen
+	// navigation relative to the pressed direction.
+	for _, direction := range []struct {
+		id    string
+		input uint32
+	}{
+		{"up", 0x1e},
+		{"down", 0x1d},
+		{"left", 0x1b},
+		{"right", 0x17},
+	} {
+		if err := keypad.SetKey(direction.id, true); err != nil {
+			t.Fatal(err)
+		}
+		if err := secondary.Write(0x0400, Width32, 0x00004000); err != nil {
+			t.Fatal(err)
+		}
+		if got := primary.InputStatus(); got != direction.input {
+			t.Fatalf("SCH-W830 %s selected input = %#x, want %#x", direction.id, got, direction.input)
+		}
+		if err := keypad.SetKey(direction.id, false); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

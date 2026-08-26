@@ -935,13 +935,17 @@ func SCHW830DL21BoardProfile() BoardProfile {
 				// and B(right) behavior.
 				{ID: "soft-left", Row: 0, Column: 0},
 				{ID: "soft-right", Row: 1, Column: 0},
-				// Native DL21 screen probes identify the four ring directions:
-				// from idle they open the four documented shortcuts, while within
-				// a list they move the selection or change the selected value.
-				{ID: "up", Row: 4, Column: 3},
-				{ID: "down", Row: 4, Column: 2},
-				{ID: "left", Row: 4, Column: 1},
-				{ID: "right", Row: 4, Column: 0},
+				// Native DL21 screen probes identify the four ring directions on
+				// row 4: from idle they open the four documented shortcuts, while
+				// within a list they move the selection or change the selected
+				// value. The firmware scans this row's columns in ascending order,
+				// so up/down/left/right occupy columns 0..3; the earlier reversed
+				// assignment rotated on-screen navigation relative to the pressed
+				// direction (pressing right moved up, and so on).
+				{ID: "up", Row: 4, Column: 0},
+				{ID: "down", Row: 4, Column: 1},
+				{ID: "left", Row: 4, Column: 2},
+				{ID: "right", Row: 4, Column: 3},
 				// NATE/OK enters the highlighted menu item. The C/back key returns
 				// from a nested settings list to the grid, and from the grid home.
 				{ID: "ok", Row: 5, Column: 0},
