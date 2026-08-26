@@ -826,8 +826,7 @@ func (r *Runtime) wipicSystemProperty(key string) (string, bool) {
 		_, signal, _ := r.Services.Device.Status()
 		return strconv.Itoa(int(signal) * 5 / 100), true
 	case "BATTERYLEVEL":
-		battery, _, _ := r.Services.Device.Status()
-		return strconv.Itoa(int(battery) * 5 / 100), true
+		return r.batteryLevelSystemProperty(), true
 	case "MAXRSSILEVEL", "MAXBATTLEVEL":
 		return "5", true
 	case "MAXSERIALNUM":
@@ -863,6 +862,14 @@ func (r *Runtime) wipicSystemProperty(key string) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+func (r *Runtime) batteryLevelSystemProperty() string {
+	if r.Services == nil || r.Services.Device == nil {
+		return "5"
+	}
+	battery, _, _ := r.Services.Device.Status()
+	return strconv.Itoa(int(battery) * 5 / 100)
 }
 
 func ktfGetResourceID(
