@@ -2,6 +2,7 @@ package interpreter
 
 import (
 	"errors"
+	"sync/atomic"
 
 	"github.com/mirusu400/aram-core/cpu"
 )
@@ -50,7 +51,20 @@ func (b *Backend) enterException(mode processorMode, vector, returnLink uint32) 
 }
 
 func (b *Backend) takePendingInterrupt() bool {
-	lines := b.interruptLines.Load()
+	lines := atomic.LoadUint32(&b.interruptLines)
+	if lines == 0 {
+		return false
+	}
+	return b.takePendingInterruptLines(lines)
+}
+
+// takePendingInterruptLines is deliberately kept off the no-interrupt path.
+// Firmware spends nearly all instruction boundaries with both inputs low, so
+// the inlined wrapper above reduces that poll to one atomic load and one
+// predicted branch without reading CPSR or computing an exception link.
+//
+//go:noinline
+func (b *Backend) takePendingInterruptLines(lines uint32) bool {
 	status := b.regs[cpu.RegisterCPSR]
 	returnLink := b.regs[cpu.RegisterPC] + 4
 	if lines&(uint32(1)<<uint32(cpu.InterruptFIQ)) != 0 && status&statusFIQDisable == 0 {

@@ -40,6 +40,48 @@ func TestAttachedSystemBusExecutesCodeAndDispatchesDataAccess(t *testing.T) {
 	}
 }
 
+func TestAttachedDirectMemoryBusBypassesDataCallsAfterColdFill(t *testing.T) {
+	bus := &directTestSystemBus{data: make([]byte, 0x2000), base: 0x1000}
+	binary.LittleEndian.PutUint32(bus.data[0x0000:], 0xe5901000) // LDR r1, [r0]
+	binary.LittleEndian.PutUint32(bus.data[0x1000:], 41)
+	backend := New()
+	if err := backend.AttachSystemBus(bus); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.WriteRegister(cpu.RegisterR0, 0x2000); err != nil {
+		t.Fatal(err)
+	}
+	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 1)
+	if result.Err != nil || result.Instructions != 1 {
+		t.Fatalf("Run result = %+v", result)
+	}
+	if got := register(t, backend, cpu.RegisterR1); got != 41 {
+		t.Fatalf("r1 = %d, want 41", got)
+	}
+	if bus.directFills != 1 || bus.dataReads != 0 {
+		t.Fatalf("direct fills = %d, ordinary data reads = %d", bus.directFills, bus.dataReads)
+	}
+	if err := backend.WriteRegister(cpu.RegisterR0, 0x2004); err != nil {
+		t.Fatal(err)
+	}
+	binary.LittleEndian.PutUint32(bus.data[0x1004:], 42)
+	result = backend.Run(context.Background(), 0x1000, cpu.ModeARM, 1)
+	if result.Err != nil || register(t, backend, cpu.RegisterR1) != 42 {
+		t.Fatalf("cached direct run = %+v r1=%d", result, register(t, backend, cpu.RegisterR1))
+	}
+	if bus.directFills != 1 || bus.dataReads != 0 {
+		t.Fatalf("hot direct access refilled/called bus: fills=%d reads=%d", bus.directFills, bus.dataReads)
+	}
+	bus.invalidate()
+	result = backend.Run(context.Background(), 0x1000, cpu.ModeARM, 1)
+	if result.Err != nil || register(t, backend, cpu.RegisterR1) != 42 {
+		t.Fatalf("post-invalidation run = %+v r1=%d", result, register(t, backend, cpu.RegisterR1))
+	}
+	if bus.directFills != 2 || bus.dataReads != 0 {
+		t.Fatalf("invalidated direct access fills=%d reads=%d, want one refill", bus.directFills, bus.dataReads)
+	}
+}
+
 func TestContextSystemBusAttributesDataAccessesToGuestInstructions(t *testing.T) {
 	bus := &contextTestSystemBus{testSystemBus: testSystemBus{memory: make(map[uint32]byte)}}
 	code := []uint32{
@@ -180,6 +222,49 @@ type testSystemBus struct {
 type contextTestSystemBus struct {
 	testSystemBus
 	dataContexts []cpu.MemoryAccessContext
+}
+
+type directTestSystemBus struct {
+	data        []byte
+	base        uint32
+	dataReads   int
+	directFills int
+	invalidate  func()
+}
+
+func (b *directTestSystemBus) Read(address uint32, destination []byte, permission cpu.Permissions) error {
+	if permission != cpu.PermissionExecute {
+		b.dataReads++
+	}
+	offset := int(address - b.base)
+	copy(destination, b.data[offset:offset+len(destination)])
+	return nil
+}
+
+func (b *directTestSystemBus) Write(address uint32, source []byte, _ cpu.Permissions) error {
+	offset := int(address - b.base)
+	copy(b.data[offset:offset+len(source)], source)
+	return nil
+}
+
+func (b *directTestSystemBus) DirectMemoryRegion(
+	address uint32,
+	size int,
+	permission cpu.Permissions,
+) (cpu.DirectMemoryRegion, bool) {
+	if permission&cpu.PermissionExecute != 0 || address < b.base ||
+		uint64(address-b.base)+uint64(size) > uint64(len(b.data)) {
+		return cpu.DirectMemoryRegion{}, false
+	}
+	b.directFills++
+	return cpu.DirectMemoryRegion{
+		Address: b.base, Data: b.data,
+		Permissions: cpu.PermissionRead | cpu.PermissionWrite | cpu.PermissionExecute,
+	}, true
+}
+
+func (b *directTestSystemBus) SetDirectMemoryInvalidator(invalidate func()) {
+	b.invalidate = invalidate
 }
 
 func (b *contextTestSystemBus) ReadContext(

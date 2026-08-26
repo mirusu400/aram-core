@@ -58,6 +58,13 @@ func (b *Backend) switchProcessorMode(oldMode, newMode processorMode) {
 	if oldMode == newMode {
 		return
 	}
+	// A resident instruction line records whether its permission check passed
+	// in User or privileged mode. Drop the one-line execution window before the
+	// privilege can change underneath it.
+	b.invalidateInstructionWindow()
+	// Native data entries encode the access check performed in the old
+	// privileged/user mode, so they cannot survive a bank/mode switch.
+	b.tlbClear()
 	b.saveProcessorBank(oldMode)
 	b.loadProcessorBank(newMode)
 }

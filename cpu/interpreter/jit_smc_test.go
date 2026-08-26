@@ -2,6 +2,7 @@ package interpreter
 
 import (
 	"context"
+	"encoding/binary"
 	"testing"
 
 	"github.com/mirusu400/aram-core/cpu"
@@ -40,6 +41,40 @@ func TestJITSelfModifyingCodeInvalidatesTranslation(t *testing.T) {
 	}
 	if got := register(t, backend, cpu.RegisterR0); got != 2 {
 		t.Fatalf("r0 after self-modifying rewrite = %d, want 2 (stale translation not invalidated)", got)
+	}
+}
+
+func TestARMJITSelfModifyingCodeInvalidatesTranslation(t *testing.T) {
+	backend := NewJIT()
+	mapCodeAndStack(t, backend)
+
+	code := make([]byte, 8)
+	binary.LittleEndian.PutUint32(code[0:4], 0xe3a00001) // mov r0, #1
+	binary.LittleEndian.PutUint32(code[4:8], 0xe1200070) // bkpt
+	if err := backend.WriteMemory(0x1000, code); err != nil {
+		t.Fatal(err)
+	}
+	if result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 8); result.Err != nil ||
+		result.Reason != cpu.StopBreakpoint {
+		t.Fatalf("first run = %+v", result)
+	}
+	if got := register(t, backend, cpu.RegisterR0); got != 1 {
+		t.Fatalf("r0 after first run = %d, want 1", got)
+	}
+	if len(backend.armJITBlocks) == 0 {
+		t.Fatal("ARM run did not retain a translated block")
+	}
+
+	binary.LittleEndian.PutUint32(code[0:4], 0xe3a00002) // mov r0, #2
+	if err := backend.WriteMemory(0x1000, code[:4]); err != nil {
+		t.Fatal(err)
+	}
+	if result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 8); result.Err != nil ||
+		result.Reason != cpu.StopBreakpoint {
+		t.Fatalf("second run = %+v", result)
+	}
+	if got := register(t, backend, cpu.RegisterR0); got != 2 {
+		t.Fatalf("r0 after ARM rewrite = %d, want 2 (stale translation not invalidated)", got)
 	}
 }
 

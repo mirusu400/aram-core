@@ -195,10 +195,23 @@ type Bus struct {
 	contextObserver      MemoryObserver
 	contextObserverStart uint32
 	contextObserverEnd   uint64
+	// directMemoryInvalidator belongs to the attached CPU. Any mapping or
+	// observer change calls it after releasing mu so cached RAM slices cannot
+	// bypass newly installed bus semantics and the callback cannot deadlock by
+	// re-entering CPU state.
+	directMemoryInvalidator func()
 }
 
 func NewBus() *Bus {
 	return &Bus{}
+}
+
+// SetDirectMemoryInvalidator implements cpu.DirectMemoryBus. A whole-system bus
+// has one attached CPU; replacing the callback replaces that attachment.
+func (b *Bus) SetDirectMemoryInvalidator(invalidate func()) {
+	b.mu.Lock()
+	b.directMemoryInvalidator = invalidate
+	b.mu.Unlock()
 }
 
 // SetMMIOObserver replaces the optional diagnostic observer. The observer is
@@ -208,7 +221,11 @@ func (b *Bus) SetMMIOObserver(observer MMIOObserver) {
 	b.mu.Lock()
 	b.mmioObserver = observer
 	b.refreshObserved()
+	invalidate := b.directMemoryInvalidator
 	b.mu.Unlock()
+	if invalidate != nil {
+		invalidate()
+	}
 }
 
 // SetMemoryObserver replaces the optional bounded physical-memory observer.
@@ -224,7 +241,11 @@ func (b *Bus) SetMemoryObserver(address, size uint32, observer MemoryObserver) e
 	b.memoryObserverStart = address
 	b.memoryObserverEnd = end
 	b.refreshObserved()
+	invalidate := b.directMemoryInvalidator
 	b.mu.Unlock()
+	if invalidate != nil {
+		invalidate()
+	}
 	return nil
 }
 
@@ -257,7 +278,11 @@ func (b *Bus) SetInstructionMemoryObserver(
 	b.contextObserverStart = address
 	b.contextObserverEnd = end
 	b.refreshObserved()
+	invalidate := b.directMemoryInvalidator
 	b.mu.Unlock()
+	if invalidate != nil {
+		invalidate()
+	}
 	return nil
 }
 
@@ -327,24 +352,31 @@ func (b *Bus) MapMMIO(name string, address, size uint32, device Device) error {
 // mapRegion appends to the region slice, which can move its backing array, so
 // the remembered pointer has to be dropped.
 func (b *Bus) mapRegion(mapped region) error {
-	b.lastRegion = nil
 	b.mu.Lock()
-	defer b.mu.Unlock()
+	b.lastRegion = nil
 	if strings.TrimSpace(mapped.name) == "" || len(mapped.name) > 255 ||
 		strings.IndexByte(mapped.name, 0) >= 0 || mapped.size == 0 ||
 		uint64(mapped.address)+uint64(mapped.size) > 1<<32 {
+		b.mu.Unlock()
 		return fmt.Errorf("region %q: %w", mapped.name, ErrInvalidRegion)
 	}
 	for _, existing := range b.regions {
 		if existing.name == mapped.name {
+			b.mu.Unlock()
 			return fmt.Errorf("duplicate region %q: %w", mapped.name, ErrInvalidRegion)
 		}
 		if uint64(mapped.address) < existing.end() && uint64(existing.address) < mapped.end() {
+			b.mu.Unlock()
 			return fmt.Errorf("region %q overlaps %q: %w", mapped.name, existing.name, ErrRegionOverlap)
 		}
 	}
 	b.regions = append(b.regions, mapped)
 	sort.Slice(b.regions, func(i, j int) bool { return b.regions[i].address < b.regions[j].address })
+	invalidate := b.directMemoryInvalidator
+	b.mu.Unlock()
+	if invalidate != nil {
+		invalidate()
+	}
 	return nil
 }
 
@@ -474,6 +506,27 @@ func (b *Bus) WriteBlock(
 	}
 	b.mu.Unlock()
 	return true, nil
+}
+
+// DirectMemoryRegion returns the complete ordinary-RAM region covering a data
+// access. MMIO, sparse RAM, ROM, observed buses, boundary crossings, and
+// permission failures stay on the locked bus path.
+func (b *Bus) DirectMemoryRegion(
+	address uint32,
+	size int,
+	permission cpu.Permissions,
+) (cpu.DirectMemoryRegion, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	mapped, _, ok := b.resolveBlock(address, size, permission)
+	if !ok || mapped.kind != regionRAM {
+		return cpu.DirectMemoryRegion{}, false
+	}
+	return cpu.DirectMemoryRegion{
+		Address:     mapped.address,
+		Data:        mapped.data,
+		Permissions: mapped.permissions,
+	}, true
 }
 
 // resolveBlock is resolve without the width rules, for a transfer that carries

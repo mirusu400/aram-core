@@ -95,6 +95,14 @@ func (b *Backend) loadInstructionCacheLine(address uint32) (*instructionCacheLin
 	return b.fillInstructionCacheLine(address, mvaLine, privileged)
 }
 
+// invalidateInstructionWindow drops only the execution loop's current-line
+// pointer. The functional cache remains resident; the next fetch performs the
+// full lookup once and then reopens the window.
+func (b *Backend) invalidateInstructionWindow() {
+	b.instructionWindow = nil
+	b.instructionWindowTag = 0
+}
+
 func (b *Backend) fillInstructionCacheLine(
 	address, mvaLine uint32,
 	privileged bool,
@@ -110,6 +118,9 @@ func (b *Backend) fillInstructionCacheLine(
 		b.instructionCacheTable = new([instructionCacheSets]instructionCacheEntry)
 	}
 	entry := b.instructionCacheEntry(mvaLine)
+	// A prefetch or conflicting miss can replace the table entry currently held
+	// by the execution window. Retire that pointer before overwriting the entry.
+	b.invalidateInstructionWindow()
 	virtualLine := address &^ (instructionCacheLineSize - 1)
 	if err := b.readVirtual(virtualLine, entry.line[:], cpu.PermissionExecute); err != nil {
 		entry.valid = false
@@ -120,11 +131,30 @@ func (b *Backend) fillInstructionCacheLine(
 }
 
 func (b *Backend) fetchInstructionCache(address uint32, size uint32) ([]byte, error) {
+	// Zero is the cold sentinel; adding one is safe because a 32-bit byte
+	// address has only 27 line-number bits. Keeping the sentinel in the tag lets
+	// the hot path be a single equality comparison.
+	windowTag := (address >> instructionCacheLineShift) + 1
+	offset := address & (instructionCacheLineSize - 1)
+	if offset+size > instructionCacheLineSize {
+		// Aligned ARM and Thumb fetches cannot straddle a 32-byte line, so
+		// reaching this means the guest set an unaligned PC. That is its
+		// mistake to be told about, not the host's to die on.
+		return nil, fmt.Errorf(
+			"instruction fetch at 0x%08x crosses an ARM926 cache line: %w",
+			address, cpu.ErrInvalidAddress,
+		)
+	}
+	if b.instructionWindowTag == windowTag {
+		return b.instructionWindow[offset : offset+size], nil
+	}
+
 	line, cacheable, err := b.loadInstructionCacheLine(address)
 	if err != nil {
 		return nil, err
 	}
 	if !cacheable {
+		b.invalidateInstructionWindow()
 		physical, _, translationErr := b.translateAddressWithAttributes(
 			address,
 			cpu.PermissionExecute,
@@ -138,17 +168,8 @@ func (b *Backend) fetchInstructionCache(address uint32, size uint32) ([]byte, er
 		}
 		return data, nil
 	}
-
-	offset := address & (instructionCacheLineSize - 1)
-	if offset+size > instructionCacheLineSize {
-		// Aligned ARM and Thumb fetches cannot straddle a 32-byte line, so
-		// reaching this means the guest set an unaligned PC. That is its
-		// mistake to be told about, not the host's to die on.
-		return nil, fmt.Errorf(
-			"instruction fetch at 0x%08x crosses an ARM926 cache line: %w",
-			address, cpu.ErrInvalidAddress,
-		)
-	}
+	b.instructionWindow = line
+	b.instructionWindowTag = windowTag
 	return line[offset : offset+size], nil
 }
 
@@ -156,9 +177,11 @@ func (b *Backend) fetchInstructionCache(address uint32, size uint32) ([]byte, er
 // mapping generation, so a full flush costs nothing per line.
 func (b *Backend) invalidateInstructionCache() {
 	b.mappingGen++
+	b.invalidateInstructionWindow()
 }
 
 func (b *Backend) invalidateInstructionCacheMVA(address uint32) {
+	b.invalidateInstructionWindow()
 	mvaLine := b.modifiedVirtualAddress(address) &^ (instructionCacheLineSize - 1)
 	if entry := b.instructionCacheEntry(mvaLine); entry != nil && entry.tag == mvaLine {
 		entry.valid = false
@@ -199,6 +222,7 @@ func (b *Backend) restoreInstructionCacheLine(mvaLine uint32, line instructionCa
 	if b.instructionCacheTable == nil {
 		b.instructionCacheTable = new([instructionCacheSets]instructionCacheEntry)
 	}
+	b.invalidateInstructionWindow()
 	entry := b.instructionCacheEntry(mvaLine)
 	entry.line = line
 	entry.tag, entry.gen, entry.privileged, entry.valid =

@@ -8,9 +8,10 @@ package interpreter
 // translate-cache-execute model of a dynamic binary translator, expressed in
 // pure Go (no host code emission, so it stays Android/iOS-portable).
 //
-// It is Thumb-only; ARM and any instruction it does not translate fall back to
-// the interpreter one instruction at a time, so it is always correct. Every
-// closure body mirrors the corresponding interpreter case exactly, and
+// This file holds the Thumb decoder; arm_jit.go adds ARM blocks behind the same
+// cache/fallback contract. Any instruction they do not translate falls back to
+// the interpreter one at a time. Every closure body mirrors the corresponding
+// interpreter case exactly, and
 // cpu/conformance plus the real-game reference tests guard bit-for-bit
 // equivalence with the interpreter oracle.
 
@@ -26,8 +27,9 @@ import (
 type jitExec func(b *Backend) (branched bool, reason *cpu.StopReason, err error)
 
 type jitInstr struct {
-	pc   uint32
-	exec jitExec
+	pc        uint32
+	condition uint8 // ARM only; Thumb's runner ignores it
+	exec      jitExec
 }
 
 type jitBlock struct {
@@ -45,19 +47,25 @@ func (b *Backend) smcInvalidate(address, size uint32, perms cpu.Permissions) {
 	if perms&cpu.PermissionExecute == 0 {
 		return
 	}
-	if b.jitBlocks != nil {
+	if b.jitBlocks != nil || b.armJITBlocks != nil {
 		// KTF/WIPI map the guest image read-write-execute, so the blitter's
 		// thousands of framebuffer writes each land in an executable region.
 		// Only a write that overlaps the span of code we have actually
 		// translated can invalidate a block; a write outside it (framebuffer,
 		// heap, stack) leaves the cache intact. jitCodeLo/Hi bound every
 		// translated block, so this never keeps a stale translation.
-		if size != 0 && address < b.jitCodeHi && address+size > b.jitCodeLo {
-			clear(b.jitBlocks)
+		if size != 0 && address < b.jitCodeHi && address+size > b.jitCodeLo &&
+			b.hasJITCodePages(address, size) {
+			if b.jitBlocks != nil {
+				clear(b.jitBlocks)
+			}
+			if b.armJITBlocks != nil {
+				clear(b.armJITBlocks)
+			}
 			b.jitGen++
+			clear(b.jitCodePages)
 			b.jitCodeLo, b.jitCodeHi = ^uint32(0), 0
 		}
-		return
 	}
 	if b.nativeBlocks != nil {
 		// Same reasoning as the pure-Go JIT above: only a write that overlaps
@@ -68,7 +76,6 @@ func (b *Backend) smcInvalidate(address, size uint32, perms cpu.Permissions) {
 			b.hasCodePages(address, size) {
 			b.nativeInvalidate()
 		}
-		return
 	}
 }
 
@@ -79,7 +86,13 @@ func (b *Backend) smcInvalidate(address, size uint32, perms cpu.Permissions) {
 func (b *Backend) invalidateTranslations() {
 	if b.jitBlocks != nil {
 		clear(b.jitBlocks)
+	}
+	if b.armJITBlocks != nil {
+		clear(b.armJITBlocks)
+	}
+	if b.jitBlocks != nil || b.armJITBlocks != nil {
 		b.jitGen++
+		clear(b.jitCodePages)
 		b.jitCodeLo, b.jitCodeHi = ^uint32(0), 0
 	}
 	b.nativeInvalidate()
@@ -95,6 +108,16 @@ func (b *Backend) runThumbJIT(limit uint64) (uint64, *cpu.StopReason, error) {
 outer:
 	for executed < limit {
 		pc := b.regs[cpu.RegisterPC]
+		if wholeSystem {
+			if b.takePendingInterrupt() {
+				return executed, nil, nil
+			}
+			pc = b.regs[cpu.RegisterPC]
+			if b.executionTrapAt(cpu.ModeThumb, pc) {
+				reason := cpu.StopExecutionTrap
+				return executed, &reason, nil
+			}
+		}
 		block := b.jitBlockAt(pc)
 		if block == nil {
 			// Untranslatable at pc: interpret exactly one instruction.
@@ -176,6 +199,7 @@ func (b *Backend) jitBlockAt(pc uint32) *jitBlock {
 		block = b.translateThumbBlock(pc)
 		b.jitBlocks[pc] = block
 		if block != nil {
+			b.markJITCodePages(block.start, block.end-block.start)
 			// Grow the translated-code span so smcInvalidate can tell a real
 			// code write from an ordinary data/framebuffer write.
 			if block.start < b.jitCodeLo {
@@ -190,6 +214,35 @@ func (b *Backend) jitBlockAt(pc uint32) *jitBlock {
 	slot.gen = b.jitGen
 	slot.block = block
 	return block
+}
+
+func (b *Backend) markJITCodePages(address, size uint32) bool {
+	if b.jitCodePages == nil || size == 0 {
+		return false
+	}
+	grew := false
+	last := (uint64(address) + uint64(size) - 1) >> tlbPageBits
+	for page := uint64(address) >> tlbPageBits; page <= last; page++ {
+		word, mask := page>>6, uint64(1)<<(page&63)
+		if b.jitCodePages[word]&mask == 0 {
+			b.jitCodePages[word] |= mask
+			grew = true
+		}
+	}
+	return grew
+}
+
+func (b *Backend) hasJITCodePages(address, size uint32) bool {
+	if b.jitCodePages == nil || size == 0 {
+		return false
+	}
+	last := (uint64(address) + uint64(size) - 1) >> tlbPageBits
+	for page := uint64(address) >> tlbPageBits; page <= last; page++ {
+		if b.jitCodePages[page>>6]&(1<<(page&63)) != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (b *Backend) translateThumbBlock(pc uint32) *jitBlock {

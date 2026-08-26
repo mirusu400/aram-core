@@ -49,6 +49,36 @@ func TestARM926InstructionCacheRetainsCodeUntilMVAInvalidation(t *testing.T) {
 	}
 }
 
+func TestARM926InstructionWindowTracksLineAndInvalidatesWithMappings(t *testing.T) {
+	backend := New()
+	if err := backend.Map(
+		0x1000, 0x100,
+		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
+	); err != nil {
+		t.Fatal(err)
+	}
+	code := make([]byte, instructionCacheLineSize)
+	for offset := 0; offset < len(code); offset += 4 {
+		binary.LittleEndian.PutUint32(code[offset:offset+4], 0xe1a00000) // MOV r0, r0
+	}
+	if err := backend.WriteMemory(0x1000, code); err != nil {
+		t.Fatal(err)
+	}
+	backend.setCP15Control(1 << 12)
+	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 8)
+	if result.Err != nil || result.Instructions != 8 {
+		t.Fatalf("Run result = %+v", result)
+	}
+	if backend.instructionWindow == nil || backend.instructionWindowTag != (0x1000>>5)+1 {
+		t.Fatalf("instruction window = %p tag %#x", backend.instructionWindow, backend.instructionWindowTag)
+	}
+	backend.invalidateTLB()
+	if backend.instructionWindow != nil || backend.instructionWindowTag != 0 {
+		t.Fatalf("mapping invalidation retained instruction window = %p tag %#x",
+			backend.instructionWindow, backend.instructionWindowTag)
+	}
+}
+
 func TestARM926CP15PrefetchFillsInstructionCacheBeforeCodeIsOverwritten(t *testing.T) {
 	backend := New()
 	if err := backend.Map(

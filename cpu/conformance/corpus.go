@@ -1,6 +1,10 @@
 package conformance
 
-import "github.com/mirusu400/aram-core/cpu"
+import (
+	"encoding/binary"
+
+	"github.com/mirusu400/aram-core/cpu"
+)
 
 // Corpus is a curated Tier-1 differential corpus. It concentrates on the
 // architectural corners a fast/recompiler backend most easily gets wrong —
@@ -110,10 +114,78 @@ var Corpus = []Program{
 	{
 		Name: "arm/mov-adds-bkpt",
 		Mode: cpu.ModeARM,
-		Code: []byte{
-			0x05, 0x00, 0xa0, 0xe3, // mov r0, #5
-			0x00, 0x10, 0x90, 0xe0, // adds r1, r0, r0   ; r1=10
-			0x70, 0x00, 0x20, 0xe1, // bkpt
-		},
+		Code: armCode(
+			0xe3a00005, // mov r0, #5
+			0xe0901000, // adds r1, r0, r0   ; r1=10
+			0xe1200070, // bkpt
+		),
 	},
+	{
+		Name: "arm/conditions-and-shifter",
+		Mode: cpu.ModeARM,
+		Regs: map[uint32]uint32{cpu.RegisterLR: 0x1001, cpu.RegisterR2: 3},
+		Code: armCode(
+			0xe31e0001, // tst lr, #1          ; Z=0
+			0x03a00001, // moveq r0, #1        ; skipped
+			0x13a00002, // movne r0, #2
+			0xe1b02f82, // movs r2, r2, lsl #31 ; N=1 C=1
+			0xe1200070, // bkpt
+		),
+	},
+	{
+		Name: "arm/single-and-halfword-transfers",
+		Mode: cpu.ModeARM,
+		Regs: map[uint32]uint32{
+			cpu.RegisterR1:   DataBase,
+			cpu.RegisterLR:   DataBase,
+			cpu.RegisterR2:   1,
+			cpu.RegisterR6:   0xdead1234,
+			cpu.RegisterCPSR: 1 << 29,
+		},
+		Data: map[uint32][]byte{DataBase: {0x80, 0x00, 0x00, 0xff, 0x78, 0x56, 0x34, 0x12}},
+		Code: armCode(
+			0x24913004, // ldrcs r3, [r1], #4
+			0xe7917102, // ldr r7, [r1, r2, lsl #2]
+			0xe1de30d0, // ldrsb r3, [lr]
+			0xe1de40f2, // ldrsh r4, [lr, #2]
+			0xe1de50b2, // ldrh r5, [lr, #2]
+			0xe0ce60b4, // strh r6, [lr], #4
+			0xe1200070, // bkpt
+		),
+	},
+	{
+		Name: "arm/multiply-long-clz",
+		Mode: cpu.ModeARM,
+		Regs: map[uint32]uint32{cpu.RegisterR1: 0xfffffffe, cpu.RegisterR2: 3},
+		Code: armCode(
+			0xe0030291, // mul r3, r1, r2
+			0xe0242391, // mla r4, r1, r3, r2
+			0xe0c65291, // smull r5, r6, r1, r2
+			0xe16f7f11, // clz r7, r1
+			0xe1200070, // bkpt
+		),
+	},
+	{
+		Name: "arm/block-transfer-and-branch-exchange",
+		Mode: cpu.ModeARM,
+		Regs: map[uint32]uint32{
+			cpu.RegisterR0: 0x12345678,
+			cpu.RegisterLR: CodeBase + 16,
+		},
+		Code: armCode(
+			0xe92d4001, // stmdb sp!, {r0, lr}
+			0xe3a00000, // mov r0, #0
+			0xe8bd4001, // ldmia sp!, {r0, lr}
+			0xe12fff1e, // bx lr
+			0xe1200070, // bkpt
+		),
+	},
+}
+
+func armCode(words ...uint32) []byte {
+	encoded := make([]byte, 4*len(words))
+	for index, word := range words {
+		binary.LittleEndian.PutUint32(encoded[index*4:], word)
+	}
+	return encoded
 }

@@ -1,5 +1,7 @@
 package interpreter
 
+import "unsafe"
+
 // This file holds the portable, build-tag-free pieces of the optional native
 // JIT backend (see native_windows_amd64.go / native_android_arm64.go for the
 // per-host machine-code emitters). It compiles on every target so the shared
@@ -10,9 +12,9 @@ package interpreter
 // The native JIT is ARAM's third CPU execution strategy behind the same
 // cpu.Backend as the tree-walking interpreter (the accuracy oracle) and the
 // pure-Go closure JIT. It translates a straight run of Thumb instructions into
-// host machine code once, caches it, and re-runs it, falling back to the
-// interpreter one instruction at a time for memory access, ARM, and anything it
-// does not translate ??so it is always correct and validated bit-for-bit
+// host machine code once, caches it, and re-runs it; supported RAM accesses use
+// a guarded inline TLB, ARM uses portable translated closures, and unsupported
+// instructions fall back one at a time. It is validated bit-for-bit
 // against the interpreter by cpu/conformance. Its value is speed on hosts where
 // emitting native code beats Go dispatch; iOS (JIT forbidden) never compiles an
 // emitter and always falls back to the precise interpreter.
@@ -23,6 +25,7 @@ const (
 	nativeStatusBKPT   = 1   // block hit BKPT; stop with StopBreakpoint
 	nativeStatusBudget = 2   // remaining budget < next block; interpret the tail
 	nativeStatusBail   = 3   // software-TLB miss; interpret this one instruction
+	nativeStatusIRQ    = 4   // serviceable IRQ/FIQ at an instruction boundary
 )
 
 // nativeArenaSize is the executable arena's capacity: the bytes of translated
@@ -48,6 +51,17 @@ const nativeArenaSize = uintptr(128 << 20)
 // needs retired to give back the part that never ran.
 func nativeBailStatus(retired int) uint32 {
 	return uint32(nativeStatusBail) | uint32(retired)<<8
+}
+
+func nativeInterruptStatus(retired int) uint32 {
+	return uint32(nativeStatusIRQ) | uint32(retired)<<8
+}
+
+func (b *Backend) interruptLinesBase() uintptr {
+	if b.systemBus == nil {
+		return 0
+	}
+	return uintptr(unsafe.Pointer(&b.interruptLines))
 }
 
 // memAccess describes one Thumb single load/store for the emitters' inline
@@ -92,8 +106,9 @@ type multiAccess struct {
 // block is a leaf host function that takes &regs[0], mutates the 17-word
 // register file in place (regs[16] is CPSR with eager N/Z/C/V), and returns a
 // status (see nativeStatus*). Register/ALU classes update flags to match the
-// interpreter exactly; memory, ARM, and unhandled ops are never offered here
-// (emitThumb bails, ending the block), so a native block never faults mid-run.
+// interpreter exactly. Direct RAM memory ops use a guarded software TLB;
+// MMIO, faults, mode switches, and unhandled ops bail before side effects, so
+// a native block never faults midway through an instruction.
 //
 // It lives here (all platforms) rather than in the build-tagged JIT core so the
 // arm64 encoder ??whose bytes are pure Go and are unit-tested on the amd64 dev
@@ -110,6 +125,12 @@ type emitter interface {
 	// falls through into the body. A self-loop's back-edge jumps to this offset,
 	// so the budget is re-checked every iteration and the loop stops exactly.
 	gate(count int, startPC uint32)
+
+	// interruptPoll is emitted before each guest instruction in a whole-system
+	// block. It exits with PC at that instruction and reports how many earlier
+	// instructions retired when an asserted IRQ/FIQ is not masked in CPSR.
+	// Application blocks omit it entirely.
+	interruptPoll(pc uint32, retired int)
 
 	// Body ops (non-terminators) reproduce the interpreter's semantics exactly.
 	moveImm(rd, imm uint32)                             // MOVS rd,#imm      -> setNZ
@@ -224,15 +245,23 @@ type nativeCacheEntry struct {
 // granularity: 2^20 pages, one bit each.
 const nativeCodePageWords = (1 << 20) / 64
 
-// markCodePages records that [address, address+size) now holds translated code.
-func (b *Backend) markCodePages(address, size uint32) {
+// markCodePages records that [address, address+size) now holds translated code
+// and reports whether any page became code for the first time.
+func (b *Backend) markCodePages(address, size uint32) bool {
 	if b.nativeCodePages == nil || size == 0 {
-		return
+		return false
 	}
+	changed := false
 	last := (uint64(address) + uint64(size) - 1) >> tlbPageBits
 	for page := uint64(address) >> tlbPageBits; page <= last; page++ {
-		b.nativeCodePages[page>>6] |= 1 << (page & 63)
+		mask := uint64(1) << (page & 63)
+		word := &b.nativeCodePages[page>>6]
+		if *word&mask == 0 {
+			*word |= mask
+			changed = true
+		}
 	}
+	return changed
 }
 
 // hasCodePages reports whether any page overlapping [address, address+size)

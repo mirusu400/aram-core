@@ -15,6 +15,7 @@ package interpreter
 // on entry, status in W0 on return):
 //
 //	X9        = ctx base (&regs[0]); set once by prologue
+//	X13       = &interruptLines in whole-system blocks
 //	W0        = working value / result (N,Z read from it in the flag helpers)
 //	W1, W2    = scratch (flag/CPSR assembly)
 //	W3        = shift carry (0/1) passed to commitNZC
@@ -62,8 +63,9 @@ const (
 )
 
 type arm64emitter struct {
-	buf []byte
-	tlb uintptr // host address of the backend's software TLB (native_tlb.go)
+	buf            []byte
+	tlb            uintptr // host address of the backend's software TLB (native_tlb.go)
+	interruptLines uintptr // address of Backend.interruptLines for system polls
 }
 
 var _ emitter = (*arm64emitter)(nil)
@@ -113,6 +115,10 @@ func (e *arm64emitter) addLSL64(rd, rn, rm, shift uint32) {
 // register (scaled unsigned-offset form).
 func (e *arm64emitter) ldrWoff(rt, rn, off uint32) {
 	e.w(0xB9400000 | ((off / 4) << 10) | (rn << 5) | rt)
+}
+
+func (e *arm64emitter) ldarW(rt, rn uint32) {
+	e.w(0x88DFFC00 | (rn << 5) | rt)
 }
 func (e *arm64emitter) ldrXoff(rt, rn, off uint32) {
 	e.w(0xF9400000 | ((off / 8) << 10) | (rn << 5) | rt)
@@ -217,6 +223,12 @@ func (e *arm64emitter) prologue() {
 		e.loadConst64(11, uint64(e.tlb))
 		e.loadConst64(12, uint64(e.tlb)+tlbWriteOffset)
 	}
+	if e.interruptLines != 0 {
+		// X13 is caller-saved and otherwise unused by body emitters. Keeping the
+		// line address here removes four constant-materialisation instructions
+		// from every guest instruction's system poll.
+		e.loadConst64(13, uint64(e.interruptLines))
+	}
 }
 
 func (e *arm64emitter) mark() int           { return len(e.buf) }
@@ -245,6 +257,20 @@ func (e *arm64emitter) patchB(pos, target int) {
 // patchBCond rewrites the B.cond word at byte offset pos to branch to target.
 func (e *arm64emitter) patchBCond(pos, target int, cond uint8) {
 	word := uint32(0x54000000) | ((uint32((target-pos)/4) & 0x7FFFF) << 5) | uint32(cond)
+	e.buf[pos] = byte(word)
+	e.buf[pos+1] = byte(word >> 8)
+	e.buf[pos+2] = byte(word >> 16)
+	e.buf[pos+3] = byte(word >> 24)
+}
+
+// patchTestBit rewrites a TBZ/TBNZ at pos to branch to target. bit is limited
+// to W-register bits here, so the b5 field remains zero.
+func (e *arm64emitter) patchTestBit(pos, target int, nonzero bool, rt, bit uint32) {
+	word := uint32(0x36000000)
+	if nonzero {
+		word |= 1 << 24
+	}
+	word |= bit<<19 | (uint32((target-pos)/4)&0x3fff)<<5 | rt
 	e.buf[pos] = byte(word)
 	e.buf[pos+1] = byte(word >> 8)
 	e.buf[pos+2] = byte(word >> 16)
@@ -453,6 +479,40 @@ func (e *arm64emitter) gate(count int, startPC uint32) {
 	e.patchBCond(skip, e.mark(), a64CondHS)
 	// body_ok:
 	e.strRemain(0) // commit remain -= count
+}
+
+// interruptPoll uses an acquire load for the host-published line bitmap and
+// exits at this guest instruction boundary only for an unmasked input. The Go
+// dispatcher performs the architectural exception entry and FIQ priority.
+func (e *arm64emitter) interruptPoll(pc uint32, retired int) {
+	if e.interruptLines == 0 {
+		return
+	}
+	e.ldarW(1, 13)
+	e.ldrW(2, cpu.RegisterCPSR)
+
+	noFIQ := e.mark()
+	e.w(0) // tbz w1,#1,irq_test
+	serviceFIQ := e.mark()
+	e.w(0) // tbz w2,#6,service
+
+	irqTest := e.mark()
+	e.patchTestBit(noFIQ, irqTest, false, 1, uint32(cpu.InterruptFIQ))
+	noIRQ := e.mark()
+	e.w(0) // tbz w1,#0,continue
+	maskedIRQ := e.mark()
+	e.w(0) // tbnz w2,#7,continue
+
+	service := e.mark()
+	e.patchTestBit(serviceFIQ, service, false, 2, 6)
+	e.loadConst(0, pc)
+	e.strW(0, cpu.RegisterPC)
+	e.loadConst(0, nativeInterruptStatus(retired))
+	e.ret()
+
+	continuation := e.mark()
+	e.patchTestBit(noIRQ, continuation, false, 1, uint32(cpu.InterruptIRQ))
+	e.patchTestBit(maskedIRQ, continuation, true, 2, 7)
 }
 
 func (e *arm64emitter) selfLoopUncond(gateOff int) {

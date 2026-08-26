@@ -52,16 +52,27 @@ type terminator struct {
 // on a budget exit (the next block does not fit the remaining budget) it
 // interprets one instruction so the exact tail of the batch runs on the oracle.
 func (b *Backend) runThumbNative(limit uint64) (uint64, *cpu.StopReason, error) {
-	// Native blocks cannot observe an IRQ asserted by an MMIO access or stop at
-	// a whole-system execution trap between host instructions. Until those
-	// checks are emitted into native blocks, retain exact phone semantics by
-	// using the batched interpreter for bus-backed machines.
-	if b.systemBus != nil {
+	wholeSystem := b.systemBus != nil
+	// PC/register capture diagnostics require a Go callback per instruction.
+	// Normal whole-phone execution has none configured; keep diagnostics exact
+	// by using the oracle while they are active.
+	if wholeSystem && b.tracing() {
 		return b.runThumb(limit)
 	}
 	b.nativeRemain = uint32(limit)
 	for b.nativeRemain > 0 {
 		pc := b.regs[cpu.RegisterPC]
+		if wholeSystem {
+			if b.takePendingInterrupt() {
+				return limit - uint64(b.nativeRemain), nil, nil
+			}
+			pc = b.regs[cpu.RegisterPC]
+			if b.executionTrapAt(cpu.ModeThumb, pc) {
+				reason := cpu.StopExecutionTrap
+				return limit - uint64(b.nativeRemain), &reason, nil
+			}
+			b.instructionAddress = pc
+		}
 		block := b.nativeBlockAt(pc)
 		if block == nil {
 			// Untranslatable here: interpret exactly one instruction.
@@ -82,6 +93,19 @@ func (b *Backend) runThumbNative(limit uint64) (uint64, *cpu.StopReason, error) 
 			// and let the interpreter run that one instruction; it installs the
 			// page, so the next execution of this block stays native.
 			b.nativeRemain += uint32(block.count) - uint32(status>>8)
+			if reason, err, done := b.interpretOneNative(); done {
+				return limit - uint64(b.nativeRemain), reason, err
+			}
+		case nativeStatusIRQ:
+			// Like a TLB bail, the interrupt exit occurs after the block gate
+			// charged instructions that did not execute. Restore that tail, then
+			// let the architectural exception helper apply FIQ priority/banking.
+			b.nativeRemain += uint32(block.count) - uint32(status>>8)
+			if b.takePendingInterrupt() {
+				return limit - uint64(b.nativeRemain), nil, nil
+			}
+			// The line can be withdrawn between emitted poll and Go handling.
+			// In that race, execute the boundary instruction normally.
 			if reason, err, done := b.interpretOneNative(); done {
 				return limit - uint64(b.nativeRemain), reason, err
 			}
@@ -164,9 +188,18 @@ func (b *Backend) translateNativeBlock(pc uint32) *nativeBlock {
 	term.kind = termNone
 	term.next = pc // overwritten below; the fall-through target if we run out
 	for count < nativeMaxBlock {
+		// A configured trap is a hard block boundary. The dispatcher checks it
+		// before translating/entering the next block, so no map lookup is needed
+		// in generated code and the trapped instruction never executes.
+		if b.systemBus != nil && b.executionTrapAt(cpu.ModeThumb, cur) {
+			break
+		}
 		word, err := b.fetch16(cur)
 		if err != nil {
 			break
+		}
+		if b.systemBus != nil {
+			body.interruptPoll(cur, count)
 		}
 		kind, t := b.translateOne(body, word, cur, count)
 		if kind == translateTerminator {
@@ -207,8 +240,7 @@ func (b *Backend) translateNativeBlock(pc uint32) *nativeBlock {
 	// Grow the translated-code span so smcInvalidate can tell a real
 	// self-modifying write from the guest blitter writing pixels into the same
 	// read-write-execute image. The block covers [pc, end).
-	grew := false
-	b.markCodePages(pc, end-pc)
+	grew := b.markCodePages(pc, end-pc)
 	if pc < b.nativeCodeLo {
 		b.nativeCodeLo, grew = pc, true
 	}
