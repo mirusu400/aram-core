@@ -93,5 +93,21 @@ func (m *Machine) ImportSaveData(data []byte) error {
 	if err := storage.ImportPersistence(envelope.Storage); err != nil {
 		return fmt.Errorf("import save data: %w", err)
 	}
-	return nil
+	// Importing replaces every record store and mints fresh service IDs, so the
+	// backend's own database bookkeeping is stale until it reopens the restored
+	// stores by name.
+	return m.adoptPersistedDatabases()
+}
+
+// adoptPersistedDatabases lets the active backend rebind its database adapter
+// to the record stores storage now holds.
+func (m *Machine) adoptPersistedDatabases() error {
+	switch {
+	case m.ktf != nil:
+		return m.ktf.AdoptPersistedDatabases()
+	case m.wipi != nil:
+		return m.wipi.AdoptPersistedDatabases()
+	default:
+		return nil
+	}
 }

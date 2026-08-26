@@ -3,8 +3,11 @@ package wipi
 import (
 	"bytes"
 	"encoding/binary"
-	"github.com/mirusu400/aram-core/application/internal/guest"
+	"fmt"
 	"sort"
+
+	"github.com/mirusu400/aram-core/application/internal/guest"
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 const (
@@ -429,4 +432,67 @@ type databaseError struct {
 
 func (e *databaseError) Error() string {
 	return e.message
+}
+
+// AdoptPersistedDatabases rebinds the public WIPI database adapter to the
+// record stores the storage service currently holds. Importing a title's save
+// data replaces every record store and mints fresh service IDs, so the keys and
+// handles the adapter built at boot stop describing storage. A stale adapter
+// then reports a restored database as missing and MC_dbOpenDataBase cannot
+// recreate it, because the service still owns the name — the title silently
+// loses its save.
+//
+// Call it after storage persistence is imported and before the title starts,
+// while no database handle is open.
+func (r *Runtime) AdoptPersistedDatabases() error {
+	if r == nil || r.Services == nil || r.Services.Storage == nil {
+		return fmt.Errorf("public WIPI services are missing")
+	}
+	databases := make(map[string]*Database, len(r.Databases))
+	services := make(map[string]shared.ServiceID, len(r.Databases))
+	for _, saved := range r.Services.Storage.Snapshot().RecordStores {
+		if saved.Owner != r.ServiceOwner {
+			continue
+		}
+		name, mode, ok := splitDatabaseKey(saved.Name)
+		if !ok {
+			continue
+		}
+		// Reuse the existing entry so a database the package shipped keeps its
+		// declared record size.
+		database := r.Databases[saved.Name]
+		if database == nil {
+			database = &Database{Name: name, Mode: mode}
+		}
+		database.NextRecord = int32(saved.NextID)
+		database.Records = make(map[int32][]byte, len(saved.Records))
+		for _, record := range saved.Records {
+			database.Records[int32(record.ID)] = bytes.Clone(record.Data)
+		}
+		if database.RecordSize == 0 {
+			// Save data carries records, not the fixed record size the title
+			// declared, so the widest restored record is the closest match.
+			for _, record := range database.Records {
+				if uint32(len(record)) > database.RecordSize {
+					database.RecordSize = uint32(len(record))
+				}
+			}
+		}
+		databases[saved.Name] = database
+		services[saved.Name] = saved.ID
+	}
+	r.Databases = databases
+	r.DatabaseServices = services
+	r.DatabaseHandles = make(map[int32]string)
+	return nil
+}
+
+// splitDatabaseKey reverses databaseKey, which prefixes a database name with
+// its open mode so the same name can exist once per mode.
+func splitDatabaseKey(key string) (string, int32, bool) {
+	if len(key) < 3 || key[1] != ':' ||
+		key[0] < '0' || key[0] > '9' {
+		return "", 0, false
+	}
+	return key[2:], int32(key[0] - '0'), true
 }
