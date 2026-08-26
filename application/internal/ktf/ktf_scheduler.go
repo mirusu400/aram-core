@@ -906,6 +906,48 @@ func (r *Runtime) activateDueWIPICTimers() error {
 			return nil
 		}
 	}
+	// A carrier network callback is serialized the same way and runs before
+	// media and timers: a title that asked to connect is blocked on that one
+	// verdict and does nothing else until it arrives (issue #56).
+	if len(r.pendingNetCallbacks) != 0 {
+		pending := r.pendingNetCallbacks[0]
+		taskIndex := len(r.Tasks)
+		for index, task := range r.Tasks {
+			if task.Done {
+				taskIndex = index
+				break
+			}
+		}
+		if taskIndex >= MaxTasks {
+			return nil
+		}
+		r.pendingNetCallbacks = r.pendingNetCallbacks[1:]
+		task, err := r.NewTask(
+			pending.procedure,
+			[]uint32{pending.result, pending.parameter},
+			taskIndex,
+		)
+		if err != nil {
+			return fmt.Errorf(
+				"queue KTF WIPI-C network callback 0x%08x: %w",
+				pending.procedure,
+				err,
+			)
+		}
+		if taskIndex < len(r.Tasks) {
+			r.Tasks[taskIndex] = task
+		} else {
+			r.Tasks = append(r.Tasks, task)
+		}
+		task.WipicTimer = true
+		r.tracef(
+			"wipic_net_callback:callback=0x%08x:result=%d:tick=%d",
+			pending.procedure,
+			int32(pending.result),
+			r.TickMS,
+		)
+		return nil
+	}
 	// Media completion callbacks share the timer callbacks' serialization
 	// discipline and take priority over due timers: the handset reports a
 	// finished clip before the next tick so titles that share one clip
