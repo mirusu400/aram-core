@@ -357,7 +357,9 @@ func (b *Backend) nativeInvalidate() {
 		return
 	}
 	clear(b.nativeBlocks)
+	clear(b.nativeBlockPages)
 	clear(b.nativeARMBlocks)
+	clear(b.nativeARMBlockPages)
 	for _, slot := range b.nativeLinks {
 		slot.Store(0)
 	}
@@ -368,6 +370,17 @@ func (b *Backend) nativeInvalidate() {
 	if b.nativeArena != nil {
 		b.nativeArena.off = 0
 	}
+}
+
+// See cacheJITBlock: a native block map and its page index move together.
+func (b *Backend) cacheNativeBlock(pc uint32, block *nativeBlock) {
+	b.nativeBlocks[pc] = block
+	b.nativeBlockPages.add(pc)
+}
+
+func (b *Backend) cacheNativeARMBlock(pc uint32, block *nativeBlock) {
+	b.nativeARMBlocks[pc] = block
+	b.nativeARMBlockPages.add(pc)
 }
 
 func (b *Backend) nativeLinkSlot(mode cpu.Mode, pc uint32) uintptr {
@@ -410,28 +423,31 @@ func widthRangeOverlap(start, width, address, size uint32) bool {
 // flush; incoming direct links are disabled before the map entries disappear.
 func (b *Backend) nativeInvalidateRange(address, size uint32) bool {
 	changed := false
-	for pc, block := range b.nativeBlocks {
-		overlaps := block != nil && rangesOverlap(block.start, block.end, address, size)
-		if block == nil {
-			overlaps = widthRangeOverlap(pc, 2, address, size)
-		}
-		if overlaps {
-			b.clearNativeLink(cpu.ModeThumb, pc)
-			delete(b.nativeBlocks, pc)
+	drop := func(
+		blocks map[uint32]*nativeBlock, mode cpu.Mode, width uint32,
+	) func(uint32) bool {
+		return func(pc uint32) bool {
+			block, present := blocks[pc]
+			if !present {
+				return true // stale index entry: compact it away
+			}
+			overlaps := widthRangeOverlap(pc, width, address, size)
+			if block != nil {
+				overlaps = rangesOverlap(block.start, block.end, address, size)
+			}
+			if !overlaps {
+				return false
+			}
+			// Disable incoming direct links before the target disappears, so no
+			// executing block can jump into a gate that is about to be reused.
+			b.clearNativeLink(mode, pc)
+			delete(blocks, pc)
 			changed = true
+			return true
 		}
 	}
-	for pc, block := range b.nativeARMBlocks {
-		overlaps := block != nil && rangesOverlap(block.start, block.end, address, size)
-		if block == nil {
-			overlaps = widthRangeOverlap(pc, 4, address, size)
-		}
-		if overlaps {
-			b.clearNativeLink(cpu.ModeARM, pc)
-			delete(b.nativeARMBlocks, pc)
-			changed = true
-		}
-	}
+	b.nativeBlockPages.scan(address, size, drop(b.nativeBlocks, cpu.ModeThumb, 2))
+	b.nativeARMBlockPages.scan(address, size, drop(b.nativeARMBlocks, cpu.ModeARM, 4))
 	if changed {
 		b.nativeGen++
 	}

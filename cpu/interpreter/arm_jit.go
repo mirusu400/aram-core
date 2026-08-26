@@ -99,7 +99,7 @@ func (b *Backend) armJITBlockAt(pc uint32) *jitBlock {
 	block, ok := b.armJITBlocks[pc]
 	if !ok {
 		block = b.translateARMBlock(pc)
-		b.armJITBlocks[pc] = block
+		b.cacheARMJITBlock(pc, block)
 		if block != nil {
 			if b.markJITCodePages(block.start, block.end-block.start) && b.nativeBlocks != nil {
 				b.tlbClearWrite()
