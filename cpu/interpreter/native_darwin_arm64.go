@@ -66,10 +66,13 @@ static void jit_free(uintptr_t base, size_t size) {
 */
 import "C"
 
-import "unsafe"
+import (
+	"sync/atomic"
+	"unsafe"
+)
 
-// NewNativeJIT returns a backend that runs Thumb through native AArch64 code and
-// ARM through portable translated blocks, falling back to the interpreter for
+// NewNativeJIT returns a backend that runs common ARM and Thumb instructions
+// through native AArch64 code, falling back to portable translated blocks for
 // unsupported instructions. If the executable arena cannot be mapped it
 // degrades to the plain interpreter (nativeBlocks stays nil).
 func NewNativeJIT() *Backend {
@@ -77,19 +80,27 @@ func NewNativeJIT() *Backend {
 	if arena := newCodeArena(nativeArenaSize); arena != nil {
 		b.nativeArena = arena
 		b.nativeBlocks = make(map[uint32]*nativeBlock)
+		b.nativeARMBlocks = make(map[uint32]*nativeBlock)
+		b.nativeLinks = make(map[nativeLinkKey]*atomic.Uintptr)
+		b.nativeSlow = make(map[nativeLinkKey]nativeSlowState)
 		b.armJITBlocks = make(map[uint32]*jitBlock)
 		b.armJITCache = make([]jitCacheEntry, jitCacheSize)
 		b.jitCodePages = make([]uint64, nativeCodePageWords)
 		b.nativeCodeLo, b.nativeCodeHi = ^uint32(0), 0
 		b.tlb = newNativeTLB()
 		b.nativeCache = new([nativeCacheSize]nativeCacheEntry)
+		b.nativeARMCache = new([nativeCacheSize]nativeCacheEntry)
 		b.nativeCodePages = make([]uint64, nativeCodePageWords)
 	}
 	return b
 }
 
 func (b *Backend) newEmitter() emitter {
-	return &arm64emitter{tlb: b.tlbBase(), interruptLines: b.interruptLinesBase()}
+	return &arm64emitter{
+		tlb: b.tlbBase(), interruptLines: b.interruptLinesBase(),
+		activeCount: uintptr(unsafe.Pointer(&b.nativeActiveCount)),
+		bailAddress: uintptr(unsafe.Pointer(&b.nativeBailAddress)),
+	}
 }
 
 func newCodeArena(size uintptr) *codeArena {

@@ -16,3 +16,7 @@ import "github.com/mirusu400/aram-core/cpu"
 func (b *Backend) runThumbNative(uint64) (uint64, *cpu.StopReason, error) {
 	panic("interpreter: native JIT backend not built for this platform")
 }
+
+func (b *Backend) runARMNative(uint64) (uint64, *cpu.StopReason, error) {
+	panic("interpreter: native JIT backend not built for this platform")
+}

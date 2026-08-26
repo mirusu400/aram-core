@@ -54,17 +54,10 @@ func (b *Backend) smcInvalidate(address, size uint32, perms cpu.Permissions) {
 		// translated can invalidate a block; a write outside it (framebuffer,
 		// heap, stack) leaves the cache intact. jitCodeLo/Hi bound every
 		// translated block, so this never keeps a stale translation.
-		if size != 0 && address < b.jitCodeHi && address+size > b.jitCodeLo &&
+		if size != 0 && uint64(address) < uint64(b.jitCodeHi) &&
+			uint64(address)+uint64(size) > uint64(b.jitCodeLo) &&
 			b.hasJITCodePages(address, size) {
-			if b.jitBlocks != nil {
-				clear(b.jitBlocks)
-			}
-			if b.armJITBlocks != nil {
-				clear(b.armJITBlocks)
-			}
-			b.jitGen++
-			clear(b.jitCodePages)
-			b.jitCodeLo, b.jitCodeHi = ^uint32(0), 0
+			b.invalidateJITRange(address, size)
 		}
 	}
 	if b.nativeBlocks != nil {
@@ -72,11 +65,49 @@ func (b *Backend) smcInvalidate(address, size uint32, perms cpu.Permissions) {
 		// the span of code the native JIT has actually translated can leave a
 		// stale block behind. The guest blitter's stores into the same
 		// read-write-execute image are not self-modifying code.
-		if size != 0 && address < b.nativeCodeHi && address+size > b.nativeCodeLo &&
+		if size != 0 && uint64(address) < uint64(b.nativeCodeHi) &&
+			uint64(address)+uint64(size) > uint64(b.nativeCodeLo) &&
 			b.hasCodePages(address, size) {
-			b.nativeInvalidate()
+			b.nativeInvalidateRange(address, size)
 		}
 	}
+}
+
+func (b *Backend) invalidateJITRange(address, size uint32) bool {
+	changed := false
+	for pc, block := range b.jitBlocks {
+		overlaps := block != nil && rangesOverlap(block.start, block.end, address, size)
+		if block == nil {
+			overlaps = widthRangeOverlap(pc, 2, address, size)
+		}
+		if overlaps {
+			delete(b.jitBlocks, pc)
+			changed = true
+		}
+	}
+	for pc, block := range b.armJITBlocks {
+		overlaps := block != nil && rangesOverlap(block.start, block.end, address, size)
+		if block == nil {
+			overlaps = widthRangeOverlap(pc, 4, address, size)
+		}
+		if overlaps {
+			delete(b.armJITBlocks, pc)
+			changed = true
+		}
+	}
+	if changed {
+		b.jitGen++
+	}
+	return changed
+}
+
+// invalidateTranslationRange is used by line-granular I-cache maintenance and
+// persistent native MMIO bail handling. It deliberately leaves conservative
+// code-page bitmaps intact; doing so can cause a later harmless scan, but can
+// never retain stale translated code or reopen a native write TLB entry.
+func (b *Backend) invalidateTranslationRange(address, size uint32) {
+	b.invalidateJITRange(address, size)
+	b.nativeInvalidateRange(address, size)
 }
 
 // invalidateTranslations drops code decoded under an older virtual mapping or
@@ -148,7 +179,9 @@ outer:
 					reason := cpu.StopExecutionTrap
 					return executed, &reason, nil
 				}
-				b.recordPC(pc)
+				if traced {
+					b.recordPC(pc)
+				}
 				b.instructionAddress = pc
 			} else if traced {
 				b.recordPC(in.pc)

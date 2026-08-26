@@ -9,6 +9,7 @@ package interpreter
 // (native_jit.go); the x86-64 machine-code emitter is native_emit_windows_amd64.go.
 
 import (
+	"sync/atomic"
 	"syscall"
 	"unsafe"
 )
@@ -54,8 +55,8 @@ const (
 	arenaCommitChunk = uintptr(1 << 20)
 )
 
-// NewNativeJIT returns a backend that runs Thumb through native machine code and
-// ARM through portable translated blocks, falling back to the interpreter for
+// NewNativeJIT returns a backend that runs common ARM and Thumb instructions
+// through native machine code, falling back to portable translated blocks for
 // unsupported instructions. If the executable arena cannot be allocated it
 // degrades to the plain interpreter (nativeBlocks stays nil). It is architecturally a third CPU
 // backend behind the same identity/context as the interpreter; cpu/conformance
@@ -66,19 +67,27 @@ func NewNativeJIT() *Backend {
 		b.currentProcess, _, _ = procGetCurrentProcess.Call()
 		b.nativeArena = arena
 		b.nativeBlocks = make(map[uint32]*nativeBlock)
+		b.nativeARMBlocks = make(map[uint32]*nativeBlock)
+		b.nativeLinks = make(map[nativeLinkKey]*atomic.Uintptr)
+		b.nativeSlow = make(map[nativeLinkKey]nativeSlowState)
 		b.armJITBlocks = make(map[uint32]*jitBlock)
 		b.armJITCache = make([]jitCacheEntry, jitCacheSize)
 		b.jitCodePages = make([]uint64, nativeCodePageWords)
 		b.nativeCodeLo, b.nativeCodeHi = ^uint32(0), 0
 		b.tlb = newNativeTLB()
 		b.nativeCache = new([nativeCacheSize]nativeCacheEntry)
+		b.nativeARMCache = new([nativeCacheSize]nativeCacheEntry)
 		b.nativeCodePages = make([]uint64, nativeCodePageWords)
 	}
 	return b
 }
 
 func (b *Backend) newEmitter() emitter {
-	return &x64emitter{tlb: b.tlbBase(), interruptLines: b.interruptLinesBase()}
+	return &x64emitter{
+		tlb: b.tlbBase(), interruptLines: b.interruptLinesBase(),
+		activeCount: uintptr(unsafe.Pointer(&b.nativeActiveCount)),
+		bailAddress: uintptr(unsafe.Pointer(&b.nativeBailAddress)),
+	}
 }
 
 // newCodeArena reserves the executable arena. It is mapped read-write-execute

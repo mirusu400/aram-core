@@ -84,6 +84,116 @@ func putThumb(ram []byte, address uint32, words ...uint16) {
 	}
 }
 
+func putARM(ram []byte, address uint32, words ...uint32) {
+	for index, word := range words {
+		binary.LittleEndian.PutUint32(ram[int(address)+index*4:], word)
+	}
+}
+
+func TestNativeDirectBlockLinkRunsPublishedTargetWithoutDispatch(t *testing.T) {
+	backend, bus := newNativeSystemBackend(t)
+	putThumb(bus.ram, 0x1000, 0x2001, 0xe07d) // movs r0,#1; b 0x1100
+	putThumb(bus.ram, 0x1100, 0x3002, 0xbe00) // adds r0,#2; bkpt
+	target := backend.nativeBlockAt(0x1100)
+	source := backend.nativeBlockAt(0x1000)
+	if source == nil || target == nil {
+		t.Fatal("failed to translate linked source/target")
+	}
+	if got := backend.nativeLinks[nativeLinkKey{mode: cpu.ModeThumb, pc: 0x1100}].Load(); got != target.gate {
+		t.Fatalf("published gate = %#x, want %#x", got, target.gate)
+	}
+	if err := backend.WriteRegister(cpu.RegisterCPSR, uint32(processorModeSystem)|cpu.StatusThumb); err != nil {
+		t.Fatal(err)
+	}
+	backend.nativeRemain = 8
+	status := uint32(callNativeBlock(source.entry, &backend.regs[0], &backend.nativeRemain))
+	if status != nativeStatusBKPT || backend.regs[cpu.RegisterR0] != 3 || backend.nativeRemain != 4 {
+		t.Fatalf("linked call status=%#x r0=%d remain=%d, want BKPT r0=3 remain=4",
+			status, backend.regs[cpu.RegisterR0], backend.nativeRemain)
+	}
+}
+
+func TestNativeARMEmitsConditionsAndDirectRAMMemory(t *testing.T) {
+	backend, bus := newNativeSystemBackend(t)
+	putARM(bus.ram, 0x1000,
+		0xe5902000, // ldr   r2,[r0]
+		0x12822001, // addne r2,r2,#1 (skipped)
+		0x02822002, // addeq r2,r2,#2
+		0xe5802004, // str   r2,[r0,#4]
+		0xe1200070, // bkpt
+	)
+	binary.LittleEndian.PutUint32(bus.ram[0x2000:], 40)
+	if err := backend.WriteRegister(cpu.RegisterR0, 0x2000); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.WriteRegister(cpu.RegisterCPSR, uint32(processorModeSystem)|flagZ); err != nil {
+		t.Fatal(err)
+	}
+	if block := backend.nativeARMBlockAt(0x1000); block == nil || block.count != 5 {
+		t.Fatalf("ARM native block = %#v, want five emitted instructions", block)
+	}
+	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 16)
+	if result.Err != nil || result.Reason != cpu.StopBreakpoint || result.Instructions != 5 {
+		t.Fatalf("ARM native run = %+v", result)
+	}
+	if got := binary.LittleEndian.Uint32(bus.ram[0x2004:]); got != 42 {
+		t.Fatalf("stored value = %d, want 42", got)
+	}
+}
+
+func TestNativePersistentMMIOBailBecomesInterpreterBoundary(t *testing.T) {
+	backend, bus := newNativeSystemBackend(t)
+	putThumb(bus.ram, 0x1000, 0x6008, 0xe7fd) // str r0,[r1]; b 0x1000
+	if err := backend.WriteRegister(cpu.RegisterR1, bus.mmio); err != nil {
+		t.Fatal(err)
+	}
+	result := backend.Run(context.Background(), 0x1000, cpu.ModeThumb, 12)
+	if result.Err != nil || result.Reason != cpu.StopBudget || result.Instructions != 12 {
+		t.Fatalf("MMIO loop = %+v", result)
+	}
+	if !backend.nativeSlowAt(cpu.ModeThumb, 0x1000) {
+		t.Fatal("persistent MMIO instruction was not promoted to an interpreter boundary")
+	}
+	if backend.nativeBailAddress != bus.mmio {
+		t.Fatalf("recorded bail address = %#x, want MMIO %#x", backend.nativeBailAddress, bus.mmio)
+	}
+	if block := backend.nativeBlocks[0x1000]; block != nil {
+		t.Fatalf("slow MMIO PC retained native block %#v", block)
+	}
+	if bus.dataWrites != 6 {
+		t.Fatalf("MMIO writes = %d, want 6", bus.dataWrites)
+	}
+}
+
+func TestNativeRangeInvalidationPreservesUnrelatedBlocksAndLinks(t *testing.T) {
+	backend, bus := newNativeSystemBackend(t)
+	putThumb(bus.ram, 0x1000, 0x2001, 0xbe00)
+	putThumb(bus.ram, 0x2000, 0x2002, 0xbe00)
+	first := backend.nativeBlockAt(0x1000)
+	second := backend.nativeBlockAt(0x2000)
+	if first == nil || second == nil {
+		t.Fatal("failed to translate range-invalidation fixtures")
+	}
+	backend.nativeBlocks[0x3000] = nil
+	backend.invalidateTranslationRange(0x1000, 2)
+	if _, ok := backend.nativeBlocks[0x1000]; ok {
+		t.Fatal("overlapping block survived range invalidation")
+	}
+	if got := backend.nativeBlocks[0x2000]; got != second {
+		t.Fatal("unrelated block was discarded")
+	}
+	if got := backend.nativeLinks[nativeLinkKey{mode: cpu.ModeThumb, pc: 0x1000}].Load(); got != 0 {
+		t.Fatalf("invalidated target link = %#x, want zero", got)
+	}
+	if got := backend.nativeLinks[nativeLinkKey{mode: cpu.ModeThumb, pc: 0x2000}].Load(); got != second.gate {
+		t.Fatalf("unrelated target link = %#x, want %#x", got, second.gate)
+	}
+	backend.invalidateTranslationRange(0x3000, 2)
+	if _, ok := backend.nativeBlocks[0x3000]; ok {
+		t.Fatal("overlapping cached native fallback survived range invalidation")
+	}
+}
+
 func TestNativeWholeSystemRunsDirectRAMAndMMUDataInline(t *testing.T) {
 	for _, mmu := range []bool{false, true} {
 		t.Run(map[bool]string{false: "physical", true: "mmu-identity"}[mmu], func(t *testing.T) {
@@ -125,6 +235,11 @@ func TestNativeWholeSystemRunsDirectRAMAndMMUDataInline(t *testing.T) {
 			}
 			if len(backend.nativeBlocks) == 0 {
 				t.Fatal("whole-system Thumb run retained no native blocks")
+			}
+			for key, state := range backend.nativeSlow {
+				if state.count != 0 {
+					t.Fatalf("cold RAM bail at %+v counted as persistent: %+v", key, state)
+				}
 			}
 			if mmu {
 				for address := uint32(0x2400); address < 0x3000; address += 0x400 {
