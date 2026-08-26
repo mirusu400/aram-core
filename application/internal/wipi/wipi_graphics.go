@@ -80,10 +80,10 @@ func (r *Runtime) dispatchGraphics(name string) (guest.WIPIReturn, bool, error) 
 		return guest.WIPIReturn{}, true, r.drawText(name == "MC_grpDrawUnicodeString", args)
 	case "MC_grpGetPixelFromRGB":
 		return guest.WIPIReturn{
-			Low: r.pixelFromRGB(args[0], args[1], args[2]),
+			Low: r.devicePixelFromRGB(args[0], args[1], args[2]),
 		}, true, nil
 	case "MC_grpGetRGBFromPixel":
-		red, green, blue := r.rgbFromPixel(args[0])
+		red, green, blue := r.rgbFromDevicePixel(args[0])
 		for index, component := range []uint32{red, green, blue} {
 			if args[index+1] != 0 {
 				if err := r.WriteU32(args[index+1], component); err != nil {
@@ -281,7 +281,7 @@ func (r *Runtime) initializeGraphicsContext(address uint32) error {
 	}
 	values := [...]uint32{
 		0, 0, 0x7fffffff, 0x7fffffff, 0,
-		0, 0xffffff, 255, 0, 0, 0, 0, 0, 0, 0,
+		0, r.deviceWhite(), 255, 0, 0, 0, 0, 0, 0, 0,
 	}
 	var encoded [15 * 4]byte
 	for index, value := range values {
@@ -304,14 +304,13 @@ func (r *Runtime) transferGraphicsContext(name string, context uint32, index int
 	}
 	data := make([]byte, field.size)
 	if name == "MC_grpSetContext" {
+		// Only the clip rectangle and the translation pair need a buffer;
+		// every scalar field arrives as the value itself cast to void*.
+		// Reading a scalar back as an address would pick up whatever the
+		// guest happens to hold there, and a colour on a 16bpp screen is
+		// small enough to land inside the loaded image.
 		if field.size == 4 {
 			binary.LittleEndian.PutUint32(data, pointer)
-			if pointer != 0 {
-				indirect := make([]byte, field.size)
-				if err := r.CPU.ReadMemory(pointer, indirect); err == nil {
-					data = indirect
-				}
-			}
 		} else {
 			if pointer == 0 {
 				return nil
@@ -356,7 +355,7 @@ func (r *Runtime) context(address uint32) (wipiGraphicsContext, error) {
 		return wipiGraphicsContext{
 			right:      int(^uint32(0) >> 1),
 			bottom:     int(^uint32(0) >> 1),
-			background: 0xffffff,
+			background: r.deviceWhite(),
 			alpha:      255,
 		}, nil
 	}
@@ -447,19 +446,20 @@ func (r *Runtime) writeFramebufferPixel(
 	return nil
 }
 
-// The WIPI-C graphics API hands colours around as 24-bit RGB, which is what a
-// graphics context stores and what MC_grpGetPixelFromRGB hands back. That is
-// the same spelling as a pixel on a 32bpp screen but not on a 16bpp one, where
-// the framebuffer keeps RGB565, so the two spellings are kept apart: the pair
-// below is the API's, and the device pair converts at the framebuffer edge.
-func (r *Runtime) pixelFromRGB(red, green, blue uint32) uint32 {
-	return red&0xff<<16 | green&0xff<<8 | blue&0xff
+// deviceWhite is the background an untouched context starts on, spelled the
+// way this screen stores a pixel.
+func (r *Runtime) deviceWhite() uint32 {
+	if r.framebufferBits == 16 {
+		return 0xffff
+	}
+	return 0xffffff
 }
 
-func (r *Runtime) rgbFromPixel(pixel uint32) (uint32, uint32, uint32) {
-	return pixel >> 16 & 0xff, pixel >> 8 & 0xff, pixel & 0xff
-}
-
+// A colour crosses the WIPI-C graphics API already spelled the way the screen
+// stores a pixel: MC_grpGetPixelFromRGB is the conversion, and everything
+// downstream — a graphics context's colour, a raw framebuffer word a Clet
+// writes itself — carries that spelling. On a 32bpp screen it is plain 24-bit
+// RGB; on a 16bpp one it is RGB565.
 func (r *Runtime) devicePixelFromRGB(red, green, blue uint32) uint32 {
 	red &= 0xff
 	green &= 0xff
@@ -480,13 +480,6 @@ func (r *Runtime) rgbFromDevicePixel(pixel uint32) (uint32, uint32, uint32) {
 	return pixel >> 16 & 0xff, pixel >> 8 & 0xff, pixel & 0xff
 }
 
-// devicePixelFromColor converts an API colour into the pixel the framebuffer
-// stores. Writing the colour straight through would drop the red channel on a
-// 16bpp screen and leave the low half reading back as an unrelated colour.
-func (r *Runtime) devicePixelFromColor(color uint32) uint32 {
-	return r.devicePixelFromRGB(color>>16, color>>8, color)
-}
-
 func (r *Runtime) putPixel(handle uint32, x, y int, contextAddress uint32, override *uint32) error {
 	fb, ok := r.Framebuffers[handle]
 	if !ok {
@@ -505,9 +498,12 @@ func (r *Runtime) putPixel(handle uint32, x, y int, contextAddress uint32, overr
 		!(x >= context.left && x < context.right && y >= context.top && y < context.bottom) {
 		return nil
 	}
-	// Callers that already hold a framebuffer pixel pass it through untouched;
-	// the context carries an API colour that still needs converting.
-	foreground := r.devicePixelFromColor(context.foreground)
+	// A context colour is already spelled the way the framebuffer stores it:
+	// a Clet converts once with MC_grpGetPixelFromRGB and hands that pixel to
+	// MC_grpSetContext, so re-encoding it here would spell it twice. 영웅서기3
+	// sets white as 0xffff and 블레이드마스터4 sets its palette entries the same
+	// way; writeFramebufferPixel drops the unused half on a 16bpp screen.
+	foreground := context.foreground
 	if override != nil {
 		foreground = *override
 	}
