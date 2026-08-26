@@ -86,7 +86,7 @@ func (b *Backend) nativeARMBlockAt(pc uint32) *nativeBlock {
 	block, ok := b.nativeARMBlocks[pc]
 	if !ok {
 		block = b.translateNativeARMBlock(pc)
-		b.nativeARMBlocks[pc] = block
+		b.cacheNativeARMBlock(pc, block)
 	}
 	slot.pc, slot.gen, slot.block = pc, b.nativeGen, block
 	return block

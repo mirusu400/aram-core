@@ -263,6 +263,15 @@ type Backend struct {
 	// advances it, which retires every cached entry in constant time.
 	mappingGen uint32
 
+	// Translated-block page indexes, one per block map. Only invalidation reads
+	// them, so they sit at the tail: inserting anything between regs and the
+	// dispatch state above pushes that state onto another cache line and costs
+	// the JIT tiers double-digit throughput with no change to their code.
+	jitBlockPages       blockPageIndex
+	armJITBlockPages    blockPageIndex
+	nativeBlockPages    blockPageIndex
+	nativeARMBlockPages blockPageIndex
+
 	// Diagnostics. Every one of these is off unless a host explicitly turns it
 	// on, and tracing() reports whether any per-instruction ring is armed.
 	pcHistory                      []uint32
@@ -288,8 +297,10 @@ func New() *Backend {
 func NewJIT() *Backend {
 	b := NewWithMemoryLimit(DefaultMemoryLimit)
 	b.jitBlocks = make(map[uint32]*jitBlock)
+	b.jitBlockPages = make(blockPageIndex)
 	b.jitCache = make([]jitCacheEntry, jitCacheSize)
 	b.armJITBlocks = make(map[uint32]*jitBlock)
+	b.armJITBlockPages = make(blockPageIndex)
 	b.armJITCache = make([]jitCacheEntry, jitCacheSize)
 	b.jitCodePages = make([]uint64, nativeCodePageWords)
 	b.jitCodeLo, b.jitCodeHi = ^uint32(0), 0
@@ -566,9 +577,11 @@ func (b *Backend) Map(address, size uint32, permissions cpu.Permissions) error {
 	b.tlbClear()
 	if b.jitBlocks != nil {
 		clear(b.jitBlocks)
+		clear(b.jitBlockPages)
 	}
 	if b.armJITBlocks != nil {
 		clear(b.armJITBlocks)
+		clear(b.armJITBlockPages)
 	}
 	if b.jitBlocks != nil || b.armJITBlocks != nil {
 		b.jitGen++
@@ -597,6 +610,13 @@ func (b *Backend) AttachSystemBus(bus cpu.MemoryBus) error {
 	if b.mapped != 0 {
 		return fmt.Errorf("attach system bus with private mappings: %w", cpu.ErrInvalidMapping)
 	}
+	// Blocks emitted before a bus was attached have a different prologue and
+	// epilogue shape (no interrupt-line base, and on x86-64 no saved RDI), so a
+	// direct link from one of those into a post-attach block would unbalance the
+	// host stack. Nothing can have executed yet - attaching rejects a backend
+	// with private mappings - so this only makes that structural rather than
+	// incidental.
+	b.invalidateTranslations()
 	b.systemBus = bus
 	b.contextBus, _ = bus.(cpu.ContextMemoryBus)
 	b.blockBus, _ = bus.(cpu.BlockMemoryBus)
@@ -844,13 +864,17 @@ func (b *Backend) Close() error {
 	b.virtualData = nil
 	if b.jitBlocks != nil {
 		clear(b.jitBlocks)
+		clear(b.jitBlockPages)
 		clear(b.armJITBlocks)
+		clear(b.armJITBlockPages)
 		b.jitGen++
 		b.jitCodeLo, b.jitCodeHi = ^uint32(0), 0
 	}
 	if b.nativeBlocks != nil {
 		clear(b.nativeBlocks)
+		clear(b.nativeBlockPages)
 		clear(b.nativeARMBlocks)
+		clear(b.nativeARMBlockPages)
 		for _, slot := range b.nativeLinks {
 			slot.Store(0)
 		}
@@ -858,7 +882,9 @@ func (b *Backend) Close() error {
 		clear(b.nativeSlow)
 		b.nativeCloseArena()
 		b.nativeBlocks = nil
+		b.nativeBlockPages = nil
 		b.nativeARMBlocks = nil
+		b.nativeARMBlockPages = nil
 		b.nativeLinks = nil
 		b.nativeSlow = nil
 		b.nativeCodeLo, b.nativeCodeHi = ^uint32(0), 0
@@ -868,6 +894,7 @@ func (b *Backend) Close() error {
 	if b.armJITBlocks != nil {
 		clear(b.armJITBlocks)
 		b.armJITBlocks = nil
+		b.armJITBlockPages = nil
 		b.armJITCache = nil
 		b.jitCodePages = nil
 	}

@@ -176,7 +176,7 @@ func TestNativeRangeInvalidationPreservesUnrelatedBlocksAndLinks(t *testing.T) {
 	}
 	// A negative cache entry inside the translated hull is dropped like a real
 	// block, so changed code gets a fresh translation attempt.
-	backend.nativeBlocks[0x1010] = nil
+	backend.cacheNativeBlock(0x1010, nil)
 	backend.invalidateTranslationRange(0x1000, 2)
 	if _, ok := backend.nativeBlocks[0x1000]; ok {
 		t.Fatal("overlapping block survived range invalidation")
@@ -214,8 +214,8 @@ func TestNativeRangeInvalidationSkipsRangesHoldingNoTranslatedCode(t *testing.T)
 	// two guards can be exercised apart: 0x4000 sits inside the hull on an
 	// unmarked page, 0xf000 sits past nativeCodeHi entirely. Whether the walk
 	// ran is observable through a negative cache entry, which a walk deletes.
-	backend.nativeBlocks[0x4000] = nil
-	backend.nativeBlocks[0xf000] = nil
+	backend.cacheNativeBlock(0x4000, nil)
+	backend.cacheNativeBlock(0xf000, nil)
 	generation := backend.nativeGen
 
 	backend.invalidateTranslationRange(0x4000, instructionCacheLineSize)
@@ -240,6 +240,79 @@ func TestNativeRangeInvalidationSkipsRangesHoldingNoTranslatedCode(t *testing.T)
 	backend.invalidateTranslationRange(0x7000, instructionCacheLineSize)
 	if _, ok := backend.nativeBlocks[0x7000]; ok {
 		t.Fatal("maintenance of the translated line kept the block")
+	}
+}
+
+// Link slots outlive the blocks that published them: nativeInvalidate can only
+// zero them, because its other caller is an in-progress translation holding
+// their addresses. A full translation flush is the safe point to reclaim the
+// map, and without that it grows one entry per branch target for the life of
+// the backend.
+func TestNativeFullInvalidationReclaimsLinkSlots(t *testing.T) {
+	backend, bus := newNativeSystemBackend(t)
+	putThumb(bus.ram, 0x1000, 0x2001, 0xe07d) // movs r0,#1; b 0x1100
+	putThumb(bus.ram, 0x1100, 0x3002, 0xbe00) // adds r0,#2; bkpt
+	if backend.nativeBlockAt(0x1100) == nil || backend.nativeBlockAt(0x1000) == nil {
+		t.Fatal("failed to translate the linked fixtures")
+	}
+	if len(backend.nativeLinks) == 0 {
+		t.Fatal("translation published no link slots")
+	}
+
+	if err := backend.SetExecutionTraps(nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(backend.nativeLinks) != 0 {
+		t.Fatalf("full invalidation retained %d link slots", len(backend.nativeLinks))
+	}
+	if len(backend.nativeBlocks) != 0 || len(backend.nativeBlockPages) != 0 {
+		t.Fatal("full invalidation retained blocks or their page index")
+	}
+}
+
+// Invalidation reaches the block maps through a per-page index, so a write or
+// a maintained line only examines the blocks that could actually overlap it.
+// Being page-scoped must not cost precision in either direction.
+func TestNativeRangeInvalidationIsScopedToTheMaintainedPage(t *testing.T) {
+	backend, bus := newNativeSystemBackend(t)
+	starts := []uint32{0x1000, 0x1100, 0x2000, 0x3000}
+	translated := make(map[uint32]*nativeBlock, len(starts))
+	for _, pc := range starts {
+		putThumb(bus.ram, pc, 0x2001, 0xbe00)
+		block := backend.nativeBlockAt(pc)
+		if block == nil {
+			t.Fatalf("failed to translate the fixture at %#x", pc)
+		}
+		translated[pc] = block
+	}
+
+	backend.invalidateTranslationRange(0x1000, instructionCacheLineSize)
+	if _, ok := backend.nativeBlocks[0x1000]; ok {
+		t.Fatal("the block inside the maintained line survived")
+	}
+	// 0x1100 shares a page with the maintained line but not the line itself,
+	// and the other two are on different pages entirely.
+	for _, pc := range []uint32{0x1100, 0x2000, 0x3000} {
+		if got := backend.nativeBlocks[pc]; got != translated[pc] {
+			t.Fatalf("block at %#x was discarded by unrelated maintenance", pc)
+		}
+	}
+}
+
+// A block is registered only under the page its start PC lies on, so a scan has
+// to look one page back to catch a block that reaches across the boundary.
+// maxTranslatedBlockBytes is what makes a single page of lookback exact.
+func TestNativePageIndexFindsBlockReachingAcrossAPageBoundary(t *testing.T) {
+	backend, bus := newNativeSystemBackend(t)
+	const start = 2*tlbPageSize - 4
+	putThumb(bus.ram, start, 0x2001, 0x3002, 0xbe00)
+	block := backend.nativeBlockAt(start)
+	if block == nil || block.end <= 2*tlbPageSize {
+		t.Fatalf("fixture block %+v does not reach past the page boundary", block)
+	}
+	backend.invalidateTranslationRange(2*tlbPageSize, instructionCacheLineSize)
+	if _, ok := backend.nativeBlocks[start]; ok {
+		t.Fatal("a block reaching into the maintained page was not invalidated")
 	}
 }
 
