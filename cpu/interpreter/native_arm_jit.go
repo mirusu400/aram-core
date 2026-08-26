@@ -247,7 +247,7 @@ func (b *Backend) translateOneNativeARM(
 		return translateBail, terminator{}
 	}
 	opcode := uint8(instruction >> 21 & 0xf)
-	if opcode >= 5 && opcode <= 7 {
+	if !nativeARMDataOpEmittable(opcode) {
 		return translateBail, terminator{}
 	}
 	writes := opcode < 8 || opcode >= 12
@@ -277,6 +277,11 @@ func (b *Backend) translateOneNativeARM(
 	}
 	site := e.conditionStart(condition)
 	if !e.armDataProcessing(op) {
+		// Unreachable while the emitters agree with nativeARMDataOpEmittable.
+		// Closing the site regardless keeps a future divergence a wasted block
+		// instead of an unpatched branch: the emitters only touch host scratch
+		// before they decide, so the skipped-over bytes write no guest state.
+		e.conditionEnd(site)
 		return translateBail, terminator{}
 	}
 	e.conditionEnd(site)
