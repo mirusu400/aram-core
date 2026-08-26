@@ -428,6 +428,84 @@ func (b *Bus) ReadContext(
 	return err
 }
 
+// ReadBlock copies a whole span from plain memory in one resolution. It
+// reports false without transferring anything when the span is not entirely
+// inside one non-MMIO region, or when an observer is armed and would have to
+// see the access described per width; the caller then falls back.
+func (b *Bus) ReadBlock(
+	address uint32,
+	destination []byte,
+	permission cpu.Permissions,
+) (bool, error) {
+	b.mu.Lock()
+	mapped, offset, ok := b.resolveBlock(address, len(destination), permission)
+	if !ok {
+		b.mu.Unlock()
+		return false, nil
+	}
+	if mapped.kind == regionSparseRAM {
+		mapped.sparse.read(offset, destination)
+	} else {
+		start := int(offset)
+		copy(destination, mapped.data[start:start+len(destination)])
+	}
+	b.mu.Unlock()
+	return true, nil
+}
+
+// WriteBlock is ReadBlock's counterpart. A ROM region declines, so a write that
+// would be rejected still travels the per-width path and reports its fault.
+func (b *Bus) WriteBlock(
+	address uint32,
+	source []byte,
+	permission cpu.Permissions,
+) (bool, error) {
+	b.mu.Lock()
+	mapped, offset, ok := b.resolveBlock(address, len(source), permission)
+	if !ok {
+		b.mu.Unlock()
+		return false, nil
+	}
+	if mapped.kind == regionSparseRAM {
+		mapped.sparse.write(offset, source)
+	} else {
+		start := int(offset)
+		copy(mapped.data[start:start+len(source)], source)
+	}
+	b.mu.Unlock()
+	return true, nil
+}
+
+// resolveBlock is resolve without the width rules, for a transfer that carries
+// no device meaning. It declines rather than faulting: every rejection it makes
+// is one the per-width path will make again, and report properly.
+func (b *Bus) resolveBlock(
+	address uint32,
+	size int,
+	permission cpu.Permissions,
+) (*region, uint32, bool) {
+	if size == 0 || b.observed {
+		return nil, 0, false
+	}
+	mapped := b.lastRegion
+	if mapped == nil || address < mapped.address || uint64(address) >= mapped.end() {
+		index := sort.Search(len(b.regions), func(index int) bool {
+			return uint64(address) < b.regions[index].end()
+		})
+		if index >= len(b.regions) || address < b.regions[index].address {
+			return nil, 0, false
+		}
+		mapped = &b.regions[index]
+		b.lastRegion = mapped
+	}
+	if mapped.kind == regionMMIO ||
+		uint64(address)+uint64(size) > mapped.end() ||
+		mapped.permissions&permission != permission {
+		return nil, 0, false
+	}
+	return mapped, address - mapped.address, true
+}
+
 func (b *Bus) Write(address uint32, source []byte, permission cpu.Permissions) error {
 	return b.WriteContext(cpu.MemoryAccessContext{}, address, source, permission)
 }

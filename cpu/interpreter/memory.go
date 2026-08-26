@@ -425,6 +425,15 @@ func (b *Backend) copyOut(address uint32, destination []byte, permission cpu.Per
 		return nil
 	}
 	if b.systemBus != nil {
+		if b.blockBus != nil {
+			done, err := b.blockBus.ReadBlock(address, destination, permission)
+			if err != nil {
+				return err
+			}
+			if done {
+				return nil
+			}
+		}
 		current := address
 		remaining := destination
 		for len(remaining) > 0 {
@@ -463,6 +472,15 @@ func (b *Backend) copyIn(address uint32, source []byte, permission cpu.Permissio
 		return nil
 	}
 	if b.systemBus != nil {
+		if b.blockBus != nil {
+			done, err := b.blockBus.WriteBlock(address, source, permission)
+			if err != nil {
+				return err
+			}
+			if done {
+				return nil
+			}
+		}
 		current := address
 		remaining := source
 		for len(remaining) > 0 {
