@@ -1,6 +1,11 @@
 package interpreter
 
-import "unsafe"
+import (
+	"sync/atomic"
+	"unsafe"
+
+	"github.com/mirusu400/aram-core/cpu"
+)
 
 // This file holds the portable, build-tag-free pieces of the optional native
 // JIT backend (see native_windows_amd64.go / native_android_arm64.go for the
@@ -11,10 +16,10 @@ import "unsafe"
 //
 // The native JIT is ARAM's third CPU execution strategy behind the same
 // cpu.Backend as the tree-walking interpreter (the accuracy oracle) and the
-// pure-Go closure JIT. It translates a straight run of Thumb instructions into
-// host machine code once, caches it, and re-runs it; supported RAM accesses use
-// a guarded inline TLB, ARM uses portable translated closures, and unsupported
-// instructions fall back one at a time. It is validated bit-for-bit
+// pure-Go closure JIT. It translates straight ARM and Thumb runs into host
+// machine code once, caches them, and re-runs them; supported RAM accesses use
+// a guarded inline TLB and unsupported instructions fall back one at a time.
+// It is validated bit-for-bit
 // against the interpreter by cpu/conformance. Its value is speed on hosts where
 // emitting native code beats Go dispatch; iOS (JIT forbidden) never compiles an
 // emitter and always falls back to the precise interpreter.
@@ -57,6 +62,13 @@ func nativeInterruptStatus(retired int) uint32 {
 	return uint32(nativeStatusIRQ) | uint32(retired)<<8
 }
 
+func (b *Backend) refundNativeTail(status uintptr) {
+	retired := uint32(status >> 8)
+	if retired <= b.nativeActiveCount {
+		b.nativeRemain += b.nativeActiveCount - retired
+	}
+}
+
 func (b *Backend) interruptLinesBase() uintptr {
 	if b.systemBus == nil {
 		return 0
@@ -79,6 +91,7 @@ type memAccess struct {
 	index    uint32 // guest index register, when hasIndex
 	hasIndex bool
 	offset   uint32 // constant offset added to the base
+	subtract bool   // subtract index/offset from the base (ARM U=0)
 	absolute bool   // the address is exactly offset (PC-relative literal load)
 }
 
@@ -98,6 +111,21 @@ type multiAccess struct {
 	base      uint32   // base register (RegisterSP for PUSH/POP)
 	preDec    bool     // PUSH: the transfer starts 4*len(regs) below the base
 	writeback bool     // write the final address back to base
+}
+
+// nativeARMDataOp is the decoded subset shared by the x86-64 and AArch64 ARM
+// emitters. operand is either a translation-time constant or one unshifted
+// guest register. carry is -1 when a logical flag update preserves C, or 0/1
+// when a rotated immediate supplies a known shifter carry-out.
+type nativeARMDataOp struct {
+	opcode     uint8
+	setFlags   bool
+	rd         uint32
+	rn         uint32
+	operand    uint32
+	operandReg bool
+	pcValue    uint32
+	carry      int8
 }
 
 // emitter appends host machine code for one translated Thumb instruction at a
@@ -131,6 +159,8 @@ type emitter interface {
 	// instructions retired when an asserted IRQ/FIQ is not masked in CPSR.
 	// Application blocks omit it entirely.
 	interruptPoll(pc uint32, retired int)
+	conditionStart(condition uint8) int
+	conditionEnd(site int)
 
 	// Body ops (non-terminators) reproduce the interpreter's semantics exactly.
 	moveImm(rd, imm uint32)                             // MOVS rd,#imm      -> setNZ
@@ -152,6 +182,7 @@ type emitter interface {
 	// nearly half of all blocks otherwise, and a block that ends is a full
 	// dispatch round trip.
 	highRegister(op, rd, rs, pcValue uint32) bool
+	armDataProcessing(op nativeARMDataOp) bool
 
 	// memory translates one single load/store inline through the software TLB
 	// (native_tlb.go): address computation, a direct-mapped page probe, a
@@ -175,8 +206,11 @@ type emitter interface {
 	selfLoopCond(cond uint8, gateOff int, nextPC uint32) // Bcc to own start: taken->gate, else exit at nextPC
 	exitBranch(pc uint32)                                // set PC=pc, return NORM
 	exitCondBranch(cond uint8, takenPC, nextPC uint32)   // external Bcc: PC = cond?taken:next, return NORM
-	exitBkpt(nextPC uint32)                              // set PC=nextPC, return BKPT
-	exitBranchLink(link, target uint32)                  // BL: LR=link, PC=target, return NORM
+	exitLinked(slot uintptr, pc uint32)                  // jump to a published target gate, else dispatch
+	exitCondLinked(cond uint8, takenSlot uintptr, takenPC uint32, nextSlot uintptr, nextPC uint32)
+	exitBkpt(nextPC uint32)             // set PC=nextPC, return BKPT
+	exitBranchLink(link, target uint32) // BL: LR=link, PC=target, return NORM
+	exitBranchLinkLinked(link uint32, slot uintptr, target uint32)
 
 	code() []byte // finished block bytes
 }
@@ -215,7 +249,7 @@ func (a *codeArena) reserve(off, n uintptr) bool {
 	return a.commit(off + n)
 }
 
-// nativeBlock is one translated straight-line Thumb run: entry is the host
+// nativeBlock is one translated straight-line ARM or Thumb run: entry is the host
 // address to call (via the per-host callBlock), and count is the number of
 // guest instructions it retires. A native block always terminates at the first
 // control-flow instruction (or right before an untranslatable one), so it
@@ -224,9 +258,25 @@ func (a *codeArena) reserve(off, n uintptr) bool {
 // reporting them.
 type nativeBlock struct {
 	start uint32
+	end   uint32
+	mode  cpu.Mode
 	count int
 	entry uintptr
+	gate  uintptr
 }
+
+type nativeLinkKey struct {
+	mode cpu.Mode
+	pc   uint32
+}
+
+type nativeSlowState struct {
+	address  uint32
+	count    uint8
+	resident bool
+}
+
+const nativeSlowThreshold = 3
 
 // nativeCacheSize is the direct-mapped dispatch cache depth: a power of two so
 // the index is a mask, sized like the pure-Go JIT's equivalent.
@@ -295,12 +345,115 @@ func (b *Backend) nativeInvalidate() {
 		return
 	}
 	clear(b.nativeBlocks)
+	clear(b.nativeARMBlocks)
+	for _, slot := range b.nativeLinks {
+		slot.Store(0)
+	}
+	clear(b.nativeSlow)
 	b.nativeGen++
 	clear(b.nativeCodePages)
 	b.nativeCodeLo, b.nativeCodeHi = ^uint32(0), 0
 	if b.nativeArena != nil {
 		b.nativeArena.off = 0
 	}
+}
+
+func (b *Backend) nativeLinkSlot(mode cpu.Mode, pc uint32) uintptr {
+	key := nativeLinkKey{mode: mode, pc: pc}
+	if slot := b.nativeLinks[key]; slot != nil {
+		return uintptr(unsafe.Pointer(slot))
+	}
+	slot := new(atomic.Uintptr)
+	b.nativeLinks[key] = slot
+	return uintptr(unsafe.Pointer(slot))
+}
+
+func (b *Backend) publishNativeLink(mode cpu.Mode, pc uint32, gate uintptr) {
+	key := nativeLinkKey{mode: mode, pc: pc}
+	slot := b.nativeLinks[key]
+	if slot == nil {
+		slot = new(atomic.Uintptr)
+		b.nativeLinks[key] = slot
+	}
+	slot.Store(gate)
+}
+
+func (b *Backend) clearNativeLink(mode cpu.Mode, pc uint32) {
+	if slot := b.nativeLinks[nativeLinkKey{mode: mode, pc: pc}]; slot != nil {
+		slot.Store(0)
+	}
+}
+
+func rangesOverlap(start, end, address, size uint32) bool {
+	return size != 0 && uint64(start) < uint64(address)+uint64(size) && uint64(end) > uint64(address)
+}
+
+func widthRangeOverlap(start, width, address, size uint32) bool {
+	return size != 0 && uint64(start) < uint64(address)+uint64(size) &&
+		uint64(start)+uint64(width) > uint64(address)
+}
+
+// nativeInvalidateRange removes only blocks whose decoded guest bytes overlap
+// the changed range. Emitted bytes remain in the bump arena until the next full
+// flush; incoming direct links are disabled before the map entries disappear.
+func (b *Backend) nativeInvalidateRange(address, size uint32) bool {
+	changed := false
+	for pc, block := range b.nativeBlocks {
+		overlaps := block != nil && rangesOverlap(block.start, block.end, address, size)
+		if block == nil {
+			overlaps = widthRangeOverlap(pc, 2, address, size)
+		}
+		if overlaps {
+			b.clearNativeLink(cpu.ModeThumb, pc)
+			delete(b.nativeBlocks, pc)
+			changed = true
+		}
+	}
+	for pc, block := range b.nativeARMBlocks {
+		overlaps := block != nil && rangesOverlap(block.start, block.end, address, size)
+		if block == nil {
+			overlaps = widthRangeOverlap(pc, 4, address, size)
+		}
+		if overlaps {
+			b.clearNativeLink(cpu.ModeARM, pc)
+			delete(b.nativeARMBlocks, pc)
+			changed = true
+		}
+	}
+	if changed {
+		b.nativeGen++
+	}
+	return changed
+}
+
+func (b *Backend) noteNativeBail(mode cpu.Mode, pc, address uint32) {
+	key := nativeLinkKey{mode: mode, pc: pc}
+	state := b.nativeSlow[key]
+	resident := b.tlbHit(address, cpu.PermissionRead) ||
+		b.tlbHit(address, cpu.PermissionWrite)
+	// The first miss on a directly backed page is just TLB warm-up. A second
+	// bail at the same now-resident address is persistent (normally a crossing
+	// check or a deliberately non-writable code page) and counts toward the
+	// interpreter-boundary threshold. MMIO never becomes resident and counts
+	// immediately.
+	if resident && (!state.resident || state.address != address) {
+		state.count = 0
+	} else if state.count < nativeSlowThreshold {
+		state.count++
+	}
+	state.address, state.resident = address, resident
+	b.nativeSlow[key] = state
+	if state.count == nativeSlowThreshold {
+		width := uint32(2)
+		if mode == cpu.ModeARM {
+			width = 4
+		}
+		b.nativeInvalidateRange(pc, width)
+	}
+}
+
+func (b *Backend) nativeSlowAt(mode cpu.Mode, pc uint32) bool {
+	return b.nativeSlow[nativeLinkKey{mode: mode, pc: pc}].count >= nativeSlowThreshold
 }
 
 // nativeCloseArena releases the executable mapping. It is called from Close.

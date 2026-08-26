@@ -66,6 +66,8 @@ type arm64emitter struct {
 	buf            []byte
 	tlb            uintptr // host address of the backend's software TLB (native_tlb.go)
 	interruptLines uintptr // address of Backend.interruptLines for system polls
+	activeCount    uintptr // address of Backend.nativeActiveCount
+	bailAddress    uintptr // address of Backend.nativeBailAddress
 }
 
 var _ emitter = (*arm64emitter)(nil)
@@ -120,6 +122,9 @@ func (e *arm64emitter) ldrWoff(rt, rn, off uint32) {
 func (e *arm64emitter) ldarW(rt, rn uint32) {
 	e.w(0x88DFFC00 | (rn << 5) | rt)
 }
+func (e *arm64emitter) ldarX(rt, rn uint32) {
+	e.w(0xC8DFFC00 | (rn << 5) | rt)
+}
 func (e *arm64emitter) ldrXoff(rt, rn, off uint32) {
 	e.w(0xF9400000 | ((off / 8) << 10) | (rn << 5) | rt)
 }
@@ -162,6 +167,7 @@ func (e *arm64emitter) mrsNZCV(rt uint32)               { e.w(0xD53B4200 | rt) }
 func (e *arm64emitter) msrNZCV(rt uint32)               { e.w(0xD51B4200 | rt) }                 // msr nzcv,xt
 func (e *arm64emitter) andMask(rd, rn, template uint32) { e.w(template | (rn << 5) | rd) }       // and wd,wn,#mask
 func (e *arm64emitter) ret()                            { e.w(0xD65F03C0) }                      // ret
+func (e *arm64emitter) br(rn uint32)                    { e.w(0xD61F0000 | (rn << 5)) }          // br xn
 
 // --- flag commit helpers (mirror the interpreter's flag semantics) ---------
 
@@ -229,6 +235,9 @@ func (e *arm64emitter) prologue() {
 		// from every guest instruction's system poll.
 		e.loadConst64(13, uint64(e.interruptLines))
 	}
+	if e.activeCount != 0 {
+		e.loadConst64(14, uint64(e.activeCount))
+	}
 }
 
 func (e *arm64emitter) mark() int           { return len(e.buf) }
@@ -257,6 +266,24 @@ func (e *arm64emitter) patchB(pos, target int) {
 // patchBCond rewrites the B.cond word at byte offset pos to branch to target.
 func (e *arm64emitter) patchBCond(pos, target int, cond uint8) {
 	word := uint32(0x54000000) | ((uint32((target-pos)/4) & 0x7FFFF) << 5) | uint32(cond)
+	e.buf[pos] = byte(word)
+	e.buf[pos+1] = byte(word >> 8)
+	e.buf[pos+2] = byte(word >> 16)
+	e.buf[pos+3] = byte(word >> 24)
+}
+
+// patchCBZ rewrites the placeholder at pos as CBZ Wrt,target. The interrupt
+// poll uses it to skip every CPSR access while no line is asserted.
+func (e *arm64emitter) patchCBZ(pos, target int, rt uint32) {
+	word := uint32(0x34000000) | (uint32((target-pos)/4)&0x7ffff)<<5 | rt
+	e.buf[pos] = byte(word)
+	e.buf[pos+1] = byte(word >> 8)
+	e.buf[pos+2] = byte(word >> 16)
+	e.buf[pos+3] = byte(word >> 24)
+}
+
+func (e *arm64emitter) patchCBZX(pos, target int, rt uint32) {
+	word := uint32(0xB4000000) | (uint32((target-pos)/4)&0x7ffff)<<5 | rt
 	e.buf[pos] = byte(word)
 	e.buf[pos+1] = byte(word >> 8)
 	e.buf[pos+2] = byte(word >> 16)
@@ -479,6 +506,10 @@ func (e *arm64emitter) gate(count int, startPC uint32) {
 	e.patchBCond(skip, e.mark(), a64CondHS)
 	// body_ok:
 	e.strRemain(0) // commit remain -= count
+	if e.activeCount != 0 {
+		e.loadConst(1, uint32(count))
+		e.strWoff(1, 14, 0)
+	}
 }
 
 // interruptPoll uses an acquire load for the host-published line bitmap and
@@ -489,6 +520,8 @@ func (e *arm64emitter) interruptPoll(pc uint32, retired int) {
 		return
 	}
 	e.ldarW(1, 13)
+	noLines := e.mark()
+	e.w(0) // cbz w1,continue
 	e.ldrW(2, cpu.RegisterCPSR)
 
 	noFIQ := e.mark()
@@ -511,8 +544,27 @@ func (e *arm64emitter) interruptPoll(pc uint32, retired int) {
 	e.ret()
 
 	continuation := e.mark()
+	e.patchCBZ(noLines, continuation, 1)
 	e.patchTestBit(noIRQ, continuation, false, 1, uint32(cpu.InterruptIRQ))
 	e.patchTestBit(maskedIRQ, continuation, true, 2, 7)
+}
+
+func (e *arm64emitter) conditionStart(condition uint8) int {
+	if condition >= 0xe {
+		return -1
+	}
+	e.ldrW(1, cpu.RegisterCPSR)
+	e.andMask(1, 1, a64MaskTop4)
+	e.msrNZCV(1)
+	site := e.mark()
+	e.bCond(condition^1, 0)
+	return site
+}
+
+func (e *arm64emitter) conditionEnd(site int) {
+	if site >= 0 {
+		e.patchBCond(site, e.mark(), uint8(e.buf[site]&0xf))
+	}
 }
 
 func (e *arm64emitter) selfLoopUncond(gateOff int) {
@@ -550,6 +602,29 @@ func (e *arm64emitter) exitCondBranch(cond uint8, takenPC, nextPC uint32) {
 	e.ret()
 }
 
+func (e *arm64emitter) exitLinked(slot uintptr, pc uint32) {
+	e.loadConst64(0, uint64(slot))
+	e.ldarX(0, 0)
+	missing := e.mark()
+	e.w(0) // cbz x0,fallback
+	e.br(0)
+	e.patchCBZX(missing, e.mark(), 0)
+	e.exitBranch(pc)
+}
+
+func (e *arm64emitter) exitCondLinked(
+	cond uint8, takenSlot uintptr, takenPC uint32, nextSlot uintptr, nextPC uint32,
+) {
+	e.ldrW(1, cpu.RegisterCPSR)
+	e.andMask(1, 1, a64MaskTop4)
+	e.msrNZCV(1)
+	notTaken := e.mark()
+	e.bCond(cond^1, 0)
+	e.exitLinked(takenSlot, takenPC)
+	e.patchBCond(notTaken, e.mark(), cond^1)
+	e.exitLinked(nextSlot, nextPC)
+}
+
 // exitBranchLink is the BL terminator: LR and PC are both constants fixed when
 // the block was translated.
 func (e *arm64emitter) exitBranchLink(link, target uint32) {
@@ -559,6 +634,12 @@ func (e *arm64emitter) exitBranchLink(link, target uint32) {
 	e.strW(0, cpu.RegisterPC)
 	e.movz(0, nativeStatusNorm)
 	e.ret()
+}
+
+func (e *arm64emitter) exitBranchLinkLinked(link uint32, slot uintptr, target uint32) {
+	e.loadConst(0, link)
+	e.strW(0, cpu.RegisterLR)
+	e.exitLinked(slot, target)
 }
 
 func (e *arm64emitter) exitBkpt(nextPC uint32) {
@@ -590,10 +671,18 @@ func (e *arm64emitter) memory(m memAccess, pc uint32, retired int) {
 		e.ldrW(0, m.base)
 		if m.hasIndex {
 			e.ldrW(1, m.index)
-			e.addReg(0, 0, 1)
+			if m.subtract {
+				e.subsReg(0, 0, 1)
+			} else {
+				e.addReg(0, 0, 1)
+			}
 		}
 		if m.offset != 0 {
-			e.addImm12(0, 0, m.offset)
+			if m.subtract {
+				e.subImm12(0, 0, m.offset)
+			} else {
+				e.addImm12(0, 0, m.offset)
+			}
 		}
 	}
 
@@ -701,6 +790,10 @@ func (e *arm64emitter) bailStub(pc uint32, retired int, misses []int) {
 	skip := e.mark()
 	e.w(0) // placeholder: b done
 	bail := e.mark()
+	if e.bailAddress != 0 {
+		e.loadConst64(5, uint64(e.bailAddress))
+		e.strWoff(0, 5, 0)
+	}
 	e.loadConst(0, pc)
 	e.strW(0, cpu.RegisterPC)
 	e.loadConst(0, nativeBailStatus(retired))
@@ -744,6 +837,96 @@ func (e *arm64emitter) highRegister(op, rd, rs, pcValue uint32) bool {
 	default: // 2: MOV rd, rs (no flags)
 		load(0, rs)
 		e.strW(0, rd)
+	}
+	return true
+}
+
+func (e *arm64emitter) armDataProcessing(op nativeARMDataOp) bool {
+	if op.opcode >= 5 && op.opcode <= 7 {
+		return false
+	}
+	load := func(host, guest uint32) {
+		if guest == cpu.RegisterPC {
+			e.loadConst(host, op.pcValue)
+		} else {
+			e.ldrW(host, guest)
+		}
+	}
+	loadOperand := func(host uint32) {
+		if op.operandReg {
+			load(host, op.operand)
+		} else {
+			e.loadConst(host, op.operand)
+		}
+	}
+
+	writes := op.opcode < 8 || op.opcode >= 12
+	arithmetic := false
+	subtract := false
+	switch op.opcode {
+	case 0: // AND
+		load(0, op.rn)
+		loadOperand(1)
+		e.andReg(0, 0, 1)
+	case 1: // EOR
+		load(0, op.rn)
+		loadOperand(1)
+		e.eorReg(0, 0, 1)
+	case 2, 10: // SUB / CMP
+		load(0, op.rn)
+		loadOperand(1)
+		e.subsReg(0, 0, 1)
+		arithmetic, subtract = true, true
+	case 3: // RSB
+		loadOperand(0)
+		load(1, op.rn)
+		e.subsReg(0, 0, 1)
+		arithmetic, subtract = true, true
+	case 4, 11: // ADD / CMN
+		load(0, op.rn)
+		loadOperand(1)
+		if op.setFlags {
+			e.addsReg(0, 0, 1)
+		} else {
+			e.addReg(0, 0, 1)
+		}
+		arithmetic = true
+	case 8: // TST
+		load(0, op.rn)
+		loadOperand(1)
+		e.andReg(0, 0, 1)
+	case 9: // TEQ
+		load(0, op.rn)
+		loadOperand(1)
+		e.eorReg(0, 0, 1)
+	case 12: // ORR
+		load(0, op.rn)
+		loadOperand(1)
+		e.orrReg(0, 0, 1)
+	case 13: // MOV
+		loadOperand(0)
+	case 14: // BIC
+		load(0, op.rn)
+		loadOperand(1)
+		e.bicReg(0, 0, 1)
+	case 15: // MVN
+		loadOperand(1)
+		e.mvn(0, 1)
+	default:
+		return false
+	}
+	if op.setFlags {
+		if arithmetic {
+			e.commitNZCV(subtract)
+		} else if op.carry >= 0 {
+			e.movz(3, uint32(op.carry))
+			e.commitNZC()
+		} else {
+			e.commitNZ()
+		}
+	}
+	if writes {
+		e.strW(0, op.rd)
 	}
 	return true
 }

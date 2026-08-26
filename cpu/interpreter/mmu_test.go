@@ -2,6 +2,7 @@ package interpreter
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"testing"
 
@@ -233,5 +234,71 @@ func TestMMUFCSEProcessIDModifiesLowVirtualAddresses(t *testing.T) {
 	value, err := backend.read32(virtual, cpu.PermissionRead)
 	if err != nil || value != 0x12345678 {
 		t.Fatalf("FCSE read = %#x error %v", value, err)
+	}
+}
+
+func TestMMUDirectVirtualDataCacheHonorsGenerationPrivilegeAndInvalidation(t *testing.T) {
+	const (
+		virtual      = uint32(0x80000420)
+		physicalBase = uint32(0x00100000)
+		tableBase    = uint32(0x00004000)
+	)
+	bus := &directTestSystemBus{data: make([]byte, 0x300000)}
+	binary.LittleEndian.PutUint32(
+		bus.data[tableBase+(virtual>>20)*4:],
+		physicalBase|1<<10|2, // client domain, privileged-only AP=1 section
+	)
+	physical := physicalBase | virtual&0x000fffff
+	binary.LittleEndian.PutUint32(bus.data[physical:], 0x11223344)
+
+	backend := NewJIT()
+	if err := backend.AttachSystemBus(bus); err != nil {
+		t.Fatal(err)
+	}
+	backend.cp15.translationTableBase = tableBase
+	backend.cp15.domainAccessControl = 1
+	backend.setCP15Control(1)
+	backend.regs[cpu.RegisterCPSR] = uint32(processorModeSupervisor)
+
+	value, err := backend.read32(virtual, cpu.PermissionRead)
+	if err != nil || value != 0x11223344 {
+		t.Fatalf("cold direct virtual read = %#x error %v", value, err)
+	}
+	if _, _, ok := backend.virtualDataHit(virtual, 4, cpu.PermissionRead); !ok {
+		t.Fatal("successful direct virtual read did not install the Go TLB entry")
+	}
+	if err := backend.write32(virtual, 0x55667788, cpu.PermissionWrite); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := backend.virtualDataHit(virtual, 4, cpu.PermissionWrite); !ok {
+		t.Fatal("successful direct virtual write did not install its permission half")
+	}
+	if got := binary.LittleEndian.Uint32(bus.data[physical:]); got != 0x55667788 {
+		t.Fatalf("direct virtual write = %#x", got)
+	}
+
+	// Privilege is the one permission input that can change without a mapping
+	// generation. A privileged entry must not bypass the user AP check.
+	backend.regs[cpu.RegisterCPSR] = uint32(processorModeUser)
+	if _, err := backend.read32(virtual, cpu.PermissionRead); !errors.Is(err, ErrMMUPermissionFault) {
+		t.Fatalf("user read through privileged virtual cache = %v", err)
+	}
+
+	backend.regs[cpu.RegisterCPSR] = uint32(processorModeSupervisor)
+	oldGen := backend.mappingGen
+	backend.invalidateTLB()
+	if backend.mappingGen == oldGen {
+		t.Fatal("TLB invalidation did not advance the virtual-cache generation")
+	}
+	if _, _, ok := backend.virtualDataHit(virtual, 4, cpu.PermissionRead); ok {
+		t.Fatal("mapping-generation change retained a virtual data hit")
+	}
+
+	if _, err := backend.read32(virtual, cpu.PermissionRead); err != nil {
+		t.Fatal(err)
+	}
+	bus.invalidate()
+	if backend.virtualData != nil {
+		t.Fatal("direct-memory invalidator retained virtual RAM slices")
 	}
 }

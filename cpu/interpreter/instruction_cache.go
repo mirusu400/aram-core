@@ -162,7 +162,7 @@ func (b *Backend) fetchInstructionCache(address uint32, size uint32) ([]byte, er
 		if translationErr != nil {
 			return nil, translationErr
 		}
-		data := make([]byte, size)
+		data := b.readScratch[:size]
 		if err := b.copyOut(physical, data, cpu.PermissionExecute); err != nil {
 			return nil, err
 		}
@@ -186,6 +186,7 @@ func (b *Backend) invalidateInstructionCacheMVA(address uint32) {
 	if entry := b.instructionCacheEntry(mvaLine); entry != nil && entry.tag == mvaLine {
 		entry.valid = false
 	}
+	b.invalidateTranslationRange(address&^(instructionCacheLineSize-1), instructionCacheLineSize)
 }
 
 // prefetchInstructionCacheLine services CP15 c7,c13,1. ARM926 performs an

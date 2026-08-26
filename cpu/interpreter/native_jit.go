@@ -92,15 +92,17 @@ func (b *Backend) runThumbNative(limit uint64) (uint64, *cpu.StopReason, error) 
 			// the whole block, so give back everything from the bail point on
 			// and let the interpreter run that one instruction; it installs the
 			// page, so the next execution of this block stays native.
-			b.nativeRemain += uint32(block.count) - uint32(status>>8)
+			b.refundNativeTail(status)
+			bailPC, bailAddress := b.regs[cpu.RegisterPC], b.nativeBailAddress
 			if reason, err, done := b.interpretOneNative(); done {
 				return limit - uint64(b.nativeRemain), reason, err
 			}
+			b.noteNativeBail(cpu.ModeThumb, bailPC, bailAddress)
 		case nativeStatusIRQ:
 			// Like a TLB bail, the interrupt exit occurs after the block gate
 			// charged instructions that did not execute. Restore that tail, then
 			// let the architectural exception helper apply FIQ priority/banking.
-			b.nativeRemain += uint32(block.count) - uint32(status>>8)
+			b.refundNativeTail(status)
 			if b.takePendingInterrupt() {
 				return limit - uint64(b.nativeRemain), nil, nil
 			}
@@ -194,6 +196,9 @@ func (b *Backend) translateNativeBlock(pc uint32) *nativeBlock {
 		if b.systemBus != nil && b.executionTrapAt(cpu.ModeThumb, cur) {
 			break
 		}
+		if b.nativeSlowAt(cpu.ModeThumb, cur) {
+			break
+		}
 		word, err := b.fetch16(cur)
 		if err != nil {
 			break
@@ -228,7 +233,7 @@ func (b *Backend) translateNativeBlock(pc uint32) *nativeBlock {
 	gateOff := main.mark()
 	main.gate(count, pc)
 	main.appendCode(body.code())
-	emitTerminator(main, term, pc, gateOff)
+	b.emitNativeTerminator(main, cpu.ModeThumb, term, pc, gateOff)
 
 	entry := b.arenaAppend(main.code())
 	if entry == 0 {
@@ -254,29 +259,40 @@ func (b *Backend) translateNativeBlock(pc uint32) *nativeBlock {
 		// executions, so no block is holding a stale entry.
 		b.tlbClearWrite()
 	}
-	return &nativeBlock{start: pc, count: count, entry: entry}
+	gate := entry + uintptr(gateOff)
+	b.publishNativeLink(cpu.ModeThumb, pc, gate)
+	return &nativeBlock{
+		start: pc, end: end, mode: cpu.ModeThumb,
+		count: count, entry: entry, gate: gate,
+	}
 }
 
-func emitTerminator(e emitter, t terminator, startPC uint32, gateOff int) {
+func (b *Backend) emitNativeTerminator(
+	e emitter, mode cpu.Mode, t terminator, startPC uint32, gateOff int,
+) {
 	switch t.kind {
 	case termUncond:
 		if t.target == startPC {
 			e.selfLoopUncond(gateOff)
 		} else {
-			e.exitBranch(t.target)
+			e.exitLinked(b.nativeLinkSlot(mode, t.target), t.target)
 		}
 	case termCond:
 		if t.target == startPC {
 			e.selfLoopCond(t.cond, gateOff, t.next)
 		} else {
-			e.exitCondBranch(t.cond, t.target, t.next)
+			e.exitCondLinked(
+				t.cond,
+				b.nativeLinkSlot(mode, t.target), t.target,
+				b.nativeLinkSlot(mode, t.next), t.next,
+			)
 		}
 	case termBkpt:
 		e.exitBkpt(t.next)
 	case termBranchLink:
-		e.exitBranchLink(t.link, t.target)
+		e.exitBranchLinkLinked(t.link, b.nativeLinkSlot(mode, t.target), t.target)
 	default: // termNone: fell off the end
-		e.exitBranch(t.next)
+		e.exitLinked(b.nativeLinkSlot(mode, t.next), t.next)
 	}
 }
 

@@ -56,6 +56,26 @@ type dataRegionCache struct {
 	data    []byte
 }
 
+const virtualDataCacheEntries = 4096
+
+// virtualDataCacheEntry is the Go execution tiers' 1 KiB direct-RAM window.
+// ARM926 permissions are selected per 1 KiB subpage, so this granularity lets
+// a hit skip address translation and the physical bus without speculating
+// across an AP boundary.
+type virtualDataCacheEntry struct {
+	data          []byte
+	virtualPage   uint32
+	physicalPage  uint32
+	regionAddress uint32
+	gen           uint32
+	privileged    bool
+}
+
+type virtualDataCache struct {
+	read  [virtualDataCacheEntries]virtualDataCacheEntry
+	write [virtualDataCacheEntries]virtualDataCacheEntry
+}
+
 // Backend is a bounds-checked ARMv5TE interpreter. It currently implements
 // the ARM/Thumb control-flow and integer instructions needed by the first
 // application-entry milestone; unsupported encodings produce a precise fault.
@@ -75,7 +95,11 @@ type Backend struct {
 	// region re-sorts (regions never overlap and their backing arrays are
 	// stable); it is invalidated wherever executeData is.
 	dataCache [8]dataRegionCache
-	regs      [17]uint32
+	// virtualData is allocated lazily after the MMU first resolves a direct RAM
+	// data access. Native blocks have their own 4 KiB host-pointer TLB; this one
+	// removes the remaining MMU/permission/bus work from precise and Go-JIT ARM.
+	virtualData *virtualDataCache
+	regs        [17]uint32
 	// flags holds condition N/Z/C/V lazily: setNZCV records the defining
 	// operation here instead of writing CPSR, and resolveFlags materializes it
 	// only when a reader actually needs the bits. See pendingFlags.
@@ -128,14 +152,17 @@ type Backend struct {
 	jitCodePages []uint64
 	// nativeBlocks and nativeArena drive the optional native machine-code JIT
 	// (see native_common.go and the per-host native_*.go emitters). Non-nil
-	// nativeBlocks enables it for Thumb, translating straight runs into host
-	// code held in nativeArena and falling back for untranslated Thumb. ARM uses
-	// armJITBlocks on the same backend. Like jitBlocks it is invalidated on
+	// nativeBlocks enables it for Thumb, while nativeARMBlocks holds ARM host
+	// code; both live in nativeArena and fall back instruction-by-instruction to
+	// the portable translated tiers. Like jitBlocks they are invalidated on
 	// Map/Close and on a self-modifying write. jitBlocks and nativeBlocks are
 	// mutually exclusive: a backend is the pure-Go JIT or the native JIT, never
 	// both.
 	nativeBlocks map[uint32]*nativeBlock
-	nativeArena  *codeArena
+	// nativeARMBlocks is the machine-code counterpart used by native backends.
+	// armJITBlocks remains allocated as its decoded-closure fallback.
+	nativeARMBlocks map[uint32]*nativeBlock
+	nativeArena     *codeArena
 	// nativeCodeLo/nativeCodeHi bound the guest-address span of every
 	// translated native block, exactly as jitCodeLo/jitCodeHi do for the
 	// pure-Go JIT. KTF/WIPI map the guest image read-write-execute, so without
@@ -149,8 +176,18 @@ type Backend struct {
 	// few instructions, so a title dispatches blocks hundreds of thousands of
 	// times per frame and the map hash dominated dispatch. nativeGen is bumped
 	// on invalidation so stale entries miss without walking the array.
-	nativeCache *[nativeCacheSize]nativeCacheEntry
-	nativeGen   uint64
+	nativeCache    *[nativeCacheSize]nativeCacheEntry
+	nativeARMCache *[nativeCacheSize]nativeCacheEntry
+	nativeGen      uint64
+	// nativeLinks are stable indirection slots baked into terminal branches.
+	// A translated target publishes its gate address into the slot, allowing
+	// subsequent executions to jump block-to-block without returning to Go.
+	// Range invalidation zeros only the affected target slots.
+	nativeLinks map[nativeLinkKey]*atomic.Uintptr
+	// nativeSlow remembers memory instructions that repeatedly miss the inline
+	// TLB (normally MMIO). Translation then stops before them so the dispatcher
+	// interprets the access directly instead of paying a native bail each time.
+	nativeSlow map[nativeLinkKey]nativeSlowState
 	// nativeCodePages marks, one bit per 4 KiB guest page, the pages that hold
 	// translated code. The lo/hi span above is only a hull: KTF/WIPI titles run
 	// from a read-write-execute image and allocate their heap and framebuffer
@@ -170,6 +207,14 @@ type Backend struct {
 	// exact retired count). It lives on the Backend so &nativeRemain is stable
 	// across the block call and the interpreter tail shares the same counter.
 	nativeRemain uint32
+	// nativeActiveCount is written by every native budget gate. It makes bail
+	// and IRQ refund accounting independent of which linked block was originally
+	// entered from Go.
+	nativeActiveCount uint32
+	// nativeBailAddress is written only on the emitted miss stub. The Go slow
+	// path uses it to distinguish cold RAM that just populated the TLB from an
+	// address that persistently cannot be admitted (MMIO/page crossing).
+	nativeBailAddress uint32
 	// currentProcess caches the windows/amd64 pseudo-handle the code arena's
 	// WriteProcessMemory copy needs, so emitting a block does not re-query it.
 	// It is unused on other hosts.
@@ -517,6 +562,7 @@ func (b *Backend) Map(address, size uint32, permissions cpu.Permissions) error {
 	b.executeData = nil
 	b.invalidateInstructionWindow()
 	clear(b.dataCache[:])
+	b.virtualData = nil
 	b.tlbClear()
 	if b.jitBlocks != nil {
 		clear(b.jitBlocks)
@@ -715,6 +761,8 @@ func (b *Backend) Run(ctx context.Context, address uint32, mode cpu.Mode, budget
 			default:
 				retired, reason, err = b.runThumb(batch)
 			}
+		} else if b.nativeARMBlocks != nil {
+			retired, reason, err = b.runARMNative(batch)
 		} else if b.armJITBlocks != nil {
 			retired, reason, err = b.runARMJIT(batch)
 		} else {
@@ -793,6 +841,7 @@ func (b *Backend) Close() error {
 	clear(b.regionHints[:])
 	b.executeData = nil
 	clear(b.dataCache[:])
+	b.virtualData = nil
 	if b.jitBlocks != nil {
 		clear(b.jitBlocks)
 		clear(b.armJITBlocks)
@@ -801,8 +850,17 @@ func (b *Backend) Close() error {
 	}
 	if b.nativeBlocks != nil {
 		clear(b.nativeBlocks)
+		clear(b.nativeARMBlocks)
+		for _, slot := range b.nativeLinks {
+			slot.Store(0)
+		}
+		clear(b.nativeLinks)
+		clear(b.nativeSlow)
 		b.nativeCloseArena()
 		b.nativeBlocks = nil
+		b.nativeARMBlocks = nil
+		b.nativeLinks = nil
+		b.nativeSlow = nil
 		b.nativeCodeLo, b.nativeCodeHi = ^uint32(0), 0
 		b.tlbClear()
 		b.tlb = nil

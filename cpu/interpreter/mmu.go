@@ -313,6 +313,7 @@ func (b *Backend) readVirtual(address uint32, destination []byte, permission cpu
 		if err := b.copyOut(physical, remaining[:count], permission); err != nil {
 			return b.recordExternalAbort(current, permission, err)
 		}
+		b.noteVirtualData(current, physical, permission)
 		b.noteVirtualTLB(current, physical, permission)
 		remaining = remaining[count:]
 		current += uint32(count)
@@ -335,6 +336,7 @@ func (b *Backend) writeVirtual(address uint32, source []byte, permission cpu.Per
 		if !b.instructionCacheEnabled() {
 			b.smcInvalidate(current, uint32(count), cpu.PermissionExecute)
 		}
+		b.noteVirtualData(current, physical, permission)
 		b.noteVirtualTLB(current, physical, permission)
 		remaining = remaining[count:]
 		current += uint32(count)
