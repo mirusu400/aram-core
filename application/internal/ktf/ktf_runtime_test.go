@@ -1138,6 +1138,24 @@ func TestKTFHandsetSystemPropertyProvidesCompatiblePhoneModel(t *testing.T) {
 	}
 }
 
+func TestKTFHandsetSystemPropertyReportsFullBattery(t *testing.T) {
+	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.CPU.Close()
+
+	if got := runtime.handsetSystemProperty(" batterylevel "); got != "5" {
+		t.Fatalf("BATTERYLEVEL = %q, want 5", got)
+	}
+	if got := runtime.handsetSystemProperty("maxbattlevel"); got != "5" {
+		t.Fatalf("MAXBATTLEVEL = %q, want 5", got)
+	}
+}
+
 func TestKTFJavaArrayNewCreatesPrimitiveArray(t *testing.T) {
 	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
 		ClientName: "client.bin0",

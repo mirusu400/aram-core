@@ -1197,6 +1197,10 @@ func (r *Runtime) handsetSystemProperty(key string) string {
 			return "LG-KH1300"
 		}
 		return r.Services.Device.Config().Model
+	case "BATTERYLEVEL":
+		return r.batteryLevelSystemProperty()
+	case "MAXBATTLEVEL":
+		return "5"
 	default:
 		return ""
 	}
