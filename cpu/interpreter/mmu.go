@@ -83,8 +83,24 @@ func (b *Backend) mmuEnabled() bool {
 	return b.cp15.control&1 != 0
 }
 
+// mmuTLBEntries sizes the software translation-lookaside buffer. Descriptors
+// are cached per 1 KiB of virtual address, so this covers 4 MiB of resident
+// mapping - comfortably more than the working set between the flushes a guest
+// actually performs, and small enough to stay in cache itself.
+const mmuTLBEntries = 4096
+
+type mmuTLBEntry struct {
+	translation mmuTranslation
+	tag         uint32
+	gen         uint32
+	valid       bool
+}
+
+// invalidateTLB drops every cached descriptor. It bumps the shared mapping
+// generation rather than clearing the table, so a flush stays O(1) on a path
+// the guest takes at every context switch.
 func (b *Backend) invalidateTLB() {
-	b.mmuTLB = nil
+	b.mappingGen++
 	b.invalidateTranslations()
 }
 
@@ -105,17 +121,22 @@ func (b *Backend) translateAddressWithAttributes(
 		modified |= b.cp15.processID & 0xfe000000
 	}
 	key := modified >> 10
-	translation, ok := b.mmuTLB[key]
-	if !ok {
+	table := b.mmuTLBTable
+	if table == nil {
+		table = new([mmuTLBEntries]mmuTLBEntry)
+		b.mmuTLBTable = table
+	}
+	entry := &table[key&(mmuTLBEntries-1)]
+	var translation mmuTranslation
+	if entry.valid && entry.gen == b.mappingGen && entry.tag == key {
+		translation = entry.translation
+	} else {
 		var err error
 		translation, err = b.walkShortDescriptor(modified, address, permission)
 		if err != nil {
 			return 0, mmuTranslation{}, err
 		}
-		if b.mmuTLB == nil {
-			b.mmuTLB = make(map[uint32]mmuTranslation)
-		}
-		b.mmuTLB[key] = translation
+		entry.translation, entry.tag, entry.gen, entry.valid = translation, key, b.mappingGen, true
 	}
 	if err := b.checkTranslationAccess(translation, address, permission); err != nil {
 		return 0, mmuTranslation{}, err
