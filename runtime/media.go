@@ -1,9 +1,11 @@
 package runtime
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -116,6 +118,24 @@ type decodedPCM struct {
 	smaf       *smafRenderStream
 }
 
+type smafDecodeCacheKey struct {
+	digest     [sha256.Size]byte
+	sampleRate uint32
+}
+
+type smafDecodeCacheEntry struct {
+	decoded *decodedPCM
+}
+
+const maxSMAFDecodeCacheEntries = 64
+
+// maxSMAFDecodeCacheSamples bounds the PCM the cache may retain. An entry count
+// is not a bound on its own: a lazy score renders on demand up to
+// maxSMAFSeconds of stereo int16, so 64 fully played tracks would hold
+// gigabytes resident on a handset. Retention is re-checked on every insert
+// because an entry keeps growing after it is cached.
+const maxSMAFDecodeCacheSamples = 16 << 20
+
 type mediaClip struct {
 	id             ServiceID
 	owner          OwnerID
@@ -152,6 +172,12 @@ type Media struct {
 	mixMode     bool
 	bgmVoice    *mediaClip
 	bgmVoiceSig uint64
+
+	voiceIDs      []ServiceID
+	voiceScratch  []*mediaClip
+	mixScratch    []int64
+	smafCache     map[smafDecodeCacheKey]smafDecodeCacheEntry
+	smafCacheFIFO []smafDecodeCacheKey
 }
 
 func NewMedia(registry *Registry, limits MediaLimits) (*Media, error) {
@@ -210,15 +236,19 @@ func bgmSignature(data []byte) uint64 {
 // registry clips sorted by id, then the persistent music voice if one exists.
 // The voice has no service id and is invisible to the guest; it only mixes.
 func (m *Media) playbackVoices() []*mediaClip {
-	ids := m.sortedClipIDs()
-	voices := make([]*mediaClip, 0, len(ids)+1)
-	for _, id := range ids {
-		voices = append(voices, m.clips[id])
+	m.voiceIDs = m.voiceIDs[:0]
+	for id := range m.clips {
+		m.voiceIDs = append(m.voiceIDs, id)
+	}
+	slices.Sort(m.voiceIDs)
+	m.voiceScratch = m.voiceScratch[:0]
+	for _, id := range m.voiceIDs {
+		m.voiceScratch = append(m.voiceScratch, m.clips[id])
 	}
 	if m.bgmVoice != nil {
-		voices = append(voices, m.bgmVoice)
+		m.voiceScratch = append(m.voiceScratch, m.bgmVoice)
 	}
-	return voices
+	return m.voiceScratch
 }
 
 // musicVoiceMinDuration classifies a non-looping clip as background music when
@@ -249,10 +279,11 @@ func (m *Media) playAsBGMVoice(clip *mediaClip) {
 		volume:         clip.volume,
 		pan:            clip.pan,
 	}
-	voice.decoded = decodeWavePCM16(voice.source)
-	if voice.decoded == nil && looksLikeSMAF(voice.source) {
-		voice.decoded = decodeSMAFLazyPCM16(voice.source, m.limits.OutputSampleRate)
-	}
+	// Play decoded the source before deciding it was background music. PCM is
+	// immutable from the clip's point of view and the lazy SMAF stream only
+	// extends a deterministic shared prefix, so the persistent voice can reuse
+	// it instead of parsing and probing the same score a second time.
+	voice.decoded = clip.decoded
 	m.bgmVoice = voice
 	m.bgmVoiceSig = sig
 }
@@ -349,10 +380,7 @@ func (m *Media) Play(owner OwnerID, id ServiceID, plays int32) error {
 		return fmt.Errorf("%w: invalid media play count %d", ErrInvalidArgument, plays)
 	}
 	if clip.decoded == nil && looksLikeSMAF(clip.source) {
-		clip.decoded = decodeSMAFLazyPCM16(
-			clip.source,
-			m.limits.OutputSampleRate,
-		)
+		clip.decoded = m.decodeSMAF(clip.source)
 	}
 	if clip.decoded != nil && clip.position >= clip.decoded.duration {
 		clip.position = 0
@@ -530,7 +558,13 @@ func (m *Media) advanceLocked(start, end time.Duration, bus *EventBus) error {
 		sampleCount = (frameCount - firstFrame) * uint64(m.limits.OutputChannels)
 	}
 
-	mixed := make([]int64, int(sampleCount))
+	if cap(m.mixScratch) < int(sampleCount) {
+		m.mixScratch = make([]int64, int(sampleCount))
+	} else {
+		m.mixScratch = m.mixScratch[:int(sampleCount)]
+		clear(m.mixScratch)
+	}
+	mixed := m.mixScratch
 	for _, clip := range voices {
 		if clip.state != ClipPlaying || clip.decoded == nil ||
 			clip.decoded.duration <= 0 || clip.muted || m.globalMute ||
@@ -776,7 +810,7 @@ func (m *Media) Restore(state MediaState) error {
 		if clip.decoded == nil &&
 			(saved.State == ClipPlaying || saved.State == ClipPaused) &&
 			looksLikeSMAF(clip.source) {
-			clip.decoded = decodeSMAFLazyPCM16(
+			clip.decoded = m.decodeSMAFAtRate(
 				clip.source,
 				state.Limits.OutputSampleRate,
 			)
@@ -808,7 +842,7 @@ func (m *Media) Restore(state MediaState) error {
 		}
 		bgmVoice.decoded = decodeWavePCM16(bgmVoice.source)
 		if bgmVoice.decoded == nil && looksLikeSMAF(bgmVoice.source) {
-			bgmVoice.decoded = decodeSMAFLazyPCM16(
+			bgmVoice.decoded = m.decodeSMAFAtRate(
 				bgmVoice.source,
 				state.Limits.OutputSampleRate,
 			)
@@ -847,6 +881,62 @@ func (m *Media) sortedClipIDs() []ServiceID {
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	return ids
+}
+
+func (m *Media) decodeSMAF(data []byte) *decodedPCM {
+	return m.decodeSMAFAtRate(data, m.limits.OutputSampleRate)
+}
+
+// decodeSMAFAtRate shares a deterministic decoded stream for identical SMAF
+// bytes. Playback position, gain, looping, and completion state live on each
+// mediaClip, while decoded PCM is a content property. A lazy stream may append
+// to its shared sample prefix, but never changes an existing sample.
+func (m *Media) decodeSMAFAtRate(data []byte, sampleRate uint32) *decodedPCM {
+	key := smafDecodeCacheKey{
+		digest:     sha256.Sum256(data),
+		sampleRate: sampleRate,
+	}
+	if cached, ok := m.smafCache[key]; ok {
+		return cached.decoded
+	}
+	decoded := decodeSMAFLazyPCM16(data, sampleRate)
+	if m.smafCache == nil {
+		m.smafCache = make(map[smafDecodeCacheKey]smafDecodeCacheEntry)
+	}
+	if len(m.smafCacheFIFO) == maxSMAFDecodeCacheEntries {
+		m.evictOldestSMAFDecode()
+	}
+	m.smafCache[key] = smafDecodeCacheEntry{decoded: decoded}
+	m.smafCacheFIFO = append(m.smafCacheFIFO, key)
+	// The newest entry is always kept: a single score longer than the budget
+	// must still be shared by the clip and the persistent music voice.
+	for len(m.smafCacheFIFO) > 1 &&
+		m.smafCacheSamples() > maxSMAFDecodeCacheSamples {
+		m.evictOldestSMAFDecode()
+	}
+	return decoded
+}
+
+// smafCacheSamples reports the PCM the cache holds. A dropped entry keeps
+// playing for whichever clip already points at it; only the sharing is lost.
+func (m *Media) smafCacheSamples() int {
+	total := 0
+	for _, key := range m.smafCacheFIFO {
+		if entry := m.smafCache[key]; entry.decoded != nil {
+			total += len(entry.decoded.samples)
+		}
+	}
+	return total
+}
+
+func (m *Media) evictOldestSMAFDecode() {
+	if len(m.smafCacheFIFO) == 0 {
+		return
+	}
+	oldest := m.smafCacheFIFO[0]
+	copy(m.smafCacheFIFO, m.smafCacheFIFO[1:])
+	m.smafCacheFIFO = m.smafCacheFIFO[:len(m.smafCacheFIFO)-1]
+	delete(m.smafCache, oldest)
 }
 
 func durationForFrame(frame uint64, rate uint32) time.Duration {

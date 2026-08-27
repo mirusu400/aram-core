@@ -130,6 +130,90 @@ func TestServicesAdvanceRollsBackWhenEventQueueIsFull(t *testing.T) {
 	}
 }
 
+func TestServicesAdvanceLateFailureRestoresEveryJournal(t *testing.T) {
+	config := DefaultConfig()
+	config.ReplayMode = ReplayRecord
+	config.RepeatDelay = time.Millisecond
+	config.RepeatPeriod = time.Millisecond
+	config.Limits.Replay.MaxEntries = 1
+	services, err := NewServices(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const owner = OwnerID(1)
+	if _, err := services.Replay.Record(ReplayEntry{
+		AtNS: 0, Kind: ReplayInput, Owner: owner, Name: "seed", Value: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := services.Input.Change(services.Events, owner, "ok", true, 0); err != nil {
+		t.Fatal(err)
+	}
+	timer, err := services.Timers.Define(owner, "due")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := services.Timers.Set(timer, owner, time.Millisecond, 0, 7); err != nil {
+		t.Fatal(err)
+	}
+	clip, err := services.Media.CreateClip(owner, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := services.Media.Play(owner, clip, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := services.Device.Vibrate(50, time.Millisecond, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := services.Device.SetBacklight(true, time.Millisecond, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	before := services.Snapshot()
+	if err := services.Advance(owner, 2*time.Millisecond); !errors.Is(err, ErrLimitExceeded) {
+		t.Fatalf("Advance with exhausted replay log error = %v", err)
+	}
+	if after := services.Snapshot(); !reflect.DeepEqual(after, before) {
+		t.Fatal("late replay failure did not restore clock, events, input, timers, media, device, and replay")
+	}
+}
+
+func TestServicesIdleAdvanceAllocatesNothing(t *testing.T) {
+	services, err := NewServices(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := services.Advance(1, time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	allocations := testing.AllocsPerRun(1000, func() {
+		if err := services.Advance(1, time.Millisecond); err != nil {
+			panic(err)
+		}
+	})
+	if allocations != 0 {
+		t.Fatalf("idle Services.Advance allocations = %.2f, want 0", allocations)
+	}
+}
+
+func BenchmarkServicesAdvanceIdle(b *testing.B) {
+	services, err := NewServices(Config{})
+	if err != nil {
+		b.Fatal(err)
+	}
+	if err := services.Advance(1, time.Millisecond); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if err := services.Advance(1, time.Millisecond); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func TestServicesQueueInputAnchorsLateTransitionAtCurrentTime(t *testing.T) {
 	config := DefaultConfig()
 	config.RepeatDelay = 100 * time.Millisecond

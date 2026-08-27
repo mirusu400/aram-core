@@ -136,12 +136,24 @@ func (r *Runtime) syncKTFGraphics(instance uint32) error {
 		)
 	}
 	if state.PixelsDirty {
-		if err := r.Services.Graphics.ReplacePixels(
-			r.ServiceOwner,
-			serviceID,
-			ktfRGBABytes(state.Target),
-		); err != nil {
-			return err
+		var replaceErr error
+		if rgba, ok := state.Target.(*image.RGBA); ok {
+			start := rgba.PixOffset(bounds.Min.X, bounds.Min.Y)
+			replaceErr = r.Services.Graphics.ReplacePixelRows(
+				r.ServiceOwner,
+				serviceID,
+				rgba.Pix[start:],
+				rgba.Stride,
+			)
+		} else {
+			replaceErr = r.Services.Graphics.ReplacePixels(
+				r.ServiceOwner,
+				serviceID,
+				ktfRGBABytes(state.Target),
+			)
+		}
+		if replaceErr != nil {
+			return replaceErr
 		}
 		state.PixelsDirty = false
 	}

@@ -2,6 +2,8 @@ package ktf
 
 import (
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/mirusu400/aram-core/application/internal/guest"
 )
@@ -23,11 +25,80 @@ const ktfHostTraceKeep = ktfHostTraceLimit / 2
 // for diagnostics without formatting and retaining an entry for every pixel.
 const HostTraceSampleInterval = 256
 
+// KTFTraceMode separates production counters from expensive debugger detail.
+// The zero value is off so a scratch Runtime cannot accidentally allocate a
+// trace; NewRuntime explicitly selects the product default (counters).
+type KTFTraceMode uint8
+
+const (
+	KTFTraceOff KTFTraceMode = iota
+	KTFTraceCounters
+	KTFTraceSampled
+	KTFTraceFull
+)
+
+const ktfTraceSampleLimit = 1024
+
+type ktfTraceSample struct {
+	Call     uint64
+	Selector string
+}
+
+func (mode KTFTraceMode) Valid() bool {
+	return mode >= KTFTraceOff && mode <= KTFTraceFull
+}
+
+func (mode KTFTraceMode) String() string {
+	switch mode {
+	case KTFTraceOff:
+		return "off"
+	case KTFTraceCounters:
+		return "counters"
+	case KTFTraceSampled:
+		return "sampled"
+	case KTFTraceFull:
+		return "full"
+	default:
+		return fmt.Sprintf("unknown(%d)", mode)
+	}
+}
+
+func defaultKTFTraceMode() KTFTraceMode {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("ARAM_KTF_TRACE"))) {
+	case "off":
+		return KTFTraceOff
+	case "sampled":
+		return KTFTraceSampled
+	case "full":
+		return KTFTraceFull
+	default:
+		return KTFTraceCounters
+	}
+}
+
+func (r *Runtime) SetTraceMode(mode KTFTraceMode) error {
+	if !mode.Valid() {
+		return fmt.Errorf("invalid KTF trace mode %d", mode)
+	}
+	r.traceMode = mode
+	if mode == KTFTraceSampled && len(r.traceSamples) != ktfTraceSampleLimit {
+		r.traceSamples = make([]ktfTraceSample, ktfTraceSampleLimit)
+	}
+	return nil
+}
+
+func (r *Runtime) TraceMode() KTFTraceMode {
+	return r.traceMode
+}
+
 // trace records one host trace entry, discarding the oldest entries once the
 // retention window is full. hostTraceDropped keeps the reported total honest
 // so a snapshot still distinguishes "nothing happened" from "the window
 // rolled over".
 func (r *Runtime) trace(entry string) {
+	if r.traceMode != KTFTraceFull {
+		return
+	}
 	if len(r.HostTrace) >= ktfHostTraceLimit {
 		dropped := len(r.HostTrace) - ktfHostTraceKeep
 		copy(r.HostTrace, r.HostTrace[dropped:])
@@ -40,6 +111,9 @@ func (r *Runtime) trace(entry string) {
 
 // tracef records one formatted host trace entry.
 func (r *Runtime) tracef(format string, args ...any) {
+	if r.traceMode != KTFTraceFull {
+		return
+	}
 	r.trace(fmt.Sprintf(format, args...))
 }
 
@@ -58,6 +132,9 @@ func (r *Runtime) traceJavaMethodCall(
 	link uint32,
 	registers []uint32,
 ) {
+	if r.traceMode != KTFTraceFull {
+		return
+	}
 	buffer := append(r.traceScratch[:0], "java_method_call:"...)
 	buffer = append(buffer, className...)
 	buffer = append(buffer, '.')
@@ -90,14 +167,29 @@ func appendTraceHex8(destination []byte, value uint32) []byte {
 // omitTrace accounts for an intentionally sampled-out entry. This preserves
 // the total reported by DebugSnapshot while avoiding its string allocation.
 func (r *Runtime) omitTrace() {
-	r.HostTraceDropped++
+	if r.traceMode == KTFTraceFull {
+		r.HostTraceDropped++
+	}
 }
 
 // traceHostCall records a host bridge crossing and samples only leaf graphics
 // calls that titles commonly invoke once per pixel. The first call is always
 // retained, followed by one entry per interval.
 func (r *Runtime) TraceHostCall(entry string) {
+	if r.traceMode == KTFTraceOff {
+		return
+	}
 	r.HostCallCount++
+	r.LastHostCall = entry
+	if r.traceMode == KTFTraceCounters {
+		return
+	}
+	if r.traceMode == KTFTraceSampled {
+		if r.HostCallCount == 1 || r.HostCallCount%HostTraceSampleInterval == 0 {
+			r.recordTraceSample(entry)
+		}
+		return
+	}
 	if !isKTFHighFrequencyHostTrace(entry) {
 		r.trace(entry)
 		return
@@ -112,6 +204,62 @@ func (r *Runtime) TraceHostCall(entry string) {
 		return
 	}
 	r.omitTrace()
+}
+
+func (r *Runtime) recordTraceSample(selector string) {
+	if len(r.traceSamples) != ktfTraceSampleLimit {
+		r.traceSamples = make([]ktfTraceSample, ktfTraceSampleLimit)
+	}
+	index := r.traceSampleNext % uint64(len(r.traceSamples))
+	r.traceSamples[index] = ktfTraceSample{
+		Call:     r.HostCallCount,
+		Selector: selector,
+	}
+	r.traceSampleNext++
+}
+
+// HostTraceSnapshot formats sampled numeric records only when diagnostics are
+// requested. The counters/off modes never create detail strings on the guest
+// execution path, while full mode preserves the legacy debugger content.
+func (r *Runtime) HostTraceSnapshot(limit int) guest.DebugLogSnapshot {
+	if len(r.HostTrace) != 0 || r.traceMode == KTFTraceFull {
+		return guest.NewDebugLogSnapshot(
+			r.HostTrace,
+			r.HostTraceDropped,
+			limit,
+		)
+	}
+	switch r.traceMode {
+	case KTFTraceCounters:
+		return guest.NewDebugLogSnapshot(nil, traceCountAsInt(r.HostCallCount), limit)
+	case KTFTraceSampled:
+		count := min(r.traceSampleNext, uint64(len(r.traceSamples)))
+		entries := make([]string, 0, int(count))
+		start := r.traceSampleNext - count
+		for offset := uint64(0); offset < count; offset++ {
+			sample := r.traceSamples[(start+offset)%uint64(len(r.traceSamples))]
+			entries = append(entries, fmt.Sprintf(
+				"sample:%d:%s",
+				sample.Call,
+				sample.Selector,
+			))
+		}
+		dropped := uint64(0)
+		if r.HostCallCount > count {
+			dropped = r.HostCallCount - count
+		}
+		return guest.NewDebugLogSnapshot(entries, traceCountAsInt(dropped), limit)
+	default:
+		return guest.NewDebugLogSnapshot(nil, 0, limit)
+	}
+}
+
+func traceCountAsInt(value uint64) int {
+	maximum := uint64(^uint(0) >> 1)
+	if value > maximum {
+		return int(maximum)
+	}
+	return int(value)
 }
 
 func isKTFHighFrequencyHostTrace(entry string) bool {

@@ -2,18 +2,20 @@ package cpu
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"strings"
 )
 
 var (
-	ErrInvalidAddress         = errors.New("invalid guest address")
-	ErrInvalidMapping         = errors.New("invalid guest memory mapping")
-	ErrPermissionDenied       = errors.New("guest memory permission denied")
-	ErrUnsupportedInstruction = errors.New("unsupported guest instruction")
-	ErrStopped                = errors.New("CPU execution stopped")
-	ErrClosed                 = errors.New("CPU backend is closed")
+	ErrInvalidAddress              = errors.New("invalid guest address")
+	ErrInvalidMapping              = errors.New("invalid guest memory mapping")
+	ErrPermissionDenied            = errors.New("guest memory permission denied")
+	ErrUnsupportedInstruction      = errors.New("unsupported guest instruction")
+	ErrExecutionContextUnavailable = errors.New("fast execution context unavailable")
+	ErrStopped                     = errors.New("CPU execution stopped")
+	ErrClosed                      = errors.New("CPU backend is closed")
 )
 
 type Permissions uint8
@@ -254,6 +256,224 @@ func (c SystemCapabilities) Has(capability SystemCapability) bool {
 type SystemBackend interface {
 	SystemBusBackend
 	SystemCapabilities() SystemCapabilities
+}
+
+// ExecutionContext is a backend-owned, reusable architectural register
+// snapshot. It is intentionally not a portable save-state: cooperative
+// application schedulers use it to switch tasks without discarding mappings or
+// translated code shared by every task in the same guest address space.
+type ExecutionContext interface {
+	CPUExecutionContext()
+}
+
+// ExecutionContextBackend is an optional fast context-switch capability.
+// SaveExecutionContext reuses destination when it belongs to this backend;
+// callers pass nil for the first capture. MarshalExecutionContext emits the
+// ordinary portable SaveContext representation only when persistence needs it.
+// A backend must reject this capability whenever retaining mapping or
+// translation caches would be unsafe.
+type ExecutionContextBackend interface {
+	Backend
+	SaveExecutionContext(destination ExecutionContext) (ExecutionContext, error)
+	RestoreExecutionContext(ExecutionContext) error
+	MarshalExecutionContext(ExecutionContext, []byte) ([]byte, error)
+}
+
+// ScopedContext is the architectural state to return to after a nested guest
+// call that comes back to the same address space: a host callback re-entering
+// guest code, or a cooperative task slice.
+//
+// It prefers the backend's reusable execution context and falls back to the
+// portable serialized context. The distinction is not just allocation:
+// RestoreContext must assume the bytes describe a different machine, so it
+// retires the TLB and every translated block. Paying that per nested call is a
+// translation-cache flush per call - on one corpus title the JIT retranslated
+// 113,980 blocks over 600 frames for a 698 KiB working set - while the guest
+// never left the address space its translations were made for.
+type ScopedContext struct {
+	backend ExecutionContextBackend
+	fast    ExecutionContext
+	bytes   []byte
+}
+
+// SaveScopedContext captures the state to return to. Passing the previous
+// result reuses its storage, so a repeated nested call allocates nothing.
+func SaveScopedContext(
+	backend Backend,
+	reuse ScopedContext,
+) (ScopedContext, error) {
+	if fast, ok := backend.(ExecutionContextBackend); ok {
+		saved, err := fast.SaveExecutionContext(reuse.fast)
+		if err != nil && reuse.fast != nil &&
+			!errors.Is(err, ErrExecutionContextUnavailable) {
+			// The retained context belongs to another backend, which only
+			// SaveExecutionContext can tell. Capture a fresh one rather than
+			// failing the call.
+			saved, err = fast.SaveExecutionContext(nil)
+		}
+		if err == nil {
+			return ScopedContext{backend: fast, fast: saved}, nil
+		}
+		if !errors.Is(err, ErrExecutionContextUnavailable) {
+			return ScopedContext{}, err
+		}
+	}
+	data, err := backend.SaveContext()
+	if err != nil {
+		return ScopedContext{}, err
+	}
+	return ScopedContext{bytes: data}, nil
+}
+
+// Restore puts the captured state back.
+func (saved ScopedContext) Restore(backend Backend) error {
+	if saved.backend == nil || saved.fast == nil {
+		if saved.bytes == nil {
+			return fmt.Errorf("scoped CPU context: %w", ErrInvalidAddress)
+		}
+		return backend.RestoreContext(saved.bytes)
+	}
+	err := saved.backend.RestoreExecutionContext(saved.fast)
+	if !errors.Is(err, ErrExecutionContextUnavailable) {
+		return err
+	}
+	// The nested call left the backend in a mode the reusable context cannot be
+	// applied in - it enabled the MMU or the instruction cache. The portable
+	// representation restores those too, so the return is still exact.
+	data, marshalErr := saved.backend.MarshalExecutionContext(saved.fast, nil)
+	if marshalErr != nil {
+		return marshalErr
+	}
+	return backend.RestoreContext(data)
+}
+
+// ExecutionStatistics are cumulative counters for scheduler and translation
+// behavior. Deltas around a frame expose cache-reset and translation costs
+// without enabling per-instruction tracing.
+type ExecutionStatistics struct {
+	SerializedContextSaves    uint64 `json:"serialized_context_saves"`
+	SerializedContextRestores uint64 `json:"serialized_context_restores"`
+	FastContextSaves          uint64 `json:"fast_context_saves"`
+	FastContextRestores       uint64 `json:"fast_context_restores"`
+	TranslationInvalidations  uint64 `json:"translation_invalidations"`
+	TranslatedBlocks          uint64 `json:"translated_blocks"`
+	TranslatedGuestBytes      uint64 `json:"translated_guest_bytes"`
+	TranslatedHostBytes       uint64 `json:"translated_host_bytes"`
+	NativeArenaResets         uint64 `json:"native_arena_resets"`
+	HostFrameCaptures         uint64 `json:"host_frame_captures"`
+	HostRegisterCommits       uint64 `json:"host_register_commits"`
+}
+
+type ExecutionStatisticsBackend interface {
+	Backend
+	ExecutionStatistics() ExecutionStatistics
+}
+
+const MaxHostCallWords = 64
+
+// HostCallFrame is one reentrant host-boundary snapshot. Registers holds
+// r0-r15 and CPSR. Stack and Parameters are optional contiguous word ranges
+// requested by the caller and captured under the same backend synchronization
+// point as the registers.
+type HostCallFrame struct {
+	Registers      [17]uint32
+	Stack          [MaxHostCallWords]uint32
+	Parameters     [MaxHostCallWords]uint32
+	StackWords     uint32
+	ParameterWords uint32
+}
+
+type HostCallFrameRequest struct {
+	StackWords       uint32
+	ParameterAddress uint32
+	ParameterWords   uint32
+}
+
+// RegisterCommit batches host-return register updates. Mask bit n selects
+// Values[n]. Register IDs remain the public architectural IDs above.
+type RegisterCommit struct {
+	Values [17]uint32
+	Mask   uint32
+}
+
+func (commit *RegisterCommit) Set(register, value uint32) error {
+	if register >= uint32(len(commit.Values)) {
+		return fmt.Errorf("register %d: %w", register, ErrInvalidAddress)
+	}
+	commit.Values[register] = value
+	commit.Mask |= 1 << register
+	return nil
+}
+
+type HostCallFrameBackend interface {
+	Backend
+	CaptureHostCallFrame(*HostCallFrame, HostCallFrameRequest) error
+	CommitHostCallRegisters(RegisterCommit) error
+}
+
+// CaptureHostCallFrame uses the backend bulk capability when available and a
+// scalar portable fallback otherwise.
+func CaptureHostCallFrame(
+	backend Backend,
+	destination *HostCallFrame,
+	request HostCallFrameRequest,
+) error {
+	if backend == nil || destination == nil {
+		return fmt.Errorf("host-call frame: %w", ErrInvalidAddress)
+	}
+	if request.StackWords > MaxHostCallWords ||
+		request.ParameterWords > MaxHostCallWords ||
+		request.ParameterWords != 0 && request.ParameterAddress == 0 {
+		return fmt.Errorf("host-call frame request: %w", ErrInvalidAddress)
+	}
+	if bulk, ok := backend.(HostCallFrameBackend); ok {
+		return bulk.CaptureHostCallFrame(destination, request)
+	}
+	for register := range destination.Registers {
+		value, err := backend.ReadRegister(uint32(register))
+		if err != nil {
+			return err
+		}
+		destination.Registers[register] = value
+	}
+	destination.StackWords = request.StackWords
+	destination.ParameterWords = request.ParameterWords
+	var encoded [4]byte
+	stack := destination.Registers[RegisterSP]
+	for index := uint32(0); index < request.StackWords; index++ {
+		if err := backend.ReadMemory(stack+index*4, encoded[:]); err != nil {
+			return err
+		}
+		destination.Stack[index] = binary.LittleEndian.Uint32(encoded[:])
+	}
+	for index := uint32(0); index < request.ParameterWords; index++ {
+		if err := backend.ReadMemory(
+			request.ParameterAddress+index*4,
+			encoded[:],
+		); err != nil {
+			return err
+		}
+		destination.Parameters[index] = binary.LittleEndian.Uint32(encoded[:])
+	}
+	return nil
+}
+
+func CommitHostCallRegisters(backend Backend, commit RegisterCommit) error {
+	if backend == nil || commit.Mask>>17 != 0 {
+		return fmt.Errorf("host-call register commit: %w", ErrInvalidAddress)
+	}
+	if bulk, ok := backend.(HostCallFrameBackend); ok {
+		return bulk.CommitHostCallRegisters(commit)
+	}
+	for register := uint32(0); register < 17; register++ {
+		if commit.Mask&(1<<register) == 0 {
+			continue
+		}
+		if err := backend.WriteRegister(register, commit.Values[register]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type Backend interface {

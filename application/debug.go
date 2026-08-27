@@ -23,8 +23,10 @@ type (
 	DebugRegister            = guest.DebugRegister
 	DebugExecutionResult     = guest.DebugExecutionResult
 	DebugLogSnapshot         = guest.DebugLogSnapshot
+	DebugAudioSnapshot       = guest.DebugAudioSnapshot
 	DebugFramebufferSnapshot = guest.DebugFramebufferSnapshot
 	DebugKTFSnapshot         = guest.DebugKTFSnapshot
+	DebugKTFTaskSnapshot     = guest.DebugKTFTaskSnapshot
 	DebugRaptorSnapshot      = guest.DebugRaptorSnapshot
 	DebugRaptorImportCall    = guest.DebugRaptorImportCall
 	DebugSKVMSnapshot        = guest.DebugSKVMSnapshot
@@ -42,6 +44,24 @@ func (m *Machine) DebugSnapshot(maxEntries int) DebugSnapshot {
 		GuestLog:  guest.NewDebugLogSnapshot(nil, 0, limit),
 		HostTrace: guest.NewDebugLogSnapshot(nil, 0, limit),
 	}
+	if measured, ok := m.cpu.(cpu.ExecutionStatisticsBackend); ok {
+		execution := measured.ExecutionStatistics()
+		snapshot.Execution = &execution
+	}
+	m.audioMu.Lock()
+	snapshot.Audio = &DebugAudioSnapshot{
+		Generation:       m.audioGeneration,
+		EpochGuestNS:     m.audioEpochGuestNS,
+		QueuedChunks:     len(m.publishedAudio) - m.publishedAudioHead,
+		QueuedSamples:    m.publishedAudioSamples,
+		PublishedDropped: m.publishedAudioDropped,
+	}
+	m.audioMu.Unlock()
+	if m.ktf != nil && m.ktf.Services != nil && m.ktf.Services.Media != nil {
+		snapshot.Audio.MediaDroppedSamples = m.ktf.Services.Media.DroppedSamples()
+	} else if m.wipi != nil && m.wipi.Services != nil && m.wipi.Services.Media != nil {
+		snapshot.Audio.MediaDroppedSamples = m.wipi.Services.Media.DroppedSamples()
+	}
 	if m.lastResult.Instructions != 0 ||
 		m.lastResult.PC != 0 ||
 		m.lastResult.Err != nil ||
@@ -52,16 +72,42 @@ func (m *Machine) DebugSnapshot(maxEntries int) DebugSnapshot {
 		snapshot.GuestLog = guest.NewDebugLogSnapshot(m.wipi.Logs, 0, limit)
 	}
 	if m.ktf != nil {
-		snapshot.HostTrace = guest.NewDebugLogSnapshot(
-			m.ktf.HostTrace,
-			m.ktf.HostTraceDropped,
-			limit,
-		)
+		snapshot.HostTrace = m.ktf.HostTraceSnapshot(limit)
+		tasks := make([]DebugKTFTaskSnapshot, 0, len(m.ktf.Tasks))
+		var taskInstructions, taskSlices, taskYields uint64
+		for index, task := range m.ktf.Tasks {
+			if task == nil {
+				continue
+			}
+			taskInstructions += task.Instructions()
+			taskSlices += task.Slices()
+			taskYields += task.Yields()
+			tasks = append(tasks, DebugKTFTaskSnapshot{
+				Index:           index,
+				Instructions:    task.Instructions(),
+				Slices:          task.Slices(),
+				Yields:          task.Yields(),
+				LastYieldReason: task.LastYieldReason(),
+				Done:            task.Done,
+			})
+		}
+		var execution cpu.ExecutionStatistics
+		if snapshot.Execution != nil {
+			execution = *snapshot.Execution
+		}
 		snapshot.KTF = &DebugKTFSnapshot{
 			PresentCount:          m.ktf.PresentCount,
 			TickMS:                m.ktf.TickMS,
 			TaskCount:             len(m.ktf.Tasks),
 			ActiveInstructions:    m.ktf.ActiveInstructions,
+			TaskInstructions:      taskInstructions,
+			TaskSlices:            taskSlices,
+			TaskYields:            taskYields,
+			Tasks:                 tasks,
+			Execution:             execution,
+			TraceMode:             m.ktf.TraceMode().String(),
+			HostCalls:             m.ktf.HostCallCount,
+			LastHostCall:          m.ktf.LastHostCall,
 			LastJavaMethod:        m.ktf.LastJavaMethod,
 			LastUnimplementedJava: m.ktf.LastUnimplementedJava,
 			FirstJavaThrow:        m.ktf.FirstJavaThrowName,

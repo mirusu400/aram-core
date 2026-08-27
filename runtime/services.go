@@ -254,7 +254,11 @@ type Services struct {
 	rbEvents EventBusState
 	// rbMedia is the matching reusable media rollback record; see
 	// mediaAdvanceState for why the full snapshot is too expensive here.
-	rbMedia mediaAdvanceState
+	rbMedia  mediaAdvanceState
+	rbInput  inputAdvanceState
+	rbTimers timersAdvanceState
+	rbDevice deviceAdvanceState
+	rbReplay replayAdvanceState
 }
 
 func NewServices(config Config) (*Services, error) {
@@ -354,11 +358,11 @@ func (s *Services) Advance(owner OwnerID, delta time.Duration) error {
 	clockState := s.Clock.Snapshot()
 	s.Events.SnapshotInto(&s.rbEvents)
 	eventState := s.rbEvents
-	inputState := s.Input.Snapshot()
-	timerState := s.Timers.Snapshot()
+	s.rbInput.controls = s.rbInput.controls[:0]
+	s.rbTimers.timers = s.rbTimers.timers[:0]
 	s.Media.captureAdvance(&s.rbMedia)
-	deviceState := s.Device.Snapshot()
-	replayState := s.Replay.Snapshot()
+	s.Device.captureAdvance(&s.rbDevice)
+	s.Replay.captureAdvance(&s.rbReplay)
 	if s.Replay.Mode() == ReplayPlayback {
 		if err := s.Replay.Consume(ReplayEntry{
 			AtNS: int64(s.Clock.Monotonic()), Kind: ReplayClockAdvance,
@@ -369,7 +373,7 @@ func (s *Services) Advance(owner OwnerID, delta time.Duration) error {
 	}
 
 	if err := s.Clock.Advance(delta); err != nil {
-		_ = s.Replay.Restore(replayState)
+		s.restoreAdvance(clockState, eventState)
 		return err
 	}
 	now := s.Clock.Monotonic()
@@ -378,23 +382,23 @@ func (s *Services) Advance(owner OwnerID, delta time.Duration) error {
 		now,
 		s.Events,
 	); err != nil {
-		s.restoreAdvance(clockState, eventState, inputState, timerState, deviceState, replayState)
+		s.restoreAdvance(clockState, eventState)
 		return err
 	}
-	if err := s.Input.Advance(s.Events, owner, now); err != nil {
-		s.restoreAdvance(clockState, eventState, inputState, timerState, deviceState, replayState)
+	if err := s.Input.advanceLocked(s.Events, owner, now, &s.rbInput); err != nil {
+		s.restoreAdvance(clockState, eventState)
 		return err
 	}
-	if err := s.Timers.Advance(now, s.Events); err != nil {
-		s.restoreAdvance(clockState, eventState, inputState, timerState, deviceState, replayState)
+	if err := s.Timers.advanceLocked(now, s.Events, &s.rbTimers); err != nil {
+		s.restoreAdvance(clockState, eventState)
 		return err
 	}
 	if err := s.Device.Advance(now); err != nil {
-		s.restoreAdvance(clockState, eventState, inputState, timerState, deviceState, replayState)
+		s.restoreAdvance(clockState, eventState)
 		return err
 	}
 	if err := s.Replay.RecordAdvance(owner, time.Duration(clockState.MonotonicNanos), delta); err != nil {
-		s.restoreAdvance(clockState, eventState, inputState, timerState, deviceState, replayState)
+		s.restoreAdvance(clockState, eventState)
 		return err
 	}
 	return nil
@@ -407,18 +411,14 @@ func (s *Services) AdvanceFrame(owner OwnerID) error {
 func (s *Services) restoreAdvance(
 	clock ClockState,
 	events EventBusState,
-	input InputState,
-	timers TimersState,
-	device DeviceState,
-	replay ReplayState,
 ) {
-	_ = s.Clock.Restore(clock)
-	_ = s.Events.Restore(events)
-	_ = s.Input.Restore(input)
-	_ = s.Timers.Restore(timers)
+	s.Replay.restoreAdvance(&s.rbReplay)
+	s.Device.restoreAdvance(&s.rbDevice)
+	s.Timers.restoreAdvance(&s.rbTimers)
+	s.Input.restoreAdvance(&s.rbInput)
 	s.Media.restoreAdvance(&s.rbMedia)
-	_ = s.Device.Restore(device)
-	_ = s.Replay.Restore(replay)
+	_ = s.Events.Restore(events)
+	_ = s.Clock.Restore(clock)
 }
 
 func (s *Services) Snapshot() ServicesState {

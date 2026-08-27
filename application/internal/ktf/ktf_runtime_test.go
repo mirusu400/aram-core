@@ -257,6 +257,9 @@ func TestKTFJletNotifyDestroyedStopsNestedAndScheduledExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := runtime.SetTraceMode(KTFTraceFull); err != nil {
+		t.Fatal(err)
+	}
 	defer runtime.CPU.Close()
 	if err := runtime.MapImageAndHost(); err != nil {
 		t.Fatal(err)
@@ -2323,6 +2326,9 @@ func TestKTFCallNativeOverridesNullThreadSleepTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := runtime.SetTraceMode(KTFTraceFull); err != nil {
+		t.Fatal(err)
+	}
 	defer runtime.CPU.Close()
 	if err := runtime.MapImageAndHost(); err != nil {
 		t.Fatal(err)
@@ -3901,6 +3907,9 @@ func TestKTFBestEffortInitialPaintDiscardsUnhandledJavaException(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := runtime.SetTraceMode(KTFTraceFull); err != nil {
+		t.Fatal(err)
+	}
 	defer runtime.CPU.Close()
 	if err := runtime.MapImageAndHost(); err != nil {
 		t.Fatal(err)
@@ -3970,6 +3979,9 @@ func TestKTFHostVTableCollisionRedispatchesToGuestReceiver(t *testing.T) {
 		},
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.SetTraceMode(KTFTraceFull); err != nil {
 		t.Fatal(err)
 	}
 	defer runtime.CPU.Close()
@@ -4080,6 +4092,9 @@ func TestKTFPaintCardCoalescesWhilePaintTaskIsPending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := runtime.SetTraceMode(KTFTraceFull); err != nil {
+		t.Fatal(err)
+	}
 	defer runtime.CPU.Close()
 
 	const card = uint32(0x10001000)
@@ -4109,6 +4124,7 @@ func TestKTFPaintCardWaitsForPendingKeyCallback(t *testing.T) {
 	const card = uint32(0x10001000)
 	keyTask := &Task{KeyCard: card}
 	runtime := &Runtime{
+		traceMode:          KTFTraceFull,
 		Tasks:              []*Task{keyTask},
 		dirtyCards:         map[uint32]bool{card: true},
 		deferredPaintCards: make(map[*Task][]uint32),
@@ -5808,6 +5824,9 @@ func TestKTFRareJavaAndMediaCompatibilityMethods(t *testing.T) {
 		Client:     []byte{0x70, 0x47},
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.SetTraceMode(KTFTraceFull); err != nil {
 		t.Fatal(err)
 	}
 	defer runtime.CPU.Close()
@@ -8493,6 +8512,9 @@ func newScratchKTFRuntime(t *testing.T) *Runtime {
 		Client:     []byte{0x70, 0x47},
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.SetTraceMode(KTFTraceFull); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = runtime.CPU.Close() })

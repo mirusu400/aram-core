@@ -165,6 +165,7 @@ func NewRuntimeForProfile(
 		wipicFileServices:     make(map[uint32]shared.ServiceID),
 		nextHostCall:          HostBase + 4,
 		hostCalls:             make(map[uint32]ktfHostCall),
+		traceMode:             defaultKTFTraceMode(),
 		JavaClasses:           make(map[string]uint32),
 		JavaStrings:           make(map[uint32]string),
 		javaClassObjs:         make(map[uint32]uint32),

@@ -89,9 +89,14 @@ func (m *Machine) runKTFSlice(ctx context.Context, elapsed time.Duration) error 
 		if step <= 0 {
 			return nil
 		}
+		start := runtime.Services.Clock.Monotonic()
 		if err := runtime.Services.Advance(runtime.ServiceOwner, step); err != nil {
 			return err
 		}
+		// Services.Advance is the transaction commit point. Transfer PCM
+		// ownership now, before a potentially slow CPU task, so the host audio
+		// consumer never waits for the rest of StepFrame.
+		m.publishAudioFromMedia(runtime.Services.Media, start)
 		advanced += step
 		runtime.TickMS = uint64(
 			runtime.Services.Clock.Monotonic() / time.Millisecond,

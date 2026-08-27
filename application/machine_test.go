@@ -728,6 +728,9 @@ func TestMachineDispatchesPublicWIPITrampoline(t *testing.T) {
 
 func TestKTFWIPIFrameStatsCountSampledHostCalls(t *testing.T) {
 	runtime := &ktfrt.Runtime{}
+	if err := runtime.SetTraceMode(ktfrt.KTFTraceCounters); err != nil {
+		t.Fatal(err)
+	}
 	entry := "java.method.org/kwis/msp/lcdui/Graphics.setRGBPixels(IIII[III)V"
 	total := ktfrt.HostTraceSampleInterval + 1
 	for range total {

@@ -14,6 +14,7 @@ import (
 	"image/draw"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/mirusu400/aram-core/application/internal/guest"
 	"github.com/mirusu400/aram-core/application/internal/minigame"
@@ -147,6 +148,7 @@ func (f Factory) Create(ctx context.Context, source machinecore.Source) (machine
 		raptorNet:        f.RaptorNet,
 		fallbackFont:     f.FallbackFont,
 		audioMixMode:     f.AudioMixMode,
+		audioGeneration:  1,
 	}
 	if err := machine.Load(ctx, source); err != nil {
 		_ = backend.Close()
@@ -163,8 +165,12 @@ func (f Factory) Create(ctx context.Context, source machinecore.Source) (machine
 func (m *Machine) SetAudioMixMode(on bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	changed := m.audioMixMode != on
 	m.audioMixMode = on
 	m.applyAudioMixMode()
+	if changed {
+		m.beginAudioGeneration(m.guestTimeLocked())
+	}
 }
 
 // applyAudioMixMode pushes the selected audio policy onto whichever runtime is
@@ -202,31 +208,38 @@ type ImageInfo struct {
 }
 
 type Machine struct {
-	mu               sync.Mutex
-	cpu              cpu.Backend
-	wipi             *wipirt.Runtime
-	minigame         *minigame.Runtime
-	ktf              *ktfrt.Runtime
-	raptor           *raptorrt.Runtime
-	raptorNet        netauth.Backend
-	fallbackFont     string
-	audioMixMode     bool
-	ktfStarted       bool
-	state            machinecore.State
-	source           machinecore.Source
-	info             ImageInfo
-	initialText      []byte
-	initialContext   []byte
-	initialResources map[string][]byte
-	lastResult       cpu.Result
-	runBudget        uint64
-	frameRunBudget   uint64
-	ktfRunBudget     uint64
-	memoryLimit      uint64
-	frame            *image.RGBA
-	presentation     framePresentationCache
-	input            []machinecore.InputEvent
-	closed           bool
+	mu                    sync.Mutex
+	audioMu               sync.Mutex
+	cpu                   cpu.Backend
+	wipi                  *wipirt.Runtime
+	minigame              *minigame.Runtime
+	ktf                   *ktfrt.Runtime
+	raptor                *raptorrt.Runtime
+	raptorNet             netauth.Backend
+	fallbackFont          string
+	audioMixMode          bool
+	ktfStarted            bool
+	state                 machinecore.State
+	source                machinecore.Source
+	info                  ImageInfo
+	initialText           []byte
+	initialContext        []byte
+	initialResources      map[string][]byte
+	lastResult            cpu.Result
+	runBudget             uint64
+	frameRunBudget        uint64
+	ktfRunBudget          uint64
+	memoryLimit           uint64
+	frame                 *image.RGBA
+	presentation          framePresentationCache
+	input                 []machinecore.InputEvent
+	closed                bool
+	audioGeneration       uint64
+	audioEpochGuestNS     int64
+	publishedAudio        []machinecore.AudioChunk
+	publishedAudioHead    int
+	publishedAudioSamples int
+	publishedAudioDropped uint64
 }
 
 func (m *Machine) State() machinecore.State {
@@ -285,6 +298,7 @@ func (m *Machine) Pause() error {
 			}
 		}
 		m.state = machinecore.StatePaused
+		m.beginAudioGeneration(m.guestTimeLocked())
 		return nil
 	case machinecore.StatePaused:
 		return nil
@@ -340,6 +354,7 @@ func (m *Machine) Stop() error {
 		}
 	}
 	m.state = machinecore.StateStopped
+	m.beginAudioGeneration(m.guestTimeLocked())
 	return nil
 }
 
@@ -355,6 +370,7 @@ func (m *Machine) Reset(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	m.beginAudioGeneration(0)
 	if m.ktf != nil {
 		persistence, err := m.ktf.CapturePersistentState()
 		if err != nil {
@@ -590,22 +606,35 @@ func (m *Machine) Framebuffer() image.Image {
 }
 
 func (m *Machine) DrainAudio() machinecore.AudioChunk {
+	if published := m.DrainPublishedAudio(); len(published.PCM16) != 0 {
+		return published
+	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	var audio shared.AudioBuffer
+	var end time.Duration
 	switch {
 	case m.ktf != nil && m.ktf.Services != nil:
 		audio = m.ktf.Services.Media.Drain()
+		end = m.ktf.Services.Clock.Monotonic()
 	case m.wipi != nil && m.wipi.Services != nil:
 		audio = m.wipi.Services.Media.Drain()
+		end = m.wipi.Services.Clock.Monotonic()
 	default:
+		m.mu.Unlock()
 		return machinecore.AudioChunk{}
 	}
-	return machinecore.AudioChunk{
-		SampleRate: audio.SampleRate,
-		Channels:   audio.Channels,
-		PCM16:      audio.PCM16,
+	m.mu.Unlock()
+	if len(audio.PCM16) == 0 || audio.SampleRate <= 0 || audio.Channels <= 0 {
+		return m.DrainPublishedAudio()
 	}
+	frames := len(audio.PCM16) / audio.Channels
+	duration := time.Duration(int64(frames) * int64(time.Second) / int64(audio.SampleRate))
+	start := end - duration
+	if start < 0 {
+		start = 0
+	}
+	m.publishAudioBuffer(audio, start)
+	return m.DrainPublishedAudio()
 }
 
 func (m *Machine) Close() error {
@@ -615,6 +644,7 @@ func (m *Machine) Close() error {
 		return nil
 	}
 	m.closed = true
+	m.beginAudioGeneration(m.guestTimeLocked())
 	running := m.state == machinecore.StateRunning
 	m.mu.Unlock()
 
