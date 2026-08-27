@@ -29,8 +29,13 @@ func TestMachineDebugSnapshotIsBoundedAndDetached(t *testing.T) {
 	}
 
 	machine := &Machine{
-		cpu:   backend,
-		state: machinecore.StateFaulted,
+		cpu:                   backend,
+		state:                 machinecore.StateFaulted,
+		audioGeneration:       4,
+		audioEpochGuestNS:     123,
+		publishedAudio:        []machinecore.AudioChunk{{PCM16: []int16{1, 2}}},
+		publishedAudioSamples: 2,
+		publishedAudioDropped: 9,
 		lastResult: cpu.Result{
 			Reason:       cpu.StopFault,
 			Instructions: 77,
@@ -56,6 +61,14 @@ func TestMachineDebugSnapshotIsBoundedAndDetached(t *testing.T) {
 		snapshot.CPU.Mode != "thumb" ||
 		len(snapshot.CPU.Registers) != len(guest.DebugRegisterNames) {
 		t.Fatalf("CPU snapshot = %+v", snapshot.CPU)
+	}
+	if snapshot.Execution == nil {
+		t.Fatal("execution statistics are absent")
+	}
+	if snapshot.Audio == nil || snapshot.Audio.Generation != 4 ||
+		snapshot.Audio.EpochGuestNS != 123 || snapshot.Audio.QueuedChunks != 1 ||
+		snapshot.Audio.QueuedSamples != 2 || snapshot.Audio.PublishedDropped != 9 {
+		t.Fatalf("audio snapshot = %+v", snapshot.Audio)
 	}
 	if snapshot.LastResult == nil ||
 		snapshot.LastResult.Reason != "fault" ||

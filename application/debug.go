@@ -23,6 +23,7 @@ type (
 	DebugRegister            = guest.DebugRegister
 	DebugExecutionResult     = guest.DebugExecutionResult
 	DebugLogSnapshot         = guest.DebugLogSnapshot
+	DebugAudioSnapshot       = guest.DebugAudioSnapshot
 	DebugFramebufferSnapshot = guest.DebugFramebufferSnapshot
 	DebugKTFSnapshot         = guest.DebugKTFSnapshot
 	DebugKTFTaskSnapshot     = guest.DebugKTFTaskSnapshot
@@ -42,6 +43,24 @@ func (m *Machine) DebugSnapshot(maxEntries int) DebugSnapshot {
 		CPU:       guest.NewDebugCPUSnapshot(m.cpu),
 		GuestLog:  guest.NewDebugLogSnapshot(nil, 0, limit),
 		HostTrace: guest.NewDebugLogSnapshot(nil, 0, limit),
+	}
+	if measured, ok := m.cpu.(cpu.ExecutionStatisticsBackend); ok {
+		execution := measured.ExecutionStatistics()
+		snapshot.Execution = &execution
+	}
+	m.audioMu.Lock()
+	snapshot.Audio = &DebugAudioSnapshot{
+		Generation:       m.audioGeneration,
+		EpochGuestNS:     m.audioEpochGuestNS,
+		QueuedChunks:     len(m.publishedAudio) - m.publishedAudioHead,
+		QueuedSamples:    m.publishedAudioSamples,
+		PublishedDropped: m.publishedAudioDropped,
+	}
+	m.audioMu.Unlock()
+	if m.ktf != nil && m.ktf.Services != nil && m.ktf.Services.Media != nil {
+		snapshot.Audio.MediaDroppedSamples = m.ktf.Services.Media.DroppedSamples()
+	} else if m.wipi != nil && m.wipi.Services != nil && m.wipi.Services.Media != nil {
+		snapshot.Audio.MediaDroppedSamples = m.wipi.Services.Media.DroppedSamples()
 	}
 	if m.lastResult.Instructions != 0 ||
 		m.lastResult.PC != 0 ||
@@ -73,8 +92,8 @@ func (m *Machine) DebugSnapshot(maxEntries int) DebugSnapshot {
 			})
 		}
 		var execution cpu.ExecutionStatistics
-		if measured, ok := m.cpu.(cpu.ExecutionStatisticsBackend); ok {
-			execution = measured.ExecutionStatistics()
+		if snapshot.Execution != nil {
+			execution = *snapshot.Execution
 		}
 		snapshot.KTF = &DebugKTFSnapshot{
 			PresentCount:          m.ktf.PresentCount,
