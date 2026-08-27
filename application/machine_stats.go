@@ -83,7 +83,11 @@ func (m *Machine) WIPIAPICoverage() (WIPIAPICoverage, bool) {
 	if m.wipi == nil || m.state == machinecore.StateRunning {
 		return WIPIAPICoverage{}, false
 	}
-	return m.wipi.Coverage(), true
+	coverage := m.wipi.Coverage()
+	if m.raptor != nil {
+		coverage.Observed = len(m.raptor.ObservedPublicAPIs())
+	}
+	return coverage, true
 }
 
 // WIPIUnimplementedAPIs returns the sorted selectors actually reached without
@@ -103,6 +107,21 @@ func (m *Machine) WIPIUnimplementedAPIs() []string {
 		return nil
 	}
 	return m.wipi.UnimplementedNames()
+}
+
+// WIPIObservedAPIs returns the sorted public WIPI-C API names reached by the
+// active machine. A count alone cannot prove which catalog members a fixture
+// exercised, so compatibility runners use this list for exact coverage gates.
+func (m *Machine) WIPIObservedAPIs() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.raptor != nil {
+		return m.raptor.ObservedPublicAPIs()
+	}
+	if m.wipi == nil {
+		return nil
+	}
+	return m.wipi.ObservedNames()
 }
 
 // RenderFirstFrame executes the recovered bootstrap, setup, start, preload,
