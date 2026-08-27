@@ -39,7 +39,7 @@ func (m *Machine) stepMinigameFrame(ctx context.Context) error {
 	}
 	m.mu.Unlock()
 
-	result, err := runtime.StepFrame(ctx)
+	result, completed, err := runtime.StepFrame(ctx)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -63,10 +63,20 @@ func (m *Machine) stepMinigameFrame(ctx context.Context) error {
 		return err
 	}
 	runtime.SyncFrame()
+	reason := cpu.StopBudget
+	pc, readErr := m.cpu.ReadRegister(cpu.RegisterPC)
+	if readErr != nil {
+		m.state = machinecore.StateFaulted
+		return readErr
+	}
+	if completed {
+		reason = cpu.StopBreakpoint
+		pc = guest.ReturnSentinel
+	}
 	m.lastResult = cpu.Result{
-		Reason:       cpu.StopBreakpoint,
+		Reason:       reason,
 		Instructions: result.Instructions,
-		PC:           guest.ReturnSentinel,
+		PC:           pc,
 	}
 	m.state = machinecore.StatePaused
 	if m.wipi != nil {

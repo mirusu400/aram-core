@@ -115,12 +115,13 @@ type Runtime struct {
 	surfaceWork    uint32
 	textSurface    [5]uint32
 
-	rngState     uint32
-	tickMS       uint32
-	presentCount uint32
-	enabled      bool
-	stage        int
-	Stats        EADSFrameStats
+	rngState              uint32
+	tickMS                uint32
+	presentCount          uint32
+	enabled               bool
+	stage                 int
+	eventInstructionLimit uint64
+	Stats                 EADSFrameStats
 }
 
 func NewRuntime(
@@ -353,10 +354,23 @@ func (r *Runtime) RenderFirstFrame(ctx context.Context) error {
 		{FrameEvent, [4]uint32{FrameEvent, 0, 0, 0}},
 	}
 	for index, event := range events {
-		result, runErr := r.runEvent(ctx, event.event, event.args)
+		result, completed, runErr := r.runEventSlice(
+			ctx,
+			event.event,
+			event.args,
+			true,
+		)
 		if runErr != nil {
 			return fmt.Errorf("EADS event 0x%04x at lifecycle stage %d: %w",
 				event.event, index, runErr)
+		}
+		if !completed {
+			return fmt.Errorf(
+				"EADS event 0x%04x at lifecycle stage %d reached instruction limit %d",
+				event.event,
+				index,
+				r.eventLimit(),
+			)
 		}
 		r.Stats.Events = append(r.Stats.Events, result)
 		r.stage++
@@ -366,59 +380,81 @@ func (r *Runtime) RenderFirstFrame(ctx context.Context) error {
 	return nil
 }
 
-func (r *Runtime) StepFrame(ctx context.Context) (EADSEventResult, error) {
+func (r *Runtime) StepFrame(
+	ctx context.Context,
+) (EADSEventResult, bool, error) {
 	if r.stage < 5 {
 		if err := r.RenderFirstFrame(ctx); err != nil {
-			return EADSEventResult{}, err
+			return EADSEventResult{}, false, err
 		}
 	}
-	result, err := r.runEvent(ctx, FrameEvent, [4]uint32{FrameEvent})
+	pc, err := r.cpu.ReadRegister(cpu.RegisterPC)
+	if err != nil {
+		return EADSEventResult{}, false, err
+	}
+	result, completed, err := r.runEventSlice(
+		ctx,
+		FrameEvent,
+		[4]uint32{FrameEvent},
+		pc == guest.ReturnSentinel,
+	)
 	if err == nil {
 		r.Stats.Events = append(r.Stats.Events, result)
 		r.Stats.PresentCount = r.presentCount
 		r.Stats.TickMS = r.tickMS
 	}
-	return result, err
+	return result, completed, err
 }
 
-func (r *Runtime) runEvent(
+func (r *Runtime) eventLimit() uint64 {
+	if r.eventInstructionLimit != 0 {
+		return r.eventInstructionLimit
+	}
+	return eadsEventInstructionLimit
+}
+
+func (r *Runtime) runEventSlice(
 	ctx context.Context,
 	event uint32,
 	args [4]uint32,
-) (EADSEventResult, error) {
-	for register := cpu.RegisterR0; register <= cpu.RegisterR12; register++ {
-		if err := r.cpu.WriteRegister(register, 0); err != nil {
-			return EADSEventResult{}, err
+	initialize bool,
+) (EADSEventResult, bool, error) {
+	if initialize {
+		for register := cpu.RegisterR0; register <= cpu.RegisterR12; register++ {
+			if err := r.cpu.WriteRegister(register, 0); err != nil {
+				return EADSEventResult{}, false, err
+			}
 		}
-	}
-	for register, value := range args {
-		if err := r.cpu.WriteRegister(uint32(register), value); err != nil {
-			return EADSEventResult{}, err
+		for register, value := range args {
+			if err := r.cpu.WriteRegister(uint32(register), value); err != nil {
+				return EADSEventResult{}, false, err
+			}
 		}
-	}
-	for _, register := range []struct {
-		id    uint32
-		value uint32
-	}{
-		{cpu.RegisterSP, eadsStackTop},
-		{cpu.RegisterLR, guest.ReturnSentinel | 1},
-		{cpu.RegisterPC, r.entry &^ 1},
-		{cpu.RegisterCPSR, cpu.StatusThumb},
-	} {
-		if err := r.cpu.WriteRegister(register.id, register.value); err != nil {
-			return EADSEventResult{}, err
+		for _, register := range []struct {
+			id    uint32
+			value uint32
+		}{
+			{cpu.RegisterSP, eadsStackTop},
+			{cpu.RegisterLR, guest.ReturnSentinel | 1},
+			{cpu.RegisterPC, r.entry &^ 1},
+			{cpu.RegisterCPSR, cpu.StatusThumb},
+		} {
+			if err := r.cpu.WriteRegister(register.id, register.value); err != nil {
+				return EADSEventResult{}, false, err
+			}
 		}
 	}
 
 	result := EADSEventResult{Event: event}
-	for result.Instructions < eadsEventInstructionLimit {
+	limit := r.eventLimit()
+	for result.Instructions < limit {
 		pc, err := r.cpu.ReadRegister(cpu.RegisterPC)
 		if err != nil {
-			return result, err
+			return result, false, err
 		}
 		cpsr, err := r.cpu.ReadRegister(cpu.RegisterCPSR)
 		if err != nil {
-			return result, err
+			return result, false, err
 		}
 		mode := cpu.ModeARM
 		if cpsr&cpu.StatusThumb != 0 {
@@ -428,15 +464,18 @@ func (r *Runtime) runEvent(
 			ctx,
 			pc,
 			mode,
-			eadsEventInstructionLimit-result.Instructions,
+			limit-result.Instructions,
 		)
 		result.Instructions += run.Instructions
 		if run.Err != nil {
-			return result, fmt.Errorf("execute at 0x%08x after %d instructions: %w",
+			return result, false, fmt.Errorf("execute at 0x%08x after %d instructions: %w",
 				run.PC, result.Instructions, run.Err)
 		}
+		if run.Reason == cpu.StopBudget {
+			return result, false, nil
+		}
 		if run.Reason != cpu.StopBreakpoint {
-			return result, fmt.Errorf("unexpected CPU stop %d at 0x%08x after %d instructions",
+			return result, false, fmt.Errorf("unexpected CPU stop %d at 0x%08x after %d instructions",
 				run.Reason, run.PC, result.Instructions)
 		}
 		trap := run.PC - 2
@@ -447,54 +486,54 @@ func (r *Runtime) runEvent(
 			result.Instructions--
 			value, readErr := r.cpu.ReadRegister(cpu.RegisterR0)
 			if readErr != nil {
-				return result, readErr
+				return result, false, readErr
 			}
 			if writeErr := r.cpu.WriteRegister(cpu.RegisterPC, guest.ReturnSentinel); writeErr != nil {
-				return result, writeErr
+				return result, false, writeErr
 			}
 			result.ReturnValue = value
 			if err := r.ensureResourceObjects(); err != nil {
-				return result, err
+				return result, false, err
 			}
-			return result, nil
+			return result, true, nil
 		}
 		result.APICalls++
 		switch trap {
 		case eadsResolverTrampoline:
 			serviceID, readErr := r.arg(0)
 			if readErr != nil {
-				return result, readErr
+				return result, false, readErr
 			}
 			if err := r.returnFromTrap(r.serviceAddresses[serviceID]); err != nil {
-				return result, err
+				return result, false, err
 			}
 		case eadsErrorTrampoline:
 			if err := r.returnFromTrap(0); err != nil {
-				return result, err
+				return result, false, err
 			}
 		default:
 			call, ok := r.serviceByStub[trap]
 			if !ok {
 				handled, publicErr := r.public.DispatchTrap(ctx, trap)
 				if publicErr != nil {
-					return result, publicErr
+					return result, false, publicErr
 				}
 				if handled {
 					continue
 				}
-				return result, fmt.Errorf("unknown host trampoline 0x%08x", trap)
+				return result, false, fmt.Errorf("unknown host trampoline 0x%08x", trap)
 			}
 			value, dispatchErr := r.dispatch(call)
 			if dispatchErr != nil {
-				return result, fmt.Errorf("service 0x%03x slot 0x%02x: %w",
+				return result, false, fmt.Errorf("service 0x%03x slot 0x%02x: %w",
 					call.id, call.slot, dispatchErr)
 			}
 			if err := r.returnFromTrap(value); err != nil {
-				return result, err
+				return result, false, err
 			}
 		}
 	}
-	return result, fmt.Errorf("instruction limit %d reached", eadsEventInstructionLimit)
+	return result, false, nil
 }
 
 func (r *Runtime) returnFromTrap(value uint32) error {
