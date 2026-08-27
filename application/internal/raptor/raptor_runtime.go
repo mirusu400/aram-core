@@ -895,6 +895,12 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 	// faulted while unimplemented (returned 0).
 	case 1056:
 		return "localtime", true
+	// MC_mdaVibrator drives the handset vibration motor. libwipi's lgt-raptor
+	// veneer imports it at module 0x1fb ordinal 0x4c1; without this mapping the
+	// call fell through to the unimplemented stub, so no vibration ever reached
+	// the device service and hosts saw a permanently idle motor.
+	case 0x4c1:
+		return "MC_mdaVibrator", true
 	default:
 		return "", false
 	}

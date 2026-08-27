@@ -67,8 +67,9 @@ func TestRaptorWIPIImportsResolveToPublicCatalog(t *testing.T) {
 		1031: "strcat",
 		1040: "strstr",
 		1041: "strlen",
-		1044: "memcpy",
-		1048: "memset",
+		1044:  "memcpy",
+		1048:  "memset",
+		0x4c1: "MC_mdaVibrator",
 	}
 	for ordinal, want := range expected {
 		got, ok := raptorWIPIImportName(ordinal)
