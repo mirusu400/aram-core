@@ -90,6 +90,58 @@ func TestLastFrameImageDoesNotAliasTheService(t *testing.T) {
 	}
 }
 
+func TestPresentCommitReusesOwnedPixelsWithoutExposingThem(t *testing.T) {
+	graphics, surface := presentedScreen(t)
+	if err := graphics.SetPixel(1, surface, 0, 0, RGB(255, 0, 0)); err != nil {
+		t.Fatal(err)
+	}
+	first, err := graphics.PresentCommit(1, surface, Rectangle{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backing := &graphics.lastFrame.RGBA[0]
+	second, err := graphics.PresentCommit(1, surface, Rectangle{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Sequence != first.Sequence+1 || second.Hash != first.Hash ||
+		!second.Dirty.Empty() {
+		t.Fatalf("unchanged presentation = %+v after %+v", second, first)
+	}
+	if &graphics.lastFrame.RGBA[0] != backing {
+		t.Fatal("unchanged PresentCommit replaced its owned RGBA buffer")
+	}
+	if err := graphics.SetPixel(1, surface, 1, 0, RGB(0, 255, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := graphics.PresentCommit(1, surface, Rectangle{}); err != nil {
+		t.Fatal(err)
+	}
+	if &graphics.lastFrame.RGBA[0] != backing {
+		t.Fatal("dirty PresentCommit did not reuse its sized RGBA buffer")
+	}
+	destination := make([]byte, 2*4+8)
+	if err := graphics.CopyLastFrameRGBA(destination, 2*4+8); err != nil {
+		t.Fatal(err)
+	}
+	if destination[0] != 255 || destination[4+1] != 255 {
+		t.Fatalf("copied committed RGBA = %v", destination[:8])
+	}
+	destination[0] = 0
+	if graphics.lastFrame.RGBA[0] != 255 {
+		t.Fatal("CopyLastFrameRGBA exposed the service backing pixels")
+	}
+
+	allocations := testing.AllocsPerRun(1000, func() {
+		if _, err := graphics.PresentCommit(1, surface, Rectangle{}); err != nil {
+			panic(err)
+		}
+	})
+	if allocations != 0 {
+		t.Fatalf("unchanged PresentCommit allocations = %.2f, want 0", allocations)
+	}
+}
+
 func BenchmarkLastFrameImageSingleCopy(b *testing.B) {
 	graphics, err := NewGraphics(NewRegistry(16), GraphicsLimits{})
 	if err != nil {
@@ -117,4 +169,30 @@ func BenchmarkLastFrameImageSingleCopy(b *testing.B) {
 			_ = graphics.LastFrame().Image()
 		}
 	})
+}
+
+func BenchmarkPresentCommitOwnedBuffer(b *testing.B) {
+	graphics, err := NewGraphics(NewRegistry(16), GraphicsLimits{})
+	if err != nil {
+		b.Fatal(err)
+	}
+	surface, err := graphics.CreateSurface(1, SurfaceDescriptor{
+		Width: 240, Height: 320, Format: PixelRGB565,
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	if err := graphics.SetScreen(1, surface); err != nil {
+		b.Fatal(err)
+	}
+	if _, err := graphics.PresentCommit(1, surface, Rectangle{}); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := graphics.PresentCommit(1, surface, Rectangle{}); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

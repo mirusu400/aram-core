@@ -175,6 +175,18 @@ type FrameSnapshot struct {
 	Hash      [sha256.Size]byte
 }
 
+// FramePresentation is the immutable, pixel-free identity of a committed
+// frame. Runtime adapters use it when the graphics service should retain the
+// pixels; public snapshot APIs continue returning detached RGBA copies.
+type FramePresentation struct {
+	SurfaceID ServiceID
+	Sequence  uint64
+	Width     int32
+	Height    int32
+	Dirty     Rectangle
+	Hash      [sha256.Size]byte
+}
+
 // Point is a guest-neutral raster coordinate.
 type Point struct {
 	X int32
@@ -343,6 +355,42 @@ func (g *Graphics) ReplacePixels(owner OwnerID, id ServiceID, pixels []byte) err
 	return nil
 }
 
+// ReplacePixelRows copies packed source rows into surface storage without
+// first materializing a tightly packed temporary image. Source begins at the
+// first pixel of row zero; sourceStride may include padding.
+func (g *Graphics) ReplacePixelRows(
+	owner OwnerID,
+	id ServiceID,
+	pixels []byte,
+	sourceStride int,
+) error {
+	current, err := g.get(id, owner)
+	if err != nil {
+		return err
+	}
+	rowBytes64 := int64(current.descriptor.Width) *
+		int64(current.descriptor.Format.BytesPerPixel())
+	if rowBytes64 > int64(^uint(0)>>1) {
+		return fmt.Errorf("%w: packed pixel row exceeds host limits", ErrLimitExceeded)
+	}
+	rowBytes := int(rowBytes64)
+	height := int(current.descriptor.Height)
+	if sourceStride < rowBytes || height <= 0 || len(pixels) < rowBytes ||
+		(height > 1 && (sourceStride == 0 ||
+			height-1 > (len(pixels)-rowBytes)/sourceStride)) {
+		return fmt.Errorf("%w: invalid packed pixel rows", ErrInvalidArgument)
+	}
+	destinationStride := int(current.descriptor.Stride)
+	for y := 0; y < height; y++ {
+		copy(
+			current.pixels[y*destinationStride:y*destinationStride+rowBytes],
+			pixels[y*sourceStride:y*sourceStride+rowBytes],
+		)
+	}
+	current.dirty = Rectangle{Width: current.descriptor.Width, Height: current.descriptor.Height}
+	return nil
+}
+
 func (g *Graphics) ReadPixelBytes(
 	owner OwnerID,
 	id ServiceID,
@@ -492,6 +540,33 @@ func (g *Graphics) ScaledBlit(
 }
 
 func (g *Graphics) Present(owner OwnerID, id ServiceID, requested Rectangle) (FrameSnapshot, error) {
+	frame, err := g.presentCommit(owner, id, requested)
+	if err != nil {
+		return FrameSnapshot{}, err
+	}
+	return cloneFrame(frame), nil
+}
+
+// PresentCommit commits a frame while leaving its RGBA bytes owned by the
+// graphics service. It is the adapter fast path; callers that need retained
+// pixels use Present or LastFrame, which remain detached.
+func (g *Graphics) PresentCommit(
+	owner OwnerID,
+	id ServiceID,
+	requested Rectangle,
+) (FramePresentation, error) {
+	frame, err := g.presentCommit(owner, id, requested)
+	if err != nil {
+		return FramePresentation{}, err
+	}
+	return presentationOf(frame), nil
+}
+
+func (g *Graphics) presentCommit(
+	owner OwnerID,
+	id ServiceID,
+	requested Rectangle,
+) (FrameSnapshot, error) {
 	current, err := g.get(id, owner)
 	if err != nil {
 		return FrameSnapshot{}, err
@@ -510,9 +585,18 @@ func (g *Graphics) Present(owner OwnerID, id ServiceID, requested Rectangle) (Fr
 	if g.presentSequence == math.MaxUint64 {
 		return FrameSnapshot{}, fmt.Errorf("%w: presentation sequence exhausted", ErrLimitExceeded)
 	}
-	rgba, err := surfaceRGBA(current)
-	if err != nil {
-		return FrameSnapshot{}, err
+	reuse := dirty.Empty() &&
+		g.lastFrame.SurfaceID == id &&
+		g.lastFrame.Width == current.descriptor.Width &&
+		g.lastFrame.Height == current.descriptor.Height
+	rgba := g.lastFrame.RGBA
+	hash := g.lastFrame.Hash
+	if !reuse {
+		rgba, err = surfaceRGBAInto(current, rgba)
+		if err != nil {
+			return FrameSnapshot{}, err
+		}
+		hash = sha256.Sum256(rgba)
 	}
 	g.presentSequence++
 	frame := FrameSnapshot{
@@ -522,16 +606,22 @@ func (g *Graphics) Present(owner OwnerID, id ServiceID, requested Rectangle) (Fr
 		Height:    current.descriptor.Height,
 		Dirty:     dirty,
 		RGBA:      rgba,
-		Hash:      sha256.Sum256(rgba),
+		Hash:      hash,
 	}
 	current.dirty = Rectangle{}
-	// frame is a local that owns the freshly copied rgba (surfaceRGBA already
-	// detached it from the surface), so lastFrame can adopt it directly instead
-	// of cloning: this runs on the emulation goroutine every presented frame,
-	// and the second copy was pure per-frame churn. The return is still cloned
-	// so a caller that keeps or mutates it cannot disturb lastFrame.
 	g.lastFrame = frame
-	return cloneFrame(frame), nil
+	return frame, nil
+}
+
+func presentationOf(frame FrameSnapshot) FramePresentation {
+	return FramePresentation{
+		SurfaceID: frame.SurfaceID,
+		Sequence:  frame.Sequence,
+		Width:     frame.Width,
+		Height:    frame.Height,
+		Dirty:     frame.Dirty,
+		Hash:      frame.Hash,
+	}
 }
 
 // RGBA converts a surface to a copied presentation-format buffer without
@@ -556,6 +646,33 @@ func (g *Graphics) LastFrame() FrameSnapshot {
 // than being re-copied and re-uploaded.
 func (g *Graphics) LastFramePresentation() (uint64, [sha256.Size]byte) {
 	return g.lastFrame.Sequence, g.lastFrame.Hash
+}
+
+// CopyLastFrameRGBA copies the committed pixels into caller-owned row storage
+// without allocating or exposing the service's backing slice.
+func (g *Graphics) CopyLastFrameRGBA(destination []byte, stride int) error {
+	frame := g.lastFrame
+	if frame.Sequence == 0 || frame.Width <= 0 || frame.Height <= 0 {
+		return fmt.Errorf("%w: no presented frame", ErrNotFound)
+	}
+	rowBytes64 := int64(frame.Width) * 4
+	if rowBytes64 > int64(^uint(0)>>1) {
+		return fmt.Errorf("%w: RGBA row exceeds host limits", ErrLimitExceeded)
+	}
+	rowBytes := int(rowBytes64)
+	height := int(frame.Height)
+	if stride < rowBytes || len(destination) < rowBytes ||
+		(height > 1 && (stride == 0 ||
+			height-1 > (len(destination)-rowBytes)/stride)) {
+		return fmt.Errorf("%w: RGBA destination is too small", ErrInvalidArgument)
+	}
+	for y := 0; y < height; y++ {
+		copy(
+			destination[y*stride:y*stride+rowBytes],
+			frame.RGBA[y*rowBytes:(y+1)*rowBytes],
+		)
+	}
+	return nil
 }
 
 // LastFrameImage materializes the presented frame with a single copy, or nil
