@@ -16,6 +16,13 @@ import (
 )
 
 func (r *Runtime) parameter(index uint32) (uint32, error) {
+	if r.hostCallDepth != 0 {
+		scope := &r.hostCallScopes[r.hostCallDepth-1]
+		if err := r.ensureHostCallArguments(scope, index+1); err != nil {
+			return 0, err
+		}
+		return scope.arguments[index], nil
+	}
 	if r.NativeParameterBase != 0 {
 		if index == 0 {
 			return 0, nil
@@ -40,6 +47,109 @@ func (r *Runtime) parameter(index uint32) (uint32, error) {
 		return 0, err
 	}
 	return binary.LittleEndian.Uint32(r.parameterScratch[:]), nil
+}
+
+func (r *Runtime) pushHostCallScope(argumentWords uint32) (*ktfHostCallScope, error) {
+	if argumentWords > cpu.MaxHostCallWords ||
+		r.hostCallDepth >= len(r.hostCallScopes) {
+		return nil, errors.New("KTF host-call nesting limit reached")
+	}
+	scope := &r.hostCallScopes[r.hostCallDepth]
+	clear(scope.arguments[:])
+	scope.argumentWords = 0
+	scope.native = r.NativeParameterBase != 0
+	scope.parameterBase = r.NativeParameterBase
+	if err := r.ensureHostCallArguments(scope, argumentWords); err != nil {
+		// The legacy scalar pre-capture ignored unread optional arguments and
+		// only surfaced an address fault if the selected handler actually used
+		// that parameter. Preserve that lazy-error behavior while still bulk
+		// capturing every valid call frame.
+		minimum := min(argumentWords, uint32(4))
+		if scope.native {
+			minimum = min(argumentWords, uint32(1))
+		}
+		if minimum == argumentWords {
+			return nil, err
+		}
+		if err := r.ensureHostCallArguments(scope, minimum); err != nil {
+			return nil, err
+		}
+	}
+	r.hostCallDepth++
+	return scope, nil
+}
+
+func (r *Runtime) ensureHostCallArguments(
+	scope *ktfHostCallScope,
+	argumentWords uint32,
+) error {
+	if argumentWords <= scope.argumentWords {
+		return nil
+	}
+	if argumentWords > cpu.MaxHostCallWords {
+		return errors.New("KTF host-call argument capacity exceeded")
+	}
+	request := cpu.HostCallFrameRequest{}
+	if scope.native {
+		request.ParameterAddress = scope.parameterBase
+		if argumentWords > 1 {
+			request.ParameterWords = argumentWords - 1
+		}
+	} else if argumentWords > 4 {
+		request.StackWords = argumentWords - 4
+	}
+	if err := cpu.CaptureHostCallFrame(r.CPU, &scope.frame, request); err != nil {
+		return err
+	}
+	for index := uint32(0); index < argumentWords; index++ {
+		switch {
+		case scope.native && index == 0:
+			scope.arguments[index] = 0
+		case scope.native:
+			scope.arguments[index] = scope.frame.Parameters[index-1]
+		case index < 4:
+			scope.arguments[index] = scope.frame.Registers[index]
+		default:
+			scope.arguments[index] = scope.frame.Stack[index-4]
+		}
+	}
+	scope.argumentWords = argumentWords
+	return nil
+}
+
+func (r *Runtime) acquireHostCallScope(
+	argumentWords uint32,
+) (*ktfHostCallScope, bool, error) {
+	if r.hostCallDepth != 0 {
+		scope := &r.hostCallScopes[r.hostCallDepth-1]
+		// This is speculative argument capture for receiver correction and full
+		// trace. A selected handler still gets a precise lazy error through
+		// parameter if an optional stack word is genuinely unavailable.
+		_ = r.ensureHostCallArguments(scope, argumentWords)
+		return scope, false, nil
+	}
+	scope, err := r.pushHostCallScope(argumentWords)
+	return scope, true, err
+}
+
+func (r *Runtime) invokeHostHandler(
+	ctx context.Context,
+	host ktfHostCall,
+) (uint32, error) {
+	scope, err := r.pushHostCallScope(4)
+	if err != nil {
+		return 0, err
+	}
+	value, callErr := host.handler(ctx, r)
+	r.popHostCallScope(scope)
+	return value, callErr
+}
+
+func (r *Runtime) popHostCallScope(scope *ktfHostCallScope) {
+	if r.hostCallDepth == 0 || scope != &r.hostCallScopes[r.hostCallDepth-1] {
+		panic("KTF host-call scope stack is corrupt")
+	}
+	r.hostCallDepth--
 }
 
 func ktfGetInterface(_ context.Context, runtime *Runtime) (uint32, error) {
@@ -137,7 +247,7 @@ func ktfCallNative(ctx context.Context, runtime *Runtime) (uint32, error) {
 		runtime.TraceHostCall(host.name)
 		nativeParameterBase := runtime.NativeParameterBase
 		runtime.NativeParameterBase = parameters
-		value, err = host.handler(ctx, runtime)
+		value, err = runtime.invokeHostHandler(ctx, host)
 		runtime.NativeParameterBase = nativeParameterBase
 		if err != nil {
 			nativeParameters, _ := runtime.ReadWords(parameters, 10)
@@ -517,6 +627,20 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 		ctx context.Context,
 		runtime *Runtime,
 	) (value uint32, returnedErr error) {
+		argumentWords := uint32(4)
+		if parameters, ok := ktfJavaParameterWords(descriptor); ok {
+			argumentWords = uint32(min(
+				int(cpu.RegisterR12+1),
+				max(4, parameters+2),
+			))
+		}
+		scope, ownedScope, err := runtime.acquireHostCallScope(argumentWords)
+		if err != nil {
+			return 0, err
+		}
+		if ownedScope {
+			defer runtime.popHostCallScope(scope)
+		}
 		runtime.JavaReturnHigh = 0
 		defer func() {
 			if returnedErr != nil ||
@@ -524,18 +648,14 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 				runtime.NativeParameterBase != 0 {
 				return
 			}
-			if err := runtime.CPU.WriteRegister(
-				cpu.RegisterR1,
-				runtime.JavaReturnHigh,
-			); err != nil {
+			var commit cpu.RegisterCommit
+			_ = commit.Set(cpu.RegisterR1, runtime.JavaReturnHigh)
+			if err := cpu.CommitHostCallRegisters(runtime.CPU, commit); err != nil {
 				value = 0
 				returnedErr = err
 			}
 		}()
-		registers := make([]uint32, cpu.RegisterR12+1)
-		for register := range registers {
-			registers[register], _ = runtime.parameter(uint32(register))
-		}
+		registers := scope.arguments[:cpu.RegisterR12+1]
 		declaredClass := className
 		className = runtime.correctHostJavaReceiverClass(
 			className,
@@ -552,11 +672,23 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 				className,
 			)
 		}
-		runtime.LastJavaCallLR, _ = runtime.CPU.ReadRegister(cpu.RegisterLR)
-		if sampleDetailedTrace {
-			detailedTraceCalls++
-			if detailedTraceCalls == 1 ||
-				detailedTraceCalls%HostTraceSampleInterval == 0 {
+		runtime.LastJavaCallLR = scope.frame.Registers[cpu.RegisterLR]
+		if runtime.traceMode == KTFTraceFull {
+			if sampleDetailedTrace {
+				detailedTraceCalls++
+				if detailedTraceCalls == 1 ||
+					detailedTraceCalls%HostTraceSampleInterval == 0 {
+					runtime.traceJavaMethodCall(
+						className,
+						name,
+						descriptor,
+						runtime.LastJavaCallLR,
+						registers,
+					)
+				} else {
+					runtime.omitTrace()
+				}
+			} else {
 				runtime.traceJavaMethodCall(
 					className,
 					name,
@@ -564,17 +696,7 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 					runtime.LastJavaCallLR,
 					registers,
 				)
-			} else {
-				runtime.omitTrace()
 			}
-		} else {
-			runtime.traceJavaMethodCall(
-				className,
-				name,
-				descriptor,
-				runtime.LastJavaCallLR,
-				registers,
-			)
 		}
 		// A guest class can override a host-declared virtual method. The
 		// receiver's implementation must win over the host model, or the

@@ -93,6 +93,10 @@ type Runtime struct {
 	hostCalls        map[uint32]ktfHostCall
 	HostTrace        []string
 	HostTraceDropped int
+	traceMode        KTFTraceMode
+	LastHostCall     string
+	traceSamples     []ktfTraceSample
+	traceSampleNext  uint64
 	// traceScratch is the reusable buffer traceJavaMethodCall formats into.
 	traceScratch     []byte
 	HostCallCount    uint64
@@ -242,6 +246,16 @@ type Runtime struct {
 	activeTask                    *Task
 	ActiveInstructions            uint64
 	executionDepth                int
+	hostCallScopes                [16]ktfHostCallScope
+	hostCallDepth                 int
+}
+
+type ktfHostCallScope struct {
+	frame         cpu.HostCallFrame
+	arguments     [cpu.MaxHostCallWords]uint32
+	argumentWords uint32
+	native        bool
+	parameterBase uint32
 }
 
 type ktfHostHandler func(context.Context, *Runtime) (uint32, error)
@@ -619,24 +633,58 @@ type ktfLWCComponent struct {
 }
 
 type Task struct {
-	Context         []byte
-	exceptionFrame  uint32
-	LastJavaMethod  string
-	WakeAtMS        uint64
-	timerTask       uint32
-	timerOwner      uint32
-	timerPeriodMS   uint64
-	timerDeadlineMS uint64
-	timerFixedRate  bool
-	Done            bool
-	presentOnReturn bool
-	bestEffortPaint bool
-	WipicTimer      bool
-	paintCard       uint32
-	KeyCard         uint32
-	layoutOnReturn  uint32
-	startBlocker    *Task
-	childStartGrace uint64
+	Context          []byte
+	executionContext cpu.ExecutionContext
+	contextDirty     bool
+	exceptionFrame   uint32
+	LastJavaMethod   string
+	instructions     uint64
+	slices           uint64
+	yields           uint64
+	lastYieldReason  string
+	WakeAtMS         uint64
+	timerTask        uint32
+	timerOwner       uint32
+	timerPeriodMS    uint64
+	timerDeadlineMS  uint64
+	timerFixedRate   bool
+	Done             bool
+	presentOnReturn  bool
+	bestEffortPaint  bool
+	WipicTimer       bool
+	paintCard        uint32
+	KeyCard          uint32
+	layoutOnReturn   uint32
+	startBlocker     *Task
+	childStartGrace  uint64
+}
+
+func (t *Task) Instructions() uint64 {
+	if t == nil {
+		return 0
+	}
+	return t.instructions
+}
+
+func (t *Task) Slices() uint64 {
+	if t == nil {
+		return 0
+	}
+	return t.slices
+}
+
+func (t *Task) Yields() uint64 {
+	if t == nil {
+		return 0
+	}
+	return t.yields
+}
+
+func (t *Task) LastYieldReason() string {
+	if t == nil {
+		return ""
+	}
+	return t.lastYieldReason
 }
 
 type ktfPendingJavaCall struct {

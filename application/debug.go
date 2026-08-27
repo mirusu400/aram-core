@@ -25,6 +25,7 @@ type (
 	DebugLogSnapshot         = guest.DebugLogSnapshot
 	DebugFramebufferSnapshot = guest.DebugFramebufferSnapshot
 	DebugKTFSnapshot         = guest.DebugKTFSnapshot
+	DebugKTFTaskSnapshot     = guest.DebugKTFTaskSnapshot
 	DebugRaptorSnapshot      = guest.DebugRaptorSnapshot
 	DebugRaptorImportCall    = guest.DebugRaptorImportCall
 	DebugSKVMSnapshot        = guest.DebugSKVMSnapshot
@@ -52,16 +53,42 @@ func (m *Machine) DebugSnapshot(maxEntries int) DebugSnapshot {
 		snapshot.GuestLog = guest.NewDebugLogSnapshot(m.wipi.Logs, 0, limit)
 	}
 	if m.ktf != nil {
-		snapshot.HostTrace = guest.NewDebugLogSnapshot(
-			m.ktf.HostTrace,
-			m.ktf.HostTraceDropped,
-			limit,
-		)
+		snapshot.HostTrace = m.ktf.HostTraceSnapshot(limit)
+		tasks := make([]DebugKTFTaskSnapshot, 0, len(m.ktf.Tasks))
+		var taskInstructions, taskSlices, taskYields uint64
+		for index, task := range m.ktf.Tasks {
+			if task == nil {
+				continue
+			}
+			taskInstructions += task.Instructions()
+			taskSlices += task.Slices()
+			taskYields += task.Yields()
+			tasks = append(tasks, DebugKTFTaskSnapshot{
+				Index:           index,
+				Instructions:    task.Instructions(),
+				Slices:          task.Slices(),
+				Yields:          task.Yields(),
+				LastYieldReason: task.LastYieldReason(),
+				Done:            task.Done,
+			})
+		}
+		var execution cpu.ExecutionStatistics
+		if measured, ok := m.cpu.(cpu.ExecutionStatisticsBackend); ok {
+			execution = measured.ExecutionStatistics()
+		}
 		snapshot.KTF = &DebugKTFSnapshot{
 			PresentCount:          m.ktf.PresentCount,
 			TickMS:                m.ktf.TickMS,
 			TaskCount:             len(m.ktf.Tasks),
 			ActiveInstructions:    m.ktf.ActiveInstructions,
+			TaskInstructions:      taskInstructions,
+			TaskSlices:            taskSlices,
+			TaskYields:            taskYields,
+			Tasks:                 tasks,
+			Execution:             execution,
+			TraceMode:             m.ktf.TraceMode().String(),
+			HostCalls:             m.ktf.HostCallCount,
+			LastHostCall:          m.ktf.LastHostCall,
 			LastJavaMethod:        m.ktf.LastJavaMethod,
 			LastUnimplementedJava: m.ktf.LastUnimplementedJava,
 			FirstJavaThrow:        m.ktf.FirstJavaThrowName,

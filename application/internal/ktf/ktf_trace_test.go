@@ -2,12 +2,86 @@ package ktf
 
 import (
 	"fmt"
-	"github.com/mirusu400/aram-core/application/internal/guest"
 	"testing"
+
+	"github.com/mirusu400/aram-core/application/internal/guest"
+	"github.com/mirusu400/aram-core/cpu/interpreter"
+	ktfloader "github.com/mirusu400/aram-core/loader/ktf"
 )
 
-func TestKTFHostTraceRetainsNewestWithinLimit(t *testing.T) {
+func TestKTFProductTraceDefaultsToCounters(t *testing.T) {
+	t.Setenv("ARAM_KTF_TRACE", "")
+	backend := interpreter.New()
+	defer backend.Close()
+	runtime, err := NewRuntime(backend, ktfloader.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.TraceMode() != KTFTraceCounters {
+		t.Fatalf("default KTF trace mode = %s, want counters", runtime.TraceMode())
+	}
+	for range 3 {
+		runtime.TraceHostCall("synthetic.call")
+		runtime.tracef("detail:%d", 7)
+	}
+	if runtime.HostCallCount != 3 || runtime.LastHostCall != "synthetic.call" {
+		t.Fatalf(
+			"counter trace calls=%d last=%q",
+			runtime.HostCallCount,
+			runtime.LastHostCall,
+		)
+	}
+	if len(runtime.HostTrace) != 0 {
+		t.Fatalf("counter mode retained detailed strings: %v", runtime.HostTrace)
+	}
+	snapshot := runtime.HostTraceSnapshot(10)
+	if snapshot.Total != 3 || snapshot.Omitted != 3 || len(snapshot.Entries) != 0 {
+		t.Fatalf("counter snapshot = %+v", snapshot)
+	}
+}
+
+func TestKTFTraceOffAndCountersAllocateNothing(t *testing.T) {
+	for _, mode := range []KTFTraceMode{KTFTraceOff, KTFTraceCounters} {
+		runtime := &Runtime{traceMode: mode}
+		allocations := testing.AllocsPerRun(1000, func() {
+			runtime.TraceHostCall("synthetic.call")
+			runtime.tracef("detail:%d", 7)
+		})
+		if allocations != 0 {
+			t.Fatalf("%s trace = %g allocs, want 0", mode, allocations)
+		}
+		if mode == KTFTraceOff && runtime.HostCallCount != 0 {
+			t.Fatalf("off trace counted %d calls", runtime.HostCallCount)
+		}
+	}
+}
+
+func TestKTFSampledTraceUsesNumericFixedRing(t *testing.T) {
 	runtime := &Runtime{}
+	if err := runtime.SetTraceMode(KTFTraceSampled); err != nil {
+		t.Fatal(err)
+	}
+	for index := 1; index <= HostTraceSampleInterval*2+1; index++ {
+		runtime.TraceHostCall("synthetic.call")
+	}
+	if len(runtime.HostTrace) != 0 || runtime.traceSampleNext != 3 {
+		t.Fatalf(
+			"sampled storage strings=%d numeric=%d",
+			len(runtime.HostTrace),
+			runtime.traceSampleNext,
+		)
+	}
+	snapshot := runtime.HostTraceSnapshot(10)
+	if len(snapshot.Entries) != 3 || snapshot.Total != HostTraceSampleInterval*2+1 {
+		t.Fatalf("sampled snapshot = %+v", snapshot)
+	}
+}
+
+func TestKTFHostTraceRetainsNewestWithinLimit(t *testing.T) {
+	runtime := &Runtime{traceMode: KTFTraceFull}
 	total := ktfHostTraceLimit + ktfHostTraceKeep + 7
 	for index := range total {
 		runtime.trace(fmt.Sprintf("entry-%d", index))
@@ -33,7 +107,7 @@ func TestKTFHostTraceRetainsNewestWithinLimit(t *testing.T) {
 }
 
 func TestKTFHostTraceBelowLimitDropsNothing(t *testing.T) {
-	runtime := &Runtime{}
+	runtime := &Runtime{traceMode: KTFTraceFull}
 	for index := range ktfHostTraceLimit {
 		runtime.tracef("entry-%d", index)
 	}
@@ -50,7 +124,7 @@ func TestKTFHostTraceBelowLimitDropsNothing(t *testing.T) {
 }
 
 func TestKTFHostTraceSamplesHighFrequencyGraphicsCalls(t *testing.T) {
-	runtime := &Runtime{}
+	runtime := &Runtime{traceMode: KTFTraceFull}
 	entry := "java.method.org/kwis/msp/lcdui/Graphics.setRGBPixels(IIII[III)V"
 	total := HostTraceSampleInterval + 1
 	for range total {
@@ -73,7 +147,7 @@ func TestKTFHostTraceSamplesHighFrequencyGraphicsCalls(t *testing.T) {
 }
 
 func TestKTFHostTraceDoesNotSampleOrdinaryCalls(t *testing.T) {
-	runtime := &Runtime{}
+	runtime := &Runtime{traceMode: KTFTraceFull}
 	entry := "wipic.2.21"
 	for range 3 {
 		runtime.TraceHostCall(entry)
