@@ -274,6 +274,7 @@ func (m *Machine) pumpWIPICallbacks(
 		}
 	}
 	m.input = pendingInput
+	audioStart := m.wipi.Services.Clock.Monotonic()
 	if err := m.wipi.Services.Advance(
 		m.wipi.ServiceOwner,
 		elapsed,
@@ -284,6 +285,7 @@ func (m *Machine) pumpWIPICallbacks(
 		m.mu.Unlock()
 		return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
 	}
+	m.publishAudioFromMedia(m.wipi.Services.Media, audioStart)
 	m.wipi.TickMS = uint64(m.wipi.Services.Clock.Monotonic() / time.Millisecond)
 	for {
 		event, ready := m.wipi.Services.Events.PopReady(

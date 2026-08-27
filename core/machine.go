@@ -106,6 +106,14 @@ type AudioChunk struct {
 	SampleRate int
 	Channels   int
 	PCM16      []int16
+	// StartGuestNS is the guest-monotonic time of the first PCM frame.
+	StartGuestNS int64
+	// StartSample is the first output-frame cursor within Generation. It may
+	// jump when the guest produced no audible samples for part of its timeline.
+	StartSample uint64
+	// Generation changes whenever reset/load-state or another discontinuity
+	// invalidates audio already buffered by a host.
+	Generation uint64
 }
 
 func (c AudioChunk) Validate() error {
@@ -125,7 +133,19 @@ func (c AudioChunk) Validate() error {
 			c.Channels,
 		)
 	}
+	if c.StartGuestNS < 0 {
+		return fmt.Errorf("invalid audio guest timestamp %d", c.StartGuestNS)
+	}
 	return nil
+}
+
+// VideoPresentation is an immutable guest frame anchored to the same timeline
+// generation used by AudioChunk.
+type VideoPresentation struct {
+	Image      image.Image
+	Sequence   uint64
+	GuestNS    int64
+	Generation uint64
 }
 
 type Machine interface {
