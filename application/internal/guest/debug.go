@@ -15,15 +15,26 @@ const (
 // machine. It contains execution metadata and logs, but never source bytes,
 // guest memory, framebuffer pixels, persistence, or media payloads.
 type DebugSnapshot struct {
-	Runtime    string                `json:"runtime"`
-	State      string                `json:"state"`
-	CPU        *DebugCPUSnapshot     `json:"cpu,omitempty"`
-	LastResult *DebugExecutionResult `json:"last_result,omitempty"`
-	GuestLog   DebugLogSnapshot      `json:"guest_log"`
-	HostTrace  DebugLogSnapshot      `json:"host_trace"`
-	KTF        *DebugKTFSnapshot     `json:"ktf,omitempty"`
-	Raptor     *DebugRaptorSnapshot  `json:"raptor,omitempty"`
-	SKVM       *DebugSKVMSnapshot    `json:"skvm,omitempty"`
+	Runtime    string                   `json:"runtime"`
+	State      string                   `json:"state"`
+	CPU        *DebugCPUSnapshot        `json:"cpu,omitempty"`
+	Execution  *cpu.ExecutionStatistics `json:"execution,omitempty"`
+	Audio      *DebugAudioSnapshot      `json:"audio,omitempty"`
+	LastResult *DebugExecutionResult    `json:"last_result,omitempty"`
+	GuestLog   DebugLogSnapshot         `json:"guest_log"`
+	HostTrace  DebugLogSnapshot         `json:"host_trace"`
+	KTF        *DebugKTFSnapshot        `json:"ktf,omitempty"`
+	Raptor     *DebugRaptorSnapshot     `json:"raptor,omitempty"`
+	SKVM       *DebugSKVMSnapshot       `json:"skvm,omitempty"`
+}
+
+type DebugAudioSnapshot struct {
+	Generation          uint64 `json:"generation"`
+	EpochGuestNS        int64  `json:"epoch_guest_ns"`
+	QueuedChunks        int    `json:"queued_chunks"`
+	QueuedSamples       int    `json:"queued_samples"`
+	PublishedDropped    uint64 `json:"published_dropped_samples"`
+	MediaDroppedSamples uint64 `json:"media_dropped_samples"`
 }
 
 type DebugCPUSnapshot struct {
