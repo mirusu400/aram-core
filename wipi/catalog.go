@@ -18,15 +18,18 @@ type API struct {
 }
 
 var (
-	apiByName   map[string]API
-	apiByFamily map[string]map[uint32]API
+	apiByName    map[string]API
+	apiByOrdinal map[int]API
+	apiByFamily  map[string]map[uint32]API
 )
 
 func init() {
 	apiByName = make(map[string]API, len(generatedAPIs))
+	apiByOrdinal = make(map[int]API, len(generatedAPIs))
 	apiByFamily = make(map[string]map[uint32]API)
 	for _, api := range generatedAPIs {
 		apiByName[api.Name] = api
+		apiByOrdinal[api.Ordinal] = api
 		family := apiByFamily[api.Family]
 		if family == nil {
 			family = make(map[uint32]API)
@@ -46,6 +49,13 @@ func APIs() []API {
 // Lookup returns a public selector by C function name.
 func Lookup(name string) (API, bool) {
 	api, ok := apiByName[name]
+	return api, ok
+}
+
+// LookupOrdinal returns a public selector by its versioned catalog ordinal.
+// Catalog ordinals are not carrier or device import numbers.
+func LookupOrdinal(ordinal int) (API, bool) {
+	api, ok := apiByOrdinal[ordinal]
 	return api, ok
 }
 

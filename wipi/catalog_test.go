@@ -65,6 +65,15 @@ func TestCatalogLookupAndResolve(t *testing.T) {
 	if _, ok := Resolve("MC_GRP", 0x5f); ok {
 		t.Fatal("misaligned selector resolved")
 	}
+	byOrdinal, ok := LookupOrdinal(46)
+	if !ok || byOrdinal.Name != "MC_fsOpen" {
+		t.Fatalf("LookupOrdinal(46) = %+v, %v", byOrdinal, ok)
+	}
+	for _, ordinal := range []int{0, -1, 240} {
+		if api, found := LookupOrdinal(ordinal); found {
+			t.Errorf("LookupOrdinal(%d) = %+v, true", ordinal, api)
+		}
+	}
 
 	all := APIs()
 	all[0].Name = "mutated"

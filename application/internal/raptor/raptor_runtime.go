@@ -28,6 +28,11 @@ var observedPublicAliases = map[string]string{
 	"RAPTOR.sndStop":       "MC_mdaStop",
 }
 
+// libwipiARAMImportBase starts an ARAM-only synthetic import range used by
+// the SDK lab. The public catalog ordinal is added to this base. This is not
+// an LGT, Wie, handset, or WIPI-wide ABI claim.
+const libwipiARAMImportBase uint32 = 0x7000
+
 // ObservedPublicAPIs projects Raptor provider calls back onto the public
 // WIPI-C API selected by the ABI adapter. Provider-private helpers remain out
 // of SDK coverage even though they still appear in raw runtime traces.
@@ -767,6 +772,13 @@ func (r *Runtime) DispatchPrivateImport(
 }
 
 func raptorWIPIImportName(ordinal uint32) (string, bool) {
+	if ordinal > libwipiARAMImportBase {
+		api, ok := wipi.LookupOrdinal(int(ordinal - libwipiARAMImportBase))
+		if ok && (api.Family == "MC_FS" || api.Family == "MC_DB" ||
+			api.Family == "MC_MDA") {
+			return api.Name, true
+		}
+	}
 	switch ordinal {
 	case 100:
 		return "MC_knlPrintk", true

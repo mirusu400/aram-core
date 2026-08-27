@@ -6,6 +6,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/mirusu400/aram-core/application/internal/guest"
 	shared "github.com/mirusu400/aram-core/runtime"
@@ -572,4 +573,63 @@ func (r *Runtime) filesystemUsed() int {
 		total += len(data)
 	}
 	return total
+}
+
+// AdoptPersistedFilesystem rebuilds the public WIPI path mirror after the
+// shared storage service imports restart-persistent private and shared data.
+// Open descriptors are process-local and intentionally start empty.
+func (r *Runtime) AdoptPersistedFilesystem() error {
+	if r == nil || r.Services == nil || r.Services.Storage == nil {
+		return fmt.Errorf("public WIPI services are missing")
+	}
+	files := make(map[string][]byte)
+	directories := map[string]bool{
+		"/private": true,
+		"/shared":  true,
+		"/system":  true,
+	}
+	fileTimes := make(map[string]uint32)
+	snapshot := r.Services.Storage.Snapshot()
+	for _, saved := range snapshot.Directories {
+		if saved.Namespace != shared.NamespacePrivate &&
+			saved.Namespace != shared.NamespaceShared {
+			continue
+		}
+		name, err := wipiPersistentGuestPath(saved.Namespace, saved.Path)
+		if err != nil || directories[name] {
+			return fmt.Errorf("adopt persistent WIPI directory %q", saved.Path)
+		}
+		directories[name] = true
+		fileTimes[name] = persistentFileTime(saved.Modified)
+	}
+	for _, saved := range snapshot.Files {
+		if saved.Namespace != shared.NamespacePrivate &&
+			saved.Namespace != shared.NamespaceShared {
+			continue
+		}
+		name, err := wipiPersistentGuestPath(saved.Namespace, saved.Path)
+		if err != nil || directories[name] || files[name] != nil {
+			return fmt.Errorf("adopt persistent WIPI file %q", saved.Path)
+		}
+		files[name] = append([]byte(nil), saved.Data...)
+		fileTimes[name] = persistentFileTime(saved.Modified)
+	}
+	r.Files = files
+	r.Directories = directories
+	r.FileTimes = fileTimes
+	r.fileHandles = make(map[int32]wipiFileHandle)
+	r.fileServices = make(map[int32]shared.ServiceID)
+	r.nextFile = 3
+	return nil
+}
+
+func persistentFileTime(modified int64) uint32 {
+	if modified <= 0 {
+		return 0
+	}
+	seconds := uint64(modified) / uint64(time.Second)
+	if seconds > uint64(^uint32(0)) {
+		return ^uint32(0)
+	}
+	return uint32(seconds)
 }

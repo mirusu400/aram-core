@@ -167,6 +167,41 @@ func TestImportSaveDataRebindsWIPIDatabases(t *testing.T) {
 	}
 }
 
+func TestImportSaveDataRebuildsWIPIFilesystemMirror(t *testing.T) {
+	source := newSyntheticMachine(t)
+	if err := source.wipi.Services.Storage.MakeDirectory(
+		shared.NamespacePrivate,
+		"/sdkfs",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.wipi.Services.Storage.WriteFile(
+		shared.NamespacePrivate,
+		"/sdkfs/persist.bin",
+		[]byte("LIBWIPI1"),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	saved, err := source.ExportSaveData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := newSyntheticMachine(t)
+	if err := restored.ImportSaveData(saved); err != nil {
+		t.Fatal(err)
+	}
+	if !restored.wipi.Directories["/private/sdkfs"] {
+		t.Fatalf("restored directories = %v", restored.wipi.Directories)
+	}
+	if got := restored.wipi.Files["/private/sdkfs/persist.bin"]; !bytes.Equal(got, []byte("LIBWIPI1")) {
+		t.Fatalf("restored WIPI file mirror = %q", got)
+	}
+	if len(restored.wipi.FileTimes) != 2 {
+		t.Fatalf("restored WIPI timestamps = %v", restored.wipi.FileTimes)
+	}
+}
+
 // Save data that no longer carries a store the package shipped must also drop
 // the adapter's stale service handle, so the next create call sees the same
 // world the storage service does.
