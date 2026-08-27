@@ -62,3 +62,22 @@ func TestFrameEventResumesAfterInstructionBudget(t *testing.T) {
 		t.Fatalf("r1 after resumed slice = %d, err=%v; want 99", got, err)
 	}
 }
+
+// The save format refuses a longer event log than maxSavedEADSEvents, and a
+// frame that needs several budget slices records one result per slice, so the
+// log must stay bounded no matter how long a title runs.
+func TestEventResultLogStaysWithinTheSaveFormatLimit(t *testing.T) {
+	runtime := &Runtime{}
+	for index := 0; index < maxSavedEADSEvents+16; index++ {
+		runtime.appendEventResult(EADSEventResult{Instructions: uint64(index)})
+	}
+	if len(runtime.Stats.Events) != maxSavedEADSEvents {
+		t.Fatalf("retained %d results, want %d",
+			len(runtime.Stats.Events), maxSavedEADSEvents)
+	}
+	newest := runtime.Stats.Events[len(runtime.Stats.Events)-1]
+	if newest.Instructions != uint64(maxSavedEADSEvents+15) {
+		t.Fatalf("newest result = %d, want %d",
+			newest.Instructions, maxSavedEADSEvents+15)
+	}
+}

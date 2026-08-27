@@ -372,7 +372,7 @@ func (r *Runtime) RenderFirstFrame(ctx context.Context) error {
 				eadsEventInstructionLimit,
 			)
 		}
-		r.Stats.Events = append(r.Stats.Events, result)
+		r.appendEventResult(result)
 		r.stage++
 	}
 	r.Stats.PresentCount = r.presentCount
@@ -401,11 +401,24 @@ func (r *Runtime) StepFrame(
 		max(instructionLimit, uint64(1)),
 	)
 	if err == nil {
-		r.Stats.Events = append(r.Stats.Events, result)
+		r.appendEventResult(result)
 		r.Stats.PresentCount = r.presentCount
 		r.Stats.TickMS = r.tickMS
 	}
 	return result, completed, err
+}
+
+// appendEventResult records one event result, keeping the newest
+// maxSavedEADSEvents. The log is bounded because it is part of the save format,
+// which refuses a longer one: a frame event that needs several budget slices
+// records a result per slice, so an unbounded log would grow for as long as a
+// title runs and would eventually make SaveState fail.
+func (r *Runtime) appendEventResult(result EADSEventResult) {
+	if len(r.Stats.Events) >= maxSavedEADSEvents {
+		drop := len(r.Stats.Events) - maxSavedEADSEvents + 1
+		r.Stats.Events = append(r.Stats.Events[:0], r.Stats.Events[drop:]...)
+	}
+	r.Stats.Events = append(r.Stats.Events, result)
 }
 
 func (r *Runtime) runEventSlice(

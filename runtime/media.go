@@ -129,6 +129,13 @@ type smafDecodeCacheEntry struct {
 
 const maxSMAFDecodeCacheEntries = 64
 
+// maxSMAFDecodeCacheSamples bounds the PCM the cache may retain. An entry count
+// is not a bound on its own: a lazy score renders on demand up to
+// maxSMAFSeconds of stereo int16, so 64 fully played tracks would hold
+// gigabytes resident on a handset. Retention is re-checked on every insert
+// because an entry keeps growing after it is cached.
+const maxSMAFDecodeCacheSamples = 16 << 20
+
 type mediaClip struct {
 	id             ServiceID
 	owner          OwnerID
@@ -897,14 +904,39 @@ func (m *Media) decodeSMAFAtRate(data []byte, sampleRate uint32) *decodedPCM {
 		m.smafCache = make(map[smafDecodeCacheKey]smafDecodeCacheEntry)
 	}
 	if len(m.smafCacheFIFO) == maxSMAFDecodeCacheEntries {
-		oldest := m.smafCacheFIFO[0]
-		copy(m.smafCacheFIFO, m.smafCacheFIFO[1:])
-		m.smafCacheFIFO = m.smafCacheFIFO[:len(m.smafCacheFIFO)-1]
-		delete(m.smafCache, oldest)
+		m.evictOldestSMAFDecode()
 	}
 	m.smafCache[key] = smafDecodeCacheEntry{decoded: decoded}
 	m.smafCacheFIFO = append(m.smafCacheFIFO, key)
+	// The newest entry is always kept: a single score longer than the budget
+	// must still be shared by the clip and the persistent music voice.
+	for len(m.smafCacheFIFO) > 1 &&
+		m.smafCacheSamples() > maxSMAFDecodeCacheSamples {
+		m.evictOldestSMAFDecode()
+	}
 	return decoded
+}
+
+// smafCacheSamples reports the PCM the cache holds. A dropped entry keeps
+// playing for whichever clip already points at it; only the sharing is lost.
+func (m *Media) smafCacheSamples() int {
+	total := 0
+	for _, key := range m.smafCacheFIFO {
+		if entry := m.smafCache[key]; entry.decoded != nil {
+			total += len(entry.decoded.samples)
+		}
+	}
+	return total
+}
+
+func (m *Media) evictOldestSMAFDecode() {
+	if len(m.smafCacheFIFO) == 0 {
+		return
+	}
+	oldest := m.smafCacheFIFO[0]
+	copy(m.smafCacheFIFO, m.smafCacheFIFO[1:])
+	m.smafCacheFIFO = m.smafCacheFIFO[:len(m.smafCacheFIFO)-1]
+	delete(m.smafCache, oldest)
 }
 
 func durationForFrame(frame uint64, rate uint32) time.Duration {

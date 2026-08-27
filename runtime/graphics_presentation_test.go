@@ -196,3 +196,37 @@ func BenchmarkPresentCommitOwnedBuffer(b *testing.B) {
 		}
 	}
 }
+
+// A requested rectangle that lies outside the surface intersects to empty. The
+// frame is still a full-surface copy, so pixels drawn before that present must
+// survive it: reusing the previous frame there would drop them and clear the
+// surface's dirty rectangle, so nothing would ever present them.
+func TestPresentOutsideTheSurfaceKeepsDrawnPixels(t *testing.T) {
+	graphics, surface := presentedScreen(t)
+	if err := graphics.SetPixel(1, surface, 0, 0, RGB(255, 0, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := graphics.Present(1, surface, Rectangle{}); err != nil {
+		t.Fatal(err)
+	}
+	_, first := graphics.LastFramePresentation()
+
+	if err := graphics.SetPixel(1, surface, 1, 0, RGB(0, 255, 0)); err != nil {
+		t.Fatal(err)
+	}
+	frame, err := graphics.Present(1, surface, Rectangle{
+		X:      900,
+		Y:      900,
+		Width:  1,
+		Height: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, second := graphics.LastFramePresentation(); second == first {
+		t.Fatalf("the drawn pixel was dropped: hash stayed %x", second)
+	}
+	if frame.RGBA[4] != 0 || frame.RGBA[5] != 255 {
+		t.Fatalf("presented pixels lost the draw: %v", frame.RGBA)
+	}
+}
