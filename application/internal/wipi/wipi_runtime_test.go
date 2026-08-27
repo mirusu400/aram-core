@@ -652,6 +652,61 @@ func TestWIPIRuntimeContextColourIsADevicePixel(t *testing.T) {
 	}
 }
 
+func TestWIPIRuntimeDrawStringRasterizesGlyphShape(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	framebuffer := dispatchPublicAPI(
+		t,
+		runtime,
+		"MC_grpCreateOffScreenFrameBuffer",
+		16,
+		16,
+	).Low
+	context, err := runtime.Heap.Allocate(60, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatchPublicAPI(t, runtime, "MC_grpInitContext", context)
+	dispatchPublicAPI(t, runtime, "MC_grpSetContext", context, 1, 0x00ffffff)
+	font := dispatchPublicAPI(t, runtime, "MC_grpGetFont", 0, 12, 0).Low
+	dispatchPublicAPI(t, runtime, "MC_grpSetContext", context, 7, font)
+
+	text, err := runtime.Heap.Allocate(2, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.CPU.WriteMemory(text, []byte{'A', 0}); err != nil {
+		t.Fatal(err)
+	}
+	dispatchPublicAPI(
+		t,
+		runtime,
+		"MC_grpDrawString",
+		framebuffer,
+		0,
+		11,
+		text,
+		^uint32(0),
+		context,
+	)
+
+	pixels := runtime.Framebuffers[framebuffer].Pixels
+	painted := 0
+	for y := 0; y < 14; y++ {
+		for x := 0; x < 6; x++ {
+			pixel, err := runtime.ReadU32(pixels + uint32(y*16+x)*4)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if pixel == 0x00ffffff {
+				painted++
+			}
+		}
+	}
+	if painted == 0 || painted == 6*14 {
+		t.Fatalf("painted glyph pixels = %d, want a non-empty glyph with holes", painted)
+	}
+}
+
 func TestWIPIRuntimeGraphicsSupportsRGB565Framebuffer(t *testing.T) {
 	runtime := newPublicRuntime(t)
 	runtime.framebufferBits = 16
@@ -1128,7 +1183,7 @@ func TestWIPIRuntimeAdvancedGraphicsPrimitives(t *testing.T) {
 	)
 
 	pixels := runtime.Framebuffers[framebuffer].Pixels
-	for _, coordinate := range [][2]int{{2, 6}, {6, 6}, {0, 0}, {9, 6}} {
+	for _, coordinate := range [][2]int{{2, 6}, {6, 6}, {9, 6}} {
 		pixel, err := runtime.ReadU32(
 			pixels + uint32(coordinate[1]*16+coordinate[0])*4,
 		)

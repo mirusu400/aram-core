@@ -536,6 +536,19 @@ func (r *Runtime) rgbFromDevicePixel(pixel uint32) (uint32, uint32, uint32) {
 }
 
 func (r *Runtime) putPixel(handle uint32, x, y int, contextAddress uint32, override *uint32) error {
+	return r.putPixelCoverage(handle, x, y, contextAddress, override, 0xff)
+}
+
+func (r *Runtime) putPixelCoverage(
+	handle uint32,
+	x, y int,
+	contextAddress uint32,
+	override *uint32,
+	coverage byte,
+) error {
+	if coverage == 0 {
+		return nil
+	}
 	fb, ok := r.Framebuffers[handle]
 	if !ok {
 		return nil
@@ -577,21 +590,42 @@ func (r *Runtime) putPixel(handle uint32, x, y int, contextAddress uint32, overr
 		if err != nil {
 			return err
 		}
+		if coverage < 0xff {
+			foreground = r.blendDevicePixel(destination, foreground, uint32(coverage))
+		}
 	case context.xor:
 		foreground = destination ^ foreground
-	case context.alpha <= 0:
-		foreground = destination
-	case context.alpha < 255:
-		alpha := uint32(context.alpha)
-		inverse := uint32(255) - alpha
-		sourceRed, sourceGreen, sourceBlue := r.rgbFromDevicePixel(foreground)
-		destRed, destGreen, destBlue := r.rgbFromDevicePixel(destination)
-		red := (sourceRed*alpha + destRed*inverse) / 255
-		green := (sourceGreen*alpha + destGreen*inverse) / 255
-		blue := (sourceBlue*alpha + destBlue*inverse) / 255
-		foreground = r.devicePixelFromRGB(red, green, blue)
+		if coverage < 0xff {
+			foreground = r.blendDevicePixel(destination, foreground, uint32(coverage))
+		}
+	default:
+		alpha := uint32(0)
+		if context.alpha > 0 {
+			alpha = uint32(context.alpha)
+			if alpha > 0xff {
+				alpha = 0xff
+			}
+			alpha = alpha * uint32(coverage) / 0xff
+		}
+		foreground = r.blendDevicePixel(destination, foreground, alpha)
 	}
 	return r.writeFramebufferPixel(fb, x, y, foreground)
+}
+
+func (r *Runtime) blendDevicePixel(destination, source, alpha uint32) uint32 {
+	if alpha == 0 {
+		return destination
+	}
+	if alpha >= 0xff {
+		return source
+	}
+	inverse := uint32(0xff) - alpha
+	sourceRed, sourceGreen, sourceBlue := r.rgbFromDevicePixel(source)
+	destRed, destGreen, destBlue := r.rgbFromDevicePixel(destination)
+	red := (sourceRed*alpha + destRed*inverse) / 0xff
+	green := (sourceGreen*alpha + destGreen*inverse) / 0xff
+	blue := (sourceBlue*alpha + destBlue*inverse) / 0xff
+	return r.devicePixelFromRGB(red, green, blue)
 }
 
 func (r *Runtime) drawLine(handle uint32, x1, y1, x2, y2 int, context uint32) error {

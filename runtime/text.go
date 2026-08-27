@@ -179,6 +179,29 @@ func (t *Text) CreateFont(owner OwnerID, descriptor FontDescriptor) (ServiceID, 
 	return id, nil
 }
 
+// EnsureFont returns the oldest live font with the same owner and descriptor,
+// or creates it when none exists. Adapters use this for integer font handles
+// whose service association can be reconstructed after restoring a snapshot.
+func (t *Text) EnsureFont(owner OwnerID, descriptor FontDescriptor) (ServiceID, error) {
+	if descriptor.Family == "" {
+		descriptor.Family = "aram-fallback"
+	}
+	if err := descriptor.Validate(); err != nil {
+		return 0, err
+	}
+	var existing ServiceID
+	for id, font := range t.fonts {
+		if font.owner == owner && font.descriptor == descriptor &&
+			(existing == 0 || id < existing) {
+			existing = id
+		}
+	}
+	if existing != 0 {
+		return existing, nil
+	}
+	return t.CreateFont(owner, descriptor)
+}
+
 func (t *Text) DestroyFont(owner OwnerID, id ServiceID) error {
 	font, err := t.font(owner, id)
 	if err != nil {

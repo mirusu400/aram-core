@@ -57,6 +57,32 @@ func TestTextEuckrConversionAndFallbackRaster(t *testing.T) {
 	}
 }
 
+func TestTextEnsureFontReusesMatchingDescriptor(t *testing.T) {
+	services, err := NewServices(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor := FontDescriptor{Size: 12, Style: FontBold}
+	first, err := services.Text.EnsureFont(1, descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := services.Text.EnsureFont(1, descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second != first {
+		t.Fatalf("matching font service = %s, want %s", second, first)
+	}
+	otherOwner, err := services.Text.EnsureFont(2, descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if otherOwner == first {
+		t.Fatalf("font service %s was reused across owners", first)
+	}
+}
+
 func TestTextStateRoundTripPreservesGlyphCache(t *testing.T) {
 	services, err := NewServices(Config{})
 	if err != nil {

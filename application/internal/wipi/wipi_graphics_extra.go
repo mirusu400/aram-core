@@ -582,27 +582,64 @@ func (r *Runtime) drawText(unicode bool, args []uint32) error {
 	if err != nil {
 		return err
 	}
-	height := guest.FontHeight(font)
-	ascent := height - height/4
-	characterWidth := max(1, height/2)
-	x, baseline := int(int32(args[1])), int(int32(args[2]))
-	for index, character := range characters {
-		if character == 0x20 {
-			continue
-		}
-		rectArgs := []uint32{
-			args[0],
-			uint32(int32(x + index*characterWidth)),
-			uint32(int32(baseline - ascent)),
-			uint32(int32(max(1, characterWidth-1))),
-			uint32(int32(height)),
-			args[5],
-		}
-		if err := r.drawRect(true, rectArgs); err != nil {
+	fontID, err := r.ensureGraphicsFont(font)
+	if err != nil {
+		return err
+	}
+	metrics, err := r.Services.Text.Metrics(r.ServiceOwner, fontID)
+	if err != nil {
+		return err
+	}
+	cursor := int(int32(args[1]))
+	top := int(int32(args[2])) - int(metrics.Ascent)
+	for _, character := range characters {
+		glyph, err := r.Services.Text.Glyph(
+			r.ServiceOwner,
+			fontID,
+			rune(character),
+		)
+		if err != nil {
 			return err
 		}
+		for row := int32(0); row < glyph.Height; row++ {
+			for column := int32(0); column < glyph.Width; column++ {
+				alpha := glyph.Alpha[row*glyph.Width+column]
+				if err := r.putPixelCoverage(
+					args[0],
+					cursor+int(glyph.BearingX+column),
+					top+int(glyph.BearingY+row),
+					args[5],
+					nil,
+					alpha,
+				); err != nil {
+					return err
+				}
+			}
+		}
+		cursor += int(glyph.Advance)
 	}
 	return nil
+}
+
+func (r *Runtime) ensureGraphicsFont(font uint32) (shared.ServiceID, error) {
+	var style shared.FontStyle
+	if font&0x0100 != 0 {
+		style |= shared.FontBold
+	}
+	if font&0x0200 != 0 {
+		style |= shared.FontItalic
+	}
+	if font&0x0400 != 0 {
+		style |= shared.FontUnderlined
+	}
+	return r.Services.Text.EnsureFont(
+		r.ServiceOwner,
+		shared.FontDescriptor{
+			Family: "aram-fallback",
+			Size:   int32(guest.FontHeight(font)),
+			Style:  style,
+		},
+	)
 }
 
 func (r *Runtime) graphicsContextFont(context uint32) (uint32, error) {
