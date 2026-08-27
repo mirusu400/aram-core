@@ -92,6 +92,15 @@ type Replay struct {
 	entries      []ReplayEntry
 }
 
+// replayAdvanceState is enough to undo Consume or RecordAdvance. Frame
+// advancement never edits an existing replay entry or changes replay mode and
+// profile identity, so cloning the entire log each tick is unnecessary.
+type replayAdvanceState struct {
+	nextSequence uint64
+	cursor       uint32
+	entries      int
+}
+
 func NewReplay(
 	limits ReplayLimits,
 	mode ReplayMode,
@@ -167,6 +176,24 @@ func (r *Replay) RecordAdvance(owner OwnerID, at, delta time.Duration) error {
 		Value: int64(delta),
 	})
 	return err
+}
+
+func (r *Replay) captureAdvance(destination *replayAdvanceState) {
+	destination.nextSequence = r.nextSequence
+	destination.cursor = r.cursor
+	destination.entries = len(r.entries)
+}
+
+func (r *Replay) restoreAdvance(saved *replayAdvanceState) {
+	if saved == nil {
+		return
+	}
+	r.nextSequence = saved.nextSequence
+	r.cursor = saved.cursor
+	if saved.entries < len(r.entries) {
+		clear(r.entries[saved.entries:])
+		r.entries = r.entries[:saved.entries]
+	}
 }
 
 func (r *Replay) RecordInput(

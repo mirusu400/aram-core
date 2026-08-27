@@ -27,6 +27,15 @@ type inputControl struct {
 	nextRepeat time.Duration
 }
 
+type inputAdvanceState struct {
+	controls []inputControlAdvanceState
+}
+
+type inputControlAdvanceState struct {
+	name    string
+	control inputControl
+}
+
 // Input tracks held controls and emits normalized press/release/repeat events.
 type Input struct {
 	maxControls  uint32
@@ -34,6 +43,7 @@ type Input struct {
 	repeatPeriod time.Duration
 	focused      bool
 	controls     map[string]inputControl
+	dueNames     []string
 }
 
 func NewInput(maxControls uint32, repeatDelay, repeatPeriod time.Duration) *Input {
@@ -112,21 +122,48 @@ func (i *Input) Advance(bus *EventBus, owner OwnerID, now time.Duration) error {
 		return nil
 	}
 	busBefore := bus.Snapshot()
-	inputBefore := i.Snapshot()
-	rollback := func(err error) error {
+	var inputBefore inputAdvanceState
+	if err := i.advanceLocked(bus, owner, now, &inputBefore); err != nil {
 		_ = bus.Restore(busBefore)
-		_ = i.Restore(inputBefore)
+		i.restoreAdvance(&inputBefore)
 		return err
 	}
-	names := make([]string, 0, len(i.controls))
+	return nil
+}
+
+// advanceLocked emits repeats without taking a full component snapshot. The
+// caller owns the event-bus transaction and may retain saved to undo only the
+// controls whose repeat deadlines changed.
+func (i *Input) advanceLocked(
+	bus *EventBus,
+	owner OwnerID,
+	now time.Duration,
+	saved *inputAdvanceState,
+) error {
+	if bus == nil || now < 0 {
+		return fmt.Errorf("%w: invalid input advance", ErrInvalidArgument)
+	}
+	if saved != nil {
+		saved.controls = saved.controls[:0]
+	}
+	if !i.focused {
+		return nil
+	}
+	i.dueNames = i.dueNames[:0]
 	for name, control := range i.controls {
 		if control.pressed && control.nextRepeat <= now {
-			names = append(names, name)
+			i.dueNames = append(i.dueNames, name)
 		}
 	}
-	sort.Strings(names)
-	for _, name := range names {
+	sort.Strings(i.dueNames)
+	for _, name := range i.dueNames {
 		control := i.controls[name]
+		if saved != nil {
+			saved.controls = append(saved.controls, inputControlAdvanceState{
+				name:    name,
+				control: control,
+			})
+		}
 		for control.nextRepeat <= now {
 			if _, err := bus.Enqueue(Event{
 				At:      control.nextRepeat,
@@ -134,19 +171,28 @@ func (i *Input) Advance(bus *EventBus, owner OwnerID, now time.Duration) error {
 				Owner:   owner,
 				Control: name,
 			}); err != nil {
-				return rollback(err)
+				return err
 			}
 			if control.nextRepeat > time.Duration(math.MaxInt64-int64(i.repeatPeriod)) {
-				return rollback(fmt.Errorf(
+				return fmt.Errorf(
 					"%w: input repeat deadline overflow",
 					ErrLimitExceeded,
-				))
+				)
 			}
 			control.nextRepeat += i.repeatPeriod
 		}
 		i.controls[name] = control
 	}
 	return nil
+}
+
+func (i *Input) restoreAdvance(saved *inputAdvanceState) {
+	if saved == nil {
+		return
+	}
+	for _, change := range saved.controls {
+		i.controls[change.name] = change.control
+	}
 }
 
 func (i *Input) Snapshot() InputState {
