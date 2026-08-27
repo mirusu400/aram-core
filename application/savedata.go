@@ -96,16 +96,19 @@ func (m *Machine) ImportSaveData(data []byte) error {
 	// Importing replaces every record store and mints fresh service IDs, so the
 	// backend's own database bookkeeping is stale until it reopens the restored
 	// stores by name.
-	return m.adoptPersistedDatabases()
+	return m.adoptPersistedStorage()
 }
 
-// adoptPersistedDatabases lets the active backend rebind its database adapter
-// to the record stores storage now holds.
-func (m *Machine) adoptPersistedDatabases() error {
+// adoptPersistedStorage lets the active backend rebuild compatibility mirrors
+// and rebind database adapters to the storage service's imported state.
+func (m *Machine) adoptPersistedStorage() error {
 	switch {
 	case m.ktf != nil:
 		return m.ktf.AdoptPersistedDatabases()
 	case m.wipi != nil:
+		if err := m.wipi.AdoptPersistedFilesystem(); err != nil {
+			return err
+		}
 		return m.wipi.AdoptPersistedDatabases()
 	default:
 		return nil
