@@ -248,6 +248,7 @@ type Runtime struct {
 	executionDepth                int
 	hostCallScopes                [16]ktfHostCallScope
 	hostCallDepth                 int
+	nestedCallContexts            []cpu.ScopedContext
 }
 
 type ktfHostCallScope struct {

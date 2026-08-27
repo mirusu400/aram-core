@@ -888,7 +888,7 @@ func (r *Runtime) present(handle uint32) error {
 	if r.Services.Coordinator.PresentationOwner() != r.ServiceOwner {
 		return nil
 	}
-	_, err := r.Services.Graphics.PresentCommit(
+	presentation, err := r.Services.Graphics.PresentCommit(
 		r.ServiceOwner,
 		serviceID,
 		shared.Rectangle{},
@@ -896,8 +896,31 @@ func (r *Runtime) present(handle uint32) error {
 	if err != nil {
 		return err
 	}
-	if err := r.Services.Graphics.CopyLastFrameRGBA(r.Frame.Pix, r.Frame.Stride); err != nil {
-		return err
+	// A surface larger than the host frame can reach here: presenting a
+	// non-screen framebuffer is only refused once a screen surface exists, and
+	// a title may flush an offscreen buffer of its own size before creating
+	// one. CopyLastFrameRGBA refuses a destination that cannot hold the frame,
+	// so that case keeps the copy of the overlap it has always had.
+	if int(presentation.Width) <= r.Frame.Bounds().Dx() &&
+		int(presentation.Height) <= r.Frame.Bounds().Dy() {
+		if err := r.Services.Graphics.CopyLastFrameRGBA(
+			r.Frame.Pix,
+			r.Frame.Stride,
+		); err != nil {
+			return err
+		}
+	} else {
+		snapshot := r.Services.Graphics.LastFrame()
+		width := min(int(snapshot.Width), r.Frame.Bounds().Dx())
+		height := min(int(snapshot.Height), r.Frame.Bounds().Dy())
+		for y := 0; y < height; y++ {
+			source := y * int(snapshot.Width) * 4
+			destination := y * r.Frame.Stride
+			copy(
+				r.Frame.Pix[destination:destination+width*4],
+				snapshot.RGBA[source:source+width*4],
+			)
+		}
 	}
 	r.Stats.PresentCount++
 	return nil

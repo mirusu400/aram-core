@@ -1853,3 +1853,36 @@ func TestWIPIRuntimeCompactGraphicsContextPlacesScalarsWithoutClipFlag(t *testin
 		t.Fatal("zeroed compact context reports an enabled clip rectangle")
 	}
 }
+
+// Presenting a non-screen framebuffer is only refused once a screen surface
+// exists, so a title can flush an offscreen buffer of its own size first. A
+// buffer larger than the host frame must still deliver the overlap rather than
+// failing the flush.
+func TestPresentOversizedFramebufferCopiesTheOverlap(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	handle, err := runtime.newFramebuffer(
+		runtime.Frame.Bounds().Dx()*2,
+		runtime.Frame.Bounds().Dy()*2,
+		true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	framebuffer := runtime.Framebuffers[handle]
+	pixels := make([]byte,
+		int(framebuffer.Width)*int(framebuffer.Height)*
+			int(framebuffer.bytesPerPixel()))
+	for index := range pixels {
+		pixels[index] = 0xff
+	}
+	if err := runtime.CPU.WriteMemory(framebuffer.Pixels, pixels); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.present(handle); err != nil {
+		t.Fatalf("flushing an oversized offscreen buffer failed: %v", err)
+	}
+	if runtime.Frame.Pix[0] == 0 && runtime.Frame.Pix[1] == 0 &&
+		runtime.Frame.Pix[2] == 0 {
+		t.Fatal("the host frame kept no pixels from the oversized flush")
+	}
+}
