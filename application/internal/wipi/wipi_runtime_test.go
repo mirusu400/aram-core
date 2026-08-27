@@ -109,6 +109,19 @@ func TestWIPIRuntimeInstallsAllPublicImports(t *testing.T) {
 	}
 }
 
+func TestWIPIRuntimeObservedNamesAreSorted(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	dispatchPublicAPI(t, runtime, "MC_knlGetFreeMemory")
+	dispatchPublicAPI(t, runtime, "strlen", 0)
+
+	if got := runtime.ObservedNames(); !slices.Equal(got, []string{
+		"MC_knlGetFreeMemory",
+		"strlen",
+	}) {
+		t.Fatalf("observed names = %v", got)
+	}
+}
+
 func TestWIPIDispatchArgumentCountsMatchCatalogPrototypes(t *testing.T) {
 	for _, api := range wipicatalog.APIs() {
 		expected, variadic, ok := prototypeABIWordCount(api.Prototype)

@@ -1036,6 +1036,15 @@ func (r *Runtime) UnimplementedNames() []string {
 	return result
 }
 
+func (r *Runtime) ObservedNames() []string {
+	result := make([]string, 0, len(r.Observed))
+	for name := range r.Observed {
+		result = append(result, name)
+	}
+	sort.Strings(result)
+	return result
+}
+
 func signed32(value uint32) int32 {
 	return int32(value)
 }

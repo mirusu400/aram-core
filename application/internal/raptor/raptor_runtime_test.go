@@ -2,6 +2,7 @@ package raptor
 
 import (
 	"encoding/binary"
+	"slices"
 	"testing"
 
 	wipirt "github.com/mirusu400/aram-core/application/internal/wipi"
@@ -12,6 +13,23 @@ import (
 	"github.com/mirusu400/aram-core/profile"
 	"github.com/mirusu400/aram-core/wipi"
 )
+
+func TestObservedPublicAPIsNormalizeAdapterNames(t *testing.T) {
+	public := newPublicRuntime(t)
+	public.Observed["MC_grpDrawString"] = 1
+	public.Observed["RAPTOR.sndCreate"] = 1
+	public.Observed["RAPTOR.knlSetTimer"] = 1
+	public.Observed["RAPTOR.privateRuntimeInit1400"] = 1
+	runtime := &Runtime{Public: public}
+
+	if got := runtime.ObservedPublicAPIs(); !slices.Equal(got, []string{
+		"MC_grpDrawString",
+		"MC_knlSetTimer",
+		"MC_mdaClipCreate",
+	}) {
+		t.Fatalf("observed public APIs = %v", got)
+	}
+}
 
 func TestRaptorRVCTImportVeneerSectionIsExecutable(t *testing.T) {
 	section := raptorloader.Section{Data: make([]byte, 8)}
@@ -30,6 +48,8 @@ func TestRaptorWIPIImportsResolveToPublicCatalog(t *testing.T) {
 	expected := map[uint32]string{
 		100:   "MC_knlPrintk",
 		101:   "MC_knlSprintk",
+		107:   "MC_knlExit",
+		111:   "MC_knlGetProgramName",
 		120:   "MC_knlGetTotalMemory",
 		121:   "MC_knlGetFreeMemory",
 		125:   "MC_knlCurrentTime",
@@ -37,6 +57,7 @@ func TestRaptorWIPIImportsResolveToPublicCatalog(t *testing.T) {
 		200:   "MC_grpGetImageProperty",
 		201:   "MC_grpGetImageFrameBuffer",
 		202:   "MC_grpGetScreenFrameBuffer",
+		203:   "MC_grpDestroyOffScreenFrameBuffer",
 		204:   "MC_grpCreateOffScreenFrameBuffer",
 		205:   "MC_grpInitContext",
 		206:   "MC_grpSetContext",
@@ -46,6 +67,7 @@ func TestRaptorWIPIImportsResolveToPublicCatalog(t *testing.T) {
 		222:   "MC_grpFlushLcd",
 		223:   "MC_grpGetPixelFromRGB",
 		225:   "MC_grpGetDisplayInfo",
+		226:   "MC_grpRepaint",
 		227:   "MC_grpGetFont",
 		233:   "MC_grpCreateImage",
 		400:   "MC_fsOpen",
@@ -62,6 +84,9 @@ func TestRaptorWIPIImportsResolveToPublicCatalog(t *testing.T) {
 		123:   "MC_knlSetTimer",
 		128:   "MC_knlGetResourceID",
 		129:   "MC_knlGetResource",
+		600:   "MC_netConnect",
+		601:   "MC_netClose",
+		606:   "MC_netSocketClose",
 		1029:  "strcpy",
 		1030:  "strncpy",
 		1031:  "strcat",
@@ -69,6 +94,9 @@ func TestRaptorWIPIImportsResolveToPublicCatalog(t *testing.T) {
 		1041:  "strlen",
 		1044:  "memcpy",
 		1048:  "memset",
+		1233:  "MC_mdaSetMuteState",
+		1234:  "MC_mdaGetMuteState",
+		1400:  "MC_miscBackLight",
 		0x4c1: "MC_mdaVibrator",
 	}
 	for ordinal, want := range expected {

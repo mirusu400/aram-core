@@ -16,6 +16,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -723,6 +724,17 @@ func TestMachineDispatchesPublicWIPITrampoline(t *testing.T) {
 		coverage.SemanticallyModeled != 239 ||
 		coverage.Observed != 1 {
 		t.Fatalf("public WIPI coverage = %+v, %v", coverage, ok)
+	}
+	if got := machine.WIPIObservedAPIs(); !slices.Equal(got, []string{"strlen"}) {
+		t.Fatalf("observed public WIPI APIs = %v", got)
+	}
+	machine.raptor = &raptorrt.Runtime{Public: machine.wipi}
+	machine.wipi.Observed["RAPTOR.sndCreate"] = 1
+	if got := machine.WIPIObservedAPIs(); !slices.Equal(got, []string{
+		"MC_mdaClipCreate",
+		"strlen",
+	}) {
+		t.Fatalf("Raptor-observed public WIPI APIs = %v", got)
 	}
 }
 

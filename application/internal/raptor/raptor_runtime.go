@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"sort"
 
 	wipirt "github.com/mirusu400/aram-core/application/internal/wipi"
 	"github.com/mirusu400/aram-core/netauth"
@@ -14,6 +15,42 @@ import (
 	raptorloader "github.com/mirusu400/aram-core/loader/raptor"
 	"github.com/mirusu400/aram-core/wipi"
 )
+
+var observedPublicAliases = map[string]string{
+	"RAPTOR.knlDefTimer":   "MC_knlDefTimer",
+	"RAPTOR.knlSetTimer":   "MC_knlSetTimer",
+	"RAPTOR.knlUnsetTimer": "MC_knlUnsetTimer",
+	"RAPTOR.sndCreate":     "MC_mdaClipCreate",
+	"RAPTOR.sndFree":       "MC_mdaClipFree",
+	"RAPTOR.sndPlay":       "MC_mdaPlay",
+	"RAPTOR.sndPutData":    "MC_mdaClipPutData",
+	"RAPTOR.sndSetVolume":  "MC_mdaClipSetVolume",
+	"RAPTOR.sndStop":       "MC_mdaStop",
+}
+
+// ObservedPublicAPIs projects Raptor provider calls back onto the public
+// WIPI-C API selected by the ABI adapter. Provider-private helpers remain out
+// of SDK coverage even though they still appear in raw runtime traces.
+func (r *Runtime) ObservedPublicAPIs() []string {
+	if r == nil || r.Public == nil {
+		return nil
+	}
+	observed := make(map[string]struct{})
+	for name := range r.Public.Observed {
+		if alias := observedPublicAliases[name]; alias != "" {
+			name = alias
+		}
+		if _, ok := wipi.Lookup(name); ok {
+			observed[name] = struct{}{}
+		}
+	}
+	result := make([]string, 0, len(observed))
+	for name := range observed {
+		result = append(result, name)
+	}
+	sort.Strings(result)
+	return result
+}
 
 const (
 	ProfileID = "wipi-1.2.1/lgt/raptor"
@@ -705,15 +742,13 @@ func (r *Runtime) DispatchPrivateImport(
 		err = r.Public.UnsetTimer(timer, false)
 		return guest.WIPIReturn{}, "RAPTOR.knlUnsetTimer", true, err
 	case 1233:
-		// The KTF Raptor title 얍 invokes this provider-private startup hook
-		// once with (3, 1) and discards the result before querying handset
-		// properties. No guest-visible state is exchanged.
-		return guest.WIPIReturn{}, "RAPTOR.privateStartup1233", true, nil
+		// The confirmed install contract identifies this ordinal as the public
+		// mute setter. Let the catalog dispatcher apply its normal semantics.
+		return guest.WIPIReturn{}, "", false, nil
 	case 1400:
-		// Raptor modules may invoke this provider-private runtime initializer
-		// with (0, 2, 0, 0) before their public imports are resolved. Its
-		// result is ignored, so model the provider's successful no-op boundary.
-		return guest.WIPIReturn{}, "RAPTOR.privateRuntimeInit1400", true, nil
+		// The observed (0, 2, 0, 0) startup call matches the public request to
+		// keep the primary backlight on. Route it through the catalog.
+		return guest.WIPIReturn{}, "", false, nil
 	case 106, 238:
 		// The LGT carrier network/DRM API. When a NetBackend (aram-authd) is
 		// installed it services the auth handshake; otherwise fall through to
@@ -739,6 +774,8 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 		return "MC_knlSprintk", true
 	case 107:
 		return "MC_knlExit", true
+	case 111:
+		return "MC_knlGetProgramName", true
 	case 120:
 		return "MC_knlGetTotalMemory", true
 	case 121:
@@ -755,6 +792,8 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 		return "MC_grpGetImageFrameBuffer", true
 	case 202:
 		return "MC_grpGetScreenFrameBuffer", true
+	case 203:
+		return "MC_grpDestroyOffScreenFrameBuffer", true
 	case 204:
 		return "MC_grpCreateOffScreenFrameBuffer", true
 	case 205:
@@ -805,6 +844,8 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 		return "MC_grpGetRGBFromPixel", true
 	case 225:
 		return "MC_grpGetDisplayInfo", true
+	case 226:
+		return "MC_grpRepaint", true
 	// 영웅서기3 asks for a font handle here with (face, size, style) and feeds
 	// the result straight into MC_grpSetContext index 7, the context's font
 	// field, so an unresolved import leaves the Clet drawing with font 0.
@@ -868,6 +909,12 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 		return "MC_knlGetResourceID", true
 	case 129:
 		return "MC_knlGetResource", true
+	case 600:
+		return "MC_netConnect", true
+	case 601:
+		return "MC_netClose", true
+	case 606:
+		return "MC_netSocketClose", true
 	case 1029:
 		return "strcpy", true
 	// The C string family is contiguous from strcpy, so the ordinal between
@@ -911,12 +958,18 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 		return "localtime", true
 	case 1208:
 		return "MC_mdaClipGetVolume", true
+	case 1233:
+		return "MC_mdaSetMuteState", true
+	case 1234:
+		return "MC_mdaGetMuteState", true
 	// MC_mdaVibrator drives the handset vibration motor. libwipi's lgt-raptor
 	// veneer imports it at module 0x1fb ordinal 0x4c1; without this mapping the
 	// call fell through to the unimplemented stub, so no vibration ever reached
 	// the device service and hosts saw a permanently idle motor.
 	case 0x4c1:
 		return "MC_mdaVibrator", true
+	case 1400:
+		return "MC_miscBackLight", true
 	default:
 		return "", false
 	}
