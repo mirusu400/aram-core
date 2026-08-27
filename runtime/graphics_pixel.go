@@ -110,11 +110,21 @@ func pixelOffset(current *surface, x, y int32) int {
 }
 
 func surfaceRGBA(current *surface) ([]byte, error) {
+	return surfaceRGBAInto(current, nil)
+}
+
+func surfaceRGBAInto(current *surface, destination []byte) ([]byte, error) {
 	pixelCount := uint64(current.descriptor.Width) * uint64(current.descriptor.Height)
 	if pixelCount > uint64(math.MaxInt/4) {
 		return nil, fmt.Errorf("%w: RGBA conversion exceeds host address space", ErrLimitExceeded)
 	}
-	rgba := make([]byte, int(pixelCount)*4)
+	size := int(pixelCount) * 4
+	var rgba []byte
+	if cap(destination) < size {
+		rgba = make([]byte, size)
+	} else {
+		rgba = destination[:size]
+	}
 	width := int(current.descriptor.Width)
 	height := int(current.descriptor.Height)
 	stride := int(current.descriptor.Stride)

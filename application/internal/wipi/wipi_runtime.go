@@ -210,10 +210,11 @@ type wipiHTTP struct {
 }
 
 type Runtime struct {
-	CPU    cpu.Backend
-	Frame  *image.RGBA
-	Layout wipicatalog.Layout
-	Heap   guest.Heap
+	CPU                cpu.Backend
+	Frame              *image.RGBA
+	Layout             wipicatalog.Layout
+	Heap               guest.Heap
+	framebufferScratch []byte
 
 	Services         *shared.Services
 	serviceConfig    shared.Config

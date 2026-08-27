@@ -1555,7 +1555,7 @@ func (r *Runtime) RecordPresentation() error {
 					return err
 				}
 			}
-			if _, err := r.Services.Graphics.Present(
+			if _, err := r.Services.Graphics.PresentCommit(
 				r.ServiceOwner,
 				serviceID,
 				shared.Rectangle{},
