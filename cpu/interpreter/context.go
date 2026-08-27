@@ -17,6 +17,153 @@ const (
 	cp15ContextWords         = 7
 )
 
+// executionContext is the non-serialized task-switch state for an application
+// guest. All tasks share mappings and translated code, so only architectural
+// state moves. owner prevents accidentally restoring a context into a
+// different backend with a different address space.
+type executionContext struct {
+	owner *Backend
+	regs  [17]uint32
+	banks bankedRegisters
+	spsr  savedProgramStatus
+	cp15  cp15State
+	mode  cpu.Mode
+}
+
+func (*executionContext) CPUExecutionContext() {}
+
+func (b *Backend) fastExecutionContextAvailable() bool {
+	return b.systemBus == nil && !b.mmuEnabled() && !b.instructionCacheEnabled()
+}
+
+// SaveExecutionContext captures reusable application task state without
+// serializing instruction-cache lines or invalidating shared translation
+// caches. Passing the previous result makes repeated scheduler saves
+// allocation-free.
+func (b *Backend) SaveExecutionContext(
+	destination cpu.ExecutionContext,
+) (cpu.ExecutionContext, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return nil, cpu.ErrClosed
+	}
+	if !b.fastExecutionContextAvailable() {
+		return nil, cpu.ErrExecutionContextUnavailable
+	}
+	var current *executionContext
+	if destination == nil {
+		current = &executionContext{owner: b}
+	} else {
+		var ok bool
+		current, ok = destination.(*executionContext)
+		if !ok || current.owner != b {
+			return nil, fmt.Errorf("CPU execution context owner: %w", cpu.ErrInvalidAddress)
+		}
+	}
+	b.resolveFlags()
+	current.regs = b.regs
+	current.banks = b.banks
+	current.spsr = b.spsr
+	current.cp15 = b.cp15
+	current.mode = b.mode
+	b.executionStatistics.FastContextSaves++
+	return current, nil
+}
+
+// RestoreExecutionContext switches application task state while retaining the
+// mapping, data, JIT, native-code, and link caches shared by that application.
+func (b *Backend) RestoreExecutionContext(saved cpu.ExecutionContext) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return cpu.ErrClosed
+	}
+	if !b.fastExecutionContextAvailable() {
+		return cpu.ErrExecutionContextUnavailable
+	}
+	current, ok := saved.(*executionContext)
+	if !ok || current == nil || current.owner != b || !current.mode.Valid() {
+		return fmt.Errorf("CPU execution context: %w", cpu.ErrInvalidAddress)
+	}
+	if current.cp15.control&1 != 0 || current.cp15.control&(1<<12) != 0 {
+		return cpu.ErrExecutionContextUnavailable
+	}
+	b.regs = current.regs
+	b.banks = current.banks
+	b.spsr = current.spsr
+	b.cp15 = current.cp15
+	b.flags = pendingFlags{}
+	b.mode = current.mode
+	b.setModeFlag()
+	b.executionStatistics.FastContextRestores++
+	return nil
+}
+
+// MarshalExecutionContext emits the existing portable context-v3 byte format.
+// Application contexts never have architectural instruction-cache lines, so
+// the line count is zero and destination can be reused across save states.
+func (b *Backend) MarshalExecutionContext(
+	saved cpu.ExecutionContext,
+	destination []byte,
+) ([]byte, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return nil, cpu.ErrClosed
+	}
+	current, ok := saved.(*executionContext)
+	if !ok || current == nil || current.owner != b || !current.mode.Valid() {
+		return nil, fmt.Errorf("CPU execution context: %w", cpu.ErrInvalidAddress)
+	}
+	wordCount := len(current.regs) + bankedContextWords +
+		spsrContextWords + cp15ContextWords + 2
+	size := 8 + wordCount*4
+	if cap(destination) < size {
+		destination = make([]byte, size)
+	} else {
+		destination = destination[:size]
+	}
+	copy(destination, "ARMC")
+	binary.LittleEndian.PutUint32(destination[4:8], contextVersion)
+	offset := 8
+	putWords := func(values []uint32) {
+		for _, value := range values {
+			binary.LittleEndian.PutUint32(destination[offset:offset+4], value)
+			offset += 4
+		}
+	}
+	putWords(current.regs[:])
+	putWords(current.banks.userHigh[:])
+	putWords(current.banks.userStackLink[:])
+	putWords(current.banks.fiq[:])
+	putWords(current.banks.irq[:])
+	putWords(current.banks.supervisor[:])
+	putWords(current.banks.abort[:])
+	putWords(current.banks.undefined[:])
+	putWords([]uint32{
+		current.spsr.fiq,
+		current.spsr.irq,
+		current.spsr.supervisor,
+		current.spsr.abort,
+		current.spsr.undefined,
+	})
+	putWords([]uint32{
+		current.cp15.control,
+		current.cp15.translationTableBase,
+		current.cp15.domainAccessControl,
+		current.cp15.dataFaultStatus,
+		current.cp15.instructionFaultStatus,
+		current.cp15.faultAddress,
+		current.cp15.processID,
+	})
+	binary.LittleEndian.PutUint32(destination[offset:offset+4], 0)
+	offset += 4
+	binary.LittleEndian.PutUint32(destination[offset:offset+4], uint32(current.mode))
+	b.executionStatistics.SerializedContextSaves++
+	return destination, nil
+}
+
 func (b *Backend) SaveContext() ([]byte, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -67,6 +214,7 @@ func (b *Backend) SaveContext() ([]byte, error) {
 		offset += int(instructionCacheLineSize)
 	}
 	binary.LittleEndian.PutUint32(data[offset:offset+4], uint32(b.mode))
+	b.executionStatistics.SerializedContextSaves++
 	return data, nil
 }
 
@@ -187,5 +335,6 @@ func (b *Backend) RestoreContext(data []byte) error {
 	b.flags.dirty = false
 	b.mode = mode
 	b.setModeFlag()
+	b.executionStatistics.SerializedContextRestores++
 	return nil
 }

@@ -295,11 +295,20 @@ type Runtime struct {
 	ExitRequested    bool
 	exitCode         int32
 	Stats            WIPIFrameStats
+	hostCallScopes   [16]wipiHostCallScope
+	hostCallDepth    int
+	standaloneFrame  cpu.HostCallFrame
 
 	// sharedPackageFiles is a read-only view of package contents addressable
 	// through the shared filesystem namespace; entries materialize into
 	// Files (and the storage service) on first guest access.
 	sharedPackageFiles map[string][]byte
+}
+
+type wipiHostCallScope struct {
+	frame         cpu.HostCallFrame
+	arguments     [cpu.MaxHostCallWords + 4]uint32
+	argumentWords int
 }
 
 func MapRuntimeMemory(backend cpu.Backend) error {
@@ -769,6 +778,11 @@ func (r *Runtime) DispatchAPI(ctx context.Context, api wipicatalog.API) error {
 	defer func() {
 		r.activeContext = previousContext
 	}()
+	scope, err := r.pushHostCallScope()
+	if err != nil {
+		return err
+	}
+	defer r.popHostCallScope(scope)
 	r.Stats.APICalls++
 	r.Stats.LastAPI = api.Name
 	r.Observed[api.Name]++
@@ -834,34 +848,42 @@ func defaultWIPIReturn(family string) uint32 {
 }
 
 func (r *Runtime) ReturnFromTrap(result guest.WIPIReturn) error {
-	if err := r.CPU.WriteRegister(cpu.RegisterR0, result.Low); err != nil {
+	frame := &r.standaloneFrame
+	if r.hostCallDepth != 0 {
+		frame = &r.hostCallScopes[r.hostCallDepth-1].frame
+	}
+	if err := cpu.CaptureHostCallFrame(
+		r.CPU,
+		frame,
+		cpu.HostCallFrameRequest{},
+	); err != nil {
 		return err
 	}
-	if err := r.CPU.WriteRegister(cpu.RegisterR1, result.High); err != nil {
-		return err
-	}
-	lr, err := r.CPU.ReadRegister(cpu.RegisterLR)
-	if err != nil {
-		return err
-	}
-	if err := r.CPU.WriteRegister(cpu.RegisterPC, lr&^1); err != nil {
-		return err
-	}
-	cpsr, err := r.CPU.ReadRegister(cpu.RegisterCPSR)
-	if err != nil {
-		return err
-	}
+	lr := frame.Registers[cpu.RegisterLR]
+	cpsr := frame.Registers[cpu.RegisterCPSR]
 	if lr&1 != 0 {
 		cpsr |= cpu.StatusThumb
 	} else {
 		cpsr &^= cpu.StatusThumb
 	}
-	return r.CPU.WriteRegister(cpu.RegisterCPSR, cpsr)
+	var commit cpu.RegisterCommit
+	_ = commit.Set(cpu.RegisterR0, result.Low)
+	_ = commit.Set(cpu.RegisterR1, result.High)
+	_ = commit.Set(cpu.RegisterPC, lr&^1)
+	_ = commit.Set(cpu.RegisterCPSR, cpsr)
+	return cpu.CommitHostCallRegisters(r.CPU, commit)
 }
 
 func (r *Runtime) arg(index int) (uint32, error) {
 	if index < 0 {
 		return 0, fmt.Errorf("negative argument index")
+	}
+	if r.hostCallDepth != 0 {
+		scope := &r.hostCallScopes[r.hostCallDepth-1]
+		if err := r.ensureHostCallArguments(scope, index+1); err != nil {
+			return 0, err
+		}
+		return scope.arguments[index], nil
 	}
 	if index < 4 {
 		return r.CPU.ReadRegister(uint32(index))
@@ -874,6 +896,16 @@ func (r *Runtime) arg(index int) (uint32, error) {
 }
 
 func (r *Runtime) args(count int) ([]uint32, error) {
+	if count < 0 {
+		return nil, fmt.Errorf("negative argument count")
+	}
+	if r.hostCallDepth != 0 {
+		scope := &r.hostCallScopes[r.hostCallDepth-1]
+		if err := r.ensureHostCallArguments(scope, count); err != nil {
+			return nil, err
+		}
+		return scope.arguments[:count], nil
+	}
 	result := make([]uint32, count)
 	for index := range result {
 		value, err := r.arg(index)
@@ -883,6 +915,54 @@ func (r *Runtime) args(count int) ([]uint32, error) {
 		result[index] = value
 	}
 	return result, nil
+}
+
+func (r *Runtime) pushHostCallScope() (*wipiHostCallScope, error) {
+	if r.hostCallDepth >= len(r.hostCallScopes) {
+		return nil, fmt.Errorf("WIPI host-call nesting limit reached")
+	}
+	scope := &r.hostCallScopes[r.hostCallDepth]
+	if err := cpu.CaptureHostCallFrame(
+		r.CPU,
+		&scope.frame,
+		cpu.HostCallFrameRequest{},
+	); err != nil {
+		return nil, err
+	}
+	copy(scope.arguments[:4], scope.frame.Registers[:4])
+	scope.argumentWords = 4
+	r.hostCallDepth++
+	return scope, nil
+}
+
+func (r *Runtime) ensureHostCallArguments(
+	scope *wipiHostCallScope,
+	count int,
+) error {
+	if count <= scope.argumentWords {
+		return nil
+	}
+	if count > len(scope.arguments) {
+		return fmt.Errorf("WIPI argument count %d exceeds host-call capacity", count)
+	}
+	request := cpu.HostCallFrameRequest{}
+	if count > 4 {
+		request.StackWords = uint32(count - 4)
+	}
+	if err := cpu.CaptureHostCallFrame(r.CPU, &scope.frame, request); err != nil {
+		return err
+	}
+	copy(scope.arguments[:4], scope.frame.Registers[:4])
+	copy(scope.arguments[4:count], scope.frame.Stack[:request.StackWords])
+	scope.argumentWords = count
+	return nil
+}
+
+func (r *Runtime) popHostCallScope(scope *wipiHostCallScope) {
+	if r.hostCallDepth == 0 || scope != &r.hostCallScopes[r.hostCallDepth-1] {
+		panic("WIPI host-call scope stack is corrupt")
+	}
+	r.hostCallDepth--
 }
 
 func (r *Runtime) ReadU32(address uint32) (uint32, error) {

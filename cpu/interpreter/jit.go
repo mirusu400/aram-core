@@ -113,11 +113,21 @@ const (
 func (b *Backend) cacheJITBlock(pc uint32, block *jitBlock) {
 	b.jitBlocks[pc] = block
 	b.jitBlockPages.add(pc)
+	b.recordTranslatedBlock(block)
 }
 
 func (b *Backend) cacheARMJITBlock(pc uint32, block *jitBlock) {
 	b.armJITBlocks[pc] = block
 	b.armJITBlockPages.add(pc)
+	b.recordTranslatedBlock(block)
+}
+
+func (b *Backend) recordTranslatedBlock(block *jitBlock) {
+	if block == nil {
+		return
+	}
+	b.executionStatistics.TranslatedBlocks++
+	b.executionStatistics.TranslatedGuestBytes += uint64(block.end - block.start)
 }
 
 func (index blockPageIndex) add(pc uint32) {
@@ -223,6 +233,7 @@ func (b *Backend) invalidateTranslationRange(address, size uint32) {
 // without writing a private mapped region, so ordinary SMC invalidation alone
 // is not sufficient for them.
 func (b *Backend) invalidateTranslations() {
+	b.executionStatistics.TranslationInvalidations++
 	if b.jitBlocks != nil {
 		clear(b.jitBlocks)
 		clear(b.jitBlockPages)

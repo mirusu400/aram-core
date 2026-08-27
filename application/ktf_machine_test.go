@@ -154,6 +154,9 @@ func TestKTFMachineQueuesDueInputToDockedCard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := runtime.SetTraceMode(ktfrt.KTFTraceFull); err != nil {
+		t.Fatal(err)
+	}
 	defer runtime.CPU.Close()
 	if err := runtime.MapImageAndHost(); err != nil {
 		t.Fatal(err)

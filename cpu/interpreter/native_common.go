@@ -368,6 +368,9 @@ func (b *Backend) nativeInvalidate() {
 	clear(b.nativeCodePages)
 	b.nativeCodeLo, b.nativeCodeHi = ^uint32(0), 0
 	if b.nativeArena != nil {
+		if b.nativeArena.off != 0 {
+			b.executionStatistics.NativeArenaResets++
+		}
 		b.nativeArena.off = 0
 	}
 }
@@ -376,11 +379,21 @@ func (b *Backend) nativeInvalidate() {
 func (b *Backend) cacheNativeBlock(pc uint32, block *nativeBlock) {
 	b.nativeBlocks[pc] = block
 	b.nativeBlockPages.add(pc)
+	b.recordTranslatedNativeBlock(block)
 }
 
 func (b *Backend) cacheNativeARMBlock(pc uint32, block *nativeBlock) {
 	b.nativeARMBlocks[pc] = block
 	b.nativeARMBlockPages.add(pc)
+	b.recordTranslatedNativeBlock(block)
+}
+
+func (b *Backend) recordTranslatedNativeBlock(block *nativeBlock) {
+	if block == nil {
+		return
+	}
+	b.executionStatistics.TranslatedBlocks++
+	b.executionStatistics.TranslatedGuestBytes += uint64(block.end - block.start)
 }
 
 func (b *Backend) nativeLinkSlot(mode cpu.Mode, pc uint32) uintptr {

@@ -128,6 +128,7 @@ func (b *Backend) arenaAppend(code []byte) uintptr {
 	}
 	C.jit_write(C.uintptr_t(a.base), C.size_t(off), unsafe.Pointer(&code[0]), C.size_t(n))
 	a.off = off + n
+	b.executionStatistics.TranslatedHostBytes += uint64(n)
 	return a.base + off
 }
 

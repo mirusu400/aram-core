@@ -168,17 +168,34 @@ var DebugRegisterNames = [...]string{
 }
 
 type DebugKTFSnapshot struct {
-	PresentCount          uint32   `json:"present_count"`
-	TickMS                uint64   `json:"tick_ms"`
-	TaskCount             int      `json:"task_count"`
-	ActiveInstructions    uint64   `json:"active_instructions"`
-	LastJavaMethod        string   `json:"last_java_method,omitempty"`
-	LastUnimplementedJava string   `json:"last_unimplemented_java,omitempty"`
-	FirstJavaThrow        string   `json:"first_java_throw,omitempty"`
-	FirstJavaThrowSP      uint32   `json:"first_java_throw_sp,omitempty"`
-	LastJavaThrow         string   `json:"last_java_throw,omitempty"`
-	LastJavaThrowSP       uint32   `json:"last_java_throw_sp,omitempty"`
-	JavaExceptionFrames   []string `json:"java_exception_frames,omitempty"`
+	PresentCount          uint32                  `json:"present_count"`
+	TickMS                uint64                  `json:"tick_ms"`
+	TaskCount             int                     `json:"task_count"`
+	ActiveInstructions    uint64                  `json:"active_instructions"`
+	TaskInstructions      uint64                  `json:"task_instructions"`
+	TaskSlices            uint64                  `json:"task_slices"`
+	TaskYields            uint64                  `json:"task_yields"`
+	Tasks                 []DebugKTFTaskSnapshot  `json:"tasks,omitempty"`
+	Execution             cpu.ExecutionStatistics `json:"execution"`
+	TraceMode             string                  `json:"trace_mode"`
+	HostCalls             uint64                  `json:"host_calls"`
+	LastHostCall          string                  `json:"last_host_call,omitempty"`
+	LastJavaMethod        string                  `json:"last_java_method,omitempty"`
+	LastUnimplementedJava string                  `json:"last_unimplemented_java,omitempty"`
+	FirstJavaThrow        string                  `json:"first_java_throw,omitempty"`
+	FirstJavaThrowSP      uint32                  `json:"first_java_throw_sp,omitempty"`
+	LastJavaThrow         string                  `json:"last_java_throw,omitempty"`
+	LastJavaThrowSP       uint32                  `json:"last_java_throw_sp,omitempty"`
+	JavaExceptionFrames   []string                `json:"java_exception_frames,omitempty"`
+}
+
+type DebugKTFTaskSnapshot struct {
+	Index           int    `json:"index"`
+	Instructions    uint64 `json:"instructions"`
+	Slices          uint64 `json:"slices"`
+	Yields          uint64 `json:"yields"`
+	LastYieldReason string `json:"last_yield_reason,omitempty"`
+	Done            bool   `json:"done"`
 }
 
 type DebugRaptorSnapshot struct {

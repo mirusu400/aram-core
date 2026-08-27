@@ -33,6 +33,9 @@ func newKTFQuantumMachine(t *testing.T) *Machine {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := runtime.SetTraceMode(ktfrt.KTFTraceFull); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { _ = runtime.CPU.Close() })
 	if err := runtime.MapImageAndHost(); err != nil {
 		t.Fatal(err)

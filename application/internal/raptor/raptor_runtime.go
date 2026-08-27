@@ -80,6 +80,8 @@ type Runtime struct {
 	importSlots       []raptorImportKey
 	importSlotByKey   map[raptorImportKey]uint32
 	ImportTrace       []raptorImportCall
+	hostCallFrames    [16]cpu.HostCallFrame
+	hostCallDepth     int
 }
 
 type raptorImportKey struct {
@@ -412,19 +414,16 @@ func (r *Runtime) dispatchImport(
 	ctx context.Context,
 	key raptorImportKey,
 ) error {
-	call := raptorImportCall{Module: key.Module, Ordinal: key.Ordinal}
-	for register := cpu.RegisterR0; register <= cpu.RegisterR3; register++ {
-		value, err := r.CPU.ReadRegister(register)
-		if err != nil {
-			return err
-		}
-		call.Args[register] = value
-	}
-	lr, err := r.CPU.ReadRegister(cpu.RegisterLR)
+	frame, err := r.pushHostCallFrame()
 	if err != nil {
 		return err
 	}
-	call.LR = lr
+	defer r.popHostCallFrame(frame)
+	call := raptorImportCall{Module: key.Module, Ordinal: key.Ordinal}
+	for register := cpu.RegisterR0; register <= cpu.RegisterR3; register++ {
+		call.Args[register] = frame.Registers[register]
+	}
+	call.LR = frame.Registers[cpu.RegisterLR]
 	if len(r.ImportTrace) < wipirt.MaxSavedEntries {
 		r.ImportTrace = append(r.ImportTrace, call)
 	} else {
@@ -474,6 +473,29 @@ func (r *Runtime) dispatchImport(
 	r.Public.Observed[name]++
 	r.Public.Unimplemented[name]++
 	return r.Public.ReturnFromTrap(guest.WIPIReturn{})
+}
+
+func (r *Runtime) pushHostCallFrame() (*cpu.HostCallFrame, error) {
+	if r.hostCallDepth >= len(r.hostCallFrames) {
+		return nil, fmt.Errorf("Raptor host-call nesting limit reached")
+	}
+	frame := &r.hostCallFrames[r.hostCallDepth]
+	if err := cpu.CaptureHostCallFrame(
+		r.CPU,
+		frame,
+		cpu.HostCallFrameRequest{},
+	); err != nil {
+		return nil, err
+	}
+	r.hostCallDepth++
+	return frame, nil
+}
+
+func (r *Runtime) popHostCallFrame(frame *cpu.HostCallFrame) {
+	if r.hostCallDepth == 0 || frame != &r.hostCallFrames[r.hostCallDepth-1] {
+		panic("Raptor host-call frame stack is corrupt")
+	}
+	r.hostCallDepth--
 }
 
 func (r *Runtime) DispatchPrivateImport(

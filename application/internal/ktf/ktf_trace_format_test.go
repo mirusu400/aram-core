@@ -38,7 +38,7 @@ func TestKTFJavaMethodTraceMatchesFmt(t *testing.T) {
 			test.link,
 			test.registers,
 		)
-		runtime := &Runtime{}
+		runtime := &Runtime{traceMode: KTFTraceFull}
 		runtime.traceJavaMethodCall(
 			test.className,
 			test.name,
@@ -58,7 +58,7 @@ func TestKTFJavaMethodTraceMatchesFmt(t *testing.T) {
 // TestKTFJavaMethodTraceReusesScratch confirms the formatter does not hand the
 // trace a string aliasing the buffer it reuses for the next entry.
 func TestKTFJavaMethodTraceReusesScratch(t *testing.T) {
-	runtime := &Runtime{}
+	runtime := &Runtime{traceMode: KTFTraceFull}
 	runtime.traceJavaMethodCall("a/B", "m", "()V", 1, []uint32{1})
 	first := runtime.HostTrace[0]
 	runtime.traceJavaMethodCall("c/D", "n", "(I)V", 2, []uint32{2, 3})

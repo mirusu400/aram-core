@@ -151,6 +151,7 @@ func (b *Backend) arenaAppend(code []byte) uintptr {
 		procWriteProcessMemory.Call(b.currentProcess, a.base+off, source, n, 0)
 	}
 	a.off = off + n
+	b.executionStatistics.TranslatedHostBytes += uint64(n)
 	return a.base + off
 }
 
