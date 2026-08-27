@@ -33,6 +33,16 @@ type Timer struct {
 	Value    int64
 }
 
+type timersAdvanceState struct {
+	timers []timerAdvanceState
+}
+
+type timerAdvanceState struct {
+	timer    *Timer
+	deadline time.Duration
+	active   bool
+}
+
 // Timers owns ordered virtual-time deadlines. Callback representations remain
 // in the adapter; expiry is delivered as a guest-neutral event.
 type Timers struct {
@@ -121,12 +131,29 @@ func (t *Timers) Advance(now time.Duration, bus *EventBus) error {
 	if now < 0 || bus == nil {
 		return fmt.Errorf("%w: invalid timer advance", ErrInvalidArgument)
 	}
-	timerBefore := t.Snapshot()
 	busBefore := bus.Snapshot()
-	rollback := func(err error) error {
-		_ = t.Restore(timerBefore)
+	var timerBefore timersAdvanceState
+	if err := t.advanceLocked(now, bus, &timerBefore); err != nil {
 		_ = bus.Restore(busBefore)
+		t.restoreAdvance(&timerBefore)
 		return err
+	}
+	return nil
+}
+
+// advanceLocked records only timers that it mutates. A repeating timer may be
+// selected more than once in one large virtual-time step, so its original
+// deadline is journaled once and restored by pointer on transaction failure.
+func (t *Timers) advanceLocked(
+	now time.Duration,
+	bus *EventBus,
+	saved *timersAdvanceState,
+) error {
+	if now < 0 || bus == nil {
+		return fmt.Errorf("%w: invalid timer advance", ErrInvalidArgument)
+	}
+	if saved != nil {
+		saved.timers = saved.timers[:0]
 	}
 	for {
 		var selected *Timer
@@ -143,6 +170,22 @@ func (t *Timers) Advance(now time.Duration, bus *EventBus) error {
 		if selected == nil {
 			return nil
 		}
+		if saved != nil {
+			alreadySaved := false
+			for _, change := range saved.timers {
+				if change.timer == selected {
+					alreadySaved = true
+					break
+				}
+			}
+			if !alreadySaved {
+				saved.timers = append(saved.timers, timerAdvanceState{
+					timer:    selected,
+					deadline: selected.Deadline,
+					active:   selected.Active,
+				})
+			}
+		}
 		if _, err := bus.Enqueue(Event{
 			At:        selected.Deadline,
 			Kind:      EventTimer,
@@ -151,19 +194,29 @@ func (t *Timers) Advance(now time.Duration, bus *EventBus) error {
 			Name:      selected.Name,
 			Value:     selected.Value,
 		}); err != nil {
-			return rollback(err)
+			return err
 		}
 		if selected.Interval == 0 {
 			selected.Active = false
 			continue
 		}
 		if selected.Deadline > time.Duration(math.MaxInt64-int64(selected.Interval)) {
-			return rollback(fmt.Errorf(
+			return fmt.Errorf(
 				"%w: timer deadline overflow",
 				ErrLimitExceeded,
-			))
+			)
 		}
 		selected.Deadline += selected.Interval
+	}
+}
+
+func (t *Timers) restoreAdvance(saved *timersAdvanceState) {
+	if saved == nil {
+		return
+	}
+	for _, change := range saved.timers {
+		change.timer.Deadline = change.deadline
+		change.timer.Active = change.active
 	}
 }
 
