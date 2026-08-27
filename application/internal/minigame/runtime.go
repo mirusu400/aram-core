@@ -115,13 +115,12 @@ type Runtime struct {
 	surfaceWork    uint32
 	textSurface    [5]uint32
 
-	rngState              uint32
-	tickMS                uint32
-	presentCount          uint32
-	enabled               bool
-	stage                 int
-	eventInstructionLimit uint64
-	Stats                 EADSFrameStats
+	rngState     uint32
+	tickMS       uint32
+	presentCount uint32
+	enabled      bool
+	stage        int
+	Stats        EADSFrameStats
 }
 
 func NewRuntime(
@@ -359,6 +358,7 @@ func (r *Runtime) RenderFirstFrame(ctx context.Context) error {
 			event.event,
 			event.args,
 			true,
+			eadsEventInstructionLimit,
 		)
 		if runErr != nil {
 			return fmt.Errorf("EADS event 0x%04x at lifecycle stage %d: %w",
@@ -369,7 +369,7 @@ func (r *Runtime) RenderFirstFrame(ctx context.Context) error {
 				"EADS event 0x%04x at lifecycle stage %d reached instruction limit %d",
 				event.event,
 				index,
-				r.eventLimit(),
+				eadsEventInstructionLimit,
 			)
 		}
 		r.Stats.Events = append(r.Stats.Events, result)
@@ -382,6 +382,7 @@ func (r *Runtime) RenderFirstFrame(ctx context.Context) error {
 
 func (r *Runtime) StepFrame(
 	ctx context.Context,
+	instructionLimit uint64,
 ) (EADSEventResult, bool, error) {
 	if r.stage < 5 {
 		if err := r.RenderFirstFrame(ctx); err != nil {
@@ -397,6 +398,7 @@ func (r *Runtime) StepFrame(
 		FrameEvent,
 		[4]uint32{FrameEvent},
 		pc == guest.ReturnSentinel,
+		max(instructionLimit, uint64(1)),
 	)
 	if err == nil {
 		r.Stats.Events = append(r.Stats.Events, result)
@@ -406,18 +408,12 @@ func (r *Runtime) StepFrame(
 	return result, completed, err
 }
 
-func (r *Runtime) eventLimit() uint64 {
-	if r.eventInstructionLimit != 0 {
-		return r.eventInstructionLimit
-	}
-	return eadsEventInstructionLimit
-}
-
 func (r *Runtime) runEventSlice(
 	ctx context.Context,
 	event uint32,
 	args [4]uint32,
 	initialize bool,
+	limit uint64,
 ) (EADSEventResult, bool, error) {
 	if initialize {
 		for register := cpu.RegisterR0; register <= cpu.RegisterR12; register++ {
@@ -446,7 +442,6 @@ func (r *Runtime) runEventSlice(
 	}
 
 	result := EADSEventResult{Event: event}
-	limit := r.eventLimit()
 	for result.Instructions < limit {
 		pc, err := r.cpu.ReadRegister(cpu.RegisterPC)
 		if err != nil {

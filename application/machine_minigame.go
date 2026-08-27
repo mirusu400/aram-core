@@ -28,7 +28,41 @@ func (m *Machine) stepMinigameFrame(ctx context.Context) error {
 		m.mu.Unlock()
 		return fmt.Errorf("execute from %s: %w", state, ErrInvalidState)
 	}
+	hasServices := m.wipi != nil
+	m.mu.Unlock()
+
+	// A frame event may remain in flight across many CPU budgets. Advance the
+	// shared clock and drain lifecycle/timer/media events before resuming it;
+	// otherwise the running/paused transitions from each slice accumulate until
+	// the bounded service queue faults. WIPI callbacks preserve the outer CPU
+	// context, so pumping here does not clobber the suspended EADS frame.
+	if hasServices {
+		if _, stopped, err := m.pumpWIPICallbacks(
+			ctx,
+			guest.WIPIFrameDuration,
+		); err != nil || stopped {
+			return err
+		}
+	}
+
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return cpu.ErrClosed
+	}
+	if m.minigame == nil {
+		m.mu.Unlock()
+		return fmt.Errorf("step EADS frame: title runtime is unavailable")
+	}
+	switch m.state {
+	case machinecore.StateReady, machinecore.StatePaused:
+	default:
+		state := m.state
+		m.mu.Unlock()
+		return fmt.Errorf("execute from %s: %w", state, ErrInvalidState)
+	}
 	runtime := m.minigame
+	budget := max(m.frameRunBudget, uint64(1))
 	m.state = machinecore.StateRunning
 	if m.wipi != nil {
 		if err := m.wipi.BeginServiceExecution(); err != nil {
@@ -39,7 +73,7 @@ func (m *Machine) stepMinigameFrame(ctx context.Context) error {
 	}
 	m.mu.Unlock()
 
-	result, completed, err := runtime.StepFrame(ctx)
+	result, completed, err := runtime.StepFrame(ctx, budget)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
