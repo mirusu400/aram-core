@@ -244,6 +244,16 @@ type Device struct {
 	requests         []ExternalRequest
 }
 
+// deviceAdvanceState contains the four fields Device.Advance can mutate. The
+// immutable profile, LEDs, and external request log do not belong in a
+// per-frame rollback snapshot.
+type deviceAdvanceState struct {
+	vibrationLevel uint8
+	vibrationUntil time.Duration
+	backlight      bool
+	backlightUntil time.Duration
+}
+
 func NewDevice(config DeviceConfig, limits DeviceLimits) (*Device, error) {
 	if reflect.DeepEqual(config, DeviceConfig{}) {
 		config = DefaultDeviceConfig()
@@ -449,6 +459,23 @@ func (d *Device) Advance(now time.Duration) error {
 		d.backlightUntil = 0
 	}
 	return nil
+}
+
+func (d *Device) captureAdvance(destination *deviceAdvanceState) {
+	destination.vibrationLevel = d.vibrationLevel
+	destination.vibrationUntil = d.vibrationUntil
+	destination.backlight = d.backlight
+	destination.backlightUntil = d.backlightUntil
+}
+
+func (d *Device) restoreAdvance(saved *deviceAdvanceState) {
+	if saved == nil {
+		return
+	}
+	d.vibrationLevel = saved.vibrationLevel
+	d.vibrationUntil = saved.vibrationUntil
+	d.backlight = saved.backlight
+	d.backlightUntil = saved.backlightUntil
 }
 
 func (d *Device) Snapshot() DeviceState {

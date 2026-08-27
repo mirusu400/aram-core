@@ -257,12 +257,12 @@ func (m *Machine) runRaptorCallbackTask(
 	task *raptorrt.CallbackTask,
 	budget uint64,
 ) (result cpu.Result, completed bool, returnedErr error) {
-	outer, err := m.cpu.SaveContext()
+	outer, err := cpu.SaveScopedContext(m.cpu, cpu.ScopedContext{})
 	if err != nil {
 		return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
 	}
 	defer func() {
-		if restoreErr := m.cpu.RestoreContext(outer); restoreErr != nil && returnedErr == nil {
+		if restoreErr := outer.Restore(m.cpu); restoreErr != nil && returnedErr == nil {
 			result = cpu.Result{Reason: cpu.StopFault, Err: restoreErr}
 			completed = false
 			returnedErr = restoreErr
@@ -393,11 +393,11 @@ func (m *Machine) stepRaptorJavaTask(ctx context.Context) (cpu.Result, bool, err
 	if task == nil {
 		return cpu.Result{}, false, nil
 	}
-	outer, err := m.cpu.SaveContext()
+	outer, err := cpu.SaveScopedContext(m.cpu, cpu.ScopedContext{})
 	if err != nil {
 		return cpu.Result{Reason: cpu.StopFault, Err: err}, true, err
 	}
-	defer func() { _ = m.cpu.RestoreContext(outer) }()
+	defer func() { _ = outer.Restore(m.cpu) }()
 	if len(task.Context) == 0 {
 		for register := cpu.RegisterR0; register <= cpu.RegisterR12; register++ {
 			if err := m.cpu.WriteRegister(register, 0); err != nil {

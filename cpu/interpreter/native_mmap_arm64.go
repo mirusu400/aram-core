@@ -124,5 +124,6 @@ func (b *Backend) arenaAppend(code []byte) uintptr {
 	a.protect(off, n, syscall.PROT_READ|syscall.PROT_EXEC)
 	flushICache(a.base+off, a.base+off+n)
 	a.off = off + n
+	b.executionStatistics.TranslatedHostBytes += uint64(n)
 	return a.base + off
 }

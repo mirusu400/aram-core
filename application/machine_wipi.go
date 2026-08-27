@@ -274,6 +274,7 @@ func (m *Machine) pumpWIPICallbacks(
 		}
 	}
 	m.input = pendingInput
+	audioStart := m.wipi.Services.Clock.Monotonic()
 	if err := m.wipi.Services.Advance(
 		m.wipi.ServiceOwner,
 		elapsed,
@@ -284,6 +285,7 @@ func (m *Machine) pumpWIPICallbacks(
 		m.mu.Unlock()
 		return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
 	}
+	m.publishAudioFromMedia(m.wipi.Services.Media, audioStart)
 	m.wipi.TickMS = uint64(m.wipi.Services.Clock.Monotonic() / time.Millisecond)
 	for {
 		event, ready := m.wipi.Services.Events.PopReady(
@@ -455,12 +457,15 @@ func (m *Machine) invokeWIPICallback(
 	ctx context.Context,
 	callback wipirt.GuestCallback,
 ) (result cpu.Result, returnValue uint32, returnedErr error) {
-	savedContext, err := m.cpu.SaveContext()
+	// The callback returns to the address space it interrupted, so the return
+	// uses the reusable execution context. The portable one retires the TLB and
+	// every translated block, which a title pays on every callback it runs.
+	savedContext, err := cpu.SaveScopedContext(m.cpu, cpu.ScopedContext{})
 	if err != nil {
 		return cpu.Result{Reason: cpu.StopFault, Err: err}, 0, err
 	}
 	defer func() {
-		if restoreErr := m.cpu.RestoreContext(savedContext); restoreErr != nil && returnedErr == nil {
+		if restoreErr := savedContext.Restore(m.cpu); restoreErr != nil && returnedErr == nil {
 			result = cpu.Result{Reason: cpu.StopFault, Err: restoreErr}
 			returnValue = 0
 			returnedErr = restoreErr

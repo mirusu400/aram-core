@@ -868,7 +868,7 @@ func (r *Runtime) present(handle uint32) error {
 			screen.BitsPerPixel == fb.BitsPerPixel {
 			size := uint64(fb.Width) * uint64(fb.Height) * uint64(fb.bytesPerPixel())
 			if size <= uint64(^uint(0)>>1) {
-				buffer := make([]byte, int(size))
+				buffer := r.framebufferBuffer(int(size))
 				if readErr := r.CPU.ReadMemory(fb.Pixels, buffer); readErr == nil {
 					if writeErr := r.CPU.WriteMemory(screen.Pixels, buffer); writeErr == nil {
 						handle = r.ScreenHandle
@@ -888,7 +888,7 @@ func (r *Runtime) present(handle uint32) error {
 	if r.Services.Coordinator.PresentationOwner() != r.ServiceOwner {
 		return nil
 	}
-	snapshot, err := r.Services.Graphics.Present(
+	presentation, err := r.Services.Graphics.PresentCommit(
 		r.ServiceOwner,
 		serviceID,
 		shared.Rectangle{},
@@ -896,12 +896,31 @@ func (r *Runtime) present(handle uint32) error {
 	if err != nil {
 		return err
 	}
-	width := min(int(snapshot.Width), r.Frame.Bounds().Dx())
-	height := min(int(snapshot.Height), r.Frame.Bounds().Dy())
-	for y := 0; y < height; y++ {
-		source := y * int(snapshot.Width) * 4
-		destination := y * r.Frame.Stride
-		copy(r.Frame.Pix[destination:destination+width*4], snapshot.RGBA[source:source+width*4])
+	// A surface larger than the host frame can reach here: presenting a
+	// non-screen framebuffer is only refused once a screen surface exists, and
+	// a title may flush an offscreen buffer of its own size before creating
+	// one. CopyLastFrameRGBA refuses a destination that cannot hold the frame,
+	// so that case keeps the copy of the overlap it has always had.
+	if int(presentation.Width) <= r.Frame.Bounds().Dx() &&
+		int(presentation.Height) <= r.Frame.Bounds().Dy() {
+		if err := r.Services.Graphics.CopyLastFrameRGBA(
+			r.Frame.Pix,
+			r.Frame.Stride,
+		); err != nil {
+			return err
+		}
+	} else {
+		snapshot := r.Services.Graphics.LastFrame()
+		width := min(int(snapshot.Width), r.Frame.Bounds().Dx())
+		height := min(int(snapshot.Height), r.Frame.Bounds().Dy())
+		for y := 0; y < height; y++ {
+			source := y * int(snapshot.Width) * 4
+			destination := y * r.Frame.Stride
+			copy(
+				r.Frame.Pix[destination:destination+width*4],
+				snapshot.RGBA[source:source+width*4],
+			)
+		}
 	}
 	r.Stats.PresentCount++
 	return nil
@@ -916,11 +935,20 @@ func (r *Runtime) syncFramebufferToService(fb Framebuffer) error {
 	if size > uint64(^uint(0)>>1) {
 		return fmt.Errorf("WIPI framebuffer byte size exceeds host limit")
 	}
-	pixels := make([]byte, int(size))
+	pixels := r.framebufferBuffer(int(size))
 	if err := r.CPU.ReadMemory(fb.Pixels, pixels); err != nil {
 		return err
 	}
 	return r.Services.Graphics.ReplacePixels(r.ServiceOwner, serviceID, pixels)
+}
+
+func (r *Runtime) framebufferBuffer(size int) []byte {
+	if cap(r.framebufferScratch) < size {
+		r.framebufferScratch = make([]byte, size)
+	} else {
+		r.framebufferScratch = r.framebufferScratch[:size]
+	}
+	return r.framebufferScratch
 }
 
 func (r *Runtime) syncFramebufferFromService(fb Framebuffer) error {

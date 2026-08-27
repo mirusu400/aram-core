@@ -151,6 +151,58 @@ func TestMediaSMAFPlaysAtItsNaturalLength(t *testing.T) {
 	}
 }
 
+func TestMediaSMAFContentCacheSharesDecodeAndMusicVoice(t *testing.T) {
+	registry := NewRegistry(32)
+	media, err := NewMedia(registry, DefaultMediaLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const owner OwnerID = 7
+	score := smafGoldenScore()
+	clips := make([]ServiceID, 2)
+	for index := range clips {
+		clips[index], err = media.CreateClip(owner, "audio/mmf", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := media.Append(owner, clips[index], score); err != nil {
+			t.Fatal(err)
+		}
+		if err := media.Play(owner, clips[index], 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	decoded := media.clips[clips[0]].decoded
+	if decoded == nil || media.clips[clips[1]].decoded != decoded {
+		t.Fatal("identical SMAF clips did not share their content decode")
+	}
+	media.SetAudioMixMode(true)
+	if err := media.Play(owner, clips[0], -1); err != nil {
+		t.Fatal(err)
+	}
+	if media.bgmVoice == nil || media.bgmVoice.decoded != decoded {
+		t.Fatal("promoting cached SMAF music reparsed or copied its decode")
+	}
+}
+
+func BenchmarkMediaSMAFDecodeCacheHit(b *testing.B) {
+	media, err := NewMedia(NewRegistry(32), DefaultMediaLimits())
+	if err != nil {
+		b.Fatal(err)
+	}
+	score := smafGoldenScore()
+	if media.decodeSMAF(score) == nil {
+		b.Fatal("synthetic SMAF did not decode")
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if media.decodeSMAF(score) == nil {
+			b.Fatal("cached SMAF disappeared")
+		}
+	}
+}
+
 func appendSMAFChunk(destination, id, body []byte) []byte {
 	destination = append(destination, id...)
 	size := make([]byte, 4)

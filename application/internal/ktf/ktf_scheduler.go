@@ -38,7 +38,11 @@ func (r *Runtime) call(
 		r.executionDepth--
 		r.NativeParameterBase = nativeParameterBase
 	}()
-	saved, err := r.CPU.SaveContext()
+	// The nested call returns to the address space it was made from, so the
+	// return uses the reusable execution context. The portable one would retire
+	// the TLB and every translated block on each host callback that re-enters
+	// guest code, and a title does that many times per frame.
+	saved, err := r.saveNestedCallContext()
 	if err != nil {
 		return cpu.Result{Reason: cpu.StopFault, Err: err}, 0, err
 	}
@@ -47,7 +51,7 @@ func (r *Runtime) call(
 		return cpu.Result{Reason: cpu.StopFault, Err: callerStackErr}, 0, callerStackErr
 	}
 	defer func() {
-		if restoreErr := r.CPU.RestoreContext(saved); restoreErr != nil && returnedErr == nil {
+		if restoreErr := saved.Restore(r.CPU); restoreErr != nil && returnedErr == nil {
 			result = cpu.Result{Reason: cpu.StopFault, Err: restoreErr}
 			returnValue = 0
 			returnedErr = restoreErr
@@ -188,7 +192,7 @@ func (r *Runtime) call(
 			return run, 0, err
 		}
 		r.TraceHostCall(host.name)
-		value, err := host.handler(ctx, r)
+		value, err := r.invokeHostHandler(ctx, host)
 		if err != nil {
 			var unwind *ktfJavaExceptionUnwind
 			if errors.As(err, &unwind) &&
@@ -529,16 +533,55 @@ func (r *Runtime) releaseStartedThreads(parent *Task, reason string) {
 	}
 }
 
+// saveNestedCallContext captures the caller state for one level of nesting,
+// reusing that level's storage across calls. r.call is reentrant, so each
+// depth keeps its own: a deeper call must not overwrite the state its caller
+// is going to return to. executionDepth has already been incremented.
+func (r *Runtime) saveNestedCallContext() (cpu.ScopedContext, error) {
+	index := r.executionDepth - 1
+	if index < 0 {
+		index = 0
+	}
+	for len(r.nestedCallContexts) <= index {
+		r.nestedCallContexts = append(r.nestedCallContexts, cpu.ScopedContext{})
+	}
+	saved, err := cpu.SaveScopedContext(r.CPU, r.nestedCallContexts[index])
+	if err != nil {
+		r.nestedCallContexts[index] = cpu.ScopedContext{}
+		return cpu.ScopedContext{}, err
+	}
+	r.nestedCallContexts[index] = saved
+	return saved, nil
+}
+
 func (r *Runtime) NewTask(
 	procedure uint32,
 	args []uint32,
 	index int,
 ) (*Task, error) {
-	saved, err := r.CPU.SaveContext()
+	fast, hasFast := r.CPU.(cpu.ExecutionContextBackend)
+	var (
+		savedFast cpu.ExecutionContext
+		saved     []byte
+		err       error
+	)
+	if hasFast {
+		savedFast, err = fast.SaveExecutionContext(nil)
+		if errors.Is(err, cpu.ErrExecutionContextUnavailable) {
+			hasFast = false
+			err = nil
+		}
+	}
+	if err == nil && !hasFast {
+		saved, err = r.CPU.SaveContext()
+	}
 	if err != nil {
 		return nil, err
 	}
 	restore := func() error {
+		if hasFast {
+			return fast.RestoreExecutionContext(savedFast)
+		}
 		return r.CPU.RestoreContext(saved)
 	}
 	stackTop := guest.DefaultStackBase + guest.DefaultStackSize -
@@ -580,7 +623,16 @@ func (r *Runtime) NewTask(
 			return nil, err
 		}
 	}
-	taskContext, err := r.CPU.SaveContext()
+	var taskFast cpu.ExecutionContext
+	var taskContext []byte
+	if hasFast {
+		taskFast, err = fast.SaveExecutionContext(nil)
+		if err == nil {
+			taskContext, err = fast.MarshalExecutionContext(taskFast, nil)
+		}
+	} else {
+		taskContext, err = r.CPU.SaveContext()
+	}
 	if err != nil {
 		_ = restore()
 		return nil, err
@@ -588,7 +640,7 @@ func (r *Runtime) NewTask(
 	if err := restore(); err != nil {
 		return nil, err
 	}
-	return &Task{Context: taskContext}, nil
+	return &Task{Context: taskContext, executionContext: taskFast}, nil
 }
 
 func (r *Runtime) RunTaskSlice(
@@ -630,14 +682,16 @@ func (r *Runtime) RunTaskSlice(
 	r.LastJavaMethod = task.LastJavaMethod
 	r.activeTask = task
 	r.ActiveInstructions = 0
+	task.slices++
 	defer func() {
 		r.chargeThreadStartGrace(task, r.ActiveInstructions)
+		task.instructions += r.ActiveInstructions
 		task.LastJavaMethod = r.LastJavaMethod
 		r.LastJavaMethod = lastJavaMethod
 		r.activeTask = nil
 		r.ActiveInstructions = 0
 	}()
-	if err := r.CPU.RestoreContext(task.Context); err != nil {
+	if err := r.restoreTaskContext(task); err != nil {
 		return cpu.Result{Reason: cpu.StopFault, Err: err}
 	}
 	if err := r.restoreTaskExceptionFrame(task); err != nil {
@@ -662,17 +716,19 @@ func (r *Runtime) RunTaskSlice(
 	if status&cpu.StatusThumb != 0 {
 		mode = cpu.ModeThumb
 	}
-	stack, _ := r.CPU.ReadRegister(cpu.RegisterSP)
-	register10, _ := r.CPU.ReadRegister(cpu.RegisterR10)
-	link, _ := r.CPU.ReadRegister(cpu.RegisterLR)
-	r.tracef(
-		"java_task_slice:index=%d:pc=0x%08x:sp=0x%08x:r10=0x%08x:lr=0x%08x",
-		taskIndex,
-		pc,
-		stack,
-		register10,
-		link,
-	)
+	if r.traceMode == KTFTraceFull {
+		stack, _ := r.CPU.ReadRegister(cpu.RegisterSP)
+		register10, _ := r.CPU.ReadRegister(cpu.RegisterR10)
+		link, _ := r.CPU.ReadRegister(cpu.RegisterLR)
+		r.tracef(
+			"java_task_slice:index=%d:pc=0x%08x:sp=0x%08x:r10=0x%08x:lr=0x%08x",
+			taskIndex,
+			pc,
+			stack,
+			register10,
+			link,
+		)
+	}
 	r.yieldRequested = false
 	var instructions uint64
 	for instructions < instructionLimit {
@@ -682,6 +738,7 @@ func (r *Runtime) RunTaskSlice(
 		r.ActiveInstructions = instructions
 		run.Instructions = instructions
 		if run.Err != nil {
+			task.lastYieldReason = "fault"
 			r.tracef(
 				"java_task_fault:index=%d:pc=0x%08x:error=%v",
 				taskIndex,
@@ -694,6 +751,10 @@ func (r *Runtime) RunTaskSlice(
 			if err := r.saveTaskContext(task); err != nil {
 				run.Reason = cpu.StopFault
 				run.Err = err
+				task.lastYieldReason = "fault"
+			} else {
+				task.yields++
+				task.lastYieldReason = "budget"
 			}
 			return run
 		}
@@ -710,6 +771,7 @@ func (r *Runtime) RunTaskSlice(
 		trap := run.PC - 2
 		if trap == ktfReturnSentinel {
 			task.Done = true
+			task.lastYieldReason = "return"
 			if err := r.completeJavaTimerTask(task); err != nil {
 				run.Reason = cpu.StopFault
 				run.Err = err
@@ -761,7 +823,7 @@ func (r *Runtime) RunTaskSlice(
 			return run
 		}
 		r.TraceHostCall(host.name)
-		value, err := host.handler(ctx, r)
+		value, err := r.invokeHostHandler(ctx, host)
 		if err != nil {
 			var unwind *ktfJavaExceptionUnwind
 			if errors.As(err, &unwind) {
@@ -795,7 +857,7 @@ func (r *Runtime) RunTaskSlice(
 			run.Err = fmt.Errorf("KTF host call %s: %w", host.name, err)
 			return run
 		}
-		if strings.HasPrefix(host.name, "java.bridge.") {
+		if r.traceMode == KTFTraceFull && strings.HasPrefix(host.name, "java.bridge.") {
 			register10, _ := r.CPU.ReadRegister(cpu.RegisterR10)
 			link, _ := r.CPU.ReadRegister(cpu.RegisterLR)
 			stack, _ := r.CPU.ReadRegister(cpu.RegisterSP)
@@ -814,14 +876,6 @@ func (r *Runtime) RunTaskSlice(
 			run.Reason = cpu.StopExited
 			return run
 		}
-		if err := r.CPU.WriteRegister(cpu.RegisterR0, value); err != nil {
-			return cpu.Result{
-				Reason:       cpu.StopFault,
-				Instructions: instructions,
-				PC:           trap,
-				Err:          err,
-			}
-		}
 		lr, err := r.CPU.ReadRegister(cpu.RegisterLR)
 		if err != nil {
 			return cpu.Result{
@@ -838,15 +892,11 @@ func (r *Runtime) RunTaskSlice(
 			mode = cpu.ModeThumb
 			status = cpu.StatusThumb
 		}
-		if err := r.CPU.WriteRegister(cpu.RegisterPC, pc); err != nil {
-			return cpu.Result{
-				Reason:       cpu.StopFault,
-				Instructions: instructions,
-				PC:           trap,
-				Err:          err,
-			}
-		}
-		if err := r.CPU.WriteRegister(cpu.RegisterCPSR, status); err != nil {
+		var commit cpu.RegisterCommit
+		_ = commit.Set(cpu.RegisterR0, value)
+		_ = commit.Set(cpu.RegisterPC, pc)
+		_ = commit.Set(cpu.RegisterCPSR, status)
+		if err := cpu.CommitHostCallRegisters(r.CPU, commit); err != nil {
 			return cpu.Result{
 				Reason:       cpu.StopFault,
 				Instructions: instructions,
@@ -858,6 +908,7 @@ func (r *Runtime) RunTaskSlice(
 			r.yieldRequested = false
 			r.releaseStartedThreads(task, "yield")
 			if err := r.saveTaskContext(task); err != nil {
+				task.lastYieldReason = "fault"
 				return cpu.Result{
 					Reason:       cpu.StopFault,
 					Instructions: instructions,
@@ -866,6 +917,7 @@ func (r *Runtime) RunTaskSlice(
 				}
 			}
 			if err := r.releaseDeferredCardPaints(ctx, task); err != nil {
+				task.lastYieldReason = "fault"
 				return cpu.Result{
 					Reason:       cpu.StopFault,
 					Instructions: instructions,
@@ -873,6 +925,8 @@ func (r *Runtime) RunTaskSlice(
 					Err:          err,
 				}
 			}
+			task.yields++
+			task.lastYieldReason = "host"
 			return cpu.Result{
 				Reason:       cpu.StopBudget,
 				Instructions: instructions,
@@ -881,6 +935,7 @@ func (r *Runtime) RunTaskSlice(
 		}
 	}
 	if err := r.saveTaskContext(task); err != nil {
+		task.lastYieldReason = "fault"
 		return cpu.Result{
 			Reason:       cpu.StopFault,
 			Instructions: instructions,
@@ -888,6 +943,8 @@ func (r *Runtime) RunTaskSlice(
 			Err:          err,
 		}
 	}
+	task.yields++
+	task.lastYieldReason = "budget"
 	return cpu.Result{
 		Reason:       cpu.StopBudget,
 		Instructions: instructions,
@@ -1250,17 +1307,84 @@ func (r *Runtime) hasLiveTask() bool {
 }
 
 func (r *Runtime) saveTaskContext(task *Task) error {
-	contextData, err := r.CPU.SaveContext()
-	if err != nil {
-		return err
+	fast, hasFast := r.CPU.(cpu.ExecutionContextBackend)
+	if hasFast {
+		contextData, err := fast.SaveExecutionContext(task.executionContext)
+		if err == nil {
+			task.executionContext = contextData
+			task.contextDirty = true
+		} else if !errors.Is(err, cpu.ErrExecutionContextUnavailable) {
+			return err
+		} else {
+			hasFast = false
+		}
 	}
-	task.Context = contextData
+	if !hasFast {
+		contextData, err := r.CPU.SaveContext()
+		if err != nil {
+			return err
+		}
+		task.Context = contextData
+		task.executionContext = nil
+		task.contextDirty = false
+	}
+	var err error
 	if r.exceptionContext != 0 {
 		task.exceptionFrame, err = r.ReadU32(r.exceptionContext + 8*4)
 		if err != nil {
 			return err
 		}
 	}
+	return nil
+}
+
+func (r *Runtime) restoreTaskContext(task *Task) error {
+	fast, hasFast := r.CPU.(cpu.ExecutionContextBackend)
+	if hasFast && task.executionContext != nil {
+		if err := fast.RestoreExecutionContext(task.executionContext); err == nil {
+			return nil
+		} else if !errors.Is(err, cpu.ErrExecutionContextUnavailable) {
+			return err
+		}
+	}
+	if task.contextDirty {
+		if err := r.materializeTaskContext(task); err != nil {
+			return err
+		}
+	}
+	if err := r.CPU.RestoreContext(task.Context); err != nil {
+		return err
+	}
+	if hasFast {
+		contextData, err := fast.SaveExecutionContext(task.executionContext)
+		if err == nil {
+			task.executionContext = contextData
+			return nil
+		}
+		if !errors.Is(err, cpu.ErrExecutionContextUnavailable) {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *Runtime) materializeTaskContext(task *Task) error {
+	if task == nil || !task.contextDirty {
+		return nil
+	}
+	fast, ok := r.CPU.(cpu.ExecutionContextBackend)
+	if !ok || task.executionContext == nil {
+		return errors.New("KTF task has no serializable execution context")
+	}
+	contextData, err := fast.MarshalExecutionContext(
+		task.executionContext,
+		task.Context[:0],
+	)
+	if err != nil {
+		return err
+	}
+	task.Context = contextData
+	task.contextDirty = false
 	return nil
 }
 

@@ -23,6 +23,9 @@ func newKTFObservedAPIRuntime(t *testing.T) *Runtime {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := runtime.SetTraceMode(KTFTraceFull); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { _ = runtime.CPU.Close() })
 	if err := runtime.MapImageAndHost(); err != nil {
 		t.Fatal(err)

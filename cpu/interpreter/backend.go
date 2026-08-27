@@ -283,6 +283,8 @@ type Backend struct {
 	cp15ControlHistoryNext         uint64
 	instructionPrefetchHistory     []InstructionCachePrefetchAccess
 	instructionPrefetchHistoryNext uint64
+	executionStatistics            cpu.ExecutionStatistics
+	hostCallScratch                [cpu.MaxHostCallWords * 4]byte
 }
 
 func New() *Backend {
@@ -328,6 +330,15 @@ func (b *Backend) PCHits() map[uint32]uint64 {
 		out[k] = v
 	}
 	return out
+}
+
+// ExecutionStatistics returns low-overhead cumulative scheduler and
+// translation counters. Unlike instruction tracing, maintaining these counters
+// does not change the execution tier or allocate on the hot path.
+func (b *Backend) ExecutionStatistics() cpu.ExecutionStatistics {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.executionStatistics
 }
 
 // SetPCHistoryLimit configures a bounded diagnostic ring of instruction
@@ -687,6 +698,10 @@ func (b *Backend) WriteRegister(id, value uint32) error {
 	if b.closed {
 		return cpu.ErrClosed
 	}
+	return b.writeRegisterLocked(id, value)
+}
+
+func (b *Backend) writeRegisterLocked(id, value uint32) error {
 	if id >= uint32(len(b.regs)) {
 		return fmt.Errorf("register %d: %w", id, cpu.ErrInvalidAddress)
 	}

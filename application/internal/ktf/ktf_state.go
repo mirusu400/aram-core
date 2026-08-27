@@ -430,6 +430,11 @@ func WriteState(r *Runtime, backend cpu.Backend, started bool, writer *guest.Sta
 	if r.executionDepth != 0 || r.activeTask != nil {
 		return fmt.Errorf("save KTF state while an adapter continuation is active")
 	}
+	for index, task := range r.Tasks {
+		if err := r.materializeTaskContext(task); err != nil {
+			return fmt.Errorf("materialize KTF task %d context: %w", index, err)
+		}
+	}
 	for _, instance := range guest.SortedUint32Keys(r.Graphics) {
 		if err := r.syncKTFGraphics(instance); err != nil {
 			return fmt.Errorf(

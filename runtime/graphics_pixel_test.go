@@ -53,6 +53,36 @@ func TestSurfaceRGBAFastPathsMatchGeneric(t *testing.T) {
 	}
 }
 
+func TestReplacePixelRowsCopiesPackedPixelsAcrossPadding(t *testing.T) {
+	graphics, err := NewGraphics(NewRegistry(8), GraphicsLimits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	surface, err := graphics.CreateSurface(1, SurfaceDescriptor{
+		Width: 2, Height: 2, Stride: 12, Format: PixelRGBA8888,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := make([]byte, 24)
+	copy(source[0:8], []byte{1, 2, 3, 4, 5, 6, 7, 8})
+	copy(source[16:24], []byte{9, 10, 11, 12, 13, 14, 15, 16})
+	if err := graphics.ReplacePixelRows(1, surface, source, 16); err != nil {
+		t.Fatal(err)
+	}
+	pixels, err := graphics.Pixels(1, surface)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []byte{
+		1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0,
+		9, 10, 11, 12, 13, 14, 15, 16, 0, 0, 0, 0,
+	}
+	if !bytes.Equal(pixels, want) {
+		t.Fatalf("padded surface pixels = %v, want %v", pixels, want)
+	}
+}
+
 // genericSurfaceRGBA is the pixel-at-a-time conversion surfaceRGBA's
 // specialised loops replace.
 func genericSurfaceRGBA(current *surface) []byte {
