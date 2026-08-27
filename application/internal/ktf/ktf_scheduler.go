@@ -38,7 +38,11 @@ func (r *Runtime) call(
 		r.executionDepth--
 		r.NativeParameterBase = nativeParameterBase
 	}()
-	saved, err := r.CPU.SaveContext()
+	// The nested call returns to the address space it was made from, so the
+	// return uses the reusable execution context. The portable one would retire
+	// the TLB and every translated block on each host callback that re-enters
+	// guest code, and a title does that many times per frame.
+	saved, err := r.saveNestedCallContext()
 	if err != nil {
 		return cpu.Result{Reason: cpu.StopFault, Err: err}, 0, err
 	}
@@ -47,7 +51,7 @@ func (r *Runtime) call(
 		return cpu.Result{Reason: cpu.StopFault, Err: callerStackErr}, 0, callerStackErr
 	}
 	defer func() {
-		if restoreErr := r.CPU.RestoreContext(saved); restoreErr != nil && returnedErr == nil {
+		if restoreErr := saved.Restore(r.CPU); restoreErr != nil && returnedErr == nil {
 			result = cpu.Result{Reason: cpu.StopFault, Err: restoreErr}
 			returnValue = 0
 			returnedErr = restoreErr
@@ -527,6 +531,27 @@ func (r *Runtime) releaseStartedThreads(parent *Task, reason string) {
 			released,
 		)
 	}
+}
+
+// saveNestedCallContext captures the caller state for one level of nesting,
+// reusing that level's storage across calls. r.call is reentrant, so each
+// depth keeps its own: a deeper call must not overwrite the state its caller
+// is going to return to. executionDepth has already been incremented.
+func (r *Runtime) saveNestedCallContext() (cpu.ScopedContext, error) {
+	index := r.executionDepth - 1
+	if index < 0 {
+		index = 0
+	}
+	for len(r.nestedCallContexts) <= index {
+		r.nestedCallContexts = append(r.nestedCallContexts, cpu.ScopedContext{})
+	}
+	saved, err := cpu.SaveScopedContext(r.CPU, r.nestedCallContexts[index])
+	if err != nil {
+		r.nestedCallContexts[index] = cpu.ScopedContext{}
+		return cpu.ScopedContext{}, err
+	}
+	r.nestedCallContexts[index] = saved
+	return saved, nil
 }
 
 func (r *Runtime) NewTask(
