@@ -29,13 +29,12 @@ func TestFrameEventResumesAfterInstructionBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime := &Runtime{
-		cpu:                   backend,
-		entry:                 0x1001,
-		stage:                 5,
-		eventInstructionLimit: 4,
+		cpu:   backend,
+		entry: 0x1001,
+		stage: 5,
 	}
 
-	first, completed, err := runtime.StepFrame(context.Background())
+	first, completed, err := runtime.StepFrame(context.Background(), 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +48,7 @@ func TestFrameEventResumesAfterInstructionBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	second, completed, err := runtime.StepFrame(context.Background())
+	second, completed, err := runtime.StepFrame(context.Background(), 4)
 	if err != nil {
 		t.Fatal(err)
 	}
