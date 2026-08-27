@@ -737,6 +737,8 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 		return "MC_knlPrintk", true
 	case 101:
 		return "MC_knlSprintk", true
+	case 107:
+		return "MC_knlExit", true
 	case 120:
 		return "MC_knlGetTotalMemory", true
 	case 121:
@@ -759,6 +761,8 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 		return "MC_grpInitContext", true
 	case 206:
 		return "MC_grpSetContext", true
+	case 208:
+		return "MC_grpPutPixel", true
 	case 209:
 		return "MC_grpDrawLine", true
 	// Bracketed by DrawLine and FillRect, so this is the vtable slot between
@@ -797,6 +801,8 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 		return "MC_grpFlushLcd", true
 	case 223:
 		return "MC_grpGetPixelFromRGB", true
+	case 224:
+		return "MC_grpGetRGBFromPixel", true
 	case 225:
 		return "MC_grpGetDisplayInfo", true
 	// 영웅서기3 asks for a font handle here with (face, size, style) and feeds
@@ -804,6 +810,14 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 	// field, so an unresolved import leaves the Clet drawing with font 0.
 	case 227:
 		return "MC_grpGetFont", true
+	case 228:
+		return "MC_grpGetFontHeight", true
+	case 229:
+		return "MC_grpGetFontAscent", true
+	case 230:
+		return "MC_grpGetFontDescent", true
+	case 231:
+		return "MC_grpGetStringWidth", true
 	case 233:
 		return "MC_grpCreateImage", true
 	// The 400 block is MC_FS in vtable order. 영웅서기3 pins every entry from
@@ -895,6 +909,8 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 	// faulted while unimplemented (returned 0).
 	case 1056:
 		return "localtime", true
+	case 1208:
+		return "MC_mdaClipGetVolume", true
 	// MC_mdaVibrator drives the handset vibration motor. libwipi's lgt-raptor
 	// veneer imports it at module 0x1fb ordinal 0x4c1; without this mapping the
 	// call fell through to the unimplemented stub, so no vibration ever reached
