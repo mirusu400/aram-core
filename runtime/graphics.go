@@ -585,7 +585,13 @@ func (g *Graphics) presentCommit(
 	if g.presentSequence == math.MaxUint64 {
 		return FrameSnapshot{}, fmt.Errorf("%w: presentation sequence exhausted", ErrLimitExceeded)
 	}
+	// Reuse is only sound when the surface itself is clean. dirty alone is not
+	// enough: a requested rectangle that falls outside the surface intersects
+	// to empty, and adopting the previous frame there would drop pixels the
+	// guest had already drawn - and clear current.dirty, so nothing would ever
+	// present them.
 	reuse := dirty.Empty() &&
+		current.dirty.Empty() &&
 		g.lastFrame.SurfaceID == id &&
 		g.lastFrame.Width == current.descriptor.Width &&
 		g.lastFrame.Height == current.descriptor.Height
