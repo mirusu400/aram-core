@@ -178,6 +178,9 @@ func (m *Machine) LoadState(input io.Reader) error {
 	if err != nil {
 		return err
 	}
+	// From this point restoration may replace guest time and media state. Make
+	// any PCM published from the previous timeline unreachable immediately.
+	m.beginAudioGeneration(0)
 
 	if err := m.cpu.RestoreContext(parsed.context); err != nil {
 		return fmt.Errorf("restore CPU context: %w", err)
@@ -214,6 +217,7 @@ func (m *Machine) LoadState(input io.Reader) error {
 	// The restored media state carries whatever policy was active when the save
 	// was written; re-apply the current preference so a toggle since then wins.
 	m.applyAudioMixMode()
+	m.setAudioGenerationEpoch(m.guestTimeLocked())
 	return nil
 }
 

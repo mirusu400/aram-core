@@ -41,6 +41,20 @@ func TestFramePresentationHoldsItsSequenceWhilePixelsAreUnchanged(t *testing.T) 
 	}
 }
 
+func TestVideoPresentationCarriesGuestTimeline(t *testing.T) {
+	machine := &Machine{
+		frame:           image.NewRGBA(image.Rect(0, 0, 4, 3)),
+		audioGeneration: 7,
+	}
+	presentation := machine.VideoPresentation()
+	if presentation.Image == nil || presentation.Sequence == 0 {
+		t.Fatalf("video presentation = %+v", presentation)
+	}
+	if presentation.GuestNS != 0 || presentation.Generation != 7 {
+		t.Fatalf("video timeline = %+v, want guest 0 generation 7", presentation)
+	}
+}
+
 // The published frame must be a snapshot. If it aliased the guest's live
 // framebuffer, the next guest draw would silently rewrite a frame the driver
 // still believes it holds.

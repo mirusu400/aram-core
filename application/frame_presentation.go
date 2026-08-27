@@ -6,6 +6,8 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
+
+	machinecore "github.com/mirusu400/aram-core/core"
 )
 
 // framePresentationCache holds the last frame handed to a driver so an
@@ -35,6 +37,26 @@ type framePresentationCache struct {
 func (m *Machine) FramePresentation() (image.Image, uint64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.framePresentationLocked()
+}
+
+// VideoPresentation anchors the immutable frame to the same deterministic
+// guest timeline and discontinuity generation as published audio.
+func (m *Machine) VideoPresentation() machinecore.VideoPresentation {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	frame, sequence := m.framePresentationLocked()
+	return machinecore.VideoPresentation{
+		Image:      frame,
+		Sequence:   sequence,
+		GuestNS:    int64(m.guestTimeLocked()),
+		Generation: m.audioGenerationValue(),
+	}
+}
+
+// framePresentationLocked is the shared legacy/timestamped presentation path.
+// Callers hold m.mu.
+func (m *Machine) framePresentationLocked() (image.Image, uint64) {
 	if m.ktf != nil && m.ktf.Services != nil {
 		sequence, hash := m.ktf.Services.Graphics.LastFramePresentation()
 		if sequence == 0 {

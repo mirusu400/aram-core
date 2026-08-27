@@ -53,10 +53,25 @@ func TestInputAndAudioValidation(t *testing.T) {
 	if err := (InputEvent{Control: strings.Repeat("x", MaxControlNameBytes+1)}).Validate(); err == nil {
 		t.Fatal("InputEvent.Validate accepted an oversized control")
 	}
-	if err := (AudioChunk{SampleRate: 44100, Channels: 2, PCM16: make([]int16, 4)}).Validate(); err != nil {
+	if err := (AudioChunk{
+		SampleRate:   44100,
+		Channels:     2,
+		PCM16:        make([]int16, 4),
+		StartGuestNS: int64(10 * time.Millisecond),
+		StartSample:  441,
+		Generation:   2,
+	}).Validate(); err != nil {
 		t.Fatal(err)
 	}
 	if err := (AudioChunk{SampleRate: 44100, Channels: 2, PCM16: make([]int16, 3)}).Validate(); err == nil {
 		t.Fatal("AudioChunk.Validate accepted an incomplete sample frame")
+	}
+	if err := (AudioChunk{
+		SampleRate:   44100,
+		Channels:     2,
+		PCM16:        make([]int16, 4),
+		StartGuestNS: -1,
+	}).Validate(); err == nil {
+		t.Fatal("AudioChunk.Validate accepted a negative guest timestamp")
 	}
 }
