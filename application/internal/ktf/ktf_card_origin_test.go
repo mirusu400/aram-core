@@ -231,3 +231,48 @@ func TestKTFWithoutAnnunciatorNothingPaintsTheTopRow(t *testing.T) {
 		}
 	}
 }
+
+// The card a title is told about and the card the screen Graphics clips to
+// have to be the same rectangle. The Raptor Java bridge answers
+// Card.getWidth/getHeight from DisplayWidth and DefaultCardHeight for exactly
+// this reason: it used to answer with the whole framebuffer, so 붕어빵타이쿤3
+// laid its screens out over 320 rows and lost the bottom twenty to this clip
+// (issue #74).
+func TestKTFCardSizeMatchesTheScreenGraphicsClip(t *testing.T) {
+	for _, annunciator := range []bool{false, true} {
+		runtime := newCardOriginRuntime(t)
+		if annunciator {
+			showAnnunciator(runtime)
+		}
+		graphics, err := runtime.EnsureScreenGraphics()
+		if err != nil {
+			t.Fatal(err)
+		}
+		runtime.ResetScreenGraphics(graphics)
+		clip := runtime.Graphics[graphics].clip
+		if got := uint32(clip.Dx()); got != runtime.DisplayWidth() {
+			t.Fatalf(
+				"annunciator=%v: clip width %d, card width %d",
+				annunciator,
+				got,
+				runtime.DisplayWidth(),
+			)
+		}
+		if got := uint32(clip.Dy()); got != runtime.DefaultCardHeight() {
+			t.Fatalf(
+				"annunciator=%v: clip height %d, card height %d",
+				annunciator,
+				got,
+				runtime.DefaultCardHeight(),
+			)
+		}
+		if got := uint32(clip.Min.Y); got != runtime.CardOriginY() {
+			t.Fatalf(
+				"annunciator=%v: clip top %d, card origin %d",
+				annunciator,
+				got,
+				runtime.CardOriginY(),
+			)
+		}
+	}
+}
