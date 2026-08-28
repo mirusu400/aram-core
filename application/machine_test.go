@@ -626,6 +626,32 @@ func TestFactoryDoesNotMisclassifyMalformedJavaArchiveAsRaptor(t *testing.T) {
 	}
 }
 
+// Issue #69, 크아비엔비2011: an Android APK is a ZIP, so it survives every WIPI
+// loader and reached the container scan, which reported "no valid ABHS or EADS
+// records" — the person who opened it had no way to tell that ARAM simply does
+// not run Android applications.
+func TestFactoryNamesAndroidPackagesInsteadOfBlamingTheContainer(t *testing.T) {
+	archive := testZIP(t, map[string][]byte{
+		"AndroidManifest.xml": []byte("binary xml"),
+		"classes.dex":         []byte("dex 035 dalvik"),
+	})
+	_, err := NewFactory().Create(context.Background(), machinecore.Source{
+		Name:     "android.apk",
+		Format:   string(loader.KindJava),
+		ReaderAt: bytes.NewReader(archive),
+		Size:     int64(len(archive)),
+	})
+	if !errors.Is(err, ErrUnsupportedSource) {
+		t.Fatalf("Android package error = %v", err)
+	}
+	if !strings.Contains(err.Error(), "Android application package") {
+		t.Fatalf("Android package error does not name the format: %v", err)
+	}
+	if errors.Is(err, loader.ErrNoContainerRecords) {
+		t.Fatalf("Android package was reported as a broken container: %v", err)
+	}
+}
+
 func TestFactoryClassifiesEncryptedKTFPackageAsUnsupported(t *testing.T) {
 	encrypted := make([]byte, 16+32)
 	archive := testZIP(t, map[string][]byte{

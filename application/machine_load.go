@@ -99,6 +99,23 @@ func (m *Machine) Load(ctx context.Context, source machinecore.Source) error {
 	}
 	container, err := loader.InspectContainer(data)
 	if err != nil || len(container.Images) == 0 {
+		// An Android package is a ZIP too, so it survives every WIPI loader
+		// above and lands here. Say what it is instead of reporting the last
+		// container scan's "no valid ABHS or EADS records", which reads as a
+		// broken WIPI title rather than a file this emulator never runs.
+		if wrapped, android := loader.AndroidPackage(data); android {
+			relation := "is"
+			if wrapped {
+				relation = "contains"
+			}
+			return fmt.Errorf(
+				"%w: %q %s an Android application package; ARAM runs WIPI "+
+					"titles, not Android applications",
+				ErrUnsupportedSource,
+				source.Name,
+				relation,
+			)
+		}
 		if err == nil {
 			err = ErrUnsupportedSource
 		}
