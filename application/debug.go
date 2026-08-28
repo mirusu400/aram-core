@@ -30,7 +30,85 @@ type (
 	DebugRaptorSnapshot      = guest.DebugRaptorSnapshot
 	DebugRaptorImportCall    = guest.DebugRaptorImportCall
 	DebugSKVMSnapshot        = guest.DebugSKVMSnapshot
+	DebugMemoryRegion        = guest.DebugMemoryRegion
 )
+
+const (
+	// defaultDebugMemoryLimit caps the total guest bytes returned across all
+	// crash-triage windows when a caller does not request its own bound.
+	defaultDebugMemoryLimit = 64 << 10
+	debugMemoryPCTrailing   = 128
+	debugMemoryPCWindow     = 512
+	debugMemoryStackWindow  = 1024
+	debugMemoryTextWindow   = 1024
+)
+
+// DebugMemoryRegions returns bounded windows of guest memory for crash triage:
+// code around the faulting PC, the top of the stack, and the head of the text
+// segment. It returns nil unless the machine has faulted, because guest runtime
+// memory can hold game data and is only meant for a user-submitted crash
+// report. limit caps the total bytes summed across the returned regions.
+func (m *Machine) DebugMemoryRegions(limit int) []DebugMemoryRegion {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.state != machinecore.StateFaulted || m.cpu == nil {
+		return nil
+	}
+	if limit <= 0 {
+		limit = defaultDebugMemoryLimit
+	}
+
+	windows := make([]DebugMemoryRegion, 0, 3)
+	if pc := m.lastResult.PC; pc != 0 {
+		base := uint32(0)
+		if pc > debugMemoryPCTrailing {
+			base = pc - debugMemoryPCTrailing
+		}
+		windows = append(windows, guest.ReadDebugMemoryRegion(
+			m.cpu, "pc", base, debugMemoryPCWindow,
+		))
+	}
+	if sp, err := m.cpu.ReadRegister(cpu.RegisterSP); err == nil && sp != 0 {
+		windows = append(windows, guest.ReadDebugMemoryRegion(
+			m.cpu, "stack", sp, debugMemoryStackWindow,
+		))
+	}
+	if m.info.TextSize != 0 {
+		size := int(m.info.TextSize)
+		if size > debugMemoryTextWindow {
+			size = debugMemoryTextWindow
+		}
+		windows = append(windows, guest.ReadDebugMemoryRegion(
+			m.cpu, "text", m.info.TextAddress, size,
+		))
+	}
+	return boundDebugMemoryRegions(windows, limit)
+}
+
+// boundDebugMemoryRegions drops empty windows and truncates the tail so the
+// summed byte count never exceeds limit.
+func boundDebugMemoryRegions(
+	regions []DebugMemoryRegion,
+	limit int,
+) []DebugMemoryRegion {
+	bounded := make([]DebugMemoryRegion, 0, len(regions))
+	total := 0
+	for _, region := range regions {
+		if len(region.Data) == 0 || total >= limit {
+			continue
+		}
+		if total+len(region.Data) > limit {
+			region.Data = region.Data[:limit-total]
+		}
+		total += len(region.Data)
+		bounded = append(bounded, region)
+	}
+	if len(bounded) == 0 {
+		return nil
+	}
+	return bounded
+}
 
 func (m *Machine) DebugSnapshot(maxEntries int) DebugSnapshot {
 	m.mu.Lock()
