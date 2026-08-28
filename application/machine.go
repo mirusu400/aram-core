@@ -240,6 +240,13 @@ type Machine struct {
 	publishedAudioHead    int
 	publishedAudioSamples int
 	publishedAudioDropped uint64
+	// audioCursorSample is the sample index one past the last published frame.
+	// Chunk start indices are anchored to it rather than recomputed from guest
+	// time, because the two disagree by a sample whenever an advance boundary
+	// does not land on a whole output frame. A host that treats the stream as a
+	// sample timeline reads that disagreement as a real discontinuity.
+	audioCursorSample uint64
+	audioCursorValid  bool
 }
 
 func (m *Machine) State() machinecore.State {
