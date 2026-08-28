@@ -1,6 +1,7 @@
 package ktf
 
 import (
+	"bytes"
 	"image"
 	"image/color"
 	"testing"
@@ -101,8 +102,13 @@ func TestKTFShownAnnunciatorPaintsTheCardBelowTheStrip(t *testing.T) {
 			state.plot(x, y)
 		}
 	}
-	if got := runtime.frame.RGBAAt(0, int(ktfAnnunciatorHeight)-1); got.R != 0 {
-		t.Fatalf("annunciator strip pixel = %#v, want untouched", got)
+	// The strip belongs to the handset's status bar, so the title's own ink
+	// must not be there — but it is not bare framebuffer either.
+	if got := runtime.frame.RGBAAt(0, int(ktfAnnunciatorHeight)-1); got.R == 0xff {
+		t.Fatalf("annunciator strip pixel = %#v, want the title's ink kept out", got)
+	}
+	if got := runtime.frame.RGBAAt(0, int(ktfAnnunciatorHeight)-1); got != annunciatorEdge {
+		t.Fatalf("annunciator strip pixel = %#v, want %#v", got, annunciatorEdge)
 	}
 	if got := runtime.frame.RGBAAt(0, int(ktfAnnunciatorHeight)); got.R != 0xff {
 		t.Fatalf("first card row = %#v, want painted", got)
@@ -155,10 +161,73 @@ func TestKTFShowingTheAnnunciatorClearsTheStripBehindIt(t *testing.T) {
 	showAnnunciator(runtime)
 	runtime.ResetScreenGraphics(graphics)
 
-	if got := runtime.frame.RGBAAt(0, 0); got.B != 0 {
-		t.Fatalf("annunciator strip = %#v, want cleared", got)
+	if got := runtime.frame.RGBAAt(0, 0); got.B == 0xff {
+		t.Fatalf("annunciator strip = %#v, want the earlier paint gone", got)
+	}
+	if got := runtime.frame.RGBAAt(0, 0); got != annunciatorBackground {
+		t.Fatalf("annunciator strip = %#v, want %#v", got, annunciatorBackground)
 	}
 	if got := runtime.frame.RGBAAt(0, int(ktfAnnunciatorHeight)); got.B != 0xff {
 		t.Fatalf("card row = %#v, want the earlier paint kept", got)
+	}
+}
+
+// Issue #80, 동전쌓기2006: 110 of the 218 KTF corpus titles show an
+// annunciator, and every one of them carried the reserved strip as a dead
+// black band across the top of the screen for the whole session. The strip is
+// the handset's status bar, so it has to be drawn, and drawn the same way
+// every frame — a title's rendering has to stay deterministic.
+func TestKTFAnnunciatorStripDrawsTheHandsetStatusBar(t *testing.T) {
+	runtime := newCardOriginRuntime(t)
+	showAnnunciator(runtime)
+	graphics, err := runtime.EnsureScreenGraphics()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.ResetScreenGraphics(graphics)
+
+	strip := image.Rect(0, 0, int(ktfDisplayWidth), int(ktfAnnunciatorHeight))
+	ink := 0
+	for y := strip.Min.Y; y < strip.Max.Y; y++ {
+		for x := strip.Min.X; x < strip.Max.X; x++ {
+			if runtime.frame.RGBAAt(x, y) == annunciatorInk {
+				ink++
+			}
+		}
+	}
+	if ink == 0 {
+		t.Fatal("annunciator strip has no indicators")
+	}
+	// The indicators sit against the two ends of the bar, so the middle
+	// carries none of them.
+	middle := runtime.frame.RGBAAt(
+		int(ktfDisplayWidth)/2,
+		int(ktfAnnunciatorHeight)/2,
+	)
+	if middle != annunciatorBackground {
+		t.Fatalf("annunciator middle = %#v, want the bar background", middle)
+	}
+
+	before := append([]uint8(nil), runtime.frame.Pix...)
+	runtime.Graphics[graphics].origin = image.Point{}
+	runtime.ResetScreenGraphics(graphics)
+	if !bytes.Equal(before, runtime.frame.Pix) {
+		t.Fatal("annunciator strip is not redrawn identically")
+	}
+}
+
+// A title that never shows an annunciator owns the whole screen, so nothing
+// may be drawn over the top of its first row.
+func TestKTFWithoutAnnunciatorNothingPaintsTheTopRow(t *testing.T) {
+	runtime := newCardOriginRuntime(t)
+	graphics, err := runtime.EnsureScreenGraphics()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.ResetScreenGraphics(graphics)
+	for x := 0; x < int(ktfDisplayWidth); x++ {
+		if got := runtime.frame.RGBAAt(x, 0); got != (color.RGBA{}) {
+			t.Fatalf("top row pixel %d = %#v, want untouched", x, got)
+		}
 	}
 }
