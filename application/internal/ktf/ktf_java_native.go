@@ -612,8 +612,54 @@ func ktfJavaNativeOverride(signature string) (ktfHostCall, bool) {
 			},
 		}, true
 	default:
+		return ktfHostJavaSpecOverride(signature)
+	}
+}
+
+// ktfHostJavaSpecOverride resolves any Java method ARAM implements itself.
+// The cases above name individual methods; this is the general rule behind
+// them. A guest class table with no native body for such a method reaches
+// Clet.callNative with a null address, and without a target that is a fault
+// even though the runtime has the method — 부루마불2007 faults that way on
+// StringBuffer.append(C) partway through a game (issue #81).
+//
+// Only a method the host class specs actually declare is resolved, walking the
+// spec's own parent chain the way a virtual call does. A guest class that
+// happens to share a name with a host one is not in the specs, so its methods
+// still fault rather than silently running host code.
+func ktfHostJavaSpecOverride(signature string) (ktfHostCall, bool) {
+	open := strings.IndexByte(signature, '(')
+	if open < 0 {
 		return ktfHostCall{}, false
 	}
+	separator := strings.LastIndexByte(signature[:open], '.')
+	if separator < 0 {
+		return ktfHostCall{}, false
+	}
+	className := signature[:separator]
+	name := signature[separator+1 : open]
+	descriptor := signature[open:]
+	for depth := 0; className != "" && depth < 32; depth++ {
+		spec, known := HostJavaClassSpecs[className]
+		if !known {
+			return ktfHostCall{}, false
+		}
+		for _, method := range spec.methods {
+			if method.name != name || method.descriptor != descriptor {
+				continue
+			}
+			return ktfHostCall{
+				name: "java.native_override." + signature,
+				handler: HostJavaMethod(
+					signature[:separator],
+					name,
+					descriptor,
+				),
+			}, true
+		}
+		className = spec.Parent
+	}
+	return ktfHostCall{}, false
 }
 
 func HostJavaMethod(className, name, descriptor string) ktfHostHandler {

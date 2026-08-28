@@ -9308,3 +9308,85 @@ func TestKTFWIPICNetConnectReportsFailureThroughItsCallback(t *testing.T) {
 		}
 	}
 }
+
+// Issue #81, 부루마불2007: partway through a game the title reaches
+// Clet.callNative with a null address while its pending method is
+// StringBuffer.append(C), which faulted the whole title even though the
+// runtime implements that method. Any method the host class specs declare has
+// to resolve; anything else still has to fault.
+func TestKTFNativeOverrideResolvesEveryHostJavaSpecMethod(t *testing.T) {
+	for _, signature := range []string{
+		"java/lang/StringBuffer.append(C)Ljava/lang/StringBuffer;",
+		"java/lang/StringBuffer.append(I)Ljava/lang/StringBuffer;",
+		"java/lang/StringBuffer.charAt(I)C",
+		"java/lang/String.substring(II)Ljava/lang/String;",
+		// Declared on the parent, reached through the spec's own chain.
+		"java/lang/StringBuffer.hashCode()I",
+	} {
+		if _, ok := ktfJavaNativeOverride(signature); !ok {
+			t.Errorf("native override missing for %s", signature)
+		}
+	}
+	for _, signature := range []string{
+		// A title's own class, which the runtime must not run host code for.
+		"com/example/Game.append(C)Ljava/lang/StringBuffer;",
+		// A descriptor the host spec does not declare.
+		"java/lang/StringBuffer.append(F)Ljava/lang/StringBuffer;",
+		// Not a method signature at all.
+		"java/lang/StringBuffer",
+		"append(C)Ljava/lang/StringBuffer;",
+	} {
+		if _, ok := ktfJavaNativeOverride(signature); ok {
+			t.Errorf("native override resolved %s, want a fault", signature)
+		}
+	}
+}
+
+// The override has to be the one that actually runs: a null native target with
+// a pending host method appends to the buffer instead of faulting.
+func TestKTFNullNativeTargetRunsTheHostStringBufferAppend(t *testing.T) {
+	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.CPU.Close()
+	if err := runtime.MapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	buffer, err := runtime.AllocateWords(4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.stringBuffers[buffer] = "AB"
+	parameters, err := runtime.AllocateWords(4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.writeWords(parameters, []uint32{
+		buffer,
+		uint32('C'),
+		0,
+		0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runtime.LastJavaMethod =
+		"java/lang/StringBuffer.append(C)Ljava/lang/StringBuffer;"
+	for register, value := range []uint32{0, parameters} {
+		if err := runtime.CPU.WriteRegister(
+			cpu.RegisterR0+uint32(register),
+			value,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := ktfCallNative(context.Background(), runtime); err != nil {
+		t.Fatalf("null native target for an implemented method: %v", err)
+	}
+	if got := runtime.stringBuffers[buffer]; got != "ABC" {
+		t.Fatalf("StringBuffer = %q, want %q", got, "ABC")
+	}
+}
