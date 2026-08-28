@@ -10,6 +10,21 @@ import (
 
 const publishedAudioRetention = 500 * time.Millisecond
 
+// audioCursorSlack is how far a chunk's guest-time anchor may sit from the
+// running output cursor and still count as the same continuous stream.
+//
+// The mixer decides how many frames an advance produces with a remainder
+// accumulator, while the chunk's start index is a truncated guest-time to
+// sample conversion. The two answers differ by a sample whenever an advance
+// boundary falls between two output frames, which happens constantly once a
+// title splits its presentation quantum around a timer. A host that trusts the
+// index then sees the stream jump forward or backward by one sample tens of
+// times a second and resynchronizes - dropping or re-buffering real audio for
+// what is only a rounding difference. Anything inside this window is treated as
+// contiguous and given the cursor's index; anything beyond it is a real gap and
+// keeps its own anchor.
+const audioCursorSlack = time.Millisecond
+
 // DrainPublishedAudio transfers one immutable PCM chunk without taking the
 // machine lifecycle lock. The emulation goroutine is the only Media owner; it
 // drains Media at a committed service advance and publishes ownership here.
@@ -64,7 +79,7 @@ func (m *Machine) publishAudioBuffer(audio shared.AudioBuffer, start time.Durati
 		Channels:     audio.Channels,
 		PCM16:        audio.PCM16,
 		StartGuestNS: startNS,
-		StartSample: sampleCursor(
+		StartSample: m.audioStartSampleLocked(
 			time.Duration(startNS-m.audioEpochGuestNS),
 			audio.SampleRate,
 		),
@@ -74,8 +89,36 @@ func (m *Machine) publishAudioBuffer(audio shared.AudioBuffer, start time.Durati
 	if len(chunk.PCM16) == 0 {
 		return
 	}
+	m.audioCursorSample = chunk.StartSample +
+		uint64(len(chunk.PCM16)/chunk.Channels)
+	m.audioCursorValid = true
 	m.publishedAudio = append(m.publishedAudio, chunk)
 	m.publishedAudioSamples += len(chunk.PCM16)
+}
+
+// audioStartSampleLocked places a chunk on the published sample timeline. It
+// keeps the running cursor whenever the guest-time anchor agrees with it to
+// within audioCursorSlack, so mixer rounding cannot punch a hole in an
+// otherwise unbroken stream.
+func (m *Machine) audioStartSampleLocked(
+	elapsed time.Duration,
+	sampleRate int,
+) uint64 {
+	anchor := sampleCursor(elapsed, sampleRate)
+	if !m.audioCursorValid {
+		return anchor
+	}
+	slack := sampleCursor(audioCursorSlack, sampleRate)
+	if anchor >= m.audioCursorSample {
+		if anchor-m.audioCursorSample <= slack {
+			return m.audioCursorSample
+		}
+		return anchor
+	}
+	if m.audioCursorSample-anchor <= slack {
+		return m.audioCursorSample
+	}
+	return anchor
 }
 
 func (m *Machine) retainPublishedAudioLocked(chunk *machinecore.AudioChunk) {
@@ -130,6 +173,8 @@ func (m *Machine) setAudioGenerationEpoch(epoch time.Duration) {
 	defer m.audioMu.Unlock()
 	m.ensureAudioGenerationLocked()
 	m.audioEpochGuestNS = int64(epoch)
+	m.audioCursorSample = 0
+	m.audioCursorValid = false
 }
 
 func (m *Machine) nextAudioGenerationLocked(epoch time.Duration) {
@@ -139,6 +184,8 @@ func (m *Machine) nextAudioGenerationLocked(epoch time.Duration) {
 		m.audioGeneration++
 	}
 	m.audioEpochGuestNS = int64(epoch)
+	m.audioCursorSample = 0
+	m.audioCursorValid = false
 	for index := m.publishedAudioHead; index < len(m.publishedAudio); index++ {
 		m.publishedAudio[index] = machinecore.AudioChunk{}
 	}
