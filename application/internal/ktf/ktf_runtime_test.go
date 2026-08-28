@@ -435,6 +435,23 @@ func TestKTFDisplayKeyMappingsAreSymmetric(t *testing.T) {
 	}
 }
 
+func TestKTFRuntimeMethodsHaveNativeOverride(t *testing.T) {
+	// A title whose Runtime method bodies are left unlinked reaches the host
+	// only through the native override; without these entries getRuntime()
+	// faults with a null target (issue #15).
+	for _, signature := range []string{
+		"java/lang/Runtime.getRuntime()Ljava/lang/Runtime;",
+		"java/lang/Runtime.freeMemory()J",
+		"java/lang/Runtime.totalMemory()J",
+		"java/lang/Runtime.gc()V",
+		"java/lang/Runtime.exit(I)V",
+	} {
+		if _, ok := ktfJavaNativeOverride(signature); !ok {
+			t.Errorf("native override missing for %s", signature)
+		}
+	}
+}
+
 func TestKTFNestedCallPropagatesPendingJavaMethod(t *testing.T) {
 	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
 		ClientName: "client.bin0",
