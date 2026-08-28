@@ -21,6 +21,7 @@ com/skt/m/Graphics2D drawImage (IILjavax/microedition/lcdui/Image;IIIII)V
 com/skt/m/Graphics2D getGraphics2D (Ljavax/microedition/lcdui/Graphics;)Lcom/skt/m/Graphics2D;
 com/skt/m/Graphics2D setPixel (III)V
 com/skt/m/ProgressBar <init> (Ljava/lang/String;)V
+com/skt/m/ProgressBar getValue ()I
 com/skt/m/ProgressBar setMaxValue (I)V
 com/skt/m/ProgressBar setValue (I)V
 com/skt/m/Vibration getLevelNum ()I
