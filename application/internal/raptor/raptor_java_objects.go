@@ -466,17 +466,14 @@ func (r *Runtime) callJavaHostMethod(
 			delete(java.dirtyCards, receiver)
 			return guest.WIPIReturn{}, r.paintRaptorJavaCard(ctx, java, receiver)
 		case "org/kwis/msp/lcdui/Card.getWidth()I":
-			handle, hErr := r.Public.EnsureScreenFramebuffer()
-			if hErr != nil {
-				return guest.WIPIReturn{}, hErr
-			}
-			return guest.WIPIReturn{Low: uint32(r.Public.Framebuffers[handle].Width)}, nil
+			return guest.WIPIReturn{Low: java.Host.DisplayWidth()}, nil
 		case "org/kwis/msp/lcdui/Card.getHeight()I":
-			handle, hErr := r.Public.EnsureScreenFramebuffer()
-			if hErr != nil {
-				return guest.WIPIReturn{}, hErr
-			}
-			return guest.WIPIReturn{Low: uint32(r.Public.Framebuffers[handle].Height)}, nil
+			// The card the screen Graphics paints stops above the annunciator
+			// strip, so this has to report the same height. Answering with the
+			// whole framebuffer instead made 붕어빵타이쿤3 lay its title art
+			// out over 320 rows and lose the bottom twenty to the card clip
+			// (issue #74).
+			return guest.WIPIReturn{Low: java.Host.DefaultCardHeight()}, nil
 		case "org/kwis/msp/lcdui/Display.getDockedCard()Lorg/kwis/msp/lcdui/Card;":
 			return guest.WIPIReturn{Low: java.currentCard}, nil
 		case "org/kwis/msp/lcdui/Display.pushCard(Lorg/kwis/msp/lcdui/Card;)V":
