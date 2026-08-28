@@ -492,6 +492,25 @@ func ktfJavaNativeOverride(signature string) (ktfHostCall, bool) {
 				method[separator:],
 			),
 		}, true
+	case "java/lang/Runtime.getRuntime()Ljava/lang/Runtime;",
+		"java/lang/Runtime.freeMemory()J",
+		"java/lang/Runtime.totalMemory()J",
+		"java/lang/Runtime.gc()V",
+		"java/lang/Runtime.exit(I)V":
+		// Runtime is an SDK-native class: the guest leaves these method bodies
+		// unlinked, so without a host override getRuntime() faults with a null
+		// target the moment a title probes free/total memory (issue #15). The
+		// host bodies live in the HostJavaMethod dispatch alongside System.
+		method := strings.TrimPrefix(signature, "java/lang/Runtime.")
+		separator := strings.IndexByte(method, '(')
+		return ktfHostCall{
+			name: "java.native_override." + signature,
+			handler: HostJavaMethod(
+				"java/lang/Runtime",
+				method[:separator],
+				method[separator:],
+			),
+		}, true
 	case "java/lang/String.valueOf([C)Ljava/lang/String;",
 		"java/lang/String.valueOf([CII)Ljava/lang/String;":
 		method := strings.TrimPrefix(signature, "java/lang/String.")
