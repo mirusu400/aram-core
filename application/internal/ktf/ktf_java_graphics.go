@@ -89,6 +89,14 @@ func (r *Runtime) ResetScreenGraphics(instance uint32) {
 		state.origin = origin
 		state.PixelsDirty = true
 	}
+	// The strip the card gives up is the handset's status bar, not a
+	// letterbox: draw the phone chrome the title is laying out around. This
+	// runs on every reset rather than only when the origin moves, so a state
+	// saved before the bar existed still comes back with one.
+	paintKTFAnnunciator(
+		state.Target,
+		image.Rect(bounds.Min.X, bounds.Min.Y, bounds.Max.X, card.Min.Y),
+	)
 	state.surface = card
 	state.clip = card
 	state.translate = image.Point{}
