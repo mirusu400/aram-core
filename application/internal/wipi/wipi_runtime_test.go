@@ -1775,6 +1775,68 @@ func TestRaptorStopClipReportsCompletionAndFrees(t *testing.T) {
 	}
 }
 
+// A Raptor title owns one clip for the whole session and reuses it for every
+// track: stop, clear, rewind, put the next track's bytes, play. Clearing has to
+// empty the source, or each put appends to the last track, the decoder keeps
+// replaying the first sound the title ever loaded, and once the pile passes the
+// capacity declared at create time every later put fails and the title falls
+// silent (issue #65, 블레이드마스터4).
+func TestRaptorClearClipDataEmptiesTheSourceBuffer(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	handle, err := runtime.RaptorCreateClip("Yamaha_MA3", 8, 0x02000001)
+	if err != nil || handle == 0 {
+		t.Fatalf("RaptorCreateClip = 0x%08x, err=%v", handle, err)
+	}
+	source, err := runtime.Heap.Allocate(16, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	put := func(bytes []byte) bool {
+		t.Helper()
+		if err := runtime.CPU.WriteMemory(source, bytes); err != nil {
+			t.Fatal(err)
+		}
+		return runtime.RaptorPutClipData(handle, source, int32(len(bytes)))
+	}
+	if !put([]byte{1, 2, 3, 4}) {
+		t.Fatal("first RaptorPutClipData was rejected")
+	}
+	if !runtime.RaptorClearClipData(handle) {
+		t.Fatal("RaptorClearClipData refused a live clip")
+	}
+	clip := runtime.MediaClips[handle]
+	if clip == nil || len(clip.Data) != 0 || clip.position != 0 {
+		t.Fatalf("cleared clip = %+v", clip)
+	}
+	if serviceID := runtime.MediaServices[handle]; serviceID != 0 {
+		remaining, err := runtime.Services.Media.Source(runtime.ServiceOwner, serviceID)
+		if err != nil || len(remaining) != 0 {
+			t.Fatalf("cleared media service source = %v, err=%v", remaining, err)
+		}
+	}
+
+	// The next track starts from nothing, so it both fits the 8-byte capacity
+	// and is the only thing the decoder is given.
+	if !put([]byte{5, 6, 7, 8, 9, 10, 11, 12}) {
+		t.Fatal("RaptorPutClipData was rejected after the clear")
+	}
+	if got := runtime.MediaClips[handle].Data; string(got) !=
+		string([]byte{5, 6, 7, 8, 9, 10, 11, 12}) {
+		t.Fatalf("clip source after the clear = %v", got)
+	}
+
+	// Without the clear the same put would have overflowed the clip.
+	if put([]byte{13}) {
+		t.Fatal("RaptorPutClipData accepted bytes past the clip capacity")
+	}
+	if !runtime.RaptorClearClipData(handle) {
+		t.Fatal("RaptorClearClipData refused the reused clip")
+	}
+	if runtime.RaptorClearClipData(handle + 0x1000) {
+		t.Fatal("RaptorClearClipData accepted an unknown handle")
+	}
+}
+
 // MC_grpGetPixelFromRGB converts an RGB triple into the screen's own pixel
 // spelling, which is what makes it useful: a Clet that walks the raw
 // framebuffer through MC_grpGetFrameBufferPixels stores the result directly.

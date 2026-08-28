@@ -592,6 +592,22 @@ func (r *Runtime) DispatchPrivateImport(
 			return guest.WIPIReturn{Low: length}, "RAPTOR.sndPutData", true, nil
 		}
 		return guest.WIPIReturn{}, "RAPTOR.sndPutData", true, nil
+	case 1206:
+		// MC_mdaClipClearData(handle) empties the clip's source buffer. LGT
+		// titles own one clip for the whole session and reuse it: stop, clear,
+		// rewind, put the next track's bytes, play. Leaving the clear
+		// unimplemented made every MC_mdaClipPutData append to the previous
+		// track, so the decoder kept replaying the first sound the title ever
+		// loaded and, once the pile passed the capacity declared at create
+		// time, every later put failed and the title went silent (issue #65).
+		handle, err := r.CPU.ReadRegister(cpu.RegisterR0)
+		if err != nil {
+			return guest.WIPIReturn{}, "", true, err
+		}
+		if !r.Public.RaptorClearClipData(handle) {
+			return guest.WIPIReturn{Low: ^uint32(0)}, "RAPTOR.sndClearData", true, nil
+		}
+		return guest.WIPIReturn{}, "RAPTOR.sndClearData", true, nil
 	case 1201:
 		// MC_sndFree(handle) releases a clip. 제노니아1's teardown ends with
 		// this call and then drops the handle from its sound object, so the
@@ -968,6 +984,16 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 	// faulted while unimplemented (returned 0).
 	case 1056:
 		return "localtime", true
+	// The LGT mda block runs MC_mdaClipCreate(1200), ClipFree, ClipGetType,
+	// ClipPutData(1203), ClipGetData, ClipAvailableDataSize,
+	// ClipClearData(1206), ClipSetPosition, and then the two libwipi anchors
+	// ClipGetVolume(1208) and MC_mdaVibrator(1217): the whole run lines up
+	// once MC_mdaClipPutDataByFile, which LGT does not export, is dropped from
+	// the standard order. 32 of the 53 LGT titles that use sound call 1206,
+	// always right after MC_mdaStop and always ignoring the result, which is
+	// how a clip is emptied before its next track is put in.
+	case 1206:
+		return "MC_mdaClipClearData", true
 	case 1208:
 		return "MC_mdaClipGetVolume", true
 	case 1233:
