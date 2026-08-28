@@ -134,6 +134,72 @@ func TestSKVMDebugSnapshotReportsFramebufferIntegrityWithoutPixels(t *testing.T)
 	}
 }
 
+func TestDebugMemoryRegionsAreFaultGatedAndBounded(t *testing.T) {
+	backend := interpreter.New()
+	t.Cleanup(func() { _ = backend.Close() })
+
+	const (
+		base        = uint32(0x10000)
+		size        = uint32(0x8000)
+		textAddress = uint32(0x10000)
+		pc          = uint32(0x11000)
+		sp          = uint32(0x12000)
+	)
+	if err := backend.Map(base, size,
+		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute); err != nil {
+		t.Fatal(err)
+	}
+	write := func(address uint32, value byte) {
+		if err := backend.WriteMemory(address, []byte{value}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(textAddress, 0xAA)
+	write(pc-128, 0xBB) // origin of the pc window
+	write(sp, 0xCC)
+	if err := backend.WriteRegister(cpu.RegisterSP, sp); err != nil {
+		t.Fatal(err)
+	}
+
+	machine := &Machine{
+		cpu:        backend,
+		state:      machinecore.StateFaulted,
+		lastResult: cpu.Result{PC: pc},
+		info:       ImageInfo{TextAddress: textAddress, TextSize: 64},
+	}
+
+	regions := machine.DebugMemoryRegions(0)
+	if len(regions) != 3 {
+		t.Fatalf("region count = %d, want 3", len(regions))
+	}
+	byLabel := map[string]DebugMemoryRegion{}
+	for _, region := range regions {
+		byLabel[region.Label] = region
+	}
+	if r := byLabel["pc"]; r.Base != pc-128 || len(r.Data) != 512 || r.Data[0] != 0xBB {
+		t.Fatalf("pc region = %+v", r)
+	}
+	if r := byLabel["stack"]; r.Base != sp || len(r.Data) != 1024 || r.Data[0] != 0xCC {
+		t.Fatalf("stack region = %+v", r)
+	}
+	if r := byLabel["text"]; r.Base != textAddress || len(r.Data) != 64 || r.Data[0] != 0xAA {
+		t.Fatalf("text region = %+v", r)
+	}
+
+	total := 0
+	for _, region := range machine.DebugMemoryRegions(600) {
+		total += len(region.Data)
+	}
+	if total != 600 {
+		t.Fatalf("bounded total = %d, want 600", total)
+	}
+
+	machine.state = machinecore.StateRunning
+	if regions := machine.DebugMemoryRegions(0); regions != nil {
+		t.Fatalf("non-faulted regions = %+v", regions)
+	}
+}
+
 func TestDebugSnapshotLimitIsClamped(t *testing.T) {
 	if got := guest.NormalizeDebugSnapshotLimit(0); got != DefaultDebugSnapshotEntries {
 		t.Fatalf("default limit = %d", got)
