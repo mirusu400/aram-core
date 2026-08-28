@@ -376,9 +376,25 @@ func ktfIncrementalMemoryAdd(
 	if err := runtime.CPU.ReadMemory(base+size-1, probe[:]); err != nil {
 		return 0, fmt.Errorf("read KTF incremental memory region end: %w", err)
 	}
+	if runtime.incrementalHeaps == nil {
+		runtime.incrementalHeaps = make(map[uint32]*guest.Heap)
+	}
 	start, end := uint64(base), uint64(base)+uint64(size)
 	for _, region := range runtime.incrementalMemory {
 		if region.base == base && region.size == size {
+			// Re-declaring a region that is already registered hands the whole
+			// buffer back to the arena. 액션히어로3D uses the call that way: it
+			// allocates a scratch buffer, reads a file into it, and then
+			// re-adds the region instead of freeing the block. Treating the
+			// repeat as a no-op leaked every scratch buffer until a later
+			// texture allocation returned null and the guest dereferenced it.
+			heap := guest.NewHeap(runtime.CPU, base, size)
+			runtime.incrementalHeaps[base] = &heap
+			runtime.tracef(
+				"mx_user_mem_reset:base=0x%08x:size=%d",
+				base,
+				size,
+			)
 			return 0, nil
 		}
 		regionStart := uint64(region.base)
@@ -397,9 +413,6 @@ func ktfIncrementalMemoryAdd(
 		runtime.incrementalMemory,
 		ktfIncrementalMemoryRegion{base: base, size: size},
 	)
-	if runtime.incrementalHeaps == nil {
-		runtime.incrementalHeaps = make(map[uint32]*guest.Heap)
-	}
 	heap := guest.NewHeap(runtime.CPU, base, size)
 	runtime.incrementalHeaps[base] = &heap
 	runtime.tracef(
