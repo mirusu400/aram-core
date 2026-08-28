@@ -2133,3 +2133,77 @@ func TestWIPIRuntimeDrawStringDecodesEUCKR(t *testing.T) {
 		t.Fatal("invalid EUC-KR run decoded to nothing")
 	}
 }
+
+// Issue #78, 무한신맞고2009: the title decodes an image per sprite as it plays
+// and every MC_grpCreateImage used to allocate a shared graphics surface
+// alongside the guest framebuffer it decoded into. About eighty seconds in it
+// crossed the 1024-surface service limit and faulted with "MC_grpCreateImage:
+// surface count reached 1024". Nothing ever read those mirrors: WIPI-C drawing
+// runs on the guest pixel memory, and only a present or an encode needs one.
+func TestWIPIRuntimeImagesDoNotConsumeServiceSurfaces(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	screen := dispatchPublicAPI(t, runtime, "MC_grpGetScreenFrameBuffer", 0).Low
+	if _, mirrored := runtime.surfaceServices[screen]; !mirrored {
+		t.Fatal("the screen needs its surface up front for SetScreen")
+	}
+	source := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	source.SetRGBA(0, 0, color.RGBA{R: 0xff, A: 0xff})
+	var payload bytes.Buffer
+	if err := png.Encode(&payload, source); err != nil {
+		t.Fatal(err)
+	}
+	before := len(runtime.surfaceServices)
+	handles := make([]uint32, 0, 8)
+	for index := 0; index < 8; index++ {
+		buffer, err := runtime.Heap.Allocate(uint32(payload.Len()), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := runtime.CPU.WriteMemory(buffer, payload.Bytes()); err != nil {
+			t.Fatal(err)
+		}
+		output, err := runtime.Heap.Allocate(4, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result := dispatchPublicAPI(
+			t,
+			runtime,
+			"MC_grpCreateImage",
+			output,
+			buffer,
+			0,
+			uint32(payload.Len()),
+		); result.Low != uint32(guest.WIPIImageDone) {
+			t.Fatalf("MC_grpCreateImage = %d", int32(result.Low))
+		}
+		handle, err := runtime.ReadU32(output)
+		if err != nil || handle == 0 {
+			t.Fatalf("image handle = 0x%08x, %v", handle, err)
+		}
+		handles = append(handles, handle)
+	}
+	if got := len(runtime.surfaceServices); got != before {
+		t.Fatalf("surfaces after eight images = %d, want %d", got, before)
+	}
+	// An encode is one of the few places a framebuffer leaves the guest, so
+	// the mirror has to appear then.
+	descriptor, ok, err := runtime.readImage(handles[0])
+	if err != nil || !ok {
+		t.Fatalf("image descriptor: %v", err)
+	}
+	dispatchPublicAPI(
+		t,
+		runtime,
+		"MC_grpEncodeImage",
+		descriptor.framebuffer,
+		0,
+		0,
+		2,
+		2,
+		0,
+	)
+	if _, mirrored := runtime.surfaceServices[descriptor.framebuffer]; !mirrored {
+		t.Fatal("encoding a framebuffer did not materialize its surface")
+	}
+}

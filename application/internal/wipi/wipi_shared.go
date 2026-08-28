@@ -515,7 +515,10 @@ func (r *Runtime) validateSavedServices(saved *SavedState) error {
 		return fmt.Errorf("adapter and service network states differ")
 	}
 
-	if len(saved.surfaceServices) != len(saved.Framebuffers) ||
+	// A framebuffer's shared-service mirror is created on first use, so a
+	// saved state legitimately carries fewer surfaces than framebuffers; it
+	// must never carry more.
+	if len(saved.surfaceServices) > len(saved.Framebuffers) ||
 		len(saved.fileServices) != len(saved.fileHandles) ||
 		len(saved.DatabaseServices) != len(saved.Databases) ||
 		len(saved.MediaServices) != len(saved.MediaClips) ||
@@ -528,6 +531,10 @@ func (r *Runtime) validateSavedServices(saved *SavedState) error {
 	for _, framebuffer := range saved.Framebuffers {
 		framebuffers[framebuffer.Handle] = framebuffer
 		serviceID := saved.surfaceServices[framebuffer.Handle]
+		if serviceID == 0 {
+			// Never mirrored, so there is no surface to check against.
+			continue
+		}
 		if err := candidate.Registry.Validate(
 			serviceID,
 			saved.ServiceOwner,

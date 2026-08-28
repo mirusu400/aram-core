@@ -242,29 +242,17 @@ func (r *Runtime) newFramebuffer(width, height int, owns bool) (uint32, error) {
 		BitsPerPixel: bytesPerPixel * 8,
 		owns:         owns,
 	}
-	format := shared.PixelBGRX8888
-	if bytesPerPixel == 2 {
-		format = shared.PixelRGB565
-	}
-	serviceID, err := r.Services.Graphics.CreateSurface(
-		r.ServiceOwner,
-		shared.SurfaceDescriptor{
-			Width:  int32(width),
-			Height: int32(height),
-			Stride: int32(width * bytesPerPixel),
-			Format: format,
-		},
-	)
-	if err != nil {
-		delete(r.Framebuffers, handle)
-		r.Heap.Release(handle)
-		r.Heap.Release(pixels)
-		return 0, err
-	}
-	r.surfaceServices[handle] = serviceID
 	if !owns {
-		if err := r.Services.Graphics.SetScreen(r.ServiceOwner, serviceID); err != nil {
-			_ = r.Services.Graphics.DestroySurface(r.ServiceOwner, serviceID)
+		// Only the screen needs its mirror up front, because SetScreen takes
+		// it. Everything else materializes one on first use.
+		serviceID, err := r.ensureSurface(handle)
+		if err == nil {
+			err = r.Services.Graphics.SetScreen(r.ServiceOwner, serviceID)
+		}
+		if err != nil {
+			if serviceID != 0 {
+				_ = r.Services.Graphics.DestroySurface(r.ServiceOwner, serviceID)
+			}
 			delete(r.surfaceServices, handle)
 			delete(r.Framebuffers, handle)
 			r.Heap.Release(handle)
@@ -273,6 +261,44 @@ func (r *Runtime) newFramebuffer(width, height int, owns bool) (uint32, error) {
 		}
 	}
 	return handle, nil
+}
+
+// ensureSurface returns the shared-service mirror of a guest framebuffer,
+// creating it on first use.
+//
+// WIPI-C drawing runs entirely on the guest pixel memory the framebuffer
+// points at; the mirror is only read where a framebuffer leaves the guest —
+// when it is presented or encoded. Mirroring every framebuffer eagerly spent
+// one service surface per MC_grpImage, so 무한신맞고2009, which decodes an
+// image per sprite as it plays, crossed the 1024-surface service limit about
+// eighty seconds in and faulted with "MC_grpCreateImage: surface count
+// reached 1024" (issue #78).
+func (r *Runtime) ensureSurface(handle uint32) (shared.ServiceID, error) {
+	if serviceID := r.surfaceServices[handle]; serviceID != 0 {
+		return serviceID, nil
+	}
+	framebuffer, ok := r.Framebuffers[handle]
+	if !ok {
+		return 0, nil
+	}
+	format := shared.PixelBGRX8888
+	if framebuffer.BitsPerPixel == 16 {
+		format = shared.PixelRGB565
+	}
+	serviceID, err := r.Services.Graphics.CreateSurface(
+		r.ServiceOwner,
+		shared.SurfaceDescriptor{
+			Width:  int32(framebuffer.Width),
+			Height: int32(framebuffer.Height),
+			Stride: int32(uint32(framebuffer.Width) * framebuffer.bytesPerPixel()),
+			Format: format,
+		},
+	)
+	if err != nil {
+		return 0, err
+	}
+	r.surfaceServices[handle] = serviceID
+	return serviceID, nil
 }
 
 // graphicsContextField locates one MC_GrpContext member.
@@ -926,7 +952,10 @@ func (r *Runtime) present(handle uint32) error {
 			}
 		}
 	}
-	serviceID := r.surfaceServices[handle]
+	serviceID, err := r.ensureSurface(handle)
+	if err != nil {
+		return err
+	}
 	if serviceID == 0 {
 		return nil
 	}

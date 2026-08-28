@@ -693,12 +693,16 @@ func (r *Runtime) encodeImage(args []uint32) (uint32, error) {
 		x+width > framebuffer.Width || y+height > framebuffer.Height {
 		return 0, nil
 	}
+	surface, err := r.ensureSurface(framebuffer.Handle)
+	if err != nil {
+		return 0, err
+	}
 	if err := r.syncFramebufferToService(framebuffer); err != nil {
 		return 0, err
 	}
 	encoded, err := r.Services.Assets.EncodeSurface(
 		r.ServiceOwner,
-		r.surfaceServices[framebuffer.Handle],
+		surface,
 		"image/bmp",
 		shared.Rectangle{
 			X:      int32(x),
