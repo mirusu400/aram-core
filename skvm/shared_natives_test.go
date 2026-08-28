@@ -108,6 +108,48 @@ func TestSKVMFileNativesUseSharedStorage(t *testing.T) {
 	}
 }
 
+func TestSKVMProgressBarRetainsValue(t *testing.T) {
+	vm, err := New(map[string][]byte{"Game": syntheticClass(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bar := vm.NewObject("com/skt/m/ProgressBar", nil)
+	label := vm.NewString("loading")
+	invokeTestNative(
+		t, vm,
+		"com/skt/m/ProgressBar", "<init>", "(Ljava/lang/String;)V",
+		bar, ReferenceValue(label),
+	)
+	invokeTestNative(
+		t, vm,
+		"com/skt/m/ProgressBar", "setMaxValue", "(I)V",
+		bar, IntValue(100),
+	)
+	invokeTestNative(
+		t, vm,
+		"com/skt/m/ProgressBar", "setValue", "(I)V",
+		bar, IntValue(42),
+	)
+	got := invokeTestNative(t, vm, "com/skt/m/ProgressBar", "getValue", "()I", bar)
+	if value, valueErr := got.Int(); valueErr != nil || value != 42 {
+		t.Fatalf("getValue = %d, %v; want 42", value, valueErr)
+	}
+	// The load level has to survive a save-state round-trip so a resumed title
+	// does not see its progress bar snap back to zero.
+	state, err := vm.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	invokeTestNative(t, vm, "com/skt/m/ProgressBar", "setValue", "(I)V", bar, IntValue(7))
+	if err := vm.UnmarshalBinary(state); err != nil {
+		t.Fatal(err)
+	}
+	got = invokeTestNative(t, vm, "com/skt/m/ProgressBar", "getValue", "()I", bar)
+	if value, valueErr := got.Int(); valueErr != nil || value != 42 {
+		t.Fatalf("restored getValue = %d, %v; want 42", value, valueErr)
+	}
+}
+
 func TestSKVMDeviceAndAudioNativesUseSharedServices(t *testing.T) {
 	vm, err := New(map[string][]byte{"Game": syntheticClass(t)})
 	if err != nil {

@@ -373,14 +373,22 @@ func (vm *VM) installSKTNatives() {
 			)
 		},
 	)
+	// ProgressBar is the SKT loading-progress widget. A title fills it during a
+	// load loop and then reads the level back to decide when the bar is full, so
+	// the current value has to survive setValue and reappear from getValue; an
+	// integer-state receiver holds it. setMaxValue stays a no-op because the
+	// ceiling the title picks is never read back.
 	vm.RegisterNative(
 		"com/skt/m/ProgressBar",
 		"<init>",
 		"(Ljava/lang/String;)V",
-		nativeVoid,
+		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+			return Value{}, false, vm.setNative(receiver, &integerState{})
+		},
 	)
 	vm.RegisterNative("com/skt/m/ProgressBar", "setMaxValue", "(I)V", nativeVoid)
-	vm.RegisterNative("com/skt/m/ProgressBar", "setValue", "(I)V", nativeVoid)
+	vm.RegisterNative("com/skt/m/ProgressBar", "setValue", "(I)V", nativeSetIntegerState)
+	vm.RegisterNative("com/skt/m/ProgressBar", "getValue", "()I", nativeIntegerState)
 	vm.RegisterNative("com/xce/io/ByteToCharEUC_KR", "<init>", "()V", nativeVoid)
 	vm.RegisterNative(
 		"com/xce/io/ByteToCharConverter",
