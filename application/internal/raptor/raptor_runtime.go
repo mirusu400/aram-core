@@ -853,16 +853,13 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 		return "MC_grpDrawArc", true
 	case 216:
 		return "MC_grpFillArc", true
-	case 217:
-		return "MC_grpDrawString", true
-	// DrawUnicodeString 0x48, GetRGBPixels 0x4c, SetRGBPixels 0x50 continue the
-	// aligned range before the raptor +1 divergence at FlushLcd. 검은방2/3 draw
-	// all their Korean text through DrawUnicodeString (218).
 	case 218:
-		return "MC_grpDrawUnicodeString", true
+		return "MC_grpDrawString", true
 	case 219:
-		return "MC_grpGetRGBPixels", true
+		return "MC_grpDrawUnicodeString", true
 	case 220:
+		return "MC_grpGetRGBPixels", true
+	case 221:
 		return "MC_grpSetRGBPixels", true
 	case 222:
 		return "MC_grpFlushLcd", true
