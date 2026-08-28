@@ -6833,11 +6833,19 @@ func TestKTFWIPICMediaMA3LoadAndPlayback(t *testing.T) {
 		t.Fatalf("clear result=%08x err=%v", result, err)
 	}
 	writeParameters(handle, input, uint32(len(source)))
+	// Issue #72: MC_mdaClipPutData answers with the bytes it accepted.
+	// 질주쾌감 스케쳐 frees the clip and never plays it when the answer is not
+	// positive, which left the whole title silent while this returned zero.
 	if result, err := ktfWIPICMediaPutData(
 		context.Background(),
 		runtime,
-	); err != nil || result != 0 {
-		t.Fatalf("put result=%08x err=%v", result, err)
+	); err != nil || result != uint32(len(source)) {
+		t.Fatalf(
+			"put result=%08x err=%v; want %08x",
+			result,
+			err,
+			len(source),
+		)
 	}
 	stored, err := runtime.Services.Media.Source(runtime.ServiceOwner, serviceID)
 	if err != nil {

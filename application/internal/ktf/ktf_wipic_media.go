@@ -355,7 +355,12 @@ func ktfWIPICMediaPutData(
 	}
 	clip.data = append(clip.data, data...)
 	runtime.tracef("wipic_media_putdata:handle=0x%08x:add=%d:total=%d", handle, count, len(clip.data))
-	return 0, nil
+	// MC_mdaClipPutData answers with the number of bytes it accepted, not a
+	// zero status. 질주쾌감 스케쳐 loads every clip through
+	// `if (MC_mdaClipPutData(...) <= 0) { MC_mdaClipFree(clip); return; }`,
+	// so returning zero read as a failed write and the title freed each clip
+	// instead of ever reaching MC_mdaPlay — it ran completely silent.
+	return count, nil
 }
 
 func ktfWIPICMediaGetData(
