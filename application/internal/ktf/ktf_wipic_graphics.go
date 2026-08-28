@@ -464,26 +464,20 @@ func (r *Runtime) createWIPICFramebuffer(
 		bits:        bits,
 		screen:      screen,
 	}
-	surface, err := r.Services.Graphics.CreateSurface(
-		r.ServiceOwner,
-		shared.SurfaceDescriptor{
-			Width:  int32(width),
-			Height: int32(height),
-			Stride: int32(stride),
-			Format: shared.PixelRGB565,
-		},
-	)
-	if err != nil {
-		return 0, err
-	}
+	r.wipicFramebuffers[object] = framebuffer
 	if screen {
+		surface, err := r.createWIPICSurface(framebuffer)
+		if err != nil {
+			delete(r.wipicFramebuffers, object)
+			return 0, err
+		}
 		if err := r.Services.Graphics.SetScreen(r.ServiceOwner, surface); err != nil {
 			_ = r.Services.Graphics.DestroySurface(r.ServiceOwner, surface)
+			delete(r.wipicSurfaceServices, object)
+			delete(r.wipicFramebuffers, object)
 			return 0, err
 		}
 	}
-	r.wipicFramebuffers[object] = framebuffer
-	r.wipicSurfaceServices[object] = surface
 	r.tracef(
 		"wipic_graphics_framebuffer:object=0x%08x:body=0x%08x:pixels=0x%08x:%dx%dx%d:screen=%t",
 		object,
@@ -495,6 +489,46 @@ func (r *Runtime) createWIPICFramebuffer(
 		screen,
 	)
 	return object, nil
+}
+
+// ensureWIPICSurface returns the shared-service mirror of a guest RGB565
+// framebuffer, creating it on first use.
+//
+// WIPI-C drawing, sprite blits included, runs entirely on the guest pixel
+// memory the framebuffer body points at; the shared surface is only read where
+// the framebuffer leaves the guest, that is when it is presented, merged into
+// the Java frame, or encoded. Mirroring every framebuffer eagerly therefore
+// spent one service surface per MC_grpImage, and a title that legitimately
+// keeps hundreds of sprites alive (메이플스토리 도적편, issue #68) exhausted the
+// surface-count limit mid-play on mirrors nothing had ever read.
+func (r *Runtime) ensureWIPICSurface(handle uint32) (shared.ServiceID, error) {
+	if surface := r.wipicSurfaceServices[handle]; surface != 0 {
+		return surface, nil
+	}
+	framebuffer := r.wipicFramebuffers[handle]
+	if framebuffer == nil {
+		return 0, nil
+	}
+	return r.createWIPICSurface(framebuffer)
+}
+
+func (r *Runtime) createWIPICSurface(
+	framebuffer *ktfWIPICFramebuffer,
+) (shared.ServiceID, error) {
+	surface, err := r.Services.Graphics.CreateSurface(
+		r.ServiceOwner,
+		shared.SurfaceDescriptor{
+			Width:  int32(framebuffer.width),
+			Height: int32(framebuffer.height),
+			Stride: int32(framebuffer.stride),
+			Format: shared.PixelRGB565,
+		},
+	)
+	if err != nil {
+		return 0, err
+	}
+	r.wipicSurfaceServices[framebuffer.object] = surface
+	return surface, nil
 }
 
 func ktfWIPICGraphicsInitContext(

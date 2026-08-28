@@ -393,3 +393,75 @@ func readKTFWIPICPixel(
 	}
 	return binary.LittleEndian.Uint16(encoded[:])
 }
+
+// TestKTFWIPICSpriteFramebuffersDoNotConsumeSharedSurfaces pins issue #68.
+// 메이플스토리 도적편 keeps hundreds of MC_grpImage sprites alive, and mirroring
+// each one into the graphics service exhausted the surface count mid-play even
+// though nothing ever read those mirrors.
+func TestKTFWIPICSpriteFramebuffersDoNotConsumeSharedSurfaces(t *testing.T) {
+	runtime := newScratchKTFRuntime(t)
+	limit := int(shared.DefaultGraphicsLimits().MaxSurfaces)
+	for index := 0; index < limit+16; index++ {
+		handle, err := runtime.createWIPICFramebuffer(8, 8, false)
+		if err != nil {
+			t.Fatalf("sprite framebuffer %d: %v", index, err)
+		}
+		if surface := runtime.wipicSurfaceServices[handle]; surface != 0 {
+			t.Fatalf(
+				"sprite framebuffer %d took shared surface %d before any use",
+				index,
+				surface,
+			)
+		}
+	}
+}
+
+// TestKTFWIPICFramebufferSurfaceMaterializesOnSync covers the other half of the
+// lazy mirror: a framebuffer that does leave the guest still gets its shared
+// surface, carrying the guest pixels with it.
+func TestKTFWIPICFramebufferSurfaceMaterializesOnSync(t *testing.T) {
+	runtime := newScratchKTFRuntime(t)
+	handle, err := runtime.createWIPICFramebuffer(2, 2, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	framebuffer := runtime.wipicFramebuffers[handle]
+	pixels := make([]byte, framebuffer.stride*framebuffer.height)
+	for index := 0; index < len(pixels); index += 2 {
+		binary.LittleEndian.PutUint16(pixels[index:], 0xf800)
+	}
+	if err := runtime.CPU.WriteMemory(framebuffer.pixels, pixels); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.syncKTFWIPICFramebuffer(handle); err != nil {
+		t.Fatal(err)
+	}
+	surface := runtime.wipicSurfaceServices[handle]
+	if surface == 0 {
+		t.Fatal("syncing a framebuffer did not materialize its shared surface")
+	}
+	if err := runtime.syncKTFWIPICFramebuffer(handle); err != nil {
+		t.Fatal(err)
+	}
+	if again := runtime.wipicSurfaceServices[handle]; again != surface {
+		t.Fatalf("second sync replaced surface %d with %d", surface, again)
+	}
+	rgba, err := runtime.Services.Graphics.RGBA(runtime.ServiceOwner, surface)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rgba) != 2*2*4 {
+		t.Fatalf("surface RGBA payload has %d bytes, want %d", len(rgba), 16)
+	}
+	for index := 0; index < len(rgba); index += 4 {
+		if rgba[index] != 0xff || rgba[index+1] != 0 || rgba[index+2] != 0 {
+			t.Fatalf(
+				"pixel %d is %02x%02x%02x, want the guest red",
+				index/4,
+				rgba[index],
+				rgba[index+1],
+				rgba[index+2],
+			)
+		}
+	}
+}

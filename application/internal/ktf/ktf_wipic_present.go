@@ -615,8 +615,14 @@ func (r *Runtime) applyPendingWIPICScreen() error {
 
 func (r *Runtime) syncKTFWIPICFramebuffer(handle uint32) error {
 	framebuffer := r.wipicFramebuffers[handle]
-	serviceID := r.wipicSurfaceServices[handle]
-	if framebuffer == nil || serviceID == 0 {
+	if framebuffer == nil {
+		return nil
+	}
+	serviceID, err := r.ensureWIPICSurface(handle)
+	if err != nil {
+		return err
+	}
+	if serviceID == 0 {
 		return nil
 	}
 	data := make([]byte, framebuffer.stride*framebuffer.height)
