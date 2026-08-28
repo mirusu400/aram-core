@@ -218,6 +218,7 @@ func (r *Runtime) destroyImage(handle uint32) error {
 		}
 		delete(r.assetServices, handle)
 	}
+	r.releaseImageAlpha(handle)
 	r.destroyOwnedFramebuffer(descriptor.framebuffer)
 	if descriptor.bufferID != 0 {
 		r.Heap.Release(descriptor.bufferID)
@@ -465,9 +466,12 @@ func (r *Runtime) drawImage(args []uint32) error {
 	if err != nil || !ok {
 		return err
 	}
+	alpha := r.imageAlphaFor(args[5], descriptor)
 	translated := append([]uint32(nil), args...)
 	translated[5] = descriptor.framebuffer
-	return r.copyFramebuffer(translated)
+	// MC_grpDrawImage composites the image's transparency; the framebuffer
+	// copy it is built on does not, which is why the mask is threaded through.
+	return r.copyFramebufferAlpha(translated, alpha)
 }
 
 func (r *Runtime) drawArc(fill bool, args []uint32) error {

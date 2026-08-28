@@ -830,6 +830,17 @@ func (r *Runtime) setRGBPixels(args []uint32) error {
 }
 
 func (r *Runtime) copyFramebuffer(args []uint32) error {
+	return r.copyFramebufferAlpha(args, nil)
+}
+
+// copyFramebufferAlpha copies a rectangle between two framebuffers, leaving
+// the destination untouched wherever alpha marks the source transparent. A nil
+// alpha copies every pixel, which is what MC_grpCopyFrameBuffer and
+// MC_grpCopyArea do.
+func (r *Runtime) copyFramebufferAlpha(
+	args []uint32,
+	alpha *wipiImageAlpha,
+) error {
 	destination, ok := r.Framebuffers[args[0]]
 	if !ok {
 		return nil
@@ -862,6 +873,9 @@ func (r *Runtime) copyFramebuffer(args []uint32) error {
 	}
 	for row := 0; row < height; row++ {
 		for column := 0; column < width; column++ {
+			if alpha.transparentAt(sx+column, sy+row) {
+				continue
+			}
 			value := pixels[row*width+column]
 			if err := r.putPixel(destination.Handle, dx+column, dy+row, context, &value); err != nil {
 				return err

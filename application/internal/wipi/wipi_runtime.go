@@ -216,12 +216,16 @@ type Runtime struct {
 	Heap               guest.Heap
 	framebufferScratch []byte
 
-	Services         *shared.Services
-	serviceConfig    shared.Config
-	ServiceOwner     shared.OwnerID
-	serviceName      string
-	surfaceServices  map[uint32]shared.ServiceID
-	assetServices    map[uint32]shared.ServiceID
+	Services        *shared.Services
+	serviceConfig   shared.Config
+	ServiceOwner    shared.OwnerID
+	serviceName     string
+	surfaceServices map[uint32]shared.ServiceID
+	assetServices   map[uint32]shared.ServiceID
+	// imageAlpha caches the transparency of each decoded MC_GrpImage, keyed
+	// by the image handle. A 16bpp framebuffer cannot hold alpha, so the
+	// decoded surface is the only place it survives; see wipi_image_alpha.go.
+	imageAlpha       map[uint32]*wipiImageAlpha
 	TimerServices    map[uint32]shared.ServiceID
 	fileServices     map[int32]shared.ServiceID
 	DatabaseServices map[string]shared.ServiceID
@@ -419,6 +423,7 @@ func NewRuntimeForProfile(
 		serviceName:      serviceName,
 		surfaceServices:  make(map[uint32]shared.ServiceID),
 		assetServices:    make(map[uint32]shared.ServiceID),
+		imageAlpha:       make(map[uint32]*wipiImageAlpha),
 		TimerServices:    make(map[uint32]shared.ServiceID),
 		fileServices:     make(map[int32]shared.ServiceID),
 		DatabaseServices: make(map[string]shared.ServiceID),
@@ -522,6 +527,7 @@ func (r *Runtime) Reset() error {
 	r.ServiceOwner = owner
 	r.surfaceServices = make(map[uint32]shared.ServiceID)
 	r.assetServices = make(map[uint32]shared.ServiceID)
+	r.imageAlpha = make(map[uint32]*wipiImageAlpha)
 	r.TimerServices = make(map[uint32]shared.ServiceID)
 	r.fileServices = make(map[int32]shared.ServiceID)
 	r.DatabaseServices = make(map[string]shared.ServiceID)

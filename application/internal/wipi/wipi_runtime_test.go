@@ -2016,3 +2016,91 @@ func TestPresentOversizedFramebufferCopiesTheOverlap(t *testing.T) {
 		t.Fatal("the host frame kept no pixels from the oversized flush")
 	}
 }
+
+// Issue #76, 무한신맞고2009: its sprite sheets reserve magenta as the
+// transparent palette entry. MC_grpDrawImage composites an image's
+// transparency, but the framebuffer copy it is built on does not, so every
+// sprite blitted as a solid rectangle and the whole dialog came out magenta.
+func TestWIPIRuntimeDrawImageKeepsTransparentPixelsOut(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	source := image.NewNRGBA(image.Rect(0, 0, 2, 1))
+	source.SetNRGBA(0, 0, color.NRGBA{R: 0x20, G: 0x40, B: 0x60, A: 0xff})
+	source.SetNRGBA(1, 0, color.NRGBA{R: 0xff, B: 0xff})
+	var payload bytes.Buffer
+	if err := png.Encode(&payload, source); err != nil {
+		t.Fatal(err)
+	}
+	buffer, err := runtime.Heap.Allocate(uint32(payload.Len()), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.CPU.WriteMemory(buffer, payload.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	output, err := runtime.Heap.Allocate(4, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := dispatchPublicAPI(
+		t,
+		runtime,
+		"MC_grpCreateImage",
+		output,
+		buffer,
+		0,
+		uint32(payload.Len()),
+	); result.Low != uint32(guest.WIPIImageDone) {
+		t.Fatalf("MC_grpCreateImage = %d", int32(result.Low))
+	}
+	handle, err := runtime.ReadU32(output)
+	if err != nil || handle == 0 {
+		t.Fatalf("image handle = 0x%08x, %v", handle, err)
+	}
+	screen := dispatchPublicAPI(t, runtime, "MC_grpGetScreenFrameBuffer", 0).Low
+	background := color.RGBA{G: 0xff, A: 0xff}
+	for x := 0; x < 2; x++ {
+		runtime.Frame.SetRGBA(x, 0, background)
+	}
+	if err := runtime.writeFramebufferPixel(
+		runtime.Framebuffers[screen],
+		1,
+		0,
+		runtime.devicePixelFromRGB(0, 0xff, 0),
+	); err != nil {
+		t.Fatal(err)
+	}
+	dispatchPublicAPI(
+		t,
+		runtime,
+		"MC_grpDrawImage",
+		screen,
+		0,
+		0,
+		2,
+		1,
+		handle,
+		0,
+		0,
+		0,
+	)
+	dispatchPublicAPI(t, runtime, "MC_grpFlushLcd", 0, screen, 0, 0, 16, 12)
+	if got := runtime.Frame.RGBAAt(0, 0); got != (color.RGBA{
+		R: 0x20,
+		G: 0x40,
+		B: 0x60,
+		A: 0xff,
+	}) {
+		t.Fatalf("opaque image pixel = %#v", got)
+	}
+	if got := runtime.Frame.RGBAAt(1, 0); got != background {
+		t.Fatalf(
+			"transparent image pixel = %#v, want the background %#v",
+			got,
+			background,
+		)
+	}
+	dispatchPublicAPI(t, runtime, "MC_grpDestroyImage", handle)
+	if _, cached := runtime.imageAlpha[handle]; cached {
+		t.Fatal("destroyed image kept its cached transparency")
+	}
+}
