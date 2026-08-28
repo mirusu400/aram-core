@@ -149,7 +149,7 @@ func ktfWIPICGraphicsCreateImage(
 		_ = runtime.Services.Assets.Release(runtime.ServiceOwner, assetID)
 		return 0, err
 	}
-	transparentKey, err := runtime.paintWIPICImageFrame(
+	alpha, err := runtime.paintWIPICImageFrame(
 		framebufferObject,
 		asset.Frames[0].Surface,
 	)
@@ -180,11 +180,11 @@ func ktfWIPICGraphicsCreateImage(
 		return 0, err
 	}
 	runtime.wipicImages[object] = &ktfWIPICImage{
-		object:         object,
-		body:           body,
-		framebuffer:    framebufferObject,
-		source:         memoryID,
-		transparentKey: transparentKey,
+		object:      object,
+		body:        body,
+		framebuffer: framebufferObject,
+		source:      memoryID,
+		alpha:       alpha,
 	}
 	runtime.wipicAssetServices[object] = assetID
 	if err := runtime.WriteU32(output, object); err != nil {
@@ -955,7 +955,7 @@ func ktfWIPICGraphicsDrawImage(
 		int64(int32(values[6])),
 		int64(int32(values[7])),
 		state,
-		image.transparentKey,
+		image.alpha,
 	); err != nil {
 		return 0, err
 	}
@@ -971,19 +971,22 @@ func (r *Runtime) blitWIPICFramebuffer(
 ) error {
 	return r.blitWIPICFramebufferKeyed(
 		destinationHandle, sourceHandle,
-		dx, dy, width, height, sx, sy, state, -1,
+		dx, dy, width, height, sx, sy, state,
+		ktfWIPICImageAlpha{key: -1},
 	)
 }
 
 // blitWIPICFramebufferKeyed copies a rectangle between two 16bpp framebuffers.
-// A transparentKey of 0..0xffff leaves destination pixels untouched wherever
-// the source matches that RGB565 value, which is how KTF renders MC_grpImage
-// sprites decoded from color-keyed bitmaps. A negative key copies opaquely.
+// alpha names the source pixels to skip so the destination shows through:
+// its mask when the decoded image carried one, otherwise a key of 0..0xffff
+// matched against the RGB565 source value, which is how KTF renders an
+// MC_grpImage decoded from a color-keyed sprite sheet. No mask and a negative
+// key copies opaquely.
 func (r *Runtime) blitWIPICFramebufferKeyed(
 	destinationHandle, sourceHandle uint32,
 	dx, dy, width, height, sx, sy int64,
 	state ktfWIPICGraphicsContext,
-	transparentKey int32,
+	alpha ktfWIPICImageAlpha,
 ) error {
 	destination := r.wipicFramebuffers[destinationHandle]
 	source := r.wipicFramebuffers[sourceHandle]
@@ -1036,29 +1039,48 @@ func (r *Runtime) blitWIPICFramebufferKeyed(
 			return err
 		}
 	}
+	// A mask indexes the source framebuffer directly, so it is only usable
+	// when it was built for exactly this surface. The clamping above then
+	// keeps every index the row loop computes inside it, which is what lets
+	// the inner loop read the bitset without a bounds check per pixel.
+	masked := len(alpha.mask) != 0 &&
+		alpha.width == source.width && alpha.height == source.height
 	var destinationRow []byte
-	if transparentKey >= 0 {
+	if masked || alpha.key >= 0 {
 		destinationRow = make([]byte, rowBytes)
 	}
+	key := uint16(alpha.key)
 	for y := top; y < bottom; y++ {
 		destinationAddress := destination.pixels +
 			uint32(y*int64(destination.stride)+left*2)
 		rowOffset := int(y-top) * rowBytes
 		sourceRow := data[rowOffset : rowOffset+rowBytes]
-		if transparentKey < 0 {
+		if !masked && alpha.key < 0 {
 			if err := r.CPU.WriteMemory(destinationAddress, sourceRow); err != nil {
 				return err
 			}
 			continue
 		}
 		// Merge only the opaque source pixels over the current destination so
-		// the color-keyed background shows whatever was already painted there.
+		// the transparent background shows whatever was already painted there.
 		if err := r.CPU.ReadMemory(destinationAddress, destinationRow); err != nil {
 			return err
 		}
-		key := uint16(transparentKey)
-		for i := 0; i+1 < rowBytes; i += 2 {
-			if binary.LittleEndian.Uint16(sourceRow[i:]) != key {
+		if masked {
+			base := int(sy+y-dy)*alpha.width + int(sx+left-dx)
+			for i := 0; i+1 < rowBytes; i += 2 {
+				index := base + i/2
+				if alpha.mask[index>>6]&(1<<(index&63)) != 0 {
+					continue
+				}
+				destinationRow[i] = sourceRow[i]
+				destinationRow[i+1] = sourceRow[i+1]
+			}
+		} else {
+			for i := 0; i+1 < rowBytes; i += 2 {
+				if binary.LittleEndian.Uint16(sourceRow[i:]) == key {
+					continue
+				}
 				destinationRow[i] = sourceRow[i]
 				destinationRow[i+1] = sourceRow[i+1]
 			}

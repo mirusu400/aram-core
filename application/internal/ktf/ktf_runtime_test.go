@@ -7624,9 +7624,9 @@ func TestKTFWIPICDrawImageBlitsAndClips(t *testing.T) {
 	}
 	const imageObject = uint32(0x4000)
 	runtime.wipicImages[imageObject] = &ktfWIPICImage{
-		object:         imageObject,
-		framebuffer:    source,
-		transparentKey: -1,
+		object:      imageObject,
+		framebuffer: source,
+		alpha:       ktfWIPICImageAlpha{key: -1},
 	}
 	contextAddress, err := runtime.Heap.Allocate(60, true)
 	if err != nil {
@@ -7771,9 +7771,9 @@ func TestKTFWIPICDrawImageKeysOutMagenta(t *testing.T) {
 	}
 	const imageObject = uint32(0x4000)
 	runtime.wipicImages[imageObject] = &ktfWIPICImage{
-		object:         imageObject,
-		framebuffer:    source,
-		transparentKey: int32(key),
+		object:      imageObject,
+		framebuffer: source,
+		alpha:       ktfWIPICImageAlpha{key: int32(key)},
 	}
 	contextAddress, err := runtime.Heap.Allocate(60, true)
 	if err != nil {
@@ -8921,10 +8921,10 @@ func TestKTFWIPICImageKeysOutReservedPaletteEntry(t *testing.T) {
 	object := createKTFWIPICImage(t, runtime, encoded)
 	image := runtime.wipicImages[object]
 	const greenKey = int32(0x2484)
-	if image.transparentKey != greenKey {
+	if image.alpha.key != greenKey {
 		t.Fatalf(
 			"reserved palette entry key = %#x; want %#x",
-			image.transparentKey,
+			image.alpha.key,
 			greenKey,
 		)
 	}
@@ -8943,8 +8943,78 @@ func TestKTFWIPICImageKeysOutReservedPaletteEntry(t *testing.T) {
 	}
 }
 
+// drawKTFWIPICImage blits a whole decoded image over a destination
+// framebuffer through the MC_grpDrawImage entry point, so a test exercises the
+// same transparency the guest sees.
+func drawKTFWIPICImage(
+	t *testing.T,
+	runtime *Runtime,
+	imageObject, destination uint32,
+	width, height int,
+) {
+	t.Helper()
+	contextAddress, err := runtime.Heap.Allocate(60, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range []uint32{
+		destination,
+		0,
+		0,
+		uint32(width),
+	} {
+		if err := runtime.CPU.WriteRegister(
+			cpu.RegisterR0+uint32(register),
+			value,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stack, err := runtime.Heap.Allocate(20, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.writeWords(stack, []uint32{
+		uint32(height),
+		imageObject,
+		0,
+		0,
+		contextAddress,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.CPU.WriteRegister(cpu.RegisterSP, stack); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ktfWIPICGraphicsDrawImage(
+		context.Background(),
+		runtime,
+	); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// fillKTFWIPICFramebuffer paints one RGB565 value over a whole framebuffer.
+func fillKTFWIPICFramebuffer(
+	t *testing.T,
+	runtime *Runtime,
+	handle uint32,
+	value uint16,
+) {
+	t.Helper()
+	framebuffer := runtime.wipicFramebuffers[handle]
+	pixels := make([]byte, framebuffer.stride*framebuffer.height)
+	for offset := 0; offset+1 < len(pixels); offset += 2 {
+		binary.LittleEndian.PutUint16(pixels[offset:], value)
+	}
+	if err := runtime.CPU.WriteMemory(framebuffer.pixels, pixels); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // A straight-alpha PNG normally stores transparent black, and a sprite that
-// also draws with opaque black must not lose those pixels to the color key.
+// also draws with opaque black must not lose those pixels: a single color key
+// cannot separate the two, so the image keeps the decoded alpha as a mask.
 func TestKTFWIPICImageKeepsBlackWhenTransparentPixelsShareIt(t *testing.T) {
 	source := image.NewNRGBA(image.Rect(0, 0, 2, 1))
 	source.SetNRGBA(0, 0, color.NRGBA{A: 0xff})
@@ -8956,8 +9026,62 @@ func TestKTFWIPICImageKeepsBlackWhenTransparentPixelsShareIt(t *testing.T) {
 
 	runtime := newScratchKTFRuntime(t)
 	object := createKTFWIPICImage(t, runtime, encoded.Bytes())
-	if got := runtime.wipicImages[object].transparentKey; got != -1 {
+	if got := runtime.wipicImages[object].alpha.key; got != -1 {
 		t.Fatalf("color key = %#x; want -1", got)
+	}
+	destination, err := runtime.createWIPICFramebuffer(2, 1, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const background = uint16(0x001f)
+	fillKTFWIPICFramebuffer(t, runtime, destination, background)
+	drawKTFWIPICImage(t, runtime, object, destination, 2, 1)
+	if got := readKTFWIPICPixel(t, runtime, destination, 0, 0); got != 0 {
+		t.Fatalf("opaque black pixel = %04x; want 0000", got)
+	}
+	if got := readKTFWIPICPixel(t, runtime, destination, 1, 0); got != background {
+		t.Fatalf(
+			"transparent pixel = %04x; want the background %04x",
+			got,
+			background,
+		)
+	}
+}
+
+// Issue #70, 액션히어로3D: its sprite sheets name white as the transparent
+// palette entry and also draw opaque white pixels, so no single RGB565 value
+// can stand for transparency. The color key alone gave up and blitted the
+// sheet opaquely, which painted a white box behind every sprite.
+func TestKTFWIPICImageMasksTransparencyWhenItsColorIsAlsoOpaque(t *testing.T) {
+	source := image.NewNRGBA(image.Rect(0, 0, 2, 1))
+	source.SetNRGBA(0, 0, color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff})
+	source.SetNRGBA(1, 0, color.NRGBA{R: 0xff, G: 0xff, B: 0xff})
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, source); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime := newScratchKTFRuntime(t)
+	object := createKTFWIPICImage(t, runtime, encoded.Bytes())
+	if got := runtime.wipicImages[object].alpha.key; got != -1 {
+		t.Fatalf("color key = %#x; want -1, white is opaque here too", got)
+	}
+	destination, err := runtime.createWIPICFramebuffer(2, 1, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const background = uint16(0x001f)
+	fillKTFWIPICFramebuffer(t, runtime, destination, background)
+	drawKTFWIPICImage(t, runtime, object, destination, 2, 1)
+	if got := readKTFWIPICPixel(t, runtime, destination, 0, 0); got != 0xffff {
+		t.Fatalf("opaque white pixel = %04x; want ffff", got)
+	}
+	if got := readKTFWIPICPixel(t, runtime, destination, 1, 0); got != background {
+		t.Fatalf(
+			"transparent white pixel = %04x; want the background %04x",
+			got,
+			background,
+		)
 	}
 }
 
@@ -9004,18 +9128,18 @@ func TestKTFWIPICRestoredImageRecoversColorKey(t *testing.T) {
 			runtime := newScratchKTFRuntime(t)
 			object := createKTFWIPICImage(t, runtime, test.encoded)
 			image := runtime.wipicImages[object]
-			if image.transparentKey != test.want {
+			if image.alpha.key != test.want {
 				t.Fatalf(
 					"created key = %#x; want %#x",
-					image.transparentKey,
+					image.alpha.key,
 					test.want,
 				)
 			}
-			recovered := runtime.wipicRestoredImageColorKey(
+			recovered := runtime.wipicRestoredImageAlpha(
 				runtime.wipicAssetServices[object],
 				image.frameIndex,
 				image.framebuffer,
-			)
+			).key
 			if recovered != test.want {
 				t.Fatalf(
 					"recovered key = %#x; want %#x",
