@@ -132,6 +132,22 @@ func wipicSurfaceAlpha(
 	if maskWidth <= 0 || maskHeight <= 0 {
 		return alpha
 	}
+	// A frame that covers its framebuffer with no transparent pixel at all
+	// needs no mask, and most do not have one. Look before allocating: a
+	// title can hold hundreds of sprites at once, and a mask each would be
+	// megabytes of bitset nothing ever reads.
+	transparent := false
+	for y := 0; y < height && !transparent; y++ {
+		for x := 0; x < width; x++ {
+			if rgba[(y*stride+x)*4+3] == 0 {
+				transparent = true
+				break
+			}
+		}
+	}
+	if !transparent && width == maskWidth && height == maskHeight {
+		return alpha
+	}
 	// Every pixel the paint loop skipped stays transparent: the framebuffer
 	// was zero-filled there, and drawing that black over the destination
 	// would be a worse answer than leaving the destination alone.
@@ -139,19 +155,14 @@ func wipicSurfaceAlpha(
 	for index := range mask {
 		mask[index] = ^uint64(0)
 	}
-	transparent := false
 	for y := 0; y < height; y++ {
 		for x := 0; x < width; x++ {
 			if rgba[(y*stride+x)*4+3] == 0 {
-				transparent = true
 				continue
 			}
 			index := y*maskWidth + x
 			mask[index>>6] &^= 1 << (index & 63)
 		}
-	}
-	if !transparent && width == maskWidth && height == maskHeight {
-		return alpha
 	}
 	alpha.mask = mask
 	alpha.width = maskWidth
