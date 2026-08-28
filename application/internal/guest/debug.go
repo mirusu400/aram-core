@@ -178,6 +178,55 @@ var DebugRegisterNames = [...]string{
 	"r8", "r9", "r10", "r11", "r12", "sp", "lr", "pc", "cpsr",
 }
 
+// DebugMemoryRegion is a bounded window of guest memory captured for crash
+// triage. Data holds the bytes that were readable from Base upward; a short
+// Data means the window ran into unmapped memory. These are guest runtime
+// bytes, so a region is only ever populated for a faulted machine and only
+// travels in a user-submitted crash report.
+type DebugMemoryRegion struct {
+	Label string `json:"label"`
+	Base  uint32 `json:"base"`
+	Data  []byte `json:"-"`
+}
+
+// debugMemoryRegionChunk is the granularity of a bounded region read. A window
+// stops at the first chunk that fails so a partly-mapped window still yields its
+// readable prefix instead of nothing.
+const debugMemoryRegionChunk = 16
+
+// ReadDebugMemoryRegion reads up to size bytes from base, stopping at the first
+// unreadable chunk. An unmapped tail therefore never discards the mapped
+// prefix, and a fully unmapped window yields an empty region.
+func ReadDebugMemoryRegion(
+	backend cpu.Backend,
+	label string,
+	base uint32,
+	size int,
+) DebugMemoryRegion {
+	region := DebugMemoryRegion{Label: label, Base: base}
+	if backend == nil || size <= 0 {
+		return region
+	}
+	buffer := make([]byte, 0, size)
+	chunk := make([]byte, debugMemoryRegionChunk)
+	for offset := 0; offset < size; offset += debugMemoryRegionChunk {
+		want := debugMemoryRegionChunk
+		if remaining := size - offset; remaining < want {
+			want = remaining
+		}
+		address := uint64(base) + uint64(offset)
+		if address > 0xffffffff {
+			break
+		}
+		if err := backend.ReadMemory(uint32(address), chunk[:want]); err != nil {
+			break
+		}
+		buffer = append(buffer, chunk[:want]...)
+	}
+	region.Data = buffer
+	return region
+}
+
 type DebugKTFSnapshot struct {
 	PresentCount          uint32                  `json:"present_count"`
 	TickMS                uint64                  `json:"tick_ms"`
