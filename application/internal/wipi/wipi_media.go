@@ -373,6 +373,30 @@ func (r *Runtime) RaptorPutClipData(handle, source uint32, length int32) bool {
 	return true
 }
 
+// RaptorClearClipData empties a clip's source buffer so the next
+// MC_mdaClipPutData starts a new track instead of appending to the last one.
+//
+// LGT titles keep a single clip for the whole session: they stop it, clear it,
+// rewind it, put the next track's bytes in, and play again. With the clear
+// missing the buffer only ever grew, so the decoder kept replaying the first
+// track it was ever given, and once the accumulated tracks passed the clip's
+// declared capacity every later MC_mdaClipPutData failed outright and the
+// title fell silent for the rest of the session (issue #65).
+func (r *Runtime) RaptorClearClipData(handle uint32) bool {
+	clip := r.MediaClips[handle]
+	if clip == nil {
+		return false
+	}
+	if serviceID := r.MediaServices[handle]; serviceID != 0 {
+		if err := r.Services.Media.Clear(r.ServiceOwner, serviceID); err != nil {
+			return false
+		}
+	}
+	clip.Data = nil
+	clip.position = 0
+	return true
+}
+
 // RaptorRewindClip seeks a clip back to its start.
 func (r *Runtime) RaptorRewindClip(handle uint32) {
 	clip := r.MediaClips[handle]

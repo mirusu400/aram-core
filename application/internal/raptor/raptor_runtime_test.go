@@ -218,6 +218,18 @@ func TestRaptorPrivateSoundOrdinalsStopAndFreeClips(t *testing.T) {
 		t.Fatalf("stop completion callback = %+v", public.PendingCallbacks)
 	}
 
+	public.MediaClips[handle].Data = []byte{1, 2, 3, 4}
+	if name := call(1206); name != "RAPTOR.sndClearData" {
+		t.Fatalf("ordinal 1206 = %q", name)
+	}
+	if clip := public.MediaClips[handle]; clip == nil || len(clip.Data) != 0 {
+		t.Fatalf("cleared clip = %+v", public.MediaClips[handle])
+	}
+	if name, ok := raptorWIPIImportName(1206); !ok ||
+		name != "MC_mdaClipClearData" {
+		t.Fatalf("raptorWIPIImportName(1206) = %q, %v", name, ok)
+	}
+
 	if name := call(1201); name != "RAPTOR.sndFree" {
 		t.Fatalf("ordinal 1201 = %q", name)
 	}
