@@ -40,35 +40,37 @@ func readKTFWIPICParameters(
 
 // paintWIPICImageFrame converts a decoded shared RGBA surface into the
 // provider-private RGB565 framebuffer that native KTF clients dereference.
-// paintWIPICImageFrame returns the RGB565 transparent color key for the frame,
-// or -1 when it draws fully opaque. A source that already carries alpha — a
-// BMP whose header names a transparent palette entry, for one — names its own
-// key: the color its fully transparent pixels share. Otherwise the key is the
-// top-left pixel when that pixel is in the magenta family color-keyed bitmaps
-// reserve for transparency.
+// paintWIPICImageFrame returns the transparency the framebuffer itself cannot
+// carry: a one-bit mask taken straight from the decoded alpha whenever the
+// source has any fully transparent pixel, and otherwise the older color key —
+// the top-left pixel when it is in the magenta family color-keyed native
+// sprite sheets reserve for transparency.
 func (r *Runtime) paintWIPICImageFrame(
 	framebufferHandle uint32,
 	surface shared.ServiceID,
-) (int32, error) {
+) (ktfWIPICImageAlpha, error) {
+	opaque := ktfWIPICImageAlpha{key: -1}
 	framebuffer := r.wipicFramebuffers[framebufferHandle]
 	if framebuffer == nil {
-		return -1, fmt.Errorf(
+		return opaque, fmt.Errorf(
 			"KTF WIPI-C image framebuffer 0x%08x is unavailable",
 			framebufferHandle,
 		)
 	}
 	descriptor, err := r.Services.Graphics.Descriptor(r.ServiceOwner, surface)
 	if err != nil {
-		return -1, err
+		return opaque, err
 	}
 	rgba, err := r.Services.Graphics.RGBA(r.ServiceOwner, surface)
 	if err != nil {
-		return -1, err
+		return opaque, err
 	}
 	width, height := int(descriptor.Width), int(descriptor.Height)
 	if width <= 0 || height <= 0 ||
 		uint64(width)*uint64(height)*4 > uint64(len(rgba)) {
-		return -1, errors.New("KTF WIPI-C decoded image surface is malformed")
+		return opaque, errors.New(
+			"KTF WIPI-C decoded image surface is malformed",
+		)
 	}
 	pixels := make([]byte, framebuffer.stride*framebuffer.height)
 	width = min(width, framebuffer.width)
@@ -95,20 +97,66 @@ func (r *Runtime) paintWIPICImageFrame(
 		}
 	}
 	if err := r.CPU.WriteMemory(framebuffer.pixels, pixels); err != nil {
-		return -1, err
+		return opaque, err
 	}
-	transparentKey := wipicSurfaceColorKey(
+	alpha := wipicSurfaceAlpha(
 		rgba,
 		int(descriptor.Width),
 		width,
 		height,
+		framebuffer.width,
+		framebuffer.height,
 	)
-	if transparentKey < 0 && width > 0 && height > 0 {
+	if len(alpha.mask) == 0 && alpha.key < 0 && width > 0 && height > 0 {
 		if corner := binary.LittleEndian.Uint16(pixels); ktfIsColorKeyMagenta565(corner) {
-			transparentKey = int32(corner)
+			alpha.key = int32(corner)
 		}
 	}
-	return transparentKey, r.commitKTFWIPICFramebuffer(framebufferHandle)
+	return alpha, r.commitKTFWIPICFramebuffer(framebufferHandle)
+}
+
+// wipicSurfaceAlpha turns a decoded surface's alpha into the form the blit can
+// use. A mask is exact and always preferred; it is what lets a sprite sheet
+// whose transparent palette entry is white also draw opaque white pixels,
+// which a single color key cannot express. The key is still reported for a
+// fully keyable frame so a restored image without its decoded asset, and the
+// magenta fallback above, keep working.
+func wipicSurfaceAlpha(
+	rgba []byte,
+	stride, width, height int,
+	maskWidth, maskHeight int,
+) ktfWIPICImageAlpha {
+	alpha := ktfWIPICImageAlpha{
+		key: wipicSurfaceColorKey(rgba, stride, width, height),
+	}
+	if maskWidth <= 0 || maskHeight <= 0 {
+		return alpha
+	}
+	// Every pixel the paint loop skipped stays transparent: the framebuffer
+	// was zero-filled there, and drawing that black over the destination
+	// would be a worse answer than leaving the destination alone.
+	mask := make([]uint64, (maskWidth*maskHeight+63)/64)
+	for index := range mask {
+		mask[index] = ^uint64(0)
+	}
+	transparent := false
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			if rgba[(y*stride+x)*4+3] == 0 {
+				transparent = true
+				continue
+			}
+			index := y*maskWidth + x
+			mask[index>>6] &^= 1 << (index & 63)
+		}
+	}
+	if !transparent && width == maskWidth && height == maskHeight {
+		return alpha
+	}
+	alpha.mask = mask
+	alpha.width = maskWidth
+	alpha.height = maskHeight
+	return alpha
 }
 
 // wipicSurfaceColorKey reports the RGB565 value that stands in for a decoded
@@ -150,59 +198,63 @@ func wipicSurfaceColorKey(rgba []byte, stride, width, height int) int32 {
 	return int32(key)
 }
 
-// wipicRestoredImageColorKey recovers a restored image's transparent color
-// key. The decoded asset is restored alongside the image, so its surface still
-// carries the alpha the framebuffer cannot hold; an image whose key arrived as
-// an opaque magenta instead falls back to reading the painted corner.
-func (r *Runtime) wipicRestoredImageColorKey(
+// wipicRestoredImageAlpha recovers a restored image's transparency. The
+// decoded asset is restored alongside the image, so its surface still carries
+// the alpha the framebuffer cannot hold; an image whose asset is gone falls
+// back to reading the painted corner for a magenta color key.
+func (r *Runtime) wipicRestoredImageAlpha(
 	assetID shared.ServiceID,
 	frameIndex uint32,
 	framebufferHandle uint32,
-) int32 {
-	if key := r.wipicAssetColorKey(
+) ktfWIPICImageAlpha {
+	if alpha := r.wipicAssetAlpha(
 		assetID,
 		frameIndex,
 		framebufferHandle,
-	); key >= 0 {
-		return key
+	); len(alpha.mask) != 0 || alpha.key >= 0 {
+		return alpha
 	}
-	return r.wipicImageColorKey(framebufferHandle)
+	return ktfWIPICImageAlpha{key: r.wipicImageColorKey(framebufferHandle)}
 }
 
-// wipicAssetColorKey rescans the decoded frame an image was painted from, or
-// returns -1 when the asset, its surface, or its transparency is unavailable.
-func (r *Runtime) wipicAssetColorKey(
+// wipicAssetAlpha rescans the decoded frame an image was painted from, or
+// reports no transparency when the asset, its surface, or its alpha is
+// unavailable.
+func (r *Runtime) wipicAssetAlpha(
 	assetID shared.ServiceID,
 	frameIndex uint32,
 	framebufferHandle uint32,
-) int32 {
+) ktfWIPICImageAlpha {
+	opaque := ktfWIPICImageAlpha{key: -1}
 	framebuffer := r.wipicFramebuffers[framebufferHandle]
 	if assetID == 0 || framebuffer == nil || r.Services == nil {
-		return -1
+		return opaque
 	}
 	asset, err := r.Services.Assets.Info(r.ServiceOwner, assetID)
 	if err != nil || frameIndex >= uint32(len(asset.Frames)) {
-		return -1
+		return opaque
 	}
 	surface := asset.Frames[frameIndex].Surface
 	descriptor, err := r.Services.Graphics.Descriptor(r.ServiceOwner, surface)
 	if err != nil {
-		return -1
+		return opaque
 	}
 	rgba, err := r.Services.Graphics.RGBA(r.ServiceOwner, surface)
 	if err != nil {
-		return -1
+		return opaque
 	}
 	width, height := int(descriptor.Width), int(descriptor.Height)
 	if width <= 0 || height <= 0 ||
 		uint64(width)*uint64(height)*4 > uint64(len(rgba)) {
-		return -1
+		return opaque
 	}
-	return wipicSurfaceColorKey(
+	return wipicSurfaceAlpha(
 		rgba,
 		width,
 		min(width, framebuffer.width),
 		min(height, framebuffer.height),
+		framebuffer.width,
+		framebuffer.height,
 	)
 }
 
@@ -544,14 +596,14 @@ func ktfWIPICGraphicsDecodeNextImage(
 	if len(asset.Frames) <= 1 || next >= uint32(len(asset.Frames)) {
 		return guest.WIPIReturnCode(guest.WIPIImageDone), nil
 	}
-	transparentKey, err := runtime.paintWIPICImageFrame(
+	alpha, err := runtime.paintWIPICImageFrame(
 		imageState.framebuffer,
 		asset.Frames[next].Surface,
 	)
 	if err != nil {
 		return guest.WIPIReturnCode(guest.WIPIBadFormat), err
 	}
-	imageState.transparentKey = transparentKey
+	imageState.alpha = alpha
 	imageState.frameIndex = next
 	runtime.tracef(
 		"wipic_graphics_decode_next:image=0x%08x:frame=%d/%d",

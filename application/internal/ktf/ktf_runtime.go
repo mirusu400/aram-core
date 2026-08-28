@@ -546,9 +546,25 @@ type ktfWIPICImage struct {
 	framebuffer uint32
 	source      uint32
 	frameIndex  uint32
-	// transparentKey is the RGB565 color a color-keyed bitmap uses for its
-	// transparent background, or -1 when the image draws fully opaque.
-	transparentKey int32
+	// alpha carries the transparency the 16bpp image framebuffer cannot hold.
+	alpha ktfWIPICImageAlpha
+}
+
+// ktfWIPICImageAlpha describes how a painted MC_GrpImage frame keeps the
+// transparency its RGB565 framebuffer dropped. A handset stores a separate
+// mask framebuffer next to the color one, which is why the provider-private
+// image body reserves a slot for it; mask mirrors that storage, one bit per
+// pixel, set where the decoded source pixel was fully transparent.
+//
+// key is the older, weaker model: the single RGB565 value a color-keyed
+// bitmap reserves for its background. It still covers sources that reach us
+// without alpha at all — a magenta-keyed native sprite sheet — and stays the
+// fallback when no mask could be built.
+type ktfWIPICImageAlpha struct {
+	key    int32
+	mask   []uint64
+	width  int
+	height int
 }
 
 type ktfWIPICMemory struct {
