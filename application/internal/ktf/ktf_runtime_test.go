@@ -6256,6 +6256,79 @@ func TestKTFWIPICKernelGetDLLInterfaceRegistersUserMemory(t *testing.T) {
 	}
 }
 
+// Issue #71, 액션히어로3D: the title never calls MXUserMem free. It allocates a
+// scratch buffer, reads a file into it, and then re-declares the same region
+// to hand the whole arena back. Treating that repeat as a no-op leaked every
+// scratch buffer, so the later 66 KiB texture allocation returned null and the
+// guest faulted dereferencing it.
+func TestKTFMXUserMemReAddReclaimsTheWholeArena(t *testing.T) {
+	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin128",
+		BSSSize:    128,
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.CPU.Close()
+	if err := runtime.MapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	const (
+		regionBase = uint32(ImageBase + 8)
+		regionSize = uint32(64)
+	)
+	add := func() {
+		t.Helper()
+		if err := runtime.CPU.WriteRegister(cpu.RegisterR0, regionBase); err != nil {
+			t.Fatal(err)
+		}
+		if err := runtime.CPU.WriteRegister(cpu.RegisterR1, regionSize); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ktfIncrementalMemoryAdd(
+			context.Background(),
+			runtime,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	allocate := func(size uint32) uint32 {
+		t.Helper()
+		if err := runtime.CPU.WriteRegister(cpu.RegisterR0, regionBase); err != nil {
+			t.Fatal(err)
+		}
+		if err := runtime.CPU.WriteRegister(cpu.RegisterR1, size); err != nil {
+			t.Fatal(err)
+		}
+		address, err := ktfIncrementalMemoryAllocate(
+			context.Background(),
+			runtime,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return address
+	}
+
+	add()
+	if got := allocate(48); got != regionBase {
+		t.Fatalf("first allocation = 0x%08x, want 0x%08x", got, regionBase)
+	}
+	add()
+	if got := allocate(48); got != regionBase {
+		t.Fatalf(
+			"allocation after re-adding the region = 0x%08x, want the arena "+
+				"start 0x%08x",
+			got,
+			regionBase,
+		)
+	}
+	if regions := len(runtime.incrementalMemory); regions != 1 {
+		t.Fatalf("registered regions = %d, want 1", regions)
+	}
+}
+
 func TestKTFWIPICKernelMemoryIDCopiesResourceToIndirectBuffer(t *testing.T) {
 	resource := []byte{0x18, 0xba, 0x72, 0x00, 0xff}
 	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
