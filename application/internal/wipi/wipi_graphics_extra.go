@@ -575,12 +575,7 @@ func (r *Runtime) drawText(unicode bool, args []uint32) error {
 		default:
 			return nil
 		}
-		for _, value := range encoded {
-			if value == 0 {
-				break
-			}
-			characters = append(characters, uint16(value))
-		}
+		characters = decodeWIPICharRun(r, encoded)
 	}
 	font, err := r.graphicsContextFont(args[5])
 	if err != nil {
@@ -623,6 +618,40 @@ func (r *Runtime) drawText(unicode bool, args []uint32) error {
 		cursor += int(glyph.Advance)
 	}
 	return nil
+}
+
+// decodeWIPICharRun turns an M_Char run into the characters to draw. A handset
+// carries M_Char text in its own EUC-KR encoding, so a Korean syllable is two
+// bytes; mapping each byte to a character instead drew 무한신맞고2009's menus
+// and dialogue as mojibake and missing-glyph boxes (issue #77). ASCII survives
+// either way, and a run that is not valid EUC-KR falls back to the byte
+// mapping rather than losing the text.
+func decodeWIPICharRun(r *Runtime, encoded []byte) []uint16 {
+	terminated := encoded
+	for index, value := range encoded {
+		if value == 0 {
+			terminated = encoded[:index]
+			break
+		}
+	}
+	if decoded, err := r.Services.Text.Decode(
+		terminated,
+		shared.EncodingEUCKR,
+	); err == nil {
+		characters := make([]uint16, 0, len(terminated))
+		for _, character := range decoded {
+			if character > 0xffff {
+				character = 0xfffd
+			}
+			characters = append(characters, uint16(character))
+		}
+		return characters
+	}
+	characters := make([]uint16, 0, len(terminated))
+	for _, value := range terminated {
+		characters = append(characters, uint16(value))
+	}
+	return characters
 }
 
 func (r *Runtime) ensureGraphicsFont(font uint32) (shared.ServiceID, error) {

@@ -2104,3 +2104,32 @@ func TestWIPIRuntimeDrawImageKeepsTransparentPixelsOut(t *testing.T) {
 		t.Fatal("destroyed image kept its cached transparency")
 	}
 }
+
+// Issue #77, 무한신맞고2009: a handset carries M_Char text in its own EUC-KR
+// encoding, so a Korean syllable is two bytes. Mapping each byte to a
+// character drew every Korean menu and dialogue line as mojibake and
+// missing-glyph boxes.
+func TestWIPIRuntimeDrawStringDecodesEUCKR(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	// "가나" in EUC-KR, followed by ASCII to prove the mixed-width path.
+	encoded := []byte{0xb0, 0xa1, 0xb3, 0xaa, 'A', 0}
+	buffer, err := runtime.Heap.Allocate(uint32(len(encoded)), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.CPU.WriteMemory(buffer, encoded); err != nil {
+		t.Fatal(err)
+	}
+	characters := decodeWIPICharRun(runtime, encoded)
+	runes := make([]rune, 0, len(characters))
+	for _, character := range characters {
+		runes = append(runes, rune(character))
+	}
+	if got := string(runes); got != "가나A" {
+		t.Fatalf("decoded M_Char run = %q, want %q", got, "가나A")
+	}
+	// A run that is not valid EUC-KR keeps its bytes rather than losing text.
+	if got := decodeWIPICharRun(runtime, []byte{0xff, 'B', 0}); len(got) == 0 {
+		t.Fatal("invalid EUC-KR run decoded to nothing")
+	}
+}
