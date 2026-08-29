@@ -70,6 +70,25 @@ func (b *Backend) virtualDataWriteHit(address uint32, size int) ([]byte, int, bo
 	return entry.data, pageOffset, pageOffset+size <= 0x400
 }
 
+// invalidateVirtualDataAt forces the precise recovery access after a native
+// TLB miss through readVirtual/writeVirtual. A warm 1 KiB Go-side window would
+// otherwise service that recovery without calling noteVirtualTLB, so the same
+// native instruction would miss forever despite observer-free RAM underneath.
+func (b *Backend) invalidateVirtualDataAt(address uint32) {
+	cache := b.virtualData
+	if cache == nil {
+		return
+	}
+	page := address >> 10
+	index := page & (virtualDataCacheEntries - 1)
+	if cache.read[index].virtualPage == page|virtualDataValid {
+		cache.read[index] = virtualDataCacheEntry{}
+	}
+	if cache.write[index].virtualPage == page|virtualDataValid {
+		cache.write[index] = virtualDataCacheEntry{}
+	}
+}
+
 func (b *Backend) noteVirtualData(
 	address, physical uint32,
 	permission cpu.Permissions,

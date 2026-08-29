@@ -45,20 +45,42 @@ func throughputSliceBudget(t *testing.T) uint64 {
 	return parsed
 }
 
+func throughputBackend(t *testing.T) *interpreter.Backend {
+	t.Helper()
+	switch name := os.Getenv("ARAM_THROUGHPUT_BACKEND"); name {
+	case "", "jit":
+		return interpreter.NewJIT()
+	case "native":
+		backend := interpreter.NewNativeJIT()
+		if backend.Identity().Name != interpreter.BackendName+"-native" {
+			t.Skip("native JIT executable arena is unavailable")
+		}
+		return backend
+	case "hybrid":
+		backend := interpreter.NewHybridJIT()
+		if backend.Identity().Name != interpreter.BackendName+"-native" {
+			t.Skip("native JIT executable arena is unavailable")
+		}
+		return backend
+	default:
+		t.Fatalf("invalid ARAM_THROUGHPUT_BACKEND %q", name)
+		return nil
+	}
+}
+
 // TestPrivateSCHW830ColdBootThroughput measures the whole-phone machine from
 // reset, which is the run a person actually waits through. The existing
 // parity/throughput test needs a saved snapshot; this one needs only the
 // firmware, so it can be used while changing the boot path itself.
 //
-// It also samples the guest instruction set at every slice boundary. The
-// translated-block backends are Thumb-only, so knowing how much of a run is
-// ARM is what says whether a Thumb optimization can matter at all.
+// It also samples the guest instruction set at every slice boundary so a mixed
+// ARM/Thumb run shows which execution tier each optimization can affect.
 func TestPrivateSCHW830ColdBootThroughput(t *testing.T) {
 	if os.Getenv("ARAM_THROUGHPUT") == "" {
 		t.Skip("ARAM_THROUGHPUT is not configured")
 	}
 	set := openSamsungSCHReferenceSet(t, schw830ReferenceDirectory(t))
-	backend := interpreter.NewJIT()
+	backend := throughputBackend(t)
 	machine, err := New(set, Options{Backend: backend})
 	if err != nil {
 		t.Fatal(err)
@@ -107,6 +129,7 @@ func TestPrivateSCHW830ColdBootThroughput(t *testing.T) {
 		}
 	}
 	seconds := time.Since(overall).Seconds()
-	t.Logf("THROUGHPUT retired=%dM elapsed=%.1fs -> %.2f MIPS (slice mode: ARM=%d Thumb=%d)",
-		total/1_000_000, seconds, float64(total)/seconds/1e6, armSlices, thumbSlices)
+	t.Logf("THROUGHPUT backend=%s retired=%dM elapsed=%.1fs -> %.2f MIPS (slice mode: ARM=%d Thumb=%d)",
+		backend.Identity().Name, total/1_000_000, seconds, float64(total)/seconds/1e6, armSlices, thumbSlices)
+	t.Logf("TRANSLATION statistics=%+v", backend.ExecutionStatistics())
 }

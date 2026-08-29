@@ -5,7 +5,7 @@ package interpreter
 // The native emitters translate a guest load/store into a handful of host
 // instructions instead of a call back into Go: probe a direct-mapped table with
 // the guest page number, and on a hit access host memory at
-// entry.host + (address & 0xfff). Without this every memory access bails to the
+// entry.host + (address & 0x3ff). Without this every memory access bails to the
 // interpreter, which is why the native backend used to lose to the interpreter
 // on the guest software blitters that dominate a heavy frame.
 //
@@ -37,8 +37,8 @@ const (
 	// one: with 256 entries the hottest loop in a real title evicted itself,
 	// because its literal-pool load and its data load fell in the same set and
 	// knocked each other out about 47000 times per 120 frames each. Sizing it
-	// to cover 16 MiB of distinct pages makes that collision rare.
-	nativeTLBEntries = 4096
+	// to cover 16 MiB of distinct 1 KiB subpages makes that collision rare.
+	nativeTLBEntries = 16384
 	nativeTLBMask    = nativeTLBEntries - 1
 	// tlbEntryBytes is the fixed stride the emitted code indexes with. It is a
 	// power of two so the index is a shift, and it is spelled out here because
@@ -46,11 +46,13 @@ const (
 	tlbEntryBytes = 16
 	// tlbWriteOffset is the byte offset of the write half inside the table.
 	tlbWriteOffset = nativeTLBEntries * tlbEntryBytes
-	// tlbPageBits/tlbPageSize is the granularity of one entry.
-	tlbPageBits = 12
+	// ARM926 permissions and the Go virtual-data cache are both 1 KiB-granular.
+	// Matching them avoids rejecting a hot subpage just because a neighbouring
+	// quarter of its host 4 KiB page is mapped differently.
+	tlbPageBits = 10
 	tlbPageSize = 1 << tlbPageBits
 	// tlbEmptyTag can never be a real page number (a 32-bit guest address
-	// shifts down to at most 0x000fffff), so a zeroed table is all misses only
+	// shifts down to at most 0x003fffff), so a zeroed table is all misses only
 	// once page 0 is excluded; tlbClear writes this tag explicitly instead.
 	tlbEmptyTag = ^uint32(0)
 )
