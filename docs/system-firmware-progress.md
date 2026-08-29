@@ -40,8 +40,9 @@ a complete cold-boot claim.
   incomplete.
 - Board profiles describe RAM/IRAM/high-vector windows and exact-width
   read-only board registers, fixed-width external latches, boot-control
-  halfword/word layouts, SBI instances, and board-specific clock/sleep
-  controllers. `SparseWordRegisters` provides a reusable, stateful device for
+  halfword/word layouts, SBI instances and peripheral read responses, and
+  board-specific clock/sleep controllers. `SparseWordRegisters` provides a
+  reusable, stateful device for
   explicitly evidenced register layouts without turning reserved MMIO gaps
   into read-zero/write-drop space.
 - Qualcomm compatibility devices now cover the NAND/PBL controls, MPMC register
@@ -136,8 +137,9 @@ The reset path places only reconstructed QCSBL bytes at the profiled load
 address, provides the bounded PBL IRAM/service-table contract, and starts the
 original QCSBL. QCSBL reads MIBIB and OEMSBL through the modeled NAND device.
 The original firmware then initializes two sleep controllers, local SBI/SSBI
-paths, three differently shaped controller instances at `0x80004000` through
-`0x8000423C`, the panel, MMU, clocks, timer/control banks, and IRQ/FIQ masks. It
+paths with a profiled full-charge PMIC ADC response, three differently shaped
+controller instances at `0x80004000` through `0x8000423C`, the panel, MMU,
+clocks, timer/control banks, and IRQ/FIQ masks. It
 performs privileged exception return into transformed runtime code, services
 the watchdog, reads the timetick, and continues runtime work without an MMIO
 or CPU fault during the measured budget. An attributed trace identifies the
@@ -255,8 +257,8 @@ The next targets are:
 2. Derive the SCH-W860 keypad matrix from its own firmware/hardware evidence,
    then verify real input and a built-in application without borrowing W830
    controls.
-3. Model remaining user-visible services such as battery, audio, camera, and
-   Bluetooth according to each board profile.
+3. Model remaining user-visible services such as audio, camera, and Bluetooth
+   according to each board profile.
 4. Add exact profiles for further Samsung sets and let their own boot traces
    identify only the new board/device facts they require.
 5. Finish reset and undefined-instruction exception entry without hiding

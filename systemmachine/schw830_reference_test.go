@@ -279,11 +279,11 @@ func TestSCHW830PrivateReferenceProvisionsPowerCyclesAndLaunchesApp(t *testing.T
 	expectations := map[string]buildExpectation{
 		samsung.SCHW830DL21ProfileID: {
 			homeBudget:       2_051_195_629,
-			homeHash:         "049d7aff0d48c1decea479460fe141cf678fbf8fdf5de3726ef98df55c31c578",
+			homeHash:         "071704b77e6b59ccd6d3f98225136cb6f8bb8101ff30619c4ed7ed496c545d25",
 			keyPressBudget:   5_000_000,
 			keyReleaseBudget: 5_000_000,
 			appSettleBudget:  40_000_000,
-			appHash:          "e2de7cb76bad6088d18c2eb3433f87dc773d8a06a23bf1aba92113756b759dca",
+			appHash:          "288a58871e07ad9dc6572efbccf204fc93dfa076c526e8c86670b7de636d1169",
 		},
 		samsung.SCHW830DA18ProfileID: {
 			homeBudget:       2_101_195_629,

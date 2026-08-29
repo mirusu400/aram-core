@@ -81,6 +81,13 @@ func TestSCHW830BoardProfileAppliesEvidenceBackedIRAM(t *testing.T) {
 	if want := []uint32{0x5000, 0x5100, 0x5200}; !reflect.DeepEqual(profile.BootControlSBIControllers, want) {
 		t.Fatalf("SCH-W830 boot-control SBI controllers = %#v", profile.BootControlSBIControllers)
 	}
+	if want := []QualcommSBIReadResponse{
+		{Controller: 0x5100, Address: 0x4f, Value: 0xc1},
+		{Controller: 0x5100, Address: 0x53, Value: 0xff},
+		{Controller: 0x5100, Address: 0x54, Value: 0x01},
+	}; !reflect.DeepEqual(profile.BootControlSBIReadResponses, want) {
+		t.Fatalf("SCH-W830 boot-control SBI read responses = %#v", profile.BootControlSBIReadResponses)
+	}
 	if profile.BootControlSBICompletionStatus != 0x0494 {
 		t.Fatalf(
 			"SCH-W830 boot-control SBI completion status = %#x",
@@ -322,9 +329,10 @@ func TestSCHW860DA06BoardProfileKeepsAdjacentBoardFactsSeparate(t *testing.T) {
 		t.Fatalf("SCH-W860 identity/NAND = %q/%q %#x/%#x",
 			profile.ID, profile.FirmwareBuildID, profile.NANDSize, profile.NANDReadID)
 	}
-	if len(profile.LegacyTopWritableOffsets) != 2 || profile.Keypad != nil {
-		t.Fatalf("SCH-W860 top-page/keypad profile = %#v/%#v",
-			profile.LegacyTopWritableOffsets, profile.Keypad)
+	if len(profile.LegacyTopWritableOffsets) != 2 || profile.Keypad != nil ||
+		len(profile.BootControlSBIReadResponses) != 0 {
+		t.Fatalf("SCH-W860 top-page/keypad/SBI response profile = %#v/%#v/%#v",
+			profile.LegacyTopWritableOffsets, profile.Keypad, profile.BootControlSBIReadResponses)
 	}
 	wantInitialData := []FlashSeed{{Offset: 0x097c0000, Data: make([]byte, 12)}}
 	if !reflect.DeepEqual(profile.NANDInitialData, wantInitialData) {
