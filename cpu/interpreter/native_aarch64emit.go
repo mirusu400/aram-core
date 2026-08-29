@@ -43,17 +43,14 @@ const (
 	a64MaskN         = 0x12010000 // & 0x80000000 (isolate N)
 	a64MaskTop4      = 0x12040C00 // & 0xF0000000 (isolate N,Z,C,V nibble)
 	a64Mask1         = 0x12000000 // & 0x00000001 (isolate bit 0)
-	a64MaskPageOff   = 0x12002C00 // & 0x00000FFF (in-page offset)
-	// a64MaskTLBIndex isolates the software-TLB index. It is the same 12-bit
-	// mask as a64MaskPageOff only because the table currently holds 4096
-	// entries; the assertion below breaks the build if that stops being true,
-	// rather than letting the emitted code silently index the wrong set.
-	a64MaskTLBIndex = 0x12002C00 // & 0x00000FFF
+	a64MaskByte      = 0x12001C00 // & 0x000000FF (ARM register-shift count)
+	a64MaskPageOff   = 0x12002400 // & 0x000003FF (1 KiB in-page offset)
+	a64MaskTLBIndex  = 0x12003400 // & 0x00003FFF (16384-entry table)
 )
 
 const (
-	_ = uint(nativeTLBMask - 0xfff)
-	_ = uint(0xfff - nativeTLBMask)
+	_ = uint(nativeTLBMask - 0x3fff)
+	_ = uint(0x3fff - nativeTLBMask)
 )
 
 // Condition codes used by the emitted control flow.
@@ -139,6 +136,8 @@ func (e *arm64emitter) subsImm12(rd, rn, imm uint32) { e.w(0x71000000 | (imm << 
 
 func (e *arm64emitter) addsReg(rd, rn, rm uint32) { e.w(0x2B000000 | (rm << 16) | (rn << 5) | rd) } // adds wd,wn,wm
 func (e *arm64emitter) subsReg(rd, rn, rm uint32) { e.w(0x6B000000 | (rm << 16) | (rn << 5) | rd) } // subs wd,wn,wm
+func (e *arm64emitter) adcsReg(rd, rn, rm uint32) { e.w(0x3A000000 | (rm << 16) | (rn << 5) | rd) } // adcs wd,wn,wm
+func (e *arm64emitter) sbcsReg(rd, rn, rm uint32) { e.w(0x7A000000 | (rm << 16) | (rn << 5) | rd) } // sbcs wd,wn,wm
 func (e *arm64emitter) andReg(rd, rn, rm uint32)  { e.w(0x0A000000 | (rm << 16) | (rn << 5) | rd) } // and  wd,wn,wm
 func (e *arm64emitter) orrReg(rd, rn, rm uint32)  { e.w(0x2A000000 | (rm << 16) | (rn << 5) | rd) } // orr  wd,wn,wm
 func (e *arm64emitter) eorReg(rd, rn, rm uint32)  { e.w(0x4A000000 | (rm << 16) | (rn << 5) | rd) } // eor  wd,wn,wm
@@ -157,6 +156,21 @@ func (e *arm64emitter) lsrI(rd, rn, sh uint32) {
 func (e *arm64emitter) asrI(rd, rn, sh uint32) {
 	e.w(0x13000000 | (sh << 16) | (31 << 10) | (rn << 5) | rd)
 } // asr wd,wn,#sh
+func (e *arm64emitter) rorI(rd, rn, sh uint32) {
+	e.w(0x13800000 | (rn << 16) | (sh << 10) | (rn << 5) | rd)
+} // ror wd,wn,#sh (EXTR alias)
+func (e *arm64emitter) lslV(rd, rn, rm uint32) {
+	e.w(0x1AC02000 | (rm << 16) | (rn << 5) | rd)
+}
+func (e *arm64emitter) lsrV(rd, rn, rm uint32) {
+	e.w(0x1AC02400 | (rm << 16) | (rn << 5) | rd)
+}
+func (e *arm64emitter) asrV(rd, rn, rm uint32) {
+	e.w(0x1AC02800 | (rm << 16) | (rn << 5) | rd)
+}
+func (e *arm64emitter) rorV(rd, rn, rm uint32) {
+	e.w(0x1AC02C00 | (rm << 16) | (rn << 5) | rd)
+}
 
 func (e *arm64emitter) csetEQ(rd uint32) { e.w(0x1A9F17E0 | rd) } // cset wd,eq
 func (e *arm64emitter) csel(rd, rn, rm uint32, c uint8) {
@@ -567,6 +581,15 @@ func (e *arm64emitter) conditionEnd(site int) {
 	}
 }
 
+func (e *arm64emitter) conditionalSlow(condition uint8, pc uint32, retired int) {
+	site := e.conditionStart(condition)
+	e.loadConst(0, pc)
+	e.strW(0, cpu.RegisterPC)
+	e.loadConst(0, nativeSlowStatus(retired))
+	e.ret()
+	e.conditionEnd(site)
+}
+
 func (e *arm64emitter) selfLoopUncond(gateOff int) {
 	e.bUncond(gateOff - e.mark())
 }
@@ -642,6 +665,49 @@ func (e *arm64emitter) exitBranchLinkLinked(link uint32, slot uintptr, target ui
 	e.exitLinked(slot, target)
 }
 
+// exitBranchExchange is the AArch64 counterpart of the x86-64 BX/BLX exit.
+func (e *arm64emitter) exitBranchExchange(reg, pcValue, link uint32, writeLink bool) {
+	if reg == cpu.RegisterPC {
+		e.loadConst(0, pcValue)
+	} else {
+		e.ldrW(0, reg)
+	}
+	e.exitBranchExchangeValue(link, writeLink)
+}
+
+func (e *arm64emitter) exitLoadedPC() {
+	e.ldrW(0, cpu.RegisterPC)
+	e.exitBranchExchangeValue(0, false)
+}
+
+// exitBranchExchangeValue consumes the raw branch target in W0.
+func (e *arm64emitter) exitBranchExchangeValue(link uint32, writeLink bool) {
+	e.orrReg(1, a64WZR, 0) // w1 = target
+	if writeLink {
+		e.loadConst(0, link)
+		e.strW(0, cpu.RegisterLR)
+	}
+
+	// CPSR.T = target & 1.
+	e.ldrW(2, cpu.RegisterCPSR)
+	e.loadConst(3, ^uint32(flagT))
+	e.andReg(2, 2, 3)
+	e.andMask(3, 1, a64Mask1)
+	e.lslI(3, 3, 5)
+	e.orrReg(2, 2, 3)
+	e.strW(2, cpu.RegisterCPSR)
+
+	// mask = 0xfffffffc | ((target & 1) << 1).
+	e.andMask(3, 1, a64Mask1)
+	e.lslI(3, 3, 1)
+	e.loadConst(4, 0xfffffffc)
+	e.orrReg(3, 3, 4)
+	e.andReg(1, 1, 3)
+	e.strW(1, cpu.RegisterPC)
+	e.movz(0, nativeStatusMode)
+	e.ret()
+}
+
 func (e *arm64emitter) exitBkpt(nextPC uint32) {
 	e.loadConst(0, nextPC)
 	e.strW(0, cpu.RegisterPC)
@@ -664,18 +730,35 @@ func (e *arm64emitter) exitBkpt(nextPC uint32) {
 // tlbWriteOffset; the emitted code never looks at permissions, because tlbNote
 // installs a page in a half only when that half's access is legal for it.
 func (e *arm64emitter) memory(m memAccess, pc uint32, retired int) {
-	// 1. Effective address into W0, exactly as the interpreter computes it.
-	if m.absolute {
-		e.loadConst(0, m.offset)
-	} else {
-		e.ldrW(0, m.base)
+	applyIndex := func() {
 		if m.hasIndex {
 			e.ldrW(1, m.index)
+			switch m.indexShiftType {
+			case 0:
+				if m.indexShift != 0 {
+					e.lslI(1, 1, uint32(m.indexShift))
+				}
+			case 1:
+				if m.indexShift == 32 {
+					e.movz(1, 0)
+				} else {
+					e.lsrI(1, 1, uint32(m.indexShift))
+				}
+			case 2:
+				if m.indexShift == 32 {
+					e.asrI(1, 1, 31)
+				} else {
+					e.asrI(1, 1, uint32(m.indexShift))
+				}
+			case 3:
+				e.rorI(1, 1, uint32(m.indexShift))
+			}
 			if m.subtract {
 				e.subsReg(0, 0, 1)
 			} else {
 				e.addReg(0, 0, 1)
 			}
+			return
 		}
 		if m.offset != 0 {
 			if m.subtract {
@@ -683,6 +766,15 @@ func (e *arm64emitter) memory(m memAccess, pc uint32, retired int) {
 			} else {
 				e.addImm12(0, 0, m.offset)
 			}
+		}
+	}
+	// 1. Effective address into W0, exactly as the interpreter computes it.
+	if m.absolute {
+		e.loadConst(0, m.offset)
+	} else {
+		e.ldrW(0, m.base)
+		if !m.postIndex {
+			applyIndex()
 		}
 	}
 
@@ -717,17 +809,27 @@ func (e *arm64emitter) memory(m memAccess, pc uint32, retired int) {
 		}
 		e.strW(0, m.rd)
 	}
+	if m.writeback {
+		// A load reuses W0 for its result. The decoder suppresses writeback
+		// when rd==base, so reloading base still obtains the original value.
+		e.ldrW(0, m.base)
+		applyIndex()
+		e.strW(0, m.base)
+	}
 	e.bailStub(pc, retired, misses)
 }
 
-// multi translates PUSH/POP/STMIA/LDMIA: one probe covering the whole list,
-// then a word per register at a fixed displacement, then the base writeback.
+// multi translates ARM/Thumb multi-register transfers: one probe covering the
+// whole list, then a word per register at a fixed displacement, then optional
+// base writeback.
 // See multiAccess (native_common.go) for why the instruction is all-or-nothing.
 func (e *arm64emitter) multi(m multiAccess, pc uint32, retired int) {
 	span := uint32(4 * len(m.regs))
 	e.ldrW(0, m.base)
-	if m.preDec {
-		e.subImm12(0, 0, span) // PUSH transfers below the base
+	if m.startOffset < 0 {
+		e.subImm12(0, 0, uint32(-m.startOffset))
+	} else if m.startOffset > 0 {
+		e.addImm12(0, 0, uint32(m.startOffset))
 	}
 	misses := e.probeTLB(m.store, span)
 	e.addLSL64(3, 3, 2, 0) // x3 = host page + in-page offset
@@ -742,14 +844,17 @@ func (e *arm64emitter) multi(m multiAccess, pc uint32, retired int) {
 		}
 	}
 	if m.writeback {
-		// PUSH leaves the base at the bottom of the block it just wrote; the
-		// ascending forms leave it one word past the top.
-		if !m.preDec {
-			e.addImm12(0, 0, span)
+		if m.writebackOffset < 0 {
+			e.subImm12(0, 0, uint32(-m.writebackOffset))
+		} else if m.writebackOffset > 0 {
+			e.addImm12(0, 0, uint32(m.writebackOffset))
 		}
 		e.strW(0, m.base)
 	}
 	e.bailStub(pc, retired, misses)
+	if m.loadPC {
+		e.exitLoadedPC()
+	}
 }
 
 // probeTLB emits the software-TLB probe for an access of span bytes whose guest
@@ -773,9 +878,9 @@ func (e *arm64emitter) probeTLB(store bool, span uint32) []int {
 	e.subsReg(a64WZR, 4, 1)          // cmp w4, w1
 	misses := []int{e.mark()}
 	e.w(0)                          // placeholder: b.ne bail
-	e.andMask(2, 0, a64MaskPageOff) // w2 = address & 0xfff
+	e.andMask(2, 0, a64MaskPageOff) // w2 = address & 0x3ff
 	if span > 1 {
-		e.subsImm12(a64WZR, 2, tlbPageSize-span) // cmp w2, #4096-span
+		e.subsImm12(a64WZR, 2, tlbPageSize-span) // cmp w2, #1024-span
 		misses = append(misses, e.mark())
 		e.w(0) // placeholder: b.hi bail
 	}
@@ -852,11 +957,68 @@ func (e *arm64emitter) armDataProcessing(op nativeARMDataOp) bool {
 			e.ldrW(host, guest)
 		}
 	}
+	if op.shifterCarry {
+		load(3, op.operand)
+		switch op.shiftType {
+		case 0: // LSL
+			e.lsrI(3, 3, uint32(32-op.shift))
+		case 1, 2: // LSR/ASR
+			e.lsrI(3, 3, uint32(op.shift-1))
+		case 3: // ROR
+			e.rorI(3, 3, uint32(op.shift))
+			e.lsrI(3, 3, 31)
+		}
+		e.andMask(3, 3, a64Mask1)
+	}
+	if op.shiftReg {
+		load(3, op.operand)
+		load(4, op.shiftRegister)
+		e.andMask(4, 4, a64MaskByte)
+		switch op.shiftType {
+		case 0:
+			e.lslV(3, 3, 4)
+			e.subsImm12(a64WZR, 4, 32)
+			e.csel(3, 3, a64WZR, 3) // count < 32 ? shifted : 0
+		case 1:
+			e.lsrV(3, 3, 4)
+			e.subsImm12(a64WZR, 4, 32)
+			e.csel(3, 3, a64WZR, 3)
+		case 2:
+			e.asrI(5, 3, 31)
+			e.asrV(3, 3, 4)
+			e.subsImm12(a64WZR, 4, 32)
+			e.csel(3, 3, 5, 3) // count < 32 ? shifted : sign fill
+		case 3:
+			e.rorV(3, 3, 4)
+		}
+	}
 	loadOperand := func(host uint32) {
-		if op.operandReg {
+		if op.shiftReg {
+			e.orrReg(host, a64WZR, 3)
+		} else if op.operandReg {
 			load(host, op.operand)
 		} else {
 			e.loadConst(host, op.operand)
+		}
+		switch op.shiftType {
+		case 0:
+			if op.shift != 0 {
+				e.lslI(host, host, uint32(op.shift))
+			}
+		case 1:
+			if op.shift == 32 {
+				e.movz(host, 0)
+			} else {
+				e.lsrI(host, host, uint32(op.shift))
+			}
+		case 2:
+			if op.shift == 32 {
+				e.asrI(host, host, 31)
+			} else {
+				e.asrI(host, host, uint32(op.shift))
+			}
+		case 3:
+			e.rorI(host, host, uint32(op.shift))
 		}
 	}
 
@@ -891,6 +1053,27 @@ func (e *arm64emitter) armDataProcessing(op nativeARMDataOp) bool {
 			e.addReg(0, 0, 1)
 		}
 		arithmetic = true
+	case 5: // ADC
+		load(0, op.rn)
+		loadOperand(1)
+		e.ldrW(4, cpu.RegisterCPSR)
+		e.msrNZCV(4)
+		e.adcsReg(0, 0, 1)
+		arithmetic = true
+	case 6: // SBC
+		load(0, op.rn)
+		loadOperand(1)
+		e.ldrW(4, cpu.RegisterCPSR)
+		e.msrNZCV(4)
+		e.sbcsReg(0, 0, 1)
+		arithmetic, subtract = true, true
+	case 7: // RSC
+		loadOperand(0)
+		load(1, op.rn)
+		e.ldrW(4, cpu.RegisterCPSR)
+		e.msrNZCV(4)
+		e.sbcsReg(0, 0, 1)
+		arithmetic, subtract = true, true
 	case 8: // TST
 		load(0, op.rn)
 		loadOperand(1)
@@ -921,6 +1104,8 @@ func (e *arm64emitter) armDataProcessing(op nativeARMDataOp) bool {
 		} else if op.carry >= 0 {
 			e.movz(3, uint32(op.carry))
 			e.commitNZC()
+		} else if op.shifterCarry {
+			e.commitNZC()
 		} else {
 			e.commitNZ()
 		}
@@ -929,4 +1114,18 @@ func (e *arm64emitter) armDataProcessing(op nativeARMDataOp) bool {
 		e.strW(0, op.rd)
 	}
 	return true
+}
+
+func (e *arm64emitter) armMultiply(op nativeARMMultiply) {
+	e.ldrW(0, op.rm)
+	e.ldrW(1, op.rs)
+	e.mul(0, 0, 1)
+	if op.accumulate {
+		e.ldrW(1, op.rn)
+		e.addReg(0, 0, 1)
+	}
+	if op.setFlags {
+		e.commitNZ()
+	}
+	e.strW(0, op.rd)
 }

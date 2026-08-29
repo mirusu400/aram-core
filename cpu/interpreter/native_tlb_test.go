@@ -129,7 +129,7 @@ func TestNativeInlineStoreToExecutableDataStaysCoherent(t *testing.T) {
 // nativeTLBEntries apart share a slot; alternating between them must keep
 // producing each page's own bytes rather than the other page's host pointer.
 func TestNativeTLBAliasingPages(t *testing.T) {
-	const stride = uint32(nativeTLBEntries) << tlbPageBits // 1 MiB
+	const stride = uint32(nativeTLBEntries) << tlbPageBits // 16 MiB
 	b := nativeBackend(t)
 	rw := cpu.PermissionRead | cpu.PermissionWrite
 	mustMap(t, b, 0x1000, 0x1000, cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute)

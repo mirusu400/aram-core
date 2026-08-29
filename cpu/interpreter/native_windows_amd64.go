@@ -74,13 +74,27 @@ func NewNativeJIT() *Backend {
 		b.nativeSlow = make(map[nativeLinkKey]nativeSlowState)
 		b.armJITBlocks = make(map[uint32]*jitBlock)
 		b.armJITBlockPages = make(blockPageIndex)
-		b.armJITCache = make([]jitCacheEntry, jitCacheSize)
+		b.armJITCache = make([]jitCacheSet, jitCacheSize)
 		b.jitCodePages = make([]uint64, nativeCodePageWords)
 		b.nativeCodeLo, b.nativeCodeHi = ^uint32(0), 0
 		b.tlb = newNativeTLB()
-		b.nativeCache = new([nativeCacheSize]nativeCacheEntry)
-		b.nativeARMCache = new([nativeCacheSize]nativeCacheEntry)
+		b.nativeCache = new([nativeCacheSize]nativeCacheSet)
+		b.nativeARMCache = new([nativeCacheSize]nativeCacheSet)
 		b.nativeCodePages = make([]uint64, nativeCodePageWords)
+	}
+	return b
+}
+
+// NewHybridJIT combines the fastest measured tiers on windows/amd64: emitted
+// x86-64 for ARM and the compact Go micro-op runner for whole-system Thumb.
+// Application backends still use emitted Thumb blocks because they do not pay
+// the physical-bus/MMU boundary costs that make firmware Thumb slower natively.
+func NewHybridJIT() *Backend {
+	b := NewNativeJIT()
+	if b.nativeBlocks != nil {
+		b.jitBlocks = make(map[uint32]*jitBlock)
+		b.jitBlockPages = make(blockPageIndex)
+		b.jitCache = make([]jitCacheSet, jitCacheSize)
 	}
 	return b
 }

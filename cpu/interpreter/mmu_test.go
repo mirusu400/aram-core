@@ -307,3 +307,90 @@ func TestMMUDirectVirtualDataCacheHonorsGenerationPrivilegeAndInvalidation(t *te
 		t.Fatal("direct-memory invalidator retained virtual RAM slices")
 	}
 }
+
+func TestARMJITBlockTransferUsesDirectMMUSubpage(t *testing.T) {
+	const (
+		virtualBase = uint32(0x80000000)
+		tableBase   = uint32(0x00004000)
+		code        = virtualBase + 0x1000
+		data        = virtualBase + 0x2400
+	)
+	bus := &directTestSystemBus{data: make([]byte, 0x100000)}
+	binary.LittleEndian.PutUint32(
+		bus.data[tableBase+(virtualBase>>20)*4:],
+		3<<10|2, // identity section, domain 0 manager permissions
+	)
+	for index, instruction := range []uint32{
+		0xe8b0001e, // ldmia r0!, {r1-r4}
+		0xe1200070, // bkpt
+		0xe8a0001e, // stmia r0!, {r1-r4}
+		0xe1200070, // bkpt
+	} {
+		binary.LittleEndian.PutUint32(bus.data[0x1000+index*4:], instruction)
+	}
+	for index, value := range []uint32{11, 22, 33, 44} {
+		binary.LittleEndian.PutUint32(bus.data[0x2400+index*4:], value)
+	}
+
+	backend := NewJIT()
+	if err := backend.AttachSystemBus(bus); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = backend.Close() }()
+	backend.cp15.translationTableBase = tableBase
+	backend.cp15.domainAccessControl = 3
+	backend.setCP15Control(1)
+
+	// Scalar warmup installs both permission halves. The block transfer then
+	// proves its complete range once and accesses the direct page itself.
+	first, err := backend.read32(data, cpu.PermissionRead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.write32(data, first, cpu.PermissionWrite); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := backend.armBlockTransferPage(data, 16, true); !ok {
+		t.Fatal("warm LDM range did not hit the direct MMU subpage")
+	}
+	if _, _, ok := backend.armBlockTransferPage(data, 16, false); !ok {
+		t.Fatal("warm STM range did not hit the direct MMU subpage")
+	}
+	if _, _, ok := backend.armBlockTransferPage(virtualBase+0x3fc, 8, true); ok {
+		t.Fatal("cross-subpage transfer incorrectly used the direct range")
+	}
+
+	if err := backend.WriteRegister(cpu.RegisterR0, data); err != nil {
+		t.Fatal(err)
+	}
+	result := backend.Run(context.Background(), code, cpu.ModeARM, 8)
+	if result.Err != nil || result.Reason != cpu.StopBreakpoint || result.Instructions != 2 {
+		t.Fatalf("direct LDM run = %+v", result)
+	}
+	for register, want := range []uint32{11, 22, 33, 44} {
+		if got := registerValue(t, backend, uint32(register+1)); got != want {
+			t.Fatalf("LDM r%d = %d, want %d", register+1, got, want)
+		}
+	}
+	if got := registerValue(t, backend, cpu.RegisterR0); got != data+16 {
+		t.Fatalf("LDM writeback = %#x, want %#x", got, data+16)
+	}
+
+	for register, value := range []uint32{101, 202, 303, 404} {
+		if err := backend.WriteRegister(uint32(register+1), value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := backend.WriteRegister(cpu.RegisterR0, data); err != nil {
+		t.Fatal(err)
+	}
+	result = backend.Run(context.Background(), code+8, cpu.ModeARM, 8)
+	if result.Err != nil || result.Reason != cpu.StopBreakpoint || result.Instructions != 2 {
+		t.Fatalf("direct STM run = %+v", result)
+	}
+	for index, want := range []uint32{101, 202, 303, 404} {
+		if got := binary.LittleEndian.Uint32(bus.data[0x2400+index*4:]); got != want {
+			t.Fatalf("STM word %d = %d, want %d", index, got, want)
+		}
+	}
+}

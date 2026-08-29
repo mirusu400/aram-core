@@ -27,11 +27,15 @@ import "github.com/mirusu400/aram-core/cpu"
 type termKind uint8
 
 const (
-	termNone       termKind = iota // fell off the end (untranslatable next / max) -> exit at cur
-	termUncond                     // unconditional branch to a constant target
-	termCond                       // conditional branch (constant taken target + fall-through)
-	termBkpt                       // BKPT
-	termBranchLink                 // BL: constant link register + constant target
+	termNone               termKind = iota // fell off the end (untranslatable next / max) -> exit at cur
+	termUncond                             // unconditional branch to a constant target
+	termCond                               // conditional branch (constant taken target + fall-through)
+	termBkpt                               // BKPT
+	termBranchLink                         // BL: constant link register + constant target
+	termCondBranchLink                     // conditional BL; false path falls through
+	termBranchExchange                     // BX/BLX: target comes from a guest register
+	termCondBranchExchange                 // conditional BX/BLX; false path falls through
+	termInlineFallthrough                  // body already exits when taken; link the skipped path
 )
 
 type terminator struct {
@@ -40,6 +44,9 @@ type terminator struct {
 	target uint32 // termUncond target / termCond taken target / termBranchLink target
 	next   uint32 // termCond fall-through PC / termBkpt next PC / termNone cur
 	link   uint32 // termBranchLink: the value BL leaves in LR
+	reg    uint32 // termBranchExchange: target register
+	pcRead uint32 // termBranchExchange: architectural value when reg is PC
+	blx    bool   // termBranchExchange: write link before branching
 	// width is how many bytes the terminator instruction occupies. Everything
 	// is a 2-byte Thumb instruction except BL, which the interpreter treats as
 	// one instruction spanning two halfwords - it retires 1 but covers 4 bytes,
@@ -94,10 +101,16 @@ func (b *Backend) runThumbNative(limit uint64) (uint64, *cpu.StopReason, error) 
 			// page, so the next execution of this block stays native.
 			b.refundNativeTail(status)
 			bailPC, bailAddress := b.regs[cpu.RegisterPC], b.nativeBailAddress
+			b.invalidateVirtualDataAt(bailAddress)
 			if reason, err, done := b.interpretOneNative(); done {
 				return limit - uint64(b.nativeRemain), reason, err
 			}
 			b.noteNativeBail(cpu.ModeThumb, bailPC, bailAddress)
+		case nativeStatusSlow:
+			b.refundNativeTail(status)
+			if reason, err, done := b.interpretOneNative(); done {
+				return limit - uint64(b.nativeRemain), reason, err
+			}
 		case nativeStatusIRQ:
 			// Like a TLB bail, the interrupt exit occurs after the block gate
 			// charged instructions that did not execute. Restore that tail, then
@@ -114,6 +127,12 @@ func (b *Backend) runThumbNative(limit uint64) (uint64, *cpu.StopReason, error) 
 		case nativeStatusBKPT:
 			reason := cpu.StopBreakpoint
 			return limit - uint64(b.nativeRemain), &reason, nil
+		case nativeStatusMode:
+			if b.regs[cpu.RegisterCPSR]&cpu.StatusThumb == 0 {
+				b.mode = cpu.ModeARM
+				return limit - uint64(b.nativeRemain), nil, nil
+			}
+			b.mode = cpu.ModeThumb
 		case nativeStatusBudget:
 			// Remaining budget < block.count, so no block starting here can
 			// run: interpret the rest of the batch in one go. Taking it one
@@ -167,15 +186,15 @@ func (b *Backend) interpretNative(count uint32) (*cpu.StopReason, error, bool) {
 // so it is not re-translated each time.
 func (b *Backend) nativeBlockAt(pc uint32) *nativeBlock {
 	slot := &b.nativeCache[pc>>1&(nativeCacheSize-1)]
-	if slot.pc == pc && slot.gen == b.nativeGen {
-		return slot.block
+	if block, ok := slot.lookup(pc, b.nativeGen); ok {
+		return block
 	}
 	block, ok := b.nativeBlocks[pc]
 	if !ok {
 		block = b.translateNativeBlock(pc)
 		b.cacheNativeBlock(pc, block)
 	}
-	slot.pc, slot.gen, slot.block = pc, b.nativeGen, block
+	slot.store(pc, b.nativeGen, block)
 	return block
 }
 
@@ -291,6 +310,20 @@ func (b *Backend) emitNativeTerminator(
 		e.exitBkpt(t.next)
 	case termBranchLink:
 		e.exitBranchLinkLinked(t.link, b.nativeLinkSlot(mode, t.target), t.target)
+	case termCondBranchLink:
+		site := e.conditionStart(t.cond)
+		e.exitBranchLinkLinked(t.link, b.nativeLinkSlot(mode, t.target), t.target)
+		e.conditionEnd(site)
+		e.exitLinked(b.nativeLinkSlot(mode, t.next), t.next)
+	case termBranchExchange:
+		e.exitBranchExchange(t.reg, t.pcRead, t.link, t.blx)
+	case termCondBranchExchange:
+		site := e.conditionStart(t.cond)
+		e.exitBranchExchange(t.reg, t.pcRead, t.link, t.blx)
+		e.conditionEnd(site)
+		e.exitLinked(b.nativeLinkSlot(mode, t.next), t.next)
+	case termInlineFallthrough:
+		e.exitLinked(b.nativeLinkSlot(mode, t.next), t.next)
 	default: // termNone: fell off the end
 		e.exitLinked(b.nativeLinkSlot(mode, t.next), t.next)
 	}
@@ -503,13 +536,16 @@ func decodeMultiAccess(instruction uint16) (multiAccess, bool) {
 		}
 		return multiAccess{
 			store: true, regs: regs, base: cpu.RegisterSP,
-			preDec: true, writeback: true,
+			startOffset: -int32(4 * len(regs)), writeback: true,
 		}, true
 	case thumbPop:
 		if instruction&(1<<8) != 0 || len(low) == 0 {
 			return multiAccess{}, false // POP with PC branch-exchanges
 		}
-		return multiAccess{regs: low, base: cpu.RegisterSP, writeback: true}, true
+		return multiAccess{
+			regs: low, base: cpu.RegisterSP, writeback: true,
+			writebackOffset: int32(4 * len(low)),
+		}, true
 	default: // thumbMultipleTransfer
 		if len(low) == 0 {
 			return multiAccess{}, false
@@ -521,6 +557,7 @@ func decodeMultiAccess(instruction uint16) (multiAccess, bool) {
 		writeback := !load || list&(1<<base) == 0
 		return multiAccess{
 			store: !load, regs: low, base: base, writeback: writeback,
+			writebackOffset: int32(4 * len(low)),
 		}, true
 	}
 }

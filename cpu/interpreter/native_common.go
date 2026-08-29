@@ -31,6 +31,8 @@ const (
 	nativeStatusBudget = 2   // remaining budget < next block; interpret the tail
 	nativeStatusBail   = 3   // software-TLB miss; interpret this one instruction
 	nativeStatusIRQ    = 4   // serviceable IRQ/FIQ at an instruction boundary
+	nativeStatusMode   = 5   // BX/BLX updated CPSR.T; synchronize the Go mode
+	nativeStatusSlow   = 6   // promoted slow instruction whose condition passed
 )
 
 // nativeArenaSize is the executable arena's capacity: the bytes of translated
@@ -62,6 +64,10 @@ func nativeInterruptStatus(retired int) uint32 {
 	return uint32(nativeStatusIRQ) | uint32(retired)<<8
 }
 
+func nativeSlowStatus(retired int) uint32 {
+	return uint32(nativeStatusSlow) | uint32(retired)<<8
+}
+
 func (b *Backend) refundNativeTail(status uintptr) {
 	retired := uint32(status >> 8)
 	if retired <= b.nativeActiveCount {
@@ -76,41 +82,48 @@ func (b *Backend) interruptLinesBase() uintptr {
 	return uintptr(unsafe.Pointer(&b.interruptLines))
 }
 
-// memAccess describes one Thumb single load/store for the emitters' inline
-// software-TLB path. The interpreter's deliberately linear unaligned access is
-// reproduced exactly: the host load/store is unaligned-capable and the emitted
-// page-crossing check sends anything that would straddle two pages (the only
-// case where the interpreter's byte-wise copyOut/copyIn path could differ) back
-// to the interpreter.
+// memAccess describes one ARM or Thumb single load/store for the emitters'
+// inline software-TLB path. The interpreter's deliberately linear unaligned
+// access is reproduced exactly: the host load/store is unaligned-capable and
+// the emitted page-crossing check sends anything that would straddle two pages
+// back to the interpreter. postIndex leaves the access at the original base;
+// writeback applies the decoded index/offset only after a successful access.
 type memAccess struct {
-	store    bool   // store rather than load
-	size     uint8  // 1, 2 or 4 bytes
-	signed   bool   // LDRSB/LDRSH sign-extend the loaded value
-	rd       uint32 // value register (always a low register here)
-	base     uint32 // guest base register; RegisterSP for the SP-relative form
-	index    uint32 // guest index register, when hasIndex
-	hasIndex bool
-	offset   uint32 // constant offset added to the base
-	subtract bool   // subtract index/offset from the base (ARM U=0)
-	absolute bool   // the address is exactly offset (PC-relative literal load)
+	store          bool   // store rather than load
+	size           uint8  // 1, 2 or 4 bytes
+	signed         bool   // LDRSB/LDRSH sign-extend the loaded value
+	rd             uint32 // value register
+	base           uint32 // guest base register; RegisterSP for the SP-relative form
+	index          uint32 // guest index register, when hasIndex
+	hasIndex       bool
+	indexShiftType uint8  // ARM register-offset LSL/LSR/ASR/ROR
+	indexShift     uint8  // normalized immediate shift amount
+	offset         uint32 // constant offset added to the base
+	subtract       bool   // subtract index/offset from the base (ARM U=0)
+	absolute       bool   // the address is exactly offset (PC-relative literal load)
+	postIndex      bool   // access base, then apply index/offset for writeback
+	writeback      bool   // commit the indexed address to base after a successful access
 }
 
-// multiAccess describes one Thumb multi-register transfer (PUSH, POP, STMIA,
-// LDMIA) for the emitters' inline path. The whole list is a contiguous run of
-// words from one base, so it costs a single software-TLB probe plus a range
-// check covering every word - anything that would leave the page bails and the
-// interpreter services the whole instruction.
+// multiAccess describes one ARM or Thumb multi-register transfer for the
+// emitters' inline path. The whole list is a contiguous run of words from one
+// start address, so it costs a single software-TLB probe plus a range check
+// covering every word - anything that would leave the page bails and the
+// interpreter services the whole instruction. startOffset is relative to the
+// original base; writebackOffset is relative to that adjusted start address.
 //
 // Bailing on the whole instruction is what keeps a partial fault exact: the
 // interpreter transfers one word at a time and stops at the first bad address,
 // leaving the earlier words written and the base register not yet updated. The
 // inline path only runs when no word can fault, so it is all-or-nothing.
 type multiAccess struct {
-	store     bool     // store the list rather than load it
-	regs      []uint32 // guest registers in ascending transfer order
-	base      uint32   // base register (RegisterSP for PUSH/POP)
-	preDec    bool     // PUSH: the transfer starts 4*len(regs) below the base
-	writeback bool     // write the final address back to base
+	store           bool     // store the list rather than load it
+	regs            []uint32 // guest registers in ascending transfer order
+	base            uint32   // base register (RegisterSP for PUSH/POP)
+	startOffset     int32    // transfer start relative to the original base
+	writeback       bool     // write a final address back to base
+	writebackOffset int32    // final base relative to the transfer start
+	loadPC          bool     // final loaded word branches and may switch ARM/Thumb
 }
 
 // nativeARMDataOp is the decoded subset shared by the x86-64 and AArch64 ARM
@@ -118,14 +131,28 @@ type multiAccess struct {
 // guest register. carry is -1 when a logical flag update preserves C, or 0/1
 // when a rotated immediate supplies a known shifter carry-out.
 type nativeARMDataOp struct {
-	opcode     uint8
+	opcode        uint8
+	setFlags      bool
+	rd            uint32
+	rn            uint32
+	operand       uint32
+	operandReg    bool
+	shiftType     uint8 // ARM immediate register shift: LSL/LSR/ASR/ROR
+	shift         uint8 // normalized amount (LSR/ASR #0 become 32)
+	shiftReg      bool  // shift count comes from the low byte of shiftRegister
+	shiftRegister uint32
+	pcValue       uint32
+	carry         int8
+	shifterCarry  bool // derive C from a non-zero immediate register shift
+}
+
+type nativeARMMultiply struct {
+	accumulate bool
 	setFlags   bool
 	rd         uint32
 	rn         uint32
-	operand    uint32
-	operandReg bool
-	pcValue    uint32
-	carry      int8
+	rs         uint32
+	rm         uint32
 }
 
 // nativeARMDataOpEmittable is the single authority on which data-processing
@@ -136,8 +163,7 @@ type nativeARMDataOp struct {
 // branch unpatched - a harmless fall-through on x86-64, but a branch-to-itself
 // (a guest hang, not a fault) on AArch64.
 func nativeARMDataOpEmittable(opcode uint8) bool {
-	// ADC/SBC/RSC read the incoming carry, which neither emitter models.
-	return opcode < 5 || opcode > 7
+	return opcode < 16
 }
 
 // emitter appends host machine code for one translated Thumb instruction at a
@@ -173,6 +199,7 @@ type emitter interface {
 	interruptPoll(pc uint32, retired int)
 	conditionStart(condition uint8) int
 	conditionEnd(site int)
+	conditionalSlow(condition uint8, pc uint32, retired int)
 
 	// Body ops (non-terminators) reproduce the interpreter's semantics exactly.
 	moveImm(rd, imm uint32)                             // MOVS rd,#imm      -> setNZ
@@ -195,6 +222,7 @@ type emitter interface {
 	// dispatch round trip.
 	highRegister(op, rd, rs, pcValue uint32) bool
 	armDataProcessing(op nativeARMDataOp) bool
+	armMultiply(op nativeARMMultiply)
 
 	// memory translates one single load/store inline through the software TLB
 	// (native_tlb.go): address computation, a direct-mapped page probe, a
@@ -223,6 +251,8 @@ type emitter interface {
 	exitBkpt(nextPC uint32)             // set PC=nextPC, return BKPT
 	exitBranchLink(link, target uint32) // BL: LR=link, PC=target, return NORM
 	exitBranchLinkLinked(link uint32, slot uintptr, target uint32)
+	exitBranchExchange(reg, pcValue, link uint32, writeLink bool)
+	exitLoadedPC() // branch-exchange through the raw value loaded into regs[PC]
 
 	code() []byte // finished block bytes
 }
@@ -290,17 +320,36 @@ type nativeSlowState struct {
 
 const nativeSlowThreshold = 3
 
-// nativeCacheSize is the direct-mapped dispatch cache depth: a power of two so
+// nativeCacheSize is the two-way dispatch cache set count: a power of two so
 // the index is a mask, sized like the pure-Go JIT's equivalent.
 const nativeCacheSize = 8192
 
-// nativeCacheEntry caches one translated block for direct-mapped dispatch. gen
-// ties it to the nativeBlocks generation, so an invalidation makes every stale
-// entry miss without the invalidation path walking the array.
+// nativeCacheEntry mirrors jitCacheEntry. valid makes a nil native translation
+// cacheable and also prevents the zero-value PC/generation pair from looking
+// like a hit before the first translation.
 type nativeCacheEntry struct {
-	pc    uint32
-	gen   uint64
 	block *nativeBlock
+	gen   uint64
+	pc    uint32
+	valid bool
+}
+
+type nativeCacheSet [2]nativeCacheEntry
+
+func (set *nativeCacheSet) lookup(pc uint32, gen uint64) (*nativeBlock, bool) {
+	if entry := &set[0]; entry.valid && entry.pc == pc && entry.gen == gen {
+		return entry.block, true
+	}
+	if entry := &set[1]; entry.valid && entry.pc == pc && entry.gen == gen {
+		set[0], set[1] = set[1], set[0]
+		return set[0].block, true
+	}
+	return nil, false
+}
+
+func (set *nativeCacheSet) store(pc uint32, gen uint64, block *nativeBlock) {
+	set[1] = set[0]
+	set[0] = nativeCacheEntry{block: block, gen: gen, pc: pc, valid: true}
 }
 
 // nativeCodePageWords covers the whole 32-bit guest address space at 4 KiB
@@ -314,8 +363,8 @@ func (b *Backend) markCodePages(address, size uint32) bool {
 		return false
 	}
 	changed := false
-	last := (uint64(address) + uint64(size) - 1) >> tlbPageBits
-	for page := uint64(address) >> tlbPageBits; page <= last; page++ {
+	last := (uint64(address) + uint64(size) - 1) >> codePageBits
+	for page := uint64(address) >> codePageBits; page <= last; page++ {
 		mask := uint64(1) << (page & 63)
 		word := &b.nativeCodePages[page>>6]
 		if *word&mask == 0 {
@@ -336,8 +385,8 @@ func (b *Backend) hasCodePages(address, size uint32) bool {
 	if size == 0 {
 		return false
 	}
-	last := (uint64(address) + uint64(size) - 1) >> tlbPageBits
-	for page := uint64(address) >> tlbPageBits; page <= last; page++ {
+	last := (uint64(address) + uint64(size) - 1) >> codePageBits
+	for page := uint64(address) >> codePageBits; page <= last; page++ {
 		if b.nativeCodePages[page>>6]&(1<<(page&63)) != 0 {
 			return true
 		}

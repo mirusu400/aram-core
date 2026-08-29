@@ -85,8 +85,8 @@ func TestARM64PrimitiveEncodings(t *testing.T) {
 		{"ldrWoff#4096", emit(func(e *arm64emitter) { e.ldrWoff(4, 3, 4096) }), words(0xB9500064)},
 		{"ldrXoff#8", emit(func(e *arm64emitter) { e.ldrXoff(3, 3, 8) }), words(0xF9400463)},
 		{"ldrXoff#4104", emit(func(e *arm64emitter) { e.ldrXoff(3, 3, 4104) }), words(0xF9480463)},
-		{"maskTLBIndex", emit(func(e *arm64emitter) { e.andMask(2, 1, a64MaskTLBIndex) }), words(0x12002C22)},
-		{"maskPageOff", emit(func(e *arm64emitter) { e.andMask(2, 0, a64MaskPageOff) }), words(0x12002C02)},
+		{"maskTLBIndex", emit(func(e *arm64emitter) { e.andMask(2, 1, a64MaskTLBIndex) }), words(0x12003422)},
+		{"maskPageOff", emit(func(e *arm64emitter) { e.andMask(2, 0, a64MaskPageOff) }), words(0x12002402)},
 		{"lsrI#12", emit(func(e *arm64emitter) { e.lsrI(1, 0, 12) }), words(0x530C7C01)},
 		{"cmpW-reg", emit(func(e *arm64emitter) { e.subsReg(a64WZR, 4, 1) }), words(0x6B01009F)},
 		{"cmpW#4092", emit(func(e *arm64emitter) { e.subsImm12(a64WZR, 2, 4092) }), words(0x713FF05F)},
@@ -142,11 +142,11 @@ func TestARM64InterruptPollEncoding(t *testing.T) {
 func TestARM64MemoryEncodings(t *testing.T) {
 	const tlb = 0x1234567890AB0000
 	// X11 and X12 are the read and write half-tables; the write half sits
-	// tlbWriteOffset (0x10000 at 4096 entries) above the read half.
+	// tlbWriteOffset (0x40000 at 16384 entries) above the read half.
 	prologue := words(
 		0xAA0003E9, 0xAA0103EA,
 		0xD280000B, 0xF2B2156B, 0xF2CACF0B, 0xF2E2468B, // movz/movk x11, tlb
-		0xD280000C, 0xF2B2158C, 0xF2CACF0C, 0xF2E2468C, // movz/movk x12, tlb+0x10000
+		0xD280000C, 0xF2B215EC, 0xF2CACF0C, 0xF2E2468C, // movz/movk x12, tlb+0x40000
 	)
 	single := []struct {
 		name string
@@ -161,14 +161,14 @@ func TestARM64MemoryEncodings(t *testing.T) {
 				0xB9400520, // ldr  w0,[x9,#4]      (base register)
 				0xB9400921, // ldr  w1,[x9,#8]      (index register)
 				0x0B010000, // add  w0,w0,w1
-				0x530C7C01, // lsr  w1,w0,#12       (guest page)
-				0x12002C22, // and  w2,w1,#0xfff    (table index)
+				0x530A7C01, // lsr  w1,w0,#10       (guest subpage)
+				0x12003422, // and  w2,w1,#0x3fff   (table index)
 				0x8B021163, // add  x3,x11,x2,lsl#4 (READ half entry)
 				0xB9400064, // ldr  w4,[x3]         (entry.tag)
 				0x6B01009F, // cmp  w4,w1
 				0x54000101, // b.ne bail            (+8 words)
-				0x12002C02, // and  w2,w0,#0xfff    (in-page offset)
-				0x713FF05F, // cmp  w2,#4092
+				0x12002402, // and  w2,w0,#0x3ff    (in-page offset)
+				0x710FF05F, // cmp  w2,#1020
 				0x540000A8, // b.hi bail            (+5 words)
 				0xF9400463, // ldr  x3,[x3,#8]      (host page)
 				0xB8626860, // ldr  w0,[x3,x2]
@@ -187,14 +187,14 @@ func TestARM64MemoryEncodings(t *testing.T) {
 			body: []uint32{
 				0xB9401520, // ldr  w0,[x9,#20]
 				0x11003000, // add  w0,w0,#12
-				0x530C7C01, // lsr  w1,w0,#12
-				0x12002C22, // and  w2,w1,#0xfff
+				0x530A7C01, // lsr  w1,w0,#10
+				0x12003422, // and  w2,w1,#0x3fff
 				0x8B021183, // add  x3,x12,x2,lsl#4 (WRITE half entry)
 				0xB9400064, // ldr  w4,[x3]
 				0x6B01009F, // cmp  w4,w1
 				0x54000101, // b.ne bail
-				0x12002C02, // and  w2,w0,#0xfff
-				0x713FF85F, // cmp  w2,#4094        (2-byte access)
+				0x12002402, // and  w2,w0,#0x3ff
+				0x710FF85F, // cmp  w2,#1022        (2-byte access)
 				0x540000A8, // b.hi bail
 				0xF9400463, // ldr  x3,[x3,#8]
 				0xB9400124, // ldr  w4,[x9]         (value register)
@@ -209,13 +209,13 @@ func TestARM64MemoryEncodings(t *testing.T) {
 			m:    memAccess{size: 1, signed: true, rd: 7, base: 6},
 			body: []uint32{
 				0xB9401920, // ldr  w0,[x9,#24]
-				0x530C7C01, // lsr  w1,w0,#12
-				0x12002C22, // and  w2,w1,#0xfff
+				0x530A7C01, // lsr  w1,w0,#10
+				0x12003422, // and  w2,w1,#0x3fff
 				0x8B021163, // add  x3,x11,x2,lsl#4
 				0xB9400064, // ldr  w4,[x3]
 				0x6B01009F, // cmp  w4,w1
 				0x540000C1, // b.ne bail            (+6 words: one check fewer)
-				0x12002C02, // and  w2,w0,#0xfff
+				0x12002402, // and  w2,w0,#0x3ff
 				0xF9400463, // ldr  x3,[x3,#8]
 				0x38A26860, // ldrsb w0,[x3,x2]
 				0xB9001D20, // str  w0,[x9,#28]
@@ -238,14 +238,14 @@ func TestARM64MemoryEncodings(t *testing.T) {
 	push := []uint32{
 		0xB9403520, // ldr  w0,[x9,#52]     (SP)
 		0x51003000, // sub  w0,w0,#12       (3 words below SP)
-		0x530C7C01, // lsr  w1,w0,#12
-		0x12002C22, // and  w2,w1,#0xfff
+		0x530A7C01, // lsr  w1,w0,#10
+		0x12003422, // and  w2,w1,#0x3fff
 		0x8B021183, // add  x3,x12,x2,lsl#4 (WRITE half entry)
 		0xB9400064, // ldr  w4,[x3]
 		0x6B01009F, // cmp  w4,w1
 		0x540001C1, // b.ne bail            (+14 words)
-		0x12002C02, // and  w2,w0,#0xfff
-		0x713FD05F, // cmp  w2,#4084        (4096 - 12: the WHOLE list)
+		0x12002402, // and  w2,w0,#0x3ff
+		0x710FD05F, // cmp  w2,#1012        (1024 - 12: the WHOLE list)
 		0x54000168, // b.hi bail            (+11 words)
 		0xF9400463, // ldr  x3,[x3,#8]      (host page)
 		0x8B020063, // add  x3,x3,x2        (host page + in-page offset)
@@ -264,7 +264,7 @@ func TestARM64MemoryEncodings(t *testing.T) {
 		e.prologue()
 		e.multi(multiAccess{
 			store: true, regs: []uint32{0, 2, cpu.RegisterLR},
-			base: cpu.RegisterSP, preDec: true, writeback: true,
+			base: cpu.RegisterSP, startOffset: -12, writeback: true,
 		}, 0x1234, 5)
 	})
 	compareWords(t, "push", got, append(append([]byte{}, prologue...), words(push...)...))
