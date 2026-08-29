@@ -389,9 +389,15 @@ func (b *Backend) jitBlockAt(pc uint32) *jitBlock {
 		block = b.translateThumbBlock(pc)
 		b.cacheJITBlock(pc, block)
 		if block != nil {
-			b.markJITCodePages(block.start, block.end-block.start)
 			// Grow the translated-code span so smcInvalidate can tell a real
-			// code write from an ordinary data/framebuffer write.
+			// code write from an ordinary data/framebuffer write. A hybrid
+			// backend also emits native code, whose inline stores bypass
+			// smcInvalidate, so a page that has just become Go-JIT code must
+			// leave the software TLB's write half (see native_tlb.go).
+			if b.markJITCodePages(block.start, block.end-block.start) &&
+				b.nativeBlocks != nil {
+				b.tlbClearWrite()
+			}
 			if block.start < b.jitCodeLo {
 				b.jitCodeLo = block.start
 			}

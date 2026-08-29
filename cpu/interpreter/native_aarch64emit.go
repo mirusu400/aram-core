@@ -19,6 +19,7 @@ package interpreter
 //	W0        = working value / result (N,Z read from it in the flag helpers)
 //	W1, W2    = scratch (flag/CPSR assembly)
 //	W3        = shift carry (0/1) passed to commitNZC
+//	W4, W5    = further scratch (register-specified shifts, carry-in ALU ops)
 //
 // Guest register i is at [X9, #4*i] (LDR/STR word offset i); regs[16] is CPSR
 // with eager N(31)/Z(30)/C(29)/V(28) plus the T bit. AArch64 PSTATE.NZCV has the

@@ -43,3 +43,39 @@ func TestHybridSystemSelectsNativeARMAndGoThumb(t *testing.T) {
 		t.Fatal("whole-system ARM did not use the native block tier")
 	}
 }
+
+// TestHybridThumbTranslationDropsInlineWriteEntries guards the coherence rule
+// the native software TLB's write half exists for: a page that holds translated
+// code must never be reachable by an inline native store, because such a store
+// never reaches smcInvalidate. The hybrid backend is the first configuration in
+// which the Go-JIT Thumb translator and emitted native code are live together,
+// so growing the Go-JIT code span has to flush the write half exactly as the
+// ARM translator already does.
+func TestHybridThumbTranslationDropsInlineWriteEntries(t *testing.T) {
+	backend := NewHybridJIT()
+	if backend.nativeBlocks == nil || backend.jitBlocks == nil {
+		backend.Close()
+		t.Skip("native executable arena unavailable")
+	}
+	t.Cleanup(func() { _ = backend.Close() })
+	mustMap(t, backend, 0x1000, 0x1000,
+		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute)
+	if err := backend.WriteMemory(0x1000, []byte{0x01, 0x20, 0x00, 0xbe}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Warm the inline write half for the subpage that is about to hold code.
+	if err := backend.write32(0x1004, 0, cpu.PermissionWrite); err != nil {
+		t.Fatal(err)
+	}
+	if !backend.tlbHit(0x1000, cpu.PermissionWrite) {
+		t.Fatal("inline write entry was not installed before translation")
+	}
+
+	if block := backend.jitBlockAt(0x1000); block == nil {
+		t.Fatal("Thumb block did not translate")
+	}
+	if backend.tlbHit(0x1000, cpu.PermissionWrite) {
+		t.Fatal("inline write entry survived Go-JIT Thumb translation of its page")
+	}
+}

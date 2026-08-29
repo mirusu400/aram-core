@@ -91,6 +91,22 @@ func TestARM64PrimitiveEncodings(t *testing.T) {
 		{"cmpW-reg", emit(func(e *arm64emitter) { e.subsReg(a64WZR, 4, 1) }), words(0x6B01009F)},
 		{"cmpW#4092", emit(func(e *arm64emitter) { e.subsImm12(a64WZR, 2, 4092) }), words(0x713FF05F)},
 		{"cmpW#4094", emit(func(e *arm64emitter) { e.subsImm12(a64WZR, 2, 4094) }), words(0x713FF85F)},
+		// ARM shifter-operand and carry-arithmetic primitives. Same ground
+		// truth: assembled as WORDs for GOARCH=arm64 and read back with
+		// `go tool objdump`, which prints RORW/LSLW/ADCSW/CSELW for these.
+		{"rorI#5", emit(func(e *arm64emitter) { e.rorI(3, 3, 5) }), words(0x13831463)},
+		{"rorI#31", emit(func(e *arm64emitter) { e.rorI(1, 1, 31) }), words(0x13817C21)},
+		{"lslV", emit(func(e *arm64emitter) { e.lslV(3, 3, 4) }), words(0x1AC42063)},
+		{"lsrV", emit(func(e *arm64emitter) { e.lsrV(3, 3, 4) }), words(0x1AC42463)},
+		{"asrV", emit(func(e *arm64emitter) { e.asrV(3, 3, 4) }), words(0x1AC42863)},
+		{"rorV", emit(func(e *arm64emitter) { e.rorV(3, 3, 4) }), words(0x1AC42C63)},
+		{"adcsReg", emit(func(e *arm64emitter) { e.adcsReg(0, 0, 1) }), words(0x3A010000)},
+		{"sbcsReg", emit(func(e *arm64emitter) { e.sbcsReg(0, 0, 1) }), words(0x7A010000)},
+		{"maskByte", emit(func(e *arm64emitter) { e.andMask(4, 4, a64MaskByte) }), words(0x12001C84)},
+		// csel with condition 3 (LO/CC) is what selects the shifted value only
+		// when a register-specified shift count is below 32.
+		{"csel-lo-zero", emit(func(e *arm64emitter) { e.csel(3, 3, a64WZR, 3) }), words(0x1A9F3063)},
+		{"csel-lo-reg", emit(func(e *arm64emitter) { e.csel(3, 3, 5, 3) }), words(0x1A853063)},
 	}
 	for _, c := range cases {
 		if len(c.got) != len(c.want) {

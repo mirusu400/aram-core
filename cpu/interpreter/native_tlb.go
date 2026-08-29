@@ -52,7 +52,7 @@ const (
 	tlbPageBits = 10
 	tlbPageSize = 1 << tlbPageBits
 	// tlbEmptyTag can never be a real page number (a 32-bit guest address
-	// shifts down to at most 0x000fffff), so a zeroed table is all misses only
+	// shifts down to at most 0x003fffff), so a zeroed table is all misses only
 	// once page 0 is excluded; tlbClear writes this tag explicitly instead.
 	tlbEmptyTag = ^uint32(0)
 )
