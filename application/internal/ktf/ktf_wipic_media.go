@@ -367,6 +367,29 @@ func ktfWIPICMediaPutData(
 	if err != nil {
 		return 0, err
 	}
+	// MC_mdaClipPutData appends, which is what a title streaming a long sound
+	// into a small buffer needs. A title that reuses one clip for every sound
+	// instead writes the whole next sound in one call after stopping the last
+	// one, and never calls MC_mdaClipClearData: 에픽크로니클2 loads its field
+	// music over the menu music that way. Appending there left the finished
+	// sound in front of the new one, so the same track kept playing and the
+	// buffer eventually filled up and rejected every effect (issue #85).
+	// Playback having ended is the boundary between the two patterns.
+	if clip.rewindPending {
+		if err := runtime.Services.Media.Clear(
+			runtime.ServiceOwner,
+			serviceID,
+		); err != nil {
+			return 0, err
+		}
+		runtime.tracef(
+			"wipic_media_rewind:handle=0x%08x:dropped=%d",
+			handle,
+			len(clip.data),
+		)
+		clip.data = nil
+		clip.rewindPending = false
+	}
 	if input == 0 || count > clip.capacity ||
 		uint64(len(clip.data))+uint64(count) > uint64(clip.capacity) {
 		return ktfWIPICErrorInvalid, nil
@@ -470,6 +493,7 @@ func ktfWIPICMediaClearData(
 	clip.data = nil
 	clip.state = 0
 	clip.repeat = false
+	clip.rewindPending = false
 	return 0, nil
 }
 
@@ -501,6 +525,7 @@ func ktfWIPICMediaPlay(
 	}
 	clip.state = 1
 	clip.repeat = repeat != 0
+	clip.rewindPending = false
 	runtime.tracef(
 		"wipic_media_play:handle=0x%08x:size=%d:repeat=%t",
 		handle,
@@ -574,6 +599,7 @@ func ktfWIPICMediaStop(
 	runtime.tracef("wipic_media_stop:handle=0x%08x:repeat=%t", handle, clip.repeat)
 	clip.state = 0
 	clip.repeat = false
+	clip.rewindPending = true
 	return 0, nil
 }
 
