@@ -1,4 +1,4 @@
-package skvm
+package ime
 
 // Hangul (천지인 / Cheonjiin) composition for the XCE input-method automata.
 //
@@ -155,16 +155,16 @@ func (k *koreanAutomata) render() rune {
 
 // emit renders the current syllable and returns the callback that shows it:
 // replace while a syllable is already on screen, insert when starting a new one.
-func (k *koreanAutomata) emit() []imeOp {
+func (k *koreanAutomata) emit() []Op {
 	glyph := k.render()
 	if glyph == 0 {
 		return nil
 	}
 	if k.composing {
-		return []imeOp{{kind: imeReplace, char: glyph}}
+		return []Op{{Kind: OpReplace, Char: glyph}}
 	}
 	k.composing = true
-	return []imeOp{{kind: imeInsert, char: glyph}}
+	return []Op{{Kind: OpInsert, Char: glyph}}
 }
 
 // startSyllable commits whatever is on screen and begins a fresh syllable, so
@@ -178,7 +178,7 @@ func (k *koreanAutomata) startSyllable() {
 	k.lastIndex = 0
 }
 
-func (k *koreanAutomata) press(key int32) ([]imeOp, bool) {
+func (k *koreanAutomata) press(key int32) ([]Op, bool) {
 	if choCycle, ok := consonantChoseong[key]; ok {
 		return k.pressConsonant(key, choCycle, consonantJongseong[key]), true
 	}
@@ -193,7 +193,7 @@ func (k *koreanAutomata) press(key int32) ([]imeOp, bool) {
 	return nil, false
 }
 
-func (k *koreanAutomata) pressConsonant(key int32, choCycle, jongCycle []int) []imeOp {
+func (k *koreanAutomata) pressConsonant(key int32, choCycle, jongCycle []int) []Op {
 	jung := rune(k.jungseong)
 	switch {
 	case k.choseong < 0 && jung == vowelNone:
@@ -235,7 +235,7 @@ func (k *koreanAutomata) pressConsonant(key int32, choCycle, jongCycle []int) []
 	return k.emit()
 }
 
-func (k *koreanAutomata) pressVowel(stroke int) []imeOp {
+func (k *koreanAutomata) pressVowel(stroke int) []Op {
 	jung := rune(k.jungseong)
 
 	// 연음: a syllable with a 받침 hands it to a new syllable led by that
@@ -244,13 +244,13 @@ func (k *koreanAutomata) pressVowel(stroke int) []imeOp {
 		moved, ok := jongseongToChoseong[k.jongseong]
 		if ok {
 			k.jongseong = 0
-			fix := imeOp{kind: imeReplace, char: k.render()}
+			fix := Op{Kind: OpReplace, Char: k.render()}
 			next, _ := vowelStep(vowelNone, stroke)
 			k.startSyllable()
 			k.choseong = moved
 			k.jungseong = int(next)
 			add := k.emit()
-			return append([]imeOp{fix}, add...)
+			return append([]Op{fix}, add...)
 		}
 	}
 
