@@ -59,8 +59,9 @@ func TestKTFWIPICCopyAreaHandlesOverlapOffsetAndClip(t *testing.T) {
 		t.Fatal(err)
 	}
 	contextWords := make([]uint32, 15)
-	copy(contextWords, []uint32{1, 1, 3, 4, 1})
-	contextWords[14] = 1
+	// clip_enabled, clip, then the y offset at +0x28.
+	copy(contextWords, []uint32{1, 1, 1, 3, 4})
+	contextWords[10] = 1
 	if err := runtime.writeWords(graphicsContext, contextWords); err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +139,7 @@ func TestKTFWIPICArcPolygonAndExtremeLineRasterize(t *testing.T) {
 	if err := runtime.writeWords(yCoordinates, []uint32{1, 1, 9}); err != nil {
 		t.Fatal(err)
 	}
-	contextWords[13], contextWords[14] = 1, 1
+	contextWords[9], contextWords[10] = 1, 1
 	if err := runtime.writeWords(graphicsContext, contextWords); err != nil {
 		t.Fatal(err)
 	}
@@ -188,8 +189,8 @@ func TestKTFWIPICRGBPixelTransfersHonorPitchAndContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	contextWords := make([]uint32, 15)
-	copy(contextWords, []uint32{0, 0, 3, 3, 1})
-	contextWords[14] = 1
+	copy(contextWords, []uint32{1, 0, 0, 3, 3})
+	contextWords[10] = 1
 	if err := runtime.writeWords(graphicsContext, contextWords); err != nil {
 		t.Fatal(err)
 	}

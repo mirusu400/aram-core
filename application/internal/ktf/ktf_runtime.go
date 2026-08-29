@@ -211,6 +211,10 @@ type Runtime struct {
 	wipicSystemProperties  map[string]string
 	wipicFiles             map[uint32]*ktfFile
 	nextWIPICFile          uint32
+	wipicDatabases         map[uint32]string
+	nextWIPICDatabase      uint32
+	wipicPixelOpResults    map[ktfWIPICPixelOpKey]uint16
+	brokenWIPICPixelOps    map[uint32]bool
 	dirtyCards             map[uint32]bool
 	paintInitializedCards  map[uint32]bool
 	PaintTasks             map[uint32]*Task
@@ -593,6 +597,11 @@ type ktfWIPICMediaClip struct {
 	volume    int32
 	state     uint8
 	repeat    bool
+	// rewindPending marks a clip whose playback has ended, either because the
+	// title stopped it or because it ran out. The next MC_mdaClipPutData then
+	// starts a fresh sound instead of appending to the one that just
+	// finished; see ktfWIPICMediaPutData.
+	rewindPending bool
 	// lastTracedState dedups the GetState host trace: a title polls GetState in
 	// a tight loop, so only a change (notably the playing->stopped edge when an
 	// effect finishes) is worth an entry.

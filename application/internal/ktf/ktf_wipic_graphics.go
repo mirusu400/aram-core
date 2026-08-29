@@ -540,8 +540,13 @@ func ktfWIPICGraphicsInitContext(
 		return 0, err
 	}
 	values := [...]uint32{
-		0, 0, 0x7fffffff, 0x7fffffff, 0,
-		0, 0xffff, 255, 0, 0, 0, 0, 0, 0, 0,
+		0,                            // clip_enabled
+		0, 0, 0x7fffffff, 0x7fffffff, // clip
+		0xffff, 0, 0, // fg_pixel, bg_pixel, trans_pixel
+		255,  // alpha
+		0, 0, // offset
+		0, 0, // pixel_op, pixel_param1
+		0, 0, // font, style
 	}
 	return 0, runtime.writeWords(address, values[:])
 }
@@ -562,10 +567,7 @@ func ktfWIPICGraphicsSetContext(
 	if err != nil || address == 0 {
 		return 0, err
 	}
-	offsets := map[uint32]uint32{
-		1: 20, 2: 24, 4: 28, 5: 32, 6: 36,
-		7: 40, 8: 44, 9: 48,
-	}
+	offsets := ktfWIPICContextScalarOffsets
 	if index == 0 {
 		if value == 0 {
 			return 0, nil
@@ -574,10 +576,13 @@ func ktfWIPICGraphicsSetContext(
 		if err := runtime.CPU.ReadMemory(value, clip); err != nil {
 			return 0, err
 		}
-		if err := runtime.CPU.WriteMemory(address, clip); err != nil {
+		if err := runtime.CPU.WriteMemory(
+			address+ktfWIPICContextClip,
+			clip,
+		); err != nil {
 			return 0, err
 		}
-		return 0, runtime.WriteU32(address+16, 1)
+		return 0, runtime.WriteU32(address+ktfWIPICContextClipEnabled, 1)
 	}
 	if index == 10 {
 		if value == 0 {
@@ -587,7 +592,10 @@ func ktfWIPICGraphicsSetContext(
 		if err := runtime.CPU.ReadMemory(value, offset); err != nil {
 			return 0, err
 		}
-		return 0, runtime.CPU.WriteMemory(address+52, offset)
+		return 0, runtime.CPU.WriteMemory(
+			address+ktfWIPICContextOffset,
+			offset,
+		)
 	}
 	if offset, ok := offsets[index]; ok {
 		return 0, runtime.WriteU32(address+offset, value)
@@ -611,23 +619,61 @@ func ktfWIPICGraphicsGetContext(
 	if err != nil || address == 0 || output == 0 {
 		return 0, err
 	}
-	offsets := map[uint32]struct {
-		offset uint32
-		size   uint32
-	}{
-		0: {0, 16}, 1: {20, 4}, 2: {24, 4}, 4: {28, 4},
-		5: {32, 4}, 6: {36, 4}, 7: {40, 4}, 8: {44, 4},
-		9: {48, 4}, 10: {52, 8},
+	offset, size := uint32(0), uint32(0)
+	switch {
+	case index == 0:
+		offset, size = ktfWIPICContextClip, 16
+	case index == 10:
+		offset, size = ktfWIPICContextOffset, 8
+	default:
+		scalar, ok := ktfWIPICContextScalarOffsets[index]
+		if !ok {
+			return 0, nil
+		}
+		offset, size = scalar, 4
 	}
-	field, ok := offsets[index]
-	if !ok {
-		return 0, nil
-	}
-	data := make([]byte, field.size)
-	if err := runtime.CPU.ReadMemory(address+field.offset, data); err != nil {
+	data := make([]byte, size)
+	if err := runtime.CPU.ReadMemory(address+offset, data); err != nil {
 		return 0, err
 	}
 	return 0, runtime.CPU.WriteMemory(output, data)
+}
+
+// The KTF MC_GrpContext members, proven from 컴투스포춘골프3D's own
+// MC_grpSetContext front end: it services the members it knows by writing the
+// struct directly - transparent pixel to +0x1c, alpha to +0x20 (mirrored into
+// the pixel-op parameter at +0x30), the drawing offset pair to +0x24, and the
+// pixel-op procedure to +0x2c - and forwards every other index to the real
+// entry point. The clip sits behind a leading enable word rather than in front
+// of a trailing one, which is why the same title's clip read as an empty
+// rectangle before (issue #86) and discarded every host draw it made.
+const (
+	ktfWIPICContextClipEnabled = 0
+	ktfWIPICContextClip        = 4
+	ktfWIPICContextForeground  = 20
+	ktfWIPICContextBackground  = 24
+	ktfWIPICContextTransparent = 28
+	ktfWIPICContextAlpha       = 32
+	ktfWIPICContextOffset      = 36
+	ktfWIPICContextPixelOp     = 44
+	ktfWIPICContextPixelParam  = 48
+	ktfWIPICContextFont        = 52
+	ktfWIPICContextStyle       = 56
+	ktfWIPICContextSize        = 60
+)
+
+// ktfWIPICContextScalarOffsets maps the single-word MC_grpSetContext indices
+// onto the members above. Index 0 (clip) and index 10 (offset) carry a
+// pointer to a small array instead and are handled separately.
+var ktfWIPICContextScalarOffsets = map[uint32]uint32{
+	1: ktfWIPICContextForeground,
+	2: ktfWIPICContextBackground,
+	3: ktfWIPICContextTransparent,
+	4: ktfWIPICContextAlpha,
+	5: ktfWIPICContextPixelOp,
+	6: ktfWIPICContextPixelParam,
+	7: ktfWIPICContextFont,
+	8: ktfWIPICContextStyle,
 }
 
 type ktfWIPICGraphicsContext struct {
@@ -636,6 +682,8 @@ type ktfWIPICGraphicsContext struct {
 	foreground               uint16
 	font                     uint32
 	offsetX, offsetY         int
+	pixelOp                  uint32
+	pixelParam               uint32
 }
 
 func (r *Runtime) wipicGraphicsContext(
@@ -648,7 +696,7 @@ func (r *Runtime) wipicGraphicsContext(
 	if address == 0 {
 		return state, nil
 	}
-	var encoded [60]byte
+	var encoded [ktfWIPICContextSize]byte
 	if err := r.CPU.ReadMemory(address, encoded[:]); err != nil {
 		return state, fmt.Errorf(
 			"read KTF WIPI-C graphics context at 0x%08x: %w",
@@ -656,15 +704,25 @@ func (r *Runtime) wipicGraphicsContext(
 			err,
 		)
 	}
-	state.left = int(int32(binary.LittleEndian.Uint32(encoded[0:4])))
-	state.top = int(int32(binary.LittleEndian.Uint32(encoded[4:8])))
-	state.right = int(int32(binary.LittleEndian.Uint32(encoded[8:12])))
-	state.bottom = int(int32(binary.LittleEndian.Uint32(encoded[12:16])))
-	state.clipEnabled = binary.LittleEndian.Uint32(encoded[16:20]) != 0
-	state.foreground = uint16(binary.LittleEndian.Uint32(encoded[20:24]))
-	state.font = binary.LittleEndian.Uint32(encoded[40:44])
-	state.offsetX = int(int32(binary.LittleEndian.Uint32(encoded[52:56])))
-	state.offsetY = int(int32(binary.LittleEndian.Uint32(encoded[56:60])))
+	word := func(offset int) uint32 {
+		return binary.LittleEndian.Uint32(encoded[offset : offset+4])
+	}
+	state.left = int(int32(word(ktfWIPICContextClip)))
+	state.top = int(int32(word(ktfWIPICContextClip + 4)))
+	state.right = int(int32(word(ktfWIPICContextClip + 8)))
+	state.bottom = int(int32(word(ktfWIPICContextClip + 12)))
+	// MC_grpSetContext always installs a non-empty clip, so an enabled clip
+	// with no area is not one the title asked for: it is whatever bytes its
+	// own MC_GrpContext happened to hold. Honouring it would silently discard
+	// every draw made through that context.
+	state.clipEnabled = word(ktfWIPICContextClipEnabled) != 0 &&
+		state.left < state.right && state.top < state.bottom
+	state.foreground = uint16(word(ktfWIPICContextForeground))
+	state.font = word(ktfWIPICContextFont)
+	state.offsetX = int(int32(word(ktfWIPICContextOffset)))
+	state.offsetY = int(int32(word(ktfWIPICContextOffset + 4)))
+	state.pixelOp = word(ktfWIPICContextPixelOp)
+	state.pixelParam = word(ktfWIPICContextPixelParam)
 	return state, nil
 }
 
@@ -886,7 +944,7 @@ func ktfWIPICGraphicsFillRect(
 }
 
 func ktfWIPICGraphicsCopyFramebuffer(
-	_ context.Context,
+	ctx context.Context,
 	runtime *Runtime,
 ) (uint32, error) {
 	values := make([]uint32, 9)
@@ -902,6 +960,7 @@ func ktfWIPICGraphicsCopyFramebuffer(
 		return 0, err
 	}
 	if err := runtime.blitWIPICFramebuffer(
+		ctx,
 		values[0],
 		values[5],
 		int64(int32(values[1]))+int64(state.offsetX),
@@ -922,7 +981,7 @@ func ktfWIPICGraphicsCopyFramebuffer(
 // framebuffer-to-framebuffer one with the source resolved through the image and
 // the destination rectangle clipped by the graphics context.
 func ktfWIPICGraphicsDrawImage(
-	_ context.Context,
+	ctx context.Context,
 	runtime *Runtime,
 ) (uint32, error) {
 	values := make([]uint32, 9)
@@ -946,6 +1005,7 @@ func ktfWIPICGraphicsDrawImage(
 		return 0, err
 	}
 	if err := runtime.blitWIPICFramebufferKeyed(
+		ctx,
 		values[0],
 		image.framebuffer,
 		int64(int32(values[1]))+int64(state.offsetX),
@@ -965,11 +1025,13 @@ func ktfWIPICGraphicsDrawImage(
 // blitWIPICFramebuffer copies a rectangle between two 16bpp framebuffers,
 // clamping it into both and against the context clip.
 func (r *Runtime) blitWIPICFramebuffer(
+	ctx context.Context,
 	destinationHandle, sourceHandle uint32,
 	dx, dy, width, height, sx, sy int64,
 	state ktfWIPICGraphicsContext,
 ) error {
 	return r.blitWIPICFramebufferKeyed(
+		ctx,
 		destinationHandle, sourceHandle,
 		dx, dy, width, height, sx, sy, state,
 		ktfWIPICImageAlpha{key: -1},
@@ -983,6 +1045,7 @@ func (r *Runtime) blitWIPICFramebuffer(
 // MC_grpImage decoded from a color-keyed sprite sheet. No mask and a negative
 // key copies opaquely.
 func (r *Runtime) blitWIPICFramebufferKeyed(
+	ctx context.Context,
 	destinationHandle, sourceHandle uint32,
 	dx, dy, width, height, sx, sy int64,
 	state ktfWIPICGraphicsContext,
@@ -1045,8 +1108,14 @@ func (r *Runtime) blitWIPICFramebufferKeyed(
 	// the inner loop read the bitset without a bounds check per pixel.
 	masked := len(alpha.mask) != 0 &&
 		alpha.width == source.width && alpha.height == source.height
+	// A context may install an MC_GrpPixelOpProc, a guest procedure that
+	// combines each source pixel with the one already in the destination.
+	// 컴투스포춘골프3D draws its rotating main menu that way, one alpha per
+	// ring position, so ignoring the procedure painted every entry fully
+	// opaque on top of the others (issue #86).
+	blend := r.usableWIPICPixelOp(state, int64(rowBytes/2)*int64(rowCount))
 	var destinationRow []byte
-	if masked || alpha.key >= 0 {
+	if masked || alpha.key >= 0 || blend {
 		destinationRow = make([]byte, rowBytes)
 	}
 	key := uint16(alpha.key)
@@ -1055,7 +1124,7 @@ func (r *Runtime) blitWIPICFramebufferKeyed(
 			uint32(y*int64(destination.stride)+left*2)
 		rowOffset := int(y-top) * rowBytes
 		sourceRow := data[rowOffset : rowOffset+rowBytes]
-		if !masked && alpha.key < 0 {
+		if !masked && alpha.key < 0 && !blend {
 			if err := r.CPU.WriteMemory(destinationAddress, sourceRow); err != nil {
 				return err
 			}
@@ -1066,30 +1135,123 @@ func (r *Runtime) blitWIPICFramebufferKeyed(
 		if err := r.CPU.ReadMemory(destinationAddress, destinationRow); err != nil {
 			return err
 		}
-		if masked {
-			base := int(sy+y-dy)*alpha.width + int(sx+left-dx)
-			for i := 0; i+1 < rowBytes; i += 2 {
+		base := int(sy+y-dy)*alpha.width + int(sx+left-dx)
+		for i := 0; i+1 < rowBytes; i += 2 {
+			if masked {
 				index := base + i/2
 				if alpha.mask[index>>6]&(1<<(index&63)) != 0 {
 					continue
 				}
-				destinationRow[i] = sourceRow[i]
-				destinationRow[i+1] = sourceRow[i+1]
+			} else if alpha.key >= 0 &&
+				binary.LittleEndian.Uint16(sourceRow[i:]) == key {
+				continue
 			}
-		} else {
-			for i := 0; i+1 < rowBytes; i += 2 {
-				if binary.LittleEndian.Uint16(sourceRow[i:]) == key {
-					continue
+			value := binary.LittleEndian.Uint16(sourceRow[i:])
+			if blend {
+				merged, err := r.applyWIPICPixelOp(
+					ctx,
+					state,
+					value,
+					binary.LittleEndian.Uint16(destinationRow[i:]),
+				)
+				if err != nil {
+					return err
 				}
-				destinationRow[i] = sourceRow[i]
-				destinationRow[i+1] = sourceRow[i+1]
+				// A procedure that faults is retired for the rest of the
+				// session; finish this rectangle as a plain copy.
+				if !r.usableWIPICPixelOp(state, 0) {
+					blend = false
+				} else {
+					value = merged
+				}
 			}
+			binary.LittleEndian.PutUint16(destinationRow[i:], value)
 		}
 		if err := r.CPU.WriteMemory(destinationAddress, destinationRow); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// ktfWIPICPixelOpBudget bounds one MC_GrpPixelOpProc call. The procedures
+// titles install are a few dozen instructions of fixed-point blending.
+const ktfWIPICPixelOpBudget = 1 << 16
+
+// ktfWIPICPixelOpMaxPixels keeps a pixel-op blit from turning a full-screen
+// copy into a hundred thousand guest calls in one frame. Titles use the
+// procedure for sprites and panels, never for the background restore.
+const ktfWIPICPixelOpMaxPixels = 1 << 16
+
+// ktfWIPICPixelOpCacheLimit bounds the memo table. The procedure is a pure
+// function of its three arguments, so caching it collapses a menu that
+// repaints the same sprite over the same background every frame down to one
+// guest call per distinct pixel pair.
+const ktfWIPICPixelOpCacheLimit = 1 << 16
+
+type ktfWIPICPixelOpKey struct {
+	procedure   uint32
+	parameter   uint32
+	source      uint16
+	destination uint16
+}
+
+// usableWIPICPixelOp reports whether this context's procedure should run for a
+// rectangle of the given pixel count. A zero count only asks whether the
+// procedure is still trusted.
+func (r *Runtime) usableWIPICPixelOp(
+	state ktfWIPICGraphicsContext,
+	pixels int64,
+) bool {
+	if state.pixelOp == 0 || r.brokenWIPICPixelOps[state.pixelOp] {
+		return false
+	}
+	if pixels > ktfWIPICPixelOpMaxPixels {
+		return false
+	}
+	// The procedure lives in the loaded client image like any other guest
+	// function; a word that does not is leftover data, not a callback.
+	return state.pixelOp >= ImageBase &&
+		uint64(state.pixelOp) < uint64(ImageBase)+uint64(r.ImageSz)
+}
+
+func (r *Runtime) applyWIPICPixelOp(
+	ctx context.Context,
+	state ktfWIPICGraphicsContext,
+	source, destination uint16,
+) (uint16, error) {
+	key := ktfWIPICPixelOpKey{
+		procedure:   state.pixelOp,
+		parameter:   state.pixelParam,
+		source:      source,
+		destination: destination,
+	}
+	if merged, ok := r.wipicPixelOpResults[key]; ok {
+		return merged, nil
+	}
+	_, value, err := r.call(
+		ctx,
+		state.pixelOp,
+		[]uint32{uint32(source), uint32(destination), state.pixelParam},
+		ktfWIPICPixelOpBudget,
+	)
+	// A nested call returns through the KTF return sentinel, which reports a
+	// breakpoint stop; only the error says whether it completed.
+	if err != nil {
+		r.brokenWIPICPixelOps[state.pixelOp] = true
+		r.tracef(
+			"wipic_pixel_op_retired:procedure=0x%08x:error=%v",
+			state.pixelOp,
+			err,
+		)
+		return source, nil
+	}
+	merged := uint16(value)
+	if len(r.wipicPixelOpResults) >= ktfWIPICPixelOpCacheLimit {
+		clear(r.wipicPixelOpResults)
+	}
+	r.wipicPixelOpResults[key] = merged
+	return merged, nil
 }
 
 func (r *Runtime) writeWIPICPixel(

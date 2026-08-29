@@ -270,7 +270,7 @@ func (r *Runtime) wipicAssetAlpha(
 }
 
 func ktfWIPICGraphicsCopyArea(
-	_ context.Context,
+	ctx context.Context,
 	runtime *Runtime,
 ) (uint32, error) {
 	values, err := readKTFWIPICParameters(runtime, 8, "copy-area")
@@ -282,6 +282,7 @@ func ktfWIPICGraphicsCopyArea(
 		return 0, err
 	}
 	if err := runtime.blitWIPICFramebuffer(
+		ctx,
 		values[0],
 		values[0],
 		int64(int32(values[1]))+int64(state.offsetX),

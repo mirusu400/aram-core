@@ -401,6 +401,8 @@ type ktfMetadataSnapshot struct {
 	WIPICSystemProperties  map[string]string
 	WIPICFiles             map[uint32]ktfFileSnapshot
 	NextWIPICFile          uint32
+	WIPICDatabases         map[uint32]string
+	NextWIPICDatabase      uint32
 
 	DirtyCards            map[uint32]bool
 	PaintInitializedCards map[uint32]bool
@@ -800,6 +802,8 @@ func snapshotKTFMetadata(
 		WIPICResourceIDs:       guest.CloneMap(r.wipicResourceIDs),
 		WIPICSystemProperties:  guest.CloneMap(r.wipicSystemProperties),
 		NextWIPICFile:          r.nextWIPICFile,
+		WIPICDatabases:         guest.CloneMap(r.wipicDatabases),
+		NextWIPICDatabase:      r.nextWIPICDatabase,
 
 		DirtyCards:            guest.CloneMap(r.dirtyCards),
 		PaintInitializedCards: guest.CloneMap(r.paintInitializedCards),
