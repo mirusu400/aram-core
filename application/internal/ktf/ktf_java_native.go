@@ -722,6 +722,11 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 		}()
 		registers := scope.arguments[:cpu.RegisterR12+1]
 		declaredClass := className
+		// Resolving which class owns this call only reads, and it reads the
+		// same classes several times; hold their parses until the resolution
+		// is over. See ktfInspectMemo.
+		runtime.inspectMemo.begin()
+		defer runtime.inspectMemo.reset()
 		className = runtime.correctHostJavaReceiverClass(
 			className,
 			name,
@@ -776,6 +781,9 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 		); ok || err != nil {
 			return value, err
 		}
+		// The handler below is free to write guest memory, so the resolution
+		// window ends here rather than at the end of the call.
+		runtime.inspectMemo.reset()
 		switch className {
 		case "java/lang/Object":
 			switch name + descriptor {
@@ -1312,6 +1320,8 @@ func (r *Runtime) redispatchGuestJavaMethod(
 		actual.Name,
 		method.Body,
 	)
+	// The override is guest code, so the resolution window ends before it runs.
+	r.inspectMemo.reset()
 	r.redispatchActive[guard] = true
 	value, err := r.invokeJavaVirtual(
 		ctx,

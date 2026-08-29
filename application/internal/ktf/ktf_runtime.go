@@ -103,17 +103,20 @@ type Runtime struct {
 	HostCallCount    uint64
 	hostTraceSamples map[string]uint64
 
-	knlInterface            uint32
-	jbInterface             uint32
-	wipicInterface          uint32
-	mxUserMemInterface      uint32
-	incrementalMemory       []ktfIncrementalMemoryRegion
-	incrementalHeaps        map[uint32]*guest.Heap
-	JavaClasses             map[string]uint32
-	javaClassGeneration     uint64
-	nativeSignatures        map[uint32]*ktfNativeSignatureMatches
-	nativeSignatureGen      uint64
-	javaClassInspections    map[uint32]*ktfJavaClassInspection
+	knlInterface         uint32
+	jbInterface          uint32
+	wipicInterface       uint32
+	mxUserMemInterface   uint32
+	incrementalMemory    []ktfIncrementalMemoryRegion
+	incrementalHeaps     map[uint32]*guest.Heap
+	JavaClasses          map[string]uint32
+	javaClassGeneration  uint64
+	nativeSignatures     map[uint32]*ktfNativeSignatureMatches
+	nativeSignatureGen   uint64
+	javaClassInspections map[uint32]*ktfJavaClassInspection
+	// inspectMemo short-circuits class inspection for as long as the guest CPU
+	// is stopped inside a host call. See ktfInspectMemo.
+	inspectMemo             ktfInspectMemo
 	javaMethodInspections   map[uint32]*ktfJavaMethodInspection
 	javaInspectGen          uint64
 	JavaStrings             map[uint32]string
