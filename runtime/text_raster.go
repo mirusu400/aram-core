@@ -3,6 +3,9 @@ package runtime
 import "unicode"
 
 func rasterFallbackGlyph(font *handsetFont, descriptor FontDescriptor, character rune) Glyph {
+	if isHandsetControlRune(character) {
+		return Glyph{Rune: character}
+	}
 	if character >= 0xac00 && character <= 0xd7a3 {
 		return rasterHangulGlyph(font, descriptor, character)
 	}
@@ -124,6 +127,27 @@ func rasterHandsetGlyph(
 		}
 	}
 	return glyph
+}
+
+// isHandsetControlRune reports whether a rune is a control code no handset font
+// carries an entry for, so it draws nothing and takes no room.
+//
+// 초밥의달인3 keeps its dialogue in a fixed eighty-character line buffer and
+// hands the whole buffer to drawString, so every line ends in a tail of NULs
+// past the text it wrote. The device draws a NUL-terminated string and never
+// reaches them; ARAM reached them and drew each one as the missing-glyph box,
+// filling the rest of the line with tofu. Giving them no advance also keeps the
+// measured width of such a line the width of its text, which is what a title
+// centring the line asks for.
+//
+// The whitespace controls a title does use inside a line - tab, newline and
+// carriage return - keep the blank-with-advance shape they have always had.
+func isHandsetControlRune(character rune) bool {
+	if unicode.IsSpace(character) {
+		return false
+	}
+	return character < 0x20 || character == 0x7f ||
+		(character >= 0x80 && character <= 0x9f)
 }
 
 func fallbackGlyphRows(character rune) [7]uint8 {
