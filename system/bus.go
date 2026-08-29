@@ -485,6 +485,65 @@ func (b *Bus) ReadBlock(
 	return true, nil
 }
 
+// ReadMemory copies a span for a host-side inspector that must not disturb the
+// machine it reads. It transfers plain memory only: an address that lands on
+// MMIO declines instead of running a device read, because several devices here
+// answer a read by clearing or advancing their own state. It also stays off the
+// observer path, since the transfer is host bookkeeping rather than guest
+// traffic, and it follows region boundaries so a span may cross adjacent
+// memory regions.
+func (b *Bus) ReadMemory(
+	address uint32,
+	destination []byte,
+	permission cpu.Permissions,
+) error {
+	if len(destination) == 0 {
+		return nil
+	}
+	if uint64(address)+uint64(len(destination)) > 1<<32 {
+		return &Fault{Address: address, Permission: permission, Err: cpu.ErrInvalidAddress}
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for copied := 0; copied < len(destination); {
+		current := address + uint32(copied)
+		// The locality cache belongs to guest traffic; a host inspection must
+		// not evict the region the CPU is working in.
+		index := sort.Search(len(b.regions), func(index int) bool {
+			return uint64(current) < b.regions[index].end()
+		})
+		if index >= len(b.regions) || current < b.regions[index].address {
+			return &Fault{Address: current, Permission: permission, Err: cpu.ErrInvalidAddress}
+		}
+		mapped := &b.regions[index]
+		if mapped.kind == regionMMIO {
+			return &Fault{
+				Region: mapped.name, Address: current,
+				Permission: permission, Err: cpu.ErrInvalidAddress,
+			}
+		}
+		if mapped.permissions&permission != permission {
+			return &Fault{
+				Region: mapped.name, Address: current,
+				Permission: permission, Err: cpu.ErrPermissionDenied,
+			}
+		}
+		chunk := len(destination) - copied
+		if available := mapped.end() - uint64(current); uint64(chunk) > available {
+			chunk = int(available)
+		}
+		offset := current - mapped.address
+		if mapped.kind == regionSparseRAM {
+			mapped.sparse.read(offset, destination[copied:copied+chunk])
+		} else {
+			start := int(offset)
+			copy(destination[copied:copied+chunk], mapped.data[start:start+chunk])
+		}
+		copied += chunk
+	}
+	return nil
+}
+
 // WriteBlock is ReadBlock's counterpart. A ROM region declines, so a write that
 // would be rejected still travels the per-width path and reports its fault.
 func (b *Bus) WriteBlock(

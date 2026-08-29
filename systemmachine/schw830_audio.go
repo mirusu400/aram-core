@@ -392,25 +392,14 @@ func (a *schw830Audio) readWord(address uint32) (uint32, bool) {
 	return binary.LittleEndian.Uint32(data[:]), true
 }
 
+// readSCHW830GuestBlock reads what the firmware published, never what a device
+// would answer. The descriptor pointer is guest data, so a stale or partly
+// written word can address MMIO; running that through the ordinary read path
+// would let this host-side device clear the boot-control SBI completion status
+// or advance a legacy UART the firmware is still using, and would put host
+// bookkeeping into an attributed trace.
 func readSCHW830GuestBlock(bus *system.Bus, address uint32, destination []byte) error {
-	if ok, err := bus.ReadBlock(address, destination, cpu.PermissionRead); err != nil || ok {
-		return err
-	}
-	for offset := 0; offset < len(destination); {
-		current := address + uint32(offset)
-		left := len(destination) - offset
-		width := 1
-		if current%4 == 0 && left >= 4 {
-			width = 4
-		} else if current%2 == 0 && left >= 2 {
-			width = 2
-		}
-		if err := bus.Read(current, destination[offset:offset+width], cpu.PermissionRead); err != nil {
-			return err
-		}
-		offset += width
-	}
-	return nil
+	return bus.ReadMemory(address, destination, cpu.PermissionRead)
 }
 
 func (a *schw830Audio) publish(audio aramruntime.AudioBuffer, start time.Duration) {

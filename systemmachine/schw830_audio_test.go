@@ -371,3 +371,39 @@ func schw830AudioPeak(samples []int16) int32 {
 	}
 	return peak
 }
+
+// countingSCHW830Device stands in for the boot-control and UART registers that
+// answer a read by clearing or advancing their own state.
+type countingSCHW830Device struct{ reads int }
+
+func (d *countingSCHW830Device) Reset() error { return nil }
+
+func (d *countingSCHW830Device) Read(uint32, system.Width) (uint32, error) {
+	d.reads++
+	return 0x444d4d4d, nil
+}
+
+func (d *countingSCHW830Device) Write(uint32, system.Width, uint32) error { return nil }
+
+func TestSCHW830AudioLeavesDevicesAloneForAnMMIODescriptor(t *testing.T) {
+	audio, command := newSCHW830TestAudio(t, 7, 0)
+	device := &countingSCHW830Device{}
+	if err := audio.bus.MapMMIO("registers", 0x8000, 0x1000, device); err != nil {
+		t.Fatal(err)
+	}
+	writeSCHW830TestWord(t, audio.bus, schw830TestSourceLength, 0x40)
+	writeSCHW830TestWord(t, audio.bus, schw830TestSourceWord, 0x8000)
+
+	if err := command.Write(schw830TestCommand, system.Width16, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := audio.Advance(1_000); err != nil {
+		t.Fatal(err)
+	}
+	if audio.clip.Valid() {
+		t.Fatal("an MMIO descriptor produced a clip")
+	}
+	if device.reads != 0 {
+		t.Fatalf("descriptor read reached the device %d times", device.reads)
+	}
+}
