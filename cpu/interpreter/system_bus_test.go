@@ -232,6 +232,122 @@ type directTestSystemBus struct {
 	invalidate  func()
 }
 
+type alternatingDirectTestBus struct {
+	first          []byte
+	second         []byte
+	directAttempts int
+	directFills    int
+}
+
+func (b *alternatingDirectTestBus) Read(
+	address uint32,
+	destination []byte,
+	permission cpu.Permissions,
+) error {
+	region, ok := b.directMemoryRegion(address, len(destination), permission)
+	if !ok {
+		return cpu.ErrInvalidAddress
+	}
+	copy(destination, region.Data[address-region.Address:])
+	return nil
+}
+
+func (b *alternatingDirectTestBus) Write(
+	address uint32,
+	source []byte,
+	permission cpu.Permissions,
+) error {
+	region, ok := b.directMemoryRegion(address, len(source), permission)
+	if !ok {
+		return cpu.ErrInvalidAddress
+	}
+	copy(region.Data[address-region.Address:], source)
+	return nil
+}
+
+func (b *alternatingDirectTestBus) DirectMemoryRegion(
+	address uint32,
+	size int,
+	permission cpu.Permissions,
+) (cpu.DirectMemoryRegion, bool) {
+	b.directAttempts++
+	region, ok := b.directMemoryRegion(address, size, permission)
+	if ok {
+		b.directFills++
+	}
+	return region, ok
+}
+
+func TestDirectDataCacheRetainsNonDirectPageMiss(t *testing.T) {
+	backend := NewJIT()
+	defer func() { _ = backend.Close() }()
+	bus := &alternatingDirectTestBus{
+		first:  make([]byte, 0x1000),
+		second: make([]byte, 0x1000),
+	}
+	backend.directBus = bus
+	for range 3 {
+		if _, _, _, ok := backend.directData(0x5000, 4, cpu.PermissionRead); ok {
+			t.Fatal("unmapped page was exposed as direct memory")
+		}
+	}
+	if bus.directAttempts != 1 {
+		t.Fatalf("repeated non-direct page attempts = %d, want 1", bus.directAttempts)
+	}
+	backend.clearDataCaches()
+	if _, _, _, ok := backend.directData(0x5000, 4, cpu.PermissionRead); ok {
+		t.Fatal("invalidated unmapped page was exposed as direct memory")
+	}
+	if bus.directAttempts != 2 {
+		t.Fatalf("post-invalidation direct attempts = %d, want 2", bus.directAttempts)
+	}
+}
+
+func (b *alternatingDirectTestBus) directMemoryRegion(
+	address uint32,
+	size int,
+	permission cpu.Permissions,
+) (cpu.DirectMemoryRegion, bool) {
+	if permission&cpu.PermissionExecute != 0 {
+		return cpu.DirectMemoryRegion{}, false
+	}
+	for _, candidate := range []struct {
+		address uint32
+		data    []byte
+	}{{0x1000, b.first}, {0x3000, b.second}} {
+		if address >= candidate.address &&
+			uint64(address-candidate.address)+uint64(size) <= uint64(len(candidate.data)) {
+			return cpu.DirectMemoryRegion{
+				Address: candidate.address,
+				Data:    candidate.data,
+				Permissions: cpu.PermissionRead | cpu.PermissionWrite |
+					cpu.PermissionExecute,
+			}, true
+		}
+	}
+	return cpu.DirectMemoryRegion{}, false
+}
+
+func (*alternatingDirectTestBus) SetDirectMemoryInvalidator(func()) {}
+
+func TestDirectDataCacheRetainsAlternatingRegions(t *testing.T) {
+	backend := NewJIT()
+	defer func() { _ = backend.Close() }()
+	bus := &alternatingDirectTestBus{
+		first:  make([]byte, 0x1000),
+		second: make([]byte, 0x1000),
+	}
+	backend.directBus = bus
+	for _, address := range []uint32{0x1010, 0x3010, 0x1020, 0x3020} {
+		if _, _, _, ok := backend.directData(address, 4, cpu.PermissionRead); !ok {
+			t.Fatalf("direct data miss at %#x", address)
+		}
+	}
+	if bus.directFills != 2 {
+		t.Fatalf("alternating direct region fills = %d, want 2", bus.directFills)
+	}
+}
+
 func (b *directTestSystemBus) Read(address uint32, destination []byte, permission cpu.Permissions) error {
 	if permission != cpu.PermissionExecute {
 		b.dataReads++

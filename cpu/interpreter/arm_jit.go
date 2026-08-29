@@ -16,6 +16,7 @@ import (
 // at architectural instruction boundaries, exactly as in runARMInstrumented.
 func (b *Backend) runARMJIT(limit uint64) (uint64, *cpu.StopReason, error) {
 	wholeSystem := b.systemBus != nil
+	hasExecutionTraps := len(b.executionTraps) != 0
 	traced := b.tracing()
 	var executed uint64
 outer:
@@ -29,7 +30,7 @@ outer:
 				continue
 			}
 			pc = b.regs[cpu.RegisterPC]
-			if b.executionTrapAt(cpu.ModeARM, pc) {
+			if hasExecutionTraps && b.executionTrapAt(cpu.ModeARM, pc) {
 				reason := cpu.StopExecutionTrap
 				return executed, &reason, nil
 			}
@@ -46,19 +47,26 @@ outer:
 			}
 			continue
 		}
-		for index := range block.instrs {
-			if executed >= limit {
-				return executed, nil, nil
-			}
+		blockInstructions := len(block.instrs)
+		if remaining := limit - executed; uint64(blockInstructions) > remaining {
+			blockInstructions = int(remaining)
+		}
+		for index := 0; index < blockInstructions; index++ {
 			in := &block.instrs[index]
 			if wholeSystem {
-				if b.takePendingInterrupt() {
-					continue outer
-				}
-				pc = b.regs[cpu.RegisterPC]
-				if b.executionTrapAt(cpu.ModeARM, pc) {
-					reason := cpu.StopExecutionTrap
-					return executed, &reason, nil
+				// The outer dispatch already checked the first instruction's
+				// boundary before fetching or translating this block. Later
+				// instructions still poll individually, so MMIO-raised interrupts
+				// and traps retain instruction-boundary precision.
+				if index != 0 {
+					if b.takePendingInterrupt() {
+						continue outer
+					}
+					pc = b.regs[cpu.RegisterPC]
+					if hasExecutionTraps && b.executionTrapAt(cpu.ModeARM, pc) {
+						reason := cpu.StopExecutionTrap
+						return executed, &reason, nil
+					}
 				}
 				if traced {
 					b.recordPC(pc)

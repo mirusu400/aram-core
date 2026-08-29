@@ -264,13 +264,18 @@ func TestMMUDirectVirtualDataCacheHonorsGenerationPrivilegeAndInvalidation(t *te
 	if err != nil || value != 0x11223344 {
 		t.Fatalf("cold direct virtual read = %#x error %v", value, err)
 	}
-	if _, _, ok := backend.virtualDataHit(virtual, 4, cpu.PermissionRead); !ok {
+	if _, _, ok := backend.virtualDataReadHit(virtual, 4); !ok {
 		t.Fatal("successful direct virtual read did not install the Go TLB entry")
+	}
+	page := virtual >> 10
+	entry := &backend.virtualData.read[page&(virtualDataCacheEntries-1)]
+	if len(entry.data) != 0x400 {
+		t.Fatalf("direct virtual cache span = %#x bytes, want one 1 KiB subpage", len(entry.data))
 	}
 	if err := backend.write32(virtual, 0x55667788, cpu.PermissionWrite); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, ok := backend.virtualDataHit(virtual, 4, cpu.PermissionWrite); !ok {
+	if _, _, ok := backend.virtualDataWriteHit(virtual, 4); !ok {
 		t.Fatal("successful direct virtual write did not install its permission half")
 	}
 	if got := binary.LittleEndian.Uint32(bus.data[physical:]); got != 0x55667788 {
@@ -290,7 +295,7 @@ func TestMMUDirectVirtualDataCacheHonorsGenerationPrivilegeAndInvalidation(t *te
 	if backend.mappingGen == oldGen {
 		t.Fatal("TLB invalidation did not advance the virtual-cache generation")
 	}
-	if _, _, ok := backend.virtualDataHit(virtual, 4, cpu.PermissionRead); ok {
+	if _, _, ok := backend.virtualDataReadHit(virtual, 4); ok {
 		t.Fatal("mapping-generation change retained a virtual data hit")
 	}
 
