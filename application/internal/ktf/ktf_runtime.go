@@ -211,6 +211,10 @@ type Runtime struct {
 	wipicSystemProperties  map[string]string
 	wipicFiles             map[uint32]*ktfFile
 	nextWIPICFile          uint32
+	wipicDatabases         map[uint32]string
+	nextWIPICDatabase      uint32
+	wipicPixelOpResults    map[ktfWIPICPixelOpKey]uint16
+	brokenWIPICPixelOps    map[uint32]bool
 	dirtyCards             map[uint32]bool
 	paintInitializedCards  map[uint32]bool
 	PaintTasks             map[uint32]*Task

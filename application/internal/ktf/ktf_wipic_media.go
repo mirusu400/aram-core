@@ -59,6 +59,7 @@ func (r *Runtime) buildWIPICInterface() (uint32, error) {
 
 const (
 	ktfWIPICMasterGraphics = 2
+	ktfWIPICMasterDatabase = 4
 	ktfWIPICMasterFS       = 6
 	ktfWIPICMasterMedia    = 9
 	ktfWIPICMasterNet      = 10
@@ -145,6 +146,34 @@ func ktfWIPICHandler(table, slot int) ktfHostHandler {
 			return ktfWIPICGraphicsDrawPolygon
 		case 38:
 			return ktfWIPICGraphicsDrawFillPolygon
+		}
+	}
+	if table == ktfWIPICMasterDatabase {
+		switch slot {
+		case ktfWIPICDBSlotOpen:
+			return ktfWIPICDBOpenDataBase
+		case ktfWIPICDBSlotClose:
+			return ktfWIPICDBCloseDataBase
+		case ktfWIPICDBSlotDeleteDatabase:
+			return ktfWIPICDBDeleteDataBase
+		case ktfWIPICDBSlotInsertRecord:
+			return ktfWIPICDBInsert
+		case ktfWIPICDBSlotSelectRecord:
+			return ktfWIPICDBSelect
+		case ktfWIPICDBSlotUpdateRecord:
+			return ktfWIPICDBUpdate
+		case ktfWIPICDBSlotDeleteRecord:
+			return ktfWIPICDBDeleteRecord
+		case ktfWIPICDBSlotListRecords:
+			return ktfWIPICDBList
+		case ktfWIPICDBSlotGetAccessMode:
+			return ktfWIPICDBAccessMode
+		case ktfWIPICDBSlotNumberOfRecords:
+			return ktfWIPICDBCount
+		case ktfWIPICDBSlotRecordSize:
+			return ktfWIPICDBRecordSize
+		case ktfWIPICDBSlotListDatabases:
+			return ktfWIPICDBListDatabases
 		}
 	}
 	if table == ktfWIPICMasterFS {

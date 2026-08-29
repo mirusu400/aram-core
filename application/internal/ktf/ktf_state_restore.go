@@ -577,6 +577,11 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	r.wipicSystemProperties = guest.CloneMap(meta.WIPICSystemProperties)
 	r.wipicFiles = restoreKTFFiles(meta.WIPICFiles)
 	r.nextWIPICFile = meta.NextWIPICFile
+	r.wipicDatabases = guest.CloneMap(meta.WIPICDatabases)
+	if r.wipicDatabases == nil {
+		r.wipicDatabases = make(map[uint32]string)
+	}
+	r.nextWIPICDatabase = max(uint32(1), meta.NextWIPICDatabase)
 	r.dirtyCards = guest.CloneMap(meta.DirtyCards)
 	r.paintInitializedCards = guest.CloneMap(meta.PaintInitializedCards)
 	r.PresentCount = meta.PresentCount
