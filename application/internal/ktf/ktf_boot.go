@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/mirusu400/aram-core/internal/ime"
 	"image"
 	_ "image/gif"
 	_ "image/jpeg"
@@ -191,6 +192,7 @@ func NewRuntimeForProfile(
 		lwcEventData:          make(map[uint32]uint32),
 		lwcChildren:           make(map[uint32][]uint32),
 		lwcMaxLengths:         make(map[uint32]int32),
+		lwcTextInput:          make(map[uint32]*ime.Automata),
 		lwcComponents:         make(map[uint32]*ktfLWCComponent),
 		databases:             make(map[uint32]*Database),
 		DatabaseStores:        databaseStores,

@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/binary"
 	"fmt"
+	"github.com/mirusu400/aram-core/internal/ime"
 	"io"
 	"math"
 	"reflect"
@@ -449,20 +450,20 @@ func snapshotNative(
 	case *integerState:
 		return nativeState{Kind: "integer", Integer: state.value}, nil
 	case *textComponentHandlerState:
-		korean := state.automata.korean
+		automata := state.automata.Snapshot()
 		return nativeState{
 			Kind:      "text-component-handler",
 			Reference: state.component,
-			Integer:   int32(state.automata.mode),
-			Width:     state.automata.composingKey,
-			Height:    int32(state.automata.composingIndex),
+			Integer:   automata.Mode,
+			Width:     automata.ComposingKey,
+			Height:    automata.ComposingIndex,
 			References: []uint32{
-				uint32(int32(korean.choseong)),
-				uint32(int32(korean.jungseong)),
-				uint32(int32(korean.jongseong)),
-				boolToUint32(korean.composing),
-				uint32(korean.lastKey),
-				uint32(int32(korean.lastIndex)),
+				uint32(automata.Choseong),
+				uint32(automata.Jungseong),
+				uint32(automata.Jongseong),
+				boolToUint32(automata.Composing),
+				uint32(automata.LastKey),
+				uint32(automata.LastIndex),
 			},
 		}, nil
 	case *dateState:
@@ -994,18 +995,20 @@ func restoreNative(saved nativeState) (any, nativeLink, error) {
 	case "text-component-handler":
 		handler := newTextComponentHandlerState()
 		handler.component = saved.Reference
-		handler.automata.mode = imeMode(saved.Integer)
-		handler.automata.composingKey = saved.Width
-		handler.automata.composingIndex = int(saved.Height)
-		if len(saved.References) == 6 {
-			korean := &handler.automata.korean
-			korean.choseong = int(int32(saved.References[0]))
-			korean.jungseong = int(int32(saved.References[1]))
-			korean.jongseong = int(int32(saved.References[2]))
-			korean.composing = saved.References[3] != 0
-			korean.lastKey = int32(saved.References[4])
-			korean.lastIndex = int(int32(saved.References[5]))
+		automata := ime.State{
+			Mode:           saved.Integer,
+			ComposingKey:   saved.Width,
+			ComposingIndex: saved.Height,
 		}
+		if len(saved.References) == 6 {
+			automata.Choseong = int32(saved.References[0])
+			automata.Jungseong = int32(saved.References[1])
+			automata.Jongseong = int32(saved.References[2])
+			automata.Composing = saved.References[3] != 0
+			automata.LastKey = int32(saved.References[4])
+			automata.LastIndex = int32(saved.References[5])
+		}
+		handler.automata.Restore(automata)
 		return handler, nativeLink{}, nil
 	case "date":
 		return &dateState{millis: saved.Long}, nativeLink{}, nil
