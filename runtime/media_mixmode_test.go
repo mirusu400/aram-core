@@ -194,10 +194,10 @@ func TestMediaMixModeVoiceSurvivesSnapshotRestore(t *testing.T) {
 	}
 }
 
-// TestMediaMixModeVoicesLongOneShotBGM proves the mixing policy also rescues a
-// title that loops its music by hand (a long non-repeat clip it replays on
-// completion): the long track is promoted to the persistent voice and survives
-// destroy, while a short one-shot effect stays an ordinary clip.
+// TestMediaMixModeVoicesLongOneShotBGM proves the mixing policy still rescues a
+// title that loops its music by hand (a long non-repeat clip it replays the
+// moment it ends): the replay is promoted to the persistent voice and survives
+// destroy, while the first play and a short one-shot effect stay ordinary clips.
 func TestMediaMixModeVoicesLongOneShotBGM(t *testing.T) {
 	limits := DefaultMediaLimits()
 	limits.OutputSampleRate = 8_000
@@ -222,18 +222,42 @@ func TestMediaMixModeVoicesLongOneShotBGM(t *testing.T) {
 	if _, err := media.Append(1, bgm, pcmWave(8_000, 1, longSamples)); err != nil {
 		t.Fatal(err)
 	}
-	if err := media.Play(1, bgm, 1); err != nil { // one-shot, but long => music
+	// The first play is an ordinary clip: nothing has shown this track loops.
+	if err := media.Play(1, bgm, 1); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := media.Info(1, bgm); err != nil {
+		t.Fatal(err)
+	} else if info.State != ClipPlaying {
+		t.Fatalf("first long one-shot state = %v, want ClipPlaying (not voiced)", info.State)
+	}
+	// Run it out. The title sees the completion and replays the same track,
+	// which is the hand-written loop the mixing policy takes over.
+	if err := media.Advance(0, 1300*time.Millisecond, bus); err != nil {
 		t.Fatal(err)
 	}
 	if info, err := media.Info(1, bgm); err != nil {
 		t.Fatal(err)
 	} else if info.State != ClipStopped {
-		t.Fatalf("long one-shot BGM clip state = %v, want ClipStopped (voiced)", info.State)
+		t.Fatalf("long one-shot after its end = %v, want ClipStopped", info.State)
+	}
+	media.Drain()
+	if err := media.Play(1, bgm, 1); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := media.Info(1, bgm); err != nil {
+		t.Fatal(err)
+	} else if info.State != ClipStopped {
+		t.Fatalf("replayed long BGM clip state = %v, want ClipStopped (voiced)", info.State)
 	}
 	if err := media.DestroyClip(1, bgm, bus); err != nil {
 		t.Fatal(err)
 	}
-	if err := media.Advance(0, 125*time.Microsecond, bus); err != nil {
+	if err := media.Advance(
+		1300*time.Millisecond,
+		1300*time.Millisecond+125*time.Microsecond,
+		bus,
+	); err != nil {
 		t.Fatal(err)
 	}
 	if got := media.Drain().PCM16; !reflect.DeepEqual(got, []int16{100}) {
@@ -255,6 +279,120 @@ func TestMediaMixModeVoicesLongOneShotBGM(t *testing.T) {
 		t.Fatal(err)
 	} else if info.State != ClipPlaying {
 		t.Fatalf("short effect clip state = %v, want ClipPlaying (not voiced)", info.State)
+	}
+}
+
+// TestMediaMixModeLeavesLongOneShotCueAlone is the 추억의달고나 report: the
+// title plays several one-shot effects longer than a second - the longest a
+// 4.06s game-over sting - and the mixing policy used to promote every one of
+// them to the persistent music voice on length alone. The voice loops forever
+// and outlives the title's own stop, so the sting played over and over and took
+// the real background music's place. A cue the title never replays must stay an
+// ordinary clip that stops when it ends and stays stopped when it is stopped.
+func TestMediaMixModeLeavesLongOneShotCueAlone(t *testing.T) {
+	limits := DefaultMediaLimits()
+	limits.OutputSampleRate = 8_000
+	limits.OutputChannels = 1
+	registry := NewRegistry(32)
+	media, err := NewMedia(registry, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	media.SetAudioMixMode(true)
+	bus := NewEventBus(16, 32)
+
+	music := make([]int16, 16_000) // 2s of looping background music
+	for i := range music {
+		music[i] = 40
+	}
+	bgm, err := media.CreateClip(1, "audio/wav", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := media.Append(1, bgm, pcmWave(8_000, 1, music)); err != nil {
+		t.Fatal(err)
+	}
+	if err := media.Play(1, bgm, -1); err != nil {
+		t.Fatal(err)
+	}
+	if !media.MusicVoiceActive() {
+		t.Fatal("looping track was not promoted to the music voice")
+	}
+
+	sting := make([]int16, 32_480) // 4.06s, the game-over cue
+	for i := range sting {
+		sting[i] = 700
+	}
+	cue, err := media.CreateClip(1, "audio/wav", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := media.Append(1, cue, pcmWave(8_000, 1, sting)); err != nil {
+		t.Fatal(err)
+	}
+	if err := media.Play(1, cue, 1); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := media.Info(1, cue); err != nil {
+		t.Fatal(err)
+	} else if info.State != ClipPlaying {
+		t.Fatalf("long one-shot cue state = %v, want ClipPlaying (not voiced)", info.State)
+	}
+	// The music the title asked to loop is still the voice, not the cue.
+	if media.bgmVoiceSig != bgmSignature(pcmWave(8_000, 1, music)) {
+		t.Fatal("the one-shot cue displaced the looping music voice")
+	}
+
+	// It ends on its own and stays silent: nothing loops it.
+	if err := media.Advance(0, 4100*time.Millisecond, bus); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := media.Info(1, cue); err != nil {
+		t.Fatal(err)
+	} else if info.State != ClipStopped {
+		t.Fatalf("cue state after its end = %v, want ClipStopped", info.State)
+	}
+	media.Drain()
+	if err := media.Advance(
+		4100*time.Millisecond,
+		4100*time.Millisecond+125*time.Microsecond,
+		bus,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if got := media.Drain().PCM16; !reflect.DeepEqual(got, []int16{40}) {
+		t.Fatalf("mix after the cue ended = %v, want [40] (music alone)", got)
+	}
+
+	// Replaying it much later is a fresh cue, not a loop the title is driving.
+	if err := media.Advance(
+		4100*time.Millisecond+125*time.Microsecond,
+		9*time.Second,
+		bus,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := media.Play(1, cue, 1); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := media.Info(1, cue); err != nil {
+		t.Fatal(err)
+	} else if info.State != ClipPlaying {
+		t.Fatalf("replayed cue state = %v, want ClipPlaying (not voiced)", info.State)
+	}
+	if err := media.Stop(1, cue); err != nil {
+		t.Fatal(err)
+	}
+	media.Drain()
+	if err := media.Advance(
+		9*time.Second,
+		9*time.Second+125*time.Microsecond,
+		bus,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if got := media.Drain().PCM16; !reflect.DeepEqual(got, []int16{40}) {
+		t.Fatalf("mix after stopping the cue = %v, want [40] (cue silenced)", got)
 	}
 }
 
