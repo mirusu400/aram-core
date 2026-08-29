@@ -351,6 +351,13 @@ func snapshotFrames(frames []*frame, label string) ([]frameState, error) {
 	return saved, nil
 }
 
+func boolToUint32(value bool) uint32 {
+	if value {
+		return 1
+	}
+	return 0
+}
+
 func snapshotNative(
 	reference uint32,
 	native any,
@@ -441,6 +448,23 @@ func snapshotNative(
 		}, nil
 	case *integerState:
 		return nativeState{Kind: "integer", Integer: state.value}, nil
+	case *textComponentHandlerState:
+		korean := state.automata.korean
+		return nativeState{
+			Kind:      "text-component-handler",
+			Reference: state.component,
+			Integer:   int32(state.automata.mode),
+			Width:     state.automata.composingKey,
+			Height:    int32(state.automata.composingIndex),
+			References: []uint32{
+				uint32(int32(korean.choseong)),
+				uint32(int32(korean.jungseong)),
+				uint32(int32(korean.jongseong)),
+				boolToUint32(korean.composing),
+				uint32(korean.lastKey),
+				uint32(int32(korean.lastIndex)),
+			},
+		}, nil
 	case *dateState:
 		return nativeState{Kind: "date", Long: state.millis}, nil
 	case *hashtableState:
@@ -967,6 +991,22 @@ func restoreNative(saved nativeState) (any, nativeLink, error) {
 		}, nativeLink{}, nil
 	case "integer":
 		return &integerState{value: saved.Integer}, nativeLink{}, nil
+	case "text-component-handler":
+		handler := newTextComponentHandlerState()
+		handler.component = saved.Reference
+		handler.automata.mode = imeMode(saved.Integer)
+		handler.automata.composingKey = saved.Width
+		handler.automata.composingIndex = int(saved.Height)
+		if len(saved.References) == 6 {
+			korean := &handler.automata.korean
+			korean.choseong = int(int32(saved.References[0]))
+			korean.jungseong = int(int32(saved.References[1]))
+			korean.jongseong = int(int32(saved.References[2]))
+			korean.composing = saved.References[3] != 0
+			korean.lastKey = int32(saved.References[4])
+			korean.lastIndex = int(int32(saved.References[5]))
+		}
+		return handler, nativeLink{}, nil
 	case "date":
 		return &dateState{millis: saved.Long}, nativeLink{}, nil
 	case "hashtable":
@@ -1150,6 +1190,8 @@ func (vm *VM) validateNative(reference uint32, native any) error {
 	case nil, string, *stringBufferState,
 		*integerState, *dateState, *xTextFieldState:
 		return nil
+	case *textComponentHandlerState:
+		return validateRef(state.component, "text component")
 	case *inputStreamState:
 		return validateRef(state.connection, "input stream connection")
 	case *xFileState:
