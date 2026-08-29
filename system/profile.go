@@ -85,6 +85,7 @@ type BoardProfile struct {
 	BootControlCompletionEvents      []QualcommCompletionEventConfig
 	BootControlLegacyUARTControllers []uint32
 	BootControlSBIControllers        []uint32
+	BootControlSBIReadResponses      []QualcommSBIReadResponse
 	BootControlSBICompletionStatus   uint32
 	PrimaryClockWritableOffsets      []uint32
 	SecondaryClockWritableOffsets    []uint32
@@ -162,6 +163,7 @@ func (p BoardProfile) Validate() error {
 		p.BootControlCompletionEvents,
 		p.BootControlLegacyUARTControllers,
 		p.BootControlSBIControllers,
+		p.BootControlSBIReadResponses,
 		p.BootControlSBICompletionStatus,
 	); err != nil {
 		return fmt.Errorf("board profile %q boot-control register profile: %w", p.ID, err)
@@ -819,7 +821,16 @@ func SCHW830DL21BoardProfile() BoardProfile {
 			0x4600, 0x4604, 0x4614,
 			0x533c,
 		},
-		BootControlSBIControllers:      []uint32{0x5000, 0x5100, 0x5200},
+		BootControlSBIControllers: []uint32{0x5000, 0x5100, 0x5200},
+		// DL21's battery monitor reads PMIC registers 0x54, 0x53, and 0x4f.
+		// Bit 0 at 0x54 completes the conversion, 0xc1 at 0x4f preserves the
+		// programmed 8-bit mode, and the maximum sample at 0x53 keeps the
+		// handset's battery indicator at full charge.
+		BootControlSBIReadResponses: []QualcommSBIReadResponse{
+			{Controller: 0x5100, Address: 0x4f, Value: 0xc1},
+			{Controller: 0x5100, Address: 0x53, Value: 0xff},
+			{Controller: 0x5100, Address: 0x54, Value: 0x01},
+		},
 		BootControlSBICompletionStatus: 0x0494,
 		BootControlHalfwordOffsets: []uint32{
 			0x0e0c, 0x0e28,
@@ -1126,6 +1137,7 @@ func SCHW860DA06BoardProfile() BoardProfile {
 		Offset: 0x097c0000,
 		Data:   []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
 	}}
+	profile.BootControlSBIReadResponses = nil
 	profile.LegacyTopWritableOffsets = []uint32{
 		qualcommLegacyTopIDOffset,
 		qualcommLegacyTopIDOffset + 4,

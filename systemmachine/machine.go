@@ -198,13 +198,21 @@ func newSCHW830(
 	firmwareProfile samsung.BuildProfile,
 	options Options,
 ) (*Machine, error) {
-	board := system.SCHW830DL21BoardProfile()
-	board.FirmwareBuildID = firmwareProfile.ID
+	board := schw830BoardProfile(firmwareProfile.ID)
 	return newSamsungQualcommMachine(set, pkg, firmwareProfile, board, bootBoundary{
 		name:         "SCH-W830 QCSBL callback",
 		instructions: schw830QCSBLBoundaryInstructions,
 		pc:           schw830QCSBLBoundaryPC,
 	}, options)
+}
+
+func schw830BoardProfile(firmwareBuildID string) system.BoardProfile {
+	board := system.SCHW830DL21BoardProfile()
+	board.FirmwareBuildID = firmwareBuildID
+	if firmwareBuildID != samsung.SCHW830DL21ProfileID {
+		board.BootControlSBIReadResponses = nil
+	}
+	return board
 }
 
 func newSCHW860(
@@ -316,6 +324,7 @@ func newSamsungQualcommMachine(
 		CompletionEvents:            board.BootControlCompletionEvents,
 		LegacyUARTControllers:       board.BootControlLegacyUARTControllers,
 		SBIControllers:              board.BootControlSBIControllers,
+		SBIReadResponses:            board.BootControlSBIReadResponses,
 		SBICompletionStatus:         board.BootControlSBICompletionStatus,
 		NANDReady:                   nandReady,
 		InterruptController:         legacyInterrupts,
