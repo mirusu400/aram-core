@@ -21,7 +21,7 @@ func (vm *VM) installXCECompatibilityNatives() {
 	)
 	textHandler := vm.NewObject(
 		"com/xce/lcdui/TextComponentHandler",
-		&integerState{},
+		newTextComponentHandlerState(),
 	)
 	vm.RegisterStaticField(
 		"com/xce/lcdui/TextComponentHandler",
@@ -61,9 +61,24 @@ func (vm *VM) installXCECompatibilityNatives() {
 		"com/xce/lcdui/TextComponentHandler",
 		"getInputMode",
 		"()I",
-		nativeIntegerState,
+		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+			state, err := vm.textComponentHandler(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			return IntValue(int32(state.automata.mode)), true, nil
+		},
 	)
-	for _, method := range []string{"keyPressed", "keyReleased", "keyRepeated"} {
+	vm.RegisterNative(
+		"com/xce/lcdui/TextComponentHandler",
+		"keyPressed",
+		"(I)Z",
+		nativeTextComponentKeyPressed,
+	)
+	// A key release or auto-repeat carries no multi-tap meaning here: the
+	// automata advances on press, so releases are reported unhandled and repeats
+	// are swallowed so a held key does not spray glyphs.
+	for _, method := range []string{"keyReleased", "keyRepeated"} {
 		vm.RegisterNative(
 			"com/xce/lcdui/TextComponentHandler",
 			method,
@@ -73,15 +88,40 @@ func (vm *VM) installXCECompatibilityNatives() {
 			},
 		)
 	}
+	vm.RegisterNative(
+		"com/xce/lcdui/TextComponentHandler",
+		"clear",
+		"()V",
+		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+			state, err := vm.textComponentHandler(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			state.automata.reset()
+			return Value{}, false, nil
+		},
+	)
+	vm.RegisterNative(
+		"com/xce/lcdui/TextComponentHandler",
+		"setTextComponent",
+		"(Lcom/xce/lcdui/TextComponent;)V",
+		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+			state, err := vm.textComponentHandler(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			component, err := referenceArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			state.component = component
+			state.automata.reset()
+			return Value{}, false, nil
+		},
+	)
 	for _, method := range []struct {
 		class, name, descriptor string
 	}{
-		{"com/xce/lcdui/TextComponentHandler", "clear", "()V"},
-		{
-			"com/xce/lcdui/TextComponentHandler",
-			"setTextComponent",
-			"(Lcom/xce/lcdui/TextComponent;)V",
-		},
 		{"com/xce/lcdui/XEventHandler", "restoreDisplay", "()V"},
 		{"com/xce/jam/XBrowser", "setNetworkMode", "(I)V"},
 		{"com/xce/net/Socket", "setPPPPreserveTime", "(I)V"},
@@ -190,4 +230,71 @@ func nativeSetIntegerState(
 	}
 	state.value = value
 	return Value{}, false, nil
+}
+
+func (vm *VM) textComponentHandler(
+	receiver uint32,
+) (*textComponentHandlerState, error) {
+	object, ok := vm.Object(receiver)
+	if !ok {
+		return nil, fmt.Errorf("invalid TextComponentHandler receiver %d", receiver)
+	}
+	state, ok := object.Native.(*textComponentHandlerState)
+	if !ok {
+		return nil, fmt.Errorf("object %d is not a TextComponentHandler", receiver)
+	}
+	return state, nil
+}
+
+// nativeTextComponentKeyPressed drives the multi-tap automata for one key and
+// pushes the resulting glyph edits into the registered guest TextComponent. It
+// reports whether the input method consumed the key, which is what the guest
+// XTextField forwards from keyPressed.
+func nativeTextComponentKeyPressed(
+	ctx context.Context,
+	vm *VM,
+	receiver uint32,
+	args []Value,
+) (Value, bool, error) {
+	state, err := vm.textComponentHandler(receiver)
+	if err != nil {
+		return Value{}, false, err
+	}
+	key, err := intArgument(args, 0)
+	if err != nil {
+		return Value{}, false, err
+	}
+	if state.component == 0 {
+		// No field is registered, so the key cannot be composed into anything;
+		// leave it for the guest to handle.
+		return boolValue(false), true, nil
+	}
+	ops, handled := state.automata.press(key)
+	for _, op := range ops {
+		if err := vm.applyIMEOp(ctx, state.component, op); err != nil {
+			return Value{}, false, err
+		}
+	}
+	return boolValue(handled), true, nil
+}
+
+// applyIMEOp turns one automata callback into an InvokeVirtual on the guest
+// TextComponent. Chars ride in an int slot, matching the (C)V descriptors.
+func (vm *VM) applyIMEOp(ctx context.Context, component uint32, op imeOp) error {
+	switch op.kind {
+	case imeInsert:
+		_, _, err := vm.InvokeVirtual(
+			ctx, component, "insert", "(C)V", IntValue(int32(op.char)),
+		)
+		return err
+	case imeReplace:
+		_, _, err := vm.InvokeVirtual(
+			ctx, component, "replace", "(C)V", IntValue(int32(op.char)),
+		)
+		return err
+	case imeDelete:
+		_, _, err := vm.InvokeVirtual(ctx, component, "delete", "()V")
+		return err
+	}
+	return nil
 }
