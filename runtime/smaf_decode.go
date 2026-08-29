@@ -77,6 +77,7 @@ type smafDecoder struct {
 
 type smafPCMVoice struct {
 	pcm      []int16
+	kernel   *resampleKernel
 	position float64
 	step     float64
 	pan      float64
@@ -84,18 +85,52 @@ type smafPCMVoice struct {
 	active   bool
 }
 
+// tick reads one output sample from the wave bank. The banks hold Yamaha ADPCM
+// recorded at 4 to 22 kHz, so nearly every one is played back well above its
+// own rate and has to be reconstructed rather than interpolated. Drawing a
+// straight line between two stored samples, which is what this did, left the
+// source's spectral images only about 14 dB below the sound itself across the
+// local corpus - the grit percussion in these scores used to have. The mixer's
+// windowed sinc puts them 55 dB down. See media_resample.go.
 func (voice *smafPCMVoice) tick() float64 {
-	if !voice.active || len(voice.pcm) == 0 ||
+	if !voice.active || len(voice.pcm) == 0 || voice.kernel == nil ||
 		voice.position >= float64(len(voice.pcm)) {
 		voice.active = false
 		return 0
 	}
 	index := int(voice.position)
-	next := min(index+1, len(voice.pcm)-1)
 	fraction := voice.position - float64(index)
-	value := float64(voice.pcm[index]) +
-		float64(voice.pcm[next]-voice.pcm[index])*fraction
 	voice.position += voice.step
+	kernel := voice.kernel
+	phase := int(fraction * resamplePhases)
+	if phase < 0 {
+		phase = 0
+	} else if phase >= resamplePhases {
+		phase = resamplePhases - 1
+	}
+	row := kernel.weights[phase*kernel.taps : (phase+1)*kernel.taps]
+	base := index - (kernel.half - 1)
+	value := 0.0
+	// The window sits wholly inside the wave for all but its first and last
+	// few samples, and taking that case without a per-tap clamp is what keeps
+	// the filter affordable on a voice that sounds at the render rate.
+	if base >= 0 && base+len(row) <= len(voice.pcm) {
+		window := voice.pcm[base : base+len(row)]
+		for tap, weight := range row {
+			value += float64(window[tap]) * weight
+		}
+		return value / 32768
+	}
+	last := len(voice.pcm) - 1
+	for tap, weight := range row {
+		at := base + tap
+		if at < 0 {
+			at = 0
+		} else if at > last {
+			at = last
+		}
+		value += float64(voice.pcm[at]) * weight
+	}
 	return value / 32768
 }
 
@@ -1058,7 +1093,11 @@ func (decoder *smafDecoder) fire(event smafEvent) {
 			decoder.nextPCM++
 		}
 		decoder.pcmPool[slot] = smafPCMVoice{
-			pcm:    wave.pcm,
+			pcm: wave.pcm,
+			kernel: resampleKernelFor(
+				uint32(wave.sampleRate),
+				decoder.rate,
+			),
 			step:   float64(wave.sampleRate) / float64(decoder.rate),
 			active: true,
 		}

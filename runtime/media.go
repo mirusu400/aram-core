@@ -609,7 +609,22 @@ func (m *Media) advanceLocked(start, end time.Duration, bus *EventBus) error {
 			clip.position += delta
 			continue
 		}
-		if err := advanceClipTimeline(clip, delta, start, bus); err != nil {
+		// A decoded clip advances by the audio actually rendered for it, not
+		// by the wall time the frame covered. The two differ by a fraction of
+		// a frame, and the mixer used to spend that fraction twice: the frame
+		// count came from an exact carrying accumulator while the read cursor
+		// was recomputed from the clip's nanosecond position, so the two
+		// disagreed by a sample at most block boundaries. At a 16 ms frame
+		// that put a repeated or skipped sample into the stream about sixty
+		// times a second, and the comb it left sat only 19 dB below the music
+		// it was riding on. Stepping the position by the rendered frames keeps
+		// the next block's cursor exactly where this one stopped.
+		if err := advanceClipTimeline(
+			clip,
+			clipFrameStep(clip.position, frameCount, m.limits.OutputSampleRate),
+			start,
+			bus,
+		); err != nil {
 			return err
 		}
 	}
@@ -939,6 +954,27 @@ func (m *Media) evictOldestSMAFDecode() {
 	delete(m.smafCache, oldest)
 }
 
+// clipFrameStep reports how far a clip's position moves when the mixer has
+// rendered the given number of output frames for it. The result names the frame
+// after the last one rendered, so that reading the position back - which
+// clipSampleAt does by rounding it into a frame index - lands exactly there.
+func clipFrameStep(
+	position time.Duration,
+	frames uint64,
+	rate uint32,
+) time.Duration {
+	if position < 0 {
+		return 0
+	}
+	second := uint64(time.Second)
+	played := (uint64(position)*uint64(rate) + second/2) / second
+	target := (played + frames) * second / uint64(rate)
+	if target <= uint64(position) {
+		return 0
+	}
+	return time.Duration(target - uint64(position))
+}
+
 func durationForFrame(frame uint64, rate uint32) time.Duration {
 	return time.Duration(frame * uint64(time.Second) / uint64(rate))
 }
@@ -956,17 +992,48 @@ func (m *Media) clipSampleAt(clip *mediaClip, offset time.Duration) (int16, int1
 		}
 		position %= duration
 	}
-	frame := uint64(position) * uint64(clip.decoded.sampleRate) / uint64(time.Second)
-	clip.decoded.ensureFrame(frame)
-	availableFrames := uint64(len(clip.decoded.samples)) / uint64(clip.decoded.channels)
-	if frame >= availableFrames {
+	cursor := uint64(position) * uint64(clip.decoded.sampleRate)
+	frame := cursor / uint64(time.Second)
+	// A clip already stored at the mixer's rate is read straight out: its
+	// frames line up one for one with the output, so filtering it would only
+	// blur samples that need no reconstruction. Every SMAF score is rendered
+	// at the output rate and takes this path.
+	//
+	// The frame has to be rounded rather than truncated to get there. The
+	// caller names an output frame by the nanosecond it starts at, and a
+	// nanosecond cannot name a 44.1 kHz frame exactly: truncating the way back
+	// lands on the previous stored frame for every output frame except the
+	// 1-in-441 whose nanosecond happens to be exact, so the read both stalled
+	// and skipped a sample about a hundred times a second. Rounding recovers
+	// the frame the nanosecond was made from, because the two conversions
+	// together move the index by well under half a frame.
+	if clip.decoded.sampleRate == m.limits.OutputSampleRate {
+		frame = (cursor + uint64(time.Second)/2) / uint64(time.Second)
+		clip.decoded.ensureFrame(frame)
+		frames := uint64(len(clip.decoded.samples)) / uint64(clip.decoded.channels)
+		if frame >= frames {
+			return 0, 0, false
+		}
+		if clip.decoded.channels == 1 {
+			value := clip.decoded.samples[frame]
+			return value, value, true
+		}
+		return clip.decoded.samples[frame*2], clip.decoded.samples[frame*2+1], true
+	}
+	// A rate the mixer does not share has to be reconstructed rather than
+	// held; see media_resample.go for why the held version sounded wrong.
+	kernel := resampleKernelFor(
+		clip.decoded.sampleRate,
+		m.limits.OutputSampleRate,
+	)
+	clip.decoded.ensureFrame(frame + uint64(kernel.half))
+	frames := uint64(len(clip.decoded.samples)) / uint64(clip.decoded.channels)
+	if frame >= frames {
 		return 0, 0, false
 	}
-	if clip.decoded.channels == 1 {
-		value := clip.decoded.samples[frame]
-		return value, value, true
-	}
-	return clip.decoded.samples[frame*2], clip.decoded.samples[frame*2+1], true
+	fraction := float64(cursor%uint64(time.Second)) / float64(time.Second)
+	left, right := clip.decoded.resampleAt(kernel, frame, fraction, frames)
+	return left, right, true
 }
 
 func (decoded *decodedPCM) ensureFrame(frame uint64) {
