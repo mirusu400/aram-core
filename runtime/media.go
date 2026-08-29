@@ -379,8 +379,8 @@ func (m *Media) Play(owner OwnerID, id ServiceID, plays int32) error {
 	if plays == 0 || plays < -1 {
 		return fmt.Errorf("%w: invalid media play count %d", ErrInvalidArgument, plays)
 	}
-	if clip.decoded == nil && looksLikeSMAF(clip.source) {
-		clip.decoded = m.decodeSMAF(clip.source)
+	if clip.decoded == nil && looksLikeSequencedScore(clip.source) {
+		clip.decoded = m.decodeScore(clip.source)
 	}
 	if clip.decoded != nil && clip.position >= clip.decoded.duration {
 		clip.position = 0
@@ -824,8 +824,8 @@ func (m *Media) Restore(state MediaState) error {
 		clip.decoded = decodeWavePCM16(clip.source)
 		if clip.decoded == nil &&
 			(saved.State == ClipPlaying || saved.State == ClipPaused) &&
-			looksLikeSMAF(clip.source) {
-			clip.decoded = m.decodeSMAFAtRate(
+			looksLikeSequencedScore(clip.source) {
+			clip.decoded = m.decodeScoreAtRate(
 				clip.source,
 				state.Limits.OutputSampleRate,
 			)
@@ -856,8 +856,8 @@ func (m *Media) Restore(state MediaState) error {
 			pan:            v.Pan,
 		}
 		bgmVoice.decoded = decodeWavePCM16(bgmVoice.source)
-		if bgmVoice.decoded == nil && looksLikeSMAF(bgmVoice.source) {
-			bgmVoice.decoded = m.decodeSMAFAtRate(
+		if bgmVoice.decoded == nil && looksLikeSequencedScore(bgmVoice.source) {
+			bgmVoice.decoded = m.decodeScoreAtRate(
 				bgmVoice.source,
 				state.Limits.OutputSampleRate,
 			)
@@ -898,15 +898,16 @@ func (m *Media) sortedClipIDs() []ServiceID {
 	return ids
 }
 
-func (m *Media) decodeSMAF(data []byte) *decodedPCM {
-	return m.decodeSMAFAtRate(data, m.limits.OutputSampleRate)
+func (m *Media) decodeScore(data []byte) *decodedPCM {
+	return m.decodeScoreAtRate(data, m.limits.OutputSampleRate)
 }
 
-// decodeSMAFAtRate shares a deterministic decoded stream for identical SMAF
-// bytes. Playback position, gain, looping, and completion state live on each
-// mediaClip, while decoded PCM is a content property. A lazy stream may append
-// to its shared sample prefix, but never changes an existing sample.
-func (m *Media) decodeSMAFAtRate(data []byte, sampleRate uint32) *decodedPCM {
+// decodeScoreAtRate shares a deterministic decoded stream for identical score
+// bytes, in either container the synthesiser plays. Playback position, gain,
+// looping, and completion state live on each mediaClip, while decoded PCM is a
+// content property. A lazy stream may append to its shared sample prefix, but
+// never changes an existing sample.
+func (m *Media) decodeScoreAtRate(data []byte, sampleRate uint32) *decodedPCM {
 	key := smafDecodeCacheKey{
 		digest:     sha256.Sum256(data),
 		sampleRate: sampleRate,
@@ -914,7 +915,7 @@ func (m *Media) decodeSMAFAtRate(data []byte, sampleRate uint32) *decodedPCM {
 	if cached, ok := m.smafCache[key]; ok {
 		return cached.decoded
 	}
-	decoded := decodeSMAFLazyPCM16(data, sampleRate)
+	decoded := decodeScoreLazyPCM16(data, sampleRate)
 	if m.smafCache == nil {
 		m.smafCache = make(map[smafDecodeCacheKey]smafDecodeCacheEntry)
 	}
