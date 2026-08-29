@@ -25,6 +25,34 @@ type ReadOnlyStorage interface {
 	Size() int64
 }
 
+type erasedFlashStorage struct {
+	size int64
+}
+
+func (s erasedFlashStorage) Size() int64 {
+	return s.size
+}
+
+func (s erasedFlashStorage) ReadAt(destination []byte, offset int64) (int, error) {
+	if len(destination) == 0 {
+		return 0, nil
+	}
+	if offset < 0 || offset >= s.size {
+		return 0, io.EOF
+	}
+	count := len(destination)
+	if remaining := s.size - offset; int64(count) > remaining {
+		count = int(remaining)
+	}
+	for index := range destination[:count] {
+		destination[index] = 0xff
+	}
+	if count != len(destination) {
+		return count, io.EOF
+	}
+	return count, nil
+}
+
 // FlashSeed describes generated, non-firmware bytes present on a newly
 // provisioned flash device. Seeds are part of the immutable factory baseline:
 // guest writes remain copy-on-write, and FactoryReset reveals the seeds again.
@@ -52,6 +80,16 @@ func NewCOWFlash(base ReadOnlyStorage, blockSize uint32, identity string) (*COWF
 		return nil, ErrInvalidFlash
 	}
 	return NewCOWFlashWithCapacity(base, uint64(base.Size()), blockSize, identity)
+}
+
+// NewErasedCOWFlash creates a sparse writable flash whose factory baseline is
+// entirely erased. It avoids allocating the full device capacity for phones
+// whose firmware and user-data NAND chips are physically separate.
+func NewErasedCOWFlash(capacity uint64, blockSize uint32, identity string) (*COWFlash, error) {
+	if capacity == 0 || capacity > uint64(^uint32(0)) {
+		return nil, ErrInvalidFlash
+	}
+	return NewCOWFlash(erasedFlashStorage{size: int64(capacity)}, blockSize, identity)
 }
 
 // NewCOWFlashWithCapacity creates a writable physical flash view over a

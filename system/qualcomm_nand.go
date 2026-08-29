@@ -58,6 +58,17 @@ type QualcommNANDConfig struct {
 	Ready            *StatusSignal
 }
 
+// NANDSpareStorage exposes page-aligned NAND spare/OOB media independently
+// from a controller's MMIO data window. Controllers that address the same
+// physical flash can share one implementation so guest-written metadata is
+// persisted and reset together.
+type NANDSpareStorage interface {
+	SparePageSize() uint32
+	ReadSparePage(destination []byte, page uint64) error
+	ProgramSparePage(source []byte, page uint64) error
+	EraseSpareBlock(block uint32) error
+}
+
 // Qualcomm2K8BitNANDConfig describes the standard four-codeword, 2 KiB,
 // eight-bit NAND configuration consumed by the early Qualcomm controller.
 func Qualcomm2K8BitNANDConfig(readID uint32, ready *StatusSignal) QualcommNANDConfig {
@@ -258,7 +269,7 @@ func (n *QualcommNAND) Write(offset uint32, width Width, value uint32) error {
 				writable.EraseBlock(uint32(block)) != nil {
 				n.status = qualcommNANDStatusOperationError
 			} else {
-				n.eraseSpareBlock(block)
+				n.eraseSpareBlockUnchecked(block)
 				n.status = 0
 			}
 			n.ready.Set(1)
@@ -626,7 +637,63 @@ func (n *QualcommNAND) loadSparePage(page uint64, output []byte) bool {
 	return true
 }
 
-func (n *QualcommNAND) eraseSpareBlock(block uint64) {
+func (n *QualcommNAND) SparePageSize() uint32 {
+	return n.sparePageSize
+}
+
+func (n *QualcommNAND) ReadSparePage(destination []byte, page uint64) error {
+	if uint32(len(destination)) != n.sparePageSize {
+		return ErrInvalidQualcommNAND
+	}
+	if page >= n.capacity/uint64(n.pageSize) {
+		return ErrFlashBounds
+	}
+	if !n.loadSparePage(page, destination) {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+
+func (n *QualcommNAND) ProgramSparePage(source []byte, page uint64) error {
+	if uint32(len(source)) != n.sparePageSize {
+		return ErrInvalidQualcommNAND
+	}
+	if page >= n.capacity/uint64(n.pageSize) {
+		return ErrFlashBounds
+	}
+	if _, writable := n.storage.(qualcommNANDWritableStorage); !writable {
+		return ErrFlashProgram
+	}
+	current := make([]byte, n.sparePageSize)
+	if !n.loadSparePage(page, current) {
+		return io.ErrUnexpectedEOF
+	}
+	changed := false
+	for index, value := range source {
+		effective := current[index] & value
+		if effective != current[index] {
+			current[index] = effective
+			changed = true
+		}
+	}
+	if changed {
+		n.sparePages[page] = current
+	}
+	return nil
+}
+
+func (n *QualcommNAND) EraseSpareBlock(block uint32) error {
+	if uint64(block) >= n.capacity/uint64(n.pageSize)/n.pagesPerEraseBlock {
+		return ErrFlashBounds
+	}
+	if _, writable := n.storage.(qualcommNANDWritableStorage); !writable {
+		return ErrFlashProgram
+	}
+	n.eraseSpareBlockUnchecked(uint64(block))
+	return nil
+}
+
+func (n *QualcommNAND) eraseSpareBlockUnchecked(block uint64) {
 	firstPage := block * n.pagesPerEraseBlock
 	erased := make([]byte, n.sparePageSize)
 	for index := range erased {
@@ -651,6 +718,7 @@ func (n *QualcommNAND) failRead() {
 }
 
 var (
-	_ Device         = (*QualcommNAND)(nil)
-	_ StatefulDevice = (*QualcommNAND)(nil)
+	_ Device           = (*QualcommNAND)(nil)
+	_ StatefulDevice   = (*QualcommNAND)(nil)
+	_ NANDSpareStorage = (*QualcommNAND)(nil)
 )

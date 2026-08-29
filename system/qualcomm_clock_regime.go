@@ -283,6 +283,9 @@ var qualcommClockRegimeApertures = [...]struct {
 	{0x1900, 0x1a00},
 	{0x2000, 0x2100},
 	{0x2400, 0x2600},
+	// DA05's AMSS clock initializer continues the adjacent register bank into
+	// the +0x2600 page and performs ordinary read/modify/write at +0x262c.
+	{0x2600, 0x2700},
 	// A late USB_TDI sub-block is initialized through the +0x2940 register
 	// bank. Keep the evidenced page separate from the unmodeled FIFO/status
 	// portions of the much larger USB aperture.

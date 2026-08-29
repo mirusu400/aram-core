@@ -348,6 +348,54 @@ func TestQualcommNANDSpareMediaStateRoundTripAndProgramInhibit(t *testing.T) {
 	}
 }
 
+func TestQualcommNANDExposesSharedSpareStorage(t *testing.T) {
+	base := byteStorage{data: bytes.Repeat([]byte{0xff}, 2*qualcomm2K8BitNANDEraseBlockSize)}
+	flash, err := NewCOWFlash(base, qualcomm2K8BitNANDEraseBlockSize, "nand-shared-spare-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	device, err := NewQualcommNAND(
+		flash,
+		Qualcomm2K8BitNANDConfig(0xecaa, NewStatusSignal()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if device.SparePageSize() != 0x40 {
+		t.Fatalf("spare page size = %#x", device.SparePageSize())
+	}
+	spare := make([]byte, device.SparePageSize())
+	if err := device.ReadSparePage(spare, 1); err != nil || !allBytes(spare, 0xff) {
+		t.Fatalf("erased spare = %x error %v", spare, err)
+	}
+	programmed := bytes.Repeat([]byte{0xff}, len(spare))
+	programmed[3] = 0xa5
+	programmed[37] = 0x5a
+	if err := device.ProgramSparePage(programmed, 1); err != nil {
+		t.Fatal(err)
+	}
+	programmed[3] = 0xf0
+	programmed[37] = 0x0f
+	if err := device.ProgramSparePage(programmed, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := device.ReadSparePage(spare, 1); err != nil {
+		t.Fatal(err)
+	}
+	if spare[3] != 0xa0 || spare[37] != 0x0a {
+		t.Fatalf("program-inhibited spare bytes = %#x %#x", spare[3], spare[37])
+	}
+	if err := device.EraseSpareBlock(0); err != nil {
+		t.Fatal(err)
+	}
+	if err := device.ReadSparePage(spare, 1); err != nil || !allBytes(spare, 0xff) {
+		t.Fatalf("erased shared spare = %x error %v", spare, err)
+	}
+	if err := device.ReadSparePage(spare, 1<<20); !errors.Is(err, ErrFlashBounds) {
+		t.Fatalf("out-of-range spare read error = %v", err)
+	}
+}
+
 func TestQualcommNANDTreatsOneBitsAsProgramInhibitOnRepeatedCodeword(t *testing.T) {
 	base := byteStorage{data: bytes.Repeat([]byte{0xff}, qualcomm2K8BitNANDEraseBlockSize)}
 	flash, err := NewCOWFlash(base, qualcomm2K8BitNANDEraseBlockSize, "nand-program-inhibit-test")

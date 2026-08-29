@@ -47,6 +47,15 @@ type ParallelPanelInterface struct {
 	writeObserver  ParallelPanelObserver
 }
 
+// ParallelPanelPort presents one 16-bit command or data port as an independent
+// MMIO device. Boards that decode the D/C signal with a sparse external-bus
+// address can map these two aliases without claiming the unrelated addresses
+// between them.
+type ParallelPanelPort struct {
+	panel *ParallelPanelInterface
+	data  bool
+}
+
 func NewParallelPanelInterface() *ParallelPanelInterface {
 	return &ParallelPanelInterface{}
 }
@@ -62,6 +71,21 @@ func NewParallelPanelInterfaceWithController(
 		return nil, err
 	}
 	return panel, nil
+}
+
+func NewParallelPanelCommandPort(panel *ParallelPanelInterface) (*ParallelPanelPort, error) {
+	return newParallelPanelPort(panel, false)
+}
+
+func NewParallelPanelDataPort(panel *ParallelPanelInterface) (*ParallelPanelPort, error) {
+	return newParallelPanelPort(panel, true)
+}
+
+func newParallelPanelPort(panel *ParallelPanelInterface, data bool) (*ParallelPanelPort, error) {
+	if panel == nil {
+		return nil, fmt.Errorf("parallel-panel port transport is nil")
+	}
+	return &ParallelPanelPort{panel: panel, data: data}, nil
 }
 
 func (p *ParallelPanelInterface) Reset() error {
@@ -183,7 +207,61 @@ func (p *ParallelPanelInterface) LoadState(state []byte) error {
 	return nil
 }
 
+func (p *ParallelPanelPort) Reset() error {
+	return p.panel.Reset()
+}
+
+func (p *ParallelPanelPort) Read(offset uint32, width Width) (uint32, error) {
+	if offset != 0 {
+		return 0, fmt.Errorf("%w: read%d at sparse-port offset 0x%x", ErrParallelPanelMMIO, width*8, offset)
+	}
+	panelOffset := uint32(0)
+	if p.data {
+		panelOffset = ParallelPanelDataOffset
+	}
+	return p.panel.Read(panelOffset, width)
+}
+
+func (p *ParallelPanelPort) Write(offset uint32, width Width, value uint32) error {
+	if offset != 0 {
+		return fmt.Errorf("%w: write%d at sparse-port offset 0x%x", ErrParallelPanelMMIO, width*8, offset)
+	}
+	panelOffset := uint32(0)
+	if p.data {
+		panelOffset = ParallelPanelDataOffset
+	}
+	return p.panel.Write(panelOffset, width, value)
+}
+
+func (p *ParallelPanelPort) SaveState() ([]byte, error) {
+	state, err := p.panel.SaveState()
+	if err != nil {
+		return nil, err
+	}
+	output := make([]byte, 9+len(state))
+	copy(output, "PPPT")
+	binary.LittleEndian.PutUint32(output[4:8], 1)
+	if p.data {
+		output[8] = 1
+	}
+	copy(output[9:], state)
+	return output, nil
+}
+
+func (p *ParallelPanelPort) LoadState(state []byte) error {
+	wantData := byte(0)
+	if p.data {
+		wantData = 1
+	}
+	if len(state) < 9 || string(state[:4]) != "PPPT" ||
+		binary.LittleEndian.Uint32(state[4:8]) != 1 || state[8] != wantData {
+		return ErrInvalidState
+	}
+	return p.panel.LoadState(state[9:])
+}
+
 var (
 	_ Device         = (*ParallelPanelInterface)(nil)
 	_ StatefulDevice = (*ParallelPanelInterface)(nil)
+	_ StatefulDevice = (*ParallelPanelPort)(nil)
 )

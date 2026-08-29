@@ -71,12 +71,15 @@ type Options struct {
 }
 
 // MediaState is the persistent NAND state which survives a power cycle. Flash
-// contains main-area copy-on-write blocks; NAND contains the physical spare/OOB
-// pages. Neither field contains the immutable user-supplied firmware pieces.
+// and NAND retain the primary main/OOB state used by existing single-chip
+// boards. SecondaryFlash and OneNANDSpare are populated by dual-flash boards.
+// None of the fields contains the immutable user-supplied firmware pieces.
 type MediaState struct {
 	FirmwareBuildID string
 	Flash           []byte
 	NAND            []byte
+	SecondaryFlash  []byte
+	OneNANDSpare    []byte
 }
 
 // Snapshot captures complete volatile execution state plus persistent media.
@@ -91,6 +94,8 @@ type Snapshot struct {
 	CPU             []byte
 	Bus             []byte
 	Flash           []byte
+	SecondaryFlash  []byte
+	OneNANDSpare    []byte
 	Instructions    uint64
 }
 
@@ -108,25 +113,28 @@ type Position struct {
 type Machine struct {
 	mu sync.Mutex
 
-	identity Identity
-	backend  cpu.Backend
-	bus      *system.Bus
-	runner   *system.ClockedRunner
-	handoff  system.BootHandoff
-	flash    *system.COWFlash
-	nand     *system.QualcommNAND
-	panel    *system.DCSPanelController
-	keypad   *system.QualcommGPIOKeypad
-	controls []string
+	identity       Identity
+	backend        cpu.Backend
+	bus            *system.Bus
+	runner         *system.ClockedRunner
+	handoff        system.BootHandoff
+	flash          *system.COWFlash
+	secondaryFlash *system.COWFlash
+	nand           *system.QualcommNAND
+	oneNANDSpare   *system.QualcommNAND
+	panel          *system.DCSPanelController
+	keypad         *system.QualcommGPIOKeypad
+	controls       []string
 
-	resetCPUState    []byte
-	factoryNANDState []byte
-	pc               uint32
-	mode             cpu.Mode
-	instructions     uint64
-	bootBoundary     bootBoundary
-	bootBoundaryLeft uint64
-	closed           atomic.Bool
+	resetCPUState            []byte
+	factoryNANDState         []byte
+	factoryOneNANDSpareState []byte
+	pc                       uint32
+	mode                     cpu.Mode
+	instructions             uint64
+	bootBoundary             bootBoundary
+	bootBoundaryLeft         uint64
+	closed                   atomic.Bool
 }
 
 type bootBoundary struct {
@@ -148,6 +156,8 @@ func New(set firmwareset.Set, options Options) (*Machine, error) {
 		return nil, fmt.Errorf("select Samsung firmware build: %w", err)
 	}
 	switch firmwareProfile.Model {
+	case "SCH-W770":
+		return newSCHW770(set, pkg, firmwareProfile, options)
 	case "SCH-W830":
 		return newSCHW830(set, pkg, firmwareProfile, options)
 	case "SCH-W860":
@@ -155,6 +165,23 @@ func New(set firmwareset.Set, options Options) (*Machine, error) {
 	default:
 		return nil, fmt.Errorf("%w: Samsung %s build %s", ErrUnsupportedMachine, firmwareProfile.Model, firmwareProfile.Build)
 	}
+}
+
+// NewSCHW770 constructs the DA05 version-one MIBIB handset from its traced
+// model-specific storage, display, GPIO, and keypad wiring.
+func NewSCHW770(set firmwareset.Set, options Options) (*Machine, error) {
+	pkg, err := samsung.Inspect(set)
+	if err != nil {
+		return nil, fmt.Errorf("inspect Samsung firmware set: %w", err)
+	}
+	firmwareProfile, err := samsung.BuiltinRegistry().Match(pkg)
+	if err != nil {
+		return nil, fmt.Errorf("select Samsung firmware build: %w", err)
+	}
+	if firmwareProfile.Model != "SCH-W770" {
+		return nil, fmt.Errorf("%w: Samsung %s build %s", ErrUnsupportedMachine, firmwareProfile.Model, firmwareProfile.Build)
+	}
+	return newSCHW770(set, pkg, firmwareProfile, options)
 }
 
 // NewSCHW860 constructs the currently evidenced DA06 adjacent-board machine.
@@ -207,6 +234,17 @@ func newSCHW830(
 	}, options)
 }
 
+func newSCHW770(
+	set firmwareset.Set,
+	pkg samsung.Package,
+	firmwareProfile samsung.BuildProfile,
+	options Options,
+) (*Machine, error) {
+	board := system.SCHW770DA05BoardProfile()
+	board.FirmwareBuildID = firmwareProfile.ID
+	return newSamsungQualcommMachine(set, pkg, firmwareProfile, board, bootBoundary{}, options)
+}
+
 func newSCHW860(
 	set firmwareset.Set,
 	pkg samsung.Package,
@@ -254,6 +292,17 @@ func newSamsungQualcommMachine(
 	if err != nil {
 		return nil, fmt.Errorf("create %s writable NAND: %w", firmwareProfile.Model, err)
 	}
+	var secondaryFlash *system.COWFlash
+	if spec := board.OneNAND; spec != nil {
+		secondaryFlash, err = system.NewErasedCOWFlash(
+			spec.Capacity,
+			samsung.EraseBlockSize,
+			firmwareProfile.ID+":onenand",
+		)
+		if err != nil {
+			return nil, fmt.Errorf("create %s OneNAND media: %w", firmwareProfile.Model, err)
+		}
+	}
 
 	backend := options.Backend
 	ownedBackend := false
@@ -281,28 +330,66 @@ func newSamsungQualcommMachine(
 		return fail(fmt.Errorf("%w: %s has no interrupt-line sink", ErrUnsupportedBackend, backend.Identity().Name))
 	}
 
-	legacyInterrupts := system.NewQualcommInterruptController(nil)
+	legacyInterrupts, err := system.NewQualcommInterruptControllerWithConfig(
+		system.QualcommInterruptControllerConfig{GPIOInputs: board.BootControlGPIOInputs},
+		nil,
+	)
+	if err != nil {
+		return fail(fmt.Errorf("create %s legacy interrupt/GPIO aperture: %w", firmwareProfile.Model, err))
+	}
 	vectoredInterrupts, err := system.NewQualcommVectoredInterruptController(
 		*board.VectoredInterrupt,
 		interruptSink,
 	)
 	if err != nil {
-		return fail(fmt.Errorf("create SCH-W830 vectored interrupt controller: %w", err))
+		return fail(fmt.Errorf("create %s vectored interrupt controller: %w", firmwareProfile.Model, err))
 	}
 	nandReady := system.NewStatusSignal()
 	nandConfig := system.Qualcomm2K8BitNANDConfig(board.NANDReadID, nandReady)
 	nandConfig.Capacity = board.NANDSize
 	nandConfig.FactoryBadBlocks = append([]uint32(nil), board.NANDFactoryBadBlocks...)
 	if nandConfig.PageSize != samsung.PageSize {
-		return fail(fmt.Errorf("SCH-W830 NAND page size does not match normalized flash"))
+		return fail(fmt.Errorf("%s NAND page size does not match normalized flash", firmwareProfile.Model))
 	}
 	nand, err := system.NewQualcommNAND(flash, nandConfig)
 	if err != nil {
-		return fail(fmt.Errorf("create SCH-W830 NAND controller: %w", err))
+		return fail(fmt.Errorf("create %s NAND controller: %w", firmwareProfile.Model, err))
+	}
+	var oneNAND *system.OneNAND
+	var oneNANDSpare *system.QualcommNAND
+	if spec := board.OneNAND; spec != nil {
+		spareConfig := system.Qualcomm2K8BitNANDConfig(
+			uint32(spec.ManufacturerID)<<8|uint32(spec.DeviceID&0xff),
+			system.NewStatusSignal(),
+		)
+		spareConfig.Capacity = spec.Capacity
+		oneNANDSpare, err = system.NewQualcommNAND(secondaryFlash, spareConfig)
+		if err != nil {
+			return fail(fmt.Errorf("create %s OneNAND spare media: %w", firmwareProfile.Model, err))
+		}
+		oneNAND, err = system.NewOneNAND(system.OneNANDConfig{
+			ManufacturerID: spec.ManufacturerID,
+			DeviceID:       spec.DeviceID,
+			VersionID:      spec.VersionID,
+			DieBlockOffset: spec.DieBlockOffset,
+			Capacity:       spec.Capacity,
+			Storage:        secondaryFlash,
+			Spare:          oneNANDSpare,
+		})
+		if err != nil {
+			return fail(fmt.Errorf("create %s OneNAND: %w", firmwareProfile.Model, err))
+		}
 	}
 	factoryNANDState, err := nand.SaveState()
 	if err != nil {
-		return fail(fmt.Errorf("capture SCH-W830 factory NAND state: %w", err))
+		return fail(fmt.Errorf("capture %s factory NAND state: %w", firmwareProfile.Model, err))
+	}
+	var factoryOneNANDSpareState []byte
+	if oneNANDSpare != nil {
+		factoryOneNANDSpareState, err = oneNANDSpare.SaveState()
+		if err != nil {
+			return fail(fmt.Errorf("capture %s factory OneNAND spare state: %w", firmwareProfile.Model, err))
+		}
 	}
 
 	bootControl, err := system.NewQualcommBootControl(system.QualcommBootControlConfig{
@@ -323,13 +410,16 @@ func newSamsungQualcommMachine(
 		TimeTickClock:               cloneTimeTickClock(board.TimeTickClock),
 	})
 	if err != nil {
-		return fail(fmt.Errorf("create SCH-W830 boot control: %w", err))
+		return fail(fmt.Errorf("create %s boot control: %w", firmwareProfile.Model, err))
 	}
-	secondaryClock, err := system.NewQualcommSecondaryClockControlWithWritableOffsets(
-		board.SecondaryClockWritableOffsets,
+	secondaryClock, err := system.NewQualcommSecondaryClockControlWithConfig(
+		system.QualcommSecondaryClockConfig{
+			WritableOffsets:   board.SecondaryClockWritableOffsets,
+			ReadOnlyRegisters: board.SecondaryClockReadOnlyRegisters,
+		},
 	)
 	if err != nil {
-		return fail(fmt.Errorf("create SCH-W830 secondary clock: %w", err))
+		return fail(fmt.Errorf("create %s secondary clock: %w", firmwareProfile.Model, err))
 	}
 	primaryClock, err := system.NewQualcommPrimaryClockControl(system.QualcommPrimaryClockConfig{
 		Status:          board.PrimaryClockStatus,
@@ -337,11 +427,16 @@ func newSamsungQualcommMachine(
 		WritableOffsets: board.PrimaryClockWritableOffsets,
 	})
 	if err != nil {
-		return fail(fmt.Errorf("create SCH-W830 primary clock: %w", err))
+		return fail(fmt.Errorf("create %s primary clock: %w", firmwareProfile.Model, err))
 	}
 	keypad, err := board.AttachKeypad(primaryClock, secondaryClock, legacyInterrupts)
 	if err != nil {
 		return fail(err)
+	}
+	if keypad != nil {
+		if err := keypad.AttachInterruptControllers(legacyInterrupts, vectoredInterrupts); err != nil {
+			return fail(fmt.Errorf("attach %s keypad interrupts: %w", firmwareProfile.Model, err))
+		}
 	}
 	legacyTop, err := system.NewQualcommLegacyTopPageWithConfig(system.QualcommLegacyTopConfig{
 		Version:         board.LegacyTopVersion,
@@ -349,7 +444,7 @@ func newSamsungQualcommMachine(
 		WritableOffsets: board.LegacyTopWritableOffsets,
 	})
 	if err != nil {
-		return fail(fmt.Errorf("create SCH-W830 legacy top page: %w", err))
+		return fail(fmt.Errorf("create %s legacy top page: %w", firmwareProfile.Model, err))
 	}
 	clockRegime, err := system.NewQualcommClockRegimeWithConfig(system.QualcommClockRegimeConfig{
 		SleepControllers:            board.ClockRegimeSleepControllers,
@@ -359,27 +454,28 @@ func newSamsungQualcommMachine(
 		VectoredInterruptController: vectoredInterrupts,
 	})
 	if err != nil {
-		return fail(fmt.Errorf("create SCH-W830 clock regime: %w", err))
+		return fail(fmt.Errorf("create %s clock regime: %w", firmwareProfile.Model, err))
 	}
 	busRegisters, err := system.NewSparseWordRegisters(schw830BusRegisterOffsets())
 	if err != nil {
-		return fail(fmt.Errorf("create SCH-W830 sparse bus registers: %w", err))
+		return fail(fmt.Errorf("create %s sparse bus registers: %w", firmwareProfile.Model, err))
 	}
-	panelController, err := system.NewDCSPanelController(board.Panel)
+	dcsPanelController, err := system.NewDCSPanelController(board.Panel)
 	if err != nil {
-		return fail(fmt.Errorf("create SCH-W830 panel controller: %w", err))
+		return fail(fmt.Errorf("create %s panel controller: %w", firmwareProfile.Model, err))
 	}
-	panel, err := system.NewParallelPanelInterfaceWithController(panelController)
+	panel, err := system.NewParallelPanelInterfaceWithController(dcsPanelController)
 	if err != nil {
-		return fail(fmt.Errorf("create SCH-W830 panel transport: %w", err))
+		return fail(fmt.Errorf("create %s panel transport: %w", firmwareProfile.Model, err))
 	}
 	handoff, err := system.NewQualcommNANDPBLHandoff(system.QualcommNANDPBLConfig{
 		Entry: qcsbl.EntryAddress, TableAddress: 0x78001000,
-		PageSize: samsung.PageSize, EraseBlockSize: samsung.EraseBlockSize,
+		LegacyFeatureDataAddress: board.PBLLegacyFeatureDataAddress,
+		PageSize:                 samsung.PageSize, EraseBlockSize: samsung.EraseBlockSize,
 		FlashSize: uint64(flash.Size()), BadBlockLimit: 0x14,
 	})
 	if err != nil {
-		return fail(fmt.Errorf("create SCH-W830 PBL handoff: %w", err))
+		return fail(fmt.Errorf("create %s PBL handoff: %w", firmwareProfile.Model, err))
 	}
 	handoff.Memory = append(handoff.Memory, system.MemorySeed{
 		Address: qcsbl.LoadAddress,
@@ -387,16 +483,17 @@ func newSamsungQualcommMachine(
 	})
 
 	bus := system.NewBus()
-	if _, err := board.AttachMDP(bus, panelController, bootControl); err != nil {
+	if _, err := board.AttachMDP(bus, dcsPanelController, bootControl); err != nil {
 		return fail(err)
 	}
-	if err := mapSCHW830Board(
+	if err := mapSamsungQualcommBoard(
 		bus,
 		board,
 		legacyInterrupts,
 		vectoredInterrupts,
 		bootControl,
 		nand,
+		oneNAND,
 		primaryClock,
 		secondaryClock,
 		panel,
@@ -407,14 +504,14 @@ func newSamsungQualcommMachine(
 		return fail(err)
 	}
 	if err := backend.(cpu.SystemBusBackend).AttachSystemBus(bus); err != nil {
-		return fail(fmt.Errorf("attach SCH-W830 physical bus: %w", err))
+		return fail(fmt.Errorf("attach %s physical bus: %w", firmwareProfile.Model, err))
 	}
 	if err := handoff.Apply(bus, backend); err != nil {
-		return fail(fmt.Errorf("apply SCH-W830 PBL handoff: %w", err))
+		return fail(fmt.Errorf("apply %s PBL handoff: %w", firmwareProfile.Model, err))
 	}
 	resetCPUState, err := backend.SaveContext()
 	if err != nil {
-		return fail(fmt.Errorf("capture SCH-W830 reset CPU state: %w", err))
+		return fail(fmt.Errorf("capture %s reset CPU state: %w", firmwareProfile.Model, err))
 	}
 	quantum := options.RunnerQuantum
 	if quantum == 0 {
@@ -440,11 +537,14 @@ func newSamsungQualcommMachine(
 			CPU:             backend.Identity(),
 		},
 		backend: backend, bus: bus, runner: runner, handoff: handoff,
-		flash: flash, nand: nand, panel: panelController, keypad: keypad,
-		controls:         boardControls(board),
-		resetCPUState:    append([]byte(nil), resetCPUState...),
-		factoryNANDState: append([]byte(nil), factoryNANDState...),
-		pc:               handoff.Entry, mode: handoff.Mode,
+		flash: flash, secondaryFlash: secondaryFlash, nand: nand,
+		oneNANDSpare: oneNANDSpare,
+		panel:        dcsPanelController, keypad: keypad,
+		controls:                 boardControls(board),
+		resetCPUState:            append([]byte(nil), resetCPUState...),
+		factoryNANDState:         append([]byte(nil), factoryNANDState...),
+		factoryOneNANDSpareState: append([]byte(nil), factoryOneNANDSpareState...),
+		pc:                       handoff.Entry, mode: handoff.Mode,
 		bootBoundary: boundary, bootBoundaryLeft: boundary.instructions,
 	}
 	if options.Media != nil {
@@ -502,13 +602,14 @@ func cloneTimeTickClock(source *system.QualcommTimeTickClockConfig) *system.Qual
 	return &clone
 }
 
-func mapSCHW830Board(
+func mapSamsungQualcommBoard(
 	bus *system.Bus,
 	board system.BoardProfile,
 	legacyInterrupts *system.QualcommInterruptController,
 	vectoredInterrupts *system.QualcommVectoredInterruptController,
 	bootControl *system.QualcommBootControl,
-	nand *system.QualcommNAND,
+	nand system.Device,
+	oneNAND *system.OneNAND,
 	primaryClock *system.QualcommPrimaryClockControl,
 	secondaryClock *system.QualcommSecondaryClockControl,
 	panel *system.ParallelPanelInterface,
@@ -535,17 +636,70 @@ func mapSCHW830Board(
 		{"qualcomm-nand", 0x60000000, system.QualcommNANDWindowSize, nand},
 		{"qualcomm-primary-clock", 0x84000000, system.QualcommPrimaryClockWindowSize, primaryClock},
 		{"qualcomm-secondary-clock", 0x84004000, system.QualcommSecondaryClockWindowSize, secondaryClock},
-		{"parallel-panel", 0x20000000, system.ParallelPanelWindowSize, panel},
 		{"qualcomm-clock-regime", 0x90000000, system.QualcommClockRegimeWindowSize, clockRegime},
 		{"qualcomm-sparse-bus-registers", 0x90400000, 0x1000, busRegisters},
 		{"qualcomm-legacy-top-page", 0xfffff000, system.QualcommLegacyTopWindowSize, legacyTop},
 	}
 	for _, mapping := range mappings {
 		if err := bus.MapMMIO(mapping.name, mapping.address, mapping.size, mapping.device); err != nil {
-			return fmt.Errorf("map SCH-W830 device %q: %w", mapping.name, err)
+			return fmt.Errorf("map %s device %q: %w", board.ID, mapping.name, err)
+		}
+	}
+	if board.PanelPorts == nil {
+		if err := bus.MapMMIO(
+			"parallel-panel",
+			0x20000000,
+			system.ParallelPanelWindowSize,
+			panel,
+		); err != nil {
+			return fmt.Errorf("map %s parallel panel: %w", board.ID, err)
+		}
+	} else {
+		if err := mapSparsePanelPorts(bus, "parallel-panel", *board.PanelPorts, panel); err != nil {
+			return fmt.Errorf("map %s panel ports: %w", board.ID, err)
+		}
+	}
+	if oneNAND != nil {
+		if err := bus.MapMMIO(
+			"samsung-onenand",
+			board.OneNAND.Address,
+			system.OneNANDWindowSize,
+			oneNAND,
+		); err != nil {
+			return fmt.Errorf("map %s OneNAND: %w", board.ID, err)
 		}
 	}
 	return nil
+}
+
+func mapSparsePanelPorts(
+	bus *system.Bus,
+	name string,
+	ports system.ParallelPanelPortProfile,
+	panel *system.ParallelPanelInterface,
+) error {
+	commandPort, err := system.NewParallelPanelCommandPort(panel)
+	if err != nil {
+		return fmt.Errorf("create command port: %w", err)
+	}
+	dataPort, err := system.NewParallelPanelDataPort(panel)
+	if err != nil {
+		return fmt.Errorf("create data port: %w", err)
+	}
+	if err := bus.MapMMIO(
+		name+"-command",
+		ports.CommandAddress,
+		uint32(system.Width16),
+		commandPort,
+	); err != nil {
+		return err
+	}
+	return bus.MapMMIO(
+		name+"-data",
+		ports.DataAddress,
+		uint32(system.Width16),
+		dataPort,
+	)
 }
 
 func schw830BusRegisterOffsets() []uint32 {
@@ -735,6 +889,11 @@ func (m *Machine) PowerCycle() error {
 }
 
 func (m *Machine) powerCycleLocked() error {
+	if m.oneNANDSpare != nil {
+		if err := m.oneNANDSpare.Reset(); err != nil {
+			return fmt.Errorf("reset OneNAND spare media: %w", err)
+		}
+	}
 	if err := m.bus.Reset(); err != nil {
 		return fmt.Errorf("reset system bus: %w", err)
 	}
@@ -771,10 +930,26 @@ func (m *Machine) saveMediaLocked() (MediaState, error) {
 	if err != nil {
 		return MediaState{}, fmt.Errorf("save NAND spare area: %w", err)
 	}
+	var secondaryFlashState []byte
+	if m.secondaryFlash != nil {
+		secondaryFlashState, err = m.secondaryFlash.SaveState()
+		if err != nil {
+			return MediaState{}, fmt.Errorf("save secondary NAND main area: %w", err)
+		}
+	}
+	var oneNANDSpareState []byte
+	if m.oneNANDSpare != nil {
+		oneNANDSpareState, err = m.oneNANDSpare.SaveState()
+		if err != nil {
+			return MediaState{}, fmt.Errorf("save OneNAND spare area: %w", err)
+		}
+	}
 	return MediaState{
 		FirmwareBuildID: m.identity.FirmwareBuildID,
 		Flash:           append([]byte(nil), flashState...),
 		NAND:            append([]byte(nil), nandState...),
+		SecondaryFlash:  append([]byte(nil), secondaryFlashState...),
+		OneNANDSpare:    append([]byte(nil), oneNANDSpareState...),
 	}, nil
 }
 
@@ -801,26 +976,63 @@ func (m *Machine) LoadMedia(media MediaState) error {
 }
 
 func (m *Machine) loadMediaLocked(media MediaState) error {
-	if media.FirmwareBuildID != m.identity.FirmwareBuildID || len(media.Flash) == 0 || len(media.NAND) == 0 {
+	if media.FirmwareBuildID != m.identity.FirmwareBuildID || len(media.Flash) == 0 || len(media.NAND) == 0 ||
+		(m.secondaryFlash != nil) != (len(media.SecondaryFlash) != 0) ||
+		(m.oneNANDSpare != nil) != (len(media.OneNANDSpare) != 0) {
 		return ErrIncompatibleMedia
 	}
 	oldFlash, flashSaveErr := m.flash.SaveState()
 	oldNAND, nandSaveErr := m.nand.SaveState()
-	if flashSaveErr != nil || nandSaveErr != nil {
-		return fmt.Errorf("capture media rollback state: %v %v", flashSaveErr, nandSaveErr)
+	var oldSecondaryFlash, oldOneNANDSpare []byte
+	var secondarySaveErr, oneNANDSpareSaveErr error
+	if m.secondaryFlash != nil {
+		oldSecondaryFlash, secondarySaveErr = m.secondaryFlash.SaveState()
+	}
+	if m.oneNANDSpare != nil {
+		oldOneNANDSpare, oneNANDSpareSaveErr = m.oneNANDSpare.SaveState()
+	}
+	if flashSaveErr != nil || nandSaveErr != nil || secondarySaveErr != nil || oneNANDSpareSaveErr != nil {
+		return fmt.Errorf("capture media rollback state: %v %v %v %v",
+			flashSaveErr, nandSaveErr, secondarySaveErr, oneNANDSpareSaveErr)
+	}
+	rollback := func() {
+		_ = m.flash.LoadState(oldFlash)
+		_ = m.nand.LoadState(oldNAND)
+		if m.secondaryFlash != nil {
+			_ = m.secondaryFlash.LoadState(oldSecondaryFlash)
+		}
+		if m.oneNANDSpare != nil {
+			_ = m.oneNANDSpare.LoadState(oldOneNANDSpare)
+		}
 	}
 	if err := m.flash.LoadState(media.Flash); err != nil {
 		return fmt.Errorf("load NAND main area: %w", err)
 	}
+	if m.secondaryFlash != nil {
+		if err := m.secondaryFlash.LoadState(media.SecondaryFlash); err != nil {
+			rollback()
+			return fmt.Errorf("load secondary NAND main area: %w", err)
+		}
+	}
 	if err := m.nand.LoadState(media.NAND); err != nil {
-		_ = m.flash.LoadState(oldFlash)
-		_ = m.nand.LoadState(oldNAND)
+		rollback()
 		return fmt.Errorf("load NAND spare area: %w", err)
 	}
+	if m.oneNANDSpare != nil {
+		if err := m.oneNANDSpare.LoadState(media.OneNANDSpare); err != nil {
+			rollback()
+			return fmt.Errorf("load OneNAND spare area: %w", err)
+		}
+	}
 	if err := m.nand.Reset(); err != nil {
-		_ = m.flash.LoadState(oldFlash)
-		_ = m.nand.LoadState(oldNAND)
+		rollback()
 		return fmt.Errorf("reset restored NAND controller: %w", err)
+	}
+	if m.oneNANDSpare != nil {
+		if err := m.oneNANDSpare.Reset(); err != nil {
+			rollback()
+			return fmt.Errorf("reset restored OneNAND spare media: %w", err)
+		}
 	}
 	return nil
 }
@@ -834,8 +1046,16 @@ func (m *Machine) FactoryReset() error {
 		return ErrClosed
 	}
 	m.flash.FactoryReset()
+	if m.secondaryFlash != nil {
+		m.secondaryFlash.FactoryReset()
+	}
 	if err := m.nand.LoadState(m.factoryNANDState); err != nil {
 		return fmt.Errorf("restore factory NAND spare state: %w", err)
+	}
+	if m.oneNANDSpare != nil {
+		if err := m.oneNANDSpare.LoadState(m.factoryOneNANDSpareState); err != nil {
+			return fmt.Errorf("restore factory OneNAND spare state: %w", err)
+		}
 	}
 	return m.powerCycleLocked()
 }
@@ -858,6 +1078,19 @@ func (m *Machine) SaveSnapshot() (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
+	var secondaryFlashState, oneNANDSpareState []byte
+	if m.secondaryFlash != nil {
+		secondaryFlashState, err = m.secondaryFlash.SaveState()
+		if err != nil {
+			return Snapshot{}, err
+		}
+	}
+	if m.oneNANDSpare != nil {
+		oneNANDSpareState, err = m.oneNANDSpare.SaveState()
+		if err != nil {
+			return Snapshot{}, err
+		}
+	}
 	return Snapshot{
 		Schema:          SnapshotSchema,
 		FirmwareBuildID: m.identity.FirmwareBuildID,
@@ -867,6 +1100,8 @@ func (m *Machine) SaveSnapshot() (Snapshot, error) {
 		CPU:             append([]byte(nil), cpuState...),
 		Bus:             append([]byte(nil), busState...),
 		Flash:           append([]byte(nil), flashState...),
+		SecondaryFlash:  append([]byte(nil), secondaryFlashState...),
+		OneNANDSpare:    append([]byte(nil), oneNANDSpareState...),
 		Instructions:    m.instructions,
 	}, nil
 }
@@ -884,24 +1119,54 @@ func (m *Machine) LoadSnapshot(snapshot Snapshot) error {
 		snapshot.BoardID != m.identity.BoardID ||
 		snapshot.PlatformID != m.identity.PlatformID ||
 		!compatibleCPUContextIdentity(snapshot.CPUIdentity, m.identity.CPU) ||
-		len(snapshot.CPU) == 0 || len(snapshot.Bus) == 0 || len(snapshot.Flash) == 0 {
+		len(snapshot.CPU) == 0 || len(snapshot.Bus) == 0 || len(snapshot.Flash) == 0 ||
+		(m.secondaryFlash != nil) != (len(snapshot.SecondaryFlash) != 0) ||
+		(m.oneNANDSpare != nil) != (len(snapshot.OneNANDSpare) != 0) {
 		return ErrIncompatibleState
 	}
 	oldCPU, cpuSaveErr := m.backend.SaveContext()
 	oldBus, busSaveErr := m.bus.SaveState()
 	oldFlash, flashSaveErr := m.flash.SaveState()
-	if cpuSaveErr != nil || busSaveErr != nil || flashSaveErr != nil {
-		return fmt.Errorf("capture snapshot rollback state: %v %v %v", cpuSaveErr, busSaveErr, flashSaveErr)
+	var oldSecondaryFlash, oldOneNANDSpare []byte
+	var secondarySaveErr, oneNANDSpareSaveErr error
+	if m.secondaryFlash != nil {
+		oldSecondaryFlash, secondarySaveErr = m.secondaryFlash.SaveState()
+	}
+	if m.oneNANDSpare != nil {
+		oldOneNANDSpare, oneNANDSpareSaveErr = m.oneNANDSpare.SaveState()
+	}
+	if cpuSaveErr != nil || busSaveErr != nil || flashSaveErr != nil ||
+		secondarySaveErr != nil || oneNANDSpareSaveErr != nil {
+		return fmt.Errorf("capture snapshot rollback state: %v %v %v %v %v",
+			cpuSaveErr, busSaveErr, flashSaveErr, secondarySaveErr, oneNANDSpareSaveErr)
 	}
 	oldPosition := Position{PC: m.pc, Mode: m.mode, Instructions: m.instructions}
 	rollback := func() {
 		_ = m.flash.LoadState(oldFlash)
+		if m.secondaryFlash != nil {
+			_ = m.secondaryFlash.LoadState(oldSecondaryFlash)
+		}
+		if m.oneNANDSpare != nil {
+			_ = m.oneNANDSpare.LoadState(oldOneNANDSpare)
+		}
 		_ = m.bus.LoadState(oldBus)
 		_ = m.backend.RestoreContext(oldCPU)
 		m.pc, m.mode, m.instructions = oldPosition.PC, oldPosition.Mode, oldPosition.Instructions
 	}
 	if err := m.flash.LoadState(snapshot.Flash); err != nil {
 		return fmt.Errorf("load snapshot flash: %w", err)
+	}
+	if m.secondaryFlash != nil {
+		if err := m.secondaryFlash.LoadState(snapshot.SecondaryFlash); err != nil {
+			rollback()
+			return fmt.Errorf("load snapshot secondary flash: %w", err)
+		}
+	}
+	if m.oneNANDSpare != nil {
+		if err := m.oneNANDSpare.LoadState(snapshot.OneNANDSpare); err != nil {
+			rollback()
+			return fmt.Errorf("load snapshot OneNAND spare: %w", err)
+		}
 	}
 	if err := m.bus.LoadState(snapshot.Bus); err != nil {
 		rollback()

@@ -7,6 +7,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"testing"
 
@@ -254,6 +255,81 @@ func TestSCHW860PrivateReferenceProvisionsPowerCyclesAndReachesHome(t *testing.T
 	}
 	if position := machine.Position(); position.Instructions != 0 || position.PC != 0x00080028 {
 		t.Fatalf("SCH-W860 position after completed media reload = %+v", position)
+	}
+}
+
+func TestSCHW770PrivateReferenceProvisionsColdBootsAndReachesHome(t *testing.T) {
+	if os.Getenv("ARAM_SCHW770_E2E") == "" {
+		t.Skip("ARAM_SCHW770_E2E is not configured")
+	}
+	directory := os.Getenv("ARAM_SCHW770_DA05_DIR")
+	if directory == "" {
+		t.Skip("ARAM_SCHW770_DA05_DIR is not configured")
+	}
+	set := openSamsungSCHReferenceSet(t, directory)
+	firstBoot, err := NewSCHW770(set, Options{BackendMode: CPUBackendJIT})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const (
+		provisionBudget = uint64(1_600_000_000)
+		provisionHash   = "42259913833d6b3e18970334e1b93ba09b83bf809197d72732c0044ab1cad835"
+		coldBootBudget  = uint64(1_600_000_000)
+		holdBudget      = uint64(34_000_000)
+		releaseBudget   = uint64(20_000_000)
+		homeHash        = "51ded67b646df3840c58f2b162c374153b83f4436c57763c409eabbac12e7be7"
+	)
+	runSystemMachineBudget(t, firstBoot, provisionBudget, "SCH-W770 native provisioning")
+	if hash := firstBoot.FrameSHA256(); hash != provisionHash {
+		t.Fatalf("SCH-W770 provisioned frame hash = %s, want %s", hash, provisionHash)
+	}
+	media, err := firstBoot.SaveMedia()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(media.SecondaryFlash) == 0 || len(media.OneNANDSpare) == 0 {
+		t.Fatalf("SCH-W770 dual-flash media is incomplete: secondary=%d spare=%d",
+			len(media.SecondaryFlash), len(media.OneNANDSpare))
+	}
+	if err := firstBoot.Close(); err != nil {
+		t.Fatal(err)
+	}
+	firstBoot = nil
+	runtime.GC()
+
+	// A new machine proves that the guest-created BML/TFS4 media is sufficient;
+	// no volatile state or host-side guest-code patch crosses this boundary.
+	coldBoot, err := NewSCHW770(set, Options{BackendMode: CPUBackendJIT, Media: &media})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = coldBoot.Close() })
+	runSystemMachineBudget(t, coldBoot, coldBootBudget, "SCH-W770 saved-media cold boot")
+	if err := coldBoot.SetKey("hold", true); err != nil {
+		t.Fatal(err)
+	}
+	runSystemMachineBudget(t, coldBoot, holdBudget, "SCH-W770 long HOLD")
+	if err := coldBoot.SetKey("hold", false); err != nil {
+		t.Fatal(err)
+	}
+	runSystemMachineBudget(t, coldBoot, releaseBudget, "SCH-W770 HOLD release")
+	if hash := coldBoot.FrameSHA256(); hash != homeHash {
+		t.Fatalf("SCH-W770 home frame hash = %s, want %s", hash, homeHash)
+	}
+	if framePath := os.Getenv("ARAM_SCHW770_E2E_FRAME_PATH"); framePath != "" {
+		file, createErr := os.Create(framePath)
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		encodeErr := png.Encode(file, coldBoot.Framebuffer())
+		closeErr := file.Close()
+		if encodeErr != nil {
+			t.Fatal(encodeErr)
+		}
+		if closeErr != nil {
+			t.Fatal(closeErr)
+		}
 	}
 }
 

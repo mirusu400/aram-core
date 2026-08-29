@@ -9,9 +9,10 @@ a complete cold-boot claim.
 - `firmwareset` hashes bounded random-access inputs and emits a path-free
   manifest. Core never needs a host filename to retain firmware identity.
 - `loader/samsung` identifies WBT, WBIN, DAT, and FNT roles from wrapper
-  contents, selects and validates MIBIB metadata, reconstructs the original
-  OEMSBL/QCSBL images, decodes the progressive WBIN, and assembles an immutable
-  logical NAND image. Source ordering and filenames are not part of matching.
+  contents, selects and validates version-one or version-three MIBIB metadata,
+  reconstructs the original OEMSBL/QCSBL images, decodes the progressive WBIN,
+  and assembles an immutable logical NAND image. Source ordering and filenames
+  are not part of matching.
 - `system.COWFlash` keeps erase-block writes separate from immutable firmware,
   enforces NAND's 1-to-0 programming rule, supports factory reset, and binds
   save states to the normalized flash identity plus profile-generated new-media
@@ -19,7 +20,10 @@ a complete cold-boot claim.
   guest-dirty blocks or modifications to the user-supplied firmware pieces.
 - `system.QualcommNAND` implements the evidenced 2 KiB-page controller path,
   including identification, configuration, ready signaling, command/address
-  latches, and the 512-byte data window used by the original boot stages.
+  latches, the 512-byte data window used by the original boot stages, and a
+  shareable persistent spare/OOB interface. `system.OneNAND` implements the
+  separate 16-bit command, BootRAM/DataRAM, main/spare transfer, program, erase,
+  reset, and identification path used by dual-flash boards.
 - The named `qualcomm.pbl-hle.nand2k-v1` boundary supplies only the unavailable
   mask-ROM service table and register contract consumed by QCSBL. Geometry is
   derived from the assembled image; OEMSBL and AMSS are not host-preloaded.
@@ -63,20 +67,25 @@ a complete cold-boot claim.
   acknowledges the resulting timer IRQ end to end.
 - The generic 16-bit parallel-panel transport feeds a profile-sized DCS panel
   with address-window, pixel-format, memory-write, pixel-surface, scanout, and
-  deterministic state support. A separate profile-driven Qualcomm MDP engine
+  deterministic state support. Sparse command/data port aliases support boards
+  that decode D/C through non-contiguous external-bus addresses. A separate
+  profile-driven Qualcomm MDP engine
   executes the firmware's linked command scripts and transfers RGB565 layers
   through that panel instead of treating a framebuffer address as universal.
 - A profile-driven active-low Qualcomm GPIO keypad joins firmware-selected row
   outputs from either the interrupt-control or secondary-clock GPIO banks with
-  primary-clock input columns. Stable host key IDs, reset, and save/load are
-  independent of the SCH-W830 electrical matrix.
+  primary-clock input columns. Profiled GPIO pending/configuration banks can
+  pulse either interrupt controller, retain level status across W1C, and
+  re-latch a held level when firmware unmasks it after debounce. Stable host key
+  IDs, reset, and save/load are independent of any one handset matrix.
 - All added devices and CPU-visible MMU state participate in deterministic
   reset/save/load behavior.
 - `systemmachine` now composes exact firmware-set recognition, the portable
-  system backend, SCH-W830 and SCH-W860 board wiring, persistent NAND main/OOB
-  media, power-cycle and factory-reset behavior, framebuffer/frame hashes,
-  stable key IDs, and complete CPU/bus/device/flash snapshots behind one
-  synchronous headless API. The system-device package remains guest-neutral.
+  system backend, SCH-W770/SCH-W830/SCH-W860 board wiring, persistent primary
+  NAND and optional secondary OneNAND main/OOB media, power-cycle and
+  factory-reset behavior, framebuffer/frame hashes, stable key IDs, and complete
+  CPU/bus/device/flash snapshots behind one synchronous headless API. The
+  system-device package remains guest-neutral.
 - The SCH-W830 boot coordinator preserves the measured original-QCSBL callback
   boundary at 1,195,629 instructions / `0x000A07D8`, so a frontend's outer run
   budget cannot accidentally erase this platform timing boundary.
@@ -159,6 +168,36 @@ not opened, copied into guest memory, or included in save state. It has been
 used manually as a reference oracle to identify analogous functions and board
 register layouts; those observations are converted into explicit, tested
 device contracts before they enter the emulator.
+
+## Private SCH-W770 DA05 evidence gate
+
+When `ARAM_SCHW770_E2E` and `ARAM_SCHW770_DA05_DIR` are configured, the private
+gate proves the earlier version-one-MIBIB handset through a fresh user-visible
+cold boot:
+
+| Check | Measured result |
+|---|---|
+| exact four-piece build-profile match | `samsung.sch-w770.da05` |
+| selected MIBIB version / generation / partitions | `1` / `2` / `10` |
+| packaged end / raw NAND capacity | `0x11200000` / `0x20000000` |
+| separate OneNAND identity / capacity | Samsung `EC/5C` / `0x18000000` |
+| original OEMSBL and QCSBL | reconstructed and exact profile hash matches |
+| legacy PBL geometry ABI | generated `boot_feature_cfg` at `0xFFFF6044` |
+| OEMSBL auxiliary panel path | bounded 16-bit latches at `0x30000000` and `0x30020000`; no data abort |
+| primary display path | sparse DCS command/data ports at `0x20000000` / `0x20020000`; native 240x400 RGB565 frame |
+| native first boot | guest BML/TFS4 format/provisioning leaves 1,898 dirty primary-NAND blocks and reaches its completion wait at `1,600,000,000` instructions |
+| deterministic provisioned frame | SHA-256 `42259913833d6b3e18970334e1b93ba09b83bf809197d72732c0044ab1cad835` |
+| physical HOLD path | active-low GPIO 46 group interrupt, firmware debounce timer, and long-HOLD event; no guest-code patch |
+| fresh-machine cold boot | saved dual-flash media loaded into a new machine reaches the SKT home UI after long HOLD |
+| deterministic home frame | SHA-256 `51ded67b646df3840c58f2b162c374153b83f4436c57763c409eabbac12e7be7` |
+
+The four-piece package omits the downloader-generated footer after its open-ended
+`0:EFS2` entry. The profile supplies only the completion word and an empty
+preload-table header at the normalized package end. Original firmware performs
+the format, filesystem/NV rebuild, and persistent writes. The verified cold boot
+constructs a second machine from those saved media bytes, holds the modeled
+physical switch through firmware's own long-press timer, and renders the home
+screen without a RAM restore, control-flow injection, or firmware patch.
 
 ## Private SCH-W860 DA06 evidence gate
 
@@ -247,14 +286,22 @@ generated non-proprietary new-media header, saves the guest-created NAND state,
 power-cycles all volatile state, and reaches the DA06 home screen without a
 firmware patch or memory-dump restore.
 
+The earlier adjacent-board path now also covers SCH-W770 DA05. Its version-one
+MIBIB rules, 512 MiB raw NAND, separate 384 MiB OneNAND, legacy PBL feature
+structure, sparse portrait-panel ports, OEMSBL auxiliary command/data latches,
+and HOLD GPIO interrupt routing are explicit profile/device contracts. A gated
+E2E starts from erased writable media, lets original firmware create BML/TFS4,
+constructs a fresh machine from the resulting dual-flash state, and reaches the
+SKT home frame through the physical long-HOLD path.
+
 The next targets are:
 
 1. Merge the system-machine API with the newer application-mode core without
    regressing either backend, then graduate the product adapter from its
    experimental build tag.
-2. Derive the SCH-W860 keypad matrix from its own firmware/hardware evidence,
-   then verify real input and a built-in application without borrowing W830
-   controls.
+2. Derive the remaining SCH-W770 controls and the SCH-W860 keypad matrix from
+   each model's own firmware/hardware evidence, then verify built-in
+   applications without borrowing W830 controls.
 3. Model remaining user-visible services such as battery, audio, camera, and
    Bluetooth according to each board profile.
 4. Add exact profiles for further Samsung sets and let their own boot traces
