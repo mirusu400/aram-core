@@ -639,6 +639,7 @@ func (r *Runtime) handleLWCMethod(
 		return uint32(r.lwcMaxLengths[instance]), nil
 	case "setString(Ljava/lang/String;)V", "setLabel(Ljava/lang/String;)V":
 		state.text = registers[2]
+		r.resetLWCTextInput(instance)
 		r.initializeLWCTextSize(
 			state,
 			registers[2],
@@ -724,6 +725,18 @@ func (r *Runtime) handleLWCMethod(
 		return uint32(state.dialogAction), nil
 	case "keyNotify(II)Z", "pointerNotify(III)Z",
 		"processEvent(IIII)Z":
+		if method == "keyNotify(II)Z" && ktfLWCTextInputClasses[className] {
+			handled, editErr := r.editLWCText(
+				instance,
+				state,
+				int32(registers[2]),
+				int32(registers[3]),
+			)
+			if editErr != nil {
+				return 0, editErr
+			}
+			return boolWord(handled), nil
+		}
 		if className == "org/kwis/msp/lwc/ProgressComponent" &&
 			method == "keyNotify(II)Z" && state.progressInput {
 			key := int32(registers[3])

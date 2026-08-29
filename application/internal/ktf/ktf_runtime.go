@@ -3,6 +3,7 @@ package ktf
 import (
 	"context"
 	"fmt"
+	"github.com/mirusu400/aram-core/internal/ime"
 	"image"
 	"image/color"
 	"image/draw"
@@ -157,21 +158,25 @@ type Runtime struct {
 	lwcEventData            map[uint32]uint32
 	lwcChildren             map[uint32][]uint32
 	lwcMaxLengths           map[uint32]int32
-	lwcComponents           map[uint32]*ktfLWCComponent
-	databases               map[uint32]*Database
-	DatabaseStores          map[string]*Database
-	defaultRuntime          uint32
-	DefaultDisplay          uint32
-	MainJlet                uint32
-	eventQueue              uint32
-	sharedBuffers           map[string]uint32
-	redispatchActive        map[string]bool
-	DisplayCards            map[uint32]uint32
-	ThreadTargets           map[uint32]uint32
-	javaTimerTasks          map[uint32]*Task
-	javaTimerTaskStates     map[uint32]uint8
-	currentThread           uint32
-	stringBuffers           map[uint32]string
+	// lwcTextInput is the keypad input method behind each editable LWC field.
+	// It holds only a half-composed glyph, which the next press rebuilds, so it
+	// is a live cache rather than part of the save state.
+	lwcTextInput        map[uint32]*ime.Automata
+	lwcComponents       map[uint32]*ktfLWCComponent
+	databases           map[uint32]*Database
+	DatabaseStores      map[string]*Database
+	defaultRuntime      uint32
+	DefaultDisplay      uint32
+	MainJlet            uint32
+	eventQueue          uint32
+	sharedBuffers       map[string]uint32
+	redispatchActive    map[string]bool
+	DisplayCards        map[uint32]uint32
+	ThreadTargets       map[uint32]uint32
+	javaTimerTasks      map[uint32]*Task
+	javaTimerTaskStates map[uint32]uint8
+	currentThread       uint32
+	stringBuffers       map[uint32]string
 	// stringBuffersConsumed marks a StringBuffer whose value was read out by
 	// toString(). The LGT Raptor AOT compiler inlines StringBuffer.setLength(0)
 	// as a direct native write to the buffer object's guest memory, which never
