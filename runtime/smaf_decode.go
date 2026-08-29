@@ -195,12 +195,29 @@ func decodeSMAFLazyPCM16(data []byte, sampleRate uint32) *decodedPCM {
 			}
 		}
 	}
+	return finishLazyScoreDecode(decoder, sampleRate, func() *smafDecoder {
+		probeDecoder := &smafDecoder{rate: sampleRate}
+		if !probeDecoder.parse(data) || !probeDecoder.buildEvents() {
+			return nil
+		}
+		return probeDecoder
+	})
+}
+
+// finishLazyScoreDecode turns a built score into a decodedPCM. A score short
+// enough that rendering it is not felt is rendered whole here, so playback is
+// an array read and the length is exact; a longer one is left incremental and
+// only its playable length is worked out. rebuild produces a second decoder for
+// the length probe, which consumes the stream it walks.
+func finishLazyScoreDecode(
+	decoder *smafDecoder,
+	sampleRate uint32,
+	rebuild func() *smafDecoder,
+) *decodedPCM {
 	stream := newSMAFRenderStream(decoder)
 	if stream.end == 0 {
 		return nil
 	}
-	// A score short enough that rendering it is not felt is rendered here, so
-	// playback is an array read and the length is exact.
 	if stream.end <= uint64(sampleRate)*smafEagerRenderSeconds {
 		if samples := stream.renderUntil(nil, stream.end); len(samples) != 0 {
 			return &decodedPCM{
@@ -230,8 +247,7 @@ func decodeSMAFLazyPCM16(data []byte, sampleRate uint32) *decodedPCM {
 	// The probe consumes the stream it walks, so it gets its own.
 	length := stream.end
 	if stream.end <= uint64(sampleRate)*smafProbedLengthSeconds {
-		probeDecoder := &smafDecoder{rate: sampleRate}
-		if probeDecoder.parse(data) && probeDecoder.buildEvents() {
+		if probeDecoder := rebuild(); probeDecoder != nil {
 			if probed := newSMAFRenderStream(probeDecoder).probeEnd(); probed != 0 {
 				length = probed
 			}
@@ -531,8 +547,17 @@ func (decoder *smafDecoder) buildEvents() bool {
 			event.sample = 0
 		}
 	}
-	sort.SliceStable(decoder.events, func(i, j int) bool {
-		left, right := decoder.events[i], decoder.events[j]
+	sortSMAFEvents(decoder.events)
+	return true
+}
+
+// sortSMAFEvents puts the timeline in the order the render loop consumes it.
+// Events that land on the same sample are ordered so a channel's setup - its
+// bank, program, volume, and pan - is in force before a note on that sample
+// reads it.
+func sortSMAFEvents(events []smafEvent) {
+	sort.SliceStable(events, func(i, j int) bool {
+		left, right := events[i], events[j]
 		if left.sample != right.sample {
 			return left.sample < right.sample
 		}
@@ -540,7 +565,6 @@ func (decoder *smafDecoder) buildEvents() bool {
 		rightNote := right.kind == smafNoteOn || right.kind == smafNoteOff
 		return !leftNote && rightNote
 	})
-	return true
 }
 
 func (decoder *smafDecoder) applyRhythmChannels(track smafTrack, base int) {

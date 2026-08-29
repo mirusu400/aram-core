@@ -191,13 +191,13 @@ func BenchmarkMediaSMAFDecodeCacheHit(b *testing.B) {
 		b.Fatal(err)
 	}
 	score := smafGoldenScore()
-	if media.decodeSMAF(score) == nil {
+	if media.decodeScore(score) == nil {
 		b.Fatal("synthetic SMAF did not decode")
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		if media.decodeSMAF(score) == nil {
+		if media.decodeScore(score) == nil {
 			b.Fatal("cached SMAF disappeared")
 		}
 	}
