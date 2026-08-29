@@ -35,6 +35,11 @@ func TestSCHW830BoardProfileAppliesEvidenceBackedIRAM(t *testing.T) {
 	if profile.PrimaryClockStatus != 0x1f || profile.PrimaryClockInputMask != 0x1f {
 		t.Fatalf("SCH-W830 primary clock status = %#x", profile.PrimaryClockStatus)
 	}
+	if want := []QualcommPrimaryClockKeyProfile{{
+		ID: "end", InputLine: 4, ActiveLow: true,
+	}}; !reflect.DeepEqual(profile.PrimaryClockKeys, want) {
+		t.Fatalf("SCH-W830 primary-clock keys = %#v, want %#v", profile.PrimaryClockKeys, want)
+	}
 	if profile.BootClockModeStatus != 1 {
 		t.Fatalf("SCH-W830 boot clock mode status = %#x", profile.BootClockModeStatus)
 	}
@@ -722,6 +727,37 @@ func TestBoardProfileRejectsIncompletePanelDimensions(t *testing.T) {
 		}
 		if err := profile.Validate(); err == nil {
 			t.Fatalf("BoardProfile accepted invalid panel profile: %+v", panel)
+		}
+	}
+}
+
+func TestBoardProfileRejectsInvalidPrimaryClockKeys(t *testing.T) {
+	mutations := []func(*BoardProfile){
+		func(profile *BoardProfile) { profile.PrimaryClockKeys[0].ID = "" },
+		func(profile *BoardProfile) { profile.PrimaryClockKeys[0].InputLine = 5 },
+		func(profile *BoardProfile) { profile.PrimaryClockKeys[0].ActiveLow = false },
+		func(profile *BoardProfile) {
+			profile.PrimaryClockKeys = append(profile.PrimaryClockKeys,
+				QualcommPrimaryClockKeyProfile{ID: "end", InputLine: 0, ActiveLow: true})
+		},
+		func(profile *BoardProfile) {
+			profile.PrimaryClockKeys = append(profile.PrimaryClockKeys,
+				QualcommPrimaryClockKeyProfile{ID: "power", InputLine: 4, ActiveLow: true})
+		},
+		func(profile *BoardProfile) {
+			profile.PrimaryClockKeys[0] = QualcommPrimaryClockKeyProfile{
+				ID: "send", InputLine: 4, ActiveLow: true,
+			}
+		},
+		func(profile *BoardProfile) {
+			profile.PrimaryClockKeys[0].InputLine = 0
+		},
+	}
+	for index, mutate := range mutations {
+		profile := SCHW830DL21BoardProfile()
+		mutate(&profile)
+		if err := profile.Validate(); err == nil {
+			t.Fatalf("BoardProfile accepted invalid primary-clock key case %d: %+v", index, profile.PrimaryClockKeys)
 		}
 	}
 }
