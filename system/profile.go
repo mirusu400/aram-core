@@ -57,6 +57,14 @@ type HLECallProfile struct {
 	Return   HLEReturn
 }
 
+// QualcommPrimaryClockKeyProfile maps a host control to one raw digital input
+// exposed by the Qualcomm primary-clock GPIO status register.
+type QualcommPrimaryClockKeyProfile struct {
+	ID        string
+	InputLine uint8
+	ActiveLow bool
+}
+
 func (p HLECallProfile) validate() error {
 	trap := cpu.ExecutionTrap{Address: p.Address, Mode: p.Mode}
 	if !validProfileID(p.ID) || !validProfileID(p.Contract) || !trap.Valid() ||
@@ -77,6 +85,7 @@ type BoardProfile struct {
 	BootClockModeStatus              uint32
 	PrimaryClockStatus               uint32
 	PrimaryClockInputMask            uint32
+	PrimaryClockKeys                 []QualcommPrimaryClockKeyProfile
 	BootControlWritableOffsets       []uint32
 	BootControlHalfwordOffsets       []uint32
 	BootControlMixedWidthOffsets     []uint32
@@ -151,6 +160,26 @@ func (p BoardProfile) Validate() error {
 	if p.PrimaryClockStatus&^primaryClockInputMask != 0 {
 		return fmt.Errorf("board profile %q has invalid primary clock status 0x%x", p.ID, p.PrimaryClockStatus)
 	}
+	primaryClockKeyIDs := make(map[string]struct{}, len(p.PrimaryClockKeys))
+	primaryClockKeyLines := make(map[uint8]struct{}, len(p.PrimaryClockKeys))
+	for _, key := range p.PrimaryClockKeys {
+		if !validProfileID(key.ID) || key.InputLine >= 32 {
+			return fmt.Errorf("board profile %q has invalid primary-clock key %q", p.ID, key.ID)
+		}
+		lineMask := uint32(1) << key.InputLine
+		idleHigh := p.PrimaryClockStatus&lineMask != 0
+		if lineMask&primaryClockInputMask == 0 || idleHigh != key.ActiveLow {
+			return fmt.Errorf("board profile %q has invalid primary-clock key %q", p.ID, key.ID)
+		}
+		if _, duplicate := primaryClockKeyIDs[key.ID]; duplicate {
+			return fmt.Errorf("board profile %q repeats primary-clock key ID %q", p.ID, key.ID)
+		}
+		if _, duplicate := primaryClockKeyLines[key.InputLine]; duplicate {
+			return fmt.Errorf("board profile %q repeats primary-clock key input line %d", p.ID, key.InputLine)
+		}
+		primaryClockKeyIDs[key.ID] = struct{}{}
+		primaryClockKeyLines[key.InputLine] = struct{}{}
+	}
 	if p.BootClockModeStatus&^uint32(0x11) != 0 {
 		return fmt.Errorf("board profile %q has invalid boot clock mode status 0x%x", p.ID, p.BootClockModeStatus)
 	}
@@ -184,6 +213,16 @@ func (p BoardProfile) Validate() error {
 		}
 		if keypadInputMask&^primaryClockInputMask != 0 {
 			return fmt.Errorf("board profile %q keypad columns exceed primary-clock inputs", p.ID)
+		}
+		for _, key := range keypad.Keys {
+			if _, duplicate := primaryClockKeyIDs[key.ID]; duplicate {
+				return fmt.Errorf("board profile %q repeats control ID %q", p.ID, key.ID)
+			}
+		}
+		for line := range primaryClockKeyLines {
+			if keypadInputMask&(uint32(1)<<line) != 0 {
+				return fmt.Errorf("board profile %q shares primary-clock input line %d with its keypad", p.ID, line)
+			}
 		}
 		secondaryOffsets := make(map[uint32]struct{}, len(qualcommSecondaryClockOffsets)+len(p.SecondaryClockWritableOffsets))
 		for _, offset := range qualcommSecondaryClockOffsets {
@@ -794,6 +833,11 @@ func SCHW830DL21BoardProfile() BoardProfile {
 		// its late hardware-initialization loop.
 		PrimaryClockStatus:    0x0000001f,
 		PrimaryClockInputMask: 0x0000001f,
+		PrimaryClockKeys: []QualcommPrimaryClockKeyProfile{{
+			// A short active-low pulse on the boot power-key input performs the
+			// handset's red END action and returns the native UI to idle.
+			ID: "end", InputLine: 4, ActiveLow: true,
+		}},
 		BootControlWritableOffsets: []uint32{
 			0x0008,
 			0x00bc, 0x00c0,
@@ -1143,6 +1187,7 @@ func SCHW860DA06BoardProfile() BoardProfile {
 		qualcommLegacyTopIDOffset + 4,
 	}
 	profile.Keypad = nil
+	profile.PrimaryClockKeys = nil
 	return profile
 }
 
