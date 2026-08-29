@@ -117,6 +117,7 @@ type Machine struct {
 	nand     *system.QualcommNAND
 	panel    *system.DCSPanelController
 	keypad   *system.QualcommGPIOKeypad
+	audio    *schw830Audio
 	controls []string
 
 	resetCPUState    []byte
@@ -396,6 +397,17 @@ func newSamsungQualcommMachine(
 	})
 
 	bus := system.NewBus()
+	var audio *schw830Audio
+	if firmwareProfile.ID == samsung.SCHW830DL21ProfileID {
+		instructionsPerSecond := schw830AudioInstructionsPerSecond
+		if board.TimeTickClock != nil && board.TimeTickClock.InstructionsPerSecond != 0 {
+			instructionsPerSecond = board.TimeTickClock.InstructionsPerSecond
+		}
+		audio, err = newSCHW830Audio(bus, defaultSCHW830AudioConfig(instructionsPerSecond))
+		if err != nil {
+			return fail(err)
+		}
+	}
 	if _, err := board.AttachMDP(bus, panelController, bootControl); err != nil {
 		return fail(err)
 	}
@@ -412,6 +424,7 @@ func newSamsungQualcommMachine(
 		clockRegime,
 		busRegisters,
 		legacyTop,
+		audio,
 	); err != nil {
 		return fail(err)
 	}
@@ -429,11 +442,15 @@ func newSamsungQualcommMachine(
 	if quantum == 0 {
 		quantum = system.DefaultClockedRunnerQuantum
 	}
+	clockedDevices := bus.ClockedDevices()
+	if audio != nil {
+		clockedDevices = append(clockedDevices, audio)
+	}
 	runner, err := system.NewClockedRunner(
 		backend,
 		backend,
 		quantum,
-		bus.ClockedDevices()...,
+		clockedDevices...,
 	)
 	if err != nil {
 		return fail(err)
@@ -449,7 +466,7 @@ func newSamsungQualcommMachine(
 			CPU:             backend.Identity(),
 		},
 		backend: backend, bus: bus, runner: runner, handoff: handoff,
-		flash: flash, nand: nand, panel: panelController, keypad: keypad,
+		flash: flash, nand: nand, panel: panelController, keypad: keypad, audio: audio,
 		controls:         boardControls(board),
 		resetCPUState:    append([]byte(nil), resetCPUState...),
 		factoryNANDState: append([]byte(nil), factoryNANDState...),
@@ -524,12 +541,37 @@ func mapSCHW830Board(
 	clockRegime *system.QualcommClockRegime,
 	busRegisters *system.SparseWordRegisters,
 	legacyTop *system.QualcommLegacyTopPage,
+	audio *schw830Audio,
 ) error {
 	if err := board.ApplyMemory(bus); err != nil {
 		return err
 	}
 	if err := board.ApplyReadOnlyRegisters(bus); err != nil {
 		return err
+	}
+	if audio != nil {
+		var commandWindow *system.LatchedRegisterWindowProfile
+		remaining := make([]system.LatchedRegisterWindowProfile, 0, len(board.LatchedRegisterWindows))
+		for index := range board.LatchedRegisterWindows {
+			spec := board.LatchedRegisterWindows[index]
+			if spec.ID == schw830AudioCommandWindowID {
+				copy := spec
+				commandWindow = &copy
+				continue
+			}
+			remaining = append(remaining, spec)
+		}
+		if commandWindow == nil {
+			return fmt.Errorf("SCH-W830 board has no audio command window %q", schw830AudioCommandWindowID)
+		}
+		device, err := newSCHW830AudioCommandWindow(commandWindow.Size, commandWindow.Width, audio)
+		if err != nil {
+			return fmt.Errorf("create SCH-W830 audio command window: %w", err)
+		}
+		if err := bus.MapMMIO(commandWindow.ID, commandWindow.Address, commandWindow.Size, device); err != nil {
+			return fmt.Errorf("map SCH-W830 audio command window: %w", err)
+		}
+		board.LatchedRegisterWindows = remaining
 	}
 	if err := board.ApplyLatchedRegistersWithInterrupts(bus, legacyInterrupts, vectoredInterrupts); err != nil {
 		return err
@@ -747,6 +789,11 @@ func (m *Machine) powerCycleLocked() error {
 	if err := m.bus.Reset(); err != nil {
 		return fmt.Errorf("reset system bus: %w", err)
 	}
+	if m.audio != nil {
+		if err := m.audio.resetAtInstructions(0); err != nil {
+			return err
+		}
+	}
 	if err := m.backend.RestoreContext(m.resetCPUState); err != nil {
 		return fmt.Errorf("restore reset CPU state: %w", err)
 	}
@@ -936,6 +983,12 @@ func (m *Machine) LoadSnapshot(snapshot Snapshot) error {
 		m.mode = cpu.ModeThumb
 	}
 	m.instructions = snapshot.Instructions
+	if m.audio != nil {
+		if err := m.audio.resetAtInstructions(snapshot.Instructions); err != nil {
+			rollback()
+			return err
+		}
+	}
 	m.bootBoundaryLeft = 0
 	if snapshot.Instructions < m.bootBoundary.instructions {
 		m.bootBoundaryLeft = m.bootBoundary.instructions - snapshot.Instructions
