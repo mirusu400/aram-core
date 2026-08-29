@@ -29,6 +29,9 @@ type textComponentHandlerState struct {
 // zero value, which would read as "leading consonant 0 already present".
 func newTextComponentHandlerState() *textComponentHandlerState {
 	state := &textComponentHandlerState{}
+	// These are Korean titles and the field shows no mode indicator, so start in
+	// Hangul; '*' cycles to the English and numeric modes.
+	state.automata.mode = imeModeKorean
 	state.automata.korean.reset()
 	return state
 }
