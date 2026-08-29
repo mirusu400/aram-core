@@ -264,6 +264,7 @@ func (b *Backend) invalidateTranslations() {
 func (b *Backend) runThumbJIT(limit uint64) (uint64, *cpu.StopReason, error) {
 	var executed uint64
 	wholeSystem := b.systemBus != nil
+	hasExecutionTraps := len(b.executionTraps) != 0
 	traced := b.tracing()
 outer:
 	for executed < limit {
@@ -273,7 +274,7 @@ outer:
 				return executed, nil, nil
 			}
 			pc = b.regs[cpu.RegisterPC]
-			if b.executionTrapAt(cpu.ModeThumb, pc) {
+			if hasExecutionTraps && b.executionTrapAt(cpu.ModeThumb, pc) {
 				reason := cpu.StopExecutionTrap
 				return executed, &reason, nil
 			}
@@ -294,19 +295,25 @@ outer:
 			}
 			continue
 		}
-		for i := range block.instrs {
-			if executed >= limit {
-				return executed, nil, nil
-			}
+		blockInstructions := len(block.instrs)
+		if remaining := limit - executed; uint64(blockInstructions) > remaining {
+			blockInstructions = int(remaining)
+		}
+		for i := 0; i < blockInstructions; i++ {
 			in := &block.instrs[i]
 			if wholeSystem {
-				if b.takePendingInterrupt() {
-					return executed, nil, nil
-				}
-				pc := b.regs[cpu.RegisterPC]
-				if b.executionTrapAt(cpu.ModeThumb, pc) {
-					reason := cpu.StopExecutionTrap
-					return executed, &reason, nil
+				// Dispatch checked the first instruction boundary already. Poll
+				// again only after an instruction has had a chance to change IRQ
+				// state or advance to another configured trap.
+				if i != 0 {
+					if b.takePendingInterrupt() {
+						return executed, nil, nil
+					}
+					pc = b.regs[cpu.RegisterPC]
+					if hasExecutionTraps && b.executionTrapAt(cpu.ModeThumb, pc) {
+						reason := cpu.StopExecutionTrap
+						return executed, &reason, nil
+					}
 				}
 				if traced {
 					b.recordPC(pc)

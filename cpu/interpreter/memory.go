@@ -25,40 +25,49 @@ func (b *Backend) accessAttribution() cpu.MemoryAccessContext {
 // unchanged, so both the Go-side region windows and native host pointers leave
 // together.
 func (b *Backend) invalidateDirectMemory() {
-	clear(b.dataCache[:])
+	b.clearDataCaches()
 	b.virtualData = nil
 	b.tlbClear()
 }
 
-func (b *Backend) virtualDataHit(
-	address uint32,
-	size int,
-	permission cpu.Permissions,
-) ([]byte, int, bool) {
+func (b *Backend) clearDataCaches() {
+	clear(b.dataCache[:])
+	clear(b.directDataCacheAlt[:])
+	clear(b.directDataMissCache[:])
+}
+
+// virtualDataReadHit and virtualDataWriteHit are deliberately separate. Their
+// callers already know the access direction and have verified that the MMU is
+// enabled, so keeping the hot lookup small lets the Go compiler inline it into
+// each scalar load/store instead of paying another function call per access.
+func (b *Backend) virtualDataReadHit(address uint32, size int) ([]byte, int, bool) {
 	cache := b.virtualData
-	if cache == nil || !b.mmuEnabled() || permission&cpu.PermissionExecute != 0 {
+	if cache == nil {
 		return nil, 0, false
 	}
 	page := address >> 10
-	var entry *virtualDataCacheEntry
-	if permission&cpu.PermissionWrite != 0 {
-		entry = &cache.write[page&(virtualDataCacheEntries-1)]
-	} else {
-		entry = &cache.read[page&(virtualDataCacheEntries-1)]
-	}
-	if entry.data == nil || entry.virtualPage != page || entry.gen != b.mappingGen ||
-		entry.privileged != b.currentlyPrivileged() {
+	entry := &cache.read[page&(virtualDataCacheEntries-1)]
+	if entry.virtualPage != page|virtualDataValid || entry.gen != b.mappingGen ||
+		entry.privileged != (b.regs[cpu.RegisterCPSR]&processorModeMask != uint32(processorModeUser)) {
 		return nil, 0, false
 	}
-	pageOffset := uint64(address & 0x3ff)
-	if pageOffset+uint64(size) > 0x400 {
+	pageOffset := int(address & 0x3ff)
+	return entry.data, pageOffset, pageOffset+size <= 0x400
+}
+
+func (b *Backend) virtualDataWriteHit(address uint32, size int) ([]byte, int, bool) {
+	cache := b.virtualData
+	if cache == nil {
 		return nil, 0, false
 	}
-	offset := uint64(entry.physicalPage-entry.regionAddress) + pageOffset
-	if offset+uint64(size) > uint64(len(entry.data)) {
+	page := address >> 10
+	entry := &cache.write[page&(virtualDataCacheEntries-1)]
+	if entry.virtualPage != page|virtualDataValid || entry.gen != b.mappingGen ||
+		entry.privileged != (b.regs[cpu.RegisterCPSR]&processorModeMask != uint32(processorModeUser)) {
 		return nil, 0, false
 	}
-	return entry.data, int(offset), true
+	pageOffset := int(address & 0x3ff)
+	return entry.data, pageOffset, pageOffset+size <= 0x400
 }
 
 func (b *Backend) noteVirtualData(
@@ -76,18 +85,17 @@ func (b *Backend) noteVirtualData(
 	if b.virtualData == nil {
 		b.virtualData = new(virtualDataCache)
 	}
+	data = data[offset : offset+0x400]
 	page := address >> 10
 	entry := &b.virtualData.read[page&(virtualDataCacheEntries-1)]
 	if permission&cpu.PermissionWrite != 0 {
 		entry = &b.virtualData.write[page&(virtualDataCacheEntries-1)]
 	}
 	*entry = virtualDataCacheEntry{
-		data:          data,
-		virtualPage:   page,
-		physicalPage:  physicalPage,
-		regionAddress: physicalPage - uint32(offset),
-		gen:           b.mappingGen,
-		privileged:    b.currentlyPrivileged(),
+		data:        data,
+		virtualPage: page | virtualDataValid,
+		gen:         b.mappingGen,
+		privileged:  b.currentlyPrivileged(),
 	}
 }
 
@@ -105,20 +113,58 @@ func (b *Backend) directData(
 	if data, offset, perms, ok := b.dataHit(address, size, permission); ok {
 		return data, offset, perms, true
 	}
+	if data, offset, perms, ok := b.directDataAltHit(address, size, permission); ok {
+		return data, offset, perms, true
+	}
+	var missSlot *uint32
+	var missTag uint32
+	if size > 0 && uint64(address&0x3ff)+uint64(size) <= 0x400 {
+		page := address >> 10
+		missTag = directDataMissValid | page | uint32(permission)<<22
+		missIndex := (page ^ uint32(permission)*0x9e3779b9) & (directDataMissCacheEntries - 1)
+		missSlot = &b.directDataMissCache[missIndex]
+		if *missSlot == missTag {
+			return nil, 0, 0, false
+		}
+	}
 	mapped, ok := b.directBus.DirectMemoryRegion(address, size, permission)
 	if !ok {
+		if missSlot != nil {
+			*missSlot = missTag
+		}
 		return nil, 0, 0, false
 	}
 	slot := int(permission)
-	if slot < 0 || slot >= len(b.dataCache) {
+	if slot >= len(b.dataCache) {
 		return nil, 0, 0, false
 	}
+	b.directDataCacheAlt[slot] = b.dataCache[slot]
 	b.dataCache[slot] = dataRegionCache{
 		address: mapped.Address,
 		perms:   mapped.Permissions,
 		data:    mapped.Data,
 	}
 	return b.dataHit(address, size, permission)
+}
+
+func (b *Backend) directDataAltHit(
+	address uint32,
+	size int,
+	permission cpu.Permissions,
+) ([]byte, int, cpu.Permissions, bool) {
+	slot := int(permission)
+	if slot >= len(b.directDataCacheAlt) {
+		return nil, 0, 0, false
+	}
+	entry := &b.directDataCacheAlt[slot]
+	if entry.data == nil || entry.perms&permission != permission || address < entry.address {
+		return nil, 0, 0, false
+	}
+	offset := uint64(address - entry.address)
+	if offset+uint64(size) > uint64(len(entry.data)) {
+		return nil, 0, 0, false
+	}
+	return entry.data, int(offset), entry.perms, true
 }
 
 func (b *Backend) readSystemBus(address uint32, destination []byte, permission cpu.Permissions) error {
@@ -158,7 +204,7 @@ func (b *Backend) writeSystemBus(address uint32, source []byte, permission cpu.P
 // findRegion lookup, mirroring the executeData fetch cache.
 func (b *Backend) dataHit(address uint32, size int, permission cpu.Permissions) ([]byte, int, cpu.Permissions, bool) {
 	slot := int(permission)
-	if slot < 0 || slot >= len(b.dataCache) {
+	if slot >= len(b.dataCache) {
 		return nil, 0, 0, false
 	}
 	entry := &b.dataCache[slot]
@@ -181,7 +227,7 @@ func (b *Backend) dataHit(address uint32, size int, permission cpu.Permissions) 
 // stable backing arrays; the cache is invalidated wherever executeData is.
 func (b *Backend) cacheData(mapped *region, access cpu.Permissions) {
 	slot := int(access)
-	if slot < 0 || slot >= len(b.dataCache) {
+	if slot >= len(b.dataCache) {
 		return
 	}
 	b.dataCache[slot] = dataRegionCache{
@@ -195,7 +241,7 @@ func (b *Backend) read16(address uint32, permission cpu.Permissions) (uint16, er
 	if b.physicalAccess {
 		data := b.readScratch[:2]
 		if b.mmuEnabled() {
-			if direct, offset, ok := b.virtualDataHit(address, 2, permission); ok {
+			if direct, offset, ok := b.virtualDataReadHit(address, 2); ok {
 				return binary.LittleEndian.Uint16(direct[offset : offset+2]), nil
 			}
 			if err := b.readVirtual(address, data, permission); err != nil {
@@ -241,7 +287,7 @@ func (b *Backend) read32(address uint32, permission cpu.Permissions) (uint32, er
 	if b.physicalAccess {
 		data := b.readScratch[:4]
 		if b.mmuEnabled() {
-			if direct, offset, ok := b.virtualDataHit(address, 4, permission); ok {
+			if direct, offset, ok := b.virtualDataReadHit(address, 4); ok {
 				return binary.LittleEndian.Uint32(direct[offset : offset+4]), nil
 			}
 			if err := b.readVirtual(address, data, permission); err != nil {
@@ -388,7 +434,7 @@ func (b *Backend) write16(address uint32, value uint16, permission cpu.Permissio
 		data := b.writeScratch[:2]
 		binary.LittleEndian.PutUint16(data, value)
 		if b.mmuEnabled() {
-			if direct, offset, ok := b.virtualDataHit(address, 2, permission); ok {
+			if direct, offset, ok := b.virtualDataWriteHit(address, 2); ok {
 				binary.LittleEndian.PutUint16(direct[offset:offset+2], value)
 				if !b.instructionCacheEnabled() {
 					b.smcInvalidate(address, 2, cpu.PermissionExecute)
@@ -437,7 +483,7 @@ func (b *Backend) write32(address, value uint32, permission cpu.Permissions) err
 		data := b.writeScratch[:4]
 		binary.LittleEndian.PutUint32(data, value)
 		if b.mmuEnabled() {
-			if direct, offset, ok := b.virtualDataHit(address, 4, permission); ok {
+			if direct, offset, ok := b.virtualDataWriteHit(address, 4); ok {
 				binary.LittleEndian.PutUint32(direct[offset:offset+4], value)
 				if !b.instructionCacheEnabled() {
 					b.smcInvalidate(address, 4, cpu.PermissionExecute)
@@ -485,7 +531,7 @@ func (b *Backend) read8(address uint32, permission cpu.Permissions) (byte, error
 	if b.physicalAccess {
 		data := b.readScratch[:1]
 		if b.mmuEnabled() {
-			if direct, offset, ok := b.virtualDataHit(address, 1, permission); ok {
+			if direct, offset, ok := b.virtualDataReadHit(address, 1); ok {
 				return direct[offset], nil
 			}
 			if err := b.readVirtual(address, data, permission); err != nil {
@@ -522,7 +568,7 @@ func (b *Backend) write8(address uint32, value byte, permission cpu.Permissions)
 		data := b.writeScratch[:1]
 		data[0] = value
 		if b.mmuEnabled() {
-			if direct, offset, ok := b.virtualDataHit(address, 1, permission); ok {
+			if direct, offset, ok := b.virtualDataWriteHit(address, 1); ok {
 				direct[offset] = value
 				if !b.instructionCacheEnabled() {
 					b.smcInvalidate(address, 1, cpu.PermissionExecute)

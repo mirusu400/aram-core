@@ -212,26 +212,68 @@ func (f *COWFlash) ProgramAt(source []byte, offset int64) error {
 	start := uint64(offset)
 	first := uint32(start / uint64(f.blockSize))
 	last := uint32((start + uint64(count) - 1) / uint64(f.blockSize))
-	pending := make(map[uint32][]byte, int(last-first)+1)
+	if first == last {
+		block, dirty := f.blocks[first]
+		if !dirty {
+			block, err = f.cloneFactoryBlock(first)
+			if err != nil {
+				return err
+			}
+		}
+		blockOffset := int(start % uint64(f.blockSize))
+		target := block[blockOffset : blockOffset+count]
+		for index, value := range source {
+			if target[index]&value != value {
+				return fmt.Errorf("%w at 0x%x", ErrFlashProgram, start+uint64(index))
+			}
+		}
+		copy(target, source)
+		if !dirty {
+			f.blocks[first] = block
+		}
+		return nil
+	}
+
+	blocks := make([][]byte, int(last-first)+1)
 	for index := first; index <= last; index++ {
-		block, err := f.cloneBlock(index)
+		block, dirty := f.blocks[index]
+		if !dirty {
+			block, err = f.cloneFactoryBlock(index)
+		}
 		if err != nil {
 			return err
 		}
-		pending[index] = block
+		blocks[index-first] = block
 	}
-	for index, value := range source {
-		address := start + uint64(index)
+	for position := 0; position < count; {
+		address := start + uint64(position)
 		blockIndex := uint32(address / uint64(f.blockSize))
-		blockOffset := uint32(address % uint64(f.blockSize))
-		current := pending[blockIndex][blockOffset]
-		if current&value != value {
-			return fmt.Errorf("%w at 0x%x", ErrFlashProgram, address)
+		blockOffset := int(address % uint64(f.blockSize))
+		chunkSize := min(count-position, int(f.blockSize)-blockOffset)
+		target := blocks[blockIndex-first][blockOffset : blockOffset+chunkSize]
+		for index, value := range source[position : position+chunkSize] {
+			if target[index]&value != value {
+				return fmt.Errorf("%w at 0x%x", ErrFlashProgram, address+uint64(index))
+			}
 		}
-		pending[blockIndex][blockOffset] = value
+		position += chunkSize
 	}
-	for index, block := range pending {
-		f.blocks[index] = block
+	for position := 0; position < count; {
+		address := start + uint64(position)
+		blockIndex := uint32(address / uint64(f.blockSize))
+		blockOffset := int(address % uint64(f.blockSize))
+		chunkSize := min(count-position, int(f.blockSize)-blockOffset)
+		copy(
+			blocks[blockIndex-first][blockOffset:blockOffset+chunkSize],
+			source[position:position+chunkSize],
+		)
+		position += chunkSize
+	}
+	for index, block := range blocks {
+		blockIndex := first + uint32(index)
+		if _, dirty := f.blocks[blockIndex]; !dirty {
+			f.blocks[blockIndex] = block
+		}
 	}
 	return nil
 }
@@ -242,10 +284,7 @@ func (f *COWFlash) EraseBlock(index uint32) error {
 	if uint64(index) >= f.blockCount() {
 		return ErrFlashBounds
 	}
-	block := make([]byte, f.blockSize)
-	for position := range block {
-		block[position] = 0xff
-	}
+	block := bytes.Repeat([]byte{0xff}, int(f.blockSize))
 	f.blocks[index] = block
 	return nil
 }
@@ -348,10 +387,7 @@ func (f *COWFlash) resolveRange(offset int64, length int) (int, bool, error) {
 	return length, false, nil
 }
 
-func (f *COWFlash) cloneBlock(index uint32) ([]byte, error) {
-	if block, ok := f.blocks[index]; ok {
-		return append([]byte(nil), block...), nil
-	}
+func (f *COWFlash) cloneFactoryBlock(index uint32) ([]byte, error) {
 	if block, ok := f.seeds[index]; ok {
 		return append([]byte(nil), block...), nil
 	}
@@ -359,10 +395,7 @@ func (f *COWFlash) cloneBlock(index uint32) ([]byte, error) {
 }
 
 func (f *COWFlash) cloneBaseBlock(index uint32) ([]byte, error) {
-	block := make([]byte, f.blockSize)
-	for position := range block {
-		block[position] = 0xff
-	}
+	block := bytes.Repeat([]byte{0xff}, int(f.blockSize))
 	offset := int64(uint64(index) * uint64(f.blockSize))
 	baseSize := uint64(f.base.Size())
 	if uint64(offset) < baseSize {

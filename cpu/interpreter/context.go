@@ -331,7 +331,7 @@ func (b *Backend) RestoreContext(data []byte) error {
 		b.restoreInstructionCacheLine(address, line)
 	}
 	b.executeData = nil
-	clear(b.dataCache[:])
+	b.clearDataCaches()
 	b.flags.dirty = false
 	b.mode = mode
 	b.setModeFlag()

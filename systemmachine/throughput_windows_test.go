@@ -5,6 +5,7 @@ package systemmachine
 import (
 	"context"
 	"os"
+	"runtime/pprof"
 	"strconv"
 	"testing"
 	"time"
@@ -74,7 +75,12 @@ func TestPrivateSCHW830ColdBootThroughput(t *testing.T) {
 	overall := time.Now()
 	for slice := range slices {
 		started := time.Now()
-		result := machine.Run(context.Background(), perSlice)
+		var result cpu.Result
+		pprof.Do(
+			context.Background(),
+			pprof.Labels("slice", "s"+strconv.Itoa(slice)),
+			func(ctx context.Context) { result = machine.Run(ctx, perSlice) },
+		)
 		elapsed := time.Since(started)
 		total += result.Instructions
 		status, statusErr := backend.ReadRegister(cpu.RegisterCPSR)

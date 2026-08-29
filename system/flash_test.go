@@ -55,6 +55,43 @@ func TestCOWFlashProgramsErasesAndFactoryResets(t *testing.T) {
 	assertStorageBytes(t, flash, 0x22, []byte{0x00})
 }
 
+func TestCOWFlashRepeatedProgramsReuseDirtyBlock(t *testing.T) {
+	base := byteStorage{data: bytes.Repeat([]byte{0xff}, 0x20)}
+	flash, err := NewCOWFlash(base, 0x10, "firmware-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := flash.ProgramAt([]byte{0xf0}, 0x01); err != nil {
+		t.Fatal(err)
+	}
+	dirtyBlock := flash.blocks[0]
+	if err := flash.ProgramAt([]byte{0x0f}, 0x02); err != nil {
+		t.Fatal(err)
+	}
+	if &flash.blocks[0][0] != &dirtyBlock[0] {
+		t.Fatal("programming an already-dirty block replaced its backing storage")
+	}
+	assertStorageBytes(t, flash, 0x01, []byte{0xf0, 0x0f})
+}
+
+func TestCOWFlashProgramFailureIsAtomicAcrossBlocks(t *testing.T) {
+	base := byteStorage{data: bytes.Repeat([]byte{0xff}, 0x20)}
+	flash, err := NewCOWFlash(base, 0x10, "firmware-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := flash.ProgramAt([]byte{0x0f}, 0x0f); err != nil {
+		t.Fatal(err)
+	}
+	if err := flash.ProgramAt([]byte{0x00}, 0x10); err != nil {
+		t.Fatal(err)
+	}
+	if err := flash.ProgramAt([]byte{0x00, 0xff}, 0x0f); !errors.Is(err, ErrFlashProgram) {
+		t.Fatalf("cross-block program error = %v", err)
+	}
+	assertStorageBytes(t, flash, 0x0f, []byte{0x0f, 0x00})
+}
+
 func TestCOWFlashSparseCapacityTreatsUnrepresentedTailAsErasedAndWritable(t *testing.T) {
 	baseBytes := bytes.Repeat([]byte{0xff}, 0x20)
 	baseBytes[0x03] = 0x5a

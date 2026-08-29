@@ -58,17 +58,25 @@ type dataRegionCache struct {
 
 const virtualDataCacheEntries = 4096
 
+// Guest virtual pages use only 22 bits at the cache's 1 KiB granularity. The
+// high bit distinguishes a populated slot from a zero-value entry without an
+// extra pointer comparison on every load and store.
+const virtualDataValid = uint32(1 << 31)
+
+const (
+	directDataMissCacheEntries = 256
+	directDataMissValid        = uint32(1 << 31)
+)
+
 // virtualDataCacheEntry is the Go execution tiers' 1 KiB direct-RAM window.
 // ARM926 permissions are selected per 1 KiB subpage, so this granularity lets
 // a hit skip address translation and the physical bus without speculating
 // across an AP boundary.
 type virtualDataCacheEntry struct {
-	data          []byte
-	virtualPage   uint32
-	physicalPage  uint32
-	regionAddress uint32
-	gen           uint32
-	privileged    bool
+	data        []byte
+	virtualPage uint32 // page | virtualDataValid
+	gen         uint32
+	privileged  bool
 }
 
 type virtualDataCache struct {
@@ -95,6 +103,18 @@ type Backend struct {
 	// region re-sorts (regions never overlap and their backing arrays are
 	// stable); it is invalidated wherever executeData is.
 	dataCache [8]dataRegionCache
+	// directDataCacheAlt retains the previous whole-system RAM region for each
+	// permission. MMU table walks and the translated data they resolve commonly
+	// alternate between two physical RAM regions; this second slot prevents
+	// those misses from taking the system bus mutex every time. Private mappings
+	// keep using dataCache's single-entry hot path.
+	directDataCacheAlt [8]dataRegionCache
+	// directDataMissCache remembers physical 1 KiB pages that the attached bus
+	// declined as plain RAM (normally MMIO, ROM, or sparse RAM). Repeated scalar
+	// accesses can then go straight to the semantic bus path instead of locking
+	// once to rediscover that direct access is impossible and again to perform
+	// the access. The bus invalidator clears these topology-dependent entries.
+	directDataMissCache [directDataMissCacheEntries]uint32
 	// virtualData is allocated lazily after the MMU first resolves a direct RAM
 	// data access. Native blocks have their own 4 KiB host-pointer TLB; this one
 	// removes the remaining MMU/permission/bus work from precise and Go-JIT ARM.
@@ -583,7 +603,7 @@ func (b *Backend) Map(address, size uint32, permissions cpu.Permissions) error {
 	clear(b.regionHints[:])
 	b.executeData = nil
 	b.invalidateInstructionWindow()
-	clear(b.dataCache[:])
+	b.clearDataCaches()
 	b.virtualData = nil
 	b.tlbClear()
 	if b.jitBlocks != nil {
@@ -648,7 +668,7 @@ func (b *Backend) AttachSystemBus(bus cpu.MemoryBus) error {
 	clear(b.regionHints[:])
 	b.executeData = nil
 	b.invalidateInstructionWindow()
-	clear(b.dataCache[:])
+	b.clearDataCaches()
 	b.tlbClear()
 	return nil
 }
@@ -875,7 +895,7 @@ func (b *Backend) Close() error {
 	b.invalidateInstructionWindow()
 	clear(b.regionHints[:])
 	b.executeData = nil
-	clear(b.dataCache[:])
+	b.clearDataCaches()
 	b.virtualData = nil
 	if b.jitBlocks != nil {
 		clear(b.jitBlocks)
