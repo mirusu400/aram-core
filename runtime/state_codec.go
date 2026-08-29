@@ -40,7 +40,9 @@ var requiredServiceComponents = []serviceComponentSpec{
 	{"graphics", 2},
 	{"assets", 2},
 	{"storage", 2},
-	{"media", 2},
+	// media 3 adds the mixing policy's hand-loop marker, which decides whether
+	// a long non-repeating track becomes the persistent music voice.
+	{"media", 3},
 	{"device", 2},
 	{"network", 2},
 	{"replay", 2},
