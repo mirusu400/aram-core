@@ -70,13 +70,58 @@ func driveHandler(t *testing.T, keys ...int32) string {
 	return string(runes)
 }
 
+func typeHangul(keys ...int32) string {
+	a := &imeAutomata{mode: imeModeKorean}
+	// Production builds the automata through newTextComponentHandlerState, which
+	// primes the Korean sentinels; a raw literal needs the same reset.
+	a.korean.reset()
+	var buffer []rune
+	for _, key := range keys {
+		ops, _ := a.press(key)
+		buffer = applyOps(buffer, ops)
+	}
+	return string(buffer)
+}
+
+func TestIMEKoreanComposesSyllables(t *testing.T) {
+	cases := []struct {
+		name string
+		keys []int32
+		want string
+	}{
+		// ㄴ(5) ㅣ(1)
+		{"ni", []int32{'5', '1'}, "니"},
+		// ㄱ(4) ㅗ=ㆍ(2)+ㅡ(3)
+		{"go", []int32{'4', '2', '3'}, "고"},
+		// ㄱ(4) ㅏ=ㅣ(1)+ㆍ(2) ㄱ받침(4)
+		{"gak", []int32{'4', '1', '2', '4'}, "각"},
+		// 강: ㄱ ㅏ ㅇ받침(0)
+		{"gang", []int32{'4', '1', '2', '0'}, "강"},
+		// ㄴ(5) ㅣ(1) ㄱ받침(4)
+		{"nik", []int32{'5', '1', '4'}, "닉"},
+		// 고치: ㄱㅗ, ㅊ=ㅈ(9)->ㅊ(9,9), then ㅣ(1) triggers 연음
+		{"gochi", []int32{'4', '2', '3', '9', '9', '1'}, "고치"},
+		// 연음: 강 + ㅏ -> 가아 (the ㅇ 받침 moves to the next syllable)
+		{"gang+a", []int32{'4', '1', '2', '0', '1', '2'}, "가아"},
+	}
+	for _, test := range cases {
+		if got := typeHangul(test.keys...); got != test.want {
+			t.Errorf("%s: typeHangul = %q, want %q", test.name, got, test.want)
+		}
+	}
+}
+
 func TestTextComponentHandlerDrivesGuestComponent(t *testing.T) {
-	// Default EN/S mode: '2','2' rotates a->b, then '3' commits and inserts 'd'.
-	if got := driveHandler(t, '2', '2', '3'); got != "bd" {
+	// The field starts in KO, so ㄴ(5)+ㅣ(1) composes 니 into the guest field.
+	if got := driveHandler(t, '5', '1'); got != "니" {
+		t.Fatalf("korean compose = %q, want %q", got, "니")
+	}
+	// One '*' reaches EN/S: '2','2' rotates a->b, then '3' commits and inserts 'd'.
+	if got := driveHandler(t, '*', '2', '2', '3'); got != "bd" {
 		t.Fatalf("english compose = %q, want %q", got, "bd")
 	}
-	// '*' twice reaches N123; digits then insert literally, and '#' is a space.
-	if got := driveHandler(t, '*', '*', '5', '#', '9'); got != "5 9" {
+	// KO -> EN/S -> EN/L -> N123 needs three '*'; digits insert literally, '#' spaces.
+	if got := driveHandler(t, '*', '*', '*', '5', '#', '9'); got != "5 9" {
 		t.Fatalf("numeric compose = %q, want %q", got, "5 9")
 	}
 }
