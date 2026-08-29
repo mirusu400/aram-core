@@ -46,6 +46,8 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 			{name: "<init>", descriptor: "(Ljava/lang/String;)V"},
 			{name: "<init>", descriptor: "([B)V"},
 			{name: "<init>", descriptor: "([BII)V"},
+			{name: "<init>", descriptor: "([BLjava/lang/String;)V"},
+			{name: "<init>", descriptor: "([BIILjava/lang/String;)V"},
 			{name: "<init>", descriptor: "([C)V"},
 			{name: "<init>", descriptor: "([CII)V"},
 			{name: "length", descriptor: "()I"},
@@ -54,6 +56,7 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 			{name: "substring", descriptor: "(II)Ljava/lang/String;"},
 			{name: "trim", descriptor: "()Ljava/lang/String;"},
 			{name: "getBytes", descriptor: "()[B"},
+			{name: "getBytes", descriptor: "(Ljava/lang/String;)[B"},
 			{name: "toCharArray", descriptor: "()[C"},
 			{
 				name:       "equals",
