@@ -493,3 +493,64 @@ func (d *registerDevice) LoadState(state []byte) error {
 	d.value = value
 	return nil
 }
+
+func TestBusReadMemoryKeepsHostInspectionOffDevicesAndObservers(t *testing.T) {
+	bus := NewBus()
+	device := &registerDevice{value: 0x11223344}
+	if err := bus.MapRAM("low", 0x1000, 0x1000); err != nil {
+		t.Fatal(err)
+	}
+	if err := bus.MapRAM("high", 0x2000, 0x1000); err != nil {
+		t.Fatal(err)
+	}
+	if err := bus.MapMMIO("registers", 0x3000, 0x1000, device); err != nil {
+		t.Fatal(err)
+	}
+	if err := bus.Write(0x1ffc, []byte{1, 2, 3, 4}, cpu.PermissionWrite); err != nil {
+		t.Fatal(err)
+	}
+	if err := bus.Write(0x2000, []byte{5, 6, 7, 8}, cpu.PermissionWrite); err != nil {
+		t.Fatal(err)
+	}
+
+	// An armed observer sends guest traffic down the per-width path. A host
+	// inspection must still transfer, and must stay out of the trace.
+	observed := 0
+	if err := bus.SetMemoryObserver(0x1000, 0x2000, func(MemoryAccess) { observed++ }); err != nil {
+		t.Fatal(err)
+	}
+	span := make([]byte, 8)
+	if err := bus.ReadMemory(0x1ffc, span, cpu.PermissionRead); err != nil {
+		t.Fatal(err)
+	}
+	if want := []byte{1, 2, 3, 4, 5, 6, 7, 8}; !bytes.Equal(span, want) {
+		t.Fatalf("region-crossing host read = %v, want %v", span, want)
+	}
+	if observed != 0 {
+		t.Fatalf("host read notified the memory observer %d times", observed)
+	}
+
+	for _, test := range []struct {
+		name    string
+		address uint32
+		size    int
+	}{
+		{name: "mmio", address: 0x3000, size: 4},
+		{name: "memory-into-mmio", address: 0x2ffc, size: 8},
+		{name: "unmapped", address: 0x9000, size: 4},
+		{name: "wraparound", address: 0xfffffffc, size: 8},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := bus.ReadMemory(
+				test.address,
+				make([]byte, test.size),
+				cpu.PermissionRead,
+			); !errors.Is(err, cpu.ErrInvalidAddress) {
+				t.Fatalf("host read error = %v", err)
+			}
+		})
+	}
+	if device.reads != 0 {
+		t.Fatalf("host read reached the device %d times", device.reads)
+	}
+}
