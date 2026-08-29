@@ -107,8 +107,11 @@ type Runtime struct {
 	CPU    cpu.Backend
 	Public *wipirt.Runtime
 	Pkg    raptorloader.Package
-	Clet   Clet
-	Java   *JavaRuntime
+	// unimplementedNames interns the label for an import ARAM does not
+	// implement. See unimplementedImportName.
+	unimplementedNames map[raptorImportKey]string
+	Clet               Clet
+	Java               *JavaRuntime
 
 	CallbackTasks []*CallbackTask
 
@@ -507,7 +510,7 @@ func (r *Runtime) dispatchImport(
 		}
 		return r.Public.DispatchAPI(ctx, api)
 	}
-	name := fmt.Sprintf("RAPTOR.module%d#%d", key.Module, key.Ordinal)
+	name := r.unimplementedImportName(key)
 	r.Public.Stats.APICalls++
 	r.Public.Stats.UnimplementedCalls++
 	r.Public.Stats.LastAPI = name
@@ -515,6 +518,34 @@ func (r *Runtime) dispatchImport(
 	r.Public.Observed[name]++
 	r.Public.Unimplemented[name]++
 	return r.Public.ReturnFromTrap(guest.WIPIReturn{})
+}
+
+// maxRaptorUnimplementedNames bounds the intern table. A title's import table
+// is far smaller than this; the cap only stops a runaway from growing the map
+// without limit, and formatting past it still works, it just allocates.
+const maxRaptorUnimplementedNames = 4096
+
+// unimplementedImportName is the label the statistics and the observed-call
+// tables record an unimplemented import under.
+//
+// It used to be formatted on every call. 붕어빵타이쿤3 issues around a hundred
+// and fifty imports a frame and almost all of them land here, so naming calls
+// ARAM does nothing with was a tenth of the frame - more than the interpreter
+// spent on the title's own drawing (issue #75). The label depends only on the
+// module and the ordinal, so it is built once per pair.
+func (r *Runtime) unimplementedImportName(key raptorImportKey) string {
+	if name, ok := r.unimplementedNames[key]; ok {
+		return name
+	}
+	name := fmt.Sprintf("RAPTOR.module%d#%d", key.Module, key.Ordinal)
+	if len(r.unimplementedNames) >= maxRaptorUnimplementedNames {
+		return name
+	}
+	if r.unimplementedNames == nil {
+		r.unimplementedNames = make(map[raptorImportKey]string)
+	}
+	r.unimplementedNames[key] = name
+	return name
 }
 
 func (r *Runtime) pushHostCallFrame() (*cpu.HostCallFrame, error) {
