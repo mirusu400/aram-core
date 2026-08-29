@@ -15,8 +15,6 @@ import (
 // cpu/conformance before it is offered here.
 func init() { RegisterCPUBackend("native", newNativeCPU) }
 
-// newNativeCPU is the hand-written Thumb->x86-64 dynamic recompiler
-// (interpreter.NewNativeJIT): a third CPU backend that translates and caches
-// Thumb blocks as host machine code, falling back to the interpreter for
-// memory, ARM, and untranslated instructions.
-func newNativeCPU() cpu.Backend { return interpreter.NewNativeJIT() }
+// newNativeCPU uses emitted x86-64 ARM/application Thumb blocks and the faster
+// compact Go Thumb tier for whole-system firmware on Windows.
+func newNativeCPU() cpu.Backend { return interpreter.NewHybridJIT() }

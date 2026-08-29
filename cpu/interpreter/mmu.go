@@ -344,62 +344,21 @@ func (b *Backend) writeVirtual(address uint32, source []byte, permission cpu.Per
 	return nil
 }
 
-// noteVirtualTLB admits a whole virtual 4 KiB page to the native inline-memory
-// path only when all four ARM926 1 KiB translation chunks are permitted,
-// physically consecutive, and backed by one observer-free RAM slice. Failed
-// speculative probes restore the architectural fault registers: the guest
-// completed its actual access successfully, so validating neighbouring chunks
-// must not manufacture a visible fault.
+// noteVirtualTLB admits the accessed ARM926 1 KiB permission subpage to the
+// native inline-memory path when it is backed by observer-free RAM. The native
+// TLB deliberately shares this granularity, so no neighbouring AP subpage has
+// to be speculatively translated just to accelerate the completed access.
 func (b *Backend) noteVirtualTLB(address, accessedPhysical uint32, permission cpu.Permissions) {
 	if b.tlb == nil || b.directBus == nil || permission&cpu.PermissionExecute != 0 ||
 		b.tlbHit(address, permission) {
 		return
 	}
-	// Prove the completed access itself is still direct RAM before speculative
-	// translation checks. With an observer armed this fails immediately, so the
-	// neighbouring page-table probes below cannot create observable bus reads.
-	if _, _, _, ok := b.directData(accessedPhysical, 1, permission); !ok {
+	virtualStart := address &^ uint32(tlbPageSize-1)
+	pageOffset := address & uint32(tlbPageSize-1)
+	if accessedPhysical&uint32(tlbPageSize-1) != pageOffset {
 		return
 	}
-	virtualStart := address &^ uint32(tlbPageSize-1)
-	dataStatus := b.cp15.dataFaultStatus
-	instructionStatus := b.cp15.instructionFaultStatus
-	faultAddress := b.cp15.faultAddress
-	var slots [tlbPageSize / 0x400]uint32
-	var saved [tlbPageSize / 0x400]mmuTLBEntry
-	for index, offset := range []uint32{0, 0x400, 0x800, 0xc00} {
-		modified := virtualStart + offset
-		if modified < 0x02000000 {
-			modified |= b.cp15.processID & 0xfe000000
-		}
-		slots[index] = modified >> 10 & (mmuTLBEntries - 1)
-		if b.mmuTLBTable != nil {
-			saved[index] = b.mmuTLBTable[slots[index]]
-		}
-	}
-	defer func() {
-		b.cp15.dataFaultStatus = dataStatus
-		b.cp15.instructionFaultStatus = instructionStatus
-		b.cp15.faultAddress = faultAddress
-		if b.mmuTLBTable != nil {
-			for index, slot := range slots {
-				b.mmuTLBTable[slot] = saved[index]
-			}
-		}
-	}()
-
-	var physicalStart uint32
-	for offset := uint32(0); offset < tlbPageSize; offset += 0x400 {
-		physical, err := b.translateAddress(virtualStart+offset, permission)
-		if err != nil {
-			return
-		}
-		if offset == 0 {
-			physicalStart = physical
-		} else if uint64(physicalStart)+uint64(offset) != uint64(physical) {
-			return
-		}
-	}
+	physicalStart := accessedPhysical - pageOffset
 	data, offset, _, ok := b.directData(physicalStart, tlbPageSize, permission)
 	if !ok {
 		return
