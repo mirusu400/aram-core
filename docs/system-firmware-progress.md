@@ -129,6 +129,7 @@ When `ARAM_REFERENCE_REPO` is configured, the private gate currently proves:
 | numeric keypad input | four real matrix `digit-0` events open the native dialer and render `000-0` |
 | built-in UI launch | a real side `volume-up` matrix press from home opens the firmware's `소리 조절` application |
 | native navigation input | screen-differential probes identify the left/menu and right/memo soft keys, NATE/OK, send, all four ring directions, C/back, and both side-volume keys; menu opens the native grid, directions select native shortcuts and list items, OK enters a selection, and back returns to its parent |
+| END/power input | a short active-low pulse on primary-clock GPIO input bit 4 reproduces the red handset END key; a DL21 snapshot regression opens the native menu and verifies that `end` returns to the post-END home frame |
 | second SCH-W830 build | DA18 is independently hash-matched and normalized, reuses the CG23 boot chain and the same board devices, completes native first-boot provisioning, cold-boots to its `S/W:DA18.1029` home frame, and launches `소리 조절` through the side-volume key |
 | reusable headless machine | DL21 and DA18 both pass `systemmachine.New`: exact set selection, QCSBL boundary, frame/input contracts, media save/load, power cycle, factory reset, and complete snapshot restore |
 | automated erased-media E2E | both builds pass new NAND -> native first-boot success -> guest-created media -> power cycle -> profiled `volume-up` input -> full `소리 조절` frame -> pre-input snapshot restore -> deterministic home frame |

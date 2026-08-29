@@ -108,17 +108,19 @@ type Position struct {
 type Machine struct {
 	mu sync.Mutex
 
-	identity Identity
-	backend  cpu.Backend
-	bus      *system.Bus
-	runner   *system.ClockedRunner
-	handoff  system.BootHandoff
-	flash    *system.COWFlash
-	nand     *system.QualcommNAND
-	panel    *system.DCSPanelController
-	keypad   *system.QualcommGPIOKeypad
-	audio    *schw830Audio
-	controls []string
+	identity     Identity
+	backend      cpu.Backend
+	bus          *system.Bus
+	runner       *system.ClockedRunner
+	handoff      system.BootHandoff
+	flash        *system.COWFlash
+	nand         *system.QualcommNAND
+	panel        *system.DCSPanelController
+	keypad       *system.QualcommGPIOKeypad
+	primaryClock *system.QualcommPrimaryClockControl
+	primaryKeys  map[string]system.QualcommPrimaryClockKeyProfile
+	audio        *schw830Audio
+	controls     []string
 
 	resetCPUState    []byte
 	factoryNANDState []byte
@@ -466,7 +468,8 @@ func newSamsungQualcommMachine(
 			CPU:             backend.Identity(),
 		},
 		backend: backend, bus: bus, runner: runner, handoff: handoff,
-		flash: flash, nand: nand, panel: panelController, keypad: keypad, audio: audio,
+		flash: flash, nand: nand, panel: panelController, keypad: keypad,
+		primaryClock: primaryClock, primaryKeys: boardPrimaryClockKeys(board), audio: audio,
 		controls:         boardControls(board),
 		resetCPUState:    append([]byte(nil), resetCPUState...),
 		factoryNANDState: append([]byte(nil), factoryNANDState...),
@@ -626,14 +629,31 @@ func schw830BusRegisterOffsets() []uint32 {
 }
 
 func boardControls(board system.BoardProfile) []string {
-	if board.Keypad == nil {
-		return nil
+	keypadCount := 0
+	if board.Keypad != nil {
+		keypadCount = len(board.Keypad.Keys)
 	}
-	controls := make([]string, len(board.Keypad.Keys))
-	for index, key := range board.Keypad.Keys {
-		controls[index] = key.ID
+	controls := make([]string, 0, keypadCount+len(board.PrimaryClockKeys))
+	if board.Keypad != nil {
+		for _, key := range board.Keypad.Keys {
+			controls = append(controls, key.ID)
+		}
+	}
+	for _, key := range board.PrimaryClockKeys {
+		controls = append(controls, key.ID)
 	}
 	return controls
+}
+
+func boardPrimaryClockKeys(board system.BoardProfile) map[string]system.QualcommPrimaryClockKeyProfile {
+	if len(board.PrimaryClockKeys) == 0 {
+		return nil
+	}
+	keys := make(map[string]system.QualcommPrimaryClockKeyProfile, len(board.PrimaryClockKeys))
+	for _, key := range board.PrimaryClockKeys {
+		keys[key.ID] = key
+	}
+	return keys
 }
 
 func (m *Machine) Identity() Identity {
@@ -731,6 +751,16 @@ func (m *Machine) SetKey(id string, pressed bool) error {
 	defer m.mu.Unlock()
 	if m.closed.Load() {
 		return ErrClosed
+	}
+	if key, ok := m.primaryKeys[id]; ok {
+		if m.primaryClock == nil {
+			return ErrUnsupportedControl
+		}
+		high := pressed
+		if key.ActiveLow {
+			high = !pressed
+		}
+		return m.primaryClock.SetInputLine(key.InputLine, high)
 	}
 	if m.keypad == nil {
 		return ErrUnsupportedControl

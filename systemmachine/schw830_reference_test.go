@@ -38,7 +38,7 @@ func TestSCHW830PrivateReferenceUsesHeadlessMachineAPI(t *testing.T) {
 		controls[id] = true
 	}
 	for _, id := range []string{
-		"soft-left", "soft-right", "up", "down", "left", "right", "ok", "back", "send",
+		"soft-left", "soft-right", "up", "down", "left", "right", "ok", "back", "send", "end",
 		"volume-up", "volume-down", "digit-0",
 	} {
 		if !controls[id] {
@@ -92,6 +92,64 @@ func TestSCHW830PrivateReferenceUsesHeadlessMachineAPI(t *testing.T) {
 	}
 	if position := machine.Position(); position != initial {
 		t.Fatalf("position after factory reset = %+v, want %+v", position, initial)
+	}
+}
+
+func TestSCHW830PrivateReferenceEndKeyReturnsToHome(t *testing.T) {
+	prefix := os.Getenv("ARAM_SCHW830_PHONE_KEYS_SNAPSHOT_PREFIX")
+	if prefix == "" {
+		t.Skip("ARAM_SCHW830_PHONE_KEYS_SNAPSHOT_PREFIX is not configured")
+	}
+	set := openSamsungSCHReferenceSet(t, schw830ReferenceDirectory(t))
+	machine, err := New(set, Options{BackendMode: CPUBackendJIT})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = machine.Close() })
+	if buildID := machine.Identity().FirmwareBuildID; buildID != samsung.SCHW830DL21ProfileID {
+		t.Fatalf("END-key snapshot regression requires DL21, got %q", buildID)
+	}
+	loadSystemMachineSnapshot(t, machine, prefix)
+
+	const (
+		homeHash       = "071704b77e6b59ccd6d3f98225136cb6f8bb8101ff30619c4ed7ed496c545d25"
+		endKeyHomeHash = "8396a13fd0e8c9ed1872c1f7a6ce3a90d3e2b826a2778964c00475bd93a873c5"
+	)
+	if hash := machine.FrameSHA256(); hash != homeHash {
+		t.Fatalf("loaded phone-key frame hash = %s, want home %s", hash, homeHash)
+	}
+	for _, action := range []struct {
+		id      string
+		pressed bool
+		budget  uint64
+	}{
+		{id: "soft-left", pressed: true, budget: 5_000_000},
+		{id: "soft-left", pressed: false, budget: 5_000_000},
+	} {
+		if err := machine.SetKey(action.id, action.pressed); err != nil {
+			t.Fatal(err)
+		}
+		runSCHW830Budget(t, machine, action.budget, "menu key transition")
+	}
+	runSCHW830Budget(t, machine, 35_000_000, "menu settle")
+	if hash := machine.FrameSHA256(); hash == homeHash {
+		t.Fatal("soft-left did not open the menu before END-key regression")
+	}
+	for _, action := range []struct {
+		pressed bool
+		budget  uint64
+	}{
+		{pressed: true, budget: 5_000_000},
+		{pressed: false, budget: 5_000_000},
+	} {
+		if err := machine.SetKey("end", action.pressed); err != nil {
+			t.Fatal(err)
+		}
+		runSCHW830Budget(t, machine, action.budget, "END key transition")
+	}
+	runSCHW830Budget(t, machine, 35_000_000, "END key settle")
+	if hash := machine.FrameSHA256(); hash != endKeyHomeHash {
+		t.Fatalf("END key returned frame hash %s, want post-END home %s", hash, endKeyHomeHash)
 	}
 }
 
