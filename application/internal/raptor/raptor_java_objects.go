@@ -564,6 +564,26 @@ func (r *Runtime) callJavaHostMethod(
 	return guest.WIPIReturn{Low: value, High: java.Host.JavaReturnHigh}, nil
 }
 
+// RepaintDirtyJavaCard paints the card the title has asked to repaint and
+// reports whether it painted one.
+//
+// Card.repaint() only marks the card dirty: on a handset the platform performs
+// the repaint on its own thread, and a title is free to never call
+// serviceRepaints. 현영맞고2006 does exactly that - it asks for a repaint tens
+// of thousands of times and never once services it - so the frame step has to
+// be the thing that services it (issue #79).
+func (r *Runtime) RepaintDirtyJavaCard(ctx context.Context) (bool, error) {
+	if r.Java == nil || r.Java.currentCard == 0 {
+		return false, nil
+	}
+	card := r.Java.currentCard
+	if !r.Java.dirtyCards[card] {
+		return false, nil
+	}
+	delete(r.Java.dirtyCards, card)
+	return true, r.paintRaptorJavaCard(ctx, r.Java, card)
+}
+
 func (r *Runtime) paintRaptorJavaCard(
 	ctx context.Context,
 	java *JavaRuntime,

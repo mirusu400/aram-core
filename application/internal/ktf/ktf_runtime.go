@@ -114,6 +114,9 @@ type Runtime struct {
 	nativeSignatures     map[uint32]*ktfNativeSignatureMatches
 	nativeSignatureGen   uint64
 	javaClassInspections map[uint32]*ktfJavaClassInspection
+	// textSurfaceScratch is the reusable RGBA conversion buffer the text draw
+	// path reads a surface back through.
+	textSurfaceScratch []byte
 	// inspectMemo short-circuits class inspection for as long as the guest CPU
 	// is stopped inside a host call. See ktfInspectMemo.
 	inspectMemo             ktfInspectMemo

@@ -73,6 +73,29 @@ type raptorJavaFixedVirtualMethod struct {
 	descriptor string
 }
 
+// raptorJavaFlatVirtualBase is the first offset the link step publishes for a
+// linked (flat) virtual method, in the units the generated code uses:
+// it computes the slot as vtable + offset*4 + 4.
+//
+// The flat entries have to start past every fixed slot below, because a
+// compiler-inlined call site reads a fixed byte offset directly and the fixed
+// pass writes those slots after the flat pass. Publishing offset = index*2 put
+// flat entry 1 at byte 12 - java/lang/Object's hashCode slot - so the fixed
+// pass overwrote it. 현영맞고2006 draws its whole screen through flat entry 1
+// (org/kwis/msp/lcdui/Graphics.drawString), and every one of those calls
+// dispatched to Object.hashCode instead: 92,799 of them in sixty frames, and
+// nothing was ever drawn (issue #79). The highest fixed offset in the table
+// below is java/lang/String's substring at 0x74, so the flat region starts at
+// byte 0x7c.
+const raptorJavaFlatVirtualBase = 30
+
+// raptorJavaFlatVirtualSlot is the byte offset of one linked virtual method
+// inside a vtable, matching what generated code computes from the published
+// offset.
+func raptorJavaFlatVirtualSlot(index uint32) uint32 {
+	return (raptorJavaFlatVirtualBase+index*2)*4 + 4
+}
+
 var raptorJavaFixedVirtualMethods = map[string][]raptorJavaFixedVirtualMethod{
 	"java/lang/String": {
 		{offset: 0x10, Name: "equals", descriptor: "(Ljava/lang/Object;)Z"},
@@ -239,6 +262,14 @@ type JavaRuntime struct {
 	initializing map[uint32]bool
 	scratch      uint32
 	jarPath      uint32
+
+	// fieldOffsets and fieldNames remember where the linker published the
+	// module's field-offset table and which fields it covers, so a class that
+	// only arrives after the link can still have its fields resolved. See
+	// resolveRaptorJavaFieldOffsets.
+	fieldOffsets uint32
+	fieldNames   uint32
+	fieldCount   uint32
 
 	LaunchRequested bool
 	MainClass       string
@@ -979,6 +1010,13 @@ func (r *Runtime) inspectRaptorJavaClass(
 			})
 		}
 	}
+	// A class that arrives after linkClasses brings field indices the published
+	// table could not have carried, so the table is resolved again.
+	if len(class.fields) != 0 && java.fieldOffsets != 0 {
+		if err := r.resolveRaptorJavaFieldOffsets(java); err != nil {
+			return nil, err
+		}
+	}
 	return class, nil
 }
 
@@ -1108,12 +1146,14 @@ func (r *Runtime) linkRaptorJavaClasses(java *JavaRuntime) error {
 		java.flatVirtual[index] = raptorJavaMethod{
 			Name: names[index], descriptor: descriptors[index],
 		}
-		// Generated code computes vtable + offset*4 + 4. Compiler-inlined calls
-		// use the SDK's fixed per-class slots (raptorJavaFixedVirtualMethods),
-		// so linked offsets are doubled to keep the flat entries clear of the
-		// fixed slot range.
+		// Generated code computes vtable + offset*4 + 4; the offsets are
+		// published from raptorJavaFlatVirtualBase so the flat entries land
+		// past every fixed slot.
 		var encoded [2]byte
-		binary.LittleEndian.PutUint16(encoded[:], uint16(index*2))
+		binary.LittleEndian.PutUint16(
+			encoded[:],
+			uint16(raptorJavaFlatVirtualBase+index*2),
+		)
 		if err := r.CPU.WriteMemory(virtualMethodOffsets+index*2, encoded[:]); err != nil {
 			return err
 		}
@@ -1182,26 +1222,11 @@ func (r *Runtime) linkRaptorJavaClasses(java *JavaRuntime) error {
 		if fieldCount > 4096 {
 			return fmt.Errorf("invalid Raptor Java field table size %d", fieldCount)
 		}
-		previousFieldIndex := uint32(0)
-		previousFieldWide := false
-		for index := uint32(0); index < fieldCount; index++ {
-			nameAddress, _ := r.Public.ReadU32(fields + index*8)
-			typeAddress, _ := r.Public.ReadU32(fields + index*8 + 4)
-			name, _ := r.Public.ReadCString(nameAddress)
-			descriptor, _ := r.Public.ReadCString(typeAddress)
-			fieldIndex, wide := raptorJavaLinkedFieldIndex(
-				java,
-				string(name),
-				string(descriptor),
-				previousFieldIndex,
-				previousFieldWide,
-			)
-			previousFieldIndex, previousFieldWide = fieldIndex, wide
-			var encoded [2]byte
-			binary.LittleEndian.PutUint16(encoded[:], uint16(fieldIndex))
-			if err := r.CPU.WriteMemory(fieldOffsets+index*2, encoded[:]); err != nil {
-				return err
-			}
+		java.fieldOffsets = fieldOffsets
+		java.fieldNames = fields
+		java.fieldCount = fieldCount
+		if err := r.resolveRaptorJavaFieldOffsets(java); err != nil {
+			return err
 		}
 	}
 	for _, class := range java.classes {
@@ -1276,6 +1301,46 @@ func (r *Runtime) ensureRaptorHostClass(
 	return class, nil
 }
 
+// resolveRaptorJavaFieldOffsets publishes an index for every field the module
+// names, into the table its generated code reads a field's slot from.
+//
+// It is separated from linkClasses because a module may register the classes
+// that own those fields *after* it links. 현영맞고2006 registers nine
+// field-less helper classes, links, and only then loads Hcvs - the Card
+// subclass that owns 378 of the module's 370 named fields. Resolving once at
+// link time left every entry zero, so each of that title's getfields read slot
+// zero: its paint() read what it believed was its Graphics field, found the
+// unrelated object living in slot zero, took the "already painting" early exit
+// and drew nothing, so the title booted to a black screen and never repainted
+// (issue #79).
+func (r *Runtime) resolveRaptorJavaFieldOffsets(java *JavaRuntime) error {
+	if java.fieldOffsets == 0 || java.fieldCount == 0 {
+		return nil
+	}
+	previousFieldIndex := uint32(0)
+	previousFieldWide := false
+	for index := uint32(0); index < java.fieldCount; index++ {
+		nameAddress, _ := r.Public.ReadU32(java.fieldNames + index*8)
+		typeAddress, _ := r.Public.ReadU32(java.fieldNames + index*8 + 4)
+		name, _ := r.Public.ReadCString(nameAddress)
+		descriptor, _ := r.Public.ReadCString(typeAddress)
+		fieldIndex, wide := raptorJavaLinkedFieldIndex(
+			java,
+			string(name),
+			string(descriptor),
+			previousFieldIndex,
+			previousFieldWide,
+		)
+		previousFieldIndex, previousFieldWide = fieldIndex, wide
+		var encoded [2]byte
+		binary.LittleEndian.PutUint16(encoded[:], uint16(fieldIndex))
+		if err := r.CPU.WriteMemory(java.fieldOffsets+index*2, encoded[:]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func raptorJavaLinkedFieldIndex(
 	java *JavaRuntime,
 	name, descriptor string,
@@ -1331,10 +1396,10 @@ func (r *Runtime) buildRaptorJavaVTable(
 		}
 	}
 	// Guest vtables hold the class holder at +0 followed by 4-byte slots.
-	// Linked flat entries live at index*8+4 (matching the doubled offsets the
-	// link step publishes); SDK classes additionally pin methods at fixed byte
-	// offsets that compiler-inlined call sites hardcode.
-	vtableSize := count*8 + 8
+	// Linked flat entries live at raptorJavaFlatVirtualSlot(index) (matching
+	// the offsets the link step publishes); SDK classes additionally pin
+	// methods at fixed byte offsets that compiler-inlined call sites hardcode.
+	vtableSize := raptorJavaFlatVirtualSlot(count) + 4
 	if methodTable != 0 {
 		// Walk the table's method region (contiguous code pointers in the low
 		// image, interspersed with zero gaps) until it ends at a class-data
@@ -1383,7 +1448,10 @@ func (r *Runtime) buildRaptorJavaVTable(
 			}
 		}
 		if procedure != 0 {
-			if err := r.Public.WriteU32(vtable+uint32(index)*8+4, procedure); err != nil {
+			if err := r.Public.WriteU32(
+				vtable+raptorJavaFlatVirtualSlot(uint32(index)),
+				procedure,
+			); err != nil {
 				return err
 			}
 		}
