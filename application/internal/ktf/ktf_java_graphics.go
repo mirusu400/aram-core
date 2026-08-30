@@ -678,7 +678,7 @@ func (r *Runtime) drawGraphicsTextShared(
 	case anchor&64 != 0:
 		textAnchor = textAnchor&^shared.AnchorTop | shared.AnchorBaseline
 	}
-	if err := r.Services.Text.Draw(
+	top, bottom, err := r.Services.Text.DrawBounds(
 		r.ServiceOwner,
 		fontID,
 		serviceID,
@@ -692,20 +692,61 @@ func (r *Runtime) drawGraphicsTextShared(
 			B: state.color.B,
 			A: 0xff,
 		},
-	); err != nil {
-		return err
-	}
-	pixels, err := r.Services.Graphics.RGBA(r.ServiceOwner, serviceID)
+	)
 	if err != nil {
 		return err
 	}
 	bounds := state.Target.Bounds()
-	if len(pixels) != bounds.Dx()*bounds.Dy()*4 {
+	if top >= bottom {
+		// Nothing was inked, so the target already matches the surface.
+		state.PixelsDirty = false
+		return nil
+	}
+	// Only the band the run inked is read back, into a buffer kept across
+	// calls. A title that draws its whole screen with drawString - 현영맞고2006
+	// issues hundreds a frame - otherwise converted, allocated and copied the
+	// whole surface twice per string, which was most of its frame (issue #79).
+	target, direct := state.Target.(*image.RGBA)
+	direct = direct && target.Rect == bounds &&
+		bounds.Min == (image.Point{}) &&
+		target.Stride == bounds.Dx()*4
+	if !direct {
+		top, bottom = 0, bounds.Dy()
+	}
+	top = max(top, 0)
+	bottom = min(bottom, bounds.Dy())
+	if top >= bottom {
+		state.PixelsDirty = false
+		return nil
+	}
+	pixels, err := r.Services.Graphics.RGBARowsInto(
+		r.ServiceOwner,
+		serviceID,
+		top,
+		bottom,
+		r.textSurfaceScratch,
+	)
+	if err != nil {
+		return err
+	}
+	r.textSurfaceScratch = pixels
+	if len(pixels) != bounds.Dx()*(bottom-top)*4 {
 		return fmt.Errorf("KTF text surface geometry changed")
 	}
-	source := image.NewRGBA(image.Rect(0, 0, bounds.Dx(), bounds.Dy()))
+	if direct {
+		copy(target.Pix[top*target.Stride:bottom*target.Stride], pixels)
+		state.PixelsDirty = false
+		return nil
+	}
+	source := image.NewRGBA(image.Rect(0, 0, bounds.Dx(), bottom-top))
 	copy(source.Pix, pixels)
-	draw.Draw(state.Target, bounds, source, image.Point{}, draw.Src)
+	draw.Draw(
+		state.Target,
+		image.Rect(bounds.Min.X, bounds.Min.Y+top, bounds.Max.X, bounds.Min.Y+bottom),
+		source,
+		image.Point{},
+		draw.Src,
+	)
 	state.PixelsDirty = false
 	return nil
 }

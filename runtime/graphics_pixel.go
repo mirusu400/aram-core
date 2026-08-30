@@ -113,6 +113,69 @@ func surfaceRGBA(current *surface) ([]byte, error) {
 	return surfaceRGBAInto(current, nil)
 }
 
+// surfaceRGBARowsInto converts the rows in [top, bottom) and returns them
+// packed from the start of the destination, so a caller that only changed a
+// band of the surface converts a band instead of the whole thing.
+func surfaceRGBARowsInto(
+	current *surface,
+	top, bottom int,
+	destination []byte,
+) ([]byte, error) {
+	height := int(current.descriptor.Height)
+	top = max(top, 0)
+	bottom = min(bottom, height)
+	if top >= bottom {
+		return destination[:0], nil
+	}
+	width := int(current.descriptor.Width)
+	rows := bottom - top
+	if uint64(width)*uint64(rows) > uint64(math.MaxInt/4) {
+		return nil, fmt.Errorf("%w: RGBA conversion exceeds host address space", ErrLimitExceeded)
+	}
+	size := width * rows * 4
+	rgba := destination
+	if cap(destination) < size {
+		rgba = make([]byte, size)
+	} else {
+		rgba = destination[:size]
+	}
+	stride := int(current.descriptor.Stride)
+	switch current.descriptor.Format {
+	case PixelRGB565:
+		for y := top; y < bottom; y++ {
+			row := y * stride
+			offset := (y - top) * width * 4
+			for x := 0; x < width; x++ {
+				value := binary.LittleEndian.Uint16(current.pixels[row+x*2:])
+				rgba[offset+0] = expand5(uint8((value >> 11) & 0x1f))
+				rgba[offset+1] = expand6(uint8((value >> 5) & 0x3f))
+				rgba[offset+2] = expand5(uint8(value & 0x1f))
+				rgba[offset+3] = 0xff
+				offset += 4
+			}
+		}
+		return rgba, nil
+	case PixelRGBA8888:
+		for y := top; y < bottom; y++ {
+			row := y * stride
+			offset := (y - top) * width * 4
+			copy(rgba[offset:offset+width*4], current.pixels[row:row+width*4])
+		}
+		return rgba, nil
+	}
+	for y := top; y < bottom; y++ {
+		for x := 0; x < width; x++ {
+			color := decodeSurfaceColor(current, int32(x), int32(y))
+			offset := ((y-top)*width + x) * 4
+			rgba[offset+0] = color.R
+			rgba[offset+1] = color.G
+			rgba[offset+2] = color.B
+			rgba[offset+3] = color.A
+		}
+	}
+	return rgba, nil
+}
+
 func surfaceRGBAInto(current *surface, destination []byte) ([]byte, error) {
 	pixelCount := uint64(current.descriptor.Width) * uint64(current.descriptor.Height)
 	if pixelCount > uint64(math.MaxInt/4) {
