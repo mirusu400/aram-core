@@ -393,6 +393,9 @@ func TestSCHW770DA05BoardProfileKeepsVersionOneNANDSeparate(t *testing.T) {
 	if profile.PBLLegacyFeatureDataAddress != 0xffff6044 {
 		t.Fatalf("SCH-W770 legacy PBL feature data = %#x", profile.PBLLegacyFeatureDataAddress)
 	}
+	if profile.PrimaryClockKeys != nil {
+		t.Fatalf("SCH-W770 inherited unevidenced primary-clock keys %#v", profile.PrimaryClockKeys)
+	}
 	if !reflect.DeepEqual(profile.LegacyTopWritableOffsets, []uint32{
 		qualcommLegacyTopIDOffset,
 		qualcommLegacyTopIDOffset + 4,

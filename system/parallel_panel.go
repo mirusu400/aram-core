@@ -50,7 +50,8 @@ type ParallelPanelInterface struct {
 // ParallelPanelPort presents one 16-bit command or data port as an independent
 // MMIO device. Boards that decode the D/C signal with a sparse external-bus
 // address can map these two aliases without claiming the unrelated addresses
-// between them.
+// between them. Both aliases drive one transport, so the command port owns its
+// reset and serialization; the data port carries only its own role.
 type ParallelPanelPort struct {
 	panel *ParallelPanelInterface
 	data  bool
@@ -207,7 +208,12 @@ func (p *ParallelPanelInterface) LoadState(state []byte) error {
 	return nil
 }
 
+// Reset defers to the command port. Resetting the shared transport once keeps
+// a two-alias board identical to a single contiguous window.
 func (p *ParallelPanelPort) Reset() error {
+	if p.data {
+		return nil
+	}
 	return p.panel.Reset()
 }
 
@@ -233,19 +239,22 @@ func (p *ParallelPanelPort) Write(offset uint32, width Width, value uint32) erro
 	return p.panel.Write(panelOffset, width, value)
 }
 
+// SaveState serializes the shared transport from the command port only. The
+// panel state embeds a full pixel surface, so letting both aliases carry it
+// would duplicate every frame in each machine snapshot.
 func (p *ParallelPanelPort) SaveState() ([]byte, error) {
+	header := make([]byte, 9)
+	copy(header, "PPPT")
+	binary.LittleEndian.PutUint32(header[4:8], 1)
+	if p.data {
+		header[8] = 1
+		return header, nil
+	}
 	state, err := p.panel.SaveState()
 	if err != nil {
 		return nil, err
 	}
-	output := make([]byte, 9+len(state))
-	copy(output, "PPPT")
-	binary.LittleEndian.PutUint32(output[4:8], 1)
-	if p.data {
-		output[8] = 1
-	}
-	copy(output[9:], state)
-	return output, nil
+	return append(header, state...), nil
 }
 
 func (p *ParallelPanelPort) LoadState(state []byte) error {
@@ -256,6 +265,12 @@ func (p *ParallelPanelPort) LoadState(state []byte) error {
 	if len(state) < 9 || string(state[:4]) != "PPPT" ||
 		binary.LittleEndian.Uint32(state[4:8]) != 1 || state[8] != wantData {
 		return ErrInvalidState
+	}
+	if p.data {
+		if len(state) != 9 {
+			return ErrInvalidState
+		}
+		return nil
 	}
 	return p.panel.LoadState(state[9:])
 }

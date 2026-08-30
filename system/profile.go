@@ -1297,6 +1297,10 @@ func SCHW770DA05BoardProfile() BoardProfile {
 	// publishes equivalent NAND geometry through boot_feature_cfg at this
 	// fixed high-IRAM structure address.
 	profile.PBLLegacyFeatureDataAddress = 0xffff6044
+	// The boot power-key input line that publishes W830's red END action is not
+	// evidenced on DA05, whose scanner samples input bits 0..2 only. Drop the
+	// inherited host control rather than exporting an unproven W770 key.
+	profile.PrimaryClockKeys = nil
 	// DA05's hsdevice_W770 key scanner selects three GPIO rows through bits
 	// 10..12 of GPIO_OE_1 and samples input bits 0..2. The HOLD switch is the
 	// otherwise-unmapped matrix position stored at scan-buffer index 6
