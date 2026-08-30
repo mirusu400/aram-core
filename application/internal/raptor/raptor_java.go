@@ -278,6 +278,30 @@ type JavaRuntime struct {
 	dirtyCards      map[uint32]bool
 	threadTargets   []uint32
 	Tasks           []*JavaTask
+	// nextTask rotates the thread scheduler. See NextRunnableJavaTask.
+	nextTask int
+}
+
+// NextRunnableJavaTask picks the next started thread to run, rotating so every
+// one of them gets a slice.
+//
+// The scheduler used to take the first task that was not done, so a title whose
+// main loop never returns starved every other thread it started. 현영맞고2006
+// starts Hcvs.run() and then TimeChecker.run(); the first never returns, so the
+// clock thread it runs against never got a single instruction (issue #79).
+func (r *Runtime) NextRunnableJavaTask() *JavaTask {
+	java := r.Java
+	if java == nil || len(java.Tasks) == 0 {
+		return nil
+	}
+	for offset := 0; offset < len(java.Tasks); offset++ {
+		index := (java.nextTask + offset) % len(java.Tasks)
+		if task := java.Tasks[index]; !task.Done {
+			java.nextTask = (index + 1) % len(java.Tasks)
+			return task
+		}
+	}
+	return nil
 }
 
 func (r *Runtime) ensureJavaRuntime() (*JavaRuntime, error) {
