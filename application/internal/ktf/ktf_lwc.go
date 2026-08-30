@@ -1362,6 +1362,44 @@ func ktfJavaArrayElementSize(className string) (uint32, error) {
 // instance handle is mirror. Callers that maintain a parallel guest array (the
 // Raptor bridge keeps its own array body next to each KTF mirror) use it to
 // copy the correct number of bytes.
+// ArrayShape describes a KTF Java array instance to a caller that keeps its own
+// copy of the elements. body is where the elements start, count is the element
+// count, element is one element's byte size, and primitive reports whether the
+// elements are values rather than object references. It reports ok=false for an
+// instance that is not an array.
+//
+// The Raptor bridge keeps a second, AOT-readable body for every array it
+// mirrors here, and uses this to copy elements between the two.
+func (r *Runtime) ArrayShape(mirror uint32) (
+	body uint32,
+	count uint32,
+	element uint32,
+	primitive bool,
+	ok bool,
+) {
+	if mirror == 0 {
+		return 0, 0, 0, false, false
+	}
+	words, err := r.ReadWords(mirror, 2)
+	if err != nil || words[0] == 0 {
+		return 0, 0, 0, false, false
+	}
+	class, err := r.InspectJavaClass(words[1])
+	if err != nil || !strings.HasPrefix(class.Name, "[") || len(class.Name) < 2 {
+		return 0, 0, 0, false, false
+	}
+	element, err = ktfJavaArrayElementSize(class.Name)
+	if err != nil {
+		return 0, 0, 0, false, false
+	}
+	count, err = r.ReadU32(words[0] + 4)
+	if err != nil {
+		return 0, 0, 0, false, false
+	}
+	primitive = class.Name[1] != 'L' && class.Name[1] != '['
+	return words[0] + 8, count, element, primitive, true
+}
+
 func (r *Runtime) ArrayElementSize(mirror uint32) (uint32, error) {
 	words, err := r.ReadWords(mirror, 2)
 	if err != nil {
