@@ -494,15 +494,12 @@ func (r *Runtime) callJavaHostMethod(
 				target = receiver
 			}
 			java.threadTargets = append(java.threadTargets, target)
-			class := r.raptorJavaClassForObject(java, target)
-			for depth := 0; class != nil && depth < 256; depth++ {
-				if run, found := DeclaredMethod(class, "run", "()V"); found && run.Body != 0 {
-					java.Tasks = append(java.Tasks, &JavaTask{
-						Target: target, Procedure: run.Body,
-					})
-					break
-				}
-				class = java.ClassByName[class.parentName]
+			if procedure := r.raptorJavaThreadRun(java, target); procedure != 0 {
+				java.Tasks = append(java.Tasks, &JavaTask{
+					Target:    target,
+					Procedure: procedure,
+					Stack:     RaptorJavaTaskStack(len(java.Tasks)),
+				})
 			}
 			return guest.WIPIReturn{}, nil
 		case "org/kwis/msp/lcdui/Display.callSerially(Ljava/lang/Runnable;)V",
@@ -582,6 +579,32 @@ func (r *Runtime) RepaintDirtyJavaCard(ctx context.Context) (bool, error) {
 	}
 	delete(r.Java.dirtyCards, card)
 	return true, r.paintRaptorJavaCard(ctx, r.Java, card)
+}
+
+// raptorJavaThreadRun resolves the body a started thread runs. A class the
+// module publishes metadata for is resolved by name along its chain; one it
+// does not is read out of the vtable the module built for it, where run sits
+// next to start. See raptorJavaThreadRunSlot.
+func (r *Runtime) raptorJavaThreadRun(java *JavaRuntime, target uint32) uint32 {
+	class := r.raptorJavaClassForObject(java, target)
+	for depth := 0; class != nil && depth < 256; depth++ {
+		if run, found := DeclaredMethod(class, "run", "()V"); found && run.Body != 0 {
+			return run.Body
+		}
+		class = java.ClassByName[class.parentName]
+	}
+	for class = r.raptorJavaClassForObject(java, target); class != nil; {
+		if class.guestVTable != 0 {
+			body, err := r.Public.ReadU32(
+				class.guestVTable + raptorJavaThreadRunSlot,
+			)
+			if err == nil && body != 0 && body != class.Holder {
+				return body
+			}
+		}
+		class = java.ClassByName[class.parentName]
+	}
+	return 0
 }
 
 func (r *Runtime) paintRaptorJavaCard(
