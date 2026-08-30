@@ -74,3 +74,97 @@ func TestParallelPanelInterfaceStateRoundTripAndReset(t *testing.T) {
 		t.Fatal("parallel panel reset retained state")
 	}
 }
+
+func TestParallelPanelSparsePortsShareTransportAndState(t *testing.T) {
+	panel := NewParallelPanelInterface()
+	command, err := NewParallelPanelCommandPort(panel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := NewParallelPanelDataPort(panel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Write(0, Width16, 0x2c); err != nil {
+		t.Fatal(err)
+	}
+	if err := data.Write(0, Width16, 0x1234); err != nil {
+		t.Fatal(err)
+	}
+	if panel.CurrentCommand() != 0x2c || panel.LastData() != 0x1234 {
+		t.Fatalf("sparse ports left command %#x data %#x", panel.CurrentCommand(), panel.LastData())
+	}
+	state, err := command.SaveState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoredPanel := NewParallelPanelInterface()
+	restoredCommand, _ := NewParallelPanelCommandPort(restoredPanel)
+	if err := restoredCommand.LoadState(state); err != nil {
+		t.Fatal(err)
+	}
+	if restoredPanel.CurrentCommand() != 0x2c || restoredPanel.LastData() != 0x1234 {
+		t.Fatal("sparse command-port state did not restore shared transport")
+	}
+	restoredData, _ := NewParallelPanelDataPort(restoredPanel)
+	if err := restoredData.LoadState(state); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("cross-role sparse-port state error = %v", err)
+	}
+	if _, err := NewParallelPanelCommandPort(nil); err == nil {
+		t.Fatal("accepted nil sparse panel transport")
+	}
+}
+
+func TestParallelPanelSparseDataPortDoesNotDuplicateTransportState(t *testing.T) {
+	controller, err := NewDCSPanelController(DCSPanelConfig{Width: 240, Height: 400, NativeAddressMode: 0x88})
+	if err != nil {
+		t.Fatal(err)
+	}
+	panel, err := NewParallelPanelInterfaceWithController(controller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command, err := NewParallelPanelCommandPort(panel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := NewParallelPanelDataPort(panel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commandState, err := command.SaveState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataState, err := data.SaveState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dataState) != 9 {
+		t.Fatalf("sparse data port serialized %d bytes of shared transport state", len(dataState)-9)
+	}
+	if len(commandState) <= 9 {
+		t.Fatal("sparse command port did not serialize the shared transport")
+	}
+	if err := data.LoadState(dataState); err != nil {
+		t.Fatal(err)
+	}
+	if err := data.LoadState(append(append([]byte(nil), dataState...), 0)); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("sparse data port accepted trailing state: %v", err)
+	}
+	if err := command.Write(0, Width16, 0x2c); err != nil {
+		t.Fatal(err)
+	}
+	if err := data.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	if panel.CurrentCommand() != 0x2c {
+		t.Fatal("sparse data-port reset cleared the shared transport")
+	}
+	if err := command.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	if panel.CurrentCommand() != 0 {
+		t.Fatal("sparse command-port reset did not clear the shared transport")
+	}
+}

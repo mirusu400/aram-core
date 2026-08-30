@@ -97,6 +97,167 @@ func TestNormalizeAcceptsTrailingWritablePartitionAfterPackagedEnd(t *testing.T)
 	}
 }
 
+func TestNormalizeAcceptsVersionOneOpenEndedFinalPartition(t *testing.T) {
+	sources := syntheticDownloadSources(t)
+	wbt := readSyntheticSource(t, sources[RoleWBT])
+	copyOffset := WrapperSize + 2*EraseBlockSize
+	copyData := wbt[copyOffset : copyOffset+EraseBlockSize]
+	binary.LittleEndian.PutUint32(copyData[8:12], 1)
+	primary := copyData[PageSize:]
+	binary.LittleEndian.PutUint32(primary[8:12], 1)
+	binary.LittleEndian.PutUint32(primary[12:16], 6)
+	entryOffset := 16 + 5*mibibEntrySize
+	copy(primary[entryOffset:entryOffset+16], "0:EFS2")
+	putU32s(primary, entryOffset+16, 7, 0, 0)
+	sources[RoleWBT] = firmwareset.Source{ReaderAt: bytes.NewReader(wbt), Size: int64(len(wbt))}
+
+	wbin := readSyntheticSource(t, sources[RoleWBIN])
+	footer := len(wbin) - 62
+	putU32s(wbin, footer, 0x6, 0xc, 0x8, 0x12)
+	sources[RoleWBIN] = firmwareset.Source{ReaderAt: bytes.NewReader(wbin), Size: int64(len(wbin))}
+
+	set, err := firmwareset.NewSet([]firmwareset.Source{
+		sources[RoleWBT], sources[RoleWBIN], sources[RoleDAT], sources[RoleFont],
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := Inspect(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	layout, err := Normalize(set, pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if layout.MIBIBVersion != 1 || layout.MIBIBGeneration != 2 || layout.PackagedEnd != 0x120000 {
+		t.Fatalf("version-one layout = %+v", layout)
+	}
+	last := layout.Partitions[len(layout.Partitions)-1]
+	if last.Name != "0:EFS2" || last.Start != 0x0e0000 || last.Size != 0x040000 || last.BlockCount != 2 {
+		t.Fatalf("resolved open-ended partition = %+v", last)
+	}
+}
+
+func TestNormalizeRejectsOpenEndedPartitionOutsideVersionOneTail(t *testing.T) {
+	tests := []struct {
+		name       string
+		version    uint32
+		entryIndex int
+	}{
+		{name: "version-three", version: 3, entryIndex: 5},
+		{name: "non-final", version: 1, entryIndex: 4},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			sources := syntheticDownloadSources(t)
+			wbt := readSyntheticSource(t, sources[RoleWBT])
+			copyOffset := WrapperSize + 2*EraseBlockSize
+			copyData := wbt[copyOffset : copyOffset+EraseBlockSize]
+			binary.LittleEndian.PutUint32(copyData[8:12], test.version)
+			primary := copyData[PageSize:]
+			binary.LittleEndian.PutUint32(primary[8:12], test.version)
+			binary.LittleEndian.PutUint32(primary[12:16], 6)
+			entryOffset := 16 + test.entryIndex*mibibEntrySize
+			copy(primary[entryOffset:entryOffset+16], "0:EFS2")
+			putU32s(primary, entryOffset+16, 7, 0, 0)
+			sources[RoleWBT] = firmwareset.Source{ReaderAt: bytes.NewReader(wbt), Size: int64(len(wbt))}
+
+			set, err := firmwareset.NewSet([]firmwareset.Source{
+				sources[RoleWBT], sources[RoleWBIN], sources[RoleDAT], sources[RoleFont],
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			pkg, err := Inspect(set)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Normalize(set, pkg); err == nil {
+				t.Fatal("Normalize accepted an invalid open-ended partition")
+			}
+		})
+	}
+}
+
+func TestNormalizeAcceptsVersionOneFOTAAliasAtEndOfAMSS(t *testing.T) {
+	sources := syntheticDownloadSources(t)
+	wbt := readSyntheticSource(t, sources[RoleWBT])
+	copyOffset := WrapperSize + 2*EraseBlockSize
+	copyData := wbt[copyOffset : copyOffset+EraseBlockSize]
+	binary.LittleEndian.PutUint32(copyData[8:12], 1)
+	primary := copyData[PageSize:]
+	putU32s(primary, 8, 1, 6)
+	entries := []struct {
+		name        string
+		start, size uint32
+	}{
+		{"0:MIBIB", 0, 2},
+		{"0:QCSBL", 2, 1},
+		{"0:AMSS", 3, 3},
+		{"0:FOTA", 5, 1},
+		{"0:RSRC", 6, 2},
+		{"0:FONT", 8, 1},
+	}
+	for index, entry := range entries {
+		offset := 16 + index*mibibEntrySize
+		clear(primary[offset : offset+mibibEntrySize])
+		copy(primary[offset:offset+16], entry.name)
+		putU32s(primary, offset+16, entry.start, entry.size, 0)
+	}
+	sources[RoleWBT] = firmwareset.Source{ReaderAt: bytes.NewReader(wbt), Size: int64(len(wbt))}
+
+	wbin := readSyntheticSource(t, sources[RoleWBIN])
+	footer := len(wbin) - 62
+	putU32s(wbin, footer, 0x6, 0x10, 0xc, 0x12)
+	sources[RoleWBIN] = firmwareset.Source{ReaderAt: bytes.NewReader(wbin), Size: int64(len(wbin))}
+
+	set, err := firmwareset.NewSet([]firmwareset.Source{
+		sources[RoleWBT], sources[RoleWBIN], sources[RoleDAT], sources[RoleFont],
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := Inspect(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	layout, err := Normalize(set, pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if layout.MIBIBVersion != 1 || len(layout.Partitions) != len(entries) {
+		t.Fatalf("version-one alias layout = %+v", layout)
+	}
+}
+
+func TestNormalizeRejectsUnrelatedVersionOnePartitionOverlap(t *testing.T) {
+	sources := syntheticDownloadSources(t)
+	wbt := readSyntheticSource(t, sources[RoleWBT])
+	copyOffset := WrapperSize + 2*EraseBlockSize
+	copyData := wbt[copyOffset : copyOffset+EraseBlockSize]
+	binary.LittleEndian.PutUint32(copyData[8:12], 1)
+	primary := copyData[PageSize:]
+	binary.LittleEndian.PutUint32(primary[8:12], 1)
+	entryOffset := 16 + 4*mibibEntrySize
+	putU32s(primary, entryOffset+16, 5, 2, 0)
+	sources[RoleWBT] = firmwareset.Source{ReaderAt: bytes.NewReader(wbt), Size: int64(len(wbt))}
+
+	set, err := firmwareset.NewSet([]firmwareset.Source{
+		sources[RoleWBT], sources[RoleWBIN], sources[RoleDAT], sources[RoleFont],
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := Inspect(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Normalize(set, pkg); err == nil {
+		t.Fatal("Normalize accepted an unrelated version-one overlap")
+	}
+}
+
 func TestInspectReportsDuplicateRoleAndMissingPieces(t *testing.T) {
 	sources := syntheticDownloadSources(t)
 	set, err := firmwareset.NewSet([]firmwareset.Source{sources[RoleWBT], sources[RoleWBT]})

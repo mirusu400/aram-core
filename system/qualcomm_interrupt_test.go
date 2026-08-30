@@ -2,6 +2,7 @@ package system
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"testing"
 
@@ -116,6 +117,9 @@ func TestQualcommInterruptControllerRejectsReservedAccessesAndRestoresState(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
+	if version := binary.LittleEndian.Uint32(state[4:8]); version != 1 {
+		t.Fatalf("legacy controller state version = %d, want 1", version)
+	}
 	restoredProbe := &interruptLineProbe{}
 	restored := NewQualcommInterruptController(restoredProbe)
 	if err := restored.LoadState(state); err != nil {
@@ -126,6 +130,53 @@ func TestQualcommInterruptControllerRejectsReservedAccessesAndRestoresState(t *t
 	}
 	if err := restored.LoadState(state[:len(state)-1]); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("truncated state error = %v", err)
+	}
+}
+
+func TestQualcommInterruptControllerProfilesLegacyGPIOInputAlias(t *testing.T) {
+	device, err := NewQualcommInterruptControllerWithConfig(QualcommInterruptControllerConfig{
+		GPIOInputs: []QualcommGPIOInputRegister{{Offset: 0x40, Value: 0x20}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := device.Read(0x40, Width32)
+	if err != nil || value != 0x20 {
+		t.Fatalf("GPIO input alias = %#x error %v", value, err)
+	}
+	if err := device.Write(0x40, Width32, 0); !errors.Is(err, ErrQualcommInterruptControllerMMIO) {
+		t.Fatalf("GPIO input write error = %v", err)
+	}
+	state, err := device.SaveState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version := binary.LittleEndian.Uint32(state[4:8]); version != 2 {
+		t.Fatalf("profiled controller state version = %d, want 2", version)
+	}
+	restored, _ := NewQualcommInterruptControllerWithConfig(QualcommInterruptControllerConfig{
+		GPIOInputs: []QualcommGPIOInputRegister{{Offset: 0x40, Value: 0x20}},
+	}, nil)
+	if err := restored.LoadState(state); err != nil {
+		t.Fatal(err)
+	}
+	mismatch, _ := NewQualcommInterruptControllerWithConfig(QualcommInterruptControllerConfig{
+		GPIOInputs: []QualcommGPIOInputRegister{{Offset: 0x40, Value: 0}},
+	}, nil)
+	if err := mismatch.LoadState(state); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("mismatched GPIO input state error = %v", err)
+	}
+	legacyState, _ := NewQualcommInterruptController(nil).SaveState()
+	if err := restored.LoadState(legacyState); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("legacy state accepted by profiled controller: %v", err)
+	}
+	for _, config := range []QualcommInterruptControllerConfig{
+		{GPIOInputs: []QualcommGPIOInputRegister{{Offset: 0x44}}},
+		{GPIOInputs: []QualcommGPIOInputRegister{{Offset: 0x40}, {Offset: 0x40}}},
+	} {
+		if _, err := NewQualcommInterruptControllerWithConfig(config, nil); err == nil {
+			t.Fatalf("accepted invalid GPIO input config %#v", config)
+		}
 	}
 }
 

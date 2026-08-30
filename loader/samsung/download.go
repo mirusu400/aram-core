@@ -220,6 +220,7 @@ func (p Partition) End() uint64 {
 
 type Layout struct {
 	Family          string
+	MIBIBVersion    uint32
 	MIBIBGeneration uint32
 	PackagedEnd     uint64
 	Partitions      []Partition
@@ -272,9 +273,30 @@ func Normalize(set firmwareset.Set, pkg Package) (Layout, error) {
 			selected = candidate
 		}
 	}
-	byName := make(map[string]Partition, len(selected.Partitions))
+	footer, footerOffset, err := readWBINFooter(pieces[RoleWBIN])
+	if err != nil {
+		return Layout{}, err
+	}
+	starts := [4]uint64{
+		uint64(footer[0]) << 16,
+		uint64(footer[1]) << 16,
+		uint64(footer[2]) << 16,
+		uint64(footer[3]) << 16,
+	}
+	partitions := append([]Partition(nil), selected.Partitions...)
+	if err := resolveOpenEndedPartitions(
+		partitions,
+		selected.Version,
+		starts[3],
+		pieces[RoleWBT].Index(),
+		pieces[RoleWBIN].Index(),
+		footerOffset,
+	); err != nil {
+		return Layout{}, err
+	}
+	byName := make(map[string]Partition, len(partitions))
 	var flashEnd uint64
-	for _, partition := range selected.Partitions {
+	for _, partition := range partitions {
 		byName[partition.Name] = partition
 		flashEnd = max(flashEnd, partition.End())
 	}
@@ -286,16 +308,6 @@ func Normalize(set firmwareset.Set, pkg Package) (Layout, error) {
 	if !ok {
 		return Layout{}, &FormatError{Role: RoleWBT, Piece: pieces[RoleWBT].Index(), Reason: "MIBIB has no 0:FONT partition"}
 	}
-	footer, footerOffset, err := readWBINFooter(pieces[RoleWBIN])
-	if err != nil {
-		return Layout{}, err
-	}
-	starts := [4]uint64{
-		uint64(footer[0]) << 16,
-		uint64(footer[1]) << 16,
-		uint64(footer[2]) << 16,
-		uint64(footer[3]) << 16,
-	}
 	wbtSize := pkg.Pieces[RoleWBT].Header.PayloadSize
 	if starts[0] != wbtSize {
 		return Layout{}, &FormatError{
@@ -305,7 +317,7 @@ func Normalize(set firmwareset.Set, pkg Package) (Layout, error) {
 	}
 	packagedEnd := starts[3]
 	packagedEndIsPartitionBoundary := packagedEnd == flashEnd
-	for _, partition := range selected.Partitions {
+	for _, partition := range partitions {
 		if partition.Start == packagedEnd {
 			packagedEndIsPartitionBoundary = true
 			break
@@ -337,11 +349,50 @@ func Normalize(set firmwareset.Set, pkg Package) (Layout, error) {
 	}
 	return Layout{
 		Family:          FamilySCHDownload,
+		MIBIBVersion:    selected.Version,
 		MIBIBGeneration: selected.Generation,
 		PackagedEnd:     packagedEnd,
-		Partitions:      append([]Partition(nil), selected.Partitions...),
+		Partitions:      partitions,
 		Regions:         regions,
 	}, nil
+}
+
+func resolveOpenEndedPartitions(
+	partitions []Partition,
+	version uint32,
+	packagedEnd uint64,
+	wbtPiece int,
+	wbinPiece int,
+	footerOffset int64,
+) error {
+	for index := range partitions {
+		partition := &partitions[index]
+		if partition.BlockCount != 0 {
+			continue
+		}
+		if version != 1 || index != len(partitions)-1 || partition.Name != "0:EFS2" {
+			return &FormatError{
+				Role: RoleWBT, Piece: wbtPiece,
+				Reason: fmt.Sprintf("partition %q has unsupported open-ended geometry", partition.Name),
+			}
+		}
+		if packagedEnd <= partition.Start || (packagedEnd-partition.Start)%EraseBlockSize != 0 {
+			return &FormatError{
+				Role: RoleWBIN, Piece: wbinPiece, Offset: footerOffset,
+				Reason: fmt.Sprintf("package end does not resolve partition %q", partition.Name),
+			}
+		}
+		blocks := (packagedEnd - partition.Start) / EraseBlockSize
+		if blocks > uint64(^uint32(0)) {
+			return &FormatError{
+				Role: RoleWBIN, Piece: wbinPiece, Offset: footerOffset,
+				Reason: fmt.Sprintf("resolved partition %q is too large", partition.Name),
+			}
+		}
+		partition.BlockCount = uint32(blocks)
+		partition.Size = blocks * EraseBlockSize
+	}
+	return nil
 }
 
 func readWBINFooter(piece firmwareset.Piece) ([4]uint32, int64, error) {
@@ -364,6 +415,7 @@ func readWBINFooter(piece firmwareset.Piece) ([4]uint32, int64, error) {
 
 type mibibCopy struct {
 	Offset     int64
+	Version    uint32
 	Generation uint32
 	Partitions []Partition
 }
@@ -379,9 +431,15 @@ func parseMIBIBCopies(piece firmwareset.Piece) ([]mibibCopy, error) {
 			return nil, err
 		}
 		if binary.LittleEndian.Uint32(header[0:4]) != mibibHeaderMagic[0] ||
-			binary.LittleEndian.Uint32(header[4:8]) != mibibHeaderMagic[1] ||
-			binary.LittleEndian.Uint32(header[8:12]) != mibibHeaderMagic[2] {
+			binary.LittleEndian.Uint32(header[4:8]) != mibibHeaderMagic[1] {
 			continue
+		}
+		version := binary.LittleEndian.Uint32(header[8:12])
+		if version != 1 && version != mibibHeaderMagic[2] {
+			return nil, &FormatError{
+				Role: RoleWBT, Piece: piece.Index(), Offset: offset + 8,
+				Reason: fmt.Sprintf("unsupported MIBIB version %d", version),
+			}
 		}
 		if offset+EraseBlockSize > piece.Size() {
 			return nil, &FormatError{Role: RoleWBT, Piece: piece.Index(), Offset: offset, Reason: "truncated MIBIB erase block"}
@@ -413,11 +471,16 @@ func parseMIBIBCopy(piece int, base int64, data []byte) (mibibCopy, error) {
 		return fail(0, "invalid MIBIB erase-block size")
 	}
 	generation := binary.LittleEndian.Uint32(data[12:16])
+	version := binary.LittleEndian.Uint32(data[8:12])
 	primary := data[PageSize : 2*PageSize]
-	for index, magic := range primaryTableMagic {
+	for index, magic := range primaryTableMagic[:2] {
 		if binary.LittleEndian.Uint32(primary[index*4:]) != magic {
 			return fail(PageSize+int64(index*4), "primary partition-table magic mismatch")
 		}
+	}
+	primaryVersion := binary.LittleEndian.Uint32(primary[8:12])
+	if primaryVersion != version {
+		return fail(PageSize+8, fmt.Sprintf("primary partition-table version %d does not match MIBIB version %d", primaryVersion, version))
 	}
 	count := binary.LittleEndian.Uint32(primary[12:16])
 	maxEntries := uint32((PageSize - 16) / mibibEntrySize)
@@ -448,7 +511,7 @@ func parseMIBIBCopy(piece int, base int64, data []byte) (mibibCopy, error) {
 		startBlock := binary.LittleEndian.Uint32(entry[16:20])
 		blockCount := binary.LittleEndian.Uint32(entry[20:24])
 		attributes := binary.LittleEndian.Uint32(entry[24:28])
-		if blockCount == 0 {
+		if blockCount == 0 && (version != 1 || index != count-1 || name != "0:EFS2") {
 			return fail(PageSize+int64(relative+20), fmt.Sprintf("partition %q is empty", name))
 		}
 		endBlock := uint64(startBlock) + uint64(blockCount)
@@ -458,15 +521,20 @@ func parseMIBIBCopy(piece int, base int64, data []byte) (mibibCopy, error) {
 		start := uint64(startBlock) * EraseBlockSize
 		size := uint64(blockCount) * EraseBlockSize
 		if index > 0 && start < previousEnd {
-			return fail(PageSize+int64(relative+16), fmt.Sprintf("partition %q overlaps its predecessor", name))
+			previous := partitions[len(partitions)-1]
+			versionOneFOTAAlias := version == 1 && name == "0:FOTA" && previous.Name == "0:AMSS" &&
+				start >= previous.Start && start+size <= previous.End()
+			if !versionOneFOTAAlias {
+				return fail(PageSize+int64(relative+16), fmt.Sprintf("partition %q overlaps its predecessor", name))
+			}
 		}
-		previousEnd = start + size
+		previousEnd = max(previousEnd, start+size)
 		partitions = append(partitions, Partition{
 			Name: name, StartBlock: startBlock, BlockCount: blockCount,
 			Attributes: attributes, Start: start, Size: size,
 		})
 	}
-	return mibibCopy{Offset: base, Generation: generation, Partitions: partitions}, nil
+	return mibibCopy{Offset: base, Version: version, Generation: generation, Partitions: partitions}, nil
 }
 
 func joinRoles(roles []Role) string {
