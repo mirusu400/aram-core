@@ -204,6 +204,9 @@ func (r *Runtime) newRaptorJavaArray(element, count uint32) (uint32, error) {
 	}
 	java.lgtToKTF[instance] = mirror
 	java.ktfToLGT[mirror] = instance
+	if className != "[Ljava/lang/Object;" {
+		r.noteRaptorPrimitiveArray(java, mirror, elementSize)
+	}
 	// Give the array an object header so a guest that virtual-dispatches on an
 	// array reference (Java array types extend Object; some AOT call sites also
 	// treat an array-typed local as a receiver) loads a real vtable instead of
@@ -415,6 +418,10 @@ func (r *Runtime) callJavaHostMethod(
 		return guest.WIPIReturn{}, nil
 	}
 	method = r.resolveRaptorJavaOverload(java, method)
+	if method.className == "java/lang/Thread" && method.Name == "sleep" &&
+		method.descriptor == "(J)V" {
+		return r.sleepRaptorJavaTask(java)
+	}
 	argumentCount := raptorJavaDescriptorArgumentCount(method.descriptor)
 	if !method.isStatic {
 		argumentCount++
@@ -534,6 +541,7 @@ func (r *Runtime) callJavaHostMethod(
 			arguments[index] = mirror
 		}
 	}
+	r.syncRaptorArrayArguments(java, arguments, true)
 	data := make([]byte, len(arguments)*4)
 	for index, value := range arguments {
 		binary.LittleEndian.PutUint32(data[index*4:], value)
@@ -549,6 +557,7 @@ func (r *Runtime) callJavaHostMethod(
 		method.descriptor,
 	)(ctx, java.Host)
 	java.Host.NativeParameterBase = parameterBase
+	r.syncRaptorArrayArguments(java, arguments, false)
 	if callErr != nil {
 		return guest.WIPIReturn{}, callErr
 	}

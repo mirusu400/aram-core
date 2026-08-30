@@ -110,6 +110,8 @@ type Runtime struct {
 	// unimplementedNames interns the label for an import ARAM does not
 	// implement. See unimplementedImportName.
 	unimplementedNames map[raptorImportKey]string
+	// javaYieldRequested ends the CPU slice after a Java thread parks itself.
+	javaYieldRequested bool
 	Clet               Clet
 	Java               *JavaRuntime
 
