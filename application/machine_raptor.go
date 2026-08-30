@@ -387,14 +387,7 @@ func (m *Machine) stepRaptorJavaTask(ctx context.Context) (cpu.Result, bool, err
 	if runtime == nil || runtime.Java == nil {
 		return cpu.Result{}, false, nil
 	}
-	java := runtime.Java
-	var task *raptorrt.JavaTask
-	for _, candidate := range java.Tasks {
-		if !candidate.Done {
-			task = candidate
-			break
-		}
-	}
+	task := runtime.NextRunnableJavaTask()
 	if task == nil {
 		return cpu.Result{}, false, nil
 	}
