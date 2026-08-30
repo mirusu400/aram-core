@@ -143,6 +143,14 @@ func (m *Machine) stepRaptorFrame(ctx context.Context) error {
 			return err
 		}
 	}
+	m.mu.Lock()
+	if m.raptor != nil {
+		if err := m.raptor.ServiceAuthCompletion(); err != nil {
+			m.mu.Unlock()
+			return err
+		}
+	}
+	m.mu.Unlock()
 	if hasCallbackTask {
 		// A callback that spans frames still advances guest time by one video
 		// quantum per frame: titles that implement a fixed delay as a busy

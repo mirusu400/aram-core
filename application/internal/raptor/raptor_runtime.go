@@ -123,6 +123,13 @@ type Runtime struct {
 
 	ModuleInitialized bool
 	Started           bool
+	// pendingCompletion is a carrier DRM/server response a netauth backend has
+	// asked the runtime to deliver to the clet; completionDelay counts the
+	// frames left before it is posted, and authRespBuf is the reused guest
+	// buffer the response bytes live in. See ServiceAuthCompletion.
+	pendingCompletion *netauth.Completion
+	completionDelay   int
+	authRespBuf       uint32
 	resolvedImports   map[raptorImportKey]uint64
 	importSlots       []raptorImportKey
 	importSlotByKey   map[raptorImportKey]uint32
@@ -548,6 +555,57 @@ func (r *Runtime) unimplementedImportName(key raptorImportKey) string {
 	}
 	r.unimplementedNames[key] = name
 	return name
+}
+
+// armAuthCompletion records a carrier response a netauth backend wants
+// delivered to the clet. A later ordinal in the same handshake burst simply
+// overwrites it, so one request delivers one completion.
+func (r *Runtime) armAuthCompletion(completion *netauth.Completion) {
+	r.pendingCompletion = completion
+	r.completionDelay = completion.DelayFrames
+	if r.completionDelay < 1 {
+		r.completionDelay = 1
+	}
+}
+
+// ServiceAuthCompletion posts a pending carrier DRM/server response to the
+// clet a few frames after the title requested the handshake, so titles that
+// block on "접속중"/"서버 접속중" proceed. A real handset receives the
+// carrier's response as a clet event; the backend decides the event, status
+// and payload. It is a no-op unless a backend armed one, so titles run
+// unchanged when no auth backend is installed.
+func (r *Runtime) ServiceAuthCompletion() error {
+	if r.pendingCompletion == nil || r.Clet.HandleEvent == 0 {
+		return nil
+	}
+	if r.completionDelay > 0 {
+		r.completionDelay--
+		if r.completionDelay > 0 {
+			return nil
+		}
+	}
+	completion := r.pendingCompletion
+	r.pendingCompletion = nil
+	// The clet reads the response through a data pointer (arg2). Keep one
+	// reused buffer sized to the largest response seen.
+	need := uint32(len(completion.Response))
+	if need < 4 {
+		need = 4
+	}
+	if r.authRespBuf == 0 {
+		buf, err := r.Public.Heap.Allocate(need, true)
+		if err != nil || buf == 0 {
+			return nil
+		}
+		r.authRespBuf = buf
+	}
+	if len(completion.Response) != 0 {
+		if err := r.CPU.WriteMemory(r.authRespBuf, completion.Response); err != nil {
+			return err
+		}
+	}
+	r.Public.EnqueueCallback(r.Clet.HandleEvent, completion.Event, completion.Arg1, r.authRespBuf)
+	return nil
 }
 
 func (r *Runtime) pushHostCallFrame() (*cpu.HostCallFrame, error) {

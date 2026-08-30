@@ -34,3 +34,28 @@ type Call struct {
 type Backend interface {
 	Handle(call Call, mem Memory) (result uint32, handled bool)
 }
+
+// Completion is the asynchronous carrier response a backend asks the runtime to
+// deliver to the title after a network ordinal, emulating the DRM/server
+// handshake result a real handset receives out of band. A raptor title blocks
+// on "접속중"/"서버 접속중" until it arrives.
+//
+// The runtime delivers it as a Clet HandleEvent(Event, Arg1, buffer): Event is
+// the handset event type that carries a server response, Arg1 the status word,
+// and Response the bytes written to a runtime-owned buffer the title reads as
+// the event's data pointer. DelayFrames lets the title settle into its wait
+// state before the event is posted.
+type Completion struct {
+	Event       uint32
+	Arg1        uint32
+	Response    []byte
+	DelayFrames int
+}
+
+// CompletionSource is an optional Backend capability. After the runtime routes
+// a network ordinal that the backend handled, it asks the backend for an
+// asynchronous completion to deliver to the title; nil means none. A backend
+// that only reads/writes session memory need not implement it.
+type CompletionSource interface {
+	Complete(call Call) *Completion
+}
