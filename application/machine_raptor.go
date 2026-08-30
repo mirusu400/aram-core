@@ -397,6 +397,10 @@ func (m *Machine) stepRaptorJavaTask(ctx context.Context) (cpu.Result, bool, err
 	}
 	defer func() { _ = outer.Restore(m.cpu) }()
 	if len(task.Context) == 0 {
+		stack := task.Stack
+		if stack == 0 {
+			stack = raptorrt.RaptorJavaTaskStack(0)
+		}
 		for register := cpu.RegisterR0; register <= cpu.RegisterR12; register++ {
 			if err := m.cpu.WriteRegister(register, 0); err != nil {
 				return cpu.Result{Reason: cpu.StopFault, Err: err}, true, err
@@ -404,7 +408,7 @@ func (m *Machine) stepRaptorJavaTask(ctx context.Context) (cpu.Result, bool, err
 		}
 		for register, value := range map[uint32]uint32{
 			cpu.RegisterR0:   task.Target,
-			cpu.RegisterSP:   DefaultStackBase + DefaultStackSize - 0x20000,
+			cpu.RegisterSP:   stack,
 			cpu.RegisterLR:   guest.ReturnSentinel | 1,
 			cpu.RegisterPC:   task.Procedure &^ 1,
 			cpu.RegisterCPSR: ktfrt.ModeStatus(task.Procedure),

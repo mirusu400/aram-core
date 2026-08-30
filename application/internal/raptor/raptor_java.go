@@ -87,6 +87,18 @@ type raptorJavaFixedVirtualMethod struct {
 // nothing was ever drawn (issue #79). The highest fixed offset in the table
 // below is java/lang/String's substring at 0x74, so the flat region starts at
 // byte 0x7c.
+// raptorJavaThreadRunSlot is the byte offset of run()V in the module's own
+// vtable for a java/lang/Thread subclass, next to the start()V slot the fixed
+// table already names at 0x2c.
+//
+// A helper class the module publishes no metadata for cannot be resolved by
+// name: 현영맞고2006's TimeChecker carries neither a method nor a field table,
+// so Thread.start found no run() and the thread was never scheduled - the
+// game's clock never advanced and its screen transition never completed
+// (issue #79). The module still fills its own vtable, so the body is read from
+// there.
+const raptorJavaThreadRunSlot = 0x30
+
 const raptorJavaFlatVirtualBase = 30
 
 // raptorJavaFlatVirtualSlot is the byte offset of one linked virtual method
@@ -215,24 +227,54 @@ type raptorJavaDeclaredField struct {
 }
 
 type raptorJavaClass struct {
-	Holder      uint32
-	descriptor  uint32
-	Name        string
-	parentName  string
-	fieldSize   uint32
-	staticBase  uint32
-	vtable      uint32
+	Holder     uint32
+	descriptor uint32
+	Name       string
+	parentName string
+	fieldSize  uint32
+	staticBase uint32
+	vtable     uint32
+	// guestVTable is the dispatch table the module built for this class, kept
+	// after the runtime replaces vtable with its own. See raptorJavaThreadRun.
+	guestVTable uint32
 	methods     []raptorJavaDeclaredMethod
 	fields      []raptorJavaDeclaredField
 	hostClass   uint32
 	classObject uint32
 }
 
+// raptorJavaTaskStackSize is the stack one started Java thread gets, and
+// raptorJavaTaskStackTop is where the first one's stack ends.
+//
+// Every thread used to start with the same stack pointer, so a title running
+// two at once had them writing over each other's frames. It only stayed hidden
+// while a second thread could not be scheduled at all (issue #79).
+const (
+	raptorJavaTaskStackTop  = guest.DefaultStackBase + guest.DefaultStackSize - 0x20000
+	raptorJavaTaskStackSize = uint32(0x20000)
+	raptorJavaTaskStackMax  = 6
+)
+
+// RaptorJavaTaskStack is the stack pointer thread index gets. Threads past the
+// supported count share the last stack, which is what every thread did before.
+func RaptorJavaTaskStack(index int) uint32 {
+	if index < 0 {
+		index = 0
+	}
+	if index >= raptorJavaTaskStackMax {
+		index = raptorJavaTaskStackMax - 1
+	}
+	return raptorJavaTaskStackTop - uint32(index)*raptorJavaTaskStackSize
+}
+
 type JavaTask struct {
 	Target    uint32
 	Procedure uint32
-	Context   []byte
-	Done      bool
+	// Stack is where this thread's stack starts, so concurrently scheduled
+	// threads do not write over each other. See RaptorJavaTaskStack.
+	Stack   uint32
+	Context []byte
+	Done    bool
 }
 
 // JavaClass is an exported alias so callers outside this package (the machine
@@ -972,14 +1014,16 @@ func (r *Runtime) inspectRaptorJavaClass(
 		return nil, fmt.Errorf("Raptor Java class %q static base %d exceeds limit", string(nameBytes), staticBase)
 	}
 	vtable, _ := r.Public.ReadU32(descriptor + 0x0c)
+	guestVTable := vtable
 	class := &raptorJavaClass{
-		Holder:     holder,
-		descriptor: descriptor,
-		Name:       string(nameBytes),
-		parentName: string(parentBytes),
-		fieldSize:  fieldWord & 0xffff,
-		staticBase: staticBase,
-		vtable:     vtable,
+		Holder:      holder,
+		descriptor:  descriptor,
+		Name:        string(nameBytes),
+		parentName:  string(parentBytes),
+		fieldSize:   fieldWord & 0xffff,
+		staticBase:  staticBase,
+		vtable:      vtable,
+		guestVTable: guestVTable,
 	}
 	java.classes[holder] = class
 	java.ClassByName[class.Name] = class
