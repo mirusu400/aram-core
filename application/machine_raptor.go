@@ -184,6 +184,11 @@ func (m *Machine) stepRaptorFrame(ctx context.Context) error {
 		m.mu.Unlock()
 	}
 	if m.raptor.Clet.Paint == 0 {
+		// A Java title has no Clet paint entry; its card is repainted here
+		// instead, once per frame, for the repaints it has asked for.
+		if _, err := m.raptor.RepaintDirtyJavaCard(ctx); err != nil {
+			return err
+		}
 		return nil
 	}
 	m.mu.Lock()

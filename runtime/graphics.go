@@ -441,6 +441,23 @@ func (g *Graphics) SetPixel(owner OwnerID, id ServiceID, x, y int32, color Color
 	return drawSurfacePixel(current, x, y, color)
 }
 
+// resolveSurface validates a surface once for a caller about to plot many
+// pixels into it. Text.DrawBounds took the registry lookup per glyph pixel,
+// which was a quarter of a frame on a title that draws its screen with
+// drawString (issue #79).
+func (g *Graphics) resolveSurface(owner OwnerID, id ServiceID) (*surface, error) {
+	return g.get(id, owner)
+}
+
+// setResolvedPixel plots into an already-resolved surface.
+func (g *Graphics) setResolvedPixel(
+	current *surface,
+	x, y int32,
+	color Color,
+) error {
+	return drawSurfacePixel(current, x, y, color)
+}
+
 func (g *Graphics) Clear(owner OwnerID, id ServiceID, color Color) error {
 	current, err := g.get(id, owner)
 	if err != nil {
@@ -638,6 +655,37 @@ func (g *Graphics) RGBA(owner OwnerID, id ServiceID) ([]byte, error) {
 		return nil, err
 	}
 	return surfaceRGBA(current)
+}
+
+// RGBAInto converts a surface into destination, reusing its storage when it is
+// large enough, and returns the slice that holds the result. A caller that
+// converts the same surface many times a frame keeps one buffer instead of
+// allocating and zeroing the whole surface on every call.
+func (g *Graphics) RGBAInto(
+	owner OwnerID,
+	id ServiceID,
+	destination []byte,
+) ([]byte, error) {
+	current, err := g.get(id, owner)
+	if err != nil {
+		return nil, err
+	}
+	return surfaceRGBAInto(current, destination)
+}
+
+// RGBARowsInto converts the surface rows in [top, bottom) into destination,
+// packed from its start, reusing its storage when it is large enough.
+func (g *Graphics) RGBARowsInto(
+	owner OwnerID,
+	id ServiceID,
+	top, bottom int,
+	destination []byte,
+) ([]byte, error) {
+	current, err := g.get(id, owner)
+	if err != nil {
+		return nil, err
+	}
+	return surfaceRGBARowsInto(current, top, bottom, destination)
 }
 
 func (g *Graphics) LastFrame() FrameSnapshot {

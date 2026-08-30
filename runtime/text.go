@@ -276,24 +276,43 @@ func (t *Text) Draw(
 	anchor TextAnchor,
 	color Color,
 ) error {
+	_, _, err := t.DrawBounds(owner, fontID, surfaceID, text, x, y, anchor, color)
+	return err
+}
+
+// DrawBounds draws like Draw and reports the rows it touched, as a half-open
+// [top, bottom) range. A caller that mirrors the surface back into its own
+// image copies only that band instead of the whole surface; an empty run
+// reports an empty range.
+func (t *Text) DrawBounds(
+	owner OwnerID,
+	fontID, surfaceID ServiceID,
+	text string,
+	x, y int32,
+	anchor TextAnchor,
+	color Color,
+) (top, bottom int, err error) {
 	if len(text) > int(t.limits.MaxStringBytes) || !utf8.ValidString(text) ||
 		!validTextAnchor(anchor) {
-		return fmt.Errorf("%w: invalid text draw", ErrInvalidArgument)
+		return 0, 0, fmt.Errorf("%w: invalid text draw", ErrInvalidArgument)
 	}
-	font, err := t.font(owner, fontID)
-	if err != nil {
-		return err
+	font, fontErr := t.font(owner, fontID)
+	if fontErr != nil {
+		return 0, 0, fontErr
 	}
-	if _, err := t.graphics.get(surfaceID, owner); err != nil {
-		return err
+	// Resolved once: the plot loop below runs per glyph pixel, and validating
+	// the surface there made the registry lookup the dominant cost.
+	target, getErr := t.graphics.resolveSurface(owner, surfaceID)
+	if getErr != nil {
+		return 0, 0, getErr
 	}
-	glyphs, width, err := t.prepareGlyphs(font, text, true)
-	if err != nil {
-		return err
+	glyphs, width, prepareErr := t.prepareGlyphs(font, text, true)
+	if prepareErr != nil {
+		return 0, 0, prepareErr
 	}
-	metrics, err := t.Metrics(owner, fontID)
-	if err != nil {
-		return err
+	metrics, metricsErr := t.Metrics(owner, fontID)
+	if metricsErr != nil {
+		return 0, 0, metricsErr
 	}
 	drawX, drawY := int64(x), int64(y)
 	switch {
@@ -311,10 +330,11 @@ func (t *Text) Draw(
 		drawY -= int64(metrics.Ascent)
 	}
 	cursor := drawX
+	inked := false
 	var rasterPixels uint64
 	for _, glyph := range glyphs {
 		if uint64(len(glyph.Alpha)) > t.limits.MaxGlyphPixels-rasterPixels {
-			return fmt.Errorf("%w: text raster work exceeds limit", ErrLimitExceeded)
+			return 0, 0, fmt.Errorf("%w: text raster work exceeds limit", ErrLimitExceeded)
 		}
 		rasterPixels += uint64(len(glyph.Alpha))
 		for row := int32(0); row < glyph.Height; row++ {
@@ -331,20 +351,33 @@ func (t *Text) Draw(
 				}
 				pixel := color
 				pixel.A = uint8(uint16(pixel.A) * uint16(alpha) / 255)
-				if err := t.graphics.SetPixel(
-					owner,
-					surfaceID,
+				if setErr := t.graphics.setResolvedPixel(
+					target,
 					int32(pixelX),
 					int32(pixelY),
 					pixel,
-				); err != nil {
-					return err
+				); setErr != nil {
+					return 0, 0, setErr
 				}
+				// The surface applies its own translation before it stores
+				// the pixel, so the reported band has to be in the same
+				// coordinates the caller reads back.
+				plotY := int(pixelY) + int(target.state.TranslateY)
+				if !inked || plotY < top {
+					top = plotY
+				}
+				if !inked || plotY+1 > bottom {
+					bottom = plotY + 1
+				}
+				inked = true
 			}
 		}
 		cursor += int64(glyph.Advance)
 	}
-	return nil
+	if !inked {
+		return 0, 0, nil
+	}
+	return top, bottom, nil
 }
 
 const (
