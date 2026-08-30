@@ -391,6 +391,8 @@ func (m *Machine) stepRaptorJavaTask(ctx context.Context) (cpu.Result, bool, err
 	if task == nil {
 		return cpu.Result{}, false, nil
 	}
+	runtime.SetActiveJavaTask(task)
+	defer runtime.SetActiveJavaTask(nil)
 	outer, err := cpu.SaveScopedContext(m.cpu, cpu.ScopedContext{})
 	if err != nil {
 		return cpu.Result{Reason: cpu.StopFault, Err: err}, true, err

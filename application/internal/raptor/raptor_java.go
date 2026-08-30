@@ -108,6 +108,19 @@ func raptorJavaFlatVirtualSlot(index uint32) uint32 {
 	return (raptorJavaFlatVirtualBase+index*2)*4 + 4
 }
 
+// raptorJavaReaderVirtualMethods is the CLDC java/io/Reader vtable layout,
+// shared by Reader and InputStreamReader. See raptorJavaFixedVirtualMethods.
+var raptorJavaReaderVirtualMethods = []raptorJavaFixedVirtualMethod{
+	{offset: 0x2c, Name: "read", descriptor: "()I"},
+	{offset: 0x30, Name: "read", descriptor: "([C)I"},
+	{offset: 0x34, Name: "read", descriptor: "([CII)I"},
+	{offset: 0x38, Name: "skip", descriptor: "(J)J"},
+	{offset: 0x3c, Name: "ready", descriptor: "()Z"},
+	{offset: 0x44, Name: "mark", descriptor: "(I)V"},
+	{offset: 0x48, Name: "reset", descriptor: "()V"},
+	{offset: 0x4c, Name: "close", descriptor: "()V"},
+}
+
 var raptorJavaFixedVirtualMethods = map[string][]raptorJavaFixedVirtualMethod{
 	"java/lang/String": {
 		{offset: 0x10, Name: "equals", descriptor: "(Ljava/lang/Object;)Z"},
@@ -186,6 +199,16 @@ var raptorJavaFixedVirtualMethods = map[string][]raptorJavaFixedVirtualMethod{
 		{offset: 0x44, Name: "mark", descriptor: "(I)V"},
 		{offset: 0x4c, Name: "reset", descriptor: "()V"},
 	},
+	// A Reader declares read(), read(char[]), read(char[],int,int), skip,
+	// ready, markSupported, mark, reset, close in that order, so its slots line
+	// up from 0x2c exactly as java/io/InputStream's do. 현영맞고2006 reads its
+	// tutorial and manual text with reader.read(buffer) at slot 0x30 and closes
+	// at slot 0x4c; unresolved, both fell through to the no-op backstop, the
+	// buffer stayed empty, and the title built a String over a negative range
+	// (issue #79). Both the abstract and the concrete class carry the layout,
+	// because a wrapper typed as either one is dispatched through it.
+	"java/io/Reader":            raptorJavaReaderVirtualMethods,
+	"java/io/InputStreamReader": raptorJavaReaderVirtualMethods,
 	"org/kwis/msp/lcdui/Card": {
 		// A Card is a full-screen Displayable; its dimension getters occupy the
 		// Object-region bytes 0x14/0x18 in the KWIS vtable, not Object.toString/
@@ -275,6 +298,9 @@ type JavaTask struct {
 	Stack   uint32
 	Context []byte
 	Done    bool
+	// WakeAtMS is the monotonic millisecond this thread's Thread.sleep ends.
+	// The scheduler skips the task until the clock reaches it.
+	WakeAtMS uint64
 }
 
 // JavaClass is an exported alias so callers outside this package (the machine
@@ -289,6 +315,15 @@ type JavaRuntime struct {
 	classOrder  []*raptorJavaClass
 	hostMethods map[uint32]raptorJavaMethod
 	nextMethod  uint32
+	// activeTask is the Java thread the machine is currently running, so a
+	// Thread.sleep from guest code parks that thread.
+	activeTask *JavaTask
+	// primitiveArrays maps a KTF array mirror to its element width, for the
+	// arrays whose elements the bridge copies across a host call. See
+	// syncRaptorArrayArguments.
+	primitiveArrays map[uint32]uint32
+	// syncScratch is the reusable staging buffer those copies move through.
+	syncScratch []byte
 	// noopStub is a single cached host trampoline reused to fill vtable
 	// own-method slots that no source (flat/fixed/inline/table) resolved. It
 	// keeps a call through an otherwise-null slot from branching to address 0.
@@ -336,12 +371,20 @@ func (r *Runtime) NextRunnableJavaTask() *JavaTask {
 	if java == nil || len(java.Tasks) == 0 {
 		return nil
 	}
+	now := uint64(0)
+	if r.Public != nil {
+		now = r.Public.TickMS
+	}
 	for offset := 0; offset < len(java.Tasks); offset++ {
 		index := (java.nextTask + offset) % len(java.Tasks)
-		if task := java.Tasks[index]; !task.Done {
-			java.nextTask = (index + 1) % len(java.Tasks)
-			return task
+		task := java.Tasks[index]
+		if task.Done || task.WakeAtMS > now {
+			// A thread parked by Thread.sleep is not runnable until the
+			// handset clock reaches its wake time. See sleepRaptorJavaTask.
+			continue
 		}
+		java.nextTask = (index + 1) % len(java.Tasks)
+		return task
 	}
 	return nil
 }
@@ -1751,9 +1794,39 @@ func (r *Runtime) wrapRaptorJavaObject(
 	if err != nil || instance == 0 {
 		return 0, errors.New("allocate Raptor Java host wrapper")
 	}
-	fields, err := r.Public.Heap.Allocate(max(uint32(4), class.fieldSize*4), true)
+	// An array the host returns (DataBase.selectRecord, String.getBytes) needs
+	// a body the AOT can read: its length word followed by the elements, not
+	// the one-word field block a plain object gets. Without it every such array
+	// looked empty to the guest and indexing one threw out of bounds.
+	bodyWords := max(uint32(4), class.fieldSize*4)
+	mirrorBody, count, element, primitive, isArray := java.Host.ArrayShape(mirror)
+	if isArray {
+		if count > maxRaptorArraySyncElements {
+			return 0, fmt.Errorf(
+				"Raptor Java host array length %d exceeds limit", count,
+			)
+		}
+		bodyWords = 4 + count*element
+	}
+	fields, err := r.Public.Heap.Allocate(bodyWords, true)
 	if err != nil || fields == 0 {
 		return 0, errors.New("allocate Raptor Java host wrapper fields")
+	}
+	if isArray {
+		if err := r.Public.WriteU32(fields, count); err != nil {
+			return 0, err
+		}
+		if primitive {
+			r.noteRaptorPrimitiveArray(java, mirror, element)
+		}
+		if primitive && count != 0 {
+			buffer := make([]byte, count*element)
+			if err := r.CPU.ReadMemory(mirrorBody, buffer); err == nil {
+				if err := r.CPU.WriteMemory(fields+4, buffer); err != nil {
+					return 0, err
+				}
+			}
+		}
 	}
 	for offset, value := range map[uint32]uint32{
 		0: class.vtable, 4: class.Holder, 8: fields,
