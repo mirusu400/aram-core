@@ -1744,26 +1744,68 @@ func (r *Runtime) JavaInputCallback(
 	if !ok {
 		return wipirt.GuestCallback{}, false
 	}
-	class := r.raptorJavaClassForObject(r.Java, r.Java.currentCard)
-	for depth := 0; class != nil && depth < 256; depth++ {
-		method, found := DeclaredMethod(class, "keyNotify", "(II)Z")
-		if found && method.Body != 0 {
-			eventType := ktfrt.KeyReleased
-			if event.Pressed {
-				eventType = ktfrt.KeyPressed
-			}
-			return wipirt.GuestCallback{
-				Procedure: method.Body,
-				Args: [4]uint32{
-					r.Java.currentCard,
-					eventType,
-					uint32(int32(key)),
-				},
-			}, true
-		}
-		class = r.Java.ClassByName[class.parentName]
+	body := r.raptorJavaKeyNotifyBody(r.Java, r.Java.currentCard)
+	if body == 0 {
+		return wipirt.GuestCallback{}, false
 	}
-	return wipirt.GuestCallback{}, false
+	eventType := ktfrt.KeyReleased
+	if event.Pressed {
+		eventType = ktfrt.KeyPressed
+	}
+	return wipirt.GuestCallback{
+		Procedure: body,
+		Args: [4]uint32{
+			r.Java.currentCard,
+			eventType,
+			uint32(int32(key)),
+		},
+	}, true
+}
+
+// raptorJavaKeyNotifyBody resolves the keyNotify(II)Z body the current card
+// dispatches a handset key to. A card class the module publishes metadata for
+// is resolved by name along its chain; one it does not is read out of the
+// vtable the module filled for it, the same way a started thread's run() body
+// is (issue #79). Without the vtable fallback a card whose keyNotify is
+// declared on an intermediate class the module leaves out of its metadata
+// dropped every key, so the title's input screens could not be driven
+// (issue #103).
+func (r *Runtime) raptorJavaKeyNotifyBody(java *JavaRuntime, card uint32) uint32 {
+	for class, depth := r.raptorJavaClassForObject(java, card), 0; class != nil && depth < 256; depth++ {
+		if method, found := DeclaredMethod(class, "keyNotify", "(II)Z"); found && method.Body != 0 {
+			return method.Body
+		}
+		class = java.ClassByName[class.parentName]
+	}
+	slot, ok := raptorJavaFlatVirtualSlotByName(java, "keyNotify", "(II)Z")
+	if !ok {
+		return 0
+	}
+	for class := r.raptorJavaClassForObject(java, card); class != nil; {
+		if class.guestVTable != 0 {
+			if body, err := r.Public.ReadU32(class.guestVTable + slot); err == nil &&
+				body != 0 && body != class.Holder {
+				return body
+			}
+		}
+		class = java.ClassByName[class.parentName]
+	}
+	return 0
+}
+
+// raptorJavaFlatVirtualSlotByName returns the vtable byte offset the module
+// links a flat virtual method at, found by name and descriptor. The flat table
+// is shared across the module, so keyNotify keeps one offset for every class.
+func raptorJavaFlatVirtualSlotByName(
+	java *JavaRuntime,
+	name, descriptor string,
+) (uint32, bool) {
+	for index, method := range java.flatVirtual {
+		if method.Name == name && method.descriptor == descriptor {
+			return raptorJavaFlatVirtualSlot(uint32(index)), true
+		}
+	}
+	return 0, false
 }
 
 func (r *Runtime) wrapRaptorJavaObject(
