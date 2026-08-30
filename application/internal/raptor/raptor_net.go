@@ -63,9 +63,14 @@ func (r *Runtime) dispatchNet(ordinal uint32) (result uint32, handled bool, err 
 	}
 	sp, _ := r.CPU.ReadRegister(cpu.RegisterSP)
 	lr, _ := r.CPU.ReadRegister(cpu.RegisterLR)
-	result, handled = r.Net.Handle(
-		netauth.Call{Ordinal: ordinal, Args: args, SP: sp, LR: lr},
-		cpuNetMemory{r.CPU},
-	)
+	call := netauth.Call{Ordinal: ordinal, Args: args, SP: sp, LR: lr}
+	result, handled = r.Net.Handle(call, cpuNetMemory{r.CPU})
+	if handled {
+		if source, ok := r.Net.(netauth.CompletionSource); ok {
+			if completion := source.Complete(call); completion != nil {
+				r.armAuthCompletion(completion)
+			}
+		}
+	}
 	return result, handled, nil
 }
