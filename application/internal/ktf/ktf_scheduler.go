@@ -112,6 +112,7 @@ func (r *Runtime) call(
 	pc := procedure &^ 1
 	var instructions uint64
 	for instructions < instructionLimit {
+		r.inspectMemo.reset()
 		run := r.CPU.Run(ctx, pc, mode, instructionLimit-instructions)
 		instructions += run.Instructions
 		run.Instructions = instructions
@@ -733,6 +734,7 @@ func (r *Runtime) RunTaskSlice(
 	var instructions uint64
 	for instructions < instructionLimit {
 		runBudget := instructionLimit - instructions
+		r.inspectMemo.reset()
 		run := r.CPU.Run(ctx, pc, mode, runBudget)
 		instructions += run.Instructions
 		r.ActiveInstructions = instructions
@@ -1173,6 +1175,7 @@ func (r *Runtime) DrainServiceEvents(now time.Duration) error {
 				if serviceID == event.ServiceID {
 					if clip := r.wipicMediaClips[handle]; clip != nil && !clip.repeat {
 						clip.state = 0
+						clip.rewindPending = true
 						r.tracef("wipic_media_complete:handle=0x%08x", handle)
 						if clip.callback != 0 {
 							r.pendingMediaCallbacks = append(

@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/mirusu400/aram-core/internal/ime"
 	"image"
 	_ "image/gif"
 	_ "image/jpeg"
@@ -191,6 +192,7 @@ func NewRuntimeForProfile(
 		lwcEventData:          make(map[uint32]uint32),
 		lwcChildren:           make(map[uint32][]uint32),
 		lwcMaxLengths:         make(map[uint32]int32),
+		lwcTextInput:          make(map[uint32]*ime.Automata),
 		lwcComponents:         make(map[uint32]*ktfLWCComponent),
 		databases:             make(map[uint32]*Database),
 		DatabaseStores:        databaseStores,
@@ -221,6 +223,10 @@ func NewRuntimeForProfile(
 		wipicSystemProperties: make(map[string]string),
 		wipicFiles:            make(map[uint32]*ktfFile),
 		nextWIPICFile:         1,
+		wipicDatabases:        make(map[uint32]string),
+		nextWIPICDatabase:     1,
+		wipicPixelOpResults:   make(map[ktfWIPICPixelOpKey]uint16),
+		brokenWIPICPixelOps:   make(map[uint32]bool),
 		dirtyCards:            make(map[uint32]bool),
 		paintInitializedCards: make(map[uint32]bool),
 		PaintTasks:            make(map[uint32]*Task),
@@ -609,7 +615,86 @@ func (r *Runtime) ensureJavaInspectionCache() {
 		r.javaClassInspections = make(map[uint32]*ktfJavaClassInspection)
 		r.javaMethodInspections = make(map[uint32]*ktfJavaMethodInspection)
 		r.javaInspectGen = r.javaClassGeneration
+		r.inspectMemo.reset()
 	}
+}
+
+// ktfInspectMemoSize bounds the per-host-call class memo. One bridge call
+// inspects the declared class, the receiver's class and a step or two of their
+// parents; eight covers that with room to spare and stays a linear scan of one
+// cache line's worth of addresses.
+const ktfInspectMemoSize = 8
+
+// ktfInspectMemo caches parsed classes across one resolution of a host Java
+// bridge call, and only while it is explicitly open.
+//
+// InspectJavaClass revalidates its parse by re-reading fourteen words of guest
+// memory, which is right: a title relinks a method's native body in place and
+// the parse has to see it (issue #43). But resolving one bridge call inspects
+// the same handful of classes four to six times over - the declared class, the
+// receiver's class, and a step or two of their parents - and that resolution
+// only reads. 귀혼무사편 crosses the bridge some seven thousand times a frame to
+// blit its scene through setRGBPixels, and those revalidation reads were the
+// largest single cost in the title (issue #93).
+//
+// The window is opened by HostJavaMethod around receiver correction and
+// redispatch resolution, and closed before anything that can change a class
+// runs: the guest itself, and the host handler, which is free to write guest
+// memory. Nothing else may open it.
+type ktfInspectMemo struct {
+	addresses [ktfInspectMemoSize]uint32
+	classes   [ktfInspectMemoSize]JavaClass
+	length    int
+	next      int
+	open      bool
+}
+
+// open starts a resolution window with an empty memo.
+func (m *ktfInspectMemo) begin() {
+	m.reset()
+	m.open = true
+}
+
+// reset closes the window and forgets everything in it.
+func (m *ktfInspectMemo) reset() {
+	m.length = 0
+	m.next = 0
+	m.open = false
+	m.addresses = [ktfInspectMemoSize]uint32{}
+	m.classes = [ktfInspectMemoSize]JavaClass{}
+}
+
+func (m *ktfInspectMemo) lookup(address uint32) (JavaClass, bool) {
+	if !m.open {
+		return JavaClass{}, false
+	}
+	for index := 0; index < m.length; index++ {
+		if m.addresses[index] == address {
+			return m.classes[index], true
+		}
+	}
+	return JavaClass{}, false
+}
+
+func (m *ktfInspectMemo) store(address uint32, class JavaClass) {
+	if !m.open {
+		return
+	}
+	for index := 0; index < m.length; index++ {
+		if m.addresses[index] == address {
+			m.classes[index] = class
+			return
+		}
+	}
+	if m.length < ktfInspectMemoSize {
+		m.addresses[m.length] = address
+		m.classes[m.length] = class
+		m.length++
+		return
+	}
+	m.addresses[m.next] = address
+	m.classes[m.next] = class
+	m.next = (m.next + 1) % ktfInspectMemoSize
 }
 
 // readInspectionWords is readWords without the per-call slice allocations;
@@ -628,6 +713,9 @@ func (r *Runtime) readInspectionWords(address uint32, words []uint32) error {
 
 func (r *Runtime) InspectJavaClass(address uint32) (JavaClass, error) {
 	r.ensureJavaInspectionCache()
+	if class, ok := r.inspectMemo.lookup(address); ok {
+		return class, nil
+	}
 	var classWords [5]uint32
 	if err := r.readInspectionWords(address, classWords[:]); err != nil {
 		return JavaClass{}, err
@@ -642,6 +730,7 @@ func (r *Runtime) InspectJavaClass(address uint32) (JavaClass, error) {
 	if cached, ok := r.javaClassInspections[address]; ok &&
 		cached.classWords == classWords &&
 		cached.descriptorWords == descriptorWords {
+		r.inspectMemo.store(address, cached.class)
 		return cached.class, nil
 	}
 	name, err := r.readCString(descriptorWords[0], 1024)
@@ -687,6 +776,7 @@ func (r *Runtime) InspectJavaClass(address uint32) (JavaClass, error) {
 		descriptorWords: descriptorWords,
 	}
 	r.javaClassInspections[address] = entry
+	r.inspectMemo.store(address, entry.class)
 	return entry.class, nil
 }
 

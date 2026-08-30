@@ -7319,7 +7319,7 @@ func TestKTFWIPICOffscreenFramebufferLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := runtime.writeWords(contextAddress, []uint32{
-		0, 0, 32, 24, 1, 0xffff,
+		1, 0, 0, 32, 24, 0xffff,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -7800,7 +7800,7 @@ func TestKTFWIPICDrawImageBlitsAndClips(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	draw([]uint32{2, 3, 3, 7, 1})
+	draw([]uint32{1, 2, 3, 3, 7})
 	if got := pixelAt(2, 3); got != 0x1234 {
 		t.Fatalf("clipped pixel = %04x", got)
 	}
@@ -8079,7 +8079,8 @@ func TestKTFWIPICDrawStringAnchorsTheBaseline(t *testing.T) {
 	// The 10-pixel handset font (handle 8) ascends 8 rows, so a baseline at
 	// clipTop+8 keeps the whole glyph inside the one-row clip rectangle.
 	if err := runtime.writeWords(contextAddress, []uint32{
-		0, clipTop, 64, clipBottom, 1, 0xf800, 0, 0, 0, 0, 8,
+		1, 0, clipTop, 64, clipBottom, 0xf800,
+		0, 0, 0, 0, 0, 0, 0, 8,
 	}); err != nil {
 		t.Fatal(err)
 	}

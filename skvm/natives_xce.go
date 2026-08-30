@@ -3,6 +3,7 @@ package skvm
 import (
 	"context"
 	"fmt"
+	"github.com/mirusu400/aram-core/internal/ime"
 )
 
 // installCompatibilityNatives contains the less common APIs exposed by SKT,
@@ -66,7 +67,7 @@ func (vm *VM) installXCECompatibilityNatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
-			return IntValue(int32(state.automata.mode)), true, nil
+			return IntValue(int32(state.automata.CurrentMode())), true, nil
 		},
 	)
 	vm.RegisterNative(
@@ -97,7 +98,7 @@ func (vm *VM) installXCECompatibilityNatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
-			state.automata.reset()
+			state.automata.Reset()
 			return Value{}, false, nil
 		},
 	)
@@ -115,7 +116,7 @@ func (vm *VM) installXCECompatibilityNatives() {
 				return Value{}, false, err
 			}
 			state.component = component
-			state.automata.reset()
+			state.automata.Reset()
 			return Value{}, false, nil
 		},
 	)
@@ -269,7 +270,7 @@ func nativeTextComponentKeyPressed(
 		// leave it for the guest to handle.
 		return boolValue(false), true, nil
 	}
-	ops, handled := state.automata.press(key)
+	ops, handled := state.automata.Press(key)
 	for _, op := range ops {
 		if err := vm.applyIMEOp(ctx, state.component, op); err != nil {
 			return Value{}, false, err
@@ -280,19 +281,19 @@ func nativeTextComponentKeyPressed(
 
 // applyIMEOp turns one automata callback into an InvokeVirtual on the guest
 // TextComponent. Chars ride in an int slot, matching the (C)V descriptors.
-func (vm *VM) applyIMEOp(ctx context.Context, component uint32, op imeOp) error {
-	switch op.kind {
-	case imeInsert:
+func (vm *VM) applyIMEOp(ctx context.Context, component uint32, op ime.Op) error {
+	switch op.Kind {
+	case ime.OpInsert:
 		_, _, err := vm.InvokeVirtual(
-			ctx, component, "insert", "(C)V", IntValue(int32(op.char)),
+			ctx, component, "insert", "(C)V", IntValue(int32(op.Char)),
 		)
 		return err
-	case imeReplace:
+	case ime.OpReplace:
 		_, _, err := vm.InvokeVirtual(
-			ctx, component, "replace", "(C)V", IntValue(int32(op.char)),
+			ctx, component, "replace", "(C)V", IntValue(int32(op.Char)),
 		)
 		return err
-	case imeDelete:
+	case ime.OpDelete:
 		_, _, err := vm.InvokeVirtual(ctx, component, "delete", "()V")
 		return err
 	}

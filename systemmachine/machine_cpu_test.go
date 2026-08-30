@@ -5,6 +5,7 @@ import (
 
 	"github.com/mirusu400/aram-core/cpu"
 	"github.com/mirusu400/aram-core/cpu/interpreter"
+	"github.com/mirusu400/aram-core/loader/samsung"
 )
 
 func TestCompatibleCPUContextIdentityAllowsInterpreterTiers(t *testing.T) {
@@ -23,6 +24,17 @@ func TestCompatibleCPUContextIdentityAllowsInterpreterTiers(t *testing.T) {
 	wrongVersion.Version = "different"
 	if compatibleCPUContextIdentity(precise, wrongVersion) {
 		t.Fatal("different interpreter context version was accepted")
+	}
+}
+
+func TestSCHW830BatteryResponsesStayDL21Specific(t *testing.T) {
+	dl21 := schw830BoardProfile(samsung.SCHW830DL21ProfileID)
+	if len(dl21.BootControlSBIReadResponses) == 0 {
+		t.Fatal("DL21 board profile has no battery SBI responses")
+	}
+	da18 := schw830BoardProfile(samsung.SCHW830DA18ProfileID)
+	if len(da18.BootControlSBIReadResponses) != 0 {
+		t.Fatalf("unevidenced DA18 battery SBI responses = %#v", da18.BootControlSBIReadResponses)
 	}
 }
 

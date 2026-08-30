@@ -116,7 +116,7 @@ type Backend struct {
 	// the access. The bus invalidator clears these topology-dependent entries.
 	directDataMissCache [directDataMissCacheEntries]uint32
 	// virtualData is allocated lazily after the MMU first resolves a direct RAM
-	// data access. Native blocks have their own 4 KiB host-pointer TLB; this one
+	// data access. Native blocks have their own 1 KiB host-pointer TLB; this one
 	// removes the remaining MMU/permission/bus work from precise and Go-JIT ARM.
 	virtualData *virtualDataCache
 	regs        [17]uint32
@@ -148,17 +148,17 @@ type Backend struct {
 	// armJITBlocks is the ARM counterpart of jitBlocks. It is separate because
 	// an aligned address can contain either ARM or Thumb code over the lifetime
 	// of a backend, while each cache entry must retain mode-specific decode.
-	// Native-JIT backends also allocate this map: ARM uses portable translated
-	// closures while Thumb continues through native machine code.
+	// Native-JIT backends also allocate this map as the precise decoded fallback
+	// for ARM instructions their host emitter does not cover.
 	armJITBlocks map[uint32]*jitBlock
-	// jitCache is a direct-mapped front for jitBlocks: hot loops dispatch the
+	// jitCache is a two-way front for jitBlocks: hot loops dispatch the
 	// same few blocks repeatedly, so caching (pc -> block) in a fixed array
 	// skips the map hash+lookup that otherwise dominates block dispatch. jitGen
 	// is bumped on every invalidation of jitBlocks; an entry whose gen no longer
 	// matches is treated as a miss, so the cache never returns a stale block
 	// without touching the array on the (rare) invalidation path.
-	jitCache    []jitCacheEntry
-	armJITCache []jitCacheEntry
+	jitCache    []jitCacheSet
+	armJITCache []jitCacheSet
 	jitGen      uint64
 	// jitCodeLo/jitCodeHi bound the guest-address span of every translated
 	// block. smcInvalidate uses them to invalidate only on a write that
@@ -172,12 +172,12 @@ type Backend struct {
 	jitCodePages []uint64
 	// nativeBlocks and nativeArena drive the optional native machine-code JIT
 	// (see native_common.go and the per-host native_*.go emitters). Non-nil
-	// nativeBlocks enables it for Thumb, while nativeARMBlocks holds ARM host
+	// nativeBlocks holds emitted Thumb code, while nativeARMBlocks holds ARM host
 	// code; both live in nativeArena and fall back instruction-by-instruction to
-	// the portable translated tiers. Like jitBlocks they are invalidated on
-	// Map/Close and on a self-modifying write. jitBlocks and nativeBlocks are
-	// mutually exclusive: a backend is the pure-Go JIT or the native JIT, never
-	// both.
+	// the portable translated tiers. A Windows hybrid whole-system backend keeps
+	// nativeBlocks for application mode but selects jitBlocks for firmware Thumb.
+	// Like jitBlocks they are invalidated on Map/Close and on a self-modifying
+	// write. They coexist only in that explicit hybrid configuration.
 	nativeBlocks map[uint32]*nativeBlock
 	// nativeARMBlocks is the machine-code counterpart used by native backends.
 	// armJITBlocks remains allocated as its decoded-closure fallback.
@@ -191,13 +191,13 @@ type Backend struct {
 	// (^uint32(0), 0), which no write overlaps.
 	nativeCodeLo uint32
 	nativeCodeHi uint32
-	// nativeCache is the direct-mapped dispatch front for nativeBlocks, the
+	// nativeCache is the two-way dispatch front for nativeBlocks, the
 	// native counterpart of jitCache. Real Thumb ends a translated block every
 	// few instructions, so a title dispatches blocks hundreds of thousands of
 	// times per frame and the map hash dominated dispatch. nativeGen is bumped
 	// on invalidation so stale entries miss without walking the array.
-	nativeCache    *[nativeCacheSize]nativeCacheEntry
-	nativeARMCache *[nativeCacheSize]nativeCacheEntry
+	nativeCache    *[nativeCacheSize]nativeCacheSet
+	nativeARMCache *[nativeCacheSize]nativeCacheSet
 	nativeGen      uint64
 	// nativeLinks are stable indirection slots baked into terminal branches.
 	// A translated target publishes its gate address into the slot, allowing
@@ -205,8 +205,9 @@ type Backend struct {
 	// Range invalidation zeros only the affected target slots.
 	nativeLinks map[nativeLinkKey]*atomic.Uintptr
 	// nativeSlow remembers memory instructions that repeatedly miss the inline
-	// TLB (normally MMIO). Translation then stops before them so the dispatcher
-	// interprets the access directly instead of paying a native bail each time.
+	// TLB (normally MMIO). Unconditional slow PCs become interpreter boundaries;
+	// conditional ARM PCs remain in the native block and exit only when their
+	// condition actually passes.
 	nativeSlow map[nativeLinkKey]nativeSlowState
 	// nativeCodePages marks, one bit per 4 KiB guest page, the pages that hold
 	// translated code. The lo/hi span above is only a hull: KTF/WIPI titles run
@@ -320,10 +321,10 @@ func NewJIT() *Backend {
 	b := NewWithMemoryLimit(DefaultMemoryLimit)
 	b.jitBlocks = make(map[uint32]*jitBlock)
 	b.jitBlockPages = make(blockPageIndex)
-	b.jitCache = make([]jitCacheEntry, jitCacheSize)
+	b.jitCache = make([]jitCacheSet, jitCacheSize)
 	b.armJITBlocks = make(map[uint32]*jitBlock)
 	b.armJITBlockPages = make(blockPageIndex)
-	b.armJITCache = make([]jitCacheEntry, jitCacheSize)
+	b.armJITCache = make([]jitCacheSet, jitCacheSize)
 	b.jitCodePages = make([]uint64, nativeCodePageWords)
 	b.jitCodeLo, b.jitCodeHi = ^uint32(0), 0
 	return b
@@ -469,15 +470,16 @@ func (b *Backend) recordPC(address uint32) {
 func (b *Backend) Identity() cpu.Identity {
 	name := BackendName
 	switch {
+	case b.nativeBlocks != nil:
+		// Same architecture and portable context as the interpreter; a distinct
+		// name makes the active native core observable in diagnostics/UI. A
+		// windows whole-system backend may also carry the Go Thumb micro-op tier.
+		name = BackendName + "-native"
 	case b.jitBlocks != nil:
 		// The JIT is the same architecture and context format as the precise
 		// interpreter (so saves stay portable), but reports a distinct name so
 		// the active core is observable in diagnostics and the settings UI.
 		name = BackendName + "-jit"
-	case b.nativeBlocks != nil:
-		// Same architecture and portable context as the interpreter; a distinct
-		// name makes the active native core observable in diagnostics/UI.
-		name = BackendName + "-native"
 	}
 	return cpu.Identity{
 		Name:         name,
@@ -809,10 +811,10 @@ func (b *Backend) Run(ctx context.Context, address uint32, mode cpu.Mode, budget
 		)
 		if b.mode == cpu.ModeThumb {
 			switch {
+			case b.nativeBlocks != nil && (b.jitBlocks == nil || b.systemBus == nil):
+				retired, reason, err = b.runThumbNative(batch)
 			case b.jitBlocks != nil:
 				retired, reason, err = b.runThumbJIT(batch)
-			case b.nativeBlocks != nil:
-				retired, reason, err = b.runThumbNative(batch)
 			default:
 				retired, reason, err = b.runThumb(batch)
 			}

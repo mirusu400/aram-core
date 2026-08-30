@@ -3,6 +3,7 @@ package ktf
 import (
 	"context"
 	"fmt"
+	"github.com/mirusu400/aram-core/internal/ime"
 	"image"
 	"image/color"
 	"image/draw"
@@ -102,17 +103,23 @@ type Runtime struct {
 	HostCallCount    uint64
 	hostTraceSamples map[string]uint64
 
-	knlInterface            uint32
-	jbInterface             uint32
-	wipicInterface          uint32
-	mxUserMemInterface      uint32
-	incrementalMemory       []ktfIncrementalMemoryRegion
-	incrementalHeaps        map[uint32]*guest.Heap
-	JavaClasses             map[string]uint32
-	javaClassGeneration     uint64
-	nativeSignatures        map[uint32]*ktfNativeSignatureMatches
-	nativeSignatureGen      uint64
-	javaClassInspections    map[uint32]*ktfJavaClassInspection
+	knlInterface         uint32
+	jbInterface          uint32
+	wipicInterface       uint32
+	mxUserMemInterface   uint32
+	incrementalMemory    []ktfIncrementalMemoryRegion
+	incrementalHeaps     map[uint32]*guest.Heap
+	JavaClasses          map[string]uint32
+	javaClassGeneration  uint64
+	nativeSignatures     map[uint32]*ktfNativeSignatureMatches
+	nativeSignatureGen   uint64
+	javaClassInspections map[uint32]*ktfJavaClassInspection
+	// textSurfaceScratch is the reusable RGBA conversion buffer the text draw
+	// path reads a surface back through.
+	textSurfaceScratch []byte
+	// inspectMemo short-circuits class inspection for as long as the guest CPU
+	// is stopped inside a host call. See ktfInspectMemo.
+	inspectMemo             ktfInspectMemo
 	javaMethodInspections   map[uint32]*ktfJavaMethodInspection
 	javaInspectGen          uint64
 	JavaStrings             map[uint32]string
@@ -157,21 +164,25 @@ type Runtime struct {
 	lwcEventData            map[uint32]uint32
 	lwcChildren             map[uint32][]uint32
 	lwcMaxLengths           map[uint32]int32
-	lwcComponents           map[uint32]*ktfLWCComponent
-	databases               map[uint32]*Database
-	DatabaseStores          map[string]*Database
-	defaultRuntime          uint32
-	DefaultDisplay          uint32
-	MainJlet                uint32
-	eventQueue              uint32
-	sharedBuffers           map[string]uint32
-	redispatchActive        map[string]bool
-	DisplayCards            map[uint32]uint32
-	ThreadTargets           map[uint32]uint32
-	javaTimerTasks          map[uint32]*Task
-	javaTimerTaskStates     map[uint32]uint8
-	currentThread           uint32
-	stringBuffers           map[uint32]string
+	// lwcTextInput is the keypad input method behind each editable LWC field.
+	// It holds only a half-composed glyph, which the next press rebuilds, so it
+	// is a live cache rather than part of the save state.
+	lwcTextInput        map[uint32]*ime.Automata
+	lwcComponents       map[uint32]*ktfLWCComponent
+	databases           map[uint32]*Database
+	DatabaseStores      map[string]*Database
+	defaultRuntime      uint32
+	DefaultDisplay      uint32
+	MainJlet            uint32
+	eventQueue          uint32
+	sharedBuffers       map[string]uint32
+	redispatchActive    map[string]bool
+	DisplayCards        map[uint32]uint32
+	ThreadTargets       map[uint32]uint32
+	javaTimerTasks      map[uint32]*Task
+	javaTimerTaskStates map[uint32]uint8
+	currentThread       uint32
+	stringBuffers       map[uint32]string
 	// stringBuffersConsumed marks a StringBuffer whose value was read out by
 	// toString(). The LGT Raptor AOT compiler inlines StringBuffer.setLength(0)
 	// as a direct native write to the buffer object's guest memory, which never
@@ -211,6 +222,10 @@ type Runtime struct {
 	wipicSystemProperties  map[string]string
 	wipicFiles             map[uint32]*ktfFile
 	nextWIPICFile          uint32
+	wipicDatabases         map[uint32]string
+	nextWIPICDatabase      uint32
+	wipicPixelOpResults    map[ktfWIPICPixelOpKey]uint16
+	brokenWIPICPixelOps    map[uint32]bool
 	dirtyCards             map[uint32]bool
 	paintInitializedCards  map[uint32]bool
 	PaintTasks             map[uint32]*Task
@@ -593,6 +608,11 @@ type ktfWIPICMediaClip struct {
 	volume    int32
 	state     uint8
 	repeat    bool
+	// rewindPending marks a clip whose playback has ended, either because the
+	// title stopped it or because it ran out. The next MC_mdaClipPutData then
+	// starts a fresh sound instead of appending to the one that just
+	// finished; see ktfWIPICMediaPutData.
+	rewindPending bool
 	// lastTracedState dedups the GetState host trace: a title polls GetState in
 	// a tight loop, so only a change (notably the playing->stopped edge when an
 	// effect finishes) is worth an entry.

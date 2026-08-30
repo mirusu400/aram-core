@@ -173,6 +173,14 @@ func (a *x64emitter) conditionEnd(site int) {
 	}
 }
 
+func (a *x64emitter) conditionalSlow(condition uint8, pc uint32, retired int) {
+	site := a.conditionStart(condition)
+	a.movMemPC(pc)
+	a.movEAXimm(nativeSlowStatus(retired))
+	a.ret1()
+	a.conditionEnd(site)
+}
+
 func (a *x64emitter) selfLoopUncond(gateOff int) {
 	pos := a.mark()
 	a.b(0xE9)
@@ -252,6 +260,56 @@ func (a *x64emitter) exitBranchLinkLinked(link uint32, slot uintptr, target uint
 	a.exitLinked(slot, target)
 }
 
+// exitBranchExchange implements ARM BX/BLX with a register target. The target
+// bit selects CPSR.T and the corresponding 2/4-byte alignment. A distinct
+// status lets Go synchronize Backend.mode before selecting the next tier.
+func (a *x64emitter) exitBranchExchange(reg, pcValue, link uint32, writeLink bool) {
+	if reg == cpu.RegisterPC {
+		a.movEAXimm(pcValue)
+	} else {
+		a.loadEAX(reg)
+	}
+	a.exitBranchExchangeValue(link, writeLink)
+}
+
+func (a *x64emitter) exitLoadedPC() {
+	a.loadEAX(cpu.RegisterPC)
+	a.exitBranchExchangeValue(0, false)
+}
+
+// exitBranchExchangeValue consumes the raw target in EAX. LDM writes its last
+// word to regs[PC] before taking this path; BX/BLX load EAX directly first.
+func (a *x64emitter) exitBranchExchangeValue(link uint32, writeLink bool) {
+	a.b(0x89, 0xC1) // mov ecx,eax (target)
+	if writeLink {
+		a.movEAXimm(link)
+		a.storeEAX(cpu.RegisterLR)
+	}
+
+	// CPSR.T = target & 1.
+	a.loadEAX(cpu.RegisterCPSR)
+	a.b(0x25)
+	a.imm32(^uint32(flagT)) // and eax,~T
+	a.b(0x89, 0xCA)         // mov edx,ecx
+	a.b(0x83, 0xE2, 0x01)   // and edx,1
+	a.b(0xC1, 0xE2, 0x05)   // shl edx,5
+	a.b(0x09, 0xD0)         // or eax,edx
+	a.storeEAX(cpu.RegisterCPSR)
+
+	// mask = 0xfffffffc | ((target & 1) << 1): ARM clears two
+	// low bits, Thumb clears one.
+	a.b(0x89, 0xCA)       // mov edx,ecx
+	a.b(0x83, 0xE2, 0x01) // and edx,1
+	a.b(0xD1, 0xE2)       // shl edx,1
+	a.b(0x81, 0xCA)
+	a.imm32(0xfffffffc) // or edx,0xfffffffc
+	a.b(0x21, 0xD1)     // and ecx,edx
+	a.b(0x89, 0xC8)     // mov eax,ecx
+	a.storeEAX(cpu.RegisterPC)
+	a.movEAXimm(nativeStatusMode)
+	a.ret1()
+}
+
 func (a *x64emitter) exitBkpt(nextPC uint32) {
 	a.movMemPC(nextPC)
 	a.b(0xB8)
@@ -294,6 +352,13 @@ func (a *x64emitter) imulEAXmem(gi uint32) { a.b(0x41, 0x0F, 0xAF, 0x43, disp(gi
 func (a *x64emitter) shlEAXimm(k uint8) { a.b(0xC1, 0xE0, k) } // shl eax, k
 func (a *x64emitter) shrEAXimm(k uint8) { a.b(0xC1, 0xE8, k) } // shr eax, k
 func (a *x64emitter) sarEAXimm(k uint8) { a.b(0xC1, 0xF8, k) } // sar eax, k
+func (a *x64emitter) rorEAXimm(k uint8) { a.b(0xC1, 0xC8, k) } // ror eax, k
+func (a *x64emitter) shlECXimm(k uint8) { a.b(0xC1, 0xE1, k) } // shl ecx, k
+func (a *x64emitter) shrECXimm(k uint8) { a.b(0xC1, 0xE9, k) } // shr ecx, k
+func (a *x64emitter) sarECXimm(k uint8) { a.b(0xC1, 0xF9, k) } // sar ecx, k
+func (a *x64emitter) rorECXimm(k uint8) { a.b(0xC1, 0xC9, k) } // ror ecx, k
+func (a *x64emitter) movEAXR8D()        { a.b(0x44, 0x89, 0xC0) }
+func (a *x64emitter) movECXR8D()        { a.b(0x44, 0x89, 0xC1) }
 
 func (a *x64emitter) movR8DEAX()        { a.b(0x41, 0x89, 0xC0) }       // mov r8d, eax
 func (a *x64emitter) shrR8Dimm(k uint8) { a.b(0x41, 0xC1, 0xE8, k) }    // shr r8d, k
@@ -674,17 +739,41 @@ func (a *x64emitter) setRegConst(rd, value uint32) {
 // page that overlaps translated code (so an inline store can never be
 // self-modifying).
 func (a *x64emitter) memory(m memAccess, pc uint32, retired int) {
-	// 1. Effective address into EAX, exactly as the interpreter computes it.
-	if m.absolute {
-		a.movEAXimm(m.offset)
-	} else {
-		a.loadEAX(m.base)
+	applyIndex := func() {
 		if m.hasIndex {
-			if m.subtract {
-				a.subEAXmem(m.index)
-			} else {
-				a.addEAXmem(m.index)
+			if m.indexShift == 0 {
+				if m.subtract {
+					a.subEAXmem(m.index)
+				} else {
+					a.addEAXmem(m.index)
+				}
+				return
 			}
+			a.loadECX(m.index)
+			switch m.indexShiftType {
+			case 0:
+				a.shlECXimm(m.indexShift)
+			case 1:
+				if m.indexShift == 32 {
+					a.b(0x31, 0xC9) // xor ecx,ecx
+				} else {
+					a.shrECXimm(m.indexShift)
+				}
+			case 2:
+				if m.indexShift == 32 {
+					a.sarECXimm(31)
+				} else {
+					a.sarECXimm(m.indexShift)
+				}
+			case 3:
+				a.rorECXimm(m.indexShift)
+			}
+			if m.subtract {
+				a.subEAXECX()
+			} else {
+				a.addEAXECX()
+			}
+			return
 		}
 		if m.offset != 0 {
 			if m.subtract {
@@ -692,6 +781,15 @@ func (a *x64emitter) memory(m memAccess, pc uint32, retired int) {
 			} else {
 				a.addEAXimm(m.offset)
 			}
+		}
+	}
+	// 1. Effective address into EAX, exactly as the interpreter computes it.
+	if m.absolute {
+		a.movEAXimm(m.offset)
+	} else {
+		a.loadEAX(m.base)
+		if !m.postIndex {
+			applyIndex()
 		}
 	}
 
@@ -724,17 +822,27 @@ func (a *x64emitter) memory(m memAccess, pc uint32, retired int) {
 		}
 		a.storeEAX(m.rd)
 	}
+	if m.writeback {
+		// A load reuses EAX for its result. The decoder suppresses writeback
+		// when rd==base, so reloading base still obtains the original value.
+		a.loadEAX(m.base)
+		applyIndex()
+		a.storeEAX(m.base)
+	}
 	a.bailStub(pc, retired, misses)
 }
 
-// multi translates PUSH/POP/STMIA/LDMIA: one probe covering the whole list,
-// then a word per register at a fixed displacement, then the base writeback.
+// multi translates ARM/Thumb multi-register transfers: one probe covering the
+// whole list, then a word per register at a fixed displacement, then optional
+// base writeback.
 // See multiAccess (native_common.go) for why the instruction is all-or-nothing.
 func (a *x64emitter) multi(m multiAccess, pc uint32, retired int) {
 	span := uint32(4 * len(m.regs))
 	a.loadEAX(m.base)
-	if m.preDec {
-		a.subEAXimm(span) // PUSH transfers below the base
+	if m.startOffset < 0 {
+		a.subEAXimm(uint32(-m.startOffset))
+	} else if m.startOffset > 0 {
+		a.addEAXimm(uint32(m.startOffset))
 	}
 	misses := a.probeTLB(m.store, span)
 	for i, reg := range m.regs {
@@ -748,14 +856,17 @@ func (a *x64emitter) multi(m multiAccess, pc uint32, retired int) {
 		}
 	}
 	if m.writeback {
-		// PUSH leaves the base at the bottom of the block it just wrote; the
-		// ascending forms leave it one word past the top.
-		if !m.preDec {
-			a.addEAXimm(span)
+		if m.writebackOffset < 0 {
+			a.subEAXimm(uint32(-m.writebackOffset))
+		} else if m.writebackOffset > 0 {
+			a.addEAXimm(uint32(m.writebackOffset))
 		}
 		a.storeEAX(m.base)
 	}
 	a.bailStub(pc, retired, misses)
+	if m.loadPC {
+		a.exitLoadedPC()
+	}
 }
 
 // probeTLB emits the software-TLB probe for an access of span bytes whose guest
@@ -770,7 +881,7 @@ func (a *x64emitter) multi(m multiAccess, pc uint32, retired int) {
 // never installs a writable page that holds translated code.
 func (a *x64emitter) probeTLB(store bool, span uint32) []int {
 	a.b(0x89, 0xC1)              // mov ecx, eax
-	a.b(0xC1, 0xE9, tlbPageBits) // shr ecx, 12
+	a.b(0xC1, 0xE9, tlbPageBits) // shr ecx, 10
 	a.b(0x89, 0xCA)              // mov edx, ecx      (page number)
 	a.b(0x81, 0xE1)              // and ecx, mask
 	a.imm32(nativeTLBMask)
@@ -783,17 +894,19 @@ func (a *x64emitter) probeTLB(store bool, span uint32) []int {
 	a.imm64(table)
 	a.b(0x41, 0x3B, 0x14, 0x09) // cmp edx, [r9+rcx]  (entry.tag)
 	misses := []int{a.mark()}
-	a.b(0x75, 0)    // jne bail (patched)
+	a.b(0x0F, 0x85) // jne bail (rel32, patched)
+	a.imm32(0)
 	a.b(0x89, 0xC2) // mov edx, eax
 	a.b(0x81, 0xE2) // and edx, 0xfff
 	a.imm32(tlbPageSize - 1)
 	if span > 1 {
 		// Keep a straddling access - the only case the interpreter would
 		// service byte-wise across regions - on the interpreter.
-		a.b(0x81, 0xFA) // cmp edx, 4096-span
+		a.b(0x81, 0xFA) // cmp edx, 1024-span
 		a.imm32(tlbPageSize - span)
 		misses = append(misses, a.mark())
-		a.b(0x77, 0) // ja bail (patched)
+		a.b(0x0F, 0x87) // ja bail (rel32, patched)
+		a.imm32(0)
 	}
 	a.b(0x4D, 0x8B, 0x4C, 0x09, 0x08) // mov r9, [r9+rcx+8] (entry.host)
 	return misses
@@ -818,7 +931,10 @@ func (a *x64emitter) bailStub(pc uint32, retired int, misses []int) {
 	a.ret1()
 	done := a.mark()
 	for _, site := range misses {
-		a.buf[site+1] = byte(bail - (site + 2))
+		displacement := uint32(int32(bail - (site + 6)))
+		for index := 0; index < 4; index++ {
+			a.buf[site+2+index] = byte(displacement >> (8 * index))
+		}
 	}
 	a.buf[skip+1] = byte(done - (skip + 2))
 }
@@ -881,18 +997,114 @@ func (a *x64emitter) armDataProcessing(op nativeARMDataOp) bool {
 			a.loadECX(gi)
 		}
 	}
+	if op.shifterCarry {
+		loadEAX(op.operand)
+		switch op.shiftType {
+		case 0: // LSL: bit 32-shift of the unshifted operand
+			a.shrEAXimm(32 - op.shift)
+		case 1, 2: // LSR/ASR: bit shift-1 of the unshifted operand
+			a.shrEAXimm(op.shift - 1)
+		case 3: // ROR: bit 31 of the rotated result
+			a.rorEAXimm(op.shift)
+			a.shrEAXimm(31)
+		}
+		a.movR8DEAX()
+		a.andR8Dimm1()
+	}
+	if op.shiftReg {
+		loadEAX(op.operand)
+		loadECX(op.shiftRegister)
+		a.b(0x0F, 0xB6, 0xC9) // movzx ecx,cl (ARM uses low eight bits)
+		switch op.shiftType {
+		case 0, 1:
+			a.b(0x83, 0xF9, 0x20) // cmp ecx,32
+			below := a.mark()
+			a.b(0x72, 0) // jb shift
+			a.xorEAXEAX()
+			done := a.mark()
+			a.b(0xEB, 0) // jmp done
+			shift := a.mark()
+			if op.shiftType == 0 {
+				a.b(0xD3, 0xE0) // shl eax,cl
+			} else {
+				a.b(0xD3, 0xE8) // shr eax,cl
+			}
+			end := a.mark()
+			a.buf[below+1] = byte(shift - (below + 2))
+			a.buf[done+1] = byte(end - (done + 2))
+		case 2:
+			a.b(0x83, 0xF9, 0x20) // cmp ecx,32
+			below := a.mark()
+			a.b(0x72, 0) // jb shift
+			a.sarEAXimm(31)
+			done := a.mark()
+			a.b(0xEB, 0) // jmp done
+			shift := a.mark()
+			a.b(0xD3, 0xF8) // sar eax,cl
+			end := a.mark()
+			a.buf[below+1] = byte(shift - (below + 2))
+			a.buf[done+1] = byte(end - (done + 2))
+		case 3:
+			a.b(0xD3, 0xC8) // ror eax,cl (modulo 32 matches ARM ROR)
+		}
+		a.movR8DEAX()
+	}
 	loadOperandECX := func() {
-		if op.operandReg {
+		if op.shiftReg {
+			a.movECXR8D()
+		} else if op.operandReg {
 			loadECX(op.operand)
 		} else {
 			a.movECXimm(op.operand)
 		}
+		switch op.shiftType {
+		case 0:
+			if op.shift != 0 {
+				a.shlECXimm(op.shift)
+			}
+		case 1:
+			if op.shift == 32 {
+				a.b(0x31, 0xC9) // xor ecx,ecx
+			} else {
+				a.shrECXimm(op.shift)
+			}
+		case 2:
+			if op.shift == 32 {
+				a.sarECXimm(31)
+			} else {
+				a.sarECXimm(op.shift)
+			}
+		case 3:
+			a.rorECXimm(op.shift)
+		}
 	}
 	loadOperandEAX := func() {
-		if op.operandReg {
+		if op.shiftReg {
+			a.movEAXR8D()
+		} else if op.operandReg {
 			loadEAX(op.operand)
 		} else {
 			a.movEAXimm(op.operand)
+		}
+		switch op.shiftType {
+		case 0:
+			if op.shift != 0 {
+				a.shlEAXimm(op.shift)
+			}
+		case 1:
+			if op.shift == 32 {
+				a.xorEAXEAX()
+			} else {
+				a.shrEAXimm(op.shift)
+			}
+		case 2:
+			if op.shift == 32 {
+				a.sarEAXimm(31)
+			} else {
+				a.sarEAXimm(op.shift)
+			}
+		case 3:
+			a.rorEAXimm(op.shift)
 		}
 	}
 
@@ -923,6 +1135,32 @@ func (a *x64emitter) armDataProcessing(op nativeARMDataOp) bool {
 		loadOperandECX()
 		a.addEAXECX()
 		arithmetic = true
+	case 5: // ADC
+		loadEAX(op.rn)
+		loadOperandECX()
+		a.loadR9DfromCPSR()
+		a.b(0x41, 0xC1, 0xE9, 0x1D)       // shr r9d,29
+		a.b(0x41, 0x0F, 0xBA, 0xE1, 0x00) // bt r9d,0 -> CF=C
+		a.b(0x11, 0xC8)                   // adc eax,ecx
+		arithmetic = true
+	case 6: // SBC
+		loadEAX(op.rn)
+		loadOperandECX()
+		a.loadR9DfromCPSR()
+		a.b(0x41, 0xC1, 0xE9, 0x1D)
+		a.b(0x41, 0x0F, 0xBA, 0xE1, 0x00) // CF=C
+		a.b(0xF5)                         // cmc: x86 borrow = !ARM C
+		a.b(0x19, 0xC8)                   // sbb eax,ecx
+		arithmetic, subtract = true, true
+	case 7: // RSC
+		loadOperandEAX()
+		loadECX(op.rn)
+		a.loadR9DfromCPSR()
+		a.b(0x41, 0xC1, 0xE9, 0x1D)
+		a.b(0x41, 0x0F, 0xBA, 0xE1, 0x00)
+		a.b(0xF5)
+		a.b(0x19, 0xC8)
+		arithmetic, subtract = true, true
 	case 8: // TST
 		loadEAX(op.rn)
 		loadOperandECX()
@@ -954,6 +1192,8 @@ func (a *x64emitter) armDataProcessing(op nativeARMDataOp) bool {
 		} else if op.carry >= 0 {
 			a.movR8Dimm(uint32(op.carry))
 			a.commitNZC()
+		} else if op.shifterCarry {
+			a.commitNZC()
 		} else {
 			a.commitNZ()
 		}
@@ -962,4 +1202,16 @@ func (a *x64emitter) armDataProcessing(op nativeARMDataOp) bool {
 		a.storeEAX(op.rd)
 	}
 	return true
+}
+
+func (a *x64emitter) armMultiply(op nativeARMMultiply) {
+	a.loadEAX(op.rm)
+	a.imulEAXmem(op.rs)
+	if op.accumulate {
+		a.addEAXmem(op.rn)
+	}
+	if op.setFlags {
+		a.commitNZ()
+	}
+	a.storeEAX(op.rd)
 }

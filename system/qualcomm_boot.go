@@ -50,6 +50,7 @@ type QualcommBootControlConfig struct {
 	CompletionEvents            []QualcommCompletionEventConfig
 	LegacyUARTControllers       []uint32
 	SBIControllers              []uint32
+	SBIReadResponses            []QualcommSBIReadResponse
 	SBICompletionStatus         uint32
 	NANDReady                   *StatusSignal
 	InterruptController         *QualcommInterruptController
@@ -73,6 +74,15 @@ type QualcommBootReadOnlyRegister struct {
 type QualcommBootRegisterReset struct {
 	Offset uint32
 	Value  uint32
+}
+
+// QualcommSBIReadResponse gives a profiled SBI controller a deterministic
+// byte response for one addressed peripheral register. Unprofiled reads keep
+// the controller's existing zero-value compatibility behavior.
+type QualcommSBIReadResponse struct {
+	Controller uint32
+	Address    uint8
+	Value      uint8
 }
 
 // QualcommCompletionEventConfig describes an evidenced command/status/ack
@@ -239,6 +249,7 @@ func validateQualcommBootControlConfigurationOffsets(
 	completionEvents []QualcommCompletionEventConfig,
 	legacyUARTControllers []uint32,
 	sbiControllers []uint32,
+	sbiReadResponses []QualcommSBIReadResponse,
 	sbiCompletionStatus uint32,
 ) error {
 	if err := validateQualcommBootControlWritableOffsets(writableOffsets); err != nil {
@@ -331,6 +342,26 @@ func validateQualcommBootControlConfigurationOffsets(
 			return fmt.Errorf("duplicate SBI completion status 0x%x: %w", sbiCompletionStatus, ErrInvalidRegion)
 		}
 		seen[sbiCompletionStatus] = struct{}{}
+	}
+	sbiResponses := make(map[qualcommSBIReadKey]struct{}, len(sbiReadResponses))
+	for _, response := range sbiReadResponses {
+		if _, configured := bases[response.Controller]; !configured {
+			return fmt.Errorf(
+				"SBI response controller 0x%x is not configured: %w",
+				response.Controller,
+				ErrInvalidRegion,
+			)
+		}
+		key := qualcommSBIReadKey{controller: response.Controller, address: response.Address}
+		if _, duplicate := sbiResponses[key]; duplicate {
+			return fmt.Errorf(
+				"duplicate SBI response for controller 0x%x address 0x%x: %w",
+				response.Controller,
+				response.Address,
+				ErrInvalidRegion,
+			)
+		}
+		sbiResponses[key] = struct{}{}
 	}
 	halfwords := make(map[uint32]struct{}, len(halfwordOffsets))
 	for _, offset := range halfwordOffsets {
@@ -603,6 +634,8 @@ type QualcommBootControl struct {
 	orderedCompletionHandlers   []QualcommCompletionHandler
 	legacyUARTControllers       map[uint32]struct{}
 	sbiControllers              map[uint32]struct{}
+	sbiReadResponses            []QualcommSBIReadResponse
+	sbiReadResponseValues       map[qualcommSBIReadKey]uint8
 	sbiCompletionStatus         uint32
 	registers                   map[uint32]uint32
 	watchdogServices            uint64
@@ -616,6 +649,11 @@ type QualcommBootControl struct {
 	timeTickPhase               uint64
 	timeTickMatchReady          bool
 	timeTickMatchConfigured     bool
+}
+
+type qualcommSBIReadKey struct {
+	controller uint32
+	address    uint8
 }
 
 func NewQualcommBootControl(config QualcommBootControlConfig) (*QualcommBootControl, error) {
@@ -635,6 +673,7 @@ func NewQualcommBootControl(config QualcommBootControlConfig) (*QualcommBootCont
 		config.CompletionEvents,
 		config.LegacyUARTControllers,
 		config.SBIControllers,
+		config.SBIReadResponses,
 		config.SBICompletionStatus,
 	); err != nil {
 		return nil, fmt.Errorf("invalid Qualcomm boot-control register profile: %w", err)
@@ -674,6 +713,13 @@ func NewQualcommBootControl(config QualcommBootControlConfig) (*QualcommBootCont
 	sort.Slice(registerResets, func(left, right int) bool {
 		return registerResets[left].Offset < registerResets[right].Offset
 	})
+	sbiReadResponses := append([]QualcommSBIReadResponse(nil), config.SBIReadResponses...)
+	sort.Slice(sbiReadResponses, func(left, right int) bool {
+		if sbiReadResponses[left].Controller != sbiReadResponses[right].Controller {
+			return sbiReadResponses[left].Controller < sbiReadResponses[right].Controller
+		}
+		return sbiReadResponses[left].Address < sbiReadResponses[right].Address
+	})
 	device := &QualcommBootControl{
 		hardwareRevision:            config.HardwareRevision,
 		nandInterfaceMode:           config.NANDInterfaceMode,
@@ -698,6 +744,8 @@ func NewQualcommBootControl(config QualcommBootControlConfig) (*QualcommBootCont
 		completionHandlers:    make(map[uint32]QualcommCompletionHandler),
 		legacyUARTControllers: make(map[uint32]struct{}, len(config.LegacyUARTControllers)),
 		sbiControllers:        make(map[uint32]struct{}, len(config.SBIControllers)),
+		sbiReadResponses:      sbiReadResponses,
+		sbiReadResponseValues: make(map[qualcommSBIReadKey]uint8, len(sbiReadResponses)),
 		sbiCompletionStatus:   config.SBICompletionStatus,
 	}
 	for _, offset := range config.HalfwordOffsets {
@@ -714,6 +762,12 @@ func NewQualcommBootControl(config QualcommBootControlConfig) (*QualcommBootCont
 	}
 	for _, base := range config.SBIControllers {
 		device.sbiControllers[base] = struct{}{}
+	}
+	for _, response := range sbiReadResponses {
+		device.sbiReadResponseValues[qualcommSBIReadKey{
+			controller: response.Controller,
+			address:    response.Address,
+		}] = response.Value
 	}
 	if clock := config.TimeTickClock; clock != nil {
 		device.timeTickClocked = true
@@ -997,7 +1051,14 @@ func (d *QualcommBootControl) Write(offset uint32, width Width, value uint32) er
 	}
 	for base := range d.sbiControllers {
 		if offset == base+qualcommBootSBICommandOffset {
-			d.registers[base+qualcommBootSBIResultOffset] = 0
+			result := uint32(0)
+			if value>>24 == 1 {
+				result = uint32(d.sbiReadResponseValues[qualcommSBIReadKey{
+					controller: base,
+					address:    uint8(value >> 16),
+				}])
+			}
+			d.registers[base+qualcommBootSBIResultOffset] = result
 			d.registers[d.sbiCompletionStatus] = qualcommBootSBICompleteStatus
 			return nil
 		}
@@ -1097,7 +1158,7 @@ func (d *QualcommBootControl) SaveState() ([]byte, error) {
 	offsets := d.writableOffsets
 	var output bytes.Buffer
 	output.WriteString("QBTC")
-	_ = binary.Write(&output, binary.LittleEndian, uint32(17))
+	_ = binary.Write(&output, binary.LittleEndian, uint32(18))
 	_ = binary.Write(&output, binary.LittleEndian, d.hardwareRevision)
 	_ = binary.Write(&output, binary.LittleEndian, d.nandInterfaceMode)
 	_ = binary.Write(&output, binary.LittleEndian, d.ebiMemoryConfiguration)
@@ -1153,6 +1214,12 @@ func (d *QualcommBootControl) SaveState() ([]byte, error) {
 		_ = binary.Write(&output, binary.LittleEndian, reset.Offset)
 		_ = binary.Write(&output, binary.LittleEndian, reset.Value)
 	}
+	_ = binary.Write(&output, binary.LittleEndian, uint32(len(d.sbiReadResponses)))
+	for _, response := range d.sbiReadResponses {
+		_ = binary.Write(&output, binary.LittleEndian, response.Controller)
+		_ = output.WriteByte(response.Address)
+		_ = output.WriteByte(response.Value)
+	}
 	_ = binary.Write(&output, binary.LittleEndian, uint32(len(offsets)))
 	for _, offset := range offsets {
 		_ = binary.Write(&output, binary.LittleEndian, offset)
@@ -1188,9 +1255,9 @@ func (d *QualcommBootControl) loadState(state []byte, allowMissingProfileRegiste
 	var timeTickReadPhase uint8
 	var clocked, interruptSource, useVectored, matchReady, matchConfigured uint8
 	var instructionRate, timeTickHz, timeTickPhase uint64
-	var completionCount, resetCount, count uint32
+	var completionCount, resetCount, sbiResponseCount, count uint32
 	if _, err := io.ReadFull(reader, magic[:]); err != nil || string(magic[:]) != "QBTC" ||
-		binary.Read(reader, binary.LittleEndian, &version) != nil || version != 17 ||
+		binary.Read(reader, binary.LittleEndian, &version) != nil || (version != 17 && version != 18) ||
 		binary.Read(reader, binary.LittleEndian, &revision) != nil || revision != d.hardwareRevision ||
 		binary.Read(reader, binary.LittleEndian, &nandInterfaceMode) != nil ||
 		nandInterfaceMode != d.nandInterfaceMode ||
@@ -1263,6 +1330,21 @@ func (d *QualcommBootControl) loadState(state []byte, allowMissingProfileRegiste
 			return ErrInvalidState
 		}
 		serializedResets[reset.Offset] = reset.Value
+	}
+	if version >= 18 {
+		if binary.Read(reader, binary.LittleEndian, &sbiResponseCount) != nil ||
+			sbiResponseCount != uint32(len(d.sbiReadResponses)) {
+			return ErrInvalidState
+		}
+		for index := uint32(0); index < sbiResponseCount; index++ {
+			var response QualcommSBIReadResponse
+			if binary.Read(reader, binary.LittleEndian, &response.Controller) != nil ||
+				binary.Read(reader, binary.LittleEndian, &response.Address) != nil ||
+				binary.Read(reader, binary.LittleEndian, &response.Value) != nil ||
+				response != d.sbiReadResponses[index] {
+				return ErrInvalidState
+			}
+		}
 	}
 	if binary.Read(reader, binary.LittleEndian, &count) != nil ||
 		count > uint32(len(d.writableOffsets)) ||

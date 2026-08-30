@@ -220,8 +220,11 @@ func TestBuildRaptorJavaVTableUsesFixedAndFlatSlots(t *testing.T) {
 	}
 	// Flat slot 0 dispatches to the subclass override body (declared wins), and
 	// the ARM body's clear interworking bit is preserved verbatim — the builder
-	// must not strip it or re-force Thumb.
-	if got, _ := public.ReadU32(subclass.vtable + 4); got != 0x00002468 {
+	// must not strip it or re-force Thumb. Flat slots start past the fixed ones
+	// so the fixed pass cannot overwrite them.
+	if got, _ := public.ReadU32(
+		subclass.vtable + raptorJavaFlatVirtualSlot(0),
+	); got != 0x00002468 {
 		t.Fatalf("flat slot 0 = 0x%08x, want the ARM override body 0x00002468", got)
 	}
 	// Fixed Object slots are populated even though the subclass declares none.

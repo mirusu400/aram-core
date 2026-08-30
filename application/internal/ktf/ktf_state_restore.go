@@ -3,6 +3,7 @@ package ktf
 import (
 	"fmt"
 	"github.com/mirusu400/aram-core/cpu"
+	"github.com/mirusu400/aram-core/internal/ime"
 	"image"
 	"image/color"
 	"strconv"
@@ -476,6 +477,9 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	r.lwcEventData = guest.CloneMap(meta.LWCEventData)
 	r.lwcChildren = guest.CloneSliceMap(meta.LWCChildren)
 	r.lwcMaxLengths = guest.CloneMap(meta.LWCMaxLengths)
+	// The field input methods are a live cache of a half-composed glyph, so a
+	// restore starts them empty rather than carrying the previous run's.
+	r.lwcTextInput = make(map[uint32]*ime.Automata)
 	r.lwcComponents = make(
 		map[uint32]*ktfLWCComponent,
 		len(meta.LWCComponents),
@@ -577,6 +581,11 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	r.wipicSystemProperties = guest.CloneMap(meta.WIPICSystemProperties)
 	r.wipicFiles = restoreKTFFiles(meta.WIPICFiles)
 	r.nextWIPICFile = meta.NextWIPICFile
+	r.wipicDatabases = guest.CloneMap(meta.WIPICDatabases)
+	if r.wipicDatabases == nil {
+		r.wipicDatabases = make(map[uint32]string)
+	}
+	r.nextWIPICDatabase = max(uint32(1), meta.NextWIPICDatabase)
 	r.dirtyCards = guest.CloneMap(meta.DirtyCards)
 	r.paintInitializedCards = guest.CloneMap(meta.PaintInitializedCards)
 	r.PresentCount = meta.PresentCount

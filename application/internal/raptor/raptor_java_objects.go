@@ -204,6 +204,9 @@ func (r *Runtime) newRaptorJavaArray(element, count uint32) (uint32, error) {
 	}
 	java.lgtToKTF[instance] = mirror
 	java.ktfToLGT[mirror] = instance
+	if className != "[Ljava/lang/Object;" {
+		r.noteRaptorPrimitiveArray(java, mirror, elementSize)
+	}
 	// Give the array an object header so a guest that virtual-dispatches on an
 	// array reference (Java array types extend Object; some AOT call sites also
 	// treat an array-typed local as a receiver) loads a real vtable instead of
@@ -415,6 +418,10 @@ func (r *Runtime) callJavaHostMethod(
 		return guest.WIPIReturn{}, nil
 	}
 	method = r.resolveRaptorJavaOverload(java, method)
+	if method.className == "java/lang/Thread" && method.Name == "sleep" &&
+		method.descriptor == "(J)V" {
+		return r.sleepRaptorJavaTask(java)
+	}
 	argumentCount := raptorJavaDescriptorArgumentCount(method.descriptor)
 	if !method.isStatic {
 		argumentCount++
@@ -494,15 +501,12 @@ func (r *Runtime) callJavaHostMethod(
 				target = receiver
 			}
 			java.threadTargets = append(java.threadTargets, target)
-			class := r.raptorJavaClassForObject(java, target)
-			for depth := 0; class != nil && depth < 256; depth++ {
-				if run, found := DeclaredMethod(class, "run", "()V"); found && run.Body != 0 {
-					java.Tasks = append(java.Tasks, &JavaTask{
-						Target: target, Procedure: run.Body,
-					})
-					break
-				}
-				class = java.ClassByName[class.parentName]
+			if procedure := r.raptorJavaThreadRun(java, target); procedure != 0 {
+				java.Tasks = append(java.Tasks, &JavaTask{
+					Target:    target,
+					Procedure: procedure,
+					Stack:     RaptorJavaTaskStack(len(java.Tasks)),
+				})
 			}
 			return guest.WIPIReturn{}, nil
 		case "org/kwis/msp/lcdui/Display.callSerially(Ljava/lang/Runnable;)V",
@@ -537,6 +541,7 @@ func (r *Runtime) callJavaHostMethod(
 			arguments[index] = mirror
 		}
 	}
+	r.syncRaptorArrayArguments(java, arguments, true)
 	data := make([]byte, len(arguments)*4)
 	for index, value := range arguments {
 		binary.LittleEndian.PutUint32(data[index*4:], value)
@@ -552,6 +557,7 @@ func (r *Runtime) callJavaHostMethod(
 		method.descriptor,
 	)(ctx, java.Host)
 	java.Host.NativeParameterBase = parameterBase
+	r.syncRaptorArrayArguments(java, arguments, false)
 	if callErr != nil {
 		return guest.WIPIReturn{}, callErr
 	}
@@ -562,6 +568,52 @@ func (r *Runtime) callJavaHostMethod(
 		}
 	}
 	return guest.WIPIReturn{Low: value, High: java.Host.JavaReturnHigh}, nil
+}
+
+// RepaintDirtyJavaCard paints the card the title has asked to repaint and
+// reports whether it painted one.
+//
+// Card.repaint() only marks the card dirty: on a handset the platform performs
+// the repaint on its own thread, and a title is free to never call
+// serviceRepaints. 현영맞고2006 does exactly that - it asks for a repaint tens
+// of thousands of times and never once services it - so the frame step has to
+// be the thing that services it (issue #79).
+func (r *Runtime) RepaintDirtyJavaCard(ctx context.Context) (bool, error) {
+	if r.Java == nil || r.Java.currentCard == 0 {
+		return false, nil
+	}
+	card := r.Java.currentCard
+	if !r.Java.dirtyCards[card] {
+		return false, nil
+	}
+	delete(r.Java.dirtyCards, card)
+	return true, r.paintRaptorJavaCard(ctx, r.Java, card)
+}
+
+// raptorJavaThreadRun resolves the body a started thread runs. A class the
+// module publishes metadata for is resolved by name along its chain; one it
+// does not is read out of the vtable the module built for it, where run sits
+// next to start. See raptorJavaThreadRunSlot.
+func (r *Runtime) raptorJavaThreadRun(java *JavaRuntime, target uint32) uint32 {
+	class := r.raptorJavaClassForObject(java, target)
+	for depth := 0; class != nil && depth < 256; depth++ {
+		if run, found := DeclaredMethod(class, "run", "()V"); found && run.Body != 0 {
+			return run.Body
+		}
+		class = java.ClassByName[class.parentName]
+	}
+	for class = r.raptorJavaClassForObject(java, target); class != nil; {
+		if class.guestVTable != 0 {
+			body, err := r.Public.ReadU32(
+				class.guestVTable + raptorJavaThreadRunSlot,
+			)
+			if err == nil && body != 0 && body != class.Holder {
+				return body
+			}
+		}
+		class = java.ClassByName[class.parentName]
+	}
+	return 0
 }
 
 func (r *Runtime) paintRaptorJavaCard(

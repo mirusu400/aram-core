@@ -1011,7 +1011,10 @@ func TestQualcommBootControlProfiledSBICompletesAndClearsStatus(t *testing.T) {
 	config := QualcommBootControlConfig{
 		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
 		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1,
-		SBIControllers:      []uint32{0x5000},
+		SBIControllers: []uint32{0x5000},
+		SBIReadResponses: []QualcommSBIReadResponse{{
+			Controller: 0x5000, Address: 0x02, Value: 0xa5,
+		}},
 		SBICompletionStatus: 0x0494,
 		NANDReady:           NewStatusSignal(),
 	}
@@ -1030,6 +1033,17 @@ func TestQualcommBootControlProfiledSBICompletesAndClearsStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Version 17 ended immediately after the empty register-reset list. Keep
+	// accepting those snapshots while version 18 records immutable SBI response
+	// identity for new saves.
+	const legacySBIResponseBlockOffset = 75
+	legacyState := append([]byte(nil), state[:legacySBIResponseBlockOffset]...)
+	legacyState = append(legacyState, state[legacySBIResponseBlockOffset+10:]...)
+	binary.LittleEndian.PutUint32(legacyState[4:8], 17)
+	legacyRestored, _ := NewQualcommBootControl(config)
+	if err := legacyRestored.LoadState(legacyState); err != nil {
+		t.Fatalf("load version 17 SBI state: %v", err)
+	}
 	restored, _ := NewQualcommBootControl(config)
 	if err := restored.LoadState(state); err != nil {
 		t.Fatal(err)
@@ -1043,11 +1057,18 @@ func TestQualcommBootControlProfiledSBICompletesAndClearsStatus(t *testing.T) {
 		t.Fatalf("cleared SBI status = %#x", status)
 	}
 	result, err := restored.Read(0x5010, Width32)
-	if err != nil || result != 0 {
+	if err != nil || result != 0xa5 {
 		t.Fatalf("SBI result = %#x error %v", result, err)
+	}
+	if err := restored.Write(0x5008, Width32, 0x01030000); err != nil {
+		t.Fatal(err)
+	}
+	if result, err = restored.Read(0x5010, Width32); err != nil || result != 0 {
+		t.Fatalf("unprofiled SBI read result = %#x error %v", result, err)
 	}
 	unprofiled := config
 	unprofiled.SBIControllers = nil
+	unprofiled.SBIReadResponses = nil
 	unprofiled.SBICompletionStatus = 0
 	withoutSBI, _ := NewQualcommBootControl(unprofiled)
 	if err := withoutSBI.LoadState(state); !errors.Is(err, ErrInvalidState) {
@@ -1071,6 +1092,30 @@ func TestQualcommBootControlProfiledSBICompletesAndClearsStatus(t *testing.T) {
 	missingCompletion.SBICompletionStatus = 0
 	if _, err := NewQualcommBootControl(missingCompletion); err == nil {
 		t.Fatal("accepted SBI controllers without completion status")
+	}
+	for _, responses := range [][]QualcommSBIReadResponse{
+		{{Controller: 0x5100, Address: 0x02, Value: 1}},
+		{
+			{Controller: 0x5000, Address: 0x02, Value: 1},
+			{Controller: 0x5000, Address: 0x02, Value: 2},
+		},
+	} {
+		invalid := config
+		invalid.SBIReadResponses = responses
+		if _, err := NewQualcommBootControl(invalid); err == nil {
+			t.Fatalf("accepted invalid SBI read responses %#v", responses)
+		}
+	}
+	mismatched := config
+	mismatched.SBIReadResponses = []QualcommSBIReadResponse{{
+		Controller: 0x5000, Address: 0x02, Value: 0xa4,
+	}}
+	mismatchedDevice, err := NewQualcommBootControl(mismatched)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mismatchedDevice.LoadState(state); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("mismatched SBI response profile state error = %v", err)
 	}
 }
 

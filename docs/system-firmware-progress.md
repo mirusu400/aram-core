@@ -44,8 +44,9 @@ a complete cold-boot claim.
   incomplete.
 - Board profiles describe RAM/IRAM/high-vector windows and exact-width
   read-only board registers, fixed-width external latches, boot-control
-  halfword/word layouts, SBI instances, and board-specific clock/sleep
-  controllers. `SparseWordRegisters` provides a reusable, stateful device for
+  halfword/word layouts, SBI instances and peripheral read responses, and
+  board-specific clock/sleep controllers. `SparseWordRegisters` provides a
+  reusable, stateful device for
   explicitly evidenced register layouts without turning reserved MMIO gaps
   into read-zero/write-drop space.
 - Qualcomm compatibility devices now cover the NAND/PBL controls, MPMC register
@@ -137,6 +138,7 @@ When `ARAM_REFERENCE_REPO` is configured, the private gate currently proves:
 | numeric keypad input | four real matrix `digit-0` events open the native dialer and render `000-0` |
 | built-in UI launch | a real side `volume-up` matrix press from home opens the firmware's `소리 조절` application |
 | native navigation input | screen-differential probes identify the left/menu and right/memo soft keys, NATE/OK, send, all four ring directions, C/back, and both side-volume keys; menu opens the native grid, directions select native shortcuts and list items, OK enters a selection, and back returns to its parent |
+| END/power input | a short active-low pulse on primary-clock GPIO input bit 4 reproduces the red handset END key; a DL21 snapshot regression opens the native menu and verifies that `end` returns to the post-END home frame |
 | second SCH-W830 build | DA18 is independently hash-matched and normalized, reuses the CG23 boot chain and the same board devices, completes native first-boot provisioning, cold-boots to its `S/W:DA18.1029` home frame, and launches `소리 조절` through the side-volume key |
 | reusable headless machine | DL21 and DA18 both pass `systemmachine.New`: exact set selection, QCSBL boundary, frame/input contracts, media save/load, power cycle, factory reset, and complete snapshot restore |
 | automated erased-media E2E | both builds pass new NAND -> native first-boot success -> guest-created media -> power cycle -> profiled `volume-up` input -> full `소리 조절` frame -> pre-input snapshot restore -> deterministic home frame |
@@ -145,8 +147,9 @@ The reset path places only reconstructed QCSBL bytes at the profiled load
 address, provides the bounded PBL IRAM/service-table contract, and starts the
 original QCSBL. QCSBL reads MIBIB and OEMSBL through the modeled NAND device.
 The original firmware then initializes two sleep controllers, local SBI/SSBI
-paths, three differently shaped controller instances at `0x80004000` through
-`0x8000423C`, the panel, MMU, clocks, timer/control banks, and IRQ/FIQ masks. It
+paths with a profiled full-charge PMIC ADC response, three differently shaped
+controller instances at `0x80004000` through `0x8000423C`, the panel, MMU,
+clocks, timer/control banks, and IRQ/FIQ masks. It
 performs privileged exception return into transformed runtime code, services
 the watchdog, reads the timetick, and continues runtime work without an MMIO
 or CPU fault during the measured budget. An attributed trace identifies the
@@ -302,8 +305,8 @@ The next targets are:
 2. Derive the remaining SCH-W770 controls and the SCH-W860 keypad matrix from
    each model's own firmware/hardware evidence, then verify built-in
    applications without borrowing W830 controls.
-3. Model remaining user-visible services such as battery, audio, camera, and
-   Bluetooth according to each board profile.
+3. Model remaining user-visible services such as camera and Bluetooth according
+   to each board profile.
 4. Add exact profiles for further Samsung sets and let their own boot traces
    identify only the new board/device facts they require.
 5. Finish reset and undefined-instruction exception entry without hiding

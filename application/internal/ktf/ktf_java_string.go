@@ -119,6 +119,62 @@ func (r *Runtime) handleStringMethod(
 			return 0, valueErr
 		}
 		return 0, r.materializeJavaString(instance, value)
+	case "<init>([BLjava/lang/String;)V":
+		array, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if array == 0 {
+			return 0, r.materializeJavaString(instance, "")
+		}
+		data, valueErr := r.readJavaByteArray(array)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		charset, valueErr := r.parameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		value, valueErr = r.Services.Text.Decode(
+			data,
+			javaCharsetEncoding(r.javaStringValue(charset)),
+		)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		return 0, r.materializeJavaString(instance, value)
+	case "<init>([BIILjava/lang/String;)V":
+		array, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if array == 0 {
+			return 0, r.materializeJavaString(instance, "")
+		}
+		offset, valueErr := r.parameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		count, valueErr := r.parameter(4)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		data, valueErr := r.readJavaByteArrayRange(array, offset, count)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		charset, valueErr := r.parameter(5)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		value, valueErr = r.Services.Text.Decode(
+			data,
+			javaCharsetEncoding(r.javaStringValue(charset)),
+		)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		return 0, r.materializeJavaString(instance, value)
 	case "<init>([C)V":
 		array, valueErr := r.parameter(2)
 		if valueErr != nil {
@@ -248,6 +304,19 @@ func (r *Runtime) handleStringMethod(
 		encoded, valueErr := r.Services.Text.Encode(
 			value,
 			shared.EncodingEUCKR,
+		)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		return r.newJavaByteArray(encoded)
+	case "getBytes(Ljava/lang/String;)[B":
+		charset, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		encoded, valueErr := r.Services.Text.Encode(
+			value,
+			javaCharsetEncoding(r.javaStringValue(charset)),
 		)
 		if valueErr != nil {
 			return 0, valueErr
@@ -447,6 +516,26 @@ func (r *Runtime) handleStringMethod(
 		return r.NewJavaString(string(utf16.Decode(replaced)))
 	default:
 		return 0, nil
+	}
+}
+
+// javaCharsetEncoding maps a Java charset name onto the encoding the text
+// service converts with. A KTF handset ships the Korean charset under several
+// names and titles use whichever their build tool wrote, so an unrecognised
+// name decodes as EUC-KR: that is the handset's own default and the only
+// charset most of these titles ever hold bytes in.
+func javaCharsetEncoding(name string) shared.TextEncoding {
+	switch strings.ToUpper(strings.TrimSpace(name)) {
+	case "UTF-8", "UTF8":
+		return shared.EncodingUTF8
+	case "UTF-16LE", "UTF16LE", "UNICODELITTLE", "UNICODELITTLEUNMARKED",
+		"X-UTF-16LE":
+		return shared.EncodingUTF16LE
+	case "UTF-16", "UTF16", "UTF-16BE", "UTF16BE", "UNICODE", "UNICODEBIG",
+		"UNICODEBIGUNMARKED", "ISO-10646-UCS-2":
+		return shared.EncodingUTF16BE
+	default:
+		return shared.EncodingEUCKR
 	}
 }
 

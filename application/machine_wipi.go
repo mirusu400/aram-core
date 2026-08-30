@@ -186,6 +186,16 @@ func (m *Machine) runWIPISlice(
 				PC:           nextPC,
 			}
 		}
+		if m.raptor != nil && m.raptor.TakeJavaYield() {
+			// A Raptor Java thread parked itself in Thread.sleep. End the
+			// slice so the rest of the budget goes to the other threads and
+			// to the frame instead of spinning inside the sleeping one.
+			return cpu.Result{
+				Reason:       cpu.StopBudget,
+				Instructions: instructions,
+				PC:           nextPC,
+			}
+		}
 		if instructions >= budget {
 			return cpu.Result{
 				Reason:       cpu.StopBudget,

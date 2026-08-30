@@ -35,6 +35,11 @@ func TestSCHW830BoardProfileAppliesEvidenceBackedIRAM(t *testing.T) {
 	if profile.PrimaryClockStatus != 0x1f || profile.PrimaryClockInputMask != 0x1f {
 		t.Fatalf("SCH-W830 primary clock status = %#x", profile.PrimaryClockStatus)
 	}
+	if want := []QualcommPrimaryClockKeyProfile{{
+		ID: "end", InputLine: 4, ActiveLow: true,
+	}}; !reflect.DeepEqual(profile.PrimaryClockKeys, want) {
+		t.Fatalf("SCH-W830 primary-clock keys = %#v, want %#v", profile.PrimaryClockKeys, want)
+	}
 	if profile.BootClockModeStatus != 1 {
 		t.Fatalf("SCH-W830 boot clock mode status = %#x", profile.BootClockModeStatus)
 	}
@@ -80,6 +85,13 @@ func TestSCHW830BoardProfileAppliesEvidenceBackedIRAM(t *testing.T) {
 	}
 	if want := []uint32{0x5000, 0x5100, 0x5200}; !reflect.DeepEqual(profile.BootControlSBIControllers, want) {
 		t.Fatalf("SCH-W830 boot-control SBI controllers = %#v", profile.BootControlSBIControllers)
+	}
+	if want := []QualcommSBIReadResponse{
+		{Controller: 0x5100, Address: 0x4f, Value: 0xc1},
+		{Controller: 0x5100, Address: 0x53, Value: 0xff},
+		{Controller: 0x5100, Address: 0x54, Value: 0x01},
+	}; !reflect.DeepEqual(profile.BootControlSBIReadResponses, want) {
+		t.Fatalf("SCH-W830 boot-control SBI read responses = %#v", profile.BootControlSBIReadResponses)
 	}
 	if profile.BootControlSBICompletionStatus != 0x0494 {
 		t.Fatalf(
@@ -322,9 +334,10 @@ func TestSCHW860DA06BoardProfileKeepsAdjacentBoardFactsSeparate(t *testing.T) {
 		t.Fatalf("SCH-W860 identity/NAND = %q/%q %#x/%#x",
 			profile.ID, profile.FirmwareBuildID, profile.NANDSize, profile.NANDReadID)
 	}
-	if len(profile.LegacyTopWritableOffsets) != 2 || profile.Keypad != nil {
-		t.Fatalf("SCH-W860 top-page/keypad profile = %#v/%#v",
-			profile.LegacyTopWritableOffsets, profile.Keypad)
+	if len(profile.LegacyTopWritableOffsets) != 2 || profile.Keypad != nil ||
+		len(profile.BootControlSBIReadResponses) != 0 {
+		t.Fatalf("SCH-W860 top-page/keypad/SBI response profile = %#v/%#v/%#v",
+			profile.LegacyTopWritableOffsets, profile.Keypad, profile.BootControlSBIReadResponses)
 	}
 	wantInitialData := []FlashSeed{{Offset: 0x097c0000, Data: make([]byte, 12)}}
 	if !reflect.DeepEqual(profile.NANDInitialData, wantInitialData) {
@@ -876,6 +889,37 @@ func TestBoardProfileRejectsIncompletePanelDimensions(t *testing.T) {
 		}
 		if err := profile.Validate(); err == nil {
 			t.Fatalf("BoardProfile accepted invalid panel profile: %+v", panel)
+		}
+	}
+}
+
+func TestBoardProfileRejectsInvalidPrimaryClockKeys(t *testing.T) {
+	mutations := []func(*BoardProfile){
+		func(profile *BoardProfile) { profile.PrimaryClockKeys[0].ID = "" },
+		func(profile *BoardProfile) { profile.PrimaryClockKeys[0].InputLine = 5 },
+		func(profile *BoardProfile) { profile.PrimaryClockKeys[0].ActiveLow = false },
+		func(profile *BoardProfile) {
+			profile.PrimaryClockKeys = append(profile.PrimaryClockKeys,
+				QualcommPrimaryClockKeyProfile{ID: "end", InputLine: 0, ActiveLow: true})
+		},
+		func(profile *BoardProfile) {
+			profile.PrimaryClockKeys = append(profile.PrimaryClockKeys,
+				QualcommPrimaryClockKeyProfile{ID: "power", InputLine: 4, ActiveLow: true})
+		},
+		func(profile *BoardProfile) {
+			profile.PrimaryClockKeys[0] = QualcommPrimaryClockKeyProfile{
+				ID: "send", InputLine: 4, ActiveLow: true,
+			}
+		},
+		func(profile *BoardProfile) {
+			profile.PrimaryClockKeys[0].InputLine = 0
+		},
+	}
+	for index, mutate := range mutations {
+		profile := SCHW830DL21BoardProfile()
+		mutate(&profile)
+		if err := profile.Validate(); err == nil {
+			t.Fatalf("BoardProfile accepted invalid primary-clock key case %d: %+v", index, profile.PrimaryClockKeys)
 		}
 	}
 }

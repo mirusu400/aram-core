@@ -184,6 +184,11 @@ func (m *Machine) stepRaptorFrame(ctx context.Context) error {
 		m.mu.Unlock()
 	}
 	if m.raptor.Clet.Paint == 0 {
+		// A Java title has no Clet paint entry; its card is repainted here
+		// instead, once per frame, for the repaints it has asked for.
+		if _, err := m.raptor.RepaintDirtyJavaCard(ctx); err != nil {
+			return err
+		}
 		return nil
 	}
 	m.mu.Lock()
@@ -382,23 +387,22 @@ func (m *Machine) stepRaptorJavaTask(ctx context.Context) (cpu.Result, bool, err
 	if runtime == nil || runtime.Java == nil {
 		return cpu.Result{}, false, nil
 	}
-	java := runtime.Java
-	var task *raptorrt.JavaTask
-	for _, candidate := range java.Tasks {
-		if !candidate.Done {
-			task = candidate
-			break
-		}
-	}
+	task := runtime.NextRunnableJavaTask()
 	if task == nil {
 		return cpu.Result{}, false, nil
 	}
+	runtime.SetActiveJavaTask(task)
+	defer runtime.SetActiveJavaTask(nil)
 	outer, err := cpu.SaveScopedContext(m.cpu, cpu.ScopedContext{})
 	if err != nil {
 		return cpu.Result{Reason: cpu.StopFault, Err: err}, true, err
 	}
 	defer func() { _ = outer.Restore(m.cpu) }()
 	if len(task.Context) == 0 {
+		stack := task.Stack
+		if stack == 0 {
+			stack = raptorrt.RaptorJavaTaskStack(0)
+		}
 		for register := cpu.RegisterR0; register <= cpu.RegisterR12; register++ {
 			if err := m.cpu.WriteRegister(register, 0); err != nil {
 				return cpu.Result{Reason: cpu.StopFault, Err: err}, true, err
@@ -406,7 +410,7 @@ func (m *Machine) stepRaptorJavaTask(ctx context.Context) (cpu.Result, bool, err
 		}
 		for register, value := range map[uint32]uint32{
 			cpu.RegisterR0:   task.Target,
-			cpu.RegisterSP:   DefaultStackBase + DefaultStackSize - 0x20000,
+			cpu.RegisterSP:   stack,
 			cpu.RegisterLR:   guest.ReturnSentinel | 1,
 			cpu.RegisterPC:   task.Procedure &^ 1,
 			cpu.RegisterCPSR: ktfrt.ModeStatus(task.Procedure),

@@ -6,6 +6,7 @@ package interpreter
 // to retain as closures.
 
 import (
+	"encoding/binary"
 	"fmt"
 	"math/bits"
 
@@ -47,12 +48,12 @@ outer:
 			}
 			continue
 		}
-		blockInstructions := len(block.instrs)
+		blockInstructions := len(block.arm)
 		if remaining := limit - executed; uint64(blockInstructions) > remaining {
 			blockInstructions = int(remaining)
 		}
 		for index := 0; index < blockInstructions; index++ {
-			in := &block.instrs[index]
+			in := &block.arm[index]
 			if wholeSystem {
 				// The outer dispatch already checked the first instruction's
 				// boundary before fetching or translating this block. Later
@@ -80,7 +81,7 @@ outer:
 				executed++
 				continue
 			}
-			branched, reason, err := in.exec(b)
+			branched, reason, err := b.executeARMJITInstruction(in)
 			if err != nil {
 				return executed, nil, err
 			}
@@ -101,8 +102,8 @@ outer:
 
 func (b *Backend) armJITBlockAt(pc uint32) *jitBlock {
 	slot := &b.armJITCache[int(pc>>2)&(jitCacheSize-1)]
-	if slot.block != nil && slot.pc == pc && slot.gen == b.jitGen {
-		return slot.block
+	if block, ok := slot.lookup(pc, b.jitGen); ok {
+		return block
 	}
 	block, ok := b.armJITBlocks[pc]
 	if !ok {
@@ -120,7 +121,7 @@ func (b *Backend) armJITBlockAt(pc uint32) *jitBlock {
 			}
 		}
 	}
-	slot.pc, slot.gen, slot.block = pc, b.jitGen, block
+	slot.store(pc, b.jitGen, block)
 	return block
 }
 
@@ -132,12 +133,17 @@ func (b *Backend) translateARMBlock(pc uint32) *jitBlock {
 		if err != nil {
 			break
 		}
-		exec, terminates, ok := b.translateARMInstr(instruction, cur)
+		op, terminates, ok := classifyARMMemoryMicroOp(instruction)
+		var exec jitExec
 		if !ok {
-			break
+			exec, terminates, ok = b.translateARMInstr(instruction, cur)
+			if !ok {
+				break
+			}
 		}
 		instrs = append(instrs, jitInstr{
-			pc: cur, condition: uint8(instruction >> 28), exec: exec,
+			pc: cur, raw: instruction, condition: uint8(instruction >> 28),
+			op: op, exec: exec,
 		})
 		cur += 4
 		if terminates {
@@ -147,7 +153,7 @@ func (b *Backend) translateARMBlock(pc uint32) *jitBlock {
 	if len(instrs) == 0 {
 		return nil
 	}
-	return &jitBlock{start: pc, end: cur, instrs: instrs}
+	return &jitBlock{start: pc, end: cur, arm: instrs}
 }
 
 // ARM conditions and the architectural PC advance are block-runner metadata,
@@ -962,14 +968,24 @@ func (b *Backend) translateARMBlockTransfer(
 		}
 		var loadedPC uint32
 		loadedProgramCounter := false
+		direct, directOffset, directOK := b.armBlockTransferPage(
+			address, int(count*4), load,
+		)
 		for register := uint32(0); register < 16; register++ {
 			if registers&(1<<register) == 0 {
 				continue
 			}
 			if load {
-				value, err := b.read32(address, cpu.PermissionRead)
-				if err != nil {
-					return false, nil, err
+				var value uint32
+				if directOK {
+					value = binary.LittleEndian.Uint32(direct[directOffset : directOffset+4])
+					directOffset += 4
+				} else {
+					var err error
+					value, err = b.read32(address, cpu.PermissionRead)
+					if err != nil {
+						return false, nil, err
+					}
 				}
 				if register == cpu.RegisterPC {
 					loadedPC, loadedProgramCounter = value, true
@@ -990,11 +1006,17 @@ func (b *Backend) translateARMBlockTransfer(
 						value = base
 					}
 				}
-				if err := b.write32(address, value, cpu.PermissionWrite); err != nil {
+				if directOK {
+					binary.LittleEndian.PutUint32(direct[directOffset:directOffset+4], value)
+					directOffset += 4
+				} else if err := b.write32(address, value, cpu.PermissionWrite); err != nil {
 					return false, nil, err
 				}
 			}
 			address += 4
+		}
+		if directOK && !load && !b.instructionCacheEnabled() {
+			b.smcInvalidate(address-count*4, count*4, cpu.PermissionExecute)
 		}
 		if writeBack && (!load || registers&(1<<rn) == 0) {
 			if increment {
@@ -1020,4 +1042,30 @@ func (b *Backend) translateARMBlockTransfer(
 		return loadedProgramCounter, nil, nil
 	})
 	return exec, load && registers&(1<<cpu.RegisterPC) != 0, true
+}
+
+// armBlockTransferPage returns one direct 1 KiB MMU subpage that covers an
+// entire LDM/STM transfer. A cache hit proves permission, physical continuity,
+// direct RAM backing, and the absence of bus observers, so every word can be
+// transferred without repeating translation and bus-cache checks. A miss uses
+// the scalar path, preserving partial-fault and MMIO semantics exactly.
+func (b *Backend) armBlockTransferPage(address uint32, size int, load bool) ([]byte, int, bool) {
+	if !b.physicalAccess || size <= 0 {
+		return nil, 0, false
+	}
+	permission := cpu.PermissionWrite
+	if load {
+		permission = cpu.PermissionRead
+	}
+	if !b.mmuEnabled() {
+		data, offset, perms, ok := b.directData(address, size, permission)
+		if ok && b.tlb != nil {
+			b.tlbNote(address, address-uint32(offset), data, perms)
+		}
+		return data, offset, ok
+	}
+	if load {
+		return b.virtualDataReadHit(address, size)
+	}
+	return b.virtualDataWriteHit(address, size)
 }
