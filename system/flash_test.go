@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"slices"
 	"testing"
 )
 
@@ -123,6 +124,31 @@ func TestCOWFlashSparseCapacityTreatsUnrepresentedTailAsErasedAndWritable(t *tes
 	assertStorageBytes(t, flash, 0x03, []byte{0x5a})
 	assertStorageBytes(t, flash, 0x1e, bytes.Repeat([]byte{0xff}, 4))
 	assertStorageBytes(t, flash, 0x3f, []byte{0xff})
+}
+
+func TestErasedCOWFlashIsSparseWritableMedia(t *testing.T) {
+	flash, err := NewErasedCOWFlash(0x40, 0x10, "erased-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := make([]byte, 4)
+	if count, err := flash.ReadAt(data, 0x20); count != len(data) || err != nil ||
+		!bytes.Equal(data, []byte{0xff, 0xff, 0xff, 0xff}) {
+		t.Fatalf("erased read = %x, %d, %v", data, count, err)
+	}
+	if err := flash.ProgramAt([]byte{0xf0, 0x0f}, 0x22); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := flash.ReadAt(data, 0x20); count != len(data) || err != nil ||
+		!bytes.Equal(data, []byte{0xff, 0xff, 0xf0, 0x0f}) {
+		t.Fatalf("programmed read = %x, %d, %v", data, count, err)
+	}
+	if dirty := flash.DirtyBlocks(); !slices.Equal(dirty, []uint32{2}) {
+		t.Fatalf("dirty blocks = %v", dirty)
+	}
+	if count, err := flash.base.ReadAt(nil, flash.Size()+1); count != 0 || err != nil {
+		t.Fatalf("empty erased read = %d, %v", count, err)
+	}
 }
 
 func TestCOWFlashFactorySeedsAreImmutableResetBaselineAndBindStateIdentity(t *testing.T) {

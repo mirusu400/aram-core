@@ -13,6 +13,7 @@ import (
 const (
 	SCHW830DL21ProfileID = "samsung.sch-w830.dl21"
 	SCHW830DA18ProfileID = "samsung.sch-w830.da18"
+	SCHW770DA05ProfileID = "samsung.sch-w770.da05"
 	SCHW860DA06ProfileID = "samsung.sch-w860.da06"
 )
 
@@ -167,11 +168,47 @@ func (r Registry) Match(pkg Package) (BuildProfile, error) {
 }
 
 func BuiltinRegistry() Registry {
-	registry, err := NewRegistry(schW830DL21Profile(), schW830DA18Profile(), schW860DA06Profile())
+	registry, err := NewRegistry(
+		schW830DL21Profile(),
+		schW830DA18Profile(),
+		schW770DA05Profile(),
+		schW860DA06Profile(),
+	)
 	if err != nil {
 		panic(err)
 	}
 	return registry
+}
+
+func schW770DA05Profile() BuildProfile {
+	// DA05 uses the earlier version-one MIBIB layout, but its WBT keeps the
+	// same 2 KiB boot-page framing and Qualcomm QCSBL/OEMSBL markers as the
+	// later SCH-W830 family. The exact four-piece identity prevents those
+	// shared structural facts from becoming a cross-model match.
+	profile := schW830DL21Profile()
+	profile.ID = SCHW770DA05ProfileID
+	profile.Model = "SCH-W770"
+	profile.Build = "DA05"
+	profile.PieceHashes = map[Role]string{
+		RoleWBT:  "e88b5d1f5fb8249e63467f27f8a279712ded1d2c93d90cc304247a6c57fc5afc",
+		RoleWBIN: "1f0626d93084b6bf657fa7abe4d377ef341d0621c43ad9c650a408db1d54099d",
+		RoleDAT:  "b837559aa0c9addb01c8d282fa17c8c250813c39c5ee2688436bd482a641dfab",
+		RoleFont: "61dd894f063a061b7abdabb8d0d0620a60244bce9386a060f1698db210cd99e9",
+	}
+	for index := range profile.BootImages {
+		switch profile.BootImages[index].ID {
+		case "oemsbl":
+			profile.BootImages[index].BlockOffsets = []int64{0x0e0000, 0x100000, 0x120000}
+			profile.BootImages[index].UsedSize = 0x0004fd1c
+			profile.BootImages[index].LogicalSHA256 = "2a8bb93dd6daf25f208eec98b65d278dfff7860914e400012578afa0abfcf31b"
+		case "qcsbl":
+			profile.BootImages[index].BlockOffsets = []int64{0x0c0000}
+			profile.BootImages[index].EntryOffset = 0
+			profile.BootImages[index].UsedSize = 0x000081bf
+			profile.BootImages[index].LogicalSHA256 = "e501bbe2fb888d46271e6e83b3fad03dc6750a520c02358fa816abef3b02a4c4"
+		}
+	}
+	return profile
 }
 
 func schW860DA06Profile() BuildProfile {

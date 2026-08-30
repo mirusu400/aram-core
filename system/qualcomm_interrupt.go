@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/mirusu400/aram-core/cpu"
 )
@@ -39,6 +40,20 @@ const (
 
 var ErrQualcommInterruptControllerMMIO = errors.New("unsupported Qualcomm interrupt-controller register")
 
+// QualcommGPIOInputRegister exposes an evidenced read-only GPIO input word in
+// the legacy 0x100-byte control aperture. Some ARM9-era Qualcomm parts place
+// their split GPIO banks at offsets that are reserved in the MSM6150/6550
+// INTCTL layout, so these aliases remain board-profile data rather than
+// permissive controller defaults.
+type QualcommGPIOInputRegister struct {
+	Offset uint32
+	Value  uint32
+}
+
+type QualcommInterruptControllerConfig struct {
+	GPIOInputs []QualcommGPIOInputRegister
+}
+
 // InterruptLineSink is implemented by a CPU backend or a test wire. The
 // controller drives level-sensitive ARM IRQ and FIQ inputs after applying its
 // source enables.
@@ -54,6 +69,8 @@ type InterruptLineSink interface {
 type QualcommInterruptController struct {
 	sink              InterruptLineSink
 	gpioWriteObserver QualcommGPIOWriteObserver
+	gpioInputOffsets  []uint32
+	gpioInputs        map[uint32]uint32
 	irqEnable         [2]uint32
 	fiqEnable         [2]uint32
 	status            [2]uint32
@@ -65,9 +82,46 @@ type QualcommInterruptController struct {
 }
 
 func NewQualcommInterruptController(sink InterruptLineSink) *QualcommInterruptController {
-	device := &QualcommInterruptController{sink: sink}
-	_ = device.Reset()
+	device, _ := NewQualcommInterruptControllerWithConfig(QualcommInterruptControllerConfig{}, sink)
 	return device
+}
+
+func NewQualcommInterruptControllerWithConfig(
+	config QualcommInterruptControllerConfig,
+	sink InterruptLineSink,
+) (*QualcommInterruptController, error) {
+	if err := validateQualcommGPIOInputRegisters(config.GPIOInputs); err != nil {
+		return nil, err
+	}
+	inputs := append([]QualcommGPIOInputRegister(nil), config.GPIOInputs...)
+	sort.Slice(inputs, func(left, right int) bool { return inputs[left].Offset < inputs[right].Offset })
+	device := &QualcommInterruptController{
+		sink:             sink,
+		gpioInputOffsets: make([]uint32, 0, len(inputs)),
+		gpioInputs:       make(map[uint32]uint32, len(inputs)),
+	}
+	for _, input := range inputs {
+		device.gpioInputOffsets = append(device.gpioInputOffsets, input.Offset)
+		device.gpioInputs[input.Offset] = input.Value
+	}
+	_ = device.Reset()
+	return device, nil
+}
+
+func validateQualcommGPIOInputRegisters(inputs []QualcommGPIOInputRegister) error {
+	seen := make(map[uint32]struct{}, len(inputs))
+	for _, input := range inputs {
+		switch input.Offset {
+		case 0x34, 0x38, 0x3c, 0x40:
+		default:
+			return fmt.Errorf("GPIO input offset 0x%x: %w", input.Offset, ErrInvalidRegion)
+		}
+		if _, duplicate := seen[input.Offset]; duplicate {
+			return fmt.Errorf("duplicate GPIO input offset 0x%x: %w", input.Offset, ErrInvalidRegion)
+		}
+		seen[input.Offset] = struct{}{}
+	}
+	return nil
 }
 
 func (d *QualcommInterruptController) AttachGPIOWriteObserver(observer QualcommGPIOWriteObserver) error {
@@ -93,6 +147,9 @@ func (d *QualcommInterruptController) Reset() error {
 func (d *QualcommInterruptController) Read(offset uint32, width Width) (uint32, error) {
 	if width != Width32 {
 		return 0, fmt.Errorf("%w: read%d at 0x%x", ErrQualcommInterruptControllerMMIO, width*8, offset)
+	}
+	if value, ok := d.gpioInputs[offset]; ok {
+		return value, nil
 	}
 	switch offset {
 	case qualcommIRQEnable0Offset:
@@ -264,10 +321,25 @@ func (d *QualcommInterruptController) updateOutputs() error {
 
 func (d *QualcommInterruptController) SaveState() ([]byte, error) {
 	const words = 2 + 2 + 2 + 2 + 3 + 4 + 3 + 3
-	state := make([]byte, 8+words*4)
+	version := uint32(1)
+	headerSize := 8
+	if len(d.gpioInputOffsets) != 0 {
+		version = 2
+		headerSize = 12 + len(d.gpioInputOffsets)*8
+	}
+	state := make([]byte, headerSize+words*4)
 	copy(state, "QINT")
-	binary.LittleEndian.PutUint32(state[4:8], 1)
+	binary.LittleEndian.PutUint32(state[4:8], version)
 	offset := 8
+	if version == 2 {
+		binary.LittleEndian.PutUint32(state[8:12], uint32(len(d.gpioInputOffsets)))
+		offset = 12
+		for _, inputOffset := range d.gpioInputOffsets {
+			binary.LittleEndian.PutUint32(state[offset:offset+4], inputOffset)
+			binary.LittleEndian.PutUint32(state[offset+4:offset+8], d.gpioInputs[inputOffset])
+			offset += 8
+		}
+	}
 	put := func(values []uint32) {
 		for _, value := range values {
 			binary.LittleEndian.PutUint32(state[offset:offset+4], value)
@@ -287,11 +359,35 @@ func (d *QualcommInterruptController) SaveState() ([]byte, error) {
 
 func (d *QualcommInterruptController) LoadState(state []byte) error {
 	const words = 2 + 2 + 2 + 2 + 3 + 4 + 3 + 3
-	if len(state) != 8+words*4 || string(state[:4]) != "QINT" ||
-		binary.LittleEndian.Uint32(state[4:8]) != 1 {
+	if len(state) < 8 || string(state[:4]) != "QINT" {
 		return ErrInvalidState
 	}
 	offset := 8
+	switch binary.LittleEndian.Uint32(state[4:8]) {
+	case 1:
+		if len(d.gpioInputOffsets) != 0 || len(state) != 8+words*4 {
+			return ErrInvalidState
+		}
+	case 2:
+		if len(state) < 12 {
+			return ErrInvalidState
+		}
+		inputCount := binary.LittleEndian.Uint32(state[8:12])
+		if inputCount != uint32(len(d.gpioInputOffsets)) ||
+			uint64(len(state)) != 12+uint64(inputCount)*8+words*4 {
+			return ErrInvalidState
+		}
+		offset = 12
+		for _, inputOffset := range d.gpioInputOffsets {
+			if binary.LittleEndian.Uint32(state[offset:offset+4]) != inputOffset ||
+				binary.LittleEndian.Uint32(state[offset+4:offset+8]) != d.gpioInputs[inputOffset] {
+				return ErrInvalidState
+			}
+			offset += 8
+		}
+	default:
+		return ErrInvalidState
+	}
 	read := func(values []uint32) {
 		for index := range values {
 			values[index] = binary.LittleEndian.Uint32(state[offset : offset+4])

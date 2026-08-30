@@ -79,6 +79,11 @@ func (d *QualcommPrimaryClockControl) Read(offset uint32, width Width) (uint32, 
 	if offset == qualcommPrimaryGPIOInputOffset && width == Width32 {
 		return d.InputStatus(), nil
 	}
+	if d.keypad != nil && width == Width32 {
+		if value, handled := d.keypad.readPrimaryGPIORegister(offset); handled {
+			return value, nil
+		}
+	}
 	if value, ok := d.registers[offset]; ok && width == Width32 {
 		return value, nil
 	}
@@ -132,6 +137,11 @@ func (d *QualcommPrimaryClockControl) SetInputLine(line uint8, high bool) error 
 }
 
 func (d *QualcommPrimaryClockControl) Write(offset uint32, width Width, value uint32) error {
+	if d.keypad != nil && width == Width32 {
+		if handled, err := d.keypad.writePrimaryGPIORegister(offset, value); handled {
+			return err
+		}
+	}
 	if _, ok := d.registers[offset]; ok && width == Width32 {
 		d.registers[offset] = value
 		return nil
