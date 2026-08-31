@@ -551,6 +551,16 @@ func (m *Machine) handleEventLocked(
 	}
 }
 
+// skvmKeyCode translates a WIPI handset key to the SKT keypad code an SKVM
+// MIDlet reads in keyPressed. Only the digits, '*' and '#' share the WIPI
+// spelling; every function key has its own SKT code, and a title that never
+// sees it simply ignores the press. The non-obvious codes were read out of the
+// SKT corpus: 129 is always tested next to 8 on the paths that back out of a
+// screen, and 131 is always tested next to 148 on the paths that confirm. The
+// side keys (194 up, 195 down, read off 드래곤나이트EX turning them straight
+// into AudioSystem volume steps) have no case here on purpose: the volume
+// rocker belongs to the phone, so the host only routes it to a whole-phone
+// firmware session and an application title never sees one.
 func skvmKeyCode(key profile.KeyCode) int32 {
 	switch key {
 	case profile.KeyUp:
@@ -563,6 +573,12 @@ func skvmKeyCode(key profile.KeyCode) int32 {
 		return 146
 	case profile.KeySelect:
 		return 148
+	case profile.KeySoft1:
+		return 131
+	case profile.KeySoft2:
+		return 129
+	case profile.KeyClear:
+		return 8
 	default:
 		return int32(key)
 	}
