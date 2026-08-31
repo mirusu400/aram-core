@@ -10,6 +10,50 @@ import (
 	shared "github.com/mirusu400/aram-core/runtime"
 )
 
+// DeliverSocketRead fires the async read callback registered on the socket bound
+// to serviceID once bytes have arrived (an EventNetworkReady "read" event). The
+// immediate-data path in MC_netSetReadCB covers data already buffered at
+// registration; this covers data that arrives afterwards, without which a guest
+// that arms a read callback and waits for a server reply never wakes. Returns
+// true if a callback was fired.
+func (r *Runtime) DeliverSocketRead(serviceID shared.ServiceID) bool {
+	for descriptor, id := range r.socketServices {
+		if id != serviceID {
+			continue
+		}
+		socket := r.sockets[descriptor]
+		if socket == nil || socket.readCallback == 0 {
+			return false
+		}
+		callback, parameter := socket.readCallback, socket.readParameter
+		socket.readCallback, socket.readParameter = 0, 0
+		r.EnqueueCallback(callback, uint32(descriptor), 0, parameter)
+		return true
+	}
+	return false
+}
+
+// answerOfflineCarrier acknowledges an LGT carrier request so an auth-gated
+// title proceeds offline. The carrier protocol frames each message as
+// [u32 len][u16 0xffff marker][u16 code][body]; a real carrier replies to a
+// request with a matching success message. With the billing servers shut down
+// ARAM cannot complete the exchange, so it synthesizes that acknowledgement:
+// a minimal reply carrying code+1 (the success response code) and subtype 0,
+// which the title's dispatcher accepts to continue past its connecting screen.
+func (r *Runtime) answerOfflineCarrier(socket *wipiSocket, request []byte) {
+	if len(request) < 8 || request[4] != 0xff || request[5] != 0xff {
+		return
+	}
+	code := binary.LittleEndian.Uint16(request[6:8]) + 1
+	reply := []byte{9, 0, 0, 0, 0xff, 0xff, byte(code), byte(code >> 8), 0}
+	socket.readData = append(socket.readData, reply...)
+	if socket.readCallback != 0 {
+		callback, parameter := socket.readCallback, socket.readParameter
+		socket.readCallback, socket.readParameter = 0, 0
+		r.EnqueueCallback(callback, uint32(socket.descriptor), 0, parameter)
+	}
+}
+
 func (r *Runtime) dispatchNetwork(name string) (guest.WIPIReturn, bool, error) {
 	count, ok := networkArgumentCount(name)
 	if !ok {
@@ -170,6 +214,9 @@ func (r *Runtime) dispatchNetwork(name string) (guest.WIPIReturn, bool, error) {
 			return guest.WIPIReturn{}, true, err
 		}
 		socket.writeData = append(socket.writeData, data...)
+		if r.OfflineCarrierAuth {
+			r.answerOfflineCarrier(socket, data)
+		}
 		if name == "MC_netSocketSendTo" {
 			socket.address = arg(3)
 			socket.port = uint16(arg(4))
