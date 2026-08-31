@@ -72,3 +72,5 @@ The Magic Hole-first, multi-platform system-mode plan is recorded in
 Measured implementation status and the current original-firmware trace
 boundary are recorded in
 [`docs/system-firmware-progress.md`](docs/system-firmware-progress.md).
+The opt-in, privacy-safe LCD transfer inference path is documented in
+[`docs/lcd-transfer-probe.md`](docs/lcd-transfer-probe.md).
