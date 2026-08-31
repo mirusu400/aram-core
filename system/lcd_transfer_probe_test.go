@@ -201,6 +201,32 @@ func TestLCDTransferProbeRejectsInvalidOrRepeatedAttachment(t *testing.T) {
 	}
 }
 
+func TestLCDTransferProbeSurvivesUnterminatedAddressParameterStream(t *testing.T) {
+	bus, _, probe := newLCDTransferProbeHarness(t, nil)
+	parameters := make([]uint16, 600)
+	for index := range parameters {
+		parameters[index] = uint16(index & 0xff)
+	}
+	writeLCDTransaction(
+		t, bus, testLCDCommandAddress, testLCDDataAddress, dcsSetColumnAddress, parameters...,
+	)
+
+	report := probe.Report()
+	if len(report.Candidates) != 1 {
+		t.Fatalf("unterminated address parameter report = %+v", report)
+	}
+	candidate := report.Candidates[0]
+	// The first four parameters complete one window; every later parameter
+	// must saturate the counter instead of wrapping back into the array.
+	if candidate.Evidence.ColumnWindows != 1 || candidate.Evidence.PageWindows != 0 ||
+		candidate.Confidence != "low" {
+		t.Fatalf("unterminated address parameter candidate = %+v", candidate)
+	}
+	if candidate.Evidence.MatchedDataWrites != uint64(len(parameters)) {
+		t.Fatalf("unterminated address parameter data writes = %d", candidate.Evidence.MatchedDataWrites)
+	}
+}
+
 func newLCDTransferProbeHarness(
 	t *testing.T,
 	controller ParallelPanelController,
