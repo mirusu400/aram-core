@@ -11,9 +11,15 @@ import (
 func TestCompatibleCPUContextIdentityAllowsInterpreterTiers(t *testing.T) {
 	precise := interpreter.New().Identity()
 	jit := interpreter.NewJIT().Identity()
+	jitLoops := interpreter.NewJITWithOptions(interpreter.JITOptions{LoopAcceleration: true}).Identity()
 	if !compatibleCPUContextIdentity(precise, jit) ||
-		!compatibleCPUContextIdentity(jit, precise) {
-		t.Fatalf("interpreter tier contexts are not portable: precise=%+v jit=%+v", precise, jit)
+		!compatibleCPUContextIdentity(jit, precise) ||
+		!compatibleCPUContextIdentity(precise, jitLoops) ||
+		!compatibleCPUContextIdentity(jitLoops, jit) {
+		t.Fatalf(
+			"interpreter tier contexts are not portable: precise=%+v jit=%+v jit-loops=%+v",
+			precise, jit, jitLoops,
+		)
 	}
 	if compatibleCPUContextIdentity(precise, cpu.Identity{
 		Name: "different-backend", Version: precise.Version, Architecture: precise.Architecture,
@@ -46,6 +52,7 @@ func TestInterpreterBackendModeSelection(t *testing.T) {
 		{mode: "", wantName: interpreter.BackendName},
 		{mode: CPUBackendPrecise, wantName: interpreter.BackendName},
 		{mode: CPUBackendJIT, wantName: interpreter.BackendName + "-jit"},
+		{mode: CPUBackendJITLoops, wantName: interpreter.BackendName + "-jit-loops"},
 	} {
 		backend, err := newInterpreterBackend(test.mode)
 		if err != nil {

@@ -44,8 +44,9 @@ var (
 type CPUBackendMode string
 
 const (
-	CPUBackendPrecise CPUBackendMode = "precise"
-	CPUBackendJIT     CPUBackendMode = "jit"
+	CPUBackendPrecise  CPUBackendMode = "precise"
+	CPUBackendJIT      CPUBackendMode = "jit"
+	CPUBackendJITLoops CPUBackendMode = "jit-loops"
 )
 
 // Identity contains only stable, privacy-safe machine selection facts.
@@ -605,6 +606,8 @@ func newInterpreterBackend(mode CPUBackendMode) (cpu.Backend, error) {
 		return interpreter.New(), nil
 	case CPUBackendJIT:
 		return interpreter.NewJIT(), nil
+	case CPUBackendJITLoops:
+		return interpreter.NewJITWithOptions(interpreter.JITOptions{LoopAcceleration: true}), nil
 	default:
 		return nil, fmt.Errorf("%w: CPU backend mode %q", ErrUnsupportedBackend, mode)
 	}
