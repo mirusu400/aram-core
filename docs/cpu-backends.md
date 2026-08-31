@@ -115,3 +115,19 @@ and Go has no runtime code emitter. The order-of-magnitude path is a cgo
 recompiler on desktop only; mobile speed comes from interpreter-level work
 (straight-line batching, lazy flags, and a decoded-block cache), which stays
 pure-Go and benefits every target.
+
+## Development-only Unicorn comparison module
+
+`dev/unicornbackend` is a nested Go module implementing the private-memory
+`cpu.Backend` surface for differential tests. It runtime-loads a user-installed
+Unicorn 2.x shared library and returns a typed `ErrUnavailable` when the library
+or required ABI is absent. The adapter executes one instruction per native call
+to prioritize exact stop PCs and retirement budgets over throughput, and its
+tests compare deterministic ARM corpus snapshots with `cpu/interpreter`.
+
+The nested-module boundary is deliberate: the root module does not import the
+adapter or its cgo runtime-loader shim, default `go test ./...` does not enter
+it, and required Windows/Android pure-Go builds remain unchanged. The module is
+not registered as a selectable product backend and does not support system
+buses or MMIO. See its README and explicit Unicorn GPL notice before installing
+or redistributing the external library.
