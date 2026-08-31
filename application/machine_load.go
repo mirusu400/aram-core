@@ -196,6 +196,7 @@ func (m *Machine) Load(ctx context.Context, source machinecore.Source) error {
 		return fmt.Errorf("initialize public WIPI runtime: %w", err)
 	}
 	m.wipi = publicRuntime
+	publicRuntime.OfflineCarrierAuth = m.offlineCarrierAuth
 	publicRuntime.InvokeSync = func(
 		callbackContext context.Context,
 		callback wipirt.GuestCallback,
@@ -324,6 +325,7 @@ func (m *Machine) loadRaptor(
 		return fmt.Errorf("initialize public WIPI runtime for Raptor: %w", err)
 	}
 	m.wipi = publicRuntime
+	publicRuntime.OfflineCarrierAuth = m.offlineCarrierAuth
 	publicRuntime.InvokeSync = func(
 		callbackContext context.Context,
 		callback wipirt.GuestCallback,
