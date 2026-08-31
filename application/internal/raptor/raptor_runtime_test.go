@@ -70,6 +70,8 @@ func TestRaptorWIPIImportsResolveToPublicCatalog(t *testing.T) {
 		226:   "MC_grpRepaint",
 		227:   "MC_grpGetFont",
 		233:   "MC_grpCreateImage",
+		234:   "MC_grpDestroyImage",
+		235:   "MC_grpDecodeNextImage",
 		400:   "MC_fsOpen",
 		401:   "MC_fsRead",
 		402:   "MC_fsWrite",
