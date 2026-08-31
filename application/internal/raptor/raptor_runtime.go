@@ -123,6 +123,13 @@ type Runtime struct {
 
 	ModuleInitialized bool
 	Started           bool
+	// pendingCompletion is a carrier DRM/server response a netauth backend has
+	// asked the runtime to deliver to the clet; completionDelay counts the
+	// frames left before it is posted, and authRespBuf is the reused guest
+	// buffer the response bytes live in. See ServiceAuthCompletion.
+	pendingCompletion *netauth.Completion
+	completionDelay   int
+	authRespBuf       uint32
 	resolvedImports   map[raptorImportKey]uint64
 	importSlots       []raptorImportKey
 	importSlotByKey   map[raptorImportKey]uint32
@@ -550,6 +557,57 @@ func (r *Runtime) unimplementedImportName(key raptorImportKey) string {
 	return name
 }
 
+// armAuthCompletion records a carrier response a netauth backend wants
+// delivered to the clet. A later ordinal in the same handshake burst simply
+// overwrites it, so one request delivers one completion.
+func (r *Runtime) armAuthCompletion(completion *netauth.Completion) {
+	r.pendingCompletion = completion
+	r.completionDelay = completion.DelayFrames
+	if r.completionDelay < 1 {
+		r.completionDelay = 1
+	}
+}
+
+// ServiceAuthCompletion posts a pending carrier DRM/server response to the
+// clet a few frames after the title requested the handshake, so titles that
+// block on "접속중"/"서버 접속중" proceed. A real handset receives the
+// carrier's response as a clet event; the backend decides the event, status
+// and payload. It is a no-op unless a backend armed one, so titles run
+// unchanged when no auth backend is installed.
+func (r *Runtime) ServiceAuthCompletion() error {
+	if r.pendingCompletion == nil || r.Clet.HandleEvent == 0 {
+		return nil
+	}
+	if r.completionDelay > 0 {
+		r.completionDelay--
+		if r.completionDelay > 0 {
+			return nil
+		}
+	}
+	completion := r.pendingCompletion
+	r.pendingCompletion = nil
+	// The clet reads the response through a data pointer (arg2). Keep one
+	// reused buffer sized to the largest response seen.
+	need := uint32(len(completion.Response))
+	if need < 4 {
+		need = 4
+	}
+	if r.authRespBuf == 0 {
+		buf, err := r.Public.Heap.Allocate(need, true)
+		if err != nil || buf == 0 {
+			return nil
+		}
+		r.authRespBuf = buf
+	}
+	if len(completion.Response) != 0 {
+		if err := r.CPU.WriteMemory(r.authRespBuf, completion.Response); err != nil {
+			return err
+		}
+	}
+	r.Public.EnqueueCallback(r.Clet.HandleEvent, completion.Event, completion.Arg1, r.authRespBuf)
+	return nil
+}
+
 func (r *Runtime) pushHostCallFrame() (*cpu.HostCallFrame, error) {
 	if r.hostCallDepth >= len(r.hostCallFrames) {
 		return nil, fmt.Errorf("Raptor host-call nesting limit reached")
@@ -967,12 +1025,46 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 		return "MC_knlGetResourceID", true
 	case 129:
 		return "MC_knlGetResource", true
+	// LGT carrier BSD-socket family. The raptor ordinal is 600 + slot/4 of the
+	// firmware MC_NET table, so the whole family (create/connect/read/write/
+	// callbacks) must be routed, not just connect/close: a title that opens a
+	// socket (테일즈위버's 게임시작 login) otherwise no-ops MC_netSocket, hands the
+	// game a nil descriptor, and hangs forever on "접속중" because its own connect
+	// timeout is never armed. With the family routed the game connects, sends,
+	// and — with no carrier server answering — falls to its offline connect
+	// timeout ("서버 접속 실패") the way a handset out of coverage does.
 	case 600:
 		return "MC_netConnect", true
 	case 601:
 		return "MC_netClose", true
+	// 2000 is 테일즈위버's non-standard MC_netSocket ordinal (it still uses the
+	// standard 603/604/605/613 for the rest of the socket family).
+	case 602, 2000:
+		return "MC_netSocket", true
+	case 603:
+		return "MC_netSocketConnect", true
+	case 604:
+		return "MC_netSocketWrite", true
+	case 605:
+		return "MC_netSocketRead", true
 	case 606:
 		return "MC_netSocketClose", true
+	case 607:
+		return "MC_netSocketBind", true
+	case 608:
+		return "MC_netGetMaxPacketLength", true
+	case 609:
+		return "MC_netSocketSendTo", true
+	case 610:
+		return "MC_netSocketRcvFrom", true
+	case 611:
+		return "MC_netGetHostAddr", true
+	case 612:
+		return "MC_netSocketAccept", true
+	case 613:
+		return "MC_netSetReadCB", true
+	case 614:
+		return "MC_netSetWriteCB", true
 	case 1029:
 		return "strcpy", true
 	// The C string family is contiguous from strcpy, so the ordinal between
