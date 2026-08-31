@@ -977,6 +977,21 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 		return "MC_grpGetStringWidth", true
 	case 233:
 		return "MC_grpCreateImage", true
+	// 234/235 continue the MC_grp image family past CreateImage. The LGT raptor
+	// veneer keeps the WIPIC_graphicInterface order (CreateImage +0x80,
+	// DestroyImage +0x84, DecodeNextImage +0x88), so the two ordinals after 233
+	// are DestroyImage and DecodeNextImage. 판타지포에버3 builds its menu artwork
+	// as images and pumps MC_grpDecodeNextImage once per frame; while the
+	// ordinal fell through to the unimplemented stub it returned 0
+	// (MC_GRP_FRAME_DONE, "another frame is pending"), so the title treated
+	// every finished still as an unfinished animation and left the body black
+	// behind the softkey bar. Leaving DestroyImage unmapped alongside it would
+	// also leak a graphics surface per image until the service's surface limit
+	// faulted, so both are routed to their existing public implementations.
+	case 234:
+		return "MC_grpDestroyImage", true
+	case 235:
+		return "MC_grpDecodeNextImage", true
 	// The 400 block is MC_FS in vtable order. 영웅서기3 pins every entry from
 	// its own call sites: open takes a name and a mode, write is reached
 	// through a helper that prints "===> FileWrite Error", close is called on
