@@ -136,9 +136,13 @@ type Backend struct {
 	// the translated-block caches at the offsets they had before whole-system
 	// support and off an extra cache line. See refreshPhysicalAccess.
 	physicalAccess bool
-	mapped         uint64
-	memoryLimit    uint64
-	pcHits         map[uint32]uint64 // env ARAM_PC_TRACE: per-PC execution histogram
+	// loopAcceleration enables the deliberately narrow counted-loop fast path
+	// in the portable translated tiers. It is fixed at construction time and
+	// remains false for NewJIT so the established JIT stays instruction-exact.
+	loopAcceleration bool
+	mapped           uint64
+	memoryLimit      uint64
+	pcHits           map[uint32]uint64 // env ARAM_PC_TRACE: per-PC execution histogram
 	// jitBlocks is the translated-block cache of the optional pure-Go dynamic
 	// recompiler (see jit.go). Nil keeps the precise tree-walking path; non-nil
 	// enables the JIT for Thumb alongside armJITBlocks, falling back to the
@@ -312,13 +316,29 @@ func New() *Backend {
 	return NewWithMemoryLimit(DefaultMemoryLimit)
 }
 
+// JITOptions configures opt-in translated-tier behavior. The zero value keeps
+// the pure-Go JIT instruction-exact.
+type JITOptions struct {
+	// LoopAcceleration recognizes only side-effect-free decrement-and-branch
+	// loops. It preserves architectural state and retired-instruction counts,
+	// but may execute several proven iterations as one host operation.
+	LoopAcceleration bool
+}
+
 // NewJIT returns a backend that runs ARM and Thumb through pure-Go translated
 // blocks instead of repeatedly decoding them, falling back to the interpreter
 // for unsupported instructions. It is
 // architecturally a second CPU backend behind the same identity; use
 // cpu/conformance to confirm it reproduces the interpreter exactly.
 func NewJIT() *Backend {
+	return NewJITWithOptions(JITOptions{})
+}
+
+// NewJITWithOptions returns the portable translated backend with explicit,
+// default-off execution options.
+func NewJITWithOptions(options JITOptions) *Backend {
 	b := NewWithMemoryLimit(DefaultMemoryLimit)
+	b.loopAcceleration = options.LoopAcceleration
 	b.jitBlocks = make(map[uint32]*jitBlock)
 	b.jitBlockPages = make(blockPageIndex)
 	b.jitCache = make([]jitCacheSet, jitCacheSize)
@@ -475,6 +495,8 @@ func (b *Backend) Identity() cpu.Identity {
 		// name makes the active native core observable in diagnostics/UI. A
 		// windows whole-system backend may also carry the Go Thumb micro-op tier.
 		name = BackendName + "-native"
+	case b.jitBlocks != nil && b.loopAcceleration:
+		name = BackendName + "-jit-loops"
 	case b.jitBlocks != nil:
 		// The JIT is the same architecture and context format as the precise
 		// interpreter (so saves stay portable), but reports a distinct name so

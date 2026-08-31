@@ -100,6 +100,15 @@ MMIO boundaries, and CP15 TLB or instruction-cache invalidation also discards
 translated code. Precise and JIT snapshots are mutually loadable when their
 architecture and context version match.
 
+The separate `jit-loops` mode opts into conservative counted-loop acceleration.
+It recognizes only a two-instruction `SUBS register, register, #1` / `BNE`
+back-edge (including Thumb's two equivalent decrement encodings), skips only
+proven-taken iterations, and executes the final iteration normally to preserve
+NZCV and exact instruction-budget cutoffs. It is disabled whenever tracing or
+execution traps are configured. A whole-system machine additionally requires
+both IRQ and FIQ to be masked, so an interrupt boundary can never be skipped.
+`jit` and `NewJIT()` retain their previous instruction-by-instruction behavior.
+
 On the same DL21 home-screen snapshot and a 100,000,000-instruction budget, the
 portable JIT measured 13.83 MIPS versus 11.58 MIPS for the precise interpreter,
 with identical final PC and framebuffer hash. The native-code JIT currently

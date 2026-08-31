@@ -48,6 +48,9 @@ outer:
 			}
 			continue
 		}
+		executed += b.accelerateCountedLoop(
+			block, limit-executed, wholeSystem, hasExecutionTraps, traced,
+		)
 		blockInstructions := len(block.arm)
 		if remaining := limit - executed; uint64(blockInstructions) > remaining {
 			blockInstructions = int(remaining)
@@ -153,7 +156,11 @@ func (b *Backend) translateARMBlock(pc uint32) *jitBlock {
 	if len(instrs) == 0 {
 		return nil
 	}
-	return &jitBlock{start: pc, end: cur, arm: instrs}
+	block := &jitBlock{start: pc, end: cur, arm: instrs}
+	if b.loopAcceleration {
+		block.countedLoop = classifyARMCountedLoop(block)
+	}
+	return block
 }
 
 // ARM conditions and the architectural PC advance are block-runner metadata,
