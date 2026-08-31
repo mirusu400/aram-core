@@ -54,6 +54,45 @@ func TestAnswerOfflineCarrierIgnoresForeignFraming(t *testing.T) {
 	}
 }
 
+// TestAnswerOfflineCarrierAnswersTextCarrierAuth covers the plaintext /
+// length-prefixed carrier handshakes some LGT titles use instead of the 0xffff
+// framing. Their success payload is server-defined and the servers are gone, so
+// the responder echoes the request as a minimal acknowledgement — but only for
+// requests that match a known carrier-auth signature, never ordinary traffic.
+func TestAnswerOfflineCarrierAnswersTextCarrierAuth(t *testing.T) {
+	// ENSLGT plaintext handshake -> echoed acknowledgement + woken callback.
+	r := &Runtime{}
+	socket := &wipiSocket{descriptor: 4, readCallback: 0xabc, readParameter: 0xde}
+	req := []byte("ENSLGT 01000000000")
+	r.answerOfflineCarrier(socket, req)
+	if string(socket.readData) != string(req) {
+		t.Fatalf("ENSLGT reply = % x, want echo % x", socket.readData, req)
+	}
+	if socket.readCallback != 0 || len(r.PendingCallbacks) != 1 {
+		t.Fatalf("ENSLGT callback not fired: cb=0x%x pending=%d", socket.readCallback, len(r.PendingCallbacks))
+	}
+
+	// The 28-byte binary carrier frame (14 00 01 00 ...) is answered.
+	r2 := &Runtime{}
+	s2 := &wipiSocket{descriptor: 5}
+	bin := make([]byte, 28)
+	bin[0], bin[2] = 0x14, 0x01
+	r2.answerOfflineCarrier(s2, bin)
+	if len(s2.readData) != 28 {
+		t.Fatalf("binary carrier reply len = %d, want 28", len(s2.readData))
+	}
+
+	// A 28-byte frame without the carrier signature is left alone.
+	r3 := &Runtime{}
+	s3 := &wipiSocket{descriptor: 6}
+	other := make([]byte, 28)
+	other[0] = 0x99
+	r3.answerOfflineCarrier(s3, other)
+	if len(s3.readData) != 0 {
+		t.Fatalf("non-carrier 28-byte frame produced a reply: % x", s3.readData)
+	}
+}
+
 // TestDeliverSocketReadWakesAWaitingReadCallback covers the async read path: a
 // title that arms MC_netSetReadCB and waits for a server reply must be woken
 // when bytes arrive after registration, not only when they were already
