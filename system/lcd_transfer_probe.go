@@ -13,6 +13,9 @@ const (
 	lcdProbeMaximumPendingWrites = 8
 	lcdProbeMaximumPorts         = 16
 	lcdProbeMaximumPairs         = 32
+	// lcdProbeAddressParameters is the DCS column/page address parameter
+	// count. parameterCount saturates one past it.
+	lcdProbeAddressParameters = 4
 )
 
 // ErrLCDTransferProbe reports invalid or repeated observer attachment.
@@ -84,7 +87,7 @@ type lcdProbePairStats struct {
 type lcdProbeGrammar struct {
 	currentCommand uint16
 	parameterCount uint8
-	parameters     [4]uint8
+	parameters     [lcdProbeAddressParameters]uint8
 	windowValid    bool
 
 	recognizedCommands uint64
@@ -368,7 +371,7 @@ func (g *lcdProbeGrammar) observe(write ParallelPanelWrite) {
 	if !write.Data {
 		g.currentCommand = write.Command
 		g.parameterCount = 0
-		g.parameters = [4]uint8{}
+		g.parameters = [lcdProbeAddressParameters]uint8{}
 		g.windowValid = true
 		switch write.Command {
 		case dcsExitSleepMode, dcsEnterSleepMode, dcsSetDisplayOff, dcsSetDisplayOn,
@@ -385,14 +388,19 @@ func (g *lcdProbeGrammar) observe(write ParallelPanelWrite) {
 	switch g.currentCommand {
 	case dcsSetColumnAddress, dcsSetPageAddress:
 		g.parameterWrites++
-		g.parameterCount++
-		if write.Value > 0xff || g.parameterCount > 4 {
+		// Saturate instead of wrapping: firmware which streams more than
+		// four parameters after an address command must keep reporting an
+		// invalid window rather than re-entering the parameter array.
+		if g.parameterCount <= lcdProbeAddressParameters {
+			g.parameterCount++
+		}
+		if write.Value > 0xff || g.parameterCount > lcdProbeAddressParameters {
 			g.wideParameters++
 			g.windowValid = false
 		} else {
 			g.parameters[g.parameterCount-1] = uint8(write.Value)
 		}
-		if g.parameterCount == 4 && g.windowValid {
+		if g.parameterCount == lcdProbeAddressParameters && g.windowValid {
 			start := uint16(g.parameters[0])<<8 | uint16(g.parameters[1])
 			end := uint16(g.parameters[2])<<8 | uint16(g.parameters[3])
 			if start <= end {
