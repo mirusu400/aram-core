@@ -91,4 +91,5 @@ type graphicsState struct {
 	surface shared.ServiceID
 	font    shared.ServiceID
 	color   uint32
+	stroke  int32
 }

@@ -175,6 +175,7 @@ func (vm *VM) canvasHeight() int {
 }
 
 func (vm *VM) installGraphicsNatives() {
+	vm.installMIDPGraphicsExtras()
 	vm.RegisterNative(
 		"javax/microedition/lcdui/Image",
 		"createImage",
@@ -886,6 +887,12 @@ func (vm *VM) installGraphicsCompatibilityNatives() {
 			return Value{}, false, err
 		}
 	}
+	vm.RegisterNative(
+		"javax/microedition/lcdui/Graphics",
+		"drawArc",
+		"(IIIIII)V",
+		arc(false),
+	)
 	vm.RegisterNative(
 		"javax/microedition/lcdui/Graphics",
 		"fillArc",
