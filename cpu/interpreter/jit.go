@@ -324,9 +324,14 @@ outer:
 			}
 			continue
 		}
-		executed += b.accelerateCountedLoop(
-			block, limit-executed, wholeSystem, hasExecutionTraps, traced,
-		)
+		// The nil check keeps the un-accelerated JIT free of a non-inlinable
+		// call per translated block; countedLoop is only ever populated when
+		// loop acceleration is enabled.
+		if block.countedLoop != nil {
+			executed += b.accelerateCountedLoop(
+				block, limit-executed, wholeSystem, hasExecutionTraps, traced,
+			)
+		}
 		blockInstructions := len(block.thumb)
 		if remaining := limit - executed; uint64(blockInstructions) > remaining {
 			blockInstructions = int(remaining)
