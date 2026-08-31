@@ -18,6 +18,8 @@ const (
 	qualcommPBLMagic                 = 0xa1b2c3d4
 	qualcommPBLServiceEnd            = 0x015d
 	qualcommPBLFlashTypeNAND2K       = 6
+	qualcommLegacyPBLFeatureEnd      = 0x0131
+	qualcommPBLFeatureDataHeaderSize = 0x2c
 )
 
 var (
@@ -26,12 +28,13 @@ var (
 )
 
 type QualcommNANDPBLConfig struct {
-	Entry          uint32
-	TableAddress   uint32
-	PageSize       uint32
-	EraseBlockSize uint32
-	FlashSize      uint64
-	BadBlockLimit  uint32
+	Entry                    uint32
+	TableAddress             uint32
+	LegacyFeatureDataAddress uint32
+	PageSize                 uint32
+	EraseBlockSize           uint32
+	FlashSize                uint64
+	BadBlockLimit            uint32
 }
 
 type QualcommBootControlConfig struct {
@@ -125,7 +128,9 @@ func NewQualcommNANDPBLHandoff(config QualcommNANDPBLConfig) (BootHandoff, error
 		config.EraseBlockSize == 0 || config.EraseBlockSize%config.PageSize != 0 ||
 		config.FlashSize == 0 || config.FlashSize%uint64(config.EraseBlockSize) != 0 ||
 		config.FlashSize/uint64(config.EraseBlockSize) > uint64(^uint32(0)) ||
-		config.BadBlockLimit == 0 {
+		config.BadBlockLimit == 0 ||
+		(config.LegacyFeatureDataAddress != 0 && (config.LegacyFeatureDataAddress&3 != 0 ||
+			uint64(config.LegacyFeatureDataAddress)+qualcommPBLFeatureDataHeaderSize+6*8 > 1<<32)) {
 		return BootHandoff{}, fmt.Errorf("invalid Qualcomm NAND PBL geometry")
 	}
 	entries := [][2]uint32{
@@ -136,10 +141,10 @@ func NewQualcommNANDPBLHandoff(config QualcommNANDPBLConfig) (BootHandoff, error
 		{0x0141, qualcommPBLFlashTypeNAND2K},
 		{qualcommPBLServiceEnd, 0},
 	}
-	table := make([]byte, 0x2c+len(entries)*8)
+	table := make([]byte, qualcommPBLFeatureDataHeaderSize+len(entries)*8)
 	for index, entry := range entries {
-		binary.LittleEndian.PutUint32(table[0x2c+index*8:], entry[0])
-		binary.LittleEndian.PutUint32(table[0x30+index*8:], entry[1])
+		binary.LittleEndian.PutUint32(table[qualcommPBLFeatureDataHeaderSize+index*8:], entry[0])
+		binary.LittleEndian.PutUint32(table[qualcommPBLFeatureDataHeaderSize+index*8+4:], entry[1])
 	}
 	handoff := BootHandoff{
 		ID:    "qualcomm.pbl-hle.nand2k-v1",
@@ -150,6 +155,28 @@ func NewQualcommNANDPBLHandoff(config QualcommNANDPBLConfig) (BootHandoff, error
 			{Register: cpu.RegisterR8, Value: config.TableAddress},
 		},
 		Memory: []MemorySeed{{Address: config.TableAddress, Bytes: table}},
+	}
+	if config.LegacyFeatureDataAddress != 0 {
+		// Earlier QCSBLs consume the same NAND facts through boot_feature_cfg
+		// IDs in a fixed PBL-owned structure. Keep that compatibility ABI an
+		// explicit handoff seed instead of treating high IRAM as magic RAM.
+		legacyEntries := [][2]uint32{
+			{0x0108, config.EraseBlockSize / config.PageSize},
+			{0x0109, uint32(config.FlashSize / uint64(config.EraseBlockSize))},
+			{0x010b, config.PageSize},
+			{0x010c, config.BadBlockLimit},
+			{0x0115, qualcommPBLFlashTypeNAND2K},
+			{qualcommLegacyPBLFeatureEnd, 0},
+		}
+		legacy := make([]byte, qualcommPBLFeatureDataHeaderSize+len(legacyEntries)*8)
+		for index, entry := range legacyEntries {
+			binary.LittleEndian.PutUint32(legacy[qualcommPBLFeatureDataHeaderSize+index*8:], entry[0])
+			binary.LittleEndian.PutUint32(legacy[qualcommPBLFeatureDataHeaderSize+index*8+4:], entry[1])
+		}
+		handoff.Memory = append(handoff.Memory, MemorySeed{
+			Address: config.LegacyFeatureDataAddress,
+			Bytes:   legacy,
+		})
 	}
 	if err := handoff.Validate(); err != nil {
 		return BootHandoff{}, err
@@ -529,6 +556,19 @@ var qualcommSecondaryClockOffsets = []uint32{0x0400, 0x0404, 0x0408, 0x0430, 0x0
 
 const qualcommSecondaryClockDisabledStatusOffset = 0x0440
 
+// QualcommSecondaryClockReadOnlyRegister describes one board-wired input in
+// the secondary GPIO/clock aperture. These inputs share the register page with
+// the output latches above but must not silently become writable storage.
+type QualcommSecondaryClockReadOnlyRegister struct {
+	Offset uint32
+	Value  uint32
+}
+
+type QualcommSecondaryClockConfig struct {
+	WritableOffsets   []uint32
+	ReadOnlyRegisters []QualcommSecondaryClockReadOnlyRegister
+}
+
 func validateQualcommSecondaryClockWritableOffsets(offsets []uint32) error {
 	seen := make(map[uint32]struct{}, len(qualcommSecondaryClockOffsets)+len(offsets))
 	for _, offset := range qualcommSecondaryClockOffsets {
@@ -543,6 +583,31 @@ func validateQualcommSecondaryClockWritableOffsets(offsets []uint32) error {
 			return fmt.Errorf("duplicate secondary-clock offset 0x%x: %w", offset, ErrInvalidRegion)
 		}
 		seen[offset] = struct{}{}
+	}
+	return nil
+}
+
+func validateQualcommSecondaryClockConfig(config QualcommSecondaryClockConfig) error {
+	if err := validateQualcommSecondaryClockWritableOffsets(config.WritableOffsets); err != nil {
+		return err
+	}
+	seen := make(map[uint32]struct{},
+		len(qualcommSecondaryClockOffsets)+len(config.WritableOffsets)+1+len(config.ReadOnlyRegisters))
+	for _, offset := range qualcommSecondaryClockOffsets {
+		seen[offset] = struct{}{}
+	}
+	for _, offset := range config.WritableOffsets {
+		seen[offset] = struct{}{}
+	}
+	seen[qualcommSecondaryClockDisabledStatusOffset] = struct{}{}
+	for _, register := range config.ReadOnlyRegisters {
+		if register.Offset%4 != 0 || register.Offset >= QualcommSecondaryClockWindowSize {
+			return fmt.Errorf("secondary-clock read-only offset 0x%x: %w", register.Offset, ErrInvalidRegion)
+		}
+		if _, duplicate := seen[register.Offset]; duplicate {
+			return fmt.Errorf("duplicate secondary-clock offset 0x%x: %w", register.Offset, ErrInvalidRegion)
+		}
+		seen[register.Offset] = struct{}{}
 	}
 	return nil
 }
@@ -1370,6 +1435,7 @@ func (d *QualcommBootControl) loadState(state []byte, allowMissingProfileRegiste
 type QualcommSecondaryClockControl struct {
 	offsets           []uint32
 	registers         map[uint32]uint32
+	readOnlyRegisters map[uint32]uint32
 	gpioWriteObserver QualcommGPIOWriteObserver
 }
 
@@ -1383,13 +1449,30 @@ func NewQualcommSecondaryClockControl() *QualcommSecondaryClockControl {
 func NewQualcommSecondaryClockControlWithWritableOffsets(
 	extra []uint32,
 ) (*QualcommSecondaryClockControl, error) {
-	if err := validateQualcommSecondaryClockWritableOffsets(extra); err != nil {
+	return NewQualcommSecondaryClockControlWithConfig(QualcommSecondaryClockConfig{
+		WritableOffsets: extra,
+	})
+}
+
+// NewQualcommSecondaryClockControlWithConfig adds only the output latches and
+// raw input words evidenced by a board profile.
+func NewQualcommSecondaryClockControlWithConfig(
+	config QualcommSecondaryClockConfig,
+) (*QualcommSecondaryClockControl, error) {
+	if err := validateQualcommSecondaryClockConfig(config); err != nil {
 		return nil, err
 	}
 	offsets := append([]uint32(nil), qualcommSecondaryClockOffsets...)
-	offsets = append(offsets, extra...)
+	offsets = append(offsets, config.WritableOffsets...)
 	sort.Slice(offsets, func(left, right int) bool { return offsets[left] < offsets[right] })
-	device := &QualcommSecondaryClockControl{offsets: offsets}
+	readOnlyRegisters := make(map[uint32]uint32, len(config.ReadOnlyRegisters))
+	for _, register := range config.ReadOnlyRegisters {
+		readOnlyRegisters[register.Offset] = register.Value
+	}
+	device := &QualcommSecondaryClockControl{
+		offsets:           offsets,
+		readOnlyRegisters: readOnlyRegisters,
+	}
 	_ = device.Reset()
 	return device, nil
 }
@@ -1414,6 +1497,9 @@ func (d *QualcommSecondaryClockControl) Read(offset uint32, width Width) (uint32
 	if width == Width32 {
 		if offset == qualcommSecondaryClockDisabledStatusOffset {
 			return 0x10, nil
+		}
+		if value, ok := d.readOnlyRegisters[offset]; ok {
+			return value, nil
 		}
 		if value, ok := d.registers[offset]; ok {
 			return value, nil

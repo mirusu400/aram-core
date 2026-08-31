@@ -57,6 +57,41 @@ type HLECallProfile struct {
 	Return   HLEReturn
 }
 
+type OneNANDProfile struct {
+	Address        uint32
+	ManufacturerID uint16
+	DeviceID       uint16
+	VersionID      uint16
+	DieBlockOffset uint32
+	Capacity       uint64
+}
+
+type ParallelPanelPortProfile struct {
+	CommandAddress uint32
+	DataAddress    uint32
+}
+
+func (p ParallelPanelPortProfile) validate() error {
+	if p.CommandAddress%uint32(Width16) != 0 || p.DataAddress%uint32(Width16) != 0 ||
+		p.CommandAddress == p.DataAddress || uint64(p.CommandAddress)+uint64(Width16) > 1<<32 ||
+		uint64(p.DataAddress)+uint64(Width16) > 1<<32 {
+		return ErrInvalidRegion
+	}
+	return nil
+}
+
+func (p OneNANDProfile) validate() error {
+	if p.Address%OneNANDWindowSize != 0 ||
+		uint64(p.Address)+OneNANDWindowSize > 1<<32 ||
+		p.ManufacturerID == 0 || p.DeviceID == 0 ||
+		p.Capacity == 0 || p.Capacity%oneNANDEraseBlockSize != 0 ||
+		p.Capacity > uint64(^uint32(0)) ||
+		p.DieBlockOffset != 0 && p.DieBlockOffset&(p.DieBlockOffset-1) != 0 {
+		return ErrInvalidOneNAND
+	}
+	return nil
+}
+
 // QualcommPrimaryClockKeyProfile maps a host control to one raw digital input
 // exposed by the Qualcomm primary-clock GPIO status register.
 type QualcommPrimaryClockKeyProfile struct {
@@ -82,6 +117,8 @@ type BoardProfile struct {
 	NANDSize                         uint64
 	NANDFactoryBadBlocks             []uint32
 	NANDInitialData                  []FlashSeed
+	OneNAND                          *OneNANDProfile
+	PBLLegacyFeatureDataAddress      uint32
 	BootClockModeStatus              uint32
 	PrimaryClockStatus               uint32
 	PrimaryClockInputMask            uint32
@@ -96,8 +133,10 @@ type BoardProfile struct {
 	BootControlSBIControllers        []uint32
 	BootControlSBIReadResponses      []QualcommSBIReadResponse
 	BootControlSBICompletionStatus   uint32
+	BootControlGPIOInputs            []QualcommGPIOInputRegister
 	PrimaryClockWritableOffsets      []uint32
 	SecondaryClockWritableOffsets    []uint32
+	SecondaryClockReadOnlyRegisters  []QualcommSecondaryClockReadOnlyRegister
 	ClockRegimeSleepControllers      []uint32
 	ClockRegimeCounters              []QualcommClockRegimeCounterConfig
 	ClockRegimeComparators           []QualcommClockRegimeComparatorConfig
@@ -105,6 +144,7 @@ type BoardProfile struct {
 	TimeTickClock                    *QualcommTimeTickClockConfig
 	Keypad                           *QualcommGPIOKeypadProfile
 	Panel                            DCSPanelConfig
+	PanelPorts                       *ParallelPanelPortProfile
 	MDP                              *QualcommMDPProfile
 	LegacyTopVersion                 uint32
 	LegacyTopIdentification          uint32
@@ -153,6 +193,15 @@ func (p BoardProfile) Validate() error {
 			}
 		}
 	}
+	if p.OneNAND != nil {
+		if err := p.OneNAND.validate(); err != nil {
+			return fmt.Errorf("board profile %q OneNAND: %w", p.ID, err)
+		}
+		if p.OneNAND.DieBlockOffset != 0 &&
+			uint64(p.OneNAND.DieBlockOffset) >= p.OneNAND.Capacity/oneNANDEraseBlockSize {
+			return fmt.Errorf("board profile %q OneNAND die offset: %w", p.ID, ErrInvalidOneNAND)
+		}
+	}
 	primaryClockInputMask := p.PrimaryClockInputMask
 	if primaryClockInputMask == 0 {
 		primaryClockInputMask = qualcommPrimaryGPIOInputMask
@@ -197,11 +246,17 @@ func (p BoardProfile) Validate() error {
 	); err != nil {
 		return fmt.Errorf("board profile %q boot-control register profile: %w", p.ID, err)
 	}
+	if err := validateQualcommGPIOInputRegisters(p.BootControlGPIOInputs); err != nil {
+		return fmt.Errorf("board profile %q boot-control GPIO inputs: %w", p.ID, err)
+	}
 	if err := validateQualcommPrimaryClockWritableOffsets(p.PrimaryClockWritableOffsets); err != nil {
 		return fmt.Errorf("board profile %q primary-clock writable offsets: %w", p.ID, err)
 	}
-	if err := validateQualcommSecondaryClockWritableOffsets(p.SecondaryClockWritableOffsets); err != nil {
-		return fmt.Errorf("board profile %q secondary-clock writable offsets: %w", p.ID, err)
+	if err := validateQualcommSecondaryClockConfig(QualcommSecondaryClockConfig{
+		WritableOffsets:   p.SecondaryClockWritableOffsets,
+		ReadOnlyRegisters: p.SecondaryClockReadOnlyRegisters,
+	}); err != nil {
+		return fmt.Errorf("board profile %q secondary-clock registers: %w", p.ID, err)
 	}
 	if keypad := p.Keypad; keypad != nil {
 		if err := keypad.validate(); err != nil {
@@ -241,10 +296,57 @@ func (p BoardProfile) Validate() error {
 				}
 			}
 		}
+		primaryWritable := make(map[uint32]struct{}, len(qualcommPrimaryClockWritableOffsets)+len(p.PrimaryClockWritableOffsets))
+		for _, offset := range mergedQualcommPrimaryClockWritableOffsets(p.PrimaryClockWritableOffsets) {
+			primaryWritable[offset] = struct{}{}
+		}
+		for index, group := range keypad.InterruptGroups {
+			for _, offset := range []uint32{
+				group.ClearOffset,
+				group.EnableOffset,
+				group.DetectOffset,
+				group.PolarityOffset,
+			} {
+				if _, writable := primaryWritable[offset]; !writable {
+					return fmt.Errorf(
+						"board profile %q keypad interrupt group %d uses unwritable primary-clock offset 0x%x",
+						p.ID, index, offset,
+					)
+				}
+			}
+			if _, writable := primaryWritable[group.StatusOffset]; writable ||
+				group.StatusOffset == qualcommPrimaryGPIOInputOffset {
+				return fmt.Errorf(
+					"board profile %q keypad interrupt group %d has invalid status offset 0x%x",
+					p.ID, index, group.StatusOffset,
+				)
+			}
+			if group.UseVectoredController {
+				if p.VectoredInterrupt == nil || group.InterruptSource >= p.VectoredInterrupt.SourceCount {
+					return fmt.Errorf(
+						"board profile %q keypad interrupt group %d source %d exceeds vectored controller",
+						p.ID, index, group.InterruptSource,
+					)
+				}
+			} else if group.InterruptSource >= 64 {
+				return fmt.Errorf(
+					"board profile %q keypad interrupt group %d source %d exceeds legacy controller",
+					p.ID, index, group.InterruptSource,
+				)
+			}
+		}
 	}
 	if p.Panel.Width != 0 || p.Panel.Height != 0 {
 		if _, err := validateDCSPanelConfig(p.Panel); err != nil {
 			return fmt.Errorf("board profile %q panel: %w", p.ID, err)
+		}
+	}
+	if p.PanelPorts != nil {
+		if p.Panel.Width == 0 || p.Panel.Height == 0 {
+			return fmt.Errorf("board profile %q sparse panel ports have no panel", p.ID)
+		}
+		if err := p.PanelPorts.validate(); err != nil {
+			return fmt.Errorf("board profile %q sparse panel ports: %w", p.ID, err)
 		}
 	}
 	if mdp := p.MDP; mdp != nil {
@@ -1156,6 +1258,173 @@ func SCHW830DL21BoardProfile() BoardProfile {
 			},
 		},
 	}
+}
+
+// SCHW770DA05BoardProfile starts the earlier version-one MIBIB handset from
+// its own board identity. DA05 has a 512 MiB EC/DC raw NAND containing the
+// downloader image and a separate 384 MiB EC/5C OneNAND data device.
+func SCHW770DA05BoardProfile() BoardProfile {
+	profile := SCHW830DL21BoardProfile()
+	profile.ID = "samsung.sch-w770"
+	profile.FirmwareBuildID = "samsung.sch-w770.da05"
+	profile.Memory = append([]MemoryRegionProfile(nil), profile.Memory...)
+	for index := range profile.Memory {
+		if profile.Memory[index].ID == "ebi-ram" {
+			// DA05 places its late OEMSBL work area at 0x0bfff000 and
+			// explicitly clears words immediately below 0x0c000000.
+			profile.Memory[index].Size = 0x0c000000
+			break
+		}
+	}
+	profile.NANDSize = 0x20000000
+	profile.NANDReadID = 0x0000ecdc
+	// DA05 derives this location from the MIBIB packaged end (0x11200000)
+	// and checks the downloader's little-endian 0xBEAFFEFF completion marker
+	// before choosing its one-shot native BML/STL/TFS4 provisioning path. The
+	// following words are the preload-table entry count and version. The
+	// four-piece archive omits this downloader-generated footer, so model a
+	// completed download with an empty preload table without inventing payload
+	// records that are not present in the archive.
+	profile.NANDInitialData = []FlashSeed{{
+		Offset: 0x11200000,
+		Data:   []byte{0xff, 0xfe, 0xaf, 0xbe, 0, 0, 0, 0, 0, 0, 0, 0},
+	}}
+	profile.OneNAND = &OneNANDProfile{
+		Address: 0x40000000, ManufacturerID: 0x00ec, DeviceID: 0x005c,
+		DieBlockOffset: 0x0800, Capacity: 0x18000000,
+	}
+	// DA05 predates the service-ID table used by later QCSBLs. Its ROM PBL
+	// publishes equivalent NAND geometry through boot_feature_cfg at this
+	// fixed high-IRAM structure address.
+	profile.PBLLegacyFeatureDataAddress = 0xffff6044
+	// The boot power-key input line that publishes W830's red END action is not
+	// evidenced on DA05, whose scanner samples input bits 0..2 only. Drop the
+	// inherited host control rather than exporting an unproven W770 key.
+	profile.PrimaryClockKeys = nil
+	// DA05's hsdevice_W770 key scanner selects three GPIO rows through bits
+	// 10..12 of GPIO_OE_1 and samples input bits 0..2. The HOLD switch is the
+	// otherwise-unmapped matrix position stored at scan-buffer index 6
+	// (column 2, row 0); firmware handles that position separately to emit its
+	// short- and long-hold events. Keep the other coordinates unnamed until
+	// their handset-facing meanings are established independently.
+	profile.Keypad = &QualcommGPIOKeypadProfile{
+		Columns: []uint8{0, 1, 2},
+		Rows: []QualcommGPIOKeypadRowProfile{
+			{OutputBank: QualcommGPIOOutputSecondaryClock, OutputOffset: 0x0400, OutputMask: 0x00000400},
+			{OutputBank: QualcommGPIOOutputSecondaryClock, OutputOffset: 0x0400, OutputMask: 0x00000800},
+			{OutputBank: QualcommGPIOOutputSecondaryClock, OutputOffset: 0x0400, OutputMask: 0x00001000},
+		},
+		Keys: []QualcommGPIOKeyProfile{{ID: "hold", Row: 0, Column: 2}},
+		// GPIOs 46, 62, and 63 are the three matrix columns. The shared GPIO
+		// dispatcher services hardware groups 2 and 3 from VIC source 5, reads
+		// their pending words at +0x05e4/+0x05e8, and acknowledges each bit via
+		// +0x0594/+0x0598 after invoking the registered key callback.
+		InterruptGroups: []QualcommGPIOInterruptGroupProfile{
+			{
+				ClearOffset: 0x0594, EnableOffset: 0x05a8,
+				DetectOffset: 0x05bc, PolarityOffset: 0x05d0, StatusOffset: 0x05e4,
+				InterruptSource: 5, UseVectoredController: true,
+			},
+			{
+				ClearOffset: 0x0598, EnableOffset: 0x05ac,
+				DetectOffset: 0x05c0, PolarityOffset: 0x05d4, StatusOffset: 0x05e8,
+				InterruptSource: 5, UseVectoredController: true,
+			},
+		},
+		ColumnInterrupts: []QualcommGPIOKeypadColumnInterruptProfile{
+			{Column: 0, Group: 1, Mask: 1 << 7}, // GPIO 62
+			{Column: 1, Group: 1, Mask: 1 << 8}, // GPIO 63
+			{Column: 2, Group: 0, Mask: 1 << 7}, // GPIO 46 / HOLD column
+		},
+	}
+	// DA05 selects the legacy high-page path and exposes paired getter/setter
+	// routines for the boot scratch words at 0xffffff04 and 0xffffff08.
+	// Both words reset clear and retain values written during the handoff.
+	profile.LegacyTopWritableOffsets = []uint32{
+		qualcommLegacyTopIDOffset,
+		qualcommLegacyTopIDOffset + 4,
+	}
+	// DA05's portrait boot surface is scanned from the opposite mounted edge
+	// to W830's 240x320 panel. Page-reverse plus BGR maps its native 0x88 mode
+	// to the upright framebuffer orientation exposed to frontends.
+	profile.Panel = DCSPanelConfig{Width: 240, Height: 400, NativeAddressMode: 0x88}
+	profile.PanelPorts = &ParallelPanelPortProfile{
+		CommandAddress: 0x20000000,
+		DataAddress:    0x20020000,
+	}
+	// OEMSBL streams a fixed 16-bit register table through the sparse
+	// 0x30000000/0x30020000 command/data pair before it initializes the primary
+	// panel. No status read or framebuffer transfer has been observed on this
+	// auxiliary path, so retain only the two evidenced halfword latches.
+	// DA05 also drives a byte-wide external command/data port at offsets 0 and 2.
+	// Its low-level helper writes command values to the first byte and streams
+	// payload bytes through the second; retaining those two latches is enough
+	// to preserve the guest-visible bus contract while the attached peripheral
+	// remains offline.
+	profile.LatchedRegisterWindows = append(
+		profile.LatchedRegisterWindows,
+		LatchedRegisterWindowProfile{
+			ID:      "auxiliary-16bit-panel-command",
+			Address: 0x30000000,
+			Size:    uint32(Width16),
+			Width:   Width16,
+		},
+		LatchedRegisterWindowProfile{
+			ID:      "auxiliary-16bit-panel-data",
+			Address: 0x30020000,
+			Size:    uint32(Width16),
+			Width:   Width16,
+		},
+		LatchedRegisterWindowProfile{
+			ID:      "external-8bit-command-data",
+			Address: 0x38000000,
+			Size:    4,
+			Width:   Width8,
+		},
+	)
+	// DA05's GPIO helper resolves group 4 input through CHIP_BASE+0x0940.
+	// That word is reserved in the older INTCTL layout inherited by W830, so
+	// expose the W770 low-idle input only through this exact board contract.
+	profile.BootControlGPIOInputs = []QualcommGPIOInputRegister{{Offset: 0x40, Value: 0}}
+	// DA05 samples bit 10 of GPIO_IN_1 at this address when publishing the
+	// initial slider state. No external transition is asserted at reset.
+	profile.SecondaryClockReadOnlyRegisters = []QualcommSecondaryClockReadOnlyRegister{{
+		Offset: 0x0444,
+		Value:  0,
+	}}
+	// DA05 restores its saved chip configuration through +0x00a0 immediately
+	// before the common +0x00a4 latch. AMSS samples and then replaces the clock
+	// plan word at +0x010c, programs +0x0120 before the common +0x0124 control,
+	// updates the paired clock-source controls at +0x0130/+0x0134, and writes
+	// companion plan words at +0x0148/+0x0248. The clock-vote transition copies
+	// its calibration pair into the common +0x0080/+0x0084 bank. AMSS peripheral
+	// setup writes the +0x0a44 command word; its polling code treats bit 1 at
+	// +0x0a4c as successful synchronous completion and reads a zero result from
+	// +0x0a50. The QCSBL stack-exit path clears the adjacent watchdog/control
+	// latches below.
+	profile.BootControlReadOnlyRegisters = append(
+		profile.BootControlReadOnlyRegisters,
+		QualcommBootReadOnlyRegister{Offset: 0x0a4c, Value: 0x00000002},
+		QualcommBootReadOnlyRegister{Offset: 0x0a50, Value: 0x00000000},
+		// A periodic AMSS worker debounces bit 23 of this raw input word. The
+		// deterministic board starts with that external signal deasserted.
+		QualcommBootReadOnlyRegister{Offset: 0x05ec, Value: 0x00000000},
+	)
+	profile.BootControlWritableOffsets = append(
+		profile.BootControlWritableOffsets,
+		0x0080,
+		0x00a0,
+		0x010c,
+		0x0120,
+		0x0130,
+		0x0134,
+		0x0148,
+		0x0248,
+		0x0a44,
+		0x53a8,
+		0x53e0,
+	)
+	return profile
 }
 
 // SCHW860DA06BoardProfile is the adjacent SCH-family board contract currently
