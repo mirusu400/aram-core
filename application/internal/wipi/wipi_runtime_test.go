@@ -864,6 +864,52 @@ func TestWIPIRuntimeGraphicsPixelOperationUsesCallbackResult(t *testing.T) {
 	}
 }
 
+// TestWIPIRuntimeRaptorPixelOperationSwapsArguments pins the LGT Raptor pixel
+// operation ABI. The public Samsung model calls op(srcPixel, dstPixel, param)
+// (see the sibling test), but Raptor Clets - 판타지포에버3's color-keyed sprite
+// blit - expect the destination pixel first. CompactGraphicsContext, which the
+// Raptor runtime also sets for the divergent context struct, selects the order.
+func TestWIPIRuntimeRaptorPixelOperationSwapsArguments(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	runtime.CompactGraphicsContext = true
+	screen := dispatchPublicAPI(t, runtime, "MC_grpGetScreenFrameBuffer", 0).Low
+	contextAddress, err := runtime.Heap.Allocate(60, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatchPublicAPI(t, runtime, "MC_grpInitContext", contextAddress)
+	setContextValue := func(index uint32, value uint32) {
+		t.Helper()
+		dispatchPublicAPI(t, runtime, "MC_grpSetContext", contextAddress, index, value)
+	}
+	setContextValue(1, 0x00123456) // foreground (source) pixel
+	setContextValue(5, 0x02000001) // pixel operation callback
+	setContextValue(6, ^uint32(6)) // pixel parameter (-7)
+
+	var callback GuestCallback
+	runtime.InvokeSync = func(_ context.Context, current GuestCallback) (uint32, error) {
+		callback = current
+		return 0x00abcdef, nil
+	}
+	dispatchPublicAPI(t, runtime, "MC_grpPutPixel", screen, 2, 3, contextAddress)
+
+	// Raptor order: destination first (0, the cleared screen), then the source.
+	if callback.Procedure != 0x02000001 ||
+		callback.Args[0] != 0 ||
+		callback.Args[1] != 0x00123456 ||
+		int32(callback.Args[2]) != -7 {
+		t.Fatalf("pixel callback = %+v", callback)
+	}
+	framebuffer := runtime.Framebuffers[screen]
+	pixel, err := runtime.ReadU32(framebuffer.Pixels + uint32(3*framebuffer.Width+2)*4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pixel != 0x00abcdef {
+		t.Fatalf("pixel callback result = 0x%08x", pixel)
+	}
+}
+
 func TestWIPIRuntimeTreatsMalformedModeledCallsAsImplemented(t *testing.T) {
 	runtime := newPublicRuntime(t)
 	result := dispatchPublicAPI(t, runtime, "MC_grpCreateImage")

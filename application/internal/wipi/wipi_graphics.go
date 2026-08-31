@@ -607,10 +607,24 @@ func (r *Runtime) putPixelCoverage(
 	}
 	switch {
 	case context.pixelOperation != 0:
+		// MC_grpSetContext installs a guest pixel-operation callback. The public
+		// Samsung model recovered the firmware signature as op(srcPixel,
+		// dstPixel, param) and the model test pins that order. LGT's Raptor
+		// runtime hands the two pixels the other way round: 판타지포에버3's op
+		// returns its second argument unless that argument is the transparent
+		// key, and it only composites a recognizable in-game scene when the
+		// destination is passed first (source first left every blit returning
+		// the untouched destination, so the whole scene stayed black). The
+		// vendor split mirrors the divergent context struct handled by
+		// CompactGraphicsContext, so key the argument order off the same flag.
+		first, second := foreground, destination
+		if r.CompactGraphicsContext {
+			first, second = destination, foreground
+		}
 		foreground, err = r.CallGuestFunction(
 			context.pixelOperation,
-			foreground,
-			destination,
+			first,
+			second,
 			uint32(context.pixelParameter),
 		)
 		if err != nil {
