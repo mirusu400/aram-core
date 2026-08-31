@@ -103,6 +103,96 @@ var MenuForegroundOverlays = []MenuForegroundOverlay{
 	},
 }
 
+// SKVMTitleKey identifies one shipped SKT MIDlet package build exactly. The
+// digest is the lowercase hex SHA-256 of the whole distributed package, which
+// is what the SKVM host already carries for the loaded input.
+type SKVMTitleKey struct {
+	PackageSHA256 string
+	MainClass     string
+	ProgramName   string
+}
+
+func (k SKVMTitleKey) Matches(packageSHA256, mainClass, programName string) bool {
+	return packageSHA256 == k.PackageSHA256 &&
+		mainClass == k.MainClass &&
+		programName == k.ProgramName
+}
+
+// SKVMCanvas records the handset canvas one SKT MIDlet build was authored for.
+// An SKT descriptor never declares a display size, and a title that packs its
+// art into opaque resource blobs offers nothing to infer one from, so a build
+// whose layout only closes up on a particular handset is recorded here rather
+// than guessed.
+type SKVMCanvas struct {
+	Key SKVMTitleKey
+	// InferredWidth and InferredHeight, when non-zero, additionally require
+	// the geometry the host inferred from the package assets.
+	InferredWidth  int
+	InferredHeight int
+	// Width and Height, when non-zero, replace the inferred geometry.
+	Width  int
+	Height int
+	// CanvasHeightInset16 reports Canvas.getHeight() 16 pixels short of the
+	// framebuffer, matching an SKT handset that reserved a system strip while
+	// drawing still covered the complete display.
+	CanvasHeightInset16 bool
+}
+
+var SKVMCanvases = []SKVMCanvas{
+	{
+		// 드래곤나이트EX (Dragon Knight EX) targets an SKT handset where
+		// Canvas.getHeight() excluded a 16-pixel system strip while drawing
+		// still covered the complete 120x160 framebuffer.
+		Key: SKVMTitleKey{
+			PackageSHA256: "fa1fc7826e4f2dbd10a4793177d9aed3282e5b9812d47863edc2f64761850cc2",
+			MainClass:     "PNJDKEx",
+			ProgramName:   "0053597505",
+		},
+		InferredWidth:       120,
+		InferredHeight:      160,
+		CanvasHeightInset16: true,
+	},
+	{
+		// 고래사냥2 (Whale Hunting 2) keeps every image it ships inside an
+		// opaque resource blob, so no package asset reveals the handset. Its
+		// title screen draws a 128-pixel column flush against the right edge
+		// (x = getWidth()-128) next to the 48-pixel column that completes the
+		// picture at x = 0, and those two only meet on a 176-pixel-wide
+		// canvas. The 205-pixel-tall picture then centers on a 220-pixel
+		// display once Canvas.getHeight() reports the same 16-pixel system
+		// strip inset the title already compensates for (aram-core #116).
+		Key: SKVMTitleKey{
+			PackageSHA256: "1367261bc3ee3b7f0afa102a52a7559204d94da60c543969773d47a09c051e79",
+			MainClass:     "w",
+			ProgramName:   "3523930101",
+		},
+		Width:               176,
+		Height:              220,
+		CanvasHeightInset16: true,
+	},
+}
+
+// LookupSKVMCanvas answers with the recorded canvas for one shipped SKT MIDlet
+// package, given the geometry the host inferred from its assets.
+func LookupSKVMCanvas(
+	packageSHA256, mainClass, programName string,
+	inferredWidth, inferredHeight int,
+) (SKVMCanvas, bool) {
+	for _, entry := range SKVMCanvases {
+		if !entry.Key.Matches(packageSHA256, mainClass, programName) {
+			continue
+		}
+		if entry.InferredWidth != 0 && entry.InferredWidth != inferredWidth {
+			continue
+		}
+		if entry.InferredHeight != 0 && entry.InferredHeight != inferredHeight {
+			continue
+		}
+		return entry, true
+	}
+	return SKVMCanvas{}, false
+}
+
 // EADSTitleRuntime pins a dedicated EADS host runtime to one exact shipped
 // binary. The only entry is the SKT SCH-W830 minigame pack (미니게임천국
 // lineage), whose OEM native service ABI is modeled by internal/minigame.

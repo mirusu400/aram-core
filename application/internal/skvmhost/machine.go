@@ -56,7 +56,8 @@ func New(
 	if size.X <= 0 || size.Y <= 0 {
 		size = image.Pt(240, 320)
 	}
-	size = inferSKVMFramebufferSize(size, pkg.Resources)
+	inferred := inferSKVMFramebufferSize(size, pkg.Resources)
+	size = skvmTitleCanvas(source, pkg, inferred)
 	config := shared.DefaultConfig()
 	config.Device.ProfileID = ProfileID
 	config.Device.Carrier = "skt"
@@ -75,7 +76,7 @@ func New(
 	if source.ProfileID != "" {
 		config.Device.ProfileID = source.ProfileID
 	}
-	applySKVMTitleCompatibility(&config, source, pkg, size)
+	applySKVMTitleCompatibility(&config, source, pkg, inferred)
 	services, err := shared.NewServices(config)
 	if err != nil {
 		return nil, fmt.Errorf("initialize SKVM shared services: %w", err)
