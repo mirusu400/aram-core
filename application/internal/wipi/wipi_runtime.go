@@ -287,22 +287,27 @@ type Runtime struct {
 	networkParameter uint32
 	sockets          map[int32]*wipiSocket
 	nextSocket       int32
-	http             map[int32]*wipiHTTP
-	nextHTTP         int32
-	PendingCallbacks []GuestCallback
-	InvokeSync       func(context.Context, GuestCallback) (uint32, error)
-	activeContext    context.Context
-	Observed         map[string]uint64
-	Unimplemented    map[string]uint64
-	Logs             []string
-	strtokNext       uint32
-	TickMS           uint64
-	ExitRequested    bool
-	exitCode         int32
-	Stats            WIPIFrameStats
-	hostCallScopes   [16]wipiHostCallScope
-	hostCallDepth    int
-	standaloneFrame  cpu.HostCallFrame
+	// OfflineCarrierAuth, when set, emulates a shut-down LGT carrier billing
+	// server by acknowledging each carrier-framed socket request so an
+	// auth-gated title reaches gameplay instead of blocking on its connecting
+	// screen forever. See dispatchNetwork's MC_netSocketWrite case.
+	OfflineCarrierAuth bool
+	http               map[int32]*wipiHTTP
+	nextHTTP           int32
+	PendingCallbacks   []GuestCallback
+	InvokeSync         func(context.Context, GuestCallback) (uint32, error)
+	activeContext      context.Context
+	Observed           map[string]uint64
+	Unimplemented      map[string]uint64
+	Logs               []string
+	strtokNext         uint32
+	TickMS             uint64
+	ExitRequested      bool
+	exitCode           int32
+	Stats              WIPIFrameStats
+	hostCallScopes     [16]wipiHostCallScope
+	hostCallDepth      int
+	standaloneFrame    cpu.HostCallFrame
 
 	// sharedPackageFiles is a read-only view of package contents addressable
 	// through the shared filesystem namespace; entries materialize into
