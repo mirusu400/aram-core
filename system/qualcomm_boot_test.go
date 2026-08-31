@@ -31,6 +31,29 @@ func TestQualcommNANDPBLHandoffCarriesGeometry(t *testing.T) {
 	}
 }
 
+func TestQualcommNANDPBLHandoffCarriesLegacyFeatureData(t *testing.T) {
+	handoff, err := NewQualcommNANDPBLHandoff(QualcommNANDPBLConfig{
+		Entry: 0x80000, TableAddress: 0x78001000, LegacyFeatureDataAddress: 0xffff6044,
+		PageSize: 0x800, EraseBlockSize: 0x20000,
+		FlashSize: 0x20000000, BadBlockLimit: 0x14,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(handoff.Memory) != 2 || handoff.Memory[1].Address != 0xffff6044 {
+		t.Fatalf("legacy PBL memory = %+v", handoff.Memory)
+	}
+	table := handoff.Memory[1].Bytes
+	want := [][2]uint32{{0x108, 0x40}, {0x109, 0x1000}, {0x10b, 0x800}, {0x10c, 0x14}, {0x115, 6}, {0x131, 0}}
+	for index, entry := range want {
+		offset := qualcommPBLFeatureDataHeaderSize + index*8
+		if binary.LittleEndian.Uint32(table[offset:]) != entry[0] ||
+			binary.LittleEndian.Uint32(table[offset+4:]) != entry[1] {
+			t.Fatalf("legacy PBL feature %d = %x", index, table[offset:offset+8])
+		}
+	}
+}
+
 func TestQualcommNANDPBLHandoffRejectsNon2KPageGeometry(t *testing.T) {
 	_, err := NewQualcommNANDPBLHandoff(QualcommNANDPBLConfig{
 		Entry: 0x80028, TableAddress: 0x78001000,
@@ -39,6 +62,14 @@ func TestQualcommNANDPBLHandoffRejectsNon2KPageGeometry(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("NAND2K handoff accepted 4 KiB pages")
+	}
+	_, err = NewQualcommNANDPBLHandoff(QualcommNANDPBLConfig{
+		Entry: 0x80000, TableAddress: 0x78001000, LegacyFeatureDataAddress: 0xffff6042,
+		PageSize: 0x800, EraseBlockSize: 0x20000,
+		FlashSize: 0x20000000, BadBlockLimit: 0x14,
+	})
+	if err == nil {
+		t.Fatal("NAND2K handoff accepted an unaligned legacy feature address")
 	}
 }
 
@@ -1369,5 +1400,49 @@ func TestQualcommSecondaryClockControlProfilesAdditionalWritableOffsets(t *testi
 		if _, err := NewQualcommSecondaryClockControlWithWritableOffsets(offsets); err == nil {
 			t.Fatalf("accepted invalid secondary-clock writable offsets %#v", offsets)
 		}
+	}
+}
+
+func TestQualcommSecondaryClockControlProfilesReadOnlyInput(t *testing.T) {
+	device, err := NewQualcommSecondaryClockControlWithConfig(QualcommSecondaryClockConfig{
+		WritableOffsets: []uint32{0x040c},
+		ReadOnlyRegisters: []QualcommSecondaryClockReadOnlyRegister{{
+			Offset: 0x0444,
+			Value:  0x00000400,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := device.Read(0x0444, Width32)
+	if err != nil || value != 0x00000400 {
+		t.Fatalf("secondary clock input = %#x error %v", value, err)
+	}
+	if err := device.Write(0x0444, Width32, 0); !errors.Is(err, ErrQualcommSecondaryClockMMIO) {
+		t.Fatalf("secondary clock input write error = %v", err)
+	}
+}
+
+func TestQualcommSecondaryClockControlRejectsInvalidReadOnlyInputs(t *testing.T) {
+	for _, registers := range [][]QualcommSecondaryClockReadOnlyRegister{
+		{{Offset: 0x0441}},
+		{{Offset: QualcommSecondaryClockWindowSize}},
+		{{Offset: 0x0400}},
+		{{Offset: qualcommSecondaryClockDisabledStatusOffset}},
+		{{Offset: 0x0444}, {Offset: 0x0444}},
+	} {
+		if _, err := NewQualcommSecondaryClockControlWithConfig(QualcommSecondaryClockConfig{
+			ReadOnlyRegisters: registers,
+		}); err == nil {
+			t.Fatalf("accepted secondary-clock read-only registers %+v", registers)
+		}
+	}
+	if _, err := NewQualcommSecondaryClockControlWithConfig(QualcommSecondaryClockConfig{
+		WritableOffsets: []uint32{0x0444},
+		ReadOnlyRegisters: []QualcommSecondaryClockReadOnlyRegister{{
+			Offset: 0x0444,
+		}},
+	}); err == nil {
+		t.Fatal("accepted overlapping secondary-clock writable and read-only registers")
 	}
 }

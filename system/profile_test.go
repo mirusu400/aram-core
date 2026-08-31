@@ -348,6 +348,171 @@ func TestSCHW860DA06BoardProfileKeepsAdjacentBoardFactsSeparate(t *testing.T) {
 	}
 }
 
+func TestSCHW770DA05BoardProfileKeepsVersionOneNANDSeparate(t *testing.T) {
+	profile := SCHW770DA05BoardProfile()
+	if err := profile.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if profile.ID != "samsung.sch-w770" || profile.FirmwareBuildID != "samsung.sch-w770.da05" ||
+		profile.NANDSize != 0x20000000 || profile.NANDReadID != 0xecdc {
+		t.Fatalf("SCH-W770 identity/NAND = %q/%q %#x/%#x",
+			profile.ID, profile.FirmwareBuildID, profile.NANDSize, profile.NANDReadID)
+	}
+	wantSeed := []byte{0xff, 0xfe, 0xaf, 0xbe, 0, 0, 0, 0, 0, 0, 0, 0}
+	if want := []FlashSeed{{Offset: 0x11200000, Data: wantSeed}}; !reflect.DeepEqual(profile.NANDInitialData, want) || profile.Keypad == nil {
+		t.Fatalf("SCH-W770 initial data/keypad = %#v/%#v", profile.NANDInitialData, profile.Keypad)
+	}
+	if want := (QualcommGPIOKeypadProfile{
+		Columns: []uint8{0, 1, 2},
+		Rows: []QualcommGPIOKeypadRowProfile{
+			{OutputBank: QualcommGPIOOutputSecondaryClock, OutputOffset: 0x0400, OutputMask: 0x00000400},
+			{OutputBank: QualcommGPIOOutputSecondaryClock, OutputOffset: 0x0400, OutputMask: 0x00000800},
+			{OutputBank: QualcommGPIOOutputSecondaryClock, OutputOffset: 0x0400, OutputMask: 0x00001000},
+		},
+		Keys: []QualcommGPIOKeyProfile{{ID: "hold", Row: 0, Column: 2}},
+		InterruptGroups: []QualcommGPIOInterruptGroupProfile{
+			{
+				ClearOffset: 0x0594, EnableOffset: 0x05a8,
+				DetectOffset: 0x05bc, PolarityOffset: 0x05d0, StatusOffset: 0x05e4,
+				InterruptSource: 5, UseVectoredController: true,
+			},
+			{
+				ClearOffset: 0x0598, EnableOffset: 0x05ac,
+				DetectOffset: 0x05c0, PolarityOffset: 0x05d4, StatusOffset: 0x05e8,
+				InterruptSource: 5, UseVectoredController: true,
+			},
+		},
+		ColumnInterrupts: []QualcommGPIOKeypadColumnInterruptProfile{
+			{Column: 0, Group: 1, Mask: 1 << 7},
+			{Column: 1, Group: 1, Mask: 1 << 8},
+			{Column: 2, Group: 0, Mask: 1 << 7},
+		},
+	}); !reflect.DeepEqual(*profile.Keypad, want) {
+		t.Fatalf("SCH-W770 keypad = %#v, want %#v", *profile.Keypad, want)
+	}
+	if profile.PBLLegacyFeatureDataAddress != 0xffff6044 {
+		t.Fatalf("SCH-W770 legacy PBL feature data = %#x", profile.PBLLegacyFeatureDataAddress)
+	}
+	if profile.PrimaryClockKeys != nil {
+		t.Fatalf("SCH-W770 inherited unevidenced primary-clock keys %#v", profile.PrimaryClockKeys)
+	}
+	if !reflect.DeepEqual(profile.LegacyTopWritableOffsets, []uint32{
+		qualcommLegacyTopIDOffset,
+		qualcommLegacyTopIDOffset + 4,
+	}) {
+		t.Fatalf("SCH-W770 legacy top-page scratch = %#v", profile.LegacyTopWritableOffsets)
+	}
+	if profile.OneNAND == nil || profile.OneNAND.Address != 0x40000000 ||
+		profile.OneNAND.ManufacturerID != 0xec || profile.OneNAND.DeviceID != 0x5c ||
+		profile.OneNAND.DieBlockOffset != 0x800 || profile.OneNAND.Capacity != 0x18000000 {
+		t.Fatalf("SCH-W770 OneNAND profile = %+v", profile.OneNAND)
+	}
+	foundEBIRAM := false
+	for _, region := range profile.Memory {
+		if region.ID == "ebi-ram" {
+			foundEBIRAM = region.Address == 0 && region.Size == 0x0c000000
+		}
+	}
+	if !foundEBIRAM {
+		t.Fatal("SCH-W770 profile lacks its traced 192 MiB EBI RAM")
+	}
+	if profile.Panel.Width != 240 || profile.Panel.Height != 400 ||
+		profile.Panel.NativeAddressMode != 0x88 || profile.PanelPorts == nil ||
+		profile.PanelPorts.CommandAddress != 0x20000000 || profile.PanelPorts.DataAddress != 0x20020000 {
+		t.Fatalf("SCH-W770 primary panel = %+v / %+v", profile.Panel, profile.PanelPorts)
+	}
+	wantAuxiliaryPanelWindows := []LatchedRegisterWindowProfile{
+		{ID: "auxiliary-16bit-panel-command", Address: 0x30000000, Size: 2, Width: Width16},
+		{ID: "auxiliary-16bit-panel-data", Address: 0x30020000, Size: 2, Width: Width16},
+	}
+	for _, want := range wantAuxiliaryPanelWindows {
+		found := false
+		for _, window := range profile.LatchedRegisterWindows {
+			found = found || window == want
+		}
+		if !found {
+			t.Fatalf("SCH-W770 profile lacks auxiliary panel latch %+v", want)
+		}
+	}
+	if len(profile.BootControlGPIOInputs) != 1 ||
+		profile.BootControlGPIOInputs[0] != (QualcommGPIOInputRegister{Offset: 0x40, Value: 0}) {
+		t.Fatalf("SCH-W770 GPIO inputs = %+v", profile.BootControlGPIOInputs)
+	}
+	if !reflect.DeepEqual(profile.SecondaryClockReadOnlyRegisters,
+		[]QualcommSecondaryClockReadOnlyRegister{{Offset: 0x0444, Value: 0}}) {
+		t.Fatalf("SCH-W770 secondary GPIO inputs = %+v", profile.SecondaryClockReadOnlyRegisters)
+	}
+	foundAMSSPeripheralStatus := false
+	foundAMSSPeripheralResult := false
+	foundAMSSRawInput := false
+	for _, register := range profile.BootControlReadOnlyRegisters {
+		if register == (QualcommBootReadOnlyRegister{Offset: 0x0a4c, Value: 2}) {
+			foundAMSSPeripheralStatus = true
+		}
+		if register == (QualcommBootReadOnlyRegister{Offset: 0x0a50, Value: 0}) {
+			foundAMSSPeripheralResult = true
+		}
+		if register == (QualcommBootReadOnlyRegister{Offset: 0x05ec, Value: 0}) {
+			foundAMSSRawInput = true
+		}
+	}
+	if !foundAMSSPeripheralStatus || !foundAMSSPeripheralResult || !foundAMSSRawInput {
+		t.Fatal("SCH-W770 profile lacks its AMSS peripheral status registers")
+	}
+	foundOEMSBLClockLatch := false
+	foundStackExitLatch := false
+	foundSavedChipConfigLatch := false
+	foundAMSSCalibrationLatch := false
+	foundAMSSClockPlanLatch := false
+	foundAMSSClockProgramLatch := false
+	foundAMSSClockSourceLatches := 0
+	foundAMSSClockLatch := false
+	foundAMSSClockBankLatch := false
+	foundAMSSPeripheralControl := false
+	for _, offset := range profile.BootControlWritableOffsets {
+		if offset == 0x0080 {
+			foundAMSSCalibrationLatch = true
+		}
+		if offset == 0x00a0 {
+			foundSavedChipConfigLatch = true
+		}
+		if offset == 0x0148 {
+			foundAMSSClockLatch = true
+		}
+		if offset == 0x010c {
+			foundAMSSClockPlanLatch = true
+		}
+		if offset == 0x0130 || offset == 0x0134 {
+			foundAMSSClockSourceLatches++
+		}
+		if offset == 0x0120 {
+			foundAMSSClockProgramLatch = true
+		}
+		if offset == 0x0248 {
+			foundAMSSClockBankLatch = true
+		}
+		if offset == 0x0a44 {
+			foundAMSSPeripheralControl = true
+		}
+		if offset == 0x53a8 {
+			foundOEMSBLClockLatch = true
+		}
+		if offset == 0x53e0 {
+			foundStackExitLatch = true
+		}
+	}
+	if !foundSavedChipConfigLatch || !foundAMSSCalibrationLatch ||
+		!foundAMSSClockPlanLatch || !foundAMSSClockProgramLatch ||
+		foundAMSSClockSourceLatches != 2 || !foundAMSSClockLatch ||
+		!foundAMSSClockBankLatch || !foundAMSSPeripheralControl ||
+		!foundOEMSBLClockLatch || !foundStackExitLatch {
+		t.Fatal("SCH-W770 profile lacks traced QCSBL/OEMSBL control latches")
+	}
+	if w830 := SCHW830DL21BoardProfile(); w830.NANDSize != 0x10000000 || w830.Keypad == nil {
+		t.Fatalf("SCH-W770 profile construction mutated SCH-W830")
+	}
+}
+
 func TestBoardProfileRejectsInvalidMDPProfile(t *testing.T) {
 	for _, mutate := range []func(*BoardProfile){
 		func(profile *BoardProfile) { profile.MDP.CompletionStartOffset = 0x0e08 },

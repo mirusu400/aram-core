@@ -36,10 +36,10 @@ func TestRegistryMatchesExactPieceHashes(t *testing.T) {
 	}
 }
 
-func TestBuiltinRegistrySeparatesSCHW830BuildsAndSCHW860Board(t *testing.T) {
+func TestBuiltinRegistrySeparatesSCHW830BuildsAndAdjacentBoards(t *testing.T) {
 	registry := BuiltinRegistry()
-	if len(registry.profiles) != 3 {
-		t.Fatalf("built-in Samsung profiles = %d, want 3", len(registry.profiles))
+	if len(registry.profiles) != 4 {
+		t.Fatalf("built-in Samsung profiles = %d, want 4", len(registry.profiles))
 	}
 	profiles := make(map[string]BuildProfile, len(registry.profiles))
 	for _, profile := range registry.profiles {
@@ -47,8 +47,9 @@ func TestBuiltinRegistrySeparatesSCHW830BuildsAndSCHW860Board(t *testing.T) {
 	}
 	dl21, dl21OK := profiles[SCHW830DL21ProfileID]
 	da18, da18OK := profiles[SCHW830DA18ProfileID]
+	w770, w770OK := profiles[SCHW770DA05ProfileID]
 	w860, w860OK := profiles[SCHW860DA06ProfileID]
-	if !dl21OK || !da18OK || !w860OK {
+	if !dl21OK || !da18OK || !w770OK || !w860OK {
 		t.Fatalf("built-in Samsung profile IDs = %#v", profiles)
 	}
 	if dl21.Build != "DL21" || da18.Build != "DA18" ||
@@ -59,6 +60,15 @@ func TestBuiltinRegistrySeparatesSCHW830BuildsAndSCHW860Board(t *testing.T) {
 	if w860.Model != "SCH-W860" || w860.Build != "DA06" ||
 		w860.PieceHashes[RoleWBT] == dl21.PieceHashes[RoleWBT] {
 		t.Fatalf("SCH-W860 profile is not a distinct exact board build: %+v", w860)
+	}
+	if w770.Model != "SCH-W770" || w770.Build != "DA05" ||
+		w770.PieceHashes[RoleWBT] == dl21.PieceHashes[RoleWBT] {
+		t.Fatalf("SCH-W770 profile is not a distinct exact board build: %+v", w770)
+	}
+	qcsbl, ok := w770.BootImage("qcsbl")
+	if !ok || len(qcsbl.BlockOffsets) != 1 || qcsbl.BlockOffsets[0] != 0x0c0000 ||
+		qcsbl.LoadAddress != 0x00080000 || qcsbl.EntryOffset != 0 {
+		t.Fatalf("SCH-W770 QCSBL profile = %+v", qcsbl)
 	}
 }
 
