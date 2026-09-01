@@ -17,9 +17,16 @@ const (
 	QualcommSecondaryClockWindowSize = 0x1000
 	qualcommPBLMagic                 = 0xa1b2c3d4
 	qualcommPBLServiceEnd            = 0x015d
+	qualcommPBLHeaderFeatureFirst    = 0x0158
+	qualcommPBLHeaderFeatureEnd      = 0x015d
+	qualcommPBLHeaderFlashBlockCount = 0x0159
+	qualcommPBLHeaderSLCBlockCount   = 0x015a
+	qualcommPBLHeaderBadBlockLimit   = 0x015b
+	qualcommPBLHeaderFeatureDataSize = (qualcommPBLHeaderFeatureEnd - qualcommPBLHeaderFeatureFirst) * 8
 	qualcommPBLFlashTypeNAND2K       = 6
 	qualcommLegacyPBLFeatureEnd      = 0x0131
 	qualcommPBLFeatureDataHeaderSize = 0x2c
+	qualcommPBLServiceEntryCount     = 6
 )
 
 var (
@@ -30,32 +37,46 @@ var (
 type QualcommNANDPBLConfig struct {
 	Entry                    uint32
 	TableAddress             uint32
+	ServiceTableHeaderSize   uint32
+	HeaderFeatureDataAddress uint32
+	HeaderFeatures           []QualcommPBLHeaderFeature
 	LegacyFeatureDataAddress uint32
+	SharedDataAddress        uint32
+	SharedDataSize           uint32
 	PageSize                 uint32
 	EraseBlockSize           uint32
 	FlashSize                uint64
 	BadBlockLimit            uint32
 }
 
+// QualcommPBLHeaderFeature describes one fixed presence/value slot in the
+// newer PBL table passed to QCSBL through r9.
+type QualcommPBLHeaderFeature struct {
+	Selector uint32
+	Value    uint32
+}
+
 type QualcommBootControlConfig struct {
-	HardwareRevision            uint32
-	NANDInterfaceMode           uint32
-	EBIMemoryConfiguration      uint32
-	ClockModeStatus             uint32
-	WritableOffsets             []uint32
-	HalfwordOffsets             []uint32
-	MixedWidthOffsets           []uint32
-	ReadOnlyRegisters           []QualcommBootReadOnlyRegister
-	RegisterResets              []QualcommBootRegisterReset
-	CompletionEvents            []QualcommCompletionEventConfig
-	LegacyUARTControllers       []uint32
-	SBIControllers              []uint32
-	SBIReadResponses            []QualcommSBIReadResponse
-	SBICompletionStatus         uint32
-	NANDReady                   *StatusSignal
-	InterruptController         *QualcommInterruptController
-	VectoredInterruptController *QualcommVectoredInterruptController
-	TimeTickClock               *QualcommTimeTickClockConfig
+	HardwareRevision               uint32
+	NANDInterfaceMode              uint32
+	EBIMemoryConfiguration         uint32
+	ClockModeStatus                uint32
+	WritableOffsets                []uint32
+	InterruptWindowWritableOffsets []uint32
+	HalfwordOffsets                []uint32
+	MixedWidthOffsets              []uint32
+	ReadOnlyRegisters              []QualcommBootReadOnlyRegister
+	RegisterResets                 []QualcommBootRegisterReset
+	CompletionEvents               []QualcommCompletionEventConfig
+	LegacyUARTControllers          []uint32
+	SBIControllers                 []uint32
+	SBIReadResponses               []QualcommSBIReadResponse
+	SBICompletionStatus            uint32
+	WatchdogServiceReadable        bool
+	NANDReady                      *StatusSignal
+	InterruptController            *QualcommInterruptController
+	VectoredInterruptController    *QualcommVectoredInterruptController
+	TimeTickClock                  *QualcommTimeTickClockConfig
 }
 
 // QualcommBootReadOnlyRegister describes a profile-specific word register
@@ -124,13 +145,40 @@ type QualcommTimeTickClockConfig struct {
 // NewQualcommNANDPBLHandoff builds the bounded PBL service data consumed by
 // the early QCSBL. The missing mask-ROM remains an explicit HLE boundary.
 func NewQualcommNANDPBLHandoff(config QualcommNANDPBLConfig) (BootHandoff, error) {
+	serviceTableHeaderSize := config.ServiceTableHeaderSize
+	if serviceTableHeaderSize == 0 {
+		serviceTableHeaderSize = qualcommPBLFeatureDataHeaderSize
+	}
+	headerFeatureOffsets := make([]uint32, len(config.HeaderFeatures))
+	seenHeaderFeatures := make(map[uint32]struct{}, len(config.HeaderFeatures))
+	for index, feature := range config.HeaderFeatures {
+		if feature.Selector < qualcommPBLHeaderFeatureFirst ||
+			feature.Selector >= qualcommPBLHeaderFeatureEnd {
+			return BootHandoff{}, fmt.Errorf("invalid Qualcomm NAND PBL geometry")
+		}
+		if _, duplicate := seenHeaderFeatures[feature.Selector]; duplicate {
+			return BootHandoff{}, fmt.Errorf("invalid Qualcomm NAND PBL geometry")
+		}
+		seenHeaderFeatures[feature.Selector] = struct{}{}
+		headerFeatureOffsets[index] = (feature.Selector - qualcommPBLHeaderFeatureFirst) * 8
+	}
 	if config.Entry&3 != 0 || config.TableAddress&3 != 0 || config.PageSize != 0x800 ||
+		serviceTableHeaderSize < qualcommPBLFeatureDataHeaderSize || serviceTableHeaderSize&3 != 0 ||
+		uint64(config.TableAddress)+uint64(serviceTableHeaderSize)+qualcommPBLServiceEntryCount*8 > 1<<32 ||
+		uint64(serviceTableHeaderSize)+qualcommPBLServiceEntryCount*8 > MaxHandoffSeedBytes ||
+		(config.HeaderFeatureDataAddress == 0) != (len(config.HeaderFeatures) == 0) ||
+		config.HeaderFeatureDataAddress&3 != 0 ||
+		uint64(config.HeaderFeatureDataAddress)+qualcommPBLHeaderFeatureDataSize > 1<<32 ||
 		config.EraseBlockSize == 0 || config.EraseBlockSize%config.PageSize != 0 ||
 		config.FlashSize == 0 || config.FlashSize%uint64(config.EraseBlockSize) != 0 ||
 		config.FlashSize/uint64(config.EraseBlockSize) > uint64(^uint32(0)) ||
 		config.BadBlockLimit == 0 ||
 		(config.LegacyFeatureDataAddress != 0 && (config.LegacyFeatureDataAddress&3 != 0 ||
-			uint64(config.LegacyFeatureDataAddress)+qualcommPBLFeatureDataHeaderSize+6*8 > 1<<32)) {
+			uint64(config.LegacyFeatureDataAddress)+qualcommPBLFeatureDataHeaderSize+6*8 > 1<<32)) ||
+		(config.SharedDataAddress == 0) != (config.SharedDataSize == 0) ||
+		config.SharedDataAddress&3 != 0 ||
+		uint64(config.SharedDataAddress)+uint64(config.SharedDataSize) > 1<<32 ||
+		config.SharedDataSize > MaxHandoffSeedBytes {
 		return BootHandoff{}, fmt.Errorf("invalid Qualcomm NAND PBL geometry")
 	}
 	entries := [][2]uint32{
@@ -141,10 +189,11 @@ func NewQualcommNANDPBLHandoff(config QualcommNANDPBLConfig) (BootHandoff, error
 		{0x0141, qualcommPBLFlashTypeNAND2K},
 		{qualcommPBLServiceEnd, 0},
 	}
-	table := make([]byte, qualcommPBLFeatureDataHeaderSize+len(entries)*8)
+	table := make([]byte, int(serviceTableHeaderSize)+len(entries)*8)
 	for index, entry := range entries {
-		binary.LittleEndian.PutUint32(table[qualcommPBLFeatureDataHeaderSize+index*8:], entry[0])
-		binary.LittleEndian.PutUint32(table[qualcommPBLFeatureDataHeaderSize+index*8+4:], entry[1])
+		offset := int(serviceTableHeaderSize) + index*8
+		binary.LittleEndian.PutUint32(table[offset:], entry[0])
+		binary.LittleEndian.PutUint32(table[offset+4:], entry[1])
 	}
 	handoff := BootHandoff{
 		ID:    "qualcomm.pbl-hle.nand2k-v1",
@@ -155,6 +204,24 @@ func NewQualcommNANDPBLHandoff(config QualcommNANDPBLConfig) (BootHandoff, error
 			{Register: cpu.RegisterR8, Value: config.TableAddress},
 		},
 		Memory: []MemorySeed{{Address: config.TableAddress, Bytes: table}},
+	}
+	if config.HeaderFeatureDataAddress != 0 {
+		// MSM7600's newer PBL ABI passes a second table in r9. QCSBL looks up
+		// selectors 0x158..0x15c there as fixed presence/value pairs.
+		headerFeatures := make([]byte, qualcommPBLHeaderFeatureDataSize)
+		for index, feature := range config.HeaderFeatures {
+			offset := headerFeatureOffsets[index]
+			binary.LittleEndian.PutUint32(headerFeatures[offset:], 1)
+			binary.LittleEndian.PutUint32(headerFeatures[offset+4:], feature.Value)
+		}
+		handoff.Registers = append(handoff.Registers, RegisterSeed{
+			Register: cpu.RegisterR9,
+			Value:    config.HeaderFeatureDataAddress,
+		})
+		handoff.Memory = append(handoff.Memory, MemorySeed{
+			Address: config.HeaderFeatureDataAddress,
+			Bytes:   headerFeatures,
+		})
 	}
 	if config.LegacyFeatureDataAddress != 0 {
 		// Earlier QCSBLs consume the same NAND facts through boot_feature_cfg
@@ -176,6 +243,19 @@ func NewQualcommNANDPBLHandoff(config QualcommNANDPBLConfig) (BootHandoff, error
 		handoff.Memory = append(handoff.Memory, MemorySeed{
 			Address: config.LegacyFeatureDataAddress,
 			Bytes:   legacy,
+		})
+	}
+	if config.SharedDataSize != 0 {
+		// This PBL generation passes r11 as the exclusive end of a shared-data
+		// record. QCSBL derives the start by subtracting its compile-time size,
+		// then preserves the record for the flash and next-stage handoffs.
+		handoff.Registers = append(handoff.Registers, RegisterSeed{
+			Register: cpu.RegisterR11,
+			Value:    config.SharedDataAddress + config.SharedDataSize,
+		})
+		handoff.Memory = append(handoff.Memory, MemorySeed{
+			Address: config.SharedDataAddress,
+			Bytes:   make([]byte, config.SharedDataSize),
 		})
 	}
 	if err := handoff.Validate(); err != nil {
@@ -202,7 +282,10 @@ var qualcommBootWritableOffsets = append(append([]uint32{
 	0x0400, 0x0404, 0x0408, 0x040c, 0x0410, 0x0414, 0x0418, 0x041c, 0x0420, 0x0424,
 	0x0430, 0x0434, 0x0438, 0x043c, 0x0440, 0x0444, 0x0448, 0x044c, 0x0450, 0x0454,
 	0x0458, 0x045c, 0x0460, 0x0464, 0x0468, 0x046c, 0x0470,
-	0x0aa0,
+	// AMSS initialises this peripheral bank as one contiguous group. CK06
+	// supplies the configuration word at +0xaa4 between the existing +0xaa0
+	// and +0xaa8 latches and does not poll an independent completion signal.
+	0x0aa0, 0x0aa4,
 	0x0a00, 0x0a04, 0x0a48, 0x0aa8, 0x0aac, 0x0ab0, 0x0ab4,
 	0x0ab8,
 	0x0abc,
@@ -230,6 +313,28 @@ func validateQualcommBootControlWritableOffsets(offsets []uint32) error {
 	return nil
 }
 
+func isQualcommBootControlInterruptWindowOffset(offset uint32) bool {
+	return offset >= 0x0900 && offset < 0x0900+QualcommInterruptControllerWindowSize
+}
+
+func validateQualcommBootControlInterruptWindowWritableOffsets(offsets []uint32) error {
+	seen := make(map[uint32]struct{}, len(offsets))
+	for _, offset := range offsets {
+		if offset%4 != 0 || !isQualcommBootControlInterruptWindowOffset(offset) {
+			return fmt.Errorf("interrupt-window writable offset 0x%x: %w", offset, ErrInvalidRegion)
+		}
+		if _, duplicate := seen[offset]; duplicate {
+			return fmt.Errorf(
+				"duplicate interrupt-window writable offset 0x%x: %w",
+				offset,
+				ErrInvalidRegion,
+			)
+		}
+		seen[offset] = struct{}{}
+	}
+	return nil
+}
+
 const (
 	qualcommBootSBICommandOffset  = 0x08
 	qualcommBootSBIResultOffset   = 0x10
@@ -242,6 +347,7 @@ var qualcommBootSBIRegisterOffsets = [...]uint32{0x00, 0x04, 0x08, 0x10, 0x14}
 
 func validateQualcommBootControlConfigurationOffsets(
 	writableOffsets []uint32,
+	interruptWindowWritableOffsets []uint32,
 	halfwordOffsets []uint32,
 	mixedWidthOffsets []uint32,
 	readOnlyRegisters []QualcommBootReadOnlyRegister,
@@ -255,9 +361,16 @@ func validateQualcommBootControlConfigurationOffsets(
 	if err := validateQualcommBootControlWritableOffsets(writableOffsets); err != nil {
 		return err
 	}
+	if err := validateQualcommBootControlInterruptWindowWritableOffsets(
+		interruptWindowWritableOffsets,
+	); err != nil {
+		return err
+	}
 	seen := make(map[uint32]struct{}, len(qualcommBootWritableOffsets)+len(writableOffsets)+
+		len(interruptWindowWritableOffsets)+
 		len(sbiControllers)*len(qualcommBootSBIRegisterOffsets))
-	wordWritable := make(map[uint32]struct{}, len(qualcommBootWritableOffsets)+len(writableOffsets))
+	wordWritable := make(map[uint32]struct{}, len(qualcommBootWritableOffsets)+len(writableOffsets)+
+		len(interruptWindowWritableOffsets))
 	for _, offset := range qualcommBootWritableOffsets {
 		seen[offset] = struct{}{}
 		wordWritable[offset] = struct{}{}
@@ -266,9 +379,14 @@ func validateQualcommBootControlConfigurationOffsets(
 		seen[offset] = struct{}{}
 		wordWritable[offset] = struct{}{}
 	}
+	for _, offset := range interruptWindowWritableOffsets {
+		seen[offset] = struct{}{}
+		wordWritable[offset] = struct{}{}
+	}
 	mixed := make(map[uint32]struct{}, len(mixedWidthOffsets))
 	for _, offset := range mixedWidthOffsets {
-		if offset%4 != 0 || isQualcommBootControlSpecialOffset(offset) {
+		if offset%4 != 0 || isQualcommBootControlInterruptWindowOffset(offset) ||
+			isQualcommBootControlSpecialOffset(offset) {
 			return fmt.Errorf("mixed-width offset 0x%x: %w", offset, ErrInvalidRegion)
 		}
 		if _, writable := seen[offset]; !writable {
@@ -394,8 +512,9 @@ func validateQualcommBootControlConfigurationOffsets(
 			(event.AcknowledgeWidth != Width16 && event.AcknowledgeWidth != Width32) ||
 			event.AcknowledgeOffset%uint32(event.AcknowledgeWidth) != 0 ||
 			event.StatusOffset >= QualcommBootControlWindowSize ||
-			(event.StatusOffset >= 0x0900 &&
-				event.StatusOffset < 0x0900+QualcommInterruptControllerWindowSize) ||
+			isQualcommBootControlInterruptWindowOffset(event.StartOffset) ||
+			isQualcommBootControlInterruptWindowOffset(event.StatusOffset) ||
+			isQualcommBootControlInterruptWindowOffset(event.AcknowledgeOffset) ||
 			isQualcommBootControlSpecialOffset(event.StartOffset) ||
 			isQualcommBootControlSpecialOffset(event.StatusOffset) ||
 			isQualcommBootControlSpecialOffset(event.AcknowledgeOffset) {
@@ -467,11 +586,14 @@ func validateQualcommBootControlConfigurationOffsets(
 			}
 		}
 		for _, relative := range qualcommLegacyUARTHalfwordRegisterOffsets {
-			if _, configured := halfwords[base+relative]; !configured {
+			offset := base + relative
+			_, halfwordConfigured := halfwords[offset]
+			_, mixedWidthConfigured := mixed[offset]
+			if !halfwordConfigured && !mixedWidthConfigured {
 				return fmt.Errorf(
-					"legacy UART controller 0x%x lacks halfword register 0x%x: %w",
+					"legacy UART controller 0x%x lacks halfword or mixed-width register 0x%x: %w",
 					base,
-					base+relative,
+					offset,
 					ErrInvalidRegion,
 				)
 			}
@@ -494,7 +616,7 @@ func isQualcommBootControlSpecialOffset(offset uint32) bool {
 }
 
 func mergedQualcommBootControlWritableOffsets(
-	extra, halfwords []uint32,
+	extra, interruptWindowExtra, halfwords []uint32,
 	readOnlyRegisters []QualcommBootReadOnlyRegister,
 	completionEvents []QualcommCompletionEventConfig,
 	sbiControllers []uint32,
@@ -503,11 +625,13 @@ func mergedQualcommBootControlWritableOffsets(
 	offsets := make(
 		[]uint32,
 		0,
-		len(qualcommBootWritableOffsets)+len(extra)+len(halfwords)+len(readOnlyRegisters)+len(completionEvents)+
+		len(qualcommBootWritableOffsets)+len(extra)+len(interruptWindowExtra)+len(halfwords)+
+			len(readOnlyRegisters)+len(completionEvents)+
 			len(sbiControllers)*len(qualcommBootSBIRegisterOffsets),
 	)
 	offsets = append(offsets, qualcommBootWritableOffsets...)
 	offsets = append(offsets, extra...)
+	offsets = append(offsets, interruptWindowExtra...)
 	offsets = append(offsets, halfwords...)
 	for _, register := range readOnlyRegisters {
 		offsets = append(offsets, register.Offset)
@@ -592,14 +716,13 @@ func validateQualcommSecondaryClockConfig(config QualcommSecondaryClockConfig) e
 		return err
 	}
 	seen := make(map[uint32]struct{},
-		len(qualcommSecondaryClockOffsets)+len(config.WritableOffsets)+1+len(config.ReadOnlyRegisters))
+		len(qualcommSecondaryClockOffsets)+len(config.WritableOffsets)+len(config.ReadOnlyRegisters))
 	for _, offset := range qualcommSecondaryClockOffsets {
 		seen[offset] = struct{}{}
 	}
 	for _, offset := range config.WritableOffsets {
 		seen[offset] = struct{}{}
 	}
-	seen[qualcommSecondaryClockDisabledStatusOffset] = struct{}{}
 	for _, register := range config.ReadOnlyRegisters {
 		if register.Offset%4 != 0 || register.Offset >= QualcommSecondaryClockWindowSize {
 			return fmt.Errorf("secondary-clock read-only offset 0x%x: %w", register.Offset, ErrInvalidRegion)
@@ -617,38 +740,40 @@ func validateQualcommSecondaryClockConfig(config QualcommSecondaryClockConfig) e
 // Registers with understood side effects are modeled separately; every
 // unknown access fails.
 type QualcommBootControl struct {
-	hardwareRevision            uint32
-	nandInterfaceMode           uint32
-	ebiMemoryConfiguration      uint32
-	clockModeStatus             uint32
-	nandReady                   *StatusSignal
-	interruptController         *QualcommInterruptController
-	vectoredInterruptController *QualcommVectoredInterruptController
-	writableOffsets             []uint32
-	halfwordOffsets             map[uint32]struct{}
-	mixedWidthOffsets           map[uint32]struct{}
-	readOnlyRegisters           map[uint32]uint32
-	registerResets              []QualcommBootRegisterReset
-	completionEvents            []QualcommCompletionEventConfig
-	completionHandlers          map[uint32]QualcommCompletionHandler
-	orderedCompletionHandlers   []QualcommCompletionHandler
-	legacyUARTControllers       map[uint32]struct{}
-	sbiControllers              map[uint32]struct{}
-	sbiReadResponses            []QualcommSBIReadResponse
-	sbiReadResponseValues       map[qualcommSBIReadKey]uint8
-	sbiCompletionStatus         uint32
-	registers                   map[uint32]uint32
-	watchdogServices            uint64
-	timeTick                    uint32
-	timeTickReadPhase           uint8
-	timeTickClocked             bool
-	timeTickInstructionRate     uint64
-	timeTickHz                  uint64
-	timeTickInterruptSource     uint8
-	timeTickUseVectored         bool
-	timeTickPhase               uint64
-	timeTickMatchReady          bool
-	timeTickMatchConfigured     bool
+	hardwareRevision               uint32
+	nandInterfaceMode              uint32
+	ebiMemoryConfiguration         uint32
+	clockModeStatus                uint32
+	nandReady                      *StatusSignal
+	interruptController            *QualcommInterruptController
+	vectoredInterruptController    *QualcommVectoredInterruptController
+	writableOffsets                []uint32
+	interruptWindowWritableOffsets map[uint32]struct{}
+	halfwordOffsets                map[uint32]struct{}
+	mixedWidthOffsets              map[uint32]struct{}
+	readOnlyRegisters              map[uint32]uint32
+	registerResets                 []QualcommBootRegisterReset
+	completionEvents               []QualcommCompletionEventConfig
+	completionHandlers             map[uint32]QualcommCompletionHandler
+	orderedCompletionHandlers      []QualcommCompletionHandler
+	legacyUARTControllers          map[uint32]struct{}
+	sbiControllers                 map[uint32]struct{}
+	sbiReadResponses               []QualcommSBIReadResponse
+	sbiReadResponseValues          map[qualcommSBIReadKey]uint8
+	sbiCompletionStatus            uint32
+	watchdogServiceReadable        bool
+	registers                      map[uint32]uint32
+	watchdogServices               uint64
+	timeTick                       uint32
+	timeTickReadPhase              uint8
+	timeTickClocked                bool
+	timeTickInstructionRate        uint64
+	timeTickHz                     uint64
+	timeTickInterruptSource        uint8
+	timeTickUseVectored            bool
+	timeTickPhase                  uint64
+	timeTickMatchReady             bool
+	timeTickMatchConfigured        bool
 }
 
 type qualcommSBIReadKey struct {
@@ -666,6 +791,7 @@ func NewQualcommBootControl(config QualcommBootControlConfig) (*QualcommBootCont
 	}
 	if err := validateQualcommBootControlConfigurationOffsets(
 		config.WritableOffsets,
+		config.InterruptWindowWritableOffsets,
 		config.HalfwordOffsets,
 		config.MixedWidthOffsets,
 		config.ReadOnlyRegisters,
@@ -730,26 +856,35 @@ func NewQualcommBootControl(config QualcommBootControlConfig) (*QualcommBootCont
 		vectoredInterruptController: config.VectoredInterruptController,
 		writableOffsets: mergedQualcommBootControlWritableOffsets(
 			config.WritableOffsets,
+			config.InterruptWindowWritableOffsets,
 			config.HalfwordOffsets,
 			config.ReadOnlyRegisters,
 			config.CompletionEvents,
 			config.SBIControllers,
 			config.SBICompletionStatus,
 		),
-		halfwordOffsets:       make(map[uint32]struct{}, len(config.HalfwordOffsets)),
-		mixedWidthOffsets:     make(map[uint32]struct{}, len(config.MixedWidthOffsets)),
-		readOnlyRegisters:     make(map[uint32]uint32, len(config.ReadOnlyRegisters)),
-		registerResets:        registerResets,
-		completionEvents:      completionEvents,
-		completionHandlers:    make(map[uint32]QualcommCompletionHandler),
-		legacyUARTControllers: make(map[uint32]struct{}, len(config.LegacyUARTControllers)),
-		sbiControllers:        make(map[uint32]struct{}, len(config.SBIControllers)),
-		sbiReadResponses:      sbiReadResponses,
-		sbiReadResponseValues: make(map[qualcommSBIReadKey]uint8, len(sbiReadResponses)),
-		sbiCompletionStatus:   config.SBICompletionStatus,
+		interruptWindowWritableOffsets: make(
+			map[uint32]struct{},
+			len(config.InterruptWindowWritableOffsets),
+		),
+		halfwordOffsets:         make(map[uint32]struct{}, len(config.HalfwordOffsets)),
+		mixedWidthOffsets:       make(map[uint32]struct{}, len(config.MixedWidthOffsets)),
+		readOnlyRegisters:       make(map[uint32]uint32, len(config.ReadOnlyRegisters)),
+		registerResets:          registerResets,
+		completionEvents:        completionEvents,
+		completionHandlers:      make(map[uint32]QualcommCompletionHandler),
+		legacyUARTControllers:   make(map[uint32]struct{}, len(config.LegacyUARTControllers)),
+		sbiControllers:          make(map[uint32]struct{}, len(config.SBIControllers)),
+		sbiReadResponses:        sbiReadResponses,
+		sbiReadResponseValues:   make(map[qualcommSBIReadKey]uint8, len(sbiReadResponses)),
+		sbiCompletionStatus:     config.SBICompletionStatus,
+		watchdogServiceReadable: config.WatchdogServiceReadable,
 	}
 	for _, offset := range config.HalfwordOffsets {
 		device.halfwordOffsets[offset] = struct{}{}
+	}
+	for _, offset := range config.InterruptWindowWritableOffsets {
+		device.interruptWindowWritableOffsets[offset] = struct{}{}
 	}
 	for _, offset := range config.MixedWidthOffsets {
 		device.mixedWidthOffsets[offset] = struct{}{}
@@ -860,7 +995,8 @@ func (d *QualcommBootControl) AttachCompletionHandler(
 }
 
 func (d *QualcommBootControl) Read(offset uint32, width Width) (uint32, error) {
-	if offset >= 0x0900 && offset < 0x0900+QualcommInterruptControllerWindowSize {
+	_, interruptWindowOverride := d.interruptWindowWritableOffsets[offset]
+	if isQualcommBootControlInterruptWindowOffset(offset) && !interruptWindowOverride {
 		return d.interruptController.Read(offset-0x0900, width)
 	}
 	if d.vectoredInterruptController != nil &&
@@ -910,6 +1046,14 @@ func (d *QualcommBootControl) Read(offset uint32, width Width) (uint32, error) {
 			}
 		}
 		return value, nil
+	case 0x540c:
+		if d.watchdogServiceReadable {
+			if d.watchdogServices != 0 {
+				return 1, nil
+			}
+			return 0, nil
+		}
+		return 0, fmt.Errorf("%w: read32 at 0x%x", ErrQualcommBootControlMMIO, offset)
 	case 0x54c0:
 		if d.timeTickMatchReady {
 			return 1, nil
@@ -926,7 +1070,8 @@ func (d *QualcommBootControl) Read(offset uint32, width Width) (uint32, error) {
 }
 
 func (d *QualcommBootControl) Write(offset uint32, width Width, value uint32) error {
-	if offset >= 0x0900 && offset < 0x0900+QualcommInterruptControllerWindowSize {
+	_, interruptWindowOverride := d.interruptWindowWritableOffsets[offset]
+	if isQualcommBootControlInterruptWindowOffset(offset) && !interruptWindowOverride {
 		return d.interruptController.Write(offset-0x0900, width, value)
 	}
 	if d.vectoredInterruptController != nil &&
@@ -1465,7 +1610,10 @@ func NewQualcommSecondaryClockControlWithConfig(
 	offsets := append([]uint32(nil), qualcommSecondaryClockOffsets...)
 	offsets = append(offsets, config.WritableOffsets...)
 	sort.Slice(offsets, func(left, right int) bool { return offsets[left] < offsets[right] })
-	readOnlyRegisters := make(map[uint32]uint32, len(config.ReadOnlyRegisters))
+	readOnlyRegisters := make(map[uint32]uint32, len(config.ReadOnlyRegisters)+1)
+	// Existing boards sample bit 4 of this raw input word. Profiles may
+	// replace the value when another handset wires a different input line.
+	readOnlyRegisters[qualcommSecondaryClockDisabledStatusOffset] = 0x10
 	for _, register := range config.ReadOnlyRegisters {
 		readOnlyRegisters[register.Offset] = register.Value
 	}
@@ -1495,9 +1643,6 @@ func (d *QualcommSecondaryClockControl) AttachGPIOWriteObserver(observer Qualcom
 
 func (d *QualcommSecondaryClockControl) Read(offset uint32, width Width) (uint32, error) {
 	if width == Width32 {
-		if offset == qualcommSecondaryClockDisabledStatusOffset {
-			return 0x10, nil
-		}
 		if value, ok := d.readOnlyRegisters[offset]; ok {
 			return value, nil
 		}

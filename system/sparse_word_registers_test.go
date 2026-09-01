@@ -57,3 +57,30 @@ func TestSparseWordRegistersValidatesLayoutAndState(t *testing.T) {
 		t.Fatalf("reset word = %#x", value)
 	}
 }
+
+func TestSparseWordRegistersApplyConfiguredResetValues(t *testing.T) {
+	device, err := NewSparseWordRegistersWithConfig(SparseWordRegistersConfig{
+		Offsets: []uint32{0, 0x40},
+		Resets:  []SparseWordRegisterReset{{Offset: 0x40, Value: 0x00800000}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, err := device.Read(0x40, Width32); err != nil || value != 0x00800000 {
+		t.Fatalf("configured reset value = %#x, %v", value, err)
+	}
+	if err := device.Write(0x40, Width32, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := device.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	if value, _ := device.Read(0x40, Width32); value != 0x00800000 {
+		t.Fatalf("reset value after reset = %#x", value)
+	}
+	if _, err := NewSparseWordRegistersWithConfig(SparseWordRegistersConfig{
+		Offsets: []uint32{0}, Resets: []SparseWordRegisterReset{{Offset: 4, Value: 1}},
+	}); err == nil {
+		t.Fatal("unsupported reset offset accepted")
+	}
+}

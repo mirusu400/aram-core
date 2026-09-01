@@ -133,10 +133,49 @@ func TestKTFMonotonicReadCreditsBusyWaitInstructions(t *testing.T) {
 	if got := r.monotonicReadMS(); got != 1007 {
 		t.Fatalf("read after trivial work = %d, want 1007", got)
 	}
-	// A quantum advancing the real clock resets the credit.
+	// A quantum advancing the real clock past the credited value rebases onto
+	// the new tick and drops the credit.
 	r.TickMS = 1016
 	if got := r.monotonicReadMS(); got != 1016 {
 		t.Fatalf("read after quantum = %d, want 1016", got)
+	}
+}
+
+// TestKTFMonotonicReadNeverGoesBackward pins the guest-visible clock as
+// monotonic. A busy-wait credits far more elapsed time than the quantum that
+// follows it advances TickMS, and a title that computed a deadline from the
+// credited value would wait out the whole busy-wait again if the clock rewound.
+func TestKTFMonotonicReadNeverGoesBackward(t *testing.T) {
+	r := &Runtime{TickMS: 1000}
+	if got := r.monotonicReadMS(); got != 1000 {
+		t.Fatalf("first read = %d, want 1000", got)
+	}
+	// A task slice busy-waits a full budget inside one quantum.
+	r.TotalInstructions += 100 * ktfBusyWaitInstrsPerMS
+	peak := r.monotonicReadMS()
+	if peak != 1100 {
+		t.Fatalf("read after busy-wait = %d, want 1100", peak)
+	}
+	// The presentation quantum then advances the real clock by one frame.
+	r.TickMS = 1016
+	if got := r.monotonicReadMS(); got != peak {
+		t.Fatalf("read after quantum = %d, want %d", got, peak)
+	}
+	// The floor holds only a value the guest has already been shown, so the
+	// clock never runs ahead of the credit; a fresh credit in the new quantum
+	// still moves it once it passes the held value.
+	r.TotalInstructions += 50 * ktfBusyWaitInstrsPerMS
+	if got := r.monotonicReadMS(); got != peak {
+		t.Fatalf("read below the held value = %d, want %d", got, peak)
+	}
+	r.TotalInstructions += 35 * ktfBusyWaitInstrsPerMS
+	if got := r.monotonicReadMS(); got != 1101 {
+		t.Fatalf("read past the held value = %d, want 1101", got)
+	}
+	// Once the real clock passes the held value the floor stops binding.
+	r.TickMS = 2000
+	if got := r.monotonicReadMS(); got != 2000 {
+		t.Fatalf("read after clock catches up = %d, want 2000", got)
 	}
 }
 

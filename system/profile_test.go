@@ -513,6 +513,496 @@ func TestSCHW770DA05BoardProfileKeepsVersionOneNANDSeparate(t *testing.T) {
 	}
 }
 
+func TestSCHW850CF11BoardProfileUsesMSM7600SFlashFlexOneNAND(t *testing.T) {
+	profile := SCHW850CF11BoardProfile()
+	if err := profile.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if profile.ID != "samsung.sch-w850" ||
+		profile.PlatformID != "qualcomm.msm7600-modem-arm9" ||
+		profile.FirmwareBuildID != "samsung.sch-w850.cf11" ||
+		profile.NANDSize != 0x20000000 || profile.OneNAND != nil {
+		t.Fatalf("SCH-W850 identity/storage profile = %+v", profile)
+	}
+	wantSFlash := &QualcommSFlashOneNANDProfile{
+		Address:        0xa0a00000,
+		ManufacturerID: 0x00ec,
+		DeviceID:       0x0250,
+		TechnologyID:   1,
+		Capacity:       0x20000000,
+		FlexGeometry: &OneNANDFlexGeometry{
+			PageSize: 0x1000, BlockCount: 0x400, SLCBoundary: 0x0f,
+			SLCBlockSize: 0x40000, MLCBlockSize: 0x80000,
+		},
+		SpareInitialData: []FlashSeed{
+			{Offset: 0x00c74000, Data: []byte{0xff, 0xff, 0xa5, 0xa5}},
+			{Offset: 0x00c74080, Data: []byte{0xff, 0xff, 0xa5, 0xa5}},
+			{Offset: 0x00c75f80, Data: []byte{0xff, 0xff, 0xa5, 0xa5}},
+			{Offset: 0x00c78000, Data: []byte{0xff, 0xff, 0xa5, 0xa5}},
+			{Offset: 0x00c78080, Data: []byte{0xff, 0xff, 0xa5, 0xa5}},
+			{Offset: 0x00c79f80, Data: []byte{0xff, 0xff, 0xa5, 0xa5}},
+		},
+	}
+	if !reflect.DeepEqual(profile.SFlashOneNAND, wantSFlash) {
+		t.Fatalf("SCH-W850 SFlash OneNAND = %+v, want %+v", profile.SFlashOneNAND, wantSFlash)
+	}
+	if want := []FlashSeed{
+		{
+			Offset: 0x18e80000,
+			Data: []byte{
+				'U', 'P', 'C', 'H', 0, 0, 0, 0, 1, 0, 0xff, 0xff,
+				1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0,
+				0, 4, 0, 0, 0, 4, 0, 0,
+			},
+		},
+		{Offset: 0x18e81000, Data: []byte{0x00}},
+		{Offset: 0x18ebc20c, Data: []byte{
+			0x01, 0x00, 0x00, 0x00,
+			0x00, 0x00, 0x00, 0x00,
+			0x00, 0x00, 0x00, 0x04,
+		}},
+		{Offset: 0x18ebf000, Data: make([]byte, 0x1000)},
+		{
+			Offset: 0x18f00000,
+			Data: []byte{
+				'L', 'P', 'C', 'H', 0, 0, 0, 0, 1, 0, 0xff, 0xff,
+				1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0,
+				0, 4, 0, 0, 0, 4, 0, 0,
+			},
+		},
+		{Offset: 0x18f01000, Data: []byte{0x00}},
+		{Offset: 0x18f3c20c, Data: []byte{
+			0x01, 0x00, 0x00, 0x00,
+			0x00, 0x00, 0x00, 0x00,
+			0x00, 0x00, 0x00, 0x04,
+		}},
+		{Offset: 0x18f3f000, Data: make([]byte, 0x1000)},
+	}; !reflect.DeepEqual(profile.NANDInitialData, want) {
+		t.Fatalf("SCH-W850 generated LPCH data = %#v, want %#v", profile.NANDInitialData, want)
+	}
+	if profile.PBLSharedDataAddress != 0xffffe000 || profile.PBLSharedDataSize != 0x68 {
+		t.Fatalf("SCH-W850 PBL shared data = %#x/%#x", profile.PBLSharedDataAddress, profile.PBLSharedDataSize)
+	}
+	if profile.PBLServiceTableAddress != 0xffffe100 || profile.PBLServiceTableHeaderSize != 0x30 ||
+		profile.PBLHeaderFeatureDataAddress != 0xffffe0a0 || !reflect.DeepEqual(
+		profile.PBLHeaderFeatures,
+		[]QualcommPBLHeaderFeature{
+			{Selector: qualcommPBLHeaderFlashBlockCount, Value: 0x0400},
+			{Selector: qualcommPBLHeaderSLCBlockCount, Value: 0x0010},
+			{Selector: qualcommPBLHeaderBadBlockLimit, Value: 0x0014},
+		},
+	) {
+		t.Fatalf(
+			"SCH-W850 PBL service table = %#x/%#x features %#x/%+v",
+			profile.PBLServiceTableAddress,
+			profile.PBLServiceTableHeaderSize,
+			profile.PBLHeaderFeatureDataAddress,
+			profile.PBLHeaderFeatures,
+		)
+	}
+	foundIRAM := false
+	foundHardwareRevision := false
+	foundMSM7600StatusInputs := map[uint32]bool{0x40: false, 0x44: false}
+	for _, region := range profile.Memory {
+		if region.ID == "msm7600-qcsbl-iram-page" {
+			foundIRAM = region.Kind == MemoryRAM && region.Address == 0xfffef000 && region.Size == 0x1000
+		}
+	}
+	for _, register := range profile.LatchedRegisters {
+		if register.ID == "msm7600-hardware-revision" {
+			foundHardwareRevision = register.Address == 0xa9000270 &&
+				register.Width == Width32 && register.ResetValue == 0x10000000
+		}
+	}
+	for _, register := range profile.BootControlGPIOInputs {
+		if _, ok := foundMSM7600StatusInputs[register.Offset]; ok && register.Value == 0 {
+			foundMSM7600StatusInputs[register.Offset] = true
+		}
+	}
+	if !foundIRAM {
+		t.Fatal("SCH-W850 profile lacks the observed terminal MSM7600 IRAM page")
+	}
+	if !foundHardwareRevision {
+		t.Fatal("SCH-W850 profile lacks the revision-1 MSM7600 PBL service-table selector")
+	}
+	for offset, found := range foundMSM7600StatusInputs {
+		if !found {
+			t.Fatalf("SCH-W850 profile lacks reset-zero MSM7600 status input 0x%x", offset)
+		}
+	}
+	foundClockInterruptLatch := false
+	for _, offset := range profile.BootControlWritableOffsets {
+		foundClockInterruptLatch = foundClockInterruptLatch || offset == 0x0840
+	}
+	if !foundClockInterruptLatch {
+		t.Fatal("SCH-W850 profile lacks its MSM7600 clock/interrupt latch")
+	}
+	if want := []uint32{0x0904}; !reflect.DeepEqual(
+		profile.BootControlInterruptWindowWritableOffsets,
+		want,
+	) {
+		t.Fatalf(
+			"SCH-W850 interrupt-window writable offsets = %#v, want %#v",
+			profile.BootControlInterruptWindowWritableOffsets,
+			want,
+		)
+	}
+}
+
+func TestRawSamsungBoardProfilesKeepExactIdentityAndPackagedEnd(t *testing.T) {
+	tests := []struct {
+		profile          BoardProfile
+		id, build        string
+		packagedEnd      uint64
+		reportErasedECC  bool
+		extraInitialData []FlashSeed
+	}{
+		{
+			profile: SCHW320DC18BoardProfile(), id: "samsung.sch-w320",
+			build: "samsung.sch-w320.dc18", packagedEnd: 0x0a760000, reportErasedECC: true,
+		},
+		{
+			profile: SCHW340DC18BoardProfile(), id: "samsung.sch-w340",
+			build: "samsung.sch-w340.dc18", packagedEnd: 0x08800000, reportErasedECC: true,
+		},
+		{
+			profile: SCHW350CK06BoardProfile(), id: "samsung.sch-w350",
+			build: "samsung.sch-w350.ck06", packagedEnd: 0x08f80000,
+			extraInitialData: []FlashSeed{{Offset: 0x019a0004, Data: []byte{0}}},
+		},
+		{
+			profile: SCHW410CL10BoardProfile(), id: "samsung.sch-w410",
+			build: "samsung.sch-w410.cl10", packagedEnd: 0x09100000, reportErasedECC: true,
+		},
+	}
+	for _, test := range tests {
+		if err := test.profile.Validate(); err != nil {
+			t.Fatalf("%s: %v", test.id, err)
+		}
+		if test.profile.ID != test.id || test.profile.FirmwareBuildID != test.build ||
+			test.profile.PlatformID != "qualcomm.arm9-sch-raw-v1" ||
+			test.profile.NANDReadID != 0x000098ca || test.profile.NANDSize != 0x10000000 ||
+			test.profile.NANDReportsErasedECCCodewords != test.reportErasedECC ||
+			test.profile.OneNAND != nil || test.profile.PBLLegacyFeatureDataAddress != 0xffff6044 {
+			t.Fatalf("raw Samsung board profile = %+v", test.profile)
+		}
+		wantInitialData := append([]FlashSeed{{
+			Offset: test.packagedEnd,
+			Data:   []byte{0xff, 0xfe, 0xaf, 0xbe, 0, 0, 0, 0, 0, 0, 0, 0},
+		}}, test.extraInitialData...)
+		if !reflect.DeepEqual(test.profile.NANDInitialData, wantInitialData) {
+			t.Fatalf("%s initial NAND data = %+v", test.id, test.profile.NANDInitialData)
+		}
+		foundExternalCommandData, foundExternalMemoryControl := false, false
+		for _, window := range test.profile.LatchedRegisterWindows {
+			if window.ID == "external-8bit-command-data" && window.Address == 0x30000000 &&
+				window.Size == 4 && window.Width == Width8 {
+				foundExternalCommandData = true
+			}
+			if window.ID == "qcsbl-external-memory-control" && window.Address == 0xa0000000 &&
+				window.Size == 0x78 && window.Width == Width32 {
+				foundExternalMemoryControl = true
+			}
+		}
+		if !foundExternalCommandData || !foundExternalMemoryControl {
+			t.Fatalf("%s lacks raw external-bus windows", test.id)
+		}
+		foundSparseBusZero, foundSparseBusStatus := false, false
+		foundRawClockControl, foundPeripheralControl := false, false
+		for _, offset := range test.profile.BootControlWritableOffsets {
+			foundRawClockControl = foundRawClockControl || offset == 0x000c
+			foundPeripheralControl = foundPeripheralControl || offset == 0x2078
+		}
+		if !foundRawClockControl || !foundPeripheralControl {
+			t.Fatalf("%s lacks raw boot-control latches", test.id)
+		}
+		foundColdPeripheralStatus := false
+		for _, register := range test.profile.BootControlReadOnlyRegisters {
+			foundColdPeripheralStatus = foundColdPeripheralStatus ||
+				register == (QualcommBootReadOnlyRegister{Offset: 0x0d64, Value: 0})
+		}
+		if !foundColdPeripheralStatus {
+			t.Fatalf("%s lacks cold peripheral status", test.id)
+		}
+		for _, offset := range test.profile.SparseBusRegisterOffsets {
+			foundSparseBusZero = foundSparseBusZero || offset == 0
+			foundSparseBusStatus = foundSparseBusStatus || offset == 0x40
+		}
+		if !foundSparseBusZero || !foundSparseBusStatus ||
+			len(test.profile.SparseBusRegisterResets) != 1 ||
+			test.profile.SparseBusRegisterResets[0] != (SparseWordRegisterReset{
+				Offset: 0x40, Value: 0x80000000,
+			}) {
+			t.Fatalf("%s sparse-bus profile = %v / %v", test.id,
+				test.profile.SparseBusRegisterOffsets, test.profile.SparseBusRegisterResets)
+		}
+	}
+}
+
+func TestSCHW320AndW340UseAddressBitSevenPanel(t *testing.T) {
+	for _, profile := range []BoardProfile{SCHW320DC18BoardProfile(), SCHW340DC18BoardProfile()} {
+		if profile.Panel.Protocol != ParallelPanelProtocolIndexedRGB565Window454647 ||
+			profile.PanelPorts == nil ||
+			profile.PanelPorts.CommandAddress != 0x20000000 ||
+			profile.PanelPorts.DataAddress != 0x20000080 {
+			t.Fatalf("%s panel = %+v / %+v", profile.ID, profile.Panel, profile.PanelPorts)
+		}
+	}
+}
+
+func TestSCHW410UsesDedicatedActiveLowEndKey(t *testing.T) {
+	profile := SCHW410CL10BoardProfile()
+	want := []QualcommPrimaryClockKeyProfile{{
+		ID: "end", InputLine: 4, ActiveLow: true,
+	}}
+	if !reflect.DeepEqual(profile.PrimaryClockKeys, want) {
+		t.Fatalf("SCH-W410 primary keys = %+v, want %+v", profile.PrimaryClockKeys, want)
+	}
+}
+
+func TestSCHW350UsesItsOEMSBLStartupInput(t *testing.T) {
+	profile := SCHW350CK06BoardProfile()
+	if !profile.BootControlWatchdogReadable {
+		t.Fatal("SCH-W350 watchdog service latch remains write-only")
+	}
+	if want := []QualcommGPIOInputRegister{{Offset: 0x40, Value: 0}}; !reflect.DeepEqual(
+		profile.BootControlGPIOInputs,
+		want,
+	) {
+		t.Fatalf("SCH-W350 legacy GPIO inputs = %+v", profile.BootControlGPIOInputs)
+	}
+	for _, relative := range qualcommLegacyUARTHalfwordRegisterOffsets {
+		wantOffset := uint32(0x4200) + relative
+		found := false
+		for _, offset := range profile.BootControlMixedWidthOffsets {
+			found = found || offset == wantOffset
+		}
+		if !found {
+			t.Fatalf("SCH-W350 second UART register 0x%x is not mixed-width", wantOffset)
+		}
+	}
+	foundHardwareConfiguration := false
+	for _, offset := range profile.BootControlWritableOffsets {
+		foundHardwareConfiguration = foundHardwareConfiguration || offset == 0x039c
+	}
+	if !foundHardwareConfiguration {
+		t.Fatal("SCH-W350 profile lacks its late hardware-configuration latch")
+	}
+	if wantKeys := []QualcommPrimaryClockKeyProfile{{
+		ID: "download", InputLine: 2, ActiveLow: true,
+	}}; !reflect.DeepEqual(profile.PrimaryClockKeys, wantKeys) {
+		t.Fatalf("SCH-W350 primary keys = %+v", profile.PrimaryClockKeys)
+	}
+	want := QualcommSecondaryClockReadOnlyRegister{
+		Offset: qualcommSecondaryClockDisabledStatusOffset,
+		Value:  0x00000004,
+	}
+	found := false
+	for _, register := range profile.SecondaryClockReadOnlyRegisters {
+		found = found || register == want
+	}
+	if !found {
+		t.Fatalf("SCH-W350 secondary startup inputs = %+v", profile.SecondaryClockReadOnlyRegisters)
+	}
+	if profile.PanelPorts == nil ||
+		*profile.PanelPorts != (ParallelPanelPortProfile{
+			CommandAddress: 0x38000000,
+			DataAddress:    0x38000004,
+		}) || profile.Panel.Protocol != ParallelPanelProtocolPackedRGB565Window424A {
+		t.Fatalf("SCH-W350 panel ports = %+v", profile.PanelPorts)
+	}
+	if want := []IndexedHalfwordRegisterPortProfile{{
+		ID:             "w350-indexed-external-registers",
+		CommandAddress: 0x20000000,
+		DataAddress:    0x20040000,
+	}}; !reflect.DeepEqual(profile.IndexedHalfwordRegisterPorts, want) {
+		t.Fatalf("SCH-W350 indexed external registers = %+v", profile.IndexedHalfwordRegisterPorts)
+	}
+	foundSecondaryPanel := false
+	for _, window := range profile.LatchedRegisterWindows {
+		foundSecondaryPanel = foundSecondaryPanel || window == (LatchedRegisterWindowProfile{
+			ID: "w350-secondary-panel-output", Address: 0x40000000,
+			Size: 6, Width: Width16,
+		})
+	}
+	if !foundSecondaryPanel {
+		t.Fatalf("SCH-W350 secondary panel output = %+v", profile.LatchedRegisterWindows)
+	}
+	wantHLE := []HLECallProfile{
+		{
+			ID:       "w350-bootstrap-verified-firmware",
+			Contract: HLEContractQualcommBootstrapVerifiedFirmware,
+			Address:  0x00113d30, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+		},
+		{
+			ID:       "w350-resident-boot-callback",
+			Contract: HLEContractQualcommResidentBootCallback,
+			Address:  0x001478c8, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+		},
+	}
+	if !reflect.DeepEqual(profile.HLECalls, wantHLE) {
+		t.Fatalf("SCH-W350 bootstrap HLE calls = %+v", profile.HLECalls)
+	}
+}
+
+func TestSCHW320RestoresVerifiedPBLLoaderState(t *testing.T) {
+	profile := SCHW320DC18BoardProfile()
+	if want := []QualcommPrimaryClockKeyProfile{{
+		ID: "download", InputLine: 1, ActiveLow: true,
+	}}; !reflect.DeepEqual(profile.PrimaryClockKeys, want) {
+		t.Fatalf("SCH-W320 primary keys = %+v, want %+v", profile.PrimaryClockKeys, want)
+	}
+	if want := []QualcommGPIOInputRegister{{Offset: 0x40, Value: 0}}; !reflect.DeepEqual(
+		profile.BootControlGPIOInputs,
+		want,
+	) {
+		t.Fatalf("SCH-W320 legacy GPIO inputs = %+v", profile.BootControlGPIOInputs)
+	}
+	foundRAM := false
+	foundMGP := false
+	for _, region := range profile.Memory {
+		foundRAM = foundRAM || region == (MemoryRegionProfile{
+			ID: "w320-ebi1-ram", Kind: MemorySparseRAM,
+			Address: 0x08000000, Size: 0x04000000,
+		})
+		foundMGP = foundMGP || region == (MemoryRegionProfile{
+			ID: "samsung-mgp-code-ram", Kind: MemorySparseRAM,
+			Address: 0x90108000, Size: 0x00008000,
+		})
+	}
+	if !foundRAM {
+		t.Fatal("SCH-W320 profile lacks its second 64 MiB EBI RAM bank")
+	}
+	if !foundMGP {
+		t.Fatal("SCH-W320 profile lacks MGP code RAM")
+	}
+	wantMGP := &SamsungMGPProfile{
+		ID: "samsung-mgp-registers", Address: 0x9011f1a0, Size: 0x40,
+		ReleaseOffset: 0x0c, SharedMemoryID: "samsung-mgp-code-ram",
+		ReadyOffset: 0x29e0, ReadyValue: 1, ResponseDelayInstructions: 1,
+	}
+	if !reflect.DeepEqual(profile.SamsungMGP, wantMGP) {
+		t.Fatalf("SCH-W320 MGP profile = %+v, want %+v", profile.SamsungMGP, wantMGP)
+	}
+	foundMGPInterface := false
+	for _, window := range profile.LatchedRegisterWindows {
+		foundMGPInterface = foundMGPInterface || window == (LatchedRegisterWindowProfile{
+			ID: "samsung-mgp-interface-registers", Address: 0x9011f140,
+			Size: 0x10, Width: Width16,
+		})
+	}
+	if !foundMGPInterface {
+		t.Fatal("SCH-W320 profile lacks MGP interface registers")
+	}
+	for _, offset := range profile.BootControlHalfwordOffsets {
+		if offset >= 0x4200 && offset < 0x423c {
+			t.Fatalf("SCH-W320 second UART register 0x%x remains halfword-only", offset)
+		}
+	}
+	for _, relative := range qualcommLegacyUARTHalfwordRegisterOffsets {
+		wantOffset := uint32(0x4200) + relative
+		found := false
+		for _, offset := range profile.BootControlMixedWidthOffsets {
+			found = found || offset == wantOffset
+		}
+		if !found {
+			t.Fatalf("SCH-W320 second UART register 0x%x is not mixed-width", wantOffset)
+		}
+	}
+	want := []HLECallProfile{
+		{
+			ID: "w320-pbl-verified-loader-state", Contract: HLEContractQualcommPBLVerifiedLoaderState,
+			Address: 0x0010214e, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+		},
+		{
+			ID:       "w320-resident-boot-callback",
+			Contract: HLEContractQualcommResidentBootCallback,
+			Address:  0x001138c8, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+		},
+	}
+	if !reflect.DeepEqual(profile.HLECalls, want) {
+		t.Fatalf("SCH-W320 boot HLE calls = %+v, want %+v", profile.HLECalls, want)
+	}
+}
+
+func TestSCHW340MapsBoundedMGPRegisters(t *testing.T) {
+	profile := SCHW340DC18BoardProfile()
+	foundRAM := false
+	for _, region := range profile.Memory {
+		foundRAM = foundRAM || region == (MemoryRegionProfile{
+			ID: "samsung-mgp-code-ram", Kind: MemorySparseRAM,
+			Address: 0x90108000, Size: 0x00008000,
+		})
+	}
+	if !foundRAM {
+		t.Fatal("SCH-W340 profile lacks MGP code RAM")
+	}
+	want := &SamsungMGPProfile{
+		ID: "samsung-mgp-registers", Address: 0x9011f1a0, Size: 0x40,
+		ReleaseOffset: 0x0c, SharedMemoryID: "samsung-mgp-code-ram",
+		ReadyOffset: 0x29e0, ReadyValue: 1, ResponseDelayInstructions: 1,
+	}
+	if !reflect.DeepEqual(profile.SamsungMGP, want) {
+		t.Fatalf("SCH-W340 MGP profile = %+v, want %+v", profile.SamsungMGP, want)
+	}
+	foundInterface := false
+	for _, window := range profile.LatchedRegisterWindows {
+		if window.ID == want.ID {
+			t.Fatalf("SCH-W340 still maps MGP as a passive register window: %+v", window)
+		}
+		foundInterface = foundInterface || window == (LatchedRegisterWindowProfile{
+			ID: "samsung-mgp-interface-registers", Address: 0x9011f140,
+			Size: 0x10, Width: Width16,
+		})
+	}
+	if !foundInterface {
+		t.Fatal("SCH-W340 profile lacks its bounded MGP host-interface registers")
+	}
+
+	bus := NewBus()
+	if err := profile.ApplyMemory(bus); err != nil {
+		t.Fatal(err)
+	}
+	device, err := profile.AttachSamsungMGP(bus)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSamsungMGPRegister(t, bus, 0x9011f1ac, 1)
+	writeSamsungMGPRegister(t, bus, 0x9011f1ac, 0)
+	if err := device.Advance(1); err != nil {
+		t.Fatal(err)
+	}
+	if got := readSamsungMGPByte(t, bus, 0x9010a9e0); got != 1 {
+		t.Fatalf("SCH-W340 MGP ready byte = %#x", got)
+	}
+}
+
+func TestBoardProfileRejectsInvalidSamsungMGP(t *testing.T) {
+	for _, mutate := range []func(*BoardProfile){
+		func(profile *BoardProfile) { profile.SamsungMGP.ID = "" },
+		func(profile *BoardProfile) { profile.SamsungMGP.SharedMemoryID = "missing" },
+		func(profile *BoardProfile) { profile.SamsungMGP.ReadyOffset = 0x8000 },
+		func(profile *BoardProfile) { profile.SamsungMGP.ReleaseOffset = 1 },
+		func(profile *BoardProfile) { profile.SamsungMGP.ReadyValue = 0 },
+		func(profile *BoardProfile) { profile.SamsungMGP.ResponseDelayInstructions = 0 },
+		func(profile *BoardProfile) { profile.SamsungMGP.Address = 0x90108000 },
+		func(profile *BoardProfile) {
+			profile.LatchedRegisterWindows = append(
+				profile.LatchedRegisterWindows,
+				LatchedRegisterWindowProfile{
+					ID: "overlap", Address: 0x9011f1a0, Size: 2, Width: Width16,
+				},
+			)
+		},
+	} {
+		profile := SCHW340DC18BoardProfile()
+		mutate(&profile)
+		if err := profile.Validate(); err == nil {
+			t.Fatalf("BoardProfile accepted invalid Samsung MGP: %+v", profile.SamsungMGP)
+		}
+	}
+}
+
 func TestBoardProfileRejectsInvalidMDPProfile(t *testing.T) {
 	for _, mutate := range []func(*BoardProfile){
 		func(profile *BoardProfile) { profile.MDP.CompletionStartOffset = 0x0e08 },
@@ -868,6 +1358,10 @@ func TestBoardProfileRejectsInvalidCompatibilityWritableOffsets(t *testing.T) {
 		},
 		{
 			ID: "board", PlatformID: "platform", FirmwareBuildID: "build",
+			BootControlInterruptWindowWritableOffsets: []uint32{0x0904, 0x0904},
+		},
+		{
+			ID: "board", PlatformID: "platform", FirmwareBuildID: "build",
 			PrimaryClockWritableOffsets: []uint32{qualcommPrimaryGPIOInputOffset},
 		},
 		{
@@ -892,6 +1386,31 @@ func TestBoardProfileRejectsIncompletePanelDimensions(t *testing.T) {
 		}
 		if err := profile.Validate(); err == nil {
 			t.Fatalf("BoardProfile accepted invalid panel profile: %+v", panel)
+		}
+	}
+}
+
+func TestBoardProfileRejectsInvalidIndexedHalfwordRegisterPorts(t *testing.T) {
+	for _, ports := range [][]IndexedHalfwordRegisterPortProfile{
+		{{ID: "", CommandAddress: 0x1000, DataAddress: 0x2000}},
+		{{ID: "ports", CommandAddress: 0x1001, DataAddress: 0x2000}},
+		{{ID: "ports", CommandAddress: 0x1000, DataAddress: 0x2001}},
+		{{ID: "ports", CommandAddress: 0x1000, DataAddress: 0x1000}},
+		{
+			{ID: "ports", CommandAddress: 0x1000, DataAddress: 0x2000},
+			{ID: "ports", CommandAddress: 0x3000, DataAddress: 0x4000},
+		},
+		{
+			{ID: "one", CommandAddress: 0x1000, DataAddress: 0x2000},
+			{ID: "two", CommandAddress: 0x3000, DataAddress: 0x2000},
+		},
+	} {
+		profile := BoardProfile{
+			ID: "board", PlatformID: "platform", FirmwareBuildID: "build",
+			IndexedHalfwordRegisterPorts: ports,
+		}
+		if err := profile.Validate(); err == nil {
+			t.Fatalf("BoardProfile accepted invalid indexed halfword ports: %+v", ports)
 		}
 	}
 }

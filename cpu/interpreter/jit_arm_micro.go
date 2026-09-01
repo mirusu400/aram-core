@@ -18,10 +18,18 @@ func classifyARMMemoryMicroOp(instruction uint32) (armMicroOp, bool, bool) {
 	case instruction&0x0e000090 == 0x00000090 && instruction&0x00000060 != 0:
 		immediate := instruction&(1<<22) != 0
 		load := instruction&(1<<20) != 0
+		preIndex := instruction&(1<<24) != 0
+		writeBack := instruction&(1<<21) != 0
+		rn := instruction >> 16 & 0xf
 		rd := instruction >> 12 & 0xf
 		operation := uint8(instruction>>5) & 3
 		rm := instruction & 0xf
-		if rd == cpu.RegisterPC || (!load && operation != 1) ||
+		doubleword := !load && operation >= 2
+		writeBackAddress := !preIndex || writeBack
+		if rd == cpu.RegisterPC ||
+			doubleword && (rd&1 != 0 || rd+1 >= cpu.RegisterPC ||
+				writeBackAddress && (rn == rd || rn == rd+1)) ||
+			(!load && operation != 1 && !doubleword) ||
 			(!immediate && (instruction&0x00000f00 != 0 || rm == cpu.RegisterPC)) {
 			return armMicroClosure, false, false
 		}
@@ -150,6 +158,7 @@ func (b *Backend) executeARMMicroHalfwordTransfer(
 	rn := instruction >> 16 & 0xf
 	rd := instruction >> 12 & 0xf
 	operation := uint8(instruction>>5) & 3
+	semanticLoad := load || operation == 2
 	offset := instruction>>4&0xf0 | instruction&0xf
 	if !immediate {
 		offset = b.regs[instruction&0xf]
@@ -166,7 +175,7 @@ func (b *Backend) executeARMMicroHalfwordTransfer(
 		address = indexedAddress
 	}
 	switch {
-	case !load:
+	case !load && operation == 1:
 		if err := b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); err != nil {
 			return false, nil, err
 		}
@@ -176,6 +185,23 @@ func (b *Backend) executeARMMicroHalfwordTransfer(
 			return false, nil, err
 		}
 		b.regs[rd] = uint32(value)
+	case !load && operation == 2:
+		low, err := b.read32(address, cpu.PermissionRead)
+		if err != nil {
+			return false, nil, err
+		}
+		high, err := b.read32(address+4, cpu.PermissionRead)
+		if err != nil {
+			return false, nil, err
+		}
+		b.regs[rd], b.regs[rd+1] = low, high
+	case !load && operation == 3:
+		if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
+			return false, nil, err
+		}
+		if err := b.write32(address+4, b.regs[rd+1], cpu.PermissionWrite); err != nil {
+			return false, nil, err
+		}
 	case operation == 2:
 		value, err := b.read8(address, cpu.PermissionRead)
 		if err != nil {
@@ -189,7 +215,7 @@ func (b *Backend) executeARMMicroHalfwordTransfer(
 		}
 		b.regs[rd] = uint32(int32(int16(value)))
 	}
-	if (!preIndex || writeBack) && !(load && rd == rn) {
+	if (!preIndex || writeBack) && !(semanticLoad && rd == rn) {
 		b.regs[rn] = indexedAddress
 	}
 	return false, nil, nil

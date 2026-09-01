@@ -51,11 +51,16 @@ type QualcommNANDConfig struct {
 	SpareSize        uint32
 	Spare            ReadOnlyStorage
 	FactoryBadBlocks []uint32
-	DeviceConfig0    uint32
-	DeviceConfig1    uint32
-	CommandValidity  uint32
-	ReadID           uint32
-	Ready            *StatusSignal
+	// ReportErasedECCCodewords models controllers that complete an ECC-mode
+	// transfer of an erased codeword while reporting the ECC operation error
+	// consumed by the guest's raw-erased-page fallback. Bit 0 of DeviceConfig0
+	// selects that raw fallback and suppresses the synthetic ECC error.
+	ReportErasedECCCodewords bool
+	DeviceConfig0            uint32
+	DeviceConfig1            uint32
+	CommandValidity          uint32
+	ReadID                   uint32
+	Ready                    *StatusSignal
 }
 
 // NANDSpareStorage exposes page-aligned NAND spare/OOB media independently
@@ -92,32 +97,33 @@ var (
 // of codeword data followed by 16 bytes reserved for spare/ECC results. A 2 KiB
 // page is transferred as four repeated read commands to the same page address.
 type QualcommNAND struct {
-	storage                ReadOnlyStorage
-	spareStorage           ReadOnlyStorage
-	pageSize               uint32
-	capacity               uint64
-	spareSize              uint32
-	sparePageSize          uint32
-	pagesPerEraseBlock     uint64
-	factoryBadBlocks       map[uint32]struct{}
-	initialDeviceConfig0   uint32
-	initialDeviceConfig1   uint32
-	initialCommandValidity uint32
-	readID                 uint32
-	ready                  *StatusSignal
-	deviceConfig0          uint32
-	deviceConfig1          uint32
-	commandValidity        uint32
-	readData               uint32
-	address                uint32
-	nextChunk              uint32
-	status                 uint32
-	data                   [qualcommNANDBufferSize]byte
-	pageData               []byte
-	spareData              []byte
-	sparePages             map[uint64][]byte
-	latchedPage            uint64
-	pageLoaded             bool
+	storage                  ReadOnlyStorage
+	spareStorage             ReadOnlyStorage
+	pageSize                 uint32
+	capacity                 uint64
+	spareSize                uint32
+	sparePageSize            uint32
+	pagesPerEraseBlock       uint64
+	factoryBadBlocks         map[uint32]struct{}
+	reportErasedECCCodewords bool
+	initialDeviceConfig0     uint32
+	initialDeviceConfig1     uint32
+	initialCommandValidity   uint32
+	readID                   uint32
+	ready                    *StatusSignal
+	deviceConfig0            uint32
+	deviceConfig1            uint32
+	commandValidity          uint32
+	readData                 uint32
+	address                  uint32
+	nextChunk                uint32
+	status                   uint32
+	data                     [qualcommNANDBufferSize]byte
+	pageData                 []byte
+	spareData                []byte
+	sparePages               map[uint64][]byte
+	latchedPage              uint64
+	pageLoaded               bool
 }
 
 type qualcommNANDWritableStorage interface {
@@ -170,17 +176,18 @@ func NewQualcommNAND(storage ReadOnlyStorage, config QualcommNANDConfig) (*Qualc
 	device := &QualcommNAND{
 		storage: storage, spareStorage: config.Spare,
 		pageSize: config.PageSize, capacity: capacity, spareSize: config.SpareSize,
-		sparePageSize:          sparePageSize,
-		pagesPerEraseBlock:     uint64(config.EraseBlockSize / config.PageSize),
-		factoryBadBlocks:       badBlocks,
-		initialDeviceConfig0:   config.DeviceConfig0,
-		initialDeviceConfig1:   config.DeviceConfig1,
-		initialCommandValidity: config.CommandValidity,
-		readID:                 config.ReadID,
-		ready:                  config.Ready,
-		pageData:               make([]byte, config.PageSize),
-		spareData:              make([]byte, sparePageSize),
-		sparePages:             make(map[uint64][]byte),
+		sparePageSize:            sparePageSize,
+		pagesPerEraseBlock:       uint64(config.EraseBlockSize / config.PageSize),
+		factoryBadBlocks:         badBlocks,
+		reportErasedECCCodewords: config.ReportErasedECCCodewords,
+		initialDeviceConfig0:     config.DeviceConfig0,
+		initialDeviceConfig1:     config.DeviceConfig1,
+		initialCommandValidity:   config.CommandValidity,
+		readID:                   config.ReadID,
+		ready:                    config.Ready,
+		pageData:                 make([]byte, config.PageSize),
+		spareData:                make([]byte, sparePageSize),
+		sparePages:               make(map[uint64][]byte),
 	}
 	if err := device.Reset(); err != nil {
 		return nil, err
@@ -513,10 +520,14 @@ func (n *QualcommNAND) readChunk() bool {
 		n.data[qualcommNANDCodewordDataSize:],
 		n.spareData[spareOffset:spareOffset+qualcommNANDCodewordSpareSize],
 	)
-	// An erased codeword is still a successful transfer. Bad-block state comes
-	// from the spare marker, not from all-0xff main data; early Qualcomm boot
-	// code intentionally reads erased boundary pages while discovering images.
 	n.status = 0
+	if n.reportErasedECCCodewords && n.deviceConfig0&1 == 0 &&
+		allBytes(n.data[:], 0xff) {
+		// The transfer still completed and the erased bytes remain available to
+		// the guest. Only the ECC result is an error; firmware can switch to raw
+		// mode and confirm that the codeword is erased.
+		n.status = qualcommNANDStatusOperationError
+	}
 	n.nextChunk += qualcommNANDCodewordDataSize
 	return true
 }
@@ -568,6 +579,19 @@ func (n *QualcommNAND) programChunk() bool {
 		if effectiveSpare != current {
 			changedSpare = true
 			n.spareData[spareOffset+index] = effectiveSpare
+		}
+	}
+	if n.reportErasedECCCodewords && n.deviceConfig0&1 == 0 {
+		// ECC-mode programming also programs controller-generated parity even
+		// when all 512 user bytes are 0xff. Preserve an opaque parity-presence
+		// marker in the final reserved byte so a later ECC read does not mistake
+		// that programmed codeword for erased media. Raw reads expose the marker,
+		// matching the physical fact that the complete codeword is no longer all
+		// 0xff; no correction algorithm depends on the marker's value.
+		marker := spareOffset + qualcommNANDCodewordSpareSize - 1
+		if n.spareData[marker] != 0 {
+			n.spareData[marker] = 0
+			changedSpare = true
 		}
 	}
 	if changedSpare {
@@ -693,6 +717,28 @@ func (n *QualcommNAND) EraseSpareBlock(block uint32) error {
 	return nil
 }
 
+func (n *QualcommNAND) EraseSparePages(firstPage, pageCount uint64) error {
+	if firstPage >= n.capacity/uint64(n.pageSize) || pageCount == 0 ||
+		pageCount > n.capacity/uint64(n.pageSize)-firstPage {
+		return ErrFlashBounds
+	}
+	if _, writable := n.storage.(qualcommNANDWritableStorage); !writable {
+		return ErrFlashProgram
+	}
+	erased := make([]byte, n.sparePageSize)
+	for index := range erased {
+		erased[index] = 0xff
+	}
+	for page := firstPage; page < firstPage+pageCount; page++ {
+		if n.spareStorage == nil {
+			delete(n.sparePages, page)
+			continue
+		}
+		n.sparePages[page] = append([]byte(nil), erased...)
+	}
+	return nil
+}
+
 func (n *QualcommNAND) eraseSpareBlockUnchecked(block uint64) {
 	firstPage := block * n.pagesPerEraseBlock
 	erased := make([]byte, n.sparePageSize)
@@ -718,7 +764,8 @@ func (n *QualcommNAND) failRead() {
 }
 
 var (
-	_ Device           = (*QualcommNAND)(nil)
-	_ StatefulDevice   = (*QualcommNAND)(nil)
-	_ NANDSpareStorage = (*QualcommNAND)(nil)
+	_ Device                = (*QualcommNAND)(nil)
+	_ StatefulDevice        = (*QualcommNAND)(nil)
+	_ NANDSpareStorage      = (*QualcommNAND)(nil)
+	_ NANDSpareRangeStorage = (*QualcommNAND)(nil)
 )

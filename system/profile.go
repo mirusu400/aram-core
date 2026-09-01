@@ -43,10 +43,52 @@ type LatchedRegisterWindowProfile struct {
 	Width   Width
 }
 
+// SamsungMGPProfile locates Samsung's external ARM7/MGP control aperture and
+// its ready flag inside a separately mapped shared-memory region.
+type SamsungMGPProfile struct {
+	ID                        string
+	Address                   uint32
+	Size                      uint32
+	ReleaseOffset             uint32
+	SharedMemoryID            string
+	ReadyOffset               uint32
+	ReadyValue                uint8
+	ResponseDelayInstructions uint64
+}
+
+func (p SamsungMGPProfile) validate() error {
+	if !validProfileID(p.ID) || !validProfileID(p.SharedMemoryID) ||
+		p.Address%uint32(Width16) != 0 ||
+		uint64(p.Address)+uint64(p.Size) > 1<<32 {
+		return fmt.Errorf("invalid Samsung MGP profile %q", p.ID)
+	}
+	return SamsungMGPControlConfig{
+		Size:                      p.Size,
+		ReleaseOffset:             p.ReleaseOffset,
+		ReadyValue:                p.ReadyValue,
+		ResponseDelayInstructions: p.ResponseDelayInstructions,
+	}.validate()
+}
+
 type HLEReturn string
 
 const (
 	HLEReturnLinkRegister HLEReturn = "link-register"
+
+	// HLEContractQualcommPBLVerifiedLoaderState restores the success result
+	// produced by an unavailable mask-ROM PBL after it authenticates the exact
+	// QCSBL image selected by the host loader.
+	HLEContractQualcommPBLVerifiedLoaderState = "qualcomm.pbl.verified-loader-state-v1"
+	// HLEContractQualcommBootstrapVerifiedFirmware supplies the zero success
+	// result of a bootstrap verifier whose per-handset manufacturing key is not
+	// distributed in a firmware package. It is valid only for a build profile
+	// that has already matched every package piece by SHA-256.
+	HLEContractQualcommBootstrapVerifiedFirmware = "qualcomm.bootstrap.verified-firmware-v1"
+	// HLEContractQualcommResidentBootCallback supplies the return boundary of
+	// a boot-resident callback for which Qualcomm's progressive ELF carries no
+	// packaged implementation. It is valid only for an exact, hash-matched
+	// build whose call site ignores the result.
+	HLEContractQualcommResidentBootCallback = "qualcomm.boot.resident-callback-v1"
 )
 
 type HLECallProfile struct {
@@ -62,13 +104,51 @@ type OneNANDProfile struct {
 	ManufacturerID uint16
 	DeviceID       uint16
 	VersionID      uint16
+	TechnologyID   uint16
 	DieBlockOffset uint32
 	Capacity       uint64
+	FlexGeometry   *OneNANDFlexGeometry
+}
+
+// QualcommSFlashOneNANDProfile describes a OneNAND device reached through the
+// MSM7K SFlash controller instead of a directly mapped external-bus aperture.
+type QualcommSFlashOneNANDProfile struct {
+	Address          uint32
+	ManufacturerID   uint16
+	DeviceID         uint16
+	VersionID        uint16
+	TechnologyID     uint16
+	DieBlockOffset   uint32
+	Capacity         uint64
+	FlexGeometry     *OneNANDFlexGeometry
+	SpareInitialData []FlashSeed
 }
 
 type ParallelPanelPortProfile struct {
 	CommandAddress uint32
 	DataAddress    uint32
+}
+
+// IndexedHalfwordRegisterPortProfile maps a pair of sparse 16-bit external-bus
+// ports. Writing the command port selects a register; the data port then reads
+// or writes the selected register. CommandReadValue is the board-observed
+// status value returned by reads from the command port.
+type IndexedHalfwordRegisterPortProfile struct {
+	ID               string
+	CommandAddress   uint32
+	DataAddress      uint32
+	CommandReadValue uint16
+}
+
+func (p IndexedHalfwordRegisterPortProfile) validate() error {
+	if !validProfileID(p.ID) ||
+		p.CommandAddress%uint32(Width16) != 0 || p.DataAddress%uint32(Width16) != 0 ||
+		p.CommandAddress == p.DataAddress ||
+		uint64(p.CommandAddress)+uint64(Width16) > 1<<32 ||
+		uint64(p.DataAddress)+uint64(Width16) > 1<<32 {
+		return ErrInvalidRegion
+	}
+	return nil
 }
 
 func (p ParallelPanelPortProfile) validate() error {
@@ -81,13 +161,45 @@ func (p ParallelPanelPortProfile) validate() error {
 }
 
 func (p OneNANDProfile) validate() error {
+	geometry, geometryErr := normalizeOneNANDGeometry(p.Capacity, p.FlexGeometry)
 	if p.Address%OneNANDWindowSize != 0 ||
 		uint64(p.Address)+OneNANDWindowSize > 1<<32 ||
 		p.ManufacturerID == 0 || p.DeviceID == 0 ||
-		p.Capacity == 0 || p.Capacity%oneNANDEraseBlockSize != 0 ||
-		p.Capacity > uint64(^uint32(0)) ||
-		p.DieBlockOffset != 0 && p.DieBlockOffset&(p.DieBlockOffset-1) != 0 {
+		geometryErr != nil ||
+		p.DieBlockOffset != 0 && (p.DieBlockOffset&(p.DieBlockOffset-1) != 0 ||
+			p.DieBlockOffset >= geometry.blockCount) {
 		return ErrInvalidOneNAND
+	}
+	return nil
+}
+
+func (p QualcommSFlashOneNANDProfile) validate() error {
+	geometry, geometryErr := normalizeOneNANDGeometry(p.Capacity, p.FlexGeometry)
+	if p.Address%QualcommSFlashWindowSize != 0 ||
+		uint64(p.Address)+QualcommSFlashWindowSize > 1<<32 ||
+		p.ManufacturerID == 0 || p.DeviceID == 0 ||
+		geometryErr != nil ||
+		p.DieBlockOffset != 0 && (p.DieBlockOffset&(p.DieBlockOffset-1) != 0 ||
+			p.DieBlockOffset >= geometry.blockCount) {
+		return ErrInvalidOneNAND
+	}
+	sparePageSize := geometry.pageSize / oneNANDSectorSize * oneNANDSpareSectorSize
+	spareCapacity := p.Capacity / uint64(geometry.pageSize) * uint64(sparePageSize)
+	initialData := append([]FlashSeed(nil), p.SpareInitialData...)
+	sort.Slice(initialData, func(left, right int) bool {
+		return initialData[left].Offset < initialData[right].Offset
+	})
+	for index, seed := range initialData {
+		if len(seed.Data) == 0 || seed.Offset >= spareCapacity ||
+			uint64(len(seed.Data)) > spareCapacity-seed.Offset {
+			return ErrInvalidNANDSpare
+		}
+		if index > 0 {
+			previous := initialData[index-1]
+			if previous.Offset+uint64(len(previous.Data)) > seed.Offset {
+				return ErrInvalidNANDSpare
+			}
+		}
 	}
 	return nil
 }
@@ -110,51 +222,74 @@ func (p HLECallProfile) validate() error {
 }
 
 type BoardProfile struct {
-	ID                               string
-	PlatformID                       string
-	FirmwareBuildID                  string
-	NANDReadID                       uint32
-	NANDSize                         uint64
-	NANDFactoryBadBlocks             []uint32
-	NANDInitialData                  []FlashSeed
-	OneNAND                          *OneNANDProfile
-	PBLLegacyFeatureDataAddress      uint32
-	BootClockModeStatus              uint32
-	PrimaryClockStatus               uint32
-	PrimaryClockInputMask            uint32
-	PrimaryClockKeys                 []QualcommPrimaryClockKeyProfile
-	BootControlWritableOffsets       []uint32
-	BootControlHalfwordOffsets       []uint32
-	BootControlMixedWidthOffsets     []uint32
-	BootControlReadOnlyRegisters     []QualcommBootReadOnlyRegister
-	BootControlRegisterResets        []QualcommBootRegisterReset
-	BootControlCompletionEvents      []QualcommCompletionEventConfig
-	BootControlLegacyUARTControllers []uint32
-	BootControlSBIControllers        []uint32
-	BootControlSBIReadResponses      []QualcommSBIReadResponse
-	BootControlSBICompletionStatus   uint32
-	BootControlGPIOInputs            []QualcommGPIOInputRegister
-	PrimaryClockWritableOffsets      []uint32
-	SecondaryClockWritableOffsets    []uint32
-	SecondaryClockReadOnlyRegisters  []QualcommSecondaryClockReadOnlyRegister
-	ClockRegimeSleepControllers      []uint32
-	ClockRegimeCounters              []QualcommClockRegimeCounterConfig
-	ClockRegimeComparators           []QualcommClockRegimeComparatorConfig
-	VectoredInterrupt                *QualcommVectoredInterruptConfig
-	TimeTickClock                    *QualcommTimeTickClockConfig
-	Keypad                           *QualcommGPIOKeypadProfile
-	Panel                            DCSPanelConfig
-	PanelPorts                       *ParallelPanelPortProfile
-	MDP                              *QualcommMDPProfile
-	LegacyTopVersion                 uint32
-	LegacyTopIdentification          uint32
-	LegacyTopWritableOffsets         []uint32
-	Memory                           []MemoryRegionProfile
-	ReadOnlyRegisters                []ReadOnlyRegisterProfile
-	LatchedRegisters                 []LatchedRegisterProfile
-	LatchedRegisterWindows           []LatchedRegisterWindowProfile
-	ADSPMailbox                      *QualcommADSPMailboxProfile
-	HLECalls                         []HLECallProfile
+	ID                            string
+	PlatformID                    string
+	FirmwareBuildID               string
+	NANDReadID                    uint32
+	NANDSize                      uint64
+	NANDFactoryBadBlocks          []uint32
+	NANDReportsErasedECCCodewords bool
+	NANDInitialData               []FlashSeed
+	OneNAND                       *OneNANDProfile
+	SFlashOneNAND                 *QualcommSFlashOneNANDProfile
+	// PBLServiceTableAddress overrides the legacy MSM6xxx PBL-owned IRAM
+	// address used for the r8 service table. Zero keeps the legacy default.
+	PBLServiceTableAddress uint32
+	// PBLServiceTableHeaderSize selects the first service-entry offset for the
+	// profiled PBL ABI. Zero keeps the legacy 0x2c-byte header.
+	PBLServiceTableHeaderSize uint32
+	// PBLHeaderFeatureDataAddress supplies the separate r9 feature-slot table
+	// used by newer PBL ABIs. Zero omits that table.
+	PBLHeaderFeatureDataAddress uint32
+	PBLHeaderFeatures           []QualcommPBLHeaderFeature
+	PBLLegacyFeatureDataAddress uint32
+	PBLSharedDataAddress        uint32
+	PBLSharedDataSize           uint32
+	BootClockModeStatus         uint32
+	// BootControlAddress overrides the MSM6xxx default 0x80000000 physical
+	// base for chip families which relocate the same bounded control device.
+	BootControlAddress                        uint32
+	PrimaryClockStatus                        uint32
+	PrimaryClockInputMask                     uint32
+	PrimaryClockKeys                          []QualcommPrimaryClockKeyProfile
+	BootControlWritableOffsets                []uint32
+	BootControlInterruptWindowWritableOffsets []uint32
+	BootControlHalfwordOffsets                []uint32
+	BootControlMixedWidthOffsets              []uint32
+	BootControlReadOnlyRegisters              []QualcommBootReadOnlyRegister
+	BootControlRegisterResets                 []QualcommBootRegisterReset
+	BootControlCompletionEvents               []QualcommCompletionEventConfig
+	BootControlLegacyUARTControllers          []uint32
+	BootControlSBIControllers                 []uint32
+	BootControlSBIReadResponses               []QualcommSBIReadResponse
+	BootControlSBICompletionStatus            uint32
+	BootControlWatchdogReadable               bool
+	BootControlGPIOInputs                     []QualcommGPIOInputRegister
+	PrimaryClockWritableOffsets               []uint32
+	SecondaryClockWritableOffsets             []uint32
+	SecondaryClockReadOnlyRegisters           []QualcommSecondaryClockReadOnlyRegister
+	SparseBusRegisterOffsets                  []uint32
+	SparseBusRegisterResets                   []SparseWordRegisterReset
+	ClockRegimeSleepControllers               []uint32
+	ClockRegimeCounters                       []QualcommClockRegimeCounterConfig
+	ClockRegimeComparators                    []QualcommClockRegimeComparatorConfig
+	VectoredInterrupt                         *QualcommVectoredInterruptConfig
+	TimeTickClock                             *QualcommTimeTickClockConfig
+	Keypad                                    *QualcommGPIOKeypadProfile
+	Panel                                     DCSPanelConfig
+	PanelPorts                                *ParallelPanelPortProfile
+	IndexedHalfwordRegisterPorts              []IndexedHalfwordRegisterPortProfile
+	MDP                                       *QualcommMDPProfile
+	LegacyTopVersion                          uint32
+	LegacyTopIdentification                   uint32
+	LegacyTopWritableOffsets                  []uint32
+	Memory                                    []MemoryRegionProfile
+	ReadOnlyRegisters                         []ReadOnlyRegisterProfile
+	LatchedRegisters                          []LatchedRegisterProfile
+	LatchedRegisterWindows                    []LatchedRegisterWindowProfile
+	SamsungMGP                                *SamsungMGPProfile
+	ADSPMailbox                               *QualcommADSPMailboxProfile
+	HLECalls                                  []HLECallProfile
 }
 
 func (p BoardProfile) Validate() error {
@@ -197,9 +332,13 @@ func (p BoardProfile) Validate() error {
 		if err := p.OneNAND.validate(); err != nil {
 			return fmt.Errorf("board profile %q OneNAND: %w", p.ID, err)
 		}
-		if p.OneNAND.DieBlockOffset != 0 &&
-			uint64(p.OneNAND.DieBlockOffset) >= p.OneNAND.Capacity/oneNANDEraseBlockSize {
-			return fmt.Errorf("board profile %q OneNAND die offset: %w", p.ID, ErrInvalidOneNAND)
+	}
+	if p.SFlashOneNAND != nil {
+		if p.OneNAND != nil {
+			return fmt.Errorf("board profile %q configures two OneNAND interfaces: %w", p.ID, ErrInvalidOneNAND)
+		}
+		if err := p.SFlashOneNAND.validate(); err != nil {
+			return fmt.Errorf("board profile %q Qualcomm SFlash OneNAND: %w", p.ID, err)
 		}
 	}
 	primaryClockInputMask := p.PrimaryClockInputMask
@@ -232,8 +371,14 @@ func (p BoardProfile) Validate() error {
 	if p.BootClockModeStatus&^uint32(0x11) != 0 {
 		return fmt.Errorf("board profile %q has invalid boot clock mode status 0x%x", p.ID, p.BootClockModeStatus)
 	}
+	if p.BootControlAddress != 0 &&
+		(p.BootControlAddress%QualcommBootControlWindowSize != 0 ||
+			uint64(p.BootControlAddress)+QualcommBootControlWindowSize > 1<<32) {
+		return fmt.Errorf("board profile %q has invalid boot-control address 0x%x", p.ID, p.BootControlAddress)
+	}
 	if err := validateQualcommBootControlConfigurationOffsets(
 		p.BootControlWritableOffsets,
+		p.BootControlInterruptWindowWritableOffsets,
 		p.BootControlHalfwordOffsets,
 		p.BootControlMixedWidthOffsets,
 		p.BootControlReadOnlyRegisters,
@@ -347,6 +492,23 @@ func (p BoardProfile) Validate() error {
 		}
 		if err := p.PanelPorts.validate(); err != nil {
 			return fmt.Errorf("board profile %q sparse panel ports: %w", p.ID, err)
+		}
+	}
+	indexedPortIDs := make(map[string]struct{}, len(p.IndexedHalfwordRegisterPorts))
+	indexedPortAddresses := make(map[uint32]struct{}, len(p.IndexedHalfwordRegisterPorts)*2)
+	for _, ports := range p.IndexedHalfwordRegisterPorts {
+		if err := ports.validate(); err != nil {
+			return fmt.Errorf("board profile %q indexed halfword ports %q: %w", p.ID, ports.ID, err)
+		}
+		if _, duplicate := indexedPortIDs[ports.ID]; duplicate {
+			return fmt.Errorf("board profile %q repeats indexed halfword port ID %q", p.ID, ports.ID)
+		}
+		indexedPortIDs[ports.ID] = struct{}{}
+		for _, address := range []uint32{ports.CommandAddress, ports.DataAddress} {
+			if _, duplicate := indexedPortAddresses[address]; duplicate {
+				return fmt.Errorf("board profile %q repeats indexed halfword port 0x%08x", p.ID, address)
+			}
+			indexedPortAddresses[address] = struct{}{}
 		}
 	}
 	if mdp := p.MDP; mdp != nil {
@@ -470,6 +632,30 @@ func (p BoardProfile) Validate() error {
 			)
 		}
 	}
+	var mgpSharedMemory *MemoryRegionProfile
+	if mgp := p.SamsungMGP; mgp != nil {
+		if err := mgp.validate(); err != nil {
+			return fmt.Errorf("board profile %q: %w", p.ID, err)
+		}
+		mgpEnd := uint64(mgp.Address) + uint64(mgp.Size)
+		for index := range memory {
+			region := &memory[index]
+			if region.ID == mgp.SharedMemoryID {
+				if mgpSharedMemory != nil {
+					return fmt.Errorf("board profile %q repeats MGP shared memory %q", p.ID, region.ID)
+				}
+				mgpSharedMemory = region
+			}
+			regionEnd := uint64(region.Address) + uint64(region.Size)
+			if uint64(mgp.Address) < regionEnd && uint64(region.Address) < mgpEnd {
+				return fmt.Errorf("board profile %q regions %q and %q overlap", p.ID, mgp.ID, region.ID)
+			}
+		}
+		if mgpSharedMemory == nil || mgp.ID == mgp.SharedMemoryID ||
+			mgp.ReadyOffset >= mgpSharedMemory.Size {
+			return fmt.Errorf("board profile %q has invalid MGP shared-memory target", p.ID)
+		}
+	}
 	registers := append([]ReadOnlyRegisterProfile(nil), p.ReadOnlyRegisters...)
 	for _, register := range registers {
 		if !validProfileID(register.ID) ||
@@ -579,11 +765,42 @@ func (p BoardProfile) Validate() error {
 			}
 		}
 	}
+	if mgp := p.SamsungMGP; mgp != nil {
+		mgpEnd := uint64(mgp.Address) + uint64(mgp.Size)
+		for _, register := range registers {
+			registerEnd := uint64(register.Address) + uint64(register.Width)
+			if mgp.ID == register.ID ||
+				uint64(mgp.Address) < registerEnd && uint64(register.Address) < mgpEnd {
+				return fmt.Errorf("board profile %q registers %q and %q overlap", p.ID, mgp.ID, register.ID)
+			}
+		}
+		for _, register := range latchedRegisters {
+			registerEnd := uint64(register.Address) + uint64(register.Width)
+			if mgp.ID == register.ID ||
+				uint64(mgp.Address) < registerEnd && uint64(register.Address) < mgpEnd {
+				return fmt.Errorf("board profile %q registers %q and %q overlap", p.ID, mgp.ID, register.ID)
+			}
+		}
+		for _, window := range latchedWindows {
+			windowEnd := uint64(window.Address) + uint64(window.Size)
+			if mgp.ID == window.ID ||
+				uint64(mgp.Address) < windowEnd && uint64(window.Address) < mgpEnd {
+				return fmt.Errorf("board profile %q registers %q and %q overlap", p.ID, mgp.ID, window.ID)
+			}
+		}
+	}
 	if mailbox := p.ADSPMailbox; mailbox != nil {
 		if err := mailbox.validate(); err != nil {
 			return fmt.Errorf("board profile %q: %w", p.ID, err)
 		}
 		mailboxEnd := uint64(mailbox.Address) + uint64(mailbox.Size)
+		if mgp := p.SamsungMGP; mgp != nil {
+			mgpEnd := uint64(mgp.Address) + uint64(mgp.Size)
+			if mailbox.ID == mgp.ID ||
+				uint64(mailbox.Address) < mgpEnd && uint64(mgp.Address) < mailboxEnd {
+				return fmt.Errorf("board profile %q registers %q and %q overlap", p.ID, mailbox.ID, mgp.ID)
+			}
+		}
 		for _, region := range memory {
 			regionEnd := uint64(region.Address) + uint64(region.Size)
 			if uint64(mailbox.Address) < regionEnd && uint64(region.Address) < mailboxEnd {
@@ -822,6 +1039,47 @@ func (p BoardProfile) ApplyMemory(bus *Bus) error {
 	return nil
 }
 
+// AttachSamsungMGP maps the profiled control aperture after its shared RAM is
+// present. Profiles without this companion processor require no placeholder.
+func (p BoardProfile) AttachSamsungMGP(bus *Bus) (*SamsungMGPControl, error) {
+	if bus == nil {
+		return nil, fmt.Errorf("attach board profile %q Samsung MGP: nil bus", p.ID)
+	}
+	if err := p.Validate(); err != nil {
+		return nil, err
+	}
+	if p.SamsungMGP == nil {
+		return nil, nil
+	}
+	var shared MemoryRegionProfile
+	for _, region := range p.Memory {
+		if region.ID == p.SamsungMGP.SharedMemoryID {
+			shared = region
+			break
+		}
+	}
+	readyAddress := shared.Address + p.SamsungMGP.ReadyOffset
+	device, err := NewSamsungMGPControl(bus, SamsungMGPControlConfig{
+		Size:                      p.SamsungMGP.Size,
+		ReleaseOffset:             p.SamsungMGP.ReleaseOffset,
+		ReadyAddress:              readyAddress,
+		ReadyValue:                p.SamsungMGP.ReadyValue,
+		ResponseDelayInstructions: p.SamsungMGP.ResponseDelayInstructions,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("attach board profile %q Samsung MGP: %w", p.ID, err)
+	}
+	if err := bus.MapMMIO(
+		p.SamsungMGP.ID,
+		p.SamsungMGP.Address,
+		p.SamsungMGP.Size,
+		device,
+	); err != nil {
+		return nil, fmt.Errorf("attach board profile %q Samsung MGP: %w", p.ID, err)
+	}
+	return device, nil
+}
+
 // AttachMDP wires the board-selected script engine to its boot-control
 // completion event. Profiles without an MDP remain valid and require no
 // display engine, which keeps board construction firmware-family driven.
@@ -1032,6 +1290,7 @@ func SCHW830DL21BoardProfile() BoardProfile {
 			0x05bc, 0x05c0, 0x05d0, 0x05d4,
 		},
 		SecondaryClockWritableOffsets: []uint32{0x040c},
+		SparseBusRegisterOffsets:      samsungSCHSparseBusRegisterOffsets(),
 		ClockRegimeSleepControllers:   []uint32{0x5200, 0x5244},
 		ClockRegimeCounters: []QualcommClockRegimeCounterConfig{{
 			// DL21 samples the low 18 bits at CHIP_BASE+0x6000 when
@@ -1427,6 +1686,431 @@ func SCHW770DA05BoardProfile() BoardProfile {
 	return profile
 }
 
+// SCHW320DC18BoardProfile describes the shared early raw-downloader platform
+// with SCH-W320's exact firmware and NAND-layout identity.
+func SCHW320DC18BoardProfile() BoardProfile {
+	profile := samsungRawDownloadBoardProfile(
+		"samsung.sch-w320", "samsung.sch-w320.dc18", 0x0a760000,
+	)
+	// DC18's OEMSBL samples bit 1 of the primary input word after its board
+	// setup and takes a dedicated boot path only while that active-low line is
+	// asserted. Expose the evidenced maintenance/download input without
+	// assigning the unrelated END-key contract used by adjacent handsets.
+	profile.PrimaryClockKeys = []QualcommPrimaryClockKeyProfile{{
+		ID: "download", InputLine: 1, ActiveLow: true,
+	}}
+	// DC18's AMSS clears runtime arenas at 0x09800000 and 0x0a000000 through
+	// its ordinary word-copy loop. Its identity-mapped MMU table covers the
+	// complete second EBI RAM bank; leave adjacent builds on their evidenced
+	// 128 MiB map and expose the additional 64 MiB only for SCH-W320.
+	profile.Memory = append(profile.Memory, MemoryRegionProfile{
+		ID: "w320-ebi1-ram", Kind: MemorySparseRAM,
+		Address: 0x08000000, Size: 0x04000000,
+	})
+	// DC18 programs the second UART controller with 32-bit STR operations,
+	// while earlier boot stages retain their narrower accesses.
+	promoteQualcommLegacyUARTToMixedWidth(&profile, 0x4200)
+	// DC18's late GPIO setup resolves its fourth input group through
+	// CHIP_BASE+0x0940. The word is reserved in this INTCTL generation and no
+	// external line is asserted on the deterministic board at reset.
+	profile.BootControlGPIOInputs = append(
+		profile.BootControlGPIOInputs,
+		QualcommGPIOInputRegister{Offset: 0x40, Value: 0},
+	)
+	// Unlike the adjacent raw builds, DC18 rechecks a signed loader-state
+	// record that the missing mask-ROM PBL normally leaves behind after QCSBL
+	// authentication. The package registry has already selected the exact
+	// QCSBL by SHA-256, so restore only that PBL ABI result at the original
+	// helper boundary; no guest instruction or firmware byte is patched.
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID: "w320-pbl-verified-loader-state", Contract: HLEContractQualcommPBLVerifiedLoaderState,
+		Address: 0x0010214e, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+	})
+	// DC18's ARM veneer at 0x00e00fb0 calls 0x001138c8, inside the
+	// progressive ELF's entirely zero-filled 0x00100000 program segment. The
+	// handset's preceding boot environment supplies that resident callback;
+	// its sole AMSS call site continues unconditionally and ignores the result.
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID:       "w320-resident-boot-callback",
+		Contract: HLEContractQualcommResidentBootCallback,
+		Address:  0x001138c8, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+	})
+	// DC18 uploads its ARM7/MGP image into the same 32 KiB companion-memory
+	// aperture as W340. Its image header publishes the polled ready byte at
+	// +0x29e0.
+	profile.Memory = append(profile.Memory, MemoryRegionProfile{
+		ID: "samsung-mgp-code-ram", Kind: MemorySparseRAM,
+		Address: 0x90108000, Size: 0x00008000,
+	})
+	profile.SamsungMGP = &SamsungMGPProfile{
+		ID: "samsung-mgp-registers", Address: 0x9011f1a0, Size: 0x40,
+		ReleaseOffset: 0x0c, SharedMemoryID: "samsung-mgp-code-ram",
+		ReadyOffset: 0x29e0, ReadyValue: 1, ResponseDelayInstructions: 1,
+	}
+	profile.LatchedRegisterWindows = append(
+		profile.LatchedRegisterWindows,
+		LatchedRegisterWindowProfile{
+			ID: "samsung-mgp-interface-registers", Address: 0x9011f140,
+			Size: 0x10, Width: Width16,
+		},
+	)
+	profile.Panel.Protocol = ParallelPanelProtocolIndexedRGB565Window454647
+	profile.PanelPorts = &ParallelPanelPortProfile{
+		CommandAddress: 0x20000000,
+		DataAddress:    0x20000080,
+	}
+	return profile
+}
+
+// SCHW340DC18BoardProfile describes the shared early raw-downloader platform
+// with SCH-W340's exact firmware and NAND-layout identity.
+func SCHW340DC18BoardProfile() BoardProfile {
+	profile := samsungRawDownloadBoardProfile(
+		"samsung.sch-w340", "samsung.sch-w340.dc18", 0x08800000,
+	)
+	// W340 decodes the LCD D/C line at address bit 7: OEMSBL writes 16-bit
+	// register indexes at chip-select +0 and their values at +0x80.
+	profile.PanelPorts = &ParallelPanelPortProfile{
+		CommandAddress: 0x20000000,
+		DataAddress:    0x20000080,
+	}
+	profile.Panel.Protocol = ParallelPanelProtocolIndexedRGB565Window454647
+	// The MGP loader copies its ARM7 image into the 32 KiB code/shared-RAM
+	// aperture and exchanges boot pointers in the image header.
+	profile.Memory = append(profile.Memory, MemoryRegionProfile{
+		ID: "samsung-mgp-code-ram", Kind: MemorySparseRAM,
+		Address: 0x90108000, Size: 0x00008000,
+	})
+	// DC18 asserts +0x0c while uploading the companion image, clears it to
+	// release the ARM7, and waits for the image's shared ready byte at +0x29e0.
+	profile.SamsungMGP = &SamsungMGPProfile{
+		ID: "samsung-mgp-registers", Address: 0x9011f1a0, Size: 0x40,
+		ReleaseOffset: 0x0c, SharedMemoryID: "samsung-mgp-code-ram",
+		ReadyOffset: 0x29e0, ReadyValue: 1, ResponseDelayInstructions: 1,
+	}
+	// The host-side MGP service initialises a second halfword interface at
+	// +0x00/+0x0c before it publishes its command descriptor. No autonomous
+	// response has been observed in this bounded register subset.
+	profile.LatchedRegisterWindows = append(
+		profile.LatchedRegisterWindows,
+		LatchedRegisterWindowProfile{
+			ID: "samsung-mgp-interface-registers", Address: 0x9011f140,
+			Size: 0x10, Width: Width16,
+		},
+	)
+	return profile
+}
+
+// SCHW350CK06BoardProfile describes the shared early raw-downloader platform
+// with SCH-W350's exact firmware and NAND-layout identity.
+func SCHW350CK06BoardProfile() BoardProfile {
+	profile := samsungRawDownloadBoardProfile(
+		"samsung.sch-w350", "samsung.sch-w350.ck06", 0x08f80000,
+	)
+	// CK06's AMSS clears the second UART configuration words with 32-bit STR
+	// operations. OEMSBL still shares the same controller with narrower
+	// accesses, so expose the evidenced mixed-width aperture.
+	promoteQualcommLegacyUARTToMixedWidth(&profile, 0x4200)
+	// Late AMSS hardware setup writes its 0x00100203 configuration word to
+	// CHIP_BASE +0x039c. The value is not polled as a completion signal, so a
+	// board-specific latch is sufficient.
+	profile.BootControlWritableOffsets = append(profile.BootControlWritableOffsets, 0x039c)
+	// CK06 masks the five raw primary inputs during startup and enters its
+	// on-screen UCDMA download mode when the idle 0x1f value becomes 0x1b.
+	// Expose that evidenced active-low boot input without assigning it the
+	// unrelated END/power-key meaning used by adjacent handsets.
+	profile.PrimaryClockKeys = []QualcommPrimaryClockKeyProfile{{
+		ID: "download", InputLine: 2, ActiveLow: true,
+	}}
+	profile.NANDReportsErasedECCCodewords = false
+	// The downloader deliberately omits the handset-specific 0x019a0000
+	// manufacturing block. Its bootstrap state byte is nevertheless present
+	// on a device and accepts only zero (unprovisioned) or one (provisioned).
+	// Seed the privacy-safe unprovisioned state and let CK06 create the rest.
+	// Claiming the provisioned value without the handset's complete signed
+	// manufacturing record fails its bootstrap validation.
+	profile.NANDInitialData = append(profile.NANDInitialData, FlashSeed{
+		Offset: 0x019a0004,
+		Data:   []byte{0},
+	})
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID:       "w350-bootstrap-verified-firmware",
+		Contract: HLEContractQualcommBootstrapVerifiedFirmware,
+		Address:  0x00113d30, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+	})
+	// CK06 imports one ARM callback from 0x001478c8, inside its zero-filled
+	// BOOT/NOTUSED program segment. The handset's preceding boot environment
+	// supplies that resident ABI; the downloader package intentionally does
+	// not. Its sole call site consumes no return value, so preserve registers
+	// and return through LR without patching guest bytes.
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID:       "w350-resident-boot-callback",
+		Contract: HLEContractQualcommResidentBootCallback,
+		Address:  0x001478c8, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+	})
+	// CK06's OEMSBL samples bit 2 at secondary input +0x440 before it
+	// releases the startup timer path. The adjacent W830 board instead wires
+	// its evidenced idle input to bit 4, so keep this value board-specific.
+	profile.SecondaryClockReadOnlyRegisters = append(
+		profile.SecondaryClockReadOnlyRegisters,
+		QualcommSecondaryClockReadOnlyRegister{
+			Offset: qualcommSecondaryClockDisabledStatusOffset,
+			Value:  0x00000004,
+		},
+	)
+	// The same startup routine reads back the watchdog service latch after
+	// writing one and treats bit 0 as completion.
+	profile.BootControlWatchdogReadable = true
+	// CK06's late GPIO helper resolves its fourth input group through
+	// CHIP_BASE+0x0940. That word is reserved in the older INTCTL layout, just
+	// as it is on DA05, and no external line is asserted on the deterministic
+	// board at reset.
+	profile.BootControlGPIOInputs = append(
+		profile.BootControlGPIOInputs,
+		QualcommGPIOInputRegister{Offset: 0x40, Value: 0},
+	)
+	// CK06 drives its 16-bit LCD command FIFO at external chip-select
+	// 0x38000000 and streams RGB565 payload words through the adjacent +4
+	// data aperture.
+	profile.PanelPorts = &ParallelPanelPortProfile{
+		CommandAddress: 0x38000000,
+		DataAddress:    0x38000004,
+	}
+	profile.Panel.Protocol = ParallelPanelProtocolPackedRGB565Window424A
+	// Late AMSS uses address bit 18 to select the value port of a separate
+	// indexed external device. It writes controller values such as
+	// register 0x21 = 0x2010, reads selected registers back, and polls the
+	// command port's clear ready status. These are not coordinates or pixels
+	// for the packed LCD FIFO above.
+	profile.IndexedHalfwordRegisterPorts = []IndexedHalfwordRegisterPortProfile{{
+		ID:             "w350-indexed-external-registers",
+		CommandAddress: 0x20000000,
+		DataAddress:    0x20040000,
+	}}
+	// The handset also initializes a small secondary display through a
+	// write-only 16-bit command/data pair at +0/+4. It has no observed status
+	// or framebuffer feedback into the boot chain, so retain only the bounded
+	// output aperture instead of aliasing it to the primary 240x320 surface.
+	profile.LatchedRegisterWindows = append(
+		profile.LatchedRegisterWindows,
+		LatchedRegisterWindowProfile{
+			ID: "w350-secondary-panel-output", Address: 0x40000000,
+			Size: 6, Width: Width16,
+		},
+	)
+	return profile
+}
+
+// SCHW410CL10BoardProfile describes the shared early raw-downloader platform
+// with SCH-W410's exact firmware and NAND-layout identity.
+func SCHW410CL10BoardProfile() BoardProfile {
+	profile := samsungRawDownloadBoardProfile(
+		"samsung.sch-w410", "samsung.sch-w410.cl10", 0x09100000,
+	)
+	profile.PrimaryClockKeys = []QualcommPrimaryClockKeyProfile{{
+		ID: "end", InputLine: 4, ActiveLow: true,
+	}}
+	return profile
+}
+
+func samsungRawDownloadBoardProfile(id, firmwareBuildID string, packagedEnd uint64) BoardProfile {
+	profile := SCHW830DL21BoardProfile()
+	profile.ID = id
+	profile.PlatformID = "qualcomm.arm9-sch-raw-v1"
+	profile.FirmwareBuildID = firmwareBuildID
+	// These MSM6280 handsets use Toshiba 98/CA NAND: a 2 KiB-page,
+	// 64-page/block, 256 MiB device accepted by both the boot chain and AMSS's
+	// NFA device table.
+	profile.NANDReadID = 0x000098ca
+	profile.NANDSize = 0x10000000
+	// The MSM6280 ECC path completes an erased-codeword transfer with its
+	// operation-error bit set. AMSS then sets NAND config bit 0 and rereads the
+	// 528-byte raw codeword to distinguish erased data from an actual failure.
+	profile.NANDReportsErasedECCCodewords = true
+	profile.Panel = DCSPanelConfig{
+		Width: 240, Height: 320, Protocol: ParallelPanelProtocolIndexedRGB565,
+	}
+	profile.NANDInitialData = []FlashSeed{{
+		Offset: packagedEnd,
+		Data:   []byte{0xff, 0xfe, 0xaf, 0xbe, 0, 0, 0, 0, 0, 0, 0, 0},
+	}}
+	profile.OneNAND = nil
+	// The raw QCSBL generation predates the service-ID table used by the
+	// wrapped W830 downloads and consumes the ROM feature structure directly.
+	profile.PBLLegacyFeatureDataAddress = 0xffff6044
+	profile.BootControlSBIReadResponses = nil
+	// The shared raw QCSBL clears this watchdog/control latch before entering
+	// its NAND geometry path.
+	profile.BootControlWritableOffsets = append(
+		profile.BootControlWritableOffsets,
+		// The raw AMSS clock-vote dispatcher updates both halves of the
+		// CHIP_BASE +0x08/+0x0c control pair. W830 already supplies +0x08;
+		// the raw platform additionally exercises the adjacent word.
+		0x000c,
+		// AMSS samples and updates the active clock-plan word during late
+		// hardware initialisation, then publishes the companion plans at +0x148
+		// and +0x248. Its clock-vote transition copies the calibration pair into
+		// +0x80 and the inherited +0x84 latch.
+		0x0080,
+		0x00a0,
+		0x010c,
+		0x0120,
+		0x0130,
+		0x0134,
+		0x0148,
+		0x0248,
+		0x0a44,
+		0x0d60,
+		0x0d70,
+		0x2000,
+		0x2008,
+		0x2010,
+		0x2028,
+		// AMSS initialises this peripheral control group as one bounded
+		// sequence, including the adjacent +0x34/+0x38 control pair.
+		0x2040,
+		0x2044,
+		0x2048,
+		0x204c,
+		0x2064,
+		0x2068,
+		0x206c,
+		0x2074,
+		0x2078,
+		0x207c,
+		0x2804,
+		0x2808,
+		0x2810,
+		// The same initialiser clears the companion interrupt/status mask at
+		// +0x284c before publishing the peripheral table below.
+		0x284c,
+		0x53a8,
+		// PBL publishes its cold-boot stack transition through this scratch
+		// latch before switching exception modes.
+		0x5410,
+	)
+	// AMSS builds 32 four-word peripheral descriptors in the bounded
+	// 0x2400..0x25ff hardware table.
+	for offset := uint32(0x2400); offset < 0x2600; offset += 4 {
+		profile.BootControlWritableOffsets = append(profile.BootControlWritableOffsets, offset)
+	}
+	// The companion 16-entry status table has an eight-byte stride and clears
+	// the second word of each entry.
+	for offset := uint32(0x2984); offset < 0x2a00; offset += 8 {
+		profile.BootControlWritableOffsets = append(profile.BootControlWritableOffsets, offset)
+	}
+	// The retained PBL ROM samples bit 4 of this reset-status word before it
+	// decides between cold and warm boot. A newly constructed handset is cold.
+	profile.BootControlReadOnlyRegisters = append(
+		profile.BootControlReadOnlyRegisters,
+		QualcommBootReadOnlyRegister{Offset: 0x5314, Value: 0},
+		// PBL tests bit 0 before programming the adjacent cold-start clock
+		// sequence. The uninitialised clock domain reports clear after reset.
+		QualcommBootReadOnlyRegister{Offset: 0x5418, Value: 0},
+		// AMSS treats a zero optional peripheral source pointer as absent before
+		// initialising the adjacent 0x2400 control block.
+		QualcommBootReadOnlyRegister{Offset: 0x2824, Value: 0},
+		// The raw OEMSBL samples bit 0 of the +0x0d64 hardware-status word
+		// before selecting its optional warm/peripheral startup path. No such
+		// external state is asserted on a deterministic cold boot.
+		QualcommBootReadOnlyRegister{Offset: 0x0d64, Value: 0},
+		// The synchronous peripheral command issued through +0x0a44 completes
+		// with bit 1 set in its status word.
+		QualcommBootReadOnlyRegister{Offset: 0x0a4c, Value: 0x00000002},
+	)
+	profile.Keypad = nil
+	profile.PrimaryClockKeys = nil
+	profile.LegacyTopWritableOffsets = []uint32{
+		qualcommLegacyTopIDOffset,
+		qualcommLegacyTopIDOffset + 4,
+	}
+	// The W350 OEMSBL feature enumerator samples the two halfwords preceding
+	// the inherited +4 platform-status register. No optional external feature
+	// line is asserted in the deterministic offline board state.
+	profile.ReadOnlyRegisters = append(
+		profile.ReadOnlyRegisters,
+		ReadOnlyRegisterProfile{
+			ID: "external-platform-feature-low", Address: 0x30010000,
+			Width: Width16, Value: 0,
+		},
+		ReadOnlyRegisterProfile{
+			ID: "external-platform-feature-high", Address: 0x30010002,
+			Width: Width16, Value: 0,
+		},
+	)
+	// After OEMSBL creates the NAND bad-block table and restarts, QCSBL
+	// programs the external-memory timing bank at +0x20..+0x74 before loading
+	// AMSS. These are retained control latches, not general-purpose RAM.
+	profile.LatchedRegisterWindows = append(
+		profile.LatchedRegisterWindows,
+		LatchedRegisterWindowProfile{
+			// AMSS's external-bus helper publishes byte-wide command and data
+			// values through offsets 0 and 2 of this chip-select aperture. Leaving
+			// either address unmapped turns the valid write into a data abort.
+			ID: "external-8bit-command-data", Address: 0x30000000,
+			Size: 4, Width: Width8,
+		},
+		LatchedRegisterWindowProfile{
+			ID: "qcsbl-external-memory-control", Address: 0xa0000000,
+			Size: 0x00000078, Width: Width32,
+		},
+	)
+	profile.SparseBusRegisterOffsets = append(profile.SparseBusRegisterOffsets, 0x0000, 0x0040)
+	profile.SparseBusRegisterResets = []SparseWordRegisterReset{{
+		Offset: 0x0040, Value: 0x80000000,
+	}}
+	// The raw handset samples bit 10 of this GPIO input word while publishing
+	// its initial slider state. No external transition is asserted at reset.
+	profile.SecondaryClockReadOnlyRegisters = append(
+		profile.SecondaryClockReadOnlyRegisters,
+		QualcommSecondaryClockReadOnlyRegister{Offset: 0x0444, Value: 0},
+	)
+	return profile
+}
+
+func promoteQualcommLegacyUARTToMixedWidth(profile *BoardProfile, base uint32) {
+	wordOffsets := make(map[uint32]struct{}, len(qualcommLegacyUARTHalfwordRegisterOffsets))
+	for _, relative := range qualcommLegacyUARTHalfwordRegisterOffsets {
+		wordOffsets[base+relative] = struct{}{}
+	}
+	halfwordOffsets := make([]uint32, 0, len(profile.BootControlHalfwordOffsets))
+	for _, offset := range profile.BootControlHalfwordOffsets {
+		if _, promote := wordOffsets[offset]; promote {
+			profile.BootControlWritableOffsets = append(profile.BootControlWritableOffsets, offset)
+			profile.BootControlMixedWidthOffsets = append(profile.BootControlMixedWidthOffsets, offset)
+			continue
+		}
+		halfwordOffsets = append(halfwordOffsets, offset)
+	}
+	profile.BootControlHalfwordOffsets = halfwordOffsets
+}
+
+func samsungSCHSparseBusRegisterOffsets() []uint32 {
+	offsets := make([]uint32, 0, 128)
+	for _, span := range [][2]uint32{{0x240, 0x27c}, {0x280, 0x29c}, {0x2c0, 0x2dc}} {
+		for offset := span[0]; offset <= span[1]; offset += 4 {
+			offsets = append(offsets, offset)
+		}
+	}
+	offsets = append(offsets,
+		0x3a0, 0x3a4, 0x3a8, 0x3ac, 0x3b0, 0x3b4, 0x3b8, 0x3bc,
+		0x3c0, 0x3c4, 0x3c8, 0x3cc, 0x3d0,
+		0x3e0, 0x3e4, 0x3e8, 0x3ec, 0x3f0,
+	)
+	for column := uint32(0); column <= 0x200; column += 0x40 {
+		offsets = append(offsets, column+0x10)
+	}
+	for column := uint32(0x400); column <= 0x600; column += 0x40 {
+		for _, lane := range []uint32{0, 4, 8, 0x0c, 0x14} {
+			offsets = append(offsets, column+lane)
+		}
+	}
+	for column := uint32(0xc00); column <= 0xe00; column += 0x40 {
+		offsets = append(offsets, column+0x18, column+0x1c)
+	}
+	return offsets
+}
+
 // SCHW860DA06BoardProfile is the adjacent SCH-family board contract currently
 // evidenced by DA06's original QCSBL/OEMSBL. It deliberately clears the W830
 // keypad map: sharing a Qualcomm platform does not prove identical handset
@@ -1458,6 +2142,240 @@ func SCHW860DA06BoardProfile() BoardProfile {
 	profile.Keypad = nil
 	profile.PrimaryClockKeys = nil
 	return profile
+}
+
+// SCHW850CF11BoardProfile starts the modem ARM9 of the MSM7600 dual-processor
+// handset. The application processor remains outside this machine boundary;
+// the profiled boot path is the OEMSBL maintenance/download environment.
+func SCHW850CF11BoardProfile() BoardProfile {
+	profile := SCHW830DL21BoardProfile()
+	profile.ID = "samsung.sch-w850"
+	profile.PlatformID = "qualcomm.msm7600-modem-arm9"
+	profile.FirmwareBuildID = "samsung.sch-w850.cf11"
+	profile.NANDSize = 0x20000000
+	// The downloader package leaves the TFS4 control area erased. A newly
+	// provisioned handset carries an LPCH control marker there so QCSBL can
+	// derive the usable/reserved-block split before it loads OEMSBL. The marker
+	// is generated metadata; no firmware or user filesystem bytes are embedded.
+	profile.NANDInitialData = []FlashSeed{
+		{
+			Offset: 0x18e80000,
+			Data:   newQualcommFlexOneNANDControlHeader("UPCH"),
+		},
+		{
+			// A control header is active only when its following payload page is
+			// programmed. Zero denotes the generated empty bad-block map.
+			Offset: 0x18e81000,
+			Data:   []byte{0x00},
+		},
+		{
+			// Page 60's second 512-byte chunk is the FBA enumeration table. One
+			// unflagged record scans 0x400 blocks starting at FBA 0. An erased
+			// count retries past FBA 0x3ff, while an empty table suppresses the
+			// partition index construction entirely.
+			Offset: 0x18ebc20c,
+			Data: []byte{
+				0x01, 0x00, 0x00, 0x00, // record count
+				0x00, 0x00, 0x00, 0x00, // record tag and flags
+				0x00, 0x00, 0x00, 0x04, // start FBA and block count
+			},
+		},
+		{
+			// The terminal page of the control group is an all-zero sentinel.
+			// QCSBL locates it through the programmed OOB marker and requires
+			// the complete main page to compare equal to zero.
+			Offset: 0x18ebf000,
+			Data:   make([]byte, 0x1000),
+		},
+		{
+			Offset: 0x18f00000,
+			Data:   newQualcommFlexOneNANDControlHeader("LPCH"),
+		},
+		{
+			Offset: 0x18f01000,
+			Data:   []byte{0x00},
+		},
+		{
+			Offset: 0x18f3c20c,
+			Data: []byte{
+				0x01, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x04,
+			},
+		},
+		{
+			Offset: 0x18f3f000,
+			Data:   make([]byte, 0x1000),
+		},
+	}
+	// MSM7600 enables an identity mapping for its terminal high-IRAM section,
+	// while the inherited 0x78001000 MSM6xxx service-table address is absent
+	// from QCSBL's first-level page table. Keep the table adjacent to, but
+	// disjoint from, the PBL shared record in that mapped section.
+	profile.PBLServiceTableAddress = 0xffffe100
+	profile.PBLServiceTableHeaderSize = 0x30
+	profile.PBLHeaderFeatureDataAddress = 0xffffe0a0
+	profile.PBLHeaderFeatures = []QualcommPBLHeaderFeature{
+		{Selector: qualcommPBLHeaderFlashBlockCount, Value: 0x0400},
+		{Selector: qualcommPBLHeaderSLCBlockCount, Value: 0x0010},
+		{Selector: qualcommPBLHeaderBadBlockLimit, Value: 0x0014},
+	}
+	// QCSBL preserves a 0x68-byte record supplied by the missing PBL. Its
+	// entry stub receives r11 as the exclusive end of this bounded IRAM data.
+	profile.PBLSharedDataAddress = 0xffffe000
+	profile.PBLSharedDataSize = 0x68
+	profile.OneNAND = nil
+	profile.SFlashOneNAND = &QualcommSFlashOneNANDProfile{
+		Address:        0xa0a00000,
+		ManufacturerID: 0x00ec,
+		DeviceID:       0x0250,
+		TechnologyID:   1,
+		Capacity:       0x20000000,
+		FlexGeometry: &OneNANDFlexGeometry{
+			PageSize: 0x1000, BlockCount: 0x400, SLCBoundary: 0x0f,
+			SLCBlockSize: 0x40000, MLCBlockSize: 0x80000,
+		},
+		SpareInitialData: []FlashSeed{
+			{
+				// Raw FBA 0x325 page 0 (UPCH).
+				Offset: 0x00c74000,
+				Data:   []byte{0xff, 0xff, 0xa5, 0xa5},
+			},
+			{
+				// The programmed control payload on page 1 carries the same
+				// active-page marker while preserving the erased bad-block word.
+				Offset: 0x00c74080,
+				Data:   []byte{0xff, 0xff, 0xa5, 0xa5},
+			},
+			{
+				// Page 63 pairs the programmed OOB marker with the all-zero main
+				// sentinel seeded above.
+				Offset: 0x00c75f80,
+				Data:   []byte{0xff, 0xff, 0xa5, 0xa5},
+			},
+			{
+				// Raw FBA 0x326 page 0 (LPCH). The first word is the erased
+				// bad-block marker; 0xa5a5 identifies an active control page.
+				Offset: 0x00c78000,
+				Data:   []byte{0xff, 0xff, 0xa5, 0xa5},
+			},
+			{
+				Offset: 0x00c78080,
+				Data:   []byte{0xff, 0xff, 0xa5, 0xa5},
+			},
+			{
+				Offset: 0x00c79f80,
+				Data:   []byte{0xff, 0xff, 0xa5, 0xa5},
+			},
+		},
+	}
+	profile.BootControlAddress = 0xb8000000
+	profile.Keypad = nil
+	profile.PrimaryClockKeys = nil
+	profile.BootControlSBIReadResponses = nil
+	// MSM7600 retains this clock/interrupt control word as ordinary writable
+	// state during QCSBL startup.
+	profile.BootControlWritableOffsets = append(profile.BootControlWritableOffsets, 0x0840)
+	// At legacy INTCTL +0x04, MSM7600 exposes a readable control latch rather
+	// than the MSM6xxx write-only INT_CLEAR_1 register. QCSBL performs an
+	// explicit read/modify/write sequence, so override only this profiled word.
+	profile.BootControlInterruptWindowWritableOffsets = append(
+		profile.BootControlInterruptWindowWritableOffsets,
+		0x0904,
+	)
+	profile.BootControlGPIOInputs = append(
+		profile.BootControlGPIOInputs,
+		// MSM7600 reserves the legacy polarity-3 word as a fuse/status input.
+		// Reset-zero selects the unprovisioned modem configuration fallback.
+		QualcommGPIOInputRegister{Offset: 0x40, Value: 0},
+		// MSM7600 places an additional input/status word at legacy INTCTL
+		// +0x44. QCSBL tests bit 17 before consulting IRQ status bank 1; no
+		// external source is asserted during deterministic cold boot.
+		QualcommGPIOInputRegister{Offset: 0x44, Value: 0},
+	)
+	profile.BootControlReadOnlyRegisters = append(
+		profile.BootControlReadOnlyRegisters,
+		// The OEMSBL control sequence polls this completion word after
+		// programming +0x200/+0x204. Reset-zero reports an idle controller.
+		QualcommBootReadOnlyRegister{Offset: 0x0218, Value: 0},
+	)
+	// This QCSBL keeps its fatal-record header at 0xfffef000 and copies the
+	// final 32-byte scatter record to 0xfffeffe0. Both fall inside the final,
+	// bounded 4 KiB page of the MSM7600 modem IRAM bank.
+	profile.Memory = append(profile.Memory, MemoryRegionProfile{
+		ID: "msm7600-qcsbl-iram-page", Kind: MemoryRAM,
+		Address: 0xfffef000, Size: 0x00001000,
+	})
+	// Retain the two bounded MSM7600 clock banks discovered during QCSBL
+	// initialization; unrelated addresses remain unowned.
+	profile.LatchedRegisterWindows = append(profile.LatchedRegisterWindows, LatchedRegisterWindowProfile{
+		// The QCSBL clock bootstrap writes the +0x0c/+0x10/+0x14 control
+		// triplet and +0x84 selector, then updates the base and +0x210 mode
+		// words in the same compact register bank.
+		ID: "msm7600-clock-bootstrap", Address: 0xa8600000,
+		Size: 0x00000214, Width: Width32,
+	}, LatchedRegisterWindowProfile{
+		// QCSBL's static clock table builds four runtime banks from these exact
+		// 1 KiB apertures before enabling the modem clock domains.
+		ID: "msm7600-modem-clock-bank-0", Address: 0xa9400000,
+		Size: 0x00000400, Width: Width32,
+	}, LatchedRegisterWindowProfile{
+		ID: "msm7600-modem-clock-bank-1", Address: 0xa9500400,
+		Size: 0x00000400, Width: Width32,
+	}, LatchedRegisterWindowProfile{
+		ID: "msm7600-modem-clock-bank-2", Address: 0xa9600800,
+		Size: 0x00000400, Width: Width32,
+	}, LatchedRegisterWindowProfile{
+		ID: "msm7600-modem-clock-bank-3", Address: 0xa9700c00,
+		Size: 0x00000400, Width: Width32,
+	}, LatchedRegisterWindowProfile{
+		// The clock-control path updates base/+0x04/+0x0c and publishes its
+		// completion/mode words at +0x834/+0x838 in this bank.
+		ID: "msm7600-clock-control", Address: 0xb0007000,
+		Size: 0x0000083c, Width: Width32,
+	}, LatchedRegisterWindowProfile{
+		// The application-side branches of the same clock table build aligned
+		// addresses from +0x000 through the observed +0xf08 words.
+		ID: "msm7600-app-clock-bank", Address: 0xb0400000,
+		Size: 0x00001000, Width: Width32,
+	})
+	profile.LatchedRegisters = append(profile.LatchedRegisters, LatchedRegisterProfile{
+		ID: "msm7600-delay-progress", Address: 0xb8200000,
+		Width: Width32,
+	}, LatchedRegisterProfile{
+		// Revision 1 selects the PBL service-table ABI carried in r7/r8. A
+		// reset-zero value selects the older link-time feature pointer instead,
+		// which this MSM7600 QCSBL does not receive from its mask ROM handoff.
+		ID: "msm7600-hardware-revision", Address: 0xa9000270,
+		Width: Width32, ResetValue: 0x10000000,
+	}, LatchedRegisterProfile{
+		// The QCSBL clock initialiser publishes selector 9 through this single
+		// MSM7600 control word before it starts the remaining clock sequence.
+		ID: "msm7600-clock-selector", Address: 0xa8500004,
+		Width: Width32,
+	})
+	return profile
+}
+
+func newQualcommFlexOneNANDControlHeader(magic string) []byte {
+	// This is the first-generation header emitted by the Qualcomm flash
+	// manager for an empty control map: no previous control blocks, generation
+	// one for the selected half and globally, and the detected 1x1x0x400
+	// Flex-OneNAND geometry. The halfword following the reserved-block count is
+	// left erased, matching a freshly programmed header page.
+	header := []byte{
+		0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00,
+		0x01, 0x00, 0xff, 0xff,
+		0x01, 0x00, 0x00, 0x00,
+		0x01, 0x00, 0x00, 0x00,
+		0x01, 0x00, 0x00, 0x00,
+		0x01, 0x00, 0x00, 0x00,
+		0x00, 0x04, 0x00, 0x00,
+		0x00, 0x04, 0x00, 0x00,
+	}
+	copy(header, magic)
+	return header
 }
 
 func validProfileID(value string) bool {

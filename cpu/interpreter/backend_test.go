@@ -10,6 +10,11 @@ import (
 	"github.com/mirusu400/aram-core/cpu"
 )
 
+type backendConstructor struct {
+	name string
+	new  func() *Backend
+}
+
 func TestThumbExecutesIntegerAndStackInstructions(t *testing.T) {
 	backend := New()
 	mapCodeAndStack(t, backend)
@@ -69,6 +74,37 @@ func TestARMExecutesDataProcessing(t *testing.T) {
 	}
 	if got := register(t, backend, cpu.RegisterR0); got != 12 {
 		t.Fatalf("r0 = %d, want 12", got)
+	}
+}
+
+func TestARMORRShiftReadsSourceBeforeWritingAliasedDestination(t *testing.T) {
+	for _, constructor := range armExecutionTierConstructors() {
+		t.Run(constructor.name, func(t *testing.T) {
+			backend := constructor.new()
+			defer backend.Close()
+			mapCodeAndStack(t, backend)
+			code := make([]byte, 5*4)
+			for index, instruction := range []uint32{
+				0xe3a020ff, // mov r2, #0xff
+				0xe182c402, // orr r12, r2, r2, lsl #8
+				0xe18cc802, // orr r12, r12, r2, lsl #16
+				0xe18c2c02, // orr r2, r12, r2, lsl #24
+				0xe1200070, // bkpt
+			} {
+				binary.LittleEndian.PutUint32(code[index*4:], instruction)
+			}
+			if err := backend.WriteMemory(0x1000, code); err != nil {
+				t.Fatal(err)
+			}
+
+			result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 8)
+			if result.Err != nil || result.Reason != cpu.StopBreakpoint || result.Instructions != 5 {
+				t.Fatalf("result = %+v", result)
+			}
+			if got := register(t, backend, cpu.RegisterR2); got != 0xffffffff {
+				t.Fatalf("r2 = 0x%08x, want 0xffffffff", got)
+			}
+		})
 	}
 }
 
@@ -970,6 +1006,83 @@ func TestARMHalfwordAndSignedByteTransfers(t *testing.T) {
 	}
 	if got := binary.LittleEndian.Uint16(stored[:]); got != 0x1234 {
 		t.Fatalf("stored halfword = 0x%04x", got)
+	}
+}
+
+func TestARMDoublewordTransfersAcrossExecutionTiers(t *testing.T) {
+	for _, constructor := range armExecutionTierConstructors() {
+		t.Run(constructor.name, func(t *testing.T) {
+			backend := constructor.new()
+			defer backend.Close()
+			mapCodeAndStack(t, backend)
+			code := make([]byte, 5*4)
+			for index, instruction := range []uint32{
+				0xe1cd82d8, // ldrd r8, r9, [sp, #0x28]
+				0xe1cd80f8, // strd r8, r9, [sp, #8]
+				0xe0c140d8, // ldrd r4, r5, [r1], #8
+				0xe16261f0, // strd r6, r7, [r2, #-16]!
+				0xe1200070, // bkpt
+			} {
+				binary.LittleEndian.PutUint32(code[index*4:], instruction)
+			}
+			if err := backend.WriteMemory(0x1000, code); err != nil {
+				t.Fatal(err)
+			}
+			for address, values := range map[uint32][2]uint32{
+				0x2028: {0x11223344, 0x55667788},
+				0x2100: {0x89abcdef, 0x01234567},
+			} {
+				encoded := make([]byte, 8)
+				binary.LittleEndian.PutUint32(encoded[0:4], values[0])
+				binary.LittleEndian.PutUint32(encoded[4:8], values[1])
+				if err := backend.WriteMemory(address, encoded); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for registerID, value := range map[uint32]uint32{
+				cpu.RegisterSP: 0x2000,
+				cpu.RegisterR1: 0x2100,
+				cpu.RegisterR2: 0x2200,
+				cpu.RegisterR6: 0xaabbccdd,
+				cpu.RegisterR7: 0xeeff0011,
+			} {
+				if err := backend.WriteRegister(registerID, value); err != nil {
+					t.Fatal(err)
+				}
+			}
+			result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 8)
+			if result.Err != nil || result.Reason != cpu.StopBreakpoint || result.Instructions != 5 {
+				t.Fatalf("result = %+v", result)
+			}
+			for registerID, want := range map[uint32]uint32{
+				cpu.RegisterR1: 0x2108,
+				cpu.RegisterR2: 0x21f0,
+				cpu.RegisterR4: 0x89abcdef,
+				cpu.RegisterR5: 0x01234567,
+				cpu.RegisterR8: 0x11223344,
+				cpu.RegisterR9: 0x55667788,
+			} {
+				if got := register(t, backend, registerID); got != want {
+					t.Fatalf("register %d = %#x, want %#x", registerID, got, want)
+				}
+			}
+			for address, want := range map[uint32][2]uint32{
+				0x2008: {0x11223344, 0x55667788},
+				0x21f0: {0xaabbccdd, 0xeeff0011},
+			} {
+				encoded := make([]byte, 8)
+				if err := backend.ReadMemory(address, encoded); err != nil {
+					t.Fatal(err)
+				}
+				got := [2]uint32{
+					binary.LittleEndian.Uint32(encoded[0:4]),
+					binary.LittleEndian.Uint32(encoded[4:8]),
+				}
+				if got != want {
+					t.Fatalf("memory %#x = %#x, want %#x", address, got, want)
+				}
+			}
+		})
 	}
 }
 

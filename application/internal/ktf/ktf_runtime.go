@@ -254,6 +254,7 @@ type Runtime struct {
 	clockReadBaseTick uint64
 	clockReadInstrs   uint64
 	clockReadOffset   uint64
+	clockReadFloor    uint64
 
 	NativeParameterBase uint32
 	parameterScratch    [4]byte
