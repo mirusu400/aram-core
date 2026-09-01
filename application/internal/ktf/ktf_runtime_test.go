@@ -21,6 +21,7 @@ import (
 	"github.com/mirusu400/aram-core/cpu"
 	"github.com/mirusu400/aram-core/cpu/interpreter"
 	"github.com/mirusu400/aram-core/loader/ktf"
+	"github.com/mirusu400/aram-core/profile"
 	shared "github.com/mirusu400/aram-core/runtime"
 )
 
@@ -387,6 +388,29 @@ func TestKTFFrameDurationTracksSixtyHertz(t *testing.T) {
 	}
 	if delta > time.Microsecond {
 		t.Fatalf("60 KTF frames advance %s, want approximately 1s", got)
+	}
+}
+
+func TestKTFGameActionNeverReportsANegativeAction(t *testing.T) {
+	// A game action indexes a title's key-state array. Handset keys with no
+	// game action must report 0, never their own negative key code.
+	for _, key := range []int32{
+		int32(profile.KeySend),
+		int32(profile.KeyEnd),
+		int32(profile.KeyPower),
+		int32(profile.KeyFlipDown),
+		int32(profile.KeyFlipUp),
+		-9,
+		-99,
+	} {
+		if got := int32(ktfGameAction(key)); got != 0 {
+			t.Errorf("getGameAction(%d) = %d, want 0", key, got)
+		}
+	}
+	for key := int32(-128); key <= 128; key++ {
+		if got := int32(ktfGameAction(key)); got < 0 {
+			t.Errorf("getGameAction(%d) = %d, want a non-negative action", key, got)
+		}
 	}
 }
 
