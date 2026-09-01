@@ -46,11 +46,17 @@ type thumbMicroInstr struct {
 	op  thumbInstructionClass
 }
 
+type jitCountedLoop struct {
+	register     uint32
+	instructions uint8
+}
+
 type jitBlock struct {
-	start uint32
-	end   uint32
-	arm   []jitInstr
-	thumb []thumbMicroInstr
+	start       uint32
+	end         uint32
+	arm         []jitInstr
+	thumb       []thumbMicroInstr
+	countedLoop *jitCountedLoop
 }
 
 const jitMaxBlock = 256
@@ -318,6 +324,14 @@ outer:
 			}
 			continue
 		}
+		// The nil check keeps the un-accelerated JIT free of a non-inlinable
+		// call per translated block; countedLoop is only ever populated when
+		// loop acceleration is enabled.
+		if block.countedLoop != nil {
+			executed += b.accelerateCountedLoop(
+				block, limit-executed, wholeSystem, hasExecutionTraps, traced,
+			)
+		}
 		blockInstructions := len(block.thumb)
 		if remaining := limit - executed; uint64(blockInstructions) > remaining {
 			blockInstructions = int(remaining)
@@ -460,5 +474,9 @@ func (b *Backend) translateThumbBlock(pc uint32) *jitBlock {
 	if len(instrs) == 0 {
 		return nil
 	}
-	return &jitBlock{start: pc, end: cur, thumb: instrs}
+	block := &jitBlock{start: pc, end: cur, thumb: instrs}
+	if b.loopAcceleration {
+		block.countedLoop = classifyThumbCountedLoop(block)
+	}
+	return block
 }

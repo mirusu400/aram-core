@@ -21,6 +21,7 @@ import (
 	"github.com/mirusu400/aram-core/cpu"
 	"github.com/mirusu400/aram-core/cpu/interpreter"
 	"github.com/mirusu400/aram-core/loader/ktf"
+	"github.com/mirusu400/aram-core/profile"
 	shared "github.com/mirusu400/aram-core/runtime"
 )
 
@@ -61,6 +62,81 @@ func TestKTFRuntimeMapsAndCallsClientEntry(t *testing.T) {
 	}
 	if bss != [4]byte{} {
 		t.Fatalf("BSS is not zero: %x", bss)
+	}
+}
+
+// TestKTFRuntimeMapsLowWorkRAM pins the low-address application RAM window a KTF
+// handset kept between the host-call page and the heap. 티어즈 오브 메탈 derefs a
+// save-embedded absolute pointer (0x01d14250) that lands here, so the span must
+// be mapped read-write or the title aborts the VM as its save loads.
+func TestKTFRuntimeMapsLowWorkRAM(t *testing.T) {
+	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin4096",
+		BSSSize:    4096,
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.CPU.Close()
+	if err := runtime.MapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	const tearsOfMetalSavePointer = uint32(0x01d14250)
+	if tearsOfMetalSavePointer < LowWorkRAMBase ||
+		tearsOfMetalSavePointer >= LowWorkRAMBase+LowWorkRAMSize {
+		t.Fatalf("save pointer 0x%08x is outside low work RAM [0x%08x, 0x%08x)",
+			tearsOfMetalSavePointer, LowWorkRAMBase, LowWorkRAMBase+LowWorkRAMSize)
+	}
+	for _, address := range []uint32{
+		LowWorkRAMBase,
+		tearsOfMetalSavePointer,
+		LowWorkRAMBase + LowWorkRAMSize - 4,
+	} {
+		want := []byte{0xde, 0xad, 0xbe, 0xef}
+		if err := runtime.CPU.WriteMemory(address, want); err != nil {
+			t.Fatalf("write 0x%08x: %v", address, err)
+		}
+		got := make([]byte, 4)
+		if err := runtime.CPU.ReadMemory(address, got); err != nil {
+			t.Fatalf("read 0x%08x: %v", address, err)
+		}
+		if string(got) != string(want) {
+			t.Fatalf("0x%08x round-trip = % x, want % x", address, got, want)
+		}
+	}
+}
+
+// TestKTFMonotonicReadCreditsBusyWaitInstructions pins the busy-wait clock
+// break. Virtual time is frozen inside a host call, so a title that spins
+// reading the millisecond clock waiting for it to advance (헬싱's handleInput
+// delay) would never end. monotonicReadMS credits the instructions the guest
+// ran between two reads as elapsed time, while an ordinary once-per-frame read
+// is left exactly at TickMS.
+func TestKTFMonotonicReadCreditsBusyWaitInstructions(t *testing.T) {
+	r := &Runtime{TickMS: 1000}
+	if got := r.monotonicReadMS(); got != 1000 {
+		t.Fatalf("first read = %d, want 1000", got)
+	}
+	// A delay loop burns ~250k instructions between reads (2 virtual ms each).
+	r.TotalInstructions += 2 * ktfBusyWaitInstrsPerMS
+	if got := r.monotonicReadMS(); got != 1002 {
+		t.Fatalf("read after 2ms of work = %d, want 1002", got)
+	}
+	r.TotalInstructions += 5 * ktfBusyWaitInstrsPerMS
+	if got := r.monotonicReadMS(); got != 1007 {
+		t.Fatalf("read after 5ms more work = %d, want 1007", got)
+	}
+	// A handful of instructions between reads credits nothing, so an ordinary
+	// sampling read does not drift.
+	r.TotalInstructions += 100
+	if got := r.monotonicReadMS(); got != 1007 {
+		t.Fatalf("read after trivial work = %d, want 1007", got)
+	}
+	// A quantum advancing the real clock resets the credit.
+	r.TickMS = 1016
+	if got := r.monotonicReadMS(); got != 1016 {
+		t.Fatalf("read after quantum = %d, want 1016", got)
 	}
 }
 
@@ -387,6 +463,29 @@ func TestKTFFrameDurationTracksSixtyHertz(t *testing.T) {
 	}
 	if delta > time.Microsecond {
 		t.Fatalf("60 KTF frames advance %s, want approximately 1s", got)
+	}
+}
+
+func TestKTFGameActionNeverReportsANegativeAction(t *testing.T) {
+	// A game action indexes a title's key-state array. Handset keys with no
+	// game action must report 0, never their own negative key code.
+	for _, key := range []int32{
+		int32(profile.KeySend),
+		int32(profile.KeyEnd),
+		int32(profile.KeyPower),
+		int32(profile.KeyFlipDown),
+		int32(profile.KeyFlipUp),
+		-9,
+		-99,
+	} {
+		if got := int32(ktfGameAction(key)); got != 0 {
+			t.Errorf("getGameAction(%d) = %d, want 0", key, got)
+		}
+	}
+	for key := int32(-128); key <= 128; key++ {
+		if got := int32(ktfGameAction(key)); got < 0 {
+			t.Errorf("getGameAction(%d) = %d, want a non-negative action", key, got)
+		}
 	}
 }
 

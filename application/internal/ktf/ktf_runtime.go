@@ -18,9 +18,18 @@ import (
 )
 
 const (
-	ImageBase                  = uint32(0x00100000)
-	HostBase                   = uint32(0x01200000)
-	HostSize                   = uint32(0x00010000)
+	ImageBase = uint32(0x00100000)
+	HostBase  = uint32(0x01200000)
+	HostSize  = uint32(0x00010000)
+	// LowWorkRAM covers the low-address application RAM a KTF handset kept
+	// above the host-call page and below the megabyte-aligned heap. ARAM's map
+	// otherwise leaves that span unmapped, but titles address it absolutely:
+	// 티어즈 오브 메탈 ships a /res/save.sav whose stored pointer (0x01d14250)
+	// falls here, reads it back, and dereferences it directly, so an unmapped
+	// span aborts the whole VM the moment the save loads. Backing it with plain
+	// RAM lets those titles run.
+	LowWorkRAMBase             = uint32(0x01300000)
+	LowWorkRAMSize             = uint32(0x00d00000)
 	ktfReturnSentinel          = HostBase
 	ktfBootstrapInstructionMax = uint64(100_000_000)
 	ktfTaskStackSize           = uint32(0x00010000)
@@ -234,6 +243,17 @@ type Runtime struct {
 	deferredShownCards     map[*Task]map[uint32]bool
 	PresentCount           uint32
 	TickMS                 uint64
+	// The clock fields break a guest busy-wait on the millisecond clock. Virtual
+	// time only advances between presentation quanta, so a title that spins
+	// reading the clock inside one host call (헬싱's handleInput busy-delay)
+	// never sees time move and burns its whole instruction budget.
+	// monotonicReadMS credits the ActiveInstructions run between two clock reads
+	// as elapsed time so the wait ends, and clockReadBaseTick resets the credit
+	// whenever a quantum moves TickMS.
+	TotalInstructions uint64
+	clockReadBaseTick uint64
+	clockReadInstrs   uint64
+	clockReadOffset   uint64
 
 	NativeParameterBase uint32
 	parameterScratch    [4]byte

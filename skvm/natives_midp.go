@@ -175,6 +175,7 @@ func (vm *VM) canvasHeight() int {
 }
 
 func (vm *VM) installGraphicsNatives() {
+	vm.installMIDPGraphicsExtras()
 	vm.RegisterNative(
 		"javax/microedition/lcdui/Image",
 		"createImage",
@@ -628,6 +629,40 @@ func (vm *VM) installGraphicsNatives() {
 		"(IILjavax/microedition/lcdui/Image;IIIII)V",
 		nativeGraphics2DDrawImage,
 	)
+	vm.RegisterNative(
+		"com/skt/m/Graphics2D",
+		"getPixel",
+		"(II)I",
+		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+			state, err := vm.graphics(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			x, err := intArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			y, err := intArgument(args, 1)
+			if err != nil {
+				return Value{}, false, err
+			}
+			color, err := vm.services.Graphics.Pixel(
+				vm.serviceOwner,
+				state.surface,
+				x,
+				y,
+			)
+			if err != nil {
+				return Value{}, false, err
+			}
+			return IntValue(int32(
+				uint32(color.A)<<24 |
+					uint32(color.R)<<16 |
+					uint32(color.G)<<8 |
+					uint32(color.B),
+			)), true, nil
+		},
+	)
 }
 
 func (vm *VM) installDisplayCompatibilityNatives() {
@@ -886,6 +921,12 @@ func (vm *VM) installGraphicsCompatibilityNatives() {
 			return Value{}, false, err
 		}
 	}
+	vm.RegisterNative(
+		"javax/microedition/lcdui/Graphics",
+		"drawArc",
+		"(IIIIII)V",
+		arc(false),
+	)
 	vm.RegisterNative(
 		"javax/microedition/lcdui/Graphics",
 		"fillArc",

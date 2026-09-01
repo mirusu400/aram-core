@@ -377,6 +377,13 @@ func (m *Machine) pumpWIPICallbacks(
 				}
 				break
 			}
+		case shared.EventNetworkReady:
+			// Async socket data arrived: wake a guest that armed a read
+			// callback and is waiting for a server reply (the connect reply
+			// path fires its own callback directly at connect time).
+			if event.Name == "read" {
+				m.wipi.DeliverSocketRead(event.ServiceID)
+			}
 		}
 	}
 	callbacks = append(callbacks, m.wipi.PendingCallbacks...)

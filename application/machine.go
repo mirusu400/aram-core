@@ -81,6 +81,11 @@ type Factory struct {
 	// (106/238) for raptor titles. The composition root (aram-emu) injects an
 	// aram-authd backend; leaving it nil keeps the default behavior.
 	RaptorNet netauth.Backend
+	// OfflineCarrierAuth acknowledges LGT carrier billing-auth socket requests
+	// so an auth-gated title (테일즈위버's 게임시작 login) reaches gameplay offline
+	// instead of blocking on its connecting screen forever, the way a live
+	// carrier would answer. NewFactory enables it; set it false to opt out.
+	OfflineCarrierAuth bool
 	// FallbackFont selects the embedded handset bitmap font used to render
 	// guest text that has no glyphs of its own. Empty inherits the runtime
 	// default (galmuri9); "neodgm" selects the softer NeoDunggeunmo look.
@@ -102,6 +107,12 @@ func NewFactory() Factory {
 			X: 240,
 			Y: 320,
 		},
+		// The carrier billing servers are permanently shut down, so a handset
+		// today only ever meets the dead carrier ARAM emulates. Acknowledge its
+		// auth handshake by default; the responder only touches carrier-framed
+		// (0xffff) socket traffic, so titles that never talk to it are
+		// unaffected.
+		OfflineCarrierAuth: true,
 	}
 }
 
@@ -137,18 +148,19 @@ func (f Factory) Create(ctx context.Context, source machinecore.Source) (machine
 		size = image.Pt(240, 320)
 	}
 	machine := &Machine{
-		cpu:              backend,
-		state:            machinecore.StateEmpty,
-		runBudget:        budget,
-		ktfRunBudget:     f.KTFRunBudget,
-		memoryLimit:      memoryLimit,
-		frame:            image.NewRGBA(image.Rect(0, 0, size.X, size.Y)),
-		initialResources: guest.CloneSliceMap(f.Resources),
-		frameRunBudget:   frameBudget,
-		raptorNet:        f.RaptorNet,
-		fallbackFont:     f.FallbackFont,
-		audioMixMode:     f.AudioMixMode,
-		audioGeneration:  1,
+		cpu:                backend,
+		state:              machinecore.StateEmpty,
+		runBudget:          budget,
+		ktfRunBudget:       f.KTFRunBudget,
+		memoryLimit:        memoryLimit,
+		frame:              image.NewRGBA(image.Rect(0, 0, size.X, size.Y)),
+		initialResources:   guest.CloneSliceMap(f.Resources),
+		frameRunBudget:     frameBudget,
+		raptorNet:          f.RaptorNet,
+		offlineCarrierAuth: f.OfflineCarrierAuth,
+		fallbackFont:       f.FallbackFont,
+		audioMixMode:       f.AudioMixMode,
+		audioGeneration:    1,
 	}
 	if err := machine.Load(ctx, source); err != nil {
 		_ = backend.Close()
@@ -216,6 +228,7 @@ type Machine struct {
 	ktf                   *ktfrt.Runtime
 	raptor                *raptorrt.Runtime
 	raptorNet             netauth.Backend
+	offlineCarrierAuth    bool
 	fallbackFont          string
 	audioMixMode          bool
 	ktfStarted            bool

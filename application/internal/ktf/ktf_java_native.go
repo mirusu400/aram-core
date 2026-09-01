@@ -866,7 +866,7 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 				)
 			case "currentTimeMillis()J":
 				return runtime.javaLongResult(
-					runtime.TickMS,
+					runtime.monotonicReadMS(),
 				), nil
 			case "gc()V":
 				return 0, nil

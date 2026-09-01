@@ -50,8 +50,9 @@ var (
 type CPUBackendMode string
 
 const (
-	CPUBackendPrecise CPUBackendMode = "precise"
-	CPUBackendJIT     CPUBackendMode = "jit"
+	CPUBackendPrecise  CPUBackendMode = "precise"
+	CPUBackendJIT      CPUBackendMode = "jit"
+	CPUBackendJITLoops CPUBackendMode = "jit-loops"
 )
 
 // Identity contains only stable, privacy-safe machine selection facts.
@@ -68,12 +69,14 @@ type Identity struct {
 // Options customizes construction without changing board facts. A nil Backend
 // selects BackendMode, with an empty mode retaining the precise interpreter.
 // The constructed Machine owns and closes a supplied backend. Media, when
-// supplied, is restored before the first instruction executes.
+// supplied, is restored before the first instruction executes. Panel protocol
+// probing is diagnostic-only and remains disabled unless explicitly selected.
 type Options struct {
-	Backend       cpu.Backend
-	BackendMode   CPUBackendMode
-	RunnerQuantum uint64
-	Media         *MediaState
+	Backend            cpu.Backend
+	BackendMode        CPUBackendMode
+	RunnerQuantum      uint64
+	Media              *MediaState
+	ProbePanelProtocol bool
 }
 
 // MediaState is the persistent NAND state which survives a power cycle. Flash
@@ -129,6 +132,7 @@ type Machine struct {
 	nand           *system.QualcommNAND
 	oneNANDSpare   system.StatefulNANDSpareStorage
 	panel          *system.DCSPanelController
+	panelProbe     *system.LCDTransferProbe
 	keypad         *system.QualcommGPIOKeypad
 	primaryClock   *system.QualcommPrimaryClockControl
 	primaryKeys    map[string]system.QualcommPrimaryClockKeyProfile
@@ -654,6 +658,13 @@ func newSamsungQualcommMachine(
 	); err != nil {
 		return fail(err)
 	}
+	var panelProbe *system.LCDTransferProbe
+	if options.ProbePanelProtocol {
+		panelProbe = system.NewLCDTransferProbe()
+		if err := panelProbe.Attach(bus, panel); err != nil {
+			return fail(fmt.Errorf("attach %s panel protocol probe: %w", firmwareProfile.Model, err))
+		}
+	}
 	if err := backend.(cpu.SystemBusBackend).AttachSystemBus(bus); err != nil {
 		return fail(fmt.Errorf("attach %s physical bus: %w", firmwareProfile.Model, err))
 	}
@@ -707,7 +718,7 @@ func newSamsungQualcommMachine(
 		backend: backend, bus: bus, runner: runner, handoff: handoff,
 		flash: flash, secondaryFlash: secondaryFlash, nand: nand,
 		oneNANDSpare: oneNANDSpare,
-		panel:        dcsPanelController, keypad: keypad,
+		panel:        dcsPanelController, panelProbe: panelProbe, keypad: keypad,
 		primaryClock: primaryClock, primaryKeys: boardPrimaryClockKeys(board), audio: audio,
 		controls:                 boardControls(board),
 		resetCPUState:            append([]byte(nil), resetCPUState...),
@@ -818,6 +829,8 @@ func newInterpreterBackend(mode CPUBackendMode) (cpu.Backend, error) {
 		return interpreter.New(), nil
 	case CPUBackendJIT:
 		return interpreter.NewJIT(), nil
+	case CPUBackendJITLoops:
+		return interpreter.NewJITWithOptions(interpreter.JITOptions{LoopAcceleration: true}), nil
 	default:
 		return nil, fmt.Errorf("%w: CPU backend mode %q", ErrUnsupportedBackend, mode)
 	}
@@ -1189,6 +1202,19 @@ func (m *Machine) FrameRGB565() []uint16 {
 		return nil
 	}
 	return m.panel.FrameRGB565()
+}
+
+// PanelProtocolReport returns the cumulative diagnostic transfer inference
+// when the machine was constructed with Options.ProbePanelProtocol. The report
+// contains only addresses, standardized protocol facts, and bounded counters;
+// it does not retain pixel or firmware data.
+func (m *Machine) PanelProtocolReport() (system.LCDTransferReport, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.panelProbe == nil {
+		return system.LCDTransferReport{}, false
+	}
+	return m.panelProbe.Report(), true
 }
 
 // FrameSHA256 hashes the little-endian native RGB565 surface. It is useful for

@@ -412,6 +412,13 @@ func (r *Runtime) MapImageAndHost() error {
 	); err != nil {
 		return fmt.Errorf("map KTF guest heap: %w", err)
 	}
+	if err := r.CPU.Map(
+		LowWorkRAMBase,
+		LowWorkRAMSize,
+		cpu.PermissionRead|cpu.PermissionWrite,
+	); err != nil {
+		return fmt.Errorf("map KTF low work RAM: %w", err)
+	}
 	r.Heap = guest.NewHeap(r.CPU, guest.HeapBase, guest.HeapSize)
 	r.Mapped = true
 	return nil
@@ -429,6 +436,7 @@ func (r *Runtime) ResetMappedMemory() error {
 		{ImageBase, r.ImageSz, "client image"},
 		{guest.DefaultStackBase, guest.DefaultStackSize, "application stack"},
 		{HostBase, HostSize, "host-call page"},
+		{LowWorkRAMBase, LowWorkRAMSize, "low work RAM"},
 		{guest.HeapBase, guest.HeapSize, "guest heap"},
 	} {
 		if err := guest.ZeroMemory(r.CPU, region.address, region.size); err != nil {

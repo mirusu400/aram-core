@@ -351,17 +351,19 @@ func (saved ScopedContext) Restore(backend Backend) error {
 // behavior. Deltas around a frame expose cache-reset and translation costs
 // without enabling per-instruction tracing.
 type ExecutionStatistics struct {
-	SerializedContextSaves    uint64 `json:"serialized_context_saves"`
-	SerializedContextRestores uint64 `json:"serialized_context_restores"`
-	FastContextSaves          uint64 `json:"fast_context_saves"`
-	FastContextRestores       uint64 `json:"fast_context_restores"`
-	TranslationInvalidations  uint64 `json:"translation_invalidations"`
-	TranslatedBlocks          uint64 `json:"translated_blocks"`
-	TranslatedGuestBytes      uint64 `json:"translated_guest_bytes"`
-	TranslatedHostBytes       uint64 `json:"translated_host_bytes"`
-	NativeArenaResets         uint64 `json:"native_arena_resets"`
-	HostFrameCaptures         uint64 `json:"host_frame_captures"`
-	HostRegisterCommits       uint64 `json:"host_register_commits"`
+	SerializedContextSaves      uint64 `json:"serialized_context_saves"`
+	SerializedContextRestores   uint64 `json:"serialized_context_restores"`
+	FastContextSaves            uint64 `json:"fast_context_saves"`
+	FastContextRestores         uint64 `json:"fast_context_restores"`
+	TranslationInvalidations    uint64 `json:"translation_invalidations"`
+	TranslatedBlocks            uint64 `json:"translated_blocks"`
+	TranslatedGuestBytes        uint64 `json:"translated_guest_bytes"`
+	TranslatedHostBytes         uint64 `json:"translated_host_bytes"`
+	NativeArenaResets           uint64 `json:"native_arena_resets"`
+	HostFrameCaptures           uint64 `json:"host_frame_captures"`
+	HostRegisterCommits         uint64 `json:"host_register_commits"`
+	AcceleratedLoopIterations   uint64 `json:"accelerated_loop_iterations"`
+	AcceleratedLoopInstructions uint64 `json:"accelerated_loop_instructions"`
 }
 
 type ExecutionStatisticsBackend interface {

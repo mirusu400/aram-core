@@ -112,8 +112,12 @@ func (vm *VM) installDataIONatives() {
 	}{
 		{"readBoolean", "()Z", 1, func(data []byte) Value { return boolValue(data[0] != 0) }},
 		{"readByte", "()B", 1, func(data []byte) Value { return IntValue(int32(int8(data[0]))) }},
+		{"readUnsignedByte", "()I", 1, func(data []byte) Value { return IntValue(int32(data[0])) }},
 		{"readShort", "()S", 2, func(data []byte) Value {
 			return IntValue(int32(int16(binary.BigEndian.Uint16(data))))
+		}},
+		{"readUnsignedShort", "()I", 2, func(data []byte) Value {
+			return IntValue(int32(binary.BigEndian.Uint16(data)))
 		}},
 		{"readInt", "()I", 4, func(data []byte) Value {
 			return IntValue(int32(binary.BigEndian.Uint32(data)))

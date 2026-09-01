@@ -732,17 +732,47 @@ func ktfKernelExit(
 	return 0, nil
 }
 
+// ktfBusyWaitInstrsPerMS models the CPU throughput a busy-wait delay loop was
+// calibrated against: roughly a mid-2000s ARM9 at ~100 MIPS. monotonicReadMS
+// credits one virtual millisecond per this many instructions the guest ran
+// between two clock reads. Ordinary reads are a few hundred instructions apart
+// and stay at the same value; a delay loop runs tens of millions of
+// instructions between reads and so advances quickly.
+const ktfBusyWaitInstrsPerMS = uint64(100_000)
+
+// monotonicReadMS returns the millisecond clock for a guest read. Virtual time
+// is frozen for the duration of a host call, so a guest busy-wait that spins
+// until the clock advances would never end and would burn its whole
+// instruction budget. To break that, the read credits the instructions the
+// current host call ran since the previous read as elapsed virtual time. The
+// real TickMS is left untouched (the presentation clock and timers are
+// unaffected); the credit resets whenever a quantum advances TickMS.
+func (r *Runtime) monotonicReadMS() uint64 {
+	if r.TickMS != r.clockReadBaseTick {
+		r.clockReadBaseTick = r.TickMS
+		r.clockReadInstrs = r.TotalInstructions
+		r.clockReadOffset = 0
+		return r.TickMS
+	}
+	if r.TotalInstructions > r.clockReadInstrs {
+		r.clockReadOffset += (r.TotalInstructions - r.clockReadInstrs) / ktfBusyWaitInstrsPerMS
+	}
+	r.clockReadInstrs = r.TotalInstructions
+	return r.TickMS + r.clockReadOffset
+}
+
 func ktfKernelCurrentTime(
 	_ context.Context,
 	runtime *Runtime,
 ) (uint32, error) {
+	now := runtime.monotonicReadMS()
 	if err := runtime.CPU.WriteRegister(
 		cpu.RegisterR1,
-		uint32(runtime.TickMS>>32),
+		uint32(now>>32),
 	); err != nil {
 		return 0, err
 	}
-	return uint32(runtime.TickMS), nil
+	return uint32(now), nil
 }
 
 func ktfKernelGetSystemProperty(

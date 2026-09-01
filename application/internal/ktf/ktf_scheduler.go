@@ -115,6 +115,7 @@ func (r *Runtime) call(
 		r.inspectMemo.reset()
 		run := r.CPU.Run(ctx, pc, mode, instructionLimit-instructions)
 		instructions += run.Instructions
+		r.TotalInstructions += run.Instructions
 		run.Instructions = instructions
 		result = run
 		if run.Err != nil {
@@ -738,6 +739,7 @@ func (r *Runtime) RunTaskSlice(
 		run := r.CPU.Run(ctx, pc, mode, runBudget)
 		instructions += run.Instructions
 		r.ActiveInstructions = instructions
+		r.TotalInstructions += run.Instructions
 		run.Instructions = instructions
 		if run.Err != nil {
 			task.lastYieldReason = "fault"

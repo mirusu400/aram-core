@@ -864,6 +864,52 @@ func TestWIPIRuntimeGraphicsPixelOperationUsesCallbackResult(t *testing.T) {
 	}
 }
 
+// TestWIPIRuntimeRaptorPixelOperationSwapsArguments pins the LGT Raptor pixel
+// operation ABI. The public Samsung model calls op(srcPixel, dstPixel, param)
+// (see the sibling test), but Raptor Clets - 판타지포에버3's color-keyed sprite
+// blit - expect the destination pixel first. CompactGraphicsContext, which the
+// Raptor runtime also sets for the divergent context struct, selects the order.
+func TestWIPIRuntimeRaptorPixelOperationSwapsArguments(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	runtime.CompactGraphicsContext = true
+	screen := dispatchPublicAPI(t, runtime, "MC_grpGetScreenFrameBuffer", 0).Low
+	contextAddress, err := runtime.Heap.Allocate(60, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatchPublicAPI(t, runtime, "MC_grpInitContext", contextAddress)
+	setContextValue := func(index uint32, value uint32) {
+		t.Helper()
+		dispatchPublicAPI(t, runtime, "MC_grpSetContext", contextAddress, index, value)
+	}
+	setContextValue(1, 0x00123456) // foreground (source) pixel
+	setContextValue(5, 0x02000001) // pixel operation callback
+	setContextValue(6, ^uint32(6)) // pixel parameter (-7)
+
+	var callback GuestCallback
+	runtime.InvokeSync = func(_ context.Context, current GuestCallback) (uint32, error) {
+		callback = current
+		return 0x00abcdef, nil
+	}
+	dispatchPublicAPI(t, runtime, "MC_grpPutPixel", screen, 2, 3, contextAddress)
+
+	// Raptor order: destination first (0, the cleared screen), then the source.
+	if callback.Procedure != 0x02000001 ||
+		callback.Args[0] != 0 ||
+		callback.Args[1] != 0x00123456 ||
+		int32(callback.Args[2]) != -7 {
+		t.Fatalf("pixel callback = %+v", callback)
+	}
+	framebuffer := runtime.Framebuffers[screen]
+	pixel, err := runtime.ReadU32(framebuffer.Pixels + uint32(3*framebuffer.Width+2)*4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pixel != 0x00abcdef {
+		t.Fatalf("pixel callback result = 0x%08x", pixel)
+	}
+}
+
 func TestWIPIRuntimeTreatsMalformedModeledCallsAsImplemented(t *testing.T) {
 	runtime := newPublicRuntime(t)
 	result := dispatchPublicAPI(t, runtime, "MC_grpCreateImage")
@@ -2205,5 +2251,155 @@ func TestWIPIRuntimeImagesDoNotConsumeServiceSurfaces(t *testing.T) {
 	)
 	if _, mirrored := runtime.surfaceServices[descriptor.framebuffer]; !mirrored {
 		t.Fatal("encoding a framebuffer did not materialize its surface")
+	}
+}
+
+// smfTestScore builds the smallest standard MIDI file the media service will
+// decode: one track that holds a single note long enough to sound.
+func smfTestScore() []byte {
+	track := []byte{
+		0x00, 0x90, 0x40, 0x64, // note on, middle E, velocity 100
+		0x83, 0x00, 0x80, 0x40, 0x00, // note off half a second later
+		0x00, 0xff, 0x2f, 0x00, // end of track
+	}
+	score := []byte{
+		'M', 'T', 'h', 'd', 0x00, 0x00, 0x00, 0x06,
+		0x00, 0x00, // format 0
+		0x00, 0x01, // one track
+		0x01, 0xe0, // 480 ticks per quarter note
+		'M', 'T', 'r', 'k',
+	}
+	score = binary.BigEndian.AppendUint32(score, uint32(len(track)))
+	return append(score, track...)
+}
+
+// mediaOutputIsAudible advances the media timeline and reports whether the mix
+// carried anything but silence.
+func mediaOutputIsAudible(t *testing.T, runtime *Runtime) bool {
+	t.Helper()
+	for range 8 {
+		if err := runtime.Services.AdvanceFrame(runtime.ServiceOwner); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, sample := range runtime.Services.Media.Drain().PCM16 {
+		if sample > 64 || sample < -64 {
+			return true
+		}
+	}
+	return false
+}
+
+// MC_mdaSetMuteState names one of the handset's own sound sources - the key
+// tone and the rest of the system beeps - not the application's clips. LGT
+// titles mute a source for the length of their run and restore it on the way
+// out: 제노니아1 saves MC_mdaGetMuteState(6) before muting source 6, and
+// 테일즈위버 막시민편 mutes source 0 once during init and never unmutes it.
+// Folding those into the mixer's master mute silenced the title's own music
+// for the whole session (aram-core #119).
+func TestMediaMuteStateDoesNotSilenceTheTitlesOwnClips(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	score := smfTestScore()
+	mediaType, err := runtime.Heap.Allocate(32, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.writeCString(mediaType, []byte("audio/midi"), -1); err != nil {
+		t.Fatal(err)
+	}
+	source, err := runtime.Heap.Allocate(uint32(len(score))+16, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.CPU.WriteMemory(source, score); err != nil {
+		t.Fatal(err)
+	}
+
+	clip := dispatchPublicAPI(
+		t,
+		runtime,
+		"MC_mdaClipCreate",
+		mediaType,
+		uint32(len(score)),
+		0,
+	).Low
+	if clip == 0 {
+		t.Fatal("media clip is null")
+	}
+	if got := dispatchPublicAPI(
+		t,
+		runtime,
+		"MC_mdaClipPutData",
+		clip,
+		source,
+		uint32(len(score)),
+	).Low; got != uint32(len(score)) {
+		t.Fatalf("MC_mdaClipPutData = %d, want %d", got, len(score))
+	}
+
+	dispatchPublicAPI(t, runtime, "MC_mdaSetMuteState", 0, 1)
+	dispatchPublicAPI(t, runtime, "MC_mdaSetMuteState", 6, 1)
+	dispatchPublicAPI(t, runtime, "MC_mdaPlay", clip, 1)
+	if !mediaOutputIsAudible(t, runtime) {
+		t.Fatal("a muted handset sound source silenced the title's own clip")
+	}
+
+	// The save-and-restore pattern depends on the flags reading back.
+	for _, muted := range []uint32{0, 6} {
+		if got := dispatchPublicAPI(t, runtime, "MC_mdaGetMuteState", muted).Low; got != 1 {
+			t.Fatalf("MC_mdaGetMuteState(%d) = %d, want 1", muted, got)
+		}
+	}
+	if got := dispatchPublicAPI(t, runtime, "MC_mdaGetMuteState", 3).Low; got != 0 {
+		t.Fatalf("MC_mdaGetMuteState(3) = %d, want 0", got)
+	}
+	dispatchPublicAPI(t, runtime, "MC_mdaSetMuteState", 6, 0)
+	if got := dispatchPublicAPI(t, runtime, "MC_mdaGetMuteState", 6).Low; got != 0 {
+		t.Fatalf("MC_mdaGetMuteState(6) after restore = %d, want 0", got)
+	}
+}
+
+// MC_mdaSetVolume is the master volume an option screen drives, so it still
+// has to be able to silence playback outright.
+func TestMediaSetVolumeStillGatesPlayback(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	score := smfTestScore()
+	mediaType, err := runtime.Heap.Allocate(32, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.writeCString(mediaType, []byte("audio/midi"), -1); err != nil {
+		t.Fatal(err)
+	}
+	source, err := runtime.Heap.Allocate(uint32(len(score))+16, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.CPU.WriteMemory(source, score); err != nil {
+		t.Fatal(err)
+	}
+	clip := dispatchPublicAPI(
+		t,
+		runtime,
+		"MC_mdaClipCreate",
+		mediaType,
+		uint32(len(score)),
+		0,
+	).Low
+	if clip == 0 {
+		t.Fatal("media clip is null")
+	}
+	dispatchPublicAPI(t, runtime, "MC_mdaClipPutData", clip, source, uint32(len(score)))
+	dispatchPublicAPI(t, runtime, "MC_mdaSetVolume", 0)
+	dispatchPublicAPI(t, runtime, "MC_mdaPlay", clip, 1)
+	if mediaOutputIsAudible(t, runtime) {
+		t.Fatal("MC_mdaSetVolume(0) left the clip sounding")
+	}
+	if got := dispatchPublicAPI(t, runtime, "MC_mdaGetVolume").Low; got != 0 {
+		t.Fatalf("MC_mdaGetVolume = %d, want 0", got)
+	}
+	dispatchPublicAPI(t, runtime, "MC_mdaSetVolume", 100)
+	if !mediaOutputIsAudible(t, runtime) {
+		t.Fatal("restoring the master volume left the clip silent")
 	}
 }

@@ -438,6 +438,7 @@ func snapshotNative(
 		return nativeState{
 			Kind: "graphics", Width: int32(state.width), Height: int32(state.height),
 			Service: state.surface, Service2: state.font, Color: state.color,
+			Integer: state.stroke,
 		}, nil
 	case *dataInputState:
 		return nativeState{Kind: "data-input", Reference: state.stream}, nil
@@ -981,6 +982,7 @@ func restoreNative(saved nativeState) (any, nativeLink, error) {
 		return &graphicsState{
 			width: int(saved.Width), height: int(saved.Height),
 			surface: saved.Service, font: saved.Service2, color: saved.Color,
+			stroke: saved.Integer,
 		}, nativeLink{}, nil
 	case "data-input":
 		return &dataInputState{stream: saved.Reference}, nativeLink{}, nil
