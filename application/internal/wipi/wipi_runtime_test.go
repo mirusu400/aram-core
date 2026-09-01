@@ -2446,3 +2446,46 @@ func TestWIPIRuntimeDisplayInfoReturnValueFollowsTheVendor(t *testing.T) {
 		t.Fatalf("MC_grpGetDisplayInfo(0, NULL) = 0x%08x", result.Low)
 	}
 }
+
+// TestWIPIRuntimeIsExistUsesTheResultConvention pins MC_fsIsExist to the
+// authorized reference: it answers M_SUCCESS for an entry that is there and
+// M_E_NOENT for one that is not, the same convention every other MC_fs entry
+// point uses. The runtime used to answer a 1/0 boolean, which reads as exactly
+// the opposite - 하이브리드2 probes for its "main.dat" download, takes the zero a
+// missing file returned as success, and then copies out of a stream buffer it
+// never filled, faulting the machine on a null source (issue #124).
+func TestWIPIRuntimeIsExistUsesTheResultConvention(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	pathAddress, err := runtime.Heap.Allocate(32, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.writeCString(pathAddress, []byte("save/present.dat"), -1); err != nil {
+		t.Fatal(err)
+	}
+	if got := dispatchPublicAPI(t, runtime, "MC_fsIsExist", pathAddress, 0).Low; got != fsNoEntry {
+		t.Fatalf("MC_fsIsExist before creation = 0x%08x, want 0x%08x", got, uint32(fsNoEntry))
+	}
+	fd := int32(dispatchPublicAPI(t, runtime, "MC_fsOpen", pathAddress, 8, 0).Low)
+	if fd < 3 {
+		t.Fatalf("MC_fsOpen descriptor = %d", fd)
+	}
+	if got := dispatchPublicAPI(t, runtime, "MC_fsClose", uint32(fd)).Low; got != 0 {
+		t.Fatalf("MC_fsClose = %d", got)
+	}
+	if got := dispatchPublicAPI(t, runtime, "MC_fsIsExist", pathAddress, 0).Low; got != 0 {
+		t.Fatalf("MC_fsIsExist after creation = 0x%08x, want 0", got)
+	}
+	// A missing file's open reports the same code, so a guest that compares
+	// the two results against one constant stays consistent.
+	missingAddress, err := runtime.Heap.Allocate(32, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.writeCString(missingAddress, []byte("save/absent.dat"), -1); err != nil {
+		t.Fatal(err)
+	}
+	if got := dispatchPublicAPI(t, runtime, "MC_fsOpen", missingAddress, 1, 0).Low; got != fsNoEntry {
+		t.Fatalf("MC_fsOpen of a missing file = 0x%08x, want 0x%08x", got, uint32(fsNoEntry))
+	}
+}
