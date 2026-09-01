@@ -63,7 +63,7 @@ func (vm *VM) installDataIONatives() {
 		"java/io/DataOutputStream",
 		"write",
 		"([B)V",
-		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+		func(ctx context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
 			reference, err := referenceArgument(args, 0)
 			if err != nil {
 				return Value{}, false, err
@@ -72,19 +72,19 @@ func (vm *VM) installDataIONatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
-			return Value{}, false, vm.dataOutputWrite(receiver, data)
+			return Value{}, false, vm.dataOutputWrite(ctx, receiver, data)
 		},
 	)
 	vm.RegisterNative(
 		"java/io/DataOutputStream",
 		"write",
 		"(I)V",
-		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+		func(ctx context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
 			value, err := intArgument(args, 0)
 			if err != nil {
 				return Value{}, false, err
 			}
-			return Value{}, false, vm.dataOutputWrite(receiver, []byte{byte(value)})
+			return Value{}, false, vm.dataOutputWrite(ctx, receiver, []byte{byte(value)})
 		},
 	)
 
@@ -278,12 +278,12 @@ func (vm *VM) installDataIONatives() {
 			"java/io/DataOutputStream",
 			spec.name,
 			spec.descriptor,
-			func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+			func(ctx context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
 				data, err := spec.encode(args)
 				if err != nil {
 					return Value{}, false, err
 				}
-				err = vm.dataOutputWrite(receiver, data)
+				err = vm.dataOutputWrite(ctx, receiver, data)
 				return Value{}, false, err
 			},
 		)
@@ -292,19 +292,19 @@ func (vm *VM) installDataIONatives() {
 		"java/io/DataOutputStream",
 		"write",
 		"([BII)V",
-		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+		func(ctx context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
 			data, err := vm.byteSliceArgument(args)
 			if err != nil {
 				return Value{}, false, err
 			}
-			return Value{}, false, vm.dataOutputWrite(receiver, data)
+			return Value{}, false, vm.dataOutputWrite(ctx, receiver, data)
 		},
 	)
 	vm.RegisterNative(
 		"java/io/DataOutputStream",
 		"writeUTF",
 		"(Ljava/lang/String;)V",
-		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+		func(ctx context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
 			value, err := vm.stringArgument(args, 0)
 			if err != nil {
 				return Value{}, false, err
@@ -316,7 +316,7 @@ func (vm *VM) installDataIONatives() {
 			encoded := make([]byte, 2+len(data))
 			binary.BigEndian.PutUint16(encoded, uint16(len(data)))
 			copy(encoded[2:], data)
-			return Value{}, false, vm.dataOutputWrite(receiver, encoded)
+			return Value{}, false, vm.dataOutputWrite(ctx, receiver, encoded)
 		},
 	)
 }
@@ -393,7 +393,7 @@ func (vm *VM) dataInputRead(
 	return IntValue(int32(count)), true, nil
 }
 
-func (vm *VM) dataOutputWrite(reference uint32, data []byte) error {
+func (vm *VM) dataOutputWrite(ctx context.Context, reference uint32, data []byte) error {
 	visited := make(map[uint32]struct{})
 	for reference != 0 {
 		if _, duplicate := visited[reference]; duplicate {
@@ -410,7 +410,22 @@ func (vm *VM) dataOutputWrite(reference uint32, data []byte) error {
 		case *outputStreamState:
 			return vm.writeOutputStream(state, data)
 		default:
-			return fmt.Errorf("object %d is not an OutputStream", reference)
+			// The delegate is a guest-defined java.io.OutputStream subclass, so
+			// drive it through its own write(int) override — the single method
+			// OutputStream leaves abstract — letting a title that wraps a custom
+			// stream in DataOutputStream persist its data.
+			for _, singleByte := range data {
+				if _, _, err := vm.InvokeVirtual(
+					ctx,
+					reference,
+					"write",
+					"(I)V",
+					IntValue(int32(singleByte)),
+				); err != nil {
+					return err
+				}
+			}
+			return nil
 		}
 	}
 	return fmt.Errorf("null DataOutputStream delegate")
