@@ -63,7 +63,8 @@ type ELF32ProgramHeader struct {
 // memory dump. Its SEED tables are the public RFC 4269 definitions; only the
 // per-package round-key schedule stored in the signed wrapper is consumed.
 func DecodeWBIN(set firmwareset.Set, pkg Package) (ProgressiveImage, error) {
-	if pkg.Family != FamilySCHDownload {
+	if pkg.Family != FamilySCHDownload && pkg.Family != FamilySCHRawDownload &&
+		pkg.Family != FamilySCHFlexOneNANDDownload {
 		return ProgressiveImage{}, fmt.Errorf("unsupported Samsung package family %q", pkg.Family)
 	}
 	metadata, ok := pkg.Pieces[RoleWBIN]
@@ -77,7 +78,7 @@ func DecodeWBIN(set firmwareset.Set, pkg Package) (ProgressiveImage, error) {
 	if piece.SHA256() != metadata.SHA256 {
 		return ProgressiveImage{}, fmt.Errorf("Samsung %s metadata does not match firmware set", RoleWBIN)
 	}
-	header, err := inspectHeader(piece)
+	header, err := inspectPieceForFamily(piece, pkg.Family)
 	if err != nil {
 		return ProgressiveImage{}, err
 	}
@@ -85,9 +86,27 @@ func DecodeWBIN(set firmwareset.Set, pkg Package) (ProgressiveImage, error) {
 		return ProgressiveImage{}, fmt.Errorf("Samsung %s header metadata does not match firmware set", RoleWBIN)
 	}
 	if header.PayloadSize > MaxProgressiveImageBytes || header.PayloadSize > uint64(math.MaxInt) {
+		sourceOffset := int64(WrapperSize)
+		if pkg.Family == FamilySCHRawDownload || pkg.Family == FamilySCHFlexOneNANDDownload {
+			sourceOffset = 0
+		}
 		return ProgressiveImage{}, wbinFormat(
-			piece.Index(), WrapperSize, "payload exceeds progressive-image limit", ErrInvalidWBINTransform,
+			piece.Index(), sourceOffset, "payload exceeds progressive-image limit", ErrInvalidWBINTransform,
 		)
+	}
+	if pkg.Family == FamilySCHRawDownload || pkg.Family == FamilySCHFlexOneNANDDownload {
+		decoded := make([]byte, int(header.PayloadSize))
+		if _, err := piece.ReadAt(decoded, 0); err != nil {
+			return ProgressiveImage{}, err
+		}
+		elf, err := inspectProgressiveELF(piece.Index(), 0, decoded)
+		if err != nil {
+			return ProgressiveImage{}, err
+		}
+		digest := sha256.Sum256(decoded)
+		return ProgressiveImage{
+			Bytes: decoded, SHA256: hex.EncodeToString(digest[:]), ELF: elf,
+		}, nil
 	}
 
 	var wrapper [wbinTerminalBlockOffset + 16]byte
@@ -130,7 +149,7 @@ func DecodeWBIN(set firmwareset.Set, pkg Package) (ProgressiveImage, error) {
 		roundKeys[16] += feedback
 	}
 
-	elf, err := inspectProgressiveELF(piece.Index(), decoded)
+	elf, err := inspectProgressiveELF(piece.Index(), WrapperSize, decoded)
 	if err != nil {
 		return ProgressiveImage{}, err
 	}
@@ -143,9 +162,9 @@ func DecodeWBIN(set firmwareset.Set, pkg Package) (ProgressiveImage, error) {
 	}, nil
 }
 
-func inspectProgressiveELF(piece int, data []byte) (ProgressiveELF, error) {
+func inspectProgressiveELF(piece int, sourceOffset int64, data []byte) (ProgressiveELF, error) {
 	fail := func(offset int64, reason string) (ProgressiveELF, error) {
-		return ProgressiveELF{}, wbinFormat(piece, WrapperSize+offset, reason, ErrInvalidProgressiveELF)
+		return ProgressiveELF{}, wbinFormat(piece, sourceOffset+offset, reason, ErrInvalidProgressiveELF)
 	}
 	if len(data) < elf32HeaderSize {
 		return fail(int64(len(data)), "ELF32 header is truncated")

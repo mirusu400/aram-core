@@ -745,20 +745,34 @@ const ktfBusyWaitInstrsPerMS = uint64(100_000)
 // until the clock advances would never end and would burn its whole
 // instruction budget. To break that, the read credits the instructions the
 // current host call ran since the previous read as elapsed virtual time. The
-// real TickMS is left untouched (the presentation clock and timers are
-// unaffected); the credit resets whenever a quantum advances TickMS.
+// real TickMS is left untouched, so the presentation clock and timers are
+// unaffected.
+//
+// The clock a guest observes never moves backwards. A quantum that advances
+// TickMS drops the credit, so the value the guest already saw is held as a
+// floor until the real clock and a fresh credit reach it again. Without the
+// floor, a busy-wait's credit would rewind currentTimeMillis when the quantum
+// landed, and a title that had computed a deadline from the credited value
+// would wait out that entire span a second time. The floor only holds a value
+// the guest has already been shown, so it never runs the clock ahead of the
+// authored credit.
 func (r *Runtime) monotonicReadMS() uint64 {
 	if r.TickMS != r.clockReadBaseTick {
 		r.clockReadBaseTick = r.TickMS
 		r.clockReadInstrs = r.TotalInstructions
 		r.clockReadOffset = 0
-		return r.TickMS
 	}
 	if r.TotalInstructions > r.clockReadInstrs {
-		r.clockReadOffset += (r.TotalInstructions - r.clockReadInstrs) / ktfBusyWaitInstrsPerMS
+		credited := (r.TotalInstructions - r.clockReadInstrs) / ktfBusyWaitInstrsPerMS
+		r.clockReadOffset += credited
+		r.clockReadInstrs = r.TotalInstructions
 	}
-	r.clockReadInstrs = r.TotalInstructions
-	return r.TickMS + r.clockReadOffset
+	now := r.TickMS + r.clockReadOffset
+	if now < r.clockReadFloor {
+		now = r.clockReadFloor
+	}
+	r.clockReadFloor = now
+	return now
 }
 
 func ktfKernelCurrentTime(

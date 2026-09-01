@@ -112,7 +112,7 @@ func validateQualcommGPIOInputRegisters(inputs []QualcommGPIOInputRegister) erro
 	seen := make(map[uint32]struct{}, len(inputs))
 	for _, input := range inputs {
 		switch input.Offset {
-		case 0x34, 0x38, 0x3c, 0x40:
+		case 0x34, 0x38, 0x3c, 0x40, 0x44:
 		default:
 			return fmt.Errorf("GPIO input offset 0x%x: %w", input.Offset, ErrInvalidRegion)
 		}

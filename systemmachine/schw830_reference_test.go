@@ -1,14 +1,19 @@
 package systemmachine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image/png"
+	"math/bits"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/mirusu400/aram-core/cpu"
@@ -644,18 +649,104 @@ func schw830ReferenceDirectory(t *testing.T) string {
 	return filepath.Join(root, "SCH-W380_DL21")
 }
 
-func openSamsungSCHReferenceSet(t *testing.T, directory string) firmwareset.Set {
+func openSamsungSCHReferenceSet(t *testing.T, path string) firmwareset.Set {
 	t.Helper()
-	entries, err := os.ReadDir(directory)
+	candidates := samsungSCHReferenceSources(t, path)
+	if len(candidates) > 20 {
+		t.Fatalf("configured reference contains %d candidate pieces, want at most 20", len(candidates))
+	}
+	type inspectedCandidate struct {
+		family string
+		piece  samsung.Piece
+	}
+	inspected := make([]inspectedCandidate, len(candidates))
+	for index, source := range candidates {
+		single, setErr := firmwareset.NewSet([]firmwareset.Source{source})
+		if setErr != nil {
+			t.Fatal(setErr)
+		}
+		pkg, inspectErr := samsung.Inspect(single)
+		if inspectErr != nil || len(pkg.Pieces) != 1 {
+			continue
+		}
+		for _, piece := range pkg.Pieces {
+			piece.Index = index
+			inspected[index] = inspectedCandidate{family: pkg.Family, piece: piece}
+		}
+	}
+	var matchedIndices []int
+	matches := 0
+	for mask := 1; mask < 1<<len(candidates); mask++ {
+		count := bits.OnesCount(uint(mask))
+		if count != 4 && count != 5 {
+			continue
+		}
+		pkg := samsung.Package{Pieces: make(map[samsung.Role]samsung.Piece, count)}
+		indices := make([]int, 0, count)
+		valid := true
+		for index, candidate := range inspected {
+			if mask&(1<<index) != 0 {
+				if candidate.family == "" {
+					valid = false
+					break
+				}
+				if pkg.Family == "" {
+					pkg.Family = candidate.family
+				} else if pkg.Family != candidate.family {
+					valid = false
+					break
+				}
+				role := candidate.piece.Header.Role
+				if _, duplicate := pkg.Pieces[role]; duplicate {
+					valid = false
+					break
+				}
+				pkg.Pieces[role] = candidate.piece
+				indices = append(indices, index)
+			}
+		}
+		if !valid || !pkg.Complete() {
+			continue
+		}
+		if _, matchErr := samsung.BuiltinRegistry().Match(pkg); matchErr != nil {
+			continue
+		}
+		matchedIndices = indices
+		matches++
+	}
+	if matches != 1 {
+		t.Fatalf("configured reference has %d exact supported Samsung firmware sets", matches)
+	}
+	matchedSources := make([]firmwareset.Source, len(matchedIndices))
+	for index, candidateIndex := range matchedIndices {
+		matchedSources[index] = candidates[candidateIndex]
+	}
+	matched, err := firmwareset.NewSet(matchedSources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return matched
+}
+
+func samsungSCHReferenceSources(t *testing.T, path string) []firmwareset.Source {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("configured reference: %v", err)
+	}
+	if !info.IsDir() {
+		return samsungSCHReferenceArchiveSources(t, path)
+	}
+	entries, err := os.ReadDir(path)
 	if err != nil {
 		t.Fatalf("configured reference directory: %v", err)
 	}
-	var sources []firmwareset.Source
+	var candidates []firmwareset.Source
 	for _, entry := range entries {
 		if entry.IsDir() || !schReferenceExtension(filepath.Ext(entry.Name())) {
 			continue
 		}
-		file, err := os.Open(filepath.Join(directory, entry.Name()))
+		file, err := os.Open(filepath.Join(path, entry.Name()))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -664,21 +755,103 @@ func openSamsungSCHReferenceSet(t *testing.T, directory string) firmwareset.Set 
 		if err != nil {
 			t.Fatal(err)
 		}
-		sources = append(sources, firmwareset.Source{ReaderAt: file, Size: info.Size()})
+		candidates = append(candidates, firmwareset.Source{ReaderAt: file, Size: info.Size()})
 	}
-	if len(sources) != 4 {
-		t.Fatalf("configured reference contains %d SCH download pieces, want 4", len(sources))
+	return candidates
+}
+
+type samsungSCHArchiveEntry struct {
+	path string
+	size int64
+}
+
+func samsungSCHReferenceArchiveSources(t *testing.T, archive string) []firmwareset.Source {
+	t.Helper()
+	sevenZip, err := exec.LookPath("7z.exe")
+	if err != nil {
+		sevenZip, err = exec.LookPath("7z")
 	}
-	set, err := firmwareset.NewSet(sources)
+	if err != nil {
+		t.Fatal("configured reference archive requires 7-Zip")
+	}
+	listing, err := exec.Command(
+		sevenZip,
+		"l", "-slt", "-ba", "-sccUTF-8", "--", archive,
+	).Output()
+	if err != nil {
+		t.Fatalf("list configured reference archive: %v", err)
+	}
+	entries, err := parseSamsungSCHArchiveListing(string(listing))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return set
+	sources := make([]firmwareset.Source, 0, len(entries))
+	for _, entry := range entries {
+		data, extractErr := exec.Command(
+			sevenZip,
+			"x", "-so", "-sccUTF-8", "--", archive, entry.path,
+		).Output()
+		if extractErr != nil {
+			t.Fatalf("read configured reference archive entry: %v", extractErr)
+		}
+		if int64(len(data)) != entry.size {
+			t.Fatalf(
+				"configured reference archive entry has size %d, want %d",
+				len(data), entry.size,
+			)
+		}
+		sources = append(sources, firmwareset.Source{
+			ReaderAt: bytes.NewReader(data),
+			Size:     entry.size,
+		})
+	}
+	return sources
+}
+
+func parseSamsungSCHArchiveListing(listing string) ([]samsungSCHArchiveEntry, error) {
+	var entries []samsungSCHArchiveEntry
+	fields := make(map[string]string)
+	flush := func() error {
+		defer clear(fields)
+		path := fields["Path"]
+		if path == "" || fields["Folder"] == "+" || strings.Contains(fields["Attributes"], "D") ||
+			!schReferenceExtension(filepath.Ext(path)) {
+			return nil
+		}
+		size, err := strconv.ParseInt(fields["Size"], 10, 64)
+		if err != nil || size <= 0 {
+			return fmt.Errorf("configured reference archive has invalid entry size")
+		}
+		entries = append(entries, samsungSCHArchiveEntry{path: path, size: size})
+		return nil
+	}
+	for _, line := range strings.Split(listing, "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if line == "" {
+			if err := flush(); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		parts := strings.SplitN(line, " = ", 2)
+		if len(parts) == 2 {
+			fields[parts[0]] = parts[1]
+		}
+	}
+	if len(fields) != 0 {
+		if err := flush(); err != nil {
+			return nil, err
+		}
+	}
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("configured reference archive has no Samsung firmware pieces")
+	}
+	return entries, nil
 }
 
 func schReferenceExtension(extension string) bool {
-	switch extension {
-	case ".wbt", ".wbin", ".dat", ".fnt":
+	switch strings.ToLower(extension) {
+	case ".wbt", ".wbin", ".mbin", ".abin", ".dat", ".fnt":
 		return true
 	default:
 		return false

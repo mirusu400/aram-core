@@ -16,12 +16,17 @@ import (
 )
 
 const (
-	FamilySCHDownload = "samsung-sch-download-v1"
-	WrapperSize       = 0x20000
-	WrapperMagic      = 0xef3871ad
-	EraseBlockSize    = 0x20000
-	PageSize          = 0x800
-	mibibEntrySize    = 28
+	FamilySCHDownload    = "samsung-sch-download-v1"
+	FamilySCHRawDownload = "samsung-sch-download-raw-v1"
+	// FamilySCHFlexOneNANDDownload identifies the later dual-processor SCH
+	// package whose modem and application ELF images are separate and whose
+	// boot piece carries a Samsung Flex-OneNAND partition table.
+	FamilySCHFlexOneNANDDownload = "samsung-sch-flex-onenand-download-v1"
+	WrapperSize                  = 0x20000
+	WrapperMagic                 = 0xef3871ad
+	EraseBlockSize               = 0x20000
+	PageSize                     = 0x800
+	mibibEntrySize               = 28
 )
 
 var (
@@ -36,11 +41,13 @@ type Role string
 const (
 	RoleWBT  Role = "wbt"
 	RoleWBIN Role = "wbin"
+	RoleABIN Role = "abin"
 	RoleDAT  Role = "dat"
 	RoleFont Role = "font"
 )
 
 var requiredRoles = []Role{RoleWBT, RoleWBIN, RoleDAT, RoleFont}
+var flexOneNANDRequiredRoles = []Role{RoleWBT, RoleWBIN, RoleABIN, RoleDAT, RoleFont}
 
 var roleTokens = map[Role]uint32{
 	RoleWBT:  0xb07b1d96,
@@ -102,15 +109,24 @@ type Package struct {
 }
 
 func Inspect(set firmwareset.Set) (Package, error) {
-	pkg := Package{Family: FamilySCHDownload, Pieces: make(map[Role]Piece)}
+	pkg := Package{Pieces: make(map[Role]Piece)}
 	for index := 0; index < set.Len(); index++ {
 		piece, err := set.Piece(index)
 		if err != nil {
 			return Package{}, err
 		}
-		header, err := inspectHeader(piece)
+		family, header, err := inspectPiece(piece)
 		if err != nil {
 			return Package{}, err
+		}
+		if pkg.Family == "" {
+			pkg.Family = family
+		} else if pkg.Family != family {
+			return Package{}, &FormatError{
+				Role: header.Role, Piece: piece.Index(), Offset: 0,
+				Reason: fmt.Sprintf("piece family %q does not match package family %q", family, pkg.Family),
+				Err:    ErrNotSCHDownload,
+			}
 		}
 		if previous, exists := pkg.Pieces[header.Role]; exists {
 			return Package{}, fmt.Errorf(
@@ -130,11 +146,156 @@ func Inspect(set firmwareset.Set) (Package, error) {
 	return pkg, nil
 }
 
+func inspectPiece(piece firmwareset.Piece) (string, Header, error) {
+	header, err := inspectHeader(piece)
+	if err == nil {
+		return FamilySCHDownload, header, nil
+	}
+	if !errors.Is(err, ErrNotSCHDownload) {
+		return "", Header{}, err
+	}
+	header, flexErr := inspectFlexOneNANDPiece(piece)
+	if flexErr == nil {
+		return FamilySCHFlexOneNANDDownload, header, nil
+	}
+	if !errors.Is(flexErr, ErrNotSCHDownload) {
+		return "", Header{}, flexErr
+	}
+	header, rawErr := inspectRawPiece(piece)
+	if rawErr == nil {
+		return FamilySCHRawDownload, header, nil
+	}
+	return "", Header{}, rawErr
+}
+
+func inspectPieceForFamily(piece firmwareset.Piece, family string) (Header, error) {
+	switch family {
+	case FamilySCHDownload:
+		return inspectHeader(piece)
+	case FamilySCHRawDownload:
+		return inspectRawPiece(piece)
+	case FamilySCHFlexOneNANDDownload:
+		return inspectFlexOneNANDPiece(piece)
+	default:
+		return Header{}, fmt.Errorf("unsupported Samsung package family %q", family)
+	}
+}
+
+var flexOneNANDBootMagic = [8]byte{0x26, 0x0b, 0x0d, 0x06, 0x34, 0x10, 0xd7, 0x73}
+
+const flexOneNANDDataMagic = 0x00a1ccb9
+
+func inspectFlexOneNANDPiece(piece firmwareset.Piece) (Header, error) {
+	if piece.Size() <= 0 {
+		return Header{}, rawPieceFormat(piece, "piece is empty")
+	}
+	var header [elf32HeaderSize]byte
+	count := min(int64(len(header)), piece.Size())
+	if _, err := piece.ReadAt(header[:count], 0); err != nil {
+		return Header{}, err
+	}
+	if count >= int64(len(flexOneNANDBootMagic)) &&
+		bytes.Equal(header[:len(flexOneNANDBootMagic)], flexOneNANDBootMagic[:]) {
+		return rawHeader(piece, RoleWBT, "flex-onenand-boot"), nil
+	}
+	if count >= elf32HeaderSize && rawELF32ARMHeader(header[:]) {
+		switch binary.LittleEndian.Uint32(header[24:28]) {
+		case 0x00a00000:
+			return rawHeader(piece, RoleWBIN, "raw-mbin"), nil
+		case 0x10000000:
+			return rawHeader(piece, RoleABIN, "raw-abin"), nil
+		}
+	}
+	if count >= 4 && binary.LittleEndian.Uint32(header[:4]) == flexOneNANDDataMagic {
+		return rawHeader(piece, RoleDAT, "flex-onenand-dat"), nil
+	}
+	// CF11 is the exact supported W850 build. Its FONT image retains the
+	// older Samsung directory signature, which would otherwise be ambiguous
+	// with the four-piece raw-download family when pieces are orderless.
+	if count >= 12 && binary.LittleEndian.Uint32(header[:4]) == 1 &&
+		bytes.Equal(header[4:12], []byte("CF11brew")) {
+		return rawHeader(piece, RoleFont, "CF11"), nil
+	}
+	return Header{}, rawPieceFormat(piece, "content does not identify a Flex-OneNAND role")
+}
+
+func inspectRawPiece(piece firmwareset.Piece) (Header, error) {
+	if piece.Size() <= 0 {
+		return Header{}, rawPieceFormat(piece, "piece is empty")
+	}
+
+	var header [elf32HeaderSize]byte
+	if piece.Size() >= int64(len(header)) {
+		if _, err := piece.ReadAt(header[:], 0); err != nil {
+			return Header{}, err
+		}
+		if rawELF32ARMHeader(header[:]) {
+			return rawHeader(piece, RoleWBIN, "raw-elf"), nil
+		}
+	}
+
+	var signature [12]byte
+	if piece.Size() >= int64(len(signature)) {
+		if _, err := piece.ReadAt(signature[:], 0); err != nil {
+			return Header{}, err
+		}
+		switch {
+		case binary.LittleEndian.Uint32(signature[0:4]) == 0x00003167:
+			return rawHeader(piece, RoleDAT, "raw-dat"), nil
+		case binary.LittleEndian.Uint32(signature[0:4]) == 1 &&
+			bytes.EqualFold(signature[8:12], []byte("brew")) && printableASCII(signature[4:12]):
+			return rawHeader(piece, RoleFont, string(signature[4:8])), nil
+		}
+	}
+	if _, err := parseMIBIBCopies(piece); err == nil {
+		return rawHeader(piece, RoleWBT, rawBuildTail(piece)), nil
+	} else if !errors.Is(err, ErrMIBIBNotFound) {
+		return Header{}, err
+	}
+	return Header{}, rawPieceFormat(piece, "content does not identify a legacy raw role")
+}
+
+func rawHeader(piece firmwareset.Piece, role Role, build string) Header {
+	return Header{Role: role, Build: build, PayloadSize: uint64(piece.Size())}
+}
+
+func rawBuildTail(piece firmwareset.Piece) string {
+	if piece.Size() < 4 {
+		return "raw-wbt"
+	}
+	var tail [4]byte
+	if _, err := piece.ReadAt(tail[:], piece.Size()-int64(len(tail))); err == nil && printableASCII(tail[:]) {
+		return string(tail[:])
+	}
+	return "raw-wbt"
+}
+
+func rawELF32ARMHeader(header []byte) bool {
+	return len(header) >= elf32HeaderSize && bytes.Equal(header[:4], []byte{0x7f, 'E', 'L', 'F'}) &&
+		header[4] == 1 && header[5] == 1 && header[6] == 1 &&
+		binary.LittleEndian.Uint16(header[16:18]) == elfTypeExecutable &&
+		binary.LittleEndian.Uint16(header[18:20]) == elfMachineARM &&
+		binary.LittleEndian.Uint32(header[20:24]) == 1
+}
+
+func printableASCII(data []byte) bool {
+	for _, value := range data {
+		if value < 0x21 || value > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
+func rawPieceFormat(piece firmwareset.Piece, reason string) error {
+	return &FormatError{Piece: piece.Index(), Offset: 0, Reason: reason, Err: ErrNotSCHDownload}
+}
+
 func inspectHeader(piece firmwareset.Piece) (Header, error) {
 	if piece.Size() < WrapperSize {
 		return Header{}, &FormatError{
 			Piece: piece.Index(), Offset: piece.Size(),
-			Reason: fmt.Sprintf("wrapper is shorter than 0x%x bytes", WrapperSize),
+			Reason: fmt.Sprintf("wrapper is shorter than 0x%x bytes", WrapperSize), Err: ErrNotSCHDownload,
 		}
 	}
 	var header [20]byte
@@ -176,13 +337,21 @@ func inspectHeader(piece firmwareset.Piece) (Header, error) {
 }
 
 func (p Package) MissingRoles() []Role {
-	missing := make([]Role, 0, len(requiredRoles))
-	for _, role := range requiredRoles {
+	required := requiredRolesForFamily(p.Family)
+	missing := make([]Role, 0, len(required))
+	for _, role := range required {
 		if _, ok := p.Pieces[role]; !ok {
 			missing = append(missing, role)
 		}
 	}
 	return missing
+}
+
+func requiredRolesForFamily(family string) []Role {
+	if family == FamilySCHFlexOneNANDDownload {
+		return flexOneNANDRequiredRoles
+	}
+	return requiredRoles
 }
 
 func (p Package) Complete() bool {
@@ -192,9 +361,10 @@ func (p Package) Complete() bool {
 type Transform string
 
 const (
-	TransformIdentity     Transform = "identity"
-	TransformBootBlocks   Transform = "samsung-boot-blocks"
-	TransformSEEDFeedback Transform = "seed-feedback"
+	TransformIdentity        Transform = "identity"
+	TransformBootBlocks      Transform = "samsung-boot-blocks"
+	TransformSEEDFeedback    Transform = "seed-feedback"
+	TransformFlexOneNANDBoot Transform = "samsung-flex-onenand-boot"
 )
 
 type DownloadRegion struct {
@@ -237,7 +407,10 @@ func (l Layout) Region(role Role) *DownloadRegion {
 }
 
 func Normalize(set firmwareset.Set, pkg Package) (Layout, error) {
-	if pkg.Family != FamilySCHDownload {
+	if pkg.Family == FamilySCHFlexOneNANDDownload {
+		return NormalizeFlexOneNAND(set, pkg)
+	}
+	if pkg.Family != FamilySCHDownload && pkg.Family != FamilySCHRawDownload {
 		return Layout{}, fmt.Errorf("unsupported Samsung package family %q", pkg.Family)
 	}
 	if missing := pkg.MissingRoles(); len(missing) != 0 {
@@ -253,7 +426,7 @@ func Normalize(set firmwareset.Set, pkg Package) (Layout, error) {
 		if piece.SHA256() != metadata.SHA256 {
 			return Layout{}, fmt.Errorf("Samsung %s metadata does not match firmware set", role)
 		}
-		header, err := inspectHeader(piece)
+		header, err := inspectPieceForFamily(piece, pkg.Family)
 		if err != nil {
 			return Layout{}, err
 		}
@@ -273,7 +446,13 @@ func Normalize(set firmwareset.Set, pkg Package) (Layout, error) {
 			selected = candidate
 		}
 	}
-	footer, footerOffset, err := readWBINFooter(pieces[RoleWBIN])
+	sourceOffset := uint64(WrapperSize)
+	wbinTransform := TransformSEEDFeedback
+	if pkg.Family == FamilySCHRawDownload {
+		sourceOffset = 0
+		wbinTransform = TransformIdentity
+	}
+	footer, footerOffset, err := readWBINFooterAt(pieces[RoleWBIN], sourceOffset)
 	if err != nil {
 		return Layout{}, err
 	}
@@ -332,10 +511,10 @@ func Normalize(set firmwareset.Set, pkg Package) (Layout, error) {
 	}
 
 	regions := []DownloadRegion{
-		{Role: RoleWBT, Start: 0, Size: pkg.Pieces[RoleWBT].Header.PayloadSize, SourceOffset: WrapperSize, Transform: TransformBootBlocks},
-		{Role: RoleWBIN, Start: starts[0], Size: pkg.Pieces[RoleWBIN].Header.PayloadSize, SourceOffset: WrapperSize, Transform: TransformSEEDFeedback},
-		{Role: RoleDAT, Start: rsrc.Start, Size: pkg.Pieces[RoleDAT].Header.PayloadSize, SourceOffset: WrapperSize, Transform: TransformIdentity},
-		{Role: RoleFont, Start: font.Start, Size: pkg.Pieces[RoleFont].Header.PayloadSize, SourceOffset: WrapperSize, Transform: TransformIdentity},
+		{Role: RoleWBT, Start: 0, Size: pkg.Pieces[RoleWBT].Header.PayloadSize, SourceOffset: sourceOffset, Transform: TransformBootBlocks},
+		{Role: RoleWBIN, Start: starts[0], Size: pkg.Pieces[RoleWBIN].Header.PayloadSize, SourceOffset: sourceOffset, Transform: wbinTransform},
+		{Role: RoleDAT, Start: rsrc.Start, Size: pkg.Pieces[RoleDAT].Header.PayloadSize, SourceOffset: sourceOffset, Transform: TransformIdentity},
+		{Role: RoleFont, Start: font.Start, Size: pkg.Pieces[RoleFont].Header.PayloadSize, SourceOffset: sourceOffset, Transform: TransformIdentity},
 	}
 	sort.Slice(regions, func(i, j int) bool { return regions[i].Start < regions[j].Start })
 	for index, region := range regions {
@@ -348,7 +527,7 @@ func Normalize(set firmwareset.Set, pkg Package) (Layout, error) {
 		}
 	}
 	return Layout{
-		Family:          FamilySCHDownload,
+		Family:          pkg.Family,
 		MIBIBVersion:    selected.Version,
 		MIBIBGeneration: selected.Generation,
 		PackagedEnd:     packagedEnd,
@@ -396,8 +575,12 @@ func resolveOpenEndedPartitions(
 }
 
 func readWBINFooter(piece firmwareset.Piece) ([4]uint32, int64, error) {
+	return readWBINFooterAt(piece, WrapperSize)
+}
+
+func readWBINFooterAt(piece firmwareset.Piece, sourceOffset uint64) ([4]uint32, int64, error) {
 	var values [4]uint32
-	if piece.Size() < WrapperSize+64 {
+	if sourceOffset > uint64(piece.Size()) || uint64(piece.Size())-sourceOffset < 64 {
 		return values, piece.Size(), &FormatError{
 			Role: RoleWBIN, Piece: piece.Index(), Offset: piece.Size(), Reason: "payload is too short for layout footer",
 		}
@@ -489,7 +672,6 @@ func parseMIBIBCopy(piece int, base int64, data []byte) (mibibCopy, error) {
 	}
 	partitions := make([]Partition, 0, count)
 	seen := make(map[string]struct{}, count)
-	var previousEnd uint64
 	for index := uint32(0); index < count; index++ {
 		relative := 16 + int(index)*mibibEntrySize
 		entry := primary[relative : relative+mibibEntrySize]
@@ -520,21 +702,37 @@ func parseMIBIBCopy(piece int, base int64, data []byte) (mibibCopy, error) {
 		}
 		start := uint64(startBlock) * EraseBlockSize
 		size := uint64(blockCount) * EraseBlockSize
-		if index > 0 && start < previousEnd {
-			previous := partitions[len(partitions)-1]
-			versionOneFOTAAlias := version == 1 && name == "0:FOTA" && previous.Name == "0:AMSS" &&
-				start >= previous.Start && start+size <= previous.End()
-			if !versionOneFOTAAlias {
+		partition := Partition{
+			Name: name, StartBlock: startBlock, BlockCount: blockCount,
+			Attributes: attributes, Start: start, Size: size,
+		}
+		for _, previous := range partitions {
+			if partition.Start >= previous.End() || previous.Start >= partition.End() {
+				continue
+			}
+			if !versionOneFOTAAlias(version, previous, partition) {
 				return fail(PageSize+int64(relative+16), fmt.Sprintf("partition %q overlaps its predecessor", name))
 			}
 		}
-		previousEnd = max(previousEnd, start+size)
-		partitions = append(partitions, Partition{
-			Name: name, StartBlock: startBlock, BlockCount: blockCount,
-			Attributes: attributes, Start: start, Size: size,
-		})
+		partitions = append(partitions, partition)
 	}
 	return mibibCopy{Offset: base, Version: version, Generation: generation, Partitions: partitions}, nil
+}
+
+func versionOneFOTAAlias(version uint32, left, right Partition) bool {
+	if version != 1 {
+		return false
+	}
+	var fota, container Partition
+	switch {
+	case left.Name == "0:FOTA" && (right.Name == "0:AMSS" || right.Name == "0:DMB"):
+		fota, container = left, right
+	case right.Name == "0:FOTA" && (left.Name == "0:AMSS" || left.Name == "0:DMB"):
+		fota, container = right, left
+	default:
+		return false
+	}
+	return fota.Start >= container.Start && fota.End() <= container.End()
 }
 
 func joinRoles(roles []Role) string {

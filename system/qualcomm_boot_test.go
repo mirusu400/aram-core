@@ -1,6 +1,7 @@
 package system
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"testing"
@@ -22,6 +23,9 @@ func TestQualcommNANDPBLHandoffCarriesGeometry(t *testing.T) {
 	}
 	table := handoff.Memory[0].Bytes
 	want := [][2]uint32{{0x12f, 0x40}, {0x130, 0x4be}, {0x132, 0x800}, {0x133, 0x14}, {0x141, 6}, {0x15d, 0}}
+	if len(table) != qualcommPBLFeatureDataHeaderSize+len(want)*8 {
+		t.Fatalf("PBL service table size = %#x, want %#x", len(table), qualcommPBLFeatureDataHeaderSize+len(want)*8)
+	}
 	for index, entry := range want {
 		offset := 0x2c + index*8
 		if binary.LittleEndian.Uint32(table[offset:]) != entry[0] ||
@@ -54,6 +58,49 @@ func TestQualcommNANDPBLHandoffCarriesLegacyFeatureData(t *testing.T) {
 	}
 }
 
+func TestQualcommNANDPBLHandoffCarriesSharedDataEndPointer(t *testing.T) {
+	handoff, err := NewQualcommNANDPBLHandoff(QualcommNANDPBLConfig{
+		Entry: 0x800000, TableAddress: 0x78001000,
+		ServiceTableHeaderSize:   0x30,
+		HeaderFeatureDataAddress: 0x78002100,
+		HeaderFeatures: []QualcommPBLHeaderFeature{
+			{Selector: qualcommPBLHeaderFlashBlockCount, Value: 0x0400},
+			{Selector: qualcommPBLHeaderSLCBlockCount, Value: 0x0010},
+			{Selector: qualcommPBLHeaderBadBlockLimit, Value: 0x0014},
+		},
+		SharedDataAddress: 0x78002000, SharedDataSize: 0x68,
+		PageSize: 0x800, EraseBlockSize: 0x20000,
+		FlashSize: 0x20000000, BadBlockLimit: 0x14,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(handoff.Registers) != 4 ||
+		handoff.Registers[2] != (RegisterSeed{Register: cpu.RegisterR9, Value: 0x78002100}) ||
+		handoff.Registers[3] != (RegisterSeed{Register: cpu.RegisterR11, Value: 0x78002068}) {
+		t.Fatalf("PBL shared-data registers = %+v", handoff.Registers)
+	}
+	if len(handoff.Memory) != 3 || handoff.Memory[2].Address != 0x78002000 ||
+		len(handoff.Memory[2].Bytes) != 0x68 ||
+		!bytes.Equal(handoff.Memory[2].Bytes, make([]byte, 0x68)) {
+		t.Fatalf("PBL shared-data memory = %+v", handoff.Memory)
+	}
+	if features := handoff.Memory[1]; features.Address != 0x78002100 ||
+		len(features.Bytes) != qualcommPBLHeaderFeatureDataSize ||
+		binary.LittleEndian.Uint32(features.Bytes[0x08:]) != 1 ||
+		binary.LittleEndian.Uint32(features.Bytes[0x0c:]) != 0x0400 ||
+		binary.LittleEndian.Uint32(features.Bytes[0x10:]) != 1 ||
+		binary.LittleEndian.Uint32(features.Bytes[0x14:]) != 0x0010 ||
+		binary.LittleEndian.Uint32(features.Bytes[0x18:]) != 1 ||
+		binary.LittleEndian.Uint32(features.Bytes[0x1c:]) != 0x14 {
+		t.Fatalf("PBL header features = %+v", features)
+	}
+	if table := handoff.Memory[0].Bytes; len(table) != 0x30+qualcommPBLServiceEntryCount*8 ||
+		binary.LittleEndian.Uint32(table[0x30:]) != 0x012f {
+		t.Fatalf("PBL generation-specific service table = %x", table)
+	}
+}
+
 func TestQualcommNANDPBLHandoffRejectsNon2KPageGeometry(t *testing.T) {
 	_, err := NewQualcommNANDPBLHandoff(QualcommNANDPBLConfig{
 		Entry: 0x80028, TableAddress: 0x78001000,
@@ -70,6 +117,49 @@ func TestQualcommNANDPBLHandoffRejectsNon2KPageGeometry(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("NAND2K handoff accepted an unaligned legacy feature address")
+	}
+	for _, config := range []QualcommNANDPBLConfig{
+		{
+			Entry: 0x800000, TableAddress: 0x78001000,
+			HeaderFeatureDataAddress: 0x78002100,
+			HeaderFeatures: []QualcommPBLHeaderFeature{{
+				Selector: 0x0157, Value: 1,
+			}},
+			PageSize: 0x800, EraseBlockSize: 0x20000,
+			FlashSize: 0x20000000, BadBlockLimit: 0x14,
+		},
+		{
+			Entry: 0x800000, TableAddress: 0x78001000,
+			HeaderFeatureDataAddress: 0x78002100,
+			PageSize:                 0x800, EraseBlockSize: 0x20000,
+			FlashSize: 0x20000000, BadBlockLimit: 0x14,
+		},
+		{
+			Entry: 0x800000, TableAddress: 0x78001000,
+			HeaderFeatureDataAddress: 0x78002100,
+			HeaderFeatures: []QualcommPBLHeaderFeature{
+				{Selector: 0x0159, Value: 1},
+				{Selector: 0x0159, Value: 2},
+			},
+			PageSize: 0x800, EraseBlockSize: 0x20000,
+			FlashSize: 0x20000000, BadBlockLimit: 0x14,
+		},
+		{
+			Entry: 0x800000, TableAddress: 0x78001000,
+			SharedDataAddress: 0x78002002, SharedDataSize: 0x68,
+			PageSize: 0x800, EraseBlockSize: 0x20000,
+			FlashSize: 0x20000000, BadBlockLimit: 0x14,
+		},
+		{
+			Entry: 0x800000, TableAddress: 0x78001000,
+			SharedDataAddress: 0x78002000,
+			PageSize:          0x800, EraseBlockSize: 0x20000,
+			FlashSize: 0x20000000, BadBlockLimit: 0x14,
+		},
+	} {
+		if _, err := NewQualcommNANDPBLHandoff(config); err == nil {
+			t.Fatalf("NAND2K handoff accepted invalid shared data %+v", config)
+		}
 	}
 }
 
@@ -129,7 +219,7 @@ func TestQualcommBootControlAllowsOnlyEvidencedEarlyBootRegisters(t *testing.T) 
 	}
 	for _, offset := range []uint32{
 		0x0030, 0x0034, 0x0038, 0x003c, 0x0040, 0x0044, 0x0068,
-		0x0400, 0x0404, 0x0430, 0x0434, 0x0458, 0x045c,
+		0x0400, 0x0404, 0x0430, 0x0434, 0x0458, 0x045c, 0x0aa4,
 	} {
 		if err := device.Write(offset, Width32, offset); err != nil {
 			t.Fatalf("clock-control latch %#x: %v", offset, err)
@@ -293,6 +383,40 @@ func TestQualcommBootControlRejectsWrongNANDInterfaceState(t *testing.T) {
 	}
 }
 
+func TestQualcommBootControlProfilesReadableWatchdogService(t *testing.T) {
+	device, err := NewQualcommBootControl(QualcommBootControlConfig{
+		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
+		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1,
+		WatchdogServiceReadable: true, NANDReady: NewStatusSignal(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := device.Read(0x540c, Width32)
+	if err != nil || value != 0 {
+		t.Fatalf("reset watchdog service = %#x error %v", value, err)
+	}
+	if err := device.Write(0x540c, Width32, 1); err != nil {
+		t.Fatal(err)
+	}
+	value, err = device.Read(0x540c, Width32)
+	if err != nil || value != 1 {
+		t.Fatalf("serviced watchdog value = %#x error %v", value, err)
+	}
+
+	writeOnly, err := NewQualcommBootControl(QualcommBootControlConfig{
+		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
+		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1,
+		NANDReady: NewStatusSignal(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writeOnly.Read(0x540c, Width32); !errors.Is(err, ErrQualcommBootControlMMIO) {
+		t.Fatalf("write-only watchdog read error = %v", err)
+	}
+}
+
 func TestQualcommBootControlProfilesAdditionalWritableOffsets(t *testing.T) {
 	config := QualcommBootControlConfig{
 		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
@@ -333,6 +457,76 @@ func TestQualcommBootControlProfilesAdditionalWritableOffsets(t *testing.T) {
 		invalid.WritableOffsets = offsets
 		if _, err := NewQualcommBootControl(invalid); err == nil {
 			t.Fatalf("accepted invalid boot-control writable offsets %#v", offsets)
+		}
+	}
+}
+
+func TestQualcommBootControlProfilesInterruptWindowWritableOverrides(t *testing.T) {
+	config := QualcommBootControlConfig{
+		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
+		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1,
+		InterruptWindowWritableOffsets: []uint32{0x0904},
+		NANDReady:                      NewStatusSignal(),
+	}
+	device, err := NewQualcommBootControl(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, err := device.Read(0x0904, Width32); err != nil || value != 0 {
+		t.Fatalf("reset interrupt-window override = %#x error %v", value, err)
+	}
+	if err := device.Write(0x0904, Width32, 0x12345678); err != nil {
+		t.Fatal(err)
+	}
+	if value, err := device.Read(0x0904, Width32); err != nil || value != 0x12345678 {
+		t.Fatalf("interrupt-window override = %#x error %v", value, err)
+	}
+	if _, err := device.Read(0x0904, Width16); !errors.Is(err, ErrQualcommBootControlMMIO) {
+		t.Fatalf("narrow interrupt-window override read error = %v", err)
+	}
+	state, err := device.SaveState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := NewQualcommBootControl(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.LoadState(state); err != nil {
+		t.Fatal(err)
+	}
+	if value, err := restored.Read(0x0904, Width32); err != nil || value != 0x12345678 {
+		t.Fatalf("restored interrupt-window override = %#x error %v", value, err)
+	}
+
+	legacyConfig := config
+	legacyConfig.InterruptWindowWritableOffsets = nil
+	legacyConfig.NANDReady = NewStatusSignal()
+	legacy, err := NewQualcommBootControl(legacyConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.Read(0x0904, Width32); !errors.Is(err, ErrQualcommInterruptControllerMMIO) {
+		t.Fatalf("legacy INT_CLEAR_1 read error = %v", err)
+	}
+	if err := legacy.Write(0x0904, Width32, 0); err != nil {
+		t.Fatalf("legacy INT_CLEAR_1 write error = %v", err)
+	}
+	if err := legacy.LoadState(state); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("mismatched interrupt-window profile state error = %v", err)
+	}
+
+	for _, offsets := range [][]uint32{
+		{0x0904, 0x0904},
+		{0x0902},
+		{0x08fc},
+		{0x0a00},
+	} {
+		invalid := config
+		invalid.InterruptWindowWritableOffsets = offsets
+		invalid.NANDReady = NewStatusSignal()
+		if _, err := NewQualcommBootControl(invalid); err == nil {
+			t.Fatalf("accepted invalid interrupt-window writable offsets %#v", offsets)
 		}
 	}
 }
@@ -577,6 +771,37 @@ func TestQualcommBootControlProfilesLegacyUARTControllers(t *testing.T) {
 	missingRegister.HalfwordOffsets = missingRegister.HalfwordOffsets[:len(missingRegister.HalfwordOffsets)-1]
 	if _, err := NewQualcommBootControl(missingRegister); err == nil {
 		t.Fatal("accepted legacy UART with missing halfword register")
+	}
+}
+
+func TestQualcommBootControlProfilesMixedWidthLegacyUARTController(t *testing.T) {
+	wordOffsets := make([]uint32, 0, len(qualcommLegacyUARTHalfwordRegisterOffsets))
+	for _, relative := range qualcommLegacyUARTHalfwordRegisterOffsets {
+		wordOffsets = append(wordOffsets, 0x4200+relative)
+	}
+	device, err := NewQualcommBootControl(QualcommBootControlConfig{
+		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
+		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1,
+		WritableOffsets:       wordOffsets,
+		MixedWidthOffsets:     wordOffsets,
+		LegacyUARTControllers: []uint32{0x4200},
+		NANDReady:             NewStatusSignal(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := device.Write(0x4238, Width32, 0); err != nil {
+		t.Fatalf("word-wide legacy UART configuration write: %v", err)
+	}
+	if err := device.Write(0x4238, Width16, 0x1234); err != nil {
+		t.Fatalf("halfword legacy UART configuration write: %v", err)
+	}
+	value, err := device.Read(0x4208, Width32)
+	if err != nil || value != qualcommLegacyUARTStatusTXReady|qualcommLegacyUARTStatusTXEmpty {
+		t.Fatalf("word-wide legacy UART status = %#x error %v", value, err)
+	}
+	if value, err := device.Read(0x4214, Width32); err != nil || value != 0 {
+		t.Fatalf("word-wide legacy UART idle ISR = %#x error %v", value, err)
 	}
 }
 
@@ -1406,10 +1631,10 @@ func TestQualcommSecondaryClockControlProfilesAdditionalWritableOffsets(t *testi
 func TestQualcommSecondaryClockControlProfilesReadOnlyInput(t *testing.T) {
 	device, err := NewQualcommSecondaryClockControlWithConfig(QualcommSecondaryClockConfig{
 		WritableOffsets: []uint32{0x040c},
-		ReadOnlyRegisters: []QualcommSecondaryClockReadOnlyRegister{{
-			Offset: 0x0444,
-			Value:  0x00000400,
-		}},
+		ReadOnlyRegisters: []QualcommSecondaryClockReadOnlyRegister{
+			{Offset: qualcommSecondaryClockDisabledStatusOffset, Value: 0x00000004},
+			{Offset: 0x0444, Value: 0x00000400},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1421,6 +1646,10 @@ func TestQualcommSecondaryClockControlProfilesReadOnlyInput(t *testing.T) {
 	if err := device.Write(0x0444, Width32, 0); !errors.Is(err, ErrQualcommSecondaryClockMMIO) {
 		t.Fatalf("secondary clock input write error = %v", err)
 	}
+	value, err = device.Read(qualcommSecondaryClockDisabledStatusOffset, Width32)
+	if err != nil || value != 0x00000004 {
+		t.Fatalf("profiled secondary status = %#x error %v", value, err)
+	}
 }
 
 func TestQualcommSecondaryClockControlRejectsInvalidReadOnlyInputs(t *testing.T) {
@@ -1428,7 +1657,6 @@ func TestQualcommSecondaryClockControlRejectsInvalidReadOnlyInputs(t *testing.T)
 		{{Offset: 0x0441}},
 		{{Offset: QualcommSecondaryClockWindowSize}},
 		{{Offset: 0x0400}},
-		{{Offset: qualcommSecondaryClockDisabledStatusOffset}},
 		{{Offset: 0x0444}, {Offset: 0x0444}},
 	} {
 		if _, err := NewQualcommSecondaryClockControlWithConfig(QualcommSecondaryClockConfig{

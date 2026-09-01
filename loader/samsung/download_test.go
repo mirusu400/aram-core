@@ -63,6 +63,63 @@ func TestInspectAndNormalizeSyntheticSCHDownloadSetWithoutFilenames(t *testing.T
 	}
 }
 
+func TestInspectAndNormalizeSyntheticRawSCHDownloadSetWithoutFilenames(t *testing.T) {
+	sources := syntheticRawDownloadSources(t)
+	set, err := firmwareset.NewSet([]firmwareset.Source{
+		sources[RoleFont],
+		sources[RoleDAT],
+		sources[RoleWBT],
+		sources[RoleWBIN],
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pkg, err := Inspect(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pkg.Family != FamilySCHRawDownload || !pkg.Complete() {
+		t.Fatalf("raw package = family %q missing %v", pkg.Family, pkg.MissingRoles())
+	}
+	if got := pkg.Pieces[RoleWBT].Index; got != 2 {
+		t.Fatalf("raw WBT source index = %d, want 2", got)
+	}
+
+	layout, err := Normalize(set, pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if layout.Family != FamilySCHRawDownload || layout.MIBIBGeneration != 2 {
+		t.Fatalf("raw layout identity = %+v", layout)
+	}
+	wbin := layout.Region(RoleWBIN)
+	if wbin == nil || wbin.Start != 0x60000 || wbin.SourceOffset != 0 ||
+		wbin.Transform != TransformIdentity {
+		t.Fatalf("raw WBIN region = %+v", wbin)
+	}
+	for _, role := range []Role{RoleWBT, RoleDAT, RoleFont} {
+		region := layout.Region(role)
+		if region == nil || region.SourceOffset != 0 {
+			t.Fatalf("raw %s region = %+v", role, region)
+		}
+	}
+}
+
+func TestInspectRejectsMixedWrappedAndRawSCHDownloadPieces(t *testing.T) {
+	wrapped := syntheticDownloadSources(t)
+	raw := syntheticRawDownloadSources(t)
+	set, err := firmwareset.NewSet([]firmwareset.Source{
+		wrapped[RoleWBT], raw[RoleWBIN], raw[RoleDAT], raw[RoleFont],
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Inspect(set); !errors.Is(err, ErrNotSCHDownload) {
+		t.Fatalf("Inspect mixed-family error = %v", err)
+	}
+}
+
 func TestNormalizeAcceptsTrailingWritablePartitionAfterPackagedEnd(t *testing.T) {
 	sources := syntheticDownloadSources(t)
 	wbt := readSyntheticSource(t, sources[RoleWBT])
@@ -231,6 +288,57 @@ func TestNormalizeAcceptsVersionOneFOTAAliasAtEndOfAMSS(t *testing.T) {
 	}
 }
 
+func TestNormalizeAcceptsVersionOneFOTAAliasWithinFollowingDMB(t *testing.T) {
+	sources := syntheticDownloadSources(t)
+	wbt := readSyntheticSource(t, sources[RoleWBT])
+	copyOffset := WrapperSize + 2*EraseBlockSize
+	copyData := wbt[copyOffset : copyOffset+EraseBlockSize]
+	putU32s(copyData, 8, 1)
+	primary := copyData[PageSize:]
+	putU32s(primary, 8, 1, 7)
+	entries := []struct {
+		name        string
+		start, size uint32
+	}{
+		{"0:MIBIB", 0, 2},
+		{"0:QCSBL", 2, 1},
+		{"0:AMSS", 3, 3},
+		{"0:FOTA", 8, 1},
+		{"0:DMB", 6, 3},
+		{"0:RSRC", 9, 3},
+		{"0:FONT", 12, 1},
+	}
+	for index, entry := range entries {
+		offset := 16 + index*mibibEntrySize
+		clear(primary[offset : offset+mibibEntrySize])
+		copy(primary[offset:offset+16], entry.name)
+		putU32s(primary, offset+16, entry.start, entry.size, 0)
+	}
+	sources[RoleWBT] = firmwareset.Source{ReaderAt: bytes.NewReader(wbt), Size: int64(len(wbt))}
+
+	wbin := readSyntheticSource(t, sources[RoleWBIN])
+	putU32s(wbin, len(wbin)-62, 0x6, 0x18, 0x12, 0x1a)
+	sources[RoleWBIN] = firmwareset.Source{ReaderAt: bytes.NewReader(wbin), Size: int64(len(wbin))}
+
+	set, err := firmwareset.NewSet([]firmwareset.Source{
+		sources[RoleWBT], sources[RoleWBIN], sources[RoleDAT], sources[RoleFont],
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := Inspect(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	layout, err := Normalize(set, pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if layout.MIBIBVersion != 1 || len(layout.Partitions) != len(entries) {
+		t.Fatalf("version-one DMB alias layout = %+v", layout)
+	}
+}
+
 func TestNormalizeRejectsUnrelatedVersionOnePartitionOverlap(t *testing.T) {
 	sources := syntheticDownloadSources(t)
 	wbt := readSyntheticSource(t, sources[RoleWBT])
@@ -363,6 +471,27 @@ func syntheticDownloadSources(t *testing.T) map[Role]firmwareset.Source {
 
 	result := make(map[Role]firmwareset.Source, len(pieces))
 	for role, data := range pieces {
+		result[role] = firmwareset.Source{ReaderAt: bytes.NewReader(data), Size: int64(len(data))}
+	}
+	return result
+}
+
+func syntheticRawDownloadSources(t *testing.T) map[Role]firmwareset.Source {
+	t.Helper()
+	wrapped := syntheticDownloadSources(t)
+	_, plaintext := syntheticEncodedWBIN(t)
+	payloads := make(map[Role][]byte, len(requiredRoles))
+	for _, role := range []Role{RoleWBT, RoleDAT, RoleFont} {
+		piece := readSyntheticSource(t, wrapped[role])
+		payloads[role] = append([]byte(nil), piece[WrapperSize:]...)
+	}
+	payloads[RoleWBIN] = append([]byte(nil), plaintext...)
+	putU32s(payloads[RoleDAT], 0, 0x3167)
+	putU32s(payloads[RoleFont], 0, 1)
+	copy(payloads[RoleFont][4:12], "DC18brew")
+
+	result := make(map[Role]firmwareset.Source, len(payloads))
+	for role, data := range payloads {
 		result[role] = firmwareset.Source{ReaderAt: bytes.NewReader(data), Size: int64(len(data))}
 	}
 	return result
