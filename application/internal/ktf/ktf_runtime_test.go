@@ -64,6 +64,48 @@ func TestKTFRuntimeMapsAndCallsClientEntry(t *testing.T) {
 	}
 }
 
+// TestKTFRuntimeMapsLowWorkRAM pins the low-address application RAM window a KTF
+// handset kept between the host-call page and the heap. 티어즈 오브 메탈 derefs a
+// save-embedded absolute pointer (0x01d14250) that lands here, so the span must
+// be mapped read-write or the title aborts the VM as its save loads.
+func TestKTFRuntimeMapsLowWorkRAM(t *testing.T) {
+	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin4096",
+		BSSSize:    4096,
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.CPU.Close()
+	if err := runtime.MapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	const tearsOfMetalSavePointer = uint32(0x01d14250)
+	if tearsOfMetalSavePointer < LowWorkRAMBase ||
+		tearsOfMetalSavePointer >= LowWorkRAMBase+LowWorkRAMSize {
+		t.Fatalf("save pointer 0x%08x is outside low work RAM [0x%08x, 0x%08x)",
+			tearsOfMetalSavePointer, LowWorkRAMBase, LowWorkRAMBase+LowWorkRAMSize)
+	}
+	for _, address := range []uint32{
+		LowWorkRAMBase,
+		tearsOfMetalSavePointer,
+		LowWorkRAMBase + LowWorkRAMSize - 4,
+	} {
+		want := []byte{0xde, 0xad, 0xbe, 0xef}
+		if err := runtime.CPU.WriteMemory(address, want); err != nil {
+			t.Fatalf("write 0x%08x: %v", address, err)
+		}
+		got := make([]byte, 4)
+		if err := runtime.CPU.ReadMemory(address, got); err != nil {
+			t.Fatalf("read 0x%08x: %v", address, err)
+		}
+		if string(got) != string(want) {
+			t.Fatalf("0x%08x round-trip = % x, want % x", address, got, want)
+		}
+	}
+}
+
 func TestKTFRuntimeInitializesCompleteJavaEnvironment(t *testing.T) {
 	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
 		ClientName: "client.bin4096",
