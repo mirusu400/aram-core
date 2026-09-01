@@ -2403,3 +2403,46 @@ func TestMediaSetVolumeStillGatesPlayback(t *testing.T) {
 		t.Fatal("restoring the master volume left the clip silent")
 	}
 }
+
+// TestWIPIRuntimeDisplayInfoReturnValueFollowsTheVendor pins both spellings of
+// MC_grpGetDisplayInfo's result. The Samsung WIPI-C runtime answers
+// M_E_SUCCESS after filling the structure, while LGT answers the display
+// count. 나는마왕이다2 tests the result for truth and, on zero, skips its whole
+// graphics setup - it never fetches the screen framebuffer, so it flushed an
+// empty LCD forever and sat on a black screen (issue #126).
+func TestWIPIRuntimeDisplayInfoReturnValueFollowsTheVendor(t *testing.T) {
+	for _, testCase := range []struct {
+		name  string
+		count bool
+		want  uint32
+	}{
+		{name: "samsung", count: false, want: 0},
+		{name: "lgt", count: true, want: 1},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			runtime := newPublicRuntime(t)
+			runtime.DisplayInfoReturnsCount = testCase.count
+			displayInfo, err := runtime.Heap.Allocate(36, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result := dispatchPublicAPI(t, runtime, "MC_grpGetDisplayInfo", 0, displayInfo)
+			if result.Low != testCase.want {
+				t.Fatalf("MC_grpGetDisplayInfo = %d, want %d", result.Low, testCase.want)
+			}
+			var encoded [36]byte
+			if err := runtime.CPU.ReadMemory(displayInfo, encoded[:]); err != nil {
+				t.Fatal(err)
+			}
+			if binary.LittleEndian.Uint32(encoded[8:]) == 0 {
+				t.Fatal("MC_grpGetDisplayInfo left the width unset")
+			}
+		})
+	}
+	// A null structure pointer is still rejected, whatever the vendor.
+	runtime := newPublicRuntime(t)
+	runtime.DisplayInfoReturnsCount = true
+	if result := dispatchPublicAPI(t, runtime, "MC_grpGetDisplayInfo", 0, 0); result.Low != ^uint32(7) {
+		t.Fatalf("MC_grpGetDisplayInfo(0, NULL) = 0x%08x", result.Low)
+	}
+}
