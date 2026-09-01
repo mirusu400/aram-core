@@ -133,9 +133,31 @@ var raptorJavaFixedVirtualMethods = map[string][]raptorJavaFixedVirtualMethod{
 		{offset: 0x74, Name: "substring", descriptor: "(II)Ljava/lang/String;"},
 	},
 	"java/lang/StringBuffer": {
+		// CLDC declares length, capacity, ensureCapacity, setLength, charAt,
+		// getChars, setCharAt and then the append family in signature order
+		// (Object, String, char[], char[]II, boolean, char, int, long), so the
+		// own-method region from 0x2c lines up slot for slot. The String
+		// (0x4c), char (0x5c) and int (0x60) call sites in SD한국전쟁 confirm the
+		// three anchors that pin the block. Only the slots the host runtime
+		// implements are mapped; the rest keep the no-op backstop.
+		//
+		// append(char) was the gap that mattered: SD한국전쟁 zero-pads a resource
+		// index with buffer.append('0') before appending the number, and the
+		// unresolved slot dropped the pad, so it asked for "snd/0.mmf" instead
+		// of "snd/00.mmf". getResourceAsStream then answered null, the title's
+		// own null check threw, and the throw fell through into a null deref
+		// that faulted the machine (issue #125).
 		{offset: 0x14, Name: "toString", descriptor: "()Ljava/lang/String;"},
+		{offset: 0x2c, Name: "length", descriptor: "()I"},
+		{offset: 0x38, Name: "setLength", descriptor: "(I)V"},
+		{offset: 0x3c, Name: "charAt", descriptor: "(I)C"},
+		{offset: 0x48, Name: "append", descriptor: "(Ljava/lang/Object;)Ljava/lang/StringBuffer;"},
 		{offset: 0x4c, Name: "append", descriptor: "(Ljava/lang/String;)Ljava/lang/StringBuffer;"},
+		{offset: 0x54, Name: "append", descriptor: "([CII)Ljava/lang/StringBuffer;"},
+		{offset: 0x58, Name: "append", descriptor: "(Z)Ljava/lang/StringBuffer;"},
+		{offset: 0x5c, Name: "append", descriptor: "(C)Ljava/lang/StringBuffer;"},
 		{offset: 0x60, Name: "append", descriptor: "(I)Ljava/lang/StringBuffer;"},
+		{offset: 0x64, Name: "append", descriptor: "(J)Ljava/lang/StringBuffer;"},
 	},
 	"java/lang/Thread": {
 		{offset: 0x2c, Name: "start", descriptor: "()V"},
