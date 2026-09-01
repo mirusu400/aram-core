@@ -768,7 +768,13 @@ func (r *Runtime) getDisplayInfo(display, pointer uint32) (guest.WIPIReturn, boo
 	for index, value := range values {
 		binary.LittleEndian.PutUint32(encoded[index*4:], uint32(value))
 	}
-	return guest.WIPIReturn{}, true, r.CPU.WriteMemory(pointer, encoded[:])
+	// LGT reports the display count here; the Samsung runtime reports
+	// M_E_SUCCESS. See DisplayInfoReturnsCount.
+	result := guest.WIPIReturn{}
+	if r.DisplayInfoReturnsCount {
+		result.Low = 1
+	}
+	return result, true, r.CPU.WriteMemory(pointer, encoded[:])
 }
 
 func (r *Runtime) stringWidth(font, address uint32, length int32, unicode bool) (guest.WIPIReturn, bool, error) {

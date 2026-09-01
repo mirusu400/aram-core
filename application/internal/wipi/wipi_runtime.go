@@ -240,6 +240,15 @@ type Runtime struct {
 	// layout its own vendor's runtime wrote.
 	CompactGraphicsContext bool
 
+	// DisplayInfoReturnsCount selects LGT Raptor's MC_grpGetDisplayInfo
+	// return value. The Samsung WIPI-C runtime answers M_E_SUCCESS (0) after
+	// filling the structure; LGT's answers the number of displays, and its
+	// titles test the result for truth. 나는마왕이다2 fetches the display
+	// information once at startup and, on a zero result, skips the whole
+	// graphics setup - never fetching the screen framebuffer - so it flushed an
+	// empty LCD forever and sat on a black screen (issue #126).
+	DisplayInfoReturnsCount bool
+
 	Framebuffers     map[uint32]Framebuffer
 	framebufferBits  int
 	ScreenHandle     uint32
