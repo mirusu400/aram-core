@@ -109,6 +109,7 @@ func TestRaptorWIPIImportsResolveToPublicCatalog(t *testing.T) {
 		1041:  "strlen",
 		1044:  "memcpy",
 		1048:  "memset",
+		1216:  "MC_mdaSetVolume",
 		1233:  "MC_mdaSetMuteState",
 		1234:  "MC_mdaGetMuteState",
 		1400:  "MC_miscBackLight",

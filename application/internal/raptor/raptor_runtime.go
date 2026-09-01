@@ -1133,6 +1133,15 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 		return "MC_mdaClipClearData", true
 	case 1208:
 		return "MC_mdaClipGetVolume", true
+	// MC_mdaSetVolume is the master volume an LGT option screen drives, one
+	// step below the MC_mdaVibrator(1217) anchor that pins the block. Titles
+	// call it with a single argument holding a percentage they compute from
+	// their own step index: 테일즈위버 막시민편 and 그랜드체이스 both multiply
+	// the selected step by 25 for the five-step 볼륨 row, and the baseball
+	// titles pass a literal 0 for their off setting (aram-core #119). Leaving
+	// it unmapped meant the whole in-game volume row did nothing.
+	case 1216:
+		return "MC_mdaSetVolume", true
 	case 1233:
 		return "MC_mdaSetMuteState", true
 	case 1234:
