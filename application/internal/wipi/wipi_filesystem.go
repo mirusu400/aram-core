@@ -136,15 +136,22 @@ func (r *Runtime) dispatchFilesystem(name string) (guest.WIPIReturn, bool, error
 		}
 		return guest.WIPIReturn{Low: uint32(len(r.directoryEntries(name)))}, true, nil
 	case "MC_fsIsExist":
+		// The authorized reference resolves the name and answers M_SUCCESS (0)
+		// for an entry that is there, M_E_NOENT (-12) for one that is not - the
+		// same result convention every other MC_fs entry point uses, not a
+		// boolean. Answering 1/0 inverted the sense for the guests that test
+		// it: 하이브리드2 probes for its "main.dat" download, reads the zero it
+		// got back as success, and then copies out of the stream buffer it
+		// never filled, faulting the machine on a null source (issue #124).
 		name, err := r.guestPath(arg(0), int32(arg(1)))
 		if err != nil {
-			return guest.WIPIReturn{}, true, nil
+			return guest.WIPIReturn{Low: fsNoEntry}, true, nil
 		}
 		_, fileExists := r.Files[name]
 		if r.Directories[name] || fileExists {
-			return guest.WIPIReturn{Low: 1}, true, nil
+			return guest.WIPIReturn{}, true, nil
 		}
-		return guest.WIPIReturn{}, true, nil
+		return guest.WIPIReturn{Low: fsNoEntry}, true, nil
 	default:
 		return guest.WIPIReturn{}, false, nil
 	}
@@ -197,6 +204,11 @@ func (r *Runtime) guestPath(address uint32, accessMode int32) (string, error) {
 	return root + cleaned, nil
 }
 
+// fsNoEntry is M_E_NOENT, the WIPI file layer's "no such entry" result. A
+// guest compares against it exactly (result + 0xC == 0) rather than against
+// the generic -1 handle-error sentinel.
+const fsNoEntry = 0xFFFFFFF4
+
 func (r *Runtime) openFile(nameAddress uint32, flag, accessMode int32) (guest.WIPIReturn, bool, error) {
 	name, err := r.guestPath(nameAddress, accessMode)
 	if err != nil {
@@ -215,10 +227,7 @@ func (r *Runtime) openFile(nameAddress uint32, flag, accessMode int32) (guest.WI
 	truncate := flag&4 != 0
 	data, exists := r.Files[name]
 	if !exists && !writable {
-		// M_E_NOENT (-12): the LGT WIPI file layer's "no such entry" code, which a
-		// guest compares against exactly (result + 0xC == 0), not the generic -1
-		// handle-error sentinel.
-		return guest.WIPIReturn{Low: 0xFFFFFFF4}, true, nil
+		return guest.WIPIReturn{Low: fsNoEntry}, true, nil
 	}
 	mode := shared.OpenMode(0)
 	if readable {
