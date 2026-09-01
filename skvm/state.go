@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"github.com/mirusu400/aram-core/internal/ime"
 	"io"
@@ -1204,13 +1205,37 @@ func (vm *VM) validateNative(reference uint32, native any) error {
 			return nil
 		}
 		normalized, err := vm.services.Storage.NormalizePath(state.name)
+		if err != nil || normalized != state.name {
+			return fmt.Errorf("load SKVM state: object %d invalid file state", reference)
+		}
 		data, readErr := vm.services.Storage.ReadFile(
 			shared.NamespacePrivate,
 			state.name,
 		)
-		if err != nil || normalized != state.name ||
-			readErr != nil || !bytes.Equal(data, state.data) {
+		switch {
+		case errors.Is(readErr, shared.ErrNotFound):
+			// The file vanished from the restored snapshot — an XFile that only
+			// ever created a still-empty file is a common case. This handle's
+			// serialized data is the surviving copy, so re-materialize it.
+			if writeErr := vm.services.Storage.WriteFile(
+				shared.NamespacePrivate,
+				state.name,
+				state.data,
+			); writeErr != nil {
+				return fmt.Errorf("load SKVM state: object %d restore file: %w", reference, writeErr)
+			}
+		case readErr != nil:
 			return fmt.Errorf("load SKVM state: object %d invalid file state", reference)
+		case !bytes.Equal(data, state.data):
+			// A second handle on the same path (a com/xce/io/FileOutputStream,
+			// say) advanced the persisted file past this XFile's cached snapshot.
+			// Storage is serialized and restored on its own, so treat it as
+			// authoritative and re-sync the snapshot rather than rejecting the
+			// whole state as corrupt.
+			state.data = data
+			if state.offset > len(state.data) {
+				state.offset = len(state.data)
+			}
 		}
 		return nil
 	case *randomState:
