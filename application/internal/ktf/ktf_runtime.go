@@ -243,6 +243,17 @@ type Runtime struct {
 	deferredShownCards     map[*Task]map[uint32]bool
 	PresentCount           uint32
 	TickMS                 uint64
+	// The clock fields break a guest busy-wait on the millisecond clock. Virtual
+	// time only advances between presentation quanta, so a title that spins
+	// reading the clock inside one host call (헬싱's handleInput busy-delay)
+	// never sees time move and burns its whole instruction budget.
+	// monotonicReadMS credits the ActiveInstructions run between two clock reads
+	// as elapsed time so the wait ends, and clockReadBaseTick resets the credit
+	// whenever a quantum moves TickMS.
+	TotalInstructions uint64
+	clockReadBaseTick uint64
+	clockReadInstrs   uint64
+	clockReadOffset   uint64
 
 	NativeParameterBase uint32
 	parameterScratch    [4]byte
