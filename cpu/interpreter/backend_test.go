@@ -10,6 +10,11 @@ import (
 	"github.com/mirusu400/aram-core/cpu"
 )
 
+type backendConstructor struct {
+	name string
+	new  func() *Backend
+}
+
 func TestThumbExecutesIntegerAndStackInstructions(t *testing.T) {
 	backend := New()
 	mapCodeAndStack(t, backend)
@@ -73,15 +78,7 @@ func TestARMExecutesDataProcessing(t *testing.T) {
 }
 
 func TestARMORRShiftReadsSourceBeforeWritingAliasedDestination(t *testing.T) {
-	constructors := []struct {
-		name string
-		new  func() *Backend
-	}{
-		{name: "precise", new: New},
-		{name: "go-jit", new: NewJIT},
-		{name: "native-jit", new: NewNativeJIT},
-	}
-	for _, constructor := range constructors {
+	for _, constructor := range armExecutionTierConstructors() {
 		t.Run(constructor.name, func(t *testing.T) {
 			backend := constructor.new()
 			defer backend.Close()
@@ -1013,15 +1010,7 @@ func TestARMHalfwordAndSignedByteTransfers(t *testing.T) {
 }
 
 func TestARMDoublewordTransfersAcrossExecutionTiers(t *testing.T) {
-	constructors := []struct {
-		name string
-		new  func() *Backend
-	}{
-		{name: "precise", new: New},
-		{name: "go-jit", new: NewJIT},
-		{name: "native-jit", new: NewNativeJIT},
-	}
-	for _, constructor := range constructors {
+	for _, constructor := range armExecutionTierConstructors() {
 		t.Run(constructor.name, func(t *testing.T) {
 			backend := constructor.new()
 			defer backend.Close()
