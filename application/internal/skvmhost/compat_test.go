@@ -14,6 +14,7 @@ import (
 const (
 	dragonKnightEXSKTSHA256 = "fa1fc7826e4f2dbd10a4793177d9aed3282e5b9812d47863edc2f64761850cc2"
 	whaleHunting2SKTSHA256  = "1367261bc3ee3b7f0afa102a52a7559204d94da60c543969773d47a09c051e79"
+	xMenSKTSHA256           = "f483ba078c14a2ea0e19a0cbe28ce36ffe7e16b6afc6847aa67f4a54f66feb72"
 )
 
 func TestDragonKnightEXCompatibilityRequiresExactPackageIdentity(t *testing.T) {
@@ -107,6 +108,44 @@ func TestWhaleHunting2CanvasReplacesTheInferredGeometry(t *testing.T) {
 
 	lookalike := pkg
 	lookalike.Descriptor.MainClass = "x"
+	if canvas := skvmTitleCanvas(source, lookalike, inferred); canvas != inferred {
+		t.Fatalf("lookalike canvas = %v, want the inferred %v", canvas, inferred)
+	}
+}
+
+// TestXMenCanvasCorrectsTheAmbiguousInference covers aram-core #118: the
+// title's assets are 176x204, which fits the 176x208 candidate and the 176x220
+// one equally well, so the inference kept the first and the title's soft-key
+// labels - drawn below its 204-row canvas - ran off the bottom of the frame.
+func TestXMenCanvasCorrectsTheAmbiguousInference(t *testing.T) {
+	source := machinecore.Source{SHA256: xMenSKTSHA256}
+	pkg := skloader.Package{Descriptor: skloader.Descriptor{
+		MainClass:   "XMen",
+		ProgramName: "0053594173",
+	}}
+	inferred := image.Pt(176, 208)
+
+	if canvas := skvmTitleCanvas(source, pkg, inferred); canvas != image.Pt(176, 220) {
+		t.Fatalf("canvas = %v, want (176,220)", canvas)
+	}
+	config := shared.DefaultConfig()
+	applySKVMTitleCompatibility(&config, source, pkg, inferred)
+	if len(config.Device.Quirks) != 1 ||
+		config.Device.Quirks[0] != (shared.DeviceQuirk{
+			Name:    skengine.CanvasHeightInset16Quirk,
+			Enabled: true,
+		}) {
+		t.Fatalf("compatibility quirks = %+v", config.Device.Quirks)
+	}
+
+	// The entry is pinned to the geometry the inference actually produces, so
+	// a host that reaches another size is left alone.
+	other := image.Pt(240, 320)
+	if canvas := skvmTitleCanvas(source, pkg, other); canvas != other {
+		t.Fatalf("canvas from another inference = %v, want the inferred %v", canvas, other)
+	}
+	lookalike := pkg
+	lookalike.Descriptor.ProgramName = "0000000000"
 	if canvas := skvmTitleCanvas(source, lookalike, inferred); canvas != inferred {
 		t.Fatalf("lookalike canvas = %v, want the inferred %v", canvas, inferred)
 	}

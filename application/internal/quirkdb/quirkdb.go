@@ -170,6 +170,26 @@ var SKVMCanvases = []SKVMCanvas{
 		Height:              220,
 		CanvasHeightInset16: true,
 	},
+	{
+		// 엑스맨 (X-Men) names its own canvas in its assets: the title picture
+		// is x_men_176_204_title.png and the prompt beside it is
+		// pressanykey_176_204.png, both 176x204 - a 176x220 handset with the
+		// 16-pixel system strip taken off. Every one of those assets fits the
+		// 176x208 candidate as well as the 176x220 one, so the inference
+		// scored the two the same and kept the first. On a 208-row
+		// framebuffer the title's soft-key labels, which it draws below the
+		// 204-row canvas, ran off the bottom edge (aram-core #118).
+		Key: SKVMTitleKey{
+			PackageSHA256: "f483ba078c14a2ea0e19a0cbe28ce36ffe7e16b6afc6847aa67f4a54f66feb72",
+			MainClass:     "XMen",
+			ProgramName:   "0053594173",
+		},
+		InferredWidth:       176,
+		InferredHeight:      208,
+		Width:               176,
+		Height:              220,
+		CanvasHeightInset16: true,
+	},
 }
 
 // LookupSKVMCanvas answers with the recorded canvas for one shipped SKT MIDlet
