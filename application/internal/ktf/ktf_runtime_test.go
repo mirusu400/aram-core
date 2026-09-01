@@ -107,6 +107,39 @@ func TestKTFRuntimeMapsLowWorkRAM(t *testing.T) {
 	}
 }
 
+// TestKTFMonotonicReadCreditsBusyWaitInstructions pins the busy-wait clock
+// break. Virtual time is frozen inside a host call, so a title that spins
+// reading the millisecond clock waiting for it to advance (헬싱's handleInput
+// delay) would never end. monotonicReadMS credits the instructions the guest
+// ran between two reads as elapsed time, while an ordinary once-per-frame read
+// is left exactly at TickMS.
+func TestKTFMonotonicReadCreditsBusyWaitInstructions(t *testing.T) {
+	r := &Runtime{TickMS: 1000}
+	if got := r.monotonicReadMS(); got != 1000 {
+		t.Fatalf("first read = %d, want 1000", got)
+	}
+	// A delay loop burns ~250k instructions between reads (2 virtual ms each).
+	r.TotalInstructions += 2 * ktfBusyWaitInstrsPerMS
+	if got := r.monotonicReadMS(); got != 1002 {
+		t.Fatalf("read after 2ms of work = %d, want 1002", got)
+	}
+	r.TotalInstructions += 5 * ktfBusyWaitInstrsPerMS
+	if got := r.monotonicReadMS(); got != 1007 {
+		t.Fatalf("read after 5ms more work = %d, want 1007", got)
+	}
+	// A handful of instructions between reads credits nothing, so an ordinary
+	// sampling read does not drift.
+	r.TotalInstructions += 100
+	if got := r.monotonicReadMS(); got != 1007 {
+		t.Fatalf("read after trivial work = %d, want 1007", got)
+	}
+	// A quantum advancing the real clock resets the credit.
+	r.TickMS = 1016
+	if got := r.monotonicReadMS(); got != 1016 {
+		t.Fatalf("read after quantum = %d, want 1016", got)
+	}
+}
+
 func TestKTFRuntimeInitializesCompleteJavaEnvironment(t *testing.T) {
 	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
 		ClientName: "client.bin4096",
