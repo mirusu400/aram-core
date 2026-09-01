@@ -603,6 +603,14 @@ func ktfGameAction(key int32) uint32 {
 	case -16:
 		return 99 // EventQueue.CLEAR
 	default:
+		if key < 0 {
+			// Handset keys outside the game-action set - SEND, END, POWER,
+			// and the flip keys - have no game action at all. Reporting the
+			// raw negative key code lets a title index its key-state array
+			// with it, so report "no game action" the way the rest of the
+			// WIPI surface does.
+			return 0
+		}
 		return uint32(key)
 	}
 }
