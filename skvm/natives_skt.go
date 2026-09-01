@@ -365,7 +365,14 @@ func (vm *VM) installSKTNatives() {
 				name,
 			)
 			if err != nil {
-				return Value{}, false, err
+				// A MIDP FileInputStream constructor reports an open
+				// failure (a missing options/save file on first run
+				// included) as a catchable java.io.IOException, not a
+				// fatal VM error, so the title can fall back to defaults.
+				return Value{}, false, vm.newThrowable(
+					"java/io/IOException",
+					err.Error(),
+				)
 			}
 			return Value{}, false, vm.setNative(
 				receiver,
@@ -653,9 +660,17 @@ func (vm *VM) installSKTNatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
-			data, err := vm.byteSliceArgument(args)
-			if err != nil {
-				return Value{}, false, err
+			// A title that has not managed to load its clip bytes still opens
+			// the AudioClip with a null buffer; treat that as an empty (silent)
+			// clip instead of faulting so playback simply produces no sound.
+			var data []byte
+			if reference, refErr := referenceArgument(args, 0); refErr != nil {
+				return Value{}, false, refErr
+			} else if reference != 0 {
+				data, err = vm.byteSliceArgument(args)
+				if err != nil {
+					return Value{}, false, err
+				}
 			}
 			created := false
 			if state.clip == 0 {

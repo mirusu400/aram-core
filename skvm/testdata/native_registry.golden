@@ -19,6 +19,7 @@ com/skt/m/Graphics2D captureLCD (IIII)Ljavax/microedition/lcdui/Image;
 com/skt/m/Graphics2D createMaskableImage (II)Ljavax/microedition/lcdui/Image;
 com/skt/m/Graphics2D drawImage (IILjavax/microedition/lcdui/Image;IIIII)V
 com/skt/m/Graphics2D getGraphics2D (Ljavax/microedition/lcdui/Graphics;)Lcom/skt/m/Graphics2D;
+com/skt/m/Graphics2D getPixel (II)I
 com/skt/m/Graphics2D setPixel (III)V
 com/skt/m/ProgressBar <init> (Ljava/lang/String;)V
 com/skt/m/ProgressBar getValue ()I
@@ -91,6 +92,8 @@ java/io/DataInputStream readInt ()I
 java/io/DataInputStream readLong ()J
 java/io/DataInputStream readShort ()S
 java/io/DataInputStream readUTF ()Ljava/lang/String;
+java/io/DataInputStream readUnsignedByte ()I
+java/io/DataInputStream readUnsignedShort ()I
 java/io/DataInputStream skip (J)J
 java/io/DataInputStream skipBytes (I)I
 java/io/DataOutputStream <init> (Ljava/io/OutputStream;)V
