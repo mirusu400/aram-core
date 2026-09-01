@@ -155,12 +155,11 @@ func (r *Runtime) dispatchMedia(name string) (guest.WIPIReturn, bool, error) {
 		if current := clip(); current != nil {
 			current.volume = int32(guest.Clamp(int(int32(arg(1))), 0, 100))
 			if serviceID := r.MediaServices[current.Handle]; serviceID != 0 {
-				muted := r.mediaMute[0]
 				if err := r.Services.Media.SetClipGain(
 					r.ServiceOwner,
 					serviceID,
 					uint8(current.volume),
-					muted,
+					false,
 					0,
 				); err != nil {
 					return guest.WIPIReturn{}, true, err
@@ -203,7 +202,7 @@ func (r *Runtime) dispatchMedia(name string) (guest.WIPIReturn, bool, error) {
 		r.mediaVolume = int32(guest.Clamp(int(int32(arg(0))), 0, 100))
 		if err := r.Services.Media.SetGlobalGain(
 			uint8(r.mediaVolume),
-			r.mediaMute[0],
+			false,
 		); err != nil {
 			return guest.WIPIReturn{}, true, err
 		}
@@ -221,17 +220,25 @@ func (r *Runtime) dispatchMedia(name string) (guest.WIPIReturn, bool, error) {
 		}
 		return guest.WIPIReturn{}, true, nil
 	case "MC_mdaSetMuteState":
+		// MC_mdaSetMuteState(source, bmute) silences one of the handset's own
+		// sound sources - the key tone and the other system beeps a title does
+		// not want chirping over its music - and not the application's clips.
+		//
+		// A title states that by muting a source for the length of its run:
+		// 제노니아1 reads MC_mdaGetMuteState(6) into its settings block at
+		// startup, calls MC_mdaSetMuteState(6, M_TRUE), and restores the saved
+		// value on the way out; 테일즈위버 막시민편 mutes source 0 once during
+		// init and never unmutes it, while its own option screen still drives
+		// MC_mdaSetVolume in five steps and it ships 64 SMAF tracks
+		// (aram-core #119).
+		//
+		// Folding those sources into the mixer's master mute is therefore
+		// wrong twice over: it silences audio the handset still plays, and
+		// because the mute is never lifted the title stays silent for the rest
+		// of the session. The state is kept per source so MC_mdaGetMuteState
+		// round trips - the save-and-restore pattern depends on it - and the
+		// mixer is left alone.
 		r.mediaMute[int32(arg(0))] = arg(1) != 0
-		muted := false
-		for _, value := range r.mediaMute {
-			muted = muted || value
-		}
-		if err := r.Services.Media.SetGlobalGain(
-			uint8(r.mediaVolume),
-			muted,
-		); err != nil {
-			return guest.WIPIReturn{}, true, err
-		}
 		return guest.WIPIReturn{}, true, nil
 	case "MC_mdaGetMuteState":
 		if r.mediaMute[int32(arg(0))] {
@@ -421,7 +428,7 @@ func (r *Runtime) RaptorSetClipVolume(handle uint32, volume int32) {
 			r.ServiceOwner,
 			serviceID,
 			uint8(clip.volume),
-			r.mediaMute[0],
+			false,
 			0,
 		)
 	}
