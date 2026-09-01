@@ -97,6 +97,26 @@ func (vm *VM) collectGarbage() error {
 		}
 	}
 
+	// A Runnable handed to Display.callSerially (and a Timer callback) lives only
+	// as a reference inside the shared event bus until Advance dispatches its
+	// run(). The guest may drop its own reference the instant it schedules the
+	// work, so without rooting the pending events here a mid-flight System.gc
+	// would reclaim the Runnable and the later dispatch would fault on a stale
+	// receiver.
+	for _, event := range vm.services.Events.Snapshot().Events {
+		if event.Owner != vm.serviceOwner ||
+			event.Value <= 0 || event.Value > int64(^uint32(0)) {
+			continue
+		}
+		switch {
+		case event.Kind == shared.EventApplication &&
+			event.Name == callSeriallyEventName:
+			markReference(uint32(event.Value))
+		case event.Kind == shared.EventTimer:
+			markReference(uint32(event.Value))
+		}
+	}
+
 	for len(pending) != 0 {
 		reference := pending[len(pending)-1]
 		pending = pending[:len(pending)-1]
