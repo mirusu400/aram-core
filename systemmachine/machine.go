@@ -7,6 +7,7 @@ package systemmachine
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -27,6 +28,11 @@ const (
 	SnapshotSchema                   = "aram-system-machine-state-v1"
 	schw830QCSBLBoundaryInstructions = uint64(1_195_629)
 	schw830QCSBLBoundaryPC           = uint32(0x000a07d8)
+	samsungW320QCSBLUsedSize         = uint32(0x0000484f)
+	samsungW320QCSBLLoadAddress      = uint32(0x00080000)
+	samsungW320PBLVerifiedCopy       = uint32(0x01880000)
+	samsungW320PBLVerifiedRecord     = uint32(0x0050aab6)
+	samsungW320PBLVerifiedStatus     = uint32(0x0050aa70)
 )
 
 var (
@@ -121,7 +127,7 @@ type Machine struct {
 	flash          *system.COWFlash
 	secondaryFlash *system.COWFlash
 	nand           *system.QualcommNAND
-	oneNANDSpare   *system.QualcommNAND
+	oneNANDSpare   system.StatefulNANDSpareStorage
 	panel          *system.DCSPanelController
 	keypad         *system.QualcommGPIOKeypad
 	primaryClock   *system.QualcommPrimaryClockControl
@@ -159,6 +165,8 @@ func New(set firmwareset.Set, options Options) (*Machine, error) {
 		return nil, fmt.Errorf("select Samsung firmware build: %w", err)
 	}
 	switch firmwareProfile.Model {
+	case "SCH-W320", "SCH-W340", "SCH-W350", "SCH-W410", "SCH-W850":
+		return newSamsungRawDownloadMachine(set, pkg, firmwareProfile, options)
 	case "SCH-W770":
 		return newSCHW770(set, pkg, firmwareProfile, options)
 	case "SCH-W830":
@@ -168,6 +176,32 @@ func New(set firmwareset.Set, options Options) (*Machine, error) {
 	default:
 		return nil, fmt.Errorf("%w: Samsung %s build %s", ErrUnsupportedMachine, firmwareProfile.Model, firmwareProfile.Build)
 	}
+}
+
+func newSamsungRawDownloadMachine(
+	set firmwareset.Set,
+	pkg samsung.Package,
+	firmwareProfile samsung.BuildProfile,
+	options Options,
+) (*Machine, error) {
+	var board system.BoardProfile
+	switch firmwareProfile.ID {
+	case samsung.SCHW320DC18ProfileID:
+		board = system.SCHW320DC18BoardProfile()
+	case samsung.SCHW340DC18ProfileID:
+		board = system.SCHW340DC18BoardProfile()
+	case samsung.SCHW350CK06ProfileID:
+		board = system.SCHW350CK06BoardProfile()
+	case samsung.SCHW410CL10ProfileID:
+		board = system.SCHW410CL10BoardProfile()
+	case samsung.SCHW850CF11ProfileID:
+		board = system.SCHW850CF11BoardProfile()
+	default:
+		return nil, fmt.Errorf(
+			"%w: Samsung %s build %s", ErrUnsupportedMachine, firmwareProfile.Model, firmwareProfile.Build,
+		)
+	}
+	return newSamsungQualcommMachine(set, pkg, firmwareProfile, board, bootBoundary{}, options)
 }
 
 // NewSCHW770 constructs the DA05 version-one MIBIB handset from its traced
@@ -283,6 +317,24 @@ func newSamsungQualcommMachine(
 	if err != nil {
 		return nil, fmt.Errorf("reconstruct QCSBL: %w", err)
 	}
+	var pblPreloadedBootImages []samsung.BootImage
+	for _, spec := range firmwareProfile.BootImages {
+		if !spec.PBLPreload {
+			continue
+		}
+		image, reconstructErr := samsung.ReconstructBootImage(set, pkg, spec)
+		if reconstructErr != nil {
+			return nil, fmt.Errorf("reconstruct PBL-preloaded image %q: %w", spec.ID, reconstructErr)
+		}
+		pblPreloadedBootImages = append(pblPreloadedBootImages, image)
+	}
+	var pblROM samsung.MemoryImage
+	if pblSpec, ok := firmwareProfile.MemoryImage("pbl-rom"); ok {
+		pblROM, err = samsung.ReconstructMemoryImage(set, pkg, pblSpec)
+		if err != nil {
+			return nil, fmt.Errorf("reconstruct PBL ROM: %w", err)
+		}
+	}
 
 	if err := board.Validate(); err != nil {
 		return nil, fmt.Errorf("validate %s board: %w", firmwareProfile.Model, err)
@@ -359,6 +411,7 @@ func newSamsungQualcommMachine(
 	nandConfig := system.Qualcomm2K8BitNANDConfig(board.NANDReadID, nandReady)
 	nandConfig.Capacity = board.NANDSize
 	nandConfig.FactoryBadBlocks = append([]uint32(nil), board.NANDFactoryBadBlocks...)
+	nandConfig.ReportErasedECCCodewords = board.NANDReportsErasedECCCodewords
 	if nandConfig.PageSize != samsung.PageSize {
 		return fail(fmt.Errorf("%s NAND page size does not match normalized flash", firmwareProfile.Model))
 	}
@@ -367,7 +420,7 @@ func newSamsungQualcommMachine(
 		return fail(fmt.Errorf("create %s NAND controller: %w", firmwareProfile.Model, err))
 	}
 	var oneNAND *system.OneNAND
-	var oneNANDSpare *system.QualcommNAND
+	var oneNANDSpare system.StatefulNANDSpareStorage
 	if spec := board.OneNAND; spec != nil {
 		spareConfig := system.Qualcomm2K8BitNANDConfig(
 			uint32(spec.ManufacturerID)<<8|uint32(spec.DeviceID&0xff),
@@ -382,13 +435,55 @@ func newSamsungQualcommMachine(
 			ManufacturerID: spec.ManufacturerID,
 			DeviceID:       spec.DeviceID,
 			VersionID:      spec.VersionID,
+			TechnologyID:   spec.TechnologyID,
 			DieBlockOffset: spec.DieBlockOffset,
 			Capacity:       spec.Capacity,
+			FlexGeometry:   spec.FlexGeometry,
 			Storage:        secondaryFlash,
 			Spare:          oneNANDSpare,
 		})
 		if err != nil {
 			return fail(fmt.Errorf("create %s OneNAND: %w", firmwareProfile.Model, err))
+		}
+	}
+	var sflashOneNAND *system.QualcommSFlashController
+	if spec := board.SFlashOneNAND; spec != nil {
+		if len(spec.SpareInitialData) != 0 {
+			pageSize := uint32(0x0800)
+			pagesPerEraseBlock := uint64(samsung.EraseBlockSize / pageSize)
+			if spec.FlexGeometry != nil {
+				pageSize = spec.FlexGeometry.PageSize
+				pagesPerEraseBlock = uint64(spec.FlexGeometry.MLCBlockSize / pageSize)
+			}
+			sparePageSize := pageSize / 0x0200 * 0x0010
+			oneNANDSpare, err = system.NewSparseNANDSpare(system.SparseNANDSpareConfig{
+				PageSize:           sparePageSize,
+				PageCount:          spec.Capacity / uint64(pageSize),
+				PagesPerEraseBlock: pagesPerEraseBlock,
+				Identity:           firmwareProfile.ID + ":sflash-onenand-spare",
+				InitialData:        spec.SpareInitialData,
+			})
+			if err != nil {
+				return fail(fmt.Errorf("create %s SFlash OneNAND spare media: %w", firmwareProfile.Model, err))
+			}
+		}
+		target, targetErr := system.NewOneNAND(system.OneNANDConfig{
+			ManufacturerID: spec.ManufacturerID,
+			DeviceID:       spec.DeviceID,
+			VersionID:      spec.VersionID,
+			TechnologyID:   spec.TechnologyID,
+			DieBlockOffset: spec.DieBlockOffset,
+			Capacity:       spec.Capacity,
+			FlexGeometry:   spec.FlexGeometry,
+			Storage:        flash,
+			Spare:          oneNANDSpare,
+		})
+		if targetErr != nil {
+			return fail(fmt.Errorf("create %s SFlash OneNAND target: %w", firmwareProfile.Model, targetErr))
+		}
+		sflashOneNAND, err = system.NewQualcommSFlashController(target)
+		if err != nil {
+			return fail(fmt.Errorf("create %s SFlash OneNAND controller: %w", firmwareProfile.Model, err))
 		}
 	}
 	factoryNANDState, err := nand.SaveState()
@@ -406,20 +501,22 @@ func newSamsungQualcommMachine(
 	bootControl, err := system.NewQualcommBootControl(system.QualcommBootControlConfig{
 		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
 		EBIMemoryConfiguration: 0x5880, ClockModeStatus: board.BootClockModeStatus,
-		WritableOffsets:             board.BootControlWritableOffsets,
-		HalfwordOffsets:             board.BootControlHalfwordOffsets,
-		MixedWidthOffsets:           board.BootControlMixedWidthOffsets,
-		ReadOnlyRegisters:           board.BootControlReadOnlyRegisters,
-		RegisterResets:              board.BootControlRegisterResets,
-		CompletionEvents:            board.BootControlCompletionEvents,
-		LegacyUARTControllers:       board.BootControlLegacyUARTControllers,
-		SBIControllers:              board.BootControlSBIControllers,
-		SBIReadResponses:            board.BootControlSBIReadResponses,
-		SBICompletionStatus:         board.BootControlSBICompletionStatus,
-		NANDReady:                   nandReady,
-		InterruptController:         legacyInterrupts,
-		VectoredInterruptController: vectoredInterrupts,
-		TimeTickClock:               cloneTimeTickClock(board.TimeTickClock),
+		WritableOffsets:                board.BootControlWritableOffsets,
+		InterruptWindowWritableOffsets: board.BootControlInterruptWindowWritableOffsets,
+		HalfwordOffsets:                board.BootControlHalfwordOffsets,
+		MixedWidthOffsets:              board.BootControlMixedWidthOffsets,
+		ReadOnlyRegisters:              board.BootControlReadOnlyRegisters,
+		RegisterResets:                 board.BootControlRegisterResets,
+		CompletionEvents:               board.BootControlCompletionEvents,
+		LegacyUARTControllers:          board.BootControlLegacyUARTControllers,
+		SBIControllers:                 board.BootControlSBIControllers,
+		SBIReadResponses:               board.BootControlSBIReadResponses,
+		SBICompletionStatus:            board.BootControlSBICompletionStatus,
+		WatchdogServiceReadable:        board.BootControlWatchdogReadable,
+		NANDReady:                      nandReady,
+		InterruptController:            legacyInterrupts,
+		VectoredInterruptController:    vectoredInterrupts,
+		TimeTickClock:                  cloneTimeTickClock(board.TimeTickClock),
 	})
 	if err != nil {
 		return fail(fmt.Errorf("create %s boot control: %w", firmwareProfile.Model, err))
@@ -468,7 +565,10 @@ func newSamsungQualcommMachine(
 	if err != nil {
 		return fail(fmt.Errorf("create %s clock regime: %w", firmwareProfile.Model, err))
 	}
-	busRegisters, err := system.NewSparseWordRegisters(schw830BusRegisterOffsets())
+	busRegisters, err := system.NewSparseWordRegistersWithConfig(system.SparseWordRegistersConfig{
+		Offsets: board.SparseBusRegisterOffsets,
+		Resets:  board.SparseBusRegisterResets,
+	})
 	if err != nil {
 		return fail(fmt.Errorf("create %s sparse bus registers: %w", firmwareProfile.Model, err))
 	}
@@ -480,9 +580,18 @@ func newSamsungQualcommMachine(
 	if err != nil {
 		return fail(fmt.Errorf("create %s panel transport: %w", firmwareProfile.Model, err))
 	}
+	pblServiceTableAddress := board.PBLServiceTableAddress
+	if pblServiceTableAddress == 0 {
+		pblServiceTableAddress = 0x78001000
+	}
 	handoff, err := system.NewQualcommNANDPBLHandoff(system.QualcommNANDPBLConfig{
-		Entry: qcsbl.EntryAddress, TableAddress: 0x78001000,
+		Entry: qcsbl.EntryAddress, TableAddress: pblServiceTableAddress,
+		ServiceTableHeaderSize:   board.PBLServiceTableHeaderSize,
+		HeaderFeatureDataAddress: board.PBLHeaderFeatureDataAddress,
+		HeaderFeatures:           append([]system.QualcommPBLHeaderFeature(nil), board.PBLHeaderFeatures...),
 		LegacyFeatureDataAddress: board.PBLLegacyFeatureDataAddress,
+		SharedDataAddress:        board.PBLSharedDataAddress,
+		SharedDataSize:           board.PBLSharedDataSize,
 		PageSize:                 samsung.PageSize, EraseBlockSize: samsung.EraseBlockSize,
 		FlashSize: uint64(flash.Size()), BadBlockLimit: 0x14,
 	})
@@ -493,6 +602,23 @@ func newSamsungQualcommMachine(
 		Address: qcsbl.LoadAddress,
 		Bytes:   append([]byte(nil), qcsbl.Bytes...),
 	})
+	if firmwareProfile.ID == samsung.SCHW320DC18ProfileID {
+		if seedErr := appendSamsungW320VerifiedPBLState(&handoff, qcsbl); seedErr != nil {
+			return fail(seedErr)
+		}
+	}
+	for _, image := range pblPreloadedBootImages {
+		handoff.Memory = append(handoff.Memory, system.MemorySeed{
+			Address: image.LoadAddress,
+			Bytes:   append([]byte(nil), image.Bytes...),
+		})
+	}
+	if len(pblROM.Bytes) != 0 {
+		handoff.Memory = append(handoff.Memory, system.MemorySeed{
+			Address: pblROM.LoadAddress,
+			Bytes:   append([]byte(nil), pblROM.Bytes...),
+		})
+	}
 
 	bus := system.NewBus()
 	var audio *schw830Audio
@@ -517,6 +643,7 @@ func newSamsungQualcommMachine(
 		bootControl,
 		nand,
 		oneNAND,
+		sflashOneNAND,
 		primaryClock,
 		secondaryClock,
 		panel,
@@ -545,9 +672,22 @@ func newSamsungQualcommMachine(
 	if audio != nil {
 		clockedDevices = append(clockedDevices, audio)
 	}
+	var executionRunner system.ExecutionRunner = backend
+	if len(board.HLECalls) != 0 {
+		hleRunner, hleErr := system.NewHLERunner(
+			bus,
+			backend,
+			board.HLECalls,
+			samsungQualcommHLEHandlers(),
+		)
+		if hleErr != nil {
+			return fail(fmt.Errorf("configure %s HLE calls: %w", firmwareProfile.Model, hleErr))
+		}
+		executionRunner = hleRunner
+	}
 	runner, err := system.NewClockedRunner(
 		backend,
-		backend,
+		executionRunner,
 		quantum,
 		clockedDevices...,
 	)
@@ -587,6 +727,89 @@ func newSamsungQualcommMachine(
 		}
 	}
 	return machine, nil
+}
+
+func samsungQualcommHLEHandlers() map[string]system.HLECallHandler {
+	return map[string]system.HLECallHandler{
+		system.HLEContractQualcommPBLVerifiedLoaderState: system.HLECallHandlerFunc(
+			restoreSamsungW320VerifiedPBLLoaderState,
+		),
+		system.HLEContractQualcommBootstrapVerifiedFirmware: system.HLECallHandlerFunc(
+			func(call system.HLECallContext) error {
+				return call.CPU.WriteRegister(cpu.RegisterR0, 0)
+			},
+		),
+		system.HLEContractQualcommResidentBootCallback: system.HLECallHandlerFunc(
+			func(system.HLECallContext) error {
+				return nil
+			},
+		),
+	}
+}
+
+func restoreSamsungW320VerifiedPBLLoaderState(call system.HLECallContext) error {
+	if call.CPU == nil {
+		return fmt.Errorf("restore Samsung W320 verified PBL loader state: nil CPU")
+	}
+	qcsbl := make([]byte, samsungW320QCSBLUsedSize)
+	if err := call.CPU.ReadMemory(samsungW320QCSBLLoadAddress, qcsbl); err != nil {
+		return fmt.Errorf("read verified Samsung W320 QCSBL: %w", err)
+	}
+	if err := call.CPU.WriteMemory(samsungW320PBLVerifiedCopy, qcsbl); err != nil {
+		return fmt.Errorf("restore Samsung W320 PBL QCSBL copy: %w", err)
+	}
+	record, err := samsungW320VerifiedPBLRecord(qcsbl)
+	if err != nil {
+		return err
+	}
+	if err := call.CPU.WriteMemory(samsungW320PBLVerifiedRecord, record); err != nil {
+		return fmt.Errorf("restore Samsung W320 PBL verification record: %w", err)
+	}
+	if err := call.CPU.WriteMemory(samsungW320PBLVerifiedStatus, []byte{0}); err != nil {
+		return fmt.Errorf("restore Samsung W320 PBL verification status: %w", err)
+	}
+	if err := call.CPU.WriteRegister(cpu.RegisterR0, 0x10); err != nil {
+		return fmt.Errorf("restore Samsung W320 PBL loader result: %w", err)
+	}
+	return nil
+}
+
+func appendSamsungW320VerifiedPBLState(handoff *system.BootHandoff, qcsbl samsung.BootImage) error {
+	if handoff == nil {
+		return fmt.Errorf("restore Samsung W320 PBL state: nil handoff")
+	}
+	if qcsbl.LoadAddress != samsungW320QCSBLLoadAddress ||
+		qcsbl.UsedSize != samsungW320QCSBLUsedSize ||
+		uint64(qcsbl.UsedSize) > uint64(len(qcsbl.Bytes)) {
+		return fmt.Errorf("restore Samsung W320 PBL state: invalid QCSBL geometry")
+	}
+	verifiedQCSBL := append([]byte(nil), qcsbl.Bytes[:qcsbl.UsedSize]...)
+	record, err := samsungW320VerifiedPBLRecord(verifiedQCSBL)
+	if err != nil {
+		return err
+	}
+	handoff.Memory = append(
+		handoff.Memory,
+		system.MemorySeed{Address: samsungW320PBLVerifiedCopy, Bytes: verifiedQCSBL},
+		system.MemorySeed{Address: samsungW320PBLVerifiedRecord, Bytes: record},
+		system.MemorySeed{Address: samsungW320PBLVerifiedStatus, Bytes: []byte{0}},
+	)
+	return nil
+}
+
+func samsungW320VerifiedPBLRecord(qcsbl []byte) ([]byte, error) {
+	if len(qcsbl) != int(samsungW320QCSBLUsedSize) {
+		return nil, fmt.Errorf(
+			"restore Samsung W320 verified PBL state: QCSBL size 0x%x, want 0x%x",
+			len(qcsbl),
+			samsungW320QCSBLUsedSize,
+		)
+	}
+	digest := sha512.Sum512(qcsbl)
+	record := make([]byte, 6+len(digest))
+	binary.BigEndian.PutUint32(record, samsungW320QCSBLUsedSize)
+	copy(record[6:], digest[:])
+	return record, nil
 }
 
 func newInterpreterBackend(mode CPUBackendMode) (cpu.Backend, error) {
@@ -639,6 +862,7 @@ func mapSamsungQualcommBoard(
 	bootControl *system.QualcommBootControl,
 	nand system.Device,
 	oneNAND *system.OneNAND,
+	sflashOneNAND *system.QualcommSFlashController,
 	primaryClock *system.QualcommPrimaryClockControl,
 	secondaryClock *system.QualcommSecondaryClockControl,
 	panel *system.ParallelPanelInterface,
@@ -648,6 +872,9 @@ func mapSamsungQualcommBoard(
 	audio *schw830Audio,
 ) error {
 	if err := board.ApplyMemory(bus); err != nil {
+		return err
+	}
+	if _, err := board.AttachSamsungMGP(bus); err != nil {
 		return err
 	}
 	if err := board.ApplyReadOnlyRegisters(bus); err != nil {
@@ -680,13 +907,17 @@ func mapSamsungQualcommBoard(
 	if err := board.ApplyLatchedRegistersWithInterrupts(bus, legacyInterrupts, vectoredInterrupts); err != nil {
 		return err
 	}
+	bootControlAddress := board.BootControlAddress
+	if bootControlAddress == 0 {
+		bootControlAddress = 0x80000000
+	}
 	mappings := []struct {
 		name    string
 		address uint32
 		size    uint32
 		device  system.Device
 	}{
-		{"qualcomm-boot-control", 0x80000000, system.QualcommBootControlWindowSize, bootControl},
+		{"qualcomm-boot-control", bootControlAddress, system.QualcommBootControlWindowSize, bootControl},
 		{"qualcomm-nand", 0x60000000, system.QualcommNANDWindowSize, nand},
 		{"qualcomm-primary-clock", 0x84000000, system.QualcommPrimaryClockWindowSize, primaryClock},
 		{"qualcomm-secondary-clock", 0x84004000, system.QualcommSecondaryClockWindowSize, secondaryClock},
@@ -713,6 +944,11 @@ func mapSamsungQualcommBoard(
 			return fmt.Errorf("map %s panel ports: %w", board.ID, err)
 		}
 	}
+	for _, spec := range board.IndexedHalfwordRegisterPorts {
+		if err := mapIndexedHalfwordRegisterPorts(bus, spec); err != nil {
+			return fmt.Errorf("map %s indexed halfword ports: %w", board.ID, err)
+		}
+	}
 	if oneNAND != nil {
 		if err := bus.MapMMIO(
 			"samsung-onenand",
@@ -721,6 +957,16 @@ func mapSamsungQualcommBoard(
 			oneNAND,
 		); err != nil {
 			return fmt.Errorf("map %s OneNAND: %w", board.ID, err)
+		}
+	}
+	if sflashOneNAND != nil {
+		if err := bus.MapMMIO(
+			"qualcomm-sflash-onenand",
+			board.SFlashOneNAND.Address,
+			system.QualcommSFlashWindowSize,
+			sflashOneNAND,
+		); err != nil {
+			return fmt.Errorf("map %s Qualcomm SFlash OneNAND: %w", board.ID, err)
 		}
 	}
 	return nil
@@ -756,30 +1002,33 @@ func mapSparsePanelPorts(
 	)
 }
 
-func schw830BusRegisterOffsets() []uint32 {
-	offsets := make([]uint32, 0, 128)
-	for _, span := range [][2]uint32{{0x240, 0x27c}, {0x280, 0x29c}, {0x2c0, 0x2dc}} {
-		for offset := span[0]; offset <= span[1]; offset += 4 {
-			offsets = append(offsets, offset)
-		}
+func mapIndexedHalfwordRegisterPorts(
+	bus *system.Bus,
+	ports system.IndexedHalfwordRegisterPortProfile,
+) error {
+	registers := system.NewIndexedHalfwordRegisters(ports.CommandReadValue)
+	commandPort, err := system.NewIndexedHalfwordCommandPort(registers)
+	if err != nil {
+		return fmt.Errorf("create command port: %w", err)
 	}
-	offsets = append(offsets,
-		0x3a0, 0x3a4, 0x3a8, 0x3ac, 0x3b0, 0x3b4, 0x3b8, 0x3bc,
-		0x3c0, 0x3c4, 0x3c8, 0x3cc, 0x3d0,
-		0x3e0, 0x3e4, 0x3e8, 0x3ec, 0x3f0,
+	dataPort, err := system.NewIndexedHalfwordDataPort(registers)
+	if err != nil {
+		return fmt.Errorf("create data port: %w", err)
+	}
+	if err := bus.MapMMIO(
+		ports.ID+"-command",
+		ports.CommandAddress,
+		uint32(system.Width16),
+		commandPort,
+	); err != nil {
+		return err
+	}
+	return bus.MapMMIO(
+		ports.ID+"-data",
+		ports.DataAddress,
+		uint32(system.Width16),
+		dataPort,
 	)
-	for column := uint32(0); column <= 0x200; column += 0x40 {
-		offsets = append(offsets, column+0x10)
-	}
-	for column := uint32(0x400); column <= 0x600; column += 0x40 {
-		for _, lane := range []uint32{0, 4, 8, 0x0c, 0x14} {
-			offsets = append(offsets, column+lane)
-		}
-	}
-	for column := uint32(0xc00); column <= 0xe00; column += 0x40 {
-		offsets = append(offsets, column+0x18, column+0x1c)
-	}
-	return offsets
 }
 
 func boardControls(board system.BoardProfile) []string {

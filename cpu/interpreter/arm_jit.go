@@ -867,7 +867,13 @@ func (b *Backend) translateARMHalfword(
 	rn := instruction >> 16 & 0xf
 	rd := instruction >> 12 & 0xf
 	operation := uint8(instruction>>5) & 3
-	if rd == cpu.RegisterPC || (!load && operation != 1) {
+	doubleword := !load && operation >= 2
+	semanticLoad := load || operation == 2
+	writeBackAddress := !preIndex || writeBack
+	if rd == cpu.RegisterPC ||
+		doubleword && (rd&1 != 0 || rd+1 >= cpu.RegisterPC ||
+			writeBackAddress && (rn == rd || rn == rd+1)) ||
+		!load && operation != 1 && !doubleword {
 		return nil, false, false
 	}
 	immOffset := instruction>>4&0xf0 | instruction&0xf
@@ -892,7 +898,7 @@ func (b *Backend) translateARMHalfword(
 			address = indexedAddress
 		}
 		switch {
-		case !load:
+		case !load && operation == 1:
 			if err := b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); err != nil {
 				return false, nil, err
 			}
@@ -902,6 +908,23 @@ func (b *Backend) translateARMHalfword(
 				return false, nil, err
 			}
 			b.regs[rd] = uint32(value)
+		case !load && operation == 2:
+			low, err := b.read32(address, cpu.PermissionRead)
+			if err != nil {
+				return false, nil, err
+			}
+			high, err := b.read32(address+4, cpu.PermissionRead)
+			if err != nil {
+				return false, nil, err
+			}
+			b.regs[rd], b.regs[rd+1] = low, high
+		case !load && operation == 3:
+			if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
+				return false, nil, err
+			}
+			if err := b.write32(address+4, b.regs[rd+1], cpu.PermissionWrite); err != nil {
+				return false, nil, err
+			}
 		case operation == 2:
 			value, err := b.read8(address, cpu.PermissionRead)
 			if err != nil {
@@ -915,7 +938,7 @@ func (b *Backend) translateARMHalfword(
 			}
 			b.regs[rd] = uint32(int32(int16(value)))
 		}
-		if (!preIndex || writeBack) && !(load && rd == rn) {
+		if writeBackAddress && !(semanticLoad && rd == rn) {
 			b.regs[rn] = indexedAddress
 		}
 		return false, nil, nil

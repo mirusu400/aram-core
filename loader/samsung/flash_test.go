@@ -61,6 +61,43 @@ func TestAssembleFlashMapsDecodedAndIdentityRegions(t *testing.T) {
 	}
 }
 
+func TestAssembleFlashMapsRawDownloadRegionsFromPieceOrigin(t *testing.T) {
+	sources := syntheticRawDownloadSources(t)
+	wbt := readSyntheticSource(t, sources[RoleWBT])
+	wbt[0] = 0x11
+	sources[RoleWBT] = firmwareset.Source{ReaderAt: bytes.NewReader(wbt), Size: int64(len(wbt))}
+	set, err := firmwareset.NewSet([]firmwareset.Source{
+		sources[RoleFont], sources[RoleWBIN], sources[RoleWBT], sources[RoleDAT],
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := Inspect(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	image, err := AssembleFlash(set, pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	regions := image.Regions()
+	if len(regions) != 4 {
+		t.Fatalf("raw flash region count = %d", len(regions))
+	}
+	for _, region := range regions {
+		if region.SourceOffset != 0 {
+			t.Fatalf("raw %s source offset = %#x", region.Role, region.SourceOffset)
+		}
+	}
+	if regions[1].Transform != TransformIdentity {
+		t.Fatalf("raw WBIN transform = %q", regions[1].Transform)
+	}
+	assertFlashBytes(t, image, 0, []byte{0x11})
+	assertFlashBytes(t, image, 0x60000, []byte{0x7f, 'E', 'L', 'F'})
+	assertFlashBytes(t, image, 0x80000, []byte{0x67, 0x31})
+	assertFlashBytes(t, image, 0xc0000, []byte{1, 0, 0, 0})
+}
+
 func TestAssembleFlashMapsLogicalRegionsAroundFactoryBadBlocks(t *testing.T) {
 	set, pkg := syntheticFlashSet(t, false)
 	image, err := AssembleFlashWithOptions(set, pkg, FlashAssemblyOptions{

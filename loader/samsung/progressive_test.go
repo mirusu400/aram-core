@@ -66,6 +66,28 @@ func TestDecodeWBINSyntheticProgressiveELF(t *testing.T) {
 	}
 }
 
+func TestDecodeWBINAcceptsRawProgressiveELF(t *testing.T) {
+	sources := syntheticRawDownloadSources(t)
+	set, err := firmwareset.NewSet([]firmwareset.Source{
+		sources[RoleWBT], sources[RoleWBIN], sources[RoleDAT], sources[RoleFont],
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := Inspect(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	image, err := DecodeWBIN(set, pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if image.EncryptedLength != 0 || len(image.Bytes) != 0x100 ||
+		len(image.ELF.ProgramHeaders) != 1 || image.ELF.LogicalFileEnd != 0x90 {
+		t.Fatalf("raw progressive image = %+v", image)
+	}
+}
+
 func TestDecodeWBINRejectsTerminalCiphertextMismatch(t *testing.T) {
 	pieceBytes, _ := syntheticEncodedWBIN(t)
 	pieceBytes[wbinTerminalBlockOffset] ^= 0x80

@@ -480,6 +480,90 @@ func TestQualcommNANDCompletesErasedCodewordReadWithoutControllerError(t *testin
 	}
 }
 
+func TestQualcommNANDReportsErasedECCCodewordAndAllowsRawConfirmation(t *testing.T) {
+	ready := NewStatusSignal()
+	config := Qualcomm2K8BitNANDConfig(0xecaa, ready)
+	config.ReportErasedECCCodewords = true
+	base := byteStorage{data: bytes.Repeat([]byte{0xff}, qualcomm2K8BitNANDEraseBlockSize)}
+	flash, err := NewCOWFlash(base, qualcomm2K8BitNANDEraseBlockSize, "nand-erased-ecc-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	device, err := NewQualcommNAND(
+		flash,
+		config,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := device.Write(qualcommNANDAddressOffset, Width32, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandRead); err != nil {
+		t.Fatal(err)
+	}
+	status, err := device.Read(qualcommNANDStatusOffset, Width32)
+	if err != nil || status != qualcommNANDStatusOperationError {
+		t.Fatalf("erased ECC codeword status = %#x error %v", status, err)
+	}
+	if ready.Value() != 2 || device.nextChunk != qualcommNANDCodewordDataSize ||
+		!allBytes(device.data[:], 0xff) {
+		t.Fatalf(
+			"erased ECC transfer ready=%#x next=%#x data=%x",
+			ready.Value(), device.nextChunk, device.data,
+		)
+	}
+
+	if err := device.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	if err := device.Write(
+		qualcommNANDDeviceConfig0Offset, Width32, config.DeviceConfig0|1,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := device.Write(qualcommNANDAddressOffset, Width32, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandRead); err != nil {
+		t.Fatal(err)
+	}
+	status, err = device.Read(qualcommNANDStatusOffset, Width32)
+	if err != nil || status != 0 || ready.Value() != 2 {
+		t.Fatalf("raw erased-codeword status = %#x ready %#x error %v", status, ready.Value(), err)
+	}
+
+	if err := device.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	for chunk := 0; chunk < 4; chunk++ {
+		if err := device.Write(qualcommNANDAddressOffset, Width32, 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := device.Write(
+			qualcommNANDCommandOffset, Width32, qualcommNANDCommandProgram,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandStatus); err != nil {
+		t.Fatal(err)
+	}
+	if err := device.Write(qualcommNANDAddressOffset, Width32, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandRead); err != nil {
+		t.Fatal(err)
+	}
+	status, err = device.Read(qualcommNANDStatusOffset, Width32)
+	if err != nil || status != 0 || device.data[qualcommNANDBufferSize-1] != 0 {
+		t.Fatalf(
+			"ECC-programmed all-ff codeword status=%#x marker=%#x error=%v",
+			status, device.data[qualcommNANDBufferSize-1], err,
+		)
+	}
+}
+
 func TestQualcommNANDDoesNotMisclassifyFFCodewordInProgrammedPage(t *testing.T) {
 	data := bytes.Repeat([]byte{0xff}, 0x800)
 	data[len(data)-1] = 0x5a

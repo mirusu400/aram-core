@@ -317,9 +317,13 @@ func (b *Backend) stepARM() (*cpu.StopReason, error) {
 		rn := uint32(instruction>>16) & 0xf
 		rd := uint32(instruction>>12) & 0xf
 		operation := uint8(instruction>>5) & 3
-		// LDRD and STRD transfer a register pair and are not part of the
-		// ARMv5TE subset the WIPI toolchains emit for these titles.
-		if rd == cpu.RegisterPC || (!load && operation != 1) {
+		doubleword := !load && operation >= 2
+		semanticLoad := load || operation == 2
+		writeBackAddress := !preIndex || writeBack
+		if rd == cpu.RegisterPC ||
+			doubleword && (rd&1 != 0 || rd+1 >= cpu.RegisterPC ||
+				writeBackAddress && (rn == rd || rn == rd+1)) ||
+			!load && operation != 1 && !doubleword {
 			return nil, b.unsupportedARM(pc, instruction)
 		}
 		var offset uint32
@@ -344,7 +348,7 @@ func (b *Backend) stepARM() (*cpu.StopReason, error) {
 			address = indexedAddress
 		}
 		switch {
-		case !load: // STRH
+		case !load && operation == 1: // STRH
 			if writeErr := b.write16(
 				address,
 				uint16(b.regs[rd]),
@@ -358,6 +362,23 @@ func (b *Backend) stepARM() (*cpu.StopReason, error) {
 				return nil, readErr
 			}
 			b.regs[rd] = uint32(value)
+		case !load && operation == 2: // LDRD
+			low, readErr := b.read32(address, cpu.PermissionRead)
+			if readErr != nil {
+				return nil, readErr
+			}
+			high, readErr := b.read32(address+4, cpu.PermissionRead)
+			if readErr != nil {
+				return nil, readErr
+			}
+			b.regs[rd], b.regs[rd+1] = low, high
+		case !load && operation == 3: // STRD
+			if writeErr := b.write32(address, b.regs[rd], cpu.PermissionWrite); writeErr != nil {
+				return nil, writeErr
+			}
+			if writeErr := b.write32(address+4, b.regs[rd+1], cpu.PermissionWrite); writeErr != nil {
+				return nil, writeErr
+			}
 		case operation == 2: // LDRSB
 			value, readErr := b.read8(address, cpu.PermissionRead)
 			if readErr != nil {
@@ -371,7 +392,7 @@ func (b *Backend) stepARM() (*cpu.StopReason, error) {
 			}
 			b.regs[rd] = uint32(int32(int16(value)))
 		}
-		if (!preIndex || writeBack) && !(load && rd == rn) {
+		if writeBackAddress && !(semanticLoad && rd == rn) {
 			b.regs[rn] = indexedAddress
 		}
 		return nil, nil

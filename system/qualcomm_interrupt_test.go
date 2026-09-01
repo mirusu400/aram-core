@@ -135,7 +135,10 @@ func TestQualcommInterruptControllerRejectsReservedAccessesAndRestoresState(t *t
 
 func TestQualcommInterruptControllerProfilesLegacyGPIOInputAlias(t *testing.T) {
 	device, err := NewQualcommInterruptControllerWithConfig(QualcommInterruptControllerConfig{
-		GPIOInputs: []QualcommGPIOInputRegister{{Offset: 0x40, Value: 0x20}},
+		GPIOInputs: []QualcommGPIOInputRegister{
+			{Offset: 0x40, Value: 0x20},
+			{Offset: 0x44, Value: 0x20000},
+		},
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -147,6 +150,9 @@ func TestQualcommInterruptControllerProfilesLegacyGPIOInputAlias(t *testing.T) {
 	if err := device.Write(0x40, Width32, 0); !errors.Is(err, ErrQualcommInterruptControllerMMIO) {
 		t.Fatalf("GPIO input write error = %v", err)
 	}
+	if value, err = device.Read(0x44, Width32); err != nil || value != 0x20000 {
+		t.Fatalf("extended GPIO input alias = %#x error %v", value, err)
+	}
 	state, err := device.SaveState()
 	if err != nil {
 		t.Fatal(err)
@@ -155,13 +161,19 @@ func TestQualcommInterruptControllerProfilesLegacyGPIOInputAlias(t *testing.T) {
 		t.Fatalf("profiled controller state version = %d, want 2", version)
 	}
 	restored, _ := NewQualcommInterruptControllerWithConfig(QualcommInterruptControllerConfig{
-		GPIOInputs: []QualcommGPIOInputRegister{{Offset: 0x40, Value: 0x20}},
+		GPIOInputs: []QualcommGPIOInputRegister{
+			{Offset: 0x40, Value: 0x20},
+			{Offset: 0x44, Value: 0x20000},
+		},
 	}, nil)
 	if err := restored.LoadState(state); err != nil {
 		t.Fatal(err)
 	}
 	mismatch, _ := NewQualcommInterruptControllerWithConfig(QualcommInterruptControllerConfig{
-		GPIOInputs: []QualcommGPIOInputRegister{{Offset: 0x40, Value: 0}},
+		GPIOInputs: []QualcommGPIOInputRegister{
+			{Offset: 0x40, Value: 0},
+			{Offset: 0x44, Value: 0x20000},
+		},
 	}, nil)
 	if err := mismatch.LoadState(state); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("mismatched GPIO input state error = %v", err)
@@ -171,7 +183,7 @@ func TestQualcommInterruptControllerProfilesLegacyGPIOInputAlias(t *testing.T) {
 		t.Fatalf("legacy state accepted by profiled controller: %v", err)
 	}
 	for _, config := range []QualcommInterruptControllerConfig{
-		{GPIOInputs: []QualcommGPIOInputRegister{{Offset: 0x44}}},
+		{GPIOInputs: []QualcommGPIOInputRegister{{Offset: 0x54}}},
 		{GPIOInputs: []QualcommGPIOInputRegister{{Offset: 0x40}, {Offset: 0x40}}},
 	} {
 		if _, err := NewQualcommInterruptControllerWithConfig(config, nil); err == nil {

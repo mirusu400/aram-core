@@ -36,9 +36,10 @@ func (d *QualcommBootControl) readLegacyUART(offset uint32, width Width) (uint32
 	if !configured {
 		return 0, false, nil
 	}
+	_, wordConfigured := d.mixedWidthOffsets[offset]
 	switch relative {
 	case qualcommLegacyUARTStatusOffset:
-		if width != Width8 && width != Width16 {
+		if width != Width8 && width != Width16 && (width != Width32 || !wordConfigured) {
 			return 0, true, fmt.Errorf(
 				"%w: legacy UART status read%d at 0x%x",
 				ErrQualcommBootControlMMIO,
@@ -60,7 +61,7 @@ func (d *QualcommBootControl) readLegacyUART(offset uint32, width Width) (uint32
 		}
 		return 0, true, nil
 	case qualcommLegacyUARTMISROffset, qualcommLegacyUARTISROffset:
-		if width == Width8 || width == Width16 {
+		if width == Width8 || width == Width16 || width == Width32 && wordConfigured {
 			return 0, true, nil
 		}
 		return 0, true, fmt.Errorf(

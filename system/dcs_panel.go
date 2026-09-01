@@ -32,10 +32,30 @@ const (
 
 var ErrDCSPanel = errors.New("invalid DCS panel stream")
 
+type ParallelPanelProtocol uint8
+
+const (
+	ParallelPanelProtocolDCS ParallelPanelProtocol = iota
+	// ParallelPanelProtocolIndexedRGB565 is the 16-bit register-index/data
+	// controller used by the early SCH raw-download generation. Its window and
+	// GRAM registers are distinct from byte-oriented MIPI DCS commands.
+	ParallelPanelProtocolIndexedRGB565
+	// ParallelPanelProtocolIndexedRGB565Window454647 uses the same 0x20/0x21
+	// cursor and 0x22 GRAM registers, but defines its address window through
+	// packed columns at 0x45 and page start/end at 0x46/0x47.
+	ParallelPanelProtocolIndexedRGB565Window454647
+	// ParallelPanelProtocolPackedRGB565Window424A is the controller variant
+	// whose command FIFO carries an 8-bit register index in the high byte and
+	// its value in the low byte. Registers 0x42..0x4a select the cursor and
+	// window; the separate data FIFO carries only RGB565 pixels.
+	ParallelPanelProtocolPackedRGB565Window424A
+)
+
 type DCSPanelConfig struct {
 	Width             uint16
 	Height            uint16
 	NativeAddressMode uint8
+	Protocol          ParallelPanelProtocol
 }
 
 // DCSPanelController decodes the display-command subset shared by parallel
@@ -46,6 +66,7 @@ type DCSPanelController struct {
 	width             uint16
 	height            uint16
 	nativeAddressMode uint8
+	protocol          ParallelPanelProtocol
 	currentCommand    uint16
 	parameters        [4]uint8
 	parameterCount    uint8
@@ -74,6 +95,7 @@ func NewDCSPanelController(config DCSPanelConfig) (*DCSPanelController, error) {
 		width:             config.Width,
 		height:            config.Height,
 		nativeAddressMode: config.NativeAddressMode,
+		protocol:          config.Protocol,
 		pixels:            make([]uint16, int(pixelCount)),
 	}
 	_ = controller.Reset()
@@ -85,6 +107,12 @@ func validateDCSPanelConfig(config DCSPanelConfig) (uint64, error) {
 	pixelCount := uint64(config.Width) * uint64(config.Height)
 	if config.Width == 0 || config.Height == 0 || pixelCount > maximumPixels {
 		return 0, fmt.Errorf("%w: invalid dimensions %dx%d", ErrDCSPanel, config.Width, config.Height)
+	}
+	if config.Protocol != ParallelPanelProtocolDCS &&
+		config.Protocol != ParallelPanelProtocolIndexedRGB565 &&
+		config.Protocol != ParallelPanelProtocolIndexedRGB565Window454647 &&
+		config.Protocol != ParallelPanelProtocolPackedRGB565Window424A {
+		return 0, fmt.Errorf("%w: invalid protocol %d", ErrDCSPanel, config.Protocol)
 	}
 	return pixelCount, nil
 }
@@ -101,6 +129,9 @@ func (p *DCSPanelController) Reset() error {
 	p.cursorPage = 0
 	p.addressMode = 0
 	p.pixelFormat = 0
+	if p.isIndexedRGB565() {
+		p.pixelFormat = dcsPixelFormatRGB565
+	}
 	p.sleepOut = false
 	p.displayOn = false
 	p.memoryWritePixels = 0
@@ -116,6 +147,12 @@ func (p *DCSPanelController) WriteCommand(command uint16) error {
 	p.parameters = [4]uint8{}
 	p.parameterCount = 0
 	p.memoryWritePixels = 0
+	if p.protocol == ParallelPanelProtocolPackedRGB565Window424A {
+		return p.writePackedCommand(command)
+	}
+	if p.isIndexedRGB565() {
+		return nil
+	}
 	switch command {
 	case dcsEnterSleepMode:
 		p.sleepOut = false
@@ -135,6 +172,12 @@ func (p *DCSPanelController) WriteCommand(command uint16) error {
 }
 
 func (p *DCSPanelController) WriteData(value uint16) error {
+	if p.protocol == ParallelPanelProtocolPackedRGB565Window424A {
+		return p.writePixel(value)
+	}
+	if p.isIndexedRGB565() {
+		return p.writeIndexedData(value)
+	}
 	switch p.currentCommand {
 	case dcsSetColumnAddress, dcsSetPageAddress:
 		if value > 0xff || p.parameterCount >= uint8(len(p.parameters)) {
@@ -193,9 +236,175 @@ func (p *DCSPanelController) WriteData(value uint16) error {
 	}
 }
 
+func (p *DCSPanelController) writePackedCommand(command uint16) error {
+	register, value := uint8(command>>8), uint16(command&0x00ff)
+	switch register {
+	case 0x42:
+		if value >= p.width {
+			return fmt.Errorf("%w: packed column cursor %d", ErrDCSPanel, value)
+		}
+		p.cursorColumn = value
+	case 0x43:
+		return p.setPackedPageByte(&p.cursorPage, value, true, "cursor")
+	case 0x44:
+		return p.setPackedPageByte(&p.cursorPage, value, false, "cursor")
+	case 0x45:
+		if value >= p.width {
+			return fmt.Errorf("%w: packed column start %d", ErrDCSPanel, value)
+		}
+		p.columnStart = value
+	case 0x46:
+		if value >= p.width {
+			return fmt.Errorf("%w: packed column end %d", ErrDCSPanel, value)
+		}
+		p.columnEnd = value
+	case 0x47:
+		return p.setPackedPageByte(&p.pageStart, value, true, "start")
+	case 0x48:
+		return p.setPackedPageByte(&p.pageStart, value, false, "start")
+	case 0x49:
+		return p.setPackedPageByte(&p.pageEnd, value, true, "end")
+	case 0x4a:
+		return p.setPackedPageByte(&p.pageEnd, value, false, "end")
+	default:
+		// Other packed registers configure power, gamma, timing, and scan
+		// direction without changing the common framebuffer contract.
+	}
+	return nil
+}
+
+func (p *DCSPanelController) setPackedPageByte(
+	target *uint16,
+	value uint16,
+	high bool,
+	label string,
+) error {
+	next := *target&0x00ff | value<<8
+	if high {
+		// High and low bytes are separate registers. Firmware writes the high
+		// byte first, so it may briefly combine with the previous low byte into
+		// an out-of-range coordinate before the low-byte write completes it.
+		*target = next
+		return nil
+	}
+	next = *target&0xff00 | value
+	if next >= p.height {
+		return fmt.Errorf("%w: packed page %s %d", ErrDCSPanel, label, next)
+	}
+	*target = next
+	return nil
+}
+
+func (p *DCSPanelController) writeIndexedData(value uint16) error {
+	switch p.currentCommand {
+	case 0x0003:
+		if p.protocol != ParallelPanelProtocolIndexedRGB565 {
+			return nil
+		}
+		return p.setIndexedColumnWindow(value, false)
+	case 0x0045:
+		if p.protocol != ParallelPanelProtocolIndexedRGB565Window454647 {
+			return nil
+		}
+		return p.setIndexedColumnWindow(value, true)
+	case 0x0004:
+		if p.protocol != ParallelPanelProtocolIndexedRGB565 {
+			return nil
+		}
+		return p.setIndexedPageStart(value)
+	case 0x0046:
+		if p.protocol != ParallelPanelProtocolIndexedRGB565Window454647 {
+			return nil
+		}
+		return p.setIndexedPageStart(value)
+	case 0x0005:
+		if p.protocol != ParallelPanelProtocolIndexedRGB565 {
+			return nil
+		}
+		return p.setIndexedPageEnd(value)
+	case 0x0047:
+		if p.protocol != ParallelPanelProtocolIndexedRGB565Window454647 {
+			return nil
+		}
+		return p.setIndexedPageEnd(value)
+	case 0x0020:
+		if value >= p.width {
+			return fmt.Errorf("%w: indexed column cursor %d", ErrDCSPanel, value)
+		}
+		p.cursorColumn = value
+	case 0x0021:
+		if value >= p.height {
+			return fmt.Errorf("%w: indexed page cursor %d", ErrDCSPanel, value)
+		}
+		p.cursorPage = value
+	case 0x0022:
+		return p.writePixel(value)
+	default:
+		// Other indexed registers configure controller-specific power, gamma,
+		// timing, and scan direction. They do not alter the common framebuffer.
+	}
+	return nil
+}
+
+func (p *DCSPanelController) setIndexedColumnWindow(value uint16, startInHighByte bool) error {
+	start, end := value&0x00ff, value>>8
+	if startInHighByte {
+		start, end = end, start
+	}
+	if start > end || end >= p.width {
+		return fmt.Errorf(
+			"%w: indexed column window %d..%d exceeds %dx%d",
+			ErrDCSPanel,
+			start,
+			end,
+			p.width,
+			p.height,
+		)
+	}
+	p.columnStart, p.columnEnd = start, end
+	return nil
+}
+
+func (p *DCSPanelController) setIndexedPageStart(value uint16) error {
+	if value >= p.height {
+		return fmt.Errorf("%w: indexed page start %d", ErrDCSPanel, value)
+	}
+	p.pageStart = value
+	return nil
+}
+
+func (p *DCSPanelController) setIndexedPageEnd(value uint16) error {
+	if value >= p.height {
+		return fmt.Errorf("%w: indexed page end %d", ErrDCSPanel, value)
+	}
+	p.pageEnd = value
+	return nil
+}
+
+func (p *DCSPanelController) isIndexedRGB565() bool {
+	return p.protocol == ParallelPanelProtocolIndexedRGB565 ||
+		p.protocol == ParallelPanelProtocolIndexedRGB565Window454647 ||
+		p.protocol == ParallelPanelProtocolPackedRGB565Window424A
+}
+
 func (p *DCSPanelController) writePixel(value uint16) error {
-	if p.pixelFormat != dcsPixelFormatDBIRGB565 && p.pixelFormat != dcsPixelFormatRGB565 {
+	if !p.isIndexedRGB565() &&
+		p.pixelFormat != dcsPixelFormatDBIRGB565 && p.pixelFormat != dcsPixelFormatRGB565 {
 		return fmt.Errorf("%w: memory write with pixel format 0x%x", ErrDCSPanel, p.pixelFormat)
+	}
+	if p.columnStart > p.columnEnd || p.pageStart > p.pageEnd ||
+		p.cursorColumn < p.columnStart || p.cursorColumn > p.columnEnd ||
+		p.cursorPage < p.pageStart || p.cursorPage > p.pageEnd {
+		return fmt.Errorf(
+			"%w: cursor %d,%d outside window %d..%d,%d..%d",
+			ErrDCSPanel,
+			p.cursorColumn,
+			p.cursorPage,
+			p.columnStart,
+			p.columnEnd,
+			p.pageStart,
+			p.pageEnd,
+		)
 	}
 	x, y, ok := p.physicalCoordinate(p.cursorColumn, p.cursorPage)
 	if !ok {
@@ -253,10 +462,19 @@ func swapRGB565RedBlue(value uint16) uint16 {
 }
 
 func (p *DCSPanelController) finishMemoryWrite() {
-	if (p.currentCommand == dcsWriteMemoryStart || p.currentCommand == dcsWriteMemoryContinue) &&
-		p.memoryWritePixels != 0 {
+	if p.isMemoryWriteCommand(p.currentCommand) && p.memoryWritePixels != 0 {
 		p.updateSequence++
 	}
+}
+
+func (p *DCSPanelController) isMemoryWriteCommand(command uint16) bool {
+	if p.protocol == ParallelPanelProtocolPackedRGB565Window424A {
+		return true
+	}
+	if p.isIndexedRGB565() {
+		return command == 0x0022
+	}
+	return command == dcsWriteMemoryStart || command == dcsWriteMemoryContinue
 }
 
 func (p *DCSPanelController) Dimensions() (width, height uint16) {
@@ -277,8 +495,7 @@ func (p *DCSPanelController) FormatState() (addressMode, pixelFormat uint8) {
 
 func (p *DCSPanelController) WriteCounts() (pixels, updates uint64) {
 	updates = p.updateSequence
-	if (p.currentCommand == dcsWriteMemoryStart || p.currentCommand == dcsWriteMemoryContinue) &&
-		p.memoryWritePixels != 0 {
+	if p.isMemoryWriteCommand(p.currentCommand) && p.memoryWritePixels != 0 {
 		updates++
 	}
 	return p.pixelWrites, updates
@@ -310,10 +527,11 @@ func (p *DCSPanelController) FrameRGBA() *image.RGBA {
 func (p *DCSPanelController) SaveState() ([]byte, error) {
 	var output bytes.Buffer
 	output.WriteString("DCSP")
-	_ = binary.Write(&output, binary.LittleEndian, uint32(2))
+	_ = binary.Write(&output, binary.LittleEndian, uint32(3))
 	_ = binary.Write(&output, binary.LittleEndian, p.width)
 	_ = binary.Write(&output, binary.LittleEndian, p.height)
 	_ = output.WriteByte(p.nativeAddressMode)
+	_ = output.WriteByte(uint8(p.protocol))
 	_ = binary.Write(&output, binary.LittleEndian, p.currentCommand)
 	_ = output.WriteByte(p.parameterCount)
 	_, _ = output.Write(p.parameters[:])
@@ -353,6 +571,7 @@ func (p *DCSPanelController) LoadState(state []byte) error {
 	var version uint32
 	var width, height, currentCommand uint16
 	var nativeAddressMode uint8
+	var protocol ParallelPanelProtocol
 	var parameterCount uint8
 	var parameters [4]uint8
 	var columnStart, columnEnd, pageStart, pageEnd, cursorColumn, cursorPage uint16
@@ -361,11 +580,23 @@ func (p *DCSPanelController) LoadState(state []byte) error {
 	var pixelWrites, updateSequence uint64
 	var pixelCount uint32
 	if _, err := io.ReadFull(reader, magic[:]); err != nil || string(magic[:]) != "DCSP" ||
-		binary.Read(reader, binary.LittleEndian, &version) != nil || version != 2 ||
+		binary.Read(reader, binary.LittleEndian, &version) != nil || version != 2 && version != 3 ||
 		binary.Read(reader, binary.LittleEndian, &width) != nil || width != p.width ||
 		binary.Read(reader, binary.LittleEndian, &height) != nil || height != p.height ||
 		binary.Read(reader, binary.LittleEndian, &nativeAddressMode) != nil ||
-		nativeAddressMode != p.nativeAddressMode ||
+		nativeAddressMode != p.nativeAddressMode {
+		return ErrInvalidState
+	}
+	if version == 3 {
+		var encodedProtocol uint8
+		if binary.Read(reader, binary.LittleEndian, &encodedProtocol) != nil {
+			return ErrInvalidState
+		}
+		protocol = ParallelPanelProtocol(encodedProtocol)
+	} else {
+		protocol = ParallelPanelProtocolDCS
+	}
+	if protocol != p.protocol ||
 		binary.Read(reader, binary.LittleEndian, &currentCommand) != nil ||
 		binary.Read(reader, binary.LittleEndian, &parameterCount) != nil ||
 		parameterCount > uint8(len(parameters)) {
@@ -386,12 +617,13 @@ func (p *DCSPanelController) LoadState(state []byte) error {
 		binary.Read(reader, binary.LittleEndian, &updateSequence) != nil ||
 		binary.Read(reader, binary.LittleEndian, &pixelCount) != nil ||
 		pixelCount != uint32(len(p.pixels)) || reader.Len() != int(pixelCount)*2 ||
-		columnStart > columnEnd || columnEnd >= p.width ||
-		pageStart > pageEnd || pageEnd >= p.height ||
-		cursorColumn < columnStart || cursorColumn > columnEnd ||
-		cursorPage < pageStart || cursorPage > pageEnd ||
-		memoryWritePixels != 0 && currentCommand != dcsWriteMemoryStart &&
-			currentCommand != dcsWriteMemoryContinue {
+		columnStart >= p.width || columnEnd >= p.width || cursorColumn >= p.width ||
+		protocol != ParallelPanelProtocolPackedRGB565Window424A &&
+			(pageStart >= p.height || pageEnd >= p.height || cursorPage >= p.height ||
+				columnStart > columnEnd || pageStart > pageEnd ||
+				cursorColumn < columnStart || cursorColumn > columnEnd ||
+				cursorPage < pageStart || cursorPage > pageEnd) ||
+		memoryWritePixels != 0 && !p.isMemoryWriteCommand(currentCommand) {
 		return ErrInvalidState
 	}
 	pixels := make([]uint16, pixelCount)

@@ -17,7 +17,7 @@ const MaxFlashImageBytes = 512 << 20
 var ErrInvalidFlashLayout = errors.New("invalid Samsung flash layout")
 
 // FlashRegion attributes a normalized flash byte range to one input piece and
-// transform. SourceOffset is measured in the original wrapped piece.
+// transform. SourceOffset is measured in the original input piece.
 type FlashRegion struct {
 	Role         Role
 	Start        uint64
@@ -160,6 +160,9 @@ func AssembleFlashWithOptions(
 	pkg Package,
 	options FlashAssemblyOptions,
 ) (FlashImage, error) {
+	if pkg.Family == FamilySCHFlexOneNANDDownload {
+		return assembleFlexOneNANDFlash(set, pkg, options)
+	}
 	layout, err := Normalize(set, pkg)
 	if err != nil {
 		return FlashImage{}, err
@@ -220,7 +223,7 @@ func AssembleFlashWithOptions(
 		physical  bool
 	}{
 		{RoleWBT, 0, uint64(len(bootBlocks)), TransformBootBlocks, bootBlocks, true},
-		{RoleWBIN, amss.Start, uint64(len(progressive.Bytes)), TransformSEEDFeedback, progressive.Bytes, false},
+		{RoleWBIN, amss.Start, uint64(len(progressive.Bytes)), layout.Region(RoleWBIN).Transform, progressive.Bytes, false},
 		{RoleDAT, rsrc.Start, pkg.Pieces[RoleDAT].Header.PayloadSize, TransformIdentity, nil, false},
 		{RoleFont, font.Start, pkg.Pieces[RoleFont].Header.PayloadSize, TransformIdentity, nil, false},
 	}
@@ -245,7 +248,11 @@ func AssembleFlashWithOptions(
 			digest := sha256.Sum256(spec.decoded)
 			outputHash = hex.EncodeToString(digest[:])
 		} else if spec.decoded == nil {
-			outputHash, err = hashPieceRange(piece, WrapperSize, spec.size)
+			region := layout.Region(spec.role)
+			if region == nil {
+				return FlashImage{}, fmt.Errorf("%w: layout has no %s region", ErrInvalidFlashLayout, spec.role)
+			}
+			outputHash, err = hashPieceRange(piece, region.SourceOffset, spec.size)
 			if err != nil {
 				return FlashImage{}, err
 			}
@@ -258,9 +265,13 @@ func AssembleFlashWithOptions(
 		if decoded != nil {
 			decoded = append([]byte(nil), decoded...)
 		}
+		region := layout.Region(spec.role)
+		if region == nil {
+			return FlashImage{}, fmt.Errorf("%w: layout has no %s region", ErrInvalidFlashLayout, spec.role)
+		}
 		var dataOffset uint64
 		for _, span := range spans {
-			sourceOffset := uint64(WrapperSize)
+			sourceOffset := region.SourceOffset
 			if decoded == nil {
 				sourceOffset += dataOffset
 			}
@@ -311,8 +322,16 @@ func reconstructBootBlocks(
 		metadata.Header.PayloadSize%EraseBlockSize != 0 {
 		return nil, fmt.Errorf("%w: WBT payload is not erase-block aligned", ErrInvalidFlashLayout)
 	}
+	layout, err := Normalize(set, pkg)
+	if err != nil {
+		return nil, err
+	}
+	region := layout.Region(RoleWBT)
+	if region == nil {
+		return nil, fmt.Errorf("%w: layout has no %s region", ErrInvalidFlashLayout, RoleWBT)
+	}
 	data := make([]byte, metadata.Header.PayloadSize)
-	if _, err := piece.ReadAt(data, WrapperSize); err != nil {
+	if _, err := piece.ReadAt(data, int64(region.SourceOffset)); err != nil {
 		return nil, err
 	}
 	copies, err := parseMIBIBCopies(piece)
@@ -325,10 +344,10 @@ func reconstructBootBlocks(
 			selected = candidate
 		}
 	}
-	if selected.Offset < WrapperSize {
+	if uint64(selected.Offset) < region.SourceOffset {
 		return nil, fmt.Errorf("%w: MIBIB source precedes WBT payload", ErrInvalidFlashLayout)
 	}
-	source := uint64(selected.Offset - WrapperSize)
+	source := uint64(selected.Offset) - region.SourceOffset
 	// QCSBL deliberately opens the second usable boot block. Downloader WBT
 	// pieces retain multiple generation slots, so normalization promotes the
 	// newest valid MIBIB copy into that physical slot without treating an

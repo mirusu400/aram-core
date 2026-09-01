@@ -212,7 +212,7 @@ func (e *QualcommMDPScriptEngine) executeOutputScript(address uint32, budget *in
 			if err := e.panel.WriteCommand(command); err != nil {
 				return false, fmt.Errorf("%w: panel command 0x%x: %v", ErrQualcommMDP, command, err)
 			}
-			if command == dcsWriteMemoryStart {
+			if e.panel.isMemoryWriteCommand(command) {
 				memoryWrite = true
 			}
 		case 0x0e:
