@@ -1401,3 +1401,32 @@ func syntheticThreadClass(t *testing.T) []byte {
 	u2(0) // class attributes
 	return output.Bytes()
 }
+
+// TestSKVMBrowserNativeOutlivesAFullOutbox covers what random key fuzzing hit
+// on 노리타이쿤: nothing in the product acknowledges external requests, so a
+// menu the player can open again and again eventually met a full outbox, and
+// the native handed that refusal back as a fatal VM error. invokeWapBrowser
+// returns void - the handset cannot tell the title its browser did not open -
+// so neither a full outbox nor a target the title built badly may stop it.
+func TestSKVMBrowserNativeOutlivesAFullOutbox(t *testing.T) {
+	vm, err := New(map[string][]byte{"Game": syntheticClass(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := vm.NewString("https://example.invalid/")
+	for visit := 0; visit < 600; visit++ {
+		invokeTestNative(
+			t, vm,
+			"com/skt/m/Device", "invokeWapBrowser", "(Ljava/lang/String;)V",
+			0, ReferenceValue(target),
+		)
+	}
+	if requests := vm.services.Device.Requests(); len(requests) == 0 {
+		t.Fatal("the outbox kept nothing at all")
+	}
+	invokeTestNative(
+		t, vm,
+		"com/skt/m/Device", "invokeWapBrowser", "(Ljava/lang/String;)V",
+		0, ReferenceValue(vm.NewString("")),
+	)
+}

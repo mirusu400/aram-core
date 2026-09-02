@@ -242,6 +242,7 @@ type Device struct {
 	networkAvailable bool
 	nextRequest      uint64
 	requests         []ExternalRequest
+	droppedRequests  uint64
 }
 
 // deviceAdvanceState contains the four fields Device.Advance can mutate. The
@@ -412,9 +413,21 @@ func (d *Device) Request(
 		len(data) > int(d.limits.MaxRequestData) || now < 0 {
 		return 0, fmt.Errorf("%w: invalid external request", ErrInvalidArgument)
 	}
-	if uint32(len(d.requests)) >= d.limits.MaxRequests ||
-		d.nextRequest == 0 || d.nextRequest == math.MaxUint64 {
+	if d.nextRequest == 0 || d.nextRequest == math.MaxUint64 {
 		return 0, fmt.Errorf("%w: external request queue exhausted", ErrLimitExceeded)
+	}
+	// The queue is an outbox: a host reads it and acknowledges with
+	// ClearRequests. A host that has not acknowledged 256 placed calls is not
+	// listening, and on the handset none of this queues at all - dialling
+	// replaces whatever was on screen. So a full outbox drops its oldest entry
+	// rather than refusing the guest, which is what a title cannot survive: a
+	// menu that dials or opens the browser is reachable over and over, and
+	// refusing it took the title down with the queue.
+	for uint32(len(d.requests)) >= d.limits.MaxRequests && len(d.requests) != 0 {
+		copy(d.requests, d.requests[1:])
+		clear(d.requests[len(d.requests)-1:])
+		d.requests = d.requests[:len(d.requests)-1]
+		d.droppedRequests++
 	}
 	sequence := d.nextRequest
 	d.nextRequest++
@@ -428,6 +441,11 @@ func (d *Device) Request(
 	})
 	return sequence, nil
 }
+
+// DroppedRequests counts entries the outbox discarded because no host
+// acknowledged them. It is diagnostic only: a non-zero count means external
+// requests are being made and nothing is consuming them.
+func (d *Device) DroppedRequests() uint64 { return d.droppedRequests }
 
 func (d *Device) Requests() []ExternalRequest {
 	result := append([]ExternalRequest(nil), d.requests...)

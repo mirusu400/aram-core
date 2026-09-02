@@ -2,6 +2,7 @@ package skvm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"strings"
@@ -46,14 +47,23 @@ func (vm *VM) installSKTNatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
-			_, err = vm.services.Device.Request(
+			if _, err = vm.services.Device.Request(
 				vm.serviceOwner,
 				shared.RequestBrowser,
 				target,
 				nil,
 				vm.services.Clock.Monotonic(),
-			)
-			return Value{}, false, err
+			); err != nil {
+				// The method returns void, so the handset has no way to tell
+				// the title its browser did not open, and a URL the title
+				// built badly is not a reason to stop running it.
+				if errors.Is(err, shared.ErrInvalidArgument) ||
+					errors.Is(err, shared.ErrLimitExceeded) {
+					return Value{}, false, nil
+				}
+				return Value{}, false, err
+			}
+			return Value{}, false, nil
 		},
 	)
 	vm.RegisterNative(

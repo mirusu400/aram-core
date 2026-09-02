@@ -187,3 +187,41 @@ func TestConfigFromProfileRetainsDefaultsForUnspecifiedIdentityFields(t *testing
 		t.Fatalf("minimal profile identity = %+v", config.Device)
 	}
 }
+
+// TestDeviceOutboxDropsItsOldestRatherThanTheTitle covers a defect random key
+// fuzzing found on an SKT title: nothing in the product acknowledges external
+// requests, so the outbox filled and every later dial or browser open failed.
+// The SKT natives propagate that failure as a fatal VM error, so a menu the
+// player can reach repeatedly killed the title after 256 visits.
+func TestDeviceOutboxDropsItsOldestRatherThanTheTitle(t *testing.T) {
+	limits := DeviceLimits{MaxRequests: 4, MaxRequestData: 64}
+	device, err := NewDevice(DeviceConfig{}, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 100; index++ {
+		if _, err := device.Request(
+			1, RequestPhone, "01000000000", nil, time.Second,
+		); err != nil {
+			t.Fatalf("request %d refused: %v", index, err)
+		}
+	}
+	requests := device.Requests()
+	if uint32(len(requests)) != limits.MaxRequests {
+		t.Fatalf("outbox holds %d requests, want %d", len(requests), limits.MaxRequests)
+	}
+	// What survives is the newest, which is what a host would want to act on.
+	if requests[len(requests)-1].Sequence != 100 {
+		t.Errorf("newest sequence is %d, want 100", requests[len(requests)-1].Sequence)
+	}
+	if requests[0].Sequence != 97 {
+		t.Errorf("oldest sequence is %d, want 97", requests[0].Sequence)
+	}
+	if dropped := device.DroppedRequests(); dropped != 96 {
+		t.Errorf("dropped %d requests, want 96", dropped)
+	}
+	// Dropping is only for a full outbox; a malformed request is still an error.
+	if _, err := device.Request(1, RequestPhone, "", nil, time.Second); err == nil {
+		t.Error("an empty target was accepted")
+	}
+}
