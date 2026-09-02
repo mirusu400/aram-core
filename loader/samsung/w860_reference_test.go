@@ -67,8 +67,8 @@ func TestSCHW860DA06PrivateReferenceStructuralBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	selected := copies[0]
-	for _, candidate := range copies[1:] {
+	selected := copies.Copies[0]
+	for _, candidate := range copies.Copies[1:] {
 		if candidate.Generation > selected.Generation {
 			selected = candidate
 		}

@@ -2,7 +2,9 @@ package samsung
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"testing"
 
@@ -85,6 +87,69 @@ func TestDecodeWBINAcceptsRawProgressiveELF(t *testing.T) {
 	if image.EncryptedLength != 0 || len(image.Bytes) != 0x100 ||
 		len(image.ELF.ProgramHeaders) != 1 || image.ELF.LogicalFileEnd != 0x90 {
 		t.Fatalf("raw progressive image = %+v", image)
+	}
+}
+
+func TestDecodeWBINAllowsOnlyExactProfiledOpaqueRawImage(t *testing.T) {
+	sources := syntheticSmallPageRawDownloadSources(t)
+	opaque := bytes.Repeat([]byte{0xa5, 0x5a, 0x3c, 0xc3}, 0x40)
+	sources[RoleWBIN] = firmwareset.Source{ReaderAt: bytes.NewReader(opaque), Size: int64(len(opaque))}
+	roles := []Role{RoleWBT, RoleWBIN, RoleDAT, RoleFont}
+	setSources := make([]firmwareset.Source, len(roles))
+	for index, role := range roles {
+		setSources[index] = sources[role]
+	}
+	set, err := firmwareset.NewSet(setSources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Inspect(set); !errors.Is(err, ErrNotSCHDownload) {
+		t.Fatalf("Inspect unknown opaque WBIN error = %v", err)
+	}
+
+	hashes := make(map[Role]string, len(roles))
+	for index, role := range roles {
+		piece, pieceErr := set.Piece(index)
+		if pieceErr != nil {
+			t.Fatal(pieceErr)
+		}
+		hashes[role] = piece.SHA256()
+	}
+	registry, err := NewRegistry(BuildProfile{
+		ID: "samsung.synthetic.opaque", Family: FamilySCHRawDownload,
+		Manufacturer: "Samsung", Model: "Synthetic", Build: "OPAQUE",
+		WBINFormat: WBINFormatOpaque, PieceHashes: hashes,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := inspectWithRegistry(set, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pkg.Pieces[RoleWBIN].Header.Build != string(WBINFormatOpaque) {
+		t.Fatalf("opaque WBIN header = %+v", pkg.Pieces[RoleWBIN].Header)
+	}
+	layout, err := normalizeWithRegistry(set, pkg, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if layout.PageSize != smallPageSize || layout.EraseBlockSize != smallEraseBlockSize {
+		t.Fatalf("opaque WBIN layout geometry = %#x/%#x", layout.PageSize, layout.EraseBlockSize)
+	}
+	image, err := decodeWBINWithRegistry(set, pkg, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(opaque)
+	if !bytes.Equal(image.Bytes, opaque) || image.SHA256 != hex.EncodeToString(digest[:]) ||
+		image.EncryptedLength != 0 || image.ELF.Entry != 0 || image.ELF.LogicalFileEnd != 0 ||
+		len(image.ELF.ProgramHeaders) != 0 {
+		t.Fatalf("opaque progressive image = %+v", image)
+	}
+
+	if _, err := decodeWBINWithRegistry(set, pkg, Registry{}); !errors.Is(err, ErrNotSCHDownload) {
+		t.Fatalf("DecodeWBIN unknown opaque profile error = %v", err)
 	}
 }
 

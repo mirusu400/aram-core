@@ -20,6 +20,9 @@ const (
 	SCHW350CK06ProfileID = "samsung.sch-w350.ck06"
 	SCHW410CL10ProfileID = "samsung.sch-w410.cl10"
 	SCHW850CF11ProfileID = "samsung.sch-w850.cf11"
+	SCHW270CL28ProfileID = "samsung.sch-w270.cl28"
+	SCHW300DA04ProfileID = "samsung.sch-w300.da04"
+	SCHW420CD16ProfileID = "samsung.sch-w420.cd16"
 )
 
 var (
@@ -167,10 +170,21 @@ type BuildProfile struct {
 	Manufacturer string
 	Model        string
 	Build        string
+	WBINFormat   WBINFormat
 	PieceHashes  map[Role]string
 	BootImages   []BootImageSpec
 	MemoryImages []MemoryImageSpec
 }
+
+// WBINFormat describes the logical AMSS image carried by a Samsung WBIN
+// piece. The zero value retains the normal progressive-ELF contract so older
+// profiles do not need format-only churn.
+type WBINFormat string
+
+const (
+	WBINFormatProgressiveELF WBINFormat = "progressive-elf"
+	WBINFormatOpaque         WBINFormat = "opaque"
+)
 
 func (p BuildProfile) validate() error {
 	if strings.TrimSpace(p.ID) == "" || strings.TrimSpace(p.Manufacturer) == "" ||
@@ -180,6 +194,15 @@ func (p BuildProfile) validate() error {
 	if p.Family != FamilySCHDownload && p.Family != FamilySCHRawDownload &&
 		p.Family != FamilySCHFlexOneNANDDownload {
 		return fmt.Errorf("firmware profile %q has unsupported family %q", p.ID, p.Family)
+	}
+	switch p.WBINFormat {
+	case "", WBINFormatProgressiveELF:
+	case WBINFormatOpaque:
+		if p.Family != FamilySCHRawDownload {
+			return fmt.Errorf("firmware profile %q uses opaque WBIN outside the raw-download family", p.ID)
+		}
+	default:
+		return fmt.Errorf("firmware profile %q has unsupported WBIN format %q", p.ID, p.WBINFormat)
 	}
 	required := requiredRolesForFamily(p.Family)
 	if len(p.PieceHashes) != len(required) {
@@ -294,6 +317,9 @@ func BuiltinRegistry() Registry {
 		schW350CK06Profile(),
 		schW410CL10Profile(),
 		schW850CF11Profile(),
+		schW270CL28Profile(),
+		schW300DA04Profile(),
+		schW420CD16Profile(),
 	)
 	if err != nil {
 		panic(err)
@@ -347,8 +373,10 @@ func schW320DC18Profile() BuildProfile {
 			RoleDAT:  "1d87efeb9c0f6cbd43b8e0c6b5e895ff8789107e2f3c897b31f8507ae204605f",
 			RoleFont: "75231a46cce706d5fb32222bcba71747967be38308789d43045b0bab8ccc621e",
 		},
-		0x00045c7e,
-		"66da2ca862fd8704b4136b8476c3957fe22d702fd1c69bb120db1cdb4181d364",
+		schLargePageRawBootProfile(
+			0x00045c7e,
+			"66da2ca862fd8704b4136b8476c3957fe22d702fd1c69bb120db1cdb4181d364",
+		),
 	)
 }
 
@@ -363,8 +391,10 @@ func schW340DC18Profile() BuildProfile {
 			RoleDAT:  "28d15d06d45116111955b67920dc65dbddd934ad8bc7ddd25cd33b624303fdb0",
 			RoleFont: "360818f96042d2a844e1d158a46537743cd5d4573dc6554137976b726dd07a95",
 		},
-		0x00044757,
-		"95b53a49c8b2365c67a9fbbb05644ccfeed69225062df503a68b5044f44d8dde",
+		schLargePageRawBootProfile(
+			0x00044757,
+			"95b53a49c8b2365c67a9fbbb05644ccfeed69225062df503a68b5044f44d8dde",
+		),
 	)
 }
 
@@ -379,8 +409,10 @@ func schW350CK06Profile() BuildProfile {
 			RoleDAT:  "520ab99a1ee7169b4d057abd602338362e6b312340f0ed550bf085c364d7ad43",
 			RoleFont: "165b468bb26ee3687a74a48659229cf25d34874a0ae72ec9ba9088c26b740782",
 		},
-		0x00053968,
-		"3f04ed1ff6a122a84d7f6009cb87560597edfcd94a95384a6646514b3e5d995b",
+		schLargePageRawBootProfile(
+			0x00053968,
+			"3f04ed1ff6a122a84d7f6009cb87560597edfcd94a95384a6646514b3e5d995b",
+		),
 	)
 }
 
@@ -395,16 +427,30 @@ func schW410CL10Profile() BuildProfile {
 			RoleDAT:  "67b8b03dfdb50ed4af513af119e7eee0f0758f5dddea0c4ca5269c8344fd8831",
 			RoleFont: "5c191716f3fd1224dbb8eeba156aba8a529469f5c7d1fba2998562c1dfb286ba",
 		},
-		0x00043ba0,
-		"0fc474689a06d8299bb42519314bee3ec4cf0c33ddd3e8b9a15fb1cb43af4d79",
+		schLargePageRawBootProfile(
+			0x00043ba0,
+			"0fc474689a06d8299bb42519314bee3ec4cf0c33ddd3e8b9a15fb1cb43af4d79",
+		),
 	)
+}
+
+type schRawBootProfile struct {
+	PageSize, EraseBlockSize uint32
+	OEMSBLBlockOffsets       []int64
+	OEMSBLUsedSize           uint32
+	OEMSBLLogicalSHA256      string
+	QCSBLBlockOffsets        []int64
+	QCSBLUsedSize            uint32
+	QCSBLLogicalSHA256       string
+	PBLSourceOffset          uint64
+	PBLSize, PBLLoadAddress  uint32
+	PBLLogicalSHA256         string
 }
 
 func schRawDownloadProfile(
 	id, model, build string,
 	pieceHashes map[Role]string,
-	oemsblUsedSize uint32,
-	oemsblSHA256 string,
+	boot schRawBootProfile,
 ) BuildProfile {
 	// These older version-one packages store the four downloader payloads
 	// without the later 128 KiB signed wrapper. Their SBL blocks retain the
@@ -415,28 +461,120 @@ func schRawDownloadProfile(
 		BootImages: []BootImageSpec{
 			{
 				ID: "oemsbl", Role: RoleWBT,
-				BlockOffsets: []int64{0x0c0000, 0x0e0000, 0x100000},
+				BlockOffsets: append([]int64(nil), boot.OEMSBLBlockOffsets...),
 				BlockMarker:  [8]byte{0x9c, 0x12, 0x0f, 0xfa, 0xc9, 0xb6, 0x8f, 0x5a},
-				HeaderSize:   PageSize, BlockSize: EraseBlockSize,
+				HeaderSize:   boot.PageSize, BlockSize: boot.EraseBlockSize,
 				LoadAddress: 0x000a0000, EntryOffset: 0,
-				UsedSize: oemsblUsedSize, LogicalSHA256: oemsblSHA256,
+				UsedSize: boot.OEMSBLUsedSize, LogicalSHA256: boot.OEMSBLLogicalSHA256,
 			},
 			{
 				ID: "qcsbl", Role: RoleWBT,
-				BlockOffsets: []int64{0x0a0000},
+				BlockOffsets: append([]int64(nil), boot.QCSBLBlockOffsets...),
 				BlockMarker:  [8]byte{0xdf, 0x5d, 0xe8, 0x5f, 0xbc, 0xce, 0x64, 0x52},
-				HeaderSize:   PageSize, BlockSize: EraseBlockSize,
+				HeaderSize:   boot.PageSize, BlockSize: boot.EraseBlockSize,
 				LoadAddress: 0x00080000, EntryOffset: 0,
-				UsedSize:      0x0000484f,
-				LogicalSHA256: "551543bdca41fe33b889c81376effa276f01672310c8bda9c4c076ac4d8c1c89",
+				UsedSize: boot.QCSBLUsedSize, LogicalSHA256: boot.QCSBLLogicalSHA256,
 			},
 		},
 		MemoryImages: []MemoryImageSpec{{
-			ID: "pbl-rom", Role: RoleWBT, SourceOffset: 0, Size: 0x00003948,
-			LoadAddress:   0x00101000,
-			LogicalSHA256: "ea0bd3a8dec21657a7da0b20485e44793062f15de6ee453774cd31bc1a78d920",
+			ID: "pbl-rom", Role: RoleWBT, SourceOffset: boot.PBLSourceOffset, Size: boot.PBLSize,
+			LoadAddress: boot.PBLLoadAddress, LogicalSHA256: boot.PBLLogicalSHA256,
 		}},
 	}
+}
+
+func schLargePageRawBootProfile(oemsblUsedSize uint32, oemsblSHA256 string) schRawBootProfile {
+	return schRawBootProfile{
+		PageSize: PageSize, EraseBlockSize: EraseBlockSize,
+		OEMSBLBlockOffsets:  []int64{0x0c0000, 0x0e0000, 0x100000},
+		OEMSBLUsedSize:      oemsblUsedSize,
+		OEMSBLLogicalSHA256: oemsblSHA256,
+		QCSBLBlockOffsets:   []int64{0x0a0000},
+		QCSBLUsedSize:       0x0000484f,
+		QCSBLLogicalSHA256:  "551543bdca41fe33b889c81376effa276f01672310c8bda9c4c076ac4d8c1c89",
+		PBLSize:             0x00003948,
+		PBLLoadAddress:      0x00101000,
+		PBLLogicalSHA256:    "ea0bd3a8dec21657a7da0b20485e44793062f15de6ee453774cd31bc1a78d920",
+	}
+}
+
+func schW300DA04Profile() BuildProfile {
+	boot := schLargePageRawBootProfile(
+		0x00043df3,
+		"a60cac5f11979498e2e73ae6bc28eaa575d7b9a639713e0bc511f130a9083bd1",
+	)
+	boot.QCSBLUsedSize = 0x000089a3
+	boot.QCSBLLogicalSHA256 = "a88fbca03f96da15c9577a2a4f01f28e424670b7d851a627109828de378c8a3b"
+	return schRawDownloadProfile(
+		SCHW300DA04ProfileID,
+		"SCH-W300",
+		"DA04",
+		map[Role]string{
+			RoleWBT:  "6940ee63e557b0ef81291f0f59371019f7617ee021b42b93cf6e809fd81a3a36",
+			RoleWBIN: "694cb1fe193712701f910606942131fecba7312b049220993b506bcd7d00245a",
+			RoleDAT:  "271237943217a358c859ffcb70ec1f8ed7ff6d242ff6a1551c2c215d583a9946",
+			RoleFont: "cde6d1368849f5cdd6603e67063b998ebb93a494a5c2db50179baad536a4b4eb",
+		},
+		boot,
+	)
+}
+
+func schW420CD16Profile() BuildProfile {
+	boot := schLargePageRawBootProfile(
+		0x00042b36,
+		"35963e233dae7a78182c11bd904d1aeab2826616b0045426ce7cf3f82b846832",
+	)
+	boot.QCSBLUsedSize = 0x000081bf
+	boot.QCSBLLogicalSHA256 = "e501bbe2fb888d46271e6e83b3fad03dc6750a520c02358fa816abef3b02a4c4"
+	return schRawDownloadProfile(
+		SCHW420CD16ProfileID,
+		"SCH-W420",
+		"CD16",
+		map[Role]string{
+			RoleWBT:  "6550560f94d996ec9c39cb703841904033ff2cb39eff838afd37cf3dda8c609c",
+			RoleWBIN: "1af0f5498cc3947ed5a78aba7540db84c6c1e4908ab3cb62bec0826bd16e4935",
+			RoleDAT:  "c72e381ab9a29313c9e52876db314dd0285cdf438f5f57aa9b33c12cc959e706",
+			RoleFont: "0df002d0c3a135539d9bebd04e31e97681632ada160a66ce021cc986f8b06a89",
+		},
+		boot,
+	)
+}
+
+func schW270CL28Profile() BuildProfile {
+	boot := schRawBootProfile{
+		PageSize: smallPageSize, EraseBlockSize: smallEraseBlockSize,
+		OEMSBLBlockOffsets:  schRawBlockOffsets(0x00080000, 23, smallEraseBlockSize),
+		OEMSBLUsedSize:      0x0005801c,
+		OEMSBLLogicalSHA256: "f1ecd3b23fd8cb48ff299ee447b7af963bc483247446ee1cad70f778ea369130",
+		QCSBLBlockOffsets:   []int64{0x00040000},
+		QCSBLUsedSize:       0x00001504,
+		QCSBLLogicalSHA256:  "c66591cfd5d5654645c15d9a6e5e9e294266a1db5d67e9b3c9cb9cfe3aa26e4d",
+		PBLSize:             0x000042f0,
+		PBLLoadAddress:      0x00101000,
+		PBLLogicalSHA256:    "c744059da2a0ae138fa4e5b753c348a5070dc9b52f1537f1497a04b844f6453e",
+	}
+	profile := schRawDownloadProfile(
+		SCHW270CL28ProfileID,
+		"SCH-W270",
+		"CL28",
+		map[Role]string{
+			RoleWBT:  "7899654ba29cf597df88279d96b26c2867e2b342da96169ddad5daeae78c37a4",
+			RoleWBIN: "ee5bb6cdaf9b2fc467d45490bfda765f0d81444f924ec3348c9fd6be78544123",
+			RoleDAT:  "747608b7e4de7df0f1d5530767c4236b71de25f598194c4ac0e0223bd0a4f4ac",
+			RoleFont: "4e5d62efc26d830a664966d5f99d333838eb93fbf62eba896b8641f9c5416c40",
+		},
+		boot,
+	)
+	profile.WBINFormat = WBINFormatOpaque
+	return profile
+}
+
+func schRawBlockOffsets(start int64, count int, blockSize uint32) []int64 {
+	offsets := make([]int64, count)
+	for index := range offsets {
+		offsets[index] = start + int64(index)*int64(blockSize)
+	}
+	return offsets
 }
 
 func schW770DA05Profile() BuildProfile {
