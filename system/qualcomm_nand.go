@@ -77,10 +77,33 @@ type NANDSpareStorage interface {
 // Qualcomm2K8BitNANDConfig describes the standard four-codeword, 2 KiB,
 // eight-bit NAND configuration consumed by the early Qualcomm controller.
 func Qualcomm2K8BitNANDConfig(readID uint32, ready *StatusSignal) QualcommNANDConfig {
+	return Qualcomm8BitNANDConfig(0x0800, qualcomm2K8BitNANDEraseBlockSize, readID, ready)
+}
+
+// Qualcomm8BitNANDConfig describes an early Qualcomm NAND controller using
+// 512-byte codewords. Geometry validation remains centralized in
+// NewQualcommNAND; this constructor also encodes the codeword count exposed by
+// the controller's reset configuration register.
+func Qualcomm8BitNANDConfig(
+	pageSize uint32,
+	eraseBlockSize uint32,
+	readID uint32,
+	ready *StatusSignal,
+) QualcommNANDConfig {
+	const codewordsPerPageMask = uint32(0x000001c0)
+	deviceConfig0 := uint32(0xe8d408c0) &^ codewordsPerPageMask
+	if codewords := pageSize / qualcommNANDCodewordDataSize; codewords >= 1 && codewords <= 8 {
+		deviceConfig0 |= (codewords - 1) << 6
+	}
+	if pageSize == 0x200 {
+		// The older controller ABI clears the large-page layout selector. Its
+		// QCSBL uses this bit to choose the small-page NAND service path.
+		deviceConfig0 &^= 0x00000800
+	}
 	return QualcommNANDConfig{
-		PageSize:        0x0800,
-		EraseBlockSize:  qualcomm2K8BitNANDEraseBlockSize,
-		DeviceConfig0:   0xe8d408c0,
+		PageSize:        pageSize,
+		EraseBlockSize:  eraseBlockSize,
+		DeviceConfig0:   deviceConfig0,
 		DeviceConfig1:   0x0004745c,
 		CommandValidity: 0x0000001d,
 		ReadID:          readID,

@@ -66,10 +66,11 @@ func TestSamsungTargetBootPrivateReferences(t *testing.T) {
 				t.Fatalf("selected machine identity = %+v", identity)
 			}
 
-			wantEntry := uint32(0x00080000)
-			if firmwareProfile.ID == samsung.SCHW850CF11ProfileID {
-				wantEntry = 0x00800000
+			qcsblSpec, ok := firmwareProfile.BootImage("qcsbl")
+			if !ok {
+				t.Fatal("profile has no QCSBL image")
 			}
+			wantEntry := qcsblSpec.LoadAddress + qcsblSpec.EntryOffset
 			if position := machine.Position(); position.PC != wantEntry ||
 				position.Mode != cpu.ModeARM || position.Instructions != 0 {
 				t.Fatalf("initial boot position = %+v, want PC %#x ARM", position, wantEntry)
@@ -80,45 +81,69 @@ func TestSamsungTargetBootPrivateReferences(t *testing.T) {
 
 			var mgpControlWrites, mgpInterfaceWrites uint64
 			var indexedReads, indexedWrites uint64
-			machine.bus.SetMMIOObserver(func(access system.MMIOAccess) {
-				switch access.Region {
-				case "samsung-mgp-registers":
-					if access.Write {
-						mgpControlWrites++
+			if firmwareProfile.ID == samsung.SCHW320DC18ProfileID ||
+				firmwareProfile.ID == samsung.SCHW350CK06ProfileID {
+				machine.bus.SetMMIOObserver(func(access system.MMIOAccess) {
+					switch access.Region {
+					case "samsung-mgp-registers":
+						if access.Write {
+							mgpControlWrites++
+						}
+					case "samsung-mgp-interface-registers":
+						if access.Write {
+							mgpInterfaceWrites++
+						}
+					case "w350-indexed-external-registers-command", "w350-indexed-external-registers-data":
+						if access.Write {
+							indexedWrites++
+						} else {
+							indexedReads++
+						}
 					}
-				case "samsung-mgp-interface-registers":
-					if access.Write {
-						mgpInterfaceWrites++
-					}
-				case "w350-indexed-external-registers-command", "w350-indexed-external-registers-data":
-					if access.Write {
-						indexedWrites++
-					} else {
-						indexedReads++
-					}
-				}
-			})
+				})
+			}
 
 			var oemsblEntry uint32
 			var oemsblMode cpu.Mode
+			expectOEMSBLTrap := firmwareProfile.ID == samsung.SCHW850CF11ProfileID ||
+				firmwareProfile.ID == samsung.SCHW270CL28ProfileID ||
+				firmwareProfile.ID == samsung.SCHW300DA04ProfileID ||
+				firmwareProfile.ID == samsung.SCHW420CD16ProfileID
 			if firmwareProfile.ID == samsung.SCHW850CF11ProfileID {
 				oemsblEntry, oemsblMode = privateW850OEMSBLTrap(t, set, pkg, firmwareProfile)
+			} else if expectOEMSBLTrap {
+				oemsblEntry, oemsblMode = privateProfileBootImageTrap(t, set, pkg, firmwareProfile, "oemsbl")
+			}
+			if expectOEMSBLTrap {
 				traps, ok := machine.backend.(cpu.ExecutionTrapBackend)
 				if !ok {
-					t.Fatal("W850 backend has no execution-trap support")
+					t.Fatalf("%s backend has no execution-trap support", firmwareProfile.Model)
 				}
-				if err := traps.SetExecutionTraps([]cpu.ExecutionTrap{{
+				executionTraps := []cpu.ExecutionTrap{{
 					Address: oemsblEntry,
 					Mode:    oemsblMode,
-				}}); err != nil {
+				}}
+				if firmwareProfile.ID == samsung.SCHW270CL28ProfileID {
+					for _, call := range system.SCHW270CL28BoardProfile().HLECalls {
+						executionTraps = append(executionTraps, cpu.ExecutionTrap{
+							Address: call.Address,
+							Mode:    call.Mode,
+						})
+					}
+					executionTraps = append(executionTraps, cpu.ExecutionTrap{
+						Address: 0x00080000,
+						Mode:    cpu.ModeARM,
+					})
+				}
+				if err := traps.SetExecutionTraps(executionTraps); err != nil {
 					t.Fatal(err)
 				}
 			}
 
 			result := machine.Run(context.Background(), budget)
-			if firmwareProfile.ID == samsung.SCHW850CF11ProfileID {
+			if expectOEMSBLTrap {
 				if result.Err != nil || result.Reason != cpu.StopExecutionTrap || result.PC != oemsblEntry {
-					t.Fatalf("W850 QCSBL-to-OEMSBL boot result = %+v", result)
+					t.Fatalf("%s QCSBL-to-OEMSBL boot result = %+v", firmwareProfile.Model, result)
 				}
 			} else if result.Err != nil || result.Reason != cpu.StopBudget ||
 				result.Instructions != budget {
@@ -211,4 +236,42 @@ func privateW850OEMSBLTrap(
 		t.Fatal("W850 OEMSBL internal entry is zero")
 	}
 	return entry, mode
+}
+
+func privateProfileBootImageTrap(
+	t *testing.T,
+	set firmwareset.Set,
+	pkg samsung.Package,
+	profile samsung.BuildProfile,
+	id string,
+) (uint32, cpu.Mode) {
+	t.Helper()
+	spec, ok := profile.BootImage(id)
+	if !ok {
+		t.Fatalf("profile %q has no %s image", profile.ID, id)
+	}
+	image, err := samsung.ReconstructBootImage(set, pkg, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(image.Bytes) < 4 {
+		t.Fatalf("profile %q %s has no internal entry vector", profile.ID, id)
+	}
+	limit := min(len(image.Bytes), 0x80)
+	for offset := 0; offset+4 <= limit; offset += 4 {
+		entry := binary.LittleEndian.Uint32(image.Bytes[offset:])
+		mode := cpu.ModeARM
+		if entry&1 != 0 {
+			entry &^= 1
+			mode = cpu.ModeThumb
+		}
+		if entry == image.EntryAddress {
+			return image.EntryAddress, mode
+		}
+	}
+	t.Fatalf(
+		"profile %q %s metadata entry %#x is absent from its internal vectors",
+		profile.ID, id, image.EntryAddress,
+	)
+	return 0, cpu.ModeARM
 }

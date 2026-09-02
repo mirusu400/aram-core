@@ -126,7 +126,10 @@ func (r *HLERunner) Run(
 		}
 		call, exists := r.gates[cpu.ExecutionTrap{Address: result.PC, Mode: trapMode}]
 		if !exists {
-			return r.fault(instructions, result.PC, fmt.Errorf("unowned execution trap"))
+			// Debuggers and milestone tests may merge their own traps with the HLE
+			// gates. Preserve an unowned stop for that caller instead of turning it
+			// into a machine fault.
+			return result
 		}
 		if err := r.handlers[call.Contract].InvokeHLE(HLECallContext{
 			Call: call,

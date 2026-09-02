@@ -655,6 +655,20 @@ func openSamsungSCHReferenceSet(t *testing.T, path string) firmwareset.Set {
 	if len(candidates) > 20 {
 		t.Fatalf("configured reference contains %d candidate pieces, want at most 20", len(candidates))
 	}
+	// Exact opaque WBIN builds cannot classify that one piece in isolation.
+	// A directory/archive containing one complete set can still be selected by
+	// the same full-package hash registry before the mixed-corpus subset scan.
+	if len(candidates) == 4 || len(candidates) == 5 {
+		direct, setErr := firmwareset.NewSet(candidates)
+		if setErr != nil {
+			t.Fatal(setErr)
+		}
+		if pkg, inspectErr := samsung.Inspect(direct); inspectErr == nil {
+			if _, matchErr := samsung.BuiltinRegistry().Match(pkg); matchErr == nil {
+				return direct
+			}
+		}
+	}
 	type inspectedCandidate struct {
 		family string
 		piece  samsung.Piece

@@ -23,6 +23,7 @@ const (
 	qualcommPBLHeaderSLCBlockCount   = 0x015a
 	qualcommPBLHeaderBadBlockLimit   = 0x015b
 	qualcommPBLHeaderFeatureDataSize = (qualcommPBLHeaderFeatureEnd - qualcommPBLHeaderFeatureFirst) * 8
+	qualcommPBLFlashTypeNAND         = 1
 	qualcommPBLFlashTypeNAND2K       = 6
 	qualcommLegacyPBLFeatureEnd      = 0x0131
 	qualcommPBLFeatureDataHeaderSize = 0x2c
@@ -36,10 +37,15 @@ var (
 
 type QualcommNANDPBLConfig struct {
 	Entry                    uint32
+	StackPointer             uint32
 	TableAddress             uint32
 	ServiceTableHeaderSize   uint32
 	HeaderFeatureDataAddress uint32
 	HeaderFeatures           []QualcommPBLHeaderFeature
+	FixedFeatureDataAddress  uint32
+	FixedFeatureFirst        uint32
+	FixedFeatureSlotCount    uint32
+	FixedFeatures            []QualcommPBLFixedFeature
 	LegacyFeatureDataAddress uint32
 	SharedDataAddress        uint32
 	SharedDataSize           uint32
@@ -52,6 +58,14 @@ type QualcommNANDPBLConfig struct {
 // QualcommPBLHeaderFeature describes one fixed presence/value slot in the
 // newer PBL table passed to QCSBL through r9.
 type QualcommPBLHeaderFeature struct {
+	Selector uint32
+	Value    uint32
+}
+
+// QualcommPBLFixedFeature describes one present selector/value slot in a
+// generation-specific fixed table. Selectors omitted from FixedFeatures stay
+// absent while preserving their positional slot.
+type QualcommPBLFixedFeature struct {
 	Selector uint32
 	Value    uint32
 }
@@ -145,6 +159,16 @@ type QualcommTimeTickClockConfig struct {
 // NewQualcommNANDPBLHandoff builds the bounded PBL service data consumed by
 // the early QCSBL. The missing mask-ROM remains an explicit HLE boundary.
 func NewQualcommNANDPBLHandoff(config QualcommNANDPBLConfig) (BootHandoff, error) {
+	flashType := uint32(qualcommPBLFlashTypeNAND2K)
+	handoffID := "qualcomm.pbl-hle.nand2k-v1"
+	switch config.PageSize {
+	case 0x200:
+		flashType = qualcommPBLFlashTypeNAND
+		handoffID = "qualcomm.pbl-hle.nand-v1"
+	case 0x800:
+	default:
+		return BootHandoff{}, fmt.Errorf("invalid Qualcomm NAND PBL geometry")
+	}
 	serviceTableHeaderSize := config.ServiceTableHeaderSize
 	if serviceTableHeaderSize == 0 {
 		serviceTableHeaderSize = qualcommPBLFeatureDataHeaderSize
@@ -162,7 +186,34 @@ func NewQualcommNANDPBLHandoff(config QualcommNANDPBLConfig) (BootHandoff, error
 		seenHeaderFeatures[feature.Selector] = struct{}{}
 		headerFeatureOffsets[index] = (feature.Selector - qualcommPBLHeaderFeatureFirst) * 8
 	}
-	if config.Entry&3 != 0 || config.TableAddress&3 != 0 || config.PageSize != 0x800 ||
+	fixedFeatureOffsets := make([]uint32, len(config.FixedFeatures))
+	seenFixedFeatures := make(map[uint32]struct{}, len(config.FixedFeatures))
+	fixedFeatureSize := uint64(config.FixedFeatureSlotCount) * 8
+	if config.FixedFeatureDataAddress == 0 || config.FixedFeatureSlotCount == 0 {
+		if config.FixedFeatureDataAddress != 0 || config.FixedFeatureFirst != 0 ||
+			config.FixedFeatureSlotCount != 0 || len(config.FixedFeatures) != 0 {
+			return BootHandoff{}, fmt.Errorf("invalid Qualcomm NAND PBL geometry")
+		}
+	} else {
+		selectorEnd := uint64(config.FixedFeatureFirst) + uint64(config.FixedFeatureSlotCount)
+		if config.FixedFeatureDataAddress&3 != 0 || selectorEnd > 1<<32 ||
+			fixedFeatureSize > MaxHandoffSeedBytes ||
+			uint64(config.FixedFeatureDataAddress)+fixedFeatureSize > 1<<32 {
+			return BootHandoff{}, fmt.Errorf("invalid Qualcomm NAND PBL geometry")
+		}
+		for index, feature := range config.FixedFeatures {
+			if feature.Selector < config.FixedFeatureFirst ||
+				uint64(feature.Selector) >= selectorEnd {
+				return BootHandoff{}, fmt.Errorf("invalid Qualcomm NAND PBL geometry")
+			}
+			if _, duplicate := seenFixedFeatures[feature.Selector]; duplicate {
+				return BootHandoff{}, fmt.Errorf("invalid Qualcomm NAND PBL geometry")
+			}
+			seenFixedFeatures[feature.Selector] = struct{}{}
+			fixedFeatureOffsets[index] = (feature.Selector - config.FixedFeatureFirst) * 8
+		}
+	}
+	if config.Entry&3 != 0 || config.StackPointer&3 != 0 || config.TableAddress&3 != 0 ||
 		serviceTableHeaderSize < qualcommPBLFeatureDataHeaderSize || serviceTableHeaderSize&3 != 0 ||
 		uint64(config.TableAddress)+uint64(serviceTableHeaderSize)+qualcommPBLServiceEntryCount*8 > 1<<32 ||
 		uint64(serviceTableHeaderSize)+qualcommPBLServiceEntryCount*8 > MaxHandoffSeedBytes ||
@@ -186,7 +237,7 @@ func NewQualcommNANDPBLHandoff(config QualcommNANDPBLConfig) (BootHandoff, error
 		{0x0130, uint32(config.FlashSize / uint64(config.EraseBlockSize))},
 		{0x0132, config.PageSize},
 		{0x0133, config.BadBlockLimit},
-		{0x0141, qualcommPBLFlashTypeNAND2K},
+		{0x0141, flashType},
 		{qualcommPBLServiceEnd, 0},
 	}
 	table := make([]byte, int(serviceTableHeaderSize)+len(entries)*8)
@@ -196,7 +247,7 @@ func NewQualcommNANDPBLHandoff(config QualcommNANDPBLConfig) (BootHandoff, error
 		binary.LittleEndian.PutUint32(table[offset+4:], entry[1])
 	}
 	handoff := BootHandoff{
-		ID:    "qualcomm.pbl-hle.nand2k-v1",
+		ID:    handoffID,
 		Entry: config.Entry,
 		Mode:  cpu.ModeARM,
 		Registers: []RegisterSeed{
@@ -223,6 +274,18 @@ func NewQualcommNANDPBLHandoff(config QualcommNANDPBLConfig) (BootHandoff, error
 			Bytes:   headerFeatures,
 		})
 	}
+	if config.FixedFeatureDataAddress != 0 {
+		fixedFeatures := make([]byte, int(fixedFeatureSize))
+		for index, feature := range config.FixedFeatures {
+			offset := fixedFeatureOffsets[index]
+			binary.LittleEndian.PutUint32(fixedFeatures[offset:], 1)
+			binary.LittleEndian.PutUint32(fixedFeatures[offset+4:], feature.Value)
+		}
+		handoff.Memory = append(handoff.Memory, MemorySeed{
+			Address: config.FixedFeatureDataAddress,
+			Bytes:   fixedFeatures,
+		})
+	}
 	if config.LegacyFeatureDataAddress != 0 {
 		// Earlier QCSBLs consume the same NAND facts through boot_feature_cfg
 		// IDs in a fixed PBL-owned structure. Keep that compatibility ABI an
@@ -232,7 +295,7 @@ func NewQualcommNANDPBLHandoff(config QualcommNANDPBLConfig) (BootHandoff, error
 			{0x0109, uint32(config.FlashSize / uint64(config.EraseBlockSize))},
 			{0x010b, config.PageSize},
 			{0x010c, config.BadBlockLimit},
-			{0x0115, qualcommPBLFlashTypeNAND2K},
+			{0x0115, flashType},
 			{qualcommLegacyPBLFeatureEnd, 0},
 		}
 		legacy := make([]byte, qualcommPBLFeatureDataHeaderSize+len(legacyEntries)*8)
@@ -256,6 +319,15 @@ func NewQualcommNANDPBLHandoff(config QualcommNANDPBLConfig) (BootHandoff, error
 		handoff.Memory = append(handoff.Memory, MemorySeed{
 			Address: config.SharedDataAddress,
 			Bytes:   make([]byte, config.SharedDataSize),
+		})
+	}
+	if config.StackPointer != 0 {
+		// Some older QCSBL entrypoints are ordinary ARM functions and retain the
+		// stack established by mask ROM. Keep that ABI input explicit and
+		// optional; reset-style entrypoints continue to establish their own.
+		handoff.Registers = append(handoff.Registers, RegisterSeed{
+			Register: cpu.RegisterSP,
+			Value:    config.StackPointer,
 		})
 	}
 	if err := handoff.Validate(); err != nil {

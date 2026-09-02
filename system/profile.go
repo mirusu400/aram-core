@@ -79,6 +79,15 @@ const (
 	// produced by an unavailable mask-ROM PBL after it authenticates the exact
 	// QCSBL image selected by the host loader.
 	HLEContractQualcommPBLVerifiedLoaderState = "qualcomm.pbl.verified-loader-state-v1"
+	// HLEContractQualcommPBLNANDBadBlock supplies the retained PBL callback
+	// which classifies one physical NAND erase block.
+	HLEContractQualcommPBLNANDBadBlock = "qualcomm.pbl.nand-bad-block-v1"
+	// HLEContractQualcommPBLNANDRead supplies the retained PBL callback which
+	// copies a bounded run of physical NAND pages into QCSBL memory.
+	HLEContractQualcommPBLNANDRead = "qualcomm.pbl.nand-read-v1"
+	// HLEContractQualcommPBLFatal identifies the retained PBL assertion sink.
+	// The machine handler surfaces it as a fault instead of fabricating success.
+	HLEContractQualcommPBLFatal = "qualcomm.pbl.fatal-v1"
 	// HLEContractQualcommBootstrapVerifiedFirmware supplies the zero success
 	// result of a bootstrap verifier whose per-handset manufacturing key is not
 	// distributed in a firmware package. It is valid only for a build profile
@@ -227,6 +236,8 @@ type BoardProfile struct {
 	FirmwareBuildID               string
 	NANDReadID                    uint32
 	NANDSize                      uint64
+	NANDPageSize                  uint32
+	NANDEraseBlockSize            uint32
 	NANDFactoryBadBlocks          []uint32
 	NANDReportsErasedECCCodewords bool
 	NANDInitialData               []FlashSeed
@@ -242,10 +253,19 @@ type BoardProfile struct {
 	// used by newer PBL ABIs. Zero omits that table.
 	PBLHeaderFeatureDataAddress uint32
 	PBLHeaderFeatures           []QualcommPBLHeaderFeature
+	// PBLFixedFeatureDataAddress supplies a generation-specific fixed
+	// presence/value table whose selector range is profiled below.
+	PBLFixedFeatureDataAddress  uint32
+	PBLFixedFeatureFirst        uint32
+	PBLFixedFeatureSlotCount    uint32
+	PBLFixedFeatures            []QualcommPBLFixedFeature
 	PBLLegacyFeatureDataAddress uint32
 	PBLSharedDataAddress        uint32
 	PBLSharedDataSize           uint32
-	BootClockModeStatus         uint32
+	// PBLStackPointer retains the initial stack supplied by mask ROM for
+	// QCSBL entrypoints which begin as ordinary functions. Zero omits it.
+	PBLStackPointer     uint32
+	BootClockModeStatus uint32
 	// BootControlAddress overrides the MSM6xxx default 0x80000000 physical
 	// base for chip families which relocate the same bounded control device.
 	BootControlAddress                        uint32
@@ -296,15 +316,30 @@ func (p BoardProfile) Validate() error {
 	if !validProfileID(p.ID) || !validProfileID(p.PlatformID) || !validProfileID(p.FirmwareBuildID) {
 		return fmt.Errorf("system board profile identity is invalid")
 	}
-	if p.NANDSize != 0 && (p.NANDSize%0x800 != 0 || p.NANDSize > uint64(1<<63-1)) {
-		return fmt.Errorf("board profile %q has invalid NAND size 0x%x", p.ID, p.NANDSize)
+	if p.PBLStackPointer&3 != 0 {
+		return fmt.Errorf("board profile %q has unaligned PBL stack pointer 0x%x", p.ID, p.PBLStackPointer)
+	}
+	if p.NANDSize == 0 {
+		if p.NANDPageSize != 0 || p.NANDEraseBlockSize != 0 {
+			return fmt.Errorf("board profile %q has NAND geometry without capacity", p.ID)
+		}
+	} else if p.NANDPageSize < 0x200 || p.NANDPageSize > 16<<10 ||
+		p.NANDPageSize&(p.NANDPageSize-1) != 0 ||
+		p.NANDEraseBlockSize < p.NANDPageSize ||
+		p.NANDEraseBlockSize%p.NANDPageSize != 0 ||
+		p.NANDEraseBlockSize&(p.NANDEraseBlockSize-1) != 0 ||
+		p.NANDSize%uint64(p.NANDEraseBlockSize) != 0 || p.NANDSize > uint64(1<<63-1) {
+		return fmt.Errorf(
+			"board profile %q has invalid NAND geometry size=0x%x page=0x%x erase=0x%x",
+			p.ID, p.NANDSize, p.NANDPageSize, p.NANDEraseBlockSize,
+		)
 	}
 	if _, err := validateQualcommLegacyTopWritableOffsets(p.LegacyTopWritableOffsets); err != nil {
 		return fmt.Errorf("board profile %q legacy top page: %w", p.ID, err)
 	}
 	badBlocks := make(map[uint32]struct{}, len(p.NANDFactoryBadBlocks))
 	for _, block := range p.NANDFactoryBadBlocks {
-		if p.NANDSize == 0 || uint64(block) >= p.NANDSize/qualcomm2K8BitNANDEraseBlockSize {
+		if p.NANDSize == 0 || uint64(block) >= p.NANDSize/uint64(p.NANDEraseBlockSize) {
 			return fmt.Errorf("board profile %q has invalid NAND factory bad block 0x%x", p.ID, block)
 		}
 		if _, duplicate := badBlocks[block]; duplicate {
@@ -1173,8 +1208,10 @@ func SCHW830DL21BoardProfile() BoardProfile {
 		// reference SPH-W8300 runtime dump: that carrier variant has a
 		// different AMSS NAND table. This controller generation exposes the
 		// maker in READ_ID[15:8] and the device in READ_ID[7:0].
-		NANDReadID: 0x0000ecba,
-		NANDSize:   0x10000000,
+		NANDReadID:         0x0000ecba,
+		NANDSize:           0x10000000,
+		NANDPageSize:       0x00000800,
+		NANDEraseBlockSize: 0x00020000,
 		// The downloader set has no physical OOB stream. Its WBT normalizer
 		// promotes the newest MIBIB generation into QCSBL's second usable boot
 		// slot; inventing a factory-bad block here would incorrectly displace
@@ -1910,6 +1947,106 @@ func SCHW410CL10BoardProfile() BoardProfile {
 	profile.PrimaryClockKeys = []QualcommPrimaryClockKeyProfile{{
 		ID: "end", InputLine: 4, ActiveLow: true,
 	}}
+	return profile
+}
+
+// SCHW300DA04BoardProfile retains only the shared raw-download board facts
+// needed to start DA04. Model-specific peripherals are added when execution
+// reaches and evidences them.
+func SCHW300DA04BoardProfile() BoardProfile {
+	profile := samsungRawDownloadBoardProfile(
+		"samsung.sch-w300", "samsung.sch-w300.da04", 0x085c0000,
+	)
+	// DA04 writes 16-bit LCD register indexes at chip-select +0 and their
+	// values at address-bit-7 +0x80 during its first hardware pass.
+	profile.PanelPorts = &ParallelPanelPortProfile{
+		CommandAddress: 0x20000000,
+		DataAddress:    0x20000080,
+	}
+	profile.Panel.Protocol = ParallelPanelProtocolIndexedRGB565Window454647
+	return profile
+}
+
+// SCHW420CD16BoardProfile retains only the shared raw-download board facts
+// needed to start CD16. Model-specific peripherals are added when execution
+// reaches and evidences them.
+func SCHW420CD16BoardProfile() BoardProfile {
+	return samsungRawDownloadBoardProfile(
+		"samsung.sch-w420", "samsung.sch-w420.cd16", 0x0d5c0000,
+	)
+}
+
+// SCHW270CL28BoardProfile uses the older small-page NAND geometry published
+// by CL28's MIBIB and retained PBL feature table.
+func SCHW270CL28BoardProfile() BoardProfile {
+	profile := samsungRawDownloadBoardProfile(
+		"samsung.sch-w270", "samsung.sch-w270.cl28", 0x08c80000,
+	)
+	profile.NANDPageSize = 0x00000200
+	profile.NANDEraseBlockSize = 0x00004000
+	profile.PBLStackPointer = 0x03f40000
+	profile.PBLFixedFeatureDataAddress = 0x78002000
+	profile.PBLFixedFeatureFirst = 0x000000f9
+	profile.PBLFixedFeatureSlotCount = 5
+	profile.PBLFixedFeatures = []QualcommPBLFixedFeature{
+		{Selector: 0xf9, Value: 0x20},
+		{Selector: 0xfa, Value: 0x200},
+		{Selector: 0xfc, Value: 0x4000},
+		{Selector: 0xfd, Value: 0x14},
+	}
+	// CL28's QCSBL uses three callbacks from a retained PBL interface table.
+	// Their original low-vector entries are populated by unavailable mask-ROM
+	// state, so bind only the exact bad-block, page-read, and fatal ABIs here.
+	profile.HLECalls = append(profile.HLECalls,
+		HLECallProfile{
+			ID: "w270-pbl-nand-read", Contract: HLEContractQualcommPBLNANDRead,
+			Address: 0x03d4b000, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+		},
+		HLECallProfile{
+			ID: "w270-pbl-fatal", Contract: HLEContractQualcommPBLFatal,
+			Address: 0x03d4b004, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+		},
+		HLECallProfile{
+			ID: "w270-pbl-nand-bad-block", Contract: HLEContractQualcommPBLNANDBadBlock,
+			Address: 0x03d4b008, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+		},
+	)
+	// CL28's older QCSBL clears the bounded CHIP_BASE +0x18..+0x24 latch group
+	// while installing its exception-mode stacks.
+	profile.BootControlWritableOffsets = append(
+		profile.BootControlWritableOffsets,
+		0x0018, 0x001c, 0x0020, 0x0024,
+		// The retained PBL's clock bootstrap publishes the decoded PLL fields
+		// through this paired control latch before returning to QCSBL.
+		0x0300, 0x0304, 0x032c,
+		0x0a1c, 0x0a2c,
+	)
+	profile.BootControlInterruptWindowWritableOffsets = append(
+		profile.BootControlInterruptWindowWritableOffsets,
+		0x0920, 0x0924,
+	)
+	// The retained PBL publishes its runtime data in this one-page RAM window
+	// before entering QCSBL. CL28's entry initializes its first 0x18 bytes.
+	profile.Memory = append(profile.Memory, MemoryRegionProfile{
+		ID: "w270-pbl-runtime-data", Kind: MemoryRAM,
+		Address: 0x7f000000, Size: 0x00001000,
+	})
+	// CL28 tests bit 0 of CHIP_BASE+0x270 before selecting its exception-mode
+	// stacks. Revision one selects the evidenced 0x03f40000 stack inside EBI
+	// RAM; the clear path selects 0x080b0000 beyond this board's RAM window.
+	profile.BootControlReadOnlyRegisters = append(
+		profile.BootControlReadOnlyRegisters,
+		QualcommBootReadOnlyRegister{Offset: 0x0270, Value: 1},
+		// The retained PBL requires low selector two before decoding the
+		// cold-reset PLL fields and publishing them through +0x0a1c/+0x0a2c.
+		QualcommBootReadOnlyRegister{Offset: 0x53b8, Value: 2},
+		QualcommBootReadOnlyRegister{Offset: 0x53bc, Value: 0},
+		QualcommBootReadOnlyRegister{Offset: 0x53c0, Value: 0},
+		QualcommBootReadOnlyRegister{Offset: 0x53c4, Value: 0},
+		QualcommBootReadOnlyRegister{Offset: 0x53c8, Value: 0},
+		QualcommBootReadOnlyRegister{Offset: 0x53cc, Value: 0},
+		QualcommBootReadOnlyRegister{Offset: 0x53d0, Value: 0},
+	)
 	return profile
 }
 

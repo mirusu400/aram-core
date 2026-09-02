@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/mirusu400/aram-core/firmwareset"
@@ -128,6 +129,15 @@ func TestBuiltinRegistryKeepsRawVersionOneTargetsExact(t *testing.T) {
 			t.Fatalf("raw profile %q PBL ROM = %+v", id, pbl)
 		}
 	}
+	for id, entry := range map[string]uint32{
+		SCHW300DA04ProfileID: 0x000a05e4,
+		SCHW420CD16ProfileID: 0x000a09a0,
+	} {
+		oemsbl, ok := profiles[id].BootImage("oemsbl")
+		if !ok || oemsbl.LoadAddress+oemsbl.EntryOffset != entry {
+			t.Fatalf("raw profile %q OEMSBL = %+v, want entry %#x", id, oemsbl, entry)
+		}
+	}
 	w270, ok := profiles[SCHW270CL28ProfileID]
 	if !ok || w270.Family != FamilySCHRawDownload || w270.Model != "SCH-W270" ||
 		w270.Build != "CL28" || w270.WBINFormat != WBINFormatOpaque ||
@@ -137,16 +147,22 @@ func TestBuiltinRegistryKeepsRawVersionOneTargetsExact(t *testing.T) {
 	qcsbl, ok := w270.BootImage("qcsbl")
 	if !ok || len(qcsbl.BlockOffsets) != 1 || qcsbl.BlockOffsets[0] != 0x40000 ||
 		qcsbl.HeaderSize != smallPageSize || qcsbl.BlockSize != smallEraseBlockSize ||
-		qcsbl.UsedSize != 0x1504 {
+		qcsbl.LoadAddress != 0x00080000 || qcsbl.EntryOffset != 0x0fd8 ||
+		qcsbl.UsedSize != 0x1504 || !qcsbl.PBLPreload ||
+		!reflect.DeepEqual(qcsbl.PBLBytePatches, []BootImageBytePatch{{
+			Offset: 0x240, Expected: 0xd8, Value: 0xa0,
+		}}) {
 		t.Fatalf("SCH-W270 QCSBL = %+v", qcsbl)
 	}
 	oemsbl, ok := w270.BootImage("oemsbl")
 	if !ok || len(oemsbl.BlockOffsets) != 23 || oemsbl.BlockOffsets[0] != 0x80000 ||
-		oemsbl.BlockOffsets[len(oemsbl.BlockOffsets)-1] != 0xd8000 {
+		oemsbl.BlockOffsets[len(oemsbl.BlockOffsets)-1] != 0xd8000 ||
+		oemsbl.LoadAddress != 0x03d9c000 || oemsbl.EntryOffset != 0x0a1e {
 		t.Fatalf("SCH-W270 OEMSBL = %+v", oemsbl)
 	}
 	pbl, ok := w270.MemoryImage("pbl-rom")
-	if !ok || pbl.Size != 0x42f0 || pbl.LoadAddress != 0x00101000 {
+	if !ok || pbl.Size != 0x42f0 || pbl.LoadAddress != 0x03d4c000 ||
+		len(pbl.PBLBytePatches) != 14 {
 		t.Fatalf("SCH-W270 PBL ROM = %+v", pbl)
 	}
 }
@@ -226,6 +242,21 @@ func TestReconstructMemoryImageReadsExactVerifiedRange(t *testing.T) {
 	}
 	if image.LoadAddress != spec.LoadAddress || !bytes.Equal(image.Bytes, wbt[:32]) {
 		t.Fatalf("reconstructed memory image = %+v", image)
+	}
+	patchedSpec := spec
+	patchedSpec.PBLBytePatches = []BootImageBytePatch{{
+		Offset: 3, Expected: wbt[3], Value: wbt[3] ^ 0xff,
+	}}
+	patched, err := ReconstructMemoryImage(set, pkg, patchedSpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if patched.Bytes[3] != wbt[3]^0xff {
+		t.Fatalf("PBL-patched memory byte = 0x%02x", patched.Bytes[3])
+	}
+	patchedSpec.PBLBytePatches[0].Expected ^= 0xff
+	if _, err := ReconstructMemoryImage(set, pkg, patchedSpec); err == nil {
+		t.Fatal("ReconstructMemoryImage accepted the wrong PBL patch preimage")
 	}
 	spec.LogicalSHA256 = fmt.Sprintf("%064d", 1)
 	if _, err := ReconstructMemoryImage(set, pkg, spec); err == nil {

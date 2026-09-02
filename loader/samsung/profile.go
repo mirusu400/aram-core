@@ -62,12 +62,13 @@ type BootImageBytePatch struct {
 // MemoryImageSpec identifies a bounded, directly mapped image retained in a
 // firmware piece. Unlike BootImageSpec it has no per-erase-block framing.
 type MemoryImageSpec struct {
-	ID            string
-	Role          Role
-	SourceOffset  uint64
-	Size          uint32
-	LoadAddress   uint32
-	LogicalSHA256 string
+	ID             string
+	Role           Role
+	PBLBytePatches []BootImageBytePatch
+	SourceOffset   uint64
+	Size           uint32
+	LoadAddress    uint32
+	LogicalSHA256  string
 }
 
 func (s MemoryImageSpec) validate() error {
@@ -80,6 +81,16 @@ func (s MemoryImageSpec) validate() error {
 	if s.Size == 0 || uint64(s.LoadAddress)+uint64(s.Size) > 1<<32 ||
 		s.SourceOffset > ^uint64(0)-uint64(s.Size) {
 		return fmt.Errorf("memory image %q has invalid geometry", s.ID)
+	}
+	seenPatchOffsets := make(map[uint32]struct{}, len(s.PBLBytePatches))
+	for _, patch := range s.PBLBytePatches {
+		if patch.Offset >= s.Size || patch.Expected == patch.Value {
+			return fmt.Errorf("memory image %q has invalid PBL byte patch at 0x%x", s.ID, patch.Offset)
+		}
+		if _, duplicate := seenPatchOffsets[patch.Offset]; duplicate {
+			return fmt.Errorf("memory image %q repeats PBL byte patch at 0x%x", s.ID, patch.Offset)
+		}
+		seenPatchOffsets[patch.Offset] = struct{}{}
 	}
 	if err := validateSHA256(s.LogicalSHA256); err != nil {
 		return fmt.Errorf("memory image %q: %w", s.ID, err)
@@ -437,9 +448,12 @@ func schW410CL10Profile() BuildProfile {
 type schRawBootProfile struct {
 	PageSize, EraseBlockSize uint32
 	OEMSBLBlockOffsets       []int64
+	OEMSBLLoadAddress        uint32
+	OEMSBLEntryOffset        uint32
 	OEMSBLUsedSize           uint32
 	OEMSBLLogicalSHA256      string
 	QCSBLBlockOffsets        []int64
+	QCSBLEntryOffset         uint32
 	QCSBLUsedSize            uint32
 	QCSBLLogicalSHA256       string
 	PBLSourceOffset          uint64
@@ -454,7 +468,11 @@ func schRawDownloadProfile(
 ) BuildProfile {
 	// These older version-one packages store the four downloader payloads
 	// without the later 128 KiB signed wrapper. Their SBL blocks retain the
-	// same 2 KiB page framing, but unused logical bytes are zero-filled.
+	// profiled NAND-page framing, but unused logical bytes are zero-filled.
+	oemsblLoadAddress := boot.OEMSBLLoadAddress
+	if oemsblLoadAddress == 0 {
+		oemsblLoadAddress = 0x000a0000
+	}
 	return BuildProfile{
 		ID: id, Family: FamilySCHRawDownload, Manufacturer: "Samsung",
 		Model: model, Build: build, PieceHashes: pieceHashes,
@@ -464,7 +482,7 @@ func schRawDownloadProfile(
 				BlockOffsets: append([]int64(nil), boot.OEMSBLBlockOffsets...),
 				BlockMarker:  [8]byte{0x9c, 0x12, 0x0f, 0xfa, 0xc9, 0xb6, 0x8f, 0x5a},
 				HeaderSize:   boot.PageSize, BlockSize: boot.EraseBlockSize,
-				LoadAddress: 0x000a0000, EntryOffset: 0,
+				LoadAddress: oemsblLoadAddress, EntryOffset: boot.OEMSBLEntryOffset,
 				UsedSize: boot.OEMSBLUsedSize, LogicalSHA256: boot.OEMSBLLogicalSHA256,
 			},
 			{
@@ -472,7 +490,7 @@ func schRawDownloadProfile(
 				BlockOffsets: append([]int64(nil), boot.QCSBLBlockOffsets...),
 				BlockMarker:  [8]byte{0xdf, 0x5d, 0xe8, 0x5f, 0xbc, 0xce, 0x64, 0x52},
 				HeaderSize:   boot.PageSize, BlockSize: boot.EraseBlockSize,
-				LoadAddress: 0x00080000, EntryOffset: 0,
+				LoadAddress: 0x00080000, EntryOffset: boot.QCSBLEntryOffset,
 				UsedSize: boot.QCSBLUsedSize, LogicalSHA256: boot.QCSBLLogicalSHA256,
 			},
 		},
@@ -505,6 +523,7 @@ func schW300DA04Profile() BuildProfile {
 	)
 	boot.QCSBLUsedSize = 0x000089a3
 	boot.QCSBLLogicalSHA256 = "a88fbca03f96da15c9577a2a4f01f28e424670b7d851a627109828de378c8a3b"
+	boot.OEMSBLEntryOffset = 0x000005e4
 	return schRawDownloadProfile(
 		SCHW300DA04ProfileID,
 		"SCH-W300",
@@ -526,6 +545,7 @@ func schW420CD16Profile() BuildProfile {
 	)
 	boot.QCSBLUsedSize = 0x000081bf
 	boot.QCSBLLogicalSHA256 = "e501bbe2fb888d46271e6e83b3fad03dc6750a520c02358fa816abef3b02a4c4"
+	boot.OEMSBLEntryOffset = 0x000009a0
 	return schRawDownloadProfile(
 		SCHW420CD16ProfileID,
 		"SCH-W420",
@@ -544,13 +564,16 @@ func schW270CL28Profile() BuildProfile {
 	boot := schRawBootProfile{
 		PageSize: smallPageSize, EraseBlockSize: smallEraseBlockSize,
 		OEMSBLBlockOffsets:  schRawBlockOffsets(0x00080000, 23, smallEraseBlockSize),
+		OEMSBLLoadAddress:   0x03d9c000,
+		OEMSBLEntryOffset:   0x00000a1e,
 		OEMSBLUsedSize:      0x0005801c,
 		OEMSBLLogicalSHA256: "f1ecd3b23fd8cb48ff299ee447b7af963bc483247446ee1cad70f778ea369130",
 		QCSBLBlockOffsets:   []int64{0x00040000},
+		QCSBLEntryOffset:    0x00000fd8,
 		QCSBLUsedSize:       0x00001504,
 		QCSBLLogicalSHA256:  "c66591cfd5d5654645c15d9a6e5e9e294266a1db5d67e9b3c9cb9cfe3aa26e4d",
 		PBLSize:             0x000042f0,
-		PBLLoadAddress:      0x00101000,
+		PBLLoadAddress:      0x03d4c000,
 		PBLLogicalSHA256:    "c744059da2a0ae138fa4e5b753c348a5070dc9b52f1537f1497a04b844f6453e",
 	}
 	profile := schRawDownloadProfile(
@@ -565,8 +588,48 @@ func schW270CL28Profile() BuildProfile {
 		},
 		boot,
 	)
+	for index := range profile.BootImages {
+		if profile.BootImages[index].ID != "qcsbl" {
+			continue
+		}
+		profile.BootImages[index].PBLPreload = true
+		profile.BootImages[index].PBLBytePatches = littleEndianWordBytePatches(
+			0x00000240, 0x03d4cfd8, 0x03d4cfa0,
+		)
+	}
+	profile.MemoryImages[0].PBLBytePatches = append(
+		profile.MemoryImages[0].PBLBytePatches,
+		littleEndianWordBytePatches(0x000014b0, 0x00007f00, 0x03d4b008)...,
+	)
+	profile.MemoryImages[0].PBLBytePatches = append(
+		profile.MemoryImages[0].PBLBytePatches,
+		littleEndianWordBytePatches(0x000014b4, 0x00000008, 0x03d4b000)...,
+	)
+	profile.MemoryImages[0].PBLBytePatches = append(
+		profile.MemoryImages[0].PBLBytePatches,
+		littleEndianWordBytePatches(0x000014b8, 0x00008000, 0x03d4b004)...,
+	)
+	profile.MemoryImages[0].PBLBytePatches = append(
+		profile.MemoryImages[0].PBLBytePatches,
+		littleEndianWordBytePatches(0x000014e4, 0x00000000, 0x78002000)...,
+	)
 	profile.WBINFormat = WBINFormatOpaque
 	return profile
+}
+
+func littleEndianWordBytePatches(offset, expected, value uint32) []BootImageBytePatch {
+	patches := make([]BootImageBytePatch, 0, 4)
+	for index := uint32(0); index < 4; index++ {
+		expectedByte := byte(expected >> (index * 8))
+		valueByte := byte(value >> (index * 8))
+		if expectedByte == valueByte {
+			continue
+		}
+		patches = append(patches, BootImageBytePatch{
+			Offset: offset + index, Expected: expectedByte, Value: valueByte,
+		})
+	}
+	return patches
 }
 
 func schRawBlockOffsets(start int64, count int, blockSize uint32) []int64 {
@@ -703,6 +766,11 @@ func cloneProfile(profile BuildProfile) BuildProfile {
 		)
 	}
 	clone.MemoryImages = append([]MemoryImageSpec(nil), profile.MemoryImages...)
+	for index := range clone.MemoryImages {
+		clone.MemoryImages[index].PBLBytePatches = append(
+			[]BootImageBytePatch(nil), profile.MemoryImages[index].PBLBytePatches...,
+		)
+	}
 	return clone
 }
 
@@ -759,6 +827,15 @@ func ReconstructMemoryImage(
 			"memory image %q SHA-256 %s does not match profile %s",
 			spec.ID, digestText, spec.LogicalSHA256,
 		)
+	}
+	for _, patch := range spec.PBLBytePatches {
+		if data[patch.Offset] != patch.Expected {
+			return MemoryImage{}, fmt.Errorf(
+				"memory image %q PBL byte at 0x%x is 0x%02x, want 0x%02x",
+				spec.ID, patch.Offset, data[patch.Offset], patch.Expected,
+			)
+		}
+		data[patch.Offset] = patch.Value
 	}
 	return MemoryImage{
 		ID: spec.ID, LoadAddress: spec.LoadAddress,

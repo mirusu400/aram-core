@@ -23,6 +23,9 @@ func TestSCHW830BoardProfileAppliesEvidenceBackedIRAM(t *testing.T) {
 	if profile.NANDSize != 0x10000000 {
 		t.Fatalf("SCH-W830 NAND size = %#x", profile.NANDSize)
 	}
+	if profile.NANDPageSize != 0x800 || profile.NANDEraseBlockSize != 0x20000 {
+		t.Fatalf("SCH-W830 NAND geometry = %#x/%#x", profile.NANDPageSize, profile.NANDEraseBlockSize)
+	}
 	if len(profile.NANDFactoryBadBlocks) != 0 {
 		t.Fatalf("SCH-W830 factory bad blocks = %#v", profile.NANDFactoryBadBlocks)
 	}
@@ -654,25 +657,45 @@ func TestRawSamsungBoardProfilesKeepExactIdentityAndPackagedEnd(t *testing.T) {
 		profile          BoardProfile
 		id, build        string
 		packagedEnd      uint64
+		page, erase      uint32
 		reportErasedECC  bool
 		extraInitialData []FlashSeed
 	}{
 		{
 			profile: SCHW320DC18BoardProfile(), id: "samsung.sch-w320",
-			build: "samsung.sch-w320.dc18", packagedEnd: 0x0a760000, reportErasedECC: true,
+			build: "samsung.sch-w320.dc18", packagedEnd: 0x0a760000,
+			page: 0x800, erase: 0x20000, reportErasedECC: true,
 		},
 		{
 			profile: SCHW340DC18BoardProfile(), id: "samsung.sch-w340",
-			build: "samsung.sch-w340.dc18", packagedEnd: 0x08800000, reportErasedECC: true,
+			build: "samsung.sch-w340.dc18", packagedEnd: 0x08800000,
+			page: 0x800, erase: 0x20000, reportErasedECC: true,
 		},
 		{
 			profile: SCHW350CK06BoardProfile(), id: "samsung.sch-w350",
 			build: "samsung.sch-w350.ck06", packagedEnd: 0x08f80000,
+			page: 0x800, erase: 0x20000,
 			extraInitialData: []FlashSeed{{Offset: 0x019a0004, Data: []byte{0}}},
 		},
 		{
 			profile: SCHW410CL10BoardProfile(), id: "samsung.sch-w410",
-			build: "samsung.sch-w410.cl10", packagedEnd: 0x09100000, reportErasedECC: true,
+			build: "samsung.sch-w410.cl10", packagedEnd: 0x09100000,
+			page: 0x800, erase: 0x20000, reportErasedECC: true,
+		},
+		{
+			profile: SCHW300DA04BoardProfile(), id: "samsung.sch-w300",
+			build: "samsung.sch-w300.da04", packagedEnd: 0x085c0000,
+			page: 0x800, erase: 0x20000, reportErasedECC: true,
+		},
+		{
+			profile: SCHW420CD16BoardProfile(), id: "samsung.sch-w420",
+			build: "samsung.sch-w420.cd16", packagedEnd: 0x0d5c0000,
+			page: 0x800, erase: 0x20000, reportErasedECC: true,
+		},
+		{
+			profile: SCHW270CL28BoardProfile(), id: "samsung.sch-w270",
+			build: "samsung.sch-w270.cl28", packagedEnd: 0x08c80000,
+			page: 0x200, erase: 0x4000, reportErasedECC: true,
 		},
 	}
 	for _, test := range tests {
@@ -682,6 +705,7 @@ func TestRawSamsungBoardProfilesKeepExactIdentityAndPackagedEnd(t *testing.T) {
 		if test.profile.ID != test.id || test.profile.FirmwareBuildID != test.build ||
 			test.profile.PlatformID != "qualcomm.arm9-sch-raw-v1" ||
 			test.profile.NANDReadID != 0x000098ca || test.profile.NANDSize != 0x10000000 ||
+			test.profile.NANDPageSize != test.page || test.profile.NANDEraseBlockSize != test.erase ||
 			test.profile.NANDReportsErasedECCCodewords != test.reportErasedECC ||
 			test.profile.OneNAND != nil || test.profile.PBLLegacyFeatureDataAddress != 0xffff6044 {
 			t.Fatalf("raw Samsung board profile = %+v", test.profile)
@@ -739,14 +763,101 @@ func TestRawSamsungBoardProfilesKeepExactIdentityAndPackagedEnd(t *testing.T) {
 	}
 }
 
-func TestSCHW320AndW340UseAddressBitSevenPanel(t *testing.T) {
-	for _, profile := range []BoardProfile{SCHW320DC18BoardProfile(), SCHW340DC18BoardProfile()} {
+func TestRawSamsungAddressBitSevenPanelsStayProfiled(t *testing.T) {
+	for _, profile := range []BoardProfile{
+		SCHW300DA04BoardProfile(),
+		SCHW320DC18BoardProfile(),
+		SCHW340DC18BoardProfile(),
+	} {
 		if profile.Panel.Protocol != ParallelPanelProtocolIndexedRGB565Window454647 ||
 			profile.PanelPorts == nil ||
 			profile.PanelPorts.CommandAddress != 0x20000000 ||
 			profile.PanelPorts.DataAddress != 0x20000080 {
 			t.Fatalf("%s panel = %+v / %+v", profile.ID, profile.Panel, profile.PanelPorts)
 		}
+	}
+}
+
+func TestSCHW270SelectsMappedQCSBLStackRevision(t *testing.T) {
+	profile := SCHW270CL28BoardProfile()
+	if profile.PBLStackPointer != 0x03f40000 {
+		t.Fatalf("SCH-W270 PBL stack = %#x", profile.PBLStackPointer)
+	}
+	wantFixedFeatures := []QualcommPBLFixedFeature{
+		{Selector: 0xf9, Value: 0x20},
+		{Selector: 0xfa, Value: 0x200},
+		{Selector: 0xfc, Value: 0x4000},
+		{Selector: 0xfd, Value: 0x14},
+	}
+	if profile.PBLFixedFeatureDataAddress != 0x78002000 ||
+		profile.PBLFixedFeatureFirst != 0xf9 || profile.PBLFixedFeatureSlotCount != 5 ||
+		!reflect.DeepEqual(profile.PBLFixedFeatures, wantFixedFeatures) {
+		t.Fatalf(
+			"SCH-W270 fixed PBL features = %#x/%#x/%#x/%+v",
+			profile.PBLFixedFeatureDataAddress,
+			profile.PBLFixedFeatureFirst,
+			profile.PBLFixedFeatureSlotCount,
+			profile.PBLFixedFeatures,
+		)
+	}
+	wantHLECalls := []HLECallProfile{
+		{
+			ID: "w270-pbl-nand-read", Contract: HLEContractQualcommPBLNANDRead,
+			Address: 0x03d4b000, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+		},
+		{
+			ID: "w270-pbl-fatal", Contract: HLEContractQualcommPBLFatal,
+			Address: 0x03d4b004, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+		},
+		{
+			ID: "w270-pbl-nand-bad-block", Contract: HLEContractQualcommPBLNANDBadBlock,
+			Address: 0x03d4b008, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+		},
+	}
+	if !reflect.DeepEqual(profile.HLECalls, wantHLECalls) {
+		t.Fatalf("SCH-W270 retained PBL HLE calls = %+v", profile.HLECalls)
+	}
+	found := false
+	pblFuseStatus := make(map[uint32]bool)
+	stackLatches := make(map[uint32]bool)
+	pblClockLatches := make(map[uint32]bool)
+	foundRuntimeData := false
+	for _, register := range profile.BootControlReadOnlyRegisters {
+		found = found || register == (QualcommBootReadOnlyRegister{Offset: 0x0270, Value: 1})
+		if register.Offset >= 0x53b8 && register.Offset <= 0x53d0 &&
+			(register.Offset == 0x53b8 && register.Value == 2 ||
+				register.Offset != 0x53b8 && register.Value == 0) {
+			pblFuseStatus[register.Offset] = true
+		}
+	}
+	for _, offset := range profile.BootControlWritableOffsets {
+		if offset >= 0x0018 && offset <= 0x0024 {
+			stackLatches[offset] = true
+		}
+		if offset == 0x0a1c || offset == 0x0a2c {
+			pblClockLatches[offset] = true
+		}
+	}
+	for _, region := range profile.Memory {
+		foundRuntimeData = foundRuntimeData || region == (MemoryRegionProfile{
+			ID: "w270-pbl-runtime-data", Kind: MemoryRAM,
+			Address: 0x7f000000, Size: 0x1000,
+		})
+	}
+	if !found {
+		t.Fatal("SCH-W270 profile lacks QCSBL stack-selection revision")
+	}
+	if len(pblFuseStatus) != 7 {
+		t.Fatalf("SCH-W270 PBL fuse/status words = %#v", pblFuseStatus)
+	}
+	if len(stackLatches) != 4 {
+		t.Fatalf("SCH-W270 QCSBL stack latches = %#v", stackLatches)
+	}
+	if len(pblClockLatches) != 2 {
+		t.Fatalf("SCH-W270 PBL clock latches = %#v", pblClockLatches)
+	}
+	if !foundRuntimeData {
+		t.Fatal("SCH-W270 profile lacks PBL runtime-data memory")
 	}
 }
 
@@ -1034,6 +1145,35 @@ func TestBoardProfileRejectsInvalidNANDInitialData(t *testing.T) {
 		if err := profile.Validate(); err == nil {
 			t.Fatalf("accepted invalid NAND initial data %#v", initialData)
 		}
+	}
+}
+
+func TestBoardProfileRejectsInvalidNANDGeometry(t *testing.T) {
+	for _, mutate := range []func(*BoardProfile){
+		func(profile *BoardProfile) { profile.NANDPageSize = 0 },
+		func(profile *BoardProfile) { profile.NANDEraseBlockSize = 0 },
+		func(profile *BoardProfile) { profile.NANDPageSize = 0x300 },
+		func(profile *BoardProfile) { profile.NANDEraseBlockSize = 0x400 },
+		func(profile *BoardProfile) { profile.NANDEraseBlockSize = 0x21000 },
+		func(profile *BoardProfile) { profile.NANDSize++ },
+		func(profile *BoardProfile) { profile.NANDSize = 0 },
+	} {
+		profile := SCHW830DL21BoardProfile()
+		mutate(&profile)
+		if err := profile.Validate(); err == nil {
+			t.Fatalf(
+				"accepted invalid NAND geometry size=%#x page=%#x erase=%#x",
+				profile.NANDSize, profile.NANDPageSize, profile.NANDEraseBlockSize,
+			)
+		}
+	}
+}
+
+func TestBoardProfileRejectsUnalignedPBLStackPointer(t *testing.T) {
+	profile := SCHW270CL28BoardProfile()
+	profile.PBLStackPointer++
+	if err := profile.Validate(); err == nil {
+		t.Fatalf("accepted unaligned PBL stack pointer %#x", profile.PBLStackPointer)
 	}
 }
 

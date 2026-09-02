@@ -807,3 +807,23 @@ func TestQualcommNANDExposesAndResetsExplicitControllerConfiguration(t *testing.
 		t.Fatalf("invalid NAND controller configuration error = %v", err)
 	}
 }
+
+func TestQualcomm8BitNANDConfigCarriesSmallPageGeometry(t *testing.T) {
+	config := Qualcomm8BitNANDConfig(0x200, 0x4000, 0x98ca, NewStatusSignal())
+	if config.PageSize != 0x200 || config.EraseBlockSize != 0x4000 ||
+		config.ReadID != 0x98ca || config.DeviceConfig0 == 0 ||
+		config.DeviceConfig0&0x00000800 != 0 ||
+		config.DeviceConfig1 == 0 || config.CommandValidity == 0 {
+		t.Fatalf("small-page NAND config = %+v", config)
+	}
+	device, err := NewQualcommNAND(
+		byteStorage{data: bytes.Repeat([]byte{0xff}, int(config.EraseBlockSize))},
+		config,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(device.pageData) != 0x200 || device.pagesPerEraseBlock != 0x20 {
+		t.Fatalf("small-page NAND device geometry = %#x/%#x", len(device.pageData), device.pagesPerEraseBlock)
+	}
+}

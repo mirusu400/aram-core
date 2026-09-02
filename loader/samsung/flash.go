@@ -373,7 +373,9 @@ func reconstructBootBlocks(
 	// erased predecessor as a factory-bad NAND block.
 	eraseBlockSize := uint64(layout.EraseBlockSize)
 	target := physicalBlockForLogical(1, badBlocks) * eraseBlockSize
-	if source > uint64(len(data))-eraseBlockSize || target > uint64(len(data))-eraseBlockSize {
+	if uint64(len(data)) < eraseBlockSize ||
+		source > uint64(len(data))-eraseBlockSize ||
+		target > uint64(len(data))-eraseBlockSize {
 		return nil, fmt.Errorf("%w: selected MIBIB placement exceeds WBT payload", ErrInvalidFlashLayout)
 	}
 	copy(data[target:target+eraseBlockSize], data[source:source+eraseBlockSize])
