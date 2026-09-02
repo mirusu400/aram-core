@@ -819,7 +819,7 @@ func (r *Runtime) RunTaskSlice(
 					"()V",
 				); err != nil {
 					run.Reason = cpu.StopFault
-					run.Err = err
+					run.Err = fmt.Errorf("queue KTF main layout: %w", err)
 					return run
 				}
 				r.tracef(

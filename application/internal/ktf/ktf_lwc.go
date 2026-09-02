@@ -1471,6 +1471,9 @@ func (r *Runtime) notifyCardShown(
 	}
 	if r.DeferThreads {
 		_, err := r.queueJavaVirtualTask(card, "showNotify", "(Z)V", value)
+		if err != nil {
+			err = fmt.Errorf("queue KTF card showNotify: %w", err)
+		}
 		return err
 	}
 	_, err := r.invokeJavaVirtual(ctx, card, "showNotify", "(Z)V", value)
@@ -1498,6 +1501,15 @@ func (r *Runtime) paintCard(ctx context.Context, card uint32) error {
 		r.tracef("java_paint_coalesce:card=0x%08x", card)
 		return nil
 	}
+	if r.DeferThreads && !r.HasJavaTaskCapacity() {
+		// Every task slot is taken by a thread the title started, and most of
+		// them are asleep with a deadline a few milliseconds out. Leaving the
+		// card dirty paints it on a later quantum, once one of them retires;
+		// failing here killed the title instead. 스파이더맨3 starts sixteen
+		// threads before its first frame and died on launch.
+		r.tracef("java_paint_defer_capacity:card=0x%08x", card)
+		return nil
+	}
 	delete(r.PaintTasks, card)
 	delete(r.dirtyCards, card)
 	graphics, err := r.EnsureScreenGraphics()
@@ -1516,7 +1528,7 @@ func (r *Runtime) paintCard(ctx context.Context, card uint32) error {
 			graphics,
 		)
 		if err != nil {
-			return err
+			return fmt.Errorf("queue KTF card paint: %w", err)
 		}
 		task.presentOnReturn = true
 		task.paintCard = card
