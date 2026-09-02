@@ -350,3 +350,60 @@ func TestNativeBranchLinkSpansFourBytes(t *testing.T) {
 			"(the second halfword of BL is outside the translated-code span)", got)
 	}
 }
+
+// TestNativeTLBSurvivesACPSRWriteThatKeepsTheMode pins the cost fix for issue
+// #93. Writing the CPSR used to empty the whole 32768-entry table, but only the
+// processor mode can invalidate a cached translation: under the MMU it is the
+// privilege level that decides a page's permissions, while the flags, the
+// Thumb bit and the interrupt masks describe execution only.
+//
+// A KTF title writes the CPSR on every host-call return. 귀혼무사편 makes enough
+// of them that the sweep was 70% of its entire run time on the native tier -
+// the title ran at a quarter of real time, and the "fastest core" setting
+// picked exactly that backend.
+func TestNativeTLBSurvivesACPSRWriteThatKeepsTheMode(t *testing.T) {
+	backend := nativeBackend(t)
+	if err := backend.Map(0x1000, tlbPageSize*2,
+		cpu.PermissionRead|cpu.PermissionWrite); err != nil {
+		t.Fatal(err)
+	}
+	// Install the page the way the interpreter's memory path does after a
+	// successful guest access. This is a white-box test of the invalidation
+	// policy, so priming it directly keeps the guest program out of it.
+	region := make([]byte, tlbPageSize*2)
+	backend.tlbNote(0x1000, 0x1000, region, cpu.PermissionRead|cpu.PermissionWrite)
+	if !backend.tlbHit(0x1000, cpu.PermissionRead) {
+		t.Fatal("the read half did not cache the page")
+	}
+
+	mode := uint32(processorModeSystem)
+	if err := backend.WriteRegister(cpu.RegisterCPSR, mode); err != nil {
+		t.Fatal(err)
+	}
+	if !backend.tlbHit(0x1000, cpu.PermissionRead) {
+		t.Fatal("entering the mode already selected dropped the cached page")
+	}
+	// Flags and the Thumb bit change execution, not translation; 1<<29 is the
+	// architectural C flag.
+	if err := backend.WriteRegister(
+		cpu.RegisterCPSR,
+		mode|cpu.StatusThumb|(1<<29),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if !backend.tlbHit(0x1000, cpu.PermissionRead) {
+		t.Fatal("a flag-only CPSR write dropped the cached page")
+	}
+
+	// A real mode change must still empty the table: the privilege level it
+	// selects is what a page's permissions are resolved against.
+	if err := backend.WriteRegister(
+		cpu.RegisterCPSR,
+		uint32(processorModeUser)|cpu.StatusThumb,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if backend.tlbHit(0x1000, cpu.PermissionRead) {
+		t.Fatal("switching the processor mode kept a cached translation")
+	}
+}

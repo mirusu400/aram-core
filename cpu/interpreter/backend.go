@@ -758,6 +758,15 @@ func (b *Backend) writeRegisterLocked(id, value uint32) error {
 		newMode, newValid := decodeProcessorMode(value & processorModeMask)
 		if oldValid && newValid && oldMode != newMode {
 			b.switchProcessorMode(oldMode, newMode)
+			// Only the processor mode can invalidate a cached translation:
+			// under the MMU the privilege level it selects is what decides a
+			// page's permissions. The rest of the CPSR - the flags, the Thumb
+			// bit, the interrupt masks - describes execution, not address
+			// translation, so clearing on every write emptied a 32768-entry
+			// table for nothing. A KTF title writes the CPSR on every host
+			// call return, and 귀혼무사편 makes enough of them that the sweep
+			// was 70% of its whole run time on the native tier (issue #93).
+			b.tlbClear()
 		}
 		b.regs[id] = value
 		if value&cpu.StatusThumb != 0 {
@@ -766,7 +775,6 @@ func (b *Backend) writeRegisterLocked(id, value uint32) error {
 			b.mode = cpu.ModeARM
 		}
 		b.invalidateInstructionWindow()
-		b.tlbClear()
 	} else {
 		b.regs[id] = value
 	}
