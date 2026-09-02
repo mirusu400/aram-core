@@ -397,16 +397,35 @@ func (r *Runtime) HasJavaTaskCapacity() bool {
 // queueKeyEvent posts one handset key event to the card currently on the
 // primary display. Returning false means the event must remain in Machine's
 // input queue until a card or a task slot becomes available.
-func (r *Runtime) QueueKeyEvent(pressed bool, key int32) (bool, error) {
+// CanQueueKeyEvent reports whether a key event handed to the runtime now would
+// reach the card, rather than bouncing off a busy paint or key task.
+//
+// The machine consults this before it moves an input off its own queue and on
+// to the shared event bus. That matters because the bus is strictly ordered
+// and DrainServiceEvents leaves an undeliverable input at the head to retry:
+// an input that reaches the bus and then cannot be delivered blocks every
+// later event behind it, including the per-quantum lifecycle records nothing
+// else consumes, until the queue hits its thousand-event limit and the machine
+// faults with "event queue reached 1024". Keeping the two checks identical is
+// what stops the bus from ever holding an input it cannot deliver.
+func (r *Runtime) CanQueueKeyEvent() bool {
 	card := r.DisplayCards[r.DefaultDisplay]
 	if card == 0 || r.pendingKeyTask(card) != nil ||
 		r.pendingWIPICTimerTask() != nil ||
 		!r.HasJavaTaskCapacity() {
-		return false, nil
+		return false
 	}
 	if task := r.PaintTasks[card]; task != nil && !task.Done {
+		return false
+	}
+	return true
+}
+
+func (r *Runtime) QueueKeyEvent(pressed bool, key int32) (bool, error) {
+	if !r.CanQueueKeyEvent() {
 		return false, nil
 	}
+	card := r.DisplayCards[r.DefaultDisplay]
 	eventType := KeyReleased
 	if pressed {
 		eventType = KeyPressed

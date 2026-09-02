@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	ktfrt "github.com/mirusu400/aram-core/application/internal/ktf"
 	machinecore "github.com/mirusu400/aram-core/core"
 	"github.com/mirusu400/aram-core/cpu"
 	"github.com/mirusu400/aram-core/cpu/interpreter"
@@ -150,6 +151,121 @@ func TestKTFPresentsPerQuantumStaysUnderTheJavaTaskLimit(t *testing.T) {
 			"presents per quantum = %d; eight already overflows the Java task "+
 				"table in 스파이더맨3",
 			ktfPresentsPerQuantumMax,
+		)
+	}
+}
+
+// TestKTFInputStaysOffTheBusUntilTheCardCanTakeIt covers the regression the
+// wider presentation quantum exposed. The shared event bus is strictly
+// ordered and DrainServiceEvents leaves an input it cannot deliver at the
+// head to retry, so an input that reaches the bus while the card is busy
+// blocks every later event behind it - including the two lifecycle records
+// each quantum writes and nothing consumes. 영웅서기1 filled the thousand-event
+// queue that way in about five hundred frames and faulted with
+// "event queue reached 1024". The machine's own gate must therefore ask
+// exactly what the delivery path asks.
+func TestKTFInputStaysOffTheBusUntilTheCardCanTakeIt(t *testing.T) {
+	machine := newKTFQuantumMachine(t)
+	runtime := machine.ktf
+
+	// No display card yet: nothing may be handed to the bus.
+	if runtime.CanQueueKeyEvent() {
+		t.Fatal("a key event was accepted with no card on the display")
+	}
+	queued, err := runtime.QueueKeyEvent(true, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued {
+		t.Fatal("QueueKeyEvent accepted a key with no card on the display")
+	}
+
+	// The two must never disagree: QueueKeyEvent is the delivery path and
+	// CanQueueKeyEvent is what the machine gates on, so a state that one
+	// accepts and the other refuses is what strands an input at the head of
+	// the queue.
+	if runtime.CanQueueKeyEvent() != func() bool {
+		accepted, queueErr := runtime.QueueKeyEvent(true, 1)
+		if queueErr != nil {
+			t.Fatal(queueErr)
+		}
+		return accepted
+	}() {
+		t.Fatal("CanQueueKeyEvent disagrees with QueueKeyEvent")
+	}
+}
+
+// heroSagaOneSHA256 identifies the shipped 영웅서기1 package. It repaints hard
+// enough that its card is busy for most of a wider quantum, which is what made
+// it the title that caught the input regression below.
+const heroSagaOneSHA256 = "ead25bc6ffa7777862328ba6fa057911645d69ad47c2e8d922a1d545a1728d2d"
+
+// TestKTFWiderQuantumStillDeliversInput is the test the corpus probe sweep
+// cannot be: a probe barely presses anything, so it saw nothing wrong when the
+// wider presentation quantum first landed. Offering input only once at the top
+// of a quantum that now carries several frames left 영웅서기1's card busy every
+// time it was asked, and the machine either stranded every key or filled the
+// shared event queue with the lifecycle records piling up behind the stuck
+// one and faulted with "event queue reached 1024".
+func TestKTFWiderQuantumStillDeliversInput(t *testing.T) {
+	path, data := findAuthorizedPackage(t, heroSagaOneSHA256)
+
+	factory := NewFactory()
+	factory.NewCPU = func() cpu.Backend { return interpreter.New() }
+	factory.RunBudget = DefaultKTFHandsetRunBudget
+	factory.KTFRunBudget = DefaultKTFHandsetRunBudget
+	factory.FrameRunBudget = DefaultKTFHandsetRunBudget
+	created, err := factory.Create(context.Background(), machinecore.Source{
+		Name:     filepath.Base(path),
+		ReaderAt: bytes.NewReader(data),
+		Size:     int64(len(data)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	machine := created.(*Machine)
+	t.Cleanup(func() { _ = machine.Close() })
+	if err := machine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.ktf.SetTraceMode(ktfrt.KTFTraceFull); err != nil {
+		t.Fatal(err)
+	}
+
+	const (
+		frames    = 1200
+		firstPunt = 200
+		every     = 40
+	)
+	posted, delivered := 0, 0
+	for frame := 0; frame < frames; frame++ {
+		if frame >= firstPunt && frame%every == 0 {
+			for _, pressed := range []bool{true, false} {
+				if err := machine.QueueInput(machinecore.InputEvent{
+					Control: "ok",
+					Pressed: pressed,
+				}); err != nil {
+					t.Fatal(err)
+				}
+				posted++
+			}
+		}
+		if err := machine.StepFrame(context.Background()); err != nil {
+			t.Fatalf("frame %d: %v", frame, err)
+		}
+		for _, entry := range machine.ktf.HostTrace {
+			if strings.Contains(entry, "java_key_event") {
+				delivered++
+			}
+		}
+		machine.ktf.HostTrace = machine.ktf.HostTrace[:0]
+	}
+	if delivered != posted {
+		t.Fatalf(
+			"delivered %d of %d posted key events (%d still queued)",
+			delivered,
+			posted,
+			len(machine.input),
 		)
 	}
 }

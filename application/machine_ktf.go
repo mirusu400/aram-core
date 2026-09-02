@@ -159,6 +159,19 @@ taskLoop:
 	for slices := 0; slices < ktfTaskSlicesPerQuantumMax &&
 		instructions < budget; slices++ {
 		remaining := budget - instructions
+		// Hand the guest any input it can now take. A quantum that carries
+		// several submitted frames keeps the card busy for most of its length,
+		// so offering input only once at the top of the quantum means a title
+		// whose paint task is almost always pending never sees a key at all.
+		if err := m.queueKTFInput(runtime); err != nil {
+			result = cpu.Result{
+				Reason:       cpu.StopFault,
+				PC:           result.PC,
+				Instructions: instructions,
+				Err:          err,
+			}
+			break
+		}
 		presentations := runtime.PresentCount
 		sliceResult := runtime.RunTaskSlice(ctx, remaining)
 		if sliceResult.Instructions > remaining {
@@ -333,8 +346,7 @@ func (m *Machine) queueKTFInput(runtime *ktfrt.Runtime) error {
 			continue
 		}
 		if _, known := guest.InputKeyCode(event.Control); known &&
-			(runtime.DisplayCards[runtime.DefaultDisplay] == 0 ||
-				!runtime.HasJavaTaskCapacity()) {
+			!runtime.CanQueueKeyEvent() {
 			break
 		}
 		if err := runtime.Services.QueueInput(
