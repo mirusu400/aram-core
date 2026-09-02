@@ -14,7 +14,8 @@ import (
 const (
 	ktfStateSchemaV2     = uint32(2)
 	ktfStateSchemaV3     = uint32(3)
-	ktfStateSchema       = uint32(4)
+	ktfStateSchemaV4     = uint32(4)
+	ktfStateSchema       = uint32(5)
 	maxKTFStateMetadata  = uint32(64 << 20)
 	maxKTFStateEntries   = 16_384
 	maxKTFStateHostCalls = int(HostSize / 4)
@@ -30,6 +31,7 @@ type SavedState struct {
 	incrementalHeaps   []ktfIncrementalHeapSnapshot
 	metadata           ktfMetadataSnapshot
 	taskWakeAtMS       []uint64
+	pendingTimers      []*ktfPendingTimer
 	WipicScreenPending bool
 	resolvedHostCalls  map[uint32]ktfHostCall
 }
@@ -519,6 +521,28 @@ func WriteState(r *Runtime, backend cpu.Backend, started bool, writer *guest.Sta
 		writer.U8(0)
 	}
 	writer.Write([]byte{0, 0, 0})
+	// A parked java.util.Timer schedule carries what its Task will be given
+	// once a slot frees. The pending-call snapshot has no room for it, so it
+	// travels alongside, one entry per pending call.
+	writer.U32(uint32(len(r.PendingJavaCalls)))
+	for _, call := range r.PendingJavaCalls {
+		if call.timer == nil {
+			writer.U8(0)
+			writer.Write([]byte{0, 0, 0})
+			continue
+		}
+		writer.U8(1)
+		if call.timer.fixedRate {
+			writer.U8(1)
+		} else {
+			writer.U8(0)
+		}
+		writer.Write([]byte{0, 0})
+		writer.U32(call.timer.owner)
+		writer.U64(call.timer.periodMS)
+		writer.U64(call.timer.deadlineMS)
+		writer.U64(call.timer.wakeAtMS)
+	}
 	return nil
 }
 
@@ -541,7 +565,7 @@ func ParseState(r *Runtime,
 	}
 	schema := decoder.U32()
 	if schema != ktfStateSchemaV2 && schema != ktfStateSchemaV3 &&
-		schema != ktfStateSchema {
+		schema != ktfStateSchemaV4 && schema != ktfStateSchema {
 		return nil, decoder.Fail(fmt.Sprintf("unsupported KTF state schema %d", schema))
 	}
 	owner := shared.OwnerID(decoder.U32())
@@ -629,7 +653,7 @@ func ParseState(r *Runtime,
 		}
 	}
 	var wipicScreenPending bool
-	if schema >= ktfStateSchema {
+	if schema >= ktfStateSchemaV4 {
 		pending := decoder.U8()
 		decoder.Reserved(3)
 		if pending > 1 {
@@ -640,6 +664,36 @@ func ParseState(r *Runtime,
 			return nil, decoder.Fail(
 				"pending KTF WIPI-C screen state has no framebuffer",
 			)
+		}
+	}
+	var pendingTimers []*ktfPendingTimer
+	if schema >= ktfStateSchema {
+		count := decoder.U32()
+		if count > maxKTFStateEntries ||
+			int(count) != len(metadata.PendingJavaCalls) {
+			return nil, decoder.Fail("KTF pending timer count differs")
+		}
+		pendingTimers = make([]*ktfPendingTimer, count)
+		for index := range pendingTimers {
+			present := decoder.U8()
+			fixedRate := decoder.U8()
+			decoder.Reserved(2)
+			if present > 1 || fixedRate > 1 {
+				return nil, decoder.Fail("invalid KTF pending timer state")
+			}
+			if present == 0 {
+				if fixedRate != 0 {
+					return nil, decoder.Fail("invalid KTF pending timer state")
+				}
+				continue
+			}
+			pendingTimers[index] = &ktfPendingTimer{
+				fixedRate: fixedRate != 0,
+			}
+			pendingTimers[index].owner = decoder.U32()
+			pendingTimers[index].periodMS = decoder.U64()
+			pendingTimers[index].deadlineMS = decoder.U64()
+			pendingTimers[index].wakeAtMS = decoder.U64()
 		}
 	}
 	resolvedCalls, err := resolveKTFHostCalls(r, metadata.HostCalls)
@@ -659,6 +713,7 @@ func ParseState(r *Runtime,
 		incrementalHeaps:   incremental,
 		metadata:           metadata,
 		taskWakeAtMS:       taskWakeAtMS,
+		pendingTimers:      pendingTimers,
 		WipicScreenPending: wipicScreenPending,
 		resolvedHostCalls:  resolvedCalls,
 	}, nil

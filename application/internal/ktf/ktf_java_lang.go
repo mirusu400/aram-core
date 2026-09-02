@@ -1007,6 +1007,13 @@ func (r *Runtime) handleTimerMethod(
 			r.javaTimerTaskStates[instance] = ktfJavaTimerCancelled
 			cancelled++
 		}
+		cancelled += r.dropPendingJavaTimers(func(call ktfPendingJavaCall) bool {
+			if call.timer.owner != timer {
+				return false
+			}
+			r.javaTimerTaskStates[call.instance] = ktfJavaTimerCancelled
+			return true
+		})
 		r.tracef(
 			"java_timer_cancel:timer=0x%08x:tasks=%d",
 			timer,
@@ -1026,6 +1033,9 @@ func (r *Runtime) handleTimerMethod(
 			task.Done = true
 			delete(r.javaTimerTasks, instance)
 		}
+		r.dropPendingJavaTimers(func(call ktfPendingJavaCall) bool {
+			return call.instance == instance
+		})
 		r.javaTimerTaskStates[instance] = ktfJavaTimerCancelled
 		r.tracef(
 			"java_timer_task_cancel:task=0x%08x:scheduled=%t",
@@ -1068,20 +1078,27 @@ func (r *Runtime) handleTimerMethod(
 		if !r.DeferThreads {
 			return r.invokeJavaVirtual(ctx, task, "run", "()V")
 		}
-		queued, err := r.queueJavaVirtualTask(task, "run", "()V")
-		if err != nil {
+		deadline := r.javaTimerDeadline(uint64(delay))
+		pending := ktfPendingTimer{
+			owner:      timer,
+			periodMS:   uint64(period),
+			deadlineMS: deadline,
+			fixedRate:  name == "scheduleAtFixedRate",
+		}
+		if delay != 0 {
+			pending.wakeAtMS = deadline
+		}
+		// A java.util.Timer runs its tasks on one thread of its own and queues
+		// whatever it cannot start yet, so scheduling can never fail on the
+		// handset for want of a thread. Here every scheduled task takes a task
+		// slot, and a title whose run() sleeps holds that slot for as long as
+		// it sleeps: random key input on 소울카드마스터2 filled all sixteen with
+		// sleeping timer tasks and the next schedule killed the title. A
+		// schedule with no room now waits for one, the way the queue behind a
+		// timer thread does.
+		if err := r.queueJavaTimerTask(task, pending); err != nil {
 			return 0, err
 		}
-		deadline := r.javaTimerDeadline(uint64(delay))
-		queued.timerTask = task
-		queued.timerOwner = timer
-		queued.timerPeriodMS = uint64(period)
-		queued.timerDeadlineMS = deadline
-		queued.timerFixedRate = name == "scheduleAtFixedRate"
-		if delay != 0 {
-			queued.WakeAtMS = deadline
-		}
-		r.javaTimerTasks[task] = queued
 		r.javaTimerTaskStates[task] = ktfJavaTimerScheduled
 		r.tracef(
 			"java_timer_schedule:timer=0x%08x:task=0x%08x:"+
@@ -1090,7 +1107,7 @@ func (r *Runtime) handleTimerMethod(
 			task,
 			delay,
 			period,
-			queued.timerFixedRate,
+			pending.fixedRate,
 		)
 		return 0, nil
 	case "scheduledExecutionTime()J":
@@ -1100,6 +1117,11 @@ func (r *Runtime) handleTimerMethod(
 		}
 		if task := r.javaTimerTasks[instance]; task != nil {
 			return r.javaLongResult(task.timerDeadlineMS), nil
+		}
+		for _, call := range r.PendingJavaCalls {
+			if call.timer != nil && call.instance == instance {
+				return r.javaLongResult(call.timer.deadlineMS), nil
+			}
 		}
 		return r.javaLongResult(0), nil
 	default:
@@ -1124,6 +1146,76 @@ func (r *Runtime) javaTimerDeadline(delay uint64) uint64 {
 		return ^uint64(0)
 	}
 	return r.TickMS + delay
+}
+
+// queueJavaTimerTask starts a scheduled TimerTask, or parks it until a task
+// slot frees. A parked schedule keeps its state as scheduled, so cancel() and
+// scheduledExecutionTime() see it exactly as they see a started one.
+func (r *Runtime) queueJavaTimerTask(task uint32, pending ktfPendingTimer) error {
+	if !r.HasJavaTaskCapacity() {
+		if len(r.PendingJavaCalls) >= ktfMaxPendingJavaCalls {
+			return fmt.Errorf(
+				"KTF pending Java call limit %d reached",
+				ktfMaxPendingJavaCalls,
+			)
+		}
+		waiting := pending
+		r.PendingJavaCalls = append(r.PendingJavaCalls, ktfPendingJavaCall{
+			instance:   task,
+			name:       "run",
+			descriptor: "()V",
+			timer:      &waiting,
+		})
+		r.tracef(
+			"java_timer_defer:timer=0x%08x:task=0x%08x:wake_at_ms=%d:pending=%d",
+			pending.owner,
+			task,
+			pending.wakeAtMS,
+			len(r.PendingJavaCalls),
+		)
+		return nil
+	}
+	queued, err := r.queueJavaVirtualTask(task, "run", "()V")
+	if err != nil {
+		return err
+	}
+	r.applyJavaTimer(queued, task, pending)
+	return nil
+}
+
+func (r *Runtime) applyJavaTimer(
+	queued *Task,
+	task uint32,
+	pending ktfPendingTimer,
+) {
+	queued.timerTask = task
+	queued.timerOwner = pending.owner
+	queued.timerPeriodMS = pending.periodMS
+	queued.timerDeadlineMS = pending.deadlineMS
+	queued.timerFixedRate = pending.fixedRate
+	if pending.wakeAtMS != 0 {
+		queued.WakeAtMS = pending.wakeAtMS
+	}
+	r.javaTimerTasks[task] = queued
+}
+
+// dropPendingJavaTimers removes parked schedules that match, and answers how
+// many it removed. A cancelled schedule must not start later.
+func (r *Runtime) dropPendingJavaTimers(match func(ktfPendingJavaCall) bool) int {
+	kept := r.PendingJavaCalls[:0]
+	dropped := 0
+	for _, call := range r.PendingJavaCalls {
+		if call.timer != nil && match(call) {
+			dropped++
+			continue
+		}
+		kept = append(kept, call)
+	}
+	for index := len(kept); index < len(r.PendingJavaCalls); index++ {
+		r.PendingJavaCalls[index] = ktfPendingJavaCall{}
+	}
+	r.PendingJavaCalls = kept
+	return dropped
 }
 
 func (r *Runtime) beginJavaTimerTask(task *Task) {
@@ -1162,20 +1254,18 @@ func (r *Runtime) completeJavaTimerTask(task *Task) error {
 			deadline += task.timerPeriodMS
 		}
 	}
-	queued, err := r.queueJavaVirtualTask(instance, "run", "()V")
-	if err != nil {
+	if err := r.queueJavaTimerTask(instance, ktfPendingTimer{
+		owner:      task.timerOwner,
+		periodMS:   task.timerPeriodMS,
+		deadlineMS: deadline,
+		wakeAtMS:   deadline,
+		fixedRate:  task.timerFixedRate,
+	}); err != nil {
 		return fmt.Errorf("reschedule KTF Java TimerTask: %w", err)
 	}
-	queued.WakeAtMS = deadline
-	queued.timerTask = instance
-	queued.timerOwner = task.timerOwner
-	queued.timerPeriodMS = task.timerPeriodMS
-	queued.timerDeadlineMS = deadline
-	queued.timerFixedRate = task.timerFixedRate
-	r.javaTimerTasks[instance] = queued
 	r.tracef(
 		"java_timer_reschedule:timer=0x%08x:task=0x%08x:wake_at_ms=%d",
-		queued.timerOwner,
+		task.timerOwner,
 		instance,
 		deadline,
 	)

@@ -628,6 +628,10 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 			descriptor: call.Descriptor,
 			args:       append([]uint32(nil), call.Args...),
 		}
+		if index < len(saved.pendingTimers) && saved.pendingTimers[index] != nil {
+			timer := *saved.pendingTimers[index]
+			r.PendingJavaCalls[index].timer = &timer
+		}
 	}
 	r.taskCursor = int(meta.TaskCursor)
 	r.activeTask = nil

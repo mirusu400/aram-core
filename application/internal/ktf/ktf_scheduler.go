@@ -306,13 +306,22 @@ func (r *Runtime) ActivatePendingJavaCalls() error {
 		call := r.PendingJavaCalls[0]
 		copy(r.PendingJavaCalls, r.PendingJavaCalls[1:])
 		r.PendingJavaCalls = r.PendingJavaCalls[:len(r.PendingJavaCalls)-1]
-		if _, err := r.queueJavaVirtualTask(
+		if call.timer != nil &&
+			r.javaTimerTaskStates[call.instance] != ktfJavaTimerScheduled {
+			// Cancelled, or already run, while it waited for a slot.
+			continue
+		}
+		queued, err := r.queueJavaVirtualTask(
 			call.instance,
 			call.name,
 			call.descriptor,
 			call.args...,
-		); err != nil {
+		)
+		if err != nil {
 			return err
+		}
+		if call.timer != nil {
+			r.applyJavaTimer(queued, call.instance, *call.timer)
 		}
 	}
 	return nil

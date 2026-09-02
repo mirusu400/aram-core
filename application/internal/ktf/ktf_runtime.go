@@ -750,6 +750,19 @@ type ktfPendingJavaCall struct {
 	name       string
 	descriptor string
 	args       []uint32
+	// timer is set when the call is a java.util.Timer schedule that had to
+	// wait for a task slot. It carries what the Task would have been given had
+	// there been room, so activation produces the same timer the immediate
+	// path does.
+	timer *ktfPendingTimer
+}
+
+type ktfPendingTimer struct {
+	owner      uint32
+	periodMS   uint64
+	deadlineMS uint64
+	wakeAtMS   uint64
+	fixedRate  bool
 }
 
 type ktfJavaExceptionTarget struct {
