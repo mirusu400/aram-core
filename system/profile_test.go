@@ -763,6 +763,82 @@ func TestRawSamsungBoardProfilesKeepExactIdentityAndPackagedEnd(t *testing.T) {
 	}
 }
 
+func TestAdditionalSmallPageRawBoardProfilesKeepExactGeometry(t *testing.T) {
+	tests := []struct {
+		profile                       BoardProfile
+		id, build                     string
+		packagedEnd, nandSize         uint64
+		legacyFeatures, fixedFeatures uint32
+	}{
+		{
+			profile: SCHW210CK12BoardProfile(), id: "samsung.sch-w210",
+			build: "samsung.sch-w210.ck12", packagedEnd: 0x093c0000,
+			nandSize: 0x10000000, legacyFeatures: 0xffff6044,
+		},
+		{
+			profile: SCHW240CL28BoardProfile(), id: "samsung.sch-w240",
+			build: "samsung.sch-w240.cl28", packagedEnd: 0x0bac0000,
+			nandSize: 0x10000000, fixedFeatures: 0xffff601c,
+		},
+		{
+			profile: SCHW290CK10BoardProfile(), id: "samsung.sch-w290",
+			build: "samsung.sch-w290.ck10", packagedEnd: 0x05d00000,
+			nandSize: 0x08000000, fixedFeatures: 0xffff601c,
+		},
+		{
+			profile: SCHW330CK06BoardProfile(), id: "samsung.sch-w330",
+			build: "samsung.sch-w330.ck06", packagedEnd: 0x05700000,
+			nandSize: 0x08000000, legacyFeatures: 0xffff6044,
+		},
+		{
+			profile: SCHW390CK11BoardProfile(), id: "samsung.sch-w390",
+			build: "samsung.sch-w390.ck11", packagedEnd: 0x05700000,
+			nandSize: 0x08000000, legacyFeatures: 0xffff6044,
+		},
+		{
+			profile: SCHW460CC26BoardProfile(), id: "samsung.sch-w460",
+			build: "samsung.sch-w460.cc26", packagedEnd: 0x05870000,
+			nandSize: 0x08000000, legacyFeatures: 0xffff6044,
+		},
+	}
+	for _, test := range tests {
+		if err := test.profile.Validate(); err != nil {
+			t.Fatalf("%s: %v", test.id, err)
+		}
+		if test.profile.ID != test.id || test.profile.FirmwareBuildID != test.build ||
+			test.profile.PlatformID != "qualcomm.arm9-sch-raw-v1" ||
+			test.profile.NANDReadID != 0x000098ca || test.profile.NANDSize != test.nandSize ||
+			test.profile.NANDPageSize != 0x200 || test.profile.NANDEraseBlockSize != 0x4000 ||
+			test.profile.PBLLegacyFeatureDataAddress != test.legacyFeatures ||
+			test.fixedFeatures != 0 && test.profile.PBLFixedFeatureDataAddress != test.fixedFeatures ||
+			test.profile.OneNAND != nil {
+			t.Fatalf("small-page raw Samsung board profile = %+v", test.profile)
+		}
+		wantInitialData := []FlashSeed{{
+			Offset: test.packagedEnd,
+			Data:   []byte{0xff, 0xfe, 0xaf, 0xbe, 0, 0, 0, 0, 0, 0, 0, 0},
+		}}
+		if !reflect.DeepEqual(test.profile.NANDInitialData, wantInitialData) {
+			t.Fatalf("%s initial NAND data = %+v", test.id, test.profile.NANDInitialData)
+		}
+	}
+
+	wantFixedFeatures := []QualcommPBLFixedFeature{
+		{Selector: 0x0ff, Value: 0x0020},
+		{Selector: 0x100, Value: 0x4000},
+		{Selector: 0x102, Value: 0x0200},
+		{Selector: 0x103, Value: 0x004a},
+		{Selector: 0x119, Value: 0x0014},
+	}
+	for _, profile := range []BoardProfile{SCHW240CL28BoardProfile(), SCHW290CK10BoardProfile()} {
+		if profile.PBLFixedFeatureFirst != 0x0ff || profile.PBLFixedFeatureSlotCount != 0x13f ||
+			!reflect.DeepEqual(profile.PBLFixedFeatures, wantFixedFeatures) {
+			t.Fatalf("%s retained fixed PBL features = %#x/%#x/%+v", profile.ID,
+				profile.PBLFixedFeatureFirst, profile.PBLFixedFeatureSlotCount, profile.PBLFixedFeatures)
+		}
+	}
+}
+
 func TestRawSamsungAddressBitSevenPanelsStayProfiled(t *testing.T) {
 	for _, profile := range []BoardProfile{
 		SCHW300DA04BoardProfile(),

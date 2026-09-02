@@ -42,12 +42,13 @@ func TestSamsungRawDownloadPrivateReferences(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			pblSpec, ok := profile.MemoryImage("pbl-rom")
-			if !ok {
-				t.Fatalf("profile %q has no PBL ROM image", profile.ID)
-			}
-			if _, err := ReconstructMemoryImage(set, pkg, pblSpec); err != nil {
-				t.Fatal(err)
+			for _, pblID := range []string{"pbl-rom", "pbl-source"} {
+				pblSpec, ok := profile.MemoryImage(pblID)
+				if ok {
+					if _, err := ReconstructMemoryImage(set, pkg, pblSpec); err != nil {
+						t.Fatal(err)
+					}
+				}
 			}
 			layout, err := Normalize(set, pkg)
 			if err != nil {

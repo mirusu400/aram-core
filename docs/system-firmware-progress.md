@@ -89,8 +89,9 @@ a complete cold-boot claim.
   NAND and optional secondary OneNAND main/OOB media, power-cycle and
   factory-reset behavior, framebuffer/frame hashes, stable key IDs, and complete
   CPU/bus/device/flash snapshots behind one synchronous headless API. Exact raw
-  profiles also expose the narrower QCSBL-to-OEMSBL boot gate for SCH-W270,
-  SCH-W300, and SCH-W420. The system-device package remains guest-neutral.
+  profiles also expose the narrower QCSBL-to-OEMSBL boot gate for SCH-W210,
+  SCH-W240, SCH-W270, SCH-W290, SCH-W300, SCH-W330, SCH-W390, SCH-W420, and
+  SCH-W460. The system-device package remains guest-neutral.
 - The SCH-W830 boot coordinator preserves the measured original-QCSBL callback
   boundary at 1,195,629 instructions / `0x000A07D8`, so a frontend's outer run
   budget cannot accidentally erase this platform timing boundary.
@@ -129,9 +130,15 @@ application compatibility claims.
 
 | target | NAND geometry | measured QCSBL-to-OEMSBL boundary |
 |---|---|---|
+| SCH-W210 CK12 | 512-byte page / 16 KiB erase block | 56,561 guest instructions |
+| SCH-W240 CL28 | 512-byte page / 16 KiB erase block | 122,199 guest instructions |
 | SCH-W270 CL28 | 512-byte page / 16 KiB erase block | 20,886 guest instructions |
+| SCH-W290 CK10 | 512-byte page / 16 KiB erase block | 89,306 guest instructions |
 | SCH-W300 DA04 | 2 KiB page / 128 KiB erase block | 148,526 guest instructions |
+| SCH-W330 CK06 | 512-byte page / 16 KiB erase block | 429,377 guest instructions |
+| SCH-W390 CK11 | 512-byte page / 16 KiB erase block | 429,377 guest instructions |
 | SCH-W420 CD16 | 2 KiB page / 128 KiB erase block | 147,255 guest instructions |
+| SCH-W460 CC26 | 512-byte page / 16 KiB erase block | 441,469 guest instructions |
 
 W300 and W420 reuse the raw large-page assembly, controller, and PBL handoff
 contracts while retaining their own exact image identities and OEMSBL entry
@@ -140,6 +147,20 @@ board profile, NAND controller, and PBL service tables. Its retained PBL page
 read, bad-block, and fatal callbacks are bounded generic HLE contracts selected
 by profiled gate addresses. All W270 target-selection patches are applied only
 after the original image hash and exact preimage bytes have been verified.
+
+W210 reuses that compatible retained-PBL contract with its own exact image and
+board identity. W240 and W290 instead keep the original PBL source at
+`0xFFFF0000`, relocate QCSBL to `0x78010000`, and publish the retained fixed
+selector table at `0xFFFF601C`. The table covers selectors `0x0FF` through
+`0x23D`; its evidenced non-zero entries describe the 512-byte page, 16 KiB
+erase block, NAND geometry, and matching boot revision needed by both original
+QCSBL images.
+
+The reconstructed W330, W390, and W460 OEMSBL vectors store QCSBL's actual
+handoff target in word `+0x38`, not the internal vector word at `+0x18`. Their
+exact entry targets are therefore `0x000A0664`, `0x000A0640`, and `0x000A077C`
+respectively. The private gate stops at those targets and does not interpret
+execution elsewhere inside OEMSBL as proof of the handoff.
 
 ## Private SCH-W830 DL21 evidence gate
 

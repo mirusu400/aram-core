@@ -169,7 +169,7 @@ func New(set firmwareset.Set, options Options) (*Machine, error) {
 		return nil, fmt.Errorf("select Samsung firmware build: %w", err)
 	}
 	switch firmwareProfile.Model {
-	case "SCH-W270", "SCH-W300", "SCH-W320", "SCH-W340", "SCH-W350", "SCH-W410", "SCH-W420", "SCH-W850":
+	case "SCH-W210", "SCH-W240", "SCH-W270", "SCH-W290", "SCH-W300", "SCH-W320", "SCH-W330", "SCH-W340", "SCH-W350", "SCH-W390", "SCH-W410", "SCH-W420", "SCH-W460", "SCH-W850":
 		return newSamsungRawDownloadMachine(set, pkg, firmwareProfile, options)
 	case "SCH-W770":
 		return newSCHW770(set, pkg, firmwareProfile, options)
@@ -190,20 +190,32 @@ func newSamsungRawDownloadMachine(
 ) (*Machine, error) {
 	var board system.BoardProfile
 	switch firmwareProfile.ID {
+	case samsung.SCHW210CK12ProfileID:
+		board = system.SCHW210CK12BoardProfile()
+	case samsung.SCHW240CL28ProfileID:
+		board = system.SCHW240CL28BoardProfile()
 	case samsung.SCHW270CL28ProfileID:
 		board = system.SCHW270CL28BoardProfile()
+	case samsung.SCHW290CK10ProfileID:
+		board = system.SCHW290CK10BoardProfile()
 	case samsung.SCHW300DA04ProfileID:
 		board = system.SCHW300DA04BoardProfile()
 	case samsung.SCHW320DC18ProfileID:
 		board = system.SCHW320DC18BoardProfile()
+	case samsung.SCHW330CK06ProfileID:
+		board = system.SCHW330CK06BoardProfile()
 	case samsung.SCHW340DC18ProfileID:
 		board = system.SCHW340DC18BoardProfile()
 	case samsung.SCHW350CK06ProfileID:
 		board = system.SCHW350CK06BoardProfile()
+	case samsung.SCHW390CK11ProfileID:
+		board = system.SCHW390CK11BoardProfile()
 	case samsung.SCHW410CL10ProfileID:
 		board = system.SCHW410CL10BoardProfile()
 	case samsung.SCHW420CD16ProfileID:
 		board = system.SCHW420CD16BoardProfile()
+	case samsung.SCHW460CC26ProfileID:
+		board = system.SCHW460CC26BoardProfile()
 	case samsung.SCHW850CF11ProfileID:
 		board = system.SCHW850CF11BoardProfile()
 	default:
@@ -633,6 +645,12 @@ func newSamsungQualcommMachine(
 		Address: qcsbl.LoadAddress,
 		Bytes:   append([]byte(nil), qcsbl.Bytes...),
 	})
+	if qcsblSpec.PBLRelocationAddress != 0 {
+		handoff.Memory = append(handoff.Memory, system.MemorySeed{
+			Address: qcsblSpec.PBLRelocationAddress,
+			Bytes:   append([]byte(nil), qcsbl.Bytes...),
+		})
+	}
 	if firmwareProfile.ID == samsung.SCHW320DC18ProfileID {
 		if seedErr := appendSamsungW320VerifiedPBLState(&handoff, qcsbl); seedErr != nil {
 			return fail(seedErr)

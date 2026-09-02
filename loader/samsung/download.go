@@ -133,11 +133,18 @@ func inspectWithRegistry(set firmwareset.Set, registry Registry) (Package, error
 	}
 	var pending []pendingPiece
 	for index := 0; index < set.Len(); index++ {
-		piece, err := set.Piece(index)
-		if err != nil {
-			return Package{}, err
+		piece, pieceErr := set.Piece(index)
+		if pieceErr != nil {
+			return Package{}, pieceErr
 		}
-		family, header, err := inspectPiece(piece)
+		var family string
+		var header Header
+		var err error
+		if set.Len() == len(requiredRoles) {
+			family, header, err = inspectFourPiece(piece)
+		} else {
+			family, header, err = inspectPiece(piece)
+		}
 		if err != nil {
 			if errors.Is(err, ErrNotSCHDownload) {
 				pending = append(pending, pendingPiece{piece: piece, err: err})
@@ -174,20 +181,40 @@ func inspectWithRegistry(set firmwareset.Set, registry Registry) (Package, error
 	}
 	if len(pending) == 1 && pkg.Family == FamilySCHRawDownload && set.Len() == len(requiredRoles) {
 		missing := pkg.MissingRoles()
-		if len(missing) == 1 && missing[0] == RoleWBIN {
+		if len(missing) == 1 {
 			piece := pending[0].piece
-			header := rawHeader(piece, RoleWBIN, string(WBINFormatOpaque))
-			pkg.Pieces[RoleWBIN] = Piece{
+			role := missing[0]
+			build := "raw-inferred-" + string(role)
+			if role == RoleWBIN {
+				build = string(WBINFormatOpaque)
+			}
+			header := rawHeader(piece, role, build)
+			pkg.Pieces[role] = Piece{
 				Index: piece.Index(), SHA256: piece.SHA256(), Header: header,
 			}
 			profile, matchErr := registry.Match(pkg)
-			if matchErr == nil && profile.WBINFormat == WBINFormatOpaque {
+			if matchErr == nil && (role != RoleWBIN || profile.WBINFormat == WBINFormatOpaque) {
 				return pkg, nil
 			}
-			delete(pkg.Pieces, RoleWBIN)
+			delete(pkg.Pieces, role)
 		}
 	}
 	return Package{}, pending[0].err
+}
+
+func inspectFourPiece(piece firmwareset.Piece) (string, Header, error) {
+	header, err := inspectHeader(piece)
+	if err == nil {
+		return FamilySCHDownload, header, nil
+	}
+	if !errors.Is(err, ErrNotSCHDownload) {
+		return "", Header{}, err
+	}
+	header, rawErr := inspectRawPiece(piece)
+	if rawErr == nil {
+		return FamilySCHRawDownload, header, nil
+	}
+	return "", Header{}, rawErr
 }
 
 func inspectPiece(piece firmwareset.Piece) (string, Header, error) {
@@ -233,7 +260,7 @@ func inspectFlexOneNANDPiece(piece firmwareset.Piece) (Header, error) {
 	if piece.Size() <= 0 {
 		return Header{}, rawPieceFormat(piece, "piece is empty")
 	}
-	var header [elf32HeaderSize]byte
+	var header [64]byte
 	count := min(int64(len(header)), piece.Size())
 	if _, err := piece.ReadAt(header[:count], 0); err != nil {
 		return Header{}, err
@@ -268,13 +295,16 @@ func inspectRawPiece(piece firmwareset.Piece) (Header, error) {
 		return Header{}, rawPieceFormat(piece, "piece is empty")
 	}
 
-	var header [elf32HeaderSize]byte
+	var header [64]byte
 	if piece.Size() >= int64(len(header)) {
 		if _, err := piece.ReadAt(header[:], 0); err != nil {
 			return Header{}, err
 		}
-		if rawELF32ARMHeader(header[:]) {
+		if rawELF32ARMHeader(header[:elf32HeaderSize]) {
 			return rawHeader(piece, RoleWBIN, "raw-elf"), nil
+		}
+		if rawARMVectorHeader(header[:]) {
+			return rawHeader(piece, RoleWBIN, "raw-arm"), nil
 		}
 	}
 
@@ -284,11 +314,14 @@ func inspectRawPiece(piece firmwareset.Piece) (Header, error) {
 			return Header{}, err
 		}
 		switch {
-		case binary.LittleEndian.Uint32(signature[0:4]) == 0x00003167:
+		case binary.LittleEndian.Uint32(signature[0:4]) == 0x00003167,
+			binary.LittleEndian.Uint32(signature[0:4]) == flexOneNANDDataMagic:
 			return rawHeader(piece, RoleDAT, "raw-dat"), nil
 		case binary.LittleEndian.Uint32(signature[0:4]) == 1 &&
 			bytes.EqualFold(signature[8:12], []byte("brew")) && printableASCII(signature[4:12]):
 			return rawHeader(piece, RoleFont, string(signature[4:8])), nil
+		case zlibHeader(signature[:2]):
+			return rawHeader(piece, RoleFont, "raw-zlib"), nil
 		}
 	}
 	if _, err := parseMIBIBCopies(piece); err == nil {
@@ -297,6 +330,33 @@ func inspectRawPiece(piece firmwareset.Piece) (Header, error) {
 		return Header{}, err
 	}
 	return Header{}, rawPieceFormat(piece, "content does not identify a legacy raw role")
+}
+
+func rawARMVectorHeader(header []byte) bool {
+	// Several early Samsung AMSS downloads are flat ARM images rather than
+	// ELF files. Their reset table contains eight identical
+	// `LDR pc, [pc, #0x18]` vectors followed by eight absolute handlers.
+	if len(header) < 64 {
+		return false
+	}
+	for offset := 0; offset < 32; offset += 4 {
+		if binary.LittleEndian.Uint32(header[offset:]) != 0xe59ff018 {
+			return false
+		}
+	}
+	for offset := 32; offset < 64; offset += 4 {
+		if binary.LittleEndian.Uint32(header[offset:]) == 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func zlibHeader(header []byte) bool {
+	if len(header) < 2 || header[0]&0x0f != 8 || header[0]>>4 > 7 {
+		return false
+	}
+	return (uint16(header[0])<<8|uint16(header[1]))%31 == 0
 }
 
 func rawHeader(piece firmwareset.Piece, role Role, build string) Header {
@@ -480,11 +540,18 @@ func normalizeWithRegistry(set firmwareset.Set, pkg Package, registry Registry) 
 		}
 		var header Header
 		if role == RoleWBIN && opaqueWBIN {
-			header = rawHeader(piece, RoleWBIN, string(WBINFormatOpaque))
+			// Exact opaque profiles may still have a structurally recognizable
+			// flat-ARM header. Preserve the metadata selected during Inspect;
+			// the profile controls decoding, not the diagnostic header label.
+			header = metadata.Header
 		} else {
 			header, err = inspectPieceForFamily(piece, pkg.Family)
 			if err != nil {
-				return Layout{}, err
+				inferredBuild := "raw-inferred-" + string(role)
+				if matchErr != nil || metadata.Header.Build != inferredBuild {
+					return Layout{}, err
+				}
+				header = metadata.Header
 			}
 		}
 		if header != metadata.Header {
@@ -516,9 +583,9 @@ func normalizeWithRegistry(set firmwareset.Set, pkg Package, registry Registry) 
 		byName[partition.Name] = partition
 		preliminaryFlashEnd = max(preliminaryFlashEnd, partition.End())
 	}
-	rsrc, ok := byName["0:RSRC"]
+	rsrc, ok := rawDataPartition(byName)
 	if !ok {
-		return Layout{}, &FormatError{Role: RoleWBT, Piece: pieces[RoleWBT].Index(), Reason: "MIBIB has no 0:RSRC partition"}
+		return Layout{}, &FormatError{Role: RoleWBT, Piece: pieces[RoleWBT].Index(), Reason: "MIBIB has no 0:RSRC or 0:DATA partition"}
 	}
 	font, ok := byName["0:FONT"]
 	if !ok {
@@ -527,44 +594,68 @@ func normalizeWithRegistry(set firmwareset.Set, pkg Package, registry Registry) 
 	wbtSize := pkg.Pieces[RoleWBT].Header.PayloadSize
 	var footer [4]uint32
 	var footerOffset int64
+	var starts [4]uint64
 	if pkg.Family == FamilySCHRawDownload {
-		var found bool
-		footer, footerOffset, found, err = findRawWBINFooterAt(
-			pieces[RoleWBIN], sourceOffset, wbtSize, font.Start, rsrc.Start,
-			mibib.EraseBlockSize,
-		)
-		if err != nil {
-			return Layout{}, err
-		}
-		if !found {
+		_, wbtFooterAddressable := rawFooterUnits(wbtSize)
+		_, fontFooterAddressable := rawFooterUnits(font.Start)
+		_, dataFooterAddressable := rawFooterUnits(rsrc.Start)
+		_, endFooterAddressable := rawFooterUnits(preliminaryFlashEnd)
+		if wbtFooterAddressable && fontFooterAddressable && dataFooterAddressable && endFooterAddressable {
+			var found bool
+			footer, footerOffset, found, err = findRawWBINFooterAt(
+				pieces[RoleWBIN], sourceOffset, wbtSize, font.Start, rsrc.Start,
+				mibib.EraseBlockSize,
+			)
+			if err != nil {
+				return Layout{}, err
+			}
+			if !found {
+				for _, partition := range partitions {
+					if partition.BlockCount == 0 {
+						return Layout{}, &FormatError{
+							Role: RoleWBIN, Piece: pieces[RoleWBIN].Index(), Offset: pieces[RoleWBIN].Size(),
+							Reason: "raw WBIN has no layout footer for an open-ended MIBIB",
+						}
+					}
+				}
+				footer, err = synthesizeRawWBINFooter(wbtSize, font.Start, rsrc.Start, preliminaryFlashEnd)
+				if err != nil {
+					return Layout{}, &FormatError{
+						Role: RoleWBIN, Piece: pieces[RoleWBIN].Index(), Offset: pieces[RoleWBIN].Size(),
+						Reason: err.Error(),
+					}
+				}
+				footerOffset = pieces[RoleWBIN].Size()
+			}
+			starts = [4]uint64{
+				uint64(footer[0]) << 16,
+				uint64(footer[1]) << 16,
+				uint64(footer[2]) << 16,
+				uint64(footer[3]) << 16,
+			}
+		} else {
 			for _, partition := range partitions {
 				if partition.BlockCount == 0 {
 					return Layout{}, &FormatError{
 						Role: RoleWBIN, Piece: pieces[RoleWBIN].Index(), Offset: pieces[RoleWBIN].Size(),
-						Reason: "raw WBIN has no layout footer for an open-ended MIBIB",
+						Reason: "non-64-KiB raw layout has an open-ended MIBIB partition",
 					}
 				}
 			}
-			footer, err = synthesizeRawWBINFooter(wbtSize, font.Start, rsrc.Start, preliminaryFlashEnd)
-			if err != nil {
-				return Layout{}, &FormatError{
-					Role: RoleWBIN, Piece: pieces[RoleWBIN].Index(), Offset: pieces[RoleWBIN].Size(),
-					Reason: err.Error(),
-				}
-			}
 			footerOffset = pieces[RoleWBIN].Size()
+			starts = [4]uint64{wbtSize, font.Start, rsrc.Start, preliminaryFlashEnd}
 		}
 	} else {
 		footer, footerOffset, err = readWBINFooterAt(pieces[RoleWBIN], sourceOffset)
 		if err != nil {
 			return Layout{}, err
 		}
-	}
-	starts := [4]uint64{
-		uint64(footer[0]) << 16,
-		uint64(footer[1]) << 16,
-		uint64(footer[2]) << 16,
-		uint64(footer[3]) << 16,
+		starts = [4]uint64{
+			uint64(footer[0]) << 16,
+			uint64(footer[1]) << 16,
+			uint64(footer[2]) << 16,
+			uint64(footer[3]) << 16,
+		}
 	}
 	if err := resolveOpenEndedPartitions(
 		partitions,
@@ -583,9 +674,9 @@ func normalizeWithRegistry(set firmwareset.Set, pkg Package, registry Registry) 
 		byName[partition.Name] = partition
 		flashEnd = max(flashEnd, partition.End())
 	}
-	rsrc, ok = byName["0:RSRC"]
+	rsrc, ok = rawDataPartition(byName)
 	if !ok {
-		return Layout{}, &FormatError{Role: RoleWBT, Piece: pieces[RoleWBT].Index(), Reason: "MIBIB has no 0:RSRC partition"}
+		return Layout{}, &FormatError{Role: RoleWBT, Piece: pieces[RoleWBT].Index(), Reason: "MIBIB has no 0:RSRC or 0:DATA partition"}
 	}
 	font, ok = byName["0:FONT"]
 	if !ok {
@@ -639,6 +730,14 @@ func normalizeWithRegistry(set firmwareset.Set, pkg Package, registry Registry) 
 		Partitions:      partitions,
 		Regions:         regions,
 	}, nil
+}
+
+func rawDataPartition(byName map[string]Partition) (Partition, bool) {
+	if partition, ok := byName["0:RSRC"]; ok {
+		return partition, true
+	}
+	partition, ok := byName["0:DATA"]
+	return partition, ok
 }
 
 func resolveOpenEndedPartitions(
@@ -859,7 +958,7 @@ func parseMIBIBCopiesWithGeometry(piece firmwareset.Piece, geometry rawNANDGeome
 			continue
 		}
 		version := binary.LittleEndian.Uint32(header[8:12])
-		if version != 1 && version != mibibHeaderMagic[2] {
+		if version != 1 && version != 2 && version != mibibHeaderMagic[2] {
 			if firstFormatError == nil {
 				firstFormatError = &FormatError{
 					Role: RoleWBT, Piece: piece.Index(), Offset: offset + 8,
@@ -920,7 +1019,7 @@ func parseMIBIBCopy(piece int, base int64, data []byte, geometry rawNANDGeometry
 		}
 	}
 	primaryVersion := binary.LittleEndian.Uint32(primary[8:12])
-	if primaryVersion != version {
+	if primaryVersion != version && !(version > 1 && primaryVersion == version-1) {
 		return fail(int64(geometry.PageSize)+8, fmt.Sprintf("primary partition-table version %d does not match MIBIB version %d", primaryVersion, version))
 	}
 	count := binary.LittleEndian.Uint32(primary[12:16])
@@ -935,6 +1034,9 @@ func parseMIBIBCopy(piece int, base int64, data []byte, geometry rawNANDGeometry
 		entry := primary[relative : relative+mibibEntrySize]
 		nul := bytes.IndexByte(entry[:16], 0)
 		if nul <= 0 {
+			if index == count-1 && version == 2 && bytes.Equal(entry, make([]byte, len(entry))) {
+				break
+			}
 			return fail(int64(geometry.PageSize)+int64(relative), "partition name is empty or unterminated")
 		}
 		nameBytes := entry[:nul]

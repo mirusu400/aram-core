@@ -106,9 +106,15 @@ func TestSamsungTargetBootPrivateReferences(t *testing.T) {
 			var oemsblEntry uint32
 			var oemsblMode cpu.Mode
 			expectOEMSBLTrap := firmwareProfile.ID == samsung.SCHW850CF11ProfileID ||
+				firmwareProfile.ID == samsung.SCHW210CK12ProfileID ||
+				firmwareProfile.ID == samsung.SCHW240CL28ProfileID ||
 				firmwareProfile.ID == samsung.SCHW270CL28ProfileID ||
+				firmwareProfile.ID == samsung.SCHW290CK10ProfileID ||
 				firmwareProfile.ID == samsung.SCHW300DA04ProfileID ||
-				firmwareProfile.ID == samsung.SCHW420CD16ProfileID
+				firmwareProfile.ID == samsung.SCHW330CK06ProfileID ||
+				firmwareProfile.ID == samsung.SCHW390CK11ProfileID ||
+				firmwareProfile.ID == samsung.SCHW420CD16ProfileID ||
+				firmwareProfile.ID == samsung.SCHW460CC26ProfileID
 			if firmwareProfile.ID == samsung.SCHW850CF11ProfileID {
 				oemsblEntry, oemsblMode = privateW850OEMSBLTrap(t, set, pkg, firmwareProfile)
 			} else if expectOEMSBLTrap {
@@ -123,8 +129,13 @@ func TestSamsungTargetBootPrivateReferences(t *testing.T) {
 					Address: oemsblEntry,
 					Mode:    oemsblMode,
 				}}
-				if firmwareProfile.ID == samsung.SCHW270CL28ProfileID {
-					for _, call := range system.SCHW270CL28BoardProfile().HLECalls {
+				if firmwareProfile.ID == samsung.SCHW210CK12ProfileID ||
+					firmwareProfile.ID == samsung.SCHW270CL28ProfileID {
+					board := system.SCHW270CL28BoardProfile()
+					if firmwareProfile.ID == samsung.SCHW210CK12ProfileID {
+						board = system.SCHW210CK12BoardProfile()
+					}
+					for _, call := range board.HLECalls {
 						executionTraps = append(executionTraps, cpu.ExecutionTrap{
 							Address: call.Address,
 							Mode:    call.Mode,
@@ -143,7 +154,14 @@ func TestSamsungTargetBootPrivateReferences(t *testing.T) {
 			result := machine.Run(context.Background(), budget)
 			if expectOEMSBLTrap {
 				if result.Err != nil || result.Reason != cpu.StopExecutionTrap || result.PC != oemsblEntry {
-					t.Fatalf("%s QCSBL-to-OEMSBL boot result = %+v", firmwareProfile.Model, result)
+					registers := make([]uint32, 17)
+					for index := range registers {
+						registers[index], _ = machine.backend.ReadRegister(uint32(index))
+					}
+					t.Fatalf(
+						"%s QCSBL-to-OEMSBL boot result = %+v registers=%#x",
+						firmwareProfile.Model, result, registers,
+					)
 				}
 			} else if result.Err != nil || result.Reason != cpu.StopBudget ||
 				result.Instructions != budget {

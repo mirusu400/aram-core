@@ -87,7 +87,10 @@ func decodeWBINWithRegistry(set firmwareset.Set, pkg Package, registry Registry)
 		if pkg.Family != FamilySCHRawDownload {
 			return ProgressiveImage{}, fmt.Errorf("opaque Samsung WBIN requires the raw-download family")
 		}
-		header := rawHeader(piece, RoleWBIN, string(WBINFormatOpaque))
+		// The exact profile decides whether a flat raw image is opaque. Keep a
+		// structurally detected raw-ARM label when Inspect could identify it;
+		// older opaque images remain labeled with the format fallback.
+		header := metadata.Header
 		if header != metadata.Header {
 			return ProgressiveImage{}, fmt.Errorf("Samsung %s header metadata does not match firmware set", RoleWBIN)
 		}

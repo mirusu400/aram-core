@@ -153,6 +153,59 @@ func TestDecodeWBINAllowsOnlyExactProfiledOpaqueRawImage(t *testing.T) {
 	}
 }
 
+func TestDecodeWBINPreservesProfiledFlatARMMetadata(t *testing.T) {
+	sources := syntheticSmallPageRawDownloadSources(t)
+	flat := make([]byte, 0x1000)
+	for offset := 0; offset < 32; offset += 4 {
+		binary.LittleEndian.PutUint32(flat[offset:], 0xe59ff018)
+		binary.LittleEndian.PutUint32(flat[offset+32:], uint32(0x00100000+offset))
+	}
+	sources[RoleWBIN] = firmwareset.Source{ReaderAt: bytes.NewReader(flat), Size: int64(len(flat))}
+	roles := []Role{RoleWBT, RoleWBIN, RoleDAT, RoleFont}
+	setSources := make([]firmwareset.Source, len(roles))
+	for index, role := range roles {
+		setSources[index] = sources[role]
+	}
+	set, err := firmwareset.NewSet(setSources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hashes := make(map[Role]string, len(roles))
+	for index, role := range roles {
+		piece, pieceErr := set.Piece(index)
+		if pieceErr != nil {
+			t.Fatal(pieceErr)
+		}
+		hashes[role] = piece.SHA256()
+	}
+	registry, err := NewRegistry(BuildProfile{
+		ID: "samsung.synthetic.flat-arm", Family: FamilySCHRawDownload,
+		Manufacturer: "Samsung", Model: "Synthetic", Build: "FLAT",
+		WBINFormat: WBINFormatOpaque, PieceHashes: hashes,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := inspectWithRegistry(set, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pkg.Pieces[RoleWBIN].Header.Build != "raw-arm" {
+		t.Fatalf("flat ARM metadata = %+v", pkg.Pieces[RoleWBIN].Header)
+	}
+	if _, err := normalizeWithRegistry(set, pkg, registry); err != nil {
+		t.Fatal(err)
+	}
+	image, err := decodeWBINWithRegistry(set, pkg, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(image.Bytes, flat) || image.EncryptedLength != 0 ||
+		len(image.ELF.ProgramHeaders) != 0 {
+		t.Fatalf("profiled flat ARM image = %+v", image)
+	}
+}
+
 func TestDecodeWBINRejectsTerminalCiphertextMismatch(t *testing.T) {
 	pieceBytes, _ := syntheticEncodedWBIN(t)
 	pieceBytes[wbinTerminalBlockOffset] ^= 0x80

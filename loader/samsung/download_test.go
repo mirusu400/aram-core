@@ -172,6 +172,185 @@ func TestInspectAndNormalizeSmallPageRawSCHDownload(t *testing.T) {
 	}
 }
 
+func TestInspectRecognizesFlatARMAndZlibRawPieces(t *testing.T) {
+	sources := syntheticSmallPageRawDownloadSources(t)
+	wbin := make([]byte, 0x1000)
+	for offset := 0; offset < 32; offset += 4 {
+		binary.LittleEndian.PutUint32(wbin[offset:], 0xe59ff018)
+		binary.LittleEndian.PutUint32(wbin[offset+32:], uint32(0x00100000+offset))
+	}
+	sources[RoleWBIN] = firmwareset.Source{ReaderAt: bytes.NewReader(wbin), Size: int64(len(wbin))}
+	font := readSyntheticSource(t, sources[RoleFont])
+	font[0], font[1] = 0x78, 0x9c
+	sources[RoleFont] = firmwareset.Source{ReaderAt: bytes.NewReader(font), Size: int64(len(font))}
+
+	set, err := firmwareset.NewSet([]firmwareset.Source{
+		sources[RoleFont], sources[RoleDAT], sources[RoleWBIN], sources[RoleWBT],
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := Inspect(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pkg.Pieces[RoleWBIN].Header.Build != "raw-arm" ||
+		pkg.Pieces[RoleFont].Header.Build != "raw-zlib" {
+		t.Fatalf("raw structural headers = WBIN %+v FONT %+v", pkg.Pieces[RoleWBIN], pkg.Pieces[RoleFont])
+	}
+
+	clear(wbin[32:64])
+	if rawARMVectorHeader(wbin[:64]) {
+		t.Fatal("flat ARM detection accepted zero handler vectors")
+	}
+	if !zlibHeader([]byte{0x78, 0x9c}) || zlibHeader([]byte{0x78, 0x00}) {
+		t.Fatal("zlib header validation accepted an invalid checksum")
+	}
+}
+
+func TestInspectInfersOnlyExactMissingRawRole(t *testing.T) {
+	sources := syntheticSmallPageRawDownloadSources(t)
+	unknownFont := bytes.Repeat([]byte{0xa5}, 0x1000)
+	sources[RoleFont] = firmwareset.Source{
+		ReaderAt: bytes.NewReader(unknownFont), Size: int64(len(unknownFont)),
+	}
+	roles := []Role{RoleWBT, RoleWBIN, RoleDAT, RoleFont}
+	setSources := make([]firmwareset.Source, len(roles))
+	for index, role := range roles {
+		setSources[index] = sources[role]
+	}
+	set, err := firmwareset.NewSet(setSources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hashes := make(map[Role]string, len(roles))
+	for index, role := range roles {
+		piece, pieceErr := set.Piece(index)
+		if pieceErr != nil {
+			t.Fatal(pieceErr)
+		}
+		hashes[role] = piece.SHA256()
+	}
+	registry, err := NewRegistry(BuildProfile{
+		ID: "samsung.synthetic.inferred-font", Family: FamilySCHRawDownload,
+		Manufacturer: "Samsung", Model: "Synthetic", Build: "INFERRED",
+		PieceHashes: hashes,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := inspectWithRegistry(set, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if font := pkg.Pieces[RoleFont]; font.Index != 3 || font.Header.Build != "raw-inferred-font" {
+		t.Fatalf("inferred raw FONT = %+v", font)
+	}
+	if _, err := Inspect(set); !errors.Is(err, ErrNotSCHDownload) {
+		t.Fatalf("unprofiled raw role inference error = %v", err)
+	}
+}
+
+func TestNormalizeAcceptsAdjacentMIBIBTableVersions(t *testing.T) {
+	tests := []struct {
+		name                          string
+		headerVersion, primaryVersion uint32
+		trailingSentinel              bool
+	}{
+		{name: "v2-primary-v1-sentinel", headerVersion: 2, primaryVersion: 1, trailingSentinel: true},
+		{name: "v3-primary-v2", headerVersion: 3, primaryVersion: 2},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			sources := syntheticSmallPageRawDownloadSources(t)
+			wbt := readSyntheticSource(t, sources[RoleWBT])
+			for _, copyOffset := range []int{0x0c000, 0x10000} {
+				copyData := wbt[copyOffset : copyOffset+smallEraseBlockSize]
+				binary.LittleEndian.PutUint32(copyData[8:12], test.headerVersion)
+				primary := copyData[smallPageSize : 2*smallPageSize]
+				binary.LittleEndian.PutUint32(primary[8:12], test.primaryVersion)
+				if test.trailingSentinel {
+					binary.LittleEndian.PutUint32(primary[12:16], 7)
+					clear(primary[16+6*mibibEntrySize : 16+7*mibibEntrySize])
+				}
+			}
+			sources[RoleWBT] = firmwareset.Source{ReaderAt: bytes.NewReader(wbt), Size: int64(len(wbt))}
+			set, err := firmwareset.NewSet([]firmwareset.Source{
+				sources[RoleWBT], sources[RoleWBIN], sources[RoleDAT], sources[RoleFont],
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			pkg, err := Inspect(set)
+			if err != nil {
+				t.Fatal(err)
+			}
+			layout, err := Normalize(set, pkg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if layout.MIBIBVersion != test.headerVersion || layout.MIBIBGeneration != 2 ||
+				len(layout.Partitions) != 6 {
+				t.Fatalf("adjacent-version MIBIB layout = %+v", layout)
+			}
+		})
+	}
+}
+
+func TestNormalizeAndAssembleFooterlessNon64KDataLayout(t *testing.T) {
+	sources := syntheticSmallPageRawDownloadSources(t)
+	wbt := readSyntheticSource(t, sources[RoleWBT])
+	entries := []struct {
+		name        string
+		start, size uint32
+	}{
+		{"0:MIBIB", 0, 16},
+		{"0:QCSBL", 16, 8},
+		{"0:AMSS", 24, 5},
+		{"0:DATA", 29, 4},
+		{"0:FONT", 33, 4},
+		{"0:EFS2", 37, 4},
+	}
+	for _, copyOffset := range []int{0x0c000, 0x10000} {
+		primary := wbt[copyOffset+smallPageSize : copyOffset+2*smallPageSize]
+		binary.LittleEndian.PutUint32(primary[12:16], uint32(len(entries)))
+		for index, entry := range entries {
+			offset := 16 + index*mibibEntrySize
+			clear(primary[offset : offset+mibibEntrySize])
+			copy(primary[offset:offset+16], entry.name)
+			putU32s(primary, offset+16, entry.start, entry.size, 0x00ffffff)
+		}
+	}
+	sources[RoleWBT] = firmwareset.Source{ReaderAt: bytes.NewReader(wbt), Size: int64(len(wbt))}
+	set, err := firmwareset.NewSet([]firmwareset.Source{
+		sources[RoleWBT], sources[RoleWBIN], sources[RoleDAT], sources[RoleFont],
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := Inspect(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	layout, err := Normalize(set, pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wbinRegion, datRegion, fontRegion := layout.Region(RoleWBIN), layout.Region(RoleDAT), layout.Region(RoleFont)
+	if layout.PackagedEnd != 0x0a4000 || wbinRegion == nil || datRegion == nil || fontRegion == nil ||
+		wbinRegion.Start != 0x60000 || datRegion.Start != 0x74000 || fontRegion.Start != 0x84000 {
+		t.Fatalf("footerless non-64-KiB layout = %+v", layout)
+	}
+	image, err := AssembleFlash(set, pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if image.Size() != 0x0a4000 || image.PageSize() != smallPageSize ||
+		image.EraseBlockSize() != smallEraseBlockSize {
+		t.Fatalf("footerless non-64-KiB flash = %#x/%#x/%#x", image.Size(), image.PageSize(), image.EraseBlockSize())
+	}
+}
+
 func TestInspectRejectsMixedWrappedAndRawSCHDownloadPieces(t *testing.T) {
 	wrapped := syntheticDownloadSources(t)
 	raw := syntheticRawDownloadSources(t)

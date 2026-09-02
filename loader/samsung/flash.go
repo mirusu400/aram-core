@@ -187,7 +187,10 @@ func AssembleFlashWithOptions(
 	}
 	rsrc, ok := findPartition(layout, "0:RSRC")
 	if !ok {
-		return FlashImage{}, fmt.Errorf("%w: MIBIB has no 0:RSRC partition", ErrInvalidFlashLayout)
+		rsrc, ok = findPartition(layout, "0:DATA")
+		if !ok {
+			return FlashImage{}, fmt.Errorf("%w: MIBIB has no 0:RSRC or 0:DATA partition", ErrInvalidFlashLayout)
+		}
 	}
 	font, ok := findPartition(layout, "0:FONT")
 	if !ok {

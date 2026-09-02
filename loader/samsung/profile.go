@@ -20,9 +20,15 @@ const (
 	SCHW350CK06ProfileID = "samsung.sch-w350.ck06"
 	SCHW410CL10ProfileID = "samsung.sch-w410.cl10"
 	SCHW850CF11ProfileID = "samsung.sch-w850.cf11"
+	SCHW210CK12ProfileID = "samsung.sch-w210.ck12"
+	SCHW240CL28ProfileID = "samsung.sch-w240.cl28"
 	SCHW270CL28ProfileID = "samsung.sch-w270.cl28"
+	SCHW290CK10ProfileID = "samsung.sch-w290.ck10"
 	SCHW300DA04ProfileID = "samsung.sch-w300.da04"
+	SCHW330CK06ProfileID = "samsung.sch-w330.ck06"
+	SCHW390CK11ProfileID = "samsung.sch-w390.ck11"
 	SCHW420CD16ProfileID = "samsung.sch-w420.cd16"
+	SCHW460CC26ProfileID = "samsung.sch-w460.cc26"
 )
 
 var (
@@ -31,23 +37,27 @@ var (
 )
 
 type BootImageSpec struct {
-	ID             string
-	Role           Role
-	PBLPreload     bool
-	PBLBytePatches []BootImageBytePatch
-	BlockOffsets   []int64
-	BlockMarker    [8]byte
-	MarkerOffset   uint32
-	HeaderSize     uint32
-	BlockSize      uint32
-	DataOffset     uint32
-	DataSize       uint32
-	ChunkSize      uint32
-	ChunkStride    uint32
-	LoadAddress    uint32
-	EntryOffset    uint32
-	UsedSize       uint32
-	LogicalSHA256  string
+	ID         string
+	Role       Role
+	PBLPreload bool
+	// PBLRelocationAddress mirrors the verified logical image at the runtime
+	// address prepared by the unavailable mask-ROM PBL before QCSBL entry.
+	// Zero means that the image executes only from LoadAddress.
+	PBLRelocationAddress uint32
+	PBLBytePatches       []BootImageBytePatch
+	BlockOffsets         []int64
+	BlockMarker          [8]byte
+	MarkerOffset         uint32
+	HeaderSize           uint32
+	BlockSize            uint32
+	DataOffset           uint32
+	DataSize             uint32
+	ChunkSize            uint32
+	ChunkStride          uint32
+	LoadAddress          uint32
+	EntryOffset          uint32
+	UsedSize             uint32
+	LogicalSHA256        string
 }
 
 // BootImageBytePatch records a target-selection byte applied by the missing
@@ -128,6 +138,11 @@ func (s BootImageSpec) validate() error {
 	}
 	if len(s.PBLBytePatches) != 0 && !s.PBLPreload {
 		return fmt.Errorf("boot image %q patches an image not preloaded by PBL", s.ID)
+	}
+	if s.PBLRelocationAddress != 0 &&
+		(uint64(s.PBLRelocationAddress)+uint64(logicalSize) > 1<<32 ||
+			s.PBLRelocationAddress == s.LoadAddress) {
+		return fmt.Errorf("boot image %q has invalid PBL relocation address", s.ID)
 	}
 	seenPatchOffsets := make(map[uint32]struct{}, len(s.PBLBytePatches))
 	for _, patch := range s.PBLBytePatches {
@@ -328,9 +343,15 @@ func BuiltinRegistry() Registry {
 		schW350CK06Profile(),
 		schW410CL10Profile(),
 		schW850CF11Profile(),
+		schW210CK12Profile(),
+		schW240CL28Profile(),
 		schW270CL28Profile(),
+		schW290CK10Profile(),
 		schW300DA04Profile(),
+		schW330CK06Profile(),
+		schW390CK11Profile(),
 		schW420CD16Profile(),
+		schW460CC26Profile(),
 	)
 	if err != nil {
 		panic(err)
@@ -473,7 +494,7 @@ func schRawDownloadProfile(
 	if oemsblLoadAddress == 0 {
 		oemsblLoadAddress = 0x000a0000
 	}
-	return BuildProfile{
+	profile := BuildProfile{
 		ID: id, Family: FamilySCHRawDownload, Manufacturer: "Samsung",
 		Model: model, Build: build, PieceHashes: pieceHashes,
 		BootImages: []BootImageSpec{
@@ -494,11 +515,14 @@ func schRawDownloadProfile(
 				UsedSize: boot.QCSBLUsedSize, LogicalSHA256: boot.QCSBLLogicalSHA256,
 			},
 		},
-		MemoryImages: []MemoryImageSpec{{
+	}
+	if boot.PBLSize != 0 {
+		profile.MemoryImages = []MemoryImageSpec{{
 			ID: "pbl-rom", Role: RoleWBT, SourceOffset: boot.PBLSourceOffset, Size: boot.PBLSize,
 			LoadAddress: boot.PBLLoadAddress, LogicalSHA256: boot.PBLLogicalSHA256,
-		}},
+		}}
 	}
+	return profile
 }
 
 func schLargePageRawBootProfile(oemsblUsedSize uint32, oemsblSHA256 string) schRawBootProfile {
@@ -561,21 +585,12 @@ func schW420CD16Profile() BuildProfile {
 }
 
 func schW270CL28Profile() BuildProfile {
-	boot := schRawBootProfile{
-		PageSize: smallPageSize, EraseBlockSize: smallEraseBlockSize,
-		OEMSBLBlockOffsets:  schRawBlockOffsets(0x00080000, 23, smallEraseBlockSize),
-		OEMSBLLoadAddress:   0x03d9c000,
-		OEMSBLEntryOffset:   0x00000a1e,
-		OEMSBLUsedSize:      0x0005801c,
-		OEMSBLLogicalSHA256: "f1ecd3b23fd8cb48ff299ee447b7af963bc483247446ee1cad70f778ea369130",
-		QCSBLBlockOffsets:   []int64{0x00040000},
-		QCSBLEntryOffset:    0x00000fd8,
-		QCSBLUsedSize:       0x00001504,
-		QCSBLLogicalSHA256:  "c66591cfd5d5654645c15d9a6e5e9e294266a1db5d67e9b3c9cb9cfe3aa26e4d",
-		PBLSize:             0x000042f0,
-		PBLLoadAddress:      0x03d4c000,
-		PBLLogicalSHA256:    "c744059da2a0ae138fa4e5b753c348a5070dc9b52f1537f1497a04b844f6453e",
-	}
+	boot := schW270CompatibleSmallPageBootProfile()
+	boot.OEMSBLBlockOffsets = schRawBlockOffsets(0x00080000, 23, smallEraseBlockSize)
+	boot.OEMSBLLoadAddress = 0x03d9c000
+	boot.OEMSBLEntryOffset = 0x00000a1e
+	boot.OEMSBLUsedSize = 0x0005801c
+	boot.OEMSBLLogicalSHA256 = "f1ecd3b23fd8cb48ff299ee447b7af963bc483247446ee1cad70f778ea369130"
 	profile := schRawDownloadProfile(
 		SCHW270CL28ProfileID,
 		"SCH-W270",
@@ -588,6 +603,49 @@ func schW270CL28Profile() BuildProfile {
 		},
 		boot,
 	)
+	applyW270CompatiblePBLHandoff(&profile)
+	return profile
+}
+
+func schW210CK12Profile() BuildProfile {
+	boot := schW270CompatibleSmallPageBootProfile()
+	// CK12 retains two 64-block OEMSBL copies. Reconstruct the first copy,
+	// matching the first-copy convention used by the adjacent raw profiles.
+	boot.OEMSBLBlockOffsets = schRawBlockOffsets(0x00080000, 64, smallEraseBlockSize)
+	boot.OEMSBLLoadAddress = 0x03d9c000
+	boot.OEMSBLEntryOffset = 0x00000a26
+	boot.OEMSBLUsedSize = 0x000f50f9
+	boot.OEMSBLLogicalSHA256 = "b3550ebaf28215772014adae2205306b34b33f34875d3135f4586e56ab976e4e"
+	profile := schRawDownloadProfile(
+		SCHW210CK12ProfileID,
+		"SCH-W210",
+		"CK12",
+		map[Role]string{
+			RoleWBT:  "873c0dc12a58148a922755773019fb2a51766bcaf60804dd0bac89234113fce0",
+			RoleWBIN: "f79c7adfda0632a914f21ef94fb08d5f3ec26bf352549ace8e64ba20ee9043b2",
+			RoleDAT:  "63c07ff36e50959bc02f2a4ceacb0c54b54be39b42448d2d8ed848bdb56c4b70",
+			RoleFont: "6e2ac12d20b892b46639f27478a14b41935e42abe169162dd16ecad5c3083d1a",
+		},
+		boot,
+	)
+	applyW270CompatiblePBLHandoff(&profile)
+	return profile
+}
+
+func schW270CompatibleSmallPageBootProfile() schRawBootProfile {
+	return schRawBootProfile{
+		PageSize: smallPageSize, EraseBlockSize: smallEraseBlockSize,
+		QCSBLBlockOffsets:  []int64{0x00040000},
+		QCSBLEntryOffset:   0x00000fd8,
+		QCSBLUsedSize:      0x00001504,
+		QCSBLLogicalSHA256: "c66591cfd5d5654645c15d9a6e5e9e294266a1db5d67e9b3c9cb9cfe3aa26e4d",
+		PBLSize:            0x000042f0,
+		PBLLoadAddress:     0x03d4c000,
+		PBLLogicalSHA256:   "c744059da2a0ae138fa4e5b753c348a5070dc9b52f1537f1497a04b844f6453e",
+	}
+}
+
+func applyW270CompatiblePBLHandoff(profile *BuildProfile) {
 	for index := range profile.BootImages {
 		if profile.BootImages[index].ID != "qcsbl" {
 			continue
@@ -597,22 +655,175 @@ func schW270CL28Profile() BuildProfile {
 			0x00000240, 0x03d4cfd8, 0x03d4cfa0,
 		)
 	}
-	profile.MemoryImages[0].PBLBytePatches = append(
-		profile.MemoryImages[0].PBLBytePatches,
-		littleEndianWordBytePatches(0x000014b0, 0x00007f00, 0x03d4b008)...,
+	pbl, ok := profile.MemoryImage("pbl-rom")
+	if !ok {
+		panic("W270-compatible profile has no PBL ROM image")
+	}
+	for index := range profile.MemoryImages {
+		if profile.MemoryImages[index].ID != pbl.ID {
+			continue
+		}
+		profile.MemoryImages[index].PBLBytePatches = append(
+			profile.MemoryImages[index].PBLBytePatches,
+			littleEndianWordBytePatches(0x000014b0, 0x00007f00, 0x03d4b008)...,
+		)
+		profile.MemoryImages[index].PBLBytePatches = append(
+			profile.MemoryImages[index].PBLBytePatches,
+			littleEndianWordBytePatches(0x000014b4, 0x00000008, 0x03d4b000)...,
+		)
+		profile.MemoryImages[index].PBLBytePatches = append(
+			profile.MemoryImages[index].PBLBytePatches,
+			littleEndianWordBytePatches(0x000014b8, 0x00008000, 0x03d4b004)...,
+		)
+		profile.MemoryImages[index].PBLBytePatches = append(
+			profile.MemoryImages[index].PBLBytePatches,
+			littleEndianWordBytePatches(0x000014e4, 0x00000000, 0x78002000)...,
+		)
+	}
+	profile.WBINFormat = WBINFormatOpaque
+}
+
+func schW240CL28Profile() BuildProfile {
+	profile := schRawDownloadProfile(
+		SCHW240CL28ProfileID, "SCH-W240", "CL28",
+		map[Role]string{
+			RoleWBT:  "7c7a52555ff528ccfc596f0efef1eeeff4e3fd9ab994cc4e9fe3f992a6ccc9f3",
+			RoleWBIN: "6a6bc227f79ccea4a6d5bb42518c7af75edfc78119a7bbfadb4648a1374bcbf7",
+			RoleDAT:  "363779487dd64f7178fd1cfdb47b9f783ea17ec5973251efe7140a0cbc661de6",
+			RoleFont: "3d128c436ea85e54a7b39dc5322696a9b4951201222414bd2e292281ed30c3f4",
+		},
+		schW240W290SmallPageBootProfile(
+			schRawBlockOffsets(0x00080000, 19, smallEraseBlockSize),
+			0x03d9c000, 0x0000091e, 0x000481c8,
+			"2a401f4b899b4d358163b4a0b077b1a0ec7d36c44e33ec18e2cf0ff206158ed5",
+			0x00004388,
+			"297c305cfd840debf4b5adbee5340b63a7626cd675e87201f61250769581398e",
+		),
 	)
-	profile.MemoryImages[0].PBLBytePatches = append(
-		profile.MemoryImages[0].PBLBytePatches,
-		littleEndianWordBytePatches(0x000014b4, 0x00000008, 0x03d4b000)...,
+	applyW240W290PBLHandoff(&profile)
+	profile.WBINFormat = WBINFormatOpaque
+	return profile
+}
+
+func schW290CK10Profile() BuildProfile {
+	profile := schRawDownloadProfile(
+		SCHW290CK10ProfileID, "SCH-W290", "CK10",
+		map[Role]string{
+			RoleWBT:  "ef6a490e7d31edb04fda399ee0b606954a408a3dda3e2a2e8d5a9d6f662bb490",
+			RoleWBIN: "0a56263da399dc68e6057ab8d6f53a4dbcb956317598c4b8c5d37c75e92dca10",
+			RoleDAT:  "6fdb15ef8221676523fe623d65e422f1afa4abae1b414190e04b9d153d69908a",
+			RoleFont: "4541d20f896717d47d4c276d09d01085801a5acc0aacee796b0162d756b31646",
+		},
+		schW240W290SmallPageBootProfile(
+			schRawBlockOffsets(0x00080000, 14, smallEraseBlockSize),
+			0x00a50000, 0x00000d20, 0x000341c7,
+			"4204a9d773f6621fa47a0d1ba06ec00e6d12dd83b71feb6f5c63a554e7c57b20",
+			0x000043a0,
+			"52a8f361500ba05abea9f8721cd1c7464caf0dae928f6b88c2d9190f087c0258",
+		),
 	)
-	profile.MemoryImages[0].PBLBytePatches = append(
-		profile.MemoryImages[0].PBLBytePatches,
-		littleEndianWordBytePatches(0x000014b8, 0x00008000, 0x03d4b004)...,
+	applyW240W290PBLHandoff(&profile)
+	profile.WBINFormat = WBINFormatOpaque
+	return profile
+}
+
+func applyW240W290PBLHandoff(profile *BuildProfile) {
+	for index := range profile.BootImages {
+		if profile.BootImages[index].ID == "qcsbl" {
+			profile.BootImages[index].PBLRelocationAddress = 0x78010000
+		}
+	}
+	for index := range profile.MemoryImages {
+		if profile.MemoryImages[index].ID == "pbl-rom" {
+			profile.MemoryImages[index].ID = "pbl-source"
+			profile.MemoryImages[index].LoadAddress = 0xffff0000
+		}
+	}
+}
+
+func schW240W290SmallPageBootProfile(
+	oemsblBlocks []int64,
+	oemsblLoadAddress, oemsblEntryOffset, oemsblUsedSize uint32,
+	oemsblSHA256 string,
+	pblSize uint32,
+	pblSHA256 string,
+) schRawBootProfile {
+	return schRawBootProfile{
+		PageSize: smallPageSize, EraseBlockSize: smallEraseBlockSize,
+		OEMSBLBlockOffsets: oemsblBlocks, OEMSBLLoadAddress: oemsblLoadAddress,
+		OEMSBLEntryOffset: oemsblEntryOffset, OEMSBLUsedSize: oemsblUsedSize,
+		OEMSBLLogicalSHA256: oemsblSHA256,
+		QCSBLBlockOffsets:   []int64{0x00040000}, QCSBLEntryOffset: 0x00000f34,
+		QCSBLUsedSize:      0x00001498,
+		QCSBLLogicalSHA256: "2415753537cc846313a7ebee92b21ecd6425db2ae90f1bc0e39fe18b7b70fbee",
+		PBLSize:            pblSize, PBLLoadAddress: 0x78010000, PBLLogicalSHA256: pblSHA256,
+	}
+}
+
+func schW330CK06Profile() BuildProfile {
+	return schThreeBlockSmallPageRawProfile(
+		SCHW330CK06ProfileID, "SCH-W330", "CK06",
+		map[Role]string{
+			RoleWBT:  "14236a18f79bd54f15fa22d8276e364524f3e220aaec9140606bed6eff330c33",
+			RoleWBIN: "8394f4f1a1ad39553b80b6aaaf1d1c702fc831cba41f62bc6f7e3e03658eb439",
+			RoleDAT:  "e8592224d6cdcdb3606f8f8fae88dbcb5b4b1449f3ba4747f3d458e7483ea898",
+			RoleFont: "cfe2d4a73c6ebb2f2f0b4da5fd60191b00e9e37253b1749a68743c2b2f0a470c",
+		},
+		0x0000b06d, "9f87df30ea0c4abf7efe652fde0b37828b13f31d29cb3a5e8926b363496209f1",
+		0x00054000, 17, 0x00000664, 0x00041e00,
+		"89518e970d1ca44c36947b269f30ed0a37efe3057bcb2499f61368183450ffed",
 	)
-	profile.MemoryImages[0].PBLBytePatches = append(
-		profile.MemoryImages[0].PBLBytePatches,
-		littleEndianWordBytePatches(0x000014e4, 0x00000000, 0x78002000)...,
+}
+
+func schW390CK11Profile() BuildProfile {
+	return schThreeBlockSmallPageRawProfile(
+		SCHW390CK11ProfileID, "SCH-W390", "CK11",
+		map[Role]string{
+			RoleWBT:  "9d990da9e29450084f069359c60a4f09efeceddec93994522447b69003d6008d",
+			RoleWBIN: "aa9f6f7dc43f1836c1eefc669f98b86e1c3170be425bcc3253ed633e547c53fc",
+			RoleDAT:  "a1ec54bcea51caac59f55a11d9cc6a72b8bf08c8a18e7f5c8b5af11daa0c1eba",
+			RoleFont: "569161cd8bd11b841f15e281db7253b9eafd379936fe58ef6e392ccfc112c3c5",
+		},
+		0x0000b071, "5350a079e310cb383d716e50e2254940045a777963e466faef640893b6c65bb4",
+		0x00054000, 17, 0x00000640, 0x00041e00,
+		"9c3f3856876d3e5b24087c6985d076d97235c117663397cc4f9bc2622fd89703",
 	)
+}
+
+func schW460CC26Profile() BuildProfile {
+	return schThreeBlockSmallPageRawProfile(
+		SCHW460CC26ProfileID, "SCH-W460", "CC26",
+		map[Role]string{
+			RoleWBT:  "59388283d06af34c0e266457ff854ab3010b03d00158a7348569c8af6d51c7c6",
+			RoleWBIN: "50ca91657707d3f3d6225b6c9d4392ed85b7dc27132e0300fa60a605bfd7b910",
+			RoleDAT:  "a694419e65781d776f580121d09c13ff3237c1222234d6527fde936cdd08a074",
+			RoleFont: "cd7804430c71e09f38f4525d8b5b1f0f0d411bdf143d15b1a64153fed8c00647",
+		},
+		0x0000ad0e, "41d1fe559f241c6e1a548ee3d692dd6bcbe63dfa44cc5ad0a75c81a2a575b800",
+		0x00058000, 19, 0x0000077c, 0x00049a00,
+		"4cebf54c547f2f272b260dd94192ac36948510137f6b07860753f0d1d87c793f",
+	)
+}
+
+func schThreeBlockSmallPageRawProfile(
+	id, model, build string,
+	pieceHashes map[Role]string,
+	qcsblUsedSize uint32,
+	qcsblSHA256 string,
+	oemsblStart int64,
+	oemsblBlocks int,
+	oemsblEntryOffset, oemsblUsedSize uint32,
+	oemsblSHA256 string,
+) BuildProfile {
+	profile := schRawDownloadProfile(id, model, build, pieceHashes, schRawBootProfile{
+		PageSize: smallPageSize, EraseBlockSize: smallEraseBlockSize,
+		OEMSBLBlockOffsets: schRawBlockOffsets(oemsblStart, oemsblBlocks, smallEraseBlockSize),
+		OEMSBLLoadAddress:  0x000a0000, OEMSBLEntryOffset: oemsblEntryOffset,
+		OEMSBLUsedSize: oemsblUsedSize, OEMSBLLogicalSHA256: oemsblSHA256,
+		QCSBLBlockOffsets: schRawBlockOffsets(0x00040000, 3, smallEraseBlockSize),
+		QCSBLEntryOffset:  0x00000028, QCSBLUsedSize: qcsblUsedSize,
+		QCSBLLogicalSHA256: qcsblSHA256,
+	})
 	profile.WBINFormat = WBINFormatOpaque
 	return profile
 }

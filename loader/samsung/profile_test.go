@@ -63,8 +63,8 @@ func TestRegistryRestrictsOpaqueWBINToRawDownloads(t *testing.T) {
 
 func TestBuiltinRegistrySeparatesSCHW830BuildsAndAdjacentBoards(t *testing.T) {
 	registry := BuiltinRegistry()
-	if len(registry.profiles) != 12 {
-		t.Fatalf("built-in Samsung profiles = %d, want 12", len(registry.profiles))
+	if len(registry.profiles) != 18 {
+		t.Fatalf("built-in Samsung profiles = %d, want 18", len(registry.profiles))
 	}
 	profiles := make(map[string]BuildProfile, len(registry.profiles))
 	for _, profile := range registry.profiles {
@@ -94,6 +94,73 @@ func TestBuiltinRegistrySeparatesSCHW830BuildsAndAdjacentBoards(t *testing.T) {
 	if !ok || len(qcsbl.BlockOffsets) != 1 || qcsbl.BlockOffsets[0] != 0x0c0000 ||
 		qcsbl.LoadAddress != 0x00080000 || qcsbl.EntryOffset != 0 {
 		t.Fatalf("SCH-W770 QCSBL profile = %+v", qcsbl)
+	}
+}
+
+func TestBuiltinRegistryKeepsAdditionalSmallPageRawTargetsExact(t *testing.T) {
+	profiles := make(map[string]BuildProfile)
+	for _, profile := range BuiltinRegistry().profiles {
+		profiles[profile.ID] = profile
+	}
+	tests := []struct {
+		id, model, build, wbt string
+		oemsblEntry           uint32
+	}{
+		{SCHW210CK12ProfileID, "SCH-W210", "CK12", "873c0dc12a58148a922755773019fb2a51766bcaf60804dd0bac89234113fce0", 0x03d9ca26},
+		{SCHW240CL28ProfileID, "SCH-W240", "CL28", "7c7a52555ff528ccfc596f0efef1eeeff4e3fd9ab994cc4e9fe3f992a6ccc9f3", 0x03d9c91e},
+		{SCHW290CK10ProfileID, "SCH-W290", "CK10", "ef6a490e7d31edb04fda399ee0b606954a408a3dda3e2a2e8d5a9d6f662bb490", 0x00a50d20},
+		{SCHW330CK06ProfileID, "SCH-W330", "CK06", "14236a18f79bd54f15fa22d8276e364524f3e220aaec9140606bed6eff330c33", 0x000a0664},
+		{SCHW390CK11ProfileID, "SCH-W390", "CK11", "9d990da9e29450084f069359c60a4f09efeceddec93994522447b69003d6008d", 0x000a0640},
+		{SCHW460CC26ProfileID, "SCH-W460", "CC26", "59388283d06af34c0e266457ff854ab3010b03d00158a7348569c8af6d51c7c6", 0x000a077c},
+	}
+	for _, test := range tests {
+		profile, ok := profiles[test.id]
+		if !ok || profile.Family != FamilySCHRawDownload ||
+			profile.Model != test.model || profile.Build != test.build ||
+			profile.WBINFormat != WBINFormatOpaque || profile.PieceHashes[RoleWBT] != test.wbt {
+			t.Fatalf("small-page raw profile %q = %+v", test.id, profile)
+		}
+		oemsbl, ok := profile.BootImage("oemsbl")
+		if !ok || oemsbl.LoadAddress+oemsbl.EntryOffset != test.oemsblEntry {
+			t.Fatalf("small-page raw profile %q OEMSBL = %+v", test.id, oemsbl)
+		}
+	}
+
+	w210 := profiles[SCHW210CK12ProfileID]
+	w210QCSBL, _ := w210.BootImage("qcsbl")
+	w210PBL, w210HasPBL := w210.MemoryImage("pbl-rom")
+	if len(w210QCSBL.BlockOffsets) != 1 || w210QCSBL.BlockOffsets[0] != 0x40000 ||
+		w210QCSBL.EntryOffset != 0x0fd8 || !w210QCSBL.PBLPreload ||
+		len(w210QCSBL.PBLBytePatches) != 1 || !w210HasPBL ||
+		w210PBL.LoadAddress != 0x03d4c000 || len(w210PBL.PBLBytePatches) != 14 {
+		t.Fatalf("SCH-W210 boot profile = QCSBL %+v PBL %+v", w210QCSBL, w210PBL)
+	}
+
+	for _, id := range []string{SCHW240CL28ProfileID, SCHW290CK10ProfileID} {
+		profile := profiles[id]
+		qcsbl, _ := profile.BootImage("qcsbl")
+		pbl, hasPBL := profile.MemoryImage("pbl-source")
+		_, hasMappedPBL := profile.MemoryImage("pbl-rom")
+		wantPBLSize := uint32(0x4388)
+		if id == SCHW290CK10ProfileID {
+			wantPBLSize = 0x43a0
+		}
+		if len(qcsbl.BlockOffsets) != 1 || qcsbl.BlockOffsets[0] != 0x40000 ||
+			qcsbl.EntryOffset != 0x0f34 || qcsbl.UsedSize != 0x1498 ||
+			qcsbl.PBLRelocationAddress != 0x78010000 || qcsbl.PBLPreload ||
+			!hasPBL || hasMappedPBL || pbl.LoadAddress != 0xffff0000 || pbl.Size != wantPBLSize {
+			t.Fatalf("%s boot profile = QCSBL %+v PBL %+v", id, qcsbl, pbl)
+		}
+	}
+
+	for _, id := range []string{SCHW330CK06ProfileID, SCHW390CK11ProfileID, SCHW460CC26ProfileID} {
+		profile := profiles[id]
+		qcsbl, _ := profile.BootImage("qcsbl")
+		if !reflect.DeepEqual(qcsbl.BlockOffsets, []int64{0x40000, 0x44000, 0x48000}) ||
+			qcsbl.EntryOffset != 0x28 || qcsbl.HeaderSize != smallPageSize ||
+			qcsbl.BlockSize != smallEraseBlockSize || len(profile.MemoryImages) != 0 {
+			t.Fatalf("%s three-block QCSBL profile = %+v", id, qcsbl)
+		}
 	}
 }
 
@@ -202,6 +269,19 @@ func TestReconstructBootImageStripsPerBlockHeaders(t *testing.T) {
 	}
 	if !bytes.Equal(image.Bytes[:32], wbt[firstBlock+PageSize:firstBlock+PageSize+32]) {
 		t.Fatal("reconstructed payload does not follow the block header")
+	}
+	relocatedSpec := spec
+	relocatedSpec.PBLRelocationAddress = 0x00100000
+	if err := relocatedSpec.validate(); err != nil {
+		t.Fatalf("valid PBL relocation rejected: %v", err)
+	}
+	relocatedSpec.PBLRelocationAddress = relocatedSpec.LoadAddress
+	if err := relocatedSpec.validate(); err == nil {
+		t.Fatal("boot image accepted a PBL relocation at its load address")
+	}
+	relocatedSpec.PBLRelocationAddress = 0xffff0000
+	if err := relocatedSpec.validate(); err == nil {
+		t.Fatal("boot image accepted an overflowing PBL relocation")
 	}
 
 	patchedSpec := spec

@@ -1976,12 +1976,107 @@ func SCHW420CD16BoardProfile() BoardProfile {
 	)
 }
 
+// SCHW210CK12BoardProfile selects CK12's exact small-page raw-download board.
+func SCHW210CK12BoardProfile() BoardProfile {
+	return samsungW270CompatibleBoardProfile(
+		"samsung.sch-w210", "samsung.sch-w210.ck12", 0x093c0000,
+	)
+}
+
+// SCHW240CL28BoardProfile selects CL28's exact small-page raw-download board.
+func SCHW240CL28BoardProfile() BoardProfile {
+	profile := samsungW240W290BoardProfile(
+		"samsung.sch-w240", "samsung.sch-w240.cl28", 0x0bac0000,
+	)
+	// CL28's partition extent exceeds 128 MiB and its PBL publishes the
+	// corresponding 256 MiB small-page device geometry.
+	profile.NANDSize = 0x10000000
+	return profile
+}
+
+// SCHW290CK10BoardProfile selects CK10's exact small-page raw-download board.
+func SCHW290CK10BoardProfile() BoardProfile {
+	return samsungW240W290BoardProfile(
+		"samsung.sch-w290", "samsung.sch-w290.ck10", 0x05d00000,
+	)
+}
+
+func samsungW240W290BoardProfile(id, firmwareBuildID string, packagedEnd uint64) BoardProfile {
+	profile := samsungSmallPageRawDownloadBoardProfile(id, firmwareBuildID, packagedEnd)
+	// This QCSBL generation relocates into the retained 0x78010000 PBL RAM
+	// bank and uses its upper half for working data and the initial stack.
+	profile.Memory = append(profile.Memory, MemoryRegionProfile{
+		ID: "small-page-pbl-runtime", Kind: MemoryRAM,
+		Address: 0x78010000, Size: 0x00020000,
+	})
+	// The relocated QCSBL reset stub publishes 0x78028000 as its full-
+	// descending stack top. The missing mask ROM uses the same retained RAM
+	// bank when it calls the profiled QCSBL entry routine.
+	profile.PBLStackPointer = 0x78028000
+	// This PBL generation expands the NAND feature records retained in its
+	// source image into a fixed selector table consumed directly by QCSBL.
+	profile.PBLLegacyFeatureDataAddress = 0
+	profile.PBLFixedFeatureDataAddress = 0xffff601c
+	profile.PBLFixedFeatureFirst = 0x000000ff
+	profile.PBLFixedFeatureSlotCount = 0x0000013f
+	profile.PBLFixedFeatures = []QualcommPBLFixedFeature{
+		{Selector: 0x0ff, Value: 0x0020},
+		{Selector: 0x100, Value: 0x4000},
+		{Selector: 0x102, Value: 0x0200},
+		{Selector: 0x103, Value: 0x004a},
+		{Selector: 0x119, Value: 0x0014},
+	}
+	// Revision one selects the retained 0x78010000 QCSBL relocation and its
+	// matching internal-RAM stack layout.
+	profile.BootControlReadOnlyRegisters = append(
+		profile.BootControlReadOnlyRegisters,
+		QualcommBootReadOnlyRegister{Offset: 0x0270, Value: 1},
+	)
+	return profile
+}
+
+// SCHW330CK06BoardProfile selects CK06's exact small-page raw-download board.
+func SCHW330CK06BoardProfile() BoardProfile {
+	return samsungSmallPageRawDownloadBoardProfile(
+		"samsung.sch-w330", "samsung.sch-w330.ck06", 0x05700000,
+	)
+}
+
+// SCHW390CK11BoardProfile selects CK11's exact small-page raw-download board.
+func SCHW390CK11BoardProfile() BoardProfile {
+	return samsungSmallPageRawDownloadBoardProfile(
+		"samsung.sch-w390", "samsung.sch-w390.ck11", 0x05700000,
+	)
+}
+
+// SCHW460CC26BoardProfile selects CC26's exact small-page raw-download board.
+func SCHW460CC26BoardProfile() BoardProfile {
+	return samsungSmallPageRawDownloadBoardProfile(
+		"samsung.sch-w460", "samsung.sch-w460.cc26", 0x05870000,
+	)
+}
+
+func samsungSmallPageRawDownloadBoardProfile(id, firmwareBuildID string, packagedEnd uint64) BoardProfile {
+	profile := samsungRawDownloadBoardProfile(id, firmwareBuildID, packagedEnd)
+	profile.NANDPageSize = 0x00000200
+	profile.NANDEraseBlockSize = 0x00004000
+	// This small-page generation publishes 0x2000 physical erase blocks in
+	// its retained PBL feature data: 128 MiB independent of the smaller
+	// packaged partition extent.
+	profile.NANDSize = 0x08000000
+	return profile
+}
+
 // SCHW270CL28BoardProfile uses the older small-page NAND geometry published
 // by CL28's MIBIB and retained PBL feature table.
 func SCHW270CL28BoardProfile() BoardProfile {
-	profile := samsungRawDownloadBoardProfile(
+	return samsungW270CompatibleBoardProfile(
 		"samsung.sch-w270", "samsung.sch-w270.cl28", 0x08c80000,
 	)
+}
+
+func samsungW270CompatibleBoardProfile(id, firmwareBuildID string, packagedEnd uint64) BoardProfile {
+	profile := samsungRawDownloadBoardProfile(id, firmwareBuildID, packagedEnd)
 	profile.NANDPageSize = 0x00000200
 	profile.NANDEraseBlockSize = 0x00004000
 	profile.PBLStackPointer = 0x03f40000
