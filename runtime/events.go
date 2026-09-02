@@ -129,6 +129,44 @@ func (b *EventBus) Enqueue(event Event) (uint64, error) {
 	return event.Sequence, nil
 }
 
+// HasPendingRepeat answers whether an auto-repeat for this control is still
+// waiting to be delivered. A repeat says only "the key is still down", so a
+// second one behind an undelivered first carries nothing new - and while the
+// guest cannot take input, appending them at the repeat rate is what fills the
+// queue to its bound.
+func (b *EventBus) HasPendingRepeat(owner OwnerID, control string) bool {
+	for _, event := range b.events {
+		if event.Kind == EventInputRepeat &&
+			event.Owner == owner && event.Control == control {
+			return true
+		}
+	}
+	return false
+}
+
+// DropPendingLifecycle removes an owner's undelivered lifecycle records and
+// answers how many went. Lifecycle is a state, not a log: the newest record is
+// the whole truth and nothing reads the ones behind it. A quantum writes a
+// running and a paused record, so without this a guest that stops taking
+// events - because an undeliverable input sits at the head of the strictly
+// ordered queue - fills the queue with them at two per frame.
+func (b *EventBus) DropPendingLifecycle(owner OwnerID) int {
+	kept := b.events[:0]
+	dropped := 0
+	for _, event := range b.events {
+		if event.Kind == EventLifecycle && event.Owner == owner {
+			dropped++
+			continue
+		}
+		kept = append(kept, event)
+	}
+	for index := len(kept); index < len(b.events); index++ {
+		b.events[index] = Event{}
+	}
+	b.events = kept
+	return dropped
+}
+
 func (b *EventBus) Peek() (Event, bool) {
 	if len(b.events) == 0 {
 		return Event{}, false

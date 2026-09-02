@@ -279,14 +279,54 @@ func TestEventInputAndTimersHaveDeterministicOrdering(t *testing.T) {
 		}
 		kinds = append(kinds, event.Kind)
 	}
+	// The advance spans three repeat periods, but nothing consumed a repeat in
+	// between, and a repeat only says "the key is still down". Delivering a
+	// backlog of them would be delivering real-time events late, so the one
+	// still waiting stands for all three.
 	want := []EventKind{
 		EventInputPress,
-		EventInputRepeat,
-		EventInputRepeat,
 		EventInputRepeat,
 	}
 	if !reflect.DeepEqual(kinds, want) {
 		t.Fatalf("input event kinds = %v, want %v", kinds, want)
+	}
+	// Consuming it lets the next one through, so the train continues.
+	if err := input.Advance(bus, 1, 2300*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	event, ok = bus.PopReady(2300 * time.Millisecond)
+	if !ok || event.Kind != EventInputRepeat {
+		t.Fatalf("repeat after the queue drained = %+v, %v", event, ok)
+	}
+}
+
+// TestHeldKeyCannotFillTheEventQueue covers what random key fuzzing found on
+// 창세기전 크로우2: the title's own key handler had not returned, so no input
+// could be delivered, and the auto-repeat generator kept appending behind the
+// undeliverable event at the head until the queue hit its bound and the title
+// died. A held key must cost one queued repeat, however long it is held.
+func TestHeldKeyCannotFillTheEventQueue(t *testing.T) {
+	bus := NewEventBus(64, 64)
+	input := NewInput(4, 100*time.Millisecond, 50*time.Millisecond)
+	if err := input.Change(bus, 1, "up", true, 0); err != nil {
+		t.Fatal(err)
+	}
+	// Nothing ever pops, which is exactly the blocked case.
+	for step := 1; step <= 200; step++ {
+		if err := input.Advance(
+			bus, 1, time.Duration(step)*50*time.Millisecond,
+		); err != nil {
+			t.Fatalf("advance %d: %v", step, err)
+		}
+	}
+	repeats := 0
+	for _, event := range bus.Snapshot().Events {
+		if event.Kind == EventInputRepeat {
+			repeats++
+		}
+	}
+	if repeats != 1 {
+		t.Fatalf("a key held for ten seconds queued %d repeats, want 1", repeats)
 	}
 }
 

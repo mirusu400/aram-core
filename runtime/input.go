@@ -165,13 +165,20 @@ func (i *Input) advanceLocked(
 			})
 		}
 		for control.nextRepeat <= now {
-			if _, err := bus.Enqueue(Event{
-				At:      control.nextRepeat,
-				Kind:    EventInputRepeat,
-				Owner:   owner,
-				Control: name,
-			}); err != nil {
-				return err
+			// Coalesce: a repeat this control has not had delivered yet says
+			// everything a second one would. Without this a title that stops
+			// taking input while a key is held - because its own key handler
+			// has not returned - watches the queue fill at the repeat rate
+			// until it hits the bound and dies.
+			if !bus.HasPendingRepeat(owner, name) {
+				if _, err := bus.Enqueue(Event{
+					At:      control.nextRepeat,
+					Kind:    EventInputRepeat,
+					Owner:   owner,
+					Control: name,
+				}); err != nil {
+					return err
+				}
 			}
 			if control.nextRepeat > time.Duration(math.MaxInt64-int64(i.repeatPeriod)) {
 				return fmt.Errorf(

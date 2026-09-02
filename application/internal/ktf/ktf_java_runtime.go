@@ -304,6 +304,33 @@ func (r *Runtime) handleThreadMethod(
 			if target == 0 {
 				target = thread
 			}
+			// A start with no free task slot waits for one. Killing the title
+			// instead is the worst of the three things a VM could do here, and
+			// it is what random key input reached on 리얼타짜맞고: the title
+			// starts a network thread per attempt, those threads never end,
+			// and the seventeenth start took the whole title down.
+			if !r.HasJavaTaskCapacity() {
+				if len(r.PendingJavaCalls) >= ktfMaxPendingJavaCalls {
+					return 0, fmt.Errorf(
+						"KTF pending Java call limit %d reached",
+						ktfMaxPendingJavaCalls,
+					)
+				}
+				r.PendingJavaCalls = append(
+					r.PendingJavaCalls,
+					ktfPendingJavaCall{
+						instance:   target,
+						name:       "run",
+						descriptor: "()V",
+					},
+				)
+				r.tracef(
+					"java_thread_start_defer_full:thread=0x%08x:pending=%d",
+					thread,
+					len(r.PendingJavaCalls),
+				)
+				return 0, nil
+			}
 			task, err := r.queueJavaVirtualTask(target, "run", "()V")
 			if err != nil {
 				return 0, err

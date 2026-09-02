@@ -169,6 +169,8 @@ func (c *Coordinator) Transition(
 	adapter.Lifecycle = next
 	adapter.Fault = ""
 	if bus != nil {
+		// This record supersedes any the owner has not taken yet.
+		bus.DropPendingLifecycle(owner)
 		sequence, enqueueErr := bus.Enqueue(Event{
 			At: at, Kind: EventLifecycle, Owner: owner,
 			Name: lifecycleName(next), Value: int64(next),
@@ -202,6 +204,7 @@ func (c *Coordinator) Fault(
 	previousState, previousFault := adapter.Lifecycle, adapter.Fault
 	adapter.Lifecycle, adapter.Fault = LifecycleFaulted, message
 	if bus != nil {
+		bus.DropPendingLifecycle(owner)
 		sequence, enqueueErr := bus.Enqueue(Event{
 			At: at, Kind: EventLifecycle, Owner: owner,
 			Name: "faulted", Value: int64(LifecycleFaulted),
