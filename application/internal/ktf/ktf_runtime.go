@@ -82,6 +82,11 @@ type Runtime struct {
 	Exe     ktfExecutable
 	Heap    guest.Heap
 
+	// javaHeapCollected is how many blocks were live just after the last
+	// collection, so the next one waits for real growth rather than running
+	// again on the very next allocation.
+	javaHeapCollected int
+
 	Services             *shared.Services
 	serviceConfig        shared.Config
 	ServiceOwner         shared.OwnerID

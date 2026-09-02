@@ -118,7 +118,7 @@ func (r *Runtime) NewJavaInstanceForClass(class JavaClass) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
-	fields, err := r.Heap.Allocate(uint32(class.FieldSize)+4, true)
+	fields, err := r.allocateJavaHeapBytes(uint32(class.FieldSize)+4, true)
 	if err != nil {
 		return 0, err
 	}
@@ -239,7 +239,7 @@ func (r *Runtime) NewJavaArray(
 	if err != nil {
 		return 0, err
 	}
-	fields, err := r.Heap.Allocate(count*elementSize+8, true)
+	fields, err := r.allocateJavaHeapBytes(count*elementSize+8, true)
 	if err != nil {
 		return 0, err
 	}
@@ -272,7 +272,7 @@ func (r *Runtime) AllocateWords(count uint32) (uint32, error) {
 	if count > ^uint32(0)/4 {
 		return 0, errors.New("KTF allocation word count overflows")
 	}
-	address, err := r.Heap.Allocate(count*4, true)
+	address, err := r.allocateJavaHeapBytes(count*4, true)
 	if err != nil {
 		return 0, err
 	}
@@ -290,7 +290,7 @@ func (r *Runtime) allocateBytes(data []byte, terminate bool) (uint32, error) {
 	if uint64(size) > uint64(^uint32(0)) {
 		return 0, errors.New("KTF byte allocation exceeds uint32")
 	}
-	address, err := r.Heap.Allocate(uint32(size), true)
+	address, err := r.allocateJavaHeapBytes(uint32(size), true)
 	if err != nil {
 		return 0, err
 	}

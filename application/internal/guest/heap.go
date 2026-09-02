@@ -95,3 +95,39 @@ func (h *Heap) Release(address uint32) bool {
 	h.Free = merged
 	return true
 }
+
+// ReleaseAll frees many blocks at once and answers how many it freed. Release
+// sorts and merges the whole free list per call, which a collector freeing a
+// million blocks cannot afford: this pays that cost once.
+func (h *Heap) ReleaseAll(addresses []uint32) int {
+	h = h.Root()
+	freed := 0
+	for _, address := range addresses {
+		size, ok := h.Allocations[address]
+		if !ok {
+			continue
+		}
+		delete(h.Allocations, address)
+		h.Free = append(h.Free, Block{Address: address, Size: size})
+		freed++
+	}
+	if freed == 0 {
+		return 0
+	}
+	sort.Slice(h.Free, func(i, j int) bool {
+		return h.Free[i].Address < h.Free[j].Address
+	})
+	merged := h.Free[:0]
+	for _, block := range h.Free {
+		if len(merged) != 0 {
+			last := &merged[len(merged)-1]
+			if last.Address+last.Size == block.Address {
+				last.Size += block.Size
+				continue
+			}
+		}
+		merged = append(merged, block)
+	}
+	h.Free = merged
+	return freed
+}
