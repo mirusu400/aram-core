@@ -88,6 +88,39 @@ func TestHLERunnerRequiresExplicitHandlerAndPropagatesHandlerFault(t *testing.T)
 	}
 }
 
+func TestHLERunnerPreservesUnownedExecutionTrap(t *testing.T) {
+	bus := NewBus()
+	if err := bus.MapRAM("code", 0x1000, 0x200); err != nil {
+		t.Fatal(err)
+	}
+	writeARMInstructions(t, bus, 0x1000, 0xe1a00000, 0xe1a00000)
+	backend := interpreter.New()
+	if err := backend.AttachSystemBus(bus); err != nil {
+		t.Fatal(err)
+	}
+	call := HLECallProfile{
+		ID: "fixture-call", Contract: "fixture.return",
+		Address: 0x1100, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+	}
+	runner, err := NewHLERunner(bus, backend, []HLECallProfile{call}, map[string]HLECallHandler{
+		call.Contract: HLECallHandlerFunc(func(HLECallContext) error { return nil }),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.SetExecutionTraps([]cpu.ExecutionTrap{
+		{Address: call.Address, Mode: call.Mode},
+		{Address: 0x1004, Mode: cpu.ModeARM},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result := runner.Run(context.Background(), 0x1000, cpu.ModeARM, 8)
+	if result.Err != nil || result.Reason != cpu.StopExecutionTrap ||
+		result.Instructions != 1 || result.PC != 0x1004 {
+		t.Fatalf("unowned HLE-adjacent trap result = %+v", result)
+	}
+}
+
 func writeARMInstructions(t *testing.T, bus *Bus, address uint32, instructions ...uint32) {
 	t.Helper()
 	var encoded [4]byte

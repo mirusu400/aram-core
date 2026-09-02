@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha512"
 	"encoding/binary"
+	"strings"
 	"testing"
 
 	"github.com/mirusu400/aram-core/cpu"
@@ -195,6 +196,81 @@ func TestSamsungQualcommResidentBootHandlerPreservesCallRegisters(t *testing.T) 
 	}
 	if value, err := backend.ReadRegister(cpu.RegisterR0); err != nil || value != sentinel {
 		t.Fatalf("resident boot callback result = %#x, error %v", value, err)
+	}
+}
+
+func TestSamsungQualcommRetainedPBLNANDHandlers(t *testing.T) {
+	flash, err := system.NewErasedCOWFlash(0x8000, 0x4000, strings.Repeat("a", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := bytes.Repeat([]byte{0x5a}, 0x200)
+	if err := flash.ProgramAt(page, 0x400); err != nil {
+		t.Fatal(err)
+	}
+	board := system.BoardProfile{
+		NANDPageSize: 0x200, NANDEraseBlockSize: 0x4000,
+		NANDFactoryBadBlocks: []uint32{1},
+	}
+	handlers := samsungQualcommMachineHLEHandlers(flash, board)
+	backend := interpreter.New()
+	t.Cleanup(func() { _ = backend.Close() })
+	if err := backend.Map(0x2000, 0x2000, cpu.PermissionRead|cpu.PermissionWrite); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR0: 2,
+		cpu.RegisterR1: 0x200,
+		cpu.RegisterR2: 2,
+		cpu.RegisterR3: 0x2000,
+		cpu.RegisterSP: 0x3000,
+	} {
+		if err := backend.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var count [4]byte
+	binary.LittleEndian.PutUint32(count[:], 1)
+	if err := backend.WriteMemory(0x3000, count[:]); err != nil {
+		t.Fatal(err)
+	}
+	readHandler := handlers[system.HLEContractQualcommPBLNANDRead]
+	if readHandler == nil {
+		t.Fatal("retained PBL NAND read handler is missing")
+	}
+	if err := readHandler.InvokeHLE(system.HLECallContext{CPU: backend}); err != nil {
+		t.Fatal(err)
+	}
+	output := make([]byte, len(page))
+	if err := backend.ReadMemory(0x2000, output); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(output, page) {
+		t.Fatal("retained PBL NAND read did not copy the requested page")
+	}
+	if value, err := backend.ReadRegister(cpu.RegisterR0); err != nil || value != 1 {
+		t.Fatalf("retained PBL NAND read result = %#x, error %v", value, err)
+	}
+
+	badBlockHandler := handlers[system.HLEContractQualcommPBLNANDBadBlock]
+	if badBlockHandler == nil {
+		t.Fatal("retained PBL NAND bad-block handler is missing")
+	}
+	for block, want := range map[uint32]uint32{0: 0, 1: 1} {
+		if err := backend.WriteRegister(cpu.RegisterR0, block); err != nil {
+			t.Fatal(err)
+		}
+		if err := badBlockHandler.InvokeHLE(system.HLECallContext{CPU: backend}); err != nil {
+			t.Fatal(err)
+		}
+		if value, err := backend.ReadRegister(cpu.RegisterR0); err != nil || value != want {
+			t.Fatalf("retained PBL NAND block %#x result = %#x, error %v", block, value, err)
+		}
+	}
+	if err := handlers[system.HLEContractQualcommPBLFatal].InvokeHLE(
+		system.HLECallContext{CPU: backend},
+	); err == nil {
+		t.Fatal("retained PBL fatal handler returned success")
 	}
 }
 

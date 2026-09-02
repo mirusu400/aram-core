@@ -18,6 +18,9 @@ func TestAssembleFlashMapsDecodedAndIdentityRegions(t *testing.T) {
 	if image.Size() != 0xe0000 || image.ErasedValue() != 0xff {
 		t.Fatalf("flash geometry = size %#x erased %#x", image.Size(), image.ErasedValue())
 	}
+	if image.PageSize() != PageSize || image.EraseBlockSize() != EraseBlockSize {
+		t.Fatalf("flash NAND geometry = %#x/%#x", image.PageSize(), image.EraseBlockSize())
+	}
 	if len(image.Identity()) != len("samsung-flash-v1:")+64 {
 		t.Fatalf("flash identity = %q", image.Identity())
 	}
@@ -96,6 +99,33 @@ func TestAssembleFlashMapsRawDownloadRegionsFromPieceOrigin(t *testing.T) {
 	assertFlashBytes(t, image, 0x60000, []byte{0x7f, 'E', 'L', 'F'})
 	assertFlashBytes(t, image, 0x80000, []byte{0x67, 0x31})
 	assertFlashBytes(t, image, 0xc0000, []byte{1, 0, 0, 0})
+}
+
+func TestAssembleFlashPreservesSmallPageRawGeometry(t *testing.T) {
+	sources := syntheticSmallPageRawDownloadSources(t)
+	set, err := firmwareset.NewSet([]firmwareset.Source{
+		sources[RoleWBT], sources[RoleWBIN], sources[RoleDAT], sources[RoleFont],
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := Inspect(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	image, err := AssembleFlash(set, pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if image.Size() != 0x0e0000 || image.PageSize() != smallPageSize ||
+		image.EraseBlockSize() != smallEraseBlockSize {
+		t.Fatalf(
+			"small-page flash geometry = size %#x page %#x erase %#x",
+			image.Size(), image.PageSize(), image.EraseBlockSize(),
+		)
+	}
+	assertFlashBytes(t, image, smallEraseBlockSize, []byte{0xac, 0x9f, 0x56, 0xfe})
+	assertFlashBytes(t, image, smallEraseBlockSize+12, []byte{2, 0, 0, 0})
 }
 
 func TestAssembleFlashMapsLogicalRegionsAroundFactoryBadBlocks(t *testing.T) {

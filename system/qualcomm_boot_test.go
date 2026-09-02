@@ -101,14 +101,87 @@ func TestQualcommNANDPBLHandoffCarriesSharedDataEndPointer(t *testing.T) {
 	}
 }
 
-func TestQualcommNANDPBLHandoffRejectsNon2KPageGeometry(t *testing.T) {
+func TestQualcommNANDPBLHandoffCarriesSmallPageGeometry(t *testing.T) {
+	handoff, err := NewQualcommNANDPBLHandoff(QualcommNANDPBLConfig{
+		Entry:        0x80000,
+		StackPointer: 0x03f40000,
+		TableAddress: 0x78001000, LegacyFeatureDataAddress: 0xffff6044,
+		FixedFeatureDataAddress: 0x78002000,
+		FixedFeatureFirst:       0xf9,
+		FixedFeatureSlotCount:   5,
+		FixedFeatures: []QualcommPBLFixedFeature{
+			{Selector: 0xf9, Value: 0x20},
+			{Selector: 0xfa, Value: 0x200},
+			{Selector: 0xfc, Value: 0x4000},
+			{Selector: 0xfd, Value: 0x14},
+		},
+		PageSize: 0x200, EraseBlockSize: 0x4000,
+		FlashSize: 0x10000000, BadBlockLimit: 0x14,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if handoff.ID != "qualcomm.pbl-hle.nand-v1" {
+		t.Fatalf("small-page PBL handoff ID = %q", handoff.ID)
+	}
+	if handoff.Registers[len(handoff.Registers)-1] != (RegisterSeed{
+		Register: cpu.RegisterSP,
+		Value:    0x03f40000,
+	}) {
+		t.Fatalf("small-page PBL stack = %+v", handoff.Registers)
+	}
+	for _, table := range []struct {
+		address  uint32
+		expected [][2]uint32
+	}{
+		{0x78001000, [][2]uint32{{0x12f, 0x20}, {0x130, 0x4000}, {0x132, 0x200}, {0x133, 0x14}, {0x141, qualcommPBLFlashTypeNAND}}},
+		{0xffff6044, [][2]uint32{{0x108, 0x20}, {0x109, 0x4000}, {0x10b, 0x200}, {0x10c, 0x14}, {0x115, qualcommPBLFlashTypeNAND}}},
+	} {
+		var memory []byte
+		for _, seed := range handoff.Memory {
+			if seed.Address == table.address {
+				memory = seed.Bytes
+				break
+			}
+		}
+		if memory == nil {
+			t.Fatalf("small-page PBL table %#x is absent", table.address)
+		}
+		for index, entry := range table.expected {
+			offset := qualcommPBLFeatureDataHeaderSize + index*8
+			if binary.LittleEndian.Uint32(memory[offset:]) != entry[0] ||
+				binary.LittleEndian.Uint32(memory[offset+4:]) != entry[1] {
+				t.Fatalf("small-page PBL table %#x entry %d = %x", table.address, index, memory[offset:offset+8])
+			}
+		}
+	}
+	var fixed []byte
+	for _, seed := range handoff.Memory {
+		if seed.Address == 0x78002000 {
+			fixed = seed.Bytes
+			break
+		}
+	}
+	wantFixed := [][2]uint32{{1, 0x20}, {1, 0x200}, {0, 0}, {1, 0x4000}, {1, 0x14}}
+	if len(fixed) != len(wantFixed)*8 {
+		t.Fatalf("small-page fixed PBL table size = %#x", len(fixed))
+	}
+	for index, entry := range wantFixed {
+		if binary.LittleEndian.Uint32(fixed[index*8:]) != entry[0] ||
+			binary.LittleEndian.Uint32(fixed[index*8+4:]) != entry[1] {
+			t.Fatalf("small-page fixed PBL slot %d = %x", index, fixed[index*8:index*8+8])
+		}
+	}
+}
+
+func TestQualcommNANDPBLHandoffRejectsUnsupportedGeometry(t *testing.T) {
 	_, err := NewQualcommNANDPBLHandoff(QualcommNANDPBLConfig{
 		Entry: 0x80028, TableAddress: 0x78001000,
 		PageSize: 0x1000, EraseBlockSize: 0x20000,
 		FlashSize: 0x09800000, BadBlockLimit: 0x14,
 	})
 	if err == nil {
-		t.Fatal("NAND2K handoff accepted 4 KiB pages")
+		t.Fatal("PBL handoff accepted unsupported 4 KiB pages")
 	}
 	_, err = NewQualcommNANDPBLHandoff(QualcommNANDPBLConfig{
 		Entry: 0x80000, TableAddress: 0x78001000, LegacyFeatureDataAddress: 0xffff6042,
@@ -154,6 +227,24 @@ func TestQualcommNANDPBLHandoffRejectsNon2KPageGeometry(t *testing.T) {
 			Entry: 0x800000, TableAddress: 0x78001000,
 			SharedDataAddress: 0x78002000,
 			PageSize:          0x800, EraseBlockSize: 0x20000,
+			FlashSize: 0x20000000, BadBlockLimit: 0x14,
+		},
+		{
+			Entry: 0x800000, TableAddress: 0x78001000,
+			FixedFeatureDataAddress: 0x78002000,
+			FixedFeatureFirst:       0xf9,
+			PageSize:                0x800, EraseBlockSize: 0x20000,
+			FlashSize: 0x20000000, BadBlockLimit: 0x14,
+		},
+		{
+			Entry: 0x800000, TableAddress: 0x78001000,
+			FixedFeatureDataAddress: 0x78002000,
+			FixedFeatureFirst:       0xf9,
+			FixedFeatureSlotCount:   1,
+			FixedFeatures: []QualcommPBLFixedFeature{
+				{Selector: 0xfa, Value: 1},
+			},
+			PageSize: 0x800, EraseBlockSize: 0x20000,
 			FlashSize: 0x20000000, BadBlockLimit: 0x14,
 		},
 	} {

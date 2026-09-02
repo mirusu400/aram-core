@@ -63,6 +63,10 @@ type ELF32ProgramHeader struct {
 // memory dump. Its SEED tables are the public RFC 4269 definitions; only the
 // per-package round-key schedule stored in the signed wrapper is consumed.
 func DecodeWBIN(set firmwareset.Set, pkg Package) (ProgressiveImage, error) {
+	return decodeWBINWithRegistry(set, pkg, BuiltinRegistry())
+}
+
+func decodeWBINWithRegistry(set firmwareset.Set, pkg Package, registry Registry) (ProgressiveImage, error) {
 	if pkg.Family != FamilySCHDownload && pkg.Family != FamilySCHRawDownload &&
 		pkg.Family != FamilySCHFlexOneNANDDownload {
 		return ProgressiveImage{}, fmt.Errorf("unsupported Samsung package family %q", pkg.Family)
@@ -77,6 +81,29 @@ func DecodeWBIN(set firmwareset.Set, pkg Package) (ProgressiveImage, error) {
 	}
 	if piece.SHA256() != metadata.SHA256 {
 		return ProgressiveImage{}, fmt.Errorf("Samsung %s metadata does not match firmware set", RoleWBIN)
+	}
+	profile, matchErr := registry.Match(pkg)
+	if matchErr == nil && profile.WBINFormat == WBINFormatOpaque {
+		if pkg.Family != FamilySCHRawDownload {
+			return ProgressiveImage{}, fmt.Errorf("opaque Samsung WBIN requires the raw-download family")
+		}
+		header := rawHeader(piece, RoleWBIN, string(WBINFormatOpaque))
+		if header != metadata.Header {
+			return ProgressiveImage{}, fmt.Errorf("Samsung %s header metadata does not match firmware set", RoleWBIN)
+		}
+		if header.PayloadSize > MaxProgressiveImageBytes || header.PayloadSize > uint64(math.MaxInt) {
+			return ProgressiveImage{}, wbinFormat(
+				piece.Index(), 0, "payload exceeds progressive-image limit", ErrInvalidWBINTransform,
+			)
+		}
+		decoded := make([]byte, int(header.PayloadSize))
+		if _, err := piece.ReadAt(decoded, 0); err != nil {
+			return ProgressiveImage{}, err
+		}
+		digest := sha256.Sum256(decoded)
+		return ProgressiveImage{
+			Bytes: decoded, SHA256: hex.EncodeToString(digest[:]),
+		}, nil
 	}
 	header, err := inspectPieceForFamily(piece, pkg.Family)
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/mirusu400/aram-core/firmwareset"
@@ -36,10 +37,34 @@ func TestRegistryMatchesExactPieceHashes(t *testing.T) {
 	}
 }
 
+func TestRegistryRestrictsOpaqueWBINToRawDownloads(t *testing.T) {
+	sources := syntheticDownloadSources(t)
+	_, pkg := inspectSyntheticSet(t, sources)
+	profile := syntheticProfile(t, pkg)
+	profile.WBINFormat = WBINFormatOpaque
+	if _, err := NewRegistry(profile); err == nil {
+		t.Fatal("NewRegistry accepted opaque WBIN for a wrapped download")
+	}
+
+	profile.Family = FamilySCHRawDownload
+	registry, err := NewRegistry(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if registry.profiles[0].WBINFormat != WBINFormatOpaque {
+		t.Fatalf("cloned WBIN format = %q", registry.profiles[0].WBINFormat)
+	}
+
+	profile.WBINFormat = "unsupported"
+	if _, err := NewRegistry(profile); err == nil {
+		t.Fatal("NewRegistry accepted an unknown WBIN format")
+	}
+}
+
 func TestBuiltinRegistrySeparatesSCHW830BuildsAndAdjacentBoards(t *testing.T) {
 	registry := BuiltinRegistry()
-	if len(registry.profiles) != 9 {
-		t.Fatalf("built-in Samsung profiles = %d, want 9", len(registry.profiles))
+	if len(registry.profiles) != 12 {
+		t.Fatalf("built-in Samsung profiles = %d, want 12", len(registry.profiles))
 	}
 	profiles := make(map[string]BuildProfile, len(registry.profiles))
 	for _, profile := range registry.profiles {
@@ -84,6 +109,8 @@ func TestBuiltinRegistryKeepsRawVersionOneTargetsExact(t *testing.T) {
 		SCHW340DC18ProfileID: {"SCH-W340", "DC18", "d07018c4ddb90fa14042515a7363e5895ec9fbe8644a336d158c533f8e37288a"},
 		SCHW350CK06ProfileID: {"SCH-W350", "CK06", "b7eb96136c3621e4fcad5124cb7a85486b135fbbac133c4fcd684a73335d2c9f"},
 		SCHW410CL10ProfileID: {"SCH-W410", "CL10", "8655518bde12f4e51b88da2653523ddddec4d2b77b2f6bd0097010385754f506"},
+		SCHW300DA04ProfileID: {"SCH-W300", "DA04", "6940ee63e557b0ef81291f0f59371019f7617ee021b42b93cf6e809fd81a3a36"},
+		SCHW420CD16ProfileID: {"SCH-W420", "CD16", "6550560f94d996ec9c39cb703841904033ff2cb39eff838afd37cf3dda8c609c"},
 	}
 	for id, want := range expected {
 		profile, ok := profiles[id]
@@ -101,6 +128,42 @@ func TestBuiltinRegistryKeepsRawVersionOneTargetsExact(t *testing.T) {
 			pbl.LoadAddress != 0x00101000 {
 			t.Fatalf("raw profile %q PBL ROM = %+v", id, pbl)
 		}
+	}
+	for id, entry := range map[string]uint32{
+		SCHW300DA04ProfileID: 0x000a05e4,
+		SCHW420CD16ProfileID: 0x000a09a0,
+	} {
+		oemsbl, ok := profiles[id].BootImage("oemsbl")
+		if !ok || oemsbl.LoadAddress+oemsbl.EntryOffset != entry {
+			t.Fatalf("raw profile %q OEMSBL = %+v, want entry %#x", id, oemsbl, entry)
+		}
+	}
+	w270, ok := profiles[SCHW270CL28ProfileID]
+	if !ok || w270.Family != FamilySCHRawDownload || w270.Model != "SCH-W270" ||
+		w270.Build != "CL28" || w270.WBINFormat != WBINFormatOpaque ||
+		w270.PieceHashes[RoleWBT] != "7899654ba29cf597df88279d96b26c2867e2b342da96169ddad5daeae78c37a4" {
+		t.Fatalf("raw profile %q = %+v", SCHW270CL28ProfileID, w270)
+	}
+	qcsbl, ok := w270.BootImage("qcsbl")
+	if !ok || len(qcsbl.BlockOffsets) != 1 || qcsbl.BlockOffsets[0] != 0x40000 ||
+		qcsbl.HeaderSize != smallPageSize || qcsbl.BlockSize != smallEraseBlockSize ||
+		qcsbl.LoadAddress != 0x00080000 || qcsbl.EntryOffset != 0x0fd8 ||
+		qcsbl.UsedSize != 0x1504 || !qcsbl.PBLPreload ||
+		!reflect.DeepEqual(qcsbl.PBLBytePatches, []BootImageBytePatch{{
+			Offset: 0x240, Expected: 0xd8, Value: 0xa0,
+		}}) {
+		t.Fatalf("SCH-W270 QCSBL = %+v", qcsbl)
+	}
+	oemsbl, ok := w270.BootImage("oemsbl")
+	if !ok || len(oemsbl.BlockOffsets) != 23 || oemsbl.BlockOffsets[0] != 0x80000 ||
+		oemsbl.BlockOffsets[len(oemsbl.BlockOffsets)-1] != 0xd8000 ||
+		oemsbl.LoadAddress != 0x03d9c000 || oemsbl.EntryOffset != 0x0a1e {
+		t.Fatalf("SCH-W270 OEMSBL = %+v", oemsbl)
+	}
+	pbl, ok := w270.MemoryImage("pbl-rom")
+	if !ok || pbl.Size != 0x42f0 || pbl.LoadAddress != 0x03d4c000 ||
+		len(pbl.PBLBytePatches) != 14 {
+		t.Fatalf("SCH-W270 PBL ROM = %+v", pbl)
 	}
 }
 
@@ -179,6 +242,21 @@ func TestReconstructMemoryImageReadsExactVerifiedRange(t *testing.T) {
 	}
 	if image.LoadAddress != spec.LoadAddress || !bytes.Equal(image.Bytes, wbt[:32]) {
 		t.Fatalf("reconstructed memory image = %+v", image)
+	}
+	patchedSpec := spec
+	patchedSpec.PBLBytePatches = []BootImageBytePatch{{
+		Offset: 3, Expected: wbt[3], Value: wbt[3] ^ 0xff,
+	}}
+	patched, err := ReconstructMemoryImage(set, pkg, patchedSpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if patched.Bytes[3] != wbt[3]^0xff {
+		t.Fatalf("PBL-patched memory byte = 0x%02x", patched.Bytes[3])
+	}
+	patchedSpec.PBLBytePatches[0].Expected ^= 0xff
+	if _, err := ReconstructMemoryImage(set, pkg, patchedSpec); err == nil {
+		t.Fatal("ReconstructMemoryImage accepted the wrong PBL patch preimage")
 	}
 	spec.LogicalSHA256 = fmt.Sprintf("%064d", 1)
 	if _, err := ReconstructMemoryImage(set, pkg, spec); err == nil {

@@ -414,6 +414,7 @@ func assembleFlexOneNANDFlash(set firmwareset.Set, pkg Package, options FlashAss
 	identity := identifyFlash(flexOneNANDPhysicalSize, layout.Partitions, regions)
 	return FlashImage{
 		size: flexOneNANDPhysicalSize, erased: 0xff,
+		pageSize: PageSize, eraseBlock: EraseBlockSize,
 		partitions: append([]Partition(nil), layout.Partitions...), regions: regions,
 		progressive: progressive.ELF, identity: identity,
 	}, nil

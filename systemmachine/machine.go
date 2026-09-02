@@ -169,7 +169,7 @@ func New(set firmwareset.Set, options Options) (*Machine, error) {
 		return nil, fmt.Errorf("select Samsung firmware build: %w", err)
 	}
 	switch firmwareProfile.Model {
-	case "SCH-W320", "SCH-W340", "SCH-W350", "SCH-W410", "SCH-W850":
+	case "SCH-W270", "SCH-W300", "SCH-W320", "SCH-W340", "SCH-W350", "SCH-W410", "SCH-W420", "SCH-W850":
 		return newSamsungRawDownloadMachine(set, pkg, firmwareProfile, options)
 	case "SCH-W770":
 		return newSCHW770(set, pkg, firmwareProfile, options)
@@ -190,6 +190,10 @@ func newSamsungRawDownloadMachine(
 ) (*Machine, error) {
 	var board system.BoardProfile
 	switch firmwareProfile.ID {
+	case samsung.SCHW270CL28ProfileID:
+		board = system.SCHW270CL28BoardProfile()
+	case samsung.SCHW300DA04ProfileID:
+		board = system.SCHW300DA04BoardProfile()
 	case samsung.SCHW320DC18ProfileID:
 		board = system.SCHW320DC18BoardProfile()
 	case samsung.SCHW340DC18ProfileID:
@@ -198,6 +202,8 @@ func newSamsungRawDownloadMachine(
 		board = system.SCHW350CK06BoardProfile()
 	case samsung.SCHW410CL10ProfileID:
 		board = system.SCHW410CL10BoardProfile()
+	case samsung.SCHW420CD16ProfileID:
+		board = system.SCHW420CD16BoardProfile()
 	case samsung.SCHW850CF11ProfileID:
 		board = system.SCHW850CF11BoardProfile()
 	default:
@@ -323,7 +329,7 @@ func newSamsungQualcommMachine(
 	}
 	var pblPreloadedBootImages []samsung.BootImage
 	for _, spec := range firmwareProfile.BootImages {
-		if !spec.PBLPreload {
+		if !spec.PBLPreload || spec.ID == qcsblSpec.ID {
 			continue
 		}
 		image, reconstructErr := samsung.ReconstructBootImage(set, pkg, spec)
@@ -349,10 +355,19 @@ func newSamsungQualcommMachine(
 	if err != nil {
 		return nil, fmt.Errorf("assemble %s NAND: %w", firmwareProfile.Model, err)
 	}
+	if flashImage.PageSize() != board.NANDPageSize ||
+		flashImage.EraseBlockSize() != board.NANDEraseBlockSize {
+		return nil, fmt.Errorf(
+			"%s normalized NAND geometry %#x/%#x does not match board %#x/%#x",
+			firmwareProfile.Model,
+			flashImage.PageSize(), flashImage.EraseBlockSize(),
+			board.NANDPageSize, board.NANDEraseBlockSize,
+		)
+	}
 	flash, err := system.NewCOWFlashWithCapacityAndSeeds(
 		flashImage,
 		board.NANDSize,
-		samsung.EraseBlockSize,
+		board.NANDEraseBlockSize,
 		flashImage.Identity(),
 		board.NANDInitialData,
 	)
@@ -412,12 +427,18 @@ func newSamsungQualcommMachine(
 		return fail(fmt.Errorf("create %s vectored interrupt controller: %w", firmwareProfile.Model, err))
 	}
 	nandReady := system.NewStatusSignal()
-	nandConfig := system.Qualcomm2K8BitNANDConfig(board.NANDReadID, nandReady)
+	nandConfig := system.Qualcomm8BitNANDConfig(
+		board.NANDPageSize,
+		board.NANDEraseBlockSize,
+		board.NANDReadID,
+		nandReady,
+	)
 	nandConfig.Capacity = board.NANDSize
 	nandConfig.FactoryBadBlocks = append([]uint32(nil), board.NANDFactoryBadBlocks...)
 	nandConfig.ReportErasedECCCodewords = board.NANDReportsErasedECCCodewords
-	if nandConfig.PageSize != samsung.PageSize {
-		return fail(fmt.Errorf("%s NAND page size does not match normalized flash", firmwareProfile.Model))
+	if nandConfig.PageSize != flashImage.PageSize() ||
+		nandConfig.EraseBlockSize != flashImage.EraseBlockSize() {
+		return fail(fmt.Errorf("%s NAND geometry does not match normalized flash", firmwareProfile.Model))
 	}
 	nand, err := system.NewQualcommNAND(flash, nandConfig)
 	if err != nil {
@@ -589,14 +610,20 @@ func newSamsungQualcommMachine(
 		pblServiceTableAddress = 0x78001000
 	}
 	handoff, err := system.NewQualcommNANDPBLHandoff(system.QualcommNANDPBLConfig{
-		Entry: qcsbl.EntryAddress, TableAddress: pblServiceTableAddress,
+		Entry:                    qcsbl.EntryAddress,
+		StackPointer:             board.PBLStackPointer,
+		TableAddress:             pblServiceTableAddress,
 		ServiceTableHeaderSize:   board.PBLServiceTableHeaderSize,
 		HeaderFeatureDataAddress: board.PBLHeaderFeatureDataAddress,
 		HeaderFeatures:           append([]system.QualcommPBLHeaderFeature(nil), board.PBLHeaderFeatures...),
+		FixedFeatureDataAddress:  board.PBLFixedFeatureDataAddress,
+		FixedFeatureFirst:        board.PBLFixedFeatureFirst,
+		FixedFeatureSlotCount:    board.PBLFixedFeatureSlotCount,
+		FixedFeatures:            append([]system.QualcommPBLFixedFeature(nil), board.PBLFixedFeatures...),
 		LegacyFeatureDataAddress: board.PBLLegacyFeatureDataAddress,
 		SharedDataAddress:        board.PBLSharedDataAddress,
 		SharedDataSize:           board.PBLSharedDataSize,
-		PageSize:                 samsung.PageSize, EraseBlockSize: samsung.EraseBlockSize,
+		PageSize:                 board.NANDPageSize, EraseBlockSize: board.NANDEraseBlockSize,
 		FlashSize: uint64(flash.Size()), BadBlockLimit: 0x14,
 	})
 	if err != nil {
@@ -689,7 +716,7 @@ func newSamsungQualcommMachine(
 			bus,
 			backend,
 			board.HLECalls,
-			samsungQualcommHLEHandlers(),
+			samsungQualcommMachineHLEHandlers(flash, board),
 		)
 		if hleErr != nil {
 			return fail(fmt.Errorf("configure %s HLE calls: %w", firmwareProfile.Model, hleErr))
@@ -756,6 +783,93 @@ func samsungQualcommHLEHandlers() map[string]system.HLECallHandler {
 			},
 		),
 	}
+}
+
+func samsungQualcommMachineHLEHandlers(
+	flash *system.COWFlash,
+	board system.BoardProfile,
+) map[string]system.HLECallHandler {
+	handlers := samsungQualcommHLEHandlers()
+	badBlocks := make(map[uint32]struct{}, len(board.NANDFactoryBadBlocks))
+	for _, block := range board.NANDFactoryBadBlocks {
+		badBlocks[block] = struct{}{}
+	}
+	handlers[system.HLEContractQualcommPBLNANDBadBlock] = system.HLECallHandlerFunc(
+		func(call system.HLECallContext) error {
+			if call.CPU == nil || flash == nil || board.NANDEraseBlockSize == 0 {
+				return fmt.Errorf("Qualcomm PBL NAND bad-block callback is unavailable")
+			}
+			block, err := call.CPU.ReadRegister(cpu.RegisterR0)
+			if err != nil {
+				return err
+			}
+			blockCount := uint64(flash.Size()) / uint64(board.NANDEraseBlockSize)
+			if uint64(block) >= blockCount {
+				return fmt.Errorf("Qualcomm PBL NAND block 0x%x is out of range", block)
+			}
+			result := uint32(0)
+			if _, bad := badBlocks[block]; bad {
+				result = 1
+			}
+			return call.CPU.WriteRegister(cpu.RegisterR0, result)
+		},
+	)
+	handlers[system.HLEContractQualcommPBLNANDRead] = system.HLECallHandlerFunc(
+		func(call system.HLECallContext) error {
+			if call.CPU == nil || flash == nil || board.NANDPageSize == 0 {
+				return fmt.Errorf("Qualcomm PBL NAND read callback is unavailable")
+			}
+			registers := make([]uint32, 5)
+			for index, register := range []uint32{
+				cpu.RegisterR0, cpu.RegisterR1, cpu.RegisterR2, cpu.RegisterR3, cpu.RegisterSP,
+			} {
+				value, err := call.CPU.ReadRegister(register)
+				if err != nil {
+					return err
+				}
+				registers[index] = value
+			}
+			if registers[0] != 2 || registers[1] != board.NANDPageSize {
+				return fmt.Errorf(
+					"Qualcomm PBL NAND read ABI type/page-size %#x/%#x is unsupported",
+					registers[0], registers[1],
+				)
+			}
+			countBytes := make([]byte, 4)
+			if err := call.CPU.ReadMemory(registers[4], countBytes); err != nil {
+				return err
+			}
+			pageCount := binary.LittleEndian.Uint32(countBytes)
+			if pageCount == 0 || uint64(pageCount)*uint64(board.NANDPageSize) > system.MaxHandoffSeedBytes {
+				return fmt.Errorf("Qualcomm PBL NAND page count 0x%x is invalid", pageCount)
+			}
+			byteCount := uint64(pageCount) * uint64(board.NANDPageSize)
+			flashOffset := uint64(registers[2]) * uint64(board.NANDPageSize)
+			flashSize := uint64(flash.Size())
+			if flashOffset > flashSize || byteCount > flashSize-flashOffset ||
+				uint64(registers[3])+byteCount > 1<<32 {
+				return fmt.Errorf("Qualcomm PBL NAND read range is invalid")
+			}
+			data := make([]byte, int(byteCount))
+			read, err := flash.ReadAt(data, int64(flashOffset))
+			if err != nil || read != len(data) {
+				if err == nil {
+					err = fmt.Errorf("short NAND read: %d of %d bytes", read, len(data))
+				}
+				return err
+			}
+			if err := call.CPU.WriteMemory(registers[3], data); err != nil {
+				return err
+			}
+			return call.CPU.WriteRegister(cpu.RegisterR0, 1)
+		},
+	)
+	handlers[system.HLEContractQualcommPBLFatal] = system.HLECallHandlerFunc(
+		func(system.HLECallContext) error {
+			return fmt.Errorf("retained Qualcomm PBL reported a fatal error")
+		},
+	)
+	return handlers
 }
 
 func restoreSamsungW320VerifiedPBLLoaderState(call system.HLECallContext) error {
