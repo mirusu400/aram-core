@@ -1181,7 +1181,20 @@ func (r *Runtime) DrainServiceEvents(now time.Duration) error {
 				)
 			}
 			if !queued {
-				return nil
+				// A press or a release carries state the title must see, so
+				// leave it at the head and retry on the next drain. A repeat
+				// does not: it is the periodic "still held" signal, and the
+				// next one is already on its way. Dropping it is what keeps a
+				// held key from filling the queue faster than a busy card can
+				// take it - every held key emits a repeat per period whether
+				// or not the previous one was consumed, and an undeliverable
+				// one at the head blocks every later event behind it,
+				// including the lifecycle records each quantum writes. Random
+				// key fuzzing reached that on 133 of 218 KTF titles.
+				if event.Kind != shared.EventInputRepeat {
+					return nil
+				}
+				r.tracef("java_input_repeat_drop:control=%q", event.Control)
 			}
 		case shared.EventAudioComplete:
 			for instance, serviceID := range r.clipServices {

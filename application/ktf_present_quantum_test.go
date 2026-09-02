@@ -269,3 +269,57 @@ func TestKTFWiderQuantumStillDeliversInput(t *testing.T) {
 		)
 	}
 }
+
+// TestKTFHeldKeyDoesNotFillTheEventQueue covers what random key fuzzing found
+// on 133 of 218 KTF titles: hold a key and the machine faults with
+// "runtime service limit exceeded: event queue reached 1024".
+//
+// Auto-repeat emits an event per period for every held control whether or not
+// the previous one was consumed, and the drain leaves an input it cannot
+// deliver at the head of the strictly ordered bus to retry. A card that is
+// busy repainting therefore never takes one, and the repeats pile up behind it
+// together with the lifecycle records each quantum writes. A repeat is the
+// periodic "still held" signal, so dropping an undeliverable one is free; a
+// press or a release still waits.
+func TestKTFHeldKeyDoesNotFillTheEventQueue(t *testing.T) {
+	path, data := findAuthorizedPackage(t, heroSagaOneSHA256)
+
+	factory := NewFactory()
+	factory.NewCPU = func() cpu.Backend { return interpreter.New() }
+	factory.RunBudget = DefaultKTFHandsetRunBudget
+	factory.KTFRunBudget = DefaultKTFHandsetRunBudget
+	factory.FrameRunBudget = DefaultKTFHandsetRunBudget
+	created, err := factory.Create(context.Background(), machinecore.Source{
+		Name:     filepath.Base(path),
+		ReaderAt: bytes.NewReader(data),
+		Size:     int64(len(data)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	machine := created.(*Machine)
+	t.Cleanup(func() { _ = machine.Close() })
+	if err := machine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Press four controls and never release them, which is what a fuzz seed
+	// that toggles randomly ends up doing and what a player leaning on the pad
+	// does.
+	for _, control := range []string{"ok", "left", "num5", "soft-right"} {
+		if err := machine.QueueInput(machinecore.InputEvent{
+			Control: control,
+			Pressed: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for frame := 0; frame < 1500; frame++ {
+		if err := machine.StepFrame(context.Background()); err != nil {
+			if strings.Contains(err.Error(), "from stopped") {
+				return
+			}
+			t.Fatalf("frame %d with four keys held: %v", frame, err)
+		}
+	}
+}
