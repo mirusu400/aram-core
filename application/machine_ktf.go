@@ -149,6 +149,7 @@ func (m *Machine) runKTFSlice(ctx context.Context, elapsed time.Duration) error 
 		m.mu.Unlock()
 		return err
 	}
+	presents := 0
 	result := cpu.Result{Reason: cpu.StopBudget}
 	var instructions uint64
 	var consumeErr error
@@ -192,11 +193,22 @@ taskLoop:
 			break
 		}
 		if runtime.PresentCount != presentations {
-			// StepFrame is a presentation quantum. Once the guest submits a
-			// frame, return it to the frontend instead of allowing an
-			// uncapped paint loop to render many invisible intermediate
-			// frames in one host update.
-			break
+			presents++
+			// StepFrame is a presentation quantum, but stopping at the very
+			// first submitted frame hands a title that paints one element per
+			// repaint almost none of the quantum: 메이플스토리 궁수편 draws its main
+			// menu that way and got about five hundred guest instructions per
+			// 16.67 ms against a budget of a million, so the menu was still
+			// half-composed when the title's own two-second timer wiped it and
+			// the player saw an all but empty screen (issue #55). Allowing a
+			// few frames per quantum gives that loop room to finish while
+			// still capping an uncapped paint loop, which would otherwise
+			// render many invisible intermediate frames in one host update -
+			// and, in 스파이더맨3, queue Java paint tasks faster than they
+			// retire until the task table overflows.
+			if presents >= ktfPresentsPerQuantumMax {
+				break
+			}
 		}
 		if runtime.PaintStalled {
 			// The card the guest keeps asking to repaint is waiting on a

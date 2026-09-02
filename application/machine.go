@@ -47,6 +47,12 @@ const (
 	// A 1K slice leaves several real titles in initialization indefinitely at
 	// ordinary 60 Hz frontend scheduling.
 	ktfTaskSlicesPerQuantumMax = 64
+	// ktfPresentsPerQuantumMax bounds how many frames the guest may submit
+	// inside one presentation quantum before the quantum ends. Four is the
+	// measured knee: 메이플스토리 궁수편's main menu is fully on screen for 5 frames
+	// at one, 61 at two and 67 at four, and no higher value improves it, while
+	// eight is already enough for 스파이더맨3 to overflow the Java task table.
+	ktfPresentsPerQuantumMax = 4
 	// ktfQuantumStepsMax bounds how many pieces one KTF presentation quantum
 	// may be handed to the guest in. Stopping the clock on a title's own timer
 	// deadlines needs only one or two pieces; the cap keeps a title that sleeps
