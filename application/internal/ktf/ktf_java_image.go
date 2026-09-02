@@ -423,7 +423,11 @@ func (r *Runtime) handleImageMethod(name, descriptor string) (uint32, error) {
 			clip:   target.Bounds(),
 			color:  color.RGBA{A: 0xff},
 		}
-		r.GraphicsServices[graphics] = r.imageServices[instance]
+		surface, err := r.ensureJavaImageSurface(instance)
+		if err != nil {
+			return 0, err
+		}
+		r.GraphicsServices[graphics] = surface
 		return graphics, nil
 	case "loadImage(Ljava/lang/String;Lorg/kwis/msp/lcdui/ImageObserver;)Lorg/kwis/msp/lcdui/Image;":
 		// The observer never fires: the host decodes synchronously, so the
@@ -458,6 +462,23 @@ func (r *Runtime) newJavaImage(source image.Image) (uint32, error) {
 		return 0, err
 	}
 	r.images[instance] = source
+	return instance, nil
+}
+
+// ensureJavaImageSurface materialises the service surface an Image needs only
+// once something asks to draw through it. Drawing itself runs on the Go image
+// in r.images; the surface is a mirror the sync path uploads to. Creating one
+// per Image eagerly meant a title that decodes sprites in a loop climbed to
+// the 1024-surface cap with mirrors nothing ever read - KTF Java has no
+// collector, so an Image lives as long as the title does.
+func (r *Runtime) ensureJavaImageSurface(instance uint32) (shared.ServiceID, error) {
+	if surface, ok := r.imageServices[instance]; ok {
+		return surface, nil
+	}
+	source := r.images[instance]
+	if source == nil {
+		return 0, fmt.Errorf("KTF Java image 0x%08x has no pixels", instance)
+	}
 	bounds := source.Bounds()
 	surface, err := r.Services.Graphics.CreateSurface(
 		r.ServiceOwner,
@@ -479,7 +500,7 @@ func (r *Runtime) newJavaImage(source image.Image) (uint32, error) {
 		return 0, err
 	}
 	r.imageServices[instance] = surface
-	return instance, nil
+	return surface, nil
 }
 
 func (r *Runtime) newJavaEncodedImage(data []byte) (uint32, error) {
@@ -523,8 +544,12 @@ func (r *Runtime) newJavaEncodedImage(data []byte) (uint32, error) {
 		return 0, err
 	}
 	r.images[instance] = source
-	r.imageServices[instance] = info.Frames[0].Surface
-	r.javaAssetServices[instance] = asset
+	// The decoded pixels are copied out above, so the asset and the surface it
+	// owns have no further reader. Holding them was one surface and one asset
+	// per decoded image, for the lifetime of the title.
+	if err := r.Services.Assets.Release(r.ServiceOwner, asset); err != nil {
+		return 0, err
+	}
 	return instance, nil
 }
 

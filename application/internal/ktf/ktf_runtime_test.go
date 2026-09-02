@@ -4768,12 +4768,21 @@ func TestKTFImageAndFontFactoriesReturnHostObjects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if copyObject == imageObject ||
-		runtime.imageServices[copyObject] == runtime.imageServices[imageObject] {
+	// An Image's service surface is materialised on demand, so ask for both
+	// before comparing them: absent is not the same as shared.
+	sourceSurface, err := runtime.ensureJavaImageSurface(imageObject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copySurface, err := runtime.ensureJavaImageSurface(copyObject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if copyObject == imageObject || copySurface == sourceSurface {
 		t.Fatalf(
 			"copied image aliases source: object=%#x service=%s",
 			copyObject,
-			runtime.imageServices[copyObject],
+			copySurface,
 		)
 	}
 	if got := color.RGBAModel.Convert(runtime.images[copyObject].At(4, 5)); got != (color.RGBA{R: 0x12, G: 0x34, B: 0x56, A: 0xff}) {

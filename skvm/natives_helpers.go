@@ -9,13 +9,34 @@ import (
 	shared "github.com/mirusu400/aram-core/runtime"
 )
 
+// withCollectRetry runs an allocation, and when it fails because a host table
+// is full, collects and runs it once more. SKVM only collects when the guest
+// calls System.gc, and most MIDlets never do, so a title that decodes images
+// as it plays filled the 1024-surface table with images nothing referenced any
+// more and died. A VM allocates, collects, retries, and only then gives up.
+func (vm *VM) withCollectRetry(allocate func() error) error {
+	err := allocate()
+	if err == nil || !errors.Is(err, shared.ErrLimitExceeded) {
+		return err
+	}
+	if collectErr := vm.collectGarbage(); collectErr != nil {
+		return collectErr
+	}
+	return allocate()
+}
+
 func (vm *VM) newImage(data []byte) (uint32, error) {
 	if len(data) != 0 {
-		asset, decodeErr := vm.services.Assets.Decode(
-			vm.serviceOwner,
-			data,
-			shared.DecodeOptions{},
-		)
+		var asset shared.ServiceID
+		decodeErr := vm.withCollectRetry(func() error {
+			var err error
+			asset, err = vm.services.Assets.Decode(
+				vm.serviceOwner,
+				data,
+				shared.DecodeOptions{},
+			)
+			return err
+		})
 		if decodeErr == nil {
 			info, infoErr := vm.services.Assets.Info(vm.serviceOwner, asset)
 			if infoErr != nil {
@@ -42,15 +63,19 @@ func (vm *VM) newImageState(width, height int) (*imageState, error) {
 	if width <= 0 || height <= 0 {
 		return nil, fmt.Errorf("invalid image geometry %dx%d", width, height)
 	}
-	surface, err := vm.services.Graphics.CreateSurface(
-		vm.serviceOwner,
-		shared.SurfaceDescriptor{
-			Width:  int32(width),
-			Height: int32(height),
-			Format: shared.PixelRGBA8888,
-		},
-	)
-	if err != nil {
+	var surface shared.ServiceID
+	if err := vm.withCollectRetry(func() error {
+		var createErr error
+		surface, createErr = vm.services.Graphics.CreateSurface(
+			vm.serviceOwner,
+			shared.SurfaceDescriptor{
+				Width:  int32(width),
+				Height: int32(height),
+				Format: shared.PixelRGBA8888,
+			},
+		)
+		return createErr
+	}); err != nil {
 		return nil, err
 	}
 	return &imageState{
