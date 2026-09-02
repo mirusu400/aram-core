@@ -32,12 +32,15 @@ const (
 	LowWorkRAMSize             = uint32(0x00d00000)
 	ktfReturnSentinel          = HostBase
 	ktfBootstrapInstructionMax = uint64(100_000_000)
-	ktfTaskStackSize           = uint32(0x00010000)
-	RunBudgetMin               = uint64(10_000)
-	MaxTasks                   = int(guest.DefaultStackSize / ktfTaskStackSize)
-	ktfMaxPendingJavaCalls     = 4096
-	ktfHostVirtualSlotBase     = uint16(256)
-	ktfHostVirtualTableReserve = uint32(512)
+	// ktfRelocatableDescriptorWords covers the load descriptor a relocatable
+	// client image begins with, through the slot naming its entry point.
+	ktfRelocatableDescriptorWords = 10
+	ktfTaskStackSize              = uint32(0x00010000)
+	RunBudgetMin                  = uint64(10_000)
+	MaxTasks                      = int(guest.DefaultStackSize / ktfTaskStackSize)
+	ktfMaxPendingJavaCalls        = 4096
+	ktfHostVirtualSlotBase        = uint16(256)
+	ktfHostVirtualTableReserve    = uint32(512)
 
 	// KTF games commonly start their render thread before startApp has
 	// published the images that thread paints. The handset scheduler let the

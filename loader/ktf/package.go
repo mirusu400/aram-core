@@ -7,6 +7,7 @@ package ktf
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -46,9 +47,14 @@ type Package struct {
 	ClientName string
 	BSSSize    uint32
 	Client     []byte
-	Files      map[string][]byte
-	Resources  map[string][]byte
-	Warnings   []string
+	// Relocations lists the word offsets in Client holding an image-relative
+	// address, for the images that ship a relocation header. It is nil for a
+	// plain code image. The load base is the runtime's to know, so applying
+	// these is the runtime's job.
+	Relocations []uint32
+	Files       map[string][]byte
+	Resources   map[string][]byte
+	Warnings    []string
 }
 
 type FormatError struct {
@@ -143,15 +149,17 @@ func Inspect(data []byte) (Package, error) {
 		}
 	}
 	delete(resources, clientName)
+	client, relocations, _ := SplitRelocatableClient(client, bssSize)
 	return Package{
-		Descriptor: descriptor,
-		JARName:    jarName,
-		ClientName: clientName,
-		BSSSize:    bssSize,
-		Client:     client,
-		Files:      files,
-		Resources:  resources,
-		Warnings:   warnings,
+		Descriptor:  descriptor,
+		JARName:     jarName,
+		ClientName:  clientName,
+		BSSSize:     bssSize,
+		Client:      client,
+		Relocations: relocations,
+		Files:       files,
+		Resources:   resources,
+		Warnings:    warnings,
 	}, nil
 }
 
@@ -378,4 +386,48 @@ func readZIP(data []byte, label string, tolerateResourceErrors bool) (map[string
 		files[name] = payload
 	}
 	return files, warnings, nil
+}
+
+// SplitRelocatableClient recognises the second shape a KTF client image comes
+// in and separates it into the image proper and the offsets that need the load
+// base added.
+//
+// Most client.bin images are position-dependent code that starts at the first
+// byte. Some are preceded by a header - the BSS size the file name already
+// carries, a count, and that many word offsets - and every word at one of
+// those offsets holds an image-relative address the loader is expected to
+// rebase. Running such an image as if it were code executes the header and
+// faults within a couple of dozen instructions.
+//
+// The BSS size appearing twice, once in the name and once as the first word,
+// is what tells the two apart; a code image begins with an instruction, which
+// would have to equal its own BSS size by coincidence.
+func SplitRelocatableClient(client []byte, bssSize uint32) ([]byte, []uint32, bool) {
+	const headerWords = 2
+	if len(client) < headerWords*4 || bssSize == 0 {
+		return client, nil, false
+	}
+	if binary.LittleEndian.Uint32(client) != bssSize {
+		return client, nil, false
+	}
+	count := binary.LittleEndian.Uint32(client[4:])
+	if count == 0 || uint64(count) > uint64(len(client))/4 {
+		return client, nil, false
+	}
+	header := uint64(headerWords*4) + uint64(count)*4
+	if header >= uint64(len(client)) {
+		return client, nil, false
+	}
+	body := client[header:]
+	relocations := make([]uint32, 0, count)
+	for index := uint32(0); index < count; index++ {
+		offset := binary.LittleEndian.Uint32(client[headerWords*4+index*4:])
+		// Every offset has to name a whole word inside the image, or this is
+		// not a relocation table and the image is ordinary code.
+		if uint64(offset)+4 > uint64(len(body)) || offset%4 != 0 {
+			return client, nil, false
+		}
+		relocations = append(relocations, offset)
+	}
+	return body, relocations, true
 }

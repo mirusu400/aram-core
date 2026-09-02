@@ -384,6 +384,9 @@ func (r *Runtime) MapImageAndHost() error {
 	if err := r.CPU.WriteMemory(ImageBase, r.Pkg.Client); err != nil {
 		return fmt.Errorf("copy KTF client image: %w", err)
 	}
+	if err := r.relocateClientImage(); err != nil {
+		return err
+	}
 	if err := r.CPU.Map(
 		guest.DefaultStackBase,
 		guest.DefaultStackSize,
@@ -459,6 +462,20 @@ func (r *Runtime) ResetMappedMemory() error {
 }
 
 func (r *Runtime) Bootstrap(ctx context.Context) (cpu.Result, uint32, error) {
+	if len(r.Pkg.Relocations) != 0 {
+		// The image loads and relocates, and the entry the load descriptor
+		// names runs its own position-independent prologue correctly, but it
+		// then reads a host interface table out of the pointer it is handed
+		// and calls through it. That table is the MNInterface module ABI,
+		// which this runtime does not implement, so the title cannot start.
+		// Saying so beats faulting somewhere inside the title's prologue and
+		// reporting a bad guest address.
+		return cpu.Result{}, 0, fmt.Errorf(
+			"KTF client %s is a relocatable image and needs the MNInterface "+
+				"module ABI, which is not implemented",
+			r.Pkg.ClientName,
+		)
+	}
 	result, address, err := r.call(
 		ctx,
 		ImageBase|1,
@@ -909,6 +926,59 @@ func (r *Runtime) StartMainClass(ctx context.Context) error {
 			result.Instructions,
 			err,
 		)
+	}
+	return nil
+}
+
+// relocateClientImage rebases a relocatable client image in place.
+//
+// Such an image ships image-relative addresses and two ways of finding them.
+// The header lists most of them outright. The rest are the global offset
+// table, which the code reaches through r10 and which the header does not
+// list: the load descriptor at the front of the image names its bounds
+// instead, and every non-zero word in it is an address. Leaving the table
+// unrebased leaves the very first thing the entry point loads pointing at an
+// image-relative offset, which is how 대박돈까스 faulted sixteen instructions
+// into its own prologue.
+func (r *Runtime) relocateClientImage() error {
+	if len(r.Pkg.Relocations) == 0 {
+		return nil
+	}
+	for _, offset := range r.Pkg.Relocations {
+		address := ImageBase + offset
+		value, err := r.ReadU32(address)
+		if err != nil {
+			return fmt.Errorf("read KTF relocation at 0x%08x: %w", address, err)
+		}
+		if err := r.WriteU32(address, value+ImageBase); err != nil {
+			return fmt.Errorf("apply KTF relocation at 0x%08x: %w", address, err)
+		}
+	}
+	descriptor, err := r.ReadWords(ImageBase, ktfRelocatableDescriptorWords)
+	if err != nil {
+		return fmt.Errorf("read KTF load descriptor: %w", err)
+	}
+	// The bounds are relocated words by now, so they are addresses.
+	start, end := descriptor[6], descriptor[7]
+	limit := ImageBase + uint32(len(r.Pkg.Client))
+	if start < ImageBase || end > limit || start >= end || start%4 != 0 || end%4 != 0 {
+		return fmt.Errorf(
+			"KTF global offset table 0x%08x..0x%08x is outside the image",
+			start,
+			end,
+		)
+	}
+	for address := start; address < end; address += 4 {
+		value, err := r.ReadU32(address)
+		if err != nil {
+			return fmt.Errorf("read KTF offset table at 0x%08x: %w", address, err)
+		}
+		if value == 0 {
+			continue
+		}
+		if err := r.WriteU32(address, value+ImageBase); err != nil {
+			return fmt.Errorf("apply KTF offset table at 0x%08x: %w", address, err)
+		}
 	}
 	return nil
 }
