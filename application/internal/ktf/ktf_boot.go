@@ -463,18 +463,11 @@ func (r *Runtime) ResetMappedMemory() error {
 
 func (r *Runtime) Bootstrap(ctx context.Context) (cpu.Result, uint32, error) {
 	if len(r.Pkg.Relocations) != 0 {
-		// The image loads and relocates, and the entry the load descriptor
-		// names runs its own position-independent prologue correctly, but it
-		// then reads a host interface table out of the pointer it is handed
-		// and calls through it. That table is the MNInterface module ABI,
-		// which this runtime does not implement, so the title cannot start.
-		// Saying so beats faulting somewhere inside the title's prologue and
-		// reporting a bad guest address.
-		return cpu.Result{}, 0, fmt.Errorf(
-			"KTF client %s is a relocatable image and needs the MNInterface "+
-				"module ABI, which is not implemented",
-			r.Pkg.ClientName,
-		)
+		// A relocatable client introduces itself through the MN module ABI
+		// rather than answering with a WipiExe, and carries its classes with
+		// it. See ktf_mn_module.go.
+		module, err := r.bootstrapMNModule(ctx)
+		return cpu.Result{}, module, err
 	}
 	result, address, err := r.call(
 		ctx,
@@ -494,6 +487,11 @@ func (r *Runtime) Bootstrap(ctx context.Context) (cpu.Result, uint32, error) {
 }
 
 func (r *Runtime) Initialize(ctx context.Context) error {
+	if r.mnContext != 0 {
+		// An MN module has already taken the callback table it wanted and its
+		// classes are registered, so there is no WipiExe to initialize.
+		return nil
+	}
 	if r.Exe.InterfaceInit == 0 || r.Exe.ExecutableInit == 0 {
 		return errors.New("KTF executable has no initialization procedures")
 	}
@@ -591,6 +589,11 @@ func (r *Runtime) Initialize(ctx context.Context) error {
 
 func (r *Runtime) LoadClass(ctx context.Context, name string) (JavaClass, error) {
 	if r.Exe.GetClass == 0 {
+		// An MN module has no class lookup procedure: it registered every
+		// class it carries when it started, so the name is already known.
+		if class := r.JavaClasses[name]; class != 0 {
+			return r.InspectJavaClass(class)
+		}
 		return JavaClass{}, errors.New("KTF executable has no class lookup procedure")
 	}
 	candidates := []string{name}

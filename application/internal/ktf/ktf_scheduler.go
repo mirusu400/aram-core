@@ -105,6 +105,12 @@ func (r *Runtime) call(
 			return cpu.Result{Reason: cpu.StopFault, Err: err}, 0, err
 		}
 	}
+	// A relocatable MN module expects its two callee-saved registers to be set
+	// by whoever enters its code: the global offset table it was relocated
+	// around, and the context it reads its call-out stack from.
+	if err := r.applyMNRegisters(); err != nil {
+		return cpu.Result{Reason: cpu.StopFault, Err: err}, 0, err
+	}
 	mode := cpu.ModeARM
 	if procedure&1 != 0 {
 		mode = cpu.ModeThumb

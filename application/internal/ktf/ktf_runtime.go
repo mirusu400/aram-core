@@ -195,6 +195,12 @@ type Runtime struct {
 	sharedBuffers    map[string]uint32
 	redispatchActive map[string]bool
 	DisplayCards     map[uint32]uint32
+	// mnInterface, mnGOT and mnContext belong to a relocatable MN module: the
+	// callback table it asked for, and the two callee-saved registers its code
+	// expects a caller to have set. See ktf_mn_module.go.
+	mnInterface uint32
+	mnGOT       uint32
+	mnContext   uint32
 	// cardOwnsScreen is set once a title blits a frame at least as large as
 	// the handset screen into the card, which is how it says the card is the
 	// whole screen rather than the area below the annunciator.
