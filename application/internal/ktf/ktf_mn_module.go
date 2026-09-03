@@ -319,6 +319,7 @@ func (r *Runtime) ensureMNInterface() (uint32, error) {
 	fields[8] = r.RegisterHostCall("mn.class_load", ktfMNClassLoad)
 	fields[10] = r.RegisterHostCall("java_string_copy", ktfJavaStringCopy)
 	fields[16] = r.RegisterHostCall("mn.resolve_class", ktfMNResolveClass)
+	fields[25] = r.RegisterHostCall("mn.resolve_member", ktfMNResolveMember)
 	fields[11] = r.RegisterHostCall("alloc", ktfAlloc)
 	if err := r.writeWords(object, fields); err != nil {
 		return 0, err
@@ -382,6 +383,81 @@ func ktfMNUnmappedSlot(index int) ktfHostHandler {
 		return args[0], nil
 	}
 }
+
+// ktfMNResolveMember answers the member a module names against a class it has
+// already resolved. It is called as resolveMember(class, member, out) and the
+// module **branches through the word written to out**, so leaving that word
+// alone is what sent it into its own stack: the slot still held the frame link
+// the caller left there, and 0x7ffffeb4 is one 8-byte call-out frame past the
+// 0x7ffffeac it was handed.
+//
+// The member is named the same way the ordinary KTF path names one - a tag
+// byte, the descriptor, "+", and the name, as addHostJavaMethod writes it -
+// so "H()V+<init>" against java/util/Vector is Vector.<init>()V.
+func ktfMNResolveMember(_ context.Context, runtime *Runtime) (uint32, error) {
+	classObject, err := runtime.parameter(0)
+	if err != nil {
+		return 0, err
+	}
+	member, err := runtime.parameter(1)
+	if err != nil {
+		return 0, err
+	}
+	target, err := runtime.parameter(2)
+	if err != nil {
+		return 0, err
+	}
+	stub, err := runtime.mnResolveMember(classObject, member)
+	if err != nil {
+		runtime.tracef("mn_resolve_member_failed:%v", err)
+		return 0, nil
+	}
+	if target != 0 {
+		if err := runtime.WriteU32(target, stub); err != nil {
+			return 0, err
+		}
+	}
+	return 0, nil
+}
+
+// mnResolveMember answers a callable entry point for the member a module names
+// as "<tag><descriptor>+<name>" against the class object it passes.
+func (r *Runtime) mnResolveMember(classObject, member uint32) (uint32, error) {
+	class, err := r.InspectJavaClass(classObject)
+	if err != nil {
+		return 0, err
+	}
+	text, err := r.readCString(member, 512)
+	if err != nil {
+		return 0, err
+	}
+	if len(text) == 0 {
+		return 0, errors.New("MN member name is empty")
+	}
+	// The first byte is the entry's tag - the same slot addHostJavaMethod
+	// writes a zero into - and is not part of the descriptor.
+	descriptor, name, found := strings.Cut(string(text[1:]), "+")
+	if !found {
+		return 0, fmt.Errorf("MN member %q has no name", string(text))
+	}
+	key := class.Name + "." + name + descriptor
+	if stub := r.mnMembers[key]; stub != 0 {
+		return stub, nil
+	}
+	// One stub per member: the host-call page is small and a module resolves
+	// the same member every time it reaches the call site.
+	stub := r.RegisterHostCall(
+		"java.method."+key,
+		HostJavaMethod(class.Name, name, descriptor),
+	)
+	if r.mnMembers == nil {
+		r.mnMembers = map[string]uint32{}
+	}
+	r.mnMembers[key] = stub
+	r.tracef("mn_resolve_member:%s@0x%08x", key, stub)
+	return stub, nil
+}
+
 func ktfMNClassLoad(_ context.Context, runtime *Runtime) (uint32, error) {
 	nameAddress, err := runtime.parameter(0)
 	if err != nil {

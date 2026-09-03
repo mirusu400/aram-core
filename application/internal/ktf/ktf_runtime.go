@@ -201,6 +201,7 @@ type Runtime struct {
 	mnInterface uint32
 	mnGOT       uint32
 	mnContext   uint32
+	mnMembers   map[string]uint32
 	// cardOwnsScreen is set once a title blits a frame at least as large as
 	// the handset screen into the card, which is how it says the card is the
 	// whole screen rather than the area below the annunciator.
