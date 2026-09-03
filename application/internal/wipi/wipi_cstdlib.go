@@ -2,14 +2,43 @@ package wipi
 
 import (
 	"bytes"
-	"github.com/mirusu400/aram-core/application/internal/guest"
+	"fmt"
 	"math"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mirusu400/aram-core/application/internal/guest"
+	"github.com/mirusu400/aram-core/cpu"
 )
 
+// dispatchCStdlib runs a CSTDLIB call and, when it fails, names the arguments
+// the guest passed and where it called from. A CSTDLIB failure is nearly
+// always a length or a pointer the guest computed somewhere else - 부루마불
+// 2009 reached memcpy with a 64 MiB length (issue #139) - and the refused
+// value on its own says nothing about where to look for it.
 func (r *Runtime) dispatchCStdlib(name string) (guest.WIPIReturn, bool, error) {
+	value, handled, err := r.cStdlib(name)
+	if err == nil {
+		return value, handled, nil
+	}
+	args, argErr := r.args(4)
+	if argErr != nil {
+		return value, handled, err
+	}
+	lr, _ := r.CPU.ReadRegister(cpu.RegisterLR)
+	return value, handled, fmt.Errorf(
+		"(0x%08x, 0x%08x, 0x%08x, 0x%08x) from lr 0x%08x: %w",
+		args[0],
+		args[1],
+		args[2],
+		args[3],
+		lr,
+		err,
+	)
+}
+
+func (r *Runtime) cStdlib(name string) (guest.WIPIReturn, bool, error) {
 	args, err := r.args(4)
 	if err != nil {
 		return guest.WIPIReturn{}, true, err
