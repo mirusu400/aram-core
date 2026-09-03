@@ -276,3 +276,76 @@ func TestKTFCardSizeMatchesTheScreenGraphicsClip(t *testing.T) {
 		}
 	}
 }
+
+// A title that blits a frame as large as the whole handset screen into the
+// card is telling the runtime how tall its card is. 대박돈까스 shows an
+// annunciator, composes 176x240 and blits it at the card origin with its
+// softkey bar on the last rows, so a card an annunciator short dropped the bar
+// off the bottom edge (issue #133).
+func TestKTFFullScreenFrameGivesTheCardTheWholeScreen(t *testing.T) {
+	runtime := newCardOriginRuntime(t)
+	showAnnunciator(runtime)
+	if got, want := runtime.ActiveCardHeight(),
+		ktfDisplayHeight-uint32(ktfAnnunciatorHeight); got != want {
+		t.Fatalf("card height = %d, want %d", got, want)
+	}
+	graphics, err := runtime.EnsureScreenGraphics()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.ResetScreenGraphics(graphics)
+	state := runtime.Graphics[graphics]
+	frame := image.NewRGBA(image.Rect(
+		0,
+		0,
+		int(ktfDisplayWidth),
+		int(ktfDisplayHeight)+20,
+	))
+	runtime.noteKTFFullScreenFrame(state, frame, 0, 0)
+	if got := runtime.ActiveCardHeight(); got != ktfDisplayHeight {
+		t.Fatalf("card height after a full-screen frame = %d, want %d", got, ktfDisplayHeight)
+	}
+	runtime.ResetScreenGraphics(graphics)
+	if got, want := state.clip, runtime.frame.Bounds(); got != want {
+		t.Fatalf("clip = %v, want %v", got, want)
+	}
+	if got := runtime.CardOriginY(); got != 0 {
+		t.Fatalf("card origin = %d, want 0", got)
+	}
+}
+
+// A frame smaller than the screen says nothing about the card: a title that
+// composes a couple of rows more than the card still lays itself out under the
+// annunciator, and growing the card for it would only steal rows from the
+// status bar.
+func TestKTFSmallerFrameLeavesTheCardAlone(t *testing.T) {
+	runtime := newCardOriginRuntime(t)
+	showAnnunciator(runtime)
+	graphics, err := runtime.EnsureScreenGraphics()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.ResetScreenGraphics(graphics)
+	state := runtime.Graphics[graphics]
+	frame := image.NewRGBA(image.Rect(
+		0,
+		0,
+		int(ktfDisplayWidth),
+		int(ktfDisplayHeight)-int(ktfAnnunciatorHeight)+2,
+	))
+	runtime.noteKTFFullScreenFrame(state, frame, 0, 0)
+	if got, want := runtime.ActiveCardHeight(),
+		ktfDisplayHeight-uint32(ktfAnnunciatorHeight); got != want {
+		t.Fatalf("card height = %d, want %d", got, want)
+	}
+	// Neither does a full-screen frame drawn somewhere other than the card
+	// origin, or into an offscreen image of the title's own.
+	full := image.NewRGBA(image.Rect(0, 0, int(ktfDisplayWidth), int(ktfDisplayHeight)))
+	runtime.noteKTFFullScreenFrame(state, full, 0, 8)
+	offscreen := &ktfGraphics{Target: image.NewRGBA(runtime.frame.Bounds())}
+	runtime.noteKTFFullScreenFrame(offscreen, full, 0, 0)
+	if got, want := runtime.ActiveCardHeight(),
+		ktfDisplayHeight-uint32(ktfAnnunciatorHeight); got != want {
+		t.Fatalf("card height = %d, want %d", got, want)
+	}
+}

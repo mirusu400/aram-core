@@ -184,17 +184,21 @@ type Runtime struct {
 	// lwcTextInput is the keypad input method behind each editable LWC field.
 	// It holds only a half-composed glyph, which the next press rebuilds, so it
 	// is a live cache rather than part of the save state.
-	lwcTextInput        map[uint32]*ime.Automata
-	lwcComponents       map[uint32]*ktfLWCComponent
-	databases           map[uint32]*Database
-	DatabaseStores      map[string]*Database
-	defaultRuntime      uint32
-	DefaultDisplay      uint32
-	MainJlet            uint32
-	eventQueue          uint32
-	sharedBuffers       map[string]uint32
-	redispatchActive    map[string]bool
-	DisplayCards        map[uint32]uint32
+	lwcTextInput     map[uint32]*ime.Automata
+	lwcComponents    map[uint32]*ktfLWCComponent
+	databases        map[uint32]*Database
+	DatabaseStores   map[string]*Database
+	defaultRuntime   uint32
+	DefaultDisplay   uint32
+	MainJlet         uint32
+	eventQueue       uint32
+	sharedBuffers    map[string]uint32
+	redispatchActive map[string]bool
+	DisplayCards     map[uint32]uint32
+	// cardOwnsScreen is set once a title blits a frame at least as large as
+	// the handset screen into the card, which is how it says the card is the
+	// whole screen rather than the area below the annunciator.
+	cardOwnsScreen      bool
 	ThreadTargets       map[uint32]uint32
 	javaTimerTasks      map[uint32]*Task
 	javaTimerTaskStates map[uint32]uint8

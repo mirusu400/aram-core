@@ -68,6 +68,32 @@ func (r *Runtime) EnsureScreenGraphics() (uint32, error) {
 	return instance, nil
 }
 
+// noteKTFFullScreenFrame records that the title composes its frame at the full
+// screen size. A title that shows an annunciator normally gives the top of the
+// screen up and lays its card out below it, but a few build a backbuffer as
+// tall as the whole handset screen and blit it at the card origin: 대박돈까스
+// composes 176x240 and puts its softkey bar on the last rows, so a card an
+// annunciator short dropped the bar off the bottom edge (issue #133). A frame
+// at least as large as the screen is the title saying how tall its card is, so
+// the card takes the whole screen from the next paint on. Only a Graphics that
+// draws the screen counts, and the card never shrinks back.
+func (r *Runtime) noteKTFFullScreenFrame(
+	state *ktfGraphics,
+	source image.Image,
+	x, y int,
+) {
+	if r.cardOwnsScreen || state == nil || r.frame == nil ||
+		state.Target != r.frame || x != 0 || y != 0 {
+		return
+	}
+	bounds := source.Bounds()
+	if bounds.Dx() < int(r.DisplayWidth()) ||
+		bounds.Dy() < int(r.displayHeight()) {
+		return
+	}
+	r.cardOwnsScreen = true
+}
+
 func (r *Runtime) ResetScreenGraphics(instance uint32) {
 	state := r.Graphics[instance]
 	if state == nil {
@@ -79,7 +105,7 @@ func (r *Runtime) ResetScreenGraphics(instance uint32) {
 		origin.X,
 		origin.Y,
 		bounds.Max.X,
-		origin.Y+int(r.DefaultCardHeight()),
+		origin.Y+int(r.ActiveCardHeight()),
 	).Intersect(bounds)
 	if state.origin != origin {
 		// A title that paints before showing its annunciator has already put
@@ -434,6 +460,7 @@ func (r *Runtime) handleGraphicsMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
+		r.noteKTFFullScreenFrame(state, source, x, y)
 		r.drawKTFJavaImage(state, imageAddress, source, x, y, anchor)
 		return 0, nil
 	case "setClip(IIII)V":
