@@ -23,6 +23,12 @@ import (
 // interior pointer counts - guest code walking an array holds a pointer past
 // its start, and treating that as a reference is the difference between
 // retaining a little garbage and freeing something still in use.
+//
+// The one thing that is not a root is a host table keyed by a guest object:
+// those record something *about* an object the guest reaches by its own route,
+// so their keys are weak and their values live only for as long as their key
+// does. See weakTables - treating those keys as roots kept every Java object a
+// title ever made alive, which is what this collector was written to stop.
 
 // ktfHeapBlock is one allocation, as a half-open address range.
 type ktfHeapBlock struct {
@@ -96,35 +102,96 @@ func (r *Runtime) collectJavaHeap() int {
 		pending = append(pending, index)
 	}
 
-	r.markHostRoots(mark)
+	weak := r.weakTables()
+	skip := make(map[uintptr]bool, len(weak))
+	for _, table := range weak {
+		skip[table.Pointer()] = true
+	}
+	r.markHostRoots(mark, skip)
 	r.markRegionRoots(mark)
 
 	// Transitive closure: a marked block's own words are references too.
 	scratch := make([]byte, 0, 4096)
-	for len(pending) != 0 {
-		index := pending[len(pending)-1]
-		pending = pending[:len(pending)-1]
-		block := blocks[index]
-		size := block.end - block.start
-		if size > uint32(cap(scratch)) {
-			scratch = make([]byte, size)
+	drainPending := func() {
+		for len(pending) != 0 {
+			index := pending[len(pending)-1]
+			pending = pending[:len(pending)-1]
+			block := blocks[index]
+			size := block.end - block.start
+			if size > uint32(cap(scratch)) {
+				scratch = make([]byte, size)
+			}
+			buffer := scratch[:size]
+			if err := r.CPU.ReadMemory(block.start, buffer); err != nil {
+				// A block we cannot read is a block we cannot prove dead.
+				continue
+			}
+			scanWords(buffer, mark)
 		}
-		buffer := scratch[:size]
-		if err := r.CPU.ReadMemory(block.start, buffer); err != nil {
-			// A block we cannot read is a block we cannot prove dead.
-			continue
+	}
+	drainPending()
+
+	// A weak table's key is not a root, so its entries are settled only once
+	// the strong closure is complete: an entry whose key survived it holds
+	// values that are live, and an entry whose key did not is itself garbage.
+	// Marking a value can revive another table's key, so this repeats until a
+	// pass adds nothing.
+	dead := func(address uint32) bool {
+		index := sort.Search(len(blocks), func(index int) bool {
+			return blocks[index].start > address
+		}) - 1
+		// An address that is no heap block of ours is not something this
+		// collection can prove dead.
+		return index >= 0 && address < blocks[index].end && !marked[index]
+	}
+	seen := make(map[uintptr]bool)
+	seenWeak := make(map[weakEntry]bool)
+	for {
+		progress := false
+		for _, table := range weak {
+			iterator := table.MapRange()
+			for iterator.Next() {
+				key := uint32(iterator.Key().Uint())
+				if dead(key) {
+					continue
+				}
+				entry := weakEntry{table: table.Pointer(), key: key}
+				if seenWeak[entry] {
+					continue
+				}
+				seenWeak[entry] = true
+				markValue(iterator.Value(), mark, seen, 1, skip)
+				progress = true
+			}
 		}
-		scanWords(buffer, mark)
+		if !progress {
+			break
+		}
+		drainPending()
 	}
 
-	dead := make([]uint32, 0, len(blocks))
-	for index, block := range blocks {
-		if !marked[index] {
-			dead = append(dead, block.start)
+	// The entries left over describe objects nothing can reach. Dropping them
+	// is what lets the block go, and it keeps the host-side table from growing
+	// for as long as the title runs.
+	pruned := 0
+	for _, table := range weak {
+		for _, key := range table.MapKeys() {
+			if !dead(uint32(key.Uint())) {
+				continue
+			}
+			table.SetMapIndex(key, reflect.Value{})
+			pruned++
 		}
 	}
-	freed := root.ReleaseAll(dead)
-	r.tracef("java_heap_collect:blocks=%d:freed=%d", len(blocks), freed)
+
+	deadBlocks := make([]uint32, 0, len(blocks))
+	for index, block := range blocks {
+		if !marked[index] {
+			deadBlocks = append(deadBlocks, block.start)
+		}
+	}
+	freed := root.ReleaseAll(deadBlocks)
+	r.tracef("java_heap_collect:blocks=%d:freed=%d:pruned=%d", len(blocks), freed, pruned)
 	return freed
 }
 
@@ -160,8 +227,9 @@ func (r *Runtime) markRegionRoots(mark func(uint32)) {
 // timer tasks - and every one of them is a reference the guest can still reach.
 // Walking by reflection rather than by hand is deliberate: a map added later is
 // a root the moment it exists, where a hand-written list would quietly stop
-// being complete.
-func (r *Runtime) markHostRoots(mark func(uint32)) {
+// being complete. The weak tables are the exception and are named by hand, so
+// skip carries them and the ephemeron pass settles them instead.
+func (r *Runtime) markHostRoots(mark func(uint32), skip map[uintptr]bool) {
 	// A task's registers live in the backend's own context until they are
 	// marshalled, and a suspended task's receiver may be held in nothing else.
 	for _, task := range r.Tasks {
@@ -180,7 +248,7 @@ func (r *Runtime) markHostRoots(mark func(uint32)) {
 		}
 	}
 	seen := make(map[uintptr]bool)
-	markValue(reflect.ValueOf(r), mark, seen, 0)
+	markValue(reflect.ValueOf(r), mark, seen, 0, skip)
 }
 
 // markValue is the reflective walk. It reads only, so unexported fields are
@@ -190,6 +258,7 @@ func markValue(
 	mark func(uint32),
 	seen map[uintptr]bool,
 	depth int,
+	skip map[uintptr]bool,
 ) {
 	if depth > 8 || !value.IsValid() {
 		return
@@ -208,7 +277,7 @@ func markValue(
 			}
 			seen[address] = true
 		}
-		markValue(value.Elem(), mark, seen, depth+1)
+		markValue(value.Elem(), mark, seen, depth+1, skip)
 	case reflect.Struct:
 		// The heap's own allocation table lists every block by address, so
 		// walking it would mark the entire heap and collect nothing.
@@ -216,7 +285,7 @@ func markValue(
 			return
 		}
 		for index := 0; index < value.NumField(); index++ {
-			markValue(value.Field(index), mark, seen, depth+1)
+			markValue(value.Field(index), mark, seen, depth+1, skip)
 		}
 	case reflect.Slice, reflect.Array:
 		if value.Kind() == reflect.Slice && value.IsNil() {
@@ -227,16 +296,22 @@ func markValue(
 			return
 		}
 		for index := 0; index < value.Len(); index++ {
-			markValue(value.Index(index), mark, seen, depth+1)
+			markValue(value.Index(index), mark, seen, depth+1, skip)
 		}
 	case reflect.Map:
 		if value.IsNil() {
 			return
 		}
+		if skip[value.Pointer()] {
+			// A weak table. Its keys are not roots and its values are live
+			// only for as long as their key is, so the ephemeron pass in
+			// collectJavaHeap settles it once the strong closure is done.
+			return
+		}
 		iterator := value.MapRange()
 		for iterator.Next() {
-			markValue(iterator.Key(), mark, seen, depth+1)
-			markValue(iterator.Value(), mark, seen, depth+1)
+			markValue(iterator.Key(), mark, seen, depth+1, skip)
+			markValue(iterator.Value(), mark, seen, depth+1, skip)
 		}
 	}
 }
@@ -251,3 +326,62 @@ func scanWords(buffer []byte, mark func(uint32)) {
 // happen only when the heap is full, which is far too rare to test against, so
 // a test can force one and check that a healthy title does not notice.
 func (r *Runtime) CollectJavaHeapForTest() int { return r.collectJavaHeap() }
+
+// weakEntry names one entry of one weak table, so the ephemeron pass can tell
+// an entry it has already followed from one a later round revived.
+type weakEntry struct {
+	table uintptr
+	key   uint32
+}
+
+// weakTables are the host-side tables keyed by a guest object's address that
+// hold state *about* an object rather than a reference *to* it: the text behind
+// a String, the pixels behind a Graphics, the elements of a Vector. The guest
+// reaches these objects through its own fields and stack; the table is only how
+// the host finds what it recorded. Treating a key here as a root is what kept
+// every Java object a title ever made alive - 트랜스포머 calls
+// Image.getGraphics() a few hundred times a frame, and two million dead
+// Graphics filled the heap while the collector was unable to touch one of them.
+//
+// A table belongs here only if its key is a Java object the guest allocated and
+// its value carries no host resource that has to be released by hand. Leaving a
+// table out is safe - it keeps behaving as a root and retains a little garbage;
+// putting one in that does not belong is not, so the streams, the media clips,
+// the images with their surfaces, the LWC components and everything about a
+// class or a thread stay strong.
+func (r *Runtime) weakTables() []reflect.Value {
+	candidates := []any{
+		r.JavaStrings,
+		r.stringBuffers,
+		r.stringBuffersConsumed,
+		r.integerValues,
+		r.longValues,
+		r.dates,
+		r.randomSeeds,
+		r.throwableMessages,
+		r.Vectors,
+		r.hashtables,
+		r.enumerations,
+		r.Graphics,
+		r.GraphicsServices,
+	}
+	tables := make([]reflect.Value, 0, len(candidates))
+	for _, candidate := range candidates {
+		value := reflect.ValueOf(candidate)
+		if !value.IsValid() || value.IsNil() {
+			continue
+		}
+		tables = append(tables, value)
+	}
+	return tables
+}
+
+// WeakTableEntriesForTest answers how many entries the weak host tables hold,
+// so a test can watch a collection drop the dead ones.
+func (r *Runtime) WeakTableEntriesForTest() int {
+	total := 0
+	for _, table := range r.weakTables() {
+		total += table.Len()
+	}
+	return total
+}

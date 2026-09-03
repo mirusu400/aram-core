@@ -92,3 +92,55 @@ func TestKTFForcedCollectionLeavesAHealthyTitleAlone(t *testing.T) {
 		})
 	}
 }
+
+// TestKTFCollectionDropsDeadSideTableEntries covers issues #142 and #143. The
+// collector walked the runtime for roots by reflection, which marked the key of
+// every host table keyed by a guest object - the String texts, the Graphics
+// registry, the boxed Integers - so an object the guest had long forgotten was
+// still a root, and neither it nor anything it referred to could ever be freed.
+// 리얼사커2007 ends with six hundred thousand dead Strings pinned that way and
+// 트랜스포머 with two million dead Graphics.
+func TestKTFCollectionDropsDeadSideTableEntries(t *testing.T) {
+	path, data := findAuthorizedPackage(t, asphaltFourSHA256)
+
+	factory := NewFactory()
+	factory.FrameRunBudget = DefaultHandsetRunBudget
+	factory.KTFRunBudget = DefaultKTFHandsetRunBudget
+	created, err := factory.Create(context.Background(), machinecore.Source{
+		Name:     filepath.Base(path),
+		ReaderAt: bytes.NewReader(data),
+		Size:     int64(len(data)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	machine := created.(*Machine)
+	t.Cleanup(func() { _ = machine.Close() })
+	if err := machine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for frame := 0; frame < 1200; frame++ {
+		if err := machine.StepFrame(context.Background()); err != nil {
+			t.Fatalf("frame %d: %v", frame, err)
+		}
+	}
+	before := machine.ktf.WeakTableEntriesForTest()
+	if before < 100 {
+		t.Fatalf("only %d weak table entries after 1200 frames, so this title "+
+			"no longer reproduces the leak and the test proves nothing", before)
+	}
+	machine.ktf.CollectJavaHeapForTest()
+	after := machine.ktf.WeakTableEntriesForTest()
+	if after >= before {
+		t.Fatalf("collection left all %d of %d entries registered, so the "+
+			"tables are still roots", after, before)
+	}
+	// The title has to keep running on what is left.
+	for frame := 0; frame < 600; frame++ {
+		if err := machine.StepFrame(context.Background()); err != nil {
+			t.Fatalf("frame %d after dropping %d of %d entries: %v",
+				frame, before-after, before, err)
+		}
+	}
+	t.Logf("collection dropped %d of %d dead side table entries", before-after, before)
+}
