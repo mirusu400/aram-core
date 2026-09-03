@@ -108,7 +108,17 @@ func (r *Runtime) dispatchKernel(name string) (guest.WIPIReturn, bool, error) {
 			if err := r.WriteU32(a1, 0); err != nil {
 				return guest.WIPIReturn{}, true, err
 			}
-			return guest.WIPIReturn{Low: guest.WIPIReturnCode(guest.WIPINoEntry)}, true, nil
+			// M_E_NOENT, the same "no such entry" result the file layer
+			// answers, and the one a guest compares against exactly:
+			// 메이플스토리 시그너스기사단 asks whether its save exists with
+			//
+			//     MC_knlGetResourceID(name, &size) != -12
+			//
+			// so any other failure code told it the save was there. It then
+			// allocated the zero size it had been handed, wrote the save into
+			// that empty block and destroyed the header of the next one, and
+			// its own allocator answered NULL a few calls later (issue #141).
+			return guest.WIPIReturn{Low: fsNoEntry}, true, nil
 		}
 		if err := r.WriteU32(a1, uint32(len(resource.Data))); err != nil {
 			return guest.WIPIReturn{}, true, err
