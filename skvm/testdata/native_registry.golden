@@ -254,6 +254,7 @@ java/util/Random <init> (J)V
 java/util/Random nextInt ()I
 java/util/Random setSeed (J)V
 java/util/Stack <init> ()V
+java/util/Stack empty ()Z
 java/util/Stack pop ()Ljava/lang/Object;
 java/util/Stack push (Ljava/lang/Object;)Ljava/lang/Object;
 java/util/TimeZone getTimeZone (Ljava/lang/String;)Ljava/util/TimeZone;

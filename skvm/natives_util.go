@@ -212,6 +212,18 @@ func (vm *VM) installVectorNatives() {
 	)
 	vm.RegisterNative(
 		"java/util/Stack",
+		"empty",
+		"()Z",
+		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+			state, err := vm.vector(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			return boolValue(len(state.values) == 0), true, nil
+		},
+	)
+	vm.RegisterNative(
+		"java/util/Stack",
 		"pop",
 		"()Ljava/lang/Object;",
 		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
