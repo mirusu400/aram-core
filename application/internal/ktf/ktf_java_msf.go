@@ -154,6 +154,25 @@ func (r *Runtime) handleMSFSocketMethod(
 	name, descriptor string,
 ) (uint32, error) {
 	switch name + descriptor {
+	case "getInputStream()Ljava/io/InputStream;":
+		// The handset is offline, so the stream is at end of input from the
+		// start. Answering null instead would only move the guest's null
+		// dereference one call further along.
+		stream, err := r.newJavaInstance("java/io/InputStream", 4)
+		if err != nil {
+			return 0, err
+		}
+		r.inputStreams[stream] = &ktfInputStream{}
+		return stream, nil
+	case "getOutputStream()Ljava/io/OutputStream;":
+		stream, err := r.newJavaInstance("java/io/OutputStream", 4)
+		if err != nil {
+			return 0, err
+		}
+		r.outputStreams[stream] = nil
+		return stream, nil
+	case "close()V":
+		return 0, nil
 	case "getRequestMethod()Ljava/lang/String;":
 		return r.NewJavaString("GET")
 	case "getProtocol()Ljava/lang/String;":

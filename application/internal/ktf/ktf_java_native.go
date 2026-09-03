@@ -1128,8 +1128,31 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 			if name+descriptor ==
 				"find(Ljava/lang/String;)Lorg/kwis/msf/io/Socket;" {
 				url := runtime.javaStringValue(registers[1])
-				runtime.tracef("java_url_find_unavailable:%s", url)
-				return 0, nil
+				// Answering null here is what a handset with no coverage
+				// would do, but a title that looks a URL up at startup does
+				// not check: 마스터오브소드2 resolves
+				// BillSocket://yahoo.yalgem.com:8003/rw/30000 for its billing
+				// check and dereferences the result immediately, so the null
+				// came back as a NullPointerException out of its own g.h()V
+				// and the boot never finished (#147).
+				//
+				// A live handset returns a Socket and the connection fails
+				// afterwards, which is a path the title does handle - and one
+				// the Socket methods here already model, answering 503 and
+				// "Service Unavailable" to every request.
+				socket, socketErr := runtime.newJavaInstance(
+					"org/kwis/msf/io/Socket",
+					8,
+				)
+				if socketErr != nil {
+					return 0, socketErr
+				}
+				runtime.tracef(
+					"java_url_find_offline:%s@0x%08x",
+					url,
+					socket,
+				)
+				return socket, nil
 			}
 		case "wec/OEMDevice":
 			if name+descriptor == "getSYSTheme()Lwec/SYSTheme;" {
