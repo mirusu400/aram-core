@@ -178,13 +178,17 @@ type FrameSnapshot struct {
 // FramePresentation is the immutable, pixel-free identity of a committed
 // frame. Runtime adapters use it when the graphics service should retain the
 // pixels; public snapshot APIs continue returning detached RGBA copies.
+// FramePresentation identifies a committed frame without its pixels. It
+// carries no digest: Sequence already names the frame exactly, and computing a
+// digest on the commit path costs more than every caller of this type saves.
+// A caller that needs the digest asks LastFramePresentation, which computes it
+// once for the frame on screen.
 type FramePresentation struct {
 	SurfaceID ServiceID
 	Sequence  uint64
 	Width     int32
 	Height    int32
 	Dirty     Rectangle
-	Hash      [sha256.Size]byte
 }
 
 // Point is a guest-neutral raster coordinate.
@@ -213,6 +217,13 @@ type Graphics struct {
 	screen          ServiceID
 	presentSequence uint64
 	lastFrame       FrameSnapshot
+	// lastFrameHashed records whether lastFrame.Hash has been computed for the
+	// pixels it holds. Hashing is deferred because a guest presents far more
+	// often than a host asks which frame it is looking at - a KTF title runs
+	// its paint loop at a thousand presents a second, and hashing a 240x320
+	// frame on each of them spent an eighth of the emulator's CPU on a digest
+	// nobody read.
+	lastFrameHashed bool
 }
 
 func NewGraphics(registry *Registry, limits GraphicsLimits) (*Graphics, error) {
@@ -561,6 +572,9 @@ func (g *Graphics) Present(owner OwnerID, id ServiceID, requested Rectangle) (Fr
 	if err != nil {
 		return FrameSnapshot{}, err
 	}
+	// Present hands the pixels out, so its snapshot carries the digest that
+	// goes with them; the commit-only path leaves it to whoever asks.
+	frame.Hash = g.hashLastFrame()
 	return cloneFrame(frame), nil
 }
 
@@ -614,12 +628,13 @@ func (g *Graphics) presentCommit(
 		g.lastFrame.Height == current.descriptor.Height
 	rgba := g.lastFrame.RGBA
 	hash := g.lastFrame.Hash
+	hashed := g.lastFrameHashed
 	if !reuse {
 		rgba, err = surfaceRGBAInto(current, rgba)
 		if err != nil {
 			return FrameSnapshot{}, err
 		}
-		hash = sha256.Sum256(rgba)
+		hash, hashed = [sha256.Size]byte{}, false
 	}
 	g.presentSequence++
 	frame := FrameSnapshot{
@@ -633,7 +648,26 @@ func (g *Graphics) presentCommit(
 	}
 	current.dirty = Rectangle{}
 	g.lastFrame = frame
+	g.lastFrameHashed = hashed
 	return frame, nil
+}
+
+// hashLastFrame answers the digest of the frame on screen, computing it the
+// first time it is asked for. Present leaves it unset: a caller that only
+// commits pixels never looks at it, and the callers that do - the host asking
+// whether the screen changed, and the state snapshot - run orders of magnitude
+// less often than the guest presents.
+func (g *Graphics) hashLastFrame() [sha256.Size]byte {
+	if g.lastFrame.Sequence == 0 {
+		// Nothing has been presented, and an empty snapshot has to carry an
+		// empty digest for the state validator to accept it.
+		return [sha256.Size]byte{}
+	}
+	if !g.lastFrameHashed {
+		g.lastFrame.Hash = sha256.Sum256(g.lastFrame.RGBA)
+		g.lastFrameHashed = true
+	}
+	return g.lastFrame.Hash
 }
 
 func presentationOf(frame FrameSnapshot) FramePresentation {
@@ -643,7 +677,6 @@ func presentationOf(frame FrameSnapshot) FramePresentation {
 		Width:     frame.Width,
 		Height:    frame.Height,
 		Dirty:     frame.Dirty,
-		Hash:      frame.Hash,
 	}
 }
 
@@ -689,6 +722,7 @@ func (g *Graphics) RGBARowsInto(
 }
 
 func (g *Graphics) LastFrame() FrameSnapshot {
+	g.hashLastFrame()
 	return cloneFrame(g.lastFrame)
 }
 
@@ -699,7 +733,7 @@ func (g *Graphics) LastFrame() FrameSnapshot {
 // Present already computed, so an unchanged screen is recognized exactly rather
 // than being re-copied and re-uploaded.
 func (g *Graphics) LastFramePresentation() (uint64, [sha256.Size]byte) {
-	return g.lastFrame.Sequence, g.lastFrame.Hash
+	return g.lastFrame.Sequence, g.hashLastFrame()
 }
 
 // CopyLastFrameRGBA copies the committed pixels into caller-owned row storage
@@ -750,6 +784,7 @@ func (g *Graphics) LastFrameImage() *image.RGBA {
 }
 
 func (g *Graphics) Snapshot() GraphicsState {
+	g.hashLastFrame()
 	state := GraphicsState{
 		Limits:          g.limits,
 		Screen:          g.screen,
@@ -830,6 +865,9 @@ func (g *Graphics) Restore(state GraphicsState) error {
 	g.screen = state.Screen
 	g.presentSequence = state.PresentSequence
 	g.lastFrame = cloneFrame(state.LastFrame)
+	// The restored snapshot carried a validated digest for exactly these
+	// pixels, so it does not have to be recomputed.
+	g.lastFrameHashed = true
 	return nil
 }
 

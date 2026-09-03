@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"crypto/sha256"
 	"testing"
 )
 
@@ -104,9 +105,13 @@ func TestPresentCommitReusesOwnedPixelsWithoutExposingThem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.Sequence != first.Sequence+1 || second.Hash != first.Hash ||
-		!second.Dirty.Empty() {
+	if second.Sequence != first.Sequence+1 || !second.Dirty.Empty() {
 		t.Fatalf("unchanged presentation = %+v after %+v", second, first)
+	}
+	// The commit path carries no digest - Sequence names the frame - so an
+	// unchanged screen is recognized by the pixels the service still owns.
+	if graphics.hashLastFrame() != graphics.LastFrame().Hash {
+		t.Fatal("the frame on screen and its snapshot disagree on the digest")
 	}
 	if &graphics.lastFrame.RGBA[0] != backing {
 		t.Fatal("unchanged PresentCommit replaced its owned RGBA buffer")
@@ -228,5 +233,54 @@ func TestPresentOutsideTheSurfaceKeepsDrawnPixels(t *testing.T) {
 	}
 	if frame.RGBA[4] != 0 || frame.RGBA[5] != 255 {
 		t.Fatalf("presented pixels lost the draw: %v", frame.RGBA)
+	}
+}
+
+// A guest presents far more often than a host asks which frame it is looking
+// at: a KTF title runs its paint loop at a thousand presents a second, and
+// hashing a 240x320 frame on every one of them spent an eighth of the
+// emulator's CPU on a digest nobody read. The commit path must therefore leave
+// the digest alone until something asks for it.
+func TestPresentCommitDefersTheFrameDigest(t *testing.T) {
+	graphics, surface := presentedScreen(t)
+	if err := graphics.SetPixel(1, surface, 0, 0, RGB(255, 0, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := graphics.PresentCommit(1, surface, Rectangle{}); err != nil {
+		t.Fatal(err)
+	}
+	if graphics.lastFrameHashed {
+		t.Fatal("PresentCommit hashed the frame before anyone asked")
+	}
+	sequence, hash := graphics.LastFramePresentation()
+	if sequence == 0 {
+		t.Fatal("no frame was presented")
+	}
+	if hash != sha256.Sum256(graphics.lastFrame.RGBA) {
+		t.Fatal("the deferred digest does not match the presented pixels")
+	}
+	if !graphics.lastFrameHashed {
+		t.Fatal("the digest was not kept for the next caller")
+	}
+	// A second present of the same pixels reuses the frame, so the digest it
+	// already has stays valid and is not recomputed.
+	if _, err := graphics.PresentCommit(1, surface, Rectangle{}); err != nil {
+		t.Fatal(err)
+	}
+	if !graphics.lastFrameHashed {
+		t.Fatal("an unchanged present threw its digest away")
+	}
+	// New pixels invalidate it again.
+	if err := graphics.SetPixel(1, surface, 1, 0, RGB(0, 255, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := graphics.PresentCommit(1, surface, Rectangle{}); err != nil {
+		t.Fatal(err)
+	}
+	if graphics.lastFrameHashed {
+		t.Fatal("a changed present kept the digest of the old pixels")
+	}
+	if _, again := graphics.LastFramePresentation(); again == hash {
+		t.Fatal("the digest did not follow the new pixels")
 	}
 }
