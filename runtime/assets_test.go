@@ -581,3 +581,89 @@ func TestAssetsDecodeBMPHonorsReservedTransparentPaletteEntry(t *testing.T) {
 		})
 	}
 }
+
+// A GIF's transparent index is how a sprite sheet says "leave this alone".
+// Flattening a frame onto the file's background color turned every keyed-out
+// pixel opaque, so a title's GUI overlay arrived as a solid plate in whatever
+// color the file happened to name (issue #134: 고기집타이쿤's gui sheets name
+// 0xff4955, and the whole overlay came out magenta).
+func TestAssetsDecodeGIFKeepsTransparentPixelsTransparent(t *testing.T) {
+	palette := color.Palette{
+		color.RGBA{R: 0xff, G: 0x49, B: 0x55, A: 0xff},
+		color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff},
+		color.RGBA{},
+	}
+	frame := image.NewPaletted(image.Rect(0, 0, 2, 1), palette)
+	frame.SetColorIndex(0, 0, 1)
+	frame.SetColorIndex(1, 0, 2)
+	var encoded bytes.Buffer
+	if err := gif.EncodeAll(&encoded, &gif.GIF{
+		Image:    []*image.Paletted{frame},
+		Delay:    []int{0},
+		Disposal: []byte{gif.DisposalNone},
+		Config: image.Config{
+			ColorModel: palette,
+			Width:      2,
+			Height:     1,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	frames, _, _, _, err := decodeImageAsset(
+		encoded.Bytes(),
+		DecodeOptions{MediaType: "image/gif"},
+		DefaultAssetLimits(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, alpha := frames[0].At(0, 0).RGBA(); alpha != 0xffff {
+		t.Fatalf("painted pixel alpha = %d, want opaque", alpha)
+	}
+	if _, _, _, alpha := frames[0].At(1, 0).RGBA(); alpha != 0 {
+		t.Fatalf("keyed-out pixel alpha = %d, want transparent", alpha)
+	}
+}
+
+// Disposing a frame to the background clears it for the next frame. The
+// cleared area has to become transparent again, not the file's background
+// color, or an animated sprite leaves an opaque plate behind it.
+func TestAssetsDecodeGIFDisposalBackgroundClearsToTransparent(t *testing.T) {
+	palette := color.Palette{
+		color.RGBA{R: 0xff, G: 0x49, B: 0x55, A: 0xff},
+		color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff},
+		color.RGBA{},
+	}
+	first := image.NewPaletted(image.Rect(0, 0, 2, 1), palette)
+	first.SetColorIndex(0, 0, 1)
+	first.SetColorIndex(1, 0, 1)
+	second := image.NewPaletted(image.Rect(0, 0, 1, 1), palette)
+	second.SetColorIndex(0, 0, 1)
+	var encoded bytes.Buffer
+	if err := gif.EncodeAll(&encoded, &gif.GIF{
+		Image:    []*image.Paletted{first, second},
+		Delay:    []int{1, 1},
+		Disposal: []byte{gif.DisposalBackground, gif.DisposalNone},
+		Config: image.Config{
+			ColorModel: palette,
+			Width:      2,
+			Height:     1,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	frames, _, _, _, err := decodeImageAsset(
+		encoded.Bytes(),
+		DecodeOptions{MediaType: "image/gif"},
+		DefaultAssetLimits(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) != 2 {
+		t.Fatalf("decoded %d frames, want 2", len(frames))
+	}
+	if _, _, _, alpha := frames[1].At(1, 0).RGBA(); alpha != 0 {
+		t.Fatalf("disposed pixel alpha = %d, want transparent", alpha)
+	}
+}

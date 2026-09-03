@@ -330,16 +330,18 @@ func validateDecodedGeometry(width, height, frames int, limits AssetLimits) erro
 	return nil
 }
 
+// compositeGIF flattens a GIF's frames into standalone images. The canvas
+// starts transparent and a frame disposed to the background clears back to
+// transparent rather than to the file's background color: a WIPI title's
+// sprite sheet keys its background out with the transparent index, and
+// painting the background color there turns every keyed-out pixel opaque -
+// 고기집타이쿤's GUI sheets name 0xff4955, so its whole overlay arrived as a
+// magenta plate (issue #134). Web decoders resolve the background the same
+// way, and a sheet that really wants an opaque backdrop paints one.
 func compositeGIF(animation *gif.GIF) []image.Image {
 	width, height := animation.Config.Width, animation.Config.Height
 	canvas := image.NewRGBA(image.Rect(0, 0, width, height))
-	background := color.RGBA{}
-	if palette, ok := animation.Config.ColorModel.(color.Palette); ok {
-		if index := int(animation.BackgroundIndex); index < len(palette) {
-			background = color.RGBAModel.Convert(palette[index]).(color.RGBA)
-		}
-	}
-	draw.Draw(canvas, canvas.Bounds(), &image.Uniform{C: background}, image.Point{}, draw.Src)
+	transparent := &image.Uniform{C: color.RGBA{}}
 	result := make([]image.Image, 0, len(animation.Image))
 	var previous *image.RGBA
 	for index, frame := range animation.Image {
@@ -349,7 +351,7 @@ func compositeGIF(animation *gif.GIF) []image.Image {
 				draw.Draw(
 					canvas,
 					animation.Image[index-1].Bounds(),
-					&image.Uniform{C: background},
+					transparent,
 					image.Point{},
 					draw.Src,
 				)
