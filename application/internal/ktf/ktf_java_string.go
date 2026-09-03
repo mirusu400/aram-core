@@ -284,9 +284,6 @@ func (r *Runtime) handleStringMethod(
 		if start > uint32(len(codeUnits)) {
 			return 0, nil
 		}
-		if start == 0 {
-			return instance, nil
-		}
 		return r.NewJavaString(string(utf16.Decode(codeUnits[start:])))
 	case "substring(II)Ljava/lang/String;":
 		start, valueErr := r.parameter(2)
@@ -300,12 +297,9 @@ func (r *Runtime) handleStringMethod(
 		if start > end || end > uint32(len(codeUnits)) {
 			return 0, nil
 		}
-		if start == 0 && end == uint32(len(codeUnits)) {
-			return instance, nil
-		}
 		return r.NewJavaString(string(utf16.Decode(codeUnits[start:end])))
 	case "trim()Ljava/lang/String;":
-		return r.sameJavaStringOrNew(instance, value, strings.TrimSpace(value))
+		return r.NewJavaString(strings.TrimSpace(value))
 	case "getBytes()[B":
 		encoded, valueErr := r.Services.Text.Encode(
 			value,
@@ -364,7 +358,7 @@ func (r *Runtime) handleStringMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		return r.sameJavaStringOrNew(instance, value, value+r.javaStringValue(other))
+		return r.NewJavaString(value + r.javaStringValue(other))
 	case "startsWith(Ljava/lang/String;)Z":
 		prefix, valueErr := r.parameter(2)
 		if valueErr != nil {
@@ -426,9 +420,9 @@ func (r *Runtime) handleStringMethod(
 			fromIndex,
 		))), nil
 	case "toLowerCase()Ljava/lang/String;":
-		return r.sameJavaStringOrNew(instance, value, strings.ToLower(value))
+		return r.NewJavaString(strings.ToLower(value))
 	case "toUpperCase()Ljava/lang/String;":
-		return r.sameJavaStringOrNew(instance, value, strings.ToUpper(value))
+		return r.NewJavaString(strings.ToUpper(value))
 	case "toString()Ljava/lang/String;":
 		return instance, nil
 	case "equalsIgnoreCase(Ljava/lang/String;)Z":
@@ -523,24 +517,6 @@ func (r *Runtime) handleStringMethod(
 	default:
 		return 0, nil
 	}
-}
-
-// sameJavaStringOrNew answers the receiver when a String method would produce
-// the string it was given, and a fresh String otherwise. java.lang.String is
-// immutable and the JDK does exactly this - trim() with nothing to trim,
-// toLowerCase() on a lower-case string and concat("") all return this - so it
-// is the specified behaviour rather than an optimisation. It matters here
-// because a KTF title's every String comes off the guest heap: 리얼사커2007
-// trims strings in its own loop and allocated 2.6 million tiny blocks before
-// the 32 MiB heap was gone (issue #131).
-func (r *Runtime) sameJavaStringOrNew(
-	instance uint32,
-	value, result string,
-) (uint32, error) {
-	if result == value {
-		return instance, nil
-	}
-	return r.NewJavaString(result)
 }
 
 // javaCharsetEncoding maps a Java charset name onto the encoding the text
