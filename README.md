@@ -2,6 +2,8 @@
 
 [![ci](https://github.com/mirusu400/aram-core/actions/workflows/ci.yml/badge.svg)](https://github.com/mirusu400/aram-core/actions/workflows/ci.yml)
 
+[Website](https://aram.mir.sh/en/) · [Usage guide](https://aram.mir.sh/en/guide/) · [Compatibility](https://aram.mir.sh/en/compatibility/)
+
 Headless, frontend-independent emulation core for **ARAM (Archived Runtime for
 ARM Mobiles)**.
 
