@@ -11,24 +11,27 @@ import (
 )
 
 const (
-	SCHW830DL21ProfileID = "samsung.sch-w830.dl21"
-	SCHW830DA18ProfileID = "samsung.sch-w830.da18"
-	SCHW770DA05ProfileID = "samsung.sch-w770.da05"
-	SCHW860DA06ProfileID = "samsung.sch-w860.da06"
-	SCHW320DC18ProfileID = "samsung.sch-w320.dc18"
-	SCHW340DC18ProfileID = "samsung.sch-w340.dc18"
-	SCHW350CK06ProfileID = "samsung.sch-w350.ck06"
-	SCHW410CL10ProfileID = "samsung.sch-w410.cl10"
-	SCHW850CF11ProfileID = "samsung.sch-w850.cf11"
-	SCHW210CK12ProfileID = "samsung.sch-w210.ck12"
-	SCHW240CL28ProfileID = "samsung.sch-w240.cl28"
-	SCHW270CL28ProfileID = "samsung.sch-w270.cl28"
-	SCHW290CK10ProfileID = "samsung.sch-w290.ck10"
-	SCHW300DA04ProfileID = "samsung.sch-w300.da04"
-	SCHW330CK06ProfileID = "samsung.sch-w330.ck06"
-	SCHW390CK11ProfileID = "samsung.sch-w390.ck11"
-	SCHW420CD16ProfileID = "samsung.sch-w420.cd16"
-	SCHW460CC26ProfileID = "samsung.sch-w460.cc26"
+	SCHW830DL21ProfileID  = "samsung.sch-w830.dl21"
+	SCHW830DA18ProfileID  = "samsung.sch-w830.da18"
+	SCHW770DA05ProfileID  = "samsung.sch-w770.da05"
+	SCHW860DA06ProfileID  = "samsung.sch-w860.da06"
+	SCHW320DC18ProfileID  = "samsung.sch-w320.dc18"
+	SCHW340DC18ProfileID  = "samsung.sch-w340.dc18"
+	SCHW350CK06ProfileID  = "samsung.sch-w350.ck06"
+	SCHW410CL10ProfileID  = "samsung.sch-w410.cl10"
+	SCHW850CF11ProfileID  = "samsung.sch-w850.cf11"
+	SCHW210CK12ProfileID  = "samsung.sch-w210.ck12"
+	SCHW240CL28ProfileID  = "samsung.sch-w240.cl28"
+	SCHW270CL28ProfileID  = "samsung.sch-w270.cl28"
+	SCHW290CK10ProfileID  = "samsung.sch-w290.ck10"
+	SCHW300DA04ProfileID  = "samsung.sch-w300.da04"
+	SCHW330CK06ProfileID  = "samsung.sch-w330.ck06"
+	SCHW390CK11ProfileID  = "samsung.sch-w390.ck11"
+	SCHW420CD16ProfileID  = "samsung.sch-w420.cd16"
+	SCHW460CC26ProfileID  = "samsung.sch-w460.cc26"
+	SPHW4200DC17ProfileID = "samsung.sph-w4200.dc17"
+	SCHW450CK10ProfileID  = "samsung.sch-w450.ck10"
+	SCHW599BE30ProfileID  = "samsung.sch-w599.be30"
 )
 
 var (
@@ -58,6 +61,14 @@ type BootImageSpec struct {
 	EntryOffset          uint32
 	UsedSize             uint32
 	LogicalSHA256        string
+	// ContiguousSize selects an unframed byte range in the source piece. It is
+	// mutually exclusive with block extraction and is used by direct-reset
+	// firmware whose original boot bytes are already stored linearly.
+	ContiguousSourceOffset uint64
+	ContiguousSize         uint32
+	// MirrorAddresses map the same reconstructed bytes at hardware aliases used
+	// by direct-reset firmware, such as the low-vector view of high-vector ROM.
+	MirrorAddresses []uint32
 }
 
 // BootImageBytePatch records a target-selection byte applied by the missing
@@ -85,7 +96,7 @@ func (s MemoryImageSpec) validate() error {
 	if strings.TrimSpace(s.ID) == "" {
 		return fmt.Errorf("memory image ID is empty")
 	}
-	if _, ok := roleTokens[s.Role]; !ok {
+	if !validRole(s.Role) {
 		return fmt.Errorf("memory image %q has invalid role %q", s.ID, s.Role)
 	}
 	if s.Size == 0 || uint64(s.LoadAddress)+uint64(s.Size) > 1<<32 ||
@@ -112,8 +123,44 @@ func (s BootImageSpec) validate() error {
 	if strings.TrimSpace(s.ID) == "" {
 		return fmt.Errorf("boot image ID is empty")
 	}
-	if _, ok := roleTokens[s.Role]; !ok {
+	if !validRole(s.Role) {
 		return fmt.Errorf("boot image %q has invalid role %q", s.ID, s.Role)
+	}
+	if s.ContiguousSize != 0 {
+		if len(s.BlockOffsets) != 0 || s.HeaderSize != 0 || s.BlockSize != 0 ||
+			s.MarkerOffset != 0 || s.DataOffset != 0 || s.DataSize != 0 ||
+			s.ChunkSize != 0 || s.ChunkStride != 0 ||
+			s.ContiguousSourceOffset > ^uint64(0)-uint64(s.ContiguousSize) {
+			return fmt.Errorf("boot image %q mixes contiguous and block geometry", s.ID)
+		}
+		if s.UsedSize == 0 || s.UsedSize > s.ContiguousSize ||
+			uint64(s.LoadAddress)+uint64(s.ContiguousSize) > 1<<32 {
+			return fmt.Errorf("boot image %q has invalid contiguous geometry", s.ID)
+		}
+		if len(s.PBLBytePatches) != 0 || s.PBLPreload || s.PBLRelocationAddress != 0 {
+			return fmt.Errorf("boot image %q applies PBL transforms to contiguous bytes", s.ID)
+		}
+		if uint64(s.EntryOffset) >= uint64(s.ContiguousSize) {
+			return fmt.Errorf("boot image %q entry exceeds contiguous bytes", s.ID)
+		}
+		if err := validateSHA256(s.LogicalSHA256); err != nil {
+			return fmt.Errorf("boot image %q: %w", s.ID, err)
+		}
+		seenMirrors := make(map[uint32]struct{}, len(s.MirrorAddresses))
+		for _, address := range s.MirrorAddresses {
+			if address == s.LoadAddress || address&3 != 0 ||
+				uint64(address)+uint64(s.ContiguousSize) > 1<<32 {
+				return fmt.Errorf("boot image %q has invalid mirror address 0x%x", s.ID, address)
+			}
+			if _, duplicate := seenMirrors[address]; duplicate {
+				return fmt.Errorf("boot image %q repeats mirror address 0x%x", s.ID, address)
+			}
+			seenMirrors[address] = struct{}{}
+		}
+		return nil
+	}
+	if len(s.MirrorAddresses) != 0 {
+		return fmt.Errorf("boot image %q has mirrors without contiguous geometry", s.ID)
 	}
 	if len(s.BlockOffsets) == 0 || len(s.BlockOffsets) > 64 {
 		return fmt.Errorf("boot image %q has invalid block count %d", s.ID, len(s.BlockOffsets))
@@ -200,6 +247,25 @@ type BuildProfile struct {
 	PieceHashes  map[Role]string
 	BootImages   []BootImageSpec
 	MemoryImages []MemoryImageSpec
+	FlatFlash    *FlatFlashSpec
+	// DirectResetImage names an original firmware image that begins at reset.
+	// Empty retains the unavailable-PBL-to-QCSBL handoff used by later phones.
+	DirectResetImage string
+}
+
+type FlatFlashRegionSpec struct {
+	Role         Role
+	Start        uint64
+	SourceOffset uint64
+	// Size zero consumes the remainder of the exact source piece.
+	Size uint64
+}
+
+type FlatFlashSpec struct {
+	Size           uint64
+	PageSize       uint32
+	EraseBlockSize uint32
+	Regions        []FlatFlashRegionSpec
 }
 
 // WBINFormat describes the logical AMSS image carried by a Samsung WBIN
@@ -218,13 +284,16 @@ func (p BuildProfile) validate() error {
 		return fmt.Errorf("firmware profile identity is incomplete")
 	}
 	if p.Family != FamilySCHDownload && p.Family != FamilySCHRawDownload &&
-		p.Family != FamilySCHFlexOneNANDDownload {
+		p.Family != FamilySCHFlexOneNANDDownload &&
+		p.Family != FamilySamsungLegacyFlatDownload &&
+		p.Family != FamilySamsungMonolithicFlash {
 		return fmt.Errorf("firmware profile %q has unsupported family %q", p.ID, p.Family)
 	}
 	switch p.WBINFormat {
 	case "", WBINFormatProgressiveELF:
 	case WBINFormatOpaque:
-		if p.Family != FamilySCHRawDownload {
+		if p.Family != FamilySCHRawDownload && p.Family != FamilySamsungLegacyFlatDownload &&
+			p.Family != FamilySamsungMonolithicFlash {
 			return fmt.Errorf("firmware profile %q uses opaque WBIN outside the raw-download family", p.ID)
 		}
 	default:
@@ -262,7 +331,57 @@ func (p BuildProfile) validate() error {
 		}
 		seenImages[image.ID] = struct{}{}
 	}
+	if p.FlatFlash != nil {
+		if err := p.FlatFlash.validate(p.PieceHashes); err != nil {
+			return fmt.Errorf("firmware profile %q flat flash: %w", p.ID, err)
+		}
+	} else if p.Family == FamilySamsungLegacyFlatDownload || p.Family == FamilySamsungMonolithicFlash {
+		return fmt.Errorf("firmware profile %q has no flat flash geometry", p.ID)
+	}
+	if p.DirectResetImage != "" {
+		image, ok := p.BootImage(p.DirectResetImage)
+		if !ok || image.ContiguousSize == 0 {
+			return fmt.Errorf("firmware profile %q has invalid direct reset image %q", p.ID, p.DirectResetImage)
+		}
+	}
 	return nil
+}
+
+func (s FlatFlashSpec) validate(pieceHashes map[Role]string) error {
+	if s.Size == 0 || s.Size > MaxFlashImageBytes || s.PageSize < 0x200 ||
+		s.EraseBlockSize < s.PageSize || s.EraseBlockSize%s.PageSize != 0 ||
+		s.Size%uint64(s.EraseBlockSize) != 0 || len(s.Regions) == 0 {
+		return fmt.Errorf("invalid geometry")
+	}
+	seen := make(map[Role]struct{}, len(s.Regions))
+	for _, region := range s.Regions {
+		if !validRole(region.Role) {
+			return fmt.Errorf("invalid role %q", region.Role)
+		}
+		if _, ok := pieceHashes[region.Role]; !ok {
+			return fmt.Errorf("region role %q has no exact piece", region.Role)
+		}
+		if _, duplicate := seen[region.Role]; duplicate {
+			return fmt.Errorf("repeated region role %q", region.Role)
+		}
+		seen[region.Role] = struct{}{}
+		if region.Start >= s.Size || region.Size > s.Size-region.Start {
+			return fmt.Errorf("region %q exceeds flash", region.Role)
+		}
+	}
+	if len(seen) != len(pieceHashes) {
+		return fmt.Errorf("regions do not cover every exact piece")
+	}
+	return nil
+}
+
+func validRole(role Role) bool {
+	switch role {
+	case RoleWBT, RoleWBIN, RoleABIN, RoleDAT, RoleFont, RoleFirmware, RolePreload:
+		return true
+	default:
+		return false
+	}
 }
 
 func (p BuildProfile) BootImage(id string) (BootImageSpec, bool) {
@@ -332,6 +451,55 @@ func (r Registry) Match(pkg Package) (BuildProfile, error) {
 	}
 }
 
+func (r Registry) packageForExactSet(set firmwareset.Set) (Package, error) {
+	var matches []Package
+	for _, profile := range r.profiles {
+		if len(profile.PieceHashes) != set.Len() {
+			continue
+		}
+		pkg := Package{Family: profile.Family, Pieces: make(map[Role]Piece, set.Len())}
+		used := make(map[int]struct{}, set.Len())
+		matched := true
+		for role, digest := range profile.PieceHashes {
+			found := false
+			for index := 0; index < set.Len(); index++ {
+				if _, exists := used[index]; exists {
+					continue
+				}
+				piece, err := set.Piece(index)
+				if err != nil {
+					return Package{}, err
+				}
+				if !strings.EqualFold(piece.SHA256(), digest) {
+					continue
+				}
+				used[index] = struct{}{}
+				pkg.Pieces[role] = Piece{
+					Index: index, SHA256: piece.SHA256(),
+					Header: rawHeader(piece, role, profile.Build),
+				}
+				found = true
+				break
+			}
+			if !found {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			matches = append(matches, pkg)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return Package{}, ErrUnknownBuild
+	case 1:
+		return matches[0], nil
+	default:
+		return Package{}, fmt.Errorf("%w: %d exact firmware sets", ErrAmbiguousBuild, len(matches))
+	}
+}
+
 func BuiltinRegistry() Registry {
 	registry, err := NewRegistry(
 		schW830DL21Profile(),
@@ -352,6 +520,9 @@ func BuiltinRegistry() Registry {
 		schW390CK11Profile(),
 		schW420CD16Profile(),
 		schW460CC26Profile(),
+		sphW4200DC17Profile(),
+		schW450CK10Profile(),
+		schW599BE30Profile(),
 	)
 	if err != nil {
 		panic(err)
@@ -582,6 +753,88 @@ func schW420CD16Profile() BuildProfile {
 		},
 		boot,
 	)
+}
+
+func sphW4200DC17Profile() BuildProfile {
+	boot := schLargePageRawBootProfile(
+		0x00034d7f,
+		"127cfe01de84198c86fdb9c24ed70cee8f3ea09efe13f37a4e996dca435cef60",
+	)
+	// DC17 retains two identical two-block OEMSBL copies rather than the
+	// three-block image used by the adjacent SCH large-page downloads.
+	boot.OEMSBLBlockOffsets = []int64{0x000c0000, 0x000e0000}
+	boot.OEMSBLEntryOffset = 0x00000a68
+	// The KTF build uses the same original QCSBL image as SCH-W300 DA04.
+	boot.QCSBLUsedSize = 0x000089a3
+	boot.QCSBLLogicalSHA256 = "a88fbca03f96da15c9577a2a4f01f28e424670b7d851a627109828de378c8a3b"
+	return schRawDownloadProfile(
+		SPHW4200DC17ProfileID,
+		"SPH-W4200",
+		"DC17",
+		map[Role]string{
+			RoleWBT:  "d7990b024f8d60dbcfc0768c165a4255a779c60be40e7ea738952aef207d4a50",
+			RoleWBIN: "66438f3317882d412a4a502225375857138020fe9a7642289a9a42eabbe701ef",
+			RoleDAT:  "4a0906848e99d8786a473be32653ac21e62304fa1f79e1b6310932cf9c581253",
+			RoleFont: "5190294e9601e18db0f171abd2cccba4806642ecb21a7dd2c06659232f954ae5",
+		},
+		boot,
+	)
+}
+
+func schW450CK10Profile() BuildProfile {
+	return BuildProfile{
+		ID: SCHW450CK10ProfileID, Family: FamilySamsungLegacyFlatDownload,
+		Manufacturer: "Samsung", Model: "SCH-W450", Build: "CK10",
+		WBINFormat: WBINFormatOpaque,
+		PieceHashes: map[Role]string{
+			RoleWBT:  "2349abb956bfadf2711134e5168029b2e776b464671a642090147a4505fa3dd8",
+			RoleWBIN: "23ed9194f70c0217911a0c7f21573c7fdebf450df97ebbcf05afba31ec9d0120",
+			RoleDAT:  "f745eb0479f3354bd1d6c5fc5596bd1098df913071e109275b3bed082d16545b",
+			RoleFont: "95cdce78b63ce57a3a611a867df554920c551f0525f3c51562157485e07388ed",
+		},
+		BootImages: []BootImageSpec{{
+			ID: "reset", Role: RoleWBT,
+			ContiguousSize: 0x0000f000, LoadAddress: 0xffff0000,
+			UsedSize:        0x0000f000,
+			LogicalSHA256:   "37c65eb0c6fe85751019821bc9a4f051403cd129e86430b100673b27f7c5facb",
+			MirrorAddresses: []uint32{0x00000000},
+		}},
+		DirectResetImage: "reset",
+		FlatFlash: &FlatFlashSpec{
+			Size: 0x04c50000, PageSize: smallPageSize, EraseBlockSize: smallEraseBlockSize,
+			Regions: []FlatFlashRegionSpec{
+				{Role: RoleWBT, Start: 0x00000000},
+				{Role: RoleWBIN, Start: 0x00028000},
+				{Role: RoleDAT, Start: 0x02900000},
+				{Role: RoleFont, Start: 0x03b00000},
+			},
+		},
+	}
+}
+
+func schW599BE30Profile() BuildProfile {
+	return BuildProfile{
+		ID: SCHW599BE30ProfileID, Family: FamilySamsungMonolithicFlash,
+		Manufacturer: "Samsung", Model: "SCH-W599", Build: "BE30",
+		PieceHashes: map[Role]string{
+			RoleFirmware: "0b98ad5a2d4c05667851c92a345769f6d074cb90665ccea9fa802c5e486b3520",
+			RolePreload:  "7db7d9a35e70e08f3b70333d1811c7ab8908a235faec88c26a794e8590e3adf1",
+		},
+		BootImages: []BootImageSpec{{
+			ID: "reset", Role: RoleFirmware,
+			ContiguousSize: 0x0000f000, LoadAddress: 0xffff0000,
+			UsedSize:      0x0000f000,
+			LogicalSHA256: "6cce4c85cee355f00ce62c22c809ac9915da347236dc5e5bf1cced6542c806cf",
+		}},
+		DirectResetImage: "reset",
+		FlatFlash: &FlatFlashSpec{
+			Size: 0x05d70000, PageSize: smallPageSize, EraseBlockSize: smallEraseBlockSize,
+			Regions: []FlatFlashRegionSpec{
+				{Role: RoleFirmware, Start: 0x00000000},
+				{Role: RolePreload, Start: 0x05560000},
+			},
+		},
+	}
 }
 
 func schW270CL28Profile() BuildProfile {
@@ -972,6 +1225,9 @@ func cloneProfile(profile BuildProfile) BuildProfile {
 	clone.BootImages = append([]BootImageSpec(nil), profile.BootImages...)
 	for index := range clone.BootImages {
 		clone.BootImages[index].BlockOffsets = append([]int64(nil), profile.BootImages[index].BlockOffsets...)
+		clone.BootImages[index].MirrorAddresses = append(
+			[]uint32(nil), profile.BootImages[index].MirrorAddresses...,
+		)
 		clone.BootImages[index].PBLBytePatches = append(
 			[]BootImageBytePatch(nil), profile.BootImages[index].PBLBytePatches...,
 		)
@@ -981,6 +1237,11 @@ func cloneProfile(profile BuildProfile) BuildProfile {
 		clone.MemoryImages[index].PBLBytePatches = append(
 			[]BootImageBytePatch(nil), profile.MemoryImages[index].PBLBytePatches...,
 		)
+	}
+	if profile.FlatFlash != nil {
+		flat := *profile.FlatFlash
+		flat.Regions = append([]FlatFlashRegionSpec(nil), profile.FlatFlash.Regions...)
+		clone.FlatFlash = &flat
 	}
 	return clone
 }
@@ -1072,6 +1333,32 @@ func ReconstructBootImage(
 	}
 	if piece.SHA256() != metadata.SHA256 {
 		return BootImage{}, fmt.Errorf("Samsung %s metadata does not match firmware set", spec.Role)
+	}
+	if spec.ContiguousSize != 0 {
+		if spec.ContiguousSourceOffset > uint64(piece.Size()) ||
+			uint64(spec.ContiguousSize) > uint64(piece.Size())-spec.ContiguousSourceOffset {
+			return BootImage{}, &FormatError{
+				Role: spec.Role, Piece: piece.Index(), Offset: int64(spec.ContiguousSourceOffset),
+				Reason: fmt.Sprintf("boot image %q contiguous bytes exceed input", spec.ID),
+			}
+		}
+		data := make([]byte, spec.ContiguousSize)
+		if _, err := piece.ReadAt(data, int64(spec.ContiguousSourceOffset)); err != nil {
+			return BootImage{}, err
+		}
+		digest := sha256.Sum256(data)
+		digestText := hex.EncodeToString(digest[:])
+		if !strings.EqualFold(digestText, spec.LogicalSHA256) {
+			return BootImage{}, fmt.Errorf(
+				"boot image %q SHA-256 %s does not match profile %s",
+				spec.ID, digestText, spec.LogicalSHA256,
+			)
+		}
+		return BootImage{
+			ID: spec.ID, LoadAddress: spec.LoadAddress,
+			EntryAddress: spec.LoadAddress + spec.EntryOffset,
+			UsedSize:     spec.UsedSize, SHA256: digestText, Bytes: data,
+		}, nil
 	}
 	dataOffset, dataSize, chunkSize, chunkStride, ok := spec.geometry()
 	if !ok {

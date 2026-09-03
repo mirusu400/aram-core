@@ -658,7 +658,7 @@ func openSamsungSCHReferenceSet(t *testing.T, path string) firmwareset.Set {
 	// Exact opaque WBIN builds cannot classify that one piece in isolation.
 	// A directory/archive containing one complete set can still be selected by
 	// the same full-package hash registry before the mixed-corpus subset scan.
-	if len(candidates) == 4 || len(candidates) == 5 {
+	if len(candidates) == 2 || len(candidates) == 4 || len(candidates) == 5 {
 		direct, setErr := firmwareset.NewSet(candidates)
 		if setErr != nil {
 			t.Fatal(setErr)
@@ -668,6 +668,38 @@ func openSamsungSCHReferenceSet(t *testing.T, path string) firmwareset.Set {
 				return direct
 			}
 		}
+	}
+	// Monolithic firmware/preload pieces intentionally have no filename or
+	// embedded wrapper role. Resolve an archive containing unrelated .bin
+	// artifacts by exact two-piece registry hashes before the header-based
+	// mixed-corpus scan below.
+	var exactPair firmwareset.Set
+	exactPairMatches := 0
+	for left := 0; left < len(candidates); left++ {
+		for right := left + 1; right < len(candidates); right++ {
+			pair, setErr := firmwareset.NewSet([]firmwareset.Source{
+				candidates[left],
+				candidates[right],
+			})
+			if setErr != nil {
+				t.Fatal(setErr)
+			}
+			pkg, inspectErr := samsung.Inspect(pair)
+			if inspectErr != nil {
+				continue
+			}
+			if _, matchErr := samsung.BuiltinRegistry().Match(pkg); matchErr != nil {
+				continue
+			}
+			exactPair = pair
+			exactPairMatches++
+		}
+	}
+	if exactPairMatches == 1 {
+		return exactPair
+	}
+	if exactPairMatches > 1 {
+		t.Fatalf("configured reference has %d exact supported two-piece Samsung firmware sets", exactPairMatches)
 	}
 	type inspectedCandidate struct {
 		family string
@@ -865,7 +897,7 @@ func parseSamsungSCHArchiveListing(listing string) ([]samsungSCHArchiveEntry, er
 
 func schReferenceExtension(extension string) bool {
 	switch strings.ToLower(extension) {
-	case ".wbt", ".wbin", ".mbin", ".abin", ".dat", ".fnt":
+	case ".wbt", ".wbin", ".mbin", ".abin", ".dat", ".fnt", ".bin":
 		return true
 	default:
 		return false

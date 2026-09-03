@@ -66,11 +66,15 @@ func TestSamsungTargetBootPrivateReferences(t *testing.T) {
 				t.Fatalf("selected machine identity = %+v", identity)
 			}
 
-			qcsblSpec, ok := firmwareProfile.BootImage("qcsbl")
-			if !ok {
-				t.Fatal("profile has no QCSBL image")
+			initialImageID := "qcsbl"
+			if firmwareProfile.DirectResetImage != "" {
+				initialImageID = firmwareProfile.DirectResetImage
 			}
-			wantEntry := qcsblSpec.LoadAddress + qcsblSpec.EntryOffset
+			initialSpec, ok := firmwareProfile.BootImage(initialImageID)
+			if !ok {
+				t.Fatalf("profile has no initial boot image %q", initialImageID)
+			}
+			wantEntry := initialSpec.LoadAddress + initialSpec.EntryOffset
 			if position := machine.Position(); position.PC != wantEntry ||
 				position.Mode != cpu.ModeARM || position.Instructions != 0 {
 				t.Fatalf("initial boot position = %+v, want PC %#x ARM", position, wantEntry)
@@ -115,19 +119,35 @@ func TestSamsungTargetBootPrivateReferences(t *testing.T) {
 				firmwareProfile.ID == samsung.SCHW390CK11ProfileID ||
 				firmwareProfile.ID == samsung.SCHW420CD16ProfileID ||
 				firmwareProfile.ID == samsung.SCHW460CC26ProfileID
+			expectOEMSBLTrap = expectOEMSBLTrap || firmwareProfile.ID == samsung.SPHW4200DC17ProfileID
+			var directResetEntry uint32
+			var directResetMode cpu.Mode
+			expectDirectResetTrap := false
+			switch firmwareProfile.ID {
+			case samsung.SCHW450CK10ProfileID:
+				directResetEntry, directResetMode = 0xffff4000, cpu.ModeARM
+				expectDirectResetTrap = true
+			case samsung.SCHW599BE30ProfileID:
+				directResetEntry, directResetMode = 0x00000000, cpu.ModeARM
+				expectDirectResetTrap = true
+			}
 			if firmwareProfile.ID == samsung.SCHW850CF11ProfileID {
 				oemsblEntry, oemsblMode = privateW850OEMSBLTrap(t, set, pkg, firmwareProfile)
 			} else if expectOEMSBLTrap {
 				oemsblEntry, oemsblMode = privateProfileBootImageTrap(t, set, pkg, firmwareProfile, "oemsbl")
 			}
-			if expectOEMSBLTrap {
+			if expectOEMSBLTrap || expectDirectResetTrap {
 				traps, ok := machine.backend.(cpu.ExecutionTrapBackend)
 				if !ok {
 					t.Fatalf("%s backend has no execution-trap support", firmwareProfile.Model)
 				}
+				trapEntry, trapMode := oemsblEntry, oemsblMode
+				if expectDirectResetTrap {
+					trapEntry, trapMode = directResetEntry, directResetMode
+				}
 				executionTraps := []cpu.ExecutionTrap{{
-					Address: oemsblEntry,
-					Mode:    oemsblMode,
+					Address: trapEntry,
+					Mode:    trapMode,
 				}}
 				if firmwareProfile.ID == samsung.SCHW210CK12ProfileID ||
 					firmwareProfile.ID == samsung.SCHW270CL28ProfileID {
@@ -161,6 +181,20 @@ func TestSamsungTargetBootPrivateReferences(t *testing.T) {
 					t.Fatalf(
 						"%s QCSBL-to-OEMSBL boot result = %+v registers=%#x",
 						firmwareProfile.Model, result, registers,
+					)
+				}
+			} else if expectDirectResetTrap {
+				if result.Err != nil || result.Reason != cpu.StopExecutionTrap ||
+					result.PC != directResetEntry {
+					registers := make([]uint32, 17)
+					for index := range registers {
+						registers[index], _ = machine.backend.ReadRegister(uint32(index))
+					}
+					t.Fatalf(
+						"%s direct-reset boot result = %+v registers=%#x",
+						firmwareProfile.Model,
+						result,
+						registers,
 					)
 				}
 			} else if result.Err != nil || result.Reason != cpu.StopBudget ||

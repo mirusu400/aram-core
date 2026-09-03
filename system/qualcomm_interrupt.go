@@ -50,8 +50,18 @@ type QualcommGPIOInputRegister struct {
 	Value  uint32
 }
 
+// QualcommInterruptStatusAlias describes a board-specific read-only view of
+// one interrupt status bank. Some companion generations expose a bank at an
+// offset occupied by a configuration register in the baseline MSM layout.
+type QualcommInterruptStatusAlias struct {
+	Offset     uint32
+	Bank       uint8
+	ResetValue uint32
+}
+
 type QualcommInterruptControllerConfig struct {
-	GPIOInputs []QualcommGPIOInputRegister
+	GPIOInputs    []QualcommGPIOInputRegister
+	StatusAliases []QualcommInterruptStatusAlias
 }
 
 // InterruptLineSink is implemented by a CPU backend or a test wire. The
@@ -71,6 +81,9 @@ type QualcommInterruptController struct {
 	gpioWriteObserver QualcommGPIOWriteObserver
 	gpioInputOffsets  []uint32
 	gpioInputs        map[uint32]uint32
+	statusAliases     []QualcommInterruptStatusAlias
+	statusAliasBanks  map[uint32]uint8
+	resetStatus       [2]uint32
 	irqEnable         [2]uint32
 	fiqEnable         [2]uint32
 	status            [2]uint32
@@ -90,22 +103,57 @@ func NewQualcommInterruptControllerWithConfig(
 	config QualcommInterruptControllerConfig,
 	sink InterruptLineSink,
 ) (*QualcommInterruptController, error) {
-	if err := validateQualcommGPIOInputRegisters(config.GPIOInputs); err != nil {
+	if err := validateQualcommInterruptControllerConfig(config); err != nil {
 		return nil, err
 	}
 	inputs := append([]QualcommGPIOInputRegister(nil), config.GPIOInputs...)
 	sort.Slice(inputs, func(left, right int) bool { return inputs[left].Offset < inputs[right].Offset })
+	aliases := append([]QualcommInterruptStatusAlias(nil), config.StatusAliases...)
+	sort.Slice(aliases, func(left, right int) bool { return aliases[left].Offset < aliases[right].Offset })
 	device := &QualcommInterruptController{
 		sink:             sink,
 		gpioInputOffsets: make([]uint32, 0, len(inputs)),
 		gpioInputs:       make(map[uint32]uint32, len(inputs)),
+		statusAliases:    aliases,
+		statusAliasBanks: make(map[uint32]uint8, len(aliases)),
 	}
 	for _, input := range inputs {
 		device.gpioInputOffsets = append(device.gpioInputOffsets, input.Offset)
 		device.gpioInputs[input.Offset] = input.Value
 	}
+	for _, alias := range aliases {
+		device.statusAliasBanks[alias.Offset] = alias.Bank
+		device.resetStatus[alias.Bank] = alias.ResetValue
+	}
 	_ = device.Reset()
 	return device, nil
+}
+
+func validateQualcommInterruptControllerConfig(config QualcommInterruptControllerConfig) error {
+	if err := validateQualcommGPIOInputRegisters(config.GPIOInputs); err != nil {
+		return err
+	}
+	seen := make(map[uint32]struct{}, len(config.GPIOInputs)+len(config.StatusAliases))
+	for _, input := range config.GPIOInputs {
+		seen[input.Offset] = struct{}{}
+	}
+	bankResets := make(map[uint8]uint32, 2)
+	for _, alias := range config.StatusAliases {
+		if alias.Offset%4 != 0 || alias.Offset >= QualcommInterruptControllerWindowSize ||
+			alias.Offset == qualcommInterruptStatus0Offset || alias.Offset == qualcommInterruptStatus1Offset ||
+			alias.Bank >= 2 {
+			return fmt.Errorf("status alias offset 0x%x bank %d: %w", alias.Offset, alias.Bank, ErrInvalidRegion)
+		}
+		if _, duplicate := seen[alias.Offset]; duplicate {
+			return fmt.Errorf("duplicate interrupt alias offset 0x%x: %w", alias.Offset, ErrInvalidRegion)
+		}
+		seen[alias.Offset] = struct{}{}
+		if reset, configured := bankResets[alias.Bank]; configured && reset != alias.ResetValue {
+			return fmt.Errorf("conflicting reset for interrupt bank %d: %w", alias.Bank, ErrInvalidRegion)
+		}
+		bankResets[alias.Bank] = alias.ResetValue
+	}
+	return nil
 }
 
 func validateQualcommGPIOInputRegisters(inputs []QualcommGPIOInputRegister) error {
@@ -135,7 +183,7 @@ func (d *QualcommInterruptController) AttachGPIOWriteObserver(observer QualcommG
 func (d *QualcommInterruptController) Reset() error {
 	d.irqEnable = [2]uint32{}
 	d.fiqEnable = [2]uint32{}
-	d.status = [2]uint32{}
+	d.status = d.resetStatus
 	d.level = [2]uint32{}
 	d.gpioEnable = [3]uint32{}
 	d.polarity = [4]uint32{}
@@ -150,6 +198,9 @@ func (d *QualcommInterruptController) Read(offset uint32, width Width) (uint32, 
 	}
 	if value, ok := d.gpioInputs[offset]; ok {
 		return value, nil
+	}
+	if bank, ok := d.statusAliasBanks[offset]; ok {
+		return d.status[bank], nil
 	}
 	switch offset {
 	case qualcommIRQEnable0Offset:
@@ -200,6 +251,12 @@ func (d *QualcommInterruptController) Write(offset uint32, width Width, value ui
 		return fmt.Errorf(
 			"%w: write%d value 0x%x at 0x%x",
 			ErrQualcommInterruptControllerMMIO, width*8, value, offset,
+		)
+	}
+	if _, readOnly := d.statusAliasBanks[offset]; readOnly {
+		return fmt.Errorf(
+			"%w: write32 value 0x%x at read-only status alias 0x%x",
+			ErrQualcommInterruptControllerMMIO, value, offset,
 		)
 	}
 	switch offset {
@@ -323,7 +380,10 @@ func (d *QualcommInterruptController) SaveState() ([]byte, error) {
 	const words = 2 + 2 + 2 + 2 + 3 + 4 + 3 + 3
 	version := uint32(1)
 	headerSize := 8
-	if len(d.gpioInputOffsets) != 0 {
+	if len(d.statusAliases) != 0 {
+		version = 3
+		headerSize = 16 + len(d.gpioInputOffsets)*8 + len(d.statusAliases)*12
+	} else if len(d.gpioInputOffsets) != 0 {
 		version = 2
 		headerSize = 12 + len(d.gpioInputOffsets)*8
 	}
@@ -331,13 +391,23 @@ func (d *QualcommInterruptController) SaveState() ([]byte, error) {
 	copy(state, "QINT")
 	binary.LittleEndian.PutUint32(state[4:8], version)
 	offset := 8
-	if version == 2 {
+	if version >= 2 {
 		binary.LittleEndian.PutUint32(state[8:12], uint32(len(d.gpioInputOffsets)))
 		offset = 12
 		for _, inputOffset := range d.gpioInputOffsets {
 			binary.LittleEndian.PutUint32(state[offset:offset+4], inputOffset)
 			binary.LittleEndian.PutUint32(state[offset+4:offset+8], d.gpioInputs[inputOffset])
 			offset += 8
+		}
+	}
+	if version == 3 {
+		binary.LittleEndian.PutUint32(state[offset:offset+4], uint32(len(d.statusAliases)))
+		offset += 4
+		for _, alias := range d.statusAliases {
+			binary.LittleEndian.PutUint32(state[offset:offset+4], alias.Offset)
+			binary.LittleEndian.PutUint32(state[offset+4:offset+8], uint32(alias.Bank))
+			binary.LittleEndian.PutUint32(state[offset+8:offset+12], alias.ResetValue)
+			offset += 12
 		}
 	}
 	put := func(values []uint32) {
@@ -365,11 +435,11 @@ func (d *QualcommInterruptController) LoadState(state []byte) error {
 	offset := 8
 	switch binary.LittleEndian.Uint32(state[4:8]) {
 	case 1:
-		if len(d.gpioInputOffsets) != 0 || len(state) != 8+words*4 {
+		if len(d.gpioInputOffsets) != 0 || len(d.statusAliases) != 0 || len(state) != 8+words*4 {
 			return ErrInvalidState
 		}
 	case 2:
-		if len(state) < 12 {
+		if len(d.statusAliases) != 0 || len(state) < 12 {
 			return ErrInvalidState
 		}
 		inputCount := binary.LittleEndian.Uint32(state[8:12])
@@ -384,6 +454,37 @@ func (d *QualcommInterruptController) LoadState(state []byte) error {
 				return ErrInvalidState
 			}
 			offset += 8
+		}
+	case 3:
+		if len(state) < 16 {
+			return ErrInvalidState
+		}
+		inputCount := binary.LittleEndian.Uint32(state[8:12])
+		inputEnd := uint64(12) + uint64(inputCount)*8
+		if inputCount != uint32(len(d.gpioInputOffsets)) || inputEnd+4 > uint64(len(state)) {
+			return ErrInvalidState
+		}
+		offset = 12
+		for _, inputOffset := range d.gpioInputOffsets {
+			if binary.LittleEndian.Uint32(state[offset:offset+4]) != inputOffset ||
+				binary.LittleEndian.Uint32(state[offset+4:offset+8]) != d.gpioInputs[inputOffset] {
+				return ErrInvalidState
+			}
+			offset += 8
+		}
+		aliasCount := binary.LittleEndian.Uint32(state[offset : offset+4])
+		offset += 4
+		expectedSize := uint64(offset) + uint64(aliasCount)*12 + words*4
+		if aliasCount != uint32(len(d.statusAliases)) || expectedSize != uint64(len(state)) {
+			return ErrInvalidState
+		}
+		for _, alias := range d.statusAliases {
+			if binary.LittleEndian.Uint32(state[offset:offset+4]) != alias.Offset ||
+				binary.LittleEndian.Uint32(state[offset+4:offset+8]) != uint32(alias.Bank) ||
+				binary.LittleEndian.Uint32(state[offset+8:offset+12]) != alias.ResetValue {
+				return ErrInvalidState
+			}
+			offset += 12
 		}
 	default:
 		return ErrInvalidState

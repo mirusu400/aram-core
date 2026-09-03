@@ -9,6 +9,12 @@ import (
 	"github.com/mirusu400/aram-core/firmwareset"
 )
 
+func TestUnknownSamsungPackageFamilyIsIncomplete(t *testing.T) {
+	if pkg := (Package{Family: "unknown"}); pkg.Complete() {
+		t.Fatal("package with unknown family reported complete")
+	}
+}
+
 func TestInspectAndNormalizeSyntheticSCHDownloadSetWithoutFilenames(t *testing.T) {
 	sources := syntheticDownloadSources(t)
 	set, err := firmwareset.NewSet([]firmwareset.Source{

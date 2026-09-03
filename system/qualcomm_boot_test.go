@@ -805,6 +805,62 @@ func TestQualcommBootControlProfilesMixedWidthOffsets(t *testing.T) {
 	}
 }
 
+func TestQualcommBootControlProfilesByteWritableOffsets(t *testing.T) {
+	config := QualcommBootControlConfig{
+		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
+		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1,
+		WritableOffsets:     []uint32{0x3404},
+		ByteWritableOffsets: []uint32{0x3404},
+		NANDReady:           NewStatusSignal(),
+	}
+	device, err := NewQualcommBootControl(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := device.Write(0x3404, Width32, 0xaaaa5555); err != nil {
+		t.Fatal(err)
+	}
+	if err := device.Write(0x3404, Width8, 0x12); err != nil {
+		t.Fatal(err)
+	}
+	word, err := device.Read(0x3404, Width32)
+	if err != nil || word != 0xaaaa5512 {
+		t.Fatalf("byte-writable word = %#x error %v", word, err)
+	}
+	value, err := device.Read(0x3404, Width8)
+	if err != nil || value != 0x12 {
+		t.Fatalf("byte-writable byte = %#x error %v", value, err)
+	}
+	if err := device.Write(0x3404, Width16, 0); !errors.Is(err, ErrQualcommBootControlMMIO) {
+		t.Fatalf("halfword write to byte-writable register error = %v", err)
+	}
+	state, err := device.SaveState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, _ := NewQualcommBootControl(config)
+	if err := restored.LoadState(state); err != nil {
+		t.Fatal(err)
+	}
+	word, _ = restored.Read(0x3404, Width32)
+	if word != 0xaaaa5512 {
+		t.Fatalf("restored byte-writable word = %#x", word)
+	}
+	unprofiledConfig := config
+	unprofiledConfig.ByteWritableOffsets = nil
+	unprofiled, _ := NewQualcommBootControl(unprofiledConfig)
+	if err := unprofiled.LoadState(state); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("mismatched byte-writable profile state error = %v", err)
+	}
+	for _, offsets := range [][]uint32{{0x3404, 0x3404}, {0x3402}, {0x3408}, {0x0a40}} {
+		invalid := config
+		invalid.ByteWritableOffsets = offsets
+		if _, err := NewQualcommBootControl(invalid); err == nil {
+			t.Fatalf("accepted invalid byte-writable offsets %#v", offsets)
+		}
+	}
+}
+
 func TestQualcommBootControlProfilesLegacyUARTControllers(t *testing.T) {
 	halfwordOffsets := make([]uint32, 0, len(qualcommLegacyUARTHalfwordRegisterOffsets))
 	for _, relative := range qualcommLegacyUARTHalfwordRegisterOffsets {
@@ -870,6 +926,7 @@ func TestQualcommBootControlProfilesMixedWidthLegacyUARTController(t *testing.T)
 	for _, relative := range qualcommLegacyUARTHalfwordRegisterOffsets {
 		wordOffsets = append(wordOffsets, 0x4200+relative)
 	}
+	wordOffsets = append(wordOffsets, 0x4200+qualcommLegacyUARTFIFOOffset)
 	device, err := NewQualcommBootControl(QualcommBootControlConfig{
 		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
 		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1,
@@ -886,6 +943,12 @@ func TestQualcommBootControlProfilesMixedWidthLegacyUARTController(t *testing.T)
 	}
 	if err := device.Write(0x4238, Width16, 0x1234); err != nil {
 		t.Fatalf("halfword legacy UART configuration write: %v", err)
+	}
+	if err := device.Write(0x420c, Width32, 'A'); err != nil {
+		t.Fatalf("word-wide legacy UART FIFO write: %v", err)
+	}
+	if err := device.Write(0x420c, Width32, 0x100); !errors.Is(err, ErrQualcommBootControlMMIO) {
+		t.Fatalf("multi-byte legacy UART FIFO write error = %v", err)
 	}
 	value, err := device.Read(0x4208, Width32)
 	if err != nil || value != qualcommLegacyUARTStatusTXReady|qualcommLegacyUARTStatusTXEmpty {

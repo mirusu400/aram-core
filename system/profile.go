@@ -30,10 +30,21 @@ type ReadOnlyRegisterProfile struct {
 }
 
 type LatchedRegisterProfile struct {
-	ID         string
-	Address    uint32
-	Width      Width
-	ResetValue uint32
+	ID               string
+	Address          uint32
+	Width            Width
+	AdditionalWidths []Width
+	ResetValue       uint32
+	WritePulses      []LatchedRegisterWritePulseProfile
+}
+
+// LatchedRegisterWritePulseProfile raises one or more interrupt-controller
+// status sources when a profiled command bit is written to a simple latch.
+type LatchedRegisterWritePulseProfile struct {
+	Mask                  uint32
+	Value                 uint32
+	Sources               []uint8
+	UseVectoredController bool
 }
 
 type LatchedRegisterWindowProfile struct {
@@ -41,6 +52,40 @@ type LatchedRegisterWindowProfile struct {
 	Address uint32
 	Size    uint32
 	Width   Width
+}
+
+// AddressedStorageWindowProfile maps a bounded read aperture and an exact
+// command register which selects its source range in an immutable image.
+type AddressedStorageWindowProfile struct {
+	ID             string
+	Address        uint32
+	Size           uint32
+	CommandID      string
+	CommandAddress uint32
+	CommandWidth   Width
+	AddressMask    uint32
+	ResetCommand   uint32
+}
+
+func (p AddressedStorageWindowProfile) validate() error {
+	if !validProfileID(p.ID) || !validProfileID(p.CommandID) || p.ID == p.CommandID ||
+		p.Size == 0 || p.Size&(p.Size-1) != 0 ||
+		uint64(p.Address)+uint64(p.Size) > 1<<32 ||
+		(p.CommandWidth != Width8 && p.CommandWidth != Width16 && p.CommandWidth != Width32) ||
+		p.CommandAddress%uint32(p.CommandWidth) != 0 ||
+		uint64(p.CommandAddress)+uint64(p.CommandWidth) > 1<<32 ||
+		p.AddressMask&(p.Size-1) != 0 ||
+		p.CommandWidth < Width32 &&
+			(p.AddressMask >= uint32(1)<<(uint32(p.CommandWidth)*8) ||
+				p.ResetCommand >= uint32(1)<<(uint32(p.CommandWidth)*8)) {
+		return ErrInvalidRegion
+	}
+	dataEnd := uint64(p.Address) + uint64(p.Size)
+	commandEnd := uint64(p.CommandAddress) + uint64(p.CommandWidth)
+	if uint64(p.Address) < commandEnd && uint64(p.CommandAddress) < dataEnd {
+		return ErrRegionOverlap
+	}
+	return nil
 }
 
 // SamsungMGPProfile locates Samsung's external ARM7/MGP control aperture and
@@ -234,6 +279,7 @@ type BoardProfile struct {
 	ID                            string
 	PlatformID                    string
 	FirmwareBuildID               string
+	CPUCompatibility              ARMCPUCompatibilityProfile
 	NANDReadID                    uint32
 	NANDSize                      uint64
 	NANDPageSize                  uint32
@@ -276,6 +322,7 @@ type BoardProfile struct {
 	BootControlInterruptWindowWritableOffsets []uint32
 	BootControlHalfwordOffsets                []uint32
 	BootControlMixedWidthOffsets              []uint32
+	BootControlByteWritableOffsets            []uint32
 	BootControlReadOnlyRegisters              []QualcommBootReadOnlyRegister
 	BootControlRegisterResets                 []QualcommBootRegisterReset
 	BootControlCompletionEvents               []QualcommCompletionEventConfig
@@ -285,6 +332,7 @@ type BoardProfile struct {
 	BootControlSBICompletionStatus            uint32
 	BootControlWatchdogReadable               bool
 	BootControlGPIOInputs                     []QualcommGPIOInputRegister
+	BootControlInterruptStatusAliases         []QualcommInterruptStatusAlias
 	PrimaryClockWritableOffsets               []uint32
 	SecondaryClockWritableOffsets             []uint32
 	SecondaryClockReadOnlyRegisters           []QualcommSecondaryClockReadOnlyRegister
@@ -307,9 +355,16 @@ type BoardProfile struct {
 	ReadOnlyRegisters                         []ReadOnlyRegisterProfile
 	LatchedRegisters                          []LatchedRegisterProfile
 	LatchedRegisterWindows                    []LatchedRegisterWindowProfile
+	AddressedStorageWindows                   []AddressedStorageWindowProfile
 	SamsungMGP                                *SamsungMGPProfile
 	ADSPMailbox                               *QualcommADSPMailboxProfile
 	HLECalls                                  []HLECallProfile
+}
+
+// ARMCPUCompatibilityProfile records board-selected behavior for instructions
+// whose architecture defines no stable result. The zero value is precise.
+type ARMCPUCompatibilityProfile struct {
+	UserSystemSPSRReadAsCPSR bool
 }
 
 func (p BoardProfile) Validate() error {
@@ -416,6 +471,7 @@ func (p BoardProfile) Validate() error {
 		p.BootControlInterruptWindowWritableOffsets,
 		p.BootControlHalfwordOffsets,
 		p.BootControlMixedWidthOffsets,
+		p.BootControlByteWritableOffsets,
 		p.BootControlReadOnlyRegisters,
 		p.BootControlRegisterResets,
 		p.BootControlCompletionEvents,
@@ -426,8 +482,11 @@ func (p BoardProfile) Validate() error {
 	); err != nil {
 		return fmt.Errorf("board profile %q boot-control register profile: %w", p.ID, err)
 	}
-	if err := validateQualcommGPIOInputRegisters(p.BootControlGPIOInputs); err != nil {
-		return fmt.Errorf("board profile %q boot-control GPIO inputs: %w", p.ID, err)
+	if err := validateQualcommInterruptControllerConfig(QualcommInterruptControllerConfig{
+		GPIOInputs:    p.BootControlGPIOInputs,
+		StatusAliases: p.BootControlInterruptStatusAliases,
+	}); err != nil {
+		return fmt.Errorf("board profile %q boot-control interrupt inputs: %w", p.ID, err)
 	}
 	if err := validateQualcommPrimaryClockWritableOffsets(p.PrimaryClockWritableOffsets); err != nil {
 		return fmt.Errorf("board profile %q primary-clock writable offsets: %w", p.ID, err)
@@ -722,6 +781,46 @@ func (p BoardProfile) Validate() error {
 			(register.Width < Width32 && register.ResetValue >= uint32(1)<<(uint32(register.Width)*8)) {
 			return fmt.Errorf("board profile %q has invalid latched register %q", p.ID, register.ID)
 		}
+		additionalWidths := make(map[Width]struct{}, len(register.AdditionalWidths))
+		for _, width := range register.AdditionalWidths {
+			if width != Width8 && width != Width16 && width != Width32 ||
+				width >= register.Width || register.Address%uint32(width) != 0 {
+				return fmt.Errorf("board profile %q has invalid mixed width for latched register %q", p.ID, register.ID)
+			}
+			if _, duplicate := additionalWidths[width]; duplicate {
+				return fmt.Errorf("board profile %q repeats mixed width for latched register %q", p.ID, register.ID)
+			}
+			additionalWidths[width] = struct{}{}
+		}
+		if len(register.AdditionalWidths) != 0 && len(register.WritePulses) != 0 {
+			return fmt.Errorf("board profile %q mixes pulse and multi-width latched register %q", p.ID, register.ID)
+		}
+		pulseKeys := make(map[[2]uint32]struct{}, len(register.WritePulses))
+		for _, pulse := range register.WritePulses {
+			if pulse.Mask == 0 || pulse.Value&^pulse.Mask != 0 || len(pulse.Sources) == 0 ||
+				register.Width < Width32 && pulse.Mask >= uint32(1)<<(uint32(register.Width)*8) {
+				return fmt.Errorf("board profile %q has invalid latched-register pulse %q", p.ID, register.ID)
+			}
+			key := [2]uint32{pulse.Mask, pulse.Value}
+			if _, duplicate := pulseKeys[key]; duplicate {
+				return fmt.Errorf("board profile %q repeats latched-register pulse rule %q", p.ID, register.ID)
+			}
+			pulseKeys[key] = struct{}{}
+			seenSources := make(map[uint8]struct{}, len(pulse.Sources))
+			for _, source := range pulse.Sources {
+				if pulse.UseVectoredController {
+					if p.VectoredInterrupt == nil || source >= p.VectoredInterrupt.SourceCount {
+						return fmt.Errorf("board profile %q has invalid latched-register pulse source %d", p.ID, source)
+					}
+				} else if source >= 64 {
+					return fmt.Errorf("board profile %q has invalid latched-register pulse source %d", p.ID, source)
+				}
+				if _, duplicate := seenSources[source]; duplicate {
+					return fmt.Errorf("board profile %q repeats latched-register pulse source %d", p.ID, source)
+				}
+				seenSources[source] = struct{}{}
+			}
+		}
 	}
 	sort.Slice(latchedRegisters, func(i, j int) bool {
 		return latchedRegisters[i].Address < latchedRegisters[j].Address
@@ -797,6 +896,69 @@ func (p BoardProfile) Validate() error {
 					window.ID,
 					latched.ID,
 				)
+			}
+		}
+	}
+	type addressedMapping struct {
+		id      string
+		address uint32
+		size    uint32
+	}
+	addressedMappings := make([]addressedMapping, 0, len(p.AddressedStorageWindows)*2)
+	addressedIDs := make(map[string]struct{}, len(p.AddressedStorageWindows)*2)
+	for _, window := range p.AddressedStorageWindows {
+		if err := window.validate(); err != nil {
+			return fmt.Errorf("board profile %q has invalid addressed storage window %q: %w", p.ID, window.ID, err)
+		}
+		for _, id := range []string{window.ID, window.CommandID} {
+			if _, duplicate := addressedIDs[id]; duplicate {
+				return fmt.Errorf("board profile %q repeats addressed storage mapping %q", p.ID, id)
+			}
+			addressedIDs[id] = struct{}{}
+		}
+		addressedMappings = append(
+			addressedMappings,
+			addressedMapping{id: window.ID, address: window.Address, size: window.Size},
+			addressedMapping{
+				id: window.CommandID, address: window.CommandAddress, size: uint32(window.CommandWidth),
+			},
+		)
+	}
+	sort.Slice(addressedMappings, func(left, right int) bool {
+		return addressedMappings[left].address < addressedMappings[right].address
+	})
+	for index, mapping := range addressedMappings {
+		if index > 0 {
+			previous := addressedMappings[index-1]
+			if uint64(previous.address)+uint64(previous.size) > uint64(mapping.address) {
+				return fmt.Errorf(
+					"board profile %q addressed storage mappings %q and %q overlap",
+					p.ID,
+					previous.id,
+					mapping.id,
+				)
+			}
+		}
+		mappingEnd := uint64(mapping.address) + uint64(mapping.size)
+		for _, register := range registers {
+			registerEnd := uint64(register.Address) + uint64(register.Width)
+			if mapping.id == register.ID ||
+				uint64(mapping.address) < registerEnd && uint64(register.Address) < mappingEnd {
+				return fmt.Errorf("board profile %q registers %q and %q overlap", p.ID, mapping.id, register.ID)
+			}
+		}
+		for _, register := range latchedRegisters {
+			registerEnd := uint64(register.Address) + uint64(register.Width)
+			if mapping.id == register.ID ||
+				uint64(mapping.address) < registerEnd && uint64(register.Address) < mappingEnd {
+				return fmt.Errorf("board profile %q registers %q and %q overlap", p.ID, mapping.id, register.ID)
+			}
+		}
+		for _, window := range latchedWindows {
+			windowEnd := uint64(window.Address) + uint64(window.Size)
+			if mapping.id == window.ID ||
+				uint64(mapping.address) < windowEnd && uint64(window.Address) < mappingEnd {
+				return fmt.Errorf("board profile %q registers %q and %q overlap", p.ID, mapping.id, window.ID)
 			}
 		}
 	}
@@ -982,6 +1144,45 @@ func (p BoardProfile) ApplyReadOnlyRegisters(bus *Bus) error {
 	return nil
 }
 
+// ApplyAddressedStorageWindows connects profile-declared read apertures to the
+// supplied machine storage. The aperture itself remains read-only while other
+// controllers may update the shared backing device.
+func (p BoardProfile) ApplyAddressedStorageWindows(bus *Bus, storage ReadOnlyStorage) error {
+	if bus == nil || storage == nil {
+		return fmt.Errorf("apply board profile %q addressed storage: nil bus or storage", p.ID)
+	}
+	if err := p.Validate(); err != nil {
+		return err
+	}
+	for _, spec := range p.AddressedStorageWindows {
+		window, err := NewAddressedReadOnlyStorageWindow(
+			storage,
+			spec.Size,
+			spec.AddressMask,
+			spec.ResetCommand,
+		)
+		if err != nil {
+			return fmt.Errorf("apply board profile %q storage window %q: %w", p.ID, spec.ID, err)
+		}
+		command, err := NewAddressedStorageCommandRegister(window, spec.CommandWidth)
+		if err != nil {
+			return fmt.Errorf("apply board profile %q storage command %q: %w", p.ID, spec.CommandID, err)
+		}
+		if err := bus.MapMMIO(spec.ID, spec.Address, spec.Size, window); err != nil {
+			return fmt.Errorf("apply board profile %q: %w", p.ID, err)
+		}
+		if err := bus.MapMMIO(
+			spec.CommandID,
+			spec.CommandAddress,
+			uint32(spec.CommandWidth),
+			command,
+		); err != nil {
+			return fmt.Errorf("apply board profile %q: %w", p.ID, err)
+		}
+	}
+	return nil
+}
+
 func (p BoardProfile) ApplyLatchedRegisters(bus *Bus) error {
 	return p.applyLatchedRegisters(bus, nil, nil)
 }
@@ -1041,9 +1242,29 @@ func (p BoardProfile) applyLatchedRegisters(
 		}
 	}
 	for _, spec := range p.LatchedRegisters {
-		register, err := NewLatchedRegister(spec.Width, spec.ResetValue)
-		if err != nil {
-			return fmt.Errorf("apply board profile %q register %q: %w", p.ID, spec.ID, err)
+		var register Device
+		if len(spec.AdditionalWidths) != 0 {
+			widths := append([]Width{spec.Width}, spec.AdditionalWidths...)
+			mixed, err := NewMixedWidthLatchedRegister(widths, spec.ResetValue)
+			if err != nil {
+				return fmt.Errorf("apply board profile %q register %q: %w", p.ID, spec.ID, err)
+			}
+			register = mixed
+		} else {
+			exact, err := NewLatchedRegister(spec.Width, spec.ResetValue)
+			if err != nil {
+				return fmt.Errorf("apply board profile %q register %q: %w", p.ID, spec.ID, err)
+			}
+			for _, pulse := range spec.WritePulses {
+				var pulser qualcommInterruptSourcePulser = interruptController
+				if pulse.UseVectoredController {
+					pulser = vectoredInterruptController
+				}
+				if err := exact.AttachWritePulse(pulse.Mask, pulse.Value, pulse.Sources, pulser); err != nil {
+					return fmt.Errorf("apply board profile %q register pulse %q: %w", p.ID, spec.ID, err)
+				}
+			}
+			register = exact
 		}
 		if err := bus.MapMMIO(spec.ID, spec.Address, uint32(spec.Width), register); err != nil {
 			return fmt.Errorf("apply board profile %q: %w", p.ID, err)
@@ -1974,6 +2195,266 @@ func SCHW420CD16BoardProfile() BoardProfile {
 	return samsungRawDownloadBoardProfile(
 		"samsung.sch-w420", "samsung.sch-w420.cd16", 0x0d5c0000,
 	)
+}
+
+// SPHW4200DC17BoardProfile selects the KTF sibling's exact firmware and NAND
+// identity while retaining the shared MSM6280 raw-download device contracts.
+func SPHW4200DC17BoardProfile() BoardProfile {
+	return samsungRawDownloadBoardProfile(
+		"samsung.sph-w4200", "samsung.sph-w4200.dc17", 0x0e600000,
+	)
+}
+
+// SCHW450CK10BoardProfile starts the original MSM6250-era flat boot image at
+// reset while retaining only shared Samsung/Qualcomm MMIO primitives.
+func SCHW450CK10BoardProfile() BoardProfile {
+	profile := samsungLegacyFlatBoardProfile(
+		"samsung.sch-w450", "samsung.sch-w450.ck10",
+	)
+	// The direct reset stub owns the full 32-bit external platform word. Drop
+	// the two inherited read-only halfword straps used by later raw QCSBLs.
+	readOnly := profile.ReadOnlyRegisters[:0]
+	for _, register := range profile.ReadOnlyRegisters {
+		if register.ID != "external-platform-feature-low" &&
+			register.ID != "external-platform-feature-high" {
+			readOnly = append(readOnly, register)
+		}
+	}
+	profile.ReadOnlyRegisters = readOnly
+	// The reset prologue snapshots this cold-reset status word into its IRAM
+	// handoff record before configuring memory. It is not a writable latch.
+	profile.BootControlReadOnlyRegisters = append(
+		profile.BootControlReadOnlyRegisters,
+		QualcommBootReadOnlyRegister{Offset: 0x3400, Value: 0},
+	)
+	// Reset publishes a word and then toggles its low byte at +0x3404.
+	profile.BootControlWritableOffsets = append(profile.BootControlWritableOffsets, 0x3404)
+	profile.BootControlMixedWidthOffsets = append(profile.BootControlMixedWidthOffsets, 0x3404)
+	profile.BootControlByteWritableOffsets = append(profile.BootControlByteWritableOffsets, 0x3404)
+	profile.PrimaryClockWritableOffsets = append(
+		profile.PrimaryClockWritableOffsets,
+		0x0174, 0x0178, 0x017c, 0x0180,
+	)
+	// The reset sequence masks this one clock-domain register before touching
+	// external-memory timing. It is outside the inherited primary clock
+	// controller aperture and is not read back by the handoff path.
+	profile.LatchedRegisters = append(profile.LatchedRegisters, LatchedRegisterProfile{
+		ID: "w450-clock-domain-mask", Address: 0x84001400,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		// Reset reads the full external-memory configuration word, then sets
+		// its low-half enable bit with STRH.
+		ID: "w450-external-memory-configuration", Address: 0x48000000,
+		Width: Width32, AdditionalWidths: []Width{Width16}, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w450-static-memory-configuration", Address: 0x48000008,
+		Width: Width32, AdditionalWidths: []Width{Width16}, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w450-external-platform-word", Address: 0x30010000,
+		Width: Width32, ResetValue: 0,
+	})
+	profile.LatchedRegisterWindows = append(profile.LatchedRegisterWindows, LatchedRegisterWindowProfile{
+		// Reset configures the external-bus control words in the first half,
+		// then programs sixteen 0x20-byte timing slots in the second half.
+		ID: "w450-external-bus-control", Address: 0x63800000,
+		Size: 0x400, Width: Width32,
+	})
+	return profile
+}
+
+// SCHW599BE30BoardProfile uses the same direct-reset flat-flash contract for
+// the monolithic ARM7 firmware and its adjacent preload region.
+func SCHW599BE30BoardProfile() BoardProfile {
+	profile := samsungLegacyFlatBoardProfile(
+		"samsung.sch-w599", "samsung.sch-w599.be30",
+	)
+	profile.PlatformID = "intel.pxa27x-samsung-flat-v1"
+	profile.NANDReadID = 0x00009879
+	// The high-vector reset stub reads physical flash through its addressed
+	// page aperture and copies the selected payload into the inherited 128 MiB
+	// low-address EBI RAM before transferring control there.
+	// The high-vector tail samples two encoded bootstrap selector fields from
+	// this read-only external status word after the command handshakes finish.
+	profile.ReadOnlyRegisters = append(profile.ReadOnlyRegisters, ReadOnlyRegisterProfile{
+		ID: "w599-bootstrap-selectors", Address: 0x64000308,
+		// The selector fields encode Toshiba manufacturer 0x98 and the 128 MiB
+		// small-page device 0x79, the only table entry large enough for this
+		// build's firmware and preload regions.
+		Width: Width32, Value: 0x4c3c8000,
+	}, ReadOnlyRegisterProfile{
+		// A separate result byte returns 0xff when the bootstrap read completes
+		// without the status error bit. Other values make the reset scanner skip
+		// the page and continue toward its bounded device-size limit.
+		ID: "w599-bootstrap-result", Address: 0x64000320,
+		Width: Width32, Value: 0x000000ff,
+	})
+	// Bootstrap read commands encode a byte-aligned flash page plus low flag
+	// bits. The controller exposes the selected 512-byte page through a fixed
+	// read-only data aperture.
+	profile.AddressedStorageWindows = append(
+		profile.AddressedStorageWindows,
+		AddressedStorageWindowProfile{
+			ID: "w599-bootstrap-page", Address: 0x64000000, Size: 0x200,
+			CommandID: "w599-bootstrap-page-command", CommandAddress: 0x64000304,
+			CommandWidth: Width32, AddressMask: 0xfffffe00,
+		},
+	)
+	// The reset stub samples the low half of PXA27x BSCNTR1 before applying its
+	// board drive-strength setting.
+	profile.LatchedRegisters = append(profile.LatchedRegisters, LatchedRegisterProfile{
+		ID: "pxa27x-memory-strength-1", Address: 0x48000050,
+		Width: Width16, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		// A high-vector helper publishes its masked bootstrap word here before
+		// returning to the reset sequencer.
+		ID: "w599-bootstrap-word", Address: 0x6400031c,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w599-bootstrap-control", Address: 0x64000300,
+		Width: Width32, ResetValue: 0,
+		WritePulses: []LatchedRegisterWritePulseProfile{
+			{Mask: 0xffffffff, Value: 1, Sources: []uint8{45}},
+			{Mask: 0xffffffff, Value: 7, Sources: []uint8{45, 46}},
+			{Mask: 0xffffffff, Value: 5, Sources: []uint8{45, 46}},
+			{Mask: 0xffffffff, Value: 6, Sources: []uint8{45}},
+		},
+	}, LatchedRegisterProfile{
+		ID: "pxa27x-static-memory-control-0", Address: 0x48000008,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "pxa27x-dynamic-memory-configuration", Address: 0x48000000,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		// The Thumb reset tail asserts this external bootstrap latch before
+		// transferring into the ordinary low-vector image.
+		ID: "w599-external-bootstrap", Address: 0x63800000,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w599-external-bootstrap-clear", Address: 0x63800008,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w599-external-bootstrap-mode", Address: 0x63800020,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w599-external-bootstrap-status", Address: 0x63800024,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w599-external-bootstrap-control", Address: 0x63800028,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w599-external-bootstrap-mask", Address: 0x63800030,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w599-external-bootstrap-mask-high", Address: 0x63800034,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w599-external-bootstrap-mask-final", Address: 0x63800038,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w599-external-bootstrap-mask-limit", Address: 0x6380003c,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w599-external-bootstrap-data", Address: 0x63800040,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w599-external-bootstrap-data-high", Address: 0x63800044,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w599-external-bootstrap-data-final", Address: 0x63800048,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w599-external-bootstrap-data-limit", Address: 0x6380004c,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w599-external-bootstrap-data-end", Address: 0x63800050,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w599-external-bootstrap-data-tail", Address: 0x63800054,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w599-external-bootstrap-data-terminal", Address: 0x63800058,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w599-external-bootstrap-command", Address: 0x63800100,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w599-external-bootstrap-command-high", Address: 0x63800120,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w599-external-bootstrap-command-final", Address: 0x63800140,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w599-external-bootstrap-command-limit", Address: 0x63800160,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w599-external-bootstrap-status-low", Address: 0x63800104,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w599-external-bootstrap-status-high", Address: 0x63800124,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w599-external-bootstrap-status-final", Address: 0x63800144,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w599-external-bootstrap-status-limit", Address: 0x63800164,
+		Width: Width32, ResetValue: 0,
+	})
+	// The first low-vector routine transmits through the byte-wide FIFO at
+	// CHIP_BASE+0x1b3c, identifying the surrounding MSM6xxx legacy UART bank.
+	const legacyUARTBase = uint32(0x1b30)
+	// The same reset sequence enables the bounded Qualcomm companion control
+	// latch at CHIP_BASE+0x2204 before leaving high-vector startup.
+	profile.BootControlWritableOffsets = append(
+		profile.BootControlWritableOffsets,
+		0x05f0, 0x05f4, 0x060c, 0x0630,
+		legacyUARTBase+qualcommLegacyUARTFIFOOffset,
+		0x0710, 0x072c, 0x0730, 0x2204, 0x2210, 0x2220, 0x2224,
+	)
+	profile.BootControlMixedWidthOffsets = append(
+		profile.BootControlMixedWidthOffsets,
+		legacyUARTBase+qualcommLegacyUARTFIFOOffset,
+	)
+	// This companion generation exposes its bootstrap pin state where the
+	// older INTCTL layout placed GPIO interrupt-detect group four. Both sampled
+	// pins are asserted once the deterministic external endpoint is ready.
+	profile.BootControlInterruptStatusAliases = append(
+		profile.BootControlInterruptStatusAliases,
+		QualcommInterruptStatusAlias{Offset: 0x50, Bank: 1},
+	)
+	profile.BootControlLegacyUARTControllers = append(
+		profile.BootControlLegacyUARTControllers, legacyUARTBase,
+	)
+	for _, relative := range qualcommLegacyUARTHalfwordRegisterOffsets {
+		profile.BootControlHalfwordOffsets = append(
+			profile.BootControlHalfwordOffsets, legacyUARTBase+relative,
+		)
+	}
+	return profile
+}
+
+func samsungLegacyFlatBoardProfile(id, firmwareBuildID string) BoardProfile {
+	profile := samsungSmallPageRawDownloadBoardProfile(id, firmwareBuildID, 0)
+	profile.PlatformID = "qualcomm.arm7-samsung-flat-v1"
+	profile.CPUCompatibility.UserSystemSPSRReadAsCPSR = true
+	// These archives already contain the downloader-produced physical bytes.
+	// Do not invent the completion footer used by later MIBIB packages.
+	profile.NANDInitialData = nil
+	profile.NANDReportsErasedECCCodewords = false
+	// Original reset code runs instead of an unavailable-mask-ROM HLE, so no
+	// retained PBL tables or entry register contract is supplied by the host.
+	profile.PBLServiceTableAddress = 0
+	profile.PBLServiceTableHeaderSize = 0
+	profile.PBLHeaderFeatureDataAddress = 0
+	profile.PBLHeaderFeatures = nil
+	profile.PBLFixedFeatureDataAddress = 0
+	profile.PBLFixedFeatureFirst = 0
+	profile.PBLFixedFeatureSlotCount = 0
+	profile.PBLFixedFeatures = nil
+	profile.PBLLegacyFeatureDataAddress = 0
+	profile.PBLSharedDataAddress = 0
+	profile.PBLSharedDataSize = 0
+	profile.PBLStackPointer = 0
+	return profile
 }
 
 // SCHW210CK12BoardProfile selects CK12's exact small-page raw-download board.

@@ -284,7 +284,7 @@ func TestInterpreterBackendModeSelection(t *testing.T) {
 		{mode: CPUBackendJIT, wantName: interpreter.BackendName + "-jit"},
 		{mode: CPUBackendJITLoops, wantName: interpreter.BackendName + "-jit-loops"},
 	} {
-		backend, err := newInterpreterBackend(test.mode)
+		backend, err := newInterpreterBackend(test.mode, interpreter.CompatibilityOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -295,7 +295,7 @@ func TestInterpreterBackendModeSelection(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := newInterpreterBackend("unknown"); err == nil {
+	if _, err := newInterpreterBackend("unknown", interpreter.CompatibilityOptions{}); err == nil {
 		t.Fatal("unknown CPU backend mode was accepted")
 	}
 }

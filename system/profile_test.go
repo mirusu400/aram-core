@@ -1,6 +1,7 @@
 package system
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"reflect"
@@ -693,6 +694,11 @@ func TestRawSamsungBoardProfilesKeepExactIdentityAndPackagedEnd(t *testing.T) {
 			page: 0x800, erase: 0x20000, reportErasedECC: true,
 		},
 		{
+			profile: SPHW4200DC17BoardProfile(), id: "samsung.sph-w4200",
+			build: "samsung.sph-w4200.dc17", packagedEnd: 0x0e600000,
+			page: 0x800, erase: 0x20000, reportErasedECC: true,
+		},
+		{
 			profile: SCHW270CL28BoardProfile(), id: "samsung.sch-w270",
 			build: "samsung.sch-w270.cl28", packagedEnd: 0x08c80000,
 			page: 0x200, erase: 0x4000, reportErasedECC: true,
@@ -760,6 +766,74 @@ func TestRawSamsungBoardProfilesKeepExactIdentityAndPackagedEnd(t *testing.T) {
 			t.Fatalf("%s sparse-bus profile = %v / %v", test.id,
 				test.profile.SparseBusRegisterOffsets, test.profile.SparseBusRegisterResets)
 		}
+	}
+}
+
+func TestLegacyFlatBoardProfilesDeclareExactResetDevices(t *testing.T) {
+	w450 := SCHW450CK10BoardProfile()
+	if err := w450.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if w450.ID != "samsung.sch-w450" || w450.FirmwareBuildID != "samsung.sch-w450.ck10" ||
+		w450.PlatformID != "qualcomm.arm7-samsung-flat-v1" ||
+		!w450.CPUCompatibility.UserSystemSPSRReadAsCPSR ||
+		!reflect.DeepEqual(w450.BootControlByteWritableOffsets, []uint32{0x3404}) {
+		t.Fatalf("SCH-W450 reset profile = %+v", w450)
+	}
+	foundResetStatus, foundMixedControl, foundBusWindow := false, false, false
+	for _, register := range w450.BootControlReadOnlyRegisters {
+		foundResetStatus = foundResetStatus || register == (QualcommBootReadOnlyRegister{Offset: 0x3400})
+	}
+	for _, offset := range w450.BootControlMixedWidthOffsets {
+		foundMixedControl = foundMixedControl || offset == 0x3404
+	}
+	for _, window := range w450.LatchedRegisterWindows {
+		foundBusWindow = foundBusWindow || window == (LatchedRegisterWindowProfile{
+			ID: "w450-external-bus-control", Address: 0x63800000, Size: 0x400, Width: Width32,
+		})
+	}
+	if !foundResetStatus || !foundMixedControl || !foundBusWindow {
+		t.Fatalf("SCH-W450 reset devices = status:%t mixed:%t bus:%t", foundResetStatus, foundMixedControl, foundBusWindow)
+	}
+
+	w599 := SCHW599BE30BoardProfile()
+	if err := w599.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if w599.ID != "samsung.sch-w599" || w599.FirmwareBuildID != "samsung.sch-w599.be30" ||
+		w599.PlatformID != "intel.pxa27x-samsung-flat-v1" ||
+		w599.NANDReadID != 0x00009879 ||
+		!w599.CPUCompatibility.UserSystemSPSRReadAsCPSR {
+		t.Fatalf("SCH-W599 reset profile = %+v", w599)
+	}
+	wantStorage := AddressedStorageWindowProfile{
+		ID: "w599-bootstrap-page", Address: 0x64000000, Size: 0x200,
+		CommandID: "w599-bootstrap-page-command", CommandAddress: 0x64000304,
+		CommandWidth: Width32, AddressMask: 0xfffffe00,
+	}
+	if !reflect.DeepEqual(w599.AddressedStorageWindows, []AddressedStorageWindowProfile{wantStorage}) {
+		t.Fatalf("SCH-W599 addressed storage = %+v", w599.AddressedStorageWindows)
+	}
+	foundRAM, foundSelectors, foundResult, foundStatusAlias := false, false, false, false
+	for _, memory := range w599.Memory {
+		foundRAM = foundRAM || memory == (MemoryRegionProfile{
+			ID: "ebi-ram", Kind: MemoryRAM, Address: 0, Size: 0x08000000,
+		})
+	}
+	for _, register := range w599.ReadOnlyRegisters {
+		foundSelectors = foundSelectors || register == (ReadOnlyRegisterProfile{
+			ID: "w599-bootstrap-selectors", Address: 0x64000308, Width: Width32, Value: 0x4c3c8000,
+		})
+		foundResult = foundResult || register == (ReadOnlyRegisterProfile{
+			ID: "w599-bootstrap-result", Address: 0x64000320, Width: Width32, Value: 0xff,
+		})
+	}
+	for _, alias := range w599.BootControlInterruptStatusAliases {
+		foundStatusAlias = foundStatusAlias || alias == (QualcommInterruptStatusAlias{Offset: 0x50, Bank: 1})
+	}
+	if !foundRAM || !foundSelectors || !foundResult || !foundStatusAlias {
+		t.Fatalf("SCH-W599 reset devices = ram:%t selectors:%t result:%t irq:%t",
+			foundRAM, foundSelectors, foundResult, foundStatusAlias)
 	}
 }
 
@@ -1300,6 +1374,38 @@ func TestBoardProfileAttachesProfileSelectedMDP(t *testing.T) {
 	engine, err = withoutMDP.AttachMDP(nil, nil, nil)
 	if err != nil || engine != nil {
 		t.Fatalf("profile without MDP returned engine %p error %v", engine, err)
+	}
+}
+
+func TestBoardProfileAppliesAddressedStorageWindow(t *testing.T) {
+	profile := BoardProfile{
+		ID: "board", PlatformID: "platform", FirmwareBuildID: "build",
+		AddressedStorageWindows: []AddressedStorageWindowProfile{{
+			ID: "storage-data", Address: 0x91000000, Size: 0x20,
+			CommandID: "storage-command", CommandAddress: 0x91000100,
+			CommandWidth: Width32, AddressMask: 0xffffffe0,
+		}},
+	}
+	image := make([]byte, 0x80)
+	for index := range image {
+		image[index] = byte(index)
+	}
+	bus := NewBus()
+	if err := profile.ApplyAddressedStorageWindows(bus, bytes.NewReader(image)); err != nil {
+		t.Fatal(err)
+	}
+	var command [4]byte
+	binary.LittleEndian.PutUint32(command[:], 0x25)
+	if err := bus.Write(0x91000100, command[:], cpu.PermissionWrite); err != nil {
+		t.Fatal(err)
+	}
+	var data [4]byte
+	if err := bus.Read(0x91000004, data[:], cpu.PermissionRead); err != nil ||
+		binary.LittleEndian.Uint32(data[:]) != 0x27262524 {
+		t.Fatalf("profiled storage word = %x error %v", data, err)
+	}
+	if err := bus.Write(0x91000000, data[:], cpu.PermissionWrite); err == nil {
+		t.Fatal("profiled storage data window accepted a write")
 	}
 }
 

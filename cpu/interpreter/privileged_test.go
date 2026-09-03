@@ -23,6 +23,59 @@ func TestARMStatusRegisterImmediateAndRead(t *testing.T) {
 	}
 }
 
+func TestARMUserSystemSPSRReadCompatibilityIsExplicit(t *testing.T) {
+	constructors := []struct {
+		name       string
+		strict     func() *Backend
+		compatible func() *Backend
+	}{
+		{
+			name:   "precise",
+			strict: New,
+			compatible: func() *Backend {
+				return NewWithCompatibility(CompatibilityOptions{UserSystemSPSRReadAsCPSR: true})
+			},
+		},
+		{
+			name:   "jit",
+			strict: NewJIT,
+			compatible: func() *Backend {
+				return NewJITWithOptions(JITOptions{
+					Compatibility: CompatibilityOptions{UserSystemSPSRReadAsCPSR: true},
+				})
+			},
+		},
+	}
+	for _, constructor := range constructors {
+		t.Run(constructor.name+"-strict", func(t *testing.T) {
+			backend := constructor.strict()
+			systemARMInstructions(t, backend,
+				0xe321f0df, // MSR CPSR_c, #0xdf (System, IRQ/FIQ masked)
+				0xe14f0000, // MRS r0, SPSR (UNPREDICTABLE in System mode)
+			)
+			result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 2)
+			if result.Err == nil {
+				t.Fatalf("Run result = %+v, want unavailable SPSR fault", result)
+			}
+		})
+
+		t.Run(constructor.name+"-compatible", func(t *testing.T) {
+			backend := constructor.compatible()
+			systemARMInstructions(t, backend,
+				0xe321f0df, // MSR CPSR_c, #0xdf (System, IRQ/FIQ masked)
+				0xe14f0000, // MRS r0, SPSR
+			)
+			result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 2)
+			if result.Err != nil || result.Reason != cpu.StopBudget {
+				t.Fatalf("Run result = %+v", result)
+			}
+			if got := register(t, backend, cpu.RegisterR0); got != 0xdf {
+				t.Fatalf("compatible MRS SPSR = %#x, want CPSR %#x", got, 0xdf)
+			}
+		})
+	}
+}
+
 func TestARMProcessorModesBankStackAndLinkRegisters(t *testing.T) {
 	backend := New()
 	systemARMInstructions(t, backend,
