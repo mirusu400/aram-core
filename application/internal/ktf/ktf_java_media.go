@@ -316,27 +316,33 @@ func (r *Runtime) ensureKTFClipService(
 // data lives in ktfClip, so a recycled clip reallocates and refills its
 // service the next time the guest touches it.
 func (r *Runtime) recycleKTFClipService() bool {
-	idle, playing := uint32(0), uint32(0)
+	var idle, playing uint32
+	var haveIdle, havePlaying bool
 	for instance, serviceID := range r.clipServices {
-		if serviceID == 0 {
+		// A Clip method reached on a null receiver files itself under
+		// instance 0. It is not a clip anyone can play, and it used to end the
+		// scan: 0 doubled as "no victim yet", so whenever Go's randomized map
+		// order put that entry last the recycler reported it had nothing to
+		// free and the next Clip faulted on the full pool (issue #130).
+		if instance == 0 || serviceID == 0 {
 			continue
 		}
 		if clip := r.clips[instance]; clip != nil && clip.playing {
-			if playing == 0 || instance < playing {
-				playing = instance
+			if !havePlaying || instance < playing {
+				playing, havePlaying = instance, true
 			}
 			continue
 		}
-		if idle == 0 || instance < idle {
-			idle = instance
+		if !haveIdle || instance < idle {
+			idle, haveIdle = instance, true
 		}
 	}
 	victim := idle
-	if victim == 0 {
+	if !haveIdle {
 		victim = playing
-	}
-	if victim == 0 {
-		return false
+		if !havePlaying {
+			return false
+		}
 	}
 	if err := r.Services.Media.DestroyClip(
 		r.ServiceOwner,
