@@ -82,7 +82,14 @@ type Factory struct {
 	KTFRunBudget    uint64
 	MemoryLimit     uint64
 	FramebufferSize image.Point
-	Resources       map[string][]byte
+	// GuestWidthOverride widens the guest framebuffer to at least this many
+	// pixels (experimental widescreen), keeping each loader's native height. Zero
+	// leaves the native width. Unlike FramebufferSize it survives loaders that
+	// resize the frame from a package descriptor (KTF), because it is reapplied
+	// after that resize. A title only fills the extra width if it lays its scene
+	// out from the runtime-reported screen size.
+	GuestWidthOverride int
+	Resources          map[string][]byte
 	// RaptorNet, when set, services the LGT carrier network/DRM ordinals
 	// (106/238) for raptor titles. The composition root (aram-emu) injects an
 	// aram-authd backend; leaving it nil keeps the default behavior.
@@ -153,12 +160,17 @@ func (f Factory) Create(ctx context.Context, source machinecore.Source) (machine
 	if size.X <= 0 || size.Y <= 0 {
 		size = image.Pt(240, 320)
 	}
+	// Experimental widescreen: widen the initial frame, keeping its height. A
+	// loader that resizes the frame from a package descriptor (KTF) reapplies the
+	// override afterward via applyGuestWidthOverride.
+	size.X = applyGuestWidthOverride(size.X, f.GuestWidthOverride)
 	machine := &Machine{
 		cpu:                backend,
 		state:              machinecore.StateEmpty,
 		runBudget:          budget,
 		ktfRunBudget:       f.KTFRunBudget,
 		memoryLimit:        memoryLimit,
+		guestWidthOverride: f.GuestWidthOverride,
 		frame:              image.NewRGBA(image.Rect(0, 0, size.X, size.Y)),
 		initialResources:   guest.CloneSliceMap(f.Resources),
 		frameRunBudget:     frameBudget,
@@ -174,6 +186,24 @@ func (f Factory) Create(ctx context.Context, source machinecore.Source) (machine
 	}
 	machine.applyAudioMixMode()
 	return machine, nil
+}
+
+// maxGuestWidth bounds the experimental widescreen override to the same ceiling
+// the graphics runtime enforces on any framebuffer edge.
+const maxGuestWidth = 4096
+
+// applyGuestWidthOverride returns the wider of the native width and the override.
+// A non-positive override, or one no wider than the native width, leaves the
+// native width unchanged, so the setting only ever widens a title. The result is
+// capped to the runtime's framebuffer edge limit.
+func applyGuestWidthOverride(nativeWidth, override int) int {
+	if override > nativeWidth {
+		if override > maxGuestWidth {
+			return maxGuestWidth
+		}
+		return override
+	}
+	return nativeWidth
 }
 
 // SetAudioMixMode switches the audio policy on the running machine and
@@ -249,6 +279,7 @@ type Machine struct {
 	frameRunBudget        uint64
 	ktfRunBudget          uint64
 	memoryLimit           uint64
+	guestWidthOverride    int
 	frame                 *image.RGBA
 	presentation          framePresentationCache
 	input                 []machinecore.InputEvent

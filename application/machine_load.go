@@ -413,8 +413,18 @@ func (m *Machine) loadKTF(
 	// Apply only exact-package corrections for known mismatched metadata.
 	if width, height := ktfrt.EffectiveDisplaySize(pkg); width > 0 &&
 		height > 0 {
+		// The descriptor resize would otherwise discard an experimental
+		// widescreen override set on the factory, so reapply it here, keeping the
+		// descriptor's native height.
+		width = applyGuestWidthOverride(width, m.guestWidthOverride)
 		if bounds := m.frame.Bounds(); bounds.Dx() != width || bounds.Dy() != height {
 			m.frame = image.NewRGBA(image.Rect(0, 0, width, height))
+		}
+	} else if m.guestWidthOverride > 0 {
+		// No descriptor resize happened; widen the frame the factory created.
+		if bounds := m.frame.Bounds(); m.guestWidthOverride > bounds.Dx() {
+			m.frame = image.NewRGBA(image.Rect(0, 0,
+				applyGuestWidthOverride(bounds.Dx(), m.guestWidthOverride), bounds.Dy()))
 		}
 	}
 	runtime, err := ktfrt.NewRuntimeForProfile(
