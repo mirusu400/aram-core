@@ -181,6 +181,12 @@ type Media struct {
 	mixMode     bool
 	bgmVoice    *mediaClip
 	bgmVoiceSig uint64
+	// bgmVoiceStopped records that the title stopped the clip the music voice
+	// was promoted from. The voice deliberately outlives an ordinary stop so a
+	// hand-looped track plays continuously, but a stop followed by a different
+	// track is the title changing its music, and then the voice has to go. See
+	// releaseStoppedMusicVoice.
+	bgmVoiceStopped bool
 
 	// endedSig names the last track that reached its own end without being
 	// stopped, endedElapsed how much timeline has passed since, and endedValid
@@ -223,6 +229,7 @@ func (m *Media) SetAudioMixMode(on bool) {
 	if !on {
 		m.bgmVoice = nil
 		m.bgmVoiceSig = 0
+		m.bgmVoiceStopped = false
 		m.endedSig, m.endedElapsed, m.endedValid = 0, 0, false
 	}
 }
@@ -334,6 +341,7 @@ func (m *Media) playAsBGMVoice(clip *mediaClip) {
 	voice.decoded = clip.decoded
 	m.bgmVoice = voice
 	m.bgmVoiceSig = sig
+	m.bgmVoiceStopped = false
 }
 
 func (m *Media) CreateClip(
@@ -438,6 +446,7 @@ func (m *Media) Play(owner OwnerID, id ServiceID, plays int32) error {
 	if clip.decoded != nil && clip.position >= clip.decoded.duration {
 		clip.position = 0
 	}
+	m.releaseStoppedMusicVoice(clip)
 	if m.mixMode && m.isMusicVoicePlay(clip, plays, replaysEndedTrack) {
 		m.playAsBGMVoice(clip)
 		return nil
@@ -474,9 +483,41 @@ func (m *Media) Stop(owner OwnerID, id ServiceID) error {
 	if err != nil {
 		return err
 	}
+	if m.bgmVoice != nil && m.bgmVoiceSig == bgmSignature(clip.source) {
+		m.bgmVoiceStopped = true
+	}
 	clip.state = ClipStopped
 	clip.remainingPlays = 0
 	return nil
+}
+
+// releaseStoppedMusicVoice retires a music voice the title has stopped, once it
+// starts something else.
+//
+// The voice is a detached copy so that a title looping its music by hand -
+// play, wait for the end, play again - is heard continuously instead of
+// gapping on every cycle, and that means an ordinary Stop cannot be allowed to
+// silence it. The cost is that a title which stops its music and then starts a
+// different track gets both at once, which is what 리듬스타1 does: it stops the
+// menu music and starts a song preview, and in mixing mode the two play over
+// each other (#148).
+//
+// Waiting for the next Play is what separates the two cases. A hand-looped
+// track comes back with the same signature and keeps its voice; a different
+// track means the stop really was the title changing its music. A one-shot cue
+// laid over the music - a defeat jingle, a spoken line - never stops the music
+// first, so it still mixes as before.
+func (m *Media) releaseStoppedMusicVoice(clip *mediaClip) {
+	if m.bgmVoice == nil || !m.bgmVoiceStopped {
+		return
+	}
+	if bgmSignature(clip.source) == m.bgmVoiceSig {
+		m.bgmVoiceStopped = false
+		return
+	}
+	m.bgmVoice = nil
+	m.bgmVoiceSig = 0
+	m.bgmVoiceStopped = false
 }
 
 func (m *Media) Seek(owner OwnerID, id ServiceID, position time.Duration) error {

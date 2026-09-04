@@ -439,3 +439,105 @@ func TestMediaFaithfulModeHonoursStopAndDestroy(t *testing.T) {
 		t.Fatalf("faithful post-destroy audio = %v, want silence", got)
 	}
 }
+
+// TestMediaMixModeStoppedVoiceYieldsToTheNextTrack covers #148. The music voice
+// is a detached copy so a hand-looped track is heard continuously, which means
+// an ordinary Stop cannot silence it - but a title that stops its music and
+// then starts something else was getting both at once. 리듬스타1 stops its
+// menu music and starts a song preview, and the two played over each other.
+func TestMediaMixModeStoppedVoiceYieldsToTheNextTrack(t *testing.T) {
+	limits := DefaultMediaLimits()
+	limits.OutputSampleRate = 8_000
+	limits.OutputChannels = 1
+	registry := NewRegistry(32)
+	media, err := NewMedia(registry, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	media.SetAudioMixMode(true)
+
+	menu := make([]int16, 16_000) // 2s menu music, looped by the title
+	for i := range menu {
+		menu[i] = 40
+	}
+	menuClip, err := media.CreateClip(1, "audio/wav", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := media.Append(1, menuClip, pcmWave(8_000, 1, menu)); err != nil {
+		t.Fatal(err)
+	}
+	if err := media.Play(1, menuClip, -1); err != nil {
+		t.Fatal(err)
+	}
+	if !media.MusicVoiceActive() {
+		t.Fatal("looping menu music was not promoted to the music voice")
+	}
+
+	// The title stops its menu music and starts a different track.
+	if err := media.Stop(1, menuClip); err != nil {
+		t.Fatal(err)
+	}
+	if !media.MusicVoiceActive() {
+		t.Fatal("the voice went away on Stop alone, which would gap a hand-loop")
+	}
+	preview := make([]int16, 24_000) // 3s song preview, played once
+	for i := range preview {
+		preview[i] = 900
+	}
+	previewClip, err := media.CreateClip(1, "audio/wav", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := media.Append(1, previewClip, pcmWave(8_000, 1, preview)); err != nil {
+		t.Fatal(err)
+	}
+	if err := media.Play(1, previewClip, 1); err != nil {
+		t.Fatal(err)
+	}
+	if media.MusicVoiceActive() {
+		t.Fatal("the stopped menu music is still voiced, so it plays under the preview")
+	}
+}
+
+// TestMediaMixModeHandLoopKeepsItsVoice is the other half: stopping and
+// restarting the same track is how a title loops by hand, and that must not
+// cost it the persistent voice.
+func TestMediaMixModeHandLoopKeepsItsVoice(t *testing.T) {
+	limits := DefaultMediaLimits()
+	limits.OutputSampleRate = 8_000
+	limits.OutputChannels = 1
+	registry := NewRegistry(32)
+	media, err := NewMedia(registry, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	media.SetAudioMixMode(true)
+
+	music := make([]int16, 16_000)
+	for i := range music {
+		music[i] = 40
+	}
+	clip, err := media.CreateClip(1, "audio/wav", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := media.Append(1, clip, pcmWave(8_000, 1, music)); err != nil {
+		t.Fatal(err)
+	}
+	if err := media.Play(1, clip, -1); err != nil {
+		t.Fatal(err)
+	}
+	voice := media.bgmVoiceSig
+	for cycle := 0; cycle < 3; cycle++ {
+		if err := media.Stop(1, clip); err != nil {
+			t.Fatal(err)
+		}
+		if err := media.Play(1, clip, -1); err != nil {
+			t.Fatal(err)
+		}
+		if !media.MusicVoiceActive() || media.bgmVoiceSig != voice {
+			t.Fatalf("cycle %d lost the hand-looped music voice", cycle)
+		}
+	}
+}
