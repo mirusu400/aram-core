@@ -101,6 +101,9 @@ func selectIconResource(resources map[string][]byte, hint string) ([]byte, bool)
 	}
 	keys := make([]string, 0, len(resources))
 	for key := range resources {
+		if isNonIconSystemResource(key) {
+			continue
+		}
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
@@ -116,6 +119,18 @@ func selectIconResource(resources map[string][]byte, hint string) ([]byte, bool)
 		}
 	}
 	return nil, false
+}
+
+// isNonIconSystemResource reports whether name is known handset chrome bundled
+// alongside a title's own art rather than its app icon. KTF/Raptor WIPI
+// packages commonly ship an "Annunciator.png"-style resource: template art for
+// the handset's own status bar (signal and battery glyphs, see
+// application/internal/ktf/ktf_annunciator.go), not anything the title drew.
+// Without this exclusion it is often the only resource selectIconResource can
+// recognize as an image, so it wins the "any image" fallback and the launcher
+// shows a strip of status-bar glyphs instead of a plain placeholder tile.
+func isNonIconSystemResource(key string) bool {
+	return strings.Contains(strings.ToLower(path.Base(key)), "annunciator")
 }
 
 // candidateKeys expands a declared icon path into the forms a resource map may

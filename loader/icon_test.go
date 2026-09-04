@@ -112,6 +112,50 @@ func TestIconNoIconForRawDat(t *testing.T) {
 	}
 }
 
+func TestIconSkipsAnnunciatorArt(t *testing.T) {
+	// Real KTF titles often bundle "Annunciator.png": template art for the
+	// handset's own status bar, not the title's icon (see
+	// application/internal/ktf/ktf_annunciator.go). When it is the only
+	// recognizable image in the package, Icon must report ErrNoIcon rather
+	// than hand back a strip of signal/battery glyphs as if it were the icon.
+	jar := iconMakeZip(t, map[string][]byte{
+		"META-INF/MANIFEST.MF": []byte("Manifest-Version: 1.0\n"),
+		"client.bin4096":       {0x04, 0xe0, 0x70, 0x47},
+		"Annunciator.png":      iconTestPNG(t, 58, 9),
+	})
+	archive := iconMakeZip(t, map[string][]byte{
+		"01020304.jar": jar,
+		"__adf__":      []byte("PID:PD000001\r\nAID:01020304\r\nMClass:GameMain\r\n"),
+	})
+	path := iconWriteTemp(t, "game.dat", archive)
+
+	if _, err := Icon(path); !errors.Is(err, ErrNoIcon) {
+		t.Fatalf("Icon(annunciator-only) error = %v, want ErrNoIcon", err)
+	}
+}
+
+func TestIconPrefersRealIconOverAnnunciatorArt(t *testing.T) {
+	jar := iconMakeZip(t, map[string][]byte{
+		"META-INF/MANIFEST.MF": []byte("Manifest-Version: 1.0\n"),
+		"client.bin4096":       {0x04, 0xe0, 0x70, 0x47},
+		"Annunciator.png":      iconTestPNG(t, 58, 9),
+		"r/icon.png":           iconTestPNG(t, 16, 16),
+	})
+	archive := iconMakeZip(t, map[string][]byte{
+		"01020304.jar": jar,
+		"__adf__":      []byte("PID:PD000001\r\nAID:01020304\r\nMClass:GameMain\r\n"),
+	})
+	path := iconWriteTemp(t, "game.dat", archive)
+
+	data, err := Icon(path)
+	if err != nil {
+		t.Fatalf("Icon(icon+annunciator) error: %v", err)
+	}
+	if w, h := iconPNGSize(t, data); w != 16 || h != 16 {
+		t.Fatalf("icon = %dx%d, want 16x16 (the title's own icon, not the annunciator strip)", w, h)
+	}
+}
+
 func TestIconNoIconWhenArchiveHasNoImage(t *testing.T) {
 	jar := iconMakeZip(t, map[string][]byte{
 		"Game.class": {0xca, 0xfe, 0xba, 0xbe},
