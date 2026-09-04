@@ -907,12 +907,22 @@ func (r *Runtime) javaArrayClass(elementType uint32) (string, uint32, error) {
 
 func (r *Runtime) EnsureJavaClass(name string) (uint32, error) {
 	if class := r.JavaClasses[name]; class != 0 {
-		if _, ok := HostJavaClassSpecs[name]; ok {
-			if err := r.augmentHostJavaClass(class, name); err != nil {
-				return 0, err
+		// The collector can reclaim the guest heap slot a cached class lived
+		// in while this name cache still points at it (issue #145): the
+		// descriptor word reads back zero, and callers three layers away
+		// (array/vtable construction, a Raptor-forwarded selectRecord) see
+		// an unrelated "string pointer is null" crash with no hint the real
+		// problem is here. A live class always has a descriptor; one that
+		// does not is stale, not a legitimate zero-descriptor class, so
+		// rebuild it instead of handing back a name that no longer resolves.
+		if descriptor, err := r.ReadU32(class + 8); err == nil && descriptor != 0 {
+			if _, ok := HostJavaClassSpecs[name]; ok {
+				if err := r.augmentHostJavaClass(class, name); err != nil {
+					return 0, err
+				}
 			}
+			return class, nil
 		}
-		return class, nil
 	}
 	if name == "" || len(name) > 1024 {
 		return 0, fmt.Errorf("invalid Java class name %q", name)
