@@ -274,6 +274,10 @@ func (m *Machine) Load(ctx context.Context, source machinecore.Source) error {
 	return nil
 }
 
+// raptorNullGuardSize covers a typical instance's small field offsets, which
+// is the only shape of null dereference this guard is meant to absorb.
+const raptorNullGuardSize = 0x1000
+
 func (m *Machine) loadRaptor(
 	ctx context.Context,
 	source machinecore.Source,
@@ -298,6 +302,20 @@ func (m *Machine) loadRaptor(
 	if err := raptorrt.MapRaptorImage(m.cpu, pkg.Image); err != nil {
 		return err
 	}
+	// A real handset leaves address 0 unmapped too - a linker convention that
+	// turns a null-field dereference into a hardware abort the firmware
+	// catches and re-delivers as a Java NullPointerException. Raptor has no
+	// equivalent guest exception unwinding (there is nowhere to unwind an AOT
+	// C++-EH frame to), so the same access here took the whole machine down
+	// instead of the one caught exception a device would see (턴 and
+	// 훼밀리마트타이쿤 both null-deref a small instance-field offset deep into
+	// a run). Mapping this range read/write only - never executable, so a
+	// genuine wild jump through a null vtable slot still faults - lets a
+	// stray small-offset access read back zero and a stray write land
+	// harmlessly instead of stopping the title outright. Best effort: a title
+	// whose own sections legitimately start at or near 0 already owns this
+	// range, and the call below is left to fail silently for it.
+	_ = m.cpu.Map(0, raptorNullGuardSize, cpu.PermissionRead|cpu.PermissionWrite)
 	if err := m.cpu.Map(
 		DefaultStackBase,
 		DefaultStackSize,
