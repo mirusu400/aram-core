@@ -155,12 +155,19 @@ func validateKTFMetadata(
 			return fmt.Errorf("graphics 0x%08x has an invalid clip", instance)
 		}
 	}
+	// A WIPI-C framebuffer needs no service surface either, for the same
+	// reason an Image does not: ensureWIPICSurface mirrors one lazily, only
+	// when a framebuffer is actually presented, merged into the Java frame,
+	// or encoded (issue #68 - hundreds of live sprites exhausted the surface
+	// limit when every one was mirrored eagerly). Its pixels live in guest
+	// memory at framebuffer.pixels, which the save already carries, so an
+	// unmirrored framebuffer restores fine and gets its surface back the
+	// next time anything actually reads it.
 	for handle, framebuffer := range meta.WIPICFramebuffers {
 		if handle == 0 || framebuffer.Object != handle ||
 			framebuffer.Width <= 0 || framebuffer.Height <= 0 ||
 			framebuffer.Stride < framebuffer.Width*2 ||
-			framebuffer.Bits != 16 ||
-			meta.WIPICSurfaceServices[handle] == 0 {
+			framebuffer.Bits != 16 {
 			return fmt.Errorf("invalid WIPI-C framebuffer 0x%08x", handle)
 		}
 	}

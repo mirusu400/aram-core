@@ -93,6 +93,55 @@ func TestKTFSaveCarriesImagesWithNoMirror(t *testing.T) {
 	}
 }
 
+// TestKTFSaveCarriesWIPICFramebuffersWithNoMirror covers the WIPI-C sibling
+// of the Image case above: ensureWIPICSurface mirrors a framebuffer lazily,
+// only once something actually presents, merges, or encodes it, so a title
+// that only ever draws into an offscreen framebuffer never gets one. A save
+// that required every framebuffer to have a mirror refused to write at all
+// ("invalid WIPI-C framebuffer 0x..."), which is any title using an
+// offscreen framebuffer as a draw target it has not yet shown.
+func TestKTFSaveCarriesWIPICFramebuffersWithNoMirror(t *testing.T) {
+	runtime := newScratchKTFRuntime(t)
+	handle, err := runtime.createWIPICFramebuffer(4, 4, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.wipicSurfaceServices[handle] != 0 {
+		t.Fatal("fixture framebuffer already has a surface")
+	}
+
+	var buffer bytes.Buffer
+	writer := guest.NewStateWriter(&buffer)
+	if err := WriteState(runtime, runtime.CPU, true, writer); err != nil {
+		t.Fatalf("save with an unmirrored WIPI-C framebuffer: %v", err)
+	}
+
+	decoder := guest.StateDecoder{Reader: bytes.NewReader(buffer.Bytes())}
+	saved, err := ParseState(runtime, &decoder)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	runtime.wipicFramebuffers = nil
+	runtime.wipicSurfaceServices = nil
+	started := false
+	if err := RestoreState(runtime, runtime.CPU, saved, &started); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	restored := runtime.wipicFramebuffers[handle]
+	if restored == nil {
+		t.Fatal("restored WIPI-C framebuffer is missing")
+	}
+	if runtime.wipicSurfaceServices[handle] != 0 {
+		t.Fatal("restored framebuffer carries a surface it never had before save")
+	}
+	if err := runtime.syncKTFWIPICFramebuffer(handle); err != nil {
+		t.Fatalf("sync after restore: %v", err)
+	}
+	if runtime.wipicSurfaceServices[handle] == 0 {
+		t.Fatal("sync after restore did not lazily create the surface")
+	}
+}
+
 // TestKTFRestoreAcceptsSaveWithoutTheImageBlock covers the saves written
 // before Images carried their own pixels. Every Image such a save holds was
 // mirrored - it could not have been written otherwise - so its pixels still
