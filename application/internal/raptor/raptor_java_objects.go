@@ -689,5 +689,19 @@ func (r *Runtime) paintRaptorJavaCard(
 	}); err != nil {
 		return err
 	}
-	return java.Host.RecordPresentation()
+	if err := java.Host.RecordPresentation(); err != nil {
+		return err
+	}
+	// java.Host is the shared KTF runtime, whose own PresentCount only feeds
+	// KTF's internal scheduler yield check. WIPIFrameStats (what the probe
+	// and corpus sweep actually read as "present_count") is served from
+	// r.Public.Stats - the *wipirt.Runtime this machine also exposes as
+	// m.wipi - so a Raptor title that presents exclusively through this
+	// Java Card paint path (no native Clet.Paint entry) never counted a
+	// single presentation externally, no matter how many frames it drew.
+	// 당신은골프왕 drew and presented correctly 46,656 times in 60 seconds
+	// (confirmed by instrumenting this function directly) while every
+	// external report read present_count 0 the whole time - not a hang.
+	r.Public.Stats.PresentCount++
+	return nil
 }
