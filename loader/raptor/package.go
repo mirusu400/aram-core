@@ -226,7 +226,17 @@ func Inspect(data []byte) (Package, error) {
 	}
 	jar, ok := files[jarName]
 	if !ok {
-		return Package{}, formatError(jarName, -1, "AID-named JAR is missing")
+		// Some shipped packages keep the descriptor's original listing AID
+		// while the JAR was renamed on a later re-upload (the module
+		// identifier and descriptor AID already routinely disagree, per the
+		// comment below). When exactly one sibling JAR sits next to app_info,
+		// a real handset would load it, so fall back to it by position
+		// instead of insisting on the exact AID-shaped name.
+		if fallbackName, fallback, found := soleSiblingJAR(files, appInfoName); found {
+			jarName, jar = fallbackName, fallback
+		} else {
+			return Package{}, formatError(jarName, -1, "AID-named JAR is missing")
+		}
 	}
 	contents, err := readZIP(jar, jarName)
 	if err != nil {
@@ -378,6 +388,31 @@ func findAppInfo(data []byte) (string, error) {
 		found = name
 	}
 	return found, nil
+}
+
+// soleSiblingJAR returns the one JAR file that sits next to appInfoName, if
+// exactly one exists. Two or more candidates leave no safe choice, so the
+// caller keeps reporting the AID-named lookup as missing.
+func soleSiblingJAR(files map[string][]byte, appInfoName string) (string, []byte, bool) {
+	dir := path.Dir(appInfoName)
+	var name string
+	var data []byte
+	for candidate, payload := range files {
+		if path.Dir(candidate) != dir {
+			continue
+		}
+		if strings.ToLower(path.Ext(candidate)) != ".jar" {
+			continue
+		}
+		if name != "" {
+			return "", nil, false
+		}
+		name, data = candidate, payload
+	}
+	if name == "" {
+		return "", nil, false
+	}
+	return name, data, true
 }
 
 func readZIP(data []byte, label string) (map[string][]byte, error) {

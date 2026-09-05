@@ -152,6 +152,13 @@ func (r *Runtime) registerMNClasses(moduleTable, imports uint32) error {
 	record := moduleTable + mnModuleTableClasses
 	registered := 0
 	for seen := 0; record != 0 && seen < mnMaxClasses; seen++ {
+		// The list does not always end at a null pointer: some modules close
+		// it with a sentinel record whose fields are not relocated pointers
+		// at all, and once with a "next" address that fell entirely outside
+		// the image. Either shape means the walk is done, not malformed.
+		if !r.imagePointer(record, mnClassRecordWords*4) {
+			break
+		}
 		words, err := r.ReadWords(record, mnClassRecordWords)
 		if err != nil {
 			return fmt.Errorf("read KTF module class record: %w", err)
@@ -193,7 +200,10 @@ func (r *Runtime) linkMNClassParent(object, imports uint32) error {
 		return err
 	}
 	descriptor := classWords[2]
-	if descriptor == 0 {
+	// A list-ending sentinel record carries this field unrelocated, so it
+	// reads as a small offset rather than an image pointer. Reject anything
+	// that cannot be a real descriptor instead of dereferencing it.
+	if descriptor == 0 || !r.imagePointer(descriptor, 12) {
 		return nil
 	}
 	parent, err := r.ReadU32(descriptor + 8)

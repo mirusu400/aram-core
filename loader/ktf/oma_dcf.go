@@ -2,6 +2,8 @@ package ktf
 
 import (
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -11,12 +13,16 @@ import (
 var ErrProtectedContent = errors.New("KTF package contains protected OMA DRM content")
 
 // ProtectedContentError reports a structurally valid OMA DRM object that
-// cannot be opened without the content-encryption key supplied by a Rights
-// Object. The package loader deliberately does not guess or derive that key.
+// cannot be opened because no Rights Object key is on hand for it. The loader
+// deliberately does not guess or derive the key; supply it through
+// RightsKeyEnv or SetRightsKeys.
 type ProtectedContentError struct {
 	Path      string
 	ContentID string
 	Algorithm uint16
+	// WrongKey marks the case where a key was available but did not decrypt
+	// the object, as opposed to no key being configured at all.
+	WrongKey bool
 }
 
 func (e *ProtectedContentError) Error() string {
@@ -24,11 +30,20 @@ func (e *ProtectedContentError) Error() string {
 	if e.ContentID != "" {
 		content = fmt.Sprintf(" content %q", e.ContentID)
 	}
+	if e.WrongKey {
+		return fmt.Sprintf(
+			"KTF package %q: OMA DRM%s did not decrypt with the configured rights key",
+			e.Path,
+			content,
+		)
+	}
 	return fmt.Sprintf(
-		"KTF package %q: OMA DRM%s uses %s and requires a rights key",
+		"KTF package %q: OMA DRM%s uses %s and requires a rights key"+
+			" (set %s to a file naming the content key)",
 		e.Path,
 		content,
 		omaDRMAlgorithmName(e.Algorithm),
+		RightsKeyEnv,
 	)
 }
 
@@ -117,11 +132,7 @@ func unwrapOMADCF(data []byte, label string) ([]byte, error) {
 		return nil, &FormatError{Path: label, Reason: "OMA DRM plaintext exceeds size limit"}
 	}
 	if headers.algorithm != 0 {
-		return nil, &ProtectedContentError{
-			Path:      label,
-			ContentID: headers.contentID,
-			Algorithm: headers.algorithm,
-		}
+		return openProtectedOMADCF(object, headers, label)
 	}
 	if headers.padding != 0 {
 		return nil, omaDCFFormatError(
@@ -142,6 +153,76 @@ func unwrapOMADCF(data []byte, label string) ([]byte, error) {
 		)
 	}
 	return object, nil
+}
+
+// openProtectedOMADCF decrypts an AES-protected OMA DRM object when the
+// rights-key store holds the content-encryption key a KTF Rights Object
+// carried for it.
+//
+// KTF issues AES-128-CTR objects whose OMADRMData length equals the plaintext
+// length, so the object carries no counter-block prefix and decryption starts
+// from an all-zero counter. The spec's prefixed-counter layout is accepted
+// too, for objects that do carry one.
+func openProtectedOMADCF(
+	object []byte,
+	headers omaDCFHeaders,
+	label string,
+) ([]byte, error) {
+	key := lookupRightsKey(headers.contentID)
+	if key == nil || headers.algorithm != omaDRMAlgorithmAESCTR {
+		return nil, &ProtectedContentError{
+			Path:      label,
+			ContentID: headers.contentID,
+			Algorithm: headers.algorithm,
+		}
+	}
+	if headers.padding != 0 {
+		return nil, omaDCFFormatError(
+			label,
+			0,
+			"AES-CTR OMA DRM object has nonzero padding",
+		)
+	}
+
+	var counter [aes.BlockSize]byte
+	body := object
+	switch {
+	case uint64(len(body)) == headers.plaintextBytes:
+	case uint64(len(body)) == headers.plaintextBytes+aes.BlockSize:
+		copy(counter[:], body[:aes.BlockSize])
+		body = body[aes.BlockSize:]
+	default:
+		return nil, omaDCFFormatError(
+			label,
+			0,
+			fmt.Sprintf(
+				"OMA DRM ciphertext is %d bytes, want %d",
+				len(body),
+				headers.plaintextBytes,
+			),
+		)
+	}
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, &ProtectedContentError{
+			Path:      label,
+			ContentID: headers.contentID,
+			Algorithm: headers.algorithm,
+			WrongKey:  true,
+		}
+	}
+	plaintext := make([]byte, len(body))
+	cipher.NewCTR(block, counter[:]).XORKeyStream(plaintext, body)
+	if !bytes.HasPrefix(plaintext, []byte("PK\x03\x04")) {
+		return nil, &ProtectedContentError{
+			Path:      label,
+			ContentID: headers.contentID,
+			Algorithm: headers.algorithm,
+			WrongKey:  true,
+		}
+	}
+	return plaintext, nil
 }
 
 func parseOMADCFHeaders(
@@ -297,13 +378,19 @@ func omaDCFFormatError(label string, offset int, reason string) error {
 	}
 }
 
+const (
+	omaDRMAlgorithmNull   uint16 = 0
+	omaDRMAlgorithmAESCBC uint16 = 1
+	omaDRMAlgorithmAESCTR uint16 = 2
+)
+
 func omaDRMAlgorithmName(algorithm uint16) string {
 	switch algorithm {
-	case 0:
+	case omaDRMAlgorithmNull:
 		return "NULL encryption"
-	case 1:
+	case omaDRMAlgorithmAESCBC:
 		return "AES-128-CBC"
-	case 2:
+	case omaDRMAlgorithmAESCTR:
 		return "AES-128-CTR"
 	default:
 		return fmt.Sprintf("encryption algorithm 0x%04x", algorithm)

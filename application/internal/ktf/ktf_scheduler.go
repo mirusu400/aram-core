@@ -497,6 +497,7 @@ func (r *Runtime) requestJavaTermination(instance uint32) {
 	r.PendingJavaCalls = nil
 	for _, task := range r.Tasks {
 		task.Done = true
+		r.releaseTerminatedTask(task)
 	}
 	r.tracef(
 		"java_lifecycle:notifyDestroyed:instance=0x%08x",
@@ -517,6 +518,7 @@ func (r *Runtime) requestCletTermination() {
 	r.PendingJavaCalls = nil
 	for _, task := range r.Tasks {
 		task.Done = true
+		r.releaseTerminatedTask(task)
 	}
 }
 
@@ -566,6 +568,28 @@ func (r *Runtime) releaseStartedThreads(parent *Task, reason string) {
 			reason,
 			released,
 		)
+	}
+}
+
+// releaseTerminatedTask removes a task's pointer from every collection keyed
+// on it once the task can never run again, without releaseDeferredCardPaints'
+// side effect of painting a card - right for whole-application termination,
+// where nothing should render again, unlike a single task's own exit. Every
+// other *Task-keyed collection (deferredPaintCards, deferredShownCards,
+// PaintTasks) must be scrubbed here too, or the task's table slot being
+// recycled leaves a stale pointer no snapshot can account for, and the next
+// SaveState rejects it as pointing outside the task table.
+func (r *Runtime) releaseTerminatedTask(task *Task) {
+	if task == nil {
+		return
+	}
+	r.releaseStartedThreads(task, "terminate")
+	delete(r.deferredPaintCards, task)
+	delete(r.deferredShownCards, task)
+	for card, owner := range r.PaintTasks {
+		if owner == task {
+			delete(r.PaintTasks, card)
+		}
 	}
 }
 
@@ -841,6 +865,16 @@ func (r *Runtime) RunTaskSlice(
 			if task.presentOnReturn {
 				task.presentOnReturn = false
 				r.paintInitializedCards[task.paintCard] = true
+				// This task is PaintTasks[paintCard]'s owner (the two are
+				// only ever set together, in paintCard). Its normal
+				// completion is the common case, and unlike the discard and
+				// force-cancel paths this one never cleared the entry: it
+				// stayed keyed on a *Task no longer in the task table the
+				// moment this slot was recycled, and the next SaveState
+				// rejected it as pointing outside the task table.
+				if r.PaintTasks[task.paintCard] == task {
+					delete(r.PaintTasks, task.paintCard)
+				}
 				if err := r.RecordPresentation(); err != nil {
 					run.Reason = cpu.StopFault
 					run.Err = err
@@ -879,6 +913,19 @@ func (r *Runtime) RunTaskSlice(
 				task.Done = true
 				task.bestEffortPaint = false
 				delete(r.PaintTasks, task.paintCard)
+				// This task exits by the same door as a normal return or
+				// yield, so it needs the same two cleanups those paths run:
+				// otherwise a child thread stays parked on a startBlocker
+				// that will never clear, and this task's pointer stays keyed
+				// in the deferred-paint maps after its task-table slot is
+				// recycled - the next SaveState then finds a *Task no
+				// snapshot can account for and fails.
+				r.releaseStartedThreads(task, "discard")
+				if err := r.releaseDeferredCardPaints(ctx, task); err != nil {
+					run.Reason = cpu.StopFault
+					run.Err = err
+					return run
+				}
 				r.tracef(
 					"java_initial_paint_discard:%s:card=0x%08x",
 					unhandled.name,

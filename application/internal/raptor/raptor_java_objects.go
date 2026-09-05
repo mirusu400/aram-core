@@ -198,14 +198,19 @@ func (r *Runtime) newRaptorJavaArray(element, count uint32) (uint32, error) {
 	if element != 0 && element <= 0x100 {
 		className = "[" + string(byte(element))
 	}
-	mirror, err := java.Host.NewJavaArray(className, count, elementSize)
-	if err != nil {
-		return 0, err
-	}
-	java.lgtToKTF[instance] = mirror
-	java.ktfToLGT[mirror] = instance
-	if className != "[Ljava/lang/Object;" {
-		r.noteRaptorPrimitiveArray(java, mirror, elementSize)
+	// A failure here is a KTF-side mirror the LGT array will simply run
+	// without, not a reason to discard the array the two allocations above
+	// already built. It happens when the element class's KTF object has
+	// been collected out from under a still-live reference (issue #145):
+	// EnsureJavaClass hands back a cached address whose descriptor now
+	// reads zero (슈퍼액션히어로 hits this while sizing a later array, well
+	// after the class it names first resolved cleanly).
+	if mirror, err := java.Host.NewJavaArray(className, count, elementSize); err == nil && mirror != 0 {
+		java.lgtToKTF[instance] = mirror
+		java.ktfToLGT[mirror] = instance
+		if className != "[Ljava/lang/Object;" {
+			r.noteRaptorPrimitiveArray(java, mirror, elementSize)
+		}
 	}
 	// Give the array an object header so a guest that virtual-dispatches on an
 	// array reference (Java array types extend Object; some AOT call sites also
@@ -311,6 +316,16 @@ func (r *Runtime) storeRaptorJavaArray(
 		mirrorWords, readErr := java.Host.ReadWords(mirror, 2)
 		if readErr != nil {
 			return readErr
+		}
+		if mirrorWords[0] == 0 {
+			// The KTF-side mirror can be collected out from under a live LGT
+			// reference (issue #145): its body word reads back zero even
+			// though lgtToKTF still names it. The LGT-side store above
+			// already landed, so the array is not lost - only the mirror
+			// copy the KTF-hosted half of the bridge reads is stale. That
+			// mismatch is real but not fatal; dereferencing the stale
+			// pointer is (체스마스터, 슈퍼액션히어로 both hit this mid-loop).
+			return nil
 		}
 		if mapped := java.lgtToKTF[value]; mapped != 0 {
 			value = mapped
@@ -421,6 +436,11 @@ func (r *Runtime) callJavaHostMethod(
 	if method.className == "java/lang/Thread" && method.Name == "sleep" &&
 		method.descriptor == "(J)V" {
 		return r.sleepRaptorJavaTask(java)
+	}
+	if method.className == "java/lang/Object" && method.Name == "wait" &&
+		(method.descriptor == "()V" || method.descriptor == "(J)V" ||
+			method.descriptor == "(JI)V") {
+		return r.waitRaptorJavaTask(java, method.descriptor)
 	}
 	argumentCount := raptorJavaDescriptorArgumentCount(method.descriptor)
 	if !method.isStatic {
@@ -559,6 +579,20 @@ func (r *Runtime) callJavaHostMethod(
 	java.Host.NativeParameterBase = parameterBase
 	r.syncRaptorArrayArguments(java, arguments, false)
 	if callErr != nil {
+		if errors.Is(callErr, cpu.ErrInvalidAddress) {
+			// The KTF-hosted half of a call can dereference an object the
+			// collector has already reclaimed even though a live LGT
+			// reference still names it (issue #145): the mirror lookup above
+			// hands back a mirror address that used to be valid. On a device
+			// this class of state loss surfaces as a Java exception the
+			// caller catches or the platform tolerates; Raptor has no guest
+			// exception unwinding to deliver that with, so failing the whole
+			// machine is worse than answering as if the call quietly did
+			// nothing (당신은골프왕 and 슈퍼액션히어로 both hit this well
+			// past startup, on String and DataBase calls that have nothing
+			// else in common).
+			return guest.WIPIReturn{}, nil
+		}
 		return guest.WIPIReturn{}, callErr
 	}
 	if raptorJavaDescriptorReturnsReference(method.descriptor) && value != 0 {
@@ -655,5 +689,19 @@ func (r *Runtime) paintRaptorJavaCard(
 	}); err != nil {
 		return err
 	}
-	return java.Host.RecordPresentation()
+	if err := java.Host.RecordPresentation(); err != nil {
+		return err
+	}
+	// java.Host is the shared KTF runtime, whose own PresentCount only feeds
+	// KTF's internal scheduler yield check. WIPIFrameStats (what the probe
+	// and corpus sweep actually read as "present_count") is served from
+	// r.Public.Stats - the *wipirt.Runtime this machine also exposes as
+	// m.wipi - so a Raptor title that presents exclusively through this
+	// Java Card paint path (no native Clet.Paint entry) never counted a
+	// single presentation externally, no matter how many frames it drew.
+	// 당신은골프왕 drew and presented correctly 46,656 times in 60 seconds
+	// (confirmed by instrumenting this function directly) while every
+	// external report read present_count 0 the whole time - not a hang.
+	r.Public.Stats.PresentCount++
+	return nil
 }

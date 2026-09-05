@@ -3958,6 +3958,66 @@ func TestKTFTaskRecordsPresentationAfterPaintReturns(t *testing.T) {
 	}
 }
 
+// TestKTFPaintTaskReturnReleasesPaintTasksEntry guards against a regression
+// where a paint task's normal return - the common case, unlike the discard
+// and force-cancel paths, which do clear this - left it as PaintTasks[card]'s
+// value forever. Once that task's table slot was recycled by whatever the
+// title started next, snapshotKTFMetadata could no longer account for the
+// old pointer and SaveState failed with "task pointer is outside the task
+// table" on a title that had never done anything unusual - it just painted
+// its first screen and moved on.
+func TestKTFPaintTaskReturnReleasesPaintTasksEntry(t *testing.T) {
+	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.CPU.Close()
+	if err := runtime.MapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	task, err := runtime.NewTask(ktfReturnSentinel|1, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const card = uint32(0x10002000)
+	task.presentOnReturn = true
+	task.paintCard = card
+	runtime.Tasks = append(runtime.Tasks, task)
+	runtime.PaintTasks[card] = task
+
+	result := runtime.RunTaskSlice(context.Background(), 16)
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if result.Reason != cpu.StopExited {
+		t.Fatalf("paint task stopped as %v, want exited", result.Reason)
+	}
+	if runtime.PaintTasks[card] != nil {
+		t.Fatal("paint task's normal return left it in PaintTasks")
+	}
+
+	// The returned task's slot gets reused by whatever the title starts
+	// next - exactly what makes its old *Task unreachable from
+	// snapshotKTFMetadata's task table if PaintTasks was not cleared.
+	replacement, err := runtime.NewTask(ktfReturnSentinel|1, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, existing := range runtime.Tasks {
+		if existing == task {
+			runtime.Tasks[index] = replacement
+			break
+		}
+	}
+
+	if _, err := snapshotKTFMetadata(runtime, true); err != nil {
+		t.Fatalf("snapshot after paint task return: %v", err)
+	}
+}
+
 func TestKTFJavaPresentationRetakesScreenFromWIPIC(t *testing.T) {
 	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
 		ClientName: "client.bin0",
@@ -4122,6 +4182,87 @@ func TestKTFBestEffortInitialPaintDiscardsUnhandledJavaException(t *testing.T) {
 			"initial paint discard missing from trace: %v",
 			runtime.HostTrace,
 		)
+	}
+}
+
+// TestKTFInitialPaintDiscardReleasesTaskFromDeferredState guards against a
+// regression where the best-effort initial paint discard marked a task Done
+// without releasing it from the deferred-paint maps or from a sibling's
+// startBlocker - both keyed on the *Task pointer itself rather than a task
+// index. Once the discarded task's table slot was recycled by whatever the
+// title started next, snapshotKTFMetadata could no longer account for that
+// old pointer and SaveState failed with "task pointer is outside the task
+// table" on a title that had never done anything unusual.
+func TestKTFInitialPaintDiscardReleasesTaskFromDeferredState(t *testing.T) {
+	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.CPU.Close()
+	if err := runtime.MapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	procedure := runtime.RegisterHostCall(
+		"synthetic.initial.paint.leak",
+		func(context.Context, *Runtime) (uint32, error) {
+			return 0, &ktfUnhandledJavaException{
+				name:    "java/lang/NullPointerException",
+				detail:  0x10001000,
+				Context: "synthetic initial paint",
+			}
+		},
+	)
+	task, err := runtime.NewTask(procedure|1, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const card = uint32(0x10002000)
+	task.bestEffortPaint = true
+	task.paintCard = card
+	runtime.Tasks = append(runtime.Tasks, task)
+	runtime.PaintTasks[card] = task
+
+	// What a title that pushed a card mid-paint leaves behind: this exact
+	// task keyed into the deferred-paint maps. The bug is the stale key
+	// surviving, not what it maps to, so the value stays empty here rather
+	// than pulling in a real repaint, which needs graphics this fixture
+	// never sets up.
+	runtime.deferredPaintCards[task] = []uint32{}
+	runtime.deferredShownCards[task] = map[uint32]bool{}
+
+	result := runtime.RunTaskSlice(context.Background(), 16)
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if !task.Done {
+		t.Fatalf("discarded task result = %+v, done=%t", result, task.Done)
+	}
+	if _, stillDeferred := runtime.deferredPaintCards[task]; stillDeferred {
+		t.Fatal("discarded task's deferred paint cards were not released")
+	}
+	if _, stillShown := runtime.deferredShownCards[task]; stillShown {
+		t.Fatal("discarded task's deferred shown cards were not released")
+	}
+
+	// The discarded task's slot gets reused by whatever the title starts
+	// next - exactly what makes its old *Task unreachable from
+	// snapshotKTFMetadata's task table if the maps above were not cleared.
+	replacement, err := runtime.NewTask(procedure|1, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, existing := range runtime.Tasks {
+		if existing == task {
+			runtime.Tasks[index] = replacement
+			break
+		}
+	}
+
+	if _, err := snapshotKTFMetadata(runtime, true); err != nil {
+		t.Fatalf("snapshot after discard: %v", err)
 	}
 }
 

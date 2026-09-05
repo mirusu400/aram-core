@@ -1003,7 +1003,29 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	"org/kwis/msf/core/ProgramExitException": {
 		Parent: "java/lang/RuntimeException",
 	},
-	"org/kwis/msf/io/Socket": {Parent: "java/lang/Object"},
+	// Socket declares its methods so that a virtual call on one resolves to
+	// Socket. Left empty, the host virtual slots are handed out globally and a
+	// guest calling Socket.getInputStream() lands on whatever unrelated class
+	// happens to own that slot - 마스터오브소드2 reached
+	// org/kwis/msp/lwc/ProgressComponent.getInputStream() that way (#147).
+	"org/kwis/msf/io/Socket": {
+		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "getInputStream", descriptor: "()Ljava/io/InputStream;"},
+			{name: "getOutputStream", descriptor: "()Ljava/io/OutputStream;"},
+			{name: "close", descriptor: "()V"},
+			{name: "getProtocol", descriptor: "()Ljava/lang/String;"},
+			{name: "getPort", descriptor: "()I"},
+			{name: "getRequestMethod", descriptor: "()Ljava/lang/String;"},
+			{name: "getResponseCode", descriptor: "()I"},
+			{name: "getResponseMessage", descriptor: "()Ljava/lang/String;"},
+			{name: "getLength", descriptor: "()J"},
+			{name: "getDate", descriptor: "()J"},
+			{name: "getExpiration", descriptor: "()J"},
+			{name: "getLastModified", descriptor: "()J"},
+			{name: "isRelocatable", descriptor: "()Z"},
+		},
+	},
 	"org/kwis/msf/io/HttpSocket": {
 		Parent: "org/kwis/msf/io/Socket",
 	},

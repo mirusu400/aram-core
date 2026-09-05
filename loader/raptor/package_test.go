@@ -55,6 +55,54 @@ func TestInspectPackage(t *testing.T) {
 	}
 }
 
+// Shipped packages routinely disagree between the descriptor's listing AID
+// and the JAR's own filename (a later re-upload renames the JAR but keeps
+// the old app_info), so a lone sibling JAR is used instead of insisting on
+// the exact AID-shaped name.
+func TestInspectFallsBackToSoleSiblingJARWhenAIDNameMissing(t *testing.T) {
+	module := makeELF(t, "00029420", []string{"kernel"})
+	jar := makeZIP(t, map[string][]byte{
+		"binary.mod": module,
+	})
+	archive := makeZIP(t, map[string][]byte{
+		"WEBSYNC1.jar": jar,
+		"app_info": []byte(
+			"PID:PD122590\r\nAID:0002A52B\r\nName:YAP\r\n" +
+				"Ver:01.00.01\r\nMClass:clet\r\nVdr:vendor\r\n",
+		),
+	})
+
+	pkg, err := Inspect(archive)
+	if err != nil {
+		t.Fatalf("Inspect rejected the sole sibling JAR: %v", err)
+	}
+	if pkg.JARName != "WEBSYNC1.jar" {
+		t.Fatalf("JARName = %q, want the sibling JAR", pkg.JARName)
+	}
+	if pkg.Descriptor.AID != "0002A52B" {
+		t.Fatalf("Descriptor.AID = %q, want the app_info value untouched", pkg.Descriptor.AID)
+	}
+}
+
+func TestInspectRejectsAmbiguousSiblingJARs(t *testing.T) {
+	module := makeELF(t, "00029420", []string{"kernel"})
+	jar := makeZIP(t, map[string][]byte{
+		"binary.mod": module,
+	})
+	archive := makeZIP(t, map[string][]byte{
+		"WEBSYNC1.jar": jar,
+		"OTHER.jar":    jar,
+		"app_info": []byte(
+			"PID:PD122590\r\nAID:0002A52B\r\nName:YAP\r\n" +
+				"Ver:01.00.01\r\nMClass:clet\r\nVdr:vendor\r\n",
+		),
+	})
+
+	if _, err := Inspect(archive); err == nil {
+		t.Fatal("Inspect accepted an ambiguous set of sibling JARs")
+	}
+}
+
 // Modules built with the ARM RVCT toolchain name their regions ER_RO/ER_RW/
 // ER_ZI instead of .text/.data/.bss, so the code section has to be recognized
 // by its flags rather than by one toolchain's spelling.

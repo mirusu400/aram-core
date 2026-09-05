@@ -136,6 +136,19 @@ func (m *Machine) runWIPISlice(
 	for instructions < budget {
 		run := m.cpu.Run(ctx, pc, mode, budget-instructions)
 		instructions += run.Instructions
+		if m.raptor != nil && m.raptor.Java != nil && m.raptor.Java.Host != nil {
+			// Raptor drives this loop directly instead of going through the
+			// KTF scheduler's own call(), so its shared java.Host never
+			// otherwise learns how many instructions ran. Its clock read
+			// credits busy-wait time against exactly that counter (see
+			// monotonicReadMS); left at zero, a title that paces itself by
+			// polling System.currentTimeMillis() in a bare spin - no
+			// sleep()/wait() to yield on - saw the clock never move and
+			// spun until the run budget's deadline (훼밀리마트타이쿤 polls
+			// the clock this way after its earlier construct-time faults
+			// were fixed).
+			m.raptor.Java.Host.TotalInstructions += run.Instructions
+		}
 		run.Instructions = instructions
 		if run.Err != nil || run.Reason != cpu.StopBreakpoint || m.wipi == nil {
 			return run

@@ -1087,7 +1087,9 @@ func snapshotKTFMetadata(
 	for card, task := range r.PaintTasks {
 		index, err := taskIndex(task)
 		if err != nil {
-			return ktfMetadataSnapshot{}, err
+			return ktfMetadataSnapshot{}, fmt.Errorf(
+				"save KTF paint task 0x%08x: %w", card, err,
+			)
 		}
 		meta.PaintTasks = append(meta.PaintTasks, ktfTaskMapSnapshot{
 			Key: card, Task: index,
@@ -1099,7 +1101,9 @@ func snapshotKTFMetadata(
 	for task, cards := range r.deferredPaintCards {
 		index, err := taskIndex(task)
 		if err != nil {
-			return ktfMetadataSnapshot{}, err
+			return ktfMetadataSnapshot{}, fmt.Errorf(
+				"save KTF deferred paint cards: %w", err,
+			)
 		}
 		meta.DeferredPaintCards = append(
 			meta.DeferredPaintCards,
@@ -1115,7 +1119,9 @@ func snapshotKTFMetadata(
 	for task, cards := range r.deferredShownCards {
 		index, err := taskIndex(task)
 		if err != nil {
-			return ktfMetadataSnapshot{}, err
+			return ktfMetadataSnapshot{}, fmt.Errorf(
+				"save KTF deferred shown cards: %w", err,
+			)
 		}
 		values := make([]uint32, 0, len(cards))
 		for card, shown := range cards {
