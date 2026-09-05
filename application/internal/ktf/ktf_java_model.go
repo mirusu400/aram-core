@@ -909,13 +909,16 @@ func (r *Runtime) EnsureJavaClass(name string) (uint32, error) {
 	if class := r.JavaClasses[name]; class != 0 {
 		// The collector can reclaim the guest heap slot a cached class lived
 		// in while this name cache still points at it (issue #145): the
-		// descriptor word reads back zero, and callers three layers away
-		// (array/vtable construction, a Raptor-forwarded selectRecord) see
-		// an unrelated "string pointer is null" crash with no hint the real
-		// problem is here. A live class always has a descriptor; one that
-		// does not is stale, not a legitimate zero-descriptor class, so
-		// rebuild it instead of handing back a name that no longer resolves.
-		if descriptor, err := r.ReadU32(class + 8); err == nil && descriptor != 0 {
+		// descriptor word can read back zero, or - just as often - some
+		// other block's leftover bytes, which is a wild, unmapped address
+		// rather than a null one. Either way callers three layers away
+		// (array/vtable construction, a Raptor-forwarded selectRecord or
+		// InputStream.read) saw an unrelated crash with no hint the real
+		// problem is here. InspectJavaClass already knows what a live class
+		// looks like end to end (descriptor, name string, and all); reuse
+		// that check instead of a narrower one that only catches a zeroed
+		// descriptor and waves a wild one through as "live".
+		if _, err := r.InspectJavaClass(class); err == nil {
 			if _, ok := HostJavaClassSpecs[name]; ok {
 				if err := r.augmentHostJavaClass(class, name); err != nil {
 					return 0, err
