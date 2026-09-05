@@ -32,6 +32,15 @@ const (
 	LowWorkRAMSize             = uint32(0x00d00000)
 	ktfReturnSentinel          = HostBase
 	ktfBootstrapInstructionMax = uint64(100_000_000)
+	// ktfJavaNativeInstructionMax bounds one call into a Clet's own native
+	// code. A native runs to completion inside the host call that made it -
+	// nothing about it is resumable - so the bound has to cover the longest
+	// piece of work a title does in one, and that is a level load, not a
+	// frame. 이노티아연대기2 spends 113.5 million instructions in the single
+	// Clet.handleInput that loads a scenario from its own files, so the
+	// bootstrap bound faulted the title at the first thing a player does
+	// (issue #147).
+	ktfJavaNativeInstructionMax = uint64(256_000_000)
 	// ktfRelocatableDescriptorWords covers the load descriptor a relocatable
 	// client image begins with, through the slot naming its entry point.
 	ktfRelocatableDescriptorWords = 10

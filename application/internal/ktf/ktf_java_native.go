@@ -283,7 +283,7 @@ func ktfCallNative(ctx context.Context, runtime *Runtime) (uint32, error) {
 			ctx,
 			address,
 			[]uint32{parameters, parameters},
-			ktfBootstrapInstructionMax,
+			ktfJavaNativeInstructionMax,
 		)
 		if callErr != nil {
 			method := runtime.LastJavaMethod
