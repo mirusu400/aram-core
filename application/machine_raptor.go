@@ -598,11 +598,7 @@ func (m *Machine) startRaptorJava(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	start, ok := raptorrt.DeclaredMethod(
-		class,
-		"startApp",
-		"([Ljava/lang/String;)V",
-	)
+	start, ok := runtime.RaptorJletStartApp(class)
 	if !ok || start.Body == 0 {
 		return fmt.Errorf("Raptor Java main class %q has no startApp(String[])", class.Name)
 	}
@@ -620,5 +616,11 @@ func (m *Machine) startRaptorJava(ctx context.Context) error {
 		)
 	}
 	java.MainInstance = instance
+	// Jlet.getActiveJlet() is answered by the shared KTF Java host, which only
+	// the KTF boot path used to fill in. A Raptor Java title that asks for the
+	// running Jlet was handed null.
+	if java.Host != nil {
+		java.Host.MainJlet = instance
+	}
 	return runtime.SyncRaptorJavaVTables(java)
 }

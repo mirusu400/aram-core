@@ -334,9 +334,13 @@ type JavaRuntime struct {
 
 	classes     map[uint32]*raptorJavaClass
 	ClassByName map[string]*raptorJavaClass
-	classOrder  []*raptorJavaClass
-	hostMethods map[uint32]raptorJavaMethod
-	nextMethod  uint32
+	// parentInspection guards the recursion in raptorJavaParentName: a parent
+	// slot that holds a holder is followed, and a module whose descriptors
+	// point at each other must not send that walk round for ever.
+	parentInspection map[uint32]bool
+	classOrder       []*raptorJavaClass
+	hostMethods      map[uint32]raptorJavaMethod
+	nextMethod       uint32
 	// activeTask is the Java thread the machine is currently running, so a
 	// Thread.sleep from guest code parks that thread.
 	activeTask *JavaTask
@@ -1061,6 +1065,63 @@ func (r *Runtime) scanGuestWord(value, start, end uint32) uint32 {
 	return 0
 }
 
+// raptorJavaParentName reads a class descriptor's parent slot, which holds one
+// of two things. A class whose superclass the module does not define names it
+// by string ("org/kwis/msp/lcdui/Jlet"). A class whose superclass is another
+// class in the same module points straight at that class's **holder** instead,
+// and reading the holder as a string yields nothing: 배틀몬스터's launch class
+// Game extends its obfuscated Jlet subclass "a" that way, so the chain broke
+// and Game inherited neither startApp nor run - the title started no thread at
+// all and its worker waited on a request nothing could post (issue #151).
+func (r *Runtime) raptorJavaParentName(
+	java *JavaRuntime,
+	parentAddress uint32,
+) string {
+	if parentAddress == 0 {
+		return ""
+	}
+	if parent := java.classes[parentAddress]; parent != nil {
+		return parent.Name
+	}
+	if bytes, err := r.Public.ReadCString(parentAddress); err == nil &&
+		len(bytes) != 0 && raptorJavaPlausibleClassName(string(bytes)) {
+		return string(bytes)
+	}
+	// Not a name, so read it as the holder of a class in this module. The
+	// inspection registers the parent, which is what makes the whole chain
+	// resolvable from either end.
+	if java.parentInspection == nil {
+		java.parentInspection = make(map[uint32]bool)
+	}
+	if java.parentInspection[parentAddress] {
+		return ""
+	}
+	java.parentInspection[parentAddress] = true
+	defer delete(java.parentInspection, parentAddress)
+	parent, err := r.inspectRaptorJavaClass(java, parentAddress)
+	if err != nil || parent == nil {
+		return ""
+	}
+	return parent.Name
+}
+
+// raptorJavaPlausibleClassName rejects the bytes a holder pointer happens to
+// read as. A class name is printable and has no path separators or spaces of
+// the kind a data structure produces.
+func raptorJavaPlausibleClassName(value string) bool {
+	for _, character := range value {
+		switch {
+		case character >= 'a' && character <= 'z':
+		case character >= 'A' && character <= 'Z':
+		case character >= '0' && character <= '9':
+		case character == '/' || character == '_' || character == '$':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func (r *Runtime) inspectRaptorJavaClass(
 	java *JavaRuntime,
 	holder uint32,
@@ -1081,7 +1142,7 @@ func (r *Runtime) inspectRaptorJavaClass(
 		return nil, fmt.Errorf("inspect Raptor Java class name at 0x%08x", nameAddress)
 	}
 	parentAddress, _ := r.Public.ReadU32(descriptor + 0x10)
-	parentBytes, _ := r.Public.ReadCString(parentAddress)
+	parentName := r.raptorJavaParentName(java, parentAddress)
 	fieldWord, _ := r.Public.ReadU32(descriptor + 0x18)
 	staticBase, _ := r.Public.ReadU32(descriptor + 0x48)
 	if staticBase > 0xffff {
@@ -1093,7 +1154,7 @@ func (r *Runtime) inspectRaptorJavaClass(
 		Holder:      holder,
 		descriptor:  descriptor,
 		Name:        string(nameBytes),
-		parentName:  string(parentBytes),
+		parentName:  parentName,
 		fieldSize:   fieldWord & 0xffff,
 		staticBase:  staticBase,
 		vtable:      vtable,
@@ -1946,7 +2007,7 @@ func (r *Runtime) ResolveRaptorJletMainClass(requested *raptorJavaClass) *raptor
 	if requested == nil {
 		return requested
 	}
-	if m, ok := DeclaredMethod(requested, "startApp", "([Ljava/lang/String;)V"); ok && m.Body != 0 {
+	if _, ok := r.RaptorJletStartApp(requested); ok {
 		return requested
 	}
 	java := r.Java
@@ -1970,6 +2031,33 @@ func (r *Runtime) ResolveRaptorJletMainClass(requested *raptorJavaClass) *raptor
 		return candidate
 	}
 	return requested
+}
+
+// RaptorJletStartApp finds the startApp a class runs, inherited ones included.
+// The class that the launch names commonly declares none of the lifecycle
+// itself and extends the Jlet subclass that does; before the parent slot was
+// read as a holder (see raptorJavaParentName) that chain was invisible and the
+// runtime had to fall back to running the lifecycle on a *second* instance of
+// the base class, which threw away every override the launch class made
+// (issue #151).
+func (r *Runtime) RaptorJletStartApp(
+	class *raptorJavaClass,
+) (raptorJavaDeclaredMethod, bool) {
+	java := r.Java
+	for walk, depth := class, 0; walk != nil && depth < 256; depth++ {
+		if method, ok := DeclaredMethod(
+			walk,
+			"startApp",
+			"([Ljava/lang/String;)V",
+		); ok && method.Body != 0 {
+			return method, true
+		}
+		if java == nil {
+			break
+		}
+		walk = java.ClassByName[walk.parentName]
+	}
+	return raptorJavaDeclaredMethod{}, false
 }
 
 func (r *Runtime) raptorClassExtendsJlet(java *JavaRuntime, class *raptorJavaClass) bool {
