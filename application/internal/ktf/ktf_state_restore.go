@@ -136,14 +136,18 @@ func validateKTFMetadata(
 			return fmt.Errorf("database service mapping %q is invalid", name)
 		}
 	}
+	// An Image needs no service surface: the mirror is a cache the budget
+	// drops when a title works through more Images than fit, and the pixels
+	// of one without a mirror travel in the save's own image block.
+	images := make(map[uint32]bool, len(meta.Images))
 	for _, object := range meta.Images {
-		if object == 0 || meta.ImageServices[object] == 0 {
-			return fmt.Errorf("image 0x%08x has no shared surface", object)
+		if object == 0 {
+			return fmt.Errorf("image 0x%08x is invalid", object)
 		}
+		images[object] = true
 	}
 	for instance, graphics := range meta.Graphics {
-		if meta.GraphicsServices[instance] == 0 ||
-			(!graphics.Screen && meta.ImageServices[graphics.Target] == 0) {
+		if !graphics.Screen && !images[graphics.Target] {
 			return fmt.Errorf("graphics 0x%08x has an invalid target", instance)
 		}
 		if graphics.Clip[2] < graphics.Clip[0] ||
@@ -530,7 +534,7 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	r.systemInputStream = meta.SystemInputStream
 	r.systemPrintStream = meta.SystemPrintStream
 
-	if err := restoreKTFImagesAndGraphics(r, meta); err != nil {
+	if err := restoreKTFImagesAndGraphics(r, meta, saved.imagePixels); err != nil {
 		return err
 	}
 	r.defaultFont = meta.DefaultFont
@@ -738,9 +742,14 @@ func restoreKTFWIPICFramebuffers(
 func restoreKTFImagesAndGraphics(
 	r *Runtime,
 	meta ktfMetadataSnapshot,
+	pixels map[uint32]*image.RGBA,
 ) error {
 	r.images = make(map[uint32]image.Image, len(meta.Images))
 	for _, object := range meta.Images {
+		if carried := pixels[object]; carried != nil {
+			r.images[object] = carried
+			continue
+		}
 		surface := meta.ImageServices[object]
 		descriptor, err := r.Services.Graphics.Descriptor(r.ServiceOwner, surface)
 		if err != nil {
@@ -775,8 +784,13 @@ func restoreKTFImagesAndGraphics(
 				instance,
 			)
 		}
+		graphicsImage := value.Target
+		if value.Screen {
+			graphicsImage = 0
+		}
 		r.Graphics[instance] = &ktfGraphics{
 			Target: drawTarget,
+			image:  graphicsImage,
 			clip: image.Rect(
 				int(value.Clip[0]),
 				int(value.Clip[1]),

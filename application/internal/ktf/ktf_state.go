@@ -15,10 +15,15 @@ const (
 	ktfStateSchemaV2     = uint32(2)
 	ktfStateSchemaV3     = uint32(3)
 	ktfStateSchemaV4     = uint32(4)
-	ktfStateSchema       = uint32(5)
+	ktfStateSchemaV5     = uint32(5)
+	ktfStateSchema       = uint32(6)
 	maxKTFStateMetadata  = uint32(64 << 20)
 	maxKTFStateEntries   = 16_384
 	maxKTFStateHostCalls = int(HostSize / 4)
+	// maxKTFStateImageEdge bounds one saved Image, which is what a handset
+	// screen allows several times over. It exists so a corrupt save cannot
+	// ask the host for an unbounded allocation.
+	maxKTFStateImageEdge = uint32(8192)
 )
 
 type SavedState struct {
@@ -34,6 +39,10 @@ type SavedState struct {
 	pendingTimers      []*ktfPendingTimer
 	WipicScreenPending bool
 	resolvedHostCalls  map[uint32]ktfHostCall
+	// imagePixels carries the Images no service surface mirrors. A save from
+	// before this block has none: every Image it holds had a mirror, so its
+	// pixels come back from the surface store instead.
+	imagePixels map[uint32]*image.RGBA
 }
 
 type ktfPersistentState struct {
@@ -543,7 +552,34 @@ func WriteState(r *Runtime, backend cpu.Backend, started bool, writer *guest.Sta
 		writer.U64(call.timer.deadlineMS)
 		writer.U64(call.timer.wakeAtMS)
 	}
+	// An Image's service surface is a mirror the host draws through, and the
+	// mirror budget drops the ones a title has moved on from, so the surface
+	// store is no longer where every Image's pixels can be read back from.
+	// The Images without one carry their own.
+	mirrorless := mirrorlessKTFImages(r)
+	writer.U32(uint32(len(mirrorless)))
+	for _, object := range mirrorless {
+		bounds := r.images[object].Bounds()
+		writer.U32(object)
+		writer.U32(uint32(bounds.Dx()))
+		writer.U32(uint32(bounds.Dy()))
+		pixels := ktfRGBABytes(r.images[object])
+		writer.U32(uint32(len(pixels)))
+		writer.Write(pixels)
+	}
 	return nil
+}
+
+// mirrorlessKTFImages lists, in a stable order, the Images whose pixels no
+// service surface holds.
+func mirrorlessKTFImages(r *Runtime) []uint32 {
+	objects := make([]uint32, 0, len(r.images))
+	for _, object := range guest.SortedUint32Keys(r.images) {
+		if r.imageServices[object] == 0 {
+			objects = append(objects, object)
+		}
+	}
+	return objects
 }
 
 func ParseState(r *Runtime,
@@ -565,7 +601,8 @@ func ParseState(r *Runtime,
 	}
 	schema := decoder.U32()
 	if schema != ktfStateSchemaV2 && schema != ktfStateSchemaV3 &&
-		schema != ktfStateSchemaV4 && schema != ktfStateSchema {
+		schema != ktfStateSchemaV4 && schema != ktfStateSchemaV5 &&
+		schema != ktfStateSchema {
 		return nil, decoder.Fail(fmt.Sprintf("unsupported KTF state schema %d", schema))
 	}
 	owner := shared.OwnerID(decoder.U32())
@@ -667,7 +704,7 @@ func ParseState(r *Runtime,
 		}
 	}
 	var pendingTimers []*ktfPendingTimer
-	if schema >= ktfStateSchema {
+	if schema >= ktfStateSchemaV5 {
 		count := decoder.U32()
 		if count > maxKTFStateEntries ||
 			int(count) != len(metadata.PendingJavaCalls) {
@@ -696,6 +733,69 @@ func ParseState(r *Runtime,
 			pendingTimers[index].wakeAtMS = decoder.U64()
 		}
 	}
+	imagePixels := make(map[uint32]*image.RGBA)
+	if schema >= ktfStateSchema {
+		count := decoder.U32()
+		if count > maxKTFStateEntries {
+			return nil, decoder.Fail("KTF saved image count exceeds limit")
+		}
+		for index := uint32(0); index < count; index++ {
+			object := decoder.U32()
+			width := decoder.U32()
+			height := decoder.U32()
+			size := decoder.U32()
+			if decoder.Err != nil {
+				return nil, decoder.Err
+			}
+			if object == 0 || width == 0 || height == 0 ||
+				width > maxKTFStateImageEdge ||
+				height > maxKTFStateImageEdge ||
+				size != width*height*4 {
+				return nil, decoder.Fail(
+					fmt.Sprintf("invalid saved KTF image 0x%08x", object),
+				)
+			}
+			if _, duplicate := imagePixels[object]; duplicate {
+				return nil, decoder.Fail(
+					fmt.Sprintf("duplicate saved KTF image 0x%08x", object),
+				)
+			}
+			pixels := decoder.Bytes(int(size))
+			if decoder.Err != nil {
+				return nil, decoder.Err
+			}
+			restored := image.NewRGBA(
+				image.Rect(0, 0, int(width), int(height)),
+			)
+			copy(restored.Pix, pixels)
+			imagePixels[object] = restored
+		}
+	}
+	savedImages := make(map[uint32]bool, len(metadata.Images))
+	for _, object := range metadata.Images {
+		savedImages[object] = true
+		_, carried := imagePixels[object]
+		if metadata.ImageServices[object] == 0 && !carried {
+			return nil, decoder.Fail(fmt.Sprintf(
+				"KTF image 0x%08x has neither a surface nor pixels",
+				object,
+			))
+		}
+		if metadata.ImageServices[object] != 0 && carried {
+			return nil, decoder.Fail(fmt.Sprintf(
+				"KTF image 0x%08x is saved twice",
+				object,
+			))
+		}
+	}
+	for object := range imagePixels {
+		if !savedImages[object] {
+			return nil, decoder.Fail(fmt.Sprintf(
+				"saved KTF image 0x%08x belongs to no Image",
+				object,
+			))
+		}
+	}
 	resolvedCalls, err := resolveKTFHostCalls(r, metadata.HostCalls)
 	if err != nil {
 		return nil, decoder.Fail(fmt.Sprintf("invalid KTF host-call graph: %v", err))
@@ -716,6 +816,7 @@ func ParseState(r *Runtime,
 		pendingTimers:      pendingTimers,
 		WipicScreenPending: wipicScreenPending,
 		resolvedHostCalls:  resolvedCalls,
+		imagePixels:        imagePixels,
 	}, nil
 }
 

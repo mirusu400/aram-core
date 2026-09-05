@@ -90,11 +90,18 @@ type Runtime struct {
 	// again on the very next allocation.
 	javaHeapCollected int
 
-	Services             *shared.Services
-	serviceConfig        shared.Config
-	ServiceOwner         shared.OwnerID
-	serviceName          string
-	imageServices        map[uint32]shared.ServiceID
+	Services      *shared.Services
+	serviceConfig shared.Config
+	ServiceOwner  shared.OwnerID
+	serviceName   string
+	imageServices map[uint32]shared.ServiceID
+	// imageSurfaceUse orders the image mirrors by how recently something drew
+	// through them, so the ones a title has moved on from are the ones dropped
+	// when the mirror budget is reached. It is a cache index, not state: a
+	// restored session starts it empty and fills it again as it draws.
+	imageSurfaceUse  map[uint32]uint64
+	imageSurfaceTick uint64
+
 	javaAssetServices    map[uint32]shared.ServiceID
 	FontServices         map[uint32]shared.ServiceID
 	GraphicsServices     map[uint32]shared.ServiceID
@@ -461,8 +468,13 @@ var ktfJavaExceptionParents = map[string]string{
 
 type ktfGraphics struct {
 	Target draw.Image
-	clip   image.Rectangle
-	color  color.RGBA
+	// image names the Image this Graphics draws into, so the mirror the
+	// service surface holds can be dropped and made again from the Image's
+	// own pixels. The screen Graphics draws the frame instead and leaves it
+	// zero.
+	image uint32
+	clip  image.Rectangle
+	color color.RGBA
 	// translate is the guest's own Graphics.translate offset, in card
 	// coordinates. The guest reads it back with getTranslateX/Y, so it must
 	// never carry a host-imposed offset.

@@ -147,6 +147,35 @@ func clearOutside(target draw.Image, inside image.Rectangle) {
 	}
 }
 
+// ensureGraphicsSurface answers the service surface a host draw through this
+// Graphics needs, making it if the Image behind it has no mirror yet or lost
+// the one it had to the mirror budget. A Graphics that draws the screen keeps
+// the screen surface, which is never a mirror and never evicted.
+func (r *Runtime) ensureGraphicsSurface(
+	instance uint32,
+) (shared.ServiceID, error) {
+	if surface := r.GraphicsServices[instance]; surface != 0 {
+		state := r.Graphics[instance]
+		if state != nil && state.image != 0 {
+			r.touchJavaImageSurface(state.image)
+		}
+		return surface, nil
+	}
+	state := r.Graphics[instance]
+	if state == nil || state.image == 0 {
+		return 0, nil
+	}
+	surface, err := r.ensureJavaImageSurface(state.image)
+	if err != nil {
+		return 0, err
+	}
+	r.GraphicsServices[instance] = surface
+	// The mirror was just uploaded from the Image, which is the same pixels
+	// this Graphics draws into, so nothing is outstanding.
+	state.PixelsDirty = false
+	return surface, nil
+}
+
 func (r *Runtime) syncKTFGraphics(instance uint32) error {
 	state := r.Graphics[instance]
 	serviceID := r.GraphicsServices[instance]
@@ -665,14 +694,16 @@ func (r *Runtime) drawGraphicsTextShared(
 	x, y int,
 	anchor uint32,
 ) error {
-	var serviceID shared.ServiceID
 	var graphicsInstance uint32
 	for instance, candidate := range r.Graphics {
 		if candidate == state {
 			graphicsInstance = instance
-			serviceID = r.GraphicsServices[instance]
 			break
 		}
+	}
+	serviceID, err := r.ensureGraphicsSurface(graphicsInstance)
+	if err != nil {
+		return err
 	}
 	if serviceID == 0 {
 		return fmt.Errorf("KTF graphics text target has no shared surface")
@@ -1196,10 +1227,13 @@ func (r *Runtime) encodeGraphicsImage(
 			"java/lang/IllegalArgumentException",
 		)
 	}
+	surface, err := r.ensureGraphicsSurface(instance)
+	if err != nil {
+		return 0, err
+	}
 	if err := r.syncKTFGraphics(instance); err != nil {
 		return 0, err
 	}
-	surface := r.GraphicsServices[instance]
 	if surface == 0 {
 		return 0, fmt.Errorf(
 			"KTF graphics 0x%08x has no shared surface",

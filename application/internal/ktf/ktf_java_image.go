@@ -11,6 +11,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"path"
+	"sort"
 	"strings"
 
 	shared "github.com/mirusu400/aram-core/runtime"
@@ -420,14 +421,14 @@ func (r *Runtime) handleImageMethod(name, descriptor string) (uint32, error) {
 		}
 		r.Graphics[graphics] = &ktfGraphics{
 			Target: target,
+			image:  instance,
 			clip:   target.Bounds(),
 			color:  color.RGBA{A: 0xff},
 		}
-		surface, err := r.ensureJavaImageSurface(instance)
-		if err != nil {
-			return 0, err
-		}
-		r.GraphicsServices[graphics] = surface
+		// The mirror waits for a draw that actually needs one. Most Graphics
+		// obtained from an Image only ever run the Go drawing paths, and a
+		// title that asks for one per sprite per frame filled the surface
+		// table with mirrors nothing read (issue #149).
 		return graphics, nil
 	case "loadImage(Ljava/lang/String;Lorg/kwis/msp/lcdui/ImageObserver;)Lorg/kwis/msp/lcdui/Image;":
 		// The observer never fires: the host decodes synchronously, so the
@@ -465,20 +466,37 @@ func (r *Runtime) newJavaImage(source image.Image) (uint32, error) {
 	return instance, nil
 }
 
+// ktfJavaImageSurfaceBudget is how many Image mirrors this runtime keeps. The
+// surface table holds 1024 for the whole title, and the WIPI-C screen, the
+// fonts and the Java frame all draw from the same table, so the Java mirrors
+// take a fraction of it and give back the ones nothing has drawn through
+// lately. A frame needs one mirror per Image it draws *text* into or encodes;
+// everything else runs on the Go image, so a budget this size is never reached
+// by a title doing ordinary work.
+const ktfJavaImageSurfaceBudget = 192
+
 // ensureJavaImageSurface materialises the service surface an Image needs only
 // once something asks to draw through it. Drawing itself runs on the Go image
 // in r.images; the surface is a mirror the sync path uploads to. Creating one
 // per Image eagerly meant a title that decodes sprites in a loop climbed to
-// the 1024-surface cap with mirrors nothing ever read - KTF Java has no
-// collector, so an Image lives as long as the title does.
+// the 1024-surface cap with mirrors nothing ever read.
+//
+// The mirror is a cache and nothing else: every pixel in it came from the Go
+// image, and every host draw that writes one reads its result straight back.
+// So a mirror can be dropped at any point between draws and made again from
+// the Image the next time one is asked for, which is what keeps a long session
+// inside the surface table however many Images the title works through
+// (issue #149: 에스테반루크 reached 1024 mirrors after 4451 frames of play).
 func (r *Runtime) ensureJavaImageSurface(instance uint32) (shared.ServiceID, error) {
 	if surface, ok := r.imageServices[instance]; ok {
+		r.touchJavaImageSurface(instance)
 		return surface, nil
 	}
 	source := r.images[instance]
 	if source == nil {
 		return 0, fmt.Errorf("KTF Java image 0x%08x has no pixels", instance)
 	}
+	r.evictJavaImageSurfaces(instance)
 	bounds := source.Bounds()
 	surface, err := r.Services.Graphics.CreateSurface(
 		r.ServiceOwner,
@@ -500,7 +518,73 @@ func (r *Runtime) ensureJavaImageSurface(instance uint32) (shared.ServiceID, err
 		return 0, err
 	}
 	r.imageServices[instance] = surface
+	r.touchJavaImageSurface(instance)
 	return surface, nil
+}
+
+// touchJavaImageSurface records that a mirror was just used, so eviction takes
+// the ones a title has moved on from first.
+func (r *Runtime) touchJavaImageSurface(instance uint32) {
+	if r.imageSurfaceUse == nil {
+		r.imageSurfaceUse = make(map[uint32]uint64, len(r.imageServices))
+	}
+	r.imageSurfaceTick++
+	r.imageSurfaceUse[instance] = r.imageSurfaceTick
+}
+
+// evictJavaImageSurfaces drops least-recently-drawn Image mirrors until one
+// more fits in the budget. keep is the Image about to be mirrored, which is
+// never a victim. A Graphics that named an evicted surface loses the mapping
+// too, so the next draw through it materialises the mirror again rather than
+// reading a destroyed surface.
+func (r *Runtime) evictJavaImageSurfaces(keep uint32) {
+	if len(r.imageServices) < ktfJavaImageSurfaceBudget {
+		return
+	}
+	candidates := make([]uint32, 0, len(r.imageServices))
+	for instance := range r.imageServices {
+		if instance == keep {
+			continue
+		}
+		candidates = append(candidates, instance)
+	}
+	sort.Slice(candidates, func(first, second int) bool {
+		left, right := candidates[first], candidates[second]
+		if r.imageSurfaceUse[left] != r.imageSurfaceUse[right] {
+			return r.imageSurfaceUse[left] < r.imageSurfaceUse[right]
+		}
+		return left < right
+	})
+	// Dropping a quarter of the budget at once keeps a title that works
+	// through more Images than fit from paying a scan on every single draw.
+	drop := len(r.imageServices) - ktfJavaImageSurfaceBudget + 1
+	if quarter := ktfJavaImageSurfaceBudget / 4; drop < quarter {
+		drop = quarter
+	}
+	if drop > len(candidates) {
+		drop = len(candidates)
+	}
+	evicted := make(map[shared.ServiceID]bool, drop)
+	for _, instance := range candidates[:drop] {
+		surface := r.imageServices[instance]
+		delete(r.imageServices, instance)
+		delete(r.imageSurfaceUse, instance)
+		if surface == 0 {
+			continue
+		}
+		evicted[surface] = true
+		_ = r.Services.Graphics.DestroySurface(r.ServiceOwner, surface)
+	}
+	if len(evicted) == 0 {
+		return
+	}
+	for graphics, surface := range r.GraphicsServices {
+		if evicted[surface] {
+			delete(r.GraphicsServices, graphics)
+		}
+	}
+	r.tracef("java_image_surface_evict:dropped=%d:live=%d",
+		drop, len(r.imageServices))
 }
 
 func (r *Runtime) newJavaEncodedImage(data []byte) (uint32, error) {

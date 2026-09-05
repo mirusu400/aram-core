@@ -153,6 +153,7 @@ func NewRuntimeForProfile(
 		ServiceOwner:          owner,
 		serviceName:           "ktf",
 		imageServices:         make(map[uint32]shared.ServiceID),
+		imageSurfaceUse:       make(map[uint32]uint64),
 		javaAssetServices:     make(map[uint32]shared.ServiceID),
 		FontServices:          make(map[uint32]shared.ServiceID),
 		GraphicsServices:      make(map[uint32]shared.ServiceID),
