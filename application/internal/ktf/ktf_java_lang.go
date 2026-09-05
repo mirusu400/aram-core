@@ -1005,6 +1005,15 @@ func (r *Runtime) handleTimerMethod(
 			task.Done = true
 			delete(r.javaTimerTasks, instance)
 			r.javaTimerTaskStates[instance] = ktfJavaTimerCancelled
+			// Same lifecycle as any other task exit: a sibling started off
+			// this one must stop waiting, and this task's pointer must not
+			// stay keyed in the deferred-paint maps once its task-table slot
+			// is recycled, or the next SaveState rejects it as pointing
+			// outside the task table.
+			r.releaseStartedThreads(task, "timer-cancel")
+			if err := r.releaseDeferredCardPaints(ctx, task); err != nil {
+				return 0, err
+			}
 			cancelled++
 		}
 		cancelled += r.dropPendingJavaTimers(func(call ktfPendingJavaCall) bool {
@@ -1032,6 +1041,10 @@ func (r *Runtime) handleTimerMethod(
 		if task := r.javaTimerTasks[instance]; task != nil {
 			task.Done = true
 			delete(r.javaTimerTasks, instance)
+			r.releaseStartedThreads(task, "timer-cancel")
+			if err := r.releaseDeferredCardPaints(ctx, task); err != nil {
+				return 0, err
+			}
 		}
 		r.dropPendingJavaTimers(func(call ktfPendingJavaCall) bool {
 			return call.instance == instance

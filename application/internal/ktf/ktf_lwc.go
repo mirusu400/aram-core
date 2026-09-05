@@ -1565,6 +1565,15 @@ func (r *Runtime) serviceCardRepaints(
 	if task := r.PaintTasks[card]; task != nil && !task.Done {
 		task.Done = true
 		delete(r.PaintTasks, card)
+		// Same reasoning as the initial-paint discard in RunTaskSlice: a
+		// forced cancel is still a task exit, and skipping these leaves a
+		// startBlocker child parked forever or a stale *Task keyed in the
+		// deferred-paint maps once this slot is recycled, which SaveState
+		// then rejects as pointing outside the task table.
+		r.releaseStartedThreads(task, "force-cancel")
+		if err := r.releaseDeferredCardPaints(ctx, task); err != nil {
+			return err
+		}
 		r.tracef("java_paint_force_cancel:card=0x%08x", card)
 	}
 	delete(r.dirtyCards, card)
