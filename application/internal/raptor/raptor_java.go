@@ -338,9 +338,12 @@ type JavaRuntime struct {
 	// slot that holds a holder is followed, and a module whose descriptors
 	// point at each other must not send that walk round for ever.
 	parentInspection map[uint32]bool
-	classOrder       []*raptorJavaClass
-	hostMethods      map[uint32]raptorJavaMethod
-	nextMethod       uint32
+	// vtableBuilding guards the same recursion when a subclass builds its
+	// parent's vtable so it has something to inherit.
+	vtableBuilding map[uint32]bool
+	classOrder     []*raptorJavaClass
+	hostMethods    map[uint32]raptorJavaMethod
+	nextMethod     uint32
 	// activeTask is the Java thread the machine is currently running, so a
 	// Thread.sleep from guest code parks that thread.
 	activeTask *JavaTask
@@ -467,17 +470,18 @@ func (r *Runtime) ensureJavaRuntime() (*JavaRuntime, error) {
 		return nil, errors.New("allocate Raptor Java call scratch")
 	}
 	java := &JavaRuntime{
-		Host:         host,
-		classes:      make(map[uint32]*raptorJavaClass),
-		ClassByName:  make(map[string]*raptorJavaClass),
-		hostMethods:  make(map[uint32]raptorJavaMethod),
-		nextMethod:   1,
-		lgtToKTF:     make(map[uint32]uint32),
-		ktfToLGT:     make(map[uint32]uint32),
-		initializing: make(map[uint32]bool),
-		dirtyCards:   make(map[uint32]bool),
-		scratch:      scratch,
-		MainClass:    r.Pkg.Descriptor.MainClass,
+		Host:           host,
+		classes:        make(map[uint32]*raptorJavaClass),
+		ClassByName:    make(map[string]*raptorJavaClass),
+		hostMethods:    make(map[uint32]raptorJavaMethod),
+		nextMethod:     1,
+		lgtToKTF:       make(map[uint32]uint32),
+		ktfToLGT:       make(map[uint32]uint32),
+		initializing:   make(map[uint32]bool),
+		vtableBuilding: make(map[uint32]bool),
+		dirtyCards:     make(map[uint32]bool),
+		scratch:        scratch,
+		MainClass:      r.Pkg.Descriptor.MainClass,
 	}
 	r.Java = java
 	return java, nil
@@ -1700,14 +1704,23 @@ func (r *Runtime) buildRaptorJavaVTable(
 			// Host trampolines are Thumb code; force the interworking bit.
 			procedure = stub | 1
 		}
-		for _, declared := range class.methods {
-			if declared.Name == method.Name && declared.descriptor == method.descriptor {
+		// The body wins over the host stub, and an inherited body counts: a
+		// subclass that declares none of its own would otherwise dispatch the
+		// slot to a host trampoline for an *application* class, which resolves
+		// to nothing and silently does nothing (issue #151).
+		for walk, depth := class, 0; walk != nil && depth < 256; depth++ {
+			if declared, found := DeclaredMethod(
+				walk,
+				method.Name,
+				method.descriptor,
+			); found && declared.Body != 0 {
 				// The declared body pointer already carries the ARM/Thumb
 				// interworking bit; preserve it so a bx into an ARM method body
 				// does not switch the CPU into Thumb mode.
 				procedure = declared.Body
 				break
 			}
+			walk = java.ClassByName[walk.parentName]
 		}
 		if procedure != 0 {
 			if err := r.Public.WriteU32(
@@ -1800,6 +1813,37 @@ func (r *Runtime) buildRaptorJavaVTable(
 			}
 			if err := r.Public.WriteU32(vtable+offset, body); err != nil {
 				return err
+			}
+		}
+	}
+	// A subclass inherits every slot its parent resolved. The parent chain was
+	// invisible until a descriptor's parent slot could name a holder (see
+	// raptorJavaParentName), so this pass had nothing to inherit from and every
+	// inherited method fell through to the no-op backstop below: 배틀몬스터
+	// dispatched 564 of them in 260 frames, its whole Jlet-side behaviour.
+	if parent := java.ClassByName[class.parentName]; parent != nil &&
+		parent != class {
+		if parent.vtable == 0 && !java.vtableBuilding[parent.Holder] {
+			java.vtableBuilding[parent.Holder] = true
+			buildErr := r.buildRaptorJavaVTable(java, parent, count)
+			delete(java.vtableBuilding, parent.Holder)
+			if buildErr != nil {
+				return buildErr
+			}
+		}
+		if parent.vtable != 0 {
+			for offset := uint32(0x04); offset < vtableSize; offset += 4 {
+				existing, readErr := r.Public.ReadU32(vtable + offset)
+				if readErr != nil || existing != 0 {
+					continue
+				}
+				inherited, readErr := r.Public.ReadU32(parent.vtable + offset)
+				if readErr != nil || inherited == 0 {
+					continue
+				}
+				if err := r.Public.WriteU32(vtable+offset, inherited); err != nil {
+					return err
+				}
 			}
 		}
 	}
