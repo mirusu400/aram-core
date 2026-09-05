@@ -195,6 +195,29 @@ func (r *Runtime) collectJavaHeap() int {
 	return freed
 }
 
+// AddGCRootRegion names an additional guest memory range markRegionRoots
+// scans for live heap pointers, alongside the client image, the stack, and
+// low work RAM.
+//
+// A shared Java host (the Raptor bridge builds one with a one-byte dummy
+// Client, since the real image belongs to the Raptor runtime that owns the
+// address space) has no client image of its own for markRegionRoots to
+// cover, so any reference the collector can only reach through Raptor's own
+// statics - its .data and .bss sections - was invisible to the root walk.
+// The collector could then reclaim a heap block a live Raptor object field
+// still named, and reading it back later found whatever unrelated data had
+// since been written there instead (당신은골프왕 crashes dereferencing a
+// vtable pointer that reads as unrelated heap bytes for exactly this reason).
+func (r *Runtime) AddGCRootRegion(base, size uint32) {
+	if size == 0 {
+		return
+	}
+	r.incrementalMemory = append(
+		r.incrementalMemory,
+		ktfIncrementalMemoryRegion{base: base, size: size},
+	)
+}
+
 // markRegionRoots scans every mapped region that is not the heap itself. The
 // client image holds the title's statics, the stack holds every live frame,
 // and low work RAM is where KTF titles keep their own structures.

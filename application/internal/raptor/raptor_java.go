@@ -439,6 +439,15 @@ func (r *Runtime) ensureJavaRuntime() (*JavaRuntime, error) {
 	host.Heap = guest.Heap{CPU: r.CPU, Shared: &r.Public.Heap}
 	host.Mapped = true
 	host.DeferThreads = false
+	// The shared host's own client image is the one-byte dummy above, since
+	// the real image belongs to this Raptor runtime; without this, the
+	// collector's root walk never scans Raptor's statics (its code and data
+	// sections), so a heap reference reachable only from there looks
+	// unreferenced and can be reclaimed while a live Raptor object field
+	// still names it (issue #145).
+	for _, section := range r.Pkg.Image.AllocatedSections() {
+		host.AddGCRootRegion(section.Address, section.Size)
+	}
 	// The Raptor AOT-Java bridge cannot deliver a host-raised Java exception to
 	// a guest catch block, so a first-run read-only open of a not-yet-written
 	// private config file must not fault the machine.
@@ -1490,11 +1499,17 @@ func raptorJavaLinkedFieldIndex(
 	// Class registration order is stable. Several obfuscated applications use
 	// the same short field name in more than one class, so ranging over the
 	// holder map would otherwise make linking depend on Go's map iteration.
+	// The inner break only left the innermost loop, so a later class sharing
+	// the same short (name, descriptor) pair kept overwriting an earlier,
+	// correct match instead of the first one winning as intended - a field
+	// read on the earlier class's instance would then land on whatever index
+	// the later class happened to declare it at.
+found:
 	for _, class := range java.classOrder {
 		for _, declared := range class.fields {
 			if declared.Name == name && declared.descriptor == descriptor {
 				fieldIndex = declared.index
-				break
+				break found
 			}
 		}
 	}
