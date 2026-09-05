@@ -1256,9 +1256,23 @@ func (p BoardProfile) applyLatchedRegisters(
 				return fmt.Errorf("apply board profile %q register %q: %w", p.ID, spec.ID, err)
 			}
 			for _, pulse := range spec.WritePulses {
-				var pulser qualcommInterruptSourcePulser = interruptController
+				// Assign only a non-nil controller. A typed nil pointer stored
+				// in the interface would pass AttachWritePulse's nil check and
+				// then panic on the first guest write that matches the rule.
+				var pulser qualcommInterruptSourcePulser
 				if pulse.UseVectoredController {
-					pulser = vectoredInterruptController
+					if vectoredInterruptController != nil {
+						pulser = vectoredInterruptController
+					}
+				} else if interruptController != nil {
+					pulser = interruptController
+				}
+				if pulser == nil {
+					return fmt.Errorf(
+						"apply board profile %q register pulse %q: no attached interrupt controller",
+						p.ID,
+						spec.ID,
+					)
 				}
 				if err := exact.AttachWritePulse(pulse.Mask, pulse.Value, pulse.Sources, pulser); err != nil {
 					return fmt.Errorf("apply board profile %q register pulse %q: %w", p.ID, spec.ID, err)

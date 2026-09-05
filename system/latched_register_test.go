@@ -3,6 +3,7 @@ package system
 import (
 	"encoding/binary"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -127,5 +128,21 @@ func TestLatchedRegisterProfilesInterruptPulses(t *testing.T) {
 		if err := candidate.AttachWritePulse(invalid.mask, invalid.value, invalid.sources, invalid.pulser); err == nil {
 			t.Fatalf("accepted invalid pulse mask=%#x sources=%v", invalid.mask, invalid.sources)
 		}
+	}
+}
+
+func TestLatchedRegisterPulseRequiresAttachedInterruptController(t *testing.T) {
+	// A profiled write pulse without an interrupt controller must be refused
+	// while the board is being wired, not dereferenced on a guest MMIO write.
+	profile := SCHW599BE30BoardProfile()
+	profile.ADSPMailbox = nil
+	bus := NewBus()
+	err := profile.ApplyLatchedRegisters(bus)
+	if err == nil {
+		t.Fatal("latched-register pulse accepted without an interrupt controller")
+	}
+	if !strings.Contains(err.Error(), "w599-bootstrap-control") ||
+		!strings.Contains(err.Error(), "no attached interrupt controller") {
+		t.Fatalf("unexpected wiring error = %v", err)
 	}
 }
