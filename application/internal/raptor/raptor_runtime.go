@@ -560,6 +560,44 @@ func (r *Runtime) dispatchImport(
 	// undocumented. That is real reverse-engineering work (cross-referencing
 	// other titles' use of the same ordinals, most likely), not something
 	// this experiment should keep guessing at.
+	//
+	// Cross-title corpus check (user request): 20 of the gamearchive corpus's
+	// 380 titles call module100#84; every single one has present_count=0 in
+	// the smoke sweep. This is not 당신은골프왕-specific. A prior session's
+	// memory (issue #125, SD한국전쟁) independently reached the same "r0
+	// selects the operation" model and additionally found: the framebuffer
+	// is verified FULLY rendered (76,800/76,800 non-black pixels - confirmed
+	// again here for both SD한국전쟁 and 당신은골프왕) well before the hang;
+	// #84/#85 are called fire-and-forget (return value never dereferenced,
+	// so wrong guesses there cannot crash, only mislead); #31 pairs with
+	// module1#50 as an acquire/query; #32 is hypothesized as its release;
+	// #34 is the one call in the chain that previously dereferenced a null
+	// result directly (root-caused there to an unrelated StringBuffer vtable
+	// gap, already fixed - not an ordinal semantics problem).
+	//
+	// Tried raising raptorCallbackInstructionLimit (machine_wipi.go) from
+	// 256M to 2B on the theory that this is "slow but finite", since a
+	// nested InvokeSync (paintRaptorJavaCard's callback path) has no
+	// resume-across-frames mechanism and treats hitting its own budget as a
+	// hard StopFault ("WIPI callback ... did not return within N
+	// instructions"), unlike the top-level per-quantum loop, which yields
+	// cleanly. NOT sufficient either, but not simply wrong: a 20-minute /
+	// 2.68B-instruction run never once produced that "did not return"
+	// error - the probe's own wall-clock --timeout always fires first,
+	// meaning this specific call has not yet hit even a 2B-instruction cap.
+	// It also is not stuck at the same place: last_api moved from
+	// Graphics.drawImage to java/lang/Thread.sleep(J)V (a call this
+	// session's own sleep-park fix already handles) over that run, real
+	// forward progress into different guest code, not a tight spin on one
+	// PC. Whatever this is, it is at minimum extremely slow under this
+	// interpreter, and possibly also missing a stopping condition that only
+	// the true ordinal semantics would reveal - the two are not mutually
+	// exclusive and this experiment cannot distinguish them without a
+	// working profiler or substantially more wall-clock budget than is
+	// practical to keep re-testing with. Left at 256M in the reverted
+	// baseline (the 2B change is NOT in this commit) since raising it
+	// unconditionally would also slow down genuinely-broken titles' time to
+	// fail without any confirmed benefit yet.
 	if key.Module == 100 && key.Ordinal == 84 {
 		return r.Public.ReturnFromTrap(guest.WIPIReturn{Low: ^uint32(0)})
 	}
