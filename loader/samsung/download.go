@@ -18,6 +18,13 @@ import (
 const (
 	FamilySCHDownload    = "samsung-sch-download-v1"
 	FamilySCHRawDownload = "samsung-sch-download-raw-v1"
+	// FamilySamsungLegacyFlatDownload identifies older four-piece downloads
+	// whose payloads already contain their physical flash bytes without MIBIB
+	// block framing or a signed wrapper.
+	FamilySamsungLegacyFlatDownload = "samsung-legacy-flat-download-v1"
+	// FamilySamsungMonolithicFlash identifies a complete flat firmware image
+	// plus its optional factory preload region.
+	FamilySamsungMonolithicFlash = "samsung-monolithic-flash-v1"
 	// FamilySCHFlexOneNANDDownload identifies the later dual-processor SCH
 	// package whose modem and application ELF images are separate and whose
 	// boot piece carries a Samsung Flex-OneNAND partition table.
@@ -52,15 +59,18 @@ var (
 type Role string
 
 const (
-	RoleWBT  Role = "wbt"
-	RoleWBIN Role = "wbin"
-	RoleABIN Role = "abin"
-	RoleDAT  Role = "dat"
-	RoleFont Role = "font"
+	RoleWBT      Role = "wbt"
+	RoleWBIN     Role = "wbin"
+	RoleABIN     Role = "abin"
+	RoleDAT      Role = "dat"
+	RoleFont     Role = "font"
+	RoleFirmware Role = "firmware"
+	RolePreload  Role = "preload"
 )
 
 var requiredRoles = []Role{RoleWBT, RoleWBIN, RoleDAT, RoleFont}
 var flexOneNANDRequiredRoles = []Role{RoleWBT, RoleWBIN, RoleABIN, RoleDAT, RoleFont}
+var monolithicRequiredRoles = []Role{RoleFirmware, RolePreload}
 
 var roleTokens = map[Role]uint32{
 	RoleWBT:  0xb07b1d96,
@@ -198,6 +208,11 @@ func inspectWithRegistry(set firmwareset.Set, registry Registry) (Package, error
 			}
 			delete(pkg.Pieces, role)
 		}
+	}
+	if exact, exactErr := registry.packageForExactSet(set); exactErr == nil {
+		return exact, nil
+	} else if !errors.Is(exactErr, ErrUnknownBuild) {
+		return Package{}, exactErr
 	}
 	return Package{}, pending[0].err
 }
@@ -452,14 +467,20 @@ func (p Package) MissingRoles() []Role {
 }
 
 func requiredRolesForFamily(family string) []Role {
-	if family == FamilySCHFlexOneNANDDownload {
+	switch family {
+	case FamilySCHFlexOneNANDDownload:
 		return flexOneNANDRequiredRoles
+	case FamilySamsungMonolithicFlash:
+		return monolithicRequiredRoles
+	case FamilySCHDownload, FamilySCHRawDownload, FamilySamsungLegacyFlatDownload:
+		return requiredRoles
+	default:
+		return nil
 	}
-	return requiredRoles
 }
 
 func (p Package) Complete() bool {
-	return len(p.MissingRoles()) == 0
+	return requiredRolesForFamily(p.Family) != nil && len(p.MissingRoles()) == 0
 }
 
 type Transform string

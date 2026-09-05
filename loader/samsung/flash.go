@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 
 	"github.com/mirusu400/aram-core/firmwareset"
 )
@@ -327,6 +328,102 @@ func AssembleFlashWithOptions(
 		pageSize: layout.PageSize, eraseBlock: layout.EraseBlockSize,
 		partitions: append([]Partition(nil), layout.Partitions...),
 		regions:    regions, progressive: progressive.ELF, identity: identity,
+	}, nil
+}
+
+// AssembleFlashForProfileWithOptions uses exact profile geometry for older
+// downloads which contain already-linear physical flash bytes. Later MIBIB and
+// Flex-OneNAND packages retain the structural normalization path above.
+func AssembleFlashForProfileWithOptions(
+	set firmwareset.Set,
+	pkg Package,
+	profile BuildProfile,
+	options FlashAssemblyOptions,
+) (FlashImage, error) {
+	if profile.FlatFlash != nil {
+		return assembleFlatProfileFlash(set, pkg, profile)
+	}
+	return AssembleFlashWithOptions(set, pkg, options)
+}
+
+func assembleFlatProfileFlash(
+	set firmwareset.Set,
+	pkg Package,
+	profile BuildProfile,
+) (FlashImage, error) {
+	spec := profile.FlatFlash
+	if spec == nil {
+		return FlashImage{}, fmt.Errorf("%w: profile has no flat flash geometry", ErrInvalidFlashLayout)
+	}
+	if err := spec.validate(profile.PieceHashes); err != nil {
+		return FlashImage{}, fmt.Errorf("%w: %v", ErrInvalidFlashLayout, err)
+	}
+	regions := make([]flashRegion, 0, len(spec.Regions))
+	partitions := make([]Partition, 0, len(spec.Regions))
+	for _, regionSpec := range spec.Regions {
+		metadata, ok := pkg.Pieces[regionSpec.Role]
+		if !ok {
+			return FlashImage{}, fmt.Errorf("%w: missing %s", ErrIncompleteSet, regionSpec.Role)
+		}
+		piece, err := set.Piece(metadata.Index)
+		if err != nil {
+			return FlashImage{}, err
+		}
+		if piece.SHA256() != metadata.SHA256 {
+			return FlashImage{}, fmt.Errorf("Samsung %s metadata does not match firmware set", regionSpec.Role)
+		}
+		pieceSize := uint64(piece.Size())
+		if regionSpec.SourceOffset > pieceSize {
+			return FlashImage{}, fmt.Errorf("%w: %s source offset exceeds input", ErrInvalidFlashLayout, regionSpec.Role)
+		}
+		size := regionSpec.Size
+		if size == 0 {
+			size = pieceSize - regionSpec.SourceOffset
+		}
+		if size == 0 || size > pieceSize-regionSpec.SourceOffset ||
+			regionSpec.Start > spec.Size || size > spec.Size-regionSpec.Start {
+			return FlashImage{}, fmt.Errorf("%w: %s flat range exceeds input or flash", ErrInvalidFlashLayout, regionSpec.Role)
+		}
+		outputHash := metadata.SHA256
+		if regionSpec.SourceOffset != 0 || size != pieceSize {
+			outputHash, err = hashPieceRange(piece, regionSpec.SourceOffset, size)
+			if err != nil {
+				return FlashImage{}, err
+			}
+		}
+		regions = append(regions, flashRegion{
+			metadata: FlashRegion{
+				Role: regionSpec.Role, Start: regionSpec.Start, Size: size,
+				SourcePiece: metadata.Index, SourceOffset: regionSpec.SourceOffset,
+				Transform: TransformIdentity, SourceSHA256: metadata.SHA256,
+				OutputSHA256: outputHash,
+			},
+			piece: piece,
+		})
+		partitions = append(partitions, Partition{
+			Name:  "0:" + strings.ToUpper(string(regionSpec.Role)),
+			Start: regionSpec.Start, Size: size,
+		})
+	}
+	sort.Slice(regions, func(left, right int) bool {
+		return regions[left].metadata.Start < regions[right].metadata.Start
+	})
+	for index := 1; index < len(regions); index++ {
+		if regions[index-1].metadata.End() > regions[index].metadata.Start {
+			return FlashImage{}, fmt.Errorf(
+				"%w: %s overlaps %s", ErrInvalidFlashLayout,
+				regions[index-1].metadata.Role, regions[index].metadata.Role,
+			)
+		}
+	}
+	sort.Slice(partitions, func(left, right int) bool {
+		return partitions[left].Start < partitions[right].Start
+	})
+	identity := identifyFlash(spec.Size, partitions, regions)
+	return FlashImage{
+		size: spec.Size, erased: 0xff,
+		pageSize: spec.PageSize, eraseBlock: spec.EraseBlockSize,
+		partitions: partitions, regions: regions, identity: identity,
 	}, nil
 }
 

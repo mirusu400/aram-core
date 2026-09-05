@@ -140,9 +140,13 @@ type Backend struct {
 	// in the portable translated tiers. It is fixed at construction time and
 	// remains false for NewJIT so the established JIT stays instruction-exact.
 	loopAcceleration bool
-	mapped           uint64
-	memoryLimit      uint64
-	pcHits           map[uint32]uint64 // env ARAM_PC_TRACE: per-PC execution histogram
+	// userSystemSPSRReadAsCPSR selects an observed legacy ARM7 compatibility
+	// behavior for whole-system firmware. Architecturally, User and System mode
+	// have no SPSR and the default remains a precise fault.
+	userSystemSPSRReadAsCPSR bool
+	mapped                   uint64
+	memoryLimit              uint64
+	pcHits                   map[uint32]uint64 // env ARAM_PC_TRACE: per-PC execution histogram
 	// jitBlocks is the translated-block cache of the optional pure-Go dynamic
 	// recompiler (see jit.go). Nil keeps the precise tree-walking path; non-nil
 	// enables the JIT for Thumb alongside armJITBlocks, falling back to the
@@ -316,6 +320,22 @@ func New() *Backend {
 	return NewWithMemoryLimit(DefaultMemoryLimit)
 }
 
+// CompatibilityOptions selects explicitly profiled behavior for instructions
+// whose architectural result is UNPREDICTABLE. The zero value remains strict.
+type CompatibilityOptions struct {
+	// UserSystemSPSRReadAsCPSR makes MRS SPSR return CPSR in User or System
+	// mode. Some legacy ARM7 firmware relies on this implementation behavior.
+	UserSystemSPSRReadAsCPSR bool
+}
+
+// NewWithCompatibility returns the precise interpreter with explicit,
+// default-off whole-system compatibility behavior.
+func NewWithCompatibility(options CompatibilityOptions) *Backend {
+	b := NewWithMemoryLimit(DefaultMemoryLimit)
+	b.userSystemSPSRReadAsCPSR = options.UserSystemSPSRReadAsCPSR
+	return b
+}
+
 // JITOptions configures opt-in translated-tier behavior. The zero value keeps
 // the pure-Go JIT instruction-exact.
 type JITOptions struct {
@@ -323,6 +343,7 @@ type JITOptions struct {
 	// loops. It preserves architectural state and retired-instruction counts,
 	// but may execute several proven iterations as one host operation.
 	LoopAcceleration bool
+	Compatibility    CompatibilityOptions
 }
 
 // NewJIT returns a backend that runs ARM and Thumb through pure-Go translated
@@ -339,6 +360,7 @@ func NewJIT() *Backend {
 func NewJITWithOptions(options JITOptions) *Backend {
 	b := NewWithMemoryLimit(DefaultMemoryLimit)
 	b.loopAcceleration = options.LoopAcceleration
+	b.userSystemSPSRReadAsCPSR = options.Compatibility.UserSystemSPSRReadAsCPSR
 	b.jitBlocks = make(map[uint32]*jitBlock)
 	b.jitBlockPages = make(blockPageIndex)
 	b.jitCache = make([]jitCacheSet, jitCacheSize)

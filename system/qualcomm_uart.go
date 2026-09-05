@@ -80,7 +80,8 @@ func (d *QualcommBootControl) writeLegacyUART(offset uint32, width Width, value 
 	if !configured || relative != qualcommLegacyUARTFIFOOffset {
 		return false, nil
 	}
-	if width != Width8 || value > 0xff {
+	_, wordConfigured := d.mixedWidthOffsets[offset]
+	if width != Width8 && (width != Width32 || !wordConfigured) || value > 0xff {
 		return true, fmt.Errorf(
 			"%w: legacy UART FIFO write%d value 0x%x at 0x%x",
 			ErrQualcommBootControlMMIO,
@@ -89,7 +90,8 @@ func (d *QualcommBootControl) writeLegacyUART(offset uint32, width Width, value 
 			offset,
 		)
 	}
-	// No host endpoint is attached yet. Accepting the byte models an empty
-	// transmit FIFO without inventing receive data or an external peer.
+	// No host endpoint is attached yet. Accepting the low byte models an empty
+	// transmit FIFO without inventing receive data or an external peer. Some
+	// profiled ARM7 code uses a word store for the same byte-wide aperture.
 	return true, nil
 }

@@ -37,6 +37,73 @@ func TestRegistryMatchesExactPieceHashes(t *testing.T) {
 	}
 }
 
+func TestExactFlatProfileInspectsReconstructsAndMapsSyntheticBytes(t *testing.T) {
+	firmware := bytes.Repeat([]byte{0x31}, 0x400)
+	preload := bytes.Repeat([]byte{0x72}, 0x200)
+	firmwareDigest := fmt.Sprintf("%x", sha256.Sum256(firmware))
+	preloadDigest := fmt.Sprintf("%x", sha256.Sum256(preload))
+	resetDigest := fmt.Sprintf("%x", sha256.Sum256(firmware[:0x200]))
+	profile := BuildProfile{
+		ID: "samsung.synthetic.flat", Family: FamilySamsungMonolithicFlash,
+		Manufacturer: "Samsung", Model: "Synthetic", Build: "TEST",
+		PieceHashes: map[Role]string{
+			RoleFirmware: firmwareDigest,
+			RolePreload:  preloadDigest,
+		},
+		BootImages: []BootImageSpec{{
+			ID: "reset", Role: RoleFirmware, ContiguousSize: 0x200,
+			LoadAddress: 0xffff0000, UsedSize: 0x100, LogicalSHA256: resetDigest,
+			MirrorAddresses: []uint32{0},
+		}},
+		DirectResetImage: "reset",
+		FlatFlash: &FlatFlashSpec{
+			Size: 0x1000, PageSize: 0x200, EraseBlockSize: 0x400,
+			Regions: []FlatFlashRegionSpec{
+				{Role: RoleFirmware, Start: 0},
+				{Role: RolePreload, Start: 0x800},
+			},
+		},
+	}
+	registry, err := NewRegistry(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err := firmwareset.NewSet([]firmwareset.Source{
+		{ReaderAt: bytes.NewReader(preload), Size: int64(len(preload))},
+		{ReaderAt: bytes.NewReader(firmware), Size: int64(len(firmware))},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := inspectWithRegistry(set, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pkg.Family != FamilySamsungMonolithicFlash ||
+		pkg.Pieces[RoleFirmware].Index != 1 || pkg.Pieces[RolePreload].Index != 0 {
+		t.Fatalf("exact flat package = %+v", pkg)
+	}
+	matched, err := registry.Match(pkg)
+	if err != nil || matched.ID != profile.ID {
+		t.Fatalf("flat profile match = %q error %v", matched.ID, err)
+	}
+	reset, err := ReconstructBootImage(set, pkg, profile.BootImages[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reset.LoadAddress != 0xffff0000 || reset.EntryAddress != 0xffff0000 ||
+		reset.UsedSize != 0x100 || !bytes.Equal(reset.Bytes, firmware[:0x200]) {
+		t.Fatalf("flat reset image = %+v", reset)
+	}
+	image, err := AssembleFlashForProfileWithOptions(set, pkg, profile, FlashAssemblyOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFlashBytes(t, image, 0, firmware[:16])
+	assertFlashBytes(t, image, 0x800, preload[:16])
+	assertFlashBytes(t, image, 0x600, bytes.Repeat([]byte{0xff}, 16))
+}
+
 func TestRegistryRestrictsOpaqueWBINToRawDownloads(t *testing.T) {
 	sources := syntheticDownloadSources(t)
 	_, pkg := inspectSyntheticSet(t, sources)
@@ -63,8 +130,8 @@ func TestRegistryRestrictsOpaqueWBINToRawDownloads(t *testing.T) {
 
 func TestBuiltinRegistrySeparatesSCHW830BuildsAndAdjacentBoards(t *testing.T) {
 	registry := BuiltinRegistry()
-	if len(registry.profiles) != 18 {
-		t.Fatalf("built-in Samsung profiles = %d, want 18", len(registry.profiles))
+	if len(registry.profiles) != 21 {
+		t.Fatalf("built-in Samsung profiles = %d, want 21", len(registry.profiles))
 	}
 	profiles := make(map[string]BuildProfile, len(registry.profiles))
 	for _, profile := range registry.profiles {
@@ -74,7 +141,10 @@ func TestBuiltinRegistrySeparatesSCHW830BuildsAndAdjacentBoards(t *testing.T) {
 	da18, da18OK := profiles[SCHW830DA18ProfileID]
 	w770, w770OK := profiles[SCHW770DA05ProfileID]
 	w860, w860OK := profiles[SCHW860DA06ProfileID]
-	if !dl21OK || !da18OK || !w770OK || !w860OK {
+	w4200, w4200OK := profiles[SPHW4200DC17ProfileID]
+	w450, w450OK := profiles[SCHW450CK10ProfileID]
+	w599, w599OK := profiles[SCHW599BE30ProfileID]
+	if !dl21OK || !da18OK || !w770OK || !w860OK || !w4200OK || !w450OK || !w599OK {
 		t.Fatalf("built-in Samsung profile IDs = %#v", profiles)
 	}
 	if dl21.Build != "DL21" || da18.Build != "DA18" ||
@@ -89,6 +159,28 @@ func TestBuiltinRegistrySeparatesSCHW830BuildsAndAdjacentBoards(t *testing.T) {
 	if w770.Model != "SCH-W770" || w770.Build != "DA05" ||
 		w770.PieceHashes[RoleWBT] == dl21.PieceHashes[RoleWBT] {
 		t.Fatalf("SCH-W770 profile is not a distinct exact board build: %+v", w770)
+	}
+	if w4200.Model != "SPH-W4200" || w4200.Build != "DC17" ||
+		w4200.Family != FamilySCHRawDownload {
+		t.Fatalf("SPH-W4200 profile = %+v", w4200)
+	}
+	w450Reset, w450ResetOK := w450.BootImage("reset")
+	if w450.Model != "SCH-W450" || w450.Build != "CK10" ||
+		w450.Family != FamilySamsungLegacyFlatDownload ||
+		w450.DirectResetImage != "reset" || !w450ResetOK ||
+		w450Reset.LoadAddress != 0xffff0000 || w450Reset.ContiguousSize != 0xf000 ||
+		!reflect.DeepEqual(w450Reset.MirrorAddresses, []uint32{0}) ||
+		w450.FlatFlash == nil || w450.FlatFlash.Size != 0x04c50000 {
+		t.Fatalf("SCH-W450 profile = %+v", w450)
+	}
+	w599Reset, w599ResetOK := w599.BootImage("reset")
+	if w599.Model != "SCH-W599" || w599.Build != "BE30" ||
+		w599.Family != FamilySamsungMonolithicFlash ||
+		w599.DirectResetImage != "reset" || !w599ResetOK ||
+		w599Reset.LoadAddress != 0xffff0000 || w599Reset.ContiguousSize != 0xf000 ||
+		len(w599Reset.MirrorAddresses) != 0 ||
+		w599.FlatFlash == nil || w599.FlatFlash.Size != 0x05d70000 {
+		t.Fatalf("SCH-W599 profile = %+v", w599)
 	}
 	qcsbl, ok := w770.BootImage("qcsbl")
 	if !ok || len(qcsbl.BlockOffsets) != 1 || qcsbl.BlockOffsets[0] != 0x0c0000 ||

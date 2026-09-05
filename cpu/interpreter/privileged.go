@@ -174,9 +174,15 @@ func (b *Backend) readProgramStatus(saved bool) (uint32, error) {
 		b.resolveFlags()
 		return b.regs[cpu.RegisterCPSR], nil
 	}
-	status := b.savedStatus(b.currentProcessorMode())
+	mode := b.currentProcessorMode()
+	status := b.savedStatus(mode)
 	if status == nil {
-		return 0, fmt.Errorf("SPSR is unavailable in processor mode 0x%02x", b.currentProcessorMode())
+		if b.systemBus != nil && b.userSystemSPSRReadAsCPSR &&
+			(mode == processorModeUser || mode == processorModeSystem) {
+			b.resolveFlags()
+			return b.regs[cpu.RegisterCPSR], nil
+		}
+		return 0, fmt.Errorf("SPSR is unavailable in processor mode 0x%02x", mode)
 	}
 	return *status, nil
 }

@@ -169,7 +169,7 @@ func New(set firmwareset.Set, options Options) (*Machine, error) {
 		return nil, fmt.Errorf("select Samsung firmware build: %w", err)
 	}
 	switch firmwareProfile.Model {
-	case "SCH-W210", "SCH-W240", "SCH-W270", "SCH-W290", "SCH-W300", "SCH-W320", "SCH-W330", "SCH-W340", "SCH-W350", "SCH-W390", "SCH-W410", "SCH-W420", "SCH-W460", "SCH-W850":
+	case "SCH-W210", "SCH-W240", "SCH-W270", "SCH-W290", "SCH-W300", "SCH-W320", "SCH-W330", "SCH-W340", "SCH-W350", "SCH-W390", "SCH-W410", "SCH-W420", "SCH-W450", "SCH-W460", "SCH-W599", "SCH-W850", "SPH-W4200":
 		return newSamsungRawDownloadMachine(set, pkg, firmwareProfile, options)
 	case "SCH-W770":
 		return newSCHW770(set, pkg, firmwareProfile, options)
@@ -216,6 +216,12 @@ func newSamsungRawDownloadMachine(
 		board = system.SCHW420CD16BoardProfile()
 	case samsung.SCHW460CC26ProfileID:
 		board = system.SCHW460CC26BoardProfile()
+	case samsung.SPHW4200DC17ProfileID:
+		board = system.SPHW4200DC17BoardProfile()
+	case samsung.SCHW450CK10ProfileID:
+		board = system.SCHW450CK10BoardProfile()
+	case samsung.SCHW599BE30ProfileID:
+		board = system.SCHW599BE30BoardProfile()
 	case samsung.SCHW850CF11ProfileID:
 		board = system.SCHW850CF11BoardProfile()
 	default:
@@ -331,13 +337,17 @@ func newSamsungQualcommMachine(
 	boundary bootBoundary,
 	options Options,
 ) (*Machine, error) {
-	qcsblSpec, ok := firmwareProfile.BootImage("qcsbl")
+	bootImageID := "qcsbl"
+	if firmwareProfile.DirectResetImage != "" {
+		bootImageID = firmwareProfile.DirectResetImage
+	}
+	qcsblSpec, ok := firmwareProfile.BootImage(bootImageID)
 	if !ok {
-		return nil, fmt.Errorf("firmware build %q has no QCSBL image", firmwareProfile.ID)
+		return nil, fmt.Errorf("firmware build %q has no initial boot image %q", firmwareProfile.ID, bootImageID)
 	}
 	qcsbl, err := samsung.ReconstructBootImage(set, pkg, qcsblSpec)
 	if err != nil {
-		return nil, fmt.Errorf("reconstruct QCSBL: %w", err)
+		return nil, fmt.Errorf("reconstruct initial boot image: %w", err)
 	}
 	var pblPreloadedBootImages []samsung.BootImage
 	for _, spec := range firmwareProfile.BootImages {
@@ -361,7 +371,7 @@ func newSamsungQualcommMachine(
 	if err := board.Validate(); err != nil {
 		return nil, fmt.Errorf("validate %s board: %w", firmwareProfile.Model, err)
 	}
-	flashImage, err := samsung.AssembleFlashWithOptions(set, pkg, samsung.FlashAssemblyOptions{
+	flashImage, err := samsung.AssembleFlashForProfileWithOptions(set, pkg, firmwareProfile, samsung.FlashAssemblyOptions{
 		FactoryBadBlocks: board.NANDFactoryBadBlocks,
 	})
 	if err != nil {
@@ -402,7 +412,9 @@ func newSamsungQualcommMachine(
 	ownedBackend := false
 	if backend == nil {
 		var backendErr error
-		backend, backendErr = newInterpreterBackend(options.BackendMode)
+		backend, backendErr = newInterpreterBackend(options.BackendMode, interpreter.CompatibilityOptions{
+			UserSystemSPSRReadAsCPSR: board.CPUCompatibility.UserSystemSPSRReadAsCPSR,
+		})
 		if backendErr != nil {
 			return nil, backendErr
 		}
@@ -425,7 +437,10 @@ func newSamsungQualcommMachine(
 	}
 
 	legacyInterrupts, err := system.NewQualcommInterruptControllerWithConfig(
-		system.QualcommInterruptControllerConfig{GPIOInputs: board.BootControlGPIOInputs},
+		system.QualcommInterruptControllerConfig{
+			GPIOInputs:    board.BootControlGPIOInputs,
+			StatusAliases: board.BootControlInterruptStatusAliases,
+		},
 		nil,
 	)
 	if err != nil {
@@ -542,6 +557,7 @@ func newSamsungQualcommMachine(
 		InterruptWindowWritableOffsets: board.BootControlInterruptWindowWritableOffsets,
 		HalfwordOffsets:                board.BootControlHalfwordOffsets,
 		MixedWidthOffsets:              board.BootControlMixedWidthOffsets,
+		ByteWritableOffsets:            board.BootControlByteWritableOffsets,
 		ReadOnlyRegisters:              board.BootControlReadOnlyRegisters,
 		RegisterResets:                 board.BootControlRegisterResets,
 		CompletionEvents:               board.BootControlCompletionEvents,
@@ -621,30 +637,44 @@ func newSamsungQualcommMachine(
 	if pblServiceTableAddress == 0 {
 		pblServiceTableAddress = 0x78001000
 	}
-	handoff, err := system.NewQualcommNANDPBLHandoff(system.QualcommNANDPBLConfig{
-		Entry:                    qcsbl.EntryAddress,
-		StackPointer:             board.PBLStackPointer,
-		TableAddress:             pblServiceTableAddress,
-		ServiceTableHeaderSize:   board.PBLServiceTableHeaderSize,
-		HeaderFeatureDataAddress: board.PBLHeaderFeatureDataAddress,
-		HeaderFeatures:           append([]system.QualcommPBLHeaderFeature(nil), board.PBLHeaderFeatures...),
-		FixedFeatureDataAddress:  board.PBLFixedFeatureDataAddress,
-		FixedFeatureFirst:        board.PBLFixedFeatureFirst,
-		FixedFeatureSlotCount:    board.PBLFixedFeatureSlotCount,
-		FixedFeatures:            append([]system.QualcommPBLFixedFeature(nil), board.PBLFixedFeatures...),
-		LegacyFeatureDataAddress: board.PBLLegacyFeatureDataAddress,
-		SharedDataAddress:        board.PBLSharedDataAddress,
-		SharedDataSize:           board.PBLSharedDataSize,
-		PageSize:                 board.NANDPageSize, EraseBlockSize: board.NANDEraseBlockSize,
-		FlashSize: uint64(flash.Size()), BadBlockLimit: 0x14,
-	})
-	if err != nil {
-		return fail(fmt.Errorf("create %s PBL handoff: %w", firmwareProfile.Model, err))
+	var handoff system.BootHandoff
+	if firmwareProfile.DirectResetImage != "" {
+		handoff = system.BootHandoff{
+			ID: "original-firmware-reset", Entry: qcsbl.EntryAddress, Mode: cpu.ModeARM,
+			Registers: []system.RegisterSeed{{Register: cpu.RegisterCPSR, Value: 0x000000d3}},
+		}
+	} else {
+		handoff, err = system.NewQualcommNANDPBLHandoff(system.QualcommNANDPBLConfig{
+			Entry:                    qcsbl.EntryAddress,
+			StackPointer:             board.PBLStackPointer,
+			TableAddress:             pblServiceTableAddress,
+			ServiceTableHeaderSize:   board.PBLServiceTableHeaderSize,
+			HeaderFeatureDataAddress: board.PBLHeaderFeatureDataAddress,
+			HeaderFeatures:           append([]system.QualcommPBLHeaderFeature(nil), board.PBLHeaderFeatures...),
+			FixedFeatureDataAddress:  board.PBLFixedFeatureDataAddress,
+			FixedFeatureFirst:        board.PBLFixedFeatureFirst,
+			FixedFeatureSlotCount:    board.PBLFixedFeatureSlotCount,
+			FixedFeatures:            append([]system.QualcommPBLFixedFeature(nil), board.PBLFixedFeatures...),
+			LegacyFeatureDataAddress: board.PBLLegacyFeatureDataAddress,
+			SharedDataAddress:        board.PBLSharedDataAddress,
+			SharedDataSize:           board.PBLSharedDataSize,
+			PageSize:                 board.NANDPageSize, EraseBlockSize: board.NANDEraseBlockSize,
+			FlashSize: uint64(flash.Size()), BadBlockLimit: 0x14,
+		})
+		if err != nil {
+			return fail(fmt.Errorf("create %s PBL handoff: %w", firmwareProfile.Model, err))
+		}
 	}
 	handoff.Memory = append(handoff.Memory, system.MemorySeed{
 		Address: qcsbl.LoadAddress,
 		Bytes:   append([]byte(nil), qcsbl.Bytes...),
 	})
+	for _, address := range qcsblSpec.MirrorAddresses {
+		handoff.Memory = append(handoff.Memory, system.MemorySeed{
+			Address: address,
+			Bytes:   append([]byte(nil), qcsbl.Bytes...),
+		})
+	}
 	if qcsblSpec.PBLRelocationAddress != 0 {
 		handoff.Memory = append(handoff.Memory, system.MemorySeed{
 			Address: qcsblSpec.PBLRelocationAddress,
@@ -670,6 +700,9 @@ func newSamsungQualcommMachine(
 	}
 
 	bus := system.NewBus()
+	if err := board.ApplyAddressedStorageWindows(bus, flash); err != nil {
+		return fail(fmt.Errorf("map %s addressed storage windows: %w", firmwareProfile.Model, err))
+	}
 	var audio *schw830Audio
 	if firmwareProfile.ID == samsung.SCHW830DL21ProfileID {
 		instructionsPerSecond := schw830AudioInstructionsPerSecond
@@ -955,14 +988,20 @@ func samsungW320VerifiedPBLRecord(qcsbl []byte) ([]byte, error) {
 	return record, nil
 }
 
-func newInterpreterBackend(mode CPUBackendMode) (cpu.Backend, error) {
+func newInterpreterBackend(
+	mode CPUBackendMode,
+	compatibility interpreter.CompatibilityOptions,
+) (cpu.Backend, error) {
 	switch mode {
 	case "", CPUBackendPrecise:
-		return interpreter.New(), nil
+		return interpreter.NewWithCompatibility(compatibility), nil
 	case CPUBackendJIT:
-		return interpreter.NewJIT(), nil
+		return interpreter.NewJITWithOptions(interpreter.JITOptions{Compatibility: compatibility}), nil
 	case CPUBackendJITLoops:
-		return interpreter.NewJITWithOptions(interpreter.JITOptions{LoopAcceleration: true}), nil
+		return interpreter.NewJITWithOptions(interpreter.JITOptions{
+			LoopAcceleration: true,
+			Compatibility:    compatibility,
+		}), nil
 	default:
 		return nil, fmt.Errorf("%w: CPU backend mode %q", ErrUnsupportedBackend, mode)
 	}

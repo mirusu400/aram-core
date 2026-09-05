@@ -192,6 +192,69 @@ func TestQualcommInterruptControllerProfilesLegacyGPIOInputAlias(t *testing.T) {
 	}
 }
 
+func TestQualcommInterruptControllerProfilesStatusAliasResetAndClear(t *testing.T) {
+	config := QualcommInterruptControllerConfig{StatusAliases: []QualcommInterruptStatusAlias{{
+		Offset: 0x50, Bank: 1, ResetValue: 0x00006000,
+	}}}
+	device, err := NewQualcommInterruptControllerWithConfig(config, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, offset := range []uint32{0x50, qualcommInterruptStatus1Offset} {
+		value, readErr := device.Read(offset, Width32)
+		if readErr != nil || value != 0x00006000 {
+			t.Fatalf("reset status at 0x%x = %#x error %v", offset, value, readErr)
+		}
+	}
+	if err := device.Write(0x50, Width32, 0); !errors.Is(err, ErrQualcommInterruptControllerMMIO) {
+		t.Fatalf("status alias write error = %v", err)
+	}
+	if err := device.Write(qualcommInterruptClear1Offset, Width32, 0x00002000); err != nil {
+		t.Fatal(err)
+	}
+	if value, err := device.Read(0x50, Width32); err != nil || value != 0x00004000 {
+		t.Fatalf("partially cleared status alias = %#x error %v", value, err)
+	}
+	state, err := device.SaveState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version := binary.LittleEndian.Uint32(state[4:8]); version != 3 {
+		t.Fatalf("status-alias state version = %d, want 3", version)
+	}
+	restored, _ := NewQualcommInterruptControllerWithConfig(config, nil)
+	if err := restored.LoadState(state); err != nil {
+		t.Fatal(err)
+	}
+	if value, err := restored.Read(0x50, Width32); err != nil || value != 0x00004000 {
+		t.Fatalf("restored status alias = %#x error %v", value, err)
+	}
+	if err := restored.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	if value, err := restored.Read(0x50, Width32); err != nil || value != 0x00006000 {
+		t.Fatalf("re-reset status alias = %#x error %v", value, err)
+	}
+	mismatch, _ := NewQualcommInterruptControllerWithConfig(QualcommInterruptControllerConfig{
+		StatusAliases: []QualcommInterruptStatusAlias{{Offset: 0x50, Bank: 1, ResetValue: 0}},
+	}, nil)
+	if err := mismatch.LoadState(state); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("mismatched status-alias state error = %v", err)
+	}
+	for _, invalid := range []QualcommInterruptControllerConfig{
+		{StatusAliases: []QualcommInterruptStatusAlias{{Offset: 2, Bank: 1}}},
+		{StatusAliases: []QualcommInterruptStatusAlias{{Offset: 0x50, Bank: 2}}},
+		{StatusAliases: []QualcommInterruptStatusAlias{{Offset: qualcommInterruptStatus1Offset, Bank: 1}}},
+		{StatusAliases: []QualcommInterruptStatusAlias{{Offset: 0x50}, {Offset: 0x50, Bank: 1}}},
+		{GPIOInputs: []QualcommGPIOInputRegister{{Offset: 0x40}}, StatusAliases: []QualcommInterruptStatusAlias{{Offset: 0x40}}},
+		{StatusAliases: []QualcommInterruptStatusAlias{{Offset: 0x50, Bank: 1, ResetValue: 1}, {Offset: 0x4c, Bank: 1, ResetValue: 2}}},
+	} {
+		if _, err := NewQualcommInterruptControllerWithConfig(invalid, nil); err == nil {
+			t.Fatalf("accepted invalid status alias config %#v", invalid)
+		}
+	}
+}
+
 func TestQualcommBootControlRoutesInterruptWindowToARMCore(t *testing.T) {
 	backend := interpreter.New()
 	controller := NewQualcommInterruptController(nil)

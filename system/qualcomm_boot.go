@@ -79,6 +79,7 @@ type QualcommBootControlConfig struct {
 	InterruptWindowWritableOffsets []uint32
 	HalfwordOffsets                []uint32
 	MixedWidthOffsets              []uint32
+	ByteWritableOffsets            []uint32
 	ReadOnlyRegisters              []QualcommBootReadOnlyRegister
 	RegisterResets                 []QualcommBootRegisterReset
 	CompletionEvents               []QualcommCompletionEventConfig
@@ -422,6 +423,7 @@ func validateQualcommBootControlConfigurationOffsets(
 	interruptWindowWritableOffsets []uint32,
 	halfwordOffsets []uint32,
 	mixedWidthOffsets []uint32,
+	byteWritableOffsets []uint32,
 	readOnlyRegisters []QualcommBootReadOnlyRegister,
 	registerResets []QualcommBootRegisterReset,
 	completionEvents []QualcommCompletionEventConfig,
@@ -468,6 +470,20 @@ func validateQualcommBootControlConfigurationOffsets(
 			return fmt.Errorf("duplicate mixed-width offset 0x%x: %w", offset, ErrInvalidRegion)
 		}
 		mixed[offset] = struct{}{}
+	}
+	byteWritable := make(map[uint32]struct{}, len(byteWritableOffsets))
+	for _, offset := range byteWritableOffsets {
+		if offset%4 != 0 || isQualcommBootControlInterruptWindowOffset(offset) ||
+			isQualcommBootControlSpecialOffset(offset) {
+			return fmt.Errorf("byte-writable offset 0x%x: %w", offset, ErrInvalidRegion)
+		}
+		if _, writable := wordWritable[offset]; !writable {
+			return fmt.Errorf("byte-writable offset 0x%x is not word-writable: %w", offset, ErrInvalidRegion)
+		}
+		if _, duplicate := byteWritable[offset]; duplicate {
+			return fmt.Errorf("duplicate byte-writable offset 0x%x: %w", offset, ErrInvalidRegion)
+		}
+		byteWritable[offset] = struct{}{}
 	}
 	for _, register := range readOnlyRegisters {
 		offset := register.Offset
@@ -823,6 +839,7 @@ type QualcommBootControl struct {
 	interruptWindowWritableOffsets map[uint32]struct{}
 	halfwordOffsets                map[uint32]struct{}
 	mixedWidthOffsets              map[uint32]struct{}
+	byteWritableOffsets            map[uint32]struct{}
 	readOnlyRegisters              map[uint32]uint32
 	registerResets                 []QualcommBootRegisterReset
 	completionEvents               []QualcommCompletionEventConfig
@@ -866,6 +883,7 @@ func NewQualcommBootControl(config QualcommBootControlConfig) (*QualcommBootCont
 		config.InterruptWindowWritableOffsets,
 		config.HalfwordOffsets,
 		config.MixedWidthOffsets,
+		config.ByteWritableOffsets,
 		config.ReadOnlyRegisters,
 		config.RegisterResets,
 		config.CompletionEvents,
@@ -941,6 +959,7 @@ func NewQualcommBootControl(config QualcommBootControlConfig) (*QualcommBootCont
 		),
 		halfwordOffsets:         make(map[uint32]struct{}, len(config.HalfwordOffsets)),
 		mixedWidthOffsets:       make(map[uint32]struct{}, len(config.MixedWidthOffsets)),
+		byteWritableOffsets:     make(map[uint32]struct{}, len(config.ByteWritableOffsets)),
 		readOnlyRegisters:       make(map[uint32]uint32, len(config.ReadOnlyRegisters)),
 		registerResets:          registerResets,
 		completionEvents:        completionEvents,
@@ -960,6 +979,9 @@ func NewQualcommBootControl(config QualcommBootControlConfig) (*QualcommBootCont
 	}
 	for _, offset := range config.MixedWidthOffsets {
 		device.mixedWidthOffsets[offset] = struct{}{}
+	}
+	for _, offset := range config.ByteWritableOffsets {
+		device.byteWritableOffsets[offset] = struct{}{}
 	}
 	for _, base := range config.LegacyUARTControllers {
 		device.legacyUARTControllers[base] = struct{}{}
@@ -1092,6 +1114,9 @@ func (d *QualcommBootControl) Read(offset uint32, width Width) (uint32, error) {
 	if _, ok := d.mixedWidthOffsets[offset]; ok && width == Width16 {
 		return d.registers[offset] & 0xffff, nil
 	}
+	if _, ok := d.byteWritableOffsets[offset]; ok && width == Width8 {
+		return d.registers[offset] & 0xff, nil
+	}
 	if width != Width32 {
 		return 0, fmt.Errorf("%w: read%d at 0x%x", ErrQualcommBootControlMMIO, width*8, offset)
 	}
@@ -1218,6 +1243,19 @@ func (d *QualcommBootControl) Write(offset uint32, width Width, value uint32) er
 			)
 		}
 		d.registers[offset] = d.registers[offset]&0xffff0000 | value
+		return nil
+	}
+	if _, ok := d.byteWritableOffsets[offset]; ok && width == Width8 {
+		if value > 0xff {
+			return fmt.Errorf(
+				"%w: write%d value 0x%x at 0x%x",
+				ErrQualcommBootControlMMIO,
+				width*8,
+				value,
+				offset,
+			)
+		}
+		d.registers[offset] = d.registers[offset]&0xffffff00 | value
 		return nil
 	}
 	if offset == 0x540c {
@@ -1351,13 +1389,17 @@ func (d *QualcommBootControl) WatchdogServices() uint64 {
 }
 
 func (d *QualcommBootControl) registerAccessWidths(offset uint32) uint8 {
+	widths := uint8(0)
 	if _, ok := d.halfwordOffsets[offset]; ok {
 		return uint8(Width16)
 	}
 	if _, ok := d.mixedWidthOffsets[offset]; ok {
-		return uint8(Width16 | Width32)
+		widths |= uint8(Width16)
 	}
-	return uint8(Width32)
+	if _, ok := d.byteWritableOffsets[offset]; ok {
+		widths |= uint8(Width8)
+	}
+	return widths | uint8(Width32)
 }
 
 func (d *QualcommBootControl) SaveState() ([]byte, error) {
