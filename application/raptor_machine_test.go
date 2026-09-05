@@ -484,3 +484,105 @@ func newPublicRuntime(t *testing.T) *wipirt.Runtime {
 	}
 	return runtime
 }
+
+// A handset runs a queued callback to completion and then takes the next one.
+// Retiring exactly one per frame instead starved 화이트데이: its splash timers
+// queue callbacks faster than a frame retires them, so a queue that only ever
+// grew kept the Clet's paint - which is queued only when the queue is empty -
+// from ever running again, and the title froze on its rating screen
+// (issue #150).
+func TestRaptorFrameDrainsTheCallbacksItCanAfford(t *testing.T) {
+	machine := newSyntheticMachine(t)
+	const callback = uint32(0x04000000)
+	if err := machine.cpu.Map(
+		callback,
+		0x1000,
+		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.cpu.WriteMemory(callback, []byte{
+		0x00, 0x20, // movs r0, #0
+		0x70, 0x47, // bx lr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	machine.frameRunBudget = 1024
+	machine.raptor = &raptorrt.Runtime{
+		CPU:     machine.cpu,
+		Public:  machine.wipi,
+		Started: true,
+	}
+	const queued = 8
+	for range queued {
+		machine.raptor.CallbackTasks = append(
+			machine.raptor.CallbackTasks,
+			&raptorrt.CallbackTask{
+				Callback: wipirt.GuestCallback{Procedure: callback | 1},
+			},
+		)
+	}
+
+	if err := machine.StepFrame(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if machine.State() == machinecore.StateFaulted {
+		t.Fatalf("draining %d callbacks faulted: %+v", queued, machine.LastResult())
+	}
+	if left := len(machine.raptor.CallbackTasks); left != 0 {
+		t.Fatalf("%d of %d trivial callbacks were left queued after one frame",
+			left, queued)
+	}
+}
+
+// The drain stops where the frame does. A callback that spends the frame's
+// whole budget still yields with its context preserved, and the callbacks
+// behind it wait for the next frame rather than running past the budget.
+func TestRaptorFrameDrainStopsAtTheFrameBudget(t *testing.T) {
+	machine := newSyntheticMachine(t)
+	const callback = uint32(0x04000000)
+	if err := machine.cpu.Map(
+		callback,
+		0x1000,
+		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.cpu.WriteMemory(callback, []byte{
+		0x00, 0x20, // movs r0, #0
+		0x01, 0x30, // loop: adds r0, #1
+		0x0a, 0x28, // cmp r0, #10
+		0xfc, 0xd1, // bne loop
+		0x70, 0x47, // bx lr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	machine.frameRunBudget = 3
+	machine.raptor = &raptorrt.Runtime{
+		CPU:     machine.cpu,
+		Public:  machine.wipi,
+		Started: true,
+	}
+	for range 4 {
+		machine.raptor.CallbackTasks = append(
+			machine.raptor.CallbackTasks,
+			&raptorrt.CallbackTask{
+				Callback: wipirt.GuestCallback{Procedure: callback | 1},
+			},
+		)
+	}
+
+	if err := machine.StepFrame(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if left := len(machine.raptor.CallbackTasks); left != 4 {
+		t.Fatalf("callbacks after a budget-length first callback = %d, want 4", left)
+	}
+	if result := machine.LastResult(); result.Reason != cpu.StopBudget ||
+		result.Instructions != machine.frameRunBudget {
+		t.Fatalf("first callback slice = %+v", result)
+	}
+	if len(machine.raptor.CallbackTasks[0].Context) == 0 {
+		t.Fatal("the yielded callback kept no context to resume from")
+	}
+}

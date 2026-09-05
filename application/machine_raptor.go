@@ -217,10 +217,26 @@ func (m *Machine) stepRaptorFrame(ctx context.Context) error {
 	return m.stepRaptorCallbackTask(ctx, callbackResult.Instructions)
 }
 
-// Raptor Clets can legitimately spend more than one handset video quantum in
-// a paint or event callback while loading and decoding resources. Preserve the
-// guest CPU context at a budget or presentation yield so the callback resumes
-// on the next frame instead of being faulted at an arbitrary instruction cap.
+// maxRaptorCallbacksPerFrame bounds how many queued callbacks one frame runs,
+// so a title whose callbacks queue each other cannot hold the frame open even
+// while each one costs almost nothing.
+const maxRaptorCallbacksPerFrame = 64
+
+// stepRaptorCallbackTask runs the queued callbacks a frame can afford.
+//
+// A handset runs a callback to completion and takes the next one; only work
+// that actually takes time is spread over frames. Running exactly one callback
+// per frame instead starved a title whose timer callbacks arrive faster than a
+// frame: 화이트데이 arms its splash timers in a loop, and each frame retired
+// one 25-instruction callback out of a queue that grew all the while, so the
+// Clet's paint - which is only queued when the queue is empty - never ran
+// again and the title froze on the rating screen (issue #150).
+//
+// A callback that spends the frame's whole budget, or presents, still ends the
+// frame: Raptor Clets legitimately spend more than one handset video quantum
+// in a paint or event callback while loading and decoding resources, and the
+// guest CPU context is preserved at that yield so the callback resumes on the
+// next frame rather than being faulted at an arbitrary instruction cap.
 func (m *Machine) stepRaptorCallbackTask(
 	ctx context.Context,
 	precedingInstructions uint64,
@@ -239,8 +255,8 @@ func (m *Machine) stepRaptorCallbackTask(
 		m.mu.Unlock()
 		return fmt.Errorf("resume Raptor callback from %s: %w", state, ErrInvalidState)
 	}
-	task := m.raptor.CallbackTasks[0]
 	budget := max(m.frameRunBudget, uint64(1))
+	presentations := m.wipi.Stats.PresentCount
 	m.state = machinecore.StateRunning
 	if err := m.wipi.BeginServiceExecution(); err != nil {
 		m.state = machinecore.StateFaulted
@@ -249,19 +265,53 @@ func (m *Machine) stepRaptorCallbackTask(
 	}
 	m.mu.Unlock()
 
-	result, completed, callErr := m.runRaptorCallbackTask(ctx, task, budget)
-	serviceInstructions := result.Instructions
-	if completed {
+	var (
+		result  cpu.Result
+		callErr error
+		spent   uint64
+	)
+	for range maxRaptorCallbacksPerFrame {
 		m.mu.Lock()
-		if len(m.raptor.CallbackTasks) != 0 && m.raptor.CallbackTasks[0] == task {
-			m.raptor.CallbackTasks = m.raptor.CallbackTasks[1:]
-			if len(m.raptor.CallbackTasks) == 0 {
-				m.raptor.CallbackTasks = nil
-			}
+		if m.raptor == nil || len(m.raptor.CallbackTasks) == 0 {
+			m.mu.Unlock()
+			break
 		}
+		task := m.raptor.CallbackTasks[0]
 		m.mu.Unlock()
+
+		slice := budget - spent
+		if spent >= budget {
+			slice = 1
+		}
+		var completed bool
+		result, completed, callErr = m.runRaptorCallbackTask(ctx, task, slice)
+		spent += result.Instructions
+		if completed {
+			m.mu.Lock()
+			if len(m.raptor.CallbackTasks) != 0 &&
+				m.raptor.CallbackTasks[0] == task {
+				m.raptor.CallbackTasks = m.raptor.CallbackTasks[1:]
+				if len(m.raptor.CallbackTasks) == 0 {
+					m.raptor.CallbackTasks = nil
+				}
+			}
+			m.mu.Unlock()
+		}
+		if callErr != nil || !completed || result.Reason == cpu.StopExited {
+			break
+		}
+		if spent >= budget {
+			break
+		}
+		m.mu.Lock()
+		presented := m.wipi.Stats.PresentCount != presentations
+		m.mu.Unlock()
+		if presented {
+			break
+		}
 	}
-	result.Instructions += precedingInstructions
+	serviceInstructions := spent
+	result.Instructions = spent + precedingInstructions
 	return m.finishRaptorCall(result, callErr, serviceInstructions)
 }
 
