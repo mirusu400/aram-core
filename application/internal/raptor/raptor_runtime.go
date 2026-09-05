@@ -523,26 +523,43 @@ func (r *Runtime) dispatchImport(
 	}
 	// EXPERIMENTAL, NOT A FIX (branch experiment/raptor-module100-84): tried
 	// answering every module100#84 call with -1 instead of the generic 0.
-	// Disassembly (golf_binary.mod .text, capstone, skipdata) of the dominant
-	// call site (~93k of ~250k calls in a 20s run, all from one function at
-	// 0x125b4) shows #84(r0=13) is the FIRST of several calls in a
-	// lookup-or-create sequence: #84(13) -> a second import at 0x14047b8(0) ->
-	// a local call whose result gates two branches (object found: dereference
-	// it and call an import at 0x1404748, then maybe 0x14047d8; not found:
-	// call two more functions resolved through a table at 0x150028c+{0x104,
-	// 0x114} with the original argument sign-extended to 64 bits). Returning
-	// -1 for #84 alone changes which import dominates the loop (#32 instead
-	// of #84 in a resweep) but does not stop it - the loop bound is not #84's
-	// return value in isolation, it depends on this whole chain, and the
-	// "local call" step did not disassemble cleanly enough past this point to
-	// be confident which literal pool table entries it is (misaligned
-	// something in the 0x78000-0x79000 range: chained short branches with a
-	// suspiciously regular but not obviously correct 16-byte stride).
 	// Verified NOT sufficient: 8 minutes / 1.1B instructions, present_count
-	// still 0, growing without bound either way. Needs a real IDA function
-	// pass (segments never came up for the raw ELF this session - only a
-	// flat .text-only load worked, and only for linear capstone disasm) to
-	// resolve the branch table before guessing further is worth the risk.
+	// still 0 either way (unimplemented_apis just shifts which ordinal
+	// dominates - #32 instead of #84 in a resweep).
+	//
+	// Real IDA analysis (manually built segments over golf_binary.mod's
+	// .text/.data/.bss - the ELF loader creates none on its own for this
+	// custom relocatable format; a flat .text-only load also works for quick
+	// linear disasm but gets the true call target here wrong) resolved what
+	// the first capstone-only pass could not: 0x1404848 (r3 in the dominant
+	// call site, function at 0x125b4) is not a per-call resolved import - it
+	// has *thousands* of xrefs across the whole binary, all "ldr r3,
+	// =unk_1404848; bl sub_79980" with a different r0 each time. It is one
+	// shared "module 100 dispatch handle" the whole title calls through with
+	// r0 selecting the operation, confirming the original register-trace
+	// model (r0 selects; 13/15/20 fire 6x/3x/4x per item, 17/21/34 once
+	// each) rather than refuting it. 0x14047b8/0x1404748/0x14047d8/0x14047c8
+	// are the same pattern for three or four *other* shared modules.
+	//
+	// The third call in that function (`ldr r3, =sub_791C4; bl sub_79980`)
+	// is a real, IDA-confirmed function: sub_791C4 is one 12-byte entry of a
+	// linker-generated import veneer table ("PUSH {LR}; BL sub_7971C; DCD
+	// <module>, <ordinal>" - the common-dispatcher pattern the loader's own
+	// raptorSectionExecutable comment already describes) resolving to
+	// module 1 ordinal 0x32 (50), not module 100 at all - a *different*
+	// native import in the same lookup-or-create sequence. This was wrongly
+	// read as a misaligned/uncertain region in the capstone-only pass; it
+	// resolves cleanly once IDA has real segments to analyze.
+	//
+	// Net: the mechanism is understood (a lookup-or-create chain across at
+	// least two shared dispatch handles - module 100 and module 1 - plus two
+	// virtual-method-table calls resolved at 0x150028c+{0x104,0x114,0x134}
+	// through the same linkRaptorJavaClasses machinery as ordinary Java
+	// method dispatch), but the *semantics* of module100 ordinal
+	// {9,11,13,15,17,20,21,24,27,34} and module1 ordinal 50 are still
+	// undocumented. That is real reverse-engineering work (cross-referencing
+	// other titles' use of the same ordinals, most likely), not something
+	// this experiment should keep guessing at.
 	if key.Module == 100 && key.Ordinal == 84 {
 		return r.Public.ReturnFromTrap(guest.WIPIReturn{Low: ^uint32(0)})
 	}
