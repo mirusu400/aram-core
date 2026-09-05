@@ -16,7 +16,8 @@ const (
 	ktfStateSchemaV3     = uint32(3)
 	ktfStateSchemaV4     = uint32(4)
 	ktfStateSchemaV5     = uint32(5)
-	ktfStateSchema       = uint32(6)
+	ktfStateSchemaV6     = uint32(6)
+	ktfStateSchema       = uint32(7)
 	maxKTFStateMetadata  = uint32(64 << 20)
 	maxKTFStateEntries   = 16_384
 	maxKTFStateHostCalls = int(HostSize / 4)
@@ -43,6 +44,9 @@ type SavedState struct {
 	// before this block has none: every Image it holds had a mirror, so its
 	// pixels come back from the surface store instead.
 	imagePixels map[uint32]*image.RGBA
+	// taskThreads names the java/lang/Thread each task runs, in task order.
+	// An older save has none and its tasks fall back to the Jlet's thread.
+	taskThreads []uint32
 }
 
 type ktfPersistentState struct {
@@ -567,6 +571,12 @@ func WriteState(r *Runtime, backend cpu.Backend, started bool, writer *guest.Sta
 		writer.U32(uint32(len(pixels)))
 		writer.Write(pixels)
 	}
+	// Which java/lang/Thread each task runs. Thread.currentThread() answers
+	// with it, so a restored session has to keep the identity a title checks
+	// its own worker against.
+	for _, task := range r.Tasks {
+		writer.U32(task.javaThread)
+	}
 	return nil
 }
 
@@ -602,7 +612,7 @@ func ParseState(r *Runtime,
 	schema := decoder.U32()
 	if schema != ktfStateSchemaV2 && schema != ktfStateSchemaV3 &&
 		schema != ktfStateSchemaV4 && schema != ktfStateSchemaV5 &&
-		schema != ktfStateSchema {
+		schema != ktfStateSchemaV6 && schema != ktfStateSchema {
 		return nil, decoder.Fail(fmt.Sprintf("unsupported KTF state schema %d", schema))
 	}
 	owner := shared.OwnerID(decoder.U32())
@@ -734,7 +744,7 @@ func ParseState(r *Runtime,
 		}
 	}
 	imagePixels := make(map[uint32]*image.RGBA)
-	if schema >= ktfStateSchema {
+	if schema >= ktfStateSchemaV6 {
 		count := decoder.U32()
 		if count > maxKTFStateEntries {
 			return nil, decoder.Fail("KTF saved image count exceeds limit")
@@ -769,6 +779,15 @@ func ParseState(r *Runtime,
 			)
 			copy(restored.Pix, pixels)
 			imagePixels[object] = restored
+		}
+	}
+	taskThreads := make([]uint32, 0, len(metadata.Tasks))
+	if schema >= ktfStateSchema {
+		for range metadata.Tasks {
+			taskThreads = append(taskThreads, decoder.U32())
+		}
+		if decoder.Err != nil {
+			return nil, decoder.Err
 		}
 	}
 	savedImages := make(map[uint32]bool, len(metadata.Images))
@@ -817,6 +836,7 @@ func ParseState(r *Runtime,
 		WipicScreenPending: wipicScreenPending,
 		resolvedHostCalls:  resolvedCalls,
 		imagePixels:        imagePixels,
+		taskThreads:        taskThreads,
 	}, nil
 }
 

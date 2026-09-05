@@ -329,8 +329,31 @@ func (r *Runtime) ActivatePendingJavaCalls() error {
 		if call.timer != nil {
 			r.applyJavaTimer(queued, call.instance, *call.timer)
 		}
+		if call.timer == nil && call.name == "run" && call.descriptor == "()V" {
+			// A thread that waited for a free slot still has to know its own
+			// java/lang/Thread when it runs. See handleThreadMethod's start.
+			queued.javaThread = r.javaThreadFor(call.instance)
+		}
 	}
 	return nil
+}
+
+// javaThreadFor answers the java/lang/Thread whose run() a task with this
+// receiver is executing: the receiver itself when the title subclassed Thread,
+// or the Thread the receiver was handed to as a Runnable.
+func (r *Runtime) javaThreadFor(instance uint32) uint32 {
+	if instance == 0 {
+		return 0
+	}
+	if _, ok := r.ThreadTargets[instance]; ok {
+		return instance
+	}
+	for _, thread := range guest.SortedUint32Keys(r.ThreadTargets) {
+		if r.ThreadTargets[thread] == instance {
+			return thread
+		}
+	}
+	return instance
 }
 
 func (r *Runtime) queueJavaVirtualTask(

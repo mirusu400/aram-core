@@ -335,6 +335,7 @@ func (r *Runtime) handleThreadMethod(
 			if err != nil {
 				return 0, err
 			}
+			task.javaThread = thread
 			r.deferStartedThread(task)
 			return 0, nil
 		}
@@ -393,6 +394,14 @@ func (r *Runtime) handleThreadMethod(
 	case "isAlive()Z":
 		return 0, nil
 	case "currentThread()Ljava/lang/Thread;":
+		// A started thread has to see its own java/lang/Thread here. A title
+		// that guards its loop with `if (Thread.currentThread() != this.worker)
+		// return;` otherwise leaves run() on its first instruction and every
+		// thread it owns ends: 라피스라줄리 stopped on a black screen that way,
+		// with all three of its tasks finished (issue #147).
+		if r.activeTask != nil && r.activeTask.javaThread != 0 {
+			return r.activeTask.javaThread, nil
+		}
 		if r.currentThread != 0 {
 			return r.currentThread, nil
 		}

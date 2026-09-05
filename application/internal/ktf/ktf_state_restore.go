@@ -623,6 +623,9 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 		if len(saved.taskWakeAtMS) != 0 {
 			r.Tasks[index].WakeAtMS = saved.taskWakeAtMS[index]
 		}
+		if index < len(saved.taskThreads) {
+			r.Tasks[index].javaThread = saved.taskThreads[index]
+		}
 	}
 	for index, task := range meta.Tasks {
 		if task.StartBlocker >= 0 {

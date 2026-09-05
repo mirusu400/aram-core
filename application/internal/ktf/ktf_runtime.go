@@ -746,15 +746,20 @@ type Task struct {
 	timerPeriodMS    uint64
 	timerDeadlineMS  uint64
 	timerFixedRate   bool
-	Done             bool
-	presentOnReturn  bool
-	bestEffortPaint  bool
-	WipicTimer       bool
-	paintCard        uint32
-	KeyCard          uint32
-	layoutOnReturn   uint32
-	startBlocker     *Task
-	childStartGrace  uint64
+	// javaThread is the java/lang/Thread this task runs, which is what
+	// Thread.currentThread() has to answer while the task is on the CPU. A
+	// task that is not a started thread - a paint, a key event, a timer -
+	// leaves it zero and falls back to the Jlet's own thread.
+	javaThread      uint32
+	Done            bool
+	presentOnReturn bool
+	bestEffortPaint bool
+	WipicTimer      bool
+	paintCard       uint32
+	KeyCard         uint32
+	layoutOnReturn  uint32
+	startBlocker    *Task
+	childStartGrace uint64
 }
 
 func (t *Task) Instructions() uint64 {
