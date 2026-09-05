@@ -1520,17 +1520,23 @@ func (r *Runtime) resolveRaptorJavaFieldOffsets(java *JavaRuntime) error {
 	if java.fieldOffsets == 0 || java.fieldCount == 0 {
 		return nil
 	}
-	previousFieldIndex := uint32(0)
-	previousFieldWide := false
+	names := make([]string, java.fieldCount)
+	descriptors := make([]string, java.fieldCount)
 	for index := uint32(0); index < java.fieldCount; index++ {
 		nameAddress, _ := r.Public.ReadU32(java.fieldNames + index*8)
 		typeAddress, _ := r.Public.ReadU32(java.fieldNames + index*8 + 4)
 		name, _ := r.Public.ReadCString(nameAddress)
 		descriptor, _ := r.Public.ReadCString(typeAddress)
+		names[index], descriptors[index] = string(name), string(descriptor)
+	}
+	previousFieldIndex := uint32(0)
+	previousFieldWide := false
+	for index := uint32(0); index < java.fieldCount; index++ {
 		fieldIndex, wide := raptorJavaLinkedFieldIndex(
 			java,
-			string(name),
-			string(descriptor),
+			names,
+			descriptors,
+			index,
 			previousFieldIndex,
 			previousFieldWide,
 		)
@@ -1544,34 +1550,81 @@ func (r *Runtime) resolveRaptorJavaFieldOffsets(java *JavaRuntime) error {
 	return nil
 }
 
+// raptorJavaFieldNeighbourhood is how far either side of an entry the resolver
+// looks for agreement about which class a run of field references belongs to.
+const raptorJavaFieldNeighbourhood = 4
+
+// raptorJavaFieldGroupScore counts how many of the entries around index the
+// class also declares. The table is laid out class by class - 배틀몬스터's
+// entries 146..149 are all fields of its Jlet subclass "a" - so the class its
+// neighbours agree on is the class this entry belongs to.
+func raptorJavaFieldGroupScore(
+	class *raptorJavaClass,
+	names, descriptors []string,
+	index uint32,
+) int {
+	score := 0
+	low := int(index) - raptorJavaFieldNeighbourhood
+	if low < 0 {
+		low = 0
+	}
+	high := int(index) + raptorJavaFieldNeighbourhood
+	if high > len(names)-1 {
+		high = len(names) - 1
+	}
+	for neighbour := low; neighbour <= high; neighbour++ {
+		if uint32(neighbour) == index || names[neighbour] == "" {
+			continue
+		}
+		for _, declared := range class.fields {
+			if declared.Name == names[neighbour] &&
+				declared.descriptor == descriptors[neighbour] {
+				score++
+				break
+			}
+		}
+	}
+	return score
+}
+
 func raptorJavaLinkedFieldIndex(
 	java *JavaRuntime,
-	name, descriptor string,
+	names, descriptors []string,
+	index uint32,
 	previousIndex uint32,
 	previousWide bool,
 ) (uint32, bool) {
+	name, descriptor := names[index], descriptors[index]
 	wide := descriptor == "J" || descriptor == "D"
 	if name == "" && descriptor == "" && previousWide {
 		// The AOT field table emits an unnamed companion entry for the second
 		// word of every long or double instance field.
 		return previousIndex + 1, false
 	}
-	fieldIndex := uint32(0)
 	// Class registration order is stable. Several obfuscated applications use
 	// the same short field name in more than one class, so ranging over the
 	// holder map would otherwise make linking depend on Go's map iteration.
-	// The inner break only left the innermost loop, so a later class sharing
-	// the same short (name, descriptor) pair kept overwriting an earlier,
-	// correct match instead of the first one winning as intended - a field
-	// read on the earlier class's instance would then land on whatever index
-	// the later class happened to declare it at.
-found:
+	//
+	// Taking the first class that declares the pair is not enough on its own:
+	// the reference carries no class, and an obfuscated module reuses one-letter
+	// names freely. 배틀몬스터 declares ("e", "Z") in both its Jlet subclass "a"
+	// (index 1) and in class "j" (index 2), and taking "j" made the Jlet's
+	// "screen" and "waiting" references resolve to the *same* slot: the poster
+	// wrote the screen and then cleared it with the flag in the next store, so
+	// the worker woke to a null screen and threw (issue #151). The table is laid
+	// out class by class, so the class the surrounding entries agree on decides.
+	fieldIndex := uint32(0)
+	bestScore := -1
 	for _, class := range java.classOrder {
 		for _, declared := range class.fields {
-			if declared.Name == name && declared.descriptor == descriptor {
-				fieldIndex = declared.index
-				break found
+			if declared.Name != name || declared.descriptor != descriptor {
+				continue
 			}
+			score := raptorJavaFieldGroupScore(class, names, descriptors, index)
+			if score > bestScore {
+				fieldIndex, bestScore = declared.index, score
+			}
+			break
 		}
 	}
 	return fieldIndex, wide

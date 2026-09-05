@@ -84,15 +84,17 @@ func TestRaptorJavaLinkedFieldIndexHandlesWideCompanion(t *testing.T) {
 		{fields: []raptorJavaDeclaredField{{Name: "clock", descriptor: "J", index: 7}}},
 		{fields: []raptorJavaDeclaredField{{Name: "clock", descriptor: "J", index: 67}}},
 	}
-	index, wide := raptorJavaLinkedFieldIndex(java, "clock", "J", 0, false)
+	names := []string{"clock", "", ""}
+	descriptors := []string{"J", "", ""}
+	index, wide := raptorJavaLinkedFieldIndex(java, names, descriptors, 0, 0, false)
 	if index != 7 || !wide {
 		t.Fatalf("wide field = %d, wide=%t; want 7, true", index, wide)
 	}
-	index, wide = raptorJavaLinkedFieldIndex(java, "", "", index, wide)
+	index, wide = raptorJavaLinkedFieldIndex(java, names, descriptors, 1, index, wide)
 	if index != 8 || wide {
 		t.Fatalf("wide companion = %d, wide=%t; want 8, false", index, wide)
 	}
-	index, wide = raptorJavaLinkedFieldIndex(java, "", "", index, wide)
+	index, wide = raptorJavaLinkedFieldIndex(java, names, descriptors, 2, index, wide)
 	if index != 0 || wide {
 		t.Fatalf("ordinary empty field = %d, wide=%t; want 0, false", index, wide)
 	}
