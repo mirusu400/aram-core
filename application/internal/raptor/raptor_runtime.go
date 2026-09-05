@@ -521,6 +521,31 @@ func (r *Runtime) dispatchImport(
 		}
 		return r.Public.DispatchAPI(ctx, api)
 	}
+	// EXPERIMENTAL, NOT A FIX (branch experiment/raptor-module100-84): tried
+	// answering every module100#84 call with -1 instead of the generic 0.
+	// Disassembly (golf_binary.mod .text, capstone, skipdata) of the dominant
+	// call site (~93k of ~250k calls in a 20s run, all from one function at
+	// 0x125b4) shows #84(r0=13) is the FIRST of several calls in a
+	// lookup-or-create sequence: #84(13) -> a second import at 0x14047b8(0) ->
+	// a local call whose result gates two branches (object found: dereference
+	// it and call an import at 0x1404748, then maybe 0x14047d8; not found:
+	// call two more functions resolved through a table at 0x150028c+{0x104,
+	// 0x114} with the original argument sign-extended to 64 bits). Returning
+	// -1 for #84 alone changes which import dominates the loop (#32 instead
+	// of #84 in a resweep) but does not stop it - the loop bound is not #84's
+	// return value in isolation, it depends on this whole chain, and the
+	// "local call" step did not disassemble cleanly enough past this point to
+	// be confident which literal pool table entries it is (misaligned
+	// something in the 0x78000-0x79000 range: chained short branches with a
+	// suspiciously regular but not obviously correct 16-byte stride).
+	// Verified NOT sufficient: 8 minutes / 1.1B instructions, present_count
+	// still 0, growing without bound either way. Needs a real IDA function
+	// pass (segments never came up for the raw ELF this session - only a
+	// flat .text-only load worked, and only for linear capstone disasm) to
+	// resolve the branch table before guessing further is worth the risk.
+	if key.Module == 100 && key.Ordinal == 84 {
+		return r.Public.ReturnFromTrap(guest.WIPIReturn{Low: ^uint32(0)})
+	}
 	name := r.unimplementedImportName(key)
 	r.Public.Stats.APICalls++
 	r.Public.Stats.UnimplementedCalls++
