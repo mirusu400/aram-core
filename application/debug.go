@@ -197,6 +197,16 @@ func (m *Machine) DebugSnapshot(maxEntries int) DebugSnapshot {
 				m.ktf.JavaExceptionFrames...,
 			),
 		}
+		for _, fault := range m.ktf.IsolatedTaskFaults {
+			snapshot.KTF.IsolatedTaskFaults = append(
+				snapshot.KTF.IsolatedTaskFaults,
+				guest.DebugKTFIsolatedFault{
+					TaskIndex: fault.TaskIndex,
+					Class:     fault.Class,
+					Context:   fault.Context,
+				},
+			)
+		}
 	}
 	if m.raptor != nil {
 		start := max(0, len(m.raptor.ImportTrace)-limit)

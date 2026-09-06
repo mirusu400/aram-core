@@ -182,21 +182,29 @@ type Runtime struct {
 	LastJavaThrowStack      []uint32
 	JavaReturnHigh          uint32
 	JavaExceptionFrames     []string
-	UnimplementedJava       map[string]uint64
-	LastUnimplementedJava   string
-	randomSeeds             map[uint32]uint64
-	integerValues           map[uint32]int32
-	longValues              map[uint32]int64
-	throwableMessages       map[uint32]uint32
-	dates                   map[uint32]int64
-	Vectors                 map[uint32][]uint32
-	hashtables              map[uint32]map[string]ktfHashtableEntry
-	enumerations            map[uint32]*ktfEnumeration
-	clips                   map[uint32]*ktfClip
-	listeners               map[uint32]uint32
-	lwcEventData            map[uint32]uint32
-	lwcChildren             map[uint32][]uint32
-	lwcMaxLengths           map[uint32]int32
+	// IsolatedTaskFaults records every unhandled guest Java exception that was
+	// isolated to its own task instead of hard-faulting the session (issue
+	// #152). Without this the isolation is silent outside full-trace mode, so a
+	// title that soft-locks because the isolated task was the one it was
+	// waiting on (a loader worker) produced a debug bundle indistinguishable
+	// from a clean hang - the crash class and site were lost. Retained so the
+	// debug snapshot can surface them.
+	IsolatedTaskFaults    []KTFIsolatedTaskFault
+	UnimplementedJava     map[string]uint64
+	LastUnimplementedJava string
+	randomSeeds           map[uint32]uint64
+	integerValues         map[uint32]int32
+	longValues            map[uint32]int64
+	throwableMessages     map[uint32]uint32
+	dates                 map[uint32]int64
+	Vectors               map[uint32][]uint32
+	hashtables            map[uint32]map[string]ktfHashtableEntry
+	enumerations          map[uint32]*ktfEnumeration
+	clips                 map[uint32]*ktfClip
+	listeners             map[uint32]uint32
+	lwcEventData          map[uint32]uint32
+	lwcChildren           map[uint32][]uint32
+	lwcMaxLengths         map[uint32]int32
 	// lwcTextInput is the keypad input method behind each editable LWC field.
 	// It holds only a half-composed glyph, which the next press rebuilds, so it
 	// is a live cache rather than part of the save state.
@@ -841,6 +849,17 @@ func (e *ktfUnhandledJavaException) Error() string {
 		e.detail,
 		e.Context,
 	)
+}
+
+// KTFIsolatedTaskFault is one unhandled guest Java exception that terminated a
+// single task while the session kept running (issue #152). It carries the same
+// diagnostic the hard-fault path puts in its error string - the exception class
+// and the caller/PC context - so a soft-locked title's debug bundle names the
+// crash instead of looking like a clean loading-screen hang.
+type KTFIsolatedTaskFault struct {
+	TaskIndex int
+	Class     string
+	Context   string
 }
 
 func ktfNoop(context.Context, *Runtime) (uint32, error) {

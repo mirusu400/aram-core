@@ -247,6 +247,17 @@ type DebugKTFSnapshot struct {
 	LastJavaThrow         string                  `json:"last_java_throw,omitempty"`
 	LastJavaThrowSP       uint32                  `json:"last_java_throw_sp,omitempty"`
 	JavaExceptionFrames   []string                `json:"java_exception_frames,omitempty"`
+	IsolatedTaskFaults    []DebugKTFIsolatedFault `json:"isolated_task_faults,omitempty"`
+}
+
+// DebugKTFIsolatedFault names one unhandled guest Java exception that killed a
+// single task while the session kept running (issue #152), so a soft-locked
+// title's bundle carries the crash class and site instead of looking like a
+// clean loading-screen hang.
+type DebugKTFIsolatedFault struct {
+	TaskIndex int    `json:"task_index"`
+	Class     string `json:"class"`
+	Context   string `json:"context,omitempty"`
 }
 
 type DebugKTFTaskSnapshot struct {

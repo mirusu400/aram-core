@@ -3029,6 +3029,21 @@ func TestKTFUnhandledJavaExceptionIsolatedToItsOwnTask(t *testing.T) {
 			runtime.HostTrace,
 		)
 	}
+	// The isolation must also be recorded independently of trace mode so a
+	// title that soft-locks (its main loop waits on the killed task) still
+	// names the crash in its debug bundle instead of looking like a clean hang.
+	if len(runtime.IsolatedTaskFaults) != 1 {
+		t.Fatalf(
+			"isolated task faults = %+v, want exactly one",
+			runtime.IsolatedTaskFaults,
+		)
+	}
+	fault := runtime.IsolatedTaskFaults[0]
+	if fault.TaskIndex != 0 ||
+		fault.Class != "java/lang/NullPointerException" ||
+		fault.Context != "synthetic worker throw" {
+		t.Fatalf("recorded isolated fault = %+v", fault)
+	}
 }
 
 // TestKTFUnhandledJavaExceptionFaultsWhenNoTaskSurvives confirms an
@@ -3058,6 +3073,14 @@ func TestKTFUnhandledJavaExceptionFaultsWhenNoTaskSurvives(t *testing.T) {
 	}
 	if solo.Done {
 		t.Fatal("a task that hard-faults should not be marked done")
+	}
+	// A hard fault already carries the full context in its error, so nothing is
+	// isolated and the isolated-fault list stays empty.
+	if len(runtime.IsolatedTaskFaults) != 0 {
+		t.Fatalf(
+			"hard fault recorded an isolated fault: %+v",
+			runtime.IsolatedTaskFaults,
+		)
 	}
 }
 

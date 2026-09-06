@@ -976,6 +976,7 @@ func (r *Runtime) RunTaskSlice(
 				task.Done = true
 				if r.hasLiveTask() {
 					r.releaseTerminatedTask(task)
+					r.recordIsolatedTaskFault(taskIndex, unhandled)
 					r.tracef(
 						"java_task_exception_isolate:index=%d:%s",
 						taskIndex,
@@ -1443,6 +1444,28 @@ func (r *Runtime) TraceQuantumStep(step time.Duration) {
 		step/time.Millisecond,
 		r.TickMS,
 	)
+}
+
+// recordIsolatedTaskFault keeps the diagnostic for one isolated unhandled Java
+// exception so the debug snapshot can surface it (issue #152). The bound caps a
+// pathological title that keeps throwing from growing the slice without limit;
+// the newest faults are the ones a report needs.
+func (r *Runtime) recordIsolatedTaskFault(
+	taskIndex int,
+	unhandled *ktfUnhandledJavaException,
+) {
+	const maxIsolatedTaskFaults = 16
+	fault := KTFIsolatedTaskFault{
+		TaskIndex: taskIndex,
+		Class:     unhandled.name,
+		Context:   unhandled.Context,
+	}
+	if len(r.IsolatedTaskFaults) >= maxIsolatedTaskFaults {
+		copy(r.IsolatedTaskFaults, r.IsolatedTaskFaults[1:])
+		r.IsolatedTaskFaults[len(r.IsolatedTaskFaults)-1] = fault
+		return
+	}
+	r.IsolatedTaskFaults = append(r.IsolatedTaskFaults, fault)
 }
 
 func (r *Runtime) hasLiveTask() bool {
