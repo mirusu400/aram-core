@@ -939,11 +939,13 @@ func (a *x64emitter) bailStub(pc uint32, retired int, misses []int) {
 	a.buf[skip+1] = byte(done - (skip + 2))
 }
 
-// highRegister translates the ADD/CMP/MOV high-register forms. ADD and MOV set
-// no flags at all; CMP sets N/Z/C/V from the subtraction exactly as the
-// low-register CMP does. Reading R15 yields pcValue, so a PC operand becomes an
-// immediate. Writing R15 (and BX/BLX) is a branch, which this does not
-// translate - the block ends there and the interpreter takes it.
+// highRegister translates the ADD/CMP/MOV high-register forms; op==3 (BX/BLX)
+// never reaches here, translateOne builds a termBranchExchange terminator for
+// it directly. ADD and MOV set no flags at all; CMP sets N/Z/C/V from the
+// subtraction exactly as the low-register CMP does. Reading R15 yields
+// pcValue, so a PC operand becomes an immediate. Writing R15 via ADD/MOV is
+// still a plain (non-interworking) branch this does not translate - the block
+// ends there and the interpreter takes it.
 func (a *x64emitter) highRegister(op, rd, rs, pcValue uint32) bool {
 	if op == 3 || (rd == cpu.RegisterPC && op != 1) {
 		return false

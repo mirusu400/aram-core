@@ -419,6 +419,12 @@ func (b *Backend) translateOne(e emitter, instruction uint16, pc uint32, retired
 		op := uint32(instruction>>8) & 3
 		rs := uint32(instruction>>3)&7 | uint32(instruction>>6)&1<<3
 		rd := uint32(instruction)&7 | uint32(instruction>>7)&1<<3
+		if op == 3 { // BX/BLX Rs: every Thumb subroutine return is this form.
+			return translateTerminator, terminator{
+				kind: termBranchExchange, reg: rs, pcRead: pc + 4,
+				link: (pc + 2) | 1, blx: instruction&(1<<7) != 0,
+			}
+		}
 		if e.highRegister(op, rd, rs, pc+4) {
 			return translateBody, terminator{}
 		}
@@ -437,6 +443,12 @@ func (b *Backend) translateOne(e emitter, instruction uint16, pc uint32, retired
 			return translateBail, terminator{}
 		}
 		e.multi(access, pc, retired)
+		if access.loadPC {
+			// multi() already branch-exchanged through the loaded PC and
+			// returned; nothing after it in this block ever runs, so stop the
+			// block here the same way ARM's LDM-to-PC does.
+			return translateTerminator, terminator{kind: termInlineFallthrough, next: pc + 2}
+		}
 		return translateBody, terminator{}
 	default:
 		// High-register ops, BL, block transfers, semihosting SWI, etc.
@@ -511,10 +523,12 @@ func decodeMemAccess(instruction uint16, pc uint32) (memAccess, bool) {
 
 // decodeMultiAccess turns PUSH/POP/STMIA/LDMIA into the emitters' multiAccess
 // form, mirroring the interpreter's operand extraction exactly (see runThumb).
-// It refuses the forms whose effect the inline path cannot reproduce:
+// POP with PC in the list loads PC last and branch-exchanges through it
+// (loadPC), the same treatment ARM's LDM-to-PC gets - the shared multi()
+// emitter already branch-exchanges inline, including switching to ARM when the
+// loaded value has bit0 clear, so no interpreter fallback is needed. It refuses
+// the forms whose effect the inline path still cannot reproduce:
 //
-//   - POP with PC in the list, because that is a branch-exchange and can hand
-//     control to ARM, which only the interpreter can do;
 //   - an empty LDMIA/STMIA list, which the interpreter faults on;
 //   - an empty PUSH/POP list, which transfers nothing and is not worth code.
 func decodeMultiAccess(instruction uint16) (multiAccess, bool) {
@@ -539,12 +553,17 @@ func decodeMultiAccess(instruction uint16) (multiAccess, bool) {
 			startOffset: -int32(4 * len(regs)), writeback: true,
 		}, true
 	case thumbPop:
-		if instruction&(1<<8) != 0 || len(low) == 0 {
-			return multiAccess{}, false // POP with PC branch-exchanges
+		regs := low
+		loadPC := instruction&(1<<8) != 0
+		if loadPC {
+			regs = append(regs, cpu.RegisterPC)
+		}
+		if len(regs) == 0 {
+			return multiAccess{}, false
 		}
 		return multiAccess{
-			regs: low, base: cpu.RegisterSP, writeback: true,
-			writebackOffset: int32(4 * len(low)),
+			regs: regs, base: cpu.RegisterSP, writeback: true,
+			writebackOffset: int32(4 * len(regs)), loadPC: loadPC,
 		}, true
 	default: // thumbMultipleTransfer
 		if len(low) == 0 {

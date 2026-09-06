@@ -366,7 +366,7 @@ func TestNativeMultiRegisterTransfers(t *testing.T) {
 				{"push", pushList(false, list)},
 				{"push-lr", pushList(true, list)},
 				{"pop", popList(false, list)},
-				{"pop-pc", popList(true, list)}, // must fall back: branch-exchange
+				{"pop-pc", popList(true, list)}, // branch-exchanges through the loaded PC
 			} {
 				name := fmt.Sprintf("%s/list=%02x/sp=%08x", form.name, list, base)
 				mustAgree(t, name, multiProgram(name, DataBase, base, form.word))
