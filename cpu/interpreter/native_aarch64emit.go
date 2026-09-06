@@ -56,6 +56,7 @@ const (
 
 // Condition codes used by the emitted control flow.
 const (
+	a64CondEQ = 0 // equal
 	a64CondNE = 1 // not equal
 	a64CondHI = 8 // unsigned higher
 )
@@ -172,6 +173,15 @@ func (e *arm64emitter) asrV(rd, rn, rm uint32) {
 func (e *arm64emitter) rorV(rd, rn, rm uint32) {
 	e.w(0x1AC02C00 | (rm << 16) | (rn << 5) | rd)
 }
+
+// 64-bit forms for the register-count shifts, whose carry-out is a fixed bit
+// of the wide result (see shiftRegister). Words from Go's assembler.
+func (e *arm64emitter) lslVX(rd, rn, rm uint32) { e.w(0x9AC02000 | (rm << 16) | (rn << 5) | rd) } // lslv xd,xn,xm
+func (e *arm64emitter) lsrVX(rd, rn, rm uint32) { e.w(0x9AC02400 | (rm << 16) | (rn << 5) | rd) } // lsrv xd,xn,xm
+func (e *arm64emitter) asrVX(rd, rn, rm uint32) { e.w(0x9AC02800 | (rm << 16) | (rn << 5) | rd) } // asrv xd,xn,xm
+func (e *arm64emitter) lslX32(rd, rn uint32)    { e.w(0xD3607C00 | (rn << 5) | rd) }              // lsl xd,xn,#32
+func (e *arm64emitter) lsrX32(rd, rn uint32)    { e.w(0xD360FC00 | (rn << 5) | rd) }              // lsr xd,xn,#32
+func (e *arm64emitter) sxtw(rd, rn uint32)      { e.w(0x93407C00 | (rn << 5) | rd) }              // sxtw xd,wn
 
 func (e *arm64emitter) csetEQ(rd uint32) { e.w(0x1A9F17E0 | rd) } // cset wd,eq
 func (e *arm64emitter) csel(rd, rn, rm uint32, c uint8) {
@@ -418,10 +428,28 @@ func (e *arm64emitter) shiftImm(rd, rs, op, shift uint32) {
 	}
 }
 
-// alu emits the register data-processing ops, bailing (false, no bytes) on the
-// register-shift and carry-in sub-ops (LSL/LSR/ASR/ROR by register, ADC, SBC).
+// alu emits the register data-processing ops. Every sub-op is covered; the
+// bool stays in the emitter contract for a host that cannot express one.
 func (e *arm64emitter) alu(op, rd, rs uint32) bool {
 	switch op {
+	case 0x2, 0x3, 0x4, 0x7: // LSL/LSR/ASR/ROR by register
+		e.shiftRegister(op, rd, rs)
+	case 0x5: // ADC: host ADCS with PSTATE.C loaded from the guest CPSR
+		e.ldrW(1, cpu.RegisterCPSR)
+		e.msrNZCV(1)
+		e.ldrW(0, rd)
+		e.ldrW(1, rs)
+		e.adcsReg(0, 0, 1)
+		e.commitNZCV(false)
+		e.strW(0, rd)
+	case 0x6: // SBC: host SBCS is Rd + ^Rs + C with C = !borrow, as on ARM32
+		e.ldrW(1, cpu.RegisterCPSR)
+		e.msrNZCV(1)
+		e.ldrW(0, rd)
+		e.ldrW(1, rs)
+		e.sbcsReg(0, 0, 1)
+		e.commitNZCV(true)
+		e.strW(0, rd)
 	case 0x0: // AND
 		e.ldrW(0, rd)
 		e.ldrW(1, rs)
@@ -478,9 +506,57 @@ func (e *arm64emitter) alu(op, rd, rs uint32) bool {
 		e.strW(0, rd)
 		e.commitNZ()
 	default:
-		return false // 0x2/0x3/0x4 register shifts, 0x5 ADC, 0x6 SBC, 0x7 ROR
+		return false
 	}
 	return true
+}
+
+// shiftRegister emits LSL/LSR/ASR/ROR by the low byte of Rs (Thumb ALU
+// 0x2/0x3/0x4/0x7), mirroring shiftLSL/shiftLSR/shiftASR/shiftROR. The shift
+// runs on the 64-bit host register so the carry-out lands in a fixed bit for
+// every amount 1..63: bit 32 after LSL, and bit 31 of the low half after
+// LSR/ASR of the value placed in the high half. Amounts above 63 clamp to 63,
+// which is already "every bit shifted out" (LSL/LSR: 0 with C=0; ASR: sign
+// fill with C=sign), exactly the interpreter's >32 cases. ROR needs no clamp:
+// RORV masks the count to five bits, which is the ARM rotation, and C is bit
+// 31 of the result whether or not it rotated. An amount of 0 keeps the old C,
+// selected at the end from the compare nothing in between disturbs.
+func (e *arm64emitter) shiftRegister(op, rd, rs uint32) {
+	e.ldrW(0, rd) // zero-extended into X0
+	e.ldrW(1, rs)
+	e.andMask(1, 1, a64MaskByte)
+	e.ldrW(4, cpu.RegisterCPSR)
+	e.lsrI(4, 4, 29)
+	e.andMask(4, 4, a64Mask1) // W4 = old C
+	if op != 0x7 {
+		e.movz(2, 63)
+		e.subsReg(a64WZR, 1, 2)
+		e.csel(1, 2, 1, a64CondHI)
+	}
+	e.cmp0(1)
+	switch op {
+	case 0x2: // LSL: carry = bit 32 of the 64-bit product
+		e.lslVX(0, 0, 1)
+		e.lsrX32(3, 0)
+		e.andMask(3, 3, a64Mask1)
+	case 0x3: // LSR: value in the high half; carry = bit 31 of the low half
+		e.lslX32(0, 0)
+		e.lsrVX(0, 0, 1)
+		e.lsrI(3, 0, 31)
+		e.lsrX32(0, 0)
+	case 0x4: // ASR: as LSR with the sign extended first
+		e.sxtw(0, 0)
+		e.lslX32(0, 0)
+		e.asrVX(0, 0, 1)
+		e.lsrI(3, 0, 31)
+		e.lsrX32(0, 0)
+	default: // 0x7 ROR: carry = bit 31 of the result
+		e.rorV(0, 0, 1)
+		e.lsrI(3, 0, 31)
+	}
+	e.csel(3, 4, 3, a64CondEQ)
+	e.strW(0, rd)
+	e.commitNZC()
 }
 
 func (e *arm64emitter) adjustStack(sub bool, offset uint32) {

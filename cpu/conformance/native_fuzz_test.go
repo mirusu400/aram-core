@@ -121,13 +121,48 @@ func TestNativeShiftImmediate(t *testing.T) {
 
 const flagCbit = uint32(1) << 29
 
-// TestNativeALUOps covers every thumbALU sub-op (including the ones the native
-// backend bails on: ADC/SBC/register shifts/ROR) over varied operands, so both
-// the translated ops and the fall-back boundary match the interpreter.
+// TestNativeRegisterShifts covers LSL/LSR/ASR/ROR by register over amounts on
+// both sides of every boundary the interpreter's shift helpers distinguish (0,
+// 1..31, 32, 33..63, 64..255) plus counts whose low byte is 0 or 32, with the
+// carry seeded both ways so an amount of 0 proves C is preserved. The shift
+// sits mid-block so the translated block has to carry on past it.
+func TestNativeRegisterShifts(t *testing.T) {
+	values := []uint32{
+		0, 1, 2, 0x80000000, 0xffffffff, 0xc0000000, 0x00010000, 0x0000ffff,
+		0xa5a5a5a5, 0x7fffffff,
+	}
+	amounts := []uint32{
+		0, 1, 2, 7, 8, 15, 16, 30, 31, 32, 33, 34, 47, 48, 62, 63, 64, 65, 100,
+		127, 128, 200, 254, 255, 256, 0x11f, 0x120, 0xff00, 0xffffffff,
+	}
+	for _, op := range []uint16{0x2, 0x3, 0x4, 0x7} {
+		for _, v := range values {
+			for _, n := range amounts {
+				for _, c := range []uint32{0, flagCbit} {
+					p := Program{
+						Name: fmt.Sprintf("shiftreg%x/%08x,%d/C%d", op, v, n, c>>29),
+						Mode: cpu.ModeThumb,
+						Regs: map[uint32]uint32{
+							cpu.RegisterR0: v, cpu.RegisterR1: n,
+							cpu.RegisterCPSR: cpu.StatusThumb | c,
+						},
+						Code: code(alu(op, 0, 1), addImm(2, 1), bkpt),
+					}
+					mustAgree(t, p.Name, p)
+				}
+			}
+		}
+	}
+}
+
+// TestNativeALUOps covers every thumbALU sub-op over varied operands and both
+// carry states, so the translated ops match the interpreter.
 func TestNativeALUOps(t *testing.T) {
 	operands := [][2]uint32{
 		{0, 0}, {1, 0}, {0, 1}, {0xffffffff, 1}, {0x80000000, 0x80000000},
 		{0x7fffffff, 1}, {0xdeadbeef, 0x0000000f}, {5, 40}, {40, 5}, {0xffffffff, 0xffffffff},
+		{0x80000000, 0}, {0, 0x80000000}, {0x7fffffff, 0xffffffff}, {0xffffffff, 0},
+		{0x80000000, 1}, {0x7fffffff, 0x7fffffff},
 	}
 	for op := uint16(0); op < 16; op++ {
 		for _, o := range operands {

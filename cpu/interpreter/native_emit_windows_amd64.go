@@ -357,8 +357,42 @@ func (a *x64emitter) shlECXimm(k uint8) { a.b(0xC1, 0xE1, k) } // shl ecx, k
 func (a *x64emitter) shrECXimm(k uint8) { a.b(0xC1, 0xE9, k) } // shr ecx, k
 func (a *x64emitter) sarECXimm(k uint8) { a.b(0xC1, 0xF9, k) } // sar ecx, k
 func (a *x64emitter) rorECXimm(k uint8) { a.b(0xC1, 0xC9, k) } // ror ecx, k
-func (a *x64emitter) movEAXR8D()        { a.b(0x44, 0x89, 0xC0) }
-func (a *x64emitter) movECXR8D()        { a.b(0x44, 0x89, 0xC1) }
+
+// Register-count shifts and carry-in arithmetic (Thumb ALU 0x2-0x7).
+func (a *x64emitter) movzxECXCL()         { a.b(0x0F, 0xB6, 0xC9) }            // movzx ecx, cl
+func (a *x64emitter) cmpECXimm8(v uint8)  { a.b(0x83, 0xF9, v) }               // cmp ecx, imm8
+func (a *x64emitter) cmovaECXEDX()        { a.b(0x0F, 0x47, 0xCA) }            // cmova ecx, edx
+func (a *x64emitter) shlRAXcl()           { a.b(0x48, 0xD3, 0xE0) }            // shl rax, cl
+func (a *x64emitter) shrRAXcl()           { a.b(0x48, 0xD3, 0xE8) }            // shr rax, cl
+func (a *x64emitter) sarRAXcl()           { a.b(0x48, 0xD3, 0xF8) }            // sar rax, cl
+func (a *x64emitter) rorEAXcl()           { a.b(0xD3, 0xC8) }                  // ror eax, cl
+func (a *x64emitter) shlRAXimm(k uint8)   { a.b(0x48, 0xC1, 0xE0, k) }         // shl rax, k
+func (a *x64emitter) shrRAXimm(k uint8)   { a.b(0x48, 0xC1, 0xE8, k) }         // shr rax, k
+func (a *x64emitter) movsxdRAXEAX()       { a.b(0x48, 0x63, 0xC0) }            // movsxd rax, eax
+func (a *x64emitter) movR8RAX()           { a.b(0x49, 0x89, 0xC0) }            // mov r8, rax
+func (a *x64emitter) shrR8imm(k uint8)    { a.b(0x49, 0xC1, 0xE8, k) }         // shr r8, k
+func (a *x64emitter) btR9Dimm(bit uint8)  { a.b(0x41, 0x0F, 0xBA, 0xE1, bit) } // bt r9d, bit (CF = bit)
+func (a *x64emitter) cmc()                { a.b(0xF5) }                        // cmc
+func (a *x64emitter) adcEAXmem(gi uint32) { a.b(0x41, 0x13, 0x43, disp(gi)) }  // adc eax,[r11+d]
+func (a *x64emitter) sbbEAXmem(gi uint32) { a.b(0x41, 0x1B, 0x43, disp(gi)) }  // sbb eax,[r11+d]
+
+// jumpIfZero emits a forward jz rel32 with a placeholder displacement and
+// returns its site for patchJump once the skipped code has been emitted.
+func (a *x64emitter) jumpIfZero() int {
+	site := a.mark()
+	a.b(0x0F, 0x84)
+	a.imm32(0)
+	return site
+}
+
+func (a *x64emitter) patchJump(site int) {
+	displacement := int32(a.mark() - (site + 6))
+	for index := 0; index < 4; index++ {
+		a.buf[site+2+index] = byte(uint32(displacement) >> (8 * index))
+	}
+}
+func (a *x64emitter) movEAXR8D() { a.b(0x44, 0x89, 0xC0) }
+func (a *x64emitter) movECXR8D() { a.b(0x44, 0x89, 0xC1) }
 
 func (a *x64emitter) movR8DEAX()        { a.b(0x41, 0x89, 0xC0) }       // mov r8d, eax
 func (a *x64emitter) shrR8Dimm(k uint8) { a.b(0x41, 0xC1, 0xE8, k) }    // shr r8d, k
@@ -636,11 +670,27 @@ func (a *x64emitter) shiftImm(rd, rs, op, shift uint32) {
 	}
 }
 
-// alu emits the register data-processing ops, bailing (false, no bytes) on the
-// register-shift and carry-in sub-ops (LSL/LSR/ASR/ROR by register, ADC, SBC)
-// the interpreter handles.
+// alu emits the register data-processing ops. Every sub-op is covered; the
+// bool stays in the emitter contract for a host that cannot express one.
 func (a *x64emitter) alu(op, rd, rs uint32) bool {
 	switch op {
+	case 0x2, 0x3, 0x4, 0x7: // LSL/LSR/ASR/ROR by register
+		a.shiftRegister(op, rd, rs)
+	case 0x5: // ADC: Rd + Rs + C -> setNZCV (add); CF is loaded from the guest C
+		a.loadR9DfromCPSR()
+		a.btR9Dimm(bitC)
+		a.loadEAX(rd)
+		a.adcEAXmem(rs)
+		a.commitNZCV(false)
+		a.storeEAX(rd)
+	case 0x6: // SBC: Rd + ^Rs + C -> setNZCV (sub); x86 borrows on CF, so CF = !C
+		a.loadR9DfromCPSR()
+		a.btR9Dimm(bitC)
+		a.cmc()
+		a.loadEAX(rd)
+		a.sbbEAXmem(rs)
+		a.commitNZCV(true)
+		a.storeEAX(rd)
 	case 0x0: // AND
 		a.loadEAX(rd)
 		a.andEAXmem(rs)
@@ -691,9 +741,61 @@ func (a *x64emitter) alu(op, rd, rs uint32) bool {
 		a.storeEAX(rd)
 		a.commitNZ()
 	default:
-		return false // 0x2/0x3/0x4 register shifts, 0x5 ADC, 0x6 SBC, 0x7 ROR
+		return false
 	}
 	return true
+}
+
+// shiftRegister emits LSL/LSR/ASR/ROR by the low byte of Rs (Thumb ALU
+// 0x2/0x3/0x4/0x7), mirroring shiftLSL/shiftLSR/shiftASR/shiftROR. An amount
+// of 0 leaves the value and C alone, so C is preloaded from CPSR and the whole
+// shift is skipped. Otherwise the shift runs on the 64-bit host register so the
+// carry-out lands in a fixed bit for every amount 1..63: bit 32 after LSL, and
+// bit 31 of the low half after LSR/ASR of the value placed in the high half.
+// Amounts above 63 clamp to 63, which is already "every bit shifted out"
+// (LSL/LSR: 0 with C=0; ASR: sign fill with C=sign), exactly the interpreter's
+// >32 cases. ROR needs no clamp: the host masks the count to five bits, which
+// is the ARM rotation, and C is bit 31 of the result whether or not it rotated.
+func (a *x64emitter) shiftRegister(op, rd, rs uint32) {
+	a.loadEAX(rd) // a 32-bit load zero-extends into RAX
+	a.loadECX(rs)
+	a.movzxECXCL()
+	a.loadR9DfromCPSR()
+	a.bitToR8D(bitC)
+	a.testECXECX()
+	skip := a.jumpIfZero()
+	if op != 0x7 {
+		a.movEDXimm(63)
+		a.cmpECXimm8(63)
+		a.cmovaECXEDX()
+	}
+	switch op {
+	case 0x2: // LSL: carry = bit 32 of the 64-bit product
+		a.shlRAXcl()
+		a.movR8RAX()
+		a.shrR8imm(32)
+		a.andR8Dimm1()
+	case 0x3: // LSR: value in the high half; carry = bit 31 of the low half
+		a.shlRAXimm(32)
+		a.shrRAXcl()
+		a.movR8DEAX()
+		a.shrR8Dimm(31)
+		a.shrRAXimm(32)
+	case 0x4: // ASR: as LSR with the sign extended first
+		a.movsxdRAXEAX()
+		a.shlRAXimm(32)
+		a.sarRAXcl()
+		a.movR8DEAX()
+		a.shrR8Dimm(31)
+		a.shrRAXimm(32)
+	default: // 0x7 ROR: carry = bit 31 of the result
+		a.rorEAXcl()
+		a.movR8DEAX()
+		a.shrR8Dimm(31)
+	}
+	a.patchJump(skip)
+	a.storeEAX(rd)
+	a.commitNZC()
 }
 
 func (a *x64emitter) adjustStack(sub bool, offset uint32) {
