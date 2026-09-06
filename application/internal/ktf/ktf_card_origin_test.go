@@ -18,7 +18,7 @@ func newCardOriginRuntime(t *testing.T) *Runtime {
 	runtime, err := NewRuntimeForProfile(interpreter.New(), ktf.Package{
 		ClientName: "client.bin0",
 		Client:     []byte{0x70, 0x47},
-	}, frame, ProfileID, "")
+	}, frame, ProfileID, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

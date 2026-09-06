@@ -15,7 +15,7 @@ func TestArrayShapeDescribesArrays(t *testing.T) {
 	runtime, err := NewRuntimeForProfile(interpreter.New(), ktf.Package{
 		ClientName: "client.bin0",
 		Client:     []byte{0x70, 0x47},
-	}, nil, ProfileID, "")
+	}, nil, ProfileID, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

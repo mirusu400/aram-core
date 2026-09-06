@@ -109,6 +109,13 @@ type Factory struct {
 	// It is a playback preference, deliberately kept out of the profile
 	// configuration hash so it never changes a title's deterministic identity.
 	AudioMixMode bool
+	// OutputSampleRate overrides the audio render rate (Hz). Zero inherits the
+	// runtime default (44,100). SMAF FM synthesis renders one operator/envelope
+	// tick per output sample, so a lower rate (e.g. 22,050) trades audio quality
+	// for roughly proportional CPU savings on weak hardware. Like AudioMixMode,
+	// this is a playback preference, not part of a title's deterministic
+	// identity.
+	OutputSampleRate uint32
 }
 
 func NewFactory() Factory {
@@ -178,6 +185,7 @@ func (f Factory) Create(ctx context.Context, source machinecore.Source) (machine
 		offlineCarrierAuth: f.OfflineCarrierAuth,
 		fallbackFont:       f.FallbackFont,
 		audioMixMode:       f.AudioMixMode,
+		outputSampleRate:   f.OutputSampleRate,
 		audioGeneration:    1,
 	}
 	if err := machine.Load(ctx, source); err != nil {
@@ -267,6 +275,7 @@ type Machine struct {
 	offlineCarrierAuth    bool
 	fallbackFont          string
 	audioMixMode          bool
+	outputSampleRate      uint32
 	ktfStarted            bool
 	state                 machinecore.State
 	source                machinecore.Source
@@ -442,6 +451,7 @@ func (m *Machine) Reset(ctx context.Context) error {
 			m.frame,
 			profileID,
 			m.fallbackFont,
+			m.outputSampleRate,
 		)
 		if err != nil {
 			m.state = machinecore.StateFaulted

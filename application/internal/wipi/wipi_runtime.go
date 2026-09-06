@@ -357,6 +357,7 @@ func NewRuntime(backend cpu.Backend, frame *image.RGBA) (*Runtime, error) {
 		32,
 		"wipi-c",
 		"",
+		0,
 	)
 }
 
@@ -369,6 +370,15 @@ func (r *Runtime) FallbackFontName() string {
 	return r.Services.Config.FallbackFont
 }
 
+// OutputSampleRate reports the audio sample rate this runtime's Services
+// render at, so an embedded host (the Raptor Java host) can match it.
+func (r *Runtime) OutputSampleRate() uint32 {
+	if r.Services == nil {
+		return 0
+	}
+	return r.Services.Config.Limits.Media.OutputSampleRate
+}
+
 func NewRuntimeForProfile(
 	backend cpu.Backend,
 	frame *image.RGBA,
@@ -377,6 +387,7 @@ func NewRuntimeForProfile(
 	framebufferBits int,
 	serviceName string,
 	fallbackFont string,
+	outputSampleRate uint32,
 ) (*Runtime, error) {
 	layout, err := wipicatalog.NewLayout()
 	if err != nil {
@@ -385,6 +396,9 @@ func NewRuntimeForProfile(
 	serviceConfig := shared.DefaultConfig()
 	if fallbackFont != "" {
 		serviceConfig.FallbackFont = fallbackFont
+	}
+	if outputSampleRate != 0 {
+		serviceConfig.Limits.Media.OutputSampleRate = outputSampleRate
 	}
 	serviceConfig.Device.ProfileID = profileID
 	serviceConfig.Device.Carrier = carrier

@@ -29,6 +29,7 @@ func newKTFQuantumMachine(t *testing.T) *Machine {
 		drawBuffer,
 		ktfrt.ProfileID,
 		"",
+		0,
 	)
 	if err != nil {
 		t.Fatal(err)

@@ -432,9 +432,11 @@ func (r *Runtime) ensureJavaRuntime() (*JavaRuntime, error) {
 		},
 		r.Public.Frame,
 		ProfileID+"/java",
-		// The Raptor Java host shares the public runtime's fallback font; the
-		// public WIPI runtime already applied the machine's selection.
+		// The Raptor Java host shares the public runtime's fallback font and
+		// audio sample rate; the public WIPI runtime already applied the
+		// machine's selection for both.
 		r.Public.FallbackFontName(),
+		r.Public.OutputSampleRate(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("initialize Raptor Java Host: %w", err)
