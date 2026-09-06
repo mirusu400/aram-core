@@ -11,18 +11,20 @@ package interpreter
 // (native_jit.go); the AArch64 machine-code emitter (native_aarch64emit.go) is
 // pure Go and unit-tested on the amd64 dev host.
 //
-// VERIFIED under emulation, real-hardware i-cache still unproven: the whole arm64
-// path ??this glue (the Go->native BLR trampoline, mmap W^X arena, and DC/IC
-// cache-flush loop), the emitter, and the self-loop block linking ??executes
-// correctly on emulated aarch64: cpu/conformance's native differential (corpus,
-// every condition/flag state, all shifts/ALU, self-loop retirement, and 4000
-// random programs) passes bit-for-bit against the interpreter under qemu (Docker
-// linux/arm64). The one thing emulation cannot exercise is I-cache/D-cache
-// incoherence on real silicon (qemu auto-invalidates its translation cache), so
-// the flushICache correctness on a physical device is still unproven. Because of
-// that residual risk the android "native" backend is registered only when
-// ARAM_NATIVE_ARM64=1 is set (see the application layer), pending an on-device
-// conformance run.
+// VERIFIED under emulation AND on real hardware: the whole arm64 path — this
+// glue (the Go->native BLR trampoline, mmap W^X arena, and DC/IC cache-flush
+// loop), the emitter, and the self-loop block linking — executes correctly on
+// emulated aarch64 (cpu/conformance's native differential — corpus, every
+// condition/flag state, all shifts/ALU, self-loop retirement, and 4000 random
+// programs — passes bit-for-bit against the interpreter under qemu, Docker
+// linux/arm64) and, as of 2026-09-06, on a physical device (Pixel 6a, Tensor):
+// the same suite passes bit-for-bit cross-compiled GOOS=android GOARCH=arm64
+// and run over adb. That was the one thing emulation could not exercise
+// (I-cache/D-cache incoherence on real silicon; qemu auto-invalidates its
+// translation cache), so flushICache is now confirmed correct on hardware, not
+// just under emulation. The android "native" backend registers
+// unconditionally now (see the application layer); git history has the prior
+// ARAM_NATIVE_ARM64 opt-in gate this replaced.
 
 import (
 	"sync/atomic"
