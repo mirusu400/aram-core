@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"image/gif"
 	"image/png"
 	"io"
 	"os"
@@ -53,72 +54,195 @@ func Icon(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	resources, hint := packageIconSource(data)
-	if len(resources) == 0 {
-		return nil, ErrNoIcon
-	}
-	raw, ok := selectIconResource(resources, hint)
+	source := packageIconSource(data)
+	img, ok := selectIcon(source)
 	if !ok {
 		return nil, ErrNoIcon
 	}
-	return normalizeIconPNG(raw)
+	return encodeIconPNG(img)
 }
 
-// packageIconSource returns the package's non-code resources plus an optional
-// descriptor-declared icon path, trying each ZIP-based format in turn. Each
-// loader reports ErrNotPackage for archives that are not its format, so the
-// order is a safe cascade ending at a plain MIDlet jar.
-func packageIconSource(data []byte) (map[string][]byte, string) {
+// iconSource is everything an icon may be chosen from: the launcher icons the
+// distribution ZIP ships beside the JAR, the JAR's own resources, and the icon
+// path a MIDlet descriptor declares.
+type iconSource struct {
+	// launcher holds the carrier's install-menu icons in preference order
+	// (big before middle before small). KTF ZIPs ship big.icon/middle.icon/
+	// small.icon and LGT Raptor ZIPs big.png/middle.png/small.png next to
+	// app_info; either is the icon the handset showed, so it always wins over
+	// a guess from the JAR's art.
+	launcher  [][]byte
+	resources map[string][]byte
+	hint      string
+}
+
+// packageIconSource collects the icon candidates of a ZIP-based package,
+// trying each format in turn. Each loader reports ErrNotPackage for archives
+// that are not its format, so the order is a safe cascade ending at a plain
+// MIDlet jar.
+func packageIconSource(data []byte) iconSource {
 	if pkg, err := ktf.Inspect(data); err == nil {
-		return pkg.Resources, ""
+		return iconSource{launcher: launcherIcons(pkg.Files), resources: pkg.Resources}
 	}
 	if pkg, err := raptor.Inspect(data); err == nil {
-		return pkg.Resources, ""
+		return iconSource{launcher: launcherIcons(pkg.Files), resources: pkg.Resources}
 	}
 	if pkg, err := skvm.Inspect(data); err == nil {
 		hint := pkg.Descriptor.Raw["MIDlet-Icon"]
 		if hint == "" {
 			hint = midletIconField(pkg.Descriptor.Raw["MIDlet-1"])
 		}
-		return pkg.Resources, hint
+		return iconSource{
+			launcher:  launcherIcons(pkg.Files),
+			resources: pkg.Resources,
+			hint:      hint,
+		}
 	}
-	return jarResources(data)
+	resources, hint := jarResources(data)
+	return iconSource{resources: resources, hint: hint}
 }
 
-// selectIconResource picks the icon bytes from a resource map: the declared
-// hint first, then common icon filenames, then any image resource (chosen
-// deterministically).
-func selectIconResource(resources map[string][]byte, hint string) ([]byte, bool) {
-	for _, key := range candidateKeys(hint) {
-		if data, ok := resources[key]; ok && looksLikeImage(data) {
-			return data, true
+// launcherIconNames are the carrier install-menu icon files, largest first.
+// They sit beside the descriptor in the distribution ZIP, sometimes below an
+// installer's wrapping directories, so they are matched by base name.
+var launcherIconNames = []string{
+	"big.icon", "big.png",
+	"middle.icon", "middle.png",
+	"small.icon", "small.png",
+}
+
+// launcherIcons returns the distribution ZIP's install-menu icons in
+// preference order. A name that appears more than once (an installer dump
+// with several apps) resolves to the shallowest path, then alphabetically.
+func launcherIcons(files map[string][]byte) [][]byte {
+	var icons [][]byte
+	for _, want := range launcherIconNames {
+		bestKey := ""
+		for key := range files {
+			if !strings.EqualFold(path.Base(key), want) {
+				continue
+			}
+			if bestKey == "" || shallowerPath(key, bestKey) {
+				bestKey = key
+			}
+		}
+		if bestKey != "" && looksLikeImage(files[bestKey]) {
+			icons = append(icons, files[bestKey])
+		}
+	}
+	return icons
+}
+
+func shallowerPath(a, b string) bool {
+	depthA, depthB := strings.Count(a, "/"), strings.Count(b, "/")
+	if depthA != depthB {
+		return depthA < depthB
+	}
+	return a < b
+}
+
+// selectIcon decodes the best available icon: a launcher icon, then the
+// declared descriptor icon, then well-known icon file names, then a plausible
+// image among the JAR's resources. A candidate that does not decode, or that
+// is not icon-shaped, is skipped rather than failing the whole lookup, since
+// titles routinely keep sprite strips or non-BMP ".bmp"-signed data next to
+// their art.
+func selectIcon(source iconSource) (image.Image, bool) {
+	for _, raw := range source.launcher {
+		if img, ok := decodeIconCandidate(raw, false); ok {
+			return img, true
+		}
+	}
+	for _, key := range candidateKeys(source.hint) {
+		if raw, ok := source.resources[key]; ok {
+			if img, ok := decodeIconCandidate(raw, false); ok {
+				return img, true
+			}
 		}
 	}
 	for _, name := range []string{"icon.png", "r/icon.png", "res/icon.png", "icon.bmp"} {
-		if data, ok := resources[name]; ok && looksLikeImage(data) {
-			return data, true
+		if raw, ok := source.resources[name]; ok {
+			if img, ok := decodeIconCandidate(raw, false); ok {
+				return img, true
+			}
 		}
 	}
+	return selectIconResource(source.resources)
+}
+
+// selectIconResource guesses an icon from a resource map when the package
+// declares none: a resource whose name mentions "icon" wins, then the largest
+// icon-shaped image (see decodeIconCandidate), ties broken by name so the
+// choice is deterministic. Undecodable or oddly shaped images are skipped.
+func selectIconResource(resources map[string][]byte) (image.Image, bool) {
 	keys := make([]string, 0, len(resources))
 	for key := range resources {
-		if isNonIconSystemResource(key) {
+		if isNonIconSystemResource(key) || !looksLikeImage(resources[key]) {
 			continue
 		}
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	// Prefer a resource whose name mentions "icon", then any image.
-	for _, wantIcon := range []bool{true, false} {
-		for _, key := range keys {
-			if wantIcon && !strings.Contains(strings.ToLower(path.Base(key)), "icon") {
-				continue
-			}
-			if looksLikeImage(resources[key]) {
-				return resources[key], true
-			}
+	for _, key := range keys {
+		if !strings.Contains(strings.ToLower(path.Base(key)), "icon") {
+			continue
+		}
+		if img, ok := decodeIconCandidate(resources[key], true); ok {
+			return img, true
 		}
 	}
-	return nil, false
+	bestKey, bestArea := "", 0
+	for _, key := range keys {
+		config, err := decodeIconConfig(resources[key])
+		if err != nil || !iconShaped(config.Width, config.Height, true) {
+			continue
+		}
+		if area := config.Width * config.Height; area > bestArea {
+			bestKey, bestArea = key, area
+		}
+	}
+	if bestKey == "" {
+		return nil, false
+	}
+	return decodeIconCandidate(resources[bestKey], true)
+}
+
+// minGuessedIconSize is the smallest edge a resource guessed to be an icon may
+// have; anything smaller is a cursor, a bullet, or a font glyph.
+const minGuessedIconSize = 8
+
+// iconShaped reports whether a decoded size is plausible for an icon. A
+// declared or launcher icon only has to fit the size cap; a guessed one must
+// also be near square, which rules out sprite strips, fonts, and UI bars.
+func iconShaped(width, height int, guessed bool) bool {
+	if width <= 0 || height <= 0 || width > maxIconDimension || height > maxIconDimension {
+		return false
+	}
+	if !guessed {
+		return true
+	}
+	if width < minGuessedIconSize || height < minGuessedIconSize {
+		return false
+	}
+	return width <= 2*height && height <= 2*width
+}
+
+// decodeIconCandidate decodes raw as an icon, reporting false for data that
+// is not a decodable PNG, BMP, or GIF or whose size is not icon-shaped.
+func decodeIconCandidate(raw []byte, guessed bool) (image.Image, bool) {
+	config, err := decodeIconConfig(raw)
+	if err != nil || !iconShaped(config.Width, config.Height, guessed) {
+		return nil, false
+	}
+	img, err := decodeIconImage(raw)
+	if err != nil {
+		return nil, false
+	}
+	bounds := img.Bounds()
+	if !iconShaped(bounds.Dx(), bounds.Dy(), guessed) {
+		return nil, false
+	}
+	return img, true
 }
 
 // isNonIconSystemResource reports whether name is known handset chrome bundled
@@ -235,29 +359,23 @@ func midletIconFromManifest(manifest []byte) string {
 	return ""
 }
 
-// looksLikeImage reports whether data begins with a PNG or BMP signature.
+// looksLikeImage reports whether data begins with a PNG, BMP, or GIF signature.
 func looksLikeImage(data []byte) bool {
-	if len(data) >= 8 && bytes.Equal(data[:8], []byte("\x89PNG\r\n\x1a\n")) {
+	if bytes.HasPrefix(data, pngSignature) {
 		return true
 	}
 	if len(data) >= 2 && data[0] == 'B' && data[1] == 'M' {
 		return true
 	}
+	if len(data) >= 6 && (bytes.Equal(data[:6], []byte("GIF87a")) || bytes.Equal(data[:6], []byte("GIF89a"))) {
+		return true
+	}
 	return false
 }
 
-// normalizeIconPNG decodes a PNG or BMP icon and re-encodes it as PNG so callers
-// only ever handle PNG.
-func normalizeIconPNG(raw []byte) ([]byte, error) {
-	img, err := decodeIconImage(raw)
-	if err != nil {
-		return nil, fmt.Errorf("loader: decode icon: %w", err)
-	}
-	bounds := img.Bounds()
-	if bounds.Dx() <= 0 || bounds.Dy() <= 0 ||
-		bounds.Dx() > maxIconDimension || bounds.Dy() > maxIconDimension {
-		return nil, fmt.Errorf("loader: icon size %dx%d out of range", bounds.Dx(), bounds.Dy())
-	}
+// encodeIconPNG re-encodes a decoded icon as PNG so callers only ever handle
+// PNG.
+func encodeIconPNG(img image.Image) ([]byte, error) {
 	var buffer bytes.Buffer
 	if err := png.Encode(&buffer, img); err != nil {
 		return nil, fmt.Errorf("loader: encode icon: %w", err)
@@ -265,11 +383,30 @@ func normalizeIconPNG(raw []byte) ([]byte, error) {
 	return buffer.Bytes(), nil
 }
 
-func decodeIconImage(raw []byte) (image.Image, error) {
-	if img, err := png.Decode(bytes.NewReader(raw)); err == nil {
-		return img, nil
+var pngSignature = []byte("\x89PNG\r\n\x1a\n")
+
+// decodeIconConfig reads only the image header, which is enough to rank and
+// reject candidates without decoding every resource in a package.
+func decodeIconConfig(raw []byte) (image.Config, error) {
+	switch {
+	case bytes.HasPrefix(raw, pngSignature):
+		return png.DecodeConfig(bytes.NewReader(raw))
+	case bytes.HasPrefix(raw, []byte("GIF8")):
+		return gif.DecodeConfig(bytes.NewReader(raw))
+	default:
+		return bmp.DecodeConfig(bytes.NewReader(raw))
 	}
-	return bmp.Decode(bytes.NewReader(raw))
+}
+
+func decodeIconImage(raw []byte) (image.Image, error) {
+	switch {
+	case bytes.HasPrefix(raw, pngSignature):
+		return png.Decode(bytes.NewReader(raw))
+	case bytes.HasPrefix(raw, []byte("GIF8")):
+		return gif.Decode(bytes.NewReader(raw))
+	default:
+		return bmp.Decode(bytes.NewReader(raw))
+	}
 }
 
 func readBoundedFile(name string, limit int64) ([]byte, error) {
