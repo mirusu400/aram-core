@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"image"
 	"image/color"
 	"image/gif"
@@ -41,6 +42,39 @@ func newPublicRuntime(t *testing.T) *Runtime {
 
 func dispatchPublicAPI(t *testing.T, runtime *Runtime, name string, args ...uint32) guest.WIPIReturn {
 	t.Helper()
+	stub := preparePublicAPICall(t, runtime, name, args...)
+	handled, err := runtime.dispatchTrap(context.Background(), stub&^1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatalf("%s trap was not handled", name)
+	}
+	return readPublicAPIReturn(t, runtime)
+}
+
+// dispatchPublicAPIContext dispatches like dispatchPublicAPI but under the
+// caller's context and hands back the dispatch error instead of failing.
+func dispatchPublicAPIContext(
+	t *testing.T,
+	ctx context.Context,
+	runtime *Runtime,
+	name string,
+	args ...uint32,
+) error {
+	t.Helper()
+	stub := preparePublicAPICall(t, runtime, name, args...)
+	handled, err := runtime.dispatchTrap(ctx, stub&^1)
+	if err == nil && !handled {
+		t.Fatalf("%s trap was not handled", name)
+	}
+	return err
+}
+
+// preparePublicAPICall loads the registers and stack words for one public API
+// call and returns its trampoline stub.
+func preparePublicAPICall(t *testing.T, runtime *Runtime, name string, args ...uint32) uint32 {
+	t.Helper()
 	for index := 0; index < 4; index++ {
 		value := uint32(0)
 		if index < len(args) {
@@ -69,13 +103,14 @@ func dispatchPublicAPI(t *testing.T, runtime *Runtime, name string, args ...uint
 	if !ok {
 		t.Fatalf("%s has no stub", name)
 	}
-	handled, err := runtime.dispatchTrap(context.Background(), stub&^1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !handled {
-		t.Fatalf("%s trap was not handled", name)
-	}
+	return stub
+}
+
+// readPublicAPIReturn reads the r0/r1 return pair after a dispatched call and
+// checks that the call returned to its link address.
+func readPublicAPIReturn(t *testing.T, runtime *Runtime) guest.WIPIReturn {
+	t.Helper()
+	const link = uint32(0x02000001)
 	low, err := runtime.CPU.ReadRegister(cpu.RegisterR0)
 	if err != nil {
 		t.Fatal(err)
@@ -85,7 +120,7 @@ func dispatchPublicAPI(t *testing.T, runtime *Runtime, name string, args ...uint
 		t.Fatal(err)
 	}
 	if pc, _ := runtime.CPU.ReadRegister(cpu.RegisterPC); pc != link&^1 {
-		t.Fatalf("%s returned to PC 0x%08x", name, pc)
+		t.Fatalf("returned to PC 0x%08x", pc)
 	}
 	return guest.WIPIReturn{Low: low, High: high}
 }
@@ -907,6 +942,126 @@ func TestWIPIRuntimeRaptorPixelOperationSwapsArguments(t *testing.T) {
 	}
 	if pixel != 0x00abcdef {
 		t.Fatalf("pixel callback result = 0x%08x", pixel)
+	}
+}
+
+// installPixelOperationContext allocates a graphics context whose foreground
+// is 0x00123456 and whose pixel operation is procedure 0x02000001 with
+// parameter 7, and returns the screen handle and context address.
+func installPixelOperationContext(t *testing.T, runtime *Runtime) (uint32, uint32) {
+	t.Helper()
+	screen := dispatchPublicAPI(t, runtime, "MC_grpGetScreenFrameBuffer", 0).Low
+	contextAddress, err := runtime.Heap.Allocate(60, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatchPublicAPI(t, runtime, "MC_grpInitContext", contextAddress)
+	dispatchPublicAPI(t, runtime, "MC_grpSetContext", contextAddress, 1, 0x00123456)
+	dispatchPublicAPI(t, runtime, "MC_grpSetContext", contextAddress, 5, 0x02000001)
+	dispatchPublicAPI(t, runtime, "MC_grpSetContext", contextAddress, 6, 7)
+	return screen, contextAddress
+}
+
+func readScreenPixel(t *testing.T, runtime *Runtime, screen uint32, x, y int) uint32 {
+	t.Helper()
+	framebuffer := runtime.Framebuffers[screen]
+	pixel, err := runtime.ReadU32(framebuffer.Pixels + uint32(y*framebuffer.Width+x)*4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pixel
+}
+
+// A pixel operation is a pure function of (procedure, parameter, source,
+// destination), so a filled rectangle over a uniform background costs one
+// guest call, not one per pixel; a new destination, or a new parameter, is a
+// new question.
+func TestWIPIRuntimeGraphicsPixelOperationIsMemoized(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	screen, contextAddress := installPixelOperationContext(t, runtime)
+
+	calls := 0
+	runtime.InvokeSync = func(_ context.Context, current GuestCallback) (uint32, error) {
+		calls++
+		return current.Args[0] ^ current.Args[1] ^ current.Args[2] ^ 0x00ff0000, nil
+	}
+	dispatchPublicAPI(t, runtime, "MC_grpFillRect", screen, 1, 1, 4, 3, contextAddress)
+	if calls != 1 {
+		t.Fatalf("a 4x3 fill over a cleared screen ran the operation %d times, want 1", calls)
+	}
+	want := uint32(0x00123456 ^ 7 ^ 0x00ff0000)
+	for _, point := range [][2]int{{1, 1}, {4, 3}} {
+		if pixel := readScreenPixel(t, runtime, screen, point[0], point[1]); pixel != want {
+			t.Fatalf("pixel %v = 0x%08x, want 0x%08x", point, pixel, want)
+		}
+	}
+	// Painting over the previous result presents a new destination pixel.
+	dispatchPublicAPI(t, runtime, "MC_grpFillRect", screen, 1, 1, 4, 3, contextAddress)
+	if calls != 2 {
+		t.Fatalf("a repaint over the result ran the operation %d times in total, want 2", calls)
+	}
+	// A new parameter is a new key even for a pixel pair already answered.
+	dispatchPublicAPI(t, runtime, "MC_grpSetContext", contextAddress, 6, 8)
+	dispatchPublicAPI(t, runtime, "MC_grpPutPixel", screen, 0, 0, contextAddress)
+	if calls != 3 {
+		t.Fatalf("a new parameter ran the operation %d times in total, want 3", calls)
+	}
+	dispatchPublicAPI(t, runtime, "MC_grpPutPixel", screen, 0, 1, contextAddress)
+	if calls != 3 {
+		t.Fatalf("a memoized pair ran the operation %d times in total, want 3", calls)
+	}
+	if pixel := readScreenPixel(t, runtime, screen, 0, 1); pixel != 0x00123456^8^0x00ff0000 {
+		t.Fatalf("memoized pixel = 0x%08x", pixel)
+	}
+}
+
+// A procedure that faults is retired once; the rest of the session composites
+// as if the context had no operation instead of failing every draw.
+func TestWIPIRuntimeGraphicsPixelOperationRetiresAfterAFault(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	screen, contextAddress := installPixelOperationContext(t, runtime)
+
+	calls := 0
+	runtime.InvokeSync = func(context.Context, GuestCallback) (uint32, error) {
+		calls++
+		return 0, errors.New("guest fault")
+	}
+	dispatchPublicAPI(t, runtime, "MC_grpFillRect", screen, 1, 1, 4, 3, contextAddress)
+	if calls != 1 {
+		t.Fatalf("a faulting operation ran %d times, want 1", calls)
+	}
+	if !runtime.brokenPixelOps[0x02000001] {
+		t.Fatal("a faulting procedure should have been retired")
+	}
+	if pixel := readScreenPixel(t, runtime, screen, 4, 3); pixel != 0x00123456 {
+		t.Fatalf("retired operation painted 0x%08x, want the plain foreground", pixel)
+	}
+	dispatchPublicAPI(t, runtime, "MC_grpPutPixel", screen, 0, 0, contextAddress)
+	if calls != 1 {
+		t.Fatalf("a retired procedure ran again (%d calls)", calls)
+	}
+}
+
+// A frame cancelled mid-callback is not a broken procedure: the error still
+// surfaces and the procedure stays installed for the next frame.
+func TestWIPIRuntimeGraphicsPixelOperationCancelledFrameIsNotRetired(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	screen, contextAddress := installPixelOperationContext(t, runtime)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	runtime.InvokeSync = func(callbackContext context.Context, _ GuestCallback) (uint32, error) {
+		return 0, callbackContext.Err()
+	}
+	err := dispatchPublicAPIContext(t, ctx, runtime, "MC_grpPutPixel", screen, 0, 0, contextAddress)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled pixel operation returned %v, want context.Canceled", err)
+	}
+	if runtime.brokenPixelOps[0x02000001] {
+		t.Fatal("a cancelled frame must not retire the procedure")
+	}
+	if len(runtime.pixelOpResults) != 0 {
+		t.Fatalf("a cancelled frame memoized %d results", len(runtime.pixelOpResults))
 	}
 }
 

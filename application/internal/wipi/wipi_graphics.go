@@ -605,34 +605,22 @@ func (r *Runtime) putPixelCoverage(
 	if err != nil {
 		return err
 	}
-	switch {
-	case context.pixelOperation != 0:
-		// MC_grpSetContext installs a guest pixel-operation callback. The public
-		// Samsung model recovered the firmware signature as op(srcPixel,
-		// dstPixel, param) and the model test pins that order. LGT's Raptor
-		// runtime hands the two pixels the other way round: 판타지포에버3's op
-		// returns its second argument unless that argument is the transparent
-		// key, and it only composites a recognizable in-game scene when the
-		// destination is passed first (source first left every blit returning
-		// the untouched destination, so the whole scene stayed black). The
-		// vendor split mirrors the divergent context struct handled by
-		// CompactGraphicsContext, so key the argument order off the same flag.
-		first, second := foreground, destination
-		if r.CompactGraphicsContext {
-			first, second = destination, foreground
-		}
-		foreground, err = r.CallGuestFunction(
-			context.pixelOperation,
-			first,
-			second,
-			uint32(context.pixelParameter),
-		)
+	operated := false
+	if context.pixelOperation != 0 {
+		merged, ok, err := r.pixelOperationResult(context, foreground, destination)
 		if err != nil {
 			return err
 		}
-		if coverage < 0xff {
-			foreground = r.blendDevicePixel(destination, foreground, uint32(coverage))
+		if ok {
+			foreground = merged
+			if coverage < 0xff {
+				foreground = r.blendDevicePixel(destination, foreground, uint32(coverage))
+			}
+			operated = true
 		}
+	}
+	switch {
+	case operated:
 	case context.xor:
 		foreground = destination ^ foreground
 		if coverage < 0xff {
@@ -650,6 +638,84 @@ func (r *Runtime) putPixelCoverage(
 		foreground = r.blendDevicePixel(destination, foreground, alpha)
 	}
 	return r.writeFramebufferPixel(fb, x, y, foreground)
+}
+
+// wipiPixelOpCacheLimit bounds the pixel-operation memo. A 16bpp title can
+// only ever produce 65536 distinct pixels per side, and a 32bpp title that
+// somehow exceeds the limit just starts a fresh table.
+const wipiPixelOpCacheLimit = 1 << 16
+
+// wipiPixelOpKey identifies one pixel-operation result. It carries the
+// procedure and its parameter, so installing a different operation misses the
+// memo instead of needing an explicit clear, and the two pixels in the order
+// the guest receives them, so the vendor argument swap is part of the key.
+type wipiPixelOpKey struct {
+	procedure uint32
+	parameter uint32
+	first     uint32
+	second    uint32
+}
+
+// pixelOperationResult runs the context's pixel-operation callback for one
+// pixel pair. It reports ok=false when the procedure has been retired, in
+// which case the caller composites as if no operation were installed.
+//
+// MC_grpSetContext installs a guest pixel-operation callback. The public
+// Samsung model recovered the firmware signature as op(srcPixel, dstPixel,
+// param) and the model test pins that order. LGT's Raptor runtime hands the
+// two pixels the other way round: 판타지포에버3's op returns its second
+// argument unless that argument is the transparent key, and it only
+// composites a recognizable in-game scene when the destination is passed
+// first (source first left every blit returning the untouched destination, so
+// the whole scene stayed black). The vendor split mirrors the divergent
+// context struct handled by CompactGraphicsContext, so key the argument order
+// off the same flag.
+//
+// Every call is a synchronous guest re-entry, and a filled rectangle or a
+// colour-keyed sprite blit asks for one per pixel, so the result is memoized
+// the way the KTF WIPI-C runtime memoizes MC_GrpPixelOpProc: the procedure is
+// a pure function of its three arguments. A procedure that faults or overruns
+// its budget is retired for the session rather than failing the draw, which
+// is also the KTF contract; a cancelled frame is not a broken procedure and
+// still surfaces as an error.
+func (r *Runtime) pixelOperationResult(
+	context wipiGraphicsContext,
+	foreground, destination uint32,
+) (uint32, bool, error) {
+	procedure := context.pixelOperation
+	if r.brokenPixelOps[procedure] {
+		return 0, false, nil
+	}
+	first, second := foreground, destination
+	if r.CompactGraphicsContext {
+		first, second = destination, foreground
+	}
+	key := wipiPixelOpKey{
+		procedure: procedure,
+		parameter: uint32(context.pixelParameter),
+		first:     first,
+		second:    second,
+	}
+	if merged, ok := r.pixelOpResults[key]; ok {
+		return merged, true, nil
+	}
+	merged, err := r.CallGuestFunction(procedure, first, second, key.parameter)
+	if err != nil {
+		// A missing guest runner is a host wiring fault, not a guest one.
+		if r.InvokeSync == nil {
+			return 0, false, err
+		}
+		if active := r.activeContext; active != nil && active.Err() != nil {
+			return 0, false, err
+		}
+		r.brokenPixelOps[procedure] = true
+		return 0, false, nil
+	}
+	if len(r.pixelOpResults) >= wipiPixelOpCacheLimit {
+		clear(r.pixelOpResults)
+	}
+	r.pixelOpResults[key] = merged
+	return merged, true, nil
 }
 
 func (r *Runtime) blendDevicePixel(destination, source, alpha uint32) uint32 {

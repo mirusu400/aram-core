@@ -225,7 +225,17 @@ type Runtime struct {
 	// imageAlpha caches the transparency of each decoded MC_GrpImage, keyed
 	// by the image handle. A 16bpp framebuffer cannot hold alpha, so the
 	// decoded surface is the only place it survives; see wipi_image_alpha.go.
-	imageAlpha       map[uint32]*wipiImageAlpha
+	imageAlpha map[uint32]*wipiImageAlpha
+	// pixelOpResults memoizes the MC_GrpContext pixel-operation callback by
+	// (procedure, parameter, pixel pair). The procedure is a pure function
+	// of its arguments, so a sprite repainted over the same background every
+	// frame costs one guest call per distinct pair instead of one per pixel.
+	// It is derived state: never saved, cleared on Reset and RestoreState.
+	pixelOpResults map[wipiPixelOpKey]uint32
+	// brokenPixelOps names procedures that faulted or overran their budget.
+	// A retired procedure behaves as if the context never installed one, so
+	// a broken callback costs the session one fault instead of one per pixel.
+	brokenPixelOps   map[uint32]bool
 	TimerServices    map[uint32]shared.ServiceID
 	fileServices     map[int32]shared.ServiceID
 	DatabaseServices map[string]shared.ServiceID
@@ -452,6 +462,8 @@ func NewRuntimeForProfile(
 		surfaceServices:  make(map[uint32]shared.ServiceID),
 		assetServices:    make(map[uint32]shared.ServiceID),
 		imageAlpha:       make(map[uint32]*wipiImageAlpha),
+		pixelOpResults:   make(map[wipiPixelOpKey]uint32),
+		brokenPixelOps:   make(map[uint32]bool),
 		TimerServices:    make(map[uint32]shared.ServiceID),
 		fileServices:     make(map[int32]shared.ServiceID),
 		DatabaseServices: make(map[string]shared.ServiceID),
@@ -556,6 +568,8 @@ func (r *Runtime) Reset() error {
 	r.surfaceServices = make(map[uint32]shared.ServiceID)
 	r.assetServices = make(map[uint32]shared.ServiceID)
 	r.imageAlpha = make(map[uint32]*wipiImageAlpha)
+	r.pixelOpResults = make(map[wipiPixelOpKey]uint32)
+	r.brokenPixelOps = make(map[uint32]bool)
 	r.TimerServices = make(map[uint32]shared.ServiceID)
 	r.fileServices = make(map[int32]shared.ServiceID)
 	r.DatabaseServices = make(map[string]shared.ServiceID)
