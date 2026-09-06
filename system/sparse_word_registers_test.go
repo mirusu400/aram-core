@@ -7,12 +7,8 @@ import (
 
 func TestSparseWordRegistersAllowsOnlyConfiguredWords(t *testing.T) {
 	device, err := NewSparseWordRegisters([]uint32{0x3d0, 0x240, 0x280})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(0x280, Width32, 2); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, device.Write(0x280, Width32, 2))
 	value, err := device.Read(0x280, Width32)
 	if err != nil || value != 2 {
 		t.Fatalf("latched word = %#x error %v", value, err)
@@ -34,13 +30,9 @@ func TestSparseWordRegistersValidatesLayoutAndState(t *testing.T) {
 	device, _ := NewSparseWordRegisters([]uint32{0x240, 0x280})
 	_ = device.Write(0x280, Width32, 2)
 	state, err := device.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	restored, _ := NewSparseWordRegisters([]uint32{0x280, 0x240})
-	if err := restored.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restored.LoadState(state))
 	value, _ := restored.Read(0x280, Width32)
 	if value != 2 {
 		t.Fatalf("restored word = %#x", value)
@@ -49,9 +41,7 @@ func TestSparseWordRegistersValidatesLayoutAndState(t *testing.T) {
 	if err := mismatch.LoadState(state); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("mismatched layout state error = %v", err)
 	}
-	if err := restored.Reset(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restored.Reset())
 	value, _ = restored.Read(0x280, Width32)
 	if value != 0 {
 		t.Fatalf("reset word = %#x", value)
@@ -63,18 +53,12 @@ func TestSparseWordRegistersApplyConfiguredResetValues(t *testing.T) {
 		Offsets: []uint32{0, 0x40},
 		Resets:  []SparseWordRegisterReset{{Offset: 0x40, Value: 0x00800000}},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if value, err := device.Read(0x40, Width32); err != nil || value != 0x00800000 {
 		t.Fatalf("configured reset value = %#x, %v", value, err)
 	}
-	if err := device.Write(0x40, Width32, 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Reset(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(0x40, Width32, 1))
+	check(t, device.Reset())
 	if value, _ := device.Read(0x40, Width32); value != 0x00800000 {
 		t.Fatalf("reset value after reset = %#x", value)
 	}

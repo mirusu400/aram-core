@@ -17,9 +17,7 @@ func TestARMJITMemoryFamiliesUseDirectMicroOps(t *testing.T) {
 	} {
 		binary.LittleEndian.PutUint32(code[index*4:], instruction)
 	}
-	if err := backend.WriteMemory(0x1000, code); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1000, code))
 	block := backend.armJITBlockAt(0x1000)
 	if block == nil || len(block.arm) != 4 {
 		t.Fatalf("ARM block = %#v, want four instructions", block)

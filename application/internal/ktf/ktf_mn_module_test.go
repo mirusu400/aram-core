@@ -19,22 +19,13 @@ func TestKTFRegisterMNClassesStopsAtUnrelocatedSentinelRecord(t *testing.T) {
 		ClientName: "client.bin0",
 		Client:     make([]byte, 4096),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	t.Cleanup(func() { _ = runtime.CPU.Close() })
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.MapImageAndHost())
 
 	name, err := runtime.allocateBytes(append([]byte("Real"), 0), true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	descriptor, err := runtime.AllocateWords(9)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	descriptor := allocWords(t, runtime, 9)
 	if err := runtime.writeWords(descriptor, []uint32{
 		name, 0, 0, 0, 0, 0, 0, 0, 0,
 	}); err != nil {
@@ -78,9 +69,7 @@ func TestKTFRegisterMNClassesStopsAtUnrelocatedSentinelRecord(t *testing.T) {
 		{sentinel + 20, outsideImage}, // next: outside every mapped region
 	}
 	for _, field := range fields {
-		if err := runtime.WriteU32(field.address, field.value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.WriteU32(field.address, field.value))
 	}
 
 	if err := runtime.registerMNClasses(moduleTable, 0); err != nil {

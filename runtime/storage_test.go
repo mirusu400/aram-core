@@ -12,13 +12,9 @@ func newTestStorage(t *testing.T) (*Registry, *Clock, *Storage) {
 	t.Helper()
 	registry := NewRegistry(64)
 	clock, err := NewClock(0, 0, "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	storage, err := NewStorage(registry, clock, StorageLimits{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	return registry, clock, storage
 }
 
@@ -29,17 +25,11 @@ func TestStorageSeparatesPackageAndMutableNamespaces(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := storage.WriteFile(NamespacePrivate, "config/data.bin", []byte{4, 5}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, storage.WriteFile(NamespacePrivate, "config/data.bin", []byte{4, 5}))
 	resource, err := storage.ReadFile(NamespacePackage, "/config/data.bin")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	private, err := storage.ReadFile(NamespacePrivate, "/config/data.bin")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !bytes.Equal(resource, []byte{1, 2, 3}) ||
 		!bytes.Equal(private, []byte{4, 5}) {
 		t.Fatalf("resource = %v, private = %v", resource, private)
@@ -47,16 +37,10 @@ func TestStorageSeparatesPackageAndMutableNamespaces(t *testing.T) {
 	if err := storage.WriteFile(NamespacePackage, "config/data.bin", nil); !errors.Is(err, ErrReadOnly) {
 		t.Fatalf("write package error = %v", err)
 	}
-	if err := clock.Advance(time.Second); err != nil {
-		t.Fatal(err)
-	}
-	if err := storage.WriteFile(NamespacePrivate, "config/data.bin", []byte{6}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, clock.Advance(time.Second))
+	check(t, storage.WriteFile(NamespacePrivate, "config/data.bin", []byte{6}))
 	info, err := storage.Stat(NamespacePrivate, "config/data.bin")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if info.Modified != time.Second || info.Size != 1 {
 		t.Fatalf("private file info = %+v", info)
 	}
@@ -98,17 +82,11 @@ func TestStorageRejectsEscapingAndHostPaths(t *testing.T) {
 
 func TestStorageHandlesHaveIndependentPositionsAndStableIDs(t *testing.T) {
 	_, _, storage := newTestStorage(t)
-	if err := storage.WriteFile(NamespacePrivate, "save.dat", []byte("abcdef")); err != nil {
-		t.Fatal(err)
-	}
+	check(t, storage.WriteFile(NamespacePrivate, "save.dat", []byte("abcdef")))
 	first, err := storage.Open(1, NamespacePrivate, "save.dat", OpenRead|OpenWrite)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	second, err := storage.Open(1, NamespacePrivate, "save.dat", OpenRead)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	data, err := storage.Read(1, first, 2)
 	if err != nil || string(data) != "ab" {
 		t.Fatalf("first read = %q, %v", data, err)
@@ -124,15 +102,11 @@ func TestStorageHandlesHaveIndependentPositionsAndStableIDs(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := storage.ReadFile(NamespacePrivate, "save.dat")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if string(got) != "aZcdef" {
 		t.Fatalf("updated file = %q", got)
 	}
-	if err := storage.Close(1, first); err != nil {
-		t.Fatal(err)
-	}
+	check(t, storage.Close(1, first))
 	if _, err := storage.Read(1, first, 1); !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrStaleID) {
 		t.Fatalf("read closed handle error = %v", err)
 	}
@@ -141,32 +115,24 @@ func TestStorageHandlesHaveIndependentPositionsAndStableIDs(t *testing.T) {
 func TestStorageFailedAppendDoesNotMoveHandle(t *testing.T) {
 	registry := NewRegistry(8)
 	clock, err := NewClock(0, 0, "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	limits := DefaultStorageLimits()
 	limits.MaxFileBytes = 6
 	limits.MaxStorageBytes = 6
 	storage, err := NewStorage(registry, clock, limits)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := storage.WriteFile(
+	check(t, err)
+	check(t, storage.WriteFile(
 		NamespacePrivate,
 		"save.dat",
 		[]byte("abcdef"),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	handle, err := storage.Open(
 		1,
 		NamespacePrivate,
 		"save.dat",
 		OpenRead|OpenWrite|OpenAppend,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := storage.Seek(1, handle, 0, SeekStart); err != nil {
 		t.Fatal(err)
 	}
@@ -185,35 +151,27 @@ func TestStorageFailedAppendDoesNotMoveHandle(t *testing.T) {
 
 func TestStorageDirectoriesRenameOpenFilesAndRoundTrip(t *testing.T) {
 	registry, _, storage := newTestStorage(t)
-	if err := storage.MakeDirectory(
+	check(t, storage.MakeDirectory(
 		NamespacePrivate,
 		"saves/slot1",
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := storage.WriteFile(
+	))
+	check(t, storage.WriteFile(
 		NamespacePrivate,
 		"saves/slot1/data.bin",
 		[]byte("save"),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	handle, err := storage.Open(
 		7,
 		NamespacePrivate,
 		"saves/slot1/data.bin",
 		OpenRead,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := storage.RenameDirectory(
+	check(t, err)
+	check(t, storage.RenameDirectory(
 		NamespacePrivate,
 		"saves",
 		"archive",
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	if storage.DirectoryExists(NamespacePrivate, "saves") ||
 		!storage.DirectoryExists(NamespacePrivate, "archive/slot1") {
 		t.Fatal("renamed directory tree is inconsistent")
@@ -235,16 +193,10 @@ func TestStorageDirectoriesRenameOpenFilesAndRoundTrip(t *testing.T) {
 
 	state := storage.Snapshot()
 	cloneClock, err := NewClock(0, 0, "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	clone, err := NewStorage(registry, cloneClock, StorageLimits{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := clone.Restore(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, clone.Restore(state))
 	if !reflect.DeepEqual(clone.Snapshot(), state) {
 		t.Fatal("directory state did not round-trip")
 	}
@@ -253,22 +205,16 @@ func TestStorageDirectoriesRenameOpenFilesAndRoundTrip(t *testing.T) {
 func TestStorageDirectoryRenameRejectsExpandedPathAtomically(t *testing.T) {
 	registry := NewRegistry(8)
 	clock, err := NewClock(0, 0, "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	limits := DefaultStorageLimits()
 	limits.MaxPathBytes = 12
 	storage, err := NewStorage(registry, clock, limits)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := storage.WriteFile(
+	check(t, err)
+	check(t, storage.WriteFile(
 		NamespacePrivate,
 		"a/12345678",
 		[]byte("save"),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	before := storage.Snapshot()
 	if err := storage.RenameDirectory(
 		NamespacePrivate,
@@ -314,42 +260,26 @@ func TestStoragePackageDirectoriesAreAtomicAndReadOnly(t *testing.T) {
 func TestRecordStoreUsesStableNonReusedRecordIDs(t *testing.T) {
 	_, _, storage := newTestStorage(t)
 	store, err := storage.CreateRecordStore(9, "game-rms")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	first, err := storage.AddRecord(9, store, []byte("one"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	second, err := storage.AddRecord(9, store, []byte("two"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := storage.DeleteRecord(9, store, first); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, storage.DeleteRecord(9, store, first))
 	third, err := storage.AddRecord(9, store, []byte("three"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if first != 1 || second != 2 || third != 3 {
 		t.Fatalf("record IDs = %d, %d, %d", first, second, third)
 	}
 	count, err := storage.RecordCount(9, store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	next, err := storage.NextRecordID(9, store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if count != 2 || next != 4 {
 		t.Fatalf("record count/next = %d/%d, want 2/4", count, next)
 	}
 	ids, err := storage.RecordIDs(9, store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !reflect.DeepEqual(ids, []uint32{2, 3}) {
 		t.Fatalf("record IDs = %v", ids)
 	}
@@ -357,17 +287,11 @@ func TestRecordStoreUsesStableNonReusedRecordIDs(t *testing.T) {
 
 func TestStorageRestoreValidatesBeforeMutation(t *testing.T) {
 	registry, _, storage := newTestStorage(t)
-	if err := storage.WriteFile(NamespacePrivate, "save.dat", []byte("original")); err != nil {
-		t.Fatal(err)
-	}
+	check(t, storage.WriteFile(NamespacePrivate, "save.dat", []byte("original")))
 	handle, err := storage.Open(2, NamespacePrivate, "save.dat", OpenRead)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	store, err := storage.CreateRecordStore(2, "rms")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := storage.AddRecord(2, store, []byte("record")); err != nil {
 		t.Fatal(err)
 	}
@@ -402,16 +326,10 @@ func TestStorageRestoreValidatesBeforeMutation(t *testing.T) {
 	}
 
 	cloneClock, err := NewClock(0, 0, "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	clone, err := NewStorage(registry, cloneClock, StorageLimits{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := clone.Restore(before); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, clone.Restore(before))
 	if !reflect.DeepEqual(clone.Snapshot(), before) {
 		t.Fatal("storage state did not round-trip")
 	}
@@ -420,24 +338,16 @@ func TestStorageRestoreValidatesBeforeMutation(t *testing.T) {
 func TestStorageOpenRegistryFailureDoesNotCreateOrTruncate(t *testing.T) {
 	registry := NewRegistry(1)
 	clock, err := NewClock(0, 0, "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	storage, err := NewStorage(registry, clock, StorageLimits{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := storage.WriteFile(
+	check(t, err)
+	check(t, storage.WriteFile(
 		NamespacePrivate,
 		"existing.dat",
 		[]byte("keep"),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	occupied, err := registry.Create(99, KindSurface)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	beforeStorage, beforeRegistry := storage.Snapshot(), registry.Snapshot()
 	if _, err := storage.Open(
 		1,
@@ -459,9 +369,7 @@ func TestStorageOpenRegistryFailureDoesNotCreateOrTruncate(t *testing.T) {
 		!reflect.DeepEqual(registry.Snapshot(), beforeRegistry) {
 		t.Fatal("failed open create/truncate mutated storage or registry")
 	}
-	if err := registry.Destroy(occupied, 99, KindSurface); err != nil {
-		t.Fatal(err)
-	}
+	check(t, registry.Destroy(occupied, 99, KindSurface))
 }
 
 func TestStoragePersistenceRoundTripExcludesProcessLocalState(t *testing.T) {
@@ -471,42 +379,28 @@ func TestStoragePersistenceRoundTripExcludesProcessLocalState(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := source.WriteFile(
+	check(t, source.WriteFile(
 		NamespacePrivate,
 		"saves/slot/data.bin",
 		[]byte("private-save"),
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := source.WriteFile(
+	))
+	check(t, source.WriteFile(
 		NamespaceShared,
 		"shared/config.bin",
 		[]byte("shared-save"),
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := source.WriteFile(
+	))
+	check(t, source.WriteFile(
 		NamespaceTemporary,
 		"cache.bin",
 		[]byte("source-temporary"),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	store, err := source.CreateRecordStore(27, "game-rms")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	first, err := source.AddRecord(27, store, []byte("discarded"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	second, err := source.AddRecord(27, store, []byte("record-two"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := source.DeleteRecord(27, store, first); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, source.DeleteRecord(27, store, first))
 
 	exported := source.ExportPersistence()
 	if len(exported.Files) == 0 || len(exported.RecordStores) != 1 ||
@@ -519,13 +413,9 @@ func TestStoragePersistenceRoundTripExcludesProcessLocalState(t *testing.T) {
 		NamespacePrivate,
 		"saves/slot/data.bin",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	recordData, err := source.Record(27, store, second)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if string(privateData) != "private-save" ||
 		string(recordData) != "record-two" {
 		t.Fatal("persistence export aliased live storage")
@@ -538,24 +428,18 @@ func TestStoragePersistenceRoundTripExcludesProcessLocalState(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := destination.WriteFile(
+	check(t, destination.WriteFile(
 		NamespaceTemporary,
 		"cache.bin",
 		[]byte("destination-temporary"),
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := destination.WriteFile(
+	))
+	check(t, destination.WriteFile(
 		NamespacePrivate,
 		"old.bin",
 		[]byte("replace-me"),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	replacedStore, err := destination.CreateRecordStore(88, "replace-me")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := destination.AddRecord(
 		88,
 		replacedStore,
@@ -563,9 +447,7 @@ func TestStoragePersistenceRoundTripExcludesProcessLocalState(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := destination.ImportPersistence(exported); err != nil {
-		t.Fatal(err)
-	}
+	check(t, destination.ImportPersistence(exported))
 	for namespace, nameAndWant := range map[Namespace][2]string{
 		NamespacePackage:   {"assets/runtime.bin", "destination-package"},
 		NamespacePrivate:   {"saves/slot/data.bin", "private-save"},
@@ -605,9 +487,7 @@ func TestStoragePersistenceRoundTripExcludesProcessLocalState(t *testing.T) {
 		t.Fatalf("persistence did not round-trip:\ngot  %+v\nwant %+v", after, exported)
 	}
 	restoredStore, err := destination.OpenRecordStore(27, "game-rms")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	ids, err := destination.RecordIDs(27, restoredStore)
 	if err != nil || !reflect.DeepEqual(ids, []uint32{second}) {
 		t.Fatalf("restored record IDs = %v, %v", ids, err)
@@ -620,24 +500,20 @@ func TestStoragePersistenceRoundTripExcludesProcessLocalState(t *testing.T) {
 
 func TestStoragePersistenceRejectsInvalidStateAtomically(t *testing.T) {
 	_, _, source := newTestStorage(t)
-	if err := source.WriteFile(
+	check(t, source.WriteFile(
 		NamespacePrivate,
 		"saves/data.bin",
 		[]byte("save"),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	persistence := source.ExportPersistence()
 	persistence.Files[0].Path = "/missing/data.bin"
 
 	registry, _, destination := newTestStorage(t)
-	if err := destination.WriteFile(
+	check(t, destination.WriteFile(
 		NamespacePrivate,
 		"existing.bin",
 		[]byte("existing"),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	beforeStorage, beforeRegistry := destination.Snapshot(), registry.Snapshot()
 	if err := destination.ImportPersistence(persistence); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("ImportPersistence invalid state error = %v", err)
@@ -657,13 +533,9 @@ func TestStoragePersistenceRegistryFailureIsAtomic(t *testing.T) {
 
 	registry := NewRegistry(1)
 	clock, err := NewClock(0, 0, "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	destination, err := NewStorage(registry, clock, StorageLimits{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := registry.Create(99, KindSurface); err != nil {
 		t.Fatal(err)
 	}
@@ -679,35 +551,23 @@ func TestStoragePersistenceRegistryFailureIsAtomic(t *testing.T) {
 
 func TestStoragePersistenceRebasesTimestampsForNewRuntime(t *testing.T) {
 	source, err := NewServices(Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := source.Clock.Advance(time.Second); err != nil {
-		t.Fatal(err)
-	}
-	if err := source.Storage.WriteFile(
+	check(t, err)
+	check(t, source.Clock.Advance(time.Second))
+	check(t, source.Storage.WriteFile(
 		NamespacePrivate,
 		"saves/slot.bin",
 		[]byte("save"),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	persistence := source.Storage.ExportPersistence()
 
 	destination, err := NewServices(Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := destination.Storage.ImportPersistence(persistence); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, destination.Storage.ImportPersistence(persistence))
 	info, err := destination.Storage.Stat(
 		NamespacePrivate,
 		"saves/slot.bin",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if info.Modified != destination.Clock.Monotonic() {
 		t.Fatalf(
 			"imported timestamp = %s, want current runtime time %s",

@@ -8,20 +8,14 @@ import (
 func presentedScreen(t *testing.T) (*Graphics, ServiceID) {
 	t.Helper()
 	graphics, err := NewGraphics(NewRegistry(16), GraphicsLimits{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	surface, err := graphics.CreateSurface(1, SurfaceDescriptor{
 		Width:  2,
 		Height: 1,
 		Format: PixelRGBA8888,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := graphics.SetScreen(1, surface); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, graphics.SetScreen(1, surface))
 	return graphics, surface
 }
 
@@ -37,9 +31,7 @@ func TestLastFramePresentationIdentifiesTheCommittedFrame(t *testing.T) {
 		t.Fatal("an image was materialized before any present")
 	}
 
-	if err := graphics.SetPixel(1, surface, 0, 0, RGB(255, 0, 0)); err != nil {
-		t.Fatal(err)
-	}
+	check(t, graphics.SetPixel(1, surface, 0, 0, RGB(255, 0, 0)))
 	if _, err := graphics.Present(1, surface, Rectangle{}); err != nil {
 		t.Fatal(err)
 	}
@@ -61,9 +53,7 @@ func TestLastFramePresentationIdentifiesTheCommittedFrame(t *testing.T) {
 		t.Fatal("identical pixels produced a different content hash")
 	}
 
-	if err := graphics.SetPixel(1, surface, 1, 0, RGB(0, 255, 0)); err != nil {
-		t.Fatal(err)
-	}
+	check(t, graphics.SetPixel(1, surface, 1, 0, RGB(0, 255, 0)))
 	if _, err := graphics.Present(1, surface, Rectangle{}); err != nil {
 		t.Fatal(err)
 	}
@@ -74,9 +64,7 @@ func TestLastFramePresentationIdentifiesTheCommittedFrame(t *testing.T) {
 
 func TestLastFrameImageDoesNotAliasTheService(t *testing.T) {
 	graphics, surface := presentedScreen(t)
-	if err := graphics.SetPixel(1, surface, 0, 0, RGB(255, 0, 0)); err != nil {
-		t.Fatal(err)
-	}
+	check(t, graphics.SetPixel(1, surface, 0, 0, RGB(255, 0, 0)))
 	if _, err := graphics.Present(1, surface, Rectangle{}); err != nil {
 		t.Fatal(err)
 	}
@@ -93,18 +81,12 @@ func TestLastFrameImageDoesNotAliasTheService(t *testing.T) {
 
 func TestPresentCommitReusesOwnedPixelsWithoutExposingThem(t *testing.T) {
 	graphics, surface := presentedScreen(t)
-	if err := graphics.SetPixel(1, surface, 0, 0, RGB(255, 0, 0)); err != nil {
-		t.Fatal(err)
-	}
+	check(t, graphics.SetPixel(1, surface, 0, 0, RGB(255, 0, 0)))
 	first, err := graphics.PresentCommit(1, surface, Rectangle{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	backing := &graphics.lastFrame.RGBA[0]
 	second, err := graphics.PresentCommit(1, surface, Rectangle{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if second.Sequence != first.Sequence+1 || !second.Dirty.Empty() {
 		t.Fatalf("unchanged presentation = %+v after %+v", second, first)
 	}
@@ -116,9 +98,7 @@ func TestPresentCommitReusesOwnedPixelsWithoutExposingThem(t *testing.T) {
 	if &graphics.lastFrame.RGBA[0] != backing {
 		t.Fatal("unchanged PresentCommit replaced its owned RGBA buffer")
 	}
-	if err := graphics.SetPixel(1, surface, 1, 0, RGB(0, 255, 0)); err != nil {
-		t.Fatal(err)
-	}
+	check(t, graphics.SetPixel(1, surface, 1, 0, RGB(0, 255, 0)))
 	if _, err := graphics.PresentCommit(1, surface, Rectangle{}); err != nil {
 		t.Fatal(err)
 	}
@@ -126,9 +106,7 @@ func TestPresentCommitReusesOwnedPixelsWithoutExposingThem(t *testing.T) {
 		t.Fatal("dirty PresentCommit did not reuse its sized RGBA buffer")
 	}
 	destination := make([]byte, 2*4+8)
-	if err := graphics.CopyLastFrameRGBA(destination, 2*4+8); err != nil {
-		t.Fatal(err)
-	}
+	check(t, graphics.CopyLastFrameRGBA(destination, 2*4+8))
 	if destination[0] != 255 || destination[4+1] != 255 {
 		t.Fatalf("copied committed RGBA = %v", destination[:8])
 	}
@@ -149,18 +127,12 @@ func TestPresentCommitReusesOwnedPixelsWithoutExposingThem(t *testing.T) {
 
 func BenchmarkLastFrameImageSingleCopy(b *testing.B) {
 	graphics, err := NewGraphics(NewRegistry(16), GraphicsLimits{})
-	if err != nil {
-		b.Fatal(err)
-	}
+	check(b, err)
 	surface, err := graphics.CreateSurface(1, SurfaceDescriptor{
 		Width: 240, Height: 320, Format: PixelRGBA8888,
 	})
-	if err != nil {
-		b.Fatal(err)
-	}
-	if err := graphics.SetScreen(1, surface); err != nil {
-		b.Fatal(err)
-	}
+	check(b, err)
+	check(b, graphics.SetScreen(1, surface))
 	if _, err := graphics.Present(1, surface, Rectangle{}); err != nil {
 		b.Fatal(err)
 	}
@@ -178,18 +150,12 @@ func BenchmarkLastFrameImageSingleCopy(b *testing.B) {
 
 func BenchmarkPresentCommitOwnedBuffer(b *testing.B) {
 	graphics, err := NewGraphics(NewRegistry(16), GraphicsLimits{})
-	if err != nil {
-		b.Fatal(err)
-	}
+	check(b, err)
 	surface, err := graphics.CreateSurface(1, SurfaceDescriptor{
 		Width: 240, Height: 320, Format: PixelRGB565,
 	})
-	if err != nil {
-		b.Fatal(err)
-	}
-	if err := graphics.SetScreen(1, surface); err != nil {
-		b.Fatal(err)
-	}
+	check(b, err)
+	check(b, graphics.SetScreen(1, surface))
 	if _, err := graphics.PresentCommit(1, surface, Rectangle{}); err != nil {
 		b.Fatal(err)
 	}
@@ -208,26 +174,20 @@ func BenchmarkPresentCommitOwnedBuffer(b *testing.B) {
 // surface's dirty rectangle, so nothing would ever present them.
 func TestPresentOutsideTheSurfaceKeepsDrawnPixels(t *testing.T) {
 	graphics, surface := presentedScreen(t)
-	if err := graphics.SetPixel(1, surface, 0, 0, RGB(255, 0, 0)); err != nil {
-		t.Fatal(err)
-	}
+	check(t, graphics.SetPixel(1, surface, 0, 0, RGB(255, 0, 0)))
 	if _, err := graphics.Present(1, surface, Rectangle{}); err != nil {
 		t.Fatal(err)
 	}
 	_, first := graphics.LastFramePresentation()
 
-	if err := graphics.SetPixel(1, surface, 1, 0, RGB(0, 255, 0)); err != nil {
-		t.Fatal(err)
-	}
+	check(t, graphics.SetPixel(1, surface, 1, 0, RGB(0, 255, 0)))
 	frame, err := graphics.Present(1, surface, Rectangle{
 		X:      900,
 		Y:      900,
 		Width:  1,
 		Height: 1,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, second := graphics.LastFramePresentation(); second == first {
 		t.Fatalf("the drawn pixel was dropped: hash stayed %x", second)
 	}
@@ -243,9 +203,7 @@ func TestPresentOutsideTheSurfaceKeepsDrawnPixels(t *testing.T) {
 // the digest alone until something asks for it.
 func TestPresentCommitDefersTheFrameDigest(t *testing.T) {
 	graphics, surface := presentedScreen(t)
-	if err := graphics.SetPixel(1, surface, 0, 0, RGB(255, 0, 0)); err != nil {
-		t.Fatal(err)
-	}
+	check(t, graphics.SetPixel(1, surface, 0, 0, RGB(255, 0, 0)))
 	if _, err := graphics.PresentCommit(1, surface, Rectangle{}); err != nil {
 		t.Fatal(err)
 	}
@@ -271,9 +229,7 @@ func TestPresentCommitDefersTheFrameDigest(t *testing.T) {
 		t.Fatal("an unchanged present threw its digest away")
 	}
 	// New pixels invalidate it again.
-	if err := graphics.SetPixel(1, surface, 1, 0, RGB(0, 255, 0)); err != nil {
-		t.Fatal(err)
-	}
+	check(t, graphics.SetPixel(1, surface, 1, 0, RGB(0, 255, 0)))
 	if _, err := graphics.PresentCommit(1, surface, Rectangle{}); err != nil {
 		t.Fatal(err)
 	}

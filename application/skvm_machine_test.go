@@ -27,9 +27,7 @@ func TestFactoryInfersSKVMFramebufferFromResources(t *testing.T) {
 		ReaderAt: bytes.NewReader(data),
 		Size:     int64(len(data)),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	t.Cleanup(func() { _ = created.Close() })
 	if bounds := created.Framebuffer().Bounds(); bounds.Dx() != 120 ||
 		bounds.Dy() != 160 {
@@ -51,9 +49,7 @@ func TestFactoryCreatesSKVMMachineWithSharedServices(t *testing.T) {
 		ReaderAt: bytes.NewReader(data),
 		Size:     int64(len(data)),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	machine, ok := created.(*skvmhost.Machine)
 	if !ok {
 		t.Fatalf("Factory.Create returned %T, want *skvmhost.Machine", created)
@@ -75,17 +71,11 @@ func TestFactoryCreatesSKVMMachineWithSharedServices(t *testing.T) {
 		machine.Owner(),
 		"installedData",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	record, err := machine.Services().Storage.Record(machine.Owner(), store, 4)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	nextID, err := machine.Services().Storage.NextRecordID(machine.Owner(), store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !bytes.Equal(record, []byte("second")) || nextID != 9 {
 		t.Fatalf("installed record store: record=%q next_id=%d", record, nextID)
 	}
@@ -98,15 +88,11 @@ func TestSKVMMachineLifecycleResetAndStateRoundTrip(t *testing.T) {
 		ReaderAt: bytes.NewReader(data),
 		Size:     int64(len(data)),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	machine := created.(*skvmhost.Machine)
 	t.Cleanup(func() { _ = machine.Close() })
 
-	if err := machine.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.Start(context.Background()))
 	if machine.State() != machinecore.StatePaused {
 		t.Fatalf("state after start = %s, want paused", machine.State())
 	}
@@ -118,28 +104,20 @@ func TestSKVMMachineLifecycleResetAndStateRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	frameStartedAt := machine.Services().Clock.Monotonic()
-	if err := machine.StepFrame(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.StepFrame(context.Background()))
 	savedClock := machine.Services().Clock.Monotonic()
 	if got, want := machine.FrameQuantum(), savedClock-frameStartedAt; got != want {
 		t.Fatalf("frame quantum = %s, want actual clock advance %s", got, want)
 	}
 	savedInstructions := machine.VM().Instructions
 	var saved bytes.Buffer
-	if err := machine.SaveState(&saved); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.SaveState(&saved))
 
-	if err := machine.StepFrame(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.StepFrame(context.Background()))
 	if machine.Services().Clock.Monotonic() == savedClock {
 		t.Fatal("second frame did not advance virtual time")
 	}
-	if err := machine.LoadState(bytes.NewReader(saved.Bytes())); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.LoadState(bytes.NewReader(saved.Bytes())))
 	if machine.Services().Clock.Monotonic() != savedClock ||
 		machine.VM().Instructions != savedInstructions ||
 		machine.State() != machinecore.StatePaused {
@@ -150,41 +128,29 @@ func TestSKVMMachineLifecycleResetAndStateRoundTrip(t *testing.T) {
 			machine.State(),
 		)
 	}
-	if err := machine.Services().Storage.WriteFile(
+	check(t, machine.Services().Storage.WriteFile(
 		shared.NamespacePrivate,
 		"/save.dat",
 		[]byte("persistent SKVM file"),
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := machine.Services().Storage.WriteFile(
+	))
+	check(t, machine.Services().Storage.WriteFile(
 		shared.NamespaceTemporary,
 		"/discard.tmp",
 		[]byte("temporary"),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	store, err := machine.Services().Storage.CreateRecordStore(
 		machine.Owner(),
 		"scores",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	recordID, err := machine.Services().Storage.AddRecord(
 		machine.Owner(),
 		store,
 		[]byte{9, 8, 7, 6},
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := machine.Stop(); err != nil {
-		t.Fatal(err)
-	}
-	if err := machine.Reset(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, machine.Stop())
+	check(t, machine.Reset(context.Background()))
 	if machine.State() != machinecore.StateReady ||
 		machine.Services().Clock.Monotonic() != 0 {
 		t.Fatalf(
@@ -210,9 +176,7 @@ func TestSKVMMachineLifecycleResetAndStateRoundTrip(t *testing.T) {
 		machine.Owner(),
 		"scores",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	persistedRecord, err := machine.Services().Storage.Record(
 		machine.Owner(),
 		persistedStore,
@@ -272,16 +236,12 @@ func syntheticSKVMZIP(t *testing.T, files map[string][]byte) []byte {
 	writer := zip.NewWriter(&output)
 	for name, data := range files {
 		entry, err := writer.Create(name)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		if _, err := entry.Write(data); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := writer.Close(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, writer.Close())
 	return output.Bytes()
 }
 
@@ -302,15 +262,11 @@ func syntheticSKVMRecordStoreMetadata(
 		databaseSize,
 		uint64(0x0102030405060708),
 	} {
-		if err := binary.Write(&output, binary.BigEndian, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, binary.Write(&output, binary.BigEndian, value))
 	}
 	for _, record := range records {
 		for _, value := range record {
-			if err := binary.Write(&output, binary.BigEndian, value); err != nil {
-				t.Fatal(err)
-			}
+			check(t, binary.Write(&output, binary.BigEndian, value))
 		}
 	}
 	return output.Bytes()
@@ -319,12 +275,10 @@ func syntheticSKVMRecordStoreMetadata(
 func syntheticSKVMPNG(t *testing.T, width, height int) []byte {
 	t.Helper()
 	var output bytes.Buffer
-	if err := png.Encode(
+	check(t, png.Encode(
 		&output,
 		image.NewRGBA(image.Rect(0, 0, width, height)),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	return output.Bytes()
 }
 
@@ -333,15 +287,11 @@ func syntheticSKVMLifecycleClass(t *testing.T) []byte {
 	var output bytes.Buffer
 	u2 := func(value uint16) {
 		t.Helper()
-		if err := binary.Write(&output, binary.BigEndian, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, binary.Write(&output, binary.BigEndian, value))
 	}
 	u4 := func(value uint32) {
 		t.Helper()
-		if err := binary.Write(&output, binary.BigEndian, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, binary.Write(&output, binary.BigEndian, value))
 	}
 	utf := func(value string) {
 		t.Helper()

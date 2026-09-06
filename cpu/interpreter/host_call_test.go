@@ -10,13 +10,11 @@ import (
 func TestHostCallFrameCapturesAndCommitsInBulk(t *testing.T) {
 	backend := New()
 	defer backend.Close()
-	if err := backend.Map(
+	check(t, backend.Map(
 		0x1000,
 		0x1000,
 		cpu.PermissionRead|cpu.PermissionWrite,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	const (
 		stack      = uint32(0x1100)
 		parameters = uint32(0x1200)
@@ -27,26 +25,16 @@ func TestHostCallFrameCapturesAndCommitsInBulk(t *testing.T) {
 		for index, value := range values {
 			binary.LittleEndian.PutUint32(encoded[index*4:], value)
 		}
-		if err := backend.WriteMemory(address, encoded); err != nil {
-			t.Fatal(err)
-		}
+		check(t, backend.WriteMemory(address, encoded))
 	}
 	writeWords(stack, 0x41, 0x42)
 	writeWords(parameters, 0x51, 0x52, 0x53)
 	for register := uint32(0); register <= cpu.RegisterR12; register++ {
-		if err := backend.WriteRegister(register, 0x100+register); err != nil {
-			t.Fatal(err)
-		}
+		check(t, backend.WriteRegister(register, 0x100+register))
 	}
-	if err := backend.WriteRegister(cpu.RegisterSP, stack); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterLR, 0x3344); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterCPSR, cpu.StatusThumb); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteRegister(cpu.RegisterSP, stack))
+	check(t, backend.WriteRegister(cpu.RegisterLR, 0x3344))
+	check(t, backend.WriteRegister(cpu.RegisterCPSR, cpu.StatusThumb))
 
 	var frame cpu.HostCallFrame
 	if err := cpu.CaptureHostCallFrame(backend, &frame, cpu.HostCallFrameRequest{
@@ -71,13 +59,9 @@ func TestHostCallFrameCapturesAndCommitsInBulk(t *testing.T) {
 		cpu.RegisterPC:   0x2000,
 		cpu.RegisterCPSR: 0,
 	} {
-		if err := commit.Set(register, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, commit.Set(register, value))
 	}
-	if err := cpu.CommitHostCallRegisters(backend, commit); err != nil {
-		t.Fatal(err)
-	}
+	check(t, cpu.CommitHostCallRegisters(backend, commit))
 	for register, want := range map[uint32]uint32{
 		cpu.RegisterR0: 0xa0,
 		cpu.RegisterR1: 0xa1,
@@ -96,23 +80,17 @@ func TestHostCallFrameCapturesAndCommitsInBulk(t *testing.T) {
 func BenchmarkHostCallFrameCapture(b *testing.B) {
 	backend := New()
 	b.Cleanup(func() { _ = backend.Close() })
-	if err := backend.Map(
+	check(b, backend.Map(
 		0x1000,
 		0x1000,
 		cpu.PermissionRead|cpu.PermissionWrite,
-	); err != nil {
-		b.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterSP, 0x1100); err != nil {
-		b.Fatal(err)
-	}
+	))
+	check(b, backend.WriteRegister(cpu.RegisterSP, 0x1100))
 	request := cpu.HostCallFrameRequest{StackWords: 9}
 	var frame cpu.HostCallFrame
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		if err := cpu.CaptureHostCallFrame(backend, &frame, request); err != nil {
-			b.Fatal(err)
-		}
+		check(b, cpu.CaptureHostCallFrame(backend, &frame, request))
 	}
 }

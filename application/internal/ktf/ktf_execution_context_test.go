@@ -28,21 +28,15 @@ func newBudgetTaskRuntime(
 			0xfd, 0xe7, // b 0x0000
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.MapImageAndHost())
 	for index := range taskCount {
 		task, err := runtime.NewTask(
 			ImageBase|1,
 			[]uint32{uint32(index * 1000)},
 			index,
 		)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		runtime.Tasks = append(runtime.Tasks, task)
 	}
 	return runtime
@@ -98,13 +92,9 @@ func TestKTFExecutionContextsKeepTaskRegistersIndependent(t *testing.T) {
 		}
 	}
 	for index, task := range runtime.Tasks {
-		if err := runtime.restoreTaskContext(task); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.restoreTaskContext(task))
 		value, err := runtime.CPU.ReadRegister(cpu.RegisterR0)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		want := uint32(index*1000 + 4)
 		if value != want {
 			t.Fatalf("task %d r0 = %d, want %d", index, value, want)
@@ -167,37 +157,21 @@ func TestKTFHostCallScopesAreReentrant(t *testing.T) {
 	defer backend.Close()
 	runtime := newBudgetTaskRuntime(t, backend, 0)
 	outerStack := guest.DefaultStackBase + 0x100
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, 10); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterSP, outerStack); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(outerStack, []uint32{14, 15}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, 10))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterSP, outerStack))
+	check(t, runtime.writeWords(outerStack, []uint32{14, 15}))
 	outer, err := runtime.pushHostCallScope(6)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if outer.arguments[0] != 10 || outer.arguments[4] != 14 || outer.arguments[5] != 15 {
 		t.Fatalf("outer host-call arguments = %v", outer.arguments[:6])
 	}
 
 	innerStack := guest.DefaultStackBase + 0x200
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, 20); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterSP, innerStack); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(innerStack, []uint32{24, 25}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, 20))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterSP, innerStack))
+	check(t, runtime.writeWords(innerStack, []uint32{24, 25}))
 	inner, err := runtime.pushHostCallScope(6)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if inner.arguments[0] != 20 || inner.arguments[4] != 24 || inner.arguments[5] != 25 {
 		t.Fatalf("inner host-call arguments = %v", inner.arguments[:6])
 	}
@@ -225,12 +199,8 @@ func newYieldTaskRuntime(t testing.TB, taskCount int) *Runtime {
 			0x00, 0x00, 0x00, 0x00,
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.MapImageAndHost())
 	yield := runtime.RegisterHostCall(
 		"benchmark.yield",
 		func(_ context.Context, current *Runtime) (uint32, error) {
@@ -240,14 +210,10 @@ func newYieldTaskRuntime(t testing.TB, taskCount int) *Runtime {
 	)
 	var encoded [4]byte
 	binary.LittleEndian.PutUint32(encoded[:], yield)
-	if err := runtime.CPU.WriteMemory(ImageBase+8, encoded[:]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteMemory(ImageBase+8, encoded[:]))
 	for index := range taskCount {
 		task, err := runtime.NewTask(ImageBase|1, nil, index)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		runtime.Tasks = append(runtime.Tasks, task)
 	}
 	return runtime

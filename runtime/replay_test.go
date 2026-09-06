@@ -11,16 +11,10 @@ func TestReplayDrivesInputAndClockWithoutTraceDependency(t *testing.T) {
 	recordConfig := DefaultConfig()
 	recordConfig.ReplayMode = ReplayRecord
 	recorded, err := NewServices(recordConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	recorded.Trace.SetEnabled(true)
-	if err := recorded.QueueInput(5, "up", true, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := recorded.Advance(5, 100*time.Millisecond); err != nil {
-		t.Fatal(err)
-	}
+	check(t, recorded.QueueInput(5, "up", true, 0))
+	check(t, recorded.Advance(5, 100*time.Millisecond))
 	log := recorded.Replay.Snapshot()
 	log.Mode = ReplayPlayback
 	log.Cursor = 0
@@ -28,18 +22,10 @@ func TestReplayDrivesInputAndClockWithoutTraceDependency(t *testing.T) {
 	playbackConfig := recordConfig
 	playbackConfig.ReplayMode = ReplayPlayback
 	replayed, err := NewServices(playbackConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := replayed.Replay.Restore(log); err != nil {
-		t.Fatal(err)
-	}
-	if err := replayed.QueueInput(5, "up", true, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := replayed.Advance(5, 100*time.Millisecond); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, replayed.Replay.Restore(log))
+	check(t, replayed.QueueInput(5, "up", true, 0))
+	check(t, replayed.Advance(5, 100*time.Millisecond))
 	if !reflect.DeepEqual(replayed.Clock.Snapshot(), recorded.Clock.Snapshot()) ||
 		!reflect.DeepEqual(replayed.Input.Snapshot(), recorded.Input.Snapshot()) ||
 		!reflect.DeepEqual(replayed.Events.Snapshot(), recorded.Events.Snapshot()) {
@@ -54,9 +40,7 @@ func TestReplayMismatchDoesNotConsumeEntry(t *testing.T) {
 	config := DefaultConfig()
 	config.ReplayMode = ReplayPlayback
 	services, err := NewServices(config)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	state := services.Replay.Snapshot()
 	state.Entries = []ReplayEntry{{
 		Sequence: 1,
@@ -67,9 +51,7 @@ func TestReplayMismatchDoesNotConsumeEntry(t *testing.T) {
 		Value:    1,
 	}}
 	state.NextSequence = 2
-	if err := services.Replay.Restore(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, services.Replay.Restore(state))
 	if err := services.QueueInput(1, "down", true, 0); err == nil {
 		t.Fatal("mismatched replay input succeeded")
 	}
@@ -80,26 +62,14 @@ func TestReplayMismatchDoesNotConsumeEntry(t *testing.T) {
 
 func TestServicesStatePreservesRuntimeReplayModeChange(t *testing.T) {
 	services, err := NewServices(Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := services.Replay.SetMode(ReplayRecord); err != nil {
-		t.Fatal(err)
-	}
-	if err := services.QueueInput(1, "fire", true, 0); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, services.Replay.SetMode(ReplayRecord))
+	check(t, services.QueueInput(1, "fire", true, 0))
 	encoded, err := services.MarshalBinary()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	clone, err := NewServices(services.Config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := clone.UnmarshalBinary(encoded); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, clone.UnmarshalBinary(encoded))
 	if clone.Replay.Mode() != ReplayRecord ||
 		!reflect.DeepEqual(clone.Replay.Snapshot(), services.Replay.Snapshot()) {
 		t.Fatal("service state did not preserve the live replay mode")
@@ -113,9 +83,7 @@ func TestReplayDataLimitIsAggregateAndAtomic(t *testing.T) {
 		1,
 		"profile",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := replay.Record(ReplayEntry{
 		Kind:      ReplayNetworkResponse,
 		ServiceID: makeServiceID(1, 1),
@@ -157,9 +125,7 @@ func TestReplayRestoreRejectsRuntimeIdentityMismatchAtomically(t *testing.T) {
 	config := DefaultConfig()
 	config.ReplayMode = ReplayPlayback
 	services, err := NewServices(config)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	before := services.Replay.Snapshot()
 
 	testCases := map[string]func(*ReplayState){
@@ -189,9 +155,7 @@ func TestReplayRestoreRejectsRuntimeIdentityMismatchAtomically(t *testing.T) {
 
 func TestServicesRestoreRejectsMalformedReplaySemanticsAtomically(t *testing.T) {
 	services, err := NewServices(Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	before := services.Snapshot()
 
 	testCases := map[string]ReplayEntry{
@@ -228,37 +192,27 @@ func TestExternalNetworkResponsesRecordAndDrivePlayback(t *testing.T) {
 	recordConfig := DefaultConfig()
 	recordConfig.ReplayMode = ReplayRecord
 	recorded, err := NewServices(recordConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	socket, err := recorded.Network.OpenSocket(2, 2, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := recorded.Network.ConnectSocket(
+	check(t, err)
+	check(t, recorded.Network.ConnectSocket(
 		2,
 		socket,
 		"127.0.0.1",
 		1234,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := recorded.CompleteSocketResponse(
+	))
+	check(t, recorded.CompleteSocketResponse(
 		2,
 		socket,
 		true,
 		0,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := recorded.InjectSocketResponse(
+	))
+	check(t, recorded.InjectSocketResponse(
 		2,
 		socket,
 		[]byte("recorded"),
 		time.Millisecond,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	log := recorded.Replay.Snapshot()
 	log.Mode = ReplayPlayback
 	log.Cursor = 0
@@ -266,48 +220,34 @@ func TestExternalNetworkResponsesRecordAndDrivePlayback(t *testing.T) {
 	playbackConfig := recordConfig
 	playbackConfig.ReplayMode = ReplayPlayback
 	playback, err := NewServices(playbackConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	replayedSocket, err := playback.Network.OpenSocket(2, 2, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if replayedSocket != socket {
 		t.Fatalf("replayed socket ID = %s, want %s", replayedSocket, socket)
 	}
-	if err := playback.Network.ConnectSocket(
+	check(t, playback.Network.ConnectSocket(
 		2,
 		replayedSocket,
 		"127.0.0.1",
 		1234,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := playback.Replay.Restore(log); err != nil {
-		t.Fatal(err)
-	}
+	))
+	check(t, playback.Replay.Restore(log))
 	// Playback ignores provider values and applies the captured responses.
-	if err := playback.CompleteSocketResponse(
+	check(t, playback.CompleteSocketResponse(
 		2,
 		replayedSocket,
 		false,
 		0,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := playback.InjectSocketResponse(
+	))
+	check(t, playback.InjectSocketResponse(
 		2,
 		replayedSocket,
 		[]byte("ignored"),
 		time.Millisecond,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	data, err := playback.Network.SocketRead(2, replayedSocket, 64)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if string(data) != "recorded" ||
 		playback.Replay.Snapshot().Cursor != uint32(len(log.Entries)) {
 		t.Fatalf(
@@ -323,24 +263,16 @@ func TestExternalResponseReplayLimitFailureIsAtomic(t *testing.T) {
 	config.ReplayMode = ReplayRecord
 	config.Limits.Replay.MaxData = 1
 	services, err := NewServices(config)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	socket, err := services.Network.OpenSocket(1, 2, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := services.Network.ConnectSocket(
+	check(t, err)
+	check(t, services.Network.ConnectSocket(
 		1,
 		socket,
 		"127.0.0.1",
 		7,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := services.CompleteSocketResponse(1, socket, true, 0); err != nil {
-		t.Fatal(err)
-	}
+	))
+	check(t, services.CompleteSocketResponse(1, socket, true, 0))
 	networkBefore := services.Network.Snapshot()
 	eventsBefore := services.Events.Snapshot()
 	replayBefore := services.Replay.Snapshot()
@@ -361,39 +293,25 @@ func TestExternalResponseReplayLimitFailureIsAtomic(t *testing.T) {
 
 func TestSaveRestoreContinuesWithSameFrameAndEventSequence(t *testing.T) {
 	services, err := NewServices(Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	surface, err := services.Graphics.CreateSurface(1, SurfaceDescriptor{
 		Width: 4, Height: 4, Format: PixelRGBA8888,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := services.Graphics.SetScreen(1, surface); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, services.Graphics.SetScreen(1, surface))
 	if _, err := services.Graphics.Present(1, surface, Rectangle{}); err != nil {
 		t.Fatal(err)
 	}
 	encoded, err := services.MarshalBinary()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	clone, err := NewServices(services.Config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := clone.UnmarshalBinary(encoded); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, clone.UnmarshalBinary(encoded))
 
 	continueRun := func(current *Services) (FrameSnapshot, EventBusState) {
 		t.Helper()
-		if err := current.QueueInput(1, "fire", true, current.Clock.Monotonic()); err != nil {
-			t.Fatal(err)
-		}
-		if err := current.Graphics.Line(
+		check(t, current.QueueInput(1, "fire", true, current.Clock.Monotonic()))
+		check(t, current.Graphics.Line(
 			1,
 			surface,
 			0,
@@ -401,13 +319,9 @@ func TestSaveRestoreContinuesWithSameFrameAndEventSequence(t *testing.T) {
 			3,
 			3,
 			RGB(10, 20, 30),
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 		frame, err := current.Graphics.Present(1, surface, Rectangle{})
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		return frame, current.Events.Snapshot()
 	}
 	frameA, eventsA := continueRun(services)

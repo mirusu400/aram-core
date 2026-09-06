@@ -114,18 +114,12 @@ func TestPrivilegedBanksSurviveContextRoundTrip(t *testing.T) {
 		t.Fatal(first.Err)
 	}
 	saved, err := backend.SaveContext()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if got := binary.LittleEndian.Uint32(saved[4:8]); got != 3 {
 		t.Fatalf("context version = %d, want 2", got)
 	}
-	if err := backend.WriteRegister(cpu.RegisterSP, 0x99); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.RestoreContext(saved); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteRegister(cpu.RegisterSP, 0x99))
+	check(t, backend.RestoreContext(saved))
 	second := backend.Run(context.Background(), 0x1014, cpu.ModeARM, 1)
 	if second.Err != nil {
 		t.Fatal(second.Err)
@@ -140,9 +134,7 @@ func TestARMLDMExceptionReturnRestoresCPSRAndBranches(t *testing.T) {
 	mapARMInstructions(t, backend,
 		0xe8d0dfff, // LDMIA r0, {r0-r12,lr,pc}^
 	)
-	if err := backend.Map(0x2000, 0x1000, cpu.PermissionRead|cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.Map(0x2000, 0x1000, cpu.PermissionRead|cpu.PermissionWrite))
 
 	loaded := make([]uint32, 0, 15)
 	for register := uint32(0); register <= cpu.RegisterR12; register++ {
@@ -155,9 +147,7 @@ func TestARMLDMExceptionReturnRestoresCPSRAndBranches(t *testing.T) {
 	for index, value := range loaded {
 		binary.LittleEndian.PutUint32(encoded[index*4:], value)
 	}
-	if err := backend.WriteMemory(0x2000, encoded); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x2000, encoded))
 
 	backend.regs[cpu.RegisterCPSR] = uint32(processorModeSupervisor)
 	backend.regs[cpu.RegisterR0] = 0x2000
@@ -197,9 +187,7 @@ func TestARMBlockTransferSBitUsesUserBank(t *testing.T) {
 		mapARMInstructions(t, backend,
 			0xe8c07f00, // STMIA r0, {r8-r14}^
 		)
-		if err := backend.Map(0x2000, 0x1000, cpu.PermissionRead|cpu.PermissionWrite); err != nil {
-			t.Fatal(err)
-		}
+		check(t, backend.Map(0x2000, 0x1000, cpu.PermissionRead|cpu.PermissionWrite))
 		backend.regs[cpu.RegisterCPSR] = uint32(processorModeFIQ)
 		backend.regs[cpu.RegisterR0] = 0x2000
 		for index := range backend.banks.userHigh {
@@ -215,9 +203,7 @@ func TestARMBlockTransferSBitUsesUserBank(t *testing.T) {
 			t.Fatalf("Run result = %+v", result)
 		}
 		stored := make([]byte, 7*4)
-		if err := backend.ReadMemory(0x2000, stored); err != nil {
-			t.Fatal(err)
-		}
+		check(t, backend.ReadMemory(0x2000, stored))
 		for index := uint32(0); index < 7; index++ {
 			if got := binary.LittleEndian.Uint32(stored[index*4:]); got != 0x44000008+index {
 				t.Fatalf("stored user r%d = %#x, want %#x", index+8, got, 0x44000008+index)
@@ -230,16 +216,12 @@ func TestARMBlockTransferSBitUsesUserBank(t *testing.T) {
 		mapARMInstructions(t, backend,
 			0xe8d07f00, // LDMIA r0, {r8-r14}^
 		)
-		if err := backend.Map(0x2000, 0x1000, cpu.PermissionRead|cpu.PermissionWrite); err != nil {
-			t.Fatal(err)
-		}
+		check(t, backend.Map(0x2000, 0x1000, cpu.PermissionRead|cpu.PermissionWrite))
 		encoded := make([]byte, 7*4)
 		for index := uint32(0); index < 7; index++ {
 			binary.LittleEndian.PutUint32(encoded[index*4:], 0x55000008+index)
 		}
-		if err := backend.WriteMemory(0x2000, encoded); err != nil {
-			t.Fatal(err)
-		}
+		check(t, backend.WriteMemory(0x2000, encoded))
 		backend.regs[cpu.RegisterCPSR] = uint32(processorModeFIQ)
 		backend.regs[cpu.RegisterR0] = 0x2000
 		for register := uint32(cpu.RegisterR8); register <= cpu.RegisterLR; register++ {
@@ -264,9 +246,7 @@ func TestARMBlockTransferSBitUsesUserBank(t *testing.T) {
 func registerValue(t *testing.T, backend *Backend, id uint32) uint32 {
 	t.Helper()
 	value, err := backend.ReadRegister(id)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	return value
 }
 
@@ -282,22 +262,16 @@ func systemARMInstructions(t *testing.T, backend *Backend, instructions ...uint3
 		binary.LittleEndian.PutUint32(encoded[index*4:], instruction)
 	}
 	bus.writeRaw(0x1000, encoded)
-	if err := backend.AttachSystemBus(bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.AttachSystemBus(bus))
 	return bus
 }
 
 func mapARMInstructions(t *testing.T, backend *Backend, instructions ...uint32) {
 	t.Helper()
-	if err := backend.Map(0x1000, 0x1000, cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.Map(0x1000, 0x1000, cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute))
 	encoded := make([]byte, len(instructions)*4)
 	for index, instruction := range instructions {
 		binary.LittleEndian.PutUint32(encoded[index*4:], instruction)
 	}
-	if err := backend.WriteMemory(0x1000, encoded); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1000, encoded))
 }

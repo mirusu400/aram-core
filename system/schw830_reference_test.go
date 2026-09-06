@@ -37,13 +37,9 @@ func TestSCHW830PrivateReferenceTracesProgressiveCode(t *testing.T) {
 	}
 	set := openSCHW830ReferenceSet(t, referenceDirectory)
 	pkg, err := samsung.Inspect(set)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	progressive, err := samsung.DecodeWBIN(set, pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if dumpPath := os.Getenv("ARAM_DUMP_PROGRESSIVE_ELF"); dumpPath != "" {
 		if writeErr := os.WriteFile(dumpPath, progressive.Bytes, 0o600); writeErr != nil {
 			t.Fatalf("write decoded progressive ELF: %v", writeErr)
@@ -119,21 +115,15 @@ func TestSCHW830PrivateReferenceRunsOriginalFirmwarePastTimeTickSetup(t *testing
 	}
 	set := openSCHW830ReferenceSet(t, referenceDirectory)
 	pkg, err := samsung.Inspect(set)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	profile, err := samsung.BuiltinRegistry().Match(pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	spec, ok := profile.BootImage("qcsbl")
 	if !ok {
 		t.Fatal("SCH-W830 profile has no QCSBL image")
 	}
 	image, err := samsung.ReconstructBootImage(set, pkg, spec)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	board := SCHW830DL21BoardProfile()
 	board.FirmwareBuildID = profile.ID
 	if profile.Model == "SCH-W860" {
@@ -152,16 +142,12 @@ func TestSCHW830PrivateReferenceRunsOriginalFirmwarePastTimeTickSetup(t *testing
 	flashImage, err := samsung.AssembleFlashWithOptions(set, pkg, samsung.FlashAssemblyOptions{
 		FactoryBadBlocks: physicalBadBlocks,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	flash, err := NewCOWFlashWithCapacityAndSeeds(
 		flashImage, board.NANDSize, samsung.EraseBlockSize, flashImage.Identity(),
 		board.NANDInitialData,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	mediaLoadPrefix := os.Getenv("ARAM_LOAD_FACTORY_MEDIA_PREFIX")
 	if mediaLoadPrefix != "" {
 		flashState, readErr := os.ReadFile(mediaLoadPrefix + ".flash")
@@ -186,9 +172,7 @@ func TestSCHW830PrivateReferenceRunsOriginalFirmwarePastTimeTickSetup(t *testing
 		if historyErr != nil || historyLimit == 0 {
 			t.Fatalf("invalid ARAM_PC_HISTORY %q", historyText)
 		}
-		if err := backend.SetPCHistoryLimit(uint32(historyLimit)); err != nil {
-			t.Fatal(err)
-		}
+		check(t, backend.SetPCHistoryLimit(uint32(historyLimit)))
 	}
 	if captureText := os.Getenv("ARAM_CAPTURE_PC_REGISTERS"); captureText != "" {
 		parts := strings.Split(captureText, ",")
@@ -200,27 +184,21 @@ func TestSCHW830PrivateReferenceRunsOriginalFirmwarePastTimeTickSetup(t *testing
 		if addressErr != nil || limitErr != nil || limit == 0 {
 			t.Fatalf("invalid ARAM_CAPTURE_PC_REGISTERS %q", captureText)
 		}
-		if err := backend.SetPCRegisterCapture(uint32(address), uint32(limit)); err != nil {
-			t.Fatal(err)
-		}
+		check(t, backend.SetPCRegisterCapture(uint32(address), uint32(limit)))
 	}
 	if historyText := os.Getenv("ARAM_CP15_CONTROL_HISTORY"); historyText != "" {
 		historyLimit, historyErr := strconv.ParseUint(historyText, 0, 32)
 		if historyErr != nil || historyLimit == 0 {
 			t.Fatalf("invalid ARAM_CP15_CONTROL_HISTORY %q", historyText)
 		}
-		if err := backend.SetCP15ControlHistoryLimit(uint32(historyLimit)); err != nil {
-			t.Fatal(err)
-		}
+		check(t, backend.SetCP15ControlHistoryLimit(uint32(historyLimit)))
 	}
 	if historyText := os.Getenv("ARAM_CP15_PREFETCH_HISTORY"); historyText != "" {
 		historyLimit, historyErr := strconv.ParseUint(historyText, 0, 32)
 		if historyErr != nil || historyLimit == 0 {
 			t.Fatalf("invalid ARAM_CP15_PREFETCH_HISTORY %q", historyText)
 		}
-		if err := backend.SetInstructionCachePrefetchHistoryLimit(uint32(historyLimit)); err != nil {
-			t.Fatal(err)
-		}
+		check(t, backend.SetInstructionCachePrefetchHistoryLimit(uint32(historyLimit)))
 	}
 	interruptController := NewQualcommInterruptController(nil)
 	if board.VectoredInterrupt == nil {
@@ -230,9 +208,7 @@ func TestSCHW830PrivateReferenceRunsOriginalFirmwarePastTimeTickSetup(t *testing
 		*board.VectoredInterrupt,
 		backend,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	nandReady := NewStatusSignal()
 	var timeTickClock *QualcommTimeTickClockConfig
 	if board.TimeTickClock != nil {
@@ -284,9 +260,7 @@ func TestSCHW830PrivateReferenceRunsOriginalFirmwarePastTimeTickSetup(t *testing
 		t.Fatal("SCH-W830 NAND profile page size does not match normalized flash")
 	}
 	nand, err := NewQualcommNAND(flash, nandConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if mediaLoadPrefix != "" {
 		nandState, readErr := os.ReadFile(mediaLoadPrefix + ".nand")
 		if readErr != nil {
@@ -317,35 +291,25 @@ func TestSCHW830PrivateReferenceRunsOriginalFirmwarePastTimeTickSetup(t *testing
 		VectoredInterruptController: vectoredInterruptController,
 		TimeTickClock:               timeTickClock,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	secondaryClock, err := NewQualcommSecondaryClockControlWithWritableOffsets(
 		board.SecondaryClockWritableOffsets,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	primaryClock, err := NewQualcommPrimaryClockControl(QualcommPrimaryClockConfig{
 		Status:          board.PrimaryClockStatus,
 		InputMask:       board.PrimaryClockInputMask,
 		WritableOffsets: board.PrimaryClockWritableOffsets,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	keypad, err := board.AttachKeypad(primaryClock, secondaryClock, interruptController)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	legacyTop, err := NewQualcommLegacyTopPageWithConfig(QualcommLegacyTopConfig{
 		Version:         board.LegacyTopVersion,
 		Identification:  board.LegacyTopIdentification,
 		WritableOffsets: board.LegacyTopWritableOffsets,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	clockRegime, err := NewQualcommClockRegimeWithConfig(QualcommClockRegimeConfig{
 		SleepControllers:            board.ClockRegimeSleepControllers,
 		Counters:                    board.ClockRegimeCounters,
@@ -353,21 +317,13 @@ func TestSCHW830PrivateReferenceRunsOriginalFirmwarePastTimeTickSetup(t *testing
 		InterruptController:         interruptController,
 		VectoredInterruptController: vectoredInterruptController,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	busRegisters, err := NewSparseWordRegisters(schw830BusRegisterOffsets())
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	panelController, err := NewDCSPanelController(board.Panel)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	panel, err := NewParallelPanelInterfaceWithController(panelController)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	var panelTrace *schw830PanelTrace
 	if os.Getenv("ARAM_TRACE_PANEL_COMMANDS") != "" {
 		panelTrace = &schw830PanelTrace{}
@@ -378,9 +334,7 @@ func TestSCHW830PrivateReferenceRunsOriginalFirmwarePastTimeTickSetup(t *testing
 		PageSize: samsung.PageSize, EraseBlockSize: samsung.EraseBlockSize,
 		FlashSize: uint64(flash.Size()), BadBlockLimit: 0x14,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	handoff.Memory = append(handoff.Memory, MemorySeed{
 		Address: image.LoadAddress,
 		Bytes:   append([]byte(nil), image.Bytes...),
@@ -388,9 +342,7 @@ func TestSCHW830PrivateReferenceRunsOriginalFirmwarePastTimeTickSetup(t *testing
 
 	bus := NewBus()
 	mdpEngine, err := board.AttachMDP(bus, panelController, bootControl)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	var (
 		traceContextAccesses       []MemoryAccess
 		traceContextLowWriteWindow []MemoryAccess
@@ -722,80 +674,54 @@ func TestSCHW830PrivateReferenceRunsOriginalFirmwarePastTimeTickSetup(t *testing
 			t.Fatal(err)
 		}
 	}
-	if err := board.ApplyMemory(bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, board.ApplyMemory(bus))
 	factoryFormatInjected := false
-	if err := board.ApplyReadOnlyRegisters(bus); err != nil {
-		t.Fatal(err)
-	}
-	if err := board.ApplyLatchedRegistersWithInterrupts(
+	check(t, board.ApplyReadOnlyRegisters(bus))
+	check(t, board.ApplyLatchedRegistersWithInterrupts(
 		bus,
 		interruptController,
 		vectoredInterruptController,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := bus.MapMMIO("qualcomm-boot-control", 0x80000000, QualcommBootControlWindowSize, bootControl); err != nil {
-		t.Fatal(err)
-	}
-	if err := bus.MapMMIO("qualcomm-nand", 0x60000000, QualcommNANDWindowSize, nand); err != nil {
-		t.Fatal(err)
-	}
-	if err := bus.MapMMIO(
+	))
+	check(t, bus.MapMMIO("qualcomm-boot-control", 0x80000000, QualcommBootControlWindowSize, bootControl))
+	check(t, bus.MapMMIO("qualcomm-nand", 0x60000000, QualcommNANDWindowSize, nand))
+	check(t, bus.MapMMIO(
 		"qualcomm-primary-clock",
 		0x84000000,
 		QualcommPrimaryClockWindowSize,
 		primaryClock,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := bus.MapMMIO(
+	))
+	check(t, bus.MapMMIO(
 		"qualcomm-secondary-clock",
 		0x84004000,
 		QualcommSecondaryClockWindowSize,
 		secondaryClock,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := bus.MapMMIO(
+	))
+	check(t, bus.MapMMIO(
 		"parallel-panel",
 		0x20000000,
 		ParallelPanelWindowSize,
 		panel,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := bus.MapMMIO(
+	))
+	check(t, bus.MapMMIO(
 		"qualcomm-clock-regime",
 		0x90000000,
 		QualcommClockRegimeWindowSize,
 		clockRegime,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := bus.MapMMIO(
+	))
+	check(t, bus.MapMMIO(
 		"qualcomm-sparse-bus-registers",
 		0x90400000,
 		0x1000,
 		busRegisters,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := bus.MapMMIO(
+	))
+	check(t, bus.MapMMIO(
 		"qualcomm-legacy-top-page",
 		0xfffff000,
 		QualcommLegacyTopWindowSize,
 		legacyTop,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.AttachSystemBus(bus); err != nil {
-		t.Fatal(err)
-	}
-	if err := handoff.Apply(bus, backend); err != nil {
-		t.Fatal(err)
-	}
+	))
+	check(t, backend.AttachSystemBus(bus))
+	check(t, handoff.Apply(bus, backend))
 	clockedDevices := bus.ClockedDevices()
 	fatalDiagnostic := errors.New("unexpected OEM fatal diagnostic")
 	flashInitFailure := errors.New("OEM flash initialization failed")
@@ -897,9 +823,7 @@ func TestSCHW830PrivateReferenceRunsOriginalFirmwarePastTimeTickSetup(t *testing
 		}),
 	}
 	runner, err := NewHLERunner(bus, backend, calls, handlers)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	callGuestRFSFormat := func(device string) {
 		const (
 			// The public wrapper at 0x01a50ad6 collapses every backend failure to
@@ -1767,9 +1691,7 @@ func TestSCHW830PrivateReferenceRunsOriginalFirmwarePastTimeTickSetup(t *testing
 		executionRunner, err = NewClockedRunner(
 			backend, runner, DefaultClockedRunnerQuantum, clockedDevices...,
 		)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 	}
 	// Most task-backed guest services need the normal clocked runner so their
 	// worker tasks can make progress.  A synchronous DIAG handler is different:
@@ -2237,15 +2159,11 @@ func TestSCHW830PrivateReferenceRunsOriginalFirmwarePastTimeTickSetup(t *testing
 		// Preserve the scheduler's current privileged bank and stack, but mask
 		// asynchronous exceptions while the synchronous firmware helper runs.
 		factoryStatus := savedRegisters[cpu.RegisterCPSR] | cpu.StatusThumb | 1<<7 | 1<<6
-		if err := backend.WriteRegister(cpu.RegisterCPSR, factoryStatus); err != nil {
-			t.Fatal(err)
-		}
-		if err := backend.WriteRegister(
+		check(t, backend.WriteRegister(cpu.RegisterCPSR, factoryStatus))
+		check(t, backend.WriteRegister(
 			cpu.RegisterLR,
 			factoryBootstrapReturnAddress|1,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 		factoryResult := runner.Run(
 			context.Background(), factoryFormatEntry, cpu.ModeThumb, 250_000_000,
 		)
@@ -2287,12 +2205,10 @@ func TestSCHW830PrivateReferenceRunsOriginalFirmwarePastTimeTickSetup(t *testing
 			t.Fatalf("guest factory bootstrap returned failure 0x%08x", factoryReturn)
 		}
 		if factoryFollowupEntry != 0 {
-			if err := backend.WriteRegister(
+			check(t, backend.WriteRegister(
 				cpu.RegisterLR,
 				factoryBootstrapReturnAddress|1,
-			); err != nil {
-				t.Fatal(err)
-			}
+			))
 			followupResult := runner.Run(
 				context.Background(), factoryFollowupEntry, cpu.ModeThumb, 250_000_000,
 			)
@@ -2324,9 +2240,7 @@ func TestSCHW830PrivateReferenceRunsOriginalFirmwarePastTimeTickSetup(t *testing
 				t.Fatalf("restore register %d after guest factory bootstrap: %v", register, err)
 			}
 		}
-		if err := backend.WriteRegister(cpu.RegisterCPSR, savedRegisters[cpu.RegisterCPSR]); err != nil {
-			t.Fatal(err)
-		}
+		check(t, backend.WriteRegister(cpu.RegisterCPSR, savedRegisters[cpu.RegisterCPSR]))
 		if mediaSavePrefix := os.Getenv("ARAM_SAVE_FACTORY_MEDIA_PREFIX"); mediaSavePrefix != "" {
 			flashState, saveErr := flash.SaveState()
 			if saveErr != nil {
@@ -2807,9 +2721,7 @@ func TestSCHW830PrivateReferenceRunsOriginalFirmwarePastTimeTickSetup(t *testing
 			if parseErr != nil || source >= 64 {
 				t.Fatalf("invalid ARAM_INJECT_IRQ_SOURCE %q", sourceText)
 			}
-			if err := interruptController.PulseSource(uint8(source)); err != nil {
-				t.Fatal(err)
-			}
+			check(t, interruptController.PulseSource(uint8(source)))
 			t.Logf("injected one Qualcomm interrupt source %d pulse", source)
 		}
 		if sourceText := os.Getenv("ARAM_INJECT_VIC_SOURCE"); sourceText != "" {
@@ -2817,9 +2729,7 @@ func TestSCHW830PrivateReferenceRunsOriginalFirmwarePastTimeTickSetup(t *testing
 			if parseErr != nil || source >= uint64(vectoredInterruptController.SourceCount()) {
 				t.Fatalf("invalid ARAM_INJECT_VIC_SOURCE %q", sourceText)
 			}
-			if err := vectoredInterruptController.PulseSource(uint8(source)); err != nil {
-				t.Fatal(err)
-			}
+			check(t, vectoredInterruptController.PulseSource(uint8(source)))
 			t.Logf("injected one Qualcomm vectored interrupt source %d pulse", source)
 		}
 		if signalText := os.Getenv("ARAM_GUEST_SIGNAL_MAIN"); signalText != "" {
@@ -4790,23 +4700,17 @@ func openSCHW830ReferenceSet(t *testing.T, directory string) firmwareset.Set {
 			continue
 		}
 		file, err := os.Open(filepath.Join(directory, entry.Name()))
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		t.Cleanup(func() { _ = file.Close() })
 		info, err := file.Stat()
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		sources = append(sources, firmwareset.Source{ReaderAt: file, Size: info.Size()})
 	}
 	if len(sources) != 4 {
 		t.Fatalf("configured reference contains %d SCH download pieces, want 4", len(sources))
 	}
 	set, err := firmwareset.NewSet(sources)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	return set
 }
 

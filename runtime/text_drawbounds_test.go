@@ -9,22 +9,16 @@ import "testing"
 // drawing under a translated context lost the bottom of every line of text.
 func TestTextDrawBoundsReportsTheRowsItInked(t *testing.T) {
 	services, err := NewServices(Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	font, err := services.Text.CreateFont(3, FontDescriptor{
 		Family: "aram-fallback",
 		Size:   8,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	surface, err := services.Graphics.CreateSurface(3, SurfaceDescriptor{
 		Width: 64, Height: 48, Format: PixelRGBA8888,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	inked := func() (int, int) {
 		t.Helper()
 		pixels, rgbaErr := services.Graphics.RGBA(3, surface)
@@ -60,16 +54,10 @@ func TestTextDrawBoundsReportsTheRowsItInked(t *testing.T) {
 	// The same run under a translated draw state has to report where the
 	// pixels actually landed, not where the caller asked for them.
 	state, err := services.Graphics.DrawState(3, surface)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	state.TranslateY = 9
-	if err := services.Graphics.SetDrawState(3, surface, state); err != nil {
-		t.Fatal(err)
-	}
-	if err := services.Graphics.Clear(3, surface, RGB(0, 0, 0)); err != nil {
-		t.Fatal(err)
-	}
+	check(t, services.Graphics.SetDrawState(3, surface, state))
+	check(t, services.Graphics.Clear(3, surface, RGB(0, 0, 0)))
 	top, bottom, err = services.Text.DrawBounds(
 		3, font, surface, "A", 2, 4, AnchorLeft|AnchorTop, RGB(255, 0, 0),
 	)
@@ -92,32 +80,22 @@ func TestTextDrawBoundsReportsTheRowsItInked(t *testing.T) {
 // honest against the full one.
 func TestGraphicsRGBARowsIntoMatchesTheWholeSurface(t *testing.T) {
 	services, err := NewServices(Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	surface, err := services.Graphics.CreateSurface(4, SurfaceDescriptor{
 		Width: 8, Height: 6, Format: PixelRGBA8888,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	for y := int32(0); y < 6; y++ {
 		for x := int32(0); x < 8; x++ {
-			if err := services.Graphics.SetPixel(
+			check(t, services.Graphics.SetPixel(
 				4, surface, x, y, RGB(uint8(x*8), uint8(y*8), 0x20),
-			); err != nil {
-				t.Fatal(err)
-			}
+			))
 		}
 	}
 	whole, err := services.Graphics.RGBA(4, surface)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	band, err := services.Graphics.RGBARowsInto(4, surface, 2, 5, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if len(band) != 8*3*4 {
 		t.Fatalf("band has %d bytes, want %d", len(band), 8*3*4)
 	}

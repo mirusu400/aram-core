@@ -18,13 +18,11 @@ import (
 func TestRaptorTimerExpiryPreservesAdjacentGuestMemory(t *testing.T) {
 	machine := newSyntheticMachine(t)
 	const callback = uint32(0x04000000)
-	if err := machine.cpu.Map(
+	check(t, machine.cpu.Map(
 		callback,
 		0x1000,
 		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	if err := machine.cpu.WriteMemory(callback, []byte{
 		0x2a, 0x22, // movs r2, #42
 		0x0a, 0x60, // str r2, [r1]
@@ -33,20 +31,12 @@ func TestRaptorTimerExpiryPreservesAdjacentGuestMemory(t *testing.T) {
 		t.Fatal(err)
 	}
 	timer, err := machine.wipi.Heap.Allocate(32, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	marker, err := machine.wipi.Heap.Allocate(4, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	const sentinel = uint32(0xfeedface)
-	if err := machine.wipi.WriteU32(timer, callback|1); err != nil {
-		t.Fatal(err)
-	}
-	if err := machine.wipi.WriteU32(timer+24, sentinel); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.wipi.WriteU32(timer, callback|1))
+	check(t, machine.wipi.WriteU32(timer+24, sentinel))
 	if result, err := machine.wipi.SetTimer(timer, 16, marker, false); err != nil ||
 		result != (guest.WIPIReturn{}) {
 		t.Fatalf("set timer = %#v, %v", result, err)
@@ -69,9 +59,7 @@ func TestRaptorTimerExpiryPreservesAdjacentGuestMemory(t *testing.T) {
 		)
 	}
 	for frame := 0; len(machine.raptor.CallbackTasks) != 0 && frame < 16; frame++ {
-		if err := machine.StepFrame(context.Background()); err != nil {
-			t.Fatal(err)
-		}
+		check(t, machine.StepFrame(context.Background()))
 	}
 	if len(machine.raptor.CallbackTasks) != 0 {
 		t.Fatal("Raptor timer callback did not return")
@@ -100,13 +88,9 @@ func TestRaptorTimerImportsUseFourByteLGTABI(t *testing.T) {
 		parameter = uint32(0x89abcdef)
 		sentinel  = uint32(0xfeedface)
 	)
-	if err := public.WriteU32(timer+4, sentinel); err != nil {
-		t.Fatal(err)
-	}
+	check(t, public.WriteU32(timer+4, sentinel))
 	for register, value := range []uint32{timer, callback} {
-		if err := runtime.CPU.WriteRegister(uint32(register), value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteRegister(uint32(register), value))
 	}
 	result, name, handled, err := runtime.DispatchPrivateImport(122)
 	if err != nil || !handled || name != "RAPTOR.knlDefTimer" ||
@@ -126,9 +110,7 @@ func TestRaptorTimerImportsUseFourByteLGTABI(t *testing.T) {
 		t.Fatalf("define timer overwrote adjacent word = 0x%08x, %v", got, err)
 	}
 	for register, value := range []uint32{timer, timeout, 0, parameter} {
-		if err := runtime.CPU.WriteRegister(uint32(register), value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteRegister(uint32(register), value))
 	}
 	result, name, handled, err = runtime.DispatchPrivateImport(123)
 	if err != nil || !handled || name != "RAPTOR.knlSetTimer" ||
@@ -149,9 +131,7 @@ func TestRaptorTimerImportsUseFourByteLGTABI(t *testing.T) {
 	if got, err := public.ReadU32(timer + 4); err != nil || got != sentinel {
 		t.Fatalf("set timer overwrote adjacent word = 0x%08x, %v", got, err)
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, timer); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, timer))
 	result, name, handled, err = runtime.DispatchPrivateImport(124)
 	if err != nil || !handled || name != "RAPTOR.knlUnsetTimer" ||
 		result != (guest.WIPIReturn{}) {
@@ -174,13 +154,11 @@ func TestRaptorTimerImportsUseFourByteLGTABI(t *testing.T) {
 func TestRaptorCallbacksResumeAcrossFrameBudgets(t *testing.T) {
 	machine := newSyntheticMachine(t)
 	const callback = uint32(0x04000000)
-	if err := machine.cpu.Map(
+	check(t, machine.cpu.Map(
 		callback,
 		0x1000,
 		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	if err := machine.cpu.WriteMemory(callback, []byte{
 		0x00, 0x20, // movs r0, #0
 		0x01, 0x30, // loop: adds r0, #1
@@ -198,9 +176,7 @@ func TestRaptorCallbacksResumeAcrossFrameBudgets(t *testing.T) {
 		Clet:    raptorrt.Clet{Paint: callback | 1},
 	}
 
-	if err := machine.StepFrame(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.StepFrame(context.Background()))
 	if machine.State() == machinecore.StateFaulted {
 		t.Fatal("long Raptor callback faulted at its first frame budget")
 	}
@@ -232,9 +208,7 @@ func TestRaptorFramebufferImportsExposeLGTGeometry(t *testing.T) {
 		Public: public,
 	}
 	handle, err := public.EnsureScreenFramebuffer()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	framebuffer := public.Framebuffers[handle]
 	tests := []struct {
 		ordinal uint32
@@ -259,9 +233,7 @@ func TestRaptorFramebufferImportsExposeLGTGeometry(t *testing.T) {
 		},
 	}
 	for _, test := range tests {
-		if err := runtime.CPU.WriteRegister(cpu.RegisterR0, test.input); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, test.input))
 		got, name, handled, err := runtime.DispatchPrivateImport(test.ordinal)
 		if err != nil || !handled || name != test.name || got.Low != test.want {
 			t.Errorf(
@@ -281,13 +253,11 @@ func TestRaptorFramebufferImportsExposeLGTGeometry(t *testing.T) {
 func TestRaptorCallbackTaskSurvivesSaveState(t *testing.T) {
 	machine := newSyntheticMachine(t)
 	const callback = uint32(0x04000000)
-	if err := machine.cpu.Map(
+	check(t, machine.cpu.Map(
 		callback,
 		0x1000,
 		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	if err := machine.cpu.WriteMemory(callback, []byte{
 		0x00, 0x20, // movs r0, #0
 		0x01, 0x30, // loop: adds r0, #1
@@ -304,19 +274,13 @@ func TestRaptorCallbackTaskSurvivesSaveState(t *testing.T) {
 		Started: true,
 		Clet:    raptorrt.Clet{Paint: callback | 1},
 	}
-	if err := machine.StepFrame(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.StepFrame(context.Background()))
 	wantContext := append([]byte(nil), machine.raptor.CallbackTasks[0].Context...)
 	var saved bytes.Buffer
-	if err := machine.SaveState(&saved); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.SaveState(&saved))
 	wantFrames := drainRaptorCallbackTasks(t, machine)
 
-	if err := machine.LoadState(bytes.NewReader(saved.Bytes())); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.LoadState(bytes.NewReader(saved.Bytes())))
 	if len(machine.raptor.CallbackTasks) != 1 ||
 		!bytes.Equal(machine.raptor.CallbackTasks[0].Context, wantContext) {
 		t.Fatalf(
@@ -335,9 +299,7 @@ func TestRaptorVolumeImportsExposeLGTVolumeRoots(t *testing.T) {
 		CPU:    public.CPU,
 		Public: public,
 	}
-	if err := runtime.InstallInterfaces(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.InstallInterfaces())
 
 	count, name, handled, err := runtime.DispatchPrivateImport(300)
 	if err != nil || !handled || name != "RAPTOR.fsGetVolumeCount" ||
@@ -362,15 +324,11 @@ func TestRaptorVolumeImportsExposeLGTVolumeRoots(t *testing.T) {
 		)
 	}
 	var pointers [8]byte
-	if err := runtime.CPU.ReadMemory(list.Low, pointers[:]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(list.Low, pointers[:]))
 	for index, want := range []string{"/L", "/S"} {
 		address := binary.LittleEndian.Uint32(pointers[index*4:])
 		got, err := public.ReadCString(address)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		if string(got) != want {
 			t.Errorf("volume %d = %q, want %q", index, got, want)
 		}
@@ -393,9 +351,7 @@ func drainRaptorCallbackTasks(t *testing.T, machine *Machine) int {
 	t.Helper()
 	frames := 0
 	for len(machine.raptor.CallbackTasks) != 0 && frames < 64 {
-		if err := machine.StepFrame(context.Background()); err != nil {
-			t.Fatal(err)
-		}
+		check(t, machine.StepFrame(context.Background()))
 		frames++
 	}
 	if len(machine.raptor.CallbackTasks) != 0 {
@@ -411,13 +367,11 @@ func drainRaptorCallbackTasks(t *testing.T, machine *Machine) int {
 func TestRaptorResumedCallbackKeepsDrainingServiceEvents(t *testing.T) {
 	machine := newSyntheticMachine(t)
 	const callback = uint32(0x04000000)
-	if err := machine.cpu.Map(
+	check(t, machine.cpu.Map(
 		callback,
 		0x1000,
 		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	if err := machine.cpu.WriteMemory(callback, []byte{
 		0x00, 0x20, // movs r0, #0
 		0x01, 0x30, // loop: adds r0, #1
@@ -434,9 +388,7 @@ func TestRaptorResumedCallbackKeepsDrainingServiceEvents(t *testing.T) {
 		Started: true,
 		Clet:    raptorrt.Clet{Paint: callback | 1},
 	}
-	if err := machine.StepFrame(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.StepFrame(context.Background()))
 	frames := 0
 	for len(machine.raptor.CallbackTasks) != 0 && frames < 1500 {
 		if err := machine.StepFrame(context.Background()); err != nil {
@@ -469,19 +421,11 @@ func newPublicRuntime(t *testing.T) *wipirt.Runtime {
 	t.Helper()
 	backend := interpreter.New()
 	t.Cleanup(func() { _ = backend.Close() })
-	if err := wipirt.MapRuntimeMemory(backend); err != nil {
-		t.Fatal(err)
-	}
+	check(t, wipirt.MapRuntimeMemory(backend))
 	runtime, err := wipirt.NewRuntime(backend, image.NewRGBA(image.Rect(0, 0, 16, 12)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.Map(guest.DefaultStackBase, guest.DefaultStackSize, cpu.PermissionRead|cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterSP, guest.DefaultStackBase+guest.DefaultStackSize-0x100); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, backend.Map(guest.DefaultStackBase, guest.DefaultStackSize, cpu.PermissionRead|cpu.PermissionWrite))
+	check(t, backend.WriteRegister(cpu.RegisterSP, guest.DefaultStackBase+guest.DefaultStackSize-0x100))
 	return runtime
 }
 
@@ -494,13 +438,11 @@ func newPublicRuntime(t *testing.T) *wipirt.Runtime {
 func TestRaptorFrameDrainsTheCallbacksItCanAfford(t *testing.T) {
 	machine := newSyntheticMachine(t)
 	const callback = uint32(0x04000000)
-	if err := machine.cpu.Map(
+	check(t, machine.cpu.Map(
 		callback,
 		0x1000,
 		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	if err := machine.cpu.WriteMemory(callback, []byte{
 		0x00, 0x20, // movs r0, #0
 		0x70, 0x47, // bx lr
@@ -523,9 +465,7 @@ func TestRaptorFrameDrainsTheCallbacksItCanAfford(t *testing.T) {
 		)
 	}
 
-	if err := machine.StepFrame(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.StepFrame(context.Background()))
 	if machine.State() == machinecore.StateFaulted {
 		t.Fatalf("draining %d callbacks faulted: %+v", queued, machine.LastResult())
 	}
@@ -541,13 +481,11 @@ func TestRaptorFrameDrainsTheCallbacksItCanAfford(t *testing.T) {
 func TestRaptorFrameDrainStopsAtTheFrameBudget(t *testing.T) {
 	machine := newSyntheticMachine(t)
 	const callback = uint32(0x04000000)
-	if err := machine.cpu.Map(
+	check(t, machine.cpu.Map(
 		callback,
 		0x1000,
 		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	if err := machine.cpu.WriteMemory(callback, []byte{
 		0x00, 0x20, // movs r0, #0
 		0x01, 0x30, // loop: adds r0, #1
@@ -572,9 +510,7 @@ func TestRaptorFrameDrainStopsAtTheFrameBudget(t *testing.T) {
 		)
 	}
 
-	if err := machine.StepFrame(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.StepFrame(context.Background()))
 	if left := len(machine.raptor.CallbackTasks); left != 4 {
 		t.Fatalf("callbacks after a budget-length first callback = %d, want 4", left)
 	}

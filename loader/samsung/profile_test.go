@@ -16,13 +16,9 @@ func TestRegistryMatchesExactPieceHashes(t *testing.T) {
 	_, pkg := inspectSyntheticSet(t, sources)
 	profile := syntheticProfile(t, pkg)
 	registry, err := NewRegistry(profile)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	matched, err := registry.Match(pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if matched.ID != profile.ID {
 		t.Fatalf("matched profile = %q, want %q", matched.ID, profile.ID)
 	}
@@ -65,20 +61,14 @@ func TestExactFlatProfileInspectsReconstructsAndMapsSyntheticBytes(t *testing.T)
 		},
 	}
 	registry, err := NewRegistry(profile)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	set, err := firmwareset.NewSet([]firmwareset.Source{
 		{ReaderAt: bytes.NewReader(preload), Size: int64(len(preload))},
 		{ReaderAt: bytes.NewReader(firmware), Size: int64(len(firmware))},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	pkg, err := inspectWithRegistry(set, registry)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if pkg.Family != FamilySamsungMonolithicFlash ||
 		pkg.Pieces[RoleFirmware].Index != 1 || pkg.Pieces[RolePreload].Index != 0 {
 		t.Fatalf("exact flat package = %+v", pkg)
@@ -88,17 +78,13 @@ func TestExactFlatProfileInspectsReconstructsAndMapsSyntheticBytes(t *testing.T)
 		t.Fatalf("flat profile match = %q error %v", matched.ID, err)
 	}
 	reset, err := ReconstructBootImage(set, pkg, profile.BootImages[0])
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if reset.LoadAddress != 0xffff0000 || reset.EntryAddress != 0xffff0000 ||
 		reset.UsedSize != 0x100 || !bytes.Equal(reset.Bytes, firmware[:0x200]) {
 		t.Fatalf("flat reset image = %+v", reset)
 	}
 	image, err := AssembleFlashForProfileWithOptions(set, pkg, profile, FlashAssemblyOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	assertFlashBytes(t, image, 0, firmware[:16])
 	assertFlashBytes(t, image, 0x800, preload[:16])
 	assertFlashBytes(t, image, 0x600, bytes.Repeat([]byte{0xff}, 16))
@@ -115,9 +101,7 @@ func TestRegistryRestrictsOpaqueWBINToRawDownloads(t *testing.T) {
 
 	profile.Family = FamilySCHRawDownload
 	registry, err := NewRegistry(profile)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if registry.profiles[0].WBINFormat != WBINFormatOpaque {
 		t.Fatalf("cloned WBIN format = %q", registry.profiles[0].WBINFormat)
 	}
@@ -353,9 +337,7 @@ func TestReconstructBootImageStripsPerBlockHeaders(t *testing.T) {
 		LogicalSHA256: fmt.Sprintf("%x", digest),
 	}
 	image, err := ReconstructBootImage(set, pkg, spec)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if image.EntryAddress != 0x80028 || len(image.Bytes) != EraseBlockSize-PageSize {
 		t.Fatalf("boot image = entry %#x, size %#x", image.EntryAddress, len(image.Bytes))
 	}
@@ -382,9 +364,7 @@ func TestReconstructBootImageStripsPerBlockHeaders(t *testing.T) {
 		Offset: 0, Expected: logical[0], Value: logical[0] ^ 0xff,
 	}}
 	patched, err := ReconstructBootImage(set, pkg, patchedSpec)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if patched.Bytes[0] != logical[0]^0xff {
 		t.Fatalf("PBL-patched boot byte = 0x%02x", patched.Bytes[0])
 	}
@@ -409,9 +389,7 @@ func TestReconstructMemoryImageReadsExactVerifiedRange(t *testing.T) {
 		LoadAddress: 0x00101000, LogicalSHA256: fmt.Sprintf("%x", digest),
 	}
 	image, err := ReconstructMemoryImage(set, pkg, spec)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if image.LoadAddress != spec.LoadAddress || !bytes.Equal(image.Bytes, wbt[:32]) {
 		t.Fatalf("reconstructed memory image = %+v", image)
 	}
@@ -420,9 +398,7 @@ func TestReconstructMemoryImageReadsExactVerifiedRange(t *testing.T) {
 		Offset: 3, Expected: wbt[3], Value: wbt[3] ^ 0xff,
 	}}
 	patched, err := ReconstructMemoryImage(set, pkg, patchedSpec)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if patched.Bytes[3] != wbt[3]^0xff {
 		t.Fatalf("PBL-patched memory byte = 0x%02x", patched.Bytes[3])
 	}
@@ -441,13 +417,9 @@ func inspectSyntheticSet(t *testing.T, sources map[Role]firmwareset.Source) (fir
 	set, err := firmwareset.NewSet([]firmwareset.Source{
 		sources[RoleWBT], sources[RoleWBIN], sources[RoleDAT], sources[RoleFont],
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	pkg, err := Inspect(set)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	return set, pkg
 }
 

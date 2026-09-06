@@ -15,19 +15,13 @@ import "testing"
 func TestGetResourceIDAnswersNoEntryForAMissingResource(t *testing.T) {
 	runtime := newPublicRuntime(t)
 	name, err := runtime.Heap.Allocate(32, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := runtime.writeCString(name, []byte("bb"), -1); err != nil {
 		t.Fatal(err)
 	}
 	size, err := runtime.Heap.Allocate(4, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.WriteU32(size, 0x5a5a5a5a); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.WriteU32(size, 0x5a5a5a5a))
 	if got := int32(dispatchPublicAPI(
 		t,
 		runtime,

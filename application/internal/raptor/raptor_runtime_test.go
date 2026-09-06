@@ -212,9 +212,7 @@ func TestRaptorPrivateSoundOrdinalsStopAndFreeClips(t *testing.T) {
 
 	call := func(ordinal uint32) string {
 		t.Helper()
-		if err := runtime.CPU.WriteRegister(cpu.RegisterR0, handle); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, handle))
 		_, name, handled, err := runtime.DispatchPrivateImport(ordinal)
 		if err != nil || !handled {
 			t.Fatalf("ordinal %d handled=%v err=%v", ordinal, handled, err)

@@ -78,26 +78,18 @@ func configureApplicationCountedLoop(
 	t.Helper()
 	backend := newBackend()
 	t.Cleanup(func() { _ = backend.Close() })
-	if err := backend.Map(
+	check(t, backend.Map(
 		countedLoopTestAddress,
 		0x1000,
 		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteMemory(countedLoopTestAddress, program.code); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterR0, counter); err != nil {
-		t.Fatal(err)
-	}
+	))
+	check(t, backend.WriteMemory(countedLoopTestAddress, program.code))
+	check(t, backend.WriteRegister(cpu.RegisterR0, counter))
 	status := flagC | flagV | uint32(processorModeSystem)
 	if program.mode == cpu.ModeThumb {
 		status |= cpu.StatusThumb
 	}
-	if err := backend.WriteRegister(cpu.RegisterCPSR, status); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteRegister(cpu.RegisterCPSR, status))
 	return backend
 }
 
@@ -112,18 +104,12 @@ func configureSystemCountedLoop(
 	bus.writeRaw(countedLoopTestAddress, program.code)
 	backend := newBackend()
 	t.Cleanup(func() { _ = backend.Close() })
-	if err := backend.AttachSystemBus(bus); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterR0, counter); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.AttachSystemBus(bus))
+	check(t, backend.WriteRegister(cpu.RegisterR0, counter))
 	if program.mode == cpu.ModeThumb {
 		status |= cpu.StatusThumb
 	}
-	if err := backend.WriteRegister(cpu.RegisterCPSR, status); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteRegister(cpu.RegisterCPSR, status))
 	return backend, bus
 }
 
@@ -217,16 +203,12 @@ func TestJITLoopAccelerationClassifiesOnlyQualifiedShapes(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			backend := newLoopAccelerationBackend()
 			t.Cleanup(func() { _ = backend.Close() })
-			if err := backend.Map(
+			check(t, backend.Map(
 				countedLoopTestAddress,
 				0x1000,
 				cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
-			); err != nil {
-				t.Fatal(err)
-			}
-			if err := backend.WriteMemory(countedLoopTestAddress, test.code); err != nil {
-				t.Fatal(err)
-			}
+			))
+			check(t, backend.WriteMemory(countedLoopTestAddress, test.code))
 			var block *jitBlock
 			if test.mode == cpu.ModeThumb {
 				block = backend.translateThumbBlock(countedLoopTestAddress)
@@ -271,9 +253,7 @@ func TestJITLoopAccelerationDisabledByTracing(t *testing.T) {
 	for _, program := range countedLoopTestPrograms() {
 		t.Run(program.name, func(t *testing.T) {
 			backend := configureApplicationCountedLoop(t, newLoopAccelerationBackend, program, 1000)
-			if err := backend.SetPCHistoryLimit(runBatchInstructions); err != nil {
-				t.Fatal(err)
-			}
+			check(t, backend.SetPCHistoryLimit(runBatchInstructions))
 			result := backend.Run(context.Background(), countedLoopTestAddress, program.mode, runBatchInstructions)
 			if result.Err != nil || result.Reason != cpu.StopBudget {
 				t.Fatalf("traced run result = %+v", result)
@@ -322,12 +302,8 @@ func TestJITLoopAccelerationRequiresBothInterruptMasks(t *testing.T) {
 			status := uint32(processorModeSystem) | statusIRQDisable | statusFIQDisable
 			exact, _ := configureSystemCountedLoop(t, NewJIT, program, 1000, status)
 			accelerated, _ := configureSystemCountedLoop(t, newLoopAccelerationBackend, program, 1000, status)
-			if err := exact.SetInterruptLine(cpu.InterruptIRQ, true); err != nil {
-				t.Fatal(err)
-			}
-			if err := accelerated.SetInterruptLine(cpu.InterruptIRQ, true); err != nil {
-				t.Fatal(err)
-			}
+			check(t, exact.SetInterruptLine(cpu.InterruptIRQ, true))
+			check(t, accelerated.SetInterruptLine(cpu.InterruptIRQ, true))
 			exactResult := exact.Run(context.Background(), countedLoopTestAddress, program.mode, runBatchInstructions)
 			acceleratedResult := accelerated.Run(context.Background(), countedLoopTestAddress, program.mode, runBatchInstructions)
 			assertLoopBackendParity(t, exact, accelerated, exactResult, acceleratedResult)
@@ -339,9 +315,7 @@ func TestJITLoopAccelerationRequiresBothInterruptMasks(t *testing.T) {
 		t.Run(program.name+"/fiq_unmasked", func(t *testing.T) {
 			status := uint32(processorModeSystem) | statusIRQDisable
 			backend, _ := configureSystemCountedLoop(t, newLoopAccelerationBackend, program, 1000, status)
-			if err := backend.SetInterruptLine(cpu.InterruptIRQ, true); err != nil {
-				t.Fatal(err)
-			}
+			check(t, backend.SetInterruptLine(cpu.InterruptIRQ, true))
 			result := backend.Run(context.Background(), countedLoopTestAddress, program.mode, runBatchInstructions)
 			if result.Err != nil || result.Reason != cpu.StopBudget {
 				t.Fatalf("run result = %+v", result)
@@ -392,19 +366,13 @@ func configureInterruptBoundaryLoop(
 	backend := newBackend()
 	t.Cleanup(func() { _ = backend.Close() })
 	bus.backend = backend
-	if err := backend.AttachSystemBus(bus); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterR0, 1000); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.AttachSystemBus(bus))
+	check(t, backend.WriteRegister(cpu.RegisterR0, 1000))
 	status := uint32(processorModeSystem)
 	if program.mode == cpu.ModeThumb {
 		status |= cpu.StatusThumb
 	}
-	if err := backend.WriteRegister(cpu.RegisterCPSR, status); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteRegister(cpu.RegisterCPSR, status))
 	return backend, bus
 }
 
@@ -478,19 +446,13 @@ func TestJITLoopAccelerationPreservesStopResponsiveness(t *testing.T) {
 			bus.writeRaw(countedLoopTestAddress, program.code)
 			backend := newLoopAccelerationBackend()
 			t.Cleanup(func() { _ = backend.Close() })
-			if err := backend.AttachSystemBus(bus); err != nil {
-				t.Fatal(err)
-			}
-			if err := backend.WriteRegister(cpu.RegisterR0, ^uint32(0)); err != nil {
-				t.Fatal(err)
-			}
+			check(t, backend.AttachSystemBus(bus))
+			check(t, backend.WriteRegister(cpu.RegisterR0, ^uint32(0)))
 			status := uint32(processorModeSystem) | statusIRQDisable | statusFIQDisable
 			if program.mode == cpu.ModeThumb {
 				status |= cpu.StatusThumb
 			}
-			if err := backend.WriteRegister(cpu.RegisterCPSR, status); err != nil {
-				t.Fatal(err)
-			}
+			check(t, backend.WriteRegister(cpu.RegisterCPSR, status))
 
 			done := make(chan cpu.Result, 1)
 			go func() {
@@ -501,9 +463,7 @@ func TestJITLoopAccelerationPreservesStopResponsiveness(t *testing.T) {
 			case <-time.After(2 * time.Second):
 				t.Fatal("Run did not begin fetching loop code")
 			}
-			if err := backend.Stop(); err != nil {
-				t.Fatal(err)
-			}
+			check(t, backend.Stop())
 			select {
 			case result := <-done:
 				if result.Reason != cpu.StopRequested || !errors.Is(result.Err, cpu.ErrStopped) ||
@@ -527,22 +487,14 @@ func TestJITLoopAccelerationContextRoundTripParity(t *testing.T) {
 			assertLoopBackendParity(t, exact, accelerated, exactResult, acceleratedResult)
 
 			exactContext, err := exact.SaveContext()
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			acceleratedContext, err := accelerated.SaveContext()
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			if !bytes.Equal(exactContext, acceleratedContext) {
 				t.Fatal("precise and accelerated portable contexts differ")
 			}
-			if err := exact.RestoreContext(acceleratedContext); err != nil {
-				t.Fatal(err)
-			}
-			if err := accelerated.RestoreContext(exactContext); err != nil {
-				t.Fatal(err)
-			}
+			check(t, exact.RestoreContext(acceleratedContext))
+			check(t, accelerated.RestoreContext(exactContext))
 
 			exactResult = exact.Run(context.Background(), exactResult.PC, program.mode, 100)
 			acceleratedResult = accelerated.Run(context.Background(), acceleratedResult.PC, program.mode, 100)
@@ -561,9 +513,7 @@ func benchmarkJITCountedLoop(
 	ctx := context.Background()
 	b.ResetTimer()
 	for range b.N {
-		if err := backend.WriteRegister(cpu.RegisterR0, uint32(budget/2)); err != nil {
-			b.Fatal(err)
-		}
+		check(b, backend.WriteRegister(cpu.RegisterR0, uint32(budget/2)))
 		result := backend.Run(ctx, countedLoopTestAddress, program.mode, budget)
 		if result.Err != nil || result.Reason != cpu.StopBudget || result.Instructions != budget {
 			b.Fatalf("run result = %+v", result)
@@ -580,16 +530,12 @@ func configureApplicationCountedLoopBenchmark(
 	b.Helper()
 	backend := newBackend()
 	b.Cleanup(func() { _ = backend.Close() })
-	if err := backend.Map(
+	check(b, backend.Map(
 		countedLoopTestAddress,
 		0x1000,
 		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
-	); err != nil {
-		b.Fatal(err)
-	}
-	if err := backend.WriteMemory(countedLoopTestAddress, program.code); err != nil {
-		b.Fatal(err)
-	}
+	))
+	check(b, backend.WriteMemory(countedLoopTestAddress, program.code))
 	return backend
 }
 

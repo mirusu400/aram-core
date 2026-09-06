@@ -38,9 +38,7 @@ func TestKTFWIPICPublicGraphicsSlotsAreMapped(t *testing.T) {
 func TestKTFWIPICCopyAreaHandlesOverlapOffsetAndClip(t *testing.T) {
 	runtime := newScratchKTFRuntime(t)
 	framebufferHandle, err := runtime.createWIPICFramebuffer(4, 4, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	framebuffer := runtime.wipicFramebuffers[framebufferHandle]
 	pixels := make([]byte, framebuffer.stride*framebuffer.height)
 	for y := 0; y < framebuffer.height; y++ {
@@ -51,20 +49,13 @@ func TestKTFWIPICCopyAreaHandlesOverlapOffsetAndClip(t *testing.T) {
 			)
 		}
 	}
-	if err := runtime.CPU.WriteMemory(framebuffer.pixels, pixels); err != nil {
-		t.Fatal(err)
-	}
-	graphicsContext, err := runtime.Heap.Allocate(60, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteMemory(framebuffer.pixels, pixels))
+	graphicsContext := heapAlloc(t, runtime, 60, true)
 	contextWords := make([]uint32, 15)
 	// clip_enabled, clip, then the y offset at +0x28.
 	copy(contextWords, []uint32{1, 1, 1, 3, 4})
 	contextWords[10] = 1
-	if err := runtime.writeWords(graphicsContext, contextWords); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.writeWords(graphicsContext, contextWords))
 	setKTFWIPICCallArguments(t, runtime, []uint32{
 		framebufferHandle, 0, 0, 4, 3, 0, 0, graphicsContext,
 	})
@@ -93,18 +84,11 @@ func TestKTFWIPICCopyAreaHandlesOverlapOffsetAndClip(t *testing.T) {
 func TestKTFWIPICArcPolygonAndExtremeLineRasterize(t *testing.T) {
 	runtime := newScratchKTFRuntime(t)
 	framebufferHandle, err := runtime.createWIPICFramebuffer(12, 12, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	graphicsContext, err := runtime.Heap.Allocate(60, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	graphicsContext := heapAlloc(t, runtime, 60, true)
 	contextWords := make([]uint32, 15)
 	contextWords[5] = 0xf800
-	if err := runtime.writeWords(graphicsContext, contextWords); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.writeWords(graphicsContext, contextWords))
 	setKTFWIPICCallArguments(t, runtime, []uint32{
 		framebufferHandle, 1, 1, 8, 8, 0, 360, graphicsContext,
 	})
@@ -119,30 +103,16 @@ func TestKTFWIPICArcPolygonAndExtremeLineRasterize(t *testing.T) {
 	}
 
 	framebuffer := runtime.wipicFramebuffers[framebufferHandle]
-	if err := runtime.CPU.WriteMemory(
+	check(t, runtime.CPU.WriteMemory(
 		framebuffer.pixels,
 		make([]byte, framebuffer.stride*framebuffer.height),
-	); err != nil {
-		t.Fatal(err)
-	}
-	xCoordinates, err := runtime.Heap.Allocate(12, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	yCoordinates, err := runtime.Heap.Allocate(12, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(xCoordinates, []uint32{1, 9, 1}); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(yCoordinates, []uint32{1, 1, 9}); err != nil {
-		t.Fatal(err)
-	}
+	))
+	xCoordinates := heapAlloc(t, runtime, 12, true)
+	yCoordinates := heapAlloc(t, runtime, 12, true)
+	check(t, runtime.writeWords(xCoordinates, []uint32{1, 9, 1}))
+	check(t, runtime.writeWords(yCoordinates, []uint32{1, 1, 9}))
 	contextWords[9], contextWords[10] = 1, 1
-	if err := runtime.writeWords(graphicsContext, contextWords); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.writeWords(graphicsContext, contextWords))
 	setKTFWIPICCallArguments(t, runtime, []uint32{
 		framebufferHandle, xCoordinates, yCoordinates, 3, graphicsContext,
 	})
@@ -157,19 +127,15 @@ func TestKTFWIPICArcPolygonAndExtremeLineRasterize(t *testing.T) {
 	}
 
 	state, err := runtime.wipicGraphicsContext(graphicsContext)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.drawWIPICLine(
+	check(t, err)
+	check(t, runtime.drawWIPICLine(
 		framebufferHandle,
 		-1<<30,
 		10,
 		1<<30,
 		10,
 		state,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	if got := readKTFWIPICPixel(t, runtime, framebufferHandle, 0, 10); got != 0xf800 {
 		t.Fatalf("clipped extreme line start = %04x", got)
 	}
@@ -181,23 +147,13 @@ func TestKTFWIPICArcPolygonAndExtremeLineRasterize(t *testing.T) {
 func TestKTFWIPICRGBPixelTransfersHonorPitchAndContext(t *testing.T) {
 	runtime := newScratchKTFRuntime(t)
 	framebufferHandle, err := runtime.createWIPICFramebuffer(4, 3, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	graphicsContext, err := runtime.Heap.Allocate(60, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	graphicsContext := heapAlloc(t, runtime, 60, true)
 	contextWords := make([]uint32, 15)
 	copy(contextWords, []uint32{1, 0, 0, 3, 3})
 	contextWords[10] = 1
-	if err := runtime.writeWords(graphicsContext, contextWords); err != nil {
-		t.Fatal(err)
-	}
-	source, err := runtime.Heap.Allocate(6*4, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.writeWords(graphicsContext, contextWords))
+	source := heapAlloc(t, runtime, 6*4, true)
 	if err := runtime.writeWords(source, []uint32{
 		0xffff0000, 0xff00ff00, 0xdeadbeef,
 		0xff0000ff, 0xffffffff, 0xdeadbeef,
@@ -224,10 +180,7 @@ func TestKTFWIPICRGBPixelTransfersHonorPitchAndContext(t *testing.T) {
 			t.Fatalf("set RGB pixel (%d,%d) = %04x, want %04x", check.x, check.y, got, check.want)
 		}
 	}
-	output, err := runtime.Heap.Allocate(6*4, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	output := heapAlloc(t, runtime, 6*4, true)
 	if err := runtime.writeWords(output, []uint32{
 		0, 0, 0xdeadbeef, 0, 0, 0xdeadbeef,
 	}); err != nil {
@@ -239,10 +192,7 @@ func TestKTFWIPICRGBPixelTransfersHonorPitchAndContext(t *testing.T) {
 	if _, err := ktfWIPICGraphicsGetRGBPixels(context.Background(), runtime); err != nil {
 		t.Fatal(err)
 	}
-	got, err := runtime.ReadWords(output, 6)
-	if err != nil {
-		t.Fatal(err)
-	}
+	got := readWords(t, runtime, output, 6)
 	want := []uint32{0x00ff0000, 0x0000ff00, 0xdeadbeef, 0x000000ff, 0x00ffffff, 0xdeadbeef}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("RGB output = %08x, want %08x", got, want)
@@ -273,29 +223,19 @@ func TestKTFWIPICDecodeNextImageAdvancesAnimatedGIF(t *testing.T) {
 	}
 	runtime := newScratchKTFRuntime(t)
 	memoryID, err := runtime.allocateWIPICMemory(uint32(encoded.Len()), false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteMemory(
+	check(t, err)
+	check(t, runtime.CPU.WriteMemory(
 		runtime.wipicMemory[memoryID].data,
 		encoded.Bytes(),
-	); err != nil {
-		t.Fatal(err)
-	}
-	output, err := runtime.AllocateWords(1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	))
+	output := allocWords(t, runtime, 1)
 	setKTFWIPICCallArguments(t, runtime, []uint32{
 		output, memoryID, 0, uint32(encoded.Len()),
 	})
 	if result, err := ktfWIPICGraphicsCreateImage(context.Background(), runtime); err != nil || result != 1 {
 		t.Fatalf("create animated image result=%08x err=%v", result, err)
 	}
-	object, err := runtime.ReadU32(output)
-	if err != nil {
-		t.Fatal(err)
-	}
+	object := readU32(t, runtime, output)
 	framebufferHandle := runtime.wipicImages[object].framebuffer
 	if got := readKTFWIPICPixel(t, runtime, framebufferHandle, 0, 0); got != 0xf800 {
 		t.Fatalf("initial GIF frame pixel = %04x", got)
@@ -355,23 +295,14 @@ func setKTFWIPICCallArguments(t *testing.T, runtime *Runtime, values []uint32) {
 		if index < len(values) {
 			value = values[index]
 		}
-		if err := runtime.CPU.WriteRegister(cpu.RegisterR0+uint32(index), value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteRegister(cpu.RegisterR0+uint32(index), value))
 	}
 	if len(values) <= 4 {
 		return
 	}
-	stack, err := runtime.Heap.Allocate(uint32((len(values)-4)*4), true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(stack, values[4:]); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterSP, stack); err != nil {
-		t.Fatal(err)
-	}
+	stack := heapAlloc(t, runtime, uint32((len(values)-4)*4), true)
+	check(t, runtime.writeWords(stack, values[4:]))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterSP, stack))
 }
 
 func readKTFWIPICPixel(
@@ -386,12 +317,10 @@ func readKTFWIPICPixel(
 		t.Fatalf("framebuffer 0x%08x is unavailable", framebufferHandle)
 	}
 	var encoded [2]byte
-	if err := runtime.CPU.ReadMemory(
+	check(t, runtime.CPU.ReadMemory(
 		framebuffer.pixels+uint32(y*framebuffer.stride+x*2),
 		encoded[:],
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	return binary.LittleEndian.Uint16(encoded[:])
 }
 
@@ -423,34 +352,24 @@ func TestKTFWIPICSpriteFramebuffersDoNotConsumeSharedSurfaces(t *testing.T) {
 func TestKTFWIPICFramebufferSurfaceMaterializesOnSync(t *testing.T) {
 	runtime := newScratchKTFRuntime(t)
 	handle, err := runtime.createWIPICFramebuffer(2, 2, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	framebuffer := runtime.wipicFramebuffers[handle]
 	pixels := make([]byte, framebuffer.stride*framebuffer.height)
 	for index := 0; index < len(pixels); index += 2 {
 		binary.LittleEndian.PutUint16(pixels[index:], 0xf800)
 	}
-	if err := runtime.CPU.WriteMemory(framebuffer.pixels, pixels); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.syncKTFWIPICFramebuffer(handle); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteMemory(framebuffer.pixels, pixels))
+	check(t, runtime.syncKTFWIPICFramebuffer(handle))
 	surface := runtime.wipicSurfaceServices[handle]
 	if surface == 0 {
 		t.Fatal("syncing a framebuffer did not materialize its shared surface")
 	}
-	if err := runtime.syncKTFWIPICFramebuffer(handle); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.syncKTFWIPICFramebuffer(handle))
 	if again := runtime.wipicSurfaceServices[handle]; again != surface {
 		t.Fatalf("second sync replaced surface %d with %d", surface, again)
 	}
 	rgba, err := runtime.Services.Graphics.RGBA(runtime.ServiceOwner, surface)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if len(rgba) != 2*2*4 {
 		t.Fatalf("surface RGBA payload has %d bytes, want %d", len(rgba), 16)
 	}

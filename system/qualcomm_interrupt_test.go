@@ -30,9 +30,7 @@ func (p *interruptLineProbe) SetInterruptLine(line cpu.InterruptLine, asserted b
 func TestQualcommInterruptControllerMasksLatchesAndAcknowledgesSources(t *testing.T) {
 	probe := &interruptLineProbe{}
 	device := NewQualcommInterruptController(probe)
-	if err := device.SetSource(2, true); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.SetSource(2, true))
 	if probe.irq || probe.fiq {
 		t.Fatalf("disabled source drove outputs IRQ=%v FIQ=%v", probe.irq, probe.fiq)
 	}
@@ -40,27 +38,19 @@ func TestQualcommInterruptControllerMasksLatchesAndAcknowledgesSources(t *testin
 	if err != nil || status != 1<<2 {
 		t.Fatalf("latched status = %#x error %v", status, err)
 	}
-	if err := device.Write(qualcommIRQEnable0Offset, Width32, 1<<2); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(qualcommIRQEnable0Offset, Width32, 1<<2))
 	if !probe.irq || probe.fiq {
 		t.Fatalf("IRQ enable outputs IRQ=%v FIQ=%v", probe.irq, probe.fiq)
 	}
-	if err := device.Write(qualcommInterruptClear0Offset, Width32, 1<<2); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(qualcommInterruptClear0Offset, Width32, 1<<2))
 	if status, _ := device.Read(qualcommInterruptStatus0Offset, Width32); status != 1<<2 {
 		t.Fatalf("asserted level was cleared: %#x", status)
 	}
-	if err := device.SetSource(2, false); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.SetSource(2, false))
 	if !probe.irq {
 		t.Fatal("deasserting source incorrectly cleared sticky status")
 	}
-	if err := device.Write(qualcommInterruptClear0Offset, Width32, 1<<2); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(qualcommInterruptClear0Offset, Width32, 1<<2))
 	if probe.irq {
 		t.Fatal("acknowledged source left IRQ asserted")
 	}
@@ -69,18 +59,12 @@ func TestQualcommInterruptControllerMasksLatchesAndAcknowledgesSources(t *testin
 func TestQualcommInterruptControllerRoutesFIQAndPulseSources(t *testing.T) {
 	probe := &interruptLineProbe{}
 	device := NewQualcommInterruptController(probe)
-	if err := device.Write(qualcommFIQEnable1Offset, Width32, 1<<8); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.PulseSource(40); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(qualcommFIQEnable1Offset, Width32, 1<<8))
+	check(t, device.PulseSource(40))
 	if probe.irq || !probe.fiq {
 		t.Fatalf("FIQ pulse outputs IRQ=%v FIQ=%v", probe.irq, probe.fiq)
 	}
-	if err := device.Write(qualcommInterruptClear1Offset, Width32, 1<<8); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(qualcommInterruptClear1Offset, Width32, 1<<8))
 	if probe.fiq {
 		t.Fatal("cleared pulse left FIQ asserted")
 	}
@@ -107,24 +91,16 @@ func TestQualcommInterruptControllerRejectsReservedAccessesAndRestoresState(t *t
 	if _, err := device.Read(0x44, Width32); !errors.Is(err, ErrQualcommInterruptControllerMMIO) {
 		t.Fatalf("reserved read error = %v", err)
 	}
-	if err := device.Write(qualcommIRQEnable1Offset, Width32, 1<<3); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.SetSource(35, true); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(qualcommIRQEnable1Offset, Width32, 1<<3))
+	check(t, device.SetSource(35, true))
 	state, err := device.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if version := binary.LittleEndian.Uint32(state[4:8]); version != 1 {
 		t.Fatalf("legacy controller state version = %d, want 1", version)
 	}
 	restoredProbe := &interruptLineProbe{}
 	restored := NewQualcommInterruptController(restoredProbe)
-	if err := restored.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restored.LoadState(state))
 	if !restoredProbe.irq || restoredProbe.fiq {
 		t.Fatalf("restored outputs IRQ=%v FIQ=%v", restoredProbe.irq, restoredProbe.fiq)
 	}
@@ -140,9 +116,7 @@ func TestQualcommInterruptControllerProfilesLegacyGPIOInputAlias(t *testing.T) {
 			{Offset: 0x44, Value: 0x20000},
 		},
 	}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	value, err := device.Read(0x40, Width32)
 	if err != nil || value != 0x20 {
 		t.Fatalf("GPIO input alias = %#x error %v", value, err)
@@ -154,9 +128,7 @@ func TestQualcommInterruptControllerProfilesLegacyGPIOInputAlias(t *testing.T) {
 		t.Fatalf("extended GPIO input alias = %#x error %v", value, err)
 	}
 	state, err := device.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if version := binary.LittleEndian.Uint32(state[4:8]); version != 2 {
 		t.Fatalf("profiled controller state version = %d, want 2", version)
 	}
@@ -166,9 +138,7 @@ func TestQualcommInterruptControllerProfilesLegacyGPIOInputAlias(t *testing.T) {
 			{Offset: 0x44, Value: 0x20000},
 		},
 	}, nil)
-	if err := restored.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restored.LoadState(state))
 	mismatch, _ := NewQualcommInterruptControllerWithConfig(QualcommInterruptControllerConfig{
 		GPIOInputs: []QualcommGPIOInputRegister{
 			{Offset: 0x40, Value: 0},
@@ -197,9 +167,7 @@ func TestQualcommInterruptControllerProfilesStatusAliasResetAndClear(t *testing.
 		Offset: 0x50, Bank: 1, ResetValue: 0x00006000,
 	}}}
 	device, err := NewQualcommInterruptControllerWithConfig(config, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	for _, offset := range []uint32{0x50, qualcommInterruptStatus1Offset} {
 		value, readErr := device.Read(offset, Width32)
 		if readErr != nil || value != 0x00006000 {
@@ -209,29 +177,21 @@ func TestQualcommInterruptControllerProfilesStatusAliasResetAndClear(t *testing.
 	if err := device.Write(0x50, Width32, 0); !errors.Is(err, ErrQualcommInterruptControllerMMIO) {
 		t.Fatalf("status alias write error = %v", err)
 	}
-	if err := device.Write(qualcommInterruptClear1Offset, Width32, 0x00002000); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(qualcommInterruptClear1Offset, Width32, 0x00002000))
 	if value, err := device.Read(0x50, Width32); err != nil || value != 0x00004000 {
 		t.Fatalf("partially cleared status alias = %#x error %v", value, err)
 	}
 	state, err := device.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if version := binary.LittleEndian.Uint32(state[4:8]); version != 3 {
 		t.Fatalf("status-alias state version = %d, want 3", version)
 	}
 	restored, _ := NewQualcommInterruptControllerWithConfig(config, nil)
-	if err := restored.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restored.LoadState(state))
 	if value, err := restored.Read(0x50, Width32); err != nil || value != 0x00004000 {
 		t.Fatalf("restored status alias = %#x error %v", value, err)
 	}
-	if err := restored.Reset(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restored.Reset())
 	if value, err := restored.Read(0x50, Width32); err != nil || value != 0x00006000 {
 		t.Fatalf("re-reset status alias = %#x error %v", value, err)
 	}
@@ -262,28 +222,18 @@ func TestQualcommBootControlRoutesInterruptWindowToARMCore(t *testing.T) {
 		QualcommVectoredInterruptConfig{SourceCount: 49, Bank0Sources: 25},
 		backend,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	bootControl, err := NewQualcommBootControl(QualcommBootControlConfig{
 		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
 		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1,
 		NANDReady: NewStatusSignal(), InterruptController: controller,
 		VectoredInterruptController: vectored,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	bus := NewBus()
-	if err := bus.MapRAM("vectors", 0, 0x2000); err != nil {
-		t.Fatal(err)
-	}
-	if err := bus.MapMMIO("chip-control", 0x80000000, QualcommBootControlWindowSize, bootControl); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.AttachSystemBus(bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.MapRAM("vectors", 0, 0x2000))
+	check(t, bus.MapMMIO("chip-control", 0x80000000, QualcommBootControlWindowSize, bootControl))
+	check(t, backend.AttachSystemBus(bus))
 	writeWord := func(address, value uint32) {
 		t.Helper()
 		var encoded [4]byte
@@ -291,15 +241,11 @@ func TestQualcommBootControlRoutesInterruptWindowToARMCore(t *testing.T) {
 		encoded[1] = byte(value >> 8)
 		encoded[2] = byte(value >> 16)
 		encoded[3] = byte(value >> 24)
-		if err := bus.Write(address, encoded[:], cpu.PermissionWrite); err != nil {
-			t.Fatal(err)
-		}
+		check(t, bus.Write(address, encoded[:], cpu.PermissionWrite))
 	}
 	writeWord(0x18, 0xe3a0002a) // MOV r0, #42
 	writeWord(0x1000, 0xe3a00001)
-	if err := backend.WriteRegister(cpu.RegisterCPSR, 0x1f); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteRegister(cpu.RegisterCPSR, 0x1f))
 	writeWord(0x80000430, 1<<2)
 	value, err := bootControl.Read(0x049c, Width32)
 	if err != nil || value != 0x3f {
@@ -313,9 +259,7 @@ func TestQualcommBootControlRoutesInterruptWindowToARMCore(t *testing.T) {
 	if err != nil || value != 0xff {
 		t.Fatalf("idle in-service IRQ vector = %#x error %v", value, err)
 	}
-	if err := vectored.SetSource(2, true); err != nil {
-		t.Fatal(err)
-	}
+	check(t, vectored.SetSource(2, true))
 	value, err = bootControl.Read(0x0474, Width32)
 	if err != nil || value != 1<<2 {
 		t.Fatalf("vectored low status = %#x error %v", value, err)
@@ -328,9 +272,7 @@ func TestQualcommBootControlRoutesInterruptWindowToARMCore(t *testing.T) {
 	if err != nil || value != 2 {
 		t.Fatalf("in-service IRQ vector = %#x error %v", value, err)
 	}
-	if err := bootControl.Write(0x04a4, Width32, 0); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bootControl.Write(0x04a4, Width32, 0))
 	value, err = bootControl.Read(0x04a8, Width32)
 	if err != nil || value != 0xff {
 		t.Fatalf("completed in-service IRQ vector = %#x error %v", value, err)

@@ -23,14 +23,10 @@ func TestInspectAndNormalizeSyntheticSCHDownloadSetWithoutFilenames(t *testing.T
 		sources[RoleDAT],
 		sources[RoleWBIN],
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 
 	pkg, err := Inspect(set)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !pkg.Complete() || len(pkg.MissingRoles()) != 0 {
 		t.Fatalf("package is incomplete: %v", pkg.MissingRoles())
 	}
@@ -42,9 +38,7 @@ func TestInspectAndNormalizeSyntheticSCHDownloadSetWithoutFilenames(t *testing.T
 	}
 
 	layout, err := Normalize(set, pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if layout.Family != FamilySCHDownload || layout.MIBIBGeneration != 2 {
 		t.Fatalf("layout identity = %+v", layout)
 	}
@@ -77,14 +71,10 @@ func TestInspectAndNormalizeSyntheticRawSCHDownloadSetWithoutFilenames(t *testin
 		sources[RoleWBT],
 		sources[RoleWBIN],
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 
 	pkg, err := Inspect(set)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if pkg.Family != FamilySCHRawDownload || !pkg.Complete() {
 		t.Fatalf("raw package = family %q missing %v", pkg.Family, pkg.MissingRoles())
 	}
@@ -93,9 +83,7 @@ func TestInspectAndNormalizeSyntheticRawSCHDownloadSetWithoutFilenames(t *testin
 	}
 
 	layout, err := Normalize(set, pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if layout.Family != FamilySCHRawDownload || layout.MIBIBGeneration != 2 {
 		t.Fatalf("raw layout identity = %+v", layout)
 	}
@@ -128,17 +116,11 @@ func TestNormalizeFindsRawFooterBeforeDownloaderPadding(t *testing.T) {
 	set, err := firmwareset.NewSet([]firmwareset.Source{
 		sources[RoleWBT], sources[RoleWBIN], sources[RoleDAT], sources[RoleFont],
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	pkg, err := Inspect(set)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	layout, err := Normalize(set, pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if layout.PackagedEnd != 0x0e0000 {
 		t.Fatalf("displaced-footer packaged end = %#x", layout.PackagedEnd)
 	}
@@ -149,20 +131,14 @@ func TestInspectAndNormalizeSmallPageRawSCHDownload(t *testing.T) {
 	set, err := firmwareset.NewSet([]firmwareset.Source{
 		sources[RoleFont], sources[RoleWBIN], sources[RoleWBT], sources[RoleDAT],
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	pkg, err := Inspect(set)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if pkg.Family != FamilySCHRawDownload || !pkg.Complete() {
 		t.Fatalf("small-page package = family %q missing %v", pkg.Family, pkg.MissingRoles())
 	}
 	layout, err := Normalize(set, pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if layout.PageSize != smallPageSize || layout.EraseBlockSize != smallEraseBlockSize ||
 		layout.MIBIBVersion != 1 || layout.MIBIBGeneration != 2 || layout.PackagedEnd != 0x0e0000 {
 		t.Fatalf("small-page layout = %+v", layout)
@@ -193,13 +169,9 @@ func TestInspectRecognizesFlatARMAndZlibRawPieces(t *testing.T) {
 	set, err := firmwareset.NewSet([]firmwareset.Source{
 		sources[RoleFont], sources[RoleDAT], sources[RoleWBIN], sources[RoleWBT],
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	pkg, err := Inspect(set)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if pkg.Pieces[RoleWBIN].Header.Build != "raw-arm" ||
 		pkg.Pieces[RoleFont].Header.Build != "raw-zlib" {
 		t.Fatalf("raw structural headers = WBIN %+v FONT %+v", pkg.Pieces[RoleWBIN], pkg.Pieces[RoleFont])
@@ -226,9 +198,7 @@ func TestInspectInfersOnlyExactMissingRawRole(t *testing.T) {
 		setSources[index] = sources[role]
 	}
 	set, err := firmwareset.NewSet(setSources)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	hashes := make(map[Role]string, len(roles))
 	for index, role := range roles {
 		piece, pieceErr := set.Piece(index)
@@ -242,13 +212,9 @@ func TestInspectInfersOnlyExactMissingRawRole(t *testing.T) {
 		Manufacturer: "Samsung", Model: "Synthetic", Build: "INFERRED",
 		PieceHashes: hashes,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	pkg, err := inspectWithRegistry(set, registry)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if font := pkg.Pieces[RoleFont]; font.Index != 3 || font.Header.Build != "raw-inferred-font" {
 		t.Fatalf("inferred raw FONT = %+v", font)
 	}
@@ -284,17 +250,11 @@ func TestNormalizeAcceptsAdjacentMIBIBTableVersions(t *testing.T) {
 			set, err := firmwareset.NewSet([]firmwareset.Source{
 				sources[RoleWBT], sources[RoleWBIN], sources[RoleDAT], sources[RoleFont],
 			})
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			pkg, err := Inspect(set)
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			layout, err := Normalize(set, pkg)
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			if layout.MIBIBVersion != test.headerVersion || layout.MIBIBGeneration != 2 ||
 				len(layout.Partitions) != 6 {
 				t.Fatalf("adjacent-version MIBIB layout = %+v", layout)
@@ -331,26 +291,18 @@ func TestNormalizeAndAssembleFooterlessNon64KDataLayout(t *testing.T) {
 	set, err := firmwareset.NewSet([]firmwareset.Source{
 		sources[RoleWBT], sources[RoleWBIN], sources[RoleDAT], sources[RoleFont],
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	pkg, err := Inspect(set)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	layout, err := Normalize(set, pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	wbinRegion, datRegion, fontRegion := layout.Region(RoleWBIN), layout.Region(RoleDAT), layout.Region(RoleFont)
 	if layout.PackagedEnd != 0x0a4000 || wbinRegion == nil || datRegion == nil || fontRegion == nil ||
 		wbinRegion.Start != 0x60000 || datRegion.Start != 0x74000 || fontRegion.Start != 0x84000 {
 		t.Fatalf("footerless non-64-KiB layout = %+v", layout)
 	}
 	image, err := AssembleFlash(set, pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if image.Size() != 0x0a4000 || image.PageSize() != smallPageSize ||
 		image.EraseBlockSize() != smallEraseBlockSize {
 		t.Fatalf("footerless non-64-KiB flash = %#x/%#x/%#x", image.Size(), image.PageSize(), image.EraseBlockSize())
@@ -363,9 +315,7 @@ func TestInspectRejectsMixedWrappedAndRawSCHDownloadPieces(t *testing.T) {
 	set, err := firmwareset.NewSet([]firmwareset.Source{
 		wrapped[RoleWBT], raw[RoleWBIN], raw[RoleDAT], raw[RoleFont],
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := Inspect(set); !errors.Is(err, ErrNotSCHDownload) {
 		t.Fatalf("Inspect mixed-family error = %v", err)
 	}
@@ -385,17 +335,11 @@ func TestNormalizeAcceptsTrailingWritablePartitionAfterPackagedEnd(t *testing.T)
 	set, err := firmwareset.NewSet([]firmwareset.Source{
 		sources[RoleWBT], sources[RoleWBIN], sources[RoleDAT], sources[RoleFont],
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	pkg, err := Inspect(set)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	layout, err := Normalize(set, pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if layout.PackagedEnd != 0x0e0000 || len(layout.Partitions) != 6 {
 		t.Fatalf("layout with trailing writable partition = %+v", layout)
 	}
@@ -427,17 +371,11 @@ func TestNormalizeAcceptsVersionOneOpenEndedFinalPartition(t *testing.T) {
 	set, err := firmwareset.NewSet([]firmwareset.Source{
 		sources[RoleWBT], sources[RoleWBIN], sources[RoleDAT], sources[RoleFont],
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	pkg, err := Inspect(set)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	layout, err := Normalize(set, pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if layout.MIBIBVersion != 1 || layout.MIBIBGeneration != 2 || layout.PackagedEnd != 0x120000 {
 		t.Fatalf("version-one layout = %+v", layout)
 	}
@@ -474,13 +412,9 @@ func TestNormalizeRejectsOpenEndedPartitionOutsideVersionOneTail(t *testing.T) {
 			set, err := firmwareset.NewSet([]firmwareset.Source{
 				sources[RoleWBT], sources[RoleWBIN], sources[RoleDAT], sources[RoleFont],
 			})
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			pkg, err := Inspect(set)
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			if _, err := Normalize(set, pkg); err == nil {
 				t.Fatal("Normalize accepted an invalid open-ended partition")
 			}
@@ -523,17 +457,11 @@ func TestNormalizeAcceptsVersionOneFOTAAliasAtEndOfAMSS(t *testing.T) {
 	set, err := firmwareset.NewSet([]firmwareset.Source{
 		sources[RoleWBT], sources[RoleWBIN], sources[RoleDAT], sources[RoleFont],
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	pkg, err := Inspect(set)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	layout, err := Normalize(set, pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if layout.MIBIBVersion != 1 || len(layout.Partitions) != len(entries) {
 		t.Fatalf("version-one alias layout = %+v", layout)
 	}
@@ -574,17 +502,11 @@ func TestNormalizeAcceptsVersionOneFOTAAliasWithinFollowingDMB(t *testing.T) {
 	set, err := firmwareset.NewSet([]firmwareset.Source{
 		sources[RoleWBT], sources[RoleWBIN], sources[RoleDAT], sources[RoleFont],
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	pkg, err := Inspect(set)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	layout, err := Normalize(set, pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if layout.MIBIBVersion != 1 || len(layout.Partitions) != len(entries) {
 		t.Fatalf("version-one DMB alias layout = %+v", layout)
 	}
@@ -620,13 +542,9 @@ func TestNormalizeRejectsUnrelatedVersionOnePartitionOverlap(t *testing.T) {
 	set, err := firmwareset.NewSet([]firmwareset.Source{
 		sources[RoleWBT], sources[RoleWBIN], sources[RoleDAT], sources[RoleFont],
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	pkg, err := Inspect(set)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := Normalize(set, pkg); err == nil {
 		t.Fatal("Normalize accepted an unrelated version-one overlap")
 	}
@@ -635,21 +553,15 @@ func TestNormalizeRejectsUnrelatedVersionOnePartitionOverlap(t *testing.T) {
 func TestInspectReportsDuplicateRoleAndMissingPieces(t *testing.T) {
 	sources := syntheticDownloadSources(t)
 	set, err := firmwareset.NewSet([]firmwareset.Source{sources[RoleWBT], sources[RoleWBT]})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := Inspect(set); !errors.Is(err, ErrDuplicateRole) {
 		t.Fatalf("Inspect duplicate error = %v", err)
 	}
 
 	set, err = firmwareset.NewSet([]firmwareset.Source{sources[RoleWBT]})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	pkg, err := Inspect(set)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if pkg.Complete() || len(pkg.MissingRoles()) != 3 {
 		t.Fatalf("partial package missing roles = %v", pkg.MissingRoles())
 	}
@@ -664,9 +576,7 @@ func TestInspectWrapsFamilyRecognitionError(t *testing.T) {
 	set, err := firmwareset.NewSet([]firmwareset.Source{
 		{ReaderAt: bytes.NewReader(data), Size: int64(len(data))},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := Inspect(set); !errors.Is(err, ErrNotSCHDownload) {
 		t.Fatalf("Inspect recognition error = %v", err)
 	}
@@ -680,13 +590,9 @@ func TestNormalizeCarriesMIBIBFormatOffset(t *testing.T) {
 	set, err := firmwareset.NewSet([]firmwareset.Source{
 		sources[RoleWBT], sources[RoleWBIN], sources[RoleDAT], sources[RoleFont],
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	pkg, err := Inspect(set)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	_, err = Normalize(set, pkg)
 	var formatErr *FormatError
 	if !errors.As(err, &formatErr) {

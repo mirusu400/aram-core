@@ -77,14 +77,10 @@ func TestReferenceKTFBootstrap(t *testing.T) {
 	}
 
 	runtime, err := ktfrt.NewRuntime(interpreter.New(), pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	runtime.DeferThreads = os.Getenv("ARAM_TEST_DEFER_THREADS") != ""
 	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.MapImageAndHost())
 	result, pointer, err := runtime.Bootstrap(context.Background())
 	if err != nil {
 		t.Fatalf("%s: %v (result %+v)", packagePath, err, result)
@@ -644,9 +640,7 @@ func TestReferenceKTFFactoryRunsQueuedGameThread(t *testing.T) {
 		ReaderAt: bytes.NewReader(packageData),
 		Size:     int64(len(packageData)),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	defer created.Close()
 	machine := created.(*Machine)
 	if info := machine.ImageInfo(); info.SourceKind != "ktf-wipi" ||

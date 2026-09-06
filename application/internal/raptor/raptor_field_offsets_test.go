@@ -23,9 +23,7 @@ func TestRaptorFieldOffsetsPickTheClassTheNeighboursAgreeOn(t *testing.T) {
 		importSlotByKey: make(map[raptorImportKey]uint32),
 	}
 	java, err := runtime.ensureJavaRuntime()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 
 	// "j" is registered first and shares ("e", "Z") with the Jlet subclass.
 	decoy := &raptorJavaClass{
@@ -64,37 +62,25 @@ func TestRaptorFieldOffsetsPickTheClassTheNeighboursAgreeOn(t *testing.T) {
 	}
 	for index, reference := range references {
 		nameAddress, err := runtime.allocateJavaCString(reference[0])
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		typeAddress, err := runtime.allocateJavaCString(reference[1])
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		base := names + uint32(index)*8
-		if err := public.WriteU32(base, nameAddress); err != nil {
-			t.Fatal(err)
-		}
-		if err := public.WriteU32(base+4, typeAddress); err != nil {
-			t.Fatal(err)
-		}
+		check(t, public.WriteU32(base, nameAddress))
+		check(t, public.WriteU32(base+4, typeAddress))
 	}
 	java.fieldNames = names
 	java.fieldOffsets = offsets
 	java.fieldCount = uint32(len(references))
 
-	if err := runtime.resolveRaptorJavaFieldOffsets(java); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.resolveRaptorJavaFieldOffsets(java))
 	want := []uint16{3, 2, 0, 1}
 	for index, expected := range want {
 		var encoded [2]byte
-		if err := runtime.CPU.ReadMemory(
+		check(t, runtime.CPU.ReadMemory(
 			offsets+uint32(index)*2,
 			encoded[:],
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 		if slot := binary.LittleEndian.Uint16(encoded[:]); slot != expected {
 			t.Fatalf("reference %d (%q %q) resolved to slot %d, want %d",
 				index, references[index][0], references[index][1],

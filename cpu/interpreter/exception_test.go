@@ -13,16 +13,10 @@ func TestIRQEntryAndDataProcessingExceptionReturn(t *testing.T) {
 	bus.writeU32(vectorIRQ, 0xe25ef004) // SUBS pc, lr, #4
 	bus.writeU32(0x1000, 0xe3a00007)    // MOV r0, #7
 	backend := New()
-	if err := backend.AttachSystemBus(bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.AttachSystemBus(bus))
 	originalStatus := flagC | uint32(processorModeSystem)
-	if err := backend.WriteRegister(cpu.RegisterCPSR, originalStatus); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.SetInterruptLine(cpu.InterruptIRQ, true); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteRegister(cpu.RegisterCPSR, originalStatus))
+	check(t, backend.SetInterruptLine(cpu.InterruptIRQ, true))
 
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 1)
 	if result.Err != nil || result.Reason != cpu.StopBudget || result.Instructions != 1 || result.PC != 0x1000 {
@@ -34,9 +28,7 @@ func TestIRQEntryAndDataProcessingExceptionReturn(t *testing.T) {
 	if backend.spsr.irq != originalStatus || backend.banks.irq[1] != 0x1004 {
 		t.Fatalf("IRQ saved state = SPSR %#x LR %#x", backend.spsr.irq, backend.banks.irq[1])
 	}
-	if err := backend.SetInterruptLine(cpu.InterruptIRQ, false); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.SetInterruptLine(cpu.InterruptIRQ, false))
 	result = backend.Run(context.Background(), result.PC, cpu.ModeARM, 1)
 	if result.Err != nil || result.PC != 0x1004 || register(t, backend, cpu.RegisterR0) != 7 {
 		t.Fatalf("post-IRQ execution = %+v r0=%d", result, register(t, backend, cpu.RegisterR0))
@@ -48,20 +40,12 @@ func TestInterruptEntryUsesFIQPriorityAndHighVectors(t *testing.T) {
 	bus.writeU32(0xffff0000+vectorIRQ, 0xe3a00001) // MOV r0, #1
 	bus.writeU32(0xffff0000+vectorFIQ, 0xe3a00002) // MOV r0, #2
 	backend := New()
-	if err := backend.AttachSystemBus(bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.AttachSystemBus(bus))
 	backend.setCP15Control(1 << 13)
 	originalStatus := flagN | uint32(processorModeSystem)
-	if err := backend.WriteRegister(cpu.RegisterCPSR, originalStatus); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.SetInterruptLine(cpu.InterruptIRQ, true); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.SetInterruptLine(cpu.InterruptFIQ, true); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteRegister(cpu.RegisterCPSR, originalStatus))
+	check(t, backend.SetInterruptLine(cpu.InterruptIRQ, true))
+	check(t, backend.SetInterruptLine(cpu.InterruptFIQ, true))
 
 	result := backend.Run(context.Background(), 0x2000, cpu.ModeARM, 1)
 	if result.Err != nil || result.PC != 0xffff0020 || register(t, backend, cpu.RegisterR0) != 2 {
@@ -82,25 +66,17 @@ func TestMaskedInterruptWaitsAndThumbIRQPreservesReturnState(t *testing.T) {
 	bus.writeU32(vectorIRQ, 0xe25ef004) // SUBS pc, lr, #4
 	bus.writeRaw(0x1000, []byte{0x07, 0x20})
 	backend := New()
-	if err := backend.AttachSystemBus(bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.AttachSystemBus(bus))
 	maskedStatus := uint32(processorModeSystem) | cpu.StatusThumb | statusIRQDisable
-	if err := backend.WriteRegister(cpu.RegisterCPSR, maskedStatus); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.SetInterruptLine(cpu.InterruptIRQ, true); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteRegister(cpu.RegisterCPSR, maskedStatus))
+	check(t, backend.SetInterruptLine(cpu.InterruptIRQ, true))
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeThumb, 1)
 	if result.Err != nil || result.PC != 0x1002 || register(t, backend, cpu.RegisterR0) != 7 {
 		t.Fatalf("masked Thumb result = %+v r0=%d", result, register(t, backend, cpu.RegisterR0))
 	}
 
 	unmaskedStatus := maskedStatus &^ statusIRQDisable
-	if err := backend.WriteRegister(cpu.RegisterCPSR, unmaskedStatus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteRegister(cpu.RegisterCPSR, unmaskedStatus))
 	result = backend.Run(context.Background(), 0x1002, cpu.ModeThumb, 1)
 	if result.Err != nil || result.PC != 0x1002 || register(t, backend, cpu.RegisterCPSR) != unmaskedStatus {
 		t.Fatalf("Thumb IRQ return result = %+v CPSR=%#x", result, register(t, backend, cpu.RegisterCPSR))
@@ -115,13 +91,9 @@ func TestSystemSWIEntersSupervisorVector(t *testing.T) {
 	bus.writeU32(0x1000, 0xef000042)         // SWI #0x42
 	bus.writeU32(vectorSoftware, 0xe3a0002a) // MOV r0, #42
 	backend := New()
-	if err := backend.AttachSystemBus(bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.AttachSystemBus(bus))
 	originalStatus := flagV | uint32(processorModeSystem)
-	if err := backend.WriteRegister(cpu.RegisterCPSR, originalStatus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteRegister(cpu.RegisterCPSR, originalStatus))
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 2)
 	if result.Err != nil || result.PC != vectorSoftware+4 || register(t, backend, cpu.RegisterR0) != 42 {
 		t.Fatalf("SWI result = %+v r0=%d", result, register(t, backend, cpu.RegisterR0))
@@ -142,15 +114,11 @@ func TestMMUFaultsEnterPrefetchAndDataAbortVectors(t *testing.T) {
 		bus.writeU32(tableBase, 3<<10|2) // VA 0 -> PA 0, manager domain
 		bus.writeU32(vectorPrefetchAbort, 0xe3a0000c)
 		backend := New()
-		if err := backend.AttachSystemBus(bus); err != nil {
-			t.Fatal(err)
-		}
+		check(t, backend.AttachSystemBus(bus))
 		backend.cp15.translationTableBase = tableBase
 		backend.cp15.domainAccessControl = 3
 		backend.setCP15Control(1)
-		if err := backend.WriteRegister(cpu.RegisterCPSR, uint32(processorModeSystem)); err != nil {
-			t.Fatal(err)
-		}
+		check(t, backend.WriteRegister(cpu.RegisterCPSR, uint32(processorModeSystem)))
 		result := backend.Run(context.Background(), 0x90000000, cpu.ModeARM, 1)
 		if result.Err != nil || result.PC != vectorPrefetchAbort+4 || register(t, backend, cpu.RegisterR0) != 0x0c {
 			t.Fatalf("prefetch-abort result = %+v r0=%#x", result, register(t, backend, cpu.RegisterR0))
@@ -169,18 +137,12 @@ func TestMMUFaultsEnterPrefetchAndDataAbortVectors(t *testing.T) {
 		bus.writeU32(0x00101000, 0xe5910000)      // LDR r0, [r1]
 		bus.writeU32(vectorDataAbort, 0xe3a00010) // MOV r0, #16
 		backend := New()
-		if err := backend.AttachSystemBus(bus); err != nil {
-			t.Fatal(err)
-		}
+		check(t, backend.AttachSystemBus(bus))
 		backend.cp15.translationTableBase = tableBase
 		backend.cp15.domainAccessControl = 3
 		backend.setCP15Control(1)
-		if err := backend.WriteRegister(cpu.RegisterCPSR, uint32(processorModeSystem)); err != nil {
-			t.Fatal(err)
-		}
-		if err := backend.WriteRegister(cpu.RegisterR1, 0x90000000); err != nil {
-			t.Fatal(err)
-		}
+		check(t, backend.WriteRegister(cpu.RegisterCPSR, uint32(processorModeSystem)))
+		check(t, backend.WriteRegister(cpu.RegisterR1, 0x90000000))
 		result := backend.Run(context.Background(), 0x80001000, cpu.ModeARM, 1)
 		if result.Err != nil || result.PC != vectorDataAbort+4 || register(t, backend, cpu.RegisterR0) != 0x10 {
 			t.Fatalf("data-abort result = %+v r0=%#x", result, register(t, backend, cpu.RegisterR0))
@@ -211,18 +173,12 @@ func TestUnmappedPhysicalAccessEntersPreciseExternalDataAbort(t *testing.T) {
 	bus.writeU32(instructionPA, 0xe5910000)   // LDR r0, [r1]
 	bus.writeU32(vectorDataAbort, 0xe3a00010) // MOV r0, #16
 	backend := New()
-	if err := backend.AttachSystemBus(bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.AttachSystemBus(bus))
 	backend.cp15.translationTableBase = tableBase
 	backend.cp15.domainAccessControl = 3
 	backend.setCP15Control(1)
-	if err := backend.WriteRegister(cpu.RegisterCPSR, uint32(processorModeSystem)); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterR1, faultVA); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteRegister(cpu.RegisterCPSR, uint32(processorModeSystem)))
+	check(t, backend.WriteRegister(cpu.RegisterR1, faultVA))
 	result := backend.Run(context.Background(), instructionVA, cpu.ModeARM, 1)
 	if result.Err != nil || result.PC != vectorDataAbort+4 || register(t, backend, cpu.RegisterR0) != 0x10 {
 		t.Fatalf("external data-abort result = %+v r0=%#x", result, register(t, backend, cpu.RegisterR0))
@@ -247,15 +203,9 @@ func TestUnmappedPhysicalAccessWithoutMMUEntersPreciseExternalDataAbort(t *testi
 	bus.writeU32(instructionAddress, 0xe5910000) // LDR r0, [r1]
 	bus.writeU32(vectorDataAbort, 0xe3a00010)    // MOV r0, #16
 	backend := New()
-	if err := backend.AttachSystemBus(bus); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterCPSR, uint32(processorModeSystem)); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterR1, faultAddress); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.AttachSystemBus(bus))
+	check(t, backend.WriteRegister(cpu.RegisterCPSR, uint32(processorModeSystem)))
+	check(t, backend.WriteRegister(cpu.RegisterR1, faultAddress))
 	result := backend.Run(context.Background(), instructionAddress, cpu.ModeARM, 1)
 	if result.Err != nil || result.PC != vectorDataAbort+4 || register(t, backend, cpu.RegisterR0) != 0x10 {
 		t.Fatalf("external data-abort result = %+v r0=%#x", result, register(t, backend, cpu.RegisterR0))
@@ -293,9 +243,7 @@ func TestInterruptLineValidationAndClosedState(t *testing.T) {
 	if err := backend.SetInterruptLine(cpu.InterruptLine(2), true); !errors.Is(err, cpu.ErrInvalidAddress) {
 		t.Fatalf("invalid interrupt line error = %v", err)
 	}
-	if err := backend.Close(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.Close())
 	if err := backend.SetInterruptLine(cpu.InterruptIRQ, true); !errors.Is(err, cpu.ErrClosed) {
 		t.Fatalf("closed interrupt line error = %v", err)
 	}

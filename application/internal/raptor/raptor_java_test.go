@@ -51,13 +51,9 @@ func TestRaptorJavaClassDataIncludesStaticBase(t *testing.T) {
 	}
 
 	object, err := runtime.ensureRaptorJavaClassObject(java, class)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	data, err := public.ReadU32(object + 8)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	const wantSize = uint32((158 + 8) * 4)
 	if got := public.Heap.Root().Allocations[data]; got != wantSize {
 		t.Fatalf("class data allocation = %d, want %d", got, wantSize)
@@ -67,12 +63,8 @@ func TestRaptorJavaClassDataIncludesStaticBase(t *testing.T) {
 		t.Fatalf("allocate marker = 0x%08x, %v", marker, err)
 	}
 	const sentinel = uint32(0xfeedface)
-	if err := public.WriteU32(marker, sentinel); err != nil {
-		t.Fatal(err)
-	}
-	if err := public.WriteU32(data+162*4, 1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, public.WriteU32(marker, sentinel))
+	check(t, public.WriteU32(data+162*4, 1))
 	if got, err := public.ReadU32(marker); err != nil || got != sentinel {
 		t.Fatalf("static field write changed following allocation to 0x%08x, %v", got, err)
 	}
@@ -104,35 +96,25 @@ func TestRaptorJavaHostClassKeepsParentAndWordSizedFields(t *testing.T) {
 	public := newPublicRuntime(t)
 	runtime := &Runtime{CPU: public.CPU, Public: public}
 	java, err := runtime.ensureJavaRuntime()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	class, err := runtime.ensureRaptorHostClass(java, "java/lang/StringBuffer")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if class.parentName != "java/lang/Object" {
 		t.Fatalf("StringBuffer parent = %q, want java/lang/Object", class.parentName)
 	}
 	hostClass, err := java.Host.InspectJavaClass(class.hostClass)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	wantWords := (uint32(hostClass.FieldSize) + 3) / 4
 	if class.fieldSize != wantWords {
 		t.Fatalf("StringBuffer fields = %d words, want %d", class.fieldSize, wantWords)
 	}
 	services, owner := java.Host.Services, java.Host.ServiceOwner
-	if err := runtime.DestroyRaptorJava(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.DestroyRaptorJava())
 	if runtime.Java != nil {
 		t.Fatal("destroyed Raptor Java adapter remains attached")
 	}
 	adapter, err := services.Coordinator.Adapter(owner)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if adapter.Lifecycle != shared.LifecycleDestroyed {
 		t.Fatalf("embedded host lifecycle = %v", adapter.Lifecycle)
 	}
@@ -145,13 +127,9 @@ func TestRaptorImportSlotsIncludeModule(t *testing.T) {
 	firstKey := raptorImportKey{Module: 100, Ordinal: 34}
 	secondKey := raptorImportKey{Module: 504, Ordinal: 34}
 	first, err := runtime.importStub(firstKey)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	second, err := runtime.importStub(secondKey)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if first == second {
 		t.Fatalf("different modules shared import stub 0x%08x", first)
 	}
@@ -174,15 +152,11 @@ func TestBuildRaptorJavaVTableUsesFixedAndFlatSlots(t *testing.T) {
 		importSlotByKey: make(map[raptorImportKey]uint32),
 	}
 	java, err := runtime.ensureJavaRuntime()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	// A card subclass whose only declared method overrides an inherited flat
 	// virtual, plus one flat slot the subclass does not implement.
 	card, err := runtime.ensureRaptorHostClass(java, "org/kwis/msp/lcdui/Card")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	holder, err := public.Heap.Allocate(12, true)
 	if err != nil || holder == 0 {
 		t.Fatalf("allocate holder = 0x%08x, %v", holder, err)
@@ -210,9 +184,7 @@ func TestBuildRaptorJavaVTableUsesFixedAndFlatSlots(t *testing.T) {
 		{className: card.Name, Name: "keyNotify", descriptor: "(II)Z"},
 	}
 
-	if err := runtime.buildRaptorJavaVTable(java, subclass, uint32(len(java.flatVirtual))); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.buildRaptorJavaVTable(java, subclass, uint32(len(java.flatVirtual))))
 	if subclass.vtable == 0 {
 		t.Fatal("vtable was not allocated")
 	}
@@ -245,9 +217,7 @@ func TestBuildRaptorJavaVTableCopiesMethodTable(t *testing.T) {
 		importSlotByKey: make(map[raptorImportKey]uint32),
 	}
 	java, err := runtime.ensureJavaRuntime()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	holder, err := public.Heap.Allocate(12, true)
 	if err != nil || holder == 0 {
 		t.Fatalf("allocate holder = 0x%08x, %v", holder, err)
@@ -263,17 +233,11 @@ func TestBuildRaptorJavaVTableCopiesMethodTable(t *testing.T) {
 	if err != nil || methodTable == 0 {
 		t.Fatalf("allocate method table = 0x%08x, %v", methodTable, err)
 	}
-	if err := public.WriteU32(methodTable+0x04, holder); err != nil {
-		t.Fatal(err)
-	}
+	check(t, public.WriteU32(methodTable+0x04, holder))
 	// The table is shifted 4 bytes ahead of the vtable (holder at +0x04 vs
 	// +0x00), so vtable[0x48] is sourced from methodTable[0x4c].
-	if err := public.WriteU32(methodTable+0x4c, 0x00001a2c); err != nil {
-		t.Fatal(err)
-	}
-	if err := public.WriteU32(descriptor+0x20, methodTable); err != nil {
-		t.Fatal(err)
-	}
+	check(t, public.WriteU32(methodTable+0x4c, 0x00001a2c))
+	check(t, public.WriteU32(descriptor+0x20, methodTable))
 	leaf := &raptorJavaClass{
 		Holder:     holder,
 		descriptor: descriptor,
@@ -288,9 +252,7 @@ func TestBuildRaptorJavaVTableCopiesMethodTable(t *testing.T) {
 			className: "app/Unrelated", Name: "m", descriptor: "()V",
 		}
 	}
-	if err := runtime.buildRaptorJavaVTable(java, leaf, uint32(len(java.flatVirtual))); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.buildRaptorJavaVTable(java, leaf, uint32(len(java.flatVirtual))))
 	if got, _ := public.ReadU32(leaf.vtable + 0x48); got != 0x00001a2c {
 		t.Fatalf("vtable+0x48 = 0x%08x, want method-table body 0x00001a2c", got)
 	}
@@ -305,9 +267,7 @@ func TestBuildRaptorJavaVTableCopiesInlineOwnMethods(t *testing.T) {
 		importSlotByKey: make(map[raptorImportKey]uint32),
 	}
 	java, err := runtime.ensureJavaRuntime()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	holder, err := public.Heap.Allocate(12, true)
 	if err != nil || holder == 0 {
 		t.Fatalf("allocate holder = 0x%08x, %v", holder, err)
@@ -318,16 +278,10 @@ func TestBuildRaptorJavaVTableCopiesInlineOwnMethods(t *testing.T) {
 	}
 	// A helper class that declares no methods through the +0x38 metadata table
 	// (older-SDK layout) but carries its own virtual bodies inline at +0x2c/+0x30.
-	if err := public.WriteU32(descriptor+0x2c, 0x00001234); err != nil {
-		t.Fatal(err)
-	}
-	if err := public.WriteU32(descriptor+0x30, 0x00005678); err != nil {
-		t.Fatal(err)
-	}
+	check(t, public.WriteU32(descriptor+0x2c, 0x00001234))
+	check(t, public.WriteU32(descriptor+0x30, 0x00005678))
 	// A data-region pointer terminates the inline run (the metadata table field).
-	if err := public.WriteU32(descriptor+0x34, 0x01400abc); err != nil {
-		t.Fatal(err)
-	}
+	check(t, public.WriteU32(descriptor+0x34, 0x01400abc))
 	leaf := &raptorJavaClass{
 		Holder:     holder,
 		descriptor: descriptor,
@@ -344,9 +298,7 @@ func TestBuildRaptorJavaVTableCopiesInlineOwnMethods(t *testing.T) {
 			className: "app/Unrelated", Name: "m", descriptor: "()V",
 		}
 	}
-	if err := runtime.buildRaptorJavaVTable(java, leaf, uint32(len(java.flatVirtual))); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.buildRaptorJavaVTable(java, leaf, uint32(len(java.flatVirtual))))
 	if got, _ := public.ReadU32(leaf.vtable + 0x2c); got != 0x00001234 {
 		t.Fatalf("vtable+0x2c = 0x%08x, want inline body 0x00001234", got)
 	}
@@ -381,9 +333,7 @@ func TestScanGuestStringAndWord(t *testing.T) {
 	// Preceded by a NUL so the whole-string guard accepts the match; the zeroed
 	// allocation already supplies that leading NUL byte.
 	strAt := block + 0x40
-	if err := public.CPU.WriteMemory(strAt, append([]byte("app/Main"), 0)); err != nil {
-		t.Fatal(err)
-	}
+	check(t, public.CPU.WriteMemory(strAt, append([]byte("app/Main"), 0)))
 	if got := runtime.scanGuestCString("app/Main", lo, hi); got != strAt {
 		t.Fatalf("scanGuestCString = 0x%08x, want 0x%08x", got, strAt)
 	}
@@ -391,9 +341,7 @@ func TestScanGuestStringAndWord(t *testing.T) {
 		t.Fatalf("scanGuestCString(absent) = 0x%08x, want 0", got)
 	}
 	wordAt := block + 0x100
-	if err := public.WriteU32(wordAt, 0xdeadbeef); err != nil {
-		t.Fatal(err)
-	}
+	check(t, public.WriteU32(wordAt, 0xdeadbeef))
 	if got := runtime.scanGuestWord(0xdeadbeef, lo, hi); got != wordAt {
 		t.Fatalf("scanGuestWord = 0x%08x, want 0x%08x", got, wordAt)
 	}
@@ -406,18 +354,10 @@ func newPublicRuntime(t *testing.T) *wipirt.Runtime {
 	t.Helper()
 	backend := interpreter.New()
 	t.Cleanup(func() { _ = backend.Close() })
-	if err := wipirt.MapRuntimeMemory(backend); err != nil {
-		t.Fatal(err)
-	}
+	check(t, wipirt.MapRuntimeMemory(backend))
 	runtime, err := wipirt.NewRuntime(backend, image.NewRGBA(image.Rect(0, 0, 16, 12)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.Map(guest.DefaultStackBase, guest.DefaultStackSize, cpu.PermissionRead|cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterSP, guest.DefaultStackBase+guest.DefaultStackSize-0x100); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, backend.Map(guest.DefaultStackBase, guest.DefaultStackSize, cpu.PermissionRead|cpu.PermissionWrite))
+	check(t, backend.WriteRegister(cpu.RegisterSP, guest.DefaultStackBase+guest.DefaultStackSize-0x100))
 	return runtime
 }

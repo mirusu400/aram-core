@@ -11,13 +11,8 @@ import (
 // writeKTFTestCString stores a NUL-terminated name in guest memory.
 func writeKTFTestCString(t *testing.T, runtime *Runtime, text string) uint32 {
 	t.Helper()
-	address, err := runtime.Heap.Allocate(uint32(len(text)+1), true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteMemory(address, []byte(text)); err != nil {
-		t.Fatal(err)
-	}
+	address := heapAlloc(t, runtime, uint32(len(text)+1), true)
+	check(t, runtime.CPU.WriteMemory(address, []byte(text)))
 	return address
 }
 
@@ -62,52 +57,36 @@ func TestKTFWIPICDatabaseRoundTripsRecords(t *testing.T) {
 		t.Fatal("create-open did not register the database store")
 	}
 
-	payload, err := runtime.Heap.Allocate(8, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteMemory(
+	payload := heapAlloc(t, runtime, 8, true)
+	check(t, runtime.CPU.WriteMemory(
 		payload,
 		[]byte{1, 2, 3, 4, 5, 6, 7, 8},
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	recordID := callKTFWIPICDB(t, runtime, ktfWIPICDBSlotInsertRecord,
 		[]uint32{handle, payload, 8})
 	if recordID != 1 {
 		t.Fatalf("first inserted record id = %d, want 1", int32(recordID))
 	}
 
-	ids, err := runtime.Heap.Allocate(16, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ids := heapAlloc(t, runtime, 16, true)
 	listed := callKTFWIPICDB(t, runtime, ktfWIPICDBSlotListRecords,
 		[]uint32{handle, ids, 16})
 	if listed != 1 {
 		t.Fatalf("listed %d records, want 1", int32(listed))
 	}
-	stored, err := runtime.ReadWords(ids, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	stored := readWords(t, runtime, ids, 1)
 	if stored[0] != recordID {
 		t.Fatalf("listed record id = %d, want %d", stored[0], recordID)
 	}
 
-	output, err := runtime.Heap.Allocate(16, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	output := heapAlloc(t, runtime, 16, true)
 	read := callKTFWIPICDB(t, runtime, ktfWIPICDBSlotSelectRecord,
 		[]uint32{handle, recordID, output, 16})
 	if read != 8 {
 		t.Fatalf("select returned %d bytes, want 8", int32(read))
 	}
 	readBack := make([]byte, 8)
-	if err := runtime.CPU.ReadMemory(output, readBack); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(output, readBack))
 	for index, want := range []byte{1, 2, 3, 4, 5, 6, 7, 8} {
 		if readBack[index] != want {
 			t.Fatalf("record byte %d = %d, want %d", index, readBack[index], want)
@@ -220,10 +199,7 @@ func TestKTFWIPICDatabaseListWritesLittleEndianIDs(t *testing.T) {
 	name := writeKTFTestCString(t, runtime, "LIST")
 	handle := callKTFWIPICDB(t, runtime, ktfWIPICDBSlotOpen,
 		[]uint32{name, 4, 1, 1})
-	payload, err := runtime.Heap.Allocate(4, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	payload := heapAlloc(t, runtime, 4, true)
 	for range 3 {
 		callKTFWIPICDB(t, runtime, ktfWIPICDBSlotInsertRecord,
 			[]uint32{handle, payload, 4})
@@ -232,19 +208,14 @@ func TestKTFWIPICDatabaseListWritesLittleEndianIDs(t *testing.T) {
 	// the ids around it untouched.
 	callKTFWIPICDB(t, runtime, ktfWIPICDBSlotDeleteRecord,
 		[]uint32{handle, 2})
-	ids, err := runtime.Heap.Allocate(12, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ids := heapAlloc(t, runtime, 12, true)
 	listed := callKTFWIPICDB(t, runtime, ktfWIPICDBSlotListRecords,
 		[]uint32{handle, ids, 12})
 	if listed != 2 {
 		t.Fatalf("listed %d records, want 2", int32(listed))
 	}
 	encoded := make([]byte, 8)
-	if err := runtime.CPU.ReadMemory(ids, encoded); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(ids, encoded))
 	if binary.LittleEndian.Uint32(encoded) != 1 ||
 		binary.LittleEndian.Uint32(encoded[4:]) != 3 {
 		t.Fatalf("listed ids = %v, want 1 and 3", encoded)

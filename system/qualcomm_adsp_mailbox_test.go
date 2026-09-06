@@ -8,24 +8,16 @@ import (
 
 func TestQualcommADSPMailboxAcknowledgesHostWrites(t *testing.T) {
 	mailbox, err := NewQualcommADSPMailbox(0x100, 0x08)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := mailbox.Write(0x08, Width32, 0x80020000); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, mailbox.Write(0x08, Width32, 0x80020000))
 	if got, err := mailbox.Read(0x08, Width32); err != nil || got != 0x00020000 {
 		t.Fatalf("write-request acknowledgement = %#x, %v", got, err)
 	}
-	if err := mailbox.Write(0x08, Width32, 0x90020000); err != nil {
-		t.Fatal(err)
-	}
+	check(t, mailbox.Write(0x08, Width32, 0x90020000))
 	if got, err := mailbox.Read(0x08, Width32); err != nil || got != 0x70000000 {
 		t.Fatalf("write-done acknowledgement = %#x, %v", got, err)
 	}
-	if err := mailbox.Write(0x04, Width32, 0x11223344); err != nil {
-		t.Fatal(err)
-	}
+	check(t, mailbox.Write(0x04, Width32, 0x11223344))
 	if got, err := mailbox.Read(0x04, Width32); err != nil || got != 0x11223344 {
 		t.Fatalf("ordinary mailbox register = %#x, %v", got, err)
 	}
@@ -35,9 +27,7 @@ func TestQualcommADSPMailboxProcessesProfiledHostCommand(t *testing.T) {
 	shared, _ := NewLatchedRegisterWindow(0x20, Width16)
 	payload, _ := NewLatchedRegisterWindow(0x20, Width32)
 	mailbox, err := NewQualcommADSPMailbox(0x10, 0x08)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	profile := &QualcommADSPHostCommandProfile{
 		SelectorWindowID: "shared", SelectorOffset: 0x08, SelectorWidth: Width16,
 		Rules: []QualcommADSPHostCommandRuleProfile{{
@@ -55,9 +45,7 @@ func TestQualcommADSPMailboxProcessesProfiledHostCommand(t *testing.T) {
 	}
 	_ = shared.Write(0x08, Width16, 1)
 	_ = payload.Write(0x0c, Width32, 0x11223344)
-	if err := mailbox.Write(0x08, Width32, 0x80020000); err != nil {
-		t.Fatal(err)
-	}
+	check(t, mailbox.Write(0x08, Width32, 0x80020000))
 	if got, _ := shared.Read(0x08, Width16); got != 0 {
 		t.Fatalf("host command selector = %#x", got)
 	}
@@ -65,9 +53,7 @@ func TestQualcommADSPMailboxProcessesProfiledHostCommand(t *testing.T) {
 		t.Fatalf("host command response = %#x", got)
 	}
 	_ = shared.Write(0x08, Width16, 2)
-	if err := mailbox.Write(0x08, Width32, 0x80020000); err != nil {
-		t.Fatal(err)
-	}
+	check(t, mailbox.Write(0x08, Width32, 0x80020000))
 	if got, _ := shared.Read(0x08, Width16); got != 2 {
 		t.Fatalf("unknown host command selector = %#x", got)
 	}
@@ -75,29 +61,19 @@ func TestQualcommADSPMailboxProcessesProfiledHostCommand(t *testing.T) {
 
 func TestQualcommADSPMailboxAcknowledgesPayloadlessHostCommand(t *testing.T) {
 	selector, err := NewLatchedRegisterWindow(0x10, Width16)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	mailbox, err := NewQualcommADSPMailbox(0x10, 0x08)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if err := mailbox.configureHostCommand(&QualcommADSPHostCommandProfile{
 		SelectorWindowID: "selector", SelectorOffset: 0x08, SelectorWidth: Width16,
 		Rules: []QualcommADSPHostCommandRuleProfile{{Command: 4}},
 	}, map[string]*LatchedRegisterWindow{"selector": selector}); err != nil {
 		t.Fatal(err)
 	}
-	if err := selector.Write(0x08, Width16, 4); err != nil {
-		t.Fatal(err)
-	}
-	if err := mailbox.Write(0x08, Width32, 0x80020000); err != nil {
-		t.Fatal(err)
-	}
+	check(t, selector.Write(0x08, Width16, 4))
+	check(t, mailbox.Write(0x08, Width32, 0x80020000))
 	value, err := selector.Read(0x08, Width16)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if value != 0 {
 		t.Fatalf("payloadless host-command selector = %#x, want 0", value)
 	}
@@ -105,13 +81,9 @@ func TestQualcommADSPMailboxAcknowledgesPayloadlessHostCommand(t *testing.T) {
 
 func TestQualcommADSPMailboxAppliesProfiledControlRules(t *testing.T) {
 	shared, err := NewLatchedRegisterWindow(0x10, Width16)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	mailbox, err := NewQualcommADSPMailbox(0x10, 0x08)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if err := mailbox.configureControlRules([]QualcommADSPControlRuleProfile{
 		{Offset: 0, Value: 2, Writes: []QualcommADSPMemoryWriteProfile{{
 			WindowID: "shared", Offset: 0x0c, Width: Width16, Value: 1,
@@ -126,9 +98,7 @@ func TestQualcommADSPMailboxAppliesProfiledControlRules(t *testing.T) {
 		control uint32
 		want    uint32
 	}{{control: 2, want: 1}, {control: 3, want: 0}} {
-		if err := mailbox.Write(0, Width32, step.control); err != nil {
-			t.Fatal(err)
-		}
+		check(t, mailbox.Write(0, Width32, step.control))
 		value, readErr := shared.Read(0x0c, Width16)
 		if readErr != nil {
 			t.Fatal(readErr)
@@ -141,20 +111,14 @@ func TestQualcommADSPMailboxAppliesProfiledControlRules(t *testing.T) {
 
 func TestQualcommADSPMailboxPublishesResponseBeforeInterrupt(t *testing.T) {
 	shared, err := NewLatchedRegisterWindow(0x20, Width16)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	vic, err := NewQualcommVectoredInterruptController(QualcommVectoredInterruptConfig{
 		SourceCount: 49, Bank0Sources: 25, ReverseSourceOrder: true,
 	}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	mailbox, err := NewQualcommADSPMailbox(0x10, 0x08)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := mailbox.configureControlRulesWithInterrupts(
+	check(t, err)
+	check(t, mailbox.configureControlRulesWithInterrupts(
 		[]QualcommADSPControlRuleProfile{{
 			Offset: 4, Value: 1,
 			Writes: []QualcommADSPMemoryWriteProfile{{
@@ -167,12 +131,8 @@ func TestQualcommADSPMailboxPublishesResponseBeforeInterrupt(t *testing.T) {
 		map[string]*LatchedRegisterWindow{"shared": shared},
 		nil,
 		vic,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := mailbox.Write(4, Width32, 1); err != nil {
-		t.Fatal(err)
-	}
+	))
+	check(t, mailbox.Write(4, Width32, 1))
 	if response, err := shared.Read(0x0c, Width16); err != nil || response != 1 {
 		t.Fatalf("shared response = %#x, %v", response, err)
 	}
@@ -183,20 +143,14 @@ func TestQualcommADSPMailboxPublishesResponseBeforeInterrupt(t *testing.T) {
 
 func TestQualcommADSPMailboxDefersAndSerializesProfiledResponses(t *testing.T) {
 	shared, err := NewLatchedRegisterWindow(0x20, Width16)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	vic, err := NewQualcommVectoredInterruptController(QualcommVectoredInterruptConfig{
 		SourceCount: 49, Bank0Sources: 25, ReverseSourceOrder: true,
 	}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	mailbox, err := NewQualcommADSPMailbox(0x10, 0x08)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := mailbox.configureControlRulesWithInterrupts(
+	check(t, err)
+	check(t, mailbox.configureControlRulesWithInterrupts(
 		[]QualcommADSPControlRuleProfile{{
 			Offset: 4, Value: 1, ResponseDelayInstructions: 4,
 			Writes: []QualcommADSPMemoryWriteProfile{{
@@ -209,13 +163,9 @@ func TestQualcommADSPMailboxDefersAndSerializesProfiledResponses(t *testing.T) {
 		map[string]*LatchedRegisterWindow{"shared": shared},
 		nil,
 		vic,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	for range 2 {
-		if err := mailbox.Write(4, Width32, 1); err != nil {
-			t.Fatal(err)
-		}
+		check(t, mailbox.Write(4, Width32, 1))
 	}
 	if response, _ := shared.Read(0x0c, Width16); response != 0 {
 		t.Fatalf("response was published synchronously: %#x", response)
@@ -223,30 +173,20 @@ func TestQualcommADSPMailboxDefersAndSerializesProfiledResponses(t *testing.T) {
 	if pending := vic.PendingStatusBanks(); pending != [2]uint32{} {
 		t.Fatalf("interrupt was pulsed synchronously: %#v", pending)
 	}
-	if err := mailbox.Advance(3); err != nil {
-		t.Fatal(err)
-	}
+	check(t, mailbox.Advance(3))
 	if response, _ := shared.Read(0x0c, Width16); response != 0 {
 		t.Fatalf("early response = %#x", response)
 	}
-	if err := mailbox.Advance(1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, mailbox.Advance(1))
 	if response, _ := shared.Read(0x0c, Width16); response != 1 {
 		t.Fatalf("first delayed response = %#x", response)
 	}
 	if len(mailbox.pendingResponses) != 1 {
 		t.Fatalf("pending responses after first completion = %d", len(mailbox.pendingResponses))
 	}
-	if err := vic.Write(qualcommVICAcknowledge0Offset, Width32, 0x00008000); err != nil {
-		t.Fatal(err)
-	}
-	if err := shared.Write(0x0c, Width16, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := mailbox.Advance(4); err != nil {
-		t.Fatal(err)
-	}
+	check(t, vic.Write(qualcommVICAcknowledge0Offset, Width32, 0x00008000))
+	check(t, shared.Write(0x0c, Width16, 0))
+	check(t, mailbox.Advance(4))
 	if response, _ := shared.Read(0x0c, Width16); response != 1 {
 		t.Fatalf("second delayed response = %#x", response)
 	}
@@ -254,9 +194,7 @@ func TestQualcommADSPMailboxDefersAndSerializesProfiledResponses(t *testing.T) {
 
 func TestQualcommADSPMailboxRejectsUnwiredInterruptResponse(t *testing.T) {
 	mailbox, err := NewQualcommADSPMailbox(0x10, 0x08)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	err = mailbox.configureControlRules([]QualcommADSPControlRuleProfile{{
 		Offset: 4, Value: 1,
 		Interrupt: &QualcommADSPInterruptProfile{
@@ -275,9 +213,7 @@ func TestQualcommADSPMailboxRejectsInvalidAccesses(t *testing.T) {
 		}
 	}
 	mailbox, err := NewQualcommADSPMailbox(0x10, 0x08)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := mailbox.Read(0x08, Width16); !errors.Is(err, ErrQualcommADSPMailboxMMIO) {
 		t.Fatalf("wrong-width read error = %v", err)
 	}
@@ -288,18 +224,12 @@ func TestQualcommADSPMailboxRejectsInvalidAccesses(t *testing.T) {
 
 func TestQualcommADSPMailboxStateRoundTrip(t *testing.T) {
 	mailbox, err := NewQualcommADSPMailbox(0x10, 0x08)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	_ = mailbox.Write(0x04, Width32, 0x11223344)
 	state, err := mailbox.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	_ = mailbox.Reset()
-	if err := mailbox.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, mailbox.LoadState(state))
 	if got, _ := mailbox.Read(0x04, Width32); got != 0x11223344 {
 		t.Fatalf("restored register = %#x", got)
 	}
@@ -316,43 +246,25 @@ func TestQualcommADSPMailboxStateRoundTrip(t *testing.T) {
 func TestQualcommADSPMailboxStateRoundTripPreservesDelayedResponse(t *testing.T) {
 	shared, _ := NewLatchedRegisterWindow(0x20, Width16)
 	mailbox, err := NewQualcommADSPMailbox(0x10, 0x08)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	rules := []QualcommADSPControlRuleProfile{{
 		Offset: 4, Value: 1, ResponseDelayInstructions: 4,
 		Writes: []QualcommADSPMemoryWriteProfile{{
 			WindowID: "shared", Offset: 0x0c, Width: Width16, Value: 7,
 		}},
 	}}
-	if err := mailbox.configureControlRules(rules, map[string]*LatchedRegisterWindow{"shared": shared}); err != nil {
-		t.Fatal(err)
-	}
-	if err := mailbox.Write(4, Width32, 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := mailbox.Advance(2); err != nil {
-		t.Fatal(err)
-	}
+	check(t, mailbox.configureControlRules(rules, map[string]*LatchedRegisterWindow{"shared": shared}))
+	check(t, mailbox.Write(4, Width32, 1))
+	check(t, mailbox.Advance(2))
 	state, err := mailbox.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := mailbox.Reset(); err != nil {
-		t.Fatal(err)
-	}
-	if err := mailbox.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
-	if err := mailbox.Advance(1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, mailbox.Reset())
+	check(t, mailbox.LoadState(state))
+	check(t, mailbox.Advance(1))
 	if response, _ := shared.Read(0x0c, Width16); response != 0 {
 		t.Fatalf("restored response completed early: %#x", response)
 	}
-	if err := mailbox.Advance(1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, mailbox.Advance(1))
 	if response, _ := shared.Read(0x0c, Width16); response != 7 {
 		t.Fatalf("restored delayed response = %#x", response)
 	}
@@ -360,9 +272,7 @@ func TestQualcommADSPMailboxStateRoundTripPreservesDelayedResponse(t *testing.T)
 
 func TestQualcommADSPMailboxMigratesVersionOneSubset(t *testing.T) {
 	mailbox, err := NewQualcommADSPMailbox(0x10, 0x08)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	legacy := make([]byte, 0x20)
 	copy(legacy, "QAMB")
 	binary.LittleEndian.PutUint32(legacy[4:8], qualcommADSPMailboxLegacyState)
@@ -372,9 +282,7 @@ func TestQualcommADSPMailboxMigratesVersionOneSubset(t *testing.T) {
 	if err := mailbox.LoadState(legacy); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("strict load accepted version-one state: %v", err)
 	}
-	if err := mailbox.LoadStateSubset(legacy); err != nil {
-		t.Fatal(err)
-	}
+	check(t, mailbox.LoadStateSubset(legacy))
 	if got, _ := mailbox.Read(4, Width32); got != 0x11223344 {
 		t.Fatalf("migrated version-one register = %#x", got)
 	}
@@ -382,25 +290,17 @@ func TestQualcommADSPMailboxMigratesVersionOneSubset(t *testing.T) {
 
 func TestQualcommADSPMailboxMigratesLatchedWindowSubset(t *testing.T) {
 	legacy, err := NewLatchedRegisterWindow(0x10, Width32)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	_ = legacy.Write(0x04, Width32, 0x11223344)
 	_ = legacy.Write(0x08, Width32, 0x80020000)
 	state, err := legacy.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	mailbox, err := NewQualcommADSPMailbox(0x10, 0x08)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if err := mailbox.LoadState(state); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("strict load accepted legacy state: %v", err)
 	}
-	if err := mailbox.LoadStateSubset(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, mailbox.LoadStateSubset(state))
 	if got, _ := mailbox.Read(0x04, Width32); got != 0x11223344 {
 		t.Fatalf("migrated ordinary register = %#x", got)
 	}

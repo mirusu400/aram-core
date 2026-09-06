@@ -9,13 +9,9 @@ import (
 func TestIndexedHalfwordRegisterPortsPreserveSelectedValues(t *testing.T) {
 	registers := NewIndexedHalfwordRegisters(0x0008)
 	command, err := NewIndexedHalfwordCommandPort(registers)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	data, err := NewIndexedHalfwordDataPort(registers)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if value, err := command.Read(0, Width16); err != nil || value != 0x0008 {
 		t.Fatalf("command status = %#x, %v", value, err)
 	}
@@ -26,16 +22,10 @@ func TestIndexedHalfwordRegisterPortsPreserveSelectedValues(t *testing.T) {
 		register uint32
 		value    uint32
 	}{{0x21, 0x2010}, {0x22, 0x0745}} {
-		if err := command.Write(0, Width16, write.register); err != nil {
-			t.Fatal(err)
-		}
-		if err := data.Write(0, Width16, write.value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, command.Write(0, Width16, write.register))
+		check(t, data.Write(0, Width16, write.value))
 	}
-	if err := command.Write(0, Width16, 0x21); err != nil {
-		t.Fatal(err)
-	}
+	check(t, command.Write(0, Width16, 0x21))
 	if value, err := data.Read(0, Width16); err != nil || value != 0x2010 {
 		t.Fatalf("register 0x21 = %#x, %v", value, err)
 	}
@@ -75,13 +65,9 @@ func TestIndexedHalfwordRegisterPortsRoundTripSharedStateOnce(t *testing.T) {
 		_ = data.Write(0, Width16, write.value)
 	}
 	commandState, err := command.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	dataState, err := data.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if len(dataState) != 9 || len(commandState) <= len(dataState) {
 		t.Fatalf("port state lengths = command %d, data %d", len(commandState), len(dataState))
 	}
@@ -89,33 +75,23 @@ func TestIndexedHalfwordRegisterPortsRoundTripSharedStateOnce(t *testing.T) {
 	restoredRegisters := NewIndexedHalfwordRegisters(0)
 	restoredCommand, _ := NewIndexedHalfwordCommandPort(restoredRegisters)
 	restoredData, _ := NewIndexedHalfwordDataPort(restoredRegisters)
-	if err := restoredCommand.LoadState(commandState); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restoredCommand.LoadState(commandState))
 	if value, err := restoredData.Read(0, Width16); err != nil || value != 0x2010 {
 		t.Fatalf("restored selected register = %#x, %v", value, err)
 	}
-	if err := restoredCommand.Write(0, Width16, 0x23); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restoredCommand.Write(0, Width16, 0x23))
 	if value, err := restoredData.Read(0, Width16); err != nil || value != 0x0286 {
 		t.Fatalf("restored register 0x23 = %#x, %v", value, err)
 	}
-	if err := restoredData.LoadState(dataState); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restoredData.LoadState(dataState))
 	if err := restoredData.LoadState(commandState); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("cross-role state error = %v", err)
 	}
-	if err := restoredData.Reset(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restoredData.Reset())
 	if value, _ := restoredData.Read(0, Width16); value != 0x0286 {
 		t.Fatal("data-port reset cleared the shared register bank")
 	}
-	if err := restoredCommand.Reset(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restoredCommand.Reset())
 	if value, _ := restoredData.Read(0, Width16); value != 0 {
 		t.Fatalf("command-port reset retained register value %#x", value)
 	}
@@ -142,9 +118,7 @@ func TestIndexedHalfwordRegistersSerializeDeterministically(t *testing.T) {
 		}
 		_ = command.Write(0, Width16, 0x21)
 		state, err := command.SaveState()
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		states = append(states, state)
 	}
 	if !bytes.Equal(states[0], states[1]) {

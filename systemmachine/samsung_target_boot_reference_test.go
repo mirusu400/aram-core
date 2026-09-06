@@ -42,13 +42,9 @@ func TestSamsungTargetBootPrivateReferences(t *testing.T) {
 		t.Run(fmt.Sprintf("reference-%d", index), func(t *testing.T) {
 			set := openSamsungSCHReferenceSet(t, directory)
 			pkg, err := samsung.Inspect(set)
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			firmwareProfile, err := samsung.BuiltinRegistry().Match(pkg)
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			budget := configuredBudget
 			if budget == 0 {
 				budget = samsungTargetBootDefaultBudget
@@ -57,9 +53,7 @@ func TestSamsungTargetBootPrivateReferences(t *testing.T) {
 				}
 			}
 			machine, err := New(set, Options{BackendMode: CPUBackendJIT})
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			t.Cleanup(func() { _ = machine.Close() })
 			if identity := machine.Identity(); identity.Model != firmwareProfile.Model ||
 				identity.FirmwareBuildID != firmwareProfile.ID {
@@ -166,9 +160,7 @@ func TestSamsungTargetBootPrivateReferences(t *testing.T) {
 						Mode:    cpu.ModeARM,
 					})
 				}
-				if err := traps.SetExecutionTraps(executionTraps); err != nil {
-					t.Fatal(err)
-				}
+				check(t, traps.SetExecutionTraps(executionTraps))
 			}
 
 			result := machine.Run(context.Background(), budget)
@@ -206,9 +198,7 @@ func TestSamsungTargetBootPrivateReferences(t *testing.T) {
 			switch firmwareProfile.ID {
 			case samsung.SCHW320DC18ProfileID:
 				ready := []byte{0}
-				if err := machine.backend.ReadMemory(0x9010a9e0, ready); err != nil {
-					t.Fatal(err)
-				}
+				check(t, machine.backend.ReadMemory(0x9010a9e0, ready))
 				if ready[0] != 1 || mgpControlWrites == 0 || mgpInterfaceWrites == 0 {
 					t.Fatalf(
 						"W320 MGP/LCD companion handoff = ready %#x control %d interface %d",
@@ -247,9 +237,7 @@ func assertPrivateW320ResetPBLState(t *testing.T, machine *Machine) {
 		samsungW320PBLVerifiedRecord: record,
 		samsungW320PBLVerifiedStatus: status,
 	} {
-		if err := machine.backend.ReadMemory(address, target); err != nil {
-			t.Fatal(err)
-		}
+		check(t, machine.backend.ReadMemory(address, target))
 	}
 	digest := sha512.Sum512(qcsbl)
 	if !bytes.Equal(qcsbl, verified) ||
@@ -272,9 +260,7 @@ func privateW850OEMSBLTrap(
 		t.Fatal("W850 profile has no OEMSBL image")
 	}
 	image, err := samsung.ReconstructBootImage(set, pkg, spec)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if len(image.Bytes) < 0x1c {
 		t.Fatal("W850 OEMSBL has no internal entry word")
 	}
@@ -303,9 +289,7 @@ func privateProfileBootImageTrap(
 		t.Fatalf("profile %q has no %s image", profile.ID, id)
 	}
 	image, err := samsung.ReconstructBootImage(set, pkg, spec)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if len(image.Bytes) < 4 {
 		t.Fatalf("profile %q %s has no internal entry vector", profile.ID, id)
 	}

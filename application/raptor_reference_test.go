@@ -53,9 +53,7 @@ func TestReferenceRaptorClet(t *testing.T) {
 		ReaderAt: bytes.NewReader(data),
 		Size:     int64(len(data)),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	machine := created.(*Machine)
 	t.Cleanup(func() { _ = machine.Close() })
 	err = machine.Start(context.Background())

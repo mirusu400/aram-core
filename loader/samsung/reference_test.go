@@ -34,9 +34,7 @@ func TestSCHW830DL21PrivateReference(t *testing.T) {
 			continue
 		}
 		file, err := os.Open(filepath.Join(directory, entry.Name()))
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		info, err := file.Stat()
 		if err != nil {
 			_ = file.Close()
@@ -50,24 +48,16 @@ func TestSCHW830DL21PrivateReference(t *testing.T) {
 	}
 
 	set, err := firmwareset.NewSet(sources)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	pkg, err := Inspect(set)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	profile, err := BuiltinRegistry().Match(pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if profile.ID != SCHW830DL21ProfileID {
 		t.Fatalf("profile = %q, want %q", profile.ID, SCHW830DL21ProfileID)
 	}
 	layout, err := Normalize(set, pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if layout.MIBIBGeneration != 2 || len(layout.Partitions) != 10 {
 		t.Fatalf("MIBIB = generation %d, %d partitions", layout.MIBIBGeneration, len(layout.Partitions))
 	}
@@ -81,18 +71,14 @@ func TestSCHW830DL21PrivateReference(t *testing.T) {
 			t.Fatalf("profile has no %s boot image", id)
 		}
 		image, err := ReconstructBootImage(set, pkg, spec)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		if image.SHA256 != spec.LogicalSHA256 {
 			t.Fatalf("%s image hash = %s", id, image.SHA256)
 		}
 	}
 
 	progressive, err := DecodeWBIN(set, pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if progressive.EncryptedLength != 0x01590000 ||
 		progressive.SHA256 != "13ddb9b3163d426b9a94d21e3d6f4439a06717f7082d5b37728cde2a0c6742ab" {
 		t.Fatalf(
@@ -112,9 +98,7 @@ func TestSCHW830DL21PrivateReference(t *testing.T) {
 	}
 
 	flash, err := AssembleFlash(set, pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if flash.Size() != 0x097c0000 {
 		t.Fatalf("normalized flash size = %#x", flash.Size())
 	}

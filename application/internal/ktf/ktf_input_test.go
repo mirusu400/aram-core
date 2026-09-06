@@ -4,17 +4,13 @@ import "testing"
 
 func TestKTFDrainServiceEventsConsumesUnknownInput(t *testing.T) {
 	runtime := newScratchKTFRuntime(t)
-	if err := runtime.Services.QueueInput(
+	check(t, runtime.Services.QueueInput(
 		runtime.ServiceOwner,
 		"unknown-control",
 		true,
 		0,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.DrainServiceEvents(0); err != nil {
-		t.Fatal(err)
-	}
+	))
+	check(t, runtime.DrainServiceEvents(0))
 	if event, ok := runtime.Services.Events.Peek(); ok {
 		t.Fatalf("unknown input remained queued: %+v", event)
 	}

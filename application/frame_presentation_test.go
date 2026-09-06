@@ -74,20 +74,14 @@ func TestFramePresentationDoesNotAliasTheGuestFramebuffer(t *testing.T) {
 func presentedKTFMachine(t *testing.T) (*Machine, *shared.Graphics, shared.ServiceID) {
 	t.Helper()
 	graphics, err := shared.NewGraphics(shared.NewRegistry(16), shared.GraphicsLimits{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	surface, err := graphics.CreateSurface(1, shared.SurfaceDescriptor{
 		Width:  2,
 		Height: 2,
 		Format: shared.PixelRGBA8888,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := graphics.SetScreen(1, surface); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, graphics.SetScreen(1, surface))
 	machine := &Machine{
 		frame: image.NewRGBA(image.Rect(0, 0, 2, 2)),
 		ktf: &ktfrt.Runtime{
@@ -102,9 +96,7 @@ func presentedKTFMachine(t *testing.T) (*Machine, *shared.Graphics, shared.Servi
 // presentations.
 func TestKTFFramePresentationFollowsPresentedContent(t *testing.T) {
 	machine, graphics, surface := presentedKTFMachine(t)
-	if err := graphics.SetPixel(1, surface, 0, 0, shared.RGB(255, 0, 0)); err != nil {
-		t.Fatal(err)
-	}
+	check(t, graphics.SetPixel(1, surface, 0, 0, shared.RGB(255, 0, 0)))
 	if _, err := graphics.Present(1, surface, shared.Rectangle{}); err != nil {
 		t.Fatal(err)
 	}
@@ -129,9 +121,7 @@ func TestKTFFramePresentationFollowsPresentedContent(t *testing.T) {
 		)
 	}
 
-	if err := graphics.SetPixel(1, surface, 1, 1, shared.RGB(0, 255, 0)); err != nil {
-		t.Fatal(err)
-	}
+	check(t, graphics.SetPixel(1, surface, 1, 1, shared.RGB(0, 255, 0)))
 	if _, err := graphics.Present(1, surface, shared.Rectangle{}); err != nil {
 		t.Fatal(err)
 	}

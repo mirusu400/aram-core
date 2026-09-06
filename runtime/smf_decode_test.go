@@ -324,24 +324,16 @@ func TestMediaPlaysAnSMFClip(t *testing.T) {
 	source := smfFile(0, division, track)
 
 	media, err := NewMedia(NewRegistry(32), DefaultMediaLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	bus := NewEventBus(16, 32)
 	clip, err := media.CreateClip(3, "audio/midi", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := media.Append(3, clip, source); err != nil {
 		t.Fatal(err)
 	}
-	if err := media.Play(3, clip, 1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.Play(3, clip, 1))
 	info, err := media.Info(3, clip)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !info.Decoded {
 		t.Fatal("the clip did not decode, so it would play silently forever")
 	}
@@ -351,9 +343,7 @@ func TestMediaPlaysAnSMFClip(t *testing.T) {
 			info.Duration,
 		)
 	}
-	if err := media.Advance(0, 500*time.Millisecond, bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.Advance(0, 500*time.Millisecond, bus))
 	audio := media.Drain()
 	peak := 0.0
 	for _, sample := range audio.PCM16 {

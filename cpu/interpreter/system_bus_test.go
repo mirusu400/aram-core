@@ -25,9 +25,7 @@ func TestAttachedSystemBusExecutesCodeAndDispatchesDataAccess(t *testing.T) {
 	bus.writeU32(0x2000, 41)
 
 	backend := New()
-	if err := backend.AttachSystemBus(bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.AttachSystemBus(bus))
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 4)
 	if result.Reason != cpu.StopBudget || result.Instructions != 4 {
 		t.Fatalf("Run result = %+v", result)
@@ -45,12 +43,8 @@ func TestAttachedDirectMemoryBusBypassesDataCallsAfterColdFill(t *testing.T) {
 	binary.LittleEndian.PutUint32(bus.data[0x0000:], 0xe5901000) // LDR r1, [r0]
 	binary.LittleEndian.PutUint32(bus.data[0x1000:], 41)
 	backend := New()
-	if err := backend.AttachSystemBus(bus); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterR0, 0x2000); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.AttachSystemBus(bus))
+	check(t, backend.WriteRegister(cpu.RegisterR0, 0x2000))
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 1)
 	if result.Err != nil || result.Instructions != 1 {
 		t.Fatalf("Run result = %+v", result)
@@ -61,9 +55,7 @@ func TestAttachedDirectMemoryBusBypassesDataCallsAfterColdFill(t *testing.T) {
 	if bus.directFills != 1 || bus.dataReads != 0 {
 		t.Fatalf("direct fills = %d, ordinary data reads = %d", bus.directFills, bus.dataReads)
 	}
-	if err := backend.WriteRegister(cpu.RegisterR0, 0x2004); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteRegister(cpu.RegisterR0, 0x2004))
 	binary.LittleEndian.PutUint32(bus.data[0x1004:], 42)
 	result = backend.Run(context.Background(), 0x1000, cpu.ModeARM, 1)
 	if result.Err != nil || register(t, backend, cpu.RegisterR1) != 42 {
@@ -98,15 +90,9 @@ func TestContextSystemBusAttributesDataAccessesToGuestInstructions(t *testing.T)
 	bus.writeU32(0x2000, 41)
 
 	backend := New()
-	if err := backend.AttachSystemBus(bus); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterLR, 0x2221); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterSP, 0x1800); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.AttachSystemBus(bus))
+	check(t, backend.WriteRegister(cpu.RegisterLR, 0x2221))
+	check(t, backend.WriteRegister(cpu.RegisterSP, 0x1800))
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 3)
 	if result.Err != nil || result.Reason != cpu.StopBudget {
 		t.Fatalf("Run result = %+v", result)
@@ -128,9 +114,7 @@ func TestContextSystemBusAttributesDataAccessesToGuestInstructions(t *testing.T)
 
 func TestAttachSystemBusRejectsExistingMappings(t *testing.T) {
 	backend := New()
-	if err := backend.Map(0x1000, 0x1000, cpu.PermissionRead|cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.Map(0x1000, 0x1000, cpu.PermissionRead|cpu.PermissionWrite))
 	if err := backend.AttachSystemBus(&testSystemBus{}); err == nil {
 		t.Fatal("AttachSystemBus accepted an existing private mapping")
 	}
@@ -149,9 +133,7 @@ func TestExecutionTrapStopsBeforeGuestInstructionWithoutPatchingMemory(t *testin
 		bus.writeRaw(0x1000+uint32(index*4), encoded[:])
 	}
 	backend := New()
-	if err := backend.AttachSystemBus(bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.AttachSystemBus(bus))
 	if err := backend.SetExecutionTraps([]cpu.ExecutionTrap{
 		{Address: 0x1004, Mode: cpu.ModeARM},
 	}); err != nil {
@@ -168,9 +150,7 @@ func TestExecutionTrapStopsBeforeGuestInstructionWithoutPatchingMemory(t *testin
 	if got := bus.readU32(0x1004); got != code[1] {
 		t.Fatalf("trapped instruction changed from %#x to %#x", code[1], got)
 	}
-	if err := backend.SetExecutionTraps(nil); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.SetExecutionTraps(nil))
 	result = backend.Run(context.Background(), result.PC, cpu.ModeARM, 2)
 	if result.Err != nil || result.Reason != cpu.StopBreakpoint || result.Instructions != 2 {
 		t.Fatalf("post-trap result = %+v", result)

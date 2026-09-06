@@ -29,14 +29,10 @@ func TestKTFJavaHeapOutlivesAStringBuildingLoop(t *testing.T) {
 		ReaderAt: bytes.NewReader(data),
 		Size:     int64(len(data)),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	machine := created.(*Machine)
 	t.Cleanup(func() { _ = machine.Close() })
-	if err := machine.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.Start(context.Background()))
 	// Well past the frame the heap used to run out at.
 	for frame := 0; frame < 12000; frame++ {
 		if err := machine.StepFrame(context.Background()); err != nil {
@@ -67,14 +63,10 @@ func TestKTFForcedCollectionLeavesAHealthyTitleAlone(t *testing.T) {
 				ReaderAt: bytes.NewReader(data),
 				Size:     int64(len(data)),
 			})
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			machine := created.(*Machine)
 			t.Cleanup(func() { _ = machine.Close() })
-			if err := machine.Start(context.Background()); err != nil {
-				t.Fatal(err)
-			}
+			check(t, machine.Start(context.Background()))
 			collected := 0
 			for frame := 0; frame < 1200; frame++ {
 				if err := machine.StepFrame(context.Background()); err != nil {
@@ -111,14 +103,10 @@ func TestKTFCollectionDropsDeadSideTableEntries(t *testing.T) {
 		ReaderAt: bytes.NewReader(data),
 		Size:     int64(len(data)),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	machine := created.(*Machine)
 	t.Cleanup(func() { _ = machine.Close() })
-	if err := machine.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.Start(context.Background()))
 	for frame := 0; frame < 1200; frame++ {
 		if err := machine.StepFrame(context.Background()); err != nil {
 			t.Fatalf("frame %d: %v", frame, err)

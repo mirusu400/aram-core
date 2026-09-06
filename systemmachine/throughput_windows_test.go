@@ -82,9 +82,7 @@ func TestPrivateSCHW830ColdBootThroughput(t *testing.T) {
 	set := openSamsungSCHReferenceSet(t, schw830ReferenceDirectory(t))
 	backend := throughputBackend(t)
 	machine, err := New(set, Options{Backend: backend})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	defer machine.Close()
 
 	slices := throughputSliceCount(t)

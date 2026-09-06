@@ -29,9 +29,7 @@ func newSyntheticKTFMachine(t *testing.T) *Machine {
 			Size: int64(len(archive)),
 		},
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	machine := created.(*Machine)
 	t.Cleanup(func() { _ = machine.Close() })
 	return machine
@@ -53,32 +51,24 @@ func TestImportSaveDataRebindsKTFDatabases(t *testing.T) {
 		source.ktf.ServiceOwner,
 		store.Name,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := source.ktf.Services.Storage.ReplaceRecords(
+	check(t, err)
+	check(t, source.ktf.Services.Storage.ReplaceRecords(
 		source.ktf.ServiceOwner,
 		serviceID,
 		2,
 		map[uint32][]byte{0: {1, 2, 3, 4}, 1: {5, 6, 7, 8}},
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	source.ktf.DatabaseStores[store.Name] = store
 	source.ktf.DatabaseServices[store.Name] = serviceID
 
 	saved, err := source.ExportSaveData()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if len(saved) == 0 {
 		t.Fatal("exported KTF save data is empty")
 	}
 
 	restored := newSyntheticKTFMachine(t)
-	if err := restored.ImportSaveData(saved); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restored.ImportSaveData(saved))
 	adopted := restored.ktf.DatabaseStores[store.Name]
 	if adopted == nil {
 		t.Fatalf(
@@ -124,28 +114,20 @@ func TestImportSaveDataRebindsWIPIDatabases(t *testing.T) {
 		source.wipi.ServiceOwner,
 		key,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := source.wipi.Services.Storage.ReplaceRecords(
+	check(t, err)
+	check(t, source.wipi.Services.Storage.ReplaceRecords(
 		source.wipi.ServiceOwner,
 		serviceID,
 		2,
 		map[uint32][]byte{0: {9, 9, 9, 9}, 1: {8, 8, 8, 8}},
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	source.wipi.Databases[key] = database
 	source.wipi.DatabaseServices[key] = serviceID
 
 	saved, err := source.ExportSaveData()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	restored := newSyntheticMachine(t)
-	if err := restored.ImportSaveData(saved); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restored.ImportSaveData(saved))
 	adopted := restored.wipi.Databases[key]
 	if adopted == nil {
 		t.Fatalf(
@@ -169,28 +151,20 @@ func TestImportSaveDataRebindsWIPIDatabases(t *testing.T) {
 
 func TestImportSaveDataRebuildsWIPIFilesystemMirror(t *testing.T) {
 	source := newSyntheticMachine(t)
-	if err := source.wipi.Services.Storage.MakeDirectory(
+	check(t, source.wipi.Services.Storage.MakeDirectory(
 		shared.NamespacePrivate,
 		"/sdkfs",
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := source.wipi.Services.Storage.WriteFile(
+	))
+	check(t, source.wipi.Services.Storage.WriteFile(
 		shared.NamespacePrivate,
 		"/sdkfs/persist.bin",
 		[]byte("LIBWIPI1"),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 
 	saved, err := source.ExportSaveData()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	restored := newSyntheticMachine(t)
-	if err := restored.ImportSaveData(saved); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restored.ImportSaveData(saved))
 	if !restored.wipi.Directories["/private/sdkfs"] {
 		t.Fatalf("restored directories = %v", restored.wipi.Directories)
 	}
@@ -211,9 +185,7 @@ func TestImportSaveDataDropsUnsavedKTFDatabases(t *testing.T) {
 		machine.ktf.ServiceOwner,
 		"stale",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	machine.ktf.DatabaseStores["stale"] = &ktfrt.Database{Name: "stale"}
 	machine.ktf.DatabaseServices["stale"] = serviceID
 
@@ -224,12 +196,8 @@ func TestImportSaveDataDropsUnsavedKTFDatabases(t *testing.T) {
 		},
 	}
 	var buffer bytes.Buffer
-	if err := gob.NewEncoder(&buffer).Encode(envelope); err != nil {
-		t.Fatal(err)
-	}
-	if err := machine.ImportSaveData(buffer.Bytes()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, gob.NewEncoder(&buffer).Encode(envelope))
+	check(t, machine.ImportSaveData(buffer.Bytes()))
 	if len(machine.ktf.DatabaseStores) != 0 ||
 		len(machine.ktf.DatabaseServices) != 0 {
 		t.Fatalf(

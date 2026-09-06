@@ -39,24 +39,16 @@ func TestMediaTimelineMixesAndCompletesDeterministically(t *testing.T) {
 	limits.OutputChannels = 1
 	registry := NewRegistry(32)
 	media, err := NewMedia(registry, limits)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	bus := NewEventBus(16, 32)
 	clip, err := media.CreateClip(3, "audio/wav", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	source := pcmWave(8_000, 1, []int16{1000, -1000, 2000, -2000})
 	if _, err := media.Append(3, clip, source); err != nil {
 		t.Fatal(err)
 	}
-	if err := media.Play(3, clip, 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := media.Advance(0, 500*time.Microsecond, bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.Play(3, clip, 1))
+	check(t, media.Advance(0, 500*time.Microsecond, bus))
 	audio := media.Drain()
 	if audio.SampleRate != 8_000 || audio.Channels != 1 ||
 		!reflect.DeepEqual(audio.PCM16, []int16{1000, -1000, 2000, -2000}) {
@@ -68,9 +60,7 @@ func TestMediaTimelineMixesAndCompletesDeterministically(t *testing.T) {
 		t.Fatalf("completion event = %+v, %v", event, ok)
 	}
 	info, err := media.Info(3, clip)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if info.State != ClipStopped || info.Position != 500*time.Microsecond {
 		t.Fatalf("completed clip = %+v", info)
 	}
@@ -78,31 +68,19 @@ func TestMediaTimelineMixesAndCompletesDeterministically(t *testing.T) {
 
 func TestMediaStateRoundTripPreservesQueuedAudio(t *testing.T) {
 	services, err := NewServices(Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	clip, err := services.Media.CreateClip(1, "audio/wav", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	source := pcmWave(44_100, 1, make([]int16, 441))
 	if _, err := services.Media.Append(1, clip, source); err != nil {
 		t.Fatal(err)
 	}
-	if err := services.Media.Play(1, clip, -1); err != nil {
-		t.Fatal(err)
-	}
-	if err := services.Advance(1, time.Millisecond); err != nil {
-		t.Fatal(err)
-	}
+	check(t, services.Media.Play(1, clip, -1))
+	check(t, services.Advance(1, time.Millisecond))
 	state := services.Snapshot()
 	clone, err := NewServices(state.Config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := clone.Restore(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, clone.Restore(state))
 	if !reflect.DeepEqual(clone.Media.Snapshot(), services.Media.Snapshot()) {
 		t.Fatal("media state did not round-trip")
 	}
@@ -114,13 +92,9 @@ func TestMutedByZeroGainAdvancesWithoutQueuingAudio(t *testing.T) {
 	limits.OutputChannels = 1
 	registry := NewRegistry(4)
 	media, err := NewMedia(registry, limits)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	clip, err := media.CreateClip(1, "audio/wav", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := media.Append(
 		1,
 		clip,
@@ -128,23 +102,15 @@ func TestMutedByZeroGainAdvancesWithoutQueuingAudio(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := media.SetClipGain(1, clip, 0, false, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := media.Play(1, clip, 1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.SetClipGain(1, clip, 0, false, 0))
+	check(t, media.Play(1, clip, 1))
 	bus := NewEventBus(4, 32)
-	if err := media.Advance(0, 500*time.Microsecond, bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.Advance(0, 500*time.Microsecond, bus))
 	if audio := media.Drain(); len(audio.PCM16) != 0 {
 		t.Fatalf("zero-gain clip queued %d samples", len(audio.PCM16))
 	}
 	info, err := media.Info(1, clip)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if info.State != ClipStopped || info.Position != 500*time.Microsecond {
 		t.Fatalf("zero-gain clip timeline = %+v", info)
 	}
@@ -156,13 +122,9 @@ func TestDirectMediaAdvanceQueueFailureIsAtomic(t *testing.T) {
 	limits.OutputChannels = 1
 	registry := NewRegistry(4)
 	media, err := NewMedia(registry, limits)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	clip, err := media.CreateClip(1, "audio/wav", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := media.Append(
 		1,
 		clip,
@@ -170,9 +132,7 @@ func TestDirectMediaAdvanceQueueFailureIsAtomic(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := media.Play(1, clip, 1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.Play(1, clip, 1))
 	bus := NewEventBus(1, 32)
 	if _, err := bus.Enqueue(Event{Kind: EventApplication}); err != nil {
 		t.Fatal(err)
@@ -198,14 +158,10 @@ func TestMediaRetainsNewestSamplesWhenTheHostNeverDrains(t *testing.T) {
 	limits.MaxQueuedSamples = 8
 	registry := NewRegistry(32)
 	media, err := NewMedia(registry, limits)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	bus := NewEventBus(16, 32)
 	clip, err := media.CreateClip(3, "audio/wav", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := media.Append(
 		3,
 		clip,
@@ -213,9 +169,7 @@ func TestMediaRetainsNewestSamplesWhenTheHostNeverDrains(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := media.Play(3, clip, -1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.Play(3, clip, -1))
 	// Six one-sample advances produce twelve samples into an eight-sample
 	// window without the host ever draining. The guest must keep running.
 	for step := range 6 {
@@ -240,14 +194,10 @@ func TestMediaAdvanceLongerThanRetentionKeepsOnlyTheTail(t *testing.T) {
 	limits.MaxQueuedSamples = 4
 	registry := NewRegistry(32)
 	media, err := NewMedia(registry, limits)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	bus := NewEventBus(16, 32)
 	clip, err := media.CreateClip(3, "audio/wav", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := media.Append(
 		3,
 		clip,
@@ -255,12 +205,8 @@ func TestMediaAdvanceLongerThanRetentionKeepsOnlyTheTail(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := media.Play(3, clip, -1); err != nil {
-		t.Fatal(err)
-	}
-	if err := media.Advance(0, time.Millisecond, bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.Play(3, clip, -1))
+	check(t, media.Advance(0, time.Millisecond, bus))
 	audio := media.Drain()
 	if !reflect.DeepEqual(audio.PCM16, []int16{10, 12, 14, 16}) {
 		t.Fatalf("tail audio = %v", audio.PCM16)

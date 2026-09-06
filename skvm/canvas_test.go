@@ -15,17 +15,11 @@ func TestCanvasHeightInsetQuirkLeavesFramebufferUnchanged(t *testing.T) {
 		Enabled: true,
 	}}
 	services, err := shared.NewServices(config)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	owner, err := services.Coordinator.Register("skvm-test", 1_000_000)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	vm, err := NewWithServices(nil, services, owner)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 
 	if got := vm.canvasHeight(); got != 144 {
 		t.Fatalf("Canvas height = %d, want 144", got)
@@ -37,9 +31,7 @@ func TestCanvasHeightInsetQuirkLeavesFramebufferUnchanged(t *testing.T) {
 
 func TestCanvasHeightDefaultsToFramebufferHeight(t *testing.T) {
 	vm, err := New(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if got := vm.canvasHeight(); got != vm.ScreenHeight {
 		t.Fatalf("Canvas height = %d, want framebuffer height %d", got, vm.ScreenHeight)
 	}

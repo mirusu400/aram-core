@@ -13,9 +13,7 @@ func newKTFTestMediaClip(
 ) uint32 {
 	t.Helper()
 	mediaType, err := runtime.allocateBytes([]byte("Yamaha_MA3"), true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	setKTFWIPICCallArguments(t, runtime, []uint32{mediaType, capacity, 0})
 	handle, err := ktfWIPICMediaCreate(context.Background(), runtime)
 	if err != nil || handle == 0 {
@@ -32,15 +30,11 @@ func putKTFTestMediaData(
 ) uint32 {
 	t.Helper()
 	input, err := runtime.allocateBytes(payload, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	setKTFWIPICCallArguments(t, runtime,
 		[]uint32{handle, input, uint32(len(payload))})
 	result, err := ktfWIPICMediaPutData(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	return result
 }
 
@@ -78,9 +72,7 @@ func TestKTFWIPICMediaPutDataReplacesAFinishedSound(t *testing.T) {
 		runtime.ServiceOwner,
 		runtime.wipicMediaServices[handle],
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if string(stored) != string(battle) {
 		t.Fatalf("media service holds %q, want only the new sound", stored)
 	}

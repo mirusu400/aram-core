@@ -16,13 +16,9 @@ func TestArrayShapeDescribesArrays(t *testing.T) {
 		ClientName: "client.bin0",
 		Client:     []byte{0x70, 0x47},
 	}, nil, ProfileID, "", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.MapImageAndHost())
 
 	for _, want := range []struct {
 		className string
@@ -52,10 +48,7 @@ func TestArrayShapeDescribesArrays(t *testing.T) {
 		}
 		// Elements start after the array header, and writing the last one must
 		// stay inside the allocation the array was made with.
-		words, err := runtime.ReadWords(instance, 2)
-		if err != nil {
-			t.Fatal(err)
-		}
+		words := readWords(t, runtime, instance, 2)
 		if body != words[0]+8 {
 			t.Fatalf("%s body = 0x%08x, want 0x%08x", want.className, body, words[0]+8)
 		}
@@ -65,9 +58,7 @@ func TestArrayShapeDescribesArrays(t *testing.T) {
 		t.Fatal("a null instance was reported as an array")
 	}
 	instance, err := runtime.newJavaInstance("java/lang/Object", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, _, _, _, ok := runtime.ArrayShape(instance); ok {
 		t.Fatal("a plain object was reported as an array")
 	}

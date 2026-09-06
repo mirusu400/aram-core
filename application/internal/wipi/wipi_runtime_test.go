@@ -24,19 +24,11 @@ func newPublicRuntime(t *testing.T) *Runtime {
 	t.Helper()
 	backend := interpreter.New()
 	t.Cleanup(func() { _ = backend.Close() })
-	if err := MapRuntimeMemory(backend); err != nil {
-		t.Fatal(err)
-	}
+	check(t, MapRuntimeMemory(backend))
 	runtime, err := NewRuntime(backend, image.NewRGBA(image.Rect(0, 0, 16, 12)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.Map(guest.DefaultStackBase, guest.DefaultStackSize, cpu.PermissionRead|cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterSP, guest.DefaultStackBase+guest.DefaultStackSize-0x100); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, backend.Map(guest.DefaultStackBase, guest.DefaultStackSize, cpu.PermissionRead|cpu.PermissionWrite))
+	check(t, backend.WriteRegister(cpu.RegisterSP, guest.DefaultStackBase+guest.DefaultStackSize-0x100))
 	return runtime
 }
 
@@ -44,9 +36,7 @@ func dispatchPublicAPI(t *testing.T, runtime *Runtime, name string, args ...uint
 	t.Helper()
 	stub := preparePublicAPICall(t, runtime, name, args...)
 	handled, err := runtime.dispatchTrap(context.Background(), stub&^1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !handled {
 		t.Fatalf("%s trap was not handled", name)
 	}
@@ -80,25 +70,17 @@ func preparePublicAPICall(t *testing.T, runtime *Runtime, name string, args ...u
 		if index < len(args) {
 			value = args[index]
 		}
-		if err := runtime.CPU.WriteRegister(uint32(index), value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteRegister(uint32(index), value))
 	}
 	sp := guest.DefaultStackBase + guest.DefaultStackSize - 0x100
-	if err := runtime.CPU.WriteRegister(cpu.RegisterSP, sp); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterSP, sp))
 	for index := 4; index < len(args); index++ {
 		var encoded [4]byte
 		binary.LittleEndian.PutUint32(encoded[:], args[index])
-		if err := runtime.CPU.WriteMemory(sp+uint32(index-4)*4, encoded[:]); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteMemory(sp+uint32(index-4)*4, encoded[:]))
 	}
 	const link = uint32(0x02000001)
-	if err := runtime.CPU.WriteRegister(cpu.RegisterLR, link); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterLR, link))
 	stub, ok := runtime.Layout.StubByName[name]
 	if !ok {
 		t.Fatalf("%s has no stub", name)
@@ -112,13 +94,9 @@ func readPublicAPIReturn(t *testing.T, runtime *Runtime) guest.WIPIReturn {
 	t.Helper()
 	const link = uint32(0x02000001)
 	low, err := runtime.CPU.ReadRegister(cpu.RegisterR0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	high, err := runtime.CPU.ReadRegister(cpu.RegisterR1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if pc, _ := runtime.CPU.ReadRegister(cpu.RegisterPC); pc != link&^1 {
 		t.Fatalf("returned to PC 0x%08x", pc)
 	}
@@ -128,9 +106,7 @@ func readPublicAPIReturn(t *testing.T, runtime *Runtime) guest.WIPIReturn {
 func TestWIPIRuntimeInstallsAllPublicImports(t *testing.T) {
 	runtime := newPublicRuntime(t)
 	var encoded [4]byte
-	if err := runtime.CPU.ReadMemory(wipicatalog.ImportPointerAddress, encoded[:]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(wipicatalog.ImportPointerAddress, encoded[:]))
 	if got := binary.LittleEndian.Uint32(encoded[:]); got != wipicatalog.ProcessHolderAddress {
 		t.Fatalf("import pointer = 0x%08x", got)
 	}
@@ -258,9 +234,7 @@ func prototypeABIWordCount(prototype string) (count int, variadic bool, ok bool)
 func TestWIPIRuntimeCStdlibAndKernelPrimitives(t *testing.T) {
 	runtime := newPublicRuntime(t)
 	const source = guest.HeapBase + 0x100
-	if err := runtime.CPU.WriteMemory(source, []byte("wipi\x00")); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteMemory(source, []byte("wipi\x00")))
 	if result := dispatchPublicAPI(t, runtime, "strlen", source); result.Low != 4 {
 		t.Fatalf("strlen = %d", result.Low)
 	}
@@ -269,9 +243,7 @@ func TestWIPIRuntimeCStdlibAndKernelPrimitives(t *testing.T) {
 		t.Fatal("MC_knlCalloc returned null")
 	}
 	memory := make([]byte, 64)
-	if err := runtime.CPU.ReadMemory(allocation, memory); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(allocation, memory))
 	for index, value := range memory {
 		if value != 0 {
 			t.Fatalf("calloc byte %d = 0x%02x", index, value)
@@ -286,16 +258,12 @@ func TestWIPIRuntimeCStdlibAndKernelPrimitives(t *testing.T) {
 func TestWIPIRuntimeReadsCStringEndingAtMappingBoundary(t *testing.T) {
 	runtime := newPublicRuntime(t)
 	const address = uint32(0x04000000)
-	if err := runtime.CPU.Map(
+	check(t, runtime.CPU.Map(
 		address,
 		4,
 		cpu.PermissionRead|cpu.PermissionWrite,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteMemory(address, []byte{'A', 'R', 'M', 0}); err != nil {
-		t.Fatal(err)
-	}
+	))
+	check(t, runtime.CPU.WriteMemory(address, []byte{'A', 'R', 'M', 0}))
 	value, err := runtime.ReadCString(address)
 	if err != nil || string(value) != "ARM" {
 		t.Fatalf("boundary C string = %q, %v", value, err)
@@ -307,9 +275,7 @@ func TestWIPIRuntimeKernelPrintfFormatsGuestVarargs(t *testing.T) {
 	allocateString := func(value string) uint32 {
 		t.Helper()
 		address, err := runtime.Heap.Allocate(uint32(len(value)+1), true)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		if _, err := runtime.writeCString(address, []byte(value), -1); err != nil {
 			t.Fatal(err)
 		}
@@ -338,9 +304,7 @@ func TestWIPIRuntimeKernelPrintfFormatsGuestVarargs(t *testing.T) {
 	}
 
 	output, err := runtime.Heap.Allocate(128, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	sprintkFormat := allocateString("%*.*s %.2f")
 	floatBits := math.Float64bits(3.5)
 	sprintk := dispatchPublicAPI(
@@ -358,9 +322,7 @@ func TestWIPIRuntimeKernelPrintfFormatsGuestVarargs(t *testing.T) {
 	)
 	expectedOutput := "    wipi 3.50"
 	formatted, err := runtime.ReadCString(output)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if int(sprintk.Low) != len(expectedOutput) || string(formatted) != expectedOutput {
 		t.Fatalf("MC_knlSprintk = %d/%q", printk.Low, formatted)
 	}
@@ -374,16 +336,12 @@ func TestWIPIRuntimeKernelResources(t *testing.T) {
 		t.Fatalf("registered resource ID = %d", resourceID)
 	}
 	name, err := runtime.Heap.Allocate(32, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := runtime.writeCString(name, []byte("images/title.png"), -1); err != nil {
 		t.Fatal(err)
 	}
 	size, err := runtime.Heap.Allocate(4, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if got := int32(dispatchPublicAPI(
 		t,
 		runtime,
@@ -398,9 +356,7 @@ func TestWIPIRuntimeKernelResources(t *testing.T) {
 		t.Fatalf("resource size = %d, %v", resourceSize, err)
 	}
 	output, err := runtime.Heap.Allocate(resourceSize, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if got := int32(dispatchPublicAPI(
 		t,
 		runtime,
@@ -422,9 +378,7 @@ func TestWIPIRuntimeKernelResources(t *testing.T) {
 		t.Fatalf("MC_knlGetResource = %d", int32(got))
 	}
 	restored := make([]byte, resourceSize)
-	if err := runtime.CPU.ReadMemory(output, restored); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(output, restored))
 	if !bytes.Equal(restored, payload) {
 		t.Fatalf("resource payload = %x", restored)
 	}
@@ -433,16 +387,12 @@ func TestWIPIRuntimeKernelResources(t *testing.T) {
 func TestWIPIRuntimeKernelProgramLifecycle(t *testing.T) {
 	runtime := newPublicRuntime(t)
 	execName, err := runtime.Heap.Allocate(32, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := runtime.writeCString(execName, []byte("wipi-app"), -1); err != nil {
 		t.Fatal(err)
 	}
 	output, err := runtime.Heap.Allocate(64, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if got := int32(dispatchPublicAPI(
 		t,
 		runtime,
@@ -472,21 +422,15 @@ func TestWIPIRuntimeKernelProgramLifecycle(t *testing.T) {
 		t.Fatalf("short MC_knlGetExecNames = %d", got)
 	}
 	var shortList [4]byte
-	if err := runtime.CPU.ReadMemory(output, shortList[:]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(output, shortList[:]))
 	if shortList[3] != 0 {
 		t.Fatalf("short executable list is not terminated: %q", shortList)
 	}
 
 	firstArgument, err := runtime.Heap.Allocate(16, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	secondArgument, err := runtime.Heap.Allocate(16, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := runtime.writeCString(firstArgument, []byte("--level"), -1); err != nil {
 		t.Fatal(err)
 	}
@@ -521,9 +465,7 @@ func TestWIPIRuntimeKernelProgramLifecycle(t *testing.T) {
 	}
 
 	info, err := runtime.Heap.Allocate(12, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if got := int32(dispatchPublicAPI(
 		t,
 		runtime,
@@ -604,9 +546,7 @@ func TestWIPIRuntimeGraphicsPresentsGuestFramebuffer(t *testing.T) {
 		t.Fatal("screen framebuffer is null")
 	}
 	context, err := runtime.Heap.Allocate(60, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	dispatchPublicAPI(t, runtime, "MC_grpInitContext", context)
 	dispatchPublicAPI(t, runtime, "MC_grpSetContext", context, 1, 0x00123456)
 	dispatchPublicAPI(t, runtime, "MC_grpFillRect", screen, 2, 3, 4, 5, context)
@@ -636,9 +576,7 @@ func TestWIPIRuntimeFlushLcdRedirectsOffscreenBuffer(t *testing.T) {
 		t.Fatalf("offscreen framebuffer = 0x%08x (screen 0x%08x)", offscreen, screen)
 	}
 	context, err := runtime.Heap.Allocate(60, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	dispatchPublicAPI(t, runtime, "MC_grpInitContext", context)
 	dispatchPublicAPI(t, runtime, "MC_grpSetContext", context, 1, 0x00abcdef)
 	dispatchPublicAPI(t, runtime, "MC_grpFillRect", offscreen, 0, 0, 16, 12, context)
@@ -663,9 +601,7 @@ func TestWIPIRuntimeContextColourIsADevicePixel(t *testing.T) {
 	screen := dispatchPublicAPI(t, runtime, "MC_grpGetScreenFrameBuffer", 0).Low
 	framebuffer := runtime.Framebuffers[screen]
 	context, err := runtime.Heap.Allocate(60, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	colour := dispatchPublicAPI(
 		t,
 		runtime,
@@ -679,12 +615,10 @@ func TestWIPIRuntimeContextColourIsADevicePixel(t *testing.T) {
 	dispatchPublicAPI(t, runtime, "MC_grpPutPixel", screen, 1, 1, context)
 
 	var raw [2]byte
-	if err := runtime.CPU.ReadMemory(
+	check(t, runtime.CPU.ReadMemory(
 		framebuffer.Pixels+uint32(1*framebuffer.Width+1)*2,
 		raw[:],
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	got := binary.LittleEndian.Uint16(raw[:])
 	if want := uint16(0x4d43); got != want {
 		t.Fatalf("stored pixel = 0x%04x, want 0x%04x", got, want)
@@ -710,21 +644,15 @@ func TestWIPIRuntimeDrawStringRasterizesGlyphShape(t *testing.T) {
 		16,
 	).Low
 	context, err := runtime.Heap.Allocate(60, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	dispatchPublicAPI(t, runtime, "MC_grpInitContext", context)
 	dispatchPublicAPI(t, runtime, "MC_grpSetContext", context, 1, 0x00ffffff)
 	font := dispatchPublicAPI(t, runtime, "MC_grpGetFont", 0, 12, 0).Low
 	dispatchPublicAPI(t, runtime, "MC_grpSetContext", context, 7, font)
 
 	text, err := runtime.Heap.Allocate(2, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteMemory(text, []byte{'A', 0}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.CPU.WriteMemory(text, []byte{'A', 0}))
 	dispatchPublicAPI(
 		t,
 		runtime,
@@ -742,9 +670,7 @@ func TestWIPIRuntimeDrawStringRasterizesGlyphShape(t *testing.T) {
 	for y := 0; y < 14; y++ {
 		for x := 0; x < 6; x++ {
 			pixel, err := runtime.ReadU32(pixels + uint32(y*16+x)*4)
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			if pixel == 0x00ffffff {
 				painted++
 			}
@@ -764,9 +690,7 @@ func TestWIPIRuntimeGraphicsSupportsRGB565Framebuffer(t *testing.T) {
 		t.Fatalf("framebuffer bits = %d", framebuffer.BitsPerPixel)
 	}
 	var descriptor [24]byte
-	if err := runtime.CPU.ReadMemory(screen, descriptor[:]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(screen, descriptor[:]))
 	if stride := binary.LittleEndian.Uint32(descriptor[12:16]); stride != 32 {
 		t.Fatalf("framebuffer stride = %d", stride)
 	}
@@ -788,20 +712,16 @@ func TestWIPIRuntimeGraphicsSupportsRGB565Framebuffer(t *testing.T) {
 		t.Fatalf("device red = 0x%06x", red)
 	}
 	context, err := runtime.Heap.Allocate(60, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	dispatchPublicAPI(t, runtime, "MC_grpInitContext", context)
 	dispatchPublicAPI(t, runtime, "MC_grpSetContext", context, 1, red)
 	dispatchPublicAPI(t, runtime, "MC_grpPutPixel", screen, 2, 3, context)
 
 	var raw [2]byte
-	if err := runtime.CPU.ReadMemory(
+	check(t, runtime.CPU.ReadMemory(
 		framebuffer.Pixels+uint32(3*framebuffer.Width+2)*2,
 		raw[:],
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	if got := binary.LittleEndian.Uint16(raw[:]); got != 0xf800 {
 		t.Fatalf("raw RGB565 pixel = 0x%04x", got)
 	}
@@ -814,14 +734,10 @@ func TestWIPIRuntimeGraphicsSupportsRGB565Framebuffer(t *testing.T) {
 	}
 
 	displayInfo, err := runtime.Heap.Allocate(36, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	dispatchPublicAPI(t, runtime, "MC_grpGetDisplayInfo", 0, displayInfo)
 	var encoded [36]byte
-	if err := runtime.CPU.ReadMemory(displayInfo, encoded[:]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(displayInfo, encoded[:]))
 	values := make([]uint32, 9)
 	for index := range values {
 		values[index] = binary.LittleEndian.Uint32(encoded[index*4:])
@@ -835,25 +751,19 @@ func TestWIPIRuntimeGraphicsSupportsRGB565Framebuffer(t *testing.T) {
 func TestWIPIRuntimeGraphicsContextAcceptsImmediateScalarValues(t *testing.T) {
 	runtime := newPublicRuntime(t)
 	contextAddress, err := runtime.Heap.Allocate(60, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	dispatchPublicAPI(t, runtime, "MC_grpInitContext", contextAddress)
 
 	dispatchPublicAPI(t, runtime, "MC_grpSetContext", contextAddress, 1, 0x00ffff00)
 	context, err := runtime.context(contextAddress)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if context.foreground != 0x00ffff00 {
 		t.Fatalf("immediate foreground = 0x%08x", context.foreground)
 	}
 
 	dispatchPublicAPI(t, runtime, "MC_grpSetContext", contextAddress, 1, 0)
 	context, err = runtime.context(contextAddress)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if context.foreground != 0 {
 		t.Fatalf("zero immediate foreground = 0x%08x", context.foreground)
 	}
@@ -863,9 +773,7 @@ func TestWIPIRuntimeGraphicsPixelOperationUsesCallbackResult(t *testing.T) {
 	runtime := newPublicRuntime(t)
 	screen := dispatchPublicAPI(t, runtime, "MC_grpGetScreenFrameBuffer", 0).Low
 	contextAddress, err := runtime.Heap.Allocate(60, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	dispatchPublicAPI(t, runtime, "MC_grpInitContext", contextAddress)
 
 	setContextValue := func(index uint32, value uint32) {
@@ -891,9 +799,7 @@ func TestWIPIRuntimeGraphicsPixelOperationUsesCallbackResult(t *testing.T) {
 	}
 	framebuffer := runtime.Framebuffers[screen]
 	pixel, err := runtime.ReadU32(framebuffer.Pixels + uint32(3*framebuffer.Width+2)*4)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if pixel != 0x00abcdef {
 		t.Fatalf("pixel callback result = 0x%08x", pixel)
 	}
@@ -909,9 +815,7 @@ func TestWIPIRuntimeRaptorPixelOperationSwapsArguments(t *testing.T) {
 	runtime.CompactGraphicsContext = true
 	screen := dispatchPublicAPI(t, runtime, "MC_grpGetScreenFrameBuffer", 0).Low
 	contextAddress, err := runtime.Heap.Allocate(60, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	dispatchPublicAPI(t, runtime, "MC_grpInitContext", contextAddress)
 	setContextValue := func(index uint32, value uint32) {
 		t.Helper()
@@ -937,9 +841,7 @@ func TestWIPIRuntimeRaptorPixelOperationSwapsArguments(t *testing.T) {
 	}
 	framebuffer := runtime.Framebuffers[screen]
 	pixel, err := runtime.ReadU32(framebuffer.Pixels + uint32(3*framebuffer.Width+2)*4)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if pixel != 0x00abcdef {
 		t.Fatalf("pixel callback result = 0x%08x", pixel)
 	}
@@ -952,9 +854,7 @@ func installPixelOperationContext(t *testing.T, runtime *Runtime) (uint32, uint3
 	t.Helper()
 	screen := dispatchPublicAPI(t, runtime, "MC_grpGetScreenFrameBuffer", 0).Low
 	contextAddress, err := runtime.Heap.Allocate(60, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	dispatchPublicAPI(t, runtime, "MC_grpInitContext", contextAddress)
 	dispatchPublicAPI(t, runtime, "MC_grpSetContext", contextAddress, 1, 0x00123456)
 	dispatchPublicAPI(t, runtime, "MC_grpSetContext", contextAddress, 5, 0x02000001)
@@ -966,9 +866,7 @@ func readScreenPixel(t *testing.T, runtime *Runtime, screen uint32, x, y int) ui
 	t.Helper()
 	framebuffer := runtime.Framebuffers[screen]
 	pixel, err := runtime.ReadU32(framebuffer.Pixels + uint32(y*framebuffer.Width+x)*4)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	return pixel
 }
 
@@ -1085,20 +983,12 @@ func TestWIPIRuntimeImageDecodeDrawEncodeAndDestroy(t *testing.T) {
 	source.SetRGBA(0, 0, color.RGBA{R: 0x12, G: 0x34, B: 0x56, A: 0xff})
 	source.SetRGBA(1, 0, color.RGBA{R: 0x78, G: 0x9a, B: 0xbc, A: 0xff})
 	var payload bytes.Buffer
-	if err := png.Encode(&payload, source); err != nil {
-		t.Fatal(err)
-	}
+	check(t, png.Encode(&payload, source))
 	buffer, err := runtime.Heap.Allocate(uint32(payload.Len()), false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteMemory(buffer, payload.Bytes()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.CPU.WriteMemory(buffer, payload.Bytes()))
 	output, err := runtime.Heap.Allocate(4, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if result := dispatchPublicAPI(
 		t,
 		runtime,
@@ -1160,9 +1050,7 @@ func TestWIPIRuntimeImageDecodeDrawEncodeAndDestroy(t *testing.T) {
 	}
 
 	length, err := runtime.Heap.Allocate(4, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	encoded := dispatchPublicAPI(
 		t,
 		runtime,
@@ -1179,13 +1067,9 @@ func TestWIPIRuntimeImageDecodeDrawEncodeAndDestroy(t *testing.T) {
 		t.Fatalf("encoded BMP = 0x%08x/%d, %v", encoded, encodedLength, err)
 	}
 	bmp := make([]byte, encodedLength)
-	if err := runtime.CPU.ReadMemory(encoded, bmp); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(encoded, bmp))
 	decodedBMP, err := decodeWIPIBMP(bmp)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if got := decodedBMP.RGBAAt(0, 0); got != (color.RGBA{
 		R: 0x12,
 		G: 0x34,
@@ -1229,16 +1113,10 @@ func TestWIPIRuntimeAnimatedGIFAdvancesFrames(t *testing.T) {
 		t.Fatal(err)
 	}
 	buffer, err := runtime.Heap.Allocate(uint32(payload.Len()), false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteMemory(buffer, payload.Bytes()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.CPU.WriteMemory(buffer, payload.Bytes()))
 	output, err := runtime.Heap.Allocate(4, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if result := dispatchPublicAPI(
 		t,
 		runtime,
@@ -1305,9 +1183,7 @@ func TestWIPIRuntimeAdvancedGraphicsPrimitives(t *testing.T) {
 		12,
 	).Low
 	context, err := runtime.Heap.Allocate(60, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	dispatchPublicAPI(t, runtime, "MC_grpInitContext", context)
 	dispatchPublicAPI(t, runtime, "MC_grpSetContext", context, 1, 0x00a1b2c3)
 
@@ -1339,12 +1215,8 @@ func TestWIPIRuntimeAdvancedGraphicsPrimitives(t *testing.T) {
 	)
 
 	text, err := runtime.Heap.Allocate(4, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteMemory(text, []byte("A \x00")); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.CPU.WriteMemory(text, []byte("A \x00")))
 	dispatchPublicAPI(
 		t,
 		runtime,
@@ -1358,22 +1230,14 @@ func TestWIPIRuntimeAdvancedGraphicsPrimitives(t *testing.T) {
 	)
 
 	xCoordinates, err := runtime.Heap.Allocate(12, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	yCoordinates, err := runtime.Heap.Allocate(12, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	for index, value := range []uint32{8, 14, 8} {
-		if err := runtime.WriteU32(xCoordinates+uint32(index*4), value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.WriteU32(xCoordinates+uint32(index*4), value))
 	}
 	for index, value := range []uint32{1, 6, 10} {
-		if err := runtime.WriteU32(yCoordinates+uint32(index*4), value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.WriteU32(yCoordinates+uint32(index*4), value))
 	}
 	dispatchPublicAPI(
 		t,
@@ -1410,9 +1274,7 @@ func TestWIPIRuntimeAdvancedGraphicsPrimitives(t *testing.T) {
 func TestWIPIRuntimeFilesystemRoundTripAndListing(t *testing.T) {
 	runtime := newPublicRuntime(t)
 	pathAddress, err := runtime.Heap.Allocate(32, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := runtime.writeCString(pathAddress, []byte("save/game.dat"), -1); err != nil {
 		t.Fatal(err)
 	}
@@ -1421,12 +1283,8 @@ func TestWIPIRuntimeFilesystemRoundTripAndListing(t *testing.T) {
 		t.Fatalf("MC_fsOpen descriptor = %d", fd)
 	}
 	dataAddress, err := runtime.Heap.Allocate(16, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteMemory(dataAddress, []byte("ARAM")); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.CPU.WriteMemory(dataAddress, []byte("ARAM")))
 	if got := dispatchPublicAPI(t, runtime, "MC_fsWrite", uint32(fd), dataAddress, 4).Low; got != 4 {
 		t.Fatalf("MC_fsWrite = %d", got)
 	}
@@ -1434,38 +1292,28 @@ func TestWIPIRuntimeFilesystemRoundTripAndListing(t *testing.T) {
 		t.Fatalf("MC_fsSeek = %d", got)
 	}
 	outputAddress, err := runtime.Heap.Allocate(32, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if got := dispatchPublicAPI(t, runtime, "MC_fsRead", uint32(fd), outputAddress, 4).Low; got != 4 {
 		t.Fatalf("MC_fsRead = %d", got)
 	}
 	var output [4]byte
-	if err := runtime.CPU.ReadMemory(outputAddress, output[:]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(outputAddress, output[:]))
 	if string(output[:]) != "ARAM" {
 		t.Fatalf("read data = %q", output)
 	}
 
 	directoryAddress, err := runtime.Heap.Allocate(16, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := runtime.writeCString(directoryAddress, []byte("save"), -1); err != nil {
 		t.Fatal(err)
 	}
 	listAddress, err := runtime.Heap.Allocate(64, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if got := dispatchPublicAPI(t, runtime, "MC_fsList", directoryAddress, listAddress, 64, 0).Low; got != 0 {
 		t.Fatalf("MC_fsList = 0x%08x", got)
 	}
 	listing := make([]byte, len("game.dat")+2)
-	if err := runtime.CPU.ReadMemory(listAddress, listing); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(listAddress, listing))
 	if !bytes.Equal(listing, []byte("game.dat\x00\x00")) {
 		t.Fatalf("directory listing = %q", listing)
 	}
@@ -1474,9 +1322,7 @@ func TestWIPIRuntimeFilesystemRoundTripAndListing(t *testing.T) {
 func TestWIPIRuntimeDatabaseRecords(t *testing.T) {
 	runtime := newPublicRuntime(t)
 	nameAddress, err := runtime.Heap.Allocate(32, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := runtime.writeCString(nameAddress, []byte("scores"), -1); err != nil {
 		t.Fatal(err)
 	}
@@ -1493,12 +1339,8 @@ func TestWIPIRuntimeDatabaseRecords(t *testing.T) {
 		t.Fatalf("database handle = %d", database)
 	}
 	recordAddress, err := runtime.Heap.Allocate(8, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteMemory(recordAddress, []byte("score-1")); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.CPU.WriteMemory(recordAddress, []byte("score-1")))
 	recordID := int32(dispatchPublicAPI(
 		t,
 		runtime,
@@ -1511,9 +1353,7 @@ func TestWIPIRuntimeDatabaseRecords(t *testing.T) {
 		t.Fatalf("record ID = %d", recordID)
 	}
 	output, err := runtime.Heap.Allocate(8, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if got := dispatchPublicAPI(
 		t,
 		runtime,
@@ -1526,9 +1366,7 @@ func TestWIPIRuntimeDatabaseRecords(t *testing.T) {
 		t.Fatalf("MC_dbSelectRecord = 0x%08x", got)
 	}
 	var restored [8]byte
-	if err := runtime.CPU.ReadMemory(output, restored[:]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(output, restored[:]))
 	if !bytes.Equal(restored[:7], []byte("score-1")) || restored[7] != 0 {
 		t.Fatalf("selected record = %q", restored)
 	}
@@ -1537,9 +1375,7 @@ func TestWIPIRuntimeDatabaseRecords(t *testing.T) {
 func TestWIPIRuntimeDatabaseSortUsesGuestCompareAndFilter(t *testing.T) {
 	runtime := newPublicRuntime(t)
 	nameAddress, err := runtime.Heap.Allocate(16, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := runtime.writeCString(nameAddress, []byte("sorted"), -1); err != nil {
 		t.Fatal(err)
 	}
@@ -1553,13 +1389,9 @@ func TestWIPIRuntimeDatabaseSortUsesGuestCompareAndFilter(t *testing.T) {
 		0,
 	).Low
 	recordAddress, err := runtime.Heap.Allocate(4, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	for index, value := range []byte{'a', 'b', 'c'} {
-		if err := runtime.CPU.WriteMemory(recordAddress, []byte{value, 0, 0, 0}); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteMemory(recordAddress, []byte{value, 0, 0, 0}))
 		recordID := dispatchPublicAPI(
 			t,
 			runtime,
@@ -1580,9 +1412,7 @@ func TestWIPIRuntimeDatabaseSortUsesGuestCompareAndFilter(t *testing.T) {
 	runtime.InvokeSync = func(_ context.Context, callback GuestCallback) (uint32, error) {
 		readByte := func(address uint32) byte {
 			var value [1]byte
-			if err := runtime.CPU.ReadMemory(address, value[:]); err != nil {
-				t.Fatal(err)
-			}
+			check(t, runtime.CPU.ReadMemory(address, value[:]))
 			return value[0]
 		}
 		switch callback.Procedure {
@@ -1601,9 +1431,7 @@ func TestWIPIRuntimeDatabaseSortUsesGuestCompareAndFilter(t *testing.T) {
 		}
 	}
 	output, err := runtime.Heap.Allocate(12, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if got := dispatchPublicAPI(
 		t,
 		runtime,
@@ -1617,9 +1445,7 @@ func TestWIPIRuntimeDatabaseSortUsesGuestCompareAndFilter(t *testing.T) {
 		t.Fatalf("MC_dbSortRecords = %d", int32(got))
 	}
 	var encoded [8]byte
-	if err := runtime.CPU.ReadMemory(output, encoded[:]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(output, encoded[:]))
 	if first, second := binary.LittleEndian.Uint32(encoded[0:4]),
 		binary.LittleEndian.Uint32(encoded[4:8]); first != 3 || second != 1 {
 		t.Fatalf("sorted record IDs = [%d %d]", first, second)
@@ -1643,9 +1469,7 @@ func TestWIPIRuntimeUICComponentState(t *testing.T) {
 		t.Fatal("application context is null")
 	}
 	className, err := runtime.Heap.Allocate(32, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := runtime.writeCString(className, []byte("Label"), -1); err != nil {
 		t.Fatal(err)
 	}
@@ -1655,29 +1479,21 @@ func TestWIPIRuntimeUICComponentState(t *testing.T) {
 		t.Fatalf("class = 0x%08x, component = 0x%08x", class, component)
 	}
 	label, err := runtime.Heap.Allocate(32, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := runtime.writeCString(label, []byte("Hello"), -1); err != nil {
 		t.Fatal(err)
 	}
 	dispatchPublicAPI(t, runtime, "MC_uicSetLabel", component, label)
 	labelResult := dispatchPublicAPI(t, runtime, "MC_uicGetLabel", component).Low
 	got, err := runtime.ReadCString(labelResult)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if string(got) != "Hello" {
 		t.Fatalf("component label = %q", got)
 	}
 
 	text, err := runtime.Heap.Allocate(16, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteMemory(text, []byte("ARAM")); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.CPU.WriteMemory(text, []byte("ARAM")))
 	if got := dispatchPublicAPI(t, runtime, "MC_uicInsertText", component, 0, text, 4).Low; got != 4 {
 		t.Fatalf("MC_uicInsertText = %d", got)
 	}
@@ -1694,9 +1510,7 @@ func TestWIPIRuntimeUICHandleEventUsesSynchronousCallbacks(t *testing.T) {
 		"MC_uicCreateApplicationContext",
 	).Low
 	className, err := runtime.Heap.Allocate(16, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := runtime.writeCString(className, []byte("Text"), -1); err != nil {
 		t.Fatal(err)
 	}
@@ -1731,9 +1545,7 @@ func TestWIPIRuntimeUICHandleEventUsesSynchronousCallbacks(t *testing.T) {
 				t.Fatalf("key callback args = %#v", callback.Args)
 			}
 			value, err := runtime.ReadU32(callback.Args[1])
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			if value != eventType {
 				t.Fatalf("key callback event type = %d", value)
 			}
@@ -1783,9 +1595,7 @@ func TestWIPIRuntimeUICRepaintRecordsDamageAndSchedulesPaint(t *testing.T) {
 	runtime := newPublicRuntime(t)
 	context := dispatchPublicAPI(t, runtime, "MC_uicCreateApplicationContext").Low
 	className, err := runtime.Heap.Allocate(32, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := runtime.writeCString(className, []byte("Canvas"), -1); err != nil {
 		t.Fatal(err)
 	}
@@ -1831,9 +1641,7 @@ func TestWIPIRuntimeUICRepaintRecordsDamageAndSchedulesPaint(t *testing.T) {
 func TestWIPIRuntimeMediaAndSerialModels(t *testing.T) {
 	runtime := newPublicRuntime(t)
 	mediaType, err := runtime.Heap.Allocate(32, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := runtime.writeCString(mediaType, []byte("audio/midi"), -1); err != nil {
 		t.Fatal(err)
 	}
@@ -1842,12 +1650,8 @@ func TestWIPIRuntimeMediaAndSerialModels(t *testing.T) {
 		t.Fatal("media clip is null")
 	}
 	data, err := runtime.Heap.Allocate(16, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteMemory(data, []byte{1, 2, 3, 4}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.CPU.WriteMemory(data, []byte{1, 2, 3, 4}))
 	if got := dispatchPublicAPI(t, runtime, "MC_mdaClipPutData", clip, data, 4).Low; got != 4 {
 		t.Fatalf("MC_mdaClipPutData = %d", got)
 	}
@@ -1864,16 +1668,12 @@ func TestWIPIRuntimeMediaAndSerialModels(t *testing.T) {
 		t.Fatalf("MC_srlWrite = %d", got)
 	}
 	output, err := runtime.Heap.Allocate(16, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if got := dispatchPublicAPI(t, runtime, "MC_srlRead", uint32(serial), output, 4).Low; got != 4 {
 		t.Fatalf("MC_srlRead = %d", got)
 	}
 	var loopback [4]byte
-	if err := runtime.CPU.ReadMemory(output, loopback[:]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(output, loopback[:]))
 	if loopback != [4]byte{1, 2, 3, 4} {
 		t.Fatalf("serial loopback = %v", loopback)
 	}
@@ -1903,9 +1703,7 @@ func TestWIPIRuntimeOfflineNetworkAndHTTPModels(t *testing.T) {
 	}
 
 	url, err := runtime.Heap.Allocate(64, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := runtime.writeCString(url, []byte("https://example.invalid/"), -1); err != nil {
 		t.Fatal(err)
 	}
@@ -1933,12 +1731,8 @@ func TestRaptorStopClipReportsCompletionAndFrees(t *testing.T) {
 		t.Fatalf("RaptorCreateClip = 0x%08x, err=%v", handle, err)
 	}
 	data, err := runtime.Heap.Allocate(16, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteMemory(data, []byte{1, 2, 3, 4}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.CPU.WriteMemory(data, []byte{1, 2, 3, 4}))
 	if !runtime.RaptorPutClipData(handle, data, 4) {
 		t.Fatal("RaptorPutClipData rejected the clip source")
 	}
@@ -1989,14 +1783,10 @@ func TestRaptorClearClipDataEmptiesTheSourceBuffer(t *testing.T) {
 		t.Fatalf("RaptorCreateClip = 0x%08x, err=%v", handle, err)
 	}
 	source, err := runtime.Heap.Allocate(16, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	put := func(bytes []byte) bool {
 		t.Helper()
-		if err := runtime.CPU.WriteMemory(source, bytes); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteMemory(source, bytes))
 		return runtime.RaptorPutClipData(handle, source, int32(len(bytes)))
 	}
 	if !put([]byte{1, 2, 3, 4}) {
@@ -2067,9 +1857,7 @@ func TestWIPIRuntimeGetPixelFromRGBReturnsDevicePixel(t *testing.T) {
 	var raw [2]byte
 	binary.LittleEndian.PutUint16(raw[:], uint16(pixel))
 	offset := framebuffer.Pixels + uint32(4*framebuffer.Width+6)*2
-	if err := runtime.CPU.WriteMemory(offset, raw[:]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteMemory(offset, raw[:]))
 	dispatchPublicAPI(t, runtime, "MC_grpFlushLcd", 0, screen, 0, 0, 16, 12)
 	if got := runtime.Frame.RGBAAt(6, 4); got != (color.RGBA{
 		R: 0xb5,
@@ -2083,9 +1871,7 @@ func TestWIPIRuntimeGetPixelFromRGBReturnsDevicePixel(t *testing.T) {
 	// MC_grpGetRGBFromPixel is the same conversion in reverse, so it has to
 	// read the device spelling back rather than a 24-bit word.
 	components, err := runtime.Heap.Allocate(12, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	dispatchPublicAPI(
 		t,
 		runtime,
@@ -2096,9 +1882,7 @@ func TestWIPIRuntimeGetPixelFromRGBReturnsDevicePixel(t *testing.T) {
 		components+8,
 	)
 	var encoded [12]byte
-	if err := runtime.CPU.ReadMemory(components, encoded[:]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(components, encoded[:]))
 	red := binary.LittleEndian.Uint32(encoded[0:4])
 	green := binary.LittleEndian.Uint32(encoded[4:8])
 	blue := binary.LittleEndian.Uint32(encoded[8:12])
@@ -2118,39 +1902,29 @@ func TestWIPIRuntimeCompactGraphicsContextPlacesScalarsWithoutClipFlag(t *testin
 	runtime := newPublicRuntime(t)
 	runtime.CompactGraphicsContext = true
 	contextAddress, err := runtime.Heap.Allocate(60, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	dispatchPublicAPI(t, runtime, "MC_grpInitContext", contextAddress)
 	dispatchPublicAPI(t, runtime, "MC_grpSetContext", contextAddress, 1, 0x0000f81f)
 	dispatchPublicAPI(t, runtime, "MC_grpSetContext", contextAddress, 2, 0x00001234)
 
 	foreground, err := runtime.ReadU32(contextAddress + 0x10)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if foreground != 0x0000f81f {
 		t.Fatalf("compact foreground word = 0x%08x, want 0x0000f81f", foreground)
 	}
 	background, err := runtime.ReadU32(contextAddress + 0x14)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if background != 0x00001234 {
 		t.Fatalf("compact background word = 0x%08x, want 0x00001234", background)
 	}
 	alpha, err := runtime.ReadU32(contextAddress + 0x18)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if alpha != 255 {
 		t.Fatalf("compact alpha word = %d, want 255", alpha)
 	}
 
 	context, err := runtime.context(contextAddress)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if context.foreground != 0x0000f81f || context.background != 0x00001234 ||
 		context.alpha != 255 {
 		t.Fatalf("compact context = %+v", context)
@@ -2158,14 +1932,10 @@ func TestWIPIRuntimeCompactGraphicsContextPlacesScalarsWithoutClipFlag(t *testin
 
 	// MC_grpGetContext must read the same members back.
 	output, err := runtime.Heap.Allocate(4, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	dispatchPublicAPI(t, runtime, "MC_grpGetContext", contextAddress, 1, output)
 	readBack, err := runtime.ReadU32(output)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if readBack != 0x0000f81f {
 		t.Fatalf("compact MC_grpGetContext foreground = 0x%08x", readBack)
 	}
@@ -2173,13 +1943,9 @@ func TestWIPIRuntimeCompactGraphicsContextPlacesScalarsWithoutClipFlag(t *testin
 	// An untouched context clips nothing: without a clip_enabled word an empty
 	// rectangle must not blank the screen.
 	blank, err := runtime.Heap.Allocate(60, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	empty, err := runtime.context(blank)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if empty.clipEnabled {
 		t.Fatal("zeroed compact context reports an enabled clip rectangle")
 	}
@@ -2196,9 +1962,7 @@ func TestPresentOversizedFramebufferCopiesTheOverlap(t *testing.T) {
 		runtime.Frame.Bounds().Dy()*2,
 		true,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	framebuffer := runtime.Framebuffers[handle]
 	pixels := make([]byte,
 		int(framebuffer.Width)*int(framebuffer.Height)*
@@ -2206,9 +1970,7 @@ func TestPresentOversizedFramebufferCopiesTheOverlap(t *testing.T) {
 	for index := range pixels {
 		pixels[index] = 0xff
 	}
-	if err := runtime.CPU.WriteMemory(framebuffer.Pixels, pixels); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteMemory(framebuffer.Pixels, pixels))
 	if err := runtime.present(handle); err != nil {
 		t.Fatalf("flushing an oversized offscreen buffer failed: %v", err)
 	}
@@ -2228,20 +1990,12 @@ func TestWIPIRuntimeDrawImageKeepsTransparentPixelsOut(t *testing.T) {
 	source.SetNRGBA(0, 0, color.NRGBA{R: 0x20, G: 0x40, B: 0x60, A: 0xff})
 	source.SetNRGBA(1, 0, color.NRGBA{R: 0xff, B: 0xff})
 	var payload bytes.Buffer
-	if err := png.Encode(&payload, source); err != nil {
-		t.Fatal(err)
-	}
+	check(t, png.Encode(&payload, source))
 	buffer, err := runtime.Heap.Allocate(uint32(payload.Len()), false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteMemory(buffer, payload.Bytes()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.CPU.WriteMemory(buffer, payload.Bytes()))
 	output, err := runtime.Heap.Allocate(4, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if result := dispatchPublicAPI(
 		t,
 		runtime,
@@ -2262,14 +2016,12 @@ func TestWIPIRuntimeDrawImageKeepsTransparentPixelsOut(t *testing.T) {
 	for x := 0; x < 2; x++ {
 		runtime.Frame.SetRGBA(x, 0, background)
 	}
-	if err := runtime.writeFramebufferPixel(
+	check(t, runtime.writeFramebufferPixel(
 		runtime.Framebuffers[screen],
 		1,
 		0,
 		runtime.devicePixelFromRGB(0, 0xff, 0),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	dispatchPublicAPI(
 		t,
 		runtime,
@@ -2315,12 +2067,8 @@ func TestWIPIRuntimeDrawStringDecodesEUCKR(t *testing.T) {
 	// "가나" in EUC-KR, followed by ASCII to prove the mixed-width path.
 	encoded := []byte{0xb0, 0xa1, 0xb3, 0xaa, 'A', 0}
 	buffer, err := runtime.Heap.Allocate(uint32(len(encoded)), false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteMemory(buffer, encoded); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.CPU.WriteMemory(buffer, encoded))
 	characters := decodeWIPICharRun(runtime, encoded)
 	runes := make([]rune, 0, len(characters))
 	for _, character := range characters {
@@ -2350,23 +2098,15 @@ func TestWIPIRuntimeImagesDoNotConsumeServiceSurfaces(t *testing.T) {
 	source := image.NewRGBA(image.Rect(0, 0, 2, 2))
 	source.SetRGBA(0, 0, color.RGBA{R: 0xff, A: 0xff})
 	var payload bytes.Buffer
-	if err := png.Encode(&payload, source); err != nil {
-		t.Fatal(err)
-	}
+	check(t, png.Encode(&payload, source))
 	before := len(runtime.surfaceServices)
 	handles := make([]uint32, 0, 8)
 	for index := 0; index < 8; index++ {
 		buffer, err := runtime.Heap.Allocate(uint32(payload.Len()), false)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := runtime.CPU.WriteMemory(buffer, payload.Bytes()); err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
+		check(t, runtime.CPU.WriteMemory(buffer, payload.Bytes()))
 		output, err := runtime.Heap.Allocate(4, true)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		if result := dispatchPublicAPI(
 			t,
 			runtime,
@@ -2433,9 +2173,7 @@ func smfTestScore() []byte {
 func mediaOutputIsAudible(t *testing.T, runtime *Runtime) bool {
 	t.Helper()
 	for range 8 {
-		if err := runtime.Services.AdvanceFrame(runtime.ServiceOwner); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.Services.AdvanceFrame(runtime.ServiceOwner))
 	}
 	for _, sample := range runtime.Services.Media.Drain().PCM16 {
 		if sample > 64 || sample < -64 {
@@ -2456,19 +2194,13 @@ func TestMediaMuteStateDoesNotSilenceTheTitlesOwnClips(t *testing.T) {
 	runtime := newPublicRuntime(t)
 	score := smfTestScore()
 	mediaType, err := runtime.Heap.Allocate(32, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := runtime.writeCString(mediaType, []byte("audio/midi"), -1); err != nil {
 		t.Fatal(err)
 	}
 	source, err := runtime.Heap.Allocate(uint32(len(score))+16, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteMemory(source, score); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.CPU.WriteMemory(source, score))
 
 	clip := dispatchPublicAPI(
 		t,
@@ -2520,19 +2252,13 @@ func TestMediaSetVolumeStillGatesPlayback(t *testing.T) {
 	runtime := newPublicRuntime(t)
 	score := smfTestScore()
 	mediaType, err := runtime.Heap.Allocate(32, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := runtime.writeCString(mediaType, []byte("audio/midi"), -1); err != nil {
 		t.Fatal(err)
 	}
 	source, err := runtime.Heap.Allocate(uint32(len(score))+16, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteMemory(source, score); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.CPU.WriteMemory(source, score))
 	clip := dispatchPublicAPI(
 		t,
 		runtime,
@@ -2578,17 +2304,13 @@ func TestWIPIRuntimeDisplayInfoReturnValueFollowsTheVendor(t *testing.T) {
 			runtime := newPublicRuntime(t)
 			runtime.DisplayInfoReturnsCount = testCase.count
 			displayInfo, err := runtime.Heap.Allocate(36, true)
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			result := dispatchPublicAPI(t, runtime, "MC_grpGetDisplayInfo", 0, displayInfo)
 			if result.Low != testCase.want {
 				t.Fatalf("MC_grpGetDisplayInfo = %d, want %d", result.Low, testCase.want)
 			}
 			var encoded [36]byte
-			if err := runtime.CPU.ReadMemory(displayInfo, encoded[:]); err != nil {
-				t.Fatal(err)
-			}
+			check(t, runtime.CPU.ReadMemory(displayInfo, encoded[:]))
 			if binary.LittleEndian.Uint32(encoded[8:]) == 0 {
 				t.Fatal("MC_grpGetDisplayInfo left the width unset")
 			}
@@ -2612,9 +2334,7 @@ func TestWIPIRuntimeDisplayInfoReturnValueFollowsTheVendor(t *testing.T) {
 func TestWIPIRuntimeIsExistUsesTheResultConvention(t *testing.T) {
 	runtime := newPublicRuntime(t)
 	pathAddress, err := runtime.Heap.Allocate(32, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := runtime.writeCString(pathAddress, []byte("save/present.dat"), -1); err != nil {
 		t.Fatal(err)
 	}
@@ -2634,9 +2354,7 @@ func TestWIPIRuntimeIsExistUsesTheResultConvention(t *testing.T) {
 	// A missing file's open reports the same code, so a guest that compares
 	// the two results against one constant stays consistent.
 	missingAddress, err := runtime.Heap.Allocate(32, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := runtime.writeCString(missingAddress, []byte("save/absent.dat"), -1); err != nil {
 		t.Fatal(err)
 	}

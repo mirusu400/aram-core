@@ -18,27 +18,17 @@ func TestQualcommNANDReadsPageThroughFourDataWindows(t *testing.T) {
 		}
 	}
 	device, err := NewQualcommNAND(byteStorage{data: data}, Qualcomm2K8BitNANDConfig(0xecaa, NewStatusSignal()))
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	for chunk := 0; chunk < 4; chunk++ {
-		if err := device.Write(qualcommNANDAddressOffset, Width32, 0); err != nil {
-			t.Fatal(err)
-		}
-		if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandRead); err != nil {
-			t.Fatal(err)
-		}
+		check(t, device.Write(qualcommNANDAddressOffset, Width32, 0))
+		check(t, device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandRead))
 		value, err := device.Read(0x100, Width32)
 		if err != nil || value != uint32(chunk+1)*0x01010101 {
 			t.Fatalf("chunk %d data = %#x error %v", chunk, value, err)
 		}
 	}
-	if err := device.Write(qualcommNANDAddressOffset, Width32, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandRead); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(qualcommNANDAddressOffset, Width32, 0))
+	check(t, device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandRead))
 	value, _ := device.Read(0, Width8)
 	if value != 1 {
 		t.Fatalf("page sequence did not wrap: %#x", value)
@@ -53,12 +43,8 @@ func TestQualcommNANDReadsPageThroughFourDataWindows(t *testing.T) {
 		t.Fatalf("read beyond NAND SRAM buffer error = %v", err)
 	}
 
-	if err := device.Write(qualcommNANDAddressOffset, Width32, 0x200); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandRead); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(qualcommNANDAddressOffset, Width32, 0x200))
+	check(t, device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandRead))
 	value, _ = device.Read(0, Width16)
 	if value != 0x1111 {
 		t.Fatalf("second page data = %#x", value)
@@ -75,15 +61,9 @@ func TestQualcommNANDReportsReadFailureAndRejectsUnknownCommand(t *testing.T) {
 		byteStorage{data: bytes.Repeat([]byte{0xff}, 0x800)},
 		Qualcomm2K8BitNANDConfig(0xecaa, ready),
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommNANDAddressOffset, Width32, 0x200); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandRead); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, device.Write(qualcommNANDAddressOffset, Width32, 0x200))
+	check(t, device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandRead))
 	status, _ := device.Read(qualcommNANDStatusOffset, Width32)
 	if status != qualcommNANDStatusError {
 		t.Fatalf("NAND failure status = %#x", status)
@@ -123,21 +103,13 @@ func TestQualcommNANDReportsReadFailureAndRejectsUnknownCommand(t *testing.T) {
 func TestQualcommNANDErasesWritableStorageAndReportsWriteEnable(t *testing.T) {
 	base := byteStorage{data: bytes.Repeat([]byte{0}, 2*qualcomm2K8BitNANDEraseBlockSize)}
 	flash, err := NewCOWFlash(base, qualcomm2K8BitNANDEraseBlockSize, "nand-erase-test")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	ready := NewStatusSignal()
 	device, err := NewQualcommNAND(flash, Qualcomm2K8BitNANDConfig(0xecaa, ready))
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	address := uint32(qualcomm2K8BitNANDEraseBlockSize / 4)
-	if err := device.Write(qualcommNANDAddressOffset, Width32, address); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandErase); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(qualcommNANDAddressOffset, Width32, address))
+	check(t, device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandErase))
 	if got := flash.DirtyBlocks(); len(got) != 1 || got[0] != 1 {
 		t.Fatalf("erased blocks = %v, want [1]", got)
 	}
@@ -155,9 +127,7 @@ func TestQualcommNANDErasesWritableStorageAndReportsWriteEnable(t *testing.T) {
 	if err != nil || status != 0 {
 		t.Fatalf("erase status = %#x error %v", status, err)
 	}
-	if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandStatus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandStatus))
 	status, err = device.Read(qualcommNANDStatusOffset, Width32)
 	if err != nil || status != qualcommNANDStatusDeviceReady|
 		qualcommNANDStatusReady|qualcommNANDStatusWriteEnabled {
@@ -168,28 +138,18 @@ func TestQualcommNANDErasesWritableStorageAndReportsWriteEnable(t *testing.T) {
 func TestQualcommNANDProgramsPageThroughFourDataWindows(t *testing.T) {
 	base := byteStorage{data: bytes.Repeat([]byte{0xff}, qualcomm2K8BitNANDEraseBlockSize)}
 	flash, err := NewCOWFlash(base, qualcomm2K8BitNANDEraseBlockSize, "nand-program-test")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	ready := NewStatusSignal()
 	device, err := NewQualcommNAND(flash, Qualcomm2K8BitNANDConfig(0xecaa, ready))
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	for chunk := uint32(0); chunk < 4; chunk++ {
 		for offset := uint32(0); offset < qualcommNANDCodewordDataSize; offset += 4 {
-			if err := device.Write(offset, Width32, 0x11111111*(chunk+1)); err != nil {
-				t.Fatal(err)
-			}
+			check(t, device.Write(offset, Width32, 0x11111111*(chunk+1)))
 		}
-		if err := device.Write(qualcommNANDAddressOffset, Width32, 0); err != nil {
-			t.Fatal(err)
-		}
-		if err := device.Write(
+		check(t, device.Write(qualcommNANDAddressOffset, Width32, 0))
+		check(t, device.Write(
 			qualcommNANDCommandOffset, Width32, qualcommNANDCommandProgram,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 		wantReady := uint32(2)
 		if chunk == 3 {
 			wantReady = 3
@@ -219,45 +179,29 @@ func TestQualcommNANDProgramsPageThroughFourDataWindows(t *testing.T) {
 func TestQualcommNANDProgramsReadsAndErasesSparePerCodeword(t *testing.T) {
 	base := byteStorage{data: bytes.Repeat([]byte{0xff}, qualcomm2K8BitNANDEraseBlockSize)}
 	flash, err := NewCOWFlash(base, qualcomm2K8BitNANDEraseBlockSize, "nand-spare-program-test")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	device, err := NewQualcommNAND(
 		flash,
 		Qualcomm2K8BitNANDConfig(0xecaa, NewStatusSignal()),
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	for chunk := uint32(0); chunk < 4; chunk++ {
 		for offset := uint32(0); offset < 0x10; offset += 4 {
-			if err := device.Write(
+			check(t, device.Write(
 				qualcommNANDCodewordDataSize+offset,
 				Width32,
 				0x11111111*(chunk+1),
-			); err != nil {
-				t.Fatal(err)
-			}
+			))
 		}
-		if err := device.Write(qualcommNANDAddressOffset, Width32, 0); err != nil {
-			t.Fatal(err)
-		}
-		if err := device.Write(
+		check(t, device.Write(qualcommNANDAddressOffset, Width32, 0))
+		check(t, device.Write(
 			qualcommNANDCommandOffset, Width32, qualcommNANDCommandProgram,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
-	if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandStatus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandStatus))
 	for chunk := uint32(0); chunk < 4; chunk++ {
-		if err := device.Write(qualcommNANDAddressOffset, Width32, 0); err != nil {
-			t.Fatal(err)
-		}
-		if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandRead); err != nil {
-			t.Fatal(err)
-		}
+		check(t, device.Write(qualcommNANDAddressOffset, Width32, 0))
+		check(t, device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandRead))
 		for offset := uint32(0); offset < 0x10; offset += 4 {
 			value, readErr := device.Read(qualcommNANDCodewordDataSize+offset, Width32)
 			if readErr != nil || value != 0x11111111*(chunk+1) {
@@ -265,18 +209,10 @@ func TestQualcommNANDProgramsReadsAndErasesSparePerCodeword(t *testing.T) {
 			}
 		}
 	}
-	if err := device.Write(qualcommNANDAddressOffset, Width32, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandErase); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommNANDAddressOffset, Width32, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandRead); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(qualcommNANDAddressOffset, Width32, 0))
+	check(t, device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandErase))
+	check(t, device.Write(qualcommNANDAddressOffset, Width32, 0))
+	check(t, device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandRead))
 	for offset := uint32(0); offset < 0x10; offset += 4 {
 		value, readErr := device.Read(qualcommNANDCodewordDataSize+offset, Width32)
 		if readErr != nil || value != 0xffffffff {
@@ -288,58 +224,30 @@ func TestQualcommNANDProgramsReadsAndErasesSparePerCodeword(t *testing.T) {
 func TestQualcommNANDSpareMediaStateRoundTripAndProgramInhibit(t *testing.T) {
 	base := byteStorage{data: bytes.Repeat([]byte{0xff}, qualcomm2K8BitNANDEraseBlockSize)}
 	flash, err := NewCOWFlash(base, qualcomm2K8BitNANDEraseBlockSize, "nand-spare-state-test")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	config := Qualcomm2K8BitNANDConfig(0xecaa, NewStatusSignal())
 	device, err := NewQualcommNAND(flash, config)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	for offset := uint32(0); offset < qualcommNANDCodewordSpareSize; offset += 4 {
-		if err := device.Write(qualcommNANDCodewordDataSize+offset, Width32, 0); err != nil {
-			t.Fatal(err)
-		}
+		check(t, device.Write(qualcommNANDCodewordDataSize+offset, Width32, 0))
 	}
-	if err := device.Write(qualcommNANDAddressOffset, Width32, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandProgram); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandStatus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(qualcommNANDAddressOffset, Width32, 0))
+	check(t, device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandProgram))
+	check(t, device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandStatus))
 	for offset := uint32(0); offset < qualcommNANDCodewordSpareSize; offset += 4 {
-		if err := device.Write(
+		check(t, device.Write(
 			qualcommNANDCodewordDataSize+offset, Width32, 0xffffffff,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
-	if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandProgram); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandStatus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandProgram))
+	check(t, device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandStatus))
 	state, err := device.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	restored, err := NewQualcommNAND(flash, config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := restored.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
-	if err := restored.Write(qualcommNANDAddressOffset, Width32, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := restored.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandRead); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, restored.LoadState(state))
+	check(t, restored.Write(qualcommNANDAddressOffset, Width32, 0))
+	check(t, restored.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandRead))
 	for offset := uint32(0); offset < qualcommNANDCodewordSpareSize; offset += 4 {
 		value, readErr := restored.Read(qualcommNANDCodewordDataSize+offset, Width32)
 		if readErr != nil || value != 0 {
@@ -351,16 +259,12 @@ func TestQualcommNANDSpareMediaStateRoundTripAndProgramInhibit(t *testing.T) {
 func TestQualcommNANDExposesSharedSpareStorage(t *testing.T) {
 	base := byteStorage{data: bytes.Repeat([]byte{0xff}, 2*qualcomm2K8BitNANDEraseBlockSize)}
 	flash, err := NewCOWFlash(base, qualcomm2K8BitNANDEraseBlockSize, "nand-shared-spare-test")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	device, err := NewQualcommNAND(
 		flash,
 		Qualcomm2K8BitNANDConfig(0xecaa, NewStatusSignal()),
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if device.SparePageSize() != 0x40 {
 		t.Fatalf("spare page size = %#x", device.SparePageSize())
 	}
@@ -371,23 +275,15 @@ func TestQualcommNANDExposesSharedSpareStorage(t *testing.T) {
 	programmed := bytes.Repeat([]byte{0xff}, len(spare))
 	programmed[3] = 0xa5
 	programmed[37] = 0x5a
-	if err := device.ProgramSparePage(programmed, 1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.ProgramSparePage(programmed, 1))
 	programmed[3] = 0xf0
 	programmed[37] = 0x0f
-	if err := device.ProgramSparePage(programmed, 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.ReadSparePage(spare, 1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.ProgramSparePage(programmed, 1))
+	check(t, device.ReadSparePage(spare, 1))
 	if spare[3] != 0xa0 || spare[37] != 0x0a {
 		t.Fatalf("program-inhibited spare bytes = %#x %#x", spare[3], spare[37])
 	}
-	if err := device.EraseSpareBlock(0); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.EraseSpareBlock(0))
 	if err := device.ReadSparePage(spare, 1); err != nil || !allBytes(spare, 0xff) {
 		t.Fatalf("erased shared spare = %x error %v", spare, err)
 	}
@@ -399,41 +295,23 @@ func TestQualcommNANDExposesSharedSpareStorage(t *testing.T) {
 func TestQualcommNANDTreatsOneBitsAsProgramInhibitOnRepeatedCodeword(t *testing.T) {
 	base := byteStorage{data: bytes.Repeat([]byte{0xff}, qualcomm2K8BitNANDEraseBlockSize)}
 	flash, err := NewCOWFlash(base, qualcomm2K8BitNANDEraseBlockSize, "nand-program-inhibit-test")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	device, err := NewQualcommNAND(
 		flash,
 		Qualcomm2K8BitNANDConfig(0xecaa, NewStatusSignal()),
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	for offset := uint32(0); offset < qualcommNANDCodewordDataSize; offset += 4 {
-		if err := device.Write(offset, Width32, 0); err != nil {
-			t.Fatal(err)
-		}
+		check(t, device.Write(offset, Width32, 0))
 	}
-	if err := device.Write(qualcommNANDAddressOffset, Width32, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandProgram); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandStatus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(qualcommNANDAddressOffset, Width32, 0))
+	check(t, device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandProgram))
+	check(t, device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandStatus))
 	for offset := uint32(0); offset < qualcommNANDCodewordDataSize; offset += 4 {
-		if err := device.Write(offset, Width32, 0xffffffff); err != nil {
-			t.Fatal(err)
-		}
+		check(t, device.Write(offset, Width32, 0xffffffff))
 	}
-	if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandProgram); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandStatus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandProgram))
+	check(t, device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandStatus))
 	status, err := device.Read(qualcommNANDStatusOffset, Width32)
 	if err != nil || status != qualcommNANDStatusDeviceReady|
 		qualcommNANDStatusReady|qualcommNANDStatusWriteEnabled {
@@ -454,15 +332,9 @@ func TestQualcommNANDCompletesErasedCodewordReadWithoutControllerError(t *testin
 		byteStorage{data: bytes.Repeat([]byte{0xff}, 0x800)},
 		Qualcomm2K8BitNANDConfig(0xecaa, ready),
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommNANDAddressOffset, Width32, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandRead); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, device.Write(qualcommNANDAddressOffset, Width32, 0))
+	check(t, device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandRead))
 	status, err := device.Read(qualcommNANDStatusOffset, Width32)
 	if err != nil || status != 0 {
 		t.Fatalf("erased NAND status = %#x error %v", status, err)
@@ -486,22 +358,14 @@ func TestQualcommNANDReportsErasedECCCodewordAndAllowsRawConfirmation(t *testing
 	config.ReportErasedECCCodewords = true
 	base := byteStorage{data: bytes.Repeat([]byte{0xff}, qualcomm2K8BitNANDEraseBlockSize)}
 	flash, err := NewCOWFlash(base, qualcomm2K8BitNANDEraseBlockSize, "nand-erased-ecc-test")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	device, err := NewQualcommNAND(
 		flash,
 		config,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommNANDAddressOffset, Width32, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandRead); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, device.Write(qualcommNANDAddressOffset, Width32, 0))
+	check(t, device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandRead))
 	status, err := device.Read(qualcommNANDStatusOffset, Width32)
 	if err != nil || status != qualcommNANDStatusOperationError {
 		t.Fatalf("erased ECC codeword status = %#x error %v", status, err)
@@ -514,47 +378,27 @@ func TestQualcommNANDReportsErasedECCCodewordAndAllowsRawConfirmation(t *testing
 		)
 	}
 
-	if err := device.Reset(); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(
+	check(t, device.Reset())
+	check(t, device.Write(
 		qualcommNANDDeviceConfig0Offset, Width32, config.DeviceConfig0|1,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommNANDAddressOffset, Width32, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandRead); err != nil {
-		t.Fatal(err)
-	}
+	))
+	check(t, device.Write(qualcommNANDAddressOffset, Width32, 0))
+	check(t, device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandRead))
 	status, err = device.Read(qualcommNANDStatusOffset, Width32)
 	if err != nil || status != 0 || ready.Value() != 2 {
 		t.Fatalf("raw erased-codeword status = %#x ready %#x error %v", status, ready.Value(), err)
 	}
 
-	if err := device.Reset(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Reset())
 	for chunk := 0; chunk < 4; chunk++ {
-		if err := device.Write(qualcommNANDAddressOffset, Width32, 0); err != nil {
-			t.Fatal(err)
-		}
-		if err := device.Write(
+		check(t, device.Write(qualcommNANDAddressOffset, Width32, 0))
+		check(t, device.Write(
 			qualcommNANDCommandOffset, Width32, qualcommNANDCommandProgram,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
-	if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandStatus); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommNANDAddressOffset, Width32, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandRead); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandStatus))
+	check(t, device.Write(qualcommNANDAddressOffset, Width32, 0))
+	check(t, device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandRead))
 	status, err = device.Read(qualcommNANDStatusOffset, Width32)
 	if err != nil || status != 0 || device.data[qualcommNANDBufferSize-1] != 0 {
 		t.Fatalf(
@@ -572,15 +416,9 @@ func TestQualcommNANDDoesNotMisclassifyFFCodewordInProgrammedPage(t *testing.T) 
 		byteStorage{data: data},
 		Qualcomm2K8BitNANDConfig(0xecaa, ready),
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommNANDAddressOffset, Width32, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandRead); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, device.Write(qualcommNANDAddressOffset, Width32, 0))
+	check(t, device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandRead))
 	status, err := device.Read(qualcommNANDStatusOffset, Width32)
 	if err != nil || status != 0 || ready.Value() != 2 {
 		t.Fatalf("programmed NAND status = %#x ready %#x error %v", status, ready.Value(), err)
@@ -590,23 +428,15 @@ func TestQualcommNANDDoesNotMisclassifyFFCodewordInProgrammedPage(t *testing.T) 
 func TestQualcommNANDStateRoundTrip(t *testing.T) {
 	base := byteStorage{data: bytes.Repeat([]byte{0x5a}, 0x800)}
 	device, err := NewQualcommNAND(base, Qualcomm2K8BitNANDConfig(0xecaa, NewStatusSignal()))
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	_ = device.Write(qualcommNANDAddressOffset, Width32, 0)
 	_ = device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandRead)
 	_ = device.Write(qualcommNANDDeviceConfig0Offset, Width32, 0x12345678)
 	state, err := device.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	restored, err := NewQualcommNAND(base, Qualcomm2K8BitNANDConfig(0xecaa, NewStatusSignal()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := restored.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, restored.LoadState(state))
 	if restored.nextChunk != 0x200 || !bytes.Equal(restored.data[:], device.data[:]) {
 		t.Fatal("NAND state did not round trip")
 	}
@@ -648,15 +478,9 @@ func TestQualcommNANDSynthesizesErasedSpareForLogicalImage(t *testing.T) {
 	data[3] = 0x12
 	ready := NewStatusSignal()
 	device, err := NewQualcommNAND(byteStorage{data: data}, Qualcomm2K8BitNANDConfig(0xecaa, ready))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommNANDAddressOffset, Width32, 2); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandReadSpare); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, device.Write(qualcommNANDAddressOffset, Width32, 2))
+	check(t, device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandReadSpare))
 	value, err := device.Read(qualcommNANDReadDataOffset, Width32)
 	if err != nil || value != 0xffff || ready.Value() != 2 {
 		t.Fatalf("logical-image spare word = %#x ready %#x error %v", value, ready.Value(), err)
@@ -673,15 +497,9 @@ func TestQualcommNANDReadsProvidedSpareAtLatchedPageAndColumn(t *testing.T) {
 	config.SpareSize = 0x10
 	config.Spare = byteStorage{data: spare}
 	device, err := NewQualcommNAND(byteStorage{data: data}, config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommNANDAddressOffset, Width32, 0x203); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandReadSpare); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, device.Write(qualcommNANDAddressOffset, Width32, 0x203))
+	check(t, device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandReadSpare))
 	value, err := device.Read(qualcommNANDReadDataOffset, Width32)
 	if err != nil || value != 0x1234 || ready.Value() != 2 {
 		t.Fatalf("provided spare word = %#x ready %#x error %v", value, ready.Value(), err)
@@ -694,9 +512,7 @@ func TestQualcommNANDSynthesizesFactoryBadBlockMarkers(t *testing.T) {
 	config := Qualcomm2K8BitNANDConfig(0xecaa, ready)
 	config.FactoryBadBlocks = []uint32{1}
 	device, err := NewQualcommNAND(storage, config)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 
 	for _, test := range []struct {
 		page uint32
@@ -708,24 +524,18 @@ func TestQualcommNANDSynthesizesFactoryBadBlockMarkers(t *testing.T) {
 		{page: 0x42, want: 0xffff},
 		{page: 0x80, want: 0xffff},
 	} {
-		if err := device.Write(
+		check(t, device.Write(
 			qualcommNANDAddressOffset,
 			Width32,
 			test.page*qualcommNANDCodewordDataSize,
-		); err != nil {
-			t.Fatal(err)
-		}
-		if err := device.Write(
+		))
+		check(t, device.Write(
 			qualcommNANDCommandOffset,
 			Width32,
 			qualcommNANDCommandReadSpare,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 		got, err := device.Read(qualcommNANDReadDataOffset, Width32)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		if got != test.want {
 			t.Fatalf("page %#x marker = %#x, want %#x", test.page, got, test.want)
 		}
@@ -740,15 +550,9 @@ func TestQualcommNANDTreatsUnrepresentedDeviceTailAsErased(t *testing.T) {
 		byteStorage{data: bytes.Repeat([]byte{0x5a}, int(config.PageSize))},
 		config,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommNANDAddressOffset, Width32, qualcommNANDCodewordDataSize); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandRead); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, device.Write(qualcommNANDAddressOffset, Width32, qualcommNANDCodewordDataSize))
+	check(t, device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandRead))
 	value, err := device.Read(0, Width32)
 	status, statusErr := device.Read(qualcommNANDStatusOffset, Width32)
 	if err != nil || statusErr != nil || value != 0xffffffff ||
@@ -758,12 +562,8 @@ func TestQualcommNANDTreatsUnrepresentedDeviceTailAsErased(t *testing.T) {
 			value, status, ready.Value(), err, statusErr,
 		)
 	}
-	if err := device.Write(qualcommNANDAddressOffset, Width32, qualcommNANDCodewordDataSize); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandReadSpare); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(qualcommNANDAddressOffset, Width32, qualcommNANDCodewordDataSize))
+	check(t, device.Write(qualcommNANDCommandOffset, Width32, qualcommNANDCommandReadSpare))
 	value, err = device.Read(qualcommNANDReadDataOffset, Width32)
 	if err != nil || value != 0xffff || ready.Value() != 2 {
 		t.Fatalf("unrepresented spare tail = %#x ready %#x error %v", value, ready.Value(), err)
@@ -776,9 +576,7 @@ func TestQualcommNANDExposesAndResetsExplicitControllerConfiguration(t *testing.
 		byteStorage{data: bytes.Repeat([]byte{0xff}, int(config.PageSize))},
 		config,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	want := map[uint32]uint32{
 		qualcommNANDDeviceConfig0Offset:   config.DeviceConfig0,
 		qualcommNANDDeviceConfig1Offset:   config.DeviceConfig1,
@@ -791,12 +589,8 @@ func TestQualcommNANDExposesAndResetsExplicitControllerConfiguration(t *testing.
 			t.Fatalf("NAND register %#x = %#x error %v", offset, value, readErr)
 		}
 	}
-	if err := device.Write(qualcommNANDDeviceConfig1Offset, Width32, 0x10203040); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Reset(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(qualcommNANDDeviceConfig1Offset, Width32, 0x10203040))
+	check(t, device.Reset())
 	value, _ := device.Read(qualcommNANDDeviceConfig1Offset, Width32)
 	if value != config.DeviceConfig1 {
 		t.Fatalf("reset NAND device config 1 = %#x", value)
@@ -820,9 +614,7 @@ func TestQualcomm8BitNANDConfigCarriesSmallPageGeometry(t *testing.T) {
 		byteStorage{data: bytes.Repeat([]byte{0xff}, int(config.EraseBlockSize))},
 		config,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if len(device.pageData) != 0x200 || device.pagesPerEraseBlock != 0x20 {
 		t.Fatalf("small-page NAND device geometry = %#x/%#x", len(device.pageData), device.pagesPerEraseBlock)
 	}

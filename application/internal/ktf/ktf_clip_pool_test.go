@@ -2,9 +2,6 @@ package ktf
 
 import (
 	"testing"
-
-	"github.com/mirusu400/aram-core/cpu/interpreter"
-	"github.com/mirusu400/aram-core/loader/ktf"
 )
 
 // TestKTFJavaClipsRecycleTheBoundedPool covers the shape random key input
@@ -12,21 +9,8 @@ import (
 // Clip per sound effect walks the bounded media pool up to its limit. Asking
 // for one more must retire an older clip rather than fault.
 func TestKTFJavaClipsRecycleTheBoundedPool(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
 
 	// Well past the 256-clip pool.
 	const clips = 1000
@@ -46,21 +30,8 @@ func TestKTFJavaClipsRecycleTheBoundedPool(t *testing.T) {
 // every clip playing there is no idle victim, and a handset mixer asked for
 // more simultaneous voices than it has stops the oldest rather than refusing.
 func TestKTFJavaClipsRecycleEvenWhenEveryClipPlays(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
 
 	for index := 1; index <= 600; index++ {
 		instance := uint32(index)

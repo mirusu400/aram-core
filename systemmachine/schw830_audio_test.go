@@ -25,19 +25,13 @@ func TestSCHW830AudioDecodesFirmwareSelectedScore(t *testing.T) {
 	installSCHW830TestSource(t, audio.bus, score)
 
 	// A falling edge alone is only the end of the hardware pulse.
-	if err := command.Write(schw830TestCommand, system.Width16, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := audio.Advance(1_000); err != nil {
-		t.Fatal(err)
-	}
+	check(t, command.Write(schw830TestCommand, system.Width16, 0))
+	check(t, audio.Advance(1_000))
 	if chunk := audio.drain(); len(chunk.PCM16) != 0 {
 		t.Fatalf("falling edge produced %d PCM samples", len(chunk.PCM16))
 	}
 
-	if err := command.Write(schw830TestCommand, system.Width16, 1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, command.Write(schw830TestCommand, system.Width16, 1))
 	if err := audio.Advance(1_000); err != nil { // latch the command at 2 ms
 		t.Fatal(err)
 	}
@@ -45,9 +39,7 @@ func TestSCHW830AudioDecodesFirmwareSelectedScore(t *testing.T) {
 		t.Fatal(err)
 	}
 	chunk := audio.drain()
-	if err := chunk.Validate(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, chunk.Validate())
 	if chunk.SampleRate != 44_100 || chunk.Channels != 2 ||
 		chunk.StartGuestNS != int64(2*time.Millisecond) || chunk.Generation != 1 {
 		t.Fatalf("PCM chunk metadata = %+v", chunk)
@@ -63,15 +55,9 @@ func TestSCHW830AudioDecodesFirmwareSelectedScore(t *testing.T) {
 func TestSCHW830AudioDecodesFirmwareSelectedWaveEffect(t *testing.T) {
 	audio, command := newSCHW830TestAudio(t, 7, 0)
 	installSCHW830TestSource(t, audio.bus, schw830TestWave())
-	if err := command.Write(schw830TestCommand, system.Width16, 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := audio.Advance(1_000); err != nil {
-		t.Fatal(err)
-	}
-	if err := audio.Advance(50_000); err != nil {
-		t.Fatal(err)
-	}
+	check(t, command.Write(schw830TestCommand, system.Width16, 1))
+	check(t, audio.Advance(1_000))
+	check(t, audio.Advance(50_000))
 	chunk := audio.drain()
 	if chunk.SampleRate != 44_100 || chunk.Channels != 2 ||
 		len(chunk.PCM16) == 0 || schw830AudioPeak(chunk.PCM16) < 500 {
@@ -90,15 +76,9 @@ func TestSCHW830AudioAppliesFirmwareVolumeAndMute(t *testing.T) {
 		t.Helper()
 		audio, command := newSCHW830TestAudio(t, level, mode)
 		installSCHW830TestSource(t, audio.bus, schw830TestSMAF())
-		if err := command.Write(schw830TestCommand, system.Width16, 1); err != nil {
-			t.Fatal(err)
-		}
-		if err := audio.Advance(1_000); err != nil {
-			t.Fatal(err)
-		}
-		if err := audio.Advance(100_000); err != nil {
-			t.Fatal(err)
-		}
+		check(t, command.Write(schw830TestCommand, system.Width16, 1))
+		check(t, audio.Advance(1_000))
+		check(t, audio.Advance(100_000))
 		return audio.drain().PCM16
 	}
 
@@ -131,59 +111,35 @@ func TestSCHW830AudioCoalescesCodecSetupPulseAndResetsTimeline(t *testing.T) {
 	audio, command := newSCHW830TestAudio(t, 7, 0)
 	installSCHW830TestSource(t, audio.bus, schw830TestSMAF())
 	for range 3 {
-		if err := command.Write(schw830TestCommand, system.Width16, 1); err != nil {
-			t.Fatal(err)
-		}
-		if err := command.Write(schw830TestCommand, system.Width16, 0); err != nil {
-			t.Fatal(err)
-		}
+		check(t, command.Write(schw830TestCommand, system.Width16, 1))
+		check(t, command.Write(schw830TestCommand, system.Width16, 0))
 	}
-	if err := audio.Advance(1_000); err != nil {
-		t.Fatal(err)
-	}
+	check(t, audio.Advance(1_000))
 	firstClip := audio.clip
 	if !firstClip.Valid() {
 		t.Fatal("codec pulse did not create a clip")
 	}
-	if err := command.Write(schw830TestCommand, system.Width16, 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := audio.Advance(1_000); err != nil {
-		t.Fatal(err)
-	}
+	check(t, command.Write(schw830TestCommand, system.Width16, 1))
+	check(t, audio.Advance(1_000))
 	if audio.clip != firstClip {
 		t.Fatalf("duplicate setup edge restarted clip %s as %s", firstClip, audio.clip)
 	}
 
-	if err := audio.Advance(10_000); err != nil {
-		t.Fatal(err)
-	}
-	if err := command.Write(schw830TestCommand, system.Width16, 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := audio.Advance(1_000); err != nil {
-		t.Fatal(err)
-	}
+	check(t, audio.Advance(10_000))
+	check(t, command.Write(schw830TestCommand, system.Width16, 1))
+	check(t, audio.Advance(1_000))
 	if audio.clip == firstClip {
 		t.Fatal("later playback command did not restart the selected score")
 	}
 
 	oldGeneration := audio.generation
-	if err := audio.resetAtInstructions(5 * schw830TestClock); err != nil {
-		t.Fatal(err)
-	}
+	check(t, audio.resetAtInstructions(5*schw830TestClock))
 	if audio.generation == oldGeneration || len(audio.drain().PCM16) != 0 {
 		t.Fatal("reset did not invalidate buffered PCM")
 	}
-	if err := command.Write(schw830TestCommand, system.Width16, 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := audio.Advance(1_000); err != nil {
-		t.Fatal(err)
-	}
-	if err := audio.Advance(10_000); err != nil {
-		t.Fatal(err)
-	}
+	check(t, command.Write(schw830TestCommand, system.Width16, 1))
+	check(t, audio.Advance(1_000))
+	check(t, audio.Advance(10_000))
 	chunk := audio.drain()
 	if chunk.Generation != audio.generation || chunk.StartGuestNS != int64(5*time.Second+time.Millisecond) ||
 		chunk.StartSample != 44 {
@@ -193,23 +149,15 @@ func TestSCHW830AudioCoalescesCodecSetupPulseAndResetsTimeline(t *testing.T) {
 
 func TestSCHW830AudioCommandWindowKeepsLatchedStateContract(t *testing.T) {
 	audio, command := newSCHW830TestAudio(t, 7, 0)
-	if err := command.Write(0x40, system.Width16, 0x3456); err != nil {
-		t.Fatal(err)
-	}
+	check(t, command.Write(0x40, system.Width16, 0x3456))
 	state, err := command.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if string(state[:4]) != "LRWN" || binary.LittleEndian.Uint32(state[4:8]) != 1 {
 		t.Fatalf("command-window state header = %x", state[:8])
 	}
 	restored, err := newSCHW830AudioCommandWindow(0x100, system.Width16, audio)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := restored.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, restored.LoadState(state))
 	if value, err := restored.Read(0x40, system.Width16); err != nil || value != 0x3456 {
 		t.Fatalf("restored command register = %#x, %v", value, err)
 	}
@@ -257,9 +205,7 @@ func newSCHW830TestAudio(
 ) (*schw830Audio, *schw830AudioCommandWindow) {
 	t.Helper()
 	bus := system.NewBus()
-	if err := bus.MapRAM("ram", 0, 0x4000); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.MapRAM("ram", 0, 0x4000))
 	config := schw830AudioConfig{
 		instructionsPerSecond: schw830TestClock,
 		commandOffset:         schw830TestCommand,
@@ -272,13 +218,9 @@ func newSCHW830TestAudio(
 		duplicateWindow:       5 * time.Millisecond,
 	}
 	audio, err := newSCHW830Audio(bus, config)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	command, err := newSCHW830AudioCommandWindow(0x100, system.Width16, audio)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	writeSCHW830TestWord(t, bus, schw830TestVolume, volume)
 	writeSCHW830TestWord(t, bus, schw830TestRingMode, ringMode)
 	return audio, command
@@ -297,9 +239,7 @@ func writeSCHW830TestWord(t *testing.T, bus *system.Bus, address, value uint32) 
 	t.Helper()
 	var data [4]byte
 	binary.LittleEndian.PutUint32(data[:], value)
-	if err := bus.Write(address, data[:], cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.Write(address, data[:], cpu.PermissionWrite))
 }
 
 func schw830TestSMAF() []byte {
@@ -388,18 +328,12 @@ func (d *countingSCHW830Device) Write(uint32, system.Width, uint32) error { retu
 func TestSCHW830AudioLeavesDevicesAloneForAnMMIODescriptor(t *testing.T) {
 	audio, command := newSCHW830TestAudio(t, 7, 0)
 	device := &countingSCHW830Device{}
-	if err := audio.bus.MapMMIO("registers", 0x8000, 0x1000, device); err != nil {
-		t.Fatal(err)
-	}
+	check(t, audio.bus.MapMMIO("registers", 0x8000, 0x1000, device))
 	writeSCHW830TestWord(t, audio.bus, schw830TestSourceLength, 0x40)
 	writeSCHW830TestWord(t, audio.bus, schw830TestSourceWord, 0x8000)
 
-	if err := command.Write(schw830TestCommand, system.Width16, 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := audio.Advance(1_000); err != nil {
-		t.Fatal(err)
-	}
+	check(t, command.Write(schw830TestCommand, system.Width16, 1))
+	check(t, audio.Advance(1_000))
 	if audio.clip.Valid() {
 		t.Fatal("an MMIO descriptor produced a clip")
 	}

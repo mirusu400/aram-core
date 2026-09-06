@@ -13,9 +13,7 @@ func TestQualcommClockRegimeLatchesAlignedWords(t *testing.T) {
 		offset uint32
 		value  uint32
 	}{{0x0404, 0x2e}, {0x0604, 0x55}, {0x1428, 0x15e}, {0x1870, 0x20}, {0x262c, 0x440}, {0x2954, 0}, {0x4878, 0}, {0x4d08, 0xffffffff}, {0x5054, 0xfd3a}, {0x5814, 0x12345678}} {
-		if err := device.Write(access.offset, Width32, access.value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, device.Write(access.offset, Width32, access.value))
 		value, err := device.Read(access.offset, Width32)
 		if err != nil || value != access.value {
 			t.Fatalf("register %#x = %#x error %v", access.offset, value, err)
@@ -39,13 +37,9 @@ func TestQualcommClockRegimeStateRoundTripAndReset(t *testing.T) {
 	device := NewQualcommClockRegime()
 	_ = device.Write(0x5054, Width32, 0xfd3a)
 	state, err := device.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	restored := NewQualcommClockRegime()
-	if err := restored.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restored.LoadState(state))
 	value, _ := restored.Read(0x5054, Width32)
 	if value != 0xfd3a {
 		t.Fatalf("restored clock register = %#x", value)
@@ -53,9 +47,7 @@ func TestQualcommClockRegimeStateRoundTripAndReset(t *testing.T) {
 	if err := restored.LoadState(state[:len(state)-1]); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("truncated state error = %v", err)
 	}
-	if err := restored.Reset(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restored.Reset())
 	value, _ = restored.Read(0x5054, Width32)
 	if value != 0 {
 		t.Fatalf("reset clock register = %#x", value)
@@ -64,21 +56,15 @@ func TestQualcommClockRegimeStateRoundTripAndReset(t *testing.T) {
 
 func TestQualcommClockRegimeProfiledSleepControllerStops(t *testing.T) {
 	device, err := NewQualcommClockRegimeWithSleepControllers([]uint32{0x5200})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(0x5230, Width32, 0); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, device.Write(0x5230, Width32, 0))
 	status, err := device.Read(0x5224, Width32)
 	if err != nil || status != 1 {
 		t.Fatalf("sleep-controller status = %#x error %v, want stopped state 1", status, err)
 	}
 
 	unprofiled := NewQualcommClockRegime()
-	if err := unprofiled.Write(0x5230, Width32, 0); err != nil {
-		t.Fatal(err)
-	}
+	check(t, unprofiled.Write(0x5230, Width32, 0))
 	status, _ = unprofiled.Read(0x5224, Width32)
 	if status != 0 {
 		t.Fatalf("unprofiled sleep-controller status = %#x, want latch-only zero", status)
@@ -99,39 +85,25 @@ func TestQualcommClockRegimeProfiledCounterAdvancesAndWraps(t *testing.T) {
 			Offset: 0x6000, InstructionsPerSecond: 10, CounterHz: 3, Bits: 4,
 		}},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Advance(3); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, device.Advance(3))
 	value, _ := device.Read(0x6000, Width32)
 	if value != 0 {
 		t.Fatalf("counter after 9/10 tick = %#x", value)
 	}
-	if err := device.Advance(1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Advance(1))
 	value, _ = device.Read(0x6000, Width32)
 	if value != 1 {
 		t.Fatalf("counter after 12/10 ticks = %#x", value)
 	}
-	if err := device.Write(0x6000, Width32, 15); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Advance(30); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(0x6000, Width32, 15))
+	check(t, device.Advance(30))
 	value, _ = device.Read(0x6000, Width32)
 	if value != 8 {
 		t.Fatalf("wrapped four-bit counter = %#x, want 8", value)
 	}
-	if err := device.Reset(); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Advance(4); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Reset())
+	check(t, device.Advance(4))
 	value, _ = device.Read(0x6000, Width32)
 	if value != 1 {
 		t.Fatalf("counter after reset = %#x, want 1", value)
@@ -143,26 +115,14 @@ func TestQualcommClockRegimeCounterStatePreservesFractionalPhase(t *testing.T) {
 		Offset: 0x6000, InstructionsPerSecond: 10, CounterHz: 3, Bits: 18,
 	}}}
 	source, err := NewQualcommClockRegimeWithConfig(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := source.Advance(3); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, source.Advance(3))
 	state, err := source.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	restored, err := NewQualcommClockRegimeWithConfig(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := restored.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
-	if err := restored.Advance(1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, restored.LoadState(state))
+	check(t, restored.Advance(1))
 	value, _ := restored.Read(0x6000, Width32)
 	if value != 1 {
 		t.Fatalf("restored fractional counter = %#x, want 1", value)
@@ -173,9 +133,7 @@ func TestQualcommClockRegimeCounterStatePreservesFractionalPhase(t *testing.T) {
 			Offset: 0x6000, InstructionsPerSecond: 10, CounterHz: 2, Bits: 18,
 		}},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if err := mismatched.LoadState(state); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("mismatched counter state error = %v", err)
 	}
@@ -191,15 +149,11 @@ func TestQualcommClockRegimeMigratesLatchOnlyStatesAsSubsets(t *testing.T) {
 			Offset: 0x6000, InstructionsPerSecond: 10, CounterHz: 3, Bits: 18,
 		}},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if err := profiled.LoadState(legacy); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("exact legacy state error = %v", err)
 	}
-	if err := profiled.LoadStateSubset(legacy); err != nil {
-		t.Fatal(err)
-	}
+	check(t, profiled.LoadStateSubset(legacy))
 	value, _ := profiled.Read(0x6000, Width32)
 	if value != 7 {
 		t.Fatalf("migrated legacy counter latch = %#x", value)
@@ -207,15 +161,11 @@ func TestQualcommClockRegimeMigratesLatchOnlyStatesAsSubsets(t *testing.T) {
 
 	latchOnly := NewQualcommClockRegime()
 	state, err := latchOnly.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if err := profiled.LoadStateSubset(state); err != nil {
 		t.Fatalf("migrate v2 counter subset: %v", err)
 	}
-	if err := profiled.Advance(4); err != nil {
-		t.Fatal(err)
-	}
+	check(t, profiled.Advance(4))
 	value, _ = profiled.Read(0x6000, Width32)
 	if value != 1 {
 		t.Fatalf("new counter after v2 subset migration = %#x", value)
@@ -258,30 +208,16 @@ func TestQualcommClockRegimeComparatorRaisesProfiledInterruptAndAcknowledges(t *
 		QualcommVectoredInterruptConfig{SourceCount: 8, Bank0Sources: 4},
 		&interruptLineProbe{},
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := interrupts.Write(qualcommVICEnable0Offset, Width32, 1<<3); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, interrupts.Write(qualcommVICEnable0Offset, Width32, 1<<3))
 	config := testQualcommClockRegimeComparatorConfig()
 	config.VectoredInterruptController = interrupts
 	device, err := NewQualcommClockRegimeWithConfig(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(0x480c, Width32, 0xa5000011); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(0x48cc, Width32, 3<<8|0x5a); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(0x487c, Width32, 1<<2); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Advance(14); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, device.Write(0x480c, Width32, 0xa5000011))
+	check(t, device.Write(0x48cc, Width32, 3<<8|0x5a))
+	check(t, device.Write(0x487c, Width32, 1<<2))
+	check(t, device.Advance(14))
 	if status, _ := device.Read(0x4864, Width32); status != 0 {
 		t.Fatalf("early comparator status = %#x", status)
 	}
@@ -291,9 +227,7 @@ func TestQualcommClockRegimeComparatorRaisesProfiledInterruptAndAcknowledges(t *
 	if counter, _ := device.Read(0x480c, Width32); counter != 0xa5000211 {
 		t.Fatalf("field-packed comparator counter = %#x, want 0xa5000211", counter)
 	}
-	if err := device.Advance(1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Advance(1))
 	if status, _ := device.Read(0x4864, Width32); status != 1<<2 {
 		t.Fatalf("expired comparator status = %#x", status)
 	}
@@ -303,9 +237,7 @@ func TestQualcommClockRegimeComparatorRaisesProfiledInterruptAndAcknowledges(t *
 	if match, _ := device.Read(0x48cc, Width32); match != 3<<8|0x5a {
 		t.Fatalf("comparator advance changed non-field match bits: %#x", match)
 	}
-	if err := device.Write(0x4870, Width32, 1<<2); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(0x4870, Width32, 1<<2))
 	if status, _ := device.Read(0x4864, Width32); status != 0 {
 		t.Fatalf("acknowledged comparator status = %#x", status)
 	}
@@ -317,28 +249,20 @@ func TestQualcommClockRegimeComparatorIsSliceInvariantAndStateful(t *testing.T) 
 			QualcommVectoredInterruptConfig{SourceCount: 8, Bank0Sources: 4},
 			nil,
 		)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		config := testQualcommClockRegimeComparatorConfig()
 		config.VectoredInterruptController = interrupts
 		device, err := NewQualcommClockRegimeWithConfig(config)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		_ = device.Write(0x48c4, Width32, 1<<8)
 		_ = device.Write(0x487c, Width32, 1)
 		return device, interrupts
 	}
 	whole, wholeInterrupts := newDevice()
 	sliced, slicedInterrupts := newDevice()
-	if err := whole.Advance(19); err != nil {
-		t.Fatal(err)
-	}
+	check(t, whole.Advance(19))
 	for _, instructions := range []uint64{3, 4, 5, 7} {
-		if err := sliced.Advance(instructions); err != nil {
-			t.Fatal(err)
-		}
+		check(t, sliced.Advance(instructions))
 	}
 	wholeState, _ := whole.SaveState()
 	slicedState, _ := sliced.SaveState()
@@ -356,18 +280,10 @@ func TestQualcommClockRegimeComparatorIsSliceInvariantAndStateful(t *testing.T) 
 	restoredConfig := testQualcommClockRegimeComparatorConfig()
 	restoredConfig.VectoredInterruptController = restoredInterrupts
 	restored, err := NewQualcommClockRegimeWithConfig(restoredConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := restored.LoadState(wholeState); err != nil {
-		t.Fatal(err)
-	}
-	if err := whole.Advance(1); err != nil {
-		t.Fatal(err)
-	}
-	if err := restored.Advance(1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, restored.LoadState(wholeState))
+	check(t, whole.Advance(1))
+	check(t, restored.Advance(1))
 	continuedState, _ := whole.SaveState()
 	restoredState, _ := restored.SaveState()
 	if !bytes.Equal(continuedState, restoredState) {
@@ -384,15 +300,11 @@ func TestQualcommClockRegimeComparatorMigratesV2Subset(t *testing.T) {
 			Offset: 0x6000, InstructionsPerSecond: 10, CounterHz: 3, Bits: 18,
 		}},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	_ = previous.Write(0x48c4, Width32, 1<<8)
 	_ = previous.Write(0x487c, Width32, 1)
 	v2, err := previous.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	binary.LittleEndian.PutUint32(v2[4:8], 2)
 	v2 = v2[:len(v2)-4]
 
@@ -406,18 +318,12 @@ func TestQualcommClockRegimeComparatorMigratesV2Subset(t *testing.T) {
 	}}
 	currentConfig.VectoredInterruptController = interrupts
 	current, err := NewQualcommClockRegimeWithConfig(currentConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if err := current.LoadState(v2); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("exact v2 comparator migration error = %v", err)
 	}
-	if err := current.LoadStateSubset(v2); err != nil {
-		t.Fatal(err)
-	}
-	if err := current.Advance(5); err != nil {
-		t.Fatal(err)
-	}
+	check(t, current.LoadStateSubset(v2))
+	check(t, current.Advance(5))
 	if status, _ := current.Read(0x4864, Width32); status != 1 {
 		t.Fatalf("migrated v2 comparator status = %#x, want event 0", status)
 	}

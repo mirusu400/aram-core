@@ -19,9 +19,7 @@ func TestJITSelfModifyingCodeInvalidatesTranslation(t *testing.T) {
 	mapCodeAndStack(t, backend) // 0x1000 is read-write-execute
 
 	// movs r0, #1 ; bkpt
-	if err := backend.WriteMemory(0x1000, []byte{0x01, 0x20, 0x00, 0xbe}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1000, []byte{0x01, 0x20, 0x00, 0xbe}))
 	if r := backend.Run(context.Background(), 0x1000, cpu.ModeThumb, 8); r.Err != nil ||
 		r.Reason != cpu.StopBreakpoint {
 		t.Fatalf("first run = %+v", r)
@@ -32,9 +30,7 @@ func TestJITSelfModifyingCodeInvalidatesTranslation(t *testing.T) {
 
 	// Overwrite the same code in place: movs r0, #2 ; bkpt. This write lands
 	// inside the translated block's span, so it must invalidate the cache.
-	if err := backend.WriteMemory(0x1000, []byte{0x02, 0x20, 0x00, 0xbe}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1000, []byte{0x02, 0x20, 0x00, 0xbe}))
 	if r := backend.Run(context.Background(), 0x1000, cpu.ModeThumb, 8); r.Err != nil ||
 		r.Reason != cpu.StopBreakpoint {
 		t.Fatalf("second run = %+v", r)
@@ -51,9 +47,7 @@ func TestARMJITSelfModifyingCodeInvalidatesTranslation(t *testing.T) {
 	code := make([]byte, 8)
 	binary.LittleEndian.PutUint32(code[0:4], 0xe3a00001) // mov r0, #1
 	binary.LittleEndian.PutUint32(code[4:8], 0xe1200070) // bkpt
-	if err := backend.WriteMemory(0x1000, code); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1000, code))
 	if result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 8); result.Err != nil ||
 		result.Reason != cpu.StopBreakpoint {
 		t.Fatalf("first run = %+v", result)
@@ -66,9 +60,7 @@ func TestARMJITSelfModifyingCodeInvalidatesTranslation(t *testing.T) {
 	}
 
 	binary.LittleEndian.PutUint32(code[0:4], 0xe3a00002) // mov r0, #2
-	if err := backend.WriteMemory(0x1000, code[:4]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1000, code[:4]))
 	if result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 8); result.Err != nil ||
 		result.Reason != cpu.StopBreakpoint {
 		t.Fatalf("second run = %+v", result)
@@ -92,9 +84,7 @@ func TestJITWriteOutsideCodeSpanKeepsExecuting(t *testing.T) {
 		t.Fatalf("first run = %+v", r)
 	}
 	// Store far from the translated code but still in the RWX region.
-	if err := backend.WriteMemory(0x1800, []byte{0xff, 0xff, 0xff, 0xff}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1800, []byte{0xff, 0xff, 0xff, 0xff}))
 	if r := backend.Run(context.Background(), 0x1000, cpu.ModeThumb, 8); r.Err != nil {
 		t.Fatalf("second run = %+v", r)
 	}
@@ -109,9 +99,7 @@ func TestJITInstructionCacheInvalidationDropsTranslations(t *testing.T) {
 	backend.jitCodeLo, backend.jitCodeHi = 0x1000, 0x1002
 	oldGeneration := backend.jitGen
 
-	if err := backend.writeCP15(7, 5, 0, 0); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.writeCP15(7, 5, 0, 0))
 	if len(backend.jitBlocks) != 0 {
 		t.Fatalf("translated block count = %d, want 0", len(backend.jitBlocks))
 	}
@@ -146,32 +134,24 @@ func TestPerPermissionDataCacheBlit(t *testing.T) {
 				0x02, 0x88, 0x0a, 0x80, 0x02, 0x30, 0x02, 0x31,
 				0x01, 0x3b, 0xf9, 0xd1, 0x00, 0xbe,
 			}
-			if err := b.WriteMemory(0x1000, code); err != nil {
-				t.Fatal(err)
-			}
+			check(t, b.WriteMemory(0x1000, code))
 			const n = 8
 			src := make([]byte, n*2)
 			for i := 0; i < n; i++ {
 				binaryPutUint16(src[i*2:], uint16(0x1100+i*7))
 			}
-			if err := b.WriteMemory(0x3000, src); err != nil {
-				t.Fatal(err)
-			}
+			check(t, b.WriteMemory(0x3000, src))
 			for reg, val := range map[uint32]uint32{
 				cpu.RegisterR0: 0x3000, cpu.RegisterR1: 0x4000, cpu.RegisterR3: n,
 			} {
-				if err := b.WriteRegister(reg, val); err != nil {
-					t.Fatal(err)
-				}
+				check(t, b.WriteRegister(reg, val))
 			}
 			r := b.Run(context.Background(), 0x1000, cpu.ModeThumb, 200)
 			if r.Err != nil || r.Reason != cpu.StopBreakpoint {
 				t.Fatalf("run = %+v", r)
 			}
 			dst := make([]byte, n*2)
-			if err := b.ReadMemory(0x4000, dst); err != nil {
-				t.Fatal(err)
-			}
+			check(t, b.ReadMemory(0x4000, dst))
 			for i := range src {
 				if dst[i] != src[i] {
 					t.Fatalf("blit byte %d = %#x, want %#x (dst=%x)", i, dst[i], src[i], dst)
@@ -183,9 +163,7 @@ func TestPerPermissionDataCacheBlit(t *testing.T) {
 
 func mustMap(t *testing.T, b *Backend, addr, size uint32, perm cpu.Permissions) {
 	t.Helper()
-	if err := b.Map(addr, size, perm); err != nil {
-		t.Fatal(err)
-	}
+	check(t, b.Map(addr, size, perm))
 }
 
 func binaryPutUint16(dst []byte, v uint16) {

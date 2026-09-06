@@ -20,9 +20,7 @@ func TestKTFClipRecyclerIgnoresTheNullInstance(t *testing.T) {
 				"",
 				0,
 			)
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			runtime.clipServices[instance] = serviceID
 			runtime.clips[instance] = &ktfClip{volume: 100}
 		}
@@ -51,9 +49,7 @@ func TestKTFClipRecyclerTakesAPlayingClipWhenNoneAreIdle(t *testing.T) {
 			"",
 			0,
 		)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		runtime.clipServices[instance] = serviceID
 		runtime.clips[instance] = &ktfClip{volume: 100, playing: true}
 	}

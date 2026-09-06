@@ -13,27 +13,19 @@ import (
 // nothing, and it must not widen the line a title measures to centre it.
 func TestTextIgnoresControlPaddingInFixedLineBuffer(t *testing.T) {
 	services, err := NewServices(Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	font, err := services.Text.CreateFont(2, FontDescriptor{
 		Family: "aram-fallback",
 		Size:   8,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	line := "잡으세요!"
 	padded := line + string(bytes.Repeat([]byte{0}, 68))
 
 	bare, err := services.Text.Measure(2, font, line)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	full, err := services.Text.Measure(2, font, padded)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if full != bare {
 		t.Fatalf("padded line width = %d, want %d (the text alone)", full, bare)
 	}
@@ -41,10 +33,8 @@ func TestTextIgnoresControlPaddingInFixedLineBuffer(t *testing.T) {
 	surface, err := services.Graphics.CreateSurface(2, SurfaceDescriptor{
 		Width: 240, Height: 16, Format: PixelRGBA8888,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := services.Text.Draw(
+	check(t, err)
+	check(t, services.Text.Draw(
 		2,
 		font,
 		surface,
@@ -53,22 +43,16 @@ func TestTextIgnoresControlPaddingInFixedLineBuffer(t *testing.T) {
 		0,
 		AnchorLeft|AnchorTop,
 		RGB(255, 255, 255),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	padPixels, err := services.Graphics.RGBA(2, surface)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	inked := append([]byte(nil), padPixels...)
 
 	blank, err := services.Graphics.CreateSurface(2, SurfaceDescriptor{
 		Width: 240, Height: 16, Format: PixelRGBA8888,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := services.Text.Draw(
+	check(t, err)
+	check(t, services.Text.Draw(
 		2,
 		font,
 		blank,
@@ -77,13 +61,9 @@ func TestTextIgnoresControlPaddingInFixedLineBuffer(t *testing.T) {
 		0,
 		AnchorLeft|AnchorTop,
 		RGB(255, 255, 255),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	want, err := services.Graphics.RGBA(2, blank)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !bytes.Equal(inked, want) {
 		t.Fatal("the NUL padding drew ink the text alone does not")
 	}

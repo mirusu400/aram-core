@@ -10,13 +10,11 @@ import (
 func BenchmarkThumbRun(b *testing.B) {
 	backend := New()
 	b.Cleanup(func() { _ = backend.Close() })
-	if err := backend.Map(
+	check(b, backend.Map(
 		0x1000,
 		0x1000,
 		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
-	); err != nil {
-		b.Fatal(err)
-	}
+	))
 	if err := backend.WriteMemory(0x1000, []byte{
 		0x01, 0x30, // adds r0, #1
 		0x01, 0x31, // adds r1, #1

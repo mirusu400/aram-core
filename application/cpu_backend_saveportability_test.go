@@ -28,16 +28,10 @@ func (renamedCPU) Identity() cpu.Identity {
 // so cores can be switched on an existing save.
 func TestSaveStatePortableAcrossSameArchBackends(t *testing.T) {
 	saver := newSyntheticMachine(t)
-	if err := saver.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := saver.cpu.WriteRegister(cpu.RegisterR0, 0x1234); err != nil {
-		t.Fatal(err)
-	}
+	check(t, saver.Start(context.Background()))
+	check(t, saver.cpu.WriteRegister(cpu.RegisterR0, 0x1234))
 	var saved bytes.Buffer
-	if err := saver.SaveState(&saved); err != nil {
-		t.Fatal(err)
-	}
+	check(t, saver.SaveState(&saved))
 
 	factory := NewFactory()
 	factory.NewCPU = func() cpu.Backend { return renamedCPU{interpreter.New()} }
@@ -46,14 +40,10 @@ func TestSaveStatePortableAcrossSameArchBackends(t *testing.T) {
 		ReaderAt: bytes.NewReader(syntheticEADS()),
 		Size:     int64(len(syntheticEADS())),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	loader := created.(*Machine)
 	t.Cleanup(func() { _ = loader.Close() })
-	if err := loader.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, loader.Start(context.Background()))
 	if got := loader.cpu.Identity().Name; got == interpreter.BackendName {
 		t.Fatalf("loader backend was not renamed: %q", got)
 	}

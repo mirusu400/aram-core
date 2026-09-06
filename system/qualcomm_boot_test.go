@@ -15,9 +15,7 @@ func TestQualcommNANDPBLHandoffCarriesGeometry(t *testing.T) {
 		PageSize: 0x800, EraseBlockSize: 0x20000,
 		FlashSize: 0x097c0000, BadBlockLimit: 0x14,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if handoff.Entry != 0x80028 || handoff.Registers[0] != (RegisterSeed{cpu.RegisterR7, qualcommPBLMagic}) {
 		t.Fatalf("PBL handoff = %+v", handoff)
 	}
@@ -41,9 +39,7 @@ func TestQualcommNANDPBLHandoffCarriesLegacyFeatureData(t *testing.T) {
 		PageSize: 0x800, EraseBlockSize: 0x20000,
 		FlashSize: 0x20000000, BadBlockLimit: 0x14,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if len(handoff.Memory) != 2 || handoff.Memory[1].Address != 0xffff6044 {
 		t.Fatalf("legacy PBL memory = %+v", handoff.Memory)
 	}
@@ -72,9 +68,7 @@ func TestQualcommNANDPBLHandoffCarriesSharedDataEndPointer(t *testing.T) {
 		PageSize: 0x800, EraseBlockSize: 0x20000,
 		FlashSize: 0x20000000, BadBlockLimit: 0x14,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if len(handoff.Registers) != 4 ||
 		handoff.Registers[2] != (RegisterSeed{Register: cpu.RegisterR9, Value: 0x78002100}) ||
 		handoff.Registers[3] != (RegisterSeed{Register: cpu.RegisterR11, Value: 0x78002068}) {
@@ -118,9 +112,7 @@ func TestQualcommNANDPBLHandoffCarriesSmallPageGeometry(t *testing.T) {
 		PageSize: 0x200, EraseBlockSize: 0x4000,
 		FlashSize: 0x10000000, BadBlockLimit: 0x14,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if handoff.ID != "qualcomm.pbl-hle.nand-v1" {
 		t.Fatalf("small-page PBL handoff ID = %q", handoff.ID)
 	}
@@ -259,51 +251,37 @@ func TestQualcommBootControlAllowsOnlyEvidencedEarlyBootRegisters(t *testing.T) 
 		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
 		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1, NANDReady: NewStatusSignal(),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	value, err := device.Read(0x0a40, Width32)
 	if err != nil || value != 0x10000000 {
 		t.Fatalf("hardware revision = %#x error %v", value, err)
 	}
-	if err := device.Write(0x024c, Width32, 0x55); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(0x024c, Width32, 0x55))
 	value, _ = device.Read(0x024c, Width32)
 	if value != 0x55 {
 		t.Fatalf("latched register = %#x", value)
 	}
-	if err := device.Write(0x0014, Width32, 0x1f7); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(0x0014, Width32, 0x1f7))
 	value, _ = device.Read(0x0014, Width32)
 	if value != 0x1f7 {
 		t.Fatalf("boot-control latch 0x14 = %#x", value)
 	}
-	if err := device.Write(0x0228, Width32, 1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(0x0228, Width32, 1))
 	value, _ = device.Read(0x0228, Width32)
 	if value != 1 {
 		t.Fatalf("boot-control latch 0x228 = %#x", value)
 	}
-	if err := device.Write(0x0000, Width32, 0x160000); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(0x0000, Width32, 0x160000))
 	value, _ = device.Read(0x0000, Width32)
 	if value != 0x160000 {
 		t.Fatalf("boot-control latch 0 = %#x", value)
 	}
-	if err := device.Write(0x0004, Width32, 0x200000d3); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(0x0004, Width32, 0x200000d3))
 	value, _ = device.Read(0x0004, Width32)
 	if value != 0x200000d3 {
 		t.Fatalf("boot-control latch 4 = %#x", value)
 	}
-	if err := device.Write(0x0010, Width32, 3); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(0x0010, Width32, 3))
 	value, _ = device.Read(0x0010, Width32)
 	if value != 3 {
 		t.Fatalf("boot-control latch 0x10 = %#x", value)
@@ -355,9 +333,7 @@ func TestQualcommBootControlAllowsOnlyEvidencedEarlyBootRegisters(t *testing.T) 
 	if err != nil || value != 0x5680 {
 		t.Fatalf("EBI memory configuration = %#x error %v", value, err)
 	}
-	if err := device.Write(0x1024, Width32, 9); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(0x1024, Width32, 9))
 	value, _ = device.Read(0x1024, Width32)
 	if value != 9 {
 		t.Fatalf("MPMC dynamic refresh = %#x", value)
@@ -374,30 +350,22 @@ func TestQualcommBootControlAllowsOnlyEvidencedEarlyBootRegisters(t *testing.T) 
 	if err != nil || value != 0 {
 		t.Fatalf("NAND reset status = %#x error %v", value, err)
 	}
-	if err := device.Write(0x0380, Width32, 2|8); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(0x0380, Width32, 2|8))
 	value, err = device.Read(0x0488, Width32)
 	if err != nil || value != 2 {
 		t.Fatalf("NAND ready status = %#x error %v", value, err)
 	}
-	if err := device.Write(0x0380, Width32, 2); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(0x0380, Width32, 2))
 	value, err = device.Read(0x0488, Width32)
 	if err != nil || value != 2 {
 		t.Fatalf("latched NAND ready status = %#x error %v", value, err)
 	}
-	if err := device.Write(0x0414, Width32, 2); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(0x0414, Width32, 2))
 	value, err = device.Read(0x0488, Width32)
 	if err != nil || value != 0 {
 		t.Fatalf("cleared NAND ready status = %#x error %v", value, err)
 	}
-	if err := device.Write(0x0380, Width32, 2|8); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(0x0380, Width32, 2|8))
 	if err := device.Write(0x540c, Width32, 1); err != nil || device.WatchdogServices() != 1 {
 		t.Fatalf("watchdog service error %v count %d", err, device.WatchdogServices())
 	}
@@ -405,18 +373,14 @@ func TestQualcommBootControlAllowsOnlyEvidencedEarlyBootRegisters(t *testing.T) 
 		t.Fatalf("byte watchdog service error %v count %d", err, device.WatchdogServices())
 	}
 	tick0, err := device.Read(0x5408, Width32)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	tick0Stable, _ := device.Read(0x5408, Width32)
 	tick1, _ := device.Read(0x5408, Width32)
 	tick1Stable, _ := device.Read(0x5408, Width32)
 	if tick0Stable != tick0 || tick1 != tick0+1 || tick1Stable != tick1 {
 		t.Fatalf("unstable time tick sequence = %#x %#x %#x %#x", tick0, tick0Stable, tick1, tick1Stable)
 	}
-	if err := device.Write(0x54c4, Width32, 0xfff00002); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(0x54c4, Width32, 0xfff00002))
 	value, err = device.Read(0x54c4, Width32)
 	if err != nil || value != 0xfff00002 {
 		t.Fatalf("time tick match = %#x error %v", value, err)
@@ -429,16 +393,12 @@ func TestQualcommBootControlAllowsOnlyEvidencedEarlyBootRegisters(t *testing.T) 
 		t.Fatalf("unknown write error = %v", err)
 	}
 	state, err := device.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	restored, _ := NewQualcommBootControl(QualcommBootControlConfig{
 		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
 		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1, NANDReady: NewStatusSignal(),
 	})
-	if err := restored.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restored.LoadState(state))
 	if restored.WatchdogServices() != 2 {
 		t.Fatalf("restored watchdog count = %d", restored.WatchdogServices())
 	}
@@ -480,16 +440,12 @@ func TestQualcommBootControlProfilesReadableWatchdogService(t *testing.T) {
 		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1,
 		WatchdogServiceReadable: true, NANDReady: NewStatusSignal(),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	value, err := device.Read(0x540c, Width32)
 	if err != nil || value != 0 {
 		t.Fatalf("reset watchdog service = %#x error %v", value, err)
 	}
-	if err := device.Write(0x540c, Width32, 1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(0x540c, Width32, 1))
 	value, err = device.Read(0x540c, Width32)
 	if err != nil || value != 1 {
 		t.Fatalf("serviced watchdog value = %#x error %v", value, err)
@@ -500,9 +456,7 @@ func TestQualcommBootControlProfilesReadableWatchdogService(t *testing.T) {
 		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1,
 		NANDReady: NewStatusSignal(),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := writeOnly.Read(0x540c, Width32); !errors.Is(err, ErrQualcommBootControlMMIO) {
 		t.Fatalf("write-only watchdog read error = %v", err)
 	}
@@ -515,24 +469,16 @@ func TestQualcommBootControlProfilesAdditionalWritableOffsets(t *testing.T) {
 		WritableOffsets: []uint32{0x05a0}, NANDReady: NewStatusSignal(),
 	}
 	device, err := NewQualcommBootControl(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(0x05a0, Width32, 0x12345678); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, device.Write(0x05a0, Width32, 0x12345678))
 	value, err := device.Read(0x05a0, Width32)
 	if err != nil || value != 0x12345678 {
 		t.Fatalf("profiled boot-control latch = %#x error %v", value, err)
 	}
 	state, err := device.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	restored, _ := NewQualcommBootControl(config)
-	if err := restored.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restored.LoadState(state))
 	value, _ = restored.Read(0x05a0, Width32)
 	if value != 0x12345678 {
 		t.Fatalf("restored profiled boot-control latch = %#x", value)
@@ -560,15 +506,11 @@ func TestQualcommBootControlProfilesInterruptWindowWritableOverrides(t *testing.
 		NANDReady:                      NewStatusSignal(),
 	}
 	device, err := NewQualcommBootControl(config)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if value, err := device.Read(0x0904, Width32); err != nil || value != 0 {
 		t.Fatalf("reset interrupt-window override = %#x error %v", value, err)
 	}
-	if err := device.Write(0x0904, Width32, 0x12345678); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(0x0904, Width32, 0x12345678))
 	if value, err := device.Read(0x0904, Width32); err != nil || value != 0x12345678 {
 		t.Fatalf("interrupt-window override = %#x error %v", value, err)
 	}
@@ -576,16 +518,10 @@ func TestQualcommBootControlProfilesInterruptWindowWritableOverrides(t *testing.
 		t.Fatalf("narrow interrupt-window override read error = %v", err)
 	}
 	state, err := device.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	restored, err := NewQualcommBootControl(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := restored.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, restored.LoadState(state))
 	if value, err := restored.Read(0x0904, Width32); err != nil || value != 0x12345678 {
 		t.Fatalf("restored interrupt-window override = %#x error %v", value, err)
 	}
@@ -594,9 +530,7 @@ func TestQualcommBootControlProfilesInterruptWindowWritableOverrides(t *testing.
 	legacyConfig.InterruptWindowWritableOffsets = nil
 	legacyConfig.NANDReady = NewStatusSignal()
 	legacy, err := NewQualcommBootControl(legacyConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := legacy.Read(0x0904, Width32); !errors.Is(err, ErrQualcommInterruptControllerMMIO) {
 		t.Fatalf("legacy INT_CLEAR_1 read error = %v", err)
 	}
@@ -631,35 +565,23 @@ func TestQualcommBootControlProfilesWritableRegisterResetValues(t *testing.T) {
 		NANDReady:       NewStatusSignal(),
 	}
 	device, err := NewQualcommBootControl(config)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	value, err := device.Read(0x0c00, Width32)
 	if err != nil || value != 1 {
 		t.Fatalf("profiled register reset value = %#x error %v", value, err)
 	}
-	if err := device.Write(0x0c00, Width32, 0x43); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(0x0c00, Width32, 0x43))
 	state, err := device.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Reset(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, device.Reset())
 	value, err = device.Read(0x0c00, Width32)
 	if err != nil || value != 1 {
 		t.Fatalf("reset profiled register = %#x error %v", value, err)
 	}
 
 	restored, err := NewQualcommBootControl(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := restored.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, restored.LoadState(state))
 	value, err = restored.Read(0x0c00, Width32)
 	if err != nil || value != 0x43 {
 		t.Fatalf("restored profiled register = %#x error %v", value, err)
@@ -668,9 +590,7 @@ func TestQualcommBootControlProfilesWritableRegisterResetValues(t *testing.T) {
 	mismatchedConfig := config
 	mismatchedConfig.RegisterResets = []QualcommBootRegisterReset{{Offset: 0x0c00, Value: 2}}
 	mismatched, err := NewQualcommBootControl(mismatchedConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if err := mismatched.LoadState(state); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("mismatched register reset profile state error = %v", err)
 	}
@@ -694,12 +614,8 @@ func TestQualcommBootControlProfilesHalfwordOffsets(t *testing.T) {
 		HalfwordOffsets: []uint32{0x4038}, NANDReady: NewStatusSignal(),
 	}
 	device, err := NewQualcommBootControl(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(0x4038, Width16, 0xabcd); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, device.Write(0x4038, Width16, 0xabcd))
 	value, err := device.Read(0x4038, Width16)
 	if err != nil || value != 0xabcd {
 		t.Fatalf("profiled halfword latch = %#x error %v", value, err)
@@ -714,13 +630,9 @@ func TestQualcommBootControlProfilesHalfwordOffsets(t *testing.T) {
 		t.Fatalf("word read from halfword error = %v", err)
 	}
 	state, err := device.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	restored, _ := NewQualcommBootControl(config)
-	if err := restored.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restored.LoadState(state))
 	value, _ = restored.Read(0x4038, Width16)
 	if value != 0xabcd {
 		t.Fatalf("restored halfword latch = %#x", value)
@@ -758,15 +670,9 @@ func TestQualcommBootControlProfilesMixedWidthOffsets(t *testing.T) {
 		NANDReady:         NewStatusSignal(),
 	}
 	device, err := NewQualcommBootControl(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(0x0e20, Width32, 0xaaaa5555); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(0x0e20, Width16, 0x1234); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, device.Write(0x0e20, Width32, 0xaaaa5555))
+	check(t, device.Write(0x0e20, Width16, 0x1234))
 	word, err := device.Read(0x0e20, Width32)
 	if err != nil || word != 0xaaaa1234 {
 		t.Fatalf("mixed-width word = %#x error %v", word, err)
@@ -779,13 +685,9 @@ func TestQualcommBootControlProfilesMixedWidthOffsets(t *testing.T) {
 		t.Fatalf("byte write to mixed-width register error = %v", err)
 	}
 	state, err := device.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	restored, _ := NewQualcommBootControl(config)
-	if err := restored.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restored.LoadState(state))
 	word, _ = restored.Read(0x0e20, Width32)
 	if word != 0xaaaa1234 {
 		t.Fatalf("restored mixed-width word = %#x", word)
@@ -814,15 +716,9 @@ func TestQualcommBootControlProfilesByteWritableOffsets(t *testing.T) {
 		NANDReady:           NewStatusSignal(),
 	}
 	device, err := NewQualcommBootControl(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(0x3404, Width32, 0xaaaa5555); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(0x3404, Width8, 0x12); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, device.Write(0x3404, Width32, 0xaaaa5555))
+	check(t, device.Write(0x3404, Width8, 0x12))
 	word, err := device.Read(0x3404, Width32)
 	if err != nil || word != 0xaaaa5512 {
 		t.Fatalf("byte-writable word = %#x error %v", word, err)
@@ -835,13 +731,9 @@ func TestQualcommBootControlProfilesByteWritableOffsets(t *testing.T) {
 		t.Fatalf("halfword write to byte-writable register error = %v", err)
 	}
 	state, err := device.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	restored, _ := NewQualcommBootControl(config)
-	if err := restored.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restored.LoadState(state))
 	word, _ = restored.Read(0x3404, Width32)
 	if word != 0xaaaa5512 {
 		t.Fatalf("restored byte-writable word = %#x", word)
@@ -874,21 +766,15 @@ func TestQualcommBootControlProfilesLegacyUARTControllers(t *testing.T) {
 		NANDReady:             NewStatusSignal(),
 	}
 	device, err := NewQualcommBootControl(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(0x4008, Width16, 0x77); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, device.Write(0x4008, Width16, 0x77))
 	for _, width := range []Width{Width8, Width16} {
 		value, err := device.Read(0x4008, width)
 		if err != nil || value != qualcommLegacyUARTStatusTXReady|qualcommLegacyUARTStatusTXEmpty {
 			t.Fatalf("legacy UART status read%d = %#x error %v", width*8, value, err)
 		}
 	}
-	if err := device.Write(0x4014, Width16, 0x31); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(0x4014, Width16, 0x31))
 	value, err := device.Read(0x4014, Width8)
 	if err != nil || value != 0 {
 		t.Fatalf("legacy UART idle ISR = %#x error %v", value, err)
@@ -935,9 +821,7 @@ func TestQualcommBootControlProfilesMixedWidthLegacyUARTController(t *testing.T)
 		LegacyUARTControllers: []uint32{0x4200},
 		NANDReady:             NewStatusSignal(),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if err := device.Write(0x4238, Width32, 0); err != nil {
 		t.Fatalf("word-wide legacy UART configuration write: %v", err)
 	}
@@ -992,21 +876,13 @@ func TestQualcommBootControlProfilesCompletionEvents(t *testing.T) {
 
 	probe := &interruptLineProbe{}
 	device, err := newConfiguredDevice(probe)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(0x0434, Width32, 1<<10); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(0x0e04, Width32, 0); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, device.Write(0x0434, Width32, 1<<10))
+	check(t, device.Write(0x0e04, Width32, 0))
 	if status, _ := device.Read(0x0e24, Width32); status != 0 || probe.irq {
 		t.Fatalf("inactive completion status = %#x IRQ=%v", status, probe.irq)
 	}
-	if err := device.Write(0x0e04, Width32, 1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(0x0e04, Width32, 1))
 	if status, readErr := device.Read(0x0e24, Width32); readErr != nil || status != 2 {
 		t.Fatalf("completion status = %#x error %v", status, readErr)
 	}
@@ -1027,17 +903,11 @@ func TestQualcommBootControlProfilesCompletionEvents(t *testing.T) {
 	}
 
 	state, err := device.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	restoredProbe := &interruptLineProbe{}
 	restored, err := newConfiguredDevice(restoredProbe)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := restored.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, restored.LoadState(state))
 	if status, _ := restored.Read(0x0e24, Width32); status != 2 || !restoredProbe.irq {
 		t.Fatalf("restored completion status = %#x IRQ=%v", status, restoredProbe.irq)
 	}
@@ -1061,18 +931,14 @@ func TestQualcommBootControlProfilesCompletionEvents(t *testing.T) {
 		t.Fatalf("mismatched completion profile state error = %v", err)
 	}
 
-	if err := device.Write(0x0e28, Width16, 0xffff); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(0x0e28, Width16, 0xffff))
 	if status, _ := device.Read(0x0e24, Width32); status != 0 {
 		t.Fatalf("acknowledged completion status = %#x", status)
 	}
 	if !probe.irq {
 		t.Fatal("device acknowledge unexpectedly cleared the separate VIC latch")
 	}
-	if err := device.Write(0x0404, Width32, 1<<10); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(0x0404, Width32, 1<<10))
 	if probe.irq {
 		t.Fatal("VIC acknowledge left completion IRQ asserted")
 	}
@@ -1093,34 +959,22 @@ func TestQualcommBootControlDispatchesCompletionHandlersOutsideWrite(t *testing.
 		CompletionEvents: []QualcommCompletionEventConfig{event},
 		NANDReady:        NewStatusSignal(),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	handler := &qualcommCompletionHandlerProbe{}
-	if err := device.AttachCompletionHandler(event.StartOffset, handler); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.AttachCompletionHandler(event.StartOffset, handler))
 	if handler.resets != 1 {
 		t.Fatalf("attach resets = %d", handler.resets)
 	}
-	if err := device.Write(0x0e08, Width32, 0x12345678); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(0x0e04, Width32, 1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(0x0e08, Width32, 0x12345678))
+	check(t, device.Write(0x0e04, Width32, 1))
 	if handler.queued != 1 || handler.pointer != 0x12345678 || handler.advances != 0 {
 		t.Fatalf("handler after kickoff = %+v", handler)
 	}
-	if err := device.Advance(0); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Advance(0))
 	if handler.advances != 1 {
 		t.Fatalf("handler advances = %d", handler.advances)
 	}
-	if err := device.Reset(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Reset())
 	if handler.resets != 2 {
 		t.Fatalf("handler resets = %d", handler.resets)
 	}
@@ -1141,9 +995,7 @@ func TestQualcommBootControlRejectsInvalidCompletionHandlers(t *testing.T) {
 		CompletionEvents: []QualcommCompletionEventConfig{event},
 		NANDReady:        NewStatusSignal(),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if err := device.AttachCompletionHandler(event.StartOffset, nil); err == nil {
 		t.Fatal("accepted nil completion handler")
 	}
@@ -1151,9 +1003,7 @@ func TestQualcommBootControlRejectsInvalidCompletionHandlers(t *testing.T) {
 		t.Fatal("accepted handler for unprofiled completion event")
 	}
 	handler := &qualcommCompletionHandlerProbe{}
-	if err := device.AttachCompletionHandler(event.StartOffset, handler); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.AttachCompletionHandler(event.StartOffset, handler))
 	if err := device.AttachCompletionHandler(event.StartOffset, &qualcommCompletionHandlerProbe{}); err == nil {
 		t.Fatal("accepted duplicate completion handler")
 	}
@@ -1174,14 +1024,10 @@ func TestQualcommBootControlRollsBackRejectedCompletion(t *testing.T) {
 		CompletionEvents: []QualcommCompletionEventConfig{event},
 		NANDReady:        NewStatusSignal(),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	rejected := errors.New("rejected command list")
 	handler := &qualcommCompletionHandlerProbe{queueErr: rejected}
-	if err := device.AttachCompletionHandler(event.StartOffset, handler); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.AttachCompletionHandler(event.StartOffset, handler))
 	if err := device.Write(event.StartOffset, Width32, 1); !errors.Is(err, rejected) {
 		t.Fatalf("kickoff error = %v", err)
 	}
@@ -1271,9 +1117,7 @@ func TestQualcommBootControlProfilesReadOnlyRegisters(t *testing.T) {
 		NANDReady:         NewStatusSignal(),
 	}
 	device, err := NewQualcommBootControl(config)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	value, err := device.Read(0x00bc, Width32)
 	if err != nil || value != 0x12345678 {
 		t.Fatalf("profiled read-only register = %#x error %v", value, err)
@@ -1282,13 +1126,9 @@ func TestQualcommBootControlProfilesReadOnlyRegisters(t *testing.T) {
 		t.Fatalf("read-only register write error = %v", err)
 	}
 	state, err := device.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	restored, _ := NewQualcommBootControl(config)
-	if err := restored.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restored.LoadState(state))
 	mismatchConfig := config
 	mismatchConfig.ReadOnlyRegisters = []QualcommBootReadOnlyRegister{{Offset: 0x00bc, Value: 1}}
 	mismatch, _ := NewQualcommBootControl(mismatchConfig)
@@ -1325,30 +1165,20 @@ func TestQualcommBootControlSubsetStateAddsReadOnlyRegister(t *testing.T) {
 		NANDReady:       NewStatusSignal(),
 	}
 	base, err := NewQualcommBootControl(baseConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := base.Write(0x0e04, Width32, 0x12345678); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, base.Write(0x0e04, Width32, 0x12345678))
 	state, err := base.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 
 	extendedConfig := baseConfig
 	extendedConfig.NANDReady = NewStatusSignal()
 	extendedConfig.ReadOnlyRegisters = []QualcommBootReadOnlyRegister{{Offset: 0x0e14, Value: 7}}
 	extended, err := NewQualcommBootControl(extendedConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if err := extended.LoadState(state); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("exact load with added read-only register error = %v", err)
 	}
-	if err := extended.LoadStateSubset(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, extended.LoadStateSubset(state))
 	if value, err := extended.Read(0x0e04, Width32); err != nil || value != 0x12345678 {
 		t.Fatalf("restored writable register = %#x error %v", value, err)
 	}
@@ -1360,9 +1190,7 @@ func TestQualcommBootControlSubsetStateAddsReadOnlyRegister(t *testing.T) {
 	writableConfig.NANDReady = NewStatusSignal()
 	writableConfig.WritableOffsets = []uint32{0x0e04, 0x0e14}
 	writable, err := NewQualcommBootControl(writableConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if err := writable.LoadStateSubset(state); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("subset load with added writable register error = %v", err)
 	}
@@ -1372,15 +1200,11 @@ func TestQualcommBootControlSubsetStateAddsReadOnlyRegister(t *testing.T) {
 	resetWritableConfig.WritableOffsets = []uint32{0x0e04, 0x0e14}
 	resetWritableConfig.RegisterResets = []QualcommBootRegisterReset{{Offset: 0x0e14, Value: 7}}
 	resetWritable, err := NewQualcommBootControl(resetWritableConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if err := resetWritable.LoadState(state); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("exact load with added reset writable register error = %v", err)
 	}
-	if err := resetWritable.LoadStateSubset(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, resetWritable.LoadStateSubset(state))
 	if value, err := resetWritable.Read(0x0e14, Width32); err != nil || value != 7 {
 		t.Fatalf("added reset writable register = %#x error %v", value, err)
 	}
@@ -1398,20 +1222,14 @@ func TestQualcommBootControlProfiledSBICompletesAndClearsStatus(t *testing.T) {
 		NANDReady:           NewStatusSignal(),
 	}
 	device, err := NewQualcommBootControl(config)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	status, err := device.Read(0x5014, Width32)
 	if err != nil || status != 0 {
 		t.Fatalf("reset SBI status = %#x error %v", status, err)
 	}
-	if err := device.Write(0x5008, Width32, 0x01020000); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(0x5008, Width32, 0x01020000))
 	state, err := device.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	// Version 17 ended immediately after the empty register-reset list. Keep
 	// accepting those snapshots while version 18 records immutable SBI response
 	// identity for new saves.
@@ -1424,9 +1242,7 @@ func TestQualcommBootControlProfiledSBICompletesAndClearsStatus(t *testing.T) {
 		t.Fatalf("load version 17 SBI state: %v", err)
 	}
 	restored, _ := NewQualcommBootControl(config)
-	if err := restored.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restored.LoadState(state))
 	status, err = restored.Read(0x0494, Width32)
 	if err != nil || status != qualcommBootSBICompleteStatus {
 		t.Fatalf("completed SBI status = %#x error %v", status, err)
@@ -1439,9 +1255,7 @@ func TestQualcommBootControlProfiledSBICompletesAndClearsStatus(t *testing.T) {
 	if err != nil || result != 0xa5 {
 		t.Fatalf("SBI result = %#x error %v", result, err)
 	}
-	if err := restored.Write(0x5008, Width32, 0x01030000); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restored.Write(0x5008, Width32, 0x01030000))
 	if result, err = restored.Read(0x5010, Width32); err != nil || result != 0 {
 		t.Fatalf("unprofiled SBI read result = %#x error %v", result, err)
 	}
@@ -1490,9 +1304,7 @@ func TestQualcommBootControlProfiledSBICompletesAndClearsStatus(t *testing.T) {
 		Controller: 0x5000, Address: 0x02, Value: 0xa4,
 	}}
 	mismatchedDevice, err := NewQualcommBootControl(mismatched)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if err := mismatchedDevice.LoadState(state); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("mismatched SBI response profile state error = %v", err)
 	}
@@ -1509,48 +1321,34 @@ func TestQualcommBootControlAdvancesClockedTimeTickAndPulsesProfileSource(t *tes
 			InstructionsPerSecond: 10, TimeTickHz: 3, InterruptSource: 5,
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := controller.Write(qualcommIRQEnable0Offset, Width32, 1<<5); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, controller.Write(qualcommIRQEnable0Offset, Width32, 1<<5))
 	first, _ := device.Read(0x5408, Width32)
 	stable, _ := device.Read(0x5408, Width32)
 	if first != 0 || stable != first {
 		t.Fatalf("clocked timetick reads = %#x/%#x", first, stable)
 	}
-	if err := device.Write(0x54c4, Width32, 2); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(0x54c4, Width32, 2))
 	if ready, _ := device.Read(0x54c0, Width32); ready != 1 {
 		t.Fatalf("new match ready status = %#x, want accepted", ready)
 	}
-	if err := device.Advance(3); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Advance(3))
 	if ready, _ := device.Read(0x54c0, Width32); ready != 1 {
 		t.Fatalf("advanced match ready status = %#x", ready)
 	}
 	if tick, _ := device.Read(0x5408, Width32); tick != 0 {
 		t.Fatalf("fractional tick = %#x", tick)
 	}
-	if err := device.Advance(1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Advance(1))
 	if tick, _ := device.Read(0x5408, Width32); tick != 1 || probe.irq {
 		t.Fatalf("pre-match tick/IRQ = %#x/%v", tick, probe.irq)
 	}
-	if err := device.Advance(4); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Advance(4))
 	if tick, _ := device.Read(0x5408, Width32); tick != 2 || !probe.irq || probe.fiq {
 		t.Fatalf("matched tick outputs = %#x IRQ=%v FIQ=%v", tick, probe.irq, probe.fiq)
 	}
 	state, err := device.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	restoredController := NewQualcommInterruptController(&interruptLineProbe{})
 	restored, err := NewQualcommBootControl(QualcommBootControlConfig{
 		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
@@ -1560,12 +1358,8 @@ func TestQualcommBootControlAdvancesClockedTimeTickAndPulsesProfileSource(t *tes
 			InstructionsPerSecond: 10, TimeTickHz: 3, InterruptSource: 5,
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := restored.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, restored.LoadState(state))
 	if tick, _ := restored.Read(0x5408, Width32); tick != 2 {
 		t.Fatalf("restored clocked tick = %#x", tick)
 	}
@@ -1589,9 +1383,7 @@ func TestQualcommBootControlRoutesClockedTimeTickThroughVectoredSource(t *testin
 		ReverseSourceOrder: true,
 	}
 	vectored, err := NewQualcommVectoredInterruptController(config, probe)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	device, err := NewQualcommBootControl(QualcommBootControlConfig{
 		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
 		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1,
@@ -1604,21 +1396,13 @@ func TestQualcommBootControlRoutesClockedTimeTickThroughVectoredSource(t *testin
 			UseVectoredController: true,
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	// Source 21 is packed as raw bit 27: second bank bit 2. Its hardware
 	// vector is 27, which the SCH-W830 firmware maps back to logical source
 	// 48-27 = 21.
-	if err := vectored.Write(qualcommVICEnable1Offset, Width32, 1<<2); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(0x54c4, Width32, 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Advance(1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, vectored.Write(qualcommVICEnable1Offset, Width32, 1<<2))
+	check(t, device.Write(0x54c4, Width32, 1))
+	check(t, device.Advance(1))
 	if !probe.irq || probe.fiq {
 		t.Fatalf("vectored timetick outputs IRQ=%v FIQ=%v", probe.irq, probe.fiq)
 	}
@@ -1629,9 +1413,7 @@ func TestQualcommBootControlRoutesClockedTimeTickThroughVectoredSource(t *testin
 		t.Fatalf("vectored timetick vector = %#x error %v", vector, readErr)
 	}
 	state, err := device.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	mismatchVIC, _ := NewQualcommVectoredInterruptController(config, nil)
 	mismatch, err := NewQualcommBootControl(QualcommBootControlConfig{
 		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
@@ -1642,9 +1424,7 @@ func TestQualcommBootControlRoutesClockedTimeTickThroughVectoredSource(t *testin
 			InstructionsPerSecond: 1, TimeTickHz: 1, InterruptSource: 21,
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if err := mismatch.LoadState(state); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("mismatched timetick route state error = %v", err)
 	}
@@ -1673,15 +1453,9 @@ func TestQualcommBootControlValidatesBoardConfigurationAndReset(t *testing.T) {
 		HardwareRevision: 0x10000000, NANDInterfaceMode: 4,
 		EBIMemoryConfiguration: 0x5880, ClockModeStatus: 1, NANDReady: NewStatusSignal(),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(0x0380, Width32, 2); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Reset(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, device.Write(0x0380, Width32, 2))
+	check(t, device.Reset())
 	value, err := device.Read(0x0380, Width32)
 	if err != nil || value != 4 {
 		t.Fatalf("reset NAND interface mode = %#x error %v", value, err)
@@ -1694,15 +1468,9 @@ func TestQualcommBootControlValidatesBoardConfigurationAndReset(t *testing.T) {
 
 func TestQualcommSecondaryClockControlLatchesOnlyEvidencedRegisters(t *testing.T) {
 	device := NewQualcommSecondaryClockControl()
-	if err := device.Write(0x0430, Width32, 0x2d); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(0x0434, Width32, 4); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(0x0408, Width32, 0x11223344); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(0x0430, Width32, 0x2d))
+	check(t, device.Write(0x0434, Width32, 4))
+	check(t, device.Write(0x0408, Width32, 0x11223344))
 	value, err := device.Read(0x0430, Width32)
 	if err != nil || value != 0x2d {
 		t.Fatalf("secondary selector = %#x error %v", value, err)
@@ -1722,13 +1490,9 @@ func TestQualcommSecondaryClockControlLatchesOnlyEvidencedRegisters(t *testing.T
 		t.Fatalf("secondary status write error = %v", err)
 	}
 	state, err := device.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	restored := NewQualcommSecondaryClockControl()
-	if err := restored.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restored.LoadState(state))
 	value, _ = restored.Read(0x0434, Width32)
 	if value != 4 {
 		t.Fatalf("restored secondary data = %#x", value)
@@ -1740,27 +1504,17 @@ func TestQualcommSecondaryClockControlLatchesOnlyEvidencedRegisters(t *testing.T
 
 func TestQualcommSecondaryClockControlProfilesAdditionalWritableOffsets(t *testing.T) {
 	device, err := NewQualcommSecondaryClockControlWithWritableOffsets([]uint32{0x040c})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(0x040c, Width32, 0x12345678); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, device.Write(0x040c, Width32, 0x12345678))
 	value, err := device.Read(0x040c, Width32)
 	if err != nil || value != 0x12345678 {
 		t.Fatalf("profiled secondary-clock latch = %#x error %v", value, err)
 	}
 	state, err := device.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	restored, err := NewQualcommSecondaryClockControlWithWritableOffsets([]uint32{0x040c})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := restored.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, restored.LoadState(state))
 	value, err = restored.Read(0x040c, Width32)
 	if err != nil || value != 0x12345678 {
 		t.Fatalf("restored profiled secondary-clock latch = %#x error %v", value, err)
@@ -1790,9 +1544,7 @@ func TestQualcommSecondaryClockControlProfilesReadOnlyInput(t *testing.T) {
 			{Offset: 0x0444, Value: 0x00000400},
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	value, err := device.Read(0x0444, Width32)
 	if err != nil || value != 0x00000400 {
 		t.Fatalf("secondary clock input = %#x error %v", value, err)

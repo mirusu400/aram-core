@@ -17,9 +17,7 @@ const (
 
 func TestLCDTransferProbeReportsQualifiedDCSRGB565Pair(t *testing.T) {
 	controller, err := NewDCSPanelController(DCSPanelConfig{Width: 2, Height: 2})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	bus, panel, probe := newLCDTransferProbeHarness(t, controller)
 
 	writeLCDTransaction(t, bus, testLCDCommandAddress, testLCDDataAddress, dcsSetPixelFormat, 0x55)
@@ -72,9 +70,7 @@ func TestLCDTransferProbeReportsQualifiedDCSRGB565Pair(t *testing.T) {
 	}
 
 	encoded, err := json.Marshal(report)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if strings.Contains(string(encoded), "63488") || strings.Contains(string(encoded), "65535") {
 		t.Fatalf("LCD report retained pixel payload: %s", encoded)
 	}
@@ -137,19 +133,11 @@ func TestLCDTransferProbeKeepsEvidenceScopedToPhysicalPair(t *testing.T) {
 	const secondCommand = uint32(0x21000000)
 	const secondData = uint32(0x21020000)
 	commandPort, err := NewParallelPanelCommandPort(panel)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	dataPort, err := NewParallelPanelDataPort(panel)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := bus.MapMMIO("second-lcd-command", secondCommand, uint32(Width16), commandPort); err != nil {
-		t.Fatal(err)
-	}
-	if err := bus.MapMMIO("second-lcd-data", secondData, uint32(Width16), dataPort); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, bus.MapMMIO("second-lcd-command", secondCommand, uint32(Width16), commandPort))
+	check(t, bus.MapMMIO("second-lcd-data", secondData, uint32(Width16), dataPort))
 
 	writeLCDTransaction(t, bus, testLCDCommandAddress, testLCDDataAddress, dcsSetPixelFormat, 0x55)
 	writeLCDTransaction(t, bus, testLCDCommandAddress, testLCDDataAddress, dcsSetColumnAddress, 0, 0, 0, 1)
@@ -188,9 +176,7 @@ func TestLCDTransferProbeRejectsInvalidOrRepeatedAttachment(t *testing.T) {
 	if err := probe.Attach(bus, nil); !errors.Is(err, ErrLCDTransferProbe) {
 		t.Fatalf("nil panel attachment error = %v", err)
 	}
-	if err := probe.Attach(bus, panel); err != nil {
-		t.Fatal(err)
-	}
+	check(t, probe.Attach(bus, panel))
 	if err := probe.Attach(bus, panel); !errors.Is(err, ErrLCDTransferProbe) {
 		t.Fatalf("repeated attachment error = %v", err)
 	}
@@ -236,29 +222,17 @@ func newLCDTransferProbeHarness(
 	if controller != nil {
 		var err error
 		panel, err = NewParallelPanelInterfaceWithController(controller)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 	}
 	commandPort, err := NewParallelPanelCommandPort(panel)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	dataPort, err := NewParallelPanelDataPort(panel)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	bus := NewBus()
-	if err := bus.MapMMIO("test-lcd-command", testLCDCommandAddress, uint32(Width16), commandPort); err != nil {
-		t.Fatal(err)
-	}
-	if err := bus.MapMMIO("test-lcd-data", testLCDDataAddress, uint32(Width16), dataPort); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.MapMMIO("test-lcd-command", testLCDCommandAddress, uint32(Width16), commandPort))
+	check(t, bus.MapMMIO("test-lcd-data", testLCDDataAddress, uint32(Width16), dataPort))
 	probe := NewLCDTransferProbe()
-	if err := probe.Attach(bus, panel); err != nil {
-		t.Fatal(err)
-	}
+	check(t, probe.Attach(bus, panel))
 	return bus, panel, probe
 }
 
@@ -281,7 +255,5 @@ func writeLCDHalfword(t *testing.T, bus *Bus, address uint32, value uint16) {
 	t.Helper()
 	var encoded [2]byte
 	binary.LittleEndian.PutUint16(encoded[:], value)
-	if err := bus.Write(address, encoded[:], cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.Write(address, encoded[:], cpu.PermissionWrite))
 }

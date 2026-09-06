@@ -17,9 +17,7 @@ func TestKTFProductTraceDefaultsToCounters(t *testing.T) {
 		ClientName: "client.bin0",
 		Client:     []byte{0x70, 0x47},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if runtime.TraceMode() != KTFTraceCounters {
 		t.Fatalf("default KTF trace mode = %s, want counters", runtime.TraceMode())
 	}
@@ -61,9 +59,7 @@ func TestKTFTraceOffAndCountersAllocateNothing(t *testing.T) {
 
 func TestKTFSampledTraceUsesNumericFixedRing(t *testing.T) {
 	runtime := &Runtime{}
-	if err := runtime.SetTraceMode(KTFTraceSampled); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.SetTraceMode(KTFTraceSampled))
 	for index := 1; index <= HostTraceSampleInterval*2+1; index++ {
 		runtime.TraceHostCall("synthetic.call")
 	}

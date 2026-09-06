@@ -18,9 +18,7 @@ func TestRaptorClassParentReadsAHolderAsWellAsAName(t *testing.T) {
 		importSlotByKey: make(map[raptorImportKey]uint32),
 	}
 	java, err := runtime.ensureJavaRuntime()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 
 	parentHolder := buildRaptorTestClass(t, runtime, java, "app/Base", 0)
 	parent := java.classes[parentHolder]
@@ -75,24 +73,18 @@ func buildRaptorTestClass(
 		t.Fatalf("allocate descriptor = 0x%08x, %v", descriptor, err)
 	}
 	nameAddress, err := runtime.allocateJavaCString(name)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	parent := parentHolder
 	if parent == 0 {
 		parent, err = runtime.allocateJavaCString("org/kwis/msp/lcdui/Jlet")
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 	}
 	for address, value := range map[uint32]uint32{
 		holder + 8:        descriptor,
 		descriptor + 8:    nameAddress,
 		descriptor + 0x10: parent,
 	} {
-		if err := runtime.Public.WriteU32(address, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.Public.WriteU32(address, value))
 	}
 	class, err := runtime.inspectRaptorJavaClass(java, holder)
 	if err != nil || class == nil {

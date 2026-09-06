@@ -45,9 +45,7 @@ func TestReferencePackages(t *testing.T) {
 		packages++
 		return nil
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if packages == 0 {
 		t.Fatal("ARAM_TEST_DATA contained no valid KTF packages")
 	}

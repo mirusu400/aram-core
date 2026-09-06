@@ -21,12 +21,8 @@ import (
 func TestMachineDebugSnapshotIsBoundedAndDetached(t *testing.T) {
 	backend := interpreter.New()
 	t.Cleanup(func() { _ = backend.Close() })
-	if err := backend.WriteRegister(cpu.RegisterPC, 0x12345678); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterCPSR, cpu.StatusThumb); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteRegister(cpu.RegisterPC, 0x12345678))
+	check(t, backend.WriteRegister(cpu.RegisterCPSR, cpu.StatusThumb))
 
 	machine := &Machine{
 		cpu:                   backend,
@@ -109,14 +105,10 @@ func TestSKVMDebugSnapshotReportsFramebufferIntegrityWithoutPixels(t *testing.T)
 		ReaderAt: bytes.NewReader(data),
 		Size:     int64(len(data)),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	machine := created.(*skvmhost.Machine)
 	t.Cleanup(func() { _ = machine.Close() })
-	if err := machine.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.Start(context.Background()))
 
 	snapshot := machine.DebugSnapshot(10)
 	framebuffer := snapshot.SKVM.Framebuffer
@@ -145,21 +137,15 @@ func TestDebugMemoryRegionsAreFaultGatedAndBounded(t *testing.T) {
 		pc          = uint32(0x11000)
 		sp          = uint32(0x12000)
 	)
-	if err := backend.Map(base, size,
-		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.Map(base, size,
+		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute))
 	write := func(address uint32, value byte) {
-		if err := backend.WriteMemory(address, []byte{value}); err != nil {
-			t.Fatal(err)
-		}
+		check(t, backend.WriteMemory(address, []byte{value}))
 	}
 	write(textAddress, 0xAA)
 	write(pc-128, 0xBB) // origin of the pc window
 	write(sp, 0xCC)
-	if err := backend.WriteRegister(cpu.RegisterSP, sp); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteRegister(cpu.RegisterSP, sp))
 
 	machine := &Machine{
 		cpu:        backend,

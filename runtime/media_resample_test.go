@@ -33,25 +33,17 @@ func renderResampledTone(
 		))
 	}
 	media, err := NewMedia(NewRegistry(32), DefaultMediaLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	bus := NewEventBus(16, 32)
 	clip, err := media.CreateClip(3, "audio/wav", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := media.Append(
 		3, clip, pcmWave(sourceRate, 1, source),
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := media.Play(3, clip, 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := media.Advance(0, time.Second, bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.Play(3, clip, 1))
+	check(t, media.Advance(0, time.Second, bus))
 	audio := media.Drain()
 	if len(audio.PCM16) < 40_000 {
 		t.Fatalf("drained %d samples", len(audio.PCM16))
@@ -120,28 +112,20 @@ func TestMatchingRateReadsStoredSamples(t *testing.T) {
 	limits := DefaultMediaLimits()
 	limits.OutputChannels = 1
 	media, err := NewMedia(NewRegistry(32), limits)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	bus := NewEventBus(16, 32)
 	clip, err := media.CreateClip(3, "audio/wav", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	source := []int16{0, 12_000, -12_000, 32_000, -32_000, 500}
 	if _, err := media.Append(
 		3, clip, pcmWave(limits.OutputSampleRate, 1, source),
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := media.Play(3, clip, 1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.Play(3, clip, 1))
 	span := time.Duration(len(source)+1) * time.Second /
 		time.Duration(limits.OutputSampleRate)
-	if err := media.Advance(0, span, bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.Advance(0, span, bus))
 	audio := media.Drain()
 	if len(audio.PCM16) < len(source) {
 		t.Fatalf("drained %d samples, want at least %d",
@@ -195,23 +179,15 @@ func TestDownsamplingKernelStopsAliases(t *testing.T) {
 		))
 	}
 	media, err := NewMedia(NewRegistry(32), limits)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	bus := NewEventBus(16, 32)
 	clip, err := media.CreateClip(3, "audio/wav", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := media.Append(3, clip, pcmWave(44_100, 1, source)); err != nil {
 		t.Fatal(err)
 	}
-	if err := media.Play(3, clip, 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := media.Advance(0, time.Second, bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.Play(3, clip, 1))
+	check(t, media.Advance(0, time.Second, bus))
 	audio := media.Drain()
 	mono := make([]float64, 0, len(audio.PCM16))
 	for _, sample := range audio.PCM16 {
@@ -250,27 +226,19 @@ func TestFramedAdvanceReadsEverySampleOnce(t *testing.T) {
 		source[index] = int16(index%30_000 - 15_000)
 	}
 	media, err := NewMedia(NewRegistry(32), limits)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	bus := NewEventBus(16, 32)
 	clip, err := media.CreateClip(3, "audio/wav", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := media.Append(3, clip, pcmWave(rate, 1, source)); err != nil {
 		t.Fatal(err)
 	}
-	if err := media.Play(3, clip, 1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.Play(3, clip, 1))
 	var drained []int16
 	at := time.Duration(0)
 	for range 60 {
 		next := at + 16*time.Millisecond
-		if err := media.Advance(at, next, bus); err != nil {
-			t.Fatal(err)
-		}
+		check(t, media.Advance(at, next, bus))
 		drained = append(drained, media.Drain().PCM16...)
 		at = next
 	}

@@ -14,22 +14,16 @@ import (
 func driveHandler(t *testing.T, keys ...int32) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("testdata", "IMEProbe.class"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	vm, err := New(map[string][]byte{"IMEProbe": data})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	handlerValue := invokeTestNative(
 		t, vm,
 		"com/xce/lcdui/TextComponentHandler", "getTextComponentHandler",
 		"()Lcom/xce/lcdui/TextComponentHandler;", 0,
 	)
 	handler, err := handlerValue.Reference()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	probe := vm.NewObject("IMEProbe", nil)
 	invokeTestNative(
 		t, vm,
@@ -50,9 +44,7 @@ func driveHandler(t *testing.T, keys ...int32) string {
 		t.Fatal(err)
 	}
 	length, err := lengthValue.Int()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	runes := make([]rune, 0, length)
 	for index := int32(0); index < length; index++ {
 		charValue, _, err := vm.InvokeStatic(
@@ -62,9 +54,7 @@ func driveHandler(t *testing.T, keys ...int32) string {
 			t.Fatal(err)
 		}
 		char, err := charValue.Int()
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		runes = append(runes, rune(char))
 	}
 	return string(runes)

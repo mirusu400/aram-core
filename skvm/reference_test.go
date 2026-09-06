@@ -82,9 +82,7 @@ func TestReferenceSKVMLifecycleSmoke(t *testing.T) {
 		packages++
 		return nil
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if packages == 0 {
 		t.Fatal("no SKVM packages were exercised")
 	}
@@ -188,9 +186,7 @@ func TestReferenceSKVMExternalReferenceCoverage(t *testing.T) {
 		}
 		return nil
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if len(missing) != 0 {
 		signatures := make([]string, 0, len(missing))
 		for signature := range missing {

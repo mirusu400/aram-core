@@ -13,16 +13,10 @@ func TestAddressedReadOnlyStorageWindowSelectsMaskedSourceRange(t *testing.T) {
 		image[index] = byte(index)
 	}
 	window, err := NewAddressedReadOnlyStorageWindow(bytes.NewReader(image), 0x20, 0xffffffe0, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	command, err := NewAddressedStorageCommandRegister(window, Width32)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := command.Write(0, Width32, 0x25); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, command.Write(0, Width32, 0x25))
 	if got, err := window.Read(4, Width32); err != nil || got != 0x27262524 {
 		t.Fatalf("selected word = %#x error %v", got, err)
 	}
@@ -39,24 +33,16 @@ func TestAddressedReadOnlyStorageWindowSelectsMaskedSourceRange(t *testing.T) {
 		t.Fatalf("out-of-storage command error = %v", err)
 	}
 	state, err := command.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if version := binary.LittleEndian.Uint32(state[4:8]); version != 1 {
 		t.Fatalf("state version = %d", version)
 	}
-	if err := command.Write(0, Width32, 0x45); err != nil {
-		t.Fatal(err)
-	}
-	if err := window.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, command.Write(0, Width32, 0x45))
+	check(t, window.LoadState(state))
 	if got, err := command.Read(0, Width32); err != nil || got != 0x25 {
 		t.Fatalf("restored command = %#x error %v", got, err)
 	}
-	if err := command.Reset(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, command.Reset())
 	if got, err := command.Read(0, Width32); err != nil || got != 0 {
 		t.Fatalf("reset command = %#x error %v", got, err)
 	}

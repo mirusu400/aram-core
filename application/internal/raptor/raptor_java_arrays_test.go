@@ -20,22 +20,16 @@ func TestSyncRaptorArrayCopiesBothWays(t *testing.T) {
 		importSlotByKey: make(map[raptorImportKey]uint32),
 	}
 	java, err := runtime.ensureJavaRuntime()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 
 	array, err := runtime.newRaptorJavaArray('B', 6)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	mirror := java.lgtToKTF[array]
 	if mirror == 0 {
 		t.Fatal("the array has no KTF mirror")
 	}
 	body, err := public.ReadU32(array + 8)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	mirrorBody, count, element, primitive, ok := java.Host.ArrayShape(mirror)
 	if !ok || !primitive || count != 6 || element != 1 {
 		t.Fatalf("mirror shape = count %d element %d primitive %t ok %t", count, element, primitive, ok)
@@ -47,27 +41,19 @@ func TestSyncRaptorArrayCopiesBothWays(t *testing.T) {
 	// Guest -> mirror: what the AOT stored has to reach a host method that
 	// reads the array (new String(byte[]), DataBase.insertRecord).
 	written := []byte{1, 2, 3, 4, 5, 6}
-	if err := public.CPU.WriteMemory(body+4, written); err != nil {
-		t.Fatal(err)
-	}
+	check(t, public.CPU.WriteMemory(body+4, written))
 	runtime.syncRaptorArrayArguments(java, []uint32{mirror}, true)
 	seen := make([]byte, len(written))
-	if err := public.CPU.ReadMemory(mirrorBody, seen); err != nil {
-		t.Fatal(err)
-	}
+	check(t, public.CPU.ReadMemory(mirrorBody, seen))
 	if !bytes.Equal(seen, written) {
 		t.Fatalf("mirror = %v, want %v", seen, written)
 	}
 
 	// Mirror -> guest: what a host method filled has to reach the AOT.
 	filled := []byte{9, 8, 7, 6, 5, 4}
-	if err := public.CPU.WriteMemory(mirrorBody, filled); err != nil {
-		t.Fatal(err)
-	}
+	check(t, public.CPU.WriteMemory(mirrorBody, filled))
 	runtime.syncRaptorArrayArguments(java, []uint32{mirror}, false)
-	if err := public.CPU.ReadMemory(body+4, seen); err != nil {
-		t.Fatal(err)
-	}
+	check(t, public.CPU.ReadMemory(body+4, seen))
 	if !bytes.Equal(seen, filled) {
 		t.Fatalf("guest body = %v, want %v", seen, filled)
 	}
@@ -76,25 +62,17 @@ func TestSyncRaptorArrayCopiesBothWays(t *testing.T) {
 	// name different objects on the two sides, and stores are mirrored one at
 	// a time by storeRaptorJavaArray.
 	references, err := runtime.newRaptorJavaArray(0, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	referenceMirror := java.lgtToKTF[references]
 	if width := java.primitiveArrays[referenceMirror]; width != 0 {
 		t.Fatalf("a reference array was indexed as primitive (width %d)", width)
 	}
 	referenceBody, err := public.ReadU32(references + 8)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := public.WriteU32(referenceBody+4, 0xfeedface); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, public.WriteU32(referenceBody+4, 0xfeedface))
 	runtime.syncRaptorArrayArguments(java, []uint32{referenceMirror}, true)
 	mirrorWords, err := java.Host.ReadWords(referenceMirror, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if got, _ := public.ReadU32(mirrorWords[0] + 8); got == 0xfeedface {
 		t.Fatal("a reference element was copied into the mirror verbatim")
 	}
@@ -116,42 +94,28 @@ func TestWrapRaptorJavaObjectGivesArraysABody(t *testing.T) {
 		importSlotByKey: make(map[raptorImportKey]uint32),
 	}
 	java, err := runtime.ensureJavaRuntime()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 
 	mirror, err := java.Host.NewJavaArray("[B", 5, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	mirrorBody, _, _, _, ok := java.Host.ArrayShape(mirror)
 	if !ok {
 		t.Fatal("the host array is not reported as an array")
 	}
 	stored := []byte{0x10, 0x20, 0x30, 0x40, 0x50}
-	if err := public.CPU.WriteMemory(mirrorBody, stored); err != nil {
-		t.Fatal(err)
-	}
+	check(t, public.CPU.WriteMemory(mirrorBody, stored))
 
 	instance, err := runtime.wrapRaptorJavaObject(java, mirror)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	body, err := public.ReadU32(instance + 8)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	length, err := public.ReadU32(body)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if length != 5 {
 		t.Fatalf("wrapped array length = %d, want 5", length)
 	}
 	seen := make([]byte, len(stored))
-	if err := public.CPU.ReadMemory(body+4, seen); err != nil {
-		t.Fatal(err)
-	}
+	check(t, public.CPU.ReadMemory(body+4, seen))
 	if !bytes.Equal(seen, stored) {
 		t.Fatalf("wrapped array = %v, want %v", seen, stored)
 	}

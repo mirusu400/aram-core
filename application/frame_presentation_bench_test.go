@@ -31,21 +31,13 @@ func BenchmarkFramePresentationWIPI(b *testing.B) {
 
 func benchKTF(b *testing.B) *Machine {
 	graphics, err := shared.NewGraphics(shared.NewRegistry(16), shared.GraphicsLimits{})
-	if err != nil {
-		b.Fatal(err)
-	}
+	check(b, err)
 	surface, err := graphics.CreateSurface(1, shared.SurfaceDescriptor{
 		Width: 240, Height: 320, Format: shared.PixelRGBA8888,
 	})
-	if err != nil {
-		b.Fatal(err)
-	}
-	if err := graphics.SetScreen(1, surface); err != nil {
-		b.Fatal(err)
-	}
-	if err := graphics.SetPixel(1, surface, 4, 4, shared.RGB(255, 0, 0)); err != nil {
-		b.Fatal(err)
-	}
+	check(b, err)
+	check(b, graphics.SetScreen(1, surface))
+	check(b, graphics.SetPixel(1, surface, 4, 4, shared.RGB(255, 0, 0)))
 	if _, err := graphics.Present(1, surface, shared.Rectangle{}); err != nil {
 		b.Fatal(err)
 	}

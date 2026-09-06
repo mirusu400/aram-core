@@ -7,12 +7,8 @@ import (
 
 func TestMixedWidthLatchedRegisterMergesNarrowWrites(t *testing.T) {
 	device, err := NewMixedWidthLatchedRegister([]Width{Width32, Width16}, 0x12345678)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(0, Width16, 0xabcd); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, device.Write(0, Width16, 0xabcd))
 	if got, err := device.Read(0, Width32); err != nil || got != 0x1234abcd {
 		t.Fatalf("merged word = %#x error %v", got, err)
 	}
@@ -23,13 +19,9 @@ func TestMixedWidthLatchedRegisterMergesNarrowWrites(t *testing.T) {
 		t.Fatalf("adjacent write error = %v", err)
 	}
 	state, err := device.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	restored, _ := NewMixedWidthLatchedRegister([]Width{Width16, Width32}, 0x12345678)
-	if err := restored.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restored.LoadState(state))
 	if got, _ := restored.Read(0, Width32); got != 0x1234abcd {
 		t.Fatalf("restored word = %#x", got)
 	}

@@ -3,8 +3,6 @@ package ktf
 import (
 	"testing"
 
-	"github.com/mirusu400/aram-core/cpu/interpreter"
-	"github.com/mirusu400/aram-core/loader/ktf"
 	"github.com/mirusu400/aram-core/profile"
 )
 
@@ -14,28 +12,13 @@ import (
 // owns the composition. keyNotify did nothing and answered "not consumed", so
 // both fields stayed empty.
 func TestKTFLWCTextFieldComposesKeypadInput(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
 	instance, err := runtime.newJavaInstance(
 		"org/kwis/msp/lwc/TextFieldComponent",
 		0,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	state := runtime.lwcComponent(instance)
 
 	press := func(key int32) bool {
@@ -92,28 +75,13 @@ func TestKTFLWCTextFieldComposesKeypadInput(t *testing.T) {
 // field still rotates the glyph being multi-tapped, because that does not grow
 // it.
 func TestKTFLWCTextFieldHonoursMaxLength(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
 	instance, err := runtime.newJavaInstance(
 		"org/kwis/msp/lwc/TextFieldComponent",
 		0,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	state := runtime.lwcComponent(instance)
 	runtime.lwcMaxLengths[instance] = 2
 

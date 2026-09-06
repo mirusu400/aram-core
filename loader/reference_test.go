@@ -25,9 +25,7 @@ func TestMagicholeReferenceDAT(t *testing.T) {
 		t.Skipf("reference DAT is unavailable: %v", err)
 	}
 	container, err := loader.InspectContainer(data)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if len(container.Modules) != 6 {
 		t.Fatalf("container ABHS module count = %d, want 6", len(container.Modules))
 	}

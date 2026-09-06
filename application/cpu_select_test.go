@@ -90,9 +90,7 @@ func TestFastestBackendResolvesAndNeverFails(t *testing.T) {
 	}
 	// The reported name and the returned backend must describe the same core.
 	want, err := ResolveCPUBackend(resolved)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	reference := want()
 	defer reference.Close()
 	if got, expect := backend.Identity().Name, reference.Identity().Name; got != expect {

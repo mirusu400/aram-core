@@ -38,9 +38,7 @@ func TestSCHW830PrivateReferenceOutputsFirmwarePCM(t *testing.T) {
 		t.Fatal("DL21 audio source address is unreadable")
 	}
 	header := make([]byte, 8)
-	if err := readSCHW830GuestBlock(machine.bus, address, header); err != nil {
-		t.Fatal(err)
-	}
+	check(t, readSCHW830GuestBlock(machine.bus, address, header))
 	if !bytes.Equal(header[:4], []byte("MMMD")) ||
 		binary.BigEndian.Uint32(header[4:])+8 != length {
 		t.Fatalf("DL21 audio descriptor length=%#x header=%x", length, header)
@@ -48,9 +46,7 @@ func TestSCHW830PrivateReferenceOutputsFirmwarePCM(t *testing.T) {
 	assertSCHW830FirmwareGain(t, machine, 7, 0, 100, false)
 
 	chunk := machine.DrainAudio()
-	if err := chunk.Validate(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, chunk.Validate())
 	if chunk.SampleRate != 44_100 || chunk.Channels != 2 ||
 		len(chunk.PCM16) == 0 || schw830AudioPeak(chunk.PCM16) == 0 {
 		t.Fatalf(
@@ -110,9 +106,7 @@ func openSCHW830AudioReferenceMachine(t *testing.T, snapshotEnvironment string) 
 	}
 	set := openSamsungSCHReferenceSet(t, schw830ReferenceDirectory(t))
 	machine, err := New(set, Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	t.Cleanup(func() { _ = machine.Close() })
 	if machine.identity.FirmwareBuildID != samsung.SCHW830DL21ProfileID || machine.audio == nil {
 		t.Fatalf("audio reference machine = %+v, audio=%t", machine.identity, machine.audio != nil)
@@ -123,13 +117,9 @@ func openSCHW830AudioReferenceMachine(t *testing.T, snapshotEnvironment string) 
 
 func runSCHW830AudioInput(t *testing.T, machine *Machine, control string) {
 	t.Helper()
-	if err := machine.SetKey(control, true); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.SetKey(control, true))
 	runSCHW830Budget(t, machine, schw830AudioKeyBudget, control+" press")
-	if err := machine.SetKey(control, false); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.SetKey(control, false))
 	runSCHW830Budget(t, machine, schw830AudioKeyBudget, control+" release")
 	runSCHW830Budget(t, machine, schw830AudioSettleBudget, control+" settle")
 }

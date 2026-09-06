@@ -18,9 +18,7 @@ func testPNG(t *testing.T, index int) []byte {
 		R: uint8(index), G: uint8(index >> 8), B: uint8(index >> 16), A: 0xff,
 	})
 	var buffer bytes.Buffer
-	if err := png.Encode(&buffer, frame); err != nil {
-		t.Fatal(err)
-	}
+	check(t, png.Encode(&buffer, frame))
 	return buffer.Bytes()
 }
 
@@ -35,9 +33,7 @@ func testPNG(t *testing.T, index int) []byte {
 // is only creatable if a collection actually happened.
 func TestSKVMImagesCollectWhenTheSurfaceTableFills(t *testing.T) {
 	vm, err := New(map[string][]byte{"Game": syntheticClass(t)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	for created := 0; created < 4096; created++ {
 		if _, err := vm.newImage(testPNG(t, created)); err != nil {
 			t.Fatalf("image %d: %v", created, err)
@@ -49,9 +45,7 @@ func TestSKVMImagesCollectWhenTheSurfaceTableFills(t *testing.T) {
 // the MIDlet creates by geometry takes a surface of its own.
 func TestSKVMMutableImagesCollectToo(t *testing.T) {
 	vm, err := New(map[string][]byte{"Game": syntheticClass(t)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	for created := 0; created < 4096; created++ {
 		state, err := vm.newImageState(8, 8)
 		if err != nil {

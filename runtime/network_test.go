@@ -10,52 +10,38 @@ import (
 
 func TestModeledSocketRequiresExplicitResponse(t *testing.T) {
 	services, err := NewServices(Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	socket, err := services.Network.OpenSocket(2, 2, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := services.Network.ConnectSocket(2, socket, "localhost", 1234); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, services.Network.ConnectSocket(2, socket, "localhost", 1234))
 	if _, err := services.Network.SocketWrite(2, socket, []byte("early")); err == nil {
 		t.Fatal("SocketWrite succeeded before provider completion")
 	}
-	if err := services.Network.CompleteSocketConnect(
+	check(t, services.Network.CompleteSocketConnect(
 		2,
 		socket,
 		true,
 		int64(time.Millisecond),
 		services.Events,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	if _, err := services.Network.SocketWrite(2, socket, []byte("request")); err != nil {
 		t.Fatal(err)
 	}
-	if err := services.Network.InjectSocketRead(
+	check(t, services.Network.InjectSocketRead(
 		2,
 		socket,
 		[]byte("response"),
 		int64(2*time.Millisecond),
 		services.Events,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	got, err := services.Network.SocketRead(2, socket, 4)
 	if err != nil || string(got) != "resp" {
 		t.Fatalf("SocketRead = %q, %v", got, err)
 	}
 	state := services.Snapshot()
 	clone, err := NewServices(state.Config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := clone.Restore(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, clone.Restore(state))
 	if !reflect.DeepEqual(clone.Network.Snapshot(), services.Network.Snapshot()) {
 		t.Fatal("network state did not round-trip")
 	}
@@ -64,29 +50,21 @@ func TestModeledSocketRequiresExplicitResponse(t *testing.T) {
 func TestHTTPCompletionRollsBackWhenEventQueueIsFull(t *testing.T) {
 	registry := NewRegistry(16)
 	network, err := NewNetwork(registry, NetworkLimits{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	bus := NewEventBus(1, 16)
 	if _, err := bus.Enqueue(Event{Kind: EventApplication}); err != nil {
 		t.Fatal(err)
 	}
 	request, err := network.OpenHTTP(1, "https://example.invalid/resource")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := network.SetHTTPRequest(
+	check(t, err)
+	check(t, network.SetHTTPRequest(
 		1,
 		request,
 		"POST",
 		[]HTTPProperty{{Name: "content-type", Value: "application/octet-stream"}},
 		[]byte("request"),
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := network.BeginHTTP(1, request); err != nil {
-		t.Fatal(err)
-	}
+	))
+	check(t, network.BeginHTTP(1, request))
 	before := network.Snapshot()
 	if err := network.CompleteHTTP(
 		1,
@@ -110,38 +88,28 @@ func TestHTTPCompletionRollsBackWhenEventQueueIsFull(t *testing.T) {
 
 func TestNetworkRestoreRejectsNonCanonicalStateAtomically(t *testing.T) {
 	services, err := NewServices(Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	socket, err := services.Network.OpenSocket(3, 2, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := services.Network.ConnectSocket(
+	check(t, err)
+	check(t, services.Network.ConnectSocket(
 		3,
 		socket,
 		"localhost",
 		8080,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := services.Network.CompleteSocketConnect(
+	))
+	check(t, services.Network.CompleteSocketConnect(
 		3,
 		socket,
 		true,
 		0,
 		services.Events,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	request, err := services.Network.OpenHTTP(
 		3,
 		"https://example.invalid/resource",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := services.Network.SetHTTPRequest(
+	check(t, err)
+	check(t, services.Network.SetHTTPRequest(
 		3,
 		request,
 		"post",
@@ -150,13 +118,9 @@ func TestNetworkRestoreRejectsNonCanonicalStateAtomically(t *testing.T) {
 			{Name: "X-First", Value: "1"},
 		},
 		[]byte("request"),
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := services.Network.BeginHTTP(3, request); err != nil {
-		t.Fatal(err)
-	}
-	if err := services.Network.CompleteHTTP(
+	))
+	check(t, services.Network.BeginHTTP(3, request))
+	check(t, services.Network.CompleteHTTP(
 		3,
 		request,
 		200,
@@ -164,9 +128,7 @@ func TestNetworkRestoreRejectsNonCanonicalStateAtomically(t *testing.T) {
 		[]byte("response"),
 		0,
 		services.Events,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 
 	cases := []struct {
 		name   string
@@ -229,13 +191,9 @@ func TestNetworkRestoreRejectsNonCanonicalStateAtomically(t *testing.T) {
 
 func TestNetworkRejectsEmbeddedNULAndNonCanonicalReplayHeaders(t *testing.T) {
 	services, err := NewServices(Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	socket, err := services.Network.OpenSocket(1, 2, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if err := services.Network.ConnectSocket(
 		1,
 		socket,
@@ -254,9 +212,7 @@ func TestNetworkRejectsEmbeddedNULAndNonCanonicalReplayHeaders(t *testing.T) {
 		1,
 		"https://example.invalid/",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if err := services.Network.SetHTTPRequest(
 		1,
 		request,

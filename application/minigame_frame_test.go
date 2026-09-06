@@ -15,20 +15,16 @@ func TestMinigameResumedFrameKeepsDrainingServiceEvents(t *testing.T) {
 		entry    = uint32(0x04000000)
 		dataBase = uint32(0x05000000)
 	)
-	if err := machine.cpu.Map(
+	check(t, machine.cpu.Map(
 		entry,
 		0x1000,
 		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := machine.cpu.Map(
+	))
+	check(t, machine.cpu.Map(
 		dataBase,
 		0x1000,
 		cpu.PermissionRead|cpu.PermissionWrite,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	// The first five lifecycle calls increment the counter and return. The
 	// sixth frame event enters a permanent loop, forcing every later host frame
 	// to resume at an instruction-budget boundary.
@@ -53,14 +49,10 @@ func TestMinigameResumedFrameKeepsDrainingServiceEvents(t *testing.T) {
 		0x1000,
 		entry|1,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	machine.minigame = runtime
 	machine.frameRunBudget = 1
-	if err := machine.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.Start(context.Background()))
 
 	for frame := range 1100 {
 		if err := machine.StepFrame(context.Background()); err != nil {

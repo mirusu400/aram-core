@@ -60,50 +60,36 @@ func TestSamsungQualcommVerifiedPBLHandlerReturnsLoaderSuccess(t *testing.T) {
 		{address: 0x00500000, size: 0x00100000},
 		{address: 0x01880000, size: 0x00010000},
 	} {
-		if err := backend.Map(region.address, region.size, cpu.PermissionRead|cpu.PermissionWrite); err != nil {
-			t.Fatal(err)
-		}
+		check(t, backend.Map(region.address, region.size, cpu.PermissionRead|cpu.PermissionWrite))
 	}
 	qcsbl := make([]byte, samsungW320QCSBLUsedSize)
 	for index := range qcsbl {
 		qcsbl[index] = byte(index*17 + 3)
 	}
-	if err := backend.WriteMemory(samsungW320QCSBLLoadAddress, qcsbl); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteMemory(samsungW320PBLVerifiedStatus, []byte{0xff}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(samsungW320QCSBLLoadAddress, qcsbl))
+	check(t, backend.WriteMemory(samsungW320PBLVerifiedStatus, []byte{0xff}))
 	handler := samsungQualcommHLEHandlers()[system.HLEContractQualcommPBLVerifiedLoaderState]
 	if handler == nil {
 		t.Fatal("verified PBL loader-state handler is missing")
 	}
-	if err := handler.InvokeHLE(system.HLECallContext{CPU: backend}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, handler.InvokeHLE(system.HLECallContext{CPU: backend}))
 	if value, err := backend.ReadRegister(cpu.RegisterR0); err != nil || value != 0x10 {
 		t.Fatalf("verified PBL loader-state result = %#x, error %v", value, err)
 	}
 	verifiedCopy := make([]byte, len(qcsbl))
-	if err := backend.ReadMemory(samsungW320PBLVerifiedCopy, verifiedCopy); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.ReadMemory(samsungW320PBLVerifiedCopy, verifiedCopy))
 	if !bytes.Equal(verifiedCopy, qcsbl) {
 		t.Fatal("verified PBL QCSBL copy differs from its exact input")
 	}
 	record := make([]byte, 6+sha512.Size)
-	if err := backend.ReadMemory(samsungW320PBLVerifiedRecord, record); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.ReadMemory(samsungW320PBLVerifiedRecord, record))
 	digest := sha512.Sum512(qcsbl)
 	if binary.BigEndian.Uint32(record[:4]) != samsungW320QCSBLUsedSize ||
 		record[4] != 0 || record[5] != 0 || !bytes.Equal(record[6:], digest[:]) {
 		t.Fatal("verified PBL record does not describe the exact QCSBL")
 	}
 	status := []byte{0xff}
-	if err := backend.ReadMemory(samsungW320PBLVerifiedStatus, status); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.ReadMemory(samsungW320PBLVerifiedStatus, status))
 	if status[0] != 0 {
 		t.Fatalf("verified PBL status = %#x", status[0])
 	}
@@ -129,9 +115,7 @@ func TestSCHW320ResetHandoffSeedsVerifiedPBLLoaderState(t *testing.T) {
 		UsedSize:    samsungW320QCSBLUsedSize,
 		Bytes:       qcsblBytes,
 	}
-	if err := appendSamsungW320VerifiedPBLState(&handoff, qcsbl); err != nil {
-		t.Fatal(err)
-	}
+	check(t, appendSamsungW320VerifiedPBLState(&handoff, qcsbl))
 	if err := handoff.Validate(); err != nil {
 		t.Fatalf("seeded W320 reset handoff is invalid: %v", err)
 	}
@@ -169,12 +153,8 @@ func TestSamsungQualcommVerifiedBootstrapHandlerReturnsSuccess(t *testing.T) {
 	if handler == nil {
 		t.Fatal("verified bootstrap handler is missing")
 	}
-	if err := backend.WriteRegister(cpu.RegisterR0, 0xffffffff); err != nil {
-		t.Fatal(err)
-	}
-	if err := handler.InvokeHLE(system.HLECallContext{CPU: backend}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteRegister(cpu.RegisterR0, 0xffffffff))
+	check(t, handler.InvokeHLE(system.HLECallContext{CPU: backend}))
 	if value, err := backend.ReadRegister(cpu.RegisterR0); err != nil || value != 0 {
 		t.Fatalf("verified bootstrap result = %#x, error %v", value, err)
 	}
@@ -188,12 +168,8 @@ func TestSamsungQualcommResidentBootHandlerPreservesCallRegisters(t *testing.T) 
 		t.Fatal("resident boot callback handler is missing")
 	}
 	const sentinel = uint32(0x04460c8c)
-	if err := backend.WriteRegister(cpu.RegisterR0, sentinel); err != nil {
-		t.Fatal(err)
-	}
-	if err := handler.InvokeHLE(system.HLECallContext{CPU: backend}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteRegister(cpu.RegisterR0, sentinel))
+	check(t, handler.InvokeHLE(system.HLECallContext{CPU: backend}))
 	if value, err := backend.ReadRegister(cpu.RegisterR0); err != nil || value != sentinel {
 		t.Fatalf("resident boot callback result = %#x, error %v", value, err)
 	}
@@ -201,13 +177,9 @@ func TestSamsungQualcommResidentBootHandlerPreservesCallRegisters(t *testing.T) 
 
 func TestSamsungQualcommRetainedPBLNANDHandlers(t *testing.T) {
 	flash, err := system.NewErasedCOWFlash(0x8000, 0x4000, strings.Repeat("a", 64))
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	page := bytes.Repeat([]byte{0x5a}, 0x200)
-	if err := flash.ProgramAt(page, 0x400); err != nil {
-		t.Fatal(err)
-	}
+	check(t, flash.ProgramAt(page, 0x400))
 	board := system.BoardProfile{
 		NANDPageSize: 0x200, NANDEraseBlockSize: 0x4000,
 		NANDFactoryBadBlocks: []uint32{1},
@@ -215,9 +187,7 @@ func TestSamsungQualcommRetainedPBLNANDHandlers(t *testing.T) {
 	handlers := samsungQualcommMachineHLEHandlers(flash, board)
 	backend := interpreter.New()
 	t.Cleanup(func() { _ = backend.Close() })
-	if err := backend.Map(0x2000, 0x2000, cpu.PermissionRead|cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.Map(0x2000, 0x2000, cpu.PermissionRead|cpu.PermissionWrite))
 	for register, value := range map[uint32]uint32{
 		cpu.RegisterR0: 2,
 		cpu.RegisterR1: 0x200,
@@ -225,26 +195,18 @@ func TestSamsungQualcommRetainedPBLNANDHandlers(t *testing.T) {
 		cpu.RegisterR3: 0x2000,
 		cpu.RegisterSP: 0x3000,
 	} {
-		if err := backend.WriteRegister(register, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, backend.WriteRegister(register, value))
 	}
 	var count [4]byte
 	binary.LittleEndian.PutUint32(count[:], 1)
-	if err := backend.WriteMemory(0x3000, count[:]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x3000, count[:]))
 	readHandler := handlers[system.HLEContractQualcommPBLNANDRead]
 	if readHandler == nil {
 		t.Fatal("retained PBL NAND read handler is missing")
 	}
-	if err := readHandler.InvokeHLE(system.HLECallContext{CPU: backend}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, readHandler.InvokeHLE(system.HLECallContext{CPU: backend}))
 	output := make([]byte, len(page))
-	if err := backend.ReadMemory(0x2000, output); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.ReadMemory(0x2000, output))
 	if !bytes.Equal(output, page) {
 		t.Fatal("retained PBL NAND read did not copy the requested page")
 	}
@@ -257,12 +219,8 @@ func TestSamsungQualcommRetainedPBLNANDHandlers(t *testing.T) {
 		t.Fatal("retained PBL NAND bad-block handler is missing")
 	}
 	for block, want := range map[uint32]uint32{0: 0, 1: 1} {
-		if err := backend.WriteRegister(cpu.RegisterR0, block); err != nil {
-			t.Fatal(err)
-		}
-		if err := badBlockHandler.InvokeHLE(system.HLECallContext{CPU: backend}); err != nil {
-			t.Fatal(err)
-		}
+		check(t, backend.WriteRegister(cpu.RegisterR0, block))
+		check(t, badBlockHandler.InvokeHLE(system.HLECallContext{CPU: backend}))
 		if value, err := backend.ReadRegister(cpu.RegisterR0); err != nil || value != want {
 			t.Fatalf("retained PBL NAND block %#x result = %#x, error %v", block, value, err)
 		}
@@ -285,15 +243,11 @@ func TestInterpreterBackendModeSelection(t *testing.T) {
 		{mode: CPUBackendJITLoops, wantName: interpreter.BackendName + "-jit-loops"},
 	} {
 		backend, err := newInterpreterBackend(test.mode, interpreter.CompatibilityOptions{})
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		if got := backend.Identity().Name; got != test.wantName {
 			t.Fatalf("mode %q backend = %q, want %q", test.mode, got, test.wantName)
 		}
-		if err := backend.Close(); err != nil {
-			t.Fatal(err)
-		}
+		check(t, backend.Close())
 	}
 	if _, err := newInterpreterBackend("unknown", interpreter.CompatibilityOptions{}); err == nil {
 		t.Fatal("unknown CPU backend mode was accepted")

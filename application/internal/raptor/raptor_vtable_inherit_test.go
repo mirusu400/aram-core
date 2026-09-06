@@ -16,9 +16,7 @@ func TestRaptorSubclassInheritsResolvedParentVTableSlots(t *testing.T) {
 		importSlotByKey: make(map[raptorImportKey]uint32),
 	}
 	java, err := runtime.ensureJavaRuntime()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 
 	const parentBody = uint32(0x00002469)
 	parent := newRaptorTestClass(t, runtime, java, "app/Base", "", []raptorJavaDeclaredMethod{
@@ -29,26 +27,20 @@ func TestRaptorSubclassInheritsResolvedParentVTableSlots(t *testing.T) {
 		{className: parent.Name, Name: "run", descriptor: "()V"},
 	}
 
-	if err := runtime.buildRaptorJavaVTable(
+	check(t, runtime.buildRaptorJavaVTable(
 		java,
 		parent,
 		uint32(len(java.flatVirtual)),
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.buildRaptorJavaVTable(
+	))
+	check(t, runtime.buildRaptorJavaVTable(
 		java,
 		child,
 		uint32(len(java.flatVirtual)),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 
 	slot := raptorJavaFlatVirtualSlot(0)
 	inherited, err := public.ReadU32(child.vtable + slot)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if inherited != parentBody {
 		declared, _ := public.ReadU32(parent.vtable + slot)
 		t.Fatalf("child slot = 0x%08x, want the parent's body 0x%08x (parent slot 0x%08x)",

@@ -6,9 +6,6 @@ import (
 	"image/color"
 	"image/png"
 	"testing"
-
-	"github.com/mirusu400/aram-core/cpu/interpreter"
-	"github.com/mirusu400/aram-core/loader/ktf"
 )
 
 // TestKTFJavaImagesDoNotTakeASurfaceUntilDrawnThrough covers what random key
@@ -18,21 +15,8 @@ import (
 // read. Drawing runs on the Go image; the surface is only the target a
 // Graphics obtained from the Image syncs to.
 func TestKTFJavaImagesDoNotTakeASurfaceUntilDrawnThrough(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
 
 	// Far more images than the 1024-surface table holds.
 	const images = 3000
@@ -54,16 +38,12 @@ func TestKTFJavaImagesDoNotTakeASurfaceUntilDrawnThrough(t *testing.T) {
 	// The surface still appears the moment one is needed, and is the same one
 	// on a second ask.
 	surface, err := runtime.ensureJavaImageSurface(last)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if surface == 0 {
 		t.Fatal("no surface was materialised")
 	}
 	again, err := runtime.ensureJavaImageSurface(last)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if again != surface {
 		t.Fatalf("second ask made a new surface: %s then %s", surface, again)
 	}
@@ -73,21 +53,8 @@ func TestKTFJavaImagesDoNotTakeASurfaceUntilDrawnThrough(t *testing.T) {
 // copies its pixels out, so holding the asset - and the surface the asset owns
 // - was one of each per decoded image for the lifetime of the title.
 func TestKTFDecodedImagesReleaseTheirAsset(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
 
 	const images = 2000
 	for created := 0; created < images; created++ {
@@ -96,9 +63,7 @@ func TestKTFDecodedImagesReleaseTheirAsset(t *testing.T) {
 			R: uint8(created), G: uint8(created >> 8), A: 0xff,
 		})
 		var encoded bytes.Buffer
-		if err := png.Encode(&encoded, frame); err != nil {
-			t.Fatal(err)
-		}
+		check(t, png.Encode(&encoded, frame))
 		instance, err := runtime.newJavaEncodedImage(encoded.Bytes())
 		if err != nil {
 			t.Fatalf("image %d: %v", created, err)
@@ -121,21 +86,8 @@ func TestKTFDecodedImagesReleaseTheirAsset(t *testing.T) {
 // Go image already holds, so the ones nothing has drawn through lately are
 // given back and made again on demand.
 func TestKTFJavaImageMirrorsStayInsideTheBudget(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
 
 	// Far more mirrors than the surface table holds, one per Image, in the
 	// order a title works through its sprites.
@@ -165,13 +117,9 @@ func TestKTFJavaImageMirrorsStayInsideTheBudget(t *testing.T) {
 		t.Fatal("the first mirror of 3000 was never evicted")
 	}
 	surface, err := runtime.ensureJavaImageSurface(first)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	pixels, err := runtime.Services.Graphics.RGBA(runtime.ServiceOwner, surface)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if len(pixels) != 2*2*4 || pixels[3] != 0xff || pixels[0] != 0 {
 		t.Fatalf("re-made mirror does not hold the image: %v", pixels[:4])
 	}
@@ -182,31 +130,14 @@ func TestKTFJavaImageMirrorsStayInsideTheBudget(t *testing.T) {
 // mirror that is given back has to take that mapping with it or the next draw
 // reads a destroyed surface.
 func TestKTFEvictedMirrorLeavesNoGraphicsMapping(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
 	frame := image.NewRGBA(image.Rect(0, 0, 4, 4))
 	frame.Set(1, 1, color.RGBA{B: 0x80, A: 0xff})
 	target, err := runtime.newJavaImage(frame)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	graphics, err := runtime.newJavaInstance("org/kwis/msp/lcdui/Graphics", 4)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	runtime.Graphics[graphics] = &ktfGraphics{
 		Target: frame,
 		image:  target,
@@ -221,9 +152,7 @@ func TestKTFEvictedMirrorLeavesNoGraphicsMapping(t *testing.T) {
 		other := image.NewRGBA(image.Rect(0, 0, 2, 2))
 		other.Set(0, 0, color.RGBA{G: uint8(created), A: 0xff})
 		instance, err := runtime.newJavaImage(other)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		if _, err := runtime.ensureJavaImageSurface(instance); err != nil {
 			t.Fatal(err)
 		}

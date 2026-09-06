@@ -30,13 +30,11 @@ func TestNativeRegistrySnapshot(t *testing.T) {
 	lines := registeredNativeList(t)
 	goldenPath := filepath.Join("testdata", "native_registry.golden")
 	if os.Getenv("ARAM_UPDATE_GOLDEN") != "" {
-		if err := os.WriteFile(
+		check(t, os.WriteFile(
 			goldenPath,
 			[]byte(strings.Join(lines, "\n")+"\n"),
 			0o644,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
 	raw, err := os.ReadFile(goldenPath)
 	if err != nil {

@@ -39,24 +39,16 @@ func TestSCHW830DA18PrivateReference(t *testing.T) {
 	}
 
 	set, err := firmwareset.NewSet(sources)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	pkg, err := Inspect(set)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	profile, err := BuiltinRegistry().Match(pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if profile.ID != SCHW830DA18ProfileID {
 		t.Fatalf("profile = %q, want %q", profile.ID, SCHW830DA18ProfileID)
 	}
 	layout, err := Normalize(set, pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if layout.MIBIBGeneration != 2 || len(layout.Partitions) != 10 {
 		t.Fatalf("MIBIB = generation %d, %d partitions", layout.MIBIBGeneration, len(layout.Partitions))
 	}
@@ -74,16 +66,12 @@ func TestSCHW830DA18PrivateReference(t *testing.T) {
 		}
 	}
 	progressive, err := DecodeWBIN(set, pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if progressive.EncryptedLength == 0 || len(progressive.ELF.ProgramHeaders) == 0 {
 		t.Fatalf("decoded DA18 WBIN has no progressive image metadata")
 	}
 	flash, err := AssembleFlash(set, pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	t.Logf(
 		"DA18 normalized: flash=%#x encrypted=%#x logical-end=%#x program-headers=%d hash=%s",
 		flash.Size(),

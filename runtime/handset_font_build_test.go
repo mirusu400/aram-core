@@ -61,9 +61,7 @@ func TestRegisterHandsetFontFromBDF(t *testing.T) {
 
 	// Re-registering identical bytes is idempotent and content-addressed.
 	again, err := RegisterHandsetFont([]byte(syntheticBDF))
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if again != name {
 		t.Fatalf("re-register name = %q, want stable %q", again, name)
 	}
@@ -81,27 +79,19 @@ func TestRegisterHandsetFontFromBDF(t *testing.T) {
 	// The selection reaches rasterization: 'A' has visible pixels, and the
 	// Hangul block glyph differs from a blank cell.
 	services, err := NewServices(Config{FallbackFont: name})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if services.Config.FallbackFont != name {
 		t.Fatalf("normalized FallbackFont = %q, want %q", services.Config.FallbackFont, name)
 	}
 	id, err := services.Text.CreateFont(1, FontDescriptor{Size: 12})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	glyphA, err := services.Text.Glyph(1, id, 'A')
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if bytes.Count(glyphA.Alpha, []byte{0xff}) < 3 {
 		t.Fatalf("custom 'A' glyph has too few visible pixels: %d", bytes.Count(glyphA.Alpha, []byte{0xff}))
 	}
 	glyphGa, err := services.Text.Glyph(1, id, '가')
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if bytes.Count(glyphGa.Alpha, []byte{0xff}) == 0 {
 		t.Fatal("custom '가' glyph rendered blank")
 	}

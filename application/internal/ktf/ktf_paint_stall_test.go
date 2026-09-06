@@ -25,9 +25,7 @@ func TestPaintCardReportsStallWhilePaintTaskSleeps(t *testing.T) {
 	runtime := newPaintStallRuntime(card, pending)
 	runtime.TickMS = 4000
 
-	if err := runtime.paintCard(context.Background(), card); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.paintCard(context.Background(), card))
 	if !runtime.PaintStalled {
 		t.Fatal("a repaint dropped for a sleeping paint task did not stall")
 	}
@@ -48,9 +46,7 @@ func TestPaintCardDoesNotStallForRunnablePaintTask(t *testing.T) {
 	runtime := newPaintStallRuntime(card, pending)
 	runtime.TickMS = 4000
 
-	if err := runtime.paintCard(context.Background(), card); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.paintCard(context.Background(), card))
 	if runtime.PaintStalled {
 		t.Fatal("a runnable paint task stalled the quantum")
 	}
@@ -65,9 +61,7 @@ func TestPaintCardDoesNotStallForElapsedSleep(t *testing.T) {
 	runtime := newPaintStallRuntime(card, pending)
 	runtime.TickMS = 4000
 
-	if err := runtime.paintCard(context.Background(), card); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.paintCard(context.Background(), card))
 	if runtime.PaintStalled {
 		t.Fatal("an elapsed sleep deadline stalled the quantum")
 	}

@@ -88,9 +88,7 @@ func TestReferenceSKVMBootFrameDeterminism(t *testing.T) {
 		hashed++
 		return nil
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if packages == 0 {
 		t.Fatal("no SKVM packages were exercised")
 	}

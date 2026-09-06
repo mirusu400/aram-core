@@ -21,9 +21,7 @@ func iconTestPNG(t *testing.T, width, height int) []byte {
 		}
 	}
 	var buffer bytes.Buffer
-	if err := png.Encode(&buffer, img); err != nil {
-		t.Fatal(err)
-	}
+	check(t, png.Encode(&buffer, img))
 	return buffer.Bytes()
 }
 
@@ -33,25 +31,19 @@ func iconMakeZip(t *testing.T, files map[string][]byte) []byte {
 	writer := zip.NewWriter(&buffer)
 	for name, data := range files {
 		entry, err := writer.Create(name)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		if _, err := entry.Write(data); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := writer.Close(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, writer.Close())
 	return buffer.Bytes()
 }
 
 func iconWriteTemp(t *testing.T, name string, data []byte) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), name)
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	check(t, os.WriteFile(path, data, 0o644))
 	return path
 }
 

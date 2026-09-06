@@ -11,15 +11,9 @@ import (
 
 func TestDeviceTimedStateAndRequestsRoundTrip(t *testing.T) {
 	device, err := NewDevice(DeviceConfig{}, DeviceLimits{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Vibrate(75, 100*time.Millisecond, time.Second); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.SetBacklight(true, 200*time.Millisecond, time.Second); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, device.Vibrate(75, 100*time.Millisecond, time.Second))
+	check(t, device.SetBacklight(true, 200*time.Millisecond, time.Second))
 	device.SetNetworkAvailable(true)
 	if _, err := device.Request(
 		4,
@@ -32,29 +26,21 @@ func TestDeviceTimedStateAndRequestsRoundTrip(t *testing.T) {
 	}
 	state := device.Snapshot()
 	clone, err := NewDevice(DeviceConfig{}, DeviceLimits{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := clone.Restore(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, clone.Restore(state))
 	if !reflect.DeepEqual(clone.Snapshot(), state) {
 		t.Fatal("device state did not round-trip")
 	}
 	if !clone.NetworkAvailable() {
 		t.Fatal("network availability did not round-trip")
 	}
-	if err := clone.Advance(1150 * time.Millisecond); err != nil {
-		t.Fatal(err)
-	}
+	check(t, clone.Advance(1150*time.Millisecond))
 	level, _ := clone.Vibration()
 	backlight, _ := clone.Backlight()
 	if level != 0 || !backlight {
 		t.Fatalf("timed state at 1.15s = vibration %d backlight %v", level, backlight)
 	}
-	if err := clone.Advance(1250 * time.Millisecond); err != nil {
-		t.Fatal(err)
-	}
+	check(t, clone.Advance(1250*time.Millisecond))
 	backlight, _ = clone.Backlight()
 	if backlight {
 		t.Fatal("backlight remained on past deadline")
@@ -88,9 +74,7 @@ func TestConfigFromProfileCarriesCapabilitiesAndLimits(t *testing.T) {
 		},
 	}
 	config, err := ConfigFromProfile(resolved)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if config.Device.ScreenWidth != 176 ||
 		config.Device.ScreenHeight != 220 ||
 		config.Device.TitleSHA256 != strings.Repeat("ab", 32) ||
@@ -116,9 +100,7 @@ func TestConfigFromProfileCarriesCapabilitiesAndLimits(t *testing.T) {
 	other := resolved
 	other.TitleSHA256 = strings.Repeat("cd", 32)
 	otherConfig, err := ConfigFromProfile(other)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if otherConfig.ProfileHash == config.ProfileHash {
 		t.Fatal("title SHA-256 did not affect service profile identity")
 	}
@@ -128,18 +110,14 @@ func TestDeviceStatusResponseRecordsAndDrivesPlayback(t *testing.T) {
 	config := DefaultConfig()
 	config.ReplayMode = ReplayRecord
 	recorded, err := NewServices(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := recorded.UpdateDeviceStatus(
+	check(t, err)
+	check(t, recorded.UpdateDeviceStatus(
 		3,
 		72,
 		45,
 		true,
 		time.Second,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	log := recorded.Replay.Snapshot()
 	log.Mode = ReplayPlayback
 	log.Cursor = 0
@@ -147,21 +125,15 @@ func TestDeviceStatusResponseRecordsAndDrivesPlayback(t *testing.T) {
 	playbackConfig := config
 	playbackConfig.ReplayMode = ReplayPlayback
 	playback, err := NewServices(playbackConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := playback.Replay.Restore(log); err != nil {
-		t.Fatal(err)
-	}
-	if err := playback.UpdateDeviceStatus(
+	check(t, err)
+	check(t, playback.Replay.Restore(log))
+	check(t, playback.UpdateDeviceStatus(
 		3,
 		1,
 		2,
 		false,
 		time.Second,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	battery, signal, available := playback.Device.Status()
 	if battery != 72 || signal != 45 || !available {
 		t.Fatalf(
@@ -178,9 +150,7 @@ func TestConfigFromProfileRetainsDefaultsForUnspecifiedIdentityFields(t *testing
 		ID:     "device/minimal",
 		Screen: profile.Screen{Width: 240, Height: 320},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	defaults := DefaultDeviceConfig()
 	if config.Device.WIPIVersion != defaults.WIPIVersion ||
 		config.Device.Carrier != defaults.Carrier {
@@ -196,9 +166,7 @@ func TestConfigFromProfileRetainsDefaultsForUnspecifiedIdentityFields(t *testing
 func TestDeviceOutboxDropsItsOldestRatherThanTheTitle(t *testing.T) {
 	limits := DeviceLimits{MaxRequests: 4, MaxRequestData: 64}
 	device, err := NewDevice(DeviceConfig{}, limits)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	for index := 0; index < 100; index++ {
 		if _, err := device.Request(
 			1, RequestPhone, "01000000000", nil, time.Second,

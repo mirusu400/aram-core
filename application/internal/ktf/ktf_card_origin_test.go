@@ -19,13 +19,9 @@ func newCardOriginRuntime(t *testing.T) *Runtime {
 		ClientName: "client.bin0",
 		Client:     []byte{0x70, 0x47},
 	}, frame, ProfileID, "", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	t.Cleanup(func() { _ = runtime.CPU.Close() })
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.MapImageAndHost())
 	return runtime
 }
 
@@ -47,9 +43,7 @@ func TestKTFCardWithoutAnnunciatorOwnsTheWholeScreen(t *testing.T) {
 		t.Fatalf("card origin = %d, want 0", got)
 	}
 	graphics, err := runtime.EnsureScreenGraphics()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	runtime.ResetScreenGraphics(graphics)
 	state := runtime.Graphics[graphics]
 	if got, want := state.clip, runtime.frame.Bounds(); got != want {
@@ -73,9 +67,7 @@ func TestKTFShownAnnunciatorPaintsTheCardBelowTheStrip(t *testing.T) {
 	}
 
 	graphics, err := runtime.EnsureScreenGraphics()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	runtime.ResetScreenGraphics(graphics)
 	state := runtime.Graphics[graphics]
 
@@ -122,9 +114,7 @@ func TestKTFCardClipCannotReachIntoTheAnnunciatorStrip(t *testing.T) {
 	runtime := newCardOriginRuntime(t)
 	showAnnunciator(runtime)
 	graphics, err := runtime.EnsureScreenGraphics()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	runtime.ResetScreenGraphics(graphics)
 	state := runtime.Graphics[graphics]
 
@@ -141,9 +131,7 @@ func TestKTFCardClipCannotReachIntoTheAnnunciatorStrip(t *testing.T) {
 func TestKTFShowingTheAnnunciatorClearsTheStripBehindIt(t *testing.T) {
 	runtime := newCardOriginRuntime(t)
 	graphics, err := runtime.EnsureScreenGraphics()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	// Paint the full screen the way a title does before it shows its
 	// annunciator, then show it.
 	runtime.ResetScreenGraphics(graphics)
@@ -181,9 +169,7 @@ func TestKTFAnnunciatorStripDrawsTheHandsetStatusBar(t *testing.T) {
 	runtime := newCardOriginRuntime(t)
 	showAnnunciator(runtime)
 	graphics, err := runtime.EnsureScreenGraphics()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	runtime.ResetScreenGraphics(graphics)
 
 	strip := image.Rect(0, 0, int(ktfDisplayWidth), int(ktfAnnunciatorHeight))
@@ -221,9 +207,7 @@ func TestKTFAnnunciatorStripDrawsTheHandsetStatusBar(t *testing.T) {
 func TestKTFWithoutAnnunciatorNothingPaintsTheTopRow(t *testing.T) {
 	runtime := newCardOriginRuntime(t)
 	graphics, err := runtime.EnsureScreenGraphics()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	runtime.ResetScreenGraphics(graphics)
 	for x := 0; x < int(ktfDisplayWidth); x++ {
 		if got := runtime.frame.RGBAAt(x, 0); got != (color.RGBA{}) {
@@ -245,9 +229,7 @@ func TestKTFCardSizeMatchesTheScreenGraphicsClip(t *testing.T) {
 			showAnnunciator(runtime)
 		}
 		graphics, err := runtime.EnsureScreenGraphics()
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		runtime.ResetScreenGraphics(graphics)
 		clip := runtime.Graphics[graphics].clip
 		if got := uint32(clip.Dx()); got != runtime.DisplayWidth() {
@@ -290,9 +272,7 @@ func TestKTFFullScreenFrameGivesTheCardTheWholeScreen(t *testing.T) {
 		t.Fatalf("card height = %d, want %d", got, want)
 	}
 	graphics, err := runtime.EnsureScreenGraphics()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	runtime.ResetScreenGraphics(graphics)
 	state := runtime.Graphics[graphics]
 	frame := image.NewRGBA(image.Rect(
@@ -322,9 +302,7 @@ func TestKTFSmallerFrameLeavesTheCardAlone(t *testing.T) {
 	runtime := newCardOriginRuntime(t)
 	showAnnunciator(runtime)
 	graphics, err := runtime.EnsureScreenGraphics()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	runtime.ResetScreenGraphics(graphics)
 	state := runtime.Graphics[graphics]
 	frame := image.NewRGBA(image.Rect(

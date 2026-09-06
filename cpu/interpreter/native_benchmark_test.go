@@ -20,10 +20,8 @@ import (
 func benchBackend(b *testing.B, make func() *Backend) {
 	backend := make()
 	b.Cleanup(func() { _ = backend.Close() })
-	if err := backend.Map(0x1000, 0x1000,
-		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute); err != nil {
-		b.Fatal(err)
-	}
+	check(b, backend.Map(0x1000, 0x1000,
+		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute))
 	if err := backend.WriteMemory(0x1000, []byte{
 		0x01, 0x30, // adds r0, #1
 		0x01, 0x31, // adds r1, #1
@@ -56,12 +54,8 @@ func benchmarkWholeSystemThumb(b *testing.B, makeBackend func() *Backend) {
 	bus := &nativeSystemBus{ram: make([]byte, 0x4000), mmio: 0x9000}
 	// loop: ldr r2,[r0]; adds r2,#1; str r2,[r0]; adds r3,#1; b loop
 	putThumb(bus.ram, 0x1000, 0x6802, 0x3201, 0x6002, 0x3301, 0xe7fa)
-	if err := backend.AttachSystemBus(bus); err != nil {
-		b.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterR0, 0x2000); err != nil {
-		b.Fatal(err)
-	}
+	check(b, backend.AttachSystemBus(bus))
+	check(b, backend.WriteRegister(cpu.RegisterR0, 0x2000))
 	const budget = uint64(100_000)
 	ctx := context.Background()
 	b.ResetTimer()

@@ -12,9 +12,7 @@ import (
 func TestAssembleFlashMapsDecodedAndIdentityRegions(t *testing.T) {
 	set, pkg := syntheticFlashSet(t, false)
 	image, err := AssembleFlash(set, pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if image.Size() != 0xe0000 || image.ErasedValue() != 0xff {
 		t.Fatalf("flash geometry = size %#x erased %#x", image.Size(), image.ErasedValue())
 	}
@@ -72,17 +70,11 @@ func TestAssembleFlashMapsRawDownloadRegionsFromPieceOrigin(t *testing.T) {
 	set, err := firmwareset.NewSet([]firmwareset.Source{
 		sources[RoleFont], sources[RoleWBIN], sources[RoleWBT], sources[RoleDAT],
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	pkg, err := Inspect(set)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	image, err := AssembleFlash(set, pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	regions := image.Regions()
 	if len(regions) != 4 {
 		t.Fatalf("raw flash region count = %d", len(regions))
@@ -106,17 +98,11 @@ func TestAssembleFlashPreservesSmallPageRawGeometry(t *testing.T) {
 	set, err := firmwareset.NewSet([]firmwareset.Source{
 		sources[RoleWBT], sources[RoleWBIN], sources[RoleDAT], sources[RoleFont],
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	pkg, err := Inspect(set)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	image, err := AssembleFlash(set, pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if image.Size() != 0x0e0000 || image.PageSize() != smallPageSize ||
 		image.EraseBlockSize() != smallEraseBlockSize {
 		t.Fatalf(
@@ -133,9 +119,7 @@ func TestAssembleFlashMapsLogicalRegionsAroundFactoryBadBlocks(t *testing.T) {
 	image, err := AssembleFlashWithOptions(set, pkg, FlashAssemblyOptions{
 		FactoryBadBlocks: []uint32{5, 0},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if image.Size() != 0x120000 {
 		t.Fatalf("physical flash size = %#x", image.Size())
 	}
@@ -189,13 +173,9 @@ func syntheticFlashSet(t *testing.T, overlap bool) (firmwareset.Set, Package) {
 	set, err := firmwareset.NewSet([]firmwareset.Source{
 		sources[RoleFont], sources[RoleWBIN], sources[RoleWBT], sources[RoleDAT],
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	pkg, err := Inspect(set)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	return set, pkg
 }
 

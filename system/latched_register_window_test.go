@@ -7,9 +7,7 @@ import (
 
 func TestLatchedRegisterWindowEnforcesRegisterShape(t *testing.T) {
 	device, err := NewLatchedRegisterWindow(0x10000, Width16)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	for offset, value := range map[uint32]uint32{
 		0x0000: 0x1234,
 		0x0002: 0xabcd,
@@ -48,19 +46,13 @@ func TestLatchedRegisterWindowResetAndStateRoundTrip(t *testing.T) {
 	_ = device.Write(2, Width16, 0x1234)
 	_ = device.Write(6, Width16, 0xabcd)
 	state, err := device.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	restored, _ := NewLatchedRegisterWindow(8, Width16)
-	if err := restored.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restored.LoadState(state))
 	if got, _ := restored.Read(2, Width16); got != 0x1234 {
 		t.Fatalf("restored register = %#x", got)
 	}
-	if err := restored.Reset(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restored.Reset())
 	if got, _ := restored.Read(6, Width16); got != 0 {
 		t.Fatalf("reset register = %#x", got)
 	}

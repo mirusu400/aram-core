@@ -31,15 +31,9 @@ func runKTFTraceInvariantScenario(
 		ClientName: "client.bin0",
 		Client:     []byte{0x70, 0x47}, // bx lr
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.SetTraceMode(mode); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.MapImageAndHost())
+	check(t, runtime.SetTraceMode(mode))
 
 	surface, err := runtime.Services.Graphics.CreateSurface(
 		runtime.ServiceOwner,
@@ -47,19 +41,11 @@ func runKTFTraceInvariantScenario(
 			Width: 2, Height: 1, Format: shared.PixelRGBA8888,
 		},
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.Services.Graphics.SetScreen(runtime.ServiceOwner, surface); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.Services.Graphics.SetScreen(runtime.ServiceOwner, surface))
 	const scratch = guest.DefaultStackBase + 0x400
-	if err := runtime.writeWords(scratch, []uint32{2}); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, 1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.writeWords(scratch, []uint32{2}))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, 1))
 
 	callIndex := 0
 	host := ktfHostCall{
@@ -110,34 +96,24 @@ func runKTFTraceInvariantScenario(
 	for range 3 {
 		runtime.TraceHostCall(host.name)
 		value, err := runtime.invokeHostHandler(context.Background(), host)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		var commit cpu.RegisterCommit
-		if err := commit.Set(cpu.RegisterR0, value); err != nil {
-			t.Fatal(err)
-		}
-		if err := cpu.CommitHostCallRegisters(runtime.CPU, commit); err != nil {
-			t.Fatal(err)
-		}
+		check(t, commit.Set(cpu.RegisterR0, value))
+		check(t, cpu.CommitHostCallRegisters(runtime.CPU, commit))
 	}
 
 	var frame cpu.HostCallFrame
-	if err := cpu.CaptureHostCallFrame(
+	check(t, cpu.CaptureHostCallFrame(
 		runtime.CPU,
 		&frame,
 		cpu.HostCallFrameRequest{},
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	outcome := ktfTraceInvariantOutcome{
 		Registers: frame.Registers,
 		Frame:     runtime.Services.Graphics.LastFrame(),
 		Events:    runtime.Services.Events.Snapshot(),
 	}
-	if err := runtime.CPU.ReadMemory(scratch, outcome.Memory[:]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(scratch, outcome.Memory[:]))
 	return outcome
 }
 

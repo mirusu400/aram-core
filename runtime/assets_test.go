@@ -19,52 +19,36 @@ func testPNG(t *testing.T) []byte {
 	pixels.SetNRGBA(0, 0, color.NRGBA{R: 0xff, A: 0xff})
 	pixels.SetNRGBA(1, 0, color.NRGBA{G: 0xff, A: 0x80})
 	var encoded bytes.Buffer
-	if err := png.Encode(&encoded, pixels); err != nil {
-		t.Fatal(err)
-	}
+	check(t, png.Encode(&encoded, pixels))
 	return encoded.Bytes()
 }
 
 func TestAssetsDecodeCacheAndStateRoundTrip(t *testing.T) {
 	services, err := NewServices(Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	first, err := services.Assets.Decode(7, testPNG(t), DecodeOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	second, err := services.Assets.Decode(7, testPNG(t), DecodeOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if first != second {
 		t.Fatalf("cached asset IDs = %s and %s", first, second)
 	}
 	info, err := services.Assets.Info(7, first)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if info.Width != 2 || info.Height != 1 || len(info.Frames) != 1 ||
 		info.MediaType != "image/png" {
 		t.Fatalf("decoded asset = %+v", info)
 	}
 	pixels, err := services.Graphics.RGBA(7, info.Frames[0].Surface)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !bytes.Equal(pixels, []byte{0xff, 0, 0, 0xff, 0, 0xff, 0, 0x80}) {
 		t.Fatalf("decoded pixels = %v", pixels)
 	}
 
 	state := services.Snapshot()
 	clone, err := NewServices(state.Config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := clone.Restore(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, clone.Restore(state))
 	if !reflect.DeepEqual(clone.Assets.Snapshot(), services.Assets.Snapshot()) {
 		t.Fatal("asset state did not round-trip")
 	}
@@ -85,9 +69,7 @@ func TestAssetsRejectGIFFrameLimitBeforeDecode(t *testing.T) {
 		},
 		Delay: []int{1, 1},
 	}
-	if err := gif.EncodeAll(&encoded, &animation); err != nil {
-		t.Fatal(err)
-	}
+	check(t, gif.EncodeAll(&encoded, &animation))
 	limits := DefaultAssetLimits()
 	limits.MaxFrames = 1
 	if _, _, _, _, err := decodeImageAsset(
@@ -101,16 +83,14 @@ func TestAssetsRejectGIFFrameLimitBeforeDecode(t *testing.T) {
 
 func TestAssetsRejectGIFOversizedFrameBeforeDecode(t *testing.T) {
 	var encoded bytes.Buffer
-	if err := gif.Encode(
+	check(t, gif.Encode(
 		&encoded,
 		image.NewPaletted(
 			image.Rect(0, 0, 1, 1),
 			color.Palette{color.Black, color.White},
 		),
 		nil,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	malformed := append([]byte(nil), encoded.Bytes()...)
 	descriptor := bytes.IndexByte(malformed, 0x2c)
 	if descriptor < 0 || len(malformed)-descriptor < 10 {
@@ -131,26 +111,20 @@ func TestAssetsRejectGIFOversizedFrameBeforeDecode(t *testing.T) {
 
 func TestAssetsNormalizesDecodeMediaTypeBeforeCaching(t *testing.T) {
 	services, err := NewServices(Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	encoded := testPNG(t)
 	first, err := services.Assets.Decode(
 		1,
 		encoded,
 		DecodeOptions{MediaType: " IMAGE/PNG "},
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	second, err := services.Assets.Decode(
 		1,
 		encoded,
 		DecodeOptions{MediaType: "image/png"},
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if first != second {
 		t.Fatalf("normalized asset cache IDs = %s and %s", first, second)
 	}
@@ -162,9 +136,7 @@ func TestAssetsNormalizesDecodeMediaTypeBeforeCaching(t *testing.T) {
 
 func TestAssetsRejectMalformedInputBeforeMutation(t *testing.T) {
 	services, err := NewServices(Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	beforeRegistry := services.Registry.Snapshot()
 	beforeGraphics := services.Graphics.Snapshot()
 	if _, err := services.Assets.Decode(
@@ -264,26 +236,18 @@ func TestAssetsDecodeSKVMLBMP(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			services, err := NewServices(Config{})
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			asset, err := services.Assets.Decode(7, test.encoded, DecodeOptions{})
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			info, err := services.Assets.Info(7, asset)
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			if info.Width != test.wantWidth ||
 				info.Height != test.wantHeight ||
 				info.MediaType != "image/x-lbmp" {
 				t.Fatalf("decoded LBMP = %+v", info)
 			}
 			pixels, err := services.Graphics.RGBA(7, info.Frames[0].Surface)
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			if !bytes.Equal(pixels, test.wantPixel) {
 				t.Fatalf("decoded pixels = % x; want % x", pixels, test.wantPixel)
 			}
@@ -349,28 +313,20 @@ func TestAssetsDecodeIndexedBMP(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			services, err := NewServices(Config{})
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			asset, err := services.Assets.Decode(
 				7,
 				testIndexedBMP(test.bits, test.packedPixel),
 				DecodeOptions{},
 			)
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			info, err := services.Assets.Info(7, asset)
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			pixels, err := services.Graphics.RGBA(
 				7,
 				info.Frames[0].Surface,
 			)
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			want := []byte{
 				0xff, 0x00, 0x00, 0xff,
 				0x00, 0xff, 0x00, 0xff,
@@ -384,30 +340,24 @@ func TestAssetsDecodeIndexedBMP(t *testing.T) {
 
 func TestAssetsEncodeSurfaceFormatsAreBoundedAndDecodable(t *testing.T) {
 	services, err := NewServices(Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	surface, err := services.Graphics.CreateSurface(7, SurfaceDescriptor{
 		Width: 2, Height: 2, Format: PixelRGBA8888,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	for index, value := range []Color{
 		RGB(255, 0, 0),
 		RGB(0, 255, 0),
 		RGB(0, 0, 255),
 		RGB(255, 255, 255),
 	} {
-		if err := services.Graphics.SetPixel(
+		check(t, services.Graphics.SetPixel(
 			7,
 			surface,
 			int32(index%2),
 			int32(index/2),
 			value,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
 	for _, mediaType := range []string{
 		"image/bmp",
@@ -422,9 +372,7 @@ func TestAssetsEncodeSurfaceFormatsAreBoundedAndDecodable(t *testing.T) {
 				mediaType,
 				Rectangle{},
 			)
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			if len(encoded) == 0 ||
 				uint64(len(encoded)) > services.Config.Limits.Assets.MaxEncodedBytes {
 				t.Fatalf("encoded size = %d", len(encoded))
@@ -434,13 +382,9 @@ func TestAssetsEncodeSurfaceFormatsAreBoundedAndDecodable(t *testing.T) {
 				encoded,
 				DecodeOptions{MediaType: mediaType},
 			)
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			info, err := services.Assets.Info(7, asset)
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			if info.Width != 2 || info.Height != 2 {
 				t.Fatalf("decoded encoded surface = %+v", info)
 			}
@@ -470,25 +414,17 @@ func TestAssetsDecodeBI_RGB32TreatsReservedByteAsOpaque(t *testing.T) {
 	copy(encoded[54:], []byte{0x33, 0x22, 0x11, 0x00})
 
 	services, err := NewServices(Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	asset, err := services.Assets.Decode(
 		1,
 		encoded,
 		DecodeOptions{MediaType: "image/bmp"},
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	info, err := services.Assets.Info(1, asset)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	pixels, err := services.Graphics.RGBA(1, info.Frames[0].Surface)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !bytes.Equal(pixels, []byte{0x11, 0x22, 0x33, 0xff}) {
 		t.Fatalf("BI_RGB32 pixel = % x", pixels)
 	}
@@ -556,25 +492,17 @@ func TestAssetsDecodeBMPHonorsReservedTransparentPaletteEntry(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			services, err := NewServices(Config{})
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			asset, err := services.Assets.Decode(
 				3,
 				testKeyedBMP(test.reserved, test.key),
 				DecodeOptions{MediaType: "image/bmp"},
 			)
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			info, err := services.Assets.Info(3, asset)
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			pixels, err := services.Graphics.RGBA(3, info.Frames[0].Surface)
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			if !bytes.Equal(pixels, test.want) {
 				t.Fatalf("decoded pixels = % x, want % x", pixels, test.want)
 			}

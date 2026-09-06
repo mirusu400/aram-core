@@ -10,9 +10,7 @@ import (
 func TestParseClassMethodsAndReferences(t *testing.T) {
 	data := syntheticClass(t)
 	class, err := ParseClass("Game.class", data)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if class.Name != "Game" || class.SuperName != "java/lang/Object" {
 		t.Fatalf("class identity = %q extends %q", class.Name, class.SuperName)
 	}
@@ -22,9 +20,7 @@ func TestParseClassMethodsAndReferences(t *testing.T) {
 		t.Fatalf("answer method = %#v, %v", method, ok)
 	}
 	references, err := class.References()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if len(references) != 1 || references[0] != (Reference{
 		Kind:       ReferenceMethod,
 		Class:      "java/lang/Object",
@@ -46,9 +42,7 @@ func TestParseClassRejectsTruncation(t *testing.T) {
 
 func TestDecodeModifiedUTF8(t *testing.T) {
 	got, err := decodeModifiedUTF8([]byte{'A', 0xc0, 0x80, 0xed, 0x95, 0x9c})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if got != "A\x00한" {
 		t.Fatalf("decoded string = %q", got)
 	}
@@ -56,9 +50,7 @@ func TestDecodeModifiedUTF8(t *testing.T) {
 
 func TestVMExecutesStaticBytecode(t *testing.T) {
 	machine, err := New(map[string][]byte{"Game": syntheticClass(t)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	value, returned, err := machine.InvokeStatic(
 		context.Background(),
 		"Game",
@@ -69,9 +61,7 @@ func TestVMExecutesStaticBytecode(t *testing.T) {
 		t.Fatal(err)
 	}
 	integer, err := value.Int()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !returned || integer != 42 {
 		t.Fatalf("answer = %v, %v; want 42, true", value, returned)
 	}
@@ -85,15 +75,11 @@ func syntheticClass(t *testing.T) []byte {
 	var data bytes.Buffer
 	writeU4 := func(value uint32) {
 		t.Helper()
-		if err := binary.Write(&data, binary.BigEndian, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, binary.Write(&data, binary.BigEndian, value))
 	}
 	writeU2 := func(value uint16) {
 		t.Helper()
-		if err := binary.Write(&data, binary.BigEndian, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, binary.Write(&data, binary.BigEndian, value))
 	}
 	writeUTF := func(value string) {
 		t.Helper()

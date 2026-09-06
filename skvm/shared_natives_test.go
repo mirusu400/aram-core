@@ -51,9 +51,7 @@ func invokeTestNative(
 
 func TestSKVMFileNativesUseSharedStorage(t *testing.T) {
 	vm, err := New(map[string][]byte{"Game": syntheticClass(t)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	name := vm.NewString("save/game.dat")
 	file := vm.NewObject("com/xce/io/XFile", nil)
 	invokeTestNative(
@@ -86,19 +84,13 @@ func TestSKVMFileNativesUseSharedStorage(t *testing.T) {
 		t.Fatalf("shared file = %q, %v", stored, err)
 	}
 	state, err := vm.MarshalBinary()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := vm.services.Storage.WriteFile(
+	check(t, err)
+	check(t, vm.services.Storage.WriteFile(
 		shared.NamespacePrivate,
 		"/save/game.dat",
 		[]byte("changed"),
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := vm.UnmarshalBinary(state); err != nil {
-		t.Fatal(err)
-	}
+	))
+	check(t, vm.UnmarshalBinary(state))
 	stored, err = vm.services.Storage.ReadFile(
 		shared.NamespacePrivate,
 		"/save/game.dat",
@@ -110,9 +102,7 @@ func TestSKVMFileNativesUseSharedStorage(t *testing.T) {
 
 func TestSKVMProgressBarRetainsValue(t *testing.T) {
 	vm, err := New(map[string][]byte{"Game": syntheticClass(t)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	bar := vm.NewObject("com/skt/m/ProgressBar", nil)
 	label := vm.NewString("loading")
 	invokeTestNative(
@@ -137,13 +127,9 @@ func TestSKVMProgressBarRetainsValue(t *testing.T) {
 	// The load level has to survive a save-state round-trip so a resumed title
 	// does not see its progress bar snap back to zero.
 	state, err := vm.MarshalBinary()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	invokeTestNative(t, vm, "com/skt/m/ProgressBar", "setValue", "(I)V", bar, IntValue(7))
-	if err := vm.UnmarshalBinary(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, vm.UnmarshalBinary(state))
 	got = invokeTestNative(t, vm, "com/skt/m/ProgressBar", "getValue", "()I", bar)
 	if value, valueErr := got.Int(); valueErr != nil || value != 42 {
 		t.Fatalf("restored getValue = %d, %v; want 42", value, valueErr)
@@ -152,9 +138,7 @@ func TestSKVMProgressBarRetainsValue(t *testing.T) {
 
 func TestSKVMDeviceAndAudioNativesUseSharedServices(t *testing.T) {
 	vm, err := New(map[string][]byte{"Game": syntheticClass(t)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	invokeTestNative(
 		t,
 		vm,
@@ -208,9 +192,7 @@ func TestSKVMDeviceAndAudioNativesUseSharedServices(t *testing.T) {
 		ReferenceValue(name),
 	)
 	clipReference, err := clipValue.Reference()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	invokeTestNative(
 		t,
 		vm,
@@ -220,9 +202,7 @@ func TestSKVMDeviceAndAudioNativesUseSharedServices(t *testing.T) {
 		clipReference,
 	)
 	clip, err := vm.audioClip(clipReference)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	info, err := vm.services.Media.Info(vm.serviceOwner, clip.clip)
 	if err != nil || info.State != shared.ClipPlaying {
 		t.Fatalf("shared audio clip = %+v, %v", info, err)
@@ -231,9 +211,7 @@ func TestSKVMDeviceAndAudioNativesUseSharedServices(t *testing.T) {
 
 func TestSKVMAudioClipCanReopenAfterClose(t *testing.T) {
 	vm, err := New(map[string][]byte{"Game": syntheticClass(t)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	name := vm.NewString("tone.wav")
 	clipValue := invokeTestNative(
 		t,
@@ -245,13 +223,9 @@ func TestSKVMAudioClipCanReopenAfterClose(t *testing.T) {
 		ReferenceValue(name),
 	)
 	clipReference, err := clipValue.Reference()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	clip, err := vm.audioClip(clipReference)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	closedService := clip.clip
 	invokeTestNative(
 		t,
@@ -290,9 +264,7 @@ func TestSKVMAudioClipCanReopenAfterClose(t *testing.T) {
 		t.Fatalf("reopened clip service = %s, closed service = %s", clip.clip, closedService)
 	}
 	source, err := vm.services.Media.Source(vm.serviceOwner, clip.clip)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !bytes.Equal(source, payload) {
 		t.Fatalf("reopened clip source = %q, want %q", source, payload)
 	}
@@ -300,9 +272,7 @@ func TestSKVMAudioClipCanReopenAfterClose(t *testing.T) {
 
 func TestSKVMStringsUseSharedLegacyEncoding(t *testing.T) {
 	vm, err := New(map[string][]byte{"Game": syntheticClass(t)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	text := vm.NewString("ARAM 가")
 	encoded := invokeTestNative(
 		t,
@@ -313,13 +283,9 @@ func TestSKVMStringsUseSharedLegacyEncoding(t *testing.T) {
 		text,
 	)
 	encodedReference, err := encoded.Reference()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	data, err := vm.ByteArray(encodedReference)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	want := []byte{'A', 'R', 'A', 'M', ' ', 0xb0, 0xa1}
 	if !bytes.Equal(data, want) {
 		t.Fatalf("default String.getBytes = %x, want EUC-KR %x", data, want)
@@ -336,13 +302,9 @@ func TestSKVMStringsUseSharedLegacyEncoding(t *testing.T) {
 		ReferenceValue(utf8Name),
 	)
 	encodedReference, err = encoded.Reference()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	data, err = vm.ByteArray(encodedReference)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !bytes.Equal(data, []byte("ARAM 가")) {
 		t.Fatalf("UTF-8 String.getBytes = %x", data)
 	}
@@ -359,9 +321,7 @@ func TestSKVMStringsUseSharedLegacyEncoding(t *testing.T) {
 		ReferenceValue(source),
 	)
 	value, err := vm.String(decoded)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if value != "ARAM 가" {
 		t.Fatalf("default String(byte[]) = %q, want %q", value, "ARAM 가")
 	}
@@ -369,22 +329,16 @@ func TestSKVMStringsUseSharedLegacyEncoding(t *testing.T) {
 
 func TestSKVMSystemGCReleasesUnreachableImageSurfaces(t *testing.T) {
 	vm, err := New(map[string][]byte{"Game": syntheticClass(t)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	unreachableState, err := vm.newImageState(2, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	unreachable := vm.NewObject(
 		"javax/microedition/lcdui/Image",
 		unreachableState,
 	)
 	unreachableSurface := unreachableState.surface
 	retainedState, err := vm.newImageState(2, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	retained := vm.NewObject("javax/microedition/lcdui/Image", retainedState)
 	retainedSurface := retainedState.surface
 	graphics := vm.NewObject(
@@ -438,9 +392,7 @@ func TestSKVMSystemGCReleasesUnreachableImageSurfaces(t *testing.T) {
 
 func TestSKVMSystemGCRetainsActiveApplicationRoot(t *testing.T) {
 	vm, err := New(map[string][]byte{"Game": syntheticClass(t)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	application := vm.NewObject("Game", nil)
 	vm.hostStatic[fieldStorageKey(
 		applicationRootClass,
@@ -452,12 +404,8 @@ func TestSKVMSystemGCRetainsActiveApplicationRoot(t *testing.T) {
 		t.Fatal("active application root was collected")
 	}
 	saved, err := vm.MarshalBinary()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := vm.UnmarshalBinary(saved); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, vm.UnmarshalBinary(saved))
 	if _, ok := vm.Object(application); !ok {
 		t.Fatal("active application root was not restored")
 	}
@@ -465,28 +413,20 @@ func TestSKVMSystemGCRetainsActiveApplicationRoot(t *testing.T) {
 
 func TestSKVMXDisplayCopyLCDUsesSharedGraphics(t *testing.T) {
 	vm, err := New(map[string][]byte{"Game": syntheticClass(t)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	source := vm.ScreenGraphics()
 	sourceState, err := vm.graphics(source)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	want := shared.Color{R: 0x11, G: 0x22, B: 0x33, A: 0xff}
-	if err := vm.services.Graphics.SetPixel(
+	check(t, vm.services.Graphics.SetPixel(
 		vm.serviceOwner,
 		sourceState.surface,
 		1,
 		1,
 		want,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	imageState, err := vm.newImageState(2, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	image := vm.NewObject("javax/microedition/lcdui/Image", imageState)
 	invokeTestNative(
 		t,
@@ -508,9 +448,7 @@ func TestSKVMXDisplayCopyLCDUsesSharedGraphics(t *testing.T) {
 		1,
 		1,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if got != want {
 		t.Fatalf("copied LCD pixel = %+v, want %+v", got, want)
 	}
@@ -518,9 +456,7 @@ func TestSKVMXDisplayCopyLCDUsesSharedGraphics(t *testing.T) {
 
 func TestSKVMConnectorUsesSharedDeterministicNetwork(t *testing.T) {
 	vm, err := New(map[string][]byte{"Game": syntheticClass(t)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	name := vm.NewString("socket://127.0.0.1:7821")
 	connectionValue := invokeTestNative(
 		t,
@@ -532,9 +468,7 @@ func TestSKVMConnectorUsesSharedDeterministicNetwork(t *testing.T) {
 		ReferenceValue(name),
 	)
 	connectionReference, err := connectionValue.Reference()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	for _, class := range []string{
 		"javax/microedition/io/Connection",
 		"javax/microedition/io/InputConnection",
@@ -546,16 +480,12 @@ func TestSKVMConnectorUsesSharedDeterministicNetwork(t *testing.T) {
 		}
 	}
 	connection, err := vm.openSocketConnection(connectionReference)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	info, err := vm.services.Network.SocketInfo(
 		vm.serviceOwner,
 		connection.socket,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if info.State != shared.ConnectionConnected ||
 		info.Host != "127.0.0.1" || info.Port != 7821 {
 		t.Fatalf("shared socket = %+v", info)
@@ -570,9 +500,7 @@ func TestSKVMConnectorUsesSharedDeterministicNetwork(t *testing.T) {
 		connectionReference,
 	)
 	output, err := outputValue.Reference()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	invokeTestNative(
 		t,
 		vm,
@@ -605,21 +533,17 @@ func TestSKVMConnectorUsesSharedDeterministicNetwork(t *testing.T) {
 		vm.serviceOwner,
 		connection.socket,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !bytes.Equal(written, []byte{1, 2, 3, 4, 0x11, 0x12, 0x13, 0x14}) {
 		t.Fatalf("shared socket write = %v", written)
 	}
 
-	if err := vm.services.InjectSocketResponse(
+	check(t, vm.services.InjectSocketResponse(
 		vm.serviceOwner,
 		connection.socket,
 		[]byte{5, 6, 7, 8},
 		vm.services.Clock.Monotonic(),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	inputValue := invokeTestNative(
 		t,
 		vm,
@@ -629,9 +553,7 @@ func TestSKVMConnectorUsesSharedDeterministicNetwork(t *testing.T) {
 		connectionReference,
 	)
 	input, err := inputValue.Reference()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	outerInput := vm.NewObject("java/io/DataInputStream", nil)
 	invokeTestNative(
 		t,
@@ -651,24 +573,16 @@ func TestSKVMConnectorUsesSharedDeterministicNetwork(t *testing.T) {
 		outerInput,
 	)
 	integer, err := got.Int()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if integer != 0x05060708 {
 		t.Fatalf("shared socket read = %#x", integer)
 	}
 
 	saved, err := vm.MarshalBinary()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := vm.UnmarshalBinary(saved); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, vm.UnmarshalBinary(saved))
 	connection, err = vm.openSocketConnection(connectionReference)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	info, err = vm.services.Network.SocketInfo(
 		vm.serviceOwner,
 		connection.socket,
@@ -692,9 +606,7 @@ func TestSKVMConnectorUsesSharedDeterministicNetwork(t *testing.T) {
 
 func TestSKVMHTTPConnectionUsesSharedDeterministicNetwork(t *testing.T) {
 	vm, err := New(map[string][]byte{"Game": syntheticClass(t)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	name := vm.NewString("https://example.test/game")
 	connectionValue := invokeTestNative(
 		t,
@@ -708,9 +620,7 @@ func TestSKVMHTTPConnectionUsesSharedDeterministicNetwork(t *testing.T) {
 		IntValue(1),
 	)
 	connectionReference, err := connectionValue.Reference()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	for _, class := range []string{
 		"javax/microedition/io/Connection",
 		"javax/microedition/io/InputConnection",
@@ -754,9 +664,7 @@ func TestSKVMHTTPConnectionUsesSharedDeterministicNetwork(t *testing.T) {
 		connectionReference,
 	)
 	output, err := outputValue.Reference()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	body := vm.NewByteArray([]byte("payload"))
 	invokeTestNative(
 		t,
@@ -768,13 +676,9 @@ func TestSKVMHTTPConnectionUsesSharedDeterministicNetwork(t *testing.T) {
 		ReferenceValue(body),
 	)
 	connection, err := vm.openHTTPConnection(connectionReference)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	request, err := vm.httpRequestSnapshot(connection.request)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if request.State != shared.ConnectionNew ||
 		request.Method != "POST" ||
 		!bytes.Equal(request.RequestBody, []byte("payload")) ||
@@ -784,12 +688,8 @@ func TestSKVMHTTPConnectionUsesSharedDeterministicNetwork(t *testing.T) {
 	}
 
 	saved, err := vm.MarshalBinary()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := vm.UnmarshalBinary(saved); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, vm.UnmarshalBinary(saved))
 	length := invokeTestNative(
 		t,
 		vm,
@@ -810,9 +710,7 @@ func TestSKVMHTTPConnectionUsesSharedDeterministicNetwork(t *testing.T) {
 		connectionReference,
 	)
 	contentTypeReference, err := contentTypeValue.Reference()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	contentType, err := vm.String(contentTypeReference)
 	if err != nil || contentType != "application/octet-stream" {
 		t.Fatalf("HTTP response content type = %q, %v", contentType, err)
@@ -826,9 +724,7 @@ func TestSKVMHTTPConnectionUsesSharedDeterministicNetwork(t *testing.T) {
 		connectionReference,
 	)
 	input, err := inputValue.Reference()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	read := invokeTestNative(
 		t,
 		vm,
@@ -856,14 +752,10 @@ func TestSKVMHTTPConnectionUsesSharedDeterministicNetwork(t *testing.T) {
 
 func TestSKVMCompatibilityGraphicsUseSharedServices(t *testing.T) {
 	vm, err := New(map[string][]byte{"Game": syntheticClass(t)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	graphicsReference := vm.ScreenGraphics()
 	graphics, err := vm.graphics(graphicsReference)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	graphics2D := vm.NewObject("com/skt/m/Graphics2D", graphics)
 	invokeTestNative(
 		t,
@@ -882,9 +774,7 @@ func TestSKVMCompatibilityGraphicsUseSharedServices(t *testing.T) {
 		2,
 		3,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if pixel != (shared.Color{R: 0x12, G: 0x34, B: 0x56, A: 0xff}) {
 		t.Fatalf("Graphics2D pixel = %+v", pixel)
 	}
@@ -937,21 +827,15 @@ func TestSKVMCompatibilityGraphicsUseSharedServices(t *testing.T) {
 
 func TestSKVMGraphicsClipAndTranslationUseSharedDrawState(t *testing.T) {
 	vm, err := New(map[string][]byte{"Game": syntheticClass(t)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	graphicsReference := vm.ScreenGraphics()
 	graphics, err := vm.graphics(graphicsReference)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := vm.services.Graphics.Clear(
+	check(t, err)
+	check(t, vm.services.Graphics.Clear(
 		vm.serviceOwner,
 		graphics.surface,
 		shared.RGB(0, 0, 0),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 
 	invokeTestNative(
 		t,
@@ -992,18 +876,14 @@ func TestSKVMGraphicsClipAndTranslationUseSharedDrawState(t *testing.T) {
 		2,
 		3,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	outside, err := vm.services.Graphics.Pixel(
 		vm.serviceOwner,
 		graphics.surface,
 		1,
 		3,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if inside != shared.RGB(0xff, 0, 0) || outside != shared.RGB(0, 0, 0) {
 		t.Fatalf("clipped fill pixels = inside %+v, outside %+v", inside, outside)
 	}
@@ -1079,40 +959,30 @@ func TestSKVMGraphicsClipAndTranslationUseSharedDrawState(t *testing.T) {
 
 func TestSKVMGraphics2DDrawImageAppliesRasterMode(t *testing.T) {
 	vm, err := New(map[string][]byte{"Game": syntheticClass(t)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	graphicsReference := vm.ScreenGraphics()
 	graphics, err := vm.graphics(graphicsReference)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	graphics2D := vm.NewObject("com/skt/m/Graphics2D", graphics)
 	image, err := vm.newImageState(1, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	imageReference := vm.NewObject("javax/microedition/lcdui/Image", image)
 	source := shared.RGB(0xf0, 0x0f, 0xaa)
-	if err := vm.services.Graphics.SetPixel(
+	check(t, vm.services.Graphics.SetPixel(
 		vm.serviceOwner,
 		image.surface,
 		0,
 		0,
 		source,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	destination := shared.RGB(0x55, 0x33, 0x0f)
-	if err := vm.services.Graphics.SetPixel(
+	check(t, vm.services.Graphics.SetPixel(
 		vm.serviceOwner,
 		graphics.surface,
 		0,
 		0,
 		destination,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 
 	invokeTestNative(
 		t,
@@ -1136,9 +1006,7 @@ func TestSKVMGraphics2DDrawImageAppliesRasterMode(t *testing.T) {
 		0,
 		0,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	want := shared.Color{
 		R: destination.R ^ source.R,
 		G: destination.G ^ source.G,
@@ -1152,9 +1020,7 @@ func TestSKVMGraphics2DDrawImageAppliesRasterMode(t *testing.T) {
 		vm.serviceOwner,
 		graphics.surface,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if state.Raster != shared.RasterCopy {
 		t.Fatalf("Graphics2D raster state leaked as %v", state.Raster)
 	}
@@ -1162,13 +1028,9 @@ func TestSKVMGraphics2DDrawImageAppliesRasterMode(t *testing.T) {
 
 func TestSKVMThreadsRunCooperativelyOnVirtualTime(t *testing.T) {
 	vm, err := New(map[string][]byte{"Worker": syntheticThreadClass(t)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	target, err := vm.allocateObject("Worker")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	thread := vm.NewObject("java/lang/Thread", nil)
 	invokeTestNative(
 		t,
@@ -1193,9 +1055,7 @@ func TestSKVMThreadsRunCooperativelyOnVirtualTime(t *testing.T) {
 		t.Fatalf("counter after start = %d, %v; want 1", value, err)
 	}
 	state, err := vm.thread(thread)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !state.active || state.wakeAt != time.Millisecond ||
 		len(state.continuation) != 2 {
 		t.Fatalf("thread after start = %+v", state)
@@ -1214,30 +1074,20 @@ func TestSKVMThreadsRunCooperativelyOnVirtualTime(t *testing.T) {
 	}
 
 	saved, err := vm.MarshalBinary()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := vm.UnmarshalBinary(saved); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, vm.UnmarshalBinary(saved))
 	roundTripped, err := vm.MarshalBinary()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !bytes.Equal(roundTripped, saved) {
 		t.Fatal("thread continuation state changed across round trip")
 	}
-	if err := vm.Advance(context.Background(), time.Millisecond, nil); err != nil {
-		t.Fatal(err)
-	}
+	check(t, vm.Advance(context.Background(), time.Millisecond, nil))
 	value, err = vm.classes["Worker"].static[counter].Int()
 	if err != nil || value != 11 {
 		t.Fatalf("counter after advance = %d, %v; want 11", value, err)
 	}
 	state, err = vm.thread(thread)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if state.active || len(state.continuation) != 0 {
 		t.Fatalf("thread after return = %+v", state)
 	}
@@ -1245,13 +1095,9 @@ func TestSKVMThreadsRunCooperativelyOnVirtualTime(t *testing.T) {
 
 func TestDisplayCallSeriallyDefersRunnable(t *testing.T) {
 	vm, err := New(map[string][]byte{"Worker": syntheticThreadClass(t)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	target, err := vm.allocateObject("Worker")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	display := vm.NewObject("javax/microedition/lcdui/Display", nil)
 	invokeTestNative(
 		t,
@@ -1274,15 +1120,9 @@ func TestDisplayCallSeriallyDefersRunnable(t *testing.T) {
 		t.Fatalf("callSerially event = %+v, present=%v", event, ok)
 	}
 	saved, err := vm.MarshalBinary()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := vm.UnmarshalBinary(saved); err != nil {
-		t.Fatal(err)
-	}
-	if err := vm.Advance(context.Background(), time.Nanosecond, nil); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, vm.UnmarshalBinary(saved))
+	check(t, vm.Advance(context.Background(), time.Nanosecond, nil))
 	value, err = vm.classes["Worker"].static[counter].Int()
 	if err != nil || value != 11 {
 		t.Fatalf("counter after advance = %d, %v; want 11", value, err)
@@ -1294,15 +1134,11 @@ func syntheticThreadClass(t *testing.T) []byte {
 	var output bytes.Buffer
 	u2 := func(value uint16) {
 		t.Helper()
-		if err := binary.Write(&output, binary.BigEndian, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, binary.Write(&output, binary.BigEndian, value))
 	}
 	u4 := func(value uint32) {
 		t.Helper()
-		if err := binary.Write(&output, binary.BigEndian, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, binary.Write(&output, binary.BigEndian, value))
 	}
 	utf := func(value string) {
 		output.WriteByte(constantUTF8)
@@ -1410,9 +1246,7 @@ func syntheticThreadClass(t *testing.T) []byte {
 // so neither a full outbox nor a target the title built badly may stop it.
 func TestSKVMBrowserNativeOutlivesAFullOutbox(t *testing.T) {
 	vm, err := New(map[string][]byte{"Game": syntheticClass(t)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	target := vm.NewString("https://example.invalid/")
 	for visit := 0; visit < 600; visit++ {
 		invokeTestNative(

@@ -19,36 +19,24 @@ func TestKTFJavaCallsWaitForReusableTaskStack(t *testing.T) {
 		ClientName: "client.bin0",
 		Client:     []byte{0x70, 0x47},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.MapImageAndHost())
 	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	runnable, err := runtime.NewHostJavaObject("java/lang/Thread")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	runtime.Tasks = make([]*ktfrt.Task, ktfrt.MaxTasks)
 	for index := range runtime.Tasks {
 		runtime.Tasks[index] = &ktfrt.Task{}
 	}
 
-	if err := runtime.QueueJavaVirtual(runnable, "run", "()V"); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.QueueJavaVirtual(runnable, "run", "()V"))
 	if len(runtime.PendingJavaCalls) != 1 {
 		t.Fatalf("pending Java calls = %d, want 1", len(runtime.PendingJavaCalls))
 	}
 	runtime.Tasks[3].Done = true
-	if err := runtime.ActivatePendingJavaCalls(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.ActivatePendingJavaCalls())
 	if len(runtime.PendingJavaCalls) != 0 ||
 		runtime.Tasks[3].Done ||
 		len(runtime.Tasks[3].Context) == 0 {
@@ -65,13 +53,9 @@ func TestKTFMachineKeepsInputUntilCardExists(t *testing.T) {
 		ClientName: "client.bin0",
 		Client:     []byte{0x70, 0x47},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.MapImageAndHost())
 	runtime.TickMS = 100
 	machine := &Machine{
 		ktf: runtime,
@@ -80,9 +64,7 @@ func TestKTFMachineKeepsInputUntilCardExists(t *testing.T) {
 		},
 	}
 
-	if err := machine.queueKTFInput(runtime); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.queueKTFInput(runtime))
 	if len(machine.input) != 1 || len(runtime.Tasks) != 0 {
 		t.Fatalf("input=%#v tasks=%d", machine.input, len(runtime.Tasks))
 	}
@@ -93,30 +75,20 @@ func TestKTFMachineLateInputDoesNotBackfillRepeats(t *testing.T) {
 		ClientName: "client.bin0",
 		Client:     []byte{0x70, 0x47},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.MapImageAndHost())
 	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	card, err := runtime.NewHostJavaObject("org/kwis/msp/lcdui/Card")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	const display = uint32(0x10004000)
 	runtime.DefaultDisplay = display
 	runtime.DisplayCards[display] = card
-	if err := runtime.Services.Advance(
+	check(t, runtime.Services.Advance(
 		runtime.ServiceOwner,
 		2*time.Second,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	runtime.TickMS = 2000
 	machine := &Machine{
 		ktf: runtime,
@@ -126,9 +98,7 @@ func TestKTFMachineLateInputDoesNotBackfillRepeats(t *testing.T) {
 		}},
 	}
 
-	if err := machine.queueKTFInput(runtime); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.queueKTFInput(runtime))
 	if len(machine.input) != 0 || len(runtime.Tasks) != 1 {
 		t.Fatalf("late input=%#v tasks=%d", machine.input, len(runtime.Tasks))
 	}
@@ -151,24 +121,14 @@ func TestKTFMachineQueuesDueInputToDockedCard(t *testing.T) {
 		ClientName: "client.bin0",
 		Client:     []byte{0x70, 0x47},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.SetTraceMode(ktfrt.KTFTraceFull); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.SetTraceMode(ktfrt.KTFTraceFull))
 	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.MapImageAndHost())
 	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	card, err := runtime.NewHostJavaObject("org/kwis/msp/lcdui/Card")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	const display = uint32(0x10004000)
 	runtime.DefaultDisplay = display
 	runtime.DisplayCards[display] = card
@@ -181,9 +141,7 @@ func TestKTFMachineQueuesDueInputToDockedCard(t *testing.T) {
 		},
 	}
 
-	if err := machine.queueKTFInput(runtime); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.queueKTFInput(runtime))
 	if len(machine.input) != 1 || machine.input[0].Control != "left" {
 		t.Fatalf("remaining input = %#v", machine.input)
 	}
@@ -220,9 +178,7 @@ func TestKTFMachineQueuesDueInputToDockedCard(t *testing.T) {
 	}
 	runtime.Tasks[0].Done = false
 	delete(runtime.PaintTasks, card)
-	if err := runtime.CPU.RestoreContext(runtime.Tasks[0].Context); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.RestoreContext(runtime.Tasks[0].Context))
 	for register, want := range map[uint32]uint32{
 		cpu.RegisterR1: card,
 		cpu.RegisterR2: ktfrt.KeyPressed,
@@ -265,9 +221,7 @@ func TestKTFMachineRemainsPausedWhileDockedCardCanReceiveEvents(t *testing.T) {
 				ClientName: "client.bin0",
 				Client:     []byte{0x70, 0x47},
 			})
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			defer runtime.CPU.Close()
 			if test.dockCard {
 				runtime.DefaultDisplay = 1
@@ -280,12 +234,10 @@ func TestKTFMachineRemainsPausedWhileDockedCardCanReceiveEvents(t *testing.T) {
 				ktf:        runtime,
 				ktfStarted: true,
 			}
-			if err := machine.runKTFSlice(
+			check(t, machine.runKTFSlice(
 				context.Background(),
 				16*time.Millisecond,
-			); err != nil {
-				t.Fatal(err)
-			}
+			))
 			if machine.State() != test.wantState ||
 				machine.LastResult().Reason != cpu.StopExited {
 				t.Fatalf(
@@ -303,13 +255,9 @@ func TestKTFMachineRunsCooperativeTasksWithinOneClockQuantum(t *testing.T) {
 		ClientName: "client.bin0",
 		Client:     []byte{0x70, 0x47},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.MapImageAndHost())
 
 	var observed []string
 	newTask := func(name string, stackIndex int) *ktfrt.Task {
@@ -341,12 +289,10 @@ func TestKTFMachineRunsCooperativeTasksWithinOneClockQuantum(t *testing.T) {
 		ktfStarted: true,
 	}
 
-	if err := machine.runKTFSlice(
+	check(t, machine.runKTFSlice(
 		context.Background(),
 		16*time.Millisecond,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	if want := []string{"first", "second"}; !slices.Equal(observed, want) {
 		t.Fatalf("tasks run in quantum = %q, want %q", observed, want)
 	}

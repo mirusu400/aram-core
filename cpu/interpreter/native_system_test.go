@@ -218,9 +218,7 @@ func TestNativeDirectBlockLinkRunsPublishedTargetWithoutDispatch(t *testing.T) {
 	if got := backend.nativeLinks[nativeLinkKey{mode: cpu.ModeThumb, pc: 0x1100}].Load(); got != target.gate {
 		t.Fatalf("published gate = %#x, want %#x", got, target.gate)
 	}
-	if err := backend.WriteRegister(cpu.RegisterCPSR, uint32(processorModeSystem)|cpu.StatusThumb); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteRegister(cpu.RegisterCPSR, uint32(processorModeSystem)|cpu.StatusThumb))
 	backend.nativeRemain = 8
 	status := uint32(callNativeBlock(source.entry, &backend.regs[0], &backend.nativeRemain))
 	if status != nativeStatusBKPT || backend.regs[cpu.RegisterR0] != 3 || backend.nativeRemain != 4 {
@@ -239,12 +237,8 @@ func TestNativeARMEmitsConditionsAndDirectRAMMemory(t *testing.T) {
 		0xe1200070, // bkpt
 	)
 	binary.LittleEndian.PutUint32(bus.ram[0x2000:], 40)
-	if err := backend.WriteRegister(cpu.RegisterR0, 0x2000); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterCPSR, uint32(processorModeSystem)|flagZ); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteRegister(cpu.RegisterR0, 0x2000))
+	check(t, backend.WriteRegister(cpu.RegisterCPSR, uint32(processorModeSystem)|flagZ))
 	if block := backend.nativeARMBlockAt(0x1000); block == nil || block.count != 5 {
 		t.Fatalf("ARM native block = %#v, want five emitted instructions", block)
 	}
@@ -1072,9 +1066,7 @@ func TestNativeARMConditionalBranchLink(t *testing.T) {
 func TestNativePersistentMMIOBailBecomesInterpreterBoundary(t *testing.T) {
 	backend, bus := newNativeSystemBackend(t)
 	putThumb(bus.ram, 0x1000, 0x6008, 0xe7fd) // str r0,[r1]; b 0x1000
-	if err := backend.WriteRegister(cpu.RegisterR1, bus.mmio); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteRegister(cpu.RegisterR1, bus.mmio))
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeThumb, 12)
 	if result.Err != nil || result.Reason != cpu.StopBudget || result.Instructions != 12 {
 		t.Fatalf("MMIO loop = %+v", result)
@@ -1234,9 +1226,7 @@ func TestNativeFullInvalidationReclaimsLinkSlots(t *testing.T) {
 		t.Fatal("translation published no link slots")
 	}
 
-	if err := backend.SetExecutionTraps(nil); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.SetExecutionTraps(nil))
 	if len(backend.nativeLinks) != 0 {
 		t.Fatalf("full invalidation retained %d link slots", len(backend.nativeLinks))
 	}
@@ -1302,23 +1292,15 @@ func TestNativeWholeSystemRunsDirectRAMAndMMUDataInline(t *testing.T) {
 				// One manager-domain identity section covers code, data, vectors,
 				// and the translation table itself.
 				binary.LittleEndian.PutUint32(bus.ram[0x4000:], 0x00000c02)
-				if err := backend.writeCP15(2, 0, 0, 0x4000); err != nil {
-					t.Fatal(err)
-				}
-				if err := backend.writeCP15(3, 0, 0, 3); err != nil {
-					t.Fatal(err)
-				}
-				if err := backend.writeCP15(1, 0, 0, 1); err != nil {
-					t.Fatal(err)
-				}
+				check(t, backend.writeCP15(2, 0, 0, 0x4000))
+				check(t, backend.writeCP15(3, 0, 0, 3))
+				check(t, backend.writeCP15(1, 0, 0, 1))
 			}
 			for register, value := range map[uint32]uint32{
 				cpu.RegisterR0: 0x2000,
 				cpu.RegisterR1: 3,
 			} {
-				if err := backend.WriteRegister(register, value); err != nil {
-					t.Fatal(err)
-				}
+				check(t, backend.WriteRegister(register, value))
 			}
 			result := backend.Run(context.Background(), 0x1000, cpu.ModeThumb, 64)
 			if result.Err != nil || result.Reason != cpu.StopBreakpoint || result.Instructions != 16 {
@@ -1377,12 +1359,8 @@ func TestNativeWholeSystemEmitsInterruptPoll(t *testing.T) {
 	if block == nil {
 		t.Fatal("failed to translate system block")
 	}
-	if err := backend.WriteRegister(cpu.RegisterCPSR, uint32(processorModeSystem)|cpu.StatusThumb); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.SetInterruptLine(cpu.InterruptIRQ, true); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteRegister(cpu.RegisterCPSR, uint32(processorModeSystem)|cpu.StatusThumb))
+	check(t, backend.SetInterruptLine(cpu.InterruptIRQ, true))
 	backend.nativeRemain = 8
 	status := uint32(callNativeBlock(block.entry, &backend.regs[0], &backend.nativeRemain))
 	if status != nativeInterruptStatus(0) || backend.regs[cpu.RegisterPC] != 0x1000 {
@@ -1391,12 +1369,10 @@ func TestNativeWholeSystemEmitsInterruptPoll(t *testing.T) {
 	}
 
 	// Masked IRQ must stay in native code and reach the BKPT.
-	if err := backend.WriteRegister(
+	check(t, backend.WriteRegister(
 		cpu.RegisterCPSR,
 		uint32(processorModeSystem)|cpu.StatusThumb|statusIRQDisable,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	backend.nativeRemain = 8
 	status = uint32(callNativeBlock(block.entry, &backend.regs[0], &backend.nativeRemain))
 	if status != nativeStatusBKPT || backend.regs[cpu.RegisterR0] != 1 {
@@ -1413,12 +1389,8 @@ func TestNativeWholeSystemMMIOBailsAndTakesRaisedIRQ(t *testing.T) {
 			t.Errorf("assert IRQ: %v", err)
 		}
 	}
-	if err := backend.WriteRegister(cpu.RegisterR0, 0x12345678); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterR1, bus.mmio); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteRegister(cpu.RegisterR0, 0x12345678))
+	check(t, backend.WriteRegister(cpu.RegisterR1, bus.mmio))
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeThumb, 8)
 	if result.Err != nil || result.Reason != cpu.StopBreakpoint || result.Instructions != 2 {
 		t.Fatalf("MMIO/IRQ run = %+v", result)

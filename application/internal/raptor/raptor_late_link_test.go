@@ -55,35 +55,21 @@ func TestResolveRaptorJavaFieldOffsetsSeesLateClasses(t *testing.T) {
 	java := &JavaRuntime{}
 
 	name, err := runtime.allocateJavaCString("g")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	descriptor, err := runtime.allocateJavaCString("Lorg/kwis/msp/lcdui/Graphics;")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	names, err := public.Heap.Allocate(8, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := public.WriteU32(names, name); err != nil {
-		t.Fatal(err)
-	}
-	if err := public.WriteU32(names+4, descriptor); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, public.WriteU32(names, name))
+	check(t, public.WriteU32(names+4, descriptor))
 	offsets, err := public.Heap.Allocate(2, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	java.fieldNames = names
 	java.fieldOffsets = offsets
 	java.fieldCount = 1
 
 	// Resolved with no class registered: the field has no known index yet.
-	if err := runtime.resolveRaptorJavaFieldOffsets(java); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.resolveRaptorJavaFieldOffsets(java))
 	if got := readOffset(t, runtime, offsets); got != 0 {
 		t.Fatalf("field offset before the owning class = %d, want 0", got)
 	}
@@ -98,9 +84,7 @@ func TestResolveRaptorJavaFieldOffsetsSeesLateClasses(t *testing.T) {
 			index:      142,
 		}},
 	}}
-	if err := runtime.resolveRaptorJavaFieldOffsets(java); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.resolveRaptorJavaFieldOffsets(java))
 	if got := readOffset(t, runtime, offsets); got != 142 {
 		t.Fatalf("field offset after the owning class = %d, want 142", got)
 	}
@@ -109,8 +93,6 @@ func TestResolveRaptorJavaFieldOffsetsSeesLateClasses(t *testing.T) {
 func readOffset(t *testing.T, runtime *Runtime, address uint32) uint16 {
 	t.Helper()
 	var encoded [2]byte
-	if err := runtime.CPU.ReadMemory(address, encoded[:]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(address, encoded[:]))
 	return binary.LittleEndian.Uint16(encoded[:])
 }

@@ -7,9 +7,7 @@ import (
 
 func TestReadOnlyRegisterRequiresExactAccess(t *testing.T) {
 	register, err := NewReadOnlyRegister(Width16, 0x300)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	value, err := register.Read(0, Width16)
 	if err != nil || value != 0x300 {
 		t.Fatalf("Read = %#x, %v", value, err)
@@ -33,30 +31,20 @@ func TestReadOnlyRegisterValidatesValueAndState(t *testing.T) {
 		t.Fatalf("invalid-width error = %v", err)
 	}
 	register, err := NewReadOnlyRegister(Width32, 0x12345678)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	state, err := register.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := register.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, register.LoadState(state))
 	if err := register.LoadState(state[:15]); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("truncated state error = %v", err)
 	}
 	wrongWidth, err := NewReadOnlyRegister(Width16, 0x5678)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if err := wrongWidth.LoadState(state); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("wrong-width state error = %v", err)
 	}
 	wrongValue, err := NewReadOnlyRegister(Width32, 0x87654321)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if err := wrongValue.LoadState(state); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("wrong-value state error = %v", err)
 	}

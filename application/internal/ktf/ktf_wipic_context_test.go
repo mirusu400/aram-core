@@ -18,16 +18,10 @@ func newKTFRuntimeWithClient(t *testing.T, client []byte) *Runtime {
 		ClientName: "client.bin0",
 		Client:     client,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.SetTraceMode(KTFTraceFull); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.SetTraceMode(KTFTraceFull))
 	t.Cleanup(func() { _ = runtime.CPU.Close() })
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.MapImageAndHost())
 	return runtime
 }
 
@@ -37,10 +31,7 @@ func newKTFRuntimeWithClient(t *testing.T, client []byte) *Runtime {
 // rest, so a mismatch shows up as an unrelated member changing value.
 func TestKTFWIPICContextMembersRoundTripThroughTheAPI(t *testing.T) {
 	runtime := newScratchKTFRuntime(t)
-	address, err := runtime.Heap.Allocate(ktfWIPICContextSize, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	address := heapAlloc(t, runtime, ktfWIPICContextSize, true)
 	setKTFWIPICCallArguments(t, runtime, []uint32{address})
 	if _, err := ktfWIPICGraphicsInitContext(
 		context.Background(),
@@ -57,10 +48,7 @@ func TestKTFWIPICContextMembersRoundTripThroughTheAPI(t *testing.T) {
 		); err != nil {
 			t.Fatal(err)
 		}
-		stored, err := runtime.ReadU32(address + offset)
-		if err != nil {
-			t.Fatal(err)
-		}
+		stored := readU32(t, runtime, address+offset)
 		if stored != value {
 			t.Fatalf(
 				"index %d wrote 0x%08x to +0x%02x, want 0x%08x",
@@ -70,10 +58,7 @@ func TestKTFWIPICContextMembersRoundTripThroughTheAPI(t *testing.T) {
 				value,
 			)
 		}
-		output, err := runtime.Heap.Allocate(4, true)
-		if err != nil {
-			t.Fatal(err)
-		}
+		output := heapAlloc(t, runtime, 4, true)
 		setKTFWIPICCallArguments(t, runtime, []uint32{address, index, output})
 		if _, err := ktfWIPICGraphicsGetContext(
 			context.Background(),
@@ -81,10 +66,7 @@ func TestKTFWIPICContextMembersRoundTripThroughTheAPI(t *testing.T) {
 		); err != nil {
 			t.Fatal(err)
 		}
-		readBack, err := runtime.ReadU32(output)
-		if err != nil {
-			t.Fatal(err)
-		}
+		readBack := readU32(t, runtime, output)
 		if readBack != value {
 			t.Fatalf("index %d read back 0x%08x, want 0x%08x", index, readBack, value)
 		}
@@ -92,13 +74,8 @@ func TestKTFWIPICContextMembersRoundTripThroughTheAPI(t *testing.T) {
 
 	// The clip is a four-word array behind the enable word, and installing it
 	// turns clipping on.
-	rectangle, err := runtime.Heap.Allocate(16, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(rectangle, []uint32{3, 4, 30, 40}); err != nil {
-		t.Fatal(err)
-	}
+	rectangle := heapAlloc(t, runtime, 16, true)
+	check(t, runtime.writeWords(rectangle, []uint32{3, 4, 30, 40}))
 	setKTFWIPICCallArguments(t, runtime, []uint32{address, 0, rectangle})
 	if _, err := ktfWIPICGraphicsSetContext(
 		context.Background(),
@@ -107,9 +84,7 @@ func TestKTFWIPICContextMembersRoundTripThroughTheAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	state, err := runtime.wipicGraphicsContext(address)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !state.clipEnabled || state.left != 3 || state.top != 4 ||
 		state.right != 30 || state.bottom != 40 {
 		t.Fatalf("clip read back as %+v", state)
@@ -122,18 +97,11 @@ func TestKTFWIPICContextMembersRoundTripThroughTheAPI(t *testing.T) {
 // menu belonged (issue #86).
 func TestKTFWIPICContextIgnoresAnEmptyClip(t *testing.T) {
 	runtime := newScratchKTFRuntime(t)
-	address, err := runtime.Heap.Allocate(ktfWIPICContextSize, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	address := heapAlloc(t, runtime, ktfWIPICContextSize, true)
 	// clip_enabled set, clip = (0,0,0,240): the shape the title leaves behind.
-	if err := runtime.writeWords(address, []uint32{1, 0, 0, 0, 240}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.writeWords(address, []uint32{1, 0, 0, 0, 240}))
 	state, err := runtime.wipicGraphicsContext(address)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if state.clipEnabled {
 		t.Fatal("an empty clip rectangle must not clip")
 	}
@@ -150,40 +118,26 @@ func TestKTFWIPICDrawImageRunsTheContextPixelOp(t *testing.T) {
 	runtime := newKTFRuntimeWithClient(t, client)
 
 	source, err := runtime.createWIPICFramebuffer(2, 1, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	destination, err := runtime.createWIPICFramebuffer(2, 1, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	sourcePixels := []byte{0xff, 0xff, 0xff, 0xff}
-	if err := runtime.CPU.WriteMemory(
+	check(t, runtime.CPU.WriteMemory(
 		runtime.wipicFramebuffers[source].pixels,
 		sourcePixels,
-	); err != nil {
-		t.Fatal(err)
-	}
-	imageObject, err := runtime.Heap.Allocate(4, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	))
+	imageObject := heapAlloc(t, runtime, 4, true)
 	runtime.wipicImages[imageObject] = &ktfWIPICImage{
 		object:      imageObject,
 		framebuffer: source,
 		alpha:       ktfWIPICImageAlpha{key: -1},
 	}
 
-	address, err := runtime.Heap.Allocate(ktfWIPICContextSize, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	address := heapAlloc(t, runtime, ktfWIPICContextSize, true)
 	words := make([]uint32, ktfWIPICContextSize/4)
 	words[ktfWIPICContextPixelOp/4] = ImageBase | 1
 	words[ktfWIPICContextPixelParam/4] = 0x0f0f
-	if err := runtime.writeWords(address, words); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.writeWords(address, words))
 
 	setKTFWIPICCallArguments(t, runtime, []uint32{
 		destination, 0, 0, 2, 1, imageObject, 0, 0, address,
@@ -195,12 +149,10 @@ func TestKTFWIPICDrawImageRunsTheContextPixelOp(t *testing.T) {
 		t.Fatal(err)
 	}
 	painted := make([]byte, 4)
-	if err := runtime.CPU.ReadMemory(
+	check(t, runtime.CPU.ReadMemory(
 		runtime.wipicFramebuffers[destination].pixels,
 		painted,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	for pixel := range 2 {
 		got := binary.LittleEndian.Uint16(painted[pixel*2:])
 		if got != 0x0f0f {
@@ -240,37 +192,23 @@ func TestKTFWIPICPixelOpRetiresAfterAFault(t *testing.T) {
 	client := []byte{0x00, 0x68, 0x70, 0x47}
 	runtime := newKTFRuntimeWithClient(t, client)
 	source, err := runtime.createWIPICFramebuffer(2, 1, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	destination, err := runtime.createWIPICFramebuffer(2, 1, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteMemory(
+	check(t, err)
+	check(t, runtime.CPU.WriteMemory(
 		runtime.wipicFramebuffers[source].pixels,
 		[]byte{0x34, 0x12, 0x34, 0x12},
-	); err != nil {
-		t.Fatal(err)
-	}
-	imageObject, err := runtime.Heap.Allocate(4, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	))
+	imageObject := heapAlloc(t, runtime, 4, true)
 	runtime.wipicImages[imageObject] = &ktfWIPICImage{
 		object:      imageObject,
 		framebuffer: source,
 		alpha:       ktfWIPICImageAlpha{key: -1},
 	}
-	address, err := runtime.Heap.Allocate(ktfWIPICContextSize, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	address := heapAlloc(t, runtime, ktfWIPICContextSize, true)
 	words := make([]uint32, ktfWIPICContextSize/4)
 	words[ktfWIPICContextPixelOp/4] = ImageBase | 1
-	if err := runtime.writeWords(address, words); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.writeWords(address, words))
 	setKTFWIPICCallArguments(t, runtime, []uint32{
 		destination, 0, 0, 2, 1, imageObject, 0, 0, address,
 	})
@@ -284,20 +222,16 @@ func TestKTFWIPICPixelOpRetiresAfterAFault(t *testing.T) {
 		t.Fatal("a faulting procedure should have been retired")
 	}
 	painted := make([]byte, 4)
-	if err := runtime.CPU.ReadMemory(
+	check(t, runtime.CPU.ReadMemory(
 		runtime.wipicFramebuffers[destination].pixels,
 		painted,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	if binary.LittleEndian.Uint16(painted) != 0x1234 {
 		t.Fatalf("fallback copy wrote 0x%04x, want the source pixel", painted)
 	}
 	// A later draw with the same procedure must not try again.
 	before, err := runtime.CPU.ReadRegister(cpu.RegisterPC)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	setKTFWIPICCallArguments(t, runtime, []uint32{
 		destination, 0, 0, 2, 1, imageObject, 0, 0, address,
 	})
@@ -308,9 +242,7 @@ func TestKTFWIPICPixelOpRetiresAfterAFault(t *testing.T) {
 		t.Fatal(err)
 	}
 	after, err := runtime.CPU.ReadRegister(cpu.RegisterPC)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if before != after {
 		t.Fatal("the retired procedure was entered again")
 	}

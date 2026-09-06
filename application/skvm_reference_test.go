@@ -99,9 +99,7 @@ func TestReferenceSKVMApplicationFrameSoak(t *testing.T) {
 		packages++
 		return nil
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if packages == 0 {
 		t.Fatal("no SKVM packages completed the application frame soak")
 	}

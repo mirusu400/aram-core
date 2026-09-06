@@ -44,17 +44,11 @@ func TestDecodeWBINSyntheticProgressiveELF(t *testing.T) {
 	set, err := firmwareset.NewSet([]firmwareset.Source{{
 		ReaderAt: bytes.NewReader(pieceBytes), Size: int64(len(pieceBytes)),
 	}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	pkg, err := Inspect(set)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	image, err := DecodeWBIN(set, pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if image.EncryptedLength != 0x80 || !bytes.Equal(image.Bytes, plaintext) {
 		t.Fatalf("decoded WBIN = length %#x bytesEqual %v", image.EncryptedLength, bytes.Equal(image.Bytes, plaintext))
 	}
@@ -73,17 +67,11 @@ func TestDecodeWBINAcceptsRawProgressiveELF(t *testing.T) {
 	set, err := firmwareset.NewSet([]firmwareset.Source{
 		sources[RoleWBT], sources[RoleWBIN], sources[RoleDAT], sources[RoleFont],
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	pkg, err := Inspect(set)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	image, err := DecodeWBIN(set, pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if image.EncryptedLength != 0 || len(image.Bytes) != 0x100 ||
 		len(image.ELF.ProgramHeaders) != 1 || image.ELF.LogicalFileEnd != 0x90 {
 		t.Fatalf("raw progressive image = %+v", image)
@@ -100,9 +88,7 @@ func TestDecodeWBINAllowsOnlyExactProfiledOpaqueRawImage(t *testing.T) {
 		setSources[index] = sources[role]
 	}
 	set, err := firmwareset.NewSet(setSources)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := Inspect(set); !errors.Is(err, ErrNotSCHDownload) {
 		t.Fatalf("Inspect unknown opaque WBIN error = %v", err)
 	}
@@ -120,27 +106,19 @@ func TestDecodeWBINAllowsOnlyExactProfiledOpaqueRawImage(t *testing.T) {
 		Manufacturer: "Samsung", Model: "Synthetic", Build: "OPAQUE",
 		WBINFormat: WBINFormatOpaque, PieceHashes: hashes,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	pkg, err := inspectWithRegistry(set, registry)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if pkg.Pieces[RoleWBIN].Header.Build != string(WBINFormatOpaque) {
 		t.Fatalf("opaque WBIN header = %+v", pkg.Pieces[RoleWBIN].Header)
 	}
 	layout, err := normalizeWithRegistry(set, pkg, registry)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if layout.PageSize != smallPageSize || layout.EraseBlockSize != smallEraseBlockSize {
 		t.Fatalf("opaque WBIN layout geometry = %#x/%#x", layout.PageSize, layout.EraseBlockSize)
 	}
 	image, err := decodeWBINWithRegistry(set, pkg, registry)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	digest := sha256.Sum256(opaque)
 	if !bytes.Equal(image.Bytes, opaque) || image.SHA256 != hex.EncodeToString(digest[:]) ||
 		image.EncryptedLength != 0 || image.ELF.Entry != 0 || image.ELF.LogicalFileEnd != 0 ||
@@ -167,9 +145,7 @@ func TestDecodeWBINPreservesProfiledFlatARMMetadata(t *testing.T) {
 		setSources[index] = sources[role]
 	}
 	set, err := firmwareset.NewSet(setSources)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	hashes := make(map[Role]string, len(roles))
 	for index, role := range roles {
 		piece, pieceErr := set.Piece(index)
@@ -183,13 +159,9 @@ func TestDecodeWBINPreservesProfiledFlatARMMetadata(t *testing.T) {
 		Manufacturer: "Samsung", Model: "Synthetic", Build: "FLAT",
 		WBINFormat: WBINFormatOpaque, PieceHashes: hashes,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	pkg, err := inspectWithRegistry(set, registry)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if pkg.Pieces[RoleWBIN].Header.Build != "raw-arm" {
 		t.Fatalf("flat ARM metadata = %+v", pkg.Pieces[RoleWBIN].Header)
 	}
@@ -197,9 +169,7 @@ func TestDecodeWBINPreservesProfiledFlatARMMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	image, err := decodeWBINWithRegistry(set, pkg, registry)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !bytes.Equal(image.Bytes, flat) || image.EncryptedLength != 0 ||
 		len(image.ELF.ProgramHeaders) != 0 {
 		t.Fatalf("profiled flat ARM image = %+v", image)
@@ -212,13 +182,9 @@ func TestDecodeWBINRejectsTerminalCiphertextMismatch(t *testing.T) {
 	set, err := firmwareset.NewSet([]firmwareset.Source{{
 		ReaderAt: bytes.NewReader(pieceBytes), Size: int64(len(pieceBytes)),
 	}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	pkg, err := Inspect(set)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	_, err = DecodeWBIN(set, pkg)
 	if !errors.Is(err, ErrInvalidWBINTransform) {
 		t.Fatalf("DecodeWBIN error = %v", err)

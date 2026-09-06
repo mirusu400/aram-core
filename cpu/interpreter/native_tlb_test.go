@@ -62,9 +62,7 @@ func TestNativeInlineStoreInvalidatesSelfModifiedCode(t *testing.T) {
 	for reg, value := range map[uint32]uint32{
 		cpu.RegisterR1: 0x1f80, cpu.RegisterR2: 0xffff, cpu.RegisterR4: 0x1000,
 	} {
-		if err := b.WriteRegister(reg, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, b.WriteRegister(reg, value))
 	}
 	// Each run executes the instruction the previous run wrote, then writes the
 	// next one.
@@ -106,17 +104,13 @@ func TestNativeInlineStoreToExecutableDataStaysCoherent(t *testing.T) {
 	for reg, value := range map[uint32]uint32{
 		cpu.RegisterR0: 0xa5a5a5a5, cpu.RegisterR1: 0x3000, cpu.RegisterR2: count,
 	} {
-		if err := b.WriteRegister(reg, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, b.WriteRegister(reg, value))
 	}
 	if r := run(t, b, 0x1000, 10000); r.Err != nil || r.Reason != cpu.StopBreakpoint {
 		t.Fatalf("run = %+v", r)
 	}
 	got := make([]byte, count*4)
-	if err := b.ReadMemory(0x3000, got); err != nil {
-		t.Fatal(err)
-	}
+	check(t, b.ReadMemory(0x3000, got))
 	for i, v := range got {
 		if v != 0xa5 {
 			t.Fatalf("byte %d = %#x, want 0xa5 (inline store into the executable region lost)", i, v)
@@ -138,12 +132,8 @@ func TestNativeTLBAliasingPages(t *testing.T) {
 	if 0x2000>>tlbPageBits&nativeTLBMask != (0x2000+stride)>>tlbPageBits&nativeTLBMask {
 		t.Fatal("test setup: the two regions do not collide in the TLB")
 	}
-	if err := b.WriteMemory(0x2000, []byte{0x11, 0x22, 0x33, 0x44}); err != nil {
-		t.Fatal(err)
-	}
-	if err := b.WriteMemory(0x2000+stride, []byte{0xaa, 0xbb, 0xcc, 0xdd}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, b.WriteMemory(0x2000, []byte{0x11, 0x22, 0x33, 0x44}))
+	check(t, b.WriteMemory(0x2000+stride, []byte{0xaa, 0xbb, 0xcc, 0xdd}))
 	// loop: ldr r3,[r0]; ldr r4,[r1]; str r3,[r1]; str r4,[r0]; subs r2,#1; bne loop
 	// Swaps the two words every iteration, so an aliased entry shows up as both
 	// slots holding the same value.
@@ -161,9 +151,7 @@ func TestNativeTLBAliasingPages(t *testing.T) {
 	for reg, value := range map[uint32]uint32{
 		cpu.RegisterR0: 0x2000, cpu.RegisterR1: 0x2000 + stride, cpu.RegisterR2: 9,
 	} {
-		if err := b.WriteRegister(reg, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, b.WriteRegister(reg, value))
 	}
 	if r := run(t, b, 0x1000, 10000); r.Err != nil || r.Reason != cpu.StopBreakpoint {
 		t.Fatalf("run = %+v", r)
@@ -177,9 +165,7 @@ func TestNativeTLBAliasingPages(t *testing.T) {
 		{0x2000 + stride, []byte{0x11, 0x22, 0x33, 0x44}},
 	} {
 		got := make([]byte, 4)
-		if err := b.ReadMemory(want.address, got); err != nil {
-			t.Fatal(err)
-		}
+		check(t, b.ReadMemory(want.address, got))
 		for i := range got {
 			if got[i] != want.bytes[i] {
 				t.Fatalf("0x%08x = % x, want % x (aliased TLB slot served the wrong page)",
@@ -232,9 +218,7 @@ func TestNativePartialPageRegionStaysCorrect(t *testing.T) {
 				cpu.RegisterR1: layout.base,
 				cpu.RegisterR2: layout.size/4 + 1, // one word past the region
 			} {
-				if err := b.WriteRegister(reg, value); err != nil {
-					t.Fatal(err)
-				}
+				check(t, b.WriteRegister(reg, value))
 			}
 			r := run(t, b, 0x1000, 10000)
 			if r.Reason != cpu.StopFault {
@@ -242,9 +226,7 @@ func TestNativePartialPageRegionStaysCorrect(t *testing.T) {
 					"(a partial page must never be cached in the TLB)", r)
 			}
 			got := make([]byte, layout.size)
-			if err := b.ReadMemory(layout.base, got); err != nil {
-				t.Fatal(err)
-			}
+			check(t, b.ReadMemory(layout.base, got))
 			for i, v := range got {
 				if v != 0x5a {
 					t.Fatalf("byte %d = %#x, want 0x5a", i, v)
@@ -282,15 +264,11 @@ func TestNativeBailRestoresExactBudget(t *testing.T) {
 			mustMap(t, b, 0x1000, 0x1000, rw|cpu.PermissionExecute)
 			mustMap(t, b, 0x2000, 0x1000, rw)
 			mustMap(t, b, 0x2000+stride, 0x1000, rw)
-			if err := b.WriteMemory(0x1000, code); err != nil {
-				t.Fatal(err)
-			}
+			check(t, b.WriteMemory(0x1000, code))
 			for reg, value := range map[uint32]uint32{
 				cpu.RegisterR0: 0x2000, cpu.RegisterR1: 0x2000 + stride, cpu.RegisterR2: 4,
 			} {
-				if err := b.WriteRegister(reg, value); err != nil {
-					t.Fatal(err)
-				}
+				check(t, b.WriteRegister(reg, value))
 			}
 			results[i] = b.Run(context.Background(), 0x1000, cpu.ModeThumb, budget)
 			for id := uint32(0); id < 17; id++ {
@@ -363,10 +341,8 @@ func TestNativeBranchLinkSpansFourBytes(t *testing.T) {
 // picked exactly that backend.
 func TestNativeTLBSurvivesACPSRWriteThatKeepsTheMode(t *testing.T) {
 	backend := nativeBackend(t)
-	if err := backend.Map(0x1000, tlbPageSize*2,
-		cpu.PermissionRead|cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.Map(0x1000, tlbPageSize*2,
+		cpu.PermissionRead|cpu.PermissionWrite))
 	// Install the page the way the interpreter's memory path does after a
 	// successful guest access. This is a white-box test of the invalidation
 	// policy, so priming it directly keeps the guest program out of it.
@@ -377,32 +353,26 @@ func TestNativeTLBSurvivesACPSRWriteThatKeepsTheMode(t *testing.T) {
 	}
 
 	mode := uint32(processorModeSystem)
-	if err := backend.WriteRegister(cpu.RegisterCPSR, mode); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteRegister(cpu.RegisterCPSR, mode))
 	if !backend.tlbHit(0x1000, cpu.PermissionRead) {
 		t.Fatal("entering the mode already selected dropped the cached page")
 	}
 	// Flags and the Thumb bit change execution, not translation; 1<<29 is the
 	// architectural C flag.
-	if err := backend.WriteRegister(
+	check(t, backend.WriteRegister(
 		cpu.RegisterCPSR,
 		mode|cpu.StatusThumb|(1<<29),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	if !backend.tlbHit(0x1000, cpu.PermissionRead) {
 		t.Fatal("a flag-only CPSR write dropped the cached page")
 	}
 
 	// A real mode change must still empty the table: the privilege level it
 	// selects is what a page's permissions are resolved against.
-	if err := backend.WriteRegister(
+	check(t, backend.WriteRegister(
 		cpu.RegisterCPSR,
 		uint32(processorModeUser)|cpu.StatusThumb,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	if backend.tlbHit(0x1000, cpu.PermissionRead) {
 		t.Fatal("switching the processor mode kept a cached translation")
 	}

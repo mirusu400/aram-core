@@ -158,15 +158,9 @@ func TestSessionTapAdvancesVirtualTimeAndCapturesScreen(t *testing.T) {
 			}
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := session.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := session.Tap(context.Background(), "ok", 2); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, session.Start(context.Background()))
+	check(t, session.Tap(context.Background(), "ok", 2))
 	if machine.steps != 3 {
 		t.Fatalf("machine steps = %d, want 3", machine.steps)
 	}
@@ -201,9 +195,7 @@ func TestSessionTapAdvancesVirtualTimeAndCapturesScreen(t *testing.T) {
 	}
 
 	pixel, err := session.Pixel(0, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if pixel != (Pixel{R: 3, G: 0x20, B: 0x40, A: 0xff}) {
 		t.Fatalf("pixel = %+v", pixel)
 	}
@@ -213,21 +205,15 @@ func TestSessionTapAdvancesVirtualTimeAndCapturesScreen(t *testing.T) {
 
 	path := filepath.Join(t.TempDir(), "nested", "frame.png")
 	report, err := session.Screenshot(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if report != status.Screen {
 		t.Fatalf("screenshot report = %+v, want %+v", report, status.Screen)
 	}
 	input, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	defer input.Close()
 	decoded, err := png.Decode(input)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if decoded.Bounds() != image.Rect(0, 0, 2, 1) {
 		t.Fatalf("decoded bounds = %v", decoded.Bounds())
 	}
@@ -236,32 +222,22 @@ func TestSessionTapAdvancesVirtualTimeAndCapturesScreen(t *testing.T) {
 func TestSessionStateFilesAndValidation(t *testing.T) {
 	machine := newFakeMachine()
 	session, err := New(machine, Options{FrameDuration: time.Millisecond})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if err := session.Step(context.Background(), -1); err == nil {
 		t.Fatal("negative step count unexpectedly succeeded")
 	}
 	if err := session.Tap(context.Background(), "ok", 0); err == nil {
 		t.Fatal("zero-duration tap unexpectedly succeeded")
 	}
-	if err := session.Step(context.Background(), 7); err != nil {
-		t.Fatal(err)
-	}
+	check(t, session.Step(context.Background(), 7))
 	path := filepath.Join(t.TempDir(), "states", "slot.bin")
-	if err := session.SaveState(path); err != nil {
-		t.Fatal(err)
-	}
+	check(t, session.SaveState(path))
 	machine.steps = 99
-	if err := session.LoadState(path); err != nil {
-		t.Fatal(err)
-	}
+	check(t, session.LoadState(path))
 	if machine.steps != 7 {
 		t.Fatalf("loaded steps = %d, want 7", machine.steps)
 	}
-	if err := session.Reset(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, session.Reset(context.Background()))
 	if status := session.Status(); status.Frame != 0 || status.ElapsedMS != 0 {
 		t.Fatalf("reset status = %+v", status)
 	}
@@ -280,9 +256,7 @@ func TestLuaScenarioEmitsJSONEvents(t *testing.T) {
 			}
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	screenshot := filepath.ToSlash(filepath.Join(t.TempDir(), "frame.png"))
 	script := `
 		aram.start()
@@ -301,15 +275,13 @@ func TestLuaScenarioEmitsJSONEvents(t *testing.T) {
 		print("done", stepped.state)
 	`
 	var output bytes.Buffer
-	if err := session.RunLua(
+	check(t, session.RunLua(
 		context.Background(),
 		"scenario.lua",
 		script,
 		&output,
 		io.Discard,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	if _, err := os.Stat(screenshot); err != nil {
 		t.Fatal(err)
 	}
@@ -335,9 +307,7 @@ func TestProtocolReportsErrorsInBandAndContinues(t *testing.T) {
 			return map[string]any{"kind": "fake"}
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	input := strings.NewReader("\ufeff" + strings.Join([]string{
 		`{"id":1,"command":"start"}`,
 		`{"id":2,"command":"step","count":2}`,
@@ -351,9 +321,7 @@ func TestProtocolReportsErrorsInBandAndContinues(t *testing.T) {
 		`{"id":10,"command":"quit"}`,
 	}, "\n"))
 	var output bytes.Buffer
-	if err := session.ServeProtocol(context.Background(), input, &output); err != nil {
-		t.Fatal(err)
-	}
+	check(t, session.ServeProtocol(context.Background(), input, &output))
 	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
 	if len(lines) != 10 {
 		t.Fatalf("response lines = %d, want 10:\n%s", len(lines), output.String())

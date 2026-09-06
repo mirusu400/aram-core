@@ -4,46 +4,28 @@ import (
 	"testing"
 
 	"github.com/mirusu400/aram-core/cpu"
-	"github.com/mirusu400/aram-core/cpu/interpreter"
-	"github.com/mirusu400/aram-core/loader/ktf"
 )
 
 func TestKTFFontSelectionControlsGraphicsText(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
 	writeParameters := func(values ...uint32) {
 		t.Helper()
 		for index, value := range values {
-			if err := runtime.CPU.WriteRegister(
+			check(t, runtime.CPU.WriteRegister(
 				cpu.RegisterR1+uint32(index),
 				value,
-			); err != nil {
-				t.Fatal(err)
-			}
+			))
 		}
 	}
 
 	defaultFont, err := runtime.ensureDefaultFont()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	writeParameters(0, 0, JavaFontSizeSmall)
 	smallFont, err := runtime.handleFontMethod(
 		"getFont",
 		"(III)Lorg/kwis/msp/lcdui/Font;",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if smallFont == 0 || smallFont == defaultFont {
 		t.Fatalf(
 			"small font = 0x%08x, default = 0x%08x",
@@ -56,9 +38,7 @@ func TestKTFFontSelectionControlsGraphicsText(t *testing.T) {
 		runtime.ServiceOwner,
 		smallService,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if metrics.Height != 8 {
 		t.Fatalf("small font height = %d, want 8", metrics.Height)
 	}
@@ -67,9 +47,7 @@ func TestKTFFontSelectionControlsGraphicsText(t *testing.T) {
 		"getFont",
 		"(III)Lorg/kwis/msp/lcdui/Font;",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if reusedFont != smallFont {
 		t.Fatalf(
 			"repeated small font = 0x%08x, want 0x%08x",
@@ -78,10 +56,7 @@ func TestKTFFontSelectionControlsGraphicsText(t *testing.T) {
 		)
 	}
 
-	graphics, err := runtime.NewHostJavaObject("org/kwis/msp/lcdui/Graphics")
-	if err != nil {
-		t.Fatal(err)
-	}
+	graphics := newHostObject(t, runtime, "org/kwis/msp/lcdui/Graphics")
 	writeParameters(graphics, 0)
 	if _, err := runtime.handleGraphicsMethod(
 		"<init>",
@@ -101,9 +76,7 @@ func TestKTFFontSelectionControlsGraphicsText(t *testing.T) {
 		"getFont",
 		"()Lorg/kwis/msp/lcdui/Font;",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if selected != smallFont {
 		t.Fatalf(
 			"graphics font = 0x%08x, want 0x%08x",
@@ -118,16 +91,12 @@ func TestKTFFontSelectionControlsGraphicsText(t *testing.T) {
 		smallService,
 		text,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if width != 16 {
 		t.Fatalf("small text width = %d, want 16", width)
 	}
 	state := runtime.Graphics[graphics]
-	if err := runtime.drawGraphicsTextShared(state, text, 0, 0, 0); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.drawGraphicsTextShared(state, text, 0, 0, 0))
 	right := -1
 	for y := 0; y < state.Target.Bounds().Dy(); y++ {
 		for x := 0; x < state.Target.Bounds().Dx(); x++ {

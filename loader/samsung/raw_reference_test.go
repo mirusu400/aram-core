@@ -23,16 +23,12 @@ func TestSamsungRawDownloadPrivateReferences(t *testing.T) {
 		t.Run(fmt.Sprintf("reference-%d", index), func(t *testing.T) {
 			set := openRawReferenceSet(t, directory)
 			pkg, err := Inspect(set)
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			if pkg.Family != FamilySCHRawDownload || !pkg.Complete() {
 				t.Fatalf("raw package = family %q missing %v", pkg.Family, pkg.MissingRoles())
 			}
 			profile, err := BuiltinRegistry().Match(pkg)
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			for _, id := range []string{"qcsbl", "oemsbl"} {
 				spec, ok := profile.BootImage(id)
 				if !ok {
@@ -51,17 +47,11 @@ func TestSamsungRawDownloadPrivateReferences(t *testing.T) {
 				}
 			}
 			layout, err := Normalize(set, pkg)
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			progressive, err := DecodeWBIN(set, pkg)
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			flash, err := AssembleFlash(set, pkg)
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			t.Logf(
 				"raw download %s: MIBIB version=%d generation=%d partitions=%d packaged-end=%#x flash=%#x logical-end=%#x program-headers=%d",
 				profile.ID,
@@ -95,22 +85,16 @@ func openRawReferenceSet(t *testing.T, directory string) firmwareset.Set {
 			continue
 		}
 		file, err := os.Open(filepath.Join(directory, entry.Name()))
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		t.Cleanup(func() { _ = file.Close() })
 		info, err := file.Stat()
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		sources = append(sources, firmwareset.Source{ReaderAt: file, Size: info.Size()})
 	}
 	if len(sources) != 4 {
 		t.Fatalf("configured raw reference contains %d SCH download pieces, want 4", len(sources))
 	}
 	set, err := firmwareset.NewSet(sources)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	return set
 }

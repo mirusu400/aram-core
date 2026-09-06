@@ -33,29 +33,21 @@ func benchBlitter(b *testing.B, make func() *Backend, executable bool) {
 	rwx := cpu.PermissionRead | cpu.PermissionWrite | cpu.PermissionExecute
 	rw := cpu.PermissionRead | cpu.PermissionWrite
 	if executable {
-		if err := backend.Map(0x1000, 0x4000, rwx); err != nil {
-			b.Fatal(err)
-		}
+		check(b, backend.Map(0x1000, 0x4000, rwx))
 	} else {
 		for _, m := range []struct {
 			base  uint32
 			perms cpu.Permissions
 		}{{0x1000, rwx}, {0x2000, rw}, {0x3000, rw}} {
-			if err := backend.Map(m.base, 0x1000, m.perms); err != nil {
-				b.Fatal(err)
-			}
+			check(b, backend.Map(m.base, 0x1000, m.perms))
 		}
 	}
-	if err := backend.WriteMemory(0x1000, blitterCode); err != nil {
-		b.Fatal(err)
-	}
+	check(b, backend.WriteMemory(0x1000, blitterCode))
 	for id, value := range map[uint32]uint32{
 		cpu.RegisterR0: 0x2000, cpu.RegisterR1: 0x3000,
 		cpu.RegisterR2: 0, cpu.RegisterR4: 0xffc,
 	} {
-		if err := backend.WriteRegister(id, value); err != nil {
-			b.Fatal(err)
-		}
+		check(b, backend.WriteRegister(id, value))
 	}
 	const budget = uint64(100_000)
 	ctx := context.Background()

@@ -22,15 +22,11 @@ func TestGenericStepFrameUsesConfiguredRunBudget(t *testing.T) {
 		ReaderAt: bytes.NewReader(data),
 		Size:     int64(len(data)),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	t.Cleanup(func() { _ = created.Close() })
 	machine := created.(*Machine)
 
-	if err := machine.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.Start(context.Background()))
 	if err := machine.cpu.WriteMemory(machine.info.TextAddress, []byte{
 		0x01, 0x30, // adds r0, #1
 		0xfe, 0xe7, // b .
@@ -41,13 +37,9 @@ func TestGenericStepFrameUsesConfiguredRunBudget(t *testing.T) {
 		cpu.RegisterPC:   machine.info.TextAddress,
 		cpu.RegisterCPSR: cpu.StatusThumb,
 	} {
-		if err := machine.cpu.WriteRegister(register, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, machine.cpu.WriteRegister(register, value))
 	}
-	if err := machine.StepFrame(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.StepFrame(context.Background()))
 	result := machine.LastResult()
 	if result.Reason != cpu.StopBudget ||
 		result.Instructions != factory.RunBudget ||
@@ -72,19 +64,15 @@ func TestGenericStepFrameYieldsAtPresentation(t *testing.T) {
 	if screen == 0 {
 		t.Fatal("screen framebuffer is null")
 	}
-	if err := machine.cpu.WriteMemory(
+	check(t, machine.cpu.WriteMemory(
 		machine.info.TextAddress,
 		[]byte{0xfe, 0xe7}, // b .
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	stack := DefaultStackBase + DefaultStackSize - 8
 	var trailing [8]byte
 	binary.LittleEndian.PutUint32(trailing[0:4], 240)
 	binary.LittleEndian.PutUint32(trailing[4:8], 320)
-	if err := machine.cpu.WriteMemory(stack, trailing[:]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.cpu.WriteMemory(stack, trailing[:]))
 	for register, value := range map[uint32]uint32{
 		cpu.RegisterR0:   0,
 		cpu.RegisterR1:   screen,
@@ -95,14 +83,10 @@ func TestGenericStepFrameYieldsAtPresentation(t *testing.T) {
 		cpu.RegisterLR:   machine.info.TextAddress | 1,
 		cpu.RegisterCPSR: cpu.StatusThumb,
 	} {
-		if err := machine.cpu.WriteRegister(register, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, machine.cpu.WriteRegister(register, value))
 	}
 	before := machine.wipi.Stats.PresentCount
-	if err := machine.StepFrame(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.StepFrame(context.Background()))
 	result := machine.LastResult()
 	if result.Reason != cpu.StopBudget ||
 		result.Instructions != 1 ||
@@ -126,14 +110,10 @@ func BenchmarkGenericHandsetFrame(b *testing.B) {
 		ReaderAt: bytes.NewReader(data),
 		Size:     int64(len(data)),
 	})
-	if err != nil {
-		b.Fatal(err)
-	}
+	check(b, err)
 	b.Cleanup(func() { _ = created.Close() })
 	machine := created.(*Machine)
-	if err := machine.Start(context.Background()); err != nil {
-		b.Fatal(err)
-	}
+	check(b, machine.Start(context.Background()))
 	if err := machine.cpu.WriteMemory(machine.info.TextAddress, []byte{
 		0x01, 0x30, // adds r0, #1
 		0xfe, 0xe7, // b .
@@ -144,16 +124,12 @@ func BenchmarkGenericHandsetFrame(b *testing.B) {
 		cpu.RegisterPC:   machine.info.TextAddress,
 		cpu.RegisterCPSR: cpu.StatusThumb,
 	} {
-		if err := machine.cpu.WriteRegister(register, value); err != nil {
-			b.Fatal(err)
-		}
+		check(b, machine.cpu.WriteRegister(register, value))
 	}
 
 	b.ResetTimer()
 	for range b.N {
-		if err := machine.StepFrame(context.Background()); err != nil {
-			b.Fatal(err)
-		}
+		check(b, machine.StepFrame(context.Background()))
 	}
 	b.StopTimer()
 	result := machine.LastResult()
@@ -174,44 +150,30 @@ func dispatchPublicAPI(t *testing.T, runtime *wipirt.Runtime, name string, args 
 		if index < len(args) {
 			value = args[index]
 		}
-		if err := runtime.CPU.WriteRegister(uint32(index), value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteRegister(uint32(index), value))
 	}
 	sp := guest.DefaultStackBase + guest.DefaultStackSize - 0x100
-	if err := runtime.CPU.WriteRegister(cpu.RegisterSP, sp); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterSP, sp))
 	for index := 4; index < len(args); index++ {
 		var encoded [4]byte
 		binary.LittleEndian.PutUint32(encoded[:], args[index])
-		if err := runtime.CPU.WriteMemory(sp+uint32(index-4)*4, encoded[:]); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteMemory(sp+uint32(index-4)*4, encoded[:]))
 	}
 	const link = uint32(0x02000001)
-	if err := runtime.CPU.WriteRegister(cpu.RegisterLR, link); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterLR, link))
 	stub, ok := runtime.Layout.StubByName[name]
 	if !ok {
 		t.Fatalf("%s has no stub", name)
 	}
 	handled, err := runtime.DispatchTrap(context.Background(), stub&^1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !handled {
 		t.Fatalf("%s trap was not handled", name)
 	}
 	low, err := runtime.CPU.ReadRegister(cpu.RegisterR0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	high, err := runtime.CPU.ReadRegister(cpu.RegisterR1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if pc, _ := runtime.CPU.ReadRegister(cpu.RegisterPC); pc != link&^1 {
 		t.Fatalf("%s returned to PC 0x%08x", name, pc)
 	}

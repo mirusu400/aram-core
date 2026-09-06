@@ -22,9 +22,7 @@ func TestMMUSectionTranslatesInstructionAndDataAccesses(t *testing.T) {
 	bus.writeU32(physicalBase+0x2000, 0x11223344)
 
 	backend := New()
-	if err := backend.AttachSystemBus(bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.AttachSystemBus(bus))
 	backend.cp15.translationTableBase = tableBase
 	backend.cp15.domainAccessControl = 1 << (domain * 2) // client
 	backend.setCP15Control(1)
@@ -36,16 +34,12 @@ func TestMMUSectionTranslatesInstructionAndDataAccesses(t *testing.T) {
 	if err != nil || value != 0x11223344 {
 		t.Fatalf("section data read = %#x error %v", value, err)
 	}
-	if err := backend.write32(virtualBase+0x2000, 0xaabbccdd, cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.write32(virtualBase+0x2000, 0xaabbccdd, cpu.PermissionWrite))
 	if value := bus.readU32(physicalBase + 0x2000); value != 0xaabbccdd {
 		t.Fatalf("section data write = %#x", value)
 	}
 	var publicRead [4]byte
-	if err := backend.ReadMemory(virtualBase+0x2000, publicRead[:]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.ReadMemory(virtualBase+0x2000, publicRead[:]))
 	if value := uint32(publicRead[0]) | uint32(publicRead[1])<<8 |
 		uint32(publicRead[2])<<16 | uint32(publicRead[3])<<24; value != 0xaabbccdd {
 		t.Fatalf("public virtual read = %#x", value)
@@ -68,9 +62,7 @@ func TestMMUCoarseSmallPageChecksDomainAndSubpagePermissions(t *testing.T) {
 	bus.writeU32(physical, 0x55667788)
 
 	backend := New()
-	if err := backend.AttachSystemBus(bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.AttachSystemBus(bus))
 	backend.cp15.translationTableBase = tableBase
 	backend.cp15.domainAccessControl = 1 << (domain * 2) // client
 	backend.setCP15Control(1)
@@ -113,9 +105,7 @@ func TestMMUFineTableTranslatesTinyPage(t *testing.T) {
 	bus.writeU32(physical, 0x89abcdef)
 
 	backend := New()
-	if err := backend.AttachSystemBus(bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.AttachSystemBus(bus))
 	backend.cp15.translationTableBase = tableBase
 	backend.cp15.domainAccessControl = 1 << (domain * 2)
 	backend.setCP15Control(1)
@@ -139,9 +129,7 @@ func TestMMULargePageSelectsSubpageAccessPermission(t *testing.T) {
 	bus.writeU32(physical, 0x13579bdf)
 
 	backend := New()
-	if err := backend.AttachSystemBus(bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.AttachSystemBus(bus))
 	backend.cp15.translationTableBase = tableBase
 	backend.cp15.domainAccessControl = 1
 	backend.setCP15Control(1)
@@ -158,9 +146,7 @@ func TestMMULargePageSelectsSubpageAccessPermission(t *testing.T) {
 func TestMMUTranslationFaultUpdatesInstructionFaultState(t *testing.T) {
 	bus := &testSystemBus{memory: make(map[uint32]byte)}
 	backend := New()
-	if err := backend.AttachSystemBus(bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.AttachSystemBus(bus))
 	backend.cp15.translationTableBase = 0x4000
 	backend.setCP15Control(1)
 	_, err := backend.fetch32(0x90000000)
@@ -188,9 +174,7 @@ func TestMMUTLBRetainsTranslationUntilInvalidated(t *testing.T) {
 	bus.writeU32(firstPA, 1)
 	bus.writeU32(secondPA, 2)
 	backend := New()
-	if err := backend.AttachSystemBus(bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.AttachSystemBus(bus))
 	backend.cp15.translationTableBase = tableBase
 	backend.cp15.domainAccessControl = 3 // domain 0 manager
 	backend.setCP15Control(1)
@@ -203,9 +187,7 @@ func TestMMUTLBRetainsTranslationUntilInvalidated(t *testing.T) {
 	if err != nil || value != 1 {
 		t.Fatalf("cached TLB read = %d error %v", value, err)
 	}
-	if err := backend.writeCP15(8, 7, 0, 0); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.writeCP15(8, 7, 0, 0))
 	value, err = backend.read32(virtual, cpu.PermissionRead)
 	if err != nil || value != 2 {
 		t.Fatalf("invalidated TLB read = %d error %v", value, err)
@@ -224,9 +206,7 @@ func TestMMUFCSEProcessIDModifiesLowVirtualAddresses(t *testing.T) {
 	bus.writeU32(tableBase+(modified>>20)*4, physicalBase|3<<10|2)
 	bus.writeU32(physicalBase, 0x12345678)
 	backend := New()
-	if err := backend.AttachSystemBus(bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.AttachSystemBus(bus))
 	backend.cp15.translationTableBase = tableBase
 	backend.cp15.domainAccessControl = 3
 	backend.cp15.processID = processID
@@ -252,9 +232,7 @@ func TestMMUDirectVirtualDataCacheHonorsGenerationPrivilegeAndInvalidation(t *te
 	binary.LittleEndian.PutUint32(bus.data[physical:], 0x11223344)
 
 	backend := NewJIT()
-	if err := backend.AttachSystemBus(bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.AttachSystemBus(bus))
 	backend.cp15.translationTableBase = tableBase
 	backend.cp15.domainAccessControl = 1
 	backend.setCP15Control(1)
@@ -272,9 +250,7 @@ func TestMMUDirectVirtualDataCacheHonorsGenerationPrivilegeAndInvalidation(t *te
 	if len(entry.data) != 0x400 {
 		t.Fatalf("direct virtual cache span = %#x bytes, want one 1 KiB subpage", len(entry.data))
 	}
-	if err := backend.write32(virtual, 0x55667788, cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.write32(virtual, 0x55667788, cpu.PermissionWrite))
 	if _, _, ok := backend.virtualDataWriteHit(virtual, 4); !ok {
 		t.Fatal("successful direct virtual write did not install its permission half")
 	}
@@ -333,9 +309,7 @@ func TestARMJITBlockTransferUsesDirectMMUSubpage(t *testing.T) {
 	}
 
 	backend := NewJIT()
-	if err := backend.AttachSystemBus(bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.AttachSystemBus(bus))
 	defer func() { _ = backend.Close() }()
 	backend.cp15.translationTableBase = tableBase
 	backend.cp15.domainAccessControl = 3
@@ -344,12 +318,8 @@ func TestARMJITBlockTransferUsesDirectMMUSubpage(t *testing.T) {
 	// Scalar warmup installs both permission halves. The block transfer then
 	// proves its complete range once and accesses the direct page itself.
 	first, err := backend.read32(data, cpu.PermissionRead)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.write32(data, first, cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, backend.write32(data, first, cpu.PermissionWrite))
 	if _, _, ok := backend.armBlockTransferPage(data, 16, true); !ok {
 		t.Fatal("warm LDM range did not hit the direct MMU subpage")
 	}
@@ -360,9 +330,7 @@ func TestARMJITBlockTransferUsesDirectMMUSubpage(t *testing.T) {
 		t.Fatal("cross-subpage transfer incorrectly used the direct range")
 	}
 
-	if err := backend.WriteRegister(cpu.RegisterR0, data); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteRegister(cpu.RegisterR0, data))
 	result := backend.Run(context.Background(), code, cpu.ModeARM, 8)
 	if result.Err != nil || result.Reason != cpu.StopBreakpoint || result.Instructions != 2 {
 		t.Fatalf("direct LDM run = %+v", result)
@@ -377,13 +345,9 @@ func TestARMJITBlockTransferUsesDirectMMUSubpage(t *testing.T) {
 	}
 
 	for register, value := range []uint32{101, 202, 303, 404} {
-		if err := backend.WriteRegister(uint32(register+1), value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, backend.WriteRegister(uint32(register+1), value))
 	}
-	if err := backend.WriteRegister(cpu.RegisterR0, data); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteRegister(cpu.RegisterR0, data))
 	result = backend.Run(context.Background(), code+8, cpu.ModeARM, 8)
 	if result.Err != nil || result.Reason != cpu.StopBreakpoint || result.Instructions != 2 {
 		t.Fatalf("direct STM run = %+v", result)

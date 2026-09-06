@@ -43,15 +43,11 @@ func testInterruptingQualcommGPIOKeypadProfile() QualcommGPIOKeypadProfile {
 
 func TestQualcommGPIOKeypadFollowsFirmwareRowSelection(t *testing.T) {
 	keypad, err := NewQualcommGPIOKeypad(testQualcommGPIOKeypadProfile())
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if got := keypad.InputStatus(0x1f); got != 0x1f {
 		t.Fatalf("idle keypad status = %#x", got)
 	}
-	if err := keypad.SetKey("digit-1", true); err != nil {
-		t.Fatal(err)
-	}
+	check(t, keypad.SetKey("digit-1", true))
 
 	// The firmware's pre-scan drives every row high. A pressed key therefore
 	// pulls its column input low before the row-by-row scan begins.
@@ -73,9 +69,7 @@ func TestQualcommGPIOKeypadFollowsFirmwareRowSelection(t *testing.T) {
 	if got := keypad.InputStatus(0x1f); got != 0x1d {
 		t.Fatalf("selected row keypad status = %#x", got)
 	}
-	if err := keypad.SetKey("digit-1", false); err != nil {
-		t.Fatal(err)
-	}
+	check(t, keypad.SetKey("digit-1", false))
 	if got := keypad.InputStatus(0x1f); got != 0x1f {
 		t.Fatalf("released keypad status = %#x", got)
 	}
@@ -86,53 +80,33 @@ func TestQualcommGPIOKeypadFollowsFirmwareRowSelection(t *testing.T) {
 
 func TestQualcommGPIOKeypadIntegratesWithGPIOWritesAndPrimaryInputs(t *testing.T) {
 	keypad, err := NewQualcommGPIOKeypad(testQualcommGPIOKeypadProfile())
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	primary, err := NewQualcommPrimaryClockControl(QualcommPrimaryClockConfig{
 		Status: 0x1f, InputMask: 0x1f,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	interrupt := NewQualcommInterruptController(nil)
-	if err := primary.AttachGPIOKeypad(keypad); err != nil {
-		t.Fatal(err)
-	}
-	if err := interrupt.AttachGPIOWriteObserver(keypad); err != nil {
-		t.Fatal(err)
-	}
-	if err := keypad.SetMatrixKey(2, 2, true); err != nil {
-		t.Fatal(err)
-	}
-	if err := interrupt.Write(qualcommGPIOInterruptClear4Offset, Width32, 0x00200000); err != nil {
-		t.Fatal(err)
-	}
+	check(t, primary.AttachGPIOKeypad(keypad))
+	check(t, interrupt.AttachGPIOWriteObserver(keypad))
+	check(t, keypad.SetMatrixKey(2, 2, true))
+	check(t, interrupt.Write(qualcommGPIOInterruptClear4Offset, Width32, 0x00200000))
 	value, err := primary.Read(qualcommPrimaryGPIOInputOffset, Width32)
 	if err != nil || value != 0x17 {
 		t.Fatalf("wired primary input status = %#x error %v", value, err)
 	}
 
 	state, err := primary.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	restoredKeypad, _ := NewQualcommGPIOKeypad(testQualcommGPIOKeypadProfile())
 	restoredPrimary, _ := NewQualcommPrimaryClockControl(QualcommPrimaryClockConfig{
 		Status: 0x1f, InputMask: 0x1f,
 	})
-	if err := restoredPrimary.AttachGPIOKeypad(restoredKeypad); err != nil {
-		t.Fatal(err)
-	}
-	if err := restoredPrimary.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restoredPrimary.AttachGPIOKeypad(restoredKeypad))
+	check(t, restoredPrimary.LoadState(state))
 	if got := restoredPrimary.InputStatus(); got != 0x17 {
 		t.Fatalf("restored keypad input status = %#x", got)
 	}
-	if err := restoredPrimary.Reset(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restoredPrimary.Reset())
 	if got := restoredPrimary.InputStatus(); got != 0x1f {
 		t.Fatalf("reset keypad input status = %#x", got)
 	}
@@ -140,27 +114,17 @@ func TestQualcommGPIOKeypadIntegratesWithGPIOWritesAndPrimaryInputs(t *testing.T
 
 func TestQualcommGPIOKeypadPulsesHeldLevelAgainOnlyWhenFirmwareReenablesIt(t *testing.T) {
 	keypad, err := NewQualcommGPIOKeypad(testInterruptingQualcommGPIOKeypadProfile())
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	vectored, err := NewQualcommVectoredInterruptController(QualcommVectoredInterruptConfig{
 		SourceCount: 8, Bank0Sources: 4,
 	}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := keypad.AttachInterruptControllers(nil, vectored); err != nil {
-		t.Fatal(err)
-	}
-	if err := vectored.Write(qualcommVICEnable1Offset, Width32, 1<<1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, keypad.AttachInterruptControllers(nil, vectored))
+	check(t, vectored.Write(qualcommVICEnable1Offset, Width32, 1<<1))
 	if handled, err := keypad.writePrimaryGPIORegister(0x05a8, 1<<7); err != nil || !handled {
 		t.Fatalf("enable GPIO level interrupt: handled=%t error=%v", handled, err)
 	}
-	if err := keypad.SetKey("hold", true); err != nil {
-		t.Fatal(err)
-	}
+	check(t, keypad.SetKey("hold", true))
 	if got := vectored.PendingStatusBanks(); got != [2]uint32{0, 1 << 1} {
 		t.Fatalf("initial GPIO aggregate pulse = %#v", got)
 	}
@@ -173,9 +137,7 @@ func TestQualcommGPIOKeypadPulsesHeldLevelAgainOnlyWhenFirmwareReenablesIt(t *te
 	if handled, err := keypad.writePrimaryGPIORegister(0x0594, 1<<7); err != nil || !handled {
 		t.Fatalf("clear GPIO group: handled=%t error=%v", handled, err)
 	}
-	if err := vectored.Write(qualcommVICAcknowledge1Offset, Width32, 1<<1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, vectored.Write(qualcommVICAcknowledge1Offset, Width32, 1<<1))
 	if got := vectored.PendingStatusBanks(); got != [2]uint32{} {
 		t.Fatalf("cleared aggregate pulse = %#v", got)
 	}
@@ -214,34 +176,24 @@ func TestQualcommGPIOKeypadPulsesHeldLevelAgainOnlyWhenFirmwareReenablesIt(t *te
 func TestQualcommGPIOKeypadInterruptStateRoundTripsAndLegacyStateStaysV1(t *testing.T) {
 	profile := testInterruptingQualcommGPIOKeypadProfile()
 	keypad, err := NewQualcommGPIOKeypad(profile)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	vectored, _ := NewQualcommVectoredInterruptController(QualcommVectoredInterruptConfig{
 		SourceCount: 8, Bank0Sources: 4,
 	}, nil)
-	if err := keypad.AttachInterruptControllers(nil, vectored); err != nil {
-		t.Fatal(err)
-	}
+	check(t, keypad.AttachInterruptControllers(nil, vectored))
 	_, _ = keypad.writePrimaryGPIORegister(0x05bc, 0x55)
 	_, _ = keypad.writePrimaryGPIORegister(0x05d0, 0x20)
 	_, _ = keypad.writePrimaryGPIORegister(0x05a8, 1<<7)
 	keypad.ObserveGPIOWrite(0x08, 1)
-	if err := keypad.SetKey("hold", true); err != nil {
-		t.Fatal(err)
-	}
+	check(t, keypad.SetKey("hold", true))
 	state, err := keypad.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if version := binary.LittleEndian.Uint32(state[4:8]); version != 2 {
 		t.Fatalf("interrupting keypad state version = %d", version)
 	}
 
 	restored, _ := NewQualcommGPIOKeypad(profile)
-	if err := restored.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restored.LoadState(state))
 	for offset, want := range map[uint32]uint32{
 		0x05a8: 1 << 7,
 		0x05bc: 0x55,
@@ -281,9 +233,7 @@ func TestQualcommGPIOKeypadInterruptControllerAttachmentIsAtomic(t *testing.T) {
 		InterruptSource: 5, UseVectoredController: true,
 	})
 	keypad, err := NewQualcommGPIOKeypad(profile)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	legacy := NewQualcommInterruptController(nil)
 	if err := keypad.AttachInterruptControllers(legacy, nil); !errors.Is(err, ErrQualcommGPIOKeypad) {
 		t.Fatalf("missing controller attachment error = %v", err)
@@ -338,13 +288,9 @@ func TestQualcommGPIOKeypadRejectsInvalidProfilesAndState(t *testing.T) {
 func TestQualcommGPIOKeypadStateIgnoresHostAliasesAndSafelyMigratesLegacyFingerprint(t *testing.T) {
 	profile := testQualcommGPIOKeypadProfile()
 	keypad, err := NewQualcommGPIOKeypad(profile)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	state, err := keypad.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 
 	aliasedProfile := profile
 	aliasedProfile.Keys = append(
@@ -352,9 +298,7 @@ func TestQualcommGPIOKeypadStateIgnoresHostAliasesAndSafelyMigratesLegacyFingerp
 		QualcommGPIOKeyProfile{ID: "alias", Row: 1, Column: 0},
 	)
 	aliased, err := NewQualcommGPIOKeypad(aliasedProfile)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if err := aliased.LoadState(state); err != nil {
 		t.Fatalf("host alias changed electrical state contract: %v", err)
 	}
@@ -385,23 +329,15 @@ func TestBoardProfileAttachesProfileSelectedKeypad(t *testing.T) {
 	primary, err := NewQualcommPrimaryClockControl(QualcommPrimaryClockConfig{
 		Status: 0x1f, InputMask: 0x1f,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	interrupt := NewQualcommInterruptController(nil)
 	keypad, err := profile.AttachKeypad(primary, nil, interrupt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if keypad == nil {
 		t.Fatal("profile did not attach its keypad")
 	}
-	if err := keypad.SetKey("digit-1", true); err != nil {
-		t.Fatal(err)
-	}
-	if err := interrupt.Write(qualcommGPIOInterruptClear0Offset, Width32, 0x00000800); err != nil {
-		t.Fatal(err)
-	}
+	check(t, keypad.SetKey("digit-1", true))
+	check(t, interrupt.Write(qualcommGPIOInterruptClear0Offset, Width32, 0x00000800))
 	if got := primary.InputStatus(); got != 0x1d {
 		t.Fatalf("profile-wired keypad input status = %#x", got)
 	}
@@ -428,18 +364,12 @@ func TestSCHW830ProfileMapsKnownKeypadControls(t *testing.T) {
 	primary, err := NewQualcommPrimaryClockControl(QualcommPrimaryClockConfig{
 		Status: profile.PrimaryClockStatus, InputMask: profile.PrimaryClockInputMask,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	secondary, err := NewQualcommSecondaryClockControlWithWritableOffsets(profile.SecondaryClockWritableOffsets)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	interrupt := NewQualcommInterruptController(nil)
 	keypad, err := profile.AttachKeypad(primary, secondary, interrupt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	for _, id := range []string{
 		"soft-left", "soft-right", "up", "down", "left", "right", "ok", "back", "send",
 		"volume-up", "volume-down",
@@ -449,58 +379,32 @@ func TestSCHW830ProfileMapsKnownKeypadControls(t *testing.T) {
 		if err := keypad.SetKey(id, true); err != nil {
 			t.Fatalf("profiled key %q: %v", id, err)
 		}
-		if err := keypad.SetKey(id, false); err != nil {
-			t.Fatal(err)
-		}
+		check(t, keypad.SetKey(id, false))
 	}
-	if err := keypad.SetKey("digit-1", true); err != nil {
-		t.Fatal(err)
-	}
-	if err := secondary.Write(0x0400, Width32, 0x00002000); err != nil {
-		t.Fatal(err)
-	}
+	check(t, keypad.SetKey("digit-1", true))
+	check(t, secondary.Write(0x0400, Width32, 0x00002000))
 	if got := primary.InputStatus(); got != 0x1d {
 		t.Fatalf("SCH-W830 digit-1 selected input = %#x", got)
 	}
-	if err := keypad.SetKey("digit-1", false); err != nil {
-		t.Fatal(err)
-	}
-	if err := keypad.SetKey("soft-left", true); err != nil {
-		t.Fatal(err)
-	}
-	if err := secondary.Write(0x0400, Width32, 0x00000400); err != nil {
-		t.Fatal(err)
-	}
+	check(t, keypad.SetKey("digit-1", false))
+	check(t, keypad.SetKey("soft-left", true))
+	check(t, secondary.Write(0x0400, Width32, 0x00000400))
 	if got := primary.InputStatus(); got != 0x1e {
 		t.Fatalf("SCH-W830 left soft key selected input = %#x", got)
 	}
-	if err := keypad.SetKey("soft-left", false); err != nil {
-		t.Fatal(err)
-	}
-	if err := keypad.SetKey("soft-right", true); err != nil {
-		t.Fatal(err)
-	}
-	if err := secondary.Write(0x0400, Width32, 0x00000800); err != nil {
-		t.Fatal(err)
-	}
+	check(t, keypad.SetKey("soft-left", false))
+	check(t, keypad.SetKey("soft-right", true))
+	check(t, secondary.Write(0x0400, Width32, 0x00000800))
 	if got := primary.InputStatus(); got != 0x1e {
 		t.Fatalf("SCH-W830 right soft key selected input = %#x", got)
 	}
-	if err := keypad.SetKey("soft-right", false); err != nil {
-		t.Fatal(err)
-	}
-	if err := keypad.SetKey("volume-up", true); err != nil {
-		t.Fatal(err)
-	}
-	if err := interrupt.Write(qualcommGPIOInterruptClear4Offset, Width32, 0x00200000); err != nil {
-		t.Fatal(err)
-	}
+	check(t, keypad.SetKey("soft-right", false))
+	check(t, keypad.SetKey("volume-up", true))
+	check(t, interrupt.Write(qualcommGPIOInterruptClear4Offset, Width32, 0x00200000))
 	if got := primary.InputStatus(); got != 0x1e {
 		t.Fatalf("SCH-W830 volume-up selected input = %#x", got)
 	}
-	if err := keypad.SetKey("volume-up", false); err != nil {
-		t.Fatal(err)
-	}
+	check(t, keypad.SetKey("volume-up", false))
 	// The four ring directions share row 4 and occupy columns 0..3 in
 	// up/down/left/right order, so each pulls a distinct column input low
 	// (base 0x1f minus the column bit). This pins the direction-to-column
@@ -515,17 +419,11 @@ func TestSCHW830ProfileMapsKnownKeypadControls(t *testing.T) {
 		{"left", 0x1b},
 		{"right", 0x17},
 	} {
-		if err := keypad.SetKey(direction.id, true); err != nil {
-			t.Fatal(err)
-		}
-		if err := secondary.Write(0x0400, Width32, 0x00004000); err != nil {
-			t.Fatal(err)
-		}
+		check(t, keypad.SetKey(direction.id, true))
+		check(t, secondary.Write(0x0400, Width32, 0x00004000))
 		if got := primary.InputStatus(); got != direction.input {
 			t.Fatalf("SCH-W830 %s selected input = %#x, want %#x", direction.id, got, direction.input)
 		}
-		if err := keypad.SetKey(direction.id, false); err != nil {
-			t.Fatal(err)
-		}
+		check(t, keypad.SetKey(direction.id, false))
 	}
 }

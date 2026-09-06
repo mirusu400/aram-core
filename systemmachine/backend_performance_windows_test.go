@@ -47,9 +47,7 @@ func TestPrivateSCHW830CPUBackendParityAndThroughput(t *testing.T) {
 	for index, tier := range tiers {
 		t.Run(tier.name, func(t *testing.T) {
 			machine, err := New(set, Options{Backend: tier.new()})
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			defer machine.Close()
 			loadSystemMachineSnapshot(t, machine, prefix)
 			started := time.Now()

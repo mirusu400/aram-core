@@ -10,25 +10,17 @@ import (
 
 func TestSamsungMGPControlReleasesCompanionAndPublishesReady(t *testing.T) {
 	bus := NewBus()
-	if err := bus.MapSparseRAM("mgp-shared", 0x1000, 0x100); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.MapSparseRAM("mgp-shared", 0x1000, 0x100))
 	control, err := NewSamsungMGPControl(bus, SamsungMGPControlConfig{
 		Size: 0x20, ReleaseOffset: 0x0c,
 		ReadyAddress: 0x1010, ReadyValue: 1,
 		ResponseDelayInstructions: 4,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := bus.MapMMIO("mgp-control", 0x2000, 0x20, control); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, bus.MapMMIO("mgp-control", 0x2000, 0x20, control))
 
 	writeSamsungMGPRegister(t, bus, 0x200c, 0)
-	if err := control.Advance(4); err != nil {
-		t.Fatal(err)
-	}
+	check(t, control.Advance(4))
 	if got := readSamsungMGPByte(t, bus, 0x1010); got != 0 {
 		t.Fatalf("ready after an idle zero write = %#x", got)
 	}
@@ -38,15 +30,11 @@ func TestSamsungMGPControlReleasesCompanionAndPublishesReady(t *testing.T) {
 	if got := readSamsungMGPByte(t, bus, 0x1010); got != 0 {
 		t.Fatalf("ready before delayed response = %#x", got)
 	}
-	if err := control.Advance(3); err != nil {
-		t.Fatal(err)
-	}
+	check(t, control.Advance(3))
 	if got := readSamsungMGPByte(t, bus, 0x1010); got != 0 {
 		t.Fatalf("ready before final instruction = %#x", got)
 	}
-	if err := control.Advance(1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, control.Advance(1))
 	if got := readSamsungMGPByte(t, bus, 0x1010); got != 1 {
 		t.Fatalf("ready after companion release = %#x", got)
 	}
@@ -54,48 +42,28 @@ func TestSamsungMGPControlReleasesCompanionAndPublishesReady(t *testing.T) {
 
 func TestSamsungMGPControlStateRoundTripPreservesPendingResponse(t *testing.T) {
 	bus := NewBus()
-	if err := bus.MapRAM("mgp-shared", 0x1000, 0x100); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.MapRAM("mgp-shared", 0x1000, 0x100))
 	config := SamsungMGPControlConfig{
 		Size: 0x20, ReleaseOffset: 0x0c,
 		ReadyAddress: 0x1010, ReadyValue: 0x5a,
 		ResponseDelayInstructions: 8,
 	}
 	control, err := NewSamsungMGPControl(bus, config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := control.Write(0x0c, Width16, 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := control.Write(0x0c, Width16, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := control.Advance(3); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, control.Write(0x0c, Width16, 1))
+	check(t, control.Write(0x0c, Width16, 0))
+	check(t, control.Advance(3))
 	state, err := control.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 
 	restored, err := NewSamsungMGPControl(bus, config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := restored.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
-	if err := restored.Advance(4); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, restored.LoadState(state))
+	check(t, restored.Advance(4))
 	if got := readSamsungMGPByte(t, bus, 0x1010); got != 0 {
 		t.Fatalf("restored response completed early = %#x", got)
 	}
-	if err := restored.Advance(1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restored.Advance(1))
 	if got := readSamsungMGPByte(t, bus, 0x1010); got != 0x5a {
 		t.Fatalf("restored response = %#x", got)
 	}
@@ -110,28 +78,18 @@ func TestSamsungMGPControlStateRoundTripPreservesPendingResponse(t *testing.T) {
 
 func TestSamsungMGPControlMigratesPassiveRegisterWindowSubset(t *testing.T) {
 	legacy, err := NewLatchedRegisterWindow(0x20, Width16)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := legacy.Write(2, Width16, 0x1234); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, legacy.Write(2, Width16, 0x1234))
 	state, err := legacy.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	bus := NewBus()
-	if err := bus.MapRAM("mgp-shared", 0x1000, 0x100); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.MapRAM("mgp-shared", 0x1000, 0x100))
 	control, _ := NewSamsungMGPControl(bus, SamsungMGPControlConfig{
 		Size: 0x20, ReleaseOffset: 0x0c,
 		ReadyAddress: 0x1010, ReadyValue: 1,
 		ResponseDelayInstructions: 1,
 	})
-	if err := control.LoadStateSubset(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, control.LoadStateSubset(state))
 	if got, err := control.Read(2, Width16); err != nil || got != 0x1234 {
 		t.Fatalf("migrated register = %#x, %v", got, err)
 	}
@@ -159,9 +117,7 @@ func TestSamsungMGPControlRejectsInvalidConfigurationAndAccess(t *testing.T) {
 		}
 	}
 	control, err := NewSamsungMGPControl(bus, valid)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := control.Read(0, Width8); !errors.Is(err, ErrSamsungMGPMMIO) {
 		t.Fatalf("byte register read error = %v", err)
 	}
@@ -177,16 +133,12 @@ func writeSamsungMGPRegister(t *testing.T, bus *Bus, address uint32, value uint1
 	t.Helper()
 	var encoded [2]byte
 	binary.LittleEndian.PutUint16(encoded[:], value)
-	if err := bus.Write(address, encoded[:], cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.Write(address, encoded[:], cpu.PermissionWrite))
 }
 
 func readSamsungMGPByte(t *testing.T, bus *Bus, address uint32) byte {
 	t.Helper()
 	var value [1]byte
-	if err := bus.Read(address, value[:], cpu.PermissionRead); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.Read(address, value[:], cpu.PermissionRead))
 	return value[0]
 }

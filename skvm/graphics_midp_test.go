@@ -13,18 +13,14 @@ func midpGraphicsSurface(t *testing.T, vm *VM) (uint32, *graphicsState) {
 	t.Helper()
 	reference := vm.ScreenGraphics()
 	state, err := vm.graphics(reference)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	return reference, state
 }
 
 func midpPixel(t *testing.T, vm *VM, surface shared.ServiceID, x, y int32) shared.Color {
 	t.Helper()
 	color, err := vm.services.Graphics.Pixel(vm.serviceOwner, surface, x, y)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	return color
 }
 
@@ -35,9 +31,7 @@ func midpPixel(t *testing.T, vm *VM, surface shared.ServiceID, x, y int32) share
 // moment a menu drew an arc (aram-core issue #117, aram-frontend issue #20).
 func TestSKVMMIDPGraphicsExposesEveryDrawingEntryPoint(t *testing.T) {
 	vm, err := New(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	for _, method := range []struct {
 		name       string
 		descriptor string
@@ -100,9 +94,7 @@ func TestSKVMMIDPGraphicsExposesEveryDrawingEntryPoint(t *testing.T) {
 // rasterizer and stays an outline, unlike its fillArc sibling.
 func TestSKVMMIDPDrawArcOutlinesWithoutFilling(t *testing.T) {
 	vm, err := New(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	graphics, state := midpGraphicsSurface(t, vm)
 	invokeTestNative(
 		t, vm, "javax/microedition/lcdui/Graphics", "setColor", "(I)V",
@@ -138,22 +130,18 @@ func TestSKVMMIDPDrawArcOutlinesWithoutFilling(t *testing.T) {
 func midpTwoPixelImage(t *testing.T, vm *VM) uint32 {
 	t.Helper()
 	image, err := vm.newImageState(2, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	for index, color := range []shared.Color{
 		{R: 0xff, A: 0xff},
 		{G: 0xff, A: 0xff},
 	} {
-		if err := vm.services.Graphics.SetPixel(
+		check(t, vm.services.Graphics.SetPixel(
 			vm.serviceOwner,
 			image.surface,
 			int32(index),
 			0,
 			color,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
 	return vm.NewObject("javax/microedition/lcdui/Image", image)
 }
@@ -174,9 +162,7 @@ func TestSKVMMIDPDrawRegionAppliesTransform(t *testing.T) {
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			vm, err := New(nil)
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			graphics, state := midpGraphicsSurface(t, vm)
 			image := midpTwoPixelImage(t, vm)
 			invokeTestNative(
@@ -204,9 +190,7 @@ func TestSKVMMIDPDrawRegionAppliesTransform(t *testing.T) {
 
 func TestSKVMMIDPCopyAreaMovesPixels(t *testing.T) {
 	vm, err := New(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	graphics, state := midpGraphicsSurface(t, vm)
 	invokeTestNative(
 		t, vm, "javax/microedition/lcdui/Graphics", "setColor", "(I)V",
@@ -239,9 +223,7 @@ func TestSKVMMIDPCopyAreaMovesPixels(t *testing.T) {
 // be drawn bottom-up without being copied first.
 func TestSKVMMIDPDrawRGBHonoursAlphaFlagAndScanLength(t *testing.T) {
 	vm, err := New(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	graphics, state := midpGraphicsSurface(t, vm)
 	// Fully transparent red and green: with processAlpha false both must land
 	// opaque.
@@ -287,9 +269,7 @@ func TestSKVMMIDPDrawRGBHonoursAlphaFlagAndScanLength(t *testing.T) {
 
 func TestSKVMMIDPFillTriangleRastersOntoSharedSurface(t *testing.T) {
 	vm, err := New(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	graphics, state := midpGraphicsSurface(t, vm)
 	invokeTestNative(
 		t, vm, "javax/microedition/lcdui/Graphics", "setColor", "(I)V",
@@ -313,9 +293,7 @@ func TestSKVMMIDPFillTriangleRastersOntoSharedSurface(t *testing.T) {
 
 func TestSKVMMIDPColorAndStrokeAccessors(t *testing.T) {
 	vm, err := New(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	graphics, _ := midpGraphicsSurface(t, vm)
 	invokeTestNative(
 		t, vm, "javax/microedition/lcdui/Graphics", "setColor", "(I)V",
@@ -395,18 +373,14 @@ func TestSKVMMIDPColorAndStrokeAccessors(t *testing.T) {
 // with a different style after a restore.
 func TestSKVMGraphicsStrokeStyleSurvivesStateRoundTrip(t *testing.T) {
 	vm, err := New(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	graphics, state := midpGraphicsSurface(t, vm)
 	invokeTestNative(
 		t, vm, "javax/microedition/lcdui/Graphics", "setStrokeStyle", "(I)V",
 		graphics, IntValue(strokeDotted),
 	)
 	saved, err := snapshotNative(graphics, state, map[any]uint32{state: graphics})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	restored, _, err := restoreNative(saved)
 	if err != nil {
 		t.Fatal(err)

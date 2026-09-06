@@ -3,9 +3,6 @@ package ktf
 import (
 	"context"
 	"testing"
-
-	"github.com/mirusu400/aram-core/cpu/interpreter"
-	"github.com/mirusu400/aram-core/loader/ktf"
 )
 
 // A started thread has to see its own java/lang/Thread from
@@ -17,14 +14,7 @@ import (
 // instruction, every task finished, and the title stopped on a black screen
 // after a single present (issue #147).
 func TestKTFCurrentThreadAnswersTheRunningTasksThread(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
+	runtime := newUnmappedTestRuntime(t)
 
 	const jletThread = uint32(0x10001000)
 	const workerThread = uint32(0x10002000)
@@ -37,9 +27,7 @@ func TestKTFCurrentThreadAnswersTheRunningTasksThread(t *testing.T) {
 		"currentThread",
 		"()Ljava/lang/Thread;",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if thread != workerThread {
 		t.Fatalf("currentThread on the worker = 0x%08x, want 0x%08x",
 			thread, workerThread)
@@ -53,9 +41,7 @@ func TestKTFCurrentThreadAnswersTheRunningTasksThread(t *testing.T) {
 		"currentThread",
 		"()Ljava/lang/Thread;",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if thread != jletThread {
 		t.Fatalf("currentThread on a paint task = 0x%08x, want 0x%08x",
 			thread, jletThread)
@@ -66,14 +52,7 @@ func TestKTFCurrentThreadAnswersTheRunningTasksThread(t *testing.T) {
 // and the receiver its run() belongs to is either the Thread itself or the
 // Runnable the Thread was constructed around.
 func TestKTFJavaThreadForResolvesEitherShape(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
+	runtime := newUnmappedTestRuntime(t)
 
 	const subclassed = uint32(0x10003000)
 	const wrapper = uint32(0x10004000)

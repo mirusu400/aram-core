@@ -43,9 +43,7 @@ func TestFlexOneNANDOEMSBLTargetsPackedRawFBAFour(t *testing.T) {
 	}
 	partitions := []Partition{{Name: "0:OEMSBL", StartBlock: 4, BlockCount: 1}}
 	target, err := flexOneNANDBootTarget(spec, partitions)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if target != 0x00100000 {
 		t.Fatalf("OEMSBL raw FBA target = %#x, want 0x00100000", target)
 	}
@@ -73,9 +71,7 @@ func TestPlaceFlexOneNANDBootKeepsHeaderAndStartsPayloadAtPageOne(t *testing.T) 
 		payload[index] = byte(index*7 + 3)
 	}
 	image := BootImage{ID: "oemsbl", UsedSize: uint32(len(payload)), Bytes: payload}
-	if err := placeFlexOneNANDBoot(flash, source, target, headerSize, rawBlockSize, image); err != nil {
-		t.Fatal(err)
-	}
+	check(t, placeFlexOneNANDBoot(flash, source, target, headerSize, rawBlockSize, image))
 	if !bytes.Equal(flash[target:target+headerSize], header) {
 		t.Fatal("raw OEMSBL FBA does not retain the physical header page")
 	}

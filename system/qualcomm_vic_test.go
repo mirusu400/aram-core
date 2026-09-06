@@ -14,9 +14,7 @@ func TestQualcommVectoredInterruptControllerPacksW830SourcesAndVectors(t *testin
 		},
 		probe,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	for _, offset := range []uint32{
 		qualcommVICVectorReadOffset,
 		qualcommVICPendingReadOffset,
@@ -29,12 +27,8 @@ func TestQualcommVectoredInterruptControllerPacksW830SourcesAndVectors(t *testin
 	if value, readErr := device.Read(qualcommVICInServiceOffset, Width32); readErr != nil || value != qualcommVICNoInServiceVector {
 		t.Fatalf("idle in-service vector = %#x error %v", value, readErr)
 	}
-	if err := device.Write(qualcommVICEnable1Offset, Width32, 1<<2); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.PulseSource(21); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(qualcommVICEnable1Offset, Width32, 1<<2))
+	check(t, device.PulseSource(21))
 	if !probe.irq || probe.fiq {
 		t.Fatalf("vectored outputs IRQ=%v FIQ=%v", probe.irq, probe.fiq)
 	}
@@ -50,26 +44,18 @@ func TestQualcommVectoredInterruptControllerPacksW830SourcesAndVectors(t *testin
 	if vector, readErr := device.Read(qualcommVICInServiceOffset, Width32); readErr != nil || vector != 27 {
 		t.Fatalf("in-service vector = %#x error %v", vector, readErr)
 	}
-	if err := device.Write(qualcommVICAcknowledge1Offset, Width32, 1<<2); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(qualcommVICAcknowledge1Offset, Width32, 1<<2))
 	if probe.irq {
 		t.Fatal("acknowledged pulse left vectored IRQ asserted")
 	}
-	if err := device.Write(qualcommVICVectorWriteOffset, Width32, 0); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(qualcommVICVectorWriteOffset, Width32, 0))
 	if vector, _ := device.Read(qualcommVICInServiceOffset, Width32); vector != qualcommVICNoInServiceVector {
 		t.Fatalf("completed in-service vector = %#x", vector)
 	}
 
-	if err := device.Write(qualcommVICEnable0Offset, Width32, 1<<12); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(qualcommVICEnable0Offset, Width32, 1<<12))
 	for _, source := range []uint8{21, 36} {
-		if err := device.PulseSource(source); err != nil {
-			t.Fatal(err)
-		}
+		check(t, device.PulseSource(source))
 	}
 	if vector, _ := device.Read(qualcommVICPendingReadOffset, Width32); vector != 12 {
 		t.Fatalf("fixed-priority vector = %d, want 12", vector)
@@ -82,39 +68,23 @@ func TestQualcommVectoredInterruptControllerPreservesLevelAndState(t *testing.T)
 		ReverseSourceOrder: true,
 	}
 	device, err := NewQualcommVectoredInterruptController(config, &interruptLineProbe{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommVICEnable1Offset, Width32, ^uint32(0)); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, device.Write(qualcommVICEnable1Offset, Width32, ^uint32(0)))
 	if enabled, _ := device.Read(qualcommVICEnable1Offset, Width32); enabled != 0x00ffffff {
 		t.Fatalf("masked second-bank enables = %#x", enabled)
 	}
-	if err := device.SetSource(0, true); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommVICAcknowledge1Offset, Width32, 1<<23); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.SetSource(0, true))
+	check(t, device.Write(qualcommVICAcknowledge1Offset, Width32, 1<<23))
 	if status, _ := device.Read(qualcommVICStatus1Offset, Width32); status != 1<<23 {
 		t.Fatalf("asserted level status = %#x", status)
 	}
-	if err := device.SetSource(0, false); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(qualcommVICAcknowledge1Offset, Width32, 1<<23); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.SetSource(0, false))
+	check(t, device.Write(qualcommVICAcknowledge1Offset, Width32, 1<<23))
 	state, err := device.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	restoredProbe := &interruptLineProbe{}
 	restored, _ := NewQualcommVectoredInterruptController(config, restoredProbe)
-	if err := restored.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restored.LoadState(state))
 	if restoredProbe.irq || restoredProbe.fiq {
 		t.Fatalf("restored empty outputs IRQ=%v FIQ=%v", restoredProbe.irq, restoredProbe.fiq)
 	}

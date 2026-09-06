@@ -24,15 +24,11 @@ func TestQualcommLegacyTopPageExposesOnlyConfiguredIdentification(t *testing.T) 
 		t.Fatalf("legacy top write error = %v", err)
 	}
 	state, err := device.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	restored := NewQualcommLegacyTopPage(QualcommLegacyTopConfig{
 		Version: 0x01020304, Identification: 0x12345678,
 	})
-	if err := restored.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restored.LoadState(state))
 	mismatch := NewQualcommLegacyTopPage(QualcommLegacyTopConfig{Identification: 1})
 	if err := mismatch.LoadState(state); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("mismatched legacy top state error = %v", err)
@@ -47,37 +43,25 @@ func TestQualcommLegacyTopPageProfilesWritableBootWords(t *testing.T) {
 			qualcommLegacyTopIDOffset + 4,
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if value, err := device.Read(qualcommLegacyTopIDOffset, Width32); err != nil || value != 0x12345678 {
 		t.Fatalf("writable identification reset = %#x error %v", value, err)
 	}
-	if err := device.Write(qualcommLegacyTopIDOffset+4, Width32, 0xaabbccdd); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(qualcommLegacyTopIDOffset+4, Width32, 0xaabbccdd))
 	state, err := device.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Reset(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, device.Reset())
 	if value, err := device.Read(qualcommLegacyTopIDOffset+4, Width32); err != nil || value != 0 {
 		t.Fatalf("reset boot word = %#x error %v", value, err)
 	}
-	if err := device.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.LoadState(state))
 	if value, err := device.Read(qualcommLegacyTopIDOffset+4, Width32); err != nil || value != 0xaabbccdd {
 		t.Fatalf("restored boot word = %#x error %v", value, err)
 	}
 	wrong, err := NewQualcommLegacyTopPageWithConfig(QualcommLegacyTopConfig{
 		WritableOffsets: []uint32{qualcommLegacyTopIDOffset + 8},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if err := wrong.LoadState(state); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("mismatched writable layout state error = %v", err)
 	}

@@ -25,9 +25,7 @@ func TestSCHW830PrivateReferenceUsesHeadlessMachineAPI(t *testing.T) {
 	directory := schw830ReferenceDirectory(t)
 	set := openSamsungSCHReferenceSet(t, directory)
 	machine, err := New(set, Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	t.Cleanup(func() { _ = machine.Close() })
 
 	identity := machine.Identity()
@@ -75,9 +73,7 @@ func TestSCHW830PrivateReferenceUsesHeadlessMachineAPI(t *testing.T) {
 	}
 
 	media, err := machine.SaveMedia()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if media.FirmwareBuildID != identity.FirmwareBuildID || len(media.Flash) == 0 || len(media.NAND) == 0 {
 		t.Fatalf("invalid persistent media snapshot: build=%q flash=%d NAND=%d",
 			media.FirmwareBuildID, len(media.Flash), len(media.NAND))
@@ -87,15 +83,11 @@ func TestSCHW830PrivateReferenceUsesHeadlessMachineAPI(t *testing.T) {
 	if err := machine.LoadMedia(wrongMedia); !errors.Is(err, ErrIncompatibleMedia) {
 		t.Fatalf("incompatible media error = %v", err)
 	}
-	if err := machine.LoadMedia(media); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.LoadMedia(media))
 	if position := machine.Position(); position != initial {
 		t.Fatalf("position after media load/power cycle = %+v, want %+v", position, initial)
 	}
-	if err := machine.FactoryReset(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.FactoryReset())
 	if position := machine.Position(); position != initial {
 		t.Fatalf("position after factory reset = %+v, want %+v", position, initial)
 	}
@@ -108,9 +100,7 @@ func TestSCHW830PrivateReferenceEndKeyReturnsToHome(t *testing.T) {
 	}
 	set := openSamsungSCHReferenceSet(t, schw830ReferenceDirectory(t))
 	machine, err := New(set, Options{BackendMode: CPUBackendJIT})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	t.Cleanup(func() { _ = machine.Close() })
 	if buildID := machine.Identity().FirmwareBuildID; buildID != samsung.SCHW830DL21ProfileID {
 		t.Fatalf("END-key snapshot regression requires DL21, got %q", buildID)
@@ -132,9 +122,7 @@ func TestSCHW830PrivateReferenceEndKeyReturnsToHome(t *testing.T) {
 		{id: "soft-left", pressed: true, budget: 5_000_000},
 		{id: "soft-left", pressed: false, budget: 5_000_000},
 	} {
-		if err := machine.SetKey(action.id, action.pressed); err != nil {
-			t.Fatal(err)
-		}
+		check(t, machine.SetKey(action.id, action.pressed))
 		runSCHW830Budget(t, machine, action.budget, "menu key transition")
 	}
 	runSCHW830Budget(t, machine, 35_000_000, "menu settle")
@@ -148,9 +136,7 @@ func TestSCHW830PrivateReferenceEndKeyReturnsToHome(t *testing.T) {
 		{pressed: true, budget: 5_000_000},
 		{pressed: false, budget: 5_000_000},
 	} {
-		if err := machine.SetKey("end", action.pressed); err != nil {
-			t.Fatal(err)
-		}
+		check(t, machine.SetKey("end", action.pressed))
 		runSCHW830Budget(t, machine, action.budget, "END key transition")
 	}
 	runSCHW830Budget(t, machine, 35_000_000, "END key settle")
@@ -166,16 +152,12 @@ func TestSCHW860PrivateReferenceUsesDedicatedAdjacentBoardProfile(t *testing.T) 
 	}
 	set := openSamsungSCHReferenceSet(t, directory)
 	machine, err := New(set, Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	t.Cleanup(func() { _ = machine.Close() })
 	if prefix := os.Getenv("ARAM_SCHW860_LOAD_SNAPSHOT_PREFIX"); prefix != "" {
 		loadSystemMachineSnapshot(t, machine, prefix)
 		if os.Getenv("ARAM_SCHW860_POWER_CYCLE_AFTER_LOAD") != "" {
-			if err := machine.PowerCycle(); err != nil {
-				t.Fatal(err)
-			}
+			check(t, machine.PowerCycle())
 			t.Logf("power-cycled loaded SCH-W860 media from %s", prefix)
 		}
 	}
@@ -224,22 +206,16 @@ func TestSCHW860PrivateReferenceUsesDedicatedAdjacentBoardProfile(t *testing.T) 
 	}
 	if framePath := os.Getenv("ARAM_SCHW860_FRAME_PATH"); framePath != "" {
 		file, err := os.Create(framePath)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		if err := png.Encode(file, machine.Framebuffer()); err != nil {
 			_ = file.Close()
 			t.Fatal(err)
 		}
-		if err := file.Close(); err != nil {
-			t.Fatal(err)
-		}
+		check(t, file.Close())
 	}
 	if snapshotPrefix := os.Getenv("ARAM_SCHW860_SNAPSHOT_PREFIX"); snapshotPrefix != "" {
 		snapshot, err := machine.SaveSnapshot()
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		saveSystemMachineSnapshot(t, snapshot, snapshotPrefix)
 	}
 	if result.Err != nil && os.Getenv("ARAM_SCHW860_ALLOW_FAULT") != "" {
@@ -264,9 +240,7 @@ func TestSCHW860PrivateReferenceProvisionsPowerCyclesAndReachesHome(t *testing.T
 	}
 	set := openSamsungSCHReferenceSet(t, directory)
 	machine, err := NewSCHW860(set, Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	t.Cleanup(func() { _ = machine.Close() })
 
 	const (
@@ -287,12 +261,8 @@ func TestSCHW860PrivateReferenceProvisionsPowerCyclesAndReachesHome(t *testing.T
 		t.Fatalf("SCH-W860 first-boot frame hash = %s, want %s", hash, firstBootHash)
 	}
 	media, err := machine.SaveMedia()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := machine.PowerCycle(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, machine.PowerCycle())
 	if position := machine.Position(); position.Instructions != 0 || position.PC != 0x00080028 {
 		t.Fatalf("SCH-W860 position after power cycle = %+v", position)
 	}
@@ -313,9 +283,7 @@ func TestSCHW860PrivateReferenceProvisionsPowerCyclesAndReachesHome(t *testing.T
 			t.Fatal(closeErr)
 		}
 	}
-	if err := machine.LoadMedia(media); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.LoadMedia(media))
 	if position := machine.Position(); position.Instructions != 0 || position.PC != 0x00080028 {
 		t.Fatalf("SCH-W860 position after completed media reload = %+v", position)
 	}
@@ -331,9 +299,7 @@ func TestSCHW770PrivateReferenceProvisionsColdBootsAndReachesHome(t *testing.T) 
 	}
 	set := openSamsungSCHReferenceSet(t, directory)
 	firstBoot, err := NewSCHW770(set, Options{BackendMode: CPUBackendJIT})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 
 	const (
 		provisionBudget = uint64(1_600_000_000)
@@ -348,34 +314,24 @@ func TestSCHW770PrivateReferenceProvisionsColdBootsAndReachesHome(t *testing.T) 
 		t.Fatalf("SCH-W770 provisioned frame hash = %s, want %s", hash, provisionHash)
 	}
 	media, err := firstBoot.SaveMedia()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if len(media.SecondaryFlash) == 0 || len(media.OneNANDSpare) == 0 {
 		t.Fatalf("SCH-W770 dual-flash media is incomplete: secondary=%d spare=%d",
 			len(media.SecondaryFlash), len(media.OneNANDSpare))
 	}
-	if err := firstBoot.Close(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, firstBoot.Close())
 	firstBoot = nil
 	runtime.GC()
 
 	// A new machine proves that the guest-created BML/TFS4 media is sufficient;
 	// no volatile state or host-side guest-code patch crosses this boundary.
 	coldBoot, err := NewSCHW770(set, Options{BackendMode: CPUBackendJIT, Media: &media})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	t.Cleanup(func() { _ = coldBoot.Close() })
 	runSystemMachineBudget(t, coldBoot, coldBootBudget, "SCH-W770 saved-media cold boot")
-	if err := coldBoot.SetKey("hold", true); err != nil {
-		t.Fatal(err)
-	}
+	check(t, coldBoot.SetKey("hold", true))
 	runSystemMachineBudget(t, coldBoot, holdBudget, "SCH-W770 long HOLD")
-	if err := coldBoot.SetKey("hold", false); err != nil {
-		t.Fatal(err)
-	}
+	check(t, coldBoot.SetKey("hold", false))
 	runSystemMachineBudget(t, coldBoot, releaseBudget, "SCH-W770 HOLD release")
 	if hash := coldBoot.FrameSHA256(); hash != homeHash {
 		t.Fatalf("SCH-W770 home frame hash = %s, want %s", hash, homeHash)
@@ -402,9 +358,7 @@ func TestSCHW830PrivateReferenceProvisionsPowerCyclesAndLaunchesApp(t *testing.T
 	}
 	set := openSamsungSCHReferenceSet(t, schw830ReferenceDirectory(t))
 	machine, err := New(set, Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	t.Cleanup(func() { _ = machine.Close() })
 
 	type buildExpectation struct {
@@ -450,9 +404,7 @@ func TestSCHW830PrivateReferenceProvisionsPowerCyclesAndLaunchesApp(t *testing.T
 			t.Fatal(readErr)
 		}
 		media = MediaState{FirmwareBuildID: buildID, Flash: flash, NAND: nand}
-		if err := machine.LoadMedia(media); err != nil {
-			t.Fatal(err)
-		}
+		check(t, machine.LoadMedia(media))
 	} else {
 		runSCHW830Budget(t, machine, 1_511_195_629, "native first-boot provisioning")
 		const firstBootHash = "5a2018cc9f59fd362904308f96e07bc928ce5ea29680b06300c38ec7ab1d739b"
@@ -460,30 +412,20 @@ func TestSCHW830PrivateReferenceProvisionsPowerCyclesAndLaunchesApp(t *testing.T
 			t.Fatalf("first-boot frame hash = %s, want %s", hash, firstBootHash)
 		}
 		media, err = machine.SaveMedia()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := machine.PowerCycle(); err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
+		check(t, machine.PowerCycle())
 	}
 
 	preInteraction, loaded := loadSCHW830E2ESnapshot(t, machine)
 	if !loaded {
 		runSCHW830Budget(t, machine, expectation.homeBudget, "completed-media cold boot pre-interaction")
 		preInteraction, err = machine.SaveSnapshot()
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		saveSCHW830E2ESnapshot(t, preInteraction)
 	}
-	if err := machine.SetKey("volume-up", true); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.SetKey("volume-up", true))
 	runSCHW830Budget(t, machine, expectation.keyPressBudget, "volume-up press")
-	if err := machine.SetKey("volume-up", false); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.SetKey("volume-up", false))
 	runSCHW830Budget(t, machine, expectation.keyReleaseBudget, "volume-up release")
 	runSCHW830Budget(t, machine, expectation.appSettleBudget, "application UI settle")
 	if framePath := os.Getenv("ARAM_SCHW830_E2E_FRAME_PATH"); framePath != "" {
@@ -503,9 +445,7 @@ func TestSCHW830PrivateReferenceProvisionsPowerCyclesAndLaunchesApp(t *testing.T
 	if hash := machine.FrameSHA256(); hash != expectation.appHash {
 		t.Fatalf("application frame hash = %s, want %s", hash, expectation.appHash)
 	}
-	if err := machine.LoadSnapshot(preInteraction); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.LoadSnapshot(preInteraction))
 	runSCHW830Budget(t, machine, 10_000_000, "home UI settle")
 	if hash := machine.FrameSHA256(); hash != expectation.homeHash {
 		t.Fatalf("home frame hash = %s, want %s", hash, expectation.homeHash)
@@ -514,9 +454,7 @@ func TestSCHW830PrivateReferenceProvisionsPowerCyclesAndLaunchesApp(t *testing.T
 	// Prove that the media captured at the guest's factory-success wait is a
 	// standalone persistent input, rather than relying on RAM left by the first
 	// run. LoadMedia performs another complete volatile reset.
-	if err := machine.LoadMedia(media); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.LoadMedia(media))
 	if position := machine.Position(); position.Instructions != 0 || position.PC != 0x00080028 {
 		t.Fatalf("position after reloading completed media = %+v", position)
 	}
@@ -552,9 +490,7 @@ func loadSCHW830E2ESnapshot(t *testing.T, machine *Machine) (Snapshot, bool) {
 func loadSystemMachineSnapshot(t *testing.T, machine *Machine, prefix string) Snapshot {
 	t.Helper()
 	metadataBytes, err := os.ReadFile(prefix + ".meta")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	snapshot := loadSystemMachineSnapshotBytes(t, machine, prefix, metadataBytes)
 	t.Logf("loaded system-machine snapshot from %s", prefix)
 	return snapshot
@@ -568,9 +504,7 @@ func loadSystemMachineSnapshotBytes(
 ) Snapshot {
 	t.Helper()
 	var metadata schw830SnapshotMetadata
-	if err := json.Unmarshal(metadataBytes, &metadata); err != nil {
-		t.Fatal(err)
-	}
+	check(t, json.Unmarshal(metadataBytes, &metadata))
 	read := func(suffix string) []byte {
 		state, readErr := os.ReadFile(prefix + suffix)
 		if readErr != nil {
@@ -584,9 +518,7 @@ func loadSystemMachineSnapshotBytes(
 		CPUIdentity: metadata.CPUIdentity, Instructions: metadata.Instructions,
 		CPU: read(".cpu"), Bus: read(".bus"), Flash: read(".flash"),
 	}
-	if err := machine.LoadSnapshot(snapshot); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.LoadSnapshot(snapshot))
 	return snapshot
 }
 
@@ -606,18 +538,12 @@ func saveSystemMachineSnapshot(t *testing.T, snapshot Snapshot, prefix string) {
 		BoardID: snapshot.BoardID, PlatformID: snapshot.PlatformID,
 		CPUIdentity: snapshot.CPUIdentity, Instructions: snapshot.Instructions,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(prefix), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, os.MkdirAll(filepath.Dir(prefix), 0o755))
 	for suffix, state := range map[string][]byte{
 		".meta": metadata, ".cpu": snapshot.CPU, ".bus": snapshot.Bus, ".flash": snapshot.Flash,
 	} {
-		if err := os.WriteFile(prefix+suffix, state, 0o600); err != nil {
-			t.Fatal(err)
-		}
+		check(t, os.WriteFile(prefix+suffix, state, 0o600))
 	}
 	t.Logf("saved system-machine snapshot to %s.{meta,cpu,bus,flash}", prefix)
 }
@@ -768,9 +694,7 @@ func openSamsungSCHReferenceSet(t *testing.T, path string) firmwareset.Set {
 		matchedSources[index] = candidates[candidateIndex]
 	}
 	matched, err := firmwareset.NewSet(matchedSources)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	return matched
 }
 
@@ -793,14 +717,10 @@ func samsungSCHReferenceSources(t *testing.T, path string) []firmwareset.Source 
 			continue
 		}
 		file, err := os.Open(filepath.Join(path, entry.Name()))
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		t.Cleanup(func() { _ = file.Close() })
 		info, err := file.Stat()
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		candidates = append(candidates, firmwareset.Source{ReaderAt: file, Size: info.Size()})
 	}
 	return candidates
@@ -828,9 +748,7 @@ func samsungSCHReferenceArchiveSources(t *testing.T, archive string) []firmwares
 		t.Fatalf("list configured reference archive: %v", err)
 	}
 	entries, err := parseSamsungSCHArchiveListing(string(listing))
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	sources := make([]firmwareset.Source, 0, len(entries))
 	for _, entry := range entries {
 		data, extractErr := exec.Command(

@@ -61,21 +61,13 @@ func TestRaptorJavaThreadRunFallsBackToTheGuestVTable(t *testing.T) {
 	}
 
 	vtable, err := public.Heap.Allocate(raptorJavaThreadRunSlot+8, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	const runBody = uint32(0x00083005)
-	if err := public.WriteU32(vtable+raptorJavaThreadRunSlot, runBody); err != nil {
-		t.Fatal(err)
-	}
+	check(t, public.WriteU32(vtable+raptorJavaThreadRunSlot, runBody))
 	object, err := public.Heap.Allocate(12, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	holder := uint32(0x01403600)
-	if err := public.WriteU32(object+4, holder); err != nil {
-		t.Fatal(err)
-	}
+	check(t, public.WriteU32(object+4, holder))
 	class := &raptorJavaClass{
 		Holder:      holder,
 		Name:        "TimeChecker",

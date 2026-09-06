@@ -16,17 +16,13 @@ func TestSMAFOptionalCorpusProbe(t *testing.T) {
 		t.Skip("ARAM_SMAF_ARCHIVE is not set")
 	}
 	outer, err := zip.OpenReader(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	defer outer.Close()
 	var jarBytes []byte
 	for _, entry := range outer.File {
 		if strings.HasSuffix(strings.ToLower(entry.Name), ".jar") {
 			reader, err := entry.Open()
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			jarBytes, err = io.ReadAll(reader)
 			reader.Close()
 			if err != nil {
@@ -36,18 +32,14 @@ func TestSMAFOptionalCorpusProbe(t *testing.T) {
 		}
 	}
 	jar, err := zip.NewReader(bytes.NewReader(jarBytes), int64(len(jarBytes)))
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	decodedCount := 0
 	for _, entry := range jar.File {
 		if !strings.HasSuffix(strings.ToLower(entry.Name), ".mmf") {
 			continue
 		}
 		reader, err := entry.Open()
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		data, err := io.ReadAll(reader)
 		reader.Close()
 		if err != nil {

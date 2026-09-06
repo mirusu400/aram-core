@@ -13,10 +13,8 @@ import (
 func benchmarkARMRun(b *testing.B, newBackend func() *Backend) {
 	backend := newBackend()
 	b.Cleanup(func() { _ = backend.Close() })
-	if err := backend.Map(0x1000, 0x1000,
-		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute); err != nil {
-		b.Fatal(err)
-	}
+	check(b, backend.Map(0x1000, 0x1000,
+		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute))
 	if err := backend.WriteMemory(0x1000, []byte{
 		0x01, 0x00, 0x90, 0xe2, // adds r0, r0, #1
 		0x01, 0x10, 0x91, 0xe2, // adds r1, r1, #1

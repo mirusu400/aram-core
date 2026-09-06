@@ -40,33 +40,21 @@ func TestSCHW860DA06PrivateReferenceStructuralBoundary(t *testing.T) {
 		t.Fatalf("configured SCH-W860 reference contains %d SCH download pieces, want 4", len(sources))
 	}
 	set, err := firmwareset.NewSet(sources)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	pkg, err := Inspect(set)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	profile, err := BuiltinRegistry().Match(pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if profile.ID != SCHW860DA06ProfileID {
 		t.Fatalf("SCH-W860 profile = %q, want %q", profile.ID, SCHW860DA06ProfileID)
 	}
 	wbtMetadata := pkg.Pieces[RoleWBT]
 	wbt, err := set.Piece(wbtMetadata.Index)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	wbin, err := set.Piece(pkg.Pieces[RoleWBIN].Index)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	copies, err := parseMIBIBCopies(wbt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	selected := copies.Copies[0]
 	for _, candidate := range copies.Copies[1:] {
 		if candidate.Generation > selected.Generation {
@@ -82,17 +70,11 @@ func TestSCHW860DA06PrivateReferenceStructuralBoundary(t *testing.T) {
 		t.Logf("SCH-W860 partition %q start=%#x size=%#x", partition.Name, partition.Start, partition.Size)
 	}
 	layout, err := Normalize(set, pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	progressive, err := DecodeWBIN(set, pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	flash, err := AssembleFlash(set, pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	type bootSpan struct {
 		id      string
 		offsets []int64
@@ -128,9 +110,7 @@ func TestSCHW860DA06PrivateReferenceStructuralBoundary(t *testing.T) {
 			t.Fatalf("SCH-W860 profile has no %s image", id)
 		}
 		image, err := ReconstructBootImage(set, pkg, spec)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		dumpEnvironment := "ARAM_SCHW860_DUMP_" + strings.ToUpper(id)
 		if dumpPath := os.Getenv(dumpEnvironment); dumpPath != "" {
 			if err := os.WriteFile(dumpPath, image.Bytes, 0o600); err != nil {

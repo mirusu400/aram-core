@@ -11,37 +11,23 @@ import (
 func TestGraphicsPreservesRGB565StorageAndPresentsRGBA(t *testing.T) {
 	registry := NewRegistry(16)
 	graphics, err := NewGraphics(registry, GraphicsLimits{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	surfaceID, err := graphics.CreateSurface(1, SurfaceDescriptor{
 		Width:  2,
 		Height: 1,
 		Format: PixelRGB565,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := graphics.SetScreen(1, surfaceID); err != nil {
-		t.Fatal(err)
-	}
-	if err := graphics.SetPixel(1, surfaceID, 0, 0, RGB(255, 0, 0)); err != nil {
-		t.Fatal(err)
-	}
-	if err := graphics.SetPixel(1, surfaceID, 1, 0, RGB(0, 255, 0)); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, graphics.SetScreen(1, surfaceID))
+	check(t, graphics.SetPixel(1, surfaceID, 0, 0, RGB(255, 0, 0)))
+	check(t, graphics.SetPixel(1, surfaceID, 1, 0, RGB(0, 255, 0)))
 	storage, err := graphics.Pixels(1, surfaceID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !bytes.Equal(storage, []byte{0x00, 0xf8, 0xe0, 0x07}) {
 		t.Fatalf("RGB565 storage = % x", storage)
 	}
 	frame, err := graphics.Present(1, surfaceID, Rectangle{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	wantRGBA := []byte{
 		255, 0, 0, 255,
 		0, 255, 0, 255,
@@ -60,20 +46,14 @@ func TestGraphicsPreservesRGB565StorageAndPresentsRGBA(t *testing.T) {
 func TestGraphicsClipTranslationRasterAndAlpha(t *testing.T) {
 	registry := NewRegistry(16)
 	graphics, err := NewGraphics(registry, GraphicsLimits{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	id, err := graphics.CreateSurface(4, SurfaceDescriptor{
 		Width:  4,
 		Height: 4,
 		Format: PixelRGBA8888,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := graphics.Clear(4, id, RGB(0x10, 0x20, 0x30)); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, graphics.Clear(4, id, RGB(0x10, 0x20, 0x30)))
 	if err := graphics.SetDrawState(4, id, SurfaceDrawState{
 		Clip:        Rectangle{X: 1, Y: 1, Width: 2, Height: 2},
 		TranslateX:  1,
@@ -83,17 +63,11 @@ func TestGraphicsClipTranslationRasterAndAlpha(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := graphics.Rectangle(4, id, Rectangle{Width: 3, Height: 3}, RGB(0xff, 0, 0), true); err != nil {
-		t.Fatal(err)
-	}
+	check(t, graphics.Rectangle(4, id, Rectangle{Width: 3, Height: 3}, RGB(0xff, 0, 0), true))
 	inside, err := graphics.Pixel(4, id, 1, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	outside, err := graphics.Pixel(4, id, 0, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if inside != (Color{R: 0xef, G: 0x20, B: 0x30, A: 0xff}) {
 		t.Fatalf("inside clipped XOR pixel = %+v", inside)
 	}
@@ -105,38 +79,28 @@ func TestGraphicsClipTranslationRasterAndAlpha(t *testing.T) {
 func TestGraphicsBlitHandlesOverlapAndScaling(t *testing.T) {
 	registry := NewRegistry(16)
 	graphics, err := NewGraphics(registry, GraphicsLimits{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	id, err := graphics.CreateSurface(1, SurfaceDescriptor{
 		Width:  4,
 		Height: 1,
 		Format: PixelRGBA8888,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	for x, value := range []uint8{10, 20, 30, 40} {
-		if err := graphics.SetPixel(1, id, int32(x), 0, RGB(value, 0, 0)); err != nil {
-			t.Fatal(err)
-		}
+		check(t, graphics.SetPixel(1, id, int32(x), 0, RGB(value, 0, 0)))
 	}
-	if err := graphics.Blit(
+	check(t, graphics.Blit(
 		1,
 		id,
 		id,
 		1,
 		0,
 		Rectangle{Width: 3, Height: 1},
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	var got []uint8
 	for x := int32(0); x < 4; x++ {
 		color, err := graphics.Pixel(1, id, x, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		got = append(got, color.R)
 	}
 	if !bytes.Equal(got, []byte{10, 10, 20, 30}) {
@@ -147,20 +111,14 @@ func TestGraphicsBlitHandlesOverlapAndScaling(t *testing.T) {
 func TestGraphicsRestoreRejectsInvalidObjectGraphBeforeMutation(t *testing.T) {
 	registry := NewRegistry(16)
 	graphics, err := NewGraphics(registry, GraphicsLimits{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	id, err := graphics.CreateSurface(1, SurfaceDescriptor{
 		Width:  2,
 		Height: 2,
 		Format: PixelRGBA8888,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := graphics.SetPixel(1, id, 0, 0, RGB(1, 2, 3)); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, graphics.SetPixel(1, id, 0, 0, RGB(1, 2, 3)))
 	before := graphics.Snapshot()
 	invalid := graphics.Snapshot()
 	invalid.Surfaces[0].Pixels = invalid.Surfaces[0].Pixels[:1]
@@ -177,16 +135,12 @@ func TestGraphicsRestoreRejectsInvalidObjectGraphBeforeMutation(t *testing.T) {
 func TestGraphicsArcAndPolygonRasterizeDeterministically(t *testing.T) {
 	registry := NewRegistry(8)
 	graphics, err := NewGraphics(registry, GraphicsLimits{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	arc, err := graphics.CreateSurface(1, SurfaceDescriptor{
 		Width: 8, Height: 8, Format: PixelRGBA8888,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := graphics.Arc(
+	check(t, err)
+	check(t, graphics.Arc(
 		1,
 		arc,
 		Rectangle{X: 1, Y: 1, Width: 6, Height: 6},
@@ -194,17 +148,11 @@ func TestGraphicsArcAndPolygonRasterizeDeterministically(t *testing.T) {
 		180,
 		RGB(255, 0, 0),
 		true,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	bottom, err := graphics.Pixel(1, arc, 4, 5)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	top, err := graphics.Pixel(1, arc, 4, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if bottom != RGB(255, 0, 0) || top != (Color{}) {
 		t.Fatalf("half arc pixels bottom=%+v top=%+v", bottom, top)
 	}
@@ -212,26 +160,18 @@ func TestGraphicsArcAndPolygonRasterizeDeterministically(t *testing.T) {
 	polygon, err := graphics.CreateSurface(1, SurfaceDescriptor{
 		Width: 8, Height: 8, Format: PixelRGBA8888,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := graphics.Polygon(
+	check(t, err)
+	check(t, graphics.Polygon(
 		1,
 		polygon,
 		[]Point{{X: 1, Y: 1}, {X: 6, Y: 1}, {X: 3, Y: 6}},
 		RGB(0, 255, 0),
 		true,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	inside, err := graphics.Pixel(1, polygon, 3, 3)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	outside, err := graphics.Pixel(1, polygon, 0, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if inside != RGB(0, 255, 0) || outside != (Color{}) {
 		t.Fatalf("polygon pixels inside=%+v outside=%+v", inside, outside)
 	}
@@ -247,15 +187,11 @@ func TestGraphicsRejectsUnboundedRasterWorkBeforeMutation(t *testing.T) {
 		MaxBytes:    64,
 	}
 	graphics, err := NewGraphics(registry, limits)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	id, err := graphics.CreateSurface(1, SurfaceDescriptor{
 		Width: 4, Height: 4, Format: PixelRGBA8888,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	before := graphics.Snapshot()
 	operations := []func() error{
 		func() error {
@@ -312,42 +248,24 @@ func TestGraphicsRejectsUnboundedRasterWorkBeforeMutation(t *testing.T) {
 func TestGraphicsStateKeepsImmutableFrameAfterSurfaceDestruction(t *testing.T) {
 	registry := NewRegistry(8)
 	graphics, err := NewGraphics(registry, GraphicsLimits{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	first, err := graphics.CreateSurface(1, SurfaceDescriptor{
 		Width: 2, Height: 2, Format: PixelRGBA8888,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := graphics.SetScreen(1, first); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, graphics.SetScreen(1, first))
 	frame, err := graphics.Present(1, first, Rectangle{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	second, err := graphics.CreateSurface(1, SurfaceDescriptor{
 		Width: 1, Height: 1, Format: PixelRGBA8888,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := graphics.SetScreen(1, second); err != nil {
-		t.Fatal(err)
-	}
-	if err := graphics.DestroySurface(1, first); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, graphics.SetScreen(1, second))
+	check(t, graphics.DestroySurface(1, first))
 	state := graphics.Snapshot()
 	clone, err := NewGraphics(registry, state.Limits)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := clone.Restore(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, clone.Restore(state))
 	if got := clone.LastFrame(); !reflect.DeepEqual(got, frame) {
 		t.Fatalf("restored immutable frame = %+v, want %+v", got, frame)
 	}
@@ -356,9 +274,7 @@ func TestGraphicsStateKeepsImmutableFrameAfterSurfaceDestruction(t *testing.T) {
 func TestGraphicsRestoreRejectsImplicitSavedStride(t *testing.T) {
 	registry := NewRegistry(4)
 	graphics, err := NewGraphics(registry, GraphicsLimits{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := graphics.CreateSurface(1, SurfaceDescriptor{
 		Width: 1, Height: 1, Format: PixelRGBA8888,
 	}); err != nil {
@@ -381,21 +297,15 @@ func TestScaledBlitRejectsHostAddressSpaceOverflow(t *testing.T) {
 	limits.MaxPixels = math.MaxUint64
 	registry := NewRegistry(4)
 	graphics, err := NewGraphics(registry, limits)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	destination, err := graphics.CreateSurface(1, SurfaceDescriptor{
 		Width: 1, Height: 1, Format: PixelRGBA8888,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	source, err := graphics.CreateSurface(1, SurfaceDescriptor{
 		Width: 1, Height: 1, Format: PixelRGBA8888,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if err := graphics.ScaledBlit(
 		1,
 		destination,

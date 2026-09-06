@@ -16,37 +16,18 @@ func BenchmarkKTFJavaSetRGBPixelsHostCall(b *testing.B) {
 		ClientName: "client.bin0",
 		Client:     []byte{0x70, 0x47},
 	})
-	if err != nil {
-		b.Fatal(err)
-	}
+	check(b, err)
 	b.Cleanup(func() { _ = runtime.CPU.Close() })
-	if err := runtime.MapImageAndHost(); err != nil {
-		b.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		b.Fatal(err)
-	}
+	check(b, runtime.MapImageAndHost())
+	runtime.JvmContext = allocWords(b, runtime, 3+128)
 	runtime.frame = image.NewRGBA(image.Rect(0, 0, 240, 320))
 	graphics, err := runtime.EnsureScreenGraphics()
-	if err != nil {
-		b.Fatal(err)
-	}
+	check(b, err)
 	pixels, err := runtime.NewJavaArray("[I", 1, 4)
-	if err != nil {
-		b.Fatal(err)
-	}
-	fields, err := runtime.ReadU32(pixels)
-	if err != nil {
-		b.Fatal(err)
-	}
-	if err := runtime.writeWords(fields+8, []uint32{0xff336699}); err != nil {
-		b.Fatal(err)
-	}
-	parameters, err := runtime.AllocateWords(13)
-	if err != nil {
-		b.Fatal(err)
-	}
+	check(b, err)
+	fields := readU32(b, runtime, pixels)
+	check(b, runtime.writeWords(fields+8, []uint32{0xff336699}))
+	parameters := allocWords(b, runtime, 13)
 	if err := runtime.writeWords(parameters, []uint32{
 		0,
 		graphics,

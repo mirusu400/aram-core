@@ -109,13 +109,9 @@ func TestEngineExactAndFollowupScans(t *testing.T) {
 	t.Parallel()
 	memory := newTestMemory(16)
 	engine, err := New(memory, testOptions(16))
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	for index, value := range []uint32{10, 20, 10, 30} {
-		if err := engine.Write(testMemoryBase+uint32(index*4), U32(value), nil); err != nil {
-			t.Fatal(err)
-		}
+		check(t, engine.Write(testMemoryBase+uint32(index*4), U32(value), nil))
 	}
 	target := U32(10)
 	matches, err := engine.Scan(ScanRequest{
@@ -123,26 +119,18 @@ func TestEngineExactAndFollowupScans(t *testing.T) {
 		Comparison: CompareEqual,
 		Value:      &target,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if len(matches) != 2 ||
 		matches[0].Address != testMemoryBase ||
 		matches[1].Address != testMemoryBase+8 {
 		t.Fatalf("exact matches = %+v", matches)
 	}
-	if err := engine.Write(testMemoryBase, U32(15), nil); err != nil {
-		t.Fatal(err)
-	}
-	if err := engine.Write(testMemoryBase+8, U32(5), nil); err != nil {
-		t.Fatal(err)
-	}
+	check(t, engine.Write(testMemoryBase, U32(15), nil))
+	check(t, engine.Write(testMemoryBase+8, U32(5), nil))
 	matches, err = engine.NextScan(NextScanRequest{
 		Comparison: CompareDecreased,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if len(matches) != 1 ||
 		matches[0].Address != testMemoryBase+8 ||
 		matches[0].Value != U32(5) {
@@ -154,29 +142,21 @@ func TestEngineUnknownAndChangedScan(t *testing.T) {
 	t.Parallel()
 	memory := newTestMemory(4)
 	engine, err := New(memory, testOptions(4))
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	matches, err := engine.Scan(ScanRequest{
 		Type:       TypeUint8,
 		Comparison: CompareUnknown,
 		Alignment:  1,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if len(matches) != 4 {
 		t.Fatalf("unknown matches = %d, want 4", len(matches))
 	}
-	if err := engine.Write(testMemoryBase+2, U8(1), nil); err != nil {
-		t.Fatal(err)
-	}
+	check(t, engine.Write(testMemoryBase+2, U8(1), nil))
 	matches, err = engine.NextScan(NextScanRequest{
 		Comparison: CompareChanged,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if len(matches) != 1 || matches[0].Address != testMemoryBase+2 {
 		t.Fatalf("changed matches = %+v", matches)
 	}
@@ -195,20 +175,14 @@ func TestEngineExpectedWriteAndRegionPermissions(t *testing.T) {
 	})
 	memory.data = make([]byte, 12)
 	engine, err := New(memory, options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := engine.Write(testMemoryBase, U32(7), nil); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, engine.Write(testMemoryBase, U32(7), nil))
 	wrong := U32(8)
 	if err := engine.Write(testMemoryBase, U32(9), &wrong); !errors.Is(err, ErrUnexpectedOriginal) {
 		t.Fatalf("wrong expected error = %v", err)
 	}
 	got, err := engine.Read(testMemoryBase, TypeUint32)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if got != U32(7) {
 		t.Fatalf("value after rejected write = %+v", got)
 	}
@@ -221,12 +195,8 @@ func TestCodeCaptureFreezeAndRestore(t *testing.T) {
 	t.Parallel()
 	memory := newTestMemory(8)
 	engine, err := New(memory, testOptions(8))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := engine.WriteBytes(testMemoryBase+3, []byte{7}, nil); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, engine.WriteBytes(testMemoryBase+3, []byte{7}, nil))
 	state, err := engine.AddCode(Code{
 		ID:               "lives",
 		Description:      "unlimited lives",
@@ -235,36 +205,22 @@ func TestCodeCaptureFreezeAndRestore(t *testing.T) {
 		Freeze:           true,
 		RestoreOnDisable: true,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !bytes.Equal(state.Code.Expected, []byte{7}) ||
 		state.Code.TargetSHA256 != strings.Repeat("ab", 32) {
 		t.Fatalf("captured code = %+v", state)
 	}
-	if err := engine.EnableCode("lives"); err != nil {
-		t.Fatal(err)
-	}
-	if err := memory.WriteMemory(testMemoryBase+3, []byte{1}); err != nil {
-		t.Fatal(err)
-	}
-	if err := engine.ApplyFrozen(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, engine.EnableCode("lives"))
+	check(t, memory.WriteMemory(testMemoryBase+3, []byte{1}))
+	check(t, engine.ApplyFrozen())
 	got, err := engine.ReadBytes(testMemoryBase+3, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !bytes.Equal(got, []byte{99}) {
 		t.Fatalf("frozen value = %v", got)
 	}
-	if err := engine.DisableCode("lives"); err != nil {
-		t.Fatal(err)
-	}
+	check(t, engine.DisableCode("lives"))
 	got, err = engine.ReadBytes(testMemoryBase+3, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !bytes.Equal(got, []byte{7}) {
 		t.Fatalf("restored value = %v", got)
 	}
@@ -274,9 +230,7 @@ func TestCodeRejectsWrongTargetAndChangedOriginal(t *testing.T) {
 	t.Parallel()
 	memory := newTestMemory(4)
 	engine, err := New(memory, testOptions(4))
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	_, err = engine.AddCode(Code{
 		ID:           "wrong-title",
 		TargetSHA256: strings.Repeat("cd", 32),
@@ -371,9 +325,7 @@ func TestWrappedMachineEnforcesFrameAndLifecycleCodes(t *testing.T) {
 		state:  machinecore.StateReady,
 	}
 	wrapped, err := Wrap(target, memory, testOptions(4))
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	engine := wrapped.Cheats()
 	if _, err := engine.AddCode(Code{
 		ID:      "freeze",
@@ -390,39 +342,23 @@ func TestWrappedMachineEnforcesFrameAndLifecycleCodes(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := engine.EnableCode("freeze"); err != nil {
-		t.Fatal(err)
-	}
-	if err := engine.EnableCode("persistent"); err != nil {
-		t.Fatal(err)
-	}
-	if err := wrapped.StepFrame(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, engine.EnableCode("freeze"))
+	check(t, engine.EnableCode("persistent"))
+	check(t, wrapped.StepFrame(context.Background()))
 	got, err := engine.ReadBytes(testMemoryBase, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !bytes.Equal(got, []byte{9, 8}) {
 		t.Fatalf("after step = %v", got)
 	}
-	if err := wrapped.Reset(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, wrapped.Reset(context.Background()))
 	got, err = engine.ReadBytes(testMemoryBase, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !bytes.Equal(got, []byte{9, 8}) {
 		t.Fatalf("after reset = %v", got)
 	}
-	if err := wrapped.LoadState(bytes.NewReader(nil)); err != nil {
-		t.Fatal(err)
-	}
+	check(t, wrapped.LoadState(bytes.NewReader(nil)))
 	got, err = engine.ReadBytes(testMemoryBase, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !bytes.Equal(got, []byte{9, 8}) {
 		t.Fatalf("after load state = %v", got)
 	}

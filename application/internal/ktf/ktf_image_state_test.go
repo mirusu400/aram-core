@@ -8,8 +8,6 @@ import (
 	"testing"
 
 	"github.com/mirusu400/aram-core/application/internal/guest"
-	"github.com/mirusu400/aram-core/cpu/interpreter"
-	"github.com/mirusu400/aram-core/loader/ktf"
 )
 
 // TestKTFSaveCarriesImagesWithNoMirror covers what the mirror budget means for
@@ -19,33 +17,16 @@ import (
 // ("image 0x... has no shared surface"), which is every KTF title that decodes
 // a sprite and never draws through it.
 func TestKTFSaveCarriesImagesWithNoMirror(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
 	source := image.NewRGBA(image.Rect(0, 0, 3, 2))
 	source.Set(2, 1, color.RGBA{R: 0x40, G: 0x50, B: 0x60, A: 0xff})
 	object, err := runtime.newJavaImage(source)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	mirrored := image.NewRGBA(image.Rect(0, 0, 2, 2))
 	mirrored.Set(0, 0, color.RGBA{R: 0xff, A: 0xff})
 	withMirror, err := runtime.newJavaImage(mirrored)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := runtime.ensureJavaImageSurface(withMirror); err != nil {
 		t.Fatal(err)
 	}
@@ -103,9 +84,7 @@ func TestKTFSaveCarriesImagesWithNoMirror(t *testing.T) {
 func TestKTFSaveCarriesWIPICFramebuffersWithNoMirror(t *testing.T) {
 	runtime := newScratchKTFRuntime(t)
 	handle, err := runtime.createWIPICFramebuffer(4, 4, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if runtime.wipicSurfaceServices[handle] != 0 {
 		t.Fatal("fixture framebuffer already has a surface")
 	}
@@ -147,36 +126,19 @@ func TestKTFSaveCarriesWIPICFramebuffersWithNoMirror(t *testing.T) {
 // mirrored - it could not have been written otherwise - so its pixels still
 // come back from the surface store.
 func TestKTFRestoreAcceptsSaveWithoutTheImageBlock(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
 	source := image.NewRGBA(image.Rect(0, 0, 2, 2))
 	source.Set(1, 0, color.RGBA{G: 0x7f, A: 0xff})
 	object, err := runtime.newJavaImage(source)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := runtime.ensureJavaImageSurface(object); err != nil {
 		t.Fatal(err)
 	}
 
 	var buffer bytes.Buffer
 	writer := guest.NewStateWriter(&buffer)
-	if err := WriteState(runtime, runtime.CPU, true, writer); err != nil {
-		t.Fatal(err)
-	}
+	check(t, WriteState(runtime, runtime.CPU, true, writer))
 	saved := buffer.Bytes()
 	if count := binary.LittleEndian.Uint32(saved[len(saved)-4:]); count != 0 {
 		t.Fatalf("the mirrored image took %d entries in the image block", count)

@@ -86,14 +86,10 @@ func TestKTFPresentQuantumKeepsAPerElementMenuOnScreen(t *testing.T) {
 		ReaderAt: bytes.NewReader(data),
 		Size:     int64(len(data)),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	machine := created.(*Machine)
 	t.Cleanup(func() { _ = machine.Close() })
-	if err := machine.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.Start(context.Background()))
 
 	// The menu is the only screen in this window with a large coloured area:
 	// the logos before it are greyscale on white and the screen after it is
@@ -173,9 +169,7 @@ func TestKTFInputStaysOffTheBusUntilTheCardCanTakeIt(t *testing.T) {
 		t.Fatal("a key event was accepted with no card on the display")
 	}
 	queued, err := runtime.QueueKeyEvent(true, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if queued {
 		t.Fatal("QueueKeyEvent accepted a key with no card on the display")
 	}
@@ -220,17 +214,11 @@ func TestKTFWiderQuantumStillDeliversInput(t *testing.T) {
 		ReaderAt: bytes.NewReader(data),
 		Size:     int64(len(data)),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	machine := created.(*Machine)
 	t.Cleanup(func() { _ = machine.Close() })
-	if err := machine.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := machine.ktf.SetTraceMode(ktfrt.KTFTraceFull); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.Start(context.Background()))
+	check(t, machine.ktf.SetTraceMode(ktfrt.KTFTraceFull))
 
 	const (
 		frames    = 1200
@@ -294,14 +282,10 @@ func TestKTFHeldKeyDoesNotFillTheEventQueue(t *testing.T) {
 		ReaderAt: bytes.NewReader(data),
 		Size:     int64(len(data)),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	machine := created.(*Machine)
 	t.Cleanup(func() { _ = machine.Close() })
-	if err := machine.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.Start(context.Background()))
 
 	// Press four controls and never release them, which is what a fuzz seed
 	// that toggles randomly ends up doing and what a player leaning on the pad

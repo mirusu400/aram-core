@@ -12,9 +12,7 @@ func TestInspectContainerReturnsValidatedRecordsInFileOrder(t *testing.T) {
 	data = append(data, syntheticEADSRecord()...)
 
 	container, err := InspectContainer(data)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if len(container.Modules) != 1 || len(container.Images) != 1 ||
 		len(container.Records) != 2 {
 		t.Fatalf("container counts = modules %d images %d records %d",

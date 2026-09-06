@@ -13,13 +13,9 @@ func TestInspectDATWithMarkers(t *testing.T) {
 	data := make([]byte, 512)
 	copy(data[128:], "ABHS")
 	copy(data[400:], "EADS")
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	check(t, os.WriteFile(path, data, 0o600))
 	report, err := InspectFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if report.Kind != KindDAT {
 		t.Fatalf("Kind = %q, want %q", report.Kind, KindDAT)
 	}
@@ -60,9 +56,7 @@ func TestInspectBytesDetectsSupportedKindsAndHash(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			report, err := InspectBytes(test.name, test.data)
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			if report.Kind != test.want {
 				t.Fatalf("Kind = %q, want %q", report.Kind, test.want)
 			}
@@ -70,9 +64,7 @@ func TestInspectBytesDetectsSupportedKindsAndHash(t *testing.T) {
 	}
 
 	report, err := InspectBytes("hash.resource", []byte("abc"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	const wantSHA256 = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
 	if report.SHA256 != wantSHA256 {
 		t.Fatalf("SHA256 = %q, want %q", report.SHA256, wantSHA256)
@@ -84,9 +76,7 @@ func TestInspectBytesOrdersMarkersByOffset(t *testing.T) {
 	copy(data[8:], "EADS")
 	copy(data[40:], "ABHS")
 	report, err := InspectBytes("embedded.resource", data)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if len(report.Markers) != 2 ||
 		report.Markers[0] != (Marker{Magic: "EADS", Offset: 8}) ||
 		report.Markers[1] != (Marker{Magic: "ABHS", Offset: 40}) {
@@ -101,9 +91,7 @@ func TestInspectFindsMarkerAcrossReadBoundary(t *testing.T) {
 	data := make([]byte, 1024*1024+4)
 	copy(data[1024*1024-2:], "ABHS")
 	report, err := InspectBytes("boundary.bin", data)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if len(report.Markers) != 1 ||
 		report.Markers[0].Offset != 1024*1024-2 {
 		t.Fatalf("Markers = %+v", report.Markers)
@@ -114,9 +102,7 @@ func TestInspectReadsOnlyDeclaredSize(t *testing.T) {
 	report, err := Inspect("sample.dat", &countingReaderAt{
 		data: []byte("EADS trailing bytes"),
 	}, 4)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if report.Size != 4 || len(report.Markers) != 1 ||
 		report.Markers[0].Offset != 0 {
 		t.Fatalf("Report = %+v", report)

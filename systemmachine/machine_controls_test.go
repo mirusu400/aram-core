@@ -28,24 +28,18 @@ func TestMachineSetKeyDrivesActiveLowPrimaryClockInput(t *testing.T) {
 	clock, err := system.NewQualcommPrimaryClockControl(system.QualcommPrimaryClockConfig{
 		Status: 1 << 4, InputMask: 1 << 4,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	machine := &Machine{
 		primaryClock: clock,
 		primaryKeys: map[string]system.QualcommPrimaryClockKeyProfile{
 			"end": {ID: "end", InputLine: 4, ActiveLow: true},
 		},
 	}
-	if err := machine.SetKey("end", true); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.SetKey("end", true))
 	if status := clock.InputStatus(); status != 0 {
 		t.Fatalf("pressed active-low END input status = %#x", status)
 	}
-	if err := machine.SetKey("end", false); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.SetKey("end", false))
 	if status := clock.InputStatus(); status != 1<<4 {
 		t.Fatalf("released active-low END input status = %#x", status)
 	}

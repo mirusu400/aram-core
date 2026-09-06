@@ -10,20 +10,14 @@ import (
 func newTestLibrary(t *testing.T) (*Library, *testMemory) {
 	t.Helper()
 	memory := newTestMemory(16)
-	if err := memory.WriteMemory(
+	check(t, memory.WriteMemory(
 		testMemoryBase,
 		[]byte{1, 2, 3, 4, 5, 6, 7, 8},
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	engine, err := New(memory, testOptions(16))
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	library, err := NewLibrary(engine)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	return library, memory
 }
 
@@ -54,9 +48,7 @@ func testCatalog() Catalog {
 func TestLibraryEnablesEveryPatchOfACheatTogether(t *testing.T) {
 	t.Parallel()
 	library, memory := newTestLibrary(t)
-	if err := library.Import(testCatalog()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, library.Import(testCatalog()))
 	entries := library.Entries()
 	if len(entries) != 1 || entries[0].Enabled {
 		t.Fatalf("imported entries = %+v", entries)
@@ -65,13 +57,9 @@ func TestLibraryEnablesEveryPatchOfACheatTogether(t *testing.T) {
 		t.Fatalf("library title = %+v", library.Title())
 	}
 
-	if err := library.SetEnabled("skip-auth", true); err != nil {
-		t.Fatal(err)
-	}
+	check(t, library.SetEnabled("skip-auth", true))
 	got := make([]byte, 6)
-	if err := memory.ReadMemory(testMemoryBase, got); err != nil {
-		t.Fatal(err)
-	}
+	check(t, memory.ReadMemory(testMemoryBase, got))
 	if !bytes.Equal(got, []byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}) {
 		t.Fatalf("memory after enable = %x", got)
 	}
@@ -79,12 +67,8 @@ func TestLibraryEnablesEveryPatchOfACheatTogether(t *testing.T) {
 		t.Fatalf("entries after enable = %+v", entries)
 	}
 
-	if err := library.SetEnabled("skip-auth", false); err != nil {
-		t.Fatal(err)
-	}
-	if err := memory.ReadMemory(testMemoryBase, got); err != nil {
-		t.Fatal(err)
-	}
+	check(t, library.SetEnabled("skip-auth", false))
+	check(t, memory.ReadMemory(testMemoryBase, got))
 	if !bytes.Equal(got, []byte{1, 2, 3, 4, 5, 6}) {
 		t.Fatalf("memory after disable = %x", got)
 	}
@@ -93,23 +77,17 @@ func TestLibraryEnablesEveryPatchOfACheatTogether(t *testing.T) {
 func TestLibraryRollsBackAPartiallyAppliedCheat(t *testing.T) {
 	t.Parallel()
 	library, memory := newTestLibrary(t)
-	if err := library.Import(testCatalog()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, library.Import(testCatalog()))
 	// Break the second patch's expected original after import so enabling the
 	// cheat fails halfway through.
-	if err := memory.WriteMemory(testMemoryBase+4, []byte{0x77, 0x88}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, memory.WriteMemory(testMemoryBase+4, []byte{0x77, 0x88}))
 
 	err := library.SetEnabled("skip-auth", true)
 	if !errors.Is(err, ErrUnexpectedOriginal) {
 		t.Fatalf("partial enable error = %v", err)
 	}
 	got := make([]byte, 4)
-	if err := memory.ReadMemory(testMemoryBase, got); err != nil {
-		t.Fatal(err)
-	}
+	check(t, memory.ReadMemory(testMemoryBase, got))
 	if !bytes.Equal(got, []byte{1, 2, 3, 4}) {
 		t.Fatalf("memory after rollback = %x, want the original bytes", got)
 	}
@@ -134,27 +112,19 @@ func TestLibraryRejectsACatalogForAnotherTitle(t *testing.T) {
 func TestLibraryImportReplacesThePreviousCatalog(t *testing.T) {
 	t.Parallel()
 	library, memory := newTestLibrary(t)
-	if err := library.Import(testCatalog()); err != nil {
-		t.Fatal(err)
-	}
-	if err := library.SetEnabled("skip-auth", true); err != nil {
-		t.Fatal(err)
-	}
+	check(t, library.Import(testCatalog()))
+	check(t, library.SetEnabled("skip-auth", true))
 
 	replacement := testCatalog()
 	replacement.Cheats[0].ID = "infinite-gold"
 	replacement.Cheats[0].Name = "Infinite gold"
-	if err := library.Import(replacement); err != nil {
-		t.Fatal(err)
-	}
+	check(t, library.Import(replacement))
 	entries := library.Entries()
 	if len(entries) != 1 || entries[0].Cheat.ID != "infinite-gold" {
 		t.Fatalf("entries after replacement = %+v", entries)
 	}
 	got := make([]byte, 6)
-	if err := memory.ReadMemory(testMemoryBase, got); err != nil {
-		t.Fatal(err)
-	}
+	check(t, memory.ReadMemory(testMemoryBase, got))
 	if !bytes.Equal(got, []byte{1, 2, 3, 4, 5, 6}) {
 		t.Fatalf("memory after replacement = %x, want the original bytes", got)
 	}
@@ -185,9 +155,7 @@ func defaultOnCatalog() Catalog {
 func TestApplyStateTurnsOnDefaultsAndLeavesTheRest(t *testing.T) {
 	t.Parallel()
 	library, memory := newTestLibrary(t)
-	if err := library.Import(defaultOnCatalog()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, library.Import(defaultOnCatalog()))
 	if got := library.Defaults(); len(got) != 1 || got[0] != "skip-auth" {
 		t.Fatalf("defaults = %v", got)
 	}
@@ -196,13 +164,9 @@ func TestApplyStateTurnsOnDefaultsAndLeavesTheRest(t *testing.T) {
 		t.Fatalf("import enabled a cheat on its own: %+v", entries)
 	}
 
-	if err := library.ApplyState(nil); err != nil {
-		t.Fatal(err)
-	}
+	check(t, library.ApplyState(nil))
 	got := make([]byte, 7)
-	if err := memory.ReadMemory(testMemoryBase, got); err != nil {
-		t.Fatal(err)
-	}
+	check(t, memory.ReadMemory(testMemoryBase, got))
 	if !bytes.Equal(got, []byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 7}) {
 		t.Fatalf("memory after defaults = %x", got)
 	}
@@ -215,9 +179,7 @@ func TestApplyStateTurnsOnDefaultsAndLeavesTheRest(t *testing.T) {
 func TestApplyStateLetsAChoiceOverrideTheDefault(t *testing.T) {
 	t.Parallel()
 	library, memory := newTestLibrary(t)
-	if err := library.Import(defaultOnCatalog()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, library.Import(defaultOnCatalog()))
 	// Someone turned the default-on cheat off and the other one on.
 	if err := library.ApplyState(map[string]bool{
 		"skip-auth":  false,
@@ -226,9 +188,7 @@ func TestApplyStateLetsAChoiceOverrideTheDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := make([]byte, 7)
-	if err := memory.ReadMemory(testMemoryBase, got); err != nil {
-		t.Fatal(err)
-	}
+	check(t, memory.ReadMemory(testMemoryBase, got))
 	if !bytes.Equal(got, []byte{1, 2, 3, 4, 5, 6, 0x11}) {
 		t.Fatalf("memory after overrides = %x", got)
 	}
@@ -241,13 +201,9 @@ func TestApplyStateLetsAChoiceOverrideTheDefault(t *testing.T) {
 func TestApplyStateReportsAFailureWithoutDroppingTheRest(t *testing.T) {
 	t.Parallel()
 	library, memory := newTestLibrary(t)
-	if err := library.Import(defaultOnCatalog()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, library.Import(defaultOnCatalog()))
 	// Break the default-on cheat's expected original.
-	if err := memory.WriteMemory(testMemoryBase, []byte{0x99}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, memory.WriteMemory(testMemoryBase, []byte{0x99}))
 
 	err := library.ApplyState(map[string]bool{"extra-gold": true})
 	if !errors.Is(err, ErrUnexpectedOriginal) {

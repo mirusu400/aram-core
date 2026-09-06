@@ -11,40 +11,22 @@ import (
 
 func TestServicesBinaryStateRoundTrip(t *testing.T) {
 	services, err := NewServices(Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	owner, err := services.Coordinator.Register("test", 100)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := services.Coordinator.Transition(owner, LifecycleReady, 0, nil); err != nil {
-		t.Fatal(err)
-	}
-	if err := services.QueueInput(owner, "fire", true, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := services.Advance(owner, time.Millisecond); err != nil {
-		t.Fatal(err)
-	}
-	if err := services.Storage.WriteFile(
+	check(t, err)
+	check(t, services.Coordinator.Transition(owner, LifecycleReady, 0, nil))
+	check(t, services.QueueInput(owner, "fire", true, 0))
+	check(t, services.Advance(owner, time.Millisecond))
+	check(t, services.Storage.WriteFile(
 		NamespacePrivate,
 		"save.bin",
 		[]byte{1, 2, 3},
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	encoded, err := services.MarshalBinary()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	clone, err := NewServices(Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := clone.UnmarshalBinary(encoded); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, clone.UnmarshalBinary(encoded))
 	if !reflect.DeepEqual(clone.Snapshot(), services.Snapshot()) {
 		t.Fatal("binary service state did not round-trip")
 	}
@@ -52,31 +34,19 @@ func TestServicesBinaryStateRoundTrip(t *testing.T) {
 
 func TestServicesBinaryStateRoundTripWithEmptyMediaClip(t *testing.T) {
 	services, err := NewServices(Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	owner, err := services.Coordinator.Register("media-state", 100)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	clip, err := services.Media.CreateClip(owner, "", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := services.Media.Info(owner, clip); err != nil {
 		t.Fatal(err)
 	}
 	encoded, err := services.MarshalBinary()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	clone, err := NewServices(Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := clone.UnmarshalBinary(encoded); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, clone.UnmarshalBinary(encoded))
 	if !reflect.DeepEqual(clone.Snapshot(), services.Snapshot()) {
 		t.Fatal("service state with an empty media clip did not round-trip")
 	}
@@ -84,13 +54,9 @@ func TestServicesBinaryStateRoundTripWithEmptyMediaClip(t *testing.T) {
 
 func TestServicesBinaryStateRejectsCorruptionBeforeMutation(t *testing.T) {
 	services, err := NewServices(Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	encoded, err := services.MarshalBinary()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	before := services.Snapshot()
 	corrupt := append([]byte(nil), encoded...)
 	corrupt[len(corrupt)/2] ^= 0x80
@@ -104,13 +70,9 @@ func TestServicesBinaryStateRejectsCorruptionBeforeMutation(t *testing.T) {
 
 func TestServicesBinaryStateRejectsMissingComponent(t *testing.T) {
 	services, err := NewServices(Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	encoded, err := services.MarshalBinary()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	modified := append([]byte(nil), encoded...)
 	countOffset := len(servicesStateMagic) + 4 + 4
 	binary.LittleEndian.PutUint32(
@@ -141,9 +103,7 @@ func TestTypedStateCodecUsesFixedWidthLittleEndianScalars(t *testing.T) {
 		Text:     "A",
 	}
 	encoded, err := encodeStateValue(input)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	want := []byte{
 		0x12, 0x34, 0x56, 0x78,
 		0xfe, 0xff,
@@ -154,9 +114,7 @@ func TestTypedStateCodecUsesFixedWidthLittleEndianScalars(t *testing.T) {
 		t.Fatalf("typed encoding = %x, want %x", encoded, want)
 	}
 	var decoded scalarState
-	if err := decodeStateValue(encoded, &decoded); err != nil {
-		t.Fatal(err)
-	}
+	check(t, decodeStateValue(encoded, &decoded))
 	if !reflect.DeepEqual(decoded, input) {
 		t.Fatalf("typed decoding = %+v, want %+v", decoded, input)
 	}
@@ -174,20 +132,14 @@ func TestTypedStateCodecSortsMapsAndRejectsHostWidthIntegers(t *testing.T) {
 	first := mapState{Values: map[uint32]string{9: "nine", 2: "two"}}
 	second := mapState{Values: map[uint32]string{2: "two", 9: "nine"}}
 	firstEncoded, err := MarshalStateComponent(first)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	secondEncoded, err := MarshalStateComponent(second)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !bytes.Equal(firstEncoded, secondEncoded) {
 		t.Fatal("typed map encoding depends on insertion order")
 	}
 	var decoded mapState
-	if err := UnmarshalStateComponent(firstEncoded, &decoded); err != nil {
-		t.Fatal(err)
-	}
+	check(t, UnmarshalStateComponent(firstEncoded, &decoded))
 	if !reflect.DeepEqual(decoded, first) {
 		t.Fatalf("typed map decoding = %+v, want %+v", decoded, first)
 	}

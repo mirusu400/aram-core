@@ -12,9 +12,7 @@ import (
 
 func TestSCHW830BoardProfileAppliesEvidenceBackedIRAM(t *testing.T) {
 	profile := SCHW830DL21BoardProfile()
-	if err := profile.Validate(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, profile.Validate())
 	if len(profile.HLECalls) != 0 {
 		t.Fatalf("SCH-W830 unexpectedly enables failure-path HLE calls: %+v", profile.HLECalls)
 	}
@@ -301,9 +299,7 @@ func TestSCHW830BoardProfileAppliesEvidenceBackedIRAM(t *testing.T) {
 		t.Fatalf("SCH-W830 ADSP mailbox = %#v", profile.ADSPMailbox)
 	}
 	bus := NewBus()
-	if err := profile.ApplyMemory(bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, profile.ApplyMemory(bus))
 	if err := bus.MapRAM("ebi-overlap-check", 0x07fff000, 0x1000); err == nil {
 		t.Fatal("board profile did not map 128 MiB EBI RAM")
 	}
@@ -312,9 +308,7 @@ func TestSCHW830BoardProfileAppliesEvidenceBackedIRAM(t *testing.T) {
 	}
 	var adspWord [4]byte
 	binary.LittleEndian.PutUint32(adspWord[:], 0x11223344)
-	if err := bus.Write(0x70001338, adspWord[:], cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.Write(0x70001338, adspWord[:], cpu.PermissionWrite))
 	clear(adspWord[:])
 	if err := bus.Read(0x70001338, adspWord[:], cpu.PermissionRead); err != nil ||
 		binary.LittleEndian.Uint32(adspWord[:]) != 0x11223344 {
@@ -330,9 +324,7 @@ func TestSCHW830BoardProfileAppliesEvidenceBackedIRAM(t *testing.T) {
 
 func TestSCHW860DA06BoardProfileKeepsAdjacentBoardFactsSeparate(t *testing.T) {
 	profile := SCHW860DA06BoardProfile()
-	if err := profile.Validate(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, profile.Validate())
 	if profile.ID != "samsung.sch-w860" || profile.FirmwareBuildID != "samsung.sch-w860.da06" ||
 		profile.NANDSize != 0x10000000 || profile.NANDReadID != 0xecba {
 		t.Fatalf("SCH-W860 identity/NAND = %q/%q %#x/%#x",
@@ -354,9 +346,7 @@ func TestSCHW860DA06BoardProfileKeepsAdjacentBoardFactsSeparate(t *testing.T) {
 
 func TestSCHW770DA05BoardProfileKeepsVersionOneNANDSeparate(t *testing.T) {
 	profile := SCHW770DA05BoardProfile()
-	if err := profile.Validate(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, profile.Validate())
 	if profile.ID != "samsung.sch-w770" || profile.FirmwareBuildID != "samsung.sch-w770.da05" ||
 		profile.NANDSize != 0x20000000 || profile.NANDReadID != 0xecdc {
 		t.Fatalf("SCH-W770 identity/NAND = %q/%q %#x/%#x",
@@ -519,9 +509,7 @@ func TestSCHW770DA05BoardProfileKeepsVersionOneNANDSeparate(t *testing.T) {
 
 func TestSCHW850CF11BoardProfileUsesMSM7600SFlashFlexOneNAND(t *testing.T) {
 	profile := SCHW850CF11BoardProfile()
-	if err := profile.Validate(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, profile.Validate())
 	if profile.ID != "samsung.sch-w850" ||
 		profile.PlatformID != "qualcomm.msm7600-modem-arm9" ||
 		profile.FirmwareBuildID != "samsung.sch-w850.cf11" ||
@@ -771,9 +759,7 @@ func TestRawSamsungBoardProfilesKeepExactIdentityAndPackagedEnd(t *testing.T) {
 
 func TestLegacyFlatBoardProfilesDeclareExactResetDevices(t *testing.T) {
 	w450 := SCHW450CK10BoardProfile()
-	if err := w450.Validate(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, w450.Validate())
 	if w450.ID != "samsung.sch-w450" || w450.FirmwareBuildID != "samsung.sch-w450.ck10" ||
 		w450.PlatformID != "qualcomm.arm7-samsung-flat-v1" ||
 		!w450.CPUCompatibility.UserSystemSPSRReadAsCPSR ||
@@ -797,9 +783,7 @@ func TestLegacyFlatBoardProfilesDeclareExactResetDevices(t *testing.T) {
 	}
 
 	w599 := SCHW599BE30BoardProfile()
-	if err := w599.Validate(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, w599.Validate())
 	if w599.ID != "samsung.sch-w599" || w599.FirmwareBuildID != "samsung.sch-w599.be30" ||
 		w599.PlatformID != "intel.pxa27x-samsung-flat-v1" ||
 		w599.NANDReadID != 0x00009879 ||
@@ -1221,18 +1205,12 @@ func TestSCHW340MapsBoundedMGPRegisters(t *testing.T) {
 	}
 
 	bus := NewBus()
-	if err := profile.ApplyMemory(bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, profile.ApplyMemory(bus))
 	device, err := profile.AttachSamsungMGP(bus)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	writeSamsungMGPRegister(t, bus, 0x9011f1ac, 1)
 	writeSamsungMGPRegister(t, bus, 0x9011f1ac, 0)
-	if err := device.Advance(1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Advance(1))
 	if got := readSamsungMGPByte(t, bus, 0x9010a9e0); got != 1 {
 		t.Fatalf("SCH-W340 MGP ready byte = %#x", got)
 	}
@@ -1354,17 +1332,11 @@ func TestBoardProfileAttachesProfileSelectedMDP(t *testing.T) {
 		CompletionEvents: profile.BootControlCompletionEvents,
 		NANDReady:        NewStatusSignal(),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	panel, err := NewDCSPanelController(profile.Panel)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	engine, err := profile.AttachMDP(NewBus(), panel, bootControl)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if engine == nil || len(bootControl.orderedCompletionHandlers) != 1 {
 		t.Fatalf("attached MDP = %p, handlers = %d", engine, len(bootControl.orderedCompletionHandlers))
 	}
@@ -1391,14 +1363,10 @@ func TestBoardProfileAppliesAddressedStorageWindow(t *testing.T) {
 		image[index] = byte(index)
 	}
 	bus := NewBus()
-	if err := profile.ApplyAddressedStorageWindows(bus, bytes.NewReader(image)); err != nil {
-		t.Fatal(err)
-	}
+	check(t, profile.ApplyAddressedStorageWindows(bus, bytes.NewReader(image)))
 	var command [4]byte
 	binary.LittleEndian.PutUint32(command[:], 0x25)
-	if err := bus.Write(0x91000100, command[:], cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.Write(0x91000100, command[:], cpu.PermissionWrite))
 	var data [4]byte
 	if err := bus.Read(0x91000004, data[:], cpu.PermissionRead); err != nil ||
 		binary.LittleEndian.Uint32(data[:]) != 0x27262524 {
@@ -1417,18 +1385,14 @@ func TestBoardProfileAppliesLatchedRegisters(t *testing.T) {
 		},
 	}
 	bus := NewBus()
-	if err := profile.ApplyLatchedRegisters(bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, profile.ApplyLatchedRegisters(bus))
 	var data [2]byte
 	if err := bus.Read(0x91000002, data[:], cpu.PermissionRead); err != nil ||
 		binary.LittleEndian.Uint16(data[:]) != 0x12 {
 		t.Fatalf("profiled latched register = %x error %v", data, err)
 	}
 	binary.LittleEndian.PutUint16(data[:], 0x3456)
-	if err := bus.Write(0x91000002, data[:], cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.Write(0x91000002, data[:], cpu.PermissionWrite))
 	clear(data[:])
 	_ = bus.Read(0x91000002, data[:], cpu.PermissionRead)
 	if binary.LittleEndian.Uint16(data[:]) != 0x3456 {
@@ -1444,14 +1408,10 @@ func TestBoardProfileAppliesLatchedRegisterWindows(t *testing.T) {
 		},
 	}
 	bus := NewBus()
-	if err := profile.ApplyLatchedRegisters(bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, profile.ApplyLatchedRegisters(bus))
 	var data [2]byte
 	binary.LittleEndian.PutUint16(data[:], 0x3456)
-	if err := bus.Write(0x9100552a, data[:], cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.Write(0x9100552a, data[:], cpu.PermissionWrite))
 	clear(data[:])
 	if err := bus.Read(0x9100552a, data[:], cpu.PermissionRead); err != nil ||
 		binary.LittleEndian.Uint16(data[:]) != 0x3456 {
@@ -1503,34 +1463,22 @@ func TestBoardProfileAppliesQualcommADSPMailbox(t *testing.T) {
 	}
 	bus := NewBus()
 	vic, err := NewQualcommVectoredInterruptController(*profile.VectoredInterrupt, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := profile.ApplyLatchedRegistersWithInterrupts(bus, nil, vic); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, profile.ApplyLatchedRegistersWithInterrupts(bus, nil, vic))
 	var data [4]byte
 	var selector [2]byte
 	binary.LittleEndian.PutUint32(data[:], 2)
-	if err := bus.Write(0x91c00000, data[:], cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.Write(0x91c00000, data[:], cpu.PermissionWrite))
 	if err := bus.Read(0x9120000c, selector[:], cpu.PermissionRead); err != nil ||
 		binary.LittleEndian.Uint16(selector[:]) != 1 {
 		t.Fatalf("profiled ADSP control response = %x error %v", selector, err)
 	}
 	binary.LittleEndian.PutUint16(selector[:], 1)
-	if err := bus.Write(0x91200008, selector[:], cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.Write(0x91200008, selector[:], cpu.PermissionWrite))
 	binary.LittleEndian.PutUint32(data[:], 0x11223344)
-	if err := bus.Write(0x9140000c, data[:], cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.Write(0x9140000c, data[:], cpu.PermissionWrite))
 	binary.LittleEndian.PutUint32(data[:], 0x80020000)
-	if err := bus.Write(0x91c00008, data[:], cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.Write(0x91c00008, data[:], cpu.PermissionWrite))
 	clear(data[:])
 	if err := bus.Read(0x91c00008, data[:], cpu.PermissionRead); err != nil ||
 		binary.LittleEndian.Uint32(data[:]) != 0x00020000 {
@@ -1547,9 +1495,7 @@ func TestBoardProfileAppliesQualcommADSPMailbox(t *testing.T) {
 		t.Fatalf("profiled ADSP response = %x error %v", data, err)
 	}
 	binary.LittleEndian.PutUint32(data[:], 1)
-	if err := bus.Write(0x91c00004, data[:], cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.Write(0x91c00004, data[:], cpu.PermissionWrite))
 	clear(selector[:])
 	if err := bus.Read(0x9120000e, selector[:], cpu.PermissionRead); err != nil ||
 		binary.LittleEndian.Uint16(selector[:]) != 1 {

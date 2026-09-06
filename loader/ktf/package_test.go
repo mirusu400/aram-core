@@ -21,9 +21,7 @@ func TestInspectPackage(t *testing.T) {
 	})
 
 	pkg, err := Inspect(archive)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if pkg.Descriptor.AID != "01020304" ||
 		pkg.Descriptor.PID != "PD000001" ||
 		pkg.Descriptor.MainClass != "GameMain" {
@@ -59,9 +57,7 @@ func TestInspectWrappedPackage(t *testing.T) {
 	})
 
 	pkg, err := Inspect(archive)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if pkg.JARName != "installer/apps/game/01020304.jar" {
 		t.Fatalf("JARName = %q", pkg.JARName)
 	}
@@ -112,9 +108,7 @@ func TestInspectAcceptsNullEncryptedOMADCFJar(t *testing.T) {
 		"__adf__":      []byte("PID:pid\nAID:01020304\nMClass:Main\n"),
 	})
 	pkg, err := Inspect(archive)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if pkg.ClientName != "client.bin64" ||
 		!bytes.Equal(pkg.Resources["icon.png"], []byte{1, 2, 3}) {
 		t.Fatalf("NULL-encrypted DCF package = %+v", pkg)
@@ -133,9 +127,7 @@ func TestInspectRetainsCompleteResourceWithBadChecksum(t *testing.T) {
 	})
 
 	pkg, err := Inspect(archive)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !bytes.Equal(pkg.Resources["icon.png"], []byte{1, 2, 3}) {
 		t.Fatalf("bad-checksum resource = %x", pkg.Resources["icon.png"])
 	}
@@ -182,9 +174,7 @@ func TestParseDescriptorReadsDisplaySize(t *testing.T) {
 	descriptor, err := ParseDescriptor([]byte(
 		"PID:PD005263\r\nAID:01038900\r\nMClass:Maple\r\nDisplaySize:176*220\r\n",
 	))
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if descriptor.DisplayWidth != 176 || descriptor.DisplayHeight != 220 {
 		t.Fatalf(
 			"display size = %dx%d",
@@ -262,16 +252,12 @@ func makeZIP(t testingTB, files map[string][]byte) []byte {
 	writer := zip.NewWriter(&output)
 	for name, data := range files {
 		entry, err := writer.Create(name)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		if _, err := entry.Write(data); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := writer.Close(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, writer.Close())
 	return output.Bytes()
 }
 

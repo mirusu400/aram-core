@@ -14,9 +14,7 @@ import (
 // no-op left the timer armed and the handset appeared frozen.
 func TestKTFKernelExitRequestsTermination(t *testing.T) {
 	runtime := newScratchKTFRuntime(t)
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, 0); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, 0))
 	if runtime.terminationRequested {
 		t.Fatal("termination requested before MC_knlExit")
 	}
@@ -42,11 +40,9 @@ func TestKTFFindResourceFallsBackToPrivateFile(t *testing.T) {
 	}
 
 	// A save the Clet persisted through MC_fs* lands in NamespacePrivate.
-	if err := runtime.Services.Storage.WriteFile(
+	check(t, runtime.Services.Storage.WriteFile(
 		shared.NamespacePrivate, "/gopt.sav", []byte{0x20, 0x00, 0x00, 0x00},
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	data, ok := runtime.findKTFResource("gopt.sav")
 	if !ok {
 		t.Fatal("findKTFResource did not surface the private save")
@@ -57,11 +53,9 @@ func TestKTFFindResourceFallsBackToPrivateFile(t *testing.T) {
 
 	// A bundled jar resource of the same name must win over a private file.
 	runtime.Pkg.Resources["dup.dat"] = []byte("jar")
-	if err := runtime.Services.Storage.WriteFile(
+	check(t, runtime.Services.Storage.WriteFile(
 		shared.NamespacePrivate, "/dup.dat", []byte("private"),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	dup, ok := runtime.findKTFResource("dup.dat")
 	if !ok || string(dup) != "jar" {
 		t.Fatalf("bundled resource precedence broken: ok=%v data=%q", ok, dup)

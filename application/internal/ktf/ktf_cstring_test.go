@@ -18,13 +18,11 @@ func newCStringRuntime(t *testing.T) *Runtime {
 	t.Helper()
 	backend := interpreter.New()
 	t.Cleanup(func() { _ = backend.Close() })
-	if err := backend.Map(
+	check(t, backend.Map(
 		cstringRegionBase,
 		cstringRegionSize,
 		cpu.PermissionRead|cpu.PermissionWrite,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	return &Runtime{CPU: backend}
 }
 
@@ -78,16 +76,12 @@ func TestReadCStringBlockBoundaries(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			runtime := newCStringRuntime(t)
-			if err := runtime.CPU.WriteMemory(
+			check(t, runtime.CPU.WriteMemory(
 				test.address,
 				test.payload,
-			); err != nil {
-				t.Fatal(err)
-			}
+			))
 			got, err := runtime.readCString(test.address, test.limit)
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			if got != test.want {
 				t.Fatalf("readCString = %q, want %q", got, test.want)
 			}
@@ -98,9 +92,7 @@ func TestReadCStringBlockBoundaries(t *testing.T) {
 func TestReadCStringUnterminatedAtRegionEnd(t *testing.T) {
 	runtime := newCStringRuntime(t)
 	address := cstringRegionBase + cstringRegionSize - 3
-	if err := runtime.CPU.WriteMemory(address, []byte("abc")); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteMemory(address, []byte("abc")))
 	if got, err := runtime.readCString(address, 1024); err == nil {
 		t.Fatalf("readCString = %q, want a fault past the region end", got)
 	}
@@ -108,12 +100,10 @@ func TestReadCStringUnterminatedAtRegionEnd(t *testing.T) {
 
 func TestReadCStringUnterminatedWithinLimit(t *testing.T) {
 	runtime := newCStringRuntime(t)
-	if err := runtime.CPU.WriteMemory(
+	check(t, runtime.CPU.WriteMemory(
 		cstringRegionBase,
 		bytes.Repeat([]byte("x"), 200),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	_, err := runtime.readCString(cstringRegionBase, 100)
 	if err == nil || !strings.Contains(err.Error(), "not terminated") {
 		t.Fatalf("readCString error = %v, want a not-terminated report", err)

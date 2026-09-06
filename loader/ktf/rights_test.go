@@ -16,9 +16,7 @@ const dcfTestContentID = "00WIPI00000000000001020304"
 func encryptOMADCFBody(t *testing.T, key, plaintext []byte) []byte {
 	t.Helper()
 	block, err := aes.NewCipher(key)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	ciphertext := make([]byte, len(plaintext))
 	cipher.NewCTR(block, make([]byte, aes.BlockSize)).XORKeyStream(ciphertext, plaintext)
 	return ciphertext
@@ -49,9 +47,7 @@ func TestInspectOpensAESCTRDCFWithItsRightsKey(t *testing.T) {
 	useRightsKeys(t, RightsKeys{dcfTestContentID: key})
 
 	pkg, err := Inspect(makeProtectedArchive(t, key))
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if pkg.ClientName != "client.bin64" ||
 		!bytes.Equal(pkg.Resources["icon.png"], []byte{1, 2, 3}) {
 		t.Fatalf("decrypted DCF package = %+v", pkg)
@@ -100,9 +96,7 @@ func TestInspectAcceptsACounterBlockPrefixedObject(t *testing.T) {
 	jar := makeZIP(t, map[string][]byte{"client.bin64": {0x70, 0x47}})
 	counter := []byte("counter-block!!!")
 	block, err := aes.NewCipher(key)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	body := make([]byte, aes.BlockSize+len(jar))
 	copy(body, counter)
 	cipher.NewCTR(block, counter).XORKeyStream(body[aes.BlockSize:], jar)
@@ -112,9 +106,7 @@ func TestInspectAcceptsACounterBlockPrefixedObject(t *testing.T) {
 		"__adf__":      []byte("PID:pid\nAID:01020304\nMClass:Main\n"),
 	})
 	pkg, err := Inspect(archive)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if pkg.ClientName != "client.bin64" {
 		t.Fatalf("prefixed-counter DCF package = %+v", pkg)
 	}
@@ -127,9 +119,7 @@ func TestParseRightsKeysReadsBothSpellings(t *testing.T) {
 			"\r\n" +
 			"01041fe1\t101112131415161718191A1B1C1D1E1F # trailing note\n",
 	))
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if len(keys) != 2 {
 		t.Fatalf("parsed keys = %v", keys)
 	}
@@ -158,13 +148,11 @@ func TestParseRightsKeysRejectsMalformedLines(t *testing.T) {
 func TestRightsKeysLoadFromTheEnvironmentPath(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "keys.txt")
-	if err := os.WriteFile(
+	check(t, os.WriteFile(
 		path,
 		[]byte("01020304 = 30313233343536373839616263646566\n"),
 		0o600,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	t.Setenv(RightsKeyEnv, path)
 	SetRightsKeys(nil)
 	t.Cleanup(func() { SetRightsKeys(nil) })

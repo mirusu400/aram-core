@@ -32,13 +32,9 @@ func TestKTFRuntimeMapsAndCallsClientEntry(t *testing.T) {
 		BSSSize:    4096,
 		Client:     client,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.MapImageAndHost())
 
 	result, value, err := runtime.Bootstrap(context.Background())
 	if err != nil {
@@ -57,9 +53,7 @@ func TestKTFRuntimeMapsAndCallsClientEntry(t *testing.T) {
 		t.Fatalf("executable = %+v", runtime.Exe)
 	}
 	var bss [4]byte
-	if err := runtime.CPU.ReadMemory(ImageBase+uint32(len(client)), bss[:]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(ImageBase+uint32(len(client)), bss[:]))
 	if bss != [4]byte{} {
 		t.Fatalf("BSS is not zero: %x", bss)
 	}
@@ -75,13 +69,9 @@ func TestKTFRuntimeMapsLowWorkRAM(t *testing.T) {
 		BSSSize:    4096,
 		Client:     []byte{0x70, 0x47},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.MapImageAndHost())
 	const tearsOfMetalSavePointer = uint32(0x01d14250)
 	if tearsOfMetalSavePointer < LowWorkRAMBase ||
 		tearsOfMetalSavePointer >= LowWorkRAMBase+LowWorkRAMSize {
@@ -185,24 +175,15 @@ func TestKTFRuntimeInitializesCompleteJavaEnvironment(t *testing.T) {
 		BSSSize:    4096,
 		Client:     syntheticKTFClient(),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.MapImageAndHost())
 	if _, _, err := runtime.Bootstrap(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.Initialize(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.Initialize(context.Background()))
 
-	contextAddress, err := runtime.ReadU32(runtime.javaEnvironment)
-	if err != nil {
-		t.Fatal(err)
-	}
+	contextAddress := readU32(t, runtime, runtime.javaEnvironment)
 	if contextAddress != runtime.exceptionContext {
 		t.Fatalf(
 			"Java environment context = 0x%08x, want 0x%08x",
@@ -210,23 +191,15 @@ func TestKTFRuntimeInitializesCompleteJavaEnvironment(t *testing.T) {
 			runtime.exceptionContext,
 		)
 	}
-	if err := runtime.writeWords(
+	check(t, runtime.writeWords(
 		contextAddress+0x24,
 		[]uint32{2, 0x12345678},
-	); err != nil {
-		t.Fatal(err)
-	}
-	got, err := runtime.ReadWords(contextAddress+0x24, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	))
+	got := readWords(t, runtime, contextAddress+0x24, 2)
 	if !slices.Equal(got, []uint32{2, 0x12345678}) {
 		t.Fatalf("Java environment native fields = %08x", got)
 	}
-	frame, err := runtime.ReadU32(contextAddress + 8*4)
-	if err != nil {
-		t.Fatal(err)
-	}
+	frame := readU32(t, runtime, contextAddress+8*4)
 	if frame != 0 {
 		t.Fatalf("initial Java exception frame = 0x%08x", frame)
 	}
@@ -245,9 +218,7 @@ func TestKTFRuntimeLoadsPackagedDataBases(t *testing.T) {
 			"wrapped/p/SAVE.db":  {1, 2, 3, 4, 5, 6},
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	defer runtime.CPU.Close()
 	store := runtime.DatabaseStores["save"]
 	if store == nil {
@@ -271,9 +242,7 @@ func TestKTFRuntimeLoadsPackagedPrivateFiles(t *testing.T) {
 			"other/P/ignored.do":  {4, 5, 6},
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	defer runtime.CPU.Close()
 	if !bytes.Equal(runtime.FileData["/config.do"], []byte{1, 2, 3}) {
 		t.Fatalf("private file = %v", runtime.FileData)
@@ -343,17 +312,11 @@ func TestKTFTaskSliceRunsToReturnSentinel(t *testing.T) {
 			0x70, 0x47, // bx lr
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.MapImageAndHost())
 	task, err := runtime.NewTask(ImageBase|1, nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	runtime.Tasks = append(runtime.Tasks, task)
 	result := runtime.RunTaskSlice(context.Background(), 16)
 	if result.Err != nil {
@@ -369,16 +332,10 @@ func TestKTFJletNotifyDestroyedStopsNestedAndScheduledExecution(t *testing.T) {
 		ClientName: "client.bin0",
 		Client:     []byte{0x70, 0x47},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.SetTraceMode(KTFTraceFull); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.SetTraceMode(KTFTraceFull))
 	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.MapImageAndHost())
 	const (
 		display = uint32(0x10001000)
 		card    = uint32(0x10002000)
@@ -418,9 +375,7 @@ func TestKTFJletNotifyDestroyedStopsNestedAndScheduledExecution(t *testing.T) {
 	}
 
 	task, err := runtime.NewTask(ImageBase|1, nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	runtime.Tasks = append(runtime.Tasks, task)
 	result = runtime.RunTaskSlice(context.Background(), 16)
 	if result.Err != nil {
@@ -442,17 +397,7 @@ func TestKTFJletNotifyDestroyedStopsNestedAndScheduledExecution(t *testing.T) {
 }
 
 func TestKTFTaskSliceScopesPendingJavaMethodPerTask(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
 
 	var observed []string
 	newProbe := func(name string) uint32 {
@@ -465,13 +410,9 @@ func TestKTFTaskSliceScopesPendingJavaMethodPerTask(t *testing.T) {
 		)
 	}
 	first, err := runtime.NewTask(newProbe("first"), nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	second, err := runtime.NewTask(newProbe("second"), nil, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	first.LastJavaMethod = "example/First.pending()V"
 	second.LastJavaMethod = "example/Second.pending()V"
 	runtime.Tasks = []*Task{first, second}
@@ -591,17 +532,7 @@ func TestKTFRuntimeMethodsHaveNativeOverride(t *testing.T) {
 }
 
 func TestKTFNestedCallPropagatesPendingJavaMethod(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
 
 	var observed string
 	procedure := runtime.RegisterHostCall(
@@ -635,26 +566,11 @@ func TestKTFNestedCallPropagatesPendingJavaMethod(t *testing.T) {
 }
 
 func TestKTFGraphicsFillRectUpdatesFramebuffer(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
 	runtime.frame = image.NewRGBA(image.Rect(0, 0, 16, 16))
 	graphics, err := runtime.EnsureScreenGraphics()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	graphicsState := runtime.Graphics[graphics]
 	graphicsState.translate = image.Pt(99, -17)
 	graphicsState.clip = image.Rect(2, 3, 4, 5)
@@ -666,33 +582,23 @@ func TestKTFGraphicsFillRectUpdatesFramebuffer(t *testing.T) {
 		t.Fatalf("reset screen graphics = %#v", graphicsState)
 	}
 	stack := guest.DefaultStackBase + 0x100
-	if err := runtime.CPU.WriteRegister(cpu.RegisterSP, stack); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(stack, []uint32{4, 3}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterSP, stack))
+	check(t, runtime.writeWords(stack, []uint32{4, 3}))
 	for register, value := range map[uint32]uint32{
 		cpu.RegisterR1: graphics,
 		cpu.RegisterR2: 2,
 		cpu.RegisterR3: 1,
 	} {
-		if err := runtime.CPU.WriteRegister(register, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteRegister(register, value))
 	}
 	if _, err := runtime.handleGraphicsMethod("setColor", "(I)V"); err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, 0x3366cc); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 0x3366cc))
 	if _, err := runtime.handleGraphicsMethod("setColor", "(I)V"); err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, 2); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 2))
 	if _, err := runtime.handleGraphicsMethod("fillRect", "(IIII)V"); err != nil {
 		t.Fatal(err)
 	}
@@ -704,9 +610,7 @@ func TestKTFGraphicsFillRectUpdatesFramebuffer(t *testing.T) {
 		runtime.ServiceOwner,
 		runtime.GraphicsServices[graphics],
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	serviceOffset := (2*16 + 3) * 4
 	if servicePixels[serviceOffset] != 0 ||
 		servicePixels[serviceOffset+1] != 0 ||
@@ -717,21 +621,13 @@ func TestKTFGraphicsFillRectUpdatesFramebuffer(t *testing.T) {
 		)
 	}
 	pixels, err := runtime.newJavaByteArray(make([]byte, 4))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(
+	check(t, err)
+	check(t, runtime.writeWords(
 		stack,
 		[]uint32{1, 1, pixels, 2, 1},
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, 3); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR3, 2); err != nil {
-		t.Fatal(err)
-	}
+	))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 3))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, 2))
 	if _, err := runtime.handleGraphicsMethod(
 		"getPixels",
 		"(IIII[BII)V",
@@ -739,32 +635,19 @@ func TestKTFGraphicsFillRectUpdatesFramebuffer(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, err := runtime.readJavaByteArray(pixels)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	const wantLuma = byte((0x33*77 + 0x66*150 + 0xcc*29) >> 8)
 	if data[2] != wantLuma {
 		t.Fatalf("copied grayscale pixel = 0x%02x, want 0x%02x", data[2], wantLuma)
 	}
-	text, err := runtime.NewJavaString("A")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, 0xffffff); err != nil {
-		t.Fatal(err)
-	}
+	text := newJavaString(t, runtime, "A")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 0xffffff))
 	if _, err := runtime.handleGraphicsMethod("setColor", "(I)V"); err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, text); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR3, 8); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(stack, []uint32{6, 4 | 16}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, text))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, 8))
+	check(t, runtime.writeWords(stack, []uint32{6, 4 | 16}))
 	if _, err := runtime.handleGraphicsMethod(
 		"drawString",
 		"(Ljava/lang/String;III)V",
@@ -790,51 +673,28 @@ func TestKTFGraphicsFillRectUpdatesFramebuffer(t *testing.T) {
 }
 
 func TestKTFGraphicsDrawImageAdvancesSourceWhenClipped(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
 	runtime.frame = image.NewRGBA(image.Rect(0, 0, 1, 1))
 	graphics, err := runtime.EnsureScreenGraphics()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 
 	source := image.NewRGBA(image.Rect(10, 20, 11, 23))
 	source.SetRGBA(10, 20, color.RGBA{R: 0xff, A: 0xff})
 	source.SetRGBA(10, 21, color.RGBA{G: 0xff, A: 0xff})
 	source.SetRGBA(10, 22, color.RGBA{B: 0xff, A: 0xff})
 	javaImage, err := runtime.newJavaImage(source)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 
 	stack := guest.DefaultStackBase + 0x100
-	if err := runtime.CPU.WriteRegister(cpu.RegisterSP, stack); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(stack, []uint32{^uint32(0), 0}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterSP, stack))
+	check(t, runtime.writeWords(stack, []uint32{^uint32(0), 0}))
 	for register, value := range map[uint32]uint32{
 		cpu.RegisterR1: graphics,
 		cpu.RegisterR2: javaImage,
 		cpu.RegisterR3: 0,
 	} {
-		if err := runtime.CPU.WriteRegister(register, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteRegister(register, value))
 	}
 	if _, err := runtime.handleGraphicsMethod(
 		"drawImage",
@@ -851,36 +711,16 @@ func TestKTFGraphicsDrawImageAdvancesSourceWhenClipped(t *testing.T) {
 }
 
 func TestKTFGraphicsSetRGBPixelsUsesByteStrideAndClip(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
 	runtime.frame = image.NewRGBA(image.Rect(0, 0, 4, 3))
 	graphics, err := runtime.EnsureScreenGraphics()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	runtime.Graphics[graphics].clip = image.Rect(2, 0, 3, 2)
 
 	pixels, err := runtime.NewJavaArray("[I", 7, 4)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fields, err := runtime.ReadU32(pixels)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	fields := readU32(t, runtime, pixels)
 	if err := runtime.writeWords(fields+8, []uint32{
 		0xdeadbeef,
 		0x00112233,
@@ -894,9 +734,7 @@ func TestKTFGraphicsSetRGBPixelsUsesByteStrideAndClip(t *testing.T) {
 	}
 
 	stack := guest.DefaultStackBase + 0x100
-	if err := runtime.CPU.WriteRegister(cpu.RegisterSP, stack); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterSP, stack))
 	if err := runtime.writeWords(stack, []uint32{
 		2,
 		2,
@@ -911,9 +749,7 @@ func TestKTFGraphicsSetRGBPixelsUsesByteStrideAndClip(t *testing.T) {
 		cpu.RegisterR2: 1,
 		cpu.RegisterR3: 0,
 	} {
-		if err := runtime.CPU.WriteRegister(register, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteRegister(register, value))
 	}
 	if _, err := runtime.handleGraphicsMethod(
 		"setRGBPixels",
@@ -947,26 +783,11 @@ func TestKTFGraphicsSetRGBPixelsUsesByteStrideAndClip(t *testing.T) {
 }
 
 func TestKTFGraphicsGetRGBPixelsReadsBackSurface(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
 	runtime.frame = image.NewRGBA(image.Rect(0, 0, 4, 3))
 	graphics, err := runtime.EnsureScreenGraphics()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	state := runtime.Graphics[graphics]
 	state.Target.Set(1, 0, color.RGBA{R: 0x44, G: 0x55, B: 0x66, A: 0xff})
 	state.Target.Set(2, 0, color.RGBA{R: 0x11, G: 0x22, B: 0x33, A: 0xff})
@@ -975,18 +796,11 @@ func TestKTFGraphicsGetRGBPixelsReadsBackSurface(t *testing.T) {
 	state.clip = image.Rect(0, 0, 1, 1)
 
 	pixels, err := runtime.NewJavaArray("[I", 7, 4)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fields, err := runtime.ReadU32(pixels)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	fields := readU32(t, runtime, pixels)
 
 	stack := guest.DefaultStackBase + 0x100
-	if err := runtime.CPU.WriteRegister(cpu.RegisterSP, stack); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterSP, stack))
 	if err := runtime.writeWords(stack, []uint32{
 		2,
 		2,
@@ -1001,9 +815,7 @@ func TestKTFGraphicsGetRGBPixelsReadsBackSurface(t *testing.T) {
 		cpu.RegisterR2: 1,
 		cpu.RegisterR3: 0,
 	} {
-		if err := runtime.CPU.WriteRegister(register, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteRegister(register, value))
 	}
 	if _, err := runtime.handleGraphicsMethod(
 		"getRGBPixels",
@@ -1012,10 +824,7 @@ func TestKTFGraphicsGetRGBPixelsReadsBackSurface(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	values, err := runtime.ReadWords(fields+8, 7)
-	if err != nil {
-		t.Fatal(err)
-	}
+	values := readWords(t, runtime, fields+8, 7)
 	want := []uint32{
 		0,
 		0x00445566,
@@ -1031,45 +840,21 @@ func TestKTFGraphicsGetRGBPixelsReadsBackSurface(t *testing.T) {
 }
 
 func TestKTFStringGetCharsCopiesIntoGuestArray(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
-	source, err := runtime.NewJavaString("ds2.pts")
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	source := newJavaString(t, runtime, "ds2.pts")
 	buffer, err := runtime.NewJavaArray("[C", 10, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 
 	stack := guest.DefaultStackBase + 0x100
-	if err := runtime.CPU.WriteRegister(cpu.RegisterSP, stack); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(stack, []uint32{buffer, 0}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterSP, stack))
+	check(t, runtime.writeWords(stack, []uint32{buffer, 0}))
 	for register, value := range map[uint32]uint32{
 		cpu.RegisterR1: source,
 		cpu.RegisterR2: 0,
 		cpu.RegisterR3: 7,
 	} {
-		if err := runtime.CPU.WriteRegister(register, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteRegister(register, value))
 	}
 	if _, err := runtime.handleStringMethod(
 		"getChars",
@@ -1079,62 +864,32 @@ func TestKTFStringGetCharsCopiesIntoGuestArray(t *testing.T) {
 	}
 
 	copied, err := runtime.readJavaCharArrayRange(buffer, 0, 7)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if copied != "ds2.pts" {
 		t.Fatalf("copied characters = %q, want %q", copied, "ds2.pts")
 	}
 }
 
 func TestKTFStringConstructorMaterializesGuestFields(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
 	instance, err := runtime.newJavaInstance("java/lang/String", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	data := []byte("abc.01")
 	array, err := runtime.NewJavaArray("[B", uint32(len(data)), 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fields, err := runtime.ReadU32(array)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteMemory(fields+8, data); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	fields := readU32(t, runtime, array)
+	check(t, runtime.CPU.WriteMemory(fields+8, data))
 
 	stack := guest.DefaultStackBase + 0x100
-	if err := runtime.CPU.WriteRegister(cpu.RegisterSP, stack); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(stack, []uint32{uint32(len(data))}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterSP, stack))
+	check(t, runtime.writeWords(stack, []uint32{uint32(len(data))}))
 	for register, value := range map[uint32]uint32{
 		cpu.RegisterR1: instance,
 		cpu.RegisterR2: array,
 		cpu.RegisterR3: 0,
 	} {
-		if err := runtime.CPU.WriteRegister(register, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteRegister(register, value))
 	}
 	if _, err := runtime.handleStringMethod(
 		"<init>",
@@ -1153,26 +908,11 @@ func TestKTFStringConstructorMaterializesGuestFields(t *testing.T) {
 	}
 }
 func TestKTFGraphicsEncodeImageRoundTripsTranslatedRegion(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
 	runtime.frame = image.NewRGBA(image.Rect(0, 0, 4, 3))
 	graphics, err := runtime.EnsureScreenGraphics()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	state := runtime.Graphics[graphics]
 	state.translate = image.Pt(1, 0)
 	state.Target.Set(1, 0, color.RGBA{R: 0xff, A: 0xff})
@@ -1182,55 +922,37 @@ func TestKTFGraphicsEncodeImageRoundTripsTranslatedRegion(t *testing.T) {
 	state.PixelsDirty = true
 
 	stack := guest.DefaultStackBase + 0x100
-	if err := runtime.CPU.WriteRegister(cpu.RegisterSP, stack); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(stack, []uint32{2, 2}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterSP, stack))
+	check(t, runtime.writeWords(stack, []uint32{2, 2}))
 	for register, value := range map[uint32]uint32{
 		cpu.RegisterR1: graphics,
 		cpu.RegisterR2: 0,
 		cpu.RegisterR3: 0,
 	} {
-		if err := runtime.CPU.WriteRegister(register, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteRegister(register, value))
 	}
 	encodedArray, err := runtime.handleGraphicsMethod(
 		"encodeImage",
 		"(IIII)[B",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	encoded, err := runtime.readJavaByteArray(encodedArray)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if len(encoded) < 2 || string(encoded[:2]) != "BM" {
 		t.Fatalf("encoded image is not BMP: %x", encoded)
 	}
 
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, encodedArray); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, encodedArray))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 0))
+	check(t, runtime.CPU.WriteRegister(
 		cpu.RegisterR3,
 		uint32(len(encoded)),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	imageObject, err := runtime.handleImageMethod(
 		"createImage",
 		"([BII)Lorg/kwis/msp/lcdui/Image;",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	decoded := runtime.images[imageObject]
 	if decoded == nil || decoded.Bounds().Dx() != 2 || decoded.Bounds().Dy() != 2 {
 		t.Fatalf("decoded image = %#v", decoded)
@@ -1249,17 +971,7 @@ func TestKTFGraphicsEncodeImageRoundTripsTranslatedRegion(t *testing.T) {
 }
 
 func TestKTFStringBufferDeleteClampsEndToLength(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
 	const instance = uint32(0x1234)
 	runtime.stringBuffers[instance] = "abcdefg"
 	for register, value := range map[uint32]uint32{
@@ -1267,17 +979,13 @@ func TestKTFStringBufferDeleteClampsEndToLength(t *testing.T) {
 		cpu.RegisterR2: 0,
 		cpu.RegisterR3: 400,
 	} {
-		if err := runtime.CPU.WriteRegister(register, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteRegister(register, value))
 	}
 	result, err := runtime.handleStringBufferMethod(
 		"delete",
 		"(II)Ljava/lang/StringBuffer;",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if result != instance {
 		t.Fatalf("StringBuffer.delete result = 0x%08x", result)
 	}
@@ -1297,14 +1005,7 @@ func TestKTFHandsetSystemPropertyProvidesCompatiblePhoneModel(t *testing.T) {
 }
 
 func TestKTFHandsetSystemPropertyReportsFullBattery(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
+	runtime := newUnmappedTestRuntime(t)
 
 	if got := runtime.handsetSystemProperty(" batterylevel "); got != "5" {
 		t.Fatalf("BATTERYLEVEL = %q, want 5", got)
@@ -1315,133 +1016,51 @@ func TestKTFHandsetSystemPropertyReportsFullBattery(t *testing.T) {
 }
 
 func TestKTFJavaArrayNewCreatesPrimitiveArray(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, 'I'); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, 3); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, 'I'))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, 3))
 	instance, err := ktfJavaArrayNew(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
-	instanceWords, err := runtime.ReadWords(instance, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	instanceWords := readWords(t, runtime, instance, 2)
 	if instanceWords[0] == 0 || instanceWords[1] == 0 {
 		t.Fatalf("array instance = %08x", instanceWords)
 	}
-	class, err := runtime.InspectJavaClass(instanceWords[1])
-	if err != nil {
-		t.Fatal(err)
-	}
+	class := inspectClass(t, runtime, instanceWords[1])
 	if class.Name != "[I" {
 		t.Fatalf("array class = %q", class.Name)
 	}
-	fields, err := runtime.ReadWords(instanceWords[0], 5)
-	if err != nil {
-		t.Fatal(err)
-	}
+	fields := readWords(t, runtime, instanceWords[0], 5)
 	if fields[1] != 3 || fields[2] != 0 || fields[3] != 0 || fields[4] != 0 {
 		t.Fatalf("array fields = %08x", fields)
 	}
 }
 
 func TestKTFJavaArrayNewPreservesMultidimensionalArrayClass(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
-	arrayClass, err := runtime.EnsureJavaClass("[[B")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, arrayClass); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, 3); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	arrayClass := ensureClass(t, runtime, "[[B")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, arrayClass))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, 3))
 	instance, err := ktfJavaArrayNew(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
-	instanceWords, err := runtime.ReadWords(instance, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	class, err := runtime.InspectJavaClass(instanceWords[1])
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	instanceWords := readWords(t, runtime, instance, 2)
+	class := inspectClass(t, runtime, instanceWords[1])
 	if class.Name != "[[B" {
 		t.Fatalf("multidimensional array class = %q, want %q", class.Name, "[[B")
 	}
 }
 
 func TestKTFJavaCheckTypeFollowsClassHierarchyAndArrayRule(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
-	objectClass, err := runtime.EnsureJavaClass("java/lang/Object")
-	if err != nil {
-		t.Fatal(err)
-	}
-	cardClass, err := runtime.EnsureJavaClass("org/kwis/msp/lcdui/Card")
-	if err != nil {
-		t.Fatal(err)
-	}
-	stringClass, err := runtime.EnsureJavaClass("java/lang/String")
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	objectClass := ensureClass(t, runtime, "java/lang/Object")
+	cardClass := ensureClass(t, runtime, "org/kwis/msp/lcdui/Card")
+	stringClass := ensureClass(t, runtime, "java/lang/String")
 	card, err := runtime.newJavaInstance("org/kwis/msp/lcdui/Card", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	array, err := runtime.NewJavaArray("[I", 1, 4)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	check := func(target, instance, unknown uint32) uint32 {
 		t.Helper()
 		for register, value := range map[uint32]uint32{
@@ -1449,14 +1068,10 @@ func TestKTFJavaCheckTypeFollowsClassHierarchyAndArrayRule(t *testing.T) {
 			cpu.RegisterR1: instance,
 			cpu.RegisterR2: unknown,
 		} {
-			if err := runtime.CPU.WriteRegister(register, value); err != nil {
-				t.Fatal(err)
-			}
+			check(t, runtime.CPU.WriteRegister(register, value))
 		}
 		value, err := ktfJavaCheckType(context.Background(), runtime)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		return value
 	}
 	if got := check(cardClass, card, 0); got != 1 {
@@ -1480,29 +1095,10 @@ func TestKTFJavaCheckTypeFollowsClassHierarchyAndArrayRule(t *testing.T) {
 }
 
 func TestKTFHostCardVTableMatchesDeclaredMethodOrder(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
-	address, err := runtime.EnsureJavaClass("org/kwis/msp/lcdui/Card")
-	if err != nil {
-		t.Fatal(err)
-	}
-	class, err := runtime.InspectJavaClass(address)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	address := ensureClass(t, runtime, "org/kwis/msp/lcdui/Card")
+	class := inspectClass(t, runtime, address)
 	if class.FieldSize != 24 {
 		t.Fatalf("Card field size = %d", class.FieldSize)
 	}
@@ -1561,35 +1157,14 @@ func TestKTFFindDeclaredJavaMethodDoesNotInheritClassInitializer(t *testing.T) {
 func TestKTFDynamicHostMethodsPreserveOccupiedCompatibilitySlots(
 	t *testing.T,
 ) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
-	labelAddress, err := runtime.EnsureJavaClass(
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	labelAddress := ensureClass(t, runtime,
 		"org/kwis/msp/lwc/LabelComponent",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	labelClass, err := runtime.InspectJavaClass(labelAddress)
-	if err != nil {
-		t.Fatal(err)
-	}
+	labelClass := inspectClass(t, runtime, labelAddress)
 	label, err := runtime.NewJavaInstanceForClass(labelClass)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	labelConstructor, ok := findKTFJavaMethod(
 		labelClass,
 		"<init>",
@@ -1598,32 +1173,19 @@ func TestKTFDynamicHostMethodsPreserveOccupiedCompatibilitySlots(
 	if !ok {
 		t.Fatal("LabelComponent constructor is missing")
 	}
-	labelWords, err := runtime.ReadWords(labelAddress, 5)
-	if err != nil {
-		t.Fatal(err)
-	}
+	labelWords := readWords(t, runtime, labelAddress, 5)
 	const collisionCapacity = uint32(512)
 	labelVTable := make([]uint32, collisionCapacity)
 	labelCopyCount := labelWords[4] & 0xffff
-	currentLabel, err := runtime.ReadWords(
+	currentLabel := readWords(t, runtime,
 		labelWords[3],
 		int(labelCopyCount),
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
 	copy(labelVTable, currentLabel)
 	labelVTable[ktfHostVirtualSlotBase] = labelConstructor.Address
-	labelReplacement, err := runtime.AllocateWords(collisionCapacity)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(labelReplacement, labelVTable); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.WriteU32(labelAddress+12, labelReplacement); err != nil {
-		t.Fatal(err)
-	}
+	labelReplacement := allocWords(t, runtime, collisionCapacity)
+	check(t, runtime.writeWords(labelReplacement, labelVTable))
+	check(t, runtime.WriteU32(labelAddress+12, labelReplacement))
 	if _, err := runtime.ensureJavaVTableIndex(
 		labelAddress,
 		labelReplacement,
@@ -1631,14 +1193,8 @@ func TestKTFDynamicHostMethodsPreserveOccupiedCompatibilitySlots(
 		t.Fatal(err)
 	}
 	runtime.javaVTableCapacity[labelAddress] = collisionCapacity
-	stringAddress, err := runtime.EnsureJavaClass("java/lang/String")
-	if err != nil {
-		t.Fatal(err)
-	}
-	stringClass, err := runtime.InspectJavaClass(stringAddress)
-	if err != nil {
-		t.Fatal(err)
-	}
+	stringAddress := ensureClass(t, runtime, "java/lang/String")
+	stringClass := inspectClass(t, runtime, stringAddress)
 	stringLength, ok := findKTFJavaMethod(
 		stringClass,
 		"length",
@@ -1647,62 +1203,38 @@ func TestKTFDynamicHostMethodsPreserveOccupiedCompatibilitySlots(
 	if !ok {
 		t.Fatal("String.length()I is missing")
 	}
-	stringWords, err := runtime.ReadWords(stringAddress, 5)
-	if err != nil {
-		t.Fatal(err)
-	}
+	stringWords := readWords(t, runtime, stringAddress, 5)
 	stringVTable := make([]uint32, collisionCapacity)
 	copyCount := stringWords[4] & 0xffff
-	current, err := runtime.ReadWords(stringWords[3], int(copyCount))
-	if err != nil {
-		t.Fatal(err)
-	}
+	current := readWords(t, runtime, stringWords[3], int(copyCount))
 	copy(stringVTable, current)
 	stringVTable[ktfHostVirtualSlotBase] = stringLength.Address
-	replacement, err := runtime.AllocateWords(collisionCapacity)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(replacement, stringVTable); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.WriteU32(stringAddress+12, replacement); err != nil {
-		t.Fatal(err)
-	}
+	replacement := allocWords(t, runtime, collisionCapacity)
+	check(t, runtime.writeWords(replacement, stringVTable))
+	check(t, runtime.WriteU32(stringAddress+12, replacement))
 	if _, err := runtime.ensureJavaVTableIndex(stringAddress, replacement); err != nil {
 		t.Fatal(err)
 	}
 	runtime.javaVTableCapacity[stringAddress] = collisionCapacity
-	componentAddress, err := runtime.EnsureJavaClass(
+	componentAddress := ensureClass(t, runtime,
 		"org/kwis/msp/lwc/Component",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
 	backgroundAddress, err := runtime.resolveJavaMethod(
 		componentAddress,
 		"setBackground",
 		"(I)V",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	foregroundAddress, err := runtime.resolveJavaMethod(
 		componentAddress,
 		"setForeground",
 		"(I)V",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	background, err := runtime.InspectJavaMethod(backgroundAddress)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	foreground, err := runtime.InspectJavaMethod(foregroundAddress)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if background.VTableIndex < ktfHostVirtualSlotBase ||
 		foreground.VTableIndex != background.VTableIndex+1 {
 		t.Fatalf(
@@ -1713,22 +1245,10 @@ func TestKTFDynamicHostMethodsPreserveOccupiedCompatibilitySlots(
 	}
 	virtualMethod := func(slot uint16) uint32 {
 		t.Helper()
-		fields, err := runtime.ReadU32(label)
-		if err != nil {
-			t.Fatal(err)
-		}
-		header, err := runtime.ReadU32(fields)
-		if err != nil {
-			t.Fatal(err)
-		}
-		vtable, err := runtime.ReadU32(runtime.JvmContext + 12 + (header >> 5))
-		if err != nil {
-			t.Fatal(err)
-		}
-		method, err := runtime.ReadU32(vtable + uint32(slot)*4)
-		if err != nil {
-			t.Fatal(err)
-		}
+		fields := readU32(t, runtime, label)
+		header := readU32(t, runtime, fields)
+		vtable := readU32(t, runtime, runtime.JvmContext+12+(header>>5))
+		method := readU32(t, runtime, vtable+uint32(slot)*4)
 		return method
 	}
 	if got := virtualMethod(background.VTableIndex); got != backgroundAddress {
@@ -1745,12 +1265,9 @@ func TestKTFDynamicHostMethodsPreserveOccupiedCompatibilitySlots(
 			foregroundAddress,
 		)
 	}
-	gotStringSlot, err := runtime.ReadU32(
-		replacement + uint32(background.VTableIndex)*4,
+	gotStringSlot := readU32(t, runtime,
+		replacement+uint32(background.VTableIndex)*4,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if gotStringSlot != stringLength.Address {
 		t.Fatalf(
 			"occupied String slot = 0x%08x, want preserved 0x%08x",
@@ -1758,10 +1275,7 @@ func TestKTFDynamicHostMethodsPreserveOccupiedCompatibilitySlots(
 			stringLength.Address,
 		)
 	}
-	labelClass, err = runtime.InspectJavaClass(labelAddress)
-	if err != nil {
-		t.Fatal(err)
-	}
+	labelClass = inspectClass(t, runtime, labelAddress)
 	constructor, ok := findKTFJavaMethod(
 		labelClass,
 		"<init>",
@@ -1780,21 +1294,8 @@ func TestKTFDynamicHostMethodsPreserveOccupiedCompatibilitySlots(
 }
 
 func TestKTFHostVTableExpansionPreservesLargeGuestTable(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
 
 	const (
 		logicalSize = uint32(579)
@@ -1804,17 +1305,9 @@ func TestKTFHostVTableExpansionPreservesLargeGuestTable(t *testing.T) {
 	)
 	entries := make([]uint32, logicalSize)
 	entries[guestSlot] = guestMethod
-	guestVTable, err := runtime.AllocateWords(logicalSize)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(guestVTable, entries); err != nil {
-		t.Fatal(err)
-	}
-	classAddress, err := runtime.AllocateWords(5)
-	if err != nil {
-		t.Fatal(err)
-	}
+	guestVTable := allocWords(t, runtime, logicalSize)
+	check(t, runtime.writeWords(guestVTable, entries))
+	classAddress := allocWords(t, runtime, 5)
 	if err := runtime.writeWords(classAddress, []uint32{
 		classAddress + 4,
 		0,
@@ -1831,24 +1324,16 @@ func TestKTFHostVTableExpansionPreservesLargeGuestTable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := runtime.installHostJavaVirtualMethodForClass(
+	check(t, runtime.installHostJavaVirtualMethodForClass(
 		classAddress,
 		hostMethod,
 		ktfHostVirtualSlotBase,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	if got := runtime.javaVTableCapacity[classAddress]; got < logicalSize {
 		t.Fatalf("expanded vtable capacity = %d, want at least %d", got, logicalSize)
 	}
-	expanded, err := runtime.ReadU32(classAddress + 12)
-	if err != nil {
-		t.Fatal(err)
-	}
-	gotGuest, err := runtime.ReadU32(expanded + guestSlot*4)
-	if err != nil {
-		t.Fatal(err)
-	}
+	expanded := readU32(t, runtime, classAddress+12)
+	gotGuest := readU32(t, runtime, expanded+guestSlot*4)
 	if gotGuest != guestMethod {
 		t.Fatalf(
 			"guest vtable slot %d = 0x%08x, want 0x%08x",
@@ -1857,12 +1342,9 @@ func TestKTFHostVTableExpansionPreservesLargeGuestTable(t *testing.T) {
 			guestMethod,
 		)
 	}
-	gotHost, err := runtime.ReadU32(
-		expanded + uint32(ktfHostVirtualSlotBase)*4,
+	gotHost := readU32(t, runtime,
+		expanded+uint32(ktfHostVirtualSlotBase)*4,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if gotHost != hostMethod {
 		t.Fatalf(
 			"host vtable slot %d = 0x%08x, want 0x%08x",
@@ -1874,17 +1356,7 @@ func TestKTFHostVTableExpansionPreservesLargeGuestTable(t *testing.T) {
 }
 
 func TestKTFLWCFoundationMethodsTrackState(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
 	const (
 		component = uint32(0x10001000)
 		listener  = uint32(0x10002000)
@@ -1892,9 +1364,7 @@ func TestKTFLWCFoundationMethodsTrackState(t *testing.T) {
 		shell     = uint32(0x10004000)
 	)
 	for register, value := range []uint32{0, component, listener, eventData} {
-		if err := runtime.CPU.WriteRegister(uint32(register), value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteRegister(uint32(register), value))
 	}
 	if _, err := HostJavaMethod(
 		"org/kwis/msp/lwc/Component",
@@ -1914,12 +1384,8 @@ func TestKTFLWCFoundationMethodsTrackState(t *testing.T) {
 			eventData,
 		)
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, component); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, 24); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, component))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 24))
 	if _, err := HostJavaMethod(
 		"org/kwis/msp/lwc/TextComponent",
 		"setMaxLength",
@@ -1948,20 +1414,14 @@ func TestKTFLWCFoundationMethodsTrackState(t *testing.T) {
 			runtime.UnimplementedJava,
 		)
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, shell); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, component); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, shell))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, component))
 	index, err := HostJavaMethod(
 		"org/kwis/msp/lwc/ShellComponent",
 		"addComponent",
 		"(Lorg/kwis/msp/lwc/Component;)I",
 	)(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if index != 0 || len(runtime.lwcChildren[shell]) != 1 ||
 		runtime.lwcChildren[shell][0] != component {
 		t.Fatalf(
@@ -1970,12 +1430,8 @@ func TestKTFLWCFoundationMethodsTrackState(t *testing.T) {
 			index,
 		)
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, listener); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, component); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, listener))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, component))
 	if _, err := HostJavaMethod(
 		"com/ktf/kfc/GTextListener",
 		"setIMEModes",
@@ -1992,27 +1448,11 @@ func TestKTFLWCFoundationMethodsTrackState(t *testing.T) {
 }
 
 func TestKTFLWCHierarchyAndAnnunciatorGeometry(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
-	annunciatorAddress, err := runtime.EnsureJavaClass(
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	annunciatorAddress := ensureClass(t, runtime,
 		"org/kwis/msp/lwc/AnnunciatorComponent",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
 	wantHierarchy := []string{
 		"org/kwis/msp/lwc/AnnunciatorComponent",
 		"org/kwis/msp/lwc/ShellComponent",
@@ -2031,14 +1471,9 @@ func TestKTFLWCHierarchyAndAnnunciatorGeometry(t *testing.T) {
 		}
 		address = class.Parent
 	}
-	annunciatorClass, err := runtime.InspectJavaClass(annunciatorAddress)
-	if err != nil {
-		t.Fatal(err)
-	}
+	annunciatorClass := inspectClass(t, runtime, annunciatorAddress)
 	annunciator, err := runtime.NewJavaInstanceForClass(annunciatorClass)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	registers := make([]uint32, cpu.RegisterR12+1)
 	registers[1] = annunciator
 	if _, err := runtime.handleLWCMethod(
@@ -2057,9 +1492,7 @@ func TestKTFLWCHierarchyAndAnnunciatorGeometry(t *testing.T) {
 		"()I",
 		registers,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	width, err := runtime.handleLWCMethod(
 		context.Background(),
 		"org/kwis/msp/lwc/Component",
@@ -2067,36 +1500,18 @@ func TestKTFLWCHierarchyAndAnnunciatorGeometry(t *testing.T) {
 		"()I",
 		registers,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if width != 240 || height != 20 {
 		t.Fatalf("annunciator geometry = %dx%d, want 240x20", width, height)
 	}
 }
 
 func TestKTFOpaqueAnnunciatorReservesDefaultCardHeight(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
-	annunciator, err := runtime.NewHostJavaObject(
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	annunciator := newHostObject(t, runtime,
 		"org/kwis/msp/lwc/AnnunciatorComponent",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
 	registers := make([]uint32, cpu.RegisterR12+1)
 	registers[1] = annunciator
 	if _, err := runtime.handleLWCMethod(
@@ -2117,28 +1532,18 @@ func TestKTFOpaqueAnnunciatorReservesDefaultCardHeight(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	card, err := runtime.NewHostJavaObject("org/kwis/msp/lcdui/Card")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.initializeCard(card, 0x10004000); err != nil {
-		t.Fatal(err)
-	}
+	card := newHostObject(t, runtime, "org/kwis/msp/lcdui/Card")
+	check(t, runtime.initializeCard(card, 0x10004000))
 	height, err := runtime.readJavaFieldWord(card, 20)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if height != ktfDisplayHeight-uint32(ktfAnnunciatorHeight) {
 		t.Fatalf("opaque-annunciator card height = %d", height)
 	}
 
 	runtime.setLWCShown(annunciator, false)
-	transparent, err := runtime.NewHostJavaObject(
+	transparent := newHostObject(t, runtime,
 		"org/kwis/msp/lwc/AnnunciatorComponent",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
 	registers[1] = transparent
 	registers[2] = 1
 	if _, err := runtime.handleLWCMethod(
@@ -2157,14 +1562,7 @@ func TestKTFOpaqueAnnunciatorReservesDefaultCardHeight(t *testing.T) {
 }
 
 func TestKTFLWCFormLaysOutChildrenAndScreenCoordinates(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
+	runtime := newUnmappedTestRuntime(t)
 	const (
 		form   = uint32(0x10001000)
 		first  = uint32(0x10002000)
@@ -2285,31 +1683,11 @@ func TestKTFLWCFormLaysOutChildrenAndScreenCoordinates(t *testing.T) {
 }
 
 func TestKTFDisplayCallSeriallyTimeoutQueuesRunnable(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
-	runnable, err := runtime.NewHostJavaObject("java/lang/Thread")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, runnable); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR3, 100); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	runnable := newHostObject(t, runtime, "java/lang/Thread")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, runnable))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, 100))
 	runtime.DeferThreads = true
 	if _, err := HostJavaMethod(
 		"org/kwis/msp/lcdui/Display",
@@ -2324,38 +1702,18 @@ func TestKTFDisplayCallSeriallyTimeoutQueuesRunnable(t *testing.T) {
 }
 
 func TestKTFCalendarGetTimeReturnsModeledDate(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
-	calendar, err := runtime.NewHostJavaObject("java/util/Calendar")
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	calendar := newHostObject(t, runtime, "java/util/Calendar")
 	const millis = int64(123456789)
 	runtime.dates[calendar] = millis
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, calendar); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, calendar))
 	date, err := HostJavaMethod(
 		"java/util/Calendar",
 		"getTime",
 		"()Ljava/util/Date;",
 	)(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if date == 0 || runtime.dates[date] != millis {
 		t.Fatalf(
 			"Calendar.getTime date = 0x%08x millis=%d",
@@ -2366,29 +1724,10 @@ func TestKTFCalendarGetTimeReturnsModeledDate(t *testing.T) {
 }
 
 func TestKTFCallNativeDispatchesHostMethodWithParameterContainer(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
-	systemClassAddress, err := runtime.EnsureJavaClass("java/lang/System")
-	if err != nil {
-		t.Fatal(err)
-	}
-	systemClass, err := runtime.InspectJavaClass(systemClassAddress)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	systemClassAddress := ensureClass(t, runtime, "java/lang/System")
+	systemClass := inspectClass(t, runtime, systemClassAddress)
 	currentTime, ok := findKTFJavaMethod(
 		systemClass,
 		"currentTimeMillis",
@@ -2398,27 +1737,15 @@ func TestKTFCallNativeDispatchesHostMethodWithParameterContainer(t *testing.T) {
 		currentTime.Body != 0 || currentTime.NativeBody == 0 {
 		t.Fatalf("System.currentTimeMillis method = %+v, found=%v", currentTime, ok)
 	}
-	parameters, err := runtime.AllocateWords(2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, currentTime.NativeBody); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, parameters); err != nil {
-		t.Fatal(err)
-	}
+	parameters := allocWords(t, runtime, 2)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, currentTime.NativeBody))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, parameters))
 	result, err := ktfCallNative(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if result != parameters {
 		t.Fatalf("call-native result = 0x%08x", result)
 	}
-	values, err := runtime.ReadWords(parameters, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	values := readWords(t, runtime, parameters, 2)
 	if values[0] != 0 || values[1] != 0 {
 		t.Fatalf("native return container = %08x", values)
 	}
@@ -2431,43 +1758,23 @@ func TestKTFCallNativeDispatchesHostMethodWithParameterContainer(t *testing.T) {
 }
 
 func TestKTFCallNativePrefersExplicitHostTargetOverStaleOverride(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
 	target := runtime.RegisterHostCall(
 		"test.explicit_native_target",
 		func(context.Context, *Runtime) (uint32, error) {
 			return 42, nil
 		},
 	)
-	parameters, err := runtime.AllocateWords(2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	parameters := allocWords(t, runtime, 2)
 	runtime.LastJavaMethod =
 		"org/kwis/msp/lcdui/Graphics.getClipHeight()I"
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, target); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, parameters); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, target))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, parameters))
 
 	if _, err := ktfCallNative(context.Background(), runtime); err != nil {
 		t.Fatal(err)
 	}
-	values, err := runtime.ReadWords(parameters, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	values := readWords(t, runtime, parameters, 2)
 	if !slices.Equal(values, []uint32{42, 0}) {
 		t.Fatalf("explicit native target return = %08x", values)
 	}
@@ -2478,35 +1785,20 @@ func TestKTFCallNativeOverridesNullThreadSleepTarget(t *testing.T) {
 		ClientName: "client.bin0",
 		Client:     []byte{0x70, 0x47},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.SetTraceMode(KTFTraceFull); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.SetTraceMode(KTFTraceFull))
 	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	parameters, err := runtime.AllocateWords(4)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(parameters, []uint32{60, 0, 0, 0}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.MapImageAndHost())
+	parameters := allocWords(t, runtime, 4)
+	check(t, runtime.writeWords(parameters, []uint32{60, 0, 0, 0}))
 	runtime.DeferThreads = true
 	task := &Task{}
 	runtime.activeTask = task
 	runtime.Tasks = []*Task{task}
 	runtime.TickMS = 1_000
 	runtime.LastJavaMethod = "java/lang/Thread.sleep(J)V"
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, parameters); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, 0))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, parameters))
 
 	if _, err := ktfCallNative(context.Background(), runtime); err != nil {
 		t.Fatal(err)
@@ -2547,33 +1839,15 @@ func TestKTFCallNativeOverridesNullThreadSleepTarget(t *testing.T) {
 
 func TestKTFJavaTimerTaskCancelStopsDelayedCallback(t *testing.T) {
 	runtime := newScratchKTFRuntime(t)
-	classAddress, err := runtime.EnsureJavaClass("test/TimerCallback")
-	if err != nil {
-		t.Fatal(err)
-	}
-	class, err := runtime.InspectJavaClass(classAddress)
-	if err != nil {
-		t.Fatal(err)
-	}
+	classAddress := ensureClass(t, runtime, "test/TimerCallback")
+	class := inspectClass(t, runtime, classAddress)
 	runMethod, err := runtime.addHostJavaMethod(class, "run", "()V")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.WriteU32(runMethod, ImageBase|1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.WriteU32(runMethod, ImageBase|1))
 	callback, err := runtime.NewJavaInstanceForClass(class)
-	if err != nil {
-		t.Fatal(err)
-	}
-	timer, err := runtime.NewHostJavaObject("java/util/Timer")
-	if err != nil {
-		t.Fatal(err)
-	}
-	parameters, err := runtime.AllocateWords(6)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	timer := newHostObject(t, runtime, "java/util/Timer")
+	parameters := allocWords(t, runtime, 6)
 	if err := runtime.writeWords(parameters, []uint32{
 		timer, callback, 50, 0, 0, 0,
 	}); err != nil {
@@ -2598,17 +1872,13 @@ func TestKTFJavaTimerTaskCancelStopsDelayedCallback(t *testing.T) {
 		t.Fatalf("TimerTask ran before its deadline: %p", got)
 	}
 
-	if err := runtime.WriteU32(parameters, callback); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.WriteU32(parameters, callback))
 	cancelled, err := runtime.handleTimerMethod(
 		context.Background(),
 		"cancel",
 		"()Z",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if cancelled != 1 || !queued.Done || runtime.javaTimerTasks[callback] != nil {
 		t.Fatalf(
 			"cancelled TimerTask = result %d, done %t, pending %p",
@@ -2626,38 +1896,17 @@ func TestKTFJavaTimerTaskCancelStopsDelayedCallback(t *testing.T) {
 		"cancel",
 		"()Z",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if second != 0 {
 		t.Fatalf("second TimerTask.cancel result = %d, want 0", second)
 	}
 }
 
 func TestKTFCallNativeCorrectsStaleMethodForCachedGuestNative(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
-	systemClassAddress, err := runtime.EnsureJavaClass("java/lang/System")
-	if err != nil {
-		t.Fatal(err)
-	}
-	systemClass, err := runtime.InspectJavaClass(systemClassAddress)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	systemClassAddress := ensureClass(t, runtime, "java/lang/System")
+	systemClass := inspectClass(t, runtime, systemClassAddress)
 	currentTime, ok := findKTFJavaMethod(
 		systemClass,
 		"currentTimeMillis",
@@ -2666,33 +1915,21 @@ func TestKTFCallNativeCorrectsStaleMethodForCachedGuestNative(t *testing.T) {
 	if !ok {
 		t.Fatal("System.currentTimeMillis was not found")
 	}
-	if err := runtime.WriteU32(
+	check(t, runtime.WriteU32(
 		currentTime.Address+8,
 		ImageBase|1,
-	); err != nil {
-		t.Fatal(err)
-	}
-	parameters, err := runtime.AllocateWords(2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	))
+	parameters := allocWords(t, runtime, 2)
 	runtime.TickMS = 123
 	runtime.LastJavaMethod =
 		"org/kwis/msp/lcdui/Graphics.getClipHeight()I"
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, ImageBase|1); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, parameters); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, ImageBase|1))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, parameters))
 
 	if _, err := ktfCallNative(context.Background(), runtime); err != nil {
 		t.Fatal(err)
 	}
-	values, err := runtime.ReadWords(parameters, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	values := readWords(t, runtime, parameters, 2)
 	if !slices.Equal(values, []uint32{123, 0}) {
 		t.Fatalf("corrected native return = %08x", values)
 	}
@@ -2720,156 +1957,83 @@ func TestKTFCallNativeReadsEnvironmentReturnSlot(t *testing.T) {
 		ClientName: "client.bin0",
 		Client:     client,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	environment, err := runtime.AllocateWords(ktfJavaEnvironmentWords)
-	if err != nil {
-		t.Fatal(err)
-	}
-	holder, err := runtime.AllocateWords(1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(holder, []uint32{environment}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.MapImageAndHost())
+	environment := allocWords(t, runtime, ktfJavaEnvironmentWords)
+	holder := allocWords(t, runtime, 1)
+	check(t, runtime.writeWords(holder, []uint32{environment}))
 	runtime.javaEnvironment = holder
-	if err := runtime.WriteU32(ImageBase+16, environment); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.WriteU32(ImageBase+16, environment))
 	// Leave a stale value in the slot; ktfCallNative must clear it before
 	// the call so a native that writes nothing is not misread.
-	if err := runtime.writeWords(
+	check(t, runtime.writeWords(
 		environment+0x24,
 		[]uint32{2, 0xdead},
-	); err != nil {
-		t.Fatal(err)
-	}
-	parameters, err := runtime.AllocateWords(4)
-	if err != nil {
-		t.Fatal(err)
-	}
+	))
+	parameters := allocWords(t, runtime, 4)
 	for register, value := range map[uint32]uint32{
 		cpu.RegisterR0: ImageBase | 1,
 		cpu.RegisterR1: parameters,
 	} {
-		if err := runtime.CPU.WriteRegister(register, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteRegister(register, value))
 	}
 
 	if _, err := ktfCallNative(context.Background(), runtime); err != nil {
 		t.Fatal(err)
 	}
 
-	value, err := runtime.ReadU32(parameters)
-	if err != nil {
-		t.Fatal(err)
-	}
+	value := readU32(t, runtime, parameters)
 	if value != 1234 {
 		t.Fatalf("native return = %d, want 1234 from the environment slot", value)
 	}
 }
 func TestKTFJavaStringExposesNativeLayoutAndCopiesToGuest(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	value, err := runtime.NewJavaString("Clet")
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	value := newJavaString(t, runtime, "Clet")
 	characters, err := runtime.readJavaFieldWord(value, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	offset, err := runtime.readJavaFieldWord(value, 4)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	count, err := runtime.readJavaFieldWord(value, 8)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if offset != 0 || count != 4 {
 		t.Fatalf("native String layout offset=%d count=%d", offset, count)
 	}
 	decoded, err := runtime.readJavaCharArrayRange(characters, offset, count)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if decoded != "Clet" {
 		t.Fatalf("native String characters = %q", decoded)
 	}
 
-	destination, err := runtime.AllocateWords(2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	destination := allocWords(t, runtime, 2)
 	for register, registerValue := range []uint32{
 		value,
 		destination,
 		8,
 	} {
-		if err := runtime.CPU.WriteRegister(
+		check(t, runtime.CPU.WriteRegister(
 			uint32(register),
 			registerValue,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
 	copied, err := ktfJavaStringCopy(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if copied != 4 {
 		t.Fatalf("native String copy count = %d", copied)
 	}
 	output := make([]byte, 5)
-	if err := runtime.CPU.ReadMemory(destination, output); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(destination, output))
 	if !bytes.Equal(output, []byte{'C', 'l', 'e', 't', 0}) {
 		t.Fatalf("native String copy = %q", output)
 	}
 }
 
 func TestKTFObjectWaitYieldsDeferredThread(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
-	classAddress, err := runtime.EnsureJavaClass("java/lang/Object")
-	if err != nil {
-		t.Fatal(err)
-	}
-	class, err := runtime.InspectJavaClass(classAddress)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	classAddress := ensureClass(t, runtime, "java/lang/Object")
+	class := inspectClass(t, runtime, classAddress)
 	wait, ok := findKTFJavaMethod(class, "wait", "()V")
 	if !ok {
 		t.Fatal("Object.wait() host method is missing")
@@ -2903,27 +2067,12 @@ func TestKTFObjectWaitYieldsDeferredThread(t *testing.T) {
 }
 
 func TestKTFCardRepaintQueuesPaintAtTaskYield(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	card, err := runtime.NewHostJavaObject("org/kwis/msp/lcdui/Card")
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	card := newHostObject(t, runtime, "org/kwis/msp/lcdui/Card")
 	parent := &Task{}
 	runtime.DeferThreads = true
 	runtime.activeTask = parent
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, card); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, card))
 	if _, err := HostJavaMethod(
 		"org/kwis/msp/lcdui/Card",
 		"repaint",
@@ -2944,12 +2093,10 @@ func TestKTFCardRepaintQueuesPaintAtTaskYield(t *testing.T) {
 	}
 
 	runtime.activeTask = nil
-	if err := runtime.releaseDeferredCardPaints(
+	check(t, runtime.releaseDeferredCardPaints(
 		context.Background(),
 		parent,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	if task := runtime.PaintTasks[card]; task == nil ||
 		!task.presentOnReturn {
 		t.Fatalf("repaint task = %#v", task)
@@ -2960,58 +2107,25 @@ func TestKTFCardRepaintQueuesPaintAtTaskYield(t *testing.T) {
 }
 
 func TestKTFCallNativeOverridesBrokenFrameworkNative(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	parameters, err := runtime.AllocateWords(2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	parameters := allocWords(t, runtime, 2)
 	runtime.LastJavaMethod =
 		"org/kwis/msp/lcdui/Display.addJletEventListener" +
 			"(Lorg/kwis/msp/lcdui/JletEventListener;)V"
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, ImageBase|1); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, parameters); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, ImageBase|1))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, parameters))
 	if _, err := ktfCallNative(context.Background(), runtime); err != nil {
 		t.Fatal(err)
 	}
-	values, err := runtime.ReadWords(parameters, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	values := readWords(t, runtime, parameters, 2)
 	if len(values) != 2 || values[0] != 0 || values[1] != 0 {
 		t.Fatalf("native override return container = %08x", values)
 	}
 }
 
 func TestKTFCallNativeOverridesNullFrameworkNative(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	parameters, err := runtime.AllocateWords(3)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	parameters := allocWords(t, runtime, 3)
 	tests := []struct {
 		method string
 		want   uint32
@@ -3026,25 +2140,18 @@ func TestKTFCallNativeOverridesNullFrameworkNative(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.method, func(t *testing.T) {
 			runtime.LastJavaMethod = test.method
-			if err := runtime.CPU.WriteRegister(cpu.RegisterR0, 0); err != nil {
-				t.Fatal(err)
-			}
-			if err := runtime.CPU.WriteRegister(
+			check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, 0))
+			check(t, runtime.CPU.WriteRegister(
 				cpu.RegisterR1,
 				parameters,
-			); err != nil {
-				t.Fatal(err)
-			}
+			))
 			if _, err := ktfCallNative(
 				context.Background(),
 				runtime,
 			); err != nil {
 				t.Fatal(err)
 			}
-			values, err := runtime.ReadWords(parameters, 2)
-			if err != nil {
-				t.Fatal(err)
-			}
+			values := readWords(t, runtime, parameters, 2)
 			if values[0] != test.want || values[1] != 0 {
 				t.Fatalf(
 					"native override return = %08x, want %08x",
@@ -3057,50 +2164,23 @@ func TestKTFCallNativeOverridesNullFrameworkNative(t *testing.T) {
 }
 
 func TestKTFCallNativeOverridesNullStringValueOfChars(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
 	chars, err := runtime.newJavaCharArray("WIPI!")
-	if err != nil {
-		t.Fatal(err)
-	}
-	parameters, err := runtime.AllocateWords(4)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(
+	check(t, err)
+	parameters := allocWords(t, runtime, 4)
+	check(t, runtime.writeWords(
 		parameters,
 		[]uint32{chars, 1, 3, 0},
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	runtime.LastJavaMethod =
 		"java/lang/String.valueOf([CII)Ljava/lang/String;"
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, parameters); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, 0))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, parameters))
 	if _, err := ktfCallNative(context.Background(), runtime); err != nil {
 		t.Fatal(err)
 	}
-	values, err := runtime.ReadWords(parameters, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	values := readWords(t, runtime, parameters, 2)
 	if got := runtime.javaStringValue(values[0]); got != "IPI" {
 		t.Fatalf("String.valueOf(chars, 1, 3) = %q", got)
 	}
@@ -3110,72 +2190,29 @@ func TestKTFCallNativeOverridesNullStringValueOfChars(t *testing.T) {
 }
 
 func TestKTFCallNativeRoutesGraphicsMethodsThroughFramebufferModel(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
 	graphics, err := runtime.EnsureScreenGraphics()
-	if err != nil {
-		t.Fatal(err)
-	}
-	parameters, err := runtime.AllocateWords(3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(parameters, []uint32{graphics, 0, 0}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	parameters := allocWords(t, runtime, 3)
+	check(t, runtime.writeWords(parameters, []uint32{graphics, 0, 0}))
 	runtime.LastJavaMethod =
 		"org/kwis/msp/lcdui/Graphics.getClipHeight()I"
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, parameters); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, 0))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, parameters))
 	if _, err := ktfCallNative(context.Background(), runtime); err != nil {
 		t.Fatal(err)
 	}
-	values, err := runtime.ReadWords(parameters, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	values := readWords(t, runtime, parameters, 2)
 	if values[0] != 320 || values[1] != 0 {
 		t.Fatalf("Graphics.getClipHeight return = %08x", values)
 	}
 }
 
 func TestKTFDispatchJavaExceptionBuildsGuestRestoreTarget(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	catchClass, err := runtime.EnsureJavaClass("java/lang/Exception")
-	if err != nil {
-		t.Fatal(err)
-	}
-	entry, err := runtime.AllocateWords(4)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	catchClass := ensureClass(t, runtime, "java/lang/Exception")
+	entry := allocWords(t, runtime, 4)
 	if err := runtime.writeWords(entry, []uint32{
 		4,
 		20,
@@ -3184,17 +2221,9 @@ func TestKTFDispatchJavaExceptionBuildsGuestRestoreTarget(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	table, err := runtime.AllocateWords(1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.WriteU32(table, entry); err != nil {
-		t.Fatal(err)
-	}
-	method, err := runtime.AllocateWords(7)
-	if err != nil {
-		t.Fatal(err)
-	}
+	table := allocWords(t, runtime, 1)
+	check(t, runtime.WriteU32(table, entry))
+	method := allocWords(t, runtime, 7)
 	if err := runtime.writeWords(method, []uint32{
 		0,
 		0,
@@ -3206,18 +2235,10 @@ func TestKTFDispatchJavaExceptionBuildsGuestRestoreTarget(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	functions, err := runtime.AllocateWords(2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	functions := allocWords(t, runtime, 2)
 	const restore = uint32(0x00123457)
-	if err := runtime.writeWords(functions, []uint32{0, restore}); err != nil {
-		t.Fatal(err)
-	}
-	frame, err := runtime.AllocateWords(17)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.writeWords(functions, []uint32{0, restore}))
+	frame := allocWords(t, runtime, 17)
 	saved := []uint32{
 		0x44,
 		0x55,
@@ -3235,17 +2256,10 @@ func TestKTFDispatchJavaExceptionBuildsGuestRestoreTarget(t *testing.T) {
 		[]uint32{method, 0, 0, 20, 0, functions},
 		saved...,
 	)
-	if err := runtime.writeWords(frame, frameWords); err != nil {
-		t.Fatal(err)
-	}
-	exceptionContext, err := runtime.AllocateWords(ktfJavaEnvironmentWords)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.writeWords(frame, frameWords))
+	exceptionContext := allocWords(t, runtime, ktfJavaEnvironmentWords)
 	runtime.exceptionContext = exceptionContext
-	if err := runtime.WriteU32(exceptionContext+8*4, frame); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.WriteU32(exceptionContext+8*4, frame))
 	target, caught, err := runtime.dispatchJavaException(
 		"java/lang/NullPointerException",
 		0x10203040,
@@ -3267,10 +2281,7 @@ func TestKTFDispatchJavaExceptionBuildsGuestRestoreTarget(t *testing.T) {
 	} else if detail != 0x10203040 {
 		t.Fatalf("exception detail = 0x%08x", detail)
 	}
-	contextWords, err := runtime.ReadWords(target.contextBase, len(saved))
-	if err != nil {
-		t.Fatal(err)
-	}
+	contextWords := readWords(t, runtime, target.contextBase, len(saved))
 	if !slices.Equal(contextWords, saved) {
 		t.Fatalf("exception restore context = %08x, want %08x", contextWords, saved)
 	}
@@ -3322,24 +2333,9 @@ func TestKTFCallOwnsOnlyNestedJavaExceptionFramesBelowCallerStack(t *testing.T) 
 }
 
 func TestKTFJavaThrowObjectUsesGuestInstanceClass(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	instance, err := runtime.NewHostJavaObject("java/lang/Exception")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, instance); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	instance := newHostObject(t, runtime, "java/lang/Exception")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, instance))
 	if _, err := ktfJavaThrowObject(
 		context.Background(),
 		runtime,
@@ -3360,17 +2356,7 @@ func TestKTFJavaThrowObjectUsesGuestInstanceClass(t *testing.T) {
 }
 
 func TestKTFJavaJumpCallsHostWithoutResettingGuestContext(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
 	var hostLR uint32
 	host := runtime.RegisterHostCall(
 		"test.direct_host",
@@ -3380,19 +2366,11 @@ func TestKTFJavaJumpCallsHostWithoutResettingGuestContext(t *testing.T) {
 			return 42, err
 		},
 	)
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, 7); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, host); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterLR, 0x00123457); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, 7))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, host))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterLR, 0x00123457))
 	value, err := ktfJavaJump(1)(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if value != 42 {
 		t.Fatalf("direct Java host jump returned %d", value)
 	}
@@ -3402,98 +2380,45 @@ func TestKTFJavaJumpCallsHostWithoutResettingGuestContext(t *testing.T) {
 }
 
 func TestKTFGetJavaFieldCreatesStableHostStaticDescriptor(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	fontClass, err := runtime.EnsureJavaClass("org/kwis/msp/lcdui/Font")
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	fontClass := ensureClass(t, runtime, "org/kwis/msp/lcdui/Font")
 	fullName, err := runtime.allocateBytes(
 		append([]byte{0}, []byte("I+SIZE_LARGE")...),
 		true,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, fontClass); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, fullName); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, fontClass))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, fullName))
 	first, err := ktfGetJavaField(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	second, err := ktfGetJavaField(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if first == 0 || second != first {
 		t.Fatalf("field addresses = 0x%08x, 0x%08x", first, second)
 	}
-	words, err := runtime.ReadWords(first, 4)
-	if err != nil {
-		t.Fatal(err)
-	}
+	words := readWords(t, runtime, first, 4)
 	if words[0]&0x0008 == 0 || words[1] != fontClass || words[3] != 16 {
 		t.Fatalf("field descriptor = %08x", words)
 	}
 }
 
 func TestKTFDefaultDisplayStartsWithoutDockedCard(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
 	display, err := runtime.ensureDefaultDisplay()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if card := runtime.DisplayCards[display]; card != 0 {
 		t.Fatalf("default display docked card = 0x%08x, want null", card)
 	}
 
-	cardClassAddress, err := runtime.EnsureJavaClass(
+	cardClassAddress := ensureClass(t, runtime,
 		"org/kwis/msp/lcdui/Card",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cardClass, err := runtime.InspectJavaClass(cardClassAddress)
-	if err != nil {
-		t.Fatal(err)
-	}
+	cardClass := inspectClass(t, runtime, cardClassAddress)
 	explicitCard, err := runtime.NewJavaInstanceForClass(cardClass)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, explicitCard); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, display); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, explicitCard))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, display))
 	if _, err := HostJavaMethod(
 		"org/kwis/msp/lcdui/Card",
 		"<init>",
@@ -3501,17 +2426,13 @@ func TestKTFDefaultDisplayStartsWithoutDockedCard(t *testing.T) {
 	)(context.Background(), runtime); err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, explicitCard); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, explicitCard))
 	cardDisplay, err := HostJavaMethod(
 		"org/kwis/msp/lcdui/Card",
 		"getDisplay",
 		"()Lorg/kwis/msp/lcdui/Display;",
 	)(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if cardDisplay != display {
 		t.Fatalf(
 			"explicit card display = 0x%08x, want 0x%08x",
@@ -3525,12 +2446,8 @@ func TestKTFDefaultDisplayStartsWithoutDockedCard(t *testing.T) {
 	childTask := &Task{}
 	runtime.Tasks = []*Task{parentTask, childTask}
 	runtime.activeTask = parentTask
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, display); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, explicitCard); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, display))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, explicitCard))
 	if _, err := HostJavaMethod(
 		"org/kwis/msp/lcdui/Display",
 		"pushCard",
@@ -3549,12 +2466,10 @@ func TestKTFDefaultDisplayStartsWithoutDockedCard(t *testing.T) {
 		t.Fatalf("pushCard scheduled paint before its caller yielded: %#v", task)
 	}
 	runtime.activeTask = nil
-	if err := runtime.releaseDeferredCardPaints(
+	check(t, runtime.releaseDeferredCardPaints(
 		context.Background(),
 		parentTask,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	if task := runtime.PaintTasks[explicitCard]; task == nil ||
 		!task.presentOnReturn || !task.bestEffortPaint {
 		t.Fatalf("pushed card paint task = %#v", task)
@@ -3567,32 +2482,13 @@ func TestKTFDefaultDisplayStartsWithoutDockedCard(t *testing.T) {
 }
 
 func TestKTFJavaArrayCopySupportsOverlappingRanges(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
 	array, err := runtime.newJavaByteArray([]byte{1, 2, 3, 4, 5})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.javaArrayCopy(array, 0, array, 1, 4); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.javaArrayCopy(array, 0, array, 1, 4))
 	got, err := runtime.readJavaByteArray(array)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	want := []byte{1, 1, 2, 3, 4}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("arraycopy result = %v, want %v", got, want)
@@ -3606,46 +2502,17 @@ func TestKTFJavaArrayCopySupportsOverlappingRanges(t *testing.T) {
 }
 
 func TestKTFJavaArrayCopyToleratesNullOptionalBuffer(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.javaArrayCopy(0, 0, 0, 0, 16); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	check(t, runtime.javaArrayCopy(0, 0, 0, 0, 16))
 }
 
 func TestKTFJavaArrayCopyRaisesGuestExceptions(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
 	source, err := runtime.newJavaByteArray([]byte{1, 2})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	target, err := runtime.newJavaReferenceArray("[[B", []uint32{0, 0})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	var unhandled *ktfUnhandledJavaException
 	if err := runtime.javaArrayCopy(source, 0, target, 0, 1); !errors.As(
 		err,
@@ -3663,67 +2530,30 @@ func TestKTFJavaArrayCopyRaisesGuestExceptions(t *testing.T) {
 }
 
 func TestKTFInputStreamReadReturnsEOFForNullOptionalBuffer(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	stream, err := runtime.NewHostJavaObject("java/io/InputStream")
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	stream := newHostObject(t, runtime, "java/io/InputStream")
 	runtime.inputStreams[stream] = &ktfInputStream{data: []byte{1}}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, stream); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, 0); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, stream))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 0))
 	value, err := runtime.handleInputStreamMethod(
 		context.Background(),
 		"read",
 		"([BII)I",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if value != ^uint32(0) {
 		t.Fatalf("InputStream.read(null, ...) = %d, want -1", value)
 	}
 }
 
 func TestKTFDataInputStreamPrimitiveEOFThrows(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.exceptionContext, err = runtime.AllocateWords(
+	runtime := newTestRuntime(t)
+	runtime.exceptionContext = allocWords(t, runtime,
 		ktfJavaEnvironmentWords,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stream, err := runtime.NewHostJavaObject("java/io/DataInputStream")
-	if err != nil {
-		t.Fatal(err)
-	}
+	stream := newHostObject(t, runtime, "java/io/DataInputStream")
 	runtime.inputStreams[stream] = &ktfInputStream{}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, stream); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, stream))
 
 	value, err := runtime.handleInputStreamMethod(
 		context.Background(),
@@ -3736,21 +2566,8 @@ func TestKTFDataInputStreamPrimitiveEOFThrows(t *testing.T) {
 }
 
 func TestKTFDataInputStreamReadUTFDecodesModifiedUTF8(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	stream, err := runtime.NewHostJavaObject("java/io/DataInputStream")
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	stream := newHostObject(t, runtime, "java/io/DataInputStream")
 	encoded := []byte{
 		0x00, 0x0b,
 		0x41,
@@ -3760,18 +2577,14 @@ func TestKTFDataInputStreamReadUTFDecodesModifiedUTF8(t *testing.T) {
 		0xed, 0xb8, 0x80,
 	}
 	runtime.inputStreams[stream] = &ktfInputStream{data: encoded}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, stream); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, stream))
 
 	value, err := runtime.handleInputStreamMethod(
 		context.Background(),
 		"readUTF",
 		"()Ljava/lang/String;",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if got, want := runtime.javaStringValue(value), "A\x00é😀"; got != want {
 		t.Fatalf("DataInputStream.readUTF = %q, want %q", got, want)
 	}
@@ -3796,23 +2609,10 @@ func TestDecodeKTFModifiedUTF8RejectsMalformedSequences(t *testing.T) {
 }
 
 func TestKTFTaskExceptionFramesAreSavedIndependently(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.exceptionContext, err = runtime.AllocateWords(
+	runtime := newTestRuntime(t)
+	runtime.exceptionContext = allocWords(t, runtime,
 		ktfJavaEnvironmentWords,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	first := &Task{}
 	second := &Task{}
@@ -3820,18 +2620,10 @@ func TestKTFTaskExceptionFramesAreSavedIndependently(t *testing.T) {
 		firstFrame  = uint32(0x7ffffe40)
 		secondFrame = uint32(0x7ffefe40)
 	)
-	if err := runtime.WriteU32(runtime.exceptionContext+8*4, firstFrame); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.saveTaskContext(first); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.WriteU32(runtime.exceptionContext+8*4, secondFrame); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.saveTaskContext(second); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.WriteU32(runtime.exceptionContext+8*4, firstFrame))
+	check(t, runtime.saveTaskContext(first))
+	check(t, runtime.WriteU32(runtime.exceptionContext+8*4, secondFrame))
+	check(t, runtime.saveTaskContext(second))
 
 	for _, test := range []struct {
 		name string
@@ -3842,13 +2634,8 @@ func TestKTFTaskExceptionFramesAreSavedIndependently(t *testing.T) {
 		{name: "second", task: second, want: secondFrame},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if err := runtime.restoreTaskExceptionFrame(test.task); err != nil {
-				t.Fatal(err)
-			}
-			got, err := runtime.ReadU32(runtime.exceptionContext + 8*4)
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, runtime.restoreTaskExceptionFrame(test.task))
+			got := readU32(t, runtime, runtime.exceptionContext+8*4)
 			if got != test.want {
 				t.Fatalf("restored exception frame = 0x%08x, want 0x%08x", got, test.want)
 			}
@@ -3929,21 +2716,9 @@ func TestKTFStartedThreadReleasesWhenParentYields(t *testing.T) {
 }
 
 func TestKTFTaskRecordsPresentationAfterPaintReturns(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
 	task, err := runtime.NewTask(ktfReturnSentinel|1, nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	task.presentOnReturn = true
 	runtime.Tasks = append(runtime.Tasks, task)
 	result := runtime.RunTaskSlice(context.Background(), 16)
@@ -3967,21 +2742,9 @@ func TestKTFTaskRecordsPresentationAfterPaintReturns(t *testing.T) {
 // table" on a title that had never done anything unusual - it just painted
 // its first screen and moved on.
 func TestKTFPaintTaskReturnReleasesPaintTasksEntry(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
 	task, err := runtime.NewTask(ktfReturnSentinel|1, nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	const card = uint32(0x10002000)
 	task.presentOnReturn = true
 	task.paintCard = card
@@ -4003,9 +2766,7 @@ func TestKTFPaintTaskReturnReleasesPaintTasksEntry(t *testing.T) {
 	// next - exactly what makes its old *Task unreachable from
 	// snapshotKTFMetadata's task table if PaintTasks was not cleared.
 	replacement, err := runtime.NewTask(ktfReturnSentinel|1, nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	for index, existing := range runtime.Tasks {
 		if existing == task {
 			runtime.Tasks[index] = replacement
@@ -4019,21 +2780,9 @@ func TestKTFPaintTaskReturnReleasesPaintTasksEntry(t *testing.T) {
 }
 
 func TestKTFJavaPresentationRetakesScreenFromWIPIC(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
 	graphics, err := runtime.EnsureScreenGraphics()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	javaSurface := runtime.GraphicsServices[graphics]
 	if javaSurface == 0 {
 		t.Fatal("Java screen graphics has no shared surface")
@@ -4044,53 +2793,28 @@ func TestKTFJavaPresentationRetakesScreenFromWIPIC(t *testing.T) {
 	if runtime.Services.Graphics.Screen() == javaSurface {
 		t.Fatal("WIPI-C screen did not take presentation ownership")
 	}
-	if err := runtime.RecordPresentation(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.RecordPresentation())
 	if got := runtime.Services.Graphics.Screen(); got != javaSurface {
 		t.Fatalf("presented surface = %s, want Java screen %s", got, javaSurface)
 	}
 }
 
 func TestKTFPresentationRequestsTaskYield(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
+	runtime := newUnmappedTestRuntime(t)
 	runtime.activeTask = &Task{}
 
-	if err := runtime.RecordPresentation(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.RecordPresentation())
 	if !runtime.yieldRequested {
 		t.Fatal("presentation did not request a task yield")
 	}
 }
 
 func TestKTFReturningTaskDoesNotSkipNextRunnableTask(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
 	runnable, err := runtime.NewTask(ImageBase|1, nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	returning, err := runtime.NewTask(ktfReturnSentinel|1, nil, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	runtime.Tasks = []*Task{runnable, returning}
 	runtime.taskCursor = 1
 
@@ -4119,16 +2843,10 @@ func TestKTFBestEffortInitialPaintDiscardsUnhandledJavaException(t *testing.T) {
 		ClientName: "client.bin0",
 		Client:     []byte{0x70, 0x47},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.SetTraceMode(KTFTraceFull); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.SetTraceMode(KTFTraceFull))
 	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.MapImageAndHost())
 	procedure := runtime.RegisterHostCall(
 		"synthetic.initial.paint",
 		func(context.Context, *Runtime) (uint32, error) {
@@ -4140,9 +2858,7 @@ func TestKTFBestEffortInitialPaintDiscardsUnhandledJavaException(t *testing.T) {
 		},
 	)
 	task, err := runtime.NewTask(procedure|1, nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	const card = uint32(0x10002000)
 	task.bestEffortPaint = true
 	task.paintCard = card
@@ -4194,17 +2910,7 @@ func TestKTFBestEffortInitialPaintDiscardsUnhandledJavaException(t *testing.T) {
 // old pointer and SaveState failed with "task pointer is outside the task
 // table" on a title that had never done anything unusual.
 func TestKTFInitialPaintDiscardReleasesTaskFromDeferredState(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
 	procedure := runtime.RegisterHostCall(
 		"synthetic.initial.paint.leak",
 		func(context.Context, *Runtime) (uint32, error) {
@@ -4216,9 +2922,7 @@ func TestKTFInitialPaintDiscardReleasesTaskFromDeferredState(t *testing.T) {
 		},
 	)
 	task, err := runtime.NewTask(procedure|1, nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	const card = uint32(0x10002000)
 	task.bestEffortPaint = true
 	task.paintCard = card
@@ -4251,9 +2955,7 @@ func TestKTFInitialPaintDiscardReleasesTaskFromDeferredState(t *testing.T) {
 	// next - exactly what makes its old *Task unreachable from
 	// snapshotKTFMetadata's task table if the maps above were not cleared.
 	replacement, err := runtime.NewTask(procedure|1, nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	for index, existing := range runtime.Tasks {
 		if existing == task {
 			runtime.Tasks[index] = replacement
@@ -4277,16 +2979,10 @@ func TestKTFUnhandledJavaExceptionIsolatedToItsOwnTask(t *testing.T) {
 		ClientName: "client.bin0",
 		Client:     []byte{0x70, 0x47},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.SetTraceMode(KTFTraceFull); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.SetTraceMode(KTFTraceFull))
 	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.MapImageAndHost())
 	procedure := runtime.RegisterHostCall(
 		"synthetic.worker.throw",
 		func(context.Context, *Runtime) (uint32, error) {
@@ -4298,13 +2994,9 @@ func TestKTFUnhandledJavaExceptionIsolatedToItsOwnTask(t *testing.T) {
 		},
 	)
 	failing, err := runtime.NewTask(procedure|1, nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	other, err := runtime.NewTask(procedure|1, nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	runtime.Tasks = append(runtime.Tasks, failing, other)
 
 	result := runtime.RunTaskSlice(context.Background(), 16)
@@ -4345,17 +3037,7 @@ func TestKTFUnhandledJavaExceptionIsolatedToItsOwnTask(t *testing.T) {
 // only trade a diagnosable fault (issue #147 depended on this surfacing) for
 // a silent black screen.
 func TestKTFUnhandledJavaExceptionFaultsWhenNoTaskSurvives(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
 	procedure := runtime.RegisterHostCall(
 		"synthetic.solo.throw",
 		func(context.Context, *Runtime) (uint32, error) {
@@ -4367,9 +3049,7 @@ func TestKTFUnhandledJavaExceptionFaultsWhenNoTaskSurvives(t *testing.T) {
 		},
 	)
 	solo, err := runtime.NewTask(procedure|1, nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	runtime.Tasks = append(runtime.Tasks, solo)
 
 	result := runtime.RunTaskSlice(context.Background(), 16)
@@ -4389,60 +3069,32 @@ func TestKTFHostVTableCollisionRedispatchesToGuestReceiver(t *testing.T) {
 			0x70, 0x47, // bx lr
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.SetTraceMode(KTFTraceFull); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.SetTraceMode(KTFTraceFull))
 	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
-	classAddress, err := runtime.EnsureJavaClass("test/GuestRenderer")
-	if err != nil {
-		t.Fatal(err)
-	}
-	class, err := runtime.InspectJavaClass(classAddress)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.MapImageAndHost())
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	classAddress := ensureClass(t, runtime, "test/GuestRenderer")
+	class := inspectClass(t, runtime, classAddress)
 	methodAddress, err := runtime.addHostJavaMethod(
 		class,
 		"draw",
 		"()I",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.WriteU32(methodAddress, ImageBase|1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.WriteU32(methodAddress, ImageBase|1))
 	delete(runtime.hostJavaClass, classAddress)
-	class, err = runtime.InspectJavaClass(classAddress)
-	if err != nil {
-		t.Fatal(err)
-	}
+	class = inspectClass(t, runtime, classAddress)
 	instance, err := runtime.NewJavaInstanceForClass(class)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, instance); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, instance))
 
 	value, err := HostJavaMethod(
 		"java/lang/System",
 		"draw",
 		"()I",
 	)(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if value != 0x7f {
 		t.Fatalf("redispatched guest return = 0x%08x, want 0x0000007f", value)
 	}
@@ -4500,12 +3152,8 @@ func TestKTFPaintCardCoalescesWhilePaintTaskIsPending(t *testing.T) {
 		ClientName: "client.bin0",
 		Client:     []byte{0x70, 0x47},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.SetTraceMode(KTFTraceFull); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.SetTraceMode(KTFTraceFull))
 	defer runtime.CPU.Close()
 
 	const card = uint32(0x10001000)
@@ -4513,9 +3161,7 @@ func TestKTFPaintCardCoalescesWhilePaintTaskIsPending(t *testing.T) {
 	runtime.dirtyCards[card] = true
 	runtime.PaintTasks[card] = pending
 
-	if err := runtime.paintCard(context.Background(), card); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.paintCard(context.Background(), card))
 	if runtime.dirtyCards[card] {
 		t.Fatal("coalesced card remained dirty")
 	}
@@ -4543,9 +3189,7 @@ func TestKTFPaintCardWaitsForPendingKeyCallback(t *testing.T) {
 		PaintTasks:         make(map[uint32]*Task),
 	}
 
-	if err := runtime.paintCard(context.Background(), card); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.paintCard(context.Background(), card))
 	if !runtime.dirtyCards[card] {
 		t.Fatal("key-blocked card was cleared before its paint could run")
 	}
@@ -4566,29 +3210,10 @@ func TestKTFPaintCardWaitsForPendingKeyCallback(t *testing.T) {
 }
 
 func TestKTFSystemStreamsAreInitializedHostObjects(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
-	systemAddress, err := runtime.EnsureJavaClass("java/lang/System")
-	if err != nil {
-		t.Fatal(err)
-	}
-	systemClass, err := runtime.InspectJavaClass(systemAddress)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	systemAddress := ensureClass(t, runtime, "java/lang/System")
+	systemClass := inspectClass(t, runtime, systemAddress)
 	for _, fieldSpec := range []struct {
 		name       string
 		descriptor string
@@ -4603,24 +3228,13 @@ func TestKTFSystemStreamsAreInitializedHostObjects(t *testing.T) {
 			fieldSpec.name,
 			fieldSpec.descriptor,
 		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		value, err := runtime.ReadU32(field + 12)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
+		value := readU32(t, runtime, field+12)
 		if value == 0 {
 			t.Fatalf("System.%s is null", fieldSpec.name)
 		}
-		words, err := runtime.ReadWords(value, 2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		class, err := runtime.InspectJavaClass(words[1])
-		if err != nil {
-			t.Fatal(err)
-		}
+		words := readWords(t, runtime, value, 2)
+		class := inspectClass(t, runtime, words[1])
 		if class.Name != fieldSpec.className {
 			t.Fatalf(
 				"System.%s class = %q, want %q",
@@ -4633,112 +3247,48 @@ func TestKTFSystemStreamsAreInitializedHostObjects(t *testing.T) {
 }
 
 func TestKTFResolveJavaMethodFollowsSingleWordClassReference(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	classAddress, err := runtime.EnsureJavaClass("org/kwis/msp/lcdui/Card")
-	if err != nil {
-		t.Fatal(err)
-	}
-	reference, err := runtime.AllocateWords(1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.WriteU32(reference, classAddress); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	classAddress := ensureClass(t, runtime, "org/kwis/msp/lcdui/Card")
+	reference := allocWords(t, runtime, 1)
+	check(t, runtime.WriteU32(reference, classAddress))
 
 	methodAddress, err := runtime.resolveJavaMethod(
 		reference,
 		"repaint",
 		"()V",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	method, err := runtime.InspectJavaMethod(methodAddress)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if method.Name != "repaint" || method.Descriptor != "()V" {
 		t.Fatalf("resolved method = %s%s", method.Name, method.Descriptor)
 	}
 }
 
 func TestKTFResolveJavaMethodAcceptsDirectVTable(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	classAddress, err := runtime.EnsureJavaClass("org/kwis/msp/lcdui/Card")
-	if err != nil {
-		t.Fatal(err)
-	}
-	class, err := runtime.InspectJavaClass(classAddress)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	classAddress := ensureClass(t, runtime, "org/kwis/msp/lcdui/Card")
+	class := inspectClass(t, runtime, classAddress)
 
 	methodAddress, err := runtime.resolveJavaMethod(
 		class.VTable,
 		"serviceRepaints",
 		"()V",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	method, err := runtime.InspectJavaMethod(methodAddress)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if method.Name != "serviceRepaints" || method.Descriptor != "()V" {
 		t.Fatalf("resolved method = %s%s", method.Name, method.Descriptor)
 	}
 }
 
 func TestKTFJavaNewRunsClassInitializerOnce(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
-	classAddress, err := runtime.EnsureJavaClass("test/Initialized")
-	if err != nil {
-		t.Fatal(err)
-	}
-	classWords, err := runtime.ReadWords(classAddress, 5)
-	if err != nil {
-		t.Fatal(err)
-	}
-	descriptorWords, err := runtime.ReadWords(classWords[2], 9)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	classAddress := ensureClass(t, runtime, "test/Initialized")
+	classWords := readWords(t, runtime, classAddress, 5)
+	descriptorWords := readWords(t, runtime, classWords[2], 9)
 	callCount := 0
 	body := runtime.RegisterHostCall(
 		"test.class_initializer",
@@ -4751,13 +3301,8 @@ func TestKTFJavaNewRunsClassInitializerOnce(t *testing.T) {
 		[]byte("\x00()V+<clinit>"),
 		true,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	method, err := runtime.AllocateWords(7)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	method := allocWords(t, runtime, 7)
 	if err := runtime.writeWords(method, []uint32{
 		body,
 		classAddress,
@@ -4769,34 +3314,21 @@ func TestKTFJavaNewRunsClassInitializerOnce(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	methods, err := runtime.AllocateWords(2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(methods, []uint32{method, 0}); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.WriteU32(classWords[2]+12, methods); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.WriteU32(
+	methods := allocWords(t, runtime, 2)
+	check(t, runtime.writeWords(methods, []uint32{method, 0}))
+	check(t, runtime.WriteU32(classWords[2]+12, methods))
+	check(t, runtime.WriteU32(
 		classWords[2]+24,
 		descriptorWords[6]&0xffff0000|1,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 
 	for index := 0; index < 2; index++ {
-		if err := runtime.CPU.WriteRegister(
+		check(t, runtime.CPU.WriteRegister(
 			cpu.RegisterR0,
 			classAddress,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 		instance, err := ktfJavaNew(context.Background(), runtime)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		if instance == 0 {
 			t.Fatal("Java allocation returned null")
 		}
@@ -4813,23 +3345,10 @@ func TestKTFJavaNewRunsClassInitializerOnce(t *testing.T) {
 }
 
 func TestKTFResolveJavaMethodAugmentsBodylessHostDeclaration(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	classAddress, err := runtime.EnsureJavaClass(
+	runtime := newTestRuntime(t)
+	classAddress := ensureClass(t, runtime,
 		"java/lang/IllegalStateException",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
 	delete(runtime.hostJavaClass, classAddress)
 	runtime.rememberRegisteredJavaClass(
 		"java/lang/IllegalStateException",
@@ -4838,22 +3357,11 @@ func TestKTFResolveJavaMethodAugmentsBodylessHostDeclaration(t *testing.T) {
 	if !runtime.hostJavaClass[classAddress] {
 		t.Fatal("registered java/lang class was not marked platform-owned")
 	}
-	classWords, err := runtime.ReadWords(classAddress, 5)
-	if err != nil {
-		t.Fatal(err)
-	}
-	descriptorWords, err := runtime.ReadWords(classWords[2], 9)
-	if err != nil {
-		t.Fatal(err)
-	}
+	classWords := readWords(t, runtime, classAddress, 5)
+	descriptorWords := readWords(t, runtime, classWords[2], 9)
 	fullName, err := runtime.allocateBytes([]byte("\x00()V+<init>"), true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	declaration, err := runtime.AllocateWords(7)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	declaration := allocWords(t, runtime, 7)
 	if err := runtime.writeWords(declaration, []uint32{
 		0,
 		classAddress,
@@ -4865,33 +3373,17 @@ func TestKTFResolveJavaMethodAugmentsBodylessHostDeclaration(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	methods, err := runtime.AllocateWords(2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(methods, []uint32{declaration, 0}); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.WriteU32(classWords[2]+12, methods); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.WriteU32(
+	methods := allocWords(t, runtime, 2)
+	check(t, runtime.writeWords(methods, []uint32{declaration, 0}))
+	check(t, runtime.WriteU32(classWords[2]+12, methods))
+	check(t, runtime.WriteU32(
 		classWords[2]+24,
 		descriptorWords[6]&0xffff0000|1,
-	); err != nil {
-		t.Fatal(err)
-	}
-	class, err := runtime.InspectJavaClass(classAddress)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.implementBodylessPlatformMethods(class); err != nil {
-		t.Fatal(err)
-	}
+	))
+	class := inspectClass(t, runtime, classAddress)
+	check(t, runtime.implementBodylessPlatformMethods(class))
 	patched, err := runtime.InspectJavaMethod(declaration)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if patched.Body == 0 {
 		t.Fatal("original bodyless declaration was not patched")
 	}
@@ -4904,13 +3396,9 @@ func TestKTFResolveJavaMethodAugmentsBodylessHostDeclaration(t *testing.T) {
 		"<init>",
 		"()V",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	method, err := runtime.InspectJavaMethod(methodAddress)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if method.Body == 0 {
 		t.Fatal("bodyless host declaration was not augmented")
 	}
@@ -4920,29 +3408,16 @@ func TestKTFResolveJavaMethodAugmentsBodylessHostDeclaration(t *testing.T) {
 }
 
 func TestKTFHostJavaLongReturnUsesR0R1(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, 0xdeadbeef); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newUnmappedTestRuntime(t)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, 0xdeadbeef))
 	low, err := HostJavaMethod(
 		"java/lang/Runtime",
 		"totalMemory",
 		"()J",
 	)(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	high, err := runtime.CPU.ReadRegister(cpu.RegisterR1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if low != guest.HeapSize || high != 0 {
 		t.Fatalf(
 			"Runtime.totalMemory = 0x%08x%08x, want 0x%016x",
@@ -4954,21 +3429,15 @@ func TestKTFHostJavaLongReturnUsesR0R1(t *testing.T) {
 
 	const dateValue = uint64(0x1122334455667788)
 	runtime.dates[1] = int64(dateValue)
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, 1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, 1))
 	low, err = HostJavaMethod(
 		"java/util/Date",
 		"getTime",
 		"()J",
 	)(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	high, err = runtime.CPU.ReadRegister(cpu.RegisterR1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if uint64(high)<<32|uint64(low) != dateValue {
 		t.Fatalf(
 			"Date.getTime = 0x%08x%08x, want 0x%016x",
@@ -4980,60 +3449,33 @@ func TestKTFHostJavaLongReturnUsesR0R1(t *testing.T) {
 }
 
 func TestKTFImageAndFontFactoriesReturnHostObjects(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, 23); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, 17); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, 23))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 17))
 	imageObject, err := runtime.handleImageMethod(
 		"createImage",
 		"(II)Lorg/kwis/msp/lcdui/Image;",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if source := runtime.images[imageObject]; source == nil ||
 		source.Bounds().Dx() != 23 || source.Bounds().Dy() != 17 {
 		t.Fatalf("host image = %#v", source)
 	}
 	source := runtime.images[imageObject].(draw.Image)
 	source.Set(4, 5, color.RGBA{R: 0x12, G: 0x34, B: 0x56, A: 0xff})
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, imageObject); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, imageObject))
 	copyObject, err := runtime.handleImageMethod(
 		"createImage",
 		"(Lorg/kwis/msp/lcdui/Image;)Lorg/kwis/msp/lcdui/Image;",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	// An Image's service surface is materialised on demand, so ask for both
 	// before comparing them: absent is not the same as shared.
 	sourceSurface, err := runtime.ensureJavaImageSurface(imageObject)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	copySurface, err := runtime.ensureJavaImageSurface(copyObject)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if copyObject == imageObject || copySurface == sourceSurface {
 		t.Fatalf(
 			"copied image aliases source: object=%#x service=%s",
@@ -5049,191 +3491,105 @@ func TestKTFImageAndFontFactoriesReturnHostObjects(t *testing.T) {
 		t.Fatalf("copied image changed with source = %v", got)
 	}
 	font, err := runtime.ensureDefaultFont()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if font == 0 {
 		t.Fatal("default font is null")
 	}
 }
 
 func TestKTFStringMethodsProduceGuestStringsAndArrays(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
-	value, err := runtime.NewJavaString("  가abc  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, value); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	value := newJavaString(t, runtime, "  가abc  ")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, value))
 	trimmed, err := runtime.handleStringMethod(
 		"trim",
 		"()Ljava/lang/String;",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if got := runtime.javaStringValue(trimmed); got != "가abc" {
 		t.Fatalf("trimmed string = %q", got)
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, trimmed); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR3, 4); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, trimmed))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 1))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, 4))
 	substring, err := runtime.handleStringMethod(
 		"substring",
 		"(II)Ljava/lang/String;",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if got := runtime.javaStringValue(substring); got != "abc" {
 		t.Fatalf("substring = %q", got)
 	}
-	unicodeValue, err := runtime.NewJavaString(
+	unicodeValue := newJavaString(t, runtime,
 		"\uac00\ub098\ub2e4\U0001f600",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	needle, err := runtime.NewJavaString("\ub2e4")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, unicodeValue); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, needle); err != nil {
-		t.Fatal(err)
-	}
+	needle := newJavaString(t, runtime, "\ub2e4")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, unicodeValue))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, needle))
 	index, err := runtime.handleStringMethod(
 		"indexOf",
 		"(Ljava/lang/String;)I",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if index != 2 {
 		t.Fatalf("UTF-16 String.indexOf = %d, want 2", int32(index))
 	}
-	delimited, err := runtime.NewJavaString("abc\x00def\x00")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, delimited); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR3, 4); err != nil {
-		t.Fatal(err)
-	}
+	delimited := newJavaString(t, runtime, "abc\x00def\x00")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, delimited))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 0))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, 4))
 	index, err = runtime.handleStringMethod("indexOf", "(II)I")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if index != 7 {
 		t.Fatalf("String.indexOf(NUL, 4) = %d, want 7", int32(index))
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, unicodeValue); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, unicodeValue))
 	length, err := runtime.handleStringMethod("length", "()I")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if length != 5 {
 		t.Fatalf("UTF-16 String.length = %d, want 5", length)
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, 3); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 3))
 	character, err := runtime.handleStringMethod("charAt", "(I)C")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if character != 0xd83d {
 		t.Fatalf("UTF-16 String.charAt = 0x%04x, want high surrogate", character)
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR3, 5); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, 5))
 	emoji, err := runtime.handleStringMethod(
 		"substring",
 		"(II)Ljava/lang/String;",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if got := runtime.javaStringValue(emoji); got != "\U0001f600" {
 		t.Fatalf("UTF-16 substring = %q", got)
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, substring); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, substring))
 	array, err := runtime.handleStringMethod("getBytes", "()[B")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	data, err := runtime.readJavaByteArray(array)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !bytes.Equal(data, []byte("abc")) {
 		t.Fatalf("string bytes = %q", data)
 	}
 	koreanBytes := []byte{0xb0, 0xa1}
 	koreanArray, err := runtime.newJavaByteArray(koreanBytes)
-	if err != nil {
-		t.Fatal(err)
-	}
-	korean, err := runtime.NewHostJavaObject("java/lang/String")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, korean); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, koreanArray); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	korean := newHostObject(t, runtime, "java/lang/String")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, korean))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, koreanArray))
 	if _, err := runtime.handleStringMethod("<init>", "([B)V"); err != nil {
 		t.Fatal(err)
 	}
 	if got := runtime.javaStringValue(korean); got != "가" {
 		t.Fatalf("EUC-KR String(byte[]) = %q, want %q", got, "가")
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, korean); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, korean))
 	encodedKorean, err := runtime.handleStringMethod("getBytes", "()[B")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	encodedKoreanBytes, err := runtime.readJavaByteArray(encodedKorean)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !bytes.Equal(encodedKoreanBytes, koreanBytes) {
 		t.Fatalf(
 			"EUC-KR String.getBytes = %x, want %x",
@@ -5241,44 +3597,30 @@ func TestKTFStringMethodsProduceGuestStringsAndArrays(t *testing.T) {
 			koreanBytes,
 		)
 	}
-	empty, err := runtime.NewHostJavaObject("java/lang/String")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, empty); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, 0); err != nil {
-		t.Fatal(err)
-	}
+	empty := newHostObject(t, runtime, "java/lang/String")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, empty))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 0))
 	if _, err := runtime.handleStringMethod("<init>", "([BII)V"); err != nil {
 		t.Fatal(err)
 	}
 	if got := runtime.javaStringValue(empty); got != "" {
 		t.Fatalf("String(null) = %q, want empty compatibility string", got)
 	}
-	if err := runtime.CPU.WriteRegister(
+	check(t, runtime.CPU.WriteRegister(
 		cpu.RegisterR1,
 		^uint32(41),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	formatted, err := runtime.handleStringMethod(
 		"valueOf",
 		"(I)Ljava/lang/String;",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if got := runtime.javaStringValue(formatted); got != "-42" {
 		t.Fatalf("String.valueOf(-42) = %q", got)
 	}
-	stringClass, err := runtime.InspectJavaClass(
+	stringClass := inspectClass(t, runtime,
 		runtime.JavaClasses["java/lang/String"],
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
 	valueOf, ok := findKTFJavaMethod(
 		stringClass,
 		"valueOf",
@@ -5287,71 +3629,38 @@ func TestKTFStringMethodsProduceGuestStringsAndArrays(t *testing.T) {
 	if !ok || valueOf.AccessFlags&0x0008 == 0 {
 		t.Fatalf("String.valueOf(int) flags = 0x%04x, found=%t", valueOf.AccessFlags, ok)
 	}
-	untracked, err := runtime.NewHostJavaObject("java/lang/String")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, untracked); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, untracked); err != nil {
-		t.Fatal(err)
-	}
+	untracked := newHostObject(t, runtime, "java/lang/String")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, untracked))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, untracked))
 	equal, err := runtime.handleStringMethod(
 		"equals",
 		"(Ljava/lang/Object;)Z",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if equal != 1 {
 		t.Fatal("an untracked String was not equal to itself")
 	}
-	left, err := runtime.NewJavaString("/3")
-	if err != nil {
-		t.Fatal(err)
-	}
-	right, err := runtime.NewJavaString("/1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, left); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, right); err != nil {
-		t.Fatal(err)
-	}
+	left := newJavaString(t, runtime, "/3")
+	right := newJavaString(t, runtime, "/1")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, left))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, right))
 	comparison, err := runtime.handleStringMethod(
 		"compareTo",
 		"(Ljava/lang/String;)I",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if int32(comparison) != 2 {
 		t.Fatalf("String.compareTo = %d, want 2", int32(comparison))
 	}
-	supplementary, err := runtime.NewJavaString("\U0001f600")
-	if err != nil {
-		t.Fatal(err)
-	}
-	privateUse, err := runtime.NewJavaString("\ue000")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, supplementary); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, privateUse); err != nil {
-		t.Fatal(err)
-	}
+	supplementary := newJavaString(t, runtime, "\U0001f600")
+	privateUse := newJavaString(t, runtime, "\ue000")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, supplementary))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, privateUse))
 	comparison, err = runtime.handleStringMethod(
 		"compareTo",
 		"(Ljava/lang/String;)I",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	wantComparison := int32(0xd83d - 0xe000)
 	if int32(comparison) != wantComparison {
 		t.Fatalf(
@@ -5360,30 +3669,19 @@ func TestKTFStringMethodsProduceGuestStringsAndArrays(t *testing.T) {
 			wantComparison,
 		)
 	}
-	ascii, err := runtime.NewJavaString("abc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, ascii); err != nil {
-		t.Fatal(err)
-	}
+	ascii := newJavaString(t, runtime, "abc")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, ascii))
 	hash, err := runtime.handleStringMethod("hashCode", "()I")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if int32(hash) != 96354 {
 		t.Fatalf("String.hashCode(\"abc\") = %d, want 96354", int32(hash))
 	}
-	if err := runtime.CPU.WriteRegister(
+	check(t, runtime.CPU.WriteRegister(
 		cpu.RegisterR1,
 		supplementary,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	hash, err = runtime.handleStringMethod("hashCode", "()I")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if int32(hash) != 1772899 {
 		t.Fatalf(
 			"UTF-16 String.hashCode(emoji) = %d, want 1772899",
@@ -5393,38 +3691,16 @@ func TestKTFStringMethodsProduceGuestStringsAndArrays(t *testing.T) {
 }
 
 func TestKTFHostStreamsAndCalendarReturnUsableObjects(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
-	output, err := runtime.NewHostJavaObject("java/io/ByteArrayOutputStream")
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	output := newHostObject(t, runtime, "java/io/ByteArrayOutputStream")
 	data, err := runtime.newJavaByteArray([]byte{4, 5, 6})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, output); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, output))
 	if _, err := runtime.handleByteArrayOutputStreamMethod("<init>", "()V"); err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, data); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, data))
 	if _, err := runtime.handleByteArrayOutputStreamMethod("write", "([B)V"); err != nil {
 		t.Fatal(err)
 	}
@@ -5432,13 +3708,9 @@ func TestKTFHostStreamsAndCalendarReturnUsableObjects(t *testing.T) {
 		"toByteArray",
 		"()[B",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	copiedData, err := runtime.readJavaByteArray(copied)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !bytes.Equal(copiedData, []byte{4, 5, 6}) {
 		t.Fatalf("byte output = %v", copiedData)
 	}
@@ -5446,9 +3718,7 @@ func TestKTFHostStreamsAndCalendarReturnUsableObjects(t *testing.T) {
 		"openInputStream",
 		"()Ljava/io/InputStream;",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if input == 0 || runtime.inputStreams[input] == nil {
 		t.Fatalf("file input stream = 0x%08x", input)
 	}
@@ -5456,92 +3726,53 @@ func TestKTFHostStreamsAndCalendarReturnUsableObjects(t *testing.T) {
 		"getInstance",
 		"()Ljava/util/Calendar;",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if calendar == 0 {
 		t.Fatal("Calendar.getInstance returned null")
 	}
 }
 
 func TestKTFIntegerRandomAndDataOutputSemantics(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
 
-	text, err := runtime.NewJavaString("-123")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, text); err != nil {
-		t.Fatal(err)
-	}
+	text := newJavaString(t, runtime, "-123")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, text))
 	value, err := runtime.handleIntegerMethod(
 		"parseInt",
 		"(Ljava/lang/String;)I",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if int32(value) != -123 {
 		t.Fatalf("Integer.parseInt = %d", int32(value))
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, 0x79); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, 0x79))
 	hex, err := runtime.handleIntegerMethod(
 		"toHexString",
 		"(I)Ljava/lang/String;",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if got := runtime.javaStringValue(hex); got != "79" {
 		t.Fatalf("Integer.toHexString(0x79) = %q, want 79", got)
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, ^uint32(0)); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, ^uint32(0)))
 	hex, err = runtime.handleIntegerMethod(
 		"toHexString",
 		"(I)Ljava/lang/String;",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if got := runtime.javaStringValue(hex); got != "ffffffff" {
 		t.Fatalf("Integer.toHexString(-1) = %q, want ffffffff", got)
 	}
 
-	random, err := runtime.NewHostJavaObject("java/util/Random")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, random); err != nil {
-		t.Fatal(err)
-	}
+	random := newHostObject(t, runtime, "java/util/Random")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, random))
 	if _, err := runtime.handleRandomMethod("<init>", "()V"); err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, 7); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 7))
 	randomValue, err := runtime.handleRandomMethod("nextInt", "(I)I")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if randomValue >= 7 {
 		t.Fatalf("Random.nextInt(7) = %d", randomValue)
 	}
@@ -5567,29 +3798,17 @@ func TestKTFIntegerRandomAndDataOutputSemantics(t *testing.T) {
 		t.Fatalf("short-lived Java Random objects allocated service streams: %v", streams)
 	}
 
-	target, err := runtime.NewHostJavaObject("java/io/ByteArrayOutputStream")
-	if err != nil {
-		t.Fatal(err)
-	}
-	wrapper, err := runtime.NewHostJavaObject("java/io/DataOutputStream")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, wrapper); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, target); err != nil {
-		t.Fatal(err)
-	}
+	target := newHostObject(t, runtime, "java/io/ByteArrayOutputStream")
+	wrapper := newHostObject(t, runtime, "java/io/DataOutputStream")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, wrapper))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, target))
 	if _, err := runtime.handleOutputStreamMethod(
 		"<init>",
 		"(Ljava/io/OutputStream;)V",
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, 0x01020304); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 0x01020304))
 	if _, err := runtime.handleOutputStreamMethod("writeInt", "(I)V"); err != nil {
 		t.Fatal(err)
 	}
@@ -5597,20 +3816,11 @@ func TestKTFIntegerRandomAndDataOutputSemantics(t *testing.T) {
 		t.Fatalf("DataOutputStream bytes = %x", runtime.outputStreams[target])
 	}
 
-	input, err := runtime.NewHostJavaObject("java/io/ByteArrayInputStream")
-	if err != nil {
-		t.Fatal(err)
-	}
+	input := newHostObject(t, runtime, "java/io/ByteArrayInputStream")
 	inputData, err := runtime.newJavaByteArray([]byte{0x01, 0x02, 0x03, 0x04})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, input); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, inputData); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, input))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, inputData))
 	if _, err := runtime.handleInputStreamMethod(
 		context.Background(),
 		"<init>",
@@ -5623,9 +3833,7 @@ func TestKTFIntegerRandomAndDataOutputSemantics(t *testing.T) {
 		"readInt",
 		"()I",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if readValue != 0x01020304 {
 		t.Fatalf("DataInput.readInt = 0x%08x", readValue)
 	}
@@ -5639,96 +3847,46 @@ func TestKTFDataInputStreamDelegatesToApplicationInputStream(t *testing.T) {
 			0x70, 0x47, // bx lr
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.MapImageAndHost())
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
 
-	classAddress, err := runtime.EnsureJavaClass("test/ApplicationInputStream")
-	if err != nil {
-		t.Fatal(err)
-	}
-	class, err := runtime.InspectJavaClass(classAddress)
-	if err != nil {
-		t.Fatal(err)
-	}
+	classAddress := ensureClass(t, runtime, "test/ApplicationInputStream")
+	class := inspectClass(t, runtime, classAddress)
 	method, err := runtime.addHostJavaMethod(class, "read", "()I")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.WriteU32(method, ImageBase|1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.WriteU32(method, ImageBase|1))
 	delete(runtime.hostJavaClass, classAddress)
-	class, err = runtime.InspectJavaClass(classAddress)
-	if err != nil {
-		t.Fatal(err)
-	}
+	class = inspectClass(t, runtime, classAddress)
 	source, err := runtime.NewJavaInstanceForClass(class)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wrapper, err := runtime.NewHostJavaObject("java/io/DataInputStream")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	wrapper := newHostObject(t, runtime, "java/io/DataInputStream")
 	runtime.inputTargets[wrapper] = source
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, wrapper); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, wrapper))
 	value, err := runtime.handleInputStreamMethod(
 		context.Background(),
 		"readUnsignedByte",
 		"()I",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if value != 0x7f {
 		t.Fatalf("delegated DataInputStream.readUnsignedByte = 0x%08x", value)
 	}
 }
 
 func TestKTFFileReadWriteRoundTrip(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
 
-	file, err := runtime.NewHostJavaObject("org/kwis/msp/io/File")
-	if err != nil {
-		t.Fatal(err)
-	}
-	filename, err := runtime.NewJavaString("save/data.bin")
-	if err != nil {
-		t.Fatal(err)
-	}
+	file := newHostObject(t, runtime, "org/kwis/msp/io/File")
+	filename := newJavaString(t, runtime, "save/data.bin")
 	for register, value := range map[uint32]uint32{
 		cpu.RegisterR1: file,
 		cpu.RegisterR2: filename,
 		cpu.RegisterR3: 3,
 	} {
-		if err := runtime.CPU.WriteRegister(register, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteRegister(register, value))
 	}
 	if _, err := runtime.handleFileMethod(
 		"<init>",
@@ -5738,102 +3896,59 @@ func TestKTFFileReadWriteRoundTrip(t *testing.T) {
 	}
 
 	source, err := runtime.newJavaByteArray([]byte{1, 2, 3})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	stack := guest.DefaultStackBase + 0x100
-	if err := runtime.CPU.WriteRegister(cpu.RegisterSP, stack); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.WriteU32(stack, 3); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterSP, stack))
+	check(t, runtime.WriteU32(stack, 3))
 	for register, value := range map[uint32]uint32{
 		cpu.RegisterR1: file,
 		cpu.RegisterR2: source,
 		cpu.RegisterR3: 0,
 	} {
-		if err := runtime.CPU.WriteRegister(register, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteRegister(register, value))
 	}
 	written, err := runtime.handleFileMethod("write", "([BII)I")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if written != 3 {
 		t.Fatalf("File.write = %d, want 3", written)
 	}
 	size, err := runtime.handleFileMethod("sizeOf", "()I")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if size != 3 {
 		t.Fatalf("File.sizeOf = %d, want 3", size)
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, 0); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 0))
 	if _, err := runtime.handleFileMethod("seek", "(I)V"); err != nil {
 		t.Fatal(err)
 	}
 	target, err := runtime.newJavaByteArray(make([]byte, 3))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, target); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, target))
 	read, err := runtime.handleFileMethod("read", "([BII)I")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if read != 3 {
 		t.Fatalf("File.read = %d, want 3", read)
 	}
 	data, err := runtime.readJavaByteArray(target)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !bytes.Equal(data, []byte{1, 2, 3}) {
 		t.Fatalf("File.read bytes = %v", data)
 	}
 }
 
 func TestKTFFileReadOnlyOpenRequiresExistingFile(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
-	file, err := runtime.NewHostJavaObject("org/kwis/msp/io/File")
-	if err != nil {
-		t.Fatal(err)
-	}
-	filename, err := runtime.NewJavaString("missing.dat")
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	file := newHostObject(t, runtime, "org/kwis/msp/io/File")
+	filename := newJavaString(t, runtime, "missing.dat")
 	for register, value := range map[uint32]uint32{
 		cpu.RegisterR1: file,
 		cpu.RegisterR2: filename,
 		cpu.RegisterR3: ktfFileReadOnly,
 	} {
-		if err := runtime.CPU.WriteRegister(register, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteRegister(register, value))
 	}
-	_, err = runtime.handleFileMethod(
+	_, err := runtime.handleFileMethod(
 		"<init>",
 		"(Ljava/lang/String;I)V",
 	)
@@ -5861,32 +3976,18 @@ func TestKTFFileReadOnlyOpenRequiresExistingFile(t *testing.T) {
 }
 
 func TestKTFFileSystemReportsAvailableStorage(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
 	free := runtime.ktfFreeStorageBytes()
 	if free == 0 {
 		t.Fatal("empty private storage reports no free space")
 	}
 	available, err := runtime.handleFileSystemMethod("available", "()I")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if available != uint32(min(free, math.MaxInt32)) {
 		t.Fatalf("FileSystem.available = %d, want %d", available, free)
 	}
 	low, err := runtime.handleFileSystemMethod("getFreeSpace", "()J")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if uint64(runtime.JavaReturnHigh)<<32|uint64(low) != free {
 		t.Fatalf(
 			"getFreeSpace = 0x%08x%08x, want %d",
@@ -5915,46 +4016,23 @@ func TestKTFFileSystemReportsAvailableStorage(t *testing.T) {
 }
 
 func TestKTFFileSystemRemoveClosesMatchingJavaFile(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
 	const filename = "/install.dat"
-	if err := runtime.Services.Storage.WriteFile(
+	check(t, runtime.Services.Storage.WriteFile(
 		shared.NamespacePrivate,
 		filename,
 		[]byte("installed"),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	runtime.FileData[filename] = []byte("installed")
-	file, err := runtime.NewHostJavaObject("org/kwis/msp/io/File")
-	if err != nil {
-		t.Fatal(err)
-	}
-	name, err := runtime.NewJavaString(filename)
-	if err != nil {
-		t.Fatal(err)
-	}
+	file := newHostObject(t, runtime, "org/kwis/msp/io/File")
+	name := newJavaString(t, runtime, filename)
 	for register, value := range map[uint32]uint32{
 		cpu.RegisterR1: file,
 		cpu.RegisterR2: name,
 		cpu.RegisterR3: ktfFileReadOnly,
 	} {
-		if err := runtime.CPU.WriteRegister(register, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteRegister(register, value))
 	}
 	if _, err := runtime.handleFileMethod(
 		"<init>",
@@ -5966,9 +4044,7 @@ func TestKTFFileSystemRemoveClosesMatchingJavaFile(t *testing.T) {
 	if serviceID == 0 {
 		t.Fatal("File constructor did not open shared storage")
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, name); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, name))
 	if _, err := runtime.handleFileSystemMethod(
 		"remove",
 		"(Ljava/lang/String;)V",
@@ -6000,34 +4076,12 @@ func TestKTFFileSystemRemoveClosesMatchingJavaFile(t *testing.T) {
 }
 
 func TestKTFDataBaseHonorsCreateFlag(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
-	name, err := runtime.NewJavaString("save")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, name); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, 64); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR3, 0); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	name := newJavaString(t, runtime, "save")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, name))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 64))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, 0))
 	database, err := runtime.handleDataBaseMethod(
 		context.Background(),
 		"openDataBase",
@@ -6045,17 +4099,13 @@ func TestKTFDataBaseHonorsCreateFlag(t *testing.T) {
 	if !strings.Contains(err.Error(), "detail=0x1000") {
 		t.Fatalf("missing database exception has no guest object: %v", err)
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR3, 1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, 1))
 	database, err = runtime.handleDataBaseMethod(
 		context.Background(),
 		"openDataBase",
 		"(Ljava/lang/String;IZ)Lorg/kwis/msp/db/DataBase;",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if database == 0 || runtime.DatabaseStores["save"] == nil {
 		t.Fatalf(
 			"create database = 0x%08x, store=%v",
@@ -6066,54 +4116,24 @@ func TestKTFDataBaseHonorsCreateFlag(t *testing.T) {
 }
 
 func TestKTFCollectionsReturnStoredObjectsAndEnumeration(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
-	vector, err := runtime.NewHostJavaObject("java/util/Vector")
-	if err != nil {
-		t.Fatal(err)
-	}
-	first, err := runtime.NewJavaString("first")
-	if err != nil {
-		t.Fatal(err)
-	}
-	inserted, err := runtime.NewJavaString("inserted")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, vector); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	vector := newHostObject(t, runtime, "java/util/Vector")
+	first := newJavaString(t, runtime, "first")
+	inserted := newJavaString(t, runtime, "inserted")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, vector))
 	if _, err := runtime.handleVectorMethod("<init>", "(II)V"); err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, first); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, first))
 	if _, err := runtime.handleVectorMethod(
 		"addElement",
 		"(Ljava/lang/Object;)V",
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, inserted); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR3, 0); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, inserted))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, 0))
 	if _, err := runtime.handleVectorMethod(
 		"insertElementAt",
 		"(Ljava/lang/Object;I)V",
@@ -6130,54 +4150,29 @@ func TestKTFCollectionsReturnStoredObjectsAndEnumeration(t *testing.T) {
 		"[Ljava/lang/Object;",
 		[]uint32{0, 0, 0},
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, target); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, target))
 	if _, err := runtime.handleVectorMethod(
 		"copyInto",
 		"([Ljava/lang/Object;)V",
 	); err != nil {
 		t.Fatal(err)
 	}
-	fields, err := runtime.ReadU32(target)
-	if err != nil {
-		t.Fatal(err)
-	}
-	copied, err := runtime.ReadWords(fields+8, 3)
-	if err != nil {
-		t.Fatal(err)
-	}
+	fields := readU32(t, runtime, target)
+	copied := readWords(t, runtime, fields+8, 3)
 	if !slices.Equal(copied, []uint32{inserted, first, 0}) {
 		t.Fatalf("Vector.copyInto = %08x", copied)
 	}
 
-	table, err := runtime.NewHostJavaObject("java/util/Hashtable")
-	if err != nil {
-		t.Fatal(err)
-	}
-	key, err := runtime.NewJavaString("key")
-	if err != nil {
-		t.Fatal(err)
-	}
-	value, err := runtime.NewJavaString("value")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, table); err != nil {
-		t.Fatal(err)
-	}
+	table := newHostObject(t, runtime, "java/util/Hashtable")
+	key := newJavaString(t, runtime, "key")
+	value := newJavaString(t, runtime, "value")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, table))
 	if _, err := runtime.handleHashtableMethod("<init>", "()V"); err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, key); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR3, value); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, key))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, value))
 	if _, err := runtime.handleHashtableMethod(
 		"put",
 		"(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
@@ -6188,9 +4183,7 @@ func TestKTFCollectionsReturnStoredObjectsAndEnumeration(t *testing.T) {
 		"get",
 		"(Ljava/lang/Object;)Ljava/lang/Object;",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if got != value {
 		t.Fatalf("Hashtable.get = 0x%08x, want 0x%08x", got, value)
 	}
@@ -6198,9 +4191,7 @@ func TestKTFCollectionsReturnStoredObjectsAndEnumeration(t *testing.T) {
 		"keys",
 		"()Ljava/util/Enumeration;",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if enumeration == 0 {
 		t.Fatal("Hashtable.keys returned null")
 	}
@@ -6216,13 +4207,9 @@ func TestKTFCollectionsReturnStoredObjectsAndEnumeration(t *testing.T) {
 			err,
 		)
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, enumeration); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, enumeration))
 	more, err := runtime.handleEnumerationMethod("hasMoreElements", "()Z")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if more != 1 {
 		t.Fatalf("Enumeration.hasMoreElements = %d", more)
 	}
@@ -6230,9 +4217,7 @@ func TestKTFCollectionsReturnStoredObjectsAndEnumeration(t *testing.T) {
 		"nextElement",
 		"()Ljava/lang/Object;",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if gotKey != key {
 		t.Fatalf("Enumeration.nextElement = 0x%08x, want 0x%08x", gotKey, key)
 	}
@@ -6243,34 +4228,16 @@ func TestKTFRareJavaAndMediaCompatibilityMethods(t *testing.T) {
 		ClientName: "client.bin0",
 		Client:     []byte{0x70, 0x47},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.SetTraceMode(KTFTraceFull); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.SetTraceMode(KTFTraceFull))
 	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.MapImageAndHost())
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
 
-	card, err := runtime.NewHostJavaObject("org/kwis/msp/lcdui/Card")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, card); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, ^uint32(4)); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR3, 37); err != nil {
-		t.Fatal(err)
-	}
+	card := newHostObject(t, runtime, "org/kwis/msp/lcdui/Card")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, card))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, ^uint32(4)))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, 37))
 	if _, err := HostJavaMethod(
 		"org/kwis/msp/lcdui/Card",
 		"move",
@@ -6283,36 +4250,22 @@ func TestKTFRareJavaAndMediaCompatibilityMethods(t *testing.T) {
 		"getX",
 		"()I",
 	)(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	y, err := HostJavaMethod(
 		"org/kwis/msp/lcdui/Card",
 		"getY",
 		"()I",
 	)(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if int32(x) != -5 || y != 37 {
 		t.Fatalf("Card position = (%d,%d), want (-5,37)", int32(x), int32(y))
 	}
 
-	source, err := runtime.NewHostJavaObject("java/io/InputStream")
-	if err != nil {
-		t.Fatal(err)
-	}
-	reader, err := runtime.NewHostJavaObject("java/io/InputStreamReader")
-	if err != nil {
-		t.Fatal(err)
-	}
+	source := newHostObject(t, runtime, "java/io/InputStream")
+	reader := newHostObject(t, runtime, "java/io/InputStreamReader")
 	runtime.inputStreams[source] = &ktfInputStream{data: []byte("ABC")}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, reader); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, source); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, reader))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, source))
 	if _, err := runtime.handleInputStreamReaderMethod(
 		"<init>",
 		"(Ljava/io/InputStream;)V",
@@ -6320,24 +4273,13 @@ func TestKTFRareJavaAndMediaCompatibilityMethods(t *testing.T) {
 		t.Fatal(err)
 	}
 	characters, err := runtime.NewJavaArray("[C", 4, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, characters); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, characters))
 	read, err := runtime.handleInputStreamReaderMethod("read", "([C)I")
-	if err != nil {
-		t.Fatal(err)
-	}
-	characterFields, err := runtime.ReadU32(characters)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	characterFields := readU32(t, runtime, characters)
 	encoded := make([]byte, 6)
-	if err := runtime.CPU.ReadMemory(characterFields+8, encoded); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(characterFields+8, encoded))
 	if read != 3 ||
 		binary.LittleEndian.Uint16(encoded[0:2]) != 'A' ||
 		binary.LittleEndian.Uint16(encoded[2:4]) != 'B' ||
@@ -6345,20 +4287,13 @@ func TestKTFRareJavaAndMediaCompatibilityMethods(t *testing.T) {
 		t.Fatalf("Reader.read(char[]) = %d, %x", read, encoded)
 	}
 
-	number, err := runtime.NewJavaString("-9223372036854775808")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, number); err != nil {
-		t.Fatal(err)
-	}
+	number := newJavaString(t, runtime, "-9223372036854775808")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, number))
 	low, err := runtime.handleLongMethod(
 		"parseLong",
 		"(Ljava/lang/String;)J",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if low != 0 || runtime.JavaReturnHigh != 0x80000000 {
 		t.Fatalf(
 			"Long.parseLong = 0x%08x%08x, want 0x8000000000000000",
@@ -6367,20 +4302,10 @@ func TestKTFRareJavaAndMediaCompatibilityMethods(t *testing.T) {
 		)
 	}
 
-	throwable, err := runtime.NewHostJavaObject("java/lang/Throwable")
-	if err != nil {
-		t.Fatal(err)
-	}
-	message, err := runtime.NewJavaString("boom")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, throwable); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, message); err != nil {
-		t.Fatal(err)
-	}
+	throwable := newHostObject(t, runtime, "java/lang/Throwable")
+	message := newJavaString(t, runtime, "boom")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, throwable))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, message))
 	if _, err := runtime.handleThrowableMethod(
 		"<init>",
 		"(Ljava/lang/String;)V",
@@ -6391,9 +4316,7 @@ func TestKTFRareJavaAndMediaCompatibilityMethods(t *testing.T) {
 		"getMessage",
 		"()Ljava/lang/String;",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if gotMessage != message {
 		t.Fatalf(
 			"Throwable.getMessage = 0x%08x, want 0x%08x",
@@ -6414,24 +4337,14 @@ func TestKTFRareJavaAndMediaCompatibilityMethods(t *testing.T) {
 		t.Fatalf("Throwable.printStackTrace trace = %q", trace)
 	}
 
-	clip, err := runtime.NewHostJavaObject("org/kwis/msp/media/Clip")
-	if err != nil {
-		t.Fatal(err)
-	}
+	clip := newHostObject(t, runtime, "org/kwis/msp/media/Clip")
 	if runtime.Pkg.Resources == nil {
 		runtime.Pkg.Resources = make(map[string][]byte)
 	}
 	runtime.Pkg.Resources["snd/test.mmf"] = []byte{0x4d, 0x4d, 0x4d, 0x44}
-	resourceName, err := runtime.NewJavaString("/snd/test.mmf")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, clip); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, resourceName); err != nil {
-		t.Fatal(err)
-	}
+	resourceName := newJavaString(t, runtime, "/snd/test.mmf")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, clip))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, resourceName))
 	if _, err := runtime.handleMediaMethod(
 		"<init>",
 		"(Ljava/lang/String;)V",
@@ -6444,58 +4357,26 @@ func TestKTFRareJavaAndMediaCompatibilityMethods(t *testing.T) {
 	) {
 		t.Fatalf("Clip resource constructor data = %x", runtime.clips[clip].data)
 	}
-	clip, err = runtime.NewHostJavaObject("org/kwis/msp/media/Clip")
-	if err != nil {
-		t.Fatal(err)
-	}
+	clip = newHostObject(t, runtime, "org/kwis/msp/media/Clip")
 	sourceData, err := runtime.newJavaByteArray([]byte{1, 2, 3, 4})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, clip); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, sourceData); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR3, 1); err != nil {
-		t.Fatal(err)
-	}
-	stack, err := runtime.AllocateWords(1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(stack, []uint32{2}); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterSP, stack); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, clip))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, sourceData))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, 1))
+	stack := allocWords(t, runtime, 1)
+	check(t, runtime.writeWords(stack, []uint32{2}))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterSP, stack))
 	written, err := runtime.handleMediaMethod("putData", "([BII)I")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	targetData, err := runtime.newJavaByteArray(make([]byte, 4))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, targetData); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR3, 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(stack, []uint32{3}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, targetData))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, 1))
+	check(t, runtime.writeWords(stack, []uint32{3}))
 	copied, err := runtime.handleMediaMethod("getData", "([BII)I")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	gotData, err := runtime.readJavaByteArray(targetData)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if written != 2 || copied != 2 ||
 		!bytes.Equal(gotData, []byte{0, 2, 3, 0}) {
 		t.Fatalf(
@@ -6505,16 +4386,12 @@ func TestKTFRareJavaAndMediaCompatibilityMethods(t *testing.T) {
 			gotData,
 		)
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, clip); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, clip))
 	if _, err := runtime.handleMediaMethod("clearData", "()V"); err != nil {
 		t.Fatal(err)
 	}
 	available, err := runtime.handleMediaMethod("availableDataSize", "()I")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if available != 0 {
 		t.Fatalf("BaseClip availableDataSize after clear = %d", available)
 	}
@@ -6526,53 +4403,33 @@ func TestKTFWIPICKernelGetDLLInterfaceRegistersUserMemory(t *testing.T) {
 		BSSSize:    64,
 		Client:     []byte{0x70, 0x47},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.MapImageAndHost())
 
 	name, err := runtime.allocateBytes(
 		[]byte("MXUserMemInterf"),
 		true,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	returnMajor, err := runtime.AllocateWords(1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	returnMinor, err := runtime.AllocateWords(1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	returnMajor := allocWords(t, runtime, 1)
+	returnMinor := allocWords(t, runtime, 1)
 	stack := guest.DefaultStackBase + 0x100
-	if err := runtime.WriteU32(stack, returnMinor); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.WriteU32(stack, returnMinor))
 	for register, value := range []uint32{
 		name,
 		^uint32(0),
 		^uint32(0),
 		returnMajor,
 	} {
-		if err := runtime.CPU.WriteRegister(
+		check(t, runtime.CPU.WriteRegister(
 			cpu.RegisterR0+uint32(register),
 			value,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterSP, stack); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterSP, stack))
 	address, err := ktfKernelGetDLLInterface(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if address == 0 || address != runtime.mxUserMemInterface {
 		t.Fatalf(
 			"MXUserMem interface = 0x%08x, cached 0x%08x",
@@ -6580,21 +4437,13 @@ func TestKTFWIPICKernelGetDLLInterfaceRegistersUserMemory(t *testing.T) {
 			runtime.mxUserMemInterface,
 		)
 	}
-	versions, err := runtime.ReadWords(returnMajor, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	minor, err := runtime.ReadU32(returnMinor)
-	if err != nil {
-		t.Fatal(err)
-	}
+	versions := readWords(t, runtime, returnMajor, 1)
+	minor := readU32(t, runtime, returnMinor)
 	if versions[0] != 1 || minor != 0 {
 		t.Fatalf("MXUserMem interface version = %d.%d", versions[0], minor)
 	}
 	again, err := runtime.lookupInterface("MXUserMemInterf")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if again != address {
 		t.Fatalf(
 			"repeated MXUserMem interface = 0x%08x, want 0x%08x",
@@ -6603,10 +4452,7 @@ func TestKTFWIPICKernelGetDLLInterfaceRegistersUserMemory(t *testing.T) {
 		)
 	}
 
-	callbacks, err := runtime.ReadWords(address, 4)
-	if err != nil {
-		t.Fatal(err)
-	}
+	callbacks := readWords(t, runtime, address, 4)
 	host, ok := runtime.hostCalls[callbacks[0]&^1]
 	if !ok {
 		t.Fatalf("MXUserMem add callback 0x%08x is not registered", callbacks[0])
@@ -6615,12 +4461,8 @@ func TestKTFWIPICKernelGetDLLInterfaceRegistersUserMemory(t *testing.T) {
 		regionBase = ImageBase + 8
 		regionSize = 32
 	)
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, regionBase); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, regionSize); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, regionBase))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, regionSize))
 	if value, err := host.handler(context.Background(), runtime); err != nil {
 		t.Fatal(err)
 	} else if value != 0 {
@@ -6637,16 +4479,10 @@ func TestKTFWIPICKernelGetDLLInterfaceRegistersUserMemory(t *testing.T) {
 	if allocate.handler == nil {
 		t.Fatalf("MXUserMem allocate callback 0x%08x is not registered", callbacks[1])
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, regionBase); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, 7); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, regionBase))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, 7))
 	allocation, err := allocate.handler(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if allocation != regionBase ||
 		runtime.incrementalHeaps[regionBase].Allocations[allocation] != 8 {
 		t.Fatalf(
@@ -6660,12 +4496,8 @@ func TestKTFWIPICKernelGetDLLInterfaceRegistersUserMemory(t *testing.T) {
 	if free.handler == nil {
 		t.Fatalf("MXUserMem free callback 0x%08x is not registered", callbacks[3])
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, regionBase); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, allocation); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, regionBase))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, allocation))
 	if value, err := free.handler(context.Background(), runtime); err != nil {
 		t.Fatal(err)
 	} else if value != 0 {
@@ -6687,25 +4519,17 @@ func TestKTFMXUserMemReAddReclaimsTheWholeArena(t *testing.T) {
 		BSSSize:    128,
 		Client:     []byte{0x70, 0x47},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.MapImageAndHost())
 	const (
 		regionBase = uint32(ImageBase + 8)
 		regionSize = uint32(64)
 	)
 	add := func() {
 		t.Helper()
-		if err := runtime.CPU.WriteRegister(cpu.RegisterR0, regionBase); err != nil {
-			t.Fatal(err)
-		}
-		if err := runtime.CPU.WriteRegister(cpu.RegisterR1, regionSize); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, regionBase))
+		check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, regionSize))
 		if _, err := ktfIncrementalMemoryAdd(
 			context.Background(),
 			runtime,
@@ -6715,19 +4539,13 @@ func TestKTFMXUserMemReAddReclaimsTheWholeArena(t *testing.T) {
 	}
 	allocate := func(size uint32) uint32 {
 		t.Helper()
-		if err := runtime.CPU.WriteRegister(cpu.RegisterR0, regionBase); err != nil {
-			t.Fatal(err)
-		}
-		if err := runtime.CPU.WriteRegister(cpu.RegisterR1, size); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, regionBase))
+		check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, size))
 		address, err := ktfIncrementalMemoryAllocate(
 			context.Background(),
 			runtime,
 		)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		return address
 	}
 
@@ -6758,51 +4576,26 @@ func TestKTFWIPICKernelMemoryIDCopiesResourceToIndirectBuffer(t *testing.T) {
 			"assets/18.BAR": resource,
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.MapImageAndHost())
 
 	name, err := runtime.allocateBytes([]byte("18.bar"), true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sizeAddress, err := runtime.AllocateWords(1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, name); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, sizeAddress); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	sizeAddress := allocWords(t, runtime, 1)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, name))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, sizeAddress))
 	resourceID, err := ktfGetResourceID(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
-	size, err := runtime.ReadU32(sizeAddress)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	size := readU32(t, runtime, sizeAddress)
 	if resourceID == 0 || size != uint32(len(resource)) {
 		t.Fatalf("resource ID = %d, size = %d", resourceID, size)
 	}
 
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, size); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, size))
 	memoryID, err := ktfKernelAllocate(true)(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
-	header, err := runtime.ReadWords(memoryID, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	header := readWords(t, runtime, memoryID, 2)
 	allocation := runtime.wipicMemory[memoryID]
 	if allocation.data == 0 ||
 		allocation.base != header[0] ||
@@ -6817,20 +4610,16 @@ func TestKTFWIPICKernelMemoryIDCopiesResourceToIndirectBuffer(t *testing.T) {
 		)
 	}
 	before := make([]byte, len(resource))
-	if err := runtime.CPU.ReadMemory(allocation.data, before); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(allocation.data, before))
 	if !bytes.Equal(before, make([]byte, len(resource))) {
 		t.Fatalf("calloc data before resource copy = %x", before)
 	}
 
 	for register, value := range []uint32{resourceID, memoryID, size} {
-		if err := runtime.CPU.WriteRegister(
+		check(t, runtime.CPU.WriteRegister(
 			cpu.RegisterR0+uint32(register),
 			value,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
 	if result, err := ktfGetResource(context.Background(), runtime); err != nil {
 		t.Fatal(err)
@@ -6838,20 +4627,14 @@ func TestKTFWIPICKernelMemoryIDCopiesResourceToIndirectBuffer(t *testing.T) {
 		t.Fatalf("MC_knlGetResource = 0x%08x", result)
 	}
 	got := make([]byte, len(resource))
-	if err := runtime.CPU.ReadMemory(allocation.data, got); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(allocation.data, got))
 	if !bytes.Equal(got, resource) {
 		t.Fatalf("resource at indirect buffer = %x, want %x", got, resource)
 	}
 
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, memoryID); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, memoryID))
 	freeResult, err := ktfKernelFree(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if freeResult != memoryID {
 		t.Fatalf(
 			"MC_knlFree residual r0 = 0x%08x, want memory ID 0x%08x",
@@ -6863,20 +4646,13 @@ func TestKTFWIPICKernelMemoryIDCopiesResourceToIndirectBuffer(t *testing.T) {
 		t.Fatalf("freed WIPI-C memory ID 0x%08x remains registered", memoryID)
 	}
 
-	guestHandle, err := runtime.Heap.Allocate(size+12, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.WriteU32(guestHandle, guestHandle+4); err != nil {
-		t.Fatal(err)
-	}
+	guestHandle := heapAlloc(t, runtime, size+12, true)
+	check(t, runtime.WriteU32(guestHandle, guestHandle+4))
 	for register, value := range []uint32{resourceID, guestHandle, size} {
-		if err := runtime.CPU.WriteRegister(
+		check(t, runtime.CPU.WriteRegister(
 			cpu.RegisterR0+uint32(register),
 			value,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
 	if result, err := ktfGetResource(context.Background(), runtime); err != nil {
 		t.Fatal(err)
@@ -6892,9 +4668,7 @@ func TestKTFWIPICKernelMemoryIDCopiesResourceToIndirectBuffer(t *testing.T) {
 		)
 	}
 	got = make([]byte, len(resource))
-	if err := runtime.CPU.ReadMemory(guestHandle+12, got); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(guestHandle+12, got))
 	if !bytes.Equal(got, resource) {
 		t.Fatalf(
 			"resource at guest indirect buffer = %x, want %x",
@@ -6903,17 +4677,12 @@ func TestKTFWIPICKernelMemoryIDCopiesResourceToIndirectBuffer(t *testing.T) {
 		)
 	}
 
-	direct, err := runtime.Heap.Allocate(size, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	direct := heapAlloc(t, runtime, size, true)
 	for register, value := range []uint32{resourceID, direct, size} {
-		if err := runtime.CPU.WriteRegister(
+		check(t, runtime.CPU.WriteRegister(
 			cpu.RegisterR0+uint32(register),
 			value,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
 	if result, err := ktfGetResource(context.Background(), runtime); err != nil {
 		t.Fatal(err)
@@ -6921,102 +4690,53 @@ func TestKTFWIPICKernelMemoryIDCopiesResourceToIndirectBuffer(t *testing.T) {
 		t.Fatalf("MC_knlGetResource direct buffer = 0x%08x", result)
 	}
 	got = make([]byte, len(resource))
-	if err := runtime.CPU.ReadMemory(direct, got); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(direct, got))
 	if !bytes.Equal(got, resource) {
 		t.Fatalf("resource at direct buffer = %x, want %x", got, resource)
 	}
 }
 
 func TestKTFWIPICKernelSprintkFormatsResourcePath(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	destination, err := runtime.Heap.Allocate(128, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	destination := heapAlloc(t, runtime, 128, true)
 	format, err := runtime.allocateBytes([]byte("data/%s.%04x:%d"), true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	name, err := runtime.allocateBytes([]byte("IMG_GFONT_CHO1"), true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	for register, value := range []uint32{
 		destination,
 		format,
 		name,
 		0x2a,
 	} {
-		if err := runtime.CPU.WriteRegister(
+		check(t, runtime.CPU.WriteRegister(
 			cpu.RegisterR0+uint32(register),
 			value,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
-	stack, err := runtime.Heap.Allocate(4, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(stack, []uint32{^uint32(6)}); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterSP, stack); err != nil {
-		t.Fatal(err)
-	}
+	stack := heapAlloc(t, runtime, 4, true)
+	check(t, runtime.writeWords(stack, []uint32{^uint32(6)}))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterSP, stack))
 	length, err := ktfKernelSprintk(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	const want = "data/IMG_GFONT_CHO1.002a:-7"
 	got, err := runtime.readCString(destination, 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if got != want || length != uint32(len(want)) {
 		t.Fatalf("sprintk = %q, %d; want %q, %d", got, length, want, len(want))
 	}
 }
 
 func TestKTFWIPICKernelSystemPropertyRoundTrip(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
 	key, err := runtime.allocateBytes([]byte("PHONEMODEL"), true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	output, err := runtime.Heap.Allocate(32, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	output := heapAlloc(t, runtime, 32, true)
 	for register, value := range []uint32{key, output, 32} {
-		if err := runtime.CPU.WriteRegister(
+		check(t, runtime.CPU.WriteRegister(
 			cpu.RegisterR0+uint32(register),
 			value,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
 	if result, err := ktfKernelGetSystemProperty(
 		context.Background(),
@@ -7029,16 +4749,12 @@ func TestKTFWIPICKernelSystemPropertyRoundTrip(t *testing.T) {
 		t.Fatalf("PHONEMODEL = %q, err=%v", value, err)
 	}
 	value, err := runtime.allocateBytes([]byte("test-value"), true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	for register, word := range []uint32{key, value} {
-		if err := runtime.CPU.WriteRegister(
+		check(t, runtime.CPU.WriteRegister(
 			cpu.RegisterR0+uint32(register),
 			word,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
 	if result, err := ktfKernelSetSystemProperty(
 		context.Background(),
@@ -7061,53 +4777,33 @@ func TestKTFWIPICFileRoundTrip(t *testing.T) {
 		reflect.ValueOf(ktfWIPICFileIsExist).Pointer() {
 		t.Fatal("WIPI-C filesystem slot 16 is not MC_fsIsExist")
 	}
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
 
 	name, err := runtime.allocateBytes([]byte("save.dat"), true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	for register, value := range []uint32{
 		name,
 		ktfWIPICFileReadWrite,
 		1,
 	} {
-		if err := runtime.CPU.WriteRegister(
+		check(t, runtime.CPU.WriteRegister(
 			cpu.RegisterR0+uint32(register),
 			value,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
 	handle, err := ktfWIPICFileOpen(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if handle == 0 || int32(handle) < 0 {
 		t.Fatalf("MC_fsOpen = 0x%08x", handle)
 	}
 
 	input, err := runtime.allocateBytes([]byte{1, 2, 3, 4}, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	for register, value := range []uint32{handle, input, 4} {
-		if err := runtime.CPU.WriteRegister(
+		check(t, runtime.CPU.WriteRegister(
 			cpu.RegisterR0+uint32(register),
 			value,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
 	if written, err := ktfWIPICFileWrite(
 		context.Background(),
@@ -7119,12 +4815,10 @@ func TestKTFWIPICFileRoundTrip(t *testing.T) {
 	}
 
 	for register, value := range []uint32{handle, 0, 0} {
-		if err := runtime.CPU.WriteRegister(
+		check(t, runtime.CPU.WriteRegister(
 			cpu.RegisterR0+uint32(register),
 			value,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
 	if position, err := ktfWIPICFileSeek(
 		context.Background(),
@@ -7136,16 +4830,12 @@ func TestKTFWIPICFileRoundTrip(t *testing.T) {
 	}
 
 	output, err := runtime.allocateBytes(make([]byte, 4), false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	for register, value := range []uint32{handle, output, 4} {
-		if err := runtime.CPU.WriteRegister(
+		check(t, runtime.CPU.WriteRegister(
 			cpu.RegisterR0+uint32(register),
 			value,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
 	if read, err := ktfWIPICFileRead(
 		context.Background(),
@@ -7156,16 +4846,12 @@ func TestKTFWIPICFileRoundTrip(t *testing.T) {
 		t.Fatalf("MC_fsRead = %d", read)
 	}
 	got := make([]byte, 4)
-	if err := runtime.CPU.ReadMemory(output, got); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(output, got))
 	if !bytes.Equal(got, []byte{1, 2, 3, 4}) {
 		t.Fatalf("MC_fsRead bytes = %v", got)
 	}
 
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, handle); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, handle))
 	if result, err := ktfWIPICFileClose(
 		context.Background(),
 		runtime,
@@ -7194,38 +4880,22 @@ func TestKTFWIPICMediaMA3LoadAndPlayback(t *testing.T) {
 		}
 	}
 
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
 	writeParameters := func(values ...uint32) {
 		t.Helper()
 		for index, value := range values {
-			if err := runtime.CPU.WriteRegister(
+			check(t, runtime.CPU.WriteRegister(
 				cpu.RegisterR0+uint32(index),
 				value,
-			); err != nil {
-				t.Fatal(err)
-			}
+			))
 		}
 	}
 
 	mediaType, err := runtime.allocateBytes([]byte("Yamaha_MA3"), true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	writeParameters(mediaType, 4096, ImageBase|1)
 	handle, err := ktfWIPICMediaCreate(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	clip := runtime.wipicMediaClips[handle]
 	serviceID := runtime.wipicMediaServices[handle]
 	if handle == 0 || clip == nil || serviceID == 0 ||
@@ -7242,9 +4912,7 @@ func TestKTFWIPICMediaMA3LoadAndPlayback(t *testing.T) {
 
 	source := []byte("MMMD-test")
 	input, err := runtime.allocateBytes(source, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	writeParameters(handle)
 	if result, err := ktfWIPICMediaClearData(
 		context.Background(),
@@ -7268,9 +4936,7 @@ func TestKTFWIPICMediaMA3LoadAndPlayback(t *testing.T) {
 		)
 	}
 	stored, err := runtime.Services.Media.Source(runtime.ServiceOwner, serviceID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !bytes.Equal(stored, source) {
 		t.Fatalf("WIPI-C media source = %q", stored)
 	}
@@ -7283,9 +4949,7 @@ func TestKTFWIPICMediaMA3LoadAndPlayback(t *testing.T) {
 		t.Fatalf("play result=%08x err=%v", result, err)
 	}
 	info, err := runtime.Services.Media.Info(runtime.ServiceOwner, serviceID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if info.State != shared.ClipPlaying || info.RemainingPlays != -1 {
 		t.Fatalf("WIPI-C media playback = %+v", info)
 	}
@@ -7315,33 +4979,19 @@ func TestKTFWIPICDirectoryOperationsUseSharedStorage(t *testing.T) {
 		}
 	}
 
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
 	writeParameters := func(values ...uint32) {
 		t.Helper()
 		for index, value := range values {
-			if err := runtime.CPU.WriteRegister(
+			check(t, runtime.CPU.WriteRegister(
 				cpu.RegisterR0+uint32(index),
 				value,
-			); err != nil {
-				t.Fatal(err)
-			}
+			))
 		}
 	}
 
 	directory, err := runtime.allocateBytes([]byte("/saves"), true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	writeParameters(directory)
 	if result, err := ktfWIPICFileMakeDirectory(
 		context.Background(),
@@ -7356,18 +5006,14 @@ func TestKTFWIPICDirectoryOperationsUseSharedStorage(t *testing.T) {
 	); err != nil || result != 0 {
 		t.Fatalf("MC_fsIsExist directory result=%08x err=%v", result, err)
 	}
-	if err := runtime.Services.Storage.WriteFile(
+	check(t, runtime.Services.Storage.WriteFile(
 		shared.NamespacePrivate,
 		"/saves/state.dat",
 		[]byte("state"),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 
 	output, err := runtime.allocateBytes(make([]byte, 64), false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	writeParameters(directory, output, 64)
 	if result, err := ktfWIPICFileList(
 		context.Background(),
@@ -7376,9 +5022,7 @@ func TestKTFWIPICDirectoryOperationsUseSharedStorage(t *testing.T) {
 		t.Fatalf("MC_fsList result=%08x err=%v", result, err)
 	}
 	listed := make([]byte, len("state.dat")+2)
-	if err := runtime.CPU.ReadMemory(output, listed); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(output, listed))
 	if want := append([]byte("state.dat"), 0, 0); !bytes.Equal(listed, want) {
 		t.Fatalf("MC_fsList bytes = %v; want %v", listed, want)
 	}
@@ -7396,12 +5040,10 @@ func TestKTFWIPICDirectoryOperationsUseSharedStorage(t *testing.T) {
 	); err != nil || result != ktfWIPICError {
 		t.Fatalf("remove nonempty directory result=%08x err=%v", result, err)
 	}
-	if err := runtime.Services.Storage.Delete(
+	check(t, runtime.Services.Storage.Delete(
 		shared.NamespacePrivate,
 		"/saves/state.dat",
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	writeParameters(directory)
 	if result, err := ktfWIPICFileRemoveDirectory(
 		context.Background(),
@@ -7424,13 +5066,9 @@ func TestKTFMetadataFixedWidthRoundTripPreservesIncrementalMemory(t *testing.T) 
 		TaskCursor: 1,
 	}
 	encoded, err := shared.MarshalStateComponent(input)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	var decoded ktfMetadataSnapshot
-	if err := shared.UnmarshalStateComponent(encoded, &decoded); err != nil {
-		t.Fatal(err)
-	}
+	check(t, shared.UnmarshalStateComponent(encoded, &decoded))
 	if !reflect.DeepEqual(decoded, input) {
 		t.Fatalf("KTF metadata round-trip:\ngot  %+v\nwant %+v", decoded, input)
 	}
@@ -7438,12 +5076,10 @@ func TestKTFMetadataFixedWidthRoundTripPreservesIncrementalMemory(t *testing.T) 
 		{Base: 0x1000, Size: 0x100},
 		{Base: 0x2000, Size: 0x200},
 	}
-	if err := validateKTFIncrementalMemory(
+	check(t, validateKTFIncrementalMemory(
 		decoded.IncrementalMemory,
 		heaps,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	heaps[1].Size++
 	if err := validateKTFIncrementalMemory(
 		decoded.IncrementalMemory,
@@ -7454,36 +5090,15 @@ func TestKTFMetadataFixedWidthRoundTripPreservesIncrementalMemory(t *testing.T) 
 }
 
 func TestKTFWIPICScreenFramebufferLayoutAndFill(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
 	runtime.frame = image.NewRGBA(image.Rect(0, 0, 8, 6))
 
 	framebufferAddress, err := runtime.EnsureWIPICScreenFramebuffer()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	framebuffer := runtime.wipicFramebuffers[framebufferAddress]
-	objectBody, err := runtime.ReadU32(framebufferAddress)
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, err := runtime.ReadWords(objectBody, 7)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pixelHeader, err := runtime.ReadU32(body[6])
-	if err != nil {
-		t.Fatal(err)
-	}
+	objectBody := readU32(t, runtime, framebufferAddress)
+	body := readWords(t, runtime, objectBody, 7)
+	pixelHeader := readU32(t, runtime, body[6])
 	if framebuffer == nil ||
 		objectBody != framebuffer.body ||
 		body[0] != framebuffer.body ||
@@ -7500,49 +5115,31 @@ func TestKTFWIPICScreenFramebufferLayoutAndFill(t *testing.T) {
 		)
 	}
 
-	graphicsContext, err := runtime.AllocateWords(15)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, graphicsContext); err != nil {
-		t.Fatal(err)
-	}
+	graphicsContext := allocWords(t, runtime, 15)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, graphicsContext))
 	if _, err := ktfWIPICGraphicsInitContext(
 		context.Background(),
 		runtime,
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.WriteU32(graphicsContext+20, 0xf800); err != nil {
-		t.Fatal(err)
-	}
-	stack, err := runtime.AllocateWords(2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(stack, []uint32{2, graphicsContext}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.WriteU32(graphicsContext+20, 0xf800))
+	stack := allocWords(t, runtime, 2)
+	check(t, runtime.writeWords(stack, []uint32{2, graphicsContext}))
 	for register, value := range []uint32{framebufferAddress, 2, 1, 3} {
-		if err := runtime.CPU.WriteRegister(
+		check(t, runtime.CPU.WriteRegister(
 			cpu.RegisterR0+uint32(register),
 			value,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterSP, stack); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterSP, stack))
 	if _, err := ktfWIPICGraphicsFillRect(
 		context.Background(),
 		runtime,
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.presentWIPICFramebuffer(framebufferAddress); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.presentWIPICFramebuffer(framebufferAddress))
 	if got := runtime.frame.RGBAAt(2, 1); got != (color.RGBA{
 		R: 0xff,
 		A: 0xff,
@@ -7558,47 +5155,25 @@ func TestKTFWIPICScreenFramebufferLayoutAndFill(t *testing.T) {
 }
 
 func TestKTFJavaPresentationConsumesPendingWIPICScreen(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
 	runtime.frame = image.NewRGBA(image.Rect(0, 0, 8, 6))
 	graphics, err := runtime.EnsureScreenGraphics()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.syncKTFGraphics(graphics); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.syncKTFGraphics(graphics))
 	framebufferAddress, err := runtime.EnsureWIPICScreenFramebuffer()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	framebuffer := runtime.wipicFramebuffers[framebufferAddress]
 	var pixel [2]byte
 	binary.LittleEndian.PutUint16(pixel[:], 0xf800)
-	if err := runtime.CPU.WriteMemory(
+	check(t, runtime.CPU.WriteMemory(
 		framebuffer.pixels+uint32(framebuffer.stride+2*2),
 		pixel[:],
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.commitKTFWIPICFramebuffer(framebufferAddress); err != nil {
-		t.Fatal(err)
-	}
+	))
+	check(t, runtime.commitKTFWIPICFramebuffer(framebufferAddress))
 	if !runtime.WipicScreenPending {
 		t.Fatal("WIPI-C screen write was not queued for the Java paint boundary")
 	}
-	if err := runtime.RecordPresentation(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.RecordPresentation())
 	if got := runtime.frame.RGBAAt(2, 1); got != (color.RGBA{
 		R: 0xff,
 		A: 0xff,
@@ -7627,22 +5202,10 @@ func TestKTFJavaPresentationConsumesPendingWIPICScreen(t *testing.T) {
 // read+convert. The commit only queues the write; the surface catches up when it
 // is actually consumed (present / Java paint boundary).
 func TestKTFWIPICCommitDefersSurfaceSync(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
 	runtime.frame = image.NewRGBA(image.Rect(0, 0, 8, 6))
 	framebufferAddress, err := runtime.EnsureWIPICScreenFramebuffer()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	framebuffer := runtime.wipicFramebuffers[framebufferAddress]
 	surface := runtime.wipicSurfaceServices[framebufferAddress]
 	if surface == 0 {
@@ -7650,31 +5213,21 @@ func TestKTFWIPICCommitDefersSurfaceSync(t *testing.T) {
 	}
 	var pixel [2]byte
 	binary.LittleEndian.PutUint16(pixel[:], 0xf800)
-	if err := runtime.CPU.WriteMemory(
+	check(t, runtime.CPU.WriteMemory(
 		framebuffer.pixels+uint32(framebuffer.stride+2*2),
 		pixel[:],
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.commitKTFWIPICFramebuffer(framebufferAddress); err != nil {
-		t.Fatal(err)
-	}
+	))
+	check(t, runtime.commitKTFWIPICFramebuffer(framebufferAddress))
 	surfaceOffset := (1*framebuffer.width + 2) * 4
 	deferred, err := runtime.Services.Graphics.RGBA(runtime.ServiceOwner, surface)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if deferred[surfaceOffset] == 0xff {
 		t.Fatal("commit eagerly synced the framebuffer; sync must be deferred to consumption")
 	}
 	// The consumer path (here, an explicit sync) is what publishes the pixel.
-	if err := runtime.syncKTFWIPICFramebuffer(framebufferAddress); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.syncKTFWIPICFramebuffer(framebufferAddress))
 	published, err := runtime.Services.Graphics.RGBA(runtime.ServiceOwner, surface)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if published[surfaceOffset] != 0xff {
 		t.Fatalf(
 			"synced shared pixel red = %#02x, want 0xff",
@@ -7684,77 +5237,47 @@ func TestKTFWIPICCommitDefersSurfaceSync(t *testing.T) {
 }
 
 func TestKTFWIPICOffscreenFramebufferLifecycle(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, 32); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, 24); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, 32))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, 24))
 	object, err := ktfWIPICGraphicsCreateOffscreenFramebuffer(
 		context.Background(),
 		runtime,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	framebuffer := runtime.wipicFramebuffers[object]
 	if framebuffer == nil || framebuffer.screen ||
 		framebuffer.width != 32 || framebuffer.height != 24 {
 		t.Fatalf("offscreen framebuffer = %+v", framebuffer)
 	}
 	screen, err := runtime.EnsureWIPICScreenFramebuffer()
-	if err != nil {
-		t.Fatal(err)
-	}
-	contextAddress, err := runtime.Heap.Allocate(60, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	contextAddress := heapAlloc(t, runtime, 60, true)
 	if err := runtime.writeWords(contextAddress, []uint32{
 		1, 0, 0, 32, 24, 0xffff,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	for register, value := range []uint32{object, 0, 0, 32} {
-		if err := runtime.CPU.WriteRegister(
+		check(t, runtime.CPU.WriteRegister(
 			cpu.RegisterR0+uint32(register),
 			value,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
-	stack, err := runtime.Heap.Allocate(20, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	stack := heapAlloc(t, runtime, 20, true)
 	if err := runtime.writeWords(stack, []uint32{
 		24, contextAddress, 0, 0, 0,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterSP, stack); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterSP, stack))
 	if _, err := ktfWIPICGraphicsFillRect(
 		context.Background(),
 		runtime,
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.presentWIPICFramebuffer(object); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.presentWIPICFramebuffer(object))
 	screenSurface := runtime.wipicSurfaceServices[screen]
 	if got := runtime.Services.Graphics.Screen(); got != screenSurface {
 		t.Fatalf("presented surface = %s, want screen %s", got, screenSurface)
@@ -7768,12 +5291,10 @@ func TestKTFWIPICOffscreenFramebufferLifecycle(t *testing.T) {
 		t.Fatalf("presented offscreen pixel = %#v", got)
 	}
 	for register, value := range []uint32{screen, 0, 0, 32} {
-		if err := runtime.CPU.WriteRegister(
+		check(t, runtime.CPU.WriteRegister(
 			cpu.RegisterR0+uint32(register),
 			value,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
 	if err := runtime.writeWords(stack, []uint32{
 		24, object, 0, 0,
@@ -7787,21 +5308,17 @@ func TestKTFWIPICOffscreenFramebufferLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	var copied [2]byte
-	if err := runtime.CPU.ReadMemory(
+	check(t, runtime.CPU.ReadMemory(
 		runtime.wipicFramebuffers[screen].pixels,
 		copied[:],
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	if binary.LittleEndian.Uint16(copied[:]) != 0xffff {
 		t.Fatalf(
 			"copied offscreen pixel = %04x",
 			binary.LittleEndian.Uint16(copied[:]),
 		)
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, object); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, object))
 	if _, err := ktfWIPICGraphicsDestroyOffscreenFramebuffer(
 		context.Background(),
 		runtime,
@@ -7818,52 +5335,29 @@ func TestKTFWIPICImageDecodeAndProperties(t *testing.T) {
 	source := image.NewRGBA(image.Rect(0, 0, 2, 1))
 	source.SetRGBA(0, 0, color.RGBA{R: 0xff, A: 0xff})
 	source.SetRGBA(1, 0, color.RGBA{G: 0xff, A: 0xff})
-	if err := png.Encode(&encoded, source); err != nil {
-		t.Fatal(err)
-	}
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(
+	check(t, png.Encode(&encoded, source))
+	runtime := newTestRuntime(t)
+	check(t, runtime.CPU.WriteRegister(
 		cpu.RegisterR0,
 		uint32(encoded.Len()),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	memoryID, err := ktfKernelAllocate(true)(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteMemory(
+	check(t, err)
+	check(t, runtime.CPU.WriteMemory(
 		runtime.wipicMemory[memoryID].data,
 		encoded.Bytes(),
-	); err != nil {
-		t.Fatal(err)
-	}
-	output, err := runtime.AllocateWords(1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	))
+	output := allocWords(t, runtime, 1)
 	for register, value := range []uint32{
 		output,
 		memoryID,
 		0,
 		uint32(encoded.Len()),
 	} {
-		if err := runtime.CPU.WriteRegister(
+		check(t, runtime.CPU.WriteRegister(
 			cpu.RegisterR0+uint32(register),
 			value,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
 	if result, err := ktfWIPICGraphicsCreateImage(
 		context.Background(),
@@ -7871,17 +5365,10 @@ func TestKTFWIPICImageDecodeAndProperties(t *testing.T) {
 	); err != nil || result != 1 {
 		t.Fatalf("create image result=%08x err=%v", result, err)
 	}
-	object, err := runtime.ReadU32(output)
-	if err != nil {
-		t.Fatal(err)
-	}
+	object := readU32(t, runtime, output)
 	for index, want := range map[uint32]uint32{4: 2, 5: 1, 6: 16} {
-		if err := runtime.CPU.WriteRegister(cpu.RegisterR0, object); err != nil {
-			t.Fatal(err)
-		}
-		if err := runtime.CPU.WriteRegister(cpu.RegisterR1, index); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, object))
+		check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, index))
 		got, err := ktfWIPICGraphicsGetImageProperty(
 			context.Background(),
 			runtime,
@@ -7890,23 +5377,17 @@ func TestKTFWIPICImageDecodeAndProperties(t *testing.T) {
 			t.Fatalf("image property %d = %d, err=%v; want %d", index, got, err, want)
 		}
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, object); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, object))
 	framebufferObject, err := ktfWIPICGraphicsGetImageFramebuffer(
 		context.Background(),
 		runtime,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	var pixel [2]byte
-	if err := runtime.CPU.ReadMemory(
+	check(t, runtime.CPU.ReadMemory(
 		runtime.wipicFramebuffers[framebufferObject].pixels,
 		pixel[:],
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	if got := binary.LittleEndian.Uint16(pixel[:]); got != 0xf800 {
 		t.Fatalf("decoded red pixel = %04x", got)
 	}
@@ -7932,49 +5413,28 @@ func TestKTFWIPICImageDecodesBMP(t *testing.T) {
 	})
 	copy(encoded[62:], []byte{0x01, 0x00, 0x00, 0x00})
 
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(
+	runtime := newTestRuntime(t)
+	check(t, runtime.CPU.WriteRegister(
 		cpu.RegisterR0,
 		uint32(len(encoded)),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	memoryID, err := ktfKernelAllocate(true)(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteMemory(
+	check(t, err)
+	check(t, runtime.CPU.WriteMemory(
 		runtime.wipicMemory[memoryID].data,
 		encoded,
-	); err != nil {
-		t.Fatal(err)
-	}
-	output, err := runtime.AllocateWords(1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	))
+	output := allocWords(t, runtime, 1)
 	for register, value := range []uint32{
 		output,
 		memoryID,
 		0,
 		uint32(len(encoded)),
 	} {
-		if err := runtime.CPU.WriteRegister(
+		check(t, runtime.CPU.WriteRegister(
 			cpu.RegisterR0+uint32(register),
 			value,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
 	if result, err := ktfWIPICGraphicsCreateImage(
 		context.Background(),
@@ -7982,14 +5442,8 @@ func TestKTFWIPICImageDecodesBMP(t *testing.T) {
 	); err != nil || result != 1 {
 		t.Fatalf("create BMP image result=%08x err=%v", result, err)
 	}
-	object, err := runtime.ReadU32(output)
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, err := runtime.ReadU32(object)
-	if err != nil {
-		t.Fatal(err)
-	}
+	object := readU32(t, runtime, output)
+	body := readU32(t, runtime, object)
 	if got := runtime.wipicImages[object].body; body != got {
 		t.Fatalf("BMP image body = %08x; want %08x", body, got)
 	}
@@ -8007,9 +5461,7 @@ func TestKTFWIPICImageDecodesBMP(t *testing.T) {
 	}
 	framebuffer := runtime.wipicFramebuffers[framebufferObject]
 	var pixels [4]byte
-	if err := runtime.CPU.ReadMemory(framebuffer.pixels, pixels[:]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(framebuffer.pixels, pixels[:]))
 	if got := binary.LittleEndian.Uint16(pixels[:2]); got != 0xf800 {
 		t.Fatalf("decoded BMP red pixel = %04x", got)
 	}
@@ -8021,57 +5473,33 @@ func TestKTFWIPICImageDecodesBMP(t *testing.T) {
 func TestKTFWIPICEncodeImageReturnsIndirectBMPBuffer(t *testing.T) {
 	runtime := newScratchKTFRuntime(t)
 	framebufferObject, err := runtime.createWIPICFramebuffer(2, 1, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	framebuffer := runtime.wipicFramebuffers[framebufferObject]
 	var pixels [4]byte
 	binary.LittleEndian.PutUint16(pixels[0:2], 0xf800)
 	binary.LittleEndian.PutUint16(pixels[2:4], 0x07e0)
-	if err := runtime.CPU.WriteMemory(framebuffer.pixels, pixels[:]); err != nil {
-		t.Fatal(err)
-	}
-	lengthAddress, err := runtime.AllocateWords(1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stack, err := runtime.AllocateWords(2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(stack, []uint32{1, lengthAddress}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteMemory(framebuffer.pixels, pixels[:]))
+	lengthAddress := allocWords(t, runtime, 1)
+	stack := allocWords(t, runtime, 2)
+	check(t, runtime.writeWords(stack, []uint32{1, lengthAddress}))
 	for register, value := range []uint32{framebufferObject, 0, 0, 2} {
-		if err := runtime.CPU.WriteRegister(
+		check(t, runtime.CPU.WriteRegister(
 			cpu.RegisterR0+uint32(register),
 			value,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterSP, stack); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterSP, stack))
 	memoryID, err := ktfWIPICHandler(
 		ktfWIPICMasterGraphics,
 		35,
 	)(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	allocation, ok := runtime.wipicMemory[memoryID]
 	if memoryID == 0 || !ok {
 		t.Fatalf("encoded memory ID = 0x%08x, registered=%t", memoryID, ok)
 	}
-	words, err := runtime.ReadWords(memoryID, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	length, err := runtime.ReadU32(lengthAddress)
-	if err != nil {
-		t.Fatal(err)
-	}
+	words := readWords(t, runtime, memoryID, 2)
+	length := readU32(t, runtime, lengthAddress)
 	if words[0] != allocation.base || words[1] != allocation.size ||
 		length != allocation.size || allocation.data != allocation.base+8 {
 		t.Fatalf(
@@ -8085,9 +5513,7 @@ func TestKTFWIPICEncodeImageReturnsIndirectBMPBuffer(t *testing.T) {
 		t.Fatalf("encoded BMP size = %d", allocation.size)
 	}
 	header := make([]byte, 26)
-	if err := runtime.CPU.ReadMemory(allocation.data, header); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(allocation.data, header))
 	if string(header[:2]) != "BM" ||
 		binary.LittleEndian.Uint32(header[18:22]) != 2 ||
 		binary.LittleEndian.Uint32(header[22:26]) != 1 {
@@ -8096,61 +5522,35 @@ func TestKTFWIPICEncodeImageReturnsIndirectBMPBuffer(t *testing.T) {
 }
 
 func TestKTFWIPICDrawImageBlitsAndClips(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
 	destination, err := runtime.createWIPICFramebuffer(16, 16, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	source, err := runtime.createWIPICFramebuffer(4, 4, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	sourceBuffer := runtime.wipicFramebuffers[source]
 	pixels := make([]byte, sourceBuffer.stride*sourceBuffer.height)
 	for offset := 0; offset < len(pixels); offset += 2 {
 		binary.LittleEndian.PutUint16(pixels[offset:], 0x1234)
 	}
-	if err := runtime.CPU.WriteMemory(sourceBuffer.pixels, pixels); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteMemory(sourceBuffer.pixels, pixels))
 	const imageObject = uint32(0x4000)
 	runtime.wipicImages[imageObject] = &ktfWIPICImage{
 		object:      imageObject,
 		framebuffer: source,
 		alpha:       ktfWIPICImageAlpha{key: -1},
 	}
-	contextAddress, err := runtime.Heap.Allocate(60, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	contextAddress := heapAlloc(t, runtime, 60, true)
 
 	draw := func(clip []uint32) {
 		t.Helper()
-		if err := runtime.writeWords(contextAddress, clip); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.writeWords(contextAddress, clip))
 		for register, value := range []uint32{destination, 2, 3, 4} {
-			if err := runtime.CPU.WriteRegister(
+			check(t, runtime.CPU.WriteRegister(
 				cpu.RegisterR0+uint32(register),
 				value,
-			); err != nil {
-				t.Fatal(err)
-			}
+			))
 		}
-		stack, err := runtime.Heap.Allocate(20, true)
-		if err != nil {
-			t.Fatal(err)
-		}
+		stack := heapAlloc(t, runtime, 20, true)
 		if err := runtime.writeWords(stack, []uint32{
 			4,
 			imageObject,
@@ -8160,9 +5560,7 @@ func TestKTFWIPICDrawImageBlitsAndClips(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if err := runtime.CPU.WriteRegister(cpu.RegisterSP, stack); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteRegister(cpu.RegisterSP, stack))
 		if _, err := ktfWIPICGraphicsDrawImage(
 			context.Background(),
 			runtime,
@@ -8175,12 +5573,10 @@ func TestKTFWIPICDrawImageBlitsAndClips(t *testing.T) {
 		t.Helper()
 		buffer := runtime.wipicFramebuffers[destination]
 		var encoded [2]byte
-		if err := runtime.CPU.ReadMemory(
+		check(t, runtime.CPU.ReadMemory(
 			buffer.pixels+uint32(y*buffer.stride+x*2),
 			encoded[:],
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 		return binary.LittleEndian.Uint16(encoded[:])
 	}
 
@@ -8197,12 +5593,10 @@ func TestKTFWIPICDrawImageBlitsAndClips(t *testing.T) {
 	}
 
 	// A clip that admits one column must leave the rest of the run alone.
-	if err := runtime.CPU.WriteMemory(
+	check(t, runtime.CPU.WriteMemory(
 		runtime.wipicFramebuffers[destination].pixels,
 		make([]byte, runtime.wipicFramebuffers[destination].stride*16),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	draw([]uint32{1, 2, 3, 3, 7})
 	if got := pixelAt(2, 3); got != 0x1234 {
 		t.Fatalf("clipped pixel = %04x", got)
@@ -8229,83 +5623,51 @@ func TestKTFColorKeyMagentaFamily(t *testing.T) {
 // the destination showing through wherever the source is the key color, the
 // way 이노티아's signal and battery icons draw over the title bar.
 func TestKTFWIPICDrawImageKeysOutMagenta(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
 	const (
 		background = uint16(0x001f) // blue, already on the destination
 		sprite     = uint16(0x07e0) // green, the opaque icon pixels
 		key        = uint16(0xf81f) // magenta, the transparent background
 	)
 	destination, err := runtime.createWIPICFramebuffer(8, 8, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	destinationBuffer := runtime.wipicFramebuffers[destination]
 	filled := make([]byte, destinationBuffer.stride*destinationBuffer.height)
 	for offset := 0; offset < len(filled); offset += 2 {
 		binary.LittleEndian.PutUint16(filled[offset:], background)
 	}
-	if err := runtime.CPU.WriteMemory(destinationBuffer.pixels, filled); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteMemory(destinationBuffer.pixels, filled))
 	source, err := runtime.createWIPICFramebuffer(2, 2, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	sourceBuffer := runtime.wipicFramebuffers[source]
 	sourcePixels := []uint16{key, sprite, sprite, sprite}
 	sourceBytes := make([]byte, sourceBuffer.stride*sourceBuffer.height)
 	for i, pixel := range sourcePixels {
 		binary.LittleEndian.PutUint16(sourceBytes[(i/2)*sourceBuffer.stride+(i%2)*2:], pixel)
 	}
-	if err := runtime.CPU.WriteMemory(sourceBuffer.pixels, sourceBytes); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteMemory(sourceBuffer.pixels, sourceBytes))
 	const imageObject = uint32(0x4000)
 	runtime.wipicImages[imageObject] = &ktfWIPICImage{
 		object:      imageObject,
 		framebuffer: source,
 		alpha:       ktfWIPICImageAlpha{key: int32(key)},
 	}
-	contextAddress, err := runtime.Heap.Allocate(60, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	contextAddress := heapAlloc(t, runtime, 60, true)
 	for register, value := range []uint32{destination, 1, 1, 2} {
-		if err := runtime.CPU.WriteRegister(cpu.RegisterR0+uint32(register), value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteRegister(cpu.RegisterR0+uint32(register), value))
 	}
-	stack, err := runtime.Heap.Allocate(20, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(stack, []uint32{2, imageObject, 0, 0, contextAddress}); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterSP, stack); err != nil {
-		t.Fatal(err)
-	}
+	stack := heapAlloc(t, runtime, 20, true)
+	check(t, runtime.writeWords(stack, []uint32{2, imageObject, 0, 0, contextAddress}))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterSP, stack))
 	if _, err := ktfWIPICGraphicsDrawImage(context.Background(), runtime); err != nil {
 		t.Fatal(err)
 	}
 	pixelAt := func(x, y int) uint16 {
 		var encoded [2]byte
-		if err := runtime.CPU.ReadMemory(
+		check(t, runtime.CPU.ReadMemory(
 			destinationBuffer.pixels+uint32(y*destinationBuffer.stride+x*2),
 			encoded[:],
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 		return binary.LittleEndian.Uint16(encoded[:])
 	}
 	if got := pixelAt(1, 1); got != background {
@@ -8329,82 +5691,53 @@ func TestKTFWIPICDrawStringPaintsMeasuredRun(t *testing.T) {
 		ClientName: "client.bin0",
 		Client:     []byte{0x70, 0x47},
 	}, nil, ProfileID, "neodgm", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, 64); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, 32); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.MapImageAndHost())
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, 64))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, 32))
 	object, err := ktfWIPICGraphicsCreateOffscreenFramebuffer(
 		context.Background(),
 		runtime,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	contextAddress, err := runtime.Heap.Allocate(60, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	contextAddress := heapAlloc(t, runtime, 60, true)
 	if err := runtime.writeWords(contextAddress, []uint32{
 		0, 0, 64, 32, 1, 0xf800,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	// "가A" in the handset's EUC-KR encoding, terminated for a negative length.
-	textAddress, err := runtime.Heap.Allocate(4, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteMemory(
+	textAddress := heapAlloc(t, runtime, 4, true)
+	check(t, runtime.CPU.WriteMemory(
 		textAddress,
 		[]byte{0xb0, 0xa1, 'A', 0},
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	for register, value := range []uint32{0, textAddress, ^uint32(0)} {
-		if err := runtime.CPU.WriteRegister(
+		check(t, runtime.CPU.WriteRegister(
 			cpu.RegisterR0+uint32(register),
 			value,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
 	width, err := ktfWIPICGraphicsGetStringWidth(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if width == 0 || width > 64 {
 		t.Fatalf("measured EUC-KR run width = %d", width)
 	}
 	for register, value := range []uint32{object, 1, 1, textAddress} {
-		if err := runtime.CPU.WriteRegister(
+		check(t, runtime.CPU.WriteRegister(
 			cpu.RegisterR0+uint32(register),
 			value,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
-	stack, err := runtime.Heap.Allocate(8, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	stack := heapAlloc(t, runtime, 8, true)
 	if err := runtime.writeWords(stack, []uint32{
 		^uint32(0),
 		contextAddress,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterSP, stack); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterSP, stack))
 	if _, err := ktfWIPICGraphicsDrawString(
 		context.Background(),
 		runtime,
@@ -8413,9 +5746,7 @@ func TestKTFWIPICDrawStringPaintsMeasuredRun(t *testing.T) {
 	}
 	framebuffer := runtime.wipicFramebuffers[object]
 	pixels := make([]byte, framebuffer.stride*framebuffer.height)
-	if err := runtime.CPU.ReadMemory(framebuffer.pixels, pixels); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(framebuffer.pixels, pixels))
 	painted, antialiased, right := 0, 0, 0
 	for y := 0; y < framebuffer.height; y++ {
 		for x := 0; x < framebuffer.width; x++ {
@@ -8450,35 +5781,16 @@ func TestKTFWIPICDrawStringPaintsMeasuredRun(t *testing.T) {
 // exactly one 10-pixel text row, so DrawString must treat y as the baseline:
 // a top-left origin leaves only the first two glyph rows inside the clip.
 func TestKTFWIPICDrawStringAnchorsTheBaseline(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, 64); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, 32); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, 64))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, 32))
 	object, err := ktfWIPICGraphicsCreateOffscreenFramebuffer(
 		context.Background(),
 		runtime,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	const clipTop, clipBottom = 2, 12
-	contextAddress, err := runtime.Heap.Allocate(60, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	contextAddress := heapAlloc(t, runtime, 60, true)
 	// The 10-pixel handset font (handle 8) ascends 8 rows, so a baseline at
 	// clipTop+8 keeps the whole glyph inside the one-row clip rectangle.
 	if err := runtime.writeWords(contextAddress, []uint32{
@@ -8488,37 +5800,25 @@ func TestKTFWIPICDrawStringAnchorsTheBaseline(t *testing.T) {
 		t.Fatal(err)
 	}
 	// "가" in the handset's EUC-KR encoding, terminated for a negative length.
-	textAddress, err := runtime.Heap.Allocate(3, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteMemory(
+	textAddress := heapAlloc(t, runtime, 3, true)
+	check(t, runtime.CPU.WriteMemory(
 		textAddress,
 		[]byte{0xb0, 0xa1, 0},
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	for register, value := range []uint32{object, 1, clipTop + 8, textAddress} {
-		if err := runtime.CPU.WriteRegister(
+		check(t, runtime.CPU.WriteRegister(
 			cpu.RegisterR0+uint32(register),
 			value,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
-	stack, err := runtime.Heap.Allocate(8, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	stack := heapAlloc(t, runtime, 8, true)
 	if err := runtime.writeWords(stack, []uint32{
 		^uint32(0),
 		contextAddress,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterSP, stack); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterSP, stack))
 	if _, err := ktfWIPICGraphicsDrawString(
 		context.Background(),
 		runtime,
@@ -8527,9 +5827,7 @@ func TestKTFWIPICDrawStringAnchorsTheBaseline(t *testing.T) {
 	}
 	framebuffer := runtime.wipicFramebuffers[object]
 	pixels := make([]byte, framebuffer.stride*framebuffer.height)
-	if err := runtime.CPU.ReadMemory(framebuffer.pixels, pixels); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(framebuffer.pixels, pixels))
 	paintedRows := map[int]bool{}
 	for y := 0; y < framebuffer.height; y++ {
 		for x := 0; x < framebuffer.width; x++ {
@@ -8558,47 +5856,25 @@ func TestKTFWIPICDrawStringAnchorsTheBaseline(t *testing.T) {
 }
 
 func TestKTFWIPICFontMetricsFollowTheHandsetHandle(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
 	for register, value := range []uint32{0x20, 16, 1} {
-		if err := runtime.CPU.WriteRegister(
+		check(t, runtime.CPU.WriteRegister(
 			cpu.RegisterR0+uint32(register),
 			value,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
 	font, err := ktfWIPICGraphicsGetFont(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if font != 0x20|1<<8|16 {
 		t.Fatalf("packed font handle = %08x", font)
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, font); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, font))
 	height, err := ktfWIPICGraphicsGetFontHeight(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	ascent, err := ktfWIPICGraphicsGetFontAscent(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	descent, err := ktfWIPICGraphicsGetFontDescent(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if height != uint32(guest.FontHeight(font)) || ascent+descent != height {
 		t.Fatalf(
 			"font metrics height=%d ascent=%d descent=%d",
@@ -8609,9 +5885,7 @@ func TestKTFWIPICFontMetricsFollowTheHandsetHandle(t *testing.T) {
 	}
 	// A second handle with the same height and style reuses one text service.
 	services := len(runtime.FontServices)
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, font|0x40); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, font|0x40))
 	if _, err := ktfWIPICGraphicsGetFontHeight(
 		context.Background(),
 		runtime,
@@ -8624,28 +5898,13 @@ func TestKTFWIPICFontMetricsFollowTheHandsetHandle(t *testing.T) {
 }
 
 func TestKTFWIPICStringRejectsUnterminatedRun(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	address, err := runtime.Heap.Allocate(ktfWIPICStringLimit+16, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	address := heapAlloc(t, runtime, ktfWIPICStringLimit+16, true)
 	filled := make([]byte, ktfWIPICStringLimit+16)
 	for index := range filled {
 		filled[index] = 'A'
 	}
-	if err := runtime.CPU.WriteMemory(address, filled); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteMemory(address, filled))
 	if _, err := runtime.wipicText(address, -1, false); err == nil {
 		t.Fatal("unterminated WIPI-C string was accepted")
 	}
@@ -8659,28 +5918,11 @@ func TestKTFWIPICStringRejectsUnterminatedRun(t *testing.T) {
 }
 
 func TestKTFWIPICTimerFiresAndReusesCompletedTask(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	timerAddress, err := runtime.AllocateWords(1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	timerAddress := allocWords(t, runtime, 1)
 	callback := ImageBase | 1
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR0, timerAddress); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, callback); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, timerAddress))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, callback))
 	if _, err := ktfKernelDefineTimer(context.Background(), runtime); err != nil {
 		t.Fatal(err)
 	}
@@ -8694,12 +5936,10 @@ func TestKTFWIPICTimerFiresAndReusesCompletedTask(t *testing.T) {
 			0,
 			parameter,
 		} {
-			if err := runtime.CPU.WriteRegister(
+			check(t, runtime.CPU.WriteRegister(
 				cpu.RegisterR0+uint32(register),
 				value,
-			); err != nil {
-				t.Fatal(err)
-			}
+			))
 		}
 		if result, err := ktfKernelSetTimer(
 			context.Background(),
@@ -8714,34 +5954,22 @@ func TestKTFWIPICTimerFiresAndReusesCompletedTask(t *testing.T) {
 	runtime.TickMS = 100
 	setTimer(25)
 	runtime.TickMS = 124
-	if err := runtime.activateDueWIPICTimers(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.activateDueWIPICTimers())
 	if len(runtime.Tasks) != 0 {
 		t.Fatalf("timer fired before deadline: %d tasks", len(runtime.Tasks))
 	}
 	runtime.TickMS = 125
-	if err := runtime.activateDueWIPICTimers(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.activateDueWIPICTimers())
 	if len(runtime.Tasks) != 1 {
 		t.Fatalf("timer produced %d tasks, want 1", len(runtime.Tasks))
 	}
-	if err := runtime.CPU.RestoreContext(runtime.Tasks[0].Context); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.RestoreContext(runtime.Tasks[0].Context))
 	gotTimer, err := runtime.CPU.ReadRegister(cpu.RegisterR0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	gotParameter, err := runtime.CPU.ReadRegister(cpu.RegisterR1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	gotPC, err := runtime.CPU.ReadRegister(cpu.RegisterPC)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if gotTimer != timerAddress ||
 		gotParameter != parameter ||
 		gotPC != callback&^1 {
@@ -8757,9 +5985,7 @@ func TestKTFWIPICTimerFiresAndReusesCompletedTask(t *testing.T) {
 	runtime.TickMS = 200
 	setTimer(1)
 	runtime.TickMS = 201
-	if err := runtime.activateDueWIPICTimers(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.activateDueWIPICTimers())
 	if len(runtime.Tasks) != 1 || runtime.Tasks[0].Done {
 		t.Fatalf(
 			"timer task was not reused: count=%d done=%t",
@@ -8775,18 +6001,14 @@ func TestKTFWIPICTimerFiresAndReusesCompletedTask(t *testing.T) {
 	runtime.TickMS = 300
 	setTimer(1)
 	runtime.TickMS = 301
-	if err := runtime.activateDueWIPICTimers(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.activateDueWIPICTimers())
 	if !runtime.wipicTimers[timerAddress].active {
 		t.Fatal("timer was consumed while the task pool was full")
 	}
 
 	const reusableTask = 7
 	runtime.Tasks[reusableTask].Done = true
-	if err := runtime.activateDueWIPICTimers(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.activateDueWIPICTimers())
 	if runtime.wipicTimers[timerAddress].active {
 		t.Fatal("timer remained active after a task slot became available")
 	}
@@ -8803,17 +6025,13 @@ func TestKTFWIPICTimerFiresAndReusesCompletedTask(t *testing.T) {
 		},
 	}
 	runtime.TickMS = 400
-	if err := runtime.activateDueWIPICTimers(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.activateDueWIPICTimers())
 	if len(runtime.Tasks) != 1 ||
 		!runtime.wipicTimers[0x10003000].active {
 		t.Fatal("timer callback overlapped a card key event")
 	}
 	runtime.Tasks[0].Done = true
-	if err := runtime.activateDueWIPICTimers(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.activateDueWIPICTimers())
 	if len(runtime.Tasks) != 1 ||
 		runtime.Tasks[0].Done ||
 		!runtime.Tasks[0].WipicTimer ||
@@ -8837,9 +6055,7 @@ func TestKTFWIPICTimerFiresAndReusesCompletedTask(t *testing.T) {
 		},
 	}
 	runtime.TickMS = 400
-	if err := runtime.activateDueWIPICTimers(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.activateDueWIPICTimers())
 	if len(runtime.Tasks) != 1 || !runtime.Tasks[0].WipicTimer {
 		t.Fatalf("first serialized timer tasks = %+v", runtime.Tasks)
 	}
@@ -8847,17 +6063,13 @@ func TestKTFWIPICTimerFiresAndReusesCompletedTask(t *testing.T) {
 		!runtime.wipicTimers[0x10004000].active {
 		t.Fatalf("serialized timer states = %+v", runtime.wipicTimers)
 	}
-	if err := runtime.activateDueWIPICTimers(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.activateDueWIPICTimers())
 	if len(runtime.Tasks) != 1 ||
 		!runtime.wipicTimers[0x10004000].active {
 		t.Fatal("second timer ran while the first callback was live")
 	}
 	runtime.Tasks[0].Done = true
-	if err := runtime.activateDueWIPICTimers(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.activateDueWIPICTimers())
 	if len(runtime.Tasks) != 1 ||
 		runtime.Tasks[0].Done ||
 		!runtime.Tasks[0].WipicTimer ||
@@ -8867,28 +6079,14 @@ func TestKTFWIPICTimerFiresAndReusesCompletedTask(t *testing.T) {
 }
 
 func TestKTFEncodedImageKeepsStraightAlphaTransparent(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
 	source := image.NewNRGBA(image.Rect(0, 0, 2, 1))
 	source.SetNRGBA(0, 0, color.NRGBA{R: 0xff, B: 0xff, A: 0})
 	source.SetNRGBA(1, 0, color.NRGBA{G: 0xff, A: 0xff})
 	var encoded bytes.Buffer
-	if err := png.Encode(&encoded, source); err != nil {
-		t.Fatal(err)
-	}
+	check(t, png.Encode(&encoded, source))
 	instance, err := runtime.newJavaEncodedImage(encoded.Bytes())
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	red, green, blue, alpha := runtime.images[instance].At(0, 0).RGBA()
 	if red != 0 || green != 0 || blue != 0 || alpha != 0 {
 		t.Fatalf(
@@ -8913,10 +6111,7 @@ func TestKTFEncodedImageKeepsStraightAlphaTransparent(t *testing.T) {
 
 func TestKTFClipSetVolumeUsesPercentageAndPreservesPlayback(t *testing.T) {
 	runtime := newScratchKTFRuntime(t)
-	clip, err := runtime.NewHostJavaObject("org/kwis/msp/media/Clip")
-	if err != nil {
-		t.Fatal(err)
-	}
+	clip := newHostObject(t, runtime, "org/kwis/msp/media/Clip")
 	state := runtime.ensureKTFClip(clip)
 	if state.volume != 100 {
 		t.Fatalf("default Clip volume = %d, want 100", state.volume)
@@ -8924,34 +6119,22 @@ func TestKTFClipSetVolumeUsesPercentageAndPreservesPlayback(t *testing.T) {
 	source := []byte("MMMD-test")
 	state.playing = true
 	state.data = append([]byte(nil), source...)
-	if err := runtime.syncKTFClip(clip); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.syncKTFClip(clip))
 	serviceID := runtime.clipServices[clip]
-	if err := runtime.Services.Media.Play(
+	check(t, runtime.Services.Media.Play(
 		runtime.ServiceOwner,
 		serviceID,
 		-1,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, clip); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR2, 33); err != nil {
-		t.Fatal(err)
-	}
+	))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, clip))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 33))
 	if _, err := runtime.handleMediaMethod("setVolume", "(I)Z"); err != nil {
 		t.Fatal(err)
 	}
 	info, err := runtime.Services.Media.Info(runtime.ServiceOwner, serviceID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	stored, err := runtime.Services.Media.Source(runtime.ServiceOwner, serviceID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if info.State != shared.ClipPlaying || info.RemainingPlays != -1 ||
 		info.Volume != 33 || !bytes.Equal(stored, source) {
 		t.Fatalf("Clip after setVolume: info=%+v source=%q", info, stored)
@@ -8959,14 +6142,7 @@ func TestKTFClipSetVolumeUsesPercentageAndPreservesPlayback(t *testing.T) {
 }
 
 func TestKTFClipServiceRecyclingSurvivesTheMediaPoolCap(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
+	runtime := newUnmappedTestRuntime(t)
 	limit := int(runtime.Services.Config.Limits.Media.MaxClips)
 	if limit == 0 {
 		t.Fatal("media clip limit is unset")
@@ -9013,16 +6189,10 @@ func newScratchKTFRuntime(t *testing.T) *Runtime {
 		ClientName: "client.bin0",
 		Client:     []byte{0x70, 0x47},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.SetTraceMode(KTFTraceFull); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.SetTraceMode(KTFTraceFull))
 	t.Cleanup(func() { _ = runtime.CPU.Close() })
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.MapImageAndHost())
 	return runtime
 }
 
@@ -9037,31 +6207,17 @@ func TestKTFInputStreamReaderDecodesEUCKRCharacters(t *testing.T) {
 		data: []byte{0xb0, 0xa1, 'A'}, // "가A" in EUC-KR.
 	}
 	characters, err := runtime.NewJavaArray("[C", 4, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	runtime.NativeParameterBase, err = runtime.AllocateWords(4)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(
+	check(t, err)
+	runtime.NativeParameterBase = allocWords(t, runtime, 4)
+	check(t, runtime.writeWords(
 		runtime.NativeParameterBase,
 		[]uint32{reader, characters, 1, 2},
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	read, err := runtime.handleInputStreamReaderMethod("read", "([CII)I")
-	if err != nil {
-		t.Fatal(err)
-	}
-	fields, err := runtime.ReadU32(characters)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	fields := readU32(t, runtime, characters)
 	encoded := make([]byte, 8)
-	if err := runtime.CPU.ReadMemory(fields+8, encoded); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(fields+8, encoded))
 	if read != 2 ||
 		binary.LittleEndian.Uint16(encoded[0:2]) != 0 ||
 		binary.LittleEndian.Uint16(encoded[2:4]) != '가' ||
@@ -9076,12 +6232,10 @@ func TestKTFInputStreamReaderDecodesEUCKRCharacters(t *testing.T) {
 		)
 	}
 	runtime.inputStreams[source].position = 0
-	if err := runtime.writeWords(
+	check(t, runtime.writeWords(
 		runtime.NativeParameterBase,
 		[]uint32{reader, 1, 0},
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	skipped, err := runtime.handleInputStreamReaderMethod("skip", "(J)J")
 	if err != nil || skipped != 1 || runtime.inputStreams[source].position != 2 {
 		t.Fatalf(
@@ -9091,9 +6245,7 @@ func TestKTFInputStreamReaderDecodesEUCKRCharacters(t *testing.T) {
 			err,
 		)
 	}
-	if err := runtime.writeWords(runtime.NativeParameterBase, []uint32{reader}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.writeWords(runtime.NativeParameterBase, []uint32{reader}))
 	value, err := runtime.handleInputStreamReaderMethod("read", "()I")
 	if err != nil || value != 'A' || runtime.inputStreams[source].position != 3 {
 		t.Fatalf(
@@ -9119,9 +6271,7 @@ func TestKTFStringBufferEditsCharactersInPlace(t *testing.T) {
 			cpu.RegisterR2: uint32(index),
 			cpu.RegisterR3: uint32(character),
 		} {
-			if err := runtime.CPU.WriteRegister(register, value); err != nil {
-				t.Fatal(err)
-			}
+			check(t, runtime.CPU.WriteRegister(register, value))
 		}
 		if _, err := runtime.handleStringBufferMethod(
 			"setCharAt",
@@ -9133,18 +6283,13 @@ func TestKTFStringBufferEditsCharactersInPlace(t *testing.T) {
 	if got := runtime.stringBuffers[instance]; got != "res/" {
 		t.Fatalf("StringBuffer after setCharAt = %q", got)
 	}
-	name, err := runtime.NewJavaString("map")
-	if err != nil {
-		t.Fatal(err)
-	}
+	name := newJavaString(t, runtime, "map")
 	for register, value := range map[uint32]uint32{
 		cpu.RegisterR1: instance,
 		cpu.RegisterR2: 4,
 		cpu.RegisterR3: name,
 	} {
-		if err := runtime.CPU.WriteRegister(register, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteRegister(register, value))
 	}
 	if _, err := runtime.handleStringBufferMethod(
 		"insert",
@@ -9173,10 +6318,7 @@ func TestKTFStringBufferRecordsUnmodelledMethods(t *testing.T) {
 
 func TestKTFReadsStringsTheGuestBuiltForItself(t *testing.T) {
 	runtime := newScratchKTFRuntime(t)
-	instance, err := runtime.NewJavaString("resource/map.bin")
-	if err != nil {
-		t.Fatal(err)
-	}
+	instance := newJavaString(t, runtime, "resource/map.bin")
 	// Drop the host memo so only the guest-visible fields remain, which is
 	// what a title that assembles a name through its own code leaves behind.
 	delete(runtime.JavaStrings, instance)
@@ -9193,16 +6335,11 @@ func TestKTFReadsStringsTheGuestBuiltForItself(t *testing.T) {
 
 func TestKTFInputStreamResetReturnsToTheMark(t *testing.T) {
 	runtime := newScratchKTFRuntime(t)
-	stream, err := runtime.NewHostJavaObject("java/io/DataInputStream")
-	if err != nil {
-		t.Fatal(err)
-	}
+	stream := newHostObject(t, runtime, "java/io/DataInputStream")
 	runtime.inputStreams[stream] = &ktfInputStream{
 		data: []byte{1, 2, 3, 4, 5, 6},
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterR1, stream); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, stream))
 	ctx := context.Background()
 	for range 3 {
 		if _, err := runtime.handleInputStreamMethod(
@@ -9223,9 +6360,7 @@ func TestKTFInputStreamResetReturnsToTheMark(t *testing.T) {
 		t.Fatal(err)
 	}
 	value, err := runtime.handleInputStreamMethod(ctx, "readByte", "()B")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if value != 4 {
 		t.Fatalf("byte after reset = %d, want 4", value)
 	}
@@ -9234,9 +6369,7 @@ func TestKTFInputStreamResetReturnsToTheMark(t *testing.T) {
 		"markSupported",
 		"()Z",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if supported != 1 {
 		t.Fatalf("markSupported = %d", supported)
 	}
@@ -9244,51 +6377,21 @@ func TestKTFInputStreamResetReturnsToTheMark(t *testing.T) {
 
 func TestKTFExceptionDispatchMovesTheFrameToTheHandler(t *testing.T) {
 	runtime := newScratchKTFRuntime(t)
-	entry, err := runtime.AllocateWords(4)
-	if err != nil {
-		t.Fatal(err)
-	}
+	entry := allocWords(t, runtime, 4)
 	// Protected region [115,432] with its handler at 435, the shape emitted
 	// for `try { ... } catch (Throwable t) { throw new Error(...); }`.
-	if err := runtime.writeWords(entry, []uint32{115, 432, 435, 0}); err != nil {
-		t.Fatal(err)
-	}
-	table, err := runtime.AllocateWords(1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.WriteU32(table, entry); err != nil {
-		t.Fatal(err)
-	}
-	method, err := runtime.AllocateWords(7)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(method, []uint32{0, 0, table, 0, 1, 0, 0}); err != nil {
-		t.Fatal(err)
-	}
-	functions, err := runtime.AllocateWords(2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(functions, []uint32{0, 0x00123457}); err != nil {
-		t.Fatal(err)
-	}
-	frame, err := runtime.AllocateWords(17)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.writeWords(frame, []uint32{method, 0, 0, 429, 0, functions}); err != nil {
-		t.Fatal(err)
-	}
-	exceptionContext, err := runtime.AllocateWords(ktfJavaEnvironmentWords)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.writeWords(entry, []uint32{115, 432, 435, 0}))
+	table := allocWords(t, runtime, 1)
+	check(t, runtime.WriteU32(table, entry))
+	method := allocWords(t, runtime, 7)
+	check(t, runtime.writeWords(method, []uint32{0, 0, table, 0, 1, 0, 0}))
+	functions := allocWords(t, runtime, 2)
+	check(t, runtime.writeWords(functions, []uint32{0, 0x00123457}))
+	frame := allocWords(t, runtime, 17)
+	check(t, runtime.writeWords(frame, []uint32{method, 0, 0, 429, 0, functions}))
+	exceptionContext := allocWords(t, runtime, ktfJavaEnvironmentWords)
 	runtime.exceptionContext = exceptionContext
-	if err := runtime.WriteU32(exceptionContext+8*4, frame); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.WriteU32(exceptionContext+8*4, frame))
 	target, caught, err := runtime.dispatchJavaException("java/lang/Error", 0x11223344)
 	if err != nil {
 		t.Fatal(err)
@@ -9296,10 +6399,7 @@ func TestKTFExceptionDispatchMovesTheFrameToTheHandler(t *testing.T) {
 	if !caught || target.handler != 435 {
 		t.Fatalf("first dispatch = target %+v, caught %t", target, caught)
 	}
-	bytecodePC, err := runtime.ReadU32(frame + 3*4)
-	if err != nil {
-		t.Fatal(err)
-	}
+	bytecodePC := readU32(t, runtime, frame+3*4)
 	if bytecodePC != 435 {
 		t.Fatalf("frame bytecode PC = %d, want 435", bytecodePC)
 	}
@@ -9350,38 +6450,27 @@ func createKTFWIPICImage(
 	encoded []byte,
 ) uint32 {
 	t.Helper()
-	if err := runtime.CPU.WriteRegister(
+	check(t, runtime.CPU.WriteRegister(
 		cpu.RegisterR0,
 		uint32(len(encoded)),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	memoryID, err := ktfKernelAllocate(true)(context.Background(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CPU.WriteMemory(
+	check(t, err)
+	check(t, runtime.CPU.WriteMemory(
 		runtime.wipicMemory[memoryID].data,
 		encoded,
-	); err != nil {
-		t.Fatal(err)
-	}
-	output, err := runtime.AllocateWords(1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	))
+	output := allocWords(t, runtime, 1)
 	for register, value := range []uint32{
 		output,
 		memoryID,
 		0,
 		uint32(len(encoded)),
 	} {
-		if err := runtime.CPU.WriteRegister(
+		check(t, runtime.CPU.WriteRegister(
 			cpu.RegisterR0+uint32(register),
 			value,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
 	if result, err := ktfWIPICGraphicsCreateImage(
 		context.Background(),
@@ -9389,10 +6478,7 @@ func createKTFWIPICImage(
 	); err != nil || result != 1 {
 		t.Fatalf("create image result=%08x err=%v", result, err)
 	}
-	object, err := runtime.ReadU32(output)
-	if err != nil {
-		t.Fatal(err)
-	}
+	object := readU32(t, runtime, output)
 	return object
 }
 
@@ -9432,9 +6518,7 @@ func TestKTFWIPICImageKeysOutReservedPaletteEntry(t *testing.T) {
 	}
 	framebuffer := runtime.wipicFramebuffers[image.framebuffer]
 	var pixels [4]byte
-	if err := runtime.CPU.ReadMemory(framebuffer.pixels, pixels[:]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.ReadMemory(framebuffer.pixels, pixels[:]))
 	if got := binary.LittleEndian.Uint16(pixels[:2]); got != 0xf800 {
 		t.Fatalf("opaque red pixel = %04x", got)
 	}
@@ -9455,27 +6539,19 @@ func drawKTFWIPICImage(
 	width, height int,
 ) {
 	t.Helper()
-	contextAddress, err := runtime.Heap.Allocate(60, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	contextAddress := heapAlloc(t, runtime, 60, true)
 	for register, value := range []uint32{
 		destination,
 		0,
 		0,
 		uint32(width),
 	} {
-		if err := runtime.CPU.WriteRegister(
+		check(t, runtime.CPU.WriteRegister(
 			cpu.RegisterR0+uint32(register),
 			value,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
-	stack, err := runtime.Heap.Allocate(20, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	stack := heapAlloc(t, runtime, 20, true)
 	if err := runtime.writeWords(stack, []uint32{
 		uint32(height),
 		imageObject,
@@ -9485,9 +6561,7 @@ func drawKTFWIPICImage(
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterSP, stack); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterSP, stack))
 	if _, err := ktfWIPICGraphicsDrawImage(
 		context.Background(),
 		runtime,
@@ -9509,9 +6583,7 @@ func fillKTFWIPICFramebuffer(
 	for offset := 0; offset+1 < len(pixels); offset += 2 {
 		binary.LittleEndian.PutUint16(pixels[offset:], value)
 	}
-	if err := runtime.CPU.WriteMemory(framebuffer.pixels, pixels); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteMemory(framebuffer.pixels, pixels))
 }
 
 // A straight-alpha PNG normally stores transparent black, and a sprite that
@@ -9522,9 +6594,7 @@ func TestKTFWIPICImageKeepsBlackWhenTransparentPixelsShareIt(t *testing.T) {
 	source.SetNRGBA(0, 0, color.NRGBA{A: 0xff})
 	source.SetNRGBA(1, 0, color.NRGBA{})
 	var encoded bytes.Buffer
-	if err := png.Encode(&encoded, source); err != nil {
-		t.Fatal(err)
-	}
+	check(t, png.Encode(&encoded, source))
 
 	runtime := newScratchKTFRuntime(t)
 	object := createKTFWIPICImage(t, runtime, encoded.Bytes())
@@ -9532,9 +6602,7 @@ func TestKTFWIPICImageKeepsBlackWhenTransparentPixelsShareIt(t *testing.T) {
 		t.Fatalf("color key = %#x; want -1", got)
 	}
 	destination, err := runtime.createWIPICFramebuffer(2, 1, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	const background = uint16(0x001f)
 	fillKTFWIPICFramebuffer(t, runtime, destination, background)
 	drawKTFWIPICImage(t, runtime, object, destination, 2, 1)
@@ -9559,9 +6627,7 @@ func TestKTFWIPICImageMasksTransparencyWhenItsColorIsAlsoOpaque(t *testing.T) {
 	source.SetNRGBA(0, 0, color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff})
 	source.SetNRGBA(1, 0, color.NRGBA{R: 0xff, G: 0xff, B: 0xff})
 	var encoded bytes.Buffer
-	if err := png.Encode(&encoded, source); err != nil {
-		t.Fatal(err)
-	}
+	check(t, png.Encode(&encoded, source))
 
 	runtime := newScratchKTFRuntime(t)
 	object := createKTFWIPICImage(t, runtime, encoded.Bytes())
@@ -9569,9 +6635,7 @@ func TestKTFWIPICImageMasksTransparencyWhenItsColorIsAlsoOpaque(t *testing.T) {
 		t.Fatalf("color key = %#x; want -1, white is opaque here too", got)
 	}
 	destination, err := runtime.createWIPICFramebuffer(2, 1, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	const background = uint16(0x001f)
 	fillKTFWIPICFramebuffer(t, runtime, destination, background)
 	drawKTFWIPICImage(t, runtime, object, destination, 2, 1)
@@ -9614,9 +6678,7 @@ func TestKTFWIPICRestoredImageRecoversColorKey(t *testing.T) {
 	magenta.SetNRGBA(0, 0, color.NRGBA{R: 0xff, B: 0xff, A: 0xff})
 	magenta.SetNRGBA(1, 0, color.NRGBA{R: 0xff, A: 0xff})
 	var encodedMagenta bytes.Buffer
-	if err := png.Encode(&encodedMagenta, magenta); err != nil {
-		t.Fatal(err)
-	}
+	check(t, png.Encode(&encodedMagenta, magenta))
 
 	for _, test := range []struct {
 		name    string
@@ -9667,26 +6729,14 @@ func TestKTFWIPICNetConnectReportsFailureThroughItsCallback(t *testing.T) {
 		reflect.ValueOf(ktfWIPICNetClose).Pointer() {
 		t.Fatal("net slot 1 is not MC_netClose")
 	}
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
 	const callback = ImageBase | 1
 	const parameter = uint32(0x1234abcd)
 	for register, value := range []uint32{callback, parameter} {
-		if err := runtime.CPU.WriteRegister(
+		check(t, runtime.CPU.WriteRegister(
 			cpu.RegisterR0+uint32(register),
 			value,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
 	if result, err := ktfWIPICNetConnect(context.Background(), runtime); err != nil ||
 		result != 0 {
@@ -9704,25 +6754,19 @@ func TestKTFWIPICNetConnectReportsFailureThroughItsCallback(t *testing.T) {
 	// The queued callback runs as an ordinary WIPI-C callback task, serialized
 	// with the timer callbacks, so the title observes the verdict on a later
 	// slice rather than re-entering the guest from inside the host call.
-	if err := runtime.activateDueWIPICTimers(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.activateDueWIPICTimers())
 	if len(runtime.pendingNetCallbacks) != 0 {
 		t.Fatal("network callback stayed queued")
 	}
 	if len(runtime.Tasks) != 1 || runtime.Tasks[0] == nil || runtime.Tasks[0].Done {
 		t.Fatalf("network callback task = %+v", runtime.Tasks)
 	}
-	if err := runtime.CPU.RestoreContext(runtime.Tasks[0].Context); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.RestoreContext(runtime.Tasks[0].Context))
 	registers := []uint32{cpu.RegisterR0, cpu.RegisterR1, cpu.RegisterPC}
 	want := []uint32{^uint32(0), parameter, callback &^ 1}
 	for index, register := range registers {
 		value, err := runtime.CPU.ReadRegister(register)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		if value != want[index] {
 			t.Fatalf("callback register %d = 0x%08x, want 0x%08x",
 				index, value, want[index])
@@ -9766,26 +6810,10 @@ func TestKTFNativeOverrideResolvesEveryHostJavaSpecMethod(t *testing.T) {
 // The override has to be the one that actually runs: a null native target with
 // a pending host method appends to the buffer instead of faulting.
 func TestKTFNullNativeTargetRunsTheHostStringBufferAppend(t *testing.T) {
-	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
-		ClientName: "client.bin0",
-		Client:     []byte{0x70, 0x47},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.CPU.Close()
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	buffer, err := runtime.AllocateWords(4)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTestRuntime(t)
+	buffer := allocWords(t, runtime, 4)
 	runtime.stringBuffers[buffer] = "AB"
-	parameters, err := runtime.AllocateWords(4)
-	if err != nil {
-		t.Fatal(err)
-	}
+	parameters := allocWords(t, runtime, 4)
 	if err := runtime.writeWords(parameters, []uint32{
 		buffer,
 		uint32('C'),
@@ -9797,12 +6825,10 @@ func TestKTFNullNativeTargetRunsTheHostStringBufferAppend(t *testing.T) {
 	runtime.LastJavaMethod =
 		"java/lang/StringBuffer.append(C)Ljava/lang/StringBuffer;"
 	for register, value := range []uint32{0, parameters} {
-		if err := runtime.CPU.WriteRegister(
+		check(t, runtime.CPU.WriteRegister(
 			cpu.RegisterR0+uint32(register),
 			value,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
 	if _, err := ktfCallNative(context.Background(), runtime); err != nil {
 		t.Fatalf("null native target for an implemented method: %v", err)

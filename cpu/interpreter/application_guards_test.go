@@ -17,9 +17,7 @@ func TestApplicationModeRejectsControlProgramStatusWrites(t *testing.T) {
 	mapARMInstructions(t, backend,
 		0xe321f0d3, // MSR CPSR_c, #0xd3
 	)
-	if err := backend.WriteRegister(cpu.RegisterSP, 0x1234); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteRegister(cpu.RegisterSP, 0x1234))
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 1)
 	if result.Reason != cpu.StopFault || result.Err == nil {
 		t.Fatalf("control MSR result = %+v, want a fault", result)
@@ -57,9 +55,7 @@ func TestApplicationModeRejectsCP15SystemRegisters(t *testing.T) {
 	mapARMInstructions(t, backend,
 		0xee010f10, // MCR p15, 0, r0, c1, c0, 0
 	)
-	if err := backend.WriteRegister(cpu.RegisterR0, 1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteRegister(cpu.RegisterR0, 1))
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 1)
 	if result.Reason != cpu.StopFault || result.Err == nil {
 		t.Fatalf("CP15 control write result = %+v, want a fault", result)
@@ -75,10 +71,8 @@ func TestApplicationModeRejectsCP15SystemRegisters(t *testing.T) {
 func TestApplicationModeCacheMaintenanceKeepsTranslatedBlocks(t *testing.T) {
 	backend := NewJIT()
 	defer backend.Close()
-	if err := backend.Map(0x1000, 0x1000,
-		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.Map(0x1000, 0x1000,
+		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute))
 	if err := backend.WriteMemory(0x1000, []byte{
 		0x01, 0x30, // adds r0, #1
 		0xfe, 0xe7, // b .-4
@@ -123,9 +117,7 @@ func TestSystemBusThumbStopsAtBranchExchangeIntoARM(t *testing.T) {
 	bus.writeU32(0x1008, 0x2000) // ARM entry, bit 0 clear
 	bus.writeU32(0x2000, 0xe2911001)
 	bus.writeU32(0x2004, 0xe2911001)
-	if err := backend.AttachSystemBus(bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.AttachSystemBus(bus))
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeThumb, 4)
 	if result.Err != nil || result.Reason != cpu.StopBudget || result.Instructions != 4 {
 		t.Fatalf("interworking run result = %+v", result)

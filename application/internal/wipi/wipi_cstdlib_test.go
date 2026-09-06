@@ -16,13 +16,9 @@ func TestCStdlibErrorNamesArgumentsAndCaller(t *testing.T) {
 	runtime := newPublicRuntime(t)
 	const link = uint32(0x0110a023)
 	for index, value := range []uint32{0x00030000, 0x00040000, 0x04010002, 7} {
-		if err := runtime.CPU.WriteRegister(uint32(index), value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, runtime.CPU.WriteRegister(uint32(index), value))
 	}
-	if err := runtime.CPU.WriteRegister(cpu.RegisterLR, link); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterLR, link))
 	stub, ok := runtime.Layout.StubByName["memcpy"]
 	if !ok {
 		t.Fatal("memcpy has no stub")

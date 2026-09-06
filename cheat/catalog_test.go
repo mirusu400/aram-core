@@ -46,9 +46,7 @@ const testCatalogJSON = `{
 func TestParseCatalogReadsHexAddressesAndBytes(t *testing.T) {
 	t.Parallel()
 	catalog, err := ParseCatalog([]byte(testCatalogJSON))
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if catalog.Title.Name != "Synthetic Title" ||
 		catalog.Title.ProfileID != "wipi-1.2.1/lgt/raptor" {
 		t.Fatalf("catalog title = %+v", catalog.Title)
@@ -64,17 +62,13 @@ func TestParseCatalogReadsHexAddressesAndBytes(t *testing.T) {
 	}
 
 	encoded, err := json.Marshal(catalog)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !strings.Contains(string(encoded), `"address":"0x00001000"`) ||
 		!strings.Contains(string(encoded), `"expected":"01020304"`) {
 		t.Fatalf("re-encoded catalog = %s", encoded)
 	}
 	round, err := ParseCatalog(encoded)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if round.Cheats[0].Patches[1].Address != 0x1004 {
 		t.Fatalf("round tripped patch = %+v", round.Cheats[0].Patches[1])
 	}
@@ -120,13 +114,9 @@ func TestCatalogVersionMismatchIsIdentifiable(t *testing.T) {
 func TestCheatCodesCarryTitleIdentityAndStableIDs(t *testing.T) {
 	t.Parallel()
 	catalog, err := ParseCatalog([]byte(testCatalogJSON))
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	codes, err := catalog.Cheats[0].Codes(catalog.Title.ImageSHA256)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if len(codes) != 2 {
 		t.Fatalf("codes = %+v", codes)
 	}

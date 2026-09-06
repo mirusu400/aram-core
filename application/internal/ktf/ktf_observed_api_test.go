@@ -20,20 +20,11 @@ func newKTFObservedAPIRuntime(t *testing.T) *Runtime {
 		ClientName: "client.bin0",
 		Client:     []byte{0x70, 0x47},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.SetTraceMode(KTFTraceFull); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.SetTraceMode(KTFTraceFull))
 	t.Cleanup(func() { _ = runtime.CPU.Close() })
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
-	runtime.JvmContext, err = runtime.AllocateWords(3 + 128)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.MapImageAndHost())
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
 	return runtime
 }
 
@@ -43,10 +34,7 @@ func prepareKTFMismatchedMethod(
 	className, name, descriptor string,
 ) {
 	t.Helper()
-	class, err := runtime.EnsureJavaClass(className)
-	if err != nil {
-		t.Fatal(err)
-	}
+	class := ensureClass(t, runtime, className)
 	if _, err := runtime.resolveJavaMethod(class, name, descriptor); err != nil {
 		t.Fatal(err)
 	}
@@ -58,9 +46,7 @@ func writeKTFObservedRegister(
 	register, value uint32,
 ) {
 	t.Helper()
-	if err := runtime.CPU.WriteRegister(register, value); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.CPU.WriteRegister(register, value))
 }
 
 func requireKTFReceiverCorrection(
@@ -95,10 +81,7 @@ func TestKTFHostJavaMethodCorrectsObservedAOTReceiverAliases(t *testing.T) {
 			methodName,
 			descriptor,
 		)
-		stream, err := runtime.NewHostJavaObject(actual)
-		if err != nil {
-			t.Fatal(err)
-		}
+		stream := newHostObject(t, runtime, actual)
 		runtime.outputStreams[stream] = nil
 		writeKTFObservedRegister(t, runtime, cpu.RegisterR1, stream)
 		writeKTFObservedRegister(t, runtime, cpu.RegisterR2, 0x1234)
@@ -131,10 +114,7 @@ func TestKTFHostJavaMethodCorrectsObservedAOTReceiverAliases(t *testing.T) {
 			methodName,
 			descriptor,
 		)
-		stream, err := runtime.NewHostJavaObject(actual)
-		if err != nil {
-			t.Fatal(err)
-		}
+		stream := newHostObject(t, runtime, actual)
 		runtime.inputStreams[stream] = &ktfInputStream{
 			data: []byte{0x01, 0x02, 0x03, 0x04},
 		}
@@ -144,9 +124,7 @@ func TestKTFHostJavaMethodCorrectsObservedAOTReceiverAliases(t *testing.T) {
 			methodName,
 			descriptor,
 		)(context.Background(), runtime)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		if value != 0x01020304 {
 			t.Fatalf("DataInputStream.readInt = 0x%08x", value)
 		}
@@ -170,18 +148,14 @@ func TestKTFHostJavaMethodCorrectsObservedAOTReceiverAliases(t *testing.T) {
 			descriptor,
 		)
 		enumeration, err := runtime.newJavaEnumeration([]uint32{0x1234})
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		writeKTFObservedRegister(t, runtime, cpu.RegisterR1, enumeration)
 		value, err := HostJavaMethod(
 			declared,
 			methodName,
 			descriptor,
 		)(context.Background(), runtime)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		if value != 1 {
 			t.Fatalf("Enumeration.hasMoreElements = %d", value)
 		}
@@ -191,23 +165,15 @@ func TestKTFHostJavaMethodCorrectsObservedAOTReceiverAliases(t *testing.T) {
 
 func TestKTFHostJavaMethodReadsSpilledArgumentsFromStack(t *testing.T) {
 	runtime := newKTFObservedAPIRuntime(t)
-	dialog, err := runtime.NewHostJavaObject("org/kwis/msp/lwc/DialogComponent")
-	if err != nil {
-		t.Fatal(err)
-	}
-	work, err := runtime.NewHostJavaObject("org/kwis/msp/lwc/Component")
-	if err != nil {
-		t.Fatal(err)
-	}
+	dialog := newHostObject(t, runtime, "org/kwis/msp/lwc/DialogComponent")
+	work := newHostObject(t, runtime, "org/kwis/msp/lwc/Component")
 	const stack = guest.DefaultStackBase + 0x400
 	writeKTFObservedRegister(t, runtime, cpu.RegisterR1, dialog)
 	writeKTFObservedRegister(t, runtime, cpu.RegisterR2, work)
 	writeKTFObservedRegister(t, runtime, cpu.RegisterR3, 0)
 	writeKTFObservedRegister(t, runtime, cpu.RegisterR4, 0xfeedface)
 	writeKTFObservedRegister(t, runtime, cpu.RegisterSP, stack)
-	if err := runtime.WriteU32(stack, uint32(ktfDialogTypeOKCancel)); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.WriteU32(stack, uint32(ktfDialogTypeOKCancel)))
 	if _, err := HostJavaMethod(
 		"org/kwis/msp/lwc/DialogComponent",
 		"<init>",
@@ -223,10 +189,7 @@ func TestKTFHostJavaMethodReadsSpilledArgumentsFromStack(t *testing.T) {
 
 func TestKTFObservedFileSystemNamespacesAndFileCursor(t *testing.T) {
 	runtime := newKTFObservedAPIRuntime(t)
-	directory, err := runtime.NewJavaString("save")
-	if err != nil {
-		t.Fatal(err)
-	}
+	directory := newJavaString(t, runtime, "save")
 	writeKTFObservedRegister(t, runtime, cpu.RegisterR1, directory)
 	writeKTFObservedRegister(t, runtime, cpu.RegisterR2, 2)
 	if _, err := runtime.handleFileSystemMethod(
@@ -239,16 +202,12 @@ func TestKTFObservedFileSystemNamespacesAndFileCursor(t *testing.T) {
 		"isDirectory",
 		"(Ljava/lang/String;I)Z",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	privateDirectory, err := runtime.handleFileSystemMethod(
 		"isDirectory",
 		"(Ljava/lang/String;)Z",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if sharedDirectory != 1 || privateDirectory != 0 {
 		t.Fatalf(
 			"directory visibility shared=%d private=%d",
@@ -256,18 +215,13 @@ func TestKTFObservedFileSystemNamespacesAndFileCursor(t *testing.T) {
 			privateDirectory,
 		)
 	}
-	root, err := runtime.NewJavaString("/")
-	if err != nil {
-		t.Fatal(err)
-	}
+	root := newJavaString(t, runtime, "/")
 	writeKTFObservedRegister(t, runtime, cpu.RegisterR1, root)
 	vector, err := runtime.handleFileSystemMethod(
 		"list",
 		"(Ljava/lang/String;I)Ljava/util/Vector;",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	found := false
 	for _, value := range runtime.Vectors[vector] {
 		if runtime.javaStringValue(value) == "save" {
@@ -279,29 +233,19 @@ func TestKTFObservedFileSystemNamespacesAndFileCursor(t *testing.T) {
 		t.Fatalf("shared root entries = %#v", runtime.Vectors[vector])
 	}
 
-	if err := runtime.Services.Storage.WriteFile(
+	check(t, runtime.Services.Storage.WriteFile(
 		shared.NamespaceShared,
 		"/save/data.bin",
 		[]byte{0xab},
-	); err != nil {
-		t.Fatal(err)
-	}
-	file, err := runtime.NewHostJavaObject("org/kwis/msp/io/File")
-	if err != nil {
-		t.Fatal(err)
-	}
-	filename, err := runtime.NewJavaString("/save/data.bin")
-	if err != nil {
-		t.Fatal(err)
-	}
+	))
+	file := newHostObject(t, runtime, "org/kwis/msp/io/File")
+	filename := newJavaString(t, runtime, "/save/data.bin")
 	const stack = guest.DefaultStackBase + 0x500
 	writeKTFObservedRegister(t, runtime, cpu.RegisterR1, file)
 	writeKTFObservedRegister(t, runtime, cpu.RegisterR2, filename)
 	writeKTFObservedRegister(t, runtime, cpu.RegisterR3, ktfFileReadOnly)
 	writeKTFObservedRegister(t, runtime, cpu.RegisterSP, stack)
-	if err := runtime.WriteU32(stack, 2); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.WriteU32(stack, 2))
 	if _, err := runtime.handleFileMethod(
 		"<init>",
 		"(Ljava/lang/String;II)V",
@@ -313,13 +257,9 @@ func TestKTFObservedFileSystemNamespacesAndFileCursor(t *testing.T) {
 		t.Fatalf("shared file = %#v", opened)
 	}
 	value, err := runtime.handleFileMethod("read", "()I")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	position, err := runtime.handleFileMethod("tell", "()I")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if value != 0xab || position != 1 {
 		t.Fatalf("File.read/tell = 0x%02x/%d", value, position)
 	}
@@ -343,9 +283,7 @@ func TestKTFObservedLWCProgressDialogAndAnnunciator(t *testing.T) {
 			descriptor,
 			registers,
 		)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		return value
 	}
 

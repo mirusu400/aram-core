@@ -16,9 +16,7 @@ func identityOptions() Options {
 func TestEngineAcceptsEitherTheImageOrTheFileIdentity(t *testing.T) {
 	t.Parallel()
 	engine, err := New(newTestMemory(16), identityOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if got := engine.Identities(); len(got) != 2 ||
 		got[0] != strings.Repeat("cd", 32) ||
 		got[1] != strings.Repeat("ab", 32) {
@@ -57,9 +55,7 @@ func TestEngineAcceptsEitherTheImageOrTheFileIdentity(t *testing.T) {
 func TestMatchIdentityPrefersTheImageOverTheContainer(t *testing.T) {
 	t.Parallel()
 	engine, err := New(newTestMemory(16), identityOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	got, err := engine.MatchIdentity([]string{
 		strings.Repeat("cd", 32),
 		strings.Repeat("ab", 32),
@@ -83,17 +79,11 @@ func TestMatchIdentityPrefersTheImageOverTheContainer(t *testing.T) {
 func TestLibraryImportsACatalogThatOnlyNamesTheImage(t *testing.T) {
 	t.Parallel()
 	memory := newTestMemory(16)
-	if err := memory.WriteMemory(testMemoryBase, []byte{1, 2, 3, 4}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, memory.WriteMemory(testMemoryBase, []byte{1, 2, 3, 4}))
 	engine, err := New(memory, identityOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	library, err := NewLibrary(engine)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	catalog := Catalog{
 		Version: CatalogVersion,
 		Title: Title{
@@ -107,9 +97,7 @@ func TestLibraryImportsACatalogThatOnlyNamesTheImage(t *testing.T) {
 			Patches: []Patch{{Address: Address(testMemoryBase), Value: Bytes{9}, Expected: Bytes{1}}},
 		}},
 	}
-	if err := library.Import(catalog); err != nil {
-		t.Fatal(err)
-	}
+	check(t, library.Import(catalog))
 	if entries := library.Entries(); len(entries) != 1 {
 		t.Fatalf("entries = %+v", entries)
 	}

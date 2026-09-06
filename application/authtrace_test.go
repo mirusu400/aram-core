@@ -23,23 +23,17 @@ func TestAuthPCTrace(t *testing.T) {
 		t.Skip("ARAM_PC_TRACE not set")
 	}
 	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	factory := NewFactory()
 	factory.RunBudget = DefaultHandsetRunBudget
 	factory.FrameRunBudget = DefaultHandsetRunBudget
 	created, err := factory.Create(context.Background(), machinecore.Source{
 		Name: filepath.Base(path), ReaderAt: bytes.NewReader(data), Size: int64(len(data)),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	m := created.(*Machine)
 	t.Cleanup(func() { _ = m.Close() })
-	if err := m.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, m.Start(context.Background()))
 	for frame := 0; frame < 300; frame++ {
 		if frame > 0 && frame%70 == 0 {
 			for _, p := range []bool{true, false} {

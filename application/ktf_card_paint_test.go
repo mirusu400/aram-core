@@ -33,14 +33,10 @@ func TestKTFCardPaintWaitsForATaskSlot(t *testing.T) {
 		ReaderAt: bytes.NewReader(data),
 		Size:     int64(len(data)),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	machine := created.(*Machine)
 	t.Cleanup(func() { _ = machine.Close() })
-	if err := machine.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.Start(context.Background()))
 
 	const frames = 600
 	for frame := 0; frame < frames; frame++ {

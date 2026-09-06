@@ -37,9 +37,7 @@ func TestStateWriterGoldenBytes(t *testing.T) {
 
 func TestStateDecoderGoldenRoundTrip(t *testing.T) {
 	raw, err := hex.DecodeString("ab" + "78563412" + "8877665544332211" + "0400" + "6172616d" + "0000")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	decoder := &guest.StateDecoder{Reader: bytes.NewReader(raw)}
 	if got := decoder.U8(); got != 0xab {
 		t.Fatalf("u8 = %#x", got)

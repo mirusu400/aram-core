@@ -60,14 +60,10 @@ func TestHybridThumbTranslationDropsInlineWriteEntries(t *testing.T) {
 	t.Cleanup(func() { _ = backend.Close() })
 	mustMap(t, backend, 0x1000, 0x1000,
 		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute)
-	if err := backend.WriteMemory(0x1000, []byte{0x01, 0x20, 0x00, 0xbe}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1000, []byte{0x01, 0x20, 0x00, 0xbe}))
 
 	// Warm the inline write half for the subpage that is about to hold code.
-	if err := backend.write32(0x1004, 0, cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.write32(0x1004, 0, cpu.PermissionWrite))
 	if !backend.tlbHit(0x1000, cpu.PermissionWrite) {
 		t.Fatal("inline write entry was not installed before translation")
 	}

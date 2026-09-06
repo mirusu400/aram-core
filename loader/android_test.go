@@ -12,16 +12,12 @@ func buildZip(t *testing.T, entries map[string]string) []byte {
 	writer := zip.NewWriter(&buffer)
 	for name, content := range entries {
 		file, err := writer.Create(name)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		if _, err := file.Write([]byte(content)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := writer.Close(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, writer.Close())
 	return buffer.Bytes()
 }
 

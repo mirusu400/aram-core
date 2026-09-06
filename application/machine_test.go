@@ -50,9 +50,7 @@ func TestFactoryLoadsKTFPackageWithLeadingCoverImage(t *testing.T) {
 	}
 
 	created, err := NewFactory().Create(context.Background(), source)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	t.Cleanup(func() { _ = created.Close() })
 	machine := created.(*Machine)
 	if info := machine.ImageInfo(); info.SourceKind != loader.KindKTF {
@@ -79,9 +77,7 @@ func TestFactorySizesKTFFramebufferFromDescriptor(t *testing.T) {
 				Size:     int64(len(archive)),
 			},
 		)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		t.Cleanup(func() { _ = created.Close() })
 		return created.(*Machine)
 	}
@@ -123,9 +119,7 @@ func TestKTFSaveStateRestoresAdapterAndSharedServices(t *testing.T) {
 			Size: int64(len(archive)),
 		},
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	machine := created.(*Machine)
 	t.Cleanup(func() { _ = machine.Close() })
 
@@ -133,91 +127,63 @@ func TestKTFSaveStateRestoresAdapterAndSharedServices(t *testing.T) {
 	if err != nil || allocation == 0 {
 		t.Fatalf("allocate KTF state fixture = 0x%08x, %v", allocation, err)
 	}
-	if err := machine.cpu.WriteMemory(
+	check(t, machine.cpu.WriteMemory(
 		allocation,
 		[]byte{1, 2, 3, 4},
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := machine.ktf.Services.Storage.WriteFile(
+	))
+	check(t, machine.ktf.Services.Storage.WriteFile(
 		shared.NamespacePrivate,
 		"/state.dat",
 		[]byte("saved"),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	machine.ktf.FileData["/state.dat"] = []byte("saved")
-	if err := machine.ktf.Services.Advance(
+	check(t, machine.ktf.Services.Advance(
 		machine.ktf.ServiceOwner,
 		17*time.Millisecond,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	machine.ktf.TickMS = 17
 	sleepingTask, err := machine.ktf.NewTask(ktfrt.ImageBase|1, nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	sleepingTask.WakeAtMS = 77
 	machine.ktf.Tasks = []*ktfrt.Task{sleepingTask}
 	graphics, err := machine.ktf.EnsureScreenGraphics()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	smallFont, err := machine.ktf.EnsureKTFFont(ktfrt.JavaFont{
 		Size: ktfrt.JavaFontSizeSmall,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := machine.ktf.WriteJavaFieldWord(
+	check(t, err)
+	check(t, machine.ktf.WriteJavaFieldWord(
 		graphics,
 		0,
 		smallFont,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	wipicScreen, err := machine.ktf.EnsureWIPICScreenFramebuffer()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	machine.ktf.WipicScreenPending = true
 	savedPixel := color.RGBA{R: 1, G: 2, B: 3, A: 0xff}
 	machine.frame.SetRGBA(2, 3, savedPixel)
 	machine.ktf.Graphics[graphics].PixelsDirty = true
 
 	var saved bytes.Buffer
-	if err := machine.SaveState(&saved); err != nil {
-		t.Fatal(err)
-	}
-	if err := machine.cpu.WriteMemory(
+	check(t, machine.SaveState(&saved))
+	check(t, machine.cpu.WriteMemory(
 		allocation,
 		[]byte{9, 9, 9, 9},
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := machine.ktf.Services.Storage.WriteFile(
+	))
+	check(t, machine.ktf.Services.Storage.WriteFile(
 		shared.NamespacePrivate,
 		"/state.dat",
 		[]byte("changed"),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	machine.ktf.FileData = map[string][]byte{}
 	machine.ktf.TickMS = 99
 	machine.ktf.Tasks[0].WakeAtMS = 0
 	machine.ktf.WipicScreenPending = false
-	if err := machine.ktf.WriteJavaFieldWord(graphics, 0, 0); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.ktf.WriteJavaFieldWord(graphics, 0, 0))
 
-	if err := machine.LoadState(bytes.NewReader(saved.Bytes())); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.LoadState(bytes.NewReader(saved.Bytes())))
 	var memory [4]byte
-	if err := machine.cpu.ReadMemory(allocation, memory[:]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.cpu.ReadMemory(allocation, memory[:]))
 	if memory != [4]byte{1, 2, 3, 4} {
 		t.Fatalf("restored KTF heap bytes = %v", memory)
 	}
@@ -254,9 +220,7 @@ func TestKTFSaveStateRestoresAdapterAndSharedServices(t *testing.T) {
 		t.Fatalf("restored KTF framebuffer pixel = %#v", got)
 	}
 	restoredFont, err := machine.ktf.KtfGraphicsFont(graphics)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if restoredFont != smallFont {
 		t.Fatalf(
 			"restored KTF graphics font = 0x%08x, want 0x%08x",
@@ -268,9 +232,7 @@ func TestKTFSaveStateRestoresAdapterAndSharedServices(t *testing.T) {
 		machine.ktf.ServiceOwner,
 		machine.ktf.FontServices[restoredFont],
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if fontMetrics.Height != 8 {
 		t.Fatalf(
 			"restored KTF graphics font height = %d, want 8",
@@ -281,9 +243,7 @@ func TestKTFSaveStateRestoresAdapterAndSharedServices(t *testing.T) {
 		machine.ktf.ServiceOwner,
 		machine.ktf.GraphicsServices[graphics],
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	offset := (3*machine.frame.Bounds().Dx() + 2) * 4
 	if !bytes.Equal(
 		surfacePixels[offset:offset+4],
@@ -312,41 +272,31 @@ func TestKTFResetRebuildsAdapterAndServices(t *testing.T) {
 			Size: int64(len(archive)),
 		},
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	machine := created.(*Machine)
 	t.Cleanup(func() { _ = machine.Close() })
 	allocation, err := machine.ktf.Heap.Allocate(8, true)
 	if err != nil || allocation == 0 {
 		t.Fatalf("allocate KTF reset fixture = 0x%08x, %v", allocation, err)
 	}
-	if err := machine.cpu.WriteMemory(allocation, []byte{0xaa}); err != nil {
-		t.Fatal(err)
-	}
-	if err := machine.ktf.Services.Advance(
+	check(t, machine.cpu.WriteMemory(allocation, []byte{0xaa}))
+	check(t, machine.ktf.Services.Advance(
 		machine.ktf.ServiceOwner,
 		25*time.Millisecond,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	machine.ktf.TickMS = 25
 	machine.ktfStarted = true
-	if err := machine.ktf.Services.Storage.WriteFile(
+	check(t, machine.ktf.Services.Storage.WriteFile(
 		shared.NamespacePrivate,
 		"/persist.dat",
 		[]byte("persistent KTF file"),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	machine.ktf.FileData["/persist.dat"] = []byte("persistent KTF file")
-	if err := machine.ktf.Services.Storage.WriteFile(
+	check(t, machine.ktf.Services.Storage.WriteFile(
 		shared.NamespaceTemporary,
 		"/discard.tmp",
 		[]byte("temporary"),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	database := &ktfrt.Database{
 		Name:       "scores",
 		RecordSize: 4,
@@ -356,27 +306,19 @@ func TestKTFResetRebuildsAdapterAndServices(t *testing.T) {
 		machine.ktf.ServiceOwner,
 		database.Name,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := machine.ktf.Services.Storage.ReplaceRecords(
+	check(t, err)
+	check(t, machine.ktf.Services.Storage.ReplaceRecords(
 		machine.ktf.ServiceOwner,
 		databaseService,
 		1,
 		map[uint32][]byte{0: {1, 2, 3, 4}},
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	machine.ktf.DatabaseStores[database.Name] = database
 	machine.ktf.DatabaseServices[database.Name] = databaseService
 
-	if err := machine.Reset(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.Reset(context.Background()))
 	var restored [1]byte
-	if err := machine.cpu.ReadMemory(allocation, restored[:]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.cpu.ReadMemory(allocation, restored[:]))
 	if restored[0] != 0 || machine.ktf.TickMS != 0 {
 		t.Fatalf(
 			"reset KTF state = byte %#x allocations %d tick %d",
@@ -418,9 +360,7 @@ func TestKTFResetRebuildsAdapterAndServices(t *testing.T) {
 		machine.ktf.ServiceOwner,
 		"scores",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	persistedRecord, err := machine.ktf.Services.Storage.Record(
 		machine.ktf.ServiceOwner,
 		persistedService,
@@ -449,9 +389,7 @@ func TestFactoryMapsAndExecutesEADSEntryPoint(t *testing.T) {
 		Size:     int64(len(data)),
 	}
 	created, err := NewFactory().Create(context.Background(), source)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	t.Cleanup(func() { _ = created.Close() })
 	machine, ok := created.(*Machine)
 	if !ok {
@@ -475,9 +413,7 @@ func TestFactoryMapsAndExecutesEADSEntryPoint(t *testing.T) {
 		t.Fatalf("initial state = %s", created.State())
 	}
 
-	if err := created.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, created.Start(context.Background()))
 	result := machine.LastResult()
 	if result.Reason != cpu.StopBudget ||
 		result.Instructions != 1 ||
@@ -502,9 +438,7 @@ func TestFactoryInstallsResourcesAndResetRestoresThem(t *testing.T) {
 		ReaderAt: bytes.NewReader(data),
 		Size:     int64(len(data)),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	machine := created.(*Machine)
 	t.Cleanup(func() { _ = machine.Close() })
 	payload[0] = 0xff
@@ -512,9 +446,7 @@ func TestFactoryInstallsResourcesAndResetRestoresThem(t *testing.T) {
 		!bytes.Equal(resource.Data, []byte{1, 2, 3}) {
 		t.Fatalf("installed resource = %+v", resource)
 	}
-	if err := machine.Reset(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.Reset(context.Background()))
 	if resource := machine.wipi.Resources["config.bin"]; resource == nil ||
 		!bytes.Equal(resource.Data, []byte{1, 2, 3}) {
 		t.Fatalf("reset resource = %+v", resource)
@@ -523,34 +455,24 @@ func TestFactoryInstallsResourcesAndResetRestoresThem(t *testing.T) {
 
 func TestMachineLifecycleResumeStopResetAndClose(t *testing.T) {
 	machine := newSyntheticMachine(t)
-	if err := machine.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := machine.Resume(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.Start(context.Background()))
+	check(t, machine.Resume())
 	if machine.LastResult().Reason != cpu.StopBreakpoint ||
 		machine.State() != machinecore.StatePaused {
 		t.Fatalf("state after Resume = %s, result %+v", machine.State(), machine.LastResult())
 	}
-	if err := machine.Stop(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.Stop())
 	if machine.State() != machinecore.StateStopped {
 		t.Fatalf("state after Stop = %s", machine.State())
 	}
 	if err := machine.Start(context.Background()); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("Start after Stop error = %v", err)
 	}
-	if err := machine.Reset(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.Reset(context.Background()))
 	if machine.State() != machinecore.StateReady {
 		t.Fatalf("state after Reset = %s", machine.State())
 	}
-	if err := machine.Close(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.Close())
 	if err := machine.Close(); err != nil {
 		t.Fatalf("second Close error = %v", err)
 	}
@@ -570,16 +492,12 @@ func TestMachineTreatsReturnToZeroSentinelAsCleanExit(t *testing.T) {
 		ReaderAt: bytes.NewReader(data),
 		Size:     int64(len(data)),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	machine := created.(*Machine)
 	t.Cleanup(func() { _ = machine.Close() })
 	machine.runBudget = DefaultHandsetRunBudget
 
-	if err := machine.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.Start(context.Background()))
 	if machine.State() != machinecore.StateStopped ||
 		machine.LastResult().Reason != cpu.StopExited ||
 		machine.LastResult().PC != 0 {
@@ -697,9 +615,7 @@ func TestTitleRuntimeRequiresKnownSourceHash(t *testing.T) {
 		ReaderAt: bytes.NewReader(data),
 		Size:     int64(len(data)),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	machine := created.(*Machine)
 	t.Cleanup(func() { _ = machine.Close() })
 	if _, ok := machine.EADSFrameStats(); ok {
@@ -713,9 +629,7 @@ func TestTitleRuntimeRequiresKnownSourceHash(t *testing.T) {
 func TestMachineDispatchesPublicWIPITrampoline(t *testing.T) {
 	machine := newSyntheticMachine(t)
 	const source = guest.HeapBase + 0x200
-	if err := machine.cpu.WriteMemory(source, []byte("public-wipi\x00")); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.cpu.WriteMemory(source, []byte("public-wipi\x00")))
 	stub, ok := machine.wipi.Layout.StubByName["strlen"]
 	if !ok {
 		t.Fatal("strlen trampoline is absent")
@@ -726,13 +640,9 @@ func TestMachineDispatchesPublicWIPITrampoline(t *testing.T) {
 		cpu.RegisterPC:   stub &^ 1,
 		cpu.RegisterCPSR: cpu.StatusThumb,
 	} {
-		if err := machine.cpu.WriteRegister(register, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, machine.cpu.WriteRegister(register, value))
 	}
-	if err := machine.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.Start(context.Background()))
 	if got := register(t, machine, cpu.RegisterR0); got != 11 {
 		t.Fatalf("strlen result = %d", got)
 	}
@@ -766,9 +676,7 @@ func TestMachineDispatchesPublicWIPITrampoline(t *testing.T) {
 
 func TestKTFWIPIFrameStatsCountSampledHostCalls(t *testing.T) {
 	runtime := &ktfrt.Runtime{}
-	if err := runtime.SetTraceMode(ktfrt.KTFTraceCounters); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.SetTraceMode(ktfrt.KTFTraceCounters))
 	entry := "java.method.org/kwis/msp/lcdui/Graphics.setRGBPixels(IIII[III)V"
 	total := ktfrt.HostTraceSampleInterval + 1
 	for range total {
@@ -788,13 +696,11 @@ func TestKTFWIPIFrameStatsCountSampledHostCalls(t *testing.T) {
 func TestStepFrameAdvancesClockAndInvokesDueWIPITimer(t *testing.T) {
 	machine := newSyntheticMachine(t)
 	const callbackAddress = uint32(0x04000000)
-	if err := machine.cpu.Map(
+	check(t, machine.cpu.Map(
 		callbackAddress,
 		0x1000,
 		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	if err := machine.cpu.WriteMemory(callbackAddress, []byte{
 		0x2a, 0x22, // movs r2, #42
 		0x0a, 0x60, // str r2, [r1]
@@ -803,13 +709,9 @@ func TestStepFrameAdvancesClockAndInvokesDueWIPITimer(t *testing.T) {
 		t.Fatal(err)
 	}
 	timer, err := machine.wipi.Heap.Allocate(28, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	marker, err := machine.wipi.Heap.Allocate(4, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	dispatchPublicAPI(t, machine.wipi, "MC_knlDefTimer", timer, callbackAddress|1)
 	if result := dispatchPublicAPI(
 		t,
@@ -823,16 +725,10 @@ func TestStepFrameAdvancesClockAndInvokesDueWIPITimer(t *testing.T) {
 	); result.Low != 0 {
 		t.Fatalf("MC_knlSetTimer = %d", int32(result.Low))
 	}
-	if err := machine.cpu.WriteRegister(cpu.RegisterR2, 0x99); err != nil {
-		t.Fatal(err)
-	}
-	if err := machine.cpu.WriteRegister(cpu.RegisterPC, machine.info.EntryPoint&^1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.cpu.WriteRegister(cpu.RegisterR2, 0x99))
+	check(t, machine.cpu.WriteRegister(cpu.RegisterPC, machine.info.EntryPoint&^1))
 
-	if err := machine.StepFrame(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.StepFrame(context.Background()))
 	value, err := machine.wipi.ReadU32(marker)
 	if err != nil || value != 42 {
 		t.Fatalf("timer callback marker = %d, %v", value, err)
@@ -852,13 +748,9 @@ func TestStepFrameAdvancesClockAndInvokesDueWIPITimer(t *testing.T) {
 		t.Fatalf("post-callback main execution = %+v", machine.LastResult())
 	}
 
-	if err := machine.wipi.WriteU32(marker, 0); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.wipi.WriteU32(marker, 0))
 	machine.wipi.EnqueueCallback(callbackAddress|1, 0, marker)
-	if err := machine.StepFrame(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.StepFrame(context.Background()))
 	value, err = machine.wipi.ReadU32(marker)
 	if err != nil || value != 42 || len(machine.wipi.PendingCallbacks) != 0 {
 		t.Fatalf(
@@ -873,30 +765,22 @@ func TestStepFrameAdvancesClockAndInvokesDueWIPITimer(t *testing.T) {
 func TestWIPISynchronousGuestCallbackReturnsR0AndRestoresContext(t *testing.T) {
 	machine := newSyntheticMachine(t)
 	const callbackAddress = uint32(0x04000000)
-	if err := machine.cpu.Map(
+	check(t, machine.cpu.Map(
 		callbackAddress,
 		0x1000,
 		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	if err := machine.cpu.WriteMemory(callbackAddress, []byte{
 		0x2a, 0x20, // movs r0, #42
 		0x70, 0x47, // bx lr
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := machine.cpu.WriteRegister(cpu.RegisterR0, 0x11223344); err != nil {
-		t.Fatal(err)
-	}
-	if err := machine.cpu.WriteRegister(cpu.RegisterPC, machine.info.EntryPoint&^1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.cpu.WriteRegister(cpu.RegisterR0, 0x11223344))
+	check(t, machine.cpu.WriteRegister(cpu.RegisterPC, machine.info.EntryPoint&^1))
 
 	value, err := machine.wipi.CallGuestFunction(callbackAddress|1, 7, 8, 9)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if value != 42 {
 		t.Fatalf("callback return value = %d", value)
 	}
@@ -915,9 +799,7 @@ func TestMachineValidatesInputAndReturnsFramebufferSnapshot(t *testing.T) {
 		ReaderAt: bytes.NewReader(data),
 		Size:     int64(len(data)),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	t.Cleanup(func() { _ = created.Close() })
 	if err := created.QueueInput(machinecore.InputEvent{}); err == nil {
 		t.Fatal("QueueInput accepted an empty control")
@@ -938,38 +820,24 @@ func TestMachineValidatesInputAndReturnsFramebufferSnapshot(t *testing.T) {
 
 func TestSaveStateRoundTripRestoresSerializableMachineState(t *testing.T) {
 	machine := newSyntheticMachine(t)
-	if err := machine.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := machine.cpu.WriteMemory(machine.info.BSSAddress, []byte{0x5a}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.Start(context.Background()))
+	check(t, machine.cpu.WriteMemory(machine.info.BSSAddress, []byte{0x5a}))
 	machine.frame.SetRGBA(3, 4, color.RGBA{R: 1, G: 2, B: 3, A: 4})
 	event := machinecore.InputEvent{
 		Control: "up",
 		Pressed: true,
 		At:      25 * time.Millisecond,
 	}
-	if err := machine.QueueInput(event); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.QueueInput(event))
 
 	var saved bytes.Buffer
-	if err := machine.SaveState(&saved); err != nil {
-		t.Fatal(err)
-	}
-	if err := machine.cpu.WriteRegister(cpu.RegisterR0, 99); err != nil {
-		t.Fatal(err)
-	}
-	if err := machine.cpu.WriteMemory(machine.info.BSSAddress, []byte{0}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.SaveState(&saved))
+	check(t, machine.cpu.WriteRegister(cpu.RegisterR0, 99))
+	check(t, machine.cpu.WriteMemory(machine.info.BSSAddress, []byte{0}))
 	machine.frame.SetRGBA(3, 4, color.RGBA{})
 	machine.input = nil
 
-	if err := machine.LoadState(bytes.NewReader(saved.Bytes())); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.LoadState(bytes.NewReader(saved.Bytes())))
 	if machine.State() != machinecore.StatePaused {
 		t.Fatalf("restored state = %s, want paused", machine.State())
 	}
@@ -977,9 +845,7 @@ func TestSaveStateRoundTripRestoresSerializableMachineState(t *testing.T) {
 		t.Fatalf("restored r0 = %d, want 0", got)
 	}
 	var restoredBSS [1]byte
-	if err := machine.cpu.ReadMemory(machine.info.BSSAddress, restoredBSS[:]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.cpu.ReadMemory(machine.info.BSSAddress, restoredBSS[:]))
 	if restoredBSS[0] != 0x5a {
 		t.Fatalf("restored BSS byte = %#x, want 0x5a", restoredBSS[0])
 	}
@@ -1001,9 +867,7 @@ func TestSaveStateRoundTripRestoresPublicWIPIRuntime(t *testing.T) {
 	if allocation == 0 {
 		t.Fatal("public allocation is null")
 	}
-	if err := machine.cpu.WriteMemory(allocation, []byte{1, 2, 3, 4}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.cpu.WriteMemory(allocation, []byte{1, 2, 3, 4}))
 	machine.wipi.Files["/private/save.dat"] = []byte("state")
 	machine.wipi.FileTimes["/private/save.dat"] = uint32(wipirt.EpochUnix)
 	resourceID := machine.wipi.RegisterResource("saved.bin", []byte{5, 6, 7})
@@ -1039,17 +903,11 @@ func TestSaveStateRoundTripRestoresPublicWIPIRuntime(t *testing.T) {
 	machine.wipi.DatabaseHandles[1] = "0:scores"
 	machine.wipi.NextDatabase = 2
 	uicContext, err := machine.wipi.Heap.Allocate(64, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	uicClass, err := machine.wipi.Heap.Allocate(16, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	uicComponent, err := machine.wipi.Heap.Allocate(128, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	machine.wipi.UicContexts[uicContext] = true
 	machine.wipi.UicClasses["Label"] = uicClass
 	machine.wipi.UicClassNames[uicClass] = "Label"
@@ -1074,12 +932,8 @@ func TestSaveStateRoundTripRestoresPublicWIPIRuntime(t *testing.T) {
 	dispatchPublicAPI(t, machine.wipi, "MC_grpFlushLcd", 0, screen, 0, 0, 240, 320)
 
 	var saved bytes.Buffer
-	if err := machine.SaveState(&saved); err != nil {
-		t.Fatal(err)
-	}
-	if err := machine.cpu.WriteMemory(allocation, []byte{9, 9, 9, 9}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.SaveState(&saved))
+	check(t, machine.cpu.WriteMemory(allocation, []byte{9, 9, 9, 9}))
 	machine.wipi.Stats = WIPIFrameStats{}
 	machine.wipi.Framebuffers = make(map[uint32]wipirt.Framebuffer)
 	machine.wipi.Resources = make(map[string]*wipirt.Resource)
@@ -1091,13 +945,9 @@ func TestSaveStateRoundTripRestoresPublicWIPIRuntime(t *testing.T) {
 	machine.wipi.PendingCallbacks = nil
 	machine.frame.SetRGBA(0, 0, color.RGBA{R: 0xff, A: 0xff})
 
-	if err := machine.LoadState(bytes.NewReader(saved.Bytes())); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.LoadState(bytes.NewReader(saved.Bytes())))
 	var restored [4]byte
-	if err := machine.cpu.ReadMemory(allocation, restored[:]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.cpu.ReadMemory(allocation, restored[:]))
 	if restored != [4]byte{1, 2, 3, 4} {
 		t.Fatalf("restored public heap = %v", restored)
 	}
@@ -1163,42 +1013,24 @@ func TestSaveStateRoundTripRestoresPublicWIPIRuntime(t *testing.T) {
 
 func TestResetRestoresInitialCPUAndMemoryState(t *testing.T) {
 	machine := newSyntheticMachine(t)
-	if err := machine.cpu.WriteMemory(machine.info.TextAddress, []byte{0xff, 0xff}); err != nil {
-		t.Fatal(err)
-	}
-	if err := machine.cpu.WriteMemory(machine.info.BSSAddress, []byte{0xaa}); err != nil {
-		t.Fatal(err)
-	}
-	if err := machine.cpu.WriteMemory(DefaultStackBase, []byte{0xbb}); err != nil {
-		t.Fatal(err)
-	}
-	if err := machine.cpu.WriteRegister(cpu.RegisterR0, 99); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.cpu.WriteMemory(machine.info.TextAddress, []byte{0xff, 0xff}))
+	check(t, machine.cpu.WriteMemory(machine.info.BSSAddress, []byte{0xaa}))
+	check(t, machine.cpu.WriteMemory(DefaultStackBase, []byte{0xbb}))
+	check(t, machine.cpu.WriteRegister(cpu.RegisterR0, 99))
 	machine.frame.SetRGBA(0, 0, color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff})
-	if err := machine.QueueInput(machinecore.InputEvent{Control: "fire"}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.QueueInput(machinecore.InputEvent{Control: "fire"}))
 
-	if err := machine.Reset(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.Reset(context.Background()))
 	var memory [2]byte
-	if err := machine.cpu.ReadMemory(machine.info.TextAddress, memory[:]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.cpu.ReadMemory(machine.info.TextAddress, memory[:]))
 	if memory != ([2]byte{0x00, 0xb5}) {
 		t.Fatalf("reset text = %x", memory)
 	}
-	if err := machine.cpu.ReadMemory(machine.info.BSSAddress, memory[:1]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.cpu.ReadMemory(machine.info.BSSAddress, memory[:1]))
 	if memory[0] != 0 {
 		t.Fatalf("reset BSS = %#x", memory[0])
 	}
-	if err := machine.cpu.ReadMemory(DefaultStackBase, memory[:1]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.cpu.ReadMemory(DefaultStackBase, memory[:1]))
 	if memory[0] != 0 {
 		t.Fatalf("reset stack = %#x", memory[0])
 	}
@@ -1216,30 +1048,24 @@ func TestResetRestoresInitialCPUAndMemoryState(t *testing.T) {
 func TestResetPreservesPublicWIPIPersistence(t *testing.T) {
 	machine := newSyntheticMachine(t)
 	runtime := machine.wipi
-	if err := runtime.Services.Storage.MakeDirectory(
+	check(t, runtime.Services.Storage.MakeDirectory(
 		shared.NamespacePrivate,
 		"/saves",
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.Services.Storage.WriteFile(
+	))
+	check(t, runtime.Services.Storage.WriteFile(
 		shared.NamespacePrivate,
 		"/saves/slot.dat",
 		[]byte("persistent WIPI file"),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	runtime.Directories["/private/saves"] = true
 	runtime.Files["/private/saves/slot.dat"] = []byte("persistent WIPI file")
 	runtime.FileTimes["/private/saves"] = 123
 	runtime.FileTimes["/private/saves/slot.dat"] = 456
-	if err := runtime.Services.Storage.WriteFile(
+	check(t, runtime.Services.Storage.WriteFile(
 		shared.NamespaceTemporary,
 		"/discard.tmp",
 		[]byte("temporary"),
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	const databaseKey = "0:scores"
 	database := &wipirt.Database{
 		Name:       "scores",
@@ -1254,30 +1080,22 @@ func TestResetPreservesPublicWIPIPersistence(t *testing.T) {
 		runtime.ServiceOwner,
 		databaseKey,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.Services.Storage.ReplaceRecords(
+	check(t, err)
+	check(t, runtime.Services.Storage.ReplaceRecords(
 		runtime.ServiceOwner,
 		databaseService,
 		2,
 		map[uint32][]byte{1: {4, 3, 2, 1}},
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	runtime.Databases[databaseKey] = database
 	runtime.DatabaseServices[databaseKey] = databaseService
-	if err := runtime.Services.Advance(
+	check(t, runtime.Services.Advance(
 		runtime.ServiceOwner,
 		25*time.Millisecond,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	runtime.TickMS = 25
 
-	if err := machine.Reset(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.Reset(context.Background()))
 	persisted, err := machine.wipi.Services.Storage.ReadFile(
 		shared.NamespacePrivate,
 		"/saves/slot.dat",
@@ -1309,9 +1127,7 @@ func TestResetPreservesPublicWIPIPersistence(t *testing.T) {
 		machine.wipi.ServiceOwner,
 		databaseKey,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	persistedRecord, err := machine.wipi.Services.Storage.Record(
 		machine.wipi.ServiceOwner,
 		persistedService,
@@ -1343,14 +1159,10 @@ func TestResetPreservesPublicWIPIPersistence(t *testing.T) {
 func TestLoadStateRejectsCorruptionBeforeMutation(t *testing.T) {
 	machine := newSyntheticMachine(t)
 	var saved bytes.Buffer
-	if err := machine.SaveState(&saved); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.SaveState(&saved))
 	corrupt := append([]byte(nil), saved.Bytes()...)
 	corrupt[len(corrupt)/2] ^= 0xff
-	if err := machine.cpu.WriteRegister(cpu.RegisterR0, 77); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.cpu.WriteRegister(cpu.RegisterR0, 77))
 	if err := machine.LoadState(bytes.NewReader(corrupt)); err == nil {
 		t.Fatal("LoadState accepted a corrupt checksum")
 	}
@@ -1362,9 +1174,7 @@ func TestLoadStateRejectsCorruptionBeforeMutation(t *testing.T) {
 func TestLoadStateRejectsAnotherSource(t *testing.T) {
 	first := newSyntheticMachine(t)
 	var saved bytes.Buffer
-	if err := first.SaveState(&saved); err != nil {
-		t.Fatal(err)
-	}
+	check(t, first.SaveState(&saved))
 
 	data := syntheticEADS()
 	data[0] = 1
@@ -1373,9 +1183,7 @@ func TestLoadStateRejectsAnotherSource(t *testing.T) {
 		ReaderAt: bytes.NewReader(data),
 		Size:     int64(len(data)),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	second := created.(*Machine)
 	t.Cleanup(func() { _ = second.Close() })
 	if err := second.LoadState(bytes.NewReader(saved.Bytes())); err == nil {
@@ -1393,9 +1201,7 @@ func TestPausePreservesPausedStateDuringActiveRun(t *testing.T) {
 		ReaderAt: bytes.NewReader(data),
 		Size:     int64(len(data)),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	machine := created.(*Machine)
 	t.Cleanup(func() { _ = machine.Close() })
 
@@ -1410,9 +1216,7 @@ func TestPausePreservesPausedStateDuringActiveRun(t *testing.T) {
 	if machine.State() != machinecore.StateRunning {
 		t.Fatal("machine did not enter running state")
 	}
-	if err := machine.Pause(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.Pause())
 	select {
 	case err := <-finished:
 		if err != nil {
@@ -1442,9 +1246,7 @@ func TestMagicholeReferenceEADSEntryPoint(t *testing.T) {
 	}
 	defer file.Close()
 	info, err := file.Stat()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	created, err := NewFactory().Create(context.Background(), machinecore.Source{
 		Name:     filepath.Base(path),
 		Path:     path,
@@ -1452,9 +1254,7 @@ func TestMagicholeReferenceEADSEntryPoint(t *testing.T) {
 		ReaderAt: file,
 		Size:     info.Size(),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	defer created.Close()
 	machine := created.(*Machine)
 	image := machine.ImageInfo()
@@ -1463,9 +1263,7 @@ func TestMagicholeReferenceEADSEntryPoint(t *testing.T) {
 		image.ProfileID != minigame.ProfileID {
 		t.Fatalf("reference image = %+v", image)
 	}
-	if err := created.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, created.Start(context.Background()))
 	stats, ok := machine.EADSFrameStats()
 	if !ok {
 		t.Fatal("reference title did not select the EADS runtime")
@@ -1500,21 +1298,15 @@ func TestMagicholeReferenceEADSEntryPoint(t *testing.T) {
 		t.Fatalf("reference entry execution = %+v", result)
 	}
 	var state bytes.Buffer
-	if err := machine.SaveState(&state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.SaveState(&state))
 	firstFrameDigest := sha256.Sum256(frame.Pix)
-	if err := machine.Reset(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.Reset(context.Background()))
 	resetStats, ok := machine.EADSFrameStats()
 	if !ok || len(resetStats.Events) != 0 ||
 		resetStats.PresentCount != 0 || resetStats.TickMS != 0 {
 		t.Fatalf("reset EADS stats = %+v, present %v", resetStats, ok)
 	}
-	if err := machine.LoadState(bytes.NewReader(state.Bytes())); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.LoadState(bytes.NewReader(state.Bytes())))
 	if got := register(t, machine, cpu.RegisterPC); got != guest.ReturnSentinel {
 		t.Fatalf("restored reference pc = 0x%08x, want 0x%08x", got, guest.ReturnSentinel)
 	}
@@ -1530,18 +1322,12 @@ func TestMagicholeReferenceEADSEntryPoint(t *testing.T) {
 		t.Fatalf("restored EADS stats = %+v, want %+v", restoredStats, stats)
 	}
 
-	if err := machine.StepFrame(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.StepFrame(context.Background()))
 	replayedOnce := sha256.Sum256(machine.Framebuffer().(*stdimage.RGBA).Pix)
 	onceStats, _ := machine.EADSFrameStats()
 	onceEvent := onceStats.Events[len(onceStats.Events)-1]
-	if err := machine.LoadState(bytes.NewReader(state.Bytes())); err != nil {
-		t.Fatal(err)
-	}
-	if err := machine.StepFrame(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.LoadState(bytes.NewReader(state.Bytes())))
+	check(t, machine.StepFrame(context.Background()))
 	replayedTwice := sha256.Sum256(machine.Framebuffer().(*stdimage.RGBA).Pix)
 	twiceStats, _ := machine.EADSFrameStats()
 	twiceEvent := twiceStats.Events[len(twiceStats.Events)-1]
@@ -1559,9 +1345,7 @@ func TestMagicholeReferenceEADSEntryPoint(t *testing.T) {
 func TestRaptorJavaSaveStateFailsBeforeWriting(t *testing.T) {
 	machine := newSyntheticMachine(t)
 	var valid bytes.Buffer
-	if err := machine.SaveState(&valid); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.SaveState(&valid))
 	machine.raptor = &raptorrt.Runtime{Java: &raptorrt.JavaRuntime{}}
 
 	var rejected bytes.Buffer
@@ -1586,9 +1370,7 @@ func newSyntheticMachine(t *testing.T) *Machine {
 		ReaderAt: bytes.NewReader(data),
 		Size:     int64(len(data)),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	machine := created.(*Machine)
 	t.Cleanup(func() { _ = machine.Close() })
 	return machine
@@ -1618,16 +1400,12 @@ func testZIP(t *testing.T, files map[string][]byte) []byte {
 	writer := zip.NewWriter(&output)
 	for name, payload := range files {
 		entry, err := writer.Create(name)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		if _, err := entry.Write(payload); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := writer.Close(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, writer.Close())
 	return output.Bytes()
 }
 
@@ -1676,9 +1454,7 @@ func testOMADCFBox(kind string, payload []byte) []byte {
 func register(t *testing.T, machine *Machine, id uint32) uint32 {
 	t.Helper()
 	value, err := machine.ReadRegister(id)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	return value
 }
 

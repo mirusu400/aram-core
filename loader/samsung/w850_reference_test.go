@@ -20,16 +20,12 @@ func TestSamsungW850PrivateReference(t *testing.T) {
 	}
 	set := openW850ReferenceSet(t, directory)
 	pkg, err := Inspect(set)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if pkg.Family != FamilySCHFlexOneNANDDownload || !pkg.Complete() {
 		t.Fatalf("W850 package = family %q missing %v", pkg.Family, pkg.MissingRoles())
 	}
 	profile, err := BuiltinRegistry().Match(pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if profile.ID != SCHW850CF11ProfileID {
 		t.Fatalf("W850 profile = %q", profile.ID)
 	}
@@ -41,9 +37,7 @@ func TestSamsungW850PrivateReference(t *testing.T) {
 			t.Fatalf("W850 profile has no %s image", id)
 		}
 		image, err := ReconstructBootImage(set, pkg, spec)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		if id == "oemsbl" && (spec.PBLPreload || spec.LoadAddress != 0x00900000 || spec.EntryOffset != 0 ||
 			len(spec.PBLBytePatches) != 0) {
 			t.Fatalf("W850 OEMSBL image = %+v", spec)
@@ -54,9 +48,7 @@ func TestSamsungW850PrivateReference(t *testing.T) {
 		}
 	}
 	wbtPiece, err := set.Piece(pkg.Pieces[RoleWBT].Index)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	containerHeader := make([]byte, oemsblSpec.HeaderSize)
 	if _, err := wbtPiece.ReadAt(containerHeader, oemsblSpec.BlockOffsets[0]); err != nil {
 		t.Fatal(err)
@@ -67,9 +59,7 @@ func TestSamsungW850PrivateReference(t *testing.T) {
 		t.Fatal("W850 reconstructed OEMSBL header entry is outside its image")
 	}
 	layout, err := Normalize(set, pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	wantStarts := map[Role]uint64{
 		RoleWBT: 0, RoleWBIN: 0x00400000, RoleABIN: 0x01a00000,
 		RoleDAT: 0x04700000, RoleFont: 0x09a00000,
@@ -81,16 +71,12 @@ func TestSamsungW850PrivateReference(t *testing.T) {
 		}
 	}
 	flash, err := AssembleFlash(set, pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if flash.Size() != int64(flexOneNANDPhysicalSize) {
 		t.Fatalf("W850 Flex-OneNAND size = %#x", flash.Size())
 	}
 	target, err := flexOneNANDBootTarget(oemsblSpec, layout.Partitions)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	loadedHeader := make([]byte, len(containerHeader))
 	if _, err := flash.ReadAt(loadedHeader, int64(target)); err != nil {
 		t.Fatal(err)
@@ -123,9 +109,7 @@ func TestSamsungW850PrivateReference(t *testing.T) {
 func openW850ReferenceSet(t *testing.T, directory string) firmwareset.Set {
 	t.Helper()
 	entries, err := os.ReadDir(directory)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	profile := schW850CF11Profile()
 	wbtHash := profile.PieceHashes[RoleWBT]
 	var sources []firmwareset.Source
@@ -140,9 +124,7 @@ func openW850ReferenceSet(t *testing.T, directory string) firmwareset.Set {
 		}
 		path := filepath.Join(directory, entry.Name())
 		file, err := os.Open(path)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		info, err := file.Stat()
 		if err != nil {
 			_ = file.Close()
@@ -172,8 +154,6 @@ func openW850ReferenceSet(t *testing.T, directory string) firmwareset.Set {
 		t.Fatalf("configured W850 reference contains %d selected pieces, want %d", len(sources), len(flexOneNANDRequiredRoles))
 	}
 	set, err := firmwareset.NewSet(sources)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	return set
 }

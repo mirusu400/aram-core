@@ -25,15 +25,9 @@ func TestThumbExecutesIntegerAndStackInstructions(t *testing.T) {
 		0x00, 0xb5, // push {lr}
 		0x00, 0xbe, // bkpt #0
 	}
-	if err := backend.WriteMemory(0x1000, code); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterSP, 0x3000); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterLR, 0x12345679); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1000, code))
+	check(t, backend.WriteRegister(cpu.RegisterSP, 0x3000))
+	check(t, backend.WriteRegister(cpu.RegisterLR, 0x12345679))
 
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeThumb, 16)
 	if result.Err != nil || result.Reason != cpu.StopBreakpoint || result.Instructions != 5 {
@@ -49,9 +43,7 @@ func TestThumbExecutesIntegerAndStackInstructions(t *testing.T) {
 		t.Fatalf("sp = 0x%x, want 0x2ffc", got)
 	}
 	var stacked [4]byte
-	if err := backend.ReadMemory(0x2ffc, stacked[:]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.ReadMemory(0x2ffc, stacked[:]))
 	if got := binary.LittleEndian.Uint32(stacked[:]); got != 0x12345679 {
 		t.Fatalf("stacked lr = 0x%x", got)
 	}
@@ -64,9 +56,7 @@ func TestARMExecutesDataProcessing(t *testing.T) {
 	binary.LittleEndian.PutUint32(code[0:4], 0xe3a00007)  // mov r0, #7
 	binary.LittleEndian.PutUint32(code[4:8], 0xe2800005)  // add r0, r0, #5
 	binary.LittleEndian.PutUint32(code[8:12], 0xe1200070) // bkpt #0
-	if err := backend.WriteMemory(0x1000, code); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1000, code))
 
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 16)
 	if result.Err != nil || result.Reason != cpu.StopBreakpoint || result.Instructions != 3 {
@@ -93,9 +83,7 @@ func TestARMORRShiftReadsSourceBeforeWritingAliasedDestination(t *testing.T) {
 			} {
 				binary.LittleEndian.PutUint32(code[index*4:], instruction)
 			}
-			if err := backend.WriteMemory(0x1000, code); err != nil {
-				t.Fatal(err)
-			}
+			check(t, backend.WriteMemory(0x1000, code))
 
 			result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 8)
 			if result.Err != nil || result.Reason != cpu.StopBreakpoint || result.Instructions != 5 {
@@ -111,23 +99,15 @@ func TestARMORRShiftReadsSourceBeforeWritingAliasedDestination(t *testing.T) {
 func TestExecutionBudgetAndContextRoundTrip(t *testing.T) {
 	backend := New()
 	mapCodeAndStack(t, backend)
-	if err := backend.WriteMemory(0x1000, []byte{0x01, 0x20, 0x01, 0x30}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1000, []byte{0x01, 0x20, 0x01, 0x30}))
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeThumb, 1)
 	if result.Reason != cpu.StopBudget || result.Instructions != 1 || result.PC != 0x1002 {
 		t.Fatalf("Run result = %+v", result)
 	}
 	saved, err := backend.SaveContext()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterR0, 99); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.RestoreContext(saved); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, backend.WriteRegister(cpu.RegisterR0, 99))
+	check(t, backend.RestoreContext(saved))
 	if got := register(t, backend, cpu.RegisterR0); got != 1 {
 		t.Fatalf("restored r0 = %d, want 1", got)
 	}
@@ -144,9 +124,7 @@ func TestThumbLongBranchWithLinkExecutesAsOneInstruction(t *testing.T) {
 		0x2a, 0x20, // target: MOVS r0, #42
 		0x00, 0xbe, // BKPT
 	}
-	if err := backend.WriteMemory(0x1000, code); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1000, code))
 
 	first := backend.Run(context.Background(), 0x1000, cpu.ModeThumb, 1)
 	if first.Err != nil || first.Reason != cpu.StopBudget || first.PC != 0x1008 {
@@ -178,9 +156,7 @@ func TestThumbBranchExchangeWithLinkSetsReturnAddress(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := backend.WriteRegister(cpu.RegisterR3, 0x1101); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteRegister(cpu.RegisterR3, 0x1101))
 
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeThumb, 4)
 	if result.Err != nil || result.Reason != cpu.StopBreakpoint {
@@ -200,18 +176,14 @@ func TestARMBranchExchangeWithLinkSetsReturnAddress(t *testing.T) {
 	code := make([]byte, 8)
 	binary.LittleEndian.PutUint32(code[0:4], 0xe12fff33) // BLX r3
 	binary.LittleEndian.PutUint32(code[4:8], 0xe1200070) // return address: BKPT
-	if err := backend.WriteMemory(0x1000, code); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1000, code))
 	if err := backend.WriteMemory(0x1100, []byte{
 		0x2a, 0x20, // MOVS r0, #42
 		0x70, 0x47, // BX lr
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := backend.WriteRegister(cpu.RegisterR3, 0x1101); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteRegister(cpu.RegisterR3, 0x1101))
 
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 4)
 	if result.Err != nil || result.Reason != cpu.StopBreakpoint {
@@ -232,9 +204,7 @@ func TestARMImmediateBranchExchangeWithLinkEntersThumb(t *testing.T) {
 	// BLX 0x1100: PC is 0x1008 and the signed immediate is 0xf8.
 	binary.LittleEndian.PutUint32(code[0:4], 0xfa00003e)
 	binary.LittleEndian.PutUint32(code[4:8], 0xe1200070) // return address: BKPT
-	if err := backend.WriteMemory(0x1000, code); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1000, code))
 	if err := backend.WriteMemory(0x1100, []byte{
 		0x2a, 0x20, // MOVS r0, #42
 		0x70, 0x47, // BX lr
@@ -260,9 +230,7 @@ func TestARMInstructionCacheInvalidateIsCoherentNoOp(t *testing.T) {
 	code := make([]byte, 8)
 	binary.LittleEndian.PutUint32(code[0:4], 0xee070f15) // MCR p15,0,r0,c7,c5,0
 	binary.LittleEndian.PutUint32(code[4:8], 0xe1200070) // BKPT
-	if err := backend.WriteMemory(0x1000, code); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1000, code))
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 2)
 	if result.Err != nil || result.Reason != cpu.StopBreakpoint {
 		t.Fatalf("cache maintenance result = %+v", result)
@@ -272,30 +240,24 @@ func TestARMInstructionCacheInvalidateIsCoherentNoOp(t *testing.T) {
 func TestARMBlockTransferPushesAndPopsRegisters(t *testing.T) {
 	backend := New()
 	defer backend.Close()
-	if err := backend.Map(
+	check(t, backend.Map(
 		0x1000,
 		0x1000,
 		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	code := make([]byte, 20)
 	binary.LittleEndian.PutUint32(code[0:4], 0xe92d4001)   // stmdb sp!, {r0, lr}
 	binary.LittleEndian.PutUint32(code[4:8], 0xe3a00000)   // mov r0, #0
 	binary.LittleEndian.PutUint32(code[8:12], 0xe8bd4001)  // ldmia sp!, {r0, lr}
 	binary.LittleEndian.PutUint32(code[12:16], 0xe12fff1e) // bx lr
 	binary.LittleEndian.PutUint32(code[16:20], 0xe1200070) // bkpt
-	if err := backend.WriteMemory(0x1000, code); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1000, code))
 	for register, value := range map[uint32]uint32{
 		cpu.RegisterR0: 0x12345678,
 		cpu.RegisterSP: 0x1ff0,
 		cpu.RegisterLR: 0x1010,
 	} {
-		if err := backend.WriteRegister(register, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, backend.WriteRegister(register, value))
 	}
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 8)
 	if result.Err != nil || result.Reason != cpu.StopBreakpoint {
@@ -312,22 +274,16 @@ func TestARMBlockTransferPushesAndPopsRegisters(t *testing.T) {
 func TestARMDataProcessingSupportsImmediateRegisterShift(t *testing.T) {
 	backend := New()
 	defer backend.Close()
-	if err := backend.Map(
+	check(t, backend.Map(
 		0x1000,
 		8,
 		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	var code [8]byte
 	binary.LittleEndian.PutUint32(code[0:4], 0xe1b02f82) // movs r2, r2, lsl #31
 	binary.LittleEndian.PutUint32(code[4:8], 0xe1200070) // bkpt
-	if err := backend.WriteMemory(0x1000, code[:]); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterR2, 3); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1000, code[:]))
+	check(t, backend.WriteRegister(cpu.RegisterR2, 3))
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 2)
 	if result.Err != nil || result.Reason != cpu.StopBreakpoint {
 		t.Fatalf("result = %+v", result)
@@ -336,9 +292,7 @@ func TestARMDataProcessingSupportsImmediateRegisterShift(t *testing.T) {
 		t.Fatalf("r2 = 0x%08x", got)
 	}
 	cpsr, err := backend.ReadRegister(cpu.RegisterCPSR)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if cpsr&flagN == 0 || cpsr&flagC == 0 {
 		t.Fatalf("CPSR = 0x%08x, want N and C", cpsr)
 	}
@@ -356,24 +310,18 @@ func TestARMDataProcessingTSTControlsConditionalExecution(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			backend := New()
 			defer backend.Close()
-			if err := backend.Map(
+			check(t, backend.Map(
 				0x1000,
 				16,
 				cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
-			); err != nil {
-				t.Fatal(err)
-			}
+			))
 			var code [16]byte
 			binary.LittleEndian.PutUint32(code[0:4], 0xe31e0001)   // tst lr, #1
 			binary.LittleEndian.PutUint32(code[4:8], 0x03a00001)   // moveq r0, #1
 			binary.LittleEndian.PutUint32(code[8:12], 0x13a00002)  // movne r0, #2
 			binary.LittleEndian.PutUint32(code[12:16], 0xe1200070) // bkpt
-			if err := backend.WriteMemory(0x1000, code[:]); err != nil {
-				t.Fatal(err)
-			}
-			if err := backend.WriteRegister(cpu.RegisterLR, test.lr); err != nil {
-				t.Fatal(err)
-			}
+			check(t, backend.WriteMemory(0x1000, code[:]))
+			check(t, backend.WriteRegister(cpu.RegisterLR, test.lr))
 			result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 4)
 			if result.Err != nil || result.Reason != cpu.StopBreakpoint {
 				t.Fatalf("result = %+v", result)
@@ -388,30 +336,20 @@ func TestARMDataProcessingTSTControlsConditionalExecution(t *testing.T) {
 func TestARMSingleDataTransferSupportsPostIndexAndCondition(t *testing.T) {
 	backend := New()
 	defer backend.Close()
-	if err := backend.Map(
+	check(t, backend.Map(
 		0x1000,
 		0x1000,
 		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	var code [8]byte
 	binary.LittleEndian.PutUint32(code[0:4], 0x24913004) // ldrcs r3, [r1], #4
 	binary.LittleEndian.PutUint32(code[4:8], 0xe1200070) // bkpt
-	if err := backend.WriteMemory(0x1000, code[:]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1000, code[:]))
 	var value [4]byte
 	binary.LittleEndian.PutUint32(value[:], 0x12345678)
-	if err := backend.WriteMemory(0x1800, value[:]); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterR1, 0x1800); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterCPSR, flagC); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1800, value[:]))
+	check(t, backend.WriteRegister(cpu.RegisterR1, 0x1800))
+	check(t, backend.WriteRegister(cpu.RegisterCPSR, flagC))
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 2)
 	if result.Err != nil || result.Reason != cpu.StopBreakpoint {
 		t.Fatalf("result = %+v", result)
@@ -427,30 +365,20 @@ func TestARMSingleDataTransferSupportsPostIndexAndCondition(t *testing.T) {
 func TestARMSingleDataTransferSupportsShiftedRegisterOffset(t *testing.T) {
 	backend := New()
 	defer backend.Close()
-	if err := backend.Map(
+	check(t, backend.Map(
 		0x1000,
 		0x1000,
 		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	var code [8]byte
 	binary.LittleEndian.PutUint32(code[0:4], 0xe7913102) // ldr r3, [r1, r2, lsl #2]
 	binary.LittleEndian.PutUint32(code[4:8], 0xe1200070) // bkpt
-	if err := backend.WriteMemory(0x1000, code[:]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1000, code[:]))
 	var value [4]byte
 	binary.LittleEndian.PutUint32(value[:], 0x89abcdef)
-	if err := backend.WriteMemory(0x1810, value[:]); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterR1, 0x1800); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterR2, 4); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1810, value[:]))
+	check(t, backend.WriteRegister(cpu.RegisterR1, 0x1800))
+	check(t, backend.WriteRegister(cpu.RegisterR2, 4))
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 2)
 	if result.Err != nil || result.Reason != cpu.StopBreakpoint {
 		t.Fatalf("result = %+v", result)
@@ -471,12 +399,8 @@ func TestThumbAddressGenerationFromPCAndSP(t *testing.T) {
 		0x01, 0xa9, // ADD r1, SP, #4 => 0x2804
 		0x00, 0xbe, // BKPT
 	}
-	if err := backend.WriteMemory(0x1000, code); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterSP, 0x2800); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1000, code))
+	check(t, backend.WriteRegister(cpu.RegisterSP, 0x2800))
 
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeThumb, 3)
 	if result.Err != nil || result.Reason != cpu.StopBreakpoint {
@@ -500,9 +424,7 @@ func TestThumbLiteralLoadUsesAlignedArchitecturalPC(t *testing.T) {
 		0x00, 0x00,
 		0x78, 0x56, 0x34, 0x12,
 	}
-	if err := backend.WriteMemory(0x1000, code); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1000, code))
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeThumb, 2)
 	if result.Err != nil || result.Reason != cpu.StopBreakpoint {
 		t.Fatalf("Run result = %+v", result)
@@ -521,9 +443,7 @@ func TestThumbCompareSetsSignFromResultMostSignificantBit(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := backend.WriteRegister(cpu.RegisterR0, 0x1100); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteRegister(cpu.RegisterR0, 0x1100))
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeThumb, 2)
 	if result.Err != nil || result.Reason != cpu.StopBreakpoint {
 		t.Fatalf("Run result = %+v", result)
@@ -543,17 +463,13 @@ func TestThumbImmediateShifts(t *testing.T) {
 		0x12, 0x10, // ASRS r2, r2, #32
 		0x00, 0xbe, // BKPT
 	}
-	if err := backend.WriteMemory(0x1000, code); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1000, code))
 	for register, value := range map[uint32]uint32{
 		cpu.RegisterR0: 0x80000001,
 		cpu.RegisterR1: 3,
 		cpu.RegisterR2: 0x80000000,
 	} {
-		if err := backend.WriteRegister(register, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, backend.WriteRegister(register, value))
 	}
 
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeThumb, 4)
@@ -594,9 +510,7 @@ func TestThumbRegisterALUStackAdjustmentAndMultipleTransfer(t *testing.T) {
 	for index, instruction := range instructions {
 		binary.LittleEndian.PutUint16(code[index*2:], instruction)
 	}
-	if err := backend.WriteMemory(0x1000, code); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1000, code))
 	for registerID, value := range map[uint32]uint32{
 		cpu.RegisterR0:   0xffffffff,
 		cpu.RegisterR1:   0,
@@ -606,9 +520,7 @@ func TestThumbRegisterALUStackAdjustmentAndMultipleTransfer(t *testing.T) {
 		cpu.RegisterSP:   0x2800,
 		cpu.RegisterCPSR: cpu.StatusThumb | flagC,
 	} {
-		if err := backend.WriteRegister(registerID, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, backend.WriteRegister(registerID, value))
 	}
 
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeThumb, 32)
@@ -653,18 +565,14 @@ func TestThumbRegisterOffsetLoadsAndStores(t *testing.T) {
 	for index, instruction := range instructions {
 		binary.LittleEndian.PutUint16(code[index*2:], instruction)
 	}
-	if err := backend.WriteMemory(0x1000, code); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1000, code))
 	for register, value := range map[uint32]uint32{
 		cpu.RegisterR0: 0x2000,
 		cpu.RegisterR1: 4,
 		cpu.RegisterR2: 0x8001,
 		cpu.RegisterR4: 0x80,
 	} {
-		if err := backend.WriteRegister(register, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, backend.WriteRegister(register, value))
 	}
 
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeThumb, 16)
@@ -699,12 +607,8 @@ func TestThumbHighRegisterAddUsesArchitecturalPC(t *testing.T) {
 		0x2a, 0x20, // MOVS r0, #42
 		0x00, 0xbe, // BKPT
 	}
-	if err := backend.WriteMemory(0x1000, code); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterR3, 4); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1000, code))
+	check(t, backend.WriteRegister(cpu.RegisterR3, 4))
 
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeThumb, 3)
 	if result.Err != nil || result.Reason != cpu.StopBreakpoint ||
@@ -727,17 +631,13 @@ func TestThumbImmediateLoadsAndStores(t *testing.T) {
 		0x01, 0x9d, // LDR r5, [SP, #4]
 		0x00, 0xbe, // BKPT
 	}
-	if err := backend.WriteMemory(0x1000, code); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1000, code))
 	for register, value := range map[uint32]uint32{
 		cpu.RegisterR0: 0x2000,
 		cpu.RegisterR1: 0x12345678,
 		cpu.RegisterSP: 0x2800,
 	} {
-		if err := backend.WriteRegister(register, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, backend.WriteRegister(register, value))
 	}
 
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeThumb, 16)
@@ -758,16 +658,10 @@ func TestThumbImmediateLoadsAndStores(t *testing.T) {
 
 func TestRestoreContextRejectsInvalidModeAtomically(t *testing.T) {
 	backend := New()
-	if err := backend.WriteRegister(cpu.RegisterR0, 7); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteRegister(cpu.RegisterR0, 7))
 	saved, err := backend.SaveContext()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterR0, 99); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, backend.WriteRegister(cpu.RegisterR0, 99))
 	binary.LittleEndian.PutUint32(saved[len(saved)-4:], 99)
 	if err := backend.RestoreContext(saved); err == nil {
 		t.Fatal("RestoreContext accepted an invalid mode")
@@ -779,21 +673,15 @@ func TestRestoreContextRejectsInvalidModeAtomically(t *testing.T) {
 
 func TestMemoryPermissionsAndUnsupportedInstructionFault(t *testing.T) {
 	backend := New()
-	if err := backend.Map(0x1000, 2, cpu.PermissionRead|cpu.PermissionExecute); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.Map(0x1000, 2, cpu.PermissionRead|cpu.PermissionExecute))
 	if err := backend.WriteMemory(0x1000, []byte{0, 0}); !errors.Is(err, cpu.ErrPermissionDenied) {
 		t.Fatalf("WriteMemory error = %v", err)
 	}
 
 	writable := New()
-	if err := writable.Map(0x1000, 2,
-		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute); err != nil {
-		t.Fatal(err)
-	}
-	if err := writable.WriteMemory(0x1000, []byte{0x00, 0xde}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, writable.Map(0x1000, 2,
+		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute))
+	check(t, writable.WriteMemory(0x1000, []byte{0x00, 0xde}))
 	result := writable.Run(context.Background(), 0x1000, cpu.ModeThumb, 1)
 	if !errors.Is(result.Err, cpu.ErrUnsupportedInstruction) {
 		t.Fatalf("Run error = %v", result.Err)
@@ -804,19 +692,11 @@ func TestScalarMemoryAccessCrossesAdjacentMappings(t *testing.T) {
 	backend := New()
 	defer backend.Close()
 	permissions := cpu.PermissionRead | cpu.PermissionWrite
-	if err := backend.Map(0x1000, 1, permissions); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.Map(0x1001, 3, permissions); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.write32(0x1000, 0x78563412, cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.Map(0x1000, 1, permissions))
+	check(t, backend.Map(0x1001, 3, permissions))
+	check(t, backend.write32(0x1000, 0x78563412, cpu.PermissionWrite))
 	value, err := backend.read32(0x1000, cpu.PermissionRead)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if value != 0x78563412 {
 		t.Fatalf("cross-mapping value = 0x%08x", value)
 	}
@@ -826,26 +706,16 @@ func TestRegionHintIsInvalidatedWhenMappingsAreSorted(t *testing.T) {
 	backend := New()
 	defer backend.Close()
 	permissions := cpu.PermissionRead | cpu.PermissionWrite
-	if err := backend.Map(0x2000, 4, permissions); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.write32(0x2000, 0x22222222, cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.Map(0x1000, 4, permissions); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.write32(0x1000, 0x11111111, cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.Map(0x2000, 4, permissions))
+	check(t, backend.write32(0x2000, 0x22222222, cpu.PermissionWrite))
+	check(t, backend.Map(0x1000, 4, permissions))
+	check(t, backend.write32(0x1000, 0x11111111, cpu.PermissionWrite))
 	for address, want := range map[uint32]uint32{
 		0x1000: 0x11111111,
 		0x2000: 0x22222222,
 	} {
 		got, err := backend.read32(address, cpu.PermissionRead)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		if got != want {
 			t.Fatalf("value at 0x%08x = 0x%08x, want 0x%08x", address, got, want)
 		}
@@ -855,16 +725,12 @@ func TestRegionHintIsInvalidatedWhenMappingsAreSorted(t *testing.T) {
 func TestRunHonorsCanceledContextBeforeExecuting(t *testing.T) {
 	backend := New()
 	defer backend.Close()
-	if err := backend.Map(
+	check(t, backend.Map(
 		0x1000,
 		2,
 		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteMemory(0x1000, []byte{0xfe, 0xe7}); err != nil {
-		t.Fatal(err)
-	}
+	))
+	check(t, backend.WriteMemory(0x1000, []byte{0xfe, 0xe7}))
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	result := backend.Run(ctx, 0x1000, cpu.ModeThumb, 0)
@@ -877,16 +743,12 @@ func TestRunHonorsCanceledContextBeforeExecuting(t *testing.T) {
 
 func TestIdentityAndMemoryLimit(t *testing.T) {
 	backend := NewWithMemoryLimit(0x1000)
-	if err := backend.Identity().Validate(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.Identity().Validate())
 	if backend.Identity().Name != BackendName ||
 		backend.Identity().Version != BackendVersion {
 		t.Fatalf("Identity = %+v", backend.Identity())
 	}
-	if err := backend.Map(0x1000, 0x1000, cpu.PermissionRead); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.Map(0x1000, 0x1000, cpu.PermissionRead))
 	if err := backend.Map(0x3000, 1, cpu.PermissionRead); !errors.Is(err, cpu.ErrInvalidMapping) {
 		t.Fatalf("Map beyond memory limit error = %v", err)
 	}
@@ -907,16 +769,12 @@ func TestLazyFlagsPreserveCarryOverflowAcrossPartialSetter(t *testing.T) {
 		0x05, 0x23, // movs r3, #5       ; N=0, Z=0, keeps C=1, V=1
 		0x00, 0xbe, // bkpt #0
 	}
-	if err := backend.WriteMemory(0x1000, code); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1000, code))
 	for reg, value := range map[uint32]uint32{
 		cpu.RegisterR1: 0x80000000,
 		cpu.RegisterR2: 0x80000000,
 	} {
-		if err := backend.WriteRegister(reg, value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, backend.WriteRegister(reg, value))
 	}
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeThumb, 8)
 	if result.Err != nil || result.Reason != cpu.StopBreakpoint || result.Instructions != 3 {
@@ -939,34 +797,26 @@ func TestLazyFlagsPreserveCarryOverflowAcrossPartialSetter(t *testing.T) {
 
 func mapCodeAndStack(t *testing.T, backend *Backend) {
 	t.Helper()
-	if err := backend.Map(0x1000, 0x1000,
-		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.Map(0x2000, 0x1000, cpu.PermissionRead|cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.Map(0x1000, 0x1000,
+		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute))
+	check(t, backend.Map(0x2000, 0x1000, cpu.PermissionRead|cpu.PermissionWrite))
 }
 
 func register(t *testing.T, backend *Backend, id uint32) uint32 {
 	t.Helper()
 	value, err := backend.ReadRegister(id)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	return value
 }
 
 func TestARMHalfwordAndSignedByteTransfers(t *testing.T) {
 	backend := New()
 	defer backend.Close()
-	if err := backend.Map(
+	check(t, backend.Map(
 		0x1000,
 		0x1000,
 		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	var code [20]byte
 	binary.LittleEndian.PutUint32(code[0:4], 0xe1de30d0)  // ldrsb r3, [lr]
 	binary.LittleEndian.PutUint32(code[4:8], 0xe1de40f2)  // ldrsh r4, [lr, #2]
@@ -974,18 +824,10 @@ func TestARMHalfwordAndSignedByteTransfers(t *testing.T) {
 	binary.LittleEndian.PutUint32(code[12:16], 0xe0ce60b4)
 	// strh r6, [lr], #4
 	binary.LittleEndian.PutUint32(code[16:20], 0xe1200070) // bkpt
-	if err := backend.WriteMemory(0x1000, code[:]); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteMemory(0x1800, []byte{0x80, 0x00, 0x00, 0xff}); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterLR, 0x1800); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterR6, 0xdead1234); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1000, code[:]))
+	check(t, backend.WriteMemory(0x1800, []byte{0x80, 0x00, 0x00, 0xff}))
+	check(t, backend.WriteRegister(cpu.RegisterLR, 0x1800))
+	check(t, backend.WriteRegister(cpu.RegisterR6, 0xdead1234))
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 8)
 	if result.Err != nil || result.Reason != cpu.StopBreakpoint {
 		t.Fatalf("result = %+v", result)
@@ -1001,9 +843,7 @@ func TestARMHalfwordAndSignedByteTransfers(t *testing.T) {
 		}
 	}
 	var stored [2]byte
-	if err := backend.ReadMemory(0x1800, stored[:]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.ReadMemory(0x1800, stored[:]))
 	if got := binary.LittleEndian.Uint16(stored[:]); got != 0x1234 {
 		t.Fatalf("stored halfword = 0x%04x", got)
 	}
@@ -1025,9 +865,7 @@ func TestARMDoublewordTransfersAcrossExecutionTiers(t *testing.T) {
 			} {
 				binary.LittleEndian.PutUint32(code[index*4:], instruction)
 			}
-			if err := backend.WriteMemory(0x1000, code); err != nil {
-				t.Fatal(err)
-			}
+			check(t, backend.WriteMemory(0x1000, code))
 			for address, values := range map[uint32][2]uint32{
 				0x2028: {0x11223344, 0x55667788},
 				0x2100: {0x89abcdef, 0x01234567},
@@ -1035,9 +873,7 @@ func TestARMDoublewordTransfersAcrossExecutionTiers(t *testing.T) {
 				encoded := make([]byte, 8)
 				binary.LittleEndian.PutUint32(encoded[0:4], values[0])
 				binary.LittleEndian.PutUint32(encoded[4:8], values[1])
-				if err := backend.WriteMemory(address, encoded); err != nil {
-					t.Fatal(err)
-				}
+				check(t, backend.WriteMemory(address, encoded))
 			}
 			for registerID, value := range map[uint32]uint32{
 				cpu.RegisterSP: 0x2000,
@@ -1046,9 +882,7 @@ func TestARMDoublewordTransfersAcrossExecutionTiers(t *testing.T) {
 				cpu.RegisterR6: 0xaabbccdd,
 				cpu.RegisterR7: 0xeeff0011,
 			} {
-				if err := backend.WriteRegister(registerID, value); err != nil {
-					t.Fatal(err)
-				}
+				check(t, backend.WriteRegister(registerID, value))
 			}
 			result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 8)
 			if result.Err != nil || result.Reason != cpu.StopBreakpoint || result.Instructions != 5 {
@@ -1071,9 +905,7 @@ func TestARMDoublewordTransfersAcrossExecutionTiers(t *testing.T) {
 				0x21f0: {0xaabbccdd, 0xeeff0011},
 			} {
 				encoded := make([]byte, 8)
-				if err := backend.ReadMemory(address, encoded); err != nil {
-					t.Fatal(err)
-				}
+				check(t, backend.ReadMemory(address, encoded))
 				got := [2]uint32{
 					binary.LittleEndian.Uint32(encoded[0:4]),
 					binary.LittleEndian.Uint32(encoded[4:8]),
@@ -1089,28 +921,20 @@ func TestARMDoublewordTransfersAcrossExecutionTiers(t *testing.T) {
 func TestARMMultipliesAndCountsLeadingZeros(t *testing.T) {
 	backend := New()
 	defer backend.Close()
-	if err := backend.Map(
+	check(t, backend.Map(
 		0x1000,
 		0x1000,
 		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	var code [20]byte
 	binary.LittleEndian.PutUint32(code[0:4], 0xe0030291)   // mul r3, r1, r2
 	binary.LittleEndian.PutUint32(code[4:8], 0xe0242391)   // mla r4, r1, r3, r2
 	binary.LittleEndian.PutUint32(code[8:12], 0xe0c65291)  // smull r5, r6, r1, r2
 	binary.LittleEndian.PutUint32(code[12:16], 0xe16f7f11) // clz r7, r1
 	binary.LittleEndian.PutUint32(code[16:20], 0xe1200070) // bkpt
-	if err := backend.WriteMemory(0x1000, code[:]); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterR1, 0xfffffffe); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterR2, 3); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1000, code[:]))
+	check(t, backend.WriteRegister(cpu.RegisterR1, 0xfffffffe))
+	check(t, backend.WriteRegister(cpu.RegisterR2, 3))
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 8)
 	if result.Err != nil || result.Reason != cpu.StopBreakpoint {
 		t.Fatalf("result = %+v", result)
@@ -1131,30 +955,20 @@ func TestARMMultipliesAndCountsLeadingZeros(t *testing.T) {
 func TestARMSwapExchangesMemoryAndRegister(t *testing.T) {
 	backend := New()
 	defer backend.Close()
-	if err := backend.Map(
+	check(t, backend.Map(
 		0x1000,
 		0x1000,
 		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	var code [8]byte
 	binary.LittleEndian.PutUint32(code[0:4], 0xe1013092) // swp r3, r2, [r1]
 	binary.LittleEndian.PutUint32(code[4:8], 0xe1200070) // bkpt
-	if err := backend.WriteMemory(0x1000, code[:]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1000, code[:]))
 	var value [4]byte
 	binary.LittleEndian.PutUint32(value[:], 0xaabbccdd)
-	if err := backend.WriteMemory(0x1800, value[:]); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterR1, 0x1800); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.WriteRegister(cpu.RegisterR2, 0x11223344); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1800, value[:]))
+	check(t, backend.WriteRegister(cpu.RegisterR1, 0x1800))
+	check(t, backend.WriteRegister(cpu.RegisterR2, 0x11223344))
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 4)
 	if result.Err != nil || result.Reason != cpu.StopBreakpoint {
 		t.Fatalf("result = %+v", result)
@@ -1163,9 +977,7 @@ func TestARMSwapExchangesMemoryAndRegister(t *testing.T) {
 		t.Fatalf("r3 = 0x%08x", got)
 	}
 	var swapped [4]byte
-	if err := backend.ReadMemory(0x1800, swapped[:]); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.ReadMemory(0x1800, swapped[:]))
 	if got := binary.LittleEndian.Uint32(swapped[:]); got != 0x11223344 {
 		t.Fatalf("swapped word = 0x%08x", got)
 	}
@@ -1180,9 +992,7 @@ func TestPCHistoryKeepsConfiguredExecutionTail(t *testing.T) {
 		0xe1a00000,
 		0xe1a00000,
 	)
-	if err := backend.SetPCHistoryLimit(3); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.SetPCHistoryLimit(3))
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 4)
 	if result.Err != nil || result.Reason != cpu.StopBudget {
 		t.Fatalf("result = %+v", result)
@@ -1190,9 +1000,7 @@ func TestPCHistoryKeepsConfiguredExecutionTail(t *testing.T) {
 	if got, want := backend.PCHistory(), []uint32{0x1004, 0x1008, 0x100c}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("PC history = %#v, want %#v", got, want)
 	}
-	if err := backend.SetPCHistoryLimit(0); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.SetPCHistoryLimit(0))
 	if got := backend.PCHistory(); len(got) != 0 {
 		t.Fatalf("disabled PC history = %#v", got)
 	}
@@ -1208,9 +1016,7 @@ func TestPCRegisterCaptureSamplesWithoutStoppingExecution(t *testing.T) {
 		0xe2800001, // ADD r0, r0, #1
 		0xeafffffd, // B 0x1000
 	)
-	if err := backend.SetPCRegisterCapture(0x1000, 2); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.SetPCRegisterCapture(0x1000, 2))
 	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 4)
 	if result.Err != nil || result.Reason != cpu.StopBudget {
 		t.Fatalf("result = %+v", result)
@@ -1225,9 +1031,7 @@ func TestPCRegisterCaptureSamplesWithoutStoppingExecution(t *testing.T) {
 	if got, want := captures[1].Registers[cpu.RegisterR0], uint32(1); got != want {
 		t.Fatalf("second captured r0 = 0x%08x, want 0x%08x", got, want)
 	}
-	if err := backend.SetPCRegisterCapture(0, 0); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.SetPCRegisterCapture(0, 0))
 	if got := backend.PCRegisterCaptures(); len(got) != 0 {
 		t.Fatalf("disabled PC register captures = %#v", got)
 	}

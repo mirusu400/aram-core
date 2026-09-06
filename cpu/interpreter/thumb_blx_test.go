@@ -21,9 +21,7 @@ func TestThumbImmediateBranchExchangeWithLinkEntersARM(t *testing.T) {
 	code := make([]byte, 8)
 	binary.LittleEndian.PutUint32(code[0:4], 0xe3a0002a) // MOV r0, #42
 	binary.LittleEndian.PutUint32(code[4:8], 0xe12fff1e) // BX lr
-	if err := backend.WriteMemory(0x1100, code); err != nil {
-		t.Fatal(err)
-	}
+	check(t, backend.WriteMemory(0x1100, code))
 
 	result := backend.Run(context.Background(), 0x1002, cpu.ModeThumb, 4)
 	if result.Err != nil || result.Reason != cpu.StopBreakpoint {

@@ -10,15 +10,11 @@ import (
 func newTestOneNAND(t *testing.T, data []byte) (*OneNAND, *COWFlash) {
 	t.Helper()
 	flash, err := NewCOWFlash(byteStorage{data: data}, oneNANDEraseBlockSize, "onenand-test")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	spareConfig := Qualcomm2K8BitNANDConfig(0xecaa, NewStatusSignal())
 	spareConfig.Capacity = uint64(len(data))
 	spare, err := NewQualcommNAND(flash, spareConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	device, err := NewOneNAND(OneNANDConfig{
 		ManufacturerID: 0x00ec,
 		DeviceID:       0x005c,
@@ -26,9 +22,7 @@ func newTestOneNAND(t *testing.T, data []byte) (*OneNAND, *COWFlash) {
 		Storage:        flash,
 		Spare:          spare,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	return device, flash
 }
 
@@ -47,21 +41,11 @@ func TestOneNANDIdentifiesAndLoadsMainData(t *testing.T) {
 	if interrupt, err := device.Read(oneNANDInterruptStatusOffset, Width16); err != nil || interrupt != 0x8080 {
 		t.Fatalf("cold interrupt = %#x error %v", interrupt, err)
 	}
-	if err := device.Write(oneNANDInterruptStatusOffset, Width16, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(oneNANDStartAddress1Offset, Width16, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(oneNANDStartAddress8Offset, Width16, 4); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(oneNANDStartBufferOffset, Width16, 0x0800); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(oneNANDCommandOffset, Width16, oneNANDCommandRead); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(oneNANDInterruptStatusOffset, Width16, 0))
+	check(t, device.Write(oneNANDStartAddress1Offset, Width16, 0))
+	check(t, device.Write(oneNANDStartAddress8Offset, Width16, 4))
+	check(t, device.Write(oneNANDStartBufferOffset, Width16, 0x0800))
+	check(t, device.Write(oneNANDCommandOffset, Width16, oneNANDCommandRead))
 	for offset := uint32(0); offset < 16; offset += 4 {
 		value, err := device.Read(0x400+offset, Width32)
 		if err != nil || value != binary.LittleEndian.Uint32(data[oneNANDPageSize+offset:]) {
@@ -82,25 +66,19 @@ func TestOneNANDReportsTechnologyIdentity(t *testing.T) {
 		Capacity:       uint64(len(data)),
 		Storage:        byteStorage{data: data},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if technology, readErr := device.Read(oneNANDTechnologyOffset, Width16); readErr != nil || technology != 1 {
 		t.Fatalf("technology ID = %#x error %v", technology, readErr)
 	}
 	state, err := device.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	wrong, err := NewOneNAND(OneNANDConfig{
 		ManufacturerID: 0x00ec,
 		DeviceID:       0x0250,
 		Capacity:       uint64(len(data)),
 		Storage:        byteStorage{data: data},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if err := wrong.LoadState(state); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("technology-mismatched state error = %v", err)
 	}
@@ -111,9 +89,7 @@ func TestOneNANDResetCommandOverridesPendingInterrupt(t *testing.T) {
 	if interrupt, err := device.Read(oneNANDInterruptStatusOffset, Width16); err != nil || interrupt != 0x8080 {
 		t.Fatalf("cold interrupt = %#x error %v", interrupt, err)
 	}
-	if err := device.Write(oneNANDCommandOffset, Width16, oneNANDCommandResetCore); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(oneNANDCommandOffset, Width16, oneNANDCommandResetCore))
 	if interrupt, err := device.Read(oneNANDInterruptStatusOffset, Width16); err != nil || interrupt != 0x8010 {
 		t.Fatalf("reset completion interrupt = %#x error %v", interrupt, err)
 	}
@@ -126,9 +102,7 @@ func TestOneNANDResetCommandOverridesPendingInterrupt(t *testing.T) {
 		{oneNANDStartBufferOffset, 0x0801},
 		{oneNANDCommandOffset, oneNANDCommandRead},
 	} {
-		if err := device.Write(write.offset, Width16, write.value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, device.Write(write.offset, Width16, write.value))
 	}
 	if interrupt, err := device.Read(oneNANDInterruptStatusOffset, Width16); err != nil || interrupt != 0x8090 {
 		t.Fatalf("read completion over pending reset interrupt = %#x error %v", interrupt, err)
@@ -146,9 +120,7 @@ func TestOneNANDRejectsUnlockRangeOutsideGeometry(t *testing.T) {
 		{oneNANDUnlockEndOffset, 2},
 		{oneNANDCommandOffset, oneNANDCommandUnlock},
 	} {
-		if err := device.Write(write.offset, Width16, write.value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, device.Write(write.offset, Width16, write.value))
 	}
 	if start, err := device.Read(oneNANDUnlockStartOffset, Width16); err != nil || start != 2 {
 		t.Fatalf("unlock start = %#x error %v", start, err)
@@ -175,9 +147,7 @@ func TestOneNANDRejectsUnlockRangeOutsideGeometry(t *testing.T) {
 		{oneNANDUnlockStartOffset, 0},
 		{oneNANDCommandOffset, oneNANDCommandUnlock},
 	} {
-		if err := device.Write(write.offset, Width16, write.value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, device.Write(write.offset, Width16, write.value))
 	}
 	if status, err := device.Read(oneNANDControllerStatusOffset, Width16); err != nil ||
 		status&oneNANDStatusCommandError == 0 {
@@ -198,9 +168,7 @@ func TestOneNANDOTPAccessUsesErasedViewUntilReset(t *testing.T) {
 		{oneNANDCommandOffset, oneNANDCommandOTPAccess},
 		{oneNANDCommandOffset, oneNANDCommandRead},
 	} {
-		if err := device.Write(write.offset, Width16, write.value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, device.Write(write.offset, Width16, write.value))
 	}
 	if status, err := device.Read(oneNANDControllerStatusOffset, Width16); err != nil || status != 0 {
 		t.Fatalf("OTP controller status = %#x error %v", status, err)
@@ -210,19 +178,11 @@ func TestOneNANDOTPAccessUsesErasedViewUntilReset(t *testing.T) {
 	}
 
 	state, err := device.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	restored, _ := newTestOneNAND(t, data)
-	if err := restored.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
-	if err := restored.Write(oneNANDCommandOffset, Width16, oneNANDCommandReset); err != nil {
-		t.Fatal(err)
-	}
-	if err := restored.Write(oneNANDCommandOffset, Width16, oneNANDCommandRead); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restored.LoadState(state))
+	check(t, restored.Write(oneNANDCommandOffset, Width16, oneNANDCommandReset))
+	check(t, restored.Write(oneNANDCommandOffset, Width16, oneNANDCommandRead))
 	if value, err := restored.Read(0x400, Width32); err != nil || value != 0x5a5a5a5a {
 		t.Fatalf("post-reset media data = %#x error %v", value, err)
 	}
@@ -238,9 +198,7 @@ func TestOneNANDDecodesSecondDieBlockAddresses(t *testing.T) {
 		"onenand-ddp-test",
 		[]FlashSeed{{Offset: targetOffset, Data: []byte{0x11, 0x22, 0x33, 0x44}}},
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	device, err := NewOneNAND(OneNANDConfig{
 		ManufacturerID: 0x00ec,
 		DeviceID:       0x00dc,
@@ -248,28 +206,16 @@ func TestOneNANDDecodesSecondDieBlockAddresses(t *testing.T) {
 		Capacity:       capacity,
 		Storage:        flash,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	for _, address := range []uint32{
 		0x8090, // Standard DFS plus die-relative FBA.
 		0x8890, // DA05's DFS plus global FBA encoding.
 	} {
-		if err := device.Write(oneNANDInterruptStatusOffset, Width16, 0); err != nil {
-			t.Fatal(err)
-		}
-		if err := device.Write(oneNANDStartAddress1Offset, Width16, address); err != nil {
-			t.Fatal(err)
-		}
-		if err := device.Write(oneNANDStartAddress8Offset, Width16, 0); err != nil {
-			t.Fatal(err)
-		}
-		if err := device.Write(oneNANDStartBufferOffset, Width16, 0x0801); err != nil {
-			t.Fatal(err)
-		}
-		if err := device.Write(oneNANDCommandOffset, Width16, oneNANDCommandRead); err != nil {
-			t.Fatal(err)
-		}
+		check(t, device.Write(oneNANDInterruptStatusOffset, Width16, 0))
+		check(t, device.Write(oneNANDStartAddress1Offset, Width16, address))
+		check(t, device.Write(oneNANDStartAddress8Offset, Width16, 0))
+		check(t, device.Write(oneNANDStartBufferOffset, Width16, 0x0801))
+		check(t, device.Write(oneNANDCommandOffset, Width16, oneNANDCommandRead))
 		if value, readErr := device.Read(0x400, Width32); readErr != nil || value != 0x44332211 {
 			t.Fatalf("SA1 %#x loaded %#x error %v", address, value, readErr)
 		}
@@ -312,9 +258,7 @@ func TestFlexOneNANDMapsRawSLCAndMLCBlockGeometry(t *testing.T) {
 		"flex-onenand-test",
 		seeds,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	device, err := NewOneNAND(OneNANDConfig{
 		ManufacturerID: 0x00ec,
 		DeviceID:       0x0250,
@@ -323,9 +267,7 @@ func TestFlexOneNANDMapsRawSLCAndMLCBlockGeometry(t *testing.T) {
 		FlexGeometry:   geometry,
 		Storage:        flash,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if size, readErr := device.Read(oneNANDDataBufferSizeOffset, Width16); readErr != nil || size != 0x1000 {
 		t.Fatalf("Flex-OneNAND data buffer size = %#x error %v", size, readErr)
 	}
@@ -361,9 +303,7 @@ func TestFlexOneNANDMapsRawSLCAndMLCBlockGeometry(t *testing.T) {
 	}
 
 	state, err := device.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	wrongGeometry := *geometry
 	wrongGeometry.SLCBoundary = 0x1f
 	wrong, err := NewOneNAND(OneNANDConfig{
@@ -374,9 +314,7 @@ func TestFlexOneNANDMapsRawSLCAndMLCBlockGeometry(t *testing.T) {
 		FlexGeometry:   &wrongGeometry,
 		Storage:        flash,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if err := wrong.LoadState(state); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("geometry-mismatched state error = %v", err)
 	}
@@ -399,22 +337,14 @@ func TestFlexOneNANDErasesEveryUnderlyingCOWBlock(t *testing.T) {
 			{Offset: mlcOffset + uint64(geometry.MLCBlockSize) - 1, Data: []byte{0x00}},
 		},
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	device, err := NewOneNAND(OneNANDConfig{
 		ManufacturerID: 0x00ec, DeviceID: 0x0250, TechnologyID: 1,
 		Capacity: capacity, FlexGeometry: geometry, Storage: flash,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(oneNANDStartAddress1Offset, Width16, 0x10); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(oneNANDCommandOffset, Width16, oneNANDCommandErase); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, device.Write(oneNANDStartAddress1Offset, Width16, 0x10))
+	check(t, device.Write(oneNANDCommandOffset, Width16, oneNANDCommandErase))
 	for _, offset := range []uint64{mlcOffset, mlcOffset + uint64(geometry.MLCBlockSize) - 1} {
 		value := []byte{0}
 		if _, err := flash.ReadAt(value, int64(offset)); err != nil || value[0] != 0xff {
@@ -439,9 +369,7 @@ func uint32SliceBytes(values []uint32) []byte {
 
 func TestOneNANDProgramsAndErasesSharedFlash(t *testing.T) {
 	device, flash := newTestOneNAND(t, bytes.Repeat([]byte{0xff}, 2*oneNANDEraseBlockSize))
-	if err := device.Write(0x400, Width32, 0x44332211); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(0x400, Width32, 0x44332211))
 	for _, write := range []struct {
 		offset uint32
 		value  uint32
@@ -452,20 +380,14 @@ func TestOneNANDProgramsAndErasesSharedFlash(t *testing.T) {
 		{oneNANDStartBufferOffset, 0x0801},
 		{oneNANDCommandOffset, oneNANDCommandProgram},
 	} {
-		if err := device.Write(write.offset, Width16, write.value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, device.Write(write.offset, Width16, write.value))
 	}
 	programmed := make([]byte, 4)
 	if _, err := flash.ReadAt(programmed, 0); err != nil || !bytes.Equal(programmed, []byte{0x11, 0x22, 0x33, 0x44}) {
 		t.Fatalf("programmed bytes = %x error %v", programmed, err)
 	}
-	if err := device.Write(oneNANDInterruptStatusOffset, Width16, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(oneNANDCommandOffset, Width16, oneNANDCommandErase); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(oneNANDInterruptStatusOffset, Width16, 0))
+	check(t, device.Write(oneNANDCommandOffset, Width16, oneNANDCommandErase))
 	if _, err := flash.ReadAt(programmed, 0); err != nil || !bytes.Equal(programmed, bytes.Repeat([]byte{0xff}, 4)) {
 		t.Fatalf("erased bytes = %x error %v", programmed, err)
 	}
@@ -473,12 +395,8 @@ func TestOneNANDProgramsAndErasesSharedFlash(t *testing.T) {
 
 func TestOneNANDTransfersAndErasesSpareWithMainData(t *testing.T) {
 	device, _ := newTestOneNAND(t, bytes.Repeat([]byte{0xff}, 2*oneNANDEraseBlockSize))
-	if err := device.Write(0x400, Width32, 0x44332211); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(0x10020, Width32, 0x88776655); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(0x400, Width32, 0x44332211))
+	check(t, device.Write(0x10020, Width32, 0x88776655))
 	for _, write := range []struct {
 		offset uint32
 		value  uint32
@@ -490,19 +408,11 @@ func TestOneNANDTransfersAndErasesSpareWithMainData(t *testing.T) {
 		{oneNANDCommandOffset, oneNANDCommandProgram},
 		{oneNANDInterruptStatusOffset, 0},
 	} {
-		if err := device.Write(write.offset, Width16, write.value); err != nil {
-			t.Fatal(err)
-		}
+		check(t, device.Write(write.offset, Width16, write.value))
 	}
-	if err := device.Write(0x400, Width32, 0xffffffff); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(0x10020, Width32, 0xffffffff); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(oneNANDCommandOffset, Width16, oneNANDCommandRead); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(0x400, Width32, 0xffffffff))
+	check(t, device.Write(0x10020, Width32, 0xffffffff))
+	check(t, device.Write(oneNANDCommandOffset, Width16, oneNANDCommandRead))
 	if value, err := device.Read(0x400, Width32); err != nil || value != 0x44332211 {
 		t.Fatalf("loaded main = %#x error %v", value, err)
 	}
@@ -510,40 +420,20 @@ func TestOneNANDTransfersAndErasesSpareWithMainData(t *testing.T) {
 		t.Fatalf("loaded spare = %#x error %v", value, err)
 	}
 
-	if err := device.Write(oneNANDInterruptStatusOffset, Width16, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(0x10020, Width32, 0xffff0050); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(oneNANDCommandOffset, Width16, oneNANDCommandProgramSpare); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(oneNANDInterruptStatusOffset, Width16, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(0x10020, Width32, 0xffffffff); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(oneNANDCommandOffset, Width16, oneNANDCommandReadSpare); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(oneNANDInterruptStatusOffset, Width16, 0))
+	check(t, device.Write(0x10020, Width32, 0xffff0050))
+	check(t, device.Write(oneNANDCommandOffset, Width16, oneNANDCommandProgramSpare))
+	check(t, device.Write(oneNANDInterruptStatusOffset, Width16, 0))
+	check(t, device.Write(0x10020, Width32, 0xffffffff))
+	check(t, device.Write(oneNANDCommandOffset, Width16, oneNANDCommandReadSpare))
 	if value, err := device.Read(0x10020, Width32); err != nil || value != 0x88770050 {
 		t.Fatalf("programmed spare = %#x error %v", value, err)
 	}
 
-	if err := device.Write(oneNANDInterruptStatusOffset, Width16, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(oneNANDCommandOffset, Width16, oneNANDCommandErase); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(oneNANDInterruptStatusOffset, Width16, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(oneNANDCommandOffset, Width16, oneNANDCommandRead); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(oneNANDInterruptStatusOffset, Width16, 0))
+	check(t, device.Write(oneNANDCommandOffset, Width16, oneNANDCommandErase))
+	check(t, device.Write(oneNANDInterruptStatusOffset, Width16, 0))
+	check(t, device.Write(oneNANDCommandOffset, Width16, oneNANDCommandRead))
 	if main, _ := device.Read(0x400, Width32); main != 0xffffffff {
 		t.Fatalf("erased main = %#x", main)
 	}
@@ -554,20 +444,12 @@ func TestOneNANDTransfersAndErasesSpareWithMainData(t *testing.T) {
 
 func TestOneNANDStateRoundTripKeepsVolatileBuffers(t *testing.T) {
 	device, _ := newTestOneNAND(t, bytes.Repeat([]byte{0xff}, 2*oneNANDEraseBlockSize))
-	if err := device.Write(oneNANDSystemConfig1Offset, Width16, 0x1230); err != nil {
-		t.Fatal(err)
-	}
-	if err := device.Write(0x400, Width32, 0x87654321); err != nil {
-		t.Fatal(err)
-	}
+	check(t, device.Write(oneNANDSystemConfig1Offset, Width16, 0x1230))
+	check(t, device.Write(0x400, Width32, 0x87654321))
 	state, err := device.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	restored, _ := newTestOneNAND(t, bytes.Repeat([]byte{0xff}, 2*oneNANDEraseBlockSize))
-	if err := restored.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restored.LoadState(state))
 	if config, _ := restored.Read(oneNANDSystemConfig1Offset, Width16); config != 0x1220 {
 		t.Fatalf("restored config = %#x", config)
 	}

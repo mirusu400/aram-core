@@ -31,16 +31,10 @@ func newKTFQuantumMachine(t *testing.T) *Machine {
 		"",
 		0,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.SetTraceMode(ktfrt.KTFTraceFull); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, runtime.SetTraceMode(ktfrt.KTFTraceFull))
 	t.Cleanup(func() { _ = runtime.CPU.Close() })
-	if err := runtime.MapImageAndHost(); err != nil {
-		t.Fatal(err)
-	}
+	check(t, runtime.MapImageAndHost())
 	machine := &Machine{
 		frame:        drawBuffer,
 		ktf:          runtime,
@@ -52,12 +46,10 @@ func newKTFQuantumMachine(t *testing.T) *Machine {
 	}
 	// Park the clock on a whole millisecond so deadline arithmetic in the test
 	// is exact rather than depending on where the previous quantum landed.
-	if err := runtime.Services.Advance(
+	check(t, runtime.Services.Advance(
 		runtime.ServiceOwner,
 		17*time.Millisecond,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	runtime.TickMS = 17
 	return machine
 }
@@ -81,17 +73,13 @@ func TestKTFQuantumStopsOnASleepingTaskDeadline(t *testing.T) {
 	machine := newKTFQuantumMachine(t)
 	runtime := machine.ktf
 	task, err := runtime.NewTask(ktfrt.ImageBase|1, nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	task.WakeAtMS = runtime.TickMS + 5
 	runtime.Tasks = []*ktfrt.Task{task}
 	runtime.HostTrace = nil
 
 	before := runtime.Services.Clock.Monotonic()
-	if err := machine.runKTFSlice(context.Background(), ktfrt.FrameDuration); err != nil {
-		t.Fatal(err)
-	}
+	check(t, machine.runKTFSlice(context.Background(), ktfrt.FrameDuration))
 	if advanced := runtime.Services.Clock.Monotonic() - before; advanced != ktfrt.FrameDuration {
 		t.Fatalf("quantum advanced %s, want %s", advanced, ktfrt.FrameDuration)
 	}
@@ -121,20 +109,16 @@ func TestKTFQuantumKeepsWholeAdvanceWithoutADeadline(t *testing.T) {
 			machine := newKTFQuantumMachine(t)
 			runtime := machine.ktf
 			task, err := runtime.NewTask(ktfrt.ImageBase|1, nil, 0)
-			if err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
 			task.WakeAtMS = test.wake
 			runtime.Tasks = []*ktfrt.Task{task}
 			runtime.HostTrace = nil
 
 			before := runtime.Services.Clock.Monotonic()
-			if err := machine.runKTFSlice(
+			check(t, machine.runKTFSlice(
 				context.Background(),
 				ktfrt.FrameDuration,
-			); err != nil {
-				t.Fatal(err)
-			}
+			))
 			if advanced := runtime.Services.Clock.Monotonic() - before; advanced != ktfrt.FrameDuration {
 				t.Fatalf("quantum advanced %s, want %s", advanced, ktfrt.FrameDuration)
 			}

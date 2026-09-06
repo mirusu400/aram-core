@@ -10,13 +10,9 @@ import (
 func TestRegistryAllocatesDeterministicGenerationIDs(t *testing.T) {
 	registry := NewRegistry(2)
 	first, err := registry.Create(1, KindSurface)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	second, err := registry.Create(2, KindFile)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if first.Slot() != 1 || first.Generation() != 1 ||
 		second.Slot() != 2 || second.Generation() != 1 {
 		t.Fatalf("allocated IDs = %s, %s", first, second)
@@ -24,13 +20,9 @@ func TestRegistryAllocatesDeterministicGenerationIDs(t *testing.T) {
 	if _, err := registry.Create(1, KindImage); !errors.Is(err, ErrLimitExceeded) {
 		t.Fatalf("Create past limit error = %v", err)
 	}
-	if err := registry.Destroy(first, 1, KindSurface); err != nil {
-		t.Fatal(err)
-	}
+	check(t, registry.Destroy(first, 1, KindSurface))
 	reused, err := registry.Create(1, KindImage)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if reused.Slot() != first.Slot() || reused.Generation() != first.Generation()+1 {
 		t.Fatalf("reused ID = %s, first = %s", reused, first)
 	}
@@ -45,9 +37,7 @@ func TestRegistryAllocatesDeterministicGenerationIDs(t *testing.T) {
 func TestRegistryRestoreValidatesBeforeMutation(t *testing.T) {
 	registry := NewRegistry(4)
 	id, err := registry.Create(7, KindTimer)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	before := registry.Snapshot()
 	invalid := before
 	invalid.Entries = append([]RegistryEntryState(nil), before.Entries...)
@@ -60,9 +50,7 @@ func TestRegistryRestoreValidatesBeforeMutation(t *testing.T) {
 	}
 
 	restored := NewRegistry(1)
-	if err := restored.Restore(before); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restored.Restore(before))
 	if got := restored.Snapshot(); !reflect.DeepEqual(got, before) {
 		t.Fatalf("restored state = %+v, want %+v", got, before)
 	}
@@ -78,24 +66,16 @@ func TestRegistrySkipsExhaustedGenerationsWithoutMutatingOnFailure(t *testing.T)
 			{Slot: 2, Generation: 1},
 		},
 	}
-	if err := registry.Restore(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, registry.Restore(state))
 	id, err := registry.Create(1, KindSurface)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if id.Slot() != 2 || id.Generation() != 2 {
 		t.Fatalf("Create after exhausted slot = %s", id)
 	}
-	if err := registry.Destroy(id, 1, KindSurface); err != nil {
-		t.Fatal(err)
-	}
+	check(t, registry.Destroy(id, 1, KindSurface))
 	exhausted := registry.Snapshot()
 	exhausted.Generations[1].Generation = ^uint32(0)
-	if err := registry.Restore(exhausted); err != nil {
-		t.Fatal(err)
-	}
+	check(t, registry.Restore(exhausted))
 	before := registry.Snapshot()
 	if _, err := registry.Create(1, KindImage); !errors.Is(err, ErrLimitExceeded) {
 		t.Fatalf("Create with exhausted slots error = %v", err)
@@ -122,12 +102,8 @@ func TestRegistryRejectsSparseHugeStateWithoutMutation(t *testing.T) {
 
 func TestClockAndNamedRandomStreamsRoundTrip(t *testing.T) {
 	clock, err := NewClock(DefaultWallEpochMillis, 9*60, "ko-KR")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := clock.Advance(1500 * time.Millisecond); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, clock.Advance(1500*time.Millisecond))
 	if clock.WallMillis() != DefaultWallEpochMillis+1500 ||
 		clock.LocalMillis() != DefaultWallEpochMillis+1500+9*60*60_000 {
 		t.Fatalf("clock values = wall %d local %d", clock.WallMillis(), clock.LocalMillis())
@@ -137,33 +113,23 @@ func TestClockAndNamedRandomStreamsRoundTrip(t *testing.T) {
 		t.Fatalf("negative advance error = %v", err)
 	}
 	clone, err := NewClock(1, 0, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := clone.Restore(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, clone.Restore(state))
 	if clone.Snapshot() != state {
 		t.Fatalf("restored clock = %+v, want %+v", clone.Snapshot(), state)
 	}
 
 	random := NewRandom(0x12345678, 4)
 	cFirst, err := random.Uint64("c-rand")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	javaFirst, err := random.Uint64("java-random")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	randomState := random.Snapshot()
 	cSecond, _ := random.Uint64("c-rand")
 	javaSecond, _ := random.Uint64("java-random")
 
 	replayed := NewRandom(0, 1)
-	if err := replayed.Restore(randomState); err != nil {
-		t.Fatal(err)
-	}
+	check(t, replayed.Restore(randomState))
 	gotC, _ := replayed.Uint64("c-rand")
 	gotJava, _ := replayed.Uint64("java-random")
 	if gotC != cSecond || gotJava != javaSecond || cFirst == javaFirst {
@@ -181,30 +147,20 @@ func TestClockAndNamedRandomStreamsRoundTrip(t *testing.T) {
 
 func TestJavaRandomCompatibilityStreamRoundTrip(t *testing.T) {
 	random := NewRandom(0x1234, 4)
-	if err := random.SetJavaSeed("java", 0); err != nil {
-		t.Fatal(err)
-	}
+	check(t, random.SetJavaSeed("java", 0))
 	first, err := random.JavaInt("java")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if first != -1155484576 {
 		t.Fatalf("first java.util.Random value = %d", first)
 	}
 	state := random.Snapshot()
 	second, err := random.JavaInt("java")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 
 	restored := NewRandom(0, 1)
-	if err := restored.Restore(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, restored.Restore(state))
 	replayed, err := restored.JavaInt("java")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if replayed != second {
 		t.Fatalf("replayed Java value = %d, want %d", replayed, second)
 	}
@@ -215,19 +171,13 @@ func TestJavaRandomCompatibilityStreamRoundTrip(t *testing.T) {
 
 func TestJavaRandomSerializedStateMatchesNamedStream(t *testing.T) {
 	random := NewRandom(0, 1)
-	if err := random.SetJavaSeed("java", 123); err != nil {
-		t.Fatal(err)
-	}
+	check(t, random.SetJavaSeed("java", 123))
 	state := JavaRandomSeed(123)
 	for _, bits := range []uint8{1, 16, 31, 32} {
 		want, err := random.JavaBits("java", bits)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		got, err := JavaRandomBits(&state, bits)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		if got != want {
 			t.Fatalf("Java random next(%d) = %d, want %d", bits, got, want)
 		}
@@ -239,22 +189,12 @@ func TestEventInputAndTimersHaveDeterministicOrdering(t *testing.T) {
 	bus := NewEventBus(32, 64)
 	timers := NewTimers(registry, 8)
 	later, err := timers.Define(1, "later-created")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	first, err := timers.Define(1, "first-created")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := timers.Set(first, 1, time.Second, 0, 11); err != nil {
-		t.Fatal(err)
-	}
-	if err := timers.Set(later, 1, time.Second, 0, 22); err != nil {
-		t.Fatal(err)
-	}
-	if err := timers.Advance(time.Second, bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, timers.Set(first, 1, time.Second, 0, 11))
+	check(t, timers.Set(later, 1, time.Second, 0, 22))
+	check(t, timers.Advance(time.Second, bus))
 	event, ok := bus.PopReady(time.Second)
 	if !ok || event.ServiceID != later || event.Value != 22 {
 		t.Fatalf("first equal-deadline event = %+v, %v", event, ok)
@@ -265,12 +205,8 @@ func TestEventInputAndTimersHaveDeterministicOrdering(t *testing.T) {
 	}
 
 	input := NewInput(4, 100*time.Millisecond, 50*time.Millisecond)
-	if err := input.Change(bus, 1, "up", true, 2*time.Second); err != nil {
-		t.Fatal(err)
-	}
-	if err := input.Advance(bus, 1, 2200*time.Millisecond); err != nil {
-		t.Fatal(err)
-	}
+	check(t, input.Change(bus, 1, "up", true, 2*time.Second))
+	check(t, input.Advance(bus, 1, 2200*time.Millisecond))
 	var kinds []EventKind
 	for {
 		event, ok := bus.PopReady(2200 * time.Millisecond)
@@ -291,9 +227,7 @@ func TestEventInputAndTimersHaveDeterministicOrdering(t *testing.T) {
 		t.Fatalf("input event kinds = %v, want %v", kinds, want)
 	}
 	// Consuming it lets the next one through, so the train continues.
-	if err := input.Advance(bus, 1, 2300*time.Millisecond); err != nil {
-		t.Fatal(err)
-	}
+	check(t, input.Advance(bus, 1, 2300*time.Millisecond))
 	event, ok = bus.PopReady(2300 * time.Millisecond)
 	if !ok || event.Kind != EventInputRepeat {
 		t.Fatalf("repeat after the queue drained = %+v, %v", event, ok)
@@ -308,9 +242,7 @@ func TestEventInputAndTimersHaveDeterministicOrdering(t *testing.T) {
 func TestHeldKeyCannotFillTheEventQueue(t *testing.T) {
 	bus := NewEventBus(64, 64)
 	input := NewInput(4, 100*time.Millisecond, 50*time.Millisecond)
-	if err := input.Change(bus, 1, "up", true, 0); err != nil {
-		t.Fatal(err)
-	}
+	check(t, input.Change(bus, 1, "up", true, 0))
 	// Nothing ever pops, which is exactly the blocked case.
 	for step := 1; step <= 200; step++ {
 		if err := input.Advance(
@@ -348,19 +280,11 @@ func TestDirectInputAndTimerQueueFailuresAreAtomic(t *testing.T) {
 	registry := NewRegistry(4)
 	timers := NewTimers(registry, 2)
 	first, err := timers.Define(1, "first")
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	second, err := timers.Define(1, "second")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := timers.Set(first, 1, 0, 0, 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := timers.Set(second, 1, 0, 0, 2); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, timers.Set(first, 1, 0, 0, 1))
+	check(t, timers.Set(second, 1, 0, 0, 2))
 	emptyBus := NewEventBus(1, 64)
 	timerBefore, emptyBefore := timers.Snapshot(), emptyBus.Snapshot()
 	if err := timers.Advance(0, emptyBus); !errors.Is(err, ErrLimitExceeded) {
@@ -417,22 +341,16 @@ func TestTraceToggleDoesNotChangeGuestVisibleSequences(t *testing.T) {
 		trace.SetEnabled(enabled)
 
 		id, err := registry.Create(1, KindSurface)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		value, err := random.Uint64("guest")
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		sequence, err := bus.Enqueue(Event{
 			At:    time.Millisecond,
 			Kind:  EventApplication,
 			Owner: 1,
 			Value: int64(value),
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		trace.Record(TraceEvent{
 			At:        time.Millisecond,
 			Runtime:   "test",

@@ -11,9 +11,7 @@ import (
 
 func TestQualcommMDPScriptEngineTransfersRGB565ToDCSPanel(t *testing.T) {
 	bus := NewBus()
-	if err := bus.MapRAM("script-and-frame", 0, 0x10000); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.MapRAM("script-and-frame", 0, 0x10000))
 	panel := newTestMDPPanel(t, 2, 2)
 	const (
 		rootAddress   = uint32(0x1000)
@@ -45,15 +43,9 @@ func TestQualcommMDPScriptEngineTransfersRGB565ToDCSPanel(t *testing.T) {
 		ScriptPointerOffset:   0x0e08,
 		RGB565SourceFormat:    0x20,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := engine.QueueScript(rootAddress); err != nil {
-		t.Fatal(err)
-	}
-	if err := engine.Advance(1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, engine.QueueScript(rootAddress))
+	check(t, engine.Advance(1))
 	if want := []uint16{0xf800, 0x07e0, 0x001f, 0xffff}; !reflect.DeepEqual(panel.FrameRGB565(), want) {
 		t.Fatalf("MDP frame = %#v, want %#v", panel.FrameRGB565(), want)
 	}
@@ -74,9 +66,7 @@ func TestQualcommMDPScriptEngineRejectsInvalidTransfers(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			bus := NewBus()
-			if err := bus.MapRAM("script-and-frame", 0, 0x10000); err != nil {
-				t.Fatal(err)
-			}
+			check(t, bus.MapRAM("script-and-frame", 0, 0x10000))
 			panel := newTestMDPPanel(t, 2, 2)
 			writeTestMDPWords(t, bus, 0x1000, []uint32{
 				0x10000000, test.source,
@@ -91,12 +81,8 @@ func TestQualcommMDPScriptEngineRejectsInvalidTransfers(t *testing.T) {
 				ScriptPointerOffset:   0x0e08,
 				RGB565SourceFormat:    0x20,
 			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := engine.QueueScript(0x1000); err != nil {
-				t.Fatal(err)
-			}
+			check(t, err)
+			check(t, engine.QueueScript(0x1000))
 			if err := engine.Advance(1); !errors.Is(err, test.wantErrorIs) {
 				t.Fatalf("Advance error = %v, want %v", err, test.wantErrorIs)
 			}
@@ -106,9 +92,7 @@ func TestQualcommMDPScriptEngineRejectsInvalidTransfers(t *testing.T) {
 
 func TestQualcommMDPScriptEngineAcceptsNonImageConfiguration(t *testing.T) {
 	bus := NewBus()
-	if err := bus.MapRAM("script", 0, 0x2000); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.MapRAM("script", 0, 0x2000))
 	writeTestMDPWords(t, bus, 0x1000, []uint32{
 		0x00000000, 0x3effffff,
 		0x1f000254, 0x1f010000, 0x1f020331,
@@ -119,31 +103,19 @@ func TestQualcommMDPScriptEngineAcceptsNonImageConfiguration(t *testing.T) {
 		ScriptPointerOffset:   0x0e08,
 		RGB565SourceFormat:    0x20,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := engine.QueueScript(0x1000); err != nil {
-		t.Fatal(err)
-	}
-	if err := engine.Advance(1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, engine.QueueScript(0x1000))
+	check(t, engine.Advance(1))
 }
 
 func newTestMDPPanel(t *testing.T, width, height uint16) *DCSPanelController {
 	t.Helper()
 	panel, err := NewDCSPanelController(DCSPanelConfig{Width: width, Height: height})
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	for _, command := range []uint16{dcsExitSleepMode, dcsSetDisplayOn, dcsSetPixelFormat} {
-		if err := panel.WriteCommand(command); err != nil {
-			t.Fatal(err)
-		}
+		check(t, panel.WriteCommand(command))
 	}
-	if err := panel.WriteData(dcsPixelFormatRGB565); err != nil {
-		t.Fatal(err)
-	}
+	check(t, panel.WriteData(dcsPixelFormatRGB565))
 	return panel
 }
 
@@ -152,9 +124,7 @@ func writeTestMDPWords(t *testing.T, bus *Bus, address uint32, words []uint32) {
 	var encoded [4]byte
 	for index, word := range words {
 		binary.LittleEndian.PutUint32(encoded[:], word)
-		if err := bus.Write(address+uint32(index*4), encoded[:], cpu.PermissionWrite); err != nil {
-			t.Fatal(err)
-		}
+		check(t, bus.Write(address+uint32(index*4), encoded[:], cpu.PermissionWrite))
 	}
 }
 

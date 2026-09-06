@@ -11,42 +11,28 @@ import (
 
 func TestBusRoutesRAMROMAndTypedMMIO(t *testing.T) {
 	bus := NewBus()
-	if err := bus.MapRAM("main-ram", 0x1000, 0x100); err != nil {
-		t.Fatal(err)
-	}
-	if err := bus.MapROM("boot-rom", 0x2000, []byte{1, 2, 3, 4}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.MapRAM("main-ram", 0x1000, 0x100))
+	check(t, bus.MapROM("boot-rom", 0x2000, []byte{1, 2, 3, 4}))
 	device := &registerDevice{value: 0x11223344}
-	if err := bus.MapMMIO("timer", 0x3000, 0x100, device); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.MapMMIO("timer", 0x3000, 0x100, device))
 
 	var value [4]byte
 	binary.LittleEndian.PutUint32(value[:], 0xaabbccdd)
-	if err := bus.Write(0x1010, value[:], cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.Write(0x1010, value[:], cpu.PermissionWrite))
 	clear(value[:])
-	if err := bus.Read(0x1010, value[:], cpu.PermissionRead); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.Read(0x1010, value[:], cpu.PermissionRead))
 	if got := binary.LittleEndian.Uint32(value[:]); got != 0xaabbccdd {
 		t.Fatalf("RAM value = %#x", got)
 	}
 	if err := bus.Write(0x2000, []byte{9}, cpu.PermissionWrite); !errors.Is(err, cpu.ErrPermissionDenied) {
 		t.Fatalf("ROM write error = %v", err)
 	}
-	if err := bus.Read(0x3000, value[:], cpu.PermissionRead); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.Read(0x3000, value[:], cpu.PermissionRead))
 	if got := binary.LittleEndian.Uint32(value[:]); got != 0x11223344 || device.reads != 1 {
 		t.Fatalf("MMIO read = %#x, calls %d", got, device.reads)
 	}
 	binary.LittleEndian.PutUint16(value[:2], 0x7788)
-	if err := bus.Write(0x3002, value[:2], cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.Write(0x3002, value[:2], cpu.PermissionWrite))
 	if device.lastOffset != 2 || device.lastWidth != Width16 || device.value != 0x7788 {
 		t.Fatalf("MMIO write = offset %#x width %d value %#x", device.lastOffset, device.lastWidth, device.value)
 	}
@@ -64,9 +50,7 @@ func TestBusDirectMemoryRegionIsRAMOnlyAndObserverSafe(t *testing.T) {
 	bus := NewBus()
 	invalidations := 0
 	bus.SetDirectMemoryInvalidator(func() { invalidations++ })
-	if err := bus.MapRAM("ram", 0x1000, 0x100); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.MapRAM("ram", 0x1000, 0x100))
 	if invalidations != 1 {
 		t.Fatalf("mapping invalidations = %d, want 1", invalidations)
 	}
@@ -80,15 +64,11 @@ func TestBusDirectMemoryRegionIsRAMOnlyAndObserverSafe(t *testing.T) {
 	if err := bus.Read(0x1010, got[:], cpu.PermissionRead); err != nil || got != [4]byte{1, 2, 3, 4} {
 		t.Fatalf("direct RAM write coherence = %v, %v", got, err)
 	}
-	if err := bus.MapROM("rom", 0x2000, []byte{1, 2, 3, 4}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.MapROM("rom", 0x2000, []byte{1, 2, 3, 4}))
 	if _, ok := bus.DirectMemoryRegion(0x2000, 4, cpu.PermissionRead); ok {
 		t.Fatal("ROM was exposed as direct RAM")
 	}
-	if err := bus.SetMemoryObserver(0x1010, 4, func(MemoryAccess) {}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.SetMemoryObserver(0x1010, 4, func(MemoryAccess) {}))
 	if invalidations != 3 { // RAM map, ROM map, observer install.
 		t.Fatalf("mapping/observer invalidations = %d, want 3", invalidations)
 	}
@@ -99,13 +79,9 @@ func TestBusDirectMemoryRegionIsRAMOnlyAndObserverSafe(t *testing.T) {
 
 func TestBusMMIOObserverReceivesInstructionContext(t *testing.T) {
 	bus := NewBus()
-	if err := bus.MapRAM("ram", 0x1000, 4); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.MapRAM("ram", 0x1000, 4))
 	device := &registerDevice{value: 0x11223344}
-	if err := bus.MapMMIO("timer", 0x3000, 4, device); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.MapMMIO("timer", 0x3000, 4, device))
 	var accesses []MMIOAccess
 	bus.SetMMIOObserver(func(access MMIOAccess) {
 		accesses = append(accesses, access)
@@ -114,16 +90,10 @@ func TestBusMMIOObserverReceivesInstructionContext(t *testing.T) {
 		InstructionAddress: 0x8004, Mode: cpu.ModeThumb, Attributed: true,
 	}
 	var value [4]byte
-	if err := bus.ReadContext(context, 0x3000, value[:], cpu.PermissionRead); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.ReadContext(context, 0x3000, value[:], cpu.PermissionRead))
 	binary.LittleEndian.PutUint32(value[:], 0xaabbccdd)
-	if err := bus.WriteContext(context, 0x3000, value[:], cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
-	if err := bus.ReadContext(context, 0x1000, value[:], cpu.PermissionRead); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.WriteContext(context, 0x3000, value[:], cpu.PermissionWrite))
+	check(t, bus.ReadContext(context, 0x1000, value[:], cpu.PermissionRead))
 	if len(accesses) != 2 {
 		t.Fatalf("observed %d MMIO accesses, want 2", len(accesses))
 	}
@@ -140,9 +110,7 @@ func TestBusMMIOObserverReceivesInstructionContext(t *testing.T) {
 
 func TestBusMemoryObserverIsBoundedToConfiguredPhysicalRange(t *testing.T) {
 	bus := NewBus()
-	if err := bus.MapRAM("ram", 0x1000, 0x100); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.MapRAM("ram", 0x1000, 0x100))
 	var accesses []MemoryAccess
 	if err := bus.SetMemoryObserver(0x1010, 4, func(access MemoryAccess) {
 		accesses = append(accesses, access)
@@ -154,16 +122,10 @@ func TestBusMemoryObserverIsBoundedToConfiguredPhysicalRange(t *testing.T) {
 	}
 	var value [4]byte
 	binary.LittleEndian.PutUint32(value[:], 0xaabbccdd)
-	if err := bus.WriteContext(context, 0x1010, value[:], cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.WriteContext(context, 0x1010, value[:], cpu.PermissionWrite))
 	clear(value[:])
-	if err := bus.ReadContext(context, 0x1010, value[:], cpu.PermissionRead); err != nil {
-		t.Fatal(err)
-	}
-	if err := bus.ReadContext(context, 0x1020, value[:], cpu.PermissionRead); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.ReadContext(context, 0x1010, value[:], cpu.PermissionRead))
+	check(t, bus.ReadContext(context, 0x1020, value[:], cpu.PermissionRead))
 	if len(accesses) != 2 {
 		t.Fatalf("observed %d bounded memory accesses, want 2", len(accesses))
 	}
@@ -187,9 +149,7 @@ func TestBusMemoryObserverIsBoundedToConfiguredPhysicalRange(t *testing.T) {
 
 func TestBusInstructionMemoryObserverFiltersByAttributedGuestPC(t *testing.T) {
 	bus := NewBus()
-	if err := bus.MapRAM("ram", 0x1000, 0x100); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.MapRAM("ram", 0x1000, 0x100))
 	var accesses []MemoryAccess
 	if err := bus.SetInstructionMemoryObserver(0x8000, 4, func(access MemoryAccess) {
 		accesses = append(accesses, access)
@@ -203,15 +163,9 @@ func TestBusInstructionMemoryObserverFiltersByAttributedGuestPC(t *testing.T) {
 	outside.InstructionAddress = 0x8004
 	var value [4]byte
 	binary.LittleEndian.PutUint32(value[:], 0x11223344)
-	if err := bus.WriteContext(matching, 0x1010, value[:], cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
-	if err := bus.ReadContext(outside, 0x1010, value[:], cpu.PermissionRead); err != nil {
-		t.Fatal(err)
-	}
-	if err := bus.Read(0x1010, value[:], cpu.PermissionRead); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.WriteContext(matching, 0x1010, value[:], cpu.PermissionWrite))
+	check(t, bus.ReadContext(outside, 0x1010, value[:], cpu.PermissionRead))
+	check(t, bus.Read(0x1010, value[:], cpu.PermissionRead))
 	if len(accesses) != 1 || accesses[0].Context != matching || !accesses[0].Write ||
 		accesses[0].Address != 0x1010 || accesses[0].Value != 0x11223344 {
 		t.Fatalf("instruction-attributed accesses = %+v", accesses)
@@ -226,9 +180,7 @@ func TestBusInstructionMemoryObserverFiltersByAttributedGuestPC(t *testing.T) {
 
 func TestBusRejectsOverlapAlignmentAndCrossRegionAccess(t *testing.T) {
 	bus := NewBus()
-	if err := bus.MapRAM("ram", 0x1000, 0x101); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.MapRAM("ram", 0x1000, 0x101))
 	if err := bus.MapRAM("overlap", 0x1080, 0x100); !errors.Is(err, ErrRegionOverlap) {
 		t.Fatalf("overlap error = %v", err)
 	}
@@ -248,70 +200,46 @@ func TestBusRejectsOverlapAlignmentAndCrossRegionAccess(t *testing.T) {
 
 func TestBusSparseRAMRoundTripsOnlyTouchedPages(t *testing.T) {
 	bus := NewBus()
-	if err := bus.MapSparseRAM("adsp", 0x70000000, 0x08000000); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.MapSparseRAM("adsp", 0x70000000, 0x08000000))
 	var value [4]byte
 	for _, address := range []uint32{0x70000000, 0x70001338, 0x77fffffc} {
 		for index := range value {
 			value[index] = 0xff
 		}
-		if err := bus.Read(address, value[:], cpu.PermissionRead); err != nil {
-			t.Fatal(err)
-		}
+		check(t, bus.Read(address, value[:], cpu.PermissionRead))
 		if value != [4]byte{} {
 			t.Fatalf("untouched sparse RAM at 0x%08x = %x", address, value)
 		}
 	}
 	low := [4]byte{1, 2, 3, 4}
 	high := [4]byte{5, 6, 7, 8}
-	if err := bus.Write(0x70001338, low[:], cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
-	if err := bus.Write(0x77fffffc, high[:], cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.Write(0x70001338, low[:], cpu.PermissionWrite))
+	check(t, bus.Write(0x77fffffc, high[:], cpu.PermissionWrite))
 	state, err := bus.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if len(state) >= 3*int(sparseRAMPageSize) {
 		t.Fatalf("two touched sparse pages produced %d-byte state", len(state))
 	}
-	if err := bus.Write(0x70001338, make([]byte, 4), cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
-	if err := bus.Write(0x77fffffc, make([]byte, 4), cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
-	if err := bus.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.Write(0x70001338, make([]byte, 4), cpu.PermissionWrite))
+	check(t, bus.Write(0x77fffffc, make([]byte, 4), cpu.PermissionWrite))
+	check(t, bus.LoadState(state))
 	for address, want := range map[uint32][4]byte{
 		0x70001338: low,
 		0x77fffffc: high,
 	} {
 		clear(value[:])
-		if err := bus.Read(address, value[:], cpu.PermissionExecute); err != nil {
-			t.Fatal(err)
-		}
+		check(t, bus.Read(address, value[:], cpu.PermissionExecute))
 		if value != want {
 			t.Fatalf("restored sparse RAM at 0x%08x = %x, want %x", address, value, want)
 		}
 	}
 	restoredState, err := bus.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if !bytes.Equal(restoredState, state) {
 		t.Fatal("sparse RAM state is not deterministic after round trip")
 	}
-	if err := bus.Reset(); err != nil {
-		t.Fatal(err)
-	}
-	if err := bus.Read(0x70001338, value[:], cpu.PermissionRead); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.Reset())
+	check(t, bus.Read(0x70001338, value[:], cpu.PermissionRead))
 	if value != [4]byte{} {
 		t.Fatalf("reset sparse RAM = %x", value)
 	}
@@ -321,9 +249,7 @@ func TestSparseRAMStateRejectsNonCanonicalZeroPage(t *testing.T) {
 	memory := newSparseRAM()
 	memory.write(0x1000, []byte{1})
 	state, err := memory.saveState(0x3000)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	clear(state[20:])
 	if _, err := decodeSparseRAMState(0x3000, state); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("zero sparse page state error = %v", err)
@@ -332,40 +258,22 @@ func TestSparseRAMStateRejectsNonCanonicalZeroPage(t *testing.T) {
 
 func TestBusResetAndStateRoundTripAreDeterministic(t *testing.T) {
 	bus := NewBus()
-	if err := bus.MapRAM("ram", 0x1000, 0x10); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.MapRAM("ram", 0x1000, 0x10))
 	device := &registerDevice{value: 5}
-	if err := bus.MapMMIO("device", 0x2000, 4, device); err != nil {
-		t.Fatal(err)
-	}
-	if err := bus.Write(0x1000, []byte{1, 2, 3, 4}, cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.MapMMIO("device", 0x2000, 4, device))
+	check(t, bus.Write(0x1000, []byte{1, 2, 3, 4}, cpu.PermissionWrite))
 	state, err := bus.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := bus.Write(0x1000, []byte{9, 9, 9, 9}, cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
+	check(t, bus.Write(0x1000, []byte{9, 9, 9, 9}, cpu.PermissionWrite))
 	device.value = 7
-	if err := bus.LoadState(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.LoadState(state))
 	got := make([]byte, 4)
-	if err := bus.Read(0x1000, got, cpu.PermissionRead); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.Read(0x1000, got, cpu.PermissionRead))
 	if got[0] != 1 || device.value != 5 {
 		t.Fatalf("restored RAM/device = %v/%d", got, device.value)
 	}
-	if err := bus.Reset(); err != nil {
-		t.Fatal(err)
-	}
-	if err := bus.Read(0x1000, got, cpu.PermissionRead); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.Reset())
+	check(t, bus.Read(0x1000, got, cpu.PermissionRead))
 	if got[0] != 0 || device.value != 0 {
 		t.Fatalf("reset RAM/device = %v/%d", got, device.value)
 	}
@@ -373,32 +281,20 @@ func TestBusResetAndStateRoundTripAreDeterministic(t *testing.T) {
 
 func TestBusLoadStateIsAtomicWhenDeviceRejectsState(t *testing.T) {
 	bus := NewBus()
-	if err := bus.MapRAM("ram", 0x1000, 4); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.MapRAM("ram", 0x1000, 4))
 	device := &registerDevice{value: 5, rejectValue: 9}
-	if err := bus.MapMMIO("device", 0x2000, 4, device); err != nil {
-		t.Fatal(err)
-	}
-	if err := bus.Write(0x1000, []byte{1, 1, 1, 1}, cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.MapMMIO("device", 0x2000, 4, device))
+	check(t, bus.Write(0x1000, []byte{1, 1, 1, 1}, cpu.PermissionWrite))
 	state, err := bus.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	binary.LittleEndian.PutUint32(state[len(state)-4:], 9)
-	if err := bus.Write(0x1000, []byte{7, 7, 7, 7}, cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.Write(0x1000, []byte{7, 7, 7, 7}, cpu.PermissionWrite))
 	device.value = 7
 	if err := bus.LoadState(state); err == nil {
 		t.Fatal("LoadState accepted rejected device state")
 	}
 	got := make([]byte, 4)
-	if err := bus.Read(0x1000, got, cpu.PermissionRead); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.Read(0x1000, got, cpu.PermissionRead))
 	if got[0] != 7 || device.value != 7 {
 		t.Fatalf("failed load changed RAM/device = %v/%d", got, device.value)
 	}
@@ -406,30 +302,18 @@ func TestBusLoadStateIsAtomicWhenDeviceRejectsState(t *testing.T) {
 
 func TestBusLoadStateSubsetLeavesNewRegionsUntouched(t *testing.T) {
 	source := NewBus()
-	if err := source.MapRAM("ram", 0x1000, 4); err != nil {
-		t.Fatal(err)
-	}
-	if err := source.Write(0x1000, []byte{1, 2, 3, 4}, cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, source.MapRAM("ram", 0x1000, 4))
+	check(t, source.Write(0x1000, []byte{1, 2, 3, 4}, cpu.PermissionWrite))
 	state, err := source.SaveState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 
 	destination := NewBus()
-	if err := destination.MapRAM("ram", 0x1000, 4); err != nil {
-		t.Fatal(err)
-	}
-	if err := destination.MapRAMImage("new", 0x2000, 4, []byte{9, 8, 7, 6}); err != nil {
-		t.Fatal(err)
-	}
+	check(t, destination.MapRAM("ram", 0x1000, 4))
+	check(t, destination.MapRAMImage("new", 0x2000, 4, []byte{9, 8, 7, 6}))
 	if err := destination.LoadState(state); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("exact load with added region error = %v", err)
 	}
-	if err := destination.LoadStateSubset(state); err != nil {
-		t.Fatal(err)
-	}
+	check(t, destination.LoadStateSubset(state))
 	var data [4]byte
 	if err := destination.Read(0x1000, data[:], cpu.PermissionRead); err != nil ||
 		!bytes.Equal(data[:], []byte{1, 2, 3, 4}) {
@@ -441,9 +325,7 @@ func TestBusLoadStateSubsetLeavesNewRegionsUntouched(t *testing.T) {
 	}
 
 	missing := NewBus()
-	if err := missing.MapRAM("different", 0x1000, 4); err != nil {
-		t.Fatal(err)
-	}
+	check(t, missing.MapRAM("different", 0x1000, 4))
 	if err := missing.LoadStateSubset(state); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("subset load with missing serialized region error = %v", err)
 	}
@@ -497,32 +379,18 @@ func (d *registerDevice) LoadState(state []byte) error {
 func TestBusReadMemoryKeepsHostInspectionOffDevicesAndObservers(t *testing.T) {
 	bus := NewBus()
 	device := &registerDevice{value: 0x11223344}
-	if err := bus.MapRAM("low", 0x1000, 0x1000); err != nil {
-		t.Fatal(err)
-	}
-	if err := bus.MapRAM("high", 0x2000, 0x1000); err != nil {
-		t.Fatal(err)
-	}
-	if err := bus.MapMMIO("registers", 0x3000, 0x1000, device); err != nil {
-		t.Fatal(err)
-	}
-	if err := bus.Write(0x1ffc, []byte{1, 2, 3, 4}, cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
-	if err := bus.Write(0x2000, []byte{5, 6, 7, 8}, cpu.PermissionWrite); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.MapRAM("low", 0x1000, 0x1000))
+	check(t, bus.MapRAM("high", 0x2000, 0x1000))
+	check(t, bus.MapMMIO("registers", 0x3000, 0x1000, device))
+	check(t, bus.Write(0x1ffc, []byte{1, 2, 3, 4}, cpu.PermissionWrite))
+	check(t, bus.Write(0x2000, []byte{5, 6, 7, 8}, cpu.PermissionWrite))
 
 	// An armed observer sends guest traffic down the per-width path. A host
 	// inspection must still transfer, and must stay out of the trace.
 	observed := 0
-	if err := bus.SetMemoryObserver(0x1000, 0x2000, func(MemoryAccess) { observed++ }); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.SetMemoryObserver(0x1000, 0x2000, func(MemoryAccess) { observed++ }))
 	span := make([]byte, 8)
-	if err := bus.ReadMemory(0x1ffc, span, cpu.PermissionRead); err != nil {
-		t.Fatal(err)
-	}
+	check(t, bus.ReadMemory(0x1ffc, span, cpu.PermissionRead))
 	if want := []byte{1, 2, 3, 4, 5, 6, 7, 8}; !bytes.Equal(span, want) {
 		t.Fatalf("region-crossing host read = %v, want %v", span, want)
 	}

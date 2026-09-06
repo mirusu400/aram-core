@@ -16,9 +16,7 @@ func TestMediaMixModeBGMVoicePersistsOverEffects(t *testing.T) {
 	limits.OutputChannels = 1
 	registry := NewRegistry(32)
 	media, err := NewMedia(registry, limits)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	media.SetAudioMixMode(true)
 	bus := NewEventBus(16, 32)
 
@@ -36,15 +34,11 @@ func TestMediaMixModeBGMVoicePersistsOverEffects(t *testing.T) {
 	}
 
 	bgm, err := media.CreateClip(1, "audio/wav", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := media.Append(1, bgm, ramp); err != nil {
 		t.Fatal(err)
 	}
-	if err := media.Play(1, bgm, -1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.Play(1, bgm, -1))
 	// The looping clip is delegated to the voice, so the clip itself is no
 	// longer a live playing source (that would double the music).
 	if info, err := media.Info(1, bgm); err != nil {
@@ -61,24 +55,18 @@ func TestMediaMixModeBGMVoicePersistsOverEffects(t *testing.T) {
 	}
 
 	// Destroying the guest clip must NOT silence the music: the voice survives.
-	if err := media.DestroyClip(1, bgm, bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.DestroyClip(1, bgm, bus))
 	if got := advance(); !reflect.DeepEqual(got, []int16{30}) { // frame 2, post-destroy
 		t.Fatalf("BGM after destroy = %v, want [30] (voice must survive)", got)
 	}
 
 	// A one-shot effect on its own clip mixes over the still-playing music.
 	sfx, err := media.CreateClip(1, "audio/wav", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := media.Append(1, sfx, pcmWave(8_000, 1, []int16{1000})); err != nil {
 		t.Fatal(err)
 	}
-	if err := media.Play(1, sfx, 1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.Play(1, sfx, 1))
 	if got := advance(); !reflect.DeepEqual(got, []int16{1040}) { // 40 (BGM) + 1000 (SFX)
 		t.Fatalf("SFX-over-BGM = %v, want [1040]", got)
 	}
@@ -90,15 +78,11 @@ func TestMediaMixModeBGMVoicePersistsOverEffects(t *testing.T) {
 	// "restart the music after the effect" dance). The voice must continue from
 	// where it is, not jump back to frame 0.
 	bgm2, err := media.CreateClip(1, "audio/wav", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := media.Append(1, bgm2, ramp); err != nil {
 		t.Fatal(err)
 	}
-	if err := media.Play(1, bgm2, -1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.Play(1, bgm2, -1))
 	if got := advance(); !reflect.DeepEqual(got, []int16{20}) { // frame 1, continued
 		t.Fatalf("re-issued identical loop = %v, want [20] (continue, not restart)", got)
 	}
@@ -116,36 +100,26 @@ func TestMediaMixModeVoiceSurvivesSnapshotRestore(t *testing.T) {
 	build := func() (*Media, *EventBus) {
 		registry := NewRegistry(32)
 		media, err := NewMedia(registry, limits)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		media.SetAudioMixMode(true)
 		bus := NewEventBus(16, 32)
 		clip, err := media.CreateClip(1, "audio/wav", 0)
-		if err != nil {
-			t.Fatal(err)
-		}
+		check(t, err)
 		if _, err := media.Append(1, clip, ramp); err != nil {
 			t.Fatal(err)
 		}
-		if err := media.Play(1, clip, -1); err != nil {
-			t.Fatal(err)
-		}
+		check(t, media.Play(1, clip, -1))
 		// Destroy the source clip (as a title does): only the persistent voice
 		// remains, so the snapshot carries no registry-bound clip and restores
 		// into a fresh instance cleanly.
-		if err := media.DestroyClip(1, clip, bus); err != nil {
-			t.Fatal(err)
-		}
+		check(t, media.DestroyClip(1, clip, bus))
 		return media, bus
 	}
 
 	live, liveBus := build()
 	// Advance the reference machine two frames (voice now at frame 2).
 	for i := 0; i < 2; i++ {
-		if err := live.Advance(time.Duration(i)*125*time.Microsecond, time.Duration(i+1)*125*time.Microsecond, liveBus); err != nil {
-			t.Fatal(err)
-		}
+		check(t, live.Advance(time.Duration(i)*125*time.Microsecond, time.Duration(i+1)*125*time.Microsecond, liveBus))
 		live.Drain()
 	}
 
@@ -153,9 +127,7 @@ func TestMediaMixModeVoiceSurvivesSnapshotRestore(t *testing.T) {
 	// instance before continuing.
 	saved, savedBus := build()
 	for i := 0; i < 2; i++ {
-		if err := saved.Advance(time.Duration(i)*125*time.Microsecond, time.Duration(i+1)*125*time.Microsecond, savedBus); err != nil {
-			t.Fatal(err)
-		}
+		check(t, saved.Advance(time.Duration(i)*125*time.Microsecond, time.Duration(i+1)*125*time.Microsecond, savedBus))
 		saved.Drain()
 	}
 	state := saved.Snapshot()
@@ -164,9 +136,7 @@ func TestMediaMixModeVoiceSurvivesSnapshotRestore(t *testing.T) {
 	}
 	registry := NewRegistry(32)
 	restored, err := NewMedia(registry, limits)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if err := restored.Restore(state); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
@@ -180,12 +150,8 @@ func TestMediaMixModeVoiceSurvivesSnapshotRestore(t *testing.T) {
 	for i := 2; i < 4; i++ {
 		start := time.Duration(i) * 125 * time.Microsecond
 		end := time.Duration(i+1) * 125 * time.Microsecond
-		if err := live.Advance(start, end, liveBus); err != nil {
-			t.Fatal(err)
-		}
-		if err := restored.Advance(start, end, restoredBus); err != nil {
-			t.Fatal(err)
-		}
+		check(t, live.Advance(start, end, liveBus))
+		check(t, restored.Advance(start, end, restoredBus))
 		want := live.Drain().PCM16
 		got := restored.Drain().PCM16
 		if !reflect.DeepEqual(got, want) {
@@ -204,9 +170,7 @@ func TestMediaMixModeVoicesLongOneShotBGM(t *testing.T) {
 	limits.OutputChannels = 1
 	registry := NewRegistry(32)
 	media, err := NewMedia(registry, limits)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	media.SetAudioMixMode(true)
 	bus := NewEventBus(16, 32)
 
@@ -216,16 +180,12 @@ func TestMediaMixModeVoicesLongOneShotBGM(t *testing.T) {
 		longSamples[i] = 100
 	}
 	bgm, err := media.CreateClip(1, "audio/wav", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := media.Append(1, bgm, pcmWave(8_000, 1, longSamples)); err != nil {
 		t.Fatal(err)
 	}
 	// The first play is an ordinary clip: nothing has shown this track loops.
-	if err := media.Play(1, bgm, 1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.Play(1, bgm, 1))
 	if info, err := media.Info(1, bgm); err != nil {
 		t.Fatal(err)
 	} else if info.State != ClipPlaying {
@@ -233,48 +193,36 @@ func TestMediaMixModeVoicesLongOneShotBGM(t *testing.T) {
 	}
 	// Run it out. The title sees the completion and replays the same track,
 	// which is the hand-written loop the mixing policy takes over.
-	if err := media.Advance(0, 1300*time.Millisecond, bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.Advance(0, 1300*time.Millisecond, bus))
 	if info, err := media.Info(1, bgm); err != nil {
 		t.Fatal(err)
 	} else if info.State != ClipStopped {
 		t.Fatalf("long one-shot after its end = %v, want ClipStopped", info.State)
 	}
 	media.Drain()
-	if err := media.Play(1, bgm, 1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.Play(1, bgm, 1))
 	if info, err := media.Info(1, bgm); err != nil {
 		t.Fatal(err)
 	} else if info.State != ClipStopped {
 		t.Fatalf("replayed long BGM clip state = %v, want ClipStopped (voiced)", info.State)
 	}
-	if err := media.DestroyClip(1, bgm, bus); err != nil {
-		t.Fatal(err)
-	}
-	if err := media.Advance(
+	check(t, media.DestroyClip(1, bgm, bus))
+	check(t, media.Advance(
 		1300*time.Millisecond,
 		1300*time.Millisecond+125*time.Microsecond,
 		bus,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	if got := media.Drain().PCM16; !reflect.DeepEqual(got, []int16{100}) {
 		t.Fatalf("long BGM after destroy = %v, want [100] (voice survives)", got)
 	}
 
 	// A short one-shot effect is NOT voiced: it stays a normal clip.
 	sfx, err := media.CreateClip(1, "audio/wav", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := media.Append(1, sfx, pcmWave(8_000, 1, []int16{500, 500})); err != nil {
 		t.Fatal(err)
 	}
-	if err := media.Play(1, sfx, 1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.Play(1, sfx, 1))
 	if info, err := media.Info(1, sfx); err != nil {
 		t.Fatal(err)
 	} else if info.State != ClipPlaying {
@@ -295,9 +243,7 @@ func TestMediaMixModeLeavesLongOneShotCueAlone(t *testing.T) {
 	limits.OutputChannels = 1
 	registry := NewRegistry(32)
 	media, err := NewMedia(registry, limits)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	media.SetAudioMixMode(true)
 	bus := NewEventBus(16, 32)
 
@@ -306,15 +252,11 @@ func TestMediaMixModeLeavesLongOneShotCueAlone(t *testing.T) {
 		music[i] = 40
 	}
 	bgm, err := media.CreateClip(1, "audio/wav", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := media.Append(1, bgm, pcmWave(8_000, 1, music)); err != nil {
 		t.Fatal(err)
 	}
-	if err := media.Play(1, bgm, -1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.Play(1, bgm, -1))
 	if !media.MusicVoiceActive() {
 		t.Fatal("looping track was not promoted to the music voice")
 	}
@@ -324,15 +266,11 @@ func TestMediaMixModeLeavesLongOneShotCueAlone(t *testing.T) {
 		sting[i] = 700
 	}
 	cue, err := media.CreateClip(1, "audio/wav", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := media.Append(1, cue, pcmWave(8_000, 1, sting)); err != nil {
 		t.Fatal(err)
 	}
-	if err := media.Play(1, cue, 1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.Play(1, cue, 1))
 	if info, err := media.Info(1, cue); err != nil {
 		t.Fatal(err)
 	} else if info.State != ClipPlaying {
@@ -344,53 +282,41 @@ func TestMediaMixModeLeavesLongOneShotCueAlone(t *testing.T) {
 	}
 
 	// It ends on its own and stays silent: nothing loops it.
-	if err := media.Advance(0, 4100*time.Millisecond, bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.Advance(0, 4100*time.Millisecond, bus))
 	if info, err := media.Info(1, cue); err != nil {
 		t.Fatal(err)
 	} else if info.State != ClipStopped {
 		t.Fatalf("cue state after its end = %v, want ClipStopped", info.State)
 	}
 	media.Drain()
-	if err := media.Advance(
+	check(t, media.Advance(
 		4100*time.Millisecond,
 		4100*time.Millisecond+125*time.Microsecond,
 		bus,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	if got := media.Drain().PCM16; !reflect.DeepEqual(got, []int16{40}) {
 		t.Fatalf("mix after the cue ended = %v, want [40] (music alone)", got)
 	}
 
 	// Replaying it much later is a fresh cue, not a loop the title is driving.
-	if err := media.Advance(
+	check(t, media.Advance(
 		4100*time.Millisecond+125*time.Microsecond,
 		9*time.Second,
 		bus,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := media.Play(1, cue, 1); err != nil {
-		t.Fatal(err)
-	}
+	))
+	check(t, media.Play(1, cue, 1))
 	if info, err := media.Info(1, cue); err != nil {
 		t.Fatal(err)
 	} else if info.State != ClipPlaying {
 		t.Fatalf("replayed cue state = %v, want ClipPlaying (not voiced)", info.State)
 	}
-	if err := media.Stop(1, cue); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.Stop(1, cue))
 	media.Drain()
-	if err := media.Advance(
+	check(t, media.Advance(
 		9*time.Second,
 		9*time.Second+125*time.Microsecond,
 		bus,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	if got := media.Drain().PCM16; !reflect.DeepEqual(got, []int16{40}) {
 		t.Fatalf("mix after stopping the cue = %v, want [40] (cue silenced)", got)
 	}
@@ -404,37 +330,25 @@ func TestMediaFaithfulModeHonoursStopAndDestroy(t *testing.T) {
 	limits.OutputChannels = 1
 	registry := NewRegistry(32)
 	media, err := NewMedia(registry, limits)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	bus := NewEventBus(16, 32)
 	clip, err := media.CreateClip(1, "audio/wav", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := media.Append(1, clip, pcmWave(8_000, 1, []int16{50, 60})); err != nil {
 		t.Fatal(err)
 	}
-	if err := media.Play(1, clip, -1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.Play(1, clip, -1))
 	if info, err := media.Info(1, clip); err != nil {
 		t.Fatal(err)
 	} else if info.State != ClipPlaying {
 		t.Fatalf("faithful looping clip state = %v, want ClipPlaying", info.State)
 	}
-	if err := media.Advance(0, 125*time.Microsecond, bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.Advance(0, 125*time.Microsecond, bus))
 	if got := media.Drain().PCM16; !reflect.DeepEqual(got, []int16{50}) {
 		t.Fatalf("faithful frame 0 = %v, want [50]", got)
 	}
-	if err := media.DestroyClip(1, clip, bus); err != nil {
-		t.Fatal(err)
-	}
-	if err := media.Advance(125*time.Microsecond, 250*time.Microsecond, bus); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.DestroyClip(1, clip, bus))
+	check(t, media.Advance(125*time.Microsecond, 250*time.Microsecond, bus))
 	if got := media.Drain().PCM16; len(got) != 0 {
 		t.Fatalf("faithful post-destroy audio = %v, want silence", got)
 	}
@@ -451,9 +365,7 @@ func TestMediaMixModeStoppedVoiceYieldsToTheNextTrack(t *testing.T) {
 	limits.OutputChannels = 1
 	registry := NewRegistry(32)
 	media, err := NewMedia(registry, limits)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	media.SetAudioMixMode(true)
 
 	menu := make([]int16, 16_000) // 2s menu music, looped by the title
@@ -461,23 +373,17 @@ func TestMediaMixModeStoppedVoiceYieldsToTheNextTrack(t *testing.T) {
 		menu[i] = 40
 	}
 	menuClip, err := media.CreateClip(1, "audio/wav", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := media.Append(1, menuClip, pcmWave(8_000, 1, menu)); err != nil {
 		t.Fatal(err)
 	}
-	if err := media.Play(1, menuClip, -1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.Play(1, menuClip, -1))
 	if !media.MusicVoiceActive() {
 		t.Fatal("looping menu music was not promoted to the music voice")
 	}
 
 	// The title stops its menu music and starts a different track.
-	if err := media.Stop(1, menuClip); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.Stop(1, menuClip))
 	if !media.MusicVoiceActive() {
 		t.Fatal("the voice went away on Stop alone, which would gap a hand-loop")
 	}
@@ -486,15 +392,11 @@ func TestMediaMixModeStoppedVoiceYieldsToTheNextTrack(t *testing.T) {
 		preview[i] = 900
 	}
 	previewClip, err := media.CreateClip(1, "audio/wav", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := media.Append(1, previewClip, pcmWave(8_000, 1, preview)); err != nil {
 		t.Fatal(err)
 	}
-	if err := media.Play(1, previewClip, 1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.Play(1, previewClip, 1))
 	if media.MusicVoiceActive() {
 		t.Fatal("the stopped menu music is still voiced, so it plays under the preview")
 	}
@@ -509,9 +411,7 @@ func TestMediaMixModeHandLoopKeepsItsVoice(t *testing.T) {
 	limits.OutputChannels = 1
 	registry := NewRegistry(32)
 	media, err := NewMedia(registry, limits)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	media.SetAudioMixMode(true)
 
 	music := make([]int16, 16_000)
@@ -519,23 +419,15 @@ func TestMediaMixModeHandLoopKeepsItsVoice(t *testing.T) {
 		music[i] = 40
 	}
 	clip, err := media.CreateClip(1, "audio/wav", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	check(t, err)
 	if _, err := media.Append(1, clip, pcmWave(8_000, 1, music)); err != nil {
 		t.Fatal(err)
 	}
-	if err := media.Play(1, clip, -1); err != nil {
-		t.Fatal(err)
-	}
+	check(t, media.Play(1, clip, -1))
 	voice := media.bgmVoiceSig
 	for cycle := 0; cycle < 3; cycle++ {
-		if err := media.Stop(1, clip); err != nil {
-			t.Fatal(err)
-		}
-		if err := media.Play(1, clip, -1); err != nil {
-			t.Fatal(err)
-		}
+		check(t, media.Stop(1, clip))
+		check(t, media.Play(1, clip, -1))
 		if !media.MusicVoiceActive() || media.bgmVoiceSig != voice {
 			t.Fatalf("cycle %d lost the hand-looped music voice", cycle)
 		}
