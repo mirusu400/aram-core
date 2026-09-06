@@ -476,14 +476,20 @@ func (r *Runtime) framebufferPixel(
 ) (uint32, error) {
 	address := fb.Pixels +
 		uint32(y*fb.Width+x)*fb.bytesPerPixel()
+	// The scratch lives on the runtime so the slice handed to the CPU
+	// interface does not escape to the heap on every pixel.
 	if fb.BitsPerPixel == 16 {
-		var encoded [2]byte
-		if err := r.CPU.ReadMemory(address, encoded[:]); err != nil {
+		encoded := r.pixelScratch[:2]
+		if err := r.CPU.ReadMemory(address, encoded); err != nil {
 			return 0, err
 		}
-		return uint32(binary.LittleEndian.Uint16(encoded[:])), nil
+		return uint32(binary.LittleEndian.Uint16(encoded)), nil
 	}
-	return r.ReadU32(address)
+	encoded := r.pixelScratch[:4]
+	if err := r.CPU.ReadMemory(address, encoded); err != nil {
+		return 0, err
+	}
+	return binary.LittleEndian.Uint32(encoded), nil
 }
 
 func (r *Runtime) writeFramebufferPixel(
@@ -494,9 +500,9 @@ func (r *Runtime) writeFramebufferPixel(
 	address := fb.Pixels +
 		uint32(y*fb.Width+x)*fb.bytesPerPixel()
 	if fb.BitsPerPixel == 16 {
-		var encoded [2]byte
-		binary.LittleEndian.PutUint16(encoded[:], uint16(pixel))
-		if err := r.CPU.WriteMemory(address, encoded[:]); err != nil {
+		encoded := r.pixelScratch[:2]
+		binary.LittleEndian.PutUint16(encoded, uint16(pixel))
+		if err := r.CPU.WriteMemory(address, encoded); err != nil {
 			return err
 		}
 		if serviceID := r.surfaceServices[fb.Handle]; serviceID != 0 {
@@ -505,14 +511,14 @@ func (r *Runtime) writeFramebufferPixel(
 				r.ServiceOwner,
 				serviceID,
 				offset,
-				encoded[:],
+				encoded,
 			)
 		}
 		return nil
 	}
-	var encoded [4]byte
-	binary.LittleEndian.PutUint32(encoded[:], pixel&0xffffff)
-	if err := r.CPU.WriteMemory(address, encoded[:]); err != nil {
+	encoded := r.pixelScratch[:4]
+	binary.LittleEndian.PutUint32(encoded, pixel&0xffffff)
+	if err := r.CPU.WriteMemory(address, encoded); err != nil {
 		return err
 	}
 	if serviceID := r.surfaceServices[fb.Handle]; serviceID != 0 {
@@ -521,7 +527,7 @@ func (r *Runtime) writeFramebufferPixel(
 			r.ServiceOwner,
 			serviceID,
 			offset,
-			encoded[:],
+			encoded,
 		)
 	}
 	return nil
@@ -583,6 +589,23 @@ func (r *Runtime) putPixelCoverage(
 	if err != nil {
 		return err
 	}
+	return r.putPixelDecoded(fb, x, y, &context, override, coverage)
+}
+
+// putPixelDecoded is putPixelCoverage for a caller that has already resolved
+// the framebuffer and decoded the context once for a whole primitive. The
+// per-pixel context decode was a 60-byte guest read per plotted pixel, a fifth
+// of 판타지포에버3's frame.
+func (r *Runtime) putPixelDecoded(
+	fb Framebuffer,
+	x, y int,
+	context *wipiGraphicsContext,
+	override *uint32,
+	coverage byte,
+) error {
+	if coverage == 0 {
+		return nil
+	}
 	x += context.offsetX
 	y += context.offsetY
 	if x < 0 || y < 0 || x >= fb.Width || y >= fb.Height {
@@ -605,39 +628,174 @@ func (r *Runtime) putPixelCoverage(
 	if err != nil {
 		return err
 	}
-	operated := false
+	merged, err := r.compositePixel(context, foreground, destination, coverage)
+	if err != nil {
+		return err
+	}
+	return r.writeFramebufferPixel(fb, x, y, merged)
+}
+
+// compositePixel blends one foreground pixel onto the destination under the
+// context: the installed pixel operation when it has one and it is still
+// trusted, else XOR, else the context alpha scaled by coverage. It is the one
+// blend shared by the scalar path and the row path, so the two cannot drift.
+func (r *Runtime) compositePixel(
+	context *wipiGraphicsContext,
+	foreground, destination uint32,
+	coverage byte,
+) (uint32, error) {
 	if context.pixelOperation != 0 {
 		merged, ok, err := r.pixelOperationResult(context, foreground, destination)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		if ok {
-			foreground = merged
 			if coverage < 0xff {
-				foreground = r.blendDevicePixel(destination, foreground, uint32(coverage))
+				merged = r.blendDevicePixel(destination, merged, uint32(coverage))
 			}
-			operated = true
+			return merged, nil
 		}
 	}
-	switch {
-	case operated:
-	case context.xor:
-		foreground = destination ^ foreground
+	if context.xor {
+		merged := destination ^ foreground
 		if coverage < 0xff {
-			foreground = r.blendDevicePixel(destination, foreground, uint32(coverage))
+			merged = r.blendDevicePixel(destination, merged, uint32(coverage))
 		}
-	default:
-		alpha := uint32(0)
-		if context.alpha > 0 {
-			alpha = uint32(context.alpha)
-			if alpha > 0xff {
-				alpha = 0xff
-			}
-			alpha = alpha * uint32(coverage) / 0xff
-		}
-		foreground = r.blendDevicePixel(destination, foreground, alpha)
+		return merged, nil
 	}
-	return r.writeFramebufferPixel(fb, x, y, foreground)
+	alpha := uint32(0)
+	if context.alpha > 0 {
+		alpha = uint32(context.alpha)
+		if alpha > 0xff {
+			alpha = 0xff
+		}
+		alpha = alpha * uint32(coverage) / 0xff
+	}
+	return r.blendDevicePixel(destination, foreground, alpha), nil
+}
+
+// compositeSpan composites count pixels of one framebuffer row starting at
+// (x, y), coordinates the caller has already offset by the context, reading
+// the destination run from guest memory once and writing each touched run
+// back once. values, when set, supplies the foreground of each pixel and
+// transparent, when set, marks pixels to leave alone; both are indexed from
+// the unclipped x. Pixels are blended left to right exactly as the scalar
+// path would, so a pixel operation sees the same calls in the same order and
+// a retirement mid-row switches the rest of the row the same way. The scalar
+// path cost three guest-memory round trips per pixel, each taking the CPU
+// mutex and a region lookup; a filled rectangle spent 75% of 판타지포에버3's
+// frame in them.
+func (r *Runtime) compositeSpan(
+	fb Framebuffer,
+	x, y, count int,
+	context *wipiGraphicsContext,
+	values []uint32,
+	transparent []bool,
+) error {
+	if count <= 0 || y < 0 || y >= fb.Height {
+		return nil
+	}
+	first, end := x, x+count
+	if context.clipEnabled {
+		if y < context.top || y >= context.bottom {
+			return nil
+		}
+		first = max(first, context.left)
+		end = min(end, context.right)
+	}
+	first = max(first, 0)
+	end = min(end, fb.Width)
+	if first >= end {
+		return nil
+	}
+	bytesPerPixel := int(fb.bytesPerPixel())
+	row := y * fb.Width
+	address := fb.Pixels + uint32(row+first)*uint32(bytesPerPixel)
+	// A pixel operation re-enters the guest, and the guest may draw on its
+	// way through; give such a row its own buffer instead of the shared one.
+	buffer := r.spanBuffer((end-first)*bytesPerPixel, context.pixelOperation != 0)
+	if err := r.CPU.ReadMemory(address, buffer); err != nil {
+		return err
+	}
+	serviceID := r.surfaceServices[fb.Handle]
+	runStart := -1
+	for column := first; column < end; column++ {
+		if transparent != nil && transparent[column-x] {
+			if err := r.writeSpanRun(fb, serviceID, row, first, runStart, column, buffer); err != nil {
+				return err
+			}
+			runStart = -1
+			continue
+		}
+		offset := (column - first) * bytesPerPixel
+		var destination uint32
+		if bytesPerPixel == 2 {
+			destination = uint32(binary.LittleEndian.Uint16(buffer[offset:]))
+		} else {
+			destination = binary.LittleEndian.Uint32(buffer[offset:])
+		}
+		foreground := context.foreground
+		if values != nil {
+			foreground = values[column-x]
+		}
+		merged, err := r.compositePixel(context, foreground, destination, 0xff)
+		if err != nil {
+			// Keep what was already blended, as the scalar path would have.
+			if writeErr := r.writeSpanRun(fb, serviceID, row, first, runStart, column, buffer); writeErr != nil {
+				return writeErr
+			}
+			return err
+		}
+		if bytesPerPixel == 2 {
+			binary.LittleEndian.PutUint16(buffer[offset:], uint16(merged))
+		} else {
+			binary.LittleEndian.PutUint32(buffer[offset:], merged&0xffffff)
+		}
+		if runStart < 0 {
+			runStart = column
+		}
+	}
+	return r.writeSpanRun(fb, serviceID, row, first, runStart, end, buffer)
+}
+
+// writeSpanRun writes the blended pixels [runStart, runEnd) of a compositeSpan
+// row, whose buffer starts at column first, to guest memory and to the
+// surface mirror when the framebuffer has one. A negative runStart is an empty
+// run. Only touched pixels are written, so a pixel the span left alone never
+// refreshes the mirror any more than the scalar path did.
+func (r *Runtime) writeSpanRun(
+	fb Framebuffer,
+	serviceID shared.ServiceID,
+	row, first, runStart, runEnd int,
+	buffer []byte,
+) error {
+	if runStart < 0 || runStart >= runEnd {
+		return nil
+	}
+	bytesPerPixel := int(fb.bytesPerPixel())
+	from, to := (runStart-first)*bytesPerPixel, (runEnd-first)*bytesPerPixel
+	address := fb.Pixels + uint32(row+runStart)*uint32(bytesPerPixel)
+	if err := r.CPU.WriteMemory(address, buffer[from:to]); err != nil {
+		return err
+	}
+	if serviceID == 0 {
+		return nil
+	}
+	return r.Services.Graphics.WritePixelBytes(
+		r.ServiceOwner,
+		serviceID,
+		uint64((row+runStart)*bytesPerPixel),
+		buffer[from:to],
+	)
+}
+
+// spanBuffer returns a row buffer of size bytes: the shared framebuffer
+// scratch normally, a private one when the row will re-enter the guest.
+func (r *Runtime) spanBuffer(size int, private bool) []byte {
+	if private {
+		return make([]byte, size)
+	}
+	return r.framebufferBuffer(size)
 }
 
 // wipiPixelOpCacheLimit bounds the pixel-operation memo. A 16bpp title can
@@ -679,7 +837,7 @@ type wipiPixelOpKey struct {
 // is also the KTF contract; a cancelled frame is not a broken procedure and
 // still surfaces as an error.
 func (r *Runtime) pixelOperationResult(
-	context wipiGraphicsContext,
+	context *wipiGraphicsContext,
 	foreground, destination uint32,
 ) (uint32, bool, error) {
 	procedure := context.pixelOperation
@@ -735,6 +893,10 @@ func (r *Runtime) blendDevicePixel(destination, source, alpha uint32) uint32 {
 }
 
 func (r *Runtime) drawLine(handle uint32, x1, y1, x2, y2 int, context uint32) error {
+	fb, ok := r.Framebuffers[handle]
+	if !ok {
+		return nil
+	}
 	graphicsContext, err := r.context(context)
 	if err != nil {
 		return err
@@ -753,7 +915,7 @@ func (r *Runtime) drawLine(handle uint32, x1, y1, x2, y2 int, context uint32) er
 	count := 0
 	for {
 		if graphicsContext.style == 0 || count&1 == 0 {
-			if err := r.putPixel(handle, x1, y1, context, nil); err != nil {
+			if err := r.putPixelDecoded(fb, x1, y1, &graphicsContext, nil, 0xff); err != nil {
 				return err
 			}
 		}
@@ -786,11 +948,21 @@ func (r *Runtime) drawRect(fill bool, args []uint32) error {
 		return nil
 	}
 	if fill {
+		graphicsContext, err := r.context(context)
+		if err != nil {
+			return err
+		}
 		for row := 0; row < height; row++ {
-			for column := 0; column < width; column++ {
-				if err := r.putPixel(handle, x+column, y+row, context, nil); err != nil {
-					return err
-				}
+			if err := r.compositeSpan(
+				fb,
+				x+graphicsContext.offsetX,
+				y+row+graphicsContext.offsetY,
+				width,
+				&graphicsContext,
+				nil,
+				nil,
+			); err != nil {
+				return err
 			}
 		}
 		return nil
@@ -969,29 +1141,59 @@ func (r *Runtime) copyFramebufferAlpha(
 		height > max(source.Height, destination.Height)*2 {
 		return nil
 	}
+	graphicsContext, err := r.context(context)
+	if err != nil {
+		return err
+	}
+	// Read the whole source rectangle before writing any of it: MC_grpCopyArea
+	// scrolls a framebuffer over itself, so a row read after an earlier row was
+	// written would copy the copy. A source pixel outside its framebuffer reads
+	// as zero and is still drawn, as it always was.
 	pixels := make([]uint32, max(0, width)*max(0, height))
-	for row := 0; row < height; row++ {
-		for column := 0; column < width; column++ {
-			sourceX, sourceY := sx+column, sy+row
-			if sourceX < 0 || sourceY < 0 || sourceX >= source.Width || sourceY >= source.Height {
+	sourceBytesPerPixel := int(source.bytesPerPixel())
+	firstColumn, endColumn := max(0, sx), min(source.Width, sx+width)
+	if firstColumn < endColumn {
+		rowBytes := make([]byte, (endColumn-firstColumn)*sourceBytesPerPixel)
+		for row := 0; row < height; row++ {
+			sourceY := sy + row
+			if sourceY < 0 || sourceY >= source.Height {
 				continue
 			}
-			value, err := r.framebufferPixel(source, sourceX, sourceY)
-			if err != nil {
+			address := source.Pixels +
+				uint32(sourceY*source.Width+firstColumn)*uint32(sourceBytesPerPixel)
+			if err := r.CPU.ReadMemory(address, rowBytes); err != nil {
 				return err
 			}
-			pixels[row*width+column] = value
+			values := pixels[row*width+(firstColumn-sx) : row*width+(endColumn-sx)]
+			for index := range values {
+				if sourceBytesPerPixel == 2 {
+					values[index] = uint32(binary.LittleEndian.Uint16(rowBytes[index*2:]))
+				} else {
+					values[index] = binary.LittleEndian.Uint32(rowBytes[index*4:])
+				}
+			}
 		}
 	}
+	var transparent []bool
+	if alpha != nil && len(alpha.mask) != 0 {
+		transparent = make([]bool, width)
+	}
 	for row := 0; row < height; row++ {
-		for column := 0; column < width; column++ {
-			if alpha.transparentAt(sx+column, sy+row) {
-				continue
+		if transparent != nil {
+			for column := range transparent {
+				transparent[column] = alpha.transparentAt(sx+column, sy+row)
 			}
-			value := pixels[row*width+column]
-			if err := r.putPixel(destination.Handle, dx+column, dy+row, context, &value); err != nil {
-				return err
-			}
+		}
+		if err := r.compositeSpan(
+			destination,
+			dx+graphicsContext.offsetX,
+			dy+row+graphicsContext.offsetY,
+			width,
+			&graphicsContext,
+			pixels[row*width:(row+1)*width],
+			transparent,
+		); err != nil {
+			return err
 		}
 	}
 	return nil

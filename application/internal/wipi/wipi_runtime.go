@@ -215,6 +215,9 @@ type Runtime struct {
 	Layout             wipicatalog.Layout
 	Heap               guest.Heap
 	framebufferScratch []byte
+	// pixelScratch is the one-pixel staging buffer of the scalar framebuffer
+	// path; a stack array would escape through the CPU interface per pixel.
+	pixelScratch [4]byte
 
 	Services        *shared.Services
 	serviceConfig   shared.Config

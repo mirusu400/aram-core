@@ -963,6 +963,117 @@ func TestWIPIRuntimeGraphicsPixelOperationCancelledFrameIsNotRetired(t *testing.
 	}
 }
 
+// writeGraphicsContext lays out a Samsung-spelled MC_GrpContext in guest
+// memory: clip rectangle, clip flag, foreground, background, alpha, and the
+// translation pair, with everything else zero.
+func writeGraphicsContext(
+	t *testing.T,
+	runtime *Runtime,
+	left, top, right, bottom int32,
+	clip bool,
+	foreground uint32,
+	offsetX, offsetY int32,
+) uint32 {
+	t.Helper()
+	address, err := runtime.Heap.Allocate(60, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var encoded [60]byte
+	put := func(offset int, value uint32) {
+		binary.LittleEndian.PutUint32(encoded[offset:], value)
+	}
+	put(0, uint32(left))
+	put(4, uint32(top))
+	put(8, uint32(right))
+	put(12, uint32(bottom))
+	if clip {
+		put(16, 1)
+	}
+	put(20, foreground)
+	put(24, runtime.deviceWhite())
+	put(28, 255)
+	put(52, uint32(offsetX))
+	put(56, uint32(offsetY))
+	if err := runtime.CPU.WriteMemory(address, encoded[:]); err != nil {
+		t.Fatal(err)
+	}
+	return address
+}
+
+// A filled rectangle is composited a row at a time; the row path has to
+// apply the context translation and clip exactly as the pixel path did.
+func TestWIPIRuntimeFillRectHonoursClipAndOffset(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	screen := dispatchPublicAPI(t, runtime, "MC_grpGetScreenFrameBuffer", 0).Low
+	contextAddress := writeGraphicsContext(t, runtime, 3, 2, 8, 6, true, 0x00abcdef, 1, 1)
+	// Device rectangle before clipping: x in [2,12), y in [1,9).
+	dispatchPublicAPI(t, runtime, "MC_grpFillRect", screen, 1, 0, 10, 8, contextAddress)
+	framebuffer := runtime.Framebuffers[screen]
+	for y := 0; y < framebuffer.Height; y++ {
+		for x := 0; x < framebuffer.Width; x++ {
+			want := uint32(0)
+			if x >= 3 && x < 8 && y >= 2 && y < 6 {
+				want = 0x00abcdef
+			}
+			if pixel := readScreenPixel(t, runtime, screen, x, y); pixel != want {
+				t.Fatalf("pixel (%d,%d) = 0x%08x, want 0x%08x", x, y, pixel, want)
+			}
+		}
+	}
+	// With the clip disabled the whole translated rectangle lands, bounded
+	// only by the framebuffer.
+	contextAddress = writeGraphicsContext(t, runtime, 0, 0, 0, 0, false, 0x00123456, -1, 2)
+	dispatchPublicAPI(t, runtime, "MC_grpFillRect", screen, 0, 6, 4, 10, contextAddress)
+	for y := 0; y < framebuffer.Height; y++ {
+		for x := 0; x < framebuffer.Width; x++ {
+			pixel := readScreenPixel(t, runtime, screen, x, y)
+			inSecond := x < 3 && y >= 8
+			if inSecond && pixel != 0x00123456 {
+				t.Fatalf("pixel (%d,%d) = 0x%08x, want the second fill", x, y, pixel)
+			}
+			if !inSecond && pixel == 0x00123456 {
+				t.Fatalf("pixel (%d,%d) was painted outside the second fill", x, y)
+			}
+		}
+	}
+}
+
+// MC_grpCopyArea scrolls a framebuffer over itself, so the source has to be
+// read in full before any row is written; a row copied after its neighbour
+// was overwritten would smear one row down the whole rectangle.
+func TestWIPIRuntimeCopyAreaScrollsAnOverlappingRectangle(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	screen := dispatchPublicAPI(t, runtime, "MC_grpGetScreenFrameBuffer", 0).Low
+	framebuffer := runtime.Framebuffers[screen]
+	pixelAt := func(x, y int) uint32 { return uint32((y+1)<<4 | x) }
+	for y := 0; y < 6; y++ {
+		for x := 0; x < 4; x++ {
+			var encoded [4]byte
+			binary.LittleEndian.PutUint32(encoded[:], pixelAt(x, y))
+			if err := runtime.CPU.WriteMemory(
+				framebuffer.Pixels+uint32(y*framebuffer.Width+x)*4,
+				encoded[:],
+			); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// Move rows 1..5 up onto rows 0..4.
+	dispatchPublicAPI(t, runtime, "MC_grpCopyArea", screen, 0, 0, 4, 5, 0, 1, 0)
+	for y := 0; y < 6; y++ {
+		for x := 0; x < 4; x++ {
+			want := pixelAt(x, y)
+			if y < 5 {
+				want = pixelAt(x, y+1)
+			}
+			if pixel := readScreenPixel(t, runtime, screen, x, y); pixel != want {
+				t.Fatalf("pixel (%d,%d) = 0x%08x, want 0x%08x", x, y, pixel, want)
+			}
+		}
+	}
+}
+
 func TestWIPIRuntimeTreatsMalformedModeledCallsAsImplemented(t *testing.T) {
 	runtime := newPublicRuntime(t)
 	result := dispatchPublicAPI(t, runtime, "MC_grpCreateImage")

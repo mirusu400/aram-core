@@ -499,6 +499,10 @@ func (r *Runtime) drawArc(fill bool, args []uint32) error {
 	rySquared := int64(radiusY) * int64(radiusY)
 	radiusProduct := rxSquared * rySquared
 	threshold := rxSquared*int64(radiusY) + rySquared*int64(radiusX)
+	graphicsContext, err := r.context(context)
+	if err != nil {
+		return err
+	}
 	for row := max(0, y); row < min(framebuffer.Height, y+height); row++ {
 		for column := max(0, x); column < min(framebuffer.Width, x+width); column++ {
 			dx, dy := int64(column-centerX), int64(row-centerY)
@@ -512,7 +516,7 @@ func (r *Runtime) drawArc(fill bool, args []uint32) error {
 				inside = delta <= threshold
 			}
 			if inside && guest.PointInWIPIArc(column-centerX, row-centerY, start, sweep) {
-				if err := r.putPixel(args[0], column, row, context, nil); err != nil {
+				if err := r.putPixelDecoded(framebuffer, column, row, &graphicsContext, nil, 0xff); err != nil {
 					return err
 				}
 			}
@@ -591,6 +595,17 @@ func (r *Runtime) drawText(unicode bool, args []uint32) error {
 	}
 	cursor := int(int32(args[1]))
 	top := int(int32(args[2])) - int(metrics.Ascent)
+	// Resolve the target and decode the context once per string, not per
+	// glyph pixel; a missing framebuffer still draws nothing and returns nil.
+	framebuffer, hasFramebuffer := r.Framebuffers[args[0]]
+	var graphicsContext wipiGraphicsContext
+	if hasFramebuffer {
+		decoded, err := r.context(args[5])
+		if err != nil {
+			return err
+		}
+		graphicsContext = decoded
+	}
 	for _, character := range characters {
 		glyph, err := r.Services.Text.Glyph(
 			r.ServiceOwner,
@@ -600,18 +615,20 @@ func (r *Runtime) drawText(unicode bool, args []uint32) error {
 		if err != nil {
 			return err
 		}
-		for row := int32(0); row < glyph.Height; row++ {
-			for column := int32(0); column < glyph.Width; column++ {
-				alpha := glyph.Alpha[row*glyph.Width+column]
-				if err := r.putPixelCoverage(
-					args[0],
-					cursor+int(glyph.BearingX+column),
-					top+int(glyph.BearingY+row),
-					args[5],
-					nil,
-					alpha,
-				); err != nil {
-					return err
+		if hasFramebuffer {
+			for row := int32(0); row < glyph.Height; row++ {
+				for column := int32(0); column < glyph.Width; column++ {
+					alpha := glyph.Alpha[row*glyph.Width+column]
+					if err := r.putPixelDecoded(
+						framebuffer,
+						cursor+int(glyph.BearingX+column),
+						top+int(glyph.BearingY+row),
+						&graphicsContext,
+						nil,
+						alpha,
+					); err != nil {
+						return err
+					}
 				}
 			}
 		}
@@ -746,6 +763,10 @@ func (r *Runtime) drawPolygon(fill bool, args []uint32) error {
 		return err
 	}
 	if fill && count >= 3 {
+		graphicsContext, err := r.context(args[4])
+		if err != nil {
+			return err
+		}
 		minimumY, maximumY := yCoordinates[0], yCoordinates[0]
 		for _, coordinate := range yCoordinates[1:] {
 			minimumY = min(minimumY, coordinate)
@@ -774,10 +795,16 @@ func (r *Runtime) drawPolygon(fill bool, args []uint32) error {
 			for index := 0; index+1 < len(nodes); index += 2 {
 				start := max(0, nodes[index])
 				end := min(framebuffer.Width-1, nodes[index+1])
-				for column := start; column <= end; column++ {
-					if err := r.putPixel(args[0], column, row, args[4], nil); err != nil {
-						return err
-					}
+				if err := r.compositeSpan(
+					framebuffer,
+					start+graphicsContext.offsetX,
+					row+graphicsContext.offsetY,
+					end-start+1,
+					&graphicsContext,
+					nil,
+					nil,
+				); err != nil {
+					return err
 				}
 			}
 		}
