@@ -961,6 +961,32 @@ func (r *Runtime) RunTaskSlice(
 				}
 				return run
 			}
+			if errors.As(err, &unhandled) {
+				// CLDC/KVM thread semantics: an exception nothing in the
+				// guest catches only terminates the thread that threw it and
+				// prints it - it does not bring the rest of the VM down. A
+				// task other than this one still running means the title has
+				// more than a single boot task, so isolate the failure to it
+				// rather than hard-faulting the whole session (issue #152).
+				// A title whose one and only task dies this way stays a hard
+				// fault below, exactly as before: that is indistinguishable
+				// from a genuine boot failure, and issue #147's fixes
+				// depended on it surfacing as one instead of a silent black
+				// screen.
+				task.Done = true
+				if r.hasLiveTask() {
+					r.releaseTerminatedTask(task)
+					r.tracef(
+						"java_task_exception_isolate:index=%d:%s",
+						taskIndex,
+						unhandled.name,
+					)
+					run.Reason = cpu.StopBudget
+					run.Err = nil
+					return run
+				}
+				task.Done = false
+			}
 			run.Reason = cpu.StopFault
 			run.Err = fmt.Errorf("KTF host call %s: %w", host.name, err)
 			return run

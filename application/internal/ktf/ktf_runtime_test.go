@@ -4266,6 +4266,121 @@ func TestKTFInitialPaintDiscardReleasesTaskFromDeferredState(t *testing.T) {
 	}
 }
 
+// TestKTFUnhandledJavaExceptionIsolatedToItsOwnTask guards issue #152: a
+// guest exception nothing in the guest catches used to hard-fault the whole
+// session no matter how many other Java tasks were still alive, unlike real
+// CLDC/KVM hardware, where an uncaught exception only terminates the thread
+// that threw it. A title with a background worker task that throws this way
+// should lose only that task, not the entire run.
+func TestKTFUnhandledJavaExceptionIsolatedToItsOwnTask(t *testing.T) {
+	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.SetTraceMode(KTFTraceFull); err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.CPU.Close()
+	if err := runtime.MapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	procedure := runtime.RegisterHostCall(
+		"synthetic.worker.throw",
+		func(context.Context, *Runtime) (uint32, error) {
+			return 0, &ktfUnhandledJavaException{
+				name:    "java/lang/NullPointerException",
+				detail:  0x10001000,
+				Context: "synthetic worker throw",
+			}
+		},
+	)
+	failing, err := runtime.NewTask(procedure|1, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := runtime.NewTask(procedure|1, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.Tasks = append(runtime.Tasks, failing, other)
+
+	result := runtime.RunTaskSlice(context.Background(), 16)
+	if result.Err != nil {
+		t.Fatalf("isolated task exception surfaced as a fault: %+v", result)
+	}
+	if result.Reason != cpu.StopBudget {
+		t.Fatalf("result reason = %v, want StopBudget", result.Reason)
+	}
+	if !failing.Done {
+		t.Fatal("the task that threw should be marked done")
+	}
+	if other.Done {
+		t.Fatal("the other live task must not be touched")
+	}
+	found := false
+	for _, trace := range runtime.HostTrace {
+		if strings.Contains(
+			trace,
+			"java_task_exception_isolate:index=0:"+
+				"java/lang/NullPointerException",
+		) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf(
+			"task exception isolation missing from trace: %v",
+			runtime.HostTrace,
+		)
+	}
+}
+
+// TestKTFUnhandledJavaExceptionFaultsWhenNoTaskSurvives confirms an
+// unhandled guest exception in a title's one and only task still hard-faults
+// exactly as before: with nothing left running afterward, isolating it would
+// only trade a diagnosable fault (issue #147 depended on this surfacing) for
+// a silent black screen.
+func TestKTFUnhandledJavaExceptionFaultsWhenNoTaskSurvives(t *testing.T) {
+	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client:     []byte{0x70, 0x47},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.CPU.Close()
+	if err := runtime.MapImageAndHost(); err != nil {
+		t.Fatal(err)
+	}
+	procedure := runtime.RegisterHostCall(
+		"synthetic.solo.throw",
+		func(context.Context, *Runtime) (uint32, error) {
+			return 0, &ktfUnhandledJavaException{
+				name:    "java/lang/NullPointerException",
+				detail:  0x10001000,
+				Context: "synthetic solo throw",
+			}
+		},
+	)
+	solo, err := runtime.NewTask(procedure|1, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.Tasks = append(runtime.Tasks, solo)
+
+	result := runtime.RunTaskSlice(context.Background(), 16)
+	if result.Reason != cpu.StopFault || result.Err == nil {
+		t.Fatalf("result = %+v, want a StopFault with an error", result)
+	}
+	if solo.Done {
+		t.Fatal("a task that hard-faults should not be marked done")
+	}
+}
+
 func TestKTFHostVTableCollisionRedispatchesToGuestReceiver(t *testing.T) {
 	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
 		ClientName: "client.bin0",
