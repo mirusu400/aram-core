@@ -332,7 +332,7 @@ func (m *Machine) runRaptorCallbackTask(
 		}
 	}()
 
-	if len(task.Context) == 0 {
+	if !task.HasContext() {
 		for register := cpu.RegisterR0; register <= cpu.RegisterR3; register++ {
 			if err := m.cpu.WriteRegister(register, task.Callback.Args[register]); err != nil {
 				return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
@@ -359,7 +359,7 @@ func (m *Machine) runRaptorCallbackTask(
 		if err := m.cpu.WriteRegister(cpu.RegisterCPSR, status); err != nil {
 			return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
 		}
-	} else if err := m.cpu.RestoreContext(task.Context); err != nil {
+	} else if err := task.RestoreContext(m.cpu); err != nil {
 		return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
 	}
 
@@ -397,7 +397,7 @@ func (m *Machine) runRaptorCallbackTask(
 		result.Err = err
 		return result, false, err
 	}
-	task.Context, err = m.cpu.SaveContext()
+	err = task.SaveContext(m.cpu)
 	if err != nil {
 		result.Reason = cpu.StopFault
 		result.Err = err
@@ -456,7 +456,7 @@ func (m *Machine) stepRaptorJavaTask(ctx context.Context) (cpu.Result, bool, err
 		return cpu.Result{Reason: cpu.StopFault, Err: err}, true, err
 	}
 	defer func() { _ = outer.Restore(m.cpu) }()
-	if len(task.Context) == 0 {
+	if !task.HasContext() {
 		stack := task.Stack
 		if stack == 0 {
 			stack = raptorrt.RaptorJavaTaskStack(0)
@@ -477,7 +477,7 @@ func (m *Machine) stepRaptorJavaTask(ctx context.Context) (cpu.Result, bool, err
 				return cpu.Result{Reason: cpu.StopFault, Err: err}, true, err
 			}
 		}
-	} else if err := m.cpu.RestoreContext(task.Context); err != nil {
+	} else if err := task.RestoreContext(m.cpu); err != nil {
 		return cpu.Result{Reason: cpu.StopFault, Err: err}, true, err
 	}
 	pc, err := m.cpu.ReadRegister(cpu.RegisterPC)
@@ -520,7 +520,7 @@ func (m *Machine) stepRaptorJavaTask(ctx context.Context) (cpu.Result, bool, err
 		task.Done = true
 		return result, true, nil
 	}
-	task.Context, err = m.cpu.SaveContext()
+	err = task.SaveContext(m.cpu)
 	if err != nil {
 		result.Reason = cpu.StopFault
 		result.Err = err

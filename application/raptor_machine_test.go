@@ -201,6 +201,79 @@ func TestRaptorCallbacksResumeAcrossFrameBudgets(t *testing.T) {
 	}
 }
 
+// A callback task that resumes across frame budgets must switch through the
+// CPU's reusable execution context, not the portable bytes: the portable
+// restore retires every translated block, so a title with a long-running
+// callback retranslated its whole working set every few frames. The portable
+// bytes still have to stay current, because save state carries them.
+func TestRaptorCallbackResumeKeepsTranslatedCode(t *testing.T) {
+	machine := newSyntheticMachine(t)
+	const callback = uint32(0x04000000)
+	check(t, machine.cpu.Map(
+		callback,
+		0x1000,
+		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
+	))
+	if err := machine.cpu.WriteMemory(callback, []byte{
+		0x00, 0x20, // movs r0, #0
+		0x01, 0x30, // loop: adds r0, #1
+		0x0a, 0x28, // cmp r0, #10
+		0xfc, 0xd1, // bne loop
+		0x70, 0x47, // bx lr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	machine.frameRunBudget = 3
+	machine.raptor = &raptorrt.Runtime{
+		CPU:     machine.cpu,
+		Public:  machine.wipi,
+		Started: true,
+		Clet:    raptorrt.Clet{Paint: callback | 1},
+	}
+	measured, ok := machine.cpu.(cpu.ExecutionStatisticsBackend)
+	if !ok {
+		t.Skip("CPU backend does not report execution statistics")
+	}
+	check(t, machine.StepFrame(context.Background()))
+	before := measured.ExecutionStatistics()
+	task := machine.raptor.CallbackTasks[0]
+	if !task.HasContext() || len(task.Context) == 0 {
+		t.Fatalf("task after first slice has no resumable context: %#v", task)
+	}
+	portable := append([]byte(nil), task.Context...)
+
+	frames := drainRaptorCallbackTasks(t, machine)
+	if frames < 2 {
+		t.Fatalf("callback completed in %d continuation frames", frames)
+	}
+	after := measured.ExecutionStatistics()
+	if after.SerializedContextRestores != before.SerializedContextRestores {
+		t.Fatalf(
+			"resuming the task went through %d portable restores",
+			after.SerializedContextRestores-before.SerializedContextRestores,
+		)
+	}
+	if after.FastContextRestores == before.FastContextRestores {
+		t.Fatal("resuming the task did not use the reusable execution context")
+	}
+	if after.TranslationInvalidations != before.TranslationInvalidations {
+		t.Fatalf(
+			"resuming the task flushed translations %d times",
+			after.TranslationInvalidations-before.TranslationInvalidations,
+		)
+	}
+	// The portable bytes captured after the first slice describe that slice's
+	// stop, so a fresh backend restores the same registers from them.
+	fresh := interpreter.New()
+	t.Cleanup(func() { _ = fresh.Close() })
+	check(t, fresh.RestoreContext(portable))
+	pc, err := fresh.ReadRegister(cpu.RegisterPC)
+	check(t, err)
+	if pc < callback || pc >= callback+0x1000 {
+		t.Fatalf("portable context resumes at 0x%08x, outside the callback", pc)
+	}
+}
+
 func TestRaptorFramebufferImportsExposeLGTGeometry(t *testing.T) {
 	public := newPublicRuntime(t)
 	runtime := &raptorrt.Runtime{

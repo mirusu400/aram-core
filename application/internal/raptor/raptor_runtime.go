@@ -100,7 +100,11 @@ type Clet struct {
 
 type CallbackTask struct {
 	Callback wipirt.GuestCallback
-	Context  []byte
+	// Context is the portable CPU state to resume from, kept current by
+	// SaveContext; execution is the backend's reusable form of the same
+	// state, which RestoreContext prefers (see raptor_task_context.go).
+	Context   []byte
+	execution taskExecutionContext
 }
 
 type Runtime struct {

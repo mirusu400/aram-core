@@ -317,9 +317,13 @@ type JavaTask struct {
 	Procedure uint32
 	// Stack is where this thread's stack starts, so concurrently scheduled
 	// threads do not write over each other. See RaptorJavaTaskStack.
-	Stack   uint32
-	Context []byte
-	Done    bool
+	Stack uint32
+	// Context is the portable CPU state to resume from, kept current by
+	// SaveContext; execution is the backend's reusable form of the same
+	// state, which RestoreContext prefers (see raptor_task_context.go).
+	Context   []byte
+	execution taskExecutionContext
+	Done      bool
 	// WakeAtMS is the monotonic millisecond this thread's Thread.sleep ends.
 	// The scheduler skips the task until the clock reaches it.
 	WakeAtMS uint64
