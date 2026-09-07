@@ -101,7 +101,11 @@ func TestARM64PrimitiveEncodings(t *testing.T) {
 		{"ldrWoff#4096", emit(func(e *arm64emitter) { e.ldrWoff(4, 3, 4096) }), words(0xB9500064)},
 		{"ldrXoff#8", emit(func(e *arm64emitter) { e.ldrXoff(3, 3, 8) }), words(0xF9400463)},
 		{"ldrXoff#4104", emit(func(e *arm64emitter) { e.ldrXoff(3, 3, 4104) }), words(0xF9480463)},
-		{"maskTLBIndex", emit(func(e *arm64emitter) { e.andMask(2, 1, a64MaskTLBIndex) }), words(0x12003422)},
+		{"maskTLBSet", emit(func(e *arm64emitter) { e.andMask(2, 1, a64MaskTLBSet) }), words(0x12003022)},
+		{"addLSL64#5", emit(func(e *arm64emitter) { e.addLSL64(3, 11, 2, 5) }), words(0x8B021563)},
+		{"ldrWoff#16", emit(func(e *arm64emitter) { e.ldrWoff(4, 3, 16) }), words(0xB9401064)},
+		{"addImm12X#16", emit(func(e *arm64emitter) { e.addImm12X(3, 3, 16) }), words(0x91004063)},
+		{"bCondEQ+20", emit(func(e *arm64emitter) { e.bCond(a64CondEQ, 20) }), words(0x540000A0)},
 		{"maskPageOff", emit(func(e *arm64emitter) { e.andMask(2, 0, a64MaskPageOff) }), words(0x12002402)},
 		{"lsrI#12", emit(func(e *arm64emitter) { e.lsrI(1, 0, 12) }), words(0x530C7C01)},
 		{"cmpW-reg", emit(func(e *arm64emitter) { e.subsReg(a64WZR, 4, 1) }), words(0x6B01009F)},
@@ -194,11 +198,15 @@ func TestARM64MemoryEncodings(t *testing.T) {
 				0xB9400921, // ldr  w1,[x9,#8]      (index register)
 				0x0B010000, // add  w0,w0,w1
 				0x530A7C01, // lsr  w1,w0,#10       (guest subpage)
-				0x12003422, // and  w2,w1,#0x3fff   (table index)
-				0x8B021163, // add  x3,x11,x2,lsl#4 (READ half entry)
-				0xB9400064, // ldr  w4,[x3]         (entry.tag)
+				0x12003022, // and  w2,w1,#0x1fff   (table index)
+				0x8B021563, // add  x3,x11,x2,lsl#5 (READ half entry)
+				0xB9400064, // ldr  w4,[x3]         (way 0 tag)
 				0x6B01009F, // cmp  w4,w1
-				0x54000101, // b.ne bail            (+8 words)
+				0x540000A0, // b.eq found           (+5 words)
+				0xB9401064, // ldr  w4,[x3,#16]     (way 1 tag)
+				0x6B01009F, // cmp  w4,w1
+				0x54000121, // b.ne bail            (+9 words)
+				0x91004063, // add  x3,x3,#16       (way 1 entry)
 				0x12002402, // and  w2,w0,#0x3ff    (in-page offset)
 				0x710FF05F, // cmp  w2,#1020
 				0x540000A8, // b.hi bail            (+5 words)
@@ -220,11 +228,15 @@ func TestARM64MemoryEncodings(t *testing.T) {
 				0xB9401520, // ldr  w0,[x9,#20]
 				0x11003000, // add  w0,w0,#12
 				0x530A7C01, // lsr  w1,w0,#10
-				0x12003422, // and  w2,w1,#0x3fff
-				0x8B021183, // add  x3,x12,x2,lsl#4 (WRITE half entry)
-				0xB9400064, // ldr  w4,[x3]
+				0x12003022, // and  w2,w1,#0x1fff
+				0x8B021583, // add  x3,x12,x2,lsl#5 (WRITE half entry)
+				0xB9400064, // ldr  w4,[x3]         (way 0 tag)
 				0x6B01009F, // cmp  w4,w1
-				0x54000101, // b.ne bail
+				0x540000A0, // b.eq found           (+5 words)
+				0xB9401064, // ldr  w4,[x3,#16]     (way 1 tag)
+				0x6B01009F, // cmp  w4,w1
+				0x54000121, // b.ne bail            (+9 words)
+				0x91004063, // add  x3,x3,#16       (way 1 entry)
 				0x12002402, // and  w2,w0,#0x3ff
 				0x710FF85F, // cmp  w2,#1022        (2-byte access)
 				0x540000A8, // b.hi bail
@@ -242,11 +254,15 @@ func TestARM64MemoryEncodings(t *testing.T) {
 			body: []uint32{
 				0xB9401920, // ldr  w0,[x9,#24]
 				0x530A7C01, // lsr  w1,w0,#10
-				0x12003422, // and  w2,w1,#0x3fff
-				0x8B021163, // add  x3,x11,x2,lsl#4
-				0xB9400064, // ldr  w4,[x3]
+				0x12003022, // and  w2,w1,#0x1fff
+				0x8B021563, // add  x3,x11,x2,lsl#5
+				0xB9400064, // ldr  w4,[x3]         (way 0 tag)
 				0x6B01009F, // cmp  w4,w1
-				0x540000C1, // b.ne bail            (+6 words: one check fewer)
+				0x540000A0, // b.eq found           (+5 words)
+				0xB9401064, // ldr  w4,[x3,#16]     (way 1 tag)
+				0x6B01009F, // cmp  w4,w1
+				0x540000E1, // b.ne bail            (+7 words)
+				0x91004063, // add  x3,x3,#16       (way 1 entry)
 				0x12002402, // and  w2,w0,#0x3ff
 				0xF9400463, // ldr  x3,[x3,#8]
 				0x38A26860, // ldrsb w0,[x3,x2]
@@ -271,11 +287,15 @@ func TestARM64MemoryEncodings(t *testing.T) {
 		0xB9403520, // ldr  w0,[x9,#52]     (SP)
 		0x51003000, // sub  w0,w0,#12       (3 words below SP)
 		0x530A7C01, // lsr  w1,w0,#10
-		0x12003422, // and  w2,w1,#0x3fff
-		0x8B021183, // add  x3,x12,x2,lsl#4 (WRITE half entry)
-		0xB9400064, // ldr  w4,[x3]
+		0x12003022, // and  w2,w1,#0x1fff
+		0x8B021583, // add  x3,x12,x2,lsl#5 (WRITE half entry)
+		0xB9400064, // ldr  w4,[x3]         (way 0 tag)
 		0x6B01009F, // cmp  w4,w1
-		0x540001C1, // b.ne bail            (+14 words)
+		0x540000A0, // b.eq found           (+5 words)
+		0xB9401064, // ldr  w4,[x3,#16]     (way 1 tag)
+		0x6B01009F, // cmp  w4,w1
+		0x540001E1, // b.ne bail            (+15 words)
+		0x91004063, // add  x3,x3,#16       (way 1 entry)
 		0x12002402, // and  w2,w0,#0x3ff
 		0x710FD05F, // cmp  w2,#1012        (1024 - 12: the WHOLE list)
 		0x54000168, // b.hi bail            (+11 words)

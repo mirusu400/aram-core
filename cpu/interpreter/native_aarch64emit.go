@@ -46,12 +46,12 @@ const (
 	a64Mask1         = 0x12000000 // & 0x00000001 (isolate bit 0)
 	a64MaskByte      = 0x12001C00 // & 0x000000FF (ARM register-shift count)
 	a64MaskPageOff   = 0x12002400 // & 0x000003FF (1 KiB in-page offset)
-	a64MaskTLBIndex  = 0x12003400 // & 0x00003FFF (16384-entry table)
+	a64MaskTLBSet    = 0x12003000 // & 0x00001FFF (8192 two-way sets)
 )
 
 const (
-	_ = uint(nativeTLBMask - 0x3fff)
-	_ = uint(0x3fff - nativeTLBMask)
+	_ = uint(nativeTLBSetMask - 0x1fff)
+	_ = uint(0x1fff - nativeTLBSetMask)
 )
 
 // Condition codes used by the emitted control flow.
@@ -110,6 +110,11 @@ func (e *arm64emitter) addReg(rd, rn, rm uint32) { e.w(0x0B000000 | (rm << 16) |
 // addLSL64 emits add xd, xn, xm, lsl #shift (64-bit, for TLB entry addressing).
 func (e *arm64emitter) addLSL64(rd, rn, rm, shift uint32) {
 	e.w(0x8B000000 | (rm << 16) | (shift << 10) | (rn << 5) | rd)
+}
+
+// addImm12X emits add xd, xn, #imm (64-bit).
+func (e *arm64emitter) addImm12X(rd, rn, imm uint32) {
+	e.w(0x91000000 | (imm << 10) | (rn << 5) | rd)
 }
 
 // ldrWoff/ldrXoff load a word / doubleword at a byte offset from a base
@@ -948,13 +953,20 @@ func (e *arm64emitter) probeTLB(store bool, span uint32) []int {
 	if store {
 		table = 12
 	}
-	e.lsrI(1, 0, tlbPageBits)        // w1 = guest page
-	e.andMask(2, 1, a64MaskTLBIndex) // w2 = page & mask
-	e.addLSL64(3, table, 2, 4)       // x3 = half-table + index*tlbEntryBytes
-	e.ldrWoff(4, 3, 0)               // w4 = entry.tag
-	e.subsReg(a64WZR, 4, 1)          // cmp w4, w1
+	e.lsrI(1, 0, tlbPageBits)      // w1 = guest page
+	e.andMask(2, 1, a64MaskTLBSet) // w2 = page & set mask
+	e.addLSL64(3, table, 2, 5)     // x3 = half-table + set*tlbSetBytes
+	// Two ways per set: take way 0 on a match, else way 1, else bail. A hit
+	// in way 0 skips the second compare, the miss branch, and the way select.
+	e.ldrWoff(4, 3, 0)      // w4 = way 0 tag
+	e.subsReg(a64WZR, 4, 1) // cmp w4, w1
+	e.bCond(a64CondEQ, 20)  // b.eq found (+5 words: over ldr, cmp, b.ne, add)
+	e.ldrWoff(4, 3, 16)     // w4 = way 1 tag
+	e.subsReg(a64WZR, 4, 1) // cmp w4, w1
 	misses := []int{e.mark()}
-	e.w(0)                          // placeholder: b.ne bail
+	e.w(0)                // placeholder: b.ne bail
+	e.addImm12X(3, 3, 16) // x3 = way 1 entry
+	// found:
 	e.andMask(2, 0, a64MaskPageOff) // w2 = address & 0x3ff
 	if span > 1 {
 		e.subsImm12(a64WZR, 2, tlbPageSize-span) // cmp w2, #1024-span

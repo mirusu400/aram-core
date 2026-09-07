@@ -985,19 +985,25 @@ func (a *x64emitter) probeTLB(store bool, span uint32) []int {
 	a.b(0x89, 0xC1)              // mov ecx, eax
 	a.b(0xC1, 0xE9, tlbPageBits) // shr ecx, 10
 	a.b(0x89, 0xCA)              // mov edx, ecx      (page number)
-	a.b(0x81, 0xE1)              // and ecx, mask
-	a.imm32(nativeTLBMask)
-	a.b(0xC1, 0xE1, 4) // shl ecx, 4 (tlbEntryBytes)
+	a.b(0x81, 0xE1)              // and ecx, set mask
+	a.imm32(nativeTLBSetMask)
+	a.b(0xC1, 0xE1, 5) // shl ecx, 5 (tlbSetBytes)
 	table := uint64(a.tlb)
 	if store {
 		table += tlbWriteOffset // stores probe the write half
 	}
 	a.b(0x49, 0xB9) // movabs r9, table
 	a.imm64(table)
-	a.b(0x41, 0x3B, 0x14, 0x09) // cmp edx, [r9+rcx]  (entry.tag)
+	// Two ways per set: take way 0 on a match, else way 1, else bail. A hit
+	// in way 0 skips the second compare, the miss branch, and the way select.
+	a.b(0x41, 0x3B, 0x14, 0x09)       // cmp edx, [r9+rcx]     (way 0 tag)
+	a.b(0x74, 14)                     // je  found
+	a.b(0x41, 0x3B, 0x54, 0x09, 0x10) // cmp edx, [r9+rcx+16]  (way 1 tag)
 	misses := []int{a.mark()}
 	a.b(0x0F, 0x85) // jne bail (rel32, patched)
 	a.imm32(0)
+	a.b(0x83, 0xC1, 0x10) // add ecx, 16 (select way 1)
+	// found:
 	a.b(0x89, 0xC2) // mov edx, eax
 	a.b(0x81, 0xE2) // and edx, 0xfff
 	a.imm32(tlbPageSize - 1)
