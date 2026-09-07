@@ -232,7 +232,11 @@ func ktfCallNative(ctx context.Context, runtime *Runtime) (uint32, error) {
 				runtime.LastJavaMethod,
 			)
 		}
-		return 0, errors.New("KTF Java native method target is null")
+		lr, _ := runtime.CPU.ReadRegister(cpu.RegisterLR)
+		return 0, fmt.Errorf(
+			"KTF Java native method target is null (no tracked method, lr=0x%08x)",
+			lr,
+		)
 	}
 	if parameters == 0 {
 		return 0, errors.New("KTF Java native parameter container is null")

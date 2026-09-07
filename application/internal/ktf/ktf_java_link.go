@@ -762,16 +762,21 @@ func (r *Runtime) addHostJavaMethod(
 			}
 		}
 	}
-	body := stub
-	nativeBody := uint32(0)
-	if accessFlags&0x0100 != 0 {
-		body = 0
-		nativeBody = stub
-	}
+	// The stub goes into both the Java body slot (+0) and the native body
+	// slot (+8). A KTF AOT title decides at compile time which slot a call
+	// site reads: its native-call helpers read +8 and hand the word to
+	// java.bridge.12, its Java-call helpers read +0 and jump there. The
+	// host's own access flags cannot predict which declaration the title was
+	// compiled against - String.valueOf([CII) and Vibrator.on(II)V are
+	// natives to the handset's String and Vibrator - so a stub placed in one
+	// slot only left the other reading 0. The first such call survived
+	// through the name-keyed override in ktfCallNative, but a cached call
+	// site on a later task arrives with no tracked method name and faulted
+	// with "native method target is null" (issue #172).
 	if err := r.writeWords(methodAddress, []uint32{
-		body,
+		stub,
 		class.Address,
-		nativeBody,
+		stub,
 		nameAddress,
 		0,
 		uint32(accessFlags) << 16,

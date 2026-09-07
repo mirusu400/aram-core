@@ -416,6 +416,9 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	r.javaClassObjs = guest.CloneMap(meta.JavaClassObjs)
 	r.classObjTarget = guest.CloneMap(meta.ClassObjTarget)
 	r.hostJavaClass = guest.CloneMap(meta.HostJavaClass)
+	if err := r.relinkHostJavaMethodStubs(); err != nil {
+		return fmt.Errorf("relink KTF host Java method stubs: %w", err)
+	}
 	r.javaClassInit = guest.CloneMap(meta.JavaClassInit)
 	r.JvmContext = meta.JVMContext
 	r.exceptionContext = meta.ExceptionContext
@@ -827,6 +830,55 @@ func restoreKTFImagesAndGraphics(
 		// coordinates from the state that was active before this load.
 		r.menuForegroundCompat.overlayImage = 0
 		r.menuForegroundCompat.pending = nil
+	}
+	return nil
+}
+
+// relinkHostJavaMethodStubs fills the empty body slot of every host-provided
+// method whose other slot already holds a host stub. A state saved before
+// issue #172 carries host methods with the stub in one slot only, and the
+// title's cached call sites keep reading the other; the guest heap comes back
+// verbatim, so the save would fault with a null native target the moment such
+// a site ran again.
+func (r *Runtime) relinkHostJavaMethodStubs() error {
+	patched := false
+	seen := make(map[uint32]bool, len(r.JavaClasses))
+	for _, classAddress := range r.JavaClasses {
+		if classAddress == 0 || seen[classAddress] || !r.hostJavaClass[classAddress] {
+			continue
+		}
+		seen[classAddress] = true
+		class, err := r.InspectJavaClass(classAddress)
+		if err != nil {
+			continue
+		}
+		for _, method := range class.Methods {
+			words, err := r.ReadWords(method.Address, 3)
+			if err != nil {
+				return err
+			}
+			body, nativeBody := words[0], words[2]
+			var stub uint32
+			var offset uint32
+			switch {
+			case body != 0 && nativeBody == 0:
+				stub, offset = body, 8
+			case nativeBody != 0 && body == 0:
+				stub, offset = nativeBody, 0
+			default:
+				continue
+			}
+			if _, host := r.hostCalls[stub&^1]; !host {
+				continue
+			}
+			if err := r.WriteU32(method.Address+offset, stub); err != nil {
+				return err
+			}
+			patched = true
+		}
+	}
+	if patched {
+		r.javaClassGeneration++
 	}
 	return nil
 }

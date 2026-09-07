@@ -1104,7 +1104,7 @@ func TestKTFHostCardVTableMatchesDeclaredMethodOrder(t *testing.T) {
 	}
 	constructor, ok := findKTFJavaMethod(class, "<init>", "()V")
 	if !ok || constructor.AccessFlags&0x0100 != 0 ||
-		constructor.Body == 0 || constructor.NativeBody != 0 {
+		constructor.Body == 0 || constructor.NativeBody != constructor.Body {
 		t.Fatalf("Card constructor layout = %+v", constructor)
 	}
 	width, ok := findKTFJavaMethod(class, "getWidth", "()I")
@@ -1734,7 +1734,7 @@ func TestKTFCallNativeDispatchesHostMethodWithParameterContainer(t *testing.T) {
 		"()J",
 	)
 	if !ok || currentTime.AccessFlags&0x0100 == 0 ||
-		currentTime.Body != 0 || currentTime.NativeBody == 0 {
+		currentTime.NativeBody == 0 || currentTime.Body != currentTime.NativeBody {
 		t.Fatalf("System.currentTimeMillis method = %+v, found=%v", currentTime, ok)
 	}
 	parameters := allocWords(t, runtime, 2)
@@ -2186,6 +2186,112 @@ func TestKTFCallNativeOverridesNullStringValueOfChars(t *testing.T) {
 	}
 	if values[1] != 0 {
 		t.Fatalf("String.valueOf high return word = 0x%08x", values[1])
+	}
+}
+
+// A KTF AOT title decides at compile time whether a platform method is
+// native: its native-call helper reads the method's +8 word and hands it to
+// java.bridge.12. The host used to fill only the slot its own access flags
+// named, so a method the handset declares native but the host does not
+// (String.valueOf([CII), Vibrator.on(II)V) reached the bridge with target 0.
+// The first call survived through the name-keyed override because the
+// resolving bridge call had just set LastJavaMethod; a cached call site on a
+// later task carries no tracked name and faulted (issue #172). Both slots now
+// hold the stub, so the bridge dispatches by address with no name at all.
+func TestKTFHostJavaMethodStubReachableFromNativeSlotWithoutTrackedName(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	tests := []struct {
+		class, name, descriptor string
+		arguments               []uint32
+		want                    func(t *testing.T, values []uint32)
+	}{
+		{
+			class:      "org/kwis/msp/media/Vibrator",
+			name:       "on",
+			descriptor: "(II)V",
+			arguments:  []uint32{100, 1},
+			want: func(t *testing.T, values []uint32) {
+				if values[0] != 0 || values[1] != 0 {
+					t.Fatalf("Vibrator.on return = %08x", values)
+				}
+			},
+		},
+		{
+			class:      "java/lang/String",
+			name:       "valueOf",
+			descriptor: "([CII)Ljava/lang/String;",
+			want: func(t *testing.T, values []uint32) {
+				if got := runtime.javaStringValue(values[0]); got != "IPI" {
+					t.Fatalf("String.valueOf(chars, 1, 3) = %q", got)
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.class+"."+test.name, func(t *testing.T) {
+			class := ensureClass(t, runtime, test.class)
+			methodAddress, err := runtime.resolveJavaMethod(
+				class,
+				test.name,
+				test.descriptor,
+			)
+			check(t, err)
+			method, err := runtime.InspectJavaMethod(methodAddress)
+			check(t, err)
+			if method.NativeBody == 0 || method.Body != method.NativeBody {
+				t.Fatalf("%s.%s%s layout = %+v", test.class, test.name, test.descriptor, method)
+			}
+			if _, host := runtime.hostCalls[method.NativeBody&^1]; !host {
+				t.Fatalf("native body 0x%08x is not a host stub", method.NativeBody)
+			}
+			arguments := test.arguments
+			if arguments == nil {
+				chars, err := runtime.newJavaCharArray("WIPI!")
+				check(t, err)
+				arguments = []uint32{chars, 1, 3}
+			}
+			parameters := allocWords(t, runtime, uint32(len(arguments))+2)
+			check(t, runtime.writeWords(parameters, arguments))
+			// A fresh task has no method name to fall back on.
+			runtime.LastJavaMethod = ""
+			check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, method.NativeBody))
+			check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, parameters))
+			result, err := ktfCallNative(context.Background(), runtime)
+			check(t, err)
+			if result != parameters {
+				t.Fatalf("call-native result = 0x%08x", result)
+			}
+			test.want(t, readWords(t, runtime, parameters, 2))
+			signature := test.class + "." + test.name + test.descriptor
+			if runtime.LastJavaMethod != signature {
+				t.Fatalf("tracked method = %q, want %q", runtime.LastJavaMethod, signature)
+			}
+		})
+	}
+}
+
+func TestKTFRelinkHostJavaMethodStubsFillsEmptyBodySlot(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	class := ensureClass(t, runtime, "org/kwis/msp/media/Vibrator")
+	methodAddress, err := runtime.resolveJavaMethod(class, "on", "(II)V")
+	check(t, err)
+	stub := readU32(t, runtime, methodAddress)
+	if stub == 0 || readU32(t, runtime, methodAddress+8) != stub {
+		t.Fatalf("Vibrator.on stub words = %08x", readWords(t, runtime, methodAddress, 3))
+	}
+	// A pre-#172 save holds the stub in the Java slot only.
+	check(t, runtime.WriteU32(methodAddress+8, 0))
+	check(t, runtime.relinkHostJavaMethodStubs())
+	if got := readU32(t, runtime, methodAddress+8); got != stub {
+		t.Fatalf("relinked native body = 0x%08x, want 0x%08x", got, stub)
+	}
+	// And the mirror image: a native-flagged method with the Java slot empty.
+	check(t, runtime.WriteU32(methodAddress, 0))
+	check(t, runtime.relinkHostJavaMethodStubs())
+	if got := readU32(t, runtime, methodAddress); got != stub {
+		t.Fatalf("relinked Java body = 0x%08x, want 0x%08x", got, stub)
 	}
 }
 

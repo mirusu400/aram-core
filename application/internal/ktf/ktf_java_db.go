@@ -960,11 +960,13 @@ func (r *Runtime) implementBodylessPlatformMethods(class JavaClass) error {
 			),
 			HostJavaMethod(class.Name, method.Name, method.Descriptor),
 		)
-		offset := uint32(0)
-		if method.AccessFlags&0x0100 != 0 {
-			offset = 8
+		// Fill both body slots: the title's call sites read +0 or +8 by
+		// their own compile-time declaration, not by these flags (issue
+		// #172, see addHostJavaMethod).
+		if err := r.WriteU32(method.Address, stub); err != nil {
+			return err
 		}
-		if err := r.WriteU32(method.Address+offset, stub); err != nil {
+		if err := r.WriteU32(method.Address+8, stub); err != nil {
 			return err
 		}
 		patched = true
