@@ -23,9 +23,14 @@ type randomState struct {
 }
 
 type threadState struct {
-	target       uint32
-	active       bool
-	wakeAt       time.Duration
+	target uint32
+	active bool
+	wakeAt time.Duration
+	// blockedClip is the clip whose playback this thread waits on. SK-VM
+	// AudioClip.play and loop block the calling thread until the clip stops,
+	// which is why titles start them on a worker thread and close the clip
+	// right after: the close only runs once the sound has finished.
+	blockedClip  shared.ServiceID
 	continuation []*frame
 }
 

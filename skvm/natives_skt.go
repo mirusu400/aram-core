@@ -665,7 +665,7 @@ func (vm *VM) installSKTNatives() {
 		"com/skt/m/AudioClip",
 		"open",
 		"([BII)V",
-		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+		func(ctx context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
 			state, err := vm.audioClip(receiver)
 			if err != nil {
 				return Value{}, false, err
@@ -693,11 +693,16 @@ func (vm *VM) installSKTNatives() {
 					return Value{}, false, err
 				}
 				created = true
-			} else if err := vm.services.Media.Clear(
-				vm.serviceOwner,
-				state.clip,
-			); err != nil {
-				return Value{}, false, err
+			} else {
+				if err := vm.services.Media.Clear(
+					vm.serviceOwner,
+					state.clip,
+				); err != nil {
+					return Value{}, false, err
+				}
+				if err := vm.releaseClipWaiters(ctx, state.clip); err != nil {
+					return Value{}, false, err
+				}
 			}
 			_, err = vm.services.Media.Append(vm.serviceOwner, state.clip, data)
 			if err != nil && created {
@@ -728,11 +733,27 @@ func (vm *VM) installSKTNatives() {
 				if err != nil {
 					return Value{}, false, err
 				}
-				return Value{}, false, vm.services.Media.Play(
+				// A title that plays a clip it already closed gets silence on
+				// the handset, not a fault, and the same call still has to
+				// return for the title to carry on.
+				if state.clip == 0 {
+					return Value{}, false, nil
+				}
+				if err := vm.services.Media.Play(
 					vm.serviceOwner,
 					state.clip,
 					spec.plays,
-				)
+				); err != nil {
+					return Value{}, false, err
+				}
+				// play and loop block the calling thread until the clip
+				// stops. Titles rely on it: their audio worker closes the
+				// clip on the line after, so returning early silenced the
+				// sound the instant it started.
+				if yield, blocked := vm.blockThreadOnClip(state.clip); blocked {
+					return Value{}, false, yield
+				}
+				return Value{}, false, nil
 			},
 		)
 	}
@@ -740,7 +761,7 @@ func (vm *VM) installSKTNatives() {
 		"com/skt/m/AudioClip",
 		"stop",
 		"()V",
-		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+		func(ctx context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
 			state, err := vm.audioClip(receiver)
 			if err != nil {
 				return Value{}, false, err
@@ -748,14 +769,17 @@ func (vm *VM) installSKTNatives() {
 			if state.clip == 0 {
 				return Value{}, false, nil
 			}
-			return Value{}, false, vm.services.Media.Stop(vm.serviceOwner, state.clip)
+			if err := vm.services.Media.Stop(vm.serviceOwner, state.clip); err != nil {
+				return Value{}, false, err
+			}
+			return Value{}, false, vm.releaseClipWaiters(ctx, state.clip)
 		},
 	)
 	vm.RegisterNative(
 		"com/skt/m/AudioClip",
 		"close",
 		"()V",
-		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+		func(ctx context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
 			state, err := vm.audioClip(receiver)
 			if err != nil {
 				return Value{}, false, err
@@ -763,15 +787,17 @@ func (vm *VM) installSKTNatives() {
 			if state.clip == 0 {
 				return Value{}, false, nil
 			}
+			clip := state.clip
 			err = vm.services.Media.DestroyClip(
 				vm.serviceOwner,
-				state.clip,
+				clip,
 				vm.services.Events,
 			)
-			if err == nil {
-				state.clip = 0
+			if err != nil {
+				return Value{}, false, err
 			}
-			return Value{}, false, err
+			state.clip = 0
+			return Value{}, false, vm.releaseClipWaiters(ctx, clip)
 		},
 	)
 }

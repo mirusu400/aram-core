@@ -392,6 +392,7 @@ func snapshotNative(
 			Reference: state.target,
 			Flag:      state.active,
 			Long:      int64(state.wakeAt),
+			Service:   state.blockedClip,
 		}, nil
 	case *recordStoreState:
 		return nativeState{Kind: "record-store", Text: state.name, Service: state.id}, nil
@@ -918,9 +919,10 @@ func restoreNative(saved nativeState) (any, nativeLink, error) {
 			return nil, nativeLink{}, fmt.Errorf("invalid thread wake time")
 		}
 		return &threadState{
-			target: saved.Reference,
-			active: saved.Flag,
-			wakeAt: time.Duration(saved.Long),
+			target:      saved.Reference,
+			active:      saved.Flag,
+			wakeAt:      time.Duration(saved.Long),
+			blockedClip: saved.Service,
 		}, nativeLink{}, nil
 	case "record-store":
 		return &recordStoreState{name: saved.Text, id: saved.Service}, nativeLink{}, nil
@@ -1251,6 +1253,17 @@ func (vm *VM) validateNative(reference uint32, native any) error {
 				"load SKVM state: object %d has a negative thread wake time",
 				reference,
 			)
+		}
+		if state.blockedClip != 0 {
+			if _, err := vm.services.Media.Info(
+				vm.serviceOwner,
+				state.blockedClip,
+			); err != nil {
+				return fmt.Errorf(
+					"load SKVM state: object %d waits on a missing audio clip",
+					reference,
+				)
+			}
 		}
 		return validateRef(state.target, "thread target")
 	case *recordStoreState:
