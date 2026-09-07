@@ -235,6 +235,9 @@ type Runtime struct {
 	// frame costs one guest call per distinct pair instead of one per pixel.
 	// It is derived state: never saved, cleared on Reset and RestoreState.
 	pixelOpResults map[wipiPixelOpKey]uint32
+	// pixelOpFast is a direct-mapped front cache over pixelOpResults; see
+	// wipiPixelOpFastBits. Cleared wherever the map is.
+	pixelOpFast *wipiPixelOpFast
 	// brokenPixelOps names procedures that faulted or overran their budget.
 	// A retired procedure behaves as if the context never installed one, so
 	// a broken callback costs the session one fault instead of one per pixel.
@@ -466,6 +469,7 @@ func NewRuntimeForProfile(
 		assetServices:    make(map[uint32]shared.ServiceID),
 		imageAlpha:       make(map[uint32]*wipiImageAlpha),
 		pixelOpResults:   make(map[wipiPixelOpKey]uint32),
+		pixelOpFast:      new(wipiPixelOpFast),
 		brokenPixelOps:   make(map[uint32]bool),
 		TimerServices:    make(map[uint32]shared.ServiceID),
 		fileServices:     make(map[int32]shared.ServiceID),
@@ -571,8 +575,7 @@ func (r *Runtime) Reset() error {
 	r.surfaceServices = make(map[uint32]shared.ServiceID)
 	r.assetServices = make(map[uint32]shared.ServiceID)
 	r.imageAlpha = make(map[uint32]*wipiImageAlpha)
-	r.pixelOpResults = make(map[wipiPixelOpKey]uint32)
-	r.brokenPixelOps = make(map[uint32]bool)
+	r.resetPixelOpMemo()
 	r.TimerServices = make(map[uint32]shared.ServiceID)
 	r.fileServices = make(map[int32]shared.ServiceID)
 	r.DatabaseServices = make(map[string]shared.ServiceID)

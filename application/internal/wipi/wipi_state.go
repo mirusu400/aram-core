@@ -599,8 +599,7 @@ func (r *Runtime) RestoreState(saved *SavedState) error {
 	}
 	// The pixel-operation memo is keyed by procedure address, and the
 	// restored heap may hold different code at the same address.
-	r.pixelOpResults = make(map[wipiPixelOpKey]uint32)
-	r.brokenPixelOps = make(map[uint32]bool)
+	r.resetPixelOpMemo()
 	r.ScreenHandle = saved.ScreenHandle
 	r.screenPixels = saved.screenPixels
 	r.properties = guest.CloneSliceMap(saved.properties)

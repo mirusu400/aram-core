@@ -814,6 +814,42 @@ type wipiPixelOpKey struct {
 	second    uint32
 }
 
+// wipiPixelOpFastBits sizes the direct-mapped front cache in front of the
+// memo map. A colour-keyed sprite blit asks one question per pixel, and on
+// 판타지포에버3 the map's hashing had become a third of the frame; a slot
+// lookup is a multiply and an index. 4096 slots cover a sprite's palette
+// against its background many times over; a conflict just falls through to
+// the map.
+const wipiPixelOpFastBits = 12
+
+type wipiPixelOpEntry struct {
+	key    wipiPixelOpKey
+	merged uint32
+	valid  bool
+}
+
+type wipiPixelOpFast [1 << wipiPixelOpFastBits]wipiPixelOpEntry
+
+func (k wipiPixelOpKey) slot() uint32 {
+	h := k.first*0x9E3779B1 ^ k.second*0x85EBCA77 ^ k.parameter*0xC2B2AE35 ^ k.procedure
+	h ^= h >> 15
+	h *= 0x27D4EB2D
+	return h >> (32 - wipiPixelOpFastBits)
+}
+
+// resetPixelOpMemo drops every memoized pixel-operation result and every
+// retired procedure. It runs on Reset and RestoreState, where the heap may
+// hold different code at the same procedure address.
+func (r *Runtime) resetPixelOpMemo() {
+	r.pixelOpResults = make(map[wipiPixelOpKey]uint32)
+	r.brokenPixelOps = make(map[uint32]bool)
+	if r.pixelOpFast == nil {
+		r.pixelOpFast = new(wipiPixelOpFast)
+	} else {
+		*r.pixelOpFast = wipiPixelOpFast{}
+	}
+}
+
 // pixelOperationResult runs the context's pixel-operation callback for one
 // pixel pair. It reports ok=false when the procedure has been retired, in
 // which case the caller composites as if no operation were installed.
@@ -841,9 +877,6 @@ func (r *Runtime) pixelOperationResult(
 	foreground, destination uint32,
 ) (uint32, bool, error) {
 	procedure := context.pixelOperation
-	if r.brokenPixelOps[procedure] {
-		return 0, false, nil
-	}
 	first, second := foreground, destination
 	if r.CompactGraphicsContext {
 		first, second = destination, foreground
@@ -854,7 +887,17 @@ func (r *Runtime) pixelOperationResult(
 		first:     first,
 		second:    second,
 	}
+	// The front cache never holds a retired procedure's result: retiring
+	// one clears it, so a hit here needs no brokenPixelOps lookup.
+	entry := &r.pixelOpFast[key.slot()]
+	if entry.valid && entry.key == key {
+		return entry.merged, true, nil
+	}
+	if r.brokenPixelOps[procedure] {
+		return 0, false, nil
+	}
 	if merged, ok := r.pixelOpResults[key]; ok {
+		*entry = wipiPixelOpEntry{key: key, merged: merged, valid: true}
 		return merged, true, nil
 	}
 	merged, err := r.CallGuestFunction(procedure, first, second, key.parameter)
@@ -867,12 +910,15 @@ func (r *Runtime) pixelOperationResult(
 			return 0, false, err
 		}
 		r.brokenPixelOps[procedure] = true
+		*r.pixelOpFast = wipiPixelOpFast{}
 		return 0, false, nil
 	}
 	if len(r.pixelOpResults) >= wipiPixelOpCacheLimit {
 		clear(r.pixelOpResults)
+		*r.pixelOpFast = wipiPixelOpFast{}
 	}
 	r.pixelOpResults[key] = merged
+	*entry = wipiPixelOpEntry{key: key, merged: merged, valid: true}
 	return merged, true, nil
 }
 

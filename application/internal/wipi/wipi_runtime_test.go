@@ -913,6 +913,39 @@ func TestWIPIRuntimeGraphicsPixelOperationIsMemoized(t *testing.T) {
 	}
 }
 
+// Retiring a procedure must also forget what the front cache remembered of
+// it: a pair answered before the fault composites as the plain foreground
+// afterwards, the same as a pair never seen.
+func TestWIPIRuntimeGraphicsPixelOperationRetirementClearsFrontCache(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	screen, contextAddress := installPixelOperationContext(t, runtime)
+
+	fault := false
+	runtime.InvokeSync = func(_ context.Context, current GuestCallback) (uint32, error) {
+		if fault {
+			return 0, errors.New("guest fault")
+		}
+		return current.Args[0] ^ current.Args[1] ^ current.Args[2] ^ 0x00ff0000, nil
+	}
+	// (foreground, cleared background) is answered and cached.
+	dispatchPublicAPI(t, runtime, "MC_grpPutPixel", screen, 0, 0, contextAddress)
+	memoized := uint32(0x00123456 ^ 7 ^ 0x00ff0000)
+	if pixel := readScreenPixel(t, runtime, screen, 0, 0); pixel != memoized {
+		t.Fatalf("first answer = 0x%08x, want 0x%08x", pixel, memoized)
+	}
+	// A new pair faults and retires the procedure.
+	fault = true
+	dispatchPublicAPI(t, runtime, "MC_grpPutPixel", screen, 0, 0, contextAddress)
+	if !runtime.brokenPixelOps[0x02000001] {
+		t.Fatal("the faulting procedure should have been retired")
+	}
+	// The pair cached before the fault must not answer for a retired procedure.
+	dispatchPublicAPI(t, runtime, "MC_grpPutPixel", screen, 1, 1, contextAddress)
+	if pixel := readScreenPixel(t, runtime, screen, 1, 1); pixel != 0x00123456 {
+		t.Fatalf("retired procedure painted 0x%08x from the cache, want the plain foreground", pixel)
+	}
+}
+
 // A procedure that faults is retired once; the rest of the session composites
 // as if the context had no operation instead of failing every draw.
 func TestWIPIRuntimeGraphicsPixelOperationRetiresAfterAFault(t *testing.T) {
