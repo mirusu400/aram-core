@@ -3190,6 +3190,77 @@ func TestKTFUnhandledJavaExceptionFaultsWhenNoTaskSurvives(t *testing.T) {
 	}
 }
 
+// TestKTFUnhandledJavaExceptionExitsCleanlyOncePresented guards issues #174,
+// #185, #191 and #201: a title's one and only task genuinely dying from an
+// uncaught guest exception, deep into a session that has already presented
+// real frames, is not a boot failure. Real CLDC/KVM hardware ends the Jlet
+// there and does not crash the phone, so once the title has proven it booted
+// (PresentCount > 0) this must end the session cleanly (StopExited) rather
+// than hard-fault it, exactly like a task that returns normally with no
+// siblings left. TestKTFUnhandledJavaExceptionFaultsWhenNoTaskSurvives above
+// guards the companion case (PresentCount == 0) that must keep hard-faulting.
+func TestKTFUnhandledJavaExceptionExitsCleanlyOncePresented(t *testing.T) {
+	runtime := newTestRuntime(t)
+	check(t, runtime.SetTraceMode(KTFTraceFull))
+	runtime.PresentCount = 1
+	procedure := runtime.RegisterHostCall(
+		"synthetic.solo.throw.after.present",
+		func(context.Context, *Runtime) (uint32, error) {
+			return 0, &ktfUnhandledJavaException{
+				name:    "java/lang/NullPointerException",
+				detail:  0x10001000,
+				Context: "synthetic solo throw after present",
+			}
+		},
+	)
+	solo, err := runtime.NewTask(procedure|1, nil, 0)
+	check(t, err)
+	runtime.Tasks = append(runtime.Tasks, solo)
+
+	result := runtime.RunTaskSlice(context.Background(), 16)
+	if result.Err != nil {
+		t.Fatalf("presented-session exception surfaced as a fault: %+v", result)
+	}
+	if result.Reason != cpu.StopExited {
+		t.Fatalf("result reason = %v, want StopExited", result.Reason)
+	}
+	if !solo.Done {
+		t.Fatal("the task that threw should be marked done")
+	}
+	found := false
+	for _, trace := range runtime.HostTrace {
+		if strings.Contains(
+			trace,
+			"java_task_exception_exit:index=0:"+
+				"java/lang/NullPointerException",
+		) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf(
+			"task exception exit missing from trace: %v",
+			runtime.HostTrace,
+		)
+	}
+	// A clean exit still keeps the diagnostic, exactly like the multi-task
+	// isolation path, so a session that then sits idle still names what
+	// ended it instead of looking like an ordinary quiet finish.
+	if len(runtime.IsolatedTaskFaults) != 1 {
+		t.Fatalf(
+			"isolated task faults = %+v, want exactly one",
+			runtime.IsolatedTaskFaults,
+		)
+	}
+	fault := runtime.IsolatedTaskFaults[0]
+	if fault.TaskIndex != 0 ||
+		fault.Class != "java/lang/NullPointerException" ||
+		fault.Context != "synthetic solo throw after present" {
+		t.Fatalf("recorded isolated fault = %+v", fault)
+	}
+}
+
 func TestKTFHostVTableCollisionRedispatchesToGuestReceiver(t *testing.T) {
 	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
 		ClientName: "client.bin0",

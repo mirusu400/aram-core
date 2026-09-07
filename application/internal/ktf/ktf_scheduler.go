@@ -973,11 +973,6 @@ func (r *Runtime) RunTaskSlice(
 				// task other than this one still running means the title has
 				// more than a single boot task, so isolate the failure to it
 				// rather than hard-faulting the whole session (issue #152).
-				// A title whose one and only task dies this way stays a hard
-				// fault below, exactly as before: that is indistinguishable
-				// from a genuine boot failure, and issue #147's fixes
-				// depended on it surfacing as one instead of a silent black
-				// screen.
 				task.Done = true
 				if r.hasLiveTask() {
 					r.releaseTerminatedTask(task)
@@ -988,6 +983,32 @@ func (r *Runtime) RunTaskSlice(
 						unhandled.name,
 					)
 					run.Reason = cpu.StopBudget
+					run.Err = nil
+					return run
+				}
+				// This was the title's last live task. If the title has
+				// already presented at least one real frame, it demonstrably
+				// finished booting, and this is the handset's own last
+				// thread dying mid-session: the KVM prints the stack trace
+				// and the Jlet ends, it does not take the phone down with it
+				// (issues #174, #185, #191, #201). The session has nothing
+				// left to run either way, so end it exactly like a task that
+				// returned normally with none of its siblings left (above):
+				// StopExited, not a fault.
+				//
+				// A title that dies this way before ever presenting gets no
+				// such benefit of the doubt: that is indistinguishable from
+				// a genuine boot failure, and issue #147's fixes depended on
+				// it surfacing as a fault instead of a silent black screen.
+				if r.PresentCount > 0 {
+					r.releaseTerminatedTask(task)
+					r.recordIsolatedTaskFault(taskIndex, unhandled)
+					r.tracef(
+						"java_task_exception_exit:index=%d:%s",
+						taskIndex,
+						unhandled.name,
+					)
+					run.Reason = cpu.StopExited
 					run.Err = nil
 					return run
 				}
