@@ -26,6 +26,7 @@ const (
 	KindJava     Kind = "java-archive"
 	KindKTF      Kind = "ktf-wipi"
 	KindRaptor   Kind = "raptor-wipi-c"
+	KindGNEX     Kind = "gnex-sgs"
 	KindWBIN     Kind = "samsung-wbin"
 	KindWBT      Kind = "samsung-wbt"
 	KindFont     Kind = "samsung-font"
@@ -209,6 +210,8 @@ func detectKind(path string, first []byte, markers []Marker) Kind {
 		return KindFont
 	case ".jar":
 		return KindJava
+	case ".sgs":
+		return KindGNEX
 	case ".bin", ".rom", ".img", ".mbn":
 		return KindFirmware
 	}

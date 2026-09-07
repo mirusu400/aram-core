@@ -23,6 +23,7 @@ import (
 	"github.com/mirusu400/aram-core/cpu"
 	"github.com/mirusu400/aram-core/loader"
 	"github.com/mirusu400/aram-core/loader/eads"
+	"github.com/mirusu400/aram-core/loader/gnex"
 	"github.com/mirusu400/aram-core/loader/ktf"
 	"github.com/mirusu400/aram-core/loader/raptor"
 	"github.com/mirusu400/aram-core/wipi"
@@ -99,6 +100,21 @@ func (m *Machine) Load(ctx context.Context, source machinecore.Source) error {
 	}
 	container, err := loader.InspectContainer(data)
 	if err != nil || len(container.Images) == 0 {
+		// An SKT GNEX (SinjiSoft GVM) title is a ZIP too, and its .SGS
+		// payload has no ABHS/EADS records for InspectContainer to find, so
+		// it also lands here. GNEX packages are recognized (see
+		// loader/gnex and docs/gnex-format.md) but the GVM bytecode format
+		// they carry has not been reverse engineered far enough to execute,
+		// so say precisely that instead of a generic unsupported-source error.
+		if gnexPackage, gnexErr := gnex.Inspect(data); gnexErr == nil {
+			return fmt.Errorf(
+				"%w: %q is an SKT GNEX title (%q); ARAM recognizes SinjiSoft "+
+					"GVM packages but does not yet execute GVM bytecode",
+				ErrUnsupportedSource,
+				source.Name,
+				gnexPackage.Header.Title,
+			)
+		}
 		// An Android package is a ZIP too, so it survives every WIPI loader
 		// above and lands here. Say what it is instead of reporting the last
 		// container scan's "no valid ABHS or EADS records", which reads as a
