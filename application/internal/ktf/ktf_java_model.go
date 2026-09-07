@@ -545,7 +545,18 @@ func (r *Runtime) dispatchJavaException(
 					err,
 				)
 			}
-			if bytecodePC < entry[0] || bytecodePC > entry[1] {
+			// A JVM exception table entry protects the half-open bytecode
+			// range [start_pc, end_pc): end_pc is the first instruction
+			// after the try body, which is where javac places the catch
+			// handler whenever the body ends in a return or a throw. The
+			// frame cursor is parked on the handler (below) exactly so a
+			// throw from the catch block escapes this entry, and treating
+			// end_pc as covered undid that whenever handler == end_pc:
+			// 자백's GameScript.readLineFromText wraps its catch and
+			// rethrows, so its own handler caught the rethrow forever, the
+			// Jlet constructor never returned, and the title never opened
+			// a card that could take a key.
+			if bytecodePC < entry[0] || bytecodePC >= entry[1] {
 				continue
 			}
 			matches, err := r.javaExceptionMatches(name, entry[3])

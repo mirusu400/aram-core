@@ -2359,7 +2359,7 @@ func TestKTFDispatchJavaExceptionBuildsGuestRestoreTarget(t *testing.T) {
 		0x00123457,
 	}
 	frameWords := append(
-		[]uint32{method, 0, 0, 20, 0, functions},
+		[]uint32{method, 0, 0, 12, 0, functions},
 		saved...,
 	)
 	check(t, runtime.writeWords(frame, frameWords))
@@ -2379,7 +2379,7 @@ func TestKTFDispatchJavaExceptionBuildsGuestRestoreTarget(t *testing.T) {
 		t.Fatalf("exception dispatch = target %+v, caught %t", target, caught)
 	}
 	if len(runtime.JavaExceptionFrames) != 1 ||
-		!strings.Contains(runtime.JavaExceptionFrames[0], "bcp=20") {
+		!strings.Contains(runtime.JavaExceptionFrames[0], "bcp=12") {
 		t.Fatalf("exception frames = %v", runtime.JavaExceptionFrames)
 	}
 	if detail, err := runtime.ReadU32(frame + 4*4); err != nil {
@@ -6541,6 +6541,62 @@ func TestKTFExceptionDispatchMovesTheFrameToTheHandler(t *testing.T) {
 		t.Fatal(err)
 	} else if caught {
 		t.Fatal("the handler caught the exception it raised itself")
+	}
+}
+
+// A JVM exception table entry covers [start_pc, end_pc): javac places the
+// catch handler at end_pc itself whenever the try body ends in a return or a
+// throw, which is the shape 자백's GameScript.readLineFromText compiles to.
+// Treating end_pc as protected made that handler catch its own rethrow
+// forever, so the Jlet constructor never returned and the title never opened
+// a card that could take a key (random key input then filled the machine's
+// input queue on every seed).
+func TestKTFExceptionDispatchEndPCIsNotProtected(t *testing.T) {
+	runtime := newScratchKTFRuntime(t)
+	entry := allocWords(t, runtime, 4)
+	check(t, runtime.writeWords(entry, []uint32{12, 77, 77, 0}))
+	table := allocWords(t, runtime, 1)
+	check(t, runtime.WriteU32(table, entry))
+	method := allocWords(t, runtime, 7)
+	check(t, runtime.writeWords(method, []uint32{0, 0, table, 0, 1, 0, 0}))
+	functions := allocWords(t, runtime, 2)
+	check(t, runtime.writeWords(functions, []uint32{0, 0x00123457}))
+	frame := allocWords(t, runtime, 17)
+	check(t, runtime.writeWords(frame, []uint32{method, 0, 0, 40, 0, functions}))
+	exceptionContext := allocWords(t, runtime, ktfJavaEnvironmentWords)
+	runtime.exceptionContext = exceptionContext
+	check(t, runtime.WriteU32(exceptionContext+8*4, frame))
+	target, caught, err := runtime.dispatchJavaException("java/lang/Exception", 0x11223344)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !caught || target.handler != 77 {
+		t.Fatalf("dispatch from inside the try = target %+v, caught %t", target, caught)
+	}
+	if bytecodePC := readU32(t, runtime, frame+3*4); bytecodePC != 77 {
+		t.Fatalf("frame bytecode PC = %d, want 77", bytecodePC)
+	}
+	// The frame now sits on the handler, which is also end_pc: a throw from
+	// the catch block must escape this entry.
+	if _, caught, err = runtime.dispatchJavaException(
+		"java/lang/Exception",
+		0x55667788,
+	); err != nil {
+		t.Fatal(err)
+	} else if caught {
+		t.Fatal("the handler at end_pc caught the exception it raised itself")
+	}
+	// The same holds for a frame that reaches end_pc without going through
+	// the handler: the range is half-open on the JVM and on the handset.
+	check(t, runtime.WriteU32(exceptionContext+8*4, frame))
+	check(t, runtime.WriteU32(frame+3*4, 77))
+	if _, caught, err = runtime.dispatchJavaException(
+		"java/lang/Exception",
+		0x99aabbcc,
+	); err != nil {
+		t.Fatal(err)
+	} else if caught {
+		t.Fatal("an exception raised at end_pc was treated as inside the try")
 	}
 }
 
