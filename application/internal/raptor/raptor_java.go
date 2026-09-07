@@ -1640,6 +1640,43 @@ func raptorJavaLinkedFieldIndex(
 	return fieldIndex, wide
 }
 
+// raptorJavaGuestVTableMaxSlots bounds the slot count a descriptor may claim
+// for the module's own dispatch table before it is treated as not a table.
+const raptorJavaGuestVTableMaxSlots = 1024
+
+// raptorJavaGuestVTable reports the dispatch table the module built for a
+// class (descriptor+0x0c before the runtime replaced it, holder at +0, then
+// 4-byte slots) and the end offset of its slots, or zero when the class has
+// no such table. The descriptor word at +0x24 carries the slot count in its
+// high halfword; the word after the last slot belongs to the next class, so
+// the count is what keeps a neighbour's descriptor out of the dispatch
+// table. Only a table that names its own holder is trusted.
+func (r *Runtime) raptorJavaGuestVTable(class *raptorJavaClass) (table, end uint32) {
+	table = class.guestVTable
+	if table == 0 || class.descriptor == 0 {
+		return 0, 0
+	}
+	if holder, err := r.Public.ReadU32(table); err != nil || holder != class.Holder {
+		return 0, 0
+	}
+	layout, err := r.Public.ReadU32(class.descriptor + 0x24)
+	if err != nil {
+		return 0, 0
+	}
+	slots := layout >> 16
+	// Ten slots are java/lang/Object's; a table shorter than that has no own
+	// method for this pass to place.
+	if slots <= raptorJavaObjectSlotCount || slots > raptorJavaGuestVTableMaxSlots {
+		return 0, 0
+	}
+	return table, 4 + slots*4
+}
+
+// raptorJavaObjectSlotCount is how many dispatch slots java/lang/Object
+// occupies at the front of every Raptor vtable (+0x04 through +0x28); a
+// class's own methods start at +0x2c.
+const raptorJavaObjectSlotCount = 10
+
 func (r *Runtime) buildRaptorJavaVTable(
 	java *JavaRuntime,
 	class *raptorJavaClass,
@@ -1689,6 +1726,10 @@ func (r *Runtime) buildRaptorJavaVTable(
 		if extent := lastCode + 4; extent > vtableSize {
 			vtableSize = extent
 		}
+	}
+	guestTable, guestEnd := r.raptorJavaGuestVTable(class)
+	if guestEnd > vtableSize {
+		vtableSize = guestEnd
 	}
 	vtable, err := r.Public.Heap.Allocate(vtableSize, true)
 	if err != nil || vtable == 0 {
@@ -1784,7 +1825,12 @@ func (r *Runtime) buildRaptorJavaVTable(
 	// at their matching offsets. Descriptor code pointers live in the low image;
 	// the trailing metadata/table fields point into the class-data region and
 	// terminate the run, as does a zero slot.
-	for offset := uint32(0x2c); offset < vtableSize; offset += 4 {
+	//
+	// A class whose module built it a dispatch table of its own is skipped:
+	// in that SDK the words at +0x2c are the class's static helper procedures
+	// (<clinit>, ensure-initialized, resolve) and never methods. See
+	// raptorJavaGuestVTable for how that table is used instead.
+	for offset := uint32(0x2c); guestTable == 0 && offset < vtableSize; offset += 4 {
 		body, readErr := r.Public.ReadU32(class.descriptor + offset)
 		if readErr != nil || body == 0 || body >= 0x01000000 {
 			break
@@ -1814,6 +1860,28 @@ func (r *Runtime) buildRaptorJavaVTable(
 		// Object stubs and flat slots below 0x2c survive (zero is skipped).
 		for offset := uint32(0x2c); offset < vtableSize; offset += 4 {
 			body, readErr := r.Public.ReadU32(methodTable + offset + holderOffset)
+			if readErr != nil || body == 0 || body >= 0x01000000 {
+				continue
+			}
+			if err := r.Public.WriteU32(vtable+offset, body); err != nil {
+				return err
+			}
+		}
+	}
+	// The module's own dispatch table is authoritative for the class's own
+	// slots, exactly as the +0x20 table is (for most classes the two are the
+	// same memory). It is consulted directly because the +0x20 word does not
+	// name it for every class: SD한국전쟁's script-command classes l, u and z
+	// carry a .bss pointer there instead, so their only own slot (+0x2c, the
+	// command-kind getter) was filled by the inline pass above with the
+	// class's <clinit> helper - a bare `bx lr` that returns the receiver. The
+	// command loop compared that against 4, never advanced past a kind-4
+	// command, and the paint that followed cast the command to the wrong
+	// class and dereferenced a null String (issue #157). A zero slot here is
+	// inherited from the parent below.
+	if guestTable != 0 {
+		for offset := uint32(0x2c); offset < guestEnd && offset < vtableSize; offset += 4 {
+			body, readErr := r.Public.ReadU32(guestTable + offset)
 			if readErr != nil || body == 0 || body >= 0x01000000 {
 				continue
 			}
