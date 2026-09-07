@@ -352,13 +352,43 @@ func raptorSectionExecutable(section raptorloader.Section) bool {
 		binary.LittleEndian.Uint32(section.Data[4:8])&0xff000000 == 0xeb000000
 }
 
+// raptorMapGranule is the unit a section mapping is padded to. A handset MMU
+// maps whole 1 KiB subpages (ARM926), and the native JIT's software TLB
+// caches the same 1 KiB pages and only installs a page that lies wholly
+// inside its region. An ELF section ends wherever its last symbol does -
+// Maple 시그너스's .bss ends at 0x0167d594 - so the globals in the last
+// partial page could never be cached: every native access to them bailed,
+// the bail heuristic retired those loads to the interpreter for the session,
+// and one runtime counter read cost 94,000 detours per 600 frames. Padding
+// the mapping to the granule gives the page a full region behind it; the
+// padding reads as zero, which is what the handset's zero-filled page held.
+const raptorMapGranule = 1024
+
+// mappedSectionSize is the section's size padded to raptorMapGranule, clamped
+// so the mapping never reaches the next allocated section.
+func mappedSectionSize(image raptorloader.Image, section raptorloader.Section) uint32 {
+	start := uint64(section.Address)
+	end := start + uint64(section.Size)
+	padded := (end + raptorMapGranule - 1) &^ (raptorMapGranule - 1)
+	for _, other := range image.AllocatedSections() {
+		otherStart := uint64(other.Address)
+		if otherStart > start && otherStart < padded {
+			padded = otherStart
+		}
+	}
+	if padded > 1<<32 {
+		padded = 1 << 32
+	}
+	return uint32(padded - start)
+}
+
 func MapRaptorImage(backend cpu.Backend, image raptorloader.Image) error {
 	for _, section := range image.AllocatedSections() {
 		permissions := cpu.PermissionRead | cpu.PermissionWrite
 		if raptorSectionExecutable(section) {
 			permissions |= cpu.PermissionExecute
 		}
-		if err := backend.Map(section.Address, section.Size, permissions); err != nil {
+		if err := backend.Map(section.Address, mappedSectionSize(image, section), permissions); err != nil {
 			return fmt.Errorf(
 				"map Raptor section %q at 0x%08x: %w",
 				section.Name,
@@ -404,7 +434,11 @@ func (r *Runtime) RestoreImage() error {
 		return fmt.Errorf("destroy Raptor Java adapter: %w", err)
 	}
 	for _, section := range r.Pkg.Image.AllocatedSections() {
-		if err := guest.ZeroMemory(r.CPU, section.Address, section.Size); err != nil {
+		if err := guest.ZeroMemory(
+			r.CPU,
+			section.Address,
+			mappedSectionSize(r.Pkg.Image, section),
+		); err != nil {
 			return fmt.Errorf("clear Raptor section %q: %w", section.Name, err)
 		}
 		if len(section.Data) != 0 {
@@ -1199,7 +1233,7 @@ func RequiredMemory(image raptorloader.Image) uint64 {
 		uint64(wipi.TrampolineSize) +
 		uint64(guest.HeapSize)
 	for _, section := range image.AllocatedSections() {
-		total += uint64(section.Size)
+		total += uint64(mappedSectionSize(image, section))
 	}
 	return total
 }
