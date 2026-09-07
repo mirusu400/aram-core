@@ -135,14 +135,20 @@ func (b *Backend) runThumbNative(limit uint64) (uint64, *cpu.StopReason, error) 
 			b.mode = cpu.ModeThumb
 		case nativeStatusBudget:
 			// Remaining budget < block.count, so no block starting here can
-			// run: interpret the rest of the batch in one go. Taking it one
-			// instruction at a time meant a block lookup, a flag
-			// materialisation and a native call that could only report the
-			// same shortfall between every one of them, and a batch ends this
-			// way on every host-bridge crossing - 20000 times a frame on
-			// 영웅서기3. Zero remaining ends the run through the loop
-			// condition without underflowing the unsigned counter.
+			// run in this batch. When the batch has already retired something,
+			// the shortfall is the batch cap's, not the run budget's: hand the
+			// progress back and Run starts a fresh batch at this block, which
+			// a whole batch always holds (a block is at most one batch long).
+			// Interpreting the tail here instead cost 블레이드마스터4 7.7M of its
+			// 168M Thumb instructions per 600 frames, a fifth of the frame.
+			// Only when a fresh batch still cannot hold the block - the run
+			// budget itself is nearly spent - is the tail interpreted, in one
+			// go so the cutoff lands exactly. Zero remaining ends the run
+			// through the loop condition without underflowing the counter.
 			if b.nativeRemain > 0 {
+				if uint64(b.nativeRemain) < limit {
+					return limit - uint64(b.nativeRemain), nil, nil
+				}
 				if reason, err, done := b.interpretNative(
 					b.nativeRemain,
 				); done {

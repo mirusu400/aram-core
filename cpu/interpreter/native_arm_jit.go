@@ -68,7 +68,13 @@ func (b *Backend) runARMNative(limit uint64) (uint64, *cpu.StopReason, error) {
 			}
 			b.mode = cpu.ModeARM
 		case nativeStatusBudget:
+			// See runThumbNative: a block that outgrew the batch cap is left
+			// for the next batch; only the run budget's true tail is
+			// interpreted.
 			if b.nativeRemain > 0 {
+				if uint64(b.nativeRemain) < limit {
+					return limit - uint64(b.nativeRemain), nil, nil
+				}
 				if reason, err, done := b.interpretARMNative(b.nativeRemain); done {
 					return limit - uint64(b.nativeRemain), reason, err
 				}
