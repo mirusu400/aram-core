@@ -586,7 +586,7 @@ func (r *Runtime) validateSavedServices(saved *SavedState) error {
 		}
 	}
 	for address, serviceID := range saved.TimerServices {
-		if !savedHeapContains(saved.heapAllocations, address, 28) {
+		if !r.savedTimerBacked(saved, address) {
 			return fmt.Errorf("timer address 0x%08x is not allocated", address)
 		}
 		if err := candidate.Registry.Validate(
@@ -781,6 +781,26 @@ func validateSavedWIPIStorage(
 		}
 	}
 	return nil
+}
+
+// savedTimerBacked reports whether a saved timer's 28-byte descriptor has
+// memory behind it. MC_knlSetTimer takes a caller-owned M_TIMER, and real
+// titles keep it in their own data or BSS, not on the public heap; only a
+// descriptor that does sit inside the heap must be a live allocation there.
+// Everything outside the heap is checked against this machine's mapping,
+// which the restored image shares with the saved one (the loader rejects a
+// state from another source before this runs), and which reading does not
+// mutate.
+func (r *Runtime) savedTimerBacked(saved *SavedState, address uint32) bool {
+	const timerSize = 28
+	if address >= guest.HeapBase && address-guest.HeapBase < guest.HeapSize {
+		return savedHeapContains(saved.heapAllocations, address, timerSize)
+	}
+	if address+timerSize < address || r.CPU == nil {
+		return false
+	}
+	var descriptor [timerSize]byte
+	return r.CPU.ReadMemory(address, descriptor[:]) == nil
 }
 
 func savedHeapContains(blocks []guest.Block, address, size uint32) bool {
