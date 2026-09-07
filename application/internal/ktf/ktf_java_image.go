@@ -587,6 +587,39 @@ func (r *Runtime) evictJavaImageSurfaces(keep uint32) {
 		drop, len(r.imageServices))
 }
 
+// keyOutMagentaCorner drops the transparency a decoded Java Image asset
+// cannot otherwise carry: some KTF titles ship org.kwis.msp.lcdui.Image
+// sources as a color-keyed sprite with no real alpha at all, reusing the
+// same bright-magenta convention KTF's WIPI-C native image path already
+// honors (ktfIsColorKeyMagenta565) instead of an alpha channel or PNG tRNS
+// chunk. 요구르팅 (issues #197, #198) ships one such icon as a paletted PNG
+// whose sole palette entry is 0xff00ff with no tRNS chunk, so a
+// standards-compliant decoder — correctly — returns it fully opaque, and it
+// painted as a solid magenta block instead of vanishing. This only fires
+// when nothing else decoded any transparency at all: an asset that already
+// carries real alpha (even partial) is left alone, matching the guard the
+// WIPI-C path uses before falling back to the same corner heuristic.
+func keyOutMagentaCorner(source *image.NRGBA) {
+	bounds := source.Bounds()
+	if bounds.Dx() <= 0 || bounds.Dy() <= 0 {
+		return
+	}
+	for p := 3; p < len(source.Pix); p += 4 {
+		if source.Pix[p] != 0xff {
+			return
+		}
+	}
+	red, green, blue := source.Pix[0], source.Pix[1], source.Pix[2]
+	if !ktfIsColorKeyMagenta565(ktfWIPICRGB565(uint32(red), uint32(green), uint32(blue))) {
+		return
+	}
+	for p := 0; p+3 < len(source.Pix); p += 4 {
+		if source.Pix[p] == red && source.Pix[p+1] == green && source.Pix[p+2] == blue {
+			source.Pix[p+3] = 0
+		}
+	}
+}
+
 func (r *Runtime) newJavaEncodedImage(data []byte) (uint32, error) {
 	asset, err := r.Services.Assets.Decode(
 		r.ServiceOwner,
@@ -622,6 +655,7 @@ func (r *Runtime) newJavaEncodedImage(data []byte) (uint32, error) {
 		int(info.Height),
 	))
 	copy(source.Pix, pixels)
+	keyOutMagentaCorner(source)
 	instance, err := r.newJavaInstance("org/kwis/msp/lcdui/Image", 8)
 	if err != nil {
 		_ = r.Services.Assets.Release(r.ServiceOwner, asset)

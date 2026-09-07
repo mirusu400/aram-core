@@ -78,6 +78,67 @@ func TestKTFDecodedImagesReleaseTheirAsset(t *testing.T) {
 	}
 }
 
+// TestKTFJavaImageKeysOutOpaqueMagentaCorner covers issues #197 and #198:
+// 요구르팅 ships an org.kwis.msp.lcdui.Image asset as a paletted PNG whose
+// sole palette entry is pure magenta with no tRNS chunk, the classic KTF
+// color-keyed-sprite convention with no PNG alpha to carry it. A
+// standards-compliant decode is therefore fully opaque, and without a
+// fallback the sprite painted as a solid magenta block instead of the
+// transparent placeholder it was meant to be. newJavaEncodedImage must key
+// the corner color out exactly the way the sibling WIPI-C image path already
+// does for the same convention.
+func TestKTFJavaImageKeysOutOpaqueMagentaCorner(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+
+	palette := color.Palette{color.NRGBA{R: 0xff, G: 0x00, B: 0xff, A: 0xff}}
+	frame := image.NewPaletted(image.Rect(0, 0, 16, 16), palette)
+	var encoded bytes.Buffer
+	check(t, png.Encode(&encoded, frame))
+
+	instance, err := runtime.newJavaEncodedImage(encoded.Bytes())
+	check(t, err)
+	source, ok := runtime.images[instance].(*image.NRGBA)
+	if !ok {
+		t.Fatalf("decoded image is %#v, want *image.NRGBA", runtime.images[instance])
+	}
+	for p := 0; p+3 < len(source.Pix); p += 4 {
+		if source.Pix[p+3] != 0 {
+			t.Fatalf("pixel %d kept alpha %#x, want fully keyed out", p/4, source.Pix[p+3])
+		}
+	}
+}
+
+// TestKTFJavaImageLeavesRealAlphaAlone guards the fallback's condition: an
+// image that already decoded with any real transparency must not have its
+// opaque magenta pixels keyed out too, the same way the WIPI-C path only
+// falls back to the corner heuristic when nothing else decoded transparent.
+func TestKTFJavaImageLeavesRealAlphaAlone(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+
+	frame := image.NewNRGBA(image.Rect(0, 0, 2, 2))
+	frame.SetNRGBA(0, 0, color.NRGBA{R: 0xff, G: 0x00, B: 0xff, A: 0xff}) // opaque magenta corner
+	frame.SetNRGBA(1, 0, color.NRGBA{A: 0})                               // a real transparent pixel elsewhere
+	frame.SetNRGBA(0, 1, color.NRGBA{R: 0x10, G: 0x20, B: 0x30, A: 0xff})
+	frame.SetNRGBA(1, 1, color.NRGBA{R: 0x40, G: 0x50, B: 0x60, A: 0xff})
+	var encoded bytes.Buffer
+	check(t, png.Encode(&encoded, frame))
+
+	instance, err := runtime.newJavaEncodedImage(encoded.Bytes())
+	check(t, err)
+	source, ok := runtime.images[instance].(*image.NRGBA)
+	if !ok {
+		t.Fatalf("decoded image is %#v, want *image.NRGBA", runtime.images[instance])
+	}
+	if source.NRGBAAt(0, 0).A != 0xff {
+		t.Fatal("opaque magenta corner was keyed out even though the image already carried real alpha")
+	}
+	if source.NRGBAAt(1, 0).A != 0 {
+		t.Fatal("the genuinely transparent pixel lost its transparency")
+	}
+}
+
 // TestKTFJavaImageMirrorsStayInsideTheBudget covers issue #149, which random
 // key input found on 에스테반루크 after 4451 frames of play: every
 // Image.getGraphics() took a mirror of its own and kept it, so a session long
