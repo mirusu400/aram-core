@@ -360,5 +360,20 @@ func (m *Machine) queueKTFInput(runtime *ktfrt.Runtime) error {
 		m.input = append(m.input[:index], m.input[index+1:]...)
 		break
 	}
+	// Tell the runtime whether a key is still due and waiting here, so a
+	// repaint the card requests from inside its own paint does not queue the
+	// next paint ahead of it (paintCard). Only a due key counts: an event
+	// stamped for later is not something the handset would have dispatched
+	// yet, and an unknown control never reaches the card at all.
+	runtime.InputWaiting = false
+	for _, event := range m.input {
+		if event.At > now {
+			continue
+		}
+		if _, known := guest.InputKeyCode(event.Control); known {
+			runtime.InputWaiting = true
+			break
+		}
+	}
 	return runtime.DrainServiceEvents(now)
 }

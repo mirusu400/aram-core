@@ -278,14 +278,23 @@ type Runtime struct {
 	nextWIPICDatabase      uint32
 	wipicPixelOpResults    map[ktfWIPICPixelOpKey]uint16
 	brokenWIPICPixelOps    map[uint32]bool
-	dirtyCards             map[uint32]bool
-	paintInitializedCards  map[uint32]bool
-	PaintTasks             map[uint32]*Task
-	PaintStalled           bool
-	deferredPaintCards     map[*Task][]uint32
-	deferredShownCards     map[*Task]map[uint32]bool
-	PresentCount           uint32
-	TickMS                 uint64
+	// InputWaiting is set by the machine before each task slice when it holds
+	// a key event that is due and has not reached the card yet. paintCard
+	// consults it so a repaint the card requested from inside its own paint
+	// does not queue the next paint ahead of that key: the handset's event
+	// queue is FIFO, so a key that arrived before the repaint request runs
+	// first. It is transient scheduling input, not saved state - the machine
+	// recomputes it before every slice.
+	InputWaiting bool
+
+	dirtyCards            map[uint32]bool
+	paintInitializedCards map[uint32]bool
+	PaintTasks            map[uint32]*Task
+	PaintStalled          bool
+	deferredPaintCards    map[*Task][]uint32
+	deferredShownCards    map[*Task]map[uint32]bool
+	PresentCount          uint32
+	TickMS                uint64
 	// The clock fields break a guest busy-wait on the millisecond clock. Virtual
 	// time only advances between presentation quanta, so a title that spins
 	// reading the clock inside one host call (헬싱's handleInput busy-delay)

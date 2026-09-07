@@ -479,6 +479,11 @@ func (r *Runtime) QueueKeyEvent(pressed bool, key int32) (bool, error) {
 		return false, err
 	}
 	task.KeyCard = card
+	if r.dirtyCards[card] {
+		// paintCard held this card's repaint back so the key could run
+		// first; the handler's return paints it.
+		r.deferCardPaint(task, card, false)
+	}
 	r.tracef(
 		"java_key_event:type=%d:key=%d:card=0x%08x",
 		eventType,

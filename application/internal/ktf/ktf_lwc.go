@@ -1510,6 +1510,24 @@ func (r *Runtime) paintCard(ctx context.Context, card uint32) error {
 		r.tracef("java_paint_defer_capacity:card=0x%08x", card)
 		return nil
 	}
+	if r.DeferThreads && r.InputWaiting && r.paintInitializedCards[card] &&
+		card == r.DisplayCards[r.DefaultDisplay] &&
+		r.pendingWIPICTimerTask() == nil && r.HasJavaTaskCapacity() {
+		// A title whose paint ends by calling repaint() again (아포칼립스's
+		// title screen, 크로스워드's loading bar) re-queued its next paint
+		// here, on the paint task's own return, before the machine could
+		// offer the key it was holding - and CanQueueKeyEvent refuses a key
+		// while a paint is pending, so the key never reached the card and
+		// the machine's input queue filled up. The handset dispatches from
+		// one FIFO queue: a key that arrived before this repaint request
+		// runs first, and the repaint follows it. Leave the card dirty; the
+		// key task created for the waiting input takes over the paint
+		// (QueueKeyEvent) and releases it when the handler returns. The
+		// conditions mirror CanQueueKeyEvent so the key is certain to be
+		// queued on the machine's next offer.
+		r.tracef("java_paint_defer_input:card=0x%08x", card)
+		return nil
+	}
 	delete(r.PaintTasks, card)
 	delete(r.dirtyCards, card)
 	graphics, err := r.EnsureScreenGraphics()
