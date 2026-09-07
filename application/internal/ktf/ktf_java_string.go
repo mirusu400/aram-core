@@ -1,6 +1,7 @@
 package ktf
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -89,6 +90,7 @@ func (r *Runtime) handleStringMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
+		data = trimHandsetStringBytes(data, shared.EncodingEUCKR)
 		value, valueErr = r.Services.Text.Decode(data, shared.EncodingEUCKR)
 		if valueErr != nil {
 			return 0, valueErr
@@ -114,6 +116,7 @@ func (r *Runtime) handleStringMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
+		data = trimHandsetStringBytes(data, shared.EncodingEUCKR)
 		value, valueErr = r.Services.Text.Decode(data, shared.EncodingEUCKR)
 		if valueErr != nil {
 			return 0, valueErr
@@ -135,9 +138,10 @@ func (r *Runtime) handleStringMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
+		encoding := javaCharsetEncoding(r.javaStringValue(charset))
 		value, valueErr = r.Services.Text.Decode(
-			data,
-			javaCharsetEncoding(r.javaStringValue(charset)),
+			trimHandsetStringBytes(data, encoding),
+			encoding,
 		)
 		if valueErr != nil {
 			return 0, valueErr
@@ -167,9 +171,10 @@ func (r *Runtime) handleStringMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
+		encoding := javaCharsetEncoding(r.javaStringValue(charset))
 		value, valueErr = r.Services.Text.Decode(
-			data,
-			javaCharsetEncoding(r.javaStringValue(charset)),
+			trimHandsetStringBytes(data, encoding),
+			encoding,
 		)
 		if valueErr != nil {
 			return 0, valueErr
@@ -524,6 +529,26 @@ func (r *Runtime) handleStringMethod(
 // names and titles use whichever their build tool wrote, so an unrecognised
 // name decodes as EUC-KR: that is the handset's own default and the only
 // charset most of these titles ever hold bytes in.
+// trimHandsetStringBytes cuts a byte-array String source at its first NUL,
+// the way the handset's native charset conversion does. Titles keep fixed
+// width, NUL padded records in their data files and build keys with
+// new String(record, offset, fieldWidth); on the handset that yields the bare
+// name, so the same name read from another table hashes and compares equal.
+// Decoding the padding as U+0000 code units made those keys unequal, and one
+// title's monster lookup threw a NullPointerException on a map change
+// (issue #152). UTF-16 sources carry NUL bytes inside ordinary characters, so
+// they pass through untouched.
+func trimHandsetStringBytes(data []byte, encoding shared.TextEncoding) []byte {
+	switch encoding {
+	case shared.EncodingUTF16LE, shared.EncodingUTF16BE:
+		return data
+	}
+	if end := bytes.IndexByte(data, 0); end >= 0 {
+		return data[:end]
+	}
+	return data
+}
+
 func javaCharsetEncoding(name string) shared.TextEncoding {
 	switch strings.ToUpper(strings.TrimSpace(name)) {
 	case "UTF-8", "UTF8":
