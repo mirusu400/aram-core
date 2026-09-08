@@ -763,9 +763,31 @@ func (r *Runtime) monotonicReadMS() uint64 {
 		r.clockReadOffset = 0
 	}
 	if r.TotalInstructions > r.clockReadInstrs {
-		credited := (r.TotalInstructions - r.clockReadInstrs) / ktfBusyWaitInstrsPerMS
-		r.clockReadOffset += credited
-		r.clockReadInstrs = r.TotalInstructions
+		elapsed := r.TotalInstructions - r.clockReadInstrs
+		credited := elapsed / ktfBusyWaitInstrsPerMS
+		if credited > 0 {
+			r.clockReadOffset += credited
+			// Advance the baseline by only the instructions this credit
+			// consumed, not by the full elapsed span. A guest that rereads
+			// the clock more often than once every ktfBusyWaitInstrsPerMS
+			// instructions - 헬싱's own handleInput polls every ~160,000 -
+			// left a remainder under the threshold on every single read.
+			// Snapping the baseline to TotalInstructions discarded that
+			// remainder each time instead of carrying it into the next
+			// read's elapsed span, so it never accumulated into a whole
+			// millisecond of its own: the credited rate settled at one
+			// instruction count per read rather than the intended 100,000
+			// instructions per millisecond, a real slowdown of about 60% for
+			// a loop whose own delay pass runs 160,000 instructions between
+			// reads. A title whose own busy-wait totalled a couple of
+			// real-hardware seconds this way needed more instructions to
+			// observe the same elapsed time than ARAM's Java-native call
+			// budget allows, and spun until it exhausted the budget - not
+			// because anything it was waiting for never arrived, but because
+			// the credited clock ran slower than the 100 MIPS it was
+			// calibrated against (issue #214).
+			r.clockReadInstrs += credited * ktfBusyWaitInstrsPerMS
+		}
 	}
 	now := r.TickMS + r.clockReadOffset
 	if now < r.clockReadFloor {

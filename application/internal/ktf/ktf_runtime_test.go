@@ -169,6 +169,44 @@ func TestKTFMonotonicReadNeverGoesBackward(t *testing.T) {
 	}
 }
 
+// TestKTFMonotonicReadAccumulatesSubThresholdRemainders pins issue #214: a
+// guest that rereads the clock more often than once every
+// ktfBusyWaitInstrsPerMS instructions - 헬싱's own handleInput busy-wait
+// rereads it every ~160,000, below the 100,000 threshold's next whole
+// multiple more often than not - left each read crediting zero on its own.
+// The old code snapped clockReadInstrs to the guest's current
+// TotalInstructions on every read regardless of whether that read credited
+// anything, discarding the sub-threshold remainder each time instead of
+// carrying it into the next read's elapsed span. A guest polling at a fixed
+// interval below the threshold therefore got zero credit forever, no matter
+// how many real instructions it ran: 헬싱's key-release handler burned its
+// entire Java-native instruction budget this way (issue #214) waiting for a
+// credited elapsed time that could never arrive. The fix advances the
+// baseline only by what a read actually credited, so the remainder
+// accumulates across reads and the credited rate converges on the calibrated
+// 100,000-instructions-per-ms figure instead of stalling at zero.
+func TestKTFMonotonicReadAccumulatesSubThresholdRemainders(t *testing.T) {
+	r := &Runtime{TickMS: 1000}
+	if got := r.monotonicReadMS(); got != 1000 {
+		t.Fatalf("first read = %d, want 1000", got)
+	}
+	// Each individual read is 60% of the threshold - below it every time - so
+	// a read that only ever compared its own elapsed span against the
+	// threshold would never credit anything.
+	const perRead = 3 * ktfBusyWaitInstrsPerMS / 5
+	var got uint64
+	for i := 0; i < 4; i++ {
+		r.TotalInstructions += perRead
+		got = r.monotonicReadMS()
+	}
+	// 4 reads * 60,000 instructions = 240,000 total, 2.4ms at the calibrated
+	// rate: two whole milliseconds should have accumulated. The old code left
+	// this at 1000 forever, no matter how many more reads followed.
+	if got != 1002 {
+		t.Fatalf("read after 4 sub-threshold reads = %d, want 1002", got)
+	}
+}
+
 func TestKTFRuntimeInitializesCompleteJavaEnvironment(t *testing.T) {
 	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
 		ClientName: "client.bin4096",
