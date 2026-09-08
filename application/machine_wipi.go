@@ -133,6 +133,9 @@ func (m *Machine) runWIPISlice(
 			javaPresentations = m.raptor.Java.Host.PresentCount
 		}
 	}
+	if m.raptor != nil {
+		m.raptor.BeginGuestSlice()
+	}
 	for instructions < budget {
 		run := m.cpu.Run(ctx, pc, mode, budget-instructions)
 		instructions += run.Instructions
@@ -150,6 +153,11 @@ func (m *Machine) runWIPISlice(
 			m.raptor.Java.Host.TotalInstructions += run.Instructions
 		}
 		run.Instructions = instructions
+		if run.Err != nil {
+			if result, delivered := m.deliverRaptorJavaThrow(instructions); delivered {
+				return result
+			}
+		}
 		if run.Err != nil || run.Reason != cpu.StopBreakpoint || m.wipi == nil {
 			return run
 		}
@@ -591,4 +599,38 @@ func (m *Machine) invokeWIPICallback(
 		return result, 0, err
 	}
 	return result, returnValue, nil
+}
+
+// deliverRaptorJavaThrow ends the current guest invocation when it faults
+// while executing the aftermath of a Java exception ARAM could not deliver.
+//
+// A Raptor Clet raises Java's implicit runtime checks by calling a helper in
+// module 100 that never returns (see raptor.recordRaptorJavaThrow). ARAM has no
+// way to reach the AOT catch handler, so the guest resumes at the instruction
+// after the throw - which is the operation the check had just rejected. Reading
+// a field out of a null reference survives, because address 0 reads as zero,
+// but dispatching a virtual call through it branches to address 0 and faults
+// the machine on a fetch that explains nothing.
+//
+// From here on that fault is attributed to the exception instead. The
+// invocation returns at the sentinel, exactly as if the callback, Java task or
+// host-invoked method had returned, which is what a handset's dispatcher does
+// with a task that lets an exception escape - and the exception itself is
+// already recorded under RAPTOR.Java.throw.<class>, so a report names what
+// ARAM could not deliver instead of an address-zero branch (issue #164).
+func (m *Machine) deliverRaptorJavaThrow(instructions uint64) (cpu.Result, bool) {
+	if m.raptor == nil {
+		return cpu.Result{}, false
+	}
+	if _, undelivered := m.raptor.TakeUndeliveredJavaThrow(); !undelivered {
+		return cpu.Result{}, false
+	}
+	if err := m.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+		return cpu.Result{}, false
+	}
+	return cpu.Result{
+		Reason:       cpu.StopBreakpoint,
+		Instructions: instructions,
+		PC:           guest.ReturnSentinel + 2,
+	}, true
 }

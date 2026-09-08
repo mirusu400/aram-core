@@ -138,8 +138,15 @@ type Runtime struct {
 	importSlots       []raptorImportKey
 	importSlotByKey   map[raptorImportKey]uint32
 	ImportTrace       []raptorImportCall
-	hostCallFrames    [16]cpu.HostCallFrame
-	hostCallDepth     int
+	// LastJavaThrow names the most recent Java exception the guest raised that
+	// ARAM could not deliver to a handler. It is diagnostic only, so it is not
+	// part of the deterministic machine state.
+	LastJavaThrow string
+	// pendingJavaThrow is the same description scoped to one guest slice; see
+	// BeginGuestSlice and TakeUndeliveredJavaThrow.
+	pendingJavaThrow string
+	hostCallFrames   [16]cpu.HostCallFrame
+	hostCallDepth    int
 }
 
 type raptorImportKey struct {
@@ -453,6 +460,8 @@ func (r *Runtime) RestoreImage() error {
 	r.importSlots = nil
 	r.importSlotByKey = make(map[raptorImportKey]uint32)
 	r.ImportTrace = nil
+	r.LastJavaThrow = ""
+	r.pendingJavaThrow = ""
 	r.CallbackTasks = nil
 	return nil
 }
@@ -524,6 +533,12 @@ func (r *Runtime) dispatchImport(
 		keep := len(r.ImportTrace) / 2
 		copy(r.ImportTrace, r.ImportTrace[len(r.ImportTrace)-keep:])
 		r.ImportTrace = append(r.ImportTrace[:keep], call)
+	}
+	if key.Module == 100 {
+		if class, raises := raptorJavaThrowClasses[key.Ordinal]; raises {
+			r.recordRaptorJavaThrow(class, call.LR)
+			return r.Public.ReturnFromTrap(guest.WIPIReturn{})
+		}
 	}
 	if result, name, handled, javaErr := r.dispatchJavaImport(ctx, key); handled {
 		if javaErr != nil {
