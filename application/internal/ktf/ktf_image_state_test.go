@@ -74,6 +74,39 @@ func TestKTFSaveCarriesImagesWithNoMirror(t *testing.T) {
 	}
 }
 
+func TestKTFRestoreDropsDerivedBlitCaches(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	source := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	source.SetNRGBA(0, 0, color.NRGBA{R: 100, A: 128})
+	object, err := runtime.newJavaImage(source)
+	check(t, err)
+	target := image.NewRGBA(source.Bounds())
+	runtime.drawKTFJavaImageRaw(
+		&ktfGraphics{Target: target, clip: target.Bounds()},
+		object,
+		source,
+		0,
+		0,
+		0,
+	)
+	if len(runtime.blitCaches) != 1 {
+		t.Fatal("fixture did not populate the derived blit cache")
+	}
+
+	var buffer bytes.Buffer
+	writer := guest.NewStateWriter(&buffer)
+	check(t, WriteState(runtime, runtime.CPU, true, writer))
+	decoder := guest.StateDecoder{Reader: bytes.NewReader(buffer.Bytes())}
+	saved, err := ParseState(runtime, &decoder)
+	check(t, err)
+	started := false
+	check(t, RestoreState(runtime, runtime.CPU, saved, &started))
+	if len(runtime.blitCaches) != 0 {
+		t.Fatalf("restore retained %d derived blit cache entries", len(runtime.blitCaches))
+	}
+}
+
 // TestKTFSaveCarriesWIPICFramebuffersWithNoMirror covers the WIPI-C sibling
 // of the Image case above: ensureWIPICSurface mirrors a framebuffer lazily,
 // only once something actually presents, merges, or encodes it, so a title
