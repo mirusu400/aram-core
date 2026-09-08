@@ -401,9 +401,11 @@ If the corpus does need it, `Manager.createPlayer` maps cleanly onto
 
 ## 6. Corpus gate results
 
-The locally available 1,005-result corpus contained 694 KTF and 172 Raptor
-profiles, but no SKVM/SKT profiles. The measurement used the existing
-instruments:
+The measurement ran against `aram-test/corpus/dubigame-202403`, which holds
+218 KTF, 72 Raptor and 22 SKT titles. The earlier 1,005-result report used
+here counted 694 KTF and 172 Raptor profiles; its lack of SKVM rows reflects
+what that run probed, not the corpus, which does carry SKT titles. The
+measurement used the existing instruments:
 
 | Runtime | Instrument |
 |---|---|
@@ -413,11 +415,12 @@ instruments:
 
 Results against the available `aram-test` corpus:
 
-1. No SKT sample was present, so corpus demand for the float opcode range could
-   not be measured. The opcode work was nevertheless completed as requested by
-   the original audit.
-2. With no SKT sample, demand for `javax/microedition/media/*` and
-   `javax/microedition/lcdui/game/*` remains unproven; P4 stays gated.
+1. All 22 SKT titles run 600 headless frames on the pre-opcode build without
+   raising `UnsupportedOpcodeError`, so no local title demands the 0x62-0x98
+   range. The opcode work was completed anyway, as the original audit asked.
+2. No SKT title's jar references `javax/microedition/media/*` or
+   `javax/microedition/lcdui/game/*` at all, so P4 stays gated on demand that
+   the local corpus does not show.
 3. No v2.x `MC_mda*` or tone call was observed in the available results, so
    those P5 items remain deferred.
 
