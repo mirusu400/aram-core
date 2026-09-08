@@ -893,6 +893,8 @@ func (r *Runtime) dispatchJavaImport(
 		}
 		return guest.WIPIReturn{}, "RAPTOR.java.arrayStore", true,
 			r.storeRaptorJavaArray(array, index, value)
+	case 100:
+		return r.raptorJavaDispatchTable()
 	case 86, 87:
 		return r.raptorJavaMonitorHelper(key.Ordinal)
 	}
