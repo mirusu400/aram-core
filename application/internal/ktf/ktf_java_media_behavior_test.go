@@ -105,7 +105,7 @@ func TestKTFMediaCompletionQueuesPlayListener(t *testing.T) {
 	}
 	call := runtime.PendingJavaCalls[0]
 	if call.instance != listener || call.name != "playUpdate" ||
-		call.descriptor != "(Lorg/kwis/msp/media/Clip;II)Z" ||
+		call.descriptor != "(Lorg/kwis/msp/media/Clip;II)V" ||
 		len(call.args) != 3 || call.args[0] != clip ||
 		call.args[1] != endOfData || call.args[2] != 0 {
 		t.Fatalf("queued PlayListener call = %+v", call)

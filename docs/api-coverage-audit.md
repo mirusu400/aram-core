@@ -285,7 +285,7 @@ tests. The bullets below record the implemented design.
 - `Player.pause` routes to `Media.Pause` and `Player.resume` routes to
   `Media.Resume`, preserving `clip.position`.
 - `PlayListener.playUpdate` is delivered using
-  `invokeJavaVirtual(ctx, listener, "playUpdate", "(Lorg/kwis/msp/media/Clip;II)Z", clip, event, parm)`,
+  `invokeJavaVirtual(ctx, listener, "playUpdate", "(Lorg/kwis/msp/media/Clip;II)V", clip, event, parm)`,
   queued through the scheduler so callbacks remain serialized against tasks.
 - `PlayListener` constants, for the `event` argument:
   `ERROR = -1`, `END_OF_DATA = 1`, `START = 2`, `STOP = 3`, `PAUSE = 4`,
