@@ -450,6 +450,8 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 		methods: []ktfHostJavaMethodSpec{
 			{name: "play", descriptor: "(Lorg/kwis/msp/media/Clip;Z)Z", access: 0x0008},
 			{name: "stop", descriptor: "(Lorg/kwis/msp/media/Clip;)Z", access: 0x0008},
+			{name: "pause", descriptor: "(Lorg/kwis/msp/media/Clip;)Z", access: 0x0008},
+			{name: "resume", descriptor: "(Lorg/kwis/msp/media/Clip;)Z", access: 0x0008},
 		},
 	},
 	"org/kwis/msp/lcdui/Jlet": {

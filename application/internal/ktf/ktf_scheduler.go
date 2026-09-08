@@ -1339,6 +1339,21 @@ func (r *Runtime) DrainServiceEvents(now time.Duration) error {
 				if serviceID == event.ServiceID {
 					if clip := r.clips[instance]; clip != nil {
 						clip.playing = false
+						if clip.listener != 0 {
+							if err := r.QueueJavaVirtual(
+								clip.listener,
+								"playUpdate",
+								"(Lorg/kwis/msp/media/Clip;II)Z",
+								instance,
+								1, // PlayListener.END_OF_DATA
+								0,
+							); err != nil {
+								return fmt.Errorf(
+									"queue KTF PlayListener completion: %w",
+									err,
+								)
+							}
+						}
 					}
 					break
 				}
