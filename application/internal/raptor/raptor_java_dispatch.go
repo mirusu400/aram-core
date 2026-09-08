@@ -49,9 +49,9 @@ import (
 // that, and the ordinal is rare - a 120-frame no-input scan of all 97 LGT
 // titles found one other caller (턴, twice).
 //
-// With this, SD한국전쟁 runs from frame 113 to frame 3030 on the same seed,
-// where it stops on an unrelated defect of its own: a module-100 newArray whose
-// call site hands ARAM two object references instead of (element, count).
+// With this, SD한국전쟁 reaches a later module-100 newArray call at frame 3030.
+// That import has compact and extended ABIs whose count registers differ; its
+// decoder lives in dispatchJavaImport.
 //
 // A null receiver returns zero rather than reading address 0: the guest's own
 // unresolved-method path calls this helper with r0 = 0 on purpose. A receiver

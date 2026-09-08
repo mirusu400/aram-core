@@ -210,15 +210,8 @@ func (r *Runtime) newRaptorJavaArray(element, count uint32) (uint32, error) {
 		return 0, fmt.Errorf("Raptor Java array length %d exceeds limit", count)
 	}
 	elementSize := uint32(4)
-	if element != 0 && element <= 0x100 {
-		switch byte(element) {
-		case 'Z', 'B':
-			elementSize = 1
-		case 'C', 'S':
-			elementSize = 2
-		case 'J', 'D':
-			elementSize = 8
-		}
+	if width, primitive := raptorJavaPrimitiveArrayElementSize(element); primitive {
+		elementSize = width
 	}
 	instance, err := r.Public.Heap.Allocate(12, true)
 	if err != nil || instance == 0 {
@@ -239,7 +232,7 @@ func (r *Runtime) newRaptorJavaArray(element, count uint32) (uint32, error) {
 		return 0, err
 	}
 	className := "[Ljava/lang/Object;"
-	if element != 0 && element <= 0x100 {
+	if _, primitive := raptorJavaPrimitiveArrayElementSize(element); primitive {
 		className = "[" + string(byte(element))
 	}
 	// A failure here is a KTF-side mirror the LGT array will simply run

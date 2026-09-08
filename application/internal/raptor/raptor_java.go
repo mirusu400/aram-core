@@ -52,6 +52,33 @@ func raptorPrimitiveArrayElementChar(atype uint32) uint32 {
 	return 0
 }
 
+// raptorJavaPrimitiveArrayElementSize identifies a primitive array descriptor
+// and returns its element width.
+func raptorJavaPrimitiveArrayElementSize(element uint32) (uint32, bool) {
+	if element > 0xff {
+		return 0, false
+	}
+	switch byte(element) {
+	case 'Z', 'B':
+		return 1, true
+	case 'C', 'S':
+		return 2, true
+	case 'I', 'F':
+		return 4, true
+	case 'J', 'D':
+		return 8, true
+	}
+	return 0, false
+}
+
+// raptorJavaArrayHasComponentOperand distinguishes the extended reference
+// array form from the compact newArray form. The extended form supplies a
+// Raptor Java component/class pointer in r1; compact primitive and reference
+// forms put their scalar length there instead.
+func raptorJavaArrayHasComponentOperand(component uint32) bool {
+	return component >= raptorJavaHeapBase
+}
+
 const JavaTaskInstructionBudget = uint64(250_000)
 
 type raptorJavaMethod struct {
@@ -848,7 +875,29 @@ func (r *Runtime) dispatchJavaImport(
 		if err != nil {
 			return guest.WIPIReturn{}, "RAPTOR.Java.newArray", true, err
 		}
-		count, err := r.CPU.ReadRegister(cpu.RegisterR1)
+		// Raptor has a compact and an extended newArray form. The compact form
+		// passes its scalar length in r1; r0 is either a primitive descriptor,
+		// zero, or an opaque result from ordinal 14. The extended reference form
+		// instead supplies a Raptor Java component/class pointer in r1 and its
+		// length in r2. The array body model only needs r0 to distinguish primitive
+		// descriptors from reference arrays.
+		//
+		// In SD한국전쟁's extended reference caller, ordinal 14 leaves a pointer
+		// in r0, the caller reloads r1 with a component pointer, and r2 = 1.
+		// Reading r1 as the length therefore turned a heap pointer into a
+		// multi-hundred-megabyte allocation request (issues #196 and #208).
+		// Conversely, a primitive caller has r0 = 'I', r1 = 3, and a stale import
+		// pointer in r2; another compact reference caller leaves an ordinal-14
+		// pointer in r0 but has scalar r1 = 14. Selecting r2 based on r0 is wrong.
+		countRegister := cpu.RegisterR1
+		component, componentErr := r.CPU.ReadRegister(cpu.RegisterR1)
+		if componentErr != nil {
+			return guest.WIPIReturn{}, "RAPTOR.Java.newArray", true, componentErr
+		}
+		if raptorJavaArrayHasComponentOperand(component) {
+			countRegister = cpu.RegisterR2
+		}
+		count, err := r.CPU.ReadRegister(countRegister)
 		if err != nil {
 			return guest.WIPIReturn{}, "RAPTOR.Java.newArray", true, err
 		}
