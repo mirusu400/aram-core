@@ -3652,6 +3652,59 @@ func TestKTFGetJavaMethodRepairsUniqueGuestStaticCollision(t *testing.T) {
 	}
 }
 
+func TestKTFGetJavaMethodLeavesDeclaredHostStaticMethodCollisionAlone(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	check(t, runtime.SetTraceMode(KTFTraceFull))
+
+	fileSystemClass := inspectClass(t, runtime,
+		ensureClass(t, runtime, "org/kwis/msp/io/FileSystem"))
+	hostMethod, err := runtime.resolveJavaMethod(
+		fileSystemClass.Address,
+		"exists",
+		"(Ljava/lang/String;)Z",
+	)
+	check(t, err)
+	guestClass := inspectClass(t, runtime,
+		ensureClass(t, runtime, "test/GuestStatic"))
+	guestMethod, err := runtime.addHostJavaMethod(
+		guestClass,
+		"exists",
+		"(Ljava/lang/String;)Z",
+	)
+	check(t, err)
+	check(t, runtime.WriteU32(guestMethod, ImageBase|1))
+	flags := readU32(t, runtime, guestMethod+20)
+	check(t, runtime.WriteU32(guestMethod+20, flags&0xffff|0x0008<<16))
+	delete(runtime.hostJavaClass, guestClass.Address)
+	fullName, err := runtime.allocateBytes(
+		[]byte("\x00(Ljava/lang/String;)Z+exists"),
+		true,
+	)
+	check(t, err)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, fileSystemClass.Address))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, fullName))
+
+	got, err := ktfGetJavaMethod(context.Background(), runtime)
+	check(t, err)
+	if got != hostMethod {
+		t.Fatalf(
+			"declared host static collision = 0x%08x, want host 0x%08x (guest 0x%08x)",
+			got,
+			hostMethod,
+			guestMethod,
+		)
+	}
+	if runtime.LastJavaMethod != "org/kwis/msp/io/FileSystem.exists(Ljava/lang/String;)Z" {
+		t.Fatalf("last Java method = %q", runtime.LastJavaMethod)
+	}
+	if slices.ContainsFunc(runtime.HostTrace, func(line string) bool {
+		return strings.Contains(line, "java_static_header_repair:exists(Ljava/lang/String;)Z")
+	}) {
+		t.Fatalf("declared host static call was repaired: %v", runtime.HostTrace)
+	}
+}
+
 func TestKTFGetJavaMethodLeavesAmbiguousGuestStaticCollisionAlone(t *testing.T) {
 	runtime := newTestRuntime(t)
 	runtime.JvmContext = allocWords(t, runtime, 3+128)

@@ -1151,8 +1151,13 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	"org/kwis/msp/handset/HandsetProperty": {
 		Parent: "java/lang/Object",
 	},
-	"org/kwis/msp/io/File":       {Parent: "java/lang/Object"},
-	"org/kwis/msp/io/FileSystem": {Parent: "java/lang/Object"},
+	"org/kwis/msp/io/File": {Parent: "java/lang/Object"},
+	"org/kwis/msp/io/FileSystem": {
+		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "exists", descriptor: "(Ljava/lang/String;)Z", access: 0x0008},
+		},
+	},
 
 	"org/kwis/msp/lcdui/DisplayProxy": {Parent: "java/lang/Object"},
 	"org/kwis/msp/lcdui/EventQueue":   {Parent: "java/lang/Object"},
