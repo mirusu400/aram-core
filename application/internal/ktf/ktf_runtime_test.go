@@ -3566,6 +3566,42 @@ func TestKTFResolveJavaMethodAcceptsDirectVTable(t *testing.T) {
 	}
 }
 
+func TestKTFGetJavaMethodRepairsUnrelatedHeaderClassFromReceiver(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	check(t, runtime.SetTraceMode(KTFTraceFull))
+
+	wrongClass := inspectClass(t, runtime, ensureClass(t, runtime, "test/Wrong"))
+	wrongMethod, err := runtime.addHostJavaMethod(wrongClass, "run", "()V")
+	check(t, err)
+	actualClass := inspectClass(t, runtime, ensureClass(t, runtime, "test/Actual"))
+	actualMethod, err := runtime.addHostJavaMethod(actualClass, "run", "()V")
+	check(t, err)
+	receiver, err := runtime.NewJavaInstanceForClass(actualClass)
+	check(t, err)
+	fullName, err := runtime.allocateBytes([]byte("\x00()V+run"), true)
+	check(t, err)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, wrongClass.Address))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, fullName))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR4, receiver))
+
+	got, err := ktfGetJavaMethod(context.Background(), runtime)
+	check(t, err)
+	if got != actualMethod {
+		t.Fatalf(
+			"receiver-repaired method = 0x%08x, want 0x%08x (wrong 0x%08x)",
+			got,
+			actualMethod,
+			wrongMethod,
+		)
+	}
+	if !slices.ContainsFunc(runtime.HostTrace, func(line string) bool {
+		return strings.Contains(line, "java_virtual_header_repair:run()V:actual=test/Actual")
+	}) {
+		t.Fatalf("receiver repair trace missing: %v", runtime.HostTrace)
+	}
+}
+
 func TestKTFJavaNewRunsClassInitializerOnce(t *testing.T) {
 	runtime := newTestRuntime(t)
 	runtime.JvmContext = allocWords(t, runtime, 3+128)

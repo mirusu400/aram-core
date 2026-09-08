@@ -335,6 +335,13 @@ func ktfGetJavaMethod(ctx context.Context, runtime *Runtime) (uint32, error) {
 			err,
 		)
 	}
+	if repaired, ok := runtime.repairJavaVirtualMethodFromReceiver(
+		method,
+		name,
+		descriptor,
+	); ok {
+		method = repaired
+	}
 	resolved, err := runtime.InspectJavaMethod(method)
 	if err != nil {
 		return 0, err
@@ -371,6 +378,61 @@ func ktfGetJavaMethod(ctx context.Context, runtime *Runtime) (uint32, error) {
 		lr,
 	)
 	return method, nil
+}
+
+// repairJavaVirtualMethodFromReceiver covers KTF AOT images whose object
+// header is interpreted through two different class registries. A host-created
+// header can be valid in the framework registry while selecting an unrelated
+// application class in the image-local registry. The virtual-call helper keeps
+// the receiver in r4 across the bridge call, so an unrelated resolution can be
+// repaired without changing valid superclass, constructor, private, or static
+// dispatch.
+func (r *Runtime) repairJavaVirtualMethodFromReceiver(
+	method uint32,
+	name, descriptor string,
+) (uint32, bool) {
+	if strings.HasPrefix(name, "<") {
+		return method, false
+	}
+	resolved, err := r.InspectJavaMethod(method)
+	if err != nil || resolved.AccessFlags&(0x0002|0x0008) != 0 {
+		return method, false
+	}
+	receiver, err := r.CPU.ReadRegister(cpu.RegisterR4)
+	if err != nil || receiver == 0 {
+		return method, false
+	}
+	receiverWords, err := r.ReadWords(receiver, 2)
+	if err != nil || receiverWords[1] == 0 {
+		return method, false
+	}
+	actual, err := r.InspectJavaClass(receiverWords[1])
+	if err != nil || actual.Address == resolved.DeclaringClass {
+		return method, false
+	}
+	if compatible, hierarchyErr := r.javaClassExtends(
+		actual.Address,
+		resolved.DeclaringClass,
+	); hierarchyErr == nil && compatible {
+		return method, false
+	}
+	repaired, err := r.resolveJavaMethod(actual.Address, name, descriptor)
+	if err != nil || repaired == method {
+		return method, false
+	}
+	candidate, err := r.InspectJavaMethod(repaired)
+	if err != nil || candidate.AccessFlags&(0x0002|0x0008) != 0 {
+		return method, false
+	}
+	r.tracef(
+		"java_virtual_header_repair:%s%s:actual=%s:from=0x%08x:to=0x%08x",
+		name,
+		descriptor,
+		actual.Name,
+		method,
+		repaired,
+	)
+	return repaired, true
 }
 
 func ktfGetJavaField(ctx context.Context, runtime *Runtime) (uint32, error) {
