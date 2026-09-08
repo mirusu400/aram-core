@@ -1482,7 +1482,11 @@ func (r *Runtime) linkRaptorJavaClasses(java *JavaRuntime) error {
 			return err
 		}
 	}
-	for _, class := range java.classes {
+	// Parents first, and in a fixed order: see raptorJavaLinkOrder. Ranging
+	// the class map here made the number of vtables this pass allocates - and
+	// therefore every guest heap address after it - depend on Go's randomized
+	// map iteration.
+	for _, class := range raptorJavaLinkOrder(java) {
 		if class.hostClass == 0 {
 			if err := r.buildRaptorJavaVTable(java, class, virtualCount); err != nil {
 				return err

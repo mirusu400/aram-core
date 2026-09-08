@@ -823,10 +823,17 @@ func (r *Runtime) DispatchPrivateImport(
 		}
 		framebuffer := r.Public.Framebuffers[handle]
 		if framebuffer.Handle == 0 {
+			// Lowest handle wins rather than whichever the map produced
+			// first: two framebuffers can name the same pixel buffer, and a
+			// reverse lookup that answers a different one from run to run is
+			// the replay-breaking nondeterminism raptorJavaLinkOrder
+			// documents, reached through a different table.
 			for _, candidate := range r.Public.Framebuffers {
-				if candidate.Pixels == handle {
+				if candidate.Pixels != handle {
+					continue
+				}
+				if framebuffer.Handle == 0 || candidate.Handle < framebuffer.Handle {
 					framebuffer = candidate
-					break
 				}
 			}
 		}

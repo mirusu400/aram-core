@@ -183,10 +183,20 @@ func (r *Runtime) raptorJavaClassForObject(
 	if class := java.classes[object]; class != nil {
 		return class
 	}
+	// Lowest holder wins rather than whichever the map produced first: two
+	// classes can carry the same class object, and answering a different one
+	// from run to run is the same replay-breaking nondeterminism
+	// raptorJavaLinkOrder exists to remove.
+	var byClassObject *raptorJavaClass
 	for _, class := range java.classes {
 		if class.classObject != 0 && class.classObject == object {
-			return class
+			if byClassObject == nil || class.Holder < byClassObject.Holder {
+				byClassObject = class
+			}
 		}
+	}
+	if byClassObject != nil {
+		return byClassObject
 	}
 	holder, err := r.Public.ReadU32(object + 4)
 	if err != nil {
