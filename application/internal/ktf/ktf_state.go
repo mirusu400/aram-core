@@ -367,40 +367,42 @@ type ktfMetadataSnapshot struct {
 	UnimplementedJava       map[string]uint64
 	LastUnimplementedJava   string
 
-	RandomSeeds       map[uint32]uint64
-	IntegerValues     map[uint32]int32
-	LongValues        map[uint32]int64
-	ThrowableMessages map[uint32]uint32
-	Dates             map[uint32]int64
-	Vectors           map[uint32][]uint32
-	Hashtables        map[uint32]map[string]ktfHashtableEntrySnapshot
-	Enumerations      map[uint32]ktfEnumerationSnapshot
-	Clips             map[uint32]ktfClipSnapshot
-	Listeners         map[uint32]uint32
-	LWCEventData      map[uint32]uint32
-	LWCChildren       map[uint32][]uint32
-	LWCMaxLengths     map[uint32]int32
-	LWCComponents     map[uint32]ktfLWCSnapshot
-	Databases         map[uint32]string
-	DatabaseStores    map[string]ktfDatabaseSnapshot
-	DefaultRuntime    uint32
-	DefaultDisplay    uint32
-	MainJlet          uint32
-	EventQueue        uint32
-	SharedBuffers     map[string]uint32
-	DisplayCards      map[uint32]uint32
-	ThreadTargets     map[uint32]uint32
-	CurrentThread     uint32
-	StringBuffers     map[uint32]string
-	InputStreams      map[uint32]ktfInputStreamSnapshot
-	InputTargets      map[uint32]uint32
-	OutputStreams     map[uint32][]byte
-	OutputTargets     map[uint32]uint32
-	Files             map[uint32]ktfFileSnapshot
-	FileData          map[string][]byte
-	FileStreamTargets map[uint32]uint32
-	SystemInputStream uint32
-	SystemPrintStream uint32
+	RandomSeeds              map[uint32]uint64
+	IntegerValues            map[uint32]int32
+	LongValues               map[uint32]int64
+	ThrowableMessages        map[uint32]uint32
+	Dates                    map[uint32]int64
+	Vectors                  map[uint32][]uint32
+	Hashtables               map[uint32]map[string]ktfHashtableEntrySnapshot
+	Enumerations             map[uint32]ktfEnumerationSnapshot
+	Clips                    map[uint32]ktfClipSnapshot
+	Listeners                map[uint32]uint32
+	LWCEventData             map[uint32]uint32
+	LWCChildren              map[uint32][]uint32
+	LWCMaxLengths            map[uint32]int32
+	LWCComponents            map[uint32]ktfLWCSnapshot
+	Databases                map[uint32]string
+	DatabaseStores           map[string]ktfDatabaseSnapshot
+	DefaultRuntime           uint32
+	DefaultDisplay           uint32
+	MainJlet                 uint32
+	EventQueue               uint32
+	SharedBuffers            map[string]uint32
+	DisplayCards             map[uint32]uint32
+	ThreadTargets            map[uint32]uint32
+	CurrentThread            uint32
+	StringBuffers            map[uint32]string
+	InputStreams             map[uint32]ktfInputStreamSnapshot
+	InputTargets             map[uint32]uint32
+	OutputStreams            map[uint32][]byte
+	OutputTargets            map[uint32]uint32
+	Files                    map[uint32]ktfFileSnapshot
+	FileData                 map[string][]byte
+	FileStreamTargets        map[uint32]uint32
+	SystemInputStream        uint32
+	SystemPrintStream        uint32
+	HostReservedFieldClass   uint32
+	SharedInputMethodHandler uint32
 
 	Images                 []uint32
 	DefaultFont            uint32
@@ -944,32 +946,34 @@ func snapshotKTFMetadata(
 		UnimplementedJava:       guest.CloneMap(r.UnimplementedJava),
 		LastUnimplementedJava:   r.LastUnimplementedJava,
 
-		RandomSeeds:       guest.CloneMap(r.randomSeeds),
-		IntegerValues:     guest.CloneMap(r.integerValues),
-		LongValues:        guest.CloneMap(r.longValues),
-		ThrowableMessages: guest.CloneMap(r.throwableMessages),
-		Dates:             guest.CloneMap(r.dates),
-		Vectors:           guest.CloneSliceMap(r.Vectors),
-		Listeners:         guest.CloneMap(r.listeners),
-		LWCEventData:      guest.CloneMap(r.lwcEventData),
-		LWCChildren:       guest.CloneSliceMap(r.lwcChildren),
-		LWCMaxLengths:     guest.CloneMap(r.lwcMaxLengths),
-		DefaultRuntime:    r.defaultRuntime,
-		DefaultDisplay:    r.DefaultDisplay,
-		MainJlet:          r.MainJlet,
-		EventQueue:        r.eventQueue,
-		SharedBuffers:     guest.CloneMap(r.sharedBuffers),
-		DisplayCards:      guest.CloneMap(r.DisplayCards),
-		ThreadTargets:     guest.CloneMap(r.ThreadTargets),
-		CurrentThread:     r.currentThread,
-		StringBuffers:     guest.CloneMap(r.stringBuffers),
-		InputTargets:      guest.CloneMap(r.inputTargets),
-		OutputStreams:     guest.CloneSliceMap(r.outputStreams),
-		OutputTargets:     guest.CloneMap(r.outputTargets),
-		FileData:          guest.CloneSliceMap(r.FileData),
-		FileStreamTargets: guest.CloneMap(r.fileStreamTargets),
-		SystemInputStream: r.systemInputStream,
-		SystemPrintStream: r.systemPrintStream,
+		RandomSeeds:              guest.CloneMap(r.randomSeeds),
+		IntegerValues:            guest.CloneMap(r.integerValues),
+		LongValues:               guest.CloneMap(r.longValues),
+		ThrowableMessages:        guest.CloneMap(r.throwableMessages),
+		Dates:                    guest.CloneMap(r.dates),
+		Vectors:                  guest.CloneSliceMap(r.Vectors),
+		Listeners:                guest.CloneMap(r.listeners),
+		LWCEventData:             guest.CloneMap(r.lwcEventData),
+		LWCChildren:              guest.CloneSliceMap(r.lwcChildren),
+		LWCMaxLengths:            guest.CloneMap(r.lwcMaxLengths),
+		DefaultRuntime:           r.defaultRuntime,
+		DefaultDisplay:           r.DefaultDisplay,
+		MainJlet:                 r.MainJlet,
+		EventQueue:               r.eventQueue,
+		SharedBuffers:            guest.CloneMap(r.sharedBuffers),
+		DisplayCards:             guest.CloneMap(r.DisplayCards),
+		ThreadTargets:            guest.CloneMap(r.ThreadTargets),
+		CurrentThread:            r.currentThread,
+		StringBuffers:            guest.CloneMap(r.stringBuffers),
+		InputTargets:             guest.CloneMap(r.inputTargets),
+		OutputStreams:            guest.CloneSliceMap(r.outputStreams),
+		OutputTargets:            guest.CloneMap(r.outputTargets),
+		FileData:                 guest.CloneSliceMap(r.FileData),
+		FileStreamTargets:        guest.CloneMap(r.fileStreamTargets),
+		SystemInputStream:        r.systemInputStream,
+		SystemPrintStream:        r.systemPrintStream,
+		HostReservedFieldClass:   r.hostReservedFieldClass,
+		SharedInputMethodHandler: r.sharedInputMethodHandler,
 
 		DefaultFont:            r.defaultFont,
 		ScreenGraphics:         r.ScreenGraphics,

@@ -543,6 +543,8 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	r.fileStreamTargets = guest.CloneMap(meta.FileStreamTargets)
 	r.systemInputStream = meta.SystemInputStream
 	r.systemPrintStream = meta.SystemPrintStream
+	r.hostReservedFieldClass = meta.HostReservedFieldClass
+	r.sharedInputMethodHandler = meta.SharedInputMethodHandler
 
 	if err := restoreKTFImagesAndGraphics(r, meta, saved.imagePixels); err != nil {
 		return err

@@ -507,20 +507,40 @@ func (r *Runtime) addHostJavaField(
 	if err != nil {
 		return 0, err
 	}
-	if err := r.writeWords(field, []uint32{
-		0x0009,
-		class.Address,
-		nameAddress,
-		0,
-	}); err != nil {
-		return 0, err
-	}
-	value, err := r.hostJavaStaticFieldValue(class.Name, name)
-	if err != nil {
-		return 0, err
-	}
-	if err := r.WriteU32(field+12, value); err != nil {
-		return 0, err
+	// org/kwis/msp/lwc/TextComponent.imHandler is the one field this repo
+	// has found where the guest's own compiled call site reads it as an
+	// *instance* field (this.fields[+4+offset]) rather than through the
+	// static-value convention every other invented field here uses (see
+	// ktfHostReservedFieldOffset for why offset 0 - what every other
+	// invented field gets - collides with a real subclass field instead).
+	// NewJavaInstanceForClass reserves and populates that offset for any
+	// instance descending from TextComponent once this marks the class.
+	if class.Name == "org/kwis/msp/lwc/TextComponent" && name == "imHandler" {
+		if err := r.writeWords(field, []uint32{
+			0x0001,
+			class.Address,
+			nameAddress,
+			ktfHostReservedFieldOffset,
+		}); err != nil {
+			return 0, err
+		}
+		r.hostReservedFieldClass = class.Address
+	} else {
+		if err := r.writeWords(field, []uint32{
+			0x0009,
+			class.Address,
+			nameAddress,
+			0,
+		}); err != nil {
+			return 0, err
+		}
+		value, err := r.hostJavaStaticFieldValue(class.Name, name)
+		if err != nil {
+			return 0, err
+		}
+		if err := r.WriteU32(field+12, value); err != nil {
+			return 0, err
+		}
 	}
 	classWords, err := r.ReadWords(class.Address, 5)
 	if err != nil {

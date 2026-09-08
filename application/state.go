@@ -21,8 +21,14 @@ import (
 )
 
 const (
-	stateMagic         = "ARAMAPP\x00"
-	stateVersion       = uint32(7)
+	stateMagic = "ARAMAPP\x00"
+	// Bumped to 8 for the two KTF metadata fields that back a reserved
+	// host instance field (hostReservedFieldClass, sharedInputMethodHandler).
+	// The typed state codec encodes by declared field order and rejects
+	// trailing bytes, so a version-7 state cannot be decoded against the
+	// wider snapshot - it has to be refused by version rather than fail as
+	// a corrupt component.
+	stateVersion       = uint32(8)
 	stateChecksumSize  = 32
 	maxStateInputs     = 1024
 	stateOverheadLimit = uint64(16 << 20)

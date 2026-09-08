@@ -118,7 +118,15 @@ func (r *Runtime) NewJavaInstanceForClass(class JavaClass) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
-	fields, err := r.allocateJavaHeapBytes(uint32(class.FieldSize)+4, true)
+	needsReserved, err := r.instanceNeedsReservedField(class)
+	if err != nil {
+		return 0, err
+	}
+	size := uint32(class.FieldSize) + 4
+	if needsReserved && ktfHostReservedFieldOffset+8 > size {
+		size = ktfHostReservedFieldOffset + 8
+	}
+	fields, err := r.allocateJavaHeapBytes(size, true)
 	if err != nil {
 		return 0, err
 	}
@@ -131,6 +139,56 @@ func (r *Runtime) NewJavaInstanceForClass(class JavaClass) (uint32, error) {
 	if err := r.writeWords(instance, []uint32{fields, class.Address}); err != nil {
 		return 0, err
 	}
+	if needsReserved {
+		handler, err := r.sharedHostInputMethodHandler()
+		if err != nil {
+			return 0, err
+		}
+		if err := r.WriteU32(fields+4+ktfHostReservedFieldOffset, handler); err != nil {
+			return 0, err
+		}
+	}
+	return instance, nil
+}
+
+// instanceNeedsReservedField reports whether class or any ancestor is
+// org/kwis/msp/lwc/TextComponent after it has invented an instance-style
+// imHandler field (see ktfHostReservedFieldOffset). r.hostReservedFieldClass
+// stays 0 for every title that never resolves that field, so this is a
+// single comparison for the overwhelming majority of instances created.
+func (r *Runtime) instanceNeedsReservedField(class JavaClass) (bool, error) {
+	if r.hostReservedFieldClass == 0 {
+		return false, nil
+	}
+	if class.Address == r.hostReservedFieldClass {
+		return true, nil
+	}
+	for address := class.Parent; address != 0; {
+		if address == r.hostReservedFieldClass {
+			return true, nil
+		}
+		ancestor, err := r.InspectJavaClass(address)
+		if err != nil {
+			return false, err
+		}
+		address = ancestor.Parent
+	}
+	return false, nil
+}
+
+// sharedHostInputMethodHandler answers every org/kwis/msp/lwc/TextComponent
+// descendant's imHandler with the same instance, matching the one physical
+// keypad IME a real handset has (handleInputMethodHandlerMethod's own
+// comment: "the host never opens" it, it only models the calls).
+func (r *Runtime) sharedHostInputMethodHandler() (uint32, error) {
+	if r.sharedInputMethodHandler != 0 {
+		return r.sharedInputMethodHandler, nil
+	}
+	instance, err := r.NewHostJavaObject("org/kwis/msp/lcdui/InputMethodHandler")
+	if err != nil {
+		return 0, err
+	}
+	r.sharedInputMethodHandler = instance
 	return instance, nil
 }
 
