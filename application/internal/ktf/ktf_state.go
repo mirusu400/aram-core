@@ -17,7 +17,8 @@ const (
 	ktfStateSchemaV4     = uint32(4)
 	ktfStateSchemaV5     = uint32(5)
 	ktfStateSchemaV6     = uint32(6)
-	ktfStateSchema       = uint32(7)
+	ktfStateSchemaV7     = uint32(7)
+	ktfStateSchema       = uint32(8)
 	maxKTFStateMetadata  = uint32(64 << 20)
 	maxKTFStateEntries   = 16_384
 	maxKTFStateHostCalls = int(HostSize / 4)
@@ -46,7 +47,8 @@ type SavedState struct {
 	imagePixels map[uint32]*image.RGBA
 	// taskThreads names the java/lang/Thread each task runs, in task order.
 	// An older save has none and its tasks fall back to the Jlet's thread.
-	taskThreads []uint32
+	taskThreads     []uint32
+	wipicInputModes uint32
 }
 
 type ktfPersistentState struct {
@@ -579,6 +581,9 @@ func WriteState(r *Runtime, backend cpu.Backend, started bool, writer *guest.Sta
 	for _, task := range r.Tasks {
 		writer.U32(task.javaThread)
 	}
+	// The input-method provider returns a stable pointer to its static mode
+	// table, so preserve that identity across save/restore.
+	writer.U32(r.wipicInputModes)
 	return nil
 }
 
@@ -614,7 +619,8 @@ func ParseState(r *Runtime,
 	schema := decoder.U32()
 	if schema != ktfStateSchemaV2 && schema != ktfStateSchemaV3 &&
 		schema != ktfStateSchemaV4 && schema != ktfStateSchemaV5 &&
-		schema != ktfStateSchemaV6 && schema != ktfStateSchema {
+		schema != ktfStateSchemaV6 && schema != ktfStateSchemaV7 &&
+		schema != ktfStateSchema {
 		return nil, decoder.Fail(fmt.Sprintf("unsupported KTF state schema %d", schema))
 	}
 	owner := shared.OwnerID(decoder.U32())
@@ -784,10 +790,17 @@ func ParseState(r *Runtime,
 		}
 	}
 	taskThreads := make([]uint32, 0, len(metadata.Tasks))
-	if schema >= ktfStateSchema {
+	if schema >= ktfStateSchemaV7 {
 		for range metadata.Tasks {
 			taskThreads = append(taskThreads, decoder.U32())
 		}
+		if decoder.Err != nil {
+			return nil, decoder.Err
+		}
+	}
+	wipicInputModes := uint32(0)
+	if schema >= ktfStateSchema {
+		wipicInputModes = decoder.U32()
 		if decoder.Err != nil {
 			return nil, decoder.Err
 		}
@@ -839,6 +852,7 @@ func ParseState(r *Runtime,
 		resolvedHostCalls:  resolvedCalls,
 		imagePixels:        imagePixels,
 		taskThreads:        taskThreads,
+		wipicInputModes:    wipicInputModes,
 	}, nil
 }
 

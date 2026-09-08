@@ -168,6 +168,7 @@ type Runtime struct {
 	knlInterface         uint32
 	jbInterface          uint32
 	wipicInterface       uint32
+	wipicInputModes      uint32
 	mxUserMemInterface   uint32
 	incrementalMemory    []ktfIncrementalMemoryRegion
 	incrementalHeaps     map[uint32]*guest.Heap

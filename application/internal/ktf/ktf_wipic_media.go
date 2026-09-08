@@ -59,6 +59,7 @@ func (r *Runtime) buildWIPICInterface() (uint32, error) {
 
 const (
 	ktfWIPICMasterGraphics = 2
+	ktfWIPICMasterInput    = 3
 	ktfWIPICMasterDatabase = 4
 	ktfWIPICMasterFS       = 6
 	ktfWIPICMasterMedia    = 9
@@ -66,6 +67,14 @@ const (
 )
 
 func ktfWIPICHandler(table, slot int) ktfHostHandler {
+	if table == ktfWIPICMasterInput {
+		switch slot {
+		case 3:
+			return ktfWIPICInputGetSupportedModeCount
+		case 4:
+			return ktfWIPICInputGetSupportedModes
+		}
+	}
 	if table == ktfWIPICMasterGraphics {
 		switch slot {
 		case 0:
