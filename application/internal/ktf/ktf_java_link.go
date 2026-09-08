@@ -335,6 +335,13 @@ func ktfGetJavaMethod(ctx context.Context, runtime *Runtime) (uint32, error) {
 			err,
 		)
 	}
+	if repaired, ok := runtime.repairJavaStaticMethodCollision(
+		method,
+		name,
+		descriptor,
+	); ok {
+		method = repaired
+	}
 	if repaired, ok := runtime.repairJavaVirtualMethodFromReceiver(
 		method,
 		name,
@@ -433,6 +440,69 @@ func (r *Runtime) repairJavaVirtualMethodFromReceiver(
 		repaired,
 	)
 	return repaired, true
+}
+
+// repairJavaStaticMethodCollision handles the static counterpart of the
+// image-local header collision above. A collision can make a guest static call
+// appear to target a method synthesized on a host-owned class, and there is no
+// receiver to recover it from. Only redirect a method absent from the host
+// specification when exactly one registered guest class directly declares an
+// executable static method with the same signature.
+func (r *Runtime) repairJavaStaticMethodCollision(
+	method uint32,
+	name, descriptor string,
+) (uint32, bool) {
+	resolved, err := r.InspectJavaMethod(method)
+	if err != nil || !r.hostJavaClass[resolved.DeclaringClass] {
+		return method, false
+	}
+	if _, hostBody := r.hostCalls[resolved.Body&^1]; !hostBody {
+		return method, false
+	}
+	declaring, err := r.InspectJavaClass(resolved.DeclaringClass)
+	if err != nil {
+		return method, false
+	}
+	if spec, ok := HostJavaClassSpecs[declaring.Name]; ok {
+		for _, declared := range spec.methods {
+			if declared.name == name && declared.descriptor == descriptor {
+				return method, false
+			}
+		}
+	}
+	candidates := make(map[uint32]JavaMethod)
+	for _, classAddress := range r.JavaClasses {
+		if r.hostJavaClass[classAddress] {
+			continue
+		}
+		class, inspectErr := r.InspectJavaClass(classAddress)
+		if inspectErr != nil {
+			continue
+		}
+		candidate, found := findKTFDeclaredJavaMethod(class, name, descriptor)
+		if !found || candidate.AccessFlags&0x0008 == 0 || candidate.Body == 0 {
+			continue
+		}
+		if _, hostBody := r.hostCalls[candidate.Body&^1]; hostBody {
+			continue
+		}
+		candidates[candidate.Address] = candidate
+		if len(candidates) > 1 {
+			return method, false
+		}
+	}
+	for address, candidate := range candidates {
+		r.tracef(
+			"java_static_header_repair:%s%s:actual=0x%08x:from=0x%08x:to=0x%08x",
+			name,
+			descriptor,
+			candidate.DeclaringClass,
+			method,
+			address,
+		)
+		return address, true
+	}
+	return method, false
 }
 
 func ktfGetJavaField(ctx context.Context, runtime *Runtime) (uint32, error) {

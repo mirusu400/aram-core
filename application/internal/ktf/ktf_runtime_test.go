@@ -3602,6 +3602,89 @@ func TestKTFGetJavaMethodRepairsUnrelatedHeaderClassFromReceiver(t *testing.T) {
 	}
 }
 
+func TestKTFGetJavaMethodRepairsUniqueGuestStaticCollision(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	check(t, runtime.SetTraceMode(KTFTraceFull))
+
+	fileClass := inspectClass(t, runtime,
+		ensureClass(t, runtime, "org/kwis/msp/io/File"))
+	wrongMethod, err := runtime.resolveJavaMethod(
+		fileClass.Address,
+		"b",
+		"(II)V",
+	)
+	check(t, err)
+	guestClass := inspectClass(t, runtime,
+		ensureClass(t, runtime, "test/GuestStatic"))
+	guestMethod, err := runtime.addHostJavaMethod(guestClass, "b", "(II)V")
+	check(t, err)
+	check(t, runtime.WriteU32(guestMethod, ImageBase|1))
+	flags := readU32(t, runtime, guestMethod+20)
+	check(t, runtime.WriteU32(guestMethod+20, flags&0xffff|0x0009<<16))
+	delete(runtime.hostJavaClass, guestClass.Address)
+	outerClass := inspectClass(t, runtime,
+		ensureClass(t, runtime, "test/OuterReceiver"))
+	outerMethod, err := runtime.addHostJavaMethod(outerClass, "b", "(II)V")
+	check(t, err)
+	check(t, runtime.WriteU32(outerMethod, ImageBase|3))
+	delete(runtime.hostJavaClass, outerClass.Address)
+	receiver := allocWords(t, runtime, 2)
+	check(t, runtime.writeWords(receiver, []uint32{0, outerClass.Address}))
+	fullName, err := runtime.allocateBytes([]byte("\x00(II)V+b"), true)
+	check(t, err)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, fileClass.Address))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, fullName))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR4, receiver))
+
+	got, err := ktfGetJavaMethod(context.Background(), runtime)
+	check(t, err)
+	if got != guestMethod {
+		t.Fatalf(
+			"static collision repair = 0x%08x, want 0x%08x (wrong 0x%08x)",
+			got,
+			guestMethod,
+			wrongMethod,
+		)
+	}
+	if runtime.LastJavaMethod != "test/GuestStatic.b(II)V" {
+		t.Fatalf("last Java method = %q", runtime.LastJavaMethod)
+	}
+}
+
+func TestKTFGetJavaMethodLeavesAmbiguousGuestStaticCollisionAlone(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	fileClass := inspectClass(t, runtime,
+		ensureClass(t, runtime, "org/kwis/msp/io/File"))
+	wrongMethod, err := runtime.resolveJavaMethod(
+		fileClass.Address,
+		"b",
+		"(II)V",
+	)
+	check(t, err)
+	for _, name := range []string{"test/GuestStaticA", "test/GuestStaticB"} {
+		class := inspectClass(t, runtime, ensureClass(t, runtime, name))
+		method, methodErr := runtime.addHostJavaMethod(class, "b", "(II)V")
+		check(t, methodErr)
+		check(t, runtime.WriteU32(method, ImageBase|1))
+		flags := readU32(t, runtime, method+20)
+		check(t, runtime.WriteU32(method+20, flags&0xffff|0x0009<<16))
+		delete(runtime.hostJavaClass, class.Address)
+	}
+	fullName, err := runtime.allocateBytes([]byte("\x00(II)V+b"), true)
+	check(t, err)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, fileClass.Address))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, fullName))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR4, 4))
+
+	got, err := ktfGetJavaMethod(context.Background(), runtime)
+	check(t, err)
+	if got != wrongMethod {
+		t.Fatalf("ambiguous static collision = 0x%08x, want 0x%08x", got, wrongMethod)
+	}
+}
+
 func TestKTFJavaNewRunsClassInitializerOnce(t *testing.T) {
 	runtime := newTestRuntime(t)
 	runtime.JvmContext = allocWords(t, runtime, 3+128)
