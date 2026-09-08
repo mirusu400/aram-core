@@ -1,10 +1,13 @@
 package raptor
 
 import (
+	"errors"
 	wipirt "github.com/mirusu400/aram-core/application/internal/wipi"
 	"github.com/mirusu400/aram-core/cpu"
 	"github.com/mirusu400/aram-core/cpu/interpreter"
 	"image"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/mirusu400/aram-core/application/internal/guest"
@@ -36,6 +39,71 @@ func TestGuestHeapSharedAllocatorDoesNotOverlap(t *testing.T) {
 	reused, err := public.Heap.Allocate(24, true)
 	if err != nil || reused != first {
 		t.Fatalf("released root block reused at 0x%08x, %v; want 0x%08x", reused, err, first)
+	}
+}
+
+// TestNewRaptorJavaObjectFieldsErrorNamesSizeAndCause exercises the field
+// allocation failure path directly: it drains the guest heap to the exact
+// byte, so the object header allocates but the field block after it cannot,
+// and checks that the resulting error wraps errRaptorGuestHeapExhausted and
+// names both the byte count and the class, rather than the old bare
+// "allocate Raptor Java object fields" string that discarded the underlying
+// cause (issue #200 asked for exactly this: a report that can tell a
+// genuinely exhausted heap apart from an absurd field-count request).
+func TestNewRaptorJavaObjectFieldsErrorNamesSizeAndCause(t *testing.T) {
+	public := newPublicRuntime(t)
+	runtime := &Runtime{
+		CPU:             public.CPU,
+		Public:          public,
+		resolvedImports: make(map[raptorImportKey]uint64),
+		importSlotByKey: make(map[raptorImportKey]uint32),
+	}
+	java, err := runtime.ensureJavaRuntime()
+	check(t, err)
+
+	holder, err := public.Heap.Allocate(12, true)
+	if err != nil || holder == 0 {
+		t.Fatalf("allocate holder = 0x%08x, %v", holder, err)
+	}
+	class := &raptorJavaClass{
+		Holder:     holder,
+		Name:       "app/Cramped",
+		parentName: "java/lang/Object",
+		fieldSize:  3,
+	}
+	java.classes[holder] = class
+	java.ClassByName[class.Name] = class
+
+	// Drain every free block but 16 bytes: Heap.Allocate rounds a request up
+	// to a multiple of 8, so the 12-byte instance header actually reserves
+	// 16, and leaving exactly that lets the header succeed while the field
+	// block that follows finds nothing left.
+	root := public.Heap.Root()
+	if len(root.Free) != 1 {
+		t.Fatalf("heap free list = %#v, want exactly one block for this test", root.Free)
+	}
+	free := root.Free[0].Size
+	if free <= 16 {
+		t.Fatalf("heap only has %d bytes free before the test drains it", free)
+	}
+	drain, err := public.Heap.Allocate(free-16, true)
+	if err != nil || drain == 0 {
+		t.Fatalf("drain heap = 0x%08x, %v", drain, err)
+	}
+
+	_, err = runtime.NewRaptorJavaObject(holder)
+	if err == nil {
+		t.Fatal("NewRaptorJavaObject succeeded against an exhausted heap")
+	}
+	if !errors.Is(err, errRaptorGuestHeapExhausted) {
+		t.Fatalf("error %q does not wrap errRaptorGuestHeapExhausted", err)
+	}
+	wantSize := strconv.Itoa(int(class.fieldSize) * 4)
+	if !strings.Contains(err.Error(), wantSize+" bytes") {
+		t.Fatalf("error %q does not name the requested size (%s bytes)", err, wantSize)
+	}
+	if !strings.Contains(err.Error(), class.Name) {
+		t.Fatalf("error %q does not name the class %q", err, class.Name)
 	}
 }
 

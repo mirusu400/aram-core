@@ -12,6 +12,12 @@ import (
 	"github.com/mirusu400/aram-core/cpu"
 )
 
+// errRaptorGuestHeapExhausted is the cause NewRaptorJavaObject wraps when
+// guest.Heap.Allocate answers (0, nil): the allocator found no fault, only no
+// free block large enough. A test can tell that apart from a real I/O error
+// with errors.Is.
+var errRaptorGuestHeapExhausted = errors.New("guest heap exhausted")
+
 func (r *Runtime) NewRaptorJavaObject(holder uint32) (uint32, error) {
 	java, err := r.ensureJavaRuntime()
 	if err != nil {
@@ -42,11 +48,22 @@ func (r *Runtime) NewRaptorJavaObject(holder uint32) (uint32, error) {
 	}
 	instance, err := r.Public.Heap.Allocate(12, true)
 	if err != nil || instance == 0 {
-		return 0, errors.New("allocate Raptor Java object")
+		if err == nil {
+			err = errRaptorGuestHeapExhausted
+		}
+		return 0, fmt.Errorf("allocate Raptor Java object (12 bytes): %w", err)
 	}
-	fields, err := r.Public.Heap.Allocate(max(uint32(4), class.fieldSize*4), true)
+	fieldBytes := max(uint32(4), class.fieldSize*4)
+	fields, err := r.Public.Heap.Allocate(fieldBytes, true)
 	if err != nil || fields == 0 {
-		return 0, errors.New("allocate Raptor Java object fields")
+		if err == nil {
+			err = errRaptorGuestHeapExhausted
+		}
+		// class.fieldSize came off the guest's own class descriptor: naming it
+		// here lets a report tell "the heap is genuinely full" apart from "this
+		// class's field count is nonsense", which a bare error could not.
+		return 0, fmt.Errorf("allocate Raptor Java object fields (%d bytes, class %q fieldSize=%d): %w",
+			fieldBytes, class.Name, class.fieldSize, err)
 	}
 	if err := r.Public.WriteU32(instance, class.vtable); err != nil {
 		return 0, err
