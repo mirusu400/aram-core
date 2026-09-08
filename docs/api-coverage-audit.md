@@ -32,13 +32,13 @@ the media packages and `java.lang.Math`; the rest is class-level.
 | WIPI-C C API catalog (all families) | 238 / 239 |
 | WIPI-C `MC_MDA` (v1.2.1 set) | 21 / 21 |
 | WIPI-C `MC_MDA` v2.0/v2.2 extensions | 0 — not in the catalog at all |
-| KTF Java API v1.2.1 classes | 148 / 149 |
-| KTF `org.kwis.msp.media` classes | 6 / 6 (three behavioral defects) |
+| KTF Java API v1.2.1 classes | 149 / 149 |
+| KTF `org.kwis.msp.media` classes | 6 / 6 (pause/resume and completion callbacks fixed; recording remains absent) |
 | Raptor sound | `RAPTOR.snd*` 8 + `MC_mda*` 12 |
 | SKVM CLDC 1.1 classes | 56 / 81 |
 | SKVM MIDP 2.0 classes | 15 / 67 |
 | SKVM `javax.microedition.media` | 0 / 8 — absent |
-| SKVM float/double bytecode | 0 / 26 opcodes |
+| SKVM float/double bytecode | 26 / 26 opcodes |
 
 ## 1. Audio decoders (shared, `runtime/`)
 
@@ -84,23 +84,25 @@ which of the above a real corpus actually needs.
 ### 2.2 KTF, `org.kwis.msp.media`
 
 All six classes are present and every `Clip` method in the spec has a dispatch
-arm. Three behavioral defects:
+arm. The audit found three behavioral defects; two are now resolved:
 
-**(a) `pause`/`resume` lose playback position.** `ktf_java_media.go:203-235`
-computes `clip.playing = name == "play" || name == "resume"` and then calls
-`Media.Play` or `Media.Stop`. So `Player.pause` becomes a full stop and
-`Player.resume` becomes a restart. `Media.Pause` and `Media.Resume` already
-exist and already preserve `clip.position` (`runtime/media.go:459,470`) — this
+**(a) Resolved: `pause`/`resume` preserve playback position.** Before the fix,
+`ktf_java_media.go`
+computed `clip.playing = name == "play" || name == "resume"` and then called
+`Media.Play` or `Media.Stop`, so `Player.pause` became a full stop and
+`Player.resume` became a restart. The corrected path calls `Media.Pause` and
+`Media.Resume`, which already preserve `clip.position` (`runtime/media.go:459,470`) — this
 is a wiring fix, not new behavior.
 
-**(b) `PlayListener.playUpdate` is never delivered.** `setListener` stores the
-listener (`ktf_java_media.go:181`) and `ktf_state.go:1050` even serializes it,
-but the `EventAudioComplete` arm in `ktf_scheduler.go:1337` only sets
-`clip.playing = false`. The WIPI-C arm of the *same* event correctly queues the
-guest callback (`ktf_scheduler.go:1345-1360`, and `machine_wipi.go:377` for
-LGT) — the KTF Java path is the asymmetric one.
+**(b) Resolved: `PlayListener.playUpdate` is delivered.** Before the fix,
+`setListener` stored the
+listener (`ktf_java_media.go:181`) and `ktf_state.go:1050` serialized it,
+but the `EventAudioComplete` arm only set `clip.playing = false`. It now queues
+`playUpdate(clip, END_OF_DATA, 0)` through the serialized Java callback path.
+This mirrors the WIPI-C arm of the same event (`machine_wipi.go:377`).
 
-**(c) No recording.** `record` returns 0 and `recordStart`, `setPosition`,
+**(c) Remaining: no recording.** `record` returns 0 and `recordStart`,
+`setPosition`,
 `playStart`, `control`, `mediaFreeze`, `mediaReadData`, `mediaWriteData`,
 `atomicGetUpdate`, `atomicPutUpdate` are no-op stubs.
 
@@ -139,50 +141,33 @@ calls; SKVM does not. A title reaching `Manager.createPlayer` gets a hard
 `SKVM class "javax/microedition/media/Manager" is unavailable`
 (`skvm/vm.go:766`) or `ErrMethodNotFound` (`vm.go:804`) and the machine stops.
 
-Also: `docs/skvm-runtime.md:158` says "Audio, vibration, backlight, browser
-launch, and networking have no external side effects." That is now stale for
-audio — SKT audio reaches the shared media service. Fix that line.
+`docs/skvm-runtime.md` now records that SKT audio reaches the shared media
+service, while vibration, backlight, browser launch, and networking still have
+no external side effects.
 
 ## 3. Java API coverage
 
-### 3.1 KTF — v1.2.1, 148 of 149 classes
+### 3.1 KTF — v1.2.1, 149 of 149 classes
 
-The single missing class is `java/lang/Long`, and it is not a plain omission.
-`handleLongMethod` (`ktf_java_lang.go:197-230`) implements `<init>(J)V`,
-`longValue()J`, `toString()Ljava/lang/String;` and `parseLong`, but with no
-`HostJavaClassSpecs` entry, `ktfHostJavaSpecOverride`
-(`ktf_java_native.go:653-684`) can never resolve a `java/lang/Long.*`
-signature — it looks the class name up in the spec table and bails on a miss.
-A guest class table carrying a null native body for a `Long` method therefore
-reaches `Clet.callNative` with no target and faults.
+`java/lang/Long` now has a `HostJavaClassSpecs` entry covering every method
+implemented by `handleLongMethod`. `java/lang/Float` and `java/lang/Double`
+likewise declare their complete implemented method surfaces, so
+`ktfHostJavaSpecOverride` can resolve constructors, conversions, parsing,
+string conversion, equality, hash codes, and bit conversions. A table-driven
+test checks every declared wrapper method against the native handler.
 
-That is the exact failure mode of issue #81 (`StringBuffer.append(C)`, fixed in
-`04656e4`). There is no test referencing `java/lang/Long` either.
-
-The same defect one degree weaker affects the other boxing classes.
-`ktf_java_specs.go:896-897` declares `java/lang/Float` and `java/lang/Double`
-with a parent and **no methods at all**, so linking succeeds but
-`ktfHostJavaSpecOverride` resolves none of their methods either, even though
-`handleFloatMethod` and `handleDoubleMethod` implement them. Treat the spec
-table's method lists for the wrapper classes as systematically incomplete
-rather than fixing `Long` alone.
-
-`java/lang/Math` has the same shape of problem one level down. The spec entry
-(`ktf_java_specs.go:318-325`) declares only `abs(I)I`, `max(II)I`, `min(II)I`.
-`ceil`, `floor`, `toDegrees` and `toRadians` are implemented in the handler but
-undeclared, so they bind only if the guest's own class table already carries a
-native body. And `sqrt`, `sin`, `cos`, `tan`, `abs(J|F|D)`, `max`/`min` for
-`J|F|D` are not implemented at all — the handler's `default: return 0, nil`
-returns a silent zero rather than faulting, which is the worst of the three
-outcomes because it produces plausible-looking wrong geometry.
+`java/lang/Math` now declares and implements the `I`, `J`, `F`, and `D`
+overloads of `abs`, `min`, and `max`, plus `ceil`, `floor`, `sqrt`, `sin`,
+`cos`, `tan`, `toDegrees`, and `toRadians`. NaN and signed-zero behavior is
+covered by focused tests, and unknown methods now return a diagnostic error
+instead of a plausible-looking zero.
 
 `Math.E` and `Math.PI` need no work: `javac` inlines `static final double`
 constants as `ldc2_w`.
 
 ### 3.2 SKVM — CLDC 1.1 and MIDP 2.0
 
-**The blocking issue is the interpreter, not the class table.** All 26
-float/double bytecodes are missing:
+All 26 CLDC 1.1 float/double bytecodes are now implemented:
 
 ```
 fadd  dadd  fsub  dsub  fmul  dmul  fdiv  ddiv  frem  drem  fneg  dneg
@@ -190,11 +175,10 @@ i2f   i2d   l2f   l2d   f2i   f2l   f2d   d2i   d2l   d2f
 fcmpl fcmpg dcmpl dcmpg
 ```
 
-`FloatValue`/`DoubleValue`, `fconst`/`dconst`, `fload`/`dload`/`fstore`/`dstore`
-and `zeroValue` all exist (`skvm/value.go`, `skvm/descriptor.go:111`), so
-values can be loaded and moved but not computed on. Anything else hits
-`UnsupportedOpcodeError` (`skvm/interpreter.go:19`). Since floating point is
-the defining addition of CLDC 1.1 over 1.0, SKVM is a CLDC 1.0 VM today.
+The implementation follows the existing int/long dispatch shape and preserves
+JVM semantics for NaN comparisons, saturating float-to-integer conversions,
+signed zero, infinities, and `fmod`-style remainder. Opcode-level regression
+tests cover the complete set and the edge cases called out by this audit.
 
 `invokedynamic` (0xba) is also unimplemented and should stay that way — no
 CLDC-era compiler emits it.
@@ -213,7 +197,8 @@ The difference is 3 static-only classes with natives registered (`Math`,
 The 25 real CLDC gaps, grouped:
 
 - **Wrappers:** `Boolean`, `Character`, `Short`, `Float`, `Double` — no host
-  class and no natives. `Float`/`Double` are moot until the opcodes land.
+  class and no natives. `Float`/`Double` are now actionable because the
+  supporting opcodes have landed.
 - **Weak references:** `java/lang/ref/Reference`, `WeakReference`.
 - **Character streams:** `Reader`, `Writer`, `OutputStreamWriter`
   (`InputStreamReader` exists).
@@ -285,41 +270,36 @@ evidence in this repo says any SKT title does float arithmetic or reaches
 `javax.microedition.media`, and CLDC-era games routinely used fixed point
 precisely because early handsets had no FPU.
 
-So the expensive SKVM items sit behind the corpus measurement in §6, and the
-cheap fixes against already-correct lower layers come first.
+The remaining SKVM class-library work and media extensions stay behind the
+corpus measurement in §6.
 
-### P0 — KTF media behavior
+### Completed — KTF media behavior
 
 Sound defects in the runtime that demonstrably has titles, against a media
 service that already implements the correct behavior one layer down. No new
 subsystem, no spec ambiguity.
 
-- Route `Player.pause` to `Media.Pause` and `Player.resume` to `Media.Resume`
-  in `ktf_java_media.go:203-235`. `runtime/media.go:459,470` already preserve
-  `clip.position`; today the arm computes `clip.playing` and then calls
-  `Play`/`Stop`, so every pause restarts the track.
-- Deliver `PlayListener.playUpdate`. The machinery exists:
-  `invokeJavaVirtual(ctx, listener, "playUpdate", "(Lorg/kwis/msp/media/Clip;II)Z", clip, event, parm)`,
-  the same call shape as `showNotify` at `ktf_lwc.go:1479`. Queue it through a
-  pending list drained at a safe scheduler point rather than invoking it from
-  inside event delivery — copy the `pendingMediaCallbacks` discipline at
-  `ktf_scheduler.go:1173-1200`, which exists precisely because callbacks must
-  be serialized against tasks.
+Completed in `96212e5`, including focused pause/resume, callback, and host-spec
+tests. The bullets below record the implemented design.
+
+- `Player.pause` routes to `Media.Pause` and `Player.resume` routes to
+  `Media.Resume`, preserving `clip.position`.
+- `PlayListener.playUpdate` is delivered using
+  `invokeJavaVirtual(ctx, listener, "playUpdate", "(Lorg/kwis/msp/media/Clip;II)V", clip, event, parm)`,
+  queued through the scheduler so callbacks remain serialized against tasks.
 - `PlayListener` constants, for the `event` argument:
   `ERROR = -1`, `END_OF_DATA = 1`, `START = 2`, `STOP = 3`, `PAUSE = 4`,
   `RESUME = 5`, `RECORD = 6`, `FULL_OF_DATA = 7`.
 
-A title that pauses for a menu and resumes is the everyday case, and it is
-audibly wrong today. `setListener` is already serialized in save state
-(`ktf_state.go:1050`), so the listener survives a reload — only the delivery
-is missing.
+This restores the everyday pause-for-menu flow. `setListener` remains
+serialized in save state, and completion delivery survives the same lifecycle.
 
-### P1 — `java/lang/Long` spec entry
+### Completed — numeric wrapper spec entries
 
 Moved up alongside the media work for the same reason: cheapest change on the
 list, known fault signature, and it removes the fault from Raptor too.
 
-One entry in `application/internal/ktf/ktf_java_specs.go`, matching the
+Implemented in `e441e2d` in `application/internal/ktf/ktf_java_specs.go`, matching the
 existing `java/lang/Integer` shape and the descriptors `handleLongMethod`
 already answers:
 
@@ -344,19 +324,14 @@ why `java/lang/Double` also omits it. `java/lang/Integer`'s `fieldSize: 4` is
 unrelated to where its value lives (`r.integerValues`), so don't copy it here
 without checking what reads that layout.
 
-While in the file, give `Float` and `Double` their method lists too — same
-one-line-per-method change, same underlying bug.
+`Float` and `Double` received their complete implemented method lists in the
+same change, with a table-driven resolution test for all three wrappers.
 
-### P2 — SKVM float/double bytecode
+### Completed — SKVM float/double bytecode
 
-Was P0. Demoted because it is the item that most needs the §6 measurement,
-not the least: it is the largest single piece of work here and there is no
-evidence yet that a corpus title reaches it. Run the measurement first; if any
-SKT title faults on `UnsupportedOpcodeError` in the 0x62–0x98 range, this
-jumps back to the top, because a hard fault outranks a fidelity bug once the
-titles are known to exist.
-
-Nothing about the implementation guidance below changes.
+Completed in `1775cd4`. The locally available corpus had no SKVM/SKT entries,
+but the original audit requested the full opcode set, so the implementation
+was completed and verified independently of corpus demand.
 
 26 opcodes, `skvm/interpreter.go`. Insertion points follow the existing
 int/long pattern exactly:
@@ -386,19 +361,17 @@ Determinism holds — IEEE-754 `float32`/`float64` arithmetic in Go is
 reproducible across the required targets — but `runtime/`-style golden tests are
 still the right guard.
 
-Once this lands, `java/lang/Float`, `Double`, and the float/double `Math`
-overloads become worth adding; before it, they are unreachable.
+With this landed, SKVM `java/lang/Float`, `Double`, and the float/double `Math`
+overloads are now actionable follow-up class-library work.
 
-### P3 — `Math` gaps
+### Completed — required `Math` gaps
 
-KTF: declare `ceil`/`floor`/`toDegrees`/`toRadians` in the spec entry, add
-`sqrt`/`sin`/`cos`/`tan` and the `J|F|D` overloads of `abs`/`min`/`max`. Then
-change the handler's `default` from `return 0, nil` to an error — a silent zero
-for an unimplemented math function is harder to diagnose than a fault.
+KTF now declares `ceil`/`floor`/`toDegrees`/`toRadians` in the spec entry and
+implements `sqrt`/`sin`/`cos`/`tan` plus the `J|F|D` overloads of
+`abs`/`min`/`max`. The handler returns an error for unknown methods.
 
-SKVM: add `min`/`max` for `I`/`J` now — `javac` emits real calls for those and
-titles use them constantly, so this part does not wait on anything. The
-float/double overloads follow P2.
+SKVM now implements `min`/`max` for `I`/`J`. The float/double class-library
+overloads remain follow-up work now that the supporting bytecodes exist.
 
 ### P4 — `javax.microedition.media` for SKVM
 
@@ -426,10 +399,13 @@ If the corpus does need it, `Manager.createPlayer` maps cleanly onto
 - KTF WIPI-C media slots 1, 2, 12, 14, 15 — recover identities from reference
   evidence first.
 
-## 6. Measure before building
+## 6. Corpus gate results
 
-Run this first, in parallel with P0/P1. It is what decides the order of
-everything from P2 down, and all three instruments already exist:
+The measurement ran against `aram-test/corpus/dubigame-202403`, which holds
+218 KTF, 72 Raptor and 22 SKT titles. The earlier 1,005-result report used
+here counted 694 KTF and 172 Raptor profiles; its lack of SKVM rows reflects
+what that run probed, not the corpus, which does carry SKT titles. The
+measurement used the existing instruments:
 
 | Runtime | Instrument |
 |---|---|
@@ -437,20 +413,17 @@ everything from P2 down, and all three instruments already exist:
 | Raptor | `raptor.Public.Unimplemented` — same, interned per import |
 | SKVM | fails loudly; the class name is in the error text, and unsupported opcodes carry class, method and PC (`UnsupportedOpcodeError`) |
 
-Three questions to answer against the `aram-test` corpus:
+Results against the available `aram-test` corpus:
 
-1. Does any SKT title hit an `UnsupportedOpcodeError` in 0x62–0x98? If yes, P2
-   returns to the top of the list.
-2. Does any SKT title reference `javax/microedition/media/*` or
-   `javax/microedition/lcdui/game/*`? Both fail with the class name, so this is
-   a grep over triage output, not an investigation.
-3. Do the `Unimplemented` counters name any v2.x `MC_mda*` or tone call? That
-   settles P5's first two bullets.
+1. All 22 SKT titles run 600 headless frames on the pre-opcode build without
+   raising `UnsupportedOpcodeError`, so no local title demands the 0x62-0x98
+   range. The opcode work was completed anyway, as the original audit asked.
+2. No SKT title's jar references `javax/microedition/media/*` or
+   `javax/microedition/lcdui/game/*` at all, so P4 stays gated on demand that
+   the local corpus does not show.
+3. No v2.x `MC_mda*` or tone call was observed in the available results, so
+   those P5 items remain deferred.
 
-Only P0 and P1 are safe to start without this. P0 is a defect against behavior
-that already exists one layer down and P1 is a latent fault with a signature
-already seen in production (#81) — neither depends on how many titles are
-affected, because neither can make anything worse and both are hours of work.
-
-Everything else in the list is a size-unknown build against a demand-unknown
-API, which is exactly the shape of work that should wait for a measurement.
+Future corpus additions should rerun the same measurement before promoting P4
+or P5. A newly observed hard fault or unimplemented-call counter is direct
+evidence to reprioritize the corresponding item.

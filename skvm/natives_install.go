@@ -334,6 +334,21 @@ func (vm *VM) installCoreNatives() {
 				return LongValue(max(left, right)), true, nil
 			},
 		},
+		{
+			"min",
+			"(JJ)J",
+			func(_ context.Context, _ *VM, _ uint32, args []Value) (Value, bool, error) {
+				left, err := args[0].Long()
+				if err != nil {
+					return Value{}, false, err
+				}
+				right, err := args[1].Long()
+				if err != nil {
+					return Value{}, false, err
+				}
+				return LongValue(min(left, right)), true, nil
+			},
+		},
 	} {
 		vm.RegisterNative("java/lang/Math", method.name, method.descriptor, method.native)
 	}

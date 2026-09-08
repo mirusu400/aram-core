@@ -155,8 +155,8 @@ and KWIS APIs. RMS and file data are currently in-memory runtime state.
 
 - `Thread.start`, timers, and `Display.callSerially` do not yet preserve and
   interleave Java continuations. They are deterministic compatibility stubs.
-- Audio, vibration, backlight, browser launch, and networking have no external
-  side effects.
+- SKT audio reaches the shared media service. Vibration, backlight, browser
+  launch, and networking still have no external side effects.
 - BMP, PNG, GIF, JPEG, and SKVM LBMP images decode through the bounded shared
   asset service. Other proprietary LBM and MMF assets remain resources only.
 - Text drawing uses a deterministic placeholder glyph, not a device font.

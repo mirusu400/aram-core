@@ -213,26 +213,37 @@ func (r *Runtime) handleMediaMethod(
 			clip = &ktfClip{}
 			r.clips[instance] = clip
 		}
-		clip.playing = name == "play" || name == "resume"
 		serviceID, serviceErr := r.ensureKTFClipService(instance)
 		if serviceErr != nil {
 			return 0, serviceErr
 		}
-		if clip.playing {
+		switch name {
+		case "play":
 			plays := int32(1)
-			if name == "play" {
-				if repeat, valueErr := r.parameter(2); valueErr == nil &&
-					repeat != 0 {
-					plays = -1
-				}
+			if repeat, valueErr := r.parameter(2); valueErr == nil &&
+				repeat != 0 {
+				plays = -1
 			}
 			serviceErr = r.Services.Media.Play(
 				r.ServiceOwner,
 				serviceID,
 				plays,
 			)
-		} else {
+		case "stop":
 			serviceErr = r.Services.Media.Stop(r.ServiceOwner, serviceID)
+		case "pause":
+			serviceErr = r.Services.Media.Pause(r.ServiceOwner, serviceID)
+		case "resume":
+			serviceErr = r.Services.Media.Resume(r.ServiceOwner, serviceID)
+		}
+		if serviceErr == nil {
+			info, infoErr := r.Services.Media.Info(r.ServiceOwner, serviceID)
+			if infoErr != nil {
+				return 0, infoErr
+			}
+			// A paused clip still owns live playback state and must not be
+			// mistaken for an idle recycling candidate.
+			clip.playing = info.State != shared.ClipStopped
 		}
 		return 1, serviceErr
 	default:

@@ -1339,6 +1339,28 @@ func (r *Runtime) DrainServiceEvents(now time.Duration) error {
 				if serviceID == event.ServiceID {
 					if clip := r.clips[instance]; clip != nil {
 						clip.playing = false
+						if clip.listener != 0 {
+							// PlayListener.playUpdate returns void, not boolean:
+							// the SPH-W8300 firmware name table carries exactly one
+							// Clip-taking playUpdate and it reads
+							// (Lorg/kwis/msp/media/Clip;II)V. resolveJavaMethod
+							// matches descriptors exactly, so a Z here misses the
+							// listener's own method and faults the title on every
+							// completion instead of delivering the callback.
+							if err := r.QueueJavaVirtual(
+								clip.listener,
+								"playUpdate",
+								"(Lorg/kwis/msp/media/Clip;II)V",
+								instance,
+								1, // PlayListener.END_OF_DATA
+								0,
+							); err != nil {
+								return fmt.Errorf(
+									"queue KTF PlayListener completion: %w",
+									err,
+								)
+							}
+						}
 					}
 					break
 				}
