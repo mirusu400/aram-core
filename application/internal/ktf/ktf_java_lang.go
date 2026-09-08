@@ -433,17 +433,54 @@ func (r *Runtime) handleByteMethod(name, descriptor string) (uint32, error) {
 }
 
 func (r *Runtime) handleMathMethod(name, descriptor string) (uint32, error) {
-	left, err := r.signedParameter(1)
-	if err != nil {
-		return 0, err
+	wideParameter := func(index uint32) (uint64, error) {
+		low, err := r.parameter(index)
+		if err != nil {
+			return 0, err
+		}
+		high, err := r.parameter(index + 1)
+		if err != nil {
+			return 0, err
+		}
+		return uint64(high)<<32 | uint64(low), nil
 	}
 	switch name + descriptor {
 	case "abs(I)I":
+		left, err := r.signedParameter(1)
+		if err != nil {
+			return 0, err
+		}
 		if left < 0 {
 			left = -left
 		}
 		return uint32(left), nil
+	case "abs(J)J":
+		bits, err := wideParameter(1)
+		if err != nil {
+			return 0, err
+		}
+		value := int64(bits)
+		if value < 0 {
+			value = -value
+		}
+		return r.javaLongResult(uint64(value)), nil
+	case "abs(F)F":
+		bits, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		return bits & 0x7fffffff, nil
+	case "abs(D)D":
+		bits, err := wideParameter(1)
+		if err != nil {
+			return 0, err
+		}
+		return r.javaLongResult(bits & 0x7fffffffffffffff), nil
 	case "max(II)I", "min(II)I":
+		left, err := r.signedParameter(1)
+		if err != nil {
+			return 0, err
+		}
 		right, valueErr := r.signedParameter(2)
 		if valueErr != nil {
 			return 0, valueErr
@@ -456,21 +493,66 @@ func (r *Runtime) handleMathMethod(name, descriptor string) (uint32, error) {
 			left = right
 		}
 		return uint32(left), nil
-	case "ceil(D)D", "floor(D)D", "toDegrees(D)D", "toRadians(D)D":
-		low, valueErr := r.parameter(1)
-		if valueErr != nil {
-			return 0, valueErr
+	case "max(JJ)J", "min(JJ)J":
+		leftBits, err := wideParameter(1)
+		if err != nil {
+			return 0, err
 		}
-		high, valueErr := r.parameter(2)
-		if valueErr != nil {
-			return 0, valueErr
+		rightBits, err := wideParameter(3)
+		if err != nil {
+			return 0, err
 		}
-		value := math.Float64frombits(uint64(high)<<32 | uint64(low))
+		left, right := int64(leftBits), int64(rightBits)
+		if name == "max" {
+			left = max(left, right)
+		} else {
+			left = min(left, right)
+		}
+		return r.javaLongResult(uint64(left)), nil
+	case "max(FF)F", "min(FF)F":
+		left, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		right, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		return javaMathFloatExtremum(left, right, name == "max"), nil
+	case "max(DD)D", "min(DD)D":
+		left, err := wideParameter(1)
+		if err != nil {
+			return 0, err
+		}
+		right, err := wideParameter(3)
+		if err != nil {
+			return 0, err
+		}
+		return r.javaLongResult(javaMathDoubleExtremum(
+			left,
+			right,
+			name == "max",
+		)), nil
+	case "ceil(D)D", "floor(D)D", "sqrt(D)D", "sin(D)D", "cos(D)D",
+		"tan(D)D", "toDegrees(D)D", "toRadians(D)D":
+		bits, err := wideParameter(1)
+		if err != nil {
+			return 0, err
+		}
+		value := math.Float64frombits(bits)
 		switch name {
 		case "ceil":
 			value = math.Ceil(value)
 		case "floor":
 			value = math.Floor(value)
+		case "sqrt":
+			value = math.Sqrt(value)
+		case "sin":
+			value = math.Sin(value)
+		case "cos":
+			value = math.Cos(value)
+		case "tan":
+			value = math.Tan(value)
 		case "toDegrees":
 			value = value * 180 / math.Pi
 		case "toRadians":
@@ -478,8 +560,72 @@ func (r *Runtime) handleMathMethod(name, descriptor string) (uint32, error) {
 		}
 		return r.javaLongResult(math.Float64bits(value)), nil
 	default:
-		return 0, nil
+		return 0, fmt.Errorf(
+			"KTF java.lang.Math.%s%s is unimplemented",
+			name,
+			descriptor,
+		)
 	}
+}
+
+func javaMathFloatExtremum(leftBits, rightBits uint32, maximum bool) uint32 {
+	left := math.Float32frombits(leftBits)
+	right := math.Float32frombits(rightBits)
+	if math.IsNaN(float64(left)) {
+		return leftBits
+	}
+	if math.IsNaN(float64(right)) {
+		return rightBits
+	}
+	if left > right {
+		if maximum {
+			return leftBits
+		}
+		return rightBits
+	}
+	if left < right {
+		if maximum {
+			return rightBits
+		}
+		return leftBits
+	}
+	if left == 0 {
+		if maximum {
+			return leftBits & rightBits
+		}
+		return leftBits | rightBits
+	}
+	return leftBits
+}
+
+func javaMathDoubleExtremum(leftBits, rightBits uint64, maximum bool) uint64 {
+	left := math.Float64frombits(leftBits)
+	right := math.Float64frombits(rightBits)
+	if math.IsNaN(left) {
+		return leftBits
+	}
+	if math.IsNaN(right) {
+		return rightBits
+	}
+	if left > right {
+		if maximum {
+			return leftBits
+		}
+		return rightBits
+	}
+	if left < right {
+		if maximum {
+			return rightBits
+		}
+		return leftBits
+	}
+	if left == 0 {
+		if maximum {
+			return leftBits & rightBits
+		}
+		return leftBits | rightBits
+	}
+	return leftBits
 }
 
 func (r *Runtime) handleRandomMethod(
