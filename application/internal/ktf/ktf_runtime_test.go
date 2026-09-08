@@ -5807,7 +5807,7 @@ func TestKTFWIPICImageDecodeAndProperties(t *testing.T) {
 		output,
 		memoryID,
 		0,
-		uint32(encoded.Len()),
+		uint32(encoded.Len() + 98),
 	} {
 		check(t, runtime.CPU.WriteRegister(
 			cpu.RegisterR0+uint32(register),
@@ -5818,7 +5818,7 @@ func TestKTFWIPICImageDecodeAndProperties(t *testing.T) {
 		context.Background(),
 		runtime,
 	); err != nil || result != 1 {
-		t.Fatalf("create image result=%08x err=%v", result, err)
+		t.Fatalf("create image with overstated length result=%08x err=%v", result, err)
 	}
 	object := readU32(t, runtime, output)
 	for index, want := range map[uint32]uint32{4: 2, 5: 1, 6: 16} {

@@ -113,10 +113,11 @@ func ktfWIPICGraphicsCreateImage(
 		return 0, err
 	}
 	allocation, ok := runtime.wipicMemory[memoryID]
-	if !ok || length == 0 ||
-		uint64(offset)+uint64(length) > uint64(allocation.size) ||
-		length > 16<<20 {
+	if !ok || length == 0 || offset >= allocation.size || length > 16<<20 {
 		return ^uint32(15), nil
+	}
+	if available := allocation.size - offset; length > available {
+		length = available
 	}
 	encoded := make([]byte, length)
 	if err := runtime.CPU.ReadMemory(allocation.data+offset, encoded); err != nil {
