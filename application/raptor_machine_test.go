@@ -276,6 +276,7 @@ func TestRaptorCallbackResumeKeepsTranslatedCode(t *testing.T) {
 
 func TestRaptorFramebufferImportsExposeLGTGeometry(t *testing.T) {
 	public := newPublicRuntime(t)
+	public.Frame = image.NewRGBA(image.Rect(0, 0, 240, 320))
 	runtime := &raptorrt.Runtime{
 		CPU:    public.CPU,
 		Public: public,
@@ -291,7 +292,7 @@ func TestRaptorFramebufferImportsExposeLGTGeometry(t *testing.T) {
 	}{
 		{50, handle, framebuffer.Pixels, "RAPTOR.grpGetFrameBufferPixels"},
 		{51, handle, uint32(framebuffer.Width), "RAPTOR.grpGetFrameBufferWidth"},
-		{52, handle, uint32(framebuffer.Height), "RAPTOR.grpGetFrameBufferHeight"},
+		{52, handle, uint32(framebuffer.Height - 24), "RAPTOR.grpGetFrameBufferHeight"},
 		{
 			53,
 			handle,
@@ -320,6 +321,25 @@ func TestRaptorFramebufferImportsExposeLGTGeometry(t *testing.T) {
 				test.name,
 			)
 		}
+	}
+
+	// Only the primary surface has the handset strip. Images and other
+	// offscreen surfaces expose their whole allocation to the same import.
+	const offscreenHandle = uint32(0x12345678)
+	offscreen := framebuffer
+	offscreen.Handle = offscreenHandle
+	offscreen.Height = 88
+	public.Framebuffers[offscreenHandle] = offscreen
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, offscreenHandle))
+	got, name, handled, err := runtime.DispatchPrivateImport(52)
+	if err != nil || !handled || name != "RAPTOR.grpGetFrameBufferHeight" || got.Low != 88 {
+		t.Fatalf(
+			"offscreen ordinal 52 = %#v, %q, handled=%t, err=%v; want height 88",
+			got,
+			name,
+			handled,
+			err,
+		)
 	}
 }
 

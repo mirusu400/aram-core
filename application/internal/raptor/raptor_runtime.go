@@ -83,6 +83,12 @@ const (
 	raptorKeyPressEvent   = uint32(502)
 	raptorKeyReleaseEvent = uint32(503)
 
+	// libwipi places the primary drawable below its 24-pixel handset strip.
+	// Its screen blitters add this origin after clipping against the height
+	// returned by grpGetFrameBufferHeight, so that height is the client area,
+	// not the complete physical allocation. Offscreen buffers have no strip.
+	raptorScreenOriginY = 24
+
 	StartupFrameLimit = 64
 )
 
@@ -870,7 +876,11 @@ func (r *Runtime) DispatchPrivateImport(
 			return guest.WIPIReturn{Low: uint32(framebuffer.Width)},
 				"RAPTOR.grpGetFrameBufferWidth", true, nil
 		case 52:
-			return guest.WIPIReturn{Low: uint32(framebuffer.Height)},
+			height := framebuffer.Height
+			if framebuffer.Handle == r.Public.ScreenHandle && height > raptorScreenOriginY {
+				height -= raptorScreenOriginY
+			}
+			return guest.WIPIReturn{Low: uint32(height)},
 				"RAPTOR.grpGetFrameBufferHeight", true, nil
 		case 53:
 			bytesPerPixel := framebuffer.BitsPerPixel / 8
