@@ -183,6 +183,20 @@ func InputCallback(
 	}, true
 }
 
+// IsInputCallback reports whether callback is an event sent through a Clet's
+// registered HandleEvent entry.
+func IsInputCallback(callback wipirt.GuestCallback, procedure uint32) bool {
+	if procedure == 0 || callback.Procedure != procedure {
+		return false
+	}
+	switch callback.Args[0] {
+	case raptorKeyPressEvent, raptorKeyReleaseEvent:
+		return true
+	default:
+		return false
+	}
+}
+
 func NewRuntime(
 	backend cpu.Backend,
 	public *wipirt.Runtime,

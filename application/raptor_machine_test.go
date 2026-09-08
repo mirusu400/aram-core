@@ -548,6 +548,52 @@ func TestRaptorFrameDrainsTheCallbacksItCanAfford(t *testing.T) {
 	}
 }
 
+// A Clet's input handler is edge-driven: queued key callbacks must cross the
+// service boundary one at a time, even when the preceding and following work
+// is otherwise cheap enough to drain in a single video quantum. Timer-only
+// queues still use the full drain above.
+func TestRaptorFrameDefersCallbackBatchContainingInput(t *testing.T) {
+	machine := newSyntheticMachine(t)
+	const callback = uint32(0x04000000)
+	check(t, machine.cpu.Map(
+		callback,
+		0x1000,
+		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
+	))
+	check(t, machine.cpu.WriteMemory(callback, []byte{
+		0x00, 0x20, // movs r0, #0
+		0x70, 0x47, // bx lr
+	}))
+	machine.frameRunBudget = 1024
+	machine.raptor = &raptorrt.Runtime{
+		CPU:     machine.cpu,
+		Public:  machine.wipi,
+		Started: true,
+		Clet:    raptorrt.Clet{HandleEvent: callback | 1},
+	}
+	machine.raptor.CallbackTasks = []*raptorrt.CallbackTask{
+		{Callback: wipirt.GuestCallback{Procedure: callback | 1}},
+		{Callback: wipirt.GuestCallback{
+			Procedure: callback | 1,
+			Args:      [4]uint32{502, 0},
+		}},
+		{Callback: wipirt.GuestCallback{Procedure: callback | 1}},
+	}
+
+	check(t, machine.StepFrame(context.Background()))
+	if left := len(machine.raptor.CallbackTasks); left != 2 {
+		t.Fatalf("callbacks after input-containing batch = %d, want 2", left)
+	}
+	check(t, machine.StepFrame(context.Background()))
+	if left := len(machine.raptor.CallbackTasks); left != 1 {
+		t.Fatalf("callbacks after input callback = %d, want 1", left)
+	}
+	check(t, machine.StepFrame(context.Background()))
+	if left := len(machine.raptor.CallbackTasks); left != 0 {
+		t.Fatalf("callbacks after input boundary = %d, want 0", left)
+	}
+}
+
 // The drain stops where the frame does. A callback that spends the frame's
 // whole budget still yields with its context preserved, and the callbacks
 // behind it wait for the next frame rather than running past the budget.

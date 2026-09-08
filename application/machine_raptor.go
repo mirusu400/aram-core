@@ -257,6 +257,10 @@ func (m *Machine) stepRaptorCallbackTask(
 	}
 	budget := max(m.frameRunBudget, uint64(1))
 	presentations := m.wipi.Stats.PresentCount
+	callbackLimit := maxRaptorCallbacksPerFrame
+	if raptorQueueHasInputCallback(m.raptor.CallbackTasks, m.raptor.Clet.HandleEvent) {
+		callbackLimit = 1
+	}
 	m.state = machinecore.StateRunning
 	if err := m.wipi.BeginServiceExecution(); err != nil {
 		m.state = machinecore.StateFaulted
@@ -270,7 +274,7 @@ func (m *Machine) stepRaptorCallbackTask(
 		callErr error
 		spent   uint64
 	)
-	for range maxRaptorCallbacksPerFrame {
+	for range callbackLimit {
 		m.mu.Lock()
 		if m.raptor == nil || len(m.raptor.CallbackTasks) == 0 {
 			m.mu.Unlock()
@@ -313,6 +317,18 @@ func (m *Machine) stepRaptorCallbackTask(
 	serviceInstructions := spent
 	result.Instructions = spent + precedingInstructions
 	return m.finishRaptorCall(result, callErr, serviceInstructions)
+}
+
+func raptorQueueHasInputCallback(
+	tasks []*raptorrt.CallbackTask,
+	procedure uint32,
+) bool {
+	for _, task := range tasks {
+		if task != nil && raptorrt.IsInputCallback(task.Callback, procedure) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Machine) runRaptorCallbackTask(
