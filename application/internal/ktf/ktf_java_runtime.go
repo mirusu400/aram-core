@@ -791,11 +791,20 @@ func (r *Runtime) invokeJavaVirtual(
 	callArgs := make([]uint32, 0, len(args)+2)
 	callArgs = append(callArgs, 0, instance)
 	callArgs = append(callArgs, args...)
+	// A guest Java method invoked from a host call has the same shape as a
+	// Clet native invoked from one: it runs to completion inside that host
+	// call and nothing about it is resumable, so its bound has to cover the
+	// longest single piece of work a title does rather than a frame's worth.
+	// The bootstrap bound does not: 투스워즈 preloads all 39 of its .mmf.gz
+	// sound resources in one such call and needs 122.3 million instructions,
+	// so it faulted at 100 million the first time the title loaded audio
+	// (issue #163). That is the same miscategorisation issue #147 found for
+	// natives, and the same bound answers it.
 	result, value, err := r.call(
 		ctx,
 		method.Body,
 		callArgs,
-		ktfBootstrapInstructionMax,
+		ktfJavaNativeInstructionMax,
 	)
 	if err != nil {
 		return 0, fmt.Errorf(
