@@ -375,6 +375,11 @@ type JavaRuntime struct {
 	fieldNames   uint32
 	fieldCount   uint32
 
+	// callSerially counts how many Display.callSerially runnables are on the
+	// Go stack, so a runnable that re-arms itself is queued rather than
+	// recursing. See the callSerially case in raptorJavaHostCall.
+	callSerially int
+
 	LaunchRequested bool
 	MainClass       string
 	MainInstance    uint32
@@ -1599,37 +1604,109 @@ func (r *Runtime) resolveRaptorJavaFieldOffsets(java *JavaRuntime) error {
 // looks for agreement about which class a run of field references belongs to.
 const raptorJavaFieldNeighbourhood = 4
 
-// raptorJavaFieldGroupScore counts how many of the entries around index the
-// class also declares. The table is laid out class by class - 배틀몬스터's
-// entries 146..149 are all fields of its Jlet subclass "a" - so the class its
-// neighbours agree on is the class this entry belongs to.
+// raptorJavaClassDeclares reports whether the class names this exact field.
+// An entry with no name is the unnamed companion word of a long or double and
+// belongs to whichever class the entry before it did.
+func raptorJavaClassDeclares(
+	class *raptorJavaClass,
+	name, descriptor string,
+) bool {
+	if name == "" {
+		return true
+	}
+	for _, declared := range class.fields {
+		if declared.Name == name && declared.descriptor == descriptor {
+			return true
+		}
+	}
+	return false
+}
+
+// raptorJavaFieldGroupScore counts the entries next to index that the class
+// also declares, stopping at the first that it does not. The table is laid out
+// class by class - 배틀몬스터's entries 146..149 are all fields of its Jlet
+// subclass "a" - so the class whose run of entries this one sits inside owns
+// it.
+//
+// The run has to be contiguous rather than a count over a fixed window: a
+// class contributing only a couple of entries is surrounded by a much larger
+// neighbour's block, and a plain count hands the entry to the neighbour.
+// 스파이더맨3's launch class contributes exactly two entries, wedged between a
+// 75-entry block and a 36-entry block belonging to two other classes, and both
+// of its fields are named "a"; counting over the window resolved its Display
+// field into the 75-entry class's own Display field at a word its eight-word
+// object does not have.
 func raptorJavaFieldGroupScore(
 	class *raptorJavaClass,
 	names, descriptors []string,
 	index uint32,
 ) int {
 	score := 0
-	low := int(index) - raptorJavaFieldNeighbourhood
-	if low < 0 {
-		low = 0
-	}
-	high := int(index) + raptorJavaFieldNeighbourhood
-	if high > len(names)-1 {
-		high = len(names) - 1
-	}
-	for neighbour := low; neighbour <= high; neighbour++ {
-		if uint32(neighbour) == index || names[neighbour] == "" {
-			continue
+	for neighbour := int(index) - 1; neighbour >= 0 &&
+		int(index)-neighbour <= raptorJavaFieldNeighbourhood; neighbour-- {
+		if !raptorJavaClassDeclares(class, names[neighbour], descriptors[neighbour]) {
+			break
 		}
-		for _, declared := range class.fields {
-			if declared.Name == names[neighbour] &&
-				declared.descriptor == descriptors[neighbour] {
-				score++
-				break
-			}
+		score++
+	}
+	for neighbour := int(index) + 1; neighbour < len(names) &&
+		neighbour-int(index) <= raptorJavaFieldNeighbourhood; neighbour++ {
+		if !raptorJavaClassDeclares(class, names[neighbour], descriptors[neighbour]) {
+			break
 		}
+		score++
 	}
 	return score
+}
+
+// raptorJavaOwnFieldWords is how many words of an object body the class's own
+// declared fields occupy: one past the highest index it names, plus a second
+// word when that field is a long or a double.
+func raptorJavaOwnFieldWords(class *raptorJavaClass) uint32 {
+	words := uint32(0)
+	for _, declared := range class.fields {
+		end := declared.index + 1
+		if declared.descriptor == "J" || declared.descriptor == "D" {
+			end++
+		}
+		if end > words {
+			words = end
+		}
+	}
+	return words
+}
+
+// raptorJavaFieldBase is the word of an object body that a class's own field
+// indices are counted from.
+//
+// The AOT compiler numbers a class's *own* instance fields from zero and
+// records the whole inheritance chain's word count in the class descriptor,
+// while an object here has one flat field block. Publishing a declared index
+// unchanged therefore aliases a subclass's first field onto its parent's
+// first field: 스파이더맨3 declares "l : I" at index 0 in class "d" and
+// "a : Lorg/kwis/msp/lcdui/Display;" at index 0 in its superclass "a", so both
+// references resolved to word 0 and one object word had to be an int and a
+// Display at the same time (the Display read came back as the int 10 and the
+// module started its main class at PC 0).
+//
+// The base is the parent chain's cumulative size. A parent the module declares
+// itself carries that number in its own descriptor, which is exact and does
+// not depend on how completely the module names its fields. For a parent this
+// runtime models as a host class the guest's word count is unknown - the host
+// model's field size describes the host mirror, not the AOT layout - so the
+// base is recovered from the class's own descriptor instead: the total size
+// less the words its own fields occupy (class "a" above: 88 total, 75 own,
+// so its own indices start at word 13, the AOT size of org/kwis/msp/lcdui/Card).
+func raptorJavaFieldBase(java *JavaRuntime, class *raptorJavaClass) uint32 {
+	if parent := java.ClassByName[class.parentName]; parent != nil &&
+		parent.hostClass == 0 && parent.fieldSize != 0 &&
+		parent.fieldSize < class.fieldSize {
+		return parent.fieldSize
+	}
+	if own := raptorJavaOwnFieldWords(class); own <= class.fieldSize {
+		return class.fieldSize - own
+	}
+	return 0
 }
 
 func raptorJavaLinkedFieldIndex(
@@ -1667,7 +1744,8 @@ func raptorJavaLinkedFieldIndex(
 			}
 			score := raptorJavaFieldGroupScore(class, names, descriptors, index)
 			if score > bestScore {
-				fieldIndex, bestScore = declared.index, score
+				fieldIndex = raptorJavaFieldBase(java, class) + declared.index
+				bestScore = score
 			}
 			break
 		}
