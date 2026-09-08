@@ -8,6 +8,7 @@ import (
 	"image"
 	"image/color"
 	"image/gif"
+	"image/png"
 	"reflect"
 	"testing"
 
@@ -250,6 +251,37 @@ func TestKTFWIPICDecodeNextImageAdvancesAnimatedGIF(t *testing.T) {
 	}
 	if got := readKTFWIPICPixel(t, runtime, framebufferHandle, 0, 0); got != 0x07e0 {
 		t.Fatalf("second GIF frame pixel = %04x", got)
+	}
+}
+
+func TestKTFWIPICDestroyImageDoesNotFreeReusedSourceHandle(t *testing.T) {
+	var encoded bytes.Buffer
+	check(t, png.Encode(&encoded, image.NewRGBA(image.Rect(0, 0, 1, 1))))
+	runtime := newScratchKTFRuntime(t)
+	object := createKTFWIPICImage(t, runtime, encoded.Bytes())
+	source := runtime.wipicImages[object].source
+
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, source))
+	if _, err := ktfKernelFree(context.Background(), runtime); err != nil {
+		t.Fatal(err)
+	}
+	replacement := uint32(0)
+	var err error
+	for attempt := 0; attempt < 64 && replacement != source; attempt++ {
+		replacement, err = runtime.allocateWIPICMemory(32, true)
+		check(t, err)
+	}
+	if replacement != source {
+		t.Fatalf("replacement handle = 0x%08x, want reused 0x%08x", replacement, source)
+	}
+	want := runtime.wipicMemory[replacement]
+
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, object))
+	if _, err := ktfWIPICGraphicsDestroyImage(context.Background(), runtime); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := runtime.wipicMemory[replacement]; !ok || got != want {
+		t.Fatalf("destroy image released replacement allocation: got=%+v present=%t", got, ok)
 	}
 }
 

@@ -231,11 +231,6 @@ func ktfWIPICGraphicsDestroyImage(
 		_ = runtime.Services.Assets.Release(runtime.ServiceOwner, assetID)
 		delete(runtime.wipicAssetServices, object)
 	}
-	if allocation, ok := runtime.wipicMemory[imageState.source]; ok {
-		runtime.Heap.Release(allocation.base)
-		runtime.Heap.Release(imageState.source)
-		delete(runtime.wipicMemory, imageState.source)
-	}
 	runtime.Heap.Release(imageState.body)
 	runtime.Heap.Release(imageState.object)
 	delete(runtime.wipicImages, object)
