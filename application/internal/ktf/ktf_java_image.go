@@ -751,6 +751,7 @@ type ktfJavaImageDraw struct {
 
 func (r *Runtime) drawKTFJavaImageRaw(
 	state *ktfGraphics,
+	imageAddress uint32,
 	source image.Image,
 	x, y int,
 	anchor uint32,
@@ -774,12 +775,222 @@ func (r *Runtime) drawKTFJavaImageRaw(
 	sourcePoint := source.Bounds().Min.Add(
 		clippedRect.Min.Sub(targetRect.Min),
 	)
-	draw.Draw(
-		state.Target,
-		clippedRect,
+	if !r.drawKTFJavaImageFast(
+		state,
+		imageAddress,
 		source,
+		clippedRect,
 		sourcePoint,
-		draw.Over,
-	)
+	) {
+		draw.Draw(
+			state.Target,
+			clippedRect,
+			source,
+			sourcePoint,
+			draw.Over,
+		)
+	}
+	r.markKTFGraphicsDirty(state)
+}
+
+// ktfBlitCache holds the 16-bit premultiplied intermediate that
+// image/draw.drawNRGBAOver recomputes from an *image.NRGBA source on every
+// single blit (issue #217). That conversion - straight alpha to premultiplied
+// - depends only on the source pixel, so for a sprite nothing has mutated
+// since the last draw it is exactly the same arithmetic on exactly the same
+// bytes. Caching it here and running only the destination-dependent half
+// (drawKTFBlitOverCached) by hand is the fast path drawKTFJavaImageFast
+// takes; anything it does not recognize falls back to draw.Draw unchanged.
+//
+// pix stores four uint16s per pixel - sr, sg, sb, sa in that order, each the
+// exact uint32 drawNRGBAOver would compute before its final ">> 8" (which
+// happens after adding the destination term, so it cannot be precomputed).
+// Every one of those values is <= 0xffff (sa tops out at 255*0x101, and
+// sr/sg/sb are bounded by sa), so uint16 carries them with no truncation:
+// the cache is exact, not an approximation. That is 8 bytes/pixel versus the
+// 4 the *image.NRGBA source itself already costs.
+type ktfBlitCache struct {
+	pix  []uint16
+	w, h int
+}
+
+// newKTFBlitCache runs step 1 of drawNRGBAOver's inner loop - and only step
+// 1 - once per source pixel, mirroring its arithmetic exactly (uint32(c)*
+// 0x101*a/0xff, in that order, including the intermediate truncation from
+// integer division) so the composite that reads the cache back stays bit
+// for bit identical to running drawNRGBAOver fresh every frame.
+func newKTFBlitCache(source *image.NRGBA) *ktfBlitCache {
+	bounds := source.Bounds()
+	width, height := bounds.Dx(), bounds.Dy()
+	cache := &ktfBlitCache{
+		pix: make([]uint16, width*height*4),
+		w:   width,
+		h:   height,
+	}
+	for row := 0; row < height; row++ {
+		srcOffset := source.PixOffset(bounds.Min.X, bounds.Min.Y+row)
+		srcRow := source.Pix[srcOffset : srcOffset+width*4]
+		dstRow := cache.pix[row*width*4 : (row+1)*width*4]
+		for column := 0; column < width; column++ {
+			s := srcRow[column*4 : column*4+4 : column*4+4]
+			sa := uint32(s[3]) * 0x101
+			sr := uint32(s[0]) * sa / 0xff
+			sg := uint32(s[1]) * sa / 0xff
+			sb := uint32(s[2]) * sa / 0xff
+			d := dstRow[column*4 : column*4+4 : column*4+4]
+			d[0] = uint16(sr)
+			d[1] = uint16(sg)
+			d[2] = uint16(sb)
+			d[3] = uint16(sa)
+		}
+	}
+	return cache
+}
+
+// ktfBlitCompositeM mirrors image/draw's unexported m (1<<16 - 1): the divisor
+// drawNRGBAOver's composite step uses when spreading the destination term
+// across the source's inverse alpha.
+const ktfBlitCompositeM = 1<<16 - 1
+
+// drawKTFBlitOverCached is step 2 of drawNRGBAOver's inner loop, hand-written
+// over a known *image.RGBA destination and a cache already holding step 1's
+// output. It is the same arithmetic on the same inputs as image/draw would
+// compute today, so the result is bit-exact, not an approximation of it.
+// cacheOrigin is sourcePoint already translated into the cache's own
+// coordinate space (the cache is always addressed from its own image.Point{}
+// origin, unlike the *image.NRGBA it was built from).
+func drawKTFBlitOverCached(
+	dst *image.RGBA,
+	rect image.Rectangle,
+	cache *ktfBlitCache,
+	cacheOrigin image.Point,
+) {
+	width := rect.Dx()
+	for row := 0; row < rect.Dy(); row++ {
+		dstOffset := dst.PixOffset(rect.Min.X, rect.Min.Y+row)
+		dpix := dst.Pix[dstOffset : dstOffset+width*4]
+		cacheRowStart := (cacheOrigin.Y+row)*cache.w*4 + cacheOrigin.X*4
+		spix := cache.pix[cacheRowStart : cacheRowStart+width*4]
+		for column := 0; column < width; column++ {
+			s := spix[column*4 : column*4+4 : column*4+4]
+			sr, sg, sb, sa := uint32(s[0]), uint32(s[1]), uint32(s[2]), uint32(s[3])
+			d := dpix[column*4 : column*4+4 : column*4+4]
+			dr := uint32(d[0])
+			dg := uint32(d[1])
+			db := uint32(d[2])
+			da := uint32(d[3])
+			// The 0x101 is here for the same reason as in image/draw's own
+			// drawRGBA: it is not a typo carried over by mistake.
+			a := (ktfBlitCompositeM - sa) * 0x101
+			d[0] = uint8((dr*a/ktfBlitCompositeM + sr) >> 8)
+			d[1] = uint8((dg*a/ktfBlitCompositeM + sg) >> 8)
+			d[2] = uint8((db*a/ktfBlitCompositeM + sb) >> 8)
+			d[3] = uint8((da*a/ktfBlitCompositeM + sa) >> 8)
+		}
+	}
+}
+
+// drawKTFJavaImageFast takes over from draw.Draw exactly when it would have
+// reached drawNRGBAOver: an *image.NRGBA source blitted draw.Over onto an
+// *image.RGBA destination, which is what every KTF Java sprite blit is. Any
+// other pairing (a mutable canvas as the source, XOR mode's own draw.Image
+// wrapper, whatever else drawKTFJavaImageRaw might one day be asked to draw)
+// returns false and drawKTFJavaImageRaw falls back to the original call
+// unconditionally, rather than risk a half-handled case.
+func (r *Runtime) drawKTFJavaImageFast(
+	state *ktfGraphics,
+	imageAddress uint32,
+	source image.Image,
+	clippedRect image.Rectangle,
+	sourcePoint image.Point,
+) bool {
+	if clippedRect.Empty() {
+		// draw.Draw is a no-op here too; let it take the (equally trivial)
+		// fallback path rather than special-case an empty rect twice.
+		return false
+	}
+	dst, ok := state.Target.(*image.RGBA)
+	if !ok {
+		return false
+	}
+	nrgba, ok := source.(*image.NRGBA)
+	if !ok {
+		return false
+	}
+	cache := r.ensureKTFBlitCache(imageAddress, nrgba)
+	if cache == nil {
+		return false
+	}
+	cacheOrigin := sourcePoint.Sub(nrgba.Bounds().Min)
+	if cacheOrigin.X < 0 || cacheOrigin.Y < 0 ||
+		cacheOrigin.X+clippedRect.Dx() > cache.w ||
+		cacheOrigin.Y+clippedRect.Dy() > cache.h {
+		// The geometry drawKTFJavaImageRaw computed should never let this
+		// happen, but a cache this cheap to refuse is not worth trusting
+		// blindly: fall back rather than read outside the cached slice.
+		return false
+	}
+	drawKTFBlitOverCached(dst, clippedRect, cache, cacheOrigin)
+	return true
+}
+
+// ensureKTFBlitCache answers the cached step-1 output for imageAddress,
+// building it if this is the first draw since the image was created or last
+// invalidated. imageAddress==0 means the caller has no stable identity for
+// the source (only ever true from a test built without going through
+// r.images), so there is nothing to key a cache on; every ordinary draw path
+// reaches here only after r.images[imageAddress] resolved to source.
+//
+// The cache carries no host resource - it is a plain Go byte slice derived
+// entirely from source's own pixels - so it holds the same strength as
+// r.images itself: not a weak table (see weakTables' comment on why images
+// stay strong), evicted only by explicit invalidation, never by the
+// collector. A dimension mismatch is a defensive fallback for an address
+// reused without invalidation reaching us; the real invalidation path is
+// invalidateKTFBlitCache, called everywhere a Graphics writes into an Image.
+func (r *Runtime) ensureKTFBlitCache(
+	imageAddress uint32,
+	source *image.NRGBA,
+) *ktfBlitCache {
+	if imageAddress == 0 {
+		return nil
+	}
+	bounds := source.Bounds()
+	if cache := r.blitCaches[imageAddress]; cache != nil &&
+		cache.w == bounds.Dx() && cache.h == bounds.Dy() {
+		return cache
+	}
+	cache := newKTFBlitCache(source)
+	if r.blitCaches == nil {
+		r.blitCaches = make(map[uint32]*ktfBlitCache)
+	}
+	r.blitCaches[imageAddress] = cache
+	return cache
+}
+
+// invalidateKTFBlitCache drops imageAddress's cached blit source. Called
+// wherever a Graphics writes into the Image it draws for - the same
+// relationship ensureGraphicsSurface and touchJavaImageSurface already use
+// (ktfGraphics.image) to know which mirror to refresh - so this reuses that
+// existing link rather than tracking image mutation a second way.
+func (r *Runtime) invalidateKTFBlitCache(imageAddress uint32) {
+	if imageAddress == 0 || r.blitCaches == nil {
+		return
+	}
+	delete(r.blitCaches, imageAddress)
+}
+
+// markKTFGraphicsDirty records that state.Target's pixels just changed under
+// the host's own hand. It is the same PixelsDirty flag ensureGraphicsSurface
+// already relies on to know the service mirror is stale; drawing into a
+// Graphics whose Target is a Java Image (state.image != 0) means that
+// Image's cached blit source (if any) is stale in exactly the same instant,
+// so both are recorded together here instead of at two separate call sites
+// that could drift apart.
+func (r *Runtime) markKTFGraphicsDirty(state *ktfGraphics) {
+	if state == nil {
+		return
+	}
 	state.PixelsDirty = true
+	r.invalidateKTFBlitCache(state.image)
 }

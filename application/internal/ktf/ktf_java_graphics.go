@@ -347,7 +347,7 @@ func (r *Runtime) handleGraphicsMethod(
 			}
 		}
 		draw.Draw(state.Target, rect.Intersect(state.clip), image.NewUniform(state.color), image.Point{}, draw.Src)
-		state.PixelsDirty = true
+		r.markKTFGraphicsDirty(state)
 		return 0, nil
 	case "setXORMode(Z)V":
 		if state == nil {
@@ -391,7 +391,7 @@ func (r *Runtime) handleGraphicsMethod(
 			x2+state.offset().X,
 			y2+state.offset().Y,
 		)
-		state.PixelsDirty = true
+		r.markKTFGraphicsDirty(state)
 		return 0, nil
 	case "drawRect(IIII)V", "drawRoundRect(IIIIII)V", "drawArc(IIIIII)V":
 		if state == nil {
@@ -402,7 +402,7 @@ func (r *Runtime) handleGraphicsMethod(
 			return 0, valueErr
 		}
 		r.drawGraphicsRectangle(state, rect)
-		state.PixelsDirty = true
+		r.markKTFGraphicsDirty(state)
 		return 0, nil
 	case "drawChar(CIII)V":
 		character, valueErr := r.parameter(2)
@@ -627,7 +627,7 @@ func (r *Runtime) handleGraphicsMethod(
 		point := image.Pt(x+state.offset().X, y+state.offset().Y)
 		if point.In(state.clip) {
 			state.plot(point.X, point.Y)
-			state.PixelsDirty = true
+			r.markKTFGraphicsDirty(state)
 		}
 		return 0, nil
 	case "setRGBPixels(IIII[III)V":
@@ -793,7 +793,13 @@ func (r *Runtime) drawGraphicsTextShared(
 	}
 	if direct {
 		copy(target.Pix[top*target.Stride:bottom*target.Stride], pixels)
+		// The Go pixels now match the host mirror exactly, so PixelsDirty
+		// stays false - but this Graphics' Target content just changed all
+		// the same. If it draws into a Java Image, that image's cached blit
+		// source (drawKTFJavaImageFast) is stale in the same instant, the
+		// same relationship markKTFGraphicsDirty uses everywhere else.
 		state.PixelsDirty = false
+		r.invalidateKTFBlitCache(state.image)
 		return nil
 	}
 	source := image.NewRGBA(image.Rect(0, 0, bounds.Dx(), bottom-top))
@@ -806,6 +812,7 @@ func (r *Runtime) drawGraphicsTextShared(
 		draw.Src,
 	)
 	state.PixelsDirty = false
+	r.invalidateKTFBlitCache(state.image)
 	return nil
 }
 
@@ -1033,7 +1040,7 @@ func (r *Runtime) setGraphicsRGBPixels(state *ktfGraphics) error {
 			)
 		}
 	}
-	state.PixelsDirty = true
+	r.markKTFGraphicsDirty(state)
 	return nil
 }
 

@@ -291,30 +291,39 @@ type Runtime struct {
 	hostReservedFieldClass   uint32
 	sharedInputMethodHandler uint32
 	images                   map[uint32]image.Image
-	defaultFont              uint32
-	frame                    *image.RGBA
-	Graphics                 map[uint32]*ktfGraphics
-	graphicsRGBScratch       []byte
-	ScreenGraphics           uint32
-	menuForegroundCompat     *ktfMenuForegroundCompat
-	wipicFramebuffers        map[uint32]*ktfWIPICFramebuffer
-	WipicScreenFramebuffer   uint32
-	WipicScreenPending       bool
-	wipicImages              map[uint32]*ktfWIPICImage
-	wipicResources           map[uint32][]byte
-	wipicResourceIDs         map[string]uint32
-	wipicMemory              map[uint32]ktfWIPICMemory
-	wipicTimers              map[uint32]*ktfWIPICTimer
-	wipicMediaClips          map[uint32]*ktfWIPICMediaClip
-	pendingMediaCallbacks    []uint32
-	pendingNetCallbacks      []ktfPendingNetCallback
-	wipicSystemProperties    map[string]string
-	wipicFiles               map[uint32]*ktfFile
-	nextWIPICFile            uint32
-	wipicDatabases           map[uint32]string
-	nextWIPICDatabase        uint32
-	wipicPixelOpResults      map[ktfWIPICPixelOpKey]uint16
-	brokenWIPICPixelOps      map[uint32]bool
+	// blitCaches holds, per Image instance, the 16-bit premultiplied source
+	// pixels drawKTFJavaImageFast reuses across frames instead of asking
+	// image/draw to recompute them from the *image.NRGBA source on every
+	// blit (issue #217). It carries no host resource, so - like images
+	// itself - it is not a weak table (see weakTables' comment): entries are
+	// dropped explicitly by invalidateKTFBlitCache, never by the collector.
+	// A restored session starts it empty and fills it again as it draws,
+	// the same as imageSurfaceUse.
+	blitCaches             map[uint32]*ktfBlitCache
+	defaultFont            uint32
+	frame                  *image.RGBA
+	Graphics               map[uint32]*ktfGraphics
+	graphicsRGBScratch     []byte
+	ScreenGraphics         uint32
+	menuForegroundCompat   *ktfMenuForegroundCompat
+	wipicFramebuffers      map[uint32]*ktfWIPICFramebuffer
+	WipicScreenFramebuffer uint32
+	WipicScreenPending     bool
+	wipicImages            map[uint32]*ktfWIPICImage
+	wipicResources         map[uint32][]byte
+	wipicResourceIDs       map[string]uint32
+	wipicMemory            map[uint32]ktfWIPICMemory
+	wipicTimers            map[uint32]*ktfWIPICTimer
+	wipicMediaClips        map[uint32]*ktfWIPICMediaClip
+	pendingMediaCallbacks  []uint32
+	pendingNetCallbacks    []ktfPendingNetCallback
+	wipicSystemProperties  map[string]string
+	wipicFiles             map[uint32]*ktfFile
+	nextWIPICFile          uint32
+	wipicDatabases         map[uint32]string
+	nextWIPICDatabase      uint32
+	wipicPixelOpResults    map[ktfWIPICPixelOpKey]uint16
+	brokenWIPICPixelOps    map[uint32]bool
 	// InputWaiting is set by the machine before each task slice when it holds
 	// a key event that is due and has not reached the card yet. paintCard
 	// consults it so a repaint the card requested from inside its own paint
