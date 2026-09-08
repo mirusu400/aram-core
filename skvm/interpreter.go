@@ -33,6 +33,35 @@ type stepResult struct {
 	returned bool
 }
 
+func javaIntFromFloat(value float64) int32 {
+	if math.IsNaN(value) {
+		return 0
+	}
+	if value >= float64(math.MaxInt32) {
+		return math.MaxInt32
+	}
+	if value <= float64(math.MinInt32) {
+		return math.MinInt32
+	}
+	return int32(value)
+}
+
+func javaLongFromFloat(value float64) int64 {
+	if math.IsNaN(value) {
+		return 0
+	}
+	// float64(math.MaxInt64) rounds up to 2^63, which is also the first
+	// floating-point value that must saturate instead of being converted.
+	const longLimit = float64(1 << 63)
+	if value >= longLimit {
+		return math.MaxInt64
+	}
+	if value <= -longLimit {
+		return math.MinInt64
+	}
+	return int64(value)
+}
+
 func (vm *VM) execute(
 	ctx context.Context,
 	class *Class,
@@ -691,6 +720,60 @@ func (vm *VM) step(
 			value = left ^ right
 		}
 		current.push(LongValue(value))
+	case 0x62, 0x66, 0x6a, 0x6e, 0x72: // float arithmetic
+		rightValue, leftValue, err := current.pop2()
+		if err != nil {
+			return stepResult{}, err
+		}
+		right, err := rightValue.Float()
+		if err != nil {
+			return stepResult{}, err
+		}
+		left, err := leftValue.Float()
+		if err != nil {
+			return stepResult{}, err
+		}
+		var value float32
+		switch opcode {
+		case 0x62:
+			value = left + right
+		case 0x66:
+			value = left - right
+		case 0x6a:
+			value = left * right
+		case 0x6e:
+			value = left / right
+		case 0x72:
+			value = float32(math.Mod(float64(left), float64(right)))
+		}
+		current.push(FloatValue(value))
+	case 0x63, 0x67, 0x6b, 0x6f, 0x73: // double arithmetic
+		rightValue, leftValue, err := current.pop2()
+		if err != nil {
+			return stepResult{}, err
+		}
+		right, err := rightValue.Double()
+		if err != nil {
+			return stepResult{}, err
+		}
+		left, err := leftValue.Double()
+		if err != nil {
+			return stepResult{}, err
+		}
+		var value float64
+		switch opcode {
+		case 0x63:
+			value = left + right
+		case 0x67:
+			value = left - right
+		case 0x6b:
+			value = left * right
+		case 0x6f:
+			value = left / right
+		case 0x73:
+			value = math.Mod(left, right)
+		}
+		current.push(DoubleValue(value))
 	case 0x79, 0x7b, 0x7d: // long shifts
 		distance, err := current.popInt()
 		if err != nil {
@@ -730,6 +813,26 @@ func (vm *VM) step(
 			return stepResult{}, err
 		}
 		current.push(LongValue(-long))
+	case 0x76: // fneg
+		value, err := current.pop()
+		if err != nil {
+			return stepResult{}, err
+		}
+		float, err := value.Float()
+		if err != nil {
+			return stepResult{}, err
+		}
+		current.push(FloatValue(-float))
+	case 0x77: // dneg
+		value, err := current.pop()
+		if err != nil {
+			return stepResult{}, err
+		}
+		double, err := value.Double()
+		if err != nil {
+			return stepResult{}, err
+		}
+		current.push(DoubleValue(-double))
 	case 0x84: // iinc
 		index, err := current.readU1()
 		if err != nil {
@@ -755,6 +858,18 @@ func (vm *VM) step(
 			return stepResult{}, err
 		}
 		current.push(LongValue(int64(value)))
+	case 0x86: // i2f
+		value, err := current.popInt()
+		if err != nil {
+			return stepResult{}, err
+		}
+		current.push(FloatValue(float32(value)))
+	case 0x87: // i2d
+		value, err := current.popInt()
+		if err != nil {
+			return stepResult{}, err
+		}
+		current.push(DoubleValue(float64(value)))
 	case 0x88: // l2i
 		value, err := current.pop()
 		if err != nil {
@@ -765,6 +880,54 @@ func (vm *VM) step(
 			return stepResult{}, err
 		}
 		current.push(IntValue(int32(long)))
+	case 0x89, 0x8a: // l2f, l2d
+		value, err := current.pop()
+		if err != nil {
+			return stepResult{}, err
+		}
+		long, err := value.Long()
+		if err != nil {
+			return stepResult{}, err
+		}
+		if opcode == 0x89 {
+			current.push(FloatValue(float32(long)))
+		} else {
+			current.push(DoubleValue(float64(long)))
+		}
+	case 0x8b, 0x8c, 0x8d: // f2i, f2l, f2d
+		value, err := current.pop()
+		if err != nil {
+			return stepResult{}, err
+		}
+		float, err := value.Float()
+		if err != nil {
+			return stepResult{}, err
+		}
+		switch opcode {
+		case 0x8b:
+			current.push(IntValue(javaIntFromFloat(float64(float))))
+		case 0x8c:
+			current.push(LongValue(javaLongFromFloat(float64(float))))
+		case 0x8d:
+			current.push(DoubleValue(float64(float)))
+		}
+	case 0x8e, 0x8f, 0x90: // d2i, d2l, d2f
+		value, err := current.pop()
+		if err != nil {
+			return stepResult{}, err
+		}
+		double, err := value.Double()
+		if err != nil {
+			return stepResult{}, err
+		}
+		switch opcode {
+		case 0x8e:
+			current.push(IntValue(javaIntFromFloat(double)))
+		case 0x8f:
+			current.push(LongValue(javaLongFromFloat(double)))
+		case 0x90:
+			current.push(FloatValue(float32(double)))
+		}
 	case 0x91: // i2b
 		value, err := current.popInt()
 		if err != nil {
@@ -798,6 +961,56 @@ func (vm *VM) step(
 		}
 		var comparison int32
 		if left < right {
+			comparison = -1
+		} else if left > right {
+			comparison = 1
+		}
+		current.push(IntValue(comparison))
+	case 0x95, 0x96: // fcmpl, fcmpg
+		rightValue, leftValue, err := current.pop2()
+		if err != nil {
+			return stepResult{}, err
+		}
+		right, err := rightValue.Float()
+		if err != nil {
+			return stepResult{}, err
+		}
+		left, err := leftValue.Float()
+		if err != nil {
+			return stepResult{}, err
+		}
+		comparison := int32(0)
+		if math.IsNaN(float64(left)) || math.IsNaN(float64(right)) {
+			comparison = -1
+			if opcode == 0x96 {
+				comparison = 1
+			}
+		} else if left < right {
+			comparison = -1
+		} else if left > right {
+			comparison = 1
+		}
+		current.push(IntValue(comparison))
+	case 0x97, 0x98: // dcmpl, dcmpg
+		rightValue, leftValue, err := current.pop2()
+		if err != nil {
+			return stepResult{}, err
+		}
+		right, err := rightValue.Double()
+		if err != nil {
+			return stepResult{}, err
+		}
+		left, err := leftValue.Double()
+		if err != nil {
+			return stepResult{}, err
+		}
+		comparison := int32(0)
+		if math.IsNaN(left) || math.IsNaN(right) {
+			comparison = -1
+			if opcode == 0x98 {
+				comparison = 1
+			}
+		} else if left < right {
 			comparison = -1
 		} else if left > right {
 			comparison = 1
