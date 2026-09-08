@@ -46,15 +46,32 @@ func (r *Runtime) NewRaptorJavaObject(holder uint32) (uint32, error) {
 			return 0, err
 		}
 	}
-	instance, err := r.Public.Heap.Allocate(12, true)
+	// Stage 2 of issue #200's heap-lifetime fix: go through the shared host's
+	// collect-and-retry allocator rather than r.Public.Heap.Allocate directly,
+	// so a title whose live set has genuinely grown past the heap gets the
+	// same chance to reclaim garbage a KTF-mirror allocation already had.
+	// Safe only because stage 1 first taught that collector Raptor's own
+	// roots (classes, the current card, thread contexts) and gave
+	// lgtToKTF/ktfToLGT weak-table treatment - without that, a collection
+	// reached from here would free live Raptor state the moment nothing else
+	// in scanned guest memory happened to reference it.
+	instance, err := java.Host.AllocateJavaHeapBytes(12, true)
 	if err != nil || instance == 0 {
 		if err == nil {
 			err = errRaptorGuestHeapExhausted
 		}
 		return 0, fmt.Errorf("allocate Raptor Java object (12 bytes): %w", err)
 	}
+	// instance is not reachable from any real root until the writes below
+	// link it (its vtable/holder/fields words are still whatever
+	// AllocateJavaHeapBytes' clear left them), so a collection the very next
+	// allocation's retry-after-collect triggers would otherwise free it out
+	// from under this function and hand the same address to fields, aliasing
+	// the two. Pin it for exactly as long as that window is open.
+	java.constructing[instance] = true
+	defer delete(java.constructing, instance)
 	fieldBytes := max(uint32(4), class.fieldSize*4)
-	fields, err := r.Public.Heap.Allocate(fieldBytes, true)
+	fields, err := java.Host.AllocateJavaHeapBytes(fieldBytes, true)
 	if err != nil || fields == 0 {
 		if err == nil {
 			err = errRaptorGuestHeapExhausted

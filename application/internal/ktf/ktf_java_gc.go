@@ -72,6 +72,18 @@ func (r *Runtime) allocateJavaHeapBytes(size uint32, clear bool) (uint32, error)
 	return r.Heap.Allocate(size, clear)
 }
 
+// AllocateJavaHeapBytes exports allocateJavaHeapBytes unchanged, for a caller
+// that shares this runtime's heap but builds its own objects outside this
+// package (Raptor's NewRaptorJavaObject, whose two allocations - the object
+// header and its field block - are stage 2 of issue #200's heap-lifetime fix:
+// stage 1 made this collector aware of Raptor's roots and mirror maps, and
+// this is what actually gives a title's own allocation a chance to reclaim
+// before failing, rather than only ever benefiting from a collection some
+// unrelated KTF-mirror allocation happened to trigger first).
+func (r *Runtime) AllocateJavaHeapBytes(size uint32, clear bool) (uint32, error) {
+	return r.allocateJavaHeapBytes(size, clear)
+}
+
 // collectJavaHeap frees every heap block no root can reach, and answers how
 // many it freed.
 func (r *Runtime) collectJavaHeap() int {
@@ -218,6 +230,44 @@ func (r *Runtime) AddGCRootRegion(base, size uint32) {
 	)
 }
 
+// AddGCRootWalker registers a callback markHostRoots invokes on every
+// collection, after its own built-in roots. It exists for a runtime that
+// shares this Java heap (Raptor) but keeps its live state - a class table, an
+// active card, a Java thread's saved registers - in a struct this package
+// cannot name without importing it back. Leaving Raptor's state out of the
+// walk entirely is what issue #145's history warns against: a block only a
+// class's own vtable slot or a suspended thread's register named would look
+// unreferenced and be freed while a live object still pointed to it.
+func (r *Runtime) AddGCRootWalker(walker func(mark func(uint32))) {
+	if walker == nil {
+		return
+	}
+	r.gcExtraRootWalkers = append(r.gcExtraRootWalkers, walker)
+}
+
+// AddGCWeakTable registers an additional guest-address-keyed map with the
+// same treatment as weakTables' own candidates: not a root, settled by the
+// ephemeron pass once the strong closure is complete. It exists for the same
+// reason as AddGCRootWalker - Raptor's lgtToKTF/ktfToLGT mirror maps record
+// what a KTF-mirrored object *is*, not a reference the guest can reach on its
+// own, and registering their keys as ordinary roots would keep every mirror a
+// title ever built alive for the run, the exact mistake weakTables exists to
+// avoid.
+func (r *Runtime) AddGCWeakTable(table any) {
+	if table == nil {
+		return
+	}
+	r.gcExtraWeakTables = append(r.gcExtraWeakTables, table)
+}
+
+// ScanWords marks every 4-byte little-endian word of buffer as a possible
+// reference. Exported so an AddGCRootWalker callback can hand it a saved
+// thread context - a []byte the reflective walk in markValue skips outright -
+// the same way markHostRoots already does for this runtime's own Task.Context.
+func ScanWords(buffer []byte, mark func(uint32)) {
+	scanWords(buffer, mark)
+}
+
 // markRegionRoots scans every mapped region that is not the heap itself. The
 // client image holds the title's statics, the stack holds every live frame,
 // and low work RAM is where KTF titles keep their own structures.
@@ -272,6 +322,9 @@ func (r *Runtime) markHostRoots(mark func(uint32), skip map[uintptr]bool) {
 	}
 	seen := make(map[uintptr]bool)
 	markValue(reflect.ValueOf(r), mark, seen, 0, skip)
+	for _, walker := range r.gcExtraRootWalkers {
+		walker(mark)
+	}
 }
 
 // markValue is the reflective walk. It reads only, so unexported fields are
@@ -388,6 +441,7 @@ func (r *Runtime) weakTables() []reflect.Value {
 		r.Graphics,
 		r.GraphicsServices,
 	}
+	candidates = append(candidates, r.gcExtraWeakTables...)
 	tables := make([]reflect.Value, 0, len(candidates))
 	for _, candidate := range candidates {
 		value := reflect.ValueOf(candidate)

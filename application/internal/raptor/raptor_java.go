@@ -388,6 +388,15 @@ type JavaRuntime struct {
 	dirtyCards      map[uint32]bool
 	threadTargets   []uint32
 	Tasks           []*JavaTask
+	// constructing pins a heap block a host allocation call is still in the
+	// middle of building, for exactly as long as NewRaptorJavaObject holds it:
+	// its instance header is not linked to anything (no vtable, no holder, no
+	// KTF mirror) until after the field block that follows it also allocates,
+	// so a collection stage 2's retry-after-collect triggers in that gap sees
+	// no root pointing at it yet and would otherwise free it - and the field
+	// block then reclaims that exact address, aliasing the two and corrupting
+	// whichever one gets linked second. See NewRaptorJavaObject.
+	constructing map[uint32]bool
 	// nextTask rotates the thread scheduler. See NextRunnableJavaTask.
 	nextTask int
 }
@@ -486,10 +495,68 @@ func (r *Runtime) ensureJavaRuntime() (*JavaRuntime, error) {
 		initializing:   make(map[uint32]bool),
 		vtableBuilding: make(map[uint32]bool),
 		dirtyCards:     make(map[uint32]bool),
+		constructing:   make(map[uint32]bool),
 		scratch:        scratch,
 		MainClass:      r.Pkg.Descriptor.MainClass,
 	}
 	r.Java = java
+	// Raptor's own live Java state - the class table, the current card, and
+	// every thread's saved registers - lives in this JavaRuntime, not in the
+	// shared host's own fields, so the collector's reflective walk of
+	// *ktf.Runtime never sees any of it on its own (issue #200's heap-lifetime
+	// investigation found Raptor's object path never released a block; making
+	// the shared collector reachable from it, without this, would free class
+	// vtables and card/thread state the moment nothing else in scanned guest
+	// memory happened to reference them, corrupting a title exactly the way
+	// issue #145 describes rather than fixing it).
+	//
+	// A class that currently has no live instance still needs its own vtable
+	// and class object kept: nothing else names them until the next `new` of
+	// that class writes class.vtable into a fresh instance's header, so a
+	// class with zero instances right now is not a class safe to forget.
+	host.AddGCRootWalker(func(mark func(uint32)) {
+		for _, class := range java.classes {
+			mark(class.Holder)
+			mark(class.descriptor)
+			mark(class.vtable)
+			mark(class.guestVTable)
+			mark(class.classObject)
+		}
+		mark(java.currentCard)
+		mark(java.MainInstance)
+		for address := range java.constructing {
+			mark(address)
+		}
+		for card := range java.dirtyCards {
+			mark(card)
+		}
+		for _, target := range java.threadTargets {
+			mark(target)
+		}
+		for _, task := range java.Tasks {
+			if task == nil {
+				continue
+			}
+			mark(task.Target)
+			mark(task.Procedure)
+			// A parked task's local variables can live in nothing but its
+			// saved register file until it next runs; Context is a []byte,
+			// which the reflective walk in markValue skips outright (see
+			// ktf.ScanWords), the same reason KTF scans its own Task.Context
+			// by hand.
+			ktfrt.ScanWords(task.Context, mark)
+		}
+	})
+	// lgtToKTF/ktfToLGT record which KTF object mirrors which Raptor object,
+	// not a reference the guest can reach independently of the Raptor object
+	// it is about: guest code never holds a mirror's address itself, only the
+	// bridge does, to answer a host call through it. Registering these as
+	// ordinary roots is the exact mistake weakTables was written to stop -
+	// "treating [a side table's] key as a root ... kept every Java object a
+	// title ever made alive" - which for Raptor would mean no mirrored object
+	// is ever collected for the life of the title.
+	host.AddGCWeakTable(java.lgtToKTF)
+	host.AddGCWeakTable(java.ktfToLGT)
 	return java, nil
 }
 

@@ -33,14 +33,15 @@ const (
 	ktfReturnSentinel          = HostBase
 	ktfBootstrapInstructionMax = uint64(100_000_000)
 	// ktfJavaNativeInstructionMax bounds one call into a Clet's own native
-	// code, and one guest Java method invoked from a host call, which share
+	// code, and one guest Java method invoked from a host call. Both share
 	// the property that matters here: each runs to completion inside the
 	// host call that made it - nothing about either is resumable - so the
-	// bound has to cover the longest piece of work a title does in one, and
-	// that is a level load or a bulk resource preload, not a frame. 이노티아연대기2 spends 113.5 million instructions in the single
-	// Clet.handleInput that loads a scenario from its own files, so the
-	// bootstrap bound faulted the title at the first thing a player does
-	// (issue #147).
+	// bound has to cover the longest single piece of work a title does, not
+	// a frame's worth. Two titles have proved the bootstrap bound too small
+	// for that: 이노티아연대기2 spends 113.5 million instructions in the one
+	// Clet.handleInput that loads a scenario from its own files (issue
+	// #147), and 투스워즈 spends 122.3 million in the one Java call that
+	// preloads all 39 of its sound resources (issue #163).
 	ktfJavaNativeInstructionMax = uint64(256_000_000)
 	// ktfRelocatableDescriptorWords covers the load descriptor a relocatable
 	// client image begins with, through the slot naming its entry point.
@@ -112,6 +113,16 @@ type Runtime struct {
 	ImageSz uint32
 	Exe     ktfExecutable
 	Heap    guest.Heap
+
+	// gcExtraWeakTables and gcExtraRootWalkers let a runtime that shares this
+	// Java heap (Raptor) extend the collector without this package importing
+	// that one: Raptor's own class table, current card, and Java thread
+	// contexts live in a raptor.JavaRuntime the reflective walk of *Runtime
+	// cannot reach, and its lgtToKTF/ktfToLGT mirror maps need the same weak
+	// treatment as this runtime's own side tables. See AddGCRootWalker and
+	// AddGCWeakTable.
+	gcExtraWeakTables  []any
+	gcExtraRootWalkers []func(mark func(uint32))
 
 	// javaHeapCollected is how many blocks were live just after the last
 	// collection, so the next one waits for real growth rather than running

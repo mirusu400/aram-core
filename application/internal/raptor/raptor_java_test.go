@@ -90,6 +90,17 @@ func TestNewRaptorJavaObjectFieldsErrorNamesSizeAndCause(t *testing.T) {
 	if err != nil || drain == 0 {
 		t.Fatalf("drain heap = 0x%08x, %v", drain, err)
 	}
+	// Stage 2 of issue #200's heap-lifetime fix routes this allocation through
+	// the collector's retry path, and drain is otherwise reachable from no
+	// root at all - a real collection would correctly reclaim it as garbage,
+	// which would let the second allocation below succeed and prove nothing.
+	// Naming it from the class's own classObject field, which the stage 1
+	// root walker marks, keeps the heap genuinely exhausted even after a
+	// collection runs, without disturbing holder's guest memory (inspecting
+	// the class re-reads that, and a garbage word there took a completely
+	// different, unrelated failure path when this tried writing into it
+	// instead).
+	class.classObject = drain
 
 	_, err = runtime.NewRaptorJavaObject(holder)
 	if err == nil {
@@ -104,6 +115,95 @@ func TestNewRaptorJavaObjectFieldsErrorNamesSizeAndCause(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), class.Name) {
 		t.Fatalf("error %q does not name the class %q", err, class.Name)
+	}
+}
+
+// TestNewRaptorJavaObjectSurvivesACollectionBetweenItsTwoAllocations covers a
+// hazard stage 2 of issue #200's heap-lifetime fix introduced and this same
+// package's own test suite caught before it shipped: NewRaptorJavaObject's
+// instance header is not linked to anything - no vtable, no holder, no KTF
+// mirror - until after the field block that follows it also allocates, so a
+// collection the field allocation's retry-after-collect triggers used to see
+// no root pointing at the header yet and free it, and the field allocation
+// would then reclaim that exact address, aliasing the two: whichever field
+// or header write happened second silently clobbered the other. The fix
+// pins a heap block in java.constructing for as long as NewRaptorJavaObject
+// is still building it. This drains the heap down to one legitimately
+// unreferenced block a collection can and should free (so the second
+// allocation genuinely needs one to succeed, proving the pin does not just
+// disable collection here), and checks the finished object's header still
+// names the right vtable and a field block address that is not its own.
+func TestNewRaptorJavaObjectSurvivesACollectionBetweenItsTwoAllocations(t *testing.T) {
+	public := newPublicRuntime(t)
+	runtime := &Runtime{
+		CPU:             public.CPU,
+		Public:          public,
+		resolvedImports: make(map[raptorImportKey]uint64),
+		importSlotByKey: make(map[raptorImportKey]uint32),
+	}
+	java, err := runtime.ensureJavaRuntime()
+	check(t, err)
+
+	holder, err := public.Heap.Allocate(12, true)
+	if err != nil || holder == 0 {
+		t.Fatalf("allocate holder = 0x%08x, %v", holder, err)
+	}
+	const wantVTable = 0x10000040
+	class := &raptorJavaClass{
+		Holder:     holder,
+		Name:       "app/Cramped",
+		parentName: "java/lang/Object",
+		fieldSize:  2,
+		vtable:     wantVTable,
+	}
+	java.classes[holder] = class
+	java.ClassByName[class.Name] = class
+
+	// Drain every free block but 16 bytes, the same way the sibling test
+	// above does, except this block is deliberately left unreferenced by any
+	// root: it is genuine garbage, not something pinned to stand in for a
+	// live object, so the field allocation below both needs and gets a real
+	// collection rather than an exhausted one.
+	root := public.Heap.Root()
+	if len(root.Free) != 1 {
+		t.Fatalf("heap free list = %#v, want exactly one block for this test", root.Free)
+	}
+	free := root.Free[0].Size
+	if free <= 16 {
+		t.Fatalf("heap only has %d bytes free before the test drains it", free)
+	}
+	garbage, err := public.Heap.Allocate(free-16, true)
+	if err != nil || garbage == 0 {
+		t.Fatalf("allocate garbage = 0x%08x, %v", garbage, err)
+	}
+
+	object, err := runtime.NewRaptorJavaObject(holder)
+	check(t, err)
+	if object == 0 {
+		t.Fatal("NewRaptorJavaObject returned a null object against a heap a collection could still satisfy")
+	}
+	gotVTable, err := public.ReadU32(object)
+	check(t, err)
+	if gotVTable != wantVTable {
+		t.Fatalf("object vtable = 0x%08x, want 0x%08x - the header word a stray "+
+			"reused block would have clobbered", gotVTable, wantVTable)
+	}
+	gotHolder, err := public.ReadU32(object + 4)
+	check(t, err)
+	if gotHolder != holder {
+		t.Fatalf("object holder = 0x%08x, want 0x%08x", gotHolder, holder)
+	}
+	fields, err := public.ReadU32(object + 8)
+	check(t, err)
+	if fields == 0 {
+		t.Fatal("object fields pointer is null")
+	}
+	if fields == object {
+		t.Fatalf("fields block 0x%08x aliases the object header itself", fields)
+	}
+	if root.Allocations[object] == 0 || root.Allocations[fields] == 0 {
+		t.Fatalf("heap does not record both the header (0x%08x) and its fields "+
+			"(0x%08x) as separately live", object, fields)
 	}
 }
 
