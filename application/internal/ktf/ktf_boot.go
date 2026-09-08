@@ -217,6 +217,7 @@ func NewRuntimeForProfile(
 		FileData:              fileData,
 		fileStreamTargets:     make(map[uint32]uint32),
 		images:                make(map[uint32]image.Image),
+		blitCaches:            make(map[uint32]*ktfBlitCache),
 		Graphics:              make(map[uint32]*ktfGraphics),
 		menuForegroundCompat:  newKTFMenuForegroundCompat(pkg),
 		wipicFramebuffers:     make(map[uint32]*ktfWIPICFramebuffer),

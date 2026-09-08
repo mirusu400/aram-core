@@ -7,6 +7,7 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"sort"
 	"strings"
 
 	"github.com/mirusu400/aram-core/cpu"
@@ -507,24 +508,25 @@ func (r *Runtime) addHostJavaField(
 	if err != nil {
 		return 0, err
 	}
-	// org/kwis/msp/lwc/TextComponent.imHandler is the one field this repo
-	// has found where the guest's own compiled call site reads it as an
-	// *instance* field (this.fields[+4+offset]) rather than through the
-	// static-value convention every other invented field here uses (see
-	// ktfHostReservedFieldOffset for why offset 0 - what every other
-	// invented field gets - collides with a real subclass field instead).
-	// NewJavaInstanceForClass reserves and populates that offset for any
-	// instance descending from TextComponent once this marks the class.
-	if class.Name == "org/kwis/msp/lwc/TextComponent" && name == "imHandler" {
+	// A field the host model declares as an instance field is read through a
+	// receiver (this.fields[+4+offset]), so its record has to publish an
+	// offset no subclass layout can reach; every other invented field keeps
+	// the static-value convention, where the same word is the value itself.
+	// See ktfHostReservedFieldOffset for why the fallback offset 0 is not
+	// available to an instance field.
+	if offset, declared := ktfHostInstanceFieldOffset(
+		class.Name,
+		name,
+		descriptor,
+	); declared {
 		if err := r.writeWords(field, []uint32{
 			0x0001,
 			class.Address,
 			nameAddress,
-			ktfHostReservedFieldOffset,
+			offset,
 		}); err != nil {
 			return 0, err
 		}
-		r.hostReservedFieldClass = class.Address
 	} else {
 		if err := r.writeWords(field, []uint32{
 			0x0009,
@@ -575,6 +577,72 @@ func (r *Runtime) addHostJavaField(
 		return 0, err
 	}
 	return field, nil
+}
+
+// ktfHostInstanceFieldOffsets maps every instance field a host-modelled class
+// declares to its reserved slot inside an object's field block. The slots are
+// handed out in sorted key order so the layout is a property of the build and
+// not of the order a title happens to resolve its fields in: the offsets end
+// up inside guest memory, which a save state captures.
+var ktfHostInstanceFieldOffsets = buildKTFHostInstanceFieldOffsets()
+
+// ktfHostReservedFieldLimit is the first byte past the reserved region.
+var ktfHostReservedFieldLimit = ktfHostReservedFieldOffset +
+	uint32(len(ktfHostInstanceFieldOffsets))*8
+
+// ktfHostInstanceFieldClasses names the host-modelled classes that declare at
+// least one instance field, so an allocation can decide whether to reserve the
+// region by walking names it already has.
+var ktfHostInstanceFieldClasses = buildKTFHostInstanceFieldClasses()
+
+func buildKTFHostInstanceFieldOffsets() map[string]uint32 {
+	keys := make([]string, 0, 8)
+	for className, spec := range HostJavaClassSpecs {
+		for _, field := range spec.fields {
+			keys = append(
+				keys,
+				className+"."+field.name+field.descriptor,
+			)
+		}
+	}
+	sort.Strings(keys)
+	offsets := make(map[string]uint32, len(keys))
+	for index, key := range keys {
+		offsets[key] = ktfHostReservedFieldOffset + uint32(index)*8
+	}
+	return offsets
+}
+
+func buildKTFHostInstanceFieldClasses() map[string]bool {
+	classes := make(map[string]bool, 4)
+	for className, spec := range HostJavaClassSpecs {
+		if len(spec.fields) != 0 {
+			classes[className] = true
+		}
+	}
+	return classes
+}
+
+// ktfHostInstanceFieldOffset answers the reserved offset for a declared host
+// instance field.
+func ktfHostInstanceFieldOffset(
+	className, name, descriptor string,
+) (uint32, bool) {
+	offset, ok := ktfHostInstanceFieldOffsets[className+"."+name+descriptor]
+	return offset, ok
+}
+
+// hostJavaInstanceFieldValue is the value a freshly allocated instance starts
+// a declared host instance field at. It mirrors hostJavaStaticFieldValue for
+// per-receiver state; a field with no host model stays zero, which is the null
+// or 0 a handset field starts at anyway.
+func (r *Runtime) hostJavaInstanceFieldValue(
+	className, name string,
+) (uint32, error) {
+	if className == "org/kwis/msp/lwc/TextComponent" && name == "imHandler" {
+		return r.sharedHostInputMethodHandler()
+	}
+	return 0, nil
 }
 
 func (r *Runtime) hostJavaStaticFieldValue(

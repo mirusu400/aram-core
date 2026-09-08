@@ -97,7 +97,7 @@ func (r *Runtime) drawKTFJavaImage(
 	x, y int,
 	anchor uint32,
 ) {
-	r.drawKTFJavaImageRaw(state, source, x, y, anchor)
+	r.drawKTFJavaImageRaw(state, imageAddress, source, x, y, anchor)
 	compat := r.menuForegroundCompat
 	if compat == nil || state == nil || source == nil {
 		return
@@ -130,6 +130,7 @@ func (r *Runtime) drawKTFJavaImage(
 		if pendingSource != nil {
 			r.drawKTFJavaImageRaw(
 				state,
+				pending.image,
 				pendingSource,
 				pending.x,
 				pending.y,

@@ -557,6 +557,17 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	},
 	"org/kwis/msp/lwc/TextComponent": {
 		Parent: "org/kwis/msp/lwc/Component",
+		// Both are per-component handset state, and both have been observed
+		// being read through a receiver by the guest's own getfield helper:
+		// the helper loads the record's offset word and indexes the
+		// receiver's field block with it (issues #156 and #168).
+		fields: []ktfHostJavaFieldSpec{
+			{
+				name:       "imHandler",
+				descriptor: "Lorg/kwis/msp/lcdui/InputMethodHandler;",
+			},
+			{name: "m_td", descriptor: "[C"},
+		},
 	},
 	"org/kwis/msp/lwc/AnnunciatorComponent": {
 		Parent: "org/kwis/msp/lwc/ShellComponent",

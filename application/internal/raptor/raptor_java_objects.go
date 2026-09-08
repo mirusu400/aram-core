@@ -183,10 +183,20 @@ func (r *Runtime) raptorJavaClassForObject(
 	if class := java.classes[object]; class != nil {
 		return class
 	}
+	// Lowest holder wins rather than whichever the map produced first: two
+	// classes can carry the same class object, and answering a different one
+	// from run to run is the same replay-breaking nondeterminism
+	// raptorJavaLinkOrder exists to remove.
+	var byClassObject *raptorJavaClass
 	for _, class := range java.classes {
 		if class.classObject != 0 && class.classObject == object {
-			return class
+			if byClassObject == nil || class.Holder < byClassObject.Holder {
+				byClassObject = class
+			}
 		}
+	}
+	if byClassObject != nil {
+		return byClassObject
 	}
 	holder, err := r.Public.ReadU32(object + 4)
 	if err != nil {
@@ -576,13 +586,32 @@ func (r *Runtime) callJavaHostMethod(
 			class := r.raptorJavaClassForObject(java, runnable)
 			for depth := 0; class != nil && depth < 256; depth++ {
 				if run, found := DeclaredMethod(class, "run", "()V"); found && run.Body != 0 {
+					callback := wipirt.GuestCallback{
+						Procedure: run.Body,
+						Args:      [4]uint32{runnable},
+					}
+					// callSerially hands the runnable to the event loop; it
+					// does not run it inside the caller. The distinction only
+					// matters for the loop idiom - a run() that re-arms itself
+					// with callSerially before returning - which running the
+					// runnable inline turns into unbounded recursion:
+					// 스파이더맨3's launch class re-arms on every pass and hit
+					// the host-call nesting limit before its first frame.
+					// Titles that call it once still see the runnable run in
+					// the same call, which is what every existing Raptor
+					// result was measured with.
+					if java.callSerially > 0 {
+						r.CallbackTasks = append(r.CallbackTasks, &CallbackTask{
+							Callback: callback,
+						})
+						return guest.WIPIReturn{}, nil
+					}
 					if r.Public.InvokeSync == nil {
 						break
 					}
-					_, callErr := r.Public.InvokeSync(ctx, wipirt.GuestCallback{
-						Procedure: run.Body,
-						Args:      [4]uint32{runnable},
-					})
+					java.callSerially++
+					_, callErr := r.Public.InvokeSync(ctx, callback)
+					java.callSerially--
 					return guest.WIPIReturn{}, callErr
 				}
 				class = java.ClassByName[class.parentName]
