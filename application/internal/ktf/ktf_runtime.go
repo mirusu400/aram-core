@@ -53,22 +53,21 @@ const (
 	ktfHostVirtualSlotBase        = uint16(256)
 	ktfHostVirtualTableReserve    = uint32(512)
 
-	// ktfHostReservedFieldOffset is where a host-invented *instance* field
-	// (currently only org/kwis/msp/lwc/TextComponent.imHandler) lives inside
-	// an object's fields block. addHostJavaField never has a real guest
-	// offset to hand out for such a field: the field's declaring class is
-	// entirely host-fabricated (issue #168/#156's TextComponent has no
-	// guest-compiled descriptor at all), and its concrete subclasses are
-	// real guest classes whose own fields already fill their whole declared
-	// FieldSize starting at offset 0 - there is no low offset that does not
-	// alias a real field on some subclass. Placing the reserved field far
-	// above any FieldSize seen in the corpus (the largest measured, a
-	// framework Canvas subclass, is 1800 bytes) avoids that collision by
-	// construction: guest code compiled against any subclass only ever
-	// touches offsets below its own FieldSize, so it can never reach here
-	// on its own, and the one field struct this offset is shared by (there
-	// is only ever one org/kwis/msp/lwc/TextComponent class) sees the same
-	// offset from every receiver regardless of its concrete subclass.
+	// ktfHostReservedFieldOffset is where the *instance* fields a host model
+	// declares (ktfHostJavaClassSpec.fields) start inside an object's fields
+	// block. addHostJavaField never has a real guest offset to hand out for
+	// such a field: the declaring class is entirely host-fabricated (issue
+	// #168/#156's TextComponent has no guest-compiled descriptor at all),
+	// and its concrete subclasses are real guest classes whose own fields
+	// already fill their whole declared FieldSize starting at offset 0 -
+	// there is no low offset that does not alias a real field on some
+	// subclass. Placing the reserved fields far above any FieldSize seen in
+	// the corpus (the largest measured, a framework Canvas subclass, is 1800
+	// bytes) avoids that collision by construction: guest code compiled
+	// against any subclass only ever touches offsets below its own
+	// FieldSize, so it can never reach here on its own, and each declaring
+	// class is a single host class, so its field sits at the same offset in
+	// every receiver regardless of the concrete subclass.
 	ktfHostReservedFieldOffset = uint32(0x8000)
 
 	// KTF games commonly start their render thread before startApp has
@@ -283,11 +282,12 @@ type Runtime struct {
 	fileStreamTargets     map[uint32]uint32
 	systemInputStream     uint32
 	systemPrintStream     uint32
-	// hostReservedFieldClass is org/kwis/msp/lwc/TextComponent's class
-	// address once addHostJavaField has invented its imHandler field, or 0
-	// if no title has resolved that field yet. NewJavaInstanceForClass only
-	// walks a new instance's ancestry looking for it when this is nonzero,
-	// so a title that never touches TextComponent.imHandler pays nothing.
+	// hostReservedFieldClass named the one class whose invented imHandler
+	// field forced a reserved slot. Nothing reads it now: which instances
+	// reserve the region follows from the host classes that declare
+	// instance fields (ktfHostInstanceFieldOffsets), not from whichever
+	// class a title happened to resolve a field on first. The field and its
+	// save-state slot stay so an existing state still restores.
 	hostReservedFieldClass   uint32
 	sharedInputMethodHandler uint32
 	images                   map[uint32]image.Image
@@ -324,6 +324,9 @@ type Runtime struct {
 	nextWIPICDatabase      uint32
 	wipicPixelOpResults    map[ktfWIPICPixelOpKey]uint16
 	brokenWIPICPixelOps    map[uint32]bool
+	// reservedFieldOwners caches, per class address, the host-modelled
+	// ancestors that declare instance fields.
+	reservedFieldOwners map[uint32][]string
 	// InputWaiting is set by the machine before each task slice when it holds
 	// a key event that is due and has not reached the card yet. paintCard
 	// consults it so a repaint the card requested from inside its own paint
@@ -470,6 +473,20 @@ type ktfHostJavaClassSpec struct {
 	Parent    string
 	fieldSize uint16
 	methods   []ktfHostJavaMethodSpec
+	// fields names the *instance* fields the handset class really declares.
+	// A host-modelled class carries no guest field table, so a title that
+	// reads one of its fields makes addHostJavaField invent the record. An
+	// invented record has to publish an offset, and offset 0 is a real field
+	// of every guest subclass, so an undeclared field is answered as a class
+	// constant instead. Naming a field here says "the guest reads this
+	// through a receiver", and gives it a reserved per-instance slot that no
+	// subclass layout can reach. See ktfHostReservedFieldOffset.
+	fields []ktfHostJavaFieldSpec
+}
+
+type ktfHostJavaFieldSpec struct {
+	name       string
+	descriptor string
 }
 
 type Database struct {

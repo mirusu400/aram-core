@@ -118,13 +118,13 @@ func (r *Runtime) NewJavaInstanceForClass(class JavaClass) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
-	needsReserved, err := r.instanceNeedsReservedField(class)
+	reservedOwners, err := r.instanceReservedFieldOwners(class)
 	if err != nil {
 		return 0, err
 	}
 	size := uint32(class.FieldSize) + 4
-	if needsReserved && ktfHostReservedFieldOffset+8 > size {
-		size = ktfHostReservedFieldOffset + 8
+	if len(reservedOwners) != 0 && ktfHostReservedFieldLimit+4 > size {
+		size = ktfHostReservedFieldLimit + 4
 	}
 	fields, err := r.allocateJavaHeapBytes(size, true)
 	if err != nil {
@@ -139,41 +139,65 @@ func (r *Runtime) NewJavaInstanceForClass(class JavaClass) (uint32, error) {
 	if err := r.writeWords(instance, []uint32{fields, class.Address}); err != nil {
 		return 0, err
 	}
-	if needsReserved {
-		handler, err := r.sharedHostInputMethodHandler()
-		if err != nil {
-			return 0, err
-		}
-		if err := r.WriteU32(fields+4+ktfHostReservedFieldOffset, handler); err != nil {
-			return 0, err
+	for _, owner := range reservedOwners {
+		for _, field := range HostJavaClassSpecs[owner].fields {
+			value, err := r.hostJavaInstanceFieldValue(owner, field.name)
+			if err != nil {
+				return 0, err
+			}
+			if value == 0 {
+				continue
+			}
+			offset, ok := ktfHostInstanceFieldOffset(
+				owner,
+				field.name,
+				field.descriptor,
+			)
+			if !ok {
+				continue
+			}
+			if err := r.WriteU32(fields+4+offset, value); err != nil {
+				return 0, err
+			}
 		}
 	}
 	return instance, nil
 }
 
-// instanceNeedsReservedField reports whether class or any ancestor is
-// org/kwis/msp/lwc/TextComponent after it has invented an instance-style
-// imHandler field (see ktfHostReservedFieldOffset). r.hostReservedFieldClass
-// stays 0 for every title that never resolves that field, so this is a
-// single comparison for the overwhelming majority of instances created.
-func (r *Runtime) instanceNeedsReservedField(class JavaClass) (bool, error) {
-	if r.hostReservedFieldClass == 0 {
-		return false, nil
+// instanceReservedFieldOwners names the host-modelled ancestors of class that
+// declare instance fields, so its objects reserve and initialise those slots.
+// The answer depends only on the class chain, so it is decided once per class
+// rather than per allocation, and it no longer depends on whether the title
+// has already resolved one of those fields: an object built before the first
+// resolution used to get no reserved space at all.
+func (r *Runtime) instanceReservedFieldOwners(
+	class JavaClass,
+) ([]string, error) {
+	if len(ktfHostInstanceFieldClasses) == 0 {
+		return nil, nil
 	}
-	if class.Address == r.hostReservedFieldClass {
-		return true, nil
+	if owners, ok := r.reservedFieldOwners[class.Address]; ok {
+		return owners, nil
+	}
+	var owners []string
+	if ktfHostInstanceFieldClasses[class.Name] {
+		owners = append(owners, class.Name)
 	}
 	for address := class.Parent; address != 0; {
-		if address == r.hostReservedFieldClass {
-			return true, nil
-		}
 		ancestor, err := r.InspectJavaClass(address)
 		if err != nil {
-			return false, err
+			return nil, err
+		}
+		if ktfHostInstanceFieldClasses[ancestor.Name] {
+			owners = append(owners, ancestor.Name)
 		}
 		address = ancestor.Parent
 	}
-	return false, nil
+	if r.reservedFieldOwners == nil {
+		r.reservedFieldOwners = make(map[uint32][]string)
+	}
+	r.reservedFieldOwners[class.Address] = owners
+	return owners, nil
 }
 
 // sharedHostInputMethodHandler answers every org/kwis/msp/lwc/TextComponent
