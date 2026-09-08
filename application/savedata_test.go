@@ -97,6 +97,47 @@ func TestImportSaveDataRebindsKTFDatabases(t *testing.T) {
 	}
 }
 
+// A KTF title that writes its own private file (through either the Java File
+// class or the WIPI-C file natives) must find that file again on its next
+// launch. FileData is populated once at boot from the package's shipped P/
+// template and otherwise only self-heals when a path is individually reopened
+// or rewritten, so restoring save data into storage without also rebuilding
+// FileData leaves a title-created file - one that was never part of that boot
+// template - with no mirror entry. ktfWIPICFileRemove and ktfWIPICFileRename
+// (application/internal/ktf/ktf_wipic_fs.go) trust that mirror key, not
+// shared.Storage, as their existence check, so a native remove or rename of a
+// file the title only just saved reports "does not exist" on the title's very
+// next launch - the same class of fault AdoptPersistedDatabases fixed for
+// record stores in issue #61, now fixed for files by AdoptPersistedFiles.
+func TestImportSaveDataRebindsKTFFiles(t *testing.T) {
+	source := newSyntheticKTFMachine(t)
+	const filename = "/save1.dat"
+	content := []byte{1, 2, 3, 4, 5}
+	check(t, source.ktf.Services.Storage.WriteFile(
+		shared.NamespacePrivate,
+		filename,
+		content,
+	))
+
+	saved, err := source.ExportSaveData()
+	check(t, err)
+	if len(saved) == 0 {
+		t.Fatal("exported KTF save data is empty")
+	}
+
+	restored := newSyntheticKTFMachine(t)
+	check(t, restored.ImportSaveData(saved))
+	if got, ok := restored.ktf.FileData[filename]; !ok {
+		t.Fatalf(
+			"restored KTF FileData = %v, want an entry for %q",
+			restored.ktf.FileData,
+			filename,
+		)
+	} else if !bytes.Equal(got, content) {
+		t.Fatalf("restored KTF file %q = %v, want %v", filename, got, content)
+	}
+}
+
 // The public WIPI adapter keys record stores by mode and name. A restored save
 // must land back under the same key, otherwise MC_dbOpenDataBase silently fails
 // to create the store and the title loses its save.

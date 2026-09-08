@@ -790,6 +790,36 @@ func (r *Runtime) ktfFreeStorageBytes() uint64 {
 	return limit - used
 }
 
+// AdoptPersistedFiles rebuilds the KTF private-file mirror (FileData) after
+// the shared storage service imports restart-persistent private data. The
+// mirror is populated once at boot from the package's shipped P/ template and
+// otherwise only self-heals when a path is individually opened or written
+// again. Restoring save data replaces the live files underneath it, but a
+// title-created file that was not part of that boot template has no entry
+// until something reopens it - and the WIPI-C natives in ktf_wipic_fs.go
+// trust the mirror's key, not shared.Storage, as their existence check for
+// Remove and Rename (see ktfWIPICFileRemove/ktfWIPICFileRename). Left stale,
+// a native remove or rename of a file the title only just saved reports "does
+// not exist" on the very next launch - the same class of fault
+// AdoptPersistedDatabases fixed for record stores in issue #61.
+//
+// Call it after storage persistence is imported and before the title starts,
+// while no KTF file handle is open yet.
+func (r *Runtime) AdoptPersistedFiles() error {
+	if r == nil || r.Services == nil || r.Services.Storage == nil {
+		return fmt.Errorf("KTF services are missing")
+	}
+	files := make(map[string][]byte, len(r.FileData))
+	for _, saved := range r.Services.Storage.Snapshot().Files {
+		if saved.Namespace != shared.NamespacePrivate {
+			continue
+		}
+		files[saved.Path] = append([]byte(nil), saved.Data...)
+	}
+	r.FileData = files
+	return nil
+}
+
 // recordUnimplementedJava keeps modeled-class methods that fall through their
 // handler visible in diagnostics. Without it a silent zero looks like a real
 // answer, which is how a missing free-space query reads as an empty disk.

@@ -104,6 +104,9 @@ func (m *Machine) ImportSaveData(data []byte) error {
 func (m *Machine) adoptPersistedStorage() error {
 	switch {
 	case m.ktf != nil:
+		if err := m.ktf.AdoptPersistedFiles(); err != nil {
+			return err
+		}
 		return m.ktf.AdoptPersistedDatabases()
 	case m.wipi != nil:
 		if err := m.wipi.AdoptPersistedFilesystem(); err != nil {
