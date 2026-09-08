@@ -2295,6 +2295,51 @@ func TestKTFRelinkHostJavaMethodStubsFillsEmptyBodySlot(t *testing.T) {
 	}
 }
 
+// A third concrete title (크림슨블레이드) reproduced the same issue #172
+// pattern through StringBuffer.append(I), a receiver method rather than the
+// static Vibrator.on or String.valueOf cases above: a cached call site that
+// carries the native-slot address with no tracked method name at all still
+// has to dispatch, not fault, once both body slots hold the stub.
+func TestKTFCallNativeDispatchesStringBufferAppendIntWithoutTrackedName(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	class := ensureClass(t, runtime, "java/lang/StringBuffer")
+	methodAddress, err := runtime.resolveJavaMethod(
+		class,
+		"append",
+		"(I)Ljava/lang/StringBuffer;",
+	)
+	check(t, err)
+	method, err := runtime.InspectJavaMethod(methodAddress)
+	check(t, err)
+	if method.NativeBody == 0 || method.Body != method.NativeBody {
+		t.Fatalf("StringBuffer.append(I) layout = %+v", method)
+	}
+	if _, host := runtime.hostCalls[method.NativeBody&^1]; !host {
+		t.Fatalf("native body 0x%08x is not a host stub", method.NativeBody)
+	}
+	buffer := allocWords(t, runtime, 4)
+	runtime.stringBuffers[buffer] = "score:"
+	parameters := allocWords(t, runtime, 4)
+	check(t, runtime.writeWords(parameters, []uint32{buffer, 5, 0, 0}))
+	// A fresh task has no method name to fall back on.
+	runtime.LastJavaMethod = ""
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, method.NativeBody))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, parameters))
+	result, err := ktfCallNative(context.Background(), runtime)
+	check(t, err)
+	if result != parameters {
+		t.Fatalf("call-native result = 0x%08x", result)
+	}
+	if got := runtime.stringBuffers[buffer]; got != "score:5" {
+		t.Fatalf("StringBuffer = %q, want %q", got, "score:5")
+	}
+	returned := readU32(t, runtime, parameters)
+	if returned != buffer {
+		t.Fatalf("StringBuffer.append(I) returned 0x%08x, want the receiver 0x%08x", returned, buffer)
+	}
+}
+
 func TestKTFCallNativeRoutesGraphicsMethodsThroughFramebufferModel(t *testing.T) {
 	runtime := newTestRuntime(t)
 	runtime.JvmContext = allocWords(t, runtime, 3+128)
