@@ -25,12 +25,6 @@ const raptorJavaHostModule = ^uint32(0)
 // a vtable we built, which lives in the heap.
 const raptorJavaHeapBase = uint32(0x10000000)
 
-// raptorJavaMaxFieldOffset bounds the byte offset accepted by the getfield /
-// putfield accessors. A real object field block is at most a few kilobytes; a
-// larger r2 value is not a field index, so it is ignored rather than used to
-// read or write an unrelated address.
-const raptorJavaMaxFieldOffset = uint32(0x10000)
-
 // raptorPrimitiveArrayElementChar maps a JVM primitive array type code (the
 // atype operand of newarray) to the field-descriptor character that
 // newRaptorJavaArray decodes into an element width. It returns 0 for values
@@ -899,36 +893,10 @@ func (r *Runtime) dispatchJavaImport(
 		}
 		return guest.WIPIReturn{}, "RAPTOR.java.arrayStore", true,
 			r.storeRaptorJavaArray(array, index, value)
-	case 86: // getfield-style accessor: r0=object, r2=byte offset into fields.
-		// Only small offsets are treated as field-block indices; a large r2 is
-		// not a field offset (some call sites pass an unrelated reference), so
-		// it falls through to the safe zero return the unimplemented path also
-		// gives, rather than reading an out-of-range address.
-		obj, err := r.CPU.ReadRegister(cpu.RegisterR0)
-		if err != nil {
-			return guest.WIPIReturn{}, "RAPTOR.java.getField", true, err
-		}
-		off, _ := r.CPU.ReadRegister(cpu.RegisterR2)
-		var value uint32
-		if obj != 0 && off < raptorJavaMaxFieldOffset {
-			if body, rerr := r.Public.ReadU32(obj + 8); rerr == nil && body != 0 {
-				value, _ = r.Public.ReadU32(body + off)
-			}
-		}
-		return guest.WIPIReturn{Low: value}, "RAPTOR.java.getField", true, nil
-	case 87: // putfield-style accessor: r0=object, r1=value, r2=byte offset.
-		obj, err := r.CPU.ReadRegister(cpu.RegisterR0)
-		if err != nil {
-			return guest.WIPIReturn{}, "RAPTOR.java.putField", true, err
-		}
-		value, _ := r.CPU.ReadRegister(cpu.RegisterR1)
-		off, _ := r.CPU.ReadRegister(cpu.RegisterR2)
-		if obj != 0 && off < raptorJavaMaxFieldOffset {
-			if body, rerr := r.Public.ReadU32(obj + 8); rerr == nil && body != 0 {
-				_ = r.Public.WriteU32(body+off, value)
-			}
-		}
-		return guest.WIPIReturn{}, "RAPTOR.java.putField", true, nil
+	case 100:
+		return r.raptorJavaDispatchTable()
+	case 86, 87:
+		return r.raptorJavaMonitorHelper(key.Ordinal)
 	}
 	return guest.WIPIReturn{}, "", false, nil
 }
