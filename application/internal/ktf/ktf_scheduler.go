@@ -464,9 +464,9 @@ func (r *Runtime) QueueKeyEvent(pressed bool, key int32) (bool, error) {
 		return false, nil
 	}
 	card := r.DisplayCards[r.DefaultDisplay]
-	eventType := KeyReleased
-	if pressed {
-		eventType = KeyPressed
+	eventType, err := r.keyEventType(card, pressed)
+	if err != nil {
+		return false, err
 	}
 	task, err := r.queueJavaVirtualTask(
 		card,
@@ -491,6 +491,34 @@ func (r *Runtime) QueueKeyEvent(pressed bool, key int32) (bool, error) {
 		card,
 	)
 	return true, nil
+}
+
+// keyEventType chooses the callback ABI the selected card was compiled for.
+// Regular KWIS Card and LWC handlers use 1 for press and 2 for release. A
+// Clet$CletCard is the Java facade over KTF's native Clet dispatcher, whose
+// two values are reversed: the native Clet treats 2 as a press and 1 as a
+// release. Feeding it the regular Card values can dispatch a press to an
+// inactive native callback slot (issue #237).
+func (r *Runtime) keyEventType(card uint32, pressed bool) (uint32, error) {
+	eventType := KeyReleased
+	if pressed {
+		eventType = KeyPressed
+	}
+	cardWords, err := r.ReadWords(card, 2)
+	if err != nil {
+		return 0, err
+	}
+	class, err := r.InspectJavaClass(cardWords[1])
+	if err != nil {
+		return 0, err
+	}
+	if class.Name == "Clet$CletCard" {
+		if pressed {
+			return KeyReleased, nil
+		}
+		return KeyPressed, nil
+	}
+	return eventType, nil
 }
 
 func (r *Runtime) pendingKeyTask(card uint32) *Task {
