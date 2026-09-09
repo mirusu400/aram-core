@@ -916,10 +916,18 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 			case "getRuntime()Ljava/lang/Runtime;":
 				return runtime.ensureJavaRuntime()
 			case "freeMemory()J":
-				return runtime.javaLongResult(uint64(guest.HeapSize / 2)), nil
+				var free uint64
+				for _, block := range runtime.Heap.Root().Free {
+					free += uint64(block.Size)
+				}
+				return runtime.javaLongResult(free), nil
 			case "totalMemory()J":
 				return runtime.javaLongResult(uint64(guest.HeapSize)), nil
-			case "gc()V", "exit(I)V":
+			case "gc()V":
+				runtime.collectJavaHeap()
+				return 0, nil
+			case "exit(I)V":
+				runtime.requestJavaTermination(0)
 				return 0, nil
 			}
 		case "java/util/Calendar", "java/util/GregorianCalendar":

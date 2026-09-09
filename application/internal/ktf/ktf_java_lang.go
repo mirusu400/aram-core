@@ -663,7 +663,7 @@ func (r *Runtime) handleRandomMethod(
 	}
 	switch name + descriptor {
 	case "<init>()V":
-		setSeed(uint64(instance))
+		setSeed(r.monotonicReadMS())
 		return 0, nil
 	case "<init>(J)V", "setSeed(J)V":
 		low, valueErr := r.parameter(2)
@@ -684,22 +684,34 @@ func (r *Runtime) handleRandomMethod(
 			return 0, valueErr
 		}
 		if int32(bound) <= 0 {
-			return 0, nil
+			return 0, r.raiseHostJavaException("java/lang/IllegalArgumentException")
 		}
-		value, valueErr := next(31)
-		if valueErr != nil {
-			return 0, valueErr
+		// java.util.Random uses a fast path for powers of two and rejection
+		// sampling otherwise. A simple multiply-and-shift biases non-power-of-two
+		// bounds, which is observable in games that shuffle or roll frequently.
+		if bound&(bound-1) == 0 {
+			value, nextErr := next(31)
+			if nextErr != nil {
+				return 0, nextErr
+			}
+			return uint32(uint64(bound) * uint64(value) >> 31), nil
 		}
-		return uint32(uint64(value) * uint64(bound) >> 31), nil
+		for {
+			bits, nextErr := next(31)
+			if nextErr != nil {
+				return 0, nextErr
+			}
+			value := bits % bound
+			if int32(bits-value+(bound-1)) >= 0 {
+				return value, nil
+			}
+		}
 	case "nextBoolean()Z":
 		return next(1)
 	case "next(I)I":
 		bits, valueErr := r.parameter(2)
 		if valueErr != nil {
 			return 0, valueErr
-		}
-		if bits == 0 || bits > 32 {
-			bits = 32
 		}
 		return next(uint8(bits))
 	case "nextLong()J":
