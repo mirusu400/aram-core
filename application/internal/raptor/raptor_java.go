@@ -142,6 +142,25 @@ var raptorJavaReaderVirtualMethods = []raptorJavaFixedVirtualMethod{
 	{offset: 0x4c, Name: "close", descriptor: "()V"},
 }
 
+var raptorJavaInputStreamVirtualMethods = []raptorJavaFixedVirtualMethod{
+	{offset: 0x2c, Name: "read", descriptor: "()I"},
+	{offset: 0x30, Name: "read", descriptor: "([B)I"},
+	{offset: 0x34, Name: "read", descriptor: "([BII)I"},
+	{offset: 0x38, Name: "skip", descriptor: "(J)J"},
+	{offset: 0x3c, Name: "available", descriptor: "()I"},
+	{offset: 0x40, Name: "close", descriptor: "()V"},
+	{offset: 0x44, Name: "mark", descriptor: "(I)V"},
+	{offset: 0x4c, Name: "reset", descriptor: "()V"},
+}
+
+var raptorJavaOutputStreamVirtualMethods = []raptorJavaFixedVirtualMethod{
+	{offset: 0x2c, Name: "write", descriptor: "(I)V"},
+	{offset: 0x30, Name: "write", descriptor: "([B)V"},
+	{offset: 0x34, Name: "write", descriptor: "([BII)V"},
+	{offset: 0x38, Name: "flush", descriptor: "()V"},
+	{offset: 0x3c, Name: "close", descriptor: "()V"},
+}
+
 var raptorJavaFixedVirtualMethods = map[string][]raptorJavaFixedVirtualMethod{
 	"java/lang/String": {
 		{offset: 0x10, Name: "equals", descriptor: "(Ljava/lang/Object;)Z"},
@@ -234,19 +253,20 @@ var raptorJavaFixedVirtualMethods = map[string][]raptorJavaFixedVirtualMethod{
 		{offset: 0x58, Name: "copyInto", descriptor: "([Ljava/lang/Object;)V"},
 		{offset: 0x5c, Name: "elements", descriptor: "()Ljava/util/Enumeration;"},
 	},
-	"java/io/InputStream": {
-		// CLDC order: read(), read([B), read([BII), skip, available, close,
-		// mark, markSupported, reset. 체스마스터 calls slot 0x3c on the stream
-		// from getResourceAsStream before sizing its buffer: available().
-		{offset: 0x2c, Name: "read", descriptor: "()I"},
-		{offset: 0x30, Name: "read", descriptor: "([B)I"},
-		{offset: 0x34, Name: "read", descriptor: "([BII)I"},
-		{offset: 0x38, Name: "skip", descriptor: "(J)J"},
-		{offset: 0x3c, Name: "available", descriptor: "()I"},
-		{offset: 0x40, Name: "close", descriptor: "()V"},
-		{offset: 0x44, Name: "mark", descriptor: "(I)V"},
-		{offset: 0x4c, Name: "reset", descriptor: "()V"},
-	},
+	// CLDC order: read(), read([B), read([BII), skip, available, close,
+	// mark, markSupported, reset. 체스마스터 calls slot 0x3c on the stream
+	// from getResourceAsStream before sizing its buffer: available().
+	//
+	// The concrete entry is intentional. Synthetic host classes only enter the
+	// Raptor class graph when the guest imports or receives them; a returned
+	// DataInputStream can therefore have no InputStream parent node to inherit
+	// from. 배틀몬스터 calls read([B) at slot 0x30 on exactly that wrapper (#235).
+	"java/io/InputStream":     raptorJavaInputStreamVirtualMethods,
+	"java/io/DataInputStream": raptorJavaInputStreamVirtualMethods,
+	// The same returned-wrapper rule applies to DataOutputStream. 배틀몬스터
+	// calls write([BII) and flush at slots 0x34 and 0x38 respectively (#235).
+	"java/io/OutputStream":     raptorJavaOutputStreamVirtualMethods,
+	"java/io/DataOutputStream": raptorJavaOutputStreamVirtualMethods,
 	// A Reader declares read(), read(char[]), read(char[],int,int), skip,
 	// ready, markSupported, mark, reset, close in that order, so its slots line
 	// up from 0x2c exactly as java/io/InputStream's do. 현영맞고2006 reads its
@@ -1360,10 +1380,12 @@ func (r *Runtime) linkRaptorJavaClasses(java *JavaRuntime) error {
 	fields := arguments[1]
 	staticFields := arguments[2]
 	virtualMethods := arguments[3]
+	interfaceMethods := arguments[4]
 	staticMethods := arguments[5]
 	staticFieldOffsets := arguments[7]
 	fieldOffsets := arguments[6]
 	virtualMethodOffsets := arguments[8]
+	interfaceMethodOffsets := arguments[9]
 	staticMethodOffsets := arguments[10]
 	classCount, err := r.Public.ReadU32(importedClasses)
 	if err != nil || classCount > 4096 {
@@ -1373,13 +1395,16 @@ func (r *Runtime) linkRaptorJavaClasses(java *JavaRuntime) error {
 		class             *raptorJavaClass
 		virtualStart      uint16
 		virtualCount      uint16
+		interfaceStart    uint16
+		interfaceCount    uint16
 		staticMethodStart uint16
 		staticMethodCount uint16
 		staticFieldStart  uint16
 		staticFieldCount  uint16
 	}
 	imports := make([]importedClass, 0, classCount)
-	maxVirtual, maxStaticMethod, maxStaticField := uint32(0), uint32(0), uint32(0)
+	maxVirtual, maxInterface := uint32(0), uint32(0)
+	maxStaticMethod, maxStaticField := uint32(0), uint32(0)
 	for index := uint32(0); index < classCount; index++ {
 		record := importedClasses + 4 + index*24
 		nameAddress, _ := r.Public.ReadU32(record)
@@ -1389,6 +1414,7 @@ func (r *Runtime) linkRaptorJavaClasses(java *JavaRuntime) error {
 		}
 		staticFieldRange, _ := r.Public.ReadU32(record + 8)
 		virtualRange, _ := r.Public.ReadU32(record + 12)
+		interfaceRange, _ := r.Public.ReadU32(record + 16)
 		staticMethodRange, _ := r.Public.ReadU32(record + 20)
 		class, err := r.ensureRaptorHostClass(java, string(nameBytes))
 		if err != nil {
@@ -1400,13 +1426,19 @@ func (r *Runtime) linkRaptorJavaClasses(java *JavaRuntime) error {
 			staticFieldCount:  uint16(staticFieldRange >> 16),
 			virtualStart:      uint16(virtualRange),
 			virtualCount:      uint16(virtualRange >> 16),
+			interfaceStart:    uint16(interfaceRange),
+			interfaceCount:    uint16(interfaceRange >> 16),
 			staticMethodStart: uint16(staticMethodRange),
 			staticMethodCount: uint16(staticMethodRange >> 16),
 		}
 		imports = append(imports, entry)
 		maxVirtual = max(maxVirtual, uint32(entry.virtualStart)+uint32(entry.virtualCount))
+		maxInterface = max(maxInterface, uint32(entry.interfaceStart)+uint32(entry.interfaceCount))
 		maxStaticMethod = max(maxStaticMethod, uint32(entry.staticMethodStart)+uint32(entry.staticMethodCount))
 		maxStaticField = max(maxStaticField, uint32(entry.staticFieldStart)+uint32(entry.staticFieldCount))
+	}
+	if maxInterface > 4096 {
+		return fmt.Errorf("invalid Raptor Java interface method table size %d", maxInterface)
 	}
 	// The virtual offset table runs to the next linker-filled table in the zero
 	// section; SDK revisions order those tables differently, and in the older
@@ -1448,7 +1480,13 @@ func (r *Runtime) linkRaptorJavaClasses(java *JavaRuntime) error {
 			effectiveCount = index + 1
 		}
 	}
-	java.flatVirtual = make([]raptorJavaMethod, effectiveCount)
+	// Interface calls use the same flat vtable as ordinary virtual calls, but
+	// the AOT linker supplies a separate descriptor table and separate signed
+	// halfword output table for them (arguments 4 and 9). 배틀몬스터's Socket
+	// import puts close/getInputStream/getOutputStream in that table. Ignoring
+	// it left all three output offsets zero, so both stream accessors dispatched
+	// through vtable+4 to the no-op backstop (#235).
+	java.flatVirtual = make([]raptorJavaMethod, effectiveCount+maxInterface)
 	for index := uint32(0); index < effectiveCount; index++ {
 		java.flatVirtual[index] = raptorJavaMethod{
 			Name: names[index], descriptor: descriptors[index],
@@ -1465,12 +1503,34 @@ func (r *Runtime) linkRaptorJavaClasses(java *JavaRuntime) error {
 			return err
 		}
 	}
+	for index := uint32(0); index < maxInterface; index++ {
+		nameAddress, _ := r.Public.ReadU32(interfaceMethods + index*8)
+		typeAddress, _ := r.Public.ReadU32(interfaceMethods + index*8 + 4)
+		name, _ := r.Public.ReadCString(nameAddress)
+		descriptor, _ := r.Public.ReadCString(typeAddress)
+		java.flatVirtual[effectiveCount+index] = raptorJavaMethod{
+			Name: string(name), descriptor: string(descriptor),
+		}
+		var encoded [2]byte
+		binary.LittleEndian.PutUint16(
+			encoded[:],
+			uint16(raptorJavaFlatVirtualBase+(effectiveCount+index)*2),
+		)
+		if err := r.CPU.WriteMemory(interfaceMethodOffsets+index*2, encoded[:]); err != nil {
+			return err
+		}
+	}
+	vtableCount := max(virtualCount, uint32(len(java.flatVirtual)))
 	for _, entry := range imports {
 		for offset := uint32(0); offset < uint32(entry.virtualCount); offset++ {
 			index := uint32(entry.virtualStart) + offset
 			java.flatVirtual[index].className = entry.class.Name
 		}
-		if err := r.buildRaptorJavaVTable(java, entry.class, effectiveCount); err != nil {
+		for offset := uint32(0); offset < uint32(entry.interfaceCount); offset++ {
+			index := effectiveCount + uint32(entry.interfaceStart) + offset
+			java.flatVirtual[index].className = entry.class.Name
+		}
+		if err := r.buildRaptorJavaVTable(java, entry.class, vtableCount); err != nil {
 			return err
 		}
 		for offset := uint32(0); offset < uint32(entry.staticMethodCount); offset++ {
@@ -1542,7 +1602,7 @@ func (r *Runtime) linkRaptorJavaClasses(java *JavaRuntime) error {
 	// map iteration.
 	for _, class := range raptorJavaLinkOrder(java) {
 		if class.hostClass == 0 {
-			if err := r.buildRaptorJavaVTable(java, class, virtualCount); err != nil {
+			if err := r.buildRaptorJavaVTable(java, class, vtableCount); err != nil {
 				return err
 			}
 		}
