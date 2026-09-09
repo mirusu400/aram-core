@@ -345,9 +345,20 @@ func (m *Machine) queueKTFInput(runtime *ktfrt.Runtime) error {
 		if event.At > now {
 			continue
 		}
-		if _, known := guest.InputKeyCode(event.Control); known &&
-			!runtime.CanQueueKeyEvent() {
-			break
+		if _, known := guest.InputKeyCode(event.Control); known {
+			if runtime.DefaultDisplay != 0 && !runtime.CanAwaitEvents() {
+				// Once a title has established a Display, a physical key has no
+				// recipient after it removes that Display's last card (or starts
+				// terminating). The handset drops it at that point; retaining it
+				// for a future card turns an inactive screen into an unbounded
+				// host backlog. Before a default Display exists, retain the key:
+				// boot still has to be able to receive early user input.
+				m.input = append(m.input[:index], m.input[index+1:]...)
+				break
+			}
+			if !runtime.CanQueueKeyEvent() {
+				break
+			}
 		}
 		if err := runtime.Services.QueueInput(
 			runtime.ServiceOwner,
