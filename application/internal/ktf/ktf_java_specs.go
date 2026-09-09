@@ -1,5 +1,15 @@
 package ktf
 
+func ktfThrowableSubclassSpec(parent string) ktfHostJavaClassSpec {
+	return ktfHostJavaClassSpec{
+		Parent: parent,
+		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "()V"},
+			{name: "<init>", descriptor: "(Ljava/lang/String;)V"},
+		},
+	}
+}
+
 var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	"java/lang/Object": {
 		methods: []ktfHostJavaMethodSpec{
@@ -412,6 +422,10 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 			{name: "shortValue", descriptor: "()S"},
 			{name: "intValue", descriptor: "()I"},
 			{name: "longValue", descriptor: "()J"},
+			{name: "floatValue", descriptor: "()F"},
+			{name: "doubleValue", descriptor: "()D"},
+			{name: "equals", descriptor: "(Ljava/lang/Object;)Z"},
+			{name: "hashCode", descriptor: "()I"},
 			{name: "toString", descriptor: "()Ljava/lang/String;"},
 			{name: "parseInt", descriptor: "(Ljava/lang/String;)I", access: 0x0008},
 			{name: "parseInt", descriptor: "(Ljava/lang/String;I)I", access: 0x0008},
@@ -420,6 +434,8 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 			{name: "toHexString", descriptor: "(I)Ljava/lang/String;", access: 0x0008},
 			{name: "toOctalString", descriptor: "(I)Ljava/lang/String;", access: 0x0008},
 			{name: "toBinaryString", descriptor: "(I)Ljava/lang/String;", access: 0x0008},
+			{name: "valueOf", descriptor: "(Ljava/lang/String;)Ljava/lang/Integer;", access: 0x0008},
+			{name: "valueOf", descriptor: "(Ljava/lang/String;I)Ljava/lang/Integer;", access: 0x0008},
 		},
 	},
 	"java/lang/Long": {
@@ -491,6 +507,11 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	"java/lang/Byte": {
 		Parent: "java/lang/Object",
 		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "(B)V"},
+			{name: "byteValue", descriptor: "()B"},
+			{name: "equals", descriptor: "(Ljava/lang/Object;)Z"},
+			{name: "hashCode", descriptor: "()I"},
+			{name: "toString", descriptor: "()Ljava/lang/String;"},
 			{name: "parseByte", descriptor: "(Ljava/lang/String;)B", access: 0x0008},
 			{name: "parseByte", descriptor: "(Ljava/lang/String;I)B", access: 0x0008},
 		},
@@ -627,12 +648,16 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 		},
 	},
 	"java/util/Timer": {
-		Parent: "java/lang/Object",
+		Parent:    "java/lang/Object",
+		fieldSize: 4,
 		methods: []ktfHostJavaMethodSpec{
 			{name: "<init>", descriptor: "()V"},
 			{name: "schedule", descriptor: "(Ljava/util/TimerTask;J)V"},
 			{name: "schedule", descriptor: "(Ljava/util/TimerTask;JJ)V"},
+			{name: "schedule", descriptor: "(Ljava/util/TimerTask;Ljava/util/Date;)V"},
+			{name: "schedule", descriptor: "(Ljava/util/TimerTask;Ljava/util/Date;J)V"},
 			{name: "scheduleAtFixedRate", descriptor: "(Ljava/util/TimerTask;JJ)V"},
+			{name: "scheduleAtFixedRate", descriptor: "(Ljava/util/TimerTask;Ljava/util/Date;J)V"},
 			{name: "cancel", descriptor: "()V"},
 		},
 	},
@@ -642,6 +667,7 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 			{name: "<init>", descriptor: "()V"},
 			{name: "run", descriptor: "()V", access: 0x0400},
 			{name: "cancel", descriptor: "()Z"},
+			{name: "scheduledExecutionTime", descriptor: "()J"},
 		},
 	},
 	"java/util/TimeZone": {
@@ -1192,9 +1218,44 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	// native dispatcher; what matters here is the hierarchy so that guest
 	// checkcast, catch clauses, and receiver-compatibility checks walk the
 	// same tree the reference platform ships.
-	"java/lang/Boolean":   {Parent: "java/lang/Object"},
-	"java/lang/Character": {Parent: "java/lang/Object"},
-	"java/lang/Short":     {Parent: "java/lang/Object"},
+	"java/lang/Boolean": {
+		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "(Z)V"},
+			{name: "booleanValue", descriptor: "()Z"},
+			{name: "equals", descriptor: "(Ljava/lang/Object;)Z"},
+			{name: "hashCode", descriptor: "()I"},
+			{name: "toString", descriptor: "()Ljava/lang/String;"},
+		},
+	},
+	"java/lang/Character": {
+		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "(C)V"},
+			{name: "charValue", descriptor: "()C"},
+			{name: "equals", descriptor: "(Ljava/lang/Object;)Z"},
+			{name: "hashCode", descriptor: "()I"},
+			{name: "toString", descriptor: "()Ljava/lang/String;"},
+			{name: "digit", descriptor: "(CI)I", access: 0x0008},
+			{name: "isDigit", descriptor: "(C)Z", access: 0x0008},
+			{name: "isLowerCase", descriptor: "(C)Z", access: 0x0008},
+			{name: "isUpperCase", descriptor: "(C)Z", access: 0x0008},
+			{name: "toLowerCase", descriptor: "(C)C", access: 0x0008},
+			{name: "toUpperCase", descriptor: "(C)C", access: 0x0008},
+		},
+	},
+	"java/lang/Short": {
+		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "(S)V"},
+			{name: "shortValue", descriptor: "()S"},
+			{name: "equals", descriptor: "(Ljava/lang/Object;)Z"},
+			{name: "hashCode", descriptor: "()I"},
+			{name: "toString", descriptor: "()Ljava/lang/String;"},
+			{name: "parseShort", descriptor: "(Ljava/lang/String;)S", access: 0x0008},
+			{name: "parseShort", descriptor: "(Ljava/lang/String;I)S", access: 0x0008},
+		},
+	},
 	"java/lang/Runnable": {
 		Parent: "java/lang/Object",
 		access: 0x0601,
@@ -1203,89 +1264,94 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 		},
 	},
 
-	"java/lang/Throwable": {Parent: "java/lang/Object"},
-	"java/lang/Exception": {Parent: "java/lang/Throwable"},
-	"java/lang/Error":     {Parent: "java/lang/Throwable"},
-	"java/lang/RuntimeException": {
-		Parent: "java/lang/Exception",
+	"java/lang/Throwable": {
+		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "()V"},
+			{name: "<init>", descriptor: "(Ljava/lang/String;)V"},
+			{name: "getMessage", descriptor: "()Ljava/lang/String;"},
+			{name: "printStackTrace", descriptor: "()V"},
+			{name: "toString", descriptor: "()Ljava/lang/String;"},
+		},
 	},
-	"java/lang/ArithmeticException": {
-		Parent: "java/lang/RuntimeException",
-	},
-	"java/lang/ArrayStoreException": {
-		Parent: "java/lang/RuntimeException",
-	},
-	"java/lang/ClassCastException": {
-		Parent: "java/lang/RuntimeException",
-	},
-	"java/lang/ClassNotFoundException": {
-		Parent: "java/lang/Exception",
-	},
-	"java/lang/IllegalAccessException": {
-		Parent: "java/lang/Exception",
-	},
-	"java/lang/IllegalArgumentException": {
-		Parent: "java/lang/RuntimeException",
-	},
-	"java/lang/IllegalMonitorStateException": {
-		Parent: "java/lang/RuntimeException",
-	},
-	"java/lang/IllegalStateException": {
-		Parent: "java/lang/RuntimeException",
-	},
-	"java/lang/IllegalThreadStateException": {
-		Parent: "java/lang/IllegalArgumentException",
-	},
-	"java/lang/IndexOutOfBoundsException": {
-		Parent: "java/lang/RuntimeException",
-	},
-	"java/lang/ArrayIndexOutOfBoundsException": {
-		Parent: "java/lang/IndexOutOfBoundsException",
-	},
-	"java/lang/StringIndexOutOfBoundsException": {
-		Parent: "java/lang/IndexOutOfBoundsException",
-	},
-	"java/lang/InstantiationException": {
-		Parent: "java/lang/Exception",
-	},
-	"java/lang/InterruptedException": {
-		Parent: "java/lang/Exception",
-	},
-	"java/lang/NegativeArraySizeException": {
-		Parent: "java/lang/RuntimeException",
-	},
-	"java/lang/NullPointerException": {
-		Parent: "java/lang/RuntimeException",
-	},
-	"java/lang/NumberFormatException": {
-		Parent: "java/lang/IllegalArgumentException",
-	},
-	"java/lang/SecurityException": {
-		Parent: "java/lang/RuntimeException",
-	},
-	"java/lang/VirtualMachineError": {
-		Parent: "java/lang/Error",
-	},
-	"java/lang/OutOfMemoryError": {
-		Parent: "java/lang/VirtualMachineError",
-	},
+	"java/lang/Exception": ktfThrowableSubclassSpec("java/lang/Throwable"),
+	"java/lang/Error":     ktfThrowableSubclassSpec("java/lang/Throwable"),
+	"java/lang/RuntimeException": ktfThrowableSubclassSpec(
+		"java/lang/Exception",
+	),
+	"java/lang/ArithmeticException": ktfThrowableSubclassSpec(
+		"java/lang/RuntimeException",
+	),
+	"java/lang/ArrayStoreException": ktfThrowableSubclassSpec(
+		"java/lang/RuntimeException",
+	),
+	"java/lang/ClassCastException": ktfThrowableSubclassSpec(
+		"java/lang/RuntimeException",
+	),
+	"java/lang/ClassNotFoundException": ktfThrowableSubclassSpec(
+		"java/lang/Exception",
+	),
+	"java/lang/IllegalAccessException": ktfThrowableSubclassSpec(
+		"java/lang/Exception",
+	),
+	"java/lang/IllegalArgumentException": ktfThrowableSubclassSpec(
+		"java/lang/RuntimeException",
+	),
+	"java/lang/IllegalMonitorStateException": ktfThrowableSubclassSpec(
+		"java/lang/RuntimeException",
+	),
+	"java/lang/IllegalStateException": ktfThrowableSubclassSpec(
+		"java/lang/RuntimeException",
+	),
+	"java/lang/IllegalThreadStateException": ktfThrowableSubclassSpec(
+		"java/lang/IllegalArgumentException",
+	),
+	"java/lang/IndexOutOfBoundsException": ktfThrowableSubclassSpec(
+		"java/lang/RuntimeException",
+	),
+	"java/lang/ArrayIndexOutOfBoundsException": ktfThrowableSubclassSpec(
+		"java/lang/IndexOutOfBoundsException",
+	),
+	"java/lang/StringIndexOutOfBoundsException": ktfThrowableSubclassSpec(
+		"java/lang/IndexOutOfBoundsException",
+	),
+	"java/lang/InstantiationException": ktfThrowableSubclassSpec(
+		"java/lang/Exception",
+	),
+	"java/lang/InterruptedException": ktfThrowableSubclassSpec(
+		"java/lang/Exception",
+	),
+	"java/lang/NegativeArraySizeException": ktfThrowableSubclassSpec(
+		"java/lang/RuntimeException",
+	),
+	"java/lang/NullPointerException": ktfThrowableSubclassSpec(
+		"java/lang/RuntimeException",
+	),
+	"java/lang/NumberFormatException": ktfThrowableSubclassSpec(
+		"java/lang/IllegalArgumentException",
+	),
+	"java/lang/SecurityException": ktfThrowableSubclassSpec(
+		"java/lang/RuntimeException",
+	),
+	"java/lang/VirtualMachineError": ktfThrowableSubclassSpec("java/lang/Error"),
+	"java/lang/OutOfMemoryError": ktfThrowableSubclassSpec(
+		"java/lang/VirtualMachineError",
+	),
 
-	"java/io/IOException": {Parent: "java/lang/Exception"},
-	"java/io/EOFException": {
-		Parent: "java/io/IOException",
-	},
-	"java/io/InterruptedIOException": {
-		Parent: "java/io/IOException",
-	},
-	"java/io/UTFDataFormatException": {
-		Parent: "java/io/IOException",
-	},
-	"java/io/UnavailableException": {
-		Parent: "java/io/IOException",
-	},
-	"java/io/UnsupportedEncodingException": {
-		Parent: "java/io/IOException",
-	},
+	"java/io/IOException":  ktfThrowableSubclassSpec("java/lang/Exception"),
+	"java/io/EOFException": ktfThrowableSubclassSpec("java/io/IOException"),
+	"java/io/InterruptedIOException": ktfThrowableSubclassSpec(
+		"java/io/IOException",
+	),
+	"java/io/UTFDataFormatException": ktfThrowableSubclassSpec(
+		"java/io/IOException",
+	),
+	"java/io/UnavailableException": ktfThrowableSubclassSpec(
+		"java/io/IOException",
+	),
+	"java/io/UnsupportedEncodingException": ktfThrowableSubclassSpec(
+		"java/io/IOException",
+	),
 	"java/io/Reader": {
 		Parent: "java/lang/Object",
 		methods: []ktfHostJavaMethodSpec{

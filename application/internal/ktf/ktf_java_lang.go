@@ -1249,10 +1249,17 @@ func (r *Runtime) handleTimerMethod(
 ) (uint32, error) {
 	switch name + descriptor {
 	case "<init>()V":
-		return 0, nil
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		return 0, r.WriteJavaFieldWord(instance, 0, 0)
 	case "cancel()V":
 		timer, err := r.parameter(1)
 		if err != nil {
+			return 0, err
+		}
+		if err := r.WriteJavaFieldWord(timer, 0, 1); err != nil {
 			return 0, err
 		}
 		cancelled := 0
@@ -1316,7 +1323,10 @@ func (r *Runtime) handleTimerMethod(
 		return result, nil
 	case "schedule(Ljava/util/TimerTask;J)V",
 		"schedule(Ljava/util/TimerTask;JJ)V",
-		"scheduleAtFixedRate(Ljava/util/TimerTask;JJ)V":
+		"scheduleAtFixedRate(Ljava/util/TimerTask;JJ)V",
+		"schedule(Ljava/util/TimerTask;Ljava/util/Date;)V",
+		"schedule(Ljava/util/TimerTask;Ljava/util/Date;J)V",
+		"scheduleAtFixedRate(Ljava/util/TimerTask;Ljava/util/Date;J)V":
 		timer, err := r.parameter(1)
 		if err != nil {
 			return 0, err
@@ -1326,25 +1336,54 @@ func (r *Runtime) handleTimerMethod(
 			return 0, err
 		}
 		if task == 0 {
-			return r.raiseJavaException("java/lang/NullPointerException", 0)
+			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
 		}
-		delay, err := r.javaTimerLongParameter(3)
+		cancelled, err := r.readJavaFieldWord(timer, 0)
 		if err != nil {
 			return 0, err
 		}
-		period := int64(0)
-		if descriptor != "(Ljava/util/TimerTask;J)V" {
-			period, err = r.javaTimerLongParameter(5)
+		if cancelled != 0 {
+			return 0, r.raiseHostJavaException("java/lang/IllegalStateException")
+		}
+		dateBased := descriptor == "(Ljava/util/TimerTask;Ljava/util/Date;)V" ||
+			descriptor == "(Ljava/util/TimerTask;Ljava/util/Date;J)V"
+		delay := int64(0)
+		if dateBased {
+			date, valueErr := r.parameter(3)
+			if valueErr != nil {
+				return 0, valueErr
+			}
+			if date == 0 {
+				return 0, r.raiseHostJavaException("java/lang/NullPointerException")
+			}
+			when := r.dates[date]
+			if when > int64(r.TickMS) {
+				delay = when - int64(r.TickMS)
+			}
+		} else {
+			delay, err = r.javaTimerLongParameter(3)
 			if err != nil {
 				return 0, err
 			}
 		}
-		if delay < 0 || period < 0 ||
-			descriptor != "(Ljava/util/TimerTask;J)V" && period == 0 {
-			return r.raiseJavaException("java/lang/IllegalArgumentException", 0)
+		period := int64(0)
+		hasPeriod := descriptor != "(Ljava/util/TimerTask;J)V" &&
+			descriptor != "(Ljava/util/TimerTask;Ljava/util/Date;)V"
+		if hasPeriod {
+			periodIndex := uint32(5)
+			if dateBased {
+				periodIndex = 4
+			}
+			period, err = r.javaTimerLongParameter(periodIndex)
+			if err != nil {
+				return 0, err
+			}
+		}
+		if delay < 0 || period < 0 || hasPeriod && period == 0 {
+			return 0, r.raiseHostJavaException("java/lang/IllegalArgumentException")
 		}
 		if r.javaTimerTaskStates[task] != 0 {
-			return r.raiseJavaException("java/lang/IllegalStateException", 0)
+			return 0, r.raiseHostJavaException("java/lang/IllegalStateException")
 		}
 		if !r.DeferThreads {
 			return r.invokeJavaVirtual(ctx, task, "run", "()V")

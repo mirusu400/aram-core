@@ -1961,6 +1961,57 @@ func TestKTFJavaTimerTaskCancelStopsDelayedCallback(t *testing.T) {
 	}
 }
 
+func TestKTFJavaTimerSchedulesDatesAndStaysCancelled(t *testing.T) {
+	runtime := newScratchKTFRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	classAddress := ensureClass(t, runtime, "test/DateTimerCallback")
+	class := inspectClass(t, runtime, classAddress)
+	runMethod, err := runtime.addHostJavaMethod(class, "run", "()V")
+	check(t, err)
+	check(t, runtime.WriteU32(runMethod, ImageBase|1))
+	callback, err := runtime.NewJavaInstanceForClass(class)
+	check(t, err)
+	timer := newHostObject(t, runtime, "java/util/Timer")
+	date := newHostObject(t, runtime, "java/util/Date")
+	runtime.TickMS = 2_000
+	runtime.dates[date] = 2_075
+	runtime.DeferThreads = true
+	parameters := allocWords(t, runtime, 5)
+	check(t, runtime.writeWords(parameters, []uint32{
+		timer, callback, date, 25, 0,
+	}))
+	runtime.NativeParameterBase = parameters
+
+	_, err = runtime.handleTimerMethod(
+		context.Background(),
+		"scheduleAtFixedRate",
+		"(Ljava/util/TimerTask;Ljava/util/Date;J)V",
+	)
+	check(t, err)
+	queued := runtime.javaTimerTasks[callback]
+	if queued == nil || queued.WakeAtMS != 2_075 ||
+		queued.timerDeadlineMS != 2_075 || queued.timerPeriodMS != 25 ||
+		!queued.timerFixedRate {
+		t.Fatalf("date-based TimerTask = %#v", queued)
+	}
+
+	check(t, runtime.WriteU32(parameters, timer))
+	_, err = runtime.handleTimerMethod(context.Background(), "cancel", "()V")
+	check(t, err)
+	if !queued.Done {
+		t.Fatal("Timer.cancel left its scheduled task alive")
+	}
+	check(t, runtime.writeWords(parameters, []uint32{timer, callback, 1, 0}))
+	_, err = runtime.handleTimerMethod(
+		context.Background(),
+		"schedule",
+		"(Ljava/util/TimerTask;J)V",
+	)
+	if err == nil || runtime.LastJavaThrowName != "java/lang/IllegalStateException" {
+		t.Fatalf("cancelled Timer.schedule error=%v exception=%q", err, runtime.LastJavaThrowName)
+	}
+}
+
 func TestKTFCallNativeCorrectsStaleMethodForCachedGuestNative(t *testing.T) {
 	runtime := newTestRuntime(t)
 	runtime.JvmContext = allocWords(t, runtime, 3+128)
