@@ -118,6 +118,65 @@ func (k SKVMTitleKey) Matches(packageSHA256, mainClass, programName string) bool
 		programName == k.ProgramName
 }
 
+// RaptorTitleKey identifies one exact LGT Raptor package. The package digest
+// pins every resource and descriptor byte while AID and main class make the
+// intended WIPI-C application identity explicit; neither is a display-profile
+// or title-name heuristic.
+type RaptorTitleKey struct {
+	PackageSHA256 string
+	AID           string
+	MainClass     string
+}
+
+func (k RaptorTitleKey) Matches(packageSHA256, aid, mainClass string) bool {
+	return packageSHA256 == k.PackageSHA256 &&
+		aid == k.AID &&
+		mainClass == k.MainClass
+}
+
+// RaptorFramebufferGeometry records the physical framebuffer and the value
+// one Raptor package expects from its primary framebuffer-height helper.
+// Offscreen framebuffers always retain their allocated height.
+type RaptorFramebufferGeometry struct {
+	Key               RaptorTitleKey
+	FramebufferWidth  int
+	FramebufferHeight int
+	PrimaryHeight     int
+}
+
+var RaptorFramebufferGeometries = []RaptorFramebufferGeometry{
+	{
+		// 하이브리드2 (Hybrid 2) queries its primary raw framebuffer height,
+		// then adds the drawing context's origin before clipping. On the
+		// verified 240x320 LGT handset image, it therefore requires 320,
+		// unlike titles which use the libwipi 24-pixel client-area contract.
+		Key: RaptorTitleKey{
+			PackageSHA256: "320a5360a0f314d096a9ad3f219114b47d2e4e5a36a30f07c36841f797fbf20a",
+			AID:           "0002E18D",
+			MainClass:     "Clet",
+		},
+		FramebufferWidth:  240,
+		FramebufferHeight: 320,
+		PrimaryHeight:     320,
+	},
+}
+
+// LookupRaptorFramebufferGeometry answers an override only when the exact
+// package and the physical framebuffer shape independently agree.
+func LookupRaptorFramebufferGeometry(
+	packageSHA256, aid, mainClass string,
+	framebufferWidth, framebufferHeight int,
+) (RaptorFramebufferGeometry, bool) {
+	for _, entry := range RaptorFramebufferGeometries {
+		if entry.Key.Matches(packageSHA256, aid, mainClass) &&
+			entry.FramebufferWidth == framebufferWidth &&
+			entry.FramebufferHeight == framebufferHeight {
+			return entry, true
+		}
+	}
+	return RaptorFramebufferGeometry{}, false
+}
+
 // SKVMCanvas records the handset canvas one SKT MIDlet build was authored for.
 // An SKT descriptor never declares a display size, and a title that packs its
 // art into opaque resource blobs offers nothing to infer one from, so a build

@@ -117,6 +117,10 @@ type Runtime struct {
 	CPU    cpu.Backend
 	Public *wipirt.Runtime
 	Pkg    raptorloader.Package
+	// primaryFramebufferHeight is an exact-package compatibility value for
+	// the physical screen only. A zero value keeps libwipi's client-area
+	// behavior and every offscreen framebuffer uses its allocated height.
+	primaryFramebufferHeight int
 	// unimplementedNames interns the label for an import ARAM does not
 	// implement. See unimplementedImportName.
 	unimplementedNames map[raptorImportKey]string
@@ -153,6 +157,14 @@ type Runtime struct {
 	pendingJavaThrow string
 	hostCallFrames   [16]cpu.HostCallFrame
 	hostCallDepth    int
+}
+
+// Options contains immutable Raptor compatibility behavior selected while a
+// verified package is loaded.
+type Options struct {
+	// PrimaryFramebufferHeight replaces libwipi's primary-screen client
+	// height when positive and no greater than the physical allocation.
+	PrimaryFramebufferHeight int
 }
 
 type raptorImportKey struct {
@@ -208,17 +220,30 @@ func NewRuntime(
 	public *wipirt.Runtime,
 	pkg raptorloader.Package,
 ) (*Runtime, error) {
+	return NewRuntimeWithOptions(backend, public, pkg, Options{})
+}
+
+// NewRuntimeWithOptions initializes a Raptor runtime with load-time immutable
+// compatibility settings. Saved state carries guest state only: options are
+// re-derived from the source package before state restoration.
+func NewRuntimeWithOptions(
+	backend cpu.Backend,
+	public *wipirt.Runtime,
+	pkg raptorloader.Package,
+	options Options,
+) (*Runtime, error) {
 	clet, err := inspectRaptorClet(pkg.Image)
 	if err != nil {
 		return nil, err
 	}
 	runtime := &Runtime{
-		CPU:             backend,
-		Public:          public,
-		Pkg:             pkg,
-		Clet:            clet,
-		resolvedImports: make(map[raptorImportKey]uint64),
-		importSlotByKey: make(map[raptorImportKey]uint32),
+		CPU:                      backend,
+		Public:                   public,
+		Pkg:                      pkg,
+		Clet:                     clet,
+		primaryFramebufferHeight: options.PrimaryFramebufferHeight,
+		resolvedImports:          make(map[raptorImportKey]uint64),
+		importSlotByKey:          make(map[raptorImportKey]uint32),
 	}
 	// A Raptor Clet reads its own MC_GrpContext, and LGT's runtime spells the
 	// struct without the SDK's clip_enabled word.
@@ -878,7 +903,12 @@ func (r *Runtime) DispatchPrivateImport(
 		case 52:
 			height := framebuffer.Height
 			if framebuffer.Handle == r.Public.ScreenHandle && height > raptorScreenOriginY {
-				height -= raptorScreenOriginY
+				if r.primaryFramebufferHeight > 0 &&
+					r.primaryFramebufferHeight <= height {
+					height = r.primaryFramebufferHeight
+				} else {
+					height -= raptorScreenOriginY
+				}
 			}
 			return guest.WIPIReturn{Low: uint32(height)},
 				"RAPTOR.grpGetFrameBufferHeight", true, nil

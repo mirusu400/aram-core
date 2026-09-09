@@ -2653,3 +2653,86 @@ func TestWIPIRuntimeRecordIsASuccessfulNoOp(t *testing.T) {
 		t.Fatalf("MC_mdaClipFree after record = %d, want 0", int32(got))
 	}
 }
+
+// TestWIPIRuntimeDrawStringAnchorsAtTheCellTop pins the WIPI-C string origin.
+// 메탈슬러그 서바이벌 aligns every 환경설정 label with the gauge artwork beside it by
+// handing both the same y, so anchoring the run at the baseline lifted the
+// text a font ascent clear of its own frame (issue #241). A top-left origin
+// makes the run translate with y instead of being clipped away above it.
+func TestWIPIRuntimeDrawStringAnchorsAtTheCellTop(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	context, err := runtime.Heap.Allocate(60, true)
+	check(t, err)
+	dispatchPublicAPI(t, runtime, "MC_grpInitContext", context)
+	dispatchPublicAPI(t, runtime, "MC_grpSetContext", context, 1, 0x00ffffff)
+	font := dispatchPublicAPI(t, runtime, "MC_grpGetFont", 0, 12, 0).Low
+	dispatchPublicAPI(t, runtime, "MC_grpSetContext", context, 7, font)
+	text, err := runtime.Heap.Allocate(2, true)
+	check(t, err)
+	check(t, runtime.CPU.WriteMemory(text, []byte{'A', 0}))
+
+	const side = 32
+	paintedRows := func(top uint32) []int {
+		framebuffer := dispatchPublicAPI(
+			t,
+			runtime,
+			"MC_grpCreateOffScreenFrameBuffer",
+			side,
+			side,
+		).Low
+		dispatchPublicAPI(
+			t,
+			runtime,
+			"MC_grpDrawString",
+			framebuffer,
+			0,
+			top,
+			text,
+			^uint32(0),
+			context,
+		)
+		pixels := runtime.Framebuffers[framebuffer].Pixels
+		rows := make([]int, 0, side)
+		for y := 0; y < side; y++ {
+			for x := 0; x < side; x++ {
+				pixel, readErr := runtime.ReadU32(pixels + uint32(y*side+x)*4)
+				check(t, readErr)
+				if pixel == 0x00ffffff {
+					rows = append(rows, y)
+					break
+				}
+			}
+		}
+		return rows
+	}
+
+	atTop := paintedRows(0)
+	if len(atTop) == 0 {
+		t.Fatal("drawing at y=0 painted nothing; the run was anchored above it")
+	}
+	ascent := dispatchPublicAPI(t, runtime, "MC_grpGetFontAscent", font).Low
+	if uint32(atTop[0]) >= ascent {
+		t.Fatalf("topmost painted row = %d, want it inside the first cell", atTop[0])
+	}
+	const offset = 5
+	shifted := paintedRows(offset)
+	if len(shifted) != len(atTop) {
+		t.Fatalf(
+			"painted rows at y=%d = %v, want the y=0 rows %v shifted",
+			offset,
+			shifted,
+			atTop,
+		)
+	}
+	for index, row := range shifted {
+		if row != atTop[index]+offset {
+			t.Fatalf(
+				"painted rows at y=%d = %v, want %v shifted by %d",
+				offset,
+				shifted,
+				atTop,
+				offset,
+			)
+		}
+	}
+}
