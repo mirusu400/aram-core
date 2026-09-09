@@ -98,6 +98,90 @@ func TestKTFStringImplementsCLDC11OverloadsAndIntern(t *testing.T) {
 	}
 }
 
+func TestKTFCLDCStreamOverridesAndCalendarMethodsAreDeclared(t *testing.T) {
+	want := map[string][]string{
+		"java/io/ByteArrayInputStream": {
+			"available()I",
+			"read([BII)I",
+			"skip(J)J",
+		},
+		"java/io/DataInputStream": {
+			"markSupported()Z",
+			"read([B)I",
+			"reset()V",
+		},
+		"java/util/GregorianCalendar": {
+			"computeFields()V",
+			"getGreatestMinimum(I)I",
+			"hashCode()I",
+		},
+	}
+	for className, signatures := range want {
+		declared := make(map[string]bool)
+		for _, method := range HostJavaClassSpecs[className].methods {
+			declared[method.name+method.descriptor] = true
+		}
+		for _, signature := range signatures {
+			if !declared[signature] {
+				t.Errorf("%s.%s is absent from the host spec", className, signature)
+			}
+		}
+	}
+}
+
+func TestKTFThrowableIntegerConstructorStoresIndexMessage(t *testing.T) {
+	runtime := newTestRuntime(t)
+	exception := newHostObject(
+		t,
+		runtime,
+		"java/lang/ArrayIndexOutOfBoundsException",
+	)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, exception))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, ^uint32(2)))
+	_, err := runtime.handleThrowableMethod("<init>", "(I)V")
+	check(t, err)
+	if got := runtime.javaStringValue(runtime.throwableMessages[exception]); got != "-3" {
+		t.Fatalf("ArrayIndexOutOfBoundsException(-3) message = %q", got)
+	}
+}
+
+func TestKTFReaderAndWriterRejectNullLocks(t *testing.T) {
+	runtime := newTestRuntime(t)
+	for _, test := range []struct {
+		name string
+		call func() (uint32, error)
+	}{
+		{
+			name: "Reader",
+			call: func() (uint32, error) {
+				return runtime.handleInputStreamReaderMethod(
+					"<init>",
+					"(Ljava/lang/Object;)V",
+				)
+			},
+		},
+		{
+			name: "Writer",
+			call: func() (uint32, error) {
+				return runtime.handleOutputStreamWriterMethod(
+					"<init>",
+					"(Ljava/lang/Object;)V",
+				)
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			instance := newHostObject(t, runtime, "java/io/"+test.name)
+			check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, instance))
+			check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 0))
+			_, err := test.call()
+			if err == nil || runtime.LastJavaThrowName != "java/lang/NullPointerException" {
+				t.Fatalf("%s(null) = %v, throw %q", test.name, err, runtime.LastJavaThrowName)
+			}
+		})
+	}
+}
+
 func TestKTFStringBufferModelsUTF16CapacityAndNumericOverloads(t *testing.T) {
 	runtime := newTestRuntime(t)
 	runtime.JvmContext = allocWords(t, runtime, 3+128)

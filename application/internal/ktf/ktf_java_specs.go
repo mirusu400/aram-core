@@ -10,6 +10,15 @@ func ktfThrowableSubclassSpec(parent string) ktfHostJavaClassSpec {
 	}
 }
 
+func ktfThrowableIntSubclassSpec(parent string) ktfHostJavaClassSpec {
+	spec := ktfThrowableSubclassSpec(parent)
+	spec.methods = append(spec.methods, ktfHostJavaMethodSpec{
+		name:       "<init>",
+		descriptor: "(I)V",
+	})
+	return spec
+}
+
 func ktfCompatibilityMethod(
 	name, descriptor string,
 	access ...uint16,
@@ -306,6 +315,14 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 		methods: []ktfHostJavaMethodSpec{
 			{name: "<init>", descriptor: "([B)V"},
 			{name: "<init>", descriptor: "([BII)V"},
+			{name: "available", descriptor: "()I"},
+			{name: "close", descriptor: "()V"},
+			{name: "mark", descriptor: "(I)V"},
+			{name: "markSupported", descriptor: "()Z"},
+			{name: "read", descriptor: "()I"},
+			{name: "read", descriptor: "([BII)I"},
+			{name: "reset", descriptor: "()V"},
+			{name: "skip", descriptor: "(J)J"},
 		},
 	},
 	"java/io/DataInputStream": {
@@ -332,6 +349,14 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 			{name: "readFully", descriptor: "([BII)V"},
 			{name: "skipBytes", descriptor: "(I)I"},
 			{name: "close", descriptor: "()V"},
+			{name: "available", descriptor: "()I"},
+			{name: "mark", descriptor: "(I)V"},
+			{name: "markSupported", descriptor: "()Z"},
+			{name: "read", descriptor: "()I"},
+			{name: "read", descriptor: "([B)I"},
+			{name: "read", descriptor: "([BII)I"},
+			{name: "reset", descriptor: "()V"},
+			{name: "skip", descriptor: "(J)J"},
 		},
 	},
 	"java/io/PrintStream": {
@@ -589,6 +614,16 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 			{name: "<init>", descriptor: "(Ljava/util/TimeZone;)V"},
 			{name: "<init>", descriptor: "(III)V"},
 			{name: "isLeapYear", descriptor: "(I)Z"},
+			{name: "after", descriptor: "(Ljava/lang/Object;)Z"},
+			{name: "before", descriptor: "(Ljava/lang/Object;)Z"},
+			{name: "computeFields", descriptor: "()V", access: 0x0004},
+			{name: "computeTime", descriptor: "()V", access: 0x0004},
+			{name: "equals", descriptor: "(Ljava/lang/Object;)Z"},
+			{name: "getGreatestMinimum", descriptor: "(I)I"},
+			{name: "getLeastMaximum", descriptor: "(I)I"},
+			{name: "getMaximum", descriptor: "(I)I"},
+			{name: "getMinimum", descriptor: "(I)I"},
+			{name: "hashCode", descriptor: "()I"},
 		},
 	},
 	"java/util/Vector": {
@@ -1544,10 +1579,10 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	"java/lang/IndexOutOfBoundsException": ktfThrowableSubclassSpec(
 		"java/lang/RuntimeException",
 	),
-	"java/lang/ArrayIndexOutOfBoundsException": ktfThrowableSubclassSpec(
+	"java/lang/ArrayIndexOutOfBoundsException": ktfThrowableIntSubclassSpec(
 		"java/lang/IndexOutOfBoundsException",
 	),
-	"java/lang/StringIndexOutOfBoundsException": ktfThrowableSubclassSpec(
+	"java/lang/StringIndexOutOfBoundsException": ktfThrowableIntSubclassSpec(
 		"java/lang/IndexOutOfBoundsException",
 	),
 	"java/lang/InstantiationException": ktfThrowableSubclassSpec(
@@ -1590,6 +1625,8 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	"java/io/Reader": {
 		Parent: "java/lang/Object",
 		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "()V", access: 0x0004},
+			{name: "<init>", descriptor: "(Ljava/lang/Object;)V", access: 0x0004},
 			{name: "close", descriptor: "()V"},
 			{name: "mark", descriptor: "(I)V"},
 			{name: "markSupported", descriptor: "()Z"},
@@ -1604,6 +1641,8 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	"java/io/Writer": {
 		Parent: "java/lang/Object",
 		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "()V", access: 0x0004},
+			{name: "<init>", descriptor: "(Ljava/lang/Object;)V", access: 0x0004},
 			{name: "close", descriptor: "()V"},
 			{name: "flush", descriptor: "()V"},
 			{name: "write", descriptor: "(I)V"},
@@ -1672,12 +1711,12 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 		},
 	},
 
-	"java/util/EmptyStackException": {
-		Parent: "java/lang/RuntimeException",
-	},
-	"java/util/NoSuchElementException": {
-		Parent: "java/lang/RuntimeException",
-	},
+	"java/util/EmptyStackException": ktfThrowableSubclassSpec(
+		"java/lang/RuntimeException",
+	),
+	"java/util/NoSuchElementException": ktfThrowableSubclassSpec(
+		"java/lang/RuntimeException",
+	),
 	"java/util/SimpleTimeZone": {
 		Parent: "java/util/TimeZone",
 		methods: []ktfHostJavaMethodSpec{

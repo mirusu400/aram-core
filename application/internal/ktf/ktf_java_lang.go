@@ -334,6 +334,20 @@ func (r *Runtime) handleThrowableMethod(
 		}
 		r.throwableMessages[instance] = message
 		return 0, nil
+	case "<init>(I)V":
+		index, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		message, valueErr := r.NewJavaString(strconv.FormatInt(
+			int64(int32(index)),
+			10,
+		))
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		r.throwableMessages[instance] = message
+		return 0, nil
 	case "getMessage()Ljava/lang/String;":
 		return r.throwableMessages[instance], nil
 	case "printStackTrace()V":

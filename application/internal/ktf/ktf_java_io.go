@@ -434,6 +434,17 @@ func (r *Runtime) handleInputStreamReaderMethod(
 		return 0, err
 	}
 	switch name + descriptor {
+	case "<init>()V":
+		return 0, nil
+	case "<init>(Ljava/lang/Object;)V":
+		lock, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if lock == 0 {
+			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
+		}
+		return 0, nil
 	case "<init>(Ljava/io/InputStream;)V",
 		"<init>(Ljava/io/InputStream;Ljava/lang/String;)V":
 		source, valueErr := r.parameter(2)
@@ -601,6 +612,15 @@ func (r *Runtime) handleOutputStreamWriterMethod(
 	}
 	switch name + descriptor {
 	case "<init>()V":
+		return 0, nil
+	case "<init>(Ljava/lang/Object;)V":
+		lock, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if lock == 0 {
+			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
+		}
 		return 0, nil
 	case "<init>(Ljava/io/OutputStream;)V",
 		"<init>(Ljava/io/OutputStream;Ljava/lang/String;)V":
