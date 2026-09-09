@@ -304,8 +304,9 @@ type Machine struct {
 	// time, because the two disagree by a sample whenever an advance boundary
 	// does not land on a whole output frame. A host that treats the stream as a
 	// sample timeline reads that disagreement as a real discontinuity.
-	audioCursorSample uint64
-	audioCursorValid  bool
+	audioCursorSample   uint64
+	audioCursorValid    bool
+	mediaOutputRevision uint64
 }
 
 func (m *Machine) State() machinecore.State {

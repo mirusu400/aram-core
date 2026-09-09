@@ -599,6 +599,20 @@ func ktfJavaNativeOverride(signature string) (ktfHostCall, bool) {
 				), nil
 			},
 		}, true
+	case "org/kwis/msp/media/Volume.set(I)V":
+		return ktfHostCall{
+			name: "java.native_override." + signature,
+			handler: func(_ context.Context, runtime *Runtime) (uint32, error) {
+				level, err := runtime.parameter(0)
+				if err != nil {
+					return 0, err
+				}
+				return 0, runtime.Services.Media.SetGlobalGain(
+					uint8(min(level, uint32(5))*20),
+					false,
+				)
+			},
+		}, true
 	case "org/kwis/msf/io/Network.connect()I":
 		return ktfHostCall{
 			name: "java.native_override." + signature,
@@ -992,7 +1006,7 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 			return 0, nil
 		case "org/kwis/msp/media/BaseClip", "org/kwis/msp/media/Clip",
 			"org/kwis/msp/media/Player":
-			return runtime.handleMediaMethod(name, descriptor)
+			return runtime.handleMediaMethodContext(ctx, name, descriptor)
 		case "java/lang/Throwable":
 			return runtime.handleThrowableMethod(name, descriptor)
 		case "org/kwis/msp/handset/HandsetProperty":

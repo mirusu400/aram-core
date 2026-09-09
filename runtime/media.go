@@ -65,6 +65,7 @@ type ClipInfo struct {
 	Pan            int8
 	RemainingPlays int32
 	Decoded        bool
+	WaitingForData bool
 }
 
 type ClipState struct {
@@ -92,19 +93,16 @@ type MediaState struct {
 	BGMVoice        *BGMVoiceState
 	BGMVoiceSig     uint64
 
-	// BGMEndedSig, BGMEndedElapsedNS and BGMEndedValid carry the mixing
-	// policy's hand-loop marker: which track last ran to its natural end and
-	// how long ago. They are state rather than a cache because the promotion
-	// they gate is audible, so a restored session has to make the same choice
-	// the uninterrupted one made.
+	// Legacy detached-voice fields remain in schema v3 so existing save states
+	// can be decoded and validated. Restore retires them instead of reviving an
+	// unowned audible voice.
 	BGMEndedSig       uint64
 	BGMEndedElapsedNS int64
 	BGMEndedValid     bool
 }
 
-// BGMVoiceState serialises the persistent music voice used by the mixing
-// policy. It has no service id or owner because the voice is detached from the
-// registry: it is always an infinite loop in the ClipPlaying state.
+// BGMVoiceState is the legacy schema-v3 detached music payload. New snapshots
+// never populate it.
 type BGMVoiceState struct {
 	MediaType  string
 	Source     []byte
@@ -158,6 +156,7 @@ type mediaClip struct {
 	muted          bool
 	pan            int8
 	remainingPlays int32
+	waitingForData bool
 }
 
 // Media is a deterministic, headless clip timeline and bounded PCM16 mixer.
@@ -171,30 +170,11 @@ type Media struct {
 	outputRemainder uint64
 	queuedPCM16     []int16
 	dropped         uint64
+	outputRevision  uint64
 
-	// mixMode enables the enhanced "mixing" audio policy. When set, a looping
-	// clip (an infinite Play, the marker a title uses for background music) is
-	// promoted to a persistent voice that survives the clip's own stop, clear,
-	// and destroy calls, so one-shot effects mix over it instead of silencing
-	// it. When clear, playback is bit-faithful to the device: the mixer only
-	// touches live registry clips and honours every stop the title issues.
-	mixMode     bool
-	bgmVoice    *mediaClip
-	bgmVoiceSig uint64
-	// bgmVoiceStopped records that the title stopped the clip the music voice
-	// was promoted from. The voice deliberately outlives an ordinary stop so a
-	// hand-looped track plays continuously, but a stop followed by a different
-	// track is the title changing its music, and then the voice has to go. See
-	// releaseStoppedMusicVoice.
-	bgmVoiceStopped bool
-
-	// endedSig names the last track that reached its own end without being
-	// stopped, endedElapsed how much timeline has passed since, and endedValid
-	// whether that is still inside bgmRelaunchWindow. Together they let Play
-	// recognise a title looping its music by hand.
-	endedSig     uint64
-	endedElapsed time.Duration
-	endedValid   bool
+	// mixMode enables simultaneous playback of registered clips. All sounding
+	// voices remain owned by those clips.
+	mixMode bool
 
 	voiceIDs      []ServiceID
 	voiceScratch  []*mediaClip
@@ -221,45 +201,25 @@ func NewMedia(registry *Registry, limits MediaLimits) (*Media, error) {
 	}, nil
 }
 
-// SetAudioMixMode selects the audio playback policy. Passing false restores
-// bit-faithful device behaviour and drops any persistent music voice so it can
-// no longer be heard. Passing true takes effect on the next looping Play.
+// SetAudioMixMode selects the audio playback policy. All sounding voices remain
+// owned by registered clips in either mode.
 func (m *Media) SetAudioMixMode(on bool) {
-	m.mixMode = on
-	if !on {
-		m.bgmVoice = nil
-		m.bgmVoiceSig = 0
-		m.bgmVoiceStopped = false
-		m.endedSig, m.endedElapsed, m.endedValid = 0, 0, false
+	if m.mixMode == on {
+		return
 	}
+	m.mixMode = on
+	m.invalidateOutput()
 }
 
-// AudioMixMode reports whether the enhanced mixing policy is active.
+// AudioMixMode reports the compatibility policy selection. Both policies keep
+// voices attached to registered clips.
 func (m *Media) AudioMixMode() bool { return m.mixMode }
 
-// MusicVoiceActive reports whether a persistent music voice is currently
-// playing (the mixing policy has promoted a looping/long track to it). It is a
-// read-only diagnostic used by tests and debug reporting.
-func (m *Media) MusicVoiceActive() bool { return m.bgmVoice != nil }
+// MusicVoiceActive is retained for debug/API compatibility. Detached music
+// voices are no longer created, so it always reports false for new state.
+func (m *Media) MusicVoiceActive() bool { return false }
 
-// bgmSignature is an FNV-1a digest of a clip's encoded source. It lets the
-// mixer recognise when a title re-issues the identical looping track (the
-// common "stop the music, play an effect, start the same music again" dance)
-// so the persistent voice continues seamlessly instead of restarting.
-func bgmSignature(data []byte) uint64 {
-	const offset = uint64(1469598103934665603)
-	const prime = uint64(1099511628211)
-	hash := offset
-	for _, b := range data {
-		hash ^= uint64(b)
-		hash *= prime
-	}
-	return hash
-}
-
-// playbackVoices lists every sounding source in deterministic order: the live
-// registry clips sorted by id, then the persistent music voice if one exists.
-// The voice has no service id and is invisible to the guest; it only mixes.
+// playbackVoices lists every sounding registered source in deterministic order.
 func (m *Media) playbackVoices() []*mediaClip {
 	m.voiceIDs = m.voiceIDs[:0]
 	for id := range m.clips {
@@ -270,78 +230,7 @@ func (m *Media) playbackVoices() []*mediaClip {
 	for _, id := range m.voiceIDs {
 		m.voiceScratch = append(m.voiceScratch, m.clips[id])
 	}
-	if m.bgmVoice != nil {
-		m.voiceScratch = append(m.voiceScratch, m.bgmVoice)
-	}
 	return m.voiceScratch
-}
-
-// musicVoiceMinDuration is the length below which a non-looping clip cannot be
-// background music. Titles frequently loop their BGM by hand: they play a track
-// once, wait for its completion callback, and replay it, so the music never
-// carries the infinite-repeat flag. The shortest BGM observed in the corpus is
-// ~1.8s and hit sounds run well under a second, so the threshold sits below the
-// music with margin above the effects.
-//
-// Length alone does not make a track music. A cutscene sting, a defeat jingle
-// or a spoken line also runs for seconds and is played exactly once;
-// 추억의달고나 alone plays four such one-shots, the longest 4.06s. Promoting
-// those to the persistent voice looped them forever and silenced the real BGM,
-// because the voice outlives every stop the title issues. The length is
-// therefore only a floor on the test below.
-const musicVoiceMinDuration = 1200 * time.Millisecond
-
-// bgmRelaunchWindow bounds how soon after a track ends the title has to replay
-// it for the replay to read as a hand-written loop. A title looping by hand
-// restarts the track from its completion callback, so the gap is a frame or
-// two; an effect the title happens to reuse comes back seconds later, long
-// after the window has closed.
-const bgmRelaunchWindow = 750 * time.Millisecond
-
-// isMusicVoicePlay reports whether this Play should become the persistent music
-// voice. An infinite repeat says so outright. Otherwise the title has to have
-// shown the loop: the identical track ran to its own end a moment ago and is
-// being started again, which is what hand-looped music does and what a one-shot
-// cue never does.
-func (m *Media) isMusicVoicePlay(
-	clip *mediaClip,
-	plays int32,
-	replaysEndedTrack bool,
-) bool {
-	if plays == -1 {
-		return true
-	}
-	return replaysEndedTrack && clip.decoded != nil &&
-		clip.decoded.duration >= musicVoiceMinDuration
-}
-
-// playAsBGMVoice promotes a looping clip to the persistent music voice. The
-// source clip is detached from the mixer so the music is not counted twice;
-// re-issuing the identical track keeps the current voice playing untouched.
-func (m *Media) playAsBGMVoice(clip *mediaClip) {
-	sig := bgmSignature(clip.source)
-	clip.state = ClipStopped
-	clip.remainingPlays = 0
-	if m.bgmVoice != nil && m.bgmVoiceSig == sig {
-		return
-	}
-	voice := &mediaClip{
-		mediaType:      clip.mediaType,
-		source:         cloneBytes(clip.source),
-		position:       0,
-		state:          ClipPlaying,
-		remainingPlays: -1,
-		volume:         clip.volume,
-		pan:            clip.pan,
-	}
-	// Play decoded the source before deciding it was background music. PCM is
-	// immutable from the clip's point of view and the lazy SMAF stream only
-	// extends a deterministic shared prefix, so the persistent voice can reuse
-	// it instead of parsing and probing the same score a second time.
-	voice.decoded = clip.decoded
-	m.bgmVoice = voice
-	m.bgmVoiceSig = sig
-	m.bgmVoiceStopped = false
 }
 
 func (m *Media) CreateClip(
@@ -372,13 +261,18 @@ func (m *Media) CreateClip(
 }
 
 func (m *Media) DestroyClip(owner OwnerID, id ServiceID, bus *EventBus) error {
-	if _, err := m.get(owner, id); err != nil {
+	clip, err := m.get(owner, id)
+	if err != nil {
 		return err
+	}
+	if clip.state != ClipStopped {
+		return fmt.Errorf("%w: destroy media clip while %v", ErrInvalidState, clip.state)
 	}
 	if err := m.registry.Destroy(id, owner, KindClip); err != nil {
 		return err
 	}
 	delete(m.clips, id)
+	m.invalidateOutput()
 	if bus != nil {
 		bus.RemoveService(id)
 	}
@@ -398,8 +292,19 @@ func (m *Media) Append(owner OwnerID, id ServiceID, data []byte) (int, error) {
 	if size < uint64(len(clip.source)) || size > limit {
 		return 0, fmt.Errorf("%w: media source exceeds %d bytes", ErrLimitExceeded, limit)
 	}
+	hadDecoded := clip.decoded != nil
 	clip.source = append(clip.source, data...)
-	clip.decoded = decodeWavePCM16(clip.source)
+	decoded := decodeWavePCM16(clip.source)
+	if decoded == nil && (hadDecoded || clip.waitingForData) &&
+		looksLikeSequencedScore(clip.source) {
+		decoded = m.decodeScore(clip.source)
+	}
+	clip.decoded = decoded
+	if decoded != nil {
+		clip.waitingForData = false
+	} else if clip.state == ClipPlaying && looksLikeSequencedPrefix(clip.source) {
+		clip.waitingForData = true
+	}
 	if clip.decoded != nil && clip.position > clip.decoded.duration {
 		clip.position = clip.decoded.duration
 	}
@@ -414,17 +319,81 @@ func (m *Media) Source(owner OwnerID, id ServiceID) ([]byte, error) {
 	return cloneBytes(clip.source), nil
 }
 
-func (m *Media) Clear(owner OwnerID, id ServiceID) error {
+// ReplaceSource atomically installs a stopped clip's encoded buffer.
+func (m *Media) ReplaceSource(owner OwnerID, id ServiceID, data []byte) error {
 	clip, err := m.get(owner, id)
 	if err != nil {
 		return err
 	}
-	clip.source = nil
-	clip.decoded = nil
+	if clip.state != ClipStopped {
+		return fmt.Errorf("%w: replace media buffer while %v", ErrInvalidState, clip.state)
+	}
+	limit := m.limits.MaxSourceBytes
+	if clip.capacity != 0 {
+		limit = min(limit, clip.capacity)
+	}
+	if uint64(len(data)) > limit {
+		return fmt.Errorf("%w: media source exceeds %d bytes", ErrLimitExceeded, limit)
+	}
+	clip.source = cloneBytes(data)
+	clip.decoded = decodeWavePCM16(clip.source)
 	clip.position = 0
-	clip.state = ClipStopped
 	clip.remainingPlays = 0
+	clip.waitingForData = false
+	m.invalidateOutput()
 	return nil
+}
+
+// AvailableBytes reports the consumable encoded bytes remaining at the
+// playback cursor. The encoded source is retained for deterministic decode and
+// replay, while this view supplies WIPI's decreasing buffer watermark.
+func (m *Media) AvailableBytes(owner OwnerID, id ServiceID) (uint64, error) {
+	clip, err := m.get(owner, id)
+	if err != nil {
+		return 0, err
+	}
+	return uint64(len(m.bufferedSource(clip))), nil
+}
+
+func (m *Media) bufferedSource(clip *mediaClip) []byte {
+	if clip == nil || len(clip.source) == 0 || clip.decoded == nil ||
+		clip.decoded.duration <= 0 || clip.position <= 0 {
+		if clip == nil {
+			return nil
+		}
+		return clip.source
+	}
+	if clip.position >= clip.decoded.duration {
+		return clip.source[len(clip.source):]
+	}
+	consumed := uint64(len(clip.source)) * uint64(clip.position) /
+		uint64(clip.decoded.duration)
+	return clip.source[min(consumed, uint64(len(clip.source))):]
+}
+
+// TakeBuffered removes and returns bytes from the current consumable buffer.
+// Reading encoded data while playback owns the cursor is invalid.
+func (m *Media) TakeBuffered(owner OwnerID, id ServiceID, count uint64) ([]byte, error) {
+	clip, err := m.get(owner, id)
+	if err != nil {
+		return nil, err
+	}
+	if clip.state != ClipStopped {
+		return nil, fmt.Errorf("%w: read media buffer while %v", ErrInvalidState, clip.state)
+	}
+	available := m.bufferedSource(clip)
+	count = min(count, uint64(len(available)))
+	result := cloneBytes(available[:count])
+	clip.source = cloneBytes(available[count:])
+	clip.position = 0
+	clip.decoded = decodeWavePCM16(clip.source)
+	clip.waitingForData = false
+	m.invalidateOutput()
+	return result, nil
+}
+
+func (m *Media) Clear(owner OwnerID, id ServiceID) error {
+	return m.ReplaceSource(owner, id, nil)
 }
 
 func (m *Media) Play(owner OwnerID, id ServiceID, plays int32) error {
@@ -435,21 +404,19 @@ func (m *Media) Play(owner OwnerID, id ServiceID, plays int32) error {
 	if plays == 0 || plays < -1 {
 		return fmt.Errorf("%w: invalid media play count %d", ErrInvalidArgument, plays)
 	}
+	if clip.state != ClipStopped {
+		return fmt.Errorf("%w: play media clip while %v", ErrInvalidState, clip.state)
+	}
 	if clip.decoded == nil && looksLikeSequencedScore(clip.source) {
 		clip.decoded = m.decodeScore(clip.source)
 	}
-	// The marker is read before the position reset below erases the evidence,
-	// and consumed by this Play whatever it decides: a track the title starts
-	// again has stopped being a candidate for the next start.
-	replaysEndedTrack := m.endedValid && m.endedSig == bgmSignature(clip.source)
-	m.endedSig, m.endedElapsed, m.endedValid = 0, 0, false
+	if clip.decoded == nil && looksLikeSequencedPrefix(clip.source) {
+		clip.waitingForData = true
+	} else if clip.decoded == nil || clip.decoded.duration <= 0 {
+		return fmt.Errorf("%w: %q clip cannot be decoded", ErrMediaUnsupported, clip.mediaType)
+	}
 	if clip.decoded != nil && clip.position >= clip.decoded.duration {
 		clip.position = 0
-	}
-	m.releaseStoppedMusicVoice(clip)
-	if m.mixMode && m.isMusicVoicePlay(clip, plays, replaysEndedTrack) {
-		m.playAsBGMVoice(clip)
-		return nil
 	}
 	clip.remainingPlays = plays
 	clip.state = ClipPlaying
@@ -461,9 +428,11 @@ func (m *Media) Pause(owner OwnerID, id ServiceID) error {
 	if err != nil {
 		return err
 	}
-	if clip.state == ClipPlaying {
-		clip.state = ClipPaused
+	if clip.state != ClipPlaying {
+		return fmt.Errorf("%w: pause media clip while %v", ErrInvalidState, clip.state)
 	}
+	clip.state = ClipPaused
+	m.invalidateOutput()
 	return nil
 }
 
@@ -472,9 +441,10 @@ func (m *Media) Resume(owner OwnerID, id ServiceID) error {
 	if err != nil {
 		return err
 	}
-	if clip.state == ClipPaused {
-		clip.state = ClipPlaying
+	if clip.state != ClipPaused {
+		return fmt.Errorf("%w: resume media clip while %v", ErrInvalidState, clip.state)
 	}
+	clip.state = ClipPlaying
 	return nil
 }
 
@@ -483,41 +453,14 @@ func (m *Media) Stop(owner OwnerID, id ServiceID) error {
 	if err != nil {
 		return err
 	}
-	if m.bgmVoice != nil && m.bgmVoiceSig == bgmSignature(clip.source) {
-		m.bgmVoiceStopped = true
+	if clip.state != ClipPlaying && clip.state != ClipPaused && clip.state != ClipRecording {
+		return fmt.Errorf("%w: stop media clip while %v", ErrInvalidState, clip.state)
 	}
 	clip.state = ClipStopped
 	clip.remainingPlays = 0
+	clip.waitingForData = false
+	m.invalidateOutput()
 	return nil
-}
-
-// releaseStoppedMusicVoice retires a music voice the title has stopped, once it
-// starts something else.
-//
-// The voice is a detached copy so that a title looping its music by hand -
-// play, wait for the end, play again - is heard continuously instead of
-// gapping on every cycle, and that means an ordinary Stop cannot be allowed to
-// silence it. The cost is that a title which stops its music and then starts a
-// different track gets both at once, which is what 리듬스타1 does: it stops the
-// menu music and starts a song preview, and in mixing mode the two play over
-// each other (#148).
-//
-// Waiting for the next Play is what separates the two cases. A hand-looped
-// track comes back with the same signature and keeps its voice; a different
-// track means the stop really was the title changing its music. A one-shot cue
-// laid over the music - a defeat jingle, a spoken line - never stops the music
-// first, so it still mixes as before.
-func (m *Media) releaseStoppedMusicVoice(clip *mediaClip) {
-	if m.bgmVoice == nil || !m.bgmVoiceStopped {
-		return
-	}
-	if bgmSignature(clip.source) == m.bgmVoiceSig {
-		m.bgmVoiceStopped = false
-		return
-	}
-	m.bgmVoice = nil
-	m.bgmVoiceSig = 0
-	m.bgmVoiceStopped = false
 }
 
 func (m *Media) Seek(owner OwnerID, id ServiceID, position time.Duration) error {
@@ -529,7 +472,19 @@ func (m *Media) Seek(owner OwnerID, id ServiceID, position time.Duration) error 
 		return fmt.Errorf("%w: invalid clip position %s", ErrInvalidArgument, position)
 	}
 	clip.position = position
+	m.invalidateOutput()
 	return nil
+}
+
+// OutputRevision changes whenever buffered audio becomes stale because of a
+// guest-visible discontinuity. Frontends use it to discard already-published
+// chunks before accepting newly mixed samples.
+func (m *Media) OutputRevision() uint64 { return m.outputRevision }
+
+func (m *Media) invalidateOutput() {
+	m.queuedPCM16 = m.queuedPCM16[:0]
+	m.outputRemainder = 0
+	m.outputRevision++
 }
 
 func (m *Media) SetClipGain(
@@ -546,7 +501,11 @@ func (m *Media) SetClipGain(
 	if volume > 100 || pan < -100 || pan > 100 {
 		return fmt.Errorf("%w: invalid clip gain", ErrInvalidArgument)
 	}
+	if clip.volume == volume && clip.muted == muted && clip.pan == pan {
+		return nil
+	}
 	clip.volume, clip.muted, clip.pan = volume, muted, pan
+	m.invalidateOutput()
 	return nil
 }
 
@@ -554,7 +513,11 @@ func (m *Media) SetGlobalGain(volume uint8, muted bool) error {
 	if volume > 100 {
 		return fmt.Errorf("%w: invalid global volume %d", ErrInvalidArgument, volume)
 	}
+	if m.globalVolume == volume && m.globalMute == muted {
+		return nil
+	}
 	m.globalVolume, m.globalMute = volume, muted
+	m.invalidateOutput()
 	return nil
 }
 
@@ -575,6 +538,7 @@ func (m *Media) Info(owner OwnerID, id ServiceID) (ClipInfo, error) {
 		Pan:            clip.pan,
 		RemainingPlays: clip.remainingPlays,
 		Decoded:        clip.decoded != nil,
+		WaitingForData: clip.waitingForData,
 	}
 	if clip.decoded != nil {
 		info.Duration = clip.decoded.duration
@@ -610,15 +574,6 @@ func (m *Media) advanceLocked(start, end time.Duration, bus *EventBus) error {
 		return fmt.Errorf("%w: invalid media advance", ErrInvalidArgument)
 	}
 	delta := end - start
-	// Ageing runs before the mix so a track that ends inside this advance is
-	// still a fresh candidate when the guest sees the completion next frame.
-	if m.endedValid {
-		if delta > bgmRelaunchWindow-m.endedElapsed {
-			m.endedSig, m.endedElapsed, m.endedValid = 0, 0, false
-		} else {
-			m.endedElapsed += delta
-		}
-	}
 	voices := m.playbackVoices()
 	activeDecoded := false
 	audible := false
@@ -705,11 +660,10 @@ func (m *Media) advanceLocked(start, end time.Duration, bus *EventBus) error {
 			continue
 		}
 		if clip.decoded == nil || clip.decoded.duration <= 0 {
-			if delta > time.Duration(math.MaxInt64-int64(clip.position)) {
-				return fmt.Errorf("%w: media position overflow", ErrLimitExceeded)
+			if clip.waitingForData {
+				continue
 			}
-			clip.position += delta
-			continue
+			return fmt.Errorf("%w: playing clip has no decoder", ErrMediaUnsupported)
 		}
 		// A decoded clip advances by the audio actually rendered for it, not
 		// by the wall time the frame covered. The two differ by a fraction of
@@ -779,7 +733,7 @@ func (m *Media) Drain() AudioBuffer {
 // fails.
 //
 // It exists because the rollback used the full Snapshot, which clones every
-// clip's source bytes and the persistent music voice's whole encoded track.
+// clip's source bytes.
 // That runs on every tick whether or not anything fails, and on a title with
 // audio loaded it was 17% of the frame - all of it copying bytes advanceLocked
 // cannot touch. Advancing only moves playback positions and the mixed output
@@ -792,9 +746,6 @@ type mediaAdvanceState struct {
 	outputRemainder uint64
 	queuedPCM16     []int16
 	clips           []mediaClipAdvanceState
-	endedSig        uint64
-	endedElapsed    time.Duration
-	endedValid      bool
 }
 
 // mediaClipAdvanceState is one voice's rollback record. The clip is held by
@@ -811,9 +762,6 @@ type mediaClipAdvanceState struct {
 // buffers.
 func (m *Media) captureAdvance(destination *mediaAdvanceState) {
 	destination.outputRemainder = m.outputRemainder
-	destination.endedSig = m.endedSig
-	destination.endedElapsed = m.endedElapsed
-	destination.endedValid = m.endedValid
 	destination.queuedPCM16 = append(
 		destination.queuedPCM16[:0],
 		m.queuedPCM16...,
@@ -827,22 +775,11 @@ func (m *Media) captureAdvance(destination *mediaAdvanceState) {
 			remainingPlays: clip.remainingPlays,
 		})
 	}
-	if m.bgmVoice != nil {
-		destination.clips = append(destination.clips, mediaClipAdvanceState{
-			clip:           m.bgmVoice,
-			position:       m.bgmVoice.position,
-			state:          m.bgmVoice.state,
-			remainingPlays: m.bgmVoice.remainingPlays,
-		})
-	}
 }
 
 // restoreAdvance puts back what captureAdvance recorded.
 func (m *Media) restoreAdvance(saved *mediaAdvanceState) {
 	m.outputRemainder = saved.outputRemainder
-	m.endedSig = saved.endedSig
-	m.endedElapsed = saved.endedElapsed
-	m.endedValid = saved.endedValid
 	m.queuedPCM16 = append(m.queuedPCM16[:0], saved.queuedPCM16...)
 	for _, clip := range saved.clips {
 		clip.clip.position = clip.position
@@ -859,20 +796,6 @@ func (m *Media) Snapshot() MediaState {
 		OutputRemainder: m.outputRemainder,
 		QueuedPCM16:     append([]int16(nil), m.queuedPCM16...),
 		AudioMixMode:    m.mixMode,
-		BGMVoiceSig:     m.bgmVoiceSig,
-
-		BGMEndedSig:       m.endedSig,
-		BGMEndedElapsedNS: int64(m.endedElapsed),
-		BGMEndedValid:     m.endedValid,
-	}
-	if m.bgmVoice != nil {
-		state.BGMVoice = &BGMVoiceState{
-			MediaType:  m.bgmVoice.mediaType,
-			Source:     cloneBytes(m.bgmVoice.source),
-			PositionNS: int64(m.bgmVoice.position),
-			Volume:     m.bgmVoice.volume,
-			Pan:        m.bgmVoice.pan,
-		}
 	}
 	for _, id := range m.sortedClipIDs() {
 		clip := m.clips[id]
@@ -897,7 +820,7 @@ func (m *Media) Restore(state MediaState) error {
 	if err := state.Limits.Validate(); err != nil ||
 		state.GlobalVolume > 100 ||
 		state.BGMEndedElapsedNS < 0 ||
-		time.Duration(state.BGMEndedElapsedNS) > bgmRelaunchWindow ||
+		time.Duration(state.BGMEndedElapsedNS) > 750*time.Millisecond ||
 		state.OutputRemainder >= uint64(time.Second) ||
 		len(state.QueuedPCM16) > int(state.Limits.MaxQueuedSamples) ||
 		len(state.Clips) > int(state.Limits.MaxClips) {
@@ -947,13 +870,19 @@ func (m *Media) Restore(state MediaState) error {
 				state.Limits.OutputSampleRate,
 			)
 		}
+		if clip.decoded == nil &&
+			(saved.State == ClipPlaying || saved.State == ClipPaused) {
+			if !looksLikeSequencedPrefix(clip.source) {
+				return fmt.Errorf("%w: media clip %d has no decoder", ErrInvalidState, index)
+			}
+			clip.waitingForData = true
+		}
 		if clip.decoded != nil && clip.position > clip.decoded.duration {
 			return fmt.Errorf("%w: media clip %d position exceeds duration", ErrInvalidState, index)
 		}
 		clips[saved.ID] = clip
 		previous = saved.ID
 	}
-	var bgmVoice *mediaClip
 	if state.BGMVoice != nil {
 		v := state.BGMVoice
 		if len(v.MediaType) > 127 || strings.IndexByte(v.MediaType, 0) >= 0 ||
@@ -963,23 +892,14 @@ func (m *Media) Restore(state MediaState) error {
 			v.Pan < -100 || v.Pan > 100 {
 			return fmt.Errorf("%w: invalid media music voice", ErrInvalidState)
 		}
-		bgmVoice = &mediaClip{
-			mediaType:      v.MediaType,
-			source:         cloneBytes(v.Source),
-			position:       time.Duration(v.PositionNS),
-			state:          ClipPlaying,
-			remainingPlays: -1,
-			volume:         v.Volume,
-			pan:            v.Pan,
-		}
-		bgmVoice.decoded = decodeWavePCM16(bgmVoice.source)
-		if bgmVoice.decoded == nil && looksLikeSequencedScore(bgmVoice.source) {
-			bgmVoice.decoded = m.decodeScoreAtRate(
-				bgmVoice.source,
+		decoded := decodeWavePCM16(v.Source)
+		if decoded == nil && looksLikeSequencedScore(v.Source) {
+			decoded = m.decodeScoreAtRate(
+				v.Source,
 				state.Limits.OutputSampleRate,
 			)
 		}
-		if bgmVoice.decoded != nil && bgmVoice.position > bgmVoice.decoded.duration {
+		if decoded != nil && time.Duration(v.PositionNS) > decoded.duration {
 			return fmt.Errorf("%w: media music voice position exceeds duration", ErrInvalidState)
 		}
 	}
@@ -990,12 +910,14 @@ func (m *Media) Restore(state MediaState) error {
 	m.outputRemainder = state.OutputRemainder
 	m.queuedPCM16 = append([]int16(nil), state.QueuedPCM16...)
 	m.mixMode = state.AudioMixMode
-	m.bgmVoice = bgmVoice
-	m.bgmVoiceSig = state.BGMVoiceSig
-	m.endedSig = state.BGMEndedSig
-	m.endedElapsed = time.Duration(state.BGMEndedElapsedNS)
-	m.endedValid = state.BGMEndedValid
+	// Legacy detached BGM payloads are validated above, then retired because
+	// they cannot be represented without violating clip ownership.
+	m.outputRevision++
 	return nil
+}
+
+func looksLikeSequencedPrefix(data []byte) bool {
+	return len(data) >= 4 && (string(data[:4]) == "MMMD" || string(data[:4]) == "MThd")
 }
 
 func (m *Media) get(owner OwnerID, id ServiceID) (*mediaClip, error) {
@@ -1227,12 +1149,6 @@ func (m *Media) advanceClipTimeline(
 	clip.position = duration
 	clip.state = ClipStopped
 	clip.remainingPlays = 0
-	// The track ran out on its own rather than being stopped, so it is the
-	// candidate a hand-written loop would restart. Only the newest one is kept:
-	// a title cannot be looping two tracks by hand at once.
-	m.endedSig = bgmSignature(clip.source)
-	m.endedElapsed = 0
-	m.endedValid = true
 	_, err := bus.Enqueue(Event{
 		At:        start + untilComplete,
 		Kind:      EventAudioComplete,

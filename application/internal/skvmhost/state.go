@@ -135,6 +135,7 @@ func (m *Machine) LoadState(input io.Reader) error {
 	m.midlet = parsed.midlet
 	m.input = parsed.input
 	m.frameQuantum = m.services.Config.FrameDuration
+	m.resetAudioLocked(m.services.Clock.Monotonic())
 	return nil
 }
 

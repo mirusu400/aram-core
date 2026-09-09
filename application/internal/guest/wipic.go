@@ -22,6 +22,18 @@ const (
 	WIPIBadFormat      = int32(-20)
 	WIPIImageDone      = int32(1)
 	WIPIImageFrameDone = int32(0)
+
+	// WIPI media callback values are an event ABI, not the internal playback
+	// state enum. Keep these names at the adapter boundary so the two cannot be
+	// accidentally interchanged again.
+	WIPIMediaError  = int32(-1)
+	WIPIMediaEnd    = int32(1)
+	WIPIMediaStart  = int32(2)
+	WIPIMediaStop   = int32(3)
+	WIPIMediaPause  = int32(4)
+	WIPIMediaResume = int32(5)
+	WIPIMediaRecord = int32(6)
+	WIPIMediaFull   = int32(7)
 )
 
 func WIPIReturnCode(code int32) uint32 {

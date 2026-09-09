@@ -32,6 +32,27 @@ func newPublicRuntime(t *testing.T) *Runtime {
 	return runtime
 }
 
+func wipiTestWave(samples []int16) []byte {
+	data := make([]byte, 44+len(samples)*2)
+	copy(data[0:4], "RIFF")
+	binary.LittleEndian.PutUint32(data[4:8], uint32(len(data)-8))
+	copy(data[8:12], "WAVE")
+	copy(data[12:16], "fmt ")
+	binary.LittleEndian.PutUint32(data[16:20], 16)
+	binary.LittleEndian.PutUint16(data[20:22], 1)
+	binary.LittleEndian.PutUint16(data[22:24], 1)
+	binary.LittleEndian.PutUint32(data[24:28], 8_000)
+	binary.LittleEndian.PutUint32(data[28:32], 16_000)
+	binary.LittleEndian.PutUint16(data[32:34], 2)
+	binary.LittleEndian.PutUint16(data[34:36], 16)
+	copy(data[36:40], "data")
+	binary.LittleEndian.PutUint32(data[40:44], uint32(len(samples)*2))
+	for index, sample := range samples {
+		binary.LittleEndian.PutUint16(data[44+index*2:], uint16(sample))
+	}
+	return data
+}
+
 func dispatchPublicAPI(t *testing.T, runtime *Runtime, name string, args ...uint32) guest.WIPIReturn {
 	t.Helper()
 	stub := preparePublicAPICall(t, runtime, name, args...)
@@ -1793,16 +1814,18 @@ func TestWIPIRuntimeMediaAndSerialModels(t *testing.T) {
 	if clip == 0 {
 		t.Fatal("media clip is null")
 	}
-	data, err := runtime.Heap.Allocate(16, true)
+	wave := wipiTestWave([]int16{1, 2})
+	data, err := runtime.Heap.Allocate(uint32(len(wave)), true)
 	check(t, err)
-	check(t, runtime.CPU.WriteMemory(data, []byte{1, 2, 3, 4}))
-	if got := dispatchPublicAPI(t, runtime, "MC_mdaClipPutData", clip, data, 4).Low; got != 4 {
+	check(t, runtime.CPU.WriteMemory(data, wave))
+	if got := dispatchPublicAPI(t, runtime, "MC_mdaClipPutData", clip, data, uint32(len(wave))).Low; got != uint32(len(wave)) {
 		t.Fatalf("MC_mdaClipPutData = %d", got)
 	}
 	dispatchPublicAPI(t, runtime, "MC_mdaPlay", clip, 1)
 	if runtime.MediaClips[clip].State != 1 || !runtime.MediaClips[clip].Repeat {
 		t.Fatalf("media clip state = %+v", runtime.MediaClips[clip])
 	}
+	check(t, runtime.CPU.WriteMemory(data, []byte{1, 2, 3, 4}))
 
 	serial := int32(dispatchPublicAPI(t, runtime, "MC_srlOpen", 0, 0).Low)
 	if serial < 1 {
@@ -1820,6 +1843,55 @@ func TestWIPIRuntimeMediaAndSerialModels(t *testing.T) {
 	check(t, runtime.CPU.ReadMemory(output, loopback[:]))
 	if loopback != [4]byte{1, 2, 3, 4} {
 		t.Fatalf("serial loopback = %v", loopback)
+	}
+}
+
+func TestWIPIMediaCallbacksUseDocumentedEventCodes(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	mediaType, err := runtime.Heap.Allocate(32, true)
+	check(t, err)
+	_, err = runtime.writeCString(mediaType, []byte("audio/wav"), -1)
+	check(t, err)
+	const callback = uint32(0x02000001)
+	clip := dispatchPublicAPI(t, runtime, "MC_mdaClipCreate", mediaType, 256, callback).Low
+	wave := wipiTestWave(make([]int16, 32))
+	data, err := runtime.Heap.Allocate(uint32(len(wave)), true)
+	check(t, err)
+	check(t, runtime.CPU.WriteMemory(data, wave))
+	if got := dispatchPublicAPI(t, runtime, "MC_mdaClipPutData", clip, data, uint32(len(wave))).Low; got != uint32(len(wave)) {
+		t.Fatalf("put data = %d", got)
+	}
+
+	operations := []struct {
+		name string
+		code int32
+	}{
+		{name: "MC_mdaPlay", code: guest.WIPIMediaStart},
+		{name: "MC_mdaPause", code: guest.WIPIMediaPause},
+		{name: "MC_mdaResume", code: guest.WIPIMediaResume},
+		{name: "MC_mdaStop", code: guest.WIPIMediaStop},
+	}
+	for _, operation := range operations {
+		args := []uint32{clip}
+		if operation.name == "MC_mdaPlay" {
+			args = append(args, 0)
+		}
+		if result := dispatchPublicAPI(t, runtime, operation.name, args...).Low; result != 0 {
+			t.Fatalf("%s result = 0x%08x", operation.name, result)
+		}
+		pending := runtime.PendingCallbacks[len(runtime.PendingCallbacks)-1]
+		if pending.Procedure != callback || pending.Args[0] != clip ||
+			pending.Args[1] != uint32(operation.code) {
+			t.Fatalf("%s callback = %+v, want event %d", operation.name, pending, operation.code)
+		}
+	}
+
+	before := len(runtime.PendingCallbacks)
+	if result := dispatchPublicAPI(t, runtime, "MC_mdaStop", clip).Low; result != ^uint32(0) {
+		t.Fatalf("duplicate Stop result = 0x%08x", result)
+	}
+	if len(runtime.PendingCallbacks) != before {
+		t.Fatal("invalid Stop emitted a callback")
 	}
 }
 
@@ -1874,10 +1946,11 @@ func TestRaptorStopClipReportsCompletionAndFrees(t *testing.T) {
 	if err != nil || handle == 0 {
 		t.Fatalf("RaptorCreateClip = 0x%08x, err=%v", handle, err)
 	}
-	data, err := runtime.Heap.Allocate(16, true)
+	wave := wipiTestWave([]int16{1, 2})
+	data, err := runtime.Heap.Allocate(uint32(len(wave)), true)
 	check(t, err)
-	check(t, runtime.CPU.WriteMemory(data, []byte{1, 2, 3, 4}))
-	if !runtime.RaptorPutClipData(handle, data, 4) {
+	check(t, runtime.CPU.WriteMemory(data, wave))
+	if !runtime.RaptorPutClipData(handle, data, int32(len(wave))) {
 		t.Fatal("RaptorPutClipData rejected the clip source")
 	}
 	if !runtime.RaptorPlayClip(handle, true) {

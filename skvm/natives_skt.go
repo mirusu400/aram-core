@@ -694,17 +694,16 @@ func (vm *VM) installSKTNatives() {
 				}
 				created = true
 			} else {
-				if err := vm.services.Media.Clear(
-					vm.serviceOwner,
-					state.clip,
-				); err != nil {
-					return Value{}, false, err
+				if info, infoErr := vm.services.Media.Info(vm.serviceOwner, state.clip); infoErr == nil && info.State != shared.ClipStopped {
+					if err := vm.services.Media.Stop(vm.serviceOwner, state.clip); err != nil {
+						return Value{}, false, err
+					}
 				}
 				if err := vm.releaseClipWaiters(ctx, state.clip); err != nil {
 					return Value{}, false, err
 				}
 			}
-			_, err = vm.services.Media.Append(vm.serviceOwner, state.clip, data)
+			err = vm.services.Media.ReplaceSource(vm.serviceOwner, state.clip, data)
 			if err != nil && created {
 				_ = vm.services.Media.DestroyClip(
 					vm.serviceOwner,
@@ -769,8 +768,10 @@ func (vm *VM) installSKTNatives() {
 			if state.clip == 0 {
 				return Value{}, false, nil
 			}
-			if err := vm.services.Media.Stop(vm.serviceOwner, state.clip); err != nil {
-				return Value{}, false, err
+			if info, infoErr := vm.services.Media.Info(vm.serviceOwner, state.clip); infoErr == nil && info.State != shared.ClipStopped {
+				if err := vm.services.Media.Stop(vm.serviceOwner, state.clip); err != nil {
+					return Value{}, false, err
+				}
 			}
 			return Value{}, false, vm.releaseClipWaiters(ctx, state.clip)
 		},
@@ -788,6 +789,11 @@ func (vm *VM) installSKTNatives() {
 				return Value{}, false, nil
 			}
 			clip := state.clip
+			if info, infoErr := vm.services.Media.Info(vm.serviceOwner, clip); infoErr == nil && info.State != shared.ClipStopped {
+				if err := vm.services.Media.Stop(vm.serviceOwner, clip); err != nil {
+					return Value{}, false, err
+				}
+			}
 			err = vm.services.Media.DestroyClip(
 				vm.serviceOwner,
 				clip,

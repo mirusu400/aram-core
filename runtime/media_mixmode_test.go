@@ -1,435 +1,127 @@
 package runtime
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 	"time"
 )
 
-// TestMediaMixModeBGMVoicePersistsOverEffects proves the enhanced mixing
-// policy: a looping track becomes a persistent voice that keeps playing after
-// the guest stops and destroys its clip, one-shot effects mix over it, and
-// re-issuing the identical loop continues it instead of restarting from zero.
-func TestMediaMixModeBGMVoicePersistsOverEffects(t *testing.T) {
+func newRampMedia(t *testing.T) (*Media, *EventBus, ServiceID) {
+	t.Helper()
 	limits := DefaultMediaLimits()
 	limits.OutputSampleRate = 8_000
 	limits.OutputChannels = 1
-	registry := NewRegistry(32)
-	media, err := NewMedia(registry, limits)
+	media, err := NewMedia(NewRegistry(32), limits)
 	check(t, err)
-	media.SetAudioMixMode(true)
-	bus := NewEventBus(16, 32)
-
-	// A four-frame ramp so each advance step reads a distinguishable sample and
-	// a restart (back to 10) is impossible to confuse with continuation.
-	ramp := pcmWave(8_000, 1, []int16{10, 20, 30, 40})
-	step := 125 * time.Microsecond // exactly one 8 kHz frame per advance.
-	var clock time.Duration
-	advance := func() []int16 {
-		if err := media.Advance(clock, clock+step, bus); err != nil {
-			t.Fatalf("advance at %s: %v", clock, err)
-		}
-		clock += step
-		return media.Drain().PCM16
-	}
-
-	bgm, err := media.CreateClip(1, "audio/wav", 0)
-	check(t, err)
-	if _, err := media.Append(1, bgm, ramp); err != nil {
-		t.Fatal(err)
-	}
-	check(t, media.Play(1, bgm, -1))
-	// The looping clip is delegated to the voice, so the clip itself is no
-	// longer a live playing source (that would double the music).
-	if info, err := media.Info(1, bgm); err != nil {
-		t.Fatal(err)
-	} else if info.State != ClipStopped {
-		t.Fatalf("delegated BGM clip state = %v, want ClipStopped", info.State)
-	}
-
-	if got := advance(); !reflect.DeepEqual(got, []int16{10}) { // frame 0
-		t.Fatalf("frame 0 = %v, want [10]", got)
-	}
-	if got := advance(); !reflect.DeepEqual(got, []int16{20}) { // frame 1
-		t.Fatalf("frame 1 = %v, want [20]", got)
-	}
-
-	// Destroying the guest clip must NOT silence the music: the voice survives.
-	check(t, media.DestroyClip(1, bgm, bus))
-	if got := advance(); !reflect.DeepEqual(got, []int16{30}) { // frame 2, post-destroy
-		t.Fatalf("BGM after destroy = %v, want [30] (voice must survive)", got)
-	}
-
-	// A one-shot effect on its own clip mixes over the still-playing music.
-	sfx, err := media.CreateClip(1, "audio/wav", 0)
-	check(t, err)
-	if _, err := media.Append(1, sfx, pcmWave(8_000, 1, []int16{1000})); err != nil {
-		t.Fatal(err)
-	}
-	check(t, media.Play(1, sfx, 1))
-	if got := advance(); !reflect.DeepEqual(got, []int16{1040}) { // 40 (BGM) + 1000 (SFX)
-		t.Fatalf("SFX-over-BGM = %v, want [1040]", got)
-	}
-	if got := advance(); !reflect.DeepEqual(got, []int16{10}) { // BGM loops, SFX done
-		t.Fatalf("post-SFX = %v, want [10] (BGM loops, effect finished)", got)
-	}
-
-	// The guest stops and re-issues the identical loop on a fresh clip (the
-	// "restart the music after the effect" dance). The voice must continue from
-	// where it is, not jump back to frame 0.
-	bgm2, err := media.CreateClip(1, "audio/wav", 0)
-	check(t, err)
-	if _, err := media.Append(1, bgm2, ramp); err != nil {
-		t.Fatal(err)
-	}
-	check(t, media.Play(1, bgm2, -1))
-	if got := advance(); !reflect.DeepEqual(got, []int16{20}) { // frame 1, continued
-		t.Fatalf("re-issued identical loop = %v, want [20] (continue, not restart)", got)
-	}
-}
-
-// TestMediaMixModeVoiceSurvivesSnapshotRestore proves the persistent voice is
-// part of the deterministic save state: a machine restored mid-music continues
-// the loop identically to one that never saved.
-func TestMediaMixModeVoiceSurvivesSnapshotRestore(t *testing.T) {
-	limits := DefaultMediaLimits()
-	limits.OutputSampleRate = 8_000
-	limits.OutputChannels = 1
-	ramp := pcmWave(8_000, 1, []int16{10, 20, 30, 40})
-
-	build := func() (*Media, *EventBus) {
-		registry := NewRegistry(32)
-		media, err := NewMedia(registry, limits)
-		check(t, err)
-		media.SetAudioMixMode(true)
-		bus := NewEventBus(16, 32)
-		clip, err := media.CreateClip(1, "audio/wav", 0)
-		check(t, err)
-		if _, err := media.Append(1, clip, ramp); err != nil {
-			t.Fatal(err)
-		}
-		check(t, media.Play(1, clip, -1))
-		// Destroy the source clip (as a title does): only the persistent voice
-		// remains, so the snapshot carries no registry-bound clip and restores
-		// into a fresh instance cleanly.
-		check(t, media.DestroyClip(1, clip, bus))
-		return media, bus
-	}
-
-	live, liveBus := build()
-	// Advance the reference machine two frames (voice now at frame 2).
-	for i := 0; i < 2; i++ {
-		check(t, live.Advance(time.Duration(i)*125*time.Microsecond, time.Duration(i+1)*125*time.Microsecond, liveBus))
-		live.Drain()
-	}
-
-	// A second machine advances two frames, saves, and is reloaded into a fresh
-	// instance before continuing.
-	saved, savedBus := build()
-	for i := 0; i < 2; i++ {
-		check(t, saved.Advance(time.Duration(i)*125*time.Microsecond, time.Duration(i+1)*125*time.Microsecond, savedBus))
-		saved.Drain()
-	}
-	state := saved.Snapshot()
-	if state.BGMVoice == nil || !state.AudioMixMode {
-		t.Fatalf("snapshot dropped the music voice: mix=%v voice=%v", state.AudioMixMode, state.BGMVoice)
-	}
-	registry := NewRegistry(32)
-	restored, err := NewMedia(registry, limits)
-	check(t, err)
-	if err := restored.Restore(state); err != nil {
-		t.Fatalf("restore: %v", err)
-	}
-	if !restored.AudioMixMode() {
-		t.Fatal("restored media lost mix mode")
-	}
-
-	// Both continue two more frames; the restored machine must match the one
-	// that never round-tripped.
-	restoredBus := NewEventBus(16, 32)
-	for i := 2; i < 4; i++ {
-		start := time.Duration(i) * 125 * time.Microsecond
-		end := time.Duration(i+1) * 125 * time.Microsecond
-		check(t, live.Advance(start, end, liveBus))
-		check(t, restored.Advance(start, end, restoredBus))
-		want := live.Drain().PCM16
-		got := restored.Drain().PCM16
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("frame %d after restore = %v, want %v", i, got, want)
-		}
-	}
-}
-
-// TestMediaMixModeVoicesLongOneShotBGM proves the mixing policy still rescues a
-// title that loops its music by hand (a long non-repeat clip it replays the
-// moment it ends): the replay is promoted to the persistent voice and survives
-// destroy, while the first play and a short one-shot effect stay ordinary clips.
-func TestMediaMixModeVoicesLongOneShotBGM(t *testing.T) {
-	limits := DefaultMediaLimits()
-	limits.OutputSampleRate = 8_000
-	limits.OutputChannels = 1
-	registry := NewRegistry(32)
-	media, err := NewMedia(registry, limits)
-	check(t, err)
-	media.SetAudioMixMode(true)
-	bus := NewEventBus(16, 32)
-
-	// A ~1.3s clip (> musicVoiceMinDuration) played with plays=1 (repeat=false).
-	longSamples := make([]int16, 10_400) // 10400 / 8000 Hz = 1.3s
-	for i := range longSamples {
-		longSamples[i] = 100
-	}
-	bgm, err := media.CreateClip(1, "audio/wav", 0)
-	check(t, err)
-	if _, err := media.Append(1, bgm, pcmWave(8_000, 1, longSamples)); err != nil {
-		t.Fatal(err)
-	}
-	// The first play is an ordinary clip: nothing has shown this track loops.
-	check(t, media.Play(1, bgm, 1))
-	if info, err := media.Info(1, bgm); err != nil {
-		t.Fatal(err)
-	} else if info.State != ClipPlaying {
-		t.Fatalf("first long one-shot state = %v, want ClipPlaying (not voiced)", info.State)
-	}
-	// Run it out. The title sees the completion and replays the same track,
-	// which is the hand-written loop the mixing policy takes over.
-	check(t, media.Advance(0, 1300*time.Millisecond, bus))
-	if info, err := media.Info(1, bgm); err != nil {
-		t.Fatal(err)
-	} else if info.State != ClipStopped {
-		t.Fatalf("long one-shot after its end = %v, want ClipStopped", info.State)
-	}
-	media.Drain()
-	check(t, media.Play(1, bgm, 1))
-	if info, err := media.Info(1, bgm); err != nil {
-		t.Fatal(err)
-	} else if info.State != ClipStopped {
-		t.Fatalf("replayed long BGM clip state = %v, want ClipStopped (voiced)", info.State)
-	}
-	check(t, media.DestroyClip(1, bgm, bus))
-	check(t, media.Advance(
-		1300*time.Millisecond,
-		1300*time.Millisecond+125*time.Microsecond,
-		bus,
-	))
-	if got := media.Drain().PCM16; !reflect.DeepEqual(got, []int16{100}) {
-		t.Fatalf("long BGM after destroy = %v, want [100] (voice survives)", got)
-	}
-
-	// A short one-shot effect is NOT voiced: it stays a normal clip.
-	sfx, err := media.CreateClip(1, "audio/wav", 0)
-	check(t, err)
-	if _, err := media.Append(1, sfx, pcmWave(8_000, 1, []int16{500, 500})); err != nil {
-		t.Fatal(err)
-	}
-	check(t, media.Play(1, sfx, 1))
-	if info, err := media.Info(1, sfx); err != nil {
-		t.Fatal(err)
-	} else if info.State != ClipPlaying {
-		t.Fatalf("short effect clip state = %v, want ClipPlaying (not voiced)", info.State)
-	}
-}
-
-// TestMediaMixModeLeavesLongOneShotCueAlone is the 추억의달고나 report: the
-// title plays several one-shot effects longer than a second - the longest a
-// 4.06s game-over sting - and the mixing policy used to promote every one of
-// them to the persistent music voice on length alone. The voice loops forever
-// and outlives the title's own stop, so the sting played over and over and took
-// the real background music's place. A cue the title never replays must stay an
-// ordinary clip that stops when it ends and stays stopped when it is stopped.
-func TestMediaMixModeLeavesLongOneShotCueAlone(t *testing.T) {
-	limits := DefaultMediaLimits()
-	limits.OutputSampleRate = 8_000
-	limits.OutputChannels = 1
-	registry := NewRegistry(32)
-	media, err := NewMedia(registry, limits)
-	check(t, err)
-	media.SetAudioMixMode(true)
-	bus := NewEventBus(16, 32)
-
-	music := make([]int16, 16_000) // 2s of looping background music
-	for i := range music {
-		music[i] = 40
-	}
-	bgm, err := media.CreateClip(1, "audio/wav", 0)
-	check(t, err)
-	if _, err := media.Append(1, bgm, pcmWave(8_000, 1, music)); err != nil {
-		t.Fatal(err)
-	}
-	check(t, media.Play(1, bgm, -1))
-	if !media.MusicVoiceActive() {
-		t.Fatal("looping track was not promoted to the music voice")
-	}
-
-	sting := make([]int16, 32_480) // 4.06s, the game-over cue
-	for i := range sting {
-		sting[i] = 700
-	}
-	cue, err := media.CreateClip(1, "audio/wav", 0)
-	check(t, err)
-	if _, err := media.Append(1, cue, pcmWave(8_000, 1, sting)); err != nil {
-		t.Fatal(err)
-	}
-	check(t, media.Play(1, cue, 1))
-	if info, err := media.Info(1, cue); err != nil {
-		t.Fatal(err)
-	} else if info.State != ClipPlaying {
-		t.Fatalf("long one-shot cue state = %v, want ClipPlaying (not voiced)", info.State)
-	}
-	// The music the title asked to loop is still the voice, not the cue.
-	if media.bgmVoiceSig != bgmSignature(pcmWave(8_000, 1, music)) {
-		t.Fatal("the one-shot cue displaced the looping music voice")
-	}
-
-	// It ends on its own and stays silent: nothing loops it.
-	check(t, media.Advance(0, 4100*time.Millisecond, bus))
-	if info, err := media.Info(1, cue); err != nil {
-		t.Fatal(err)
-	} else if info.State != ClipStopped {
-		t.Fatalf("cue state after its end = %v, want ClipStopped", info.State)
-	}
-	media.Drain()
-	check(t, media.Advance(
-		4100*time.Millisecond,
-		4100*time.Millisecond+125*time.Microsecond,
-		bus,
-	))
-	if got := media.Drain().PCM16; !reflect.DeepEqual(got, []int16{40}) {
-		t.Fatalf("mix after the cue ended = %v, want [40] (music alone)", got)
-	}
-
-	// Replaying it much later is a fresh cue, not a loop the title is driving.
-	check(t, media.Advance(
-		4100*time.Millisecond+125*time.Microsecond,
-		9*time.Second,
-		bus,
-	))
-	check(t, media.Play(1, cue, 1))
-	if info, err := media.Info(1, cue); err != nil {
-		t.Fatal(err)
-	} else if info.State != ClipPlaying {
-		t.Fatalf("replayed cue state = %v, want ClipPlaying (not voiced)", info.State)
-	}
-	check(t, media.Stop(1, cue))
-	media.Drain()
-	check(t, media.Advance(
-		9*time.Second,
-		9*time.Second+125*time.Microsecond,
-		bus,
-	))
-	if got := media.Drain().PCM16; !reflect.DeepEqual(got, []int16{40}) {
-		t.Fatalf("mix after stopping the cue = %v, want [40] (cue silenced)", got)
-	}
-}
-
-// TestMediaFaithfulModeHonoursStopAndDestroy pins the default policy: a looping
-// clip is a normal live source and destroying it silences the timeline.
-func TestMediaFaithfulModeHonoursStopAndDestroy(t *testing.T) {
-	limits := DefaultMediaLimits()
-	limits.OutputSampleRate = 8_000
-	limits.OutputChannels = 1
-	registry := NewRegistry(32)
-	media, err := NewMedia(registry, limits)
-	check(t, err)
-	bus := NewEventBus(16, 32)
 	clip, err := media.CreateClip(1, "audio/wav", 0)
 	check(t, err)
-	if _, err := media.Append(1, clip, pcmWave(8_000, 1, []int16{50, 60})); err != nil {
-		t.Fatal(err)
-	}
+	_, err = media.Append(1, clip, pcmWave(8_000, 1, []int16{10, 20, 30, 40}))
+	check(t, err)
+	return media, NewEventBus(32, 64), clip
+}
+
+func TestMediaMixModeKeepsLoopOwnedByClip(t *testing.T) {
+	media, bus, clip := newRampMedia(t)
+	media.SetAudioMixMode(true)
 	check(t, media.Play(1, clip, -1))
-	if info, err := media.Info(1, clip); err != nil {
-		t.Fatal(err)
-	} else if info.State != ClipPlaying {
-		t.Fatalf("faithful looping clip state = %v, want ClipPlaying", info.State)
+	info, err := media.Info(1, clip)
+	check(t, err)
+	if info.State != ClipPlaying || info.RemainingPlays != -1 {
+		t.Fatalf("loop state = (%v, %d), want playing/-1", info.State, info.RemainingPlays)
 	}
-	check(t, media.Advance(0, 125*time.Microsecond, bus))
-	if got := media.Drain().PCM16; !reflect.DeepEqual(got, []int16{50}) {
-		t.Fatalf("faithful frame 0 = %v, want [50]", got)
+	if media.MusicVoiceActive() {
+		t.Fatal("mix mode created a detached music voice")
+	}
+
+	step := 125 * time.Microsecond
+	check(t, media.Advance(0, step, bus))
+	if got := media.Drain().PCM16; !reflect.DeepEqual(got, []int16{10}) {
+		t.Fatalf("first frame = %v", got)
+	}
+	revision := media.OutputRevision()
+	check(t, media.Stop(1, clip))
+	if media.OutputRevision() == revision {
+		t.Fatal("Stop did not invalidate buffered output")
+	}
+	check(t, media.Advance(step, 4*step, bus))
+	if got := media.Drain().PCM16; len(got) != 0 {
+		t.Fatalf("audio survived Stop: %v", got)
 	}
 	check(t, media.DestroyClip(1, clip, bus))
-	check(t, media.Advance(125*time.Microsecond, 250*time.Microsecond, bus))
-	if got := media.Drain().PCM16; len(got) != 0 {
-		t.Fatalf("faithful post-destroy audio = %v, want silence", got)
+}
+
+func TestMediaMixModeStillMixesRegisteredClips(t *testing.T) {
+	media, bus, bgm := newRampMedia(t)
+	media.SetAudioMixMode(true)
+	fx, err := media.CreateClip(1, "audio/wav", 0)
+	check(t, err)
+	_, err = media.Append(1, fx, pcmWave(8_000, 1, []int16{1000}))
+	check(t, err)
+	check(t, media.Play(1, bgm, -1))
+	check(t, media.Play(1, fx, 1))
+	check(t, media.Advance(0, 125*time.Microsecond, bus))
+	if got := media.Drain().PCM16; !reflect.DeepEqual(got, []int16{1010}) {
+		t.Fatalf("mixed frame = %v, want [1010]", got)
 	}
 }
 
-// TestMediaMixModeStoppedVoiceYieldsToTheNextTrack covers #148. The music voice
-// is a detached copy so a hand-looped track is heard continuously, which means
-// an ordinary Stop cannot silence it - but a title that stops its music and
-// then starts something else was getting both at once. 리듬스타1 stops its
-// menu music and starts a song preview, and the two played over each other.
-func TestMediaMixModeStoppedVoiceYieldsToTheNextTrack(t *testing.T) {
-	limits := DefaultMediaLimits()
-	limits.OutputSampleRate = 8_000
-	limits.OutputChannels = 1
-	registry := NewRegistry(32)
-	media, err := NewMedia(registry, limits)
+func TestMediaInvalidTransitionsDoNotMutatePlayback(t *testing.T) {
+	media, _, clip := newRampMedia(t)
+	before, err := media.Info(1, clip)
 	check(t, err)
-	media.SetAudioMixMode(true)
-
-	menu := make([]int16, 16_000) // 2s menu music, looped by the title
-	for i := range menu {
-		menu[i] = 40
-	}
-	menuClip, err := media.CreateClip(1, "audio/wav", 0)
-	check(t, err)
-	if _, err := media.Append(1, menuClip, pcmWave(8_000, 1, menu)); err != nil {
-		t.Fatal(err)
-	}
-	check(t, media.Play(1, menuClip, -1))
-	if !media.MusicVoiceActive() {
-		t.Fatal("looping menu music was not promoted to the music voice")
-	}
-
-	// The title stops its menu music and starts a different track.
-	check(t, media.Stop(1, menuClip))
-	if !media.MusicVoiceActive() {
-		t.Fatal("the voice went away on Stop alone, which would gap a hand-loop")
-	}
-	preview := make([]int16, 24_000) // 3s song preview, played once
-	for i := range preview {
-		preview[i] = 900
-	}
-	previewClip, err := media.CreateClip(1, "audio/wav", 0)
-	check(t, err)
-	if _, err := media.Append(1, previewClip, pcmWave(8_000, 1, preview)); err != nil {
-		t.Fatal(err)
-	}
-	check(t, media.Play(1, previewClip, 1))
-	if media.MusicVoiceActive() {
-		t.Fatal("the stopped menu music is still voiced, so it plays under the preview")
-	}
-}
-
-// TestMediaMixModeHandLoopKeepsItsVoice is the other half: stopping and
-// restarting the same track is how a title loops by hand, and that must not
-// cost it the persistent voice.
-func TestMediaMixModeHandLoopKeepsItsVoice(t *testing.T) {
-	limits := DefaultMediaLimits()
-	limits.OutputSampleRate = 8_000
-	limits.OutputChannels = 1
-	registry := NewRegistry(32)
-	media, err := NewMedia(registry, limits)
-	check(t, err)
-	media.SetAudioMixMode(true)
-
-	music := make([]int16, 16_000)
-	for i := range music {
-		music[i] = 40
-	}
-	clip, err := media.CreateClip(1, "audio/wav", 0)
-	check(t, err)
-	if _, err := media.Append(1, clip, pcmWave(8_000, 1, music)); err != nil {
-		t.Fatal(err)
-	}
-	check(t, media.Play(1, clip, -1))
-	voice := media.bgmVoiceSig
-	for cycle := 0; cycle < 3; cycle++ {
-		check(t, media.Stop(1, clip))
-		check(t, media.Play(1, clip, -1))
-		if !media.MusicVoiceActive() || media.bgmVoiceSig != voice {
-			t.Fatalf("cycle %d lost the hand-looped music voice", cycle)
+	for name, operation := range map[string]func() error{
+		"pause":  func() error { return media.Pause(1, clip) },
+		"resume": func() error { return media.Resume(1, clip) },
+		"stop":   func() error { return media.Stop(1, clip) },
+	} {
+		if err := operation(); !errors.Is(err, ErrInvalidState) {
+			t.Fatalf("%s error = %v, want ErrInvalidState", name, err)
 		}
+		after, err := media.Info(1, clip)
+		check(t, err)
+		if after != before {
+			t.Fatalf("%s mutated clip: before=%+v after=%+v", name, before, after)
+		}
+	}
+
+	check(t, media.Play(1, clip, 1))
+	playing, err := media.Info(1, clip)
+	check(t, err)
+	if err := media.Play(1, clip, -1); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("duplicate Play error = %v", err)
+	}
+	after, err := media.Info(1, clip)
+	check(t, err)
+	if after != playing {
+		t.Fatalf("duplicate Play mutated repeat state: before=%+v after=%+v", playing, after)
+	}
+	if err := media.Clear(1, clip); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("Clear while playing error = %v", err)
+	}
+	if err := media.DestroyClip(1, clip, nil); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("Destroy while playing error = %v", err)
+	}
+}
+
+func TestMediaMixModeSnapshotHasNoDetachedVoice(t *testing.T) {
+	media, _, clip := newRampMedia(t)
+	media.SetAudioMixMode(true)
+	check(t, media.Play(1, clip, -1))
+	state := media.Snapshot()
+	if state.BGMVoice != nil {
+		t.Fatal("snapshot contains a detached BGM voice")
+	}
+
+	registry := NewRegistry(32)
+	_, err := registry.Create(1, KindClip)
+	check(t, err)
+	restored, err := NewMedia(registry, state.Limits)
+	check(t, err)
+	check(t, restored.Restore(state))
+	info, err := restored.Info(1, clip)
+	check(t, err)
+	if info.State != ClipPlaying || info.RemainingPlays != -1 {
+		t.Fatalf("restored loop state = (%v, %d)", info.State, info.RemainingPlays)
 	}
 }

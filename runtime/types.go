@@ -22,14 +22,15 @@ const (
 )
 
 var (
-	ErrInvalidArgument = errors.New("runtime service invalid argument")
-	ErrLimitExceeded   = errors.New("runtime service limit exceeded")
-	ErrNotFound        = errors.New("runtime service object not found")
-	ErrWrongKind       = errors.New("runtime service object has the wrong kind")
-	ErrWrongOwner      = errors.New("runtime service object has the wrong owner")
-	ErrStaleID         = errors.New("runtime service ID is stale")
-	ErrReadOnly        = errors.New("runtime service object is read-only")
-	ErrInvalidState    = errors.New("runtime service state is invalid")
+	ErrInvalidArgument  = errors.New("runtime service invalid argument")
+	ErrLimitExceeded    = errors.New("runtime service limit exceeded")
+	ErrNotFound         = errors.New("runtime service object not found")
+	ErrWrongKind        = errors.New("runtime service object has the wrong kind")
+	ErrWrongOwner       = errors.New("runtime service object has the wrong owner")
+	ErrStaleID          = errors.New("runtime service ID is stale")
+	ErrReadOnly         = errors.New("runtime service object is read-only")
+	ErrInvalidState     = errors.New("runtime service state is invalid")
+	ErrMediaUnsupported = errors.New("runtime service media is unsupported")
 )
 
 // OwnerID identifies an adapter-owned service-object namespace. Zero is

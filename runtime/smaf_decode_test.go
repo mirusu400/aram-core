@@ -158,10 +158,11 @@ func TestMediaSMAFContentCacheSharesDecodeAndMusicVoice(t *testing.T) {
 	if decoded == nil || media.clips[clips[1]].decoded != decoded {
 		t.Fatal("identical SMAF clips did not share their content decode")
 	}
+	check(t, media.Stop(owner, clips[0]))
 	media.SetAudioMixMode(true)
 	check(t, media.Play(owner, clips[0], -1))
-	if media.bgmVoice == nil || media.bgmVoice.decoded != decoded {
-		t.Fatal("promoting cached SMAF music reparsed or copied its decode")
+	if media.clips[clips[0]].decoded != decoded || media.MusicVoiceActive() {
+		t.Fatal("mix mode detached or reparsed the cached SMAF clip")
 	}
 }
 

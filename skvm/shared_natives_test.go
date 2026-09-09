@@ -139,6 +139,7 @@ func TestSKVMProgressBarRetainsValue(t *testing.T) {
 func TestSKVMDeviceAndAudioNativesUseSharedServices(t *testing.T) {
 	vm, err := New(map[string][]byte{"Game": syntheticClass(t)})
 	check(t, err)
+	check(t, vm.SetResourcesChecked(map[string][]byte{"tone.wav": skvmTestWave()}))
 	invokeTestNative(
 		t,
 		vm,
@@ -207,6 +208,26 @@ func TestSKVMDeviceAndAudioNativesUseSharedServices(t *testing.T) {
 	if err != nil || info.State != shared.ClipPlaying {
 		t.Fatalf("shared audio clip = %+v, %v", info, err)
 	}
+}
+
+func skvmTestWave() []byte {
+	data := make([]byte, 48)
+	copy(data[0:4], "RIFF")
+	binary.LittleEndian.PutUint32(data[4:8], uint32(len(data)-8))
+	copy(data[8:12], "WAVE")
+	copy(data[12:16], "fmt ")
+	binary.LittleEndian.PutUint32(data[16:20], 16)
+	binary.LittleEndian.PutUint16(data[20:22], 1)
+	binary.LittleEndian.PutUint16(data[22:24], 1)
+	binary.LittleEndian.PutUint32(data[24:28], 8_000)
+	binary.LittleEndian.PutUint32(data[28:32], 16_000)
+	binary.LittleEndian.PutUint16(data[32:34], 2)
+	binary.LittleEndian.PutUint16(data[34:36], 16)
+	copy(data[36:40], "data")
+	binary.LittleEndian.PutUint32(data[40:44], 4)
+	binary.LittleEndian.PutUint16(data[44:46], 1)
+	binary.LittleEndian.PutUint16(data[46:48], 2)
+	return data
 }
 
 func TestSKVMAudioClipCanReopenAfterClose(t *testing.T) {

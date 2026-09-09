@@ -1,6 +1,7 @@
 package application
 
 import (
+	"encoding/binary"
 	"testing"
 	"time"
 
@@ -25,6 +26,74 @@ func TestPublishedAudioCarriesGuestTimeline(t *testing.T) {
 	if len(chunk.PCM16) != len(pcm) || &chunk.PCM16[0] != &pcm[0] {
 		t.Fatal("published PCM ownership was copied instead of transferred")
 	}
+}
+
+func TestPublishAudioFromMediaDropsOldGenerationAfterStop(t *testing.T) {
+	services, err := shared.NewServices(shared.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, err := services.Coordinator.Register("audio-test", 1_000_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clip, err := services.Media.CreateClip(owner, "audio/wav", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := services.Media.Append(owner, clip, presentationTestWave()); err != nil {
+		t.Fatal(err)
+	}
+	if err := services.Media.Play(owner, clip, -1); err != nil {
+		t.Fatal(err)
+	}
+	if err := services.Media.Advance(0, 10*time.Millisecond, services.Events); err != nil {
+		t.Fatal(err)
+	}
+	machine := &Machine{audioGeneration: 1}
+	machine.publishAudioFromMedia(services.Media, 0)
+	first := machine.DrainPublishedAudio()
+	if len(first.PCM16) == 0 {
+		t.Fatal("first generation produced no audio")
+	}
+	if err := services.Media.Advance(10*time.Millisecond, 20*time.Millisecond, services.Events); err != nil {
+		t.Fatal(err)
+	}
+	if err := services.Media.Stop(owner, clip); err != nil {
+		t.Fatal(err)
+	}
+	machine.publishAudioFromMedia(services.Media, 20*time.Millisecond)
+	if stale := machine.DrainPublishedAudio(); len(stale.PCM16) != 0 {
+		t.Fatalf("published audio survived Stop: %d samples", len(stale.PCM16))
+	}
+	if machine.audioGeneration == first.Generation {
+		t.Fatal("Stop did not advance the frontend generation")
+	}
+}
+
+func presentationTestWave() []byte {
+	samples := make([]int16, 800)
+	for index := range samples {
+		samples[index] = 100
+	}
+	data := make([]byte, 44+len(samples)*2)
+	copy(data[0:4], "RIFF")
+	binary.LittleEndian.PutUint32(data[4:8], uint32(len(data)-8))
+	copy(data[8:12], "WAVE")
+	copy(data[12:16], "fmt ")
+	binary.LittleEndian.PutUint32(data[16:20], 16)
+	binary.LittleEndian.PutUint16(data[20:22], 1)
+	binary.LittleEndian.PutUint16(data[22:24], 1)
+	binary.LittleEndian.PutUint32(data[24:28], 8_000)
+	binary.LittleEndian.PutUint32(data[28:32], 16_000)
+	binary.LittleEndian.PutUint16(data[32:34], 2)
+	binary.LittleEndian.PutUint16(data[34:36], 16)
+	copy(data[36:40], "data")
+	binary.LittleEndian.PutUint32(data[40:44], uint32(len(samples)*2))
+	for index, sample := range samples {
+		binary.LittleEndian.PutUint16(data[44+index*2:], uint16(sample))
+	}
+	return data
 }
 
 func TestAudioGenerationDropsPreviouslyPublishedPCM(t *testing.T) {

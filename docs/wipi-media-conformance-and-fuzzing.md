@@ -1,6 +1,6 @@
 # WIPI media semantic conformance audit and fuzzing plan
 
-Status: 2026-09-09
+Status: audited and remediated, 2026-09-09
 
 This document audits ARAM's media behavior against the WIPI references and
 defines a dynamic test strategy for the sound failures seen in real titles.
@@ -72,6 +72,33 @@ Existing unit tests pass because most of these contracts are not asserted.
 Some enhanced-mixing tests explicitly preserve behavior that is incompatible
 with normal WIPI stop semantics.
 
+## Remediation implemented
+
+The implementation branch closes the sound-stability findings as follows:
+
+| Finding | Implemented correction | Regression oracle |
+|---|---|---|
+| MDA-001 | Removed creation, mixing, and restoration of detached BGM voices. Infinite playback remains owned by its registered clip, and `Stop` invalidates queued output. | `TestMediaMixModeKeepsLoopOwnedByClip`, `FuzzMediaStateMachine` |
+| MDA-002 | Added named WIPI media event constants (`ERROR=-1`, `END=1`, `START=2`, `STOP=3`, `PAUSE=4`, `RESUME=5`, `RECORD=6`, `FULL=7`) and translated public WIPI-C, KTF WIPI-C, and KTF Java callbacks at their adapter boundaries. Raptor retains its isolated natural-end `-1` and explicit-stop `3` behavior. | WIPI-C and KTF listener/callback tests |
+| MDA-003 | `Play`, `Pause`, `Resume`, `Stop`, `Clear`, and `Destroy` now reject invalid states. Adapters update mirrors and emit callbacks only after a successful shared transition. Duplicate `Play` cannot rewrite the repeat count. | `TestMediaInvalidTransitionsDoNotMutatePlayback` plus adapter tests |
+| MDA-004 | KTF Java now performs `setPosition`, applies global `Volume.set`, delivers all lifecycle listener events, honors an overridden `playStart`, and returns failure for unsupported recording/control operations. | `ktf_java_media_behavior_test.go` |
+| MDA-005 | Added a consumable encoded-buffer view whose available byte count decreases with playback, a destructive buffered read, strict in-use behavior for clear/free, and sequenced-decoder refresh when streaming data is appended. Recognizable incomplete SMAF/SMF uses explicit `WaitingForData`; sealed unknown data does not. | `TestMediaAvailableBytesDecreaseWithPlayback` and state-machine fuzzing |
+| MDA-006 | Added typed `ErrMediaUnsupported`, rejected sealed unrecognized data, and changed KTF `MEDIADEVICES` to advertise only MIDI, SMAF, and WAV. | `TestMediaRejectsSealedUnsupportedSource` |
+| MDA-007 | Added an output revision. Stop, pause, seek, clear, destroy, policy change, and restore clear stale mixer PCM; the application publisher discards its retained queue and starts a new generation when that revision changes. | `TestPublishAudioFromMediaDropsOldGenerationAfterStop` |
+| MDA-008 | SKVM now emits the same `StartGuestNS`, `StartSample`, and `Generation` contract, keeps contiguous cursors across drains, and advances the generation on stop/reset/load/lifecycle discontinuities. | `TestSKVMAudioCarriesTimelineAndStopGeneration` |
+
+Two fuzz targets are now part of the normal test build:
+
+- `FuzzMediaStateMachine` mutates clip lifecycle, buffering, repeat counts,
+  time partitioning, gain, drain, destruction, and snapshot/restore;
+- `FuzzAudioPublicationSchedule` mutates sub-frame publication partitions and
+  generation discontinuities, rejecting gaps and overlaps.
+
+The API/format inventory below remains intentionally separate. Adding WIPI
+2.x video/player APIs, MIDP media, recording hardware, or new codecs requires
+provider work and corpus evidence; those missing feature surfaces are not
+implemented as misleading successful no-ops.
+
 ## API and format gaps
 
 The mechanical inventory remains:
@@ -104,6 +131,9 @@ KTF's WIPI-C media vector also leaves slots 1, 2, 12, 14, and 15 unmapped.
 Their identities need reference-firmware evidence rather than guesses.
 
 ## Semantic findings
+
+The findings below describe the pre-remediation behavior retained as rationale
+and regression context. The implemented state is summarized above.
 
 ### MDA-001 — a hidden music voice violates clip lifetime and stop semantics
 
@@ -530,15 +560,21 @@ The first media-stability milestone is complete when:
 - real-title runs record no invalid callback values, leaked infinite voices,
   unbounded clip growth, or silent-playing deadlocks.
 
-## Verification baseline
+## Verification
 
-At the time of this audit:
+The remediation is checked with:
 
-- `go test ./...` passed;
-- race-enabled tests passed for `runtime`, public WIPI-C, KTF, SKVM, and
-  `application`;
-- no media state-machine fuzz target existed; the repository's Go fuzz targets
-  covered container/loader parsing instead.
+```sh
+go test ./...
+go test -race ./runtime ./application ./application/internal/wipi \
+  ./application/internal/ktf ./application/internal/skvmhost ./skvm
+go test ./runtime -run '^$' -fuzz '^FuzzMediaStateMachine$' -fuzztime=30s
+go test ./application -run '^$' -fuzz '^FuzzAudioPublicationSchedule$' \
+  -fuzztime=30s
+```
 
-These results establish that the findings are contract and coverage gaps, not
-currently detected data races or ordinary unit-test failures.
+The short pre-commit fuzz smoke runs execute both targets dynamically; longer
+CI/nightly runs should retain minimized failures in the normal Go fuzz corpus.
+The external real-title corpus belongs in the sibling `aram-test` workflow and
+is the remaining validation layer, rather than a reason to weaken the generic
+state and publication invariants in this repository.
