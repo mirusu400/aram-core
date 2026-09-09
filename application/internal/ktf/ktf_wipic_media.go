@@ -297,7 +297,10 @@ func ktfWIPICMediaCreate(
 		serviceMediaType = "audio/x-smaf"
 	case "audio/midi", "audio/sp-midi":
 		serviceMediaType = "audio/midi"
-	case "audio/wav", "audio/x-wav":
+	// "audio/wave" is the spelling MEDIADEVICES advertises, so a title that
+	// feeds the advertised capability string straight back to the create call
+	// has to be accepted here.
+	case "audio/wav", "audio/x-wav", "audio/wave":
 		serviceMediaType = "audio/wav"
 	default:
 		runtime.tracef("wipic_media_create_unsupported:type=%q", mediaType)

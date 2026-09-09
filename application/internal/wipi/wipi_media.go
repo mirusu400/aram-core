@@ -315,21 +315,30 @@ func (r *Runtime) setMediaState(clip *wipiMediaClip, state uint8) (guest.WIPIRet
 	if clip == nil {
 		return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
 	}
-	event := int32(0)
+	// The event is derived from the requested state before the service call, so
+	// a clip whose shared service is missing still reports a legal WIPI
+	// constant. Leaving it zero here would put an internal value back on the
+	// guest callback, which is the defect this translation exists to remove.
+	var event int32
+	switch state {
+	case 0:
+		event = guest.WIPIMediaStop
+	case 1:
+		event = guest.WIPIMediaResume
+	case 2:
+		event = guest.WIPIMediaPause
+	default:
+		return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
+	}
 	if serviceID := r.MediaServices[clip.Handle]; serviceID != 0 {
 		var err error
 		switch state {
 		case 0:
 			err = r.Services.Media.Stop(r.ServiceOwner, serviceID)
-			event = guest.WIPIMediaStop
 		case 1:
 			err = r.Services.Media.Resume(r.ServiceOwner, serviceID)
-			event = guest.WIPIMediaResume
 		case 2:
 			err = r.Services.Media.Pause(r.ServiceOwner, serviceID)
-			event = guest.WIPIMediaPause
-		default:
-			return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
 		}
 		if err != nil {
 			return guest.WIPIReturn{Low: ^uint32(0)}, true, nil

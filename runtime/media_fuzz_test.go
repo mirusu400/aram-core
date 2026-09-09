@@ -222,3 +222,111 @@ func int16Bytes(samples []int16) []byte {
 	}
 	return result
 }
+
+// TestMediaStreamingAppendDoesNotFaultAdvance pins the streaming case a title
+// reaches when it reuses one clip handle: the next track is pushed behind the
+// sound still playing, so the buffer stops decoding part-way through. Advance
+// failing there is not a silent bug - Services.Advance propagates the error and
+// the machines turn it into StateFaulted, killing the title over audio data.
+func TestMediaStreamingAppendDoesNotFaultAdvance(t *testing.T) {
+	media, bus, clip := newRampMedia(t)
+	check(t, media.Play(1, clip, 1))
+	step := 125 * time.Microsecond
+	check(t, media.Advance(0, step, bus))
+	media.Drain()
+	if _, err := media.Append(1, clip, []byte("MMMD\x00\x00\x00\x01partial")); err != nil {
+		t.Fatalf("append to a playing clip = %v", err)
+	}
+	info, err := media.Info(1, clip)
+	check(t, err)
+	if info.State != ClipPlaying || info.Decoded || !info.WaitingForData {
+		t.Fatalf("stalled clip = %+v, want playing/undecoded/waiting", info)
+	}
+	if err := media.Advance(step, 8*step, bus); err != nil {
+		t.Fatalf("advance faulted on a stalled stream: %v", err)
+	}
+	if got := media.Drain().PCM16; len(got) != 0 {
+		t.Fatalf("stalled clip produced audio: %v", got)
+	}
+}
+
+// TestMediaTakeBufferedZeroCountKeepsSource covers the size probe titles make
+// before allocating their own buffer. Consuming the played prefix for a
+// zero-length read strips a WAV header and leaves the clip unplayable.
+func TestMediaTakeBufferedZeroCountKeepsSource(t *testing.T) {
+	media, bus, clip := newRampMedia(t)
+	before, err := media.Source(1, clip)
+	check(t, err)
+	check(t, media.Play(1, clip, 1))
+	check(t, media.Advance(0, 250*time.Microsecond, bus))
+	check(t, media.Stop(1, clip))
+	got, err := media.TakeBuffered(1, clip, 0)
+	check(t, err)
+	if len(got) != 0 {
+		t.Fatalf("zero-length read returned %d bytes", len(got))
+	}
+	after, err := media.Source(1, clip)
+	check(t, err)
+	if string(after) != string(before) {
+		t.Fatalf("zero-length read consumed %d of %d bytes", len(before)-len(after), len(before))
+	}
+	check(t, media.Play(1, clip, 1))
+}
+
+// TestMediaRestoreKeepsStoppedScoreDecoder pins the save-state divergence a
+// stopped SMAF clip used to show: Info reported a duration and AvailableBytes a
+// consumed watermark before the snapshot, and neither survived the restore.
+func TestMediaRestoreKeepsStoppedScoreDecoder(t *testing.T) {
+	limits := DefaultMediaLimits()
+	limits.OutputSampleRate = 8_000
+	limits.OutputChannels = 1
+	media, err := NewMedia(NewRegistry(32), limits)
+	check(t, err)
+	clip, err := media.CreateClip(1, "audio/mmf", 0)
+	check(t, err)
+	if _, err := media.Append(1, clip, smafGoldenScore()); err != nil {
+		t.Fatalf("append score: %v", err)
+	}
+	check(t, media.Play(1, clip, 1))
+	check(t, media.Stop(1, clip))
+	before, err := media.Info(1, clip)
+	check(t, err)
+	availableBefore, err := media.AvailableBytes(1, clip)
+	check(t, err)
+	if !before.Decoded || before.Duration <= 0 {
+		t.Fatalf("stopped score clip = %+v, want a decoder", before)
+	}
+
+	check(t, media.Restore(media.Snapshot()))
+	after, err := media.Info(1, clip)
+	check(t, err)
+	availableAfter, err := media.AvailableBytes(1, clip)
+	check(t, err)
+	if before.Decoded != after.Decoded || before.Duration != after.Duration ||
+		availableBefore != availableAfter {
+		t.Fatalf("restore diverged: decoded %v->%v duration %v->%v available %d->%d",
+			before.Decoded, after.Decoded,
+			before.Duration, after.Duration,
+			availableBefore, availableAfter)
+	}
+}
+
+// TestMediaSeekToSamePositionIsNotADiscontinuity keeps the save reconcilers from
+// tearing down the host's audio generation: they re-seek every clip to the
+// position it already holds on every save.
+func TestMediaSeekToSamePositionIsNotADiscontinuity(t *testing.T) {
+	media, bus, clip := newRampMedia(t)
+	check(t, media.Play(1, clip, 1))
+	check(t, media.Advance(0, 250*time.Microsecond, bus))
+	info, err := media.Info(1, clip)
+	check(t, err)
+	revision := media.OutputRevision()
+	check(t, media.Seek(1, clip, info.Position))
+	if media.OutputRevision() != revision {
+		t.Fatalf("re-seek invalidated output: %d -> %d", revision, media.OutputRevision())
+	}
+	check(t, media.Seek(1, clip, 0))
+	if media.OutputRevision() == revision {
+		t.Fatal("a real seek did not invalidate buffered output")
+	}
+}

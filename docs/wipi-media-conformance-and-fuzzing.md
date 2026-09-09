@@ -339,6 +339,39 @@ SKVM should either use the common publication helper or document and test a
 separate contract. The preferred outcome is one frontend audio contract for
 all runtimes.
 
+## Where the transition preconditions stop
+
+MDA-003 makes `Play`, `Pause`, `Resume`, `Stop`, `Clear`, and `DestroyClip`
+reject an inapplicable transition, which is what the C API specifies:
+`MC_mdaPlay` returns `M_E_ERROR` for a clip it is already playing,
+`MC_mdaStop` for a clip already stopped, `MC_mdaClipClearData` for a sounding
+clip, and `MC_mdaClipFree` returns `M_E_INUSE` rather than freeing a playing
+clip. Those preconditions belong to the *guest* boundary only. Three internal
+callers are not guests and must not be routed through them:
+
+- the adapters' save/restore reconcilers rebuild each shared clip from their
+  own mirror, so they own the state they overwrite. They use
+  `Media.ResetForReconcile`, which is state-agnostic. Routing them through
+  `Clear` made saving impossible for a stopped clip *and* for any title with
+  audio playing, because the reconcile clears before it re-drives state;
+- `Media.Seek` treats a seek to the position the cursor already holds as no
+  discontinuity, because those reconcilers re-seek every clip on every save;
+- the rollback inside `Media.Advance` restores the output revision it captured.
+  A fully undone advance published nothing, so it must not make the host tear
+  down an audio generation for a tick that never happened.
+
+There is a matching limit on MDA-006. Rejecting a sealed unrecognized source is
+correct at `Play`, where the guest is asserting the buffer is complete. It is
+wrong during playback: a streaming title reuses one clip handle and pushes the
+next track in behind the sound still playing, so an appended buffer routinely
+stops decoding part-way through. `Append` therefore marks a sounding clip as
+waiting for data whenever its buffer no longer decodes, without testing the
+container prefix — a WAV clip that receives SMAF bytes still starts with
+`RIFF`. Without that, `advanceLocked` failed the tick, `Services.Advance`
+propagated the error, and the machines turned an audio-data problem into
+`StateFaulted`, killing the title. `Restore` accepts the same stalled clip for
+the same reason.
+
 ## Stateful fuzzing design
 
 Byte-level decoder fuzzing remains useful for panics, excessive allocation,

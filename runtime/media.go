@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"math/bits"
 	"slices"
 	"sort"
 	"strings"
@@ -201,14 +202,17 @@ func NewMedia(registry *Registry, limits MediaLimits) (*Media, error) {
 	}, nil
 }
 
-// SetAudioMixMode selects the audio playback policy. All sounding voices remain
-// owned by registered clips in either mode.
+// SetAudioMixMode records the audio playback policy. The two policies no longer
+// differ: the detached music voice the mixing policy used to create violated
+// clip lifetime and stop semantics and has been removed, and concurrent clips
+// mix in both settings. The flag is kept so existing settings and save states
+// still load, and because a title-specific compatibility quirk is the right
+// home for any future "ignore the guest's stop" behaviour.
 func (m *Media) SetAudioMixMode(on bool) {
 	if m.mixMode == on {
 		return
 	}
 	m.mixMode = on
-	m.invalidateOutput()
 }
 
 // AudioMixMode reports the compatibility policy selection. Both policies keep
@@ -302,7 +306,15 @@ func (m *Media) Append(owner OwnerID, id ServiceID, data []byte) (int, error) {
 	clip.decoded = decoded
 	if decoded != nil {
 		clip.waitingForData = false
-	} else if clip.state == ClipPlaying && looksLikeSequencedPrefix(clip.source) {
+	} else if clip.state == ClipPlaying {
+		// Streaming titles reuse one handle and push the next track behind the
+		// sound still playing, so an appended buffer routinely leaves the clip
+		// undecodable part-way through. That is a stall waiting for the rest of
+		// the data, not a fault: advanceLocked treats a playing clip with no
+		// decoder and no wait flag as a broken invariant and fails the whole
+		// tick, which the machines turn into StateFaulted. The prefix test is
+		// deliberately not applied here - a WAV clip that receives SMAF bytes
+		// keeps a "RIFF" prefix and would otherwise kill the title.
 		clip.waitingForData = true
 	}
 	if clip.decoded != nil && clip.position > clip.decoded.duration {
@@ -366,8 +378,12 @@ func (m *Media) bufferedSource(clip *mediaClip) []byte {
 	if clip.position >= clip.decoded.duration {
 		return clip.source[len(clip.source):]
 	}
-	consumed := uint64(len(clip.source)) * uint64(clip.position) /
-		uint64(clip.decoded.duration)
+	// A 64 MB source (MaxSourceBytes) longer than about 275 seconds overflows
+	// a plain uint64 product, so the watermark is computed in 128 bits. The
+	// quotient always fits: position is below duration, so it stays under
+	// len(source).
+	high, low := bits.Mul64(uint64(len(clip.source)), uint64(clip.position))
+	consumed, _ := bits.Div64(high, low, uint64(clip.decoded.duration))
 	return clip.source[min(consumed, uint64(len(clip.source))):]
 }
 
@@ -383,6 +399,13 @@ func (m *Media) TakeBuffered(owner OwnerID, id ServiceID, count uint64) ([]byte,
 	}
 	available := m.bufferedSource(clip)
 	count = min(count, uint64(len(available)))
+	if count == 0 {
+		// A zero-length read is the size probe titles make before allocating
+		// their own buffer. It must not consume the clip: rewriting the source
+		// to the tail here would strip a WAV's header and leave the clip
+		// undecodable for its next Play.
+		return nil, nil
+	}
 	result := cloneBytes(available[:count])
 	clip.source = cloneBytes(available[count:])
 	clip.position = 0
@@ -394,6 +417,25 @@ func (m *Media) TakeBuffered(owner OwnerID, id ServiceID, count uint64) ([]byte,
 
 func (m *Media) Clear(owner OwnerID, id ServiceID) error {
 	return m.ReplaceSource(owner, id, nil)
+}
+
+// ResetForReconcile returns a clip to the empty stopped state whatever it is
+// doing now. It exists for the adapters' save/restore reconcilers, which
+// rebuild each shared clip from their own mirror and therefore own the state
+// they are overwriting. Guest-facing clears must keep using Clear, which
+// enforces WIPI's precondition that a sounding clip cannot be cleared.
+func (m *Media) ResetForReconcile(owner OwnerID, id ServiceID) error {
+	clip, err := m.get(owner, id)
+	if err != nil {
+		return err
+	}
+	clip.source = nil
+	clip.decoded = nil
+	clip.position = 0
+	clip.state = ClipStopped
+	clip.remainingPlays = 0
+	clip.waitingForData = false
+	return nil
 }
 
 func (m *Media) Play(owner OwnerID, id ServiceID, plays int32) error {
@@ -470,6 +512,13 @@ func (m *Media) Seek(owner OwnerID, id ServiceID, position time.Duration) error 
 	}
 	if position < 0 || (clip.decoded != nil && position > clip.decoded.duration) {
 		return fmt.Errorf("%w: invalid clip position %s", ErrInvalidArgument, position)
+	}
+	if clip.position == position {
+		// Seeking to where the cursor already sits is not a discontinuity, and
+		// the state reconcilers re-seek every clip to its current position on
+		// every save. Invalidating here would drop buffered PCM and start a new
+		// audio generation each time a title is saved.
+		return nil
 	}
 	clip.position = position
 	m.invalidateOutput()
@@ -553,10 +602,16 @@ func (m *Media) Advance(start, end time.Duration, bus *EventBus) error {
 	mediaBefore := m.Snapshot()
 	busBefore := bus.Snapshot()
 	droppedBefore := m.dropped
+	revisionBefore := m.outputRevision
 	if err := m.advanceLocked(start, end, bus); err != nil {
 		_ = m.Restore(mediaBefore)
 		_ = bus.Restore(busBefore)
 		m.dropped = droppedBefore
+		// A fully undone advance published nothing, so it is not a
+		// discontinuity. Restore raises the revision because loading a save
+		// state is one; a rollback must not make the host tear down its audio
+		// generation for a tick that never happened.
+		m.outputRevision = revisionBefore
 		return err
 	}
 	return nil
@@ -862,9 +917,11 @@ func (m *Media) Restore(state MediaState) error {
 			remainingPlays: saved.RemainingPlays,
 		}
 		clip.decoded = decodeWavePCM16(clip.source)
-		if clip.decoded == nil &&
-			(saved.State == ClipPlaying || saved.State == ClipPaused) &&
-			looksLikeSequencedScore(clip.source) {
+		if clip.decoded == nil && looksLikeSequencedScore(clip.source) {
+			// Restoring the decoder is not limited to sounding clips. A stopped
+			// score clip still reports its duration through Info and still owes
+			// a decreasing watermark to AvailableBytes, so leaving it undecoded
+			// makes a restored machine disagree with the one it was saved from.
 			clip.decoded = m.decodeScoreAtRate(
 				clip.source,
 				state.Limits.OutputSampleRate,
@@ -872,9 +929,10 @@ func (m *Media) Restore(state MediaState) error {
 		}
 		if clip.decoded == nil &&
 			(saved.State == ClipPlaying || saved.State == ClipPaused) {
-			if !looksLikeSequencedPrefix(clip.source) {
-				return fmt.Errorf("%w: media clip %d has no decoder", ErrInvalidState, index)
-			}
+			// A sounding clip whose buffer does not decode yet is stalled
+			// waiting for the rest of its stream, which is the same state
+			// Append leaves behind. Advance skips it; it must not fail the
+			// load.
 			clip.waitingForData = true
 		}
 		if clip.decoded != nil && clip.position > clip.decoded.duration {

@@ -404,7 +404,14 @@ func (r *Runtime) prepareServicesForSave() ([]byte, error) {
 			}
 			r.MediaServices[handle] = serviceID
 		}
-		if err := r.Services.Media.Clear(r.ServiceOwner, serviceID); err != nil {
+		// The adapter mirror is the source of truth here, so the shared clip is
+		// reset whatever it is currently doing. Clear would refuse a sounding
+		// clip, which is correct for MC_mdaClipClearData and wrong for a
+		// reconcile: it would make saving impossible while a title has audio.
+		if err := r.Services.Media.ResetForReconcile(
+			r.ServiceOwner,
+			serviceID,
+		); err != nil {
 			return fail(err)
 		}
 		if _, err := r.Services.Media.Append(
@@ -432,9 +439,8 @@ func (r *Runtime) prepareServicesForSave() ([]byte, error) {
 		}
 		switch clip.State {
 		case 0:
-			if err := r.Services.Media.Stop(r.ServiceOwner, serviceID); err != nil {
-				return fail(err)
-			}
+			// ResetForReconcile already left the clip stopped, and Stop now
+			// rejects an already-stopped clip the way MC_mdaStop does.
 		case 1:
 			plays := int32(1)
 			if clip.Repeat {

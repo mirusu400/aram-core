@@ -2579,3 +2579,49 @@ func TestWIPIRuntimeIsExistUsesTheResultConvention(t *testing.T) {
 		t.Fatalf("MC_fsOpen of a missing file = 0x%08x, want 0x%08x", got, uint32(fsNoEntry))
 	}
 }
+
+// TestWIPIRuntimeSavesWithMediaClips pins that the save reconciler owns the
+// shared clip it rebuilds. It clears and re-drives every mirrored clip, so
+// routing it through the guest-facing Clear/Stop preconditions made saving
+// impossible for a stopped clip and for a title with audio playing.
+func TestWIPIRuntimeSavesWithMediaClips(t *testing.T) {
+	newClip := func(t *testing.T, runtime *Runtime) uint32 {
+		t.Helper()
+		mediaType, err := runtime.Heap.Allocate(32, true)
+		check(t, err)
+		if _, err := runtime.writeCString(mediaType, []byte("audio/wav"), -1); err != nil {
+			t.Fatal(err)
+		}
+		handle := dispatchPublicAPI(t, runtime, "MC_mdaClipCreate", mediaType, 4096, 0).Low
+		if handle == 0 {
+			t.Fatal("media clip is null")
+		}
+		wave := wipiTestWave([]int16{1, 2, 3, 4})
+		data, err := runtime.Heap.Allocate(uint32(len(wave)), true)
+		check(t, err)
+		check(t, runtime.CPU.WriteMemory(data, wave))
+		if got := dispatchPublicAPI(t, runtime, "MC_mdaClipPutData", handle, data, uint32(len(wave))).Low; got != uint32(len(wave)) {
+			t.Fatalf("MC_mdaClipPutData = %d", got)
+		}
+		return handle
+	}
+
+	t.Run("stopped", func(t *testing.T) {
+		runtime := newPublicRuntime(t)
+		newClip(t, runtime)
+		if _, err := runtime.prepareServicesForSave(); err != nil {
+			t.Fatalf("save with a stopped media clip: %v", err)
+		}
+	})
+	t.Run("playing", func(t *testing.T) {
+		runtime := newPublicRuntime(t)
+		handle := newClip(t, runtime)
+		dispatchPublicAPI(t, runtime, "MC_mdaPlay", handle, 0)
+		if runtime.MediaClips[handle].State != 1 {
+			t.Fatalf("clip state = %d, want playing", runtime.MediaClips[handle].State)
+		}
+		if _, err := runtime.prepareServicesForSave(); err != nil {
+			t.Fatalf("save with a playing media clip: %v", err)
+		}
+	})
+}

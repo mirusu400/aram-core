@@ -103,11 +103,18 @@ type Factory struct {
 	// guest text that has no glyphs of its own. Empty inherits the runtime
 	// default (galmuri9); "neodgm" selects the softer NeoDunggeunmo look.
 	FallbackFont string
-	// AudioMixMode selects the enhanced "mixing" audio policy, where a looping
-	// track keeps playing over one-shot effects instead of the title being able
-	// to silence it. False is the default and reproduces the device faithfully.
-	// It is a playback preference, deliberately kept out of the profile
-	// configuration hash so it never changes a title's deterministic identity.
+	// AudioMixMode selected the enhanced "mixing" audio policy, where a looping
+	// track was detached from its clip and kept playing over one-shot effects
+	// instead of the title being able to silence it. That policy violated WIPI
+	// stop and clip-lifetime semantics and has been removed, so the flag no
+	// longer changes playback: concurrent clips mix in both settings, and a
+	// guest Stop always stops. It is still accepted, saved, and restored so
+	// existing settings and save states keep loading. It is a playback
+	// preference, deliberately kept out of the profile configuration hash so it
+	// never changes a title's deterministic identity.
+	//
+	// TODO: retire the setting through aram-frontend and aram-emu, or give it a
+	// real behaviour again; the frontend still offers it as a live choice.
 	AudioMixMode bool
 	// OutputSampleRate overrides the audio render rate (Hz). Zero inherits the
 	// runtime default (44,100). SMAF FM synthesis renders one operator/envelope
