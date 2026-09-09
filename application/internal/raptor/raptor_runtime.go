@@ -1168,6 +1168,11 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 		return "MC_netSetReadCB", true
 	case 614:
 		return "MC_netSetWriteCB", true
+	// The LGT UIC import block starts at 800. 바이오크로니클 creates only
+	// the application context, then stores its returned handle before drawing
+	// through MC_GRP directly.
+	case 800:
+		return "MC_uicCreateApplicationContext", true
 	case 1029:
 		return "strcpy", true
 	// The C string family is contiguous from strcpy, so the ordinal between

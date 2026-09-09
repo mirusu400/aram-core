@@ -102,6 +102,7 @@ func TestRaptorWIPIImportsResolveToPublicCatalog(t *testing.T) {
 		612:   "MC_netSocketAccept",
 		613:   "MC_netSetReadCB",
 		614:   "MC_netSetWriteCB",
+		800:   "MC_uicCreateApplicationContext",
 		2000:  "MC_netSocket",
 		1029:  "strcpy",
 		1030:  "strncpy",
