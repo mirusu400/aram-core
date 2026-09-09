@@ -729,6 +729,8 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 		Parent: "java/lang/Object",
 		methods: []ktfHostJavaMethodSpec{
 			{name: "set", descriptor: "(I)V", access: 0x0008},
+			{name: "get", descriptor: "()I", access: 0x0008},
+			{name: "getCount", descriptor: "()I", access: 0x0008},
 		},
 	},
 	"org/kwis/msp/lwc/TextFieldComponent": {

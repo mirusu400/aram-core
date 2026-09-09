@@ -1073,14 +1073,32 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 		case "org/kwis/msp/handset/LED":
 			switch name + descriptor {
 			case "set(I)V":
-				return 0, runtime.Services.Device.SetLED(
-					0,
-					int32(registers[1]),
-				)
-			case "get()I":
+				count := runtime.Services.Device.Config().LEDCount
+				for index := uint8(0); index < count; index++ {
+					value := int32(0)
+					if registers[1]&(uint32(1)<<index) != 0 {
+						value = 1
+					}
+					if err := runtime.Services.Device.SetLED(index, value); err != nil {
+						return 0, err
+					}
+				}
 				return 0, nil
+			case "get()I":
+				var mask uint32
+				count := runtime.Services.Device.Config().LEDCount
+				for index := uint8(0); index < count; index++ {
+					value, err := runtime.Services.Device.LED(index)
+					if err != nil {
+						return 0, err
+					}
+					if value != 0 {
+						mask |= uint32(1) << index
+					}
+				}
+				return mask, nil
 			case "getCount()I":
-				return 1, nil
+				return uint32(runtime.Services.Device.Config().LEDCount), nil
 			}
 			return 0, nil
 		case "org/kwis/msp/handset/Call":
