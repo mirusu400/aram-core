@@ -494,6 +494,9 @@ func hostInterfaces(class string) []string {
 		return []string{"java/io/DataInput"}
 	case "java/io/DataOutputStream":
 		return []string{"java/io/DataOutput"}
+	case "javax/microedition/lcdui/ChoiceGroup",
+		"javax/microedition/lcdui/List":
+		return []string{"javax/microedition/lcdui/Choice"}
 	default:
 		return nil
 	}
@@ -511,7 +514,11 @@ func isHostInterface(class string) bool {
 		"javax/microedition/io/StreamConnection",
 		"javax/microedition/io/StreamConnectionNotifier",
 		"javax/microedition/io/HttpConnection",
-		"javax/microedition/io/SocketConnection":
+		"javax/microedition/io/SocketConnection",
+		"javax/microedition/lcdui/Choice",
+		"javax/microedition/lcdui/CommandListener",
+		"javax/microedition/lcdui/ItemCommandListener",
+		"javax/microedition/lcdui/ItemStateListener":
 		return true
 	default:
 		return false
@@ -965,6 +972,27 @@ func defaultHostSupers() map[string]string {
 		"javax/microedition/lcdui/Graphics":                 "java/lang/Object",
 		"javax/microedition/lcdui/Image":                    "java/lang/Object",
 		"javax/microedition/lcdui/Font":                     "java/lang/Object",
+		"javax/microedition/lcdui/Screen":                   "javax/microedition/lcdui/Displayable",
+		"javax/microedition/lcdui/Alert":                    "javax/microedition/lcdui/Screen",
+		"javax/microedition/lcdui/AlertType":                "java/lang/Object",
+		"javax/microedition/lcdui/Choice":                   "java/lang/Object",
+		"javax/microedition/lcdui/ChoiceGroup":              "javax/microedition/lcdui/Item",
+		"javax/microedition/lcdui/Command":                  "java/lang/Object",
+		"javax/microedition/lcdui/CommandListener":          "java/lang/Object",
+		"javax/microedition/lcdui/CustomItem":               "javax/microedition/lcdui/Item",
+		"javax/microedition/lcdui/DateField":                "javax/microedition/lcdui/Item",
+		"javax/microedition/lcdui/Form":                     "javax/microedition/lcdui/Screen",
+		"javax/microedition/lcdui/Gauge":                    "javax/microedition/lcdui/Item",
+		"javax/microedition/lcdui/ImageItem":                "javax/microedition/lcdui/Item",
+		"javax/microedition/lcdui/Item":                     "java/lang/Object",
+		"javax/microedition/lcdui/ItemCommandListener":      "java/lang/Object",
+		"javax/microedition/lcdui/ItemStateListener":        "java/lang/Object",
+		"javax/microedition/lcdui/List":                     "javax/microedition/lcdui/Screen",
+		"javax/microedition/lcdui/Spacer":                   "javax/microedition/lcdui/Item",
+		"javax/microedition/lcdui/StringItem":               "javax/microedition/lcdui/Item",
+		"javax/microedition/lcdui/TextBox":                  "javax/microedition/lcdui/Screen",
+		"javax/microedition/lcdui/TextField":                "javax/microedition/lcdui/Item",
+		"javax/microedition/lcdui/Ticker":                   "java/lang/Object",
 		"javax/microedition/rms/RecordStore":                "java/lang/Object",
 		"com/skt/m/AudioClip":                               "java/lang/Object",
 		"com/skt/m/Graphics2D":                              "java/lang/Object",
