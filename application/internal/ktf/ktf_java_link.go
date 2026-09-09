@@ -636,7 +636,11 @@ func (r *Runtime) addHostJavaField(
 	if err != nil {
 		return 0, err
 	}
-	field, err := r.AllocateWords(4)
+	fieldWords := uint32(4)
+	if descriptor == "J" || descriptor == "D" {
+		fieldWords = 5
+	}
+	field, err := r.AllocateWords(fieldWords)
 	if err != nil {
 		return 0, err
 	}
@@ -674,6 +678,15 @@ func (r *Runtime) addHostJavaField(
 		}
 		if err := r.WriteU32(field+12, value); err != nil {
 			return 0, err
+		}
+		if fieldWords == 5 {
+			high, err := r.hostJavaStaticFieldHighValue(class.Name, name)
+			if err != nil {
+				return 0, err
+			}
+			if err := r.WriteU32(field+16, high); err != nil {
+				return 0, err
+			}
 		}
 	}
 	classWords, err := r.ReadWords(class.Address, 5)
@@ -780,6 +793,10 @@ func (r *Runtime) hostJavaInstanceFieldValue(
 func (r *Runtime) hostJavaStaticFieldValue(
 	className, name string,
 ) (uint32, error) {
+	bits, ok := javaStaticConstantBits(className, name)
+	if ok {
+		return uint32(bits), nil
+	}
 	if className == "java/lang/Thread" {
 		switch name {
 		case "MIN_PRIORITY":
@@ -850,6 +867,71 @@ func (r *Runtime) hostJavaStaticFieldValue(
 		}
 	}
 	return 0, nil
+}
+
+func (r *Runtime) hostJavaStaticFieldHighValue(
+	className, name string,
+) (uint32, error) {
+	bits, ok := javaStaticConstantBits(className, name)
+	if ok {
+		return uint32(bits >> 32), nil
+	}
+	return 0, nil
+}
+
+func javaStaticConstantBits(className, name string) (uint64, bool) {
+	switch className + "." + name {
+	case "java/lang/Byte.MIN_VALUE":
+		return uint64(^uint32(127)), true
+	case "java/lang/Byte.MAX_VALUE":
+		return 127, true
+	case "java/lang/Short.MIN_VALUE":
+		return uint64(^uint32(32767)), true
+	case "java/lang/Short.MAX_VALUE":
+		return 32767, true
+	case "java/lang/Character.MIN_VALUE":
+		return 0, true
+	case "java/lang/Character.MAX_VALUE":
+		return 0xffff, true
+	case "java/lang/Character.MIN_RADIX":
+		return 2, true
+	case "java/lang/Character.MAX_RADIX":
+		return 36, true
+	case "java/lang/Integer.MIN_VALUE":
+		return uint64(uint32(0x80000000)), true
+	case "java/lang/Integer.MAX_VALUE":
+		return 0x7fffffff, true
+	case "java/lang/Long.MIN_VALUE":
+		return uint64(1) << 63, true
+	case "java/lang/Long.MAX_VALUE":
+		return uint64(1)<<63 - 1, true
+	case "java/lang/Float.MIN_VALUE":
+		return 0x00000001, true
+	case "java/lang/Float.MAX_VALUE":
+		return 0x7f7fffff, true
+	case "java/lang/Float.NaN":
+		return 0x7fc00000, true
+	case "java/lang/Float.NEGATIVE_INFINITY":
+		return 0xff800000, true
+	case "java/lang/Float.POSITIVE_INFINITY":
+		return 0x7f800000, true
+	case "java/lang/Double.MIN_VALUE":
+		return 0x0000000000000001, true
+	case "java/lang/Double.MAX_VALUE":
+		return 0x7fefffffffffffff, true
+	case "java/lang/Double.NaN":
+		return 0x7ff8000000000000, true
+	case "java/lang/Double.NEGATIVE_INFINITY":
+		return 0xfff0000000000000, true
+	case "java/lang/Double.POSITIVE_INFINITY":
+		return 0x7ff0000000000000, true
+	case "java/lang/Math.E":
+		return 0x4005bf0a8b145769, true
+	case "java/lang/Math.PI":
+		return 0x400921fb54442d18, true
+	default:
+		return 0, false
+	}
 }
 
 func (r *Runtime) resolveJavaMethod(

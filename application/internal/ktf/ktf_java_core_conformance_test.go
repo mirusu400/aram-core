@@ -530,6 +530,58 @@ func TestKTFInputMethodHandlerEnforcesConstraintAndBounds(t *testing.T) {
 	}
 }
 
+func TestKTFWrapperAndMathStaticConstantsUseJavaBits(t *testing.T) {
+	runtime := newTestRuntime(t)
+	tests := []struct {
+		class, name, descriptor string
+		want                    uint64
+	}{
+		{"java/lang/Byte", "MIN_VALUE", "B", uint64(uint32(0xffffff80))},
+		{"java/lang/Character", "MAX_RADIX", "I", 36},
+		{"java/lang/Integer", "MIN_VALUE", "I", 0x80000000},
+		{"java/lang/Long", "MAX_VALUE", "J", 0x7fffffffffffffff},
+		{"java/lang/Float", "NaN", "F", 0x7fc00000},
+		{"java/lang/Double", "NEGATIVE_INFINITY", "D", 0xfff0000000000000},
+		{"java/lang/Math", "PI", "D", 0x400921fb54442d18},
+	}
+	for _, test := range tests {
+		class := inspectClass(t, runtime, ensureClass(t, runtime, test.class))
+		field, err := runtime.ResolveJavaField(class, test.name, test.descriptor)
+		check(t, err)
+		low := readU32(t, runtime, field+12)
+		got := uint64(low)
+		if test.descriptor == "J" || test.descriptor == "D" {
+			got |= uint64(readU32(t, runtime, field+16)) << 32
+		}
+		if got != test.want {
+			t.Errorf("%s.%s bits = 0x%x, want 0x%x", test.class, test.name, got, test.want)
+		}
+	}
+}
+
+func TestKTFCharacterUsesUnicodeCaseAndDigits(t *testing.T) {
+	runtime := newTestRuntime(t)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, uint32('\u00c4')))
+	lower, err := runtime.handleCharacterMethod("toLowerCase", "(C)C")
+	check(t, err)
+	if lower != uint32('\u00e4') {
+		t.Fatalf("Character.toLowerCase(Ä) = U+%04X, want U+00E4", lower)
+	}
+
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, uint32('\u0665')))
+	digit, err := runtime.handleCharacterMethod("isDigit", "(C)Z")
+	check(t, err)
+	if digit != 1 {
+		t.Fatal("Character.isDigit(Arabic-Indic five) = false")
+	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 10))
+	value, err := runtime.handleCharacterMethod("digit", "(CI)I")
+	check(t, err)
+	if value != 5 {
+		t.Fatalf("Character.digit(Arabic-Indic five, 10) = %d, want 5", value)
+	}
+}
+
 func equalWords(left, right []uint32) bool {
 	if len(left) != len(right) {
 		return false

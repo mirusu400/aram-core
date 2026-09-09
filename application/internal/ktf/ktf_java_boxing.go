@@ -4,6 +4,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 func javaFloatingToInt32(value float64) int32 {
@@ -129,35 +130,21 @@ func (r *Runtime) handleCharacterMethod(
 			string(rune(uint16(r.integerValues[instance]))),
 		)
 	case "isDigit(C)Z":
-		return boolWord(character >= '0' && character <= '9'), nil
+		return boolWord(unicode.IsDigit(character)), nil
 	case "isLowerCase(C)Z":
-		return boolWord(character >= 'a' && character <= 'z'), nil
+		return boolWord(unicode.IsLower(character)), nil
 	case "isUpperCase(C)Z":
-		return boolWord(character >= 'A' && character <= 'Z'), nil
+		return boolWord(unicode.IsUpper(character)), nil
 	case "toLowerCase(C)C":
-		if character >= 'A' && character <= 'Z' {
-			character += 'a' - 'A'
-		}
-		return uint32(character), nil
+		return uint32(unicode.ToLower(character)), nil
 	case "toUpperCase(C)C":
-		if character >= 'a' && character <= 'z' {
-			character -= 'a' - 'A'
-		}
-		return uint32(character), nil
+		return uint32(unicode.ToUpper(character)), nil
 	case "digit(CI)I":
 		radix, valueErr := r.parameter(2)
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		value := int32(-1)
-		switch {
-		case character >= '0' && character <= '9':
-			value = int32(character - '0')
-		case character >= 'a' && character <= 'z':
-			value = int32(character-'a') + 10
-		case character >= 'A' && character <= 'Z':
-			value = int32(character-'A') + 10
-		}
+		value := javaCharacterDigit(character)
 		if radix < 2 || radix > 36 || value >= int32(radix) {
 			value = -1
 		}
@@ -165,6 +152,39 @@ func (r *Runtime) handleCharacterMethod(
 	default:
 		return 0, nil
 	}
+}
+
+func javaCharacterDigit(character rune) int32 {
+	switch {
+	case character >= '0' && character <= '9':
+		return int32(character - '0')
+	case character >= 'a' && character <= 'z':
+		return int32(character-'a') + 10
+	case character >= 'A' && character <= 'Z':
+		return int32(character-'A') + 10
+	case character >= '\uff10' && character <= '\uff19':
+		return int32(character - '\uff10')
+	case character >= '\uff41' && character <= '\uff5a':
+		return int32(character-'\uff41') + 10
+	case character >= '\uff21' && character <= '\uff3a':
+		return int32(character-'\uff21') + 10
+	}
+	// Every Unicode Nd range is made of one or more ten-character digit
+	// sequences. Using the generated tables keeps Character.digit aligned
+	// with the Unicode version Go ships without maintaining a hand list.
+	for _, table := range unicode.Digit.R16 {
+		if character >= rune(table.Lo) && character <= rune(table.Hi) &&
+			(character-rune(table.Lo))%rune(table.Stride) == 0 {
+			return int32((character-rune(table.Lo))/rune(table.Stride)) % 10
+		}
+	}
+	for _, table := range unicode.Digit.R32 {
+		if character >= rune(table.Lo) && character <= rune(table.Hi) &&
+			(character-rune(table.Lo))%rune(table.Stride) == 0 {
+			return int32((character-rune(table.Lo))/rune(table.Stride)) % 10
+		}
+	}
+	return -1
 }
 
 func (r *Runtime) handleShortMethod(
