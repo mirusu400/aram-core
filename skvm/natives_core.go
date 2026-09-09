@@ -41,6 +41,8 @@ func (vm *VM) installExtendedCoreNatives() {
 	vm.installObjectNatives()
 	vm.installStringNatives()
 	vm.installNumberNatives()
+	vm.installCLDCNumberNatives()
+	vm.installCLDCMathNatives()
 	vm.installRuntimeNatives()
 	vm.installVectorNatives()
 	vm.installHashtableNatives()
