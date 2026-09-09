@@ -956,7 +956,7 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 			return runtime.handleTimerMethod(ctx, name, descriptor)
 		case "java/util/TimeZone", "java/util/SimpleTimeZone":
 			return runtime.handleTimeZoneMethod(name, descriptor)
-		case "org/kwis/msp/lcdui/Card", "org/kwis/msp/lwc/ProxyCard":
+		case "org/kwis/msp/lcdui/Card":
 			switch name + descriptor {
 			case "<init>()V", "<init>(I)V", "<init>(Z)V":
 				if err := runtime.initializeCard(registers[1], 0); err != nil {
@@ -1142,6 +1142,7 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 			"org/kwis/msp/lwc/ImageComponent",
 			"org/kwis/msp/lwc/ListComponent",
 			"org/kwis/msp/lwc/ListItemComponent",
+			"org/kwis/msp/lwc/ProxyCard",
 			"org/kwis/msp/lwc/ScrollbarComponent",
 			"org/kwis/msp/lwc/TickerComponent",
 			"org/kwis/msp/lwc/TextComponent$ModeViewer":
@@ -1201,10 +1202,7 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 				// afterwards, which is a path the title does handle - and one
 				// the Socket methods here already model, answering 503 and
 				// "Service Unavailable" to every request.
-				socket, socketErr := runtime.newJavaInstance(
-					"org/kwis/msf/io/Socket",
-					8,
-				)
+				socket, socketErr := runtime.newOfflineMSFSocket(registers[1])
 				if socketErr != nil {
 					return 0, socketErr
 				}

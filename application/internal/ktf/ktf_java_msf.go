@@ -1,5 +1,10 @@
 package ktf
 
+import (
+	"net/url"
+	"strings"
+)
+
 // org/kwis/msf/* is the WIPI framework layer: program control, shared
 // memory, and network endpoints. The host models a single offline program,
 // so program control reports this one program and endpoint factories fail
@@ -173,26 +178,210 @@ func (r *Runtime) handleMSFSocketMethod(
 		return stream, nil
 	case "close()V":
 		return 0, nil
+	case "isStream()Z":
+		return 1, nil
+	case "getMessageCount()I":
+		return ^uint32(0), nil
+	case "getMessageMaxLength()I":
+		return 65535, nil
+	case "send(Lorg/kwis/msf/io/Message;)V",
+		"recv(Lorg/kwis/msf/io/Message;)V",
+		"accept()Lorg/kwis/msf/io/Socket;":
+		return 0, r.raiseHostJavaException("java/io/IOException")
 	case "getRequestMethod()Ljava/lang/String;":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		if method := r.lwcEventData[instance]; method != 0 {
+			return method, nil
+		}
 		return r.NewJavaString("GET")
 	case "getProtocol()Ljava/lang/String;":
-		return r.NewJavaString("http")
+		parsed, err := r.msfSocketURL()
+		if err != nil {
+			return 0, err
+		}
+		return r.NewJavaString(parsed.Scheme)
+	case "getHost()Ljava/lang/String;":
+		parsed, err := r.msfSocketURL()
+		if err != nil {
+			return 0, err
+		}
+		return r.NewJavaString(parsed.Hostname())
+	case "getFile()Ljava/lang/String;":
+		parsed, err := r.msfSocketURL()
+		if err != nil {
+			return 0, err
+		}
+		file := parsed.EscapedPath()
+		if parsed.RawQuery != "" {
+			file += "?" + parsed.RawQuery
+		}
+		return r.NewJavaString(file)
+	case "getQuery()Ljava/lang/String;":
+		parsed, err := r.msfSocketURL()
+		if err != nil {
+			return 0, err
+		}
+		return r.NewJavaString(parsed.RawQuery)
+	case "getRef()Ljava/lang/String;":
+		parsed, err := r.msfSocketURL()
+		if err != nil {
+			return 0, err
+		}
+		return r.NewJavaString(parsed.Fragment)
+	case "getURL()Ljava/lang/String;":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		return r.lwcComponent(instance).text, nil
 	case "getResponseCode()I":
 		// HTTP_UNAVAILABLE: the handset has no data connection.
 		return 503, nil
 	case "getResponseMessage()Ljava/lang/String;":
 		return r.NewJavaString("Service Unavailable")
 	case "getPort()I":
+		parsed, err := r.msfSocketURL()
+		if err != nil {
+			return 0, err
+		}
+		if port := parsed.Port(); port != "" {
+			value := uint32(0)
+			for _, digit := range port {
+				if digit < '0' || digit > '9' {
+					return 0, nil
+				}
+				value = value*10 + uint32(digit-'0')
+			}
+			return value, nil
+		}
+		if strings.EqualFold(parsed.Scheme, "https") {
+			return 443, nil
+		}
 		return 80, nil
 	case "getLength()J", "getDate()J", "getExpiration()J",
 		"getLastModified()J":
 		return r.javaLongResult(0), nil
+	case "getEncoding()Ljava/lang/String;",
+		"getHeaderField(Ljava/lang/String;)Ljava/lang/String;",
+		"getType()Ljava/lang/String;",
+		"relocation()Lorg/kwis/msf/io/HttpSocket;":
+		return 0, nil
 	case "isRelocatable()Z":
+		return 0, nil
+	case "setRequestMethod(Ljava/lang/String;)V":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		method, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		if method == 0 {
+			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
+		}
+		r.lwcEventData[instance] = method
+		return 0, nil
+	case "setRequestProperty(Ljava/lang/String;Ljava/lang/String;)V":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		key, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		value, err := r.parameter(3)
+		if err != nil {
+			return 0, err
+		}
+		if key == 0 {
+			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
+		}
+		properties := r.Vectors[instance]
+		for index := 0; index+1 < len(properties); index += 2 {
+			if strings.EqualFold(
+				r.javaStringValue(properties[index]),
+				r.javaStringValue(key),
+			) {
+				properties[index+1] = value
+				r.Vectors[instance] = properties
+				return 0, nil
+			}
+		}
+		r.Vectors[instance] = append(properties, key, value)
+		return 0, nil
+	case "getRequestProperty(Ljava/lang/String;)Ljava/lang/String;":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		key, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		properties := r.Vectors[instance]
+		for index := 0; index+1 < len(properties); index += 2 {
+			if strings.EqualFold(
+				r.javaStringValue(properties[index]),
+				r.javaStringValue(key),
+			) {
+				return properties[index+1], nil
+			}
+		}
+		return 0, nil
+	case "setProxy(Ljava/lang/String;I)V":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		host, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		port, err := r.parameter(3)
+		if err != nil {
+			return 0, err
+		}
+		state := r.lwcComponent(instance)
+		state.image = host
+		state.minimum = int32(port)
 		return 0, nil
 	default:
 		// Remaining accessors resolve to null and mutators are absorbed.
 		return 0, nil
 	}
+}
+
+func (r *Runtime) msfSocketURL() (*url.URL, error) {
+	instance, err := r.parameter(1)
+	if err != nil {
+		return nil, err
+	}
+	parsed, err := url.Parse(r.javaStringValue(r.lwcComponent(instance).text))
+	if err != nil {
+		return &url.URL{}, nil
+	}
+	return parsed, nil
+}
+
+func (r *Runtime) newOfflineMSFSocket(urlAddress uint32) (uint32, error) {
+	rawURL := r.javaStringValue(urlAddress)
+	parsed, _ := url.Parse(rawURL)
+	className := "org/kwis/msf/io/Socket"
+	if strings.EqualFold(parsed.Scheme, "http") ||
+		strings.EqualFold(parsed.Scheme, "https") {
+		className = "org/kwis/msf/io/HttpSocket"
+	}
+	instance, err := r.NewHostJavaObject(className)
+	if err != nil {
+		return 0, err
+	}
+	r.lwcComponent(instance).text = urlAddress
+	return instance, nil
 }
 
 // Message state lives in the generic per-instance component record: text is

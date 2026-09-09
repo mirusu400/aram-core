@@ -7,6 +7,57 @@ import (
 
 func TestKTFWIPI121HostSpecsDeclareFrameworkMethods(t *testing.T) {
 	want := map[string][]string{
+		"org/kwis/msp/lwc/Component": {
+			"configure(IIIII)V",
+			"getPreferredHeight(I)I",
+			"getXOnScreen()I",
+		},
+		"org/kwis/msp/lwc/ContainerComponent": {
+			"addComponent(ILorg/kwis/msp/lwc/Component;)V",
+			"getNumberOfComponent()I",
+			"processEvent(IIII)Z",
+		},
+		"org/kwis/msp/lwc/ShellComponent": {
+			"<init>(IIIIZ)V",
+			"setTitle(Ljava/lang/String;)V",
+			"setGrabKeyListener(Lorg/kwis/msp/lwc/GrabKeyListener;Ljava/lang/Object;)V",
+		},
+		"org/kwis/msp/lwc/FormComponent": {
+			"<init>(Z)V",
+			"setFocus(Lorg/kwis/msp/lwc/Component;)V",
+			"scrollTo(II)Z",
+		},
+		"org/kwis/msp/lwc/TextComponent": {
+			"insert([CIII)V",
+			"getConstraint()I",
+			"showNotify(Z)V",
+		},
+		"org/kwis/msp/lwc/CheckboxComponent": {
+			"<init>(Ljava/lang/String;Lorg/kwis/msp/lcdui/Image;Lorg/kwis/msp/lwc/CheckboxGroup;)V",
+			"setChangeListener(Lorg/kwis/msp/lwc/ChangeListener;Ljava/lang/Object;)V",
+		},
+		"org/kwis/msp/lwc/CommandBarComponent": {
+			"addCommand(Lorg/kwis/msp/lwc/Command;)I",
+			"pointerNotify(III)Z",
+		},
+		"org/kwis/msp/lwc/ListComponent": {
+			"<init>(I)V",
+			"append(Ljava/lang/String;Lorg/kwis/msp/lcdui/Image;)I",
+			"controlNumber(Z)V",
+		},
+		"org/kwis/msp/lwc/ProxyCard": {
+			"<init>(Lorg/kwis/msp/lwc/ContainerComponent;IIIIZ)V",
+			"paint(Lorg/kwis/msp/lcdui/Graphics;)V",
+		},
+		"org/kwis/msp/lwc/ScrollbarComponent": {
+			"<init>(IIIIII)V",
+			"getChangeAmount()I",
+			"setViewAmount(I)V",
+		},
+		"org/kwis/msp/lwc/TextBoxComponent": {
+			"<init>(Ljava/lang/String;II)V",
+			"configure(IIIII)V",
+		},
 		"org/kwis/msf/core/Kernel": {
 			"execute(Ljava/lang/String;[Ljava/lang/String;)I",
 			"getExecNames(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)[Ljava/lang/String;",
@@ -21,6 +72,16 @@ func TestKTFWIPI121HostSpecsDeclareFrameworkMethods(t *testing.T) {
 			"<init>(Ljava/lang/String;[BII)V",
 			"getData()[B",
 			"setDate(Ljava/util/Date;)V",
+		},
+		"org/kwis/msf/io/Socket": {
+			"isStream()Z",
+			"send(Lorg/kwis/msf/io/Message;)V",
+			"accept()Lorg/kwis/msf/io/Socket;",
+		},
+		"org/kwis/msf/io/HttpSocket": {
+			"getHost()Ljava/lang/String;",
+			"getRequestProperty(Ljava/lang/String;)Ljava/lang/String;",
+			"setRequestProperty(Ljava/lang/String;Ljava/lang/String;)V",
 		},
 		"org/kwis/msp/io/File": {
 			"<init>(Ljava/lang/String;II)V",
@@ -51,6 +112,89 @@ func TestKTFWIPI121HostSpecsDeclareFrameworkMethods(t *testing.T) {
 				t.Errorf("%s.%s is absent from the host spec", className, signature)
 			}
 		}
+	}
+}
+
+func TestKTFWIPI121HttpSocketPreservesURLAndRequestState(t *testing.T) {
+	runtime := newTestRuntime(t)
+	rawURL := newJavaString(t, runtime, "https://example.com:8443/game?a=1#top")
+	socket, err := runtime.newOfflineMSFSocket(rawURL)
+	check(t, err)
+	classAddress := readU32(t, runtime, socket+4)
+	if class := inspectClass(t, runtime, classAddress); class.Name != "org/kwis/msf/io/HttpSocket" {
+		t.Fatalf("URL.find socket class = %q", class.Name)
+	}
+
+	parameters := allocWords(t, runtime, 3)
+	runtime.NativeParameterBase = parameters
+	t.Cleanup(func() { runtime.NativeParameterBase = 0 })
+	check(t, runtime.writeWords(parameters, []uint32{socket, 0, 0}))
+	host, err := runtime.handleMSFSocketMethod("getHost", "()Ljava/lang/String;")
+	check(t, err)
+	if got := runtime.javaStringValue(host); got != "example.com" {
+		t.Fatalf("HttpSocket.getHost = %q", got)
+	}
+	port, err := runtime.handleMSFSocketMethod("getPort", "()I")
+	check(t, err)
+	if port != 8443 {
+		t.Fatalf("HttpSocket.getPort = %d", port)
+	}
+
+	key := newJavaString(t, runtime, "Accept")
+	value := newJavaString(t, runtime, "application/octet-stream")
+	check(t, runtime.writeWords(parameters, []uint32{socket, key, value}))
+	_, err = runtime.handleMSFSocketMethod(
+		"setRequestProperty",
+		"(Ljava/lang/String;Ljava/lang/String;)V",
+	)
+	check(t, err)
+	lowerKey := newJavaString(t, runtime, "accept")
+	check(t, runtime.writeWords(parameters, []uint32{socket, lowerKey, 0}))
+	got, err := runtime.handleMSFSocketMethod(
+		"getRequestProperty",
+		"(Ljava/lang/String;)Ljava/lang/String;",
+	)
+	check(t, err)
+	if got != value {
+		t.Fatalf("HttpSocket request property = 0x%08x, want 0x%08x", got, value)
+	}
+}
+
+func TestKTFWIPI121LWCConstructorsInitializeState(t *testing.T) {
+	runtime := newTestRuntime(t)
+	label := newJavaString(t, runtime, "selected")
+	image := newHostObject(t, runtime, "org/kwis/msp/lcdui/Image")
+	group := newHostObject(t, runtime, "org/kwis/msp/lwc/CheckboxGroup")
+	checkbox := newHostObject(t, runtime, "org/kwis/msp/lwc/CheckboxComponent")
+
+	_, err := runtime.handleLWCMethod(
+		context.Background(),
+		"org/kwis/msp/lwc/CheckboxComponent",
+		"<init>",
+		"(Ljava/lang/String;Lorg/kwis/msp/lcdui/Image;Lorg/kwis/msp/lwc/CheckboxGroup;)V",
+		[]uint32{0, checkbox, label, image, group},
+	)
+	check(t, err)
+	checkboxState := runtime.lwcComponent(checkbox)
+	if checkboxState.text != label || checkboxState.image != image ||
+		checkboxState.group != group {
+		t.Fatalf("CheckboxComponent constructor state = %+v", checkboxState)
+	}
+
+	scrollbar := newHostObject(t, runtime, "org/kwis/msp/lwc/ScrollbarComponent")
+	_, err = runtime.handleLWCMethod(
+		context.Background(),
+		"org/kwis/msp/lwc/ScrollbarComponent",
+		"<init>",
+		"(IIIIII)V",
+		[]uint32{0, scrollbar, 2, 30, 10, 0, 100, 5},
+	)
+	check(t, err)
+	scrollbarState := runtime.lwcComponent(scrollbar)
+	if scrollbarState.mode != 2 || scrollbarState.progressValue != 30 ||
+		scrollbarState.viewAmount != 10 || scrollbarState.minimum != 0 ||
+		scrollbarState.progressMax != 100 || scrollbarState.changeAmount != 5 {
+		t.Fatalf("ScrollbarComponent constructor state = %+v", scrollbarState)
 	}
 }
 

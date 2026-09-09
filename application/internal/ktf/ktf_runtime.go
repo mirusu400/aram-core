@@ -491,10 +491,16 @@ type ktfHostJavaMethodSpec struct {
 }
 
 type ktfHostJavaClassSpec struct {
-	Parent    string
-	access    uint16
-	fieldSize uint16
-	methods   []ktfHostJavaMethodSpec
+	Parent string
+	access uint16
+	// compatibilityVTable keeps declared virtual methods in the reserved
+	// host compatibility range instead of inserting them into the handset's
+	// compact vtable. KTF AOT binaries hard-code the latter's slots for LWC
+	// subclasses, whose exact vendor layout is not represented by our host
+	// declarations.
+	compatibilityVTable bool
+	fieldSize           uint16
+	methods             []ktfHostJavaMethodSpec
 	// fields names the *instance* fields the handset class really declares.
 	// A host-modelled class carries no guest field table, so a title that
 	// reads one of its fields makes addHostJavaField invent the record. An

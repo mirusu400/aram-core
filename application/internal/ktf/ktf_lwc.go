@@ -92,8 +92,7 @@ func (r *Runtime) handleLWCMethod(
 	switch className {
 	case "org/kwis/msp/lwc/Component",
 		"org/kwis/msp/lwc/ContainerComponent",
-		"org/kwis/msp/lwc/TextComponent",
-		"org/kwis/msp/lwc/TextBoxComponent":
+		"org/kwis/msp/lwc/TextComponent":
 		if method == "<init>()V" {
 			return 0, nil
 		}
@@ -205,6 +204,24 @@ func (r *Runtime) handleLWCMethod(
 		case "<init>(Ljava/lang/String;Lorg/kwis/msp/lwc/CheckboxGroup;)V":
 			state.text = registers[2]
 			state.group = registers[3]
+			r.initializeLWCTextSize(state, registers[2], false)
+			return 0, nil
+		case "<init>(Ljava/lang/String;Lorg/kwis/msp/lcdui/Image;)V":
+			state.text = registers[2]
+			state.image = registers[3]
+			r.initializeLWCTextSize(state, registers[2], false)
+			return 0, nil
+		case "<init>(Ljava/lang/String;Lorg/kwis/msp/lcdui/Image;" +
+			"Lorg/kwis/msp/lwc/CheckboxGroup;)V":
+			state.text = registers[2]
+			state.image = registers[3]
+			state.group = registers[4]
+			r.initializeLWCTextSize(state, registers[2], false)
+			return 0, nil
+		case "<init>(Ljava/lang/String;Lorg/kwis/msp/lcdui/Image;Z)V":
+			state.text = registers[2]
+			state.image = registers[3]
+			state.selected = registers[4] != 0
 			r.initializeLWCTextSize(state, registers[2], false)
 			return 0, nil
 		}
@@ -480,26 +497,85 @@ func (r *Runtime) handleLWCMethod(
 			return 0, nil
 		case "<init>(Ljava/lang/String;)V",
 			"setImage(Ljava/lang/String;)V":
-			resourceName := strings.TrimPrefix(strings.ReplaceAll(
-				r.javaStringValue(registers[2]),
-				`\`,
-				"/",
-			), "/")
-			if data, ok := r.findKTFResource(resourceName); ok {
-				if image, err := r.newJavaEncodedImage(data); err == nil {
-					state.image = image
-				}
+			loaded, err := r.newJavaImageResource(registers[2])
+			if err != nil {
+				return 0, err
 			}
+			state.image = loaded
+			r.invalidateLWC(instance)
 			return 0, nil
 		case "play()V", "stop()V":
+			return 0, nil
+		}
+	case "org/kwis/msp/lwc/ListItemComponent":
+		switch method {
+		case "<init>(Ljava/lang/String;)V":
+			state.text = registers[2]
+			r.initializeLWCTextSize(state, registers[2], false)
+			return 0, nil
+		case "<init>(Ljava/lang/String;Lorg/kwis/msp/lcdui/Image;)V":
+			state.text = registers[2]
+			state.image = registers[3]
+			r.initializeLWCTextSize(state, registers[2], false)
+			return 0, nil
+		case "<init>(Ljava/lang/String;Ljava/lang/String;)V":
+			loaded, err := r.newJavaImageResource(registers[3])
+			if err != nil {
+				return 0, err
+			}
+			state.text = registers[2]
+			state.image = loaded
+			r.initializeLWCTextSize(state, registers[2], false)
+			return 0, nil
+		}
+	case "org/kwis/msp/lwc/ProxyCard":
+		switch method {
+		case "<init>(Lorg/kwis/msp/lwc/ContainerComponent;)V",
+			"<init>(Lorg/kwis/msp/lwc/ContainerComponent;Z)V":
+			state.work = registers[2]
+			state.transparent = descriptor ==
+				"(Lorg/kwis/msp/lwc/ContainerComponent;Z)V" &&
+				registers[3] != 0
+			r.addLWCChild(instance, 0, registers[2])
+			return 0, nil
+		case "<init>(Lorg/kwis/msp/lwc/ContainerComponent;IIII)V",
+			"<init>(Lorg/kwis/msp/lwc/ContainerComponent;IIIIZ)V":
+			state.work = registers[2]
+			r.configureLWC(
+				state, registers[3], registers[4], registers[5], registers[6],
+			)
+			state.transparent = descriptor ==
+				"(Lorg/kwis/msp/lwc/ContainerComponent;IIIIZ)V" &&
+				registers[7] != 0
+			r.addLWCChild(instance, 0, registers[2])
 			return 0, nil
 		}
 	case "org/kwis/msp/lwc/ScrollbarComponent":
 		switch method {
 		case "<init>()V":
+			state.mode = 1
 			return 0, nil
 		case "<init>(I)V", "setDirection(I)V":
+			if registers[2] != 1 && registers[2] != 2 {
+				return 0, r.raiseHostJavaException(
+					"java/lang/IllegalArgumentException",
+				)
+			}
 			state.mode = int32(registers[2])
+			return 0, nil
+		case "<init>(IIIIII)V":
+			if registers[2] != 1 && registers[2] != 2 ||
+				int32(registers[6]) < int32(registers[5]) {
+				return 0, r.raiseHostJavaException(
+					"java/lang/IllegalArgumentException",
+				)
+			}
+			state.mode = int32(registers[2])
+			state.progressValue = int32(registers[3])
+			state.viewAmount = int32(registers[4])
+			state.minimum = int32(registers[5])
+			state.progressMax = int32(registers[6])
+			state.changeAmount = int32(registers[7])
 			return 0, nil
 		case "getDirection()I":
 			return uint32(state.mode), nil
@@ -542,6 +618,11 @@ func (r *Runtime) handleLWCMethod(
 			state.text = registers[2]
 			r.initializeLWCTextSize(state, registers[2], false)
 			return 0, nil
+		case "<init>(Ljava/lang/String;Lorg/kwis/msp/lcdui/Image;)V":
+			state.text = registers[2]
+			state.image = registers[3]
+			r.initializeLWCTextSize(state, registers[2], false)
+			return 0, nil
 		case "setDelay(I)V":
 			state.delay = int32(registers[2])
 			return 0, nil
@@ -553,6 +634,19 @@ func (r *Runtime) handleLWCMethod(
 		switch method {
 		case "<init>()V", "notifyChangeMode()V",
 			"paint(Lorg/kwis/msp/lcdui/Graphics;)V":
+			return 0, nil
+		}
+	case "org/kwis/msp/lwc/TextBoxComponent":
+		switch method {
+		case "<init>(Ljava/lang/String;I)V",
+			"<init>(Ljava/lang/String;II)V":
+			state.text = registers[2]
+			state.mode = int32(registers[3])
+			r.initializeLWCTextSize(state, registers[2], false)
+			if descriptor == "(Ljava/lang/String;II)V" {
+				state.height = int32(registers[4])
+				state.preferredHeight = state.height
+			}
 			return 0, nil
 		}
 	}
@@ -708,6 +802,17 @@ func (r *Runtime) handleLWCMethod(
 	case "setTitle(Lorg/kwis/msp/lwc/Component;)V":
 		state.title = registers[2]
 		r.setLWCParent(registers[2], instance)
+		return 0, nil
+	case "setTitle(Ljava/lang/String;)V":
+		title, err := r.NewHostJavaObject("org/kwis/msp/lwc/LabelComponent")
+		if err != nil {
+			return 0, err
+		}
+		titleState := r.lwcComponent(title)
+		titleState.text = registers[2]
+		r.initializeLWCTextSize(titleState, registers[2], false)
+		state.title = title
+		r.setLWCParent(title, instance)
 		return 0, nil
 	case "getTitle()Lorg/kwis/msp/lwc/Component;":
 		return state.title, nil

@@ -1093,6 +1093,9 @@ func (r *Runtime) EnsureJavaClass(name string) (uint32, error) {
 		return 0, err
 	}
 	for _, method := range spec.methods {
+		if deferKTFHostCompatibilityMethod(spec, method) {
+			continue
+		}
 		if _, err := r.addHostJavaMethod(
 			JavaClass{Address: class, Name: name},
 			method.name,
@@ -1115,6 +1118,9 @@ func (r *Runtime) augmentHostJavaClass(classAddress uint32, name string) error {
 	}
 	r.hostJavaClass[classAddress] = true
 	for _, wanted := range spec.methods {
+		if deferKTFHostCompatibilityMethod(spec, wanted) {
+			continue
+		}
 		method, found := findKTFJavaMethod(
 			class,
 			wanted.name,
@@ -1139,4 +1145,13 @@ func (r *Runtime) augmentHostJavaClass(classAddress uint32, name string) error {
 		}
 	}
 	return nil
+}
+
+func deferKTFHostCompatibilityMethod(
+	spec ktfHostJavaClassSpec,
+	method ktfHostJavaMethodSpec,
+) bool {
+	return spec.compatibilityVTable &&
+		method.access&(0x0002|0x0008) == 0 &&
+		!strings.HasPrefix(method.name, "<")
 }

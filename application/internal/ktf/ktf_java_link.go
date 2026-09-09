@@ -1065,7 +1065,9 @@ func (r *Runtime) addHostJavaMethod(
 	}
 	accessFlags := uint16(1)
 	declaredByHostSpec := false
+	compatibilityVTable := false
 	if spec, ok := HostJavaClassSpecs[class.Name]; ok {
+		compatibilityVTable = spec.compatibilityVTable
 		for _, method := range spec.methods {
 			if method.name == name && method.descriptor == descriptor {
 				accessFlags = method.access
@@ -1128,7 +1130,7 @@ func (r *Runtime) addHostJavaMethod(
 	if err := r.WriteU32(classWords[2]+24, countAndFields); err != nil {
 		return 0, err
 	}
-	compatibilityVirtual := !declaredByHostSpec &&
+	compatibilityVirtual := (!declaredByHostSpec || compatibilityVTable) &&
 		accessFlags&(0x0002|0x0008) == 0 &&
 		!strings.HasPrefix(name, "<")
 	if compatibilityVirtual {
