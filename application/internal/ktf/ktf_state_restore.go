@@ -47,7 +47,13 @@ func validateKTFMetadata(
 		len(meta.OutputTargets), len(meta.Files), len(meta.FileData),
 		len(meta.FileStreamTargets), len(meta.WIPI2IODevices),
 		len(meta.WIPI2SMSMessages), len(meta.WIPI2ResourceGroups),
-		len(meta.WIPI2Resources), len(meta.Images), len(meta.Graphics),
+		len(meta.WIPI2Resources), len(meta.WIPI2Handset.Addresses),
+		len(meta.WIPI2Handset.AddressObjects),
+		len(meta.WIPI2Handset.AddressShortcuts),
+		len(meta.WIPI2Handset.GPSConfigs),
+		len(meta.WIPI2Handset.GPSLocations),
+		len(meta.WIPI2Handset.StationLocations),
+		len(meta.Images), len(meta.AnimateImages), len(meta.Graphics),
 		len(meta.WIPICFramebuffers), len(meta.WIPICImages),
 		len(meta.WIPICResources), len(meta.WIPICResourceIDs),
 		len(meta.WIPICMemory), len(meta.WIPICTimers),
@@ -537,6 +543,11 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 			volume: clip.Volume, listener: clip.Listener,
 			playing: clip.Playing, capacity: int(clip.Capacity),
 			bufferSet: clip.BufferSet, data: append([]byte(nil), clip.Data...),
+			cameraMode: clip.CameraMode, cameraProperty: clip.CameraProperty,
+			cameraRect: clip.CameraRect, oemDisplay: clip.OEMDisplay,
+			preview: clip.Preview, stopTime: clip.StopTime,
+			mediaModeValues: guest.CloneMap(clip.MediaModeValues),
+			waterMark:       clip.WaterMark, waterMarkActive: clip.WaterMarkActive,
 		}
 	}
 	r.listeners = guest.CloneMap(meta.Listeners)
@@ -631,6 +642,7 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	r.wipi2SMSMessages = guest.CloneSliceMap(meta.WIPI2SMSMessages)
 	r.wipi2ResourceGroups = restoreWIPI2ResourceGroups(meta.WIPI2ResourceGroups)
 	r.wipi2Resources = restoreWIPI2Resources(meta.WIPI2Resources)
+	restoreWIPI2Handset(r, meta.WIPI2Handset)
 	r.systemInputStream = meta.SystemInputStream
 	r.systemPrintStream = meta.SystemPrintStream
 	r.hostReservedFieldClass = meta.HostReservedFieldClass
@@ -639,6 +651,7 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	if err := restoreKTFImagesAndGraphics(r, meta, saved.imagePixels); err != nil {
 		return err
 	}
+	r.animateImages = restoreKTFAnimateImages(meta.AnimateImages)
 	r.defaultFont = meta.DefaultFont
 	r.ScreenGraphics = meta.ScreenGraphics
 	r.wipicFramebuffers = restoreKTFWIPICFramebuffers(meta.WIPICFramebuffers)

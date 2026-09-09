@@ -939,6 +939,29 @@ func javaStaticConstantBits(className, name string) (uint64, bool) {
 	case "org/kwis/msp/io/ResourceGroup.GROUP_LOCKED",
 		"org/kwis/msp/io/ResourceGroup.LOCKED":
 		return 1, true
+	case "org/kwis/msp/handset/AddressBook.SEARCH_NAME",
+		"org/kwis/msp/handset/AddressBook.TYPE_INT",
+		"org/kwis/msp/handset/GPSConfig.OPT_SPEED",
+		"org/kwis/msp/handset/GPSConfig.SERVER_TCPIP",
+		"org/kwis/msp/handset/GPSConfig.MS_ASSISTED",
+		"org/kwis/msp/handset/GPSProvider.REQUEST_ONCE":
+		return 0, true
+	case "org/kwis/msp/handset/AddressBook.SEARCH_PHONE_NO",
+		"org/kwis/msp/handset/AddressBook.TYPE_STRING",
+		"org/kwis/msp/handset/GPSConfig.OPT_ACCURACY",
+		"org/kwis/msp/handset/GPSConfig.SERVER_DBURST",
+		"org/kwis/msp/handset/GPSConfig.MS_BASED":
+		return 1, true
+	case "org/kwis/msp/handset/AddressBook.SEARCH_EMAIL",
+		"org/kwis/msp/handset/AddressBook.TYPE_IMAGE":
+		return 2, true
+	case "org/kwis/msp/handset/AddressBook.SEARCH_GROUP",
+		"org/kwis/msp/handset/AddressBook.TYPE_SOUND":
+		return 3, true
+	case "org/kwis/msp/handset/AddressBook.TYPE_BINARY":
+		return 4, true
+	case "org/kwis/msp/handset/GPSProvider.REQUEST_STOP":
+		return uint64(^uint32(0)), true
 	default:
 		return 0, false
 	}

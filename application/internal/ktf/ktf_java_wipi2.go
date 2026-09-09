@@ -136,6 +136,253 @@ func restoreWIPI2Resources(source map[string]map[string]ktfWIPI2ResourceSnapshot
 }
 
 func init() {
+	HostJavaClassSpecs["org/kwis/msp/lwc/ConstraintChecker"] = ktfHostJavaClassSpec{
+		Parent: "java/lang/Object",
+	}
+	kernelSpec := HostJavaClassSpecs["org/kwis/msf/core/Kernel"]
+	kernelSpec.methods = append(kernelSpec.methods,
+		ktfCompatibilityMethod("load", "(Ljava/lang/String;)I", 0x0008),
+	)
+	HostJavaClassSpecs["org/kwis/msf/core/Kernel"] = kernelSpec
+	ledSpec := HostJavaClassSpecs["org/kwis/msp/handset/LED"]
+	ledSpec.methods = append(ledSpec.methods,
+		ktfCompatibilityMethod("<init>", "()V"),
+		ktfCompatibilityMethod("set", "(I)I", 0x0008),
+		ktfCompatibilityMethod("getSupportColor", "(I)[I", 0x0008),
+		ktfCompatibilityMethod("getColor", "(I)I", 0x0008),
+		ktfCompatibilityMethod("setColor", "(II)I", 0x0008),
+	)
+	HostJavaClassSpecs["org/kwis/msp/handset/LED"] = ledSpec
+	HostJavaClassSpecs["org/kwis/msp/lcdui/AnimateImage"] = ktfHostJavaClassSpec{
+		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "createAnimateImage", descriptor: "(Ljava/lang/String;Z)Lorg/kwis/msp/lcdui/AnimateImage;", access: 0x0008},
+			{name: "createAnimateImage", descriptor: "(III)Lorg/kwis/msp/lcdui/AnimateImage;", access: 0x0008},
+			{name: "isMutable", descriptor: "()Z"},
+			{name: "setAnimationRate", descriptor: "(II)V"},
+			{name: "getAnimationRate", descriptor: "()I"},
+			{name: "getAnimationRate", descriptor: "(I)I"},
+			{name: "getMaxFrame", descriptor: "()I"},
+			{name: "getWidth", descriptor: "()I"},
+			{name: "getHeight", descriptor: "()I"},
+			{name: "getFrameImage", descriptor: "(I)Lorg/kwis/msp/lcdui/Image;"},
+			{name: "setFrameImage", descriptor: "(Lorg/kwis/msp/lcdui/Image;I)V"},
+			{name: "play", descriptor: "(Lorg/kwis/msp/lcdui/Graphics;IIILorg/kwis/msp/lcdui/ImageObserver;)V"},
+			{name: "play", descriptor: "(Lorg/kwis/msp/lcdui/ImageObserver;)V"},
+			{name: "stop", descriptor: "()V"},
+			{name: "stopImage", descriptor: "(Lorg/kwis/msp/lcdui/ImageObserver;)V", access: 0x0008},
+			{name: "paintFrame", descriptor: "(Lorg/kwis/msp/lcdui/Graphics;III)Z"},
+			{name: "paintFrame", descriptor: "(Lorg/kwis/msp/lcdui/Graphics;III)V"},
+			{name: "setRepeat", descriptor: "(Ljava/lang/Boolean;)Z"},
+			{name: "setRepeat", descriptor: "(Z)Z"},
+			{name: "isRepeat", descriptor: "()Z"},
+			{name: "getImageType", descriptor: "()Ljava/lang/String;"},
+		},
+	}
+	HostJavaClassSpecs["org/kwis/msp/media/BaseClip"] = ktfHostJavaClassSpec{
+		Parent:              "java/lang/Object",
+		access:              0x0401,
+		compatibilityVTable: true,
+		methods: []ktfHostJavaMethodSpec{
+			{name: "allocPlayer", descriptor: "()I", access: 0x0004},
+			{name: "freePlayer", descriptor: "()I", access: 0x0004},
+			{name: "free", descriptor: "()V"},
+			{name: "mediaWriteData", descriptor: "()I", access: 0x0004},
+			{name: "mediaReadData", descriptor: "()I", access: 0x0004},
+			{name: "setWaterMark", descriptor: "(I)V"},
+			{name: "reactiveWaterMark", descriptor: "()V"},
+			{name: "setBuffer", descriptor: "([BI)Z"},
+			{name: "putData", descriptor: "([BII)I"},
+			{name: "getData", descriptor: "([BII)I"},
+			{name: "clearData", descriptor: "()V"},
+			{name: "availableDataSize", descriptor: "()I"},
+			{name: "playStart", descriptor: "(Z)Z", access: 0x0004},
+			{name: "recordStart", descriptor: "()Z", access: 0x0004},
+			{name: "playUpdate", descriptor: "(II)Z"},
+			{name: "mediaControl", descriptor: "(I[I[I)I", access: 0x0004},
+			{name: "mediaControl", descriptor: "(I[I[B)I", access: 0x0004},
+			{name: "mediaControl", descriptor: "(ILjava/lang/String;[I)I", access: 0x0004},
+			{name: "mediaModeControl", descriptor: "(Ljava/lang/String;II[I)I"},
+		},
+	}
+	clipSpec := HostJavaClassSpecs["org/kwis/msp/media/Clip"]
+	clipSpec.Parent = "org/kwis/msp/media/BaseClip"
+	HostJavaClassSpecs["org/kwis/msp/media/Clip"] = clipSpec
+	playerSpec := HostJavaClassSpecs["org/kwis/msp/media/Player"]
+	playerSpec.methods = append(playerSpec.methods,
+		ktfCompatibilityMethod("play", "(Lorg/kwis/msp/media/BaseClip;Z)Z", 0x0008),
+		ktfCompatibilityMethod("stop", "(Lorg/kwis/msp/media/BaseClip;)Z", 0x0008),
+		ktfCompatibilityMethod("pause", "(Lorg/kwis/msp/media/BaseClip;)Z", 0x0008),
+		ktfCompatibilityMethod("resume", "(Lorg/kwis/msp/media/BaseClip;)Z", 0x0008),
+		ktfCompatibilityMethod("record", "(Lorg/kwis/msp/media/BaseClip;)Z", 0x0008),
+	)
+	HostJavaClassSpecs["org/kwis/msp/media/Player"] = playerSpec
+	HostJavaClassSpecs["org/kwis/msp/media/PlayerListener"] = ktfHostJavaClassSpec{
+		Parent: "java/lang/Object",
+		access: 0x0601,
+		methods: []ktfHostJavaMethodSpec{
+			{name: "playerUpdate", descriptor: "(Lorg/kwis/msp/media/Clip;II)V", access: 0x0401},
+		},
+	}
+	HostJavaClassSpecs["org/kwis/msp/media/UnavailableException"] = ktfHostJavaClassSpec{
+		Parent:  "java/lang/RuntimeException",
+		methods: ktfThrowableSubclassSpec("java/lang/RuntimeException").methods,
+	}
+	HostJavaClassSpecs["org/kwis/msp/media/Camera"] = ktfHostJavaClassSpec{
+		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "(Ljava/lang/String;)V", access: 0x0004},
+			{name: "<init>", descriptor: "(Ljava/lang/String;I)V", access: 0x0004},
+			{name: "detect", descriptor: "()Z", access: 0x0008},
+			{name: "getModel", descriptor: "()Ljava/lang/String;", access: 0x0008},
+			{name: "setMode", descriptor: "(I)Z"},
+			{name: "getModeCount", descriptor: "()I"},
+			{name: "setProperty", descriptor: "(I)Z"},
+			{name: "setSize", descriptor: "(IIII)Z"},
+			{name: "enableOEMDisplayArea", descriptor: "()V"},
+			{name: "disableOEMDisplayArea", descriptor: "()V"},
+			{name: "previewStart", descriptor: "()V"},
+			{name: "previewStop", descriptor: "()V"},
+		},
+	}
+	HostJavaClassSpecs["org/kwis/msp/media/StillClip"] = ktfHostJavaClassSpec{
+		Parent: "org/kwis/msp/media/Camera",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "(Ljava/lang/String;)V", access: 0x0004},
+			{name: "<init>", descriptor: "(Ljava/lang/String;I)V", access: 0x0004},
+			{name: "snapshot", descriptor: "(Lorg/kwis/msp/media/PlayListener;)Z"},
+			{name: "view", descriptor: "(Lorg/kwis/msp/media/PlayListener;)Z"},
+			{name: "getData", descriptor: "()[B"},
+			{name: "playStart", descriptor: "(Z)Z", access: 0x0004},
+			{name: "playUpdate", descriptor: "(II)Z"},
+		},
+	}
+	HostJavaClassSpecs["org/kwis/msp/media/VideoClip"] = ktfHostJavaClassSpec{
+		Parent: "org/kwis/msp/media/Camera",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "(Ljava/lang/String;)V", access: 0x0004},
+			{name: "<init>", descriptor: "(Ljava/lang/String;I)V", access: 0x0004},
+			{name: "record", descriptor: "(Lorg/kwis/msp/media/PlayListener;)Z"},
+			{name: "pause", descriptor: "()Z"},
+			{name: "resume", descriptor: "()Z"},
+			{name: "stop", descriptor: "()Z"},
+			{name: "play", descriptor: "(Lorg/kwis/msp/media/PlayListener;)Z"},
+			{name: "playStart", descriptor: "(Z)Z", access: 0x0004},
+			{name: "playUpdate", descriptor: "(II)Z"},
+		},
+	}
+	HostJavaClassSpecs["org/kwis/msp/handset/Address"] = ktfHostJavaClassSpec{
+		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "getRecordId", descriptor: "()I"},
+			{name: "getField", descriptor: "(I)Ljava/lang/Object;"},
+			{name: "setField", descriptor: "(ILjava/lang/Object;)Z"},
+			{name: "getFields", descriptor: "()[Ljava/lang/Object;"},
+			{name: "setFields", descriptor: "([Ljava/lang/Object;)Z"},
+			{name: "getLockStatus", descriptor: "()I"},
+			{name: "setLockStatus", descriptor: "(I)I"},
+		},
+	}
+	HostJavaClassSpecs["org/kwis/msp/handset/AddressBook"] = ktfHostJavaClassSpec{
+		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "getAddressBook", descriptor: "()Lorg/kwis/msp/handset/AddressBook;", access: 0x0008},
+			{name: "getGroupCount", descriptor: "()I"},
+			{name: "getGroupName", descriptor: "(I)Ljava/lang/String;"},
+			{name: "createGroup", descriptor: "(Ljava/lang/String;)I"},
+			{name: "getFieldCount", descriptor: "()I"},
+			{name: "getFieldName", descriptor: "(I)Ljava/lang/String;"},
+			{name: "getFieldType", descriptor: "(I)I"},
+			{name: "getFieldMaxLength", descriptor: "(I)I"},
+			{name: "getAddressMaxCount", descriptor: "()I"},
+			{name: "getAddressCount", descriptor: "()I"},
+			{name: "getAddressRecordIdsAll", descriptor: "()[I"},
+			{name: "getAddress", descriptor: "(I)Lorg/kwis/msp/handset/Address;"},
+			{name: "createRecord", descriptor: "([Ljava/lang/Object;)I"},
+			{name: "createRecords", descriptor: "([Ljava/lang/Object;)[I"},
+			{name: "isSupportFieldShortCut", descriptor: "()Z"},
+			{name: "isSupportShortCut", descriptor: "(I)Z"},
+			{name: "getMaxShortCut", descriptor: "()I"},
+			{name: "getFirstFreeShortCut", descriptor: "(I)I"},
+			{name: "setShortCut", descriptor: "(III)Z"},
+			{name: "setShortCut", descriptor: "([I[I[I)Z"},
+			{name: "getAllShortCut", descriptor: "()[I"},
+			{name: "getShortCutItem", descriptor: "(I)[I"},
+			{name: "getShortCutAssigned", descriptor: "(II)I"},
+			{name: "searchAddress", descriptor: "(ILjava/lang/Object;Z)[I"},
+			{name: "removeAddress", descriptor: "(I)Z"},
+			{name: "checkPassword", descriptor: "(ILjava/lang/String;)I"},
+			{name: "getLockStatus", descriptor: "()I"},
+			{name: "setLockStatus", descriptor: "(I)I"},
+		},
+	}
+	HostJavaClassSpecs["org/kwis/msp/handset/StationLocationInfo"] = ktfHostJavaClassSpec{
+		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "()V"},
+			{name: "getBaseID", descriptor: "()I"},
+			{name: "getBaseLat", descriptor: "()I"},
+			{name: "getBaseLong", descriptor: "()I"},
+			{name: "isValid", descriptor: "()Z"},
+			{name: "getLocationInfo", descriptor: "()I"},
+		},
+	}
+	HostJavaClassSpecs["org/kwis/msp/handset/GPSConfig"] = ktfHostJavaClassSpec{
+		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "(IIIIII)V"},
+			{name: "getMode", descriptor: "()I"},
+			{name: "getOptimization", descriptor: "()I"},
+			{name: "getQos", descriptor: "()I"},
+			{name: "getTransport", descriptor: "()I"},
+			{name: "getPdeAddr", descriptor: "()I"},
+			{name: "getPdePort", descriptor: "()I"},
+			{name: "setMode", descriptor: "(I)I", access: 0x0008},
+			{name: "setOptimization", descriptor: "(I)I", access: 0x0008},
+			{name: "setQos", descriptor: "(I)I", access: 0x0008},
+			{name: "setTransport", descriptor: "(I)I", access: 0x0008},
+			{name: "setPdeAddr", descriptor: "(I)I", access: 0x0008},
+			{name: "setPdePort", descriptor: "(I)I", access: 0x0008},
+		},
+	}
+	HostJavaClassSpecs["org/kwis/msp/handset/GPSLocationInfo"] = ktfHostJavaClassSpec{
+		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "()V"},
+			{name: "getLatitude", descriptor: "()I"},
+			{name: "getLongitude", descriptor: "()I"},
+			{name: "getAltitude", descriptor: "()I"},
+			{name: "getHeading", descriptor: "()I"},
+			{name: "getHorizontalVelocity", descriptor: "()I"},
+			{name: "getVelocityVer", descriptor: "()I"},
+			{name: "getAccuracy", descriptor: "()I"},
+			{name: "getTimeStamp", descriptor: "()Ljava/lang/String;"},
+			{name: "isValid", descriptor: "()I"},
+		},
+	}
+	HostJavaClassSpecs["org/kwis/msp/handset/GPSProvider"] = ktfHostJavaClassSpec{
+		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "()V"},
+			{name: "available", descriptor: "()I"},
+			{name: "requestLocationInfo", descriptor: "(I)I"},
+			{name: "getGPSConfig", descriptor: "()Lorg/kwis/msp/handset/GPSConfig;", access: 0x0008},
+			{name: "setGPSConfig", descriptor: "(Lorg/kwis/msp/handset/GPSConfig;)V", access: 0x0008},
+			{name: "setLocationInfoListener", descriptor: "(Lorg/kwis/msp/handset/GPSListener;)V", access: 0x0008},
+		},
+	}
+	HostJavaClassSpecs["org/kwis/msp/handset/GPSException"] = ktfHostJavaClassSpec{
+		Parent:  "java/lang/Exception",
+		methods: ktfThrowableSubclassSpec("java/lang/Exception").methods,
+	}
+	HostJavaClassSpecs["org/kwis/msp/handset/GPSListener"] = ktfHostJavaClassSpec{
+		Parent: "java/lang/Object",
+		access: 0x0601,
+		methods: []ktfHostJavaMethodSpec{
+			{name: "LocatinInfoReceived", descriptor: "(Lorg/kwis/msp/handset/GPSLocationInfo;)V", access: 0x0401},
+			{name: "LocationInfoReceived", descriptor: "(Lorg/kwis/msp/handset/GPSLocationInfo;)V", access: 0x0401},
+		},
+	}
 	HostJavaClassSpecs["org/kwis/msp/io/IODevice"] = ktfHostJavaClassSpec{
 		Parent: "java/lang/Object",
 		methods: []ktfHostJavaMethodSpec{

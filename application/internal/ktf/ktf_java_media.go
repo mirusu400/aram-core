@@ -434,6 +434,9 @@ func (r *Runtime) handleMediaMethodContext(
 		}
 		return 1, nil
 	default:
+		if value, handled, err := r.handleWIPI2MediaMethod(ctx, name, descriptor); handled || err != nil {
+			return value, err
+		}
 		return 0, nil
 	}
 }

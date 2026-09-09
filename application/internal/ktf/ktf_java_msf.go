@@ -29,6 +29,7 @@ func (r *Runtime) handleMSFKernelMethod(
 		"Ljava/lang/String;)[Ljava/lang/String;":
 		return r.newJavaReferenceArray("[Ljava/lang/String;", nil)
 	case "execute(Ljava/lang/String;[Ljava/lang/String;)I",
+		"load(Ljava/lang/String;)I",
 		"load(Ljava/lang/String;[Ljava/lang/String;)I",
 		"mExecute(Ljava/lang/String;[Ljava/lang/String;)I",
 		"mLoad(Ljava/lang/String;[Ljava/lang/String;)I":

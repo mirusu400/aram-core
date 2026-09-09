@@ -305,6 +305,18 @@ type Runtime struct {
 	wipi2SMSMessages      map[uint32][]byte
 	wipi2ResourceGroups   map[uint32]*ktfWIPI2ResourceGroup
 	wipi2Resources        map[string]map[string]*ktfWIPI2Resource
+	wipi2AddressBook      uint32
+	wipi2AddressBookLock  int
+	wipi2AddressGroups    []uint32
+	wipi2Addresses        map[int]*ktfWIPI2Address
+	wipi2AddressObjects   map[uint32]int
+	wipi2AddressShortcuts map[int][2]int
+	wipi2NextAddressID    int
+	wipi2GPSConfigs       map[uint32]ktfWIPI2GPSConfig
+	wipi2GPSConfig        ktfWIPI2GPSConfig
+	wipi2GPSListener      uint32
+	wipi2GPSLocations     map[uint32]ktfWIPI2GPSLocation
+	wipi2StationLocations map[uint32]ktfWIPI2StationLocation
 	systemInputStream     uint32
 	systemPrintStream     uint32
 	// hostReservedFieldClass named the one class whose invented imHandler
@@ -316,6 +328,7 @@ type Runtime struct {
 	hostReservedFieldClass   uint32
 	sharedInputMethodHandler uint32
 	images                   map[uint32]image.Image
+	animateImages            map[uint32]*ktfAnimateImage
 	// blitCaches holds, per Image instance, the 16-bit premultiplied source
 	// pixels drawKTFJavaImageFast reuses across frames instead of asking
 	// image/draw to recompute them from the *image.NRGBA source on every
@@ -593,12 +606,19 @@ type ktfTimeZone struct {
 }
 
 type ktfClip struct {
-	volume    int32
-	listener  uint32
-	playing   bool
-	capacity  int
-	bufferSet bool
-	data      []byte
+	volume                     int32
+	listener                   uint32
+	playing                    bool
+	capacity                   int
+	bufferSet                  bool
+	data                       []byte
+	cameraMode, cameraProperty int32
+	cameraRect                 [4]int32
+	oemDisplay, preview        bool
+	stopTime                   int32
+	mediaModeValues            map[string]int32
+	waterMark                  int32
+	waterMarkActive            bool
 }
 
 var ktfJavaExceptionParents = map[string]string{

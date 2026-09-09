@@ -1056,12 +1056,15 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 			return runtime.handleFontMethod(name, descriptor)
 		case "org/kwis/msp/lcdui/Image":
 			return runtime.handleImageMethod(name, descriptor)
+		case "org/kwis/msp/lcdui/AnimateImage":
+			return runtime.handleAnimateImageMethod(name, descriptor)
 		case "org/kwis/msp/lcdui/Graphics":
 			return runtime.handleGraphicsMethod(name, descriptor)
 		case "org/kwis/msp/media/Volume", "org/kwis/msf/io/Network":
 			return 0, nil
 		case "org/kwis/msp/media/BaseClip", "org/kwis/msp/media/Clip",
-			"org/kwis/msp/media/Player":
+			"org/kwis/msp/media/Player", "org/kwis/msp/media/Camera",
+			"org/kwis/msp/media/StillClip", "org/kwis/msp/media/VideoClip":
 			return runtime.handleMediaMethodContext(ctx, name, descriptor)
 		case "java/lang/Throwable":
 			return runtime.handleThrowableMethod(name, descriptor)
@@ -1113,7 +1116,9 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 			return 0, nil
 		case "org/kwis/msp/handset/LED":
 			switch name + descriptor {
-			case "set(I)V":
+			case "<init>()V":
+				return 0, nil
+			case "set(I)V", "set(I)I":
 				count := runtime.Services.Device.Config().LEDCount
 				for index := uint8(0); index < count; index++ {
 					value := int32(0)
@@ -1123,6 +1128,9 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 					if err := runtime.Services.Device.SetLED(index, value); err != nil {
 						return 0, err
 					}
+				}
+				if descriptor == "(I)I" {
+					return registers[1], nil
 				}
 				return 0, nil
 			case "get()I":
@@ -1140,10 +1148,36 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 				return mask, nil
 			case "getCount()I":
 				return uint32(runtime.Services.Device.Config().LEDCount), nil
+			case "getSupportColor(I)[I":
+				if registers[1] >= uint32(runtime.Services.Device.Config().LEDCount) {
+					return 0, runtime.raiseHostJavaException("java/io/IOException")
+				}
+				return runtime.newJavaIntArray([]uint32{
+					0x000000, 0xff0000, 0x00ff00, 0x0000ff, 0xffffff,
+				})
+			case "getColor(I)I":
+				value, err := runtime.Services.Device.LED(uint8(registers[1]))
+				if err != nil {
+					return 0, runtime.raiseHostJavaException("java/io/IOException")
+				}
+				return uint32(value), nil
+			case "setColor(II)I":
+				rgb := registers[2] & 0x00ffffff
+				if err := runtime.Services.Device.SetLED(uint8(registers[1]), int32(rgb)); err != nil {
+					return 0, runtime.raiseHostJavaException("java/io/IOException")
+				}
+				return rgb, nil
 			}
 			return 0, nil
 		case "org/kwis/msp/handset/Call":
 			return runtime.handleCallMethod(name, descriptor)
+		case "org/kwis/msp/handset/Address", "org/kwis/msp/handset/AddressBook":
+			return runtime.handleWIPI2AddressMethod(className, name, descriptor)
+		case "org/kwis/msp/handset/StationLocationInfo",
+			"org/kwis/msp/handset/GPSConfig",
+			"org/kwis/msp/handset/GPSLocationInfo",
+			"org/kwis/msp/handset/GPSProvider":
+			return runtime.handleWIPI2LocationMethod(ctx, className, name, descriptor)
 		case "org/kwis/msp/lwc/Component",
 			"org/kwis/msp/lwc/ContainerComponent",
 			"org/kwis/msp/lwc/ShellComponent",

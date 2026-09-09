@@ -442,6 +442,10 @@ func (r *Runtime) weakTables() []reflect.Value {
 		r.wipi2IODevices,
 		r.wipi2SMSMessages,
 		r.wipi2ResourceGroups,
+		r.wipi2AddressObjects,
+		r.wipi2GPSConfigs,
+		r.wipi2GPSLocations,
+		r.wipi2StationLocations,
 		r.lwcTextInput,
 		r.inputConstraints,
 		r.inputListeners,
@@ -454,6 +458,7 @@ func (r *Runtime) weakTables() []reflect.Value {
 		r.enumerations,
 		r.Graphics,
 		r.GraphicsServices,
+		r.animateImages,
 	}
 	candidates = append(candidates, r.gcExtraWeakTables...)
 	tables := make([]reflect.Value, 0, len(candidates))

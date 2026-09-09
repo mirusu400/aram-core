@@ -211,12 +211,19 @@ type ktfEnumerationSnapshot struct {
 }
 
 type ktfClipSnapshot struct {
-	Volume    int32
-	Listener  uint32
-	Playing   bool
-	Capacity  int32
-	BufferSet bool
-	Data      []byte
+	Volume                     int32
+	Listener                   uint32
+	Playing                    bool
+	Capacity                   int32
+	BufferSet                  bool
+	Data                       []byte
+	CameraMode, CameraProperty int32
+	CameraRect                 [4]int32
+	OEMDisplay, Preview        bool
+	StopTime                   int32
+	MediaModeValues            map[string]int32
+	WaterMark                  int32
+	WaterMarkActive            bool
 }
 
 type ktfCallSnapshot struct {
@@ -449,12 +456,14 @@ type ktfMetadataSnapshot struct {
 	WIPI2SMSMessages         map[uint32][]byte
 	WIPI2ResourceGroups      map[uint32]ktfWIPI2ResourceGroupSnapshot
 	WIPI2Resources           map[string]map[string]ktfWIPI2ResourceSnapshot
+	WIPI2Handset             ktfWIPI2HandsetSnapshot
 	SystemInputStream        uint32
 	SystemPrintStream        uint32
 	HostReservedFieldClass   uint32
 	SharedInputMethodHandler uint32
 
 	Images                 []uint32
+	AnimateImages          map[uint32]ktfAnimateImageSnapshot
 	DefaultFont            uint32
 	Graphics               map[uint32]ktfGraphicsSnapshot
 	ScreenGraphics         uint32
@@ -1083,12 +1092,14 @@ func snapshotKTFMetadata(
 		WIPI2SMSMessages:         guest.CloneSliceMap(r.wipi2SMSMessages),
 		WIPI2ResourceGroups:      snapshotWIPI2ResourceGroups(r.wipi2ResourceGroups),
 		WIPI2Resources:           snapshotWIPI2Resources(r.wipi2Resources),
+		WIPI2Handset:             snapshotWIPI2Handset(r),
 		SystemInputStream:        r.systemInputStream,
 		SystemPrintStream:        r.systemPrintStream,
 		HostReservedFieldClass:   r.hostReservedFieldClass,
 		SharedInputMethodHandler: r.sharedInputMethodHandler,
 
 		DefaultFont:            r.defaultFont,
+		AnimateImages:          snapshotKTFAnimateImages(r.animateImages),
 		ScreenGraphics:         r.ScreenGraphics,
 		WIPICScreenFramebuffer: r.WipicScreenFramebuffer,
 		WIPICResources:         guest.CloneSliceMap(r.wipicResources),
@@ -1178,6 +1189,11 @@ func snapshotKTFMetadata(
 			Volume: clip.volume, Listener: clip.listener,
 			Playing: clip.playing, Capacity: int32(clip.capacity),
 			BufferSet: clip.bufferSet, Data: append([]byte(nil), clip.data...),
+			CameraMode: clip.cameraMode, CameraProperty: clip.cameraProperty,
+			CameraRect: clip.cameraRect, OEMDisplay: clip.oemDisplay,
+			Preview: clip.preview, StopTime: clip.stopTime,
+			MediaModeValues: guest.CloneMap(clip.mediaModeValues),
+			WaterMark:       clip.waterMark, WaterMarkActive: clip.waterMarkActive,
 		}
 	}
 	meta.LWCComponents = make(map[uint32]ktfLWCSnapshot, len(r.lwcComponents))
