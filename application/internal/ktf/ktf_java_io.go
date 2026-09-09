@@ -8,6 +8,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"math"
+	"strconv"
 	"unicode/utf16"
 
 	shared "github.com/mirusu400/aram-core/runtime"
@@ -619,6 +620,163 @@ func (r *Runtime) handleOutputStreamWriterMethod(
 	case "flush()V", "close()V":
 		return 0, nil
 	default:
+		return 0, nil
+	}
+}
+
+// handlePrintStreamMethod implements CLDC PrintStream on top of the same
+// byte sinks used by OutputStream and file streams. PrintStream writes are
+// immediate in this runtime, so flush has no buffered work; encoding or file
+// errors set the stream's trouble flag instead of escaping as IOExceptions.
+func (r *Runtime) handlePrintStreamMethod(
+	name, descriptor string,
+) (uint32, error) {
+	instance, err := r.parameter(1)
+	if err != nil {
+		return 0, err
+	}
+	target := instance
+	for depth := 0; depth < 64; depth++ {
+		redirected := r.outputTargets[target]
+		if redirected == 0 || redirected == target {
+			break
+		}
+		target = redirected
+	}
+	appendBytes := func(data []byte) {
+		r.outputStreams[target] = append(r.outputStreams[target], data...)
+		if fileInstance := r.fileStreamTargets[target]; fileInstance != 0 {
+			if _, writeErr := r.writeKTFFile(fileInstance, data); writeErr != nil {
+				r.printStreamErrors[instance] = true
+			}
+		}
+	}
+	appendText := func(value string) {
+		data, encodeErr := r.Services.Text.Encode(
+			value,
+			shared.EncodingEUCKR,
+		)
+		if encodeErr != nil {
+			r.printStreamErrors[instance] = true
+			return
+		}
+		appendBytes(data)
+	}
+	printValue := func() (string, error) {
+		value, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return "", valueErr
+		}
+		switch descriptor {
+		case "(Ljava/lang/Object;)V":
+			return r.javaObjectString(value), nil
+		case "(Ljava/lang/String;)V":
+			return r.javaStringValue(value), nil
+		case "([C)V":
+			if value == 0 {
+				return "", r.raiseHostJavaException(
+					"java/lang/NullPointerException",
+				)
+			}
+			length, lengthErr := r.javaArrayLength(value)
+			if lengthErr != nil {
+				return "", lengthErr
+			}
+			return r.readJavaCharArrayRange(value, 0, length)
+		case "(Z)V":
+			if value != 0 {
+				return "true", nil
+			}
+			return "false", nil
+		case "(C)V":
+			return string(rune(uint16(value))), nil
+		case "(I)V":
+			return strconv.FormatInt(int64(int32(value)), 10), nil
+		case "(J)V":
+			high, highErr := r.parameter(3)
+			if highErr != nil {
+				return "", highErr
+			}
+			return strconv.FormatInt(
+				int64(uint64(high)<<32|uint64(value)),
+				10,
+			), nil
+		default:
+			return "", fmt.Errorf(
+				"unsupported KTF PrintStream value descriptor %s",
+				descriptor,
+			)
+		}
+	}
+	switch name + descriptor {
+	case "<init>(Ljava/io/OutputStream;)V":
+		redirected, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if redirected == 0 {
+			return 0, r.raiseHostJavaException(
+				"java/lang/NullPointerException",
+			)
+		}
+		r.outputTargets[instance] = redirected
+		delete(r.printStreamErrors, instance)
+		return 0, nil
+	case "print(Ljava/lang/Object;)V", "print(Ljava/lang/String;)V",
+		"print([C)V", "print(Z)V", "print(C)V", "print(I)V",
+		"print(J)V",
+		"println(Ljava/lang/Object;)V", "println(Ljava/lang/String;)V",
+		"println([C)V", "println(Z)V", "println(C)V", "println(I)V",
+		"println(J)V":
+		value, valueErr := printValue()
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if name == "println" {
+			value += "\n"
+		}
+		appendText(value)
+		return 0, nil
+	case "println()V":
+		appendText("\n")
+		return 0, nil
+	case "write(I)V":
+		value, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		appendBytes([]byte{byte(value)})
+		return 0, nil
+	case "write([BII)V":
+		array, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if array == 0 {
+			return 0, r.raiseHostJavaException(
+				"java/lang/NullPointerException",
+			)
+		}
+		offset, valueErr := r.parameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		count, valueErr := r.parameter(4)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		data, valueErr := r.readJavaByteArrayRange(array, offset, count)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		appendBytes(data)
+		return 0, nil
+	case "checkError()Z":
+		return boolWord(r.printStreamErrors[instance]), nil
+	case "flush()V", "close()V":
+		return 0, nil
+	default:
+		r.recordUnimplementedJava("java/io/PrintStream", name, descriptor)
 		return 0, nil
 	}
 }

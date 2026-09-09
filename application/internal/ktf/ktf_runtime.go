@@ -182,10 +182,15 @@ type Runtime struct {
 	textSurfaceScratch []byte
 	// inspectMemo short-circuits class inspection for as long as the guest CPU
 	// is stopped inside a host call. See ktfInspectMemo.
-	inspectMemo             ktfInspectMemo
-	javaMethodInspections   map[uint32]*ktfJavaMethodInspection
-	javaInspectGen          uint64
-	JavaStrings             map[uint32]string
+	inspectMemo           ktfInspectMemo
+	javaMethodInspections map[uint32]*ktfJavaMethodInspection
+	javaInspectGen        uint64
+	JavaStrings           map[uint32]string
+	// internedStrings owns canonical String instances for the lifetime of the
+	// VM, as required by String.intern. Unlike JavaStrings this is a strong
+	// table: an interned String remains reachable even when guest code drops
+	// every other reference to it.
+	internedStrings         map[string]uint32
 	javaClassObjs           map[uint32]uint32
 	classObjTarget          map[uint32]uint32
 	hostJavaClass           map[uint32]bool
@@ -265,6 +270,7 @@ type Runtime struct {
 	javaTimerTaskStates map[uint32]uint8
 	currentThread       uint32
 	stringBuffers       map[uint32]string
+	stringBufferCaps    map[uint32]uint32
 	// stringBuffersConsumed marks a StringBuffer whose value was read out by
 	// toString(). The LGT Raptor AOT compiler inlines StringBuffer.setLength(0)
 	// as a direct native write to the buffer object's guest memory, which never
@@ -278,6 +284,7 @@ type Runtime struct {
 	inputTargets          map[uint32]uint32
 	outputStreams         map[uint32][]byte
 	outputTargets         map[uint32]uint32
+	printStreamErrors     map[uint32]bool
 	files                 map[uint32]*ktfFile
 	FileData              map[string][]byte
 	fileStreamTargets     map[uint32]uint32

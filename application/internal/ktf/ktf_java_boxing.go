@@ -6,6 +6,46 @@ import (
 	"strings"
 )
 
+func javaFloatingToInt32(value float64) int32 {
+	switch {
+	case math.IsNaN(value):
+		return 0
+	case value >= math.MaxInt32:
+		return math.MaxInt32
+	case value <= math.MinInt32:
+		return math.MinInt32
+	default:
+		return int32(value)
+	}
+}
+
+func javaFloatingToInt64(value float64) int64 {
+	switch {
+	case math.IsNaN(value):
+		return 0
+	case value >= float64(math.MaxInt64):
+		return math.MaxInt64
+	case value <= float64(math.MinInt64):
+		return math.MinInt64
+	default:
+		return int64(value)
+	}
+}
+
+func javaFloat32Bits(value float32) uint32 {
+	if math.IsNaN(float64(value)) {
+		return 0x7fc00000
+	}
+	return math.Float32bits(value)
+}
+
+func javaFloat64Bits(value float64) uint64 {
+	if math.IsNaN(value) {
+		return 0x7ff8000000000000
+	}
+	return math.Float64bits(value)
+}
+
 func (r *Runtime) handleBooleanMethod(
 	name, descriptor string,
 ) (uint32, error) {
@@ -177,7 +217,7 @@ func (r *Runtime) handleShortMethod(
 			)
 		}
 		value, parseErr := strconv.ParseInt(
-			strings.TrimSpace(r.javaStringValue(instance)),
+			r.javaStringValue(instance),
 			int(radix),
 			16,
 		)
@@ -227,15 +267,16 @@ func (r *Runtime) handleFloatMethod(
 	case "doubleValue()D":
 		return r.javaLongResult(math.Float64bits(float64(value))), nil
 	case "intValue()I":
-		return uint32(int32(value)), nil
+		return uint32(javaFloatingToInt32(float64(value))), nil
 	case "longValue()J":
-		return r.javaLongResult(uint64(int64(value))), nil
+		return r.javaLongResult(uint64(javaFloatingToInt64(float64(value)))), nil
 	case "byteValue()B":
-		return uint32(int32(int8(value))), nil
+		return uint32(int32(int8(javaFloatingToInt32(float64(value))))), nil
 	case "shortValue()S":
-		return uint32(int32(int16(value))), nil
-	case "floatToIntBits(F)I", "intBitsToFloat(I)F":
-		// Both directions are the identity on the raw bit pattern.
+		return uint32(int32(int16(javaFloatingToInt32(float64(value))))), nil
+	case "floatToIntBits(F)I":
+		return javaFloat32Bits(math.Float32frombits(instance)), nil
+	case "intBitsToFloat(I)F":
 		return instance, nil
 	case "isNaN()Z":
 		return boolWord(math.IsNaN(float64(value))), nil
@@ -262,17 +303,10 @@ func (r *Runtime) handleFloatMethod(
 		}
 		return math.Float32bits(float32(parsed)), nil
 	case "toString()Ljava/lang/String;":
-		return r.NewJavaString(strconv.FormatFloat(
-			float64(value),
-			'g',
-			-1,
-			32,
-		))
+		return r.NewJavaString(formatJavaFloatingPoint(float64(value), 32))
 	case "toString(F)Ljava/lang/String;":
-		return r.NewJavaString(strconv.FormatFloat(
+		return r.NewJavaString(formatJavaFloatingPoint(
 			float64(math.Float32frombits(instance)),
-			'g',
-			-1,
 			32,
 		))
 	case "valueOf(Ljava/lang/String;)Ljava/lang/Float;":
@@ -297,12 +331,13 @@ func (r *Runtime) handleFloatMethod(
 			return 0, valueErr
 		}
 		if bits, ok := r.integerValues[other]; ok &&
-			bits == r.integerValues[instance] {
+			javaFloat32Bits(math.Float32frombits(uint32(bits))) ==
+				javaFloat32Bits(value) {
 			return 1, nil
 		}
 		return 0, nil
 	case "hashCode()I":
-		return uint32(r.integerValues[instance]), nil
+		return javaFloat32Bits(value), nil
 	default:
 		return 0, nil
 	}
@@ -333,14 +368,21 @@ func (r *Runtime) handleDoubleMethod(
 	case "floatValue()F":
 		return math.Float32bits(float32(value)), nil
 	case "intValue()I":
-		return uint32(int32(value)), nil
+		return uint32(javaFloatingToInt32(value)), nil
 	case "longValue()J":
-		return r.javaLongResult(uint64(int64(value))), nil
+		return r.javaLongResult(uint64(javaFloatingToInt64(value))), nil
 	case "byteValue()B":
-		return uint32(int32(int8(value))), nil
+		return uint32(int32(int8(javaFloatingToInt32(value)))), nil
 	case "shortValue()S":
-		return uint32(int32(int16(value))), nil
-	case "doubleToLongBits(D)J", "longBitsToDouble(J)D":
+		return uint32(int32(int16(javaFloatingToInt32(value)))), nil
+	case "doubleToLongBits(D)J":
+		high, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		value := math.Float64frombits(uint64(high)<<32 | uint64(instance))
+		return r.javaLongResult(javaFloat64Bits(value)), nil
+	case "longBitsToDouble(J)D":
 		high, valueErr := r.parameter(2)
 		if valueErr != nil {
 			return 0, valueErr
@@ -373,14 +415,14 @@ func (r *Runtime) handleDoubleMethod(
 		}
 		return r.javaLongResult(math.Float64bits(parsed)), nil
 	case "toString()Ljava/lang/String;":
-		return r.NewJavaString(strconv.FormatFloat(value, 'g', -1, 64))
+		return r.NewJavaString(formatJavaFloatingPoint(value, 64))
 	case "toString(D)Ljava/lang/String;":
 		high, valueErr := r.parameter(2)
 		if valueErr != nil {
 			return 0, valueErr
 		}
 		wide := math.Float64frombits(uint64(high)<<32 | uint64(instance))
-		return r.NewJavaString(strconv.FormatFloat(wide, 'g', -1, 64))
+		return r.NewJavaString(formatJavaFloatingPoint(wide, 64))
 	case "valueOf(Ljava/lang/String;)Ljava/lang/Double;":
 		parsed, parseErr := strconv.ParseFloat(
 			strings.TrimSpace(r.javaStringValue(instance)),
@@ -403,12 +445,13 @@ func (r *Runtime) handleDoubleMethod(
 			return 0, valueErr
 		}
 		if bits, ok := r.longValues[other]; ok &&
-			bits == r.longValues[instance] {
+			javaFloat64Bits(math.Float64frombits(uint64(bits))) ==
+				javaFloat64Bits(value) {
 			return 1, nil
 		}
 		return 0, nil
 	case "hashCode()I":
-		bits := uint64(r.longValues[instance])
+		bits := javaFloat64Bits(value)
 		return uint32(bits ^ (bits >> 32)), nil
 	default:
 		return 0, nil

@@ -845,7 +845,7 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 		case "java/io/OutputStream", "java/io/DataOutputStream":
 			return runtime.handleOutputStreamMethod(name, descriptor)
 		case "java/io/PrintStream":
-			return 0, nil
+			return runtime.handlePrintStreamMethod(name, descriptor)
 		case "java/lang/String":
 			return runtime.handleStringMethod(name, descriptor)
 		case "java/lang/StringBuffer":
@@ -889,7 +889,22 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 			case "gc()V":
 				return 0, nil
 			case "getProperty(Ljava/lang/String;)Ljava/lang/String;":
-				return runtime.NewJavaString("")
+				if registers[1] == 0 {
+					return 0, runtime.raiseHostJavaException(
+						"java/lang/NullPointerException",
+					)
+				}
+				key := runtime.javaText(registers[1])
+				if key == "" {
+					return 0, runtime.raiseHostJavaException(
+						"java/lang/IllegalArgumentException",
+					)
+				}
+				value, ok := runtime.javaSystemProperty(key)
+				if !ok {
+					return 0, nil
+				}
+				return runtime.NewJavaString(value)
 			case "exit(I)V":
 				runtime.requestJavaTermination(0)
 				return 0, nil
@@ -1441,5 +1456,28 @@ func (r *Runtime) handsetSystemProperty(key string) string {
 		return "5"
 	default:
 		return ""
+	}
+}
+
+func (r *Runtime) javaSystemProperty(key string) (string, bool) {
+	switch key {
+	case "microedition.platform":
+		return r.handsetSystemProperty("PHONEMODEL"), true
+	case "microedition.encoding":
+		return "EUC-KR", true
+	case "microedition.configuration":
+		return "CLDC-1.1", true
+	case "microedition.profiles":
+		return "WIPI-1.2.1", true
+	}
+	normalized := strings.ToUpper(strings.TrimSpace(key))
+	if value, ok := r.wipicSystemProperties[normalized]; ok {
+		return value, true
+	}
+	switch normalized {
+	case "PHONEMODEL", "BATTERYLEVEL", "MAXBATTLEVEL":
+		return r.handsetSystemProperty(normalized), true
+	default:
+		return "", false
 	}
 }

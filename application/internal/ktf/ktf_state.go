@@ -339,6 +339,7 @@ type ktfMetadataSnapshot struct {
 
 	JavaClasses          map[string]uint32
 	JavaStrings          map[uint32]string
+	InternedStrings      map[string]uint32
 	JavaClassObjs        map[uint32]uint32
 	ClassObjTarget       map[uint32]uint32
 	HostJavaClass        map[uint32]bool
@@ -394,10 +395,12 @@ type ktfMetadataSnapshot struct {
 	ThreadTargets            map[uint32]uint32
 	CurrentThread            uint32
 	StringBuffers            map[uint32]string
+	StringBufferCapacities   map[uint32]uint32
 	InputStreams             map[uint32]ktfInputStreamSnapshot
 	InputTargets             map[uint32]uint32
 	OutputStreams            map[uint32][]byte
 	OutputTargets            map[uint32]uint32
+	PrintStreamErrors        map[uint32]bool
 	Files                    map[uint32]ktfFileSnapshot
 	FileData                 map[string][]byte
 	FileStreamTargets        map[uint32]uint32
@@ -930,6 +933,7 @@ func snapshotKTFMetadata(
 
 		JavaClasses:          guest.CloneMap(r.JavaClasses),
 		JavaStrings:          guest.CloneMap(r.JavaStrings),
+		InternedStrings:      guest.CloneMap(r.internedStrings),
 		JavaClassObjs:        guest.CloneMap(r.javaClassObjs),
 		ClassObjTarget:       guest.CloneMap(r.classObjTarget),
 		HostJavaClass:        guest.CloneMap(r.hostJavaClass),
@@ -979,9 +983,11 @@ func snapshotKTFMetadata(
 		ThreadTargets:            guest.CloneMap(r.ThreadTargets),
 		CurrentThread:            r.currentThread,
 		StringBuffers:            guest.CloneMap(r.stringBuffers),
+		StringBufferCapacities:   guest.CloneMap(r.stringBufferCaps),
 		InputTargets:             guest.CloneMap(r.inputTargets),
 		OutputStreams:            guest.CloneSliceMap(r.outputStreams),
 		OutputTargets:            guest.CloneMap(r.outputTargets),
+		PrintStreamErrors:        guest.CloneMap(r.printStreamErrors),
 		FileData:                 guest.CloneSliceMap(r.FileData),
 		FileStreamTargets:        guest.CloneMap(r.fileStreamTargets),
 		SystemInputStream:        r.systemInputStream,

@@ -44,6 +44,7 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 		methods: []ktfHostJavaMethodSpec{
 			{name: "<init>", descriptor: "()V"},
 			{name: "<init>", descriptor: "(Ljava/lang/String;)V"},
+			{name: "<init>", descriptor: "(Ljava/lang/StringBuffer;)V"},
 			{name: "<init>", descriptor: "([B)V"},
 			{name: "<init>", descriptor: "([BII)V"},
 			{name: "<init>", descriptor: "([BLjava/lang/String;)V"},
@@ -52,6 +53,9 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 			{name: "<init>", descriptor: "([CII)V"},
 			{name: "length", descriptor: "()I"},
 			{name: "charAt", descriptor: "(I)C"},
+			{name: "compareTo", descriptor: "(Ljava/lang/String;)I"},
+			{name: "getChars", descriptor: "(II[CI)V"},
+			{name: "hashCode", descriptor: "()I"},
 			{name: "substring", descriptor: "(I)Ljava/lang/String;"},
 			{name: "substring", descriptor: "(II)Ljava/lang/String;"},
 			{name: "trim", descriptor: "()Ljava/lang/String;"},
@@ -69,6 +73,10 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 			{
 				name:       "startsWith",
 				descriptor: "(Ljava/lang/String;)Z",
+			},
+			{
+				name:       "startsWith",
+				descriptor: "(Ljava/lang/String;I)Z",
 			},
 			{
 				name:       "endsWith",
@@ -92,6 +100,22 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 				name:       "toUpperCase",
 				descriptor: "()Ljava/lang/String;",
 			},
+			{name: "toString", descriptor: "()Ljava/lang/String;"},
+			{
+				name:       "equalsIgnoreCase",
+				descriptor: "(Ljava/lang/String;)Z",
+			},
+			{name: "lastIndexOf", descriptor: "(I)I"},
+			{name: "lastIndexOf", descriptor: "(II)I"},
+			{
+				name:       "regionMatches",
+				descriptor: "(ZILjava/lang/String;II)Z",
+			},
+			{
+				name:       "replace",
+				descriptor: "(CC)Ljava/lang/String;",
+			},
+			{name: "intern", descriptor: "()Ljava/lang/String;"},
 			{
 				name:       "valueOf",
 				descriptor: "(I)Ljava/lang/String;",
@@ -100,6 +124,16 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 			{
 				name:       "valueOf",
 				descriptor: "(J)Ljava/lang/String;",
+				access:     0x0008,
+			},
+			{
+				name:       "valueOf",
+				descriptor: "(F)Ljava/lang/String;",
+				access:     0x0008,
+			},
+			{
+				name:       "valueOf",
+				descriptor: "(D)Ljava/lang/String;",
 				access:     0x0008,
 			},
 			{
@@ -162,7 +196,19 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 			},
 			{
 				name:       "append",
+				descriptor: "([C)Ljava/lang/StringBuffer;",
+			},
+			{
+				name:       "append",
 				descriptor: "([CII)Ljava/lang/StringBuffer;",
+			},
+			{
+				name:       "append",
+				descriptor: "(F)Ljava/lang/StringBuffer;",
+			},
+			{
+				name:       "append",
+				descriptor: "(D)Ljava/lang/StringBuffer;",
 			},
 			{
 				name:       "delete",
@@ -171,7 +217,37 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 			{name: "toString", descriptor: "()Ljava/lang/String;"},
 			{name: "setLength", descriptor: "(I)V"},
 			{name: "length", descriptor: "()I"},
+			{name: "capacity", descriptor: "()I"},
+			{name: "ensureCapacity", descriptor: "(I)V"},
 			{name: "charAt", descriptor: "(I)C"},
+			{name: "getChars", descriptor: "(II[CI)V"},
+			{name: "setCharAt", descriptor: "(IC)V"},
+			{
+				name:       "deleteCharAt",
+				descriptor: "(I)Ljava/lang/StringBuffer;",
+			},
+			{
+				name:       "reverse",
+				descriptor: "()Ljava/lang/StringBuffer;",
+			},
+			{name: "insert", descriptor: "(IZ)Ljava/lang/StringBuffer;"},
+			{name: "insert", descriptor: "(IC)Ljava/lang/StringBuffer;"},
+			{
+				name:       "insert",
+				descriptor: "(I[C)Ljava/lang/StringBuffer;",
+			},
+			{name: "insert", descriptor: "(II)Ljava/lang/StringBuffer;"},
+			{name: "insert", descriptor: "(IJ)Ljava/lang/StringBuffer;"},
+			{name: "insert", descriptor: "(IF)Ljava/lang/StringBuffer;"},
+			{name: "insert", descriptor: "(ID)Ljava/lang/StringBuffer;"},
+			{
+				name:       "insert",
+				descriptor: "(ILjava/lang/Object;)Ljava/lang/StringBuffer;",
+			},
+			{
+				name:       "insert",
+				descriptor: "(ILjava/lang/String;)Ljava/lang/StringBuffer;",
+			},
 		},
 	},
 	"java/io/InputStream": {
@@ -708,6 +784,12 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 			{
 				name:       "getProperty",
 				descriptor: "(Ljava/lang/String;)Ljava/lang/String;",
+				access:     0x0008,
+			},
+			{name: "exit", descriptor: "(I)V", access: 0x0008},
+			{
+				name:       "identityHashCode",
+				descriptor: "(Ljava/lang/Object;)I",
 				access:     0x0008,
 			},
 		},

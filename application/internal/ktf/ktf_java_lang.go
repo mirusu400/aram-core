@@ -71,15 +71,19 @@ func (r *Runtime) handleIntegerMethod(
 			}
 		}
 		if radix < 2 || radix > 36 {
-			return 0, nil
+			return 0, r.raiseHostJavaException(
+				"java/lang/NumberFormatException",
+			)
 		}
 		value, parseErr := strconv.ParseInt(
-			strings.TrimSpace(r.javaStringValue(text)),
+			r.javaStringValue(text),
 			int(radix),
 			32,
 		)
 		if parseErr != nil {
-			return 0, nil
+			return 0, r.raiseHostJavaException(
+				"java/lang/NumberFormatException",
+			)
 		}
 		return uint32(int32(value)), nil
 	case "toString(I)Ljava/lang/String;":
@@ -172,7 +176,7 @@ func (r *Runtime) handleIntegerMethod(
 			)
 		}
 		value, parseErr := strconv.ParseInt(
-			strings.TrimSpace(r.javaStringValue(text)),
+			r.javaStringValue(text),
 			int(radix),
 			32,
 		)
@@ -235,15 +239,19 @@ func (r *Runtime) handleLongMethod(name, descriptor string) (uint32, error) {
 			}
 		}
 		if radix < 2 || radix > 36 {
-			return r.javaLongResult(0), nil
+			return 0, r.raiseHostJavaException(
+				"java/lang/NumberFormatException",
+			)
 		}
 		value, parseErr := strconv.ParseInt(
-			strings.TrimSpace(r.javaStringValue(text)),
+			r.javaStringValue(text),
 			int(radix),
 			64,
 		)
 		if parseErr != nil {
-			return r.javaLongResult(0), nil
+			return 0, r.raiseHostJavaException(
+				"java/lang/NumberFormatException",
+			)
 		}
 		return r.javaLongResult(uint64(value)), nil
 	case "toString(J)Ljava/lang/String;",
@@ -370,15 +378,19 @@ func (r *Runtime) handleByteMethod(name, descriptor string) (uint32, error) {
 			}
 		}
 		if radix < 2 || radix > 36 {
-			return 0, nil
+			return 0, r.raiseHostJavaException(
+				"java/lang/NumberFormatException",
+			)
 		}
 		value, parseErr := strconv.ParseInt(
-			strings.TrimSpace(r.javaStringValue(text)),
+			r.javaStringValue(text),
 			int(radix),
 			8,
 		)
 		if parseErr != nil {
-			return 0, nil
+			return 0, r.raiseHostJavaException(
+				"java/lang/NumberFormatException",
+			)
 		}
 		return uint32(int32(int8(value))), nil
 	case "<init>(B)V":

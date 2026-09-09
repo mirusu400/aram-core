@@ -414,6 +414,10 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	// counter is host bookkeeping, so it stays out of the save format.
 	r.javaClassGeneration++
 	r.JavaStrings = guest.CloneMap(meta.JavaStrings)
+	r.internedStrings = guest.CloneMap(meta.InternedStrings)
+	if r.internedStrings == nil {
+		r.internedStrings = make(map[string]uint32)
+	}
 	r.javaClassObjs = guest.CloneMap(meta.JavaClassObjs)
 	r.classObjTarget = guest.CloneMap(meta.ClassObjTarget)
 	r.hostJavaClass = guest.CloneMap(meta.HostJavaClass)
@@ -525,6 +529,10 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	r.ThreadTargets = guest.CloneMap(meta.ThreadTargets)
 	r.currentThread = meta.CurrentThread
 	r.stringBuffers = guest.CloneMap(meta.StringBuffers)
+	r.stringBufferCaps = guest.CloneMap(meta.StringBufferCapacities)
+	if r.stringBufferCaps == nil {
+		r.stringBufferCaps = make(map[uint32]uint32)
+	}
 	r.inputStreams = make(
 		map[uint32]*ktfInputStream,
 		len(meta.InputStreams),
@@ -539,6 +547,10 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	r.inputTargets = guest.CloneMap(meta.InputTargets)
 	r.outputStreams = guest.CloneSliceMap(meta.OutputStreams)
 	r.outputTargets = guest.CloneMap(meta.OutputTargets)
+	r.printStreamErrors = guest.CloneMap(meta.PrintStreamErrors)
+	if r.printStreamErrors == nil {
+		r.printStreamErrors = make(map[uint32]bool)
+	}
 	r.files = restoreKTFFiles(meta.Files)
 	r.FileData = guest.CloneSliceMap(meta.FileData)
 	r.fileStreamTargets = guest.CloneMap(meta.FileStreamTargets)

@@ -7339,7 +7339,7 @@ func TestKTFNativeOverrideResolvesEveryHostJavaSpecMethod(t *testing.T) {
 		// A title's own class, which the runtime must not run host code for.
 		"com/example/Game.append(C)Ljava/lang/StringBuffer;",
 		// A descriptor the host spec does not declare.
-		"java/lang/StringBuffer.append(F)Ljava/lang/StringBuffer;",
+		"java/lang/StringBuffer.append([B)Ljava/lang/StringBuffer;",
 		// Not a method signature at all.
 		"java/lang/StringBuffer",
 		"append(C)Ljava/lang/StringBuffer;",

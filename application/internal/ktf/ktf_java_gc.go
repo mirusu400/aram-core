@@ -429,7 +429,9 @@ func (r *Runtime) weakTables() []reflect.Value {
 	candidates := []any{
 		r.JavaStrings,
 		r.stringBuffers,
+		r.stringBufferCaps,
 		r.stringBuffersConsumed,
+		r.printStreamErrors,
 		r.integerValues,
 		r.longValues,
 		r.dates,
