@@ -1083,6 +1083,15 @@ func (r *Runtime) handleHashtableMethod(
 	table := r.hashtables[instance]
 	switch name + descriptor {
 	case "<init>()V", "<init>(I)V":
+		if descriptor == "(I)V" {
+			capacity, valueErr := r.signedParameter(2)
+			if valueErr != nil {
+				return 0, valueErr
+			}
+			if capacity < 0 {
+				return 0, r.raiseHostJavaException("java/lang/IllegalArgumentException")
+			}
+		}
 		r.hashtables[instance] = make(map[string]ktfHashtableEntry)
 		return 0, nil
 	case "put(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;":
@@ -1093,6 +1102,9 @@ func (r *Runtime) handleHashtableMethod(
 		value, valueErr := r.parameter(3)
 		if valueErr != nil {
 			return 0, valueErr
+		}
+		if key == 0 || value == 0 {
+			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
 		}
 		if table == nil {
 			table = make(map[string]ktfHashtableEntry)
@@ -1108,6 +1120,9 @@ func (r *Runtime) handleHashtableMethod(
 		key, valueErr := r.parameter(2)
 		if valueErr != nil {
 			return 0, valueErr
+		}
+		if key == 0 {
+			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
 		}
 		normalized := r.javaHashtableKey(key)
 		entry, ok := table[normalized]
@@ -1125,6 +1140,9 @@ func (r *Runtime) handleHashtableMethod(
 		target, valueErr := r.parameter(2)
 		if valueErr != nil {
 			return 0, valueErr
+		}
+		if target == 0 {
+			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
 		}
 		for _, entry := range table {
 			if entry.value == target {

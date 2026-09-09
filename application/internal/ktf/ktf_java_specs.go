@@ -513,6 +513,8 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 			{name: "<init>", descriptor: "(J)V"},
 			{name: "getTime", descriptor: "()J"},
 			{name: "setTime", descriptor: "(J)V"},
+			{name: "equals", descriptor: "(Ljava/lang/Object;)Z"},
+			{name: "hashCode", descriptor: "()I"},
 		},
 	},
 	"java/util/GregorianCalendar": {
@@ -583,6 +585,8 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 			{name: "clear", descriptor: "()V"},
 			{name: "keys", descriptor: "()Ljava/util/Enumeration;"},
 			{name: "elements", descriptor: "()Ljava/util/Enumeration;"},
+			{name: "rehash", descriptor: "()V", access: 0x0004},
+			{name: "toString", descriptor: "()Ljava/lang/String;"},
 		},
 	},
 	"java/util/Enumeration": {

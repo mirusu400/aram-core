@@ -63,3 +63,28 @@ func TestKTFCollectionsThrowDocumentedBoundsAndEmptyErrors(t *testing.T) {
 		t.Fatalf("nextElement error=%v exception=%q", err, runtime.LastJavaThrowName)
 	}
 }
+
+func TestKTFHashtableRejectsNullKeysAndValues(t *testing.T) {
+	runtime := newTestRuntime(t)
+	table := newHostObject(t, runtime, "java/util/Hashtable")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, table))
+	_, err := runtime.handleHashtableMethod("<init>", "()V")
+	check(t, err)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 0))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, 1))
+	_, err = runtime.handleHashtableMethod(
+		"put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+	)
+	if err == nil || runtime.LastJavaThrowName != "java/lang/NullPointerException" {
+		t.Fatalf("null Hashtable key error=%v exception=%q", err, runtime.LastJavaThrowName)
+	}
+	key := newJavaString(t, runtime, "key")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, key))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, 0))
+	_, err = runtime.handleHashtableMethod(
+		"put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+	)
+	if err == nil || runtime.LastJavaThrowName != "java/lang/NullPointerException" {
+		t.Fatalf("null Hashtable value error=%v exception=%q", err, runtime.LastJavaThrowName)
+	}
+}
