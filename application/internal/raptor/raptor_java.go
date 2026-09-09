@@ -106,8 +106,8 @@ type raptorJavaFixedVirtualMethod struct {
 // (org/kwis/msp/lcdui/Graphics.drawString), and every one of those calls
 // dispatched to Object.hashCode instead: 92,799 of them in sixty frames, and
 // nothing was ever drawn (issue #79). The highest fixed offset in the table
-// below is java/lang/String's substring at 0x74, so the flat region starts at
-// byte 0x7c.
+// below is java/lang/String's toCharArray at 0x8c, so the flat region starts at
+// byte 0x94.
 // raptorJavaThreadRunSlot is the byte offset of run()V in the module's own
 // vtable for a java/lang/Thread subclass, next to the start()V slot the fixed
 // table already names at 0x2c.
@@ -120,7 +120,7 @@ type raptorJavaFixedVirtualMethod struct {
 // there.
 const raptorJavaThreadRunSlot = 0x30
 
-const raptorJavaFlatVirtualBase = 30
+const raptorJavaFlatVirtualBase = 36
 
 // raptorJavaFlatVirtualSlot is the byte offset of one linked virtual method
 // inside a vtable, matching what generated code computes from the published
@@ -152,6 +152,11 @@ var raptorJavaFixedVirtualMethods = map[string][]raptorJavaFixedVirtualMethod{
 		// when the result is zero. Only compareTo returns 0 on equality.
 		{offset: 0x44, Name: "compareTo", descriptor: "(Ljava/lang/String;)I"},
 		{offset: 0x74, Name: "substring", descriptor: "(II)Ljava/lang/String;"},
+		// 배틀몬스터's text helper calls slot 0x8c and immediately reads the
+		// result as a char[] (length followed by UTF-16 elements). Leaving the
+		// slot on the no-op backstop returns null, so every label disappears
+		// behind the guest's subsequent NullPointerException (#235).
+		{offset: 0x8c, Name: "toCharArray", descriptor: "()[C"},
 	},
 	"java/lang/StringBuffer": {
 		// CLDC declares length, capacity, ensureCapacity, setLength, charAt,
