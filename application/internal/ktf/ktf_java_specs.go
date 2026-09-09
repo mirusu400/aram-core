@@ -1293,10 +1293,28 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	},
 	"org/kwis/msp/lcdui/InputMethodHandler": {
 		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "(I)V"},
+			{name: "getCurrentModeCode", descriptor: "()Ljava/lang/String;"},
+			{name: "notifyKeyInput", descriptor: "(II)Z"},
+			{name: "getCurrentInputMode", descriptor: "()I"},
+			{
+				name:       "setInputMethodListener",
+				descriptor: "(Lorg/kwis/msp/lcdui/InputMethodListener;)V",
+			},
+			{name: "changeCurrentModeToNext", descriptor: "()V"},
+			{name: "getCurrentMode", descriptor: "()I"},
+			{name: "setCurrentMode", descriptor: "(I)Z"},
+			{name: "hideSymbolCard", descriptor: "()V"},
+			{name: "setSymbolPosition", descriptor: "(IIII)V"},
+		},
 	},
 	"org/kwis/msp/lcdui/InputMethodListener": {
 		Parent: "java/lang/Object",
 		access: 0x0601,
+		methods: []ktfHostJavaMethodSpec{
+			{name: "notifyTextChanged", descriptor: "([CII)V", access: 0x0401},
+		},
 	},
 	"org/kwis/msp/lcdui/JletEventListener": {
 		Parent: "java/lang/Object",

@@ -1,6 +1,10 @@
 package ktf
 
-import "context"
+import (
+	"context"
+
+	"github.com/mirusu400/aram-core/internal/ime"
+)
 
 func (r *Runtime) handleJletMethod(
 	name, descriptor string,
@@ -263,23 +267,246 @@ func (r *Runtime) handleEventQueueMethod(
 	}
 }
 
-// InputMethodHandler models a handset IME the host never opens: text input
-// arrives fully composed through the text component natives.
+const (
+	ktfInputConstraintAny int32 = iota
+	ktfInputConstraintNumber
+	ktfInputConstraintPassword
+	ktfInputConstraintEmail
+	ktfInputConstraintURL
+	ktfInputConstraintPhone
+)
+
+func validKTFInputConstraint(constraint int32) bool {
+	return constraint >= ktfInputConstraintAny &&
+		constraint <= ktfInputConstraintPhone
+}
+
+func ktfInputModeAllowed(constraint int32, mode ime.Mode) bool {
+	switch constraint {
+	case ktfInputConstraintNumber, ktfInputConstraintPassword,
+		ktfInputConstraintPhone:
+		return mode == ime.ModeNumeric
+	case ktfInputConstraintEmail, ktfInputConstraintURL:
+		return mode == ime.ModeENLower || mode == ime.ModeENUpper ||
+			mode == ime.ModeNumeric
+	default:
+		return mode >= 0 && mode < ime.ModeCount
+	}
+}
+
+func ktfInitialInputMode(constraint int32) ime.Mode {
+	if constraint == ktfInputConstraintNumber ||
+		constraint == ktfInputConstraintPassword ||
+		constraint == ktfInputConstraintPhone {
+		return ime.ModeNumeric
+	}
+	if constraint == ktfInputConstraintEmail || constraint == ktfInputConstraintURL {
+		return ime.ModeENLower
+	}
+	return ime.ModeKorean
+}
+
+func (r *Runtime) inputMethodAutomata(instance uint32) *ime.Automata {
+	if automata := r.lwcTextInput[instance]; automata != nil {
+		return automata
+	}
+	constraint := r.inputConstraints[instance]
+	mode := ktfInitialInputMode(constraint)
+	if savedMode, ok := r.inputModes[instance]; ok &&
+		ktfInputModeAllowed(constraint, ime.Mode(savedMode)) {
+		mode = ime.Mode(savedMode)
+	}
+	r.inputConstraints[instance] = constraint
+	r.inputModes[instance] = int32(mode)
+	automata := ime.New(mode)
+	r.lwcTextInput[instance] = &automata
+	return &automata
+}
+
+func (r *Runtime) nextInputMethodMode(instance uint32) {
+	automata := r.inputMethodAutomata(instance)
+	constraint := r.inputConstraints[instance]
+	for offset := ime.Mode(1); offset <= ime.ModeCount; offset++ {
+		mode := (automata.CurrentMode() + offset) % ime.ModeCount
+		if ktfInputModeAllowed(constraint, mode) {
+			automata.SetMode(mode)
+			r.inputModes[instance] = int32(mode)
+			return
+		}
+	}
+}
+
+func (r *Runtime) queueInputMethodEdit(listener uint32, op ime.Op) error {
+	characters, err := r.newJavaCharArray(string(op.Char))
+	if err != nil {
+		return err
+	}
+	length, err := r.javaArrayLength(characters)
+	if err != nil {
+		return err
+	}
+	mode := int32(-1)
+	switch op.Kind {
+	case ime.OpReplace:
+		mode = 0
+	case ime.OpDelete:
+		mode = 1
+	}
+	return r.QueueJavaVirtual(
+		listener,
+		"notifyTextChanged",
+		"([CII)V",
+		characters,
+		length,
+		uint32(mode),
+	)
+}
+
+// InputMethodHandler owns a per-instance keypad automata and delivers its
+// insert/replace/delete edits through InputMethodListener.notifyTextChanged.
 func (r *Runtime) handleInputMethodHandlerMethod(
 	name, descriptor string,
 ) (uint32, error) {
 	switch name + descriptor {
+	case "<init>(I)V":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		constraintWord, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		constraint := int32(constraintWord)
+		if !validKTFInputConstraint(constraint) {
+			return 0, r.raiseHostJavaException("java/lang/IllegalArgumentException")
+		}
+		r.inputConstraints[instance] = constraint
+		mode := ktfInitialInputMode(constraint)
+		r.inputModes[instance] = int32(mode)
+		automata := ime.New(mode)
+		r.lwcTextInput[instance] = &automata
+		return 0, nil
 	case "getCurrentModeCode()Ljava/lang/String;":
-		return r.NewJavaString("")
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		mode := r.inputMethodAutomata(instance).CurrentMode()
+		if mode < 0 || int(mode) >= len(ktfWIPICInputModes) {
+			return 0, r.raiseHostJavaException("java/lang/IllegalStateException")
+		}
+		return r.NewJavaString(ktfWIPICInputModes[mode])
 	case "setCurrentMode(I)Z":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		modeWord, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		mode := ime.Mode(int32(modeWord))
+		if !ktfInputModeAllowed(r.inputConstraints[instance], mode) {
+			return 0, r.raiseHostJavaException("java/lang/IllegalArgumentException")
+		}
+		r.inputMethodAutomata(instance).SetMode(mode)
+		r.inputModes[instance] = int32(mode)
 		return 1, nil
 	case "notifyKeyInput(II)Z":
-		return 0, nil
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		keyWord, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		typeWord, err := r.parameter(3)
+		if err != nil {
+			return 0, err
+		}
+		listener := r.inputListeners[instance]
+		if listener == 0 || typeWord != KeyPressed || int32(keyWord) == ime.ModeKey {
+			return 0, nil
+		}
+		constraint := r.inputConstraints[instance]
+		key := int32(keyWord)
+		var ops []ime.Op
+		var handled bool
+		if (constraint == ktfInputConstraintPassword ||
+			constraint == ktfInputConstraintPhone) && (key < '0' || key > '9') {
+			return 0, nil
+		}
+		if (constraint == ktfInputConstraintEmail || constraint == ktfInputConstraintURL) &&
+			key == ime.SpaceKey {
+			return 0, nil
+		}
+		if constraint == ktfInputConstraintNumber && key == ime.SpaceKey {
+			key = ' '
+		}
+		if constraint == ktfInputConstraintNumber && (key == '-' || key == ' ') {
+			ops, handled = []ime.Op{{Kind: ime.OpInsert, Char: rune(key)}}, true
+		} else {
+			ops, handled = r.inputMethodAutomata(instance).Press(key)
+		}
+		if !handled {
+			return 0, nil
+		}
+		for _, op := range ops {
+			if err := r.queueInputMethodEdit(listener, op); err != nil {
+				return 0, err
+			}
+		}
+		return 1, nil
 	case "getCurrentInputMode()I", "getCurrentMode()I":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		return uint32(r.inputMethodAutomata(instance).CurrentMode()), nil
+	case "changeCurrentModeToNext()V":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		r.nextInputMethodMode(instance)
 		return 0, nil
-	case "changeCurrentModeToNext()V", "hideSymbolCard()V",
-		"setInputMethodListener(Lorg/kwis/msp/lcdui/InputMethodListener;)V",
-		"setSymbolPosition(IIII)V":
+	case "setInputMethodListener(Lorg/kwis/msp/lcdui/InputMethodListener;)V":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		listener, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		if listener == 0 {
+			delete(r.inputListeners, instance)
+		} else {
+			r.inputListeners[instance] = listener
+		}
+		return 0, nil
+	case "setSymbolPosition(IIII)V":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		var bounds [4]int32
+		for index := range bounds {
+			value, parameterErr := r.parameter(uint32(index + 2))
+			if parameterErr != nil {
+				return 0, parameterErr
+			}
+			bounds[index] = int32(value)
+		}
+		if bounds[2] <= 0 || bounds[3] <= 0 {
+			return 0, r.raiseHostJavaException("java/lang/IllegalArgumentException")
+		}
+		r.inputSymbolBounds[instance] = bounds
+		return 0, nil
+	case "hideSymbolCard()V":
+		// Symbol selection is hostless; hiding it has no visible side effect.
 		return 0, nil
 	default:
 		return 0, nil

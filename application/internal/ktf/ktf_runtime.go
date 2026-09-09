@@ -244,6 +244,10 @@ type Runtime struct {
 	// It holds only a half-composed glyph, which the next press rebuilds, so it
 	// is a live cache rather than part of the save state.
 	lwcTextInput       map[uint32]*ime.Automata
+	inputConstraints   map[uint32]int32
+	inputListeners     map[uint32]uint32
+	inputModes         map[uint32]int32
+	inputSymbolBounds  map[uint32][4]int32
 	lwcComponents      map[uint32]*ktfLWCComponent
 	databases          map[uint32]*Database
 	DatabaseStores     map[string]*Database

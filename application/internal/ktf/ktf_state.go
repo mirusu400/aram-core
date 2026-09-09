@@ -383,6 +383,10 @@ type ktfMetadataSnapshot struct {
 	LWCEventData             map[uint32]uint32
 	LWCChildren              map[uint32][]uint32
 	LWCMaxLengths            map[uint32]int32
+	InputConstraints         map[uint32]int32
+	InputListeners           map[uint32]uint32
+	InputModes               map[uint32]int32
+	InputSymbolBounds        map[uint32][4]int32
 	LWCComponents            map[uint32]ktfLWCSnapshot
 	Databases                map[uint32]string
 	DatabaseStores           map[string]ktfDatabaseSnapshot
@@ -978,6 +982,10 @@ func snapshotKTFMetadata(
 		LWCEventData:             guest.CloneMap(r.lwcEventData),
 		LWCChildren:              guest.CloneSliceMap(r.lwcChildren),
 		LWCMaxLengths:            guest.CloneMap(r.lwcMaxLengths),
+		InputConstraints:         guest.CloneMap(r.inputConstraints),
+		InputListeners:           guest.CloneMap(r.inputListeners),
+		InputModes:               guest.CloneMap(r.inputModes),
+		InputSymbolBounds:        guest.CloneMap(r.inputSymbolBounds),
 		DefaultRuntime:           r.defaultRuntime,
 		DefaultDisplay:           r.DefaultDisplay,
 		MainJlet:                 r.MainJlet,

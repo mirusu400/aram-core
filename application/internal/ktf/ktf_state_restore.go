@@ -496,6 +496,22 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	r.lwcEventData = guest.CloneMap(meta.LWCEventData)
 	r.lwcChildren = guest.CloneSliceMap(meta.LWCChildren)
 	r.lwcMaxLengths = guest.CloneMap(meta.LWCMaxLengths)
+	r.inputConstraints = guest.CloneMap(meta.InputConstraints)
+	if r.inputConstraints == nil {
+		r.inputConstraints = make(map[uint32]int32)
+	}
+	r.inputListeners = guest.CloneMap(meta.InputListeners)
+	if r.inputListeners == nil {
+		r.inputListeners = make(map[uint32]uint32)
+	}
+	r.inputModes = guest.CloneMap(meta.InputModes)
+	if r.inputModes == nil {
+		r.inputModes = make(map[uint32]int32)
+	}
+	r.inputSymbolBounds = guest.CloneMap(meta.InputSymbolBounds)
+	if r.inputSymbolBounds == nil {
+		r.inputSymbolBounds = make(map[uint32][4]int32)
+	}
 	// The field input methods are a live cache of a half-composed glyph, so a
 	// restore starts them empty rather than carrying the previous run's.
 	r.lwcTextInput = make(map[uint32]*ime.Automata)

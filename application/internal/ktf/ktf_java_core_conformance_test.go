@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/mirusu400/aram-core/cpu"
+	"github.com/mirusu400/aram-core/internal/ime"
 )
 
 func TestKTFStringImplementsCLDC11OverloadsAndIntern(t *testing.T) {
@@ -419,6 +420,113 @@ func TestKTFDisplayRegistersAndReleasesGrabbedKeys(t *testing.T) {
 	check(t, err)
 	if _, ok := runtime.grabbedKeys['5']; ok {
 		t.Fatal("Display.ungrabKey left the listener registered")
+	}
+}
+
+func TestKTFInputMethodHandlerComposesAndNotifies(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	handler := newHostObject(t, runtime, "org/kwis/msp/lcdui/InputMethodHandler")
+	listener := newHostObject(t, runtime, "org/kwis/msp/lcdui/InputMethodListener")
+
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, handler))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, uint32(ktfInputConstraintAny)))
+	_, err := runtime.handleInputMethodHandlerMethod("<init>", "(I)V")
+	check(t, err)
+	mode, err := runtime.handleInputMethodHandlerMethod("getCurrentMode", "()I")
+	check(t, err)
+	if mode != uint32(ime.ModeKorean) {
+		t.Fatalf("initial ANY input mode = %d, want Korean", mode)
+	}
+	code, err := runtime.handleInputMethodHandlerMethod(
+		"getCurrentModeCode",
+		"()Ljava/lang/String;",
+	)
+	check(t, err)
+	if got := runtime.javaStringValue(code); got != "KO" {
+		t.Fatalf("initial input mode code = %q, want KO", got)
+	}
+
+	_, err = runtime.handleInputMethodHandlerMethod("changeCurrentModeToNext", "()V")
+	check(t, err)
+	mode, err = runtime.handleInputMethodHandlerMethod("getCurrentInputMode", "()I")
+	check(t, err)
+	if mode != uint32(ime.ModeENLower) {
+		t.Fatalf("next input mode = %d, want EN/S", mode)
+	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, listener))
+	_, err = runtime.handleInputMethodHandlerMethod(
+		"setInputMethodListener",
+		"(Lorg/kwis/msp/lcdui/InputMethodListener;)V",
+	)
+	check(t, err)
+
+	// Force callbacks into PendingJavaCalls so their arguments can be checked
+	// without executing an artificial interface method body.
+	runtime.Tasks = make([]*Task, ktfBackgroundTaskLimit)
+	for index := range runtime.Tasks {
+		runtime.Tasks[index] = &Task{}
+	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, uint32('2')))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, KeyPressed))
+	handled, err := runtime.handleInputMethodHandlerMethod("notifyKeyInput", "(II)Z")
+	check(t, err)
+	if handled != 1 || len(runtime.PendingJavaCalls) != 1 {
+		t.Fatalf("first IME press handled=%d callbacks=%d", handled, len(runtime.PendingJavaCalls))
+	}
+	first := runtime.PendingJavaCalls[0]
+	if first.instance != listener || first.name != "notifyTextChanged" ||
+		first.descriptor != "([CII)V" || len(first.args) != 3 {
+		t.Fatalf("first IME callback = %+v", first)
+	}
+	text, err := runtime.readJavaCharArrayRange(first.args[0], 0, first.args[1])
+	check(t, err)
+	if text != "a" || int32(first.args[2]) != -1 {
+		t.Fatalf("first IME edit = %q mode=%d, want insert a", text, int32(first.args[2]))
+	}
+
+	handled, err = runtime.handleInputMethodHandlerMethod("notifyKeyInput", "(II)Z")
+	check(t, err)
+	if handled != 1 || len(runtime.PendingJavaCalls) != 2 {
+		t.Fatalf("second IME press handled=%d callbacks=%d", handled, len(runtime.PendingJavaCalls))
+	}
+	second := runtime.PendingJavaCalls[1]
+	text, err = runtime.readJavaCharArrayRange(second.args[0], 0, second.args[1])
+	check(t, err)
+	if text != "b" || int32(second.args[2]) != 0 {
+		t.Fatalf("second IME edit = %q mode=%d, want replace b", text, int32(second.args[2]))
+	}
+}
+
+func TestKTFInputMethodHandlerEnforcesConstraintAndBounds(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	handler := newHostObject(t, runtime, "org/kwis/msp/lcdui/InputMethodHandler")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, handler))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, uint32(ktfInputConstraintPhone)))
+	_, err := runtime.handleInputMethodHandlerMethod("<init>", "(I)V")
+	check(t, err)
+
+	mode, err := runtime.handleInputMethodHandlerMethod("getCurrentMode", "()I")
+	check(t, err)
+	if mode != uint32(ime.ModeNumeric) {
+		t.Fatalf("phone input mode = %d, want numeric", mode)
+	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, uint32(ime.ModeKorean)))
+	_, err = runtime.handleInputMethodHandlerMethod("setCurrentMode", "(I)Z")
+	if err == nil || runtime.LastJavaThrowName != "java/lang/IllegalArgumentException" {
+		t.Fatalf("unsupported input mode error=%v exception=%q", err, runtime.LastJavaThrowName)
+	}
+
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, handler))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 0))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, 0))
+	stack := allocWords(t, runtime, 2)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterSP, stack))
+	check(t, runtime.writeWords(stack, []uint32{0, 10}))
+	_, err = runtime.handleInputMethodHandlerMethod("setSymbolPosition", "(IIII)V")
+	if err == nil || runtime.LastJavaThrowName != "java/lang/IllegalArgumentException" {
+		t.Fatalf("invalid symbol bounds error=%v exception=%q", err, runtime.LastJavaThrowName)
 	}
 }
 
