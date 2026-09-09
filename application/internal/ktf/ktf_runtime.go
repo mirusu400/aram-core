@@ -546,10 +546,12 @@ type ktfEnumeration struct {
 type ktfJavaEvent [4]uint32
 
 type ktfClip struct {
-	volume   int32
-	listener uint32
-	playing  bool
-	data     []byte
+	volume    int32
+	listener  uint32
+	playing   bool
+	capacity  int
+	bufferSet bool
+	data      []byte
 }
 
 var ktfJavaExceptionParents = map[string]string{

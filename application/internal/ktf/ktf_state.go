@@ -206,10 +206,12 @@ type ktfEnumerationSnapshot struct {
 }
 
 type ktfClipSnapshot struct {
-	Volume   int32
-	Listener uint32
-	Playing  bool
-	Data     []byte
+	Volume    int32
+	Listener  uint32
+	Playing   bool
+	Capacity  int32
+	BufferSet bool
+	Data      []byte
 }
 
 type ktfLWCSnapshot struct {
@@ -1085,7 +1087,8 @@ func snapshotKTFMetadata(
 		}
 		meta.Clips[instance] = ktfClipSnapshot{
 			Volume: clip.volume, Listener: clip.listener,
-			Playing: clip.playing, Data: append([]byte(nil), clip.data...),
+			Playing: clip.playing, Capacity: int32(clip.capacity),
+			BufferSet: clip.bufferSet, Data: append([]byte(nil), clip.data...),
 		}
 	}
 	meta.LWCComponents = make(map[uint32]ktfLWCSnapshot, len(r.lwcComponents))

@@ -38,7 +38,17 @@ func (r *Runtime) handleMediaMethodContext(
 			// The declared media type string backs getType().
 			r.lwcComponent(instance).text = mediaType
 		}
-		if descriptor == "(Ljava/lang/String;[B)V" {
+		if descriptor == "(Ljava/lang/String;I)V" {
+			size, valueErr := r.signedParameter(3)
+			if valueErr != nil {
+				return 0, valueErr
+			}
+			if size < 0 {
+				return 0, r.raiseHostJavaException("java/lang/IllegalArgumentException")
+			}
+			clip.capacity = size
+			clip.bufferSet = true
+		} else if descriptor == "(Ljava/lang/String;[B)V" {
 			array, valueErr := r.parameter(3)
 			if valueErr != nil {
 				return 0, valueErr
@@ -48,6 +58,8 @@ func (r *Runtime) handleMediaMethodContext(
 				if valueErr != nil {
 					return 0, valueErr
 				}
+				clip.capacity = len(clip.data)
+				clip.bufferSet = true
 			}
 		} else {
 			resource, found, valueErr := r.ktfClipConstructorResource(
@@ -58,6 +70,8 @@ func (r *Runtime) handleMediaMethodContext(
 			}
 			if found {
 				clip.data = resource
+				clip.capacity = len(resource)
+				clip.bufferSet = true
 			}
 		}
 		r.clips[instance] = clip
@@ -111,6 +125,16 @@ func (r *Runtime) handleMediaMethodContext(
 		if err != nil {
 			return 0, err
 		}
+		clip := r.ensureKTFClip(instance)
+		if clip.capacity > 0 {
+			remaining := max(clip.capacity-len(clip.data), 0)
+			if len(data) > remaining {
+				data = data[:remaining]
+			}
+		}
+		if len(data) == 0 {
+			return 0, nil
+		}
 		serviceID, err := r.ensureKTFClipService(instance)
 		if err != nil {
 			return 0, err
@@ -118,9 +142,8 @@ func (r *Runtime) handleMediaMethodContext(
 		if _, err := r.Services.Media.Append(r.ServiceOwner, serviceID, data); err != nil {
 			return ^uint32(0), nil
 		}
-		clip := r.ensureKTFClip(instance)
 		clip.data = append(clip.data, data...)
-		return count, nil
+		return uint32(len(data)), nil
 	case "getData([BII)I":
 		instance, err := r.parameter(1)
 		if err != nil {
@@ -165,9 +188,23 @@ func (r *Runtime) handleMediaMethodContext(
 		if err != nil {
 			return 0, err
 		}
+		if array == 0 {
+			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
+		}
 		count, err := r.parameter(3)
 		if err != nil {
 			return 0, err
+		}
+		clip := r.ensureKTFClip(instance)
+		if clip.bufferSet {
+			return 0, nil
+		}
+		length, err := r.javaArrayLength(array)
+		if err != nil {
+			return 0, err
+		}
+		if count > length {
+			return 0, r.raiseHostJavaException("java/lang/ArrayIndexOutOfBoundsException")
 		}
 		data, err := r.readJavaByteArrayRange(array, 0, count)
 		if err != nil {
@@ -180,7 +217,9 @@ func (r *Runtime) handleMediaMethodContext(
 		if err := r.Services.Media.ReplaceSource(r.ServiceOwner, serviceID, data); err != nil {
 			return 0, nil
 		}
-		r.ensureKTFClip(instance).data = data
+		clip.data = data
+		clip.capacity = int(length)
+		clip.bufferSet = true
 		return 1, nil
 	case "setVolume(I)Z":
 		instance, err := r.parameter(1)
@@ -190,6 +229,9 @@ func (r *Runtime) handleMediaMethodContext(
 		volume, err := r.signedParameter(2)
 		if err != nil {
 			return 0, err
+		}
+		if volume < 0 || volume > 100 {
+			return 0, nil
 		}
 		clip := r.clips[instance]
 		if clip == nil {
@@ -253,14 +295,52 @@ func (r *Runtime) handleMediaMethodContext(
 			return 0, nil
 		}
 		return 1, nil
-	case "playStart(Z)Z":
+	case "playStart(Z)Z", "recordStart()Z", "playUpdate(II)Z":
 		// Base implementation of the protected guest override hook.
 		return 1, nil
-	case "playUpdate(II)Z", "recordStart()Z":
+	case "getPlayerID(Ljava/lang/String;)I":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		serviceID, err := r.ensureKTFClipService(instance)
+		if err != nil {
+			return ^uint32(0), nil
+		}
+		return serviceID.Slot(), nil
+	case "mediaWriteData()I":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		clip := r.ensureKTFClip(instance)
+		serviceID, err := r.ensureKTFClipService(instance)
+		if err != nil {
+			return ^uint32(0), nil
+		}
+		if err := r.Services.Media.ReplaceSource(
+			r.ServiceOwner, serviceID, clip.data,
+		); err != nil {
+			return ^uint32(0), nil
+		}
+		return uint32(len(clip.data)), nil
+	case "mediaReadData()I":
+		// No capture device is attached, so a successful read contains no data.
 		return 0, nil
-	case "getPlayerID(Ljava/lang/String;)I",
-		"mediaFreeze()I", "mediaReadData()I", "mediaWriteData()I",
-		"control(IILjava/lang/Object;Ljava/lang/Object;)I":
+	case "mediaFreeze()I":
+		r.trace("java_media_record_freeze_unsupported")
+		return ^uint32(0), nil
+	case "control(IILjava/lang/Object;Ljava/lang/Object;)I":
+		playerID, err := r.parameter(1)
+		if err != nil {
+			return ^uint32(0), err
+		}
+		for _, serviceID := range r.clipServices {
+			if uint32(serviceID) == playerID {
+				r.tracef("java_media_control:player=%d", playerID)
+				return 0, nil
+			}
+		}
 		return ^uint32(0), nil
 	case "atomicGetUpdate(I)V", "atomicPutUpdate(I)V":
 		return 0, nil

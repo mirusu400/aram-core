@@ -614,6 +614,27 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 			{name: "setVolume", descriptor: "(I)Z"},
 			{name: "getVolume", descriptor: "()I"},
 			{name: "setListener", descriptor: "(Lorg/kwis/msp/media/PlayListener;)V"},
+			{name: "availableDataSize", descriptor: "()I"},
+			{name: "clearData", descriptor: "()V"},
+			{name: "putData", descriptor: "([BII)I"},
+			{name: "getData", descriptor: "([BII)I"},
+			{name: "setBuffer", descriptor: "([BI)Z"},
+			{name: "getType", descriptor: "()Ljava/lang/String;"},
+			{name: "setPosition", descriptor: "(I)Z"},
+			{name: "playStart", descriptor: "(Z)Z"},
+			{name: "recordStart", descriptor: "()Z"},
+			{name: "playUpdate", descriptor: "(II)Z"},
+			{name: "getPlayerID", descriptor: "(Ljava/lang/String;)I"},
+			{name: "atomicPutUpdate", descriptor: "(I)V"},
+			{name: "mediaWriteData", descriptor: "()I"},
+			{name: "atomicGetUpdate", descriptor: "(I)V"},
+			{name: "mediaReadData", descriptor: "()I"},
+			{name: "mediaFreeze", descriptor: "()I"},
+			{
+				name:       "control",
+				descriptor: "(IILjava/lang/Object;Ljava/lang/Object;)I",
+				access:     0x0008,
+			},
 		},
 	},
 	"org/kwis/msp/media/Player": {
@@ -1415,6 +1436,13 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	"org/kwis/msp/media/PlayListener": {
 		Parent: "java/lang/Object",
 		access: 0x0601,
+		methods: []ktfHostJavaMethodSpec{
+			{
+				name:       "playUpdate",
+				descriptor: "(Lorg/kwis/msp/media/Clip;II)V",
+				access:     0x0401,
+			},
+		},
 	},
 	"org/kwis/msp/media/Vibrator": {Parent: "java/lang/Object"},
 }

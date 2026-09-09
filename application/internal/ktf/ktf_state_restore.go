@@ -489,7 +489,8 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	for instance, clip := range meta.Clips {
 		r.clips[instance] = &ktfClip{
 			volume: clip.Volume, listener: clip.Listener,
-			playing: clip.Playing, data: append([]byte(nil), clip.Data...),
+			playing: clip.Playing, capacity: int(clip.Capacity),
+			bufferSet: clip.BufferSet, data: append([]byte(nil), clip.Data...),
 		}
 	}
 	r.listeners = guest.CloneMap(meta.Listeners)

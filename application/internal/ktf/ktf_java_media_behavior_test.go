@@ -1,6 +1,7 @@
 package ktf
 
 import (
+	"bytes"
 	"context"
 	"testing"
 	"time"
@@ -212,4 +213,141 @@ func TestKTFPlayerNullClipReturnsFailure(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestKTFClipFixedBufferLimitsPutData(t *testing.T) {
+	runtime := newTestRuntime(t)
+	clip := newHostObject(t, runtime, "org/kwis/msp/media/Clip")
+	mediaType := newJavaString(t, runtime, "audio/mmf")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, clip))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, mediaType))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, 3))
+	_, err := runtime.handleMediaMethod("<init>", "(Ljava/lang/String;I)V")
+	check(t, err)
+
+	data, err := runtime.newJavaByteArray([]byte{1, 2, 3, 4, 5})
+	check(t, err)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, clip))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, data))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, 0))
+	stack := allocWords(t, runtime, 1)
+	check(t, runtime.writeWords(stack, []uint32{5}))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterSP, stack))
+	written, err := runtime.handleMediaMethod("putData", "([BII)I")
+	check(t, err)
+	if written != 3 || !bytes.Equal(runtime.clips[clip].data, []byte{1, 2, 3}) {
+		t.Fatalf("bounded putData = %d/%v, want 3/[1 2 3]", written, runtime.clips[clip].data)
+	}
+
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, clip))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, data))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, 2))
+	result, err := runtime.handleMediaMethod("setBuffer", "([BI)Z")
+	check(t, err)
+	if result != 0 {
+		t.Fatal("setBuffer replaced the constructor-created fixed buffer")
+	}
+}
+
+func TestKTFClipSetBufferIsOneShotAndUsesArrayCapacity(t *testing.T) {
+	runtime := newTestRuntime(t)
+	clip := newHostObject(t, runtime, "org/kwis/msp/media/Clip")
+	mediaType := newJavaString(t, runtime, "audio/mmf")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, clip))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, mediaType))
+	_, err := runtime.handleMediaMethod("<init>", "(Ljava/lang/String;)V")
+	check(t, err)
+
+	data, err := runtime.newJavaByteArray([]byte{9, 8, 7, 6})
+	check(t, err)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, clip))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, data))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, 2))
+	result, err := runtime.handleMediaMethod("setBuffer", "([BI)Z")
+	check(t, err)
+	state := runtime.clips[clip]
+	if result != 1 || state.capacity != 4 || !state.bufferSet ||
+		!bytes.Equal(state.data, []byte{9, 8}) {
+		t.Fatalf("setBuffer state = result %d, %+v", result, state)
+	}
+
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, clip))
+	result, err = runtime.handleMediaMethod("setBuffer", "([BI)Z")
+	check(t, err)
+	if result != 0 || !bytes.Equal(state.data, []byte{9, 8}) {
+		t.Fatalf("second setBuffer = %d/%v", result, state.data)
+	}
+}
+
+func TestKTFClipPlayerIDControlAndMediaWriteUseSharedService(t *testing.T) {
+	runtime := newTestRuntime(t)
+	clip := newHostObject(t, runtime, "org/kwis/msp/media/Clip")
+	runtime.clips[clip] = &ktfClip{volume: 100, data: []byte{4, 3, 2, 1}}
+	mediaType := newJavaString(t, runtime, "audio/mmf")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, clip))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, mediaType))
+	playerID, err := runtime.handleMediaMethod("getPlayerID", "(Ljava/lang/String;)I")
+	check(t, err)
+	if playerID == ^uint32(0) {
+		t.Fatal("getPlayerID returned failure")
+	}
+
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, clip))
+	written, err := runtime.handleMediaMethod("mediaWriteData", "()I")
+	check(t, err)
+	serviceData, err := runtime.Services.Media.Source(
+		runtime.ServiceOwner, runtime.clipServices[clip],
+	)
+	check(t, err)
+	if written != 4 || !bytes.Equal(serviceData, []byte{4, 3, 2, 1}) {
+		t.Fatalf("mediaWriteData = %d/%v", written, serviceData)
+	}
+
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, playerID))
+	controlled, err := runtime.handleMediaMethod(
+		"control", "(IILjava/lang/Object;Ljava/lang/Object;)I",
+	)
+	check(t, err)
+	if controlled != 0 {
+		t.Fatalf("control known player = %d", controlled)
+	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, playerID+1))
+	controlled, err = runtime.handleMediaMethod(
+		"control", "(IILjava/lang/Object;Ljava/lang/Object;)I",
+	)
+	check(t, err)
+	if controlled != ^uint32(0) {
+		t.Fatalf("control unknown player = %d", controlled)
+	}
+}
+
+func TestKTFClipRejectsOutOfRangeVolume(t *testing.T) {
+	runtime := newTestRuntime(t)
+	clip := newHostObject(t, runtime, "org/kwis/msp/media/Clip")
+	runtime.clips[clip] = &ktfClip{volume: 50}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, clip))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, ^uint32(0)))
+	result, err := runtime.handleMediaMethod("setVolume", "(I)Z")
+	check(t, err)
+	if result != 0 || runtime.clips[clip].volume != 50 {
+		t.Fatalf("setVolume(-1) = %d, volume %d", result, runtime.clips[clip].volume)
+	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 101))
+	result, err = runtime.handleMediaMethod("setVolume", "(I)Z")
+	check(t, err)
+	if result != 0 || runtime.clips[clip].volume != 50 {
+		t.Fatalf("setVolume(101) = %d, volume %d", result, runtime.clips[clip].volume)
+	}
+}
+
+func TestKTFPlayListenerHostSpecDeclaresCallback(t *testing.T) {
+	spec := HostJavaClassSpecs["org/kwis/msp/media/PlayListener"]
+	for _, method := range spec.methods {
+		if method.name == "playUpdate" &&
+			method.descriptor == "(Lorg/kwis/msp/media/Clip;II)V" &&
+			method.access&0x0400 != 0 {
+			return
+		}
+	}
+	t.Fatal("PlayListener.playUpdate(Clip,int,int) is absent from the host spec")
 }
