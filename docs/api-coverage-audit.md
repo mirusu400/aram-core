@@ -8,6 +8,10 @@ This document is the work list for closing the media and Java API gaps. It
 records what the spec asks for, what the four runtimes actually bind today, and
 where the fix goes.
 
+For state transitions, callback values, clip lifetime, PCM delivery, and the
+dynamic test plan, see
+[`wipi-media-conformance-and-fuzzing.md`](wipi-media-conformance-and-fuzzing.md).
+
 ## What "implemented" means here
 
 The comparison is mechanical and it measures **symbol presence**, not semantic
