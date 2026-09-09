@@ -2,14 +2,14 @@ package ktf
 
 import (
 	"fmt"
-	"github.com/mirusu400/aram-core/cpu"
-	"github.com/mirusu400/aram-core/internal/ime"
 	"image"
 	"image/color"
 	"strconv"
 	"strings"
 
 	"github.com/mirusu400/aram-core/application/internal/guest"
+	"github.com/mirusu400/aram-core/cpu"
+	"github.com/mirusu400/aram-core/internal/ime"
 	shared "github.com/mirusu400/aram-core/runtime"
 )
 
@@ -72,6 +72,11 @@ func validateKTFMetadata(
 		(len(meta.Tasks) != 0 && meta.TaskCursor >= int32(len(meta.Tasks))) ||
 		meta.ActiveTask < -1 || meta.ActiveTask >= int32(len(meta.Tasks)) {
 		return fmt.Errorf("invalid KTF task cursor")
+	}
+	if ktfCallState(meta.JavaCall.State) > ktfCallEnded ||
+		len(meta.JavaCall.Number) > 64 ||
+		strings.IndexByte(meta.JavaCall.Number, 0) >= 0 {
+		return fmt.Errorf("invalid KTF Java call state")
 	}
 	for index, task := range meta.Tasks {
 		if len(task.Context) > guest.MaxStateContext ||
@@ -375,6 +380,10 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	r.wipicAssetServices = guest.CloneMap(meta.WIPICAssetServices)
 	r.wipicTimerServices = guest.CloneMap(meta.WIPICTimerServices)
 	r.clipServices = guest.CloneMap(meta.ClipServices)
+	r.javaCall = ktfCall{
+		state: ktfCallState(meta.JavaCall.State), number: meta.JavaCall.Number,
+		requestSequence: meta.JavaCall.RequestSequence, ppp: meta.JavaCall.PPP,
+	}
 	r.DatabaseServices = guest.CloneMap(meta.DatabaseServices)
 	r.fileServices = guest.CloneMap(meta.FileServices)
 	r.wipicFileServices = guest.CloneMap(meta.WIPICFileServices)

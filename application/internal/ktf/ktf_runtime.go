@@ -148,6 +148,7 @@ type Runtime struct {
 	wipicTimerServices   map[uint32]shared.ServiceID
 	wipicMediaServices   map[uint32]shared.ServiceID
 	clipServices         map[uint32]shared.ServiceID
+	javaCall             ktfCall
 	DatabaseServices     map[string]shared.ServiceID
 	fileServices         map[uint32]shared.ServiceID
 	wipicFileServices    map[uint32]shared.ServiceID
@@ -544,6 +545,26 @@ type ktfEnumeration struct {
 }
 
 type ktfJavaEvent [4]uint32
+
+type ktfCallState uint8
+
+const (
+	ktfCallIdle ktfCallState = iota
+	ktfCallCalling
+	ktfCallConnected
+	ktfCallRejected
+	ktfCallIncoming
+	ktfCallWaiting
+	ktfCallTransferred
+	ktfCallEnded
+)
+
+type ktfCall struct {
+	state           ktfCallState
+	number          string
+	requestSequence uint64
+	ppp             bool
+}
 
 type ktfClip struct {
 	volume    int32

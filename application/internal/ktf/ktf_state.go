@@ -214,6 +214,13 @@ type ktfClipSnapshot struct {
 	Data      []byte
 }
 
+type ktfCallSnapshot struct {
+	State           uint8
+	Number          string
+	RequestSequence uint64
+	PPP             bool
+}
+
 type ktfLWCSnapshot struct {
 	X, Y, Width, Height                                 int32
 	PreferredWidth, PreferredHeight                     int32
@@ -382,6 +389,7 @@ type ktfMetadataSnapshot struct {
 	Hashtables               map[uint32]map[string]ktfHashtableEntrySnapshot
 	Enumerations             map[uint32]ktfEnumerationSnapshot
 	Clips                    map[uint32]ktfClipSnapshot
+	JavaCall                 ktfCallSnapshot
 	Listeners                map[uint32]uint32
 	LWCEventData             map[uint32]uint32
 	LWCChildren              map[uint32][]uint32
@@ -1036,6 +1044,10 @@ func snapshotKTFMetadata(
 		ActiveTask:          -1,
 		ActiveInstructions:  r.ActiveInstructions,
 		ExecutionDepth:      int32(r.executionDepth),
+		JavaCall: ktfCallSnapshot{
+			State: uint8(r.javaCall.state), Number: r.javaCall.number,
+			RequestSequence: r.javaCall.requestSequence, PPP: r.javaCall.ppp,
+		},
 	}
 	if r.activeTask != nil {
 		index, err := taskIndex(r.activeTask)

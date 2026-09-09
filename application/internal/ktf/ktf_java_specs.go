@@ -1280,7 +1280,21 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 		Parent: "org/kwis/msp/db/DataFilter",
 	},
 
-	"org/kwis/msp/handset/Call": {Parent: "java/lang/Object"},
+	"org/kwis/msp/handset/Call": {
+		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "securePPPSession", descriptor: "()V", access: 0x0009},
+			{name: "accept", descriptor: "()V", access: 0x0009},
+			{name: "reject", descriptor: "()V", access: 0x0009},
+			{name: "end", descriptor: "()V", access: 0x0009},
+			{name: "place", descriptor: "(Ljava/lang/String;)V", access: 0x0009},
+			{name: "securePPPSession0", descriptor: "()V", access: 0x000c},
+			{name: "accept0", descriptor: "()V", access: 0x000c},
+			{name: "reject0", descriptor: "()V", access: 0x000c},
+			{name: "end0", descriptor: "()V", access: 0x000c},
+			{name: "place0", descriptor: "(Ljava/lang/String;)V", access: 0x000c},
+		},
+	},
 	"org/kwis/msp/handset/HandsetProperty": {
 		Parent: "java/lang/Object",
 	},

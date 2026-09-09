@@ -1084,15 +1084,7 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 			}
 			return 0, nil
 		case "org/kwis/msp/handset/Call":
-			// Telephony is absent; call control requests are absorbed the
-			// way a handset in flight mode absorbs them.
-			if name == "place" || name == "place0" {
-				runtime.tracef(
-					"java_call_place_unavailable:%s",
-					runtime.javaStringValue(registers[1]),
-				)
-			}
-			return 0, nil
+			return runtime.handleCallMethod(name, descriptor)
 		case "org/kwis/msp/lwc/Component",
 			"org/kwis/msp/lwc/ContainerComponent",
 			"org/kwis/msp/lwc/ShellComponent",
