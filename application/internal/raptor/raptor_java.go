@@ -2491,7 +2491,7 @@ func raptorJavaDescriptorArgumentCount(descriptor string) int {
 		return 0
 	}
 	count := 0
-	for index := start + 1; index < end; count++ {
+	for index := start + 1; index < end; {
 		switch descriptor[index] {
 		case 'L':
 			separator := strings.IndexByte(descriptor[index:end], ';')
@@ -2499,6 +2499,7 @@ func raptorJavaDescriptorArgumentCount(descriptor string) int {
 				return count
 			}
 			index += separator + 1
+			count++
 		case '[':
 			for index < end && descriptor[index] == '[' {
 				index++
@@ -2512,8 +2513,17 @@ func raptorJavaDescriptorArgumentCount(descriptor string) int {
 			} else {
 				index++
 			}
+			count++
+		case 'J', 'D':
+			// Raptor AOT calls use one 32-bit ARM word per argument slot.
+			// Java long and double values consequently occupy two words, not
+			// one Java parameter.  The caller below reads this many words from
+			// r0-r3 and then the stack before forwarding them to the KTF host.
+			index++
+			count += 2
 		default:
 			index++
+			count++
 		}
 	}
 	return count

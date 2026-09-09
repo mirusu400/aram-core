@@ -14,6 +14,26 @@ import (
 	shared "github.com/mirusu400/aram-core/runtime"
 )
 
+func TestRaptorJavaDescriptorArgumentCountUsesABIWords(t *testing.T) {
+	tests := []struct {
+		descriptor string
+		want       int
+	}{
+		{"()V", 0},
+		{"(I[CLjava/lang/String;)V", 3},
+		{"(J)J", 2},
+		{"(JJ)J", 4},
+		{"(IDLjava/lang/Object;[J)D", 5},
+	}
+	for _, test := range tests {
+		t.Run(test.descriptor, func(t *testing.T) {
+			if got := raptorJavaDescriptorArgumentCount(test.descriptor); got != test.want {
+				t.Fatalf("argument words = %d, want %d", got, test.want)
+			}
+		})
+	}
+}
+
 func TestGuestHeapSharedAllocatorDoesNotOverlap(t *testing.T) {
 	public := newPublicRuntime(t)
 	peer := guest.Heap{CPU: public.CPU, Shared: &public.Heap}
