@@ -1893,7 +1893,7 @@ func TestRaptorStopClipReportsCompletionAndFrees(t *testing.T) {
 	if len(runtime.PendingCallbacks) != 1 ||
 		runtime.PendingCallbacks[0].Procedure != 0x02000001 ||
 		runtime.PendingCallbacks[0].Args !=
-			[4]uint32{handle, RaptorClipEndCode, 0, 0} {
+			[4]uint32{handle, RaptorClipStoppedCode, 0, 0} {
 		t.Fatalf("completion callback = %+v", runtime.PendingCallbacks)
 	}
 

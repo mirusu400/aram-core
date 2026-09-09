@@ -230,7 +230,7 @@ func TestRaptorPrivateSoundOrdinalsStopAndFreeClips(t *testing.T) {
 	}
 	if len(public.PendingCallbacks) != 1 ||
 		public.PendingCallbacks[0].Args !=
-			[4]uint32{handle, wipirt.RaptorClipEndCode, 0, 0} {
+			[4]uint32{handle, wipirt.RaptorClipStoppedCode, 0, 0} {
 		t.Fatalf("stop completion callback = %+v", public.PendingCallbacks)
 	}
 
