@@ -582,6 +582,109 @@ func TestKTFCharacterUsesUnicodeCaseAndDigits(t *testing.T) {
 	}
 }
 
+func TestKTFInputStreamEdgeContracts(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	stream := newHostObject(t, runtime, "java/io/InputStream")
+	buffer, err := runtime.NewJavaArray("[B", 0, 1)
+	check(t, err)
+	runtime.inputStreams[stream] = &ktfInputStream{}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, stream))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, buffer))
+	read, err := runtime.handleInputStreamMethod(context.Background(), "read", "([B)I")
+	check(t, err)
+	if read != 0 {
+		t.Fatalf("InputStream.read(empty range at EOF) = %d, want 0", read)
+	}
+
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, ^uint32(0)))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, ^uint32(0)))
+	skipped, err := runtime.handleInputStreamMethod(context.Background(), "skip", "(J)J")
+	check(t, err)
+	if skipped != 0 || runtime.JavaReturnHigh != 0 {
+		t.Fatalf("InputStream.skip(-1) = 0x%08x%08x", runtime.JavaReturnHigh, skipped)
+	}
+
+	runtime.inputStreams[stream] = &ktfInputStream{data: []byte{2}}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, stream))
+	boolean, err := runtime.handleInputStreamMethod(context.Background(), "readBoolean", "()Z")
+	check(t, err)
+	if boolean != 1 {
+		t.Fatalf("DataInput.readBoolean(2) = %d, want true", boolean)
+	}
+}
+
+func TestKTFPrintStreamSetErrorIsObservable(t *testing.T) {
+	runtime := newTestRuntime(t)
+	stream := newHostObject(t, runtime, "java/io/PrintStream")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, stream))
+	_, err := runtime.handlePrintStreamMethod("setError", "()V")
+	check(t, err)
+	failed, err := runtime.handlePrintStreamMethod("checkError", "()Z")
+	check(t, err)
+	if failed != 1 {
+		t.Fatal("PrintStream.setError was not visible through checkError")
+	}
+}
+
+func TestKTFStreamReadersAndWritersHonorExplicitCharset(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	encoding := newJavaString(t, runtime, "UTF-8")
+	source := newHostObject(t, runtime, "java/io/InputStream")
+	reader := newHostObject(t, runtime, "java/io/InputStreamReader")
+	runtime.inputStreams[source] = &ktfInputStream{data: []byte("가😀")}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, reader))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, source))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, encoding))
+	_, err := runtime.handleInputStreamReaderMethod(
+		"<init>",
+		"(Ljava/io/InputStream;Ljava/lang/String;)V",
+	)
+	check(t, err)
+
+	want := []uint32{'가', 0xd83d, 0xde00, ^uint32(0)}
+	for index, expected := range want {
+		check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, reader))
+		got, readErr := runtime.handleInputStreamReaderMethod("read", "()I")
+		check(t, readErr)
+		if got != expected {
+			t.Fatalf("UTF-8 reader char %d = 0x%04x, want 0x%04x", index, got, expected)
+		}
+	}
+
+	target := newHostObject(t, runtime, "java/io/ByteArrayOutputStream")
+	writer := newHostObject(t, runtime, "java/io/OutputStreamWriter")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, writer))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, target))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, encoding))
+	_, err = runtime.handleOutputStreamWriterMethod(
+		"<init>",
+		"(Ljava/io/OutputStream;Ljava/lang/String;)V",
+	)
+	check(t, err)
+	text := newJavaString(t, runtime, "한글")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, writer))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, text))
+	_, err = runtime.handleOutputStreamWriterMethod("write", "(Ljava/lang/String;)V")
+	check(t, err)
+	if got, expected := string(runtime.outputStreams[target]), "한글"; got != expected {
+		t.Fatalf("UTF-8 writer bytes decode to %q, want %q", got, expected)
+	}
+
+	unsupported := newJavaString(t, runtime, "x-unknown")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, writer))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, target))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, unsupported))
+	_, err = runtime.handleOutputStreamWriterMethod(
+		"<init>",
+		"(Ljava/io/OutputStream;Ljava/lang/String;)V",
+	)
+	if err == nil || runtime.LastJavaThrowName != "java/io/UnsupportedEncodingException" {
+		t.Fatalf("unknown writer charset error=%v exception=%q", err, runtime.LastJavaThrowName)
+	}
+}
+
 func equalWords(left, right []uint32) bool {
 	if len(left) != len(right) {
 		return false

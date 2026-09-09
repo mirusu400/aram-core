@@ -601,17 +601,26 @@ func trimHandsetStringBytes(data []byte, encoding shared.TextEncoding) []byte {
 }
 
 func javaCharsetEncoding(name string) shared.TextEncoding {
+	if encoding, ok := lookupJavaCharsetEncoding(name); ok {
+		return encoding
+	}
+	return shared.EncodingEUCKR
+}
+
+func lookupJavaCharsetEncoding(name string) (shared.TextEncoding, bool) {
 	switch strings.ToUpper(strings.TrimSpace(name)) {
 	case "UTF-8", "UTF8":
-		return shared.EncodingUTF8
+		return shared.EncodingUTF8, true
 	case "UTF-16LE", "UTF16LE", "UNICODELITTLE", "UNICODELITTLEUNMARKED",
 		"X-UTF-16LE":
-		return shared.EncodingUTF16LE
+		return shared.EncodingUTF16LE, true
 	case "UTF-16", "UTF16", "UTF-16BE", "UTF16BE", "UNICODE", "UNICODEBIG",
 		"UNICODEBIGUNMARKED", "ISO-10646-UCS-2":
-		return shared.EncodingUTF16BE
+		return shared.EncodingUTF16BE, true
+	case "EUC-KR", "EUCKR", "KSC5601", "KSC-5601", "MS949", "CP949":
+		return shared.EncodingEUCKR, true
 	default:
-		return shared.EncodingEUCKR
+		return "", false
 	}
 }
 

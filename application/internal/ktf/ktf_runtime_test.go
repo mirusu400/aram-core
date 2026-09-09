@@ -2748,20 +2748,20 @@ func TestKTFJavaArrayCopyRaisesGuestExceptions(t *testing.T) {
 	}
 }
 
-func TestKTFInputStreamReadReturnsEOFForNullOptionalBuffer(t *testing.T) {
+func TestKTFInputStreamReadRejectsNullBuffer(t *testing.T) {
 	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
 	stream := newHostObject(t, runtime, "java/io/InputStream")
 	runtime.inputStreams[stream] = &ktfInputStream{data: []byte{1}}
 	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, stream))
 	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 0))
-	value, err := runtime.handleInputStreamMethod(
+	_, err := runtime.handleInputStreamMethod(
 		context.Background(),
 		"read",
 		"([BII)I",
 	)
-	check(t, err)
-	if value != ^uint32(0) {
-		t.Fatalf("InputStream.read(null, ...) = %d, want -1", value)
+	if err == nil || runtime.LastJavaThrowName != "java/lang/NullPointerException" {
+		t.Fatalf("InputStream.read(null, ...) error=%v exception=%q", err, runtime.LastJavaThrowName)
 	}
 }
 
