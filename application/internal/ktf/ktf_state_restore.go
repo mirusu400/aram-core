@@ -790,12 +790,14 @@ func restoreKTFLWC(value ktfLWCSnapshot) *ktfLWCComponent {
 		font:          value.Font, image: value.Image,
 		imageActive: value.ImageActive, group: value.Group,
 		date: value.Date, grabListener: value.GrabListener,
+		timeZone:   value.TimeZone,
+		itemImages: append([]uint32(nil), value.ItemImages...),
 		grabObject: value.GrabObject,
 		mode:       value.Mode, layout: value.Layout, minimum: value.Minimum,
 		viewAmount: value.ViewAmount, changeAmount: value.ChangeAmount,
 		delay: value.Delay, activeIndex: value.ActiveIndex,
 		framed: value.Framed, commandGrabs: value.CommandGrabs,
-		selected: value.Selected,
+		selected: value.Selected, numberVisible: value.NumberVisible,
 	}
 	if len(value.GrabbedKeys) != 0 {
 		result.grabbedKeys = make(map[int32]bool, len(value.GrabbedKeys))

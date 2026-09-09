@@ -243,13 +243,15 @@ type ktfLWCSnapshot struct {
 	DialogTimeout, DialogAction                         int32
 	DialogOK, DialogCancel                              uint32
 	Font, Image, ImageActive                            uint32
-	Group, Date, GrabListener, GrabObject               uint32
+	Group, Date, TimeZone, GrabListener, GrabObject     uint32
+	ItemImages                                          []uint32
 	GrabbedKeys                                         []int32
 	Mode, Layout, Minimum, ViewAmount                   int32
 	ChangeAmount, Delay, ActiveIndex                    int32
 	Shown, Valid, Focused, BackgroundSet                bool
 	Vertical, Packed, Framed, CommandGrabs, Annunciator bool
 	Transparent, ProgressInput, Selected                bool
+	NumberVisible                                       bool
 }
 
 type ktfDatabaseSnapshot struct {
@@ -1396,13 +1398,15 @@ func snapshotKTFLWC(value *ktfLWCComponent) ktfLWCSnapshot {
 		ProgressInput: value.progressInput,
 		Font:          value.font, Image: value.image,
 		ImageActive: value.imageActive, Group: value.group,
-		Date: value.date, GrabListener: value.grabListener,
-		GrabObject: value.grabObject,
-		Mode:       value.mode, Layout: value.layout, Minimum: value.minimum,
+		Date: value.date, TimeZone: value.timeZone,
+		ItemImages:   append([]uint32(nil), value.itemImages...),
+		GrabListener: value.grabListener,
+		GrabObject:   value.grabObject,
+		Mode:         value.mode, Layout: value.layout, Minimum: value.minimum,
 		ViewAmount: value.viewAmount, ChangeAmount: value.changeAmount,
 		Delay: value.delay, ActiveIndex: value.activeIndex,
 		Framed: value.framed, CommandGrabs: value.commandGrabs,
-		Selected: value.selected,
+		Selected: value.selected, NumberVisible: value.numberVisible,
 	}
 	for key, grabbed := range value.grabbedKeys {
 		if grabbed {

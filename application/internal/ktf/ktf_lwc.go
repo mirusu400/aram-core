@@ -229,15 +229,19 @@ func (r *Runtime) handleLWCMethod(
 		items := r.Vectors[instance]
 		switch method {
 		case "<init>()V":
+			state.numberVisible = true
 			return 0, nil
 		case "<init>(I)V":
 			state.mode = int32(registers[2])
+			state.numberVisible = true
 			return 0, nil
 		case "append(Ljava/lang/String;)I":
 			r.Vectors[instance] = append(items, registers[2])
+			state.itemImages = append(state.itemImages, 0)
 			return uint32(len(items)), nil
 		case "append(Ljava/lang/String;Lorg/kwis/msp/lcdui/Image;)I":
 			r.Vectors[instance] = append(items, registers[2])
+			state.itemImages = append(state.itemImages, registers[3])
 			return uint32(len(items)), nil
 		case "insert(ILjava/lang/String;)I":
 			index := int(int32(registers[2]))
@@ -256,6 +260,12 @@ func (r *Runtime) handleLWCMethod(
 					items[:index:index],
 					items[index+1:]...,
 				)
+				if index < len(state.itemImages) {
+					state.itemImages = append(
+						state.itemImages[:index:index],
+						state.itemImages[index+1:]...,
+					)
+				}
 			}
 			return 0, nil
 		case "set(ILjava/lang/String;)V":
@@ -278,9 +288,14 @@ func (r *Runtime) handleLWCMethod(
 			}
 			return items[index], nil
 		case "getImage(I)Lorg/kwis/msp/lcdui/Image;":
-			// Item images are not retained by the host list model.
-			return 0, nil
+			index := int(int32(registers[2]))
+			if index < 0 || index >= len(state.itemImages) {
+				return 0, nil
+			}
+			return state.itemImages[index], nil
 		case "controlNumber(Z)V":
+			state.numberVisible = registers[2] != 0
+			r.invalidateLWC(instance)
 			return 0, nil
 		}
 	case "org/kwis/msp/lwc/Command":
@@ -353,13 +368,28 @@ func (r *Runtime) handleLWCMethod(
 	case "org/kwis/msp/lwc/DateFieldComponent":
 		switch method {
 		case "<init>()V":
+			if err := r.initializeLWCDateField(state, 0); err != nil {
+				return 0, err
+			}
 			return 0, nil
 		case "<init>(I)V", "setMode(I)V":
-			state.mode = int32(registers[2])
+			mode := int32(registers[2])
+			if mode < 0 || mode > 2 {
+				return 0, r.raiseHostJavaException("java/lang/IllegalArgumentException")
+			}
+			state.mode = mode
+			if method[0] == '<' {
+				if err := r.initializeLWCDateField(state, mode); err != nil {
+					return 0, err
+				}
+			}
 			return 0, nil
 		case "getMode()I":
 			return uint32(state.mode), nil
 		case "setDate(Ljava/util/Date;)V":
+			if registers[2] == 0 {
+				return 0, r.raiseHostJavaException("java/lang/NullPointerException")
+			}
 			state.date = registers[2]
 			return 0, nil
 		case "getDate()Ljava/util/Date;":
@@ -374,18 +404,37 @@ func (r *Runtime) handleLWCMethod(
 			state.date = date
 			return date, nil
 		case "getStringValue(I)Ljava/lang/String;":
-			moment := time.UnixMilli(r.dates[state.date]).UTC()
+			if state.date == 0 {
+				if err := r.initializeLWCDateField(state, state.mode); err != nil {
+					return 0, err
+				}
+			}
+			moment := ktfCalendarMoment(
+				r.dates[state.date], r.ensureKTFTimeZone(state.timeZone),
+			)
 			switch int32(registers[2]) {
-			case 2: // MODE_TIME
+			case 0: // MODE_TIME
 				return r.NewJavaString(moment.Format("15:04"))
-			case 3: // MODE_TIME_DATE
+			case 2: // MODE_TIME_DATE
 				return r.NewJavaString(moment.Format("2006/01/02 15:04"))
 			default: // MODE_DATE
 				return r.NewJavaString(moment.Format("2006/01/02"))
 			}
 		case "getTimeZone()Ljava/util/TimeZone;":
-			return r.NewHostJavaObject("java/util/TimeZone")
+			if state.timeZone == 0 {
+				zone, err := r.newKTFTimeZone(r.defaultKTFTimeZone())
+				if err != nil {
+					return 0, err
+				}
+				state.timeZone = zone
+			}
+			return state.timeZone, nil
 		case "setTimeZone(Ljava/util/TimeZone;)V":
+			if registers[2] == 0 {
+				return 0, r.raiseHostJavaException("java/lang/NullPointerException")
+			}
+			state.timeZone = registers[2]
+			r.invalidateLWC(instance)
 			return 0, nil
 		}
 	case "org/kwis/msp/lwc/ImageComponent":
@@ -1061,6 +1110,25 @@ func (r *Runtime) setLWCDialogType(
 	}
 	state.dialogType = dialogType
 	state.dialogAction = -2
+	return nil
+}
+
+func (r *Runtime) initializeLWCDateField(
+	state *ktfLWCComponent,
+	mode int32,
+) error {
+	date, err := r.NewHostJavaObject("java/util/Date")
+	if err != nil {
+		return err
+	}
+	zone, err := r.newKTFTimeZone(r.defaultKTFTimeZone())
+	if err != nil {
+		return err
+	}
+	r.dates[date] = int64(r.TickMS)
+	state.date = date
+	state.timeZone = zone
+	state.mode = mode
 	return nil
 }
 

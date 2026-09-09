@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"image/draw"
 	"testing"
+	"time"
 )
 
 func TestKTFLWCLayoutFrameAndTraversal(t *testing.T) {
@@ -87,6 +88,75 @@ func TestKTFLWCLayoutFrameAndTraversal(t *testing.T) {
 	)
 	if err == nil || runtime.LastJavaThrowName != "java/lang/IllegalArgumentException" {
 		t.Fatalf("conflicting layout error=%v exception=%q", err, runtime.LastJavaThrowName)
+	}
+}
+
+func TestKTFLWCListRetainsItemImagesAndNumberVisibility(t *testing.T) {
+	runtime := newTestRuntime(t)
+	list := newHostObject(t, runtime, "org/kwis/msp/lwc/ListComponent")
+	label := newJavaString(t, runtime, "item")
+	imageObject := newHostObject(t, runtime, "org/kwis/msp/lcdui/Image")
+	index, err := runtime.handleLWCMethod(
+		context.Background(), "org/kwis/msp/lwc/ListComponent", "append",
+		"(Ljava/lang/String;Lorg/kwis/msp/lcdui/Image;)I",
+		[]uint32{0, list, label, imageObject},
+	)
+	check(t, err)
+	if index != 0 {
+		t.Fatalf("append index = %d", index)
+	}
+	got, err := runtime.handleLWCMethod(
+		context.Background(), "org/kwis/msp/lwc/ListComponent", "getImage",
+		"(I)Lorg/kwis/msp/lcdui/Image;", []uint32{0, list, 0},
+	)
+	check(t, err)
+	if got != imageObject {
+		t.Fatalf("list item image = 0x%08x", got)
+	}
+	_, err = runtime.handleLWCMethod(
+		context.Background(), "org/kwis/msp/lwc/ListComponent", "controlNumber",
+		"(Z)V", []uint32{0, list, 0},
+	)
+	check(t, err)
+	if runtime.lwcComponent(list).numberVisible {
+		t.Fatal("controlNumber(false) did not hide number images")
+	}
+}
+
+func TestKTFLWCDateFieldValidatesAndUsesTimeZone(t *testing.T) {
+	runtime := newTestRuntime(t)
+	field := newHostObject(t, runtime, "org/kwis/msp/lwc/DateFieldComponent")
+	_, err := runtime.handleLWCMethod(
+		context.Background(), "org/kwis/msp/lwc/DateFieldComponent", "<init>",
+		"(I)V", []uint32{0, field, 0},
+	)
+	check(t, err)
+	state := runtime.lwcComponent(field)
+	if state.date == 0 || state.timeZone == 0 {
+		t.Fatalf("date field defaults = %+v", state)
+	}
+	runtime.dates[state.date] = time.Date(2024, 2, 3, 0, 4, 0, 0, time.UTC).UnixMilli()
+	text, err := runtime.handleLWCMethod(
+		context.Background(), "org/kwis/msp/lwc/DateFieldComponent", "getStringValue",
+		"(I)Ljava/lang/String;", []uint32{0, field, 0},
+	)
+	check(t, err)
+	if got := runtime.javaStringValue(text); got != "09:04" {
+		t.Fatalf("date field KST time = %q", got)
+	}
+	_, err = runtime.handleLWCMethod(
+		context.Background(), "org/kwis/msp/lwc/DateFieldComponent", "setMode",
+		"(I)V", []uint32{0, field, 3},
+	)
+	if err == nil || runtime.LastJavaThrowName != "java/lang/IllegalArgumentException" {
+		t.Fatalf("invalid date mode error=%v exception=%q", err, runtime.LastJavaThrowName)
+	}
+	_, err = runtime.handleLWCMethod(
+		context.Background(), "org/kwis/msp/lwc/DateFieldComponent", "setTimeZone",
+		"(Ljava/util/TimeZone;)V", []uint32{0, field, 0},
+	)
+	if err == nil || runtime.LastJavaThrowName != "java/lang/NullPointerException" {
+		t.Fatalf("null date zone error=%v exception=%q", err, runtime.LastJavaThrowName)
 	}
 }
 

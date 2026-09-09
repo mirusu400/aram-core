@@ -853,6 +853,8 @@ type ktfLWCComponent struct {
 	imageActive     uint32
 	group           uint32
 	date            uint32
+	timeZone        uint32
+	itemImages      []uint32
 	grabListener    uint32
 	grabObject      uint32
 	grabbedKeys     map[int32]bool
@@ -875,6 +877,7 @@ type ktfLWCComponent struct {
 	transparent     bool
 	progressInput   bool
 	selected        bool
+	numberVisible   bool
 }
 
 type Task struct {
