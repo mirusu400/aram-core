@@ -631,12 +631,8 @@ func (m *Machine) startRaptorJava(ctx context.Context) error {
 			err,
 		)
 	}
-	java.MainInstance = instance
-	// Jlet.getActiveJlet() is answered by the shared KTF Java host, which only
-	// the KTF boot path used to fill in. A Raptor Java title that asks for the
-	// running Jlet was handed null.
-	if java.Host != nil {
-		java.Host.MainJlet = instance
+	if err := runtime.SetRaptorJavaMainInstance(instance); err != nil {
+		return fmt.Errorf("bind Raptor Java main Jlet: %w", err)
 	}
 	return runtime.SyncRaptorJavaVTables(java)
 }

@@ -124,6 +124,23 @@ func (r *Runtime) NewRaptorJavaObject(holder uint32) (uint32, error) {
 	return instance, nil
 }
 
+// SetRaptorJavaMainInstance binds the Raptor main Jlet to its KTF mirror.
+// KTF's Jlet host methods return KTF object addresses, which the bridge then
+// maps back to Raptor objects. Storing the Raptor address there instead makes
+// the bridge parse a Raptor header as a KTF class when getCurrentJlet returns.
+func (r *Runtime) SetRaptorJavaMainInstance(instance uint32) error {
+	if r == nil || r.Java == nil || r.Java.Host == nil {
+		return errors.New("Raptor Java runtime is absent")
+	}
+	mirror := r.Java.lgtToKTF[instance]
+	if mirror == 0 {
+		return fmt.Errorf("Raptor Java main instance 0x%08x has no KTF mirror", instance)
+	}
+	r.Java.MainInstance = instance
+	r.Java.Host.MainJlet = mirror
+	return nil
+}
+
 func (r *Runtime) ensureRaptorJavaClassObject(
 	java *JavaRuntime,
 	class *raptorJavaClass,
