@@ -179,4 +179,5 @@ func (vm *VM) installRecordStoreNatives() {
 			return IntValue(int32(count)), true, nil
 		},
 	)
+	vm.installRecordStoreExtras()
 }

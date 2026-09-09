@@ -438,6 +438,12 @@ func (vm *VM) recordStore(reference uint32) (*recordStoreState, error) {
 	if !ok {
 		return nil, fmt.Errorf("object %d is not a RecordStore", reference)
 	}
+	if state.id == 0 {
+		return nil, vm.newThrowable(
+			"javax/microedition/rms/RecordStoreNotOpenException",
+			"record store is closed",
+		)
+	}
 	return state, nil
 }
 
