@@ -275,6 +275,9 @@ func (r *Runtime) handleMediaMethodContext(
 		if err != nil {
 			return 0, err
 		}
+		if instance == 0 {
+			return 0, nil
+		}
 		clip := r.clips[instance]
 		if clip == nil {
 			clip = &ktfClip{}

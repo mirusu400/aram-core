@@ -188,3 +188,28 @@ func TestKTFPlayerHostSpecIncludesPauseAndResume(t *testing.T) {
 		}
 	}
 }
+
+func TestKTFPlayerNullClipReturnsFailure(t *testing.T) {
+	runtime := newTestRuntime(t)
+	for _, test := range []struct {
+		name       string
+		descriptor string
+	}{
+		{"play", "(Lorg/kwis/msp/media/Clip;Z)Z"},
+		{"stop", "(Lorg/kwis/msp/media/Clip;)Z"},
+		{"pause", "(Lorg/kwis/msp/media/Clip;)Z"},
+		{"resume", "(Lorg/kwis/msp/media/Clip;)Z"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, 0))
+			result, err := runtime.handleMediaMethod(test.name, test.descriptor)
+			check(t, err)
+			if result != 0 {
+				t.Fatalf("result = %d, want false", result)
+			}
+			if len(runtime.clips) != 0 || len(runtime.clipServices) != 0 {
+				t.Fatalf("null call allocated clip state: clips=%v services=%v", runtime.clips, runtime.clipServices)
+			}
+		})
+	}
+}
