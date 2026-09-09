@@ -16,6 +16,11 @@ import (
 const DefaultInstructionLimit = uint64(10_000_000)
 
 const (
+	// threadInstructionQuantum bounds a runnable Java worker that does not
+	// voluntarily wait, sleep, or yield. A legacy SKT game may use such a
+	// polling loop for a network manager; it must not consume the MIDlet's
+	// complete startup budget before the cooperative scheduler can return.
+	threadInstructionQuantum  = uint64(10_000)
 	applicationRootClass      = "javax/microedition/midlet/MIDlet"
 	applicationRootField      = "__aramActiveApplication"
 	applicationRootDescriptor = "Ljava/lang/Object;"
@@ -104,6 +109,7 @@ type VM struct {
 	classDigest      [sha256.Size]byte
 	runningThread    uint32
 	threadFrameBase  int
+	threadBudget     uint64
 }
 
 type frame struct {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"time"
 )
 
 type UnsupportedOpcodeError struct {
@@ -289,6 +290,12 @@ func (vm *VM) step(
 	if *budget == 0 {
 		return stepResult{}, ErrInstructionLimit
 	}
+	if vm.runningThread != 0 && vm.threadBudget == 0 {
+		// captureThreadContinuation retains the current PC before this next
+		// opcode executes. Give another ready worker (and the MIDlet that
+		// started this one) a chance to run on the next virtual-time tick.
+		return stepResult{}, &threadYield{delay: time.Nanosecond}
+	}
 	if current.pc < 0 || current.pc >= len(current.method.Code) {
 		return stepResult{}, fmt.Errorf(
 			"SKVM PC 0x%x is outside %s.%s%s",
@@ -308,6 +315,9 @@ func (vm *VM) step(
 	current.pc++
 	*budget--
 	vm.Instructions++
+	if vm.runningThread != 0 {
+		vm.threadBudget--
+	}
 	if vm.hook != nil {
 		if err := vm.hook(TraceEvent{
 			Class:      current.class.Name,

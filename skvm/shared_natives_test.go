@@ -1114,6 +1114,55 @@ func TestSKVMThreadsRunCooperativelyOnVirtualTime(t *testing.T) {
 	}
 }
 
+func TestSKVMThreadPreemptsNonYieldingWorker(t *testing.T) {
+	// Start from the established Runnable fixture, but replace its sleep call
+	// with a branch back to its first instruction. This stays a valid compact
+	// class file while modelling an SKT-style polling worker.
+	spin := append([]byte(nil), syntheticThreadClass(t)...)
+	sleep := bytes.Index(spin, []byte{0xb8, 0, 21})
+	if sleep < 0 {
+		t.Fatal("synthetic worker sleep call is missing")
+	}
+	spin[sleep] = 0xa7 // goto
+	spin[sleep+1] = 0xff
+	spin[sleep+2] = 0xf8 // from PC 8 back to PC 0
+
+	vm, err := New(map[string][]byte{"Worker": spin})
+	check(t, err)
+	target, err := vm.allocateObject("Worker")
+	check(t, err)
+	thread := vm.NewObject("java/lang/Thread", nil)
+	invokeTestNative(
+		t, vm,
+		"java/lang/Thread", "<init>", "(Ljava/lang/Runnable;)V",
+		thread, ReferenceValue(target),
+	)
+	invokeTestNative(t, vm, "java/lang/Thread", "start", "()V", thread)
+
+	counter := fieldStorageKey("Worker", "counter", "I")
+	first, err := vm.classes["Worker"].static[counter].Int()
+	if err != nil || first <= 0 {
+		t.Fatalf("counter after first worker slice = %d, %v", first, err)
+	}
+	state, err := vm.thread(thread)
+	check(t, err)
+	if !state.active || len(state.continuation) == 0 || state.wakeAt != time.Nanosecond {
+		t.Fatalf("spinning worker was not preempted: %+v", state)
+	}
+	if vm.Instructions != threadInstructionQuantum {
+		t.Fatalf("first worker slice used %d instructions, want %d", vm.Instructions, threadInstructionQuantum)
+	}
+
+	check(t, vm.Advance(context.Background(), time.Nanosecond, nil))
+	second, err := vm.classes["Worker"].static[counter].Int()
+	if err != nil || second <= first {
+		t.Fatalf("counter after resumed worker slice = %d, %v; first=%d", second, err, first)
+	}
+	if vm.Instructions != 2*threadInstructionQuantum {
+		t.Fatalf("second worker slice used %d instructions, want %d", vm.Instructions, 2*threadInstructionQuantum)
+	}
+}
+
 func TestDisplayCallSeriallyDefersRunnable(t *testing.T) {
 	vm, err := New(map[string][]byte{"Worker": syntheticThreadClass(t)})
 	check(t, err)

@@ -131,9 +131,11 @@ func (vm *VM) runThread(
 	}
 	previous := vm.runningThread
 	previousBase := vm.threadFrameBase
+	previousBudget := vm.threadBudget
 	state.blockedClip = 0
 	vm.runningThread = reference
 	vm.threadFrameBase = len(vm.frames)
+	vm.threadBudget = threadInstructionQuantum
 	var err error
 	if len(state.continuation) != 0 {
 		continuation := state.continuation
@@ -145,6 +147,7 @@ func (vm *VM) runThread(
 	}
 	vm.runningThread = previous
 	vm.threadFrameBase = previousBase
+	vm.threadBudget = previousBudget
 	var yielded *threadYield
 	if errors.As(err, &yielded) {
 		now := vm.services.Clock.Monotonic()
