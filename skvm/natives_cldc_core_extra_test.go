@@ -69,3 +69,16 @@ func TestCLDCObjectCloneCopiesArraysAndRejectsOrdinaryObjects(t *testing.T) {
 		t.Fatalf("plain Object clone error = %v", err)
 	}
 }
+
+func TestCLDCThreadCannotRestartAfterCompletion(t *testing.T) {
+	vm, err := New(map[string][]byte{})
+	check(t, err)
+	thread := vm.NewObject("java/lang/Thread", nil)
+	invokeTestNative(t, vm, "java/lang/Thread", "<init>", "()V", thread)
+	invokeTestNative(t, vm, "java/lang/Thread", "start", "()V", thread)
+	native := vm.natives[nativeKey{"java/lang/Thread", "start", "()V"}]
+	_, _, err = native(context.Background(), vm, thread, nil)
+	if thrown, ok := err.(*thrown); !ok || thrown.class != "java/lang/IllegalThreadStateException" {
+		t.Fatalf("second Thread.start error = %v", err)
+	}
+}

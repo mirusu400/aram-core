@@ -391,6 +391,7 @@ func snapshotNative(
 			Kind:      "thread",
 			Reference: state.target,
 			Flag:      state.active,
+			Integer:   int32(boolInt(state.started)),
 			Long:      int64(state.wakeAt),
 			Service:   state.blockedClip,
 		}, nil
@@ -933,6 +934,7 @@ func restoreNative(saved nativeState) (any, nativeLink, error) {
 		}
 		return &threadState{
 			target:      saved.Reference,
+			started:     saved.Integer != 0 || saved.Flag,
 			active:      saved.Flag,
 			wakeAt:      time.Duration(saved.Long),
 			blockedClip: saved.Service,

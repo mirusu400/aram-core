@@ -47,6 +47,10 @@ func (vm *VM) installThreadNatives() {
 				// resume no-op.
 				return Value{}, false, nil
 			}
+			if state.started {
+				return Value{}, false, vm.newThrowable("java/lang/IllegalThreadStateException", "")
+			}
+			state.started = true
 			state.active = true
 			state.wakeAt = vm.services.Clock.Monotonic()
 			return Value{}, false, vm.runThread(ctx, receiver, state)
