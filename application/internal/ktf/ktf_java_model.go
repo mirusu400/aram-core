@@ -133,7 +133,11 @@ func (r *Runtime) NewJavaInstanceForClass(class JavaClass) (uint32, error) {
 	if fields == 0 {
 		return 0, errors.New("KTF guest heap exhausted allocating Java object fields")
 	}
-	if err := r.WriteU32(fields, (vtableIndex*4)<<5); err != nil {
+	header, err := r.javaObjectClassHeader(class, vtableIndex)
+	if err != nil {
+		return 0, err
+	}
+	if err := r.WriteU32(fields, header); err != nil {
 		return 0, err
 	}
 	if err := r.writeWords(instance, []uint32{fields, class.Address}); err != nil {
@@ -328,7 +332,11 @@ func (r *Runtime) NewJavaArray(
 	if fields == 0 {
 		return 0, errors.New("KTF guest heap exhausted allocating Java array")
 	}
-	if err := r.WriteU32(fields, (vtableIndex*4)<<5); err != nil {
+	header, err := r.javaObjectClassHeader(class, vtableIndex)
+	if err != nil {
+		return 0, err
+	}
+	if err := r.WriteU32(fields, header); err != nil {
 		return 0, err
 	}
 	if err := r.writeWords(instance, []uint32{fields, class.Address}); err != nil {

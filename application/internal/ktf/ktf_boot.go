@@ -180,6 +180,7 @@ func NewRuntimeForProfile(
 		hostJavaClass:         make(map[uint32]bool),
 		javaClassInit:         make(map[uint32]uint8),
 		javaVTables:           make(map[uint32]uint32),
+		javaClassBridges:      make(map[uint32]uint32),
 		javaVTableCapacity:    make(map[uint32]uint32),
 		javaVTableClasses:     make(map[uint32]uint32),
 		hostJavaVirtualSlots:  make(map[uint32]uint16),

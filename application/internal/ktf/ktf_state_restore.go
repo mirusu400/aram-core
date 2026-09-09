@@ -425,6 +425,7 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	r.exceptionContext = meta.ExceptionContext
 	r.javaEnvironment = meta.JavaEnvironment
 	r.javaVTables = guest.CloneMap(meta.JavaVTables)
+	r.javaClassBridges = make(map[uint32]uint32)
 	r.javaVTableCapacity = guest.CloneMap(meta.JavaVTableCapacity)
 	r.javaVTableClasses = guest.CloneMap(meta.JavaVTableClasses)
 	r.hostJavaVirtualSlots = guest.CloneMap(meta.HostJavaVirtualSlots)
