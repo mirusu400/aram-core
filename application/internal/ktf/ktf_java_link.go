@@ -421,7 +421,12 @@ func (r *Runtime) repairJavaVirtualMethodFromReceiver(
 		actual.Address,
 		resolved.DeclaringClass,
 	); hierarchyErr == nil && compatible {
-		return method, false
+		declaring, inspectErr := r.InspectJavaClass(resolved.DeclaringClass)
+		if inspectErr != nil ||
+			!r.hostJavaClass[resolved.DeclaringClass] ||
+			ktfHostSpecDeclaresJavaMethod(declaring.Name, name, descriptor) {
+			return method, false
+		}
 	}
 	repaired, err := r.resolveJavaMethod(actual.Address, name, descriptor)
 	if err != nil || repaired == method {
@@ -440,6 +445,19 @@ func (r *Runtime) repairJavaVirtualMethodFromReceiver(
 		repaired,
 	)
 	return repaired, true
+}
+
+func ktfHostSpecDeclaresJavaMethod(className, name, descriptor string) bool {
+	spec, ok := HostJavaClassSpecs[className]
+	if !ok {
+		return false
+	}
+	for _, method := range spec.methods {
+		if method.name == name && method.descriptor == descriptor {
+			return true
+		}
+	}
+	return false
 }
 
 // repairJavaStaticMethodCollision handles the static counterpart of the

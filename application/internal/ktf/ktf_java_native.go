@@ -1268,7 +1268,10 @@ func (r *Runtime) correctHostJavaReceiverClass(
 		actual.Address,
 		declared.Address,
 	); compatibilityErr == nil && compatible {
-		return className
+		if !r.hostJavaClass[declared.Address] ||
+			ktfHostSpecDeclaresJavaMethod(declared.Name, name, descriptor) {
+			return className
+		}
 	}
 	for depth := 0; actual.Address != 0 && depth < 256; depth++ {
 		if method, ok := findKTFJavaMethod(actual, name, descriptor); ok &&

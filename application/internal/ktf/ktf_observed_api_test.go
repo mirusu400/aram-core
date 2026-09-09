@@ -163,6 +163,36 @@ func TestKTFHostJavaMethodCorrectsObservedAOTReceiverAliases(t *testing.T) {
 	})
 }
 
+func TestKTFHostJavaMethodCorrectsSyntheticHostSuperclassMethod(t *testing.T) {
+	runtime := newKTFObservedAPIRuntime(t)
+	const (
+		declared   = "java/lang/Object"
+		actual     = "org/kwis/msf/io/Socket"
+		method     = "getInputStream()Ljava/io/InputStream;"
+		methodName = "getInputStream"
+		descriptor = "()Ljava/io/InputStream;"
+	)
+	prepareKTFMismatchedMethod(
+		t,
+		runtime,
+		declared,
+		methodName,
+		descriptor,
+	)
+	socket := newHostObject(t, runtime, actual)
+	writeKTFObservedRegister(t, runtime, cpu.RegisterR1, socket)
+	stream, err := HostJavaMethod(
+		declared,
+		methodName,
+		descriptor,
+	)(context.Background(), runtime)
+	check(t, err)
+	if stream == 0 || runtime.inputStreams[stream] == nil {
+		t.Fatalf("Socket input stream = 0x%08x, state %v", stream, runtime.inputStreams[stream])
+	}
+	requireKTFReceiverCorrection(t, runtime, declared, actual, method)
+}
+
 func TestKTFHostJavaMethodReadsSpilledArgumentsFromStack(t *testing.T) {
 	runtime := newKTFObservedAPIRuntime(t)
 	dialog := newHostObject(t, runtime, "org/kwis/msp/lwc/DialogComponent")
