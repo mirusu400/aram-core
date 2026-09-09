@@ -119,6 +119,9 @@ func (vm *VM) installCLDCInputStreamBehavior() {
 }
 
 func (vm *VM) installCLDCReaderNatives() {
+	for _, descriptor := range []string{"()V", "(Ljava/lang/Object;)V"} {
+		vm.RegisterNative("java/io/Reader", "<init>", descriptor, nativeVoid)
+	}
 	constructor := func(named bool) NativeFunc {
 		return func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
 			stream, err := referenceArgument(args, 0)
@@ -300,6 +303,9 @@ func (vm *VM) readerRead(receiver, destinationReference uint32, offset, length i
 }
 
 func (vm *VM) installCLDCWriterNatives() {
+	for _, descriptor := range []string{"()V", "(Ljava/lang/Object;)V"} {
+		vm.RegisterNative("java/io/Writer", "<init>", descriptor, nativeVoid)
+	}
 	constructor := func(named bool) NativeFunc {
 		return func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
 			stream, err := referenceArgument(args, 0)
@@ -378,6 +384,7 @@ func (vm *VM) installCLDCWriterNatives() {
 		vm.RegisterNative(class, "write", "(Ljava/lang/String;II)V", writeString)
 		vm.RegisterNative(class, "write", "(I)V", writeOne)
 	}
+	vm.RegisterNative("java/io/OutputStreamWriter", "write", "(C)V", writeOne)
 	vm.RegisterNative("java/io/Writer", "write", "([C)V", func(ctx context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
 		reference, err := referenceArgument(args, 0)
 		if err != nil {

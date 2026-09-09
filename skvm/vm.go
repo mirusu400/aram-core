@@ -475,7 +475,9 @@ func (vm *VM) SupportsHostFieldReference(class, name, descriptor string) bool {
 func hostInterfaces(class string) []string {
 	switch class {
 	case "javax/microedition/io/InputConnection",
-		"javax/microedition/io/OutputConnection":
+		"javax/microedition/io/OutputConnection",
+		"javax/microedition/io/DatagramConnection",
+		"javax/microedition/io/StreamConnectionNotifier":
 		return []string{"javax/microedition/io/Connection"}
 	case "javax/microedition/io/SocketConnection":
 		return []string{"javax/microedition/io/StreamConnection"}

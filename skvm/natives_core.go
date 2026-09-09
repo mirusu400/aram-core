@@ -46,6 +46,7 @@ func (vm *VM) installExtendedCoreNatives() {
 	vm.installCLDCMathNatives()
 	vm.installCLDCReferenceNatives()
 	vm.installCLDCCharacterStreamNatives()
+	vm.installCLDCCoreExtras()
 	vm.installRuntimeNatives()
 	vm.installVectorNatives()
 	vm.installHashtableNatives()
@@ -53,6 +54,7 @@ func (vm *VM) installExtendedCoreNatives() {
 	vm.installKWISNatives()
 	vm.installExtendedStringBufferNatives()
 	vm.installTimeNatives()
+	vm.installCLDCUtilExtras()
 	vm.installTimerNatives()
 }
 

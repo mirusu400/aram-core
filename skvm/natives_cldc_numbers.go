@@ -231,7 +231,9 @@ func (vm *VM) wrapperIntToString(class string, bits int) NativeFunc {
 			return Value{}, false, err
 		}
 		integer, _ := value.Int()
-		if bits == 16 {
+		if bits == 8 {
+			integer = int32(int8(integer))
+		} else if bits == 16 {
 			integer = int32(int16(integer))
 		}
 		return ReferenceValue(vm.NewString(strconv.FormatInt(int64(integer), 10))), true, nil

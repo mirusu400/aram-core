@@ -30,6 +30,12 @@ func (vm *VM) installConnectionNatives() {
 	vm.RegisterNative(
 		"javax/microedition/io/Connector",
 		"open",
+		"(Ljava/lang/String;I)Ljavax/microedition/io/Connection;",
+		nativeOpenConnection,
+	)
+	vm.RegisterNative(
+		"javax/microedition/io/Connector",
+		"open",
 		"(Ljava/lang/String;IZ)Ljavax/microedition/io/Connection;",
 		nativeOpenConnection,
 	)
@@ -222,6 +228,7 @@ func (vm *VM) installConnectionNatives() {
 			return ReferenceValue(vm.NewString(contentType)), true, nil
 		},
 	)
+	vm.installCLDCConnectionExtras()
 
 	vm.RegisterNative(
 		"org/kwis/msf/io/Network",
@@ -287,6 +294,43 @@ func (vm *VM) openConnection(rawURL, objectClass string) (uint32, error) {
 			objectClass = "javax/microedition/io/HttpConnection"
 		}
 		return vm.NewObject(objectClass, &httpConnectionState{request: request}), nil
+	}
+	if strings.EqualFold(parsed.Scheme, "datagram") {
+		if parsed.User != nil || parsed.Port() == "" || parsed.Path != "" ||
+			parsed.RawQuery != "" || parsed.Fragment != "" {
+			return 0, vm.newThrowable("java/lang/IllegalArgumentException", "invalid datagram URL")
+		}
+		portValue, parseErr := strconv.ParseUint(parsed.Port(), 10, 16)
+		if parseErr != nil || portValue == 0 {
+			return 0, vm.newThrowable("java/lang/IllegalArgumentException", "invalid datagram port")
+		}
+		host := parsed.Hostname()
+		if host == "" {
+			host = "127.0.0.1"
+		}
+		socket, openErr := vm.services.Network.OpenSocket(vm.serviceOwner, 2, 2)
+		if openErr == nil {
+			openErr = vm.services.Network.ConnectSocket(vm.serviceOwner, socket, host, uint16(portValue))
+		}
+		if openErr == nil {
+			openErr = vm.services.CompleteSocketResponse(vm.serviceOwner, socket, true, vm.services.Clock.Monotonic())
+		}
+		if openErr != nil {
+			if socket != 0 {
+				_ = vm.services.Network.CloseSocket(vm.serviceOwner, socket, vm.services.Events)
+			}
+			return 0, vm.newThrowable("java/io/IOException", openErr.Error())
+		}
+		return vm.NewObject("javax/microedition/io/DatagramConnection", &socketConnectionState{socket: socket}), nil
+	}
+	if strings.EqualFold(parsed.Scheme, "socket") && parsed.Hostname() == "" &&
+		parsed.Port() != "" && parsed.User == nil && parsed.Path == "" &&
+		parsed.RawQuery == "" && parsed.Fragment == "" {
+		portValue, parseErr := strconv.ParseUint(parsed.Port(), 10, 16)
+		if parseErr != nil || portValue == 0 {
+			return 0, vm.newThrowable("java/lang/IllegalArgumentException", "invalid server socket port")
+		}
+		return vm.newServerSocketNotifier(uint16(portValue)), nil
 	}
 	if !strings.EqualFold(parsed.Scheme, "socket") ||
 		parsed.User != nil || parsed.Hostname() == "" ||
