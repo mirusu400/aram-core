@@ -125,9 +125,16 @@ func (r *Runtime) handleClassMethod(
 		if err != nil {
 			return 0, err
 		}
+		if nameAddress == 0 {
+			return 0, r.raiseHostJavaException(
+				"java/lang/NullPointerException",
+			)
+		}
 		className := strings.ReplaceAll(r.javaText(nameAddress), ".", "/")
 		if className == "" {
-			return 0, nil
+			return 0, r.raiseHostJavaException(
+				"java/lang/ClassNotFoundException",
+			)
 		}
 		classAddress := r.JavaClasses[className]
 		if classAddress == 0 {
@@ -143,7 +150,9 @@ func (r *Runtime) handleClassMethod(
 						"java_class_for_name:%s:found=false",
 						className,
 					)
-					return 0, nil
+					return 0, r.raiseHostJavaException(
+						"java/lang/ClassNotFoundException",
+					)
 				}
 				classAddress = class.Address
 			}
@@ -151,9 +160,22 @@ func (r *Runtime) handleClassMethod(
 		r.tracef("java_class_for_name:%s:found=true", className)
 		return r.javaClassObject(classAddress)
 	case "isArray()Z", "isInterface()Z":
-		// Host class objects only model loadable classes; arrays and
-		// interfaces are never materialized through Class objects here.
-		return 0, nil
+		classObject, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		classAddress, err := r.javaClassObjectTarget(classObject)
+		if err != nil {
+			return 0, err
+		}
+		class, err := r.InspectJavaClass(classAddress)
+		if err != nil {
+			return 0, err
+		}
+		if name == "isArray" {
+			return boolWord(strings.HasPrefix(class.Name, "[")), nil
+		}
+		return boolWord(class.AccessFlags&0x0200 != 0), nil
 	case "isInstance(Ljava/lang/Object;)Z":
 		classObject, err := r.parameter(1)
 		if err != nil {
@@ -201,6 +223,27 @@ func (r *Runtime) handleClassMethod(
 		if err != nil {
 			return 0, err
 		}
+		if class.AccessFlags&0x0600 != 0 {
+			return 0, r.raiseHostJavaException(
+				"java/lang/InstantiationException",
+			)
+		}
+		if !r.hostJavaClass[class.Address] && class.AccessFlags&0x0001 == 0 {
+			return 0, r.raiseHostJavaException(
+				"java/lang/IllegalAccessException",
+			)
+		}
+		constructor, found := findKTFDeclaredJavaMethod(class, "<init>", "()V")
+		if !found {
+			return 0, r.raiseHostJavaException(
+				"java/lang/InstantiationException",
+			)
+		}
+		if !r.hostJavaClass[class.Address] && constructor.AccessFlags&0x0001 == 0 {
+			return 0, r.raiseHostJavaException(
+				"java/lang/IllegalAccessException",
+			)
+		}
 		instance, err := r.NewJavaInstanceForClass(class)
 		if err != nil {
 			return 0, err
@@ -211,7 +254,7 @@ func (r *Runtime) handleClassMethod(
 			"<init>",
 			"()V",
 		); invokeErr != nil {
-			r.tracef("java_class_new_instance_init:%s", invokeErr)
+			return 0, invokeErr
 		}
 		return instance, nil
 	case "toString()Ljava/lang/String;":

@@ -479,6 +479,7 @@ type ktfHostJavaMethodSpec struct {
 
 type ktfHostJavaClassSpec struct {
 	Parent    string
+	access    uint16
 	fieldSize uint16
 	methods   []ktfHostJavaMethodSpec
 	// fields names the *instance* fields the handset class really declares.

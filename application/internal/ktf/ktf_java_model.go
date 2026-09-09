@@ -1060,6 +1060,10 @@ func (r *Runtime) EnsureJavaClass(name string) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
+	access := uint32(0x21)
+	if spec.access != 0 {
+		access = uint32(spec.access)
+	}
 	if err := r.writeWords(descriptor, []uint32{
 		nameAddress,
 		0,
@@ -1068,7 +1072,7 @@ func (r *Runtime) EnsureJavaClass(name string) (uint32, error) {
 		0,
 		fields,
 		uint32(spec.fieldSize) << 16,
-		0x21,
+		access,
 		0,
 	}); err != nil {
 		return 0, err

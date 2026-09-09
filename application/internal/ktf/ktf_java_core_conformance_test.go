@@ -256,3 +256,66 @@ func TestKTFSystemPropertiesAndIntegerParsingFollowCLDC(t *testing.T) {
 		)
 	}
 }
+
+func TestKTFClassReportsArraysAndInterfaces(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+
+	arrayClass, err := runtime.EnsureJavaClass("[I")
+	check(t, err)
+	arrayObject, err := runtime.javaClassObject(arrayClass)
+	check(t, err)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, arrayObject))
+	isArray, err := runtime.handleClassMethod(context.Background(), "isArray", "()Z")
+	check(t, err)
+	if isArray != 1 {
+		t.Fatalf("int[].class.isArray = %d, want true", isArray)
+	}
+
+	interfaceClass, err := runtime.EnsureJavaClass("org/kwis/msp/media/Player")
+	check(t, err)
+	interfaceObject, err := runtime.javaClassObject(interfaceClass)
+	check(t, err)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, interfaceObject))
+	isInterface, err := runtime.handleClassMethod(
+		context.Background(),
+		"isInterface",
+		"()Z",
+	)
+	check(t, err)
+	if isInterface != 1 {
+		t.Fatalf("Player.class.isInterface = %d, want true", isInterface)
+	}
+
+	_, err = runtime.handleClassMethod(
+		context.Background(),
+		"newInstance",
+		"()Ljava/lang/Object;",
+	)
+	if err == nil {
+		t.Fatal("Class.newInstance instantiated an interface")
+	}
+	if runtime.LastJavaThrowName != "java/lang/InstantiationException" {
+		t.Fatalf(
+			"interface newInstance exception = %q",
+			runtime.LastJavaThrowName,
+		)
+	}
+
+	missing := newJavaString(t, runtime, "missing.Class")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, missing))
+	_, err = runtime.handleClassMethod(
+		context.Background(),
+		"forName",
+		"(Ljava/lang/String;)Ljava/lang/Class;",
+	)
+	if err == nil {
+		t.Fatal("Class.forName returned normally for a missing class")
+	}
+	if runtime.LastJavaThrowName != "java/lang/ClassNotFoundException" {
+		t.Fatalf(
+			"Class.forName exception = %q",
+			runtime.LastJavaThrowName,
+		)
+	}
+}

@@ -36,6 +36,17 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 				descriptor: "(Ljava/lang/String;)Ljava/lang/Class;",
 				access:     0x0108,
 			},
+			{name: "isArray", descriptor: "()Z"},
+			{name: "isInterface", descriptor: "()Z"},
+			{
+				name:       "isInstance",
+				descriptor: "(Ljava/lang/Object;)Z",
+			},
+			{
+				name:       "newInstance",
+				descriptor: "()Ljava/lang/Object;",
+			},
+			{name: "toString", descriptor: "()Ljava/lang/String;"},
 		},
 	},
 	"java/lang/String": {
@@ -562,6 +573,7 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	},
 	"java/util/Enumeration": {
 		Parent: "java/lang/Object",
+		access: 0x0601,
 		methods: []ktfHostJavaMethodSpec{
 			{name: "hasMoreElements", descriptor: "()Z"},
 			{name: "nextElement", descriptor: "()Ljava/lang/Object;"},
@@ -606,6 +618,7 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	},
 	"org/kwis/msp/media/Player": {
 		Parent: "java/lang/Object",
+		access: 0x0601,
 		methods: []ktfHostJavaMethodSpec{
 			{name: "play", descriptor: "(Lorg/kwis/msp/media/Clip;Z)Z", access: 0x0008},
 			{name: "stop", descriptor: "(Lorg/kwis/msp/media/Clip;)Z", access: 0x0008},
@@ -1071,7 +1084,10 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	"java/lang/Boolean":   {Parent: "java/lang/Object"},
 	"java/lang/Character": {Parent: "java/lang/Object"},
 	"java/lang/Short":     {Parent: "java/lang/Object"},
-	"java/lang/Runnable":  {Parent: "java/lang/Object"},
+	"java/lang/Runnable": {
+		Parent: "java/lang/Object",
+		access: 0x0601,
+	},
 
 	"java/lang/Throwable": {Parent: "java/lang/Object"},
 	"java/lang/Exception": {Parent: "java/lang/Throwable"},
@@ -1156,10 +1172,16 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	"java/io/UnsupportedEncodingException": {
 		Parent: "java/io/IOException",
 	},
-	"java/io/Reader":     {Parent: "java/lang/Object"},
-	"java/io/Writer":     {Parent: "java/lang/Object"},
-	"java/io/DataInput":  {Parent: "java/lang/Object"},
-	"java/io/DataOutput": {Parent: "java/lang/Object"},
+	"java/io/Reader": {Parent: "java/lang/Object"},
+	"java/io/Writer": {Parent: "java/lang/Object"},
+	"java/io/DataInput": {
+		Parent: "java/lang/Object",
+		access: 0x0601,
+	},
+	"java/io/DataOutput": {
+		Parent: "java/lang/Object",
+		access: 0x0601,
+	},
 	"java/io/OutputStreamWriter": {
 		Parent: "java/io/Writer",
 	},
@@ -1186,6 +1208,7 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	// org/kwis/msp/lwc/ProgressComponent.getInputStream() that way (#147).
 	"org/kwis/msf/io/Socket": {
 		Parent: "java/lang/Object",
+		access: 0x0601,
 		methods: []ktfHostJavaMethodSpec{
 			{name: "getInputStream", descriptor: "()Ljava/io/InputStream;"},
 			{name: "getOutputStream", descriptor: "()Ljava/io/OutputStream;"},
@@ -1204,6 +1227,7 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	},
 	"org/kwis/msf/io/HttpSocket": {
 		Parent: "org/kwis/msf/io/Socket",
+		access: 0x0601,
 	},
 	"org/kwis/msf/io/Message": {Parent: "java/lang/Object"},
 	"org/kwis/msf/io/URL":     {Parent: "java/lang/Object"},
@@ -1217,14 +1241,20 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	"org/kwis/msp/db/DataBaseRecordException": {
 		Parent: "org/kwis/msp/db/DataBaseException",
 	},
-	"org/kwis/msp/db/DataComparator": {Parent: "java/lang/Object"},
+	"org/kwis/msp/db/DataComparator": {
+		Parent: "java/lang/Object",
+		access: 0x0601,
+	},
 	"org/kwis/msp/db/DataComparatorInteger": {
 		Parent: "org/kwis/msp/db/DataComparator",
 	},
 	"org/kwis/msp/db/DataComparatorString": {
 		Parent: "org/kwis/msp/db/DataComparator",
 	},
-	"org/kwis/msp/db/DataFilter": {Parent: "java/lang/Object"},
+	"org/kwis/msp/db/DataFilter": {
+		Parent: "java/lang/Object",
+		access: 0x0601,
+	},
 	"org/kwis/msp/db/DataFilterInteger": {
 		Parent: "org/kwis/msp/db/DataFilter",
 	},
@@ -1245,15 +1275,18 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	"org/kwis/msp/lcdui/EventQueue":   {Parent: "java/lang/Object"},
 	"org/kwis/msp/lcdui/ImageObserver": {
 		Parent: "java/lang/Object",
+		access: 0x0601,
 	},
 	"org/kwis/msp/lcdui/InputMethodHandler": {
 		Parent: "java/lang/Object",
 	},
 	"org/kwis/msp/lcdui/InputMethodListener": {
 		Parent: "java/lang/Object",
+		access: 0x0601,
 	},
 	"org/kwis/msp/lcdui/JletEventListener": {
 		Parent: "java/lang/Object",
+		access: 0x0601,
 	},
 	"org/kwis/msp/lcdui/JletStateChangeException": {
 		Parent: "java/lang/Exception",
@@ -1261,16 +1294,28 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	"org/kwis/msp/lcdui/Main": {Parent: "java/lang/Object"},
 	"org/kwis/msp/lcdui/SystemEventListener": {
 		Parent: "java/lang/Object",
+		access: 0x0601,
 	},
 
-	"org/kwis/msp/lwc/ActionListener": {Parent: "java/lang/Object"},
-	"org/kwis/msp/lwc/ChangeListener": {Parent: "java/lang/Object"},
+	"org/kwis/msp/lwc/ActionListener": {
+		Parent: "java/lang/Object",
+		access: 0x0601,
+	},
+	"org/kwis/msp/lwc/ChangeListener": {
+		Parent: "java/lang/Object",
+		access: 0x0601,
+	},
 	"org/kwis/msp/lwc/CommandListener": {
 		Parent: "java/lang/Object",
+		access: 0x0601,
 	},
-	"org/kwis/msp/lwc/EventListener": {Parent: "java/lang/Object"},
+	"org/kwis/msp/lwc/EventListener": {
+		Parent: "java/lang/Object",
+		access: 0x0601,
+	},
 	"org/kwis/msp/lwc/GrabKeyListener": {
 		Parent: "java/lang/Object",
+		access: 0x0601,
 	},
 	"org/kwis/msp/lwc/ButtonComponent": {
 		Parent: "org/kwis/msp/lwc/Component",
@@ -1318,6 +1363,9 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	"org/kwis/msp/media/MediaUnsupportedException": {
 		Parent: "java/lang/Exception",
 	},
-	"org/kwis/msp/media/PlayListener": {Parent: "java/lang/Object"},
-	"org/kwis/msp/media/Vibrator":     {Parent: "java/lang/Object"},
+	"org/kwis/msp/media/PlayListener": {
+		Parent: "java/lang/Object",
+		access: 0x0601,
+	},
+	"org/kwis/msp/media/Vibrator": {Parent: "java/lang/Object"},
 }
