@@ -225,24 +225,26 @@ type Runtime struct {
 	// waiting on (a loader worker) produced a debug bundle indistinguishable
 	// from a clean hang - the crash class and site were lost. Retained so the
 	// debug snapshot can surface them.
-	IsolatedTaskFaults    []KTFIsolatedTaskFault
-	UnimplementedJava     map[string]uint64
-	LastUnimplementedJava string
-	randomSeeds           map[uint32]uint64
-	integerValues         map[uint32]int32
-	longValues            map[uint32]int64
-	throwableMessages     map[uint32]uint32
-	dates                 map[uint32]int64
-	timeZones             map[uint32]ktfTimeZone
-	calendarZones         map[uint32]uint32
-	Vectors               map[uint32][]uint32
-	hashtables            map[uint32]map[string]ktfHashtableEntry
-	enumerations          map[uint32]*ktfEnumeration
-	clips                 map[uint32]*ktfClip
-	listeners             map[uint32]uint32
-	lwcEventData          map[uint32]uint32
-	lwcChildren           map[uint32][]uint32
-	lwcMaxLengths         map[uint32]int32
+	IsolatedTaskFaults       []KTFIsolatedTaskFault
+	UnimplementedJava        map[string]uint64
+	LastUnimplementedJava    string
+	randomSeeds              map[uint32]uint64
+	integerValues            map[uint32]int32
+	longValues               map[uint32]int64
+	throwableMessages        map[uint32]uint32
+	dates                    map[uint32]int64
+	timeZones                map[uint32]ktfTimeZone
+	calendarZones            map[uint32]uint32
+	Vectors                  map[uint32][]uint32
+	vectorCapacities         map[uint32]uint32
+	vectorCapacityIncrements map[uint32]uint32
+	hashtables               map[uint32]map[string]ktfHashtableEntry
+	enumerations             map[uint32]*ktfEnumeration
+	clips                    map[uint32]*ktfClip
+	listeners                map[uint32]uint32
+	lwcEventData             map[uint32]uint32
+	lwcChildren              map[uint32][]uint32
+	lwcMaxLengths            map[uint32]int32
 	// lwcTextInput is the keypad input method behind each editable LWC field.
 	// It holds only a half-composed glyph, which the next press rebuilds, so it
 	// is a live cache rather than part of the save state.

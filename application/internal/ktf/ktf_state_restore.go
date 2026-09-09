@@ -35,7 +35,8 @@ func validateKTFMetadata(
 		len(meta.RandomSeeds), len(meta.IntegerValues),
 		len(meta.LongValues), len(meta.ThrowableMessages),
 		len(meta.Dates), len(meta.TimeZones), len(meta.CalendarZones),
-		len(meta.Vectors), len(meta.Hashtables),
+		len(meta.Vectors), len(meta.VectorCapacities),
+		len(meta.VectorCapacityIncrements), len(meta.Hashtables),
 		len(meta.Enumerations), len(meta.Clips), len(meta.Listeners),
 		len(meta.LWCEventData), len(meta.LWCChildren),
 		len(meta.LWCMaxLengths), len(meta.LWCComponents),
@@ -503,6 +504,8 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 		r.calendarZones = make(map[uint32]uint32)
 	}
 	r.Vectors = guest.CloneSliceMap(meta.Vectors)
+	r.vectorCapacities = guest.CloneMap(meta.VectorCapacities)
+	r.vectorCapacityIncrements = guest.CloneMap(meta.VectorCapacityIncrements)
 	r.hashtables = make(
 		map[uint32]map[string]ktfHashtableEntry,
 		len(meta.Hashtables),

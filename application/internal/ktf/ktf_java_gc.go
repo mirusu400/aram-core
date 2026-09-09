@@ -445,6 +445,8 @@ func (r *Runtime) weakTables() []reflect.Value {
 		r.inputModes,
 		r.inputSymbolBounds,
 		r.Vectors,
+		r.vectorCapacities,
+		r.vectorCapacityIncrements,
 		r.hashtables,
 		r.enumerations,
 		r.Graphics,

@@ -768,13 +768,35 @@ func (r *Runtime) handleVectorMethod(
 	values := r.Vectors[instance]
 	switch name + descriptor {
 	case "<init>()V", "<init>(I)V", "<init>(II)V":
+		capacity := int32(10)
+		increment := int32(0)
+		if descriptor != "()V" {
+			value, valueErr := r.parameter(2)
+			if valueErr != nil {
+				return 0, valueErr
+			}
+			capacity = int32(value)
+		}
+		if descriptor == "(II)V" {
+			value, valueErr := r.parameter(3)
+			if valueErr != nil {
+				return 0, valueErr
+			}
+			increment = int32(value)
+		}
+		if capacity < 0 {
+			return 0, r.raiseHostJavaException("java/lang/IllegalArgumentException")
+		}
 		r.Vectors[instance] = nil
+		r.vectorCapacities[instance] = uint32(capacity)
+		r.vectorCapacityIncrements[instance] = uint32(increment)
 		return 0, nil
 	case "addElement(Ljava/lang/Object;)V":
 		value, valueErr := r.parameter(2)
 		if valueErr != nil {
 			return 0, valueErr
 		}
+		r.ensureKTFVectorCapacity(instance, len(values)+1)
 		r.Vectors[instance] = append(values, value)
 		return 0, nil
 	case "insertElementAt(Ljava/lang/Object;I)V":
@@ -787,8 +809,9 @@ func (r *Runtime) handleVectorMethod(
 			return 0, valueErr
 		}
 		if index > uint32(len(values)) {
-			return 0, nil
+			return 0, r.raiseHostJavaException("java/lang/ArrayIndexOutOfBoundsException")
 		}
+		r.ensureKTFVectorCapacity(instance, len(values)+1)
 		values = append(values, 0)
 		copy(values[index+1:], values[index:])
 		values[index] = value
@@ -799,6 +822,7 @@ func (r *Runtime) handleVectorMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
+		r.ensureKTFVectorCapacity(instance, len(values)+1)
 		r.Vectors[instance] = append(values, value)
 		return value, nil
 	case "elementAt(I)Ljava/lang/Object;":
@@ -807,7 +831,7 @@ func (r *Runtime) handleVectorMethod(
 			return 0, valueErr
 		}
 		if index >= uint32(len(values)) {
-			return 0, nil
+			return 0, r.raiseHostJavaException("java/lang/ArrayIndexOutOfBoundsException")
 		}
 		return values[index], nil
 	case "setElementAt(Ljava/lang/Object;I)V":
@@ -819,18 +843,20 @@ func (r *Runtime) handleVectorMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		if index < uint32(len(values)) {
-			values[index] = value
+		if index >= uint32(len(values)) {
+			return 0, r.raiseHostJavaException("java/lang/ArrayIndexOutOfBoundsException")
 		}
+		values[index] = value
 		return 0, nil
 	case "removeElementAt(I)V":
 		index, valueErr := r.parameter(2)
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		if index < uint32(len(values)) {
-			r.Vectors[instance] = append(values[:index:index], values[index+1:]...)
+		if index >= uint32(len(values)) {
+			return 0, r.raiseHostJavaException("java/lang/ArrayIndexOutOfBoundsException")
 		}
+		r.Vectors[instance] = append(values[:index:index], values[index+1:]...)
 		return 0, nil
 	case "removeElement(Ljava/lang/Object;)Z":
 		target, valueErr := r.parameter(2)
@@ -850,8 +876,10 @@ func (r *Runtime) handleVectorMethod(
 	case "removeAllElements()V":
 		r.Vectors[instance] = nil
 		return 0, nil
-	case "size()I", "capacity()I":
+	case "size()I":
 		return uint32(len(values)), nil
+	case "capacity()I":
+		return max(r.vectorCapacities[instance], uint32(len(values))), nil
 	case "isEmpty()Z", "empty()Z":
 		if len(values) == 0 {
 			return 1, nil
@@ -868,12 +896,24 @@ func (r *Runtime) handleVectorMethod(
 			}
 		}
 		return 0, nil
-	case "indexOf(Ljava/lang/Object;)I":
+	case "indexOf(Ljava/lang/Object;)I", "indexOf(Ljava/lang/Object;I)I":
 		target, valueErr := r.parameter(2)
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		for index, value := range values {
+		start := 0
+		if descriptor == "(Ljava/lang/Object;I)I" {
+			from, parameterErr := r.signedParameter(3)
+			if parameterErr != nil {
+				return 0, parameterErr
+			}
+			if from < 0 {
+				return ^uint32(0), nil
+			}
+			start = from
+		}
+		for index := start; index < len(values); index++ {
+			value := values[index]
 			if value == target {
 				return uint32(index), nil
 			}
@@ -908,19 +948,29 @@ func (r *Runtime) handleVectorMethod(
 		return 0, nil
 	case "pop()Ljava/lang/Object;":
 		if len(values) == 0 {
-			return 0, nil
+			return 0, r.raiseHostJavaException("java/util/EmptyStackException")
 		}
 		value := values[len(values)-1]
 		r.Vectors[instance] = values[:len(values)-1]
 		return value, nil
 	case "peek()Ljava/lang/Object;":
 		if len(values) == 0 {
-			return 0, nil
+			return 0, r.raiseHostJavaException("java/util/EmptyStackException")
 		}
 		return values[len(values)-1], nil
 	case "elements()Ljava/util/Enumeration;":
 		return r.newJavaEnumeration(values)
-	case "ensureCapacity(I)V", "trimToSize()V":
+	case "ensureCapacity(I)V":
+		minimum, valueErr := r.signedParameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if minimum > 0 {
+			r.ensureKTFVectorCapacity(instance, minimum)
+		}
+		return 0, nil
+	case "trimToSize()V":
+		r.vectorCapacities[instance] = uint32(len(values))
 		return 0, nil
 	case "setSize(I)V":
 		size, valueErr := r.parameter(2)
@@ -933,6 +983,7 @@ func (r *Runtime) handleVectorMethod(
 			)
 		}
 		for uint32(len(values)) < size {
+			r.ensureKTFVectorCapacity(instance, int(size))
 			values = append(values, 0)
 		}
 		r.Vectors[instance] = values[:size]
@@ -994,6 +1045,25 @@ func (r *Runtime) handleVectorMethod(
 	default:
 		return 0, nil
 	}
+}
+
+func (r *Runtime) ensureKTFVectorCapacity(instance uint32, minimum int) {
+	capacity := r.vectorCapacities[instance]
+	if capacity >= uint32(minimum) {
+		return
+	}
+	if capacity == 0 {
+		capacity = 1
+	}
+	increment := r.vectorCapacityIncrements[instance]
+	for capacity < uint32(minimum) {
+		if increment != 0 {
+			capacity += increment
+		} else {
+			capacity *= 2
+		}
+	}
+	r.vectorCapacities[instance] = capacity
 }
 
 func (r *Runtime) javaHashtableKey(instance uint32) string {
@@ -1133,7 +1203,7 @@ func (r *Runtime) handleEnumerationMethod(
 		return 0, nil
 	case "nextElement()Ljava/lang/Object;":
 		if enumeration == nil || enumeration.index >= uint32(len(enumeration.values)) {
-			return 0, nil
+			return 0, r.raiseHostJavaException("java/util/NoSuchElementException")
 		}
 		value := enumeration.values[enumeration.index]
 		enumeration.index++

@@ -401,6 +401,8 @@ type ktfMetadataSnapshot struct {
 	TimeZones                map[uint32]ktfTimeZoneSnapshot
 	CalendarZones            map[uint32]uint32
 	Vectors                  map[uint32][]uint32
+	VectorCapacities         map[uint32]uint32
+	VectorCapacityIncrements map[uint32]uint32
 	Hashtables               map[uint32]map[string]ktfHashtableEntrySnapshot
 	Enumerations             map[uint32]ktfEnumerationSnapshot
 	Clips                    map[uint32]ktfClipSnapshot
@@ -1005,6 +1007,8 @@ func snapshotKTFMetadata(
 		Dates:                    guest.CloneMap(r.dates),
 		CalendarZones:            guest.CloneMap(r.calendarZones),
 		Vectors:                  guest.CloneSliceMap(r.Vectors),
+		VectorCapacities:         guest.CloneMap(r.vectorCapacities),
+		VectorCapacityIncrements: guest.CloneMap(r.vectorCapacityIncrements),
 		Listeners:                guest.CloneMap(r.listeners),
 		LWCEventData:             guest.CloneMap(r.lwcEventData),
 		LWCChildren:              guest.CloneSliceMap(r.lwcChildren),
