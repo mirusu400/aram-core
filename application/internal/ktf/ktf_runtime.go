@@ -233,6 +233,8 @@ type Runtime struct {
 	longValues            map[uint32]int64
 	throwableMessages     map[uint32]uint32
 	dates                 map[uint32]int64
+	timeZones             map[uint32]ktfTimeZone
+	calendarZones         map[uint32]uint32
 	Vectors               map[uint32][]uint32
 	hashtables            map[uint32]map[string]ktfHashtableEntry
 	enumerations          map[uint32]*ktfEnumeration
@@ -564,6 +566,17 @@ type ktfCall struct {
 	number          string
 	requestSequence uint64
 	ppp             bool
+}
+
+type ktfTimeZone struct {
+	id                        string
+	rawOffset                 int32
+	daylight                  bool
+	startYear                 int32
+	startMonth, startWeek     int32
+	startDayOfWeek, startTime int32
+	endMonth, endWeek         int32
+	endDayOfWeek, endTime     int32
 }
 
 type ktfClip struct {

@@ -34,7 +34,8 @@ func validateKTFMetadata(
 		len(meta.HostJavaVirtualSlots), len(meta.UnimplementedJava),
 		len(meta.RandomSeeds), len(meta.IntegerValues),
 		len(meta.LongValues), len(meta.ThrowableMessages),
-		len(meta.Dates), len(meta.Vectors), len(meta.Hashtables),
+		len(meta.Dates), len(meta.TimeZones), len(meta.CalendarZones),
+		len(meta.Vectors), len(meta.Hashtables),
 		len(meta.Enumerations), len(meta.Clips), len(meta.Listeners),
 		len(meta.LWCEventData), len(meta.LWCChildren),
 		len(meta.LWCMaxLengths), len(meta.LWCComponents),
@@ -77,6 +78,19 @@ func validateKTFMetadata(
 		len(meta.JavaCall.Number) > 64 ||
 		strings.IndexByte(meta.JavaCall.Number, 0) >= 0 {
 		return fmt.Errorf("invalid KTF Java call state")
+	}
+	for instance, zone := range meta.TimeZones {
+		if instance == 0 || len(zone.ID) > 64 ||
+			strings.IndexByte(zone.ID, 0) >= 0 ||
+			zone.RawOffset < -24*60*60*1000 ||
+			zone.RawOffset > 24*60*60*1000 {
+			return fmt.Errorf("invalid KTF Java time zone")
+		}
+	}
+	for calendar, zone := range meta.CalendarZones {
+		if calendar == 0 || meta.TimeZones[zone].ID == "" {
+			return fmt.Errorf("invalid KTF Java calendar time zone")
+		}
 	}
 	for index, task := range meta.Tasks {
 		if len(task.Context) > guest.MaxStateContext ||
@@ -470,6 +484,24 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	r.longValues = guest.CloneMap(meta.LongValues)
 	r.throwableMessages = guest.CloneMap(meta.ThrowableMessages)
 	r.dates = guest.CloneMap(meta.Dates)
+	r.timeZones = make(map[uint32]ktfTimeZone, len(meta.TimeZones))
+	for instance, zone := range meta.TimeZones {
+		r.timeZones[instance] = ktfTimeZone{
+			id: zone.ID, rawOffset: zone.RawOffset, daylight: zone.Daylight,
+			startYear: zone.StartYear, startMonth: zone.StartMonth,
+			startWeek: zone.StartWeek, startDayOfWeek: zone.StartDayOfWeek,
+			startTime: zone.StartTime, endMonth: zone.EndMonth,
+			endWeek: zone.EndWeek, endDayOfWeek: zone.EndDayOfWeek,
+			endTime: zone.EndTime,
+		}
+	}
+	r.calendarZones = guest.CloneMap(meta.CalendarZones)
+	if r.timeZones == nil {
+		r.timeZones = make(map[uint32]ktfTimeZone)
+	}
+	if r.calendarZones == nil {
+		r.calendarZones = make(map[uint32]uint32)
+	}
 	r.Vectors = guest.CloneSliceMap(meta.Vectors)
 	r.hashtables = make(
 		map[uint32]map[string]ktfHashtableEntry,

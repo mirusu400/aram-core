@@ -190,6 +190,8 @@ func NewRuntimeForProfile(
 		longValues:            make(map[uint32]int64),
 		throwableMessages:     make(map[uint32]uint32),
 		dates:                 make(map[uint32]int64),
+		timeZones:             make(map[uint32]ktfTimeZone),
+		calendarZones:         make(map[uint32]uint32),
 		Vectors:               make(map[uint32][]uint32),
 		hashtables:            make(map[uint32]map[string]ktfHashtableEntry),
 		enumerations:          make(map[uint32]*ktfEnumeration),

@@ -221,6 +221,17 @@ type ktfCallSnapshot struct {
 	PPP             bool
 }
 
+type ktfTimeZoneSnapshot struct {
+	ID                        string
+	RawOffset                 int32
+	Daylight                  bool
+	StartYear                 int32
+	StartMonth, StartWeek     int32
+	StartDayOfWeek, StartTime int32
+	EndMonth, EndWeek         int32
+	EndDayOfWeek, EndTime     int32
+}
+
 type ktfLWCSnapshot struct {
 	X, Y, Width, Height                                 int32
 	PreferredWidth, PreferredHeight                     int32
@@ -385,6 +396,8 @@ type ktfMetadataSnapshot struct {
 	LongValues               map[uint32]int64
 	ThrowableMessages        map[uint32]uint32
 	Dates                    map[uint32]int64
+	TimeZones                map[uint32]ktfTimeZoneSnapshot
+	CalendarZones            map[uint32]uint32
 	Vectors                  map[uint32][]uint32
 	Hashtables               map[uint32]map[string]ktfHashtableEntrySnapshot
 	Enumerations             map[uint32]ktfEnumerationSnapshot
@@ -988,6 +1001,7 @@ func snapshotKTFMetadata(
 		LongValues:               guest.CloneMap(r.longValues),
 		ThrowableMessages:        guest.CloneMap(r.throwableMessages),
 		Dates:                    guest.CloneMap(r.dates),
+		CalendarZones:            guest.CloneMap(r.calendarZones),
 		Vectors:                  guest.CloneSliceMap(r.Vectors),
 		Listeners:                guest.CloneMap(r.listeners),
 		LWCEventData:             guest.CloneMap(r.lwcEventData),
@@ -1055,6 +1069,17 @@ func snapshotKTFMetadata(
 			return ktfMetadataSnapshot{}, fmt.Errorf("save KTF active task: %w", err)
 		}
 		meta.ActiveTask = index
+	}
+	meta.TimeZones = make(map[uint32]ktfTimeZoneSnapshot, len(r.timeZones))
+	for instance, zone := range r.timeZones {
+		meta.TimeZones[instance] = ktfTimeZoneSnapshot{
+			ID: zone.id, RawOffset: zone.rawOffset, Daylight: zone.daylight,
+			StartYear: zone.startYear, StartMonth: zone.startMonth,
+			StartWeek: zone.startWeek, StartDayOfWeek: zone.startDayOfWeek,
+			StartTime: zone.startTime, EndMonth: zone.endMonth,
+			EndWeek: zone.endWeek, EndDayOfWeek: zone.endDayOfWeek,
+			EndTime: zone.endTime,
+		}
 	}
 
 	hostAddresses := guest.SortedUint32Keys(r.hostCalls)

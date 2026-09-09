@@ -435,6 +435,8 @@ func (r *Runtime) weakTables() []reflect.Value {
 		r.integerValues,
 		r.longValues,
 		r.dates,
+		r.timeZones,
+		r.calendarZones,
 		r.randomSeeds,
 		r.throwableMessages,
 		r.lwcTextInput,
