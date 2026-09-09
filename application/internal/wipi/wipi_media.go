@@ -209,8 +209,18 @@ func (r *Runtime) dispatchMedia(name string) (guest.WIPIReturn, bool, error) {
 	case "MC_mdaStop":
 		return r.setMediaState(clip(), 0)
 	case "MC_mdaRecord":
-		// No microphone/input provider exists. Do not report a successful
-		// transition that the shared service cannot perform.
+		// No microphone or input provider exists, so nothing is recorded. The
+		// spec makes that a successful no-op rather than a failure: recording
+		// through a clip whose type does not support it "아무기능도 하지
+		// 않는다", and the only documented failures are M_E_INUSE and
+		// M_E_ERROR for a clip already recording. Returning an error here is
+		// what broke the media-suite conformance example, which frees the clip
+		// straight after recording it. Nothing claims to have been captured:
+		// the clip stays stopped, its buffer does not grow, and no RECORD
+		// callback is delivered.
+		if current := clip(); current != nil {
+			return guest.WIPIReturn{}, true, nil
+		}
 		return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
 	case "MC_mdaGetVolume":
 		return guest.WIPIReturn{Low: uint32(r.mediaVolume)}, true, nil

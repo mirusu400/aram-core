@@ -2625,3 +2625,31 @@ func TestWIPIRuntimeSavesWithMediaClips(t *testing.T) {
 		}
 	})
 }
+
+// TestWIPIRuntimeRecordIsASuccessfulNoOp pins MC_mdaRecord against the C API.
+// ARAM has no capture provider, and the spec makes recording through a clip
+// whose type does not support it a no-op, not a failure: the only documented
+// errors are M_E_INUSE and M_E_ERROR for a clip already recording. Returning
+// an error left the clip unusable for the very next call, because the
+// media-suite conformance example frees it immediately afterwards.
+func TestWIPIRuntimeRecordIsASuccessfulNoOp(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	mediaType, err := runtime.Heap.Allocate(32, true)
+	check(t, err)
+	if _, err := runtime.writeCString(mediaType, []byte("audio/wav"), -1); err != nil {
+		t.Fatal(err)
+	}
+	handle := dispatchPublicAPI(t, runtime, "MC_mdaClipCreate", mediaType, 96, 0).Low
+	if handle == 0 {
+		t.Fatal("media clip is null")
+	}
+	if got := dispatchPublicAPI(t, runtime, "MC_mdaRecord", handle).Low; got != 0 {
+		t.Fatalf("MC_mdaRecord = %d, want 0", int32(got))
+	}
+	if state := runtime.MediaClips[handle].State; state != 0 {
+		t.Fatalf("MC_mdaRecord moved the clip to state %d, want stopped", state)
+	}
+	if got := dispatchPublicAPI(t, runtime, "MC_mdaClipFree", handle).Low; got != 0 {
+		t.Fatalf("MC_mdaClipFree after record = %d, want 0", int32(got))
+	}
+}
