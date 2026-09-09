@@ -438,6 +438,7 @@ func (vm *VM) installCoreNatives() {
 	vm.installMIDletNatives()
 	vm.installDisplayNatives()
 	vm.installMIDPLCDUINatives()
+	vm.installMIDPGameNatives()
 	vm.installGraphicsNatives()
 	vm.installRecordStoreNatives()
 	vm.installSKTNatives()
