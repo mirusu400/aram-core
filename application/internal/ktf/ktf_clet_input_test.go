@@ -58,3 +58,36 @@ func TestKTFCletCardUsesNativeInputEdgeValues(t *testing.T) {
 		t.Fatalf("ordinary Card release event = %d, want %d", released, KeyReleased)
 	}
 }
+
+// TestKTFInputKeepsTheReservedTaskSlot proves background Java work cannot use
+// the one stack the handset needs to dispatch a key to its displayed card.
+func TestKTFInputKeepsTheReservedTaskSlot(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+
+	class := inspectClass(t, runtime, ensureClass(t, runtime, "Clet$CletCard"))
+	_, err := runtime.addHostJavaMethod(class, "keyNotify", "(II)Z")
+	check(t, err)
+	card, err := runtime.NewJavaInstanceForClass(class)
+	check(t, err)
+
+	const display = uint32(0x10004000)
+	runtime.DefaultDisplay = display
+	runtime.DisplayCards[display] = card
+	runtime.Tasks = make([]*Task, ktfBackgroundTaskLimit)
+	for index := range runtime.Tasks {
+		runtime.Tasks[index] = &Task{}
+	}
+
+	if !runtime.CanQueueKeyEvent() {
+		t.Fatal("a displayed card lost key delivery to background tasks")
+	}
+	queued, err := runtime.QueueKeyEvent(true, -5)
+	check(t, err)
+	if !queued || len(runtime.Tasks) != MaxTasks {
+		t.Fatalf("key queue = %t, tasks=%d", queued, len(runtime.Tasks))
+	}
+	if task := runtime.Tasks[MaxTasks-1]; task.KeyCard != card {
+		t.Fatalf("reserved task card = 0x%08x, want 0x%08x", task.KeyCard, card)
+	}
+}

@@ -1311,7 +1311,7 @@ func (r *Runtime) javaTimerDeadline(delay uint64) uint64 {
 // slot frees. A parked schedule keeps its state as scheduled, so cancel() and
 // scheduledExecutionTime() see it exactly as they see a started one.
 func (r *Runtime) queueJavaTimerTask(task uint32, pending ktfPendingTimer) error {
-	if !r.HasJavaTaskCapacity() {
+	if !r.hasBackgroundJavaTaskCapacity() {
 		if len(r.PendingJavaCalls) >= ktfMaxPendingJavaCalls {
 			return fmt.Errorf(
 				"KTF pending Java call limit %d reached",

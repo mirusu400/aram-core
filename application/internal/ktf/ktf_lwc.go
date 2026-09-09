@@ -1501,7 +1501,7 @@ func (r *Runtime) paintCard(ctx context.Context, card uint32) error {
 		r.tracef("java_paint_coalesce:card=0x%08x", card)
 		return nil
 	}
-	if r.DeferThreads && !r.HasJavaTaskCapacity() {
+	if r.DeferThreads && !r.hasBackgroundJavaTaskCapacity() {
 		// Every task slot is taken by a thread the title started, and most of
 		// them are asleep with a deadline a few milliseconds out. Leaving the
 		// card dirty paints it on a later quantum, once one of them retires;
@@ -1512,7 +1512,7 @@ func (r *Runtime) paintCard(ctx context.Context, card uint32) error {
 	}
 	if r.DeferThreads && r.InputWaiting && r.paintInitializedCards[card] &&
 		card == r.DisplayCards[r.DefaultDisplay] &&
-		r.pendingWIPICTimerTask() == nil && r.HasJavaTaskCapacity() {
+		r.pendingWIPICTimerTask() == nil && r.hasBackgroundJavaTaskCapacity() {
 		// A title whose paint ends by calling repaint() again (아포칼립스's
 		// title screen, 크로스워드's loading bar) re-queued its next paint
 		// here, on the paint task's own return, before the machine could

@@ -281,7 +281,7 @@ func (r *Runtime) QueueJavaVirtual(
 	name, descriptor string,
 	args ...uint32,
 ) error {
-	if !r.HasJavaTaskCapacity() {
+	if !r.hasBackgroundJavaTaskCapacity() {
 		if len(r.PendingJavaCalls) >= ktfMaxPendingJavaCalls {
 			return fmt.Errorf(
 				"KTF pending Java call limit %d reached",
@@ -308,7 +308,7 @@ func (r *Runtime) QueueJavaVirtual(
 }
 
 func (r *Runtime) ActivatePendingJavaCalls() error {
-	for len(r.PendingJavaCalls) != 0 && r.HasJavaTaskCapacity() {
+	for len(r.PendingJavaCalls) != 0 && r.hasBackgroundJavaTaskCapacity() {
 		call := r.PendingJavaCalls[0]
 		copy(r.PendingJavaCalls, r.PendingJavaCalls[1:])
 		r.PendingJavaCalls = r.PendingJavaCalls[:len(r.PendingJavaCalls)-1]
@@ -361,6 +361,33 @@ func (r *Runtime) queueJavaVirtualTask(
 	name, descriptor string,
 	args ...uint32,
 ) (*Task, error) {
+	return r.queueJavaVirtualTaskWithin(
+		ktfBackgroundTaskLimit,
+		instance,
+		name,
+		descriptor,
+		args...,
+	)
+}
+
+// queueJavaInputTask uses the one KTF task stack held back from guest
+// background work. Handset UI dispatch has to stay available while a title's
+// own worker or TimerTask threads are asleep; otherwise a real key can only
+// accumulate in Machine's host queue.
+func (r *Runtime) queueJavaInputTask(
+	instance uint32,
+	name, descriptor string,
+	args ...uint32,
+) (*Task, error) {
+	return r.queueJavaVirtualTaskWithin(MaxTasks, instance, name, descriptor, args...)
+}
+
+func (r *Runtime) queueJavaVirtualTaskWithin(
+	limit int,
+	instance uint32,
+	name, descriptor string,
+	args ...uint32,
+) (*Task, error) {
 	if instance == 0 {
 		return nil, fmt.Errorf(
 			"queue Java method %s%s: instance is null",
@@ -368,15 +395,9 @@ func (r *Runtime) queueJavaVirtualTask(
 			descriptor,
 		)
 	}
-	taskIndex := len(r.Tasks)
-	for index, task := range r.Tasks {
-		if task.Done {
-			taskIndex = index
-			break
-		}
-	}
-	if taskIndex >= MaxTasks {
-		return nil, fmt.Errorf("KTF Java task limit %d reached", MaxTasks)
+	taskIndex, ok := r.nextJavaTaskIndex(limit)
+	if !ok {
+		return nil, fmt.Errorf("KTF Java task limit %d reached", limit)
 	}
 	instanceWords, err := r.ReadWords(instance, 2)
 	if err != nil {
@@ -421,15 +442,33 @@ func (r *Runtime) queueJavaVirtualTask(
 }
 
 func (r *Runtime) HasJavaTaskCapacity() bool {
-	if len(r.Tasks) < MaxTasks {
-		return true
+	_, ok := r.nextJavaTaskIndex(MaxTasks)
+	return ok
+}
+
+const ktfBackgroundTaskLimit = MaxTasks - 1
+
+// hasBackgroundJavaTaskCapacity excludes the one task stack reserved for the
+// primary-display key dispatcher. Guest worker threads, TimerTasks, paints,
+// and carrier callbacks must defer rather than consume that stack.
+func (r *Runtime) hasBackgroundJavaTaskCapacity() bool {
+	_, ok := r.nextJavaTaskIndex(ktfBackgroundTaskLimit)
+	return ok
+}
+
+func (r *Runtime) nextJavaTaskIndex(limit int) (int, bool) {
+	if limit < 0 || limit > MaxTasks {
+		return 0, false
 	}
-	for _, task := range r.Tasks {
-		if task.Done {
-			return true
+	for index := 0; index < len(r.Tasks) && index < limit; index++ {
+		if r.Tasks[index].Done {
+			return index, true
 		}
 	}
-	return false
+	if len(r.Tasks) < limit {
+		return len(r.Tasks), true
+	}
+	return 0, false
 }
 
 // queueKeyEvent posts one handset key event to the card currently on the
@@ -468,7 +507,7 @@ func (r *Runtime) QueueKeyEvent(pressed bool, key int32) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	task, err := r.queueJavaVirtualTask(
+	task, err := r.queueJavaInputTask(
 		card,
 		"keyNotify",
 		"(II)Z",
@@ -1157,14 +1196,8 @@ func (r *Runtime) activateDueWIPICTimers() error {
 	// verdict and does nothing else until it arrives (issue #56).
 	if len(r.pendingNetCallbacks) != 0 {
 		pending := r.pendingNetCallbacks[0]
-		taskIndex := len(r.Tasks)
-		for index, task := range r.Tasks {
-			if task.Done {
-				taskIndex = index
-				break
-			}
-		}
-		if taskIndex >= MaxTasks {
+		taskIndex, ok := r.nextJavaTaskIndex(ktfBackgroundTaskLimit)
+		if !ok {
 			return nil
 		}
 		r.pendingNetCallbacks = r.pendingNetCallbacks[1:]
@@ -1205,14 +1238,8 @@ func (r *Runtime) activateDueWIPICTimers() error {
 			r.pendingMediaCallbacks = r.pendingMediaCallbacks[1:]
 			return nil
 		}
-		taskIndex := len(r.Tasks)
-		for index, task := range r.Tasks {
-			if task.Done {
-				taskIndex = index
-				break
-			}
-		}
-		if taskIndex >= MaxTasks {
+		taskIndex, ok := r.nextJavaTaskIndex(ktfBackgroundTaskLimit)
+		if !ok {
 			return nil
 		}
 		r.pendingMediaCallbacks = r.pendingMediaCallbacks[1:]
@@ -1263,14 +1290,8 @@ func (r *Runtime) activateDueWIPICTimers() error {
 			timer.active = false
 			continue
 		}
-		taskIndex := len(r.Tasks)
-		for index, task := range r.Tasks {
-			if task.Done {
-				taskIndex = index
-				break
-			}
-		}
-		if taskIndex >= MaxTasks {
+		taskIndex, ok := r.nextJavaTaskIndex(ktfBackgroundTaskLimit)
+		if !ok {
 			// Timer callbacks share the cooperative Java/WIPI-C task pool.
 			// A full pool delays the callback until a later host slice; it is
 			// not a guest fault and must not consume the one-shot timer.

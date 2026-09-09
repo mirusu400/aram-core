@@ -309,7 +309,7 @@ func (r *Runtime) handleThreadMethod(
 			// it is what random key input reached on 리얼타짜맞고: the title
 			// starts a network thread per attempt, those threads never end,
 			// and the seventeenth start took the whole title down.
-			if !r.HasJavaTaskCapacity() {
+			if !r.hasBackgroundJavaTaskCapacity() {
 				if len(r.PendingJavaCalls) >= ktfMaxPendingJavaCalls {
 					return 0, fmt.Errorf(
 						"KTF pending Java call limit %d reached",
