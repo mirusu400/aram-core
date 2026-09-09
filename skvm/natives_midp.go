@@ -34,6 +34,7 @@ func (vm *VM) installMIDletNatives() {
 			return ReferenceValue(vm.NewString(value)), true, nil
 		},
 	)
+	vm.installMIDletLifecycleExtras()
 }
 
 func (vm *VM) installDisplayNatives() {

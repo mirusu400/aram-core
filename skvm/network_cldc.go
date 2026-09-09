@@ -77,10 +77,19 @@ func (vm *VM) newServerSocketNotifier(port uint16) uint32 {
 	return reference
 }
 
+func (vm *VM) newServerSocketConnection(port uint16) uint32 {
+	reference := vm.NewObject("javax/microedition/io/ServerSocketConnection", nil)
+	object, _ := vm.Object(reference)
+	object.Fields[serverSocketPortField] = IntValue(int32(port))
+	object.Fields[serverSocketClosedField] = IntValue(0)
+	object.Fields[connectionLocalHostField] = ReferenceValue(vm.NewString("127.0.0.1"))
+	return reference
+}
+
 func (vm *VM) installCLDCServerSocketNatives() {
 	vm.RegisterNative("javax/microedition/io/StreamConnectionNotifier", "acceptAndOpen", "()Ljavax/microedition/io/StreamConnection;", func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
 		object, ok := vm.Object(receiver)
-		if !ok || object.Class != "javax/microedition/io/StreamConnectionNotifier" {
+		if !ok || !vm.classAssignable(object.Class, "javax/microedition/io/StreamConnectionNotifier") {
 			return Value{}, false, fmt.Errorf("invalid StreamConnectionNotifier")
 		}
 		closed, _ := object.Fields[serverSocketClosedField].Int()
@@ -104,7 +113,9 @@ func (vm *VM) installCLDCServerSocketNatives() {
 			}
 			return Value{}, false, vm.newThrowable("java/io/IOException", err.Error())
 		}
-		return ReferenceValue(vm.NewObject("javax/microedition/io/SocketConnection", &socketConnectionState{socket: socket})), true, nil
+		reference := vm.NewObject("javax/microedition/io/SocketConnection", &socketConnectionState{socket: socket})
+		vm.initializeSocketFields(reference, fmt.Sprintf("socket://127.0.0.1:%d", port), "127.0.0.1", int32(port))
+		return ReferenceValue(reference), true, nil
 	})
 	vm.RegisterNative("javax/microedition/io/StreamConnectionNotifier", "close", "()V", func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
 		object, ok := vm.Object(receiver)

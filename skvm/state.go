@@ -425,6 +425,10 @@ func snapshotNative(
 		return nativeState{
 			Kind: "http-connection", Service: state.request, Flag: state.closed,
 		}, nil
+	case *serialConnectionState:
+		return nativeState{
+			Kind: "serial-connection", Service: state.serial, Flag: state.closed,
+		}, nil
 	case *audioClipState:
 		return nativeState{Kind: "audio-clip", Service: state.clip}, nil
 	case *inputStreamReaderState:
@@ -973,6 +977,11 @@ func restoreNative(saved nativeState) (any, nativeLink, error) {
 			request: saved.Service,
 			closed:  saved.Flag,
 		}, nativeLink{}, nil
+	case "serial-connection":
+		if saved.Flag && saved.Service != 0 || !saved.Flag && saved.Service == 0 {
+			return nil, nativeLink{}, fmt.Errorf("invalid serial connection state")
+		}
+		return &serialConnectionState{serial: saved.Service, closed: saved.Flag}, nativeLink{}, nil
 	case "audio-clip":
 		return &audioClipState{clip: saved.Service}, nativeLink{}, nil
 	case "input-stream-reader":
@@ -1353,6 +1362,19 @@ func (vm *VM) validateNative(reference uint32, native any) error {
 			)
 		}
 		return nil
+	case *serialConnectionState:
+		if state.closed {
+			if state.serial != 0 {
+				return fmt.Errorf("load SKVM state: object %d closed serial connection has a service", reference)
+			}
+			return nil
+		}
+		for _, serial := range vm.services.Network.Snapshot().Serial {
+			if serial.ID == state.serial && serial.Owner == vm.serviceOwner && serial.State == shared.ConnectionConnected {
+				return nil
+			}
+		}
+		return fmt.Errorf("load SKVM state: object %d invalid serial connection", reference)
 	case *audioClipState:
 		if state.clip == 0 {
 			return nil

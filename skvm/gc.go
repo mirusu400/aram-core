@@ -240,6 +240,14 @@ func (vm *VM) collectGarbage() error {
 			state.closed = true
 			state.request = 0
 		}
+		if state, ok := object.Native.(*serialConnectionState); ok &&
+			!state.closed && state.serial != 0 {
+			if err := vm.services.Network.CloseSerial(vm.serviceOwner, state.serial, vm.services.Events); err != nil {
+				return fmt.Errorf("collect SKVM serial connection %d: %w", reference, err)
+			}
+			state.closed = true
+			state.serial = 0
+		}
 		delete(vm.heap, reference)
 	}
 	return nil
