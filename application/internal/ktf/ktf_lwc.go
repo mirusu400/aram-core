@@ -10,6 +10,7 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"sort"
 	"strings"
 	"time"
 
@@ -261,31 +262,57 @@ func (r *Runtime) handleLWCMethod(
 	case "org/kwis/msp/lwc/ComboComponent",
 		"org/kwis/msp/lwc/ListComponent":
 		items := r.Vectors[instance]
+		itemCount := len(items)
+		if className == "org/kwis/msp/lwc/ListComponent" {
+			itemCount = max(itemCount, len(r.lwcChildren[instance]))
+		}
 		switch method {
 		case "<init>()V":
 			state.numberVisible = true
+			if className == "org/kwis/msp/lwc/ListComponent" {
+				state.activeIndex = -1
+			}
 			return 0, nil
 		case "<init>(I)V":
-			state.mode = int32(registers[2])
+			mode := int32(registers[2])
+			if className == "org/kwis/msp/lwc/ListComponent" &&
+				(mode < 0 || mode > 2) {
+				return 0, r.raiseHostJavaException("java/lang/IllegalArgumentException")
+			}
+			state.mode = mode
 			state.numberVisible = true
+			state.activeIndex = -1
 			return 0, nil
 		case "append(Ljava/lang/String;)I":
 			r.Vectors[instance] = append(items, registers[2])
 			state.itemImages = append(state.itemImages, 0)
+			r.initializeLWCListSelection(state, len(items)+1)
 			return uint32(len(items)), nil
 		case "append(Ljava/lang/String;Lorg/kwis/msp/lcdui/Image;)I":
 			r.Vectors[instance] = append(items, registers[2])
 			state.itemImages = append(state.itemImages, registers[3])
+			r.initializeLWCListSelection(state, len(items)+1)
 			return uint32(len(items)), nil
-		case "insert(ILjava/lang/String;)I":
+		case "insert(ILjava/lang/String;)I",
+			"insert(ILjava/lang/String;Lorg/kwis/msp/lcdui/Image;)I":
 			index := int(int32(registers[2]))
 			if index < 0 || index > len(items) {
-				return ^uint32(0), nil
+				return 0, r.raiseHostJavaException("java/lang/IndexOutOfBoundsException")
 			}
 			items = append(items, 0)
 			copy(items[index+1:], items[index:])
 			items[index] = registers[3]
 			r.Vectors[instance] = items
+			for len(state.itemImages) < len(items)-1 {
+				state.itemImages = append(state.itemImages, 0)
+			}
+			state.itemImages = append(state.itemImages, 0)
+			copy(state.itemImages[index+1:], state.itemImages[index:])
+			if method == "insert(ILjava/lang/String;Lorg/kwis/msp/lcdui/Image;)I" {
+				state.itemImages[index] = registers[4]
+			}
+			r.shiftLWCListSelection(state, int32(index), 1)
+			r.initializeLWCListSelection(state, len(items))
 			return uint32(index), nil
 		case "delete(I)V":
 			index := int(int32(registers[2]))
@@ -300,18 +327,52 @@ func (r *Runtime) handleLWCMethod(
 						state.itemImages[index+1:]...,
 					)
 				}
+				r.shiftLWCListSelection(state, int32(index), -1)
+				if state.activeIndex >= int32(len(items)-1) {
+					state.activeIndex = int32(len(items) - 2)
+				}
 			}
 			return 0, nil
-		case "set(ILjava/lang/String;)V":
+		case "set(ILjava/lang/String;)V",
+			"set(ILjava/lang/String;Lorg/kwis/msp/lcdui/Image;)V":
 			index := int(int32(registers[2]))
-			if index >= 0 && index < len(items) {
-				items[index] = registers[3]
+			if index < 0 || index >= len(items) {
+				return 0, r.raiseHostJavaException("java/lang/IndexOutOfBoundsException")
+			}
+			items[index] = registers[3]
+			if method == "set(ILjava/lang/String;Lorg/kwis/msp/lcdui/Image;)V" {
+				for len(state.itemImages) < len(items) {
+					state.itemImages = append(state.itemImages, 0)
+				}
+				state.itemImages[index] = registers[4]
 			}
 			return 0, nil
 		case "getSize()I":
-			return uint32(len(items)), nil
+			return uint32(itemCount), nil
 		case "select(I)V":
-			state.activeIndex = int32(registers[2])
+			index := int32(registers[2])
+			if index < -1 || index >= int32(itemCount) {
+				return 0, r.raiseHostJavaException("java/lang/IndexOutOfBoundsException")
+			}
+			if index == -1 && state.mode == 1 && itemCount != 0 {
+				index = 0
+			}
+			r.selectLWCListIndex(state, index, false)
+			return 0, nil
+		case "select(Lorg/kwis/msp/lwc/ListItemComponent;)V":
+			component := registers[2]
+			index := int32(-1)
+			for candidate, child := range r.lwcChildren[instance] {
+				if child == component {
+					index = int32(candidate)
+					break
+				}
+			}
+			if index < 0 {
+				return 0, r.raiseHostJavaException("java/lang/IllegalArgumentException")
+			}
+			r.selectLWCListIndex(state, index, state.mode == 2)
+			r.lwcComponent(component).selected = state.selectedItems[index]
 			return 0, nil
 		case "getSelectedIndex()I":
 			return uint32(state.activeIndex), nil
@@ -321,6 +382,31 @@ func (r *Runtime) handleLWCMethod(
 				return 0, nil
 			}
 			return items[index], nil
+		case "getString(I)Ljava/lang/String;":
+			index := int(int32(registers[2]))
+			if index < 0 || index >= len(items) {
+				return 0, r.raiseHostJavaException("java/lang/IndexOutOfBoundsException")
+			}
+			return items[index], nil
+		case "isSelected(I)Z":
+			index := int32(registers[2])
+			if index < 0 || index >= int32(itemCount) {
+				return 0, r.raiseHostJavaException("java/lang/IndexOutOfBoundsException")
+			}
+			if state.mode == 0 {
+				return boolWord(state.activeIndex == index), nil
+			}
+			return boolWord(state.selectedItems[index]), nil
+		case "getSelectedIndexs()[I":
+			selected := r.lwcListSelectedIndices(state, itemCount)
+			if len(selected) == 0 {
+				return 0, nil
+			}
+			values := make([]uint32, len(selected))
+			for index, value := range selected {
+				values[index] = uint32(value)
+			}
+			return r.newJavaIntArray(values)
 		case "getImage(I)Lorg/kwis/msp/lcdui/Image;":
 			index := int(int32(registers[2]))
 			if index < 0 || index >= len(state.itemImages) {
@@ -331,6 +417,8 @@ func (r *Runtime) handleLWCMethod(
 			state.numberVisible = registers[2] != 0
 			r.invalidateLWC(instance)
 			return 0, nil
+		case "isControlNumber()Z":
+			return boolWord(state.numberVisible), nil
 		}
 	case "org/kwis/msp/lwc/Command":
 		switch method {
@@ -1213,6 +1301,104 @@ func (r *Runtime) lwcComponent(instance uint32) *ktfLWCComponent {
 		classAddress = class.Parent
 	}
 	return state
+}
+
+func (r *Runtime) initializeLWCListSelection(state *ktfLWCComponent, count int) {
+	if state == nil || count != 1 || state.mode == 2 {
+		return
+	}
+	state.activeIndex = 0
+	if state.selectedItems == nil {
+		state.selectedItems = make(map[int32]bool)
+	}
+	state.selectedItems[0] = true
+}
+
+func (r *Runtime) shiftLWCListSelection(
+	state *ktfLWCComponent,
+	from, delta int32,
+) {
+	if state == nil || delta == 0 {
+		return
+	}
+	shifted := make(map[int32]bool, len(state.selectedItems))
+	for index, selected := range state.selectedItems {
+		if !selected {
+			continue
+		}
+		if delta > 0 && index >= from {
+			index += delta
+		} else if delta < 0 {
+			if index == from {
+				continue
+			}
+			if index > from {
+				index += delta
+			}
+		}
+		if index >= 0 {
+			shifted[index] = true
+		}
+	}
+	state.selectedItems = shifted
+	if delta > 0 && state.activeIndex >= from {
+		state.activeIndex += delta
+	} else if delta < 0 && state.activeIndex > from {
+		state.activeIndex += delta
+	} else if delta < 0 && state.activeIndex == from {
+		state.activeIndex = -1
+	}
+}
+
+func (r *Runtime) selectLWCListIndex(
+	state *ktfLWCComponent,
+	index int32,
+	toggle bool,
+) {
+	if state.selectedItems == nil {
+		state.selectedItems = make(map[int32]bool)
+	}
+	if index < 0 {
+		clear(state.selectedItems)
+		state.activeIndex = -1
+		return
+	}
+	state.activeIndex = index
+	if state.mode != 2 {
+		clear(state.selectedItems)
+		state.selectedItems[index] = true
+		return
+	}
+	if toggle && state.selectedItems[index] {
+		delete(state.selectedItems, index)
+		return
+	}
+	state.selectedItems[index] = true
+}
+
+func (r *Runtime) lwcListSelectedIndices(
+	state *ktfLWCComponent,
+	count int,
+) []int32 {
+	if state == nil {
+		return nil
+	}
+	if state.mode == 0 {
+		if state.activeIndex >= 0 && state.activeIndex < int32(count) {
+			return []int32{state.activeIndex}
+		}
+		return nil
+	}
+	selected := make([]int32, 0, len(state.selectedItems))
+	for index, value := range state.selectedItems {
+		if value && index >= 0 && index < int32(count) {
+			selected = append(selected, index)
+		}
+	}
+	sort.Slice(selected, func(left, right int) bool {
+		return selected[left] < selected[right]
+	})
+	return selected
 }
 
 func (r *Runtime) initializeLWCShell(state *ktfLWCComponent) {

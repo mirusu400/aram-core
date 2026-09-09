@@ -2,6 +2,8 @@ package ktf
 
 import (
 	"context"
+	"image"
+	"image/color"
 	"testing"
 )
 
@@ -93,6 +95,129 @@ func TestKTFWIPI2MutableAnimateImageStoresFramesAndRates(t *testing.T) {
 	check(t, err)
 	if frame != state.frames[1] {
 		t.Fatalf("AnimateImage frame = 0x%08x, want 0x%08x", frame, state.frames[1])
+	}
+}
+
+func TestKTFWIPI2GraphicsExtensionsRenderPixelsAndReset(t *testing.T) {
+	runtime := newTestRuntime(t)
+	graphics := newHostObject(t, runtime, "org/kwis/msp/lcdui/Graphics")
+	target := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	runtime.Graphics[graphics] = &ktfGraphics{
+		Target: target,
+		clip:   target.Bounds(),
+		color:  color.RGBA{R: 0xff, A: 0xff},
+	}
+	xs, err := runtime.newJavaIntArray([]uint32{1, 6, 1})
+	check(t, err)
+	ys, err := runtime.newJavaIntArray([]uint32{1, 1, 6})
+	check(t, err)
+	parameters := allocWords(t, runtime, 9)
+	runtime.NativeParameterBase = parameters
+	t.Cleanup(func() { runtime.NativeParameterBase = 0 })
+	check(t, runtime.writeWords(parameters, []uint32{graphics, xs, ys, 0, 0, 0, 0, 0, 0}))
+	_, err = runtime.handleGraphicsMethod("fillPolygon", "([I[I)V")
+	check(t, err)
+	red := color.RGBAModel.Convert(target.At(2, 2)).(color.RGBA)
+	if red.R != 0xff || red.A != 0xff {
+		t.Fatalf("filled polygon pixel = %#v", red)
+	}
+
+	pixels, err := runtime.newJavaByteArray([]byte{0x20, 0x40, 0x60, 0x80})
+	check(t, err)
+	check(t, runtime.writeWords(parameters, []uint32{graphics, 3, 3, 2, 2, pixels, 0, 2, 0}))
+	_, err = runtime.handleGraphicsMethod("setPixels", "(IIII[BII)V")
+	check(t, err)
+	gray := color.RGBAModel.Convert(target.At(4, 4)).(color.RGBA)
+	if gray.R != 0x80 || gray.G != 0x80 || gray.B != 0x80 {
+		t.Fatalf("setPixels pixel = %#v", gray)
+	}
+
+	state := runtime.Graphics[graphics]
+	state.translate = image.Pt(3, 4)
+	state.clip = image.Rect(2, 2, 4, 4)
+	state.color = color.RGBA{R: 1, G: 2, B: 3, A: 4}
+	state.xorMode = true
+	check(t, runtime.writeWords(parameters, []uint32{graphics, 0, 0, 0, 0, 0, 0, 0, 0}))
+	_, err = runtime.handleGraphicsMethod("reset", "()V")
+	check(t, err)
+	if state.translate != (image.Point{}) || state.clip != target.Bounds() ||
+		state.color != (color.RGBA{A: 0xff}) || state.xorMode {
+		t.Fatalf("reset graphics state = %+v", state)
+	}
+}
+
+func TestKTFWIPI2ListSelectionAndImageOverloadsAreStateful(t *testing.T) {
+	runtime := newTestRuntime(t)
+	list := newHostObject(t, runtime, "org/kwis/msp/lwc/ListComponent")
+	first := newJavaString(t, runtime, "first")
+	second := newJavaString(t, runtime, "second")
+	imageObject := newHostObject(t, runtime, "org/kwis/msp/lcdui/Image")
+	_, err := runtime.handleLWCMethod(
+		context.Background(), "org/kwis/msp/lwc/ListComponent", "<init>",
+		"(I)V", []uint32{0, list, 2},
+	)
+	check(t, err)
+	_, err = runtime.handleLWCMethod(
+		context.Background(), "org/kwis/msp/lwc/ListComponent", "append",
+		"(Ljava/lang/String;Lorg/kwis/msp/lcdui/Image;)I",
+		[]uint32{0, list, first, 0},
+	)
+	check(t, err)
+	_, err = runtime.handleLWCMethod(
+		context.Background(), "org/kwis/msp/lwc/ListComponent", "insert",
+		"(ILjava/lang/String;Lorg/kwis/msp/lcdui/Image;)I",
+		[]uint32{0, list, 0, second, imageObject},
+	)
+	check(t, err)
+	_, err = runtime.handleLWCMethod(
+		context.Background(), "org/kwis/msp/lwc/ListComponent", "select",
+		"(I)V", []uint32{0, list, 0},
+	)
+	check(t, err)
+	selected, err := runtime.handleLWCMethod(
+		context.Background(), "org/kwis/msp/lwc/ListComponent", "isSelected",
+		"(I)Z", []uint32{0, list, 0},
+	)
+	check(t, err)
+	if selected != 1 || runtime.Vectors[list][0] != second ||
+		runtime.lwcComponent(list).itemImages[0] != imageObject {
+		t.Fatalf("list state = %+v", runtime.lwcComponent(list))
+	}
+	snapshot := snapshotKTFLWC(runtime.lwcComponent(list))
+	restored := restoreKTFLWC(snapshot)
+	if !restored.selectedItems[0] {
+		t.Fatalf("restored selection = %+v", restored.selectedItems)
+	}
+}
+
+func TestKTFWIPI2VolumeSettingsRoundTrip(t *testing.T) {
+	runtime := newTestRuntime(t)
+	parameters := allocWords(t, runtime, 3)
+	runtime.NativeParameterBase = parameters
+	t.Cleanup(func() { runtime.NativeParameterBase = 0 })
+	check(t, runtime.writeWords(parameters, []uint32{7, 1, 0}))
+	_, err := runtime.handleWIPI2VolumeMethod("setMuteState", "(IZ)V")
+	check(t, err)
+	muted, err := runtime.handleWIPI2VolumeMethod("getMute", "(I)Z")
+	check(t, err)
+	if muted != 1 {
+		t.Fatalf("getMute = %d", muted)
+	}
+	check(t, runtime.writeWords(parameters, []uint32{7, 35, 0}))
+	_, err = runtime.handleWIPI2VolumeMethod("setDefaultVolume", "(II)V")
+	check(t, err)
+	volume, err := runtime.handleWIPI2VolumeMethod("getDefaultVolume", "(I)I")
+	check(t, err)
+	if volume != 35 {
+		t.Fatalf("getDefaultVolume = %d", volume)
+	}
+	check(t, runtime.writeWords(parameters, []uint32{64, 0, 0}))
+	_, err = runtime.handleWIPI2VolumeMethod("set", "(I)V")
+	check(t, err)
+	volume, err = runtime.handleWIPI2VolumeMethod("get", "()I")
+	check(t, err)
+	if volume != 64 {
+		t.Fatalf("Volume.get = %d", volume)
 	}
 }
 
@@ -401,6 +526,25 @@ func TestKTFWIPI2ResourceGroupStoresMetadataAndData(t *testing.T) {
 	check(t, err)
 	if count != 1 {
 		t.Fatalf("ResourceGroup.getCount = %d, want 1", count)
+	}
+	infoType := newJavaString(t, runtime, "NAME")
+	check(t, runtime.writeWords(parameters, []uint32{group, infoType, 0, 0, 0, 0, 0}))
+	groupInfo, err := runtime.handleWIPI2ResourceGroupMethod(
+		"getGroupInfo", "(Ljava/lang/String;)[B",
+	)
+	check(t, err)
+	encodedGroup, err := runtime.readJavaByteArray(groupInfo)
+	check(t, err)
+	if string(encodedGroup) != "image" {
+		t.Fatalf("ResourceGroup.getGroupInfo = %q", encodedGroup)
+	}
+	check(t, runtime.writeWords(parameters, []uint32{group, resourceName, 0, 0, 0, 0, 0}))
+	_, err = runtime.handleWIPI2ResourceGroupMethod(
+		"deleteData", "(Ljava/lang/String;)V",
+	)
+	check(t, err)
+	if len(runtime.wipi2Resources["image"]) != 0 {
+		t.Fatal("ResourceGroup.deleteData(void) kept the resource")
 	}
 }
 

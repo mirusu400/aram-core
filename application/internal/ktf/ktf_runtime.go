@@ -241,6 +241,9 @@ type Runtime struct {
 	hashtables               map[uint32]map[string]ktfHashtableEntry
 	enumerations             map[uint32]*ktfEnumeration
 	clips                    map[uint32]*ktfClip
+	mediaVolume              int32
+	mediaMute                map[int32]bool
+	mediaDefaultVolumes      map[int32]int32
 	listeners                map[uint32]uint32
 	lwcEventData             map[uint32]uint32
 	lwcChildren              map[uint32][]uint32
@@ -888,6 +891,7 @@ type ktfLWCComponent struct {
 	date            uint32
 	timeZone        uint32
 	itemImages      []uint32
+	selectedItems   map[int32]bool
 	grabListener    uint32
 	grabObject      uint32
 	grabbedKeys     map[int32]bool

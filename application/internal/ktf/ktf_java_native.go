@@ -1060,7 +1060,9 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 			return runtime.handleAnimateImageMethod(name, descriptor)
 		case "org/kwis/msp/lcdui/Graphics":
 			return runtime.handleGraphicsMethod(name, descriptor)
-		case "org/kwis/msp/media/Volume", "org/kwis/msf/io/Network":
+		case "org/kwis/msp/media/Volume":
+			return runtime.handleWIPI2VolumeMethod(name, descriptor)
+		case "org/kwis/msf/io/Network":
 			return 0, nil
 		case "org/kwis/msp/media/BaseClip", "org/kwis/msp/media/Clip",
 			"org/kwis/msp/media/Player", "org/kwis/msp/media/Camera",

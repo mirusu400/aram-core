@@ -217,6 +217,69 @@ func init() {
 		ktfCompatibilityMethod("record", "(Lorg/kwis/msp/media/BaseClip;)Z", 0x0008),
 	)
 	HostJavaClassSpecs["org/kwis/msp/media/Player"] = playerSpec
+	fileSpec := HostJavaClassSpecs["org/kwis/msp/io/File"]
+	fileSpec.fields = append(fileSpec.fields,
+		ktfHostJavaFieldSpec{name: "maxInputStream", descriptor: "I"},
+		ktfHostJavaFieldSpec{name: "maxOutputStream", descriptor: "I"},
+	)
+	fileSpec.methods = append(fileSpec.methods,
+		ktfHostJavaMethodSpec{name: "read", descriptor: "()I"},
+		ktfHostJavaMethodSpec{name: "tell", descriptor: "()I"},
+	)
+	HostJavaClassSpecs["org/kwis/msp/io/File"] = fileSpec
+	messageSpec := HostJavaClassSpecs["org/kwis/msf/io/Message"]
+	messageSpec.methods = append(messageSpec.methods,
+		// WIPI 2.0 printed these setter overloads with a get prefix. Real
+		// handsets accepted both spellings, so retain the document ABI too.
+		ktfHostJavaMethodSpec{name: "getAddressInt", descriptor: "(I)V"},
+		ktfHostJavaMethodSpec{name: "getDate", descriptor: "(Ljava/util/Date;)V"},
+	)
+	HostJavaClassSpecs["org/kwis/msf/io/Message"] = messageSpec
+	graphicsSpec := HostJavaClassSpecs["org/kwis/msp/lcdui/Graphics"]
+	graphicsSpec.methods = append(graphicsSpec.methods,
+		ktfHostJavaMethodSpec{name: "fillPolygon", descriptor: "([I[I)V"},
+		ktfHostJavaMethodSpec{name: "reset", descriptor: "()V"},
+		ktfHostJavaMethodSpec{name: "setPixels", descriptor: "(IIII[BII)V"},
+	)
+	HostJavaClassSpecs["org/kwis/msp/lcdui/Graphics"] = graphicsSpec
+	componentSpec := HostJavaClassSpecs["org/kwis/msp/lwc/Component"]
+	componentSpec.methods = append(componentSpec.methods,
+		ktfHostJavaMethodSpec{name: "keyNotify", descriptor: "(II)Z", access: 0x0004},
+		ktfHostJavaMethodSpec{name: "layout", descriptor: "()V", access: 0x0004},
+		ktfHostJavaMethodSpec{name: "paintContent", descriptor: "(Lorg/kwis/msp/lcdui/Graphics;)V"},
+		ktfHostJavaMethodSpec{name: "pointerNotify", descriptor: "(III)Z", access: 0x0004},
+		ktfHostJavaMethodSpec{name: "processEvent", descriptor: "(IIII)Z", access: 0x0004},
+		ktfHostJavaMethodSpec{name: "repaint", descriptor: "()V"},
+		ktfHostJavaMethodSpec{name: "repaint", descriptor: "(IIII)V"},
+		ktfHostJavaMethodSpec{name: "serviceRepaints", descriptor: "()V"},
+		ktfHostJavaMethodSpec{name: "setBackground", descriptor: "(I)V"},
+		ktfHostJavaMethodSpec{name: "setEventListener", descriptor: "(Lorg/kwis/msp/lwc/EventListener;Ljava/lang/Object;)V"},
+		ktfHostJavaMethodSpec{name: "setFocus", descriptor: "()V"},
+		ktfHostJavaMethodSpec{name: "setForeground", descriptor: "(I)V"},
+		ktfHostJavaMethodSpec{name: "showNotify", descriptor: "(Z)V", access: 0x0004},
+		ktfHostJavaMethodSpec{name: "validate", descriptor: "()V"},
+	)
+	HostJavaClassSpecs["org/kwis/msp/lwc/Component"] = componentSpec
+	listSpec := HostJavaClassSpecs["org/kwis/msp/lwc/ListComponent"]
+	listSpec.methods = append(listSpec.methods,
+		ktfHostJavaMethodSpec{name: "getSelectedIndexs", descriptor: "()[I"},
+		ktfHostJavaMethodSpec{name: "getString", descriptor: "(I)Ljava/lang/String;"},
+		ktfHostJavaMethodSpec{name: "insert", descriptor: "(ILjava/lang/String;Lorg/kwis/msp/lcdui/Image;)I"},
+		ktfHostJavaMethodSpec{name: "isControlNumber", descriptor: "()Z"},
+		ktfHostJavaMethodSpec{name: "isSelected", descriptor: "(I)Z"},
+		ktfHostJavaMethodSpec{name: "select", descriptor: "(Lorg/kwis/msp/lwc/ListItemComponent;)V"},
+		ktfHostJavaMethodSpec{name: "set", descriptor: "(ILjava/lang/String;Lorg/kwis/msp/lcdui/Image;)V"},
+	)
+	HostJavaClassSpecs["org/kwis/msp/lwc/ListComponent"] = listSpec
+	volumeSpec := HostJavaClassSpecs["org/kwis/msp/media/Volume"]
+	volumeSpec.methods = append(volumeSpec.methods,
+		ktfHostJavaMethodSpec{name: "getMute", descriptor: "(I)Z", access: 0x0008},
+		ktfHostJavaMethodSpec{name: "setMute", descriptor: "(IZ)V", access: 0x0008},
+		ktfHostJavaMethodSpec{name: "setMuteState", descriptor: "(IZ)V", access: 0x0008},
+		ktfHostJavaMethodSpec{name: "getDefaultVolume", descriptor: "(I)I", access: 0x0008},
+		ktfHostJavaMethodSpec{name: "setDefaultVolume", descriptor: "(II)V", access: 0x0008},
+	)
+	HostJavaClassSpecs["org/kwis/msp/media/Volume"] = volumeSpec
 	HostJavaClassSpecs["org/kwis/msp/media/PlayerListener"] = ktfHostJavaClassSpec{
 		Parent: "java/lang/Object",
 		access: 0x0601,
@@ -417,9 +480,10 @@ func init() {
 			{name: "checkPassword", descriptor: "(Ljava/lang/String;)I"},
 			{name: "checkPassword", descriptor: "(Ljava/lang/String;)Z", access: 0x0008},
 			{name: "deleteData", descriptor: "(Ljava/lang/String;)I"},
+			{name: "deleteData", descriptor: "(Ljava/lang/String;)V"},
 			{name: "getCount", descriptor: "()I"},
 			{name: "getData", descriptor: "(Ljava/lang/String;)[B"},
-			{name: "getFreeSpace", descriptor: "()I"},
+			{name: "getFreeSpace", descriptor: "()I", access: 0x0008},
 			{name: "getFormat", descriptor: "(Ljava/lang/String;)Ljava/lang/String;"},
 			{name: "getID", descriptor: "(Ljava/lang/String;)Ljava/lang/String;"},
 			{name: "getList", descriptor: "()[Ljava/lang/String;"},
@@ -440,6 +504,7 @@ func init() {
 			{name: "exists", descriptor: "(Ljava/lang/String;)Z"},
 			{name: "getGroupInfo", descriptor: "(Ljava/lang/String;)Ljava/lang/String;"},
 			{name: "getGroupInfo", descriptor: "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"},
+			{name: "getGroupInfo", descriptor: "(Ljava/lang/String;)[B"},
 			{name: "getInfo", descriptor: "(Ljava/lang/String;Ljava/lang/String;)[B"},
 			{name: "search", descriptor: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Z)[Ljava/lang/String;", access: 0x0008},
 			{name: "getUIName", descriptor: "(Ljava/lang/String;)Ljava/lang/String;"},
@@ -621,13 +686,54 @@ func (r *Runtime) handleWIPI2ResourceGroupMethod(name, descriptor string) (uint3
 	if signature == "getSupportedGroups()[Ljava/lang/String;" {
 		return r.newWIPI2StringArray(r.sortedWIPI2ResourceGroupNames(""))
 	}
-	if signature == "getRegisteredGroup(Ljava/lang/String;)[Ljava/lang/String;" ||
-		signature == "getRegisteredInfo(Ljava/lang/String;)[Ljava/lang/String;" {
+	if signature == "getFreeSpace()I" {
+		var used int
+		for _, resources := range r.wipi2Resources {
+			for _, resource := range resources {
+				used += len(resource.data)
+			}
+		}
+		return uint32(max(0, 1024*1024-used)), nil
+	}
+	if signature == "getRegisteredGroup(Ljava/lang/String;)[Ljava/lang/String;" {
 		state, err := r.parameter(1)
 		if err != nil {
 			return 0, err
 		}
 		return r.newWIPI2StringArray(r.sortedWIPI2ResourceGroupNames(r.javaStringValue(state)))
+	}
+	if signature == "getRegisteredInfo(Ljava/lang/String;)[Ljava/lang/String;" {
+		state, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		// WIPI 2.0 declared this as an instance method, while 2.2 made the
+		// identical descriptor static. An old invokevirtual leaves its receiver
+		// in the first slot; recognize it and read the state from the next slot.
+		if group := r.wipi2ResourceGroups[state]; group != nil {
+			state, err = r.parameter(2)
+			if err != nil {
+				return 0, err
+			}
+			var names []string
+			for name, resource := range r.wipi2Resources[group.name] {
+				if r.javaStringValue(state) == "" || resource.state == r.javaStringValue(state) {
+					names = append(names, name)
+				}
+			}
+			sort.Strings(names)
+			return r.newWIPI2StringArray(names)
+		}
+		var names []string
+		for groupName, resources := range r.wipi2Resources {
+			for name, resource := range resources {
+				if r.javaStringValue(state) == "" || resource.state == r.javaStringValue(state) {
+					names = append(names, groupName+";"+name)
+				}
+			}
+		}
+		sort.Strings(names)
+		return r.newWIPI2StringArray(names)
 	}
 	if signature == "search(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Z)[Ljava/lang/String;" {
 		return r.searchWIPI2Resources()
@@ -662,12 +768,6 @@ func (r *Runtime) handleWIPI2ResourceGroupMethod(name, descriptor string) (uint3
 		return 0, nil
 	case "getCount()I":
 		return uint32(len(resources)), nil
-	case "getFreeSpace()I":
-		var used int
-		for _, resource := range resources {
-			used += len(resource.data)
-		}
-		return uint32(max(0, 1024*1024-used)), nil
 	case "getGroupLockStatus()I":
 		return uint32(group.lockStatus), nil
 	case "setGroupLockStatus(I)I", "setGroupLockStatus(I)V":
@@ -696,7 +796,7 @@ func (r *Runtime) handleWIPI2ResourceGroupMethod(name, descriptor string) (uint3
 			return 1, nil
 		}
 		return 0, nil
-	case "deleteData(Ljava/lang/String;)I":
+	case "deleteData(Ljava/lang/String;)I", "deleteData(Ljava/lang/String;)V":
 		if resource == nil {
 			return ^uint32(0), nil
 		}
@@ -755,6 +855,8 @@ func (r *Runtime) handleWIPI2ResourceGroupMethod(name, descriptor string) (uint3
 		return r.newWIPI2StringArray(names)
 	case "getGroupInfo(Ljava/lang/String;)Ljava/lang/String;":
 		return r.NewJavaString(group.name)
+	case "getGroupInfo(Ljava/lang/String;)[B":
+		return r.newJavaByteArray([]byte(group.name))
 	case "getGroupInfo(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;":
 		typeAddress, valueErr := r.parameter(3)
 		if valueErr != nil {

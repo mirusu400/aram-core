@@ -550,6 +550,19 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 			waterMark:       clip.WaterMark, waterMarkActive: clip.WaterMarkActive,
 		}
 	}
+	r.mediaVolume = meta.MediaVolume
+	if r.mediaVolume == 0 && meta.MediaDefaultVolumes == nil && meta.MediaMute == nil {
+		// Saves from before the WIPI 2 Volume model used no metadata fields.
+		r.mediaVolume = 100
+	}
+	r.mediaMute = guest.CloneMap(meta.MediaMute)
+	if r.mediaMute == nil {
+		r.mediaMute = make(map[int32]bool)
+	}
+	r.mediaDefaultVolumes = guest.CloneMap(meta.MediaDefaultVolumes)
+	if r.mediaDefaultVolumes == nil {
+		r.mediaDefaultVolumes = make(map[int32]int32)
+	}
 	r.listeners = guest.CloneMap(meta.Listeners)
 	r.lwcEventData = guest.CloneMap(meta.LWCEventData)
 	r.lwcChildren = guest.CloneSliceMap(meta.LWCChildren)
@@ -826,6 +839,12 @@ func restoreKTFLWC(value ktfLWCSnapshot) *ktfLWCComponent {
 		delay: value.Delay, activeIndex: value.ActiveIndex,
 		framed: value.Framed, commandGrabs: value.CommandGrabs,
 		selected: value.Selected, numberVisible: value.NumberVisible,
+	}
+	if len(value.SelectedItems) != 0 {
+		result.selectedItems = make(map[int32]bool, len(value.SelectedItems))
+		for _, index := range value.SelectedItems {
+			result.selectedItems[index] = true
+		}
 	}
 	if len(value.GrabbedKeys) != 0 {
 		result.grabbedKeys = make(map[int32]bool, len(value.GrabbedKeys))

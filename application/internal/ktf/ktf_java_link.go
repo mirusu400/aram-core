@@ -866,6 +866,12 @@ func (r *Runtime) hostJavaStaticFieldValue(
 			return 64, nil
 		}
 	}
+	if className == "org/kwis/msp/io/FileSystem" && name == "MAX_FILENAME_LENGTH" {
+		return uint32(min(
+			r.Services.Config.Limits.Storage.MaxPathBytes,
+			uint32(0x7fffffff),
+		)), nil
+	}
 	return 0, nil
 }
 
@@ -962,6 +968,96 @@ func javaStaticConstantBits(className, name string) (uint64, bool) {
 		return 4, true
 	case "org/kwis/msp/handset/GPSProvider.REQUEST_STOP":
 		return uint64(^uint32(0)), true
+	case "org/kwis/msp/io/File.READ_ONLY",
+		"org/kwis/msp/io/FileSystem.PRIVATE_ACCESS":
+		return 1, true
+	case "org/kwis/msp/io/File.WRITE",
+		"org/kwis/msp/io/FileSystem.SHARED_ACCESS":
+		return 2, true
+	case "org/kwis/msp/io/File.WRITE_TRUNC",
+		"org/kwis/msp/io/FileSystem.SYSTEM_ACCESS":
+		return 3, true
+	case "org/kwis/msp/io/File.READ_WRITE":
+		return 4, true
+	case "org/kwis/msp/lwc/ListComponent.SELECT_IMPLICIT",
+		"org/kwis/msp/media/Volume.VOLTYPE_GENERAL":
+		return 0, true
+	case "org/kwis/msp/lwc/ListComponent.SELECT_EXCLUSIVE",
+		"org/kwis/msp/media/Volume.VOLTYPE_VOICE":
+		return 1, true
+	case "org/kwis/msp/lwc/ListComponent.SELECT_MULTIPLE",
+		"org/kwis/msp/media/Volume.VOLTYPE_RING":
+		return 2, true
+	case "org/kwis/msp/media/Volume.VOLTYPE_KEYTONE":
+		return 3, true
+	case "org/kwis/msp/media/Volume.VOLTYPE_MESSAGE":
+		return 4, true
+	case "org/kwis/msp/media/Volume.VOLTYPE_ALARM":
+		return 5, true
+	case "org/kwis/msp/media/Volume.VOLTYPE_ALERT":
+		return 6, true
+	case "org/kwis/msp/media/Volume.VOLTYPE_MMEDIA":
+		return 7, true
+	case "org/kwis/msp/media/Volume.VOLTYPE_GAME":
+		return 8, true
+	case "org/kwis/msp/media/PlayListener.ERROR",
+		"org/kwis/msp/media/PlayerListener.ERROR":
+		return uint64(^uint32(0)), true
+	case "org/kwis/msp/media/PlayListener.END_OF_DATA",
+		"org/kwis/msp/media/PlayerListener.END_OF_DATA":
+		return 1, true
+	case "org/kwis/msp/media/PlayListener.START",
+		"org/kwis/msp/media/PlayListener.STARTED",
+		"org/kwis/msp/media/PlayerListener.START",
+		"org/kwis/msp/media/PlayerListener.STARTED":
+		return 2, true
+	case "org/kwis/msp/media/PlayListener.STOP",
+		"org/kwis/msp/media/PlayListener.STOPPED",
+		"org/kwis/msp/media/PlayerListener.STOP",
+		"org/kwis/msp/media/PlayerListener.STOPPED":
+		return 3, true
+	case "org/kwis/msp/media/PlayListener.PAUSE",
+		"org/kwis/msp/media/PlayListener.PAUSED",
+		"org/kwis/msp/media/PlayerListener.PAUSE",
+		"org/kwis/msp/media/PlayerListener.PAUSED":
+		return 4, true
+	case "org/kwis/msp/media/PlayListener.RESUME",
+		"org/kwis/msp/media/PlayListener.RESUMED",
+		"org/kwis/msp/media/PlayerListener.RESUME",
+		"org/kwis/msp/media/PlayerListener.RESUMED":
+		return 5, true
+	case "org/kwis/msp/media/PlayListener.RECORD",
+		"org/kwis/msp/media/PlayListener.RECORDED",
+		"org/kwis/msp/media/PlayerListener.RECORD",
+		"org/kwis/msp/media/PlayerListener.RECORDED":
+		return 6, true
+	case "org/kwis/msp/media/PlayListener.FULL_OF_DATA",
+		"org/kwis/msp/media/PlayerListener.FULL_OF_DATA":
+		return 7, true
+	case "org/kwis/msp/media/Camera.DETECT",
+		"org/kwis/msp/media/Camera.NORMAL":
+		return 0, true
+	case "org/kwis/msp/media/Camera.MODEL",
+		"org/kwis/msp/media/Camera.HORZ_REVERSE":
+		return 1, true
+	case "org/kwis/msp/media/Camera.GET_MODE_LIST",
+		"org/kwis/msp/media/Camera.VERT_REVERSE":
+		return 2, true
+	case "org/kwis/msp/media/Camera.SET_MODE",
+		"org/kwis/msp/media/Camera.BOTH_REVERSE":
+		return 3, true
+	case "org/kwis/msp/media/Camera.SET_AXIS",
+		"org/kwis/msp/media/Camera.ROTATE90":
+		return 4, true
+	case "org/kwis/msp/media/Camera.PREVIEW_START",
+		"org/kwis/msp/media/Camera.ROTATE180":
+		return 5, true
+	case "org/kwis/msp/media/Camera.PREVIEW_STOP",
+		"org/kwis/msp/media/Camera.ROTATE270":
+		return 6, true
+	case "org/kwis/msp/media/Camera.CAPTRUE_INTERVAL",
+		"org/kwis/msp/media/Camera.CAPTURE_INTERVAL":
+		return 7, true
 	default:
 		return 0, false
 	}

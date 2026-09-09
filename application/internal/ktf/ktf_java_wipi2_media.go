@@ -9,6 +9,82 @@ import (
 	"strings"
 )
 
+func (r *Runtime) handleWIPI2VolumeMethod(name, descriptor string) (uint32, error) {
+	signature := name + descriptor
+	if r.mediaMute == nil {
+		r.mediaMute = make(map[int32]bool)
+	}
+	if r.mediaDefaultVolumes == nil {
+		r.mediaDefaultVolumes = make(map[int32]int32)
+	}
+	switch signature {
+	case "get()I":
+		return uint32(r.mediaVolume), nil
+	case "set(I)V":
+		volume, err := r.signedParameter(1)
+		if err != nil {
+			return 0, err
+		}
+		if volume < 0 || volume > 100 {
+			return 0, r.raiseHostJavaException("java/lang/IllegalArgumentException")
+		}
+		r.mediaVolume = int32(volume)
+		return 0, r.Services.Media.SetGlobalGain(uint8(volume), false)
+	case "getMute(I)Z":
+		volumeType, err := r.wipi2VolumeType(1)
+		if err != nil {
+			return 0, err
+		}
+		return boolWord(r.mediaMute[volumeType]), nil
+	case "setMute(IZ)V", "setMuteState(IZ)V":
+		volumeType, err := r.wipi2VolumeType(1)
+		if err != nil {
+			return 0, err
+		}
+		muted, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		r.mediaMute[volumeType] = muted != 0
+		return 0, nil
+	case "getDefaultVolume(I)I":
+		volumeType, err := r.wipi2VolumeType(1)
+		if err != nil {
+			return 0, err
+		}
+		if volume, ok := r.mediaDefaultVolumes[volumeType]; ok {
+			return uint32(volume), nil
+		}
+		return uint32(r.mediaVolume), nil
+	case "setDefaultVolume(II)V":
+		volumeType, err := r.wipi2VolumeType(1)
+		if err != nil {
+			return 0, err
+		}
+		volume, err := r.signedParameter(2)
+		if err != nil {
+			return 0, err
+		}
+		if volume < 0 || volume > 100 {
+			return 0, r.raiseHostJavaException("java/lang/IllegalArgumentException")
+		}
+		r.mediaDefaultVolumes[volumeType] = int32(volume)
+		return 0, nil
+	}
+	return 0, nil
+}
+
+func (r *Runtime) wipi2VolumeType(parameter uint32) (int32, error) {
+	value, err := r.signedParameter(parameter)
+	if err != nil {
+		return 0, err
+	}
+	if value < 0 || value > 8 {
+		return 0, r.raiseHostJavaException("java/lang/IllegalArgumentException")
+	}
+	return int32(value), nil
+}
+
 func (r *Runtime) handleWIPI2MediaMethod(ctx context.Context, name, descriptor string) (uint32, bool, error) {
 	signature := name + descriptor
 	if strings.Contains(descriptor, "Lorg/kwis/msp/media/BaseClip;") {

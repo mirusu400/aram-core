@@ -21,7 +21,8 @@ const (
 	ktfStateSchemaV8     = uint32(8)
 	ktfStateSchemaV9     = uint32(9)
 	ktfStateSchemaV10    = uint32(10)
-	ktfStateSchema       = uint32(11)
+	ktfStateSchemaV11    = uint32(11)
+	ktfStateSchema       = uint32(12)
 	maxKTFStateMetadata  = uint32(64 << 20)
 	maxKTFStateEntries   = 16_384
 	maxKTFStateHostCalls = int(HostSize / 4)
@@ -257,6 +258,7 @@ type ktfLWCSnapshot struct {
 	Font, Image, ImageActive                            uint32
 	Group, Date, TimeZone, GrabListener, GrabObject     uint32
 	ItemImages                                          []uint32
+	SelectedItems                                       []int32
 	GrabbedKeys                                         []int32
 	Mode, Layout, Minimum, ViewAmount                   int32
 	ChangeAmount, Delay, ActiveIndex                    int32
@@ -418,6 +420,9 @@ type ktfMetadataSnapshot struct {
 	Hashtables               map[uint32]map[string]ktfHashtableEntrySnapshot
 	Enumerations             map[uint32]ktfEnumerationSnapshot
 	Clips                    map[uint32]ktfClipSnapshot
+	MediaVolume              int32
+	MediaMute                map[int32]bool
+	MediaDefaultVolumes      map[int32]int32
 	JavaCall                 ktfCallSnapshot
 	Listeners                map[uint32]uint32
 	LWCEventData             map[uint32]uint32
@@ -687,7 +692,7 @@ func ParseState(r *Runtime,
 		schema != ktfStateSchemaV4 && schema != ktfStateSchemaV5 &&
 		schema != ktfStateSchemaV6 && schema != ktfStateSchemaV7 &&
 		schema != ktfStateSchemaV8 && schema != ktfStateSchemaV9 &&
-		schema != ktfStateSchemaV10 &&
+		schema != ktfStateSchemaV10 && schema != ktfStateSchemaV11 &&
 		schema != ktfStateSchema {
 		return nil, decoder.Fail(fmt.Sprintf("unsupported KTF state schema %d", schema))
 	}
@@ -1060,6 +1065,9 @@ func snapshotKTFMetadata(
 		Vectors:                  guest.CloneSliceMap(r.Vectors),
 		VectorCapacities:         guest.CloneMap(r.vectorCapacities),
 		VectorCapacityIncrements: guest.CloneMap(r.vectorCapacityIncrements),
+		MediaVolume:              r.mediaVolume,
+		MediaMute:                guest.CloneMap(r.mediaMute),
+		MediaDefaultVolumes:      guest.CloneMap(r.mediaDefaultVolumes),
 		Listeners:                guest.CloneMap(r.listeners),
 		LWCEventData:             guest.CloneMap(r.lwcEventData),
 		LWCChildren:              guest.CloneSliceMap(r.lwcChildren),
@@ -1474,6 +1482,14 @@ func snapshotKTFLWC(value *ktfLWCComponent) ktfLWCSnapshot {
 		Framed: value.framed, CommandGrabs: value.commandGrabs,
 		Selected: value.selected, NumberVisible: value.numberVisible,
 	}
+	for index, selected := range value.selectedItems {
+		if selected {
+			result.SelectedItems = append(result.SelectedItems, index)
+		}
+	}
+	sort.Slice(result.SelectedItems, func(i, j int) bool {
+		return result.SelectedItems[i] < result.SelectedItems[j]
+	})
 	for key, grabbed := range value.grabbedKeys {
 		if grabbed {
 			result.GrabbedKeys = append(result.GrabbedKeys, key)

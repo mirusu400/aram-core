@@ -460,7 +460,7 @@ func (r *Runtime) handleMSFMessageMethod(
 		return 0, nil
 	case "getAddressInt()I":
 		return uint32(state.minimum), nil
-	case "setAddressInt(I)V":
+	case "setAddressInt(I)V", "getAddressInt(I)V":
 		address, valueErr := argument()
 		if valueErr != nil {
 			return 0, valueErr
@@ -471,7 +471,7 @@ func (r *Runtime) handleMSFMessageMethod(
 		return state.image, nil
 	case "getDate()Ljava/util/Date;":
 		return state.date, nil
-	case "setDate(Ljava/util/Date;)V":
+	case "setDate(Ljava/util/Date;)V", "getDate(Ljava/util/Date;)V":
 		date, valueErr := argument()
 		if valueErr != nil {
 			return 0, valueErr

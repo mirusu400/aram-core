@@ -12,6 +12,7 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"sort"
 	"unicode"
 
 	shared "github.com/mirusu400/aram-core/runtime"
@@ -270,6 +271,23 @@ func (r *Runtime) handleGraphicsMethod(
 			r.GraphicsServices[instance] = r.GraphicsServices[screen]
 		}
 		return 0, nil
+	case "reset()V":
+		if state == nil {
+			return 0, nil
+		}
+		if state.image == 0 && r.frame != nil && state.Target == r.frame {
+			r.ResetScreenGraphics(instance)
+		} else {
+			state.clip = state.drawable()
+			state.translate = image.Point{}
+			state.color = color.RGBA{A: 0xff}
+		}
+		state.xorMode = false
+		font, valueErr := r.ensureDefaultFont()
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		return 0, r.WriteJavaFieldWord(instance, 0, font)
 	case "getFont()Lorg/kwis/msp/lcdui/Font;":
 		return r.KtfGraphicsFont(instance)
 	case "setFont(Lorg/kwis/msp/lcdui/Font;)V":
@@ -328,7 +346,11 @@ func (r *Runtime) handleGraphicsMethod(
 			if valueErr != nil {
 				return 0, valueErr
 			}
+			if alpha > 0xff {
+				alpha = 0xff
+			}
 			state.color.A = uint8(alpha)
+			state.xorMode = false
 		}
 		return 0, nil
 	case "fillRect(IIII)V", "fillRoundRect(IIIIII)V", "fillArc(IIIIII)V":
@@ -404,6 +426,8 @@ func (r *Runtime) handleGraphicsMethod(
 		r.drawGraphicsRectangle(state, rect)
 		r.markKTFGraphicsDirty(state)
 		return 0, nil
+	case "drawPolygon([I[I)V", "fillPolygon([I[I)V":
+		return 0, r.drawGraphicsPolygon(state, name == "fillPolygon")
 	case "drawChar(CIII)V":
 		character, valueErr := r.parameter(2)
 		if valueErr != nil {
@@ -568,6 +592,8 @@ func (r *Runtime) handleGraphicsMethod(
 			uint32(blue>>8), nil
 	case "getPixels(IIII[BII)V":
 		return 0, r.copyGraphicsPixelsToByteArray(state)
+	case "setPixels(IIII[BII)V":
+		return 0, r.copyByteArrayToGraphicsPixels(state)
 	case "getClipX()I":
 		if state == nil {
 			return 0, nil
@@ -663,6 +689,167 @@ func (r *Runtime) KtfGraphicsFont(instance uint32) (uint32, error) {
 		return 0, err
 	}
 	return font, nil
+}
+
+func (r *Runtime) readJavaIntArrayValues(instance uint32) ([]int, error) {
+	if instance == 0 {
+		return nil, r.raiseHostJavaException("java/lang/NullPointerException")
+	}
+	length, err := r.javaArrayLength(instance)
+	if err != nil {
+		return nil, err
+	}
+	fields, err := r.ReadU32(instance)
+	if err != nil {
+		return nil, err
+	}
+	encoded := make([]byte, int(length)*4)
+	if len(encoded) != 0 {
+		if err := r.CPU.ReadMemory(fields+8, encoded); err != nil {
+			return nil, err
+		}
+	}
+	values := make([]int, length)
+	for index := range values {
+		values[index] = int(int32(binary.LittleEndian.Uint32(encoded[index*4:])))
+	}
+	return values, nil
+}
+
+func (r *Runtime) drawGraphicsPolygon(state *ktfGraphics, fill bool) error {
+	xArray, err := r.parameter(2)
+	if err != nil {
+		return err
+	}
+	yArray, err := r.parameter(3)
+	if err != nil {
+		return err
+	}
+	xs, err := r.readJavaIntArrayValues(xArray)
+	if err != nil {
+		return err
+	}
+	ys, err := r.readJavaIntArrayValues(yArray)
+	if err != nil {
+		return err
+	}
+	if len(xs) != len(ys) {
+		return r.raiseHostJavaException("java/lang/IllegalArgumentException")
+	}
+	if state == nil || len(xs) == 0 {
+		return nil
+	}
+	offset := state.offset()
+	for index := range xs {
+		xs[index] += offset.X
+		ys[index] += offset.Y
+	}
+	if fill && len(xs) >= 3 {
+		minimumY, maximumY := ys[0], ys[0]
+		for _, coordinate := range ys[1:] {
+			minimumY = min(minimumY, coordinate)
+			maximumY = max(maximumY, coordinate)
+		}
+		minimumY = max(minimumY, state.clip.Min.Y)
+		maximumY = min(maximumY, state.clip.Max.Y-1)
+		nodes := make([]int, 0, len(xs))
+		for row := minimumY; row <= maximumY; row++ {
+			nodes = nodes[:0]
+			previous := len(xs) - 1
+			for index := range xs {
+				if (ys[index] <= row && ys[previous] > row) ||
+					(ys[previous] <= row && ys[index] > row) {
+					position := float64(xs[index]) +
+						float64(row-ys[index])*float64(xs[previous]-xs[index])/
+							float64(ys[previous]-ys[index])
+					nodes = append(nodes, int(position))
+				}
+				previous = index
+			}
+			sort.Ints(nodes)
+			for index := 0; index+1 < len(nodes); index += 2 {
+				start := max(nodes[index], state.clip.Min.X)
+				end := min(nodes[index+1], state.clip.Max.X-1)
+				for column := start; column <= end; column++ {
+					if image.Pt(column, row).In(state.Target.Bounds()) {
+						state.plot(column, row)
+					}
+				}
+			}
+		}
+	}
+	if len(xs) > 1 {
+		for index := range xs {
+			next := (index + 1) % len(xs)
+			r.drawGraphicsLine(state, xs[index], ys[index], xs[next], ys[next])
+		}
+	}
+	r.markKTFGraphicsDirty(state)
+	return nil
+}
+
+func (r *Runtime) copyByteArrayToGraphicsPixels(state *ktfGraphics) error {
+	x, err := r.signedParameter(2)
+	if err != nil {
+		return err
+	}
+	y, err := r.signedParameter(3)
+	if err != nil {
+		return err
+	}
+	width, err := r.signedParameter(4)
+	if err != nil {
+		return err
+	}
+	height, err := r.signedParameter(5)
+	if err != nil {
+		return err
+	}
+	array, err := r.parameter(6)
+	if err != nil {
+		return err
+	}
+	offset, err := r.signedParameter(7)
+	if err != nil {
+		return err
+	}
+	bytesPerLine, err := r.signedParameter(8)
+	if err != nil {
+		return err
+	}
+	if array == 0 {
+		return r.raiseHostJavaException("java/lang/NullPointerException")
+	}
+	if width < 0 || height < 0 || offset < 0 || bytesPerLine < width {
+		return r.raiseHostJavaException("java/lang/IllegalArgumentException")
+	}
+	data, err := r.readJavaByteArray(array)
+	if err != nil {
+		return err
+	}
+	required := offset
+	if height > 0 {
+		required += (height-1)*bytesPerLine + width
+	}
+	if required > len(data) {
+		return r.raiseHostJavaException("java/lang/ArrayIndexOutOfBoundsException")
+	}
+	if state == nil {
+		return nil
+	}
+	origin := state.offset()
+	for row := 0; row < height; row++ {
+		for column := 0; column < width; column++ {
+			point := image.Pt(x+column+origin.X, y+row+origin.Y)
+			if !point.In(state.clip) || !point.In(state.Target.Bounds()) {
+				continue
+			}
+			value := data[offset+row*bytesPerLine+column]
+			state.Target.Set(point.X, point.Y, color.RGBA{R: value, G: value, B: value, A: 0xff})
+		}
+	}
+	r.markKTFGraphicsDirty(state)
+	return nil
 }
 
 func (r *Runtime) drawGraphicsTextParameters(
