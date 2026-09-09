@@ -589,12 +589,15 @@ func (r *Runtime) drawText(unicode bool, args []uint32) error {
 	if err != nil {
 		return err
 	}
-	metrics, err := r.Services.Text.Metrics(r.ServiceOwner, fontID)
-	if err != nil {
-		return err
-	}
 	cursor := int(int32(args[1]))
-	top := int(int32(args[2])) - int(metrics.Ascent)
+	// WIPI-C anchors a string at the top-left of its cell box, not at the
+	// baseline. 메탈슬러그 서바이벌 pins this: every 환경설정 row hands MC_grpDrawString the
+	// same y as the MC_grpDrawRect/MC_grpFillRect gauge drawn beside the label
+	// (87 and 87, then 132 and 132), and the first row sits 5 pixels below the
+	// panel frame the title draws at y=82. Subtracting the ascent lifted each
+	// label a font ascent clear of its own artwork and over the frame above
+	// it (issue #241).
+	top := int(int32(args[2]))
 	// Resolve the target and decode the context once per string, not per
 	// glyph pixel; a missing framebuffer still draws nothing and returns nil.
 	framebuffer, hasFramebuffer := r.Framebuffers[args[0]]
