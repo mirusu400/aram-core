@@ -1459,8 +1459,38 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 		},
 	},
 
-	"org/kwis/msf/core/Kernel": {Parent: "java/lang/Object"},
-	"org/kwis/msf/core/Shared": {Parent: "java/lang/Object"},
+	"org/kwis/msf/core/Kernel": {
+		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "()V"},
+			{name: "execute", descriptor: "(Ljava/lang/String;[Ljava/lang/String;)I", access: 0x0008},
+			{name: "mExecute", descriptor: "(Ljava/lang/String;[Ljava/lang/String;)I", access: 0x0008},
+			{name: "load", descriptor: "(Ljava/lang/String;[Ljava/lang/String;)I", access: 0x0008},
+			{name: "mLoad", descriptor: "(Ljava/lang/String;[Ljava/lang/String;)I", access: 0x0008},
+			{name: "getExecNames", descriptor: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)[Ljava/lang/String;", access: 0x0008},
+			{name: "getPrgID", descriptor: "()I", access: 0x0008},
+			{name: "getAMID", descriptor: "()I", access: 0x0008},
+			{name: "getParentPrgID", descriptor: "()I", access: 0x0008},
+			{name: "getPrgInfo", descriptor: "()[I", access: 0x0008},
+			{name: "stop", descriptor: "(I)V", access: 0x0008},
+			{name: "letThrowExceptionWhenProgramExit", descriptor: "()I", access: 0x0008},
+			{name: "getAccessLevel", descriptor: "()I", access: 0x0008},
+			{name: "getPrgName", descriptor: "()Ljava/lang/String;", access: 0x0008},
+		},
+	},
+	"org/kwis/msf/core/Shared": {
+		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "initialize", descriptor: "()V", access: 0x0008},
+			{name: "createBuf", descriptor: "(Ljava/lang/String;I)[B", access: 0x0008},
+			{name: "getBuf", descriptor: "(Ljava/lang/String;)[B", access: 0x0008},
+			{name: "resizeBuf", descriptor: "([BI)[B", access: 0x0008},
+			{name: "destroyBuf", descriptor: "([B)V", access: 0x0008},
+			{name: "createBuf", descriptor: "(I)[B", access: 0x0008},
+			{name: "getBuf", descriptor: "()[B", access: 0x0008},
+			{name: "resizeBuf", descriptor: "(I)[B", access: 0x0008},
+		},
+	},
 	"org/kwis/msf/core/ProgramExitException": {
 		Parent: "java/lang/RuntimeException",
 	},
@@ -1492,8 +1522,38 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 		Parent: "org/kwis/msf/io/Socket",
 		access: 0x0601,
 	},
-	"org/kwis/msf/io/Message": {Parent: "java/lang/Object"},
-	"org/kwis/msf/io/URL":     {Parent: "java/lang/Object"},
+	"org/kwis/msf/io/Message": {
+		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "([B)V"},
+			{name: "<init>", descriptor: "(Ljava/lang/String;[B)V"},
+			{name: "<init>", descriptor: "(Ljava/lang/String;[BII)V"},
+			{name: "getIndex", descriptor: "()B"},
+			{name: "setIndex", descriptor: "(B)V"},
+			{name: "getTeleServiceID", descriptor: "()I"},
+			{name: "setTeleServiceID", descriptor: "(I)V"},
+			{name: "getClassification", descriptor: "()B"},
+			{name: "setClassification", descriptor: "(B)V"},
+			{name: "getData", descriptor: "()[B"},
+			{name: "getLength", descriptor: "()I"},
+			{name: "setLength", descriptor: "(I)I"},
+			{name: "getOffset", descriptor: "()I"},
+			{name: "setOffset", descriptor: "(I)I"},
+			{name: "getAddress", descriptor: "()Ljava/lang/String;"},
+			{name: "setAddress", descriptor: "(Ljava/lang/String;)V"},
+			{name: "getAddressInt", descriptor: "()I"},
+			{name: "setAddressInt", descriptor: "(I)V"},
+			{name: "getDate", descriptor: "()Ljava/util/Date;"},
+			{name: "setDate", descriptor: "(Ljava/util/Date;)V"},
+		},
+	},
+	"org/kwis/msf/io/URL": {
+		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "()V"},
+			{name: "find", descriptor: "(Ljava/lang/String;)Lorg/kwis/msf/io/Socket;", access: 0x0008},
+		},
+	},
 	"org/kwis/msf/io/SchemeNotFoundException": {
 		Parent: "java/io/IOException",
 	},
@@ -1507,19 +1567,37 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	"org/kwis/msp/db/DataComparator": {
 		Parent: "java/lang/Object",
 		access: 0x0601,
+		methods: []ktfHostJavaMethodSpec{
+			{name: "compare", descriptor: "([B[B)I", access: 0x0401},
+		},
 	},
 	"org/kwis/msp/db/DataComparatorInteger": {
 		Parent: "org/kwis/msp/db/DataComparator",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "(I)V"},
+			{name: "compare", descriptor: "([B[B)I"},
+		},
 	},
 	"org/kwis/msp/db/DataComparatorString": {
 		Parent: "org/kwis/msp/db/DataComparator",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "(I)V"},
+			{name: "compare", descriptor: "([B[B)I"},
+		},
 	},
 	"org/kwis/msp/db/DataFilter": {
 		Parent: "java/lang/Object",
 		access: 0x0601,
+		methods: []ktfHostJavaMethodSpec{
+			{name: "filter", descriptor: "([B)Z", access: 0x0401},
+		},
 	},
 	"org/kwis/msp/db/DataFilterInteger": {
 		Parent: "org/kwis/msp/db/DataFilter",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "(III)V"},
+			{name: "filter", descriptor: "([B)Z"},
+		},
 	},
 
 	"org/kwis/msp/handset/Call": {
@@ -1539,8 +1617,30 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	},
 	"org/kwis/msp/handset/HandsetProperty": {
 		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "getSystemProperty", descriptor: "(Ljava/lang/String;)Ljava/lang/String;", access: 0x0008},
+			{name: "setSystemProperty", descriptor: "(Ljava/lang/String;Ljava/lang/String;)Z", access: 0x0008},
+		},
 	},
-	"org/kwis/msp/io/File": {Parent: "java/lang/Object"},
+	"org/kwis/msp/io/File": {
+		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "(Ljava/lang/String;I)V"},
+			{name: "<init>", descriptor: "(Ljava/lang/String;II)V"},
+			{name: "openInputStream", descriptor: "()Ljava/io/InputStream;"},
+			{name: "openDataInputStream", descriptor: "()Ljava/io/DataInputStream;"},
+			{name: "openOutputStream", descriptor: "()Ljava/io/OutputStream;"},
+			{name: "openDataOutputStream", descriptor: "()Ljava/io/DataOutputStream;"},
+			{name: "close", descriptor: "()V"},
+			{name: "write", descriptor: "(I)I"},
+			{name: "write", descriptor: "([B)I"},
+			{name: "write", descriptor: "([BII)I"},
+			{name: "read", descriptor: "([B)I"},
+			{name: "read", descriptor: "([BII)I"},
+			{name: "seek", descriptor: "(I)V"},
+			{name: "sizeOf", descriptor: "()I"},
+		},
+	},
 	"org/kwis/msp/io/FileSystem": {
 		Parent: "java/lang/Object",
 		methods: []ktfHostJavaMethodSpec{
@@ -1548,7 +1648,22 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 		},
 	},
 
-	"org/kwis/msp/lcdui/DisplayProxy": {Parent: "java/lang/Object"},
+	"org/kwis/msp/lcdui/DisplayProxy": {
+		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "isColor", descriptor: "()Z"},
+			{name: "numColors", descriptor: "()I"},
+			{name: "getBitsPerPixel", descriptor: "()I"},
+			{name: "hasPointerEvents", descriptor: "()Z"},
+			{name: "hasPointerMotionEvents", descriptor: "()Z"},
+			{name: "hasRepeatEvents", descriptor: "()Z"},
+			{name: "getWidth", descriptor: "()I"},
+			{name: "getHeight", descriptor: "()I"},
+			{name: "isDoubleBuffered", descriptor: "()Z"},
+			{name: "flush", descriptor: "()V"},
+			{name: "flush", descriptor: "(IIII)V"},
+		},
+	},
 	"org/kwis/msp/lcdui/EventQueue": {
 		Parent: "java/lang/Object",
 		methods: []ktfHostJavaMethodSpec{
@@ -1567,6 +1682,9 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	"org/kwis/msp/lcdui/ImageObserver": {
 		Parent: "java/lang/Object",
 		access: 0x0601,
+		methods: []ktfHostJavaMethodSpec{
+			{name: "notify", descriptor: "(Lorg/kwis/msp/lcdui/Image;I)V", access: 0x0401},
+		},
 	},
 	"org/kwis/msp/lcdui/InputMethodHandler": {
 		Parent: "java/lang/Object",
@@ -1603,23 +1721,41 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	"org/kwis/msp/lcdui/JletStateChangeException": {
 		Parent: "java/lang/Exception",
 	},
-	"org/kwis/msp/lcdui/Main": {Parent: "java/lang/Object"},
+	"org/kwis/msp/lcdui/Main": {
+		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "()V"},
+			{name: "main", descriptor: "([Ljava/lang/String;)V", access: 0x0008},
+		},
+	},
 	"org/kwis/msp/lcdui/SystemEventListener": {
 		Parent: "java/lang/Object",
 		access: 0x0601,
+		methods: []ktfHostJavaMethodSpec{
+			{name: "notifySystemEvent", descriptor: "(IIII)V", access: 0x0401},
+		},
 	},
 
 	"org/kwis/msp/lwc/ActionListener": {
 		Parent: "java/lang/Object",
 		access: 0x0601,
+		methods: []ktfHostJavaMethodSpec{
+			{name: "action", descriptor: "(Lorg/kwis/msp/lwc/Component;Ljava/lang/Object;)V", access: 0x0401},
+		},
 	},
 	"org/kwis/msp/lwc/ChangeListener": {
 		Parent: "java/lang/Object",
 		access: 0x0601,
+		methods: []ktfHostJavaMethodSpec{
+			{name: "changed", descriptor: "(Lorg/kwis/msp/lwc/Component;Ljava/lang/Object;)V", access: 0x0401},
+		},
 	},
 	"org/kwis/msp/lwc/CommandListener": {
 		Parent: "java/lang/Object",
 		access: 0x0601,
+		methods: []ktfHostJavaMethodSpec{
+			{name: "commandAction", descriptor: "(Lorg/kwis/msp/lwc/Command;ILjava/lang/Object;)V", access: 0x0401},
+		},
 	},
 	"org/kwis/msp/lwc/EventListener": {
 		Parent: "java/lang/Object",
@@ -1649,18 +1785,49 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	"org/kwis/msp/lwc/CheckboxComponent": {
 		Parent: "org/kwis/msp/lwc/Component",
 	},
-	"org/kwis/msp/lwc/CheckboxGroup": {Parent: "java/lang/Object"},
+	"org/kwis/msp/lwc/CheckboxGroup": {
+		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "()V"},
+			{name: "select", descriptor: "(Lorg/kwis/msp/lwc/CheckboxComponent;)V"},
+			{name: "getSelectedCheckbox", descriptor: "()Lorg/kwis/msp/lwc/CheckboxComponent;"},
+			{name: "setChangeListener", descriptor: "(Lorg/kwis/msp/lwc/ChangeListener;Ljava/lang/Object;)V"},
+		},
+	},
 	"org/kwis/msp/lwc/ComboComponent": {
 		Parent: "org/kwis/msp/lwc/Component",
 	},
-	"org/kwis/msp/lwc/Command": {Parent: "java/lang/Object"},
+	"org/kwis/msp/lwc/Command": {
+		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "(Ljava/lang/String;Ljava/lang/Object;)V"},
+			{name: "<init>", descriptor: "(Ljava/lang/String;Lorg/kwis/msp/lcdui/Image;Ljava/lang/Object;)V"},
+			{name: "<init>", descriptor: "(Ljava/lang/String;Lorg/kwis/msp/lcdui/Image;Lorg/kwis/msp/lcdui/Image;Ljava/lang/Object;)V"},
+			{name: "<init>", descriptor: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/Object;)V"},
+			{name: "<init>", descriptor: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/Object;)V"},
+			{name: "getString", descriptor: "()Ljava/lang/String;"},
+			{name: "getExtObject", descriptor: "()Ljava/lang/Object;"},
+			{name: "getNormalImage", descriptor: "()Lorg/kwis/msp/lcdui/Image;"},
+			{name: "getActiveImage", descriptor: "()Lorg/kwis/msp/lcdui/Image;"},
+		},
+	},
 	"org/kwis/msp/lwc/CommandBarComponent": {
 		Parent: "org/kwis/msp/lwc/Component",
 	},
 	"org/kwis/msp/lwc/DateFieldComponent": {
 		Parent: "org/kwis/msp/lwc/Component",
 	},
-	"org/kwis/msp/lwc/Decorator": {Parent: "java/lang/Object"},
+	"org/kwis/msp/lwc/Decorator": {
+		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "()V"},
+			{name: "getColor", descriptor: "(I)I", access: 0x0008},
+			{name: "getDarkShadowColor", descriptor: "(I)I", access: 0x0008},
+			{name: "getShadowColor", descriptor: "(I)I", access: 0x0008},
+			{name: "getLightColor", descriptor: "(I)I", access: 0x0008},
+			{name: "getHighLightColor", descriptor: "(I)I", access: 0x0008},
+		},
+	},
 	"org/kwis/msp/lwc/ImageComponent": {
 		Parent: "org/kwis/msp/lwc/Component",
 	},
@@ -1700,5 +1867,10 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 			},
 		},
 	},
-	"org/kwis/msp/media/Vibrator": {Parent: "java/lang/Object"},
+	"org/kwis/msp/media/Vibrator": {
+		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "on", descriptor: "(II)V", access: 0x0009},
+		},
+	},
 }

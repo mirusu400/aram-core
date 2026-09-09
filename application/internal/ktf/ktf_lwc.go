@@ -215,13 +215,16 @@ func (r *Runtime) handleLWCMethod(
 		case "getSelectedCheckbox()Lorg/kwis/msp/lwc/CheckboxComponent;":
 			return state.group, nil
 		case "select(Lorg/kwis/msp/lwc/CheckboxComponent;)V":
+			if registers[2] == 0 {
+				return 0, r.raiseHostJavaException(
+					"java/lang/NullPointerException",
+				)
+			}
 			if previous := state.group; previous != 0 {
 				r.lwcComponent(previous).selected = false
 			}
 			state.group = registers[2]
-			if registers[2] != 0 {
-				r.lwcComponent(registers[2]).selected = true
-			}
+			r.lwcComponent(registers[2]).selected = true
 			return 0, nil
 		}
 	case "org/kwis/msp/lwc/ComboComponent",
@@ -308,6 +311,12 @@ func (r *Runtime) handleLWCMethod(
 			r.lwcEventData[instance] = registers[3]
 			return 0, nil
 		case "<init>(Ljava/lang/String;Lorg/kwis/msp/lcdui/Image;" +
+			"Ljava/lang/Object;)V":
+			state.text = registers[2]
+			state.image = registers[3]
+			r.lwcEventData[instance] = registers[4]
+			return 0, nil
+		case "<init>(Ljava/lang/String;Lorg/kwis/msp/lcdui/Image;" +
 			"Lorg/kwis/msp/lcdui/Image;)V":
 			state.text = registers[2]
 			state.image = registers[3]
@@ -318,6 +327,31 @@ func (r *Runtime) handleLWCMethod(
 			state.text = registers[2]
 			state.image = registers[3]
 			state.imageActive = registers[4]
+			r.lwcEventData[instance] = registers[5]
+			return 0, nil
+		case "<init>(Ljava/lang/String;Ljava/lang/String;" +
+			"Ljava/lang/Object;)V":
+			normal, err := r.newJavaImageResource(registers[3])
+			if err != nil {
+				return 0, err
+			}
+			state.text = registers[2]
+			state.image = normal
+			r.lwcEventData[instance] = registers[4]
+			return 0, nil
+		case "<init>(Ljava/lang/String;Ljava/lang/String;" +
+			"Ljava/lang/String;Ljava/lang/Object;)V":
+			normal, err := r.newJavaImageResource(registers[3])
+			if err != nil {
+				return 0, err
+			}
+			active, err := r.newJavaImageResource(registers[4])
+			if err != nil {
+				return 0, err
+			}
+			state.text = registers[2]
+			state.image = normal
+			state.imageActive = active
 			r.lwcEventData[instance] = registers[5]
 			return 0, nil
 		case "getString()Ljava/lang/String;":

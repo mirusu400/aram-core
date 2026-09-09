@@ -210,14 +210,54 @@ func (r *Runtime) handleMSFMessageMethod(
 	state := r.lwcComponent(instance)
 	argument := func() (uint32, error) { return r.parameter(2) }
 	switch name + descriptor {
-	case "<init>()V", "<init>([B)V":
-		if descriptor == "([B)V" {
-			data, valueErr := argument()
+	case "<init>()V":
+		return 0, nil
+	case "<init>([B)V":
+		data, valueErr := argument()
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		length, valueErr := r.javaArrayLength(data)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		state.image = data
+		state.viewAmount = int32(length)
+		return 0, nil
+	case "<init>(Ljava/lang/String;[B)V",
+		"<init>(Ljava/lang/String;[BII)V":
+		address, valueErr := argument()
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		data, valueErr := r.parameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		arrayLength, valueErr := r.javaArrayLength(data)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		offset, length := uint32(0), arrayLength
+		if descriptor == "(Ljava/lang/String;[BII)V" {
+			offset, valueErr = r.parameter(4)
 			if valueErr != nil {
 				return 0, valueErr
 			}
-			state.image = data
+			length, valueErr = r.parameter(5)
+			if valueErr != nil {
+				return 0, valueErr
+			}
+			if offset > arrayLength || length > arrayLength-offset {
+				return 0, r.raiseHostJavaException(
+					"java/lang/IndexOutOfBoundsException",
+				)
+			}
 		}
+		state.text = address
+		state.image = data
+		state.changeAmount = int32(offset)
+		state.viewAmount = int32(length)
 		return 0, nil
 	case "getAddress()Ljava/lang/String;":
 		return state.text, nil

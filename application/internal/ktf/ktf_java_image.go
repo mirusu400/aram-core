@@ -348,21 +348,7 @@ func (r *Runtime) handleImageMethod(name, descriptor string) (uint32, error) {
 		if err != nil {
 			return 0, err
 		}
-		resourceName := strings.TrimPrefix(
-			strings.ReplaceAll(r.javaStringValue(nameAddress), `\`, "/"),
-			"/",
-		)
-		resourceName = path.Clean(resourceName)
-		data, ok := r.findKTFResource(resourceName)
-		if !ok {
-			r.trace("java_image_missing:" + resourceName)
-			return r.newJavaImage(image.NewRGBA(image.Rect(0, 0, 1, 1)))
-		}
-		instance, decodeErr := r.newJavaEncodedImage(data)
-		if decodeErr != nil {
-			return r.newJavaImage(image.NewRGBA(image.Rect(0, 0, 1, 1)))
-		}
-		return instance, nil
+		return r.newJavaImageResource(nameAddress)
 	case "createImage([BII)Lorg/kwis/msp/lcdui/Image;":
 		array, err := r.parameter(1)
 		if err != nil {
@@ -455,6 +441,24 @@ func (r *Runtime) handleImageMethod(name, descriptor string) (uint32, error) {
 	default:
 		return 0, nil
 	}
+}
+
+func (r *Runtime) newJavaImageResource(nameAddress uint32) (uint32, error) {
+	resourceName := strings.TrimPrefix(
+		strings.ReplaceAll(r.javaStringValue(nameAddress), `\`, "/"),
+		"/",
+	)
+	resourceName = path.Clean(resourceName)
+	data, ok := r.findKTFResource(resourceName)
+	if !ok {
+		r.trace("java_image_missing:" + resourceName)
+		return r.newJavaImage(image.NewRGBA(image.Rect(0, 0, 1, 1)))
+	}
+	instance, err := r.newJavaEncodedImage(data)
+	if err != nil {
+		return r.newJavaImage(image.NewRGBA(image.Rect(0, 0, 1, 1)))
+	}
+	return instance, nil
 }
 
 func (r *Runtime) newJavaImage(source image.Image) (uint32, error) {
