@@ -378,7 +378,12 @@ func (m *Machine) loadRaptor(
 	// before deciding whether to download them from the carrier server), so
 	// expose the JAR contents to the shared filesystem namespace as well.
 	publicRuntime.RegisterSharedPackageFiles(pkg.Resources)
-	runtime, err := raptorrt.NewRuntime(m.cpu, publicRuntime, pkg)
+	runtime, err := raptorrt.NewRuntimeWithOptions(
+		m.cpu,
+		publicRuntime,
+		pkg,
+		raptorRuntimeOptions(source, pkg, m.frame.Bounds().Size()),
+	)
 	if err != nil {
 		return err
 	}
