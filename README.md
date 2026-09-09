@@ -76,3 +76,10 @@ boundary are recorded in
 [`docs/system-firmware-progress.md`](docs/system-firmware-progress.md).
 The opt-in, privacy-safe LCD transfer inference path is documented in
 [`docs/lcd-transfer-probe.md`](docs/lcd-transfer-probe.md).
+
+## License
+
+Licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE.md).
+Noncommercial use (personal projects, research, education, hobby builds) is
+free. Commercial use, including shipping a product or service built on this
+code, requires a separate license from the copyright holder.
