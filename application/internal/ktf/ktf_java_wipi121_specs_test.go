@@ -88,6 +88,31 @@ func TestKTFWIPI121HostSpecsDeclareFrameworkMethods(t *testing.T) {
 			"openDataInputStream()Ljava/io/DataInputStream;",
 			"write([BII)I",
 		},
+		"org/kwis/msp/io/FileSystem": {
+			"exists(Ljava/lang/String;I)Z",
+			"list(Ljava/lang/String;I)Ljava/util/Vector;",
+			"rename(Ljava/lang/String;Ljava/lang/String;I)V",
+		},
+		"org/kwis/msp/db/DataBase": {
+			"deleteDataBase(Ljava/lang/String;I)V",
+			"selectRecord(I[BI)V",
+			"sortRecord(Lorg/kwis/msp/db/DataFilter;Lorg/kwis/msp/db/DataComparator;)[I",
+		},
+		"org/kwis/msp/lcdui/Card": {
+			"<init>(Lorg/kwis/msp/lcdui/Display;IIIIZ)V",
+			"getDisplay()Lorg/kwis/msp/lcdui/Display;",
+			"pointerNotify(III)Z",
+		},
+		"org/kwis/msp/lcdui/Display": {
+			"callSerially(Ljava/lang/Runnable;I)V",
+			"setDockedCard(Lorg/kwis/msp/lcdui/Card;I)V",
+			"where()V",
+		},
+		"org/kwis/msp/lcdui/Jlet": {
+			"destroyApp(Z)V",
+			"getEventQueue()Lorg/kwis/msp/lcdui/EventQueue;",
+			"startApp([Ljava/lang/String;)V",
+		},
 		"org/kwis/msp/lcdui/DisplayProxy": {
 			"getBitsPerPixel()I",
 			"hasRepeatEvents()Z",
@@ -111,6 +136,49 @@ func TestKTFWIPI121HostSpecsDeclareFrameworkMethods(t *testing.T) {
 			if !declared[signature] {
 				t.Errorf("%s.%s is absent from the host spec", className, signature)
 			}
+		}
+	}
+}
+
+func TestKTFWIPI121DataBaseSelectRecordCopiesIntoBuffer(t *testing.T) {
+	runtime := newTestRuntime(t)
+	database := newHostObject(t, runtime, "org/kwis/msp/db/DataBase")
+	runtime.databases[database] = &Database{
+		Name:    "scores",
+		Records: [][]byte{{1, 2, 3}},
+	}
+	buffer, err := runtime.newJavaByteArray([]byte{9, 9, 9, 9, 9})
+	check(t, err)
+	parameters := allocWords(t, runtime, 4)
+	check(t, runtime.writeWords(parameters, []uint32{database, 0, buffer, 1}))
+	runtime.NativeParameterBase = parameters
+	t.Cleanup(func() { runtime.NativeParameterBase = 0 })
+
+	_, err = runtime.handleDataBaseMethod(
+		context.Background(),
+		"selectRecord",
+		"(I[BI)V",
+	)
+	check(t, err)
+	got, err := runtime.readJavaByteArray(buffer)
+	check(t, err)
+	want := []byte{9, 1, 2, 3, 9}
+	if string(got) != string(want) {
+		t.Fatalf("DataBase.selectRecord buffer = %v, want %v", got, want)
+	}
+}
+
+func TestKTFWIPI121CardCoordinateConstructorState(t *testing.T) {
+	runtime := newTestRuntime(t)
+	card := newHostObject(t, runtime, "org/kwis/msp/lcdui/Card")
+	check(t, runtime.configureCard(card, 0, 3, 4, 120, 160))
+	for offset, want := range map[uint32]uint32{
+		8: 3, 12: 4, 16: 120, 20: 160,
+	} {
+		got, err := runtime.readJavaFieldWord(card, offset)
+		check(t, err)
+		if got != want {
+			t.Fatalf("Card field +%d = %d, want %d", offset, got, want)
 		}
 	}
 }

@@ -962,6 +962,10 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 				if err := runtime.initializeCard(registers[1], 0); err != nil {
 					return 0, err
 				}
+				if descriptor == "(Z)V" {
+					runtime.lwcComponent(registers[1]).transparent =
+						registers[2] != 0
+				}
 				return 0, nil
 			case "<init>(Lorg/kwis/msp/lcdui/Display;)V":
 				if err := runtime.initializeCard(
@@ -969,6 +973,25 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 					registers[2],
 				); err != nil {
 					return 0, err
+				}
+				return 0, nil
+			case "<init>(IIII)V":
+				return 0, runtime.configureCard(
+					registers[1], 0,
+					registers[2], registers[3], registers[4], registers[5],
+				)
+			case "<init>(Lorg/kwis/msp/lcdui/Display;IIII)V",
+				"<init>(Lorg/kwis/msp/lcdui/Display;IIIIZ)V":
+				if err := runtime.configureCard(
+					registers[1], registers[2],
+					registers[3], registers[4], registers[5], registers[6],
+				); err != nil {
+					return 0, err
+				}
+				if descriptor ==
+					"(Lorg/kwis/msp/lcdui/Display;IIIIZ)V" {
+					runtime.lwcComponent(registers[1]).transparent =
+						registers[7] != 0
 				}
 				return 0, nil
 			case "getDisplay()Lorg/kwis/msp/lcdui/Display;":

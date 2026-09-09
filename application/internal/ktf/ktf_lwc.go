@@ -139,6 +139,20 @@ func (r *Runtime) handleLWCMethod(
 			state.text = registers[2]
 			r.initializeLWCTextSize(state, registers[2], false)
 			return 0, nil
+		case "<init>(Ljava/lang/String;Lorg/kwis/msp/lcdui/Image;)V":
+			state.text = registers[2]
+			state.image = registers[3]
+			r.initializeLWCTextSize(state, registers[2], false)
+			return 0, nil
+		case "<init>(Ljava/lang/String;Ljava/lang/String;)V":
+			loaded, err := r.newJavaImageResource(registers[3])
+			if err != nil {
+				return 0, err
+			}
+			state.text = registers[2]
+			state.image = loaded
+			r.initializeLWCTextSize(state, registers[2], false)
+			return 0, nil
 		}
 	case "org/kwis/msp/lwc/ProgressComponent":
 		if method == "<init>(ZI)V" {

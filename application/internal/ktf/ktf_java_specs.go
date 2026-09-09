@@ -10,6 +10,21 @@ func ktfThrowableSubclassSpec(parent string) ktfHostJavaClassSpec {
 	}
 }
 
+func ktfCompatibilityMethod(
+	name, descriptor string,
+	access ...uint16,
+) ktfHostJavaMethodSpec {
+	method := ktfHostJavaMethodSpec{
+		name:          name,
+		descriptor:    descriptor,
+		compatibility: true,
+	}
+	if len(access) != 0 {
+		method.access = access[0]
+	}
+	return method
+}
+
 var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	"java/lang/Object": {
 		methods: []ktfHostJavaMethodSpec{
@@ -730,12 +745,26 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 			{name: "stop", descriptor: "(Lorg/kwis/msp/media/Clip;)Z", access: 0x0008},
 			{name: "pause", descriptor: "(Lorg/kwis/msp/media/Clip;)Z", access: 0x0008},
 			{name: "resume", descriptor: "(Lorg/kwis/msp/media/Clip;)Z", access: 0x0008},
+			{name: "record", descriptor: "(Lorg/kwis/msp/media/Clip;)Z", access: 0x0008},
 		},
 	},
 	"org/kwis/msp/lcdui/Jlet": {
 		Parent: "java/lang/Object",
 		methods: []ktfHostJavaMethodSpec{
 			{name: "<init>", descriptor: "()V"},
+			ktfCompatibilityMethod("destroyApp", "(Z)V", 0x0404),
+			{name: "getActiveJlet", descriptor: "()Lorg/kwis/msp/lcdui/Jlet;", access: 0x0008},
+			ktfCompatibilityMethod("getAppProperty", "(Ljava/lang/String;)Ljava/lang/String;"),
+			{name: "getCurrentJlet", descriptor: "()Lorg/kwis/msp/lcdui/Jlet;", access: 0x0008},
+			ktfCompatibilityMethod("getCurrentProgramID", "()I"),
+			ktfCompatibilityMethod("getEventQueue", "()Lorg/kwis/msp/lcdui/EventQueue;"),
+			{name: "getJletFromPID", descriptor: "(I)Lorg/kwis/msp/lcdui/Jlet;", access: 0x0008},
+			ktfCompatibilityMethod("notifyDestroyed", "()V"),
+			ktfCompatibilityMethod("pauseApp", "()V", 0x0004),
+			{name: "removeAllResource", descriptor: "(I)V", access: 0x0008},
+			ktfCompatibilityMethod("resumeApp", "()V", 0x0004),
+			{name: "setActiveJlet", descriptor: "(Lorg/kwis/msp/lcdui/Jlet;)V", access: 0x0008},
+			ktfCompatibilityMethod("startApp", "([Ljava/lang/String;)V", 0x0404),
 		},
 	},
 	"org/kwis/msp/lwc/Component": {
@@ -893,6 +922,11 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 			{name: "<init>", descriptor: "(Z)V"},
 			{name: "show", descriptor: "()V"},
 			{name: "hide", descriptor: "()V"},
+			ktfCompatibilityMethod("addComponent", "(ILorg/kwis/msp/lwc/Component;)V"),
+			ktfCompatibilityMethod("layout", "()V"),
+			ktfCompatibilityMethod("paint", "(Lorg/kwis/msp/lcdui/Graphics;)V", 0x0004),
+			ktfCompatibilityMethod("removeComponent", "(Lorg/kwis/msp/lwc/Component;)V"),
+			ktfCompatibilityMethod("setParameter", "()V", 0x0004),
 		},
 	},
 	"org/kwis/msp/handset/BackLight": {
@@ -901,6 +935,8 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 			{name: "alwaysOn", descriptor: "()V", access: 0x0008},
 			{name: "on", descriptor: "()V", access: 0x0008},
 			{name: "off", descriptor: "()V", access: 0x0008},
+			{name: "before", descriptor: "()V", access: 0x0008},
+			{name: "on", descriptor: "(III)V", access: 0x0008},
 		},
 	},
 	"org/kwis/msp/handset/LED": {
@@ -916,12 +952,33 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 		methods: []ktfHostJavaMethodSpec{
 			{name: "<init>", descriptor: "(Ljava/lang/String;I)V"},
 			{name: "keyNotify", descriptor: "(II)Z"},
+			ktfCompatibilityMethod("configure", "(IIIII)V"),
+			ktfCompatibilityMethod("delete", "(II)V"),
+			ktfCompatibilityMethod("focusNotify", "(Z)V"),
+			ktfCompatibilityMethod("getPreferredHeight", "()I"),
+			ktfCompatibilityMethod("getPreferredHeight", "(I)I"),
+			ktfCompatibilityMethod("getPreferredWidth", "()I"),
+			ktfCompatibilityMethod("insert", "([CIII)V"),
+			ktfCompatibilityMethod("paintContent", "(Lorg/kwis/msp/lcdui/Graphics;)V"),
+			ktfCompatibilityMethod("setString", "(Ljava/lang/String;)V"),
 		},
 	},
 	"org/kwis/msp/lwc/LabelComponent": {
 		Parent: "org/kwis/msp/lwc/Component",
 		methods: []ktfHostJavaMethodSpec{
 			{name: "<init>", descriptor: "(Ljava/lang/String;)V"},
+			{name: "<init>", descriptor: "()V"},
+			{name: "<init>", descriptor: "(Ljava/lang/String;Lorg/kwis/msp/lcdui/Image;)V"},
+			{name: "<init>", descriptor: "(Ljava/lang/String;Ljava/lang/String;)V"},
+			ktfCompatibilityMethod("calcPreferredSize", "(I)V", 0x0004),
+			ktfCompatibilityMethod("getFont", "()Lorg/kwis/msp/lcdui/Font;"),
+			ktfCompatibilityMethod("getImage", "()Lorg/kwis/msp/lcdui/Image;"),
+			ktfCompatibilityMethod("getLabel", "()Ljava/lang/String;"),
+			ktfCompatibilityMethod("paintContent", "(Lorg/kwis/msp/lcdui/Graphics;)V"),
+			ktfCompatibilityMethod("setFont", "(Lorg/kwis/msp/lcdui/Font;)V"),
+			ktfCompatibilityMethod("setImage", "(Lorg/kwis/msp/lcdui/Image;)V"),
+			ktfCompatibilityMethod("setLabel", "(Ljava/lang/String;)V"),
+			ktfCompatibilityMethod("setLayout", "(I)V"),
 		},
 	},
 	"org/kwis/msp/lwc/ProgressComponent": {
@@ -936,6 +993,11 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 			{name: "setValue", descriptor: "(I)I"},
 			{name: "getValue", descriptor: "()I"},
 			{name: "keyNotify", descriptor: "(II)Z"},
+			ktfCompatibilityMethod("getPreferredHeight", "()I"),
+			ktfCompatibilityMethod("getPreferredHeight", "(I)I"),
+			ktfCompatibilityMethod("getPreferredWidth", "()I"),
+			ktfCompatibilityMethod("paintContent", "(Lorg/kwis/msp/lcdui/Graphics;)V"),
+			ktfCompatibilityMethod("setChangeListener", "(Lorg/kwis/msp/lwc/ChangeListener;Ljava/lang/Object;)V"),
 		},
 	},
 	"org/kwis/msp/lwc/DialogComponent": {
@@ -954,6 +1016,9 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 			{name: "getTimeout", descriptor: "()I"},
 			{name: "doModal", descriptor: "()I"},
 			{name: "getActionState", descriptor: "()I"},
+			ktfCompatibilityMethod("layout", "()V"),
+			ktfCompatibilityMethod("paintFrame", "(Lorg/kwis/msp/lcdui/Graphics;)V", 0x0004),
+			ktfCompatibilityMethod("show", "()V"),
 		},
 	},
 	"com/ktf/kfc/GForm": {
@@ -1098,6 +1163,16 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 			{name: "keyNotify", descriptor: "(II)Z"},
 			{name: "paint", descriptor: "(Lorg/kwis/msp/lcdui/Graphics;)V", access: 0x0400},
 			{name: "setCanvas", descriptor: "(Ljavax/microedition/lcdui/Canvas;)V"},
+			{name: "<init>", descriptor: "(Z)V"},
+			{name: "<init>", descriptor: "(IIII)V"},
+			{name: "<init>", descriptor: "(Lorg/kwis/msp/lcdui/Display;IIII)V"},
+			{name: "<init>", descriptor: "(Lorg/kwis/msp/lcdui/Display;IIIIZ)V"},
+			ktfCompatibilityMethod("getDisplay", "()Lorg/kwis/msp/lcdui/Display;"),
+			ktfCompatibilityMethod("getX", "()I"),
+			ktfCompatibilityMethod("getY", "()I"),
+			ktfCompatibilityMethod("move", "(II)V"),
+			ktfCompatibilityMethod("pointerNotify", "(III)Z", 0x0004),
+			ktfCompatibilityMethod("resize", "(II)V"),
 		},
 	},
 	"org/kwis/msp/lcdui/Font": {
@@ -1136,6 +1211,7 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 		Parent:    "java/lang/Object",
 		fieldSize: 8,
 		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "()V"},
 			{
 				name:       "createImage",
 				descriptor: "(II)Lorg/kwis/msp/lcdui/Image;",
@@ -1163,6 +1239,12 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 				name:       "getGraphics",
 				descriptor: "()Lorg/kwis/msp/lcdui/Graphics;",
 			},
+			ktfCompatibilityMethod("isAnimated", "()Z"),
+			ktfCompatibilityMethod("isMutable", "()Z"),
+			{name: "loadImage", descriptor: "(Ljava/lang/String;Lorg/kwis/msp/lcdui/ImageObserver;)Lorg/kwis/msp/lcdui/Image;", access: 0x0008},
+			ktfCompatibilityMethod("play", "(Lorg/kwis/msp/lcdui/ImageObserver;)V"),
+			ktfCompatibilityMethod("stop", "()V"),
+			{name: "stopImage", descriptor: "(Lorg/kwis/msp/lcdui/ImageObserver;)V", access: 0x0008},
 		},
 	},
 	"org/kwis/msp/lcdui/Graphics": {
@@ -1242,12 +1324,14 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	"org/kwis/msp/media/Volume": {
 		Parent: "java/lang/Object",
 		methods: []ktfHostJavaMethodSpec{
-			{name: "set", descriptor: "(I)V", access: 0x0100},
+			{name: "get", descriptor: "()I", access: 0x0108},
+			{name: "set", descriptor: "(I)V", access: 0x0108},
 		},
 	},
 	"org/kwis/msf/io/Network": {
 		Parent: "java/lang/Object",
 		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "()V"},
 			{name: "connect", descriptor: "()I", access: 0x0108},
 			{name: "disconnect", descriptor: "()V", access: 0x0108},
 		},
@@ -1279,6 +1363,17 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 				descriptor: "(Ljava/lang/String;)V",
 				access:     0x0008,
 			},
+			{name: "deleteDataBase", descriptor: "(Ljava/lang/String;I)V", access: 0x0008},
+			{name: "deleteRecord", descriptor: "(I)V"},
+			{name: "getAccessMode", descriptor: "(Ljava/lang/String;)I", access: 0x0008},
+			{name: "getDataBaseName", descriptor: "()Ljava/lang/String;"},
+			{name: "getDataBaseSize", descriptor: "()I"},
+			{name: "getLastModified", descriptor: "()J"},
+			{name: "getRecordSize", descriptor: "()I"},
+			{name: "getSizeAvailable", descriptor: "()I"},
+			{name: "listDataBases", descriptor: "()[Ljava/lang/String;", access: 0x0008},
+			{name: "selectRecord", descriptor: "(I[BI)V"},
+			{name: "sortRecord", descriptor: "(Lorg/kwis/msp/db/DataFilter;Lorg/kwis/msp/db/DataComparator;)[I"},
 		},
 	},
 	"org/kwis/msp/lcdui/Display": {
@@ -1319,6 +1414,10 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 				name:       "callSerially",
 				descriptor: "(Ljava/lang/Runnable;)V",
 			},
+			ktfCompatibilityMethod("callSerially", "(Ljava/lang/Runnable;I)V"),
+			ktfCompatibilityMethod("countCard", "()I"),
+			ktfCompatibilityMethod("flush", "()V"),
+			ktfCompatibilityMethod("getBitsPerPixel", "()I"),
 			{
 				name:       "getGameAction",
 				descriptor: "(I)I",
@@ -1334,6 +1433,19 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 				descriptor: "(I)Ljava/lang/String;",
 				access:     0x0108,
 			},
+			ktfCompatibilityMethod("grabKey", "(ILorg/kwis/msp/lcdui/JletEventListener;)V"),
+			ktfCompatibilityMethod("hasPointerEvents", "()Z"),
+			ktfCompatibilityMethod("hasPointerMotionEvents", "()Z"),
+			ktfCompatibilityMethod("hasRepeatEvents", "()Z"),
+			ktfCompatibilityMethod("isColor", "()Z"),
+			ktfCompatibilityMethod("numColors", "()I"),
+			ktfCompatibilityMethod("popCard", "()Lorg/kwis/msp/lcdui/Card;"),
+			ktfCompatibilityMethod("removeCard", "(Lorg/kwis/msp/lcdui/Card;)Z"),
+			ktfCompatibilityMethod("removeJletEventListener", "(Lorg/kwis/msp/lcdui/JletEventListener;)V"),
+			ktfCompatibilityMethod("setDockedCard", "(Lorg/kwis/msp/lcdui/Card;I)V"),
+			ktfCompatibilityMethod("setJletEventListener", "(Lorg/kwis/msp/lcdui/JletEventListener;)V"),
+			ktfCompatibilityMethod("ungrabKey", "(I)V"),
+			{name: "where", descriptor: "()V", access: 0x0008},
 		},
 	},
 
@@ -1795,7 +1907,30 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	"org/kwis/msp/io/FileSystem": {
 		Parent: "java/lang/Object",
 		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "()V"},
+			{name: "available", descriptor: "()I", access: 0x0008},
 			{name: "exists", descriptor: "(Ljava/lang/String;)Z", access: 0x0008},
+			{name: "exists", descriptor: "(Ljava/lang/String;I)Z", access: 0x0008},
+			{name: "getCreationTime", descriptor: "(Ljava/lang/String;)I", access: 0x0008},
+			{name: "getCreationTime", descriptor: "(Ljava/lang/String;I)I", access: 0x0008},
+			{name: "getFreeSpace", descriptor: "()J", access: 0x0008},
+			{name: "getMaxFilenameLength", descriptor: "()I", access: 0x0008},
+			{name: "isDirectory", descriptor: "(Ljava/lang/String;)Z", access: 0x0008},
+			{name: "isDirectory", descriptor: "(Ljava/lang/String;I)Z", access: 0x0008},
+			{name: "isFile", descriptor: "(Ljava/lang/String;)Z", access: 0x0008},
+			{name: "isFile", descriptor: "(Ljava/lang/String;I)Z", access: 0x0008},
+			{name: "list", descriptor: "(Ljava/lang/String;)Ljava/util/Vector;", access: 0x0008},
+			{name: "list", descriptor: "(Ljava/lang/String;I)Ljava/util/Vector;", access: 0x0008},
+			{name: "mkdir", descriptor: "(Ljava/lang/String;)V", access: 0x0008},
+			{name: "mkdir", descriptor: "(Ljava/lang/String;I)V", access: 0x0008},
+			{name: "remove", descriptor: "(Ljava/lang/String;)V", access: 0x0008},
+			{name: "remove", descriptor: "(Ljava/lang/String;I)V", access: 0x0008},
+			{name: "rename", descriptor: "(Ljava/lang/String;Ljava/lang/String;)V", access: 0x0008},
+			{name: "rename", descriptor: "(Ljava/lang/String;Ljava/lang/String;I)V", access: 0x0008},
+			{name: "rmdir", descriptor: "(Ljava/lang/String;)V", access: 0x0008},
+			{name: "rmdir", descriptor: "(Ljava/lang/String;I)V", access: 0x0008},
+			{name: "toCString", descriptor: "(Ljava/lang/String;)[B", access: 0x0008},
+			{name: "totalSpace", descriptor: "()I", access: 0x0008},
 		},
 	},
 
@@ -2177,6 +2312,11 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	},
 	"org/kwis/msp/lwc/TextComponent$ModeViewer": {
 		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "()V"},
+			{name: "notifyChangeMode", descriptor: "()V"},
+			{name: "paint", descriptor: "(Lorg/kwis/msp/lcdui/Graphics;)V", access: 0x0004},
+		},
 	},
 	"org/kwis/msp/lwc/TickerComponent": {
 		Parent:              "org/kwis/msp/lwc/Component",

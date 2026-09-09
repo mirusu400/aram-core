@@ -485,9 +485,10 @@ type ktfJavaMethodInspection struct {
 }
 
 type ktfHostJavaMethodSpec struct {
-	name       string
-	descriptor string
-	access     uint16
+	name          string
+	descriptor    string
+	access        uint16
+	compatibility bool
 }
 
 type ktfHostJavaClassSpec struct {

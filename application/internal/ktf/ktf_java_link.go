@@ -1071,6 +1071,8 @@ func (r *Runtime) addHostJavaMethod(
 		for _, method := range spec.methods {
 			if method.name == name && method.descriptor == descriptor {
 				accessFlags = method.access
+				compatibilityVTable = compatibilityVTable ||
+					method.compatibility
 				declaredByHostSpec = true
 				break
 			}

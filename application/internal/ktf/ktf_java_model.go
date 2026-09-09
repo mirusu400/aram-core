@@ -1151,7 +1151,7 @@ func deferKTFHostCompatibilityMethod(
 	spec ktfHostJavaClassSpec,
 	method ktfHostJavaMethodSpec,
 ) bool {
-	return spec.compatibilityVTable &&
+	return (spec.compatibilityVTable || method.compatibility) &&
 		method.access&(0x0002|0x0008) == 0 &&
 		!strings.HasPrefix(method.name, "<")
 }
