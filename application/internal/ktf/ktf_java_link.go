@@ -20,6 +20,11 @@ func (r *Runtime) ensureJavaVTableIndex(
 	if vtableAddress != 0 {
 		r.javaVTableClasses[vtableAddress] = classAddress
 	}
+	if bridge := r.javaClassBridges[classAddress]; bridge != 0 {
+		if err := r.WriteU32(bridge+12, vtableAddress); err != nil {
+			return 0, err
+		}
+	}
 	if index, ok := r.javaVTables[classAddress]; ok {
 		if err := r.writeJavaVTable(index, vtableAddress); err != nil {
 			return 0, err
@@ -45,6 +50,119 @@ func (r *Runtime) writeJavaVTable(index, address uint32) error {
 		return nil
 	}
 	return r.WriteU32(r.JvmContext+12+index*4, address)
+}
+
+// javaObjectClassHeader builds the tagged class reference KTF AOT stores in
+// the first word of an object's field block. Virtual-call helpers decode that
+// word relative to JvmContext and read a vtable at class+12. The inlined
+// instanceof/checkcast helper decodes the same word as a class and follows
+// class+8 -> descriptor+8 -> parent. A packed JvmContext vtable slot satisfies
+// the first ABI but aliases neighbouring slots for the second one.
+//
+// Give each real class an independent bridge class instead. Its vtable is the
+// real class's table and its synthetic parent is the real class, so dispatch
+// reads the same methods while type walking enters the genuine hierarchy after
+// one harmless extra hop. The bridge stays host-owned and is never published
+// as the instance's Java class pointer.
+func (r *Runtime) javaObjectClassHeader(
+	class JavaClass,
+	vtableIndex uint32,
+) (uint32, error) {
+	if r.JvmContext == 0 {
+		// Unit-level hosts that do not initialize the guest JVM never decode the
+		// header. Preserve the legacy value for those synthetic runtimes.
+		return (vtableIndex * 4) << 5, nil
+	}
+	bridge, err := r.ensureJavaClassBridge(class)
+	if err != nil {
+		return 0, err
+	}
+	delta := int64(bridge) - int64(r.JvmContext)
+	if delta < -(1<<26) || delta >= 1<<26 {
+		return 0, fmt.Errorf(
+			"KTF Java class bridge 0x%08x is outside compact range of JVM context 0x%08x",
+			bridge,
+			r.JvmContext,
+		)
+	}
+	header := uint32(int32(delta) << 5)
+	decoded := r.JvmContext + uint32(int32(header)>>5)
+	if decoded != bridge {
+		return 0, fmt.Errorf(
+			"KTF Java class bridge 0x%08x is not compact-reference aligned",
+			bridge,
+		)
+	}
+	return header, nil
+}
+
+func (r *Runtime) ensureJavaClassBridge(class JavaClass) (uint32, error) {
+	if r.javaClassBridges == nil {
+		r.javaClassBridges = make(map[uint32]uint32)
+	}
+	classWords, err := r.ReadWords(class.Address, 5)
+	if err != nil {
+		return 0, err
+	}
+	descriptorWords, err := r.ReadWords(classWords[2], 9)
+	if err != nil {
+		return 0, err
+	}
+	bridge := r.javaClassBridges[class.Address]
+	if bridge == 0 {
+		for candidate, target := range r.javaVTableClasses {
+			if target != class.Address || candidate == classWords[3] {
+				continue
+			}
+			candidateWords, readErr := r.ReadWords(candidate, 3)
+			if readErr != nil || candidateWords[0] != candidate+4 ||
+				candidateWords[2] != candidate+5*4 {
+				continue
+			}
+			parent, readErr := r.ReadU32(candidateWords[2] + 8)
+			if readErr == nil && parent == class.Address {
+				bridge = candidate
+				r.javaClassBridges[class.Address] = bridge
+				break
+			}
+		}
+	}
+	created := bridge == 0
+	if created {
+		bridge, err = r.AllocateWords(5 + 9)
+		if err != nil {
+			return 0, err
+		}
+		r.javaClassBridges[class.Address] = bridge
+		// javaVTableClasses is already persistent state and a strong GC root.
+		// A bridge is also a valid method-resolution alias for its real class,
+		// so recording it here preserves both properties without changing the
+		// state schema. ensureJavaClassBridge recognizes the full bridge shape
+		// and rebuilds the derived forward cache after restore.
+		r.javaVTableClasses[bridge] = class.Address
+	}
+	descriptor := bridge + 5*4
+	classWords[0] = bridge + 4
+	classWords[2] = descriptor
+	// The bridge is an internal subclass of the real class. This makes exact
+	// type checks reach the real class on the first ancestry hop and then use
+	// the title/framework's own parent chain unchanged.
+	descriptorWords[2] = class.Address
+	if err := r.writeWords(bridge, classWords); err != nil {
+		if created {
+			delete(r.javaClassBridges, class.Address)
+			delete(r.javaVTableClasses, bridge)
+		}
+		return 0, err
+	}
+	if err := r.writeWords(descriptor, descriptorWords); err != nil {
+		if created {
+			delete(r.javaClassBridges, class.Address)
+			delete(r.javaVTableClasses, bridge)
+		}
+		return 0, err
+	}
+	return bridge, nil
 }
 
 func (r *Runtime) rebuildHostJavaVTable(classAddress uint32) error {
@@ -183,7 +301,11 @@ func (r *Runtime) rebuildHostJavaVTable(classAddress uint32) error {
 		// KTF AOT code can use a class definition itself as the receiver for
 		// framework-owned methods. ptr_next points at this word, so encode the
 		// class vtable in the same form used by an instance fields header.
-		err = r.WriteU32(classAddress+4, (vtableIndex*4)<<5)
+		var header uint32
+		header, err = r.javaObjectClassHeader(hierarchy[0], vtableIndex)
+		if err == nil {
+			err = r.WriteU32(classAddress+4, header)
+		}
 	}
 	if err == nil {
 		r.tracef(
@@ -421,7 +543,12 @@ func (r *Runtime) repairJavaVirtualMethodFromReceiver(
 		actual.Address,
 		resolved.DeclaringClass,
 	); hierarchyErr == nil && compatible {
-		return method, false
+		declaring, inspectErr := r.InspectJavaClass(resolved.DeclaringClass)
+		if inspectErr != nil ||
+			!r.hostJavaClass[resolved.DeclaringClass] ||
+			ktfHostSpecDeclaresJavaMethod(declaring.Name, name, descriptor) {
+			return method, false
+		}
 	}
 	repaired, err := r.resolveJavaMethod(actual.Address, name, descriptor)
 	if err != nil || repaired == method {
@@ -440,6 +567,19 @@ func (r *Runtime) repairJavaVirtualMethodFromReceiver(
 		repaired,
 	)
 	return repaired, true
+}
+
+func ktfHostSpecDeclaresJavaMethod(className, name, descriptor string) bool {
+	spec, ok := HostJavaClassSpecs[className]
+	if !ok {
+		return false
+	}
+	for _, method := range spec.methods {
+		if method.name == name && method.descriptor == descriptor {
+			return true
+		}
+	}
+	return false
 }
 
 // repairJavaStaticMethodCollision handles the static counterpart of the

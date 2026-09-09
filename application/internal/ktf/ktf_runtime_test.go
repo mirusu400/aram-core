@@ -3683,6 +3683,58 @@ func TestKTFGetJavaMethodRepairsUnrelatedHeaderClassFromReceiver(t *testing.T) {
 	}
 }
 
+func TestKTFGetJavaMethodRepairsSyntheticHostSuperclassMethod(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	check(t, runtime.SetTraceMode(KTFTraceFull))
+
+	objectClass := inspectClass(t, runtime,
+		ensureClass(t, runtime, "java/lang/Object"))
+	wrongMethod, err := runtime.resolveJavaMethod(
+		objectClass.Address,
+		"getInputStream",
+		"()Ljava/io/InputStream;",
+	)
+	check(t, err)
+	socketClass := inspectClass(t, runtime,
+		ensureClass(t, runtime, "org/kwis/msf/io/Socket"))
+	socketMethod, err := runtime.resolveJavaMethod(
+		socketClass.Address,
+		"getInputStream",
+		"()Ljava/io/InputStream;",
+	)
+	check(t, err)
+	receiver, err := runtime.NewJavaInstanceForClass(socketClass)
+	check(t, err)
+	fullName, err := runtime.allocateBytes(
+		[]byte("\x00()Ljava/io/InputStream;+getInputStream"),
+		true,
+	)
+	check(t, err)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, objectClass.Address))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, fullName))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR4, receiver))
+
+	got, err := ktfGetJavaMethod(context.Background(), runtime)
+	check(t, err)
+	if got != socketMethod {
+		t.Fatalf(
+			"receiver-repaired method = 0x%08x, want Socket 0x%08x (Object 0x%08x)",
+			got,
+			socketMethod,
+			wrongMethod,
+		)
+	}
+	if !slices.ContainsFunc(runtime.HostTrace, func(line string) bool {
+		return strings.Contains(
+			line,
+			"java_virtual_header_repair:getInputStream()Ljava/io/InputStream;:actual=org/kwis/msf/io/Socket",
+		)
+	}) {
+		t.Fatalf("receiver repair trace missing: %v", runtime.HostTrace)
+	}
+}
+
 func TestKTFGetJavaMethodRepairsUniqueGuestStaticCollision(t *testing.T) {
 	runtime := newTestRuntime(t)
 	runtime.JvmContext = allocWords(t, runtime, 3+128)

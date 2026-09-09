@@ -2,7 +2,9 @@
 
 감사일: 2026-09-10
 
-기준 브랜치: `main` (`a7ae238`)
+최초 비교 기준: `main` (`a7ae238`)
+
+PR 직전 동기화 기준: `origin/main` (`42540ff`)
 
 구현 확인점: `feat/wipi-java-emulation` (`fbaa856`)
 

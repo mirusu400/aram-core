@@ -200,6 +200,7 @@ type Runtime struct {
 	exceptionContext        uint32
 	javaEnvironment         uint32
 	javaVTables             map[uint32]uint32
+	javaClassBridges        map[uint32]uint32
 	javaVTableCapacity      map[uint32]uint32
 	javaVTableClasses       map[uint32]uint32
 	hostJavaVirtualSlots    map[uint32]uint16

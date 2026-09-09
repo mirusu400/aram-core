@@ -224,6 +224,11 @@ type Graphics struct {
 	// frame on each of them spent an eighth of the emulator's CPU on a digest
 	// nobody read.
 	lastFrameHashed bool
+	// bulkFastPathCalls counts the Clear and blit calls served by the row-copy
+	// paths in graphics_bulk.go. It is diagnostic only and is not part of the
+	// saved state: the two paths write the same bytes, so tests need a counter
+	// rather than an output comparison to tell which one ran.
+	bulkFastPathCalls uint64
 }
 
 func NewGraphics(registry *Registry, limits GraphicsLimits) (*Graphics, error) {
@@ -474,14 +479,12 @@ func (g *Graphics) Clear(owner OwnerID, id ServiceID, color Color) error {
 	if err != nil {
 		return err
 	}
-	previous := current.state
-	current.state = defaultDrawState(current.descriptor.Width, current.descriptor.Height)
-	for y := int32(0); y < current.descriptor.Height; y++ {
-		for x := int32(0); x < current.descriptor.Width; x++ {
-			encodeSurfaceColor(current, x, y, color)
-		}
-	}
-	current.state = previous
+	// Clear covers the whole surface and consults no draw state - it never
+	// did, since encodeSurfaceColor reads only the descriptor - so the fill
+	// color is encoded once and replicated instead of being re-encoded for
+	// each of the 76,800 pixels of a handset screen.
+	fillSurface(current, color)
+	g.bulkFastPathCalls++
 	current.dirty = Rectangle{Width: current.descriptor.Width, Height: current.descriptor.Height}
 	return nil
 }
@@ -536,6 +539,10 @@ func (g *Graphics) ScaledBlit(
 	count := uint64(destinationRectangle.Width) * uint64(destinationRectangle.Height)
 	if count > g.limits.MaxPixels || count > uint64(math.MaxInt/4) {
 		return fmt.Errorf("%w: blit exceeds pixel limit", ErrLimitExceeded)
+	}
+	if blitFastPath(destination, source, destinationRectangle, sourceRectangle) {
+		g.bulkFastPathCalls++
+		return nil
 	}
 	colors := make([]Color, int(count))
 	for y := int32(0); y < destinationRectangle.Height; y++ {
