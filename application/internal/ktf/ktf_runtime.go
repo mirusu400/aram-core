@@ -817,7 +817,11 @@ type ktfLWCComponent struct {
 	imageActive     uint32
 	group           uint32
 	date            uint32
+	grabListener    uint32
+	grabObject      uint32
+	grabbedKeys     map[int32]bool
 	mode            int32
+	layout          int32
 	minimum         int32
 	viewAmount      int32
 	changeAmount    int32
@@ -828,6 +832,8 @@ type ktfLWCComponent struct {
 	focused         bool
 	vertical        bool
 	packed          bool
+	framed          bool
+	commandGrabs    bool
 	annunciator     bool
 	transparent     bool
 	progressInput   bool

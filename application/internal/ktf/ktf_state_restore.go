@@ -726,7 +726,7 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 }
 
 func restoreKTFLWC(value ktfLWCSnapshot) *ktfLWCComponent {
-	return &ktfLWCComponent{
+	result := &ktfLWCComponent{
 		x: value.X, y: value.Y, width: value.Width, height: value.Height,
 		preferredWidth:  value.PreferredWidth,
 		preferredHeight: value.PreferredHeight,
@@ -746,11 +746,21 @@ func restoreKTFLWC(value ktfLWCSnapshot) *ktfLWCComponent {
 		progressInput: value.ProgressInput,
 		font:          value.Font, image: value.Image,
 		imageActive: value.ImageActive, group: value.Group,
-		date: value.Date, mode: value.Mode, minimum: value.Minimum,
+		date: value.Date, grabListener: value.GrabListener,
+		grabObject: value.GrabObject,
+		mode:       value.Mode, layout: value.Layout, minimum: value.Minimum,
 		viewAmount: value.ViewAmount, changeAmount: value.ChangeAmount,
 		delay: value.Delay, activeIndex: value.ActiveIndex,
+		framed: value.Framed, commandGrabs: value.CommandGrabs,
 		selected: value.Selected,
 	}
+	if len(value.GrabbedKeys) != 0 {
+		result.grabbedKeys = make(map[int32]bool, len(value.GrabbedKeys))
+		for _, key := range value.GrabbedKeys {
+			result.grabbedKeys[key] = true
+		}
+	}
+	return result
 }
 
 func restoreKTFDatabase(value ktfDatabaseSnapshot) *Database {

@@ -78,7 +78,7 @@ func (r *Runtime) handleLWCDecoratorMethod(
 }
 
 func (r *Runtime) handleLWCMethod(
-	_ context.Context,
+	ctx context.Context,
 	className, name, descriptor string,
 	registers []uint32,
 ) (uint32, error) {
@@ -524,14 +524,16 @@ func (r *Runtime) handleLWCMethod(
 		return 0, nil
 	case "setFocus()V":
 		r.setLWCFocus(instance, true)
-		return 0, nil
+		_, err := r.notifyLWCEvent(ctx, instance, 1, 1, 0, 0)
+		return 0, err
 	case "setFocus(Lorg/kwis/msp/lwc/Component;)V":
 		state.focus = registers[2]
 		r.setLWCFocus(registers[2], true)
 		return 0, nil
 	case "focusNotify(Z)V":
 		r.setLWCFocus(instance, registers[2] != 0)
-		return 0, nil
+		_, err := r.notifyLWCEvent(ctx, instance, 1, registers[2], 0, 0)
+		return 0, err
 	case "hasFocus()Z":
 		return boolWord(state.focused), nil
 	case "canHandleInput()Z":
@@ -545,7 +547,8 @@ func (r *Runtime) handleLWCMethod(
 		return boolWord(r.lwcIsShown(instance)), nil
 	case "showNotify(Z)V":
 		state.shown = registers[2] != 0
-		return 0, nil
+		_, err := r.notifyLWCEvent(ctx, instance, 2, registers[2], 0, 0)
+		return 0, err
 	case "getCard()Lorg/kwis/msp/lcdui/Card;":
 		return r.lwcCard(instance), nil
 	case "show()V":
@@ -622,6 +625,7 @@ func (r *Runtime) handleLWCMethod(
 		return state.title, nil
 	case "setCommand(Lorg/kwis/msp/lwc/Component;Z)V":
 		state.command = registers[2]
+		state.commandGrabs = registers[3] != 0
 		r.setLWCParent(registers[2], instance)
 		return 0, nil
 	case "getCommand()Lorg/kwis/msp/lwc/Component;":
@@ -723,8 +727,54 @@ func (r *Runtime) handleLWCMethod(
 		return uint32(state.dialogAction), nil
 	case "getActionState()I":
 		return uint32(state.dialogAction), nil
-	case "keyNotify(II)Z", "pointerNotify(III)Z",
-		"processEvent(IIII)Z":
+	case "keyNotify(II)Z":
+		keyType := registers[2]
+		key := int32(registers[3])
+		if state.grabbedKeys[key] && r.validJavaObjectReference(state.grabListener) {
+			handled, invokeErr := r.invokeJavaVirtual(
+				ctx,
+				state.grabListener,
+				"grabKeyNotify",
+				"(IILjava/lang/Object;)Z",
+				keyType,
+				uint32(key),
+				state.grabObject,
+			)
+			if invokeErr != nil {
+				return 0, invokeErr
+			}
+			if handled != 0 {
+				return 1, nil
+			}
+		}
+		if handled, invokeErr := r.notifyLWCEvent(
+			ctx, instance, 3, keyType, uint32(key), 0,
+		); invokeErr != nil || handled {
+			return boolWord(handled), invokeErr
+		}
+		if state.commandGrabs && r.validJavaObjectReference(state.command) {
+			handled, invokeErr := r.invokeJavaVirtual(
+				ctx, state.command, "keyNotify", "(II)Z", keyType, uint32(key),
+			)
+			if invokeErr != nil {
+				return 0, invokeErr
+			}
+			if handled != 0 {
+				return 1, nil
+			}
+		}
+		if state.focus != instance && state.focus != state.command &&
+			r.validJavaObjectReference(state.focus) {
+			handled, invokeErr := r.invokeJavaVirtual(
+				ctx, state.focus, "keyNotify", "(II)Z", keyType, uint32(key),
+			)
+			if invokeErr != nil {
+				return 0, invokeErr
+			}
+			if handled != 0 {
+				return 1, nil
+			}
+		}
 		if method == "keyNotify(II)Z" && ktfLWCTextInputClasses[className] {
 			handled, editErr := r.editLWCText(
 				instance,
@@ -754,14 +804,77 @@ func (r *Runtime) handleLWCMethod(
 			return 1, nil
 		}
 		return 0, nil
+	case "pointerNotify(III)Z":
+		if handled, invokeErr := r.notifyLWCEvent(
+			ctx, instance, 4, registers[2], registers[3], registers[4],
+		); invokeErr != nil || handled {
+			return boolWord(handled), invokeErr
+		}
+		if state.focus != instance && r.validJavaObjectReference(state.focus) {
+			return r.invokeJavaVirtual(
+				ctx,
+				state.focus,
+				"pointerNotify",
+				"(III)Z",
+				registers[2],
+				registers[3],
+				registers[4],
+			)
+		}
+		return 0, nil
+	case "processEvent(IIII)Z":
+		if registers[2] == 1 {
+			return r.invokeJavaVirtual(
+				ctx,
+				instance,
+				"keyNotify",
+				"(II)Z",
+				registers[3],
+				registers[4],
+			)
+		} else if registers[2] == 2 {
+			return r.invokeJavaVirtual(
+				ctx,
+				instance,
+				"pointerNotify",
+				"(III)Z",
+				registers[3],
+				registers[4],
+				registers[5],
+			)
+		}
+		return 0, nil
 	case "paint(Lorg/kwis/msp/lcdui/Graphics;)V",
 		"paintContent(Lorg/kwis/msp/lcdui/Graphics;)V",
 		"paintFrame(Lorg/kwis/msp/lcdui/Graphics;)V",
-		"controlInset(Z)V", "useFrame(Z)V",
-		"setLayout(I)V",
-		"setGrabKeyListener(Lorg/kwis/msp/lwc/GrabKeyListener;" +
-			"Ljava/lang/Object;)V",
-		"grabKey(I)V", "ungrabKey(I)V", "setParameter()V":
+		"setParameter()V":
+		return 0, nil
+	case "controlInset(Z)V", "useFrame(Z)V":
+		state.framed = registers[2] != 0
+		r.invalidateLWC(instance)
+		return 0, nil
+	case "setLayout(I)V":
+		layout := int32(registers[2])
+		if layout & ^int32(63) != 0 ||
+			bitsSet32(layout&7) > 1 || bitsSet32(layout&56) > 1 {
+			return 0, r.raiseHostJavaException("java/lang/IllegalArgumentException")
+		}
+		state.layout = layout
+		r.invalidateLWC(instance)
+		return 0, nil
+	case "setGrabKeyListener(Lorg/kwis/msp/lwc/GrabKeyListener;" +
+		"Ljava/lang/Object;)V":
+		state.grabListener = registers[2]
+		state.grabObject = registers[3]
+		return 0, nil
+	case "grabKey(I)V":
+		if state.grabbedKeys == nil {
+			state.grabbedKeys = make(map[int32]bool)
+		}
+		state.grabbedKeys[int32(registers[2])] = true
+		return 0, nil
+	case "ungrabKey(I)V":
+		delete(state.grabbedKeys, int32(registers[2]))
 		return 0, nil
 	case "setFont(Lorg/kwis/msp/lcdui/Font;)V":
 		state.font = registers[2]
@@ -803,7 +916,11 @@ func (r *Runtime) handleLWCMethod(
 		return 0, nil
 	case "getNextTraversalComponent()Lorg/kwis/msp/lwc/Component;",
 		"getPrevTraversalComponent()Lorg/kwis/msp/lwc/Component;":
-		return 0, nil
+		direction := 1
+		if name == "getPrevTraversalComponent" {
+			direction = -1
+		}
+		return r.lwcTraversalComponent(instance, direction), nil
 	case "getConstraint()I":
 		return uint32(state.mode), nil
 	case "setConstraint(I)V":
@@ -1181,17 +1298,21 @@ func (r *Runtime) removeLWCChildIndex(parent uint32, index int) {
 func (r *Runtime) layoutLWC(instance uint32) {
 	state := r.lwcComponent(instance)
 	children := r.lwcChildren[instance]
-	var cursor int32
+	inset := int32(0)
+	if state.framed {
+		inset = 1
+	}
+	cursor := inset
 	var cross int32
 	for _, child := range children {
 		childState := r.lwcComponent(child)
 		width := lwcPreferredWidth(childState)
 		height := lwcPreferredHeight(childState)
 		if state.vertical {
-			childState.x = 0
+			childState.x = inset
 			childState.y = cursor
 			if state.packed && state.width > 0 {
-				width = state.width
+				width = max(state.width-inset*2, 0)
 			}
 			cursor += height + state.gap
 			if width > cross {
@@ -1199,9 +1320,9 @@ func (r *Runtime) layoutLWC(instance uint32) {
 			}
 		} else {
 			childState.x = cursor
-			childState.y = 0
+			childState.y = inset
 			if state.packed && state.height > 0 {
-				height = state.height
+				height = max(state.height-inset*2, 0)
 			}
 			cursor += width + state.gap
 			if height > cross {
@@ -1215,6 +1336,8 @@ func (r *Runtime) layoutLWC(instance uint32) {
 	if len(children) > 0 {
 		cursor -= state.gap
 	}
+	cursor += inset
+	cross += inset * 2
 	if state.vertical {
 		state.preferredWidth = cross
 		state.preferredHeight = cursor
@@ -1223,6 +1346,79 @@ func (r *Runtime) layoutLWC(instance uint32) {
 		state.preferredHeight = cross
 	}
 	state.valid = true
+}
+
+func bitsSet32(value int32) int {
+	count := 0
+	for value != 0 {
+		value &= value - 1
+		count++
+	}
+	return count
+}
+
+func (r *Runtime) notifyLWCEvent(
+	ctx context.Context,
+	instance uint32,
+	eventType, arg1, arg2, arg3 uint32,
+) (bool, error) {
+	listener := r.listeners[instance]
+	if !r.validJavaObjectReference(listener) {
+		return false, nil
+	}
+	result, err := r.invokeJavaVirtual(
+		ctx,
+		listener,
+		"eventNotify",
+		"(IIIILjava/lang/Object;)Z",
+		eventType,
+		arg1,
+		arg2,
+		arg3,
+		r.lwcEventData[instance],
+	)
+	return result != 0, err
+}
+
+func (r *Runtime) validJavaObjectReference(instance uint32) bool {
+	if instance == 0 {
+		return false
+	}
+	words, err := r.ReadWords(instance, 2)
+	if err != nil || words[1] == 0 {
+		return false
+	}
+	_, err = r.InspectJavaClass(words[1])
+	return err == nil
+}
+
+func (r *Runtime) lwcTraversalComponent(instance uint32, direction int) uint32 {
+	children := r.lwcChildren[instance]
+	if len(children) == 0 {
+		return 0
+	}
+	start := -1
+	if direction < 0 {
+		start = len(children)
+	}
+	focus := r.lwcComponent(instance).focus
+	for index, child := range children {
+		if child == focus {
+			start = index
+			break
+		}
+	}
+	for offset := 1; offset <= len(children); offset++ {
+		index := (start + direction*offset) % len(children)
+		if index < 0 {
+			index += len(children)
+		}
+		child := children[index]
+		if child != 0 && r.lwcIsShown(child) {
+			return child
+		}
+	}
+	return 0
 }
 
 func (r *Runtime) markLWCRepaint(instance uint32) {

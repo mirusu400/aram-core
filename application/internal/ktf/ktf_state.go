@@ -213,22 +213,23 @@ type ktfClipSnapshot struct {
 }
 
 type ktfLWCSnapshot struct {
-	X, Y, Width, Height                  int32
-	PreferredWidth, PreferredHeight      int32
-	Background, Foreground, Parent, Card uint32
-	Title, Command, Work, Focus, Text    uint32
-	Gap, ProgressValue, ProgressMax      int32
-	ProgressStep, ProgressTop            int32
-	ProgressBottom, DialogType           int32
-	DialogTimeout, DialogAction          int32
-	DialogOK, DialogCancel               uint32
-	Font, Image, ImageActive             uint32
-	Group, Date                          uint32
-	Mode, Minimum, ViewAmount            int32
-	ChangeAmount, Delay, ActiveIndex     int32
-	Shown, Valid, Focused                bool
-	Vertical, Packed, Annunciator        bool
-	Transparent, ProgressInput, Selected bool
+	X, Y, Width, Height                                 int32
+	PreferredWidth, PreferredHeight                     int32
+	Background, Foreground, Parent, Card                uint32
+	Title, Command, Work, Focus, Text                   uint32
+	Gap, ProgressValue, ProgressMax                     int32
+	ProgressStep, ProgressTop                           int32
+	ProgressBottom, DialogType                          int32
+	DialogTimeout, DialogAction                         int32
+	DialogOK, DialogCancel                              uint32
+	Font, Image, ImageActive                            uint32
+	Group, Date, GrabListener, GrabObject               uint32
+	GrabbedKeys                                         []int32
+	Mode, Layout, Minimum, ViewAmount                   int32
+	ChangeAmount, Delay, ActiveIndex                    int32
+	Shown, Valid, Focused                               bool
+	Vertical, Packed, Framed, CommandGrabs, Annunciator bool
+	Transparent, ProgressInput, Selected                bool
 }
 
 type ktfDatabaseSnapshot struct {
@@ -1334,7 +1335,7 @@ func sortedKTFIncrementalHeaps(r *Runtime) []ktfIncrementalHeapSnapshot {
 }
 
 func snapshotKTFLWC(value *ktfLWCComponent) ktfLWCSnapshot {
-	return ktfLWCSnapshot{
+	result := ktfLWCSnapshot{
 		X: value.x, Y: value.y, Width: value.width, Height: value.height,
 		PreferredWidth:  value.preferredWidth,
 		PreferredHeight: value.preferredHeight,
@@ -1354,11 +1355,23 @@ func snapshotKTFLWC(value *ktfLWCComponent) ktfLWCSnapshot {
 		ProgressInput: value.progressInput,
 		Font:          value.font, Image: value.image,
 		ImageActive: value.imageActive, Group: value.group,
-		Date: value.date, Mode: value.mode, Minimum: value.minimum,
+		Date: value.date, GrabListener: value.grabListener,
+		GrabObject: value.grabObject,
+		Mode:       value.mode, Layout: value.layout, Minimum: value.minimum,
 		ViewAmount: value.viewAmount, ChangeAmount: value.changeAmount,
 		Delay: value.delay, ActiveIndex: value.activeIndex,
+		Framed: value.framed, CommandGrabs: value.commandGrabs,
 		Selected: value.selected,
 	}
+	for key, grabbed := range value.grabbedKeys {
+		if grabbed {
+			result.GrabbedKeys = append(result.GrabbedKeys, key)
+		}
+	}
+	sort.Slice(result.GrabbedKeys, func(i, j int) bool {
+		return result.GrabbedKeys[i] < result.GrabbedKeys[j]
+	})
+	return result
 }
 
 func snapshotKTFDatabase(value *Database) ktfDatabaseSnapshot {

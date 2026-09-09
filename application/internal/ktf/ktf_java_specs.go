@@ -1347,10 +1347,24 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	"org/kwis/msp/lwc/EventListener": {
 		Parent: "java/lang/Object",
 		access: 0x0601,
+		methods: []ktfHostJavaMethodSpec{
+			{
+				name:       "eventNotify",
+				descriptor: "(IIIILjava/lang/Object;)Z",
+				access:     0x0401,
+			},
+		},
 	},
 	"org/kwis/msp/lwc/GrabKeyListener": {
 		Parent: "java/lang/Object",
 		access: 0x0601,
+		methods: []ktfHostJavaMethodSpec{
+			{
+				name:       "grabKeyNotify",
+				descriptor: "(IILjava/lang/Object;)Z",
+				access:     0x0401,
+			},
+		},
 	},
 	"org/kwis/msp/lwc/ButtonComponent": {
 		Parent: "org/kwis/msp/lwc/Component",
