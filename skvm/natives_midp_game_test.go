@@ -87,3 +87,19 @@ func TestMIDPLayerManagerMovesExistingLayer(t *testing.T) {
 		t.Fatalf("front layer = %d, want %d", reference, second)
 	}
 }
+
+func TestMIDPGameCanvasTracksPressedKeys(t *testing.T) {
+	vm, err := New(map[string][]byte{})
+	check(t, err)
+	canvas := vm.NewObject("javax/microedition/lcdui/game/GameCanvas", nil)
+	invokeTestNative(t, vm, "javax/microedition/lcdui/game/GameCanvas", "<init>", "(Z)V", canvas, IntValue(1))
+	vm.currentDisplay = canvas
+	check(t, vm.KeyEvent(t.Context(), 141, true))
+	if got := mustInt(t, invokeTestNative(t, vm, "javax/microedition/lcdui/game/GameCanvas", "getKeyStates", "()I", canvas)); got != 0x0002 {
+		t.Fatalf("pressed key state = %#x", got)
+	}
+	check(t, vm.KeyEvent(t.Context(), 141, false))
+	if got := mustInt(t, invokeTestNative(t, vm, "javax/microedition/lcdui/game/GameCanvas", "getKeyStates", "()I", canvas)); got != 0 {
+		t.Fatalf("released key state = %#x", got)
+	}
+}

@@ -636,7 +636,12 @@ func (vm *VM) installTimerNatives() {
 		receiver uint32,
 		_ []Value,
 	) (Value, bool, error) {
-		return Value{}, false, vm.setNative(receiver, &timerObjectState{})
+		if err := vm.setNative(receiver, &timerObjectState{}); err != nil {
+			return Value{}, false, err
+		}
+		object, _ := vm.Object(receiver)
+		object.Fields["\x00aram-timer-cancelled"] = IntValue(0)
+		return Value{}, false, nil
 	})
 	vm.RegisterNative("java/util/Timer", "cancel", "()V", func(
 		_ context.Context,
@@ -653,19 +658,53 @@ func (vm *VM) installTimerNatives() {
 				return Value{}, false, err
 			}
 		}
+		object, _ := vm.Object(receiver)
+		object.Fields["\x00aram-timer-cancelled"] = IntValue(1)
 		return Value{}, false, nil
 	})
 	vm.RegisterNative(
 		"java/util/Timer",
 		"schedule",
-		"(Ljava/util/TimerTask;JJ)V",
-		nativeTimerSchedule,
+		"(Ljava/util/TimerTask;J)V",
+		nativeTimerScheduleOnce,
 	)
+	vm.RegisterNative(
+		"java/util/Timer",
+		"schedule",
+		"(Ljava/util/TimerTask;JJ)V",
+		nativeTimerSchedulePeriodic,
+	)
+	for _, method := range []struct {
+		name       string
+		descriptor string
+		periodic   bool
+	}{
+		{"schedule", "(Ljava/util/TimerTask;Ljava/util/Date;)V", false},
+		{"schedule", "(Ljava/util/TimerTask;Ljava/util/Date;J)V", true},
+		{"scheduleAtFixedRate", "(Ljava/util/TimerTask;Ljava/util/Date;J)V", true},
+	} {
+		method := method
+		vm.RegisterNative("java/util/Timer", method.name, method.descriptor, func(ctx context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+			dateReference, err := referenceArgument(args, 1)
+			if err != nil || dateReference == 0 {
+				return Value{}, false, vm.newThrowable("java/lang/NullPointerException", "date")
+			}
+			date, err := vm.date(dateReference)
+			if err != nil {
+				return Value{}, false, err
+			}
+			delay := max(int64(0), date.millis-vm.services.Clock.WallMillis())
+			if !method.periodic {
+				return nativeTimerScheduleOnce(ctx, vm, receiver, []Value{args[0], LongValue(delay)})
+			}
+			return nativeTimerSchedulePeriodic(ctx, vm, receiver, []Value{args[0], LongValue(delay), args[2]})
+		})
+	}
 	vm.RegisterNative(
 		"java/util/Timer",
 		"scheduleAtFixedRate",
 		"(Ljava/util/TimerTask;JJ)V",
-		nativeTimerSchedule,
+		nativeTimerSchedulePeriodic,
 	)
 	vm.RegisterNative("java/util/TimerTask", "<init>", "()V", func(
 		_ context.Context,
@@ -705,6 +744,32 @@ func (vm *VM) installTimerNatives() {
 			return IntValue(0), true, nil
 		},
 	)
+	vm.RegisterNative("java/util/TimerTask", "scheduledExecutionTime", "()J", func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+		if _, err := vm.timerTask(receiver); err != nil {
+			return Value{}, false, err
+		}
+		object, _ := vm.Object(receiver)
+		value, ok := object.Fields["\x00aram-timer-scheduled-wall"]
+		if !ok {
+			return LongValue(0), true, nil
+		}
+		return value, true, nil
+	})
+}
+
+func nativeTimerScheduleOnce(ctx context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+	return nativeTimerSchedule(ctx, vm, receiver, []Value{args[0], args[1], LongValue(0)})
+}
+
+func nativeTimerSchedulePeriodic(ctx context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+	period, err := args[2].Long()
+	if err != nil {
+		return Value{}, false, err
+	}
+	if period <= 0 {
+		return Value{}, false, vm.newThrowable("java/lang/IllegalArgumentException", "period must be positive")
+	}
+	return nativeTimerSchedule(ctx, vm, receiver, args)
 }
 
 func nativeTimerSchedule(
@@ -716,6 +781,10 @@ func nativeTimerSchedule(
 	timer, err := vm.timerObject(receiver)
 	if err != nil {
 		return Value{}, false, err
+	}
+	timerObject, _ := vm.Object(receiver)
+	if cancelled, _ := timerObject.Fields["\x00aram-timer-cancelled"].Int(); cancelled != 0 {
+		return Value{}, false, vm.newThrowable("java/lang/IllegalStateException", "Timer cancelled")
 	}
 	taskReference, err := referenceArgument(args, 0)
 	if err != nil {
@@ -767,6 +836,8 @@ func nativeTimerSchedule(
 		return Value{}, false, err
 	}
 	task.timer = id
+	taskObject, _ := vm.Object(taskReference)
+	taskObject.Fields["\x00aram-timer-scheduled-wall"] = LongValue(vm.services.Clock.WallMillis() + delay)
 	timer.timers = append(timer.timers, id)
 	return Value{}, false, nil
 }

@@ -1,6 +1,9 @@
 package skvm
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestMIDPTextFieldMaintainsUTF16Content(t *testing.T) {
 	vm, err := New(map[string][]byte{})
@@ -59,5 +62,36 @@ func TestMIDPDisplayTracksCurrentDisplayable(t *testing.T) {
 	}
 	if shown := mustInt(t, invokeTestNative(t, vm, "javax/microedition/lcdui/Displayable", "isShown", "()Z", form)); shown != 1 {
 		t.Fatalf("isShown = %d", shown)
+	}
+}
+
+func TestMIDPImageMutabilityAndFontAttributes(t *testing.T) {
+	vm, err := New(map[string][]byte{})
+	check(t, err)
+	mutable := mustReference(t, invokeTestNative(t, vm, "javax/microedition/lcdui/Image", "createImage", "(II)Ljavax/microedition/lcdui/Image;", 0, IntValue(2), IntValue(2)))
+	if got := mustInt(t, invokeTestNative(t, vm, "javax/microedition/lcdui/Image", "isMutable", "()Z", mutable)); got != 1 {
+		t.Fatalf("blank image mutability = %d", got)
+	}
+	pixels := vm.newArray("[I", []Value{IntValue(-1)})
+	immutable := mustReference(t, invokeTestNative(t, vm, "javax/microedition/lcdui/Image", "createRGBImage", "([IIIZ)Ljavax/microedition/lcdui/Image;", 0,
+		ReferenceValue(pixels), IntValue(1), IntValue(1), IntValue(1)))
+	if got := mustInt(t, invokeTestNative(t, vm, "javax/microedition/lcdui/Image", "isMutable", "()Z", immutable)); got != 0 {
+		t.Fatalf("RGB image mutability = %d", got)
+	}
+	native := vm.natives[nativeKey{"javax/microedition/lcdui/Image", "getGraphics", "()Ljavax/microedition/lcdui/Graphics;"}]
+	_, _, err = native(context.Background(), vm, immutable, nil)
+	if thrown, ok := err.(*thrown); !ok || thrown.class != "java/lang/IllegalStateException" {
+		t.Fatalf("immutable getGraphics error = %v", err)
+	}
+	font := mustReference(t, invokeTestNative(t, vm, "javax/microedition/lcdui/Font", "getFont", "(III)Ljavax/microedition/lcdui/Font;", 0,
+		IntValue(32), IntValue(1|4), IntValue(16)))
+	if got := mustInt(t, invokeTestNative(t, vm, "javax/microedition/lcdui/Font", "getFace", "()I", font)); got != 32 {
+		t.Fatalf("font face = %d", got)
+	}
+	if got := mustInt(t, invokeTestNative(t, vm, "javax/microedition/lcdui/Font", "isBold", "()Z", font)); got != 1 {
+		t.Fatalf("font bold = %d", got)
+	}
+	if got := mustInt(t, invokeTestNative(t, vm, "javax/microedition/lcdui/Font", "isItalic", "()Z", font)); got != 0 {
+		t.Fatalf("font italic = %d", got)
 	}
 }

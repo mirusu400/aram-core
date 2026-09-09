@@ -33,6 +33,9 @@ func (vm *VM) installRecordStoreExtras() {
 	vm.installRMSExceptionNatives()
 	vm.RegisterStaticField("javax/microedition/rms/RecordStore", "AUTHMODE_PRIVATE", "I", IntValue(0))
 	vm.RegisterStaticField("javax/microedition/rms/RecordStore", "AUTHMODE_ANY", "I", IntValue(1))
+	vm.RegisterStaticField("javax/microedition/rms/RecordComparator", "PRECEDES", "I", IntValue(-1))
+	vm.RegisterStaticField("javax/microedition/rms/RecordComparator", "EQUIVALENT", "I", IntValue(0))
+	vm.RegisterStaticField("javax/microedition/rms/RecordComparator", "FOLLOWS", "I", IntValue(1))
 }
 
 func (vm *VM) installRecordStoreOpenNatives() {

@@ -638,6 +638,21 @@ func (vm *VM) KeyEvent(ctx context.Context, key int32, pressed bool) error {
 	if pressed {
 		method = "keyPressed"
 	}
+	if vm.IsInstance(vm.currentDisplay, "javax/microedition/lcdui/game/GameCanvas") {
+		object, _ := vm.Object(vm.currentDisplay)
+		states, _ := object.Fields["$game.keyStates"].Int()
+		mask := gameCanvasKeyMask(key)
+		if pressed {
+			states |= mask
+		} else {
+			states &^= mask
+		}
+		object.Fields["$game.keyStates"] = IntValue(states)
+		suppress, _ := object.Fields["$game.suppressKeyEvents"].Int()
+		if suppress != 0 {
+			return nil
+		}
+	}
 	_, _, err := vm.InvokeVirtual(
 		ctx,
 		vm.currentDisplay,
@@ -695,6 +710,10 @@ func (vm *VM) Advance(
 					return err
 				}
 				continue
+			}
+			if object, ok := vm.Object(taskReference); ok {
+				wallOffset := vm.services.Clock.WallMillis() - vm.services.Clock.Monotonic().Milliseconds()
+				object.Fields["\x00aram-timer-scheduled-wall"] = LongValue(wallOffset + event.At.Milliseconds())
 			}
 			if _, _, err := vm.InvokeVirtual(
 				ctx,

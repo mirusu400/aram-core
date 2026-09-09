@@ -115,6 +115,10 @@ func (vm *VM) font(reference uint32) (*fontState, error) {
 }
 
 func (vm *VM) newFontObject(class string, args []Value) (Value, bool, error) {
+	face, err := intArgument(args, 0)
+	if err != nil {
+		return Value{}, false, err
+	}
 	style, err := intArgument(args, 1)
 	if err != nil {
 		return Value{}, false, err
@@ -148,7 +152,12 @@ func (vm *VM) newFontObject(class string, args []Value) (Value, bool, error) {
 	if err != nil {
 		return Value{}, false, err
 	}
-	return ReferenceValue(vm.NewObject(class, &fontState{font: id})), true, nil
+	reference := vm.NewObject(class, &fontState{font: id})
+	object, _ := vm.Object(reference)
+	object.Fields["\x00aram-font-face"] = IntValue(face)
+	object.Fields["\x00aram-font-style"] = IntValue(style)
+	object.Fields["\x00aram-font-size"] = IntValue(sizeValue)
+	return ReferenceValue(reference), true, nil
 }
 
 func (vm *VM) graphics(reference uint32) (*graphicsState, error) {

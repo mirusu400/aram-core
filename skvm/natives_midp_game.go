@@ -42,6 +42,13 @@ func (vm *VM) installMIDPGameNatives() {
 	vm.installTiledLayerNatives()
 	vm.installLayerManagerNatives()
 	vm.installGameCanvasNatives()
+	for name, value := range map[string]int32{
+		"UP_PRESSED": 0x0002, "LEFT_PRESSED": 0x0004, "RIGHT_PRESSED": 0x0020,
+		"DOWN_PRESSED": 0x0040, "FIRE_PRESSED": 0x0100, "GAME_A_PRESSED": 0x0200,
+		"GAME_B_PRESSED": 0x0400, "GAME_C_PRESSED": 0x0800, "GAME_D_PRESSED": 0x1000,
+	} {
+		vm.RegisterStaticField("javax/microedition/lcdui/game/GameCanvas", name, "I", IntValue(value))
+	}
 }
 
 func (vm *VM) initializeLayer(receiver uint32, width, height int32) error {
@@ -969,7 +976,14 @@ func (vm *VM) installGameCanvasNatives() {
 		value, err := objectField(vm, receiver, gameCanvasGraphics)
 		return value, true, err
 	})
-	vm.RegisterNative("javax/microedition/lcdui/game/GameCanvas", "getKeyStates", "()I", func(context.Context, *VM, uint32, []Value) (Value, bool, error) { return IntValue(0), true, nil })
+	vm.RegisterNative("javax/microedition/lcdui/game/GameCanvas", "getKeyStates", "()I", func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+		object, ok := vm.Object(receiver)
+		if !ok {
+			return Value{}, false, fmt.Errorf("invalid GameCanvas")
+		}
+		states, _ := object.Fields["$game.keyStates"].Int()
+		return IntValue(states), true, nil
+	})
 	for _, descriptor := range []string{"()V", "(IIII)V"} {
 		descriptor := descriptor
 		vm.RegisterNative("javax/microedition/lcdui/game/GameCanvas", "flushGraphics", descriptor, func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
@@ -1008,4 +1022,29 @@ func (vm *VM) installGameCanvasNatives() {
 		image, _ := vm.image(imageReference)
 		return Value{}, false, blit(vm, graphics, image, 0, 0, 0, 0, image.width, image.height)
 	})
+}
+
+func gameCanvasKeyMask(key int32) int32 {
+	switch gameActionForKey(key) {
+	case 1:
+		return 0x0002
+	case 2:
+		return 0x0004
+	case 5:
+		return 0x0020
+	case 6:
+		return 0x0040
+	case 8:
+		return 0x0100
+	case 9:
+		return 0x0200
+	case 10:
+		return 0x0400
+	case 11:
+		return 0x0800
+	case 12:
+		return 0x1000
+	default:
+		return 0
+	}
 }

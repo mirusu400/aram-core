@@ -101,6 +101,61 @@ func (vm *VM) installMIDPCanvasImageNatives() {
 	vm.RegisterNative("javax/microedition/lcdui/Font", "getFont", "(I)Ljavax/microedition/lcdui/Font;", func(_ context.Context, vm *VM, _ uint32, _ []Value) (Value, bool, error) {
 		return ReferenceValue(vm.NewObject("javax/microedition/lcdui/Font", &fontState{font: vm.defaultFont})), true, nil
 	})
+	for _, method := range []struct{ name, field string }{
+		{"getStyle", "\x00aram-font-style"},
+		{"getSize", "\x00aram-font-size"},
+		{"getFace", "\x00aram-font-face"},
+	} {
+		method := method
+		vm.RegisterNative("javax/microedition/lcdui/Font", method.name, "()I", func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+			value, err := vm.midpFontAttribute(receiver, method.field)
+			return IntValue(value), err == nil, err
+		})
+	}
+	for _, method := range []struct {
+		name string
+		mask int32
+	}{
+		{"isPlain", 0}, {"isBold", 1}, {"isItalic", 2}, {"isUnderlined", 4},
+	} {
+		method := method
+		vm.RegisterNative("javax/microedition/lcdui/Font", method.name, "()Z", func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+			style, err := vm.midpFontAttribute(receiver, "\x00aram-font-style")
+			if err != nil {
+				return Value{}, false, err
+			}
+			matched := style&method.mask != 0
+			if method.mask == 0 {
+				matched = style == 0
+			}
+			if matched {
+				return IntValue(1), true, nil
+			}
+			return IntValue(0), true, nil
+		})
+	}
+	vm.RegisterNative("javax/microedition/lcdui/Font", "getBaselinePosition", "()I", func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+		font, err := vm.font(receiver)
+		if err != nil {
+			return Value{}, false, err
+		}
+		metrics, err := vm.services.Text.Metrics(vm.serviceOwner, font.font)
+		if err != nil {
+			return Value{}, false, err
+		}
+		return IntValue(metrics.Ascent), true, nil
+	})
+	vm.RegisterNative("javax/microedition/lcdui/Image", "isMutable", "()Z", func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+		if _, err := vm.image(receiver); err != nil {
+			return Value{}, false, err
+		}
+		object, _ := vm.Object(receiver)
+		mutable, _ := object.Fields["\x00aram-image-mutable"].Int()
+		if mutable != 0 {
+			return IntValue(1), true, nil
+		}
+		return IntValue(0), true, nil
+	})
 	vm.RegisterNative("javax/microedition/lcdui/Image", "createImage", "(Ljava/io/InputStream;)Ljavax/microedition/lcdui/Image;", func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
 		streamReference, err := referenceArgument(args, 0)
 		if err != nil {
@@ -657,6 +712,46 @@ func (vm *VM) installBasicItemNatives() {
 		}
 		return native(context.Background(), vm, receiver, args)
 	})
+	for _, method := range []struct{ name, descriptor string }{
+		{"sizeChanged", "(II)V"}, {"traverseOut", "()V"},
+		{"keyPressed", "(I)V"}, {"keyReleased", "(I)V"}, {"keyRepeated", "(I)V"},
+		{"pointerPressed", "(II)V"}, {"pointerReleased", "(II)V"}, {"pointerDragged", "(II)V"},
+		{"showNotify", "()V"}, {"hideNotify", "()V"},
+	} {
+		vm.RegisterNative("javax/microedition/lcdui/CustomItem", method.name, method.descriptor, nativeVoid)
+	}
+	vm.RegisterNative("javax/microedition/lcdui/CustomItem", "traverse", "(III[I)Z", func(context.Context, *VM, uint32, []Value) (Value, bool, error) {
+		return IntValue(0), true, nil
+	})
+}
+
+func (vm *VM) midpFontAttribute(reference uint32, field string) (int32, error) {
+	font, err := vm.font(reference)
+	if err != nil {
+		return 0, err
+	}
+	object, _ := vm.Object(reference)
+	if value, ok := object.Fields[field]; ok {
+		return value.Int()
+	}
+	for _, saved := range vm.services.Text.Snapshot().Fonts {
+		if saved.ID != font.font || saved.Owner != vm.serviceOwner {
+			continue
+		}
+		switch field {
+		case "\x00aram-font-style":
+			return int32(saved.Descriptor.Style), nil
+		case "\x00aram-font-size":
+			if saved.Descriptor.Size <= 8 {
+				return 8, nil
+			}
+			if saved.Descriptor.Size >= 16 {
+				return 16, nil
+			}
+		}
+		return 0, nil
+	}
+	return 0, fmt.Errorf("font service is unavailable")
 }
 
 func (vm *VM) initCommand(receiver uint32, short, long, kind, priority Value) error {

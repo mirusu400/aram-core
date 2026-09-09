@@ -703,6 +703,9 @@ func (vm *VM) findPushEntry(entries *Array, connection string) int {
 }
 
 func (vm *VM) installMIDPNetworkStaticFields() {
+	for name, value := range map[string]int32{"READ": 1, "WRITE": 2, "READ_WRITE": 3} {
+		vm.RegisterStaticField("javax/microedition/io/Connector", name, "I", IntValue(value))
+	}
 	for name, value := range map[string]int32{"DELAY": 0, "LINGER": 1, "KEEPALIVE": 2, "RCVBUF": 3, "SNDBUF": 4} {
 		vm.RegisterStaticField("javax/microedition/io/SocketConnection", name, "B", IntValue(value))
 	}
