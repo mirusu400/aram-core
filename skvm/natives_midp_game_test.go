@@ -88,6 +88,33 @@ func TestMIDPLayerManagerMovesExistingLayer(t *testing.T) {
 	}
 }
 
+func TestMIDPLayerManagerClipsAndRestoresViewWindow(t *testing.T) {
+	vm, err := New(map[string][]byte{})
+	check(t, err)
+	image := newOpaqueMIDPImage(t, vm, 4, 4)
+	sprite := vm.NewObject("javax/microedition/lcdui/game/Sprite", nil)
+	invokeTestNative(t, vm, "javax/microedition/lcdui/game/Sprite", "<init>", "(Ljavax/microedition/lcdui/Image;)V", sprite, ReferenceValue(image))
+	manager := vm.NewObject("javax/microedition/lcdui/game/LayerManager", nil)
+	invokeTestNative(t, vm, "javax/microedition/lcdui/game/LayerManager", "<init>", "()V", manager)
+	invokeTestNative(t, vm, "javax/microedition/lcdui/game/LayerManager", "append", "(Ljavax/microedition/lcdui/game/Layer;)V", manager, ReferenceValue(sprite))
+	invokeTestNative(t, vm, "javax/microedition/lcdui/game/LayerManager", "setViewWindow", "(IIII)V", manager, IntValue(1), IntValue(1), IntValue(2), IntValue(2))
+	graphics, state := midpGraphicsSurface(t, vm)
+	original, err := vm.services.Graphics.DrawState(vm.serviceOwner, state.surface)
+	check(t, err)
+	invokeTestNative(t, vm, "javax/microedition/lcdui/game/LayerManager", "paint", "(Ljavax/microedition/lcdui/Graphics;II)V", manager, ReferenceValue(graphics), IntValue(5), IntValue(6))
+	if got := midpPixel(t, vm, state.surface, 5, 6); got.A == 0 {
+		t.Fatalf("view-window pixel was not painted: %+v", got)
+	}
+	if got := midpPixel(t, vm, state.surface, 4, 5); got.A != 0 {
+		t.Fatalf("pixel outside view window was painted: %+v", got)
+	}
+	restored, err := vm.services.Graphics.DrawState(vm.serviceOwner, state.surface)
+	check(t, err)
+	if restored != original {
+		t.Fatalf("graphics draw state leaked: got %+v want %+v", restored, original)
+	}
+}
+
 func TestMIDPGameCanvasTracksPressedKeys(t *testing.T) {
 	vm, err := New(map[string][]byte{})
 	check(t, err)

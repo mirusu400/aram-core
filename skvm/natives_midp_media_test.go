@@ -80,3 +80,28 @@ func TestMIDPManagerPlayToneCreatesDecodableClip(t *testing.T) {
 		t.Fatalf("tone clip decoded=%v state=%v", info.Decoded, info.State)
 	}
 }
+
+func TestMIDPToneSequenceRendersBlocksRepeatsAndSilence(t *testing.T) {
+	sequence := []byte{
+		0xfe, 1,
+		0xfd, 30,
+		0xfc, 64,
+		0xfb, 1,
+		60, 64,
+		0xfa, 1,
+		0xf9, 1,
+		0xf7, 2, 62, 32,
+		0xff, 64,
+	}
+	wav, err := renderToneSequence(sequence)
+	check(t, err)
+	const expectedSamples = 8000 * 3 / 2
+	if len(wav) != 44+expectedSamples*2 {
+		t.Fatalf("tone WAV length = %d, want %d", len(wav), 44+expectedSamples*2)
+	}
+	for _, sample := range wav[len(wav)-8000:] {
+		if sample != 0 {
+			t.Fatal("SILENCE event produced non-zero PCM")
+		}
+	}
+}

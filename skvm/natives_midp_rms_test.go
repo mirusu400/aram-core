@@ -47,3 +47,21 @@ func TestMIDPRecordStoreCloseIsEnforced(t *testing.T) {
 		t.Fatalf("closed store error = %v", err)
 	}
 }
+
+func TestMIDPRecordStoreCannotBeDeletedWhileOpen(t *testing.T) {
+	vm, err := New(map[string][]byte{})
+	check(t, err)
+	name := ReferenceValue(vm.NewString("in-use"))
+	value := invokeTestNative(t, vm, "javax/microedition/rms/RecordStore", "openRecordStore", "(Ljava/lang/String;Z)Ljavax/microedition/rms/RecordStore;", 0, name, IntValue(1))
+	store, err := value.Reference()
+	check(t, err)
+	remove := vm.natives[nativeKey{"javax/microedition/rms/RecordStore", "deleteRecordStore", "(Ljava/lang/String;)V"}]
+	_, _, err = remove(context.Background(), vm, 0, []Value{name})
+	if thrown, ok := err.(*thrown); !ok || thrown.class != "javax/microedition/rms/RecordStoreException" {
+		t.Fatalf("delete open store error = %v", err)
+	}
+	invokeTestNative(t, vm, "javax/microedition/rms/RecordStore", "closeRecordStore", "()V", store)
+	if _, _, err = remove(context.Background(), vm, 0, []Value{name}); err != nil {
+		t.Fatalf("delete closed store: %v", err)
+	}
+}

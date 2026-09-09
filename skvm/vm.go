@@ -753,29 +753,13 @@ func (vm *VM) Advance(
 				if state == playerStarted {
 					object.Fields[playerStateField] = IntValue(playerPrefetched)
 				}
-				if listenersValue, ok := object.Fields[playerListenersField]; ok {
-					listenersReference, _ := listenersValue.Reference()
-					listenersObject, _ := vm.Object(listenersReference)
-					if listenersObject != nil && listenersObject.Array != nil {
-						for _, listenerValue := range listenersObject.Array.Elements {
-							listener, _ := listenerValue.Reference()
-							if listener == 0 {
-								continue
-							}
-							_, _, invokeErr := vm.InvokeVirtual(
-								ctx,
-								listener,
-								"playerUpdate",
-								"(Ljavax/microedition/media/Player;Ljava/lang/String;Ljava/lang/Object;)V",
-								ReferenceValue(reference),
-								ReferenceValue(vm.NewString("endOfMedia")),
-								ReferenceValue(0),
-							)
-							if invokeErr != nil && !errors.Is(invokeErr, ErrMethodNotFound) {
-								return invokeErr
-							}
-						}
-					}
+				position := int64(0)
+				if info, infoErr := vm.services.Media.Info(vm.serviceOwner, clip.clip); infoErr == nil {
+					position = info.Position.Microseconds()
+				}
+				data := ReferenceValue(vm.newWrapper("java/lang/Long", LongValue(position)))
+				if err := vm.notifyPlayerListeners(ctx, reference, "endOfMedia", data); err != nil {
+					return err
 				}
 				break
 			}

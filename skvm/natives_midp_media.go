@@ -3,6 +3,7 @@ package skvm
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"path"
@@ -173,7 +174,7 @@ func (vm *VM) installPlayerNatives() {
 			return Value{}, false, nil
 		})
 	}
-	vm.RegisterNative("javax/microedition/media/Player", "start", "()V", func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+	vm.RegisterNative("javax/microedition/media/Player", "start", "()V", func(ctx context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
 		object, clip, state, err := vm.requireOpenPlayer(receiver)
 		if err != nil {
 			return Value{}, false, err
@@ -186,9 +187,11 @@ func (vm *VM) installPlayerNatives() {
 			return Value{}, false, vm.newThrowable("javax/microedition/media/MediaException", err.Error())
 		}
 		object.Fields[playerStateField] = IntValue(playerStarted)
-		return Value{}, false, nil
+		info, _ := vm.services.Media.Info(vm.serviceOwner, clip.clip)
+		data := ReferenceValue(vm.newWrapper("java/lang/Long", LongValue(info.Position.Microseconds())))
+		return Value{}, false, vm.notifyPlayerListeners(ctx, receiver, "started", data)
 	})
-	vm.RegisterNative("javax/microedition/media/Player", "stop", "()V", func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+	vm.RegisterNative("javax/microedition/media/Player", "stop", "()V", func(ctx context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
 		object, clip, state, err := vm.requireOpenPlayer(receiver)
 		if err != nil {
 			return Value{}, false, err
@@ -198,6 +201,11 @@ func (vm *VM) installPlayerNatives() {
 				return Value{}, false, vm.newThrowable("javax/microedition/media/MediaException", err.Error())
 			}
 			object.Fields[playerStateField] = IntValue(playerPrefetched)
+			info, _ := vm.services.Media.Info(vm.serviceOwner, clip.clip)
+			data := ReferenceValue(vm.newWrapper("java/lang/Long", LongValue(info.Position.Microseconds())))
+			if err := vm.notifyPlayerListeners(ctx, receiver, "stopped", data); err != nil {
+				return Value{}, false, err
+			}
 		}
 		return Value{}, false, nil
 	})
@@ -212,7 +220,7 @@ func (vm *VM) installPlayerNatives() {
 		object.Fields[playerStateField] = IntValue(playerRealized)
 		return Value{}, false, nil
 	})
-	vm.RegisterNative("javax/microedition/media/Player", "close", "()V", func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+	vm.RegisterNative("javax/microedition/media/Player", "close", "()V", func(ctx context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
 		object, clip, err := vm.player(receiver)
 		if err != nil {
 			return Value{}, false, err
@@ -231,7 +239,7 @@ func (vm *VM) installPlayerNatives() {
 			clip.clip = 0
 		}
 		object.Fields[playerStateField] = IntValue(playerClosed)
-		return Value{}, false, nil
+		return Value{}, false, vm.notifyPlayerListeners(ctx, receiver, "closed", ReferenceValue(0))
 	})
 	vm.RegisterNative("javax/microedition/media/Player", "getState", "()I", func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
 		object, _, err := vm.player(receiver)
@@ -347,6 +355,41 @@ func (vm *VM) installPlayerListenerNatives() {
 	}
 }
 
+func (vm *VM) notifyPlayerListeners(ctx context.Context, player uint32, event string, data Value) error {
+	object, _, err := vm.player(player)
+	if err != nil {
+		return err
+	}
+	listenersValue, ok := object.Fields[playerListenersField]
+	if !ok {
+		return nil
+	}
+	listenersReference, _ := listenersValue.Reference()
+	listenersObject, _ := vm.Object(listenersReference)
+	if listenersObject == nil || listenersObject.Array == nil {
+		return nil
+	}
+	for _, listenerValue := range append([]Value(nil), listenersObject.Array.Elements...) {
+		listener, _ := listenerValue.Reference()
+		if listener == 0 {
+			continue
+		}
+		_, _, invokeErr := vm.InvokeVirtual(
+			ctx,
+			listener,
+			"playerUpdate",
+			"(Ljavax/microedition/media/Player;Ljava/lang/String;Ljava/lang/Object;)V",
+			ReferenceValue(player),
+			ReferenceValue(vm.NewString(event)),
+			data,
+		)
+		if invokeErr != nil && !errors.Is(invokeErr, ErrMethodNotFound) {
+			return invokeErr
+		}
+	}
+	return nil
+}
+
 func (vm *VM) playerControl(receiver uint32, args []Value) (Value, bool, error) {
 	if _, _, _, err := vm.requireOpenPlayer(receiver); err != nil {
 		return Value{}, false, err
@@ -414,7 +457,7 @@ func (vm *VM) installMediaControlNatives() {
 		info, err := vm.services.Media.Info(vm.serviceOwner, clip.clip)
 		return IntValue(boolInt(info.Muted)), true, err
 	})
-	vm.RegisterNative("javax/microedition/media/control/VolumeControl", "setLevel", "(I)I", func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+	vm.RegisterNative("javax/microedition/media/control/VolumeControl", "setLevel", "(I)I", func(ctx context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
 		clip, _, err := vm.controlPlayer(receiver)
 		if err != nil {
 			return Value{}, false, err
@@ -425,16 +468,27 @@ func (vm *VM) installMediaControlNatives() {
 		if err := vm.services.Media.SetClipGain(vm.serviceOwner, clip.clip, uint8(level), info.Muted, info.Pan); err != nil {
 			return Value{}, false, err
 		}
+		if int32(info.Volume) != level {
+			if err := vm.notifyVolumeChanged(ctx, receiver); err != nil {
+				return Value{}, false, err
+			}
+		}
 		return IntValue(level), true, nil
 	})
-	vm.RegisterNative("javax/microedition/media/control/VolumeControl", "setMute", "(Z)V", func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+	vm.RegisterNative("javax/microedition/media/control/VolumeControl", "setMute", "(Z)V", func(ctx context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
 		clip, _, err := vm.controlPlayer(receiver)
 		if err != nil {
 			return Value{}, false, err
 		}
 		mute, _ := intArgument(args, 0)
 		info, _ := vm.services.Media.Info(vm.serviceOwner, clip.clip)
-		return Value{}, false, vm.services.Media.SetClipGain(vm.serviceOwner, clip.clip, info.Volume, mute != 0, info.Pan)
+		if err := vm.services.Media.SetClipGain(vm.serviceOwner, clip.clip, info.Volume, mute != 0, info.Pan); err != nil {
+			return Value{}, false, err
+		}
+		if info.Muted != (mute != 0) {
+			return Value{}, false, vm.notifyVolumeChanged(ctx, receiver)
+		}
+		return Value{}, false, nil
 	})
 	vm.RegisterNative("javax/microedition/media/control/ToneControl", "setSequence", "([B)V", func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
 		clip, state, err := vm.controlPlayer(receiver)
@@ -458,6 +512,18 @@ func (vm *VM) installMediaControlNatives() {
 		}
 		return Value{}, false, vm.services.Media.ReplaceSource(vm.serviceOwner, clip.clip, data)
 	})
+}
+
+func (vm *VM) notifyVolumeChanged(ctx context.Context, control uint32) error {
+	playerValue, err := objectField(vm, control, controlPlayerField)
+	if err != nil {
+		return err
+	}
+	player, err := playerValue.Reference()
+	if err != nil {
+		return err
+	}
+	return vm.notifyPlayerListeners(ctx, player, "volumeChanged", ReferenceValue(control))
 }
 
 func (vm *VM) installMediaStaticFields() {
@@ -528,29 +594,158 @@ func synthesizeToneWAV(note, durationMS, volume int32) []byte {
 }
 
 func renderToneSequence(sequence []byte) ([]byte, error) {
-	if len(sequence) < 2 || int8(sequence[0]) != -2 || sequence[1] != 1 {
+	if len(sequence) < 4 || len(sequence)%2 != 0 || int8(sequence[0]) != -2 || sequence[1] != 1 {
 		return nil, fmt.Errorf("tone sequence must start with VERSION 1")
 	}
-	tempo, resolution, volume := int32(120), int32(64), int32(100)
-	for index := 2; index+1 < len(sequence); index += 2 {
-		command, value := int32(int8(sequence[index])), int32(sequence[index+1])
-		switch command {
-		case -3:
-			tempo = max(5, value*4)
-		case -4:
-			resolution = max(1, value)
-		case -8:
-			volume = min(100, value)
-		default:
-			if command >= -1 && command <= 127 {
-				duration := max(1, value*60_000/(tempo*resolution))
-				if command == -1 {
-					volume = 0
-					command = 60
-				}
-				return synthesizeToneWAV(command, duration, volume), nil
+	tempo, resolution := int32(120), int32(64)
+	index := 2
+	if index+1 < len(sequence) && int8(sequence[index]) == -3 {
+		modifier := int32(sequence[index+1])
+		if modifier < 5 || modifier > 127 {
+			return nil, fmt.Errorf("invalid TEMPO modifier %d", modifier)
+		}
+		tempo = modifier * 4
+		index += 2
+	}
+	if index+1 < len(sequence) && int8(sequence[index]) == -4 {
+		resolution = int32(sequence[index+1])
+		if resolution < 1 || resolution > 127 {
+			return nil, fmt.Errorf("invalid RESOLUTION %d", resolution)
+		}
+		index += 2
+	}
+	blocks := make(map[byte][]byte)
+	for index+1 < len(sequence) && int8(sequence[index]) == -5 {
+		block := sequence[index+1]
+		start := index + 2
+		index = start
+		for index+1 < len(sequence) && int8(sequence[index]) != -6 {
+			if int8(sequence[index]) == -5 {
+				return nil, fmt.Errorf("nested tone blocks are invalid")
+			}
+			if int8(sequence[index]) == -9 {
+				index += 4
+			} else {
+				index += 2
 			}
 		}
+		if index+1 >= len(sequence) || sequence[index+1] != block {
+			return nil, fmt.Errorf("unterminated tone block %d", block)
+		}
+		if _, exists := blocks[block]; exists {
+			return nil, fmt.Errorf("duplicate tone block %d", block)
+		}
+		blocks[block] = append([]byte(nil), sequence[start:index]...)
+		index += 2
 	}
-	return synthesizeToneWAV(60, 1, 0), nil
+	volume := int32(100)
+	events := make([]tonePCMEvent, 0, (len(sequence)-index)/2)
+	if err := appendToneEvents(sequence[index:], blocks, tempo, resolution, &volume, &events, 0); err != nil {
+		return nil, err
+	}
+	if len(events) == 0 {
+		return nil, fmt.Errorf("tone sequence has no playable events")
+	}
+	return synthesizeToneEventsWAV(events)
+}
+
+type tonePCMEvent struct {
+	note       int32
+	durationMS int32
+	volume     int32
+}
+
+func appendToneEvents(data []byte, blocks map[byte][]byte, tempo, resolution int32, volume *int32, events *[]tonePCMEvent, depth int) error {
+	if depth > 16 {
+		return fmt.Errorf("tone block nesting is too deep")
+	}
+	for index := 0; index < len(data); {
+		if index+1 >= len(data) {
+			return fmt.Errorf("truncated tone event")
+		}
+		command, value := int32(int8(data[index])), int32(data[index+1])
+		switch command {
+		case -7:
+			block, ok := blocks[data[index+1]]
+			if !ok {
+				return fmt.Errorf("undefined tone block %d", value)
+			}
+			if err := appendToneEvents(block, blocks, tempo, resolution, volume, events, depth+1); err != nil {
+				return err
+			}
+			index += 2
+		case -8:
+			if value < 0 || value > 100 {
+				return fmt.Errorf("invalid tone volume %d", value)
+			}
+			*volume = value
+			index += 2
+		case -9:
+			if value < 2 || index+3 >= len(data) {
+				return fmt.Errorf("invalid tone repeat")
+			}
+			note, duration := int32(int8(data[index+2])), int32(data[index+3])
+			if err := appendToneNote(note, duration, value, tempo, resolution, *volume, events); err != nil {
+				return err
+			}
+			index += 4
+		default:
+			if err := appendToneNote(command, value, 1, tempo, resolution, *volume, events); err != nil {
+				return err
+			}
+			index += 2
+		}
+	}
+	return nil
+}
+
+func appendToneNote(note, duration, repeat, tempo, resolution, volume int32, events *[]tonePCMEvent) error {
+	if note < -1 || note > 127 || duration < 1 || duration > 127 {
+		return fmt.Errorf("invalid tone note %d duration %d", note, duration)
+	}
+	durationMS := max(1, duration*60_000/(tempo*resolution))
+	for range repeat {
+		*events = append(*events, tonePCMEvent{note: note, durationMS: durationMS, volume: volume})
+	}
+	return nil
+}
+
+func synthesizeToneEventsWAV(events []tonePCMEvent) ([]byte, error) {
+	const sampleRate = 8000
+	total := 0
+	for _, event := range events {
+		total += max(1, int(event.durationMS)*sampleRate/1000)
+		if total > sampleRate*60*10 {
+			return nil, fmt.Errorf("tone sequence exceeds ten minutes")
+		}
+	}
+	data := make([]byte, 44+total*2)
+	copy(data[0:4], "RIFF")
+	binary.LittleEndian.PutUint32(data[4:8], uint32(len(data)-8))
+	copy(data[8:12], "WAVE")
+	copy(data[12:16], "fmt ")
+	binary.LittleEndian.PutUint32(data[16:20], 16)
+	binary.LittleEndian.PutUint16(data[20:22], 1)
+	binary.LittleEndian.PutUint16(data[22:24], 1)
+	binary.LittleEndian.PutUint32(data[24:28], sampleRate)
+	binary.LittleEndian.PutUint32(data[28:32], sampleRate*2)
+	binary.LittleEndian.PutUint16(data[32:34], 2)
+	binary.LittleEndian.PutUint16(data[34:36], 16)
+	copy(data[36:40], "data")
+	binary.LittleEndian.PutUint32(data[40:44], uint32(total*2))
+	offset := 44
+	for _, event := range events {
+		samples := max(1, int(event.durationMS)*sampleRate/1000)
+		frequency := 440.0 * math.Pow(2, float64(event.note-69)/12)
+		amplitude := float64(event.volume) / 100 * 12000
+		for index := range samples {
+			var sample int16
+			if event.note != -1 {
+				sample = int16(math.Sin(2*math.Pi*frequency*float64(index)/sampleRate) * amplitude)
+			}
+			binary.LittleEndian.PutUint16(data[offset:], uint16(sample))
+			offset += 2
+		}
+	}
+	return data, nil
 }

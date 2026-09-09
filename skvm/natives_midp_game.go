@@ -905,14 +905,46 @@ func (vm *VM) installLayerManagerNatives() {
 		}
 		return Value{}, false, nil
 	})
-	vm.RegisterNative("javax/microedition/lcdui/game/LayerManager", "paint", "(Ljavax/microedition/lcdui/Graphics;II)V", func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+	vm.RegisterNative("javax/microedition/lcdui/game/LayerManager", "paint", "(Ljavax/microedition/lcdui/Graphics;II)V", func(ctx context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
 		graphics, _ := referenceArgument(args, 0)
+		if graphics == 0 {
+			return Value{}, false, vm.newThrowable("java/lang/NullPointerException", "")
+		}
+		graphicsObject, err := vm.graphics(graphics)
+		if err != nil {
+			return Value{}, false, err
+		}
 		destinationX, _ := intArgument(args, 1)
 		destinationY, _ := intArgument(args, 2)
 		viewX, _ := vm.gameInt(receiver, gameViewXField)
 		viewY, _ := vm.gameInt(receiver, gameViewYField)
+		viewWidth, _ := vm.gameInt(receiver, gameViewWidthField)
+		viewHeight, _ := vm.gameInt(receiver, gameViewHeightField)
+		drawState, err := vm.services.Graphics.DrawState(vm.serviceOwner, graphicsObject.surface)
+		if err != nil {
+			return Value{}, false, err
+		}
+		clipped := drawState
+		clipped.Clip = clipped.Clip.Intersect(graphicsClipRectangle(
+			graphicsObject,
+			drawState,
+			destinationX,
+			destinationY,
+			viewWidth,
+			viewHeight,
+		))
+		if err := vm.services.Graphics.SetDrawState(vm.serviceOwner, graphicsObject.surface, clipped); err != nil {
+			return Value{}, false, err
+		}
+		restore := func() error {
+			return vm.services.Graphics.SetDrawState(vm.serviceOwner, graphicsObject.surface, drawState)
+		}
 		layers, _ := vm.objectArray(receiver, gameLayersField, "[Ljavax/microedition/lcdui/game/Layer;")
 		for index := len(layers.Elements) - 1; index >= 0; index-- {
+			if err := vm.services.Graphics.SetDrawState(vm.serviceOwner, graphicsObject.surface, clipped); err != nil {
+				_ = restore()
+				return Value{}, false, err
+			}
 			layer, _ := layers.Elements[index].Reference()
 			object, ok := vm.Object(layer)
 			if !ok {
@@ -922,20 +954,25 @@ func (vm *VM) installLayerManagerNatives() {
 			oldY, _ := vm.gameInt(layer, gameYField)
 			_ = setObjectField(vm, layer, gameXField, IntValue(oldX-viewX+destinationX))
 			_ = setObjectField(vm, layer, gameYField, IntValue(oldY-viewY+destinationY))
-			var err error
-			switch object.Class {
-			case "javax/microedition/lcdui/game/Sprite":
+			var paintErr error
+			switch {
+			case vm.classAssignable(object.Class, "javax/microedition/lcdui/game/Sprite"):
 				_, _, err = vm.paintSprite(layer, []Value{ReferenceValue(graphics)})
-			case "javax/microedition/lcdui/game/TiledLayer":
+				paintErr = err
+			case vm.classAssignable(object.Class, "javax/microedition/lcdui/game/TiledLayer"):
 				_, _, err = vm.paintTiledLayer(layer, []Value{ReferenceValue(graphics)})
+				paintErr = err
+			default:
+				_, _, paintErr = vm.InvokeVirtual(ctx, layer, "paint", "(Ljavax/microedition/lcdui/Graphics;)V", ReferenceValue(graphics))
 			}
 			_ = setObjectField(vm, layer, gameXField, IntValue(oldX))
 			_ = setObjectField(vm, layer, gameYField, IntValue(oldY))
-			if err != nil {
-				return Value{}, false, err
+			if paintErr != nil {
+				_ = restore()
+				return Value{}, false, paintErr
 			}
 		}
-		return Value{}, false, nil
+		return Value{}, false, restore()
 	})
 }
 
