@@ -61,6 +61,7 @@ func TestRaptorWIPIImportsResolveToPublicCatalog(t *testing.T) {
 		204:   "MC_grpCreateOffScreenFrameBuffer",
 		205:   "MC_grpInitContext",
 		206:   "MC_grpSetContext",
+		207:   "MC_grpGetContext",
 		209:   "MC_grpDrawLine",
 		210:   "MC_grpDrawRect",
 		211:   "MC_grpFillRect",

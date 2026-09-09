@@ -1005,6 +1005,8 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 		return "MC_grpInitContext", true
 	case 206:
 		return "MC_grpSetContext", true
+	case 207:
+		return "MC_grpGetContext", true
 	case 208:
 		return "MC_grpPutPixel", true
 	case 209:
