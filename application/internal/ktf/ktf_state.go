@@ -20,7 +20,8 @@ const (
 	ktfStateSchemaV7     = uint32(7)
 	ktfStateSchemaV8     = uint32(8)
 	ktfStateSchemaV9     = uint32(9)
-	ktfStateSchema       = uint32(10)
+	ktfStateSchemaV10    = uint32(10)
+	ktfStateSchema       = uint32(11)
 	maxKTFStateMetadata  = uint32(64 << 20)
 	maxKTFStateEntries   = 16_384
 	maxKTFStateHostCalls = int(HostSize / 4)
@@ -444,6 +445,10 @@ type ktfMetadataSnapshot struct {
 	Files                    map[uint32]ktfFileSnapshot
 	FileData                 map[string][]byte
 	FileStreamTargets        map[uint32]uint32
+	WIPI2IODevices           map[uint32]ktfWIPI2IODeviceSnapshot
+	WIPI2SMSMessages         map[uint32][]byte
+	WIPI2ResourceGroups      map[uint32]ktfWIPI2ResourceGroupSnapshot
+	WIPI2Resources           map[string]map[string]ktfWIPI2ResourceSnapshot
 	SystemInputStream        uint32
 	SystemPrintStream        uint32
 	HostReservedFieldClass   uint32
@@ -673,6 +678,7 @@ func ParseState(r *Runtime,
 		schema != ktfStateSchemaV4 && schema != ktfStateSchemaV5 &&
 		schema != ktfStateSchemaV6 && schema != ktfStateSchemaV7 &&
 		schema != ktfStateSchemaV8 && schema != ktfStateSchemaV9 &&
+		schema != ktfStateSchemaV10 &&
 		schema != ktfStateSchema {
 		return nil, decoder.Fail(fmt.Sprintf("unsupported KTF state schema %d", schema))
 	}
@@ -869,7 +875,7 @@ func ParseState(r *Runtime,
 		}
 	}
 	var taskMonitorWait []uint32
-	if schema >= ktfStateSchema {
+	if schema >= ktfStateSchemaV10 {
 		taskMonitorWait = make([]uint32, len(metadata.Tasks))
 		for index := range taskMonitorWait {
 			taskMonitorWait[index] = decoder.U32()
@@ -1073,6 +1079,10 @@ func snapshotKTFMetadata(
 		PrintStreamErrors:        guest.CloneMap(r.printStreamErrors),
 		FileData:                 guest.CloneSliceMap(r.FileData),
 		FileStreamTargets:        guest.CloneMap(r.fileStreamTargets),
+		WIPI2IODevices:           snapshotWIPI2IODevices(r.wipi2IODevices),
+		WIPI2SMSMessages:         guest.CloneSliceMap(r.wipi2SMSMessages),
+		WIPI2ResourceGroups:      snapshotWIPI2ResourceGroups(r.wipi2ResourceGroups),
+		WIPI2Resources:           snapshotWIPI2Resources(r.wipi2Resources),
 		SystemInputStream:        r.systemInputStream,
 		SystemPrintStream:        r.systemPrintStream,
 		HostReservedFieldClass:   r.hostReservedFieldClass,

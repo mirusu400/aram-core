@@ -1201,6 +1201,12 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 			return runtime.handleFileMethod(name, descriptor)
 		case "org/kwis/msp/io/FileSystem":
 			return runtime.handleFileSystemMethod(name, descriptor)
+		case "org/kwis/msp/io/IODevice":
+			return runtime.handleWIPI2IODeviceMethod(name, descriptor)
+		case "org/kwis/msp/io/SMS", "org/kwis/msp/io/SMSMessage":
+			return runtime.handleWIPI2SMSMethod(className, name, descriptor)
+		case "org/kwis/msp/io/ResourceGroup":
+			return runtime.handleWIPI2ResourceGroupMethod(name, descriptor)
 		case "org/kwis/msf/core/Kernel":
 			return runtime.handleMSFKernelMethod(name, descriptor)
 		case "org/kwis/msf/core/Shared":

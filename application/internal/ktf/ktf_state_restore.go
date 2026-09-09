@@ -45,7 +45,9 @@ func validateKTFMetadata(
 		len(meta.StringBuffers), len(meta.InputStreams),
 		len(meta.InputTargets), len(meta.OutputStreams),
 		len(meta.OutputTargets), len(meta.Files), len(meta.FileData),
-		len(meta.FileStreamTargets), len(meta.Images), len(meta.Graphics),
+		len(meta.FileStreamTargets), len(meta.WIPI2IODevices),
+		len(meta.WIPI2SMSMessages), len(meta.WIPI2ResourceGroups),
+		len(meta.WIPI2Resources), len(meta.Images), len(meta.Graphics),
 		len(meta.WIPICFramebuffers), len(meta.WIPICImages),
 		len(meta.WIPICResources), len(meta.WIPICResourceIDs),
 		len(meta.WIPICMemory), len(meta.WIPICTimers),
@@ -625,6 +627,10 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	r.files = restoreKTFFiles(meta.Files)
 	r.FileData = guest.CloneSliceMap(meta.FileData)
 	r.fileStreamTargets = guest.CloneMap(meta.FileStreamTargets)
+	r.wipi2IODevices = restoreWIPI2IODevices(meta.WIPI2IODevices)
+	r.wipi2SMSMessages = guest.CloneSliceMap(meta.WIPI2SMSMessages)
+	r.wipi2ResourceGroups = restoreWIPI2ResourceGroups(meta.WIPI2ResourceGroups)
+	r.wipi2Resources = restoreWIPI2Resources(meta.WIPI2Resources)
 	r.systemInputStream = meta.SystemInputStream
 	r.systemPrintStream = meta.SystemPrintStream
 	r.hostReservedFieldClass = meta.HostReservedFieldClass

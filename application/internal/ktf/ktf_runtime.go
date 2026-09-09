@@ -301,6 +301,10 @@ type Runtime struct {
 	files                 map[uint32]*ktfFile
 	FileData              map[string][]byte
 	fileStreamTargets     map[uint32]uint32
+	wipi2IODevices        map[uint32]*ktfWIPI2IODevice
+	wipi2SMSMessages      map[uint32][]byte
+	wipi2ResourceGroups   map[uint32]*ktfWIPI2ResourceGroup
+	wipi2Resources        map[string]map[string]*ktfWIPI2Resource
 	systemInputStream     uint32
 	systemPrintStream     uint32
 	// hostReservedFieldClass named the one class whose invented imHandler

@@ -929,6 +929,16 @@ func javaStaticConstantBits(className, name string) (uint64, bool) {
 		return 0x4005bf0a8b145769, true
 	case "java/lang/Math.PI":
 		return 0x400921fb54442d18, true
+	case "org/kwis/msp/io/SMSMessage.SHORT_MESSAGE":
+		return 0, true
+	case "org/kwis/msp/io/SMSMessage.UNKNOWN":
+		return 1, true
+	case "org/kwis/msp/io/ResourceGroup.GROUP_UNLOCKED",
+		"org/kwis/msp/io/ResourceGroup.UNLOCKED":
+		return 0, true
+	case "org/kwis/msp/io/ResourceGroup.GROUP_LOCKED",
+		"org/kwis/msp/io/ResourceGroup.LOCKED":
+		return 1, true
 	default:
 		return 0, false
 	}

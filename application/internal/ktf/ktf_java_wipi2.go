@@ -1,0 +1,695 @@
+package ktf
+
+import (
+	"sort"
+	"strings"
+)
+
+const ktfWIPI2SMSMaxLength = 140
+
+type ktfWIPI2IODevice struct {
+	name   string
+	number int
+	data   []byte
+	closed bool
+}
+
+type ktfWIPI2ResourceGroup struct {
+	name       string
+	lockStatus int
+}
+
+type ktfWIPI2Resource struct {
+	id         string
+	title      string
+	uiName     string
+	format     string
+	state      string
+	data       []byte
+	lockStatus int
+}
+
+type ktfWIPI2IODeviceSnapshot struct {
+	Name   string
+	Number int32
+	Data   []byte
+	Closed bool
+}
+
+type ktfWIPI2ResourceGroupSnapshot struct {
+	Name       string
+	LockStatus int32
+}
+
+type ktfWIPI2ResourceSnapshot struct {
+	ID         string
+	Title      string
+	UIName     string
+	Format     string
+	State      string
+	Data       []byte
+	LockStatus int32
+}
+
+func snapshotWIPI2IODevices(source map[uint32]*ktfWIPI2IODevice) map[uint32]ktfWIPI2IODeviceSnapshot {
+	result := make(map[uint32]ktfWIPI2IODeviceSnapshot, len(source))
+	for instance, device := range source {
+		if device == nil {
+			continue
+		}
+		result[instance] = ktfWIPI2IODeviceSnapshot{
+			Name: device.name, Number: int32(device.number),
+			Data: append([]byte(nil), device.data...), Closed: device.closed,
+		}
+	}
+	return result
+}
+
+func restoreWIPI2IODevices(source map[uint32]ktfWIPI2IODeviceSnapshot) map[uint32]*ktfWIPI2IODevice {
+	result := make(map[uint32]*ktfWIPI2IODevice, len(source))
+	for instance, device := range source {
+		result[instance] = &ktfWIPI2IODevice{
+			name: device.Name, number: int(device.Number),
+			data: append([]byte(nil), device.Data...), closed: device.Closed,
+		}
+	}
+	return result
+}
+
+func snapshotWIPI2ResourceGroups(source map[uint32]*ktfWIPI2ResourceGroup) map[uint32]ktfWIPI2ResourceGroupSnapshot {
+	result := make(map[uint32]ktfWIPI2ResourceGroupSnapshot, len(source))
+	for instance, group := range source {
+		if group != nil {
+			result[instance] = ktfWIPI2ResourceGroupSnapshot{
+				Name: group.name, LockStatus: int32(group.lockStatus),
+			}
+		}
+	}
+	return result
+}
+
+func restoreWIPI2ResourceGroups(source map[uint32]ktfWIPI2ResourceGroupSnapshot) map[uint32]*ktfWIPI2ResourceGroup {
+	result := make(map[uint32]*ktfWIPI2ResourceGroup, len(source))
+	for instance, group := range source {
+		result[instance] = &ktfWIPI2ResourceGroup{
+			name: group.Name, lockStatus: int(group.LockStatus),
+		}
+	}
+	return result
+}
+
+func snapshotWIPI2Resources(source map[string]map[string]*ktfWIPI2Resource) map[string]map[string]ktfWIPI2ResourceSnapshot {
+	result := make(map[string]map[string]ktfWIPI2ResourceSnapshot, len(source))
+	for groupName, resources := range source {
+		group := make(map[string]ktfWIPI2ResourceSnapshot, len(resources))
+		for name, resource := range resources {
+			if resource == nil {
+				continue
+			}
+			group[name] = ktfWIPI2ResourceSnapshot{
+				ID: resource.id, Title: resource.title,
+				UIName: resource.uiName, Format: resource.format,
+				State: resource.state, Data: append([]byte(nil), resource.data...),
+				LockStatus: int32(resource.lockStatus),
+			}
+		}
+		result[groupName] = group
+	}
+	return result
+}
+
+func restoreWIPI2Resources(source map[string]map[string]ktfWIPI2ResourceSnapshot) map[string]map[string]*ktfWIPI2Resource {
+	result := make(map[string]map[string]*ktfWIPI2Resource, len(source))
+	for groupName, resources := range source {
+		group := make(map[string]*ktfWIPI2Resource, len(resources))
+		for name, resource := range resources {
+			group[name] = &ktfWIPI2Resource{
+				id: resource.ID, title: resource.Title,
+				uiName: resource.UIName, format: resource.Format,
+				state: resource.State, data: append([]byte(nil), resource.Data...),
+				lockStatus: int(resource.LockStatus),
+			}
+		}
+		result[groupName] = group
+	}
+	return result
+}
+
+func init() {
+	HostJavaClassSpecs["org/kwis/msp/io/IODevice"] = ktfHostJavaClassSpec{
+		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "(Ljava/lang/String;I[B)V"},
+			{name: "close", descriptor: "()V"},
+			{name: "read", descriptor: "([BII)I"},
+			{name: "write", descriptor: "([BII)I"},
+			{name: "control", descriptor: "(Ljava/lang/String;[B[B)V"},
+		},
+	}
+	HostJavaClassSpecs["org/kwis/msp/io/SMSMessage"] = ktfHostJavaClassSpec{
+		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "([B)V"},
+			// WIPI 2.0 printed Byte[] even though 2.2 corrected it to byte[].
+			{name: "<init>", descriptor: "([Ljava/lang/Byte;)V"},
+		},
+	}
+	HostJavaClassSpecs["org/kwis/msp/io/SMS"] = ktfHostJavaClassSpec{
+		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "send", descriptor: "(Ljava/lang/String;Lorg/kwis/msp/io/SMSMessage;)I", access: 0x0008},
+			{name: "send", descriptor: "(Ljava/lang/String;Ljava/lang/String;Lorg/kwis/msp/io/SMSMessage;)I", access: 0x0008},
+			{name: "getMaxMsgLength", descriptor: "()I", access: 0x0008},
+			{name: "getMaxMsgLength", descriptor: "(Ljava/lang/String;)I", access: 0x0008},
+		},
+	}
+	HostJavaClassSpecs["org/kwis/msp/io/ResourceGroup"] = ktfHostJavaClassSpec{
+		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "(Ljava/lang/String;)V"},
+			{name: "checkPassword", descriptor: "(Ljava/lang/String;)I"},
+			{name: "checkPassword", descriptor: "(Ljava/lang/String;)Z", access: 0x0008},
+			{name: "deleteData", descriptor: "(Ljava/lang/String;)I"},
+			{name: "getCount", descriptor: "()I"},
+			{name: "getData", descriptor: "(Ljava/lang/String;)[B"},
+			{name: "getFreeSpace", descriptor: "()I"},
+			{name: "getFormat", descriptor: "(Ljava/lang/String;)Ljava/lang/String;"},
+			{name: "getID", descriptor: "(Ljava/lang/String;)Ljava/lang/String;"},
+			{name: "getList", descriptor: "()[Ljava/lang/String;"},
+			{name: "getGroupLockStatus", descriptor: "()I"},
+			{name: "getLockStatus", descriptor: "(Ljava/lang/String;)I"},
+			{name: "getRegisteredGroup", descriptor: "(Ljava/lang/String;)[Ljava/lang/String;", access: 0x0008},
+			{name: "getRegisteredInfo", descriptor: "(Ljava/lang/String;)[Ljava/lang/String;", access: 0x0008},
+			{name: "getSize", descriptor: "(Ljava/lang/String;)I"},
+			{name: "getSupportedGroups", descriptor: "()[Ljava/lang/String;", access: 0x0008},
+			{name: "registerData", descriptor: "(Ljava/lang/String;Ljava/lang/String;)I"},
+			{name: "registerData", descriptor: "(Ljava/lang/String;Ljava/lang/String;)V"},
+			{name: "setGroupLockStatus", descriptor: "(I)I"},
+			{name: "setGroupLockStatus", descriptor: "(I)V"},
+			{name: "setLockStatus", descriptor: "(Ljava/lang/String;I)I"},
+			{name: "setLockStatus", descriptor: "(Ljava/lang/String;I)V"},
+			{name: "writeData", descriptor: "(Ljava/lang/String;Ljava/lang/String;[B)Ljava/lang/String;"},
+			{name: "writeData", descriptor: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[BZ)Ljava/lang/String;"},
+			{name: "exists", descriptor: "(Ljava/lang/String;)Z"},
+			{name: "getGroupInfo", descriptor: "(Ljava/lang/String;)Ljava/lang/String;"},
+			{name: "getGroupInfo", descriptor: "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"},
+			{name: "getInfo", descriptor: "(Ljava/lang/String;Ljava/lang/String;)[B"},
+			{name: "search", descriptor: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Z)[Ljava/lang/String;", access: 0x0008},
+			{name: "getUIName", descriptor: "(Ljava/lang/String;)Ljava/lang/String;"},
+		},
+	}
+}
+
+func (r *Runtime) handleWIPI2IODeviceMethod(name, descriptor string) (uint32, error) {
+	instance, err := r.parameter(1)
+	if err != nil {
+		return 0, err
+	}
+	switch name + descriptor {
+	case "<init>(Ljava/lang/String;I[B)V":
+		deviceName, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		number, valueErr := r.signedParameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if deviceName == 0 || number < 0 {
+			return 0, r.raiseHostJavaException("java/io/IOException")
+		}
+		r.wipi2IODevices[instance] = &ktfWIPI2IODevice{
+			name:   r.javaStringValue(deviceName),
+			number: number,
+		}
+		return 0, nil
+	case "close()V":
+		if device := r.wipi2IODevices[instance]; device != nil {
+			device.closed = true
+		}
+		return 0, nil
+	case "read([BII)I", "write([BII)I":
+		device := r.wipi2IODevices[instance]
+		if device == nil || device.closed {
+			return 0, r.raiseHostJavaException("java/io/IOException")
+		}
+		array, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		offset, valueErr := r.parameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		length, valueErr := r.parameter(4)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if name == "write" {
+			data, rangeErr := r.readJavaByteArrayRange(array, offset, length)
+			if rangeErr != nil {
+				return 0, rangeErr
+			}
+			device.data = append(device.data, data...)
+			return uint32(len(data)), nil
+		}
+		count := min(int(length), len(device.data))
+		if count == 0 {
+			return 0, nil
+		}
+		if valueErr := r.writeJavaByteArrayRange(array, offset, device.data[:count]); valueErr != nil {
+			return 0, valueErr
+		}
+		device.data = append(device.data[:0], device.data[count:]...)
+		return uint32(count), nil
+	case "control(Ljava/lang/String;[B[B)V":
+		device := r.wipi2IODevices[instance]
+		if device == nil || device.closed {
+			return 0, r.raiseHostJavaException("java/io/IOException")
+		}
+		command, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		switch strings.ToLower(strings.TrimSpace(r.javaStringValue(command))) {
+		case "clear", "reset", "flush":
+			device.data = nil
+		case "set", "write":
+			input, parameterErr := r.parameter(3)
+			if parameterErr != nil {
+				return 0, parameterErr
+			}
+			if input != 0 {
+				device.data, parameterErr = r.readJavaByteArray(input)
+				if parameterErr != nil {
+					return 0, parameterErr
+				}
+			}
+		}
+		return 0, nil
+	}
+	return 0, nil
+}
+
+func (r *Runtime) handleWIPI2SMSMethod(className, name, descriptor string) (uint32, error) {
+	if className == "org/kwis/msp/io/SMSMessage" {
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		if name+descriptor == "<init>([B)V" {
+			array, valueErr := r.parameter(2)
+			if valueErr != nil {
+				return 0, valueErr
+			}
+			if array == 0 {
+				return 0, r.raiseHostJavaException("java/lang/NullPointerException")
+			}
+			data, valueErr := r.readJavaByteArray(array)
+			if valueErr != nil {
+				return 0, valueErr
+			}
+			r.wipi2SMSMessages[instance] = data
+			return 0, nil
+		}
+		// The boxed Byte[] spelling only existed in the 2.0 document. Keep the
+		// constructor resolvable; an empty payload is safer than interpreting
+		// object references as primitive bytes.
+		if name+descriptor == "<init>([Ljava/lang/Byte;)V" {
+			r.wipi2SMSMessages[instance] = nil
+		}
+		return 0, nil
+	}
+	switch name + descriptor {
+	case "getMaxMsgLength()I", "getMaxMsgLength(Ljava/lang/String;)I":
+		return ktfWIPI2SMSMaxLength, nil
+	case "send(Ljava/lang/String;Lorg/kwis/msp/io/SMSMessage;)I":
+		number, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		message, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		return r.sendWIPI2SMS(number, message)
+	case "send(Ljava/lang/String;Ljava/lang/String;Lorg/kwis/msp/io/SMSMessage;)I":
+		number, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		message, err := r.parameter(3)
+		if err != nil {
+			return 0, err
+		}
+		return r.sendWIPI2SMS(number, message)
+	}
+	return 0, nil
+}
+
+func (r *Runtime) sendWIPI2SMS(number, message uint32) (uint32, error) {
+	if number == 0 || message == 0 {
+		return 0, r.raiseHostJavaException("java/lang/NullPointerException")
+	}
+	data, known := r.wipi2SMSMessages[message]
+	if !known || len(data) > ktfWIPI2SMSMaxLength {
+		return ^uint32(0), nil
+	}
+	r.tracef("java_sms_send:%s:size=%d", r.javaStringValue(number), len(data))
+	return 0, nil
+}
+
+func (r *Runtime) handleWIPI2ResourceGroupMethod(name, descriptor string) (uint32, error) {
+	signature := name + descriptor
+	if signature == "checkPassword(Ljava/lang/String;)Z" {
+		password, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		if password == 0 {
+			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
+		}
+		return 1, nil
+	}
+	if signature == "getSupportedGroups()[Ljava/lang/String;" {
+		return r.newWIPI2StringArray(r.sortedWIPI2ResourceGroupNames(""))
+	}
+	if signature == "getRegisteredGroup(Ljava/lang/String;)[Ljava/lang/String;" ||
+		signature == "getRegisteredInfo(Ljava/lang/String;)[Ljava/lang/String;" {
+		state, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		return r.newWIPI2StringArray(r.sortedWIPI2ResourceGroupNames(r.javaStringValue(state)))
+	}
+	if signature == "search(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Z)[Ljava/lang/String;" {
+		return r.searchWIPI2Resources()
+	}
+
+	instance, err := r.parameter(1)
+	if err != nil {
+		return 0, err
+	}
+	if signature == "<init>(Ljava/lang/String;)V" {
+		nameAddress, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if nameAddress == 0 {
+			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
+		}
+		groupName := r.javaStringValue(nameAddress)
+		r.wipi2ResourceGroups[instance] = &ktfWIPI2ResourceGroup{name: groupName}
+		if r.wipi2Resources[groupName] == nil {
+			r.wipi2Resources[groupName] = make(map[string]*ktfWIPI2Resource)
+		}
+		return 0, nil
+	}
+	group := r.wipi2ResourceGroups[instance]
+	if group == nil {
+		return 0, r.raiseHostJavaException("java/io/IOException")
+	}
+	resources := r.wipi2Resources[group.name]
+	switch signature {
+	case "checkPassword(Ljava/lang/String;)I":
+		return 0, nil
+	case "getCount()I":
+		return uint32(len(resources)), nil
+	case "getFreeSpace()I":
+		var used int
+		for _, resource := range resources {
+			used += len(resource.data)
+		}
+		return uint32(max(0, 1024*1024-used)), nil
+	case "getGroupLockStatus()I":
+		return uint32(group.lockStatus), nil
+	case "setGroupLockStatus(I)I", "setGroupLockStatus(I)V":
+		status, valueErr := r.signedParameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		group.lockStatus = status
+		return uint32(status), nil
+	case "getList()[Ljava/lang/String;":
+		return r.newWIPI2StringArray(sortedWIPI2ResourceNames(resources))
+	case "writeData(Ljava/lang/String;Ljava/lang/String;[B)Ljava/lang/String;":
+		return r.writeWIPI2Resource(group.name, false)
+	case "writeData(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[BZ)Ljava/lang/String;":
+		return r.writeWIPI2Resource(group.name, true)
+	}
+	nameAddress, err := r.parameter(2)
+	if err != nil {
+		return 0, err
+	}
+	resourceName := r.javaStringValue(nameAddress)
+	resource := resources[resourceName]
+	switch signature {
+	case "exists(Ljava/lang/String;)Z":
+		if resource != nil {
+			return 1, nil
+		}
+		return 0, nil
+	case "deleteData(Ljava/lang/String;)I":
+		if resource == nil {
+			return ^uint32(0), nil
+		}
+		delete(resources, resourceName)
+		return 0, nil
+	case "getData(Ljava/lang/String;)[B":
+		if resource == nil {
+			return 0, r.raiseHostJavaException("java/io/IOException")
+		}
+		return r.newJavaByteArray(resource.data)
+	case "getSize(Ljava/lang/String;)I":
+		if resource == nil {
+			return ^uint32(0), nil
+		}
+		return uint32(len(resource.data)), nil
+	case "getFormat(Ljava/lang/String;)Ljava/lang/String;":
+		return r.wipi2ResourceString(resource, func(value *ktfWIPI2Resource) string { return value.format })
+	case "getID(Ljava/lang/String;)Ljava/lang/String;":
+		return r.wipi2ResourceString(resource, func(value *ktfWIPI2Resource) string { return value.id })
+	case "getUIName(Ljava/lang/String;)Ljava/lang/String;":
+		return r.wipi2ResourceString(resource, func(value *ktfWIPI2Resource) string { return value.uiName })
+	case "getLockStatus(Ljava/lang/String;)I":
+		if resource == nil {
+			return ^uint32(0), nil
+		}
+		return uint32(resource.lockStatus), nil
+	case "setLockStatus(Ljava/lang/String;I)I", "setLockStatus(Ljava/lang/String;I)V":
+		if resource == nil {
+			return ^uint32(0), nil
+		}
+		status, valueErr := r.signedParameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		resource.lockStatus = status
+		return uint32(status), nil
+	case "registerData(Ljava/lang/String;Ljava/lang/String;)I", "registerData(Ljava/lang/String;Ljava/lang/String;)V":
+		if resource == nil {
+			return ^uint32(0), nil
+		}
+		state, valueErr := r.parameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		resource.state = r.javaStringValue(state)
+		return 0, nil
+	case "getRegisteredInfo(Ljava/lang/String;)[Ljava/lang/String;":
+		state := resourceName
+		var names []string
+		for name, candidate := range resources {
+			if state == "" || candidate.state == state {
+				names = append(names, name)
+			}
+		}
+		sort.Strings(names)
+		return r.newWIPI2StringArray(names)
+	case "getGroupInfo(Ljava/lang/String;)Ljava/lang/String;":
+		return r.NewJavaString(group.name)
+	case "getGroupInfo(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;":
+		typeAddress, valueErr := r.parameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		return r.wipi2ResourceInfoString(resource, r.javaStringValue(typeAddress))
+	case "getInfo(Ljava/lang/String;Ljava/lang/String;)[B":
+		typeAddress, valueErr := r.parameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		value, valueErr := r.wipi2ResourceInfo(resource, r.javaStringValue(typeAddress))
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		return r.newJavaByteArray([]byte(value))
+	}
+	return 0, nil
+}
+
+func (r *Runtime) writeWIPI2Resource(groupName string, extended bool) (uint32, error) {
+	titleAddress, err := r.parameter(2)
+	if err != nil {
+		return 0, err
+	}
+	formatParameter := uint32(3)
+	dataParameter := uint32(4)
+	uiName := ""
+	update := true
+	if extended {
+		uiNameAddress, valueErr := r.parameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		uiName = r.javaStringValue(uiNameAddress)
+		formatParameter = 4
+		dataParameter = 5
+		updateParameter, valueErr := r.parameter(6)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		update = updateParameter != 0
+	}
+	formatAddress, err := r.parameter(formatParameter)
+	if err != nil {
+		return 0, err
+	}
+	dataAddress, err := r.parameter(dataParameter)
+	if err != nil {
+		return 0, err
+	}
+	if titleAddress == 0 || formatAddress == 0 || dataAddress == 0 {
+		return 0, r.raiseHostJavaException("java/lang/NullPointerException")
+	}
+	data, err := r.readJavaByteArray(dataAddress)
+	if err != nil {
+		return 0, err
+	}
+	title := r.javaStringValue(titleAddress)
+	name := title
+	resources := r.wipi2Resources[groupName]
+	if existing := resources[name]; existing != nil && !update {
+		return 0, r.raiseHostJavaException("java/io/IOException")
+	}
+	resources[name] = &ktfWIPI2Resource{
+		id: name, title: title, uiName: uiName,
+		format: r.javaStringValue(formatAddress), data: append([]byte(nil), data...),
+	}
+	return r.NewJavaString(name)
+}
+
+func (r *Runtime) wipi2ResourceString(resource *ktfWIPI2Resource, selectValue func(*ktfWIPI2Resource) string) (uint32, error) {
+	if resource == nil {
+		return 0, r.raiseHostJavaException("java/io/IOException")
+	}
+	return r.NewJavaString(selectValue(resource))
+}
+
+func (r *Runtime) wipi2ResourceInfoString(resource *ktfWIPI2Resource, infoType string) (uint32, error) {
+	value, err := r.wipi2ResourceInfo(resource, infoType)
+	if err != nil {
+		return 0, err
+	}
+	return r.NewJavaString(value)
+}
+
+func (r *Runtime) wipi2ResourceInfo(resource *ktfWIPI2Resource, infoType string) (string, error) {
+	if resource == nil {
+		return "", r.raiseHostJavaException("java/io/IOException")
+	}
+	switch strings.ToLower(infoType) {
+	case "id":
+		return resource.id, nil
+	case "title":
+		return resource.title, nil
+	case "uiname", "ui_name":
+		return resource.uiName, nil
+	case "format":
+		return resource.format, nil
+	case "state":
+		return resource.state, nil
+	default:
+		return "", nil
+	}
+}
+
+func sortedWIPI2ResourceNames(resources map[string]*ktfWIPI2Resource) []string {
+	names := make([]string, 0, len(resources))
+	for name := range resources {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func (r *Runtime) sortedWIPI2ResourceGroupNames(state string) []string {
+	groups := make(map[string]bool)
+	for _, group := range r.wipi2ResourceGroups {
+		groups[group.name] = true
+	}
+	for groupName, resources := range r.wipi2Resources {
+		for _, resource := range resources {
+			if state == "" || resource.state == state {
+				groups[groupName] = true
+				break
+			}
+		}
+	}
+	names := make([]string, 0, len(groups))
+	for name := range groups {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func (r *Runtime) newWIPI2StringArray(values []string) (uint32, error) {
+	references := make([]uint32, len(values))
+	for index, value := range values {
+		stringAddress, err := r.NewJavaString(value)
+		if err != nil {
+			return 0, err
+		}
+		references[index] = stringAddress
+	}
+	return r.newJavaReferenceArray("[Ljava/lang/String;", references)
+}
+
+func (r *Runtime) searchWIPI2Resources() (uint32, error) {
+	groupAddress, err := r.parameter(1)
+	if err != nil {
+		return 0, err
+	}
+	typeAddress, err := r.parameter(2)
+	if err != nil {
+		return 0, err
+	}
+	queryAddress, err := r.parameter(3)
+	if err != nil {
+		return 0, err
+	}
+	exact, err := r.parameter(4)
+	if err != nil {
+		return 0, err
+	}
+	groupName := r.javaStringValue(groupAddress)
+	infoType := r.javaStringValue(typeAddress)
+	query := r.javaStringValue(queryAddress)
+	var matches []string
+	for name, resource := range r.wipi2Resources[groupName] {
+		value, valueErr := r.wipi2ResourceInfo(resource, infoType)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		matched := value == query
+		if exact == 0 {
+			matched = strings.Contains(value, query)
+		}
+		if matched {
+			matches = append(matches, name)
+		}
+	}
+	sort.Strings(matches)
+	return r.newWIPI2StringArray(matches)
+}
