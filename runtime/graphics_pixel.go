@@ -61,7 +61,7 @@ func drawSurfacePixel(current *surface, x, y int32, color Color) error {
 		color = blendColor(destination, color)
 	}
 	encodeSurfaceColor(current, x, y, color)
-	current.dirty = current.dirty.Union(Rectangle{X: x, Y: y, Width: 1, Height: 1})
+	markSurfaceDirty(current, x, y)
 	return nil
 }
 
