@@ -1492,6 +1492,9 @@ func (r *Runtime) nextRunnableTask() *Task {
 	for offset := range r.Tasks {
 		index := (r.taskCursor + offset) % len(r.Tasks)
 		task := r.Tasks[index]
+		if task.joinThread != 0 && !r.javaThreadAlive(task.joinThread) {
+			task.joinThread = 0
+		}
 		if task.startBlocker != nil &&
 			(task.startBlocker.Done || task.startBlocker.childStartGrace == 0) {
 			task.startBlocker = nil
@@ -1499,7 +1502,8 @@ func (r *Runtime) nextRunnableTask() *Task {
 		if task.WakeAtMS != 0 && task.WakeAtMS <= r.TickMS {
 			task.WakeAtMS = 0
 		}
-		if !task.Done && task.startBlocker == nil && task.WakeAtMS == 0 {
+		if !task.Done && task.startBlocker == nil && task.joinThread == 0 &&
+			task.WakeAtMS == 0 {
 			r.taskCursor = (index + 1) % len(r.Tasks)
 			return task
 		}
@@ -1509,6 +1513,9 @@ func (r *Runtime) nextRunnableTask() *Task {
 
 func (r *Runtime) hasRunnableTask() bool {
 	for _, task := range r.Tasks {
+		if task.joinThread != 0 && !r.javaThreadAlive(task.joinThread) {
+			task.joinThread = 0
+		}
 		if task.startBlocker != nil &&
 			(task.startBlocker.Done || task.startBlocker.childStartGrace == 0) {
 			task.startBlocker = nil
@@ -1516,7 +1523,8 @@ func (r *Runtime) hasRunnableTask() bool {
 		if task.WakeAtMS != 0 && task.WakeAtMS <= r.TickMS {
 			task.WakeAtMS = 0
 		}
-		if !task.Done && task.startBlocker == nil && task.WakeAtMS == 0 {
+		if !task.Done && task.startBlocker == nil && task.joinThread == 0 &&
+			task.WakeAtMS == 0 {
 			return true
 		}
 	}
@@ -1551,7 +1559,8 @@ func (r *Runtime) NextWakeWithin(limit time.Duration) (time.Duration, bool) {
 	best := uint64(0)
 	found := false
 	for _, task := range r.Tasks {
-		if task == nil || task.Done || task.startBlocker != nil {
+		if task == nil || task.Done || task.startBlocker != nil ||
+			task.joinThread != 0 {
 			continue
 		}
 		// A zero deadline is a running task and the maximum is a task parked

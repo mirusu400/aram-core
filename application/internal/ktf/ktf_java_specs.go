@@ -850,9 +850,12 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 			{name: "join", descriptor: "()V"},
 			{name: "run", descriptor: "()V"},
 			{name: "isAlive", descriptor: "()Z"},
+			{name: "activeCount", descriptor: "()I", access: 0x0108},
+			{name: "getPriority", descriptor: "()I"},
 			{name: "sleep", descriptor: "(J)V", access: 0x0108},
 			{name: "yield", descriptor: "()V", access: 0x0108},
 			{name: "setPriority", descriptor: "(I)V"},
+			{name: "toString", descriptor: "()Ljava/lang/String;"},
 			{
 				name:       "currentThread",
 				descriptor: "()Ljava/lang/Thread;",

@@ -780,6 +780,16 @@ func (r *Runtime) hostJavaInstanceFieldValue(
 func (r *Runtime) hostJavaStaticFieldValue(
 	className, name string,
 ) (uint32, error) {
+	if className == "java/lang/Thread" {
+		switch name {
+		case "MIN_PRIORITY":
+			return 1, nil
+		case "NORM_PRIORITY":
+			return 5, nil
+		case "MAX_PRIORITY":
+			return 10, nil
+		}
+	}
 	if className == "java/lang/System" {
 		switch name {
 		case "in":

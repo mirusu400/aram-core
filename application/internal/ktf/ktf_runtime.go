@@ -902,7 +902,10 @@ type Task struct {
 	// Thread.currentThread() has to answer while the task is on the CPU. A
 	// task that is not a started thread - a paint, a key event, a timer -
 	// leaves it zero and falls back to the Jlet's own thread.
-	javaThread      uint32
+	javaThread uint32
+	// joinThread parks this task until the named java/lang/Thread no longer
+	// has a live or pending run() execution.
+	joinThread      uint32
 	Done            bool
 	presentOnReturn bool
 	bestEffortPaint bool

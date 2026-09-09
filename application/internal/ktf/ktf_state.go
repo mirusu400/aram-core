@@ -18,7 +18,8 @@ const (
 	ktfStateSchemaV5     = uint32(5)
 	ktfStateSchemaV6     = uint32(6)
 	ktfStateSchemaV7     = uint32(7)
-	ktfStateSchema       = uint32(8)
+	ktfStateSchemaV8     = uint32(8)
+	ktfStateSchema       = uint32(9)
 	maxKTFStateMetadata  = uint32(64 << 20)
 	maxKTFStateEntries   = 16_384
 	maxKTFStateHostCalls = int(HostSize / 4)
@@ -48,6 +49,7 @@ type SavedState struct {
 	// taskThreads names the java/lang/Thread each task runs, in task order.
 	// An older save has none and its tasks fall back to the Jlet's thread.
 	taskThreads     []uint32
+	taskJoinThreads []uint32
 	wipicInputModes uint32
 }
 
@@ -623,6 +625,10 @@ func WriteState(r *Runtime, backend cpu.Backend, started bool, writer *guest.Sta
 	// The input-method provider returns a stable pointer to its static mode
 	// table, so preserve that identity across save/restore.
 	writer.U32(r.wipicInputModes)
+	// Thread.join() is a scheduler wait rather than guest heap state.
+	for _, task := range r.Tasks {
+		writer.U32(task.joinThread)
+	}
 	return nil
 }
 
@@ -659,6 +665,7 @@ func ParseState(r *Runtime,
 	if schema != ktfStateSchemaV2 && schema != ktfStateSchemaV3 &&
 		schema != ktfStateSchemaV4 && schema != ktfStateSchemaV5 &&
 		schema != ktfStateSchemaV6 && schema != ktfStateSchemaV7 &&
+		schema != ktfStateSchemaV8 &&
 		schema != ktfStateSchema {
 		return nil, decoder.Fail(fmt.Sprintf("unsupported KTF state schema %d", schema))
 	}
@@ -838,8 +845,18 @@ func ParseState(r *Runtime,
 		}
 	}
 	wipicInputModes := uint32(0)
-	if schema >= ktfStateSchema {
+	if schema >= ktfStateSchemaV8 {
 		wipicInputModes = decoder.U32()
+		if decoder.Err != nil {
+			return nil, decoder.Err
+		}
+	}
+	var taskJoinThreads []uint32
+	if schema >= ktfStateSchema {
+		taskJoinThreads = make([]uint32, len(metadata.Tasks))
+		for index := range taskJoinThreads {
+			taskJoinThreads[index] = decoder.U32()
+		}
 		if decoder.Err != nil {
 			return nil, decoder.Err
 		}
@@ -891,6 +908,7 @@ func ParseState(r *Runtime,
 		resolvedHostCalls:  resolvedCalls,
 		imagePixels:        imagePixels,
 		taskThreads:        taskThreads,
+		taskJoinThreads:    taskJoinThreads,
 		wipicInputModes:    wipicInputModes,
 	}, nil
 }

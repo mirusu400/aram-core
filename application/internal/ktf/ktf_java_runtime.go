@@ -312,6 +312,95 @@ func (r *Runtime) javaClassObjectTarget(object uint32) (uint32, error) {
 	return 0, fmt.Errorf("unknown KTF java.lang.Class instance 0x%08x", object)
 }
 
+const (
+	ktfThreadPriorityFieldOffset = uint32(4)
+	ktfThreadStateFieldOffset    = uint32(8)
+	ktfThreadStateNew            = uint32(0)
+	ktfThreadStateStarted        = uint32(1)
+)
+
+func (r *Runtime) javaThreadField(thread, offset uint32) (uint32, error) {
+	if thread == 0 {
+		return 0, r.raiseHostJavaException("java/lang/NullPointerException")
+	}
+	fields, err := r.ReadU32(thread)
+	if err != nil {
+		return 0, err
+	}
+	return r.ReadU32(fields + offset)
+}
+
+func (r *Runtime) writeJavaThreadField(thread, offset, value uint32) error {
+	if thread == 0 {
+		return r.raiseHostJavaException("java/lang/NullPointerException")
+	}
+	fields, err := r.ReadU32(thread)
+	if err != nil {
+		return err
+	}
+	return r.WriteU32(fields+offset, value)
+}
+
+func (r *Runtime) initializeJavaThread(thread uint32) error {
+	if err := r.writeJavaThreadField(thread, ktfThreadPriorityFieldOffset, 5); err != nil {
+		return err
+	}
+	return r.writeJavaThreadField(thread, ktfThreadStateFieldOffset, ktfThreadStateNew)
+}
+
+// javaThreadAlive derives liveness from scheduler state rather than retaining
+// a stale boolean after a task slot is recycled. Pending starts count as alive
+// too: start() has returned and the VM has accepted the thread for execution.
+func (r *Runtime) javaThreadAlive(thread uint32) bool {
+	if thread == 0 {
+		return false
+	}
+	for _, task := range r.Tasks {
+		if task == nil || task.Done {
+			continue
+		}
+		if task.javaThread == thread ||
+			(task.javaThread == 0 && r.currentThread == thread) {
+			return true
+		}
+	}
+	for _, call := range r.PendingJavaCalls {
+		if call.name == "run" && call.descriptor == "()V" &&
+			r.javaThreadFor(call.instance) == thread {
+			return true
+		}
+	}
+	return r.executionDepth != 0 && r.currentThread == thread
+}
+
+func (r *Runtime) activeJavaThreadCount() uint32 {
+	threads := make(map[uint32]bool)
+	const anonymousMain = ^uint32(0)
+	for _, task := range r.Tasks {
+		if task == nil || task.Done {
+			continue
+		}
+		thread := task.javaThread
+		if thread == 0 {
+			thread = r.currentThread
+			if thread == 0 {
+				thread = anonymousMain
+			}
+		}
+		threads[thread] = true
+	}
+	for _, call := range r.PendingJavaCalls {
+		if call.name == "run" && call.descriptor == "()V" {
+			threads[r.javaThreadFor(call.instance)] = true
+		}
+	}
+	if r.executionDepth != 0 && r.currentThread != 0 {
+		threads[r.currentThread] = true
+	}
+	delete(threads, 0)
+	return uint32(len(threads))
+}
+
 func (r *Runtime) handleThreadMethod(
 	ctx context.Context,
 	name, descriptor string,
@@ -322,10 +411,7 @@ func (r *Runtime) handleThreadMethod(
 		if err != nil {
 			return 0, err
 		}
-		if r.currentThread == 0 {
-			r.currentThread = thread
-		}
-		return 0, nil
+		return 0, r.initializeJavaThread(thread)
 	case "<init>(Ljava/lang/Runnable;)V":
 		thread, err := r.parameter(1)
 		if err != nil {
@@ -336,10 +422,24 @@ func (r *Runtime) handleThreadMethod(
 			return 0, err
 		}
 		r.ThreadTargets[thread] = target
-		return 0, nil
+		return 0, r.initializeJavaThread(thread)
 	case "start()V":
 		thread, err := r.parameter(1)
 		if err != nil {
+			return 0, err
+		}
+		state, err := r.javaThreadField(thread, ktfThreadStateFieldOffset)
+		if err != nil {
+			return 0, err
+		}
+		if state != ktfThreadStateNew {
+			return 0, r.raiseHostJavaException("java/lang/IllegalThreadStateException")
+		}
+		if err := r.writeJavaThreadField(
+			thread,
+			ktfThreadStateFieldOffset,
+			ktfThreadStateStarted,
+		); err != nil {
 			return 0, err
 		}
 		if r.DeferThreads {
@@ -397,8 +497,29 @@ func (r *Runtime) handleThreadMethod(
 			return 0, nil
 		}
 		return r.invokeJavaVirtual(ctx, target, "run", "()V")
-	case "join()V", "setPriority(I)V":
+	case "join()V":
+		thread, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		if r.DeferThreads && r.activeTask != nil && r.javaThreadAlive(thread) {
+			r.activeTask.joinThread = thread
+			r.yieldRequested = true
+		}
 		return 0, nil
+	case "setPriority(I)V":
+		thread, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		priority, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		if priority < 1 || priority > 10 {
+			return 0, r.raiseHostJavaException("java/lang/IllegalArgumentException")
+		}
+		return 0, r.writeJavaThreadField(thread, ktfThreadPriorityFieldOffset, priority)
 	case "sleep(J)V":
 		low, err := r.parameter(1)
 		if err != nil {
@@ -435,6 +556,13 @@ func (r *Runtime) handleThreadMethod(
 		}
 		return 0, nil
 	case "isAlive()Z":
+		thread, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		if r.javaThreadAlive(thread) {
+			return 1, nil
+		}
 		return 0, nil
 	case "currentThread()Ljava/lang/Thread;":
 		// A started thread has to see its own java/lang/Thread here. A title
@@ -457,18 +585,48 @@ func (r *Runtime) handleThreadMethod(
 			return 0, err
 		}
 		r.currentThread, err = r.NewJavaInstanceForClass(class)
-		return r.currentThread, err
+		if err != nil {
+			return 0, err
+		}
+		if err := r.initializeJavaThread(r.currentThread); err != nil {
+			return 0, err
+		}
+		if err := r.writeJavaThreadField(
+			r.currentThread,
+			ktfThreadStateFieldOffset,
+			ktfThreadStateStarted,
+		); err != nil {
+			return 0, err
+		}
+		return r.currentThread, nil
 	case "activeCount()I":
-		return 1, nil
+		return r.activeJavaThreadCount(), nil
 	case "getPriority()I":
-		// NORM_PRIORITY; the host scheduler runs one Java thread at a time.
-		return 5, nil
+		thread, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		priority, err := r.javaThreadField(thread, ktfThreadPriorityFieldOffset)
+		if err != nil {
+			return 0, err
+		}
+		if priority == 0 {
+			priority = 5
+		}
+		return priority, nil
 	case "toString()Ljava/lang/String;":
 		instance, err := r.parameter(1)
 		if err != nil {
 			return 0, err
 		}
-		return r.NewJavaString(fmt.Sprintf("Thread-%08x", instance))
+		priority, err := r.javaThreadField(instance, ktfThreadPriorityFieldOffset)
+		if err != nil {
+			return 0, err
+		}
+		if priority == 0 {
+			priority = 5
+		}
+		return r.NewJavaString(fmt.Sprintf("Thread[Thread-%08x,%d]", instance, priority))
 	default:
 		return 0, nil
 	}

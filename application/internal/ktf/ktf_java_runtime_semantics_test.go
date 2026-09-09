@@ -119,3 +119,110 @@ func TestKTFJavaRandomDefaultConstructorUsesClockSeed(t *testing.T) {
 		t.Fatalf("default Random seed value = 0x%08x, clock-seeded value = 0x%08x", clockValue, explicitValue)
 	}
 }
+
+func TestKTFJavaThreadPriorityAndConstants(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	thread := newHostObject(t, runtime, "java/lang/Thread")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, thread))
+	_, err := runtime.handleThreadMethod(context.Background(), "<init>", "()V")
+	check(t, err)
+
+	priority, err := runtime.handleThreadMethod(context.Background(), "getPriority", "()I")
+	check(t, err)
+	if priority != 5 {
+		t.Fatalf("new Thread priority = %d, want 5", priority)
+	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 10))
+	_, err = runtime.handleThreadMethod(context.Background(), "setPriority", "(I)V")
+	check(t, err)
+	priority, err = runtime.handleThreadMethod(context.Background(), "getPriority", "()I")
+	check(t, err)
+	if priority != 10 {
+		t.Fatalf("updated Thread priority = %d, want 10", priority)
+	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 11))
+	_, err = runtime.handleThreadMethod(context.Background(), "setPriority", "(I)V")
+	if err == nil || runtime.LastJavaThrowName != "java/lang/IllegalArgumentException" {
+		t.Fatalf("Thread.setPriority(11) error=%v exception=%q", err, runtime.LastJavaThrowName)
+	}
+
+	wantConstants := map[string]uint32{
+		"MIN_PRIORITY":  1,
+		"NORM_PRIORITY": 5,
+		"MAX_PRIORITY":  10,
+	}
+	for name, want := range wantConstants {
+		got, valueErr := runtime.hostJavaStaticFieldValue("java/lang/Thread", name)
+		check(t, valueErr)
+		if got != want {
+			t.Errorf("Thread.%s = %d, want %d", name, got, want)
+		}
+	}
+}
+
+func TestKTFJavaThreadLivenessCountAndJoinFollowScheduler(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.DeferThreads = true
+	const (
+		mainThread   = uint32(0x1001)
+		workerThread = uint32(0x1002)
+		queuedThread = uint32(0x1003)
+	)
+	joiner := &Task{}
+	worker := &Task{javaThread: workerThread}
+	runtime.currentThread = mainThread
+	runtime.Tasks = []*Task{joiner, worker}
+	runtime.PendingJavaCalls = []ktfPendingJavaCall{{
+		instance: queuedThread, name: "run", descriptor: "()V",
+	}}
+
+	if !runtime.javaThreadAlive(workerThread) {
+		t.Fatal("scheduled worker Thread is not alive")
+	}
+	if !runtime.javaThreadAlive(queuedThread) {
+		t.Fatal("pending worker Thread is not alive")
+	}
+	if got := runtime.activeJavaThreadCount(); got != 3 {
+		t.Fatalf("Thread.activeCount = %d, want 3", got)
+	}
+
+	runtime.activeTask = joiner
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, workerThread))
+	_, err := runtime.handleThreadMethod(context.Background(), "join", "()V")
+	check(t, err)
+	if joiner.joinThread != workerThread || !runtime.yieldRequested {
+		t.Fatalf("join state target=0x%08x yield=%t", joiner.joinThread, runtime.yieldRequested)
+	}
+	if next := runtime.nextRunnableTask(); next != worker {
+		t.Fatalf("scheduler selected %p while join target is %p", next, worker)
+	}
+
+	worker.Done = true
+	runtime.taskCursor = 0
+	if next := runtime.nextRunnableTask(); next != joiner {
+		t.Fatalf("scheduler did not release joiner after target exit: %p", next)
+	}
+	if joiner.joinThread != 0 {
+		t.Fatalf("completed join retained target 0x%08x", joiner.joinThread)
+	}
+}
+
+func TestKTFJavaThreadCannotStartTwice(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	runtime.DeferThreads = true
+	thread := newHostObject(t, runtime, "java/lang/Thread")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, thread))
+	_, err := runtime.handleThreadMethod(context.Background(), "<init>", "()V")
+	check(t, err)
+	_, err = runtime.handleThreadMethod(context.Background(), "start", "()V")
+	check(t, err)
+	if !runtime.javaThreadAlive(thread) {
+		t.Fatal("started Thread is not alive")
+	}
+	_, err = runtime.handleThreadMethod(context.Background(), "start", "()V")
+	if err == nil || runtime.LastJavaThrowName != "java/lang/IllegalThreadStateException" {
+		t.Fatalf("second Thread.start error=%v exception=%q", err, runtime.LastJavaThrowName)
+	}
+}
