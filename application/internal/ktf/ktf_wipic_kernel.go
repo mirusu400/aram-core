@@ -916,7 +916,7 @@ func (r *Runtime) wipicSystemProperty(key string) (string, bool) {
 			10,
 		), true
 	case "MEDIADEVICES":
-		return "audio/MIDI,audio/MP3", true
+		return "audio/MIDI,audio/x-smaf,audio/WAVE", true
 	case "DNS":
 		return "127.0.0.1", true
 	case "TIMEZONE":

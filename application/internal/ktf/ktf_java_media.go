@@ -1,6 +1,7 @@
 package ktf
 
 import (
+	"context"
 	"errors"
 	_ "image/gif"
 	_ "image/jpeg"
@@ -9,10 +10,18 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mirusu400/aram-core/application/internal/guest"
 	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 func (r *Runtime) handleMediaMethod(
+	name, descriptor string,
+) (uint32, error) {
+	return r.handleMediaMethodContext(context.Background(), name, descriptor)
+}
+
+func (r *Runtime) handleMediaMethodContext(
+	ctx context.Context,
 	name, descriptor string,
 ) (uint32, error) {
 	switch name + descriptor {
@@ -58,14 +67,29 @@ func (r *Runtime) handleMediaMethod(
 		if err != nil {
 			return 0, err
 		}
-		return uint32(len(r.ensureKTFClip(instance).data)), nil
+		serviceID, err := r.ensureKTFClipService(instance)
+		if err != nil {
+			return 0, err
+		}
+		available, err := r.Services.Media.AvailableBytes(r.ServiceOwner, serviceID)
+		if err != nil {
+			return 0, nil
+		}
+		return uint32(available), nil
 	case "clearData()V":
 		instance, err := r.parameter(1)
 		if err != nil {
 			return 0, err
 		}
+		serviceID, err := r.ensureKTFClipService(instance)
+		if err != nil {
+			return 0, err
+		}
+		if err := r.Services.Media.Clear(r.ServiceOwner, serviceID); err != nil {
+			return 0, nil
+		}
 		r.ensureKTFClip(instance).data = nil
-		return 0, r.syncKTFClip(instance)
+		return 0, nil
 	case "putData([BII)I":
 		instance, err := r.parameter(1)
 		if err != nil {
@@ -87,9 +111,16 @@ func (r *Runtime) handleMediaMethod(
 		if err != nil {
 			return 0, err
 		}
+		serviceID, err := r.ensureKTFClipService(instance)
+		if err != nil {
+			return 0, err
+		}
+		if _, err := r.Services.Media.Append(r.ServiceOwner, serviceID, data); err != nil {
+			return ^uint32(0), nil
+		}
 		clip := r.ensureKTFClip(instance)
 		clip.data = append(clip.data, data...)
-		return count, r.syncKTFClip(instance)
+		return count, nil
 	case "getData([BII)I":
 		instance, err := r.parameter(1)
 		if err != nil {
@@ -107,19 +138,24 @@ func (r *Runtime) handleMediaMethod(
 		if err != nil {
 			return 0, err
 		}
-		clip := r.ensureKTFClip(instance)
-		if count > uint32(len(clip.data)) {
-			count = uint32(len(clip.data))
+		serviceID, err := r.ensureKTFClipService(instance)
+		if err != nil {
+			return 0, err
+		}
+		data, err := r.Services.Media.TakeBuffered(r.ServiceOwner, serviceID, uint64(count))
+		if err != nil {
+			return ^uint32(0), nil
 		}
 		if err := r.writeJavaByteArrayRange(
 			array,
 			offset,
-			clip.data[:count],
+			data,
 		); err != nil {
 			return 0, err
 		}
-		clip.data = append(clip.data[:0], clip.data[count:]...)
-		return count, r.syncKTFClip(instance)
+		clip := r.ensureKTFClip(instance)
+		clip.data, _ = r.Services.Media.Source(r.ServiceOwner, serviceID)
+		return uint32(len(data)), nil
 	case "setBuffer([BI)Z":
 		instance, err := r.parameter(1)
 		if err != nil {
@@ -137,8 +173,15 @@ func (r *Runtime) handleMediaMethod(
 		if err != nil {
 			return 0, err
 		}
+		serviceID, err := r.ensureKTFClipService(instance)
+		if err != nil {
+			return 0, err
+		}
+		if err := r.Services.Media.ReplaceSource(r.ServiceOwner, serviceID, data); err != nil {
+			return 0, nil
+		}
 		r.ensureKTFClip(instance).data = data
-		return 1, r.syncKTFClip(instance)
+		return 1, nil
 	case "setVolume(I)Z":
 		instance, err := r.parameter(1)
 		if err != nil {
@@ -189,13 +232,37 @@ func (r *Runtime) handleMediaMethod(
 			return mediaType, nil
 		}
 		return r.NewJavaString("")
-	case "setPosition(I)Z", "playStart(Z)Z":
+	case "setPosition(I)Z":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		position, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		serviceID, err := r.ensureKTFClipService(instance)
+		if err != nil {
+			return 0, nil
+		}
+		if err := r.Services.Media.Seek(
+			r.ServiceOwner,
+			serviceID,
+			time.Duration(position)*time.Millisecond,
+		); err != nil {
+			return 0, nil
+		}
 		return 1, nil
-	case "playUpdate(II)Z", "recordStart()Z",
-		"getPlayerID(Ljava/lang/String;)I",
+	case "playStart(Z)Z":
+		// Base implementation of the protected guest override hook.
+		return 1, nil
+	case "playUpdate(II)Z", "recordStart()Z":
+		return 0, nil
+	case "getPlayerID(Ljava/lang/String;)I",
 		"mediaFreeze()I", "mediaReadData()I", "mediaWriteData()I",
-		"atomicGetUpdate(I)V", "atomicPutUpdate(I)V",
 		"control(IILjava/lang/Object;Ljava/lang/Object;)I":
+		return ^uint32(0), nil
+	case "atomicGetUpdate(I)V", "atomicPutUpdate(I)V":
 		return 0, nil
 	case "record(Lorg/kwis/msp/media/Clip;)Z":
 		// Recording hardware is absent.
@@ -220,9 +287,29 @@ func (r *Runtime) handleMediaMethod(
 		switch name {
 		case "play":
 			plays := int32(1)
-			if repeat, valueErr := r.parameter(2); valueErr == nil &&
-				repeat != 0 {
+			repeat, valueErr := r.parameter(2)
+			if valueErr != nil {
+				return 0, valueErr
+			}
+			if repeat != 0 {
 				plays = -1
+			}
+			if overridden, overrideErr := r.hasKTFPlayStartOverride(instance); overrideErr != nil {
+				return 0, overrideErr
+			} else if overridden {
+				allowed, invokeErr := r.invokeJavaVirtual(
+					ctx,
+					instance,
+					"playStart",
+					"(Z)Z",
+					repeat,
+				)
+				if invokeErr != nil {
+					return 0, invokeErr
+				}
+				if allowed == 0 {
+					return 0, nil
+				}
 			}
 			serviceErr = r.Services.Media.Play(
 				r.ServiceOwner,
@@ -244,11 +331,61 @@ func (r *Runtime) handleMediaMethod(
 			// A paused clip still owns live playback state and must not be
 			// mistaken for an idle recycling candidate.
 			clip.playing = info.State != shared.ClipStopped
+			event := guest.WIPIMediaStart
+			switch name {
+			case "stop":
+				event = guest.WIPIMediaStop
+			case "pause":
+				event = guest.WIPIMediaPause
+			case "resume":
+				event = guest.WIPIMediaResume
+			}
+			if err := r.queueKTFPlayListener(instance, event); err != nil {
+				return 0, err
+			}
 		}
-		return 1, serviceErr
+		if serviceErr != nil {
+			return 0, nil
+		}
+		return 1, nil
 	default:
 		return 0, nil
 	}
+}
+
+func (r *Runtime) hasKTFPlayStartOverride(instance uint32) (bool, error) {
+	words, err := r.ReadWords(instance, 2)
+	if err != nil {
+		return false, err
+	}
+	actual, err := r.resolveJavaMethod(words[1], "playStart", "(Z)Z")
+	if err != nil {
+		return false, nil
+	}
+	baseClass, err := r.EnsureJavaClass("org/kwis/msp/media/Clip")
+	if err != nil {
+		return false, err
+	}
+	base, err := r.resolveJavaMethod(baseClass, "playStart", "(Z)Z")
+	if err != nil {
+		return false, nil
+	}
+	return actual != base, nil
+}
+
+func (r *Runtime) queueKTFPlayListener(instance uint32, event int32) error {
+	clip := r.clips[instance]
+	if clip == nil || clip.listener == 0 {
+		return nil
+	}
+	return r.QueueJavaVirtual(
+		clip.listener,
+		"playUpdate",
+		"(Lorg/kwis/msp/media/Clip;II)V",
+		instance,
+		uint32(event),
+		0,
+	)
 }
 
 func (r *Runtime) ktfClipConstructorResource(
@@ -355,9 +492,16 @@ func (r *Runtime) recycleKTFClipService() bool {
 			return false
 		}
 	}
+	serviceID := r.clipServices[victim]
+	if info, err := r.Services.Media.Info(r.ServiceOwner, serviceID); err == nil &&
+		info.State != shared.ClipStopped {
+		if err := r.Services.Media.Stop(r.ServiceOwner, serviceID); err != nil {
+			return false
+		}
+	}
 	if err := r.Services.Media.DestroyClip(
 		r.ServiceOwner,
-		r.clipServices[victim],
+		serviceID,
 		r.Services.Events,
 	); err != nil {
 		return false
@@ -375,10 +519,7 @@ func (r *Runtime) syncKTFClip(instance uint32) error {
 	if err != nil {
 		return err
 	}
-	if err := r.Services.Media.Clear(r.ServiceOwner, serviceID); err != nil {
-		return err
-	}
-	if _, err := r.Services.Media.Append(
+	if err := r.Services.Media.ReplaceSource(
 		r.ServiceOwner,
 		serviceID,
 		clip.data,

@@ -2,6 +2,7 @@ package ktf
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -147,5 +148,30 @@ func TestKTFWIPICMediaStopKeepsTheSoundForAReplay(t *testing.T) {
 		if _, err := ktfWIPICMediaStop(context.Background(), runtime); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// TestKTFWIPICMediaCreateAcceptsAdvertisedWaveType keeps MEDIADEVICES and the
+// create call speaking the same language. The capability string advertises
+// "audio/WAVE", and a title that feeds an advertised type straight back must not
+// get a null handle.
+func TestKTFWIPICMediaCreateAcceptsAdvertisedWaveType(t *testing.T) {
+	advertised, ok := newScratchKTFRuntime(t).wipicSystemProperty("MEDIADEVICES")
+	if !ok {
+		t.Fatal("MEDIADEVICES is not advertised")
+	}
+	for _, mediaType := range strings.Split(advertised, ",") {
+		mediaType := strings.TrimSpace(mediaType)
+		t.Run(mediaType, func(t *testing.T) {
+			runtime := newScratchKTFRuntime(t)
+			address, err := runtime.allocateBytes([]byte(mediaType), true)
+			check(t, err)
+			setKTFWIPICCallArguments(t, runtime, []uint32{address, 4096, 0})
+			handle, err := ktfWIPICMediaCreate(context.Background(), runtime)
+			check(t, err)
+			if handle == 0 {
+				t.Fatalf("advertised media type %q was rejected", mediaType)
+			}
+		})
 	}
 }

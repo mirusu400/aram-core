@@ -1199,8 +1199,8 @@ func (r *Runtime) activateDueWIPICTimers() error {
 	// finished clip before the next tick so titles that share one clip
 	// handle can reload their background track (issue #48).
 	if len(r.pendingMediaCallbacks) != 0 {
-		handle := r.pendingMediaCallbacks[0]
-		clip := r.wipicMediaClips[handle]
+		pending := r.pendingMediaCallbacks[0]
+		clip := r.wipicMediaClips[pending.handle]
 		if clip == nil || clip.callback == 0 {
 			r.pendingMediaCallbacks = r.pendingMediaCallbacks[1:]
 			return nil
@@ -1218,14 +1218,14 @@ func (r *Runtime) activateDueWIPICTimers() error {
 		r.pendingMediaCallbacks = r.pendingMediaCallbacks[1:]
 		task, err := r.NewTask(
 			clip.callback,
-			[]uint32{handle, 0},
+			[]uint32{pending.handle, uint32(pending.event)},
 			taskIndex,
 		)
 		if err != nil {
 			return fmt.Errorf(
 				"queue KTF WIPI-C media callback 0x%08x for clip 0x%08x: %w",
 				clip.callback,
-				handle,
+				pending.handle,
 				err,
 			)
 		}
@@ -1237,7 +1237,7 @@ func (r *Runtime) activateDueWIPICTimers() error {
 		task.WipicTimer = true
 		r.tracef(
 			"wipic_media_callback:handle=0x%08x:callback=0x%08x:tick=%d",
-			handle,
+			pending.handle,
 			clip.callback,
 			r.TickMS,
 		)
@@ -1380,7 +1380,7 @@ func (r *Runtime) DrainServiceEvents(now time.Duration) error {
 								"playUpdate",
 								"(Lorg/kwis/msp/media/Clip;II)V",
 								instance,
-								1, // PlayListener.END_OF_DATA
+								uint32(guest.WIPIMediaEnd),
 								0,
 							); err != nil {
 								return fmt.Errorf(
@@ -1400,10 +1400,8 @@ func (r *Runtime) DrainServiceEvents(now time.Duration) error {
 						clip.rewindPending = true
 						r.tracef("wipic_media_complete:handle=0x%08x", handle)
 						if clip.callback != 0 {
-							r.pendingMediaCallbacks = append(
-								r.pendingMediaCallbacks,
-								handle,
-							)
+							r.pendingMediaCallbacks = append(r.pendingMediaCallbacks,
+								ktfPendingMediaCallback{handle: handle, event: guest.WIPIMediaEnd})
 						}
 					}
 					break

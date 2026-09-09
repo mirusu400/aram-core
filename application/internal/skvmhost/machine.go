@@ -27,20 +27,25 @@ const (
 )
 
 type Machine struct {
-	mu           sync.Mutex
-	state        machinecore.State
-	source       machinecore.Source
-	mainClass    string
-	classData    map[string][]byte
-	vm           *skengine.VM
-	services     *shared.Services
-	owner        shared.OwnerID
-	started      bool
-	midlet       uint32
-	input        []machinecore.InputEvent
-	initialState []byte
-	frameQuantum time.Duration
-	closed       bool
+	mu                  sync.Mutex
+	state               machinecore.State
+	source              machinecore.Source
+	mainClass           string
+	classData           map[string][]byte
+	vm                  *skengine.VM
+	services            *shared.Services
+	owner               shared.OwnerID
+	started             bool
+	midlet              uint32
+	input               []machinecore.InputEvent
+	initialState        []byte
+	frameQuantum        time.Duration
+	closed              bool
+	audioGeneration     uint64
+	audioEpochGuestNS   int64
+	audioCursorSample   uint64
+	audioCursorValid    bool
+	mediaOutputRevision uint64
 }
 
 func New(
@@ -134,14 +139,16 @@ func New(
 		return nil, fmt.Errorf("ready SKVM adapter: %w", err)
 	}
 	machine := &Machine{
-		state:        machinecore.StateReady,
-		source:       source,
-		mainClass:    pkg.Descriptor.MainClass,
-		classData:    classData,
-		vm:           vm,
-		services:     services,
-		owner:        owner,
-		frameQuantum: config.FrameDuration,
+		state:               machinecore.StateReady,
+		source:              source,
+		mainClass:           pkg.Descriptor.MainClass,
+		classData:           classData,
+		vm:                  vm,
+		services:            services,
+		owner:               owner,
+		frameQuantum:        config.FrameDuration,
+		audioGeneration:     1,
+		mediaOutputRevision: services.Media.OutputRevision(),
 	}
 	machine.initialState, err = vm.MarshalBinary()
 	if err != nil {
@@ -251,6 +258,7 @@ func (m *Machine) Pause() error {
 		return m.faultLocked(err)
 	}
 	m.state = machinecore.StatePaused
+	m.resetAudioLocked(m.services.Clock.Monotonic())
 	return nil
 }
 
@@ -360,6 +368,7 @@ func (m *Machine) Stop() error {
 		return m.faultLocked(err)
 	}
 	m.state = machinecore.StateStopped
+	m.resetAudioLocked(m.services.Clock.Monotonic())
 	return nil
 }
 
@@ -404,6 +413,7 @@ func (m *Machine) Reset(ctx context.Context) error {
 	m.midlet = 0
 	m.frameQuantum = m.services.Config.FrameDuration
 	m.state = machinecore.StateReady
+	m.resetAudioLocked(0)
 	return nil
 }
 
@@ -696,12 +706,80 @@ func (m *Machine) Framebuffer() image.Image {
 func (m *Machine) DrainAudio() machinecore.AudioChunk {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	revision := m.services.Media.OutputRevision()
 	audio := m.services.Media.Drain()
-	return machinecore.AudioChunk{
-		SampleRate: audio.SampleRate,
-		Channels:   audio.Channels,
-		PCM16:      audio.PCM16,
+	now := m.services.Clock.Monotonic()
+	if audio.SampleRate <= 0 || audio.Channels <= 0 || len(audio.PCM16) == 0 ||
+		len(audio.PCM16)%audio.Channels != 0 {
+		if revision != m.mediaOutputRevision {
+			m.nextAudioGenerationLocked(now)
+			m.mediaOutputRevision = revision
+		}
+		return machinecore.AudioChunk{}
 	}
+	frames := len(audio.PCM16) / audio.Channels
+	duration := time.Duration(int64(frames) * int64(time.Second) / int64(audio.SampleRate))
+	start := now - duration
+	if start < 0 {
+		start = 0
+	}
+	if revision != m.mediaOutputRevision {
+		m.nextAudioGenerationLocked(start)
+		m.mediaOutputRevision = revision
+	}
+	startSample := skvmSampleCursor(time.Duration(int64(start)-m.audioEpochGuestNS), audio.SampleRate)
+	if m.audioCursorValid {
+		slack := skvmSampleCursor(time.Millisecond, audio.SampleRate)
+		if distanceWithin(startSample, m.audioCursorSample, slack) {
+			startSample = m.audioCursorSample
+		}
+	}
+	chunk := machinecore.AudioChunk{
+		SampleRate:   audio.SampleRate,
+		Channels:     audio.Channels,
+		PCM16:        audio.PCM16,
+		StartGuestNS: int64(start),
+		StartSample:  startSample,
+		Generation:   m.audioGeneration,
+	}
+	m.audioCursorSample = startSample + uint64(frames)
+	m.audioCursorValid = true
+	return chunk
+}
+
+func distanceWithin(left, right, limit uint64) bool {
+	if left >= right {
+		return left-right <= limit
+	}
+	return right-left <= limit
+}
+
+func skvmSampleCursor(elapsed time.Duration, sampleRate int) uint64 {
+	if elapsed <= 0 || sampleRate <= 0 {
+		return 0
+	}
+	seconds := uint64(elapsed / time.Second)
+	remainder := uint64(elapsed % time.Second)
+	return seconds*uint64(sampleRate) + remainder*uint64(sampleRate)/uint64(time.Second)
+}
+
+func (m *Machine) nextAudioGenerationLocked(epoch time.Duration) {
+	if m.audioGeneration == 0 || m.audioGeneration == ^uint64(0) {
+		m.audioGeneration = 1
+	} else {
+		m.audioGeneration++
+	}
+	m.audioEpochGuestNS = int64(max(epoch, 0))
+	m.audioCursorSample = 0
+	m.audioCursorValid = false
+}
+
+func (m *Machine) resetAudioLocked(epoch time.Duration) {
+	if m.services != nil && m.services.Media != nil {
+		_ = m.services.Media.Drain()
+		m.mediaOutputRevision = m.services.Media.OutputRevision()
+	}
+	m.nextAudioGenerationLocked(epoch)
 }
 
 func (m *Machine) Close() error {
@@ -710,6 +788,7 @@ func (m *Machine) Close() error {
 	if m.closed {
 		return nil
 	}
+	m.resetAudioLocked(m.services.Clock.Monotonic())
 	if adapter, err := m.services.Coordinator.Adapter(m.owner); err == nil &&
 		adapter.Lifecycle != shared.LifecycleDestroyed {
 		_ = m.services.Coordinator.Transition(

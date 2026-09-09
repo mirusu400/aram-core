@@ -207,6 +207,13 @@ func TestRaptorPrivateSoundOrdinalsStopAndFreeClips(t *testing.T) {
 	if err != nil || handle == 0 {
 		t.Fatalf("RaptorCreateClip = 0x%08x, err=%v", handle, err)
 	}
+	wave := raptorTestWave()
+	data, err := public.Heap.Allocate(uint32(len(wave)), true)
+	check(t, err)
+	check(t, public.CPU.WriteMemory(data, wave))
+	if !public.RaptorPutClipData(handle, data, int32(len(wave))) {
+		t.Fatal("RaptorPutClipData rejected the clip source")
+	}
 	if !public.RaptorPlayClip(handle, true) {
 		t.Fatal("RaptorPlayClip refused to start the clip")
 	}
@@ -252,4 +259,24 @@ func TestRaptorPrivateSoundOrdinalsStopAndFreeClips(t *testing.T) {
 	if _, live := public.MediaClips[handle]; live {
 		t.Fatal("freed clip is still registered")
 	}
+}
+
+func raptorTestWave() []byte {
+	data := make([]byte, 48)
+	copy(data[0:4], "RIFF")
+	binary.LittleEndian.PutUint32(data[4:8], uint32(len(data)-8))
+	copy(data[8:12], "WAVE")
+	copy(data[12:16], "fmt ")
+	binary.LittleEndian.PutUint32(data[16:20], 16)
+	binary.LittleEndian.PutUint16(data[20:22], 1)
+	binary.LittleEndian.PutUint16(data[22:24], 1)
+	binary.LittleEndian.PutUint32(data[24:28], 8_000)
+	binary.LittleEndian.PutUint32(data[28:32], 16_000)
+	binary.LittleEndian.PutUint16(data[32:34], 2)
+	binary.LittleEndian.PutUint16(data[34:36], 16)
+	copy(data[36:40], "data")
+	binary.LittleEndian.PutUint32(data[40:44], 4)
+	binary.LittleEndian.PutUint16(data[44:46], 1)
+	binary.LittleEndian.PutUint16(data[46:48], 2)
+	return data
 }

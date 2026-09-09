@@ -1,6 +1,7 @@
 package ktf
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -12,8 +13,13 @@ func TestKTFPlayerPauseAndResumePreservePosition(t *testing.T) {
 	runtime := newTestRuntime(t)
 	clip := newHostObject(t, runtime, "org/kwis/msp/media/Clip")
 	state := runtime.ensureKTFClip(clip)
-	state.data = []byte("synthetic undecoded audio")
+	state.data = ktfTestWave(make([]int16, 400))
+	state.listener = 0x10002000
 	check(t, runtime.syncKTFClip(clip))
+	runtime.Tasks = make([]*Task, MaxTasks)
+	for index := range runtime.Tasks {
+		runtime.Tasks[index] = &Task{}
+	}
 
 	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, clip))
 	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 0))
@@ -22,12 +28,15 @@ func TestKTFPlayerPauseAndResumePreservePosition(t *testing.T) {
 		"(Lorg/kwis/msp/media/Clip;Z)Z",
 	)
 	check(t, err)
+	if got := runtime.PendingJavaCalls[len(runtime.PendingJavaCalls)-1].args[1]; got != 2 {
+		t.Fatalf("play listener event = %d, want START(2)", got)
+	}
 	check(t, runtime.Services.Advance(runtime.ServiceOwner, 25*time.Millisecond))
 
 	serviceID := runtime.clipServices[clip]
 	beforePause, err := runtime.Services.Media.Info(runtime.ServiceOwner, serviceID)
 	check(t, err)
-	if beforePause.Position != 25*time.Millisecond ||
+	if beforePause.Position < 24*time.Millisecond || beforePause.Position > 25*time.Millisecond ||
 		beforePause.State != shared.ClipPlaying {
 		t.Fatalf("before pause = %+v", beforePause)
 	}
@@ -38,6 +47,9 @@ func TestKTFPlayerPauseAndResumePreservePosition(t *testing.T) {
 		"(Lorg/kwis/msp/media/Clip;)Z",
 	)
 	check(t, err)
+	if got := runtime.PendingJavaCalls[len(runtime.PendingJavaCalls)-1].args[1]; got != 4 {
+		t.Fatalf("pause listener event = %d, want PAUSE(4)", got)
+	}
 	paused, err := runtime.Services.Media.Info(runtime.ServiceOwner, serviceID)
 	check(t, err)
 	if paused.Position != beforePause.Position || paused.State != shared.ClipPaused {
@@ -61,6 +73,9 @@ func TestKTFPlayerPauseAndResumePreservePosition(t *testing.T) {
 		"(Lorg/kwis/msp/media/Clip;)Z",
 	)
 	check(t, err)
+	if got := runtime.PendingJavaCalls[len(runtime.PendingJavaCalls)-1].args[1]; got != 5 {
+		t.Fatalf("resume listener event = %d, want RESUME(5)", got)
+	}
 	resumed, err := runtime.Services.Media.Info(runtime.ServiceOwner, serviceID)
 	check(t, err)
 	if resumed.Position != beforePause.Position || resumed.State != shared.ClipPlaying {
@@ -70,8 +85,49 @@ func TestKTFPlayerPauseAndResumePreservePosition(t *testing.T) {
 	check(t, runtime.Services.Advance(runtime.ServiceOwner, 10*time.Millisecond))
 	advanced, err := runtime.Services.Media.Info(runtime.ServiceOwner, serviceID)
 	check(t, err)
-	if advanced.Position != 35*time.Millisecond {
-		t.Fatalf("resumed position = %s, want 35ms", advanced.Position)
+	if advanced.Position < 34*time.Millisecond || advanced.Position > 35*time.Millisecond {
+		t.Fatalf("resumed position = %s, want about 35ms", advanced.Position)
+	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, clip))
+	result, err := runtime.handleMediaMethod("stop", "(Lorg/kwis/msp/media/Clip;)Z")
+	check(t, err)
+	if result != 1 || runtime.PendingJavaCalls[len(runtime.PendingJavaCalls)-1].args[1] != 3 {
+		t.Fatalf("stop result/event = %d/%+v", result, runtime.PendingJavaCalls)
+	}
+}
+
+func TestKTFGlobalVolumeSetUpdatesSharedMixer(t *testing.T) {
+	runtime := newTestRuntime(t)
+	call, ok := ktfJavaNativeOverride("org/kwis/msp/media/Volume.set(I)V")
+	if !ok {
+		t.Fatal("Volume.set native override is missing")
+	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, 3))
+	if _, err := call.handler(context.Background(), runtime); err != nil {
+		t.Fatal(err)
+	}
+	if got := runtime.Services.Media.Snapshot().GlobalVolume; got != 60 {
+		t.Fatalf("global volume = %d, want 60", got)
+	}
+}
+
+func TestKTFClipSetPositionSeeksSharedClip(t *testing.T) {
+	runtime := newTestRuntime(t)
+	clip := newHostObject(t, runtime, "org/kwis/msp/media/Clip")
+	state := runtime.ensureKTFClip(clip)
+	state.data = ktfTestWave(make([]int16, 400))
+	check(t, runtime.syncKTFClip(clip))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, clip))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 10))
+	result, err := runtime.handleMediaMethod("setPosition", "(I)Z")
+	check(t, err)
+	if result != 1 {
+		t.Fatalf("setPosition result = %d", result)
+	}
+	info, err := runtime.Services.Media.Info(runtime.ServiceOwner, runtime.clipServices[clip])
+	check(t, err)
+	if info.Position != 10*time.Millisecond {
+		t.Fatalf("setPosition shared position = %s", info.Position)
 	}
 }
 

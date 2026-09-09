@@ -61,7 +61,7 @@ func (r *Runtime) dispatchMedia(name string) (guest.WIPIReturn, bool, error) {
 				serviceID,
 				r.Services.Events,
 			); err != nil {
-				return guest.WIPIReturn{}, true, err
+				return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
 			}
 			delete(r.MediaServices, arg(0))
 		}
@@ -98,26 +98,34 @@ func (r *Runtime) dispatchMedia(name string) (guest.WIPIReturn, bool, error) {
 		if current == nil || length < 0 {
 			return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
 		}
-		count := min(length, len(current.Data))
-		if err := r.CPU.WriteMemory(arg(1), current.Data[:count]); err != nil {
+		serviceID := r.MediaServices[current.Handle]
+		data := current.Data
+		if serviceID != 0 {
+			var err error
+			data, err = r.Services.Media.TakeBuffered(r.ServiceOwner, serviceID, uint64(length))
+			if err != nil {
+				return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
+			}
+		}
+		count := min(length, len(data))
+		if err := r.CPU.WriteMemory(arg(1), data[:count]); err != nil {
 			return guest.WIPIReturn{}, true, err
 		}
-		current.Data = append(current.Data[:0], current.Data[count:]...)
-		if serviceID := r.MediaServices[current.Handle]; serviceID != 0 {
-			if err := r.Services.Media.Clear(r.ServiceOwner, serviceID); err != nil {
-				return guest.WIPIReturn{}, true, err
-			}
-			if _, err := r.Services.Media.Append(
-				r.ServiceOwner,
-				serviceID,
-				current.Data,
-			); err != nil {
-				return guest.WIPIReturn{}, true, err
-			}
+		if serviceID != 0 {
+			current.Data, _ = r.Services.Media.Source(r.ServiceOwner, serviceID)
+		} else {
+			current.Data = append(current.Data[:0], current.Data[count:]...)
 		}
 		return guest.WIPIReturn{Low: uint32(count)}, true, nil
 	case "MC_mdaClipAvailableDataSize":
 		if current := clip(); current != nil {
+			if serviceID := r.MediaServices[current.Handle]; serviceID != 0 {
+				available, err := r.Services.Media.AvailableBytes(r.ServiceOwner, serviceID)
+				if err != nil {
+					return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
+				}
+				return guest.WIPIReturn{Low: uint32(available)}, true, nil
+			}
 			return guest.WIPIReturn{Low: uint32(len(current.Data))}, true, nil
 		}
 		return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
@@ -125,7 +133,7 @@ func (r *Runtime) dispatchMedia(name string) (guest.WIPIReturn, bool, error) {
 		if current := clip(); current != nil {
 			if serviceID := r.MediaServices[current.Handle]; serviceID != 0 {
 				if err := r.Services.Media.Clear(r.ServiceOwner, serviceID); err != nil {
-					return guest.WIPIReturn{}, true, err
+					return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
 				}
 			}
 			current.Data = nil
@@ -134,15 +142,20 @@ func (r *Runtime) dispatchMedia(name string) (guest.WIPIReturn, bool, error) {
 		return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
 	case "MC_mdaClipSetPosition":
 		if current := clip(); current != nil {
-			current.position = int32(arg(1))
+			position := int32(arg(1))
 			if serviceID := r.MediaServices[current.Handle]; serviceID != 0 &&
-				current.position >= 0 {
-				_ = r.Services.Media.Seek(
+				position >= 0 {
+				if err := r.Services.Media.Seek(
 					r.ServiceOwner,
 					serviceID,
-					time.Duration(current.position)*time.Millisecond,
-				)
+					time.Duration(position)*time.Millisecond,
+				); err != nil {
+					return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
+				}
+			} else if position < 0 {
+				return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
 			}
+			current.position = position
 			return guest.WIPIReturn{}, true, nil
 		}
 		return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
@@ -169,10 +182,9 @@ func (r *Runtime) dispatchMedia(name string) (guest.WIPIReturn, bool, error) {
 		return guest.WIPIReturn{}, true, nil
 	case "MC_mdaPlay":
 		if current := clip(); current != nil {
-			current.State = 1
-			current.Repeat = arg(1) != 0
+			repeat := arg(1) != 0
 			plays := int32(1)
-			if current.Repeat {
+			if repeat {
 				plays = -1
 			}
 			if serviceID := r.MediaServices[current.Handle]; serviceID != 0 {
@@ -184,7 +196,9 @@ func (r *Runtime) dispatchMedia(name string) (guest.WIPIReturn, bool, error) {
 					return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
 				}
 			}
-			r.EnqueueCallback(current.Callback, current.Handle, uint32(current.State))
+			current.State = 1
+			current.Repeat = repeat
+			r.EnqueueCallback(current.Callback, current.Handle, uint32(guest.WIPIMediaStart))
 			return guest.WIPIReturn{}, true, nil
 		}
 		return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
@@ -195,7 +209,19 @@ func (r *Runtime) dispatchMedia(name string) (guest.WIPIReturn, bool, error) {
 	case "MC_mdaStop":
 		return r.setMediaState(clip(), 0)
 	case "MC_mdaRecord":
-		return r.setMediaState(clip(), 3)
+		// No microphone or input provider exists, so nothing is recorded. The
+		// spec makes that a successful no-op rather than a failure: recording
+		// through a clip whose type does not support it "아무기능도 하지
+		// 않는다", and the only documented failures are M_E_INUSE and
+		// M_E_ERROR for a clip already recording. Returning an error here is
+		// what broke the media-suite conformance example, which frees the clip
+		// straight after recording it. Nothing claims to have been captured:
+		// the clip stays stopped, its buffer does not grow, and no RECORD
+		// callback is delivered.
+		if current := clip(); current != nil {
+			return guest.WIPIReturn{}, true, nil
+		}
+		return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
 	case "MC_mdaGetVolume":
 		return guest.WIPIReturn{Low: uint32(r.mediaVolume)}, true, nil
 	case "MC_mdaSetVolume":
@@ -299,9 +325,20 @@ func (r *Runtime) setMediaState(clip *wipiMediaClip, state uint8) (guest.WIPIRet
 	if clip == nil {
 		return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
 	}
-	clip.State = state
-	if state == 0 {
-		clip.Repeat = false
+	// The event is derived from the requested state before the service call, so
+	// a clip whose shared service is missing still reports a legal WIPI
+	// constant. Leaving it zero here would put an internal value back on the
+	// guest callback, which is the defect this translation exists to remove.
+	var event int32
+	switch state {
+	case 0:
+		event = guest.WIPIMediaStop
+	case 1:
+		event = guest.WIPIMediaResume
+	case 2:
+		event = guest.WIPIMediaPause
+	default:
+		return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
 	}
 	if serviceID := r.MediaServices[clip.Handle]; serviceID != 0 {
 		var err error
@@ -312,15 +349,16 @@ func (r *Runtime) setMediaState(clip *wipiMediaClip, state uint8) (guest.WIPIRet
 			err = r.Services.Media.Resume(r.ServiceOwner, serviceID)
 		case 2:
 			err = r.Services.Media.Pause(r.ServiceOwner, serviceID)
-		case 3:
-			// Recording is modeled in the adapter until an input provider is
-			// explicitly supplied; no host microphone is opened.
 		}
 		if err != nil {
-			return guest.WIPIReturn{}, true, err
+			return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
 		}
 	}
-	r.EnqueueCallback(clip.Callback, clip.Handle, uint32(state))
+	clip.State = state
+	if state == 0 {
+		clip.Repeat = false
+	}
+	r.EnqueueCallback(clip.Callback, clip.Handle, uint32(event))
 	return guest.WIPIReturn{}, true, nil
 }
 
@@ -440,8 +478,6 @@ func (r *Runtime) RaptorPlayClip(handle uint32, loop bool) bool {
 	if clip == nil {
 		return false
 	}
-	clip.State = 1
-	clip.Repeat = loop
 	plays := int32(1)
 	if loop {
 		plays = -1
@@ -451,6 +487,8 @@ func (r *Runtime) RaptorPlayClip(handle uint32, loop bool) bool {
 			return false
 		}
 	}
+	clip.State = 1
+	clip.Repeat = loop
 	return true
 }
 
@@ -482,10 +520,15 @@ func (r *Runtime) RaptorStopClip(handle uint32, free bool) {
 	}
 	if serviceID := r.MediaServices[handle]; serviceID != 0 {
 		if free {
+			if clip.State != 0 {
+				_ = r.Services.Media.Stop(r.ServiceOwner, serviceID)
+			}
 			_ = r.Services.Media.DestroyClip(r.ServiceOwner, serviceID, r.Services.Events)
 			delete(r.MediaServices, handle)
 		} else {
-			_ = r.Services.Media.Stop(r.ServiceOwner, serviceID)
+			if err := r.Services.Media.Stop(r.ServiceOwner, serviceID); err != nil {
+				return
+			}
 		}
 	}
 	if free {

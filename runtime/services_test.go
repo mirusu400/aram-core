@@ -112,6 +112,8 @@ func TestServicesAdvanceLateFailureRestoresEveryJournal(t *testing.T) {
 	check(t, services.Timers.Set(timer, owner, time.Millisecond, 0, 7))
 	clip, err := services.Media.CreateClip(owner, "", 0)
 	check(t, err)
+	_, err = services.Media.Append(owner, clip, pcmWave(8_000, 1, []int16{1, 2, 3, 4}))
+	check(t, err)
 	check(t, services.Media.Play(owner, clip, 1))
 	check(t, services.Device.Vibrate(50, time.Millisecond, 0))
 	check(t, services.Device.SetBacklight(true, time.Millisecond, 0))

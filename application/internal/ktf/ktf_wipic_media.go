@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mirusu400/aram-core/application/internal/guest"
 	shared "github.com/mirusu400/aram-core/runtime"
 )
 
@@ -296,7 +297,10 @@ func ktfWIPICMediaCreate(
 		serviceMediaType = "audio/x-smaf"
 	case "audio/midi", "audio/sp-midi":
 		serviceMediaType = "audio/midi"
-	case "audio/wav", "audio/x-wav":
+	// "audio/wave" is the spelling MEDIADEVICES advertises, so a title that
+	// feeds the advertised capability string straight back to the create call
+	// has to be accepted here.
+	case "audio/wav", "audio/x-wav", "audio/wave":
 		serviceMediaType = "audio/wav"
 	default:
 		runtime.tracef("wipic_media_create_unsupported:type=%q", mediaType)
@@ -349,7 +353,7 @@ func ktfWIPICMediaDestroy(
 		serviceID,
 		runtime.Services.Events,
 	); err != nil {
-		return 0, err
+		return ktfWIPICErrorInvalid, nil
 	}
 	delete(runtime.wipicMediaClips, handle)
 	delete(runtime.wipicMediaServices, handle)
@@ -447,38 +451,37 @@ func ktfWIPICMediaGetData(
 	if output == 0 && count != 0 {
 		return ktfWIPICErrorInvalid, nil
 	}
-	if err := runtime.CPU.WriteMemory(output, clip.data[:count]); err != nil {
-		return 0, err
-	}
-	clip.data = append(clip.data[:0], clip.data[count:]...)
-	if err := runtime.Services.Media.Clear(
+	data, err := runtime.Services.Media.TakeBuffered(
 		runtime.ServiceOwner,
 		serviceID,
-	); err != nil {
+		uint64(count),
+	)
+	if err != nil {
+		return ktfWIPICErrorInvalid, nil
+	}
+	if err := runtime.CPU.WriteMemory(output, data); err != nil {
 		return 0, err
 	}
-	if _, err := runtime.Services.Media.Append(
-		runtime.ServiceOwner,
-		serviceID,
-		clip.data,
-	); err != nil {
-		return 0, err
-	}
-	return count, nil
+	clip.data, _ = runtime.Services.Media.Source(runtime.ServiceOwner, serviceID)
+	return uint32(len(data)), nil
 }
 
 func ktfWIPICMediaAvailableDataSize(
 	_ context.Context,
 	runtime *Runtime,
 ) (uint32, error) {
-	_, clip, _, err := runtime.ktfWIPICMediaParameter()
+	_, clip, serviceID, err := runtime.ktfWIPICMediaParameter()
 	if err != nil {
 		return ktfWIPICErrorInvalid, err
 	}
 	if clip == nil {
 		return ktfWIPICErrorInvalid, nil
 	}
-	return uint32(len(clip.data)), nil
+	available, err := runtime.Services.Media.AvailableBytes(runtime.ServiceOwner, serviceID)
+	if err != nil {
+		return ktfWIPICErrorInvalid, nil
+	}
+	return uint32(available), nil
 }
 
 func ktfWIPICMediaClearData(
@@ -496,7 +499,7 @@ func ktfWIPICMediaClearData(
 		runtime.ServiceOwner,
 		serviceID,
 	); err != nil {
-		return 0, err
+		return ktfWIPICErrorInvalid, nil
 	}
 	runtime.tracef("wipic_media_clear:handle=0x%08x:had=%d", handle, len(clip.data))
 	clip.data = nil
@@ -530,11 +533,12 @@ func ktfWIPICMediaPlay(
 		serviceID,
 		plays,
 	); err != nil {
-		return 0, err
+		return ktfWIPICErrorInvalid, nil
 	}
 	clip.state = 1
 	clip.repeat = repeat != 0
 	clip.rewindPending = false
+	runtime.queueWIPICMediaCallback(handle, guest.WIPIMediaStart)
 	runtime.tracef(
 		"wipic_media_play:handle=0x%08x:size=%d:repeat=%t",
 		handle,
@@ -559,10 +563,11 @@ func ktfWIPICMediaPause(
 		runtime.ServiceOwner,
 		serviceID,
 	); err != nil {
-		return 0, err
+		return ktfWIPICErrorInvalid, nil
 	}
 	runtime.tracef("wipic_media_pause:handle=0x%08x", handle)
 	clip.state = 2
+	runtime.queueWIPICMediaCallback(handle, guest.WIPIMediaPause)
 	return 0, nil
 }
 
@@ -581,10 +586,11 @@ func ktfWIPICMediaResume(
 		runtime.ServiceOwner,
 		serviceID,
 	); err != nil {
-		return 0, err
+		return ktfWIPICErrorInvalid, nil
 	}
 	runtime.tracef("wipic_media_resume:handle=0x%08x", handle)
 	clip.state = 1
+	runtime.queueWIPICMediaCallback(handle, guest.WIPIMediaResume)
 	return 0, nil
 }
 
@@ -603,13 +609,21 @@ func ktfWIPICMediaStop(
 		runtime.ServiceOwner,
 		serviceID,
 	); err != nil {
-		return 0, err
+		return ktfWIPICErrorInvalid, nil
 	}
 	runtime.tracef("wipic_media_stop:handle=0x%08x:repeat=%t", handle, clip.repeat)
 	clip.state = 0
 	clip.repeat = false
 	clip.rewindPending = true
+	runtime.queueWIPICMediaCallback(handle, guest.WIPIMediaStop)
 	return 0, nil
+}
+
+func (r *Runtime) queueWIPICMediaCallback(handle uint32, event int32) {
+	if clip := r.wipicMediaClips[handle]; clip != nil && clip.callback != 0 {
+		r.pendingMediaCallbacks = append(r.pendingMediaCallbacks,
+			ktfPendingMediaCallback{handle: handle, event: event})
+	}
 }
 
 // ktfWIPICMediaGetState reports the clip's playback state (0 stopped,

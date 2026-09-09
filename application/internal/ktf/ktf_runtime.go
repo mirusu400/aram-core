@@ -316,7 +316,7 @@ type Runtime struct {
 	wipicMemory            map[uint32]ktfWIPICMemory
 	wipicTimers            map[uint32]*ktfWIPICTimer
 	wipicMediaClips        map[uint32]*ktfWIPICMediaClip
-	pendingMediaCallbacks  []uint32
+	pendingMediaCallbacks  []ktfPendingMediaCallback
 	pendingNetCallbacks    []ktfPendingNetCallback
 	wipicSystemProperties  map[string]string
 	wipicFiles             map[uint32]*ktfFile
@@ -760,6 +760,11 @@ type ktfWIPICMediaClip struct {
 	// effect finishes) is worth an entry.
 	lastTracedState uint8
 	tracedState     bool
+}
+
+type ktfPendingMediaCallback struct {
+	handle uint32
+	event  int32
 }
 
 type ktfLWCComponent struct {

@@ -25,6 +25,27 @@ import (
 	shared "github.com/mirusu400/aram-core/runtime"
 )
 
+func ktfTestWave(samples []int16) []byte {
+	data := make([]byte, 44+len(samples)*2)
+	copy(data[0:4], "RIFF")
+	binary.LittleEndian.PutUint32(data[4:8], uint32(len(data)-8))
+	copy(data[8:12], "WAVE")
+	copy(data[12:16], "fmt ")
+	binary.LittleEndian.PutUint32(data[16:20], 16)
+	binary.LittleEndian.PutUint16(data[20:22], 1)
+	binary.LittleEndian.PutUint16(data[22:24], 1)
+	binary.LittleEndian.PutUint32(data[24:28], 8_000)
+	binary.LittleEndian.PutUint32(data[28:32], 16_000)
+	binary.LittleEndian.PutUint16(data[32:34], 2)
+	binary.LittleEndian.PutUint16(data[34:36], 16)
+	copy(data[36:40], "data")
+	binary.LittleEndian.PutUint32(data[40:44], uint32(len(samples)*2))
+	for index, sample := range samples {
+		binary.LittleEndian.PutUint16(data[44+index*2:], uint16(sample))
+	}
+	return data
+}
+
 func TestKTFRuntimeMapsAndCallsClientEntry(t *testing.T) {
 	client := syntheticKTFClient()
 	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
@@ -5408,10 +5429,21 @@ func TestKTFWIPICMediaMA3LoadAndPlayback(t *testing.T) {
 	if info.State != shared.ClipPlaying || info.RemainingPlays != -1 {
 		t.Fatalf("WIPI-C media playback = %+v", info)
 	}
+	if len(runtime.pendingMediaCallbacks) != 1 ||
+		runtime.pendingMediaCallbacks[0] != (ktfPendingMediaCallback{
+			handle: handle,
+			event:  guest.WIPIMediaStart,
+		}) {
+		t.Fatalf("WIPI-C play callbacks = %+v", runtime.pendingMediaCallbacks)
+	}
 
 	writeParameters(handle)
 	if _, err := ktfWIPICMediaStop(context.Background(), runtime); err != nil {
 		t.Fatal(err)
+	}
+	if len(runtime.pendingMediaCallbacks) != 2 ||
+		runtime.pendingMediaCallbacks[1].event != guest.WIPIMediaStop {
+		t.Fatalf("WIPI-C stop callbacks = %+v", runtime.pendingMediaCallbacks)
 	}
 	if _, err := ktfWIPICMediaDestroy(context.Background(), runtime); err != nil {
 		t.Fatal(err)

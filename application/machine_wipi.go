@@ -390,7 +390,7 @@ func (m *Machine) pumpWIPICallbacks(
 					// (issue #49). The title frees the clip itself through
 					// MC_sndFree, so the clip table stays bounded without the
 					// adapter releasing it here (issue #36).
-					code := uint32(0)
+					code := uint32(guest.WIPIMediaEnd)
 					if m.raptor != nil {
 						code = wipirt.RaptorClipEndCode
 					}

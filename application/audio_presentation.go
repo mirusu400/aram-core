@@ -55,6 +55,13 @@ func (m *Machine) publishAudioFromMedia(media *shared.Media, start time.Duration
 	if media == nil {
 		return
 	}
+	revision := media.OutputRevision()
+	m.audioMu.Lock()
+	if revision != m.mediaOutputRevision {
+		m.nextAudioGenerationLocked(start)
+		m.mediaOutputRevision = revision
+	}
+	m.audioMu.Unlock()
 	m.publishAudioBuffer(media.Drain(), start)
 }
 
