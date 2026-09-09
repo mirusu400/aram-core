@@ -632,13 +632,68 @@ func (r *Runtime) handleDisplayMethod(
 			r.dirtyCards[card] = true
 		}
 		return 0, nil
-	case "flush()V", "where()V", "grabKey(ILorg/kwis/msp/lcdui/JletEventListener;)V",
-		"ungrabKey(I)V",
-		"setJletEventListener(Lorg/kwis/msp/lcdui/JletEventListener;)V",
-		"removeJletEventListener(Lorg/kwis/msp/lcdui/JletEventListener;)V",
-		"addJletEventListener(Lorg/kwis/msp/lcdui/JletEventListener;)V":
-		// Jlet event listeners and key grabs are satisfied through the
-		// Card key-notify path; the display presents every frame already.
+	case "flush()V", "where()V":
+		return 0, nil
+	case "setJletEventListener(Lorg/kwis/msp/lcdui/JletEventListener;)V":
+		listener, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		r.jletEventListeners = r.jletEventListeners[:0]
+		if listener != 0 {
+			r.jletEventListeners = append(r.jletEventListeners, listener)
+		}
+		return 0, nil
+	case "addJletEventListener(Lorg/kwis/msp/lcdui/JletEventListener;)V":
+		listener, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		if listener == 0 {
+			return 0, nil
+		}
+		for _, existing := range r.jletEventListeners {
+			if existing == listener {
+				return 0, nil
+			}
+		}
+		r.jletEventListeners = append(r.jletEventListeners, listener)
+		return 0, nil
+	case "removeJletEventListener(Lorg/kwis/msp/lcdui/JletEventListener;)V":
+		listener, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		for index, existing := range r.jletEventListeners {
+			if existing != listener {
+				continue
+			}
+			copy(r.jletEventListeners[index:], r.jletEventListeners[index+1:])
+			r.jletEventListeners = r.jletEventListeners[:len(r.jletEventListeners)-1]
+			break
+		}
+		return 0, nil
+	case "grabKey(ILorg/kwis/msp/lcdui/JletEventListener;)V":
+		key, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		listener, err := r.parameter(3)
+		if err != nil {
+			return 0, err
+		}
+		if listener != 0 {
+			if _, grabbed := r.grabbedKeys[int32(key)]; !grabbed {
+				r.grabbedKeys[int32(key)] = listener
+			}
+		}
+		return 0, nil
+	case "ungrabKey(I)V":
+		key, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		delete(r.grabbedKeys, int32(key))
 		return 0, nil
 	case "isColor()Z":
 		return 1, nil

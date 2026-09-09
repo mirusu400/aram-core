@@ -1272,7 +1272,21 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	},
 
 	"org/kwis/msp/lcdui/DisplayProxy": {Parent: "java/lang/Object"},
-	"org/kwis/msp/lcdui/EventQueue":   {Parent: "java/lang/Object"},
+	"org/kwis/msp/lcdui/EventQueue": {
+		Parent: "java/lang/Object",
+		methods: []ktfHostJavaMethodSpec{
+			{name: "<init>", descriptor: "()V"},
+			{name: "getNextEvent", descriptor: "([I)V"},
+			{name: "dispatchEvent", descriptor: "([I)V"},
+			{name: "postEvent", descriptor: "([I)Z"},
+			{name: "postEvent", descriptor: "(I[I)V", access: 0x0008},
+			{
+				name:       "hookEvent",
+				descriptor: "(ILorg/kwis/msp/lcdui/JletEventListener;)V",
+				access:     0x0008,
+			},
+		},
+	},
 	"org/kwis/msp/lcdui/ImageObserver": {
 		Parent: "java/lang/Object",
 		access: 0x0601,
@@ -1287,6 +1301,9 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 	"org/kwis/msp/lcdui/JletEventListener": {
 		Parent: "java/lang/Object",
 		access: 0x0601,
+		methods: []ktfHostJavaMethodSpec{
+			{name: "notifyEvent", descriptor: "(III)V", access: 0x0401},
+		},
 	},
 	"org/kwis/msp/lcdui/JletStateChangeException": {
 		Parent: "java/lang/Exception",

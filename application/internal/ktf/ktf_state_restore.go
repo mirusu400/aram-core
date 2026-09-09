@@ -521,6 +521,16 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	r.DefaultDisplay = meta.DefaultDisplay
 	r.MainJlet = meta.MainJlet
 	r.eventQueue = meta.EventQueue
+	r.eventQueueEvents = append([]ktfJavaEvent(nil), meta.EventQueueEvents...)
+	r.eventHooks = guest.CloneMap(meta.EventHooks)
+	if r.eventHooks == nil {
+		r.eventHooks = make(map[uint32]uint32)
+	}
+	r.jletEventListeners = append([]uint32(nil), meta.JletEventListeners...)
+	r.grabbedKeys = guest.CloneMap(meta.GrabbedKeys)
+	if r.grabbedKeys == nil {
+		r.grabbedKeys = make(map[int32]uint32)
+	}
 	r.sharedBuffers = guest.CloneMap(meta.SharedBuffers)
 	if r.sharedBuffers == nil {
 		r.sharedBuffers = make(map[string]uint32)

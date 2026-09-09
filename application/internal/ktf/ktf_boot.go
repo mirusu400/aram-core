@@ -203,6 +203,8 @@ func NewRuntimeForProfile(
 		databases:             make(map[uint32]*Database),
 		DatabaseStores:        databaseStores,
 		DisplayCards:          make(map[uint32]uint32),
+		eventHooks:            make(map[uint32]uint32),
+		grabbedKeys:           make(map[int32]uint32),
 		ThreadTargets:         make(map[uint32]uint32),
 		javaTimerTasks:        make(map[uint32]*Task),
 		javaTimerTaskStates:   make(map[uint32]uint8),

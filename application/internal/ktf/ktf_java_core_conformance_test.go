@@ -319,3 +319,117 @@ func TestKTFClassReportsArraysAndInterfaces(t *testing.T) {
 		)
 	}
 }
+
+func TestKTFEventQueueCopiesPostsAndDispatchesListeners(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	runtime.DeferThreads = true
+	queue := newHostObject(t, runtime, "org/kwis/msp/lcdui/EventQueue")
+	source, err := runtime.NewJavaArray("[I", 4, 4)
+	check(t, err)
+	sourceFields := readU32(t, runtime, source)
+	posted := ktfJavaEvent{0x5000, 11, 22, 33}
+	check(t, runtime.writeWords(sourceFields+8, posted[:]))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, queue))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, source))
+	accepted, err := runtime.handleEventQueueMethod(
+		context.Background(),
+		"postEvent",
+		"([I)Z",
+	)
+	check(t, err)
+	if accepted != 1 || len(runtime.eventQueueEvents) != 1 {
+		t.Fatalf(
+			"EventQueue.postEvent accepted=%d queued=%d",
+			accepted,
+			len(runtime.eventQueueEvents),
+		)
+	}
+	check(t, runtime.writeWords(sourceFields+8, []uint32{0, 0, 0, 0}))
+
+	destination, err := runtime.NewJavaArray("[I", 4, 4)
+	check(t, err)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, destination))
+	_, err = runtime.handleEventQueueMethod(
+		context.Background(),
+		"getNextEvent",
+		"([I)V",
+	)
+	check(t, err)
+	destinationFields := readU32(t, runtime, destination)
+	if got := readWords(t, runtime, destinationFields+8, 4); !equalWords(got, posted[:]) {
+		t.Fatalf("EventQueue copied event = %v, want %v", got, posted)
+	}
+
+	listener := newHostObject(t, runtime, "org/kwis/msp/lcdui/JletEventListener")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, 0x5000))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, listener))
+	_, err = runtime.handleEventQueueMethod(
+		context.Background(),
+		"hookEvent",
+		"(ILorg/kwis/msp/lcdui/JletEventListener;)V",
+	)
+	check(t, err)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, queue))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, destination))
+	_, err = runtime.handleEventQueueMethod(
+		context.Background(),
+		"dispatchEvent",
+		"([I)V",
+	)
+	check(t, err)
+	if len(runtime.Tasks) != 1 || runtime.Tasks[0] == nil || runtime.Tasks[0].Done {
+		t.Fatalf("EventQueue listener task = %+v", runtime.Tasks)
+	}
+}
+
+func TestKTFDisplayRegistersAndReleasesGrabbedKeys(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	runtime.DeferThreads = true
+	display := newHostObject(t, runtime, "org/kwis/msp/lcdui/Display")
+	listener := newHostObject(t, runtime, "org/kwis/msp/lcdui/JletEventListener")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, display))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, uint32('5')))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, listener))
+	_, err := runtime.handleDisplayMethod(
+		context.Background(),
+		"grabKey",
+		"(ILorg/kwis/msp/lcdui/JletEventListener;)V",
+	)
+	check(t, err)
+	queued, err := runtime.QueueKeyEvent(true, '5')
+	check(t, err)
+	if !queued || len(runtime.Tasks) != 1 {
+		t.Fatalf("grabbed key queued=%t tasks=%d", queued, len(runtime.Tasks))
+	}
+	if !runtime.CanQueueKeyEventFor('5') {
+		t.Fatal("grabbed key was rejected without a display Card")
+	}
+	if runtime.CanQueueKeyEventFor('6') {
+		t.Fatal("ungrabbed key was accepted without a display Card")
+	}
+
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, uint32('5')))
+	_, err = runtime.handleDisplayMethod(
+		context.Background(),
+		"ungrabKey",
+		"(I)V",
+	)
+	check(t, err)
+	if _, ok := runtime.grabbedKeys['5']; ok {
+		t.Fatal("Display.ungrabKey left the listener registered")
+	}
+}
+
+func equalWords(left, right []uint32) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}

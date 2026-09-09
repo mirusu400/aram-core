@@ -1043,7 +1043,7 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 		case "org/kwis/msp/lcdui/Jlet":
 			return runtime.handleJletMethod(name, descriptor)
 		case "org/kwis/msp/lcdui/EventQueue":
-			return runtime.handleEventQueueMethod(name, descriptor)
+			return runtime.handleEventQueueMethod(ctx, name, descriptor)
 		case "org/kwis/msp/lcdui/DisplayProxy":
 			return runtime.handleDisplayMethod(ctx, name, descriptor)
 		case "org/kwis/msp/lcdui/InputMethodHandler":

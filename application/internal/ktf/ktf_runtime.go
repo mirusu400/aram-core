@@ -243,17 +243,21 @@ type Runtime struct {
 	// lwcTextInput is the keypad input method behind each editable LWC field.
 	// It holds only a half-composed glyph, which the next press rebuilds, so it
 	// is a live cache rather than part of the save state.
-	lwcTextInput     map[uint32]*ime.Automata
-	lwcComponents    map[uint32]*ktfLWCComponent
-	databases        map[uint32]*Database
-	DatabaseStores   map[string]*Database
-	defaultRuntime   uint32
-	DefaultDisplay   uint32
-	MainJlet         uint32
-	eventQueue       uint32
-	sharedBuffers    map[string]uint32
-	redispatchActive map[string]bool
-	DisplayCards     map[uint32]uint32
+	lwcTextInput       map[uint32]*ime.Automata
+	lwcComponents      map[uint32]*ktfLWCComponent
+	databases          map[uint32]*Database
+	DatabaseStores     map[string]*Database
+	defaultRuntime     uint32
+	DefaultDisplay     uint32
+	MainJlet           uint32
+	eventQueue         uint32
+	eventQueueEvents   []ktfJavaEvent
+	eventHooks         map[uint32]uint32
+	jletEventListeners []uint32
+	grabbedKeys        map[int32]uint32
+	sharedBuffers      map[string]uint32
+	redispatchActive   map[string]bool
+	DisplayCards       map[uint32]uint32
 	// mnInterface, mnGOT and mnContext belong to a relocatable MN module: the
 	// callback table it asked for, and the two callee-saved registers its code
 	// expects a caller to have set. See ktf_mn_module.go.
@@ -534,6 +538,8 @@ type ktfEnumeration struct {
 	values []uint32
 	index  uint32
 }
+
+type ktfJavaEvent [4]uint32
 
 type ktfClip struct {
 	volume   int32

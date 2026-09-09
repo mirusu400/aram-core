@@ -486,6 +486,21 @@ func (r *Runtime) nextJavaTaskIndex(limit int) (int, bool) {
 // faults with "event queue reached 1024". Keeping the two checks identical is
 // what stops the bus from ever holding an input it cannot deliver.
 func (r *Runtime) CanQueueKeyEvent() bool {
+	return r.canQueueCardKeyEvent()
+}
+
+// CanQueueKeyEventFor is the input gate used when the handset key is known.
+// A grabbed key bypasses the Card paint/key serialization because it is sent
+// directly to its JletEventListener; an ordinary key still has to wait for the
+// visible Card.
+func (r *Runtime) CanQueueKeyEventFor(key int32) bool {
+	if r.grabbedKeys[key] != 0 {
+		return r.HasJavaTaskCapacity()
+	}
+	return r.canQueueCardKeyEvent()
+}
+
+func (r *Runtime) canQueueCardKeyEvent() bool {
 	card := r.DisplayCards[r.DefaultDisplay]
 	if card == 0 || r.pendingKeyTask(card) != nil ||
 		r.pendingWIPICTimerTask() != nil ||
@@ -499,7 +514,31 @@ func (r *Runtime) CanQueueKeyEvent() bool {
 }
 
 func (r *Runtime) QueueKeyEvent(pressed bool, key int32) (bool, error) {
-	if !r.CanQueueKeyEvent() {
+	if listener := r.grabbedKeys[key]; listener != 0 {
+		if !r.HasJavaTaskCapacity() {
+			return false, nil
+		}
+		eventType := KeyReleased
+		if pressed {
+			eventType = KeyPressed
+		}
+		if err := r.queueJletEventListener(listener, ktfJavaEvent{
+			1,
+			eventType,
+			uint32(key),
+			0,
+		}); err != nil {
+			return false, err
+		}
+		r.tracef(
+			"java_key_event_grabbed:type=%d:key=%d:listener=0x%08x",
+			eventType,
+			key,
+			listener,
+		)
+		return true, nil
+	}
+	if !r.canQueueCardKeyEvent() {
 		return false, nil
 	}
 	card := r.DisplayCards[r.DefaultDisplay]
@@ -582,6 +621,13 @@ func (r *Runtime) CanAwaitEvents() bool {
 	return !r.terminationRequested &&
 		r.DefaultDisplay != 0 &&
 		r.DisplayCards[r.DefaultDisplay] != 0
+}
+
+// CanAwaitKeyEvent reports whether a physical key still has a Java recipient.
+// A system-level grab remains a recipient even when no Card is docked.
+func (r *Runtime) CanAwaitKeyEvent(key int32) bool {
+	return !r.terminationRequested &&
+		(r.grabbedKeys[key] != 0 || r.CanAwaitEvents())
 }
 
 func (r *Runtime) requestJavaTermination(instance uint32) {

@@ -390,6 +390,10 @@ type ktfMetadataSnapshot struct {
 	DefaultDisplay           uint32
 	MainJlet                 uint32
 	EventQueue               uint32
+	EventQueueEvents         []ktfJavaEvent
+	EventHooks               map[uint32]uint32
+	JletEventListeners       []uint32
+	GrabbedKeys              map[int32]uint32
 	SharedBuffers            map[string]uint32
 	DisplayCards             map[uint32]uint32
 	ThreadTargets            map[uint32]uint32
@@ -978,6 +982,10 @@ func snapshotKTFMetadata(
 		DefaultDisplay:           r.DefaultDisplay,
 		MainJlet:                 r.MainJlet,
 		EventQueue:               r.eventQueue,
+		EventQueueEvents:         append([]ktfJavaEvent(nil), r.eventQueueEvents...),
+		EventHooks:               guest.CloneMap(r.eventHooks),
+		JletEventListeners:       append([]uint32(nil), r.jletEventListeners...),
+		GrabbedKeys:              guest.CloneMap(r.grabbedKeys),
 		SharedBuffers:            guest.CloneMap(r.sharedBuffers),
 		DisplayCards:             guest.CloneMap(r.DisplayCards),
 		ThreadTargets:            guest.CloneMap(r.ThreadTargets),
