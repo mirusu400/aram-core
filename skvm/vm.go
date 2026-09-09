@@ -519,7 +519,7 @@ func hostInterfaces(class string) []string {
 
 func isHostInterface(class string) bool {
 	switch class {
-	case "java/io/DataInput", "java/io/DataOutput", "java/lang/Runnable",
+	case "java/io/DataInput", "java/io/DataOutput", "java/lang/Runnable", "java/lang/Cloneable",
 		"java/util/Enumeration", "javax/microedition/io/Connection",
 		"javax/microedition/io/ContentConnection",
 		"javax/microedition/io/Datagram",
@@ -1162,6 +1162,8 @@ func defaultHostSupers() map[string]string {
 		"java/lang/IllegalAccessException":                     "java/lang/Exception",
 		"java/lang/InstantiationException":                     "java/lang/Exception",
 		"java/lang/InterruptedException":                       "java/lang/Exception",
+		"java/lang/Cloneable":                                  "java/lang/Object",
+		"java/lang/CloneNotSupportedException":                 "java/lang/Exception",
 		"java/lang/NoClassDefFoundError":                       "java/lang/Error",
 		"java/util/NoSuchElementException":                     "java/lang/RuntimeException",
 		"java/util/EmptyStackException":                        "java/lang/RuntimeException",

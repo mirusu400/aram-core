@@ -45,4 +45,8 @@ func TestCLDCCalendarUsesConfiguredFixedOffset(t *testing.T) {
 	if got := mustInt(t, offset); got != 9*60*60*1000 {
 		t.Fatalf("TimeZone.getRawOffset() = %d", got)
 	}
+	defaultZone := mustReference(t, invokeTestNative(t, vm, "java/util/TimeZone", "getDefault", "()Ljava/util/TimeZone;", 0))
+	if got := mustStringValue(t, vm, invokeTestNative(t, vm, "java/util/TimeZone", "getID", "()Ljava/lang/String;", defaultZone)); got != "GMT+09:00" {
+		t.Fatalf("default timezone = %q", got)
+	}
 }

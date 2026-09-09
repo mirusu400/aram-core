@@ -50,7 +50,13 @@ func (vm *VM) installCLDCObjectExtras() {
 		if !ok {
 			return Value{}, false, fmt.Errorf("invalid clone receiver")
 		}
-		clone := vm.NewObject(object.Class, object.Native)
+		if object.Array == nil && !vm.classAssignable(object.Class, "java/lang/Cloneable") {
+			return Value{}, false, vm.newThrowable("java/lang/CloneNotSupportedException", object.Class)
+		}
+		if object.Array == nil && object.Native != nil {
+			return Value{}, false, vm.newThrowable("java/lang/CloneNotSupportedException", object.Class)
+		}
+		clone := vm.NewObject(object.Class, nil)
 		copyObject, _ := vm.Object(clone)
 		for name, value := range object.Fields {
 			copyObject.Fields[name] = value

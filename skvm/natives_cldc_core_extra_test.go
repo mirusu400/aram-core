@@ -1,6 +1,9 @@
 package skvm
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestCLDCIntegralWrappersAndRadixFormatting(t *testing.T) {
 	vm, err := New(map[string][]byte{})
@@ -44,5 +47,25 @@ func TestCLDCRandomBoundedValues(t *testing.T) {
 		if got < 0 || got >= 7 {
 			t.Fatalf("Random.nextInt(7) = %d", got)
 		}
+	}
+}
+
+func TestCLDCObjectCloneCopiesArraysAndRejectsOrdinaryObjects(t *testing.T) {
+	vm, err := New(map[string][]byte{})
+	check(t, err)
+	source := vm.NewByteArray([]byte{1, 2, 3})
+	clone := mustReference(t, invokeTestNative(t, vm, "java/lang/Object", "clone", "()Ljava/lang/Object;", source))
+	cloneObject, _ := vm.Object(clone)
+	cloneObject.Array.Elements[0] = IntValue(9)
+	original, err := vm.ByteArray(source)
+	check(t, err)
+	if original[0] != 1 {
+		t.Fatalf("array clone aliased source: %v", original)
+	}
+	plain := vm.NewObject("java/lang/Object", nil)
+	native := vm.natives[nativeKey{"java/lang/Object", "clone", "()Ljava/lang/Object;"}]
+	_, _, err = native(context.Background(), vm, plain, nil)
+	if thrown, ok := err.(*thrown); !ok || thrown.class != "java/lang/CloneNotSupportedException" {
+		t.Fatalf("plain Object clone error = %v", err)
 	}
 }

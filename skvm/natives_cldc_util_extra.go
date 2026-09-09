@@ -410,12 +410,27 @@ func (vm *VM) installCLDCDateExtras() {
 		if err != nil {
 			return Value{}, false, err
 		}
-		return ReferenceValue(vm.NewString(time.UnixMilli(state.millis).UTC().Format("Mon Jan 02 15:04:05 GMT 2006"))), true, nil
+		offset := int(vm.services.Device.Config().TimezoneMins) * 60
+		identifier := formatGMTOffset(offset)
+		location := time.FixedZone(identifier, offset)
+		return ReferenceValue(vm.NewString(time.UnixMilli(state.millis).In(location).Format("Mon Jan 02 15:04:05 MST 2006"))), true, nil
 	})
 }
 
 func (vm *VM) defaultTimeZone() uint32 {
-	return vm.NewObject("java/util/TimeZone", "GMT")
+	return vm.NewObject("java/util/TimeZone", formatGMTOffset(int(vm.services.Device.Config().TimezoneMins)*60))
+}
+
+func formatGMTOffset(seconds int) string {
+	if seconds == 0 {
+		return "GMT"
+	}
+	sign := '+'
+	if seconds < 0 {
+		sign = '-'
+		seconds = -seconds
+	}
+	return fmt.Sprintf("GMT%c%02d:%02d", sign, seconds/3600, seconds%3600/60)
 }
 
 func (vm *VM) calendarZone(reference uint32) uint32 {
@@ -711,7 +726,16 @@ func (vm *VM) calendarSetField(reference uint32, field, set int32) error {
 
 func (vm *VM) installCLDCTimeZoneExtras() {
 	vm.RegisterNative("java/util/TimeZone", "getAvailableIDs", "()[Ljava/lang/String;", func(_ context.Context, vm *VM, _ uint32, _ []Value) (Value, bool, error) {
-		values := []Value{ReferenceValue(vm.NewString("GMT")), ReferenceValue(vm.NewString("GMT+09:00"))}
+		identifiers := []string{"GMT", "GMT+09:00", formatGMTOffset(int(vm.services.Device.Config().TimezoneMins) * 60)}
+		seen := make(map[string]struct{})
+		values := make([]Value, 0, len(identifiers))
+		for _, identifier := range identifiers {
+			if _, ok := seen[identifier]; ok {
+				continue
+			}
+			seen[identifier] = struct{}{}
+			values = append(values, ReferenceValue(vm.NewString(identifier)))
+		}
 		return ReferenceValue(vm.newArray("[Ljava/lang/String;", values)), true, nil
 	})
 	vm.RegisterNative("java/util/TimeZone", "getAvailableIDs", "(I)[Ljava/lang/String;", func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
