@@ -479,6 +479,11 @@ func hostInterfaces(class string) []string {
 		"javax/microedition/io/DatagramConnection",
 		"javax/microedition/io/StreamConnectionNotifier":
 		return []string{"javax/microedition/io/Connection"}
+	case "javax/microedition/media/Player":
+		return []string{"javax/microedition/media/Controllable"}
+	case "javax/microedition/media/control/ToneControl",
+		"javax/microedition/media/control/VolumeControl":
+		return []string{"javax/microedition/media/Control"}
 	case "javax/microedition/io/SocketConnection":
 		return []string{"javax/microedition/io/StreamConnection"}
 	case "javax/microedition/io/HttpConnection":
@@ -518,7 +523,13 @@ func isHostInterface(class string) bool {
 		"javax/microedition/lcdui/Choice",
 		"javax/microedition/lcdui/CommandListener",
 		"javax/microedition/lcdui/ItemCommandListener",
-		"javax/microedition/lcdui/ItemStateListener":
+		"javax/microedition/lcdui/ItemStateListener",
+		"javax/microedition/media/Control",
+		"javax/microedition/media/Controllable",
+		"javax/microedition/media/Player",
+		"javax/microedition/media/PlayerListener",
+		"javax/microedition/media/control/ToneControl",
+		"javax/microedition/media/control/VolumeControl":
 		return true
 	default:
 		return false
@@ -687,6 +698,47 @@ func (vm *VM) Advance(
 				"()V",
 			); err != nil {
 				return err
+			}
+			continue
+		}
+		if event.Kind == shared.EventAudioComplete {
+			for reference, object := range vm.heap {
+				if object.Class != "javax/microedition/media/Player" {
+					continue
+				}
+				clip, ok := object.Native.(*audioClipState)
+				if !ok || clip.clip != event.ServiceID {
+					continue
+				}
+				state, _ := object.Fields[playerStateField].Int()
+				if state == playerStarted {
+					object.Fields[playerStateField] = IntValue(playerPrefetched)
+				}
+				if listenersValue, ok := object.Fields[playerListenersField]; ok {
+					listenersReference, _ := listenersValue.Reference()
+					listenersObject, _ := vm.Object(listenersReference)
+					if listenersObject != nil && listenersObject.Array != nil {
+						for _, listenerValue := range listenersObject.Array.Elements {
+							listener, _ := listenerValue.Reference()
+							if listener == 0 {
+								continue
+							}
+							_, _, invokeErr := vm.InvokeVirtual(
+								ctx,
+								listener,
+								"playerUpdate",
+								"(Ljavax/microedition/media/Player;Ljava/lang/String;Ljava/lang/Object;)V",
+								ReferenceValue(reference),
+								ReferenceValue(vm.NewString("endOfMedia")),
+								ReferenceValue(0),
+							)
+							if invokeErr != nil && !errors.Is(invokeErr, ErrMethodNotFound) {
+								return invokeErr
+							}
+						}
+					}
+				}
+				break
 			}
 			continue
 		}
@@ -998,6 +1050,14 @@ func defaultHostSupers() map[string]string {
 		"javax/microedition/lcdui/game/LayerManager":        "java/lang/Object",
 		"javax/microedition/lcdui/game/Sprite":              "javax/microedition/lcdui/game/Layer",
 		"javax/microedition/lcdui/game/TiledLayer":          "javax/microedition/lcdui/game/Layer",
+		"javax/microedition/media/Control":                  "java/lang/Object",
+		"javax/microedition/media/Controllable":             "java/lang/Object",
+		"javax/microedition/media/Manager":                  "java/lang/Object",
+		"javax/microedition/media/MediaException":           "java/lang/Exception",
+		"javax/microedition/media/Player":                   "java/lang/Object",
+		"javax/microedition/media/PlayerListener":           "java/lang/Object",
+		"javax/microedition/media/control/ToneControl":      "java/lang/Object",
+		"javax/microedition/media/control/VolumeControl":    "java/lang/Object",
 		"javax/microedition/rms/RecordStore":                "java/lang/Object",
 		"com/skt/m/AudioClip":                               "java/lang/Object",
 		"com/skt/m/Graphics2D":                              "java/lang/Object",
