@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/draw"
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
@@ -509,6 +512,8 @@ func (r *Runtime) handleLWCMethod(
 		return 0, nil
 	case "setBackground(I)V":
 		state.background = registers[2]
+		state.backgroundSet = true
+		r.markLWCRepaint(instance)
 		return 0, nil
 	case "getBackground()I":
 		return state.background, nil
@@ -844,10 +849,13 @@ func (r *Runtime) handleLWCMethod(
 			)
 		}
 		return 0, nil
-	case "paint(Lorg/kwis/msp/lcdui/Graphics;)V",
-		"paintContent(Lorg/kwis/msp/lcdui/Graphics;)V",
-		"paintFrame(Lorg/kwis/msp/lcdui/Graphics;)V",
-		"setParameter()V":
+	case "paint(Lorg/kwis/msp/lcdui/Graphics;)V":
+		return 0, r.paintLWCTree(instance, registers[2])
+	case "paintContent(Lorg/kwis/msp/lcdui/Graphics;)V":
+		return 0, r.paintLWCContent(instance, registers[2])
+	case "paintFrame(Lorg/kwis/msp/lcdui/Graphics;)V":
+		return 0, r.paintLWCFrame(instance, registers[2])
+	case "setParameter()V":
 		return 0, nil
 	case "controlInset(Z)V", "useFrame(Z)V":
 		state.framed = registers[2] != 0
@@ -1419,6 +1427,220 @@ func (r *Runtime) lwcTraversalComponent(instance uint32, direction int) uint32 {
 		}
 	}
 	return 0
+}
+
+func (r *Runtime) paintLWCTree(instance, graphics uint32) error {
+	return r.paintLWCTreeSeen(instance, graphics, make(map[uint32]bool))
+}
+
+func (r *Runtime) paintLWCTreeSeen(
+	instance, graphics uint32,
+	seen map[uint32]bool,
+) error {
+	if instance == 0 || seen[instance] || !r.lwcIsShown(instance) {
+		return nil
+	}
+	seen[instance] = true
+	if err := r.paintLWCContent(instance, graphics); err != nil {
+		return err
+	}
+	for _, child := range r.lwcChildren[instance] {
+		if err := r.paintLWCTreeSeen(child, graphics, seen); err != nil {
+			return err
+		}
+	}
+	return r.paintLWCFrame(instance, graphics)
+}
+
+func (r *Runtime) paintLWCContent(instance, graphics uint32) error {
+	graphicsState := r.Graphics[graphics]
+	if graphicsState == nil || graphicsState.Target == nil ||
+		!r.lwcIsShown(instance) {
+		return nil
+	}
+	state := r.lwcComponent(instance)
+	if !state.valid {
+		r.layoutLWC(instance)
+	}
+	rect := r.lwcGraphicsRectangle(instance, graphicsState)
+	clip := rect.Intersect(graphicsState.clip).Intersect(graphicsState.drawable())
+	if clip.Empty() {
+		return nil
+	}
+	savedClip, savedColor := graphicsState.clip, graphicsState.color
+	graphicsState.clip = clip
+	defer func() {
+		graphicsState.clip = savedClip
+		graphicsState.color = savedColor
+	}()
+
+	directDraw := false
+	if state.backgroundSet && state.background != ^uint32(0) {
+		draw.Draw(
+			graphicsState.Target,
+			clip,
+			image.NewUniform(lwcColor(state.background)),
+			image.Point{},
+			draw.Src,
+		)
+		directDraw = true
+	}
+
+	className := r.lwcClassName(instance)
+	if state.image != 0 {
+		if source := r.images[state.image]; source != nil {
+			x, y, anchor := lwcAlignedPoint(state)
+			screenX, screenY := r.lwcScreenPosition(instance)
+			r.drawKTFJavaImage(
+				graphicsState,
+				state.image,
+				source,
+				int(screenX+x),
+				int(screenY+y),
+				anchor,
+			)
+		}
+	}
+	if className == "org/kwis/msp/lwc/ProgressComponent" && state.progressMax > 0 {
+		width := int64(max(state.width-4, 0)) * int64(state.progressValue) /
+			int64(state.progressMax)
+		bar := image.Rect(rect.Min.X+2, rect.Min.Y+2, rect.Min.X+2+int(width), rect.Max.Y-2)
+		draw.Draw(
+			graphicsState.Target,
+			bar.Intersect(clip),
+			image.NewUniform(lwcColor(state.foreground)),
+			image.Point{},
+			draw.Src,
+		)
+		directDraw = true
+	}
+	if className == "org/kwis/msp/lwc/CheckboxComponent" {
+		box := image.Rect(rect.Min.X+2, rect.Min.Y+2, rect.Min.X+11, rect.Min.Y+11)
+		previous := graphicsState.color
+		graphicsState.color = lwcColor(state.foreground)
+		r.drawGraphicsRectangle(graphicsState, box)
+		if state.selected {
+			r.drawGraphicsLine(graphicsState, box.Min.X+2, box.Min.Y+4, box.Min.X+4, box.Max.Y-3)
+			r.drawGraphicsLine(graphicsState, box.Min.X+4, box.Max.Y-3, box.Max.X-2, box.Min.Y+2)
+		}
+		graphicsState.color = previous
+		directDraw = true
+	}
+
+	if text := r.lwcPaintText(instance, className); text != "" {
+		x, y, anchor := lwcAlignedPoint(state)
+		if className == "org/kwis/msp/lwc/CheckboxComponent" && state.layout&7 == 0 {
+			x += 12
+		}
+		screenX, screenY := r.lwcScreenPosition(instance)
+		graphicsState.color = lwcColor(state.foreground)
+		if err := r.drawGraphicsTextShared(
+			graphicsState,
+			text,
+			int(screenX+x),
+			int(screenY+y),
+			anchor,
+		); err != nil {
+			return err
+		}
+	}
+	if directDraw {
+		r.markKTFGraphicsDirty(graphicsState)
+	}
+	return nil
+}
+
+func (r *Runtime) paintLWCFrame(instance, graphics uint32) error {
+	graphicsState := r.Graphics[graphics]
+	state := r.lwcComponent(instance)
+	if graphicsState == nil || graphicsState.Target == nil || !state.framed ||
+		!r.lwcIsShown(instance) {
+		return nil
+	}
+	rect := r.lwcGraphicsRectangle(instance, graphicsState)
+	savedClip, savedColor := graphicsState.clip, graphicsState.color
+	graphicsState.clip = rect.Intersect(savedClip).Intersect(graphicsState.drawable())
+	graphicsState.color = lwcColor(state.foreground)
+	r.drawGraphicsRectangle(graphicsState, rect)
+	graphicsState.clip, graphicsState.color = savedClip, savedColor
+	r.markKTFGraphicsDirty(graphicsState)
+	return nil
+}
+
+func (r *Runtime) lwcGraphicsRectangle(
+	instance uint32,
+	graphics *ktfGraphics,
+) image.Rectangle {
+	state := r.lwcComponent(instance)
+	x, y := r.lwcScreenPosition(instance)
+	offset := graphics.offset()
+	left, top := int(x)+offset.X, int(y)+offset.Y
+	return image.Rect(left, top, left+int(state.width), top+int(state.height))
+}
+
+func (r *Runtime) lwcClassName(instance uint32) string {
+	words, err := r.ReadWords(instance, 2)
+	if err != nil {
+		return ""
+	}
+	class, err := r.InspectJavaClass(words[1])
+	if err != nil {
+		return ""
+	}
+	return class.Name
+}
+
+func (r *Runtime) lwcPaintText(instance uint32, className string) string {
+	state := r.lwcComponent(instance)
+	switch className {
+	case "org/kwis/msp/lwc/ComboComponent", "org/kwis/msp/lwc/ListComponent":
+		items := r.Vectors[instance]
+		if state.activeIndex >= 0 && int(state.activeIndex) < len(items) {
+			return r.javaStringValue(items[state.activeIndex])
+		}
+	case "org/kwis/msp/lwc/DateFieldComponent":
+		if state.date != 0 {
+			moment := time.UnixMilli(r.dates[state.date]).UTC()
+			if state.mode == 2 {
+				return moment.Format("15:04")
+			}
+			if state.mode == 3 {
+				return moment.Format("2006/01/02 15:04")
+			}
+			return moment.Format("2006/01/02")
+		}
+	}
+	if state.text != 0 {
+		return r.javaStringValue(state.text)
+	}
+	return ""
+}
+
+func lwcColor(value uint32) color.RGBA {
+	return color.RGBA{
+		R: uint8(value >> 16),
+		G: uint8(value >> 8),
+		B: uint8(value),
+		A: 0xff,
+	}
+}
+
+func lwcAlignedPoint(state *ktfLWCComponent) (int32, int32, uint32) {
+	x, y := int32(2), int32(2)
+	anchor := uint32(4 | 16) // Graphics.LEFT | Graphics.TOP.
+	switch {
+	case state.layout&2 != 0:
+		x, anchor = state.width-2, anchor&^4|8
+	case state.layout&4 != 0:
+		x, anchor = state.width/2, anchor&^4|1
+	}
+	switch {
+	case state.layout&16 != 0:
+		y, anchor = state.height-2, anchor&^16|32
+	case state.layout&32 != 0:
+		y, anchor = state.height/2, anchor&^16|2
+	}
+	return x, y, anchor
 }
 
 func (r *Runtime) markLWCRepaint(instance uint32) {

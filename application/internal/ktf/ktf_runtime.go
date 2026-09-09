@@ -830,6 +830,7 @@ type ktfLWCComponent struct {
 	shown           bool
 	valid           bool
 	focused         bool
+	backgroundSet   bool
 	vertical        bool
 	packed          bool
 	framed          bool

@@ -227,7 +227,7 @@ type ktfLWCSnapshot struct {
 	GrabbedKeys                                         []int32
 	Mode, Layout, Minimum, ViewAmount                   int32
 	ChangeAmount, Delay, ActiveIndex                    int32
-	Shown, Valid, Focused                               bool
+	Shown, Valid, Focused, BackgroundSet                bool
 	Vertical, Packed, Framed, CommandGrabs, Annunciator bool
 	Transparent, ProgressInput, Selected                bool
 }
@@ -1344,7 +1344,8 @@ func snapshotKTFLWC(value *ktfLWCComponent) ktfLWCSnapshot {
 		Command: value.command, Work: value.work, Focus: value.focus,
 		Text: value.text, Gap: value.gap, Shown: value.shown,
 		Valid: value.valid, Focused: value.focused,
-		Vertical: value.vertical, Packed: value.packed,
+		BackgroundSet: value.backgroundSet,
+		Vertical:      value.vertical, Packed: value.packed,
 		Annunciator: value.annunciator, Transparent: value.transparent,
 		ProgressValue: value.progressValue,
 		ProgressMax:   value.progressMax, ProgressStep: value.progressStep,

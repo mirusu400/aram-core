@@ -2,6 +2,9 @@ package ktf
 
 import (
 	"context"
+	"image"
+	"image/color"
+	"image/draw"
 	"testing"
 )
 
@@ -84,6 +87,47 @@ func TestKTFLWCLayoutFrameAndTraversal(t *testing.T) {
 	)
 	if err == nil || runtime.LastJavaThrowName != "java/lang/IllegalArgumentException" {
 		t.Fatalf("conflicting layout error=%v exception=%q", err, runtime.LastJavaThrowName)
+	}
+}
+
+func TestKTFLWCPaintContentAndFrameClipToComponent(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	component := newHostObject(t, runtime, "org/kwis/msp/lwc/LabelComponent")
+	graphics := newHostObject(t, runtime, "org/kwis/msp/lcdui/Graphics")
+	target := image.NewRGBA(image.Rect(0, 0, 20, 20))
+	draw.Draw(target, target.Bounds(), image.NewUniform(color.RGBA{R: 0xff, A: 0xff}), image.Point{}, draw.Src)
+	runtime.Graphics[graphics] = &ktfGraphics{
+		Target: target,
+		clip:   target.Bounds(),
+		color:  color.RGBA{A: 0xff},
+	}
+	state := runtime.lwcComponent(component)
+	runtime.configureLWC(state, 3, 4, 8, 6)
+	state.background = 0x0000ff
+	state.backgroundSet = true
+	state.foreground = 0x00ff00
+	state.framed = true
+
+	_, err := runtime.handleLWCMethod(
+		context.Background(),
+		"org/kwis/msp/lwc/LabelComponent",
+		"paint",
+		"(Lorg/kwis/msp/lcdui/Graphics;)V",
+		[]uint32{0, component, graphics},
+	)
+	check(t, err)
+	if got := color.RGBAModel.Convert(target.At(4, 5)).(color.RGBA); got.B != 0xff {
+		t.Fatalf("component interior = %#v, want blue background", got)
+	}
+	if got := color.RGBAModel.Convert(target.At(3, 4)).(color.RGBA); got.G != 0xff {
+		t.Fatalf("component frame = %#v, want green", got)
+	}
+	if got := color.RGBAModel.Convert(target.At(2, 4)).(color.RGBA); got.R != 0xff || got.G != 0 || got.B != 0 {
+		t.Fatalf("pixel outside component changed: %#v", got)
+	}
+	if !runtime.Graphics[graphics].PixelsDirty {
+		t.Fatal("LWC paint did not mark Graphics pixels dirty")
 	}
 }
 
