@@ -718,6 +718,9 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 		if index < len(saved.taskJoinThreads) {
 			r.Tasks[index].joinThread = saved.taskJoinThreads[index]
 		}
+		if index < len(saved.taskMonitorWait) {
+			r.Tasks[index].monitorWait = saved.taskMonitorWait[index]
+		}
 	}
 	for index, task := range meta.Tasks {
 		if task.StartBlocker >= 0 {

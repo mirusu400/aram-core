@@ -19,7 +19,8 @@ const (
 	ktfStateSchemaV6     = uint32(6)
 	ktfStateSchemaV7     = uint32(7)
 	ktfStateSchemaV8     = uint32(8)
-	ktfStateSchema       = uint32(9)
+	ktfStateSchemaV9     = uint32(9)
+	ktfStateSchema       = uint32(10)
 	maxKTFStateMetadata  = uint32(64 << 20)
 	maxKTFStateEntries   = 16_384
 	maxKTFStateHostCalls = int(HostSize / 4)
@@ -50,6 +51,7 @@ type SavedState struct {
 	// An older save has none and its tasks fall back to the Jlet's thread.
 	taskThreads     []uint32
 	taskJoinThreads []uint32
+	taskMonitorWait []uint32
 	wipicInputModes uint32
 }
 
@@ -629,6 +631,11 @@ func WriteState(r *Runtime, backend cpu.Backend, started bool, writer *guest.Sta
 	for _, task := range r.Tasks {
 		writer.U32(task.joinThread)
 	}
+	// Object.wait() is also scheduler state, including indefinite waits whose
+	// WakeAtMS is zero.
+	for _, task := range r.Tasks {
+		writer.U32(task.monitorWait)
+	}
 	return nil
 }
 
@@ -665,7 +672,7 @@ func ParseState(r *Runtime,
 	if schema != ktfStateSchemaV2 && schema != ktfStateSchemaV3 &&
 		schema != ktfStateSchemaV4 && schema != ktfStateSchemaV5 &&
 		schema != ktfStateSchemaV6 && schema != ktfStateSchemaV7 &&
-		schema != ktfStateSchemaV8 &&
+		schema != ktfStateSchemaV8 && schema != ktfStateSchemaV9 &&
 		schema != ktfStateSchema {
 		return nil, decoder.Fail(fmt.Sprintf("unsupported KTF state schema %d", schema))
 	}
@@ -852,10 +859,20 @@ func ParseState(r *Runtime,
 		}
 	}
 	var taskJoinThreads []uint32
-	if schema >= ktfStateSchema {
+	if schema >= ktfStateSchemaV9 {
 		taskJoinThreads = make([]uint32, len(metadata.Tasks))
 		for index := range taskJoinThreads {
 			taskJoinThreads[index] = decoder.U32()
+		}
+		if decoder.Err != nil {
+			return nil, decoder.Err
+		}
+	}
+	var taskMonitorWait []uint32
+	if schema >= ktfStateSchema {
+		taskMonitorWait = make([]uint32, len(metadata.Tasks))
+		for index := range taskMonitorWait {
+			taskMonitorWait[index] = decoder.U32()
 		}
 		if decoder.Err != nil {
 			return nil, decoder.Err
@@ -909,6 +926,7 @@ func ParseState(r *Runtime,
 		imagePixels:        imagePixels,
 		taskThreads:        taskThreads,
 		taskJoinThreads:    taskJoinThreads,
+		taskMonitorWait:    taskMonitorWait,
 		wipicInputModes:    wipicInputModes,
 	}, nil
 }

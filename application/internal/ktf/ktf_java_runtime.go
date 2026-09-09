@@ -312,6 +312,60 @@ func (r *Runtime) javaClassObjectTarget(object uint32) (uint32, error) {
 	return 0, fmt.Errorf("unknown KTF java.lang.Class instance 0x%08x", object)
 }
 
+func (r *Runtime) waitJavaObject(object uint32, millis int64, nanos int32) error {
+	if object == 0 {
+		return r.raiseHostJavaException("java/lang/NullPointerException")
+	}
+	if millis < 0 || nanos < 0 || nanos > 999_999 {
+		return r.raiseHostJavaException("java/lang/IllegalArgumentException")
+	}
+	if !r.DeferThreads || r.activeTask == nil {
+		return nil
+	}
+	delay := uint64(millis)
+	if nanos != 0 && delay != ^uint64(0) {
+		// Object.wait rounds a positive nanosecond remainder up to the next
+		// millisecond on the millisecond scheduler.
+		delay++
+	}
+	r.activeTask.monitorWait = object
+	r.activeTask.WakeAtMS = 0
+	if delay != 0 {
+		if delay > ^uint64(0)-r.TickMS {
+			r.activeTask.WakeAtMS = ^uint64(0)
+		} else {
+			r.activeTask.WakeAtMS = r.TickMS + delay
+		}
+	}
+	r.yieldRequested = true
+	r.tracef(
+		"java_object_wait:object=0x%08x:wake_at_ms=%d",
+		object,
+		r.activeTask.WakeAtMS,
+	)
+	return nil
+}
+
+func (r *Runtime) notifyJavaObject(object uint32, all bool) error {
+	if object == 0 {
+		return r.raiseHostJavaException("java/lang/NullPointerException")
+	}
+	woken := 0
+	for _, task := range r.Tasks {
+		if task == nil || task.Done || task.monitorWait != object {
+			continue
+		}
+		task.monitorWait = 0
+		task.WakeAtMS = 0
+		woken++
+		if !all {
+			break
+		}
+	}
+	r.tracef("java_object_notify:object=0x%08x:all=%t:woken=%d", object, all, woken)
+	return nil
+}
+
 const (
 	ktfThreadPriorityFieldOffset = uint32(4)
 	ktfThreadStateFieldOffset    = uint32(8)

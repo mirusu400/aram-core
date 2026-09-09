@@ -905,7 +905,10 @@ type Task struct {
 	javaThread uint32
 	// joinThread parks this task until the named java/lang/Thread no longer
 	// has a live or pending run() execution.
-	joinThread      uint32
+	joinThread uint32
+	// monitorWait is the Object whose wait() call parked this task. A zero
+	// WakeAtMS means an indefinite wait; a nonzero value is its timeout.
+	monitorWait     uint32
 	Done            bool
 	presentOnReturn bool
 	bestEffortPaint bool

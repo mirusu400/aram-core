@@ -2093,6 +2093,11 @@ func TestKTFObjectWaitYieldsDeferredThread(t *testing.T) {
 	runtime.JvmContext = allocWords(t, runtime, 3+128)
 	classAddress := ensureClass(t, runtime, "java/lang/Object")
 	class := inspectClass(t, runtime, classAddress)
+	object := newHostObject(t, runtime, "java/lang/Object")
+	task := &Task{}
+	runtime.Tasks = []*Task{task}
+	runtime.activeTask = task
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, object))
 	wait, ok := findKTFJavaMethod(class, "wait", "()V")
 	if !ok {
 		t.Fatal("Object.wait() host method is missing")
@@ -2108,8 +2113,12 @@ func TestKTFObjectWaitYieldsDeferredThread(t *testing.T) {
 	if !runtime.yieldRequested {
 		t.Fatal("Object.wait() did not request a deferred-thread yield")
 	}
+	if task.monitorWait != object {
+		t.Fatalf("Object.wait() monitor = 0x%08x, want 0x%08x", task.monitorWait, object)
+	}
 	for _, descriptor := range []string{"(J)V", "(JI)V", "()V"} {
 		runtime.yieldRequested = false
+		task.monitorWait = 0
 		override, ok := ktfJavaNativeOverride(
 			"java/lang/Object.wait" + descriptor,
 		)

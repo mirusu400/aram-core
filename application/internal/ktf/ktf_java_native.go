@@ -805,12 +805,21 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 		switch className {
 		case "java/lang/Object":
 			switch name + descriptor {
-			case "<init>()V", "notify()V", "notifyAll()V", "finalize()V":
+			case "<init>()V", "finalize()V":
 				return 0, nil
-			case "wait(J)V", "wait(JI)V", "wait()V":
-				if runtime.DeferThreads {
-					runtime.yieldRequested = true
+			case "notify()V":
+				return 0, runtime.notifyJavaObject(registers[1], false)
+			case "notifyAll()V":
+				return 0, runtime.notifyJavaObject(registers[1], true)
+			case "wait()V":
+				return 0, runtime.waitJavaObject(registers[1], 0, 0)
+			case "wait(J)V", "wait(JI)V":
+				millis := int64(uint64(registers[3])<<32 | uint64(registers[2]))
+				nanos := int32(0)
+				if descriptor == "(JI)V" {
+					nanos = int32(registers[4])
 				}
+				return 0, runtime.waitJavaObject(registers[1], millis, nanos)
 				return 0, nil
 			case "getClass()Ljava/lang/Class;":
 				if registers[1] == 0 {
@@ -887,6 +896,7 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 					runtime.monotonicReadMS(),
 				), nil
 			case "gc()V":
+				runtime.collectJavaHeap()
 				return 0, nil
 			case "getProperty(Ljava/lang/String;)Ljava/lang/String;":
 				if registers[1] == 0 {

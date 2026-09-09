@@ -226,3 +226,76 @@ func TestKTFJavaThreadCannotStartTwice(t *testing.T) {
 		t.Fatalf("second Thread.start error=%v exception=%q", err, runtime.LastJavaThrowName)
 	}
 }
+
+func TestKTFJavaObjectWaitTimeoutAndNotifyUseScheduler(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	runtime.DeferThreads = true
+	runtime.TickMS = 100
+	monitor := newHostObject(t, runtime, "java/lang/Object")
+	first := &Task{}
+	second := &Task{}
+	runtime.Tasks = []*Task{first, second}
+	runtime.activeTask = first
+
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, monitor))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 10))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, 0))
+	_, err := HostJavaMethod("java/lang/Object", "wait", "(J)V")(
+		context.Background(),
+		runtime,
+	)
+	check(t, err)
+	if first.monitorWait != monitor || first.WakeAtMS != 110 || !runtime.yieldRequested {
+		t.Fatalf(
+			"timed wait monitor=0x%08x wake=%d yield=%t",
+			first.monitorWait,
+			first.WakeAtMS,
+			runtime.yieldRequested,
+		)
+	}
+	if next := runtime.nextRunnableTask(); next != second {
+		t.Fatalf("timed waiter ran before timeout: %p", next)
+	}
+	runtime.TickMS = 110
+	runtime.taskCursor = 0
+	if next := runtime.nextRunnableTask(); next != first {
+		t.Fatalf("timed waiter did not resume at deadline: %p", next)
+	}
+	if first.monitorWait != 0 || first.WakeAtMS != 0 {
+		t.Fatalf("expired wait retained monitor=0x%08x wake=%d", first.monitorWait, first.WakeAtMS)
+	}
+
+	first.monitorWait = monitor
+	second.monitorWait = monitor
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, monitor))
+	_, err = HostJavaMethod("java/lang/Object", "notify", "()V")(
+		context.Background(),
+		runtime,
+	)
+	check(t, err)
+	if first.monitorWait != 0 || second.monitorWait != monitor {
+		t.Fatalf("notify woke wrong number of waiters: first=0x%08x second=0x%08x", first.monitorWait, second.monitorWait)
+	}
+	_, err = HostJavaMethod("java/lang/Object", "notifyAll", "()V")(
+		context.Background(),
+		runtime,
+	)
+	check(t, err)
+	if second.monitorWait != 0 {
+		t.Fatalf("notifyAll retained waiter on 0x%08x", second.monitorWait)
+	}
+}
+
+func TestKTFJavaObjectWaitRejectsInvalidTimeout(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	err := runtime.waitJavaObject(1, -1, 0)
+	if err == nil || runtime.LastJavaThrowName != "java/lang/IllegalArgumentException" {
+		t.Fatalf("Object.wait(-1) error=%v exception=%q", err, runtime.LastJavaThrowName)
+	}
+	err = runtime.waitJavaObject(1, 0, 1_000_000)
+	if err == nil || runtime.LastJavaThrowName != "java/lang/IllegalArgumentException" {
+		t.Fatalf("Object.wait nanos error=%v exception=%q", err, runtime.LastJavaThrowName)
+	}
+}

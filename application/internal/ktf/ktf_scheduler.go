@@ -1501,9 +1501,10 @@ func (r *Runtime) nextRunnableTask() *Task {
 		}
 		if task.WakeAtMS != 0 && task.WakeAtMS <= r.TickMS {
 			task.WakeAtMS = 0
+			task.monitorWait = 0
 		}
 		if !task.Done && task.startBlocker == nil && task.joinThread == 0 &&
-			task.WakeAtMS == 0 {
+			task.monitorWait == 0 && task.WakeAtMS == 0 {
 			r.taskCursor = (index + 1) % len(r.Tasks)
 			return task
 		}
@@ -1522,9 +1523,10 @@ func (r *Runtime) hasRunnableTask() bool {
 		}
 		if task.WakeAtMS != 0 && task.WakeAtMS <= r.TickMS {
 			task.WakeAtMS = 0
+			task.monitorWait = 0
 		}
 		if !task.Done && task.startBlocker == nil && task.joinThread == 0 &&
-			task.WakeAtMS == 0 {
+			task.monitorWait == 0 && task.WakeAtMS == 0 {
 			return true
 		}
 	}
