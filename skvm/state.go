@@ -382,7 +382,7 @@ func snapshotNative(
 		return nativeState{
 			Kind: "input-stream", Data: append([]byte(nil), state.data...),
 			Offset: int64(state.offset), Flag: state.closed,
-			Reference: state.connection,
+			Reference: state.connection, Integer: int32(state.mark),
 		}, nil
 	case *randomState:
 		return nativeState{Kind: "random", Text: state.stream}, nil
@@ -428,7 +428,15 @@ func snapshotNative(
 	case *audioClipState:
 		return nativeState{Kind: "audio-clip", Service: state.clip}, nil
 	case *inputStreamReaderState:
-		return nativeState{Kind: "input-stream-reader", Reference: state.stream}, nil
+		data := make([]byte, len(state.chars)*2)
+		for index, unit := range state.chars {
+			binary.BigEndian.PutUint16(data[index*2:], unit)
+		}
+		return nativeState{
+			Kind: "input-stream-reader", Reference: state.stream,
+			Text: string(state.encoding), Data: data, Offset: int64(state.offset),
+			Flag: state.closed, Integer: int32(boolToUint32(state.initialized)),
+		}, nil
 	case *imageState:
 		return nativeState{
 			Kind: "image", Width: int32(state.width), Height: int32(state.height),
@@ -901,12 +909,13 @@ func restoreNative(saved nativeState) (any, nativeLink, error) {
 	case "string-buffer":
 		return &stringBufferState{value: saved.Text}, nativeLink{}, nil
 	case "input-stream":
-		if saved.Offset < 0 || saved.Offset > int64(len(saved.Data)) {
+		if saved.Offset < 0 || saved.Offset > int64(len(saved.Data)) ||
+			saved.Integer < 0 || int(saved.Integer) > len(saved.Data) {
 			return nil, nativeLink{}, fmt.Errorf("invalid input stream offset")
 		}
 		return &inputStreamState{
 			data:   append([]byte(nil), saved.Data...),
-			offset: int(saved.Offset), closed: saved.Flag,
+			offset: int(saved.Offset), mark: int(saved.Integer), closed: saved.Flag,
 			connection: saved.Reference,
 		}, nativeLink{}, nil
 	case "random":
@@ -967,7 +976,24 @@ func restoreNative(saved nativeState) (any, nativeLink, error) {
 	case "audio-clip":
 		return &audioClipState{clip: saved.Service}, nativeLink{}, nil
 	case "input-stream-reader":
-		return &inputStreamReaderState{stream: saved.Reference}, nativeLink{}, nil
+		if len(saved.Data)%2 != 0 || saved.Offset < 0 ||
+			saved.Offset > int64(len(saved.Data)/2) ||
+			(saved.Integer != 0 && saved.Integer != 1) {
+			return nil, nativeLink{}, fmt.Errorf("invalid input stream reader state")
+		}
+		chars := make([]uint16, len(saved.Data)/2)
+		for index := range chars {
+			chars[index] = binary.BigEndian.Uint16(saved.Data[index*2:])
+		}
+		encoding := shared.TextEncoding(saved.Text)
+		if encoding == "" {
+			encoding = shared.EncodingEUCKR
+		}
+		return &inputStreamReaderState{
+			stream: saved.Reference, encoding: encoding, chars: chars,
+			offset: int(saved.Offset), initialized: saved.Integer != 0,
+			closed: saved.Flag,
+		}, nativeLink{}, nil
 	case "image":
 		if saved.Width <= 0 || saved.Height <= 0 {
 			return nil, nativeLink{}, fmt.Errorf("invalid image geometry")

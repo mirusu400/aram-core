@@ -378,18 +378,6 @@ func nativeReaderRead(
 	receiver uint32,
 	args []Value,
 ) (Value, bool, error) {
-	object, ok := vm.Object(receiver)
-	if !ok {
-		return Value{}, false, fmt.Errorf("invalid InputStreamReader")
-	}
-	reader, ok := object.Native.(*inputStreamReaderState)
-	if !ok {
-		return Value{}, false, fmt.Errorf("invalid InputStreamReader state")
-	}
-	stream, err := vm.inputStream(reader.stream)
-	if err != nil {
-		return Value{}, false, err
-	}
 	destinationReference, err := referenceArgument(args, 0)
 	if err != nil {
 		return Value{}, false, err
@@ -402,24 +390,7 @@ func nativeReaderRead(
 	if err != nil {
 		return Value{}, false, err
 	}
-	destination, ok := vm.Object(destinationReference)
-	if !ok || destination.Array == nil || destination.Array.Descriptor != "[C" {
-		return Value{}, false, fmt.Errorf("InputStreamReader destination is not char[]")
-	}
-	if offset < 0 || length < 0 ||
-		int64(offset)+int64(length) > int64(len(destination.Array.Elements)) {
-		return Value{}, false, vm.newThrowable("java/lang/IndexOutOfBoundsException", "")
-	}
-	if stream.offset >= len(stream.data) {
-		return IntValue(-1), true, nil
-	}
-	count := min(int(length), len(stream.data)-stream.offset)
-	for index := range count {
-		destination.Array.Elements[int(offset)+index] =
-			IntValue(int32(stream.data[stream.offset+index]))
-	}
-	stream.offset += count
-	return IntValue(int32(count)), true, nil
+	return vm.readerRead(receiver, destinationReference, offset, length)
 }
 
 func (vm *VM) setNative(reference uint32, native any) error {

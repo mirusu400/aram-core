@@ -390,13 +390,38 @@ func (vm *VM) installExceptionNatives() {
 	for _, class := range []string{
 		"java/lang/Throwable",
 		"java/lang/Exception",
+		"java/lang/Error",
+		"java/lang/VirtualMachineError",
+		"java/lang/OutOfMemoryError",
 		"java/lang/RuntimeException",
 		"java/lang/NullPointerException",
+		"java/lang/ArithmeticException",
+		"java/lang/ArrayStoreException",
+		"java/lang/ClassCastException",
+		"java/lang/IllegalAccessException",
 		"java/lang/IllegalArgumentException",
+		"java/lang/IllegalMonitorStateException",
+		"java/lang/IllegalStateException",
+		"java/lang/IllegalThreadStateException",
 		"java/lang/ArrayIndexOutOfBoundsException",
+		"java/lang/IndexOutOfBoundsException",
+		"java/lang/StringIndexOutOfBoundsException",
+		"java/lang/InstantiationException",
+		"java/lang/InterruptedException",
+		"java/lang/NegativeArraySizeException",
+		"java/lang/NoClassDefFoundError",
 		"java/lang/NumberFormatException",
+		"java/lang/SecurityException",
+		"java/lang/UnsupportedOperationException",
+		"java/lang/ClassNotFoundException",
+		"java/util/EmptyStackException",
 		"java/util/NoSuchElementException",
 		"java/io/IOException",
+		"java/io/EOFException",
+		"java/io/InterruptedIOException",
+		"java/io/UTFDataFormatException",
+		"java/io/UnsupportedEncodingException",
+		"javax/microedition/io/ConnectionNotFoundException",
 	} {
 		vm.RegisterNative(class, "<init>", "()V", nativeVoid)
 		vm.RegisterNative(class, "<init>", "(Ljava/lang/String;)V", func(
@@ -413,6 +438,22 @@ func (vm *VM) installExceptionNatives() {
 		})
 	}
 	vm.RegisterNative("java/lang/Throwable", "printStackTrace", "()V", nativeVoid)
+	vm.RegisterNative(
+		"java/lang/Throwable",
+		"getMessage",
+		"()Ljava/lang/String;",
+		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+			object, ok := vm.Object(receiver)
+			if !ok {
+				return Value{}, false, fmt.Errorf("invalid Throwable reference")
+			}
+			message, ok := object.Native.(string)
+			if !ok {
+				return ReferenceValue(0), true, nil
+			}
+			return ReferenceValue(vm.NewString(message)), true, nil
+		},
+	)
 	vm.RegisterNative(
 		"java/lang/Throwable",
 		"toString",

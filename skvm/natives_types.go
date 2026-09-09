@@ -14,6 +14,7 @@ type stringBufferState struct {
 type inputStreamState struct {
 	data       []byte
 	offset     int
+	mark       int
 	closed     bool
 	connection uint32
 }
@@ -76,7 +77,12 @@ type audioClipState struct {
 }
 
 type inputStreamReaderState struct {
-	stream uint32
+	stream      uint32
+	encoding    shared.TextEncoding
+	chars       []uint16
+	offset      int
+	initialized bool
+	closed      bool
 }
 
 type imageState struct {

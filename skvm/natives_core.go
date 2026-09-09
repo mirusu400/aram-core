@@ -39,10 +39,13 @@ type timerTaskState struct {
 
 func (vm *VM) installExtendedCoreNatives() {
 	vm.installObjectNatives()
+	vm.installCLDCClassNatives()
 	vm.installStringNatives()
 	vm.installNumberNatives()
 	vm.installCLDCNumberNatives()
 	vm.installCLDCMathNatives()
+	vm.installCLDCReferenceNatives()
+	vm.installCLDCCharacterStreamNatives()
 	vm.installRuntimeNatives()
 	vm.installVectorNatives()
 	vm.installHashtableNatives()
