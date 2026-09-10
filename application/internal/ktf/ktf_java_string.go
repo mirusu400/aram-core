@@ -1250,7 +1250,20 @@ func (r *Runtime) readGuestJavaString(instance uint32) (string, bool) {
 	}
 	class, err := r.InspectJavaClass(words[1])
 	if err != nil || class.Name != "java/lang/String" {
-		return "", false
+		// Relocatable MN images carry immutable String constants in the same
+		// fields layout as ordinary KTF strings, but their second object word is
+		// the compact class header duplicated at fields[0], not a full class
+		// pointer. Validate the compiler-defined java/lang/String header as well as
+		// its duplicated fields header, so another image constant with the same
+		// object shape is not accidentally accepted as text.
+		if len(r.Pkg.Relocations) == 0 || !r.imagePointer(instance, 8) {
+			return "", false
+		}
+		header, headerErr := r.ReadU32(words[0])
+		if headerErr != nil || words[1] != header ||
+			!isMNCompactStringHeader(header) {
+			return "", false
+		}
 	}
 	characters, err := r.readJavaFieldWord(instance, 0)
 	if err != nil || characters == 0 {
@@ -1269,6 +1282,15 @@ func (r *Runtime) readGuestJavaString(instance uint32) (string, bool) {
 		return "", false
 	}
 	return value, true
+}
+
+func isMNCompactStringHeader(header uint32) bool {
+	// The MN compiler's compact platform-class table reserves slot 5 for
+	// java/lang/String. A compact reference stores the byte offset shifted left
+	// by five, so (5 * 4) << 5 is 0x280. Unlike the host's derived vtable registry,
+	// this compiler-defined value is stable in immutable module constants.
+	const mnStringClassHeader = uint32(0x280)
+	return header == mnStringClassHeader
 }
 
 func (r *Runtime) javaObjectString(instance uint32) string {

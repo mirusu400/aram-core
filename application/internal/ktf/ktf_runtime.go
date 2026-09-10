@@ -278,6 +278,17 @@ type Runtime struct {
 	mnGOT       uint32
 	mnContext   uint32
 	mnMembers   map[string]uint32
+	// mnLinkedLayouts makes the destructive MN field-offset/vtable link pass
+	// idempotent if bootstrap or a focused loader retry revisits a class.
+	mnLinkedLayouts map[uint32]bool
+	// mnCallParameterWords records descriptor arity for executable entry points.
+	// MN's short veneers branch directly to those entries, so the method record
+	// that normally carries the descriptor is no longer available at call time.
+	mnCallParameterWords map[uint32]int
+	// mnCallFrames preserves r2/r3 while slot 25 uses their two-word scratch
+	// frame to publish a first-call entry point. It is consumed synchronously by
+	// helper slot 0 and is never live at a machine boundary.
+	mnCallFrames map[uint32]mnCallFrame
 	// cardOwnsScreen is set once a title blits a frame at least as large as
 	// the handset screen into the card, which is how it says the card is the
 	// whole screen rather than the area below the annunciator.
