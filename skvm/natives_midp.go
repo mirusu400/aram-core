@@ -197,10 +197,9 @@ func (vm *VM) installGraphicsNatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
-			reference := vm.NewObject("javax/microedition/lcdui/Image", state)
-			object, _ := vm.Object(reference)
-			object.Fields["\x00aram-image-mutable"] = IntValue(1)
-			return ReferenceValue(reference), true, nil
+			return ReferenceValue(
+				vm.NewObject("javax/microedition/lcdui/Image", state),
+			), true, nil
 		},
 	)
 	vm.RegisterNative(
@@ -264,9 +263,7 @@ func (vm *VM) installGraphicsNatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
-			object, _ := vm.Object(receiver)
-			mutable, _ := object.Fields["\x00aram-image-mutable"].Int()
-			if mutable == 0 {
+			if !vm.imageMutable(receiver) {
 				return Value{}, false, vm.newThrowable("java/lang/IllegalStateException", "immutable image")
 			}
 			graphics := &graphicsState{

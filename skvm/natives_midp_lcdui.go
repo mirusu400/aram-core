@@ -149,9 +149,7 @@ func (vm *VM) installMIDPCanvasImageNatives() {
 		if _, err := vm.image(receiver); err != nil {
 			return Value{}, false, err
 		}
-		object, _ := vm.Object(receiver)
-		mutable, _ := object.Fields["\x00aram-image-mutable"].Int()
-		if mutable != 0 {
+		if vm.imageMutable(receiver) {
 			return IntValue(1), true, nil
 		}
 		return IntValue(0), true, nil
@@ -236,7 +234,7 @@ func (vm *VM) installMIDPCanvasImageNatives() {
 				}
 			}
 		}
-		return ReferenceValue(vm.NewObject("javax/microedition/lcdui/Image", state)), true, nil
+		return ReferenceValue(vm.newImmutableImageObject(state)), true, nil
 	})
 	vm.RegisterNative("javax/microedition/lcdui/Image", "getRGB", "([IIIIIII)V", func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
 		state, err := vm.image(receiver)
@@ -300,7 +298,7 @@ func (vm *VM) copyImageRegion(source *imageState, x, y, width, height, transform
 			}
 		}
 	}
-	return ReferenceValue(vm.NewObject("javax/microedition/lcdui/Image", destination)), true, nil
+	return ReferenceValue(vm.newImmutableImageObject(destination)), true, nil
 }
 
 func objectField(vm *VM, receiver uint32, field string) (Value, error) {
