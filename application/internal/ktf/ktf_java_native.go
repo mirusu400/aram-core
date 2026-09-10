@@ -820,7 +820,6 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 					nanos = int32(registers[4])
 				}
 				return 0, runtime.waitJavaObject(registers[1], millis, nanos)
-				return 0, nil
 			case "getClass()Ljava/lang/Class;":
 				if registers[1] == 0 {
 					return 0, nil
