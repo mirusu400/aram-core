@@ -623,20 +623,30 @@ func (r *Runtime) DestroyRaptorJava() error {
 		return nil
 	}
 	host := r.Java.Host
-	r.Java = nil
 	if host == nil || host.Services == nil {
+		r.Java = nil
 		return nil
 	}
-	adapter, err := host.Services.Coordinator.Adapter(host.ServiceOwner)
-	if err != nil || adapter.Lifecycle == shared.LifecycleDestroyed {
-		return err
+	var result error
+	if r.Public != nil && r.Public.Services != nil {
+		result = errors.Join(
+			result,
+			host.DestroyJavaMedia(r.Public.Services.Events),
+		)
 	}
-	return host.Services.Coordinator.Transition(
-		host.ServiceOwner,
-		shared.LifecycleDestroyed,
-		host.Services.Clock.Monotonic(),
-		nil,
-	)
+	adapter, err := host.Services.Coordinator.Adapter(host.ServiceOwner)
+	if err != nil {
+		result = errors.Join(result, err)
+	} else if adapter.Lifecycle != shared.LifecycleDestroyed {
+		result = errors.Join(result, host.Services.Coordinator.Transition(
+			host.ServiceOwner,
+			shared.LifecycleDestroyed,
+			host.Services.Clock.Monotonic(),
+			nil,
+		))
+	}
+	r.Java = nil
+	return result
 }
 
 func (r *Runtime) importStub(key raptorImportKey) (uint32, error) {
@@ -2271,6 +2281,50 @@ func (r *Runtime) JavaInputCallback(
 		class = r.Java.ClassByName[class.parentName]
 	}
 	return wipirt.GuestCallback{}, false
+}
+
+// JavaMediaCompletionCallback updates the embedded KTF Clip state after the
+// public Raptor service loop consumes its completion event and translates an
+// optional KTF PlayListener mirror back into an AOT Java callback.
+func (r *Runtime) JavaMediaCompletionCallback(
+	serviceID shared.ServiceID,
+) (wipirt.GuestCallback, bool) {
+	if r == nil || r.Java == nil || r.Java.Host == nil {
+		return wipirt.GuestCallback{}, false
+	}
+	clipMirror, listenerMirror, handled := r.Java.Host.CompleteJavaMedia(serviceID)
+	if !handled {
+		return wipirt.GuestCallback{}, false
+	}
+	if listenerMirror == 0 {
+		return wipirt.GuestCallback{}, true
+	}
+	clip := r.Java.ktfToLGT[clipMirror]
+	listener := r.Java.ktfToLGT[listenerMirror]
+	if clip == 0 || listener == 0 {
+		return wipirt.GuestCallback{}, true
+	}
+	class := r.raptorJavaClassForObject(r.Java, listener)
+	for depth := 0; class != nil && depth < 256; depth++ {
+		method, found := DeclaredMethod(
+			class,
+			"playUpdate",
+			"(Lorg/kwis/msp/media/Clip;II)V",
+		)
+		if found && method.Body != 0 {
+			return wipirt.GuestCallback{
+				Procedure: method.Body,
+				Args: [4]uint32{
+					listener,
+					clip,
+					uint32(guest.WIPIMediaEnd),
+					0,
+				},
+			}, true
+		}
+		class = r.Java.ClassByName[class.parentName]
+	}
+	return wipirt.GuestCallback{}, true
 }
 
 func (r *Runtime) wrapRaptorJavaObject(
