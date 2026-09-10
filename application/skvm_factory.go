@@ -46,7 +46,7 @@ func (f Factory) createSKVMMachine(
 	}
 	pkg, err := skloader.Inspect(data)
 	if errors.Is(err, skloader.ErrNotPackage) {
-		return nil, false, nil
+		return f.createJ2MEMachine(ctx, source, data)
 	}
 	var formatErr *skloader.FormatError
 	if errors.As(err, &formatErr) &&

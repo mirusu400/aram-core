@@ -89,6 +89,7 @@ type nativeKey struct {
 }
 
 type VM struct {
+	nativePolicy     NativePolicy
 	classes          map[string]*runtimeClass
 	heap             map[uint32]*Object
 	nextReference    uint32
@@ -162,10 +163,27 @@ func NewWithServices(
 	services *shared.Services,
 	owner shared.OwnerID,
 ) (*VM, error) {
+	return NewWithNativePolicy(classData, services, owner, NativePolicySKT)
+}
+
+// NativePolicy selects the host API namespace independently of guest classes.
+// J2ME supplies implemented Java/MIDP APIs, never carrier or WIPI extensions.
+type NativePolicy uint8
+
+const (
+	NativePolicySKT NativePolicy = iota
+	NativePolicyJ2ME
+)
+
+func NewWithNativePolicy(classData map[string][]byte, services *shared.Services, owner shared.OwnerID, policy NativePolicy) (*VM, error) {
+	if policy != NativePolicySKT && policy != NativePolicyJ2ME {
+		return nil, fmt.Errorf("unknown Java native policy %d", policy)
+	}
 	if services == nil {
 		return nil, fmt.Errorf("initialize SKVM: shared services are nil")
 	}
 	vm := &VM{
+		nativePolicy:     policy,
 		classes:          make(map[string]*runtimeClass, len(classData)),
 		heap:             make(map[uint32]*Object),
 		nextReference:    1,
@@ -180,6 +198,16 @@ func NewWithServices(
 		services:         services,
 		serviceOwner:     owner,
 		classDigest:      digestClassData(classData),
+	}
+	if policy == NativePolicyJ2ME {
+		// Preserve legacy SKVM state digests, but bind generic Java snapshots
+		// to their native policy even when both VMs share identical services.
+		vm.classDigest = sha256.Sum256(append([]byte("j2me-native-policy-v1\x00"), vm.classDigest[:]...))
+		for class := range vm.hostSupers {
+			if !standardJavaClass(class) {
+				delete(vm.hostSupers, class)
+			}
+		}
 	}
 	names := make([]string, 0, len(classData))
 	for name := range classData {
@@ -287,6 +315,9 @@ func (vm *VM) RegisterNative(
 	class, name, descriptor string,
 	native NativeFunc,
 ) {
+	if vm.nativePolicy == NativePolicyJ2ME && !standardJavaClass(class) {
+		return
+	}
 	key := nativeKey{class: class, name: name, descriptor: descriptor}
 	if native == nil {
 		delete(vm.natives, key)
@@ -296,6 +327,9 @@ func (vm *VM) RegisterNative(
 }
 
 func (vm *VM) RegisterHostClass(class, super string) {
+	if vm.nativePolicy == NativePolicyJ2ME && !standardJavaClass(class) {
+		return
+	}
 	vm.hostSupers[class] = super
 }
 
@@ -303,7 +337,14 @@ func (vm *VM) RegisterStaticField(
 	class, name, descriptor string,
 	value Value,
 ) {
+	if vm.nativePolicy == NativePolicyJ2ME && !standardJavaClass(class) {
+		return
+	}
 	vm.hostStatic[fieldStorageKey(class, name, descriptor)] = value
+}
+
+func standardJavaClass(class string) bool {
+	return strings.HasPrefix(class, "java/") || strings.HasPrefix(class, "javax/microedition/")
 }
 
 // fontCacheKey identifies one Font.getFont request.

@@ -383,37 +383,58 @@ func (vm *VM) installCoreNatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
-			value, ok := vm.properties[name]
+			var value string
+			var ok bool
+			// JAD/manifest metadata belongs to MIDlet.getAppProperty, not
+			// the J2ME system identity. Retain the legacy SKT precedence.
+			if vm.nativePolicy == NativePolicySKT {
+				value, ok = vm.properties[name]
+			}
 			if !ok {
 				value, ok = vm.services.Device.Property(name)
 			}
 			if !ok {
 				config := vm.services.Device.Config()
-				switch name {
-				case "MIN":
-					value = config.PhoneNumber
-					if value == "" {
-						value = "MIN0000000000"
+				if vm.nativePolicy == NativePolicyJ2ME {
+					switch name {
+					case "microedition.platform":
+						value, ok = config.ProfileID, true
+					case "microedition.configuration":
+						value, ok = "CLDC-1.0", true
+					case "microedition.profiles":
+						value, ok = "MIDP-1.0", true
+					case "microedition.locale":
+						value, ok = config.Locale, true
+					case "microedition.encoding":
+						value, ok = "EUC-KR", true
 					}
-					ok = true
-				case "com.xce.wipi.version":
-					value, ok = config.WIPIVersion, true
-				case "microedition.platform":
-					value = config.Model
-					if value == "" {
-						value = "SKVM"
+				} else {
+					switch name {
+					case "MIN":
+						value = config.PhoneNumber
+						if value == "" {
+							value = "MIN0000000000"
+						}
+						ok = true
+					case "com.xce.wipi.version":
+						value, ok = config.WIPIVersion, true
+					case "microedition.platform":
+						value = config.Model
+						if value == "" {
+							value = "SKVM"
+						}
+						ok = true
+					case "microedition.configuration":
+						value, ok = "M_Configuration-1.0", true
+					case "microedition.profiles":
+						value, ok = "M_Profile-1.0 SKTP-1.0", true
+					case "microedition.locale":
+						value, ok = config.Locale, true
+					case "microedition.encoding":
+						value, ok = "EUC-KR", true
+					default:
+						value, ok = "0", true
 					}
-					ok = true
-				case "microedition.configuration":
-					value, ok = "M_Configuration-1.0", true
-				case "microedition.profiles":
-					value, ok = "M_Profile-1.0 SKTP-1.0", true
-				case "microedition.locale":
-					value, ok = config.Locale, true
-				case "microedition.encoding":
-					value, ok = "EUC-KR", true
-				default:
-					value, ok = "0", true
 				}
 			}
 			if !ok {
@@ -442,7 +463,9 @@ func (vm *VM) installCoreNatives() {
 	vm.installMIDPMediaNatives()
 	vm.installGraphicsNatives()
 	vm.installRecordStoreNatives()
-	vm.installSKTNatives()
+	if vm.nativePolicy == NativePolicySKT {
+		vm.installSKTNatives()
+	}
 	vm.installHostStaticFields()
 	vm.installExtendedCoreNatives()
 	vm.installCompatibilityNatives()
@@ -455,40 +478,42 @@ func (vm *VM) installHostStaticFields() {
 		applicationRootDescriptor,
 		ReferenceValue(0),
 	)
-	font := ReferenceValue(vm.NewObject("javax/microedition/lcdui/Font", nil))
-	vm.RegisterStaticField(
-		"com/xce/lcdui/Toolkit",
-		"DEFAULT_FONT",
-		"Ljavax/microedition/lcdui/Font;",
-		font,
-	)
-	vm.RegisterStaticField(
-		"com/xce/lcdui/Toolkit",
-		"FONT_HEIGHT",
-		"I",
-		IntValue(8),
-	)
-	vm.RegisterStaticField(
-		"com/xce/lcdui/Toolkit",
-		"MAX_CHARWIDTH",
-		"I",
-		IntValue(6),
-	)
-	vm.RegisterStaticField(
-		"com/xce/lcdui/Toolkit",
-		"graphics",
-		"Ljavax/microedition/lcdui/Graphics;",
-		ReferenceValue(vm.ScreenGraphics()),
-	)
-	vm.RegisterStaticField("com/xce/lcdui/XDisplay", "width", "I", IntValue(int32(vm.ScreenWidth)))
-	vm.RegisterStaticField("com/xce/lcdui/XDisplay", "height", "I", IntValue(int32(vm.ScreenHeight)))
-	vm.RegisterStaticField("com/xce/lcdui/XDisplay", "height2", "I", IntValue(int32(vm.ScreenHeight)))
-	vm.RegisterStaticField(
-		"com/xce/lcdui/XEventHandler",
-		"eventHandler",
-		"Lcom/xce/lcdui/XEventHandler;",
-		ReferenceValue(vm.NewObject("com/xce/lcdui/XEventHandler", nil)),
-	)
+	if vm.nativePolicy == NativePolicySKT {
+		font := ReferenceValue(vm.NewObject("javax/microedition/lcdui/Font", nil))
+		vm.RegisterStaticField(
+			"com/xce/lcdui/Toolkit",
+			"DEFAULT_FONT",
+			"Ljavax/microedition/lcdui/Font;",
+			font,
+		)
+		vm.RegisterStaticField(
+			"com/xce/lcdui/Toolkit",
+			"FONT_HEIGHT",
+			"I",
+			IntValue(8),
+		)
+		vm.RegisterStaticField(
+			"com/xce/lcdui/Toolkit",
+			"MAX_CHARWIDTH",
+			"I",
+			IntValue(6),
+		)
+		vm.RegisterStaticField(
+			"com/xce/lcdui/Toolkit",
+			"graphics",
+			"Ljavax/microedition/lcdui/Graphics;",
+			ReferenceValue(vm.ScreenGraphics()),
+		)
+		vm.RegisterStaticField("com/xce/lcdui/XDisplay", "width", "I", IntValue(int32(vm.ScreenWidth)))
+		vm.RegisterStaticField("com/xce/lcdui/XDisplay", "height", "I", IntValue(int32(vm.ScreenHeight)))
+		vm.RegisterStaticField("com/xce/lcdui/XDisplay", "height2", "I", IntValue(int32(vm.ScreenHeight)))
+		vm.RegisterStaticField(
+			"com/xce/lcdui/XEventHandler",
+			"eventHandler",
+			"Lcom/xce/lcdui/XEventHandler;",
+			ReferenceValue(vm.NewObject("com/xce/lcdui/XEventHandler", nil)),
+		)
+	}
 	vm.RegisterStaticField(
 		"java/lang/System",
 		"out",
@@ -516,13 +541,14 @@ func (vm *VM) installHostStaticFields() {
 	}
 }
 
-// installCompatibilityNatives contains the less common APIs exposed by SKT,
-// XCE, and KWIS handsets. Keeping them here makes the main J2ME surface easy to
-// review while still giving every method referenced by the reference corpus a
-// concrete host implementation.
+// installCompatibilityNatives includes standard MIDP methods alongside handset
+// extensions. RegisterNative filters OEM classes, while extensions on standard
+// classes need explicit policy guards at their registration sites.
 func (vm *VM) installCompatibilityNatives() {
 	vm.installDisplayCompatibilityNatives()
 	vm.installGraphicsCompatibilityNatives()
-	vm.installXCECompatibilityNatives()
-	vm.installKWISCompatibilityNatives()
+	if vm.nativePolicy == NativePolicySKT {
+		vm.installXCECompatibilityNatives()
+		vm.installKWISCompatibilityNatives()
+	}
 }

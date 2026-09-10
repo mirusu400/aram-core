@@ -337,19 +337,21 @@ func (vm *VM) installGraphicsNatives() {
 			return vm.newFontObject("javax/microedition/lcdui/Font", args)
 		},
 	)
-	vm.RegisterNative("javax/microedition/lcdui/Graphics", "reset", "()V", func(
-		_ context.Context,
-		vm *VM,
-		receiver uint32,
-		_ []Value,
-	) (Value, bool, error) {
-		state, err := vm.graphics(receiver)
-		if err != nil {
-			return Value{}, false, err
-		}
-		state.color = 0xff000000
-		return Value{}, false, nil
-	})
+	if vm.nativePolicy == NativePolicySKT {
+		vm.RegisterNative("javax/microedition/lcdui/Graphics", "reset", "()V", func(
+			_ context.Context,
+			vm *VM,
+			receiver uint32,
+			_ []Value,
+		) (Value, bool, error) {
+			state, err := vm.graphics(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			state.color = 0xff000000
+			return Value{}, false, nil
+		})
+	}
 	vm.RegisterNative(
 		"javax/microedition/lcdui/Graphics",
 		"setFont",
@@ -702,12 +704,15 @@ func (vm *VM) installDisplayCompatibilityNatives() {
 			return boolValue(receiver != 0 && receiver == vm.currentDisplay), true, nil
 		},
 	)
-	vm.RegisterNative(
-		"javax/microedition/lcdui/Displayable",
-		"repaintIM",
-		"()V",
-		nativeVoid,
-	)
+	// repaintIM is an SKT extension despite its standard class name.
+	if vm.nativePolicy == NativePolicySKT {
+		vm.RegisterNative(
+			"javax/microedition/lcdui/Displayable",
+			"repaintIM",
+			"()V",
+			nativeVoid,
+		)
+	}
 }
 
 func gameActionForKey(key int32) int32 {

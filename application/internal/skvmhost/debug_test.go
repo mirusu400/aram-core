@@ -9,6 +9,7 @@ import (
 
 func TestSKVMDebugSnapshotReportsInterpreterProgress(t *testing.T) {
 	machine := &Machine{
+		runtimeID: "skvm",
 		state:     machinecore.StatePaused,
 		mainClass: "example/Game",
 		started:   true,

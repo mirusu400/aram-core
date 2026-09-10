@@ -603,6 +603,7 @@ func (vm *VM) buildCandidate(
 		return nil, fmt.Errorf("load SKVM state: class table size mismatch")
 	}
 	candidate := &VM{
+		nativePolicy:     vm.nativePolicy,
 		classes:          make(map[string]*runtimeClass, len(vm.classes)),
 		heap:             make(map[uint32]*Object, len(state.Heap)),
 		nextReference:    state.NextReference,

@@ -19,12 +19,12 @@ import (
 
 func (m *Machine) SaveState(output io.Writer) error {
 	if output == nil {
-		return fmt.Errorf("save SKVM state: writer is nil")
+		return fmt.Errorf("save Java state: writer is nil")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
-		return errors.New("SKVM machine is closed")
+		return errors.New("Java machine is closed")
 	}
 	switch m.state {
 	case machinecore.StateReady, machinecore.StatePaused, machinecore.StateStopped:
@@ -35,8 +35,9 @@ func (m *Machine) SaveState(output io.Writer) error {
 		m.services,
 		m.owner,
 		m.state,
+		m.runtimeID,
 	); err != nil {
-		return fmt.Errorf("save SKVM state: %w", err)
+		return fmt.Errorf("save Java state: %w", err)
 	}
 	vmState, err := m.vm.MarshalBinary()
 	if err != nil {
@@ -44,10 +45,10 @@ func (m *Machine) SaveState(output io.Writer) error {
 	}
 	sourceDigest, err := hex.DecodeString(m.source.SHA256)
 	if err != nil || len(sourceDigest) != sha256.Size {
-		return fmt.Errorf("save SKVM state: source SHA-256 is unavailable")
+		return fmt.Errorf("save Java state: source SHA-256 is unavailable")
 	}
 	var payload bytes.Buffer
-	payload.WriteString(skvmMachineStateMagic)
+	payload.WriteString(m.stateMagic)
 	writeSKVMU32(&payload, skvmMachineStateVersion)
 	payload.WriteByte(byte(m.state))
 	if m.started {
@@ -75,29 +76,29 @@ func (m *Machine) SaveState(output io.Writer) error {
 	digest := sha256.Sum256(payload.Bytes())
 	payload.Write(digest[:])
 	if uint64(payload.Len()) > maxSKVMMachineStateBytes {
-		return fmt.Errorf("save SKVM state: state exceeds byte limit")
+		return fmt.Errorf("save Java state: state exceeds byte limit")
 	}
 	return guest.WriteFull(output, payload.Bytes())
 }
 
 func (m *Machine) LoadState(input io.Reader) error {
 	if input == nil {
-		return fmt.Errorf("load SKVM state: reader is nil")
+		return fmt.Errorf("load Java state: reader is nil")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
-		return errors.New("SKVM machine is closed")
+		return errors.New("Java machine is closed")
 	}
 	if m.state == machinecore.StateRunning || m.state == machinecore.StateEmpty {
 		return fmt.Errorf("load from %s: %w", m.state, guest.ErrInvalidState)
 	}
 	data, err := io.ReadAll(io.LimitReader(input, int64(maxSKVMMachineStateBytes)+1))
 	if err != nil {
-		return fmt.Errorf("read SKVM state: %w", err)
+		return fmt.Errorf("read Java state: %w", err)
 	}
 	if uint64(len(data)) > maxSKVMMachineStateBytes {
-		return fmt.Errorf("read SKVM state: state exceeds byte limit")
+		return fmt.Errorf("read Java state: state exceeds byte limit")
 	}
 	parsed, err := m.parseMachineState(data)
 	if err != nil {
@@ -107,7 +108,7 @@ func (m *Machine) LoadState(input io.Reader) error {
 	if err != nil {
 		return err
 	}
-	candidate, err := skengine.NewWithServices(m.classData, candidateServices, m.owner)
+	candidate, err := skengine.NewWithNativePolicy(m.classData, candidateServices, m.owner, m.nativePolicy)
 	if err != nil {
 		return err
 	}
@@ -118,18 +119,20 @@ func (m *Machine) LoadState(input io.Reader) error {
 		candidateServices,
 		m.owner,
 		parsed.state,
+		m.runtimeID,
 	); err != nil {
-		return fmt.Errorf("load SKVM state: %w", err)
+		return fmt.Errorf("load Java state: %w", err)
 	}
 	if parsed.midlet != 0 {
 		if _, ok := candidate.Object(parsed.midlet); !ok {
-			return fmt.Errorf("load SKVM state: MIDlet reference is missing")
+			return fmt.Errorf("load Java state: MIDlet reference is missing")
 		}
 	}
 	if err := m.vm.UnmarshalBinary(parsed.vm); err != nil {
 		return err
 	}
 	m.services = m.vm.Services()
+	m.debugFramebuffer = nil
 	m.state = parsed.state
 	m.started = parsed.started
 	m.midlet = parsed.midlet
@@ -149,16 +152,16 @@ type parsedSKVMMachineState struct {
 
 func (m *Machine) parseMachineState(data []byte) (parsedSKVMMachineState, error) {
 	if len(data) < len(skvmMachineStateMagic)+4+4+sha256.Size+sha256.Size {
-		return parsedSKVMMachineState{}, fmt.Errorf("load SKVM state: truncated header")
+		return parsedSKVMMachineState{}, fmt.Errorf("load Java state: truncated header")
 	}
 	payload := data[:len(data)-sha256.Size]
 	expected := data[len(payload):]
 	actual := sha256.Sum256(payload)
 	if subtle.ConstantTimeCompare(expected, actual[:]) != 1 {
-		return parsedSKVMMachineState{}, fmt.Errorf("load SKVM state: checksum mismatch")
+		return parsedSKVMMachineState{}, fmt.Errorf("load Java state: checksum mismatch")
 	}
 	decoder := skvmMachineDecoder{reader: bytes.NewReader(payload)}
-	if magic := decoder.bytes(len(skvmMachineStateMagic)); string(magic) != skvmMachineStateMagic {
+	if magic := decoder.bytes(len(m.stateMagic)); string(magic) != m.stateMagic {
 		return parsedSKVMMachineState{}, decoder.fail("magic mismatch")
 	}
 	if version := decoder.u32(); version != skvmMachineStateVersion {
@@ -240,6 +243,7 @@ func validateSKVMMachineCoordinator(
 	services *shared.Services,
 	owner shared.OwnerID,
 	state machinecore.State,
+	runtimeID string,
 ) error {
 	if services == nil || services.Coordinator == nil {
 		return fmt.Errorf("shared coordinator is missing")
@@ -258,7 +262,7 @@ func validateSKVMMachineCoordinator(
 	snapshot := services.Coordinator.Snapshot()
 	if len(snapshot.Adapters) != 1 ||
 		snapshot.Adapters[0].Owner != owner ||
-		snapshot.Adapters[0].Name != "skvm" ||
+		snapshot.Adapters[0].Name != runtimeID ||
 		snapshot.Adapters[0].Lifecycle != expected ||
 		snapshot.ForegroundOwner != owner ||
 		snapshot.PresentationOwner != owner {
@@ -348,5 +352,5 @@ func (d *skvmMachineDecoder) string() string {
 }
 
 func (d *skvmMachineDecoder) fail(reason string) error {
-	return fmt.Errorf("load SKVM state at offset 0x%x: %s", d.offset, reason)
+	return fmt.Errorf("load Java state at offset 0x%x: %s", d.offset, reason)
 }
