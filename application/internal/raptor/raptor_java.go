@@ -153,6 +153,18 @@ var raptorJavaInputStreamVirtualMethods = []raptorJavaFixedVirtualMethod{
 	{offset: 0x4c, Name: "reset", descriptor: "()V"},
 }
 
+// DataInputStream implements java/io/DataInput after InputStream's inherited
+// block. CLDC orders readFully(byte[]), readFully(byte[],int,int), skipBytes,
+// readBoolean, readByte, readUnsignedByte, then readShort, which places
+// readShort()S at byte slot 0x68. 배틀몬스터 reads every big-endian short in
+// txt/MAP_TILE_NB.dat through that exact slot; leaving it on the no-op backstop
+// filled the decoded map-size array with zeroes, so New Game allocated a
+// zero-length tile array and immediately threw at index 158 (issue #235).
+var raptorJavaDataInputStreamVirtualMethods = append(
+	append([]raptorJavaFixedVirtualMethod(nil), raptorJavaInputStreamVirtualMethods...),
+	raptorJavaFixedVirtualMethod{offset: 0x68, Name: "readShort", descriptor: "()S"},
+)
+
 var raptorJavaOutputStreamVirtualMethods = []raptorJavaFixedVirtualMethod{
 	{offset: 0x2c, Name: "write", descriptor: "(I)V"},
 	{offset: 0x30, Name: "write", descriptor: "([B)V"},
@@ -262,7 +274,7 @@ var raptorJavaFixedVirtualMethods = map[string][]raptorJavaFixedVirtualMethod{
 	// DataInputStream can therefore have no InputStream parent node to inherit
 	// from. 배틀몬스터 calls read([B) at slot 0x30 on exactly that wrapper (#235).
 	"java/io/InputStream":     raptorJavaInputStreamVirtualMethods,
-	"java/io/DataInputStream": raptorJavaInputStreamVirtualMethods,
+	"java/io/DataInputStream": raptorJavaDataInputStreamVirtualMethods,
 	// The same returned-wrapper rule applies to DataOutputStream. 배틀몬스터
 	// calls write([BII) and flush at slots 0x34 and 0x38 respectively (#235).
 	"java/io/OutputStream":     raptorJavaOutputStreamVirtualMethods,
