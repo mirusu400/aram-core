@@ -805,13 +805,21 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 		switch className {
 		case "java/lang/Object":
 			switch name + descriptor {
-			case "<init>()V", "notify()V", "notifyAll()V", "finalize()V":
+			case "<init>()V", "finalize()V":
 				return 0, nil
-			case "wait(J)V", "wait(JI)V", "wait()V":
-				if runtime.DeferThreads {
-					runtime.yieldRequested = true
+			case "notify()V":
+				return 0, runtime.notifyJavaObject(registers[1], false)
+			case "notifyAll()V":
+				return 0, runtime.notifyJavaObject(registers[1], true)
+			case "wait()V":
+				return 0, runtime.waitJavaObject(registers[1], 0, 0)
+			case "wait(J)V", "wait(JI)V":
+				millis := int64(uint64(registers[3])<<32 | uint64(registers[2]))
+				nanos := int32(0)
+				if descriptor == "(JI)V" {
+					nanos = int32(registers[4])
 				}
-				return 0, nil
+				return 0, runtime.waitJavaObject(registers[1], millis, nanos)
 			case "getClass()Ljava/lang/Class;":
 				if registers[1] == 0 {
 					return 0, nil
@@ -845,7 +853,7 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 		case "java/io/OutputStream", "java/io/DataOutputStream":
 			return runtime.handleOutputStreamMethod(name, descriptor)
 		case "java/io/PrintStream":
-			return 0, nil
+			return runtime.handlePrintStreamMethod(name, descriptor)
 		case "java/lang/String":
 			return runtime.handleStringMethod(name, descriptor)
 		case "java/lang/StringBuffer":
@@ -884,12 +892,28 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 				)
 			case "currentTimeMillis()J":
 				return runtime.javaLongResult(
-					runtime.monotonicReadMS(),
+					runtime.wallReadMS(),
 				), nil
 			case "gc()V":
+				runtime.collectJavaHeap()
 				return 0, nil
 			case "getProperty(Ljava/lang/String;)Ljava/lang/String;":
-				return runtime.NewJavaString("")
+				if registers[1] == 0 {
+					return 0, runtime.raiseHostJavaException(
+						"java/lang/NullPointerException",
+					)
+				}
+				key := runtime.javaText(registers[1])
+				if key == "" {
+					return 0, runtime.raiseHostJavaException(
+						"java/lang/IllegalArgumentException",
+					)
+				}
+				value, ok := runtime.javaSystemProperty(key)
+				if !ok {
+					return 0, nil
+				}
+				return runtime.NewJavaString(value)
 			case "exit(I)V":
 				runtime.requestJavaTermination(0)
 				return 0, nil
@@ -901,10 +925,18 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 			case "getRuntime()Ljava/lang/Runtime;":
 				return runtime.ensureJavaRuntime()
 			case "freeMemory()J":
-				return runtime.javaLongResult(uint64(guest.HeapSize / 2)), nil
+				var free uint64
+				for _, block := range runtime.Heap.Root().Free {
+					free += uint64(block.Size)
+				}
+				return runtime.javaLongResult(free), nil
 			case "totalMemory()J":
 				return runtime.javaLongResult(uint64(guest.HeapSize)), nil
-			case "gc()V", "exit(I)V":
+			case "gc()V":
+				runtime.collectJavaHeap()
+				return 0, nil
+			case "exit(I)V":
+				runtime.requestJavaTermination(0)
 				return 0, nil
 			}
 		case "java/util/Calendar", "java/util/GregorianCalendar":
@@ -923,11 +955,15 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 			return runtime.handleTimerMethod(ctx, name, descriptor)
 		case "java/util/TimeZone", "java/util/SimpleTimeZone":
 			return runtime.handleTimeZoneMethod(name, descriptor)
-		case "org/kwis/msp/lcdui/Card", "org/kwis/msp/lwc/ProxyCard":
+		case "org/kwis/msp/lcdui/Card":
 			switch name + descriptor {
 			case "<init>()V", "<init>(I)V", "<init>(Z)V":
 				if err := runtime.initializeCard(registers[1], 0); err != nil {
 					return 0, err
+				}
+				if descriptor == "(Z)V" {
+					runtime.lwcComponent(registers[1]).transparent =
+						registers[2] != 0
 				}
 				return 0, nil
 			case "<init>(Lorg/kwis/msp/lcdui/Display;)V":
@@ -936,6 +972,25 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 					registers[2],
 				); err != nil {
 					return 0, err
+				}
+				return 0, nil
+			case "<init>(IIII)V":
+				return 0, runtime.configureCard(
+					registers[1], 0,
+					registers[2], registers[3], registers[4], registers[5],
+				)
+			case "<init>(Lorg/kwis/msp/lcdui/Display;IIII)V",
+				"<init>(Lorg/kwis/msp/lcdui/Display;IIIIZ)V":
+				if err := runtime.configureCard(
+					registers[1], registers[2],
+					registers[3], registers[4], registers[5], registers[6],
+				); err != nil {
+					return 0, err
+				}
+				if descriptor ==
+					"(Lorg/kwis/msp/lcdui/Display;IIIIZ)V" {
+					runtime.lwcComponent(registers[1]).transparent =
+						registers[7] != 0
 				}
 				return 0, nil
 			case "getDisplay()Lorg/kwis/msp/lcdui/Display;":
@@ -1000,12 +1055,17 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 			return runtime.handleFontMethod(name, descriptor)
 		case "org/kwis/msp/lcdui/Image":
 			return runtime.handleImageMethod(name, descriptor)
+		case "org/kwis/msp/lcdui/AnimateImage":
+			return runtime.handleAnimateImageMethod(name, descriptor)
 		case "org/kwis/msp/lcdui/Graphics":
 			return runtime.handleGraphicsMethod(name, descriptor)
-		case "org/kwis/msp/media/Volume", "org/kwis/msf/io/Network":
+		case "org/kwis/msp/media/Volume":
+			return runtime.handleWIPI2VolumeMethod(name, descriptor)
+		case "org/kwis/msf/io/Network":
 			return 0, nil
 		case "org/kwis/msp/media/BaseClip", "org/kwis/msp/media/Clip",
-			"org/kwis/msp/media/Player":
+			"org/kwis/msp/media/Player", "org/kwis/msp/media/Camera",
+			"org/kwis/msp/media/StillClip", "org/kwis/msp/media/VideoClip":
 			return runtime.handleMediaMethodContext(ctx, name, descriptor)
 		case "java/lang/Throwable":
 			return runtime.handleThrowableMethod(name, descriptor)
@@ -1028,7 +1088,7 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 		case "org/kwis/msp/lcdui/Jlet":
 			return runtime.handleJletMethod(name, descriptor)
 		case "org/kwis/msp/lcdui/EventQueue":
-			return runtime.handleEventQueueMethod(name, descriptor)
+			return runtime.handleEventQueueMethod(ctx, name, descriptor)
 		case "org/kwis/msp/lcdui/DisplayProxy":
 			return runtime.handleDisplayMethod(ctx, name, descriptor)
 		case "org/kwis/msp/lcdui/InputMethodHandler":
@@ -1057,27 +1117,68 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 			return 0, nil
 		case "org/kwis/msp/handset/LED":
 			switch name + descriptor {
-			case "set(I)V":
-				return 0, runtime.Services.Device.SetLED(
-					0,
-					int32(registers[1]),
-				)
-			case "get()I":
+			case "<init>()V":
 				return 0, nil
+			case "set(I)V", "set(I)I":
+				count := runtime.Services.Device.Config().LEDCount
+				for index := uint8(0); index < count; index++ {
+					value := int32(0)
+					if registers[1]&(uint32(1)<<index) != 0 {
+						value = 1
+					}
+					if err := runtime.Services.Device.SetLED(index, value); err != nil {
+						return 0, err
+					}
+				}
+				if descriptor == "(I)I" {
+					return registers[1], nil
+				}
+				return 0, nil
+			case "get()I":
+				var mask uint32
+				count := runtime.Services.Device.Config().LEDCount
+				for index := uint8(0); index < count; index++ {
+					value, err := runtime.Services.Device.LED(index)
+					if err != nil {
+						return 0, err
+					}
+					if value != 0 {
+						mask |= uint32(1) << index
+					}
+				}
+				return mask, nil
 			case "getCount()I":
-				return 1, nil
+				return uint32(runtime.Services.Device.Config().LEDCount), nil
+			case "getSupportColor(I)[I":
+				if registers[1] >= uint32(runtime.Services.Device.Config().LEDCount) {
+					return 0, runtime.raiseHostJavaException("java/io/IOException")
+				}
+				return runtime.newJavaIntArray([]uint32{
+					0x000000, 0xff0000, 0x00ff00, 0x0000ff, 0xffffff,
+				})
+			case "getColor(I)I":
+				value, err := runtime.Services.Device.LED(uint8(registers[1]))
+				if err != nil {
+					return 0, runtime.raiseHostJavaException("java/io/IOException")
+				}
+				return uint32(value), nil
+			case "setColor(II)I":
+				rgb := registers[2] & 0x00ffffff
+				if err := runtime.Services.Device.SetLED(uint8(registers[1]), int32(rgb)); err != nil {
+					return 0, runtime.raiseHostJavaException("java/io/IOException")
+				}
+				return rgb, nil
 			}
 			return 0, nil
 		case "org/kwis/msp/handset/Call":
-			// Telephony is absent; call control requests are absorbed the
-			// way a handset in flight mode absorbs them.
-			if name == "place" || name == "place0" {
-				runtime.tracef(
-					"java_call_place_unavailable:%s",
-					runtime.javaStringValue(registers[1]),
-				)
-			}
-			return 0, nil
+			return runtime.handleCallMethod(name, descriptor)
+		case "org/kwis/msp/handset/Address", "org/kwis/msp/handset/AddressBook":
+			return runtime.handleWIPI2AddressMethod(className, name, descriptor)
+		case "org/kwis/msp/handset/StationLocationInfo",
+			"org/kwis/msp/handset/GPSConfig",
+			"org/kwis/msp/handset/GPSLocationInfo",
+			"org/kwis/msp/handset/GPSProvider":
+			return runtime.handleWIPI2LocationMethod(ctx, className, name, descriptor)
 		case "org/kwis/msp/lwc/Component",
 			"org/kwis/msp/lwc/ContainerComponent",
 			"org/kwis/msp/lwc/ShellComponent",
@@ -1099,6 +1200,7 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 			"org/kwis/msp/lwc/ImageComponent",
 			"org/kwis/msp/lwc/ListComponent",
 			"org/kwis/msp/lwc/ListItemComponent",
+			"org/kwis/msp/lwc/ProxyCard",
 			"org/kwis/msp/lwc/ScrollbarComponent",
 			"org/kwis/msp/lwc/TickerComponent",
 			"org/kwis/msp/lwc/TextComponent$ModeViewer":
@@ -1134,6 +1236,12 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 			return runtime.handleFileMethod(name, descriptor)
 		case "org/kwis/msp/io/FileSystem":
 			return runtime.handleFileSystemMethod(name, descriptor)
+		case "org/kwis/msp/io/IODevice":
+			return runtime.handleWIPI2IODeviceMethod(name, descriptor)
+		case "org/kwis/msp/io/SMS", "org/kwis/msp/io/SMSMessage":
+			return runtime.handleWIPI2SMSMethod(className, name, descriptor)
+		case "org/kwis/msp/io/ResourceGroup":
+			return runtime.handleWIPI2ResourceGroupMethod(name, descriptor)
 		case "org/kwis/msf/core/Kernel":
 			return runtime.handleMSFKernelMethod(name, descriptor)
 		case "org/kwis/msf/core/Shared":
@@ -1158,10 +1266,7 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 				// afterwards, which is a path the title does handle - and one
 				// the Socket methods here already model, answering 503 and
 				// "Service Unavailable" to every request.
-				socket, socketErr := runtime.newJavaInstance(
-					"org/kwis/msf/io/Socket",
-					8,
-				)
+				socket, socketErr := runtime.newOfflineMSFSocket(registers[1])
 				if socketErr != nil {
 					return 0, socketErr
 				}
@@ -1424,25 +1529,33 @@ func ktfJavaParameterWords(descriptor string) (int, bool) {
 	return 0, false
 }
 
+// handsetSystemProperty answers HandsetProperty.getSystemProperty from the
+// shared handset property table. An unknown id is the empty string, which is
+// what the Java surface returns for a property the handset does not carry.
 func (r *Runtime) handsetSystemProperty(key string) string {
+	value, _ := r.systemPropertyValue(key)
+	return value
+}
+
+func (r *Runtime) javaSystemProperty(key string) (string, bool) {
+	switch key {
+	case "microedition.platform":
+		return r.handsetSystemProperty("PHONEMODEL"), true
+	case "microedition.encoding":
+		return "EUC-KR", true
+	case "microedition.configuration":
+		return "CLDC-1.1", true
+	case "microedition.profiles":
+		return "WIPI-1.2.1", true
+	}
 	normalized := strings.ToUpper(strings.TrimSpace(key))
 	if value, ok := r.wipicSystemProperties[normalized]; ok {
-		return value
+		return value, true
 	}
 	switch normalized {
-	case "PHONEMODEL":
-		// LG-KH1300 was a common 240x320 KTF WIPI target. Some games use
-		// this property to select resource geometry and otherwise leave
-		// array dimensions uninitialized.
-		if r.Services == nil || r.Services.Device == nil {
-			return "LG-KH1300"
-		}
-		return r.Services.Device.Config().Model
-	case "BATTERYLEVEL":
-		return r.batteryLevelSystemProperty()
-	case "MAXBATTLEVEL":
-		return "5"
+	case "PHONEMODEL", "BATTERYLEVEL", "MAXBATTLEVEL":
+		return r.handsetSystemProperty(normalized), true
 	default:
-		return ""
+		return "", false
 	}
 }

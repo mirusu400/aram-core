@@ -131,7 +131,13 @@ func (vm *VM) collectGarbage() error {
 				markReference(alias)
 			}
 		}
-		for _, value := range object.Fields {
+		for name, value := range object.Fields {
+			// java.lang.ref.Reference is deliberately a non-strong edge. A live
+			// WeakReference must not keep its referent alive.
+			if name == referenceValueField &&
+				vm.IsInstance(reference, "java/lang/ref/Reference") {
+				continue
+			}
 			markValue(value)
 		}
 		if object.Array != nil {
@@ -182,6 +188,25 @@ func (vm *VM) collectGarbage() error {
 		}
 	}
 
+	// Clear weak referents before reclaiming them so a surviving Reference.get
+	// never exposes a dangling VM handle.
+	for reference, object := range vm.heap {
+		if _, live := reachable[reference]; !live ||
+			!vm.IsInstance(reference, "java/lang/ref/Reference") {
+			continue
+		}
+		value, ok := object.Fields[referenceValueField]
+		if !ok || value.Kind != ValueReference {
+			continue
+		}
+		referent := uint32(value.bits)
+		if referent != 0 {
+			if _, live := reachable[referent]; !live {
+				object.Fields[referenceValueField] = ReferenceValue(0)
+			}
+		}
+	}
+
 	for reference, object := range vm.heap {
 		if _, marked := reachable[reference]; marked {
 			continue
@@ -214,6 +239,14 @@ func (vm *VM) collectGarbage() error {
 			}
 			state.closed = true
 			state.request = 0
+		}
+		if state, ok := object.Native.(*serialConnectionState); ok &&
+			!state.closed && state.serial != 0 {
+			if err := vm.services.Network.CloseSerial(vm.serviceOwner, state.serial, vm.services.Events); err != nil {
+				return fmt.Errorf("collect SKVM serial connection %d: %w", reference, err)
+			}
+			state.closed = true
+			state.serial = 0
 		}
 		delete(vm.heap, reference)
 	}

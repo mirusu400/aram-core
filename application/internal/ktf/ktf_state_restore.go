@@ -2,14 +2,14 @@ package ktf
 
 import (
 	"fmt"
-	"github.com/mirusu400/aram-core/cpu"
-	"github.com/mirusu400/aram-core/internal/ime"
 	"image"
 	"image/color"
 	"strconv"
 	"strings"
 
 	"github.com/mirusu400/aram-core/application/internal/guest"
+	"github.com/mirusu400/aram-core/cpu"
+	"github.com/mirusu400/aram-core/internal/ime"
 	shared "github.com/mirusu400/aram-core/runtime"
 )
 
@@ -34,7 +34,9 @@ func validateKTFMetadata(
 		len(meta.HostJavaVirtualSlots), len(meta.UnimplementedJava),
 		len(meta.RandomSeeds), len(meta.IntegerValues),
 		len(meta.LongValues), len(meta.ThrowableMessages),
-		len(meta.Dates), len(meta.Vectors), len(meta.Hashtables),
+		len(meta.Dates), len(meta.TimeZones), len(meta.CalendarZones),
+		len(meta.Vectors), len(meta.VectorCapacities),
+		len(meta.VectorCapacityIncrements), len(meta.Hashtables),
 		len(meta.Enumerations), len(meta.Clips), len(meta.Listeners),
 		len(meta.LWCEventData), len(meta.LWCChildren),
 		len(meta.LWCMaxLengths), len(meta.LWCComponents),
@@ -43,7 +45,15 @@ func validateKTFMetadata(
 		len(meta.StringBuffers), len(meta.InputStreams),
 		len(meta.InputTargets), len(meta.OutputStreams),
 		len(meta.OutputTargets), len(meta.Files), len(meta.FileData),
-		len(meta.FileStreamTargets), len(meta.Images), len(meta.Graphics),
+		len(meta.FileStreamTargets), len(meta.WIPI2IODevices),
+		len(meta.WIPI2SMSMessages), len(meta.WIPI2ResourceGroups),
+		len(meta.WIPI2Resources), len(meta.WIPI2Handset.Addresses),
+		len(meta.WIPI2Handset.AddressObjects),
+		len(meta.WIPI2Handset.AddressShortcuts),
+		len(meta.WIPI2Handset.GPSConfigs),
+		len(meta.WIPI2Handset.GPSLocations),
+		len(meta.WIPI2Handset.StationLocations),
+		len(meta.Images), len(meta.AnimateImages), len(meta.Graphics),
 		len(meta.WIPICFramebuffers), len(meta.WIPICImages),
 		len(meta.WIPICResources), len(meta.WIPICResourceIDs),
 		len(meta.WIPICMemory), len(meta.WIPICTimers),
@@ -72,6 +82,24 @@ func validateKTFMetadata(
 		(len(meta.Tasks) != 0 && meta.TaskCursor >= int32(len(meta.Tasks))) ||
 		meta.ActiveTask < -1 || meta.ActiveTask >= int32(len(meta.Tasks)) {
 		return fmt.Errorf("invalid KTF task cursor")
+	}
+	if ktfCallState(meta.JavaCall.State) > ktfCallEnded ||
+		len(meta.JavaCall.Number) > 64 ||
+		strings.IndexByte(meta.JavaCall.Number, 0) >= 0 {
+		return fmt.Errorf("invalid KTF Java call state")
+	}
+	for instance, zone := range meta.TimeZones {
+		if instance == 0 || len(zone.ID) > 64 ||
+			strings.IndexByte(zone.ID, 0) >= 0 ||
+			zone.RawOffset < -24*60*60*1000 ||
+			zone.RawOffset > 24*60*60*1000 {
+			return fmt.Errorf("invalid KTF Java time zone")
+		}
+	}
+	for calendar, zone := range meta.CalendarZones {
+		if calendar == 0 || meta.TimeZones[zone].ID == "" {
+			return fmt.Errorf("invalid KTF Java calendar time zone")
+		}
 	}
 	for index, task := range meta.Tasks {
 		if len(task.Context) > guest.MaxStateContext ||
@@ -375,6 +403,10 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	r.wipicAssetServices = guest.CloneMap(meta.WIPICAssetServices)
 	r.wipicTimerServices = guest.CloneMap(meta.WIPICTimerServices)
 	r.clipServices = guest.CloneMap(meta.ClipServices)
+	r.javaCall = ktfCall{
+		state: ktfCallState(meta.JavaCall.State), number: meta.JavaCall.Number,
+		requestSequence: meta.JavaCall.RequestSequence, ppp: meta.JavaCall.PPP,
+	}
 	r.DatabaseServices = guest.CloneMap(meta.DatabaseServices)
 	r.fileServices = guest.CloneMap(meta.FileServices)
 	r.wipicFileServices = guest.CloneMap(meta.WIPICFileServices)
@@ -414,6 +446,10 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	// counter is host bookkeeping, so it stays out of the save format.
 	r.javaClassGeneration++
 	r.JavaStrings = guest.CloneMap(meta.JavaStrings)
+	r.internedStrings = guest.CloneMap(meta.InternedStrings)
+	if r.internedStrings == nil {
+		r.internedStrings = make(map[string]uint32)
+	}
 	r.javaClassObjs = guest.CloneMap(meta.JavaClassObjs)
 	r.classObjTarget = guest.CloneMap(meta.ClassObjTarget)
 	r.hostJavaClass = guest.CloneMap(meta.HostJavaClass)
@@ -458,7 +494,27 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	r.longValues = guest.CloneMap(meta.LongValues)
 	r.throwableMessages = guest.CloneMap(meta.ThrowableMessages)
 	r.dates = guest.CloneMap(meta.Dates)
+	r.timeZones = make(map[uint32]ktfTimeZone, len(meta.TimeZones))
+	for instance, zone := range meta.TimeZones {
+		r.timeZones[instance] = ktfTimeZone{
+			id: zone.ID, rawOffset: zone.RawOffset, daylight: zone.Daylight,
+			startYear: zone.StartYear, startMonth: zone.StartMonth,
+			startWeek: zone.StartWeek, startDayOfWeek: zone.StartDayOfWeek,
+			startTime: zone.StartTime, endMonth: zone.EndMonth,
+			endWeek: zone.EndWeek, endDayOfWeek: zone.EndDayOfWeek,
+			endTime: zone.EndTime,
+		}
+	}
+	r.calendarZones = guest.CloneMap(meta.CalendarZones)
+	if r.timeZones == nil {
+		r.timeZones = make(map[uint32]ktfTimeZone)
+	}
+	if r.calendarZones == nil {
+		r.calendarZones = make(map[uint32]uint32)
+	}
 	r.Vectors = guest.CloneSliceMap(meta.Vectors)
+	r.vectorCapacities = guest.CloneMap(meta.VectorCapacities)
+	r.vectorCapacityIncrements = guest.CloneMap(meta.VectorCapacityIncrements)
 	r.hashtables = make(
 		map[uint32]map[string]ktfHashtableEntry,
 		len(meta.Hashtables),
@@ -486,13 +542,48 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	for instance, clip := range meta.Clips {
 		r.clips[instance] = &ktfClip{
 			volume: clip.Volume, listener: clip.Listener,
-			playing: clip.Playing, data: append([]byte(nil), clip.Data...),
+			playing: clip.Playing, capacity: int(clip.Capacity),
+			bufferSet: clip.BufferSet, data: append([]byte(nil), clip.Data...),
+			cameraMode: clip.CameraMode, cameraProperty: clip.CameraProperty,
+			cameraRect: clip.CameraRect, oemDisplay: clip.OEMDisplay,
+			preview: clip.Preview, stopTime: clip.StopTime,
+			mediaModeValues: guest.CloneMap(clip.MediaModeValues),
+			waterMark:       clip.WaterMark, waterMarkActive: clip.WaterMarkActive,
 		}
+	}
+	r.mediaVolume = meta.MediaVolume
+	if r.mediaVolume == 0 && meta.MediaDefaultVolumes == nil && meta.MediaMute == nil {
+		// Saves from before the WIPI 2 Volume model used no metadata fields.
+		r.mediaVolume = 100
+	}
+	r.mediaMute = guest.CloneMap(meta.MediaMute)
+	if r.mediaMute == nil {
+		r.mediaMute = make(map[int32]bool)
+	}
+	r.mediaDefaultVolumes = guest.CloneMap(meta.MediaDefaultVolumes)
+	if r.mediaDefaultVolumes == nil {
+		r.mediaDefaultVolumes = make(map[int32]int32)
 	}
 	r.listeners = guest.CloneMap(meta.Listeners)
 	r.lwcEventData = guest.CloneMap(meta.LWCEventData)
 	r.lwcChildren = guest.CloneSliceMap(meta.LWCChildren)
 	r.lwcMaxLengths = guest.CloneMap(meta.LWCMaxLengths)
+	r.inputConstraints = guest.CloneMap(meta.InputConstraints)
+	if r.inputConstraints == nil {
+		r.inputConstraints = make(map[uint32]int32)
+	}
+	r.inputListeners = guest.CloneMap(meta.InputListeners)
+	if r.inputListeners == nil {
+		r.inputListeners = make(map[uint32]uint32)
+	}
+	r.inputModes = guest.CloneMap(meta.InputModes)
+	if r.inputModes == nil {
+		r.inputModes = make(map[uint32]int32)
+	}
+	r.inputSymbolBounds = guest.CloneMap(meta.InputSymbolBounds)
+	if r.inputSymbolBounds == nil {
+		r.inputSymbolBounds = make(map[uint32][4]int32)
+	}
 	// The field input methods are a live cache of a half-composed glyph, so a
 	// restore starts them empty rather than carrying the previous run's.
 	r.lwcTextInput = make(map[uint32]*ime.Automata)
@@ -518,6 +609,16 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	r.DefaultDisplay = meta.DefaultDisplay
 	r.MainJlet = meta.MainJlet
 	r.eventQueue = meta.EventQueue
+	r.eventQueueEvents = append([]ktfJavaEvent(nil), meta.EventQueueEvents...)
+	r.eventHooks = guest.CloneMap(meta.EventHooks)
+	if r.eventHooks == nil {
+		r.eventHooks = make(map[uint32]uint32)
+	}
+	r.jletEventListeners = append([]uint32(nil), meta.JletEventListeners...)
+	r.grabbedKeys = guest.CloneMap(meta.GrabbedKeys)
+	if r.grabbedKeys == nil {
+		r.grabbedKeys = make(map[int32]uint32)
+	}
 	r.sharedBuffers = guest.CloneMap(meta.SharedBuffers)
 	if r.sharedBuffers == nil {
 		r.sharedBuffers = make(map[string]uint32)
@@ -526,6 +627,10 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	r.ThreadTargets = guest.CloneMap(meta.ThreadTargets)
 	r.currentThread = meta.CurrentThread
 	r.stringBuffers = guest.CloneMap(meta.StringBuffers)
+	r.stringBufferCaps = guest.CloneMap(meta.StringBufferCapacities)
+	if r.stringBufferCaps == nil {
+		r.stringBufferCaps = make(map[uint32]uint32)
+	}
 	r.inputStreams = make(
 		map[uint32]*ktfInputStream,
 		len(meta.InputStreams),
@@ -540,9 +645,18 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	r.inputTargets = guest.CloneMap(meta.InputTargets)
 	r.outputStreams = guest.CloneSliceMap(meta.OutputStreams)
 	r.outputTargets = guest.CloneMap(meta.OutputTargets)
+	r.printStreamErrors = guest.CloneMap(meta.PrintStreamErrors)
+	if r.printStreamErrors == nil {
+		r.printStreamErrors = make(map[uint32]bool)
+	}
 	r.files = restoreKTFFiles(meta.Files)
 	r.FileData = guest.CloneSliceMap(meta.FileData)
 	r.fileStreamTargets = guest.CloneMap(meta.FileStreamTargets)
+	r.wipi2IODevices = restoreWIPI2IODevices(meta.WIPI2IODevices)
+	r.wipi2SMSMessages = guest.CloneSliceMap(meta.WIPI2SMSMessages)
+	r.wipi2ResourceGroups = restoreWIPI2ResourceGroups(meta.WIPI2ResourceGroups)
+	r.wipi2Resources = restoreWIPI2Resources(meta.WIPI2Resources)
+	restoreWIPI2Handset(r, meta.WIPI2Handset)
 	r.systemInputStream = meta.SystemInputStream
 	r.systemPrintStream = meta.SystemPrintStream
 	r.hostReservedFieldClass = meta.HostReservedFieldClass
@@ -551,6 +665,7 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	if err := restoreKTFImagesAndGraphics(r, meta, saved.imagePixels); err != nil {
 		return err
 	}
+	r.animateImages = restoreKTFAnimateImages(meta.AnimateImages)
 	r.defaultFont = meta.DefaultFont
 	r.ScreenGraphics = meta.ScreenGraphics
 	r.wipicFramebuffers = restoreKTFWIPICFramebuffers(meta.WIPICFramebuffers)
@@ -633,6 +748,12 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 		if index < len(saved.taskThreads) {
 			r.Tasks[index].javaThread = saved.taskThreads[index]
 		}
+		if index < len(saved.taskJoinThreads) {
+			r.Tasks[index].joinThread = saved.taskJoinThreads[index]
+		}
+		if index < len(saved.taskMonitorWait) {
+			r.Tasks[index].monitorWait = saved.taskMonitorWait[index]
+		}
 	}
 	for index, task := range meta.Tasks {
 		if task.StartBlocker >= 0 {
@@ -689,7 +810,7 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 }
 
 func restoreKTFLWC(value ktfLWCSnapshot) *ktfLWCComponent {
-	return &ktfLWCComponent{
+	result := &ktfLWCComponent{
 		x: value.X, y: value.Y, width: value.Width, height: value.Height,
 		preferredWidth:  value.PreferredWidth,
 		preferredHeight: value.PreferredHeight,
@@ -698,7 +819,8 @@ func restoreKTFLWC(value ktfLWCSnapshot) *ktfLWCComponent {
 		command: value.Command, work: value.Work, focus: value.Focus,
 		text: value.Text, gap: value.Gap, shown: value.Shown,
 		valid: value.Valid, focused: value.Focused,
-		vertical: value.Vertical, packed: value.Packed,
+		backgroundSet: value.BackgroundSet,
+		vertical:      value.Vertical, packed: value.Packed,
 		annunciator: value.Annunciator, transparent: value.Transparent,
 		progressValue: value.ProgressValue,
 		progressMax:   value.ProgressMax, progressStep: value.ProgressStep,
@@ -709,11 +831,29 @@ func restoreKTFLWC(value ktfLWCSnapshot) *ktfLWCComponent {
 		progressInput: value.ProgressInput,
 		font:          value.Font, image: value.Image,
 		imageActive: value.ImageActive, group: value.Group,
-		date: value.Date, mode: value.Mode, minimum: value.Minimum,
+		date: value.Date, grabListener: value.GrabListener,
+		timeZone:   value.TimeZone,
+		itemImages: append([]uint32(nil), value.ItemImages...),
+		grabObject: value.GrabObject,
+		mode:       value.Mode, layout: value.Layout, minimum: value.Minimum,
 		viewAmount: value.ViewAmount, changeAmount: value.ChangeAmount,
 		delay: value.Delay, activeIndex: value.ActiveIndex,
-		selected: value.Selected,
+		framed: value.Framed, commandGrabs: value.CommandGrabs,
+		selected: value.Selected, numberVisible: value.NumberVisible,
 	}
+	if len(value.SelectedItems) != 0 {
+		result.selectedItems = make(map[int32]bool, len(value.SelectedItems))
+		for _, index := range value.SelectedItems {
+			result.selectedItems[index] = true
+		}
+	}
+	if len(value.GrabbedKeys) != 0 {
+		result.grabbedKeys = make(map[int32]bool, len(value.GrabbedKeys))
+		for _, key := range value.GrabbedKeys {
+			result.grabbedKeys[key] = true
+		}
+	}
+	return result
 }
 
 func restoreKTFDatabase(value ktfDatabaseSnapshot) *Database {

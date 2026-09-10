@@ -201,6 +201,7 @@ func (m *Machine) Start(ctx context.Context) error {
 		m.started = true
 		err = m.pumpAndPaintLocked(ctx, 0)
 	}
+	err = m.consumeHaltLocked(err)
 	if err == nil {
 		err = m.consumeInstructionsLocked(before)
 	}
@@ -440,7 +441,9 @@ func (m *Machine) StepFrame(ctx context.Context) error {
 		return m.faultLocked(err)
 	}
 	frameStartedAt := m.services.Clock.Monotonic()
-	if err := m.pumpAndPaintLocked(ctx, m.services.Config.FrameDuration); err != nil {
+	if err := m.consumeHaltLocked(
+		m.pumpAndPaintLocked(ctx, m.services.Config.FrameDuration),
+	); err != nil {
 		return m.faultLocked(err)
 	}
 	frameFinishedAt := m.services.Clock.Monotonic()
@@ -461,6 +464,18 @@ func (m *Machine) StepFrame(ctx context.Context) error {
 	}
 	m.state = machinecore.StatePaused
 	return nil
+}
+
+// consumeHaltLocked turns a title's own exit into an ordinary frame. A MIDlet
+// that calls System.exit, Runtime.exit or notifyDestroyed has ended itself,
+// which is not a failure of the machine: the VM stops running guest code and
+// the host keeps presenting the last frame the title drew. Every other error
+// passes through to the caller's fault handling.
+func (m *Machine) consumeHaltLocked(err error) error {
+	if err != nil && errors.Is(err, skengine.ErrHalted) {
+		return nil
+	}
+	return err
 }
 
 func (m *Machine) pumpAndPaintLocked(

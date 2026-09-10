@@ -20,11 +20,29 @@ type httpConnectionState struct {
 	closed  bool
 }
 
+type serialConnectionState struct {
+	serial shared.ServiceID
+	closed bool
+}
+
+const (
+	connectionURLField       = "\x00aram-connection-url"
+	connectionLocalHostField = "\x00aram-connection-local-host"
+	connectionLocalPortField = "\x00aram-connection-local-port"
+	connectionOptionsField   = "\x00aram-connection-options"
+)
+
 func (vm *VM) installConnectionNatives() {
 	vm.RegisterNative(
 		"javax/microedition/io/Connector",
 		"open",
 		"(Ljava/lang/String;)Ljavax/microedition/io/Connection;",
+		nativeOpenConnection,
+	)
+	vm.RegisterNative(
+		"javax/microedition/io/Connector",
+		"open",
+		"(Ljava/lang/String;I)Ljavax/microedition/io/Connection;",
 		nativeOpenConnection,
 	)
 	vm.RegisterNative(
@@ -117,6 +135,10 @@ func (vm *VM) installConnectionNatives() {
 			method, err := vm.stringArgument(args, 0)
 			if err != nil {
 				return Value{}, false, err
+			}
+			method = strings.ToUpper(method)
+			if method != "GET" && method != "POST" && method != "HEAD" {
+				return Value{}, false, vm.newThrowable("java/io/IOException", "unsupported HTTP method")
 			}
 			state, request, err := vm.mutableHTTPRequest(receiver)
 			if err != nil {
@@ -219,9 +241,14 @@ func (vm *VM) installConnectionNatives() {
 					break
 				}
 			}
+			if contentType == "" {
+				return ReferenceValue(0), true, nil
+			}
 			return ReferenceValue(vm.NewString(contentType)), true, nil
 		},
 	)
+	vm.installCLDCConnectionExtras()
+	vm.installMIDPConnectionExtras()
 
 	vm.RegisterNative(
 		"org/kwis/msf/io/Network",
@@ -277,6 +304,37 @@ func (vm *VM) openConnection(rawURL, objectClass string) (uint32, error) {
 			"invalid connection URL",
 		)
 	}
+	if strings.EqualFold(parsed.Scheme, "comm") {
+		portText := parsed.Opaque
+		if portText == "" {
+			portText = strings.TrimPrefix(parsed.Path, "//")
+		}
+		parts := strings.Split(portText, ";")
+		portValue, parseErr := strconv.ParseInt(parts[0], 10, 32)
+		if parseErr != nil || portValue < 0 {
+			return 0, vm.newThrowable("java/lang/IllegalArgumentException", "invalid comm port")
+		}
+		baud := int32(9600)
+		for _, option := range parts[1:] {
+			name, value, found := strings.Cut(option, "=")
+			if found && strings.EqualFold(name, "baudrate") {
+				parsedBaud, baudErr := strconv.ParseInt(value, 10, 32)
+				if baudErr != nil || parsedBaud <= 0 {
+					return 0, vm.newThrowable("java/lang/IllegalArgumentException", "invalid baud rate")
+				}
+				baud = int32(parsedBaud)
+			}
+		}
+		serial, openErr := vm.services.Network.OpenSerial(vm.serviceOwner, int32(portValue))
+		if openErr != nil {
+			return 0, vm.newThrowable("java/io/IOException", openErr.Error())
+		}
+		reference := vm.NewObject("javax/microedition/io/CommConnection", &serialConnectionState{serial: serial})
+		object, _ := vm.Object(reference)
+		object.Fields[connectionURLField] = ReferenceValue(vm.NewString(rawURL))
+		object.Fields[commBaudField] = IntValue(baud)
+		return reference, nil
+	}
 	if strings.EqualFold(parsed.Scheme, "http") ||
 		strings.EqualFold(parsed.Scheme, "https") {
 		request, openErr := vm.services.Network.OpenHTTP(vm.serviceOwner, rawURL)
@@ -285,10 +343,55 @@ func (vm *VM) openConnection(rawURL, objectClass string) (uint32, error) {
 		}
 		if objectClass == "" {
 			objectClass = "javax/microedition/io/HttpConnection"
+			if strings.EqualFold(parsed.Scheme, "https") {
+				objectClass = "javax/microedition/io/HttpsConnection"
+			}
 		}
-		return vm.NewObject(objectClass, &httpConnectionState{request: request}), nil
+		reference := vm.NewObject(objectClass, &httpConnectionState{request: request})
+		object, _ := vm.Object(reference)
+		object.Fields[connectionURLField] = ReferenceValue(vm.NewString(rawURL))
+		return reference, nil
 	}
-	if !strings.EqualFold(parsed.Scheme, "socket") ||
+	if strings.EqualFold(parsed.Scheme, "datagram") {
+		if parsed.User != nil || parsed.Port() == "" || parsed.Path != "" ||
+			parsed.RawQuery != "" || parsed.Fragment != "" {
+			return 0, vm.newThrowable("java/lang/IllegalArgumentException", "invalid datagram URL")
+		}
+		portValue, parseErr := strconv.ParseUint(parsed.Port(), 10, 16)
+		if parseErr != nil || portValue == 0 {
+			return 0, vm.newThrowable("java/lang/IllegalArgumentException", "invalid datagram port")
+		}
+		host := parsed.Hostname()
+		if host == "" {
+			host = "127.0.0.1"
+		}
+		socket, openErr := vm.services.Network.OpenSocket(vm.serviceOwner, 2, 2)
+		if openErr == nil {
+			openErr = vm.services.Network.ConnectSocket(vm.serviceOwner, socket, host, uint16(portValue))
+		}
+		if openErr == nil {
+			openErr = vm.services.CompleteSocketResponse(vm.serviceOwner, socket, true, vm.services.Clock.Monotonic())
+		}
+		if openErr != nil {
+			if socket != 0 {
+				_ = vm.services.Network.CloseSocket(vm.serviceOwner, socket, vm.services.Events)
+			}
+			return 0, vm.newThrowable("java/io/IOException", openErr.Error())
+		}
+		reference := vm.NewObject("javax/microedition/io/UDPDatagramConnection", &socketConnectionState{socket: socket})
+		vm.initializeSocketFields(reference, rawURL, "127.0.0.1", 0)
+		return reference, nil
+	}
+	if strings.EqualFold(parsed.Scheme, "socket") && parsed.Hostname() == "" &&
+		parsed.Port() != "" && parsed.User == nil && parsed.Path == "" &&
+		parsed.RawQuery == "" && parsed.Fragment == "" {
+		portValue, parseErr := strconv.ParseUint(parsed.Port(), 10, 16)
+		if parseErr != nil || portValue == 0 {
+			return 0, vm.newThrowable("java/lang/IllegalArgumentException", "invalid server socket port")
+		}
+		return vm.newServerSocketConnection(uint16(portValue)), nil
+	}
+	if (!strings.EqualFold(parsed.Scheme, "socket") && !strings.EqualFold(parsed.Scheme, "ssl")) ||
 		parsed.User != nil || parsed.Hostname() == "" ||
 		parsed.Port() == "" || parsed.Path != "" ||
 		parsed.RawQuery != "" || parsed.Fragment != "" {
@@ -333,11 +436,29 @@ func (vm *VM) openConnection(rawURL, objectClass string) (uint32, error) {
 	}
 	if objectClass == "" {
 		objectClass = "javax/microedition/io/SocketConnection"
+		if strings.EqualFold(parsed.Scheme, "ssl") {
+			objectClass = "javax/microedition/io/SecureConnection"
+		}
 	}
-	return vm.NewObject(
+	reference := vm.NewObject(
 		objectClass,
 		&socketConnectionState{socket: socket},
-	), nil
+	)
+	vm.initializeSocketFields(reference, rawURL, "127.0.0.1", 0)
+	return reference, nil
+}
+
+func (vm *VM) initializeSocketFields(reference uint32, rawURL, localHost string, localPort int32) {
+	object, ok := vm.Object(reference)
+	if !ok {
+		return
+	}
+	object.Fields[connectionURLField] = ReferenceValue(vm.NewString(rawURL))
+	object.Fields[connectionLocalHostField] = ReferenceValue(vm.NewString(localHost))
+	object.Fields[connectionLocalPortField] = IntValue(localPort)
+	object.Fields[connectionOptionsField] = ReferenceValue(vm.newArray("[I", []Value{
+		IntValue(1), IntValue(0), IntValue(0), IntValue(8192), IntValue(8192),
+	}))
 }
 
 func nativeOpenConnectionInputStream(
@@ -407,6 +528,15 @@ func nativeCloseConnection(
 		}
 		state.closed = true
 		state.request = 0
+	case *serialConnectionState:
+		if state.closed {
+			return Value{}, false, nil
+		}
+		if err := vm.services.Network.CloseSerial(vm.serviceOwner, state.serial, vm.services.Events); err != nil {
+			return Value{}, false, vm.newThrowable("java/io/IOException", err.Error())
+		}
+		state.closed = true
+		state.serial = 0
 	default:
 		return Value{}, false, fmt.Errorf("object %d is not a connection", receiver)
 	}
@@ -456,13 +586,18 @@ func (vm *VM) ensureOpenConnection(reference uint32) error {
 	if !ok {
 		return fmt.Errorf("invalid connection reference %d", reference)
 	}
-	switch object.Native.(type) {
+	switch state := object.Native.(type) {
 	case *socketConnectionState:
 		_, err := vm.openSocketConnection(reference)
 		return err
 	case *httpConnectionState:
 		_, err := vm.openHTTPConnection(reference)
 		return err
+	case *serialConnectionState:
+		if state.closed || state.serial == 0 {
+			return vm.newThrowable("java/io/IOException", "connection closed")
+		}
+		return nil
 	default:
 		return fmt.Errorf("object %d is not a connection", reference)
 	}
@@ -592,6 +727,15 @@ func (vm *VM) refreshSocketInput(state *inputStreamState) error {
 		if err != nil {
 			return vm.newThrowable("java/io/IOException", err.Error())
 		}
+	case *serialConnectionState:
+		if connection.closed || connection.serial == 0 {
+			return vm.newThrowable("java/io/IOException", "connection closed")
+		}
+		serialData, serialErr := vm.services.Network.SerialRead(vm.serviceOwner, connection.serial, 1<<20)
+		if serialErr != nil {
+			return vm.newThrowable("java/io/IOException", serialErr.Error())
+		}
+		data = serialData
 	default:
 		return fmt.Errorf("object %d is not a stream connection", state.connection)
 	}
@@ -644,6 +788,13 @@ func (vm *VM) writeOutputStream(state *outputStreamState, data []byte) error {
 				request.RequestHeaders,
 				body,
 			); err != nil {
+				return vm.newThrowable("java/io/IOException", err.Error())
+			}
+		case *serialConnectionState:
+			if connection.closed || connection.serial == 0 {
+				return vm.newThrowable("java/io/IOException", "connection closed")
+			}
+			if _, err := vm.services.Network.SerialWrite(vm.serviceOwner, connection.serial, data); err != nil {
 				return vm.newThrowable("java/io/IOException", err.Error())
 			}
 		default:

@@ -8,6 +8,7 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"math"
 	"strconv"
 	"strings"
 	"unicode/utf16"
@@ -34,6 +35,20 @@ func (r *Runtime) handleStringMethod(
 		}
 		number := int64(uint64(high)<<32 | uint64(instance))
 		return r.NewJavaString(strconv.FormatInt(number, 10))
+	case "valueOf(F)Ljava/lang/String;":
+		return r.NewJavaString(formatJavaFloatingPoint(
+			float64(math.Float32frombits(instance)),
+			32,
+		))
+	case "valueOf(D)Ljava/lang/String;":
+		high, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		return r.NewJavaString(formatJavaFloatingPoint(
+			math.Float64frombits(uint64(high)<<32|uint64(instance)),
+			64,
+		))
 	case "valueOf(Z)Ljava/lang/String;":
 		if instance == 0 {
 			return r.NewJavaString("false")
@@ -78,6 +93,17 @@ func (r *Runtime) handleStringMethod(
 			return 0, valueErr
 		}
 		return 0, r.materializeJavaString(instance, r.javaStringValue(source))
+	case "<init>(Ljava/lang/StringBuffer;)V":
+		source, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if source == 0 {
+			return 0, r.raiseHostJavaException(
+				"java/lang/NullPointerException",
+			)
+		}
+		return 0, r.materializeJavaString(instance, r.stringBuffers[source])
 	case "<init>([B)V":
 		array, valueErr := r.parameter(2)
 		if valueErr != nil {
@@ -364,12 +390,28 @@ func (r *Runtime) handleStringMethod(
 			return 0, valueErr
 		}
 		return r.NewJavaString(value + r.javaStringValue(other))
-	case "startsWith(Ljava/lang/String;)Z":
+	case "startsWith(Ljava/lang/String;)Z",
+		"startsWith(Ljava/lang/String;I)Z":
 		prefix, valueErr := r.parameter(2)
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		if strings.HasPrefix(value, r.javaStringValue(prefix)) {
+		if prefix == 0 {
+			return 0, r.raiseHostJavaException(
+				"java/lang/NullPointerException",
+			)
+		}
+		offset := int32(0)
+		if descriptor == "(Ljava/lang/String;I)Z" {
+			rawOffset, parameterErr := r.parameter(3)
+			if parameterErr != nil {
+				return 0, parameterErr
+			}
+			offset = int32(rawOffset)
+		}
+		prefixUnits := utf16.Encode([]rune(r.javaStringValue(prefix)))
+		if offset >= 0 && int64(offset)+int64(len(prefixUnits)) <= int64(len(codeUnits)) &&
+			slicesEqualUint16(codeUnits[offset:int(offset)+len(prefixUnits)], prefixUnits) {
 			return 1, nil
 		}
 		return 0, nil
@@ -519,6 +561,15 @@ func (r *Runtime) handleStringMethod(
 			return instance, nil
 		}
 		return r.NewJavaString(string(utf16.Decode(replaced)))
+	case "intern()Ljava/lang/String;":
+		if canonical := r.internedStrings[value]; canonical != 0 {
+			return canonical, nil
+		}
+		if r.internedStrings == nil {
+			r.internedStrings = make(map[string]uint32)
+		}
+		r.internedStrings[value] = instance
+		return instance, nil
 	default:
 		return 0, nil
 	}
@@ -550,17 +601,26 @@ func trimHandsetStringBytes(data []byte, encoding shared.TextEncoding) []byte {
 }
 
 func javaCharsetEncoding(name string) shared.TextEncoding {
+	if encoding, ok := lookupJavaCharsetEncoding(name); ok {
+		return encoding
+	}
+	return shared.EncodingEUCKR
+}
+
+func lookupJavaCharsetEncoding(name string) (shared.TextEncoding, bool) {
 	switch strings.ToUpper(strings.TrimSpace(name)) {
 	case "UTF-8", "UTF8":
-		return shared.EncodingUTF8
+		return shared.EncodingUTF8, true
 	case "UTF-16LE", "UTF16LE", "UNICODELITTLE", "UNICODELITTLEUNMARKED",
 		"X-UTF-16LE":
-		return shared.EncodingUTF16LE
+		return shared.EncodingUTF16LE, true
 	case "UTF-16", "UTF16", "UTF-16BE", "UTF16BE", "UNICODE", "UNICODEBIG",
 		"UNICODEBIGUNMARKED", "ISO-10646-UCS-2":
-		return shared.EncodingUTF16BE
+		return shared.EncodingUTF16BE, true
+	case "EUC-KR", "EUCKR", "KSC5601", "KSC-5601", "MS949", "CP949":
+		return shared.EncodingEUCKR, true
 	default:
-		return shared.EncodingEUCKR
+		return "", false
 	}
 }
 
@@ -608,6 +668,106 @@ func javaCodePointUnits(value uint32) ([]uint16, bool) {
 	return utf16.Encode([]rune{rune(value)}), true
 }
 
+func slicesEqualUint16(left, right []uint16) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+// formatJavaFloatingPoint follows the presentation rules shared by
+// Float.toString, Double.toString, String.valueOf and StringBuffer append.
+// strconv supplies the shortest round-tripping significand; this normalizes
+// Java's special values, decimal point, exponent threshold and exponent form.
+func formatJavaFloatingPoint(value float64, bitSize int) string {
+	switch {
+	case math.IsNaN(value):
+		return "NaN"
+	case math.IsInf(value, 1):
+		return "Infinity"
+	case math.IsInf(value, -1):
+		return "-Infinity"
+	case value == 0:
+		if math.Signbit(value) {
+			return "-0.0"
+		}
+		return "0.0"
+	}
+	abs := math.Abs(value)
+	if abs >= 1e-3 && abs < 1e7 {
+		text := strconv.FormatFloat(value, 'f', -1, bitSize)
+		if !strings.Contains(text, ".") {
+			text += ".0"
+		}
+		return text
+	}
+	text := strconv.FormatFloat(value, 'e', -1, bitSize)
+	exponentAt := strings.LastIndexByte(text, 'e')
+	if exponentAt < 0 {
+		return text
+	}
+	mantissa := text[:exponentAt]
+	if !strings.Contains(mantissa, ".") {
+		mantissa += ".0"
+	}
+	exponent, err := strconv.Atoi(text[exponentAt+1:])
+	if err != nil {
+		return text
+	}
+	return mantissa + "E" + strconv.Itoa(exponent)
+}
+
+func (r *Runtime) stringBufferCodeUnits(instance uint32) []uint16 {
+	return utf16.Encode([]rune(r.stringBuffers[instance]))
+}
+
+func (r *Runtime) setStringBufferCodeUnits(instance uint32, units []uint16) {
+	r.stringBuffers[instance] = string(utf16.Decode(units))
+	delete(r.stringBuffersConsumed, instance)
+}
+
+func (r *Runtime) stringBufferCapacity(instance uint32) uint32 {
+	if capacity, ok := r.stringBufferCaps[instance]; ok {
+		return capacity
+	}
+	capacity := uint32(16)
+	if length := uint32(len(r.stringBufferCodeUnits(instance))); length > capacity {
+		capacity = length
+	}
+	if r.stringBufferCaps == nil {
+		r.stringBufferCaps = make(map[uint32]uint32)
+	}
+	r.stringBufferCaps[instance] = capacity
+	return capacity
+}
+
+func (r *Runtime) ensureStringBufferCapacity(instance, minimum uint32) {
+	current := r.stringBufferCapacity(instance)
+	if minimum <= current {
+		return
+	}
+	grown := uint64(current)*2 + 2
+	if grown < uint64(minimum) {
+		grown = uint64(minimum)
+	}
+	if grown > math.MaxInt32 {
+		grown = math.MaxInt32
+	}
+	r.stringBufferCaps[instance] = uint32(grown)
+}
+
+func (r *Runtime) appendStringBuffer(instance uint32, value string) {
+	units := r.stringBufferCodeUnits(instance)
+	appended := utf16.Encode([]rune(value))
+	r.ensureStringBufferCapacity(instance, uint32(len(units)+len(appended)))
+	r.setStringBufferCodeUnits(instance, append(units, appended...))
+}
+
 func (r *Runtime) newJavaCharArray(value string) (uint32, error) {
 	codeUnits := utf16.Encode([]rune(value))
 	array, err := r.NewJavaArray("[C", uint32(len(codeUnits)), 2)
@@ -645,8 +805,23 @@ func (r *Runtime) handleStringBufferMethod(
 		}
 	}
 	switch name + descriptor {
-	case "<init>()V", "<init>(I)V":
+	case "<init>()V":
 		r.stringBuffers[instance] = ""
+		r.stringBufferCaps[instance] = 16
+		delete(r.stringBuffersConsumed, instance)
+		return 0, nil
+	case "<init>(I)V":
+		capacity, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if int32(capacity) < 0 {
+			return 0, r.raiseHostJavaException(
+				"java/lang/NegativeArraySizeException",
+			)
+		}
+		r.stringBuffers[instance] = ""
+		r.stringBufferCaps[instance] = capacity
 		delete(r.stringBuffersConsumed, instance)
 		return 0, nil
 	case "<init>(Ljava/lang/String;)V":
@@ -654,7 +829,15 @@ func (r *Runtime) handleStringBufferMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
+		if value == 0 {
+			return 0, r.raiseHostJavaException(
+				"java/lang/NullPointerException",
+			)
+		}
 		r.stringBuffers[instance] = r.javaStringValue(value)
+		r.stringBufferCaps[instance] = uint32(
+			len(r.stringBufferCodeUnits(instance)) + 16,
+		)
 		delete(r.stringBuffersConsumed, instance)
 		return 0, nil
 	case "append(Ljava/lang/String;)Ljava/lang/StringBuffer;":
@@ -662,14 +845,14 @@ func (r *Runtime) handleStringBufferMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		r.stringBuffers[instance] += r.javaStringValue(value)
+		r.appendStringBuffer(instance, r.javaStringValue(value))
 		return instance, nil
 	case "append(Ljava/lang/Object;)Ljava/lang/StringBuffer;":
 		value, valueErr := r.parameter(2)
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		r.stringBuffers[instance] += r.javaObjectString(value)
+		r.appendStringBuffer(instance, r.javaObjectString(value))
 		return instance, nil
 	case "append(Z)Ljava/lang/StringBuffer;":
 		value, valueErr := r.parameter(2)
@@ -677,9 +860,9 @@ func (r *Runtime) handleStringBufferMethod(
 			return 0, valueErr
 		}
 		if value == 0 {
-			r.stringBuffers[instance] += "false"
+			r.appendStringBuffer(instance, "false")
 		} else {
-			r.stringBuffers[instance] += "true"
+			r.appendStringBuffer(instance, "true")
 		}
 		return instance, nil
 	case "append(I)Ljava/lang/StringBuffer;":
@@ -687,7 +870,7 @@ func (r *Runtime) handleStringBufferMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		r.stringBuffers[instance] += fmt.Sprintf("%d", int32(value))
+		r.appendStringBuffer(instance, strconv.FormatInt(int64(int32(value)), 10))
 		return instance, nil
 	case "append(J)Ljava/lang/StringBuffer;":
 		low, valueErr := r.parameter(2)
@@ -699,33 +882,70 @@ func (r *Runtime) handleStringBufferMethod(
 			return 0, valueErr
 		}
 		value := int64(uint64(high)<<32 | uint64(low))
-		r.stringBuffers[instance] += fmt.Sprintf("%d", value)
+		r.appendStringBuffer(instance, strconv.FormatInt(value, 10))
 		return instance, nil
 	case "append(C)Ljava/lang/StringBuffer;":
 		value, valueErr := r.parameter(2)
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		r.stringBuffers[instance] += string(rune(uint16(value)))
+		r.appendStringBuffer(instance, string(rune(uint16(value))))
 		return instance, nil
-	case "append([CII)Ljava/lang/StringBuffer;":
+	case "append([C)Ljava/lang/StringBuffer;",
+		"append([CII)Ljava/lang/StringBuffer;":
 		array, valueErr := r.parameter(2)
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		offset, valueErr := r.parameter(3)
+		if array == 0 {
+			return 0, r.raiseHostJavaException(
+				"java/lang/NullPointerException",
+			)
+		}
+		offset := uint32(0)
+		count, valueErr := r.javaArrayLength(array)
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		count, valueErr := r.parameter(4)
-		if valueErr != nil {
-			return 0, valueErr
+		if descriptor == "([CII)Ljava/lang/StringBuffer;" {
+			offset, valueErr = r.parameter(3)
+			if valueErr != nil {
+				return 0, valueErr
+			}
+			count, valueErr = r.parameter(4)
+			if valueErr != nil {
+				return 0, valueErr
+			}
 		}
 		value, valueErr := r.readJavaCharArrayRange(array, offset, count)
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		r.stringBuffers[instance] += value
+		r.appendStringBuffer(instance, value)
+		return instance, nil
+	case "append(F)Ljava/lang/StringBuffer;":
+		bits, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		r.appendStringBuffer(instance, formatJavaFloatingPoint(
+			float64(math.Float32frombits(bits)),
+			32,
+		))
+		return instance, nil
+	case "append(D)Ljava/lang/StringBuffer;":
+		low, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		high, valueErr := r.parameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		r.appendStringBuffer(instance, formatJavaFloatingPoint(
+			math.Float64frombits(uint64(high)<<32|uint64(low)),
+			64,
+		))
 		return instance, nil
 	case "delete(II)Ljava/lang/StringBuffer;":
 		start, valueErr := r.parameter(2)
@@ -736,22 +956,20 @@ func (r *Runtime) handleStringBufferMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		runes := []rune(r.stringBuffers[instance])
-		if start > end || start > uint32(len(runes)) {
-			return 0, fmt.Errorf(
-				"KTF StringBuffer delete range [%d,%d) exceeds %d",
-				start,
-				end,
-				len(runes),
+		units := r.stringBufferCodeUnits(instance)
+		if int32(start) < 0 || int32(end) < 0 ||
+			start > end || start > uint32(len(units)) {
+			return 0, r.raiseHostJavaException(
+				"java/lang/StringIndexOutOfBoundsException",
 			)
 		}
-		if end > uint32(len(runes)) {
-			end = uint32(len(runes))
+		if end > uint32(len(units)) {
+			end = uint32(len(units))
 		}
-		r.stringBuffers[instance] = string(
-			append(runes[:start:start], runes[end:]...),
+		r.setStringBufferCodeUnits(
+			instance,
+			append(units[:start:start], units[end:]...),
 		)
-		delete(r.stringBuffersConsumed, instance)
 		return instance, nil
 	case "toString()Ljava/lang/String;":
 		r.stringBuffersConsumed[instance] = true
@@ -761,31 +979,46 @@ func (r *Runtime) handleStringBufferMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		runes := []rune(r.stringBuffers[instance])
-		switch {
-		case length < uint32(len(runes)):
-			runes = runes[:length]
-		case length > uint32(len(runes)):
-			runes = append(runes, make([]rune, length-uint32(len(runes)))...)
+		if int32(length) < 0 {
+			return 0, r.raiseHostJavaException(
+				"java/lang/StringIndexOutOfBoundsException",
+			)
 		}
-		r.stringBuffers[instance] = string(runes)
+		units := r.stringBufferCodeUnits(instance)
+		switch {
+		case length < uint32(len(units)):
+			units = units[:length]
+		case length > uint32(len(units)):
+			r.ensureStringBufferCapacity(instance, length)
+			units = append(units, make([]uint16, length-uint32(len(units)))...)
+		}
+		r.setStringBufferCodeUnits(instance, units)
 		return 0, nil
 	case "length()I":
-		return uint32(len([]rune(r.stringBuffers[instance]))), nil
+		return uint32(len(r.stringBufferCodeUnits(instance))), nil
 	case "capacity()I":
-		return uint32(len([]rune(r.stringBuffers[instance]))), nil
+		return r.stringBufferCapacity(instance), nil
 	case "ensureCapacity(I)V":
+		minimum, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if int32(minimum) > 0 {
+			r.ensureStringBufferCapacity(instance, minimum)
+		}
 		return 0, nil
 	case "charAt(I)C":
 		index, valueErr := r.parameter(2)
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		runes := []rune(r.stringBuffers[instance])
-		if index >= uint32(len(runes)) {
-			return 0, nil
+		units := r.stringBufferCodeUnits(instance)
+		if int32(index) < 0 || index >= uint32(len(units)) {
+			return 0, r.raiseHostJavaException(
+				"java/lang/StringIndexOutOfBoundsException",
+			)
 		}
-		return uint32(runes[index]), nil
+		return uint32(units[index]), nil
 	case "getChars(II[CI)V":
 		sourceBegin, valueErr := r.parameter(2)
 		if valueErr != nil {
@@ -845,48 +1078,57 @@ func (r *Runtime) handleStringBufferMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		runes := []rune(r.stringBuffers[instance])
-		if index >= uint32(len(runes)) {
-			return 0, fmt.Errorf(
-				"KTF StringBuffer setCharAt index %d exceeds %d",
-				index,
-				len(runes),
+		units := r.stringBufferCodeUnits(instance)
+		if int32(index) < 0 || index >= uint32(len(units)) {
+			return 0, r.raiseHostJavaException(
+				"java/lang/StringIndexOutOfBoundsException",
 			)
 		}
-		runes[index] = rune(uint16(character))
-		r.stringBuffers[instance] = string(runes)
-		delete(r.stringBuffersConsumed, instance)
+		units[index] = uint16(character)
+		r.setStringBufferCodeUnits(instance, units)
 		return 0, nil
 	case "deleteCharAt(I)Ljava/lang/StringBuffer;":
 		index, valueErr := r.parameter(2)
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		runes := []rune(r.stringBuffers[instance])
-		if index >= uint32(len(runes)) {
-			return 0, fmt.Errorf(
-				"KTF StringBuffer deleteCharAt index %d exceeds %d",
-				index,
-				len(runes),
+		units := r.stringBufferCodeUnits(instance)
+		if int32(index) < 0 || index >= uint32(len(units)) {
+			return 0, r.raiseHostJavaException(
+				"java/lang/StringIndexOutOfBoundsException",
 			)
 		}
-		r.stringBuffers[instance] = string(
-			append(runes[:index:index], runes[index+1:]...),
+		r.setStringBufferCodeUnits(
+			instance,
+			append(units[:index:index], units[index+1:]...),
 		)
 		return instance, nil
 	case "reverse()Ljava/lang/StringBuffer;":
-		runes := []rune(r.stringBuffers[instance])
-		for left, right := 0, len(runes)-1; left < right; left, right = left+1, right-1 {
-			runes[left], runes[right] = runes[right], runes[left]
+		units := r.stringBufferCodeUnits(instance)
+		for left, right := 0, len(units)-1; left < right; left, right = left+1, right-1 {
+			units[left], units[right] = units[right], units[left]
 		}
-		r.stringBuffers[instance] = string(runes)
+		// Reversing raw UTF-16 units swaps each valid surrogate pair. Repair
+		// those adjacent low/high pairs so a supplementary character remains
+		// a character while its position in the sequence is reversed.
+		for index := 0; index+1 < len(units); index++ {
+			if units[index] >= 0xdc00 && units[index] <= 0xdfff &&
+				units[index+1] >= 0xd800 && units[index+1] <= 0xdbff {
+				units[index], units[index+1] = units[index+1], units[index]
+				index++
+			}
+		}
+		r.setStringBufferCodeUnits(instance, units)
 		return instance, nil
 	case "insert(ILjava/lang/String;)Ljava/lang/StringBuffer;",
 		"insert(ILjava/lang/Object;)Ljava/lang/StringBuffer;",
+		"insert(I[C)Ljava/lang/StringBuffer;",
 		"insert(IC)Ljava/lang/StringBuffer;",
 		"insert(II)Ljava/lang/StringBuffer;",
 		"insert(IZ)Ljava/lang/StringBuffer;",
-		"insert(IJ)Ljava/lang/StringBuffer;":
+		"insert(IJ)Ljava/lang/StringBuffer;",
+		"insert(IF)Ljava/lang/StringBuffer;",
+		"insert(ID)Ljava/lang/StringBuffer;":
 		offset, valueErr := r.parameter(2)
 		if valueErr != nil {
 			return 0, valueErr
@@ -901,36 +1143,65 @@ func (r *Runtime) handleStringBufferMethod(
 			inserted = r.javaStringValue(value)
 		case "(ILjava/lang/Object;)Ljava/lang/StringBuffer;":
 			inserted = r.javaObjectString(value)
+		case "(I[C)Ljava/lang/StringBuffer;":
+			if value == 0 {
+				return 0, r.raiseHostJavaException(
+					"java/lang/NullPointerException",
+				)
+			}
+			length, lengthErr := r.javaArrayLength(value)
+			if lengthErr != nil {
+				return 0, lengthErr
+			}
+			inserted, valueErr = r.readJavaCharArrayRange(value, 0, length)
+			if valueErr != nil {
+				return 0, valueErr
+			}
 		case "(IC)Ljava/lang/StringBuffer;":
 			inserted = string(rune(uint16(value)))
 		case "(II)Ljava/lang/StringBuffer;":
-			inserted = fmt.Sprintf("%d", int32(value))
+			inserted = strconv.FormatInt(int64(int32(value)), 10)
 		case "(IZ)Ljava/lang/StringBuffer;":
 			inserted = "false"
 			if value != 0 {
 				inserted = "true"
 			}
-		default: // (IJ)
+		case "(IF)Ljava/lang/StringBuffer;":
+			inserted = formatJavaFloatingPoint(
+				float64(math.Float32frombits(value)),
+				32,
+			)
+		case "(IJ)Ljava/lang/StringBuffer;", "(ID)Ljava/lang/StringBuffer;":
 			high, highErr := r.parameter(4)
 			if highErr != nil {
 				return 0, highErr
 			}
-			inserted = fmt.Sprintf(
-				"%d",
-				int64(uint64(high)<<32|uint64(value)),
+			bits := uint64(high)<<32 | uint64(value)
+			if descriptor == "(IJ)Ljava/lang/StringBuffer;" {
+				inserted = strconv.FormatInt(int64(bits), 10)
+			} else {
+				inserted = formatJavaFloatingPoint(
+					math.Float64frombits(bits),
+					64,
+				)
+			}
+		}
+		units := r.stringBufferCodeUnits(instance)
+		if int32(offset) < 0 || offset > uint32(len(units)) {
+			return 0, r.raiseHostJavaException(
+				"java/lang/StringIndexOutOfBoundsException",
 			)
 		}
-		runes := []rune(r.stringBuffers[instance])
-		if offset > uint32(len(runes)) {
-			return 0, fmt.Errorf(
-				"KTF StringBuffer insert offset %d exceeds %d",
-				offset,
-				len(runes),
-			)
-		}
-		r.stringBuffers[instance] = string(runes[:offset]) +
-			inserted +
-			string(runes[offset:])
+		insertedUnits := utf16.Encode([]rune(inserted))
+		r.ensureStringBufferCapacity(
+			instance,
+			uint32(len(units)+len(insertedUnits)),
+		)
+		updated := make([]uint16, 0, len(units)+len(insertedUnits))
+		updated = append(updated, units[:offset]...)
+		updated = append(updated, insertedUnits...)
+		updated = append(updated, units[offset:]...)
+		r.setStringBufferCodeUnits(instance, updated)
 		return instance, nil
 	default:
 		r.recordUnimplementedJava("java/lang/StringBuffer", name, descriptor)

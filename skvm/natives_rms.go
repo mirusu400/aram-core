@@ -44,6 +44,15 @@ func (vm *VM) installRecordStoreNatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
+			for _, object := range vm.heap {
+				state, ok := object.Native.(*recordStoreState)
+				if ok && state.name == name && state.id != 0 {
+					return Value{}, false, vm.newThrowable(
+						"javax/microedition/rms/RecordStoreException",
+						"record store is open",
+					)
+				}
+			}
 			if err := vm.services.Storage.DeleteRecordStoreNamed(
 				vm.serviceOwner,
 				name,
@@ -179,4 +188,5 @@ func (vm *VM) installRecordStoreNatives() {
 			return IntValue(int32(count)), true, nil
 		},
 	)
+	vm.installRecordStoreExtras()
 }

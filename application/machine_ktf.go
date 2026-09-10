@@ -345,8 +345,9 @@ func (m *Machine) queueKTFInput(runtime *ktfrt.Runtime) error {
 		if event.At > now {
 			continue
 		}
-		if _, known := guest.InputKeyCode(event.Control); known {
-			if runtime.DefaultDisplay != 0 && !runtime.CanAwaitEvents() {
+		if key, known := guest.InputKeyCode(event.Control); known {
+			if runtime.DefaultDisplay != 0 &&
+				!runtime.CanAwaitKeyEvent(int32(key)) {
 				// Once a title has established a Display, a physical key has no
 				// recipient after it removes that Display's last card (or starts
 				// terminating). The handset drops it at that point; retaining it
@@ -356,7 +357,7 @@ func (m *Machine) queueKTFInput(runtime *ktfrt.Runtime) error {
 				m.input = append(m.input[:index], m.input[index+1:]...)
 				break
 			}
-			if !runtime.CanQueueKeyEvent() {
+			if !runtime.CanQueueKeyEventFor(int32(key)) {
 				break
 			}
 		}

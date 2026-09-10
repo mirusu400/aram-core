@@ -60,6 +60,11 @@ func (vm *VM) installCoreNatives() {
 				return Value{}, false, err
 			}
 			name = strings.ReplaceAll(name, ".", "/")
+			if !strings.HasPrefix(name, "[") && vm.classes[name] == nil {
+				if _, ok := vm.hostSupers[name]; !ok {
+					return Value{}, false, vm.newThrowable("java/lang/ClassNotFoundException", name)
+				}
+			}
 			return ReferenceValue(vm.NewObject("java/lang/Class", name)), true, nil
 		},
 	)
@@ -432,6 +437,9 @@ func (vm *VM) installCoreNatives() {
 	vm.installRandomNatives()
 	vm.installMIDletNatives()
 	vm.installDisplayNatives()
+	vm.installMIDPLCDUINatives()
+	vm.installMIDPGameNatives()
+	vm.installMIDPMediaNatives()
 	vm.installGraphicsNatives()
 	vm.installRecordStoreNatives()
 	vm.installSKTNatives()
@@ -485,7 +493,7 @@ func (vm *VM) installHostStaticFields() {
 		"java/lang/System",
 		"out",
 		"Ljava/io/PrintStream;",
-		ReferenceValue(vm.NewObject("java/io/PrintStream", nil)),
+		ReferenceValue(vm.NewObject("java/io/PrintStream", &outputStreamState{})),
 	)
 	vm.RegisterStaticField(
 		"javax/microedition/lcdui/TextField",

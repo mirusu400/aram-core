@@ -776,7 +776,11 @@ func (r *Runtime) addHostJavaField(
 	if err != nil {
 		return 0, err
 	}
-	field, err := r.AllocateWords(4)
+	fieldWords := uint32(4)
+	if descriptor == "J" || descriptor == "D" {
+		fieldWords = 5
+	}
+	field, err := r.AllocateWords(fieldWords)
 	if err != nil {
 		return 0, err
 	}
@@ -814,6 +818,15 @@ func (r *Runtime) addHostJavaField(
 		}
 		if err := r.WriteU32(field+12, value); err != nil {
 			return 0, err
+		}
+		if fieldWords == 5 {
+			high, err := r.hostJavaStaticFieldHighValue(class.Name, name)
+			if err != nil {
+				return 0, err
+			}
+			if err := r.WriteU32(field+16, high); err != nil {
+				return 0, err
+			}
 		}
 	}
 	classWords, err := r.ReadWords(class.Address, 5)
@@ -920,6 +933,20 @@ func (r *Runtime) hostJavaInstanceFieldValue(
 func (r *Runtime) hostJavaStaticFieldValue(
 	className, name string,
 ) (uint32, error) {
+	bits, ok := javaStaticConstantBits(className, name)
+	if ok {
+		return uint32(bits), nil
+	}
+	if className == "java/lang/Thread" {
+		switch name {
+		case "MIN_PRIORITY":
+			return 1, nil
+		case "NORM_PRIORITY":
+			return 5, nil
+		case "MAX_PRIORITY":
+			return 10, nil
+		}
+	}
 	if className == "java/lang/System" {
 		switch name {
 		case "in":
@@ -979,7 +1006,201 @@ func (r *Runtime) hostJavaStaticFieldValue(
 			return 64, nil
 		}
 	}
+	if className == "org/kwis/msp/io/FileSystem" && name == "MAX_FILENAME_LENGTH" {
+		return uint32(min(
+			r.Services.Config.Limits.Storage.MaxPathBytes,
+			uint32(0x7fffffff),
+		)), nil
+	}
 	return 0, nil
+}
+
+func (r *Runtime) hostJavaStaticFieldHighValue(
+	className, name string,
+) (uint32, error) {
+	bits, ok := javaStaticConstantBits(className, name)
+	if ok {
+		return uint32(bits >> 32), nil
+	}
+	return 0, nil
+}
+
+func javaStaticConstantBits(className, name string) (uint64, bool) {
+	switch className + "." + name {
+	case "java/lang/Byte.MIN_VALUE":
+		return uint64(^uint32(127)), true
+	case "java/lang/Byte.MAX_VALUE":
+		return 127, true
+	case "java/lang/Short.MIN_VALUE":
+		return uint64(^uint32(32767)), true
+	case "java/lang/Short.MAX_VALUE":
+		return 32767, true
+	case "java/lang/Character.MIN_VALUE":
+		return 0, true
+	case "java/lang/Character.MAX_VALUE":
+		return 0xffff, true
+	case "java/lang/Character.MIN_RADIX":
+		return 2, true
+	case "java/lang/Character.MAX_RADIX":
+		return 36, true
+	case "java/lang/Integer.MIN_VALUE":
+		return uint64(uint32(0x80000000)), true
+	case "java/lang/Integer.MAX_VALUE":
+		return 0x7fffffff, true
+	case "java/lang/Long.MIN_VALUE":
+		return uint64(1) << 63, true
+	case "java/lang/Long.MAX_VALUE":
+		return uint64(1)<<63 - 1, true
+	case "java/lang/Float.MIN_VALUE":
+		return 0x00000001, true
+	case "java/lang/Float.MAX_VALUE":
+		return 0x7f7fffff, true
+	case "java/lang/Float.NaN":
+		return 0x7fc00000, true
+	case "java/lang/Float.NEGATIVE_INFINITY":
+		return 0xff800000, true
+	case "java/lang/Float.POSITIVE_INFINITY":
+		return 0x7f800000, true
+	case "java/lang/Double.MIN_VALUE":
+		return 0x0000000000000001, true
+	case "java/lang/Double.MAX_VALUE":
+		return 0x7fefffffffffffff, true
+	case "java/lang/Double.NaN":
+		return 0x7ff8000000000000, true
+	case "java/lang/Double.NEGATIVE_INFINITY":
+		return 0xfff0000000000000, true
+	case "java/lang/Double.POSITIVE_INFINITY":
+		return 0x7ff0000000000000, true
+	case "java/lang/Math.E":
+		return 0x4005bf0a8b145769, true
+	case "java/lang/Math.PI":
+		return 0x400921fb54442d18, true
+	case "org/kwis/msp/io/SMSMessage.SHORT_MESSAGE":
+		return 0, true
+	case "org/kwis/msp/io/SMSMessage.UNKNOWN":
+		return 1, true
+	case "org/kwis/msp/io/ResourceGroup.GROUP_UNLOCKED",
+		"org/kwis/msp/io/ResourceGroup.UNLOCKED":
+		return 0, true
+	case "org/kwis/msp/io/ResourceGroup.GROUP_LOCKED",
+		"org/kwis/msp/io/ResourceGroup.LOCKED":
+		return 1, true
+	case "org/kwis/msp/handset/AddressBook.SEARCH_NAME",
+		"org/kwis/msp/handset/AddressBook.TYPE_INT",
+		"org/kwis/msp/handset/GPSConfig.OPT_SPEED",
+		"org/kwis/msp/handset/GPSConfig.SERVER_TCPIP",
+		"org/kwis/msp/handset/GPSConfig.MS_ASSISTED",
+		"org/kwis/msp/handset/GPSProvider.REQUEST_ONCE":
+		return 0, true
+	case "org/kwis/msp/handset/AddressBook.SEARCH_PHONE_NO",
+		"org/kwis/msp/handset/AddressBook.TYPE_STRING",
+		"org/kwis/msp/handset/GPSConfig.OPT_ACCURACY",
+		"org/kwis/msp/handset/GPSConfig.SERVER_DBURST",
+		"org/kwis/msp/handset/GPSConfig.MS_BASED":
+		return 1, true
+	case "org/kwis/msp/handset/AddressBook.SEARCH_EMAIL",
+		"org/kwis/msp/handset/AddressBook.TYPE_IMAGE":
+		return 2, true
+	case "org/kwis/msp/handset/AddressBook.SEARCH_GROUP",
+		"org/kwis/msp/handset/AddressBook.TYPE_SOUND":
+		return 3, true
+	case "org/kwis/msp/handset/AddressBook.TYPE_BINARY":
+		return 4, true
+	case "org/kwis/msp/handset/GPSProvider.REQUEST_STOP":
+		return uint64(^uint32(0)), true
+	case "org/kwis/msp/io/File.READ_ONLY",
+		"org/kwis/msp/io/FileSystem.PRIVATE_ACCESS":
+		return 1, true
+	case "org/kwis/msp/io/File.WRITE",
+		"org/kwis/msp/io/FileSystem.SHARED_ACCESS":
+		return 2, true
+	case "org/kwis/msp/io/File.WRITE_TRUNC",
+		"org/kwis/msp/io/FileSystem.SYSTEM_ACCESS":
+		return 3, true
+	case "org/kwis/msp/io/File.READ_WRITE":
+		return 4, true
+	case "org/kwis/msp/lwc/ListComponent.SELECT_IMPLICIT",
+		"org/kwis/msp/media/Volume.VOLTYPE_GENERAL":
+		return 0, true
+	case "org/kwis/msp/lwc/ListComponent.SELECT_EXCLUSIVE",
+		"org/kwis/msp/media/Volume.VOLTYPE_VOICE":
+		return 1, true
+	case "org/kwis/msp/lwc/ListComponent.SELECT_MULTIPLE",
+		"org/kwis/msp/media/Volume.VOLTYPE_RING":
+		return 2, true
+	case "org/kwis/msp/media/Volume.VOLTYPE_KEYTONE":
+		return 3, true
+	case "org/kwis/msp/media/Volume.VOLTYPE_MESSAGE":
+		return 4, true
+	case "org/kwis/msp/media/Volume.VOLTYPE_ALARM":
+		return 5, true
+	case "org/kwis/msp/media/Volume.VOLTYPE_ALERT":
+		return 6, true
+	case "org/kwis/msp/media/Volume.VOLTYPE_MMEDIA":
+		return 7, true
+	case "org/kwis/msp/media/Volume.VOLTYPE_GAME":
+		return 8, true
+	case "org/kwis/msp/media/PlayListener.ERROR",
+		"org/kwis/msp/media/PlayerListener.ERROR":
+		return uint64(^uint32(0)), true
+	case "org/kwis/msp/media/PlayListener.END_OF_DATA",
+		"org/kwis/msp/media/PlayerListener.END_OF_DATA":
+		return 1, true
+	case "org/kwis/msp/media/PlayListener.START",
+		"org/kwis/msp/media/PlayListener.STARTED",
+		"org/kwis/msp/media/PlayerListener.START",
+		"org/kwis/msp/media/PlayerListener.STARTED":
+		return 2, true
+	case "org/kwis/msp/media/PlayListener.STOP",
+		"org/kwis/msp/media/PlayListener.STOPPED",
+		"org/kwis/msp/media/PlayerListener.STOP",
+		"org/kwis/msp/media/PlayerListener.STOPPED":
+		return 3, true
+	case "org/kwis/msp/media/PlayListener.PAUSE",
+		"org/kwis/msp/media/PlayListener.PAUSED",
+		"org/kwis/msp/media/PlayerListener.PAUSE",
+		"org/kwis/msp/media/PlayerListener.PAUSED":
+		return 4, true
+	case "org/kwis/msp/media/PlayListener.RESUME",
+		"org/kwis/msp/media/PlayListener.RESUMED",
+		"org/kwis/msp/media/PlayerListener.RESUME",
+		"org/kwis/msp/media/PlayerListener.RESUMED":
+		return 5, true
+	case "org/kwis/msp/media/PlayListener.RECORD",
+		"org/kwis/msp/media/PlayListener.RECORDED",
+		"org/kwis/msp/media/PlayerListener.RECORD",
+		"org/kwis/msp/media/PlayerListener.RECORDED":
+		return 6, true
+	case "org/kwis/msp/media/PlayListener.FULL_OF_DATA",
+		"org/kwis/msp/media/PlayerListener.FULL_OF_DATA":
+		return 7, true
+	case "org/kwis/msp/media/Camera.DETECT",
+		"org/kwis/msp/media/Camera.NORMAL":
+		return 0, true
+	case "org/kwis/msp/media/Camera.MODEL",
+		"org/kwis/msp/media/Camera.HORZ_REVERSE":
+		return 1, true
+	case "org/kwis/msp/media/Camera.GET_MODE_LIST",
+		"org/kwis/msp/media/Camera.VERT_REVERSE":
+		return 2, true
+	case "org/kwis/msp/media/Camera.SET_MODE",
+		"org/kwis/msp/media/Camera.BOTH_REVERSE":
+		return 3, true
+	case "org/kwis/msp/media/Camera.SET_AXIS",
+		"org/kwis/msp/media/Camera.ROTATE90":
+		return 4, true
+	case "org/kwis/msp/media/Camera.PREVIEW_START",
+		"org/kwis/msp/media/Camera.ROTATE180":
+		return 5, true
+	case "org/kwis/msp/media/Camera.PREVIEW_STOP",
+		"org/kwis/msp/media/Camera.ROTATE270":
+		return 6, true
+	case "org/kwis/msp/media/Camera.CAPTRUE_INTERVAL",
+		"org/kwis/msp/media/Camera.CAPTURE_INTERVAL":
+		return 7, true
+	default:
+		return 0, false
+	}
 }
 
 func (r *Runtime) resolveJavaMethod(
@@ -1113,10 +1334,14 @@ func (r *Runtime) addHostJavaMethod(
 	}
 	accessFlags := uint16(1)
 	declaredByHostSpec := false
+	compatibilityVTable := false
 	if spec, ok := HostJavaClassSpecs[class.Name]; ok {
+		compatibilityVTable = spec.compatibilityVTable
 		for _, method := range spec.methods {
 			if method.name == name && method.descriptor == descriptor {
 				accessFlags = method.access
+				compatibilityVTable = compatibilityVTable ||
+					method.compatibility
 				declaredByHostSpec = true
 				break
 			}
@@ -1176,7 +1401,7 @@ func (r *Runtime) addHostJavaMethod(
 	if err := r.WriteU32(classWords[2]+24, countAndFields); err != nil {
 		return 0, err
 	}
-	compatibilityVirtual := !declaredByHostSpec &&
+	compatibilityVirtual := (!declaredByHostSpec || compatibilityVTable) &&
 		accessFlags&(0x0002|0x0008) == 0 &&
 		!strings.HasPrefix(name, "<")
 	if compatibilityVirtual {

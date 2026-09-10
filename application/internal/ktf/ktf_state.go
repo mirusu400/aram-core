@@ -18,7 +18,11 @@ const (
 	ktfStateSchemaV5     = uint32(5)
 	ktfStateSchemaV6     = uint32(6)
 	ktfStateSchemaV7     = uint32(7)
-	ktfStateSchema       = uint32(8)
+	ktfStateSchemaV8     = uint32(8)
+	ktfStateSchemaV9     = uint32(9)
+	ktfStateSchemaV10    = uint32(10)
+	ktfStateSchemaV11    = uint32(11)
+	ktfStateSchema       = uint32(12)
 	maxKTFStateMetadata  = uint32(64 << 20)
 	maxKTFStateEntries   = 16_384
 	maxKTFStateHostCalls = int(HostSize / 4)
@@ -48,6 +52,8 @@ type SavedState struct {
 	// taskThreads names the java/lang/Thread each task runs, in task order.
 	// An older save has none and its tasks fall back to the Jlet's thread.
 	taskThreads     []uint32
+	taskJoinThreads []uint32
+	taskMonitorWait []uint32
 	wipicInputModes uint32
 }
 
@@ -206,29 +212,60 @@ type ktfEnumerationSnapshot struct {
 }
 
 type ktfClipSnapshot struct {
-	Volume   int32
-	Listener uint32
-	Playing  bool
-	Data     []byte
+	Volume                     int32
+	Listener                   uint32
+	Playing                    bool
+	Capacity                   int32
+	BufferSet                  bool
+	Data                       []byte
+	CameraMode, CameraProperty int32
+	CameraRect                 [4]int32
+	OEMDisplay, Preview        bool
+	StopTime                   int32
+	MediaModeValues            map[string]int32
+	WaterMark                  int32
+	WaterMarkActive            bool
+}
+
+type ktfCallSnapshot struct {
+	State           uint8
+	Number          string
+	RequestSequence uint64
+	PPP             bool
+}
+
+type ktfTimeZoneSnapshot struct {
+	ID                        string
+	RawOffset                 int32
+	Daylight                  bool
+	StartYear                 int32
+	StartMonth, StartWeek     int32
+	StartDayOfWeek, StartTime int32
+	EndMonth, EndWeek         int32
+	EndDayOfWeek, EndTime     int32
 }
 
 type ktfLWCSnapshot struct {
-	X, Y, Width, Height                  int32
-	PreferredWidth, PreferredHeight      int32
-	Background, Foreground, Parent, Card uint32
-	Title, Command, Work, Focus, Text    uint32
-	Gap, ProgressValue, ProgressMax      int32
-	ProgressStep, ProgressTop            int32
-	ProgressBottom, DialogType           int32
-	DialogTimeout, DialogAction          int32
-	DialogOK, DialogCancel               uint32
-	Font, Image, ImageActive             uint32
-	Group, Date                          uint32
-	Mode, Minimum, ViewAmount            int32
-	ChangeAmount, Delay, ActiveIndex     int32
-	Shown, Valid, Focused                bool
-	Vertical, Packed, Annunciator        bool
-	Transparent, ProgressInput, Selected bool
+	X, Y, Width, Height                                 int32
+	PreferredWidth, PreferredHeight                     int32
+	Background, Foreground, Parent, Card                uint32
+	Title, Command, Work, Focus, Text                   uint32
+	Gap, ProgressValue, ProgressMax                     int32
+	ProgressStep, ProgressTop                           int32
+	ProgressBottom, DialogType                          int32
+	DialogTimeout, DialogAction                         int32
+	DialogOK, DialogCancel                              uint32
+	Font, Image, ImageActive                            uint32
+	Group, Date, TimeZone, GrabListener, GrabObject     uint32
+	ItemImages                                          []uint32
+	SelectedItems                                       []int32
+	GrabbedKeys                                         []int32
+	Mode, Layout, Minimum, ViewAmount                   int32
+	ChangeAmount, Delay, ActiveIndex                    int32
+	Shown, Valid, Focused, BackgroundSet                bool
+	Vertical, Packed, Framed, CommandGrabs, Annunciator bool
+	Transparent, ProgressInput, Selected                bool
+	NumberVisible                                       bool
 }
 
 type ktfDatabaseSnapshot struct {
@@ -339,6 +376,7 @@ type ktfMetadataSnapshot struct {
 
 	JavaClasses          map[string]uint32
 	JavaStrings          map[uint32]string
+	InternedStrings      map[string]uint32
 	JavaClassObjs        map[uint32]uint32
 	ClassObjTarget       map[uint32]uint32
 	HostJavaClass        map[uint32]bool
@@ -374,14 +412,26 @@ type ktfMetadataSnapshot struct {
 	LongValues               map[uint32]int64
 	ThrowableMessages        map[uint32]uint32
 	Dates                    map[uint32]int64
+	TimeZones                map[uint32]ktfTimeZoneSnapshot
+	CalendarZones            map[uint32]uint32
 	Vectors                  map[uint32][]uint32
+	VectorCapacities         map[uint32]uint32
+	VectorCapacityIncrements map[uint32]uint32
 	Hashtables               map[uint32]map[string]ktfHashtableEntrySnapshot
 	Enumerations             map[uint32]ktfEnumerationSnapshot
 	Clips                    map[uint32]ktfClipSnapshot
+	MediaVolume              int32
+	MediaMute                map[int32]bool
+	MediaDefaultVolumes      map[int32]int32
+	JavaCall                 ktfCallSnapshot
 	Listeners                map[uint32]uint32
 	LWCEventData             map[uint32]uint32
 	LWCChildren              map[uint32][]uint32
 	LWCMaxLengths            map[uint32]int32
+	InputConstraints         map[uint32]int32
+	InputListeners           map[uint32]uint32
+	InputModes               map[uint32]int32
+	InputSymbolBounds        map[uint32][4]int32
 	LWCComponents            map[uint32]ktfLWCSnapshot
 	Databases                map[uint32]string
 	DatabaseStores           map[string]ktfDatabaseSnapshot
@@ -389,24 +439,36 @@ type ktfMetadataSnapshot struct {
 	DefaultDisplay           uint32
 	MainJlet                 uint32
 	EventQueue               uint32
+	EventQueueEvents         []ktfJavaEvent
+	EventHooks               map[uint32]uint32
+	JletEventListeners       []uint32
+	GrabbedKeys              map[int32]uint32
 	SharedBuffers            map[string]uint32
 	DisplayCards             map[uint32]uint32
 	ThreadTargets            map[uint32]uint32
 	CurrentThread            uint32
 	StringBuffers            map[uint32]string
+	StringBufferCapacities   map[uint32]uint32
 	InputStreams             map[uint32]ktfInputStreamSnapshot
 	InputTargets             map[uint32]uint32
 	OutputStreams            map[uint32][]byte
 	OutputTargets            map[uint32]uint32
+	PrintStreamErrors        map[uint32]bool
 	Files                    map[uint32]ktfFileSnapshot
 	FileData                 map[string][]byte
 	FileStreamTargets        map[uint32]uint32
+	WIPI2IODevices           map[uint32]ktfWIPI2IODeviceSnapshot
+	WIPI2SMSMessages         map[uint32][]byte
+	WIPI2ResourceGroups      map[uint32]ktfWIPI2ResourceGroupSnapshot
+	WIPI2Resources           map[string]map[string]ktfWIPI2ResourceSnapshot
+	WIPI2Handset             ktfWIPI2HandsetSnapshot
 	SystemInputStream        uint32
 	SystemPrintStream        uint32
 	HostReservedFieldClass   uint32
 	SharedInputMethodHandler uint32
 
 	Images                 []uint32
+	AnimateImages          map[uint32]ktfAnimateImageSnapshot
 	DefaultFont            uint32
 	Graphics               map[uint32]ktfGraphicsSnapshot
 	ScreenGraphics         uint32
@@ -584,6 +646,15 @@ func WriteState(r *Runtime, backend cpu.Backend, started bool, writer *guest.Sta
 	// The input-method provider returns a stable pointer to its static mode
 	// table, so preserve that identity across save/restore.
 	writer.U32(r.wipicInputModes)
+	// Thread.join() is a scheduler wait rather than guest heap state.
+	for _, task := range r.Tasks {
+		writer.U32(task.joinThread)
+	}
+	// Object.wait() is also scheduler state, including indefinite waits whose
+	// WakeAtMS is zero.
+	for _, task := range r.Tasks {
+		writer.U32(task.monitorWait)
+	}
 	return nil
 }
 
@@ -620,6 +691,8 @@ func ParseState(r *Runtime,
 	if schema != ktfStateSchemaV2 && schema != ktfStateSchemaV3 &&
 		schema != ktfStateSchemaV4 && schema != ktfStateSchemaV5 &&
 		schema != ktfStateSchemaV6 && schema != ktfStateSchemaV7 &&
+		schema != ktfStateSchemaV8 && schema != ktfStateSchemaV9 &&
+		schema != ktfStateSchemaV10 && schema != ktfStateSchemaV11 &&
 		schema != ktfStateSchema {
 		return nil, decoder.Fail(fmt.Sprintf("unsupported KTF state schema %d", schema))
 	}
@@ -799,8 +872,28 @@ func ParseState(r *Runtime,
 		}
 	}
 	wipicInputModes := uint32(0)
-	if schema >= ktfStateSchema {
+	if schema >= ktfStateSchemaV8 {
 		wipicInputModes = decoder.U32()
+		if decoder.Err != nil {
+			return nil, decoder.Err
+		}
+	}
+	var taskJoinThreads []uint32
+	if schema >= ktfStateSchemaV9 {
+		taskJoinThreads = make([]uint32, len(metadata.Tasks))
+		for index := range taskJoinThreads {
+			taskJoinThreads[index] = decoder.U32()
+		}
+		if decoder.Err != nil {
+			return nil, decoder.Err
+		}
+	}
+	var taskMonitorWait []uint32
+	if schema >= ktfStateSchemaV10 {
+		taskMonitorWait = make([]uint32, len(metadata.Tasks))
+		for index := range taskMonitorWait {
+			taskMonitorWait[index] = decoder.U32()
+		}
 		if decoder.Err != nil {
 			return nil, decoder.Err
 		}
@@ -852,6 +945,8 @@ func ParseState(r *Runtime,
 		resolvedHostCalls:  resolvedCalls,
 		imagePixels:        imagePixels,
 		taskThreads:        taskThreads,
+		taskJoinThreads:    taskJoinThreads,
+		taskMonitorWait:    taskMonitorWait,
 		wipicInputModes:    wipicInputModes,
 	}, nil
 }
@@ -930,6 +1025,7 @@ func snapshotKTFMetadata(
 
 		JavaClasses:          guest.CloneMap(r.JavaClasses),
 		JavaStrings:          guest.CloneMap(r.JavaStrings),
+		InternedStrings:      guest.CloneMap(r.internedStrings),
 		JavaClassObjs:        guest.CloneMap(r.javaClassObjs),
 		ClassObjTarget:       guest.CloneMap(r.classObjTarget),
 		HostJavaClass:        guest.CloneMap(r.hostJavaClass),
@@ -965,31 +1061,53 @@ func snapshotKTFMetadata(
 		LongValues:               guest.CloneMap(r.longValues),
 		ThrowableMessages:        guest.CloneMap(r.throwableMessages),
 		Dates:                    guest.CloneMap(r.dates),
+		CalendarZones:            guest.CloneMap(r.calendarZones),
 		Vectors:                  guest.CloneSliceMap(r.Vectors),
+		VectorCapacities:         guest.CloneMap(r.vectorCapacities),
+		VectorCapacityIncrements: guest.CloneMap(r.vectorCapacityIncrements),
+		MediaVolume:              r.mediaVolume,
+		MediaMute:                guest.CloneMap(r.mediaMute),
+		MediaDefaultVolumes:      guest.CloneMap(r.mediaDefaultVolumes),
 		Listeners:                guest.CloneMap(r.listeners),
 		LWCEventData:             guest.CloneMap(r.lwcEventData),
 		LWCChildren:              guest.CloneSliceMap(r.lwcChildren),
 		LWCMaxLengths:            guest.CloneMap(r.lwcMaxLengths),
+		InputConstraints:         guest.CloneMap(r.inputConstraints),
+		InputListeners:           guest.CloneMap(r.inputListeners),
+		InputModes:               guest.CloneMap(r.inputModes),
+		InputSymbolBounds:        guest.CloneMap(r.inputSymbolBounds),
 		DefaultRuntime:           r.defaultRuntime,
 		DefaultDisplay:           r.DefaultDisplay,
 		MainJlet:                 r.MainJlet,
 		EventQueue:               r.eventQueue,
+		EventQueueEvents:         append([]ktfJavaEvent(nil), r.eventQueueEvents...),
+		EventHooks:               guest.CloneMap(r.eventHooks),
+		JletEventListeners:       append([]uint32(nil), r.jletEventListeners...),
+		GrabbedKeys:              guest.CloneMap(r.grabbedKeys),
 		SharedBuffers:            guest.CloneMap(r.sharedBuffers),
 		DisplayCards:             guest.CloneMap(r.DisplayCards),
 		ThreadTargets:            guest.CloneMap(r.ThreadTargets),
 		CurrentThread:            r.currentThread,
 		StringBuffers:            guest.CloneMap(r.stringBuffers),
+		StringBufferCapacities:   guest.CloneMap(r.stringBufferCaps),
 		InputTargets:             guest.CloneMap(r.inputTargets),
 		OutputStreams:            guest.CloneSliceMap(r.outputStreams),
 		OutputTargets:            guest.CloneMap(r.outputTargets),
+		PrintStreamErrors:        guest.CloneMap(r.printStreamErrors),
 		FileData:                 guest.CloneSliceMap(r.FileData),
 		FileStreamTargets:        guest.CloneMap(r.fileStreamTargets),
+		WIPI2IODevices:           snapshotWIPI2IODevices(r.wipi2IODevices),
+		WIPI2SMSMessages:         guest.CloneSliceMap(r.wipi2SMSMessages),
+		WIPI2ResourceGroups:      snapshotWIPI2ResourceGroups(r.wipi2ResourceGroups),
+		WIPI2Resources:           snapshotWIPI2Resources(r.wipi2Resources),
+		WIPI2Handset:             snapshotWIPI2Handset(r),
 		SystemInputStream:        r.systemInputStream,
 		SystemPrintStream:        r.systemPrintStream,
 		HostReservedFieldClass:   r.hostReservedFieldClass,
 		SharedInputMethodHandler: r.sharedInputMethodHandler,
 
 		DefaultFont:            r.defaultFont,
+		AnimateImages:          snapshotKTFAnimateImages(r.animateImages),
 		ScreenGraphics:         r.ScreenGraphics,
 		WIPICScreenFramebuffer: r.WipicScreenFramebuffer,
 		WIPICResources:         guest.CloneSliceMap(r.wipicResources),
@@ -1011,6 +1129,10 @@ func snapshotKTFMetadata(
 		ActiveTask:          -1,
 		ActiveInstructions:  r.ActiveInstructions,
 		ExecutionDepth:      int32(r.executionDepth),
+		JavaCall: ktfCallSnapshot{
+			State: uint8(r.javaCall.state), Number: r.javaCall.number,
+			RequestSequence: r.javaCall.requestSequence, PPP: r.javaCall.ppp,
+		},
 	}
 	if r.activeTask != nil {
 		index, err := taskIndex(r.activeTask)
@@ -1018,6 +1140,17 @@ func snapshotKTFMetadata(
 			return ktfMetadataSnapshot{}, fmt.Errorf("save KTF active task: %w", err)
 		}
 		meta.ActiveTask = index
+	}
+	meta.TimeZones = make(map[uint32]ktfTimeZoneSnapshot, len(r.timeZones))
+	for instance, zone := range r.timeZones {
+		meta.TimeZones[instance] = ktfTimeZoneSnapshot{
+			ID: zone.id, RawOffset: zone.rawOffset, Daylight: zone.daylight,
+			StartYear: zone.startYear, StartMonth: zone.startMonth,
+			StartWeek: zone.startWeek, StartDayOfWeek: zone.startDayOfWeek,
+			StartTime: zone.startTime, EndMonth: zone.endMonth,
+			EndWeek: zone.endWeek, EndDayOfWeek: zone.endDayOfWeek,
+			EndTime: zone.endTime,
+		}
 	}
 
 	hostAddresses := guest.SortedUint32Keys(r.hostCalls)
@@ -1062,7 +1195,13 @@ func snapshotKTFMetadata(
 		}
 		meta.Clips[instance] = ktfClipSnapshot{
 			Volume: clip.volume, Listener: clip.listener,
-			Playing: clip.playing, Data: append([]byte(nil), clip.data...),
+			Playing: clip.playing, Capacity: int32(clip.capacity),
+			BufferSet: clip.bufferSet, Data: append([]byte(nil), clip.data...),
+			CameraMode: clip.cameraMode, CameraProperty: clip.cameraProperty,
+			CameraRect: clip.cameraRect, OEMDisplay: clip.oemDisplay,
+			Preview: clip.preview, StopTime: clip.stopTime,
+			MediaModeValues: guest.CloneMap(clip.mediaModeValues),
+			WaterMark:       clip.waterMark, WaterMarkActive: clip.waterMarkActive,
 		}
 	}
 	meta.LWCComponents = make(map[uint32]ktfLWCSnapshot, len(r.lwcComponents))
@@ -1312,7 +1451,7 @@ func sortedKTFIncrementalHeaps(r *Runtime) []ktfIncrementalHeapSnapshot {
 }
 
 func snapshotKTFLWC(value *ktfLWCComponent) ktfLWCSnapshot {
-	return ktfLWCSnapshot{
+	result := ktfLWCSnapshot{
 		X: value.x, Y: value.y, Width: value.width, Height: value.height,
 		PreferredWidth:  value.preferredWidth,
 		PreferredHeight: value.preferredHeight,
@@ -1321,7 +1460,8 @@ func snapshotKTFLWC(value *ktfLWCComponent) ktfLWCSnapshot {
 		Command: value.command, Work: value.work, Focus: value.focus,
 		Text: value.text, Gap: value.gap, Shown: value.shown,
 		Valid: value.valid, Focused: value.focused,
-		Vertical: value.vertical, Packed: value.packed,
+		BackgroundSet: value.backgroundSet,
+		Vertical:      value.vertical, Packed: value.packed,
 		Annunciator: value.annunciator, Transparent: value.transparent,
 		ProgressValue: value.progressValue,
 		ProgressMax:   value.progressMax, ProgressStep: value.progressStep,
@@ -1332,11 +1472,33 @@ func snapshotKTFLWC(value *ktfLWCComponent) ktfLWCSnapshot {
 		ProgressInput: value.progressInput,
 		Font:          value.font, Image: value.image,
 		ImageActive: value.imageActive, Group: value.group,
-		Date: value.date, Mode: value.mode, Minimum: value.minimum,
+		Date: value.date, TimeZone: value.timeZone,
+		ItemImages:   append([]uint32(nil), value.itemImages...),
+		GrabListener: value.grabListener,
+		GrabObject:   value.grabObject,
+		Mode:         value.mode, Layout: value.layout, Minimum: value.minimum,
 		ViewAmount: value.viewAmount, ChangeAmount: value.changeAmount,
 		Delay: value.delay, ActiveIndex: value.activeIndex,
-		Selected: value.selected,
+		Framed: value.framed, CommandGrabs: value.commandGrabs,
+		Selected: value.selected, NumberVisible: value.numberVisible,
 	}
+	for index, selected := range value.selectedItems {
+		if selected {
+			result.SelectedItems = append(result.SelectedItems, index)
+		}
+	}
+	sort.Slice(result.SelectedItems, func(i, j int) bool {
+		return result.SelectedItems[i] < result.SelectedItems[j]
+	})
+	for key, grabbed := range value.grabbedKeys {
+		if grabbed {
+			result.GrabbedKeys = append(result.GrabbedKeys, key)
+		}
+	}
+	sort.Slice(result.GrabbedKeys, func(i, j int) bool {
+		return result.GrabbedKeys[i] < result.GrabbedKeys[j]
+	})
+	return result
 }
 
 func snapshotKTFDatabase(value *Database) ktfDatabaseSnapshot {

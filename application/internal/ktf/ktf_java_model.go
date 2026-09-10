@@ -1068,6 +1068,10 @@ func (r *Runtime) EnsureJavaClass(name string) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
+	access := uint32(0x21)
+	if spec.access != 0 {
+		access = uint32(spec.access)
+	}
 	if err := r.writeWords(descriptor, []uint32{
 		nameAddress,
 		0,
@@ -1076,7 +1080,7 @@ func (r *Runtime) EnsureJavaClass(name string) (uint32, error) {
 		0,
 		fields,
 		uint32(spec.fieldSize) << 16,
-		0x21,
+		access,
 		0,
 	}); err != nil {
 		return 0, err
@@ -1097,6 +1101,9 @@ func (r *Runtime) EnsureJavaClass(name string) (uint32, error) {
 		return 0, err
 	}
 	for _, method := range spec.methods {
+		if deferKTFHostCompatibilityMethod(spec, method) {
+			continue
+		}
 		if _, err := r.addHostJavaMethod(
 			JavaClass{Address: class, Name: name},
 			method.name,
@@ -1119,6 +1126,9 @@ func (r *Runtime) augmentHostJavaClass(classAddress uint32, name string) error {
 	}
 	r.hostJavaClass[classAddress] = true
 	for _, wanted := range spec.methods {
+		if deferKTFHostCompatibilityMethod(spec, wanted) {
+			continue
+		}
 		method, found := findKTFJavaMethod(
 			class,
 			wanted.name,
@@ -1143,4 +1153,13 @@ func (r *Runtime) augmentHostJavaClass(classAddress uint32, name string) error {
 		}
 	}
 	return nil
+}
+
+func deferKTFHostCompatibilityMethod(
+	spec ktfHostJavaClassSpec,
+	method ktfHostJavaMethodSpec,
+) bool {
+	return (spec.compatibilityVTable || method.compatibility) &&
+		method.access&(0x0002|0x0008) == 0 &&
+		!strings.HasPrefix(method.name, "<")
 }

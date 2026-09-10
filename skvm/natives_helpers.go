@@ -85,7 +85,42 @@ func (vm *VM) newImageState(width, height int) (*imageState, error) {
 	}, nil
 }
 
+// imageMutable reports whether a title may draw into an image. MIDP makes
+// only an image created from a width and height mutable; one decoded from
+// bytes, a resource or another image is immutable and Image.getGraphics on it
+// throws. A blank image holds no decoded asset, and that is what separates the
+// two here: com.skt.m.Graphics2D.createMaskableImage and the game-API buffers
+// are off-screen buffers as much as Image.createImage(int,int) is.
+// newImmutableImageObject wraps a rendered image a title may not draw into:
+// MIDP makes createRGBImage and every copy of another image immutable.
+func (vm *VM) newImmutableImageObject(state *imageState) uint32 {
+	reference := vm.NewObject("javax/microedition/lcdui/Image", state)
+	if object, ok := vm.Object(reference); ok {
+		object.Fields[imageMutableField] = IntValue(0)
+	}
+	return reference
+}
+
+func (vm *VM) imageMutable(reference uint32) bool {
+	object, ok := vm.Object(reference)
+	if !ok {
+		return false
+	}
+	if mutable, present := object.Fields[imageMutableField]; present {
+		value, _ := mutable.Int()
+		return value != 0
+	}
+	state, ok := object.Native.(*imageState)
+	return ok && state.asset == 0
+}
+
 func (vm *VM) image(reference uint32) (*imageState, error) {
+	if reference == 0 {
+		// A null Image is the title's own mistake, and MIDP reports it as a
+		// NullPointerException the guest can catch rather than as a failure
+		// of the machine.
+		return nil, vm.newThrowable("java/lang/NullPointerException", "")
+	}
 	object, ok := vm.Object(reference)
 	if !ok {
 		return nil, fmt.Errorf("invalid Image reference")
@@ -115,6 +150,10 @@ func (vm *VM) font(reference uint32) (*fontState, error) {
 }
 
 func (vm *VM) newFontObject(class string, args []Value) (Value, bool, error) {
+	face, err := intArgument(args, 0)
+	if err != nil {
+		return Value{}, false, err
+	}
 	style, err := intArgument(args, 1)
 	if err != nil {
 		return Value{}, false, err
@@ -140,6 +179,19 @@ func (vm *VM) newFontObject(class string, args []Value) (Value, bool, error) {
 	if style&4 != 0 {
 		fontStyle |= shared.FontUnderlined
 	}
+	// Font.getFont answers a shared instance: MIDP fonts are immutable value
+	// objects. Building a new one per call also builds a new host font, and a
+	// title that asks for its font inside paint reached the runtime's font
+	// limit within a couple of seconds.
+	key := fontCacheKey{class: class, face: face, style: style, size: sizeValue}
+	if cached, ok := vm.fontCache[key]; ok {
+		if object, live := vm.Object(cached); live && object.Class == class {
+			if _, isFont := object.Native.(*fontState); isFont {
+				return ReferenceValue(cached), true, nil
+			}
+		}
+		delete(vm.fontCache, key)
+	}
 	id, err := vm.services.Text.CreateFont(vm.serviceOwner, shared.FontDescriptor{
 		Family: "aram-fallback",
 		Size:   size,
@@ -148,7 +200,16 @@ func (vm *VM) newFontObject(class string, args []Value) (Value, bool, error) {
 	if err != nil {
 		return Value{}, false, err
 	}
-	return ReferenceValue(vm.NewObject(class, &fontState{font: id})), true, nil
+	reference := vm.NewObject(class, &fontState{font: id})
+	object, _ := vm.Object(reference)
+	object.Fields["\x00aram-font-face"] = IntValue(face)
+	object.Fields["\x00aram-font-style"] = IntValue(style)
+	object.Fields["\x00aram-font-size"] = IntValue(sizeValue)
+	if vm.fontCache == nil {
+		vm.fontCache = make(map[fontCacheKey]uint32)
+	}
+	vm.fontCache[key] = reference
+	return ReferenceValue(reference), true, nil
 }
 
 func (vm *VM) graphics(reference uint32) (*graphicsState, error) {
@@ -378,18 +439,6 @@ func nativeReaderRead(
 	receiver uint32,
 	args []Value,
 ) (Value, bool, error) {
-	object, ok := vm.Object(receiver)
-	if !ok {
-		return Value{}, false, fmt.Errorf("invalid InputStreamReader")
-	}
-	reader, ok := object.Native.(*inputStreamReaderState)
-	if !ok {
-		return Value{}, false, fmt.Errorf("invalid InputStreamReader state")
-	}
-	stream, err := vm.inputStream(reader.stream)
-	if err != nil {
-		return Value{}, false, err
-	}
 	destinationReference, err := referenceArgument(args, 0)
 	if err != nil {
 		return Value{}, false, err
@@ -402,24 +451,7 @@ func nativeReaderRead(
 	if err != nil {
 		return Value{}, false, err
 	}
-	destination, ok := vm.Object(destinationReference)
-	if !ok || destination.Array == nil || destination.Array.Descriptor != "[C" {
-		return Value{}, false, fmt.Errorf("InputStreamReader destination is not char[]")
-	}
-	if offset < 0 || length < 0 ||
-		int64(offset)+int64(length) > int64(len(destination.Array.Elements)) {
-		return Value{}, false, vm.newThrowable("java/lang/IndexOutOfBoundsException", "")
-	}
-	if stream.offset >= len(stream.data) {
-		return IntValue(-1), true, nil
-	}
-	count := min(int(length), len(stream.data)-stream.offset)
-	for index := range count {
-		destination.Array.Elements[int(offset)+index] =
-			IntValue(int32(stream.data[stream.offset+index]))
-	}
-	stream.offset += count
-	return IntValue(int32(count)), true, nil
+	return vm.readerRead(receiver, destinationReference, offset, length)
 }
 
 func (vm *VM) setNative(reference uint32, native any) error {
@@ -466,6 +498,12 @@ func (vm *VM) recordStore(reference uint32) (*recordStoreState, error) {
 	state, ok := object.Native.(*recordStoreState)
 	if !ok {
 		return nil, fmt.Errorf("object %d is not a RecordStore", reference)
+	}
+	if state.id == 0 {
+		return nil, vm.newThrowable(
+			"javax/microedition/rms/RecordStoreNotOpenException",
+			"record store is closed",
+		)
 	}
 	return state, nil
 }

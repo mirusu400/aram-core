@@ -3,10 +3,12 @@ package ktf
 import (
 	"context"
 	"errors"
+	"fmt"
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,7 +40,17 @@ func (r *Runtime) handleMediaMethodContext(
 			// The declared media type string backs getType().
 			r.lwcComponent(instance).text = mediaType
 		}
-		if descriptor == "(Ljava/lang/String;[B)V" {
+		if descriptor == "(Ljava/lang/String;I)V" {
+			size, valueErr := r.signedParameter(3)
+			if valueErr != nil {
+				return 0, valueErr
+			}
+			if size < 0 {
+				return 0, r.raiseHostJavaException("java/lang/IllegalArgumentException")
+			}
+			clip.capacity = size
+			clip.bufferSet = true
+		} else if descriptor == "(Ljava/lang/String;[B)V" {
 			array, valueErr := r.parameter(3)
 			if valueErr != nil {
 				return 0, valueErr
@@ -48,6 +60,8 @@ func (r *Runtime) handleMediaMethodContext(
 				if valueErr != nil {
 					return 0, valueErr
 				}
+				clip.capacity = len(clip.data)
+				clip.bufferSet = true
 			}
 		} else {
 			resource, found, valueErr := r.ktfClipConstructorResource(
@@ -58,6 +72,8 @@ func (r *Runtime) handleMediaMethodContext(
 			}
 			if found {
 				clip.data = resource
+				clip.capacity = len(resource)
+				clip.bufferSet = true
 			}
 		}
 		r.clips[instance] = clip
@@ -111,6 +127,16 @@ func (r *Runtime) handleMediaMethodContext(
 		if err != nil {
 			return 0, err
 		}
+		clip := r.ensureKTFClip(instance)
+		if clip.capacity > 0 {
+			remaining := max(clip.capacity-len(clip.data), 0)
+			if len(data) > remaining {
+				data = data[:remaining]
+			}
+		}
+		if len(data) == 0 {
+			return 0, nil
+		}
 		serviceID, err := r.ensureKTFClipService(instance)
 		if err != nil {
 			return 0, err
@@ -118,9 +144,8 @@ func (r *Runtime) handleMediaMethodContext(
 		if _, err := r.Services.Media.Append(r.ServiceOwner, serviceID, data); err != nil {
 			return ^uint32(0), nil
 		}
-		clip := r.ensureKTFClip(instance)
 		clip.data = append(clip.data, data...)
-		return count, nil
+		return uint32(len(data)), nil
 	case "getData([BII)I":
 		instance, err := r.parameter(1)
 		if err != nil {
@@ -165,9 +190,23 @@ func (r *Runtime) handleMediaMethodContext(
 		if err != nil {
 			return 0, err
 		}
+		if array == 0 {
+			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
+		}
 		count, err := r.parameter(3)
 		if err != nil {
 			return 0, err
+		}
+		clip := r.ensureKTFClip(instance)
+		if clip.bufferSet {
+			return 0, nil
+		}
+		length, err := r.javaArrayLength(array)
+		if err != nil {
+			return 0, err
+		}
+		if count > length {
+			return 0, r.raiseHostJavaException("java/lang/ArrayIndexOutOfBoundsException")
 		}
 		data, err := r.readJavaByteArrayRange(array, 0, count)
 		if err != nil {
@@ -180,7 +219,9 @@ func (r *Runtime) handleMediaMethodContext(
 		if err := r.Services.Media.ReplaceSource(r.ServiceOwner, serviceID, data); err != nil {
 			return 0, nil
 		}
-		r.ensureKTFClip(instance).data = data
+		clip.data = data
+		clip.capacity = int(length)
+		clip.bufferSet = true
 		return 1, nil
 	case "setVolume(I)Z":
 		instance, err := r.parameter(1)
@@ -190,6 +231,9 @@ func (r *Runtime) handleMediaMethodContext(
 		volume, err := r.signedParameter(2)
 		if err != nil {
 			return 0, err
+		}
+		if volume < 0 || volume > 100 {
+			return 0, nil
 		}
 		clip := r.clips[instance]
 		if clip == nil {
@@ -253,14 +297,52 @@ func (r *Runtime) handleMediaMethodContext(
 			return 0, nil
 		}
 		return 1, nil
-	case "playStart(Z)Z":
+	case "playStart(Z)Z", "recordStart()Z", "playUpdate(II)Z":
 		// Base implementation of the protected guest override hook.
 		return 1, nil
-	case "playUpdate(II)Z", "recordStart()Z":
+	case "getPlayerID(Ljava/lang/String;)I":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		serviceID, err := r.ensureKTFClipService(instance)
+		if err != nil {
+			return ^uint32(0), nil
+		}
+		return serviceID.Slot(), nil
+	case "mediaWriteData()I":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		clip := r.ensureKTFClip(instance)
+		serviceID, err := r.ensureKTFClipService(instance)
+		if err != nil {
+			return ^uint32(0), nil
+		}
+		if err := r.Services.Media.ReplaceSource(
+			r.ServiceOwner, serviceID, clip.data,
+		); err != nil {
+			return ^uint32(0), nil
+		}
+		return uint32(len(clip.data)), nil
+	case "mediaReadData()I":
+		// No capture device is attached, so a successful read contains no data.
 		return 0, nil
-	case "getPlayerID(Ljava/lang/String;)I",
-		"mediaFreeze()I", "mediaReadData()I", "mediaWriteData()I",
-		"control(IILjava/lang/Object;Ljava/lang/Object;)I":
+	case "mediaFreeze()I":
+		r.trace("java_media_record_freeze_unsupported")
+		return ^uint32(0), nil
+	case "control(IILjava/lang/Object;Ljava/lang/Object;)I":
+		playerID, err := r.parameter(1)
+		if err != nil {
+			return ^uint32(0), err
+		}
+		for _, serviceID := range r.clipServices {
+			if uint32(serviceID) == playerID {
+				r.tracef("java_media_control:player=%d", playerID)
+				return 0, nil
+			}
+		}
 		return ^uint32(0), nil
 	case "atomicGetUpdate(I)V", "atomicPutUpdate(I)V":
 		return 0, nil
@@ -352,6 +434,9 @@ func (r *Runtime) handleMediaMethodContext(
 		}
 		return 1, nil
 	default:
+		if value, handled, err := r.handleWIPI2MediaMethod(ctx, name, descriptor); handled || err != nil {
+			return value, err
+		}
 		return 0, nil
 	}
 }
@@ -551,27 +636,84 @@ func (r *Runtime) syncKTFClipGain(instance uint32) error {
 func (r *Runtime) handleCalendarMethod(
 	name, descriptor string,
 ) (uint32, error) {
+	switch name + descriptor {
+	case "getInstance()Ljava/util/Calendar;":
+		calendar, valueErr := r.NewHostJavaObject("java/util/Calendar")
+		if valueErr == nil {
+			r.dates[calendar] = r.wallTickMS()
+			zone, zoneErr := r.newKTFTimeZone(r.defaultKTFTimeZone())
+			if zoneErr != nil {
+				return 0, zoneErr
+			}
+			r.calendarZones[calendar] = zone
+		}
+		return calendar, valueErr
+	case "getInstance(Ljava/util/TimeZone;)Ljava/util/Calendar;":
+		zone, valueErr := r.parameter(1)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if zone == 0 {
+			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
+		}
+		calendar, valueErr := r.NewHostJavaObject("java/util/Calendar")
+		if valueErr == nil {
+			r.dates[calendar] = r.wallTickMS()
+			r.calendarZones[calendar] = zone
+		}
+		return calendar, valueErr
+	}
 	instance, err := r.parameter(1)
 	if err != nil {
 		return 0, err
 	}
 	switch name + descriptor {
-	case "getInstance()Ljava/util/Calendar;",
-		"getInstance(Ljava/util/TimeZone;)Ljava/util/Calendar;":
-		calendar, valueErr := r.NewHostJavaObject("java/util/Calendar")
-		if valueErr == nil {
-			r.dates[calendar] = int64(r.TickMS)
+	case "<init>()V":
+		r.dates[instance] = r.wallTickMS()
+		zone, valueErr := r.newKTFTimeZone(r.defaultKTFTimeZone())
+		if valueErr != nil {
+			return 0, valueErr
 		}
-		return calendar, valueErr
-	case "<init>()V", "<init>(Ljava/util/TimeZone;)V":
-		r.dates[instance] = int64(r.TickMS)
+		r.calendarZones[instance] = zone
+		return 0, nil
+	case "<init>(Ljava/util/TimeZone;)V":
+		zone, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		r.dates[instance] = r.wallTickMS()
+		r.calendarZones[instance] = zone
+		return 0, nil
+	case "<init>(III)V":
+		year, valueErr := r.signedParameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		month, valueErr := r.signedParameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		day, valueErr := r.signedParameter(4)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		zone, valueErr := r.newKTFTimeZone(r.defaultKTFTimeZone())
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		r.calendarZones[instance] = zone
+		r.dates[instance] = time.Date(
+			year, time.Month(month+1), day, 0, 0, 0, 0,
+			time.FixedZone("", int(r.timeZones[zone].rawOffset/1000)),
+		).UnixMilli()
 		return 0, nil
 	case "get(I)I", "internalGet(I)I":
 		field, valueErr := r.parameter(2)
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		return uint32(ktfCalendarField(r.dates[instance], field)), nil
+		zone := r.calendarTimeZone(instance)
+		return uint32(ktfCalendarField(r.dates[instance], field, zone)), nil
 	case "set(II)V":
 		field, valueErr := r.parameter(2)
 		if valueErr != nil {
@@ -585,7 +727,29 @@ func (r *Runtime) handleCalendarMethod(
 			r.dates[instance],
 			field,
 			int32(value),
+			r.calendarTimeZone(instance),
 		)
+		return 0, nil
+	case "set(III)V":
+		year, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		month, valueErr := r.parameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		day, valueErr := r.parameter(4)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		zone := r.calendarTimeZone(instance)
+		moment := ktfCalendarMoment(r.dates[instance], zone)
+		r.dates[instance] = time.Date(
+			int(year), time.Month(month+1), int(day),
+			moment.Hour(), moment.Minute(), moment.Second(),
+			moment.Nanosecond(), moment.Location(),
+		).UnixMilli()
 		return 0, nil
 	case "after(Ljava/lang/Object;)Z", "before(Ljava/lang/Object;)Z":
 		other, valueErr := r.parameter(2)
@@ -614,17 +778,32 @@ func (r *Runtime) handleCalendarMethod(
 	case "hashCode()I":
 		value := uint64(r.dates[instance])
 		return uint32(value ^ (value >> 32)), nil
-	case "complete()V", "computeFields()V", "computeTime()V",
-		"initialize()V", "setTimeZone(Ljava/util/TimeZone;)V":
-		// The host models calendar state as epoch milliseconds only, so
-		// field/time recomputation is implicit and the zone is fixed GMT.
+	case "setTimeZone(Ljava/util/TimeZone;)V":
+		zone, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if zone == 0 {
+			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
+		}
+		r.calendarZones[instance] = zone
+		return 0, nil
+	case "complete()V", "computeFields()V", "computeTime()V", "initialize()V":
+		// Field/time recomputation is implicit in the epoch representation.
 		return 0, nil
 	case "getFirstDayOfWeek()I", "getMinimalDaysInFirstWeek()I":
 		return 1, nil
 	case "isLenient()Z", "isSet(I)Z":
 		return 1, nil
 	case "getTimeZone()Ljava/util/TimeZone;":
-		return r.NewHostJavaObject("java/util/TimeZone")
+		if zone := r.calendarZones[instance]; zone != 0 {
+			return zone, nil
+		}
+		zone, valueErr := r.newKTFTimeZone(r.defaultKTFTimeZone())
+		if valueErr == nil {
+			r.calendarZones[instance] = zone
+		}
+		return zone, valueErr
 	case "getMaximum(I)I", "getLeastMaximum(I)I":
 		field, valueErr := r.parameter(2)
 		if valueErr != nil {
@@ -683,8 +862,8 @@ func (r *Runtime) handleCalendarMethod(
 }
 
 // Java Calendar field indices for the epoch-milliseconds calendar model.
-func ktfCalendarField(ms int64, field uint32) int32 {
-	moment := time.UnixMilli(ms).UTC()
+func ktfCalendarField(ms int64, field uint32, zone ktfTimeZone) int32 {
+	moment := ktfCalendarMoment(ms, zone)
 	switch field {
 	case 0: // ERA
 		return 1
@@ -718,12 +897,18 @@ func ktfCalendarField(ms int64, field uint32) int32 {
 		return int32(moment.Second())
 	case 14: // MILLISECOND
 		return int32(moment.Nanosecond() / 1e6)
+	case 15: // ZONE_OFFSET
+		return zone.rawOffset
+	case 16: // DST_OFFSET
+		if zone.inDaylightTime(ms) {
+			return 60 * 60 * 1000
+		}
 	}
 	return 0
 }
 
-func ktfCalendarSetField(ms int64, field uint32, value int32) int64 {
-	moment := time.UnixMilli(ms).UTC()
+func ktfCalendarSetField(ms int64, field uint32, value int32, zone ktfTimeZone) int64 {
+	moment := ktfCalendarMoment(ms, zone)
 	year, month, day := moment.Date()
 	hour, minute, second := moment.Clock()
 	millis := moment.Nanosecond() / 1e6
@@ -761,7 +946,7 @@ func ktfCalendarSetField(ms int64, field uint32, value int32) int64 {
 		minute,
 		second,
 		millis*1e6,
-		time.UTC,
+		moment.Location(),
 	).UnixMilli()
 }
 
@@ -783,34 +968,292 @@ func ktfCalendarMaximum(field uint32, least bool) int32 {
 func (r *Runtime) handleTimeZoneMethod(
 	name, descriptor string,
 ) (uint32, error) {
-	// Every zone the host models is GMT with no daylight saving.
 	switch name + descriptor {
-	case "getDefault()Ljava/util/TimeZone;",
-		"getTimeZone(Ljava/lang/String;)Ljava/util/TimeZone;":
-		return r.NewHostJavaObject("java/util/TimeZone")
-	case "getID()Ljava/lang/String;", "toString()Ljava/lang/String;":
-		return r.NewJavaString("GMT")
-	case "getAvailableIDs()[Ljava/lang/String;":
-		value, err := r.NewJavaString("GMT")
+	case "getDefault()Ljava/util/TimeZone;":
+		return r.newKTFTimeZone(r.defaultKTFTimeZone())
+	case "getTimeZone(Ljava/lang/String;)Ljava/util/TimeZone;":
+		id, err := r.parameter(1)
 		if err != nil {
 			return 0, err
 		}
-		return r.newJavaReferenceArray(
-			"[Ljava/lang/String;",
-			[]uint32{value},
-		)
-	case "getRawOffset()I", "getOffset(IIIIII)I", "useDaylightTime()Z",
-		"inDaylightTime(Ljava/util/Date;)Z", "hashCode()I":
+		return r.newKTFTimeZone(r.parseKTFTimeZone(r.javaStringValue(id)))
+	case "getAvailableIDs()[Ljava/lang/String;":
+		return r.newKTFTimeZoneIDArray(r.availableKTFTimeZoneIDs())
+	case "getAvailableIDs(I)[Ljava/lang/String;":
+		offset, err := r.signedParameter(1)
+		if err != nil {
+			return 0, err
+		}
+		ids := make([]string, 0, 2)
+		for _, id := range r.availableKTFTimeZoneIDs() {
+			if r.parseKTFTimeZone(id).rawOffset == int32(offset) {
+				ids = append(ids, id)
+			}
+		}
+		if len(ids) == 0 {
+			return 0, nil
+		}
+		return r.newKTFTimeZoneIDArray(ids)
+	}
+	instance, err := r.parameter(1)
+	if err != nil {
+		return 0, err
+	}
+	switch name + descriptor {
+	case "<init>()V":
+		r.timeZones[instance] = r.defaultKTFTimeZone()
 		return 0, nil
+	case "<init>(ILjava/lang/String;)V":
+		offset, valueErr := r.signedParameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		id, valueErr := r.parameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		r.timeZones[instance] = ktfTimeZone{
+			id: r.javaStringValue(id), rawOffset: int32(offset),
+		}
+		return 0, nil
+	case "<init>(ILjava/lang/String;IIIIIIII)V":
+		offset, valueErr := r.signedParameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		id, valueErr := r.parameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		values := [8]int32{}
+		for index := range values {
+			value, parameterErr := r.signedParameter(uint32(index + 4))
+			if parameterErr != nil {
+				return 0, parameterErr
+			}
+			values[index] = int32(value)
+		}
+		r.timeZones[instance] = ktfTimeZone{
+			id: r.javaStringValue(id), rawOffset: int32(offset), daylight: true,
+			startMonth: values[0], startWeek: values[1],
+			startDayOfWeek: values[2], startTime: values[3],
+			endMonth: values[4], endWeek: values[5],
+			endDayOfWeek: values[6], endTime: values[7],
+		}
+		return 0, nil
+	case "getID()Ljava/lang/String;", "toString()Ljava/lang/String;":
+		return r.NewJavaString(r.ensureKTFTimeZone(instance).id)
+	case "getRawOffset()I":
+		return uint32(r.ensureKTFTimeZone(instance).rawOffset), nil
+	case "getOffset(IIIIII)I":
+		zone := r.ensureKTFTimeZone(instance)
+		year, valueErr := r.signedParameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		month, valueErr := r.signedParameter(4)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		day, valueErr := r.signedParameter(5)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		millis, valueErr := r.signedParameter(7)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		location := time.FixedZone("", int(zone.rawOffset/1000))
+		moment := time.Date(
+			year, time.Month(month+1), day, 0, 0, 0, millis*1e6, location,
+		)
+		return uint32(zone.offsetAt(moment.UnixMilli())), nil
+	case "useDaylightTime()Z":
+		return boolWord(r.ensureKTFTimeZone(instance).daylight), nil
+	case "inDaylightTime(Ljava/util/Date;)Z":
+		date, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		return boolWord(r.ensureKTFTimeZone(instance).inDaylightTime(r.dates[date])), nil
 	case "equals(Ljava/lang/Object;)Z":
-		// Every zone the host hands out is the same GMT model.
-		return 1, nil
-	case "<init>()V", "<init>(II)V",
-		"<init>(ILjava/lang/String;)V",
-		"setID(Ljava/lang/String;)V", "setRawOffset(I)V",
-		"setStartYear(I)V", "initialize()V":
+		other, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if other == 0 {
+			return 0, nil
+		}
+		left, right := r.ensureKTFTimeZone(instance), r.ensureKTFTimeZone(other)
+		return boolWord(left == right), nil
+	case "hashCode()I":
+		zone := r.ensureKTFTimeZone(instance)
+		return uint32(zone.rawOffset) ^ uint32(len(zone.id)<<16), nil
+	case "setID(Ljava/lang/String;)V":
+		id, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		zone := r.ensureKTFTimeZone(instance)
+		zone.id = r.javaStringValue(id)
+		r.timeZones[instance] = zone
+		return 0, nil
+	case "setRawOffset(I)V":
+		offset, valueErr := r.signedParameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		zone := r.ensureKTFTimeZone(instance)
+		zone.rawOffset = int32(offset)
+		r.timeZones[instance] = zone
+		return 0, nil
+	case "setStartYear(I)V":
+		year, valueErr := r.signedParameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		zone := r.ensureKTFTimeZone(instance)
+		zone.startYear = int32(year)
+		r.timeZones[instance] = zone
+		return 0, nil
+	case "initialize()V":
 		return 0, nil
 	default:
 		return 0, nil
 	}
+}
+
+func (r *Runtime) defaultKTFTimeZone() ktfTimeZone {
+	minutes := r.Services.Device.Config().TimezoneMins
+	return ktfTimeZone{
+		id: ktfFixedTimeZoneID(minutes), rawOffset: minutes * 60 * 1000,
+	}
+}
+
+func ktfFixedTimeZoneID(minutes int32) string {
+	if minutes == 0 {
+		return "GMT"
+	}
+	sign := '+'
+	if minutes < 0 {
+		sign = '-'
+		minutes = -minutes
+	}
+	return fmt.Sprintf("GMT%c%02d:%02d", sign, minutes/60, minutes%60)
+}
+
+func (r *Runtime) parseKTFTimeZone(id string) ktfTimeZone {
+	id = strings.TrimSpace(id)
+	if id == "GMT" || id == "UTC" {
+		return ktfTimeZone{id: id}
+	}
+	if len(id) == 9 && strings.HasPrefix(id, "GMT") &&
+		(id[3] == '+' || id[3] == '-') && id[6] == ':' {
+		hours, hourErr := strconv.Atoi(id[4:6])
+		minutes, minuteErr := strconv.Atoi(id[7:9])
+		if hourErr == nil && minuteErr == nil && hours <= 23 && minutes <= 59 {
+			offset := int32((hours*60 + minutes) * 60 * 1000)
+			if id[3] == '-' {
+				offset = -offset
+			}
+			return ktfTimeZone{id: id, rawOffset: offset}
+		}
+	}
+	return ktfTimeZone{id: "GMT"}
+}
+
+func (r *Runtime) availableKTFTimeZoneIDs() []string {
+	defaultID := r.defaultKTFTimeZone().id
+	if defaultID == "GMT" {
+		return []string{"GMT"}
+	}
+	return []string{"GMT", defaultID}
+}
+
+func (r *Runtime) newKTFTimeZone(zone ktfTimeZone) (uint32, error) {
+	object, err := r.NewHostJavaObject("java/util/SimpleTimeZone")
+	if err == nil {
+		r.timeZones[object] = zone
+	}
+	return object, err
+}
+
+func (r *Runtime) newKTFTimeZoneIDArray(ids []string) (uint32, error) {
+	values := make([]uint32, len(ids))
+	for index, id := range ids {
+		value, err := r.NewJavaString(id)
+		if err != nil {
+			return 0, err
+		}
+		values[index] = value
+	}
+	return r.newJavaReferenceArray("[Ljava/lang/String;", values)
+}
+
+func (r *Runtime) ensureKTFTimeZone(instance uint32) ktfTimeZone {
+	if zone, ok := r.timeZones[instance]; ok {
+		return zone
+	}
+	zone := r.defaultKTFTimeZone()
+	r.timeZones[instance] = zone
+	return zone
+}
+
+func (r *Runtime) calendarTimeZone(calendar uint32) ktfTimeZone {
+	if zone := r.calendarZones[calendar]; zone != 0 {
+		return r.ensureKTFTimeZone(zone)
+	}
+	return r.defaultKTFTimeZone()
+}
+
+func ktfCalendarMoment(ms int64, zone ktfTimeZone) time.Time {
+	offset := zone.offsetAt(ms)
+	return time.UnixMilli(ms).In(time.FixedZone(zone.id, int(offset/1000)))
+}
+
+func (zone ktfTimeZone) offsetAt(ms int64) int32 {
+	if zone.inDaylightTime(ms) {
+		return zone.rawOffset + 60*60*1000
+	}
+	return zone.rawOffset
+}
+
+func (zone ktfTimeZone) inDaylightTime(ms int64) bool {
+	if !zone.daylight {
+		return false
+	}
+	location := time.FixedZone(zone.id, int(zone.rawOffset/1000))
+	moment := time.UnixMilli(ms).In(location)
+	if zone.startYear != 0 && int32(moment.Year()) < zone.startYear {
+		return false
+	}
+	start := ktfTimeZoneRuleDate(
+		moment.Year(), zone.startMonth, zone.startWeek,
+		zone.startDayOfWeek, zone.startTime, location,
+	)
+	end := ktfTimeZoneRuleDate(
+		moment.Year(), zone.endMonth, zone.endWeek,
+		zone.endDayOfWeek, zone.endTime, location,
+	)
+	if start.Before(end) {
+		return !moment.Before(start) && moment.Before(end)
+	}
+	return !moment.Before(start) || moment.Before(end)
+}
+
+func ktfTimeZoneRuleDate(
+	year int, month, week, dayOfWeek, millis int32, location *time.Location,
+) time.Time {
+	first := time.Date(year, time.Month(month+1), 1, 0, 0, 0, 0, location)
+	wanted := time.Weekday((dayOfWeek + 6) % 7)
+	day := 1
+	if week >= 0 {
+		day += (int(wanted)-int(first.Weekday())+7)%7 + (int(week)-1)*7
+	} else {
+		last := first.AddDate(0, 1, -1)
+		day = last.Day() - (int(last.Weekday())-int(wanted)+7)%7 + (int(week)+1)*7
+	}
+	return time.Date(
+		year, time.Month(month+1), day, 0, 0, 0, int(millis)*1e6, location,
+	)
 }

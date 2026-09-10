@@ -148,6 +148,7 @@ type Runtime struct {
 	wipicTimerServices   map[uint32]shared.ServiceID
 	wipicMediaServices   map[uint32]shared.ServiceID
 	clipServices         map[uint32]shared.ServiceID
+	javaCall             ktfCall
 	DatabaseServices     map[string]shared.ServiceID
 	fileServices         map[uint32]shared.ServiceID
 	wipicFileServices    map[uint32]shared.ServiceID
@@ -182,10 +183,15 @@ type Runtime struct {
 	textSurfaceScratch []byte
 	// inspectMemo short-circuits class inspection for as long as the guest CPU
 	// is stopped inside a host call. See ktfInspectMemo.
-	inspectMemo             ktfInspectMemo
-	javaMethodInspections   map[uint32]*ktfJavaMethodInspection
-	javaInspectGen          uint64
-	JavaStrings             map[uint32]string
+	inspectMemo           ktfInspectMemo
+	javaMethodInspections map[uint32]*ktfJavaMethodInspection
+	javaInspectGen        uint64
+	JavaStrings           map[uint32]string
+	// internedStrings owns canonical String instances for the lifetime of the
+	// VM, as required by String.intern. Unlike JavaStrings this is a strong
+	// table: an interned String remains reachable even when guest code drops
+	// every other reference to it.
+	internedStrings         map[string]uint32
 	javaClassObjs           map[uint32]uint32
 	classObjTarget          map[uint32]uint32
 	hostJavaClass           map[uint32]bool
@@ -220,36 +226,51 @@ type Runtime struct {
 	// waiting on (a loader worker) produced a debug bundle indistinguishable
 	// from a clean hang - the crash class and site were lost. Retained so the
 	// debug snapshot can surface them.
-	IsolatedTaskFaults    []KTFIsolatedTaskFault
-	UnimplementedJava     map[string]uint64
-	LastUnimplementedJava string
-	randomSeeds           map[uint32]uint64
-	integerValues         map[uint32]int32
-	longValues            map[uint32]int64
-	throwableMessages     map[uint32]uint32
-	dates                 map[uint32]int64
-	Vectors               map[uint32][]uint32
-	hashtables            map[uint32]map[string]ktfHashtableEntry
-	enumerations          map[uint32]*ktfEnumeration
-	clips                 map[uint32]*ktfClip
-	listeners             map[uint32]uint32
-	lwcEventData          map[uint32]uint32
-	lwcChildren           map[uint32][]uint32
-	lwcMaxLengths         map[uint32]int32
+	IsolatedTaskFaults       []KTFIsolatedTaskFault
+	UnimplementedJava        map[string]uint64
+	LastUnimplementedJava    string
+	randomSeeds              map[uint32]uint64
+	integerValues            map[uint32]int32
+	longValues               map[uint32]int64
+	throwableMessages        map[uint32]uint32
+	dates                    map[uint32]int64
+	timeZones                map[uint32]ktfTimeZone
+	calendarZones            map[uint32]uint32
+	Vectors                  map[uint32][]uint32
+	vectorCapacities         map[uint32]uint32
+	vectorCapacityIncrements map[uint32]uint32
+	hashtables               map[uint32]map[string]ktfHashtableEntry
+	enumerations             map[uint32]*ktfEnumeration
+	clips                    map[uint32]*ktfClip
+	mediaVolume              int32
+	mediaMute                map[int32]bool
+	mediaDefaultVolumes      map[int32]int32
+	listeners                map[uint32]uint32
+	lwcEventData             map[uint32]uint32
+	lwcChildren              map[uint32][]uint32
+	lwcMaxLengths            map[uint32]int32
 	// lwcTextInput is the keypad input method behind each editable LWC field.
 	// It holds only a half-composed glyph, which the next press rebuilds, so it
 	// is a live cache rather than part of the save state.
-	lwcTextInput     map[uint32]*ime.Automata
-	lwcComponents    map[uint32]*ktfLWCComponent
-	databases        map[uint32]*Database
-	DatabaseStores   map[string]*Database
-	defaultRuntime   uint32
-	DefaultDisplay   uint32
-	MainJlet         uint32
-	eventQueue       uint32
-	sharedBuffers    map[string]uint32
-	redispatchActive map[string]bool
-	DisplayCards     map[uint32]uint32
+	lwcTextInput       map[uint32]*ime.Automata
+	inputConstraints   map[uint32]int32
+	inputListeners     map[uint32]uint32
+	inputModes         map[uint32]int32
+	inputSymbolBounds  map[uint32][4]int32
+	lwcComponents      map[uint32]*ktfLWCComponent
+	databases          map[uint32]*Database
+	DatabaseStores     map[string]*Database
+	defaultRuntime     uint32
+	DefaultDisplay     uint32
+	MainJlet           uint32
+	eventQueue         uint32
+	eventQueueEvents   []ktfJavaEvent
+	eventHooks         map[uint32]uint32
+	jletEventListeners []uint32
+	grabbedKeys        map[int32]uint32
+	sharedBuffers      map[string]uint32
+	redispatchActive   map[string]bool
+	DisplayCards       map[uint32]uint32
 	// mnInterface, mnGOT and mnContext belong to a relocatable MN module: the
 	// callback table it asked for, and the two callee-saved registers its code
 	// expects a caller to have set. See ktf_mn_module.go.
@@ -266,6 +287,7 @@ type Runtime struct {
 	javaTimerTaskStates map[uint32]uint8
 	currentThread       uint32
 	stringBuffers       map[uint32]string
+	stringBufferCaps    map[uint32]uint32
 	// stringBuffersConsumed marks a StringBuffer whose value was read out by
 	// toString(). The LGT Raptor AOT compiler inlines StringBuffer.setLength(0)
 	// as a direct native write to the buffer object's guest memory, which never
@@ -279,9 +301,26 @@ type Runtime struct {
 	inputTargets          map[uint32]uint32
 	outputStreams         map[uint32][]byte
 	outputTargets         map[uint32]uint32
+	printStreamErrors     map[uint32]bool
 	files                 map[uint32]*ktfFile
 	FileData              map[string][]byte
 	fileStreamTargets     map[uint32]uint32
+	wipi2IODevices        map[uint32]*ktfWIPI2IODevice
+	wipi2SMSMessages      map[uint32][]byte
+	wipi2ResourceGroups   map[uint32]*ktfWIPI2ResourceGroup
+	wipi2Resources        map[string]map[string]*ktfWIPI2Resource
+	wipi2AddressBook      uint32
+	wipi2AddressBookLock  int
+	wipi2AddressGroups    []uint32
+	wipi2Addresses        map[int]*ktfWIPI2Address
+	wipi2AddressObjects   map[uint32]int
+	wipi2AddressShortcuts map[int][2]int
+	wipi2NextAddressID    int
+	wipi2GPSConfigs       map[uint32]ktfWIPI2GPSConfig
+	wipi2GPSConfig        ktfWIPI2GPSConfig
+	wipi2GPSListener      uint32
+	wipi2GPSLocations     map[uint32]ktfWIPI2GPSLocation
+	wipi2StationLocations map[uint32]ktfWIPI2StationLocation
 	systemInputStream     uint32
 	systemPrintStream     uint32
 	// hostReservedFieldClass named the one class whose invented imHandler
@@ -293,6 +332,7 @@ type Runtime struct {
 	hostReservedFieldClass   uint32
 	sharedInputMethodHandler uint32
 	images                   map[uint32]image.Image
+	animateImages            map[uint32]*ktfAnimateImage
 	// blitCaches holds, per Image instance, the 16-bit premultiplied source
 	// pixels drawKTFJavaImageFast reuses across frames instead of asking
 	// image/draw to recompute them from the *image.NRGBA source on every
@@ -466,15 +506,23 @@ type ktfJavaMethodInspection struct {
 }
 
 type ktfHostJavaMethodSpec struct {
-	name       string
-	descriptor string
-	access     uint16
+	name          string
+	descriptor    string
+	access        uint16
+	compatibility bool
 }
 
 type ktfHostJavaClassSpec struct {
-	Parent    string
-	fieldSize uint16
-	methods   []ktfHostJavaMethodSpec
+	Parent string
+	access uint16
+	// compatibilityVTable keeps declared virtual methods in the reserved
+	// host compatibility range instead of inserting them into the handset's
+	// compact vtable. KTF AOT binaries hard-code the latter's slots for LWC
+	// subclasses, whose exact vendor layout is not represented by our host
+	// declarations.
+	compatibilityVTable bool
+	fieldSize           uint16
+	methods             []ktfHostJavaMethodSpec
 	// fields names the *instance* fields the handset class really declares.
 	// A host-modelled class carries no guest field table, so a title that
 	// reads one of its fields makes addHostJavaField invent the record. An
@@ -528,11 +576,53 @@ type ktfEnumeration struct {
 	index  uint32
 }
 
+type ktfJavaEvent [4]uint32
+
+type ktfCallState uint8
+
+const (
+	ktfCallIdle ktfCallState = iota
+	ktfCallCalling
+	ktfCallConnected
+	ktfCallRejected
+	ktfCallIncoming
+	ktfCallWaiting
+	ktfCallTransferred
+	ktfCallEnded
+)
+
+type ktfCall struct {
+	state           ktfCallState
+	number          string
+	requestSequence uint64
+	ppp             bool
+}
+
+type ktfTimeZone struct {
+	id                        string
+	rawOffset                 int32
+	daylight                  bool
+	startYear                 int32
+	startMonth, startWeek     int32
+	startDayOfWeek, startTime int32
+	endMonth, endWeek         int32
+	endDayOfWeek, endTime     int32
+}
+
 type ktfClip struct {
-	volume   int32
-	listener uint32
-	playing  bool
-	data     []byte
+	volume                     int32
+	listener                   uint32
+	playing                    bool
+	capacity                   int
+	bufferSet                  bool
+	data                       []byte
+	cameraMode, cameraProperty int32
+	cameraRect                 [4]int32
+	oemDisplay, preview        bool
+	stopTime                   int32
+	mediaModeValues            map[string]int32
+	waterMark                  int32
+	waterMarkActive            bool
 }
 
 var ktfJavaExceptionParents = map[string]string{
@@ -800,7 +890,14 @@ type ktfLWCComponent struct {
 	imageActive     uint32
 	group           uint32
 	date            uint32
+	timeZone        uint32
+	itemImages      []uint32
+	selectedItems   map[int32]bool
+	grabListener    uint32
+	grabObject      uint32
+	grabbedKeys     map[int32]bool
 	mode            int32
+	layout          int32
 	minimum         int32
 	viewAmount      int32
 	changeAmount    int32
@@ -809,12 +906,16 @@ type ktfLWCComponent struct {
 	shown           bool
 	valid           bool
 	focused         bool
+	backgroundSet   bool
 	vertical        bool
 	packed          bool
+	framed          bool
+	commandGrabs    bool
 	annunciator     bool
 	transparent     bool
 	progressInput   bool
 	selected        bool
+	numberVisible   bool
 }
 
 type Task struct {
@@ -837,7 +938,13 @@ type Task struct {
 	// Thread.currentThread() has to answer while the task is on the CPU. A
 	// task that is not a started thread - a paint, a key event, a timer -
 	// leaves it zero and falls back to the Jlet's own thread.
-	javaThread      uint32
+	javaThread uint32
+	// joinThread parks this task until the named java/lang/Thread no longer
+	// has a live or pending run() execution.
+	joinThread uint32
+	// monitorWait is the Object whose wait() call parked this task. A zero
+	// WakeAtMS means an indefinite wait; a nonzero value is its timeout.
+	monitorWait     uint32
 	Done            bool
 	presentOnReturn bool
 	bestEffortPaint bool

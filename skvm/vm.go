@@ -29,8 +29,11 @@ const (
 
 var (
 	ErrInstructionLimit = errors.New("SKVM instruction limit reached")
-	ErrHalted           = errors.New("SKVM halted")
-	ErrMethodNotFound   = errors.New("SKVM method not found")
+	// ErrHalted unwinds the guest call stack when a title ends itself. It is
+	// a control signal rather than a failure: the adapter swallows it and the
+	// VM stops running guest code from then on. See VM.Halted.
+	ErrHalted         = errors.New("SKVM halted")
+	ErrMethodNotFound = errors.New("SKVM method not found")
 )
 
 type NativeFunc func(
@@ -110,6 +113,15 @@ type VM struct {
 	runningThread    uint32
 	threadFrameBase  int
 	threadBudget     uint64
+	// fontCache maps a Font.getFont request onto the instance that already
+	// answers it. It holds no state of its own: an entry whose object is gone
+	// is rebuilt on the next request.
+	fontCache map[fontCacheKey]uint32
+	// halted records that the title asked the VM to end, through
+	// System.exit, Runtime.exit or MIDlet.notifyDestroyed. The machine keeps
+	// presenting the last frame the title drew, the way the KTF runtime
+	// treats its own termination request, rather than reporting a fault.
+	halted bool
 }
 
 type frame struct {
@@ -164,6 +176,7 @@ func NewWithServices(
 		ScreenWidth:      int(services.Config.Device.ScreenWidth),
 		ScreenHeight:     int(services.Config.Device.ScreenHeight),
 		properties:       make(map[string]string),
+		fontCache:        make(map[fontCacheKey]uint32),
 		services:         services,
 		serviceOwner:     owner,
 		classDigest:      digestClassData(classData),
@@ -292,6 +305,17 @@ func (vm *VM) RegisterStaticField(
 ) {
 	vm.hostStatic[fieldStorageKey(class, name, descriptor)] = value
 }
+
+// fontCacheKey identifies one Font.getFont request.
+type fontCacheKey struct {
+	class string
+	face  int32
+	style int32
+	size  int32
+}
+
+// Halted reports whether the title ended itself.
+func (vm *VM) Halted() bool { return vm.halted }
 
 func (vm *VM) SetProperties(properties map[string]string) {
 	vm.properties = make(map[string]string, len(properties))
@@ -475,12 +499,29 @@ func (vm *VM) SupportsHostFieldReference(class, name, descriptor string) bool {
 func hostInterfaces(class string) []string {
 	switch class {
 	case "javax/microedition/io/InputConnection",
-		"javax/microedition/io/OutputConnection":
+		"javax/microedition/io/OutputConnection",
+		"javax/microedition/io/DatagramConnection",
+		"javax/microedition/io/StreamConnectionNotifier":
 		return []string{"javax/microedition/io/Connection"}
+	case "javax/microedition/media/Player":
+		return []string{"javax/microedition/media/Controllable"}
+	case "javax/microedition/media/control/ToneControl",
+		"javax/microedition/media/control/VolumeControl":
+		return []string{"javax/microedition/media/Control"}
 	case "javax/microedition/io/SocketConnection":
 		return []string{"javax/microedition/io/StreamConnection"}
+	case "javax/microedition/io/SecureConnection":
+		return []string{"javax/microedition/io/SocketConnection"}
 	case "javax/microedition/io/HttpConnection":
 		return []string{"javax/microedition/io/ContentConnection"}
+	case "javax/microedition/io/HttpsConnection":
+		return []string{"javax/microedition/io/HttpConnection"}
+	case "javax/microedition/io/UDPDatagramConnection":
+		return []string{"javax/microedition/io/DatagramConnection"}
+	case "javax/microedition/io/ServerSocketConnection":
+		return []string{"javax/microedition/io/StreamConnectionNotifier"}
+	case "javax/microedition/io/CommConnection":
+		return []string{"javax/microedition/io/StreamConnection"}
 	case "javax/microedition/io/ContentConnection":
 		return []string{"javax/microedition/io/StreamConnection"}
 	case "javax/microedition/io/StreamConnection":
@@ -492,8 +533,50 @@ func hostInterfaces(class string) []string {
 		return []string{"java/io/DataInput"}
 	case "java/io/DataOutputStream":
 		return []string{"java/io/DataOutput"}
+	case "javax/microedition/lcdui/ChoiceGroup",
+		"javax/microedition/lcdui/List":
+		return []string{"javax/microedition/lcdui/Choice"}
 	default:
 		return nil
+	}
+}
+
+func isHostInterface(class string) bool {
+	switch class {
+	case "java/io/DataInput", "java/io/DataOutput", "java/lang/Runnable", "java/lang/Cloneable",
+		"java/util/Enumeration", "javax/microedition/io/Connection",
+		"javax/microedition/io/ContentConnection",
+		"javax/microedition/io/Datagram",
+		"javax/microedition/io/DatagramConnection",
+		"javax/microedition/io/InputConnection",
+		"javax/microedition/io/OutputConnection",
+		"javax/microedition/io/StreamConnection",
+		"javax/microedition/io/StreamConnectionNotifier",
+		"javax/microedition/io/HttpConnection",
+		"javax/microedition/io/HttpsConnection",
+		"javax/microedition/io/SecureConnection",
+		"javax/microedition/io/SecurityInfo",
+		"javax/microedition/io/ServerSocketConnection",
+		"javax/microedition/io/SocketConnection",
+		"javax/microedition/io/UDPDatagramConnection",
+		"javax/microedition/io/CommConnection",
+		"javax/microedition/lcdui/Choice",
+		"javax/microedition/lcdui/CommandListener",
+		"javax/microedition/lcdui/ItemCommandListener",
+		"javax/microedition/lcdui/ItemStateListener",
+		"javax/microedition/media/Control",
+		"javax/microedition/media/Controllable",
+		"javax/microedition/media/Player",
+		"javax/microedition/media/PlayerListener",
+		"javax/microedition/media/control/ToneControl",
+		"javax/microedition/media/control/VolumeControl",
+		"javax/microedition/rms/RecordComparator",
+		"javax/microedition/rms/RecordEnumeration",
+		"javax/microedition/rms/RecordFilter",
+		"javax/microedition/rms/RecordListener":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -579,6 +662,21 @@ func (vm *VM) KeyEvent(ctx context.Context, key int32, pressed bool) error {
 	if pressed {
 		method = "keyPressed"
 	}
+	if vm.IsInstance(vm.currentDisplay, "javax/microedition/lcdui/game/GameCanvas") {
+		object, _ := vm.Object(vm.currentDisplay)
+		states, _ := object.Fields["$game.keyStates"].Int()
+		mask := gameCanvasKeyMask(key)
+		if pressed {
+			states |= mask
+		} else {
+			states &^= mask
+		}
+		object.Fields["$game.keyStates"] = IntValue(states)
+		suppress, _ := object.Fields["$game.suppressKeyEvents"].Int()
+		if suppress != 0 {
+			return nil
+		}
+	}
 	_, _, err := vm.InvokeVirtual(
 		ctx,
 		vm.currentDisplay,
@@ -605,6 +703,11 @@ func (vm *VM) Advance(
 	}
 	if err := vm.services.Advance(vm.serviceOwner, delta); err != nil {
 		return err
+	}
+	if vm.halted {
+		// An ended title runs no more guest code. Virtual time still moves so
+		// the host keeps producing frames of whatever it drew last.
+		return nil
 	}
 	if err := vm.runReadyThreads(ctx); err != nil {
 		return err
@@ -637,6 +740,10 @@ func (vm *VM) Advance(
 				}
 				continue
 			}
+			if object, ok := vm.Object(taskReference); ok {
+				wallOffset := vm.services.Clock.WallMillis() - vm.services.Clock.Monotonic().Milliseconds()
+				object.Fields["\x00aram-timer-scheduled-wall"] = LongValue(wallOffset + event.At.Milliseconds())
+			}
 			if _, _, err := vm.InvokeVirtual(
 				ctx,
 				taskReference,
@@ -659,6 +766,31 @@ func (vm *VM) Advance(
 				"()V",
 			); err != nil {
 				return err
+			}
+			continue
+		}
+		if event.Kind == shared.EventAudioComplete {
+			for reference, object := range vm.heap {
+				if object.Class != "javax/microedition/media/Player" {
+					continue
+				}
+				clip, ok := object.Native.(*audioClipState)
+				if !ok || clip.clip != event.ServiceID {
+					continue
+				}
+				state, _ := object.Fields[playerStateField].Int()
+				if state == playerStarted {
+					object.Fields[playerStateField] = IntValue(playerPrefetched)
+				}
+				position := int64(0)
+				if info, infoErr := vm.services.Media.Info(vm.serviceOwner, clip.clip); infoErr == nil {
+					position = info.Position.Microseconds()
+				}
+				data := ReferenceValue(vm.newWrapper("java/lang/Long", LongValue(position)))
+				if err := vm.notifyPlayerListeners(ctx, reference, "endOfMedia", data); err != nil {
+					return err
+				}
+				break
 			}
 			continue
 		}
@@ -884,89 +1016,177 @@ func fieldStorageKey(class, name, descriptor string) string {
 
 func defaultHostSupers() map[string]string {
 	return map[string]string{
-		"java/lang/Object":                            "",
-		"java/lang/Class":                             "java/lang/Object",
-		"java/lang/String":                            "java/lang/Object",
-		"java/lang/StringBuffer":                      "java/lang/Object",
-		"java/lang/Thread":                            "java/lang/Object",
-		"java/lang/Runtime":                           "java/lang/Object",
-		"java/lang/Integer":                           "java/lang/Object",
-		"java/lang/Byte":                              "java/lang/Object",
-		"java/lang/Long":                              "java/lang/Object",
-		"java/util/Random":                            "java/lang/Object",
-		"java/util/Vector":                            "java/lang/Object",
-		"java/util/Stack":                             "java/util/Vector",
-		"java/util/Hashtable":                         "java/lang/Object",
-		"java/util/Enumeration":                       "java/lang/Object",
-		"java/util/Date":                              "java/lang/Object",
-		"java/util/Calendar":                          "java/lang/Object",
-		"java/util/TimeZone":                          "java/lang/Object",
-		"java/util/Timer":                             "java/lang/Object",
-		"java/util/TimerTask":                         "java/lang/Object",
-		"java/io/InputStream":                         "java/lang/Object",
-		"java/io/OutputStream":                        "java/lang/Object",
-		"java/io/PrintStream":                         "java/io/OutputStream",
-		"java/io/ByteArrayInputStream":                "java/io/InputStream",
-		"java/io/ByteArrayOutputStream":               "java/io/OutputStream",
-		"java/io/DataInputStream":                     "java/io/InputStream",
-		"java/io/DataOutputStream":                    "java/io/OutputStream",
-		"java/io/InputStreamReader":                   "java/lang/Object",
-		"javax/microedition/io/Connection":            "java/lang/Object",
-		"javax/microedition/io/InputConnection":       "java/lang/Object",
-		"javax/microedition/io/OutputConnection":      "java/lang/Object",
-		"javax/microedition/io/StreamConnection":      "java/lang/Object",
-		"javax/microedition/io/ContentConnection":     "java/lang/Object",
-		"javax/microedition/io/HttpConnection":        "java/lang/Object",
-		"javax/microedition/io/SocketConnection":      "java/lang/Object",
-		"javax/microedition/midlet/MIDlet":            "java/lang/Object",
-		"javax/microedition/lcdui/Display":            "java/lang/Object",
-		"javax/microedition/lcdui/Displayable":        "java/lang/Object",
-		"javax/microedition/lcdui/Canvas":             "javax/microedition/lcdui/Displayable",
-		"javax/microedition/lcdui/Graphics":           "java/lang/Object",
-		"javax/microedition/lcdui/Image":              "java/lang/Object",
-		"javax/microedition/lcdui/Font":               "java/lang/Object",
-		"javax/microedition/rms/RecordStore":          "java/lang/Object",
-		"com/skt/m/AudioClip":                         "java/lang/Object",
-		"com/skt/m/Graphics2D":                        "java/lang/Object",
-		"com/skt/m/ProgressBar":                       "java/lang/Object",
-		"com/sun/midp/lcdui/InputMethodHandler":       "java/lang/Object",
-		"com/xce/io/XFile":                            "java/lang/Object",
-		"com/xce/io/FileInputStream":                  "java/io/InputStream",
-		"com/xce/io/FileOutputStream":                 "java/io/OutputStream",
-		"com/xce/io/ByteToCharConverter":              "java/lang/Object",
-		"com/xce/io/ByteToCharEUC_KR":                 "com/xce/io/ByteToCharConverter",
-		"com/xce/lcdui/XTextField":                    "java/lang/Object",
-		"com/xce/lcdui/TextComponentHandler":          "java/lang/Object",
-		"org/kwis/msp/io/File":                        "java/lang/Object",
-		"org/kwis/msp/io/FileSystem":                  "java/lang/Object",
-		"org/kwis/msp/lcdui/Jlet":                     "java/lang/Object",
-		"org/kwis/msp/lcdui/Card":                     "java/lang/Object",
-		"org/kwis/msp/lcdui/Display":                  "java/lang/Object",
-		"org/kwis/msp/lcdui/Graphics":                 "java/lang/Object",
-		"org/kwis/msp/lcdui/Image":                    "java/lang/Object",
-		"org/kwis/msp/lcdui/Font":                     "java/lang/Object",
-		"org/kwis/msf/io/Network":                     "java/lang/Object",
-		"org/kwis/msf/io/Socket":                      "java/lang/Object",
-		"org/kwis/msf/io/URL":                         "java/lang/Object",
-		"java/lang/Throwable":                         "java/lang/Object",
-		"java/lang/Exception":                         "java/lang/Throwable",
-		"java/lang/RuntimeException":                  "java/lang/Exception",
-		"java/lang/NullPointerException":              "java/lang/RuntimeException",
-		"java/lang/ArithmeticException":               "java/lang/RuntimeException",
-		"java/lang/ArrayIndexOutOfBoundsException":    "java/lang/RuntimeException",
-		"java/lang/NegativeArraySizeException":        "java/lang/RuntimeException",
-		"java/lang/ClassCastException":                "java/lang/RuntimeException",
-		"java/lang/ArrayStoreException":               "java/lang/RuntimeException",
-		"java/lang/IllegalArgumentException":          "java/lang/RuntimeException",
-		"java/lang/NumberFormatException":             "java/lang/IllegalArgumentException",
-		"java/lang/IllegalStateException":             "java/lang/RuntimeException",
-		"java/lang/IllegalThreadStateException":       "java/lang/IllegalArgumentException",
-		"java/lang/UnsupportedOperationException":     "java/lang/RuntimeException",
-		"java/util/NoSuchElementException":            "java/lang/RuntimeException",
-		"java/lang/IndexOutOfBoundsException":         "java/lang/RuntimeException",
-		"java/lang/StringIndexOutOfBoundsException":   "java/lang/IndexOutOfBoundsException",
-		"java/io/IOException":                         "java/lang/Exception",
-		"java/io/UnsupportedEncodingException":        "java/io/IOException",
-		"javax/microedition/rms/RecordStoreException": "java/lang/Exception",
+		"java/lang/Object":                                     "",
+		"java/lang/Class":                                      "java/lang/Object",
+		"java/lang/Math":                                       "java/lang/Object",
+		"java/lang/System":                                     "java/lang/Object",
+		"java/lang/Runnable":                                   "java/lang/Object",
+		"java/lang/String":                                     "java/lang/Object",
+		"java/lang/StringBuffer":                               "java/lang/Object",
+		"java/lang/Thread":                                     "java/lang/Object",
+		"java/lang/Runtime":                                    "java/lang/Object",
+		"java/lang/Integer":                                    "java/lang/Object",
+		"java/lang/Byte":                                       "java/lang/Object",
+		"java/lang/Long":                                       "java/lang/Object",
+		"java/lang/Boolean":                                    "java/lang/Object",
+		"java/lang/Character":                                  "java/lang/Object",
+		"java/lang/Short":                                      "java/lang/Object",
+		"java/lang/Float":                                      "java/lang/Object",
+		"java/lang/Double":                                     "java/lang/Object",
+		"java/util/Random":                                     "java/lang/Object",
+		"java/util/Vector":                                     "java/lang/Object",
+		"java/util/Stack":                                      "java/util/Vector",
+		"java/util/Hashtable":                                  "java/lang/Object",
+		"java/util/Enumeration":                                "java/lang/Object",
+		"java/util/Date":                                       "java/lang/Object",
+		"java/util/Calendar":                                   "java/lang/Object",
+		"java/util/TimeZone":                                   "java/lang/Object",
+		"java/util/Timer":                                      "java/lang/Object",
+		"java/util/TimerTask":                                  "java/lang/Object",
+		"java/io/InputStream":                                  "java/lang/Object",
+		"java/io/OutputStream":                                 "java/lang/Object",
+		"java/io/PrintStream":                                  "java/io/OutputStream",
+		"java/io/ByteArrayInputStream":                         "java/io/InputStream",
+		"java/io/ByteArrayOutputStream":                        "java/io/OutputStream",
+		"java/io/DataInputStream":                              "java/io/InputStream",
+		"java/io/DataOutputStream":                             "java/io/OutputStream",
+		"java/io/DataInput":                                    "java/lang/Object",
+		"java/io/DataOutput":                                   "java/lang/Object",
+		"java/io/Reader":                                       "java/lang/Object",
+		"java/io/InputStreamReader":                            "java/io/Reader",
+		"java/io/Writer":                                       "java/lang/Object",
+		"java/io/OutputStreamWriter":                           "java/io/Writer",
+		"java/lang/ref/Reference":                              "java/lang/Object",
+		"java/lang/ref/WeakReference":                          "java/lang/ref/Reference",
+		"javax/microedition/io/Connection":                     "java/lang/Object",
+		"javax/microedition/io/Connector":                      "java/lang/Object",
+		"javax/microedition/io/Datagram":                       "java/lang/Object",
+		"javax/microedition/io/DatagramConnection":             "java/lang/Object",
+		"javax/microedition/io/InputConnection":                "java/lang/Object",
+		"javax/microedition/io/OutputConnection":               "java/lang/Object",
+		"javax/microedition/io/StreamConnection":               "java/lang/Object",
+		"javax/microedition/io/StreamConnectionNotifier":       "java/lang/Object",
+		"javax/microedition/io/ContentConnection":              "java/lang/Object",
+		"javax/microedition/io/ConnectionNotFoundException":    "java/io/IOException",
+		"javax/microedition/io/HttpConnection":                 "java/lang/Object",
+		"javax/microedition/io/SocketConnection":               "java/lang/Object",
+		"javax/microedition/io/SecureConnection":               "javax/microedition/io/SocketConnection",
+		"javax/microedition/io/SecurityInfo":                   "java/lang/Object",
+		"javax/microedition/io/HttpsConnection":                "javax/microedition/io/HttpConnection",
+		"javax/microedition/io/UDPDatagramConnection":          "javax/microedition/io/DatagramConnection",
+		"javax/microedition/io/ServerSocketConnection":         "javax/microedition/io/StreamConnectionNotifier",
+		"javax/microedition/io/CommConnection":                 "java/lang/Object",
+		"javax/microedition/io/PushRegistry":                   "java/lang/Object",
+		"javax/microedition/pki/Certificate":                   "java/lang/Object",
+		"javax/microedition/pki/CertificateException":          "java/io/IOException",
+		"javax/microedition/midlet/MIDlet":                     "java/lang/Object",
+		"javax/microedition/midlet/MIDletStateChangeException": "java/lang/Exception",
+		"javax/microedition/lcdui/Display":                     "java/lang/Object",
+		"javax/microedition/lcdui/Displayable":                 "java/lang/Object",
+		"javax/microedition/lcdui/Canvas":                      "javax/microedition/lcdui/Displayable",
+		"javax/microedition/lcdui/Graphics":                    "java/lang/Object",
+		"javax/microedition/lcdui/Image":                       "java/lang/Object",
+		"javax/microedition/lcdui/Font":                        "java/lang/Object",
+		"javax/microedition/lcdui/Screen":                      "javax/microedition/lcdui/Displayable",
+		"javax/microedition/lcdui/Alert":                       "javax/microedition/lcdui/Screen",
+		"javax/microedition/lcdui/AlertType":                   "java/lang/Object",
+		"javax/microedition/lcdui/Choice":                      "java/lang/Object",
+		"javax/microedition/lcdui/ChoiceGroup":                 "javax/microedition/lcdui/Item",
+		"javax/microedition/lcdui/Command":                     "java/lang/Object",
+		"javax/microedition/lcdui/CommandListener":             "java/lang/Object",
+		"javax/microedition/lcdui/CustomItem":                  "javax/microedition/lcdui/Item",
+		"javax/microedition/lcdui/DateField":                   "javax/microedition/lcdui/Item",
+		"javax/microedition/lcdui/Form":                        "javax/microedition/lcdui/Screen",
+		"javax/microedition/lcdui/Gauge":                       "javax/microedition/lcdui/Item",
+		"javax/microedition/lcdui/ImageItem":                   "javax/microedition/lcdui/Item",
+		"javax/microedition/lcdui/Item":                        "java/lang/Object",
+		"javax/microedition/lcdui/ItemCommandListener":         "java/lang/Object",
+		"javax/microedition/lcdui/ItemStateListener":           "java/lang/Object",
+		"javax/microedition/lcdui/List":                        "javax/microedition/lcdui/Screen",
+		"javax/microedition/lcdui/Spacer":                      "javax/microedition/lcdui/Item",
+		"javax/microedition/lcdui/StringItem":                  "javax/microedition/lcdui/Item",
+		"javax/microedition/lcdui/TextBox":                     "javax/microedition/lcdui/Screen",
+		"javax/microedition/lcdui/TextField":                   "javax/microedition/lcdui/Item",
+		"javax/microedition/lcdui/Ticker":                      "java/lang/Object",
+		"javax/microedition/lcdui/game/GameCanvas":             "javax/microedition/lcdui/Canvas",
+		"javax/microedition/lcdui/game/Layer":                  "java/lang/Object",
+		"javax/microedition/lcdui/game/LayerManager":           "java/lang/Object",
+		"javax/microedition/lcdui/game/Sprite":                 "javax/microedition/lcdui/game/Layer",
+		"javax/microedition/lcdui/game/TiledLayer":             "javax/microedition/lcdui/game/Layer",
+		"javax/microedition/media/Control":                     "java/lang/Object",
+		"javax/microedition/media/Controllable":                "java/lang/Object",
+		"javax/microedition/media/Manager":                     "java/lang/Object",
+		"javax/microedition/media/MediaException":              "java/lang/Exception",
+		"javax/microedition/media/Player":                      "java/lang/Object",
+		"javax/microedition/media/PlayerListener":              "java/lang/Object",
+		"javax/microedition/media/control/ToneControl":         "java/lang/Object",
+		"javax/microedition/media/control/VolumeControl":       "java/lang/Object",
+		"javax/microedition/rms/InvalidRecordIDException":      "javax/microedition/rms/RecordStoreException",
+		"javax/microedition/rms/RecordComparator":              "java/lang/Object",
+		"javax/microedition/rms/RecordEnumeration":             "java/lang/Object",
+		"javax/microedition/rms/RecordFilter":                  "java/lang/Object",
+		"javax/microedition/rms/RecordListener":                "java/lang/Object",
+		"javax/microedition/rms/RecordStoreFullException":      "javax/microedition/rms/RecordStoreException",
+		"javax/microedition/rms/RecordStoreNotFoundException":  "javax/microedition/rms/RecordStoreException",
+		"javax/microedition/rms/RecordStoreNotOpenException":   "javax/microedition/rms/RecordStoreException",
+		"javax/microedition/rms/RecordStore":                   "java/lang/Object",
+		"com/skt/m/AudioClip":                                  "java/lang/Object",
+		"com/skt/m/Graphics2D":                                 "java/lang/Object",
+		"com/skt/m/ProgressBar":                                "java/lang/Object",
+		"com/sun/midp/lcdui/InputMethodHandler":                "java/lang/Object",
+		"com/xce/io/XFile":                                     "java/lang/Object",
+		"com/xce/io/FileInputStream":                           "java/io/InputStream",
+		"com/xce/io/FileOutputStream":                          "java/io/OutputStream",
+		"com/xce/io/ByteToCharConverter":                       "java/lang/Object",
+		"com/xce/io/ByteToCharEUC_KR":                          "com/xce/io/ByteToCharConverter",
+		"com/xce/lcdui/XTextField":                             "java/lang/Object",
+		"com/xce/lcdui/TextComponentHandler":                   "java/lang/Object",
+		"org/kwis/msp/io/File":                                 "java/lang/Object",
+		"org/kwis/msp/io/FileSystem":                           "java/lang/Object",
+		"org/kwis/msp/lcdui/Jlet":                              "java/lang/Object",
+		"org/kwis/msp/lcdui/Card":                              "java/lang/Object",
+		"org/kwis/msp/lcdui/Display":                           "java/lang/Object",
+		"org/kwis/msp/lcdui/Graphics":                          "java/lang/Object",
+		"org/kwis/msp/lcdui/Image":                             "java/lang/Object",
+		"org/kwis/msp/lcdui/Font":                              "java/lang/Object",
+		"org/kwis/msf/io/Network":                              "java/lang/Object",
+		"org/kwis/msf/io/Socket":                               "java/lang/Object",
+		"org/kwis/msf/io/URL":                                  "java/lang/Object",
+		"java/lang/Throwable":                                  "java/lang/Object",
+		"java/lang/Exception":                                  "java/lang/Throwable",
+		"java/lang/Error":                                      "java/lang/Throwable",
+		"java/lang/VirtualMachineError":                        "java/lang/Error",
+		"java/lang/OutOfMemoryError":                           "java/lang/VirtualMachineError",
+		"java/lang/RuntimeException":                           "java/lang/Exception",
+		"java/lang/NullPointerException":                       "java/lang/RuntimeException",
+		"java/lang/ArithmeticException":                        "java/lang/RuntimeException",
+		"java/lang/ArrayIndexOutOfBoundsException":             "java/lang/RuntimeException",
+		"java/lang/NegativeArraySizeException":                 "java/lang/RuntimeException",
+		"java/lang/ClassCastException":                         "java/lang/RuntimeException",
+		"java/lang/ArrayStoreException":                        "java/lang/RuntimeException",
+		"java/lang/IllegalArgumentException":                   "java/lang/RuntimeException",
+		"java/lang/NumberFormatException":                      "java/lang/IllegalArgumentException",
+		"java/lang/IllegalStateException":                      "java/lang/RuntimeException",
+		"java/lang/IllegalThreadStateException":                "java/lang/IllegalArgumentException",
+		"java/lang/IllegalMonitorStateException":               "java/lang/RuntimeException",
+		"java/lang/SecurityException":                          "java/lang/RuntimeException",
+		"java/lang/UnsupportedOperationException":              "java/lang/RuntimeException",
+		"java/lang/ClassNotFoundException":                     "java/lang/Exception",
+		"java/lang/IllegalAccessException":                     "java/lang/Exception",
+		"java/lang/InstantiationException":                     "java/lang/Exception",
+		"java/lang/InterruptedException":                       "java/lang/Exception",
+		"java/lang/Cloneable":                                  "java/lang/Object",
+		"java/lang/CloneNotSupportedException":                 "java/lang/Exception",
+		"java/lang/NoClassDefFoundError":                       "java/lang/Error",
+		"java/util/NoSuchElementException":                     "java/lang/RuntimeException",
+		"java/util/EmptyStackException":                        "java/lang/RuntimeException",
+		"java/lang/IndexOutOfBoundsException":                  "java/lang/RuntimeException",
+		"java/lang/StringIndexOutOfBoundsException":            "java/lang/IndexOutOfBoundsException",
+		"java/io/IOException":                                  "java/lang/Exception",
+		"java/io/EOFException":                                 "java/io/IOException",
+		"java/io/InterruptedIOException":                       "java/io/IOException",
+		"java/io/UTFDataFormatException":                       "java/io/IOException",
+		"java/io/UnsupportedEncodingException":                 "java/io/IOException",
+		"javax/microedition/rms/RecordStoreException":          "java/lang/Exception",
 	}
 }

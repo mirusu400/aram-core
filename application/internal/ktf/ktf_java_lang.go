@@ -71,15 +71,19 @@ func (r *Runtime) handleIntegerMethod(
 			}
 		}
 		if radix < 2 || radix > 36 {
-			return 0, nil
+			return 0, r.raiseHostJavaException(
+				"java/lang/NumberFormatException",
+			)
 		}
 		value, parseErr := strconv.ParseInt(
-			strings.TrimSpace(r.javaStringValue(text)),
+			r.javaStringValue(text),
 			int(radix),
 			32,
 		)
 		if parseErr != nil {
-			return 0, nil
+			return 0, r.raiseHostJavaException(
+				"java/lang/NumberFormatException",
+			)
 		}
 		return uint32(int32(value)), nil
 	case "toString(I)Ljava/lang/String;":
@@ -172,7 +176,7 @@ func (r *Runtime) handleIntegerMethod(
 			)
 		}
 		value, parseErr := strconv.ParseInt(
-			strings.TrimSpace(r.javaStringValue(text)),
+			r.javaStringValue(text),
 			int(radix),
 			32,
 		)
@@ -235,15 +239,19 @@ func (r *Runtime) handleLongMethod(name, descriptor string) (uint32, error) {
 			}
 		}
 		if radix < 2 || radix > 36 {
-			return r.javaLongResult(0), nil
+			return 0, r.raiseHostJavaException(
+				"java/lang/NumberFormatException",
+			)
 		}
 		value, parseErr := strconv.ParseInt(
-			strings.TrimSpace(r.javaStringValue(text)),
+			r.javaStringValue(text),
 			int(radix),
 			64,
 		)
 		if parseErr != nil {
-			return r.javaLongResult(0), nil
+			return 0, r.raiseHostJavaException(
+				"java/lang/NumberFormatException",
+			)
 		}
 		return r.javaLongResult(uint64(value)), nil
 	case "toString(J)Ljava/lang/String;",
@@ -326,6 +334,20 @@ func (r *Runtime) handleThrowableMethod(
 		}
 		r.throwableMessages[instance] = message
 		return 0, nil
+	case "<init>(I)V":
+		index, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		message, valueErr := r.NewJavaString(strconv.FormatInt(
+			int64(int32(index)),
+			10,
+		))
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		r.throwableMessages[instance] = message
+		return 0, nil
 	case "getMessage()Ljava/lang/String;":
 		return r.throwableMessages[instance], nil
 	case "printStackTrace()V":
@@ -370,15 +392,19 @@ func (r *Runtime) handleByteMethod(name, descriptor string) (uint32, error) {
 			}
 		}
 		if radix < 2 || radix > 36 {
-			return 0, nil
+			return 0, r.raiseHostJavaException(
+				"java/lang/NumberFormatException",
+			)
 		}
 		value, parseErr := strconv.ParseInt(
-			strings.TrimSpace(r.javaStringValue(text)),
+			r.javaStringValue(text),
 			int(radix),
 			8,
 		)
 		if parseErr != nil {
-			return 0, nil
+			return 0, r.raiseHostJavaException(
+				"java/lang/NumberFormatException",
+			)
 		}
 		return uint32(int32(int8(value))), nil
 	case "<init>(B)V":
@@ -651,7 +677,7 @@ func (r *Runtime) handleRandomMethod(
 	}
 	switch name + descriptor {
 	case "<init>()V":
-		setSeed(uint64(instance))
+		setSeed(r.monotonicReadMS())
 		return 0, nil
 	case "<init>(J)V", "setSeed(J)V":
 		low, valueErr := r.parameter(2)
@@ -672,22 +698,34 @@ func (r *Runtime) handleRandomMethod(
 			return 0, valueErr
 		}
 		if int32(bound) <= 0 {
-			return 0, nil
+			return 0, r.raiseHostJavaException("java/lang/IllegalArgumentException")
 		}
-		value, valueErr := next(31)
-		if valueErr != nil {
-			return 0, valueErr
+		// java.util.Random uses a fast path for powers of two and rejection
+		// sampling otherwise. A simple multiply-and-shift biases non-power-of-two
+		// bounds, which is observable in games that shuffle or roll frequently.
+		if bound&(bound-1) == 0 {
+			value, nextErr := next(31)
+			if nextErr != nil {
+				return 0, nextErr
+			}
+			return uint32(uint64(bound) * uint64(value) >> 31), nil
 		}
-		return uint32(uint64(value) * uint64(bound) >> 31), nil
+		for {
+			bits, nextErr := next(31)
+			if nextErr != nil {
+				return 0, nextErr
+			}
+			value := bits % bound
+			if int32(bits-value+(bound-1)) >= 0 {
+				return value, nil
+			}
+		}
 	case "nextBoolean()Z":
 		return next(1)
 	case "next(I)I":
 		bits, valueErr := r.parameter(2)
 		if valueErr != nil {
 			return 0, valueErr
-		}
-		if bits == 0 || bits > 32 {
-			bits = 32
 		}
 		return next(uint8(bits))
 	case "nextLong()J":
@@ -713,7 +751,7 @@ func (r *Runtime) handleDateMethod(name, descriptor string) (uint32, error) {
 	}
 	switch name + descriptor {
 	case "<init>()V":
-		r.dates[instance] = int64(r.TickMS)
+		r.dates[instance] = r.wallTickMS()
 		return 0, nil
 	case "<init>(J)V", "setTime(J)V":
 		low, valueErr := r.parameter(2)
@@ -756,13 +794,35 @@ func (r *Runtime) handleVectorMethod(
 	values := r.Vectors[instance]
 	switch name + descriptor {
 	case "<init>()V", "<init>(I)V", "<init>(II)V":
+		capacity := int32(10)
+		increment := int32(0)
+		if descriptor != "()V" {
+			value, valueErr := r.parameter(2)
+			if valueErr != nil {
+				return 0, valueErr
+			}
+			capacity = int32(value)
+		}
+		if descriptor == "(II)V" {
+			value, valueErr := r.parameter(3)
+			if valueErr != nil {
+				return 0, valueErr
+			}
+			increment = int32(value)
+		}
+		if capacity < 0 {
+			return 0, r.raiseHostJavaException("java/lang/IllegalArgumentException")
+		}
 		r.Vectors[instance] = nil
+		r.vectorCapacities[instance] = uint32(capacity)
+		r.vectorCapacityIncrements[instance] = uint32(increment)
 		return 0, nil
 	case "addElement(Ljava/lang/Object;)V":
 		value, valueErr := r.parameter(2)
 		if valueErr != nil {
 			return 0, valueErr
 		}
+		r.ensureKTFVectorCapacity(instance, len(values)+1)
 		r.Vectors[instance] = append(values, value)
 		return 0, nil
 	case "insertElementAt(Ljava/lang/Object;I)V":
@@ -775,8 +835,9 @@ func (r *Runtime) handleVectorMethod(
 			return 0, valueErr
 		}
 		if index > uint32(len(values)) {
-			return 0, nil
+			return 0, r.raiseHostJavaException("java/lang/ArrayIndexOutOfBoundsException")
 		}
+		r.ensureKTFVectorCapacity(instance, len(values)+1)
 		values = append(values, 0)
 		copy(values[index+1:], values[index:])
 		values[index] = value
@@ -787,6 +848,7 @@ func (r *Runtime) handleVectorMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
+		r.ensureKTFVectorCapacity(instance, len(values)+1)
 		r.Vectors[instance] = append(values, value)
 		return value, nil
 	case "elementAt(I)Ljava/lang/Object;":
@@ -795,7 +857,7 @@ func (r *Runtime) handleVectorMethod(
 			return 0, valueErr
 		}
 		if index >= uint32(len(values)) {
-			return 0, nil
+			return 0, r.raiseHostJavaException("java/lang/ArrayIndexOutOfBoundsException")
 		}
 		return values[index], nil
 	case "setElementAt(Ljava/lang/Object;I)V":
@@ -807,18 +869,20 @@ func (r *Runtime) handleVectorMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		if index < uint32(len(values)) {
-			values[index] = value
+		if index >= uint32(len(values)) {
+			return 0, r.raiseHostJavaException("java/lang/ArrayIndexOutOfBoundsException")
 		}
+		values[index] = value
 		return 0, nil
 	case "removeElementAt(I)V":
 		index, valueErr := r.parameter(2)
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		if index < uint32(len(values)) {
-			r.Vectors[instance] = append(values[:index:index], values[index+1:]...)
+		if index >= uint32(len(values)) {
+			return 0, r.raiseHostJavaException("java/lang/ArrayIndexOutOfBoundsException")
 		}
+		r.Vectors[instance] = append(values[:index:index], values[index+1:]...)
 		return 0, nil
 	case "removeElement(Ljava/lang/Object;)Z":
 		target, valueErr := r.parameter(2)
@@ -838,8 +902,10 @@ func (r *Runtime) handleVectorMethod(
 	case "removeAllElements()V":
 		r.Vectors[instance] = nil
 		return 0, nil
-	case "size()I", "capacity()I":
+	case "size()I":
 		return uint32(len(values)), nil
+	case "capacity()I":
+		return max(r.vectorCapacities[instance], uint32(len(values))), nil
 	case "isEmpty()Z", "empty()Z":
 		if len(values) == 0 {
 			return 1, nil
@@ -856,12 +922,24 @@ func (r *Runtime) handleVectorMethod(
 			}
 		}
 		return 0, nil
-	case "indexOf(Ljava/lang/Object;)I":
+	case "indexOf(Ljava/lang/Object;)I", "indexOf(Ljava/lang/Object;I)I":
 		target, valueErr := r.parameter(2)
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		for index, value := range values {
+		start := 0
+		if descriptor == "(Ljava/lang/Object;I)I" {
+			from, parameterErr := r.signedParameter(3)
+			if parameterErr != nil {
+				return 0, parameterErr
+			}
+			if from < 0 {
+				return ^uint32(0), nil
+			}
+			start = from
+		}
+		for index := start; index < len(values); index++ {
+			value := values[index]
 			if value == target {
 				return uint32(index), nil
 			}
@@ -896,19 +974,29 @@ func (r *Runtime) handleVectorMethod(
 		return 0, nil
 	case "pop()Ljava/lang/Object;":
 		if len(values) == 0 {
-			return 0, nil
+			return 0, r.raiseHostJavaException("java/util/EmptyStackException")
 		}
 		value := values[len(values)-1]
 		r.Vectors[instance] = values[:len(values)-1]
 		return value, nil
 	case "peek()Ljava/lang/Object;":
 		if len(values) == 0 {
-			return 0, nil
+			return 0, r.raiseHostJavaException("java/util/EmptyStackException")
 		}
 		return values[len(values)-1], nil
 	case "elements()Ljava/util/Enumeration;":
 		return r.newJavaEnumeration(values)
-	case "ensureCapacity(I)V", "trimToSize()V":
+	case "ensureCapacity(I)V":
+		minimum, valueErr := r.signedParameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if minimum > 0 {
+			r.ensureKTFVectorCapacity(instance, minimum)
+		}
+		return 0, nil
+	case "trimToSize()V":
+		r.vectorCapacities[instance] = uint32(len(values))
 		return 0, nil
 	case "setSize(I)V":
 		size, valueErr := r.parameter(2)
@@ -921,6 +1009,7 @@ func (r *Runtime) handleVectorMethod(
 			)
 		}
 		for uint32(len(values)) < size {
+			r.ensureKTFVectorCapacity(instance, int(size))
 			values = append(values, 0)
 		}
 		r.Vectors[instance] = values[:size]
@@ -984,6 +1073,25 @@ func (r *Runtime) handleVectorMethod(
 	}
 }
 
+func (r *Runtime) ensureKTFVectorCapacity(instance uint32, minimum int) {
+	capacity := r.vectorCapacities[instance]
+	if capacity >= uint32(minimum) {
+		return
+	}
+	if capacity == 0 {
+		capacity = 1
+	}
+	increment := r.vectorCapacityIncrements[instance]
+	for capacity < uint32(minimum) {
+		if increment != 0 {
+			capacity += increment
+		} else {
+			capacity *= 2
+		}
+	}
+	r.vectorCapacities[instance] = capacity
+}
+
 func (r *Runtime) javaHashtableKey(instance uint32) string {
 	if value, ok := r.JavaStrings[instance]; ok {
 		return "string:" + value
@@ -1001,6 +1109,15 @@ func (r *Runtime) handleHashtableMethod(
 	table := r.hashtables[instance]
 	switch name + descriptor {
 	case "<init>()V", "<init>(I)V":
+		if descriptor == "(I)V" {
+			capacity, valueErr := r.signedParameter(2)
+			if valueErr != nil {
+				return 0, valueErr
+			}
+			if capacity < 0 {
+				return 0, r.raiseHostJavaException("java/lang/IllegalArgumentException")
+			}
+		}
 		r.hashtables[instance] = make(map[string]ktfHashtableEntry)
 		return 0, nil
 	case "put(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;":
@@ -1011,6 +1128,9 @@ func (r *Runtime) handleHashtableMethod(
 		value, valueErr := r.parameter(3)
 		if valueErr != nil {
 			return 0, valueErr
+		}
+		if key == 0 || value == 0 {
+			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
 		}
 		if table == nil {
 			table = make(map[string]ktfHashtableEntry)
@@ -1026,6 +1146,9 @@ func (r *Runtime) handleHashtableMethod(
 		key, valueErr := r.parameter(2)
 		if valueErr != nil {
 			return 0, valueErr
+		}
+		if key == 0 {
+			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
 		}
 		normalized := r.javaHashtableKey(key)
 		entry, ok := table[normalized]
@@ -1043,6 +1166,9 @@ func (r *Runtime) handleHashtableMethod(
 		target, valueErr := r.parameter(2)
 		if valueErr != nil {
 			return 0, valueErr
+		}
+		if target == 0 {
+			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
 		}
 		for _, entry := range table {
 			if entry.value == target {
@@ -1121,7 +1247,7 @@ func (r *Runtime) handleEnumerationMethod(
 		return 0, nil
 	case "nextElement()Ljava/lang/Object;":
 		if enumeration == nil || enumeration.index >= uint32(len(enumeration.values)) {
-			return 0, nil
+			return 0, r.raiseHostJavaException("java/util/NoSuchElementException")
 		}
 		value := enumeration.values[enumeration.index]
 		enumeration.index++
@@ -1137,10 +1263,17 @@ func (r *Runtime) handleTimerMethod(
 ) (uint32, error) {
 	switch name + descriptor {
 	case "<init>()V":
-		return 0, nil
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		return 0, r.WriteJavaFieldWord(instance, 0, 0)
 	case "cancel()V":
 		timer, err := r.parameter(1)
 		if err != nil {
+			return 0, err
+		}
+		if err := r.WriteJavaFieldWord(timer, 0, 1); err != nil {
 			return 0, err
 		}
 		cancelled := 0
@@ -1204,7 +1337,10 @@ func (r *Runtime) handleTimerMethod(
 		return result, nil
 	case "schedule(Ljava/util/TimerTask;J)V",
 		"schedule(Ljava/util/TimerTask;JJ)V",
-		"scheduleAtFixedRate(Ljava/util/TimerTask;JJ)V":
+		"scheduleAtFixedRate(Ljava/util/TimerTask;JJ)V",
+		"schedule(Ljava/util/TimerTask;Ljava/util/Date;)V",
+		"schedule(Ljava/util/TimerTask;Ljava/util/Date;J)V",
+		"scheduleAtFixedRate(Ljava/util/TimerTask;Ljava/util/Date;J)V":
 		timer, err := r.parameter(1)
 		if err != nil {
 			return 0, err
@@ -1214,25 +1350,56 @@ func (r *Runtime) handleTimerMethod(
 			return 0, err
 		}
 		if task == 0 {
-			return r.raiseJavaException("java/lang/NullPointerException", 0)
+			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
 		}
-		delay, err := r.javaTimerLongParameter(3)
+		cancelled, err := r.readJavaFieldWord(timer, 0)
 		if err != nil {
 			return 0, err
 		}
-		period := int64(0)
-		if descriptor != "(Ljava/util/TimerTask;J)V" {
-			period, err = r.javaTimerLongParameter(5)
+		if cancelled != 0 {
+			return 0, r.raiseHostJavaException("java/lang/IllegalStateException")
+		}
+		dateBased := descriptor == "(Ljava/util/TimerTask;Ljava/util/Date;)V" ||
+			descriptor == "(Ljava/util/TimerTask;Ljava/util/Date;J)V"
+		delay := int64(0)
+		if dateBased {
+			date, valueErr := r.parameter(3)
+			if valueErr != nil {
+				return 0, valueErr
+			}
+			if date == 0 {
+				return 0, r.raiseHostJavaException("java/lang/NullPointerException")
+			}
+			// A Date carries wall-clock milliseconds, so the delay is
+			// measured against the frame's wall-clock reading.
+			when := r.dates[date]
+			if now := r.wallTickMS(); when > now {
+				delay = when - now
+			}
+		} else {
+			delay, err = r.javaTimerLongParameter(3)
 			if err != nil {
 				return 0, err
 			}
 		}
-		if delay < 0 || period < 0 ||
-			descriptor != "(Ljava/util/TimerTask;J)V" && period == 0 {
-			return r.raiseJavaException("java/lang/IllegalArgumentException", 0)
+		period := int64(0)
+		hasPeriod := descriptor != "(Ljava/util/TimerTask;J)V" &&
+			descriptor != "(Ljava/util/TimerTask;Ljava/util/Date;)V"
+		if hasPeriod {
+			periodIndex := uint32(5)
+			if dateBased {
+				periodIndex = 4
+			}
+			period, err = r.javaTimerLongParameter(periodIndex)
+			if err != nil {
+				return 0, err
+			}
+		}
+		if delay < 0 || period < 0 || hasPeriod && period == 0 {
+			return 0, r.raiseHostJavaException("java/lang/IllegalArgumentException")
 		}
 		if r.javaTimerTaskStates[task] != 0 {
-			return r.raiseJavaException("java/lang/IllegalStateException", 0)
+			return 0, r.raiseHostJavaException("java/lang/IllegalStateException")
 		}
 		if !r.DeferThreads {
 			return r.invokeJavaVirtual(ctx, task, "run", "()V")

@@ -34,6 +34,7 @@ func (vm *VM) installMIDletNatives() {
 			return ReferenceValue(vm.NewString(value)), true, nil
 		},
 	)
+	vm.installMIDletLifecycleExtras()
 }
 
 func (vm *VM) installDisplayNatives() {
@@ -261,6 +262,9 @@ func (vm *VM) installGraphicsNatives() {
 			state, err := vm.image(receiver)
 			if err != nil {
 				return Value{}, false, err
+			}
+			if !vm.imageMutable(receiver) {
+				return Value{}, false, vm.newThrowable("java/lang/IllegalStateException", "immutable image")
 			}
 			graphics := &graphicsState{
 				width:   state.width,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"unicode/utf16"
 )
 
@@ -125,6 +126,15 @@ func (vm *VM) installDataIONatives() {
 		{"readLong", "()J", 8, func(data []byte) Value {
 			return LongValue(int64(binary.BigEndian.Uint64(data)))
 		}},
+		{"readChar", "()C", 2, func(data []byte) Value {
+			return IntValue(int32(binary.BigEndian.Uint16(data)))
+		}},
+		{"readFloat", "()F", 4, func(data []byte) Value {
+			return FloatValue(math.Float32frombits(binary.BigEndian.Uint32(data)))
+		}},
+		{"readDouble", "()D", 8, func(data []byte) Value {
+			return DoubleValue(math.Float64frombits(binary.BigEndian.Uint64(data)))
+		}},
 	} {
 		spec := method
 		vm.RegisterNative(
@@ -138,7 +148,7 @@ func (vm *VM) installDataIONatives() {
 				}
 				data, err := readStreamBytes(stream, spec.size)
 				if err != nil {
-					return Value{}, false, vm.newThrowable("java/io/IOException", err.Error())
+					return Value{}, false, vm.newThrowable("java/io/EOFException", err.Error())
 				}
 				return spec.result(data), true, nil
 			},
@@ -235,9 +245,13 @@ func (vm *VM) installDataIONatives() {
 			}
 			data, err := readStreamBytes(stream, int(binary.BigEndian.Uint16(lengthBytes)))
 			if err != nil {
-				return Value{}, false, vm.newThrowable("java/io/IOException", err.Error())
+				return Value{}, false, vm.newThrowable("java/io/EOFException", err.Error())
 			}
-			return ReferenceValue(vm.NewString(string(data))), true, nil
+			text, err := decodeModifiedUTF8(data)
+			if err != nil {
+				return Value{}, false, vm.newThrowable("java/io/UTFDataFormatException", err.Error())
+			}
+			return ReferenceValue(vm.NewString(text)), true, nil
 		},
 	)
 
@@ -270,6 +284,24 @@ func (vm *VM) installDataIONatives() {
 			value, err := args[0].Long()
 			data := make([]byte, 8)
 			binary.BigEndian.PutUint64(data, uint64(value))
+			return data, err
+		}},
+		{"writeChar", "(I)V", func(args []Value) ([]byte, error) {
+			value, err := intArgument(args, 0)
+			data := make([]byte, 2)
+			binary.BigEndian.PutUint16(data, uint16(value))
+			return data, err
+		}},
+		{"writeFloat", "(F)V", func(args []Value) ([]byte, error) {
+			value, err := args[0].Float()
+			data := make([]byte, 4)
+			binary.BigEndian.PutUint32(data, math.Float32bits(value))
+			return data, err
+		}},
+		{"writeDouble", "(D)V", func(args []Value) ([]byte, error) {
+			value, err := args[0].Double()
+			data := make([]byte, 8)
+			binary.BigEndian.PutUint64(data, math.Float64bits(value))
 			return data, err
 		}},
 	} {
@@ -309,7 +341,7 @@ func (vm *VM) installDataIONatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
-			data := []byte(value)
+			data := encodeModifiedUTF8(value)
 			if len(data) > 0xffff {
 				return Value{}, false, vm.newThrowable("java/io/IOException", "UTF string too long")
 			}
@@ -319,6 +351,67 @@ func (vm *VM) installDataIONatives() {
 			return Value{}, false, vm.dataOutputWrite(ctx, receiver, encoded)
 		},
 	)
+	vm.RegisterNative(
+		"java/io/DataInputStream",
+		"readUTF",
+		"(Ljava/io/DataInput;)Ljava/lang/String;",
+		func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
+			reference, err := referenceArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			stream, err := vm.dataInput(reference)
+			if err != nil {
+				return Value{}, false, vm.newThrowable("java/io/IOException", "unsupported DataInput implementation")
+			}
+			lengthBytes, err := readStreamBytes(stream, 2)
+			if err != nil {
+				return Value{}, false, vm.newThrowable("java/io/EOFException", err.Error())
+			}
+			data, err := readStreamBytes(stream, int(binary.BigEndian.Uint16(lengthBytes)))
+			if err != nil {
+				return Value{}, false, vm.newThrowable("java/io/EOFException", err.Error())
+			}
+			text, err := decodeModifiedUTF8(data)
+			if err != nil {
+				return Value{}, false, vm.newThrowable("java/io/UTFDataFormatException", err.Error())
+			}
+			return ReferenceValue(vm.NewString(text)), true, nil
+		},
+	)
+	vm.RegisterNative(
+		"java/io/DataOutputStream",
+		"writeChars",
+		"(Ljava/lang/String;)V",
+		func(ctx context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+			value, err := vm.stringArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			units := utf16.Encode([]rune(value))
+			data := make([]byte, len(units)*2)
+			for index, unit := range units {
+				binary.BigEndian.PutUint16(data[index*2:], unit)
+			}
+			return Value{}, false, vm.dataOutputWrite(ctx, receiver, data)
+		},
+	)
+}
+
+func encodeModifiedUTF8(value string) []byte {
+	units := utf16.Encode([]rune(value))
+	data := make([]byte, 0, len(units)*3)
+	for _, unit := range units {
+		switch {
+		case unit != 0 && unit <= 0x7f:
+			data = append(data, byte(unit))
+		case unit <= 0x7ff:
+			data = append(data, 0xc0|byte(unit>>6), 0x80|byte(unit&0x3f))
+		default:
+			data = append(data, 0xe0|byte(unit>>12), 0x80|byte((unit>>6)&0x3f), 0x80|byte(unit&0x3f))
+		}
+	}
+	return data
 }
 
 func (vm *VM) dataInput(reference uint32) (*inputStreamState, error) {

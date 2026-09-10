@@ -8,7 +8,9 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"math"
+	"strconv"
 	"unicode/utf16"
+	"unicode/utf8"
 
 	shared "github.com/mirusu400/aram-core/runtime"
 )
@@ -72,10 +74,11 @@ func (r *Runtime) handleInputStreamMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		var data []byte
 		if array == 0 {
-			data = nil
-		} else if descriptor == "([BII)V" {
+			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
+		}
+		var data []byte
+		if descriptor == "([BII)V" {
 			offset, valueErr := r.parameter(3)
 			if valueErr != nil {
 				return 0, valueErr
@@ -101,6 +104,9 @@ func (r *Runtime) handleInputStreamMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
+		if source == 0 {
+			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
+		}
 		r.inputTargets[instance] = source
 		return 0, nil
 	case "available()I":
@@ -121,7 +127,7 @@ func (r *Runtime) handleInputStreamMethod(
 			return 0, valueErr
 		}
 		if array == 0 {
-			return ^uint32(0), nil
+			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
 		}
 		length, valueErr := r.javaArrayLength(array)
 		if valueErr != nil {
@@ -134,7 +140,7 @@ func (r *Runtime) handleInputStreamMethod(
 			return 0, valueErr
 		}
 		if array == 0 {
-			return ^uint32(0), nil
+			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
 		}
 		offset, valueErr := r.parameter(3)
 		if valueErr != nil {
@@ -161,7 +167,11 @@ func (r *Runtime) handleInputStreamMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		requested := uint64(high)<<32 | uint64(low)
+		signed := int64(uint64(high)<<32 | uint64(low))
+		if signed <= 0 {
+			return r.javaLongResult(0), nil
+		}
+		requested := uint64(signed)
 		remaining := uint64(len(stream.data)) - uint64(stream.position)
 		if requested > remaining {
 			requested = remaining
@@ -193,6 +203,9 @@ func (r *Runtime) handleInputStreamMethod(
 		}
 		if !ok {
 			return r.raiseJavaException("java/io/EOFException", 0)
+		}
+		if name == "readBoolean" {
+			return boolWord(data[0] != 0), nil
 		}
 		return uint32(data[0]), nil
 	case "readByte()B":
@@ -233,7 +246,8 @@ func (r *Runtime) handleInputStreamMethod(
 			return r.javaLongResult(binary.BigEndian.Uint64(data)), nil
 		}
 		return binary.BigEndian.Uint32(data), nil
-	case "readUTF()Ljava/lang/String;":
+	case "readUTF()Ljava/lang/String;",
+		"readUTF(Ljava/io/DataInput;)Ljava/lang/String;":
 		header, ok, valueErr := readBytes(2)
 		if valueErr != nil {
 			return 0, valueErr
@@ -259,6 +273,9 @@ func (r *Runtime) handleInputStreamMethod(
 		array, valueErr := r.parameter(2)
 		if valueErr != nil {
 			return 0, valueErr
+		}
+		if array == 0 {
+			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
 		}
 		offset := uint32(0)
 		count, valueErr := r.javaArrayLength(array)
@@ -291,7 +308,7 @@ func (r *Runtime) handleInputStreamMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		if stream == nil {
+		if int32(requested) <= 0 || stream == nil {
 			return 0, nil
 		}
 		remaining := uint32(len(stream.data)) - stream.position
@@ -378,20 +395,18 @@ func (r *Runtime) readInputStreamInto(
 	stream *ktfInputStream,
 	array, offset, count uint32,
 ) (uint32, error) {
-	if stream == nil || stream.position >= uint32(len(stream.data)) {
-		return ^uint32(0), nil
-	}
 	length, err := r.javaArrayLength(array)
 	if err != nil {
 		return 0, err
 	}
 	if offset > length || count > length-offset {
-		return 0, fmt.Errorf(
-			"KTF Java byte array range [%d,%d) exceeds length %d",
-			offset,
-			offset+count,
-			length,
-		)
+		return 0, r.raiseHostJavaException("java/lang/IndexOutOfBoundsException")
+	}
+	if count == 0 {
+		return 0, nil
+	}
+	if stream == nil || stream.position >= uint32(len(stream.data)) {
+		return ^uint32(0), nil
 	}
 	remaining := uint32(len(stream.data)) - stream.position
 	if count > remaining {
@@ -419,20 +434,62 @@ func (r *Runtime) handleInputStreamReaderMethod(
 		return 0, err
 	}
 	switch name + descriptor {
-	case "<init>(Ljava/io/InputStream;)V":
+	case "<init>()V":
+		return 0, nil
+	case "<init>(Ljava/lang/Object;)V":
+		lock, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if lock == 0 {
+			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
+		}
+		return 0, nil
+	case "<init>(Ljava/io/InputStream;)V",
+		"<init>(Ljava/io/InputStream;Ljava/lang/String;)V":
 		source, valueErr := r.parameter(2)
 		if valueErr != nil {
 			return 0, valueErr
 		}
+		if source == 0 {
+			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
+		}
+		encoding := shared.EncodingEUCKR
+		if descriptor == "(Ljava/io/InputStream;Ljava/lang/String;)V" {
+			encodingValue, valueErr := r.parameter(3)
+			if valueErr != nil {
+				return 0, valueErr
+			}
+			if encodingValue == 0 {
+				return 0, r.raiseHostJavaException("java/lang/NullPointerException")
+			}
+			var supported bool
+			encoding, supported = lookupJavaCharsetEncoding(
+				r.javaStringValue(encodingValue),
+			)
+			if !supported {
+				return 0, r.raiseHostJavaException("java/io/UnsupportedEncodingException")
+			}
+		}
 		r.inputTargets[instance] = source
+		if err := r.WriteJavaFieldWord(
+			instance,
+			0,
+			ktfJavaTextEncodingWord(encoding),
+		); err != nil {
+			return 0, err
+		}
+		if err := r.WriteJavaFieldWord(instance, 4, 0); err != nil {
+			return 0, err
+		}
 		return 0, nil
 	case "read()I":
 		source := r.inputReaderSource(instance)
 		stream := r.inputStreams[source]
-		if stream == nil || stream.position >= uint32(len(stream.data)) {
+		if stream == nil {
 			return ^uint32(0), nil
 		}
-		characters, next, valueErr := r.decodeInputStreamReaderChars(stream, 1)
+		characters, next, valueErr := r.decodeInputStreamReaderChars(instance, stream, 1)
 		if valueErr != nil {
 			return 0, valueErr
 		}
@@ -446,6 +503,9 @@ func (r *Runtime) handleInputStreamReaderMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
+		if array == 0 {
+			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
+		}
 		length, valueErr := r.javaArrayLength(array)
 		if valueErr != nil {
 			return 0, valueErr
@@ -455,6 +515,9 @@ func (r *Runtime) handleInputStreamReaderMethod(
 		array, valueErr := r.parameter(2)
 		if valueErr != nil {
 			return 0, valueErr
+		}
+		if array == 0 {
+			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
 		}
 		offset, valueErr := r.parameter(3)
 		if valueErr != nil {
@@ -467,8 +530,10 @@ func (r *Runtime) handleInputStreamReaderMethod(
 		return r.readInputStreamReaderChars(instance, array, offset, count)
 	case "ready()Z":
 		stream := r.inputStreams[r.inputReaderSource(instance)]
+		pending, _ := r.readJavaFieldWord(instance, 4)
 		return boolWord(
-			stream != nil && stream.position < uint32(len(stream.data)),
+			pending != 0 ||
+				(stream != nil && stream.position < uint32(len(stream.data))),
 		), nil
 	case "skip(J)J":
 		low, valueErr := r.parameter(2)
@@ -487,12 +552,12 @@ func (r *Runtime) handleInputStreamReaderMethod(
 		if stream == nil {
 			return r.javaLongResult(0), nil
 		}
-		remaining := uint64(len(stream.data)) - uint64(stream.position)
 		count := uint64(requested)
-		if count > remaining {
-			count = remaining
+		if count > math.MaxUint32 {
+			count = math.MaxUint32
 		}
 		characters, next, valueErr := r.decodeInputStreamReaderChars(
+			instance,
 			stream,
 			uint32(count),
 		)
@@ -502,21 +567,21 @@ func (r *Runtime) handleInputStreamReaderMethod(
 		stream.position = next
 		return r.javaLongResult(uint64(len(characters))), nil
 	case "close()V":
+		delete(r.inputStreams, r.inputReaderSource(instance))
 		delete(r.inputTargets, instance)
 		return 0, nil
 	case "markSupported()Z":
 		return 0, nil
 	case "mark(I)V", "reset()V":
 		// Readers over EUC-KR byte streams do not support repositioning.
-		return 0, nil
+		return 0, r.raiseHostJavaException("java/io/IOException")
 	default:
 		return 0, nil
 	}
 }
 
-// handleOutputStreamWriterMethod encodes characters as EUC-KR into the
-// wrapped output stream. The optional encoding constructor argument is
-// ignored: KTF titles only write EUC-KR text.
+// handleOutputStreamWriterMethod encodes characters into the charset chosen
+// by its constructor and writes them to the wrapped byte stream.
 func (r *Runtime) handleOutputStreamWriterMethod(
 	name, descriptor string,
 ) (uint32, error) {
@@ -528,10 +593,12 @@ func (r *Runtime) handleOutputStreamWriterMethod(
 	if redirected := r.outputTargets[instance]; redirected != 0 {
 		target = redirected
 	}
+	encodingWord, _ := r.readJavaFieldWord(instance, 0)
+	encoding := ktfJavaTextEncodingFromWord(encodingWord)
 	appendText := func(value string) error {
 		data, encodeErr := r.Services.Text.Encode(
 			value,
-			shared.EncodingEUCKR,
+			encoding,
 		)
 		if encodeErr != nil {
 			return encodeErr
@@ -546,6 +613,15 @@ func (r *Runtime) handleOutputStreamWriterMethod(
 	switch name + descriptor {
 	case "<init>()V":
 		return 0, nil
+	case "<init>(Ljava/lang/Object;)V":
+		lock, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if lock == 0 {
+			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
+		}
+		return 0, nil
 	case "<init>(Ljava/io/OutputStream;)V",
 		"<init>(Ljava/io/OutputStream;Ljava/lang/String;)V":
 		redirected, valueErr := r.parameter(2)
@@ -553,11 +629,35 @@ func (r *Runtime) handleOutputStreamWriterMethod(
 			return 0, valueErr
 		}
 		if redirected == 0 {
-			redirected = instance
+			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
+		}
+		encoding = shared.EncodingEUCKR
+		if descriptor == "(Ljava/io/OutputStream;Ljava/lang/String;)V" {
+			encodingValue, valueErr := r.parameter(3)
+			if valueErr != nil {
+				return 0, valueErr
+			}
+			if encodingValue == 0 {
+				return 0, r.raiseHostJavaException("java/lang/NullPointerException")
+			}
+			var supported bool
+			encoding, supported = lookupJavaCharsetEncoding(
+				r.javaStringValue(encodingValue),
+			)
+			if !supported {
+				return 0, r.raiseHostJavaException("java/io/UnsupportedEncodingException")
+			}
 		}
 		r.outputTargets[instance] = redirected
+		if err := r.WriteJavaFieldWord(
+			instance,
+			0,
+			ktfJavaTextEncodingWord(encoding),
+		); err != nil {
+			return 0, err
+		}
 		return 0, nil
-	case "write(I)V":
+	case "write(I)V", "write(C)V":
 		value, valueErr := r.parameter(2)
 		if valueErr != nil {
 			return 0, valueErr
@@ -623,6 +723,166 @@ func (r *Runtime) handleOutputStreamWriterMethod(
 	}
 }
 
+// handlePrintStreamMethod implements CLDC PrintStream on top of the same
+// byte sinks used by OutputStream and file streams. PrintStream writes are
+// immediate in this runtime, so flush has no buffered work; encoding or file
+// errors set the stream's trouble flag instead of escaping as IOExceptions.
+func (r *Runtime) handlePrintStreamMethod(
+	name, descriptor string,
+) (uint32, error) {
+	instance, err := r.parameter(1)
+	if err != nil {
+		return 0, err
+	}
+	target := instance
+	for depth := 0; depth < 64; depth++ {
+		redirected := r.outputTargets[target]
+		if redirected == 0 || redirected == target {
+			break
+		}
+		target = redirected
+	}
+	appendBytes := func(data []byte) {
+		r.outputStreams[target] = append(r.outputStreams[target], data...)
+		if fileInstance := r.fileStreamTargets[target]; fileInstance != 0 {
+			if _, writeErr := r.writeKTFFile(fileInstance, data); writeErr != nil {
+				r.printStreamErrors[instance] = true
+			}
+		}
+	}
+	appendText := func(value string) {
+		data, encodeErr := r.Services.Text.Encode(
+			value,
+			shared.EncodingEUCKR,
+		)
+		if encodeErr != nil {
+			r.printStreamErrors[instance] = true
+			return
+		}
+		appendBytes(data)
+	}
+	printValue := func() (string, error) {
+		value, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return "", valueErr
+		}
+		switch descriptor {
+		case "(Ljava/lang/Object;)V":
+			return r.javaObjectString(value), nil
+		case "(Ljava/lang/String;)V":
+			return r.javaStringValue(value), nil
+		case "([C)V":
+			if value == 0 {
+				return "", r.raiseHostJavaException(
+					"java/lang/NullPointerException",
+				)
+			}
+			length, lengthErr := r.javaArrayLength(value)
+			if lengthErr != nil {
+				return "", lengthErr
+			}
+			return r.readJavaCharArrayRange(value, 0, length)
+		case "(Z)V":
+			if value != 0 {
+				return "true", nil
+			}
+			return "false", nil
+		case "(C)V":
+			return string(rune(uint16(value))), nil
+		case "(I)V":
+			return strconv.FormatInt(int64(int32(value)), 10), nil
+		case "(J)V":
+			high, highErr := r.parameter(3)
+			if highErr != nil {
+				return "", highErr
+			}
+			return strconv.FormatInt(
+				int64(uint64(high)<<32|uint64(value)),
+				10,
+			), nil
+		default:
+			return "", fmt.Errorf(
+				"unsupported KTF PrintStream value descriptor %s",
+				descriptor,
+			)
+		}
+	}
+	switch name + descriptor {
+	case "<init>(Ljava/io/OutputStream;)V":
+		redirected, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if redirected == 0 {
+			return 0, r.raiseHostJavaException(
+				"java/lang/NullPointerException",
+			)
+		}
+		r.outputTargets[instance] = redirected
+		delete(r.printStreamErrors, instance)
+		return 0, nil
+	case "print(Ljava/lang/Object;)V", "print(Ljava/lang/String;)V",
+		"print([C)V", "print(Z)V", "print(C)V", "print(I)V",
+		"print(J)V",
+		"println(Ljava/lang/Object;)V", "println(Ljava/lang/String;)V",
+		"println([C)V", "println(Z)V", "println(C)V", "println(I)V",
+		"println(J)V":
+		value, valueErr := printValue()
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if name == "println" {
+			value += "\n"
+		}
+		appendText(value)
+		return 0, nil
+	case "println()V":
+		appendText("\n")
+		return 0, nil
+	case "write(I)V":
+		value, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		appendBytes([]byte{byte(value)})
+		return 0, nil
+	case "write([BII)V":
+		array, valueErr := r.parameter(2)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		if array == 0 {
+			return 0, r.raiseHostJavaException(
+				"java/lang/NullPointerException",
+			)
+		}
+		offset, valueErr := r.parameter(3)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		count, valueErr := r.parameter(4)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		data, valueErr := r.readJavaByteArrayRange(array, offset, count)
+		if valueErr != nil {
+			return 0, valueErr
+		}
+		appendBytes(data)
+		return 0, nil
+	case "checkError()Z":
+		return boolWord(r.printStreamErrors[instance]), nil
+	case "setError()V":
+		r.printStreamErrors[instance] = true
+		return 0, nil
+	case "flush()V", "close()V":
+		return 0, nil
+	default:
+		r.recordUnimplementedJava("java/io/PrintStream", name, descriptor)
+		return 0, nil
+	}
+}
+
 func encodeKTFModifiedUTF8(value string) []byte {
 	encoded := make([]byte, 0, len(value)*2)
 	for _, codeUnit := range utf16.Encode([]rune(value)) {
@@ -659,6 +919,32 @@ func (r *Runtime) inputReaderSource(instance uint32) uint32 {
 	return source
 }
 
+func ktfJavaTextEncodingWord(encoding shared.TextEncoding) uint32 {
+	switch encoding {
+	case shared.EncodingUTF8:
+		return 1
+	case shared.EncodingUTF16LE:
+		return 2
+	case shared.EncodingUTF16BE:
+		return 3
+	default:
+		return 4
+	}
+}
+
+func ktfJavaTextEncodingFromWord(value uint32) shared.TextEncoding {
+	switch value {
+	case 1:
+		return shared.EncodingUTF8
+	case 2:
+		return shared.EncodingUTF16LE
+	case 3:
+		return shared.EncodingUTF16BE
+	default:
+		return shared.EncodingEUCKR
+	}
+}
+
 func (r *Runtime) readInputStreamReaderChars(
 	instance, array, offset, count uint32,
 ) (uint32, error) {
@@ -667,23 +953,21 @@ func (r *Runtime) readInputStreamReaderChars(
 		return 0, err
 	}
 	if offset > length || count > length-offset {
-		return 0, fmt.Errorf(
-			"KTF Java char array range [%d,%d) exceeds length %d",
-			offset,
-			offset+count,
-			length,
-		)
+		return 0, r.raiseHostJavaException("java/lang/IndexOutOfBoundsException")
 	}
 	if count == 0 {
 		return 0, nil
 	}
 	stream := r.inputStreams[r.inputReaderSource(instance)]
-	if stream == nil || stream.position >= uint32(len(stream.data)) {
+	if stream == nil {
 		return ^uint32(0), nil
 	}
-	characters, next, err := r.decodeInputStreamReaderChars(stream, count)
+	characters, next, err := r.decodeInputStreamReaderChars(instance, stream, count)
 	if err != nil {
 		return 0, err
+	}
+	if len(characters) == 0 {
+		return ^uint32(0), nil
 	}
 	fields, err := r.ReadU32(array)
 	if err != nil {
@@ -704,39 +988,93 @@ func (r *Runtime) readInputStreamReaderChars(
 }
 
 func (r *Runtime) decodeInputStreamReaderChars(
+	instance uint32,
 	stream *ktfInputStream,
 	count uint32,
 ) ([]uint16, uint32, error) {
 	if stream == nil {
 		return nil, 0, nil
 	}
-	if count == 0 || stream.position >= uint32(len(stream.data)) {
+	if count == 0 {
 		return nil, stream.position, nil
 	}
+	encodingWord, fieldErr := r.readJavaFieldWord(instance, 0)
+	tracked := fieldErr == nil
+	encoding := ktfJavaTextEncodingFromWord(encodingWord)
+	pending := uint32(0)
+	if tracked {
+		pending, fieldErr = r.readJavaFieldWord(instance, 4)
+		if fieldErr != nil {
+			return nil, stream.position, fieldErr
+		}
+	}
 	remaining := uint32(len(stream.data)) - stream.position
-	characters := make([]uint16, 0, min(count, remaining))
+	characters := make([]uint16, 0, min(count, remaining+1))
 	position := stream.position
+	if pending != 0 {
+		characters = append(characters, uint16(pending))
+		pending = 0
+	}
+	if len(characters) == 0 && stream.position >= uint32(len(stream.data)) {
+		return nil, stream.position, nil
+	}
 	for uint32(len(characters)) < count && position < uint32(len(stream.data)) {
-		encodedSize := uint32(1)
-		if stream.data[position]&0x80 != 0 {
-			encodedSize = 2
+		switch encoding {
+		case shared.EncodingUTF16LE, shared.EncodingUTF16BE:
+			if uint32(len(stream.data))-position < 2 {
+				return nil, stream.position, fmt.Errorf("KTF Java InputStreamReader has truncated UTF-16 input")
+			}
+			var codeUnit uint16
+			if encoding == shared.EncodingUTF16LE {
+				codeUnit = binary.LittleEndian.Uint16(stream.data[position:])
+			} else {
+				codeUnit = binary.BigEndian.Uint16(stream.data[position:])
+			}
+			characters = append(characters, codeUnit)
+			position += 2
+		case shared.EncodingUTF8:
+			character, encodedSize := utf8.DecodeRune(stream.data[position:])
+			if character == utf8.RuneError && encodedSize == 1 &&
+				stream.data[position] >= utf8.RuneSelf {
+				return nil, stream.position, fmt.Errorf("KTF Java InputStreamReader has malformed UTF-8 input")
+			}
+			units := utf16.Encode([]rune{character})
+			characters = append(characters, units[0])
+			if len(units) == 2 {
+				if uint32(len(characters)) < count {
+					characters = append(characters, units[1])
+				} else {
+					pending = uint32(units[1])
+				}
+			}
+			position += uint32(encodedSize)
+		default:
+			encodedSize := uint32(1)
+			if stream.data[position]&0x80 != 0 {
+				encodedSize = 2
+			}
+			if encodedSize > uint32(len(stream.data))-position {
+				return nil, stream.position, fmt.Errorf("KTF Java InputStreamReader has truncated EUC-KR input")
+			}
+			value, err := r.Services.Text.Decode(
+				stream.data[position:position+encodedSize],
+				shared.EncodingEUCKR,
+			)
+			if err != nil {
+				return nil, stream.position, err
+			}
+			decoded := []rune(value)
+			if len(decoded) != 1 || decoded[0] > math.MaxUint16 {
+				return nil, stream.position, fmt.Errorf("KTF Java InputStreamReader decoded an invalid character")
+			}
+			characters = append(characters, uint16(decoded[0]))
+			position += encodedSize
 		}
-		if encodedSize > uint32(len(stream.data))-position {
-			return nil, stream.position, fmt.Errorf("KTF Java InputStreamReader has truncated EUC-KR input")
-		}
-		value, err := r.Services.Text.Decode(
-			stream.data[position:position+encodedSize],
-			shared.EncodingEUCKR,
-		)
-		if err != nil {
+	}
+	if tracked {
+		if err := r.WriteJavaFieldWord(instance, 4, pending); err != nil {
 			return nil, stream.position, err
 		}
-		decoded := []rune(value)
-		if len(decoded) != 1 || decoded[0] > math.MaxUint16 {
-			return nil, stream.position, fmt.Errorf("KTF Java InputStreamReader decoded an invalid character")
-		}
-		characters = append(characters, uint16(decoded[0]))
-		position += encodedSize
 	}
 	return characters, position, nil
 }

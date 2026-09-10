@@ -125,9 +125,16 @@ func (r *Runtime) handleClassMethod(
 		if err != nil {
 			return 0, err
 		}
+		if nameAddress == 0 {
+			return 0, r.raiseHostJavaException(
+				"java/lang/NullPointerException",
+			)
+		}
 		className := strings.ReplaceAll(r.javaText(nameAddress), ".", "/")
 		if className == "" {
-			return 0, nil
+			return 0, r.raiseHostJavaException(
+				"java/lang/ClassNotFoundException",
+			)
 		}
 		classAddress := r.JavaClasses[className]
 		if classAddress == 0 {
@@ -143,7 +150,9 @@ func (r *Runtime) handleClassMethod(
 						"java_class_for_name:%s:found=false",
 						className,
 					)
-					return 0, nil
+					return 0, r.raiseHostJavaException(
+						"java/lang/ClassNotFoundException",
+					)
 				}
 				classAddress = class.Address
 			}
@@ -151,9 +160,22 @@ func (r *Runtime) handleClassMethod(
 		r.tracef("java_class_for_name:%s:found=true", className)
 		return r.javaClassObject(classAddress)
 	case "isArray()Z", "isInterface()Z":
-		// Host class objects only model loadable classes; arrays and
-		// interfaces are never materialized through Class objects here.
-		return 0, nil
+		classObject, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		classAddress, err := r.javaClassObjectTarget(classObject)
+		if err != nil {
+			return 0, err
+		}
+		class, err := r.InspectJavaClass(classAddress)
+		if err != nil {
+			return 0, err
+		}
+		if name == "isArray" {
+			return boolWord(strings.HasPrefix(class.Name, "[")), nil
+		}
+		return boolWord(class.AccessFlags&0x0200 != 0), nil
 	case "isInstance(Ljava/lang/Object;)Z":
 		classObject, err := r.parameter(1)
 		if err != nil {
@@ -201,6 +223,27 @@ func (r *Runtime) handleClassMethod(
 		if err != nil {
 			return 0, err
 		}
+		if class.AccessFlags&0x0600 != 0 {
+			return 0, r.raiseHostJavaException(
+				"java/lang/InstantiationException",
+			)
+		}
+		if !r.hostJavaClass[class.Address] && class.AccessFlags&0x0001 == 0 {
+			return 0, r.raiseHostJavaException(
+				"java/lang/IllegalAccessException",
+			)
+		}
+		constructor, found := findKTFDeclaredJavaMethod(class, "<init>", "()V")
+		if !found {
+			return 0, r.raiseHostJavaException(
+				"java/lang/InstantiationException",
+			)
+		}
+		if !r.hostJavaClass[class.Address] && constructor.AccessFlags&0x0001 == 0 {
+			return 0, r.raiseHostJavaException(
+				"java/lang/IllegalAccessException",
+			)
+		}
 		instance, err := r.NewJavaInstanceForClass(class)
 		if err != nil {
 			return 0, err
@@ -211,7 +254,7 @@ func (r *Runtime) handleClassMethod(
 			"<init>",
 			"()V",
 		); invokeErr != nil {
-			r.tracef("java_class_new_instance_init:%s", invokeErr)
+			return 0, invokeErr
 		}
 		return instance, nil
 	case "toString()Ljava/lang/String;":
@@ -269,6 +312,149 @@ func (r *Runtime) javaClassObjectTarget(object uint32) (uint32, error) {
 	return 0, fmt.Errorf("unknown KTF java.lang.Class instance 0x%08x", object)
 }
 
+func (r *Runtime) waitJavaObject(object uint32, millis int64, nanos int32) error {
+	if object == 0 {
+		return r.raiseHostJavaException("java/lang/NullPointerException")
+	}
+	if millis < 0 || nanos < 0 || nanos > 999_999 {
+		return r.raiseHostJavaException("java/lang/IllegalArgumentException")
+	}
+	if !r.DeferThreads || r.activeTask == nil {
+		return nil
+	}
+	delay := uint64(millis)
+	if nanos != 0 && delay != ^uint64(0) {
+		// Object.wait rounds a positive nanosecond remainder up to the next
+		// millisecond on the millisecond scheduler.
+		delay++
+	}
+	r.activeTask.monitorWait = object
+	r.activeTask.WakeAtMS = 0
+	if delay != 0 {
+		if delay > ^uint64(0)-r.TickMS {
+			r.activeTask.WakeAtMS = ^uint64(0)
+		} else {
+			r.activeTask.WakeAtMS = r.TickMS + delay
+		}
+	}
+	r.yieldRequested = true
+	r.tracef(
+		"java_object_wait:object=0x%08x:wake_at_ms=%d",
+		object,
+		r.activeTask.WakeAtMS,
+	)
+	return nil
+}
+
+func (r *Runtime) notifyJavaObject(object uint32, all bool) error {
+	if object == 0 {
+		return r.raiseHostJavaException("java/lang/NullPointerException")
+	}
+	woken := 0
+	for _, task := range r.Tasks {
+		if task == nil || task.Done || task.monitorWait != object {
+			continue
+		}
+		task.monitorWait = 0
+		task.WakeAtMS = 0
+		woken++
+		if !all {
+			break
+		}
+	}
+	r.tracef("java_object_notify:object=0x%08x:all=%t:woken=%d", object, all, woken)
+	return nil
+}
+
+const (
+	ktfThreadPriorityFieldOffset = uint32(4)
+	ktfThreadStateFieldOffset    = uint32(8)
+	ktfThreadStateNew            = uint32(0)
+	ktfThreadStateStarted        = uint32(1)
+)
+
+func (r *Runtime) javaThreadField(thread, offset uint32) (uint32, error) {
+	if thread == 0 {
+		return 0, r.raiseHostJavaException("java/lang/NullPointerException")
+	}
+	fields, err := r.ReadU32(thread)
+	if err != nil {
+		return 0, err
+	}
+	return r.ReadU32(fields + offset)
+}
+
+func (r *Runtime) writeJavaThreadField(thread, offset, value uint32) error {
+	if thread == 0 {
+		return r.raiseHostJavaException("java/lang/NullPointerException")
+	}
+	fields, err := r.ReadU32(thread)
+	if err != nil {
+		return err
+	}
+	return r.WriteU32(fields+offset, value)
+}
+
+func (r *Runtime) initializeJavaThread(thread uint32) error {
+	if err := r.writeJavaThreadField(thread, ktfThreadPriorityFieldOffset, 5); err != nil {
+		return err
+	}
+	return r.writeJavaThreadField(thread, ktfThreadStateFieldOffset, ktfThreadStateNew)
+}
+
+// javaThreadAlive derives liveness from scheduler state rather than retaining
+// a stale boolean after a task slot is recycled. Pending starts count as alive
+// too: start() has returned and the VM has accepted the thread for execution.
+func (r *Runtime) javaThreadAlive(thread uint32) bool {
+	if thread == 0 {
+		return false
+	}
+	for _, task := range r.Tasks {
+		if task == nil || task.Done {
+			continue
+		}
+		if task.javaThread == thread ||
+			(task.javaThread == 0 && r.currentThread == thread) {
+			return true
+		}
+	}
+	for _, call := range r.PendingJavaCalls {
+		if call.name == "run" && call.descriptor == "()V" &&
+			r.javaThreadFor(call.instance) == thread {
+			return true
+		}
+	}
+	return r.executionDepth != 0 && r.currentThread == thread
+}
+
+func (r *Runtime) activeJavaThreadCount() uint32 {
+	threads := make(map[uint32]bool)
+	const anonymousMain = ^uint32(0)
+	for _, task := range r.Tasks {
+		if task == nil || task.Done {
+			continue
+		}
+		thread := task.javaThread
+		if thread == 0 {
+			thread = r.currentThread
+			if thread == 0 {
+				thread = anonymousMain
+			}
+		}
+		threads[thread] = true
+	}
+	for _, call := range r.PendingJavaCalls {
+		if call.name == "run" && call.descriptor == "()V" {
+			threads[r.javaThreadFor(call.instance)] = true
+		}
+	}
+	if r.executionDepth != 0 && r.currentThread != 0 {
+		threads[r.currentThread] = true
+	}
+	delete(threads, 0)
+	return uint32(len(threads))
+}
+
 func (r *Runtime) handleThreadMethod(
 	ctx context.Context,
 	name, descriptor string,
@@ -279,10 +465,7 @@ func (r *Runtime) handleThreadMethod(
 		if err != nil {
 			return 0, err
 		}
-		if r.currentThread == 0 {
-			r.currentThread = thread
-		}
-		return 0, nil
+		return 0, r.initializeJavaThread(thread)
 	case "<init>(Ljava/lang/Runnable;)V":
 		thread, err := r.parameter(1)
 		if err != nil {
@@ -293,10 +476,24 @@ func (r *Runtime) handleThreadMethod(
 			return 0, err
 		}
 		r.ThreadTargets[thread] = target
-		return 0, nil
+		return 0, r.initializeJavaThread(thread)
 	case "start()V":
 		thread, err := r.parameter(1)
 		if err != nil {
+			return 0, err
+		}
+		state, err := r.javaThreadField(thread, ktfThreadStateFieldOffset)
+		if err != nil {
+			return 0, err
+		}
+		if state != ktfThreadStateNew {
+			return 0, r.raiseHostJavaException("java/lang/IllegalThreadStateException")
+		}
+		if err := r.writeJavaThreadField(
+			thread,
+			ktfThreadStateFieldOffset,
+			ktfThreadStateStarted,
+		); err != nil {
 			return 0, err
 		}
 		if r.DeferThreads {
@@ -354,8 +551,29 @@ func (r *Runtime) handleThreadMethod(
 			return 0, nil
 		}
 		return r.invokeJavaVirtual(ctx, target, "run", "()V")
-	case "join()V", "setPriority(I)V":
+	case "join()V":
+		thread, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		if r.DeferThreads && r.activeTask != nil && r.javaThreadAlive(thread) {
+			r.activeTask.joinThread = thread
+			r.yieldRequested = true
+		}
 		return 0, nil
+	case "setPriority(I)V":
+		thread, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		priority, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		if priority < 1 || priority > 10 {
+			return 0, r.raiseHostJavaException("java/lang/IllegalArgumentException")
+		}
+		return 0, r.writeJavaThreadField(thread, ktfThreadPriorityFieldOffset, priority)
 	case "sleep(J)V":
 		low, err := r.parameter(1)
 		if err != nil {
@@ -392,6 +610,13 @@ func (r *Runtime) handleThreadMethod(
 		}
 		return 0, nil
 	case "isAlive()Z":
+		thread, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		if r.javaThreadAlive(thread) {
+			return 1, nil
+		}
 		return 0, nil
 	case "currentThread()Ljava/lang/Thread;":
 		// A started thread has to see its own java/lang/Thread here. A title
@@ -414,18 +639,48 @@ func (r *Runtime) handleThreadMethod(
 			return 0, err
 		}
 		r.currentThread, err = r.NewJavaInstanceForClass(class)
-		return r.currentThread, err
+		if err != nil {
+			return 0, err
+		}
+		if err := r.initializeJavaThread(r.currentThread); err != nil {
+			return 0, err
+		}
+		if err := r.writeJavaThreadField(
+			r.currentThread,
+			ktfThreadStateFieldOffset,
+			ktfThreadStateStarted,
+		); err != nil {
+			return 0, err
+		}
+		return r.currentThread, nil
 	case "activeCount()I":
-		return 1, nil
+		return r.activeJavaThreadCount(), nil
 	case "getPriority()I":
-		// NORM_PRIORITY; the host scheduler runs one Java thread at a time.
-		return 5, nil
+		thread, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		priority, err := r.javaThreadField(thread, ktfThreadPriorityFieldOffset)
+		if err != nil {
+			return 0, err
+		}
+		if priority == 0 {
+			priority = 5
+		}
+		return priority, nil
 	case "toString()Ljava/lang/String;":
 		instance, err := r.parameter(1)
 		if err != nil {
 			return 0, err
 		}
-		return r.NewJavaString(fmt.Sprintf("Thread-%08x", instance))
+		priority, err := r.javaThreadField(instance, ktfThreadPriorityFieldOffset)
+		if err != nil {
+			return 0, err
+		}
+		if priority == 0 {
+			priority = 5
+		}
+		return r.NewJavaString(fmt.Sprintf("Thread[Thread-%08x,%d]", instance, priority))
 	default:
 		return 0, nil
 	}
@@ -589,13 +844,68 @@ func (r *Runtime) handleDisplayMethod(
 			r.dirtyCards[card] = true
 		}
 		return 0, nil
-	case "flush()V", "where()V", "grabKey(ILorg/kwis/msp/lcdui/JletEventListener;)V",
-		"ungrabKey(I)V",
-		"setJletEventListener(Lorg/kwis/msp/lcdui/JletEventListener;)V",
-		"removeJletEventListener(Lorg/kwis/msp/lcdui/JletEventListener;)V",
-		"addJletEventListener(Lorg/kwis/msp/lcdui/JletEventListener;)V":
-		// Jlet event listeners and key grabs are satisfied through the
-		// Card key-notify path; the display presents every frame already.
+	case "flush()V", "where()V":
+		return 0, nil
+	case "setJletEventListener(Lorg/kwis/msp/lcdui/JletEventListener;)V":
+		listener, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		r.jletEventListeners = r.jletEventListeners[:0]
+		if listener != 0 {
+			r.jletEventListeners = append(r.jletEventListeners, listener)
+		}
+		return 0, nil
+	case "addJletEventListener(Lorg/kwis/msp/lcdui/JletEventListener;)V":
+		listener, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		if listener == 0 {
+			return 0, nil
+		}
+		for _, existing := range r.jletEventListeners {
+			if existing == listener {
+				return 0, nil
+			}
+		}
+		r.jletEventListeners = append(r.jletEventListeners, listener)
+		return 0, nil
+	case "removeJletEventListener(Lorg/kwis/msp/lcdui/JletEventListener;)V":
+		listener, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		for index, existing := range r.jletEventListeners {
+			if existing != listener {
+				continue
+			}
+			copy(r.jletEventListeners[index:], r.jletEventListeners[index+1:])
+			r.jletEventListeners = r.jletEventListeners[:len(r.jletEventListeners)-1]
+			break
+		}
+		return 0, nil
+	case "grabKey(ILorg/kwis/msp/lcdui/JletEventListener;)V":
+		key, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		listener, err := r.parameter(3)
+		if err != nil {
+			return 0, err
+		}
+		if listener != 0 {
+			if _, grabbed := r.grabbedKeys[int32(key)]; !grabbed {
+				r.grabbedKeys[int32(key)] = listener
+			}
+		}
+		return 0, nil
+	case "ungrabKey(I)V":
+		key, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		delete(r.grabbedKeys, int32(key))
 		return 0, nil
 	case "isColor()Z":
 		return 1, nil

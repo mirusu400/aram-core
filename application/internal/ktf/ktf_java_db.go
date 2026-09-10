@@ -155,6 +155,46 @@ func (r *Runtime) handleDataBaseMethod(
 			return r.newJavaByteArray(nil)
 		}
 		return r.newJavaByteArray(store.Records[recordID])
+	case "selectRecord(I[BI)V":
+		store, err := r.databaseParameter(1)
+		if err != nil {
+			return 0, err
+		}
+		recordID, err := r.parameter(2)
+		if err != nil {
+			return 0, err
+		}
+		array, err := r.parameter(3)
+		if err != nil {
+			return 0, err
+		}
+		offset, err := r.parameter(4)
+		if err != nil {
+			return 0, err
+		}
+		if recordID >= uint32(len(store.Records)) || store.Records[recordID] == nil {
+			return 0, r.raiseHostJavaException(
+				"org/kwis/msp/db/DataBaseRecordException",
+			)
+		}
+		arrayLength, err := r.javaArrayLength(array)
+		if err != nil {
+			return 0, err
+		}
+		record := store.Records[recordID]
+		if offset > arrayLength || uint32(len(record)) > arrayLength-offset {
+			return 0, r.raiseHostJavaException(
+				"java/lang/ArrayIndexOutOfBoundsException",
+			)
+		}
+		fields, err := r.ReadU32(array)
+		if err != nil {
+			return 0, err
+		}
+		if err := r.CPU.WriteMemory(fields+8+offset, record); err != nil {
+			return 0, err
+		}
+		return 0, nil
 	case "updateRecord(I[B)V", "updateRecord(I[BII)V":
 		store, err := r.databaseParameter(1)
 		if err != nil {
@@ -204,7 +244,8 @@ func (r *Runtime) handleDataBaseMethod(
 		}
 		store.Records[recordID] = data
 		return 0, r.syncKTFDatabase(store)
-	case "deleteDataBase(Ljava/lang/String;)V":
+	case "deleteDataBase(Ljava/lang/String;)V",
+		"deleteDataBase(Ljava/lang/String;I)V":
 		nameAddress, err := r.parameter(1)
 		if err != nil {
 			return 0, err
@@ -702,6 +743,33 @@ func (r *Runtime) initializeCard(instance, display uint32) error {
 		return err
 	}
 	return r.WriteJavaFieldWord(instance, 20, r.DefaultCardHeight())
+}
+
+func (r *Runtime) configureCard(
+	instance, display, x, y, width, height uint32,
+) error {
+	if err := r.initializeCard(instance, display); err != nil {
+		return err
+	}
+	fields := [...]struct {
+		offset uint32
+		value  uint32
+	}{
+		{8, x},
+		{12, y},
+		{16, width},
+		{20, height},
+	}
+	for _, field := range fields {
+		if err := r.WriteJavaFieldWord(
+			instance,
+			field.offset,
+			field.value,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // displayWidth and displayHeight report the screen the title actually runs on.
