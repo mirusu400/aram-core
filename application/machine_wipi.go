@@ -375,10 +375,12 @@ func (m *Machine) pumpWIPICallbacks(
 				})
 			}
 		case shared.EventAudioComplete:
+			handled := false
 			for handle, serviceID := range m.wipi.MediaServices {
 				if serviceID != event.ServiceID {
 					continue
 				}
+				handled = true
 				if clip := m.wipi.MediaClips[handle]; clip != nil {
 					clip.State = 0
 					clip.Repeat = false
@@ -397,6 +399,14 @@ func (m *Machine) pumpWIPICallbacks(
 					m.wipi.EnqueueCallback(clip.Callback, handle, code)
 				}
 				break
+			}
+			if !handled && m.raptor != nil {
+				callback, javaHandled := m.raptor.JavaMediaCompletionCallback(
+					event.ServiceID,
+				)
+				if javaHandled && callback.Procedure != 0 {
+					callbacks = append(callbacks, callback)
+				}
 			}
 		case shared.EventNetworkReady:
 			// Async socket data arrived: wake a guest that armed a read

@@ -8,6 +8,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -512,6 +513,64 @@ func (r *Runtime) ensureKTFClip(instance uint32) *ktfClip {
 		r.clips[instance] = clip
 	}
 	return clip
+}
+
+// CompleteJavaMedia records completion of a Java Clip service and returns the
+// KTF object references needed by an embedding runtime to deliver PlayListener.
+// A standalone KTF machine handles this in DrainServiceEvents. Raptor advances
+// the same mixer from its public WIPI loop, so it consumes the shared event and
+// calls this bridge instead.
+func (r *Runtime) CompleteJavaMedia(
+	serviceID shared.ServiceID,
+) (instance, listener uint32, handled bool) {
+	for candidate, candidateService := range r.clipServices {
+		if candidateService != serviceID {
+			continue
+		}
+		clip := r.clips[candidate]
+		if clip != nil {
+			clip.playing = false
+			listener = clip.listener
+		}
+		return candidate, listener, true
+	}
+	return 0, 0, false
+}
+
+// DestroyJavaMedia releases every service owned by Java Clip objects. Embedded
+// runtimes can share a mixer whose lifetime outlives this Runtime, so dropping
+// the Java maps alone would otherwise leave clips playing and consume the
+// mixer's bounded service pool.
+func (r *Runtime) DestroyJavaMedia(events *shared.EventBus) error {
+	instances := make([]uint32, 0, len(r.clipServices))
+	for instance := range r.clipServices {
+		instances = append(instances, instance)
+	}
+	slices.Sort(instances)
+	var result error
+	for _, instance := range instances {
+		serviceID := r.clipServices[instance]
+		if info, err := r.Services.Media.Info(r.ServiceOwner, serviceID); err == nil &&
+			info.State != shared.ClipStopped {
+			result = errors.Join(
+				result,
+				r.Services.Media.Stop(r.ServiceOwner, serviceID),
+			)
+		}
+		if err := r.Services.Media.DestroyClip(
+			r.ServiceOwner,
+			serviceID,
+			events,
+		); err != nil {
+			result = errors.Join(result, err)
+			continue
+		}
+		delete(r.clipServices, instance)
+		if clip := r.clips[instance]; clip != nil {
+			clip.playing = false
+		}
+	}
+	return result
 }
 
 func (r *Runtime) ensureKTFClipService(
