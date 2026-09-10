@@ -29,8 +29,11 @@ const (
 
 var (
 	ErrInstructionLimit = errors.New("SKVM instruction limit reached")
-	ErrHalted           = errors.New("SKVM halted")
-	ErrMethodNotFound   = errors.New("SKVM method not found")
+	// ErrHalted unwinds the guest call stack when a title ends itself. It is
+	// a control signal rather than a failure: the adapter swallows it and the
+	// VM stops running guest code from then on. See VM.Halted.
+	ErrHalted         = errors.New("SKVM halted")
+	ErrMethodNotFound = errors.New("SKVM method not found")
 )
 
 type NativeFunc func(
@@ -110,6 +113,15 @@ type VM struct {
 	runningThread    uint32
 	threadFrameBase  int
 	threadBudget     uint64
+	// fontCache maps a Font.getFont request onto the instance that already
+	// answers it. It holds no state of its own: an entry whose object is gone
+	// is rebuilt on the next request.
+	fontCache map[fontCacheKey]uint32
+	// halted records that the title asked the VM to end, through
+	// System.exit, Runtime.exit or MIDlet.notifyDestroyed. The machine keeps
+	// presenting the last frame the title drew, the way the KTF runtime
+	// treats its own termination request, rather than reporting a fault.
+	halted bool
 }
 
 type frame struct {
@@ -164,6 +176,7 @@ func NewWithServices(
 		ScreenWidth:      int(services.Config.Device.ScreenWidth),
 		ScreenHeight:     int(services.Config.Device.ScreenHeight),
 		properties:       make(map[string]string),
+		fontCache:        make(map[fontCacheKey]uint32),
 		services:         services,
 		serviceOwner:     owner,
 		classDigest:      digestClassData(classData),
@@ -292,6 +305,17 @@ func (vm *VM) RegisterStaticField(
 ) {
 	vm.hostStatic[fieldStorageKey(class, name, descriptor)] = value
 }
+
+// fontCacheKey identifies one Font.getFont request.
+type fontCacheKey struct {
+	class string
+	face  int32
+	style int32
+	size  int32
+}
+
+// Halted reports whether the title ended itself.
+func (vm *VM) Halted() bool { return vm.halted }
 
 func (vm *VM) SetProperties(properties map[string]string) {
 	vm.properties = make(map[string]string, len(properties))
@@ -679,6 +703,11 @@ func (vm *VM) Advance(
 	}
 	if err := vm.services.Advance(vm.serviceOwner, delta); err != nil {
 		return err
+	}
+	if vm.halted {
+		// An ended title runs no more guest code. Virtual time still moves so
+		// the host keeps producing frames of whatever it drew last.
+		return nil
 	}
 	if err := vm.runReadyThreads(ctx); err != nil {
 		return err

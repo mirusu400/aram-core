@@ -15,6 +15,7 @@ const (
 	stringBufferCapacityField = "\x00aram-buffer-capacity"
 	threadPriorityField       = "\x00aram-thread-priority"
 	threadNameField           = "\x00aram-thread-name"
+	imageMutableField         = "\x00aram-image-mutable"
 )
 
 func (vm *VM) installCLDCCoreExtras() {
@@ -31,10 +32,11 @@ func (vm *VM) installCLDCObjectExtras() {
 		reference, err := referenceArgument(args, 0)
 		return IntValue(int32(reference)), err == nil, err
 	})
-	exit := func(_ context.Context, _ *VM, _ uint32, args []Value) (Value, bool, error) {
+	exit := func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
 		if _, err := intArgument(args, 0); err != nil {
 			return Value{}, false, err
 		}
+		vm.halted = true
 		return Value{}, false, ErrHalted
 	}
 	vm.RegisterNative("java/lang/System", "exit", "(I)V", exit)
