@@ -564,6 +564,12 @@ func (r *Runtime) dispatchJavaException(
 	if r.exceptionContext == 0 {
 		return ktfJavaExceptionTarget{}, false, nil
 	}
+	bytecodePCWord, detailWord := uint32(3), uint32(4)
+	if r.mnContext != 0 {
+		// MN setjmp frames put the thrown object before the bytecode cursor.
+		// Compiled try regions update frame+16, not the ordinary frame+12.
+		bytecodePCWord, detailWord = 4, 3
+	}
 	frame, err := r.ReadU32(r.exceptionContext + 8*4)
 	if err != nil {
 		return ktfJavaExceptionTarget{}, false, err
@@ -584,7 +590,7 @@ func (r *Runtime) dispatchJavaException(
 		}
 		methodAddress := frameWords[0]
 		previousFrame := frameWords[2]
-		bytecodePC := frameWords[3]
+		bytecodePC := frameWords[bytecodePCWord]
 		methodWords, err := r.ReadWords(methodAddress, 7)
 		if err != nil {
 			return ktfJavaExceptionTarget{}, false, fmt.Errorf(
@@ -656,7 +662,7 @@ func (r *Runtime) dispatchJavaException(
 			if !matches {
 				continue
 			}
-			if err := r.WriteU32(frame+4*4, detail); err != nil {
+			if err := r.WriteU32(frame+detailWord*4, detail); err != nil {
 				return ktfJavaExceptionTarget{}, false, err
 			}
 			handler := entry[2]
@@ -670,7 +676,7 @@ func (r *Runtime) dispatchJavaException(
 			// raised by the handler body look like it came from inside the
 			// same try. This method wraps and rethrows in its catch block,
 			// which then caught itself forever until the guest heap ran out.
-			if err := r.WriteU32(frame+3*4, handler); err != nil {
+			if err := r.WriteU32(frame+bytecodePCWord*4, handler); err != nil {
 				return ktfJavaExceptionTarget{}, false, err
 			}
 			if err := r.WriteU32(r.exceptionContext+8*4, frame); err != nil {
