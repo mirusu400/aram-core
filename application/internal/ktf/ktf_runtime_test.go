@@ -1782,6 +1782,14 @@ func TestKTFCalendarGetTimeReturnsModeledDate(t *testing.T) {
 	}
 }
 
+// currentTimeMillisWords is the low and high word java.lang.System
+// currentTimeMillis answers for a runtime's current frame. The value counts
+// from 1970-01-01, so a test cannot assume the frame clock alone.
+func currentTimeMillisWords(runtime *Runtime) []uint32 {
+	now := uint64(runtime.wallEpochMS()) + runtime.TickMS
+	return []uint32{uint32(now), uint32(now >> 32)}
+}
+
 func TestKTFCallNativeDispatchesHostMethodWithParameterContainer(t *testing.T) {
 	runtime := newTestRuntime(t)
 	runtime.JvmContext = allocWords(t, runtime, 3+128)
@@ -1805,8 +1813,8 @@ func TestKTFCallNativeDispatchesHostMethodWithParameterContainer(t *testing.T) {
 		t.Fatalf("call-native result = 0x%08x", result)
 	}
 	values := readWords(t, runtime, parameters, 2)
-	if values[0] != 0 || values[1] != 0 {
-		t.Fatalf("native return container = %08x", values)
+	if want := currentTimeMillisWords(runtime); !slices.Equal(values, want) {
+		t.Fatalf("native return container = %08x, want %08x", values, want)
 	}
 	if runtime.NativeParameterBase != 0 {
 		t.Fatalf(
@@ -1974,7 +1982,8 @@ func TestKTFJavaTimerSchedulesDatesAndStaysCancelled(t *testing.T) {
 	timer := newHostObject(t, runtime, "java/util/Timer")
 	date := newHostObject(t, runtime, "java/util/Date")
 	runtime.TickMS = 2_000
-	runtime.dates[date] = 2_075
+	// A Date holds wall-clock milliseconds, 75 ms past this frame.
+	runtime.dates[date] = runtime.wallTickMS() + 75
 	runtime.DeferThreads = true
 	parameters := allocWords(t, runtime, 5)
 	check(t, runtime.writeWords(parameters, []uint32{
@@ -2040,8 +2049,8 @@ func TestKTFCallNativeCorrectsStaleMethodForCachedGuestNative(t *testing.T) {
 		t.Fatal(err)
 	}
 	values := readWords(t, runtime, parameters, 2)
-	if !slices.Equal(values, []uint32{123, 0}) {
-		t.Fatalf("corrected native return = %08x", values)
+	if want := currentTimeMillisWords(runtime); !slices.Equal(values, want) {
+		t.Fatalf("corrected native return = %08x, want %08x", values, want)
 	}
 	if runtime.LastJavaMethod !=
 		"java/lang/System.currentTimeMillis()J" {
@@ -2249,7 +2258,10 @@ func TestKTFCallNativeOverridesNullFrameworkNative(t *testing.T) {
 		method string
 		want   uint32
 	}{
-		{"java/lang/System.currentTimeMillis()J", 0},
+		{
+			"java/lang/System.currentTimeMillis()J",
+			currentTimeMillisWords(runtime)[0],
+		},
 		{"org/kwis/msp/media/Volume.get()I", 5},
 		{"org/kwis/msp/media/Vibrator.on(II)V", 0},
 		{"org/kwis/msf/io/Network.connect()I", 1},
@@ -2270,12 +2282,16 @@ func TestKTFCallNativeOverridesNullFrameworkNative(t *testing.T) {
 			); err != nil {
 				t.Fatal(err)
 			}
+			high := uint32(0)
+			if test.method == "java/lang/System.currentTimeMillis()J" {
+				high = currentTimeMillisWords(runtime)[1]
+			}
 			values := readWords(t, runtime, parameters, 2)
-			if values[0] != test.want || values[1] != 0 {
+			if values[0] != test.want || values[1] != high {
 				t.Fatalf(
 					"native override return = %08x, want %08x",
 					values,
-					[]uint32{test.want, 0},
+					[]uint32{test.want, high},
 				)
 			}
 		})

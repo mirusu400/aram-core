@@ -751,7 +751,7 @@ func (r *Runtime) handleDateMethod(name, descriptor string) (uint32, error) {
 	}
 	switch name + descriptor {
 	case "<init>()V":
-		r.dates[instance] = int64(r.TickMS)
+		r.dates[instance] = r.wallTickMS()
 		return 0, nil
 	case "<init>(J)V", "setTime(J)V":
 		low, valueErr := r.parameter(2)
@@ -1370,9 +1370,11 @@ func (r *Runtime) handleTimerMethod(
 			if date == 0 {
 				return 0, r.raiseHostJavaException("java/lang/NullPointerException")
 			}
+			// A Date carries wall-clock milliseconds, so the delay is
+			// measured against the frame's wall-clock reading.
 			when := r.dates[date]
-			if when > int64(r.TickMS) {
-				delay = when - int64(r.TickMS)
+			if now := r.wallTickMS(); when > now {
+				delay = when - now
 			}
 		} else {
 			delay, err = r.javaTimerLongParameter(3)

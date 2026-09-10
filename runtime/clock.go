@@ -7,7 +7,12 @@ import (
 	"time"
 )
 
-const DefaultWallEpochMillis = int64(946684800000) // 2000-01-01T00:00:00Z
+// DefaultWallEpochMillis is the wall-clock time a machine starts from when a
+// host supplies none. It sits inside the WIPI era on purpose: a title that
+// formats System.currentTimeMillis and indexes into the digits (a common way
+// to seed a generator) expects the thirteen digits a handset of the period
+// reported, and 2000-01-01 is only twelve.
+const DefaultWallEpochMillis = int64(1167609600000) // 2007-01-01T00:00:00Z
 
 type ClockState struct {
 	MonotonicNanos     int64

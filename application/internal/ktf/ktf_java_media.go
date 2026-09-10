@@ -640,7 +640,7 @@ func (r *Runtime) handleCalendarMethod(
 	case "getInstance()Ljava/util/Calendar;":
 		calendar, valueErr := r.NewHostJavaObject("java/util/Calendar")
 		if valueErr == nil {
-			r.dates[calendar] = int64(r.TickMS)
+			r.dates[calendar] = r.wallTickMS()
 			zone, zoneErr := r.newKTFTimeZone(r.defaultKTFTimeZone())
 			if zoneErr != nil {
 				return 0, zoneErr
@@ -658,7 +658,7 @@ func (r *Runtime) handleCalendarMethod(
 		}
 		calendar, valueErr := r.NewHostJavaObject("java/util/Calendar")
 		if valueErr == nil {
-			r.dates[calendar] = int64(r.TickMS)
+			r.dates[calendar] = r.wallTickMS()
 			r.calendarZones[calendar] = zone
 		}
 		return calendar, valueErr
@@ -669,7 +669,7 @@ func (r *Runtime) handleCalendarMethod(
 	}
 	switch name + descriptor {
 	case "<init>()V":
-		r.dates[instance] = int64(r.TickMS)
+		r.dates[instance] = r.wallTickMS()
 		zone, valueErr := r.newKTFTimeZone(r.defaultKTFTimeZone())
 		if valueErr != nil {
 			return 0, valueErr
@@ -681,7 +681,7 @@ func (r *Runtime) handleCalendarMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		r.dates[instance] = int64(r.TickMS)
+		r.dates[instance] = r.wallTickMS()
 		r.calendarZones[instance] = zone
 		return 0, nil
 	case "<init>(III)V":

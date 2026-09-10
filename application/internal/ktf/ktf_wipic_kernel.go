@@ -797,11 +797,46 @@ func (r *Runtime) monotonicReadMS() uint64 {
 	return now
 }
 
+// wallReadMS is the current time a guest sees, in milliseconds since
+// 1970-01-01. MC_knlCurrentTime and java.lang.System.currentTimeMillis are
+// both specified against that epoch, and a title that formats the value and
+// indexes into the digits (a common way to seed a generator) needs the full
+// width: ms since boot alone is only a couple of digits at startup. The
+// monotonic part still comes from monotonicReadMS, so a busy-wait advances and
+// the value never moves backwards.
+func (r *Runtime) wallReadMS() uint64 {
+	epoch := r.wallEpochMS()
+	now := r.monotonicReadMS()
+	if epoch < 0 {
+		return now
+	}
+	return uint64(epoch) + now
+}
+
+// wallEpochMS is the wall-clock value the services' clock had at guest time
+// zero. The clock service reports wall time as that epoch plus its own
+// monotonic reading, so subtracting the reading recovers the epoch.
+func (r *Runtime) wallEpochMS() int64 {
+	if r.Services == nil || r.Services.Clock == nil {
+		return 0
+	}
+	return r.Services.Clock.WallMillis() -
+		r.Services.Clock.Monotonic().Milliseconds()
+}
+
+// wallTickMS is the wall-clock time of the current frame, in milliseconds
+// since 1970-01-01. java.util.Date and java.util.Calendar report a calendar
+// date, so they read the frame clock against the same epoch rather than
+// milliseconds since boot, which placed every title in January 1970.
+func (r *Runtime) wallTickMS() int64 {
+	return r.wallEpochMS() + int64(r.TickMS)
+}
+
 func ktfKernelCurrentTime(
 	_ context.Context,
 	runtime *Runtime,
 ) (uint32, error) {
-	now := runtime.monotonicReadMS()
+	now := runtime.wallReadMS()
 	if err := runtime.CPU.WriteRegister(
 		cpu.RegisterR1,
 		uint32(now>>32),
@@ -885,14 +920,30 @@ func ktfKernelSetSystemProperty(
 }
 
 func (r *Runtime) wipicSystemProperty(key string) (string, bool) {
+	return r.systemPropertyValue(key)
+}
+
+// systemPropertyValue answers one handset property. WIPI-C reaches it through
+// MC_knlGetSystemProperty and Java through HandsetProperty.getSystemProperty,
+// and the specification gives both the same id set (HAL MH_sysGetInformation),
+// so both go through this one table. A Java title that reads a numeric
+// property parses it with Integer.parseInt, which throws on an empty string:
+// answering only part of the set turned a supported property into a boot
+// NumberFormatException.
+func (r *Runtime) systemPropertyValue(key string) (string, bool) {
 	key = strings.ToUpper(strings.TrimSpace(key))
 	if value, ok := r.wipicSystemProperties[key]; ok {
 		return value, true
 	}
-	if value := r.handsetSystemProperty(key); value != "" {
-		return value, true
-	}
 	switch key {
+	case "PHONEMODEL":
+		// LG-KH1300 was a common 240x320 KTF WIPI target. Some games use
+		// this property to select resource geometry and otherwise leave
+		// array dimensions uninitialized.
+		if r.Services == nil || r.Services.Device == nil {
+			return "LG-KH1300", true
+		}
+		return r.Services.Device.Config().Model, true
 	case "ESN":
 		return "00000000", true
 	case "NID", "SID", "BASEID", "BASELAT", "BASELONG", "CURRENTCH":

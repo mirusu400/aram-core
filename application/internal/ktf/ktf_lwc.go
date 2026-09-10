@@ -553,7 +553,7 @@ func (r *Runtime) handleLWCMethod(
 			if err != nil {
 				return 0, err
 			}
-			r.dates[date] = int64(r.TickMS)
+			r.dates[date] = r.wallTickMS()
 			state.date = date
 			return date, nil
 		case "getStringValue(I)Ljava/lang/String;":
@@ -1464,7 +1464,7 @@ func (r *Runtime) initializeLWCDateField(
 	if err != nil {
 		return err
 	}
-	r.dates[date] = int64(r.TickMS)
+	r.dates[date] = r.wallTickMS()
 	state.date = date
 	state.timeZone = zone
 	state.mode = mode

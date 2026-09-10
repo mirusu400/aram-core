@@ -892,7 +892,7 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 				)
 			case "currentTimeMillis()J":
 				return runtime.javaLongResult(
-					runtime.monotonicReadMS(),
+					runtime.wallReadMS(),
 				), nil
 			case "gc()V":
 				runtime.collectJavaHeap()
@@ -1529,27 +1529,12 @@ func ktfJavaParameterWords(descriptor string) (int, bool) {
 	return 0, false
 }
 
+// handsetSystemProperty answers HandsetProperty.getSystemProperty from the
+// shared handset property table. An unknown id is the empty string, which is
+// what the Java surface returns for a property the handset does not carry.
 func (r *Runtime) handsetSystemProperty(key string) string {
-	normalized := strings.ToUpper(strings.TrimSpace(key))
-	if value, ok := r.wipicSystemProperties[normalized]; ok {
-		return value
-	}
-	switch normalized {
-	case "PHONEMODEL":
-		// LG-KH1300 was a common 240x320 KTF WIPI target. Some games use
-		// this property to select resource geometry and otherwise leave
-		// array dimensions uninitialized.
-		if r.Services == nil || r.Services.Device == nil {
-			return "LG-KH1300"
-		}
-		return r.Services.Device.Config().Model
-	case "BATTERYLEVEL":
-		return r.batteryLevelSystemProperty()
-	case "MAXBATTLEVEL":
-		return "5"
-	default:
-		return ""
-	}
+	value, _ := r.systemPropertyValue(key)
+	return value
 }
 
 func (r *Runtime) javaSystemProperty(key string) (string, bool) {
