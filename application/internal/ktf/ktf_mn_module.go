@@ -18,11 +18,11 @@ import (
 // structure the runtime then drives. An MN module is entered at the address
 // its descriptor names, is handed a table whose first word is a callback, and
 // asks that callback for the interface it wants by name - "MNInterface". What
-// comes back is the callback table the ordinary path passes to InterfaceInit,
-// at the same indices, with three differences: word 0 points back at the table,
+// comes back is a related callback table: word 0 points back at the table,
 // because module glue reaches a callback both flat and as *(interface)[slot];
-// the class lookup takes the name first and answers the class; and the import
-// resolution takes the word to write the class into and answers a status.
+// slot 8 throws by class name; later slots allocate and resolve classes,
+// members, and arrays; and a separate six-word helper table invokes resolved
+// instance and static methods.
 //
 // It also carries its classes with it. The module table the descriptor names
 // holds a linked list of class objects in exactly the layout InspectJavaClass
@@ -30,9 +30,9 @@ import (
 // the module for each one - which it could not do anyway, since an MN module
 // has no WipiExe and so no class lookup procedure for LoadClass to call.
 //
-// This is a partial bring-up: it takes a module as far as its main class and
-// its class registry, and a callback whose meaning is not worked out yet
-// records itself as mn_unmapped_slot rather than being guessed at.
+// A callback whose meaning is not yet observed records itself as mn.slot or
+// mn.helper rather than being silently guessed, so a new module identifies the
+// missing ABI operation in its trace.
 const (
 	// mnModuleTableClasses is the offset in the module table of the first
 	// class record. The two words before it are the class count and a size.
@@ -53,7 +53,15 @@ const (
 	mnContextWords = 64
 	// mnContextStackField is where that stack pointer lives.
 	mnContextStackField = 0x34
+	// mnContextJVMField is the base used to decode compact object class headers
+	// before virtual dispatch, matching the ordinary KTF JvmContext ABI.
+	mnContextJVMField = 0x38
 )
+
+type mnCallFrame struct {
+	arguments      [2]uint32
+	parameterWords int
+}
 
 // bootstrapMNModule brings up a relocatable client and registers its classes.
 func (r *Runtime) bootstrapMNModule(ctx context.Context) (uint32, error) {
@@ -122,6 +130,12 @@ func (r *Runtime) prepareMNContext(globalOffsetTable uint32) error {
 	); err != nil {
 		return err
 	}
+	// GOT references to descriptor word 8 are the module's global VM-context
+	// cell. The file carries an ABI marker there; the handset loader replaces it
+	// with the live context before any Java code runs.
+	if err := r.WriteU32(ImageBase+8*4, context); err != nil {
+		return err
+	}
 	r.mnGOT, r.mnContext = globalOffsetTable, context
 	// The ordinary path builds these in Initialize, which an MN module skips.
 	// Java host handlers reach for both.
@@ -143,6 +157,9 @@ func (r *Runtime) prepareMNContext(globalOffsetTable uint32) error {
 		return err
 	}
 	r.JvmContext = jvm
+	if err := r.WriteU32(context+mnContextJVMField, jvm); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -150,7 +167,7 @@ func (r *Runtime) prepareMNContext(globalOffsetTable uint32) error {
 // name. The objects are already in the layout InspectJavaClass reads.
 func (r *Runtime) registerMNClasses(moduleTable, imports uint32) error {
 	record := moduleTable + mnModuleTableClasses
-	registered := 0
+	objects := make([]uint32, 0)
 	for seen := 0; record != 0 && seen < mnMaxClasses; seen++ {
 		// The list does not always end at a null pointer: some modules close
 		// it with a sentinel record whose fields are not relocated pointers
@@ -166,21 +183,277 @@ func (r *Runtime) registerMNClasses(moduleTable, imports uint32) error {
 		// The class object is the record itself minus its tag word: the tag
 		// sits where the object's second word does.
 		object := record - 4
-		if err := r.linkMNClassParent(object, imports); err != nil {
-			return err
-		}
 		class, err := r.InspectJavaClass(object)
 		if err == nil && class.Name != "" {
 			r.rememberRegisteredJavaClass(class.Name, object)
-			registered++
+			objects = append(objects, object)
 			r.tracef("mn_class:%s@0x%08x", class.Name, object)
 		}
 		record = words[4]
 	}
-	if registered == 0 {
+	if len(objects) == 0 {
 		return errors.New("KTF module registered no classes")
 	}
-	r.trace(fmt.Sprintf("mn_classes:%d", registered))
+	// Parent imports can name another class carried by the same module. Publish
+	// every module class before resolving any parent so a child that appears
+	// first in the linked list does not make EnsureJavaClass synthesize a host
+	// placeholder for its still-unseen parent.
+	for _, object := range objects {
+		if err := r.linkMNClassParent(object, imports); err != nil {
+			return err
+		}
+	}
+	if err := r.linkMNClassLayouts(objects); err != nil {
+		return err
+	}
+	r.trace(fmt.Sprintf("mn_classes:%d", len(objects)))
+	return nil
+}
+
+// linkMNClassLayouts links fields and vtables parent-first even when the
+// module's class records are ordered child-first. MN descriptors carry field
+// sizes and offsets relative to the declaring class, while object allocation
+// and getfield/putfield use one flat inherited field block. The handset loader
+// rebases each child's instance fields after the complete parent footprint.
+func (r *Runtime) linkMNClassLayouts(objects []uint32) error {
+	moduleClasses := make(map[uint32]bool, len(objects))
+	for _, object := range objects {
+		moduleClasses[object] = true
+	}
+	states := make(map[uint32]uint8, len(objects))
+	var link func(uint32) error
+	link = func(object uint32) error {
+		switch states[object] {
+		case 1:
+			return fmt.Errorf("cyclic KTF module class hierarchy at 0x%08x", object)
+		case 2:
+			return nil
+		}
+		if r.mnLinkedLayouts[object] {
+			states[object] = 2
+			return nil
+		}
+		states[object] = 1
+		class, err := r.InspectJavaClass(object)
+		if err != nil {
+			return err
+		}
+		if moduleClasses[class.Parent] {
+			if err := link(class.Parent); err != nil {
+				return err
+			}
+			class, err = r.InspectJavaClass(object)
+			if err != nil {
+				return err
+			}
+		}
+		if err := r.linkMNClassFields(class); err != nil {
+			return err
+		}
+		class, err = r.InspectJavaClass(object)
+		if err != nil {
+			return err
+		}
+		if err := r.linkMNClassVTable(class); err != nil {
+			return err
+		}
+		if r.mnLinkedLayouts == nil {
+			r.mnLinkedLayouts = make(map[uint32]bool)
+		}
+		r.mnLinkedLayouts[object] = true
+		states[object] = 2
+		return nil
+	}
+	for _, object := range objects {
+		if err := link(object); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *Runtime) linkMNClassFields(class JavaClass) error {
+	parentSize := uint32(0)
+	if class.Parent != 0 {
+		parent, err := r.InspectJavaClass(class.Parent)
+		if err != nil {
+			return err
+		}
+		parentSize = uint32(parent.FieldSize)
+	}
+	totalSize := parentSize + uint32(class.FieldSize)
+	if totalSize > uint32(^uint16(0)) {
+		return fmt.Errorf(
+			"KTF module class %q field size %d exceeds limit",
+			class.Name,
+			totalSize,
+		)
+	}
+	classWords, err := r.ReadWords(class.Address, 5)
+	if err != nil {
+		return err
+	}
+	descriptor, err := r.ReadWords(classWords[2], 9)
+	if err != nil {
+		return err
+	}
+	if descriptor[5] != 0 && parentSize != 0 {
+		type fieldUpdate struct {
+			address uint32
+			offset  uint32
+		}
+		updates := make([]fieldUpdate, 0)
+		terminated := false
+		for index := uint32(0); index < 4096; index++ {
+			field, err := r.ReadU32(descriptor[5] + index*4)
+			if err != nil {
+				return err
+			}
+			if field == 0 {
+				terminated = true
+				break
+			}
+			words, err := r.ReadWords(field, 4)
+			if err != nil {
+				return err
+			}
+			if words[0]&0x0008 != 0 {
+				continue
+			}
+			_, fieldDescriptor, err := r.ReadJavaFullName(words[2])
+			if err != nil {
+				return err
+			}
+			fieldSize := uint32(4)
+			if fieldDescriptor == "J" || fieldDescriptor == "D" {
+				fieldSize = 8
+			}
+			ownSize := uint32(class.FieldSize)
+			if words[3] > ownSize || fieldSize > ownSize-words[3] {
+				return fmt.Errorf(
+					"KTF module class %q field offset %d exceeds own footprint %d",
+					class.Name,
+					words[3],
+					ownSize,
+				)
+			}
+			updates = append(updates, fieldUpdate{
+				address: field + 12,
+				offset:  parentSize + words[3],
+			})
+		}
+		if !terminated {
+			return fmt.Errorf(
+				"KTF module class %q field table exceeds 4096 entries",
+				class.Name,
+			)
+		}
+		for _, update := range updates {
+			if err := r.WriteU32(update.address, update.offset); err != nil {
+				return err
+			}
+		}
+	}
+	if err := r.WriteU32(
+		classWords[2]+6*4,
+		descriptor[6]&0x0000ffff|totalSize<<16,
+	); err != nil {
+		return err
+	}
+	r.tracef(
+		"mn_class_fields:%s:parent=%d:own=%d:total=%d",
+		class.Name,
+		parentSize,
+		class.FieldSize,
+		totalSize,
+	)
+	return nil
+}
+
+// linkMNClassVTable performs the link step an MN module leaves to its loader.
+// Module classes carry complete method records and their compiler-assigned
+// vtable indexes, but their class vtable word is zero in the file. Virtual-call
+// helpers decode an object's compact class header and index this table directly,
+// so a merely registered class reaches a null method handle.
+func (r *Runtime) linkMNClassVTable(class JavaClass) error {
+	logicalSize := uint32(0)
+	var inherited []uint32
+	if class.Parent != 0 {
+		parent, err := r.InspectJavaClass(class.Parent)
+		if err != nil {
+			return err
+		}
+		parentWords, err := r.ReadWords(parent.Address, 5)
+		if err != nil {
+			return err
+		}
+		logicalSize = parentWords[4] & 0xffff
+		if parent.VTable != 0 && logicalSize != 0 {
+			inherited, err = r.ReadWords(parent.VTable, int(logicalSize))
+			if err != nil {
+				return err
+			}
+		}
+	}
+	for _, method := range class.Methods {
+		r.rememberMNCallMethod(method)
+		if method.AccessFlags&0x0008 != 0 ||
+			strings.HasPrefix(method.Name, "<") {
+			continue
+		}
+		if size := uint32(method.VTableIndex) + 1; size > logicalSize {
+			logicalSize = size
+		}
+	}
+	if logicalSize > uint32(^uint16(0)) {
+		return fmt.Errorf(
+			"KTF module class %q vtable size %d exceeds limit",
+			class.Name,
+			logicalSize,
+		)
+	}
+	if logicalSize == 0 {
+		return nil
+	}
+	entries := make([]uint32, logicalSize)
+	copy(entries, inherited)
+	for _, method := range class.Methods {
+		if method.AccessFlags&0x0008 != 0 ||
+			strings.HasPrefix(method.Name, "<") {
+			continue
+		}
+		entries[method.VTableIndex] = method.Address
+	}
+	vtable, err := r.AllocateWords(logicalSize)
+	if err != nil {
+		return err
+	}
+	if err := r.writeWords(vtable, entries); err != nil {
+		return err
+	}
+	if err := r.WriteU32(class.Address+12, vtable); err != nil {
+		return err
+	}
+	classWords, err := r.ReadWords(class.Address, 5)
+	if err != nil {
+		return err
+	}
+	if err := r.WriteU32(
+		class.Address+16,
+		classWords[4]&0xffff0000|logicalSize,
+	); err != nil {
+		return err
+	}
+	if _, err := r.ensureJavaVTableIndex(class.Address, vtable); err != nil {
+		return err
+	}
+	r.javaVTableCapacity[class.Address] = logicalSize
+	r.tracef(
+		"mn_class_vtable:%s@0x%08x[%d]",
+		class.Name,
+		vtable,
+		logicalSize,
+	)
 	return nil
 }
 
@@ -189,7 +462,9 @@ func (r *Runtime) registerMNClasses(moduleTable, imports uint32) error {
 // A module class descriptor holds its parent in the word an ordinary KTF class
 // holds it in, but with two encodings: an even value is a pointer to another
 // class the module carries, and an odd value is (index << 1) | 1 into the
-// module's import table, naming a platform class. framework/FunnyAppMain
+// module's import table, naming either a module or platform class. All module
+// classes are registered before this resolution pass, so either kind resolves
+// through the same class registry. framework/FunnyAppMain
 // carries 0x73, which is import 57 - org/kwis/msp/lcdui/Jlet - and
 // framework/FunnyCanvas carries 0x139, import 156, org/kwis/msp/lcdui/Card.
 // Resolving it to the platform class and writing it back is the link step a
@@ -256,12 +531,269 @@ func (r *Runtime) installMNHelpers(table uint32) error {
 	}
 	slots := make([]uint32, mnHelperSlots)
 	for index := range slots {
+		handler := ktfMNHelper(index)
+		switch index {
+		case 0:
+			handler = ktfMNInvoke
+		case 1:
+			handler = ktfMNInvokeStatic
+		}
 		slots[index] = r.RegisterHostCall(
 			fmt.Sprintf("mn.helper%d", index),
-			ktfMNHelper(index),
+			handler,
 		)
 	}
 	return r.writeWords(table, slots)
+}
+
+// ktfMNInvoke is the module's Java call trampoline. The module reaches it after
+// pushing r2 and r3, with r0 holding either a method record or a resolved entry
+// point and r1 the receiver. A handset helper invokes the method with the exact
+// descriptor-shaped argument frame and removes the two scratch words before
+// returning. Leaving it as a pass-through leaked stack and skipped every call.
+func ktfMNInvoke(ctx context.Context, runtime *Runtime) (uint32, error) {
+	rawTarget, err := runtime.parameter(0)
+	if err != nil {
+		return 0, err
+	}
+	receiver, err := runtime.parameter(1)
+	if err != nil {
+		return 0, err
+	}
+	stack, err := runtime.CPU.ReadRegister(cpu.RegisterSP)
+	if err != nil {
+		return 0, err
+	}
+	savedFrame, hasSavedFrame := runtime.takeMNCallFrame(stack)
+	var parameterWordsHint *int
+	if hasSavedFrame {
+		parameterWordsHint = &savedFrame.parameterWords
+	}
+	target, parameterWords, err := runtime.resolveMNCallTarget(
+		rawTarget,
+		parameterWordsHint,
+	)
+	if err != nil {
+		return 0, err
+	}
+	frameWords := max(2, parameterWords)
+	frame, err := runtime.ReadWords(stack, frameWords)
+	if err != nil {
+		return 0, err
+	}
+	arguments := [2]uint32{}
+	copy(arguments[:], frame)
+	if hasSavedFrame {
+		arguments = savedFrame.arguments
+	}
+	callArgs := make([]uint32, 2, parameterWords+2)
+	callArgs[1] = receiver
+	for index := 0; index < parameterWords; index++ {
+		value := frame[index]
+		if index < len(arguments) {
+			value = arguments[index]
+		}
+		callArgs = append(callArgs, value)
+	}
+	result, value, err := runtime.call(
+		ctx,
+		target,
+		callArgs,
+		ktfJavaNativeInstructionMax,
+	)
+	if err != nil {
+		return 0, fmt.Errorf(
+			"invoke MN target 0x%08x at PC 0x%08x after %d instructions: %w",
+			target,
+			result.PC,
+			result.Instructions,
+			err,
+		)
+	}
+	if err := runtime.CPU.WriteRegister(cpu.RegisterSP, stack+8); err != nil {
+		return 0, err
+	}
+	runtime.tracef(
+		"mn_invoke:target=0x%08x:receiver=0x%08x:arguments=%d",
+		target,
+		receiver,
+		parameterWords,
+	)
+	return value, nil
+}
+
+// ktfMNInvokeStatic is helper slot 1, the static-method counterpart to slot 0.
+// Static AOT methods reserve r0, put their first Java parameter in r1, and use
+// r2/r3 plus the caller stack for the remaining words. The compiler veneer has
+// pushed r2/r3 by the time it tail-jumps here, so the host must reconstruct the
+// original register frame and remove those scratch words on return.
+func ktfMNInvokeStatic(ctx context.Context, runtime *Runtime) (uint32, error) {
+	rawTarget, err := runtime.parameter(0)
+	if err != nil {
+		return 0, err
+	}
+	firstArgument, err := runtime.parameter(1)
+	if err != nil {
+		return 0, err
+	}
+	stack, err := runtime.CPU.ReadRegister(cpu.RegisterSP)
+	if err != nil {
+		return 0, err
+	}
+	savedFrame, hasSavedFrame := runtime.takeMNCallFrame(stack)
+	var parameterWordsHint *int
+	if hasSavedFrame {
+		parameterWordsHint = &savedFrame.parameterWords
+	}
+	target, parameterWords, err := runtime.resolveMNCallTarget(
+		rawTarget,
+		parameterWordsHint,
+	)
+	if err != nil {
+		return 0, err
+	}
+	frameWords := max(2, parameterWords-1)
+	frame, err := runtime.ReadWords(stack, frameWords)
+	if err != nil {
+		return 0, err
+	}
+	arguments := [2]uint32{}
+	copy(arguments[:], frame)
+	if hasSavedFrame {
+		arguments = savedFrame.arguments
+	}
+	callArgs := make([]uint32, 1, parameterWords+1)
+	for index := 0; index < parameterWords; index++ {
+		value := firstArgument
+		if index != 0 {
+			value = frame[index-1]
+			if index-1 < len(arguments) {
+				value = arguments[index-1]
+			}
+		}
+		callArgs = append(callArgs, value)
+	}
+	result, value, err := runtime.call(
+		ctx,
+		target,
+		callArgs,
+		ktfJavaNativeInstructionMax,
+	)
+	if err != nil {
+		return 0, fmt.Errorf(
+			"invoke static MN target 0x%08x at PC 0x%08x after %d instructions: %w",
+			target,
+			result.PC,
+			result.Instructions,
+			err,
+		)
+	}
+	if err := runtime.CPU.WriteRegister(cpu.RegisterSP, stack+8); err != nil {
+		return 0, err
+	}
+	runtime.tracef(
+		"mn_invoke_static:target=0x%08x:arguments=%d",
+		target,
+		parameterWords,
+	)
+	return value, nil
+}
+
+func (r *Runtime) resolveMNCallTarget(
+	rawTarget uint32,
+	parameterWordsHint *int,
+) (uint32, int, error) {
+	if rawTarget == 0 {
+		return 0, 0, errors.New("MN call target is null")
+	}
+	target := rawTarget
+	// Some call sites hand the helper a method record, some an already-resolved
+	// Thumb entry, and the shortest veneer hands it an even-addressed cell that
+	// can contain either form. Follow at most two cells so malformed guest data
+	// cannot form an infinite pointer chain.
+	for depth := 0; depth < 3; depth++ {
+		if target == 0 {
+			return 0, 0, errors.New("MN member cell is unresolved")
+		}
+		if target&1 != 0 {
+			if parameterWordsHint != nil {
+				return target, *parameterWordsHint, nil
+			}
+			parameterWords, ok := r.mnCallParameterWords[target]
+			if !ok {
+				return 0, 0, fmt.Errorf(
+					"MN direct call target 0x%08x has no descriptor arity",
+					target,
+				)
+			}
+			if parameterWords < 0 {
+				return 0, 0, fmt.Errorf(
+					"MN direct call target 0x%08x has ambiguous descriptor arity",
+					target,
+				)
+			}
+			return target, parameterWords, nil
+		}
+		if method, inspectErr := r.InspectJavaMethod(target); inspectErr == nil {
+			r.rememberMNCallMethod(method)
+			entry := method.Body
+			if entry == 0 {
+				entry = method.NativeBody
+			}
+			if entry == 0 {
+				return 0, 0, errors.New("MN method has no executable entry")
+			}
+			parameterWords, ok := ktfJavaParameterWords(method.Descriptor)
+			if !ok {
+				return 0, 0, fmt.Errorf(
+					"MN method has invalid descriptor %q",
+					method.Descriptor,
+				)
+			}
+			return entry, parameterWords, nil
+		}
+		next, err := r.ReadU32(target)
+		if err != nil {
+			return 0, 0, err
+		}
+		if next == target {
+			return 0, 0, errors.New("MN member cell points to itself")
+		}
+		target = next
+	}
+	return 0, 0, fmt.Errorf(
+		"MN member cell chain from 0x%08x exceeds limit",
+		rawTarget,
+	)
+}
+
+func (r *Runtime) rememberMNCallMethod(method JavaMethod) {
+	parameterWords, ok := ktfJavaParameterWords(method.Descriptor)
+	if !ok {
+		return
+	}
+	if r.mnCallParameterWords == nil {
+		r.mnCallParameterWords = make(map[uint32]int)
+	}
+	for _, target := range []uint32{method.Body, method.NativeBody} {
+		if target == 0 {
+			continue
+		}
+		if existing, found := r.mnCallParameterWords[target]; found &&
+			existing != parameterWords {
+			r.mnCallParameterWords[target] = -1
+			continue
+		}
+		r.mnCallParameterWords[target] = parameterWords
+	}
+}
+
+func (r *Runtime) takeMNCallFrame(stack uint32) (mnCallFrame, bool) {
+	saved, ok := r.mnCallFrames[stack]
+	if ok {
+		delete(r.mnCallFrames, stack)
+	}
+	return saved, ok
 }
 
 func ktfMNHelper(index int) ktfHostHandler {
@@ -299,9 +831,12 @@ func ktfMNGetInterface(_ context.Context, runtime *Runtime) (uint32, error) {
 	return runtime.ensureMNInterface()
 }
 
-// ensureMNInterface builds the callback table the module keeps. It is the
-// ordinary KTF InterfaceInit table at the same indices; only the class lookup
-// differs, so only that one has its own adapter.
+// ensureMNInterface builds the callback table the module keeps. Relocatable MN
+// modules use a related but distinct callback ABI from ordinary InterfaceInit.
+// In particular, slot 8 is the non-returning throw-by-class-name callback used
+// by the compiler's null, bounds, cast, and arithmetic failure veneers. Treating
+// it as ordinary java_class_load lets those veneers return through a link
+// register their internal call already replaced, eventually branching to zero.
 func (r *Runtime) ensureMNInterface() (uint32, error) {
 	if r.mnInterface != 0 {
 		return r.mnInterface, nil
@@ -326,10 +861,22 @@ func (r *Runtime) ensureMNInterface() (uint32, error) {
 	fields[4] = r.RegisterHostCall("java_check_type", ktfJavaCheckType)
 	fields[5] = r.RegisterHostCall("java_new", ktfJavaNew)
 	fields[6] = r.RegisterHostCall("java_array_new", ktfJavaArrayNew)
-	fields[8] = r.RegisterHostCall("mn.class_load", ktfMNClassLoad)
+	fields[8] = r.RegisterHostCall("mn.throw", ktfJavaThrow)
 	fields[10] = r.RegisterHostCall("java_string_copy", ktfJavaStringCopy)
+	// Module allocation glue calls slot 14 as new(class, metadata, context) and
+	// treats a non-zero result as the freshly allocated instance. The ordinary
+	// KTF allocator already implements class initialization and object layout;
+	// the two extra module arguments are bookkeeping the host does not need.
+	fields[14] = r.RegisterHostCall("mn.new", ktfJavaNew)
+	fields[15] = r.RegisterHostCall("mn.array_new", ktfMNArrayNew)
 	fields[16] = r.RegisterHostCall("mn.resolve_class", ktfMNResolveClass)
+	fields[17] = r.RegisterHostCall("mn.array_class", ktfMNObjectClass)
+	fields[18] = r.RegisterHostCall("mn.check_type", ktfMNCheckType)
+	fields[24] = r.RegisterHostCall("mn.initialize_class", ktfMNInitializeClass)
 	fields[25] = r.RegisterHostCall("mn.resolve_member", ktfMNResolveMember)
+	fields[27] = r.RegisterHostCall("mn.resolve_array_class", ktfMNResolveArrayClass)
+	fields[28] = r.RegisterHostCall("mn.primitive_array_new", ktfMNPrimitiveArrayNew)
+	fields[29] = r.RegisterHostCall("mn.multi_array_new", ktfMNMultiArrayNew)
 	fields[11] = r.RegisterHostCall("alloc", ktfAlloc)
 	if err := r.writeWords(object, fields); err != nil {
 		return 0, err
@@ -338,9 +885,207 @@ func (r *Runtime) ensureMNInterface() (uint32, error) {
 	return object, nil
 }
 
-// ktfMNResolveClass answers the class a module names in its second argument.
-// The module passes the name and its own import table; the runtime already
-// knows every class the module carries and every platform class.
+func ktfMNMultiArrayNew(_ context.Context, runtime *Runtime) (uint32, error) {
+	classAddress, err := runtime.parameter(0)
+	if err != nil {
+		return 0, err
+	}
+	dimensions, err := runtime.parameter(1)
+	if err != nil {
+		return 0, err
+	}
+	sizesAddress, err := runtime.parameter(2)
+	if err != nil {
+		return 0, err
+	}
+	if dimensions == 0 || dimensions > 255 {
+		return 0, fmt.Errorf("invalid MN array dimension count %d", dimensions)
+	}
+	sizes, err := runtime.ReadWords(sizesAddress, int(dimensions))
+	if err != nil {
+		return 0, err
+	}
+	class, err := runtime.InspectJavaClass(classAddress)
+	if err != nil {
+		return 0, err
+	}
+	var allocate func(string, uint32) (uint32, error)
+	allocate = func(name string, depth uint32) (uint32, error) {
+		if name == "" || name[0] != '[' {
+			return 0, fmt.Errorf("MN multi-array class %q is not an array", name)
+		}
+		elementSize := uint32(4)
+		if len(name) == 2 {
+			_, elementSize, err = runtime.javaArrayClass(uint32(name[1]))
+			if err != nil {
+				return 0, err
+			}
+		}
+		array, err := runtime.NewJavaArray(name, sizes[depth], elementSize)
+		if err != nil {
+			return 0, err
+		}
+		if depth+1 >= dimensions {
+			return array, nil
+		}
+		childName := name[1:]
+		fields, err := runtime.ReadU32(array)
+		if err != nil {
+			return 0, err
+		}
+		for index := uint32(0); index < sizes[depth]; index++ {
+			child, err := allocate(childName, depth+1)
+			if err != nil {
+				return 0, err
+			}
+			if err := runtime.WriteU32(fields+8+index*4, child); err != nil {
+				return 0, err
+			}
+		}
+		return array, nil
+	}
+	array, err := allocate(class.Name, 0)
+	if err != nil {
+		return 0, err
+	}
+	runtime.tracef("mn_multi_array_new:%s:%v@0x%08x", class.Name, sizes, array)
+	return array, nil
+}
+
+func ktfMNArrayNew(_ context.Context, runtime *Runtime) (uint32, error) {
+	classAddress, err := runtime.parameter(0)
+	if err != nil {
+		return 0, err
+	}
+	count, err := runtime.parameter(1)
+	if err != nil {
+		return 0, err
+	}
+	class, err := runtime.InspectJavaClass(classAddress)
+	if err != nil {
+		return 0, err
+	}
+	elementSize := uint32(4)
+	if len(class.Name) == 2 && class.Name[0] == '[' {
+		_, elementSize, err = runtime.javaArrayClass(uint32(class.Name[1]))
+		if err != nil {
+			return 0, err
+		}
+	}
+	array, err := runtime.NewJavaArray(class.Name, count, elementSize)
+	if err != nil {
+		return 0, err
+	}
+	runtime.tracef("mn_array_new:%s[%d]@0x%08x", class.Name, count, array)
+	return array, nil
+}
+
+func ktfMNResolveArrayClass(_ context.Context, runtime *Runtime) (uint32, error) {
+	elementClass, err := runtime.parameter(0)
+	if err != nil {
+		return 0, err
+	}
+	className, _, err := runtime.javaArrayClass(elementClass)
+	if err != nil {
+		return 0, err
+	}
+	class, err := runtime.EnsureJavaClass(className)
+	if err != nil {
+		return 0, err
+	}
+	runtime.tracef("mn_array_class:%s@0x%08x", className, class)
+	return class, nil
+}
+
+func ktfMNObjectClass(_ context.Context, runtime *Runtime) (uint32, error) {
+	object, err := runtime.parameter(0)
+	if err != nil {
+		return 0, err
+	}
+	if object == 0 {
+		return 0, nil
+	}
+	return runtime.ReadU32(object + 4)
+}
+
+func ktfMNCheckType(ctx context.Context, runtime *Runtime) (uint32, error) {
+	instance, err := runtime.parameter(1)
+	if err != nil {
+		return 0, err
+	}
+	if instance == 0 {
+		return 0, nil
+	}
+	compatibility, err := runtime.parameter(2)
+	if err != nil {
+		return 0, err
+	}
+	// MN array-store glue supplies its interface pointer as the non-zero third
+	// argument. KTF's compatibility form accepts that store before consulting
+	// the Java hierarchy, including compact module values that are not ordinary
+	// heap object addresses.
+	if compatibility != 0 {
+		return 1, nil
+	}
+	return ktfJavaCheckType(ctx, runtime)
+}
+
+func ktfMNInitializeClass(ctx context.Context, runtime *Runtime) (uint32, error) {
+	classAddress, err := runtime.parameter(0)
+	if err != nil {
+		return 0, err
+	}
+	class, err := runtime.InspectJavaClass(classAddress)
+	if err != nil {
+		return 0, err
+	}
+	if err := runtime.ensureJavaClassInitialized(ctx, class); err != nil {
+		return 0, err
+	}
+	return classAddress, nil
+}
+
+// ktfMNPrimitiveArrayNew implements the module compiler's newarray helper. Its
+// first argument is the JVM primitive-array type code scaled by one word, so
+// int (T_INT = 10) arrives as 0x28; the second argument is the element count.
+func ktfMNPrimitiveArrayNew(_ context.Context, runtime *Runtime) (uint32, error) {
+	encodedType, err := runtime.parameter(0)
+	if err != nil {
+		return 0, err
+	}
+	count, err := runtime.parameter(1)
+	if err != nil {
+		return 0, err
+	}
+	if encodedType%4 != 0 {
+		return 0, fmt.Errorf("invalid MN primitive array type 0x%08x", encodedType)
+	}
+	descriptors := map[uint32]byte{
+		4:  'Z',
+		5:  'C',
+		6:  'F',
+		7:  'D',
+		8:  'B',
+		9:  'S',
+		10: 'I',
+		11: 'J',
+	}
+	descriptor, ok := descriptors[encodedType/4]
+	if !ok {
+		return 0, fmt.Errorf("unsupported MN primitive array type 0x%08x", encodedType)
+	}
+	className, elementSize, err := runtime.javaArrayClass(uint32(descriptor))
+	if err != nil {
+		return 0, err
+	}
+	array, err := runtime.NewJavaArray(className, count, elementSize)
+	if err != nil {
+		return 0, err
+	}
+	runtime.tracef("mn_primitive_array_new:%s[%d]@0x%08x", className, count, array)
+	return array, nil
+}
+
 // ktfMNResolveClass answers the class a module names. The module passes the
 // word to write the class into, the name, and its own import table, and reads
 // the return as a status: zero is success, anything else sends it down its
@@ -417,72 +1162,94 @@ func ktfMNResolveMember(_ context.Context, runtime *Runtime) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
-	stub, err := runtime.mnResolveMember(classObject, member)
+	handle, entry, err := runtime.mnResolveMember(classObject, member)
 	if err != nil {
 		runtime.tracef("mn_resolve_member_failed:%v", err)
 		return 0, nil
 	}
 	if target != 0 {
-		if err := runtime.WriteU32(target, stub); err != nil {
+		arguments, err := runtime.ReadWords(target, 2)
+		if err != nil {
+			return 0, err
+		}
+		method, err := runtime.InspectJavaMethod(handle)
+		if err != nil {
+			return 0, err
+		}
+		parameterWords, ok := ktfJavaParameterWords(method.Descriptor)
+		if !ok {
+			return 0, fmt.Errorf("invalid MN member descriptor %q", method.Descriptor)
+		}
+		if runtime.mnCallFrames == nil {
+			runtime.mnCallFrames = make(map[uint32]mnCallFrame)
+		}
+		runtime.mnCallFrames[target] = mnCallFrame{
+			arguments:      [2]uint32{arguments[0], arguments[1]},
+			parameterWords: parameterWords,
+		}
+		if err := runtime.WriteU32(target, entry); err != nil {
 			return 0, err
 		}
 	}
-	return 0, nil
+	// The glue caches the non-zero method handle in the member cell, while the
+	// low-level call veneer branches through the executable entry written to the
+	// scratch out-word. They are deliberately different values.
+	return handle, nil
 }
 
-// mnResolveMember answers a callable entry point for the member a module names
-// as "<tag><descriptor>+<name>" against the class object it passes.
-func (r *Runtime) mnResolveMember(classObject, member uint32) (uint32, error) {
+// mnResolveMember answers both the method metadata handle an MN module caches
+// and the executable entry its first-call scratch frame branches through.
+func (r *Runtime) mnResolveMember(
+	classObject, member uint32,
+) (uint32, uint32, error) {
 	class, err := r.InspectJavaClass(classObject)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	text, err := r.readCString(member, 512)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if len(text) == 0 {
-		return 0, errors.New("MN member name is empty")
+		return 0, 0, errors.New("MN member name is empty")
 	}
 	// The first byte is the entry's tag - the same slot addHostJavaMethod
 	// writes a zero into - and is not part of the descriptor.
 	descriptor, name, found := strings.Cut(string(text[1:]), "+")
 	if !found {
-		return 0, fmt.Errorf("MN member %q has no name", string(text))
+		return 0, 0, fmt.Errorf("MN member %q has no name", string(text))
 	}
 	key := class.Name + "." + name + descriptor
-	if stub := r.mnMembers[key]; stub != 0 {
-		return stub, nil
+	handle := r.mnMembers[key]
+	if handle == 0 {
+		handle, err = r.resolveJavaMethod(classObject, name, descriptor)
+		if err != nil {
+			return 0, 0, err
+		}
+		if r.mnMembers == nil {
+			r.mnMembers = map[string]uint32{}
+		}
+		r.mnMembers[key] = handle
 	}
-	// One stub per member: the host-call page is small and a module resolves
-	// the same member every time it reaches the call site.
-	stub := r.RegisterHostCall(
-		"java.method."+key,
-		HostJavaMethod(class.Name, name, descriptor),
+	method, err := r.InspectJavaMethod(handle)
+	if err != nil {
+		return 0, 0, err
+	}
+	r.rememberMNCallMethod(method)
+	entry := method.Body
+	if entry == 0 {
+		entry = method.NativeBody
+	}
+	if entry == 0 {
+		return 0, 0, fmt.Errorf("MN member %s has no executable entry", key)
+	}
+	r.tracef(
+		"mn_resolve_member:%s:handle=0x%08x:entry=0x%08x",
+		key,
+		handle,
+		entry,
 	)
-	if r.mnMembers == nil {
-		r.mnMembers = map[string]uint32{}
-	}
-	r.mnMembers[key] = stub
-	r.tracef("mn_resolve_member:%s@0x%08x", key, stub)
-	return stub, nil
-}
-
-func ktfMNClassLoad(_ context.Context, runtime *Runtime) (uint32, error) {
-	nameAddress, err := runtime.parameter(0)
-	if err != nil {
-		return 0, err
-	}
-	name, err := runtime.readCString(nameAddress, 1024)
-	if err != nil {
-		return 0, err
-	}
-	class, err := runtime.EnsureJavaClass(string(name))
-	if err != nil {
-		return 0, err
-	}
-	runtime.tracef("mn_class_load:%s@0x%08x", string(name), class)
-	return class, nil
+	return handle, entry, nil
 }
 
 // applyMNRegisters installs the two registers module code expects a caller to

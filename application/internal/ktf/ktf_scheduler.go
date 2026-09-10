@@ -810,6 +810,14 @@ func (r *Runtime) NewTask(
 			return nil, err
 		}
 	}
+	// Relocatable MN methods use r10 as their GOT base and r11 as their VM
+	// context. NewTask builds a fresh register file, so deferred startApp,
+	// paint, timer, and input callbacks must restore those callee-saved ABI
+	// registers just like synchronous calls do.
+	if err := r.applyMNRegisters(); err != nil {
+		_ = restore()
+		return nil, err
+	}
 	for _, registerValue := range []struct {
 		register uint32
 		value    uint32
