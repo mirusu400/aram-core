@@ -567,7 +567,7 @@ func (m *Machine) startRaptorJava(ctx context.Context) error {
 	// while the real Jlet subclass carries an obfuscated name; run the lifecycle
 	// on the class that actually declares startApp when the named one does not.
 	construct := func(cls *raptorrt.JavaClass) (uint32, error) {
-		instance, err := runtime.NewRaptorJavaObject(cls.Holder)
+		instance, err := runtime.NewRaptorJavaMainObject(cls.Holder)
 		if err != nil {
 			return 0, fmt.Errorf("allocate Raptor Java main class %q: %w", cls.Name, err)
 		}
@@ -630,9 +630,6 @@ func (m *Machine) startRaptorJava(ctx context.Context) error {
 			result.Instructions,
 			err,
 		)
-	}
-	if err := runtime.SetRaptorJavaMainInstance(instance); err != nil {
-		return fmt.Errorf("bind Raptor Java main Jlet: %w", err)
 	}
 	return runtime.SyncRaptorJavaVTables(java)
 }
