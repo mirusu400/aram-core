@@ -25,23 +25,24 @@ import (
 // instance and static methods.
 //
 // It also carries its classes with it. The module table the descriptor names
-// holds a linked list of class objects in exactly the layout InspectJavaClass
-// already reads, so the runtime registers them by name instead of calling into
-// the module for each one - which it could not do anyway, since an MN module
-// has no WipiExe and so no class lookup procedure for LoadClass to call.
+// holds a sparse table of pointers to class objects in the layout
+// InspectJavaClass already reads, so the runtime registers them by name instead
+// of calling into the module for each one. An MN module has no WipiExe and so
+// no class lookup procedure for LoadClass to call.
 //
 // A callback whose meaning is not yet observed records itself as mn.slot or
 // mn.helper rather than being silently guessed, so a new module identifies the
 // missing ABI operation in its trace.
 const (
-	// mnModuleTableClasses is the offset in the module table of the first
-	// class record. The two words before it are the class count and a size.
-	mnModuleTableClasses = 0x1c
-	// mnClassRecordWords is one entry of that list: a tag, the class object,
-	// a reserved word, flags, and the next entry.
-	mnClassRecordWords = 5
-	// mnMaxClasses bounds the walk so a malformed list cannot spin.
-	mnMaxClasses = 4096
+	// The module table begins with a slot-array pointer, live class count,
+	// and slot capacity. Empty slots are null, including between live entries.
+	mnModuleTableWords = 3
+	// mnClassObjectWords is the class object InspectJavaClass reads. Its first
+	// word points inside itself, not to a next class in a linked list.
+	mnClassObjectWords = 5
+	// Bound both live classes and the sparse table before reading guest data.
+	mnMaxClasses    = 4096
+	mnMaxClassSlots = 8192
 	// mnMaxImports bounds an import index the same way.
 	mnMaxImports = 8192
 	// mnHelperSlots is the dispatch table the load descriptor names.
@@ -139,16 +140,14 @@ func (r *Runtime) prepareMNContext(globalOffsetTable uint32) error {
 	r.mnGOT, r.mnContext = globalOffsetTable, context
 	// The ordinary path builds these in Initialize, which an MN module skips.
 	// Java host handlers reach for both.
-	exceptionContext, err := r.AllocateWords(ktfJavaEnvironmentWords)
-	if err != nil {
+	if err := r.prepareMNExceptions(context); err != nil {
 		return err
 	}
-	r.exceptionContext = exceptionContext
 	environment, err := r.AllocateWords(1)
 	if err != nil {
 		return err
 	}
-	if err := r.writeWords(environment, []uint32{exceptionContext}); err != nil {
+	if err := r.writeWords(environment, []uint32{r.exceptionContext}); err != nil {
 		return err
 	}
 	r.javaEnvironment = environment
@@ -163,43 +162,71 @@ func (r *Runtime) prepareMNContext(globalOffsetTable uint32) error {
 	return nil
 }
 
-// registerMNClasses walks the module's class list and registers every class by
-// name. The objects are already in the layout InspectJavaClass reads.
+// registerMNClasses registers the non-null pointers in the module's sparse
+// class table. Class objects need not follow the header or each other in memory.
+// In particular, moduleTable+0x1c can contain unrelated string-object data.
 func (r *Runtime) registerMNClasses(moduleTable, imports uint32) error {
-	record := moduleTable + mnModuleTableClasses
-	objects := make([]uint32, 0)
-	for seen := 0; record != 0 && seen < mnMaxClasses; seen++ {
-		// The list does not always end at a null pointer: some modules close
-		// it with a sentinel record whose fields are not relocated pointers
-		// at all, and once with a "next" address that fell entirely outside
-		// the image. Either shape means the walk is done, not malformed.
-		if !r.imagePointer(record, mnClassRecordWords*4) {
-			break
-		}
-		words, err := r.ReadWords(record, mnClassRecordWords)
-		if err != nil {
-			return fmt.Errorf("read KTF module class record: %w", err)
-		}
-		// The class object is the record itself minus its tag word: the tag
-		// sits where the object's second word does.
-		object := record - 4
-		class, err := r.InspectJavaClass(object)
-		if err == nil && class.Name != "" {
-			r.rememberRegisteredJavaClass(class.Name, object)
-			objects = append(objects, object)
-			r.tracef("mn_class:%s@0x%08x", class.Name, object)
-		}
-		record = words[4]
+	if !r.imagePointer(moduleTable, mnModuleTableWords*4) {
+		return fmt.Errorf("KTF module table 0x%08x is outside client image", moduleTable)
 	}
-	if len(objects) == 0 {
+	header, err := r.ReadWords(moduleTable, mnModuleTableWords)
+	if err != nil {
+		return fmt.Errorf("read KTF module table: %w", err)
+	}
+	table, count, capacity := header[0], header[1], header[2]
+	if count > mnMaxClasses || capacity > mnMaxClassSlots || count > capacity {
+		return fmt.Errorf("invalid KTF module class table count %d capacity %d", count, capacity)
+	}
+	if count == 0 {
 		return errors.New("KTF module registered no classes")
+	}
+	if !r.imagePointer(table, capacity*4) {
+		return fmt.Errorf("KTF module class slots 0x%08x capacity %d are outside client image", table, capacity)
+	}
+	slots, err := r.ReadWords(table, int(capacity))
+	if err != nil {
+		return fmt.Errorf("read KTF module class slots: %w", err)
+	}
+	objects := make([]uint32, 0, count)
+	classes := make([]JavaClass, 0, count)
+	seen := make(map[uint32]bool, count)
+	for index, object := range slots {
+		if object == 0 {
+			continue
+		}
+		if !r.imagePointer(object, mnClassObjectWords*4) {
+			return fmt.Errorf("KTF module class slot %d object 0x%08x is outside client image", index, object)
+		}
+		if seen[object] {
+			return fmt.Errorf("duplicate KTF module class object 0x%08x at slot %d", object, index)
+		}
+		seen[object] = true
+		class, err := r.InspectJavaClass(object)
+		if err != nil {
+			return fmt.Errorf("inspect KTF module class slot %d object 0x%08x: %w", index, object, err)
+		}
+		if class.Name == "" {
+			return fmt.Errorf("KTF module class slot %d object 0x%08x has no name", index, object)
+		}
+		objects = append(objects, object)
+		classes = append(classes, class)
+	}
+	if uint32(len(objects)) != count {
+		return fmt.Errorf("KTF module class count %d does not match %d occupied slots", count, len(objects))
+	}
+	for _, class := range classes {
+		r.rememberRegisteredJavaClass(class.Name, class.Address)
+		r.tracef("mn_class:%s@0x%08x", class.Name, class.Address)
 	}
 	// Parent imports can name another class carried by the same module. Publish
 	// every module class before resolving any parent so a child that appears
-	// first in the linked list does not make EnsureJavaClass synthesize a host
+	// first in the table does not make EnsureJavaClass synthesize a host
 	// placeholder for its still-unseen parent.
 	for _, object := range objects {
 		if err := r.linkMNClassParent(object, imports); err != nil {
+			return err
+		}
+		if err := r.linkMNClassExceptions(object, imports); err != nil {
 			return err
 		}
 	}
@@ -475,9 +502,8 @@ func (r *Runtime) linkMNClassParent(object, imports uint32) error {
 		return err
 	}
 	descriptor := classWords[2]
-	// A list-ending sentinel record carries this field unrelocated, so it
-	// reads as a small offset rather than an image pointer. Reject anything
-	// that cannot be a real descriptor instead of dereferencing it.
+	// Only module-owned descriptors carry encoded parent imports. Host classes
+	// may have descriptors allocated outside the client image.
 	if descriptor == 0 || !r.imagePointer(descriptor, 12) {
 		return nil
 	}
@@ -872,6 +898,10 @@ func (r *Runtime) ensureMNInterface() (uint32, error) {
 	fields[16] = r.RegisterHostCall("mn.resolve_class", ktfMNResolveClass)
 	fields[17] = r.RegisterHostCall("mn.array_class", ktfMNObjectClass)
 	fields[18] = r.RegisterHostCall("mn.check_type", ktfMNCheckType)
+	// Slot 21 returns a field metadata record. The getstatic caller reads its
+	// declaring class at +4 for slot-24 initialization, then its value at +12.
+	// Returning the class itself makes Font constants read as vtable pointers.
+	fields[21] = r.RegisterHostCall("mn.resolve_field", ktfGetJavaField)
 	fields[24] = r.RegisterHostCall("mn.initialize_class", ktfMNInitializeClass)
 	fields[25] = r.RegisterHostCall("mn.resolve_member", ktfMNResolveMember)
 	fields[27] = r.RegisterHostCall("mn.resolve_array_class", ktfMNResolveArrayClass)
@@ -988,6 +1018,17 @@ func ktfMNResolveArrayClass(_ context.Context, runtime *Runtime) (uint32, error)
 	className, _, err := runtime.javaArrayClass(elementClass)
 	if err != nil {
 		return 0, err
+	}
+	if elementClass > 0x100 {
+		component, err := runtime.InspectJavaClass(elementClass)
+		if err != nil {
+			return 0, err
+		}
+		// MN slot 27 implements anewarray: an array component gains a
+		// dimension. The ordinary multi-array helper deliberately does not.
+		if strings.HasPrefix(component.Name, "[") {
+			className = "[" + component.Name
+		}
 	}
 	class, err := runtime.EnsureJavaClass(className)
 	if err != nil {
