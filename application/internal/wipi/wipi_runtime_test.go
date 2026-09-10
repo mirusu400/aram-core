@@ -17,6 +17,7 @@ import (
 	"github.com/mirusu400/aram-core/application/internal/guest"
 	"github.com/mirusu400/aram-core/cpu"
 	"github.com/mirusu400/aram-core/cpu/interpreter"
+	shared "github.com/mirusu400/aram-core/runtime"
 	wipicatalog "github.com/mirusu400/aram-core/wipi"
 )
 
@@ -1664,6 +1665,42 @@ func TestWIPIRuntimeUICComponentState(t *testing.T) {
 	}
 	if got := dispatchPublicAPI(t, runtime, "MC_uicGetTextSize", component).Low; got != 4 {
 		t.Fatalf("MC_uicGetTextSize = %d", got)
+	}
+}
+
+func TestWIPIRuntimeUICTextComposesCheonjiinFromKeyEvents(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	context := dispatchPublicAPI(t, runtime, "MC_uicCreateApplicationContext").Low
+	className, err := runtime.Heap.Allocate(16, true)
+	check(t, err)
+	_, err = runtime.writeCString(className, []byte("TextField"), -1)
+	check(t, err)
+	class := dispatchPublicAPI(t, runtime, "MC_uicGetClass", className).Low
+	component := dispatchPublicAPI(t, runtime, "MC_uicCreate", context, class).Low
+
+	// 닉: ㄴ(5) + ㅣ(1), ㄱ(4) as the trailing consonant.
+	for _, key := range []uint32{'5', '1', '4'} {
+		if got := dispatchPublicAPI(
+			t, runtime, "MC_uicHandleEvent", component, wipiKeyPressEvent, key, 0,
+		).Low; got != 1 {
+			t.Fatalf("key %q accepted = %d", key, got)
+		}
+	}
+	value, err := runtime.Services.Text.Decode(
+		runtime.UicComponents[component].text,
+		shared.EncodingEUCKR,
+	)
+	check(t, err)
+	if value != "닉" {
+		t.Fatalf("composed text = %q, want %q", value, "닉")
+	}
+	if size := dispatchPublicAPI(t, runtime, "MC_uicGetTextSize", component).Low; size != 2 {
+		t.Fatalf("EUC-KR text size = %d, want 2", size)
+	}
+
+	dispatchPublicAPI(t, runtime, "MC_uicHandleEvent", component, wipiKeyPressEvent, ^uint32(15), 0)
+	if size := dispatchPublicAPI(t, runtime, "MC_uicGetTextSize", component).Low; size != 0 {
+		t.Fatalf("text size after clear = %d, want 0", size)
 	}
 }
 

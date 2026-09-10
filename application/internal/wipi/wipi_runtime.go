@@ -12,6 +12,7 @@ import (
 
 	"github.com/mirusu400/aram-core/application/internal/guest"
 	"github.com/mirusu400/aram-core/cpu"
+	"github.com/mirusu400/aram-core/internal/ime"
 	shared "github.com/mirusu400/aram-core/runtime"
 	wipicatalog "github.com/mirusu400/aram-core/wipi"
 )
@@ -157,6 +158,10 @@ type Component struct {
 	ActiveList   int32
 	text         []byte
 	MaxText      int32
+	// textInput is the handset IME owned by editable UIC components. It is a
+	// derived cache, like KTF's LWC automata: save-state restoration starts a
+	// fresh composition while preserving the already rendered text.
+	textInput ime.Automata
 }
 
 type wipiMediaClip struct {

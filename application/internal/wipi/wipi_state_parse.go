@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/mirusu400/aram-core/application/internal/guest"
+	"github.com/mirusu400/aram-core/internal/ime"
 	shared "github.com/mirusu400/aram-core/runtime"
 	wipicatalog "github.com/mirusu400/aram-core/wipi"
 )
@@ -359,6 +360,7 @@ func ParseState(r *Runtime, decoder *guest.StateDecoder) (*SavedState, error) {
 			Width:     int32(decoder.U32()),
 			Height:    int32(decoder.U32()),
 			Enabled:   decoder.U8() != 0,
+			textInput: ime.New(ime.ModeKorean),
 		}
 		decoder.Reserved(3)
 		component.eventHandler = decoder.U32()

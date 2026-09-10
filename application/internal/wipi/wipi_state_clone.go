@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/mirusu400/aram-core/application/internal/guest"
+	"github.com/mirusu400/aram-core/internal/ime"
 )
 
 func cloneResources(source map[string]*Resource) map[string]*Resource {
@@ -44,6 +45,7 @@ func cloneComponents(source map[uint32]*Component) map[uint32]*Component {
 	result := make(map[uint32]*Component, len(source))
 	for handle, component := range source {
 		clone := *component
+		clone.textInput = ime.New(ime.ModeKorean)
 		clone.Label = append([]byte(nil), component.Label...)
 		clone.text = append([]byte(nil), component.text...)
 		clone.Callbacks = make(map[int32]UICallback, len(component.Callbacks))

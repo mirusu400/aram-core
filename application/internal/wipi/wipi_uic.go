@@ -1,8 +1,14 @@
 package wipi
 
 import (
+	"strings"
+
 	"github.com/mirusu400/aram-core/application/internal/guest"
+	"github.com/mirusu400/aram-core/internal/ime"
+	shared "github.com/mirusu400/aram-core/runtime"
 )
+
+const wipiKeyPressEvent = uint32(502)
 
 func (r *Runtime) dispatchUIC(name string) (guest.WIPIReturn, bool, error) {
 	count, ok := uicArgumentCount(name)
@@ -65,6 +71,7 @@ func (r *Runtime) dispatchUIC(name string) (guest.WIPIReturn, bool, error) {
 			ActiveMenu: -1,
 			ActiveList: -1,
 			MaxText:    256,
+			textInput:  ime.New(ime.ModeKorean),
 		}
 		return guest.WIPIReturn{Low: handle}, true, nil
 	case "MC_uicDestroy":
@@ -131,6 +138,9 @@ func (r *Runtime) dispatchUIC(name string) (guest.WIPIReturn, bool, error) {
 			if handled == 0 {
 				return guest.WIPIReturn{}, true, nil
 			}
+		}
+		if err := r.handleUICTextInput(current, arg(1), int32(arg(2))); err != nil {
+			return guest.WIPIReturn{}, true, err
 		}
 		if callback := current.Callbacks[5]; callback.procedure != 0 {
 			eventType, err := r.Heap.Allocate(4, true)
@@ -381,6 +391,69 @@ func (r *Runtime) dispatchUIC(name string) (guest.WIPIReturn, bool, error) {
 	default:
 		return guest.WIPIReturn{}, false, nil
 	}
+}
+
+func (r *Runtime) handleUICTextInput(component *Component, eventType uint32, key int32) error {
+	if component == nil || eventType != wipiKeyPressEvent ||
+		!strings.Contains(strings.ToLower(component.ClassName), "text") {
+		return nil
+	}
+	if key == int32('\b') || key == -16 {
+		component.textInput.Commit()
+		value, err := r.Services.Text.Decode(component.text, shared.EncodingEUCKR)
+		if err != nil {
+			return err
+		}
+		runes := []rune(value)
+		if len(runes) > 0 {
+			runes = runes[:len(runes)-1]
+		}
+		_, err = r.setUICUnicodeText(component, string(runes))
+		return err
+	}
+	state := component.textInput.Snapshot()
+	ops, handled := component.textInput.Press(key)
+	if !handled || len(ops) == 0 {
+		return nil
+	}
+	value, err := r.Services.Text.Decode(component.text, shared.EncodingEUCKR)
+	if err != nil {
+		return err
+	}
+	runes := []rune(value)
+	for _, op := range ops {
+		switch op.Kind {
+		case ime.OpInsert:
+			runes = append(runes, op.Char)
+		case ime.OpReplace:
+			if len(runes) == 0 {
+				runes = append(runes, op.Char)
+			} else {
+				runes[len(runes)-1] = op.Char
+			}
+		case ime.OpDelete:
+			if len(runes) > 0 {
+				runes = runes[:len(runes)-1]
+			}
+		}
+	}
+	updated, err := r.setUICUnicodeText(component, string(runes))
+	if err == nil && !updated {
+		component.textInput.Restore(state)
+	}
+	return err
+}
+
+func (r *Runtime) setUICUnicodeText(component *Component, value string) (bool, error) {
+	encoded, err := r.Services.Text.Encode(value, shared.EncodingEUCKR)
+	if err != nil {
+		return false, err
+	}
+	if len(encoded) > int(component.MaxText) {
+		return false, nil
+	}
+	component.text = append(component.text[:0], encoded...)
+	return true, nil
 }
 
 func uicArgumentCount(name string) (int, bool) {
