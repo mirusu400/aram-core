@@ -1,6 +1,7 @@
 package raptor
 
 import (
+	"context"
 	"encoding/binary"
 	"testing"
 
@@ -119,6 +120,7 @@ func TestRaptorJavaConcreteDataStreamsExposeInheritedSlots(t *testing.T) {
 	for className, expected := range map[string]map[uint32]string{
 		"java/io/DataInputStream": {
 			0x30: "read([B)I",
+			0x68: "readShort()S",
 		},
 		"java/io/DataOutputStream": {
 			0x34: "write([BII)V",
@@ -134,6 +136,81 @@ func TestRaptorJavaConcreteDataStreamsExposeInheritedSlots(t *testing.T) {
 			if got := actual[offset]; got != want {
 				t.Errorf("%s slot 0x%02x = %q, want %q", className, offset, got, want)
 			}
+		}
+	}
+}
+
+func TestRaptorJavaDataInputStreamReadShortVirtualSlot(t *testing.T) {
+	public := newPublicRuntime(t)
+	runtime := &Runtime{
+		CPU:             public.CPU,
+		Public:          public,
+		resolvedImports: make(map[raptorImportKey]uint64),
+		importSlotByKey: make(map[raptorImportKey]uint32),
+	}
+	java, err := runtime.ensureJavaRuntime()
+	check(t, err)
+	// Build synthetic host vtables large enough to publish the fixed SDK slots.
+	java.flatVirtual = make([]raptorJavaMethod, 1)
+
+	sourceClass, err := runtime.ensureRaptorHostClass(java, "java/io/ByteArrayInputStream")
+	check(t, err)
+	source, err := runtime.NewRaptorJavaObject(sourceClass.Holder)
+	check(t, err)
+	data, err := runtime.newRaptorJavaArray('B', 6)
+	check(t, err)
+	body, err := public.ReadU32(data + 8)
+	check(t, err)
+	check(t, runtime.CPU.WriteMemory(body+4, []byte{0x00, 0x8f, 0x00, 0x79, 0xff, 0x80}))
+	writeRaptorJavaTestArguments(t, runtime, source, data)
+	_, err = runtime.callJavaHostMethod(context.Background(), raptorJavaMethod{
+		className:  "java/io/ByteArrayInputStream",
+		Name:       "<init>",
+		descriptor: "([B)V",
+	})
+	check(t, err)
+
+	streamClass, err := runtime.ensureRaptorHostClass(java, "java/io/DataInputStream")
+	check(t, err)
+	stream, err := runtime.NewRaptorJavaObject(streamClass.Holder)
+	check(t, err)
+	writeRaptorJavaTestArguments(t, runtime, stream, source)
+	_, err = runtime.callJavaHostMethod(context.Background(), raptorJavaMethod{
+		className:  "java/io/DataInputStream",
+		Name:       "<init>",
+		descriptor: "(Ljava/io/InputStream;)V",
+	})
+	check(t, err)
+
+	var readShort raptorJavaMethod
+	var methodID uint32
+	found := false
+	for id, candidate := range java.hostMethods {
+		if candidate.className == "java/io/DataInputStream" &&
+			candidate.Name == "readShort" && candidate.descriptor == "()S" {
+			readShort, methodID, found = candidate, id, true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("DataInputStream.readShort()S was not registered")
+	}
+	procedure, err := public.ReadU32(streamClass.vtable + 0x68)
+	check(t, err)
+	stub, err := runtime.importStub(raptorImportKey{
+		Module: raptorJavaHostModule, Ordinal: methodID,
+	})
+	check(t, err)
+	if want := stub | 1; procedure != want {
+		t.Fatalf("DataInputStream vtable+0x68 = 0x%08x, want readShort stub 0x%08x", procedure, want)
+	}
+
+	for index, want := range []uint32{0x8f, 0x79, 0xffffff80} {
+		writeRaptorJavaTestArguments(t, runtime, stream)
+		result, callErr := runtime.callJavaHostMethod(context.Background(), readShort)
+		check(t, callErr)
+		if result.Low != want {
+			t.Fatalf("readShort[%d] = 0x%08x, want 0x%08x", index, result.Low, want)
 		}
 	}
 }
