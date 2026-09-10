@@ -124,6 +124,25 @@ func (r *Runtime) NewRaptorJavaObject(holder uint32) (uint32, error) {
 	return instance, nil
 }
 
+// NewRaptorJavaMainObject constructs the Jlet selected for launch and binds it
+// to both halves of the bridge before guest code can run its constructor.
+//
+// Raptor and its embedded KTF Java host share one guest heap. A constructor is
+// allowed to call System.gc() or Runtime.gc(), but the extra root walker only
+// knows the launch object through JavaRuntime.MainInstance. Returning an
+// unbound object to the launch path therefore opens a collection window where
+// the live Jlet and its KTF mirror can be reclaimed before <init> returns.
+func (r *Runtime) NewRaptorJavaMainObject(holder uint32) (uint32, error) {
+	instance, err := r.NewRaptorJavaObject(holder)
+	if err != nil {
+		return 0, err
+	}
+	if err := r.SetRaptorJavaMainInstance(instance); err != nil {
+		return 0, err
+	}
+	return instance, nil
+}
+
 // SetRaptorJavaMainInstance binds the Raptor main Jlet to its KTF mirror.
 // KTF's Jlet host methods return KTF object addresses, which the bridge then
 // maps back to Raptor objects. Storing the Raptor address there instead makes
