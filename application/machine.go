@@ -123,6 +123,11 @@ type Factory struct {
 	// this is a playback preference, not part of a title's deterministic
 	// identity.
 	OutputSampleRate uint32
+	// OutputChannels overrides the audio render channel count. Zero inherits the
+	// runtime default (mono); one selects mono and two selects stereo. Like the
+	// sample rate, this is a playback preference rather than part of a title's
+	// deterministic identity.
+	OutputChannels uint8
 }
 
 func NewFactory() Factory {
@@ -193,6 +198,7 @@ func (f Factory) Create(ctx context.Context, source machinecore.Source) (machine
 		fallbackFont:       f.FallbackFont,
 		audioMixMode:       f.AudioMixMode,
 		outputSampleRate:   f.OutputSampleRate,
+		outputChannels:     f.OutputChannels,
 		audioGeneration:    1,
 	}
 	if err := machine.Load(ctx, source); err != nil {
@@ -283,6 +289,7 @@ type Machine struct {
 	fallbackFont          string
 	audioMixMode          bool
 	outputSampleRate      uint32
+	outputChannels        uint8
 	ktfStarted            bool
 	state                 machinecore.State
 	source                machinecore.Source
@@ -460,6 +467,7 @@ func (m *Machine) Reset(ctx context.Context) error {
 			profileID,
 			m.fallbackFont,
 			m.outputSampleRate,
+			m.outputChannels,
 		)
 		if err != nil {
 			m.state = machinecore.StateFaulted

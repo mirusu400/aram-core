@@ -77,6 +77,9 @@ type Options struct {
 	RunnerQuantum      uint64
 	Media              *MediaState
 	ProbePanelProtocol bool
+	// OutputChannels overrides the presentation mixer's channel count. Zero
+	// inherits the runtime default (mono); one selects mono and two stereo.
+	OutputChannels uint8
 }
 
 // MediaState is the persistent NAND state which survives a power cycle. Flash
@@ -160,6 +163,9 @@ type bootBoundary struct {
 // platform/board constructor. Recognizing a container or build never silently
 // substitutes SCH-W830 hardware for a different phone.
 func New(set firmwareset.Set, options Options) (*Machine, error) {
+	if options.OutputChannels != 0 && options.OutputChannels != 1 && options.OutputChannels != 2 {
+		return nil, fmt.Errorf("invalid audio output channel count %d", options.OutputChannels)
+	}
 	pkg, err := samsung.Inspect(set)
 	if err != nil {
 		return nil, fmt.Errorf("inspect Samsung firmware set: %w", err)
@@ -709,7 +715,9 @@ func newSamsungQualcommMachine(
 		if board.TimeTickClock != nil && board.TimeTickClock.InstructionsPerSecond != 0 {
 			instructionsPerSecond = board.TimeTickClock.InstructionsPerSecond
 		}
-		audio, err = newSCHW830Audio(bus, defaultSCHW830AudioConfig(instructionsPerSecond))
+		audioConfig := defaultSCHW830AudioConfig(instructionsPerSecond)
+		audioConfig.outputChannels = options.OutputChannels
+		audio, err = newSCHW830Audio(bus, audioConfig)
 		if err != nil {
 			return fail(err)
 		}

@@ -374,6 +374,7 @@ func NewRuntime(backend cpu.Backend, frame *image.RGBA) (*Runtime, error) {
 		"wipi-c",
 		"",
 		0,
+		0,
 	)
 }
 
@@ -395,6 +396,15 @@ func (r *Runtime) OutputSampleRate() uint32 {
 	return r.Services.Config.Limits.Media.OutputSampleRate
 }
 
+// OutputChannels reports the audio channel count this runtime's Services
+// render at, so an embedded host can match the public mixer's presentation.
+func (r *Runtime) OutputChannels() uint8 {
+	if r.Services == nil {
+		return 0
+	}
+	return r.Services.Config.Limits.Media.OutputChannels
+}
+
 func NewRuntimeForProfile(
 	backend cpu.Backend,
 	frame *image.RGBA,
@@ -404,6 +414,7 @@ func NewRuntimeForProfile(
 	serviceName string,
 	fallbackFont string,
 	outputSampleRate uint32,
+	outputChannels uint8,
 ) (*Runtime, error) {
 	layout, err := wipicatalog.NewLayout()
 	if err != nil {
@@ -415,6 +426,9 @@ func NewRuntimeForProfile(
 	}
 	if outputSampleRate != 0 {
 		serviceConfig.Limits.Media.OutputSampleRate = outputSampleRate
+	}
+	if outputChannels != 0 {
+		serviceConfig.Limits.Media.OutputChannels = outputChannels
 	}
 	serviceConfig.Device.ProfileID = profileID
 	serviceConfig.Device.Carrier = carrier

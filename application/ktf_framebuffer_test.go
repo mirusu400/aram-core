@@ -22,6 +22,7 @@ func TestKTFMachineFramebufferHidesUnpresentedPaint(t *testing.T) {
 		ktfrt.ProfileID,
 		"",
 		0,
+		0,
 	)
 	check(t, err)
 	defer runtime.CPU.Close()

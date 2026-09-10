@@ -45,6 +45,7 @@ type schw830AudioConfig struct {
 	maximumSourceBytes    uint32
 	gainPollInstructions  uint64
 	duplicateWindow       time.Duration
+	outputChannels        uint8
 }
 
 func defaultSCHW830AudioConfig(instructionsPerSecond uint64) schw830AudioConfig {
@@ -115,9 +116,13 @@ func newSCHW830Audio(bus *system.Bus, config schw830AudioConfig) (*schw830Audio,
 }
 
 func (a *schw830Audio) resetAtInstructions(instructions uint64) error {
+	limits := aramruntime.DefaultMediaLimits()
+	if a.config.outputChannels != 0 {
+		limits.OutputChannels = a.config.outputChannels
+	}
 	media, err := aramruntime.NewMedia(
 		aramruntime.NewRegistry(4),
-		aramruntime.DefaultMediaLimits(),
+		limits,
 	)
 	if err != nil {
 		return fmt.Errorf("create SCH-W830 audio mixer: %w", err)

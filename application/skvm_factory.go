@@ -72,7 +72,14 @@ func (f Factory) createSKVMMachine(
 		)
 	}
 	source.SHA256 = actualSHA256
-	machine, err := skvmhost.New(ctx, source, pkg, f.FramebufferSize)
+	machine, err := skvmhost.New(
+		ctx,
+		source,
+		pkg,
+		f.FramebufferSize,
+		f.OutputSampleRate,
+		f.OutputChannels,
+	)
 	return machine, true, err
 }
 

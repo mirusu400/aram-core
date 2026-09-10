@@ -53,6 +53,8 @@ func New(
 	source machinecore.Source,
 	pkg skloader.Package,
 	framebufferSize image.Point,
+	outputSampleRate uint32,
+	outputChannels uint8,
 ) (*Machine, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -64,6 +66,12 @@ func New(
 	inferred := inferSKVMFramebufferSize(size, pkg.Resources)
 	size = skvmTitleCanvas(source, pkg, inferred)
 	config := shared.DefaultConfig()
+	if outputSampleRate != 0 {
+		config.Limits.Media.OutputSampleRate = outputSampleRate
+	}
+	if outputChannels != 0 {
+		config.Limits.Media.OutputChannels = outputChannels
+	}
 	config.Device.ProfileID = ProfileID
 	config.Device.Carrier = "skt"
 	config.Device.ScreenWidth = int32(size.X)

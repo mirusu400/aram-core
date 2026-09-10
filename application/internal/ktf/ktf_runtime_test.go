@@ -6305,7 +6305,7 @@ func TestKTFWIPICDrawStringPaintsMeasuredRun(t *testing.T) {
 	runtime, err := NewRuntimeForProfile(interpreter.New(), ktf.Package{
 		ClientName: "client.bin0",
 		Client:     []byte{0x70, 0x47},
-	}, nil, ProfileID, "neodgm", 0)
+	}, nil, ProfileID, "neodgm", 0, 0)
 	check(t, err)
 	defer runtime.CPU.Close()
 	check(t, runtime.MapImageAndHost())

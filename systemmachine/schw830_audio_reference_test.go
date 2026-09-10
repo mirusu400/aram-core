@@ -47,7 +47,7 @@ func TestSCHW830PrivateReferenceOutputsFirmwarePCM(t *testing.T) {
 
 	chunk := machine.DrainAudio()
 	check(t, chunk.Validate())
-	if chunk.SampleRate != 44_100 || chunk.Channels != 2 ||
+	if chunk.SampleRate != 44_100 || chunk.Channels != 1 ||
 		len(chunk.PCM16) == 0 || schw830AudioPeak(chunk.PCM16) == 0 {
 		t.Fatalf(
 			"DL21 firmware PCM rate=%d channels=%d samples=%d peak=%d",

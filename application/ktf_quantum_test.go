@@ -30,6 +30,7 @@ func newKTFQuantumMachine(t *testing.T) *Machine {
 		ktfrt.ProfileID,
 		"",
 		0,
+		0,
 	)
 	check(t, err)
 	check(t, runtime.SetTraceMode(ktfrt.KTFTraceFull))

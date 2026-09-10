@@ -26,7 +26,7 @@ func DefaultMediaLimits() MediaLimits {
 		MaxSourceBytes:   64 << 20,
 		MaxQueuedSamples: 2_000_000,
 		OutputSampleRate: 44_100,
-		OutputChannels:   2,
+		OutputChannels:   1,
 	}
 }
 

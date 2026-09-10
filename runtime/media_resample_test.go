@@ -32,7 +32,9 @@ func renderResampledTone(
 			2*math.Pi*frequency*float64(index)/float64(sourceRate),
 		))
 	}
-	media, err := NewMedia(NewRegistry(32), DefaultMediaLimits())
+	limits := DefaultMediaLimits()
+	limits.OutputChannels = 2
+	media, err := NewMedia(NewRegistry(32), limits)
 	check(t, err)
 	bus := NewEventBus(16, 32)
 	clip, err := media.CreateClip(3, "audio/wav", 0)
@@ -218,6 +220,7 @@ func TestDownsamplingKernelStopsAliases(t *testing.T) {
 // and still lasts the right length.
 func TestFramedAdvanceReadsEverySampleOnce(t *testing.T) {
 	limits := DefaultMediaLimits()
+	limits.OutputChannels = 2
 	rate := limits.OutputSampleRate
 	// A ramp that never repeats a value inside the checked span names the
 	// stored frame every output sample came from.

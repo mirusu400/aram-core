@@ -40,11 +40,11 @@ func TestSCHW830AudioDecodesFirmwareSelectedScore(t *testing.T) {
 	}
 	chunk := audio.drain()
 	check(t, chunk.Validate())
-	if chunk.SampleRate != 44_100 || chunk.Channels != 2 ||
+	if chunk.SampleRate != 44_100 || chunk.Channels != 1 ||
 		chunk.StartGuestNS != int64(2*time.Millisecond) || chunk.Generation != 1 {
 		t.Fatalf("PCM chunk metadata = %+v", chunk)
 	}
-	if got, want := len(chunk.PCM16), 44_100*2/10; got != want {
+	if got, want := len(chunk.PCM16), 44_100/10; got != want {
 		t.Fatalf("PCM samples = %d, want %d", got, want)
 	}
 	if peak := schw830AudioPeak(chunk.PCM16); peak < 100 {
@@ -59,7 +59,7 @@ func TestSCHW830AudioDecodesFirmwareSelectedWaveEffect(t *testing.T) {
 	check(t, audio.Advance(1_000))
 	check(t, audio.Advance(50_000))
 	chunk := audio.drain()
-	if chunk.SampleRate != 44_100 || chunk.Channels != 2 ||
+	if chunk.SampleRate != 44_100 || chunk.Channels != 1 ||
 		len(chunk.PCM16) == 0 || schw830AudioPeak(chunk.PCM16) < 500 {
 		t.Fatalf(
 			"wave-effect PCM rate=%d channels=%d samples=%d peak=%d",
@@ -203,6 +203,14 @@ func newSCHW830TestAudio(
 	t *testing.T,
 	volume, ringMode uint32,
 ) (*schw830Audio, *schw830AudioCommandWindow) {
+	return newSCHW830TestAudioChannels(t, volume, ringMode, 0)
+}
+
+func newSCHW830TestAudioChannels(
+	t *testing.T,
+	volume, ringMode uint32,
+	outputChannels uint8,
+) (*schw830Audio, *schw830AudioCommandWindow) {
 	t.Helper()
 	bus := system.NewBus()
 	check(t, bus.MapRAM("ram", 0, 0x4000))
@@ -216,6 +224,7 @@ func newSCHW830TestAudio(
 		maximumSourceBytes:    0x2000,
 		gainPollInstructions:  1_000,
 		duplicateWindow:       5 * time.Millisecond,
+		outputChannels:        outputChannels,
 	}
 	audio, err := newSCHW830Audio(bus, config)
 	check(t, err)
@@ -224,6 +233,18 @@ func newSCHW830TestAudio(
 	writeSCHW830TestWord(t, bus, schw830TestVolume, volume)
 	writeSCHW830TestWord(t, bus, schw830TestRingMode, ringMode)
 	return audio, command
+}
+
+func TestSCHW830AudioCanRenderStereoWhenSelected(t *testing.T) {
+	audio, command := newSCHW830TestAudioChannels(t, 7, 0, 2)
+	installSCHW830TestSource(t, audio.bus, schw830TestWave())
+	check(t, command.Write(schw830TestCommand, system.Width16, 1))
+	check(t, audio.Advance(1_000))
+	check(t, audio.Advance(50_000))
+	chunk := audio.drain()
+	if chunk.Channels != 2 || len(chunk.PCM16) == 0 || len(chunk.PCM16)%2 != 0 {
+		t.Fatalf("stereo PCM = channels %d, samples %d", chunk.Channels, len(chunk.PCM16))
+	}
 }
 
 func installSCHW830TestSource(t *testing.T, bus *system.Bus, source []byte) {

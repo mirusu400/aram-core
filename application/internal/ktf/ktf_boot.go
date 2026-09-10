@@ -36,6 +36,7 @@ func NewRuntime(backend cpu.Backend, pkg ktf.Package) (*Runtime, error) {
 		ProfileID,
 		"",
 		0,
+		0,
 	)
 }
 
@@ -46,6 +47,7 @@ func NewRuntimeForProfile(
 	profileID string,
 	fallbackFont string,
 	outputSampleRate uint32,
+	outputChannels uint8,
 ) (*Runtime, error) {
 	if backend == nil {
 		return nil, fmt.Errorf("initialize KTF runtime: CPU is nil")
@@ -68,6 +70,9 @@ func NewRuntimeForProfile(
 	}
 	if outputSampleRate != 0 {
 		serviceConfig.Limits.Media.OutputSampleRate = outputSampleRate
+	}
+	if outputChannels != 0 {
+		serviceConfig.Limits.Media.OutputChannels = outputChannels
 	}
 	serviceConfig.Device.ProfileID = profileID
 	serviceConfig.Device.Carrier = "ktf"

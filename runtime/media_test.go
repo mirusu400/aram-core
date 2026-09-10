@@ -33,6 +33,17 @@ func pcmWave(sampleRate uint32, channels uint16, samples []int16) []byte {
 	return result
 }
 
+func TestDefaultMediaOutputIsMonoAndStereoRemainsSelectable(t *testing.T) {
+	limits := DefaultMediaLimits()
+	if limits.OutputChannels != 1 {
+		t.Fatalf("default output channels = %d, want mono", limits.OutputChannels)
+	}
+	limits.OutputChannels = 2
+	if err := limits.Validate(); err != nil {
+		t.Fatalf("stereo output limits: %v", err)
+	}
+}
+
 func TestMediaTimelineMixesAndCompletesDeterministically(t *testing.T) {
 	limits := DefaultMediaLimits()
 	limits.OutputSampleRate = 8_000

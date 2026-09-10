@@ -119,7 +119,7 @@ func TestMediaSMAFPlaysAtItsNaturalLength(t *testing.T) {
 	bus := NewEventBus(16, 32)
 	check(t, media.Advance(0, 20_000_000, bus))
 	audio := media.Drain()
-	if len(audio.PCM16) != 44_100*2*20/1000 {
+	if audio.Channels != 1 || len(audio.PCM16) != 44_100*20/1000 {
 		t.Fatalf("drained samples = %d", len(audio.PCM16))
 	}
 	if len(internal.decoded.samples) == 0 {
