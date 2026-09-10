@@ -505,6 +505,13 @@ func (r *Runtime) ensureJavaRuntime() (*JavaRuntime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("initialize Raptor Java Host: %w", err)
 	}
+	// The Java adapter runs inside the public Raptor machine rather than through
+	// the KTF machine loop, so its private Services graph is never advanced or
+	// published. Keep its storage and other initialized services private, but put
+	// Java Clip playback on the public mixer that the Raptor frame loop advances
+	// and drains. Without this, decoded clips remain at position zero forever and
+	// no PCM reaches the frontend (issue #256).
+	host.Services.Media = r.Public.Services.Media
 	// Raptor and its Java adapter share one guest address space. Delegate every
 	// host allocation to the public runtime's allocator so copying the heap's
 	// slice header cannot create independently advancing, overlapping free
