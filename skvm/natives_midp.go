@@ -274,7 +274,7 @@ func (vm *VM) installGraphicsNatives() {
 				color:   0xff000000,
 			}
 			return ReferenceValue(
-				vm.NewObject("javax/microedition/lcdui/Graphics", graphics),
+				vm.newGraphicsObject(graphics),
 			), true, nil
 		},
 	)

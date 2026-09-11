@@ -9,8 +9,7 @@ import (
 
 func (vm *VM) ScreenGraphics() uint32 {
 	if vm.screenGraphics == 0 {
-		vm.screenGraphics = vm.NewObject(
-			"javax/microedition/lcdui/Graphics",
+		vm.screenGraphics = vm.newGraphicsObject(
 			&graphicsState{
 				width:   vm.ScreenWidth,
 				height:  vm.ScreenHeight,

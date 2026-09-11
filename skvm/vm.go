@@ -173,10 +173,12 @@ type NativePolicy uint8
 const (
 	NativePolicySKT NativePolicy = iota
 	NativePolicyJ2ME
+	// NativePolicyLGT exposes only documented, implemented MMPP additions.
+	NativePolicyLGT
 )
 
 func NewWithNativePolicy(classData map[string][]byte, services *shared.Services, owner shared.OwnerID, policy NativePolicy) (*VM, error) {
-	if policy != NativePolicySKT && policy != NativePolicyJ2ME {
+	if policy != NativePolicySKT && policy != NativePolicyJ2ME && policy != NativePolicyLGT {
 		return nil, fmt.Errorf("unknown Java native policy %d", policy)
 	}
 	if services == nil {
@@ -199,10 +201,14 @@ func NewWithNativePolicy(classData map[string][]byte, services *shared.Services,
 		serviceOwner:     owner,
 		classDigest:      digestClassData(classData),
 	}
-	if policy == NativePolicyJ2ME {
+	if policy != NativePolicySKT {
 		// Preserve legacy SKVM state digests, but bind generic Java snapshots
 		// to their native policy even when both VMs share identical services.
-		vm.classDigest = sha256.Sum256(append([]byte("j2me-native-policy-v1\x00"), vm.classDigest[:]...))
+		domain := "j2me-native-policy-v1\x00"
+		if policy == NativePolicyLGT {
+			domain = "lgt-mmpp-native-policy-v1\x00"
+		}
+		vm.classDigest = sha256.Sum256(append([]byte(domain), vm.classDigest[:]...))
 		for class := range vm.hostSupers {
 			if !standardJavaClass(class) {
 				delete(vm.hostSupers, class)
@@ -282,6 +288,12 @@ func NewWithNativePolicy(classData map[string][]byte, services *shared.Services,
 	vm.screenSurface = screen
 	vm.defaultFont = font
 	vm.installCoreNatives()
+	if policy == NativePolicyLGT {
+		vm.installLGTMediaNatives()
+		vm.installLGTBacklightNatives()
+		vm.installLGTMathNatives()
+		vm.installLGTGraphicsTypes()
+	}
 	return vm, nil
 }
 
@@ -315,7 +327,7 @@ func (vm *VM) RegisterNative(
 	class, name, descriptor string,
 	native NativeFunc,
 ) {
-	if vm.nativePolicy == NativePolicyJ2ME && !standardJavaClass(class) {
+	if !vm.nativeClassAllowed(class) {
 		return
 	}
 	key := nativeKey{class: class, name: name, descriptor: descriptor}
@@ -327,7 +339,7 @@ func (vm *VM) RegisterNative(
 }
 
 func (vm *VM) RegisterHostClass(class, super string) {
-	if vm.nativePolicy == NativePolicyJ2ME && !standardJavaClass(class) {
+	if !vm.nativeClassAllowed(class) {
 		return
 	}
 	vm.hostSupers[class] = super
@@ -337,10 +349,15 @@ func (vm *VM) RegisterStaticField(
 	class, name, descriptor string,
 	value Value,
 ) {
-	if vm.nativePolicy == NativePolicyJ2ME && !standardJavaClass(class) {
+	if !vm.nativeClassAllowed(class) {
 		return
 	}
 	vm.hostStatic[fieldStorageKey(class, name, descriptor)] = value
+}
+
+func (vm *VM) nativeClassAllowed(class string) bool {
+	return vm.nativePolicy == NativePolicySKT || standardJavaClass(class) ||
+		(vm.nativePolicy == NativePolicyLGT && (class == "mmpp/media/MediaPlayer" || class == "mmpp/media/BackLight" || class == "mmpp/lang/MathFP" || class == lgtGraphicsClass))
 }
 
 func standardJavaClass(class string) bool {

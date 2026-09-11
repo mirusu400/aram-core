@@ -395,7 +395,7 @@ func (vm *VM) installCoreNatives() {
 			}
 			if !ok {
 				config := vm.services.Device.Config()
-				if vm.nativePolicy == NativePolicyJ2ME {
+				if vm.nativePolicy != NativePolicySKT {
 					switch name {
 					case "microedition.platform":
 						value, ok = config.ProfileID, true

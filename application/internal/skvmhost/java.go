@@ -41,15 +41,17 @@ func configureJavaIdentity(config *shared.Config, source machinecore.Source, leg
 	config.Device.ProfileID = j2me.ProfileID
 	config.Device.WIPIVersion = ""
 	config.Device.Carrier = "unknown"
+	policy := engine.NativePolicyJ2ME
 	switch source.ProfileID {
 	case "", j2me.ProfileID:
 	case j2me.LGTProfileID:
 		config.Device.ProfileID = j2me.LGTProfileID
 		config.Device.Carrier = "lgt"
+		policy = engine.NativePolicyLGT
 	default:
 		return "", "", 0, fmt.Errorf("unsupported J2ME profile %q", source.ProfileID)
 	}
-	return "j2me", j2meMachineStateMagic, engine.NativePolicyJ2ME, nil
+	return "j2me", j2meMachineStateMagic, policy, nil
 }
 
 // SourceInfo reports Java identity without inventing ARM image/entry metadata.
