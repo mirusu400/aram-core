@@ -267,7 +267,7 @@ func inspectRaptorClet(image raptorloader.Image) (Clet, error) {
 	// Most modules put the lifecycle header at the start of the read-write
 	// region, but some place it further in, so find it by its shape rather
 	// than by a fixed offset: version 3, the code base, a readable name, and
-	// six Thumb entry points. The base may carry the interworking bit, the
+	// six ARM or Thumb entry points. The base may carry the interworking bit, the
 	// same way entry offsets do.
 	limit := len(data.Data) - int(raptorCletHeaderSize)
 	var module Clet
@@ -332,7 +332,10 @@ func raptorCletAt(
 		clet.Paint,
 		clet.HandleEvent,
 	} {
-		if address&1 == 0 || !raptorExecutableAddress(image, address&^1) {
+		// Bit zero selects Thumb, not validity. ARM callbacks are word-aligned
+		// even addresses, as in mixed-toolchain Clets. Keep their mode bit intact
+		// for the ordinary callback dispatcher instead of dropping the lifecycle.
+		if (address&1 == 0 && address&3 != 0) || !raptorExecutableAddress(image, address&^1) {
 			clet.Start = 0
 			clet.Destroy = 0
 			clet.Pause = 0

@@ -765,7 +765,9 @@ func (r *Runtime) handleDisplayMethod(
 	case "getWidth()I":
 		return r.DisplayWidth(), nil
 	case "getHeight()I":
-		return r.displayHeight(), nil
+		// Default Cards are sized to this logical Display. An opaque
+		// annunciator reserves rows here, but not in the physical framebuffer.
+		return r.DefaultCardHeight(), nil
 	case "callSerially(Ljava/lang/Runnable;)V",
 		"callSerially(Ljava/lang/Runnable;I)V":
 		runnable, err := r.parameter(2)
