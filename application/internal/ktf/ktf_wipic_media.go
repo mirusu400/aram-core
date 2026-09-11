@@ -70,6 +70,12 @@ const (
 func ktfWIPICHandler(table, slot int) ktfHostHandler {
 	if table == ktfWIPICMasterInput {
 		switch slot {
+		case 0:
+			return ktfWIPICInputHandle
+		case 1:
+			return ktfWIPICInputSetMode
+		case 2:
+			return ktfWIPICInputGetMode
 		case 3:
 			return ktfWIPICInputGetSupportedModeCount
 		case 4:

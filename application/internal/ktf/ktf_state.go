@@ -22,7 +22,8 @@ const (
 	ktfStateSchemaV9     = uint32(9)
 	ktfStateSchemaV10    = uint32(10)
 	ktfStateSchemaV11    = uint32(11)
-	ktfStateSchema       = uint32(12)
+	ktfStateSchemaV12    = uint32(12)
+	ktfStateSchema       = uint32(13)
 	maxKTFStateMetadata  = uint32(64 << 20)
 	maxKTFStateEntries   = 16_384
 	maxKTFStateHostCalls = int(HostSize / 4)
@@ -55,6 +56,7 @@ type SavedState struct {
 	taskJoinThreads []uint32
 	taskMonitorWait []uint32
 	wipicInputModes uint32
+	wipicInput      ktfWIPICInputState
 }
 
 type ktfPersistentState struct {
@@ -655,6 +657,9 @@ func WriteState(r *Runtime, backend cpu.Backend, started bool, writer *guest.Sta
 	for _, task := range r.Tasks {
 		writer.U32(task.monitorWait)
 	}
+	for _, word := range r.wipicInput.words() {
+		writer.U32(word)
+	}
 	return nil
 }
 
@@ -693,7 +698,7 @@ func ParseState(r *Runtime,
 		schema != ktfStateSchemaV6 && schema != ktfStateSchemaV7 &&
 		schema != ktfStateSchemaV8 && schema != ktfStateSchemaV9 &&
 		schema != ktfStateSchemaV10 && schema != ktfStateSchemaV11 &&
-		schema != ktfStateSchema {
+		schema != ktfStateSchemaV12 && schema != ktfStateSchema {
 		return nil, decoder.Fail(fmt.Sprintf("unsupported KTF state schema %d", schema))
 	}
 	owner := shared.OwnerID(decoder.U32())
@@ -898,6 +903,21 @@ func ParseState(r *Runtime,
 			return nil, decoder.Err
 		}
 	}
+	var input ktfWIPICInputState
+	if schema >= 13 {
+		var words [11]uint32
+		for i := range words {
+			words[i] = decoder.U32()
+		}
+		if decoder.Err != nil {
+			return nil, decoder.Err
+		}
+		var err error
+		input, err = ktfWIPICInputFromWords(words)
+		if err != nil {
+			return nil, decoder.Fail(err.Error())
+		}
+	}
 	savedImages := make(map[uint32]bool, len(metadata.Images))
 	for _, object := range metadata.Images {
 		savedImages[object] = true
@@ -948,6 +968,7 @@ func ParseState(r *Runtime,
 		taskJoinThreads:    taskJoinThreads,
 		taskMonitorWait:    taskMonitorWait,
 		wipicInputModes:    wipicInputModes,
+		wipicInput:         input,
 	}, nil
 }
 

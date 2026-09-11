@@ -429,6 +429,7 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	r.jbInterface = meta.JBInterface
 	r.wipicInterface = meta.WIPICInterface
 	r.wipicInputModes = saved.wipicInputModes
+	r.wipicInput = saved.wipicInput
 	r.mxUserMemInterface = meta.MXUserMemInterface
 	r.incrementalMemory = make(
 		[]ktfIncrementalMemoryRegion,
