@@ -368,7 +368,19 @@ func (r *Runtime) handleGraphicsMethod(
 				r.menuForegroundCompat.pending = nil
 			}
 		}
-		draw.Draw(state.Target, rect.Intersect(state.clip), image.NewUniform(state.color), image.Point{}, draw.Src)
+		if name == "fillRect" && state.xorMode {
+			// Bitmap glyph renderers bracket their blits with XOR fills. A
+			// source-copy fill here overwrites the glyph instead of restoring
+			// the background around it.
+			area := rect.Intersect(state.clip).Intersect(state.Target.Bounds())
+			for y := area.Min.Y; y < area.Max.Y; y++ {
+				for x := area.Min.X; x < area.Max.X; x++ {
+					state.plot(x, y)
+				}
+			}
+		} else {
+			draw.Draw(state.Target, rect.Intersect(state.clip), image.NewUniform(state.color), image.Point{}, draw.Src)
+		}
 		r.markKTFGraphicsDirty(state)
 		return 0, nil
 	case "setXORMode(Z)V":
