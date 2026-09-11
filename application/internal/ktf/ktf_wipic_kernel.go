@@ -949,7 +949,10 @@ func (r *Runtime) systemPropertyValue(key string) (string, bool) {
 	case "NID", "SID", "BASEID", "BASELAT", "BASELONG", "CURRENTCH":
 		return "0", true
 	case "PHONENUMBER":
-		return r.Services.Device.Config().PhoneNumber, true
+		// MH_sysGetInformation specifies M_E_NOTSUP when no value exists.
+		// Do not report an unconfigured device identity as a successful value.
+		number := r.Services.Device.Config().PhoneNumber
+		return number, number != ""
 	case "WIPIVERSION":
 		return r.Services.Device.Config().WIPIVersion, true
 	case "RSSILEVEL":
