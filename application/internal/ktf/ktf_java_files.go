@@ -177,6 +177,7 @@ func (r *Runtime) handleFileMethod(
 			}
 		}
 		r.inputStreams[instance] = &ktfInputStream{data: data}
+		r.fileStreamTargets[instance] = fileInstance
 		return instance, nil
 	case "openOutputStream()Ljava/io/OutputStream;",
 		"openDataOutputStream()Ljava/io/DataOutputStream;":
@@ -327,6 +328,40 @@ func (r *Runtime) handleFileMethod(
 		r.recordUnimplementedJava("org/kwis/msp/io/File", name, descriptor)
 		return 0, nil
 	}
+}
+
+// prepareKTFFileInput keeps the buffered Java stream adapter attached to its
+// File. Mixing DataInputStream headers with low-level File payload reads must
+// use one cursor, not two independent snapshots (issue #269).
+func (r *Runtime) prepareKTFFileInput(instance uint32) (uint32, func() error, error) {
+	fileInstance := r.fileStreamTargets[instance]
+	if fileInstance == 0 {
+		return 0, nil, nil
+	}
+	file, stream := r.files[fileInstance], r.inputStreams[instance]
+	if file == nil || file.closed || stream == nil {
+		return 0, nil, r.raiseHostJavaException("java/io/IOException")
+	}
+	serviceID, err := r.ensureKTFFileService(fileInstance)
+	if err != nil {
+		return 0, nil, r.raiseHostJavaException("java/io/IOException")
+	}
+	info, err := r.Services.Storage.Stat(ktfFileNamespace(file), file.name)
+	if err != nil {
+		return 0, nil, r.raiseHostJavaException("java/io/IOException")
+	}
+	stream.position = file.position
+	return uint32(min(info.Size, uint64(^uint32(0)))), func() error {
+		if stream.position == file.position {
+			return nil
+		}
+		if _, err := r.Services.Storage.Seek(r.ServiceOwner, serviceID,
+			int64(stream.position), shared.SeekStart); err != nil {
+			return r.raiseHostJavaException("java/io/IOException")
+		}
+		file.position = stream.position
+		return nil
+	}, nil
 }
 
 func normalizeKTFFileName(filename string) string {
