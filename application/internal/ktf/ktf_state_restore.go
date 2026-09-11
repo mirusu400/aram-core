@@ -542,6 +542,7 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	r.clips = make(map[uint32]*ktfClip, len(meta.Clips))
 	for instance, clip := range meta.Clips {
 		r.clips[instance] = &ktfClip{
+			bufferArray: saved.clipBuffers[instance].Array, bufferFront: int(saved.clipBuffers[instance].Front),
 			volume: clip.Volume, listener: clip.Listener,
 			playing: clip.Playing, capacity: int(clip.Capacity),
 			bufferSet: clip.BufferSet, data: append([]byte(nil), clip.Data...),

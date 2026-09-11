@@ -23,7 +23,8 @@ const (
 	ktfStateSchemaV10    = uint32(10)
 	ktfStateSchemaV11    = uint32(11)
 	ktfStateSchemaV12    = uint32(12)
-	ktfStateSchema       = uint32(13)
+	ktfStateSchemaV13    = uint32(13)
+	ktfStateSchema       = uint32(14)
 	maxKTFStateMetadata  = uint32(64 << 20)
 	maxKTFStateEntries   = 16_384
 	maxKTFStateHostCalls = int(HostSize / 4)
@@ -33,7 +34,10 @@ const (
 	maxKTFStateImageEdge = uint32(8192)
 )
 
+type ktfClipBufferSnapshot struct{ Array, Front uint32 }
+
 type SavedState struct {
+	clipBuffers        map[uint32]ktfClipBufferSnapshot
 	owner              shared.OwnerID
 	name               string
 	Services           *shared.Services
@@ -660,6 +664,20 @@ func WriteState(r *Runtime, backend cpu.Backend, started bool, writer *guest.Sta
 	for _, word := range r.wipicInput.words() {
 		writer.U32(word)
 	}
+	aliases := make([]uint32, 0)
+	for instance, clip := range r.clips {
+		if clip != nil && clip.bufferArray != 0 {
+			aliases = append(aliases, instance)
+		}
+	}
+	sort.Slice(aliases, func(i, j int) bool { return aliases[i] < aliases[j] })
+	writer.U32(uint32(len(aliases)))
+	for _, instance := range aliases {
+		clip := r.clips[instance]
+		writer.U32(instance)
+		writer.U32(clip.bufferArray)
+		writer.U32(uint32(clip.bufferFront))
+	}
 	return nil
 }
 
@@ -698,7 +716,7 @@ func ParseState(r *Runtime,
 		schema != ktfStateSchemaV6 && schema != ktfStateSchemaV7 &&
 		schema != ktfStateSchemaV8 && schema != ktfStateSchemaV9 &&
 		schema != ktfStateSchemaV10 && schema != ktfStateSchemaV11 &&
-		schema != ktfStateSchemaV12 && schema != ktfStateSchema {
+		schema != ktfStateSchemaV12 && schema != ktfStateSchemaV13 && schema != ktfStateSchema {
 		return nil, decoder.Fail(fmt.Sprintf("unsupported KTF state schema %d", schema))
 	}
 	owner := shared.OwnerID(decoder.U32())
@@ -918,6 +936,26 @@ func ParseState(r *Runtime,
 			return nil, decoder.Fail(err.Error())
 		}
 	}
+	clipBuffers := make(map[uint32]ktfClipBufferSnapshot)
+	if schema >= 14 {
+		count := decoder.U32()
+		if count > uint32(len(metadata.Clips)) {
+			return nil, decoder.Fail("retained clip count exceeds clips")
+		}
+		var previous uint32
+		for i := uint32(0); i < count; i++ {
+			instance, array, front := decoder.U32(), decoder.U32(), decoder.U32()
+			clip, exists := metadata.Clips[instance]
+			if decoder.Err != nil {
+				return nil, decoder.Err
+			}
+			if !exists || instance == 0 || (i > 0 && instance <= previous) || array == 0 || !clip.BufferSet || clip.Capacity < 0 || uint64(len(clip.Data)) > uint64(clip.Capacity) || (clip.Capacity == 0 && front != 0) || (clip.Capacity > 0 && front >= uint32(clip.Capacity)) {
+				return nil, decoder.Fail("invalid retained clip geometry")
+			}
+			clipBuffers[instance] = ktfClipBufferSnapshot{Array: array, Front: front}
+			previous = instance
+		}
+	}
 	savedImages := make(map[uint32]bool, len(metadata.Images))
 	for _, object := range metadata.Images {
 		savedImages[object] = true
@@ -951,6 +989,7 @@ func ParseState(r *Runtime,
 		return nil, decoder.Err
 	}
 	return &SavedState{
+		clipBuffers:        clipBuffers,
 		owner:              owner,
 		name:               name,
 		Services:           candidate,

@@ -622,6 +622,12 @@ type ktfTimeZone struct {
 }
 
 type ktfClip struct {
+	// A caller-supplied byte[] is the internal buffer, not a constructor-time
+	// snapshot. data remains the logical byte count and shared-decoder cache;
+	// bufferFront addresses that logical window in the retained array.
+	bufferArray uint32
+	bufferFront int
+
 	volume                     int32
 	listener                   uint32
 	playing                    bool

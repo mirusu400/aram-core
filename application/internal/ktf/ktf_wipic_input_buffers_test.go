@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"github.com/mirusu400/aram-core/application/internal/guest"
 	"github.com/mirusu400/aram-core/cpu"
 	"github.com/mirusu400/aram-core/internal/ime"
@@ -129,57 +130,73 @@ func TestKTFWIPICInputBuffers(t *testing.T) {
 }
 
 func TestKTFWIPICInputStateCompatibility(t *testing.T) {
-	r := newTestRuntime(t)
-	var buffer bytes.Buffer
-	check(t, WriteState(r, r.CPU, true, guest.NewStateWriter(&buffer)))
-	legacy := append([]byte(nil), buffer.Bytes()[:buffer.Len()-44]...)
-	binary.LittleEndian.PutUint32(legacy[4:8], ktfStateSchemaV12)
-	decoder := guest.StateDecoder{Reader: bytes.NewReader(legacy)}
-	saved, err := ParseState(r, &decoder)
-	check(t, err)
-	if saved.wipicInput != (ktfWIPICInputState{}) {
-		t.Fatal("legacy input is not fresh")
-	}
-	a := ime.New(ime.ModeENLower)
-	a.Press('2')
-	r.wipicInput = ktfWIPICInputState{Automata: a.Snapshot(), Pending: 'a', Initialized: true}
-	started := false
-	check(t, RestoreState(r, r.CPU, saved, &started))
-	out1, out2 := heapAlloc(t, r, 8, true), heapAlloc(t, r, 8, true)
-	size1, size2 := heapAlloc(t, r, 4, true), heapAlloc(t, r, 4, true)
-	check(t, r.writeWords(size1, []uint32{8}))
-	check(t, r.writeWords(size2, []uint32{8}))
-	stack := heapAlloc(t, r, 8, true)
-	check(t, r.CPU.WriteRegister(cpu.RegisterSP, stack))
-	check(t, r.writeWords(stack, []uint32{out2, size2}))
-	handle := func(key uint32, want1, want2 string) {
-		t.Helper()
-		for i, v := range []uint32{key, 2, out1, size1} {
-			check(t, r.CPU.WriteRegister(cpu.RegisterR0+uint32(i), v))
-		}
-		got, err := ktfWIPICInputHandle(context.Background(), r)
-		check(t, err)
-		if got != 1 {
-			t.Fatalf("input after legacy restore = %d", got)
-		}
-		one, err := r.readCString(out1, 8)
-		check(t, err)
-		two, err := r.readCString(out2, 8)
-		check(t, err)
-		if one != want1 || two != want2 {
-			t.Fatalf("legacy continuation = %q/%q, want %q/%q", one, two, want1, want2)
-		}
-	}
-	handle(0x9d, "", "")
-	handle('3', "", "d")
-	handle(0x9d, "d", "")
-	for _, index := range []int{0, 2, 3, 4, 5, 6, 8, 9, 10} {
-		corrupt := append([]byte(nil), buffer.Bytes()...)
-		binary.LittleEndian.PutUint32(corrupt[len(corrupt)-44+index*4:], 0x7fffffff)
-		decoder = guest.StateDecoder{Reader: bytes.NewReader(corrupt)}
-		if _, err := ParseState(r, &decoder); err == nil {
-			t.Fatalf("invalid input word %d accepted", index)
-		}
+	for _, withAlias := range []bool{false, true} {
+		t.Run(fmt.Sprint(withAlias), func(t *testing.T) {
+			r := newTestRuntime(t)
+			if withAlias {
+				clip262(t, r, []byte{1, 2, 3, 4})
+			}
+			var buffer bytes.Buffer
+			check(t, WriteState(r, r.CPU, true, guest.NewStateWriter(&buffer)))
+			inputOffset := ktfInputSectionOffsetForTest(t, r, buffer.Bytes())
+			schema13 := append([]byte(nil), buffer.Bytes()[:inputOffset+44]...)
+			binary.LittleEndian.PutUint32(schema13[4:8], ktfStateSchemaV13)
+			legacy13Decoder := guest.StateDecoder{Reader: bytes.NewReader(schema13)}
+			_, legacy13Err := ParseState(r, &legacy13Decoder)
+			check(t, legacy13Err)
+			if legacy13Decoder.Reader.Len() != 0 {
+				t.Fatal("schema13 trailing bytes")
+			}
+			legacy := append([]byte(nil), buffer.Bytes()[:inputOffset]...)
+			binary.LittleEndian.PutUint32(legacy[4:8], ktfStateSchemaV12)
+			decoder := guest.StateDecoder{Reader: bytes.NewReader(legacy)}
+			saved, err := ParseState(r, &decoder)
+			check(t, err)
+			if saved.wipicInput != (ktfWIPICInputState{}) {
+				t.Fatal("legacy input is not fresh")
+			}
+			a := ime.New(ime.ModeENLower)
+			a.Press('2')
+			r.wipicInput = ktfWIPICInputState{Automata: a.Snapshot(), Pending: 'a', Initialized: true}
+			started := false
+			check(t, RestoreState(r, r.CPU, saved, &started))
+			out1, out2 := heapAlloc(t, r, 8, true), heapAlloc(t, r, 8, true)
+			size1, size2 := heapAlloc(t, r, 4, true), heapAlloc(t, r, 4, true)
+			check(t, r.writeWords(size1, []uint32{8}))
+			check(t, r.writeWords(size2, []uint32{8}))
+			stack := heapAlloc(t, r, 8, true)
+			check(t, r.CPU.WriteRegister(cpu.RegisterSP, stack))
+			check(t, r.writeWords(stack, []uint32{out2, size2}))
+			handle := func(key uint32, want1, want2 string) {
+				t.Helper()
+				for i, v := range []uint32{key, 2, out1, size1} {
+					check(t, r.CPU.WriteRegister(cpu.RegisterR0+uint32(i), v))
+				}
+				got, err := ktfWIPICInputHandle(context.Background(), r)
+				check(t, err)
+				if got != 1 {
+					t.Fatalf("input after legacy restore = %d", got)
+				}
+				one, err := r.readCString(out1, 8)
+				check(t, err)
+				two, err := r.readCString(out2, 8)
+				check(t, err)
+				if one != want1 || two != want2 {
+					t.Fatalf("legacy continuation = %q/%q, want %q/%q", one, two, want1, want2)
+				}
+			}
+			handle(0x9d, "", "")
+			handle('3', "", "d")
+			handle(0x9d, "d", "")
+			for _, index := range []int{0, 2, 3, 4, 5, 6, 8, 9, 10} {
+				corrupt := append([]byte(nil), buffer.Bytes()...)
+				binary.LittleEndian.PutUint32(corrupt[inputOffset+index*4:], 0x7fffffff)
+				decoder = guest.StateDecoder{Reader: bytes.NewReader(corrupt)}
+				if _, err := ParseState(r, &decoder); err == nil {
+					t.Fatalf("invalid input word %d accepted", index)
+				}
+			}
+		})
 	}
 }
 
@@ -213,4 +230,23 @@ func TestKTFWIPICInputDotStateContinuation(t *testing.T) {
 			t.Fatalf("dot count %d continuation mismatch", presses)
 		}
 	}
+}
+
+func ktfInputSectionOffsetForTest(t *testing.T, r *Runtime, data []byte) int {
+	t.Helper()
+	d := guest.StateDecoder{Reader: bytes.NewReader(data)}
+	saved, e := ParseState(r, &d)
+	check(t, e)
+	if d.Reader.Len() != 0 {
+		t.Fatal("trailing KTF state bytes")
+	}
+	schema := binary.LittleEndian.Uint32(data[4:8])
+	trailer := 0
+	if schema >= 14 {
+		trailer = 4 + 12*len(saved.clipBuffers)
+	}
+	if schema < 13 {
+		t.Fatal("state has no C input section")
+	}
+	return len(data) - trailer - 44
 }

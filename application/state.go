@@ -401,6 +401,24 @@ func (m *Machine) parseState(data []byte) (parsedState, error) {
 			decoder.Reader.Len(),
 		))
 	}
+	if err := ktfState.ValidateClipBuffers(func(address uint32, size uint64) ([]byte, error) {
+		end := uint64(address) + size
+		if end > 1<<32 {
+			return nil, fmt.Errorf("saved clip memory address overflow")
+		}
+		for _, region := range []struct {
+			base uint32
+			data []byte
+		}{{m.info.TextAddress, text}, {m.info.BSSAddress, bss}, {DefaultStackBase, stack}} {
+			if uint64(address) >= uint64(region.base) && end <= uint64(region.base)+uint64(len(region.data)) {
+				offset := uint64(address) - uint64(region.base)
+				return region.data[offset : offset+size], nil
+			}
+		}
+		return nil, fmt.Errorf("saved clip buffer range 0x%x+%d is absent", address, size)
+	}); err != nil {
+		return parsedState{}, decoder.Fail(fmt.Sprintf("invalid retained KTF clip buffer: %v", err))
+	}
 	return parsedState{
 		state: savedState,
 		lastResult: cpu.Result{
