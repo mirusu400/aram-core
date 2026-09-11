@@ -14,9 +14,9 @@ import (
 // few hundred blocks a frame, so the 32 MiB heap was gone in about two and a
 // half minutes and the title died where a handset would simply have carried on.
 //
-// This is a conservative mark-sweep, and it runs only when an allocation has
-// already failed. That ordering is the safety argument: a healthy title never
-// enters it, so a mistake here can only change how an already-dead title dies.
+// This is a conservative mark-sweep. It runs after allocation failure and on
+// explicit Java System.gc/Runtime.gc requests. Explicit requests can occur in
+// healthy titles, so every collection must preserve all reachable allocations.
 //
 // Conservative means a word that happens to hold a value inside a live block
 // keeps that block, whether or not it is really a pointer. It also means an
@@ -34,6 +34,40 @@ import (
 type ktfHeapBlock struct {
 	start uint32
 	end   uint32
+}
+
+// ktfHeapLookup indexes one sorted collection snapshot. The envelope rejects
+// obvious non-pointers before paying for a binary search for every scanned word.
+// Containment still uses the original half-open block test, including interior
+// pointers and gaps. It changes neither roots nor when collection runs.
+type ktfHeapLookup struct {
+	blocks []ktfHeapBlock
+	lower  uint32
+	upper  uint32
+}
+
+func newKTFHeapLookup(blocks []ktfHeapBlock) ktfHeapLookup {
+	lookup := ktfHeapLookup{blocks: blocks}
+	if len(blocks) != 0 {
+		lookup.lower = blocks[0].start
+		for _, block := range blocks {
+			lookup.upper = max(lookup.upper, block.end)
+		}
+	}
+	return lookup
+}
+
+func (lookup ktfHeapLookup) find(address uint32) int {
+	if address < lookup.lower || address >= lookup.upper {
+		return -1
+	}
+	index := sort.Search(len(lookup.blocks), func(index int) bool {
+		return lookup.blocks[index].start > address
+	}) - 1
+	if index < 0 || address >= lookup.blocks[index].end {
+		return -1
+	}
+	return index
 }
 
 // ktfGCScanLimit bounds one region read, so scanning does not build a copy of
@@ -98,16 +132,13 @@ func (r *Runtime) collectJavaHeap() int {
 	sort.Slice(blocks, func(i, j int) bool {
 		return blocks[i].start < blocks[j].start
 	})
+	lookup := newKTFHeapLookup(blocks)
 
 	marked := make([]bool, len(blocks))
 	pending := make([]int, 0, 1024)
 	mark := func(address uint32) {
-		// The largest block still has to be found by its start, so search for
-		// the last block that begins at or before the address.
-		index := sort.Search(len(blocks), func(index int) bool {
-			return blocks[index].start > address
-		}) - 1
-		if index < 0 || address >= blocks[index].end || marked[index] {
+		index := lookup.find(address)
+		if index < 0 || marked[index] {
 			return
 		}
 		marked[index] = true
@@ -149,12 +180,10 @@ func (r *Runtime) collectJavaHeap() int {
 	// Marking a value can revive another table's key, so this repeats until a
 	// pass adds nothing.
 	dead := func(address uint32) bool {
-		index := sort.Search(len(blocks), func(index int) bool {
-			return blocks[index].start > address
-		}) - 1
+		index := lookup.find(address)
 		// An address that is no heap block of ours is not something this
 		// collection can prove dead.
-		return index >= 0 && address < blocks[index].end && !marked[index]
+		return index >= 0 && !marked[index]
 	}
 	seen := make(map[uintptr]bool)
 	seenWeak := make(map[weakEntry]bool)
@@ -398,9 +427,8 @@ func scanWords(buffer []byte, mark func(uint32)) {
 	}
 }
 
-// CollectJavaHeapForTest runs a collection on demand. Collections normally
-// happen only when the heap is full, which is far too rare to test against, so
-// a test can force one and check that a healthy title does not notice.
+// CollectJavaHeapForTest runs a collection on demand without depending on heap
+// exhaustion or an explicit Java GC request, so tests can verify reachability.
 func (r *Runtime) CollectJavaHeapForTest() int { return r.collectJavaHeap() }
 
 // weakEntry names one entry of one weak table, so the ephemeron pass can tell
