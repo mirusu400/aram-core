@@ -453,7 +453,7 @@ func snapshotNative(
 		return nativeState{
 			Kind: "graphics", Width: int32(state.width), Height: int32(state.height),
 			Service: state.surface, Service2: state.font, Color: state.color,
-			Integer: state.stroke,
+			Integer: state.stroke, Offset: int64(state.transparency256),
 		}, nil
 	case *dataInputState:
 		return nativeState{Kind: "data-input", Reference: state.stream}, nil
@@ -647,6 +647,14 @@ func (vm *VM) buildCandidate(
 	hostStatic, err := restoreValueMap(state.HostStatic)
 	if err != nil {
 		return nil, fmt.Errorf("load SKVM state: host statics: %w", err)
+	}
+	if vm.nativePolicy == NativePolicyLGT {
+		// Pre-alpha LGT snapshots lack only this newly documented host field.
+		// Do not relax the shape/type checks for any other host static.
+		key := fieldStorageKey(lgtGraphicsClass, "DEFAULT_ALPHA", "I")
+		if _, exists := hostStatic[key]; !exists {
+			hostStatic[key] = IntValue(256)
+		}
 	}
 	if !sameValueMapShape(hostStatic, vm.hostStatic) {
 		return nil, fmt.Errorf("load SKVM state: host static field mismatch")
@@ -1017,13 +1025,13 @@ func restoreNative(saved nativeState) (any, nativeLink, error) {
 	case "font":
 		return &fontState{font: saved.Service}, nativeLink{}, nil
 	case "graphics":
-		if saved.Width <= 0 || saved.Height <= 0 {
+		if saved.Width <= 0 || saved.Height <= 0 || saved.Offset < 0 || saved.Offset > 256 {
 			return nil, nativeLink{}, fmt.Errorf("invalid graphics geometry")
 		}
 		return &graphicsState{
 			width: int(saved.Width), height: int(saved.Height),
 			surface: saved.Service, font: saved.Service2, color: saved.Color,
-			stroke: saved.Integer,
+			stroke: saved.Integer, transparency256: uint16(saved.Offset),
 		}, nativeLink{}, nil
 	case "data-input":
 		return &dataInputState{stream: saved.Reference}, nativeLink{}, nil

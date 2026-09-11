@@ -108,7 +108,7 @@ func blitCopyable(
 		return false
 	}
 	if destination.state.Raster != RasterCopy ||
-		destination.state.GlobalAlpha != 0xff {
+		destination.state.GlobalAlpha != 0xff || destination.state.GlobalTransparency256 != 0 {
 		return false
 	}
 	return regionOpaque(source, sourceRectangle)

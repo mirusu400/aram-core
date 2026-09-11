@@ -33,6 +33,7 @@ func (vm *VM) resetScreenGraphics() error {
 	}
 	state.font = vm.defaultFont
 	state.color = 0xff000000
+	state.transparency256 = 0
 	return vm.services.Graphics.SetDrawState(
 		vm.serviceOwner,
 		state.surface,
@@ -81,12 +82,31 @@ func nativeDrawRect(
 	if err != nil {
 		return Value{}, false, err
 	}
-	for _, line := range [][4]int{
+	lines := [][4]int{
 		{x, y, x + width, y},
 		{x, y + height, x + width, y + height},
 		{x, y, x, y + height},
 		{x + width, y, x + width, y + height},
-	} {
+	}
+	if vm.nativePolicy == NativePolicyLGT && state.transparency256 != 0 {
+		if width < 0 || height < 0 {
+			return Value{}, false, nil
+		}
+		// MIDP outlines include both endpoints. Plot corners just once so a
+		// single translucent rectangle has uniform coverage, including lines
+		// and points produced by zero dimensions.
+		lines = lines[:1]
+		if height > 0 {
+			lines = append(lines, [4]int{x, y + height, x + width, y + height})
+		}
+		if height > 1 {
+			lines = append(lines, [4]int{x, y + 1, x, y + height - 1})
+			if width > 0 {
+				lines = append(lines, [4]int{x + width, y + 1, x + width, y + height - 1})
+			}
+		}
+	}
+	for _, line := range lines {
 		if err := drawLine(vm, state, line[0], line[1], line[2], line[3], state.color); err != nil {
 			return Value{}, false, err
 		}

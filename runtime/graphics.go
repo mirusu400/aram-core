@@ -129,6 +129,10 @@ type SurfaceDrawState struct {
 	Raster       RasterOperation
 	GlobalAlpha  uint8
 	Transparency bool
+	// GlobalTransparency256 is an additional opacity factor (256-value)/256.
+	// Zero preserves the legacy compositor and old snapshots. Adapters with a
+	// 257-level alpha contract can retain every level without uint8 quantization.
+	GlobalTransparency256 uint16 `json:",omitempty"`
 }
 
 func defaultDrawState(width, height int32) SurfaceDrawState {
@@ -338,7 +342,7 @@ func (g *Graphics) SetDrawState(owner OwnerID, id ServiceID, state SurfaceDrawSt
 	}
 	bounds := Rectangle{Width: current.descriptor.Width, Height: current.descriptor.Height}
 	if !state.Clip.Valid() || state.Clip.Intersect(bounds) != state.Clip ||
-		!state.Raster.Valid() {
+		!state.Raster.Valid() || state.GlobalTransparency256 > 256 {
 		return fmt.Errorf("%w: invalid surface draw state", ErrInvalidArgument)
 	}
 	current.state = state
@@ -829,7 +833,7 @@ func (g *Graphics) Restore(state GraphicsState) error {
 		if !saved.ID.Valid() || (index != 0 && saved.ID <= previous) ||
 			descriptor.Stride == 0 ||
 			descriptor.Validate(state.Limits) != nil ||
-			!saved.Draw.Clip.Valid() || !saved.Draw.Raster.Valid() ||
+			!saved.Draw.Clip.Valid() || !saved.Draw.Raster.Valid() || saved.Draw.GlobalTransparency256 > 256 ||
 			saved.Draw.Clip.Intersect(Rectangle{
 				Width:  descriptor.Width,
 				Height: descriptor.Height,

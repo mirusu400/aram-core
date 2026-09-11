@@ -1056,6 +1056,9 @@ func (vm *VM) installGameCanvasNatives() {
 		}
 		imageValue, _ := objectField(vm, receiver, gameCanvasImage)
 		imageReference, _ := imageValue.Reference()
+		if vm.nativePolicy == NativePolicyLGT {
+			return withLGTGraphicsAlpha(nativeDrawImage)(context.Background(), vm, destination, []Value{ReferenceValue(imageReference), IntValue(0), IntValue(0), IntValue(0)})
+		}
 		image, _ := vm.image(imageReference)
 		return Value{}, false, blit(vm, graphics, image, 0, 0, 0, 0, image.width, image.height)
 	})

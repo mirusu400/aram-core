@@ -100,6 +100,21 @@ func (g *Graphics) Rectangle(
 			return err
 		}
 	}
+	if current.state.GlobalTransparency256 != 0 {
+		// Top/bottom already include the corners. Keep the old raster path
+		// unchanged for legacy clients, but never compound 256-scale alpha
+		// merely because an outline consists of multiple inclusive lines.
+		if rectangle.Height <= 2 {
+			return nil
+		}
+		if err := g.Line(owner, id, rectangle.X, rectangle.Y+1, rectangle.X, int32(bottom)-1, color); err != nil {
+			return err
+		}
+		if rectangle.Width > 1 {
+			return g.Line(owner, id, int32(right), rectangle.Y+1, int32(right), int32(bottom)-1, color)
+		}
+		return nil
+	}
 	if err := g.Line(owner, id, rectangle.X, rectangle.Y, rectangle.X, int32(bottom), color); err != nil {
 		return err
 	}

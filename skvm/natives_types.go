@@ -104,4 +104,7 @@ type graphicsState struct {
 	font    shared.ServiceID
 	color   uint32
 	stroke  int32
+	// Inverse of GraphicsX alpha: zero means the documented default 256,
+	// including native payloads from snapshots predating this extension.
+	transparency256 uint16
 }

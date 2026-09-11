@@ -63,6 +63,17 @@ func midpRegionQuarterTurn(transform int32) bool {
 }
 
 func nativeDrawRegion(
+	ctx context.Context,
+	vm *VM,
+	receiver uint32,
+	args []Value,
+) (Value, bool, error) {
+	// Sprite and TiledLayer call this helper directly, bypassing the native
+	// registry. They must use the destination GraphicsX context's alpha too.
+	return withLGTGraphicsAlpha(nativeDrawRegionPixels)(ctx, vm, receiver, args)
+}
+
+func nativeDrawRegionPixels(
 	_ context.Context,
 	vm *VM,
 	receiver uint32,

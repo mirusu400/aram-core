@@ -60,8 +60,8 @@ func TestLGTGraphicsAllocationContract(t *testing.T) {
 			if policy == NativePolicyLGT && vm.classAssignable(graphics, graphicsX) {
 				t.Error("base Graphics must not be assignable to its subclass")
 			}
-			if vm.SupportsNativeReference(graphicsX, "setAlpha", "(I)V") {
-				t.Error("unimplemented extension method was advertised")
+			if vm.SupportsNativeReference(graphicsX, "setAlpha", "(I)V") != (policy == NativePolicyLGT) {
+				t.Error("alpha extension availability does not match policy")
 			}
 			state, err := vm.MarshalBinary()
 			check(t, err)
