@@ -77,7 +77,7 @@ func TestMMPPPolicyDigestsAtomicityAndIdentity(t *testing.T) {
 			want = sha256.Sum256(append([]byte("j2me-native-policy-v1\x00"), base[:]...))
 		}
 		if p == NativePolicyLGT {
-			want = sha256.Sum256(append([]byte("lgt-mmpp-native-policy-v1\x00"), base[:]...))
+			want = sha256.Sum256(append([]byte("lgt-mmpp-native-policy-v2\x00"), base[:]...))
 		}
 		if v.classDigest != want {
 			t.Fatalf("policy %d digest changed", p)

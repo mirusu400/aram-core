@@ -206,7 +206,7 @@ func NewWithNativePolicy(classData map[string][]byte, services *shared.Services,
 		// to their native policy even when both VMs share identical services.
 		domain := "j2me-native-policy-v1\x00"
 		if policy == NativePolicyLGT {
-			domain = "lgt-mmpp-native-policy-v1\x00"
+			domain = "lgt-mmpp-native-policy-v2\x00"
 		}
 		vm.classDigest = sha256.Sum256(append([]byte(domain), vm.classDigest[:]...))
 		for class := range vm.hostSupers {

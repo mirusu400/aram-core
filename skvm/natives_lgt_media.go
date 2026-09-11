@@ -162,6 +162,11 @@ func (vm *VM) installLGTMediaNatives() {
 				return Value{}, false, e
 			}
 			if c.clip == 0 {
+				// Emulator cleanup identity for a constructed, source-less player.
+				// Do not touch shared media or broaden real-clip transitions.
+				if name == "stop" {
+					return Value{}, false, nil
+				}
 				return Value{}, false, lgtUnsupported(name, "no source; handset error unspecified")
 			}
 			switch name {
@@ -173,6 +178,16 @@ func (vm *VM) installLGTMediaNatives() {
 				}
 				e = vm.services.Media.Play(vm.serviceOwner, c.clip, plays)
 			case "stop":
+				info, err := vm.services.Media.Info(vm.serviceOwner, c.clip)
+				if err != nil {
+					return Value{}, false, err
+				}
+				if info.State == shared.ClipStopped {
+					// Idempotent cleanup of a prepared, completed or already
+					// stopped clip must not discard another player's queued PCM.
+					// Play already rewinds a naturally completed clip on restart.
+					return Value{}, false, nil
+				}
 				e = vm.services.Media.Stop(vm.serviceOwner, c.clip)
 				if e == nil {
 					e = vm.services.Media.Seek(vm.serviceOwner, c.clip, 0)
@@ -188,10 +203,5 @@ func (vm *VM) installLGTMediaNatives() {
 			return Value{}, false, nil
 		})
 	}
-	for _, m := range []struct{ name, desc string }{{"getVolumeLevel", "()Ljava/lang/String;"}, {"setVolumeLevel", "(Ljava/lang/String;)V"}} {
-		m := m
-		vm.RegisterNative(lgtMediaClass, m.name, m.desc, func(_ context.Context, _ *VM, _ uint32, _ []Value) (Value, bool, error) {
-			return Value{}, false, lgtUnsupported(m.name, "volume String grammar and default are undocumented")
-		})
-	}
+	vm.installLGTVolumeNatives()
 }
