@@ -9,7 +9,8 @@ import (
 
 const (
 	raptorStateSchemaLegacy     = uint32(2)
-	raptorStateSchema           = uint32(3)
+	raptorStateSchemaCallbacks  = uint32(3)
+	raptorStateSchema           = uint32(4)
 	maxRaptorStateSections      = 1024
 	maxRaptorStateCallbackTasks = 1024
 )
@@ -27,6 +28,7 @@ type SavedState struct {
 	importSlots       []raptorImportKey
 	ImportTrace       []raptorImportCall
 	CallbackTasks     []*CallbackTask
+	ime               *inputMethod
 }
 
 func WriteState(r *Runtime, backend cpu.Backend, writer *guest.StateWriter) error {
@@ -95,6 +97,7 @@ func WriteState(r *Runtime, backend cpu.Backend, writer *guest.StateWriter) erro
 		writer.U32(uint32(len(task.Context)))
 		writer.Write(task.Context)
 	}
+	writeInputMethodState(r, writer)
 	return nil
 }
 
@@ -116,7 +119,7 @@ func ParseState(r *Runtime,
 		return nil, decoder.Fail("unexpected Raptor state component")
 	}
 	schema := decoder.U32()
-	if schema != raptorStateSchemaLegacy && schema != raptorStateSchema {
+	if schema < raptorStateSchemaLegacy || schema > raptorStateSchema {
 		return nil, decoder.Fail(fmt.Sprintf("unsupported Raptor state schema %d", schema))
 	}
 	state := &SavedState{
@@ -177,7 +180,7 @@ func ParseState(r *Runtime,
 			return nil, decoder.Fail("invalid Raptor import trace ordinal")
 		}
 	}
-	if schema >= raptorStateSchema {
+	if schema >= raptorStateSchemaCallbacks {
 		callbackCount := decoder.U32()
 		if callbackCount > maxRaptorStateCallbackTasks {
 			return nil, decoder.Fail("Raptor callback task table exceeds limit")
@@ -196,6 +199,9 @@ func ParseState(r *Runtime,
 			task.Context = append([]byte(nil), decoder.Bytes(int(contextSize))...)
 			state.CallbackTasks[index] = task
 		}
+	}
+	if schema >= 4 {
+		state.ime = parseInputMethodState(decoder)
 	}
 	if decoder.Err != nil {
 		return nil, decoder.Err
@@ -219,6 +225,11 @@ func RestoreState(r *Runtime, backend cpu.Backend, state *SavedState) error {
 		}
 	}
 	r.ModuleInitialized = state.ModuleInitialized
+	r.ime = nil
+	if state.ime != nil {
+		copy := *state.ime
+		r.ime = &copy
+	}
 	r.Started = state.Started
 	r.resolvedImports = make(map[raptorImportKey]uint64, len(state.resolvedImports))
 	r.importSlots = append([]raptorImportKey(nil), state.importSlots...)
@@ -235,5 +246,7 @@ func RestoreState(r *Runtime, backend cpu.Backend, state *SavedState) error {
 			Context:  append([]byte(nil), saved.Context...),
 		}
 	}
-	return nil
+	// Older public-memory snapshots can carry the obsolete two-entry /L,/S
+	// table here. Language strings are immutable adapter data, not guest state.
+	return r.installInputMethodModes()
 }

@@ -350,6 +350,10 @@ func (r *Runtime) EnsureWIPICScreenFramebuffer() (uint32, error) {
 		return 0, err
 	}
 	r.WipicScreenFramebuffer = object
+	// The guest may initialize the returned pixel pointer directly, without
+	// calling a drawing primitive. Import it at the first Java paint boundary
+	// so readback observes that initialization rather than an empty RGBA frame.
+	r.WipicScreenPending = true
 	return object, nil
 }
 

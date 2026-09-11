@@ -347,13 +347,10 @@ func (r *Runtime) readKTFFile(
 	if err != nil {
 		return 0, err
 	}
-	if offset > length || count > length-offset {
-		return 0, fmt.Errorf(
-			"KTF File.read range [%d,%d) exceeds byte array length %d",
-			offset,
-			uint64(offset)+uint64(count),
-			length,
-		)
+	// Java int arguments are signed even though the guest ABI carries words.
+	// Match InputStream's defensive checks without clamping or consuming data.
+	if int32(offset) < 0 || int32(count) < 0 || offset > length || count > length-offset {
+		return 0, r.raiseHostJavaException("java/lang/IndexOutOfBoundsException")
 	}
 	if count == 0 {
 		return 0, nil
