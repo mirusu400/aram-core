@@ -718,8 +718,9 @@ func (r *Runtime) RepaintDirtyJavaCard(ctx context.Context) (bool, error) {
 
 // raptorJavaThreadRun resolves the body a started thread runs. A class the
 // module publishes metadata for is resolved by name along its chain; one it
-// does not is read out of the vtable the module built for it, where run sits
-// next to start. See raptorJavaThreadRunSlot.
+// does not is read out of the vtable the module built for it. Thread subclasses
+// place run next to start; a single-method Runnable directly extending Object
+// has no start slot. See raptorJavaThreadRunSlot.
 func (r *Runtime) raptorJavaThreadRun(java *JavaRuntime, target uint32) uint32 {
 	class := r.raptorJavaClassForObject(java, target)
 	for depth := 0; class != nil && depth < 256; depth++ {
@@ -730,9 +731,19 @@ func (r *Runtime) raptorJavaThreadRun(java *JavaRuntime, target uint32) uint32 {
 	}
 	for class = r.raptorJavaClassForObject(java, target); class != nil; {
 		if class.guestVTable != 0 {
-			body, err := r.Public.ReadU32(
-				class.guestVTable + raptorJavaThreadRunSlot,
-			)
+			slot := uint32(raptorJavaThreadRunSlot)
+			// A Thread(Runnable) target need not extend Thread. For a direct
+			// Object subclass with exactly one own virtual slot, Runnable's
+			// run() occupies that sole slot, after Object's ten slots. There
+			// is no inherited Thread.start slot before it. The descriptor's
+			// high halfword is the same slot count used by the vtable builder.
+			if class.parentName == "java/lang/Object" {
+				layout, err := r.Public.ReadU32(class.descriptor + 0x24)
+				if err == nil && layout>>16 == 11 {
+					slot = 0x2c
+				}
+			}
+			body, err := r.Public.ReadU32(class.guestVTable + slot)
 			if err == nil && body != 0 && body != class.Holder {
 				return body
 			}

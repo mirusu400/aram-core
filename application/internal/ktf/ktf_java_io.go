@@ -18,7 +18,7 @@ import (
 func (r *Runtime) handleInputStreamMethod(
 	ctx context.Context,
 	name, descriptor string,
-) (uint32, error) {
+) (result uint32, resultErr error) {
 	instance, err := r.parameter(1)
 	if err != nil {
 		return 0, err
@@ -32,7 +32,31 @@ func (r *Runtime) handleInputStreamMethod(
 		streamInstance = redirected
 	}
 	stream := r.inputStreams[streamInstance]
+	fileInstance := r.fileStreamTargets[streamInstance]
+	streamLength := uint32(0)
+	if stream != nil {
+		streamLength = uint32(len(stream.data))
+	}
+	if name != "<init>" && name != "close" {
+		length, finish, err := r.prepareKTFFileInput(streamInstance)
+		if err != nil {
+			return 0, err
+		}
+		if finish != nil {
+			streamLength = length
+			defer func() {
+				if err := finish(); err != nil && resultErr == nil {
+					result, resultErr = 0, err
+				}
+			}()
+		}
+	}
 	readBytes := func(count uint32) ([]byte, bool, error) {
+		if fileInstance != 0 {
+			data, err := r.readKTFFileBytes(fileInstance, count)
+			stream.position = r.files[fileInstance].position
+			return data, uint32(len(data)) == count, err
+		}
 		if delegated, valueErr := r.shouldDelegateInputRead(streamInstance); valueErr != nil {
 			return nil, false, valueErr
 		} else if delegated {
@@ -62,6 +86,14 @@ func (r *Runtime) handleInputStreamMethod(
 		data := stream.data[stream.position : stream.position+count]
 		stream.position += count
 		return data, true, nil
+	}
+	readArray := func(array, offset, count uint32) (uint32, error) {
+		if fileInstance != 0 {
+			value, err := r.readKTFFile(fileInstance, array, offset, count)
+			stream.position = r.files[fileInstance].position
+			return value, err
+		}
+		return r.readInputStreamInto(stream, array, offset, count)
 	}
 	switch name + descriptor {
 	case "<init>()V":
@@ -110,11 +142,21 @@ func (r *Runtime) handleInputStreamMethod(
 		r.inputTargets[instance] = source
 		return 0, nil
 	case "available()I":
-		if stream == nil || stream.position >= uint32(len(stream.data)) {
+		if stream == nil || stream.position >= streamLength {
 			return 0, nil
 		}
-		return uint32(len(stream.data)) - stream.position, nil
+		return streamLength - stream.position, nil
 	case "read()I":
+		if fileInstance != 0 {
+			data, ok, err := readBytes(1)
+			if err != nil {
+				return 0, err
+			}
+			if !ok {
+				return ^uint32(0), nil
+			}
+			return uint32(data[0]), nil
+		}
 		if stream == nil || stream.position >= uint32(len(stream.data)) {
 			return ^uint32(0), nil
 		}
@@ -133,7 +175,7 @@ func (r *Runtime) handleInputStreamMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		return r.readInputStreamInto(stream, array, 0, length)
+		return readArray(array, 0, length)
 	case "read([BII)I":
 		array, valueErr := r.parameter(2)
 		if valueErr != nil {
@@ -150,13 +192,14 @@ func (r *Runtime) handleInputStreamMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		return r.readInputStreamInto(stream, array, offset, count)
+		return readArray(array, offset, count)
 	case "close()V":
 		delete(r.inputStreams, streamInstance)
 		delete(r.inputTargets, instance)
+		delete(r.fileStreamTargets, streamInstance)
 		return 0, nil
 	case "skip(J)J":
-		if stream == nil {
+		if stream == nil || stream.position >= streamLength {
 			return 0, nil
 		}
 		low, valueErr := r.parameter(2)
@@ -172,7 +215,7 @@ func (r *Runtime) handleInputStreamMethod(
 			return r.javaLongResult(0), nil
 		}
 		requested := uint64(signed)
-		remaining := uint64(len(stream.data)) - uint64(stream.position)
+		remaining := uint64(streamLength) - uint64(stream.position)
 		if requested > remaining {
 			requested = remaining
 		}
@@ -295,7 +338,7 @@ func (r *Runtime) handleInputStreamMethod(
 		if count == 0 {
 			return 0, nil
 		}
-		read, valueErr := r.readInputStreamInto(stream, array, offset, count)
+		read, valueErr := readArray(array, offset, count)
 		if valueErr != nil {
 			return 0, valueErr
 		}
@@ -308,10 +351,10 @@ func (r *Runtime) handleInputStreamMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		if int32(requested) <= 0 || stream == nil {
+		if int32(requested) <= 0 || stream == nil || stream.position >= streamLength {
 			return 0, nil
 		}
-		remaining := uint32(len(stream.data)) - stream.position
+		remaining := streamLength - stream.position
 		if requested > remaining {
 			requested = remaining
 		}

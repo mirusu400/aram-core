@@ -1484,8 +1484,14 @@ func (r *Runtime) copyGraphicsPixelsToByteArray(
 	}
 	offset := int64(int32(offsetValue))
 	bytesPerLine := int64(int32(bytesPerLineValue))
+	// KTF exposes a 16-bit RGB565 native framebuffer. getPixels returns
+	// those packed bytes, not luminance. Clets can recover a physical Card
+	// origin by writing row indices as native halfwords and reading byte zero
+	// back through Java (DNF fighter, issue #272). bpl is a byte stride and
+	// may include padding; it does not select the pixel format.
+	rowBytes := int64(width) * 2
 	if width < 0 || height < 0 || offset < 0 ||
-		bytesPerLine < int64(width) {
+		bytesPerLine < rowBytes {
 		return fmt.Errorf(
 			"invalid KTF Graphics.getPixels rectangle %dx%d "+
 				"offset=%d bytes-per-line=%d",
@@ -1501,7 +1507,7 @@ func (r *Runtime) copyGraphicsPixelsToByteArray(
 	}
 	required := offset
 	if height > 0 {
-		required += int64(height-1)*bytesPerLine + int64(width)
+		required += int64(height-1)*bytesPerLine + rowBytes
 	}
 	if required > int64(length) {
 		return fmt.Errorf(
@@ -1514,7 +1520,7 @@ func (r *Runtime) copyGraphicsPixelsToByteArray(
 	if err != nil {
 		return err
 	}
-	row := make([]byte, width)
+	row := make([]byte, int(rowBytes))
 	for rowIndex := 0; rowIndex < height; rowIndex++ {
 		clear(row)
 		if state != nil {
@@ -1529,9 +1535,8 @@ func (r *Runtime) copyGraphicsPixelsToByteArray(
 					point.X,
 					point.Y,
 				).RGBA()
-				row[column] = uint8((uint32(red>>8)*77 +
-					uint32(green>>8)*150 +
-					uint32(blue>>8)*29) >> 8)
+				binary.LittleEndian.PutUint16(row[column*2:],
+					ktfWIPICRGB565(red>>8, green>>8, blue>>8))
 			}
 		}
 		destination := fields + 8 + uint32(

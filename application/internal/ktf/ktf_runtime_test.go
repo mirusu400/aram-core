@@ -683,7 +683,7 @@ func TestKTFGraphicsFillRectUpdatesFramebuffer(t *testing.T) {
 	check(t, err)
 	check(t, runtime.writeWords(
 		stack,
-		[]uint32{1, 1, pixels, 2, 1},
+		[]uint32{1, 1, pixels, 2, 2},
 	))
 	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 3))
 	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, 2))
@@ -695,9 +695,9 @@ func TestKTFGraphicsFillRectUpdatesFramebuffer(t *testing.T) {
 	}
 	data, err := runtime.readJavaByteArray(pixels)
 	check(t, err)
-	const wantLuma = byte((0x33*77 + 0x66*150 + 0xcc*29) >> 8)
-	if data[2] != wantLuma {
-		t.Fatalf("copied grayscale pixel = 0x%02x, want 0x%02x", data[2], wantLuma)
+	const wantRGB565 = uint16(0x3339)
+	if got := binary.LittleEndian.Uint16(data[2:4]); got != wantRGB565 {
+		t.Fatalf("copied native pixel = 0x%04x, want 0x%04x", got, wantRGB565)
 	}
 	text := newJavaString(t, runtime, "A")
 	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 0xffffff))
