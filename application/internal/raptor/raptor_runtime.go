@@ -64,10 +64,6 @@ const (
 	DletBase   = uint32(0x01008400)
 	WIPICBase  = uint32(0x01008800)
 
-	VolumeTable       = uint32(0x01008c00)
-	raptorLocalVolume = uint32(0x01008c08)
-	raptorShareVolume = uint32(0x01008c0b)
-
 	raptorImportStubBase  = uint32(0x0110a000)
 	raptorImportStubSize  = uint32(0x00004000)
 	raptorDletModuleStub  = uint32(0x0110e000)
@@ -156,6 +152,7 @@ type Runtime struct {
 	// BeginGuestSlice and TakeUndeliveredJavaThrow.
 	pendingJavaThrow string
 	hostCallFrames   [16]cpu.HostCallFrame
+	ime              *inputMethod
 	hostCallDepth    int
 }
 
@@ -470,18 +467,11 @@ func (r *Runtime) InstallInterfaces() error {
 	if err := r.CPU.WriteMemory(DletBase, dlet); err != nil {
 		return fmt.Errorf("install Raptor dlet interface: %w", err)
 	}
-	volumes := make([]byte, 14)
-	binary.LittleEndian.PutUint32(volumes[0:4], raptorLocalVolume)
-	binary.LittleEndian.PutUint32(volumes[4:8], raptorShareVolume)
-	copy(volumes[8:11], "/L\x00")
-	copy(volumes[11:14], "/S\x00")
-	if err := r.CPU.WriteMemory(VolumeTable, volumes); err != nil {
-		return fmt.Errorf("install Raptor volume interface: %w", err)
-	}
-	return nil
+	return r.installInputMethodModes()
 }
 
 func (r *Runtime) RestoreImage() error {
+	r.ime = nil
 	if err := r.DestroyRaptorJava(); err != nil {
 		return fmt.Errorf("destroy Raptor Java adapter: %w", err)
 	}
@@ -920,18 +910,8 @@ func (r *Runtime) DispatchPrivateImport(
 			return guest.WIPIReturn{Low: uint32(framebuffer.BitsPerPixel)},
 				"RAPTOR.grpGetFrameBufferBitsPerPixel", true, nil
 		}
-	case 300:
-		return guest.WIPIReturn{Low: 2},
-			"RAPTOR.fsGetVolumeCount", true, nil
-	case 301:
-		return guest.WIPIReturn{Low: VolumeTable},
-			"RAPTOR.fsGetVolumeList", true, nil
-	case 302:
-		// LGT's filesystem adapter accepts a volume index here. The public
-		// virtual filesystem presents both advertised roots through one
-		// namespace, so no host-side selection is necessary.
-		return guest.WIPIReturn{},
-			"RAPTOR.fsSelectVolume", true, nil
+	case 300, 301, 302, 303, 304:
+		return r.dispatchInputMethod(ordinal)
 	case 122:
 		timer, err := r.CPU.ReadRegister(cpu.RegisterR0)
 		if err != nil {

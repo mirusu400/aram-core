@@ -386,7 +386,9 @@ func TestRaptorCallbackTaskSurvivesSaveState(t *testing.T) {
 	}
 }
 
-func TestRaptorVolumeImportsExposeLGTVolumeRoots(t *testing.T) {
+// The 300-series provider is the InputMethod HAL. Its ISO language-code
+// array was previously mistaken for filesystem roots.
+func TestRaptorInputMethodImportsExposeLanguageModes(t *testing.T) {
 	public := newPublicRuntime(t)
 	runtime := &raptorrt.Runtime{
 		CPU:    public.CPU,
@@ -395,10 +397,10 @@ func TestRaptorVolumeImportsExposeLGTVolumeRoots(t *testing.T) {
 	check(t, runtime.InstallInterfaces())
 
 	count, name, handled, err := runtime.DispatchPrivateImport(300)
-	if err != nil || !handled || name != "RAPTOR.fsGetVolumeCount" ||
-		count.Low != 2 {
+	if err != nil || !handled || name != "RAPTOR.IMAgetSupportModeCount" ||
+		count.Low != 4 {
 		t.Fatalf(
-			"volume count = %#v, %q, handled=%t, err=%v",
+			"input mode count = %#v, %q, handled=%t, err=%v",
 			count,
 			name,
 			handled,
@@ -406,32 +408,33 @@ func TestRaptorVolumeImportsExposeLGTVolumeRoots(t *testing.T) {
 		)
 	}
 	list, name, handled, err := runtime.DispatchPrivateImport(301)
-	if err != nil || !handled || name != "RAPTOR.fsGetVolumeList" ||
-		list.Low != raptorrt.VolumeTable {
+	if err != nil || !handled || name != "RAPTOR.IMAgetSupportedModes" ||
+		list.Low != raptorrt.IMEModeTable {
 		t.Fatalf(
-			"volume list = %#v, %q, handled=%t, err=%v",
+			"input mode list = %#v, %q, handled=%t, err=%v",
 			list,
 			name,
 			handled,
 			err,
 		)
 	}
-	var pointers [8]byte
+	var pointers [16]byte
 	check(t, runtime.CPU.ReadMemory(list.Low, pointers[:]))
-	for index, want := range []string{"/L", "/S"} {
+	for index, want := range []string{"EN/S", "EN/L", "N123", "KO"} {
 		address := binary.LittleEndian.Uint32(pointers[index*4:])
 		got, err := public.ReadCString(address)
 		check(t, err)
 		if string(got) != want {
-			t.Errorf("volume %d = %q, want %q", index, got, want)
+			t.Errorf("input mode %d = %q, want %q", index, got, want)
 		}
 	}
 
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, 3))
 	selected, name, handled, err := runtime.DispatchPrivateImport(302)
-	if err != nil || !handled || name != "RAPTOR.fsSelectVolume" ||
-		selected != (guest.WIPIReturn{}) {
+	if err != nil || !handled || name != "RAPTOR.IMAsetCurrentMode" ||
+		selected != (guest.WIPIReturn{Low: 1}) {
 		t.Fatalf(
-			"select volume = %#v, %q, handled=%t, err=%v",
+			"select input mode = %#v, %q, handled=%t, err=%v",
 			selected,
 			name,
 			handled,
