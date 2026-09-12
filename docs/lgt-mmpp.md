@@ -33,6 +33,19 @@ transitions and missing-source errors are not mapped to invented handset
 exceptions or successful playback. The source-less cleanup identity is the
 narrow exception described below.
 
+### Later local reference evidence (2026-09-12)
+
+[Hash-qualified ROM analysis](reference-emulators-20260912.md#lgt-midp)
+now provides additional evidence for one supplied emulator: its getter reads
+a cached decimal volume, its constructor uses a preference value, and its
+stop wrapper delegates to MIDlet-scoped shared MIDI ownership. Its setter
+apparently guards the old volume rather than the new argument. These are
+static wrapper observations with unresolved quick-op/native/runtime details,
+not a universal handset specification. They do not silently replace the
+conservative product choices below. In particular, the unsupported getter
+is now a pending implementation/verification boundary, not an absence of
+any evidence for a current-value getter.
+
 ## Emulator choices, not verified handset facts
 
 * Initial loop setting is false. No source is created by construction.
