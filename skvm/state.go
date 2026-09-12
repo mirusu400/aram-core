@@ -656,6 +656,13 @@ func (vm *VM) buildCandidate(
 			hostStatic[key] = IntValue(256)
 		}
 	}
+	if _, exists := hostStatic[gameCanvasHeldKeys]; !exists {
+		// Older snapshots stored only per-canvas action masks. Those cannot
+		// identify physical aliases or keys held on another Displayable, so
+		// start physical tracking empty rather than inventing pressed keys.
+		// Existing per-canvas state remains intact until input or a transition.
+		hostStatic[gameCanvasHeldKeys] = IntValue(0)
+	}
 	if !sameValueMapShape(hostStatic, vm.hostStatic) {
 		return nil, fmt.Errorf("load SKVM state: host static field mismatch")
 	}

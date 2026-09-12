@@ -426,7 +426,7 @@ func (vm *VM) installDisplayableNatives() {
 			return Value{}, false, vm.newThrowable("java/lang/IllegalArgumentException", "")
 		}
 		_ = setObjectField(vm, alert, "$midp.nextDisplayable", ReferenceValue(next))
-		vm.currentDisplay = alert
+		vm.setCurrentDisplay(alert)
 		return Value{}, false, nil
 	})
 	vm.RegisterNative("javax/microedition/lcdui/Display", "setCurrentItem", "(Ljavax/microedition/lcdui/Item;)V", func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {

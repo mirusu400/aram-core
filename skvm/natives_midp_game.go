@@ -997,7 +997,48 @@ func (vm *VM) insertLayer(layers *Array, layer Value, index int32) error {
 	return nil
 }
 
+// These values use the existing serialized field maps, not a new state schema.
+const gameCanvasHeldKeys = "\x00aram-game-held-keys"
+
+// Bit positions are serialized. Keep existing entries in this order.
+var gameCanvasPhysicalKeys = [...]int32{-1, '2', 141, -3, '4', 142, -4, '6', 145, -2, '8', 146, -5, '5', 148}
+
+func gameCanvasPhysicalKeyBit(key int32) int32 {
+	for i, candidate := range gameCanvasPhysicalKeys {
+		if key == candidate {
+			return 1 << i
+		}
+	}
+	return 0
+}
+
+func gameCanvasPhysicalKeyMask(keys int32) int32 {
+	var mask int32
+	for i, key := range gameCanvasPhysicalKeys {
+		if keys&(1<<i) != 0 {
+			mask |= gameCanvasKeyMask(key)
+		}
+	}
+	return mask
+}
+
+func (vm *VM) setCurrentDisplay(reference uint32) {
+	if reference == vm.currentDisplay {
+		return
+	}
+	vm.currentDisplay = reference
+	if vm.IsInstance(reference, "javax/microedition/lcdui/game/GameCanvas") {
+		object, _ := vm.Object(reference)
+		held, _ := vm.hostStatic[gameCanvasHeldKeys].Int()
+		object.Fields["$game.keyStates"] = IntValue(0)
+		object.Fields["$game.latchedKeys"] = IntValue(0)
+		// Keys held on entry remain invisible until released and pressed again.
+		object.Fields["$game.blockedKeys"] = IntValue(held)
+	}
+}
+
 func (vm *VM) installGameCanvasNatives() {
+	vm.hostStatic[gameCanvasHeldKeys] = IntValue(0)
 	vm.RegisterNative("javax/microedition/lcdui/game/GameCanvas", "<init>", "(Z)V", func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
 		state, err := vm.newImageState(vm.ScreenWidth, vm.canvasHeight())
 		if err != nil {
@@ -1018,8 +1059,13 @@ func (vm *VM) installGameCanvasNatives() {
 		if !ok {
 			return Value{}, false, fmt.Errorf("invalid GameCanvas")
 		}
+		if receiver != vm.currentDisplay {
+			return IntValue(0), true, nil
+		}
 		states, _ := object.Fields["$game.keyStates"].Int()
-		return IntValue(states), true, nil
+		latched, _ := object.Fields["$game.latchedKeys"].Int()
+		object.Fields["$game.latchedKeys"] = IntValue(0)
+		return IntValue(states | latched), true, nil
 	})
 	for _, descriptor := range []string{"()V", "(IIII)V"} {
 		descriptor := descriptor
