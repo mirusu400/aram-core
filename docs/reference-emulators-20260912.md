@@ -284,3 +284,7 @@ The largest remaining cluster is 358 recognized-but-unexecuted BREW inputs,
 followed by unsupported external savedata; nine GVM inputs remain recognized
 only. Missing reference inputs remain a failed acceptance gate and block an
 unqualified whole-workspace completion claim. Expectations were not weakened.
+
+Further conditional GVM entry mapping and GameCanvas presentation work are
+recorded in [the follow-up report](reference-followup-20260912.md). These do
+not retroactively turn this pass's static observations into handset evidence.

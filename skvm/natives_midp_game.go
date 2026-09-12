@@ -3,6 +3,8 @@ package skvm
 import (
 	"context"
 	"fmt"
+
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 const (
@@ -1070,6 +1072,9 @@ func (vm *VM) installGameCanvasNatives() {
 	for _, descriptor := range []string{"()V", "(IIII)V"} {
 		descriptor := descriptor
 		vm.RegisterNative("javax/microedition/lcdui/game/GameCanvas", "flushGraphics", descriptor, func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+			if receiver != vm.currentDisplay {
+				return Value{}, false, nil
+			}
 			imageValue, _ := objectField(vm, receiver, gameCanvasImage)
 			imageReference, _ := imageValue.Reference()
 			image, err := vm.image(imageReference)
@@ -1080,18 +1085,43 @@ func (vm *VM) installGameCanvasNatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
-			x, y, width, height := 0, 0, image.width, image.height
+			x, y, width, height := int64(0), int64(0), int64(image.width), int64(image.height)
 			if len(args) == 4 {
 				xv, _ := intArgument(args, 0)
 				yv, _ := intArgument(args, 1)
 				wv, _ := intArgument(args, 2)
 				hv, _ := intArgument(args, 3)
-				x, y, width, height = int(xv), int(yv), int(wv), int(hv)
+				x, y, width, height = int64(xv), int64(yv), int64(wv), int64(hv)
 			}
-			if width < 0 || height < 0 {
-				return Value{}, false, vm.newThrowable("java/lang/IllegalArgumentException", "")
+			if width < 1 || height < 1 {
+				return Value{}, false, nil
 			}
-			return Value{}, false, blit(vm, screen, image, x, y, x, y, width, height)
+			// Clip before narrowing to host int, including on 32-bit hosts.
+			// Presentation uses buffer coordinates, not Graphics drawing state.
+			right := min(x+width, int64(image.width), int64(screen.width))
+			bottom := min(y+height, int64(image.height), int64(screen.height))
+			x, y = max(x, 0), max(y, 0)
+			if right <= x || bottom <= y {
+				return Value{}, false, nil
+			}
+			drawState, err := vm.services.Graphics.DrawState(vm.serviceOwner, screen.surface)
+			if err != nil {
+				return Value{}, false, err
+			}
+			presentation := shared.SurfaceDrawState{
+				Clip:        shared.Rectangle{Width: int32(screen.width), Height: int32(screen.height)},
+				Raster:      shared.RasterCopy,
+				GlobalAlpha: 255,
+			}
+			if err := vm.services.Graphics.SetDrawState(vm.serviceOwner, screen.surface, presentation); err != nil {
+				return Value{}, false, err
+			}
+			blitErr := blit(vm, screen, image, int(x), int(y), int(x), int(y), int(right-x), int(bottom-y))
+			restoreErr := vm.services.Graphics.SetDrawState(vm.serviceOwner, screen.surface, drawState)
+			if blitErr != nil {
+				return Value{}, false, blitErr
+			}
+			return Value{}, false, restoreErr
 		})
 	}
 	vm.RegisterNative("javax/microedition/lcdui/game/GameCanvas", "paint", "(Ljavax/microedition/lcdui/Graphics;)V", func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
