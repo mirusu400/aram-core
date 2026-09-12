@@ -1,0 +1,280 @@
+// Package gvm provides a bounded, deterministic subset of GVM bytecode for
+// caller-supplied buffers. It is not an SGS loader or a game-startup runtime.
+package gvm
+
+import (
+	"encoding/binary"
+	"errors"
+	"fmt"
+)
+
+var (
+	ErrBudget              = errors.New("gvm: instruction budget exhausted")
+	ErrTruncated           = errors.New("gvm: truncated instruction")
+	ErrStackUnderflow      = errors.New("gvm: operand stack underflow")
+	ErrStackOverflow       = errors.New("gvm: operand stack overflow")
+	ErrReturnStackOverflow = errors.New("gvm: return stack overflow")
+	ErrInvalidTarget       = errors.New("gvm: target outside program")
+)
+
+// UnsupportedOpcodeError identifies the fetched opcode and its buffer offset.
+// Unimplemented instructions never silently behave as NOPs.
+type UnsupportedOpcodeError struct {
+	Opcode byte
+	Offset int
+}
+
+func (e *UnsupportedOpcodeError) Error() string {
+	return fmt.Sprintf("gvm: unsupported opcode 0x%02x at offset %d", e.Opcode, e.Offset)
+}
+
+// ExecutionError associates a safety fault with the instruction's opcode offset.
+// At end of buffer, Offset is the position of the failed opcode fetch.
+type ExecutionError struct {
+	Offset int
+	Cause  error
+}
+
+func (e *ExecutionError) Error() string { return fmt.Sprintf("gvm: offset %d: %v", e.Offset, e.Cause) }
+func (e *ExecutionError) Unwrap() error { return e.Cause }
+
+// VM owns its program and stacks. It has no host services and is not safe for
+// concurrent use. The zero value is an empty VM, equivalent to New(nil).
+// Stack lengths encode the reference's signed top indices (length minus one).
+type VM struct {
+	code        []byte
+	symbols     [][]byte
+	pc          int
+	stack       [65]uint16
+	depth       int
+	returns     [17]int
+	returnDepth int
+	halted      bool
+	fault       error
+}
+
+// New copies program and begins at buffer offset zero. An empty program fails
+// with ErrTruncated on its first fetch. This is not the SGS entry-zero rule.
+func New(program []byte) *VM { return &VM{code: append([]byte(nil), program...)} }
+
+// NewAt copies the entire buffer, selecting an explicit in-bounds entry.
+// Absolute branch operands remain relative to the beginning of this buffer,
+// not to entry. No header parsing or SGS entry mapping is performed.
+func NewAt(program []byte, entry uint32) (*VM, error) {
+	if uint64(entry) >= uint64(len(program)) {
+		return nil, fmt.Errorf("%w: entry offset %d", ErrInvalidTarget, entry)
+	}
+	v := New(program)
+	v.pc = int(entry)
+	return v, nil
+}
+
+// PC returns the next buffer-relative fetch position. On handler failure the
+// opcode has already been consumed, but no operands or stacks are committed.
+func (v *VM) PC() int { return v.pc }
+
+// Stack returns an independent bottom-to-top copy, interpreting slots as raw16.
+func (v *VM) Stack() []uint16 { return append([]uint16(nil), v.stack[:v.depth]...) }
+
+// Halted reports successful completion of the current dispatch via guest 0xff.
+// Faults are not successful halts.
+func (v *VM) Halted() bool { return v.halted }
+
+// Run executes at most budget instructions. Exhaustion is resumable and does
+// not set a fault. A zero budget makes no progress, returning ErrBudget unless
+// the VM has already halted or faulted. Reaching 0xff on the last step succeeds.
+func (v *VM) Run(budget uint64) error {
+	if v.fault != nil {
+		return v.fault
+	}
+	if v.halted {
+		return nil
+	}
+	for ; budget > 0; budget-- {
+		if err := v.Step(); err != nil {
+			return err
+		}
+		if v.halted {
+			return nil
+		}
+	}
+	return ErrBudget
+}
+
+// Step executes one instruction. A successful halted VM is inert. Safety
+// faults are sticky: subsequent Step/Run calls return the same error without
+// further mutation. Bounds/underflow checks are emulator policy, not native
+// behavior. Every fetched opcode advances PC before handler execution.
+func (v *VM) Step() error {
+	if v.fault != nil {
+		return v.fault
+	}
+	if v.halted {
+		return nil
+	}
+	offset := v.pc
+	fail := func(cause error) error { v.fault = &ExecutionError{Offset: offset, Cause: cause}; return v.fault }
+	if v.pc >= len(v.code) {
+		return fail(ErrTruncated)
+	}
+	op := v.code[v.pc]
+	v.pc++
+	switch op {
+	case 0x00:
+	case 0xff:
+		v.halted = true
+	case 0x04:
+		if len(v.code)-v.pc < 1 {
+			return fail(ErrTruncated)
+		}
+		index := int(v.code[v.pc])
+		if v.depth >= len(v.stack) {
+			return fail(ErrStackOverflow)
+		}
+		if index >= len(v.symbols) {
+			return fail(ErrInvalidSymbol)
+		}
+		if len(v.symbols[index]) < 2 {
+			return fail(ErrInvalidSymbolRegion)
+		}
+		v.stack[v.depth] = binary.LittleEndian.Uint16(v.symbols[index][:2])
+		v.depth++
+		v.pc++
+	case 0x05, 0x06:
+		// Reference top>=0x40 before increment permits 65 slots from top=-1.
+		if v.depth >= len(v.stack) {
+			return fail(ErrStackOverflow)
+		}
+		width := 1
+		if op == 0x06 {
+			width = 2
+		}
+		if len(v.code)-v.pc < width {
+			return fail(ErrTruncated)
+		}
+		var value uint16
+		if op == 0x05 {
+			value = uint16(int16(int8(v.code[v.pc])))
+		} else {
+			value = binary.BigEndian.Uint16(v.code[v.pc : v.pc+2])
+		}
+		v.stack[v.depth] = value
+		v.depth++
+		v.pc += width
+	case 0x12, 0x13, 0x14:
+		if v.depth < 2 {
+			return fail(ErrStackUnderflow)
+		}
+		a, b := v.stack[v.depth-2], v.stack[v.depth-1]
+		var value uint16
+		switch op {
+		case 0x12:
+			value = a + b
+		case 0x13:
+			value = a - b
+		case 0x14:
+			value = a * b
+		}
+		v.depth--
+		v.stack[v.depth-1] = value
+		v.stack[v.depth] = 0
+	case 0x45:
+		if v.returnDepth == 0 {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		target := v.returns[v.returnDepth-1]
+		if target < 0 || target >= len(v.code) {
+			return fail(ErrInvalidTarget)
+		}
+		v.returnDepth--
+		v.returns[v.returnDepth] = 0
+		v.pc = target
+	case 0x96, 0x97:
+		// In the hash-qualified reference build both callees are empty returns.
+		// Their wrappers pop one signed16 argument. No host service is invented.
+		if v.depth == 0 {
+			return fail(ErrStackUnderflow)
+		}
+		v.depth--
+		v.stack[v.depth] = 0
+	case 0x31:
+		// Both index bytes precede native symbol validation.
+		if len(v.code)-v.pc < 2 {
+			return fail(ErrTruncated)
+		}
+		index, element := int(v.code[v.pc]), int(v.code[v.pc+1])
+		if index >= len(v.symbols) {
+			return fail(ErrInvalidSymbol)
+		}
+		region := v.symbols[index]
+		// The host binding must exactly model a uint8 descriptor word count.
+		if len(region)%2 != 0 || len(region) > 510 {
+			return fail(ErrInvalidSymbolRegion)
+		}
+		if element >= len(region)/2 {
+			return fail(ErrInvalidElement)
+		}
+		if len(v.code)-v.pc < 3 {
+			return fail(ErrTruncated)
+		}
+		value := uint16(int16(int8(v.code[v.pc+2])))
+		binary.LittleEndian.PutUint16(region[2*element:2*element+2], value)
+		v.pc += 3
+	case 0x36:
+		if len(v.code)-v.pc < 1 {
+			return fail(ErrTruncated)
+		}
+		index := int(v.code[v.pc])
+		if index >= len(v.symbols) {
+			return fail(ErrInvalidSymbol)
+		}
+		if len(v.symbols[index]) < 2 {
+			return fail(ErrInvalidSymbolRegion)
+		}
+		if len(v.code)-v.pc < 2 {
+			return fail(ErrTruncated)
+		}
+		// Read before writing: the symbol can alias this instruction itself.
+		value := uint16(int16(int8(v.code[v.pc+1])))
+		binary.LittleEndian.PutUint16(v.symbols[index][:2], value)
+		v.pc += 2
+	case 0x41, 0x42, 0x43, 0x44:
+		if op == 0x44 && v.returnDepth >= len(v.returns) {
+			return fail(ErrReturnStackOverflow)
+		}
+		if len(v.code)-v.pc < 2 {
+			return fail(ErrTruncated)
+		}
+		conditional := op == 0x42 || op == 0x43
+		if conditional && v.depth == 0 {
+			return fail(ErrStackUnderflow)
+		}
+		taken := true
+		if conditional {
+			nonzero := v.stack[v.depth-1] != 0
+			taken = (op == 0x42 && nonzero) || (op == 0x43 && !nonzero)
+		}
+		target := int(binary.BigEndian.Uint16(v.code[v.pc : v.pc+2]))
+		if taken && target >= len(v.code) {
+			return fail(ErrInvalidTarget)
+		}
+		if conditional {
+			v.depth--
+			v.stack[v.depth] = 0
+		}
+		if op == 0x44 {
+			v.returns[v.returnDepth] = v.pc + 2
+			v.returnDepth++
+		}
+		if taken {
+			v.pc = target
+		} else {
+			v.pc += 2
+		}
+	default:
+		v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+		return v.fault
+	}
+	return nil
+}

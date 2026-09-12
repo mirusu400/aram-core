@@ -4,8 +4,10 @@
 that predate WIPI adoption and run on **SinjiSoft's ("신지소프트") GVM**
 runtime rather than SK-VM (Java, `loader/skvm`) or WIPI-C (`loader/raptor`,
 `loader/ktf`). `loader/gnex` recognizes the archive shape and decodes the
-payload's title header; it does not decode or execute the GVM bytecode body,
-which has not been reverse engineered far enough to run.
+payload's title header. The ordinary application path remains recognition-only.
+A separate, bounded execution-image decoder and `gvm` kernel now implement a
+hash-qualified subset, not a complete GVM game runtime. See
+[gvm-execution-subset.md](gvm-execution-subset.md).
 
 ## What a GNEX archive looks like
 
@@ -63,13 +65,19 @@ timestamps) carries a 32-byte zero-padded prefix ahead of it; `ParseHeader`
 scans up to `maxHeaderScan` (48 bytes) rather than assuming a fixed offset,
 to tolerate that and unknown-but-similar variants.
 
-Everything from `Header.BodyOffset` onward - the GVM bytecode, the symbol and
-media (resource) tables, and in-title image data - is **not decoded**.
+The earlier header-only investigation did not decode the body. The later
+[execution subset](gvm-execution-subset.md) recovers selected version-2
+symbol/media storage descriptors and numeric operations. Resource rendering,
+complete runtime initialization and ordinary product execution remain absent.
+`Header.BodyOffset` is not an execution entry address.
 
-### What is known about the body, and why it isn't decoded yet
+### Historical body investigation
 
-Static analysis of the same player found enough of the GVM runtime's shape to
-describe it, but not enough to write an interpreter:
+The following observations describe the earlier player investigation, not the
+later hash-qualified build. In particular, its reported symbol stride must not
+be substituted for the six-byte runtime entries recovered in the later build.
+Static analysis of the earlier player found enough of the GVM runtime's shape to
+describe it, but not enough at that time to write an interpreter:
 
 - It is a **stack-based bytecode VM** with a symbol table (the article
   ["모바일게임 변천사"](https://www.inven.co.kr/webzine/news/?news=179050)
@@ -108,8 +116,10 @@ A separate 2026-09-12 static pass on a hash-qualified supplied GVM2X build
 located its dispatcher and opcode `0x05` (signed-byte immediate push). See
 [local reference research](reference-emulators-20260912.md#verified-single-opcode-contract)
 for exact addresses, stack/PC effects and guard. Binary equivalence to the
-earlier player is unverified. SGS entry/code mapping and resource layout are
-still unresolved, so no loader execution milestone changes.
+earlier player is unverified. Follow-up work recovered a conditional whole-buffer
+entry mapping, descriptor storage and 17 numeric operations, documented in
+[the execution subset](gvm-execution-subset.md). This does not change the
+ordinary loader execution milestone.
 
 ## What `loader/gnex` actually validates
 
@@ -136,9 +146,9 @@ ambiguous. Raw payloads are limited to 64 MiB, and existing ZIP limits remain.
 `ParseHeader` now rejects invalid character sequences even when the EUC-KR
 decoder silently substitutes a Unicode replacement character. Historical
 paired-descriptor prefix scanning remains available. The checksum algorithm
-and SGS body-to-code mapping remain unknown, and are not invented as extra
-checks. The separately recovered single-opcode contract does not validate
-arbitrary bodies.
+and general SGS execution validity are not recognition checks. The separate
+execution-image decoder imposes its own narrower variant and safety limits;
+recognized headers do not establish executable bodies.
 
 ## Where this is wired in
 
@@ -151,5 +161,5 @@ that names the parsed title, rather than the generic "no valid ABHS or EADS
 records" message an unrecognized ZIP gets - the same pattern
 `loader.AndroidPackage` uses for Android APKs (see the comment above that
 check in `machine_load.go`). This is a **recognized** milestone, not a
-**loads** or **playable** one: nothing in this codebase executes a single GVM
-instruction yet.
+**loads** or **playable** one. The independent `gvm` kernel is not wired into
+this product path and cannot yet provide game startup, events or frames.
