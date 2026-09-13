@@ -53,6 +53,7 @@ Every fetched opcode advances PC before its handler.
 | `45` | Nonempty R only: restore top saved PC exactly and pop it |
 | `4c` | Configured address model only: u8 symbol, u8 element; push encoded address of symbol+2*element, PC=P+2 |
 | `4d` | Configured address model only: u8 symbol, push its encoded region-relative word address, PC=P+1 |
+| `4e` | Configured address model only: replace top tagged address with its rawLE16 word, depth unchanged, PC=P |
 | `4f` | Configured address model only: store raw top16 as LE16 at RAM+2*signed16(next-to-top), pop two, PC=P |
 | `51` | Explicit service constructor only: write four device-query words through a tagged reference and pop once |
 | `96`, `97` | Pop16 argument, call a ret-only native callee in this build, PC=P |
@@ -299,6 +300,19 @@ fetch: PC stays at opcode+1, with no operand, stack, or memory changes. This
 validation and then selected a static sentinel. No native recovery is claimed.
 
 ## Bounded execution and fault policy
+
+`4e` is supported only with an explicitly configured address space. It replaces
+one raw16 stack address in place with the rawLE16 word resolved through `ReadWord`,
+without changing depth, memory, saved returns or post-fetch PC. Bit14 selects the
+file region; clearing that bit must leave a nonnegative signed16 word index.
+The complete word must fit the chosen global region, including when a read crosses
+symbol boundaries. No descriptor shape or service configuration is required.
+Legacy constructors remain unsupported, checked before underflow. Configured
+execution adds sticky atomic underflow/address faults; ordinary `ReadWord`
+inspection errors remain nonsticky. These checks are host safety policy, not
+native invalid-pointer or error-helper behavior. Depth65 and encoded address zero
+are valid when their backing word exists. Loaded values are data, not recursively
+resolved pointers. This operation does not provide image initialization or startup.
 
 `0d` and `1d` were independently verified across their complete handlers, not
 inferred from adjacent opcodes. Both are one-byte stack-only operations with no

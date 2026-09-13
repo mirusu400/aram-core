@@ -528,6 +528,21 @@ func (v *VM) Step() error {
 		v.stack[v.depth] = value
 		v.depth++
 		v.pc += 2
+	case 0x4e:
+		if v.address == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 1 {
+			return fail(ErrStackUnderflow)
+		}
+		// ReadWord supplies the existing tag, signed-index and full-word rules.
+		// Its inspection error becomes a sticky opcode fault before mutation.
+		value, err := v.ReadWord(v.stack[v.depth-1])
+		if err != nil {
+			return fail(err)
+		}
+		v.stack[v.depth-1] = value // Raw data replaces the address, with no pop.
 	case 0x4d:
 		if v.address == nil {
 			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
