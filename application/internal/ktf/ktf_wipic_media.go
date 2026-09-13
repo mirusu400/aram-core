@@ -70,6 +70,12 @@ const (
 func ktfWIPICHandler(table, slot int) ktfHostHandler {
 	if table == ktfWIPICMasterInput {
 		switch slot {
+		case 0:
+			return ktfWIPICInputHandle
+		case 1:
+			return ktfWIPICInputSetMode
+		case 2:
+			return ktfWIPICInputGetMode
 		case 3:
 			return ktfWIPICInputGetSupportedModeCount
 		case 4:
@@ -306,8 +312,11 @@ func ktfWIPICMediaCreate(
 		runtime.tracef("wipic_media_create_unsupported:type=%q", mediaType)
 		return 0, nil
 	}
-	handle, err := runtime.AllocateWords(24)
-	if err != nil {
+	// The private provider creates its 96-byte clip with MC_knlCalloc.
+	// Return the same indirect memory ID as the kernel allocator: Clet
+	// libraries inspect *handle before issuing playback (issue #279).
+	handle, err := runtime.allocateWIPICMemory(96, true)
+	if err != nil || handle == 0 {
 		return 0, err
 	}
 	serviceID, err := runtime.Services.Media.CreateClip(
@@ -316,7 +325,7 @@ func ktfWIPICMediaCreate(
 		uint64(capacity),
 	)
 	if err != nil {
-		runtime.Heap.Release(handle)
+		runtime.releaseWIPICMemory(handle)
 		return 0, err
 	}
 	runtime.wipicMediaClips[handle] = &ktfWIPICMediaClip{
@@ -357,7 +366,7 @@ func ktfWIPICMediaDestroy(
 	}
 	delete(runtime.wipicMediaClips, handle)
 	delete(runtime.wipicMediaServices, handle)
-	runtime.Heap.Release(handle)
+	runtime.releaseWIPICMemory(handle)
 	return 0, nil
 }
 

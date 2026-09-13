@@ -62,6 +62,7 @@ func (r *Runtime) handleMediaMethodContext(
 					return 0, valueErr
 				}
 				clip.capacity = len(clip.data)
+				clip.bufferArray = array
 				clip.bufferSet = true
 			}
 		} else {
@@ -106,6 +107,7 @@ func (r *Runtime) handleMediaMethodContext(
 			return 0, nil
 		}
 		r.ensureKTFClip(instance).data = nil
+		r.ensureKTFClip(instance).bufferFront = 0
 		return 0, nil
 	case "putData([BII)I":
 		instance, err := r.parameter(1)
@@ -129,7 +131,7 @@ func (r *Runtime) handleMediaMethodContext(
 			return 0, err
 		}
 		clip := r.ensureKTFClip(instance)
-		if clip.capacity > 0 {
+		if clip.bufferSet {
 			remaining := max(clip.capacity-len(clip.data), 0)
 			if len(data) > remaining {
 				data = data[:remaining]
@@ -144,6 +146,11 @@ func (r *Runtime) handleMediaMethodContext(
 		}
 		if _, err := r.Services.Media.Append(r.ServiceOwner, serviceID, data); err != nil {
 			return ^uint32(0), nil
+		}
+		if clip.bufferArray != 0 {
+			if err := r.writeKTFClipBuffer(clip, len(clip.data), data); err != nil {
+				return 0, err
+			}
 		}
 		clip.data = append(clip.data, data...)
 		return uint32(len(data)), nil
@@ -168,9 +175,38 @@ func (r *Runtime) handleMediaMethodContext(
 		if err != nil {
 			return 0, err
 		}
+		available, err := r.Services.Media.AvailableBytes(r.ServiceOwner, serviceID)
+		if err != nil {
+			return ^uint32(0), nil
+		}
+		size := min(uint64(count), available)
+		// Validate before TakeBuffered commits consumption, including aliased destinations.
+		if _, err := r.readJavaByteArrayRange(array, offset, uint32(size)); err != nil {
+			return 0, err
+		}
+		clip := r.ensureKTFClip(instance)
+		var retained []byte
+		if clip.bufferArray != 0 {
+			retained, err = r.readKTFClipBuffer(clip)
+			if err != nil {
+				return 0, err
+			}
+			if available > uint64(len(retained)) {
+				return ^uint32(0), nil
+			}
+		}
 		data, err := r.Services.Media.TakeBuffered(r.ServiceOwner, serviceID, uint64(count))
 		if err != nil {
 			return ^uint32(0), nil
+		}
+		if len(data) > 0 && retained != nil {
+			consumed := len(retained) - int(available)
+			data = append([]byte(nil), retained[consumed:consumed+len(data)]...)
+			remaining := retained[consumed+len(data):]
+			if err := r.Services.Media.ReplaceSource(r.ServiceOwner, serviceID, remaining); err != nil {
+				return 0, err
+			}
+			clip.bufferFront = (clip.bufferFront + consumed + len(data)) % clip.capacity
 		}
 		if err := r.writeJavaByteArrayRange(
 			array,
@@ -179,7 +215,6 @@ func (r *Runtime) handleMediaMethodContext(
 		); err != nil {
 			return 0, err
 		}
-		clip := r.ensureKTFClip(instance)
 		clip.data, _ = r.Services.Media.Source(r.ServiceOwner, serviceID)
 		return uint32(len(data)), nil
 	case "setBuffer([BI)Z":
@@ -222,6 +257,8 @@ func (r *Runtime) handleMediaMethodContext(
 		}
 		clip.data = data
 		clip.capacity = int(length)
+		clip.bufferArray = array
+		clip.bufferFront = 0
 		clip.bufferSet = true
 		return 1, nil
 	case "setVolume(I)Z":
@@ -372,6 +409,28 @@ func (r *Runtime) handleMediaMethodContext(
 		}
 		switch name {
 		case "play":
+			if clip.bufferArray != 0 {
+				info, err := r.Services.Media.Info(r.ServiceOwner, serviceID)
+				if err != nil {
+					return 0, err
+				}
+				if info.State == shared.ClipStopped {
+					data, err := r.readKTFClipBuffer(clip)
+					if err != nil {
+						return 0, err
+					}
+					if !slices.Equal(data, clip.data) {
+						if err := r.Services.Media.ReplaceSource(r.ServiceOwner, serviceID, data); err != nil {
+							return 0, err
+						}
+						clip.data = data
+						// Play retains explicit seek semantics. Do not rewind a stopped cursor.
+						if err := r.Services.Media.Seek(r.ServiceOwner, serviceID, info.Position); err != nil {
+							return 0, err
+						}
+					}
+				}
+			}
 			plays := int32(1)
 			repeat, valueErr := r.parameter(2)
 			if valueErr != nil {
@@ -595,6 +654,18 @@ func (r *Runtime) ensureKTFClipService(
 		return 0, err
 	}
 	r.clipServices[instance] = serviceID
+	clip := r.ensureKTFClip(instance)
+	data, err := r.readKTFClipBuffer(clip)
+	if err != nil {
+		return 0, err
+	}
+	if err := r.Services.Media.ReplaceSource(r.ServiceOwner, serviceID, data); err != nil {
+		return 0, err
+	}
+	clip.data = data
+	if err := r.syncKTFClipGain(instance); err != nil {
+		return 0, err
+	}
 	return serviceID, nil
 }
 
@@ -1315,4 +1386,38 @@ func ktfTimeZoneRuleDate(
 	return time.Date(
 		year, time.Month(month+1), day, 0, 0, 0, int(millis)*1e6, location,
 	)
+}
+
+// readKTFClipBuffer reads the live Java backing array without changing the
+// shared decoder, playback cursor, or logical amount of buffered data.
+func (r *Runtime) readKTFClipBuffer(clip *ktfClip) ([]byte, error) {
+	if clip.bufferArray == 0 {
+		return append([]byte(nil), clip.data...), nil
+	}
+	array, err := r.readJavaByteArray(clip.bufferArray)
+	if err != nil {
+		return nil, err
+	}
+	if clip.capacity != len(array) || len(clip.data) > len(array) || clip.bufferFront < 0 || (len(array) > 0 && clip.bufferFront >= len(array)) || (len(array) == 0 && clip.bufferFront != 0) {
+		return nil, fmt.Errorf("invalid retained media buffer")
+	}
+	data := make([]byte, len(clip.data))
+	for i := range data {
+		data[i] = array[(clip.bufferFront+i)%len(array)]
+	}
+	return data, nil
+}
+func (r *Runtime) writeKTFClipBuffer(clip *ktfClip, offset int, data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	start := (clip.bufferFront + offset) % clip.capacity
+	first := min(len(data), clip.capacity-start)
+	if err := r.writeJavaByteArrayRange(clip.bufferArray, uint32(start), data[:first]); err != nil {
+		return err
+	}
+	if first < len(data) {
+		return r.writeJavaByteArrayRange(clip.bufferArray, 0, data[first:])
+	}
+	return nil
 }

@@ -551,6 +551,16 @@ func ktfIncrementalMemoryFree(
 	return 0, nil
 }
 
+// releaseWIPICMemory releases both levels of a kernel memory ID. Legacy
+// direct bridge allocations retain the single-allocation release behavior.
+func (r *Runtime) releaseWIPICMemory(memoryID uint32) {
+	if allocation, ok := r.wipicMemory[memoryID]; ok {
+		r.Heap.Release(allocation.base)
+		delete(r.wipicMemory, memoryID)
+	}
+	r.Heap.Release(memoryID)
+}
+
 func ktfKernelFree(_ context.Context, runtime *Runtime) (uint32, error) {
 	memoryID, err := runtime.parameter(0)
 	if err != nil {
@@ -559,19 +569,12 @@ func ktfKernelFree(_ context.Context, runtime *Runtime) (uint32, error) {
 	if memoryID == 0 {
 		return 0, nil
 	}
-	if allocation, ok := runtime.wipicMemory[memoryID]; ok {
-		runtime.Heap.Release(allocation.base)
-		runtime.Heap.Release(memoryID)
-		delete(runtime.wipicMemory, memoryID)
-		// MC_knlFree is specified as void, but KTF's ARM provider leaves a
-		// non-zero allocation word in r0. Some carrier Clet support libraries
-		// tail-return that value and use it as a success predicate before
-		// completing their graphics initialization. Preserve the non-zero
-		// memory ID rather than synthesizing zero for the void result.
-		return memoryID, nil
-	}
-	// A few mixed Java/C clients pass a direct bridge allocation here.
-	runtime.Heap.Release(memoryID)
+	runtime.releaseWIPICMemory(memoryID)
+	// MC_knlFree is specified as void, but KTF's ARM provider leaves a
+	// non-zero allocation word in r0. Some carrier Clet support libraries
+	// tail-return that value and use it as a success predicate before
+	// completing their graphics initialization. Preserve the non-zero
+	// memory ID rather than synthesizing zero for the void result.
 	return memoryID, nil
 }
 
