@@ -324,3 +324,33 @@ An independent coordinator rerun passes 49 instruction checkpoints, exact
 MOD/companion identities, unchanged archive checks and eight synthetic span
 policy cases. This is static format evidence, not a decoder test or load/start
 claim. No proprietary decoder, payload or asset is copied into the product.
+
+
+## Indexed-load continuation: opcode03
+
+The independently hash-qualified 62-instruction handler loads raw LE16 from
+a symbol element selected by two unsigned byte operands. Its descriptor count
+is the byte at offset1, not count plus one, and it does not inspect type.
+The checker passed 44 instruction anchors, three complete windows, 67,346
+synthetic guard cases, 65,536 LE16 cases and four integrity negatives.
+No supplied reference executable was run. Transitive error-helper effects
+remain unresolved and are not emulated.
+
+The kernel now supports25 configured opcode values. Host policy requires
+two operands before capacity, symbol index, exact even descriptor shape
+(up to510 bytes), element bounds and a complete-word read. Failures retain
+the established sticky transactional policy. Public constructor/bytecode
+tests cover raw16 values, unsigned indexes, capacity, failure ordering,
+legacy and configured bindings, aliases, memory, returns and budgets.
+
+Rebuilt public decoder/kernel observations on the same nine original SGS
+identities advance the selected c4f6ade5 identity from60 to65 instructions,
+then stop at unsupported4f at727. Other seven v2 cases are unchanged and
+the v1 case remains unsupported. This is descriptor-only kernel progress,
+not reserved-state initialization, a frame, or ordinary product startup.
+
+The frozen public ordered gate, Windows product builds, core Android/Linux/
+macOS builds and official Android binder passed. Same-scope deltas retain
+21 synthetic and496 private rows unchanged. Configured private-all exits1
+with the same six missing KTF/Raptor package prerequisites, so full workspace
+acceptance remains failed. No expectations or product milestones were weakened.

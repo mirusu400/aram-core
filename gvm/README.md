@@ -25,6 +25,7 @@ Every fetched opcode advances PC before its handler.
 | Opcode | Normalized successful behavior |
 | --- | --- |
 | `00` | No operation, PC=P |
+| `03` | u8 symbol, u8 element; push unchanged LE16 at symbol+2*element, PC=P+2 |
 | `04` | u8 symbol, push its first rawLE16 slot, PC=P+1 |
 | `05` | Push signed i8 extended to raw16, PC=P+1 |
 | `06` | Push BE16, PC=P+2 |
@@ -120,6 +121,17 @@ transactional except opcode fetch. This differs from native operand-PC
 publication and its terminal helper/host-cleanup path. Successful writes retain
 shared aliases and can change future instruction fetches. No raw native pointer
 or cleanup behavior is introduced.
+
+`03` is independently hash-verified across its complete 62-instruction handler.
+It consumes two unsigned bytes, checks capacity, symbol index, the element count
+stored at descriptor byte offset1, and starting-address membership, then pushes
+raw LE16. It does not read the descriptor type byte. The count is not incremented.
+The host eagerly requires both operands, then checks capacity and symbol index.
+As with `31`, bindings must have even length at most510 and count exactly len/2;
+invalid shape and element errors remain distinct. This representational policy
+and complete-word containment are not native metadata or error-helper claims.
+Both constructors retain transactional failures with PC=opcode+1. Native partial
+PC/stack publication and transitive error-helper effects are not reproduced.
 
 `04` fetches its u8 symbol index, then checks stack capacity before symbol
 index and pointer range, and pushes the first rawLE16 slot. It has no native

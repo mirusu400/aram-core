@@ -125,6 +125,32 @@ func (v *VM) Step() error {
 	case 0x00:
 	case 0xff:
 		v.halted = true
+	case 0x03:
+		// Host policy eagerly requires both unsigned operands before capacity.
+		if len(v.code)-v.pc < 2 {
+			return fail(ErrTruncated)
+		}
+		index, element := int(v.code[v.pc]), int(v.code[v.pc+1])
+		if v.depth >= len(v.stack) {
+			return fail(ErrStackOverflow)
+		}
+		if index >= len(v.symbols) {
+			return fail(ErrInvalidSymbol)
+		}
+		region := v.symbols[index]
+		// As for 31, exact span length must represent a uint8 word count.
+		// This is host shape policy, not native descriptor validation.
+		if len(region)%2 != 0 || len(region) > 510 {
+			return fail(ErrInvalidSymbolRegion)
+		}
+		if element >= len(region)/2 {
+			return fail(ErrInvalidElement)
+		}
+		// The validated element guarantees a full word within this bound span.
+		value := binary.LittleEndian.Uint16(region[2*element : 2*element+2])
+		v.stack[v.depth] = value
+		v.depth++
+		v.pc += 2
 	case 0x04:
 		if len(v.code)-v.pc < 1 {
 			return fail(ErrTruncated)
