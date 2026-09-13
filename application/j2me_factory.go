@@ -46,5 +46,8 @@ func (f Factory) createJ2MEMachine(ctx context.Context, source machinecore.Sourc
 	}
 	source.SHA256 = digest
 	machine, err := skvmhost.NewJ2ME(ctx, source, pkg, f.FramebufferSize, f.OutputSampleRate, f.OutputChannels)
+	if errors.Is(err, skvmhost.ErrUnsupportedProfile) {
+		return nil, true, fmt.Errorf("%w: %w", ErrUnsupportedSource, err)
+	}
 	return machine, true, err
 }
