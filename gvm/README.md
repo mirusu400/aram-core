@@ -51,6 +51,7 @@ Every fetched opcode advances PC before its handler.
 | `3d` | Pop16; if signed16(top)>=signed8(P), jump B+BE16(P+1), otherwise P+3; equality branches |
 | `3e` | Pop16; if signed16(top)<=signed8(P), jump B+BE16(P+1), otherwise P+3; equality branches |
 | `3f` | Pop16; if raw16(top)==signextended8(P), jump B+BE16(P+1), otherwise P+3 |
+| `40` | Pop16; if raw16(top)!=signextended8(P), jump B+BE16(P+1), otherwise P+3 |
 | `41` | PC=B+BE16(P) |
 | `42` | Pop16, jump B+BE16(P) if nonzero, otherwise P+2 |
 | `43` | Pop16, jump B+BE16(P) if zero, otherwise P+2 |
@@ -66,6 +67,15 @@ Every fetched opcode advances PC before its handler.
 | `b5` | Configured address model only: forward live-source operation on two tagged word arrays, pop four, PC=P |
 | `b9` | Explicit service constructor only: write local hour/minute/second/millisecond from one virtual-clock sample and pop once |
 | `ff` | Exit current dispatch, PC=P |
+
+`40` compares against the sign-extended immediate before selecting its unsigned
+BE16 whole-buffer target. Equal values fall through, unequal values branch.
+The host shares the existing immediate-branch policy: require all three operand
+bytes before underflow, validate only a taken target, then commit one pop and
+PC update. Native code instead publishes the pop before conditional target reads
+and retains backing. Existing host popped-slot zeroing remains intentional
+hygiene, not reference backing parity; growing `0c` is still unsupported.
+No initialization, presentation or game-start milestone follows from this branch.
 
 Immediate stores `31/36` and returns do not alter S; `0a` pops its stored value.
 The signed operand top starts at -1, and
