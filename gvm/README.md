@@ -35,6 +35,7 @@ Every fetched opcode advances PC before its handler.
 | `1f` | Signed16 a>=b, replacing a,b with canonical zero or one |
 | `31` | u8 symbol, u8 element, signed i8 immediate; store signextended LE16 at symbol+2*element, PC=P+3 |
 | `36` | u8 symbol, signed i8 immediate; store signextended LE16 at symbol start, PC=P+2 |
+| `3c` | Pop16; if signed16(top)<signed8(P), jump B+BE16(P+1), otherwise P+3 |
 | `41` | PC=B+BE16(P) |
 | `42` | Pop16, jump B+BE16(P) if nonzero, otherwise P+2 |
 | `43` | Pop16, jump B+BE16(P) if zero, otherwise P+2 |
@@ -128,6 +129,16 @@ fetch: PC stays at opcode+1, with no operand, stack, or memory changes. This
 validation and then selected a static sentinel. No native recovery is claimed.
 
 ## Bounded execution and fault policy
+
+The hash-qualified `3c` handler was independently checked on 2026-09-13.
+Its encoding is four bytes including the opcode. Equality falls through, and
+both paths pop once without touching guest memory or the saved-PC stack.
+It does not use tagged addresses or require a configured address space.
+Native code publishes the pop before reading a taken target and skips target
+reads when not taken. The kernel instead eagerly requires all three immediate
+bytes and validates a taken target before committing the pop. These are
+explicit safety-policy differences, not observed native error behavior.
+This static contract does not establish handset fidelity or game startup.
 
 - `Step()` executes at most one instruction. `Run(uint64)` executes at most its
   instruction budget. `ErrBudget` is resumable, not sticky. Zero budget is

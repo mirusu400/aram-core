@@ -100,7 +100,7 @@ MOD identity, same-archive companion and unchanged archive/APK hashes. These
 are static interoperability checks, not execution tests. BREW product behavior
 remains recognition-only.
 
-## GVM acceptance and remaining boundary
+## Address-space checkpoint acceptance and remaining boundary
 
 | Requirement | Observed check |
 |---|---|
@@ -115,6 +115,48 @@ remains recognition-only.
 The independent frozen review found no semantic blockers. Three 15-second
 fuzz runs passed for address-space execution, bounded execution and image
 decoding. These are additional robustness checks, not handset equivalence.
-The new kernel has 20 supported opcode values with an explicitly configured
-address space. Further numeric operations, reserved state, events and graphics
+At this address-space checkpoint the kernel had 20 supported opcode values
+with an explicitly configured address space. Further numeric operations,
+reserved state, events and graphics
 are still required before any GVM game-startup claim.
+
+## Subsequent signed-immediate branch checkpoint
+
+Opcode `0x3c` adds one supported opcode value. For the same reference hash,
+the verified four-byte encoding is opcode, signed8 comparison immediate and
+unsigned BE16 whole-buffer target. It pops once on both paths and branches
+only when signed16 top is strictly less than the immediate. It does not touch
+symbols, resolve tagged addresses, call host helpers or alter the saved-PC stack.
+The kernel's eager operand-span check and transactional failure policy differ
+explicitly from native lazy target reads and publication of the pop before a
+taken target read. See [kernel policy](../gvm/README.md).
+
+Tests failed with unsupported `0x3c` before implementation and then passed.
+The owning matrix checks signed extremes/equality, both paths, full stack,
+big-endian absolute targets, unused invalid targets, eager truncation, exact
+sticky faults, memory/return preservation and instruction budgets.
+
+The same public decoder/address-space kernel was rebuilt before and after the
+change and run against the same nine in-place original SGS identities. One v1
+remains unsupported. The selected v2 SHA above advances from 15 to **43**
+successful instructions and now rejects `0x0a` at offset **669**. The other
+seven v2 observations are unchanged, with no new bounded safety faults. This
+still uses descriptor initialization only, not the product Machine path or
+reserved runtime initialization. Neither a frame nor a game-startup milestone
+is established by this progress.
+
+The subsequent frozen-source ordered gate passed core, runner, frontend and
+integration tests/vet, synthetic 20/20, Windows product builds, core portability
+builds and the official Android binder. Same-scope product deltas again show
+21 and 496 unchanged rows. The configured private command still exits 1 for
+the same six missing KTF/Raptor prerequisites. Its triage still reports 358
+BREW and nine GVM inputs as execution unsupported. No product-level milestone
+was promoted to conceal this missing integration.
+
+| Branch requirement | Concrete observation |
+|---|---|
+| Signed comparison, byte order and absolute target | Owning Step/Run matrix and nonzero-entry target tests pass; the unchanged-hash original progresses 15 to 43 instructions through public kernel APIs. |
+| No state mutation on rejected input | Truncation, underflow and taken-target tests preserve operands, memory and saved PCs, and repeated calls retain exact sticky error/PC. |
+| Untaken target and budget behavior | Unused invalid targets fall through; end-of-buffer faults on the next fetch; zero/one budgets and resume tests pass. |
+| Existing product boundaries | Ordinary synthetic gate and same-scope reports remain unchanged; BREW/GVM product startup is still unsupported. |
+| Portability and collateral regression | Full public ordered gate, Windows builds, official Android binder and focused 386 tests pass; private prerequisite failure remains explicit. |
