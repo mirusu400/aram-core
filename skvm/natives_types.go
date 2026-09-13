@@ -71,6 +71,8 @@ type outputStreamState struct {
 	file       *xFileState
 	name       string
 	connection uint32
+	appendMode bool
+	closed     bool
 }
 
 type audioClipState struct {

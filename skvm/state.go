@@ -417,6 +417,7 @@ func snapshotNative(
 			Kind: "output-stream", Data: append([]byte(nil), state.data...),
 			Text: state.name, Reference: link,
 			References: []uint32{state.connection},
+			Flag:       state.closed, Integer: int32(boolInt(state.appendMode)),
 		}, nil
 	case *socketConnectionState:
 		return nativeState{
@@ -952,6 +953,9 @@ func restoreNative(saved nativeState) (any, nativeLink, error) {
 	case "x-text-field":
 		return &xTextFieldState{text: saved.Text, focus: saved.Flag}, nativeLink{}, nil
 	case "output-stream":
+		if saved.Integer < 0 || saved.Integer > 1 || saved.Integer != 0 && saved.Text == "" {
+			return nil, nativeLink{}, fmt.Errorf("invalid output stream append mode")
+		}
 		connection := uint32(0)
 		if len(saved.References) > 1 {
 			return nil, nativeLink{}, fmt.Errorf("invalid output stream references")
@@ -962,6 +966,7 @@ func restoreNative(saved nativeState) (any, nativeLink, error) {
 		return &outputStreamState{
 			data: append([]byte(nil), saved.Data...), name: saved.Text,
 			connection: connection,
+			closed:     saved.Flag, appendMode: saved.Integer != 0,
 		}, nativeLink{file: saved.Reference}, nil
 	case "socket-connection":
 		if saved.Flag && saved.Service != 0 || !saved.Flag && saved.Service == 0 {
@@ -1315,12 +1320,11 @@ func (vm *VM) validateNative(reference uint32, native any) error {
 		}
 		if state.name != "" {
 			normalized, err := vm.services.Storage.NormalizePath(state.name)
-			data, readErr := vm.services.Storage.ReadFile(
-				shared.NamespacePrivate,
-				state.name,
-			)
+			// Other handles may append, truncate, or unlink the file. The
+			// stream buffer records its position, not authoritative VFS data.
 			if err != nil || normalized != state.name ||
-				readErr != nil || !bytes.Equal(data, state.data) {
+				uint64(len(state.data)) > vm.services.Config.Limits.Storage.MaxFileBytes ||
+				state.connection != 0 || state.file != nil {
 				return fmt.Errorf(
 					"load SKVM state: object %d invalid output file",
 					reference,

@@ -748,6 +748,12 @@ func (vm *VM) refreshSocketInput(state *inputStreamState) error {
 }
 
 func (vm *VM) writeOutputStream(state *outputStreamState, data []byte) error {
+	if state.closed {
+		return vm.newThrowable("java/io/IOException", "stream closed")
+	}
+	if state.name != "" {
+		return vm.writeXCEFileStream(state, data)
+	}
 	if state.connection != 0 {
 		object, ok := vm.Object(state.connection)
 		if !ok {
@@ -815,12 +821,5 @@ func (vm *VM) writeOutputStream(state *outputStreamState, data []byte) error {
 		return vm.persistXFile(state.file)
 	}
 	state.data = append(state.data, data...)
-	if state.name != "" {
-		return vm.services.Storage.WriteFile(
-			shared.NamespacePrivate,
-			state.name,
-			state.data,
-		)
-	}
 	return nil
 }
