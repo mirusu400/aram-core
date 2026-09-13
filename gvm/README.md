@@ -48,6 +48,7 @@ Every fetched opcode advances PC before its handler.
 | `3c` | Pop16; if signed16(top)<signed8(P), jump B+BE16(P+1), otherwise P+3 |
 | `3d` | Pop16; if signed16(top)>=signed8(P), jump B+BE16(P+1), otherwise P+3; equality branches |
 | `3e` | Pop16; if signed16(top)<=signed8(P), jump B+BE16(P+1), otherwise P+3; equality branches |
+| `3f` | Pop16; if raw16(top)==signextended8(P), jump B+BE16(P+1), otherwise P+3 |
 | `41` | PC=B+BE16(P) |
 | `42` | Pop16, jump B+BE16(P) if nonzero, otherwise P+2 |
 | `43` | Pop16, jump B+BE16(P) if zero, otherwise P+2 |
@@ -374,6 +375,17 @@ or saved-PC stores were checked across the complete handler. The same eager
 operand/underflow/taken-target guards and atomic commit are host safety policy,
 not the native early pop and lazy target reads. `3c` and `3e` retain their
 separate predicates.
+
+`3f` is independently hash-verified across its complete handler. It compares
+raw16 top against the sign-extended immediate8 for equality, not unsigned8 or
+an ordering predicate. Thus immediate80 matches ff80, not0080. Both paths pop
+once; equality selects an unsigned BE16 whole-buffer target, while inequality
+falls through four bytes from the opcode. Eager three-byte framing precedes
+underflow, and only a taken target is range-checked before committing the pop.
+Depth65 is valid. These sticky atomic guards and clearing the vacated stack slot
+are host safety/hygiene, not native early-pop or unchecked-memory behavior.
+SavedTop/valid, returns, guest memory and existing branch predicates are unchanged.
+No configured address space, service, runtime initialization or startup is implied.
 
 - `Step()` executes at most one instruction. `Run(uint64)` executes at most its
   instruction budget. `ErrBudget` is resumable, not sticky. Zero budget is
