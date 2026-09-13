@@ -324,7 +324,7 @@ func (v *VM) Step() error {
 		value := uint16(int16(int8(v.code[v.pc+1])))
 		binary.LittleEndian.PutUint16(v.symbols[index][:2], value)
 		v.pc += 2
-	case 0x3c:
+	case 0x3c, 0x3e:
 		// Host safety policy eagerly requires all operands, even on fallthrough,
 		// and validates before committing the pop. These differ from lazy target
 		// reads and a pre-target pop; they are not native error-order claims.
@@ -335,6 +335,9 @@ func (v *VM) Step() error {
 			return fail(ErrStackUnderflow)
 		}
 		taken := int16(v.stack[v.depth-1]) < int16(int8(v.code[v.pc]))
+		if op == 0x3e {
+			taken = int16(v.stack[v.depth-1]) <= int16(int8(v.code[v.pc]))
+		}
 		target := int(binary.BigEndian.Uint16(v.code[v.pc+1 : v.pc+3]))
 		if taken && target >= len(v.code) {
 			return fail(ErrInvalidTarget)

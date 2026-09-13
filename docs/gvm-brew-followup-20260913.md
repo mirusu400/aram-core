@@ -212,3 +212,45 @@ The configured private command still exits1 with the same six missing
 KTF/Raptor prerequisites. The independent frozen review found no blockers by
 inspection. These results do not make the full private gate green or establish
 GVM/BREW game startup.
+
+## Subsequent less-than-or-equal branch checkpoint
+
+The same hash-qualified reference independently establishes `0x3e` as a
+four-byte signed16-top <= signed8-immediate branch. Equality takes the BE16
+whole-buffer target; both paths pop once. The complete 22-instruction handler
+has no helper calls, guest-memory stores or saved-PC accesses. Its native JG
+selects fallthrough. The coordinator independently reran the checker: 28
+instruction anchors, two complete windows, all 16,777,216 signed comparison
+pairs, 65,536 targets and identity-negative checks pass. These are static
+specification checks, not execution of the supplied reference.
+
+The implementation shares the existing `3c` handler but preserves its strict
+comparison. Eager three-byte validation, underflow, taken-only target bounds
+and atomic commit remain explicit host policy, not native failure ordering.
+Tests first failed with unsupported `3e`, then passed. The new external-package
+tests establish operands and nested calls using public constructors and guest
+bytecode rather than private VM-state injection.
+
+The same nine in-place original identities were compared before and after the
+change through public decoder/address-space APIs. Selected SHA
+`c4f6ade5193dec699654fc2cb488af4cd131152fe14fa27c384c1d36ec47656e`
+advances from **45 to 52** successful instructions and then rejects `0x3d` at
+**702**. The other seven v2 inputs are unchanged and the v1 input remains
+unsupported. No new bounded safety fault appears. This remains descriptor-only
+execution, without reserved initialization, services, rendering or an ordinary
+Machine launch. The configured kernel now supports 23 opcode values, not games.
+
+| Less-or-equal requirement | Concrete observation |
+|---|---|
+| Signed predicate and equality, one pop and prefix | `TestBranchLessEqualSignedMatrix` passes at depths1/65 with signed extremes and equality. Existing `TestBranchImmediate` tests also pass, preserving strict `3c`. |
+| Whole-buffer BE16 targets | `TestBranchLessEqualAbsoluteTargets` passes from nonzero entry for targets0/0x1234/0x8001/0xffff, followed by actual target fetch. |
+| Bounded faults and stepping | `TestBranchLessEqualHostFaultOrder`, `UnusedTargetsEndFetch` and `Budget` pass for eager truncation, underflow, taken/unused targets, exact sticky PC/state, end fetch and resume. |
+| Guest memory and saved returns | `TestBranchLessEqualMemoryAndCallReturnPreserved` passes with file/RAM readback and two nested bytecode returns on both branch paths. |
+| Original decoder/kernel integration | Same-hash before/after execution progresses45 to52 as above; no frame/startup milestone is inferred. |
+| Ordinary product and portability | Frozen ordered core/runner/frontend/integration tests/vet and synthetic20/20 pass. Windows builds, core Android/Linux/Darwin, official Android binder and focused386 tests pass. Product deltas retain21/496 unchanged rows. |
+
+The configured private command still exits1 for the same six missing
+KTF/Raptor prerequisites. Triage still contains358 BREW and9 GVM execution
+unsupported results. Independent frozen review found no blocking findings by
+inspection. Neither green public checks nor unchanged product reports close
+the outstanding all-platform game-startup goal.

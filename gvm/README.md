@@ -37,6 +37,7 @@ Every fetched opcode advances PC before its handler.
 | `31` | u8 symbol, u8 element, signed i8 immediate; store signextended LE16 at symbol+2*element, PC=P+3 |
 | `36` | u8 symbol, signed i8 immediate; store signextended LE16 at symbol start, PC=P+2 |
 | `3c` | Pop16; if signed16(top)<signed8(P), jump B+BE16(P+1), otherwise P+3 |
+| `3e` | Pop16; if signed16(top)<=signed8(P), jump B+BE16(P+1), otherwise P+3; equality branches |
 | `41` | PC=B+BE16(P) |
 | `42` | Pop16, jump B+BE16(P) if nonzero, otherwise P+2 |
 | `43` | Pop16, jump B+BE16(P) if zero, otherwise P+2 |
@@ -158,6 +159,17 @@ reads when not taken. The kernel instead eagerly requires all three immediate
 bytes and validates a taken target before committing the pop. These are
 explicit safety-policy differences, not observed native error behavior.
 This static contract does not establish handset fidelity or game startup.
+
+`3e` was independently verified against the same hash, rather than inferred
+from its neighboring opcode. Its four-byte encoding and single-pop behavior
+match this branch form, but its signed comparison is **less than or equal**.
+The native JG selects fallthrough, so equality takes the absolute BE16 target.
+It has no helper calls or guest-memory/saved-PC stores. The same eager
+three-byte validation, underflow and taken-only target checks are explicit
+host policy; native code publishes its pop before lazy target reads. The
+checker covers the complete handler, all signed16/signed8 comparison pairs,
+and all BE16 target values. These checks are static specification evidence,
+not reference execution or a product-startup milestone.
 
 - `Step()` executes at most one instruction. `Run(uint64)` executes at most its
   instruction budget. `ErrBudget` is resumable, not sticky. Zero budget is
