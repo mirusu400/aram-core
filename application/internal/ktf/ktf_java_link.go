@@ -1299,6 +1299,25 @@ func (r *Runtime) resolveJavaMethod(
 		}
 	}
 	if r.hostJavaClass[class.Address] {
+		// A missing host declaration may be inherited, not an unsupported
+		// method on this class. In particular Card.getClass/wait/notify must
+		// use Object's implementation rather than a synthesized Card no-op.
+		// Only search existing declarations: recursively creating a fallback
+		// on the parent would incorrectly move genuinely unknown selectors.
+		if !strings.HasPrefix(name, "<") &&
+			!ktfHostSpecDeclaresJavaMethod(class.Name, name, descriptor) {
+			parent := class.Parent
+			for depth := 0; parent != 0 && depth < 256; depth++ {
+				ancestor, err := r.InspectJavaClass(parent)
+				if err != nil {
+					return 0, err
+				}
+				if _, ok := findKTFJavaMethod(ancestor, name, descriptor); ok {
+					return r.resolveJavaMethod(parent, name, descriptor)
+				}
+				parent = ancestor.Parent
+			}
+		}
 		return r.addHostJavaMethod(class, name, descriptor)
 	}
 	if class.Parent != 0 {
