@@ -31,11 +31,13 @@ Every fetched opcode advances PC before its handler.
 | `06` | Push BE16, PC=P+2 |
 | `09` | u8 symbol, u8 element; store raw top16 as LE16 at symbol+2*element, pop once, PC=P+2; depth65 rejected |
 | `0a` | u8 symbol; store raw top16 as LE16 at symbol start, pop once, PC=P+1; depth65 rejected |
+| `0d` | Increment top16 modulo65536 without popping or operands, PC=P; depth65 accepted |
 | `0e` | Decrement top16 modulo65536 without popping or operands, PC=P; depth65 accepted |
 | `12` | Replace a=S[top-1], b=S[top] with low16(a+b) |
 | `13` | Replace a,b with low16(a-b) |
 | `14` | Replace a,b with low16(a*b) |
 | `15` | Signed32 division of signextended16 a/b, truncating toward zero, retain low16 |
+| `1d` | Signed16 a>b, replacing a,b with canonical zero or one; equality is false |
 | `1f` | Signed16 a>=b, replacing a,b with canonical zero or one |
 | `31` | u8 symbol, u8 element, signed i8 immediate; store signextended LE16 at symbol+2*element, PC=P+3 |
 | `35` | u8 destination symbol, u8 source symbol; copy first rawLE16 word, no stack effects, PC=P+2 |
@@ -297,6 +299,16 @@ fetch: PC stays at opcode+1, with no operand, stack, or memory changes. This
 validation and then selected a static sentinel. No native recovery is claimed.
 
 ## Bounded execution and fault policy
+
+`0d` and `1d` were independently verified across their complete handlers, not
+inferred from adjacent opcodes. Both are one-byte stack-only operations with no
+inline data, symbol access, direct PC change or saved-return effects. `0d` changes
+only the top raw16 value, wrapping ffff to0000. `1d` compares the next-to-top
+signed16 value against the top signed16 value using strict greater-than, stores
+canonical zero/one in the lower slot and pops once. Equality is false and operand
+order matters. Depth65 is valid for both operations. The host adds sticky atomic
+underflow faults at depths below1 or2 respectively; native invalid stack indices
+were unchecked. Clearing `1d`'s popped backing slot is host hygiene only.
 
 The hash-qualified `3c` handler was independently checked on 2026-09-13.
 Its encoding is four bytes including the opcode. Equality falls through, and

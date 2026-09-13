@@ -129,6 +129,24 @@ func (v *VM) Step() error {
 	case 0x00:
 	case 0xff:
 		v.halted = true
+	case 0x0d:
+		// This changes the top WORD, not the depth. Depth65 is valid.
+		if v.depth == 0 {
+			return fail(ErrStackUnderflow)
+		}
+		v.stack[v.depth-1]++
+	case 0x1d:
+		if v.depth < 2 {
+			return fail(ErrStackUnderflow)
+		}
+		a, b := v.stack[v.depth-2], v.stack[v.depth-1]
+		var value uint16
+		if int16(a) > int16(b) {
+			value = 1
+		}
+		v.stack[v.depth-2] = value
+		v.depth--
+		v.stack[v.depth] = 0 // Host hygiene, not native semantics.
 	case 0x0e:
 		// Native DEC word changes only top16; lower-bound safety is host policy.
 		if v.depth == 0 {
