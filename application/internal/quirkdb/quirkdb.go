@@ -195,9 +195,26 @@ type SKVMCanvas struct {
 	// framebuffer, matching an SKT handset that reserved a system strip while
 	// drawing still covered the complete display.
 	CanvasHeightInset16 bool
+	// InclusiveSetClip interprets nonnegative setClip extents as inclusive
+	// offsets, matching selected pre-MIDP-2 handset implementations.
+	InclusiveSetClip bool
 }
 
 var SKVMCanvases = []SKVMCanvas{
+	{
+		// Monster Boy's clip wrapper passes tile extents 15,15 for a 16x16
+		// tile. Its alternate handset branch adds one to each extent, but
+		// this shipped build selects the inclusive handset branch (#296).
+		// Do not change standard MIDP clipping for any unlisted package.
+		Key: SKVMTitleKey{
+			PackageSHA256: "c6cadf75c454638e2c14f7549a2062e7c37680c1eaf9536ec0d4bfb20acfe3c2",
+			MainClass:     "Game",
+			ProgramName:   "0052335225",
+		},
+		InferredWidth:    240,
+		InferredHeight:   320,
+		InclusiveSetClip: true,
+	},
 	{
 		// 드래곤나이트EX (Dragon Knight EX) targets an SKT handset where
 		// Canvas.getHeight() excluded a 16-pixel system strip while drawing

@@ -7,6 +7,10 @@ import (
 	shared "github.com/mirusu400/aram-core/runtime"
 )
 
+// InclusiveSetClipQuirk preserves an explicitly selected legacy handset's
+// inclusive setClip extents. Standard MIDP and clipRect remain half-open.
+const InclusiveSetClipQuirk = "skvm.graphics-inclusive-setclip"
+
 func (vm *VM) ScreenGraphics() uint32 {
 	if vm.screenGraphics == 0 {
 		vm.screenGraphics = vm.NewObject(
@@ -261,13 +265,18 @@ func nativeSetClip(
 	if err != nil {
 		return Value{}, false, err
 	}
-	state.Clip = graphicsClipRectangle(
+	clipWidth, clipHeight := int64(width), int64(height)
+	if vm.services.Device.Quirk(InclusiveSetClipQuirk) && width >= 0 && height >= 0 {
+		clipWidth++
+		clipHeight++
+	}
+	state.Clip = graphicsClipRectangleExtents(
 		graphics,
 		state,
 		int32(x),
 		int32(y),
-		int32(width),
-		int32(height),
+		clipWidth,
+		clipHeight,
 	)
 	err = vm.services.Graphics.SetDrawState(
 		vm.serviceOwner,
@@ -378,6 +387,15 @@ func graphicsClipRectangle(
 	graphics *graphicsState,
 	state shared.SurfaceDrawState,
 	x, y, width, height int32,
+) shared.Rectangle {
+	return graphicsClipRectangleExtents(graphics, state, x, y, int64(width), int64(height))
+}
+
+func graphicsClipRectangleExtents(
+	graphics *graphicsState,
+	state shared.SurfaceDrawState,
+	x, y int32,
+	width, height int64,
 ) shared.Rectangle {
 	if width <= 0 || height <= 0 {
 		return shared.Rectangle{}
