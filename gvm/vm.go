@@ -160,6 +160,17 @@ func (v *VM) Step() error {
 			return fail(ErrStackUnderflow)
 		}
 		v.stack[v.depth-1]--
+	case 0x0f:
+		// Native checks capacity first; empty-stack rejection is host safety.
+		if v.depth >= len(v.stack) {
+			return fail(ErrStackOverflow)
+		}
+		if v.depth == 0 {
+			return fail(ErrStackUnderflow)
+		}
+		value := v.stack[v.depth-1]
+		v.stack[v.depth] = value
+		v.depth++
 	case 0x03:
 		// Host policy eagerly requires both unsigned operands before capacity.
 		if len(v.code)-v.pc < 2 {

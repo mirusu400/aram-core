@@ -34,6 +34,7 @@ Every fetched opcode advances PC before its handler.
 | `0b` | Copy signed top index depth-1 to a private32-bit scalar, no stack effects or inline operands, PC=P |
 | `0d` | Increment top16 modulo65536 without popping or operands, PC=P; depth65 accepted |
 | `0e` | Decrement top16 modulo65536 without popping or operands, PC=P; depth65 accepted |
+| `0f` | Duplicate raw top16, depth64 grows to65, empty/overflow fault under host policy, PC=P |
 | `12` | Replace a=S[top-1], b=S[top] with low16(a+b) |
 | `13` | Replace a,b with low16(a-b) |
 | `14` | Replace a,b with low16(a*b) |
@@ -301,6 +302,15 @@ fetch: PC stays at opcode+1, with no operand, stack, or memory changes. This
 validation and then selected a static sentinel. No native recovery is claimed.
 
 ## Bounded execution and fault policy
+
+`0f` duplicates the raw16 top word without interpreting it as an address. Capacity
+is checked before reading the source: depth64 grows to65, while depth65 faults.
+The host additionally rejects depth0 rather than reproducing the native unchecked
+read below the operand stack. After validation the source is cached, copied into
+the next slot, and depth grows once. Lower words, guest memory, savedTop/valid,
+symbol bindings and saved returns remain unchanged. There are no inline operands,
+configuration requirements or extra PC changes. Existing sticky fault, budget and
+post-fetch PC rules apply; the native error helper is not emulated.
 
 `0b` copies the current signed operand top index, `depth-1`, into one private
 32-bit scalar. Empty depth records -1 and depth65 records64. Repetition overwrites
