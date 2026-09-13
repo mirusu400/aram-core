@@ -7,9 +7,18 @@ import (
 )
 
 func (g *Graphics) Line(owner OwnerID, id ServiceID, x0, y0, x1, y1 int32, color Color) error {
+	return g.line(owner, id, x0, y0, x1, y1, color, nil)
+}
+
+// line allows Polygon to share coverage across its inclusive outline edges
+// without changing the line rasterization or the public Line contract.
+func (g *Graphics) line(owner OwnerID, id ServiceID, x0, y0, x1, y1 int32, color Color, plot func(int32, int32) error) error {
 	current, err := g.get(id, owner)
 	if err != nil {
 		return err
+	}
+	if plot == nil {
+		plot = func(x, y int32) error { return drawSurfacePixel(current, x, y, color) }
 	}
 	currentX, currentY := int64(x0), int64(y0)
 	targetX, targetY := int64(x1), int64(y1)
@@ -29,7 +38,7 @@ func (g *Graphics) Line(owner OwnerID, id ServiceID, x0, y0, x1, y1 int32, color
 	}
 	lineError := dx + dy
 	for {
-		if err := drawSurfacePixel(current, int32(currentX), int32(currentY), color); err != nil {
+		if err := plot(int32(currentX), int32(currentY)); err != nil {
 			return err
 		}
 		if currentX == targetX && currentY == targetY {
@@ -253,6 +262,38 @@ func (g *Graphics) Polygon(
 			maximumY-minimumY > math.MaxInt64/(maximumX-minimumX))) {
 		return fmt.Errorf("%w: polygon fill exceeds raster work limit", ErrLimitExceeded)
 	}
+	plot := func(x, y int32) error { return drawSurfacePixel(current, x, y, color) }
+	if current.state.GlobalTransparency256 != 0 {
+		// Scanline endpoints, outline edges and vertices can all overlap. Keep
+		// their full union (outlines also add pixels not in the fill), but blend
+		// each pixel only once for the opt-in 256-scale alpha contract. Legacy
+		// drawing retains its original repeated coverage, including raster ops.
+		left := max(minimumX+int64(current.state.TranslateX), int64(current.state.Clip.X), 0)
+		top := max(minimumY+int64(current.state.TranslateY), int64(current.state.Clip.Y), 0)
+		right := min(maximumX+int64(current.state.TranslateX)+1, current.state.Clip.Right(), int64(current.descriptor.Width))
+		bottom := min(maximumY+int64(current.state.TranslateY)+1, current.state.Clip.Bottom(), int64(current.descriptor.Height))
+		if left >= right || top >= bottom {
+			return nil
+		}
+		// A bit per visible bounding-box pixel bounds scratch storage by the
+		// already validated surface size, even for mostly offscreen polygons.
+		width := uint64(right - left)
+		covered := make([]byte, (width*uint64(bottom-top)+7)/8)
+		plot = func(x, y int32) error {
+			tx := int64(x) + int64(current.state.TranslateX)
+			ty := int64(y) + int64(current.state.TranslateY)
+			if tx < left || tx >= right || ty < top || ty >= bottom {
+				return nil
+			}
+			index := uint64(ty-top)*width + uint64(tx-left)
+			bit := byte(1 << (index % 8))
+			if covered[index/8]&bit != 0 {
+				return nil
+			}
+			covered[index/8] |= bit
+			return drawSurfacePixel(current, x, y, color)
+		}
+	}
 	if fill && len(points) >= 3 {
 		nodes := make([]int64, 0, len(points))
 		for row := minimumY; row <= maximumY; row++ {
@@ -281,11 +322,9 @@ func (g *Graphics) Polygon(
 						row < math.MinInt32 || row > math.MaxInt32 {
 						continue
 					}
-					if err := drawSurfacePixel(
-						current,
+					if err := plot(
 						int32(column),
 						int32(row),
-						color,
 					); err != nil {
 						return err
 					}
@@ -294,11 +333,11 @@ func (g *Graphics) Polygon(
 		}
 	}
 	if len(points) == 1 {
-		return drawSurfacePixel(current, points[0].X, points[0].Y, color)
+		return plot(points[0].X, points[0].Y)
 	}
 	for index, point := range points {
 		next := points[(index+1)%len(points)]
-		if err := g.Line(
+		if err := g.line(
 			owner,
 			id,
 			point.X,
@@ -306,6 +345,7 @@ func (g *Graphics) Polygon(
 			next.X,
 			next.Y,
 			color,
+			plot,
 		); err != nil {
 			return err
 		}
