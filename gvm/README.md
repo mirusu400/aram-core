@@ -32,6 +32,7 @@ Every fetched opcode advances PC before its handler.
 | `09` | u8 symbol, u8 element; store raw top16 as LE16 at symbol+2*element, pop once, PC=P+2; depth65 rejected |
 | `0a` | u8 symbol; store raw top16 as LE16 at symbol start, pop once, PC=P+1; depth65 rejected |
 | `0b` | Copy signed top index depth-1 to a private32-bit scalar, no stack effects or inline operands, PC=P |
+| `0c` | Partial support: after observed `0b`, restore a valid non-growing depth from the saved index without changing backing words, PC=P |
 | `0d` | Increment top16 modulo65536 without popping or operands, PC=P; depth65 accepted |
 | `0e` | Decrement top16 modulo65536 without popping or operands, PC=P; depth65 accepted |
 | `0f` | Duplicate raw top16, depth64 grows to65, empty/overflow fault under host policy, PC=P |
@@ -322,6 +323,25 @@ policy because the reference scalar's initial value, reset and cross-dispatch
 lifetime have not been established. No consumer, serialization, clone or reset
 semantics are inferred. Internal tests verify the actual hidden write in addition
 to public execution checks; unchanged public stack output alone would not prove it.
+
+`0c` has deliberately partial support. Its independently verified native handler
+assigns the saved32-bit scalar to the operand top index, without copying values,
+clearing storage, consuming the marker or changing PC beyond opcode fetch. The
+host supports this only after an observed `0b`, with the saved index in -1..64
+and the resulting depth no greater than the current live depth. Bounds are checked
+before adding one. Success changes only depth and preserves all backing words,
+including newly hidden words, marker validity/value, returns, memory and symbols.
+A post-save word mutation remains visible: this is not a historical snapshot.
+
+Missing, invalid or growing markers retain sticky `UnsupportedOpcodeError` with
+the instruction offset and post-fetch PC. These are unsupported host domains,
+not native validity guards. The native operation can re-expose backing words,
+but existing host pops clear discarded slots and full native backing/lifecycle
+provenance is unresolved. No zero-fill, whole-stack snapshot, global pop-clearing
+change or guessed initial marker is used to conceal that gap. A standalone `0c`
+therefore remains unsupported, including in the exhaustive unknown-opcode test.
+Repeated supported restores preserve the marker; a later `0b` overwrites it.
+This restriction advances neither reset/save-state support nor product startup.
 
 `4e` is supported only with an explicitly configured address space. It replaces
 one raw16 stack address in place with the rawLE16 word resolved through `ReadWord`,

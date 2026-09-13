@@ -134,6 +134,20 @@ func (v *VM) Step() error {
 	case 0x0b:
 		v.savedTop = int32(v.depth) - 1
 		v.savedTopValid = true
+	case 0x0c:
+		// Only observed, representable, non-growing restores are supported.
+		// Growing could expose slots cleared by prior host pops. These domain
+		// restrictions are host policy, not guards in the native scalar copy.
+		if !v.savedTopValid || v.savedTop < -1 || v.savedTop > 64 {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		depth := int(v.savedTop) + 1
+		if depth > v.depth {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		v.depth = depth // Index only: preserve backing words and the marker.
 	case 0xff:
 		v.halted = true
 	case 0x0d:
