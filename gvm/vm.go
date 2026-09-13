@@ -283,6 +283,100 @@ func (v *VM) Step() error {
 		}
 		v.depth--
 		v.stack[v.depth] = 0 // Host hygiene only.
+	case 0xb5:
+		if v.address == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 4 {
+			return fail(ErrStackUnderflow)
+		}
+		destRef, sourceRef := v.stack[v.depth-4], v.stack[v.depth-3]
+		count, selector := int16(v.stack[v.depth-2]), v.stack[v.depth-1]
+		// Host fail-first validation differs from the native handler's two
+		// unconditional resolver calls and their transitive error effects.
+		destination, err := v.serviceSpan(destRef, 2)
+		if err != nil {
+			return fail(err)
+		}
+		source, err := v.serviceSpan(sourceRef, 2)
+		if err != nil {
+			return fail(err)
+		}
+		if selector > 11 {
+			return fail(ErrInvalidArraySelector)
+		}
+		// Unlike b4, nonpositive count performs no element/divisor access.
+		if count > 0 {
+			extent := 2 * uint64(count)
+			destination, err = v.serviceSpan(destRef, extent)
+			if err != nil {
+				return fail(err)
+			}
+			source, err = v.serviceSpan(sourceRef, extent)
+			if err != nil {
+				return fail(err)
+			}
+			var candidateDest, candidateSource []byte
+			if destRef&0x4000 == sourceRef&0x4000 {
+				// One shared candidate preserves writes into future source words.
+				// Copy only the bounded union, never an arbitrary whole arena.
+				d, s := 2*uint64(destRef&^0x4000), 2*uint64(sourceRef&^0x4000)
+				lo, hi := min(d, s), max(d, s)+extent
+				region := v.address.ram
+				if destRef&0x4000 != 0 {
+					region = v.address.file
+				}
+				candidate := append([]byte(nil), region[lo:hi]...)
+				candidateDest = candidate[d-lo : d-lo+extent]
+				candidateSource = candidate[s-lo : s-lo+extent]
+			} else {
+				// Different arenas cannot alias: source remains original while
+				// only the detached destination candidate evolves.
+				candidateDest = append([]byte(nil), destination...)
+				candidateSource = source
+			}
+			for pos := uint64(0); pos < extent; pos += 2 {
+				y := binary.LittleEndian.Uint16(candidateSource[pos : pos+2])
+				if (selector == 4 || selector == 5) && y == 0 {
+					// Discard the entire candidate, including overlap-generated
+					// prefixes. Native div/rem instead retain prior local writes.
+					return fail(ErrDivideByZero)
+				}
+				x := binary.LittleEndian.Uint16(candidateDest[pos : pos+2])
+				var value uint16
+				switch selector {
+				case 0:
+					value = y
+				case 1:
+					value = x + y
+				case 2:
+					value = x - y
+				case 3:
+					value = x * y
+				case 4:
+					value = uint16(int32(int16(x)) / int32(int16(y)))
+				case 5:
+					value = uint16(int32(int16(x)) % int32(int16(y)))
+				case 6:
+					value = x & y
+				case 7:
+					value = x | y
+				case 8:
+					value = ^y
+				case 9:
+					value = x ^ y
+				case 10:
+					value = uint16(int16(x) >> (y & 31))
+				case 11:
+					value = x << (y & 31)
+				}
+				binary.LittleEndian.PutUint16(candidateDest[pos:pos+2], value)
+			}
+			copy(destination, candidateDest)
+		}
+		v.depth -= 4
+		clear(v.stack[v.depth : v.depth+4]) // Host hygiene only.
 	case 0xb4:
 		if v.address == nil {
 			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}

@@ -54,6 +54,7 @@ Every fetched opcode advances PC before its handler.
 | `51` | Explicit service constructor only: write four device-query words through a tagged reference and pop once |
 | `96`, `97` | Pop16 argument, call a ret-only native callee in this build, PC=P |
 | `b4` | Configured address model only: scalar operation on a tagged word array, pop four, PC=P |
+| `b5` | Configured address model only: forward live-source operation on two tagged word arrays, pop four, PC=P |
 | `b9` | Explicit service constructor only: write local hour/minute/second/millisecond from one virtual-clock sample and pop once |
 | `ff` | Exit current dispatch, PC=P |
 
@@ -196,6 +197,23 @@ selectors. Tagged spans may cross descriptor boundaries but not their global
 region. Cached arguments preserve code aliases without exposing native VM
 globals. This is deterministic array processing, not a clock, audio or graphics
 service, and proves no presentation or startup milestone.
+
+`b5` consumes `[destination reference, source reference, signed count, selector]`.
+Its independently verified selectors0..11 correspond to the same arithmetic and
+bit operations as `b4`, but the right operand is the current live source word.
+Forward overlap is observable: copying words `[1,2,3,4]` from0 to1 for three
+elements produces `[1,1,1,1]`, not memmove output. Nonpositive counts skip all
+element/divisor access, unlike `b4`'s scalar zero-divisor check.
+
+Host validation is configured arena, depth4, destination starting word, source
+starting word, selector, then complete positive destination/source spans. This
+fail-first policy differs from the native unconditional pair of resolver calls.
+Same-bank operations simulate in one bounded union candidate; different banks
+use a candidate destination and unchanged source. Only successful destination
+bytes are committed. An overlap-generated zero divisor faults atomically rather
+than exposing the native partial prefix. No source snapshot or original-divisor
+pre-scan substitutes for live alias semantics. Candidate storage is bounded by
+the accessed intervals, not the size of an arbitrary host-provided arena.
 
 `0a` is a direct symbol store, not an indexed load. The same hash-qualified
 reference checks signed top>=64 after consuming its u8 index, despite popping
