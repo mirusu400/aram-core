@@ -254,3 +254,73 @@ KTF/Raptor prerequisites. Triage still contains358 BREW and9 GVM execution
 unsupported results. Independent frozen review found no blocking findings by
 inspection. Neither green public checks nor unchanged product reports close
 the outstanding all-platform game-startup goal.
+
+## Subsequent greater-than-or-equal branch checkpoint
+
+Opcode `3d` is independently verified against the same GVM reference hash:
+its four-byte form pops once and branches on signed16(top) >= signed8(immediate).
+Equality takes the unsigned BE16 whole-buffer target. Native JL selects
+fallthrough, with no helper calls or guest-memory/saved-PC stores. The complete
+handler and 28 anchors, all signed comparison pairs and all BE16 values pass an
+independent checker rerun. Eager operands, underflow, taken-target bounds and
+transactional faults remain host safety policy. Existing `3c <` and `3e <=`
+behavior is preserved by the shared handler.
+
+The new public-bytecode tests first failed with unsupported `3d`, then passed.
+The unchanged-hash selected original above progresses **52 to 60** successful
+instructions through public decoder/kernel APIs, then rejects `03` at **717**.
+The other seven v2 inputs are unchanged; one v1 remains unsupported. No new
+bounded safety fault appears. This is 24 supported opcode values in a partial
+kernel, not ordinary Machine execution or a game-start milestone.
+
+| Greater-or-equal requirement | Observed check |
+|---|---|
+| Signed extremes/equality, one pop and prefix | `TestBranchGreaterEqualSignedMatrix` passes at depths1/65; all existing branch tests pass. |
+| Absolute BE16 addressing | `TestBranchGreaterEqualAbsoluteTargets` passes at nonzero entry with zero, asymmetric, high-bit and final-byte targets, including subsequent fetch. |
+| Failure order and stepping | `HostFaultOrder`, `UnusedTargetsEndFetch` and `Budget` tests pass for truncation, underflow, taken/unused bounds, sticky exact PC/state, end fetch and resume. |
+| Memory and saved-PC preservation | `MemoryAndCallReturnPreserved` checks file/RAM readback and actual nested bytecode returns on both paths. |
+| Original integration | Same nine original identities compared before/after; selected52 to60, other observations unchanged. Reserved state/services/rendering are absent. |
+| Product regression and portability | Frozen ordered core/runner/frontend/integration tests/vet, synthetic20/20, Windows builds, core Android/Linux/Darwin and official Android binder pass. Focused386 branch tests pass. Product deltas21/496 unchanged. |
+
+Independent frozen review found no blocking issues by inspection. The private
+command still exits1 for the same six missing KTF/Raptor prerequisites; ordinary
+product triage still reports358 BREW and9 GVM execution-unsupported inputs.
+
+## GVM service51: identified dependency, still unsupported
+
+The same reference maps `51` to a complete zero-inline-operand handler. It
+consumes one tagged reference and writes four LE16 words through the resolved
+destination. It is not a no-op or a proven fixed response. Two output words
+depend on three fields returned through a virtual service call. The concrete
+provider, field provenance, initialization and lifetime remain unresolved.
+Neither screen dimensions nor palette/color meanings are inferred from numeric
+thresholds. The native resolver checks a starting word index, not the complete
+eight-byte write extent; a future host must impose bounded transactional policy.
+
+The coordinator reran seven fingerprinted windows, 28 instruction anchors,
+393,989 synthetic classification/shift/reference cases and integrity negatives.
+These establish a static interface dependency, not service execution. Opcode51
+remains explicitly unsupported until the provider contract is established.
+
+## BREW companion framing narrowed, decoder not selected
+
+For the previously hash-qualified 2,720-byte MOD and 42,432-byte companion, the
+caller requests a 128-byte outer header followed by a 16-byte inner header.
+Its requested input span is [144,42429), leaving three bytes unrequested. It
+requests 143,316 output-allocation bytes for 143,308 produced bytes and a
+10,456-byte workspace. These are conditional requested I/O/allocation sizes,
+not observed successful reads or decoding.
+
+Range/probability constants, model count and literal-state transitions strongly
+fingerprint an LZMA-family transform, but do not establish exact standard stream
+compatibility. The 16-byte framing differs from a conventional 13-byte candidate
+header and must not be silently repaired. The input-length argument is not an
+established decoder bound. No payload was transformed or executed. The checked
+success path forwards the original entry arguments to the first produced byte
+after an eight-byte loader-owned prefix; decoded ABI, BSS, relocations, services
+and lifecycle remain unresolved.
+
+An independent coordinator rerun passes 49 instruction checkpoints, exact
+MOD/companion identities, unchanged archive checks and eight synthetic span
+policy cases. This is static format evidence, not a decoder test or load/start
+claim. No proprietary decoder, payload or asset is copied into the product.

@@ -37,6 +37,7 @@ Every fetched opcode advances PC before its handler.
 | `31` | u8 symbol, u8 element, signed i8 immediate; store signextended LE16 at symbol+2*element, PC=P+3 |
 | `36` | u8 symbol, signed i8 immediate; store signextended LE16 at symbol start, PC=P+2 |
 | `3c` | Pop16; if signed16(top)<signed8(P), jump B+BE16(P+1), otherwise P+3 |
+| `3d` | Pop16; if signed16(top)>=signed8(P), jump B+BE16(P+1), otherwise P+3; equality branches |
 | `3e` | Pop16; if signed16(top)<=signed8(P), jump B+BE16(P+1), otherwise P+3; equality branches |
 | `41` | PC=B+BE16(P) |
 | `42` | Pop16, jump B+BE16(P) if nonzero, otherwise P+2 |
@@ -170,6 +171,15 @@ host policy; native code publishes its pop before lazy target reads. The
 checker covers the complete handler, all signed16/signed8 comparison pairs,
 and all BE16 target values. These checks are static specification evidence,
 not reference execution or a product-startup milestone.
+
+`3d` is separately hash-verified, not inferred from those neighboring branches.
+Its signed predicate is **greater than or equal**: native JL selects
+fallthrough, so equality takes the unsigned BE16 whole-buffer target. The
+four-byte encoding, one pop on both paths, and lack of helpers, guest-memory
+or saved-PC stores were checked across the complete handler. The same eager
+operand/underflow/taken-target guards and atomic commit are host safety policy,
+not the native early pop and lazy target reads. `3c` and `3e` retain their
+separate predicates.
 
 - `Step()` executes at most one instruction. `Run(uint64)` executes at most its
   instruction budget. `ErrBudget` is resumable, not sticky. Zero budget is
