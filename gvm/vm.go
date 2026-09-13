@@ -628,7 +628,7 @@ func (v *VM) Step() error {
 		v.stack[v.depth] = value
 		v.depth++
 		v.pc += width
-	case 0x12, 0x13, 0x14, 0x15, 0x1f:
+	case 0x12, 0x13, 0x14, 0x15, 0x1f, 0x21:
 		if v.depth < 2 {
 			return fail(ErrStackUnderflow)
 		}
@@ -650,6 +650,12 @@ func (v *VM) Step() error {
 			// Native operands are sign-extended before 32-bit division, so
 			// -32768/-1 yields 32768 then truncates to the raw16 slot.
 			value = uint16(int32(int16(a)) / int32(int16(b)))
+		case 0x21:
+			// Full raw-word equality. Shared pop clearing below is approved
+			// host hygiene, unlike the native handler's retained top word.
+			if a == b {
+				value = 1
+			}
 		case 0x1f:
 			if int16(a) >= int16(b) {
 				value = 1

@@ -42,6 +42,7 @@ Every fetched opcode advances PC before its handler.
 | `15` | Signed32 division of signextended16 a/b, truncating toward zero, retain low16 |
 | `1d` | Signed16 a>b, replacing a,b with canonical zero or one; equality is false |
 | `1f` | Signed16 a>=b, replacing a,b with canonical zero or one |
+| `21` | Raw16 a==b, replacing two words with canonical zero or one, no inline operands, PC=P |
 | `31` | u8 symbol, u8 element, signed i8 immediate; store signextended LE16 at symbol+2*element, PC=P+3 |
 | `35` | u8 destination symbol, u8 source symbol; copy first rawLE16 word, no stack effects, PC=P+2 |
 | `36` | u8 symbol, signed i8 immediate; store signextended LE16 at symbol start, PC=P+2 |
@@ -140,6 +141,14 @@ state first, then depth>=2 and a nonnegative full-word RAM span before any write
 or pop. Failures are sticky and transactional except opcode fetch. Clearing
 popped backing slots is host hygiene, not native behavior. Native unchecked
 pointer faults/aliases and complete loader lifecycle are not reproduced.
+
+`21` compares full 16-bit words, not bytes or truthiness. Its verified native
+handler has no underflow guard and retains the vacated backing word. The host
+rejects depths zero and one before mutation, accepts depth65, and retains its
+existing popped-slot clearing policy. That clearing is host hygiene, not native
+backing parity. Saved-top metadata and return frames are unchanged, and growing
+`0c` restores remain unsupported. This scalar operation establishes no startup
+or presentation milestone.
 
 Division by zero produces sticky `ErrDivideByZero` without changing operands.
 This differs deliberately from the native error-helper cleanup/pop path.
