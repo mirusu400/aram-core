@@ -28,6 +28,7 @@ Every fetched opcode advances PC before its handler.
 | `04` | u8 symbol, push its first rawLE16 slot, PC=P+1 |
 | `05` | Push signed i8 extended to raw16, PC=P+1 |
 | `06` | Push BE16, PC=P+2 |
+| `0a` | u8 symbol; store raw top16 as LE16 at symbol start, pop once, PC=P+1; depth65 rejected |
 | `12` | Replace a=S[top-1], b=S[top] with low16(a+b) |
 | `13` | Replace a,b with low16(a-b) |
 | `14` | Replace a,b with low16(a*b) |
@@ -45,7 +46,8 @@ Every fetched opcode advances PC before its handler.
 | `96`, `97` | Pop16 argument, call a ret-only native callee in this build, PC=P |
 | `ff` | Exit current dispatch, PC=P |
 
-Stores and returns do not alter S. The signed operand top starts at -1, and
+Immediate stores `31/36` and returns do not alter S; `0a` pops its stored value.
+The signed operand top starts at -1, and
 the observed pre-push top>=0x40 check allows **65** values, not64. Saved-PC top
 also starts at -1, and its pre-call equality check top==0x10 allows **17** saved
 PCs, not16. Internal lengths are equivalent on reachable states. A defensive
@@ -99,6 +101,23 @@ This differs deliberately from the native error-helper cleanup/pop path.
 The widened division makes `-32768 / -1` wrap to `0x8000` without a host trap.
 
 ## Reference store checks versus emulator safety
+
+`0a` is a direct symbol store, not an indexed load. The same hash-qualified
+reference checks signed top>=64 after consuming its u8 index, despite popping
+on success. Thus depth64 succeeds and depth65 fails. It reads only the symbol
+pointer, not descriptor type or element count. No even-length or 510-byte
+shape restriction is inferred. Configured address-space stores validate a full
+two-byte span in the selected global file/RAM region, allowing writes across
+descriptor boundaries and from empty descriptor views with valid backing.
+Legacy independent bindings instead require their own slice to contain two
+bytes. Neither mode permits a word past the backing region's end.
+
+Host check order is operand availability, upper-stack guard, symbol index,
+destination full span, then lower-stack underflow. All failures are sticky and
+transactional except opcode fetch. This differs from native operand-PC
+publication and its terminal helper/host-cleanup path. Successful writes retain
+shared aliases and can change future instruction fetches. No raw native pointer
+or cleanup behavior is introduced.
 
 `04` fetches its u8 symbol index, then checks stack capacity before symbol
 index and pointer range, and pushes the first rawLE16 slot. It has no native

@@ -142,6 +142,44 @@ func (v *VM) Step() error {
 		v.stack[v.depth] = binary.LittleEndian.Uint16(v.symbols[index][:2])
 		v.depth++
 		v.pc++
+	case 0x0a:
+		if len(v.code)-v.pc < 1 {
+			return fail(ErrTruncated)
+		}
+		index := int(v.code[v.pc])
+		// Native signed top>=64 rejects depth65 even though this handler pops.
+		if v.depth >= len(v.stack) {
+			return fail(ErrStackOverflow)
+		}
+		if index >= len(v.symbols) {
+			return fail(ErrInvalidSymbol)
+		}
+		region := v.symbols[index]
+		if v.address != nil {
+			binding := v.address.bindings[index]
+			region = v.address.ram
+			if binding.region == AddressFile {
+				region = v.address.file
+			}
+			// Host policy requires the whole word inside the global region,
+			// not inside the descriptor. Widen before adding for 32-bit hosts.
+			if uint64(binding.offset)+2 > uint64(len(region)) {
+				return fail(ErrInvalidSymbolRegion)
+			}
+			region = region[int(binding.offset):]
+		} else if len(region) < 2 {
+			// Legacy independent bindings cannot represent bytes beyond their span.
+			return fail(ErrInvalidSymbolRegion)
+		}
+		if v.depth == 0 {
+			return fail(ErrStackUnderflow)
+		}
+		// Cache operands before a write that may alias this operand or future code.
+		value := v.stack[v.depth-1]
+		binary.LittleEndian.PutUint16(region[:2], value)
+		v.depth--
+		v.stack[v.depth] = 0
+		v.pc++
 	case 0x4d:
 		if v.address == nil {
 			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}

@@ -160,3 +160,55 @@ was promoted to conceal this missing integration.
 | Untaken target and budget behavior | Unused invalid targets fall through; end-of-buffer faults on the next fetch; zero/one budgets and resume tests pass. |
 | Existing product boundaries | Ordinary synthetic gate and same-scope reports remain unchanged; BREW/GVM product startup is still unsupported. |
 | Portability and collateral regression | Full public ordered gate, Windows builds, official Android binder and focused 386 tests pass; private prerequisite failure remains explicit. |
+
+## Subsequent stack-to-symbol store checkpoint
+
+Opcode `0x0a` is a two-byte direct symbol store/pop, not an indexed load.
+The same hash-qualified reference reads only a u8 symbol index and its pointer,
+stores the raw top16 value as LE16, then pops once. Its signed top>=64 guard
+rejects depth65 despite popping; depth64 is accepted. It reads no descriptor
+type or element count. The independent checker passed 43 instruction anchors,
+three contiguous fingerprinted windows and all 65,536 LE16 value/alias cases.
+Those checks are static/specification evidence, not reference execution.
+
+Configured address-space stores use full global file/RAM word bounds and can
+cross descriptor boundaries, including empty descriptor views with valid
+backing. Legacy independent symbol slices require two bytes in their own span.
+Full-word bounds and underflow are explicit host safety policy. Native code
+only checks starting-pointer membership and publishes operand PC before its
+terminal cleanup/error path. Kernel faults instead remain sticky and preserve
+memory and stacks at opcode+1. No cleanup service is fabricated.
+
+The owning tests first failed with unsupported `0x0a`, then passed using actual
+`05/06` push programs through public constructors, Step and Run. They cover
+depths0/1/64/65, index255, odd/large spans, exact LE bytes, overlap and global
+boundaries, future-fetch/self-operand aliases, caller/snapshot isolation,
+budgets and call/return preservation. Focused and full GVM tests, vet and
+Windows 386 tests/vet pass.
+
+The same nine original identities were exercised through the public decoder
+and descriptor-only kernel before and after the store change. Three v2 inputs
+advanced, the other five remained unchanged, and v1 stayed unsupported:
+
+| SHA-256 prefix | Successful instructions before/after | Next explicit boundary |
+|---|---:|---|
+| `47e6e53e` | 3 / 13 | `0x35` at143 |
+| `aac8b2c5` | 4 / 6 | `0x51` at3819 |
+| `c4f6ade5` | 43 / 45 | `0x3e` at673 |
+
+No new bounded safety fault appeared. This advances a partial kernel only.
+Reserved runtime initialization, services, rendering and ordinary Machine
+integration are still required before a GVM game-startup claim.
+
+| Store requirement | Observed check |
+|---|---|
+| Raw LE16 store/pop and unusual upper guard | Public push/store programs pass at depths1/64, reject65, and verify u8 indices through255 and preserved adjacent bytes. |
+| Shared region ownership and fetch coherence | File/RAM alias tests, empty/one-byte descriptor views, odd starts, cross-descriptor stores and self-operand/future-fetch programs pass. Global last-byte writes reject safely; legacy short slices remain rejected. |
+| Error order, isolation and replayable stepping | Missing operand, overflow, index, span and underflow precedence tests pass with sticky exact PC/error and unchanged failed state. Snapshot/caller isolation, budgets and actual call/store/return programs pass. |
+| Original decoder/kernel integration | Same-hash before/after execution advances three originals as shown above, without new safety faults. It is not ordinary Machine execution. |
+| Ordinary product and build acceptance | Frozen core/runner/frontend/integration tests/vet, synthetic20/20, Windows builds, core portability and official Android binder pass. Product deltas21/496 remain unchanged, including recognized-only BREW/GVM. |
+
+The configured private command still exits1 with the same six missing
+KTF/Raptor prerequisites. The independent frozen review found no blockers by
+inspection. These results do not make the full private gate green or establish
+GVM/BREW game startup.
