@@ -80,6 +80,9 @@ func (f Factory) createSKVMMachine(
 		f.OutputSampleRate,
 		f.OutputChannels,
 	)
+	if errors.Is(err, skvmhost.ErrUnsupportedProfile) {
+		return nil, true, fmt.Errorf("%w: %w", ErrUnsupportedSource, err)
+	}
 	return machine, true, err
 }
 
