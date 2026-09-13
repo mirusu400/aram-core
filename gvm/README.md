@@ -46,6 +46,7 @@ Every fetched opcode advances PC before its handler.
 | `43` | Pop16, jump B+BE16(P) if zero, otherwise P+2 |
 | `44` | Save P+2 on R, jump B+BE16(P) |
 | `45` | Nonempty R only: restore top saved PC exactly and pop it |
+| `4c` | Configured address model only: u8 symbol, u8 element; push encoded address of symbol+2*element, PC=P+2 |
 | `4d` | Configured address model only: u8 symbol, push its encoded region-relative word address, PC=P+1 |
 | `4f` | Configured address model only: store raw top16 as LE16 at RAM+2*signed16(next-to-top), pop two, PC=P |
 | `96`, `97` | Pop16 argument, call a ret-only native callee in this build, PC=P |
@@ -91,7 +92,22 @@ service semantics are inferred.
 `RAM` slice and `AddressSymbol` bindings. `AddressFile` and `AddressRAM` offsets
 are relative to their region, not the whole program or a guessed minimum alias.
 Program and RAM are each copied once, preserving overlapping symbol views.
-Old constructors do not silently acquire this model and keep `4d` unsupported.
+Old constructors do not silently acquire this model and keep `4c/4d` unsupported.
+
+`4c` uses the same region-relative encoding as `4d`, but selects a word by
+an unsigned element operand without reading its payload. The host requires
+both operands before capacity, symbol, shape and element checks. Bindings use
+the same explicit even-length, at-most510-byte count representation as `03/31`.
+A full selected word must fit the matched region. These bounds and sticky
+transactional failures are host safety policy, not native error-helper parity.
+Odd byte-offset rounding, low16 truncation and file-tag collisions remain
+unchanged. Public constructor tests cover these rules and legacy rejection.
+
+An in-place nine-input descriptor-only comparison after this addition advanced
+the selected SHA-256 `c4f6ade5193dec699654fc2cb488af4cd131152fe14fa27c384c1d36ec47656e`
+from293 to318 completed instructions, then reached unsupported `09` at906.
+The other eight observations were unchanged. This does not apply reserved
+initialization or prove a product frame, startup, or input response.
 
 `4d` shifts the bound byte offset right by one, keeps low16 and sets `0x4000`
 for file storage. Odd offsets, truncation and tag collisions are not corrected.

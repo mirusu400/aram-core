@@ -224,6 +224,51 @@ func (v *VM) Step() error {
 		binary.LittleEndian.PutUint16(v.address.ram[start:start+2], value)
 		v.depth -= 2
 		v.stack[v.depth], v.stack[v.depth+1] = 0, 0 // Host hygiene only.
+	case 0x4c:
+		if v.address == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		// Host policy requires both unsigned operands before semantic guards.
+		if len(v.code)-v.pc < 2 {
+			return fail(ErrTruncated)
+		}
+		index, element := int(v.code[v.pc]), int(v.code[v.pc+1])
+		if v.depth >= len(v.stack) {
+			return fail(ErrStackOverflow)
+		}
+		if index >= len(v.address.bindings) {
+			return fail(ErrInvalidSymbol)
+		}
+		// As for 03/31, an exact even span represents a uint8 element count.
+		// This is restricted host metadata, not inferred native validation.
+		length := len(v.symbols[index])
+		if length%2 != 0 || length > 510 {
+			return fail(ErrInvalidSymbolRegion)
+		}
+		if element >= length/2 {
+			return fail(ErrInvalidElement)
+		}
+		binding := v.address.bindings[index]
+		region := v.address.ram
+		if binding.region == AddressFile {
+			region = v.address.file
+		}
+		// Construction validated the whole descriptor in its matched region.
+		// Require a full selected word too, without reading its payload.
+		start := uint64(binding.offset) + 2*uint64(element)
+		if start+2 > uint64(len(region)) {
+			return fail(ErrInvalidSymbolRegion)
+		}
+		// Low16(SAR32(x,1)) equals low16(x>>1), even with bit31 set.
+		// Preserve odd-offset rounding, truncation and tag collisions.
+		value := uint16(start >> 1)
+		if binding.region == AddressFile {
+			value |= 0x4000
+		}
+		v.stack[v.depth] = value
+		v.depth++
+		v.pc += 2
 	case 0x4d:
 		if v.address == nil {
 			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
