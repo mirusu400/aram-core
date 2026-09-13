@@ -214,6 +214,11 @@ var SKVMCanvases = []SKVMCanvas{
 		InferredWidth:    240,
 		InferredHeight:   320,
 		InclusiveSetClip: true,
+		// Game adds 16 to Canvas.getHeight() before sharing the layout
+		// height with its renderers. Report the handset's 304-pixel client
+		// height so this compensation yields the real 320-pixel framebuffer,
+		// not 336 with the last dialogue line below the display (#298).
+		CanvasHeightInset16: true,
 	},
 	{
 		// 드래곤나이트EX (Dragon Knight EX) targets an SKT handset where

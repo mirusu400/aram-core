@@ -55,17 +55,18 @@ func applySKVMTitleCompatibility(
 	if !ok {
 		return
 	}
+	// DeviceConfig requires quirk names in strictly increasing order.
+	// A title may need both the canvas and clipping handset contracts.
+	if entry.CanvasHeightInset16 {
+		config.Device.Quirks = append(config.Device.Quirks, shared.DeviceQuirk{
+			Name:    skengine.CanvasHeightInset16Quirk,
+			Enabled: true,
+		})
+	}
 	if entry.InclusiveSetClip {
 		config.Device.Quirks = append(config.Device.Quirks, shared.DeviceQuirk{
 			Name:    skengine.InclusiveSetClipQuirk,
 			Enabled: true,
 		})
 	}
-	if !entry.CanvasHeightInset16 {
-		return
-	}
-	config.Device.Quirks = append(config.Device.Quirks, shared.DeviceQuirk{
-		Name:    skengine.CanvasHeightInset16Quirk,
-		Enabled: true,
-	})
 }
