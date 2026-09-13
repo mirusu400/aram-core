@@ -713,6 +713,16 @@ func (vm *VM) PaintCurrent(ctx context.Context) error {
 }
 
 func (vm *VM) KeyEvent(ctx context.Context, key int32, pressed bool) error {
+	// Track physical keys even while another Displayable is current. Aliases
+	// for one game action must retain independent held/suppressed lifetimes.
+	physical := gameCanvasPhysicalKeyBit(key)
+	held, _ := vm.hostStatic[gameCanvasHeldKeys].Int()
+	if pressed {
+		held |= physical
+	} else {
+		held &^= physical
+	}
+	vm.hostStatic[gameCanvasHeldKeys] = IntValue(held)
 	if vm.currentDisplay == 0 {
 		return fmt.Errorf("SKVM has no current Displayable")
 	}
@@ -722,14 +732,18 @@ func (vm *VM) KeyEvent(ctx context.Context, key int32, pressed bool) error {
 	}
 	if vm.IsInstance(vm.currentDisplay, "javax/microedition/lcdui/game/GameCanvas") {
 		object, _ := vm.Object(vm.currentDisplay)
-		states, _ := object.Fields["$game.keyStates"].Int()
-		mask := gameCanvasKeyMask(key)
+		latched, _ := object.Fields["$game.latchedKeys"].Int()
+		blocked, _ := object.Fields["$game.blockedKeys"].Int()
 		if pressed {
-			states |= mask
+			if physical&^blocked != 0 {
+				latched |= gameCanvasKeyMask(key)
+			}
 		} else {
-			states &^= mask
+			blocked &^= physical
 		}
-		object.Fields["$game.keyStates"] = IntValue(states)
+		object.Fields["$game.keyStates"] = IntValue(gameCanvasPhysicalKeyMask(held &^ blocked))
+		object.Fields["$game.latchedKeys"] = IntValue(latched)
+		object.Fields["$game.blockedKeys"] = IntValue(blocked)
 		suppress, _ := object.Fields["$game.suppressKeyEvents"].Int()
 		if suppress != 0 {
 			return nil

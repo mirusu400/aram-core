@@ -96,13 +96,20 @@ describe it, but not enough to write an interpreter:
   histogram is dominated by "nibble-duplicated" bytes (`0x00, 0x11, 0x22, ...,
   0xff`), consistent with uncompressed low-bit-depth (likely 4bpp grayscale)
   raster image data rather than compressed or encrypted bytes.
-- No opcode mnemonics, dispatch table, or resource-table layout were located
-  in the time available. Finding them will need either substantially more
+- In that earlier pass, no opcode mnemonics, dispatch table, or resource-table
+  layout were located. Finding them required substantially more
   static call-graph archaeology from the `Invalid*` exception sites, or
   dynamic tracing (running `cr32256_Magic.exe <path>.sgs` - it auto-opens a
   path given on the command line via the standard MFC single-document
   command-line path - under a debugger and diffing memory across `ReadFile`
   calls), which was not available in this environment.
+
+A separate 2026-09-12 static pass on a hash-qualified supplied GVM2X build
+located its dispatcher and opcode `0x05` (signed-byte immediate push). See
+[local reference research](reference-emulators-20260912.md#verified-single-opcode-contract)
+for exact addresses, stack/PC effects and guard. Binary equivalence to the
+earlier player is unverified. SGS entry/code mapping and resource layout are
+still unresolved, so no loader execution milestone changes.
 
 ## What `loader/gnex` actually validates
 
@@ -129,7 +136,9 @@ ambiguous. Raw payloads are limited to 64 MiB, and existing ZIP limits remain.
 `ParseHeader` now rejects invalid character sequences even when the EUC-KR
 decoder silently substitutes a Unicode replacement character. Historical
 paired-descriptor prefix scanning remains available. The checksum algorithm
-and every body opcode remain unknown, and are not invented as extra checks.
+and SGS body-to-code mapping remain unknown, and are not invented as extra
+checks. The separately recovered single-opcode contract does not validate
+arbitrary bodies.
 
 ## Where this is wired in
 
