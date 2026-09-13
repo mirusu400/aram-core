@@ -31,6 +31,8 @@ Every fetched opcode advances PC before its handler.
 | `12` | Replace a=S[top-1], b=S[top] with low16(a+b) |
 | `13` | Replace a,b with low16(a-b) |
 | `14` | Replace a,b with low16(a*b) |
+| `15` | Signed32 division of signextended16 a/b, truncating toward zero, retain low16 |
+| `1f` | Signed16 a>=b, replacing a,b with canonical zero or one |
 | `31` | u8 symbol, u8 element, signed i8 immediate; store signextended LE16 at symbol+2*element, PC=P+3 |
 | `36` | u8 symbol, signed i8 immediate; store signextended LE16 at symbol start, PC=P+2 |
 | `41` | PC=B+BE16(P) |
@@ -38,6 +40,7 @@ Every fetched opcode advances PC before its handler.
 | `43` | Pop16, jump B+BE16(P) if zero, otherwise P+2 |
 | `44` | Save P+2 on R, jump B+BE16(P) |
 | `45` | Nonempty R only: restore top saved PC exactly and pop it |
+| `4d` | Configured address model only: u8 symbol, push its encoded region-relative word address, PC=P+1 |
 | `96`, `97` | Pop16 argument, call a ret-only native callee in this build, PC=P |
 | `ff` | Exit current dispatch, PC=P |
 
@@ -73,6 +76,26 @@ service semantics are inferred.
   They are inspection methods, not a serialized VM save-state schema.
 - No native pointers, SGS record parser, reserved runtime symbols, read-only
   policy, services, or materialization rules are inferred by this package.
+
+## Configured file/RAM address spaces
+
+`NewWithAddressSpace` takes explicit `FileStart`, `FileLength`, a coherent
+`RAM` slice and `AddressSymbol` bindings. `AddressFile` and `AddressRAM` offsets
+are relative to their region, not the whole program or a guessed minimum alias.
+Program and RAM are each copied once, preserving overlapping symbol views.
+Old constructors do not silently acquire this model and keep `4d` unsupported.
+
+`4d` shifts the bound byte offset right by one, keeps low16 and sets `0x4000`
+for file storage. Odd offsets, truncation and tag collisions are not corrected.
+`ReadWord` selects the tagged region, interprets its word index as signed16,
+checks the global region limit and full two-byte span, then returns LE16.
+It can read across descriptor boundaries within that region. It is a scalar
+inspection API, not a host pointer or a guest service. See the
+[2026-09-13 contract follow-up](../docs/gvm-brew-followup-20260913.md).
+
+Division by zero produces sticky `ErrDivideByZero` without changing operands.
+This differs deliberately from the native error-helper cleanup/pop path.
+The widened division makes `-32768 / -1` wrap to `0x8000` without a host trap.
 
 ## Reference store checks versus emulator safety
 

@@ -5,6 +5,10 @@ completed GVM game execution**. The ordinary product still reports recognition
 without execution until the runtime, media and event contracts are implemented.
 No proprietary payload, interpreter body, palette table or game asset is tracked.
 
+The [2026-09-13 follow-up](gvm-brew-followup-20260913.md) adds explicit
+file/RAM address spaces, shared symbol RAM and operations `15`, `1f`, `4d`.
+The checkpoint and observations below describe the earlier 17-opcode revision.
+
 ## Reference qualification
 
 Static contracts refer only to the supplied GVM2X PE SHA-256

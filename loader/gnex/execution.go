@@ -10,10 +10,11 @@ import (
 var ErrUnsupportedExecutionVariant = errors.New("gnex: unsupported execution image variant")
 
 // ExecutionSymbol describes initial storage, not a validated symbol operation.
-// Mutable storage is independent RAM. Otherwise Data aliases the owned Buffer.
+// Mutable storage aliases SymbolRAM. Otherwise Data aliases the owned Buffer.
 type ExecutionSymbol struct {
 	Type         byte // original descriptor byte, native runtime normalizes nonzero to 1
 	BufferOffset int  // -1 for independent RAM, otherwise offset in Buffer
+	RAMOffset    int  // -1 for file, otherwise byte offset in SymbolRAM
 	Mutable      bool
 	Data         []byte
 }
@@ -32,12 +33,15 @@ type ExecutionMedia struct {
 // Buffer and descriptor Data slices belong to the caller and are intentionally
 // mutable. Modifying Buffer updates alias descriptors but not allocated RAM.
 type ExecutionImage struct {
-	Header   Header
-	Buffer   []byte
-	Entry    uint16
-	Symbols  []ExecutionSymbol
-	Media    []ExecutionMedia
-	RAMBytes int
+	Header          Header
+	Buffer          []byte
+	Entry           uint16
+	Symbols         []ExecutionSymbol
+	Media           []ExecutionMedia
+	RAMBytes        int
+	SymbolFileStart int    // whole-Buffer start, including copied RAM initializers
+	SymbolFileEnd   int    // exclusive end after all symbol initializers, before media
+	SymbolRAM       []byte // contiguous mutable symbol storage, excluding descriptors/media
 }
 
 // DecodeExecutionImage models only the hash-qualified normal, unprefixed v2
@@ -79,7 +83,9 @@ func DecodeExecutionImage(data []byte) (ExecutionImage, error) {
 	if ram > 0x4000 {
 		return bad(0x2c, "execution descriptor RAM exceeds limit")
 	}
-	result := ExecutionImage{Header: header, Buffer: bytes.Clone(data), Entry: uint16(entry), Symbols: make([]ExecutionSymbol, 0, ns), Media: make([]ExecutionMedia, 0, nm)}
+	// Validate symbol spans and compute the exact shared allocation before
+	// constructing views. Growing RAM while binding views would split aliases.
+	symbolRAMBytes := 0
 	cursor := ps
 	for i := 0; i < ns; i++ {
 		offset := ds + 4*i
@@ -88,21 +94,37 @@ func DecodeExecutionImage(data []byte) (ExecutionImage, error) {
 		initialized := !mutable || data[offset+2] != 0
 		if mutable {
 			ram += size
+			symbolRAMBytes += size
 			if ram > 0x4000 {
 				return bad(offset, "execution symbol RAM exceeds limit")
 			}
 		}
-		if initialized && size > dm-cursor {
-			return bad(offset, "execution symbol data exceeds span")
+		if initialized {
+			if size > dm-cursor {
+				return bad(offset, "execution symbol data exceeds span")
+			}
+			cursor += size
 		}
+	}
+	result := ExecutionImage{Header: header, Buffer: bytes.Clone(data), Entry: uint16(entry), Symbols: make([]ExecutionSymbol, 0, ns), Media: make([]ExecutionMedia, 0, nm), SymbolFileStart: ps, SymbolFileEnd: cursor, SymbolRAM: make([]byte, symbolRAMBytes)}
+	cursor = ps
+	ramCursor := 0
+	for i := 0; i < ns; i++ {
+		offset := ds + 4*i
+		mutable := data[offset] != 0
+		size := 2 * int(data[offset+1])
+		initialized := !mutable || data[offset+2] != 0
 		var storage []byte
+		ramOffset := -1
 		if mutable {
-			storage = make([]byte, size)
+			ramOffset = ramCursor
+			storage = result.SymbolRAM[ramCursor : ramCursor+size : ramCursor+size]
+			ramCursor += size
 			if initialized {
 				copy(storage, data[cursor:cursor+size])
 			}
 		} else {
-			storage = result.Buffer[cursor : cursor+size]
+			storage = result.Buffer[cursor : cursor+size : cursor+size]
 		}
 		storageOffset := cursor
 		if mutable {
@@ -111,7 +133,7 @@ func DecodeExecutionImage(data []byte) (ExecutionImage, error) {
 		if initialized {
 			cursor += size
 		}
-		result.Symbols = append(result.Symbols, ExecutionSymbol{Type: data[offset], BufferOffset: storageOffset, Mutable: mutable, Data: storage})
+		result.Symbols = append(result.Symbols, ExecutionSymbol{Type: data[offset], BufferOffset: storageOffset, RAMOffset: ramOffset, Mutable: mutable, Data: storage})
 	}
 	cursor = pm
 	for i := 0; i < nm; i++ {

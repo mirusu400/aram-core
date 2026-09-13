@@ -13,6 +13,7 @@ var (
 	ErrTruncated           = errors.New("gvm: truncated instruction")
 	ErrStackUnderflow      = errors.New("gvm: operand stack underflow")
 	ErrStackOverflow       = errors.New("gvm: operand stack overflow")
+	ErrDivideByZero        = errors.New("gvm: division by zero")
 	ErrReturnStackOverflow = errors.New("gvm: return stack overflow")
 	ErrInvalidTarget       = errors.New("gvm: target outside program")
 )
@@ -44,6 +45,7 @@ func (e *ExecutionError) Unwrap() error { return e.Cause }
 type VM struct {
 	code        []byte
 	symbols     [][]byte
+	address     *addressMemory
 	pc          int
 	stack       [65]uint16
 	depth       int
@@ -140,6 +142,38 @@ func (v *VM) Step() error {
 		v.stack[v.depth] = binary.LittleEndian.Uint16(v.symbols[index][:2])
 		v.depth++
 		v.pc++
+	case 0x4d:
+		if v.address == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if len(v.code)-v.pc < 1 {
+			return fail(ErrTruncated)
+		}
+		index := int(v.code[v.pc])
+		if v.depth >= len(v.stack) {
+			return fail(ErrStackOverflow)
+		}
+		if index >= len(v.address.bindings) {
+			return fail(ErrInvalidSymbol)
+		}
+		binding := v.address.bindings[index]
+		region := v.address.ram
+		if binding.region == AddressFile {
+			region = v.address.file
+		}
+		// Membership is half-open and does not require a nonempty symbol or
+		// a full word. ReadWord separately validates any later dereference.
+		if uint64(binding.offset) >= uint64(len(region)) {
+			return fail(ErrInvalidSymbolRegion)
+		}
+		value := uint16(binding.offset >> 1)
+		if binding.region == AddressFile {
+			value |= 0x4000
+		}
+		v.stack[v.depth] = value
+		v.depth++
+		v.pc++
 	case 0x05, 0x06:
 		// Reference top>=0x40 before increment permits 65 slots from top=-1.
 		if v.depth >= len(v.stack) {
@@ -161,7 +195,7 @@ func (v *VM) Step() error {
 		v.stack[v.depth] = value
 		v.depth++
 		v.pc += width
-	case 0x12, 0x13, 0x14:
+	case 0x12, 0x13, 0x14, 0x15, 0x1f:
 		if v.depth < 2 {
 			return fail(ErrStackUnderflow)
 		}
@@ -174,6 +208,19 @@ func (v *VM) Step() error {
 			value = a - b
 		case 0x14:
 			value = a * b
+		case 0x15:
+			// Safe emulator policy is a sticky transactional fault. Native
+			// helper cleanup followed by a pop is intentionally not modeled.
+			if b == 0 {
+				return fail(ErrDivideByZero)
+			}
+			// Native operands are sign-extended before 32-bit division, so
+			// -32768/-1 yields 32768 then truncates to the raw16 slot.
+			value = uint16(int32(int16(a)) / int32(int16(b)))
+		case 0x1f:
+			if int16(a) >= int16(b) {
+				value = 1
+			}
 		}
 		v.depth--
 		v.stack[v.depth-1] = value
