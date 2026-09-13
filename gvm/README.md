@@ -31,6 +31,7 @@ Every fetched opcode advances PC before its handler.
 | `06` | Push BE16, PC=P+2 |
 | `09` | u8 symbol, u8 element; store raw top16 as LE16 at symbol+2*element, pop once, PC=P+2; depth65 rejected |
 | `0a` | u8 symbol; store raw top16 as LE16 at symbol start, pop once, PC=P+1; depth65 rejected |
+| `0b` | Copy signed top index depth-1 to a private32-bit scalar, no stack effects or inline operands, PC=P |
 | `0d` | Increment top16 modulo65536 without popping or operands, PC=P; depth65 accepted |
 | `0e` | Decrement top16 modulo65536 without popping or operands, PC=P; depth65 accepted |
 | `12` | Replace a=S[top-1], b=S[top] with low16(a+b) |
@@ -300,6 +301,16 @@ fetch: PC stays at opcode+1, with no operand, stack, or memory changes. This
 validation and then selected a static sentinel. No native recovery is claimed.
 
 ## Bounded execution and fault policy
+
+`0b` copies the current signed operand top index, `depth-1`, into one private
+32-bit scalar. Empty depth records -1 and depth65 records64. Repetition overwrites
+that scalar; no operand values, memory, saved returns, depth or post-fetch PC are
+changed. It is not a NOP or a stack checkpoint. A separate private validity flag
+marks that this host VM has observed a write. Its initially-unset state is host
+policy because the reference scalar's initial value, reset and cross-dispatch
+lifetime have not been established. No consumer, serialization, clone or reset
+semantics are inferred. Internal tests verify the actual hidden write in addition
+to public execution checks; unchanged public stack output alone would not prove it.
 
 `4e` is supported only with an explicitly configured address space. It replaces
 one raw16 stack address in place with the rawLE16 word resolved through `ReadWord`,

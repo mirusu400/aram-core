@@ -57,6 +57,10 @@ type VM struct {
 	returnDepth int
 	halted      bool
 	fault       error
+	// savedTop is meaningful only after 0b. Validity is host bookkeeping:
+	// native initial/reset state and future consumers are not established.
+	savedTop      int32
+	savedTopValid bool
 }
 
 // New copies program and begins at buffer offset zero. An empty program fails
@@ -127,6 +131,9 @@ func (v *VM) Step() error {
 	v.pc++
 	switch op {
 	case 0x00:
+	case 0x0b:
+		v.savedTop = int32(v.depth) - 1
+		v.savedTopValid = true
 	case 0xff:
 		v.halted = true
 	case 0x0d:
