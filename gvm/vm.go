@@ -41,13 +41,15 @@ type ExecutionError struct {
 func (e *ExecutionError) Error() string { return fmt.Sprintf("gvm: offset %d: %v", e.Offset, e.Cause) }
 func (e *ExecutionError) Unwrap() error { return e.Cause }
 
-// VM owns its program and stacks. It has no host services and is not safe for
-// concurrent use. The zero value is an empty VM, equivalent to New(nil).
+// VM owns its program and stacks. Old constructors supply no host services.
+// Opt-in services borrow a clock under the owner's serialization discipline.
+// VM is not safe for concurrent use. The zero value is equivalent to New(nil).
 // Stack lengths encode the reference's signed top indices (length minus one).
 type VM struct {
 	code        []byte
 	symbols     [][]byte
 	address     *addressMemory
+	services    *serviceState
 	pc          int
 	stack       [65]uint16
 	depth       int
@@ -127,6 +129,12 @@ func (v *VM) Step() error {
 	case 0x00:
 	case 0xff:
 		v.halted = true
+	case 0x0e:
+		// Native DEC word changes only top16; lower-bound safety is host policy.
+		if v.depth == 0 {
+			return fail(ErrStackUnderflow)
+		}
+		v.stack[v.depth-1]--
 	case 0x03:
 		// Host policy eagerly requires both unsigned operands before capacity.
 		if len(v.code)-v.pc < 2 {
@@ -237,6 +245,44 @@ func (v *VM) Step() error {
 		v.depth--
 		v.stack[v.depth] = 0
 		v.pc++
+	case 0x51, 0xb9:
+		// Preserve legacy unsupported behavior. Only the explicit service
+		// constructor enables stack/address/service/conversion safety faults.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 1 {
+			return fail(ErrStackUnderflow)
+		}
+		destination, err := v.serviceSpan(v.stack[v.depth-1], 8)
+		if err != nil {
+			return fail(err)
+		}
+		var words [4]uint16
+		if op == 0x51 {
+			words, err = v.services.deviceQueryWords()
+		} else {
+			words, err = v.services.clockWords()
+		}
+		if err != nil {
+			return fail(err)
+		}
+		// Services and VM control state cannot alias guest arenas. All
+		// failure-capable work precedes stores, unlike native error callbacks.
+		binary.LittleEndian.PutUint16(destination[0:2], words[0])
+		binary.LittleEndian.PutUint16(destination[2:4], words[1])
+		if op == 0x51 && v.services.deviceQuery.AudioType != 5 && v.services.deviceQuery.AudioType != 6 {
+			// Retain the generic51 native output order, though the fields do
+			// not overlap and service state is privately copied host data.
+			binary.LittleEndian.PutUint16(destination[6:8], words[3])
+			binary.LittleEndian.PutUint16(destination[4:6], words[2])
+		} else {
+			binary.LittleEndian.PutUint16(destination[4:6], words[2])
+			binary.LittleEndian.PutUint16(destination[6:8], words[3])
+		}
+		v.depth--
+		v.stack[v.depth] = 0 // Host hygiene only.
 	case 0xb4:
 		if v.address == nil {
 			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}

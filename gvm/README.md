@@ -31,6 +31,7 @@ Every fetched opcode advances PC before its handler.
 | `06` | Push BE16, PC=P+2 |
 | `09` | u8 symbol, u8 element; store raw top16 as LE16 at symbol+2*element, pop once, PC=P+2; depth65 rejected |
 | `0a` | u8 symbol; store raw top16 as LE16 at symbol start, pop once, PC=P+1; depth65 rejected |
+| `0e` | Decrement top16 modulo65536 without popping or operands, PC=P; depth65 accepted |
 | `12` | Replace a=S[top-1], b=S[top] with low16(a+b) |
 | `13` | Replace a,b with low16(a-b) |
 | `14` | Replace a,b with low16(a*b) |
@@ -50,8 +51,10 @@ Every fetched opcode advances PC before its handler.
 | `4c` | Configured address model only: u8 symbol, u8 element; push encoded address of symbol+2*element, PC=P+2 |
 | `4d` | Configured address model only: u8 symbol, push its encoded region-relative word address, PC=P+1 |
 | `4f` | Configured address model only: store raw top16 as LE16 at RAM+2*signed16(next-to-top), pop two, PC=P |
+| `51` | Explicit service constructor only: write four device-query words through a tagged reference and pop once |
 | `96`, `97` | Pop16 argument, call a ret-only native callee in this build, PC=P |
 | `b4` | Configured address model only: scalar operation on a tagged word array, pop four, PC=P |
+| `b9` | Explicit service constructor only: write local hour/minute/second/millisecond from one virtual-clock sample and pop once |
 | `ff` | Exit current dispatch, PC=P |
 
 Immediate stores `31/36` and returns do not alter S; `0a` pops its stored value.
@@ -133,7 +136,41 @@ Division by zero produces sticky `ErrDivideByZero` without changing operands.
 This differs deliberately from the native error-helper cleanup/pop path.
 The widened division makes `-32768 / -1` wrap to `0x8000` without a host trap.
 
+## Explicit device and civil-clock services
+
+`NewWithAddressSpaceAndServices` is an opt-in constructor, not a factory or
+startup adapter. Existing constructors retain typed unsupported `51/b9`.
+Nil service config deliberately provides neither service, with precise unavailable
+errors after stack/address validation. Device query and clock are independent.
+No configuration is detected from a title, host registry, environment or clock.
+
+`DeviceQueryProfile` is copied into private state. Width/Height1..256 are an
+explicit portable safety range, not a claimed native lower-bound check.
+AudioType retains all32 bits for the verified mask transform and does not enable
+audio playback. The four-word query record is computed from these explicit
+values, never hardcoded from one reference configuration.
+
+Clock configuration requires a borrowed shared `runtime.Clock` and explicit
+`FixedOffsetNoDST` policy together. The owner serializes execution and clock
+updates. A query takes one snapshot, does not advance time or consume RNG, and
+requires UTC and local milliseconds in0..2147483647999. Epoch0 is selectable
+through validated Clock.Restore; NewClock(0) otherwise normalizes its own default.
+Fixed offset conversion is emulator policy, not Windows timezone/DST parity.
+
+Both operations require one stack value and a complete eight-byte writable
+tagged-arena span before provider/conversion checks. All four results are
+prepared before any write/pop. Errors remain sticky and transactional after
+opcode fetch. File/code aliases are preserved, but native host-global aliases
+are never exposed. Service configuration is immutable apart from the explicitly
+borrowed clock. This adds no complete VM snapshot, reset, scheduler, presentation,
+or game-start contract.
+
 ## Reference store checks versus emulator safety
+
+`0e` changes only the existing top word. The hash-qualified native three-
+instruction handler has no stack guard; the host adds sticky underflow rejection
+before mutation. There is no upper guard or pop, and the maximum supported stack
+depth65 remains valid. Program/RAM and saved return addresses are unchanged.
 
 `09` uses unsigned symbol and element operands and the same exact even-span
 count representation as `03/31`. Host validation is both operand bytes, upper
