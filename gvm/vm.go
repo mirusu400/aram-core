@@ -206,6 +206,24 @@ func (v *VM) Step() error {
 		v.depth--
 		v.stack[v.depth] = 0
 		v.pc++
+	case 0x4f:
+		if v.address == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 2 {
+			return fail(ErrStackUnderflow)
+		}
+		// This is a direct signed RAM word index, not a tagged address.
+		index := int16(v.stack[v.depth-2])
+		if index < 0 || uint64(index)*2+2 > uint64(len(v.address.ram)) {
+			return fail(ErrInvalidAddress)
+		}
+		// Cache both operands before writing, then publish the two-word pop.
+		start, value := uint64(index)*2, v.stack[v.depth-1]
+		binary.LittleEndian.PutUint16(v.address.ram[start:start+2], value)
+		v.depth -= 2
+		v.stack[v.depth], v.stack[v.depth+1] = 0, 0 // Host hygiene only.
 	case 0x4d:
 		if v.address == nil {
 			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}

@@ -46,6 +46,7 @@ Every fetched opcode advances PC before its handler.
 | `44` | Save P+2 on R, jump B+BE16(P) |
 | `45` | Nonempty R only: restore top saved PC exactly and pop it |
 | `4d` | Configured address model only: u8 symbol, push its encoded region-relative word address, PC=P+1 |
+| `4f` | Configured address model only: store raw top16 as LE16 at RAM+2*signed16(next-to-top), pop two, PC=P |
 | `96`, `97` | Pop16 argument, call a ret-only native callee in this build, PC=P |
 | `ff` | Exit current dispatch, PC=P |
 
@@ -98,6 +99,16 @@ checks the global region limit and full two-byte span, then returns LE16.
 It can read across descriptor boundaries within that region. It is a scalar
 inspection API, not a host pointer or a guest service. See the
 [2026-09-13 contract follow-up](../docs/gvm-brew-followup-20260913.md).
+
+`4f` has no inline operands, helpers or services in its independently verified
+nine-instruction handler. It uses a direct signed16 RAM word index below the
+raw top16 value, not `ReadWord` tagging: positive `0x4000` selects RAM word16384,
+never file storage. Only the configured constructor supplies that global RAM;
+legacy constructors retain typed unsupported behavior. Host checks configured
+state first, then depth>=2 and a nonnegative full-word RAM span before any write
+or pop. Failures are sticky and transactional except opcode fetch. Clearing
+popped backing slots is host hygiene, not native behavior. Native unchecked
+pointer faults/aliases and complete loader lifecycle are not reproduced.
 
 Division by zero produces sticky `ErrDivideByZero` without changing operands.
 This differs deliberately from the native error-helper cleanup/pop path.

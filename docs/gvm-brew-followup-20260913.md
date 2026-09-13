@@ -354,3 +354,35 @@ macOS builds and official Android binder passed. Same-scope deltas retain
 21 synthetic and496 private rows unchanged. Configured private-all exits1
 with the same six missing KTF/Raptor package prerequisites, so full workspace
 acceptance remains failed. No expectations or product milestones were weakened.
+
+
+## Direct mutable-RAM store continuation: opcode4f
+
+Independent hash-gated analysis verifies the entire nine-instruction handler:
+no inline operands, branches, helpers or services; signed16 index below raw16
+value selects mutable-region base+2*index, then two stack words are popped.
+Three fingerprint windows,65,536 signed-index cases,65,536 payload cases,
+boundary/order checks and four integrity negatives passed in a coordinator
+rerun. Region-base provenance is bounded initialization-prefix evidence, not
+complete loader validation or reference execution.
+
+Only NewWithAddressSpace enables4f; legacy constructors remain unsupported.
+Host checks configuration, underflow, then nonnegative complete-word global
+RAM bounds before cached write/pop. Positive4000 is a direct RAM word index,
+not file tagging. Popped-slot clearing is host hygiene. External public tests
+cover0/1/2/65 depth, negative and high positive indexes, odd/end bounds,
+legacy precedence, exact sticky state, no-inline fetch, budgets, descriptor
+crossings/aliases, independent input snapshots and return preservation.
+Tests-first red and focused/full/386 tests plus vet passed. Independent
+frozen review found no blockers by inspection.
+
+The same nine original public decoder/kernel observations advance selected
+c4f6ade5 from65 to129 successful instructions, next unsupported3a at835.
+Other seven v2 cases and the unsupported v1 remain unchanged. The configured
+subset now covers26 opcode values. No reserved initialization, service, frame
+or ordinary product startup is implied.
+
+Frozen public ordered tests, Windows product builds, core portability and
+official Android binder passed. Official deltas show21synthetic and496private
+rows unchanged. Private-all alone exits1 with the same six missing KTF/Raptor
+prerequisites; full configured workspace acceptance is not green.
