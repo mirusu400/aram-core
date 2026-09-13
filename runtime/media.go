@@ -276,7 +276,8 @@ func (m *Media) DestroyClip(owner OwnerID, id ServiceID, bus *EventBus) error {
 		return err
 	}
 	delete(m.clips, id)
-	m.invalidateOutput()
+	// A stopped clip contributes no future samples. Its removal must not
+	// discard already queued output from other clips (or completed playback).
 	if bus != nil {
 		bus.RemoveService(id)
 	}
@@ -435,6 +436,26 @@ func (m *Media) ResetForReconcile(owner OwnerID, id ServiceID) error {
 	clip.state = ClipStopped
 	clip.remainingPlays = 0
 	clip.waitingForData = false
+	return nil
+}
+
+// Prepare decodes a complete stopped clip without starting playback or
+// invalidating queued output. Unsupported or partial sources remain stopped.
+// Unlike Play, Prepare never enters the streaming wait-for-data state.
+func (m *Media) Prepare(owner OwnerID, id ServiceID) error {
+	clip, err := m.get(owner, id)
+	if err != nil {
+		return err
+	}
+	if clip.state != ClipStopped {
+		return fmt.Errorf("%w: prepare media clip while %v", ErrInvalidState, clip.state)
+	}
+	if clip.decoded == nil && looksLikeSequencedScore(clip.source) {
+		clip.decoded = m.decodeScore(clip.source)
+	}
+	if clip.decoded == nil || clip.decoded.duration <= 0 {
+		return fmt.Errorf("%w: %q clip cannot be decoded", ErrMediaUnsupported, clip.mediaType)
+	}
 	return nil
 }
 

@@ -51,7 +51,9 @@ func (vm *VM) installExtendedCoreNatives() {
 	vm.installVectorNatives()
 	vm.installHashtableNatives()
 	vm.installExceptionNatives()
-	vm.installKWISNatives()
+	if vm.nativePolicy == NativePolicySKT {
+		vm.installKWISNatives()
+	}
 	vm.installExtendedStringBufferNatives()
 	vm.installTimeNatives()
 	vm.installCLDCUtilExtras()

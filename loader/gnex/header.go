@@ -3,6 +3,8 @@ package gnex
 import (
 	"encoding/binary"
 	"errors"
+	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/text/encoding/korean"
@@ -119,8 +121,39 @@ func findTitleEnd(data []byte, start int) (int, bool) {
 
 func decodeEUCKR(raw []byte) (string, error) {
 	decoded, _, err := transform.Bytes(korean.EUCKR.NewDecoder(), raw)
-	if err != nil || !utf8.Valid(decoded) {
+	// The decoder replaces malformed sequences with RuneError without always
+	// returning an error. Replacement characters and controls are not a clean
+	// title decode, and must not turn unrelated bytes into a recognized SGS.
+	if err != nil || !utf8.Valid(decoded) || strings.ContainsRune(string(decoded), utf8.RuneError) {
 		return "", errors.New("gnex: invalid EUC-KR title")
 	}
+	for _, r := range string(decoded) {
+		if unicode.IsControl(r) {
+			return "", errors.New("gnex: control character in title")
+		}
+	}
 	return string(decoded), nil
+}
+
+// standaloneHeader is deliberately narrower than the historical paired
+// descriptor scanner. Without corroborating metadata, accept only the two
+// observed placements: offset zero or a 32-byte all-zero prefix. Require a
+// nonempty body, but make no claim that the undecoded body is valid bytecode.
+func standaloneHeader(data []byte) (Header, error) {
+	header, err := ParseHeader(data)
+	if err != nil {
+		return Header{}, err
+	}
+	if header.PrefixOffset != 0 && header.PrefixOffset != 32 {
+		return Header{}, ErrHeaderNotFound
+	}
+	for _, b := range data[:header.PrefixOffset] {
+		if b != 0 {
+			return Header{}, ErrHeaderNotFound
+		}
+	}
+	if header.BodyOffset >= len(data) {
+		return Header{}, ErrHeaderNotFound
+	}
+	return header, nil
 }

@@ -27,6 +27,7 @@ const (
 	KindKTF      Kind = "ktf-wipi"
 	KindRaptor   Kind = "raptor-wipi-c"
 	KindGNEX     Kind = "gnex-sgs"
+	KindBREW     Kind = "brew-package"
 	KindWBIN     Kind = "samsung-wbin"
 	KindWBT      Kind = "samsung-wbt"
 	KindFont     Kind = "samsung-font"

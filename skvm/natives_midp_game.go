@@ -1004,7 +1004,7 @@ func (vm *VM) installGameCanvasNatives() {
 			return Value{}, false, err
 		}
 		image := vm.NewObject("javax/microedition/lcdui/Image", state)
-		graphics := vm.NewObject("javax/microedition/lcdui/Graphics", &graphicsState{width: state.width, height: state.height, surface: state.surface, font: vm.defaultFont, color: 0xff000000})
+		graphics := vm.newGraphicsObject(&graphicsState{width: state.width, height: state.height, surface: state.surface, font: vm.defaultFont, color: 0xff000000})
 		_ = setObjectField(vm, receiver, gameCanvasImage, ReferenceValue(image))
 		_ = setObjectField(vm, receiver, gameCanvasGraphics, ReferenceValue(graphics))
 		return Value{}, false, setObjectField(vm, receiver, "$game.suppressKeyEvents", args[0])
@@ -1056,6 +1056,9 @@ func (vm *VM) installGameCanvasNatives() {
 		}
 		imageValue, _ := objectField(vm, receiver, gameCanvasImage)
 		imageReference, _ := imageValue.Reference()
+		if vm.nativePolicy == NativePolicyLGT {
+			return withLGTGraphicsAlpha(nativeDrawImage)(context.Background(), vm, destination, []Value{ReferenceValue(imageReference), IntValue(0), IntValue(0), IntValue(0)})
+		}
 		image, _ := vm.image(imageReference)
 		return Value{}, false, blit(vm, graphics, image, 0, 0, 0, 0, image.width, image.height)
 	})

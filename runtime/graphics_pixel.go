@@ -57,7 +57,21 @@ func drawSurfacePixel(current *surface, x, y int32, color Color) error {
 	if current.state.GlobalAlpha != 0xff {
 		color.A = uint8(uint16(color.A) * uint16(current.state.GlobalAlpha) / 0xff)
 	}
-	if color.A != 0xff {
+	if current.state.GlobalTransparency256 != 0 {
+		// Keep the 256-scale factor through the final blend, rather than
+		// reducing 257 possible levels to an eight-bit source alpha. Rounding
+		// to nearest (ties upward) is a deterministic emulator choice.
+		const denominator uint32 = 255 * 256
+		alpha := uint32(color.A) * (256 - uint32(current.state.GlobalTransparency256))
+		if alpha == 0 {
+			return nil
+		}
+		inverse := denominator - alpha
+		channel := func(s, d uint8) uint8 {
+			return uint8((uint32(s)*alpha + uint32(d)*inverse + denominator/2) / denominator)
+		}
+		color = Color{R: channel(color.R, destination.R), G: channel(color.G, destination.G), B: channel(color.B, destination.B), A: channel(255, destination.A)}
+	} else if color.A != 0xff {
 		color = blendColor(destination, color)
 	}
 	encodeSurfaceColor(current, x, y, color)

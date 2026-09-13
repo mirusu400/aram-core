@@ -1,7 +1,8 @@
 // Package gnex parses SK Telecom "GNEX" distribution archives: SinjiSoft
 // GVM titles shipped as a basename-matched pair of a small binary
 // descriptor (a newer ".mod" installer record, or an older ".inf" record)
-// and an ".SGS"/".sgs" ("Sinji Game Script") payload.
+// and an ".SGS"/".sgs" ("Sinji Game Script") payload. It also recognizes
+// standalone SGS payloads, raw or in a ZIP, using a stricter header check.
 //
 // This package recognizes a GNEX archive and decodes the payload's fixed
 // header (format version, title). It does not decode the GVM bytecode or
@@ -30,8 +31,7 @@ const (
 )
 
 // ErrNotPackage is returned when the input is not a recognizable GNEX
-// distribution ZIP: either it lacks ZIP magic, or no basename-matched
-// .SGS + (.mod|.inf) pair with a valid SGS header was found.
+// distribution ZIP or a standalone payload with a recognized SGS header.
 var ErrNotPackage = errors.New("not a GNEX package")
 
 // ManifestKind names which of the two observed descriptor shapes a package's
@@ -42,12 +42,14 @@ type ManifestKind string
 const (
 	ManifestMOD ManifestKind = "mod"
 	ManifestINF ManifestKind = "inf"
+	// ManifestNone identifies a standalone SGS, not a decoded descriptor.
+	ManifestNone ManifestKind = ""
 )
 
 // Package is a recognized GNEX distribution.
 type Package struct {
-	// BaseName is the shared filename stem of the SGS payload and its
-	// manifest (e.g. "4400410006").
+	// BaseName is the SGS archive member stem, shared with its manifest when
+	// present. It is empty for raw standalone input whose name is not known.
 	BaseName string
 	// SGSName and ManifestName are the archive member names actually
 	// matched (case as stored in the ZIP).
@@ -59,7 +61,8 @@ type Package struct {
 	// SGS is the complete raw .SGS/.sgs payload, header included. Bytes
 	// from Header.BodyOffset onward are the undecoded GVM body.
 	SGS []byte
-	// Manifest is the complete raw manifest (.mod or .inf) bytes.
+	// Manifest is the complete raw manifest (.mod or .inf) bytes, or nil for
+	// a standalone SGS.
 	Manifest []byte
 	// Files holds every archive member, for callers that want the
 	// remaining files (e.g. a .wmr resource bundle, a .res icon, save
@@ -67,10 +70,9 @@ type Package struct {
 	Files map[string][]byte
 }
 
-// FormatError reports a structurally invalid GNEX archive: one that is
-// unambiguously a GNEX distribution (an .SGS member exists) but fails to
-// parse. It is distinct from ErrNotPackage, which means the input simply
-// isn't a GNEX archive at all.
+// FormatError reports an invalid or ambiguous paired GNEX archive, an unsafe
+// ZIP, or an oversized recognized raw SGS. An extension alone does not prove
+// GNEX identity. ErrNotPackage means no supported recognition shape was found.
 type FormatError struct {
 	Path   string
 	Offset int64
@@ -92,13 +94,20 @@ func formatError(name string, offset int64, reason string) error {
 	return &FormatError{Path: name, Offset: offset, Reason: reason}
 }
 
-// Inspect validates and decodes a GNEX distribution ZIP. ZIP data without a
-// basename-matched .SGS + (.mod|.inf) pair whose SGS payload has a valid
-// header is reported as ErrNotPackage so callers may continue probing other
-// formats.
+// Inspect recognizes a GNEX distribution ZIP or raw standalone SGS. Standalone
+// candidates require an observed header placement and a nonempty, opaque body.
+// Raw payloads have no file name or descriptor. Recognition never validates or
+// executes the bytecode body.
 func Inspect(data []byte) (Package, error) {
 	if !hasZIPMagic(data) {
-		return Package{}, ErrNotPackage
+		header, err := standaloneHeader(data)
+		if err != nil {
+			return Package{}, ErrNotPackage
+		}
+		if uint64(len(data)) > MaxMemberSize {
+			return Package{}, formatError("SGS", 0, "payload exceeds size limit")
+		}
+		return Package{Header: header, SGS: bytes.Clone(data)}, nil
 	}
 	files, err := readZIP(data, "archive")
 	if err != nil {
@@ -124,6 +133,10 @@ func Inspect(data []byte) (Package, error) {
 		}
 		if infName, ok := findCaseInsensitive(files, base+".inf"); ok {
 			found = append(found, candidate{base, name, infName, ManifestINF})
+			continue
+		}
+		if _, err := standaloneHeader(files[name]); err == nil {
+			found = append(found, candidate{base, name, "", ManifestNone})
 		}
 	}
 	if len(found) == 0 {

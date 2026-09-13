@@ -102,13 +102,86 @@ func TestInspectRejectsZIPWithoutSGS(t *testing.T) {
 	}
 }
 
-func TestInspectRejectsSGSWithoutManifest(t *testing.T) {
+func TestInspectAcceptsSGSWithoutManifest(t *testing.T) {
 	archive := buildZIP(t, map[string][]byte{
 		"orphan.sgs": validSGS(t, "고아"),
 	})
-	if _, err := Inspect(archive); !errors.Is(err, ErrNotPackage) {
-		t.Errorf("error = %v, want ErrNotPackage", err)
+	pkg, err := Inspect(archive)
+	if err != nil {
+		t.Fatal(err)
 	}
+	if pkg.ManifestKind != ManifestNone || pkg.ManifestName != "" || pkg.Manifest != nil || pkg.Header.Title != "고아" {
+		t.Fatalf("unexpected standalone metadata: %+v", pkg)
+	}
+}
+
+func TestInspectRawStandaloneSGS(t *testing.T) {
+	for _, version := range []byte{1, 2} {
+		for _, prefix := range []int{0, 32} {
+			data := buildSGS(version, prefix, []byte("Synthetic"), []byte{0x55})
+			pkg, err := Inspect(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if pkg.Header.FormatVersion != version || pkg.Header.PrefixOffset != prefix || pkg.SGSName != "" || pkg.ManifestKind != ManifestNone {
+				t.Fatalf("unexpected raw SGS metadata: %+v", pkg)
+			}
+			data[len(data)-1] = 0
+			if pkg.SGS[len(pkg.SGS)-1] != 0x55 {
+				t.Fatal("raw SGS aliases caller buffer")
+			}
+		}
+	}
+}
+
+func TestInspectStandaloneRejectsUnprovenShapes(t *testing.T) {
+	nonzeroPrefix := buildSGS(1, 32, []byte("Synthetic"), []byte{1})
+	nonzeroPrefix[0] = 0x55
+	cases := map[string][]byte{
+		"header only":       buildSGS(1, 0, []byte("Synthetic"), nil),
+		"unobserved prefix": buildSGS(1, 8, []byte("Synthetic"), []byte{1}),
+		"nonzero prefix":    nonzeroPrefix,
+		"invalid encoding":  buildSGS(1, 0, []byte{0xff}, []byte{1}),
+		"embedded NUL":      buildSGS(1, 0, []byte{'a', 0, 'b'}, []byte{1}),
+		"control":           buildSGS(1, 0, []byte{'a', '\n', 'b'}, []byte{1}),
+		"extension only":    []byte("not SGS"),
+	}
+	for name, data := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Inspect(data); !errors.Is(err, ErrNotPackage) {
+				t.Fatalf("raw: %v, want ErrNotPackage", err)
+			}
+			if _, err := Inspect(buildZIP(t, map[string][]byte{"file.sgs": data})); !errors.Is(err, ErrNotPackage) {
+				t.Fatalf("ZIP: %v, want ErrNotPackage", err)
+			}
+		})
+	}
+}
+
+func TestInspectRejectsPairedAndStandaloneAmbiguity(t *testing.T) {
+	archive := buildZIP(t, map[string][]byte{
+		"one.sgs": validSGS(t, "One"), "one.mod": []byte("descriptor"),
+		"two.sgs": validSGS(t, "Two"),
+	})
+	var formatErr *FormatError
+	if _, err := Inspect(archive); !errors.As(err, &formatErr) {
+		t.Fatalf("error = %v, want FormatError", err)
+	}
+}
+
+func FuzzInspectStandaloneSGS(f *testing.F) {
+	f.Add(buildSGS(1, 0, []byte("Synthetic"), []byte{1}))
+	f.Add(buildSGS(2, 32, []byte("Synthetic"), []byte{1}))
+	f.Add([]byte("unrelated"))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if hasZIPMagic(data) {
+			return
+		}
+		pkg, err := Inspect(data)
+		if err == nil && (pkg.Header.BodyOffset >= len(pkg.SGS) || pkg.Header.BodyOffset < 12) {
+			t.Fatal("recognized standalone has invalid body boundary")
+		}
+	})
 }
 
 func TestInspectReportsFormatErrorForBadSGSHeader(t *testing.T) {

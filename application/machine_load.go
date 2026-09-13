@@ -22,6 +22,7 @@ import (
 	machinecore "github.com/mirusu400/aram-core/core"
 	"github.com/mirusu400/aram-core/cpu"
 	"github.com/mirusu400/aram-core/loader"
+	"github.com/mirusu400/aram-core/loader/brew"
 	"github.com/mirusu400/aram-core/loader/eads"
 	"github.com/mirusu400/aram-core/loader/gnex"
 	"github.com/mirusu400/aram-core/loader/ktf"
@@ -106,14 +107,14 @@ func (m *Machine) Load(ctx context.Context, source machinecore.Source) error {
 		// loader/gnex and docs/gnex-format.md) but the GVM bytecode format
 		// they carry has not been reverse engineered far enough to execute,
 		// so say precisely that instead of a generic unsupported-source error.
-		if gnexPackage, gnexErr := gnex.Inspect(data); gnexErr == nil {
-			return fmt.Errorf(
-				"%w: %q is an SKT GNEX title (%q); ARAM recognizes SinjiSoft "+
-					"GVM packages but does not yet execute GVM bytecode",
-				ErrUnsupportedSource,
-				source.Name,
-				gnexPackage.Header.Title,
-			)
+		gnexPackage, gnexErr := gnex.Inspect(data)
+		if gnexErr == nil {
+			return &UnsupportedPlatformError{
+				Kind:      loader.KindGNEX,
+				ProfileID: "gvm-container-v1/skt/generic",
+				Reason: fmt.Sprintf("%q is an SKT GNEX title (%q); ARAM recognizes SinjiSoft "+
+					"GVM packages but does not yet execute GVM bytecode", source.Name, gnexPackage.Header.Title),
+			}
 		}
 		// An Android package is a ZIP too, so it survives every WIPI loader
 		// above and lands here. Say what it is instead of reporting the last
@@ -131,6 +132,29 @@ func (m *Machine) Load(ctx context.Context, source machinecore.Source) error {
 				source.Name,
 				relation,
 			)
+		}
+		if !errors.Is(gnexErr, gnex.ErrNotPackage) {
+			var formatErr *gnex.FormatError
+			if !errors.As(gnexErr, &formatErr) || formatErr.Path != "archive" ||
+				!strings.HasPrefix(formatErr.Reason, "invalid ZIP:") {
+				return fmt.Errorf("inspect GNEX package: %w", gnexErr)
+			}
+		}
+		// A validated MIF envelope and opaque MOD identify a BREW container,
+		// not a loadable ARM image. Keep WIPI/GNEX/Android precedence and
+		// never create a machine until the module loading ABI is established.
+		if brewPackage, brewErr := brew.Inspect(data); brewErr == nil {
+			return &UnsupportedPlatformError{
+				Kind:      loader.KindBREW,
+				ProfileID: "brew-container-v1/unknown/generic",
+				Reason:    fmt.Sprintf("BREW package recognized (%d module(s)); ARAM does not yet execute BREW modules", len(brewPackage.Modules)),
+			}
+		} else if !errors.Is(brewErr, brew.ErrNotPackage) {
+			var formatErr *brew.FormatError
+			if !errors.As(brewErr, &formatErr) || formatErr.Path != "archive" ||
+				!strings.HasPrefix(formatErr.Reason, "invalid ZIP:") {
+				return fmt.Errorf("inspect BREW package: %w", brewErr)
+			}
 		}
 		if err == nil {
 			err = ErrUnsupportedSource
