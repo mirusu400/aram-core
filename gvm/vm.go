@@ -16,6 +16,8 @@ var (
 	ErrDivideByZero        = errors.New("gvm: division by zero")
 	ErrReturnStackOverflow = errors.New("gvm: return stack overflow")
 	ErrInvalidTarget       = errors.New("gvm: target outside program")
+	// ErrInvalidArraySelector rejects operations outside the verified scalar family.
+	ErrInvalidArraySelector = errors.New("gvm: invalid scalar array selector")
 )
 
 // UnsupportedOpcodeError identifies the fetched opcode and its buffer offset.
@@ -168,6 +170,35 @@ func (v *VM) Step() error {
 		v.stack[v.depth] = binary.LittleEndian.Uint16(v.symbols[index][:2])
 		v.depth++
 		v.pc++
+	case 0x09:
+		// Host policy caches both operands before guards or aliasing writes.
+		if len(v.code)-v.pc < 2 {
+			return fail(ErrTruncated)
+		}
+		index, element := int(v.code[v.pc]), int(v.code[v.pc+1])
+		// The native upper guard rejects depth65 even though success pops.
+		if v.depth >= len(v.stack) {
+			return fail(ErrStackOverflow)
+		}
+		if index >= len(v.symbols) {
+			return fail(ErrInvalidSymbol)
+		}
+		region := v.symbols[index]
+		// Exact len/2 is the restricted uint8 count representation of 03/31.
+		if len(region)%2 != 0 || len(region) > 510 {
+			return fail(ErrInvalidSymbolRegion)
+		}
+		if element >= len(region)/2 {
+			return fail(ErrInvalidElement)
+		}
+		if v.depth == 0 {
+			return fail(ErrStackUnderflow)
+		}
+		value := v.stack[v.depth-1]
+		binary.LittleEndian.PutUint16(region[2*element:2*element+2], value)
+		v.depth--
+		v.stack[v.depth] = 0 // Host hygiene, not native backing-slot behavior.
+		v.pc += 2
 	case 0x0a:
 		if len(v.code)-v.pc < 1 {
 			return fail(ErrTruncated)
@@ -206,6 +237,76 @@ func (v *VM) Step() error {
 		v.depth--
 		v.stack[v.depth] = 0
 		v.pc++
+	case 0xb4:
+		if v.address == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 4 {
+			return fail(ErrStackUnderflow)
+		}
+		// Cache all four arguments before writes that may alias program bytes.
+		ref, scalar := v.stack[v.depth-4], v.stack[v.depth-3]
+		count, selector := int16(v.stack[v.depth-2]), v.stack[v.depth-1]
+		region, index := v.address.ram, ref
+		if index&0x4000 != 0 {
+			region = v.address.file
+			index &^= 0x4000
+		}
+		// Host policy requires a full starting word even for nonpositive count.
+		start := uint64(index) * 2
+		if int16(index) < 0 || start+2 > uint64(len(region)) {
+			return fail(ErrInvalidAddress)
+		}
+		// Only these twelve table entries have a verified bounded contract.
+		if selector > 11 {
+			return fail(ErrInvalidArraySelector)
+		}
+		// Both native operations check zero before count. Our shared sticky
+		// fault preserves memory/stack, not native diagnostics, redirection/pop.
+		if (selector == 4 || selector == 5) && scalar == 0 {
+			return fail(ErrDivideByZero)
+		}
+		if count > 0 {
+			end := start + 2*uint64(count)
+			// Preflight the entire global arena span before any partial store.
+			if end > uint64(len(region)) {
+				return fail(ErrInvalidAddress)
+			}
+			for pos := start; pos < end; pos += 2 {
+				x := binary.LittleEndian.Uint16(region[pos : pos+2])
+				var value uint16
+				switch selector {
+				case 0:
+					value = scalar
+				case 1:
+					value = x + scalar
+				case 2:
+					value = x - scalar
+				case 3:
+					value = x * scalar
+				case 4:
+					value = uint16(int32(int16(x)) / int32(int16(scalar)))
+				case 5:
+					value = uint16(int32(int16(x)) % int32(int16(scalar)))
+				case 6:
+					value = x & scalar
+				case 7:
+					value = x | scalar
+				case 8:
+					value = ^scalar // Assignment, not complement of x.
+				case 9:
+					value = x ^ scalar
+				case 10:
+					value = uint16(int16(x) >> (scalar & 31))
+				case 11:
+					value = x << (scalar & 31)
+				}
+				binary.LittleEndian.PutUint16(region[pos:pos+2], value)
+			}
+		}
+		v.depth -= 4
+		clear(v.stack[v.depth : v.depth+4]) // Host hygiene, not native behavior.
 	case 0x4f:
 		if v.address == nil {
 			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}

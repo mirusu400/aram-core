@@ -29,6 +29,7 @@ Every fetched opcode advances PC before its handler.
 | `04` | u8 symbol, push its first rawLE16 slot, PC=P+1 |
 | `05` | Push signed i8 extended to raw16, PC=P+1 |
 | `06` | Push BE16, PC=P+2 |
+| `09` | u8 symbol, u8 element; store raw top16 as LE16 at symbol+2*element, pop once, PC=P+2; depth65 rejected |
 | `0a` | u8 symbol; store raw top16 as LE16 at symbol start, pop once, PC=P+1; depth65 rejected |
 | `12` | Replace a=S[top-1], b=S[top] with low16(a+b) |
 | `13` | Replace a,b with low16(a-b) |
@@ -50,6 +51,7 @@ Every fetched opcode advances PC before its handler.
 | `4d` | Configured address model only: u8 symbol, push its encoded region-relative word address, PC=P+1 |
 | `4f` | Configured address model only: store raw top16 as LE16 at RAM+2*signed16(next-to-top), pop two, PC=P |
 | `96`, `97` | Pop16 argument, call a ret-only native callee in this build, PC=P |
+| `b4` | Configured address model only: scalar operation on a tagged word array, pop four, PC=P |
 | `ff` | Exit current dispatch, PC=P |
 
 Immediate stores `31/36` and returns do not alter S; `0a` pops its stored value.
@@ -132,6 +134,31 @@ This differs deliberately from the native error-helper cleanup/pop path.
 The widened division makes `-32768 / -1` wrap to `0x8000` without a host trap.
 
 ## Reference store checks versus emulator safety
+
+`09` uses unsigned symbol and element operands and the same exact even-span
+count representation as `03/31`. Host validation is both operand bytes, upper
+stack capacity, symbol, shape, element, then lower-stack availability. A valid
+element must fit the descriptor itself, not an unrestricted global fallback.
+Operands and value are cached before aliasing writes. Success stores raw LE16
+and pops once. Failures remain sticky and transactional after opcode fetch,
+unlike the reference's partial PC publication and host diagnostic cleanup.
+
+`b4` consumes `[destination reference, scalar, signed count, selector]`, deepest
+first. Selectors0..11 are assign, add, subtract, multiply, signed divide,
+signed remainder, AND, OR, assign NOT scalar, XOR, arithmetic right shift and
+left shift. Results retain low16 and shifts use scalar's low5 bits. Positive
+counts visit ascending words. Nonpositive counts write nothing, but zero
+division/remainder scalars still fault. Both use `ErrDivideByZero`, a host
+policy rather than the reference's distinct diagnostic numbers.
+
+Only explicit configured arenas support `b4`. Host checks configuration,
+four stack values, a complete starting word, selector0..11, divisor and the
+whole positive-count span before mutation. The starting-word check applies
+even to nonpositive counts. `ErrInvalidArraySelector` rejects all unverified
+selectors. Tagged spans may cross descriptor boundaries but not their global
+region. Cached arguments preserve code aliases without exposing native VM
+globals. This is deterministic array processing, not a clock, audio or graphics
+service, and proves no presentation or startup milestone.
 
 `0a` is a direct symbol store, not an indexed load. The same hash-qualified
 reference checks signed top>=64 after consuming its u8 index, despite popping
