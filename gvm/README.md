@@ -239,6 +239,11 @@ identical and the other eight observations were unchanged. Those seeds are
 diagnostic choices, not recovered native state. No reserved initialization,
 ordinary product launch or framebuffer was established.
 
+The next boundary is an active timer request, not a safe no-op. See the
+[timer integration evidence](../docs/gvm-timer-integration.md) for the
+static registration relationships and partial callback route, remaining state,
+and shared-runtime scheduling policies that must not be assumed equivalent.
+
 ## Reference store checks versus emulator safety
 
 `0e` changes only the existing top word. The hash-qualified native three-
