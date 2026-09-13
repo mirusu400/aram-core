@@ -368,6 +368,34 @@ func (v *VM) Step() error {
 		value := uint16(int16(int8(v.code[v.pc+1])))
 		binary.LittleEndian.PutUint16(v.symbols[index][:2], value)
 		v.pc += 2
+	case 0x3a:
+		// Host policy eagerly validates both operands before symbol lookup.
+		if len(v.code)-v.pc < 2 {
+			return fail(ErrTruncated)
+		}
+		index, delta := int(v.code[v.pc]), int8(v.code[v.pc+1])
+		if index >= len(v.symbols) {
+			return fail(ErrInvalidSymbol)
+		}
+		region := v.symbols[index]
+		if v.address != nil {
+			binding := v.address.bindings[index]
+			region = v.address.ram
+			if binding.region == AddressFile {
+				region = v.address.file
+			}
+			// Require a full global word, not a descriptor span or shape.
+			if uint64(binding.offset)+2 > uint64(len(region)) {
+				return fail(ErrInvalidSymbolRegion)
+			}
+			region = region[int(binding.offset):]
+		} else if len(region) < 2 {
+			return fail(ErrInvalidSymbolRegion)
+		}
+		// Cache the immediate and old word before any aliased file/code write.
+		old := binary.LittleEndian.Uint16(region[:2])
+		binary.LittleEndian.PutUint16(region[:2], old+uint16(int16(delta)))
+		v.pc += 2
 	case 0x3c, 0x3d, 0x3e:
 		// Host safety policy eagerly requires all operands, even on fallthrough,
 		// and validates before committing the pop. These differ from lazy target

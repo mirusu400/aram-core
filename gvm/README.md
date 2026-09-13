@@ -37,6 +37,7 @@ Every fetched opcode advances PC before its handler.
 | `1f` | Signed16 a>=b, replacing a,b with canonical zero or one |
 | `31` | u8 symbol, u8 element, signed i8 immediate; store signextended LE16 at symbol+2*element, PC=P+3 |
 | `36` | u8 symbol, signed i8 immediate; store signextended LE16 at symbol start, PC=P+2 |
+| `3a` | u8 symbol, signed i8 delta; add delta modulo65536 to its first LE16 word, stacks unchanged, PC=P+2 |
 | `3c` | Pop16; if signed16(top)<signed8(P), jump B+BE16(P+1), otherwise P+3 |
 | `3d` | Pop16; if signed16(top)>=signed8(P), jump B+BE16(P+1), otherwise P+3; equality branches |
 | `3e` | Pop16; if signed16(top)<=signed8(P), jump B+BE16(P+1), otherwise P+3; equality branches |
@@ -166,6 +167,16 @@ oversized shapes produce `ErrInvalidSymbolRegion`, never a modulo count.
 Out-of-range elements produce `ErrInvalidElement`. This shape restriction is
 host policy, not a claim that native code rejects odd buffers. `36` continues
 to allow any bound region containing at least two bytes.
+
+`3a` is a separately verified in-place LE16 add with signed8 delta and wrapping
+arithmetic, not a branch or saturating operation. It has no stack effects or
+capacity checks and reads no descriptor type/count. Host policy eagerly caches
+both operands, validates symbol and full word, then writes and advances PC.
+Configured bindings use their full selected global file/RAM region, permitting
+empty/one-byte views with valid backing; legacy slices require two bytes.
+No even-length or maximum-shape restriction is imposed. Cached delta and old
+word preserve operand/code aliases. Native index-first consumption and opaque
+error-helper host side effects are deliberately not reproduced by sticky faults.
 
 All handler failures are transactional except the already-completed opcode
 fetch: PC stays at opcode+1, with no operand, stack, or memory changes. This

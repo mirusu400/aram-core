@@ -386,3 +386,32 @@ Frozen public ordered tests, Windows product builds, core portability and
 official Android binder passed. Official deltas show21synthetic and496private
 rows unchanged. Private-all alone exits1 with the same six missing KTF/Raptor
 prerequisites; full configured workspace acceptance is not green.
+
+
+## In-place signed increment continuation: opcode3a
+
+Independent complete36-instruction evidence establishes unsigned symbol index
+and signed8 delta, LE16 wrapping addition, width3 and no stack effects.
+Coordinator reran eight fingerprint windows,458752 arithmetic cases,5120
+host-model successes,256 signed8 cases and three integrity negatives.
+Opaque transitive error-helper host effects are not modeled. No supplied
+executable was run.
+
+Host eager operand validation, full global file/RAM word bounds for configured
+bindings and two-byte minimum legacy slices deliberately differ from native
+index-first/start-only checks. No shape/type/count restrictions or capacity
+checks were added. Cached operands preserve coherent self/code aliases.
+Public tests cover wrapping extremes, unsigned indexes,0/65 stack depth,
+empty/odd/oversized views, global bounds, sticky faults, self/future fetch,
+input ownership, budgets, and all17 saved returns. Tests-first red, focused/
+full/386 tests and vet passed; independent frozen review passed by inspection.
+
+Same nine original decoder/kernel observations advance selected c4f6ade5
+from129 to293 successful instructions, then unsupported4c at841. Other seven
+v2 cases remain unchanged; v1 remains unsupported. The configured subset
+has27 opcode values but still lacks ordinary product startup and rendering.
+
+Public ordered tests, Windows builds, core portability and official binder
+passed. Official comparisons retain21synthetic and496private rows unchanged.
+Private-all alone exits1 with the same six missing KTF/Raptor prerequisites.
+This does not close complete configured workspace acceptance.
