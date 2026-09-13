@@ -53,7 +53,33 @@ normal returns. They are not a portable implementation or failure policy.
 The inner target and existing record field are not file-backed initialized
 values. Conditional writer anchors `0x412577` and `0x4126d7` occur in the
 consumer, but their selected initialization path and lifetime remain unproved.
-No guest header entry or dispatcher reset has yet been joined to this route.
+The latter installs `0x4148f0` only for input selector6 with mode0 and directly
+calls it with `(0,1,0)`. This is not the loader's initial selector2 route.
+
+If the live target is `0x4148f0`, its event2 path forwards only the second
+argument to `0x41e450`; the third argument is unused on that particular path.
+The helper performs conditional mirror updates and word writes through native
+state pointers, then calls `0x40ed50`. Only after normal return does it read
+LE16 at `H+0x20` (32 bytes in decimal), with H freshly loaded from `0x5276b8`,
+and call the dispatcher. This establishes a conditional entry-source/reset
+join, not selected startup or permission to skip preceding state effects.
+Nonzero native entry resets operand and return indices; zero entry does not
+undo the preceding helper work. The saved-top scalar is distinct.
+
+A bounded initializer recheck maps the pointer aliases used here to reserved
+symbols0,3,4,5,6. These are aliases of guest storage, not independent counters.
+The header pointer H is published from the buffer base before initialization
+completes, so its presence alone does not prove readiness. Ordered writes and
+fresh reads must preserve overlapping-symbol effects.
+
+The complete `0x40ed50` body has no calls or external tail transfer. Under its
+ordinary native-state prerequisites it publishes its argument, copies182 bytes
+from a configuration-selected lookup source, and updates a mapped byte. This
+is local lookup-state mutation, not presentation. The source contents, current
+configuration and safe source/destination extents remain unresolved. No copied
+table or guessed replacement is provided. Thus the helper-body gap is closed,
+but successful initialization and portable lookup-state policy still block
+operational timer delivery.
 
 ## Existing runtime boundary
 
@@ -80,8 +106,11 @@ test coalescing, pending-event, replacement and failure rules explicitly.
 
 1. Establish the selected inner-slot initialization/lifetime and either the
    record field's provenance or the selected target's proven non-use of it.
-2. Join that target to the actual guest callback entry and dispatcher reset.
-   Define initialization, ownership, reentrancy, budgets and sticky-fault policy.
+2. Establish the conditional wrapper's actual header/state-pointer readiness
+   and helper effects before using its entry/reset join. Define initialization,
+   ownership, reentrancy, budgets and sticky-fault policy. The bounded
+   [BeginDispatch API](../gvm/README.md#explicit-dispatch-re-entry) supplies only
+   post-halt kernel mechanics, not those wrapper prerequisites or delivery.
 3. Supply explicit serialized timer state, readiness, virtual-time advancement,
    cancellation, reset and teardown. A timer request without guest delivery
    must not be reported as an operational service.

@@ -93,6 +93,40 @@ never a guessed NOP. `96/97` are not guessed service stubs: direct assertions
 establish their ret-only callee for this hash. No graphics or other-build
 service semantics are inferred.
 
+## Explicit dispatch re-entry
+
+`BeginDispatch(entry uint32) (started bool, err error)` prepares another
+dispatch only after the preceding dispatch completed through `ff`. It does not
+execute an instruction, advance time or deliver a timer event. A single owner
+must serialize this API with stepping and borrowed service mutation.
+
+Preconditions and validation are ordered:
+
+1. A sticky execution fault is returned unchanged. This API never clears it.
+2. A non-halted VM returns `ErrDispatchActive`, including a dispatch suspended
+   by instruction-budget exhaustion. Resume that dispatch with `Run` instead.
+3. Entry zero returns `false, nil` with all state unchanged, representing an
+   absent callback. These preconditions still apply to zero.
+4. A nonzero out-of-buffer entry returns a nonsticky `ErrInvalidTarget` without
+   mutation. As with `NewAt`, this is an explicit uint32 byte offset, not an
+   implicitly masked native16-bit argument or a parsed header field.
+5. A valid nonzero entry sets PC, clears the completed flag and resets operand
+   and return-stack depths. It returns `true, nil` without running the entry.
+
+Code, RAM, symbol aliases, stack/return backing words and borrowed services are
+preserved. The raw saved-top scalar is also preserved, but using it through
+`0c` requires a fresh `0b` in the new dispatch. Invalidating that permission is
+fail-closed host policy, **not** a claim that the native dispatcher resets its
+distinct saved-top scalar. Zero/no-op and rejected requests preserve permission.
+Existing constructors still start their initial dispatch normally, including
+offset zero. They do not acquire implicit services or fabricated idle state.
+
+This is not a Reset, SaveState, interrupted-dispatch restart or machine factory.
+The authenticated timer wrapper performs guest-state writes and native helper
+work before reading its entry. Calling `BeginDispatch` alone must not bypass
+those prerequisites or count as successful timer delivery. See the
+[timer integration boundary](../docs/gvm-timer-integration.md).
+
 ## Explicit host memory bindings
 
 - `New(program)` copies the buffer and starts at zero. Empty input faults on

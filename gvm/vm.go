@@ -9,6 +9,8 @@ import (
 )
 
 var (
+	// ErrDispatchActive rejects redispatch before a successful guest halt.
+	ErrDispatchActive      = errors.New("gvm: dispatch still active")
 	ErrBudget              = errors.New("gvm: instruction budget exhausted")
 	ErrTruncated           = errors.New("gvm: truncated instruction")
 	ErrStackUnderflow      = errors.New("gvm: operand stack underflow")
@@ -89,6 +91,38 @@ func (v *VM) Stack() []uint16 { return append([]uint16(nil), v.stack[:v.depth]..
 // Halted reports successful completion of the current dispatch via guest 0xff.
 // Faults are not successful halts.
 func (v *VM) Halted() bool { return v.halted }
+
+// BeginDispatch prepares a successfully halted VM for an explicit buffer offset,
+// without executing instructions or touching services. The owner must serialize
+// calls with all other VM operations; this is not a concurrent or reentrant API.
+// Sticky faults are returned unchanged first, then active dispatches (including
+// budget suspension) are rejected. After these checks, entry zero is a complete
+// no-op. Invalid nonzero entries wrap ErrInvalidTarget without setting a fault.
+// Like NewAt, offsets are uint32, with no header lookup or implicit 16-bit mask.
+// Success empties logical stacks but retains their backing arrays, all storage
+// and aliases, and service bindings. It invalidates only savedTop's validity:
+// requiring a fresh 0b before 0c is fail-closed host policy, not a claim about
+// native savedTop reset behavior. The raw savedTop value remains untouched.
+func (v *VM) BeginDispatch(entry uint32) (started bool, err error) {
+	if v.fault != nil {
+		return false, v.fault
+	}
+	if !v.halted {
+		return false, ErrDispatchActive
+	}
+	if entry == 0 {
+		return false, nil
+	}
+	if uint64(entry) >= uint64(len(v.code)) {
+		return false, fmt.Errorf("%w: entry offset %d", ErrInvalidTarget, entry)
+	}
+	v.pc = int(entry)
+	v.halted = false
+	v.depth = 0
+	v.returnDepth = 0
+	v.savedTopValid = false
+	return true, nil
+}
 
 // Run executes at most budget instructions. Exhaustion is resumable and does
 // not set a fault. A zero budget makes no progress, returning ErrBudget unless
