@@ -38,6 +38,7 @@ Every fetched opcode advances PC before its handler.
 | `15` | Signed32 division of signextended16 a/b, truncating toward zero, retain low16 |
 | `1f` | Signed16 a>=b, replacing a,b with canonical zero or one |
 | `31` | u8 symbol, u8 element, signed i8 immediate; store signextended LE16 at symbol+2*element, PC=P+3 |
+| `35` | u8 destination symbol, u8 source symbol; copy first rawLE16 word, no stack effects, PC=P+2 |
 | `36` | u8 symbol, signed i8 immediate; store signextended LE16 at symbol start, PC=P+2 |
 | `3a` | u8 symbol, signed i8 delta; add delta modulo65536 to its first LE16 word, stacks unchanged, PC=P+2 |
 | `3c` | Pop16; if signed16(top)<signed8(P), jump B+BE16(P+1), otherwise P+3 |
@@ -249,6 +250,20 @@ wordcount or type guard. The host checks the complete two-byte region and
 keeps transactional PC behavior on failure. Missing index precedes the
 capacity check, unlike the immediate-only pushes `05/06`.
 
+`35` is independently verified as a three-byte first-word symbol copy, not an
+array copy or indexed operation. Both unsigned symbol indices and the complete
+source LE16 word are cached before the destination write. Identical, partial,
+and instruction aliases retain that load-before-store behavior. Neither stack
+changes, and depths0,64 and65 are valid without capacity or underflow checks.
+
+Host validation eagerly requires both inline operands, then checks destination
+index, destination full word, source index and source full word in that order.
+Configured bindings use the selected global file/RAM spans independently; empty,
+one-byte, odd and oversized descriptor views may succeed when backing is safe.
+Legacy bindings each require two bytes. No descriptor count/type or len/2 rule
+is inferred. Errors are sticky and atomic except opcode fetch, unlike the native
+operand-PC publication and opaque diagnostic-helper effects.
+
 `36` consumes u8 symbol before validation, checks it against native count,
 loads the pointer at offset2 of a six-byte record, checks that starting pointer
 against either permitted native range, then reads signed i8 and stores LE16.
@@ -332,8 +347,9 @@ separate predicates.
   then underflow, then taken target. Store ordering is documented above.
   These guards, transactional failures and sticky faults are emulator policy.
 - Storage is copied input, copied independent RAM, binding views and fixed
-  stacks. There are no clocks, random sources, host services or unbounded runs.
-  VM is not safe for concurrent use.
+  stacks. Legacy constructors install no clocks or host services; the explicit
+  service constructor uses the caller-owned deterministic clock described above.
+  There are no unbounded runs. VM is not safe for concurrent use.
 
 ## Focused validation
 

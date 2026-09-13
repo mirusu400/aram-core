@@ -636,6 +636,41 @@ func (v *VM) Step() error {
 		value := uint16(int16(int8(v.code[v.pc+2])))
 		binary.LittleEndian.PutUint16(region[2*element:2*element+2], value)
 		v.pc += 3
+	case 0x35:
+		// Cache both u8 operands before validation or a self-modifying write.
+		if len(v.code)-v.pc < 2 {
+			return fail(ErrTruncated)
+		}
+		indices := [2]int{int(v.code[v.pc]), int(v.code[v.pc+1])}
+		var words [2][]byte
+		// Destination index and full span precede even source-index validation.
+		// Neither descriptor shape nor operand-stack depth constrains this copy.
+		for operand, index := range indices {
+			if index >= len(v.symbols) {
+				return fail(ErrInvalidSymbol)
+			}
+			region := v.symbols[index]
+			if v.address != nil {
+				binding := v.address.bindings[index]
+				region = v.address.ram
+				if binding.region == AddressFile {
+					region = v.address.file
+				}
+				// The host requires a whole word in the selected global region.
+				// Widen before adding so offsets remain safe on 32-bit hosts.
+				if uint64(binding.offset)+2 > uint64(len(region)) {
+					return fail(ErrInvalidSymbolRegion)
+				}
+				region = region[int(binding.offset):]
+			} else if len(region) < 2 {
+				return fail(ErrInvalidSymbolRegion)
+			}
+			words[operand] = region[:2]
+		}
+		// Read the complete original word before writing, including partial aliases.
+		value := binary.LittleEndian.Uint16(words[1])
+		binary.LittleEndian.PutUint16(words[0], value)
+		v.pc += 2
 	case 0x36:
 		if len(v.code)-v.pc < 1 {
 			return fail(ErrTruncated)
