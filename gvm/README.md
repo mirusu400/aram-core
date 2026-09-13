@@ -63,6 +63,7 @@ Every fetched opcode advances PC before its handler.
 | `4f` | Configured address model only: store raw top16 as LE16 at RAM+2*signed16(next-to-top), pop two, PC=P |
 | `51` | Explicit service constructor only: write four device-query words through a tagged reference and pop once |
 | `96`, `97` | Pop16 argument, call a ret-only native callee in this build, PC=P |
+| `a1` | Explicit service constructor only: replace two signed16 bounds with an equal bound or a draw in the half-open signed range, pop once, PC=P |
 | `b4` | Configured address model only: scalar operation on a tagged word array, pop four, PC=P |
 | `b5` | Configured address model only: forward live-source operation on two tagged word arrays, pop four, PC=P |
 | `b9` | Explicit service constructor only: write local hour/minute/second/millisecond from one virtual-clock sample and pop once |
@@ -164,12 +165,12 @@ Division by zero produces sticky `ErrDivideByZero` without changing operands.
 This differs deliberately from the native error-helper cleanup/pop path.
 The widened division makes `-32768 / -1` wrap to `0x8000` without a host trap.
 
-## Explicit device and civil-clock services
+## Explicit device, civil-clock and random services
 
 `NewWithAddressSpaceAndServices` is an opt-in constructor, not a factory or
-startup adapter. Existing constructors retain typed unsupported `51/b9`.
-Nil service config deliberately provides neither service, with precise unavailable
-errors after stack/address validation. Device query and clock are independent.
+startup adapter. Existing constructors retain typed unsupported `51/b9/a1`.
+Nil service config deliberately provides no providers, with precise unavailable
+errors after operation-specific validation. Device query, clock and RNG are independent.
 No configuration is detected from a title, host registry, environment or clock.
 
 `DeviceQueryProfile` is copied into private state. Width/Height1..256 are an
@@ -190,8 +191,53 @@ tagged-arena span before provider/conversion checks. All four results are
 prepared before any write/pop. Errors remain sticky and transactional after
 opcode fetch. File/code aliases are preserved, but native host-global aliases
 are never exposed. Service configuration is immutable apart from the explicitly
-borrowed clock. This adds no complete VM snapshot, reset, scheduler, presentation,
+borrowed clock or random owner. This adds no complete VM snapshot, reset, scheduler, presentation,
 or game-start contract.
+
+### Explicit random range (`a1`)
+
+`ServiceConfig.Random` and `RandomStream` select a borrowed shared
+`runtime.Random` and a named stream. Both must be supplied together. Construction
+validates the pair and name, but never creates, seeds, resets or draws from a
+stream. Callers explicitly seed with `SetLCG214013Seed` or restore validated
+state. No host clock, TLS context, title hash or implicit seed supplies state.
+The exact reference initializes a newly allocated TLS context to one, but this
+does not establish the seed at guest entry or the observed execution boundary.
+
+The selected algorithm is `RNGLCG214013Output15`: uint32 state advances by
+`state*214013+2531011` modulo `2^32`, then returns `(state>>16)&32767`.
+Its named state and draw count participate in shared-runtime snapshots and
+serialization. Existing algorithm encodings remain unchanged. Older readers
+reject the new algorithm rather than gaining forward compatibility. Random
+owners must serialize stepping, reseeding, restoring and other borrowers.
+Replacing an entire service graph requires explicitly rebinding its borrowers.
+This is not a complete GVM save/restore or native thread-sharing contract.
+
+After the opt-in constructor check, `a1` requires two stack values before
+checking providers. Equal raw words retain that value without any random access,
+even with an empty service config. Unequal bounds use signed16 ordering and
+exactly one draw, returning `lo + draw % (hi-lo)` with a signed32 width. The
+upper bound is excluded. Width one still consumes a draw. Width65535 reaches
+only -32768 through -1, so this is not a uniform inclusive-range API.
+
+Missing providers produce `ErrRandomUnavailable`. Missing, mismatched or
+exhausted streams preserve the shared owner and VM operands and retain their
+runtime error identity through the sticky execution error. No stream is lazily
+created by a draw. All VM checks precede the draw, with no fallible operation
+between successful draw and result commit. Existing popped-slot zeroing is host
+hygiene, unlike native backing retention. Native allocation failures and
+unchecked writes have no established rollback parity. No startup or frame
+milestone is implied by an explicitly seeded diagnostic run.
+
+In a bounded nine-input public-kernel comparison, the selected SHA-256
+`c4f6ade5193dec699654fc2cb488af4cd131152fe14fa27c384c1d36ec47656e`
+remained at3621 instructions with legacy construction. Opt-in device/clock
+configuration without RNG stopped at the same offset33603 with
+`ErrRandomUnavailable`. Separately chosen per-input seeds0,1 and4294967295
+each reached4611 instructions, then unsupported `9a` at116. Seed1 replay was
+identical and the other eight observations were unchanged. Those seeds are
+diagnostic choices, not recovered native state. No reserved initialization,
+ordinary product launch or framebuffer was established.
 
 ## Reference store checks versus emulator safety
 

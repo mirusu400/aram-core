@@ -34,12 +34,13 @@ type RNGAlgorithm string
 const (
 	RNGXoshiro256StarStar RNGAlgorithm = "xoshiro256**"
 	RNGJava48             RNGAlgorithm = "java-lcg48"
+	RNGLCG214013Output15  RNGAlgorithm = "lcg32-214013-2531011-output15"
 	javaRandomMultiplier               = uint64(0x5deece66d)
 	javaRandomMask                     = uint64(1<<48 - 1)
 )
 
 func (a RNGAlgorithm) valid() bool {
-	return a == RNGXoshiro256StarStar || a == RNGJava48
+	return a == RNGXoshiro256StarStar || a == RNGJava48 || a == RNGLCG214013Output15
 }
 
 // Random owns deterministic named streams so Java Random, C rand, and
@@ -59,6 +60,51 @@ func NewRandom(seed uint64, maxStreams uint32) *Random {
 		maxStreams: maxStreams,
 		streams:    make(map[string]*rngStream),
 	}
+}
+
+// SetLCG214013Seed explicitly creates or resets a 32-bit LCG stream. Zero is a
+// valid seed. An existing stream of another algorithm is never converted.
+func (r *Random) SetLCG214013Seed(name string, seed uint32) error {
+	if err := validateRandomStreamName(name); err != nil {
+		return err
+	}
+	stream := r.streams[name]
+	if stream != nil {
+		if stream.algorithm != RNGLCG214013Output15 {
+			return fmt.Errorf("%w: random stream %q uses %s", ErrInvalidState, name, stream.algorithm)
+		}
+	} else {
+		if uint32(len(r.streams)) >= r.maxStreams {
+			return fmt.Errorf("%w: random stream count reached %d", ErrLimitExceeded, r.maxStreams)
+		}
+		stream = &rngStream{algorithm: RNGLCG214013Output15}
+		r.streams[name] = stream
+	}
+	stream.state = [4]uint64{uint64(seed)}
+	stream.draws = 0
+	return nil
+}
+
+// LCG214013Output15 advances an explicitly seeded stream once and returns its
+// high 15 bits. Missing streams are not created. Errors leave all state intact.
+func (r *Random) LCG214013Output15(name string) (uint32, error) {
+	if err := validateRandomStreamName(name); err != nil {
+		return 0, err
+	}
+	stream := r.streams[name]
+	if stream == nil {
+		return 0, fmt.Errorf("%w: random stream %q", ErrNotFound, name)
+	}
+	if stream.algorithm != RNGLCG214013Output15 {
+		return 0, fmt.Errorf("%w: random stream %q uses %s", ErrInvalidState, name, stream.algorithm)
+	}
+	if stream.draws == math.MaxUint64 {
+		return 0, fmt.Errorf("%w: random stream %q exhausted", ErrLimitExceeded, name)
+	}
+	state := uint32(stream.state[0])*214013 + 2531011
+	stream.state[0] = uint64(state)
+	stream.draws++
+	return (state >> 16) & 0x7fff, nil
 }
 
 func (r *Random) Uint64(name string) (uint64, error) {
@@ -201,16 +247,28 @@ func (r *Random) stream(name string) (*rngStream, error) {
 	return stream, nil
 }
 
-func (r *Random) ensureStream(name string, algorithm RNGAlgorithm) (*rngStream, error) {
+func validateRandomStreamName(name string) error {
 	if strings.TrimSpace(name) == "" || len(name) > 64 ||
 		strings.IndexByte(name, 0) >= 0 {
-		return nil, fmt.Errorf("%w: invalid random stream name %q", ErrInvalidArgument, name)
+		return fmt.Errorf("%w: invalid random stream name %q", ErrInvalidArgument, name)
+	}
+	return nil
+}
+
+func (r *Random) ensureStream(name string, algorithm RNGAlgorithm) (*rngStream, error) {
+	if err := validateRandomStreamName(name); err != nil {
+		return nil, err
 	}
 	if !algorithm.valid() {
 		return nil, fmt.Errorf("%w: invalid random algorithm %q", ErrInvalidArgument, algorithm)
 	}
 	if stream := r.streams[name]; stream != nil {
 		return stream, nil
+	}
+	// This algorithm requires an explicit seed and must never use the xoshiro
+	// initializer or any implicit default seed.
+	if algorithm == RNGLCG214013Output15 {
+		return nil, fmt.Errorf("%w: random stream %q requires an explicit seed", ErrNotFound, name)
 	}
 	if uint32(len(r.streams)) >= r.maxStreams {
 		return nil, fmt.Errorf("%w: random stream count reached %d", ErrLimitExceeded, r.maxStreams)
@@ -267,6 +325,11 @@ func (r *Random) Restore(state RandomState) error {
 			(index != 0 && saved.Name <= previous) ||
 			!saved.Algorithm.valid() ||
 			(saved.Algorithm == RNGXoshiro256StarStar && saved.State == [4]uint64{}) ||
+			(saved.Algorithm == RNGLCG214013Output15 &&
+				(saved.State[0] > math.MaxUint32 ||
+					saved.State[1] != 0 ||
+					saved.State[2] != 0 ||
+					saved.State[3] != 0)) ||
 			(saved.Algorithm == RNGJava48 &&
 				(saved.State[0] >= uint64(1)<<48 ||
 					saved.State[1] != 0 ||

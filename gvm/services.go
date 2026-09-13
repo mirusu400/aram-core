@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 
 	gruntime "github.com/mirusu400/aram-core/runtime"
 )
@@ -13,6 +14,7 @@ var (
 	ErrDeviceQueryUnavailable = errors.New("gvm: device query service unavailable")
 	ErrClockUnavailable       = errors.New("gvm: clock service unavailable")
 	ErrClockRange             = errors.New("gvm: clock outside supported civil-time range")
+	ErrRandomUnavailable      = errors.New("gvm: random service unavailable")
 )
 
 // DeviceQueryProfile is explicit GVM adapter state, not a detected handset or
@@ -33,7 +35,8 @@ type CivilTimePolicy uint8
 // It does not reproduce Windows timezone discovery or DST transition behavior.
 const FixedOffsetNoDST CivilTimePolicy = 1
 
-// ServiceConfig opts independently into device query (51) and civil clock (b9).
+// ServiceConfig opts independently into device query (51), civil clock (b9),
+// and random range (a1).
 // Clock and ClockPolicy must be supplied together. The Clock pointer is borrowed,
 // not copied: the owner must serialize VM execution and clock Advance/Restore.
 // GVM never advances, restores or replaces that clock. A nonnil clock alone does
@@ -43,18 +46,27 @@ type ServiceConfig struct {
 	DeviceQuery *DeviceQueryProfile
 	Clock       *gruntime.Clock
 	ClockPolicy CivilTimePolicy
+	// Random is borrowed, and RandomStream is copied. Supply both or neither.
+	// The owner must serialize execution with Random draws, seeding and Restore.
+	// Construction validates only the name, never looking up or creating a stream.
+	// Unequal A1 operands require an explicitly seeded LCG214013Output15 stream,
+	// revalidated on every draw. Equal operands do not consult Random.
+	Random       *gruntime.Random
+	RandomStream string
 }
 
 type serviceState struct {
-	deviceQuery *DeviceQueryProfile
-	clock       *gruntime.Clock
-	clockPolicy CivilTimePolicy
+	deviceQuery  *DeviceQueryProfile
+	clock        *gruntime.Clock
+	clockPolicy  CivilTimePolicy
+	random       *gruntime.Random
+	randomStream string
 }
 
 // NewWithAddressSpaceAndServices explicitly enables service-aware dispatch.
 // Nil config enables no provider and supplies no defaults: valid query operands
 // then report a named unavailable cause inside ExecutionError. Old constructors
-// remain distinguishable and return UnsupportedOpcodeError for 51/b9 instead.
+// remain distinguishable and return UnsupportedOpcodeError for 51/b9/a1 instead.
 // Configuration is validated before arena construction, with no clock mutation.
 // Current clock conversion range is checked per query, since its owner can advance
 // or restore the shared clock after construction. Epoch zero can be selected via
@@ -73,6 +85,16 @@ func NewWithAddressSpaceAndServices(program []byte, entry uint32, space AddressS
 			return nil, fmt.Errorf("%w: clock requires explicit FixedOffsetNoDST policy", ErrInvalidServiceConfig)
 		}
 		state.clock, state.clockPolicy = config.Clock, config.ClockPolicy
+		if (config.Random == nil) != (config.RandomStream == "") {
+			return nil, fmt.Errorf("%w: random requires a provider and stream name together", ErrInvalidServiceConfig)
+		}
+		if config.Random != nil {
+			name := config.RandomStream
+			if strings.TrimSpace(name) == "" || len(name) > 64 || strings.IndexByte(name, 0) >= 0 {
+				return nil, fmt.Errorf("%w: invalid random stream name", ErrInvalidServiceConfig)
+			}
+			state.random, state.randomStream = config.Random, strings.Clone(name)
+		}
 	}
 	v, err := NewWithAddressSpace(program, entry, space)
 	if err != nil {

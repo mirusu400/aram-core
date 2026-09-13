@@ -42,7 +42,7 @@ func (e *ExecutionError) Error() string { return fmt.Sprintf("gvm: offset %d: %v
 func (e *ExecutionError) Unwrap() error { return e.Cause }
 
 // VM owns its program and stacks. Old constructors supply no host services.
-// Opt-in services borrow a clock under the owner's serialization discipline.
+// Opt-in services borrow a clock and Random under the owner's serialization discipline.
 // VM is not safe for concurrent use. The zero value is equivalent to New(nil).
 // Stack lengths encode the reference's signed top indices (length minus one).
 type VM struct {
@@ -295,6 +295,43 @@ func (v *VM) Step() error {
 		v.depth--
 		v.stack[v.depth] = 0
 		v.pc++
+	case 0xa1:
+		// Preserve ALL legacy constructors' typed unsupported behavior, even
+		// for equal operands or underflow. Only explicit services opt in.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 2 {
+			return fail(ErrStackUnderflow)
+		}
+		// Cache both raw words before any service access. Depth65 is valid.
+		a, b := v.stack[v.depth-2], v.stack[v.depth-1]
+		value := a
+		if a != b {
+			lo, hi := int32(int16(a)), int32(int16(b))
+			if lo > hi {
+				lo, hi = hi, lo
+			}
+			if v.services.random == nil {
+				return fail(ErrRandomUnavailable)
+			}
+			// Lookup-only runtime draw revalidates after owner Restore and is
+			// transactional on error. Width1 still draws exactly once. Width
+			// can be 65535, so retain signed32 arithmetic, not signed16.
+			r, err := v.services.random.LCG214013Output15(v.services.randomStream)
+			if err != nil {
+				return fail(err)
+			}
+			// No fallible work after the draw. Upper bound is excluded and the
+			// 15-bit output uses modulo, not a full-width uniform sampler.
+			value = uint16(lo + int32(r)%(hi-lo))
+		}
+		v.stack[v.depth-2] = value
+		v.depth--
+		// Approved host popped-slot ZERO hygiene on both paths, deliberately
+		// unlike native retention. Equality bypasses the provider entirely.
+		v.stack[v.depth] = 0
 	case 0x51, 0xb9:
 		// Preserve legacy unsupported behavior. Only the explicit service
 		// constructor enables stack/address/service/conversion safety faults.
