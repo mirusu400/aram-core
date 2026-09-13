@@ -2,6 +2,7 @@ package skvmhost
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"image"
 
@@ -23,6 +24,10 @@ type Application struct {
 
 const j2meMachineStateMagic = "ARAMJ2M\x00"
 
+// ErrUnsupportedProfile identifies a profile incompatible with the Java host.
+// Application factories translate it to their public unsupported-source contract.
+var ErrUnsupportedProfile = errors.New("unsupported Java profile")
+
 func NewJ2ME(ctx context.Context, source machinecore.Source, pkg j2me.Package,
 	size image.Point, sampleRate uint32, channels uint8) (*Machine, error) {
 	return newJavaMachine(ctx, source, Application{MainClass: pkg.Descriptor.MainClass,
@@ -31,10 +36,10 @@ func NewJ2ME(ctx context.Context, source machinecore.Source, pkg j2me.Package,
 
 func configureJavaIdentity(config *shared.Config, source machinecore.Source, legacy bool) (string, string, engine.NativePolicy, error) {
 	if legacy {
-		config.Device.ProfileID = ProfileID
-		if source.ProfileID != "" {
-			config.Device.ProfileID = source.ProfileID
+		if source.ProfileID != "" && source.ProfileID != ProfileID {
+			return "", "", 0, fmt.Errorf("%w: unsupported SKVM profile %q", ErrUnsupportedProfile, source.ProfileID)
 		}
+		config.Device.ProfileID = ProfileID
 		config.Device.Carrier = "skt"
 		return "skvm", skvmMachineStateMagic, engine.NativePolicySKT, nil
 	}
@@ -49,7 +54,7 @@ func configureJavaIdentity(config *shared.Config, source machinecore.Source, leg
 		config.Device.Carrier = "lgt"
 		policy = engine.NativePolicyLGT
 	default:
-		return "", "", 0, fmt.Errorf("unsupported J2ME profile %q", source.ProfileID)
+		return "", "", 0, fmt.Errorf("%w: unsupported J2ME profile %q", ErrUnsupportedProfile, source.ProfileID)
 	}
 	return "j2me", j2meMachineStateMagic, policy, nil
 }
