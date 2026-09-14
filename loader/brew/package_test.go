@@ -69,15 +69,18 @@ func TestInspectKeepsMultipleModulesUnassociatedAndSorted(t *testing.T) {
 }
 
 func TestInspectDeclinesOtherFormats(t *testing.T) {
+	nearMissTag := syntheticMIF()
+	nearMissTag[1] = 1
 	cases := map[string][]byte{
-		"empty":          nil,
-		"raw MOD":        {0, 1, 2, 3},
-		"ELF":            []byte("\x7fELFsynthetic"),
-		"extension only": archive(t, []string{"a.mif", "a.mod"}, [][]byte{[]byte("not MIF"), {1}}),
-		"GNEX":           archive(t, []string{"a.sgs", "a.mod"}, [][]byte{[]byte("SGS placeholder"), {1}}),
-		"Java":           archive(t, []string{"META-INF/MANIFEST.MF", "Main.class"}, [][]byte{[]byte("MIDlet-1: Synthetic,,Main"), {0xca, 0xfe, 0xba, 0xbe}}),
-		"APK":            archive(t, []string{"AndroidManifest.xml", "classes.dex"}, [][]byte{{1}, {2}}),
-		"unknown tag":    archive(t, []string{"a.mif", "a.mod"}, [][]byte{make([]byte, 64), {1}}),
+		"empty":             nil,
+		"raw MOD":           {0, 1, 2, 3},
+		"ELF":               []byte("\x7fELFsynthetic"),
+		"extension only":    archive(t, []string{"a.mif", "a.mod"}, [][]byte{[]byte("not MIF"), {1}}),
+		"GNEX":              archive(t, []string{"a.sgs", "a.mod"}, [][]byte{[]byte("SGS placeholder"), {1}}),
+		"Java":              archive(t, []string{"META-INF/MANIFEST.MF", "Main.class"}, [][]byte{[]byte("MIDlet-1: Synthetic,,Main"), {0xca, 0xfe, 0xba, 0xbe}}),
+		"APK":               archive(t, []string{"AndroidManifest.xml", "classes.dex"}, [][]byte{{1}, {2}}),
+		"unknown tag":       archive(t, []string{"a.mif", "a.mod"}, [][]byte{make([]byte, 64), {1}}),
+		"same low tag byte": archive(t, []string{"a.mif", "a.mod"}, [][]byte{nearMissTag, []byte("synthetic opaque module, not executable")}),
 	}
 	for name, data := range cases {
 		t.Run(name, func(t *testing.T) {
