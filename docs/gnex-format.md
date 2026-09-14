@@ -9,7 +9,7 @@ which has not been reverse engineered far enough to run.
 
 ## What a GNEX archive looks like
 
-A GNEX title ships as a ZIP containing a basename-matched pair:
+A paired GNEX title ships as a ZIP containing a basename-matched pair:
 
 - an `.SGS`/`.sgs` payload ("Sinji Game Script" - confirmed from the string
   `"Sinji Game Script (*.SGS)|*.sgs|..."` in SinjiSoft's PC-side player,
@@ -32,6 +32,13 @@ exposes the raw archive members for callers that want them.
 
 Neither the `.mod` nor the `.inf` shape is required to be byte-perfect for
 recognition - see "What `loader/gnex` actually validates" below for why.
+
+The authorized legacy-platform corpus checked on 2026-09-11 also contains a
+ZIP with an SGS payload and no descriptor. All nine SGS payloads in that
+corpus have a recognized header at offset zero, a clean title, and a
+nonempty body. One reports version 1 and eight report version 2. These are
+entry counts, not a claim of nine unique or executable games. `Inspect` now
+accepts standalone SGS in a ZIP and raw SGS, without manufacturing a manifest.
 
 ## The `.SGS` payload header
 
@@ -99,16 +106,30 @@ describe it, but not enough to write an interpreter:
 
 ## What `loader/gnex` actually validates
 
-`Inspect` requires a basename-matched `.SGS`/`.sgs` + (`.mod`|`.inf`) pair
-*and* a header that parses per `ParseHeader` above. It deliberately does
+For paired distributions, `Inspect` requires a basename-matched
+`.SGS`/`.sgs` + (`.mod`|`.inf`) pair and a header that parses per `ParseHeader`
+above. It deliberately does
 **not** require the `.mod`'s MIME string or any other manifest field to
 match, because the `.inf` shape does not carry one and the `.mod` shape
 itself was observed in three slightly different byte layouts across only 12
 samples - hard-coding manifest offsets would be fragile. The structural `.SGS`
 header check (version byte + constant byte + a title that decodes cleanly as
 cp949 within a bounded length) is the strong signal; the manifest pairing is
-corroborating evidence that this is a real distribution archive, not a
-coincidental standalone file.
+corroborating evidence that this is a distribution archive.
+
+Without a paired descriptor, recognition is intentionally narrower: the
+header must occur at offset zero or after exactly 32 all-zero prefix bytes,
+the two observed placements. The title must decode without replacement
+characters or control characters, and a nonempty body must follow its bounded
+terminator. These checks also apply to raw input without relying on its file
+extension. An SGS extension alone is insufficient. Multiple valid candidates,
+including a paired candidate plus a standalone candidate, are rejected as
+ambiguous. Raw payloads are limited to 64 MiB, and existing ZIP limits remain.
+
+`ParseHeader` now rejects invalid character sequences even when the EUC-KR
+decoder silently substitutes a Unicode replacement character. Historical
+paired-descriptor prefix scanning remains available. The checksum algorithm
+and every body opcode remain unknown, and are not invented as extra checks.
 
 ## Where this is wired in
 
