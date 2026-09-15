@@ -32,6 +32,8 @@ type Machine struct {
 	source              machinecore.Source
 	mainClass           string
 	classData           map[string][]byte
+	cheatRegions        []classCheatRegion
+	imageSHA256         string
 	vm                  *skengine.VM
 	services            *shared.Services
 	owner               shared.OwnerID
@@ -129,6 +131,10 @@ func New(
 	for name, class := range pkg.Classes {
 		classData[name] = append([]byte(nil), class.Data...)
 	}
+	cheatRegions, err := buildClassCheatRegions(classData)
+	if err != nil {
+		return nil, err
+	}
 	vm, err := skengine.NewWithServices(classData, services, owner)
 	if err != nil {
 		return nil, err
@@ -151,6 +157,8 @@ func New(
 		source:              source,
 		mainClass:           pkg.Descriptor.MainClass,
 		classData:           classData,
+		cheatRegions:        cheatRegions,
+		imageSHA256:         vm.ClassSHA256(),
 		vm:                  vm,
 		services:            services,
 		owner:               owner,
