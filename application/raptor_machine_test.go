@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"github.com/mirusu400/aram-core/application/internal/guest"
+	ktfrt "github.com/mirusu400/aram-core/application/internal/ktf"
 	wipirt "github.com/mirusu400/aram-core/application/internal/wipi"
 	"github.com/mirusu400/aram-core/cpu"
 	"github.com/mirusu400/aram-core/cpu/interpreter"
@@ -440,6 +441,53 @@ func TestRaptorInputMethodImportsExposeLanguageModes(t *testing.T) {
 			handled,
 			err,
 		)
+	}
+}
+
+func TestRaptorSafepointRunsJavaTaskWithoutClobberingCallbackContext(t *testing.T) {
+	machine := newSyntheticMachine(t)
+	const procedure = uint32(0x04000000)
+	check(t, machine.cpu.Map(
+		procedure,
+		0x1000,
+		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
+	))
+	check(t, machine.cpu.WriteMemory(procedure, []byte{
+		0x2a, 0x21, // movs r1, #42
+		0x01, 0x60, // str r1, [r0]
+		0x70, 0x47, // bx lr
+	}))
+	marker, err := machine.wipi.Heap.Allocate(4, true)
+	check(t, err)
+	task := &raptorrt.JavaTask{
+		Target:    marker,
+		Procedure: procedure | 1,
+		Stack:     raptorrt.RaptorJavaTaskStack(0),
+	}
+	machine.raptor = &raptorrt.Runtime{
+		CPU:     machine.cpu,
+		Public:  machine.wipi,
+		Started: true,
+		Java: &raptorrt.JavaRuntime{
+			Host:  &ktfrt.Runtime{},
+			Tasks: []*raptorrt.JavaTask{task},
+		},
+	}
+	const callbackR0 = uint32(0xdeadbeef)
+	check(t, machine.cpu.WriteRegister(cpu.RegisterR0, callbackR0))
+
+	check(t, machine.stepRaptorJavaAfterSafepoint(context.Background()))
+	if got, err := machine.wipi.ReadU32(marker); err != nil || got != 42 {
+		t.Fatalf("Java task marker = %d, %v; want 42", got, err)
+	}
+	if !task.Done {
+		t.Fatal("Java task did not return after safepoint scheduling")
+	}
+	if got, err := machine.cpu.ReadRegister(cpu.RegisterR0); err != nil || got != callbackR0 {
+		t.Fatalf("outer callback r0 = 0x%08x, %v; want 0x%08x", got, err, callbackR0)
+	}
+	if machine.State() != machinecore.StatePaused {
+		t.Fatalf("machine state after safepoint Java slice = %s, want paused", machine.State())
 	}
 }
 

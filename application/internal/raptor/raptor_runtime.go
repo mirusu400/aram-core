@@ -120,10 +120,20 @@ type Runtime struct {
 	// unimplementedNames interns the label for an import ARAM does not
 	// implement. See unimplementedImportName.
 	unimplementedNames map[raptorImportKey]string
-	// javaYieldRequested ends the CPU slice after a Java thread parks itself.
+	// javaYieldRequested ends the CPU slice after a Java thread parks itself or
+	// a resumable callback reaches a cooperative Java safepoint.
 	javaYieldRequested bool
-	Clet               Clet
-	Java               *JavaRuntime
+	// callbackTaskActive is true only while the machine is running one of the
+	// resumable callback tasks from CallbackTasks. Java safepoints may preempt
+	// those tasks, but must not abort synchronous constructor/host callbacks.
+	callbackTaskActive bool
+	// javaSafepoint* tracks a hot module-100 ordinal 85 backedge inside the
+	// current guest slice. See raptor_java_safepoint.go.
+	javaSafepointLR      uint32
+	javaSafepointHits    uint32
+	javaSafepointYielded bool
+	Clet                 Clet
+	Java                 *JavaRuntime
 
 	CallbackTasks []*CallbackTask
 
@@ -500,6 +510,9 @@ func (r *Runtime) RestoreImage() error {
 	r.ImportTrace = nil
 	r.LastJavaThrow = ""
 	r.pendingJavaThrow = ""
+	r.javaYieldRequested = false
+	r.callbackTaskActive = false
+	r.resetJavaSafepointSlice()
 	r.CallbackTasks = nil
 	return nil
 }
@@ -573,6 +586,15 @@ func (r *Runtime) dispatchImport(
 		r.ImportTrace = append(r.ImportTrace[:keep], call)
 	}
 	if key.Module == 100 {
+		if key.Ordinal == 85 {
+			r.observeJavaSafepoint(call.LR)
+			const name = "RAPTOR.Java.safepoint"
+			r.Public.Stats.APICalls++
+			r.Public.Stats.ImplementedCalls++
+			r.Public.Stats.LastAPI = name
+			r.Public.Observed[name]++
+			return r.Public.ReturnFromTrap(guest.WIPIReturn{})
+		}
 		if class, raises := raptorJavaThrowClasses[key.Ordinal]; raises {
 			r.recordRaptorJavaThrow(class, call.LR)
 			return r.Public.ReturnFromTrap(guest.WIPIReturn{})
