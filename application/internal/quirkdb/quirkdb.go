@@ -53,6 +53,22 @@ var DisplayOverrides = []DisplayOverride{
 		Width:          240,
 		Height:         320,
 	},
+	{
+		// 만귀토벌전's descriptor records only the 176x220 client area. The
+		// client creates a 220-row Card before showing the 20-row annunciator
+		// and keeps that Card size, so its dialogue reaches physical row 239.
+		Key: TitleKey{
+			AID:       "0102A356",
+			MainClass: "man",
+			ClientSHA256: MustHash(
+				"d5e1b0c9440ef2338ea5298a2f36e34b1a38cfbc0de29f524c0351c24513e0df",
+			),
+		},
+		DeclaredWidth:  176,
+		DeclaredHeight: 220,
+		Width:          176,
+		Height:         240,
+	},
 }
 
 // MenuForegroundOverlay describes a title that draws its menu labels before
