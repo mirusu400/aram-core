@@ -570,16 +570,30 @@ func (r *Runtime) repairJavaVirtualMethodFromReceiver(
 }
 
 func ktfHostSpecDeclaresJavaMethod(className, name, descriptor string) bool {
+	_, ok := ktfHostSpecJavaMethodAccess(className, name, descriptor)
+	return ok
+}
+
+func ktfHostSpecJavaMethodAccess(
+	className, name, descriptor string,
+) (uint16, bool) {
 	spec, ok := HostJavaClassSpecs[className]
 	if !ok {
-		return false
+		return 0, false
 	}
 	for _, method := range spec.methods {
 		if method.name == name && method.descriptor == descriptor {
-			return true
+			access := method.access
+			if access == 0 {
+				access = 0x0001
+			}
+			if spec.nativeMethods {
+				access |= 0x0100
+			}
+			return access, true
 		}
 	}
-	return false
+	return 0, false
 }
 
 // repairJavaStaticMethodCollision handles the static counterpart of the
@@ -1358,12 +1372,17 @@ func (r *Runtime) addHostJavaMethod(
 		compatibilityVTable = spec.compatibilityVTable
 		for _, method := range spec.methods {
 			if method.name == name && method.descriptor == descriptor {
-				accessFlags = method.access
+				if method.access != 0 {
+					accessFlags = method.access
+				}
 				compatibilityVTable = compatibilityVTable ||
 					method.compatibility
 				declaredByHostSpec = true
 				break
 			}
+		}
+		if spec.nativeMethods {
+			accessFlags |= 0x0100
 		}
 	}
 	// The stub goes into both the Java body slot (+0) and the native body

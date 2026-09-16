@@ -529,6 +529,9 @@ type ktfHostJavaMethodSpec struct {
 type ktfHostJavaClassSpec struct {
 	Parent string
 	access uint16
+	// nativeMethods marks methods implemented entirely by host traps. Some
+	// carrier AOT resolvers inspect ACC_NATIVE before choosing java.bridge.12.
+	nativeMethods bool
 	// compatibilityVTable keeps declared virtual methods in the reserved
 	// host compatibility range instead of inserting them into the handset's
 	// compact vtable. KTF AOT binaries hard-code the latter's slots for LWC

@@ -4011,6 +4011,24 @@ func TestKTFResolveJavaMethodAugmentsBodylessHostDeclaration(t *testing.T) {
 	}
 }
 
+func TestKTFDataInputStreamHostMethodsAreNative(t *testing.T) {
+	runtime := newTestRuntime(t)
+	classAddress := ensureClass(t, runtime, "java/io/DataInputStream")
+	class := inspectClass(t, runtime, classAddress)
+	for _, signature := range [][2]string{
+		{"readFully", "([BII)V"},
+		{"readShort", "()S"},
+	} {
+		method, ok := findKTFJavaMethod(class, signature[0], signature[1])
+		if !ok {
+			t.Fatalf("DataInputStream.%s%s is missing", signature[0], signature[1])
+		}
+		if method.AccessFlags&0x0100 == 0 {
+			t.Fatalf("DataInputStream.%s%s is not native: 0x%04x", signature[0], signature[1], method.AccessFlags)
+		}
+	}
+}
+
 func TestKTFHostJavaLongReturnUsesR0R1(t *testing.T) {
 	runtime := newUnmappedTestRuntime(t)
 	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, 0xdeadbeef))
