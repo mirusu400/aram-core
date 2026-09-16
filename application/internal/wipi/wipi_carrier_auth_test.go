@@ -72,6 +72,20 @@ func TestAnswerOfflineCarrierAnswersTextCarrierAuth(t *testing.T) {
 		t.Fatalf("ENSLGT callback not fired: cb=0x%x pending=%d", socket.readCallback, len(r.PendingCallbacks))
 	}
 
+	// EA's MIDAS test-phone gate sends a plaintext identity record and treats
+	// a one-byte 0x0f reply as success.
+	rMIDAS := &Runtime{}
+	sMIDAS := &wipiSocket{descriptor: 8, readCallback: 0xdef, readParameter: 0x44}
+	midas := []byte("MIDAS_TESTPHONE_AUTH 01000000000 IM-S220L PR3:0002E829:D20100528")
+	rMIDAS.answerOfflineCarrier(sMIDAS, midas)
+	if string(sMIDAS.readData) != string([]byte{0x0f}) {
+		t.Fatalf("MIDAS reply = % x, want 0f", sMIDAS.readData)
+	}
+	if sMIDAS.readCallback != 0 || len(rMIDAS.PendingCallbacks) != 1 ||
+		rMIDAS.PendingCallbacks[0].Args != [4]uint32{8, 0, 0x44} {
+		t.Fatalf("MIDAS callback not fired correctly: cb=0x%x pending=%+v", sMIDAS.readCallback, rMIDAS.PendingCallbacks)
+	}
+
 	// The 28-byte binary carrier frame (14 00 01 00 ...) is answered.
 	r2 := &Runtime{}
 	s2 := &wipiSocket{descriptor: 5}

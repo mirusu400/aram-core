@@ -1,6 +1,7 @@
 package raptor
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -994,9 +995,35 @@ func (r *Runtime) DispatchPrivateImport(
 			return guest.WIPIReturn{Low: result}, "RAPTOR.net", true, nil
 		}
 		return guest.WIPIReturn{}, "", false, nil
+	case 151:
+		// LGT's Raptor runtime exposes the installed program identifier as a
+		// stable C string. 검은방3 obtains a program handle immediately before
+		// this call and formats the returned pointer with "%s"; the result is
+		// compared with its compiled AID before carrier authentication. Return
+		// the package AID only when the module actually carries that exact C
+		// string, rather than inventing guest storage or conflating it with the
+		// independently-versioned .raptor metadata identifier.
+		address := raptorImageStringAddress(r.Pkg.Image, r.Pkg.Descriptor.AID)
+		return guest.WIPIReturn{Low: address}, "RAPTOR.getProgramIdentifier", true, nil
 	default:
 		return guest.WIPIReturn{}, "", false, nil
 	}
+}
+
+func raptorImageStringAddress(image raptorloader.Image, value string) uint32 {
+	if value == "" {
+		return 0
+	}
+	needle := append([]byte(value), 0)
+	for _, section := range image.Sections {
+		if !section.Allocated() || section.ZeroFill() || len(section.Data) < len(needle) {
+			continue
+		}
+		if offset := bytes.Index(section.Data, needle); offset >= 0 {
+			return section.Address + uint32(offset)
+		}
+	}
+	return 0
 }
 
 func raptorWIPIImportName(ordinal uint32) (string, bool) {
@@ -1208,6 +1235,21 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 	// through MC_GRP directly.
 	case 800:
 		return "MC_uicCreateApplicationContext", true
+	// The 900 block is MC_UTIL in firmware-vtable order. 검은방3 calls 901
+	// on its 16-bit server port immediately before MC_netSocketConnect; this
+	// is the Htons slot (0x04), turning the stored 0x2d0c into port 0x0c2d.
+	case 900:
+		return "MC_utilHtonl", true
+	case 901:
+		return "MC_utilHtons", true
+	case 902:
+		return "MC_utilNtohl", true
+	case 903:
+		return "MC_utilNtohs", true
+	case 904:
+		return "MC_utilInetAddrInt", true
+	case 905:
+		return "MC_utilInetAddrStr", true
 	case 1029:
 		return "strcpy", true
 	// The C string family is contiguous from strcpy, so the ordinal between

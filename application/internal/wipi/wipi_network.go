@@ -1,6 +1,7 @@
 package wipi
 
 import (
+	"bytes"
 	"encoding/binary"
 	"net"
 	"sort"
@@ -48,6 +49,11 @@ func (r *Runtime) answerOfflineCarrier(socket *wipiSocket, request []byte) {
 		// the matching success code (code+1) and subtype 0.
 		code := binary.LittleEndian.Uint16(request[6:8]) + 1
 		reply = []byte{9, 0, 0, 0, 0xff, 0xff, byte(code), byte(code >> 8), 0}
+	case bytes.HasPrefix(request, []byte("MIDAS_TESTPHONE_AUTH ")):
+		// MIDAS test-phone authentication expects a one-byte 0x0f success
+		// response. Its receive callback checks that byte directly before
+		// releasing the authentication wait.
+		reply = []byte{0x0f}
 	case isCarrierTextAuth(request):
 		// Plaintext / length-prefixed carrier handshakes some LGT titles use
 		// instead of the 0xffff framing (ENSLGT -> gavaplus, 09대박맞고's binary
