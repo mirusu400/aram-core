@@ -483,6 +483,11 @@ func (m *Machine) loadKTF(
 		return err
 	}
 	runtime.DeferThreads = true
+	if limit, ok := ktfrt.PresentationLimit(pkg); ok {
+		m.ktfPresentsPerQuantum = limit
+	} else {
+		m.ktfPresentsPerQuantum = 0
+	}
 	if err := runtime.MapImageAndHost(); err != nil {
 		return err
 	}

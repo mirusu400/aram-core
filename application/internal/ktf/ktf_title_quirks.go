@@ -39,6 +39,31 @@ func resolveKTFDisplaySize(
 	return descriptor.DisplayWidth, descriptor.DisplayHeight
 }
 
+// PresentationLimit returns an exact-title cap for guests that use every
+// present as a completed game frame rather than an incremental paint step.
+func PresentationLimit(pkg ktf.Package) (int, bool) {
+	return resolveKTFPresentationLimit(
+		pkg.Descriptor,
+		sha256.Sum256(pkg.Client),
+	)
+}
+
+func resolveKTFPresentationLimit(
+	descriptor ktf.Descriptor,
+	clientHash [sha256.Size]byte,
+) (int, bool) {
+	for _, entry := range quirkdb.KTFPresentationLimits {
+		if entry.Key.Matches(
+			descriptor.AID,
+			descriptor.MainClass,
+			clientHash,
+		) {
+			return entry.MaxPerQuantum, true
+		}
+	}
+	return 0, false
+}
+
 // ktfMenuForegroundCompat replays recognized menu-label draws above a
 // later-drawn overlay image. It records the current coordinates rather than
 // fixing them in the runtime, so menu rotation and selection animations keep

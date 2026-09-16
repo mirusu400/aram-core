@@ -47,3 +47,32 @@ func TestKTFDisplayOverrideRequiresExactPackageIdentity(t *testing.T) {
 		})
 	}
 }
+
+func TestKTFPresentationLimitRequiresExactPackageIdentity(t *testing.T) {
+	for _, entry := range quirkdb.KTFPresentationLimits {
+		descriptor := ktf.Descriptor{
+			AID:       entry.Key.AID,
+			MainClass: entry.Key.MainClass,
+		}
+		if limit, ok := resolveKTFPresentationLimit(
+			descriptor,
+			entry.Key.ClientSHA256,
+		); !ok || limit != entry.MaxPerQuantum {
+			t.Fatalf("presentation limit = %d, %t", limit, ok)
+		}
+
+		lookalikes := []struct {
+			descriptor ktf.Descriptor
+			hash       [sha256.Size]byte
+		}{
+			{descriptor: ktf.Descriptor{AID: "different", MainClass: descriptor.MainClass}, hash: entry.Key.ClientSHA256},
+			{descriptor: ktf.Descriptor{AID: descriptor.AID, MainClass: "Different"}, hash: entry.Key.ClientSHA256},
+			{descriptor: descriptor, hash: sha256.Sum256([]byte("different client"))},
+		}
+		for _, lookalike := range lookalikes {
+			if limit, ok := resolveKTFPresentationLimit(lookalike.descriptor, lookalike.hash); ok || limit != 0 {
+				t.Fatalf("lookalike presentation limit = %d, %t", limit, ok)
+			}
+		}
+	}
+}

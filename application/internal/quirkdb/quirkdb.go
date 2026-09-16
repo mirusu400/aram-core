@@ -71,6 +71,29 @@ var DisplayOverrides = []DisplayOverride{
 	},
 }
 
+// KTFPresentationLimit caps the number of guest presents carried by one host
+// video quantum for a title that advances gameplay on every present. Most KTF
+// titles retain the wider quantum needed by incremental repaint loops.
+type KTFPresentationLimit struct {
+	Key           TitleKey
+	MaxPerQuantum int
+}
+
+var KTFPresentationLimits = []KTFPresentationLimit{
+	{
+		// 거상(벚꽃단의음모) submits a complete game frame on every repaint.
+		// Letting one 60 Hz host quantum carry four presents runs it at 240 fps.
+		Key: TitleKey{
+			AID:       "01034428",
+			MainClass: "GerSang",
+			ClientSHA256: MustHash(
+				"10ed0d398b567c2c7544962e9fc6b2bd34538c6d846df3cb6165615446a19670",
+			),
+		},
+		MaxPerQuantum: 1,
+	},
+}
+
 // MenuForegroundOverlay describes a title that draws its menu labels before
 // a full-menu overlay image and expects the labels to stay visible: the
 // runtime defers recognized label draws and replays them above the overlay.
