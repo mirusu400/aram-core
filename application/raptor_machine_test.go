@@ -291,7 +291,12 @@ func TestRaptorFramebufferImportsExposeLGTGeometry(t *testing.T) {
 		want    uint32
 		name    string
 	}{
-		{50, handle, framebuffer.Pixels, "RAPTOR.grpGetFrameBufferPixels"},
+		{
+			50,
+			handle,
+			framebuffer.Pixels + uint32(24*framebuffer.Width*framebuffer.BitsPerPixel/8),
+			"RAPTOR.grpGetFrameBufferPixels",
+		},
 		{51, handle, uint32(framebuffer.Width), "RAPTOR.grpGetFrameBufferWidth"},
 		{52, handle, uint32(framebuffer.Height - 24), "RAPTOR.grpGetFrameBufferHeight"},
 		{

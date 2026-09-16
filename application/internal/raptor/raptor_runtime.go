@@ -911,7 +911,18 @@ func (r *Runtime) DispatchPrivateImport(
 		}
 		switch ordinal {
 		case 50:
-			return guest.WIPIReturn{Low: framebuffer.Pixels},
+			pixels := framebuffer.Pixels
+			// Raw-pixel callers use the same client-area coordinates as the
+			// reported height. Keep their origin below the handset strip too;
+			// otherwise clipped sprites write before the allocation and corrupt
+			// neighboring heap objects, as 놈ZERO did in issue #284.
+			if framebuffer.Handle == r.Public.ScreenHandle &&
+				r.primaryFramebufferHeight == 0 &&
+				framebuffer.Height > raptorScreenOriginY {
+				bytesPerPixel := framebuffer.BitsPerPixel / 8
+				pixels += uint32(raptorScreenOriginY * framebuffer.Width * bytesPerPixel)
+			}
+			return guest.WIPIReturn{Low: pixels},
 				"RAPTOR.grpGetFrameBufferPixels", true, nil
 		case 51:
 			return guest.WIPIReturn{Low: uint32(framebuffer.Width)},
