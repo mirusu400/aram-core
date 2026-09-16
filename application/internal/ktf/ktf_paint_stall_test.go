@@ -98,6 +98,30 @@ func hostTraceHas(trace []string, substr string) bool {
 	return false
 }
 
+func TestServiceRepaintsPreservesLivePaintContinuation(t *testing.T) {
+	const card = uint32(0x10001000)
+	task := &Task{}
+	runtime := &Runtime{
+		dirtyCards: map[uint32]bool{card: true},
+		PaintTasks: map[uint32]*Task{card: task},
+		traceMode:  KTFTraceFull,
+	}
+
+	check(t, runtime.serviceCardRepaints(context.Background(), card))
+	if task.Done {
+		t.Fatal("serviceRepaints canceled a live paint continuation")
+	}
+	if runtime.PaintTasks[card] != task {
+		t.Fatal("serviceRepaints detached the live paint task")
+	}
+	if !runtime.dirtyCards[card] {
+		t.Fatal("serviceRepaints cleared the pending repaint")
+	}
+	if !hostTraceHas(runtime.HostTrace, "java_service_repaints_defer") {
+		t.Fatalf("deferred serviceRepaints trace missing: %v", runtime.HostTrace)
+	}
+}
+
 // TestPaintCardDefersForWaitingInput pins issues #159 #165 #169 #170 #186: a
 // title whose paint handler ends by calling repaint() again (아포칼립스's
 // title screen, 크로스워드's loading bar) used to re-queue its own next paint

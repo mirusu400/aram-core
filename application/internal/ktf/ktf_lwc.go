@@ -2406,18 +2406,15 @@ func (r *Runtime) serviceCardRepaints(
 		return nil
 	}
 	if task := r.PaintTasks[card]; task != nil && !task.Done {
-		task.Done = true
-		delete(r.PaintTasks, card)
-		// Same reasoning as the initial-paint discard in RunTaskSlice: a
-		// forced cancel is still a task exit, and skipping these leaves a
-		// startBlocker child parked forever or a stale *Task keyed in the
-		// deferred-paint maps once this slot is recycled, which SaveState
-		// then rejects as pointing outside the task table.
-		r.releaseStartedThreads(task, "force-cancel")
-		if err := r.releaseDeferredCardPaints(ctx, task); err != nil {
-			return err
-		}
-		r.tracef("java_paint_force_cancel:card=0x%08x", card)
+		// serviceRepaints is synchronous on a handset, but a deferred guest
+		// paint has its own saved CPU continuation and cannot be nested inside
+		// the task that called us. Do not discard that continuation: titles can
+		// perform state changes after drawing and before paint returns. In
+		// particular, 아포칼립스 enters its next scene there; force-canceling
+		// the live paint left its loading screen active forever. Keep the card
+		// dirty and let the cooperative scheduler finish the existing task.
+		r.tracef("java_service_repaints_defer:card=0x%08x", card)
+		return nil
 	}
 	delete(r.dirtyCards, card)
 	graphics, err := r.EnsureScreenGraphics()
