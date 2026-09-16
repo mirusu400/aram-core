@@ -4477,6 +4477,162 @@ func TestKTFDataInputStreamDelegatesToApplicationInputStream(t *testing.T) {
 	if value != 0x7f {
 		t.Fatalf("delegated DataInputStream.readUnsignedByte = 0x%08x", value)
 	}
+
+	// The inherited InputStream bulk implementation must still read from the
+	// application's virtual read() source rather than a host-side mirror.
+	runtime.inputStreams[source] = &ktfInputStream{
+		data:     []byte{1, 2, 3},
+		position: 1,
+	}
+	array, err := runtime.newJavaByteArray([]byte{0x5a, 0x5a, 0x5a})
+	check(t, err)
+	stack := allocWords(t, runtime, 1)
+	check(t, runtime.WriteU32(stack, 2))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterSP, stack))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, wrapper))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, array))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, 1))
+	value, err = runtime.handleInputStreamMethod(
+		context.Background(),
+		"read",
+		"([BII)I",
+	)
+	check(t, err)
+	if value != 2 {
+		t.Fatalf("delegated DataInputStream.read(byte[],off,len) = %d, want 2", value)
+	}
+	data, err := runtime.readJavaByteArray(array)
+	check(t, err)
+	if !bytes.Equal(data, []byte{0x5a, 0x7f, 0x7f}) {
+		t.Fatalf("delegated DataInputStream.read bytes = %v", data)
+	}
+	if runtime.inputStreams[source].position != 1 {
+		t.Fatalf(
+			"delegated application read advanced host mirror to %d",
+			runtime.inputStreams[source].position,
+		)
+	}
+
+	array, err = runtime.newJavaByteArray(make([]byte, 3))
+	check(t, err)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, wrapper))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, array))
+	_, err = runtime.handleInputStreamMethod(
+		context.Background(),
+		"readFully",
+		"([B)V",
+	)
+	check(t, err)
+	data, err = runtime.readJavaByteArray(array)
+	check(t, err)
+	if !bytes.Equal(data, []byte{0x7f, 0x7f, 0x7f}) {
+		t.Fatalf("delegated DataInputStream.readFully bytes = %v", data)
+	}
+}
+
+func TestKTFDataInputStreamUsesApplicationBulkReadOverride(t *testing.T) {
+	// read(byte[],off,len): write 0x42 at b[off], then return 1. This makes a
+	// single bulk read observably partial and lets readFully prove that it calls
+	// the override repeatedly with an advancing offset.
+	runtime, err := NewRuntime(interpreter.New(), ktf.Package{
+		ClientName: "client.bin0",
+		Client: []byte{
+			0x12, 0x68, // ldr r2, [r2]
+			0x08, 0x32, // adds r2, #8
+			0xd2, 0x18, // adds r2, r2, r3
+			0x42, 0x21, // movs r1, #0x42
+			0x11, 0x70, // strb r1, [r2]
+			0x01, 0x20, // movs r0, #1
+			0x70, 0x47, // bx lr
+		},
+	})
+	check(t, err)
+	defer runtime.CPU.Close()
+	check(t, runtime.MapImageAndHost())
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+
+	classAddress := ensureClass(t, runtime, "test/ApplicationBulkInputStream")
+	class := inspectClass(t, runtime, classAddress)
+	method, err := runtime.addHostJavaMethod(class, "read", "([BII)I")
+	check(t, err)
+	check(t, runtime.WriteU32(method, ImageBase|1))
+	delete(runtime.hostJavaClass, classAddress)
+	class = inspectClass(t, runtime, classAddress)
+	source, err := runtime.NewJavaInstanceForClass(class)
+	check(t, err)
+	wrapper := newHostObject(t, runtime, "java/io/DataInputStream")
+	runtime.inputTargets[wrapper] = source
+
+	array, err := runtime.newJavaByteArray([]byte{0x5a, 0x5a, 0x5a})
+	check(t, err)
+	stack := allocWords(t, runtime, 1)
+	check(t, runtime.WriteU32(stack, 2))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterSP, stack))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, wrapper))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, array))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, 1))
+	read, err := runtime.handleInputStreamMethod(
+		context.Background(),
+		"read",
+		"([BII)I",
+	)
+	check(t, err)
+	if read != 1 {
+		t.Fatalf("application bulk override read = %d, want 1", read)
+	}
+	data, err := runtime.readJavaByteArray(array)
+	check(t, err)
+	if !bytes.Equal(data, []byte{0x5a, 0x42, 0x5a}) {
+		t.Fatalf("application bulk override bytes = %v", data)
+	}
+
+	array, err = runtime.newJavaByteArray(make([]byte, 3))
+	check(t, err)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, wrapper))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, array))
+	_, err = runtime.handleInputStreamMethod(
+		context.Background(),
+		"readFully",
+		"([B)V",
+	)
+	check(t, err)
+	data, err = runtime.readJavaByteArray(array)
+	check(t, err)
+	if !bytes.Equal(data, []byte{0x42, 0x42, 0x42}) {
+		t.Fatalf("partial application readFully bytes = %v", data)
+	}
+}
+
+func TestKTFDataInputStreamReadFullyValidatesZeroLengthBounds(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	stream := newHostObject(t, runtime, "java/io/DataInputStream")
+	runtime.inputStreams[stream] = &ktfInputStream{}
+	array, err := runtime.newJavaByteArray(nil)
+	check(t, err)
+	stack := allocWords(t, runtime, 1)
+	check(t, runtime.WriteU32(stack, 0))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterSP, stack))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, stream))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, array))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, 1))
+	_, err = runtime.handleInputStreamMethod(
+		context.Background(),
+		"readFully",
+		"([BII)V",
+	)
+	var exception *ktfUnhandledJavaException
+	if !errors.As(err, &exception) || exception.name != "java/lang/IndexOutOfBoundsException" {
+		t.Fatalf("readFully invalid zero-length range error = %v", err)
+	}
+
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, 0))
+	_, err = runtime.handleInputStreamMethod(
+		context.Background(),
+		"readFully",
+		"([BII)V",
+	)
+	check(t, err)
 }
 
 func TestKTFFileReadWriteRoundTrip(t *testing.T) {
