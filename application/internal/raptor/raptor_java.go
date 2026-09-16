@@ -182,6 +182,10 @@ var raptorJavaFixedVirtualMethods = map[string][]raptorJavaFixedVirtualMethod{
 		// String against successive one-character String literals and branches
 		// when the result is zero. Only compareTo returns 0 on equality.
 		{offset: 0x44, Name: "compareTo", descriptor: "(Ljava/lang/String;)I"},
+		// 생과일타이쿤2 counts line breaks with indexOf('\n', from). A missing
+		// 0x5c slot returned zero forever and trapped its startup parser (#286).
+		{offset: 0x58, Name: "indexOf", descriptor: "(I)I"},
+		{offset: 0x5c, Name: "indexOf", descriptor: "(II)I"},
 		{offset: 0x74, Name: "substring", descriptor: "(II)Ljava/lang/String;"},
 		// 배틀몬스터's text helper calls slot 0x8c and immediately reads the
 		// result as a char[] (length followed by UTF-16 elements). Leaving the
@@ -423,6 +427,9 @@ type JavaRuntime struct {
 	// so a virtual dispatch on an array reference returns 0 instead of branching
 	// to address 0 through the array's zero header.
 	arrayVTable uint32
+	// interfaceVTables maps a receiver class and interface to the compact
+	// dispatch table returned by module-100 ordinal 100.
+	interfaceVTables map[[2]uint32]uint32
 
 	flatVirtual  []raptorJavaMethod
 	lgtToKTF     map[uint32]uint32
@@ -556,19 +563,20 @@ func (r *Runtime) ensureJavaRuntime() (*JavaRuntime, error) {
 		return nil, errors.New("allocate Raptor Java call scratch")
 	}
 	java := &JavaRuntime{
-		Host:           host,
-		classes:        make(map[uint32]*raptorJavaClass),
-		ClassByName:    make(map[string]*raptorJavaClass),
-		hostMethods:    make(map[uint32]raptorJavaMethod),
-		nextMethod:     1,
-		lgtToKTF:       make(map[uint32]uint32),
-		ktfToLGT:       make(map[uint32]uint32),
-		initializing:   make(map[uint32]bool),
-		vtableBuilding: make(map[uint32]bool),
-		dirtyCards:     make(map[uint32]bool),
-		constructing:   make(map[uint32]bool),
-		scratch:        scratch,
-		MainClass:      r.Pkg.Descriptor.MainClass,
+		Host:             host,
+		classes:          make(map[uint32]*raptorJavaClass),
+		ClassByName:      make(map[string]*raptorJavaClass),
+		hostMethods:      make(map[uint32]raptorJavaMethod),
+		nextMethod:       1,
+		lgtToKTF:         make(map[uint32]uint32),
+		ktfToLGT:         make(map[uint32]uint32),
+		initializing:     make(map[uint32]bool),
+		vtableBuilding:   make(map[uint32]bool),
+		interfaceVTables: make(map[[2]uint32]uint32),
+		dirtyCards:       make(map[uint32]bool),
+		constructing:     make(map[uint32]bool),
+		scratch:          scratch,
+		MainClass:        r.Pkg.Descriptor.MainClass,
 	}
 	r.Java = java
 	// Raptor's own live Java state - the class table, the current card, and
@@ -592,6 +600,9 @@ func (r *Runtime) ensureJavaRuntime() (*JavaRuntime, error) {
 			mark(class.vtable)
 			mark(class.guestVTable)
 			mark(class.classObject)
+		}
+		for _, table := range java.interfaceVTables {
+			mark(table)
 		}
 		mark(java.currentCard)
 		mark(java.MainInstance)

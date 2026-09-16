@@ -1,6 +1,8 @@
 package raptor
 
 import (
+	"fmt"
+
 	"github.com/mirusu400/aram-core/application/internal/guest"
 	"github.com/mirusu400/aram-core/cpu"
 )
@@ -38,16 +40,14 @@ import (
 // `bx r6` with r6 = 0. That is the "ARM fetch at 0x00000000" in issue #196:
 // SD한국전쟁 dispatches an org/kwis/msf/io/Socket method this way at frame 113.
 //
-// On a handset this is most likely interface dispatch, where the helper's
-// extra arguments name the interface and the answer is that interface's slice
-// of the receiver's method table. ARAM does not model interface method tables:
-// it builds one flat vtable per class and publishes the flat offsets itself
-// (see buildRaptorJavaVTable and raptorJavaFlatVirtualSlot), so the receiver's
-// own table is the correct answer for every offset ARAM itself published. A
-// title that indexes it with an offset the *guest* computed for a per-interface
-// table would still land on the wrong slot; no corpus title was observed doing
-// that, and the ordinal is rare - a 120-frame no-input scan of all 97 LGT
-// titles found one other caller (턴, twice).
+// The extra r1 argument can name an interface. In that form the generated code
+// indexes a compact table in interface declaration order, not the receiver's
+// ordinary vtable. Metadata-poor implementations still retain their bodies in
+// guestVTable, so build a compact table from that inline own-method block and
+// cache it per receiver/interface pair. Calls without a recognizable
+// interface keep the ordinary receiver-table behavior required by issue #196.
+// Returning the ordinary table here made View.run land on Object.equals and
+// left issue #286's scene loop presenting an unchanged black buffer.
 //
 // With this, SD한국전쟁 reaches a later module-100 newArray call at frame 3030.
 // That import has compact and extended ABIs whose count registers differ; its
@@ -65,6 +65,69 @@ func (r *Runtime) raptorJavaDispatchTable() (guest.WIPIReturn, string, bool, err
 	}
 	if object == 0 {
 		return guest.WIPIReturn{}, name, true, nil
+	}
+	interfaceToken, err := r.CPU.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return guest.WIPIReturn{}, name, true, err
+	}
+	java, err := r.ensureJavaRuntime()
+	if err != nil {
+		return guest.WIPIReturn{}, name, true, err
+	}
+	receiver := r.raptorJavaClassForObject(java, object)
+	contract := r.raptorJavaClassForObject(java, interfaceToken)
+	interfaceDispatch := contract != nil && len(contract.methods) != 0
+	if interfaceDispatch {
+		for _, method := range contract.methods {
+			if method.Body != 0 {
+				interfaceDispatch = false
+				break
+			}
+		}
+	}
+	if receiver != nil && interfaceDispatch &&
+		receiver.guestVTable != 0 {
+		if java.interfaceVTables == nil {
+			java.interfaceVTables = make(map[[2]uint32]uint32)
+		}
+		key := [2]uint32{receiver.Holder, contract.Holder}
+		if table := java.interfaceVTables[key]; table != 0 {
+			return guest.WIPIReturn{Low: table}, name, true, nil
+		}
+		words := uint32(len(contract.methods) + 1)
+		table, allocateErr := r.Public.Heap.Allocate(words*4, true)
+		if allocateErr != nil {
+			return guest.WIPIReturn{}, name, true,
+				fmt.Errorf("allocate Raptor Java interface dispatch table: %w", allocateErr)
+		}
+		if table == 0 {
+			return guest.WIPIReturn{}, name, true,
+				fmt.Errorf("allocate Raptor Java interface dispatch table returned null")
+		}
+		if err := r.Public.WriteU32(table, receiver.Holder); err != nil {
+			return guest.WIPIReturn{}, name, true, err
+		}
+		for index, method := range contract.methods {
+			body := uint32(0)
+			for class, depth := receiver, 0; class != nil && depth < 256; depth++ {
+				if declared, found := DeclaredMethod(class, method.Name, method.descriptor); found {
+					body = declared.Body
+					break
+				}
+				class = java.ClassByName[class.parentName]
+			}
+			if body == 0 {
+				body, err = r.Public.ReadU32(receiver.guestVTable + 0x2c + uint32(index)*4)
+				if err != nil {
+					return guest.WIPIReturn{}, name, true, err
+				}
+			}
+			if err := r.Public.WriteU32(table+4+uint32(index)*4, body); err != nil {
+				return guest.WIPIReturn{}, name, true, err
+			}
+		}
+		java.interfaceVTables[key] = table
+		return guest.WIPIReturn{Low: table}, name, true, nil
 	}
 	table, err := r.Public.ReadU32(object)
 	if err != nil {
