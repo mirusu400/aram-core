@@ -177,6 +177,39 @@ func LookupRaptorFramebufferGeometry(
 	return RaptorFramebufferGeometry{}, false
 }
 
+// RaptorResourceBytesHelper identifies a title-local static helper that takes
+// a java/lang/String resource name and returns the JAR entry as a byte array.
+// Some LGT runtimes implement this helper through carrier-private filesystem
+// imports which are unavailable outside the handset firmware.
+type RaptorResourceBytesHelper struct {
+	Key     RaptorTitleKey
+	Address uint32
+}
+
+var RaptorResourceBytesHelpers = []RaptorResourceBytesHelper{
+	{
+		// 놈3 routes every packaged image through a compiler-emitted helper whose
+		// carrier-private lookup returns null without the original LGT firmware.
+		Key: RaptorTitleKey{
+			PackageSHA256: "b475b63996844c2b4108224ec6ddb15f31ba8ac336dffcbebc4985d29009e930",
+			AID:           "00015E3D",
+			MainClass:     "Clet",
+		},
+		Address: 0x00032338,
+	},
+}
+
+func LookupRaptorResourceBytesHelper(
+	packageSHA256, aid, mainClass string,
+) (RaptorResourceBytesHelper, bool) {
+	for _, entry := range RaptorResourceBytesHelpers {
+		if entry.Key.Matches(packageSHA256, aid, mainClass) {
+			return entry, true
+		}
+	}
+	return RaptorResourceBytesHelper{}, false
+}
+
 // SKVMCanvas records the handset canvas one SKT MIDlet build was authored for.
 // An SKT descriptor never declares a display size, and a title that packs its
 // art into opaque resource blobs offers nothing to infer one from, so a build

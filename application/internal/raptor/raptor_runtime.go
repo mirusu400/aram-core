@@ -118,6 +118,7 @@ type Runtime struct {
 	// the physical screen only. A zero value keeps libwipi's client-area
 	// behavior and every offscreen framebuffer uses its allocated height.
 	primaryFramebufferHeight int
+	resourceBytesHelper      uint32
 	// unimplementedNames interns the label for an import ARAM does not
 	// implement. See unimplementedImportName.
 	unimplementedNames map[raptorImportKey]string
@@ -173,6 +174,9 @@ type Options struct {
 	// PrimaryFramebufferHeight replaces libwipi's primary-screen client
 	// height when positive and no greater than the physical allocation.
 	PrimaryFramebufferHeight int
+	// ResourceBytesHelper is an exact-title static Thumb function which takes
+	// a Java String in r0 and returns the named packaged resource as byte[].
+	ResourceBytesHelper uint32
 }
 
 type raptorImportKey struct {
@@ -250,6 +254,7 @@ func NewRuntimeWithOptions(
 		Pkg:                      pkg,
 		Clet:                     clet,
 		primaryFramebufferHeight: options.PrimaryFramebufferHeight,
+		resourceBytesHelper:      options.ResourceBytesHelper,
 		resolvedImports:          make(map[raptorImportKey]uint64),
 		importSlotByKey:          make(map[raptorImportKey]uint32),
 	}
@@ -481,7 +486,10 @@ func (r *Runtime) InstallInterfaces() error {
 	if err := r.CPU.WriteMemory(DletBase, dlet); err != nil {
 		return fmt.Errorf("install Raptor dlet interface: %w", err)
 	}
-	return r.installInputMethodModes()
+	if err := r.installInputMethodModes(); err != nil {
+		return err
+	}
+	return r.installResourceBytesHelper()
 }
 
 func (r *Runtime) RestoreImage() error {

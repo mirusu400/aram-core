@@ -749,6 +749,10 @@ func (r *Runtime) dispatchJavaImport(
 	ctx context.Context,
 	key raptorImportKey,
 ) (guest.WIPIReturn, string, bool, error) {
+	if key.Module == raptorResourceBytesHostModule {
+		result, err := r.raptorResourceBytes()
+		return result, "RAPTOR.java.resourceBytes", true, err
+	}
 	if key.Module == raptorJavaHostModule {
 		java, err := r.ensureJavaRuntime()
 		if err != nil {

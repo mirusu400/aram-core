@@ -16,6 +16,7 @@ func raptorRuntimeOptions(
 	pkg raptorloader.Package,
 	framebufferSize image.Point,
 ) raptorrt.Options {
+	options := raptorrt.Options{}
 	geometry, ok := quirkdb.LookupRaptorFramebufferGeometry(
 		source.SHA256,
 		pkg.Descriptor.AID,
@@ -23,11 +24,16 @@ func raptorRuntimeOptions(
 		framebufferSize.X,
 		framebufferSize.Y,
 	)
-	if !ok || geometry.PrimaryHeight <= 0 ||
-		geometry.PrimaryHeight > framebufferSize.Y {
-		return raptorrt.Options{}
+	if ok && geometry.PrimaryHeight > 0 &&
+		geometry.PrimaryHeight <= framebufferSize.Y {
+		options.PrimaryFramebufferHeight = geometry.PrimaryHeight
 	}
-	return raptorrt.Options{
-		PrimaryFramebufferHeight: geometry.PrimaryHeight,
+	if helper, found := quirkdb.LookupRaptorResourceBytesHelper(
+		source.SHA256,
+		pkg.Descriptor.AID,
+		pkg.Descriptor.MainClass,
+	); found {
+		options.ResourceBytesHelper = helper.Address
 	}
+	return options
 }
