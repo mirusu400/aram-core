@@ -258,6 +258,26 @@ func TestRaptorJavaClassDataIncludesStaticBase(t *testing.T) {
 	}
 }
 
+func TestRaptorJavaClassDataPublishesTypeToken(t *testing.T) {
+	public := newPublicRuntime(t)
+	runtime := &Runtime{CPU: public.CPU, Public: public}
+	class := &raptorJavaClass{
+		Holder:    0x01400000,
+		Name:      "example/TypedClass",
+		fieldSize: 1,
+	}
+
+	object, err := runtime.ensureRaptorJavaClassObject(&JavaRuntime{}, class)
+	check(t, err)
+	data, err := public.ReadU32(object + 8)
+	check(t, err)
+	token, err := public.ReadU32(data + 8)
+	check(t, err)
+	if token != class.Holder {
+		t.Fatalf("class type token = 0x%08x, want holder 0x%08x", token, class.Holder)
+	}
+}
+
 func TestRaptorJavaLinkedFieldIndexHandlesWideCompanion(t *testing.T) {
 	java := &JavaRuntime{}
 	java.classOrder = []*raptorJavaClass{
