@@ -126,7 +126,9 @@ type Runtime struct {
 	// javaHeapCollected is how many blocks were live just after the last
 	// collection, so the next one waits for real growth rather than running
 	// again on the very next allocation.
-	javaHeapCollected int
+	javaHeapCollected         int
+	javaHeapExplicitCollected int
+	javaHeapExplicitReady     bool
 
 	Services      *shared.Services
 	serviceConfig shared.Config

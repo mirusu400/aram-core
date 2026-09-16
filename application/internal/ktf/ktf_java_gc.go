@@ -106,6 +106,24 @@ func (r *Runtime) allocateJavaHeapBytes(size uint32, clear bool) (uint32, error)
 	return r.Heap.Allocate(size, clear)
 }
 
+// requestJavaHeapCollection handles the advisory System.gc and Runtime.gc
+// methods. A guest may request collection in every animation pass, but a full
+// conservative collection scans the client image, stacks, low RAM, every live
+// heap block, and every host-side root. Repeating that work before the heap has
+// materially grown cannot discover enough new garbage to justify the cost.
+// Allocation failure remains authoritative and independently attempts a
+// collection in allocateJavaHeapBytes.
+func (r *Runtime) requestJavaHeapCollection() {
+	live := len(r.Heap.Root().Allocations)
+	if r.javaHeapExplicitReady &&
+		live < r.javaHeapExplicitCollected+ktfGCGrowthBeforeRetry {
+		return
+	}
+	r.collectJavaHeap()
+	r.javaHeapExplicitCollected = len(r.Heap.Root().Allocations)
+	r.javaHeapExplicitReady = true
+}
+
 // AllocateJavaHeapBytes exports allocateJavaHeapBytes unchanged, for a caller
 // that shares this runtime's heap but builds its own objects outside this
 // package (Raptor's NewRaptorJavaObject, whose two allocations - the object
