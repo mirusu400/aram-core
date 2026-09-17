@@ -111,6 +111,11 @@ const (
 	imageVTable         = networkServiceBase + 0x400
 	imageTrapBase       = networkServiceBase + 0x500
 	imageMethodCount    = uint32(11)
+	controlServiceBase  = networkServiceBase + 0x1000
+	textCtlObject       = controlServiceBase + 0x100
+	textCtlVTable       = controlServiceBase + 0x200
+	textCtlTrapBase     = controlServiceBase + 0x300
+	textCtlMethodCount  = uint32(28)
 
 	bootstrapBudget = uint64(2_000_000)
 	hostCallBudget  = 4096
@@ -143,11 +148,23 @@ type Runtime struct {
 	soundInfo     [5]byte
 	soundVolume   uint16
 	preferences   map[brewPreferenceKey][]byte
+	textControl   brewTextControl
 }
 
 type brewPreferenceKey struct {
 	classID uint32
 	version uint16
+}
+
+type brewTextControl struct {
+	active     bool
+	rect       [8]byte
+	properties uint32
+	text       []byte
+	textPtr    uint32
+	maxSize    uint32
+	cursor     uint32
+	inputMode  uint32
 }
 
 type brewCallback struct {
@@ -370,6 +387,21 @@ func (r *Runtime) mapImage(module []byte) error {
 	binary.LittleEndian.PutUint32(network[imageVTable-networkServiceBase+4:], releaseTrap|1)
 	if err := r.cpu.WriteMemory(networkServiceBase, network[:]); err != nil {
 		return fmt.Errorf("write BREW network services: %w", err)
+	}
+	if err := r.cpu.Map(controlServiceBase, 0x1000, cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute); err != nil {
+		return fmt.Errorf("map BREW control services: %w", err)
+	}
+	var controls [0x1000]byte
+	binary.LittleEndian.PutUint32(controls[textCtlObject-controlServiceBase:], textCtlVTable)
+	for slot := uint32(0); slot < textCtlMethodCount; slot++ {
+		trap := textCtlTrapBase + slot*2
+		binary.LittleEndian.PutUint16(controls[trap-controlServiceBase:], 0xbe14)
+		binary.LittleEndian.PutUint32(controls[textCtlVTable-controlServiceBase+slot*4:], trap|1)
+	}
+	binary.LittleEndian.PutUint32(controls[textCtlVTable-controlServiceBase:], addRefTrap|1)
+	binary.LittleEndian.PutUint32(controls[textCtlVTable-controlServiceBase+4:], releaseTrap|1)
+	if err := r.cpu.WriteMemory(controlServiceBase, controls[:]); err != nil {
+		return fmt.Errorf("write BREW control services: %w", err)
 	}
 	// The exact title installs ARM pixel routines into its BREW heap and calls
 	// them through the surface callback at +0x3c. The authenticated bytes begin
@@ -944,6 +976,16 @@ func (r *Runtime) handleAppletMethodTrap(
 		default:
 			return boundary("IImage", slot)
 		}
+	}
+	if breakpoint >= textCtlTrapBase+2 && breakpoint < textCtlTrapBase+textCtlMethodCount*2+2 {
+		slot := (breakpoint - 2 - textCtlTrapBase) / 2
+		if handled, err := r.handleTextControl(slot); handled || err != nil {
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		}
+		return boundary("ITextCtl", slot)
 	}
 	if breakpoint >= shellMethodTrapBase+2 && breakpoint < shellMethodTrapBase+shellMethodCount*2+2 {
 		slot := (breakpoint - 2 - shellMethodTrapBase) / 2
@@ -2035,6 +2077,8 @@ func (r *Runtime) createShellInstance() error {
 		object = tapiObject
 	case Net11ClassID:
 		object = netObject
+	case TextCtl10ClassID:
+		object = textCtlObject
 	default:
 		returnAddress, readErr := r.cpu.ReadRegister(cpu.RegisterLR)
 		if readErr != nil {
