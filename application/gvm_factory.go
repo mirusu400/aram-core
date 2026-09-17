@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/mirusu400/aram-core/application/internal/gvmhost"
 	machinecore "github.com/mirusu400/aram-core/core"
 	"github.com/mirusu400/aram-core/cpu"
 	"github.com/mirusu400/aram-core/gvm"
@@ -24,9 +26,16 @@ const (
 	// GVMKernelProfileID explicitly opts into bounded initial-dispatch diagnostics.
 	// It is not a playability, rendering, input, timer-delivery or save-state profile.
 	GVMKernelProfileID = "gvm-kernel-v1/skt/diagnostic"
-	defaultGVMWidth    = int32(240)
-	defaultGVMHeight   = int32(240)
-	defaultGVMBudget   = uint64(1)
+	// GVMOperationalProfileID explicitly opts the one qualified SKT corpus into
+	// event-dispatch execution and presentation. It is not general GNEX support.
+	GVMOperationalProfileID     = "gvm-kernel-v1/skt/operational"
+	GVMOperationalSHA256        = "97fe208a02530ca21c6b47d7fa73cd60271aeeddd2305d2a972a217c97a4124f"
+	defaultGVMWidth             = int32(240)
+	defaultGVMHeight            = int32(240)
+	operationalGVMWidth         = int32(120)
+	operationalGVMHeight        = int32(80)
+	defaultGVMBudget            = uint64(1)
+	defaultGVMOperationalBudget = uint64(1_000_000)
 )
 
 var (
@@ -39,13 +48,42 @@ type gvmTimerBoundary struct {
 	interval int16
 	selector uint16
 	reached  bool
+	terminal bool
 }
 
 func (s *gvmTimerBoundary) RequestGVMTimer(interval int16, selector uint16) error {
 	s.interval, s.selector = interval, selector
 	s.reached = true
-	return errGVMTimerBoundary
+	if s.terminal {
+		return errGVMTimerBoundary
+	}
+	return nil
 }
+
+type gvmFramePublisher struct {
+	mu       sync.Mutex
+	latest   image.Image
+	presents uint64
+}
+
+func (p *gvmFramePublisher) PublishGVMFrame(frame image.Image) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.latest = frame
+	p.presents++
+	return nil
+}
+
+func (p *gvmFramePublisher) snapshot() (image.Image, uint64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.latest, p.presents
+}
+
+type gvmDecodedMediaServices struct{}
+
+func (*gvmDecodedMediaServices) LoadGVMMedia(uint16, []byte) error { return nil }
+func (*gvmDecodedMediaServices) ResetGVMAudio(int32) error         { return nil }
 
 // GVMDiagnosticBoundary describes the first host-service boundary reached by
 // the explicit GVM diagnostic profile. It is diagnostic evidence, not delivery.
@@ -56,19 +94,22 @@ type GVMDiagnosticBoundary struct {
 }
 
 type gvmMachine struct {
-	mu         sync.Mutex
-	state      machinecore.State
-	source     machinecore.Source
-	packageSGS []byte
-	vm         *gvm.VM
-	timer      *gvmTimerBoundary
-	budget     uint64
-	lastResult cpu.Result
-	closed     bool
+	mu          sync.Mutex
+	state       machinecore.State
+	source      machinecore.Source
+	packageSGS  []byte
+	vm          *gvm.VM
+	timer       *gvmTimerBoundary
+	budget      uint64
+	lastResult  cpu.Result
+	operational bool
+	eventEntry  uint32
+	frames      *gvmFramePublisher
+	closed      bool
 }
 
 func (f Factory) createGVMMachine(ctx context.Context, source machinecore.Source) (machinecore.Machine, bool, error) {
-	if source.ProfileID != GVMKernelProfileID {
+	if source.ProfileID != GVMKernelProfileID && source.ProfileID != GVMOperationalProfileID {
 		return nil, false, nil
 	}
 	if err := ctx.Err(); err != nil {
@@ -97,20 +138,33 @@ func (f Factory) createGVMMachine(ctx context.Context, source machinecore.Source
 		return nil, true, fmt.Errorf("load %q: SHA-256 mismatch: expected %s, got %s", source.Name, source.SHA256, actualSHA256)
 	}
 	source.SHA256 = actualSHA256
+	operational := source.ProfileID == GVMOperationalProfileID
+	if operational && actualSHA256 != GVMOperationalSHA256 {
+		return nil, true, fmt.Errorf("load %q: operational GVM profile requires outer SHA-256 %s, got %s", source.Name, GVMOperationalSHA256, actualSHA256)
+	}
 	source.Format = string(loader.KindGNEX)
-	source.ProfileID = GVMKernelProfileID
 	budget := f.FrameRunBudget
 	if budget == 0 {
 		budget = f.RunBudget
 	}
 	if budget == 0 {
 		budget = defaultGVMBudget
+		if operational {
+			budget = defaultGVMOperationalBudget
+		}
 	}
 	machine := &gvmMachine{
-		state:      machinecore.StateReady,
-		source:     source,
-		packageSGS: bytes.Clone(pkg.SGS),
-		budget:     budget,
+		state:       machinecore.StateReady,
+		source:      source,
+		packageSGS:  bytes.Clone(pkg.SGS),
+		budget:      budget,
+		operational: operational,
+	}
+	if operational {
+		if len(pkg.SGS) < 0x22 {
+			return nil, true, fmt.Errorf("initialize operational GVM: SGS event entry at 0x20 is unavailable")
+		}
+		machine.eventEntry = uint32(binary.LittleEndian.Uint16(pkg.SGS[0x20:0x22]))
 	}
 	if err := machine.resetVMLocked(); err != nil {
 		return nil, true, err
@@ -153,17 +207,54 @@ func (m *gvmMachine) resetVMLocked() error {
 	if err := random.SetLCG214013Seed("gvm", 1); err != nil {
 		return fmt.Errorf("initialize GVM diagnostic random stream: %w", err)
 	}
-	timer := new(gvmTimerBoundary)
+	timer := &gvmTimerBoundary{terminal: !m.operational}
+	width, height := defaultGVMWidth, defaultGVMHeight
+	var display *gvmhost.DisplayAdapter
+	var mediaServices *gvmDecodedMediaServices
+	var media []gvm.MediaResource
+	if m.operational {
+		width, height = operationalGVMWidth, operationalGVMHeight
+		m.frames = new(gvmFramePublisher)
+		display, err = gvmhost.NewDisplayAdapter(gvmhost.DisplayConfig{
+			Width: int(width), Height: int(height),
+			Orientation: gvmhost.DisplayOrientationDefault,
+			Palette:     gvmhost.SKTCompatibilityPalette{}, Publisher: m.frames,
+		})
+		if err != nil {
+			return fmt.Errorf("initialize operational GVM display: %w", err)
+		}
+		mediaServices = new(gvmDecodedMediaServices)
+		media = make([]gvm.MediaResource, len(image.Media))
+		for i := range image.Media {
+			media[i] = gvm.MediaResource{Data: image.Media[i].Data}
+		}
+	} else {
+		m.frames = nil
+	}
+	services := &gvm.ServiceConfig{
+		DeviceQuery: &gvm.DeviceQueryProfile{Width: width, Height: height, AudioType: 5},
+		Clock:       clock, ClockPolicy: gvm.FixedOffsetNoDST,
+		Random: random, RandomStream: "gvm",
+		Timer: timer,
+	}
+	if m.operational {
+		services.DisplayClear = display
+		services.DisplayFill = display
+		services.DisplayPresent = display
+		services.DisplayCopy = display
+		services.MappingSelect = display
+		services.ColorSelect = display
+		services.RectangleFill = display
+		services.SpriteDraw = display
+		services.AudioReset = mediaServices
+		services.Media = media
+		services.MediaLoad = mediaServices
+	}
 	vm, err := gvm.NewWithAddressSpaceAndServices(
 		image.Buffer,
 		uint32(image.Entry),
 		gvmAddressSpace(image),
-		&gvm.ServiceConfig{
-			DeviceQuery: &gvm.DeviceQueryProfile{Width: defaultGVMWidth, Height: defaultGVMHeight, AudioType: 5},
-			Clock:       clock, ClockPolicy: gvm.FixedOffsetNoDST,
-			Random: random, RandomStream: "gvm",
-			Timer: timer,
-		},
+		services,
 	)
 	if err != nil {
 		return fmt.Errorf("initialize GVM kernel: %w", err)
@@ -193,7 +284,46 @@ func (m *gvmMachine) Start(ctx context.Context) error {
 	if m.state != machinecore.StateReady {
 		return fmt.Errorf("start from %s: %w", m.state, ErrInvalidState)
 	}
+	if m.operational {
+		return m.runOperationalLocked(ctx, false)
+	}
 	return m.runLocked(ctx)
+}
+
+func (m *gvmMachine) runOperationalLocked(ctx context.Context, dispatchEvent bool) error {
+	m.state = machinecore.StateRunning
+	if dispatchEvent && m.vm.Halted() {
+		started, err := m.vm.BeginDispatch(m.eventEntry)
+		if err != nil {
+			m.state = machinecore.StateFaulted
+			return fmt.Errorf("begin operational GVM event dispatch at offset %d: %w", m.eventEntry, err)
+		}
+		if !started {
+			m.lastResult = cpu.Result{Reason: cpu.StopExited, PC: uint32(m.vm.PC())}
+			return nil
+		}
+	}
+	var completed uint64
+	for completed < m.budget {
+		if err := ctx.Err(); err != nil {
+			m.lastResult = cpu.Result{Reason: cpu.StopRequested, Instructions: completed, PC: uint32(m.vm.PC()), Err: err}
+			return err
+		}
+		if err := m.vm.Step(); err != nil {
+			m.lastResult = cpu.Result{Reason: cpu.StopFault, Instructions: completed, PC: uint32(m.vm.PC()), Err: err}
+			m.state = machinecore.StateFaulted
+			return fmt.Errorf("execute operational GVM at offset %d after %d instructions: %w", m.vm.PC(), completed, err)
+		}
+		completed++
+		if m.vm.Halted() {
+			m.lastResult = cpu.Result{Reason: cpu.StopExited, Instructions: completed, PC: uint32(m.vm.PC())}
+			return nil
+		}
+	}
+	err := fmt.Errorf("operational GVM dispatch did not halt within %d instructions", m.budget)
+	m.lastResult = cpu.Result{Reason: cpu.StopBudget, Instructions: completed, PC: uint32(m.vm.PC()), Err: err}
+	m.state = machinecore.StateFaulted
+	return err
 }
 
 func (m *gvmMachine) runLocked(ctx context.Context) error {
@@ -273,7 +403,7 @@ func (m *gvmMachine) Reset(ctx context.Context) error {
 	if m.closed {
 		return cpu.ErrClosed
 	}
-	if m.state == machinecore.StateRunning {
+	if m.state == machinecore.StateRunning && !(m.operational && m.vm != nil && m.vm.Halted()) {
 		return fmt.Errorf("reset from %s: %w", m.state, ErrInvalidState)
 	}
 	if err := ctx.Err(); err != nil {
@@ -293,6 +423,12 @@ func (m *gvmMachine) StepFrame(ctx context.Context) error {
 	if m.closed {
 		return cpu.ErrClosed
 	}
+	if m.operational {
+		if m.state != machinecore.StateRunning {
+			return fmt.Errorf("step frame from %s: %w", m.state, ErrInvalidState)
+		}
+		return m.runOperationalLocked(ctx, true)
+	}
 	if m.state != machinecore.StatePaused && m.state != machinecore.StateReady {
 		return fmt.Errorf("step frame from %s: %w", m.state, ErrInvalidState)
 	}
@@ -306,7 +442,30 @@ func (m *gvmMachine) QueueInput(event machinecore.InputEvent) error {
 	return ErrGVMInputUnavailable
 }
 
-func (*gvmMachine) Framebuffer() image.Image { return nil }
+func (m *gvmMachine) Framebuffer() image.Image {
+	m.mu.Lock()
+	frames := m.frames
+	m.mu.Unlock()
+	if frames == nil {
+		return nil
+	}
+	frame, _ := frames.snapshot()
+	return frame
+}
+
+// GVMPresentDiagnostics is an optional, narrow operational-profile diagnostic.
+type GVMPresentDiagnostics interface{ GVMPresentCount() uint64 }
+
+func (m *gvmMachine) GVMPresentCount() uint64 {
+	m.mu.Lock()
+	frames := m.frames
+	m.mu.Unlock()
+	if frames == nil {
+		return 0
+	}
+	_, count := frames.snapshot()
+	return count
+}
 
 func (*gvmMachine) DrainAudio() machinecore.AudioChunk { return machinecore.AudioChunk{} }
 func (*gvmMachine) SaveState(io.Writer) error          { return ErrGVMStateUnavailable }
