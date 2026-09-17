@@ -183,6 +183,18 @@ func TestCommonHelperContracts(t *testing.T) {
 	if got := call(helperGetSecondsSlot, 0, 0, 0); got != 630_720_002 {
 		t.Fatalf("GetSeconds = %d, want deterministic calendar time", got)
 	}
+	julianAt := heapBase + 0x600
+	call(helperGetJulianDateSlot, 630_720_000, julianAt, 0)
+	julian := make([]byte, 14)
+	if err := runtime.cpu.ReadMemory(julianAt, julian); err != nil {
+		t.Fatal(err)
+	}
+	wantJulian := []uint16{2000, 1, 1, 0, 0, 0, 6}
+	for index, want := range wantJulian {
+		if got := binary.LittleEndian.Uint16(julian[index*2:]); got != want {
+			t.Fatalf("Julian field %d = %d, want %d", index, got, want)
+		}
+	}
 }
 
 func TestLegacySoundAndActiveAppletContracts(t *testing.T) {
@@ -217,6 +229,110 @@ func TestLegacySoundAndActiveAppletContracts(t *testing.T) {
 	}
 	if got := binary.LittleEndian.Uint32(encoded[:]); got != soundObject {
 		t.Fatalf("Sound10 object = 0x%08x, want 0x%08x", got, soundObject)
+	}
+}
+
+func TestSoundPlayerSetUsesInputDiscriminator(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	out := heapBase + 0xb00
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR1: SoundPlayerClassID,
+		cpu.RegisterR2: out,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := runtime.createShellInstance(); err != nil {
+		t.Fatal(err)
+	}
+	var encoded [4]byte
+	if err := runtime.cpu.ReadMemory(out, encoded[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint32(encoded[:]); got != soundPlayerObject {
+		t.Fatalf("SoundPlayer object = 0x%08x, want 0x%08x", got, soundPlayerObject)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR1: 2,
+		cpu.RegisterR2: heapBase + 0xc00,
+		cpu.RegisterLR: returnTrap | 1,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handled, _, _, err := runtime.handleAppletMethodTrap(soundPlayerTrapBase + 3*2 + 2)
+	if err != nil || !handled {
+		t.Fatalf("ISoundPlayer Set handled=%v err=%v", handled, err)
+	}
+}
+
+func TestHeapMallocAndFreeContracts(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	if err := runtime.cpu.WriteRegister(cpu.RegisterLR, returnTrap|1); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR1, 17); err != nil {
+		t.Fatal(err)
+	}
+	handled, _, _, err := runtime.handleAppletMethodTrap(heapTrapBase + 2*2 + 2)
+	if err != nil || !handled {
+		t.Fatalf("IHeap Malloc handled=%v err=%v", handled, err)
+	}
+	address, err := runtime.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil || address != heapBase {
+		t.Fatalf("IHeap Malloc = 0x%08x err=%v, want 0x%08x", address, err, heapBase)
+	}
+	if runtime.heapNext != heapBase+24 {
+		t.Fatalf("aligned heap next = 0x%08x, want 0x%08x", runtime.heapNext, heapBase+24)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR1, address); err != nil {
+		t.Fatal(err)
+	}
+	handled, _, _, err = runtime.handleAppletMethodTrap(heapTrapBase + 4*2 + 2)
+	if err != nil || !handled {
+		t.Fatalf("IHeap Free handled=%v err=%v", handled, err)
+	}
+}
+
+func TestHelperMallocReturnsNullForZeroSize(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.returnAllocation(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || got != 0 {
+		t.Fatalf("malloc(0) = 0x%08x err=%v, want NULL", got, err)
+	}
+}
+
+func TestTAPIStatusUsesStableSyntheticIdentity(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	destination := heapBase + 0x700
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR1: destination,
+		cpu.RegisterLR: returnTrap | 1,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handled, _, _, err := runtime.handleAppletMethodTrap(tapiTrapBase + 3*2 + 2)
+	if err != nil || !handled {
+		t.Fatalf("ITAPI GetStatus handled=%v err=%v", handled, err)
+	}
+	status := make([]byte, 24)
+	if err := runtime.cpu.ReadMemory(destination, status); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(status[:16]); got != "000000000000000\x00" {
+		t.Fatalf("mobile ID = %q", got)
+	}
+	if flags := binary.LittleEndian.Uint32(status[20:]); flags != 1<<6 {
+		t.Fatalf("TAPI flags = 0x%x, want registered", flags)
 	}
 }
 

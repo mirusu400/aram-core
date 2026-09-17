@@ -26,8 +26,10 @@ const (
 	HeapClassID           = uint32(0x01001002)
 	FileMgrClassID        = uint32(0x01001003)
 	OptionalDeviceClassID = uint32(0x018000fe)
-	SoundClassID          = uint32(0x01002000)
+	SoundPlayerClassID    = uint32(0x01002000)
+	GraphicsClassID       = uint32(0x01002001)
 	Sound10ClassID        = uint32(0x0100100b)
+	TAPIClassID           = uint32(0x01001007)
 	// FirstUnsupportedClassID is retained for callers that recorded the original
 	// bootstrap milestone before the display contract was implemented.
 	FirstUnsupportedClassID = DisplayClassID

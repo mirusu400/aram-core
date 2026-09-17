@@ -77,3 +77,45 @@ func TestLoadShellResourceDataCopiesOwnedGuestBlock(t *testing.T) {
 		t.Fatalf("loaded resource = %v", got)
 	}
 }
+
+func TestLoadShellResourceStringCopiesBoundedUCS2(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	runtime.files = map[string][]byte{"assets/game.bar": buildResourceFile(brewStringResourceKind, 7, []byte{'A', 0, 'B', 0, 'C', 0, 0, 0})}
+	pathAt, destination := heapBase+0x100, heapBase+0x200
+	if err := runtime.cpu.WriteMemory(pathAt, []byte("assets/game.bar\x00")); err != nil {
+		t.Fatal(err)
+	}
+	sp := heapBase + 0x300
+	if err := runtime.cpu.WriteRegister(cpu.RegisterSP, sp); err != nil {
+		t.Fatal(err)
+	}
+	var size [4]byte
+	binary.LittleEndian.PutUint32(size[:], 6)
+	if err := runtime.cpu.WriteMemory(sp, size[:]); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR1: pathAt,
+		cpu.RegisterR2: 7,
+		cpu.RegisterR3: destination,
+		cpu.RegisterLR: returnTrap | 1,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handled, _, _, err := runtime.handleAppletMethodTrap(shellMethodTrapBase + 17*2 + 2)
+	if err != nil || !handled {
+		t.Fatalf("LoadResString handled=%v err=%v", handled, err)
+	}
+	if got, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || got != 2 {
+		t.Fatalf("LoadResString count=%d err=%v, want 2", got, err)
+	}
+	got := make([]byte, 6)
+	if err := runtime.cpu.ReadMemory(destination, got); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, []byte{'A', 0, 'B', 0, 0, 0}) {
+		t.Fatalf("loaded string = %v", got)
+	}
+}

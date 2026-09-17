@@ -50,6 +50,7 @@ const (
 	helperStrcmpSlot        = uint32(4)
 	helperStrlenSlot        = uint32(5)
 	helperSprintfSlot       = uint32(8)
+	helperSetupImageSlot    = uint32(25)
 	helperAtoiSlot          = uint32(36)
 	helperGetAEEVersionSlot = uint32(35)
 	helperDbgPrintfSlot     = uint32(39)
@@ -57,33 +58,51 @@ const (
 	helperGetTimeMSSlot     = uint32(43)
 	helperGetUpTimeMSSlot   = uint32(44)
 	helperGetSecondsSlot    = uint32(45)
+	helperGetJulianDateSlot = uint32(46)
+	helperSysFreeSlot       = uint32(47)
 	helperCurrentAppletSlot = uint32(0x30)
 	helperStrncpySlot       = uint32(50)
 	helperStrncmpSlot       = uint32(51)
 	helperStricmpSlot       = uint32(52)
 	helperStrstrSlot        = uint32(54)
+	helperMemcmpSlot        = uint32(55)
 	// The exact title branches explicitly for BREW 1.0, 1.2 and 2.1. Its KTF
 	// handset path is the BREW 2.1 branch.
-	aeeVersion         = uint32(0x02010000)
-	heapBase           = uint32(0x03000000)
-	heapSize           = uint32(0x00100000)
-	stackBase          = uint32(0x04000000)
-	stackSize          = uint32(0x00010000)
-	outputAddr         = stackBase + 0x100
-	framebufferBase    = uint32(0x05000000)
-	framebufferWidth   = uint32(120)
-	framebufferHeight  = uint32(160)
-	framebufferBytes   = framebufferWidth * framebufferHeight * 2
-	framebufferMapSize = uint32(0x0000a000)
-	serviceBase        = helperBase + 0x1000
-	fileMgrObject      = serviceBase + 0x100
-	fileMgrVTable      = serviceBase + 0x200
-	fileMgrTrapBase    = serviceBase + 0x400
-	fileMgrMethodCount = uint32(21)
-	fileObject         = serviceBase + 0x500
-	fileVTable         = serviceBase + 0x600
-	fileTrapBase       = serviceBase + 0x700
-	fileMethodCount    = uint32(12)
+	aeeVersion          = uint32(0x02010000)
+	heapBase            = uint32(0x03000000)
+	heapSize            = uint32(0x00100000)
+	stackBase           = uint32(0x04000000)
+	stackSize           = uint32(0x00010000)
+	outputAddr          = stackBase + 0x100
+	framebufferBase     = uint32(0x05000000)
+	framebufferWidth    = uint32(120)
+	framebufferHeight   = uint32(160)
+	framebufferBytes    = framebufferWidth * framebufferHeight * 2
+	framebufferMapSize  = uint32(0x0000a000)
+	serviceBase         = helperBase + 0x1000
+	fileMgrObject       = serviceBase + 0x100
+	fileMgrVTable       = serviceBase + 0x200
+	fileMgrTrapBase     = serviceBase + 0x400
+	fileMgrMethodCount  = uint32(21)
+	fileObject          = serviceBase + 0x500
+	fileVTable          = serviceBase + 0x600
+	fileTrapBase        = serviceBase + 0x700
+	fileMethodCount     = uint32(12)
+	bitmapVTable        = serviceBase + 0x800
+	bitmapTrapBase      = serviceBase + 0x900
+	bitmapMethodCount   = uint32(16)
+	graphicsObject      = serviceBase + 0xa00
+	graphicsVTable      = serviceBase + 0xa20
+	graphicsTrapBase    = serviceBase + 0xb00
+	graphicsMethodCount = uint32(44)
+	tapiObject          = serviceBase + 0xc00
+	tapiVTable          = serviceBase + 0xc20
+	tapiTrapBase        = serviceBase + 0xd00
+	tapiMethodCount     = uint32(12)
+	soundPlayerObject   = serviceBase + 0xe00
+	soundPlayerVTable   = serviceBase + 0xe20
+	soundPlayerTrapBase = serviceBase + 0xf00
+	soundPlayerMethods  = uint32(19)
 
 	bootstrapBudget = uint64(2_000_000)
 	hostCallBudget  = 4096
@@ -112,6 +131,9 @@ type Runtime struct {
 	classIDs      []uint32
 	clock         time.Duration
 	randomState   uint32
+	graphics      graphicsState
+	soundInfo     [5]byte
+	soundVolume   uint16
 }
 
 type brewCallback struct {
@@ -278,6 +300,37 @@ func (r *Runtime) mapImage(module []byte) error {
 	}
 	binary.LittleEndian.PutUint32(services[fileVTable-serviceBase:], addRefTrap|1)
 	binary.LittleEndian.PutUint32(services[fileVTable-serviceBase+4:], releaseTrap|1)
+	for slot := uint32(0); slot < bitmapMethodCount; slot++ {
+		trap := bitmapTrapBase + slot*2
+		binary.LittleEndian.PutUint16(services[trap-serviceBase:], 0xbe0e)
+		binary.LittleEndian.PutUint32(services[bitmapVTable-serviceBase+slot*4:], trap|1)
+	}
+	binary.LittleEndian.PutUint32(services[bitmapVTable-serviceBase:], addRefTrap|1)
+	binary.LittleEndian.PutUint32(services[bitmapVTable-serviceBase+4:], releaseTrap|1)
+	binary.LittleEndian.PutUint32(services[graphicsObject-serviceBase:], graphicsVTable)
+	for slot := uint32(0); slot < graphicsMethodCount; slot++ {
+		trap := graphicsTrapBase + slot*2
+		binary.LittleEndian.PutUint16(services[trap-serviceBase:], 0xbe0f)
+		binary.LittleEndian.PutUint32(services[graphicsVTable-serviceBase+slot*4:], trap|1)
+	}
+	binary.LittleEndian.PutUint32(services[graphicsVTable-serviceBase:], addRefTrap|1)
+	binary.LittleEndian.PutUint32(services[graphicsVTable-serviceBase+4:], releaseTrap|1)
+	binary.LittleEndian.PutUint32(services[tapiObject-serviceBase:], tapiVTable)
+	for slot := uint32(0); slot < tapiMethodCount; slot++ {
+		trap := tapiTrapBase + slot*2
+		binary.LittleEndian.PutUint16(services[trap-serviceBase:], 0xbe10)
+		binary.LittleEndian.PutUint32(services[tapiVTable-serviceBase+slot*4:], trap|1)
+	}
+	binary.LittleEndian.PutUint32(services[tapiVTable-serviceBase:], addRefTrap|1)
+	binary.LittleEndian.PutUint32(services[tapiVTable-serviceBase+4:], releaseTrap|1)
+	binary.LittleEndian.PutUint32(services[soundPlayerObject-serviceBase:], soundPlayerVTable)
+	for slot := uint32(0); slot < soundPlayerMethods; slot++ {
+		trap := soundPlayerTrapBase + slot*2
+		binary.LittleEndian.PutUint16(services[trap-serviceBase:], 0xbe11)
+		binary.LittleEndian.PutUint32(services[soundPlayerVTable-serviceBase+slot*4:], trap|1)
+	}
+	binary.LittleEndian.PutUint32(services[soundPlayerVTable-serviceBase:], addRefTrap|1)
+	binary.LittleEndian.PutUint32(services[soundPlayerVTable-serviceBase+4:], releaseTrap|1)
 	if err := r.cpu.WriteMemory(serviceBase, services[:]); err != nil {
 		return fmt.Errorf("write BREW exact-title services: %w", err)
 	}
@@ -527,6 +580,11 @@ func (r *Runtime) handleAppletMethodTrap(
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
+		case helperSetupImageSlot:
+			if err := r.setupNativeImage(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
 		case helperAtoiSlot:
 			if err := r.parseGuestInteger(); err != nil {
 				return true, 0, cpu.ModeARM, err
@@ -560,6 +618,35 @@ func (r *Runtime) handleAppletMethodTrap(
 				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW calendar seconds: %w", err)
 			}
 			return resume()
+		case helperGetJulianDateSlot:
+			seconds, err := r.cpu.ReadRegister(cpu.RegisterR0)
+			if err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("read BREW Julian seconds: %w", err)
+			}
+			destination, err := r.cpu.ReadRegister(cpu.RegisterR1)
+			if err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("read BREW Julian destination: %w", err)
+			}
+			// BREW seconds are measured from the GPS epoch. JulianType is seven
+			// consecutive uint16 fields: year, month, day, hour, minute, second,
+			// and weekday.
+			date := time.Date(1980, time.January, 6, 0, 0, 0, 0, time.UTC).Add(time.Duration(seconds) * time.Second)
+			var encoded [14]byte
+			values := [...]uint16{uint16(date.Year()), uint16(date.Month()), uint16(date.Day()), uint16(date.Hour()), uint16(date.Minute()), uint16(date.Second()), uint16(date.Weekday())}
+			for index, value := range values {
+				binary.LittleEndian.PutUint16(encoded[index*2:], value)
+			}
+			if err := r.cpu.WriteMemory(destination, encoded[:]); err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("write BREW Julian date: %w", err)
+			}
+			return resume()
+		case helperSysFreeSlot:
+			// The portable runtime uses a bounded arena. Individual frees are safe
+			// no-ops and all storage is reclaimed when the machine closes.
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW sysfree status: %w", err)
+			}
+			return resume()
 		case helperCurrentAppletSlot:
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, r.activeApplet); err != nil {
 				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW current applet: %w", err)
@@ -582,6 +669,11 @@ func (r *Runtime) handleAppletMethodTrap(
 			return resume()
 		case helperStrstrSlot:
 			if err := r.findGuestCString(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case helperMemcmpSlot:
+			if err := r.compareGuestMemory(); err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
@@ -644,8 +736,95 @@ func (r *Runtime) handleAppletMethodTrap(
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
+		case 6: // BitBlt(IDisplay *, xd, yd, w, h, IBitmap *, xs, ys, rop)
+			if err := r.blitDisplayBitmap(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 8, 9: // SetAnnunciators, Backlight
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
 		default:
 			return boundary("IDisplay", slot)
+		}
+	}
+	if breakpoint >= bitmapTrapBase+2 && breakpoint < bitmapTrapBase+bitmapMethodCount*2+2 {
+		slot := (breakpoint - 2 - bitmapTrapBase) / 2
+		return boundary("IBitmap", slot)
+	}
+	if breakpoint >= graphicsTrapBase+2 && breakpoint < graphicsTrapBase+graphicsMethodCount*2+2 {
+		slot := (breakpoint - 2 - graphicsTrapBase) / 2
+		if handled, err := r.handleGraphicsMethod(slot); handled || err != nil {
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		}
+		return boundary("IGraphics", slot)
+	}
+	if breakpoint >= tapiTrapBase+2 && breakpoint < tapiTrapBase+tapiMethodCount*2+2 {
+		slot := (breakpoint - 2 - tapiTrapBase) / 2
+		switch slot {
+		case 2: // INotifier.SetMask(ITAPI *, uint32 *)
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 3: // GetStatus(ITAPI *, TAPIStatus *)
+			destination, err := r.cpu.ReadRegister(cpu.RegisterR1)
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			if destination == 0 {
+				if err := r.cpu.WriteRegister(cpu.RegisterR0, 2); err != nil { // EBADPARM
+					return true, 0, cpu.ModeARM, err
+				}
+				return resume()
+			}
+			var status [24]byte
+			copy(status[:16], []byte("000000000000000\x00"))
+			status[16] = 0                                   // AEET_STATE_NONE
+			binary.LittleEndian.PutUint32(status[20:], 1<<6) // registered
+			if err := r.cpu.WriteMemory(destination, status[:]); err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("write BREW telephony status: %w", err)
+			}
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		default:
+			return boundary("ITAPI", slot)
+		}
+	}
+	if breakpoint >= soundPlayerTrapBase+2 && breakpoint < soundPlayerTrapBase+soundPlayerMethods*2+2 {
+		slot := (breakpoint - 2 - soundPlayerTrapBase) / 2
+		switch slot {
+		case 2: // RegisterNotify(ISoundPlayer *, PFNSOUNDPLAYERSTATUS, void *)
+			return resume()
+		case 3: // Set(ISoundPlayer *, AEESoundPlayerInput, void *)
+			// The second argument is an input discriminator, not an AEESoundInfo
+			// pointer. The resource pointer remains guest-owned until Play.
+			return resume()
+		case 4, 5, 6, 7, 8, 9, 10, 11, 14, 15, 16: // playback/state controls
+			return resume()
+		case 12: // SetVolume
+			volume, err := r.cpu.ReadRegister(cpu.RegisterR1)
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			r.soundVolume = uint16(min(volume, 100))
+			return resume()
+		case 13: // GetVolume, delivered asynchronously on native BREW
+			return resume()
+		case 17, 18: // BREW 1.1 SetInfo/GetInfo
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		default:
+			return boundary("ISoundPlayer", slot)
 		}
 	}
 	if breakpoint >= shellMethodTrapBase+2 && breakpoint < shellMethodTrapBase+shellMethodCount*2+2 {
@@ -689,6 +868,31 @@ func (r *Runtime) handleAppletMethodTrap(
 				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW timer status: %w", err)
 			}
 			return resume()
+		case 12: // CancelTimer(IShell *, PFNNOTIFY, void *)
+			function, err := r.cpu.ReadRegister(cpu.RegisterR1)
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			context, err := r.cpu.ReadRegister(cpu.RegisterR2)
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			kept := r.timers[:0]
+			for _, timer := range r.timers {
+				if timer.function != function || timer.context != context {
+					kept = append(kept, timer)
+				}
+			}
+			r.timers = kept
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 17: // LoadResString(IShell *, const char *, int16, AECHAR *, int)
+			if err := r.loadShellResourceString(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
 		case 18: // LoadResData(IShell *, const char *, uint16, ResType)
 			if err := r.loadShellResourceData(); err != nil {
 				return true, 0, cpu.ModeARM, err
@@ -708,6 +912,26 @@ func (r *Runtime) handleAppletMethodTrap(
 	if breakpoint >= heapTrapBase+2 && breakpoint < heapTrapBase+heapMethodCount*2+2 {
 		slot := (breakpoint - 2 - heapTrapBase) / 2
 		switch slot {
+		case 2: // Malloc(IHeap *, uint32)
+			size, err := r.cpu.ReadRegister(cpu.RegisterR1)
+			if err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("read BREW heap allocation size: %w", err)
+			}
+			address, err := r.allocateGuest(size)
+			if err != nil {
+				address = 0
+			}
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, address); err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW heap allocation: %w", err)
+			}
+			return resume()
+		case 4: // Free(IHeap *, void *)
+			// The portable runtime uses an arena. Individual allocations remain valid
+			// until the machine closes, matching the helper allocator contract.
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW heap free status: %w", err)
+			}
+			return resume()
 		case 6:
 			size, err := r.cpu.ReadRegister(cpu.RegisterR1)
 			if err != nil {
@@ -733,6 +957,52 @@ func (r *Runtime) handleAppletMethodTrap(
 		case 2: // RegisterNotify(ISound *, PFNSOUNDSTATUS, void *)
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
 				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW sound registration status: %w", err)
+			}
+			return resume()
+		case 3: // Set(ISound *, const AEESoundInfo *)
+			pointer, err := r.cpu.ReadRegister(cpu.RegisterR1)
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			if pointer != 0 {
+				if err := r.cpu.ReadMemory(pointer, r.soundInfo[:]); err != nil {
+					return true, 0, cpu.ModeARM, fmt.Errorf("read BREW sound info: %w", err)
+				}
+			}
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 4: // Get(ISound *, AEESoundInfo *)
+			pointer, err := r.cpu.ReadRegister(cpu.RegisterR1)
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			if pointer != 0 {
+				if err := r.cpu.WriteMemory(pointer, r.soundInfo[:]); err != nil {
+					return true, 0, cpu.ModeARM, fmt.Errorf("write BREW sound info: %w", err)
+				}
+			}
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 5, 9, 11: // SetDevice, StopTone, StopVibrate
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 12: // SetVolume
+			volume, err := r.cpu.ReadRegister(cpu.RegisterR1)
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			if volume > 100 {
+				volume = 100
+			}
+			r.soundVolume = uint16(volume)
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
 		default:
@@ -778,6 +1048,16 @@ func (r *Runtime) handleAppletMethodTrap(
 		switch slot {
 		case 3: // Read(IFile *, void *, uint32)
 			if err := r.readGuestFile(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 4: // Cancel(IFile *)
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 5: // Write(IFile *, const void *, uint32)
+			if err := r.writeGuestFile(); err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
@@ -1263,6 +1543,72 @@ func (r *Runtime) compareGuestStringsN() error {
 	return nil
 }
 
+func (r *Runtime) compareGuestMemory() error {
+	left, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW memcmp left pointer: %w", err)
+	}
+	right, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW memcmp right pointer: %w", err)
+	}
+	size, err := r.cpu.ReadRegister(cpu.RegisterR2)
+	if err != nil {
+		return fmt.Errorf("read BREW memcmp size: %w", err)
+	}
+	if size > heapSize {
+		return fmt.Errorf("BREW memcmp size %d exceeds runtime limit", size)
+	}
+	leftData, rightData := make([]byte, size), make([]byte, size)
+	if err := r.cpu.ReadMemory(left, leftData); err != nil {
+		return fmt.Errorf("read BREW memcmp left span: %w", err)
+	}
+	if err := r.cpu.ReadMemory(right, rightData); err != nil {
+		return fmt.Errorf("read BREW memcmp right span: %w", err)
+	}
+	result := int32(0)
+	for index := range leftData {
+		if leftData[index] != rightData[index] {
+			result = int32(leftData[index]) - int32(rightData[index])
+			break
+		}
+	}
+	return r.cpu.WriteRegister(cpu.RegisterR0, uint32(result))
+}
+
+func (r *Runtime) writeGuestFile() error {
+	source, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW file write source: %w", err)
+	}
+	count, err := r.cpu.ReadRegister(cpu.RegisterR2)
+	if err != nil {
+		return fmt.Errorf("read BREW file write count: %w", err)
+	}
+	if count > heapSize {
+		return fmt.Errorf("BREW file write count %d exceeds runtime limit", count)
+	}
+	data := make([]byte, count)
+	if err := r.cpu.ReadMemory(source, data); err != nil {
+		return fmt.Errorf("read BREW file write data: %w", err)
+	}
+	end := r.fileOffset + count
+	if end < r.fileOffset || end > heapSize {
+		return fmt.Errorf("BREW file write extent %d exceeds runtime limit", end)
+	}
+	if uint32(len(r.currentFile)) < end {
+		grown := make([]byte, end)
+		copy(grown, r.currentFile)
+		r.currentFile = grown
+	}
+	copy(r.currentFile[r.fileOffset:end], data)
+	r.fileOffset = end
+	if r.currentPath != "" {
+		r.files[r.currentPath] = r.currentFile
+	}
+	return r.cpu.WriteRegister(cpu.RegisterR0, count)
+}
+
 func (r *Runtime) openGuestFile() error {
 	pathPointer, err := r.cpu.ReadRegister(cpu.RegisterR1)
 	if err != nil {
@@ -1546,8 +1892,14 @@ func (r *Runtime) createShellInstance() error {
 		object = fileMgrObject
 	case OptionalDeviceClassID:
 		object = deviceModelObject
-	case SoundClassID, Sound10ClassID:
+	case Sound10ClassID:
 		object = soundObject
+	case SoundPlayerClassID:
+		object = soundPlayerObject
+	case GraphicsClassID:
+		object = graphicsObject
+	case TAPIClassID:
+		object = tapiObject
 	default:
 		returnAddress, readErr := r.cpu.ReadRegister(cpu.RegisterLR)
 		if readErr != nil {
@@ -1780,7 +2132,9 @@ func (r *Runtime) returnAllocation() error {
 	}
 	address, err := r.allocateGuest(size)
 	if err != nil {
-		return err
+		// BREW malloc reports allocation failure with NULL. Guest-controlled zero
+		// sizes and bounded-arena exhaustion are not host runtime faults.
+		address = 0
 	}
 	if err := r.cpu.WriteRegister(cpu.RegisterR0, address); err != nil {
 		return fmt.Errorf("return BREW allocation: %w", err)
