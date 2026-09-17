@@ -80,6 +80,111 @@ func TestDisplayUpdateCommitsDetachedBlackFramebuffer(t *testing.T) {
 	}
 }
 
+func TestDeviceBitmapGetInfoReportsGuestFramebufferGeometry(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	interfaceAt := heapBase + 0x80
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR0: deviceBitmapObject,
+		cpu.RegisterR1: 0x01001045,
+		cpu.RegisterR2: interfaceAt,
+		cpu.RegisterLR: returnTrap | 1,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, _, err := runtime.handleAppletMethodTrap(bitmapTrapBase + 2*2 + 2); err != nil {
+		t.Fatal(err)
+	}
+	var interfaceValue [4]byte
+	if err := runtime.cpu.ReadMemory(interfaceAt, interfaceValue[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint32(interfaceValue[:]); got != deviceBitmapObject {
+		t.Fatalf("IDIB interface = 0x%08x, want device bitmap", got)
+	}
+	infoAt := heapBase + 0x100
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR0: deviceBitmapObject,
+		cpu.RegisterR1: infoAt,
+		cpu.RegisterR2: 12,
+		cpu.RegisterLR: returnTrap | 1,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handled, _, _, err := runtime.handleAppletMethodTrap(bitmapTrapBase + 12*2 + 2)
+	if err != nil || !handled {
+		t.Fatalf("IBitmap GetInfo handled=%v err=%v", handled, err)
+	}
+	var info [12]byte
+	if err := runtime.cpu.ReadMemory(infoAt, info[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint32(info[0:4]); got != framebufferWidth {
+		t.Fatalf("bitmap width = %d, want %d", got, framebufferWidth)
+	}
+	if got := binary.LittleEndian.Uint32(info[4:8]); got != framebufferHeight {
+		t.Fatalf("bitmap height = %d, want %d", got, framebufferHeight)
+	}
+	if got := binary.LittleEndian.Uint32(info[8:12]); got != 16 {
+		t.Fatalf("bitmap depth = %d, want 16", got)
+	}
+}
+
+func TestCreateCompatibleBitmapReturnsBoundedSoftwareBitmap(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	objectOut := heapBase + 0x100
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR0: deviceBitmapObject,
+		cpu.RegisterR1: objectOut,
+		cpu.RegisterR2: 7,
+		cpu.RegisterR3: 5,
+		cpu.RegisterLR: returnTrap | 1,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handled, _, _, err := runtime.handleAppletMethodTrap(bitmapTrapBase + 13*2 + 2)
+	if err != nil || !handled {
+		t.Fatalf("CreateCompatibleBitmap handled=%v err=%v", handled, err)
+	}
+	var encoded [4]byte
+	if err := runtime.cpu.ReadMemory(objectOut, encoded[:]); err != nil {
+		t.Fatal(err)
+	}
+	object := binary.LittleEndian.Uint32(encoded[:])
+	if object == 0 {
+		t.Fatal("CreateCompatibleBitmap returned null")
+	}
+	infoAt := heapBase + 0x110
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR0: object,
+		cpu.RegisterR1: infoAt,
+		cpu.RegisterR2: 12,
+		cpu.RegisterLR: returnTrap | 1,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, _, err := runtime.handleAppletMethodTrap(bitmapTrapBase + 12*2 + 2); err != nil {
+		t.Fatal(err)
+	}
+	var info [12]byte
+	if err := runtime.cpu.ReadMemory(infoAt, info[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint32(info[0:4]); got != 7 {
+		t.Fatalf("compatible bitmap width = %d, want 7", got)
+	}
+	if got := binary.LittleEndian.Uint32(info[4:8]); got != 5 {
+		t.Fatalf("compatible bitmap height = %d, want 5", got)
+	}
+}
+
 func TestRunCallbacksHonorsRequestedDelay(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	runtime.timers = []brewCallback{{function: returnTrap | 1, context: 7, remaining: 100 * time.Millisecond}}
@@ -272,6 +377,62 @@ func TestSprintfSupportsBoundedStringAndIntegerFormats(t *testing.T) {
 	}
 	if text != "giftkart-007-2a%" {
 		t.Fatalf("sprintf result = %q, want giftkart-007-2a%%", text)
+	}
+}
+
+func TestLegacyIconViewControlMaintainsItemsAndSelection(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	call := func(slot uint32, r1, r2, r3 uint32) uint32 {
+		t.Helper()
+		for register, value := range map[uint32]uint32{
+			cpu.RegisterR0: menuCtlObject,
+			cpu.RegisterR1: r1,
+			cpu.RegisterR2: r2,
+			cpu.RegisterR3: r3,
+			cpu.RegisterLR: returnTrap | 1,
+		} {
+			if err := runtime.cpu.WriteRegister(register, value); err != nil {
+				t.Fatal(err)
+			}
+		}
+		handled, _, _, err := runtime.handleAppletMethodTrap(menuCtlTrapBase + slot*2 + 2)
+		if err != nil || !handled {
+			t.Fatalf("menu slot %d handled=%v err=%v", slot, handled, err)
+		}
+		value, err := runtime.cpu.ReadRegister(cpu.RegisterR0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+
+	var stackArgs [8]byte
+	binary.LittleEndian.PutUint32(stackArgs[4:], 0x12345678)
+	if err := runtime.cpu.WriteMemory(stackBase, stackArgs[:]); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterSP, stackBase); err != nil {
+		t.Fatal(err)
+	}
+	if got := call(12, 0, 0, 42); got != 1 {
+		t.Fatalf("AddItem = %d, want true", got)
+	}
+	if got := call(26, 0, 0, 0); got != 1 {
+		t.Fatalf("GetItemCount = %d, want 1", got)
+	}
+	if got := call(18, 0, 0, 0); got != 42 {
+		t.Fatalf("GetSel = %d, want 42", got)
+	}
+	dataAt := heapBase + 0x100
+	if got := call(14, 42, dataAt, 0); got != 1 {
+		t.Fatalf("GetItemData = %d, want true", got)
+	}
+	var encoded [4]byte
+	if err := runtime.cpu.ReadMemory(dataAt, encoded[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint32(encoded[:]); got != 0x12345678 {
+		t.Fatalf("menu item data = 0x%08x", got)
 	}
 }
 

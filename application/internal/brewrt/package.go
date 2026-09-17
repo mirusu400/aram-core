@@ -32,6 +32,7 @@ const (
 	TAPIClassID           = uint32(0x01001007)
 	Net11ClassID          = uint32(0x01001105)
 	TextCtl10ClassID      = uint32(0x01003009)
+	IconViewCtl10ClassID  = uint32(0x01003003)
 	// FirstUnsupportedClassID is retained for callers that recorded the original
 	// bootstrap milestone before the display contract was implemented.
 	FirstUnsupportedClassID = DisplayClassID

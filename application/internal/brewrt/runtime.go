@@ -122,6 +122,10 @@ const (
 	textCtlTrapBase     = controlServiceBase + 0x300
 	textCtlMethodCount  = uint32(28)
 	deviceBitmapObject  = controlServiceBase + 0x500
+	menuCtlObject       = controlServiceBase + 0x600
+	menuCtlVTable       = controlServiceBase + 0x700
+	menuCtlTrapBase     = controlServiceBase + 0x800
+	menuCtlMethodCount  = uint32(38)
 
 	bootstrapBudget = uint64(2_000_000)
 	hostCallBudget  = 4096
@@ -155,6 +159,7 @@ type Runtime struct {
 	soundVolume   uint16
 	preferences   map[brewPreferenceKey][]byte
 	textControl   brewTextControl
+	menuControl   brewMenuControl
 }
 
 type brewPreferenceKey struct {
@@ -171,6 +176,20 @@ type brewTextControl struct {
 	maxSize    uint32
 	cursor     uint32
 	inputMode  uint32
+}
+
+type brewMenuItem struct {
+	id   uint16
+	data uint32
+}
+
+type brewMenuControl struct {
+	active     bool
+	rect       [8]byte
+	properties uint32
+	selection  uint16
+	items      []brewMenuItem
+	enumIndex  int
 }
 
 type brewCallback struct {
@@ -406,6 +425,14 @@ func (r *Runtime) mapImage(module []byte) error {
 	}
 	binary.LittleEndian.PutUint32(controls[textCtlVTable-controlServiceBase:], addRefTrap|1)
 	binary.LittleEndian.PutUint32(controls[textCtlVTable-controlServiceBase+4:], releaseTrap|1)
+	binary.LittleEndian.PutUint32(controls[menuCtlObject-controlServiceBase:], menuCtlVTable)
+	for slot := uint32(0); slot < menuCtlMethodCount; slot++ {
+		trap := menuCtlTrapBase + slot*2
+		binary.LittleEndian.PutUint16(controls[trap-controlServiceBase:], 0xbe15)
+		binary.LittleEndian.PutUint32(controls[menuCtlVTable-controlServiceBase+slot*4:], trap|1)
+	}
+	binary.LittleEndian.PutUint32(controls[menuCtlVTable-controlServiceBase:], addRefTrap|1)
+	binary.LittleEndian.PutUint32(controls[menuCtlVTable-controlServiceBase+4:], releaseTrap|1)
 	deviceBitmap := make([]byte, 36)
 	binary.LittleEndian.PutUint32(deviceBitmap[0:], bitmapVTable)
 	binary.LittleEndian.PutUint32(deviceBitmap[8:], framebufferBase)
@@ -881,7 +908,142 @@ func (r *Runtime) handleAppletMethodTrap(
 	}
 	if breakpoint >= bitmapTrapBase+2 && breakpoint < bitmapTrapBase+bitmapMethodCount*2+2 {
 		slot := (breakpoint - 2 - bitmapTrapBase) / 2
-		return boundary("IBitmap", slot)
+		switch slot {
+		case 2: // QueryInterface(IBitmap *, AEECLSID, void **)
+			object, err := r.cpu.ReadRegister(cpu.RegisterR0)
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			classID, err := r.cpu.ReadRegister(cpu.RegisterR1)
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			output, err := r.cpu.ReadRegister(cpu.RegisterR2)
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			const (
+				bitmapInterfaceID = uint32(0x01001021)
+				dib20InterfaceID  = uint32(0x0100102c)
+				dibInterfaceID    = uint32(0x01001045)
+			)
+			if output == 0 || classID != bitmapInterfaceID && classID != dib20InterfaceID && classID != dibInterfaceID {
+				if err := r.cpu.WriteRegister(cpu.RegisterR0, 1); err != nil {
+					return true, 0, cpu.ModeARM, err
+				}
+				return resume()
+			}
+			var encoded [4]byte
+			binary.LittleEndian.PutUint32(encoded[:], object)
+			if err := r.cpu.WriteMemory(output, encoded[:]); err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("write BREW bitmap interface: %w", err)
+			}
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 3: // RGBToNative(IBitmap *, RGBVAL)
+			rgb, err := r.cpu.ReadRegister(cpu.RegisterR1)
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			red := uint16(rgb & 0xff)
+			green := uint16((rgb >> 8) & 0xff)
+			blue := uint16((rgb >> 16) & 0xff)
+			native := uint32((red>>3)<<11 | (green>>2)<<5 | blue>>3)
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, native); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 4: // NativeToRGB(IBitmap *, NativeColor)
+			raw, err := r.cpu.ReadRegister(cpu.RegisterR1)
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			value := uint16(raw)
+			red := uint32((value >> 11) & 0x1f)
+			green := uint32((value >> 5) & 0x3f)
+			blue := uint32(value & 0x1f)
+			rgb := (red<<3 | red>>2) | (green<<2|green>>4)<<8 | (blue<<3|blue>>2)<<16
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, rgb); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 12: // GetInfo(IBitmap *, AEEBitmapInfo *, int)
+			object, err := r.cpu.ReadRegister(cpu.RegisterR0)
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			output, err := r.cpu.ReadRegister(cpu.RegisterR1)
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			size, err := r.cpu.ReadRegister(cpu.RegisterR2)
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			if output == 0 || size < 12 {
+				if err := r.cpu.WriteRegister(cpu.RegisterR0, 2); err != nil {
+					return true, 0, cpu.ModeARM, err
+				}
+				return resume()
+			}
+			var header [30]byte
+			if err := r.cpu.ReadMemory(object, header[:]); err != nil || binary.LittleEndian.Uint32(header[:4]) != bitmapVTable {
+				if err := r.cpu.WriteRegister(cpu.RegisterR0, 2); err != nil {
+					return true, 0, cpu.ModeARM, err
+				}
+				return resume()
+			}
+			var info [12]byte
+			binary.LittleEndian.PutUint32(info[0:4], uint32(binary.LittleEndian.Uint16(header[20:22])))
+			binary.LittleEndian.PutUint32(info[4:8], uint32(binary.LittleEndian.Uint16(header[22:24])))
+			binary.LittleEndian.PutUint32(info[8:12], uint32(header[28]))
+			if err := r.cpu.WriteMemory(output, info[:]); err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("write BREW bitmap info: %w", err)
+			}
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 13: // CreateCompatibleBitmap(IBitmap *, IBitmap **, uint16, uint16)
+			output, err := r.cpu.ReadRegister(cpu.RegisterR1)
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			width, err := r.cpu.ReadRegister(cpu.RegisterR2)
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			height, err := r.cpu.ReadRegister(cpu.RegisterR3)
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			if output == 0 || width == 0 || height == 0 || uint64(width)*uint64(height) > maxNativeImagePixels {
+				if err := r.cpu.WriteRegister(cpu.RegisterR0, 2); err != nil {
+					return true, 0, cpu.ModeARM, err
+				}
+				return resume()
+			}
+			object, err := r.createNativeBitmap(image.NewRGBA(image.Rect(0, 0, int(width), int(height))))
+			if err != nil {
+				if err := r.cpu.WriteRegister(cpu.RegisterR0, 1); err != nil {
+					return true, 0, cpu.ModeARM, err
+				}
+				return resume()
+			}
+			var encoded [4]byte
+			binary.LittleEndian.PutUint32(encoded[:], object)
+			if err := r.cpu.WriteMemory(output, encoded[:]); err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("write compatible BREW bitmap: %w", err)
+			}
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		default:
+			return boundary("IBitmap", slot)
+		}
 	}
 	if breakpoint >= graphicsTrapBase+2 && breakpoint < graphicsTrapBase+graphicsMethodCount*2+2 {
 		slot := (breakpoint - 2 - graphicsTrapBase) / 2
@@ -1046,6 +1208,16 @@ func (r *Runtime) handleAppletMethodTrap(
 			return resume()
 		}
 		return boundary("ITextCtl", slot)
+	}
+	if breakpoint >= menuCtlTrapBase+2 && breakpoint < menuCtlTrapBase+menuCtlMethodCount*2+2 {
+		slot := (breakpoint - 2 - menuCtlTrapBase) / 2
+		if handled, err := r.handleMenuControl(slot); handled || err != nil {
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		}
+		return boundary("IMenuCtl", slot)
 	}
 	if breakpoint >= shellMethodTrapBase+2 && breakpoint < shellMethodTrapBase+shellMethodCount*2+2 {
 		slot := (breakpoint - 2 - shellMethodTrapBase) / 2
@@ -2296,6 +2468,8 @@ func (r *Runtime) createShellInstance() error {
 		object = netObject
 	case TextCtl10ClassID:
 		object = textCtlObject
+	case IconViewCtl10ClassID:
+		object = menuCtlObject
 	default:
 		returnAddress, readErr := r.cpu.ReadRegister(cpu.RegisterLR)
 		if readErr != nil {
