@@ -1,5 +1,7 @@
 package raptor
 
+import "fmt"
+
 // A Raptor Java array exists twice: as the body the AOT code reads and writes
 // with plain loads and stores (obj+8 -> body, body+0 = length, elements from
 // body+4), and as a KTF mirror the shared Java host operates on (instance ->
@@ -117,3 +119,65 @@ func (r *Runtime) syncRaptorArray(
 // make the bridge allocate or move an absurd buffer. The largest array a title
 // hands a host method is a resource read buffer, well under this.
 const maxRaptorArraySyncElements = 1 << 24
+
+// prepareRaptorStringByteArray repairs both sides of the String byte-slice ABI
+// before forwarding it to the shared KTF host. Some Raptor builds pass an end
+// pointer into the AOT array body instead of a scalar count. The Raptor array
+// can also legitimately lack a KTF mirror when its initial mirror allocation
+// failed, or retain a stale mirror after collection. Forwarding either case
+// verbatim makes the KTF handler read heap pointers as the count and length
+// (issue #302).
+func (r *Runtime) prepareRaptorStringByteArray(
+	java *JavaRuntime,
+	method raptorJavaMethod,
+	arguments []uint32,
+) error {
+	if method.className != "java/lang/String" || method.Name != "<init>" ||
+		(method.descriptor != "([BII)V" &&
+			method.descriptor != "([BIILjava/lang/String;)V") ||
+		len(arguments) < 4 {
+		return nil
+	}
+	array, offset, end := arguments[1], arguments[2], arguments[3]
+	if array == 0 {
+		return nil
+	}
+	body, err := r.Public.ReadU32(array + 8)
+	if err != nil || body == 0 {
+		return nil
+	}
+	length, err := r.Public.ReadU32(body)
+	if err != nil || length > maxRaptorArraySyncElements {
+		return nil
+	}
+	if offset <= length {
+		data := body + 4
+		start := uint64(data) + uint64(offset)
+		limit := uint64(data) + uint64(length)
+		if uint64(end) >= start && uint64(end) <= limit {
+			arguments[3] = uint32(uint64(end) - start)
+		}
+	}
+
+	oldMirror := java.lgtToKTF[array]
+	_, mirrorLength, element, primitive, valid := java.Host.ArrayShape(oldMirror)
+	if valid && primitive && mirrorLength == length && element == 1 {
+		java.ktfToLGT[oldMirror] = array
+		r.noteRaptorPrimitiveArray(java, oldMirror, 1)
+		return nil
+	}
+	java.constructing[array] = true
+	mirror, mirrorErr := java.Host.NewJavaArray("[B", length, 1)
+	delete(java.constructing, array)
+	if mirrorErr != nil {
+		return fmt.Errorf("rebuild Raptor Java byte-array mirror: %w", mirrorErr)
+	}
+	if oldMirror != 0 {
+		delete(java.ktfToLGT, oldMirror)
+		delete(java.primitiveArrays, oldMirror)
+	}
+	java.lgtToKTF[array] = mirror
+	java.ktfToLGT[mirror] = array
+	r.noteRaptorPrimitiveArray(java, mirror, 1)
+	return nil
+}

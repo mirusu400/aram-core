@@ -529,6 +529,9 @@ func (r *Runtime) callJavaHostMethod(
 	if err != nil {
 		return guest.WIPIReturn{}, err
 	}
+	if err := r.prepareRaptorStringByteArray(java, method, arguments); err != nil {
+		return guest.WIPIReturn{}, err
+	}
 	if method.className == "java/lang/System" && method.Name == "arraycopy" &&
 		len(arguments) >= 5 && java.lgtToKTF[arguments[0]] != 0 && java.lgtToKTF[arguments[2]] != 0 {
 		// System.arraycopy between two Raptor arrays must copy the Raptor array

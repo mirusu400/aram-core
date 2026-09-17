@@ -191,6 +191,72 @@ func TestSyncRaptorArrayCopiesBothWays(t *testing.T) {
 	runtime.syncRaptorArrayArguments(java, []uint32{0, 0x12345678}, true)
 }
 
+// TestRaptorJavaHostCallRebuildsMissingPrimitiveArrayMirror covers issue #302.
+// An AOT-side array is allowed to outlive a failed or collected KTF mirror;
+// forwarding its raw Raptor header made String(byte[], int, int) read vtable
+// words as the array length and fail with a huge out-of-range slice.
+func TestRaptorJavaHostCallRebuildsMissingPrimitiveArrayMirror(t *testing.T) {
+	public := newPublicRuntime(t)
+	runtime := &Runtime{
+		CPU:             public.CPU,
+		Public:          public,
+		resolvedImports: make(map[raptorImportKey]uint64),
+		importSlotByKey: make(map[raptorImportKey]uint32),
+	}
+	java, err := runtime.ensureJavaRuntime()
+	check(t, err)
+
+	array, err := runtime.newRaptorJavaArray('B', 6)
+	check(t, err)
+	body, err := public.ReadU32(array + 8)
+	check(t, err)
+	check(t, public.CPU.WriteMemory(body+4, []byte("abcdef")))
+	oldMirror := java.lgtToKTF[array]
+	delete(java.lgtToKTF, array)
+	delete(java.ktfToLGT, oldMirror)
+	delete(java.primitiveArrays, oldMirror)
+
+	receiver, err := runtime.NewRaptorJavaString("")
+	check(t, err)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, receiver))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, array))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 1))
+	// The issue title's Raptor build passes an end pointer into the AOT body
+	// here, not the scalar count declared by the Java descriptor.
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, body+4+4))
+	_, err = runtime.callJavaHostMethod(context.Background(), raptorJavaMethod{
+		className:  "java/lang/String",
+		Name:       "<init>",
+		descriptor: "([BII)V",
+	})
+	check(t, err)
+
+	mirror := java.lgtToKTF[array]
+	if mirror == 0 || mirror == oldMirror {
+		t.Fatalf("rebuilt array mirror = 0x%08x, old 0x%08x", mirror, oldMirror)
+	}
+	mirrorBody, count, element, primitive, ok := java.Host.ArrayShape(mirror)
+	if !ok || !primitive || count != 6 || element != 1 {
+		t.Fatalf("rebuilt mirror shape = count %d element %d primitive %t ok %t",
+			count, element, primitive, ok)
+	}
+	seen := make([]byte, 6)
+	check(t, public.CPU.ReadMemory(mirrorBody, seen))
+	if !bytes.Equal(seen, []byte("abcdef")) {
+		t.Fatalf("rebuilt mirror bytes = %q, want %q", seen, "abcdef")
+	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, receiver))
+	result, err := runtime.callJavaHostMethod(context.Background(), raptorJavaMethod{
+		className:  "java/lang/String",
+		Name:       "length",
+		descriptor: "()I",
+	})
+	check(t, err)
+	if result.Low != 3 {
+		t.Fatalf("String length = %d, want 3 after pointer-range normalization", result.Low)
+	}
+}
+
 // TestWrapRaptorJavaObjectGivesArraysABody pins the other direction: an array a
 // host method returns (DataBase.selectRecord, String.getBytes) reaches the guest
 // as a Raptor array, so it needs its length word and elements, not the one-word
