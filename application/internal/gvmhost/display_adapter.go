@@ -2,6 +2,7 @@ package gvmhost
 
 import (
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"sync"
@@ -244,11 +245,7 @@ func (d *DisplayAdapter) DrawGVMText(resource []byte, x, y int16, style gvm.Text
 	}
 	text, err := d.text.Decode(terminated, shared.EncodingEUCKR)
 	if err != nil {
-		runes := make([]rune, len(terminated))
-		for index, value := range terminated {
-			runes[index] = rune(value)
-		}
-		text = string(runes)
+		return err
 	}
 	fontID := d.textFonts[style.Mode]
 	if fontID == 0 {
@@ -262,25 +259,38 @@ func (d *DisplayAdapter) DrawGVMText(resource []byte, x, y int16, style gvm.Text
 		d.textFonts[style.Mode] = fontID
 	}
 	type positionedGlyph struct {
-		glyph shared.Glyph
-		x     int
+		alpha  []byte
+		width  int
+		height int
+		x      int
 	}
-	glyphs := make([]positionedGlyph, 0, len([]rune(text)))
+	runes := []rune(text)
+	units, err := gvmTextUnits(terminated, runes)
+	if err != nil {
+		return err
+	}
+	glyphs := make([]positionedGlyph, 0, len(units))
 	cursor := 0
-	for _, character := range text {
-		glyph, glyphErr := d.text.Glyph(d.textOwner, fontID, character)
+	for _, unit := range units {
+		glyph, glyphErr := d.text.Glyph(d.textOwner, fontID, unit.character)
 		if glyphErr != nil {
 			return glyphErr
 		}
-		glyphs = append(glyphs, positionedGlyph{glyph: glyph, x: cursor})
-		cursor += int(glyph.Advance)
+		inkWidth, inkHeight, cellWidth, ok := gvmTextGeometry(style.Mode, unit.encodedBytes)
+		if !ok {
+			return fmt.Errorf("%w: mode %d cannot render a %d-byte EUC-KR unit", ErrInvalidDisplayConfig, style.Mode, unit.encodedBytes)
+		}
+		glyphs = append(glyphs, positionedGlyph{
+			alpha: scaleGVMGlyph(glyph, inkWidth, inkHeight),
+			width: inkWidth, height: inkHeight, x: cursor,
+		})
+		cursor += cellWidth
 	}
 	colorIndex, err := d.palette.Map(d.mapping, int16(style.Primary))
 	if err != nil {
 		return err
 	}
-	cellWidths := [...]int{4, 6, 6, 12}
-	nativeWidth := len(terminated) * cellWidths[style.Mode]
+	nativeWidth := cursor
 	originX := int(x)
 	if style.Alignment == 1 {
 		originX -= nativeWidth / 2
@@ -289,14 +299,13 @@ func (d *DisplayAdapter) DrawGVMText(resource []byte, x, y int16, style gvm.Text
 	}
 	originY := int(y)
 	for _, positioned := range glyphs {
-		glyph := positioned.glyph
-		for row := int32(0); row < glyph.Height; row++ {
-			for column := int32(0); column < glyph.Width; column++ {
-				if glyph.Alpha[row*glyph.Width+column] == 0 {
+		for row := 0; row < positioned.height; row++ {
+			for column := 0; column < positioned.width; column++ {
+				if positioned.alpha[row*positioned.width+column] == 0 {
 					continue
 				}
-				destinationX := originX + positioned.x + int(glyph.BearingX+column)
-				destinationY := originY + int(glyph.BearingY+row)
+				destinationX := originX + positioned.x + column
+				destinationY := originY + row
 				if destinationX < 0 || destinationX >= d.drawing.width || destinationY < 0 || destinationY >= d.drawing.height {
 					continue
 				}
@@ -305,6 +314,64 @@ func (d *DisplayAdapter) DrawGVMText(resource []byte, x, y int16, style gvm.Text
 		}
 	}
 	return nil
+}
+
+type gvmTextUnit struct {
+	character    rune
+	encodedBytes int
+}
+
+func gvmTextUnits(encoded []byte, decoded []rune) ([]gvmTextUnit, error) {
+	units := make([]gvmTextUnit, 0, len(decoded))
+	runeIndex := 0
+	for byteIndex := 0; byteIndex < len(encoded); {
+		width := 1
+		if encoded[byteIndex] >= 0x80 {
+			width = 2
+		}
+		if byteIndex+width > len(encoded) || runeIndex >= len(decoded) {
+			return nil, fmt.Errorf("%w: malformed EUC-KR unit", ErrInvalidDisplayConfig)
+		}
+		units = append(units, gvmTextUnit{character: decoded[runeIndex], encodedBytes: width})
+		byteIndex += width
+		runeIndex++
+	}
+	if runeIndex != len(decoded) {
+		return nil, fmt.Errorf("%w: EUC-KR unit count mismatch", ErrInvalidDisplayConfig)
+	}
+	return units, nil
+}
+
+func gvmTextGeometry(mode uint8, encodedBytes int) (inkWidth, inkHeight, cellWidth int, ok bool) {
+	if encodedBytes == 1 {
+		widths := [...]int{3, 5, 5, 10}
+		heights := [...]int{5, 7, 11, 22}
+		cells := [...]int{4, 6, 6, 12}
+		return widths[mode], heights[mode], cells[mode], true
+	}
+	if encodedBytes == 2 && mode >= 2 {
+		scale := 1
+		if mode == 3 {
+			scale = 2
+		}
+		return 11 * scale, 11 * scale, 12 * scale, true
+	}
+	return 0, 0, 0, false
+}
+
+func scaleGVMGlyph(glyph shared.Glyph, width, height int) []byte {
+	result := make([]byte, width*height)
+	if glyph.Width <= 0 || glyph.Height <= 0 || len(glyph.Alpha) != int(glyph.Width*glyph.Height) {
+		return result
+	}
+	for y := 0; y < height; y++ {
+		sourceY := y * int(glyph.Height) / height
+		for x := 0; x < width; x++ {
+			sourceX := x * int(glyph.Width) / width
+			result[y*width+x] = glyph.Alpha[sourceY*int(glyph.Width)+sourceX]
+		}
+	}
+	return result
 }
 
 func (d *DisplayAdapter) mapSprite(sprite indexedSprite) ([]byte, error) {

@@ -217,6 +217,113 @@ func TestDisplayAdapterDrawsEuckrTextWithNativeAlignment(t *testing.T) {
 	}
 }
 
+func TestGVMTextGeometryMatchesNativeCellsAndInk(t *testing.T) {
+	tests := []struct {
+		mode, bytes               int
+		inkWidth, inkHeight, cell int
+		ok                        bool
+	}{
+		{0, 1, 3, 5, 4, true}, {1, 1, 5, 7, 6, true},
+		{2, 1, 5, 11, 6, true}, {3, 1, 10, 22, 12, true},
+		{0, 2, 0, 0, 0, false}, {1, 2, 0, 0, 0, false},
+		{2, 2, 11, 11, 12, true}, {3, 2, 22, 22, 24, true},
+	}
+	for _, test := range tests {
+		width, height, cell, ok := gvmTextGeometry(uint8(test.mode), test.bytes)
+		if width != test.inkWidth || height != test.inkHeight || cell != test.cell || ok != test.ok {
+			t.Fatalf("geometry(%d,%d) = (%d,%d,%d,%v), want (%d,%d,%d,%v)", test.mode, test.bytes, width, height, cell, ok, test.inkWidth, test.inkHeight, test.cell, test.ok)
+		}
+	}
+}
+
+func TestScaleGVMGlyphUsesExactRequestedBounds(t *testing.T) {
+	glyph := shared.Glyph{Width: 2, Height: 2, Alpha: []byte{1, 2, 3, 4}}
+	got := scaleGVMGlyph(glyph, 3, 5)
+	want := []byte{
+		1, 1, 2,
+		1, 1, 2,
+		1, 1, 2,
+		3, 3, 4,
+		3, 3, 4,
+	}
+	if len(got) != 3*5 {
+		t.Fatalf("scaled length = %d, want 15", len(got))
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("scaled[%d] = %d, want %d", index, got[index], want[index])
+		}
+	}
+}
+
+func TestDisplayAdapterTextModesAlignClipAndFailAtomically(t *testing.T) {
+	services, err := shared.NewServices(shared.DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for mode := uint8(0); mode <= 3; mode++ {
+		for alignment := uint8(0); alignment <= 2; alignment++ {
+			display, err := NewDisplayAdapter(DisplayConfig{
+				Width: 16, Height: 24, Palette: testPalette{failSelector: -1},
+				Publisher: &frameCollector{}, Text: services.Text, TextOwner: 1,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := display.DrawGVMText([]byte{'A', 0}, 0, -1, gvm.TextDrawStyle{Mode: mode, Primary: 7, Alignment: alignment}); err != nil {
+				t.Fatalf("mode=%d alignment=%d: %v", mode, alignment, err)
+			}
+			_, height, _, _ := gvmTextGeometry(mode, 1)
+			for y := height - 1; y < display.drawing.height; y++ {
+				if y < 0 {
+					continue
+				}
+				for x := range display.drawing.width {
+					if display.drawing.pixels[y*display.drawing.width+x] == 7 {
+						t.Fatalf("mode=%d drew below clipped native ink height at (%d,%d)", mode, x, y)
+					}
+				}
+			}
+		}
+	}
+
+	display, err := NewDisplayAdapter(DisplayConfig{
+		Width: 8, Height: 8, Palette: testPalette{failSelector: -1},
+		Publisher: &frameCollector{}, Text: services.Text, TextOwner: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := display.FillGVMDisplay(9); err != nil {
+		t.Fatal(err)
+	}
+	before := append([]byte(nil), display.drawing.pixels...)
+	if err := display.DrawGVMText([]byte{0xb0, 0}, 0, 0, gvm.TextDrawStyle{Mode: 2, Primary: 7}); err == nil {
+		t.Fatal("malformed EUC-KR error = nil")
+	}
+	for index := range before {
+		if display.drawing.pixels[index] != before[index] {
+			t.Fatalf("malformed text mutated pixel %d", index)
+		}
+	}
+
+	config := shared.DefaultConfig()
+	config.Limits.Text.MaxStringBytes = 1
+	limited, err := shared.NewServices(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	display.text = limited.Text
+	if err := display.DrawGVMText([]byte{'A', 'B', 0}, 0, 0, gvm.TextDrawStyle{Mode: 1, Primary: 7}); !errors.Is(err, shared.ErrLimitExceeded) {
+		t.Fatalf("oversized text error = %v, want ErrLimitExceeded", err)
+	}
+	for index := range before {
+		if display.drawing.pixels[index] != before[index] {
+			t.Fatalf("oversized text mutated pixel %d", index)
+		}
+	}
+}
+
 func TestDisplayAdapterPresentPublishesImmutableSnapshots(t *testing.T) {
 	publisher := &frameCollector{}
 	display := newTestDisplay(t, 1, 1, DisplayOrientationDefault, testPalette{failSelector: -1}, publisher)
