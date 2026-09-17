@@ -20,7 +20,14 @@ The [kernel diagnostic](../gvm/README.md#explicit-random-range-a1) reaches
 seeds. A public-stack predicate observation for diagnostic seed1 establishes
 depth2, interval at least10, and a positive nonzero second operand. Therefore
 this boundary needs an active timer service, not the short-interval bypass.
-This is still descriptor-only kernel execution, not ordinary product startup.
+This remains descriptor-only kernel execution, not game startup.
+
+The ordinary product now exposes the same limit only under the explicit
+`gvm-kernel-v1/skt/diagnostic` profile. Its Machine runs a bounded initial
+dispatch and reports opcode `9a` as a terminal `timer-request` service boundary
+without accepting the request. The default profile remains recognition-only.
+The diagnostic machine publishes no frame and exposes no continue/frame-step,
+input, save-state or timer-delivery capability.
 
 With the new explicit request sink, the same selected corpus identity forwards
 that request and reaches guest `ff` after4616 completed instructions. Both the
@@ -131,10 +138,11 @@ test coalescing, pending-event, replacement and failure rules explicitly.
    are direct byte lookups in writable initialized data; no equivalent formula
    or runtime immutability has been established. Rotated colors or a blank
    allocated framebuffer must not substitute for an evidenced guest frame.
-5. Exercise the ordinary product lifecycle and required workspace gates before
-   claiming startup or merge readiness. The six configured KTF/Raptor missing
-   package prerequisites remain a failed private gate, despite public/build/CI
-   success. Research and library progress do not waive that requirement.
+5. Extend the now-tested explicit product diagnostic beyond its service
+   breakpoint only after the prerequisites above are established. The six
+   configured KTF/Raptor missing package prerequisites remain a failed private
+   gate, despite public/build/CI success. A diagnostic load is not startup or
+   merge readiness.
 
 Public layout/context references:
 [MFC TN006](https://learn.microsoft.com/en-us/cpp/mfc/tn006-message-maps?view=msvc-170),

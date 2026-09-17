@@ -152,6 +152,9 @@ func (f Factory) Create(ctx context.Context, source machinecore.Source) (machine
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if machine, matched, err := f.createGVMMachine(ctx, source); matched || err != nil {
+		return machine, err
+	}
 	if machine, matched, err := f.createSKVMMachine(ctx, source); matched || err != nil {
 		return machine, err
 	}

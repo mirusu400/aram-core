@@ -4,9 +4,12 @@
 that predate WIPI adoption and run on **SinjiSoft's ("신지소프트") GVM**
 runtime rather than SK-VM (Java, `loader/skvm`) or WIPI-C (`loader/raptor`,
 `loader/ktf`). `loader/gnex` recognizes the archive shape and decodes the
-payload's title header. The ordinary application path remains recognition-only.
-A separate, bounded execution-image decoder and `gvm` kernel now implement a
-hash-qualified subset, not a complete GVM game runtime. See
+payload's title header. The default application path remains recognition-only.
+An explicit `gvm-kernel-v1/skt/diagnostic` profile can run the bounded initial
+dispatch until guest exit, a verified fault or the first unresolved timer-delivery
+boundary. It publishes no frame and enables no input, save state or timer delivery.
+A separate execution-image decoder and `gvm` kernel implement this hash-qualified
+subset, not a complete GVM game runtime. See
 [gvm-execution-subset.md](gvm-execution-subset.md).
 
 ## What a GNEX archive looks like
