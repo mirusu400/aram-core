@@ -50,10 +50,15 @@ const (
 	helperStrcmpSlot        = uint32(4)
 	helperStrlenSlot        = uint32(5)
 	helperSprintfSlot       = uint32(8)
-	helperDbgPrintfSlot     = uint32(39)
 	helperGetAEEVersionSlot = uint32(35)
+	helperDbgPrintfSlot     = uint32(39)
+	helperGetRandSlot       = uint32(42)
 	helperGetTimeMSSlot     = uint32(43)
+	helperGetUpTimeMSSlot   = uint32(44)
+	helperGetSecondsSlot    = uint32(45)
 	helperCurrentAppletSlot = uint32(0x30)
+	helperStrncpySlot       = uint32(50)
+	helperStrncmpSlot       = uint32(51)
 	// The exact title branches explicitly for BREW 1.0, 1.2 and 2.1. Its KTF
 	// handset path is the BREW 2.1 branch.
 	aeeVersion         = uint32(0x02010000)
@@ -102,6 +107,8 @@ type Runtime struct {
 	timers        []brewCallback
 	boundary      *ExecutionBoundaryError
 	classIDs      []uint32
+	clock         time.Duration
+	randomState   uint32
 }
 
 type brewCallback struct {
@@ -146,7 +153,11 @@ func New(pkg Package) (*Runtime, error) {
 	if len(classIDs) == 0 {
 		classIDs = []uint32{ClassID}
 	}
-	r := &Runtime{cpu: backend, heapNext: heapBase, files: pkg.Files, eventCounts: make(map[uint32]uint64), classIDs: classIDs}
+	r := &Runtime{
+		cpu: backend, heapNext: heapBase, files: pkg.Files,
+		eventCounts: make(map[uint32]uint64), classIDs: classIDs,
+		randomState: 1,
+	}
 	if err := r.mapImage(pkg.Module); err != nil {
 		_ = backend.Close()
 		return nil, err
@@ -513,19 +524,47 @@ func (r *Runtime) handleAppletMethodTrap(
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
+		case helperGetRandSlot:
+			if err := r.fillGuestRandom(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
 		case helperGetAEEVersionSlot:
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, aeeVersion); err != nil {
 				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW AEE version: %w", err)
 			}
 			return resume()
-		case helperDbgPrintfSlot, helperGetTimeMSSlot:
+		case helperDbgPrintfSlot:
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
 				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW helper slot %d result: %w", slot, err)
+			}
+			return resume()
+		case helperGetTimeMSSlot, helperGetUpTimeMSSlot:
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, uint32(r.clock/time.Millisecond)); err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW uptime: %w", err)
+			}
+			return resume()
+		case helperGetSecondsSlot:
+			// BREW calendar seconds use the GPS epoch (1980-01-06). Keep a fixed,
+			// deterministic base and advance it with the cooperative guest clock.
+			const calendarBase = uint32(630_720_000) // 2000-01-01 in BREW seconds.
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, calendarBase+uint32(r.clock/time.Second)); err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW calendar seconds: %w", err)
 			}
 			return resume()
 		case helperCurrentAppletSlot:
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, r.activeApplet); err != nil {
 				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW current applet: %w", err)
+			}
+			return resume()
+		case helperStrncpySlot:
+			if err := r.copyGuestStringN(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case helperStrncmpSlot:
+			if err := r.compareGuestStringsN(); err != nil {
+				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
 		default:
@@ -597,6 +636,11 @@ func (r *Runtime) handleAppletMethodTrap(
 		case 4: // GetDeviceInfo(IShell *, AEEDeviceInfo *)
 			if err := r.writeDeviceInfo(); err != nil {
 				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 8: // ActiveApplet(IShell *)
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, r.activeApplet); err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW active applet: %w", err)
 			}
 			return resume()
 		case 11: // SetTimer(IShell *, uint32, PFNNOTIFY, void *)
@@ -728,6 +772,9 @@ func (r *Runtime) handleAppletMethodTrap(
 // whose requested delay has expired. Callbacks rearmed by a callback remain
 // queued for a later frame.
 func (r *Runtime) RunCallbacks(ctx context.Context, elapsed time.Duration) error {
+	if elapsed > 0 {
+		r.clock += elapsed
+	}
 	pending := append([]brewCallback(nil), r.timers...)
 	r.timers = r.timers[:0]
 	for _, callback := range pending {
@@ -980,6 +1027,106 @@ func (r *Runtime) compareGuestCStrings() error {
 	}
 	result := int32(strings.Compare(left, right))
 	return r.cpu.WriteRegister(cpu.RegisterR0, uint32(result))
+}
+
+func (r *Runtime) fillGuestRandom() error {
+	destination, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW random destination: %w", err)
+	}
+	size, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW random size: %w", err)
+	}
+	if size > heapSize {
+		return fmt.Errorf("BREW random size %d exceeds runtime limit", size)
+	}
+	data := make([]byte, size)
+	for index := range data {
+		r.randomState = r.randomState*1_103_515_245 + 12_345
+		data[index] = byte(r.randomState >> 16)
+	}
+	if err := r.cpu.WriteMemory(destination, data); err != nil {
+		return fmt.Errorf("write BREW random bytes: %w", err)
+	}
+	if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+		return fmt.Errorf("return BREW random status: %w", err)
+	}
+	return nil
+}
+
+func (r *Runtime) copyGuestStringN() error {
+	destination, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW strncpy destination: %w", err)
+	}
+	source, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW strncpy source: %w", err)
+	}
+	size, err := r.cpu.ReadRegister(cpu.RegisterR2)
+	if err != nil {
+		return fmt.Errorf("read BREW strncpy size: %w", err)
+	}
+	if size > heapSize {
+		return fmt.Errorf("BREW strncpy size %d exceeds runtime limit", size)
+	}
+	data := make([]byte, size)
+	var one [1]byte
+	terminated := false
+	for index := uint32(0); index < size && !terminated; index++ {
+		if err := r.cpu.ReadMemory(source+index, one[:]); err != nil {
+			return fmt.Errorf("read BREW strncpy source byte: %w", err)
+		}
+		data[index] = one[0]
+		terminated = one[0] == 0
+	}
+	if err := r.cpu.WriteMemory(destination, data); err != nil {
+		return fmt.Errorf("write BREW strncpy destination: %w", err)
+	}
+	if err := r.cpu.WriteRegister(cpu.RegisterR0, destination); err != nil {
+		return fmt.Errorf("return BREW strncpy destination: %w", err)
+	}
+	return nil
+}
+
+func (r *Runtime) compareGuestStringsN() error {
+	left, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW strncmp left pointer: %w", err)
+	}
+	right, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW strncmp right pointer: %w", err)
+	}
+	size, err := r.cpu.ReadRegister(cpu.RegisterR2)
+	if err != nil {
+		return fmt.Errorf("read BREW strncmp size: %w", err)
+	}
+	if size > heapSize {
+		return fmt.Errorf("BREW strncmp size %d exceeds runtime limit", size)
+	}
+	var leftByte, rightByte [1]byte
+	result := int32(0)
+	for index := uint32(0); index < size; index++ {
+		if err := r.cpu.ReadMemory(left+index, leftByte[:]); err != nil {
+			return fmt.Errorf("read BREW strncmp left byte: %w", err)
+		}
+		if err := r.cpu.ReadMemory(right+index, rightByte[:]); err != nil {
+			return fmt.Errorf("read BREW strncmp right byte: %w", err)
+		}
+		if leftByte[0] != rightByte[0] {
+			result = int32(leftByte[0]) - int32(rightByte[0])
+			break
+		}
+		if leftByte[0] == 0 {
+			break
+		}
+	}
+	if err := r.cpu.WriteRegister(cpu.RegisterR0, uint32(result)); err != nil {
+		return fmt.Errorf("return BREW strncmp result: %w", err)
+	}
+	return nil
 }
 
 func (r *Runtime) openGuestFile() error {
@@ -1265,7 +1412,7 @@ func (r *Runtime) createShellInstance() error {
 		object = fileMgrObject
 	case OptionalDeviceClassID:
 		object = deviceModelObject
-	case SoundClassID:
+	case SoundClassID, Sound10ClassID:
 		object = soundObject
 	default:
 		returnAddress, readErr := r.cpu.ReadRegister(cpu.RegisterLR)

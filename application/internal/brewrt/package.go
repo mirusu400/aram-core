@@ -27,6 +27,7 @@ const (
 	FileMgrClassID        = uint32(0x01001003)
 	OptionalDeviceClassID = uint32(0x018000fe)
 	SoundClassID          = uint32(0x01002000)
+	Sound10ClassID        = uint32(0x0100100b)
 	// FirstUnsupportedClassID is retained for callers that recorded the original
 	// bootstrap milestone before the display contract was implemented.
 	FirstUnsupportedClassID = DisplayClassID

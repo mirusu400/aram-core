@@ -91,6 +91,108 @@ func TestRunCallbacksHonorsRequestedDelay(t *testing.T) {
 	}
 }
 
+func TestCommonHelperContracts(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	call := func(slot uint32, r0, r1, r2 uint32) uint32 {
+		t.Helper()
+		for register, value := range map[uint32]uint32{
+			cpu.RegisterR0: r0, cpu.RegisterR1: r1, cpu.RegisterR2: r2,
+			cpu.RegisterLR: returnTrap | 1,
+		} {
+			if err := runtime.cpu.WriteRegister(register, value); err != nil {
+				t.Fatal(err)
+			}
+		}
+		handled, _, _, err := runtime.handleAppletMethodTrap(helperMethodTrapBase + slot*2 + 2)
+		if err != nil || !handled {
+			t.Fatalf("helper slot %d handled=%v err=%v", slot, handled, err)
+		}
+		value, err := runtime.cpu.ReadRegister(cpu.RegisterR0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+
+	source, destination := heapBase+0x100, heapBase+0x200
+	if err := runtime.cpu.WriteMemory(source, []byte("ab\x00tail")); err != nil {
+		t.Fatal(err)
+	}
+	if got := call(helperStrncpySlot, destination, source, 6); got != destination {
+		t.Fatalf("strncpy return = 0x%08x, want destination", got)
+	}
+	copied := make([]byte, 6)
+	if err := runtime.cpu.ReadMemory(destination, copied); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(copied, []byte{'a', 'b', 0, 0, 0, 0}) {
+		t.Fatalf("strncpy bytes = %v", copied)
+	}
+	if err := runtime.cpu.WriteMemory(destination, []byte("ac\x00")); err != nil {
+		t.Fatal(err)
+	}
+	if got := int32(call(helperStrncmpSlot, source, destination, 3)); got != -1 {
+		t.Fatalf("strncmp result = %d, want -1", got)
+	}
+
+	randomAt := heapBase + 0x300
+	if got := call(helperGetRandSlot, randomAt, 4, 0); got != 0 {
+		t.Fatalf("GetRand result = %d, want success", got)
+	}
+	random := make([]byte, 4)
+	if err := runtime.cpu.ReadMemory(randomAt, random); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(random, make([]byte, 4)) {
+		t.Fatal("GetRand left the destination unchanged")
+	}
+
+	if err := runtime.RunCallbacks(context.Background(), 2500*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	if got := call(helperGetUpTimeMSSlot, 0, 0, 0); got != 2500 {
+		t.Fatalf("GetUpTimeMS = %d, want 2500", got)
+	}
+	if got := call(helperGetSecondsSlot, 0, 0, 0); got != 630_720_002 {
+		t.Fatalf("GetSeconds = %d, want deterministic calendar time", got)
+	}
+}
+
+func TestLegacySoundAndActiveAppletContracts(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	runtime.activeApplet = heapBase + 0x900
+	if err := runtime.cpu.WriteRegister(cpu.RegisterLR, returnTrap|1); err != nil {
+		t.Fatal(err)
+	}
+	handled, _, _, err := runtime.handleAppletMethodTrap(shellMethodTrapBase + 8*2 + 2)
+	if err != nil || !handled {
+		t.Fatalf("ActiveApplet handled=%v err=%v", handled, err)
+	}
+	if got, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || got != runtime.activeApplet {
+		t.Fatalf("ActiveApplet = 0x%08x err=%v", got, err)
+	}
+
+	out := heapBase + 0xa00
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR1: Sound10ClassID,
+		cpu.RegisterR2: out,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := runtime.createShellInstance(); err != nil {
+		t.Fatal(err)
+	}
+	var encoded [4]byte
+	if err := runtime.cpu.ReadMemory(out, encoded[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint32(encoded[:]); got != soundObject {
+		t.Fatalf("Sound10 object = 0x%08x, want 0x%08x", got, soundObject)
+	}
+}
+
 func TestDecodeSplashUsesEmbeddedBMPContract(t *testing.T) {
 	source := image.NewRGBA(image.Rect(0, 0, 120, 61))
 	for y := 0; y < source.Bounds().Dy(); y++ {
