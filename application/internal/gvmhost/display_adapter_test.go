@@ -256,6 +256,54 @@ func TestScaleGVMGlyphUsesExactRequestedBounds(t *testing.T) {
 	}
 }
 
+func TestGVMHighBitTokenizationAndFallbackMatchNative(t *testing.T) {
+	services, err := shared.NewServices(shared.DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []uint8{0, 1} {
+		units, err := gvmTextUnits(services.Text, []byte{0x81, 0x82}, mode)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(units) != 2 || units[0].character != 0 || units[0].encodedBytes != 1 || units[1].character != 0 || units[1].encodedBytes != 1 {
+			t.Fatalf("mode %d units = %+v, want two blank single-byte units", mode, units)
+		}
+	}
+	for _, mode := range []uint8{2, 3} {
+		units, err := gvmTextUnits(services.Text, []byte{0x81, 0x82}, mode)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(units) != 1 || !units[0].invalidPair || units[0].encodedBytes != 2 {
+			t.Fatalf("mode %d units = %+v, want one invalid pair", mode, units)
+		}
+	}
+
+	mode2 := rasterGVMInvalidPair(2, 11, 11)
+	wantRows := []string{
+		"11111100100", "00000100100", "00000100100", "00000100100",
+		"00000100100", "00001000111", "00001000100", "00010000100",
+		"00100000100", "11000000100", "00000000100",
+	}
+	for y, row := range wantRows {
+		for x, value := range row {
+			wantSet := value == '1'
+			if gotSet := mode2[y*11+x] != 0; gotSet != wantSet {
+				t.Fatalf("mode2 fallback (%d,%d) set=%v, want %v", x, y, gotSet, wantSet)
+			}
+		}
+	}
+	mode3 := rasterGVMInvalidPair(3, 22, 22)
+	for y := range 22 {
+		for x := range 22 {
+			if (mode3[y*22+x] != 0) != (mode2[(y/2)*11+x/2] != 0) {
+				t.Fatalf("mode3 fallback (%d,%d) is not exact 2x expansion", x, y)
+			}
+		}
+	}
+}
+
 func TestDisplayAdapterTextModesAlignClipAndFailAtomically(t *testing.T) {
 	services, err := shared.NewServices(shared.DefaultConfig())
 	if err != nil {

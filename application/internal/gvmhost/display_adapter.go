@@ -267,23 +267,29 @@ func (d *DisplayAdapter) DrawGVMText(resource []byte, x, y int16, style gvm.Text
 		height int
 		x      int
 	}
-	units, err := gvmTextUnits(d.text, terminated)
+	units, err := gvmTextUnits(d.text, terminated, style.Mode)
 	if err != nil {
 		return err
 	}
 	glyphs := make([]positionedGlyph, 0, len(units))
 	cursor := 0
 	for _, unit := range units {
-		glyph, glyphErr := d.text.Glyph(d.textOwner, fontID, unit.character)
-		if glyphErr != nil {
-			return glyphErr
-		}
 		inkWidth, inkHeight, cellWidth, ok := gvmTextGeometry(style.Mode, unit.encodedBytes)
 		if !ok {
 			return fmt.Errorf("%w: mode %d cannot render a %d-byte EUC-KR unit", ErrInvalidDisplayConfig, style.Mode, unit.encodedBytes)
 		}
+		var alpha []byte
+		if unit.invalidPair {
+			alpha = rasterGVMInvalidPair(style.Mode, inkWidth, inkHeight)
+		} else {
+			glyph, glyphErr := d.text.Glyph(d.textOwner, fontID, unit.character)
+			if glyphErr != nil {
+				return glyphErr
+			}
+			alpha = scaleGVMGlyph(glyph, inkWidth, inkHeight)
+		}
 		glyphs = append(glyphs, positionedGlyph{
-			alpha: scaleGVMGlyph(glyph, inkWidth, inkHeight),
+			alpha: alpha,
 			width: inkWidth, height: inkHeight, x: cursor,
 		})
 		cursor += cellWidth
@@ -322,13 +328,19 @@ func (d *DisplayAdapter) DrawGVMText(resource []byte, x, y int16, style gvm.Text
 type gvmTextUnit struct {
 	character    rune
 	encodedBytes int
+	invalidPair  bool
 }
 
-func gvmTextUnits(text *shared.Text, encoded []byte) ([]gvmTextUnit, error) {
+func gvmTextUnits(text *shared.Text, encoded []byte, mode uint8) ([]gvmTextUnit, error) {
 	units := make([]gvmTextUnit, 0, len(encoded))
 	for byteIndex := 0; byteIndex < len(encoded); {
 		if encoded[byteIndex]&0x80 == 0 {
 			units = append(units, gvmTextUnit{character: rune(encoded[byteIndex]), encodedBytes: 1})
+			byteIndex++
+			continue
+		}
+		if mode < 2 {
+			units = append(units, gvmTextUnit{character: 0, encodedBytes: 1})
 			byteIndex++
 			continue
 		}
@@ -337,7 +349,8 @@ func gvmTextUnits(text *shared.Text, encoded []byte) ([]gvmTextUnit, error) {
 			second = encoded[byteIndex+1]
 		}
 		pair := uint16(encoded[byteIndex])<<8 | uint16(second)
-		character := rune('?')
+		character := rune(0)
+		invalidPair := true
 		if (pair >= 0xb0a1 && pair <= 0xc9fe) || (pair >= 0xa1a1 && pair <= 0xacfe) {
 			decoded, err := text.Decode([]byte{encoded[byteIndex], second}, shared.EncodingEUCKR)
 			if err != nil {
@@ -346,9 +359,10 @@ func gvmTextUnits(text *shared.Text, encoded []byte) ([]gvmTextUnit, error) {
 			runes := []rune(decoded)
 			if len(runes) == 1 {
 				character = runes[0]
+				invalidPair = false
 			}
 		}
-		units = append(units, gvmTextUnit{character: character, encodedBytes: 2})
+		units = append(units, gvmTextUnit{character: character, encodedBytes: 2, invalidPair: invalidPair})
 		byteIndex += 2
 	}
 	return units, nil
@@ -380,6 +394,32 @@ func scaleGVMGlyph(glyph shared.Glyph, width, height int) []byte {
 		for x := 0; x < width; x++ {
 			sourceX := x * int(glyph.Width) / width
 			result[y*width+x] = glyph.Alpha[sourceY*int(glyph.Width)+sourceX]
+		}
+	}
+	return result
+}
+
+var gvmInvalidPairBitmap = [...]byte{
+	0xfc, 0x80, 0x90, 0x12, 0x02, 0x40, 0x48, 0x11,
+	0xc2, 0x20, 0x84, 0x20, 0x98, 0x10, 0x02, 0x00,
+}
+
+func rasterGVMInvalidPair(mode uint8, width, height int) []byte {
+	result := make([]byte, width*height)
+	if mode != 2 && mode != 3 {
+		return result
+	}
+	scale := 1
+	if mode == 3 {
+		scale = 2
+	}
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			sourceX, sourceY := x/scale, y/scale
+			bit := sourceY*11 + sourceX
+			if gvmInvalidPairBitmap[bit/8]&(0x80>>uint(bit%8)) != 0 {
+				result[y*width+x] = 0xff
+			}
 		}
 	}
 	return result
