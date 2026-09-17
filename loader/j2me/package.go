@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/mirusu400/aram-core/loader/internal/zipname"
+	skloader "github.com/mirusu400/aram-core/loader/skvm"
 	engine "github.com/mirusu400/aram-core/skvm"
 )
 
@@ -69,8 +70,10 @@ type Descriptor struct {
 type Package struct {
 	Descriptor       Descriptor
 	JARName, JADName string
+	ProfileID        string
 	Classes          map[string][]byte
 	Resources        map[string][]byte
+	RecordStores     []skloader.RecordStore
 }
 
 // Inspect requires MIDlet metadata, not just a .jar suffix or a ZIP signature.
@@ -110,8 +113,7 @@ func Inspect(data []byte) (Package, error) {
 		}
 		standalone = manifest["MIDlet-1"] != ""
 	}
-	pkg := Package{JARName: "archive"}
-	var externalRMS string
+	pkg := Package{JARName: "archive", ProfileID: ProfileID}
 	var requireAliasIdentity bool
 	var jad map[string]string
 	if !standalone {
@@ -160,12 +162,9 @@ func Inspect(data []byte) (Package, error) {
 				return Package{}, malformed(pkg.JADName, 0, "MIDlet-Jar-Size does not match packaged JAR")
 			}
 		}
-		for name := range files {
-			if strings.EqualFold(path.Ext(name), ".db") || strings.EqualFold(path.Ext(name), ".idx") {
-				if externalRMS == "" || name < externalRMS {
-					externalRMS = name
-				}
-			}
+		pkg.RecordStores, err = inspectExternalRecordStores(files)
+		if err != nil {
+			return Package{}, err
 		}
 		files, err = readZIP(jarBytes, pkg.JARName, &budget)
 		if err != nil {
@@ -190,7 +189,9 @@ func Inspect(data []byte) (Package, error) {
 			}
 			jadMain := strings.Split(jad["MIDlet-1"], ",")
 			manifestMain := strings.Split(manifest["MIDlet-1"], ",")
-			if len(jadMain) != 3 || len(manifestMain) != 3 || strings.TrimSpace(jadMain[2]) == "" || strings.TrimSpace(jadMain[2]) != strings.TrimSpace(manifestMain[2]) {
+			if len(manifestMain) != 3 || strings.TrimSpace(manifestMain[2]) == "" ||
+				(jad["MIDlet-1"] != "" && (len(jadMain) != 3 || strings.TrimSpace(jadMain[2]) == "" ||
+					strings.TrimSpace(jadMain[2]) != strings.TrimSpace(manifestMain[2]))) {
 				return Package{}, malformed(pkg.JADName, 0, "archived URL alias requires matching nonempty MIDlet main class")
 			}
 		}
@@ -233,6 +234,9 @@ func Inspect(data []byte) (Package, error) {
 				return Package{}, malformed(name, 0, "class path does not match declared name")
 			}
 			pkg.Classes[className] = payload
+			if pkg.ProfileID == ProfileID && classUsesLGTProfile(parsed) {
+				pkg.ProfileID = LGTProfileID
+			}
 		} else {
 			pkg.Resources[name] = payload
 		}
@@ -241,10 +245,20 @@ func Inspect(data []byte) (Package, error) {
 	if _, ok := pkg.Classes[main]; !ok {
 		return Package{}, malformed(pkg.JARName, 0, "main class is missing: "+descriptor.MainClass)
 	}
-	if externalRMS != "" {
-		return Package{}, &UnsupportedFeatureError{Path: externalRMS, Offset: 0, Feature: "external RMS database import"}
-	}
 	return pkg, nil
+}
+
+func classUsesLGTProfile(class *engine.Class) bool {
+	// MMPP class references are the carrier API identity used by LGT MIDlets
+	// whose archival distribution omitted the numeric installer index. Only
+	// authenticated CONSTANT_Class entries count. A string literal or bytecode
+	// payload containing "mmpp/" must not enable carrier-specific privileges.
+	for _, reference := range class.ClassReferences() {
+		if strings.HasPrefix(reference, "mmpp/") {
+			return true
+		}
+	}
+	return false
 }
 
 func descriptor(properties map[string]string) (Descriptor, error) {
@@ -281,7 +295,7 @@ func parseProperties(name string, data []byte, manifest bool) (map[string]string
 	for _, line := range bytes.Split(data, []byte{'\n'}) {
 		at := offset
 		offset += len(line) + 1
-		line = bytes.TrimSuffix(line, []byte{'\r'})
+		line = bytes.TrimRight(line, "\r")
 		if len(line) > MaxDescriptorLine || bytes.IndexByte(line, 0) >= 0 {
 			return nil, malformed(name, int64(at), "invalid or oversized descriptor line")
 		}
@@ -303,6 +317,9 @@ func parseProperties(name string, data []byte, manifest bool) (map[string]string
 			continue
 		}
 		key, value, ok := bytes.Cut(line, []byte{':'})
+		if !manifest {
+			key = bytes.TrimSpace(key)
+		}
 		if !ok || len(key) == 0 || len(key) > 128 || strings.TrimSpace(string(key)) != string(key) {
 			return nil, malformed(name, int64(at), "invalid property line")
 		}

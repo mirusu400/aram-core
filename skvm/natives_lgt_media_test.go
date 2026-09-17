@@ -165,7 +165,7 @@ func TestMMPPBoundsMissingUnsupportedAndPolicy(t *testing.T) {
 		}
 	}
 	for k := range v.natives {
-		if !standardJavaClass(k.class) && k.class != mmppClass && k.class != "mmpp/media/BackLight" && k.class != "mmpp/lang/MathFP" && k.class != "mmpp/microedition/lcdui/GraphicsX" {
+		if !standardJavaClass(k.class) && k.class != mmppClass && k.class != "mmpp/media/BackLight" && k.class != "mmpp/lang/MathFP" && k.class != "mmpp/microedition/lcdui/GraphicsX" && k.class != lgtPhoneClass {
 			t.Fatalf("OEM leaked: %v", k)
 		}
 	}

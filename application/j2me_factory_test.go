@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -125,13 +124,28 @@ func TestJ2MEFactoryRejectsWrongHashProfileAndMalformedClass(t *testing.T) {
 	}
 }
 
-func TestJ2MEExternalRMSIsUnsupportedSource(t *testing.T) {
+func TestJ2MEInstallerIndexAndExternalRMSAreInstalled(t *testing.T) {
 	jar := syntheticSKVMZIP(t, syntheticJ2MEFiles(t))
-	data := syntheticSKVMZIP(t, map[string][]byte{"Game.jar": jar, "Game.jad": []byte("MIDlet-1: Demo, , Game\n"), "saved.idx": []byte("synthetic")})
-	_, err := NewFactory().Create(context.Background(), machinecore.Source{Name: "external-rms.zip", ReaderAt: bytes.NewReader(data), Size: int64(len(data))})
-	if !errors.Is(err, ErrUnsupportedSource) || !errors.Is(err, j2me.ErrUnsupportedFeature) {
-		t.Fatalf("external RMS error=%v", err)
+	data := syntheticSKVMZIP(t, map[string][]byte{"Game.jar": jar, "Game.jad": []byte("MIDlet-1: Demo, , Game\n"), "Game.idx": []byte("installer index")})
+	machine, err := NewFactory().Create(context.Background(), machinecore.Source{Name: "indexed.zip", ReaderAt: bytes.NewReader(data), Size: int64(len(data))})
+	if err != nil {
+		t.Fatalf("installer index package: %v", err)
 	}
+	if got := machine.(*skvmhost.Machine).SourceInfo().ProfileID; got != j2me.ProfileID {
+		t.Fatalf("unauthenticated installer index escalated profile to %q", got)
+	}
+	_ = machine.Close()
+	database := make([]byte, 48)
+	copy(database, "midp-rms")
+	binary.BigEndian.PutUint32(database[20:], 1)
+	binary.BigEndian.PutUint32(database[40:], 48)
+	binary.BigEndian.PutUint32(database[44:], 48)
+	data = syntheticSKVMZIP(t, map[string][]byte{"Game.jar": jar, "Game.jad": []byte("MIDlet-1: Demo, , Game\n"), "saved.db": database})
+	machine, err = NewFactory().Create(context.Background(), machinecore.Source{Name: "external-rms.zip", ReaderAt: bytes.NewReader(data), Size: int64(len(data))})
+	if err != nil {
+		t.Fatalf("external RMS package: %v", err)
+	}
+	_ = machine.Close()
 }
 func TestJ2MEFallbackPreservesExistingDetectionPriority(t *testing.T) {
 	mif := make([]byte, 64)

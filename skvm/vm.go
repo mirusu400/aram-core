@@ -294,6 +294,7 @@ func NewWithNativePolicy(classData map[string][]byte, services *shared.Services,
 		vm.installLGTBacklightNatives()
 		vm.installLGTMathNatives()
 		vm.installLGTGraphicsTypes()
+		vm.installLGTPhoneNatives()
 	}
 	return vm, nil
 }
@@ -456,7 +457,7 @@ func (vm *VM) RegisterStaticField(
 
 func (vm *VM) nativeClassAllowed(class string) bool {
 	return vm.nativePolicy == NativePolicySKT || standardJavaClass(class) ||
-		(vm.nativePolicy == NativePolicyLGT && (class == "mmpp/media/MediaPlayer" || class == "mmpp/media/BackLight" || class == "mmpp/lang/MathFP" || class == lgtGraphicsClass))
+		(vm.nativePolicy == NativePolicyLGT && (class == "mmpp/media/MediaPlayer" || class == "mmpp/media/BackLight" || class == "mmpp/lang/MathFP" || class == lgtGraphicsClass || class == lgtPhoneClass))
 }
 
 func standardJavaClass(class string) bool {

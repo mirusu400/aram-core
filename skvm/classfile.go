@@ -634,6 +634,24 @@ func (c *Class) Constant(index uint16) (Constant, error) {
 	}
 }
 
+// ClassReferences returns the authenticated CONSTANT_Class names in this
+// class file. String constants and incidental bytecode text are deliberately
+// excluded so callers can make policy decisions from symbolic dependencies.
+func (c *Class) ClassReferences() []string {
+	references := make([]string, 0)
+	for index := 1; index < len(c.pool); index++ {
+		entry := c.pool[index]
+		if entry.tag != constantClass {
+			continue
+		}
+		name, err := c.utf8(entry.a)
+		if err == nil {
+			references = append(references, name)
+		}
+	}
+	return references
+}
+
 func (c *Class) Method(name, descriptor string) (Method, bool) {
 	for _, method := range c.Methods {
 		if method.Name == name && method.Descriptor == descriptor {

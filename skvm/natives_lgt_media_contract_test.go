@@ -121,7 +121,7 @@ func TestMMPPPolicyDigestsAtomicityAndIdentity(t *testing.T) {
 		}
 	}
 	for name := range v.hostSupers {
-		if !standardJavaClass(name) && name != mmppClass && name != "mmpp/media/BackLight" && name != "mmpp/lang/MathFP" && name != "mmpp/microedition/lcdui/GraphicsX" {
+		if !standardJavaClass(name) && name != mmppClass && name != "mmpp/media/BackLight" && name != "mmpp/lang/MathFP" && name != "mmpp/microedition/lcdui/GraphicsX" && name != lgtPhoneClass {
 			t.Fatalf("host class leaked %s", name)
 		}
 	}

@@ -58,6 +58,39 @@ func testClass() []byte {
 	return b.Bytes()
 }
 
+func testClassWithMMPPConstant(classReference bool) []byte {
+	var b bytes.Buffer
+	u2 := func(v uint16) { _ = binary.Write(&b, binary.BigEndian, v) }
+	_ = binary.Write(&b, binary.BigEndian, uint32(0xcafebabe))
+	u2(3)
+	u2(45)
+	u2(7)
+	for _, s := range []string{"Game", "java/lang/Object"} {
+		b.WriteByte(1)
+		u2(uint16(len(s)))
+		b.WriteString(s)
+		b.WriteByte(7)
+		if s == "Game" {
+			u2(1)
+		} else {
+			u2(3)
+		}
+	}
+	b.WriteByte(1)
+	u2(uint16(len("mmpp/phone/Phone")))
+	b.WriteString("mmpp/phone/Phone")
+	if classReference {
+		b.WriteByte(7)
+	} else {
+		b.WriteByte(8)
+	}
+	u2(5)
+	for _, v := range []uint16{1, 2, 4, 0, 0, 0, 0} {
+		u2(v)
+	}
+	return b.Bytes()
+}
+
 const testManifest = "Manifest-Version: 1.0\r\nMIDlet-Name: Demo\r\nMIDlet-Version: 1.0\r\nMIDlet-Vendor: Test\r\nMIDlet-1: Demo, , Ga\r\n me\r\nMicroEdition-Profile: MIDP-1.0\r\nMicroEdition-Configuration: CLDC-1.0\r\n\r\nName: icon.png\r\nMIDlet-1: Wrong, , Wrong\r\n"
 
 func testJAR(t *testing.T) []byte {
@@ -83,6 +116,31 @@ func TestInspectStandaloneAndJADPair(t *testing.T) {
 				t.Fatal("JAD properties not merged")
 			}
 		}
+	}
+}
+
+func TestInspectInfersLGTOnlyFromClassReferences(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		class       []byte
+		wantProfile string
+	}{
+		{name: "class reference", class: testClassWithMMPPConstant(true), wantProfile: LGTProfileID},
+		{name: "string literal", class: testClassWithMMPPConstant(false), wantProfile: ProfileID},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			jar := testZIP(t, map[string][]byte{
+				"META-INF/MANIFEST.MF": []byte(testManifest),
+				"Game.class":           test.class,
+			})
+			pkg, err := Inspect(jar)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if pkg.ProfileID != test.wantProfile {
+				t.Fatalf("profile = %q, want %q", pkg.ProfileID, test.wantProfile)
+			}
+		})
 	}
 }
 func TestInspectMalformed(t *testing.T) {
@@ -154,7 +212,17 @@ func TestUnclaimedArchives(t *testing.T) {
 	}
 }
 
-func TestStaleRemoteURLAndUnsupportedRMS(t *testing.T) {
+func TestLegacyJADWhitespaceVariants(t *testing.T) {
+	properties, err := parseProperties("DESC.jad", []byte("MIDlet-Name : Demo\r\r\nMIDlet-Jar-URL:http://example.invalid/game.jar\r\n"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if properties["MIDlet-Name"] != "Demo" || properties["MIDlet-Jar-URL"] != "http://example.invalid/game.jar" {
+		t.Fatalf("legacy JAD properties = %#v", properties)
+	}
+}
+
+func TestStaleRemoteURLAndMalformedRMS(t *testing.T) {
 	jar := testJAR(t)
 	remote := "https://example.invalid/original-name.jar"
 	jad := []byte(fmt.Sprintf("MIDlet-Jar-URL: %s\nMIDlet-Jar-Size: %d\nMIDlet-1: Demo, , Game\n", remote, len(jar)))
@@ -181,12 +249,15 @@ func TestStaleRemoteURLAndUnsupportedRMS(t *testing.T) {
 			t.Fatal("unsafe stale URL exception accepted")
 		}
 	}
-	files["saved.idx"] = []byte("synthetic")
+	files["1.idx"] = []byte("installer index")
+	if _, err = Inspect(testZIP(t, files)); err != nil {
+		t.Fatalf("LGT installer index rejected as RMS: %v", err)
+	}
+	files["saved.db"] = []byte("synthetic")
 	_, err = Inspect(testZIP(t, files))
-	var unsupported *UnsupportedFeatureError
 	var malformed *FormatError
-	if !errors.Is(err, ErrUnsupportedFeature) || !errors.As(err, &unsupported) || errors.As(err, &malformed) {
-		t.Fatalf("RMS should be unsupported, not corrupt: %v", err)
+	if !errors.As(err, &malformed) {
+		t.Fatalf("malformed RMS diagnosis: %v", err)
 	}
 }
 func FuzzInspect(f *testing.F) {
@@ -215,7 +286,7 @@ func TestArchivedFilenameAliasRequiresCompleteIdentity(t *testing.T) {
 	if pkg.Descriptor.JARURL != remote || pkg.JARName != "application/archived.jar" || pkg.Descriptor.MainClass != "Game" {
 		t.Fatal("alias association rewrote identity")
 	}
-	for _, key := range []string{"MIDlet-Name", "MIDlet-Version", "MIDlet-Vendor", "MIDlet-1"} {
+	for _, key := range []string{"MIDlet-Name", "MIDlet-Version", "MIDlet-Vendor"} {
 		value := map[string]string{"MIDlet-Name": "Demo", "MIDlet-Version": "1.0", "MIDlet-Vendor": "Test", "MIDlet-1": "Demo, , Game"}[key]
 		line := key + ": " + value + "\n"
 		for _, replacement := range []string{"", key + ": \n", key + ": Different\n"} {
@@ -231,6 +302,10 @@ func TestArchivedFilenameAliasRequiresCompleteIdentity(t *testing.T) {
 				}
 			})
 		}
+	}
+	withoutJADMain := strings.Replace(jad, "MIDlet-1: Demo, , Game\n", "", 1)
+	if pkg, err := Inspect(pack(withoutJADMain, jar)); err != nil || pkg.Descriptor.MainClass != "Game" {
+		t.Fatalf("manifest-only MIDlet main rejected: pkg=%+v err=%v", pkg.Descriptor, err)
 	}
 	for _, bad := range []string{
 		strings.Replace(jad, fmt.Sprintf("MIDlet-Jar-Size: %d\n", len(jar)), "", 1),

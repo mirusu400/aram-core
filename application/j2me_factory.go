@@ -40,6 +40,9 @@ func (f Factory) createJ2MEMachine(ctx context.Context, source machinecore.Sourc
 	if err != nil {
 		return nil, true, fmt.Errorf("inspect J2ME package: %w", err)
 	}
+	if source.ProfileID == "" {
+		source.ProfileID = pkg.ProfileID
+	}
 	digest := fmt.Sprintf("%x", sha256.Sum256(data))
 	if source.SHA256 != "" && !strings.EqualFold(source.SHA256, digest) {
 		return nil, true, fmt.Errorf("load %q: SHA-256 mismatch: expected %s, got %s", source.Name, source.SHA256, digest)

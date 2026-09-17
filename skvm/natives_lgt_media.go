@@ -9,6 +9,7 @@ import (
 
 const lgtMediaClass = "mmpp/media/MediaPlayer"
 const lgtLoopField = "$lgt.media.loop"
+const lgtVolumeField = "$lgt.media.volume"
 
 // lgtUnsupported is a host capability error, not a guessed handset exception.
 func lgtUnsupported(method, reason string) error {
@@ -30,7 +31,7 @@ func (vm *VM) lgtMedia(receiver uint32) (*Object, *audioClipState, error) {
 // Source installation is transactional: validate the replacement before retiring
 // the previous clip. Unknown codecs are never accepted as silent playback.
 func (vm *VM) lgtMediaSource(receiver uint32, data []byte) error {
-	_, old, err := vm.lgtMedia(receiver)
+	o, old, err := vm.lgtMedia(receiver)
 	if err != nil {
 		return err
 	}
@@ -60,6 +61,11 @@ func (vm *VM) lgtMediaSource(receiver uint32, data []byte) error {
 		discard()
 		return lgtUnsupported("setMediaSource", err.Error())
 	}
+	level, _ := o.Fields[lgtVolumeField].Int()
+	if err = vm.services.Media.SetClipGain(vm.serviceOwner, id, uint8(level*20), false, 0); err != nil {
+		discard()
+		return lgtUnsupported("setMediaSource", err.Error())
+	}
 	if old.clip != 0 {
 		if err = vm.services.Media.DestroyClip(vm.serviceOwner, old.clip, vm.services.Events); err != nil {
 			discard()
@@ -82,6 +88,7 @@ func (vm *VM) installLGTMediaNatives() {
 		}
 		o.Native = &audioClipState{}
 		o.Fields[lgtLoopField] = IntValue(0)
+		o.Fields[lgtVolumeField] = IntValue(5)
 		return Value{}, false, nil
 	})
 	vm.RegisterNative(lgtMediaClass, "setMediaLocation", "(Ljava/lang/String;)V", func(_ context.Context, vm *VM, r uint32, a []Value) (Value, bool, error) {

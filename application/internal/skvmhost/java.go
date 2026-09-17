@@ -31,7 +31,8 @@ var ErrUnsupportedProfile = errors.New("unsupported Java profile")
 func NewJ2ME(ctx context.Context, source machinecore.Source, pkg j2me.Package,
 	size image.Point, sampleRate uint32, channels uint8) (*Machine, error) {
 	return newJavaMachine(ctx, source, Application{MainClass: pkg.Descriptor.MainClass,
-		Properties: pkg.Descriptor.Raw, Classes: pkg.Classes, Resources: pkg.Resources}, nil, size, sampleRate, channels)
+		Properties: pkg.Descriptor.Raw, Classes: pkg.Classes, Resources: pkg.Resources,
+		RecordStores: pkg.RecordStores}, nil, size, sampleRate, channels)
 }
 
 func configureJavaIdentity(config *shared.Config, source machinecore.Source, legacy bool) (string, string, engine.NativePolicy, error) {
