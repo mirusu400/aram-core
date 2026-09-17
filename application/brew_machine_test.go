@@ -54,12 +54,12 @@ func TestBREWExecutionBoundaryPausesMachine(t *testing.T) {
 	}
 }
 
-func TestBREWFactoryRejectsWrongSizeBeforeReading(t *testing.T) {
+func TestBREWFactoryRejectsOversizeBeforeReading(t *testing.T) {
 	_, matched, err := NewFactory().createBREWMachine(context.Background(), machinecore.Source{
-		Name: "oversized.zip", ReaderAt: panicReaderAt{}, Size: brewrt.ArchiveSize + 1,
+		Name: "oversized.zip", ReaderAt: panicReaderAt{}, Size: maxBREWArchiveSize + 1,
 	})
 	if err != nil || matched {
-		t.Fatalf("wrong-size source matched=%v err=%v", matched, err)
+		t.Fatalf("oversize source matched=%v err=%v", matched, err)
 	}
 	var _ io.ReaderAt = panicReaderAt{}
 }

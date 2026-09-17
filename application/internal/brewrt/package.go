@@ -1,5 +1,4 @@
-// Package brewrt implements the deliberately narrow executable contract for
-// one preserved BREW title. It does not claim a general BREW ABI.
+// Package brewrt implements a bounded portable subset of the BREW runtime.
 package brewrt
 
 import (
@@ -32,58 +31,102 @@ const (
 	// bootstrap milestone before the display contract was implemented.
 	FirstUnsupportedClassID = DisplayClassID
 
-	mifClassIDOffset = 0x20b4
-	mifSplashOffset  = 0x74
+	mifClassIDOffset        = 0x20b4
+	mifSplashOffset         = 0x74
+	maxExecutableModuleSize = 8 << 20
 )
 
-// Package contains only data authenticated by both the archive and MOD hashes.
+// Package contains the inspected executable module and immutable archive data.
 type Package struct {
-	Module []byte
-	Splash *image.RGBA
-	Files  map[string][]byte
+	Module   []byte
+	ClassIDs []uint32
+	Splash   *image.RGBA
+	Files    map[string][]byte
 }
 
-// Match returns matched=false without parsing for every archive except the
-// single researched title. This keeps generic BREW recognition unsupported.
+// Match authenticates a bounded BREW container, selects its sole executable
+// module, and derives candidate application ClassIDs from aligned module
+// literals. The module factory remains the authority: candidates are accepted
+// only if its real CreateInstance returns a valid guest object.
 func Match(data []byte) (pkg Package, matched bool, err error) {
-	digest := sha256.Sum256(data)
-	if hex.EncodeToString(digest[:]) != ArchiveSHA256 {
+	inspected, err := brew.Inspect(data)
+	if err != nil {
+		return Package{}, false, nil
+	}
+	if len(inspected.Modules) != 1 || len(inspected.MIFs) != 1 {
+		return Package{}, false, nil
+	}
+	moduleName := inspected.Modules[0].Name
+	module := inspected.Files[moduleName]
+	if len(module) < 8 || len(module) > maxExecutableModuleSize || !knownModuleVeneer(module) {
+		return Package{}, false, nil
+	}
+	classID, ok := mifApplicationClassID(inspected.MIFs[0], inspected.Files[inspected.MIFs[0].Name])
+	if !ok {
 		return Package{}, false, nil
 	}
 
-	inspected, err := brew.Inspect(data)
-	if err != nil {
-		return Package{}, true, fmt.Errorf("inspect authenticated BREW archive: %w", err)
-	}
-	module, ok := inspected.Files[ModulePath]
-	if !ok {
-		return Package{}, true, fmt.Errorf("authenticated BREW archive is missing %q", ModulePath)
-	}
-	moduleDigest := sha256.Sum256(module)
-	if hex.EncodeToString(moduleDigest[:]) != ModuleSHA256 {
-		return Package{}, true, fmt.Errorf("authenticated BREW MOD SHA-256 mismatch")
-	}
-
-	mif, ok := inspected.Files[MIFPath]
-	if !ok {
-		return Package{}, true, fmt.Errorf("authenticated BREW archive is missing %q", MIFPath)
-	}
-	if len(mif) < mifClassIDOffset+4 || binary.LittleEndian.Uint32(mif[mifClassIDOffset:]) != ClassID {
-		return Package{}, true, fmt.Errorf("authenticated BREW MIF class contract mismatch")
-	}
-	splash, err := decodeSplash(mif)
-	if err != nil {
-		return Package{}, true, err
+	var splash *image.RGBA
+	digest := sha256.Sum256(data)
+	if hex.EncodeToString(digest[:]) == ArchiveSHA256 {
+		moduleDigest := sha256.Sum256(module)
+		if moduleName != ModulePath || hex.EncodeToString(moduleDigest[:]) != ModuleSHA256 {
+			return Package{}, true, fmt.Errorf("authenticated BREW reference module contract mismatch")
+		}
+		mif, ok := inspected.Files[MIFPath]
+		if !ok || len(mif) < mifClassIDOffset+4 || binary.LittleEndian.Uint32(mif[mifClassIDOffset:]) != ClassID {
+			return Package{}, true, fmt.Errorf("authenticated BREW reference MIF class contract mismatch")
+		}
+		splash, err = decodeSplash(mif)
+		if err != nil {
+			return Package{}, true, err
+		}
 	}
 	files := make(map[string][]byte, len(inspected.Files))
 	for name, contents := range inspected.Files {
 		files[name] = append([]byte(nil), contents...)
 	}
 	return Package{
-		Module: append([]byte(nil), module...),
-		Splash: splash,
-		Files:  files,
+		Module:   append([]byte(nil), module...),
+		ClassIDs: []uint32{classID},
+		Splash:   splash,
+		Files:    files,
 	}, true, nil
+}
+
+func knownModuleVeneer(module []byte) bool {
+	first := binary.LittleEndian.Uint32(module[:4])
+	return first == 0xe92d400e || first == 0xe92d400c || first == 0xe1a0c002
+}
+
+func mifApplicationClassID(metadata brew.Metadata, data []byte) (uint32, bool) {
+	if metadata.IndexCount == 0 {
+		return 0, false
+	}
+	indexStart := uint64(metadata.IndexOffset)
+	count := uint64(metadata.IndexCount)
+	if indexStart+(count+1)*4 > uint64(len(data)) {
+		return 0, false
+	}
+	previous := uint32(0)
+	for index := uint64(0); index <= count; index++ {
+		offset := binary.LittleEndian.Uint32(data[indexStart+index*4:])
+		if index == 0 && offset != metadata.DataOffset || index != 0 && offset < previous {
+			return 0, false
+		}
+		previous = offset
+	}
+	recordStart := binary.LittleEndian.Uint32(data[indexStart+(count-1)*4:])
+	recordEnd := binary.LittleEndian.Uint32(data[indexStart+count*4:])
+	dataEnd := uint64(metadata.DataOffset) + uint64(metadata.DataSize)
+	if recordStart < metadata.DataOffset || recordEnd < recordStart+4 || uint64(recordEnd) > dataEnd || uint64(recordEnd) > uint64(len(data)) {
+		return 0, false
+	}
+	classID := binary.LittleEndian.Uint32(data[recordStart : recordStart+4])
+	if classID < 0x01010000 || classID > 0x010fffff {
+		return 0, false
+	}
+	return classID, true
 }
 
 func decodeSplash(mif []byte) (*image.RGBA, error) {

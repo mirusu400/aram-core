@@ -23,12 +23,12 @@ import (
 const (
 	maxBREWInputEvents = 1024
 	brewFrameDuration  = 16 * time.Millisecond
+	maxBREWArchiveSize = int64(128 << 20)
 )
 
-// brewMachine is an exact-title host, not a general BREW implementation. It
-// executes the authenticated module, applet, timers and researched service
-// contracts. Its package splash remains diagnostic-only; published frames come
-// from the guest RGB565 surface after IDisplay::Update.
+// brewMachine executes bounded BREW packages through the portable runtime.
+// Package artwork remains diagnostic-only; published frames come from the guest
+// RGB565 surface after IDisplay::Update.
 type brewMachine struct {
 	mu         sync.Mutex
 	state      machinecore.State
@@ -47,10 +47,7 @@ func (f Factory) createBREWMachine(ctx context.Context, source machinecore.Sourc
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
 	}
-	if err := source.Validate(); err != nil || source.Size != brewrt.ArchiveSize {
-		return nil, false, nil
-	}
-	if source.SHA256 != "" && !strings.EqualFold(source.SHA256, brewrt.ArchiveSHA256) {
+	if err := source.Validate(); err != nil || source.Size <= 0 || source.Size > maxBREWArchiveSize {
 		return nil, false, nil
 	}
 	data, err := io.ReadAll(io.NewSectionReader(source.ReaderAt, 0, source.Size))

@@ -46,6 +46,8 @@ const (
 	helperMethodCount       = uint32(64)
 	helperMemmoveSlot       = uint32(0)
 	helperMemsetSlot        = uint32(1)
+	helperStrcpySlot        = uint32(2)
+	helperStrcmpSlot        = uint32(4)
 	helperStrlenSlot        = uint32(5)
 	helperSprintfSlot       = uint32(8)
 	helperDbgPrintfSlot     = uint32(39)
@@ -99,6 +101,7 @@ type Runtime struct {
 	fileOffset    uint32
 	timers        []brewCallback
 	boundary      *ExecutionBoundaryError
+	classIDs      []uint32
 }
 
 type brewCallback struct {
@@ -114,15 +117,17 @@ type ExecutionBoundaryError struct {
 	Interface     string
 	MethodSlot    uint32
 	GuestReturnPC uint32
+	Arguments     [4]uint32
 }
 
 func (e *ExecutionBoundaryError) Error() string {
 	if e.Interface != "" {
 		return fmt.Sprintf(
-			"BREW execution boundary: %s vtable slot %d is not implemented (guest return PC 0x%08x)",
+			"BREW execution boundary: %s vtable slot %d is not implemented (guest return PC 0x%08x, args %08x/%08x/%08x/%08x)",
 			e.Interface,
 			e.MethodSlot,
 			e.GuestReturnPC,
+			e.Arguments[0], e.Arguments[1], e.Arguments[2], e.Arguments[3],
 		)
 	}
 	return fmt.Sprintf(
@@ -137,7 +142,11 @@ func New(pkg Package) (*Runtime, error) {
 		return nil, fmt.Errorf("BREW module is empty")
 	}
 	backend := interpreter.New()
-	r := &Runtime{cpu: backend, heapNext: heapBase, files: pkg.Files, eventCounts: make(map[uint32]uint64)}
+	classIDs := append([]uint32(nil), pkg.ClassIDs...)
+	if len(classIDs) == 0 {
+		classIDs = []uint32{ClassID}
+	}
+	r := &Runtime{cpu: backend, heapNext: heapBase, files: pkg.Files, eventCounts: make(map[uint32]uint64), classIDs: classIDs}
 	if err := r.mapImage(pkg.Module); err != nil {
 		_ = backend.Close()
 		return nil, err
@@ -291,35 +300,42 @@ func (r *Runtime) ProbeAppletBoundary(ctx context.Context) error {
 	if createInstance == 0 {
 		return fmt.Errorf("BREW module CreateInstance is null")
 	}
-	for register, value := range map[uint32]uint32{
-		cpu.RegisterR0: r.moduleObject,
-		cpu.RegisterR1: shellObject,
-		cpu.RegisterR2: ClassID,
-		cpu.RegisterR3: outputAddr + 4,
-		cpu.RegisterSP: stackBase + stackSize - 16,
-		cpu.RegisterLR: returnTrap | 1,
-	} {
-		if err := r.cpu.WriteRegister(register, value); err != nil {
-			return fmt.Errorf("initialize BREW applet register r%d: %w", register, err)
+	for _, classID := range r.classIDs {
+		for register, value := range map[uint32]uint32{
+			cpu.RegisterR0: r.moduleObject,
+			cpu.RegisterR1: shellObject,
+			cpu.RegisterR2: classID,
+			cpu.RegisterR3: outputAddr + 4,
+			cpu.RegisterSP: stackBase + stackSize - 16,
+			cpu.RegisterLR: returnTrap | 1,
+		} {
+			if err := r.cpu.WriteRegister(register, value); err != nil {
+				return fmt.Errorf("initialize BREW applet register r%d: %w", register, err)
+			}
+		}
+		var zero [4]byte
+		if err := r.cpu.WriteMemory(outputAddr+4, zero[:]); err != nil {
+			return fmt.Errorf("clear BREW applet output: %w", err)
+		}
+		pc, mode := branchTarget(createInstance)
+		result, err := r.runAppletCode(ctx, pc, mode, fmt.Sprintf("constructor class 0x%08x", classID))
+		if err != nil {
+			return err
+		}
+		if err := r.cpu.ReadMemory(outputAddr+4, encoded[:]); err != nil {
+			return fmt.Errorf("read BREW applet object: %w", err)
+		}
+		candidate := binary.LittleEndian.Uint32(encoded[:])
+		if candidate < heapBase || candidate >= heapBase+heapSize {
+			candidate = result
+		}
+		if candidate >= heapBase && candidate < heapBase+heapSize {
+			r.appletObject = candidate
+			r.activeApplet = candidate
+			return nil
 		}
 	}
-	var zero [4]byte
-	if err := r.cpu.WriteMemory(outputAddr+4, zero[:]); err != nil {
-		return fmt.Errorf("clear BREW applet output: %w", err)
-	}
-	pc, mode := branchTarget(createInstance)
-	if _, err := r.runAppletCode(ctx, pc, mode, "constructor"); err != nil {
-		return err
-	}
-	if err := r.cpu.ReadMemory(outputAddr+4, encoded[:]); err != nil {
-		return fmt.Errorf("read BREW applet object: %w", err)
-	}
-	r.appletObject = binary.LittleEndian.Uint32(encoded[:])
-	if r.appletObject < heapBase || r.appletObject >= heapBase+heapSize {
-		return fmt.Errorf("BREW applet factory returned invalid object 0x%08x", r.appletObject)
-	}
-	r.activeApplet = r.appletObject
-	return nil
+	return fmt.Errorf("BREW module rejected %d candidate application ClassIDs", len(r.classIDs))
 }
 
 // DispatchEvent invokes the authenticated applet's real IApplet::HandleEvent.
@@ -445,10 +461,15 @@ func (r *Runtime) handleAppletMethodTrap(
 		if err != nil {
 			return true, 0, cpu.ModeARM, fmt.Errorf("read BREW %s return address: %w", iface, err)
 		}
+		var arguments [4]uint32
+		for index := range arguments {
+			arguments[index], _ = r.cpu.ReadRegister(cpu.RegisterR0 + uint32(index))
+		}
 		r.boundary = &ExecutionBoundaryError{
 			Interface:     iface,
 			MethodSlot:    slot,
 			GuestReturnPC: returnAddress &^ 1,
+			Arguments:     arguments,
 		}
 		return true, 0, cpu.ModeARM, r.boundary
 	}
@@ -469,6 +490,16 @@ func (r *Runtime) handleAppletMethodTrap(
 			return resume()
 		case helperMemsetSlot:
 			if err := r.fillGuestMemory(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case helperStrcpySlot:
+			if err := r.copyGuestCString(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case helperStrcmpSlot:
+			if err := r.compareGuestCStrings(); err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
@@ -639,6 +670,11 @@ func (r *Runtime) handleAppletMethodTrap(
 		switch slot {
 		case 2: // OpenFile(IFileMgr *, const char *, OpenFileMode)
 			if err := r.openGuestFile(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 3: // GetInfo(IFileMgr *, const char *, FileInfo *)
+			if err := r.returnNamedFileInfo(); err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
@@ -906,6 +942,46 @@ func (r *Runtime) readCString(address uint32) (string, error) {
 	return "", fmt.Errorf("BREW string at 0x%08x exceeded %d bytes", address, maxCString)
 }
 
+func (r *Runtime) copyGuestCString() error {
+	destination, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW strcpy destination: %w", err)
+	}
+	source, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW strcpy source: %w", err)
+	}
+	text, err := r.readCString(source)
+	if err != nil {
+		return err
+	}
+	if err := r.cpu.WriteMemory(destination, append([]byte(text), 0)); err != nil {
+		return fmt.Errorf("write BREW strcpy destination: %w", err)
+	}
+	return r.cpu.WriteRegister(cpu.RegisterR0, destination)
+}
+
+func (r *Runtime) compareGuestCStrings() error {
+	leftPointer, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW strcmp left pointer: %w", err)
+	}
+	rightPointer, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW strcmp right pointer: %w", err)
+	}
+	left, err := r.readCString(leftPointer)
+	if err != nil {
+		return err
+	}
+	right, err := r.readCString(rightPointer)
+	if err != nil {
+		return err
+	}
+	result := int32(strings.Compare(left, right))
+	return r.cpu.WriteRegister(cpu.RegisterR0, uint32(result))
+}
+
 func (r *Runtime) openGuestFile() error {
 	pathPointer, err := r.cpu.ReadRegister(cpu.RegisterR1)
 	if err != nil {
@@ -915,15 +991,12 @@ func (r *Runtime) openGuestFile() error {
 	if err != nil {
 		return err
 	}
-	normalized := strings.TrimPrefix(strings.ReplaceAll(path, "\\", "/"), "fs:/~/")
-	contents, ok := r.files["32536/"+normalized]
-	if !ok {
-		contents, ok = r.files[normalized]
-	}
+	normalized := normalizeGuestPath(path)
+	contents, resolved, ok := r.lookupGuestFile(normalized)
 	result := uint32(0)
 	if ok {
 		r.currentFile = contents
-		r.currentPath = normalized
+		r.currentPath = resolved
 		r.fileOffset = 0
 		result = fileObject
 	}
@@ -942,11 +1015,8 @@ func (r *Runtime) testGuestFile() error {
 	if err != nil {
 		return err
 	}
-	normalized := strings.TrimPrefix(strings.ReplaceAll(path, "\\", "/"), "fs:/~/")
-	_, ok := r.files["32536/"+normalized]
-	if !ok {
-		_, ok = r.files[normalized]
-	}
+	normalized := normalizeGuestPath(path)
+	_, _, ok := r.lookupGuestFile(normalized)
 	status := uint32(1)
 	if ok {
 		status = 0
@@ -955,6 +1025,55 @@ func (r *Runtime) testGuestFile() error {
 		return fmt.Errorf("return BREW file test status: %w", err)
 	}
 	return nil
+}
+
+func normalizeGuestPath(path string) string {
+	return strings.TrimPrefix(strings.ReplaceAll(path, "\\", "/"), "fs:/~/")
+}
+
+func (r *Runtime) lookupGuestFile(normalized string) ([]byte, string, bool) {
+	if contents, ok := r.files[normalized]; ok {
+		return contents, normalized, true
+	}
+	suffix := "/" + normalized
+	var match string
+	for name := range r.files {
+		if strings.HasSuffix(name, suffix) {
+			if match != "" {
+				return nil, "", false
+			}
+			match = name
+		}
+	}
+	if match == "" {
+		return nil, "", false
+	}
+	return r.files[match], match, true
+}
+
+func (r *Runtime) returnNamedFileInfo() error {
+	pathPointer, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW file-info path pointer: %w", err)
+	}
+	out, err := r.cpu.ReadRegister(cpu.RegisterR2)
+	if err != nil {
+		return fmt.Errorf("read BREW file-info output pointer: %w", err)
+	}
+	path, err := r.readCString(pathPointer)
+	if err != nil {
+		return err
+	}
+	contents, _, ok := r.lookupGuestFile(normalizeGuestPath(path))
+	if !ok || out == 0 {
+		return r.cpu.WriteRegister(cpu.RegisterR0, 1)
+	}
+	data := make([]byte, 12)
+	binary.LittleEndian.PutUint32(data[8:12], uint32(len(contents)))
+	if err := r.cpu.WriteMemory(out, data); err != nil {
+		return fmt.Errorf("write BREW named file info: %w", err)
+	}
+	return r.cpu.WriteRegister(cpu.RegisterR0, 0)
 }
 
 func (r *Runtime) returnFileSpace() error {
@@ -1008,6 +1127,16 @@ func (r *Runtime) formatResourceName() error {
 	values := make([]any, 0, 6)
 	count := uint32(0)
 	switch format {
+	case "%s":
+		pointer, readErr := arg(0)
+		if readErr != nil {
+			return fmt.Errorf("read BREW sprintf string pointer: %w", readErr)
+		}
+		text, readErr := r.readCString(uint32(pointer))
+		if readErr != nil {
+			return readErr
+		}
+		values = append(values, text)
 	case "%d", "%d.No Record", "%d.map", "%d.rec", "%d.scb", "%d.snr",
 		"%d.spk", "%d.sre", "%d.til", "%d.zip", "ui%d.cpp", "ui%d.frm":
 		count = 1

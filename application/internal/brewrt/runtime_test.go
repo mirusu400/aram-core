@@ -1,6 +1,7 @@
 package brewrt
 
 import (
+	"archive/zip"
 	"context"
 	"encoding/binary"
 	"image"
@@ -12,6 +13,7 @@ import (
 	"golang.org/x/image/bmp"
 
 	"github.com/mirusu400/aram-core/cpu"
+	loaderbrew "github.com/mirusu400/aram-core/loader/brew"
 )
 
 func newSyntheticRuntime(t *testing.T) *Runtime {
@@ -114,5 +116,66 @@ func TestDecodeSplashUsesEmbeddedBMPContract(t *testing.T) {
 func TestMatchRejectsEveryUnauthenticatedArchive(t *testing.T) {
 	if _, matched, err := Match([]byte("PK\x03\x04synthetic")); err != nil || matched {
 		t.Fatalf("unauthenticated archive matched=%v err=%v", matched, err)
+	}
+}
+
+func TestMatchAcceptsGenericSingleModulePackage(t *testing.T) {
+	module := make([]byte, 8)
+	binary.LittleEndian.PutUint32(module[0:], 0xe92d400c)
+	mif := make([]byte, 64)
+	for offset, value := range map[int]uint32{0: 0x00010011, 4: 0x10001, 8: 32, 12: 8, 16: 40, 20: 1, 24: 48, 28: 16} {
+		binary.LittleEndian.PutUint32(mif[offset:], value)
+	}
+	binary.LittleEndian.PutUint32(mif[40:], 48)
+	binary.LittleEndian.PutUint32(mif[44:], 64)
+	binary.LittleEndian.PutUint32(mif[48:], 0x01023456)
+	var archive bytes.Buffer
+	w := zip.NewWriter(&archive)
+	for name, data := range map[string][]byte{"game.mif": mif, "bin/game.mod": module} {
+		entry, err := w.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := entry.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	pkg, matched, err := Match(archive.Bytes())
+	if err != nil || !matched {
+		t.Fatalf("generic archive matched=%v err=%v", matched, err)
+	}
+	if len(pkg.ClassIDs) != 1 || pkg.ClassIDs[0] != 0x01023456 || pkg.Splash != nil {
+		t.Fatalf("generic package = %+v", pkg)
+	}
+}
+
+func TestMIFApplicationClassIDRejectsUnboundedOrNonApplicationRecord(t *testing.T) {
+	metadata := loaderbrew.Metadata{IndexOffset: 32, IndexCount: 1, DataOffset: 40, DataSize: 8}
+	data := make([]byte, 48)
+	binary.LittleEndian.PutUint32(data[32:], 40)
+	binary.LittleEndian.PutUint32(data[36:], 48)
+	binary.LittleEndian.PutUint32(data[40:], DisplayClassID)
+	if _, ok := mifApplicationClassID(metadata, data); ok {
+		t.Fatal("service ClassID was accepted as an application ClassID")
+	}
+	binary.LittleEndian.PutUint32(data[40:], 0x01023456)
+	binary.LittleEndian.PutUint32(data[36:], 52)
+	if _, ok := mifApplicationClassID(metadata, data); ok {
+		t.Fatal("out-of-bounds final MIF record was accepted")
+	}
+}
+
+func TestLookupGuestFileUsesUniqueRelativeSuffix(t *testing.T) {
+	runtime := &Runtime{files: map[string][]byte{"1234/data.bin": {1, 2, 3}}}
+	data, name, ok := runtime.lookupGuestFile("data.bin")
+	if !ok || name != "1234/data.bin" || !bytes.Equal(data, []byte{1, 2, 3}) {
+		t.Fatalf("relative lookup data=%v name=%q ok=%v", data, name, ok)
+	}
+	runtime.files["other/data.bin"] = []byte{4}
+	if _, _, ok := runtime.lookupGuestFile("data.bin"); ok {
+		t.Fatal("ambiguous relative package path was accepted")
 	}
 }
