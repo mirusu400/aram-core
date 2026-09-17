@@ -21,6 +21,8 @@ import (
 // presentation-quantum allowance was measured against.
 const mapleArcherSHA256 = "89c214dbd15dd6c12f7c7a0f6d6fa023ff43a6769be5fdbfced46f4c7b7a243c"
 
+const cherryPlotMerchantSHA256 = "0e6cd188729ed48823ea4d6d7638e0f74e6754fea5c21ae4eb0295c0bb67cd6b"
+
 // findAuthorizedPackage returns the package in ARAM_TEST_DATA with the given
 // digest, or skips when the corpus is not configured or does not hold it.
 func findAuthorizedPackage(t *testing.T, digest string) (string, []byte) {
@@ -148,6 +150,33 @@ func TestKTFPresentsPerQuantumStaysUnderTheJavaTaskLimit(t *testing.T) {
 				"table in 스파이더맨3",
 			ktfPresentsPerQuantumMax,
 		)
+	}
+}
+
+// TestKTFCompleteFrameTitlePresentsAtHostRate covers issue #270. This title
+// advances gameplay on every complete repaint, so the general four-present
+// allowance made one 60 Hz host quantum advance four game frames (about
+// 240 fps). Its exact package identity selects the one-present handset pace.
+func TestKTFCompleteFrameTitlePresentsAtHostRate(t *testing.T) {
+	path, data := findAuthorizedPackage(t, cherryPlotMerchantSHA256)
+	created, err := NewFactory().Create(context.Background(), machinecore.Source{
+		Name:     filepath.Base(path),
+		ReaderAt: bytes.NewReader(data),
+		Size:     int64(len(data)),
+	})
+	check(t, err)
+	machine := created.(*Machine)
+	t.Cleanup(func() { _ = machine.Close() })
+	check(t, machine.Start(context.Background()))
+
+	const frames = 600
+	start := machine.ktf.PresentCount
+	for frame := 0; frame < frames; frame++ {
+		check(t, machine.StepFrame(context.Background()))
+	}
+	presents := machine.ktf.PresentCount - start
+	if presents < frames-30 || presents > frames+5 {
+		t.Fatalf("%d presents over %d host frames, want handset-rate pacing", presents, frames)
 	}
 }
 

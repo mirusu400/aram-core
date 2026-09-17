@@ -339,28 +339,7 @@ func (vm *VM) installSKTNatives() {
 			return Value{}, false, vm.setNative(receiver, &outputStreamState{file: file})
 		},
 	)
-	vm.RegisterNative(
-		"com/xce/io/FileOutputStream",
-		"<init>",
-		"(Ljava/lang/String;)V",
-		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
-			name, err := vm.fileNameArgument(args, 0)
-			if err != nil {
-				return Value{}, false, err
-			}
-			if err := vm.services.Storage.WriteFile(
-				shared.NamespacePrivate,
-				name,
-				nil,
-			); err != nil {
-				return Value{}, false, err
-			}
-			return Value{}, false, vm.setNative(
-				receiver,
-				&outputStreamState{name: name},
-			)
-		},
-	)
+	vm.installXCEFileStreamNatives()
 	vm.RegisterNative(
 		"com/xce/io/FileInputStream",
 		"<init>",

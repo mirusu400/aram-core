@@ -270,9 +270,10 @@ func (m *Machine) stepRaptorCallbackTask(
 	m.mu.Unlock()
 
 	var (
-		result  cpu.Result
-		callErr error
-		spent   uint64
+		result           cpu.Result
+		callErr          error
+		spent            uint64
+		safepointYielded bool
 	)
 	for range callbackLimit {
 		m.mu.Lock()
@@ -288,7 +289,11 @@ func (m *Machine) stepRaptorCallbackTask(
 			slice = 1
 		}
 		var completed bool
-		result, completed, callErr = m.runRaptorCallbackTask(ctx, task, slice)
+		var yielded bool
+		result, completed, yielded, callErr = m.runRaptorCallbackTask(ctx, task, slice)
+		if yielded {
+			safepointYielded = true
+		}
 		spent += result.Instructions
 		if completed {
 			m.mu.Lock()
@@ -316,7 +321,11 @@ func (m *Machine) stepRaptorCallbackTask(
 	}
 	serviceInstructions := spent
 	result.Instructions = spent + precedingInstructions
-	return m.finishRaptorCall(result, callErr, serviceInstructions)
+	finishErr := m.finishRaptorCall(result, callErr, serviceInstructions)
+	if finishErr != nil || !safepointYielded {
+		return finishErr
+	}
+	return m.stepRaptorJavaAfterSafepoint(ctx)
 }
 
 func raptorQueueHasInputCallback(
@@ -335,10 +344,10 @@ func (m *Machine) runRaptorCallbackTask(
 	ctx context.Context,
 	task *raptorrt.CallbackTask,
 	budget uint64,
-) (result cpu.Result, completed bool, returnedErr error) {
+) (result cpu.Result, completed bool, safepointYielded bool, returnedErr error) {
 	outer, err := cpu.SaveScopedContext(m.cpu, cpu.ScopedContext{})
 	if err != nil {
-		return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+		return cpu.Result{Reason: cpu.StopFault, Err: err}, false, false, err
 	}
 	defer func() {
 		if restoreErr := outer.Restore(m.cpu); restoreErr != nil && returnedErr == nil {
@@ -351,21 +360,21 @@ func (m *Machine) runRaptorCallbackTask(
 	if !task.HasContext() {
 		for register := cpu.RegisterR0; register <= cpu.RegisterR3; register++ {
 			if err := m.cpu.WriteRegister(register, task.Callback.Args[register]); err != nil {
-				return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+				return cpu.Result{Reason: cpu.StopFault, Err: err}, false, false, err
 			}
 		}
 		if err := m.cpu.WriteRegister(cpu.RegisterLR, guest.ReturnSentinel|1); err != nil {
-			return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+			return cpu.Result{Reason: cpu.StopFault, Err: err}, false, false, err
 		}
 		if err := m.cpu.WriteRegister(
 			cpu.RegisterPC,
 			task.Callback.Procedure&^1,
 		); err != nil {
-			return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+			return cpu.Result{Reason: cpu.StopFault, Err: err}, false, false, err
 		}
 		status, err := m.cpu.ReadRegister(cpu.RegisterCPSR)
 		if err != nil {
-			return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+			return cpu.Result{Reason: cpu.StopFault, Err: err}, false, false, err
 		}
 		if task.Callback.Procedure&1 != 0 {
 			status |= cpu.StatusThumb
@@ -373,34 +382,37 @@ func (m *Machine) runRaptorCallbackTask(
 			status &^= cpu.StatusThumb
 		}
 		if err := m.cpu.WriteRegister(cpu.RegisterCPSR, status); err != nil {
-			return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+			return cpu.Result{Reason: cpu.StopFault, Err: err}, false, false, err
 		}
 	} else if err := task.RestoreContext(m.cpu); err != nil {
-		return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+		return cpu.Result{Reason: cpu.StopFault, Err: err}, false, false, err
 	}
 
 	pc, err := m.cpu.ReadRegister(cpu.RegisterPC)
 	if err != nil {
-		return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+		return cpu.Result{Reason: cpu.StopFault, Err: err}, false, false, err
 	}
 	status, err := m.cpu.ReadRegister(cpu.RegisterCPSR)
 	if err != nil {
-		return cpu.Result{Reason: cpu.StopFault, Err: err}, false, err
+		return cpu.Result{Reason: cpu.StopFault, Err: err}, false, false, err
 	}
 	mode := cpu.ModeARM
 	if status&cpu.StatusThumb != 0 {
 		mode = cpu.ModeThumb
 	}
+	m.raptor.SetCallbackTaskActive(true)
 	result = m.runWIPISlice(ctx, pc, mode, max(budget, uint64(1)), true)
+	m.raptor.SetCallbackTaskActive(false)
+	safepointYielded = m.raptor.TakeJavaSafepointYield()
 	if result.Err != nil {
-		return result, false, result.Err
+		return result, false, safepointYielded, result.Err
 	}
 	if result.Reason == cpu.StopExited {
-		return result, true, nil
+		return result, true, safepointYielded, nil
 	}
 	if result.Reason == cpu.StopBreakpoint && result.PC >= 2 &&
 		result.PC-2 == guest.ReturnSentinel {
-		return result, true, nil
+		return result, true, safepointYielded, nil
 	}
 	if result.Reason != cpu.StopBudget {
 		err := fmt.Errorf(
@@ -411,15 +423,46 @@ func (m *Machine) runRaptorCallbackTask(
 		)
 		result.Reason = cpu.StopFault
 		result.Err = err
-		return result, false, err
+		return result, false, safepointYielded, err
 	}
 	err = task.SaveContext(m.cpu)
 	if err != nil {
 		result.Reason = cpu.StopFault
 		result.Err = err
-		return result, false, err
+		return result, false, safepointYielded, err
 	}
-	return result, false, nil
+	return result, false, safepointYielded, nil
+}
+
+// stepRaptorJavaAfterSafepoint lets one runnable Java task execute after a
+// resumable callback voluntarily yielded at an AOT loop safepoint. The callback
+// CPU context has already been saved by runRaptorCallbackTask, so this cannot
+// overwrite the suspended callback; the next frame restores it and re-checks
+// the condition it was polling.
+func (m *Machine) stepRaptorJavaAfterSafepoint(ctx context.Context) error {
+	m.mu.Lock()
+	runtime := m.raptor
+	if runtime == nil || runtime.Java == nil {
+		m.mu.Unlock()
+		return nil
+	}
+	if runtime.Java.Host != nil {
+		runtime.Java.Host.TickMS = runtime.Public.TickMS
+	}
+	m.mu.Unlock()
+
+	result, ranJava, err := m.stepRaptorJavaTask(ctx)
+	if err != nil {
+		return m.finishRaptorCall(result, err, result.Instructions)
+	}
+	if !ranJava {
+		return nil
+	}
+	m.mu.Lock()
+	m.lastResult = result
+	m.state = machinecore.StatePaused
+	m.mu.Unlock()
+	return nil
 }
 
 func (m *Machine) finishRaptorCall(

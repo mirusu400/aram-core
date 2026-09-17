@@ -186,6 +186,12 @@ func (r *Runtime) ensureRaptorJavaClassObject(
 	if err := r.Public.WriteU32(object+8, data); err != nil {
 		return 0, err
 	}
+	// AOT check-cast sequences read the VM type token from the third
+	// bookkeeping word. Keep it stable and non-null even though the host-side
+	// type check currently only needs to distinguish initialized classes.
+	if err := r.Public.WriteU32(data+8, class.Holder); err != nil {
+		return 0, err
+	}
 	class.classObject = object
 	if err := r.writeRaptorJavaClassState(class, 3); err != nil {
 		return 0, err

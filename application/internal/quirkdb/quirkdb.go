@@ -53,6 +53,45 @@ var DisplayOverrides = []DisplayOverride{
 		Width:          240,
 		Height:         320,
 	},
+	{
+		// 만귀토벌전's descriptor records only the 176x220 client area. The
+		// client creates a 220-row Card before showing the 20-row annunciator
+		// and keeps that Card size, so its dialogue reaches physical row 239.
+		Key: TitleKey{
+			AID:       "0102A356",
+			MainClass: "man",
+			ClientSHA256: MustHash(
+				"d5e1b0c9440ef2338ea5298a2f36e34b1a38cfbc0de29f524c0351c24513e0df",
+			),
+		},
+		DeclaredWidth:  176,
+		DeclaredHeight: 220,
+		Width:          176,
+		Height:         240,
+	},
+}
+
+// KTFPresentationLimit caps the number of guest presents carried by one host
+// video quantum for a title that advances gameplay on every present. Most KTF
+// titles retain the wider quantum needed by incremental repaint loops.
+type KTFPresentationLimit struct {
+	Key           TitleKey
+	MaxPerQuantum int
+}
+
+var KTFPresentationLimits = []KTFPresentationLimit{
+	{
+		// 거상(벚꽃단의음모) submits a complete game frame on every repaint.
+		// Letting one 60 Hz host quantum carry four presents runs it at 240 fps.
+		Key: TitleKey{
+			AID:       "01034428",
+			MainClass: "GerSang",
+			ClientSHA256: MustHash(
+				"10ed0d398b567c2c7544962e9fc6b2bd34538c6d846df3cb6165615446a19670",
+			),
+		},
+		MaxPerQuantum: 1,
+	},
 }
 
 // MenuForegroundOverlay describes a title that draws its menu labels before
@@ -177,6 +216,39 @@ func LookupRaptorFramebufferGeometry(
 	return RaptorFramebufferGeometry{}, false
 }
 
+// RaptorResourceBytesHelper identifies a title-local static helper that takes
+// a java/lang/String resource name and returns the JAR entry as a byte array.
+// Some LGT runtimes implement this helper through carrier-private filesystem
+// imports which are unavailable outside the handset firmware.
+type RaptorResourceBytesHelper struct {
+	Key     RaptorTitleKey
+	Address uint32
+}
+
+var RaptorResourceBytesHelpers = []RaptorResourceBytesHelper{
+	{
+		// 놈3 routes every packaged image through a compiler-emitted helper whose
+		// carrier-private lookup returns null without the original LGT firmware.
+		Key: RaptorTitleKey{
+			PackageSHA256: "b475b63996844c2b4108224ec6ddb15f31ba8ac336dffcbebc4985d29009e930",
+			AID:           "00015E3D",
+			MainClass:     "Clet",
+		},
+		Address: 0x00032338,
+	},
+}
+
+func LookupRaptorResourceBytesHelper(
+	packageSHA256, aid, mainClass string,
+) (RaptorResourceBytesHelper, bool) {
+	for _, entry := range RaptorResourceBytesHelpers {
+		if entry.Key.Matches(packageSHA256, aid, mainClass) {
+			return entry, true
+		}
+	}
+	return RaptorResourceBytesHelper{}, false
+}
+
 // SKVMCanvas records the handset canvas one SKT MIDlet build was authored for.
 // An SKT descriptor never declares a display size, and a title that packs its
 // art into opaque resource blobs offers nothing to infer one from, so a build
@@ -195,9 +267,31 @@ type SKVMCanvas struct {
 	// framebuffer, matching an SKT handset that reserved a system strip while
 	// drawing still covered the complete display.
 	CanvasHeightInset16 bool
+	// InclusiveSetClip interprets nonnegative setClip extents as inclusive
+	// offsets, matching selected pre-MIDP-2 handset implementations.
+	InclusiveSetClip bool
 }
 
 var SKVMCanvases = []SKVMCanvas{
+	{
+		// Monster Boy's clip wrapper passes tile extents 15,15 for a 16x16
+		// tile. Its alternate handset branch adds one to each extent, but
+		// this shipped build selects the inclusive handset branch (#296).
+		// Do not change standard MIDP clipping for any unlisted package.
+		Key: SKVMTitleKey{
+			PackageSHA256: "c6cadf75c454638e2c14f7549a2062e7c37680c1eaf9536ec0d4bfb20acfe3c2",
+			MainClass:     "Game",
+			ProgramName:   "0052335225",
+		},
+		InferredWidth:    240,
+		InferredHeight:   320,
+		InclusiveSetClip: true,
+		// Game adds 16 to Canvas.getHeight() before sharing the layout
+		// height with its renderers. Report the handset's 304-pixel client
+		// height so this compensation yields the real 320-pixel framebuffer,
+		// not 336 with the last dialogue line below the display (#298).
+		CanvasHeightInset16: true,
+	},
 	{
 		// 드래곤나이트EX (Dragon Knight EX) targets an SKT handset where
 		// Canvas.getHeight() excluded a 16-pixel system strip while drawing

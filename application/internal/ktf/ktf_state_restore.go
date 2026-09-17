@@ -363,6 +363,11 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	); err != nil {
 		return fmt.Errorf("restore KTF heap metadata: %w", err)
 	}
+	// Explicit-GC coalescing is derived from the current heap population. A
+	// restored heap must establish a fresh baseline on its next advisory request.
+	r.javaHeapCollected = 0
+	r.javaHeapExplicitCollected = 0
+	r.javaHeapExplicitReady = false
 	r.incrementalHeaps = make(
 		map[uint32]*guest.Heap,
 		len(saved.incrementalHeaps),

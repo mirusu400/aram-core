@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -317,6 +318,104 @@ func digestClassData(classData map[string][]byte) [sha256.Size]byte {
 	var digest [sha256.Size]byte
 	copy(digest[:], hash.Sum(nil))
 	return digest
+}
+
+// ClassSHA256 identifies the exact set of Java classes loaded into the VM.
+// It is captured before any host-side cheat patches are applied, so catalogs
+// remain bound to the original executable image while enabled patches may
+// safely change the backing bytecode.
+func (vm *VM) ClassSHA256() string {
+	return hex.EncodeToString(vm.classDigest[:])
+}
+
+// ReplaceClassData reparses one class after a guarded host-side byte patch and
+// rebinds live and parked frames to the replacement method bodies. Structural
+// edits are rejected: catalog patches may change instructions and constants,
+// but they must not invalidate objects, statics, or continuation layouts that
+// already exist in the VM.
+func (vm *VM) ReplaceClassData(name string, data []byte) error {
+	current := vm.classes[name]
+	if current == nil {
+		return fmt.Errorf("replace unknown SKVM class %q", name)
+	}
+	replacement, err := ParseClass(name+".class", data)
+	if err != nil {
+		return err
+	}
+	if replacement.Name != name || !sameClassShape(current.class, replacement) {
+		return fmt.Errorf("replace SKVM class %q: class structure changed", name)
+	}
+	frameLists := [][]*frame{vm.frames}
+	for _, object := range vm.heap {
+		if thread, ok := object.Native.(*threadState); ok {
+			frameLists = append(frameLists, thread.continuation)
+		}
+	}
+	for _, frames := range frameLists {
+		for _, active := range frames {
+			if active.class.Name != name {
+				continue
+			}
+			method, ok := replacement.Method(active.method.Name, active.method.Descriptor)
+			if !ok || len(method.Code) != len(active.method.Code) || active.pc > len(method.Code) {
+				return fmt.Errorf(
+					"replace SKVM class %q: active method %s%s changed shape",
+					name,
+					active.method.Name,
+					active.method.Descriptor,
+				)
+			}
+		}
+	}
+	current.class = replacement
+	for _, frames := range frameLists {
+		for _, active := range frames {
+			if active.class.Name != name {
+				continue
+			}
+			method, _ := replacement.Method(active.method.Name, active.method.Descriptor)
+			active.class = replacement
+			active.method = method
+		}
+	}
+	return nil
+}
+
+func sameClassShape(left, right *Class) bool {
+	if left == nil || right == nil ||
+		left.AccessFlags != right.AccessFlags ||
+		left.Name != right.Name ||
+		left.SuperName != right.SuperName ||
+		len(left.Interfaces) != len(right.Interfaces) ||
+		len(left.Fields) != len(right.Fields) ||
+		len(left.Methods) != len(right.Methods) {
+		return false
+	}
+	for index := range left.Interfaces {
+		if left.Interfaces[index] != right.Interfaces[index] {
+			return false
+		}
+	}
+	for index := range left.Fields {
+		leftField, rightField := left.Fields[index], right.Fields[index]
+		if leftField.AccessFlags != rightField.AccessFlags ||
+			leftField.Name != rightField.Name ||
+			leftField.Descriptor != rightField.Descriptor {
+			return false
+		}
+	}
+	for index := range left.Methods {
+		leftMethod, rightMethod := left.Methods[index], right.Methods[index]
+		if leftMethod.AccessFlags != rightMethod.AccessFlags ||
+			leftMethod.Name != rightMethod.Name ||
+			leftMethod.Descriptor != rightMethod.Descriptor ||
+			leftMethod.MaxStack != rightMethod.MaxStack ||
+			leftMethod.MaxLocals != rightMethod.MaxLocals ||
+			len(leftMethod.Code) != len(rightMethod.Code) {
+			return false
+		}
+	}
+	return true
 }
 
 func (vm *VM) SetTraceHook(hook TraceHook) {
