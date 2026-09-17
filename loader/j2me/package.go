@@ -124,14 +124,6 @@ func Inspect(data []byte) (Package, error) {
 			return Package{}, malformed("archive", 0, "expected exactly one JAD/JAR pair")
 		}
 		pkg.JADName, pkg.JARName = jads[0], jars[0]
-		jarStem := strings.TrimSuffix(pkg.JARName, path.Ext(pkg.JARName))
-		for name := range files {
-			if strings.EqualFold(path.Ext(name), ".idx") &&
-				strings.EqualFold(strings.TrimSuffix(name, path.Ext(name)), jarStem) {
-				pkg.ProfileID = LGTProfileID
-				break
-			}
-		}
 		jad, err = parseProperties(pkg.JADName, files[pkg.JADName], false)
 		if err != nil {
 			return Package{}, err

@@ -131,8 +131,8 @@ func TestJ2MEInstallerIndexAndExternalRMSAreInstalled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("installer index package: %v", err)
 	}
-	if got := machine.(*skvmhost.Machine).SourceInfo().ProfileID; got != j2me.LGTProfileID {
-		t.Fatalf("installer index profile = %q, want %q", got, j2me.LGTProfileID)
+	if got := machine.(*skvmhost.Machine).SourceInfo().ProfileID; got != j2me.ProfileID {
+		t.Fatalf("unauthenticated installer index escalated profile to %q", got)
 	}
 	_ = machine.Close()
 	database := make([]byte, 48)

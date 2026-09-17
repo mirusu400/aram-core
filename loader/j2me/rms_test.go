@@ -118,4 +118,7 @@ func TestInspectExternalRecordStoreFreeList(t *testing.T) {
 	if len(store.Records) != 1 || store.Records[0].ID != 1 {
 		t.Fatalf("free-list store = %+v", store)
 	}
+	if _, err := inspectExternalRecordStore("free.db", payload[:len(payload)-1]); err == nil {
+		t.Fatal("truncated final free block accepted as omitted padding")
+	}
 }

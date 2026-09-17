@@ -86,18 +86,21 @@ func inspectExternalRecordStore(name string, data []byte) (skloader.RecordStore,
 		nextBlock := cursor + uint64(blockSize)
 		if previousBlock != previous || blockSize < 16 || blockSize%16 != 0 ||
 			nextBlock <= cursor || nextBlock > logicalEnd ||
-			(nextBlock > uint64(len(data)) &&
-				(nextBlock != logicalEnd || nextBlock-uint64(len(data)) > 15)) {
+			(nextBlock < logicalEnd && nextBlock > uint64(len(data))) {
 			return skloader.RecordStore{}, malformed(name, int64(cursor), "invalid external RMS record")
 		}
 		switch {
 		case recordID == -1:
+			if nextBlock > uint64(len(data)) {
+				return skloader.RecordStore{}, malformed(name, int64(cursor), "truncated external RMS free block")
+			}
 			freeBlocks[uint32(cursor)] = dataSizeOrNextFree
 		case recordID > 0:
 			id := uint32(recordID)
 			dataEnd := dataStart + uint64(dataSizeOrNextFree)
 			if id >= nextID || seen[id] || uint64(dataSizeOrNextFree) > uint64(blockSize-16) ||
-				dataEnd > uint64(len(data)) {
+				dataEnd > uint64(len(data)) ||
+				(nextBlock > uint64(len(data)) && nextBlock-uint64(len(data)) > 15) {
 				return skloader.RecordStore{}, malformed(name, int64(cursor), "invalid external RMS record")
 			}
 			seen[id] = true
