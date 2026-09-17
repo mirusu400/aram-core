@@ -186,6 +186,8 @@ func TestLGTGraphicsAlphaGameCanvasPaintAndFlush(t *testing.T) {
 	lgtFillWhite(t, vm, ref, 1)
 	screen, screenState := midpGraphicsSurface(t, vm)
 	lgtAlpha(t, vm, screen, 0)
+	// flushGraphics presents only the currently shown canvas.
+	invokeTestNative(t, vm, "javax/microedition/lcdui/Display", "setCurrent", "(Ljavax/microedition/lcdui/Displayable;)V", 0, ReferenceValue(game))
 	invokeTestNative(t, vm, "javax/microedition/lcdui/game/GameCanvas", "flushGraphics", "()V", game)
 	if got := midpPixel(t, vm, screenState.surface, 0, 0); got != (shared.Color{R: 255, G: 255, B: 255, A: 255}) {
 		t.Fatalf("flush inherited screen alpha: %+v", got)

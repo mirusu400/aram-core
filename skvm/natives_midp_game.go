@@ -3,6 +3,8 @@ package skvm
 import (
 	"context"
 	"fmt"
+
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 const (
@@ -997,7 +999,48 @@ func (vm *VM) insertLayer(layers *Array, layer Value, index int32) error {
 	return nil
 }
 
+// These values use the existing serialized field maps, not a new state schema.
+const gameCanvasHeldKeys = "\x00aram-game-held-keys"
+
+// Bit positions are serialized. Keep existing entries in this order.
+var gameCanvasPhysicalKeys = [...]int32{-1, '2', 141, -3, '4', 142, -4, '6', 145, -2, '8', 146, -5, '5', 148}
+
+func gameCanvasPhysicalKeyBit(key int32) int32 {
+	for i, candidate := range gameCanvasPhysicalKeys {
+		if key == candidate {
+			return 1 << i
+		}
+	}
+	return 0
+}
+
+func gameCanvasPhysicalKeyMask(keys int32) int32 {
+	var mask int32
+	for i, key := range gameCanvasPhysicalKeys {
+		if keys&(1<<i) != 0 {
+			mask |= gameCanvasKeyMask(key)
+		}
+	}
+	return mask
+}
+
+func (vm *VM) setCurrentDisplay(reference uint32) {
+	if reference == vm.currentDisplay {
+		return
+	}
+	vm.currentDisplay = reference
+	if vm.IsInstance(reference, "javax/microedition/lcdui/game/GameCanvas") {
+		object, _ := vm.Object(reference)
+		held, _ := vm.hostStatic[gameCanvasHeldKeys].Int()
+		object.Fields["$game.keyStates"] = IntValue(0)
+		object.Fields["$game.latchedKeys"] = IntValue(0)
+		// Keys held on entry remain invisible until released and pressed again.
+		object.Fields["$game.blockedKeys"] = IntValue(held)
+	}
+}
+
 func (vm *VM) installGameCanvasNatives() {
+	vm.hostStatic[gameCanvasHeldKeys] = IntValue(0)
 	vm.RegisterNative("javax/microedition/lcdui/game/GameCanvas", "<init>", "(Z)V", func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
 		state, err := vm.newImageState(vm.ScreenWidth, vm.canvasHeight())
 		if err != nil {
@@ -1018,12 +1061,20 @@ func (vm *VM) installGameCanvasNatives() {
 		if !ok {
 			return Value{}, false, fmt.Errorf("invalid GameCanvas")
 		}
+		if receiver != vm.currentDisplay {
+			return IntValue(0), true, nil
+		}
 		states, _ := object.Fields["$game.keyStates"].Int()
-		return IntValue(states), true, nil
+		latched, _ := object.Fields["$game.latchedKeys"].Int()
+		object.Fields["$game.latchedKeys"] = IntValue(0)
+		return IntValue(states | latched), true, nil
 	})
 	for _, descriptor := range []string{"()V", "(IIII)V"} {
 		descriptor := descriptor
 		vm.RegisterNative("javax/microedition/lcdui/game/GameCanvas", "flushGraphics", descriptor, func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+			if receiver != vm.currentDisplay {
+				return Value{}, false, nil
+			}
 			imageValue, _ := objectField(vm, receiver, gameCanvasImage)
 			imageReference, _ := imageValue.Reference()
 			image, err := vm.image(imageReference)
@@ -1034,18 +1085,43 @@ func (vm *VM) installGameCanvasNatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
-			x, y, width, height := 0, 0, image.width, image.height
+			x, y, width, height := int64(0), int64(0), int64(image.width), int64(image.height)
 			if len(args) == 4 {
 				xv, _ := intArgument(args, 0)
 				yv, _ := intArgument(args, 1)
 				wv, _ := intArgument(args, 2)
 				hv, _ := intArgument(args, 3)
-				x, y, width, height = int(xv), int(yv), int(wv), int(hv)
+				x, y, width, height = int64(xv), int64(yv), int64(wv), int64(hv)
 			}
-			if width < 0 || height < 0 {
-				return Value{}, false, vm.newThrowable("java/lang/IllegalArgumentException", "")
+			if width < 1 || height < 1 {
+				return Value{}, false, nil
 			}
-			return Value{}, false, blit(vm, screen, image, x, y, x, y, width, height)
+			// Clip before narrowing to host int, including on 32-bit hosts.
+			// Presentation uses buffer coordinates, not Graphics drawing state.
+			right := min(x+width, int64(image.width), int64(screen.width))
+			bottom := min(y+height, int64(image.height), int64(screen.height))
+			x, y = max(x, 0), max(y, 0)
+			if right <= x || bottom <= y {
+				return Value{}, false, nil
+			}
+			drawState, err := vm.services.Graphics.DrawState(vm.serviceOwner, screen.surface)
+			if err != nil {
+				return Value{}, false, err
+			}
+			presentation := shared.SurfaceDrawState{
+				Clip:        shared.Rectangle{Width: int32(screen.width), Height: int32(screen.height)},
+				Raster:      shared.RasterCopy,
+				GlobalAlpha: 255,
+			}
+			if err := vm.services.Graphics.SetDrawState(vm.serviceOwner, screen.surface, presentation); err != nil {
+				return Value{}, false, err
+			}
+			blitErr := blit(vm, screen, image, int(x), int(y), int(x), int(y), int(right-x), int(bottom-y))
+			restoreErr := vm.services.Graphics.SetDrawState(vm.serviceOwner, screen.surface, drawState)
+			if blitErr != nil {
+				return Value{}, false, blitErr
+			}
+			return Value{}, false, restoreErr
 		})
 	}
 	vm.RegisterNative("javax/microedition/lcdui/game/GameCanvas", "paint", "(Ljavax/microedition/lcdui/Graphics;)V", func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {

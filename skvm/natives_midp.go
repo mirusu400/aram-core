@@ -159,7 +159,7 @@ func (vm *VM) installDisplayNatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
-			vm.currentDisplay = reference
+			vm.setCurrentDisplay(reference)
 			return Value{}, false, nil
 		},
 	)
