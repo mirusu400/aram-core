@@ -10,12 +10,23 @@ import (
 )
 
 var (
-	ErrInvalidServiceConfig   = errors.New("gvm: invalid service configuration")
-	ErrDeviceQueryUnavailable = errors.New("gvm: device query service unavailable")
-	ErrClockUnavailable       = errors.New("gvm: clock service unavailable")
-	ErrClockRange             = errors.New("gvm: clock outside supported civil-time range")
-	ErrRandomUnavailable      = errors.New("gvm: random service unavailable")
-	ErrTimerUnavailable       = errors.New("gvm: timer request service unavailable")
+	ErrInvalidServiceConfig      = errors.New("gvm: invalid service configuration")
+	ErrDeviceQueryUnavailable    = errors.New("gvm: device query service unavailable")
+	ErrClockUnavailable          = errors.New("gvm: clock service unavailable")
+	ErrClockRange                = errors.New("gvm: clock outside supported civil-time range")
+	ErrRandomUnavailable         = errors.New("gvm: random service unavailable")
+	ErrTimerUnavailable          = errors.New("gvm: timer request service unavailable")
+	ErrDisplayClearUnavailable   = errors.New("gvm: display clear service unavailable")
+	ErrMappingSelectUnavailable  = errors.New("gvm: mapping selection service unavailable")
+	ErrAudioResetUnavailable     = errors.New("gvm: audio reset service unavailable")
+	ErrMediaLoadUnavailable      = errors.New("gvm: media load service unavailable")
+	ErrInvalidMediaIndex         = errors.New("gvm: invalid media index")
+	ErrDisplayPresentUnavailable = errors.New("gvm: display presentation service unavailable")
+	ErrSpriteDrawUnavailable     = errors.New("gvm: sprite draw service unavailable")
+	ErrDisplayCopyUnavailable    = errors.New("gvm: display buffer copy service unavailable")
+	ErrDisplayFillUnavailable    = errors.New("gvm: display fill service unavailable")
+	ErrColorSelectUnavailable    = errors.New("gvm: drawing color selection service unavailable")
+	ErrRectangleFillUnavailable  = errors.New("gvm: rectangle fill service unavailable")
 )
 
 // DeviceQueryProfile is explicit GVM adapter state, not a detected handset or
@@ -47,8 +58,116 @@ type TimerRequestSink interface {
 	RequestGVMTimer(intervalMillis int16, selector uint16) error
 }
 
-// ServiceConfig opts independently into device query (51), civil clock (b9),
-// random range (a1), and timer requests (9a).
+// DisplayClearSink accepts opcode55's guest-requested drawing-buffer clear.
+// The authenticated native handler fills the configured one-byte-per-pixel
+// drawing buffer with 0xff. This boundary does not present a frame, convert
+// packed colors, select a palette, or imply that display state is initialized.
+// Implementations must complete atomically and must not reenter the VM.
+type DisplayClearSink interface {
+	ClearGVMDisplay() error
+}
+
+// DisplayFillSink accepts opcode57's signed remainder modulo182. The provider
+// owns the unresolved selector remap row and atomic drawing-buffer fill. This
+// request neither selects a mapping row nor publishes a frame. Implementations
+// must complete atomically and must not reenter the VM.
+type DisplayFillSink interface {
+	FillGVMDisplay(selector int16) error
+}
+
+// DisplayPresentSink accepts an unsuppressed opcode78 guest submission. The
+// provider owns initialized geometry, drawing/display buffers, packed-color
+// conversion, immutable publication and frame sequencing. This interface does
+// not make native repaint events or UI clears into guest frames. Implementations
+// must complete atomically and must not reenter the VM.
+type DisplayPresentSink interface {
+	PresentGVMDisplay() error
+}
+
+// DisplayBuffer names the two private one-byte-per-pixel buffers copied by
+// opcodes76 and77. Drawing is opcode78's guest presentation source; Auxiliary
+// is the second initialized buffer. These names do not imply publication.
+type DisplayBuffer uint8
+
+const (
+	DisplayBufferDrawing DisplayBuffer = iota + 1
+	DisplayBufferAuxiliary
+)
+
+// DisplayCopySink accepts an atomic full-extent copy between initialized GVM
+// buffers. It must preserve overlap-safe provider policy and must not publish a
+// frame. Geometry, allocation and extent validation belong to the adapter.
+// Implementations must complete atomically and must not reenter the VM.
+type DisplayCopySink interface {
+	CopyGVMDisplay(source, destination DisplayBuffer) error
+}
+
+// MappingSelectSink accepts opcode59's clamped selector in the range 0..6.
+// The exact-build native target updates private drawing-remap state. The row
+// contents and a portable color policy are not established, so this interface
+// exposes selection only and must not be treated as presentation. Implementations
+// must complete atomically and must not reenter the VM.
+type MappingSelectSink interface {
+	SelectGVMMapping(selector uint8) error
+}
+
+// ColorSelectSink accepts opcode5e's normalized low-byte selector. The exact-build
+// native handler reduces only the low byte modulo182, records that selector, and
+// derives an active packed drawing byte from the current remap row. Selector4 is
+// transparent in the native pixel writer. The provider owns remap state and must
+// apply the update atomically; this request neither draws nor presents a frame.
+// Implementations must not reenter the VM.
+type ColorSelectSink interface {
+	SelectGVMColor(selector uint8) error
+}
+
+// RectangleFillSink accepts opcode63's four signed guest coordinates in stack
+// order. The exact-build native callee sorts each axis, clips to its private
+// inclusive bounds, and invokes the active drawing-color writer for every pixel.
+// The provider owns those bounds, active color/remap state, transparency and the
+// drawing buffer. Implementations must complete atomically and must not reenter
+// the VM; this request does not publish a frame.
+type RectangleFillSink interface {
+	FillGVMRectangle(x1, y1, x2, y2 int16) error
+}
+
+// SpriteDrawSink accepts opcode6f's validated media payload and signed guest
+// coordinates. The exact-build native callee recognizes private sprite types
+// and applies resource-local anchors before rasterizing through the active remap
+// state. This boundary deliberately does not guess those formats or mutate a
+// display buffer. Resource is an independent copy owned by the callee. The
+// implementation must complete atomically and must not reenter the VM.
+type SpriteDrawSink interface {
+	DrawGVMSprite(resource []byte, x, y int16) error
+}
+
+// AudioResetSink accepts opcode91's provider-selected audio type. The exact-build
+// handler initializes or resets type-specific native audio objects. This request
+// boundary does not model playback, media decoding, device ownership or teardown.
+// Implementations must complete atomically and must not reenter the VM.
+type AudioResetSink interface {
+	ResetGVMAudio(audioType int32) error
+}
+
+// MediaResource is owned immutable input for opcode90. Construction copies Data.
+// The first payload byte is the exact-build format discriminator consumed by the
+// native audio-type adapter; GVM does not assign it a portable codec name.
+type MediaResource struct {
+	Data []byte
+}
+
+// MediaLoadSink accepts an independent copy of one validated media payload.
+// It owns codec/device policy. Mutating data cannot change VM-owned resources.
+// Implementations must complete atomically and must not reenter the VM.
+type MediaLoadSink interface {
+	LoadGVMMedia(index uint16, data []byte) error
+}
+
+// ServiceConfig opts independently into device query (51), display clear (55),
+// remapped display fill (57), mapping selection (59), drawing-color selection
+// (5e), rectangle fill (63), sprite drawing (6f), display copies (76/77), presentation (78), media
+// load (90), audio reset (91), civil clock (b9), random range (a1), and timer
+// requests (9a).
 // Clock and ClockPolicy must be supplied together. The Clock pointer is borrowed,
 // not copied: the owner must serialize VM execution and clock Advance/Restore.
 // GVM never advances, restores or replaces that clock. A nonnil clock alone does
@@ -68,21 +187,64 @@ type ServiceConfig struct {
 	// Timer is borrowed. GVM only forwards authenticated opcode9a requests; it
 	// does not advance time, install shared runtime timers or deliver callbacks.
 	Timer TimerRequestSink
+	// DisplayClear is borrowed. Opcode55 requests only a drawing-buffer fill;
+	// it does not publish or validate a frame.
+	DisplayClear DisplayClearSink
+	// DisplayFill is borrowed. Opcode57 forwards only the normalized selector;
+	// the provider owns remapping and drawing-buffer mutation.
+	DisplayFill DisplayFillSink
+	// DisplayPresent is borrowed. Opcode78 forwarding assumes the adapter has
+	// already established that the native suppression gate is clear.
+	DisplayPresent DisplayPresentSink
+	// DisplayCopy is borrowed. Opcodes76/77 copy the configured full display
+	// extent between drawing and auxiliary buffers without presentation.
+	DisplayCopy DisplayCopySink
+	// MappingSelect is borrowed. Opcode59 forwards only the authenticated clamped
+	// selector. The provider owns any remap-row policy and atomic mutation.
+	MappingSelect MappingSelectSink
+	// ColorSelect is borrowed. Opcode5e forwards only low-byte modulo182. The
+	// provider owns the active remap row, packed byte and transparent-color policy.
+	ColorSelect ColorSelectSink
+	// RectangleFill is borrowed. Opcode63 forwards four signed coordinates; the
+	// provider owns sorting, clipping, active color and drawing-buffer mutation.
+	RectangleFill RectangleFillSink
+	// SpriteDraw is borrowed. Opcode6f forwards a copied media payload and the
+	// two signed coordinates. The provider owns format validation and raster state.
+	SpriteDraw SpriteDrawSink
+	// AudioReset is borrowed. Opcode91 also requires DeviceQuery so the adapter
+	// receives the same explicit AudioType selected for opcode51.
+	AudioReset AudioResetSink
+	// Media is copied at construction. MediaLoad is borrowed and receives a new
+	// independent payload copy for every opcode90 request.
+	Media     []MediaResource
+	MediaLoad MediaLoadSink
 }
 
 type serviceState struct {
-	deviceQuery  *DeviceQueryProfile
-	clock        *gruntime.Clock
-	clockPolicy  CivilTimePolicy
-	random       *gruntime.Random
-	randomStream string
-	timer        TimerRequestSink
+	deviceQuery    *DeviceQueryProfile
+	clock          *gruntime.Clock
+	clockPolicy    CivilTimePolicy
+	random         *gruntime.Random
+	randomStream   string
+	timer          TimerRequestSink
+	displayClear   DisplayClearSink
+	displayFill    DisplayFillSink
+	displayPresent DisplayPresentSink
+	displayCopy    DisplayCopySink
+	mappingSelect  MappingSelectSink
+	colorSelect    ColorSelectSink
+	rectangleFill  RectangleFillSink
+	spriteDraw     SpriteDrawSink
+	audioReset     AudioResetSink
+	media          [][]byte
+	mediaLoad      MediaLoadSink
 }
 
 // NewWithAddressSpaceAndServices explicitly enables service-aware dispatch.
 // Nil config enables no provider and supplies no defaults: valid query operands
 // then report a named unavailable cause inside ExecutionError. Old constructors
-// remain distinguishable and return UnsupportedOpcodeError for 51/b9/a1 instead.
+// remain distinguishable and return UnsupportedOpcodeError for
+// 51/55/57/59/5e/63/6f/76/77/78/90/91/b9/a1 instead.
 // Configuration is validated before arena construction, with no clock mutation.
 // Current clock conversion range is checked per query, since its owner can advance
 // or restore the shared clock after construction. Epoch zero can be selected via
@@ -112,6 +274,26 @@ func NewWithAddressSpaceAndServices(program []byte, entry uint32, space AddressS
 			state.random, state.randomStream = config.Random, strings.Clone(name)
 		}
 		state.timer = config.Timer
+		state.displayClear = config.DisplayClear
+		state.displayFill = config.DisplayFill
+		state.displayPresent = config.DisplayPresent
+		state.displayCopy = config.DisplayCopy
+		state.mappingSelect = config.MappingSelect
+		state.colorSelect = config.ColorSelect
+		state.rectangleFill = config.RectangleFill
+		state.spriteDraw = config.SpriteDraw
+		state.audioReset = config.AudioReset
+		state.mediaLoad = config.MediaLoad
+		if len(config.Media) > math.MaxUint16 {
+			return nil, fmt.Errorf("%w: too many media records", ErrInvalidServiceConfig)
+		}
+		state.media = make([][]byte, len(config.Media))
+		for i, media := range config.Media {
+			if len(media.Data) > math.MaxUint16 {
+				return nil, fmt.Errorf("%w: media %d exceeds 16-bit length", ErrInvalidServiceConfig, i)
+			}
+			state.media[i] = append([]byte(nil), media.Data...)
+		}
 	}
 	v, err := NewWithAddressSpace(program, entry, space)
 	if err != nil {

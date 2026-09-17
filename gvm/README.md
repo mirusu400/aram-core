@@ -25,6 +25,7 @@ Every fetched opcode advances PC before its handler.
 | Opcode | Normalized successful behavior |
 | --- | --- |
 | `00` | No operation, PC=P |
+| `02` | u8 value symbol, u8 index symbol; push value-symbol rawLE16 at signed first-word index, PC=P+2 |
 | `03` | u8 symbol, u8 element; push unchanged LE16 at symbol+2*element, PC=P+2 |
 | `04` | u8 symbol, push its first rawLE16 slot, PC=P+1 |
 | `05` | Push signed i8 extended to raw16, PC=P+1 |
@@ -41,11 +42,15 @@ Every fetched opcode advances PC before its handler.
 | `14` | Replace a,b with low16(a*b) |
 | `15` | Signed32 division of signextended16 a/b, truncating toward zero, retain low16 |
 | `1d` | Signed16 a>b, replacing a,b with canonical zero or one; equality is false |
+| `1e` | Signed16 a<b, replacing a,b with canonical zero or one; equality is false |
 | `1f` | Signed16 a>=b, replacing a,b with canonical zero or one |
+| `20` | Signed16 a<=b, replacing a,b with canonical zero or one |
 | `21` | Raw16 a==b, replacing two words with canonical zero or one, no inline operands, PC=P |
+| `2f` | u8 destination symbol/element, u8 source symbol/element; copy one raw LE16 word, no stack effects |
 | `31` | u8 symbol, u8 element, signed i8 immediate; store signextended LE16 at symbol+2*element, PC=P+3 |
 | `35` | u8 destination symbol, u8 source symbol; copy first rawLE16 word, no stack effects, PC=P+2 |
 | `36` | u8 symbol, signed i8 immediate; store signextended LE16 at symbol start, PC=P+2 |
+| `39` | u8 symbol, u8 element, signed i8 delta; add delta modulo65536 to the selected LE16 word, PC=P+3 |
 | `3a` | u8 symbol, signed i8 delta; add delta modulo65536 to its first LE16 word, stacks unchanged, PC=P+2 |
 | `3c` | Pop16; if signed16(top)<signed8(P), jump B+BE16(P+1), otherwise P+3 |
 | `3d` | Pop16; if signed16(top)>=signed8(P), jump B+BE16(P+1), otherwise P+3; equality branches |
@@ -62,6 +67,17 @@ Every fetched opcode advances PC before its handler.
 | `4e` | Configured address model only: replace top tagged address with its rawLE16 word, depth unchanged, PC=P |
 | `4f` | Configured address model only: store raw top16 as LE16 at RAM+2*signed16(next-to-top), pop two, PC=P |
 | `51` | Explicit service constructor only: write four device-query words through a tagged reference and pop once |
+| `55` | Explicit service constructor only: request an atomic drawing-buffer fill with byte `0xff`; no operands, stack effects or presentation |
+| `57` | Explicit service constructor only: signed top modulo182 selects a provider-remapped drawing-buffer fill, then pop once |
+| `59` | Explicit service constructor only: clamp signed top to `0..6`, forward a mapping-selection request and pop once; no presentation |
+| `5e` | Explicit service constructor only: reduce the low byte of top modulo182, forward drawing-color selection and pop once; no drawing or presentation |
+| `63` | Explicit service constructor only: consume four signed coordinates and forward an inclusive clipped rectangle-fill request; no presentation |
+| `6f` | Explicit service constructor only: consume signed x, signed y and signed media index; forward an owned sprite payload and coordinates |
+| `76` | Explicit service constructor only: copy the full drawing buffer to the auxiliary buffer; no stack effects or presentation |
+| `77` | Explicit service constructor only: copy the full auxiliary buffer to the drawing buffer; no stack effects or presentation |
+| `78` | Explicit service constructor only: forward one unsuppressed guest display submission; no stack effects |
+| `90` | Explicit service constructor only: resolve signed top as a bounded media index, forward an owned payload copy and pop once |
+| `91` | Explicit service constructor only: forward the selected device profile's audio type to a reset request; no stack effects or playback |
 | `96`, `97` | Pop16 argument, call a ret-only native callee in this build, PC=P |
 | `9a` | Explicit service constructor only: forward signed16 interval and raw16 selector to a borrowed timer-request sink, then pop two, PC=P |
 | `a1` | Explicit service constructor only: replace two signed16 bounds with an equal bound or a draw in the half-open signed range, pop once, PC=P |
@@ -83,6 +99,30 @@ The sink adapter must preserve the authenticated interval-below-10 bypass and
 define its own
 atomic installation, serialization and delivery policy. No initialization,
 presentation or game-start milestone follows from this branch.
+Likewise, `55` exposes only the authenticated drawing-buffer clear boundary.
+It does not allocate display state, decode colors, publish a frame or make the
+timer callback path operational.
+Opcode `57` forwards only a signed selector remainder. The provider must apply
+the unresolved active remap row and fill the drawing buffer without presenting.
+Opcode `59` similarly forwards only the clamped mapping selector. The native
+remap-row contents remain unresolved and are not embedded or approximated.
+Opcode `5e` forwards only the top word's low byte modulo182. The provider owns
+the current remap row, active packed drawing byte, and selector4 transparency;
+the kernel does not guess those values or claim that selecting a color draws.
+Opcode `63` forwards four signed coordinates in stack order. The provider owns
+axis sorting, inclusive clipping bounds, active remapped color, transparency and
+drawing-buffer mutation; the request itself does not publish a frame.
+Opcode `6f` exposes the authenticated sprite-raster request with an owned media
+payload and signed coordinates. Private resource formats, local anchor handling,
+clipping, remap application and rasterization remain adapter responsibilities.
+Opcodes `76` and `77` expose only opposite-direction full display-buffer copies.
+Neither operation publishes a frame or initializes buffer geometry.
+Opcode `91` exposes the selected audio-backend reset boundary without claiming
+media decoding, sound output or native audio-object equivalence.
+Opcode `90` forwards a bounded media payload but leaves its first-byte format,
+decoder, playback lifecycle and device semantics to the explicit adapter.
+Opcode `78` is a guest presentation boundary only when an adapter has valid
+geometry, packed-color conversion, buffers and suppression-gate state.
 
 Immediate stores `31/36` and returns do not alter S; `0a` pops its stored value.
 The signed operand top starts at -1, and
