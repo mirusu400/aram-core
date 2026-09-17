@@ -17,6 +17,7 @@ import (
 
 const (
 	ArchiveSHA256 = "99be6eb56702533eb0ef6f916e3f8a3b7978cb84fbee2de878856ad7a0db1649"
+	ArchiveSize   = int64(739636)
 	ModuleSHA256  = "5fbb0a3d36da30c592fc01cbe4e4cd5ece4cf3e41421d965cd5a67cd70badd7a"
 	ModulePath    = "32536/kkrh.mod"
 	MIFPath       = "32536.mif"

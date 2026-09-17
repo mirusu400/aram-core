@@ -7,6 +7,7 @@ import (
 	"image"
 	"image/color"
 	"strings"
+	"time"
 
 	"github.com/mirusu400/aram-core/cpu"
 	"github.com/mirusu400/aram-core/cpu/interpreter"
@@ -89,6 +90,7 @@ type Runtime struct {
 	heapNext      uint32
 	updates       uint64
 	guestFrame    bool
+	presented     []byte
 	displayColors [16]uint32
 	eventCounts   map[uint32]uint64
 	files         map[string][]byte
@@ -100,8 +102,9 @@ type Runtime struct {
 }
 
 type brewCallback struct {
-	function uint32
-	context  uint32
+	function  uint32
+	context   uint32
+	remaining time.Duration
 }
 
 // ExecutionBoundaryError identifies the first unimplemented proprietary ABI
@@ -519,12 +522,13 @@ func (r *Runtime) handleAppletMethodTrap(
 			}
 			return resume()
 		case 7: // Update(IDisplay *)
-			r.updates++
-			changed, err := r.framebufferMutated()
-			if err != nil {
-				return true, 0, cpu.ModeARM, err
+			pixels := make([]byte, framebufferBytes)
+			if err := r.cpu.ReadMemory(framebufferBase, pixels); err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("snapshot BREW guest framebuffer: %w", err)
 			}
-			r.guestFrame = r.guestFrame || changed
+			r.presented = pixels
+			r.updates++
+			r.guestFrame = true
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
 				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW display-update status: %w", err)
 			}
@@ -565,6 +569,10 @@ func (r *Runtime) handleAppletMethodTrap(
 			}
 			return resume()
 		case 11: // SetTimer(IShell *, uint32, PFNNOTIFY, void *)
+			delayMS, err := r.cpu.ReadRegister(cpu.RegisterR1)
+			if err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("read BREW timer delay: %w", err)
+			}
 			function, err := r.cpu.ReadRegister(cpu.RegisterR2)
 			if err != nil {
 				return true, 0, cpu.ModeARM, fmt.Errorf("read BREW timer callback: %w", err)
@@ -579,7 +587,11 @@ func (r *Runtime) handleAppletMethodTrap(
 				}
 				return resume()
 			}
-			r.timers = append(r.timers, brewCallback{function: function, context: user})
+			r.timers = append(r.timers, brewCallback{
+				function:  function,
+				context:   user,
+				remaining: time.Duration(delayMS) * time.Millisecond,
+			})
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
 				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW timer status: %w", err)
 			}
@@ -676,12 +688,18 @@ func (r *Runtime) handleAppletMethodTrap(
 	return false, 0, cpu.ModeARM, nil
 }
 
-// RunCallbacks executes one scheduled timer generation. Callbacks rearmed by a
-// callback remain queued for the next frame, matching cooperative BREW timing.
-func (r *Runtime) RunCallbacks(ctx context.Context) error {
+// RunCallbacks advances the cooperative clock by elapsed and executes timers
+// whose requested delay has expired. Callbacks rearmed by a callback remain
+// queued for a later frame.
+func (r *Runtime) RunCallbacks(ctx context.Context, elapsed time.Duration) error {
 	pending := append([]brewCallback(nil), r.timers...)
 	r.timers = r.timers[:0]
 	for _, callback := range pending {
+		callback.remaining -= elapsed
+		if callback.remaining > 0 {
+			r.timers = append(r.timers, callback)
+			continue
+		}
 		for register, value := range map[uint32]uint32{
 			cpu.RegisterR0: callback.context,
 			cpu.RegisterSP: stackBase + stackSize - 16,
@@ -1315,11 +1333,11 @@ func (r *Runtime) measureDisplayText() error {
 // Framebuffer returns a detached RGBA conversion of the title's RGB565 native
 // surface. presented is true only after guest code mutates and updates it.
 func (r *Runtime) Framebuffer() (frame *image.RGBA, presented bool, err error) {
-	pixels := make([]byte, framebufferBytes)
-	if err := r.cpu.ReadMemory(framebufferBase, pixels); err != nil {
-		return nil, false, fmt.Errorf("read BREW guest framebuffer: %w", err)
-	}
+	pixels := r.presented
 	frame = image.NewRGBA(image.Rect(0, 0, int(framebufferWidth), int(framebufferHeight)))
+	if len(pixels) != int(framebufferBytes) {
+		return frame, false, nil
+	}
 	for offset := uint32(0); offset < framebufferBytes; offset += 2 {
 		value := binary.LittleEndian.Uint16(pixels[offset:])
 		red := uint8((value >> 11) & 0x1f)

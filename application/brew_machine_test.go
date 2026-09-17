@@ -1,14 +1,23 @@
 package application
 
 import (
+	"context"
+	"errors"
 	"image"
 	"image/color"
+	"io"
 	"testing"
 	"time"
 
 	"github.com/mirusu400/aram-core/application/internal/brewrt"
 	machinecore "github.com/mirusu400/aram-core/core"
 )
+
+type panicReaderAt struct{}
+
+func (panicReaderAt) ReadAt([]byte, int64) (int, error) {
+	panic("unexpected source read")
+}
 
 func TestBREWMachineQueuesPressAndRelease(t *testing.T) {
 	machine := newBREWMachine(machinecore.Source{Name: "synthetic.zip"}, brewrt.Package{})
@@ -23,6 +32,36 @@ func TestBREWMachineQueuesPressAndRelease(t *testing.T) {
 	if len(machine.input) != 2 || machine.input[0] != press || machine.input[1] != release {
 		t.Fatalf("queued transitions = %#v, want press then release", machine.input)
 	}
+}
+
+func TestBREWMachineInputScheduleUsesGuestElapsedTime(t *testing.T) {
+	input := []machinecore.InputEvent{
+		{Control: "up", Pressed: true, At: 16 * time.Millisecond},
+		{Control: "up", Pressed: false, At: 48 * time.Millisecond},
+	}
+	if got := dueBREWInputCount(input, 32*time.Millisecond); got != 1 {
+		t.Fatalf("due input count at 32ms = %d, want 1", got)
+	}
+}
+
+func TestBREWExecutionBoundaryPausesMachine(t *testing.T) {
+	machine := newBREWMachine(machinecore.Source{Name: "synthetic.zip"}, brewrt.Package{})
+	machine.state = machinecore.StateRunning
+	err := machine.executionErrorLocked("timer", &brewrt.ExecutionBoundaryError{Interface: "IShell", MethodSlot: 99})
+	var boundary *brewrt.ExecutionBoundaryError
+	if !errors.As(err, &boundary) || machine.state != machinecore.StatePaused {
+		t.Fatalf("boundary error=%v state=%s, want typed boundary and paused", err, machine.state)
+	}
+}
+
+func TestBREWFactoryRejectsWrongSizeBeforeReading(t *testing.T) {
+	_, matched, err := NewFactory().createBREWMachine(context.Background(), machinecore.Source{
+		Name: "oversized.zip", ReaderAt: panicReaderAt{}, Size: brewrt.ArchiveSize + 1,
+	})
+	if err != nil || matched {
+		t.Fatalf("wrong-size source matched=%v err=%v", matched, err)
+	}
+	var _ io.ReaderAt = panicReaderAt{}
 }
 
 func TestBREWMachineRendersPackageSplashNonUniformly(t *testing.T) {

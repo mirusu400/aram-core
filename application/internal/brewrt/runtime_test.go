@@ -6,10 +6,27 @@ import (
 	"image"
 	"image/color"
 	"testing"
+	"time"
 
 	"bytes"
 	"golang.org/x/image/bmp"
+
+	"github.com/mirusu400/aram-core/cpu"
 )
+
+func newSyntheticRuntime(t *testing.T) *Runtime {
+	t.Helper()
+	module := make([]byte, 20)
+	for offset, instruction := range []uint32{0xe59f0008, 0xe5820000, 0xe3a00000, 0xe12fff1e, heapBase} {
+		binary.LittleEndian.PutUint32(module[offset*4:], instruction)
+	}
+	runtime, err := New(Package{Module: module})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	return runtime
+}
 
 func TestRuntimeBootstrapsSyntheticARMModule(t *testing.T) {
 	// ldr r0,[pc,#8]; str r0,[r2]; mov r0,#0; bx lr; .word heapBase
@@ -27,6 +44,48 @@ func TestRuntimeBootstrapsSyntheticARMModule(t *testing.T) {
 	}
 	if got := runtime.ModuleObject(); got != heapBase {
 		t.Fatalf("module object = 0x%08x, want 0x%08x", got, heapBase)
+	}
+}
+
+func TestDisplayUpdateCommitsDetachedBlackFramebuffer(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	black := make([]byte, framebufferBytes)
+	if err := runtime.cpu.WriteMemory(framebufferBase, black); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterLR, returnTrap|1); err != nil {
+		t.Fatal(err)
+	}
+	handled, _, _, err := runtime.handleAppletMethodTrap(displayTrapBase + 7*2 + 2)
+	if err != nil || !handled {
+		t.Fatalf("IDisplay Update handled=%v err=%v", handled, err)
+	}
+	if count, valid := runtime.FrameStats(); count != 1 || !valid {
+		t.Fatalf("frame stats count=%d valid=%v, want 1/true", count, valid)
+	}
+
+	changed := append([]byte(nil), black...)
+	changed[0], changed[1] = 0xff, 0xff
+	if err := runtime.cpu.WriteMemory(framebufferBase, changed); err != nil {
+		t.Fatal(err)
+	}
+	frame, presented, err := runtime.Framebuffer()
+	if err != nil || !presented {
+		t.Fatalf("committed framebuffer presented=%v err=%v", presented, err)
+	}
+	if got := color.RGBAModel.Convert(frame.At(0, 0)).(color.RGBA); got != (color.RGBA{A: 0xff}) {
+		t.Fatalf("uncommitted guest write leaked into frame: pixel=%#v", got)
+	}
+}
+
+func TestRunCallbacksHonorsRequestedDelay(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	runtime.timers = []brewCallback{{function: returnTrap | 1, context: 7, remaining: 100 * time.Millisecond}}
+	if err := runtime.RunCallbacks(context.Background(), 16*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.timers) != 1 || runtime.timers[0].remaining != 84*time.Millisecond {
+		t.Fatalf("timers after 16ms = %#v, want one timer with 84ms remaining", runtime.timers)
 	}
 }
 

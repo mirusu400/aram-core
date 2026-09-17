@@ -49,8 +49,13 @@ func TestBREWExactArchiveBootstrap(t *testing.T) {
 	if machine.State() != machinecore.StateRunning {
 		t.Fatalf("state after first frame = %s, want running", machine.State())
 	}
+	for frames := 0; frames < 64 && frameIsUniform(machine.Framebuffer()); frames++ {
+		if err := machine.StepFrame(context.Background()); err != nil {
+			t.Fatalf("step exact BREW title to first guest frame: %v", err)
+		}
+	}
 	if frameIsUniform(machine.Framebuffer()) {
-		t.Fatal("exact BREW guest framebuffer is uniform")
+		t.Fatal("exact BREW guest framebuffer remained uniform after 64 frames")
 	}
 	implementation, ok := machine.(*brewMachine)
 	if !ok || implementation.runtime == nil || implementation.runtime.ModuleObject() == 0 {

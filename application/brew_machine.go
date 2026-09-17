@@ -13,13 +13,17 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/mirusu400/aram-core/application/internal/brewrt"
 	machinecore "github.com/mirusu400/aram-core/core"
 	"github.com/mirusu400/aram-core/cpu"
 )
 
-const maxBREWInputEvents = 1024
+const (
+	maxBREWInputEvents = 1024
+	brewFrameDuration  = 16 * time.Millisecond
+)
 
 // brewMachine is an exact-title host, not a general BREW implementation. It
 // executes the authenticated module, applet, timers and researched service
@@ -35,6 +39,7 @@ type brewMachine struct {
 	input      []machinecore.InputEvent
 	started    bool
 	guestFrame bool
+	now        time.Duration
 	closed     bool
 }
 
@@ -42,7 +47,10 @@ func (f Factory) createBREWMachine(ctx context.Context, source machinecore.Sourc
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
 	}
-	if err := source.Validate(); err != nil || source.Size > maxApplicationSize {
+	if err := source.Validate(); err != nil || source.Size != brewrt.ArchiveSize {
+		return nil, false, nil
+	}
+	if source.SHA256 != "" && !strings.EqualFold(source.SHA256, brewrt.ArchiveSHA256) {
 		return nil, false, nil
 	}
 	data, err := io.ReadAll(io.NewSectionReader(source.ReaderAt, 0, source.Size))
@@ -199,6 +207,7 @@ func (m *brewMachine) Reset(ctx context.Context) error {
 	m.input = nil
 	m.started = false
 	m.guestFrame = false
+	m.now = 0
 	draw.Draw(m.frame, m.frame.Bounds(), image.NewUniform(color.Black), image.Point{}, draw.Src)
 	m.state = machinecore.StateReady
 	return nil
@@ -221,11 +230,12 @@ func (m *brewMachine) StepFrame(ctx context.Context) error {
 }
 
 func (m *brewMachine) stepLocked(ctx context.Context) error {
-	if err := m.runtime.RunCallbacks(ctx); err != nil {
-		m.state = machinecore.StateFaulted
-		return fmt.Errorf("run BREW timer callback: %w", err)
+	m.now += brewFrameDuration
+	if err := m.runtime.RunCallbacks(ctx, brewFrameDuration); err != nil {
+		return m.executionErrorLocked("run BREW timer callback", err)
 	}
-	for _, event := range m.input {
+	due := dueBREWInputCount(m.input, m.now)
+	for _, event := range m.input[:due] {
 		key, ok := brewKeyCode(event.Control)
 		if !ok {
 			return fmt.Errorf("unsupported BREW control %q", event.Control)
@@ -235,11 +245,10 @@ func (m *brewMachine) stepLocked(ctx context.Context) error {
 			kind = 0x101
 		}
 		if _, err := m.runtime.DispatchEvent(ctx, kind, key, 0); err != nil {
-			m.state = machinecore.StateFaulted
-			return fmt.Errorf("dispatch BREW input %q: %w", event.Control, err)
+			return m.executionErrorLocked(fmt.Sprintf("dispatch BREW input %q", event.Control), err)
 		}
 	}
-	m.input = nil
+	m.input = append(m.input[:0], m.input[due:]...)
 	frame, presented, err := m.runtime.Framebuffer()
 	if err != nil {
 		m.state = machinecore.StateFaulted
@@ -250,6 +259,24 @@ func (m *brewMachine) stepLocked(ctx context.Context) error {
 		m.guestFrame = true
 	}
 	return nil
+}
+
+func dueBREWInputCount(input []machinecore.InputEvent, elapsed time.Duration) int {
+	due := 0
+	for due < len(input) && input[due].At <= elapsed {
+		due++
+	}
+	return due
+}
+
+func (m *brewMachine) executionErrorLocked(operation string, err error) error {
+	var boundary *brewrt.ExecutionBoundaryError
+	if errors.As(err, &boundary) {
+		m.state = machinecore.StatePaused
+	} else {
+		m.state = machinecore.StateFaulted
+	}
+	return fmt.Errorf("%s: %w", operation, err)
 }
 
 func brewKeyCode(control string) (uint32, bool) {
