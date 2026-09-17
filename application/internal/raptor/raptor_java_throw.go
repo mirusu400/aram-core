@@ -87,6 +87,7 @@ func (r *Runtime) recordRaptorJavaThrow(class string, site uint32) {
 // same slice as an undeliverable throw is attributed to it.
 func (r *Runtime) BeginGuestSlice() {
 	r.pendingJavaThrow = ""
+	r.resetJavaSafepointSlice()
 }
 
 // TakeUndeliveredJavaThrow reports the exception raised in the current slice

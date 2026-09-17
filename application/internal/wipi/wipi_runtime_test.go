@@ -33,6 +33,19 @@ func newPublicRuntime(t *testing.T) *Runtime {
 	return runtime
 }
 
+func TestUtilityHtonsSwapsPortBytes(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, 0x2d0c))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, 0))
+	result, handled, err := runtime.dispatchUtility("MC_utilHtons")
+	if err != nil || !handled {
+		t.Fatalf("MC_utilHtons handled=%v err=%v", handled, err)
+	}
+	if result.Low != 0x0c2d {
+		t.Fatalf("MC_utilHtons(0x2d0c) = 0x%08x, want 0x00000c2d", result.Low)
+	}
+}
+
 func wipiTestWave(samples []int16) []byte {
 	data := make([]byte, 44+len(samples)*2)
 	copy(data[0:4], "RIFF")

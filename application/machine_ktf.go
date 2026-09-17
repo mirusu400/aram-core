@@ -150,6 +150,11 @@ func (m *Machine) runKTFSlice(ctx context.Context, elapsed time.Duration) error 
 		return err
 	}
 	presents := 0
+	presentLimit := ktfPresentsPerQuantumMax
+	if m.ktfPresentsPerQuantum > 0 &&
+		m.ktfPresentsPerQuantum < presentLimit {
+		presentLimit = m.ktfPresentsPerQuantum
+	}
 	result := cpu.Result{Reason: cpu.StopBudget}
 	var instructions uint64
 	var consumeErr error
@@ -219,7 +224,7 @@ taskLoop:
 			// render many invisible intermediate frames in one host update -
 			// and, in 스파이더맨3, queue Java paint tasks faster than they
 			// retire until the task table overflows.
-			if presents >= ktfPresentsPerQuantumMax {
+			if presents >= presentLimit {
 				break
 			}
 		}

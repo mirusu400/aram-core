@@ -17,6 +17,14 @@ func TestRaptorConfiguredPrimaryFramebufferHeightAffectsOnlyScreen(t *testing.T)
 	}
 	handle, err := public.EnsureScreenFramebuffer()
 	check(t, err)
+	screen := public.Framebuffers[handle]
+
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, handle))
+	pixels, _, handled, err := runtime.DispatchPrivateImport(50)
+	check(t, err)
+	if !handled || pixels.Low != screen.Pixels {
+		t.Fatalf("configured screen pixels = 0x%08x, want 0x%08x", pixels.Low, screen.Pixels)
+	}
 
 	callHeight := func(handle uint32) uint32 {
 		t.Helper()
@@ -46,5 +54,22 @@ func TestRaptorConfiguredPrimaryFramebufferHeightAffectsOnlyScreen(t *testing.T)
 	runtime.primaryFramebufferHeight = 321
 	if got := callHeight(handle); got != 296 {
 		t.Fatalf("invalid configured primary height = %d, want 296", got)
+	}
+}
+
+func TestRaptorDefaultPrimaryFramebufferPixelsStartBelowHandsetStrip(t *testing.T) {
+	public := newPublicRuntime(t)
+	public.Frame = image.NewRGBA(image.Rect(0, 0, 240, 320))
+	runtime := &Runtime{CPU: public.CPU, Public: public}
+	handle, err := public.EnsureScreenFramebuffer()
+	check(t, err)
+	screen := public.Framebuffers[handle]
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, handle))
+
+	result, name, handled, err := runtime.DispatchPrivateImport(50)
+	check(t, err)
+	want := screen.Pixels + uint32(raptorScreenOriginY*screen.Width*screen.BitsPerPixel/8)
+	if !handled || name != "RAPTOR.grpGetFrameBufferPixels" || result.Low != want {
+		t.Fatalf("default screen pixels = 0x%08x, %q, %t; want 0x%08x", result.Low, name, handled, want)
 	}
 }
