@@ -4,6 +4,11 @@ Status: 2026-09-11, **recognized only**. `loader/brew` does not load or execute
 native code. The legacy-platform plan belongs to `aram-emu`; this document
 records the core parser's evidence and remaining execution prerequisites.
 
+The [2026-09-13 static follow-up](gvm-brew-followup-20260913.md#newly-identified-filemgr-and-delegated-entry)
+identifies a selected module's FileMgr dependency, companion-entry delegation
+and the supplied build's optional cache callback. It does not change the
+ordinary product's recognition-only milestone.
+
 ## Read-only investigation
 
 The user-authorized legacy corpus was inspected in place, without extracting

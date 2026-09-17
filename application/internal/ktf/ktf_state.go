@@ -566,7 +566,7 @@ func WriteState(r *Runtime, backend cpu.Backend, started bool, writer *guest.Sta
 			len(metadataBytes),
 		)
 	}
-	if len(serviceState) > int(^uint32(0)) {
+	if uint64(len(serviceState)) > uint64(^uint32(0)) {
 		return fmt.Errorf("save KTF services: state is too large")
 	}
 

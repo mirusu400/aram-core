@@ -1,0 +1,1393 @@
+// Package gvm provides a bounded, deterministic subset of GVM bytecode for
+// caller-supplied buffers. It is not an SGS loader or a game-startup runtime.
+package gvm
+
+import (
+	"bytes"
+	"encoding/binary"
+	"errors"
+	"fmt"
+)
+
+var (
+	// ErrDispatchActive rejects redispatch before a successful guest halt.
+	ErrDispatchActive      = errors.New("gvm: dispatch still active")
+	ErrBudget              = errors.New("gvm: instruction budget exhausted")
+	ErrTruncated           = errors.New("gvm: truncated instruction")
+	ErrStackUnderflow      = errors.New("gvm: operand stack underflow")
+	ErrStackOverflow       = errors.New("gvm: operand stack overflow")
+	ErrDivideByZero        = errors.New("gvm: division by zero")
+	ErrReturnStackOverflow = errors.New("gvm: return stack overflow")
+	ErrInvalidTarget       = errors.New("gvm: target outside program")
+	// ErrInvalidArraySelector rejects operations outside the verified scalar family.
+	ErrInvalidArraySelector = errors.New("gvm: invalid scalar array selector")
+)
+
+// UnsupportedOpcodeError identifies the fetched opcode and its buffer offset.
+// Unimplemented instructions never silently behave as NOPs.
+type UnsupportedOpcodeError struct {
+	Opcode byte
+	Offset int
+}
+
+func (e *UnsupportedOpcodeError) Error() string {
+	return fmt.Sprintf("gvm: unsupported opcode 0x%02x at offset %d", e.Opcode, e.Offset)
+}
+
+// ExecutionError associates a safety fault with the instruction's opcode offset.
+// At end of buffer, Offset is the position of the failed opcode fetch.
+type ExecutionError struct {
+	Offset int
+	Cause  error
+}
+
+func (e *ExecutionError) Error() string { return fmt.Sprintf("gvm: offset %d: %v", e.Offset, e.Cause) }
+func (e *ExecutionError) Unwrap() error { return e.Cause }
+
+// VM owns its program and stacks. Old constructors supply no host services.
+// Opt-in services borrow a clock and Random under the owner's serialization discipline.
+// VM is not safe for concurrent use. The zero value is equivalent to New(nil).
+// Stack lengths encode the reference's signed top indices (length minus one).
+type VM struct {
+	code        []byte
+	symbols     [][]byte
+	address     *addressMemory
+	services    *serviceState
+	pc          int
+	stack       [65]uint16
+	depth       int
+	returns     [17]int
+	returnDepth int
+	halted      bool
+	fault       error
+	// savedTop is meaningful only after 0b. Validity is host bookkeeping:
+	// native initial/reset state and future consumers are not established.
+	savedTop      int32
+	savedTopValid bool
+}
+
+// New copies program and begins at buffer offset zero. An empty program fails
+// with ErrTruncated on its first fetch. This is not the SGS entry-zero rule.
+func New(program []byte) *VM { return &VM{code: append([]byte(nil), program...)} }
+
+// NewAt copies the entire buffer, selecting an explicit in-bounds entry.
+// Absolute branch operands remain relative to the beginning of this buffer,
+// not to entry. No header parsing or SGS entry mapping is performed.
+func NewAt(program []byte, entry uint32) (*VM, error) {
+	if uint64(entry) >= uint64(len(program)) {
+		return nil, fmt.Errorf("%w: entry offset %d", ErrInvalidTarget, entry)
+	}
+	v := New(program)
+	v.pc = int(entry)
+	return v, nil
+}
+
+// PC returns the next buffer-relative fetch position. On handler failure the
+// opcode has already been consumed, but no operands or stacks are committed.
+func (v *VM) PC() int { return v.pc }
+
+// Stack returns an independent bottom-to-top copy, interpreting slots as raw16.
+func (v *VM) Stack() []uint16 { return append([]uint16(nil), v.stack[:v.depth]...) }
+
+// Halted reports successful completion of the current dispatch via guest 0xff.
+// Faults are not successful halts.
+func (v *VM) Halted() bool { return v.halted }
+
+// BeginDispatch prepares a successfully halted VM for an explicit buffer offset,
+// without executing instructions or touching services. The owner must serialize
+// calls with all other VM operations; this is not a concurrent or reentrant API.
+// Sticky faults are returned unchanged first, then active dispatches (including
+// budget suspension) are rejected. After these checks, entry zero is a complete
+// no-op. Invalid nonzero entries wrap ErrInvalidTarget without setting a fault.
+// Like NewAt, offsets are uint32, with no header lookup or implicit 16-bit mask.
+// Success empties logical stacks but retains their backing arrays, all storage
+// and aliases, and service bindings. It invalidates only savedTop's validity:
+// requiring a fresh 0b before 0c is fail-closed host policy, not a claim about
+// native savedTop reset behavior. The raw savedTop value remains untouched.
+func (v *VM) BeginDispatch(entry uint32) (started bool, err error) {
+	if v.fault != nil {
+		return false, v.fault
+	}
+	if !v.halted {
+		return false, ErrDispatchActive
+	}
+	if entry == 0 {
+		return false, nil
+	}
+	if uint64(entry) >= uint64(len(v.code)) {
+		return false, fmt.Errorf("%w: entry offset %d", ErrInvalidTarget, entry)
+	}
+	v.pc = int(entry)
+	v.halted = false
+	v.depth = 0
+	v.returnDepth = 0
+	v.savedTopValid = false
+	return true, nil
+}
+
+// BeginSymbolDispatch atomically publishes one LE16 symbol value and prepares a
+// successfully halted VM for an explicit event entry. It is intended for host
+// adapters whose authenticated native wrapper writes a reserved event symbol
+// immediately before guest dispatch. The owner must serialize this with every
+// other VM operation.
+//
+// Validation is fail-closed and completes before mutation. Entry zero still
+// publishes the symbol value but starts no dispatch, matching wrappers that
+// perform their event write before testing an optional callback entry.
+func (v *VM) BeginSymbolDispatch(index uint8, value uint16, entry uint32) (started bool, err error) {
+	if v.fault != nil {
+		return false, v.fault
+	}
+	if !v.halted {
+		return false, ErrDispatchActive
+	}
+	if int(index) >= len(v.symbols) {
+		return false, fmt.Errorf("%w: %d", ErrInvalidSymbol, index)
+	}
+	if len(v.symbols[index]) < 2 {
+		return false, ErrInvalidSymbolRegion
+	}
+	if entry != 0 && uint64(entry) >= uint64(len(v.code)) {
+		return false, fmt.Errorf("%w: entry offset %d", ErrInvalidTarget, entry)
+	}
+
+	binary.LittleEndian.PutUint16(v.symbols[index][:2], value)
+	if entry == 0 {
+		return false, nil
+	}
+	v.pc = int(entry)
+	v.halted = false
+	v.depth = 0
+	v.returnDepth = 0
+	v.savedTopValid = false
+	return true, nil
+}
+
+// Run executes at most budget instructions. Exhaustion is resumable and does
+// not set a fault. A zero budget makes no progress, returning ErrBudget unless
+// the VM has already halted or faulted. Reaching 0xff on the last step succeeds.
+func (v *VM) Run(budget uint64) error {
+	if v.fault != nil {
+		return v.fault
+	}
+	if v.halted {
+		return nil
+	}
+	for ; budget > 0; budget-- {
+		if err := v.Step(); err != nil {
+			return err
+		}
+		if v.halted {
+			return nil
+		}
+	}
+	return ErrBudget
+}
+
+// Step executes one instruction. A successful halted VM is inert. Safety
+// faults are sticky: subsequent Step/Run calls return the same error without
+// further mutation. Bounds/underflow checks are emulator policy, not native
+// behavior. Every fetched opcode advances PC before handler execution.
+func (v *VM) Step() error {
+	if v.fault != nil {
+		return v.fault
+	}
+	if v.halted {
+		return nil
+	}
+	offset := v.pc
+	fail := func(cause error) error { v.fault = &ExecutionError{Offset: offset, Cause: cause}; return v.fault }
+	if v.pc >= len(v.code) {
+		return fail(ErrTruncated)
+	}
+	op := v.code[v.pc]
+	v.pc++
+	switch op {
+	case 0x00:
+	case 0x0b:
+		v.savedTop = int32(v.depth) - 1
+		v.savedTopValid = true
+	case 0x0c:
+		// Only observed, representable, non-growing restores are supported.
+		// Growing could expose slots cleared by prior host pops. These domain
+		// restrictions are host policy, not guards in the native scalar copy.
+		if !v.savedTopValid || v.savedTop < -1 || v.savedTop > 64 {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		depth := int(v.savedTop) + 1
+		if depth > v.depth {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		v.depth = depth // Index only: preserve backing words and the marker.
+	case 0xff:
+		v.halted = true
+	case 0x0d:
+		// This changes the top WORD, not the depth. Depth65 is valid.
+		if v.depth == 0 {
+			return fail(ErrStackUnderflow)
+		}
+		v.stack[v.depth-1]++
+	case 0x1d:
+		if v.depth < 2 {
+			return fail(ErrStackUnderflow)
+		}
+		a, b := v.stack[v.depth-2], v.stack[v.depth-1]
+		var value uint16
+		if int16(a) > int16(b) {
+			value = 1
+		}
+		v.stack[v.depth-2] = value
+		v.depth--
+		v.stack[v.depth] = 0 // Host hygiene, not native semantics.
+	case 0x1e:
+		if v.depth < 2 {
+			return fail(ErrStackUnderflow)
+		}
+		a, b := v.stack[v.depth-2], v.stack[v.depth-1]
+		var value uint16
+		if int16(a) < int16(b) {
+			value = 1
+		}
+		v.stack[v.depth-2] = value
+		v.depth--
+		v.stack[v.depth] = 0 // Host hygiene, not native semantics.
+	case 0x0e:
+		// Native DEC word changes only top16; lower-bound safety is host policy.
+		if v.depth == 0 {
+			return fail(ErrStackUnderflow)
+		}
+		v.stack[v.depth-1]--
+	case 0x0f:
+		// Native checks capacity first; empty-stack rejection is host safety.
+		if v.depth >= len(v.stack) {
+			return fail(ErrStackOverflow)
+		}
+		if v.depth == 0 {
+			return fail(ErrStackUnderflow)
+		}
+		value := v.stack[v.depth-1]
+		v.stack[v.depth] = value
+		v.depth++
+	case 0x02:
+		// Two u8 operands select a value symbol and an index symbol. The first
+		// raw word of the latter is interpreted as a signed element index into
+		// the former. Cache both operands before validation for alias safety.
+		if len(v.code)-v.pc < 2 {
+			return fail(ErrTruncated)
+		}
+		valueSymbol, indexSymbol := int(v.code[v.pc]), int(v.code[v.pc+1])
+		if v.depth >= len(v.stack) {
+			return fail(ErrStackOverflow)
+		}
+		if valueSymbol >= len(v.symbols) || indexSymbol >= len(v.symbols) {
+			return fail(ErrInvalidSymbol)
+		}
+		values, indexRegion := v.symbols[valueSymbol], v.symbols[indexSymbol]
+		if len(values)%2 != 0 || len(values) > 510 || len(indexRegion) < 2 {
+			return fail(ErrInvalidSymbolRegion)
+		}
+		element := int16(binary.LittleEndian.Uint16(indexRegion[:2]))
+		if element < 0 || int(element) >= len(values)/2 {
+			return fail(ErrInvalidElement)
+		}
+		offset := 2 * int(element)
+		v.stack[v.depth] = binary.LittleEndian.Uint16(values[offset : offset+2])
+		v.depth++
+		v.pc += 2
+	case 0x03:
+		// Host policy eagerly requires both unsigned operands before capacity.
+		if len(v.code)-v.pc < 2 {
+			return fail(ErrTruncated)
+		}
+		index, element := int(v.code[v.pc]), int(v.code[v.pc+1])
+		if v.depth >= len(v.stack) {
+			return fail(ErrStackOverflow)
+		}
+		if index >= len(v.symbols) {
+			return fail(ErrInvalidSymbol)
+		}
+		region := v.symbols[index]
+		// As for 31, exact span length must represent a uint8 word count.
+		// This is host shape policy, not native descriptor validation.
+		if len(region)%2 != 0 || len(region) > 510 {
+			return fail(ErrInvalidSymbolRegion)
+		}
+		if element >= len(region)/2 {
+			return fail(ErrInvalidElement)
+		}
+		// The validated element guarantees a full word within this bound span.
+		value := binary.LittleEndian.Uint16(region[2*element : 2*element+2])
+		v.stack[v.depth] = value
+		v.depth++
+		v.pc += 2
+	case 0x04:
+		if len(v.code)-v.pc < 1 {
+			return fail(ErrTruncated)
+		}
+		index := int(v.code[v.pc])
+		if v.depth >= len(v.stack) {
+			return fail(ErrStackOverflow)
+		}
+		if index >= len(v.symbols) {
+			return fail(ErrInvalidSymbol)
+		}
+		if len(v.symbols[index]) < 2 {
+			return fail(ErrInvalidSymbolRegion)
+		}
+		v.stack[v.depth] = binary.LittleEndian.Uint16(v.symbols[index][:2])
+		v.depth++
+		v.pc++
+	case 0x09:
+		// Host policy caches both operands before guards or aliasing writes.
+		if len(v.code)-v.pc < 2 {
+			return fail(ErrTruncated)
+		}
+		index, element := int(v.code[v.pc]), int(v.code[v.pc+1])
+		// The native upper guard rejects depth65 even though success pops.
+		if v.depth >= len(v.stack) {
+			return fail(ErrStackOverflow)
+		}
+		if index >= len(v.symbols) {
+			return fail(ErrInvalidSymbol)
+		}
+		region := v.symbols[index]
+		// Exact len/2 is the restricted uint8 count representation of 03/31.
+		if len(region)%2 != 0 || len(region) > 510 {
+			return fail(ErrInvalidSymbolRegion)
+		}
+		if element >= len(region)/2 {
+			return fail(ErrInvalidElement)
+		}
+		if v.depth == 0 {
+			return fail(ErrStackUnderflow)
+		}
+		value := v.stack[v.depth-1]
+		binary.LittleEndian.PutUint16(region[2*element:2*element+2], value)
+		v.depth--
+		v.stack[v.depth] = 0 // Host hygiene, not native backing-slot behavior.
+		v.pc += 2
+	case 0x0a:
+		if len(v.code)-v.pc < 1 {
+			return fail(ErrTruncated)
+		}
+		index := int(v.code[v.pc])
+		// Native signed top>=64 rejects depth65 even though this handler pops.
+		if v.depth >= len(v.stack) {
+			return fail(ErrStackOverflow)
+		}
+		if index >= len(v.symbols) {
+			return fail(ErrInvalidSymbol)
+		}
+		region := v.symbols[index]
+		if v.address != nil {
+			binding := v.address.bindings[index]
+			region = v.address.ram
+			if binding.region == AddressFile {
+				region = v.address.file
+			}
+			// Host policy requires the whole word inside the global region,
+			// not inside the descriptor. Widen before adding for 32-bit hosts.
+			if uint64(binding.offset)+2 > uint64(len(region)) {
+				return fail(ErrInvalidSymbolRegion)
+			}
+			region = region[int(binding.offset):]
+		} else if len(region) < 2 {
+			// Legacy independent bindings cannot represent bytes beyond their span.
+			return fail(ErrInvalidSymbolRegion)
+		}
+		if v.depth == 0 {
+			return fail(ErrStackUnderflow)
+		}
+		// Cache operands before a write that may alias this operand or future code.
+		value := v.stack[v.depth-1]
+		binary.LittleEndian.PutUint16(region[:2], value)
+		v.depth--
+		v.stack[v.depth] = 0
+		v.pc++
+	case 0x9a:
+		// Old constructors remain typed-unsupported. Explicit service-aware VMs
+		// expose only a request boundary, not timer delivery or guest redispatch.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 2 {
+			return fail(ErrStackUnderflow)
+		}
+		if v.services.timer == nil {
+			return fail(ErrTimerUnavailable)
+		}
+		interval, selector := int16(v.stack[v.depth-2]), v.stack[v.depth-1]
+		if err := v.services.timer.RequestGVMTimer(interval, selector); err != nil {
+			return fail(err)
+		}
+		v.depth -= 2
+		clear(v.stack[v.depth : v.depth+2]) // Host hygiene only.
+	case 0xa1:
+		// Preserve ALL legacy constructors' typed unsupported behavior, even
+		// for equal operands or underflow. Only explicit services opt in.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 2 {
+			return fail(ErrStackUnderflow)
+		}
+		// Cache both raw words before any service access. Depth65 is valid.
+		a, b := v.stack[v.depth-2], v.stack[v.depth-1]
+		value := a
+		if a != b {
+			lo, hi := int32(int16(a)), int32(int16(b))
+			if lo > hi {
+				lo, hi = hi, lo
+			}
+			if v.services.random == nil {
+				return fail(ErrRandomUnavailable)
+			}
+			// Lookup-only runtime draw revalidates after owner Restore and is
+			// transactional on error. Width1 still draws exactly once. Width
+			// can be 65535, so retain signed32 arithmetic, not signed16.
+			r, err := v.services.random.LCG214013Output15(v.services.randomStream)
+			if err != nil {
+				return fail(err)
+			}
+			// No fallible work after the draw. Upper bound is excluded and the
+			// 15-bit output uses modulo, not a full-width uniform sampler.
+			value = uint16(lo + int32(r)%(hi-lo))
+		}
+		v.stack[v.depth-2] = value
+		v.depth--
+		// Approved host popped-slot ZERO hygiene on both paths, deliberately
+		// unlike native retention. Equality bypasses the provider entirely.
+		v.stack[v.depth] = 0
+	case 0x55:
+		// The exact-build native handler clears the configured drawing buffer
+		// to byte 0xff. It has no operands or guest-stack effects and does not
+		// present the buffer. Old constructors remain typed-unsupported.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.services.displayClear == nil {
+			return fail(ErrDisplayClearUnavailable)
+		}
+		if err := v.services.displayClear.ClearGVMDisplay(); err != nil {
+			return fail(err)
+		}
+	case 0x57:
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth == 0 {
+			return fail(ErrStackUnderflow)
+		}
+		if v.services.displayFill == nil {
+			return fail(ErrDisplayFillUnavailable)
+		}
+		selector := int16(v.stack[v.depth-1]) % 182
+		if err := v.services.displayFill.FillGVMDisplay(selector); err != nil {
+			return fail(err)
+		}
+		v.depth--
+		v.stack[v.depth] = 0 // Host hygiene only.
+	case 0x59:
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth == 0 {
+			return fail(ErrStackUnderflow)
+		}
+		if v.services.mappingSelect == nil {
+			return fail(ErrMappingSelectUnavailable)
+		}
+		selector := int32(int16(v.stack[v.depth-1]))
+		selector = max(0, min(6, selector))
+		if err := v.services.mappingSelect.SelectGVMMapping(uint8(selector)); err != nil {
+			return fail(err)
+		}
+		v.depth--
+		v.stack[v.depth] = 0 // Host hygiene only.
+	case 0x5e:
+		// The exact-build handler reads only the low byte of top, reduces it
+		// modulo182, and updates the native drawing selector/remapped byte. The
+		// provider owns remap and transparency policy; the VM commits the pop only
+		// after a successful atomic service update.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth == 0 {
+			return fail(ErrStackUnderflow)
+		}
+		if v.services.colorSelect == nil {
+			return fail(ErrColorSelectUnavailable)
+		}
+		selector := uint8(v.stack[v.depth-1]) % 182
+		if err := v.services.colorSelect.SelectGVMColor(selector); err != nil {
+			return fail(err)
+		}
+		v.depth--
+		v.stack[v.depth] = 0 // Host hygiene only.
+	case 0x63:
+		// The exact-build handler forwards four signed coordinates in stack order
+		// to an inclusive, clipped rectangle rasterizer, then consumes all four.
+		// Sorting, clipping and active-color behavior remain adapter state.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 4 {
+			return fail(ErrStackUnderflow)
+		}
+		if v.services.rectangleFill == nil {
+			return fail(ErrRectangleFillUnavailable)
+		}
+		x1 := int16(v.stack[v.depth-4])
+		y1 := int16(v.stack[v.depth-3])
+		x2 := int16(v.stack[v.depth-2])
+		y2 := int16(v.stack[v.depth-1])
+		if err := v.services.rectangleFill.FillGVMRectangle(x1, y1, x2, y2); err != nil {
+			return fail(err)
+		}
+		v.depth -= 4
+		clear(v.stack[v.depth : v.depth+4]) // Host hygiene only.
+	case 0x62:
+		// The exact-build handler at 0x418e10 sign-extends four stack words in
+		// order, calls the clipped rectangle-outline helper at 0x40e600, then
+		// consumes all four values. Provider failure leaves the stack untouched.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 4 {
+			return fail(ErrStackUnderflow)
+		}
+		if v.services.rectangleDraw == nil {
+			return fail(ErrRectangleDrawUnavailable)
+		}
+		x1, y1 := int16(v.stack[v.depth-4]), int16(v.stack[v.depth-3])
+		x2, y2 := int16(v.stack[v.depth-2]), int16(v.stack[v.depth-1])
+		if err := v.services.rectangleDraw.DrawGVMRectangle(x1, y1, x2, y2); err != nil {
+			return fail(err)
+		}
+		v.depth -= 4
+		clear(v.stack[v.depth : v.depth+4]) // Host hygiene only.
+	case 0x66:
+		// Exact-build handler 0x418f10 reads the low byte of four words in stack
+		// order, normalizes them by 4/182/182/3, replaces the private text-draw
+		// state, and consumes all four words without invoking a host service.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 4 {
+			return fail(ErrStackUnderflow)
+		}
+		v.services.textStyle = textStyleState{
+			mode:      uint8(v.stack[v.depth-4]) % 4,
+			primary:   uint8(v.stack[v.depth-3]) % 182,
+			secondary: uint8(v.stack[v.depth-2]) % 182,
+			variant:   uint8(v.stack[v.depth-1]) % 3,
+		}
+		v.depth -= 4
+		clear(v.stack[v.depth : v.depth+4]) // Host hygiene only.
+	case 0x67:
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 1 {
+			return fail(ErrStackUnderflow)
+		}
+		v.services.textStyle.mode = uint8(v.stack[v.depth-1]) % 4
+		v.depth--
+		v.stack[v.depth] = 0 // Host hygiene only.
+	case 0x68:
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 2 {
+			return fail(ErrStackUnderflow)
+		}
+		v.services.textStyle.primary = uint8(v.stack[v.depth-2]) % 182
+		v.services.textStyle.secondary = uint8(v.stack[v.depth-1]) % 182
+		v.depth -= 2
+		clear(v.stack[v.depth : v.depth+2]) // Host hygiene only.
+	case 0x69:
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 1 {
+			return fail(ErrStackUnderflow)
+		}
+		v.services.textStyle.variant = uint8(v.stack[v.depth-1]) % 3
+		v.depth--
+		v.stack[v.depth] = 0 // Host hygiene only.
+	case 0x6a:
+		// Exact-build handler 0x419020 validates the top media index, then calls
+		// 0x40cce0 with signed x/y, the text resource, and a snapshot of the
+		// private mode/primary/alignment state. Opcode6a supplies no secondary
+		// selector and disables the outline/background path.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 3 {
+			return fail(ErrStackUnderflow)
+		}
+		index := int16(v.stack[v.depth-1])
+		if index < 0 || int(index) >= len(v.services.media) {
+			return fail(ErrInvalidMediaIndex)
+		}
+		if v.services.textDraw == nil {
+			return fail(ErrTextDrawUnavailable)
+		}
+		style := v.services.textStyle
+		if err := v.services.textDraw.DrawGVMText(
+			bytes.Clone(v.services.media[index]),
+			int16(v.stack[v.depth-3]),
+			int16(v.stack[v.depth-2]),
+			TextDrawStyle{
+				Mode: style.mode, Primary: style.primary,
+				Alignment: style.variant,
+			},
+		); err != nil {
+			return fail(err)
+		}
+		v.depth -= 3
+		clear(v.stack[v.depth : v.depth+3]) // Host hygiene only.
+	case 0x6f:
+		// Exact-build handler order is signed x, signed y, then a signed media
+		// index on top. It validates the shared media record, calls the private sprite
+		// rasterizer and consumes all three words. The adapter receives an owned
+		// resource snapshot rather than a mutable VM alias.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 3 {
+			return fail(ErrStackUnderflow)
+		}
+		index := int16(v.stack[v.depth-1])
+		if index < 0 || int(index) >= len(v.services.media) {
+			return fail(ErrInvalidMediaIndex)
+		}
+		if v.services.spriteDraw == nil {
+			return fail(ErrSpriteDrawUnavailable)
+		}
+		x := int16(v.stack[v.depth-3])
+		y := int16(v.stack[v.depth-2])
+		if err := v.services.spriteDraw.DrawGVMSprite(bytes.Clone(v.services.media[index]), x, y); err != nil {
+			return fail(err)
+		}
+		v.depth -= 3
+		clear(v.stack[v.depth : v.depth+3]) // Host hygiene only.
+	case 0x70:
+		// Exact-build order is signed x, signed y, signed media index, then a raw
+		// mirror flag. Handler 0x4194b0 validates the third word, passes the fourth
+		// as a zero/nonzero selection to 0x4107b0, and consumes all four on success.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 4 {
+			return fail(ErrStackUnderflow)
+		}
+		index := int16(v.stack[v.depth-2])
+		if index < 0 || int(index) >= len(v.services.media) {
+			return fail(ErrInvalidMediaIndex)
+		}
+		if v.services.spriteTransform == nil {
+			return fail(ErrSpriteTransformUnavailable)
+		}
+		x, y := int16(v.stack[v.depth-4]), int16(v.stack[v.depth-3])
+		mirror := v.stack[v.depth-1] != 0
+		if err := v.services.spriteTransform.DrawGVMTransformedSprite(bytes.Clone(v.services.media[index]), x, y, mirror); err != nil {
+			return fail(err)
+		}
+		v.depth -= 4
+		clear(v.stack[v.depth : v.depth+4]) // Host hygiene only.
+	case 0x76, 0x77:
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.services.displayCopy == nil {
+			return fail(ErrDisplayCopyUnavailable)
+		}
+		source, destination := DisplayBufferDrawing, DisplayBufferAuxiliary
+		if op == 0x77 {
+			source, destination = destination, source
+		}
+		if err := v.services.displayCopy.CopyGVMDisplay(source, destination); err != nil {
+			return fail(err)
+		}
+	case 0x78:
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.services.displayPresent == nil {
+			return fail(ErrDisplayPresentUnavailable)
+		}
+		if err := v.services.displayPresent.PresentGVMDisplay(); err != nil {
+			return fail(err)
+		}
+	case 0x91:
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.services.deviceQuery == nil {
+			return fail(ErrDeviceQueryUnavailable)
+		}
+		if v.services.audioReset == nil {
+			return fail(ErrAudioResetUnavailable)
+		}
+		if err := v.services.audioReset.ResetGVMAudio(v.services.deviceQuery.AudioType); err != nil {
+			return fail(err)
+		}
+	case 0x90:
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth == 0 {
+			return fail(ErrStackUnderflow)
+		}
+		index := int16(v.stack[v.depth-1])
+		if index < 0 || int(index) >= len(v.services.media) {
+			return fail(ErrInvalidMediaIndex)
+		}
+		if v.services.mediaLoad == nil {
+			return fail(ErrMediaLoadUnavailable)
+		}
+		if err := v.services.mediaLoad.LoadGVMMedia(uint16(index), bytes.Clone(v.services.media[index])); err != nil {
+			return fail(err)
+		}
+		v.depth--
+		v.stack[v.depth] = 0 // Host hygiene only.
+	case 0x51, 0xb9:
+		// Preserve legacy unsupported behavior. Only the explicit service
+		// constructor enables stack/address/service/conversion safety faults.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 1 {
+			return fail(ErrStackUnderflow)
+		}
+		destination, err := v.serviceSpan(v.stack[v.depth-1], 8)
+		if err != nil {
+			return fail(err)
+		}
+		var words [4]uint16
+		if op == 0x51 {
+			words, err = v.services.deviceQueryWords()
+		} else {
+			words, err = v.services.clockWords()
+		}
+		if err != nil {
+			return fail(err)
+		}
+		// Services and VM control state cannot alias guest arenas. All
+		// failure-capable work precedes stores, unlike native error callbacks.
+		binary.LittleEndian.PutUint16(destination[0:2], words[0])
+		binary.LittleEndian.PutUint16(destination[2:4], words[1])
+		if op == 0x51 && v.services.deviceQuery.AudioType != 5 && v.services.deviceQuery.AudioType != 6 {
+			// Retain the generic51 native output order, though the fields do
+			// not overlap and service state is privately copied host data.
+			binary.LittleEndian.PutUint16(destination[6:8], words[3])
+			binary.LittleEndian.PutUint16(destination[4:6], words[2])
+		} else {
+			binary.LittleEndian.PutUint16(destination[4:6], words[2])
+			binary.LittleEndian.PutUint16(destination[6:8], words[3])
+		}
+		v.depth--
+		v.stack[v.depth] = 0 // Host hygiene only.
+	case 0xb5:
+		if v.address == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 4 {
+			return fail(ErrStackUnderflow)
+		}
+		destRef, sourceRef := v.stack[v.depth-4], v.stack[v.depth-3]
+		count, selector := int16(v.stack[v.depth-2]), v.stack[v.depth-1]
+		// Host fail-first validation differs from the native handler's two
+		// unconditional resolver calls and their transitive error effects.
+		destination, err := v.serviceSpan(destRef, 2)
+		if err != nil {
+			return fail(err)
+		}
+		source, err := v.serviceSpan(sourceRef, 2)
+		if err != nil {
+			return fail(err)
+		}
+		if selector > 11 {
+			return fail(ErrInvalidArraySelector)
+		}
+		// Unlike b4, nonpositive count performs no element/divisor access.
+		if count > 0 {
+			extent := 2 * uint64(count)
+			destination, err = v.serviceSpan(destRef, extent)
+			if err != nil {
+				return fail(err)
+			}
+			source, err = v.serviceSpan(sourceRef, extent)
+			if err != nil {
+				return fail(err)
+			}
+			var candidateDest, candidateSource []byte
+			if destRef&0x4000 == sourceRef&0x4000 {
+				// One shared candidate preserves writes into future source words.
+				// Copy only the bounded union, never an arbitrary whole arena.
+				d, s := 2*uint64(destRef&^0x4000), 2*uint64(sourceRef&^0x4000)
+				lo, hi := min(d, s), max(d, s)+extent
+				region := v.address.ram
+				if destRef&0x4000 != 0 {
+					region = v.address.file
+				}
+				candidate := append([]byte(nil), region[lo:hi]...)
+				candidateDest = candidate[d-lo : d-lo+extent]
+				candidateSource = candidate[s-lo : s-lo+extent]
+			} else {
+				// Different arenas cannot alias: source remains original while
+				// only the detached destination candidate evolves.
+				candidateDest = append([]byte(nil), destination...)
+				candidateSource = source
+			}
+			for pos := uint64(0); pos < extent; pos += 2 {
+				y := binary.LittleEndian.Uint16(candidateSource[pos : pos+2])
+				if (selector == 4 || selector == 5) && y == 0 {
+					// Discard the entire candidate, including overlap-generated
+					// prefixes. Native div/rem instead retain prior local writes.
+					return fail(ErrDivideByZero)
+				}
+				x := binary.LittleEndian.Uint16(candidateDest[pos : pos+2])
+				var value uint16
+				switch selector {
+				case 0:
+					value = y
+				case 1:
+					value = x + y
+				case 2:
+					value = x - y
+				case 3:
+					value = x * y
+				case 4:
+					value = uint16(int32(int16(x)) / int32(int16(y)))
+				case 5:
+					value = uint16(int32(int16(x)) % int32(int16(y)))
+				case 6:
+					value = x & y
+				case 7:
+					value = x | y
+				case 8:
+					value = ^y
+				case 9:
+					value = x ^ y
+				case 10:
+					value = uint16(int16(x) >> (y & 31))
+				case 11:
+					value = x << (y & 31)
+				}
+				binary.LittleEndian.PutUint16(candidateDest[pos:pos+2], value)
+			}
+			copy(destination, candidateDest)
+		}
+		v.depth -= 4
+		clear(v.stack[v.depth : v.depth+4]) // Host hygiene only.
+	case 0xb4:
+		if v.address == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 4 {
+			return fail(ErrStackUnderflow)
+		}
+		// Cache all four arguments before writes that may alias program bytes.
+		ref, scalar := v.stack[v.depth-4], v.stack[v.depth-3]
+		count, selector := int16(v.stack[v.depth-2]), v.stack[v.depth-1]
+		region, index := v.address.ram, ref
+		if index&0x4000 != 0 {
+			region = v.address.file
+			index &^= 0x4000
+		}
+		// Host policy requires a full starting word even for nonpositive count.
+		start := uint64(index) * 2
+		if int16(index) < 0 || start+2 > uint64(len(region)) {
+			return fail(ErrInvalidAddress)
+		}
+		// Only these twelve table entries have a verified bounded contract.
+		if selector > 11 {
+			return fail(ErrInvalidArraySelector)
+		}
+		// Both native operations check zero before count. Our shared sticky
+		// fault preserves memory/stack, not native diagnostics, redirection/pop.
+		if (selector == 4 || selector == 5) && scalar == 0 {
+			return fail(ErrDivideByZero)
+		}
+		if count > 0 {
+			end := start + 2*uint64(count)
+			// Preflight the entire global arena span before any partial store.
+			if end > uint64(len(region)) {
+				return fail(ErrInvalidAddress)
+			}
+			for pos := start; pos < end; pos += 2 {
+				x := binary.LittleEndian.Uint16(region[pos : pos+2])
+				var value uint16
+				switch selector {
+				case 0:
+					value = scalar
+				case 1:
+					value = x + scalar
+				case 2:
+					value = x - scalar
+				case 3:
+					value = x * scalar
+				case 4:
+					value = uint16(int32(int16(x)) / int32(int16(scalar)))
+				case 5:
+					value = uint16(int32(int16(x)) % int32(int16(scalar)))
+				case 6:
+					value = x & scalar
+				case 7:
+					value = x | scalar
+				case 8:
+					value = ^scalar // Assignment, not complement of x.
+				case 9:
+					value = x ^ scalar
+				case 10:
+					value = uint16(int16(x) >> (scalar & 31))
+				case 11:
+					value = x << (scalar & 31)
+				}
+				binary.LittleEndian.PutUint16(region[pos:pos+2], value)
+			}
+		}
+		v.depth -= 4
+		clear(v.stack[v.depth : v.depth+4]) // Host hygiene, not native behavior.
+	case 0x4f:
+		if v.address == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 2 {
+			return fail(ErrStackUnderflow)
+		}
+		// This is a direct signed RAM word index, not a tagged address.
+		index := int16(v.stack[v.depth-2])
+		if index < 0 || uint64(index)*2+2 > uint64(len(v.address.ram)) {
+			return fail(ErrInvalidAddress)
+		}
+		// Cache both operands before writing, then publish the two-word pop.
+		start, value := uint64(index)*2, v.stack[v.depth-1]
+		binary.LittleEndian.PutUint16(v.address.ram[start:start+2], value)
+		v.depth -= 2
+		v.stack[v.depth], v.stack[v.depth+1] = 0, 0 // Host hygiene only.
+	case 0x4c:
+		if v.address == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		// Host policy requires both unsigned operands before semantic guards.
+		if len(v.code)-v.pc < 2 {
+			return fail(ErrTruncated)
+		}
+		index, element := int(v.code[v.pc]), int(v.code[v.pc+1])
+		if v.depth >= len(v.stack) {
+			return fail(ErrStackOverflow)
+		}
+		if index >= len(v.address.bindings) {
+			return fail(ErrInvalidSymbol)
+		}
+		// As for 03/31, an exact even span represents a uint8 element count.
+		// This is restricted host metadata, not inferred native validation.
+		length := len(v.symbols[index])
+		if length%2 != 0 || length > 510 {
+			return fail(ErrInvalidSymbolRegion)
+		}
+		if element >= length/2 {
+			return fail(ErrInvalidElement)
+		}
+		binding := v.address.bindings[index]
+		region := v.address.ram
+		if binding.region == AddressFile {
+			region = v.address.file
+		}
+		// Construction validated the whole descriptor in its matched region.
+		// Require a full selected word too, without reading its payload.
+		start := uint64(binding.offset) + 2*uint64(element)
+		if start+2 > uint64(len(region)) {
+			return fail(ErrInvalidSymbolRegion)
+		}
+		// Low16(SAR32(x,1)) equals low16(x>>1), even with bit31 set.
+		// Preserve odd-offset rounding, truncation and tag collisions.
+		value := uint16(start >> 1)
+		if binding.region == AddressFile {
+			value |= 0x4000
+		}
+		v.stack[v.depth] = value
+		v.depth++
+		v.pc += 2
+	case 0x4e:
+		if v.address == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 1 {
+			return fail(ErrStackUnderflow)
+		}
+		// ReadWord supplies the existing tag, signed-index and full-word rules.
+		// Its inspection error becomes a sticky opcode fault before mutation.
+		value, err := v.ReadWord(v.stack[v.depth-1])
+		if err != nil {
+			return fail(err)
+		}
+		v.stack[v.depth-1] = value // Raw data replaces the address, with no pop.
+	case 0x4d:
+		if v.address == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if len(v.code)-v.pc < 1 {
+			return fail(ErrTruncated)
+		}
+		index := int(v.code[v.pc])
+		if v.depth >= len(v.stack) {
+			return fail(ErrStackOverflow)
+		}
+		if index >= len(v.address.bindings) {
+			return fail(ErrInvalidSymbol)
+		}
+		binding := v.address.bindings[index]
+		region := v.address.ram
+		if binding.region == AddressFile {
+			region = v.address.file
+		}
+		// Membership is half-open and does not require a nonempty symbol or
+		// a full word. ReadWord separately validates any later dereference.
+		if uint64(binding.offset) >= uint64(len(region)) {
+			return fail(ErrInvalidSymbolRegion)
+		}
+		value := uint16(binding.offset >> 1)
+		if binding.region == AddressFile {
+			value |= 0x4000
+		}
+		v.stack[v.depth] = value
+		v.depth++
+		v.pc++
+	case 0x05, 0x06:
+		// Reference top>=0x40 before increment permits 65 slots from top=-1.
+		if v.depth >= len(v.stack) {
+			return fail(ErrStackOverflow)
+		}
+		width := 1
+		if op == 0x06 {
+			width = 2
+		}
+		if len(v.code)-v.pc < width {
+			return fail(ErrTruncated)
+		}
+		var value uint16
+		if op == 0x05 {
+			value = uint16(int16(int8(v.code[v.pc])))
+		} else {
+			value = binary.BigEndian.Uint16(v.code[v.pc : v.pc+2])
+		}
+		v.stack[v.depth] = value
+		v.depth++
+		v.pc += width
+	case 0x12, 0x13, 0x14, 0x15, 0x1f, 0x20, 0x21:
+		if v.depth < 2 {
+			return fail(ErrStackUnderflow)
+		}
+		a, b := v.stack[v.depth-2], v.stack[v.depth-1]
+		var value uint16
+		switch op {
+		case 0x12:
+			value = a + b
+		case 0x13:
+			value = a - b
+		case 0x14:
+			value = a * b
+		case 0x15:
+			// Safe emulator policy is a sticky transactional fault. Native
+			// helper cleanup followed by a pop is intentionally not modeled.
+			if b == 0 {
+				return fail(ErrDivideByZero)
+			}
+			// Native operands are sign-extended before 32-bit division, so
+			// -32768/-1 yields 32768 then truncates to the raw16 slot.
+			value = uint16(int32(int16(a)) / int32(int16(b)))
+		case 0x21:
+			// Full raw-word equality. Shared pop clearing below is approved
+			// host hygiene, unlike the native handler's retained top word.
+			if a == b {
+				value = 1
+			}
+		case 0x1f:
+			if int16(a) >= int16(b) {
+				value = 1
+			}
+		case 0x20:
+			if int16(a) <= int16(b) {
+				value = 1
+			}
+		}
+		v.depth--
+		v.stack[v.depth-1] = value
+		v.stack[v.depth] = 0
+	case 0x45:
+		if v.returnDepth == 0 {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		target := v.returns[v.returnDepth-1]
+		if target < 0 || target >= len(v.code) {
+			return fail(ErrInvalidTarget)
+		}
+		v.returnDepth--
+		v.returns[v.returnDepth] = 0
+		v.pc = target
+	case 0x96, 0x97:
+		// In the hash-qualified reference build both callees are empty returns.
+		// Their wrappers pop one signed16 argument. No host service is invented.
+		if v.depth == 0 {
+			return fail(ErrStackUnderflow)
+		}
+		v.depth--
+		v.stack[v.depth] = 0
+	case 0x31:
+		// Both index bytes precede native symbol validation.
+		if len(v.code)-v.pc < 2 {
+			return fail(ErrTruncated)
+		}
+		index, element := int(v.code[v.pc]), int(v.code[v.pc+1])
+		if index >= len(v.symbols) {
+			return fail(ErrInvalidSymbol)
+		}
+		region := v.symbols[index]
+		// The host binding must exactly model a uint8 descriptor word count.
+		if len(region)%2 != 0 || len(region) > 510 {
+			return fail(ErrInvalidSymbolRegion)
+		}
+		if element >= len(region)/2 {
+			return fail(ErrInvalidElement)
+		}
+		if len(v.code)-v.pc < 3 {
+			return fail(ErrTruncated)
+		}
+		value := uint16(int16(int8(v.code[v.pc+2])))
+		binary.LittleEndian.PutUint16(region[2*element:2*element+2], value)
+		v.pc += 3
+	case 0x35:
+		// Cache both u8 operands before validation or a self-modifying write.
+		if len(v.code)-v.pc < 2 {
+			return fail(ErrTruncated)
+		}
+		indices := [2]int{int(v.code[v.pc]), int(v.code[v.pc+1])}
+		var words [2][]byte
+		// Destination index and full span precede even source-index validation.
+		// Neither descriptor shape nor operand-stack depth constrains this copy.
+		for operand, index := range indices {
+			if index >= len(v.symbols) {
+				return fail(ErrInvalidSymbol)
+			}
+			region := v.symbols[index]
+			if v.address != nil {
+				binding := v.address.bindings[index]
+				region = v.address.ram
+				if binding.region == AddressFile {
+					region = v.address.file
+				}
+				// The host requires a whole word in the selected global region.
+				// Widen before adding so offsets remain safe on 32-bit hosts.
+				if uint64(binding.offset)+2 > uint64(len(region)) {
+					return fail(ErrInvalidSymbolRegion)
+				}
+				region = region[int(binding.offset):]
+			} else if len(region) < 2 {
+				return fail(ErrInvalidSymbolRegion)
+			}
+			words[operand] = region[:2]
+		}
+		// Read the complete original word before writing, including partial aliases.
+		value := binary.LittleEndian.Uint16(words[1])
+		binary.LittleEndian.PutUint16(words[0], value)
+		v.pc += 2
+	case 0x2f:
+		// Cache all four u8 operands before validation or a self-modifying
+		// destination write. The first pair selects destination, the second source.
+		if len(v.code)-v.pc < 4 {
+			return fail(ErrTruncated)
+		}
+		indices := [2]int{int(v.code[v.pc]), int(v.code[v.pc+2])}
+		elements := [2]int{int(v.code[v.pc+1]), int(v.code[v.pc+3])}
+		var words [2][]byte
+		for operand, index := range indices {
+			if index >= len(v.symbols) {
+				return fail(ErrInvalidSymbol)
+			}
+			region := v.symbols[index]
+			if len(region)%2 != 0 || len(region) > 510 {
+				return fail(ErrInvalidSymbolRegion)
+			}
+			if elements[operand] >= len(region)/2 {
+				return fail(ErrInvalidElement)
+			}
+			start := 2 * elements[operand]
+			words[operand] = region[start : start+2]
+		}
+		value := binary.LittleEndian.Uint16(words[1])
+		binary.LittleEndian.PutUint16(words[0], value)
+		v.pc += 4
+	case 0x36:
+		if len(v.code)-v.pc < 1 {
+			return fail(ErrTruncated)
+		}
+		index := int(v.code[v.pc])
+		if index >= len(v.symbols) {
+			return fail(ErrInvalidSymbol)
+		}
+		if len(v.symbols[index]) < 2 {
+			return fail(ErrInvalidSymbolRegion)
+		}
+		if len(v.code)-v.pc < 2 {
+			return fail(ErrTruncated)
+		}
+		// Read before writing: the symbol can alias this instruction itself.
+		value := uint16(int16(int8(v.code[v.pc+1])))
+		binary.LittleEndian.PutUint16(v.symbols[index][:2], value)
+		v.pc += 2
+	case 0x3a:
+		// Host policy eagerly validates both operands before symbol lookup.
+		if len(v.code)-v.pc < 2 {
+			return fail(ErrTruncated)
+		}
+		index, delta := int(v.code[v.pc]), int8(v.code[v.pc+1])
+		if index >= len(v.symbols) {
+			return fail(ErrInvalidSymbol)
+		}
+		region := v.symbols[index]
+		if v.address != nil {
+			binding := v.address.bindings[index]
+			region = v.address.ram
+			if binding.region == AddressFile {
+				region = v.address.file
+			}
+			// Require a full global word, not a descriptor span or shape.
+			if uint64(binding.offset)+2 > uint64(len(region)) {
+				return fail(ErrInvalidSymbolRegion)
+			}
+			region = region[int(binding.offset):]
+		} else if len(region) < 2 {
+			return fail(ErrInvalidSymbolRegion)
+		}
+		// Cache the immediate and old word before any aliased file/code write.
+		old := binary.LittleEndian.Uint16(region[:2])
+		binary.LittleEndian.PutUint16(region[:2], old+uint16(int16(delta)))
+		v.pc += 2
+	case 0x39:
+		// Cache all operands before a possibly self-modifying symbol write.
+		if len(v.code)-v.pc < 3 {
+			return fail(ErrTruncated)
+		}
+		index, element, delta := int(v.code[v.pc]), int(v.code[v.pc+1]), int8(v.code[v.pc+2])
+		if index >= len(v.symbols) {
+			return fail(ErrInvalidSymbol)
+		}
+		region := v.symbols[index]
+		if len(region)%2 != 0 || len(region) > 510 {
+			return fail(ErrInvalidSymbolRegion)
+		}
+		if element >= len(region)/2 {
+			return fail(ErrInvalidElement)
+		}
+		offset := 2 * element
+		old := binary.LittleEndian.Uint16(region[offset : offset+2])
+		binary.LittleEndian.PutUint16(region[offset:offset+2], old+uint16(int16(delta)))
+		v.pc += 3
+	case 0x3c, 0x3d, 0x3e, 0x3f, 0x40:
+		// Host safety policy eagerly requires all operands, even on fallthrough,
+		// and validates before committing the pop. These differ from lazy target
+		// reads and a pre-target pop; they are not native error-order claims.
+		if len(v.code)-v.pc < 3 {
+			return fail(ErrTruncated)
+		}
+		if v.depth == 0 {
+			return fail(ErrStackUnderflow)
+		}
+		taken := int16(v.stack[v.depth-1]) < int16(int8(v.code[v.pc]))
+		if op == 0x3d {
+			taken = int16(v.stack[v.depth-1]) >= int16(int8(v.code[v.pc]))
+		}
+		if op == 0x3e {
+			taken = int16(v.stack[v.depth-1]) <= int16(int8(v.code[v.pc]))
+		}
+		if op == 0x3f {
+			taken = int16(v.stack[v.depth-1]) == int16(int8(v.code[v.pc]))
+		}
+		if op == 0x40 {
+			taken = v.stack[v.depth-1] != uint16(int16(int8(v.code[v.pc])))
+		}
+		target := int(binary.BigEndian.Uint16(v.code[v.pc+1 : v.pc+3]))
+		if taken && target >= len(v.code) {
+			return fail(ErrInvalidTarget)
+		}
+		v.depth--
+		// Preserve existing host zero hygiene, deliberately unlike native backing
+		// retention and the opcode40 research proposal to retain the popped word.
+		v.stack[v.depth] = 0
+		if taken {
+			v.pc = target
+		} else {
+			v.pc += 3
+		}
+	case 0x41, 0x42, 0x43, 0x44:
+		if op == 0x44 && v.returnDepth >= len(v.returns) {
+			return fail(ErrReturnStackOverflow)
+		}
+		if len(v.code)-v.pc < 2 {
+			return fail(ErrTruncated)
+		}
+		conditional := op == 0x42 || op == 0x43
+		if conditional && v.depth == 0 {
+			return fail(ErrStackUnderflow)
+		}
+		taken := true
+		if conditional {
+			nonzero := v.stack[v.depth-1] != 0
+			taken = (op == 0x42 && nonzero) || (op == 0x43 && !nonzero)
+		}
+		target := int(binary.BigEndian.Uint16(v.code[v.pc : v.pc+2]))
+		if taken && target >= len(v.code) {
+			return fail(ErrInvalidTarget)
+		}
+		if conditional {
+			v.depth--
+			v.stack[v.depth] = 0
+		}
+		if op == 0x44 {
+			v.returns[v.returnDepth] = v.pc + 2
+			v.returnDepth++
+		}
+		if taken {
+			v.pc = target
+		} else {
+			v.pc += 2
+		}
+	default:
+		v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+		return v.fault
+	}
+	return nil
+}
