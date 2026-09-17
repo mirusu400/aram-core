@@ -496,7 +496,7 @@ func (m *gvmMachine) QueueInput(event machinecore.InputEvent) error {
 	if !known {
 		return ErrGVMInputUnavailable
 	}
-	guestCode, supported := gvmhost.SKTNumericGuestCode(key)
+	guestCode, supported := gvmhost.SKTGuestCode(key)
 	if !supported {
 		return ErrGVMInputUnavailable
 	}
@@ -509,7 +509,7 @@ func (m *gvmMachine) QueueInput(event machinecore.InputEvent) error {
 	started, err := m.vm.BeginSymbolDispatch(0, guestCode, m.inputEntry)
 	if err != nil {
 		m.state = machinecore.StateFaulted
-		return fmt.Errorf("begin operational GVM numeric input dispatch at offset %d: %w", m.inputEntry, err)
+		return fmt.Errorf("begin operational GVM input dispatch at offset %d: %w", m.inputEntry, err)
 	}
 	if !started {
 		m.lastResult = cpu.Result{Reason: cpu.StopExited, PC: uint32(m.vm.PC())}
