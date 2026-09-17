@@ -576,6 +576,59 @@ func (v *VM) Step() error {
 		}
 		v.depth -= 4
 		clear(v.stack[v.depth : v.depth+4]) // Host hygiene only.
+	case 0x66:
+		// Exact-build handler 0x418f10 reads the low byte of four words in stack
+		// order, normalizes them by 4/182/182/3, replaces the private text-draw
+		// state, and consumes all four words without invoking a host service.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 4 {
+			return fail(ErrStackUnderflow)
+		}
+		v.services.textStyle = textStyleState{
+			mode:      uint8(v.stack[v.depth-4]) % 4,
+			primary:   uint8(v.stack[v.depth-3]) % 182,
+			secondary: uint8(v.stack[v.depth-2]) % 182,
+			variant:   uint8(v.stack[v.depth-1]) % 3,
+		}
+		v.depth -= 4
+		clear(v.stack[v.depth : v.depth+4]) // Host hygiene only.
+	case 0x67:
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 1 {
+			return fail(ErrStackUnderflow)
+		}
+		v.services.textStyle.mode = uint8(v.stack[v.depth-1]) % 4
+		v.depth--
+		v.stack[v.depth] = 0 // Host hygiene only.
+	case 0x68:
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 2 {
+			return fail(ErrStackUnderflow)
+		}
+		v.services.textStyle.primary = uint8(v.stack[v.depth-2]) % 182
+		v.services.textStyle.secondary = uint8(v.stack[v.depth-1]) % 182
+		v.depth -= 2
+		clear(v.stack[v.depth : v.depth+2]) // Host hygiene only.
+	case 0x69:
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 1 {
+			return fail(ErrStackUnderflow)
+		}
+		v.services.textStyle.variant = uint8(v.stack[v.depth-1]) % 3
+		v.depth--
+		v.stack[v.depth] = 0 // Host hygiene only.
 	case 0x6f:
 		// Exact-build handler order is signed x, signed y, then a signed media
 		// index on top. It validates the shared media record, calls the private sprite

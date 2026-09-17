@@ -267,6 +267,17 @@ type serviceState struct {
 	audioReset      AudioResetSink
 	media           [][]byte
 	mediaLoad       MediaLoadSink
+	textStyle       textStyleState
+}
+
+// textStyleState mirrors the four normalized bytes consumed by the exact-build
+// text-resource opcodes. It is VM-owned state: 66 replaces all four fields,
+// while 67..69 replace the corresponding subsets.
+type textStyleState struct {
+	mode      uint8
+	primary   uint8
+	secondary uint8
+	variant   uint8
 }
 
 // NewWithAddressSpaceAndServices explicitly enables service-aware dispatch.
