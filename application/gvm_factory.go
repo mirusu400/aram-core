@@ -95,19 +95,22 @@ type GVMDiagnosticBoundary struct {
 }
 
 type gvmMachine struct {
-	mu          sync.Mutex
-	state       machinecore.State
-	source      machinecore.Source
-	packageSGS  []byte
-	vm          *gvm.VM
-	timer       *gvmTimerBoundary
-	budget      uint64
-	lastResult  cpu.Result
-	operational bool
-	eventEntry  uint32
-	inputEntry  uint32
-	frames      *gvmFramePublisher
-	closed      bool
+	mu              sync.Mutex
+	state           machinecore.State
+	source          machinecore.Source
+	packageSGS      []byte
+	vm              *gvm.VM
+	timer           *gvmTimerBoundary
+	budget          uint64
+	lastResult      cpu.Result
+	operational     bool
+	eventEntry      uint32
+	inputEntry      uint32
+	frames          *gvmFramePublisher
+	inputDispatches uint64
+	lastInputCode   uint16
+	lastInputResult cpu.Result
+	closed          bool
 }
 
 func (f Factory) createGVMMachine(ctx context.Context, source machinecore.Source) (machinecore.Machine, bool, error) {
@@ -265,6 +268,9 @@ func (m *gvmMachine) resetVMLocked() error {
 	m.vm = vm
 	m.timer = timer
 	m.lastResult = cpu.Result{}
+	m.inputDispatches = 0
+	m.lastInputCode = 0
+	m.lastInputResult = cpu.Result{}
 	return nil
 }
 
@@ -470,7 +476,13 @@ func (m *gvmMachine) QueueInput(event machinecore.InputEvent) error {
 		m.lastResult = cpu.Result{Reason: cpu.StopExited, PC: uint32(m.vm.PC())}
 		return nil
 	}
-	return m.runOperationalLocked(context.Background(), false)
+	if err := m.runOperationalLocked(context.Background(), false); err != nil {
+		return err
+	}
+	m.inputDispatches++
+	m.lastInputCode = guestCode
+	m.lastInputResult = m.lastResult
+	return nil
 }
 
 func (m *gvmMachine) Framebuffer() image.Image {
@@ -486,6 +498,24 @@ func (m *gvmMachine) Framebuffer() image.Image {
 
 // GVMPresentDiagnostics is an optional, narrow operational-profile diagnostic.
 type GVMPresentDiagnostics interface{ GVMPresentCount() uint64 }
+
+// GVMInputDispatchDiagnostics is an optional operational-profile observation
+// of authenticated guest input callbacks. It does not imply a visual change.
+type GVMInputDispatchDiagnostics struct {
+	DispatchCount uint64
+	GuestCode     uint16
+	Result        cpu.Result
+}
+
+func (m *gvmMachine) GVMInputDispatchDiagnostics() GVMInputDispatchDiagnostics {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return GVMInputDispatchDiagnostics{
+		DispatchCount: m.inputDispatches,
+		GuestCode:     m.lastInputCode,
+		Result:        m.lastInputResult,
+	}
+}
 
 func (m *gvmMachine) GVMPresentCount() uint64 {
 	m.mu.Lock()

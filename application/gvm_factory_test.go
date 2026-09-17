@@ -171,6 +171,10 @@ func TestGVMOperationalNumericPressDispatch(t *testing.T) {
 	if machine.GVMPresentCount() != 2 || machine.State() != machinecore.StateRunning || !machine.vm.Halted() {
 		t.Fatalf("input state=%s halted=%v presents=%d", machine.State(), machine.vm.Halted(), machine.GVMPresentCount())
 	}
+	input := machine.GVMInputDispatchDiagnostics()
+	if input.DispatchCount != 1 || input.GuestCode != 5 || input.Result.Instructions == 0 || input.Result.Reason != cpu.StopExited {
+		t.Fatalf("input diagnostics = %+v", input)
+	}
 	if err := machine.QueueInput(machinecore.InputEvent{Control: "num5", Pressed: false}); err != nil {
 		t.Fatalf("release should clear host state without guest dispatch: %v", err)
 	}
