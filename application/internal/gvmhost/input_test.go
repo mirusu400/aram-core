@@ -28,3 +28,22 @@ func TestSKTNumericGuestCode(t *testing.T) {
 		}
 	}
 }
+
+func TestSKTFiveWayGuestCode(t *testing.T) {
+	tests := []struct {
+		key  profile.KeyCode
+		want uint16
+	}{
+		{profile.KeyUp, 16},
+		{profile.KeyDown, 17},
+		{profile.KeyLeft, 18},
+		{profile.KeyRight, 19},
+		{profile.KeySelect, 20},
+	}
+	for _, test := range tests {
+		got, ok := SKTGuestCode(test.key)
+		if !ok || got != test.want {
+			t.Fatalf("SKTGuestCode(%d) = (%d,%v), want (%d,true)", test.key, got, ok, test.want)
+		}
+	}
+}

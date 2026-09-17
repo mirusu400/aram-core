@@ -176,7 +176,7 @@ func TestGVMOperationalLifecyclePresentationAndReset(t *testing.T) {
 	}
 }
 
-func TestGVMOperationalNumericPressDispatch(t *testing.T) {
+func TestGVMOperationalPressDispatch(t *testing.T) {
 	machine := newOperationalFixture(t, gvmOperationalArchive(t))
 	defer machine.Close()
 	if err := machine.Start(context.Background()); err != nil {
@@ -205,8 +205,21 @@ func TestGVMOperationalNumericPressDispatch(t *testing.T) {
 	if machine.GVMPresentCount() != 2 {
 		t.Fatalf("release manufactured a guest dispatch: presents=%d", machine.GVMPresentCount())
 	}
-	if err := machine.QueueInput(machinecore.InputEvent{Control: "up", Pressed: true}); !errors.Is(err, ErrGVMInputUnavailable) {
-		t.Fatalf("unauthenticated directional input = %v", err)
+	if err := machine.QueueInput(machinecore.InputEvent{Control: "up", Pressed: true}); err != nil {
+		t.Fatalf("directional press: %v", err)
+	}
+	input = machine.GVMInputDispatchDiagnostics()
+	if input.DispatchCount != 2 || input.GuestCode != 16 || input.Result.Instructions == 0 || input.Result.Reason != cpu.StopExited {
+		t.Fatalf("directional input diagnostics = %+v", input)
+	}
+	if machine.GVMPresentCount() != 3 {
+		t.Fatalf("directional press did not dispatch guest frame: presents=%d", machine.GVMPresentCount())
+	}
+	if err := machine.QueueInput(machinecore.InputEvent{Control: "up", Pressed: false}); err != nil {
+		t.Fatalf("directional release should clear host state without guest dispatch: %v", err)
+	}
+	if machine.GVMPresentCount() != 3 {
+		t.Fatalf("directional release manufactured a guest dispatch: presents=%d", machine.GVMPresentCount())
 	}
 }
 
