@@ -155,6 +155,28 @@ func TestCommonHelperContracts(t *testing.T) {
 	if got := call(helperStrstrSlot, source, destination, 0); got != source+7 {
 		t.Fatalf("strstr result = 0x%08x, want 0x%08x", got, source+7)
 	}
+	if got := call(helperStristrSlot, source, destination, 0); got != source+7 {
+		t.Fatalf("stristr result = 0x%08x, want 0x%08x", got, source+7)
+	}
+
+	wideSource, wideDestination := heapBase+0x700, heapBase+0x740
+	wide := []byte{'K', 0, 'T', 0, 'F', 0, 0, 0}
+	if err := runtime.cpu.WriteMemory(wideSource, wide); err != nil {
+		t.Fatal(err)
+	}
+	if got := call(helperWStrcpySlot, wideDestination, wideSource, 0); got != wideDestination {
+		t.Fatalf("wstrcpy return = 0x%08x, want destination", got)
+	}
+	copiedWide := make([]byte, len(wide))
+	if err := runtime.cpu.ReadMemory(wideDestination, copiedWide); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(copiedWide, wide) {
+		t.Fatalf("wstrcpy bytes = %v, want %v", copiedWide, wide)
+	}
+	if got := call(helperWStrlenSlot, wideDestination, 0, 0); got != 3 {
+		t.Fatalf("wstrlen = %d, want 3", got)
+	}
 	if err := runtime.cpu.WriteMemory(heapBase+0x500, []byte(" \t-123tail\x00")); err != nil {
 		t.Fatal(err)
 	}
@@ -194,6 +216,39 @@ func TestCommonHelperContracts(t *testing.T) {
 		if got := binary.LittleEndian.Uint16(julian[index*2:]); got != want {
 			t.Fatalf("Julian field %d = %d, want %d", index, got, want)
 		}
+	}
+}
+
+func TestSprintfSupportsBoundedStringAndIntegerFormats(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	destination, formatAt, textAt := heapBase+0x100, heapBase+0x200, heapBase+0x300
+	if err := runtime.cpu.WriteMemory(formatAt, []byte("%s-%03d%%\x00")); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteMemory(textAt, []byte("giftkart\x00")); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR0: destination,
+		cpu.RegisterR1: formatAt,
+		cpu.RegisterR2: textAt,
+		cpu.RegisterR3: 7,
+		cpu.RegisterLR: returnTrap | 1,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handled, _, _, err := runtime.handleAppletMethodTrap(helperMethodTrapBase + helperSprintfSlot*2 + 2)
+	if err != nil || !handled {
+		t.Fatalf("sprintf handled=%v err=%v", handled, err)
+	}
+	text, err := runtime.readCString(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "giftkart-007%" {
+		t.Fatalf("sprintf result = %q, want giftkart-007%%", text)
 	}
 }
 

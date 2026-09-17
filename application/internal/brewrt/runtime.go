@@ -50,6 +50,8 @@ const (
 	helperStrcmpSlot        = uint32(4)
 	helperStrlenSlot        = uint32(5)
 	helperSprintfSlot       = uint32(8)
+	helperWStrcpySlot       = uint32(9)
+	helperWStrlenSlot       = uint32(12)
 	helperSetupImageSlot    = uint32(25)
 	helperAtoiSlot          = uint32(36)
 	helperGetAEEVersionSlot = uint32(35)
@@ -66,6 +68,7 @@ const (
 	helperStricmpSlot       = uint32(52)
 	helperStrstrSlot        = uint32(54)
 	helperMemcmpSlot        = uint32(55)
+	helperStristrSlot       = uint32(58)
 	// The exact title branches explicitly for BREW 1.0, 1.2 and 2.1. Its KTF
 	// handset path is the BREW 2.1 branch.
 	aeeVersion          = uint32(0x02010000)
@@ -116,6 +119,7 @@ const (
 	textCtlVTable       = controlServiceBase + 0x200
 	textCtlTrapBase     = controlServiceBase + 0x300
 	textCtlMethodCount  = uint32(28)
+	deviceBitmapObject  = controlServiceBase + 0x500
 
 	bootstrapBudget = uint64(2_000_000)
 	hostCallBudget  = 4096
@@ -400,6 +404,15 @@ func (r *Runtime) mapImage(module []byte) error {
 	}
 	binary.LittleEndian.PutUint32(controls[textCtlVTable-controlServiceBase:], addRefTrap|1)
 	binary.LittleEndian.PutUint32(controls[textCtlVTable-controlServiceBase+4:], releaseTrap|1)
+	deviceBitmap := make([]byte, 36)
+	binary.LittleEndian.PutUint32(deviceBitmap[0:], bitmapVTable)
+	binary.LittleEndian.PutUint32(deviceBitmap[8:], framebufferBase)
+	binary.LittleEndian.PutUint16(deviceBitmap[20:], uint16(framebufferWidth))
+	binary.LittleEndian.PutUint16(deviceBitmap[22:], uint16(framebufferHeight))
+	binary.LittleEndian.PutUint16(deviceBitmap[24:], uint16(framebufferWidth*2))
+	deviceBitmap[28] = 16
+	deviceBitmap[29] = idibColorScheme565
+	copy(controls[deviceBitmapObject-controlServiceBase:], deviceBitmap)
 	if err := r.cpu.WriteMemory(controlServiceBase, controls[:]); err != nil {
 		return fmt.Errorf("write BREW control services: %w", err)
 	}
@@ -649,6 +662,16 @@ func (r *Runtime) handleAppletMethodTrap(
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
+		case helperWStrcpySlot:
+			if err := r.copyGuestWideString(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case helperWStrlenSlot:
+			if err := r.returnGuestWideStringLength(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
 		case helperSetupImageSlot:
 			if err := r.setupNativeImage(); err != nil {
 				return true, 0, cpu.ModeARM, err
@@ -746,6 +769,11 @@ func (r *Runtime) handleAppletMethodTrap(
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
+		case helperStristrSlot:
+			if err := r.findGuestCStringFoldASCII(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
 		default:
 			return boundary("loader helper", slot)
 		}
@@ -811,6 +839,26 @@ func (r *Runtime) handleAppletMethodTrap(
 			}
 			return resume()
 		case 8, 9: // SetAnnunciators, Backlight
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 16: // GetDeviceBitmap(IDisplay *, IBitmap **)
+			output, err := r.cpu.ReadRegister(cpu.RegisterR1)
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			if output == 0 {
+				if err := r.cpu.WriteRegister(cpu.RegisterR0, 2); err != nil {
+					return true, 0, cpu.ModeARM, err
+				}
+				return resume()
+			}
+			var encoded [4]byte
+			binary.LittleEndian.PutUint32(encoded[:], deviceBitmapObject)
+			if err := r.cpu.WriteMemory(output, encoded[:]); err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("write BREW device bitmap: %w", err)
+			}
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
@@ -995,6 +1043,11 @@ func (r *Runtime) handleAppletMethodTrap(
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
+		case 6: // CloseApplet
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
 		case 8: // ActiveApplet(IShell *)
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, r.activeApplet); err != nil {
 				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW active applet: %w", err)
@@ -1070,6 +1123,16 @@ func (r *Runtime) handleAppletMethodTrap(
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
+		case 21: // SendEvent: cross-applet dispatch is unavailable in this runtime.
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 22: // Beep: accept the request without host audio side effects.
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 1); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
 		case 23: // GetPrefs
 			if err := r.getPreferences(); err != nil {
 				return true, 0, cpu.ModeARM, err
@@ -1077,6 +1140,11 @@ func (r *Runtime) handleAppletMethodTrap(
 			return resume()
 		case 24: // SetPrefs
 			if err := r.setPreferences(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 32: // GetHandler: no dynamically registered external handler.
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
@@ -1493,6 +1561,53 @@ func (r *Runtime) copyGuestCString() error {
 	return r.cpu.WriteRegister(cpu.RegisterR0, destination)
 }
 
+func (r *Runtime) copyGuestWideString() error {
+	destination, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW wstrcpy destination: %w", err)
+	}
+	source, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW wstrcpy source: %w", err)
+	}
+	const maxWideStringUnits = uint32(1 << 19)
+	data := make([]byte, 0, 64)
+	var encoded [2]byte
+	for units := uint32(0); units < maxWideStringUnits; units++ {
+		address := source + units*2
+		if err := r.cpu.ReadMemory(address, encoded[:]); err != nil {
+			return fmt.Errorf("read BREW wstrcpy unit at 0x%08x: %w", address, err)
+		}
+		data = append(data, encoded[:]...)
+		if binary.LittleEndian.Uint16(encoded[:]) == 0 {
+			if err := r.cpu.WriteMemory(destination, data); err != nil {
+				return fmt.Errorf("write BREW wstrcpy destination: %w", err)
+			}
+			return r.cpu.WriteRegister(cpu.RegisterR0, destination)
+		}
+	}
+	return fmt.Errorf("BREW wstrcpy source at 0x%08x exceeded %d UTF-16 units", source, maxWideStringUnits)
+}
+
+func (r *Runtime) returnGuestWideStringLength() error {
+	address, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW wstrlen pointer: %w", err)
+	}
+	const maxWideStringUnits = uint32(1 << 19)
+	var encoded [2]byte
+	for units := uint32(0); units < maxWideStringUnits; units++ {
+		unitAddress := address + units*2
+		if err := r.cpu.ReadMemory(unitAddress, encoded[:]); err != nil {
+			return fmt.Errorf("read BREW wstrlen unit at 0x%08x: %w", unitAddress, err)
+		}
+		if binary.LittleEndian.Uint16(encoded[:]) == 0 {
+			return r.cpu.WriteRegister(cpu.RegisterR0, units)
+		}
+	}
+	return fmt.Errorf("BREW wstrlen at 0x%08x exceeded %d UTF-16 units", address, maxWideStringUnits)
+}
+
 func (r *Runtime) compareGuestCStrings() error {
 	leftPointer, err := r.cpu.ReadRegister(cpu.RegisterR0)
 	if err != nil {
@@ -1578,6 +1693,39 @@ func (r *Runtime) findGuestCString() error {
 	}
 	result := uint32(0)
 	if index := strings.Index(haystack, needle); index >= 0 {
+		result = haystackPointer + uint32(index)
+	}
+	return r.cpu.WriteRegister(cpu.RegisterR0, result)
+}
+
+func (r *Runtime) findGuestCStringFoldASCII() error {
+	haystackPointer, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW stristr haystack pointer: %w", err)
+	}
+	needlePointer, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW stristr needle pointer: %w", err)
+	}
+	haystack, err := r.readCString(haystackPointer)
+	if err != nil {
+		return err
+	}
+	needle, err := r.readCString(needlePointer)
+	if err != nil {
+		return err
+	}
+	foldASCII := func(text string) string {
+		folded := []byte(text)
+		for index, value := range folded {
+			if value >= 'A' && value <= 'Z' {
+				folded[index] = value + ('a' - 'A')
+			}
+		}
+		return string(folded)
+	}
+	result := uint32(0)
+	if index := strings.Index(foldASCII(haystack), foldASCII(needle)); index >= 0 {
 		result = haystackPointer + uint32(index)
 	}
 	return r.cpu.WriteRegister(cpu.RegisterR0, result)
@@ -1926,37 +2074,38 @@ func (r *Runtime) formatResourceName() error {
 		}
 		return int32(binary.LittleEndian.Uint32(encoded[:])), nil
 	}
-	values := make([]any, 0, 6)
-	count := uint32(0)
-	switch format {
-	case "%s":
-		pointer, readErr := arg(0)
-		if readErr != nil {
-			return fmt.Errorf("read BREW sprintf string pointer: %w", readErr)
+	values := make([]any, 0, 8)
+	argumentIndex := uint32(0)
+	for index := 0; index < len(format); index++ {
+		if format[index] != '%' {
+			continue
 		}
-		text, readErr := r.readCString(uint32(pointer))
-		if readErr != nil {
-			return readErr
+		if index+1 < len(format) && format[index+1] == '%' {
+			index++
+			continue
 		}
-		values = append(values, text)
-	case "%d", "%d.No Record", "%d.map", "%d.rec", "%d.scb", "%d.snr",
-		"%d.spk", "%d.sre", "%d.til", "%d.zip", "ui%d.cpp", "ui%d.frm":
-		count = 1
-	case " %d-%d", "%d[%d]":
-		count = 2
-	case "%d[%d-%d]", "v %d.%d.%d":
-		count = 3
-	case "%d.%02d/%02d/%02d %2d:%2d":
-		count = 6
-	default:
-		return fmt.Errorf("BREW execution boundary: unsupported sprintf format %q", format)
-	}
-	for index := uint32(0); index < count; index++ {
-		value, readErr := arg(index)
-		if readErr != nil {
-			return fmt.Errorf("read BREW sprintf argument %d: %w", index, readErr)
+		end := index + 1
+		for end < len(format) && strings.ContainsRune("-+ #0.123456789", rune(format[end])) {
+			end++
 		}
-		values = append(values, value)
+		if end >= len(format) || format[end] != 'd' && format[end] != 's' {
+			return fmt.Errorf("BREW execution boundary: unsupported sprintf format %q", format)
+		}
+		value, readErr := arg(argumentIndex)
+		if readErr != nil {
+			return fmt.Errorf("read BREW sprintf argument %d: %w", argumentIndex, readErr)
+		}
+		if format[end] == 's' {
+			text, readErr := r.readCString(uint32(value))
+			if readErr != nil {
+				return readErr
+			}
+			values = append(values, text)
+		} else {
+			values = append(values, value)
+		}
+		argumentIndex++
+		index = end
 	}
 	text := fmt.Sprintf(format, values...)
 	data := append([]byte(text), 0)
