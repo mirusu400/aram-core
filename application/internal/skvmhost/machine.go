@@ -27,6 +27,9 @@ const (
 )
 
 type Machine struct {
+	runtimeID           string
+	stateMagic          string
+	nativePolicy        skengine.NativePolicy
 	mu                  sync.Mutex
 	state               machinecore.State
 	source              machinecore.Source
@@ -48,6 +51,7 @@ type Machine struct {
 	audioCursorSample   uint64
 	audioCursorValid    bool
 	mediaOutputRevision uint64
+	debugFramebuffer    *debugFramebufferCache
 }
 
 func New(
@@ -58,6 +62,16 @@ func New(
 	outputSampleRate uint32,
 	outputChannels uint8,
 ) (*Machine, error) {
+	app := Application{MainClass: pkg.Descriptor.MainClass, Properties: pkg.Descriptor.Raw,
+		Classes: make(map[string][]byte, len(pkg.Classes)), Resources: pkg.Resources, RecordStores: pkg.RecordStores}
+	for name, class := range pkg.Classes {
+		app.Classes[name] = class.Data
+	}
+	return newJavaMachine(ctx, source, app, &pkg, framebufferSize, outputSampleRate, outputChannels)
+}
+
+func newJavaMachine(ctx context.Context, source machinecore.Source, app Application, legacy *skloader.Package,
+	framebufferSize image.Point, outputSampleRate uint32, outputChannels uint8) (*Machine, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -65,8 +79,11 @@ func New(
 	if size.X <= 0 || size.Y <= 0 {
 		size = image.Pt(240, 320)
 	}
-	inferred := inferSKVMFramebufferSize(size, pkg.Resources)
-	size = skvmTitleCanvas(source, pkg, inferred)
+	inferred := size
+	if legacy != nil {
+		inferred = inferSKVMFramebufferSize(size, app.Resources)
+		size = skvmTitleCanvas(source, *legacy, inferred)
+	}
 	config := shared.DefaultConfig()
 	if outputSampleRate != 0 {
 		config.Limits.Media.OutputSampleRate = outputSampleRate
@@ -74,8 +91,10 @@ func New(
 	if outputChannels != 0 {
 		config.Limits.Media.OutputChannels = outputChannels
 	}
-	config.Device.ProfileID = ProfileID
-	config.Device.Carrier = "skt"
+	runtimeID, stateMagic, nativePolicy, err := configureJavaIdentity(&config, source, legacy != nil)
+	if err != nil {
+		return nil, err
+	}
 	config.Device.ScreenWidth = int32(size.X)
 	config.Device.ScreenHeight = int32(size.Y)
 	config.Device.ScreenFormat = shared.PixelRGBA8888
@@ -88,24 +107,23 @@ func New(
 		{Name: "text", Enabled: true},
 		{Name: "vibration", Enabled: true},
 	}
-	if source.ProfileID != "" {
-		config.Device.ProfileID = source.ProfileID
+	if legacy != nil {
+		applySKVMTitleCompatibility(&config, source, *legacy, inferred)
 	}
-	applySKVMTitleCompatibility(&config, source, pkg, inferred)
 	services, err := shared.NewServices(config)
 	if err != nil {
-		return nil, fmt.Errorf("initialize SKVM shared services: %w", err)
+		return nil, fmt.Errorf("initialize Java shared services: %w", err)
 	}
 	budget := defaultSKVMRunBudget
-	owner, err := services.Coordinator.Register("skvm", budget)
+	owner, err := services.Coordinator.Register(runtimeID, budget)
 	if err != nil {
-		return nil, fmt.Errorf("register SKVM adapter: %w", err)
+		return nil, fmt.Errorf("register Java adapter: %w", err)
 	}
-	for _, packaged := range pkg.RecordStores {
+	for _, packaged := range app.RecordStores {
 		store, err := services.Storage.CreateRecordStore(owner, packaged.Name)
 		if err != nil {
 			return nil, fmt.Errorf(
-				"install SKVM record store %q: %w",
+				"install Java record store %q: %w",
 				packaged.Name,
 				err,
 			)
@@ -121,41 +139,44 @@ func New(
 			records,
 		); err != nil {
 			return nil, fmt.Errorf(
-				"install SKVM record store %q records: %w",
+				"install Java record store %q records: %w",
 				packaged.Name,
 				err,
 			)
 		}
 	}
-	classData := make(map[string][]byte, len(pkg.Classes))
-	for name, class := range pkg.Classes {
-		classData[name] = append([]byte(nil), class.Data...)
+	classData := make(map[string][]byte, len(app.Classes))
+	for name, class := range app.Classes {
+		classData[name] = append([]byte(nil), class...)
 	}
 	cheatRegions, err := buildClassCheatRegions(classData)
 	if err != nil {
 		return nil, err
 	}
-	vm, err := skengine.NewWithServices(classData, services, owner)
+	vm, err := skengine.NewWithNativePolicy(classData, services, owner, nativePolicy)
 	if err != nil {
 		return nil, err
 	}
 	vm.InstructionLimit = skengine.DefaultInstructionLimit
-	if err := vm.SetResourcesChecked(pkg.Resources); err != nil {
-		return nil, fmt.Errorf("mount SKVM resources: %w", err)
+	if err := vm.SetResourcesChecked(app.Resources); err != nil {
+		return nil, fmt.Errorf("mount Java resources: %w", err)
 	}
-	vm.SetProperties(pkg.Descriptor.Raw)
+	vm.SetProperties(app.Properties)
 	if err := services.Coordinator.Transition(
 		owner,
 		shared.LifecycleReady,
 		services.Clock.Monotonic(),
 		services.Events,
 	); err != nil {
-		return nil, fmt.Errorf("ready SKVM adapter: %w", err)
+		return nil, fmt.Errorf("ready Java adapter: %w", err)
 	}
 	machine := &Machine{
+		runtimeID:           runtimeID,
+		stateMagic:          stateMagic,
+		nativePolicy:        nativePolicy,
 		state:               machinecore.StateReady,
 		source:              source,
-		mainClass:           pkg.Descriptor.MainClass,
+		mainClass:           app.MainClass,
 		classData:           classData,
 		cheatRegions:        cheatRegions,
 		imageSHA256:         vm.ClassSHA256(),
@@ -168,7 +189,7 @@ func New(
 	}
 	machine.initialState, err = vm.MarshalBinary()
 	if err != nil {
-		return nil, fmt.Errorf("capture initial SKVM state: %w", err)
+		return nil, fmt.Errorf("capture initial Java state: %w", err)
 	}
 	return machine, nil
 }
@@ -177,7 +198,7 @@ func (m *Machine) Load(context.Context, machinecore.Source) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
-		return errors.New("SKVM machine is closed")
+		return errors.New("Java machine is closed")
 	}
 	return fmt.Errorf("load from %s: %w", m.state, guest.ErrInvalidState)
 }
@@ -192,7 +213,7 @@ func (m *Machine) Start(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
-		return errors.New("SKVM machine is closed")
+		return errors.New("Java machine is closed")
 	}
 	if m.state != machinecore.StateReady {
 		return fmt.Errorf("start from %s: %w", m.state, guest.ErrInvalidState)
@@ -240,7 +261,7 @@ func (m *Machine) Pause() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
-		return errors.New("SKVM machine is closed")
+		return errors.New("Java machine is closed")
 	}
 	if m.state == machinecore.StatePaused {
 		return nil
@@ -283,7 +304,7 @@ func (m *Machine) Resume() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
-		return errors.New("SKVM machine is closed")
+		return errors.New("Java machine is closed")
 	}
 	if m.state != machinecore.StatePaused {
 		return fmt.Errorf("resume from %s: %w", m.state, guest.ErrInvalidState)
@@ -334,7 +355,7 @@ func (m *Machine) Stop() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
-		return errors.New("SKVM machine is closed")
+		return errors.New("Java machine is closed")
 	}
 	if m.state == machinecore.StateStopped {
 		return nil
@@ -393,7 +414,7 @@ func (m *Machine) Reset(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
-		return errors.New("SKVM machine is closed")
+		return errors.New("Java machine is closed")
 	}
 	if m.state == machinecore.StateRunning {
 		return fmt.Errorf("reset from %s: %w", m.state, guest.ErrInvalidState)
@@ -406,7 +427,7 @@ func (m *Machine) Reset(ctx context.Context) error {
 		if store.Owner != m.owner {
 			m.state = machinecore.StateFaulted
 			return fmt.Errorf(
-				"capture SKVM persistence: record store %q belongs to owner %d, want %d",
+				"capture Java persistence: record store %q belongs to owner %d, want %d",
 				store.Name,
 				store.Owner,
 				m.owner,
@@ -415,15 +436,16 @@ func (m *Machine) Reset(ctx context.Context) error {
 	}
 	if err := m.vm.UnmarshalBinary(m.initialState); err != nil {
 		m.state = machinecore.StateFaulted
-		return fmt.Errorf("reset SKVM state: %w", err)
+		return fmt.Errorf("reset Java state: %w", err)
 	}
 	m.services = m.vm.Services()
+	m.debugFramebuffer = nil
 	for index := range persistence.RecordStores {
 		persistence.RecordStores[index].Owner = m.owner
 	}
 	if err := m.services.Storage.ImportPersistence(persistence); err != nil {
 		m.state = machinecore.StateFaulted
-		return fmt.Errorf("restore SKVM persistence after reset: %w", err)
+		return fmt.Errorf("restore Java persistence after reset: %w", err)
 	}
 	m.input = nil
 	m.started = false
@@ -438,7 +460,7 @@ func (m *Machine) StepFrame(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
-		return errors.New("SKVM machine is closed")
+		return errors.New("Java machine is closed")
 	}
 	if m.state != machinecore.StatePaused {
 		return fmt.Errorf("step from %s: %w", m.state, guest.ErrInvalidState)
@@ -464,7 +486,7 @@ func (m *Machine) StepFrame(ctx context.Context) error {
 	}
 	frameFinishedAt := m.services.Clock.Monotonic()
 	if frameFinishedAt <= frameStartedAt {
-		return m.faultLocked(fmt.Errorf("SKVM frame did not advance virtual time"))
+		return m.faultLocked(fmt.Errorf("Java frame did not advance virtual time"))
 	}
 	m.frameQuantum = frameFinishedAt - frameStartedAt
 	if err := m.consumeInstructionsLocked(before); err != nil {
@@ -500,7 +522,7 @@ func (m *Machine) pumpAndPaintLocked(
 ) error {
 	start := m.services.Clock.Monotonic()
 	if delta < 0 || delta > time.Duration(^uint64(0)>>1)-start {
-		return fmt.Errorf("invalid SKVM frame duration %s", delta)
+		return fmt.Errorf("invalid Java frame duration %s", delta)
 	}
 	target := start + delta
 	for len(m.input) != 0 && m.input[0].At <= target {
@@ -564,11 +586,14 @@ func (m *Machine) pumpAndPaintLocked(
 			return err
 		}
 	}
-	_, err := m.services.Graphics.Present(
+	frame, err := m.services.Graphics.PresentCommit(
 		m.owner,
 		m.vm.ScreenSurface(),
 		shared.Rectangle{},
 	)
+	if err == nil {
+		m.reuseDebugFramebufferLocked(frame)
+	}
 	return err
 }
 
@@ -669,7 +694,7 @@ func inferSKVMFramebufferSize(
 
 func (m *Machine) consumeInstructionsLocked(before uint64) error {
 	if m.vm.Instructions < before {
-		return fmt.Errorf("SKVM instruction counter moved backwards")
+		return fmt.Errorf("Java instruction counter moved backwards")
 	}
 	return m.services.Coordinator.Consume(
 		m.owner,
@@ -687,7 +712,7 @@ func (m *Machine) beginExecutionLocked() (uint64, error) {
 	}
 	before := m.vm.Instructions
 	if before > ^uint64(0)-adapter.RunBudget {
-		return 0, fmt.Errorf("SKVM instruction counter exhausted")
+		return 0, fmt.Errorf("Java instruction counter exhausted")
 	}
 	m.vm.InstructionLimit = before + adapter.RunBudget
 	return before, nil
@@ -697,7 +722,7 @@ func (m *Machine) QueueInput(event machinecore.InputEvent) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
-		return errors.New("SKVM machine is closed")
+		return errors.New("Java machine is closed")
 	}
 	if err := event.Validate(); err != nil {
 		return err
@@ -851,5 +876,5 @@ func (m *Machine) Services() *shared.Services { return m.services }
 // Owner exposes the machine's shared-service owner ID for tests.
 func (m *Machine) Owner() shared.OwnerID { return m.owner }
 
-// VM exposes the underlying SKVM interpreter for tests and diagnostics.
+// VM exposes the underlying Java interpreter for tests and diagnostics.
 func (m *Machine) VM() *skengine.VM { return m.vm }
