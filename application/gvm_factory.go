@@ -221,10 +221,15 @@ func (m *gvmMachine) resetVMLocked() error {
 	if m.operational {
 		width, height = operationalGVMWidth, operationalGVMHeight
 		m.frames = new(gvmFramePublisher)
+		textServices, textErr := shared.NewServices(shared.DefaultConfig())
+		if textErr != nil {
+			return fmt.Errorf("initialize operational GVM text: %w", textErr)
+		}
 		display, err = gvmhost.NewDisplayAdapter(gvmhost.DisplayConfig{
 			Width: int(width), Height: int(height),
 			Orientation: gvmhost.DisplayOrientationDefault,
 			Palette:     gvmhost.SKTCompatibilityPalette{}, Publisher: m.frames,
+			Text: textServices.Text, TextOwner: 1,
 		})
 		if err != nil {
 			return fmt.Errorf("initialize operational GVM display: %w", err)
@@ -254,6 +259,7 @@ func (m *gvmMachine) resetVMLocked() error {
 		services.RectangleFill = display
 		services.SpriteDraw = display
 		services.SpriteTransform = display
+		services.TextDraw = display
 		services.AudioReset = mediaServices
 		services.Media = media
 		services.MediaLoad = mediaServices

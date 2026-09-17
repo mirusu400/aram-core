@@ -29,6 +29,7 @@ var (
 	ErrColorSelectUnavailable     = errors.New("gvm: drawing color selection service unavailable")
 	ErrRectangleDrawUnavailable   = errors.New("gvm: rectangle outline service unavailable")
 	ErrRectangleFillUnavailable   = errors.New("gvm: rectangle fill service unavailable")
+	ErrTextDrawUnavailable        = errors.New("gvm: text draw service unavailable")
 )
 
 // DeviceQueryProfile is explicit GVM adapter state, not a detected handset or
@@ -162,6 +163,26 @@ type SpriteTransformSink interface {
 	DrawGVMTransformedSprite(resource []byte, x, y int16, mirrorHorizontal bool) error
 }
 
+// TextDrawStyle is the normalized private drawing state consumed by opcodes
+// 6a..6d. Mode is 0..3, primary and secondary are 0..181 palette selectors,
+// and alignment is 0..2. Opcode6a uses primary only and passes background=false.
+type TextDrawStyle struct {
+	Mode       uint8
+	Primary    uint8
+	Secondary  uint8
+	Alignment  uint8
+	Background bool
+}
+
+// TextDrawSink accepts opcode6a's validated NUL-terminated text resource,
+// signed coordinates, and a snapshot of the VM-owned text drawing state. The
+// exact-build native renderer decodes its legacy Korean byte stream and clips
+// glyph pixels into the current drawing buffer. Resource is an independent
+// copy. Implementations must complete atomically and must not reenter the VM.
+type TextDrawSink interface {
+	DrawGVMText(resource []byte, x, y int16, style TextDrawStyle) error
+}
+
 // AudioResetSink accepts opcode91's provider-selected audio type. The exact-build
 // handler initializes or resets type-specific native audio objects. This request
 // boundary does not model playback, media decoding, device ownership or teardown.
@@ -238,6 +259,9 @@ type ServiceConfig struct {
 	// SpriteTransform is borrowed. Opcode70 forwards a copied media payload,
 	// signed coordinates and a raw-zero/nonzero horizontal mirror selection.
 	SpriteTransform SpriteTransformSink
+	// TextDraw is borrowed. Opcode6a forwards a copied text resource and the
+	// current normalized text style without exposing mutable VM state.
+	TextDraw TextDrawSink
 	// AudioReset is borrowed. Opcode91 also requires DeviceQuery so the adapter
 	// receives the same explicit AudioType selected for opcode51.
 	AudioReset AudioResetSink
@@ -264,6 +288,7 @@ type serviceState struct {
 	rectangleFill   RectangleFillSink
 	spriteDraw      SpriteDrawSink
 	spriteTransform SpriteTransformSink
+	textDraw        TextDrawSink
 	audioReset      AudioResetSink
 	media           [][]byte
 	mediaLoad       MediaLoadSink
@@ -290,7 +315,9 @@ type textStyleState struct {
 // or restore the shared clock after construction. Epoch zero can be selected via
 // runtime.Clock.Restore; runtime.NewClock(0,...) instead normalizes to its default.
 func NewWithAddressSpaceAndServices(program []byte, entry uint32, space AddressSpace, config *ServiceConfig) (*VM, error) {
-	state := &serviceState{}
+	// The exact-build display initializer publishes this text state before guest
+	// execution. Opcodes66..69 then replace all or selected fields.
+	state := &serviceState{textStyle: textStyleState{mode: 2, primary: 3}}
 	if config != nil {
 		if p := config.DeviceQuery; p != nil {
 			if p.Width < 1 || p.Width > 256 || p.Height < 1 || p.Height > 256 {
@@ -324,6 +351,7 @@ func NewWithAddressSpaceAndServices(program []byte, entry uint32, space AddressS
 		state.rectangleFill = config.RectangleFill
 		state.spriteDraw = config.SpriteDraw
 		state.spriteTransform = config.SpriteTransform
+		state.textDraw = config.TextDraw
 		state.audioReset = config.AudioReset
 		state.mediaLoad = config.MediaLoad
 		if len(config.Media) > math.MaxUint16 {

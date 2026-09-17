@@ -71,8 +71,15 @@ Every fetched opcode advances PC before its handler.
 | `57` | Explicit service constructor only: signed top modulo182 selects a provider-remapped drawing-buffer fill, then pop once |
 | `59` | Explicit service constructor only: clamp signed top to `0..6`, forward a mapping-selection request and pop once; no presentation |
 | `5e` | Explicit service constructor only: reduce the low byte of top modulo182, forward drawing-color selection and pop once; no drawing or presentation |
+| `62` | Explicit service constructor only: consume four signed coordinates and forward an inclusive clipped rectangle-outline request; no presentation |
 | `63` | Explicit service constructor only: consume four signed coordinates and forward an inclusive clipped rectangle-fill request; no presentation |
+| `66` | Explicit service constructor only: replace normalized text mode/primary/secondary/alignment state from four low bytes and pop four |
+| `67` | Explicit service constructor only: replace normalized text mode from the top low byte and pop once |
+| `68` | Explicit service constructor only: replace normalized primary/secondary text selectors from two low bytes and pop twice |
+| `69` | Explicit service constructor only: replace normalized text alignment from the top low byte and pop once |
+| `6a` | Explicit service constructor only: consume signed x, signed y and signed media index; forward an owned NUL-terminated legacy text payload and current text style |
 | `6f` | Explicit service constructor only: consume signed x, signed y and signed media index; forward an owned sprite payload and coordinates |
+| `70` | Explicit service constructor only: consume signed x, signed y, signed media index and a raw zero/nonzero horizontal-mirror flag; forward an owned sprite payload |
 | `76` | Explicit service constructor only: copy the full drawing buffer to the auxiliary buffer; no stack effects or presentation |
 | `77` | Explicit service constructor only: copy the full auxiliary buffer to the drawing buffer; no stack effects or presentation |
 | `78` | Explicit service constructor only: forward one unsuppressed guest display submission; no stack effects |
@@ -112,9 +119,18 @@ the kernel does not guess those values or claim that selecting a color draws.
 Opcode `63` forwards four signed coordinates in stack order. The provider owns
 axis sorting, inclusive clipping bounds, active remapped color, transparency and
 drawing-buffer mutation; the request itself does not publish a frame.
+Opcode `62` has the same coordinate and color boundary but draws only the four
+inclusive clipped edges. Opcodes `66..69` keep the exact normalized text state
+inside the service-aware VM. Opcode `6a` validates and copies one media record,
+then forwards it with signed coordinates and a style snapshot. The selected
+adapter bounds the payload at the first NUL, decodes EUC-KR, uses the shared
+deterministic handset font, applies native byte-cell alignment and clips glyph
+pixels into the indexed drawing buffer without presenting.
 Opcode `6f` exposes the authenticated sprite-raster request with an owned media
 payload and signed coordinates. Private resource formats, local anchor handling,
 clipping, remap application and rasterization remain adapter responsibilities.
+Opcode `70` uses the same validated media boundary and applies the exact
+zero/nonzero horizontal-mirror placement, including signed16 origin wrapping.
 Opcodes `76` and `77` expose only opposite-direction full display-buffer copies.
 Neither operation publishes a frame or initializes buffer geometry.
 Opcode `91` exposes the selected audio-backend reset boundary without claiming

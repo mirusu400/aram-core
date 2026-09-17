@@ -428,8 +428,9 @@ The actual corpus package used for this checkpoint has SHA-256
 `97fe208a02530ca21c6b47d7fa73cd60271aeeddd2305d2a972a217c97a4124f`.
 Through the feature-core-linked public `aram-probe` interface it reaches
 `ok_service_boundary`, stops after 4,611 instructions at PC `0x75`, and emits
-no frame. This public observation is the current acceptance result. It blocks a
-main-branch merge rather than being reclassified as successful startup.
+no frame. This remains the expected diagnostic-profile result and is not
+reclassified as startup. Exact-corpus startup acceptance is recorded separately
+below for the operational profile.
 
 A separate diagnostic callback experiment bypasses the native pre-dispatch
 lifecycle and therefore is not product acceptance. It nevertheless exercises
@@ -451,16 +452,17 @@ Static, hash-gated interoperability analysis establishes these sprite layouts:
 - type 8: no embedded palette and continuous 8bpp pixel codes;
 - destination origin is `(x-anchorX, y-anchorY)` and clipping advances the
   corresponding source coordinate;
-- for palette-backed types, the last palette index is transparent only when
-  its raw palette code is 4; type 8 uses index 4 as transparent.
+- for palette-backed types, the last palette index whose raw palette code is 4
+  is transparent; type 8 uses index 4 as transparent.
 
 The independently implemented nonzero-orientation presentation path preserves
 the exact packed-byte contract rather than normalizing RGB332 components: red is
 `P & 0xe0`, green is `(P & 0x1c) << 3`, blue is `(P & 3) << 6`, with explicit
 grayscale overrides for `00`, `49`, `92` and `ff`. It rotates the source 90
 degrees counter-clockwise into `height x width` output. Independent review found
-no Blocker or Important issue. The default-orientation color policy remains
-unresolved and this conversion is not yet connected to the diagnostic profile.
+no Blocker or Important issue. The exact-corpus operational profile uses the
+independently derived SKT compatibility palette for default orientation; the
+alternate conversion remains separately available and explicit.
 
 Symbol 8 is also not ready for a portable initializer. The exact-build tail
 copies a NUL-inclusive 15-byte opaque startup seed into mutable guest-visible
@@ -476,22 +478,17 @@ writes are a readiness signal. Remap-row source/extent, actual geometry and
 orientation, normal-color ramps, failure/short-read policy, callback/timer
 lifetime, deterministic services and save-state remain commit prerequisites.
 
-The operational timer/input lifecycle is still not implementation-ready. The
-outer callback slot has multiple alternate targets and the inner callback slot
-has many state-dependent writers. For this selected corpus, the normal startup
-path is now narrowed to `0x413600` followed by `0x4148f0`: format byte 2 is 12,
-metadata byte `+0x33` is zero, and mode byte `+0x38` is one. Other mode values
-select different callback targets, so this corpus-specific path must not become
-a process-wide fixed callback. Reserved symbols 0, 3, 4, 5 and 6 are
-alias-preserving guest storage views with ordered fresh reads/writes, not
-independent host counters. The callback entry is read from `LE16(B+0x20)` after
-those writes and lookup-state update. Remaining prerequisites include the
-symbol-8 fixed-literal policy, successful full-initializer lifetime, lookup row
-source/configuration, actual timer/message delivery, serialized queue/reentrancy
-and failure policy, and provider/window/profile readiness. Calling the header
-entry directly is therefore not an acceptable product implementation.
+The operational lifecycle is implemented only for the exact outer package
+SHA-256 above and profile `gvm-kernel-v1/skt/operational`. It does not turn the
+selected callback into a process-wide rule. Static evidence still narrows this
+corpus to `0x413600` followed by `0x4148f0`: format byte 2 is 12, metadata byte
+`+0x33` is zero, and mode byte `+0x38` is one. Reserved symbols remain
+alias-preserving guest views, while the product adapter serializes dispatch,
+timer requests, presentation and input under one machine owner. Other hashes,
+callback targets, initializer variants and mode values remain rejected rather
+than inheriting this contract.
 
-The input route is also only conditionally understood. The emulator's custom
+The selected input route uses the authenticated mapping below. The emulator's custom
 keypad hit IDs map to native/guest codes as follows:
 `1:30/20, 2:28/18, 3:26/16, 4:27/17, 5:29/19, 6:23/13,
 7:24/14, 8:25/15, 9:1/1, 10:2/2, 11:3/3, 12:4/4, 13:5/5,
@@ -502,14 +499,14 @@ uses a stateful gate: it either enters UI-mode setup or clears the state, writes
 symbol 0 as 5 and dispatches `LE16(B+0x28)`. Guest code 15 bypasses that branch,
 clears the state, dispatches `LE16(B+0x1e)` and performs its mirror/message
 cleanup. `WM_LBUTTONUP` only restores the button and clears saved hit state in
-the inspected path; no direct guest release callback is established. The outer
-and inner callback installation lifetime, provider readiness and any downstream
-release synthesis remain explicit blockers, so a fabricated symmetric key-up
-event is not acceptable compatibility behavior.
+the inspected path; no direct guest release callback is established. The
+exact-corpus adapter therefore dispatches presses through `LE16(B+0x22)` and
+accepts release as a host state transition without fabricating a guest callback.
 
 Focused GVM tests, the full core test suite, `go vet`, Windows 386 GVM and
 application tests, feature-core-linked emu integration/probe tests and diff
-checks pass. Independent review found no blocker in the implemented opcode and
-service tranche. These checks validate the shipped diagnostic boundary and
-kernel behavior, while the public corpus result above keeps full startup
-acceptance explicitly blocked.
+checks pass. The public `aram-probe` acceptance path now reaches a non-uniform
+frame, reports `level=interactive` and `state=running`, dispatches `num2` and
+`num5`, and completes 1,036 post-frame slices without a guest fault. The latest
+run observed 1,004 presentations, two input dispatches and 81,634 total
+instructions. This is exact-corpus acceptance, not general GVM compatibility.

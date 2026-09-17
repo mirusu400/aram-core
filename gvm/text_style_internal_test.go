@@ -38,6 +38,16 @@ func TestTextStyleOpcodesNormalizeLowBytesAndReplaceSubsets(t *testing.T) {
 	}
 }
 
+func TestTextStyleDefaultsMatchNativeInitializer(t *testing.T) {
+	v, err := NewWithAddressSpaceAndServices([]byte{0}, 0, AddressSpace{}, &ServiceConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := v.services.textStyle, (textStyleState{mode: 2, primary: 3}); got != want {
+		t.Fatalf("default text style = %+v, want %+v", got, want)
+	}
+}
+
 func TestTextStyleOpcodeFailureBoundaries(t *testing.T) {
 	for _, opcode := range []byte{0x66, 0x67, 0x68, 0x69} {
 		v, err := NewWithAddressSpaceAndServices([]byte{opcode}, 0, AddressSpace{}, &ServiceConfig{})

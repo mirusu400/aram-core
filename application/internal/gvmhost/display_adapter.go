@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/mirusu400/aram-core/gvm"
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 var ErrInvalidDisplayConfig = errors.New("gvmhost: invalid display configuration")
@@ -41,6 +42,8 @@ type DisplayConfig struct {
 	Orientation DisplayOrientation
 	Palette     PaletteMapper
 	Publisher   FramePublisher
+	Text        *shared.Text
+	TextOwner   shared.OwnerID
 }
 
 // DisplayAdapter owns all GVM indexed display state. Its methods are serialized
@@ -55,6 +58,9 @@ type DisplayAdapter struct {
 	mapping     uint8
 	selector    uint8
 	activeColor byte
+	text        *shared.Text
+	textOwner   shared.OwnerID
+	textFonts   [4]shared.ServiceID
 }
 
 func NewDisplayAdapter(config DisplayConfig) (*DisplayAdapter, error) {
@@ -73,6 +79,8 @@ func NewDisplayAdapter(config DisplayConfig) (*DisplayAdapter, error) {
 		palette:     config.Palette,
 		publisher:   config.Publisher,
 		activeColor: active,
+		text:        config.Text,
+		textOwner:   config.TextOwner,
 	}, nil
 }
 
@@ -218,6 +226,87 @@ func (d *DisplayAdapter) DrawGVMTransformedSprite(resource []byte, x, y int16, m
 	return nil
 }
 
+func (d *DisplayAdapter) DrawGVMText(resource []byte, x, y int16, style gvm.TextDrawStyle) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.text == nil || style.Mode > 3 || style.Primary > 181 || style.Alignment > 2 {
+		return ErrInvalidDisplayConfig
+	}
+	terminated := resource
+	for index, value := range resource {
+		if value == 0 {
+			terminated = resource[:index]
+			break
+		}
+	}
+	if len(terminated) == 0 || style.Primary == 4 {
+		return nil
+	}
+	text, err := d.text.Decode(terminated, shared.EncodingEUCKR)
+	if err != nil {
+		runes := make([]rune, len(terminated))
+		for index, value := range terminated {
+			runes[index] = rune(value)
+		}
+		text = string(runes)
+	}
+	fontID := d.textFonts[style.Mode]
+	if fontID == 0 {
+		sizes := [...]int32{6, 8, 12, 24}
+		fontID, err = d.text.EnsureFont(d.textOwner, shared.FontDescriptor{
+			Family: "aram-fallback", Size: sizes[style.Mode],
+		})
+		if err != nil {
+			return err
+		}
+		d.textFonts[style.Mode] = fontID
+	}
+	type positionedGlyph struct {
+		glyph shared.Glyph
+		x     int
+	}
+	glyphs := make([]positionedGlyph, 0, len([]rune(text)))
+	cursor := 0
+	for _, character := range text {
+		glyph, glyphErr := d.text.Glyph(d.textOwner, fontID, character)
+		if glyphErr != nil {
+			return glyphErr
+		}
+		glyphs = append(glyphs, positionedGlyph{glyph: glyph, x: cursor})
+		cursor += int(glyph.Advance)
+	}
+	colorIndex, err := d.palette.Map(d.mapping, int16(style.Primary))
+	if err != nil {
+		return err
+	}
+	cellWidths := [...]int{4, 6, 6, 12}
+	nativeWidth := len(terminated) * cellWidths[style.Mode]
+	originX := int(x)
+	if style.Alignment == 1 {
+		originX -= nativeWidth / 2
+	} else if style.Alignment == 2 {
+		originX -= nativeWidth
+	}
+	originY := int(y)
+	for _, positioned := range glyphs {
+		glyph := positioned.glyph
+		for row := int32(0); row < glyph.Height; row++ {
+			for column := int32(0); column < glyph.Width; column++ {
+				if glyph.Alpha[row*glyph.Width+column] == 0 {
+					continue
+				}
+				destinationX := originX + positioned.x + int(glyph.BearingX+column)
+				destinationY := originY + int(glyph.BearingY+row)
+				if destinationX < 0 || destinationX >= d.drawing.width || destinationY < 0 || destinationY >= d.drawing.height {
+					continue
+				}
+				d.drawing.pixels[destinationY*d.drawing.width+destinationX] = colorIndex
+			}
+		}
+	}
+	return nil
+}
+
 func (d *DisplayAdapter) mapSprite(sprite indexedSprite) ([]byte, error) {
 	mapped := make([]byte, 256)
 	mappedSet := make([]bool, 256)
@@ -355,5 +444,6 @@ var (
 	_ gvm.RectangleFillSink   = (*DisplayAdapter)(nil)
 	_ gvm.SpriteDrawSink      = (*DisplayAdapter)(nil)
 	_ gvm.SpriteTransformSink = (*DisplayAdapter)(nil)
+	_ gvm.TextDrawSink        = (*DisplayAdapter)(nil)
 	_ gvm.DisplayPresentSink  = (*DisplayAdapter)(nil)
 )

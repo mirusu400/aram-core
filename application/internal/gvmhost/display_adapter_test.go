@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mirusu400/aram-core/gvm"
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 type testPalette struct {
@@ -186,6 +187,33 @@ func TestDisplayAdapterTransformedSpriteMirrorsUsingNativeAnchorConvention(t *te
 		if got := color.RGBAModel.Convert(publisher.frames[0].At(x, 0)).(color.RGBA).R; got != want {
 			t.Fatalf("mirrored pixel %d = %d, want %d", x, got, want)
 		}
+	}
+}
+
+func TestDisplayAdapterDrawsEuckrTextWithNativeAlignment(t *testing.T) {
+	services, err := shared.NewServices(shared.DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	publisher := &frameCollector{}
+	display, err := NewDisplayAdapter(DisplayConfig{
+		Width: 32, Height: 16, Palette: testPalette{failSelector: -1},
+		Publisher: publisher, Text: services.Text, TextOwner: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// "가" in EUC-KR. Center alignment is computed from the two source bytes,
+	// matching the native renderer's fixed-cell width calculation.
+	if err := display.DrawGVMText([]byte{0xb0, 0xa1, 0}, 16, 1, gvm.TextDrawStyle{Mode: 2, Primary: 9, Alignment: 1}); err != nil {
+		t.Fatal(err)
+	}
+	changed := false
+	for _, pixel := range display.drawing.pixels {
+		changed = changed || pixel == 9
+	}
+	if !changed {
+		t.Fatal("DrawGVMText() produced no glyph pixels")
 	}
 }
 

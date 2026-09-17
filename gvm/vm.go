@@ -629,6 +629,39 @@ func (v *VM) Step() error {
 		v.services.textStyle.variant = uint8(v.stack[v.depth-1]) % 3
 		v.depth--
 		v.stack[v.depth] = 0 // Host hygiene only.
+	case 0x6a:
+		// Exact-build handler 0x419020 validates the top media index, then calls
+		// 0x40cce0 with signed x/y, the text resource, and a snapshot of the
+		// private mode/primary/alignment state. Opcode6a supplies no secondary
+		// selector and disables the outline/background path.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 3 {
+			return fail(ErrStackUnderflow)
+		}
+		index := int16(v.stack[v.depth-1])
+		if index < 0 || int(index) >= len(v.services.media) {
+			return fail(ErrInvalidMediaIndex)
+		}
+		if v.services.textDraw == nil {
+			return fail(ErrTextDrawUnavailable)
+		}
+		style := v.services.textStyle
+		if err := v.services.textDraw.DrawGVMText(
+			bytes.Clone(v.services.media[index]),
+			int16(v.stack[v.depth-3]),
+			int16(v.stack[v.depth-2]),
+			TextDrawStyle{
+				Mode: style.mode, Primary: style.primary,
+				Alignment: style.variant,
+			},
+		); err != nil {
+			return fail(err)
+		}
+		v.depth -= 3
+		clear(v.stack[v.depth : v.depth+3]) // Host hygiene only.
 	case 0x6f:
 		// Exact-build handler order is signed x, signed y, then a signed media
 		// index on top. It validates the shared media record, calls the private sprite
