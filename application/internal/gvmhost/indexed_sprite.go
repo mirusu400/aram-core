@@ -44,8 +44,8 @@ func decodeIndexedSprite(data []byte) (indexedSprite, error) {
 	sprite := indexedSprite{
 		width:            int(data[1]),
 		height:           int(data[2]),
-		anchorX:          int(data[3]),
-		anchorY:          int(data[4]),
+		anchorX:          int(int8(data[3])),
+		anchorY:          int(int8(data[4])),
 		transparentIndex: -1,
 	}
 	if sprite.width == 0 || sprite.height == 0 {

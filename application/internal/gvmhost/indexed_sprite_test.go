@@ -85,6 +85,17 @@ func TestRasterizeIndexedSpriteAnchorAndInclusiveClipping(t *testing.T) {
 	}
 }
 
+func TestRasterizeIndexedSpriteSignedNegativeAnchor(t *testing.T) {
+	surface := newIndexedSurface(3, 1)
+	data := []byte{8, 1, 1, 0xff, 0, 7}
+	if err := rasterizeIndexedSprite(&surface, data, 0, 0); err != nil {
+		t.Fatalf("rasterizeIndexedSprite() error = %v", err)
+	}
+	if want := []byte{0, 7, 0}; !bytes.Equal(surface.pixels, want) {
+		t.Fatalf("surface = %v, want %v", surface.pixels, want)
+	}
+}
+
 func TestRasterizeIndexedSpriteTransparency(t *testing.T) {
 	tests := []struct {
 		name string
