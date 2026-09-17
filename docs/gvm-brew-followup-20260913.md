@@ -466,6 +466,19 @@ source/configuration, live callback-slot selection, serialized queue/reentrancy
 and failure policy, and the exact key press/release route. Calling the header
 entry directly is therefore not an acceptable product implementation.
 
+The input route is also only conditionally understood. The emulator's custom
+keypad hit IDs map to native/guest codes as follows:
+`1:30/20, 2:28/18, 3:26/16, 4:27/17, 5:29/19, 6:23/13,
+7:24/14, 8:25/15, 9:1/1, 10:2/2, 11:3/3, 12:4/4, 13:5/5,
+14:6/6, 15:7/7, 16:8/8, 17:9/9, 18:11/11, 19:10/10,
+20:12/12`. A press follows `WM_LBUTTONDOWN`, outer event 4, inner event 3,
+a symbol-0 guest-code write, then dispatch from `LE16(B+0x22)`. Guest codes
+14 and 15 take special state/bypass paths. `WM_LBUTTONUP` only restores the
+button and clears saved hit state in the inspected path; no direct guest release
+callback is established. Callback-slot lifetime, special-key semantics and any
+downstream release synthesis remain explicit blockers, so a fabricated symmetric
+key-up event is not acceptable compatibility behavior.
+
 Focused GVM tests, the full core test suite, `go vet`, Windows 386 GVM and
 application tests, feature-core-linked emu integration/probe tests and diff
 checks pass. Independent review found no blocker in the implemented opcode and
