@@ -1,6 +1,31 @@
 package gvmhost
 
-import "testing"
+import (
+	"errors"
+	"image/color"
+	"testing"
+)
+
+func TestSKTCompatibilityPalette(t *testing.T) {
+	mapper := SKTCompatibilityPalette{}
+	packed, err := mapper.Map(3, 35)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, ok := SKTGammaColor(3, 35)
+	if !ok || packed != want {
+		t.Fatalf("Map(3,35) = %02x, want %02x", packed, want)
+	}
+	if _, err := mapper.Map(3, 5); !errors.Is(err, ErrUnsupportedSKTPaletteIndex) {
+		t.Fatalf("Map unsupported error = %v", err)
+	}
+	if got := mapper.Color(0xff); got != (color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}) {
+		t.Fatalf("white = %#v", got)
+	}
+	if got := mapper.Color(0xe3); got != (color.RGBA{R: 0xff, G: 0, B: 0xff, A: 0xff}) {
+		t.Fatalf("RGB332 = %#v", got)
+	}
+}
 
 func TestSKTGammaColorNormalRange(t *testing.T) {
 	seen := make(map[byte]struct{}, 124)

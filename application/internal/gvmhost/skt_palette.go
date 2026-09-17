@@ -1,5 +1,48 @@
 package gvmhost
 
+import (
+	"errors"
+	"image/color"
+)
+
+var ErrUnsupportedSKTPaletteIndex = errors.New("gvmhost: unsupported SKT palette index")
+
+// SKTCompatibilityPalette supplies the exact selected-corpus palette-to-packed
+// mapping and a portable RGB332 presentation policy. The latter is deliberately
+// independent of the unresolved native normal-orientation component ramps.
+type SKTCompatibilityPalette struct{}
+
+func (SKTCompatibilityPalette) Map(mapping uint8, selector int16) (byte, error) {
+	if selector < 0 || selector > 181 {
+		return 0, ErrUnsupportedSKTPaletteIndex
+	}
+	packed, ok := SKTGammaColor(mapping, uint8(selector))
+	if !ok {
+		return 0, ErrUnsupportedSKTPaletteIndex
+	}
+	return packed, nil
+}
+
+func (SKTCompatibilityPalette) Color(index byte) color.RGBA {
+	switch index {
+	case 0x00:
+		return color.RGBA{A: 0xff}
+	case 0x49:
+		return color.RGBA{R: 0x80, G: 0x80, B: 0x80, A: 0xff}
+	case 0x92:
+		return color.RGBA{R: 0xc0, G: 0xc0, B: 0xc0, A: 0xff}
+	case 0xff:
+		return color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
+	default:
+		return color.RGBA{
+			R: uint8(uint16(index>>5) * 255 / 7),
+			G: uint8(uint16((index>>2)&7) * 255 / 7),
+			B: uint8(uint16(index&3) * 255 / 3),
+			A: 0xff,
+		}
+	}
+}
+
 // SKTGammaColor converts the public Mobile C palette indices used by the
 // selected SKT corpus into the packed byte consumed by the GVM display path.
 //
