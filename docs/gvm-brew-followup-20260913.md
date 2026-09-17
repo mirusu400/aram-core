@@ -455,15 +455,18 @@ Static, hash-gated interoperability analysis establishes these sprite layouts:
   its raw palette code is 4; type 8 uses index 4 as transparent.
 
 The operational timer/input lifecycle is still not implementation-ready. The
-outer callback slot has multiple alternate targets, the inner callback slot has
-many state-dependent writers, and the selected startup path still crosses
-unresolved provider/object and reload-mode state. Reserved symbols 0, 3, 4, 5
-and 6 are alias-preserving guest storage views with ordered fresh reads/writes,
-not independent host counters. The callback entry is read from `LE16(B+0x20)`
-after those writes and lookup-state update. Remaining prerequisites include the
+outer callback slot has multiple alternate targets and the inner callback slot
+has many state-dependent writers. For this selected corpus, the normal startup
+path is now narrowed to `0x413600` followed by `0x4148f0`: format byte 2 is 12,
+metadata byte `+0x33` is zero, and mode byte `+0x38` is one. Other mode values
+select different callback targets, so this corpus-specific path must not become
+a process-wide fixed callback. Reserved symbols 0, 3, 4, 5 and 6 are
+alias-preserving guest storage views with ordered fresh reads/writes, not
+independent host counters. The callback entry is read from `LE16(B+0x20)` after
+those writes and lookup-state update. Remaining prerequisites include the
 symbol-8 fixed-literal policy, successful full-initializer lifetime, lookup row
-source/configuration, live callback-slot selection, serialized queue/reentrancy
-and failure policy, and the exact key press/release route. Calling the header
+source/configuration, actual timer/message delivery, serialized queue/reentrancy
+and failure policy, and provider/window/profile readiness. Calling the header
 entry directly is therefore not an acceptable product implementation.
 
 The input route is also only conditionally understood. The emulator's custom
@@ -472,12 +475,15 @@ keypad hit IDs map to native/guest codes as follows:
 7:24/14, 8:25/15, 9:1/1, 10:2/2, 11:3/3, 12:4/4, 13:5/5,
 14:6/6, 15:7/7, 16:8/8, 17:9/9, 18:11/11, 19:10/10,
 20:12/12`. A press follows `WM_LBUTTONDOWN`, outer event 4, inner event 3,
-a symbol-0 guest-code write, then dispatch from `LE16(B+0x22)`. Guest codes
-14 and 15 take special state/bypass paths. `WM_LBUTTONUP` only restores the
-button and clears saved hit state in the inspected path; no direct guest release
-callback is established. Callback-slot lifetime, special-key semantics and any
-downstream release synthesis remain explicit blockers, so a fabricated symmetric
-key-up event is not acceptable compatibility behavior.
+a symbol-0 guest-code write, then dispatch from `LE16(B+0x22)`. Guest code 14
+uses a stateful gate: it either enters UI-mode setup or clears the state, writes
+symbol 0 as 5 and dispatches `LE16(B+0x28)`. Guest code 15 bypasses that branch,
+clears the state, dispatches `LE16(B+0x1e)` and performs its mirror/message
+cleanup. `WM_LBUTTONUP` only restores the button and clears saved hit state in
+the inspected path; no direct guest release callback is established. The outer
+and inner callback installation lifetime, provider readiness and any downstream
+release synthesis remain explicit blockers, so a fabricated symmetric key-up
+event is not acceptable compatibility behavior.
 
 Focused GVM tests, the full core test suite, `go vet`, Windows 386 GVM and
 application tests, feature-core-linked emu integration/probe tests and diff
