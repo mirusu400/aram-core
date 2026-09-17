@@ -47,8 +47,10 @@ const (
 	helperMemmoveSlot       = uint32(0)
 	helperMemsetSlot        = uint32(1)
 	helperStrcpySlot        = uint32(2)
+	helperStrcatSlot        = uint32(3)
 	helperStrcmpSlot        = uint32(4)
 	helperStrlenSlot        = uint32(5)
+	helperStrchrSlot        = uint32(6)
 	helperSprintfSlot       = uint32(8)
 	helperWStrcpySlot       = uint32(9)
 	helperWStrlenSlot       = uint32(12)
@@ -647,6 +649,11 @@ func (r *Runtime) handleAppletMethodTrap(
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
+		case helperStrcatSlot:
+			if err := r.appendGuestCString(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
 		case helperStrcmpSlot:
 			if err := r.compareGuestCStrings(); err != nil {
 				return true, 0, cpu.ModeARM, err
@@ -654,6 +661,11 @@ func (r *Runtime) handleAppletMethodTrap(
 			return resume()
 		case helperStrlenSlot:
 			if err := r.returnCStringLength(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case helperStrchrSlot:
+			if err := r.findGuestCStringByte(); err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
@@ -1561,6 +1573,32 @@ func (r *Runtime) copyGuestCString() error {
 	return r.cpu.WriteRegister(cpu.RegisterR0, destination)
 }
 
+func (r *Runtime) appendGuestCString() error {
+	destination, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW strcat destination: %w", err)
+	}
+	source, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW strcat source: %w", err)
+	}
+	prefix, err := r.readCString(destination)
+	if err != nil {
+		return err
+	}
+	suffix, err := r.readCString(source)
+	if err != nil {
+		return err
+	}
+	if len(prefix)+len(suffix)+1 > int(heapSize) {
+		return fmt.Errorf("BREW strcat result exceeds runtime limit")
+	}
+	if err := r.cpu.WriteMemory(destination, append([]byte(prefix+suffix), 0)); err != nil {
+		return fmt.Errorf("write BREW strcat destination: %w", err)
+	}
+	return r.cpu.WriteRegister(cpu.RegisterR0, destination)
+}
+
 func (r *Runtime) copyGuestWideString() error {
 	destination, err := r.cpu.ReadRegister(cpu.RegisterR0)
 	if err != nil {
@@ -1694,6 +1732,29 @@ func (r *Runtime) findGuestCString() error {
 	result := uint32(0)
 	if index := strings.Index(haystack, needle); index >= 0 {
 		result = haystackPointer + uint32(index)
+	}
+	return r.cpu.WriteRegister(cpu.RegisterR0, result)
+}
+
+func (r *Runtime) findGuestCStringByte() error {
+	pointer, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW strchr string pointer: %w", err)
+	}
+	rawValue, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW strchr value: %w", err)
+	}
+	text, err := r.readCString(pointer)
+	if err != nil {
+		return err
+	}
+	result := uint32(0)
+	value := byte(rawValue)
+	if value == 0 {
+		result = pointer + uint32(len(text))
+	} else if index := strings.IndexByte(text, value); index >= 0 {
+		result = pointer + uint32(index)
 	}
 	return r.cpu.WriteRegister(cpu.RegisterR0, result)
 }
@@ -2075,6 +2136,7 @@ func (r *Runtime) formatResourceName() error {
 		return int32(binary.LittleEndian.Uint32(encoded[:])), nil
 	}
 	values := make([]any, 0, 8)
+	goFormat := []byte(format)
 	argumentIndex := uint32(0)
 	for index := 0; index < len(format); index++ {
 		if format[index] != '%' {
@@ -2088,26 +2150,32 @@ func (r *Runtime) formatResourceName() error {
 		for end < len(format) && strings.ContainsRune("-+ #0.123456789", rune(format[end])) {
 			end++
 		}
-		if end >= len(format) || format[end] != 'd' && format[end] != 's' {
+		if end >= len(format) || !strings.ContainsRune("dsuXx", rune(format[end])) {
 			return fmt.Errorf("BREW execution boundary: unsupported sprintf format %q", format)
 		}
 		value, readErr := arg(argumentIndex)
 		if readErr != nil {
 			return fmt.Errorf("read BREW sprintf argument %d: %w", argumentIndex, readErr)
 		}
-		if format[end] == 's' {
+		switch format[end] {
+		case 's':
 			text, readErr := r.readCString(uint32(value))
 			if readErr != nil {
 				return readErr
 			}
 			values = append(values, text)
-		} else {
+		case 'd':
 			values = append(values, value)
+		case 'u':
+			goFormat[end] = 'd'
+			values = append(values, uint32(value))
+		case 'x', 'X':
+			values = append(values, uint32(value))
 		}
 		argumentIndex++
 		index = end
 	}
-	text := fmt.Sprintf(format, values...)
+	text := fmt.Sprintf(string(goFormat), values...)
 	data := append([]byte(text), 0)
 	if err := r.cpu.WriteMemory(destination, data); err != nil {
 		return fmt.Errorf("write BREW sprintf result: %w", err)

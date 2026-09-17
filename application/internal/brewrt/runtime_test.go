@@ -155,8 +155,23 @@ func TestCommonHelperContracts(t *testing.T) {
 	if got := call(helperStrstrSlot, source, destination, 0); got != source+7 {
 		t.Fatalf("strstr result = 0x%08x, want 0x%08x", got, source+7)
 	}
+	if got := call(helperStrchrSlot, source, '/', 0); got != source+6 {
+		t.Fatalf("strchr result = 0x%08x, want 0x%08x", got, source+6)
+	}
 	if got := call(helperStristrSlot, source, destination, 0); got != source+7 {
 		t.Fatalf("stristr result = 0x%08x, want 0x%08x", got, source+7)
+	}
+	if err := runtime.cpu.WriteMemory(destination, []byte("prefix-\x00")); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteMemory(heapBase+0x480, []byte("suffix\x00")); err != nil {
+		t.Fatal(err)
+	}
+	if got := call(helperStrcatSlot, destination, heapBase+0x480, 0); got != destination {
+		t.Fatalf("strcat return = 0x%08x, want destination", got)
+	}
+	if got, err := runtime.readCString(destination); err != nil || got != "prefix-suffix" {
+		t.Fatalf("strcat result = %q err=%v", got, err)
 	}
 
 	wideSource, wideDestination := heapBase+0x700, heapBase+0x740
@@ -222,7 +237,7 @@ func TestCommonHelperContracts(t *testing.T) {
 func TestSprintfSupportsBoundedStringAndIntegerFormats(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	destination, formatAt, textAt := heapBase+0x100, heapBase+0x200, heapBase+0x300
-	if err := runtime.cpu.WriteMemory(formatAt, []byte("%s-%03d%%\x00")); err != nil {
+	if err := runtime.cpu.WriteMemory(formatAt, []byte("%s-%03d-%x%%\x00")); err != nil {
 		t.Fatal(err)
 	}
 	if err := runtime.cpu.WriteMemory(textAt, []byte("giftkart\x00")); err != nil {
@@ -239,6 +254,14 @@ func TestSprintfSupportsBoundedStringAndIntegerFormats(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	var thirdArgument [4]byte
+	binary.LittleEndian.PutUint32(thirdArgument[:], 0x2a)
+	if err := runtime.cpu.WriteMemory(stackBase, thirdArgument[:]); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterSP, stackBase); err != nil {
+		t.Fatal(err)
+	}
 	handled, _, _, err := runtime.handleAppletMethodTrap(helperMethodTrapBase + helperSprintfSlot*2 + 2)
 	if err != nil || !handled {
 		t.Fatalf("sprintf handled=%v err=%v", handled, err)
@@ -247,8 +270,8 @@ func TestSprintfSupportsBoundedStringAndIntegerFormats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if text != "giftkart-007%" {
-		t.Fatalf("sprintf result = %q, want giftkart-007%%", text)
+	if text != "giftkart-007-2a%" {
+		t.Fatalf("sprintf result = %q, want giftkart-007-2a%%", text)
 	}
 }
 
