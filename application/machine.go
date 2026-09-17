@@ -128,6 +128,11 @@ type Factory struct {
 	// sample rate, this is a playback preference rather than part of a title's
 	// deterministic identity.
 	OutputChannels uint8
+	// AllowUntrustedBREW explicitly opts the embedding product into executing
+	// structurally validated BREW modules whose carrier signature is present but
+	// not cryptographically verified by aram-core. The default is false. Exact
+	// hash-qualified reference packages remain available without this opt-in.
+	AllowUntrustedBREW bool
 }
 
 func NewFactory() Factory {

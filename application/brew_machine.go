@@ -61,6 +61,9 @@ func (f Factory) createBREWMachine(ctx context.Context, source machinecore.Sourc
 	if !matched || err != nil {
 		return nil, matched, err
 	}
+	if !pkg.Authenticated && !f.AllowUntrustedBREW {
+		return nil, false, nil
+	}
 	digest := sha256.Sum256(data)
 	actualSHA := hex.EncodeToString(digest[:])
 	if source.SHA256 != "" && !strings.EqualFold(source.SHA256, actualSHA) {
@@ -118,7 +121,7 @@ func (m *brewMachine) Start(ctx context.Context) error {
 	if !m.started {
 		if err := m.runtime.Bootstrap(ctx); err != nil {
 			m.state = machinecore.StateFaulted
-			return fmt.Errorf("bootstrap authenticated BREW module: %w", err)
+			return fmt.Errorf("bootstrap BREW module: %w", err)
 		}
 		if err := m.runtime.ProbeAppletBoundary(ctx); err != nil {
 			var boundary *brewrt.ExecutionBoundaryError

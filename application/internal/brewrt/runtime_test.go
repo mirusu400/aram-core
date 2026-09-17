@@ -49,7 +49,7 @@ func TestRuntimeBootstrapsSyntheticARMModule(t *testing.T) {
 	}
 }
 
-func TestDisplayUpdateCommitsDetachedBlackFramebuffer(t *testing.T) {
+func TestDisplayUpdateRequiresChangedFramebufferAndCommitsDetachedSnapshot(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	black := make([]byte, framebufferBytes)
 	if err := runtime.cpu.WriteMemory(framebufferBase, black); err != nil {
@@ -62,8 +62,8 @@ func TestDisplayUpdateCommitsDetachedBlackFramebuffer(t *testing.T) {
 	if err != nil || !handled {
 		t.Fatalf("IDisplay Update handled=%v err=%v", handled, err)
 	}
-	if count, valid := runtime.FrameStats(); count != 1 || !valid {
-		t.Fatalf("frame stats count=%d valid=%v, want 1/true", count, valid)
+	if count, valid := runtime.FrameStats(); count != 1 || valid {
+		t.Fatalf("untouched frame stats count=%d valid=%v, want 1/false", count, valid)
 	}
 
 	changed := append([]byte(nil), black...)
@@ -71,11 +71,27 @@ func TestDisplayUpdateCommitsDetachedBlackFramebuffer(t *testing.T) {
 	if err := runtime.cpu.WriteMemory(framebufferBase, changed); err != nil {
 		t.Fatal(err)
 	}
+	if _, _, _, err := runtime.handleAppletMethodTrap(displayTrapBase + 7*2 + 2); err != nil {
+		t.Fatal(err)
+	}
 	frame, presented, err := runtime.Framebuffer()
 	if err != nil || !presented {
 		t.Fatalf("committed framebuffer presented=%v err=%v", presented, err)
 	}
-	if got := color.RGBAModel.Convert(frame.At(0, 0)).(color.RGBA); got != (color.RGBA{A: 0xff}) {
+	if got := color.RGBAModel.Convert(frame.At(0, 0)).(color.RGBA); got != (color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}) {
+		t.Fatalf("committed guest write missing from frame: pixel=%#v", got)
+	}
+	if count, valid := runtime.FrameStats(); count != 2 || !valid {
+		t.Fatalf("changed frame stats count=%d valid=%v, want 2/true", count, valid)
+	}
+	if err := runtime.cpu.WriteMemory(framebufferBase, black); err != nil {
+		t.Fatal(err)
+	}
+	frame, _, err = runtime.Framebuffer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := color.RGBAModel.Convert(frame.At(0, 0)).(color.RGBA); got != (color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}) {
 		t.Fatalf("uncommitted guest write leaked into frame: pixel=%#v", got)
 	}
 }
@@ -708,7 +724,7 @@ func TestMatchAcceptsGenericSingleModulePackage(t *testing.T) {
 	binary.LittleEndian.PutUint32(mif[48:], 0x01023456)
 	var archive bytes.Buffer
 	w := zip.NewWriter(&archive)
-	for name, data := range map[string][]byte{"game.mif": mif, "bin/game.mod": module} {
+	for name, data := range map[string][]byte{"game.mif": mif, "bin/game.mod": module, "bin/game.sig": []byte("unverified carrier signature")} {
 		entry, err := w.Create(name)
 		if err != nil {
 			t.Fatal(err)
@@ -726,6 +742,9 @@ func TestMatchAcceptsGenericSingleModulePackage(t *testing.T) {
 	}
 	if len(pkg.ClassIDs) != 1 || pkg.ClassIDs[0] != 0x01023456 || pkg.Splash != nil {
 		t.Fatalf("generic package = %+v", pkg)
+	}
+	if pkg.Authenticated {
+		t.Fatal("generic package was reported as authenticated")
 	}
 }
 
