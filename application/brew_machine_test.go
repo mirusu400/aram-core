@@ -1,7 +1,10 @@
 package application
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"image"
 	"image/color"
@@ -14,6 +17,38 @@ import (
 )
 
 type panicReaderAt struct{}
+
+func genericBREWArchiveForTest(t *testing.T) []byte {
+	t.Helper()
+	module := make([]byte, 8)
+	binary.LittleEndian.PutUint32(module, 0xe92d400c)
+	mif := make([]byte, 64)
+	for offset, value := range map[int]uint32{0: 0x00010011, 4: 0x10001, 8: 32, 12: 8, 16: 40, 20: 1, 24: 48, 28: 16} {
+		binary.LittleEndian.PutUint32(mif[offset:], value)
+	}
+	binary.LittleEndian.PutUint32(mif[40:], 48)
+	binary.LittleEndian.PutUint32(mif[44:], 64)
+	binary.LittleEndian.PutUint32(mif[48:], 0x01023456)
+	var archive bytes.Buffer
+	writer := zip.NewWriter(&archive)
+	for name, data := range map[string][]byte{
+		"game.mif":     mif,
+		"bin/game.mod": module,
+		"bin/game.sig": []byte("unverified carrier signature"),
+	} {
+		entry, err := writer.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := entry.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return archive.Bytes()
+}
 
 func (panicReaderAt) ReadAt([]byte, int64) (int, error) {
 	panic("unexpected source read")
@@ -62,6 +97,20 @@ func TestBREWFactoryRejectsOversizeBeforeReading(t *testing.T) {
 		t.Fatalf("oversize source matched=%v err=%v", matched, err)
 	}
 	var _ io.ReaderAt = panicReaderAt{}
+}
+
+func TestBREWFactoryRequiresExplicitOptInForUnverifiedPackage(t *testing.T) {
+	data := genericBREWArchiveForTest(t)
+	source := machinecore.Source{Name: "generic.zip", ReaderAt: bytes.NewReader(data), Size: int64(len(data))}
+	if _, matched, err := NewFactory().createBREWMachine(context.Background(), source); err != nil || matched {
+		t.Fatalf("default generic BREW matched=%v err=%v", matched, err)
+	}
+	factory := NewFactory()
+	factory.AllowUntrustedBREW = true
+	machine, matched, err := factory.createBREWMachine(context.Background(), source)
+	if err != nil || !matched || machine == nil {
+		t.Fatalf("opted-in generic BREW machine=%T matched=%v err=%v", machine, matched, err)
+	}
 }
 
 func TestBREWMachineRendersPackageSplashNonUniformly(t *testing.T) {

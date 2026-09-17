@@ -44,16 +44,17 @@ const (
 
 // Package contains the inspected executable module and immutable archive data.
 type Package struct {
-	Module   []byte
-	ClassIDs []uint32
-	Splash   *image.RGBA
-	Files    map[string][]byte
+	Module        []byte
+	ClassIDs      []uint32
+	Splash        *image.RGBA
+	Files         map[string][]byte
+	Authenticated bool
 }
 
-// Match authenticates a bounded BREW container, selects its sole executable
-// module, and derives candidate application ClassIDs from aligned module
-// literals. The module factory remains the authority: candidates are accepted
-// only if its real CreateInstance returns a valid guest object.
+// Match validates a bounded BREW container, selects its sole executable module,
+// and derives its application ClassID from bounded MIF metadata. Generic carrier
+// signatures are presence-checked only; Package.Authenticated is reserved for
+// the exact hash-qualified reference package.
 func Match(data []byte) (pkg Package, matched bool, err error) {
 	inspected, err := brew.Inspect(data)
 	if err != nil {
@@ -62,9 +63,10 @@ func Match(data []byte) (pkg Package, matched bool, err error) {
 	if len(inspected.Modules) != 1 || len(inspected.MIFs) != 1 {
 		return Package{}, false, nil
 	}
-	moduleName := inspected.Modules[0].Name
+	moduleMetadata := inspected.Modules[0]
+	moduleName := moduleMetadata.Name
 	module := inspected.Files[moduleName]
-	if len(module) < 8 || len(module) > maxExecutableModuleSize || !knownModuleVeneer(module) {
+	if !moduleMetadata.SignaturePresent || len(module) < 8 || len(module) > maxExecutableModuleSize || !knownModuleVeneer(module) {
 		return Package{}, false, nil
 	}
 	classID, ok := mifApplicationClassID(inspected.MIFs[0], inspected.Files[inspected.MIFs[0].Name])
@@ -73,12 +75,14 @@ func Match(data []byte) (pkg Package, matched bool, err error) {
 	}
 
 	var splash *image.RGBA
+	authenticated := false
 	digest := sha256.Sum256(data)
 	if hex.EncodeToString(digest[:]) == ArchiveSHA256 {
 		moduleDigest := sha256.Sum256(module)
 		if moduleName != ModulePath || hex.EncodeToString(moduleDigest[:]) != ModuleSHA256 {
 			return Package{}, true, fmt.Errorf("authenticated BREW reference module contract mismatch")
 		}
+		authenticated = true
 		mif, ok := inspected.Files[MIFPath]
 		if !ok || len(mif) < mifClassIDOffset+4 || binary.LittleEndian.Uint32(mif[mifClassIDOffset:]) != ClassID {
 			return Package{}, true, fmt.Errorf("authenticated BREW reference MIF class contract mismatch")
@@ -93,10 +97,11 @@ func Match(data []byte) (pkg Package, matched bool, err error) {
 		files[name] = append([]byte(nil), contents...)
 	}
 	return Package{
-		Module:   append([]byte(nil), module...),
-		ClassIDs: []uint32{classID},
-		Splash:   splash,
-		Files:    files,
+		Module:        append([]byte(nil), module...),
+		ClassIDs:      []uint32{classID},
+		Splash:        splash,
+		Files:         files,
+		Authenticated: authenticated,
 	}, true, nil
 }
 

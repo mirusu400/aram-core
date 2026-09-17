@@ -154,13 +154,9 @@ func (r *Runtime) handleGraphicsMethod(slot uint32) (bool, error) {
 	case 31, 17, 12, 14, 34, 36, 40: // state accepted by the fixed software target
 		return returnValue(0)
 	case 32: // Update
-		pixels := make([]byte, framebufferBytes)
-		if err := r.cpu.ReadMemory(framebufferBase, pixels); err != nil {
-			return true, fmt.Errorf("snapshot BREW graphics framebuffer: %w", err)
+		if err := r.commitFramebufferUpdate(); err != nil {
+			return true, fmt.Errorf("commit BREW graphics framebuffer: %w", err)
 		}
-		r.presented = pixels
-		r.updates++
-		r.guestFrame = true
 		return returnValue(0)
 	case 33:
 		x, err := argument(cpu.RegisterR1)

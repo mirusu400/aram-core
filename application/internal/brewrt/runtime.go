@@ -1,6 +1,7 @@
 package brewrt
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -131,9 +132,9 @@ const (
 	hostCallBudget  = 4096
 )
 
-// Runtime executes the authenticated module and applet ARM code with the
-// portable interpreter. It exposes only service methods reached and verified by
-// the exact title; every unknown class or vtable slot remains a typed boundary.
+// Runtime executes structurally validated module and applet ARM code with the
+// portable interpreter. It exposes only implemented service methods; every
+// unknown class or vtable slot remains a typed boundary.
 type Runtime struct {
 	cpu           cpu.Backend
 	moduleObject  uint32
@@ -838,13 +839,9 @@ func (r *Runtime) handleAppletMethodTrap(
 			}
 			return resume()
 		case 7: // Update(IDisplay *)
-			pixels := make([]byte, framebufferBytes)
-			if err := r.cpu.ReadMemory(framebufferBase, pixels); err != nil {
-				return true, 0, cpu.ModeARM, fmt.Errorf("snapshot BREW guest framebuffer: %w", err)
+			if err := r.commitFramebufferUpdate(); err != nil {
+				return true, 0, cpu.ModeARM, err
 			}
-			r.presented = pixels
-			r.updates++
-			r.guestFrame = true
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
 				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW display-update status: %w", err)
 			}
@@ -2524,6 +2521,33 @@ func (r *Runtime) framebufferMutated() (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// commitFramebufferUpdate records every guest Update call, but only publishes
+// a frame after the native RGB565 surface differs from the last committed
+// surface. An untouched zero-filled framebuffer is not rendering evidence.
+func (r *Runtime) commitFramebufferUpdate() error {
+	pixels := make([]byte, framebufferBytes)
+	if err := r.cpu.ReadMemory(framebufferBase, pixels); err != nil {
+		return fmt.Errorf("snapshot BREW guest framebuffer: %w", err)
+	}
+	r.updates++
+	changed := false
+	if len(r.presented) == len(pixels) {
+		changed = !bytes.Equal(r.presented, pixels)
+	} else {
+		for _, value := range pixels {
+			if value != 0 {
+				changed = true
+				break
+			}
+		}
+	}
+	if changed {
+		r.presented = pixels
+		r.guestFrame = true
+	}
+	return nil
 }
 
 func (r *Runtime) drawDisplayRect() error {
