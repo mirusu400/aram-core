@@ -50,6 +50,7 @@ const (
 	helperStrcmpSlot        = uint32(4)
 	helperStrlenSlot        = uint32(5)
 	helperSprintfSlot       = uint32(8)
+	helperAtoiSlot          = uint32(36)
 	helperGetAEEVersionSlot = uint32(35)
 	helperDbgPrintfSlot     = uint32(39)
 	helperGetRandSlot       = uint32(42)
@@ -59,6 +60,8 @@ const (
 	helperCurrentAppletSlot = uint32(0x30)
 	helperStrncpySlot       = uint32(50)
 	helperStrncmpSlot       = uint32(51)
+	helperStricmpSlot       = uint32(52)
+	helperStrstrSlot        = uint32(54)
 	// The exact title branches explicitly for BREW 1.0, 1.2 and 2.1. Its KTF
 	// handset path is the BREW 2.1 branch.
 	aeeVersion         = uint32(0x02010000)
@@ -524,6 +527,11 @@ func (r *Runtime) handleAppletMethodTrap(
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
+		case helperAtoiSlot:
+			if err := r.parseGuestInteger(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
 		case helperGetRandSlot:
 			if err := r.fillGuestRandom(); err != nil {
 				return true, 0, cpu.ModeARM, err
@@ -564,6 +572,16 @@ func (r *Runtime) handleAppletMethodTrap(
 			return resume()
 		case helperStrncmpSlot:
 			if err := r.compareGuestStringsN(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case helperStricmpSlot:
+			if err := r.compareGuestCStringsFoldASCII(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case helperStrstrSlot:
+			if err := r.findGuestCString(); err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
@@ -669,6 +687,18 @@ func (r *Runtime) handleAppletMethodTrap(
 			})
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
 				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW timer status: %w", err)
+			}
+			return resume()
+		case 18: // LoadResData(IShell *, const char *, uint16, ResType)
+			if err := r.loadShellResourceData(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 20: // FreeResData(IShell *, void *)
+			// Runtime allocations are arena-backed. Reclaiming is deferred until the
+			// machine closes, but the guest-visible ownership contract is complete.
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
 		default:
@@ -1027,6 +1057,110 @@ func (r *Runtime) compareGuestCStrings() error {
 	}
 	result := int32(strings.Compare(left, right))
 	return r.cpu.WriteRegister(cpu.RegisterR0, uint32(result))
+}
+
+func (r *Runtime) compareGuestCStringsFoldASCII() error {
+	leftPointer, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW stricmp left pointer: %w", err)
+	}
+	rightPointer, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW stricmp right pointer: %w", err)
+	}
+	left, err := r.readCString(leftPointer)
+	if err != nil {
+		return err
+	}
+	right, err := r.readCString(rightPointer)
+	if err != nil {
+		return err
+	}
+	fold := func(value byte) byte {
+		if value >= 'A' && value <= 'Z' {
+			return value + ('a' - 'A')
+		}
+		return value
+	}
+	limit := len(left)
+	if len(right) < limit {
+		limit = len(right)
+	}
+	result := int32(0)
+	for index := 0; index < limit; index++ {
+		leftByte, rightByte := fold(left[index]), fold(right[index])
+		if leftByte != rightByte {
+			result = int32(leftByte) - int32(rightByte)
+			break
+		}
+	}
+	if result == 0 && len(left) != len(right) {
+		if len(left) < len(right) {
+			result = -int32(fold(right[len(left)]))
+		} else {
+			result = int32(fold(left[len(right)]))
+		}
+	}
+	return r.cpu.WriteRegister(cpu.RegisterR0, uint32(result))
+}
+
+func (r *Runtime) findGuestCString() error {
+	haystackPointer, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW strstr haystack pointer: %w", err)
+	}
+	needlePointer, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW strstr needle pointer: %w", err)
+	}
+	haystack, err := r.readCString(haystackPointer)
+	if err != nil {
+		return err
+	}
+	needle, err := r.readCString(needlePointer)
+	if err != nil {
+		return err
+	}
+	result := uint32(0)
+	if index := strings.Index(haystack, needle); index >= 0 {
+		result = haystackPointer + uint32(index)
+	}
+	return r.cpu.WriteRegister(cpu.RegisterR0, result)
+}
+
+func (r *Runtime) parseGuestInteger() error {
+	pointer, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW atoi pointer: %w", err)
+	}
+	text, err := r.readCString(pointer)
+	if err != nil {
+		return err
+	}
+	index := 0
+	for index < len(text) {
+		switch text[index] {
+		case ' ', '\t', '\n', '\r', '\v', '\f':
+			index++
+		default:
+			goto sign
+		}
+	}
+sign:
+	negative := false
+	if index < len(text) && (text[index] == '+' || text[index] == '-') {
+		negative = text[index] == '-'
+		index++
+	}
+	var value uint32
+	for index < len(text) && text[index] >= '0' && text[index] <= '9' {
+		value = value*10 + uint32(text[index]-'0')
+		index++
+	}
+	if negative {
+		value = uint32(-int32(value))
+	}
+	return r.cpu.WriteRegister(cpu.RegisterR0, value)
 }
 
 func (r *Runtime) fillGuestRandom() error {
@@ -1644,12 +1778,10 @@ func (r *Runtime) returnAllocation() error {
 	if err != nil {
 		return fmt.Errorf("read BREW allocation size: %w", err)
 	}
-	size = (size + 7) &^ 7
-	if size == 0 || size > heapBase+heapSize-r.heapNext {
-		return fmt.Errorf("BREW bootstrap allocation %d exceeds heap", size)
+	address, err := r.allocateGuest(size)
+	if err != nil {
+		return err
 	}
-	address := r.heapNext
-	r.heapNext += size
 	if err := r.cpu.WriteRegister(cpu.RegisterR0, address); err != nil {
 		return fmt.Errorf("return BREW allocation: %w", err)
 	}

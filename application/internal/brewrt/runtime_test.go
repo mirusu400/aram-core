@@ -134,6 +134,33 @@ func TestCommonHelperContracts(t *testing.T) {
 	if got := int32(call(helperStrncmpSlot, source, destination, 3)); got != -1 {
 		t.Fatalf("strncmp result = %d, want -1", got)
 	}
+	if err := runtime.cpu.WriteMemory(source, []byte("Prefix/Needle/Suffix\x00")); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteMemory(destination, []byte("needle\x00")); err != nil {
+		t.Fatal(err)
+	}
+	if got := int32(call(helperStricmpSlot, destination, heapBase+0x400, 0)); got == 0 {
+		t.Fatal("stricmp treated different strings as equal")
+	}
+	if err := runtime.cpu.WriteMemory(heapBase+0x400, []byte("NEEDLE\x00")); err != nil {
+		t.Fatal(err)
+	}
+	if got := int32(call(helperStricmpSlot, destination, heapBase+0x400, 0)); got != 0 {
+		t.Fatalf("stricmp result = %d, want equal", got)
+	}
+	if err := runtime.cpu.WriteMemory(destination, []byte("Needle\x00")); err != nil {
+		t.Fatal(err)
+	}
+	if got := call(helperStrstrSlot, source, destination, 0); got != source+7 {
+		t.Fatalf("strstr result = 0x%08x, want 0x%08x", got, source+7)
+	}
+	if err := runtime.cpu.WriteMemory(heapBase+0x500, []byte(" \t-123tail\x00")); err != nil {
+		t.Fatal(err)
+	}
+	if got := int32(call(helperAtoiSlot, heapBase+0x500, 0, 0)); got != -123 {
+		t.Fatalf("atoi result = %d, want -123", got)
+	}
 
 	randomAt := heapBase + 0x300
 	if got := call(helperGetRandSlot, randomAt, 4, 0); got != 0 {
