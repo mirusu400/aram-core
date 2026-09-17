@@ -149,6 +149,41 @@ func (d *DisplayAdapter) FillGVMRectangle(x1, y1, x2, y2 int16) error {
 	return nil
 }
 
+func (d *DisplayAdapter) DrawGVMRectangle(x1, y1, x2, y2 int16) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.selector == 4 {
+		return nil
+	}
+	left, right := ordered(int(x1), int(x2))
+	top, bottom := ordered(int(y1), int(y2))
+	d.drawHorizontal(left, right, top)
+	d.drawHorizontal(left, right, bottom)
+	d.drawVertical(top, bottom, left)
+	d.drawVertical(top, bottom, right)
+	return nil
+}
+
+func (d *DisplayAdapter) drawHorizontal(x1, x2, y int) {
+	if y < 0 || y >= d.drawing.height || x2 < 0 || x1 >= d.drawing.width {
+		return
+	}
+	x1, x2 = max(x1, 0), min(x2, d.drawing.width-1)
+	for x := x1; x <= x2; x++ {
+		d.drawing.pixels[y*d.drawing.width+x] = d.activeColor
+	}
+}
+
+func (d *DisplayAdapter) drawVertical(y1, y2, x int) {
+	if x < 0 || x >= d.drawing.width || y2 < 0 || y1 >= d.drawing.height {
+		return
+	}
+	y1, y2 = max(y1, 0), min(y2, d.drawing.height-1)
+	for y := y1; y <= y2; y++ {
+		d.drawing.pixels[y*d.drawing.width+x] = d.activeColor
+	}
+}
+
 func (d *DisplayAdapter) DrawGVMSprite(resource []byte, x, y int16) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -266,6 +301,7 @@ var (
 	_ gvm.DisplayCopySink    = (*DisplayAdapter)(nil)
 	_ gvm.MappingSelectSink  = (*DisplayAdapter)(nil)
 	_ gvm.ColorSelectSink    = (*DisplayAdapter)(nil)
+	_ gvm.RectangleDrawSink  = (*DisplayAdapter)(nil)
 	_ gvm.RectangleFillSink  = (*DisplayAdapter)(nil)
 	_ gvm.SpriteDrawSink     = (*DisplayAdapter)(nil)
 	_ gvm.DisplayPresentSink = (*DisplayAdapter)(nil)

@@ -555,6 +555,27 @@ func (v *VM) Step() error {
 		}
 		v.depth -= 4
 		clear(v.stack[v.depth : v.depth+4]) // Host hygiene only.
+	case 0x62:
+		// The exact-build handler at 0x418e10 sign-extends four stack words in
+		// order, calls the clipped rectangle-outline helper at 0x40e600, then
+		// consumes all four values. Provider failure leaves the stack untouched.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 4 {
+			return fail(ErrStackUnderflow)
+		}
+		if v.services.rectangleDraw == nil {
+			return fail(ErrRectangleDrawUnavailable)
+		}
+		x1, y1 := int16(v.stack[v.depth-4]), int16(v.stack[v.depth-3])
+		x2, y2 := int16(v.stack[v.depth-2]), int16(v.stack[v.depth-1])
+		if err := v.services.rectangleDraw.DrawGVMRectangle(x1, y1, x2, y2); err != nil {
+			return fail(err)
+		}
+		v.depth -= 4
+		clear(v.stack[v.depth : v.depth+4]) // Host hygiene only.
 	case 0x6f:
 		// Exact-build handler order is signed x, signed y, then a signed media
 		// index on top. It validates the shared media record, calls the private sprite

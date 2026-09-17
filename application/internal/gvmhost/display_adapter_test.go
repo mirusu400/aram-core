@@ -106,6 +106,35 @@ func TestDisplayAdapterDrawingCopyAndTransparentColor(t *testing.T) {
 	}
 }
 
+func TestDisplayAdapterDrawRectangleClipsInclusiveEdges(t *testing.T) {
+	publisher := &frameCollector{}
+	display := newTestDisplay(t, 4, 3, DisplayOrientationDefault, testPalette{failSelector: -1}, publisher)
+	if err := display.FillGVMDisplay(0); err != nil {
+		t.Fatal(err)
+	}
+	if err := display.SelectGVMColor(7); err != nil {
+		t.Fatal(err)
+	}
+	if err := display.DrawGVMRectangle(-1, 0, 2, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := display.PresentGVMDisplay(); err != nil {
+		t.Fatal(err)
+	}
+	want := []byte{7, 7, 7, 0, 0, 0, 7, 0, 7, 7, 7, 0}
+	for i, value := range want {
+		if got := color.RGBAModel.Convert(publisher.frames[0].At(i%4, i/4)).(color.RGBA).R; got != value {
+			t.Fatalf("pixel %d = %d, want %d", i, got, value)
+		}
+	}
+	if err := display.SelectGVMColor(4); err != nil {
+		t.Fatal(err)
+	}
+	if err := display.DrawGVMRectangle(0, 0, 3, 2); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDisplayAdapterSpriteUsesDecoderMapperAndTransparencyAtomically(t *testing.T) {
 	publisher := &frameCollector{}
 	display := newTestDisplay(t, 3, 1, DisplayOrientationDefault, testPalette{failSelector: -1}, publisher)

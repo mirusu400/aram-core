@@ -26,6 +26,7 @@ var (
 	ErrDisplayCopyUnavailable    = errors.New("gvm: display buffer copy service unavailable")
 	ErrDisplayFillUnavailable    = errors.New("gvm: display fill service unavailable")
 	ErrColorSelectUnavailable    = errors.New("gvm: drawing color selection service unavailable")
+	ErrRectangleDrawUnavailable  = errors.New("gvm: rectangle outline service unavailable")
 	ErrRectangleFillUnavailable  = errors.New("gvm: rectangle fill service unavailable")
 )
 
@@ -131,6 +132,15 @@ type RectangleFillSink interface {
 	FillGVMRectangle(x1, y1, x2, y2 int16) error
 }
 
+// RectangleDrawSink accepts opcode62's four signed guest coordinates in stack
+// order. The exact-build handler at 0x418e10 forwards them to 0x40e600, which
+// draws the two clipped horizontal and two clipped vertical inclusive edges.
+// The provider owns active color/remap state and the drawing buffer. It must
+// complete atomically, must not reenter the VM, and does not publish a frame.
+type RectangleDrawSink interface {
+	DrawGVMRectangle(x1, y1, x2, y2 int16) error
+}
+
 // SpriteDrawSink accepts opcode6f's validated media payload and signed guest
 // coordinates. The exact-build native callee recognizes private sprite types
 // and applies resource-local anchors before rasterizing through the active remap
@@ -165,7 +175,7 @@ type MediaLoadSink interface {
 
 // ServiceConfig opts independently into device query (51), display clear (55),
 // remapped display fill (57), mapping selection (59), drawing-color selection
-// (5e), rectangle fill (63), sprite drawing (6f), display copies (76/77), presentation (78), media
+// (5e), rectangle outline/fill (62/63), sprite drawing (6f), display copies (76/77), presentation (78), media
 // load (90), audio reset (91), civil clock (b9), random range (a1), and timer
 // requests (9a).
 // Clock and ClockPolicy must be supplied together. The Clock pointer is borrowed,
@@ -205,6 +215,9 @@ type ServiceConfig struct {
 	// ColorSelect is borrowed. Opcode5e forwards only low-byte modulo182. The
 	// provider owns the active remap row, packed byte and transparent-color policy.
 	ColorSelect ColorSelectSink
+	// RectangleDraw is borrowed. Opcode62 forwards four signed coordinates; the
+	// provider owns clipped inclusive edge drawing and active color state.
+	RectangleDraw RectangleDrawSink
 	// RectangleFill is borrowed. Opcode63 forwards four signed coordinates; the
 	// provider owns sorting, clipping, active color and drawing-buffer mutation.
 	RectangleFill RectangleFillSink
@@ -233,6 +246,7 @@ type serviceState struct {
 	displayCopy    DisplayCopySink
 	mappingSelect  MappingSelectSink
 	colorSelect    ColorSelectSink
+	rectangleDraw  RectangleDrawSink
 	rectangleFill  RectangleFillSink
 	spriteDraw     SpriteDrawSink
 	audioReset     AudioResetSink
@@ -244,7 +258,7 @@ type serviceState struct {
 // Nil config enables no provider and supplies no defaults: valid query operands
 // then report a named unavailable cause inside ExecutionError. Old constructors
 // remain distinguishable and return UnsupportedOpcodeError for
-// 51/55/57/59/5e/63/6f/76/77/78/90/91/b9/a1 instead.
+// 51/55/57/59/5e/62/63/6f/76/77/78/90/91/b9/a1 instead.
 // Configuration is validated before arena construction, with no clock mutation.
 // Current clock conversion range is checked per query, since its owner can advance
 // or restore the shared clock after construction. Epoch zero can be selected via
@@ -280,6 +294,7 @@ func NewWithAddressSpaceAndServices(program []byte, entry uint32, space AddressS
 		state.displayCopy = config.DisplayCopy
 		state.mappingSelect = config.MappingSelect
 		state.colorSelect = config.ColorSelect
+		state.rectangleDraw = config.RectangleDraw
 		state.rectangleFill = config.RectangleFill
 		state.spriteDraw = config.SpriteDraw
 		state.audioReset = config.AudioReset
