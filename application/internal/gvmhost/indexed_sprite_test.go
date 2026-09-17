@@ -96,6 +96,43 @@ func TestRasterizeIndexedSpriteSignedNegativeAnchor(t *testing.T) {
 	}
 }
 
+func TestRasterizeIndexedSpriteAnchorAndClippingEdges(t *testing.T) {
+	t.Run("signed endpoints", func(t *testing.T) {
+		sprite, err := decodeIndexedSprite([]byte{8, 1, 1, 0x80, 0x7f, 9})
+		if err != nil {
+			t.Fatalf("decodeIndexedSprite() error = %v", err)
+		}
+		if sprite.anchorX != -128 || sprite.anchorY != 127 {
+			t.Fatalf("anchors = (%d,%d), want (-128,127)", sprite.anchorX, sprite.anchorY)
+		}
+	})
+
+	t.Run("right and bottom clipping", func(t *testing.T) {
+		surface := newIndexedSurface(2, 2)
+		data := []byte{8, 2, 2, 0, 0, 1, 2, 3, 4}
+		if err := rasterizeIndexedSprite(&surface, data, 1, 1); err != nil {
+			t.Fatalf("rasterizeIndexedSprite() error = %v", err)
+		}
+		if want := []byte{0, 0, 0, 1}; !bytes.Equal(surface.pixels, want) {
+			t.Fatalf("surface = %v, want %v", surface.pixels, want)
+		}
+	})
+
+	t.Run("fully off screen", func(t *testing.T) {
+		surface := newIndexedSurface(2, 2)
+		for index := range surface.pixels {
+			surface.pixels[index] = 6
+		}
+		before := append([]byte(nil), surface.pixels...)
+		if err := rasterizeIndexedSprite(&surface, []byte{8, 1, 1, 0, 0, 9}, -3, -3); err != nil {
+			t.Fatalf("rasterizeIndexedSprite() error = %v", err)
+		}
+		if !bytes.Equal(surface.pixels, before) {
+			t.Fatalf("surface mutated: got %v, want %v", surface.pixels, before)
+		}
+	})
+}
+
 func TestRasterizeIndexedSpriteTransparency(t *testing.T) {
 	tests := []struct {
 		name string
