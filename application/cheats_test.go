@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/mirusu400/aram-core/cheat"
+	machinecore "github.com/mirusu400/aram-core/core"
 	"github.com/mirusu400/aram-core/loader/raptor"
 )
 
@@ -116,4 +117,57 @@ func TestRaptorCheatRegionsAllowCodePatchesWithoutScanningThem(t *testing.T) {
 			data.Scannable,
 		)
 	}
+}
+
+func TestApplicationCheatsPatchSKVMClassBytecode(t *testing.T) {
+	data := syntheticSKVMPackage(t)
+	created, err := NewFactory().Create(context.Background(), machinecore.Source{
+		Name:     "game.zip",
+		ReaderAt: bytes.NewReader(data),
+		Size:     int64(len(data)),
+	})
+	check(t, err)
+	wrapper, err := AttachCheats(created, cheat.Options{})
+	check(t, err)
+	t.Cleanup(func() { _ = wrapper.Close() })
+
+	engine := wrapper.Cheats()
+	if engine.ImageSHA256() == "" || engine.TargetSHA256() == "" {
+		t.Fatalf(
+			"SKVM cheat identities: image=%q target=%q",
+			engine.ImageSHA256(),
+			engine.TargetSHA256(),
+		)
+	}
+	var game cheat.Region
+	for _, region := range engine.Regions() {
+		if region.Name == "skvm.class.Game" {
+			game = region
+			break
+		}
+	}
+	if game.Size == 0 || !game.Writable || game.Scannable {
+		t.Fatalf("SKVM Game class region = %+v", game)
+	}
+	class := syntheticSKVMLifecycleClass(t)
+	returnOffset := bytes.IndexByte(class, 0xb1)
+	if returnOffset < 0 {
+		t.Fatal("synthetic class has no return instruction")
+	}
+	if _, err := engine.AddCode(cheat.Code{
+		ID:               "break-constructor",
+		Address:          game.Start + uint32(returnOffset),
+		Value:            []byte{0x00},
+		Expected:         []byte{0xb1},
+		RestoreOnDisable: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	check(t, engine.EnableCode("break-constructor"))
+	if err := wrapper.Start(context.Background()); err == nil {
+		t.Fatal("patched one-byte constructor unexpectedly completed")
+	}
+	check(t, engine.DisableCode("break-constructor"))
+	check(t, wrapper.Reset(context.Background()))
+	check(t, wrapper.Start(context.Background()))
 }

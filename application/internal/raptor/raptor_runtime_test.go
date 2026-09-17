@@ -103,6 +103,12 @@ func TestRaptorWIPIImportsResolveToPublicCatalog(t *testing.T) {
 		613:   "MC_netSetReadCB",
 		614:   "MC_netSetWriteCB",
 		800:   "MC_uicCreateApplicationContext",
+		900:   "MC_utilHtonl",
+		901:   "MC_utilHtons",
+		902:   "MC_utilNtohl",
+		903:   "MC_utilNtohs",
+		904:   "MC_utilInetAddrInt",
+		905:   "MC_utilInetAddrStr",
 		2000:  "MC_netSocket",
 		1029:  "strcpy",
 		1030:  "strncpy",
@@ -132,6 +138,31 @@ func TestRaptorWIPIImportsResolveToPublicCatalog(t *testing.T) {
 	}
 }
 
+func TestRaptorProgramIdentifierOrdinalReturnsGuestCString(t *testing.T) {
+	const base = uint32(0x42000)
+	data := []byte("prefix\x000002E829\x00suffix")
+	runtime := &Runtime{Pkg: raptorloader.Package{
+		Descriptor: raptorloader.Descriptor{AID: "0002E829"},
+		Image: raptorloader.Image{
+			Metadata: raptorloader.Metadata{Identifier: "different-module-id"},
+			Sections: []raptorloader.Section{{
+				Address: base,
+				Flags:   2,
+				Data:    data,
+				Size:    uint32(len(data)),
+			}},
+		},
+	}}
+
+	got, name, handled, err := runtime.DispatchPrivateImport(151)
+	if err != nil || !handled || name != "RAPTOR.getProgramIdentifier" {
+		t.Fatalf("ordinal 151 = low=0x%08x name=%q handled=%v err=%v", got.Low, name, handled, err)
+	}
+	want := base + uint32(len("prefix\x00"))
+	if uint32(got.Low) != want {
+		t.Fatalf("program identifier = 0x%08x, want 0x%08x", got.Low, want)
+	}
+}
 func TestRaptorInputCallbackMapsFrontendControls(t *testing.T) {
 	tests := []struct {
 		control string

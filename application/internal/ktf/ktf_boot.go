@@ -464,6 +464,9 @@ func (r *Runtime) MapImageAndHost() error {
 		return fmt.Errorf("map KTF low work RAM: %w", err)
 	}
 	r.Heap = guest.NewHeap(r.CPU, guest.HeapBase, guest.HeapSize)
+	r.javaHeapCollected = 0
+	r.javaHeapExplicitCollected = 0
+	r.javaHeapExplicitReady = false
 	r.Mapped = true
 	return nil
 }
@@ -498,6 +501,9 @@ func (r *Runtime) ResetMappedMemory() error {
 		return fmt.Errorf("restore KTF host-call stubs: %w", err)
 	}
 	r.Heap = guest.NewHeap(r.CPU, guest.HeapBase, guest.HeapSize)
+	r.javaHeapCollected = 0
+	r.javaHeapExplicitCollected = 0
+	r.javaHeapExplicitReady = false
 	r.Mapped = true
 	return nil
 }

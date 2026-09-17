@@ -72,3 +72,19 @@ func TestRaptorJavaStringToCharArrayVirtualSlot(t *testing.T) {
 		t.Fatalf("char[] UTF-16 = 0x%08x, want 0x%08x", got, want)
 	}
 }
+
+func TestRaptorJavaStringIndexOfVirtualSlots(t *testing.T) {
+	layout := raptorJavaFixedVirtualMethods["java/lang/String"]
+	actual := make(map[uint32]string, len(layout))
+	for _, method := range layout {
+		actual[method.offset] = method.Name + method.descriptor
+	}
+	for offset, want := range map[uint32]string{
+		0x58: "indexOf(I)I",
+		0x5c: "indexOf(II)I",
+	} {
+		if got := actual[offset]; got != want {
+			t.Errorf("String slot 0x%02x = %q, want %q", offset, got, want)
+		}
+	}
+}

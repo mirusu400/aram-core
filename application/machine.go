@@ -301,6 +301,7 @@ type Machine struct {
 	runBudget             uint64
 	frameRunBudget        uint64
 	ktfRunBudget          uint64
+	ktfPresentsPerQuantum int
 	memoryLimit           uint64
 	guestWidthOverride    int
 	frame                 *image.RGBA

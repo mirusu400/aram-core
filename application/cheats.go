@@ -5,6 +5,7 @@ import (
 
 	"github.com/mirusu400/aram-core/application/internal/guest"
 	"github.com/mirusu400/aram-core/application/internal/minigame"
+	"github.com/mirusu400/aram-core/application/internal/skvmhost"
 	"github.com/mirusu400/aram-core/cheat"
 	machinecore "github.com/mirusu400/aram-core/core"
 	"github.com/mirusu400/aram-core/cpu"
@@ -18,14 +19,26 @@ func AttachCheats(
 	machine machinecore.Machine,
 	options cheat.Options,
 ) (*cheat.Machine, error) {
-	applicationMachine, ok := machine.(*Machine)
-	if !ok {
+	switch applicationMachine := machine.(type) {
+	case *Machine:
+		return applicationMachine.WithCheats(options)
+	case *skvmhost.Machine:
+		if options.TargetSHA256 == "" {
+			options.TargetSHA256 = applicationMachine.CheatTargetSHA256()
+		}
+		if options.ImageSHA256 == "" {
+			options.ImageSHA256 = applicationMachine.CheatImageSHA256()
+		}
+		if len(options.Regions) == 0 {
+			options.Regions = applicationMachine.CheatRegions()
+		}
+		return cheat.Wrap(applicationMachine, applicationMachine, options)
+	default:
 		return nil, fmt.Errorf(
 			"attach memory cheats: unsupported machine type %T",
 			machine,
 		)
 	}
-	return applicationMachine.WithCheats(options)
 }
 
 // WithCheats creates a wrapper without changing the core Machine contract or

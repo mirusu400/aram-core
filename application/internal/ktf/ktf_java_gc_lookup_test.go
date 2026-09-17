@@ -105,6 +105,39 @@ func TestKTFHeapLookupCollectionInteriorRootAndReclaim(t *testing.T) {
 	}
 }
 
+func TestKTFExplicitGCRequestsWaitForAllocationGrowth(t *testing.T) {
+	runtime := newTestRuntime(t)
+	// The runtime holds the heap base as allocator metadata, so reserve that
+	// incidental conservative root before testing an unreachable block.
+	_, err := runtime.Heap.Allocate(32, true)
+	check(t, err)
+	first, err := runtime.Heap.Allocate(32, true)
+	check(t, err)
+	if first == 0 {
+		t.Fatal("first allocation failed")
+	}
+	runtime.requestJavaHeapCollection()
+	if runtime.Heap.Root().Allocations[first] != 0 {
+		t.Fatal("first explicit collection retained unreachable allocation")
+	}
+
+	second, err := runtime.Heap.Allocate(32, true)
+	check(t, err)
+	if second == 0 {
+		t.Fatal("second allocation failed")
+	}
+	runtime.requestJavaHeapCollection()
+	if runtime.Heap.Root().Allocations[second] == 0 {
+		t.Fatal("repeated explicit collection ran without material heap growth")
+	}
+	// A forced collection remains available to tests and the allocation-failure
+	// path even while advisory requests are coalesced.
+	runtime.collectJavaHeap()
+	if runtime.Heap.Root().Allocations[second] != 0 {
+		t.Fatal("forced collection did not reclaim unreachable allocation")
+	}
+}
+
 var ktfLookupBenchmarkSink int
 
 func BenchmarkKTFHeapLookup(b *testing.B) {

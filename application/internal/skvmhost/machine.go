@@ -35,6 +35,8 @@ type Machine struct {
 	source              machinecore.Source
 	mainClass           string
 	classData           map[string][]byte
+	cheatRegions        []classCheatRegion
+	imageSHA256         string
 	vm                  *skengine.VM
 	services            *shared.Services
 	owner               shared.OwnerID
@@ -147,6 +149,10 @@ func newJavaMachine(ctx context.Context, source machinecore.Source, app Applicat
 	for name, class := range app.Classes {
 		classData[name] = append([]byte(nil), class...)
 	}
+	cheatRegions, err := buildClassCheatRegions(classData)
+	if err != nil {
+		return nil, err
+	}
 	vm, err := skengine.NewWithNativePolicy(classData, services, owner, nativePolicy)
 	if err != nil {
 		return nil, err
@@ -172,6 +178,8 @@ func newJavaMachine(ctx context.Context, source machinecore.Source, app Applicat
 		source:              source,
 		mainClass:           app.MainClass,
 		classData:           classData,
+		cheatRegions:        cheatRegions,
+		imageSHA256:         vm.ClassSHA256(),
 		vm:                  vm,
 		services:            services,
 		owner:               owner,

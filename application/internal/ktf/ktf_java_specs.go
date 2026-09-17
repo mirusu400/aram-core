@@ -326,7 +326,8 @@ var HostJavaClassSpecs = map[string]ktfHostJavaClassSpec{
 		},
 	},
 	"java/io/DataInputStream": {
-		Parent: "java/io/InputStream",
+		Parent:        "java/io/InputStream",
+		nativeMethods: true,
 		methods: []ktfHostJavaMethodSpec{
 			{name: "<init>", descriptor: "(Ljava/io/InputStream;)V"},
 			{name: "readBoolean", descriptor: "()Z"},

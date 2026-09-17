@@ -231,6 +231,11 @@ func RestoreState(r *Runtime, backend cpu.Backend, state *SavedState) error {
 		r.ime = &copy
 	}
 	r.Started = state.Started
+	// Cooperative-yield bookkeeping is host scheduler state, not guest state.
+	// A save/load boundary must never inherit a half-consumed safepoint signal.
+	r.javaYieldRequested = false
+	r.callbackTaskActive = false
+	r.resetJavaSafepointSlice()
 	r.resolvedImports = make(map[raptorImportKey]uint64, len(state.resolvedImports))
 	r.importSlots = append([]raptorImportKey(nil), state.importSlots...)
 	r.importSlotByKey = make(map[raptorImportKey]uint32, len(state.importSlots))

@@ -895,7 +895,7 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 					runtime.wallReadMS(),
 				), nil
 			case "gc()V":
-				runtime.collectJavaHeap()
+				runtime.requestJavaHeapCollection()
 				return 0, nil
 			case "getProperty(Ljava/lang/String;)Ljava/lang/String;":
 				if registers[1] == 0 {
@@ -933,7 +933,7 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 			case "totalMemory()J":
 				return runtime.javaLongResult(uint64(guest.HeapSize)), nil
 			case "gc()V":
-				runtime.collectJavaHeap()
+				runtime.requestJavaHeapCollection()
 				return 0, nil
 			case "exit(I)V":
 				runtime.requestJavaTermination(0)

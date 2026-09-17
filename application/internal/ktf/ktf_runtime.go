@@ -126,7 +126,9 @@ type Runtime struct {
 	// javaHeapCollected is how many blocks were live just after the last
 	// collection, so the next one waits for real growth rather than running
 	// again on the very next allocation.
-	javaHeapCollected int
+	javaHeapCollected         int
+	javaHeapExplicitCollected int
+	javaHeapExplicitReady     bool
 
 	Services      *shared.Services
 	serviceConfig shared.Config
@@ -527,6 +529,9 @@ type ktfHostJavaMethodSpec struct {
 type ktfHostJavaClassSpec struct {
 	Parent string
 	access uint16
+	// nativeMethods marks methods implemented entirely by host traps. Some
+	// carrier AOT resolvers inspect ACC_NATIVE before choosing java.bridge.12.
+	nativeMethods bool
 	// compatibilityVTable keeps declared virtual methods in the reserved
 	// host compatibility range instead of inserting them into the handset's
 	// compact vtable. KTF AOT binaries hard-code the latter's slots for LWC

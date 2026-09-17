@@ -3,6 +3,7 @@ package ktf
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	_ "image/gif"
 	_ "image/jpeg"
@@ -57,15 +58,14 @@ func (r *Runtime) handleInputStreamMethod(
 			stream.position = r.files[fileInstance].position
 			return data, uint32(len(data)) == count, err
 		}
-		if delegated, valueErr := r.shouldDelegateInputRead(streamInstance); valueErr != nil {
+		if delegated, valueErr := r.shouldDelegateInputRead(streamInstance, "()I"); valueErr != nil {
 			return nil, false, valueErr
 		} else if delegated {
 			data := make([]byte, count)
 			for index := range data {
-				value, valueErr := r.invokeJavaVirtual(
+				value, valueErr := r.invokeDelegatedInputRead(
 					ctx,
 					streamInstance,
-					"read",
 					"()I",
 				)
 				if valueErr != nil {
@@ -92,6 +92,32 @@ func (r *Runtime) handleInputStreamMethod(
 			value, err := r.readKTFFile(fileInstance, array, offset, count)
 			stream.position = r.files[fileInstance].position
 			return value, err
+		}
+		if delegated, valueErr := r.shouldDelegateInputRead(
+			streamInstance,
+			"([BII)I",
+		); valueErr != nil {
+			return 0, valueErr
+		} else if delegated {
+			return r.invokeDelegatedInputRead(
+				ctx,
+				streamInstance,
+				"([BII)I",
+				array,
+				offset,
+				count,
+			)
+		}
+		if delegated, valueErr := r.shouldDelegateInputRead(streamInstance, "()I"); valueErr != nil {
+			return 0, valueErr
+		} else if delegated {
+			return r.readApplicationInputStreamInto(
+				ctx,
+				streamInstance,
+				array,
+				offset,
+				count,
+			)
 		}
 		return r.readInputStreamInto(stream, array, offset, count)
 	}
@@ -321,10 +347,11 @@ func (r *Runtime) handleInputStreamMethod(
 			return 0, r.raiseHostJavaException("java/lang/NullPointerException")
 		}
 		offset := uint32(0)
-		count, valueErr := r.javaArrayLength(array)
+		arrayLength, valueErr := r.javaArrayLength(array)
 		if valueErr != nil {
 			return 0, valueErr
 		}
+		count := arrayLength
 		if descriptor == "([BII)V" {
 			offset, valueErr = r.parameter(3)
 			if valueErr != nil {
@@ -335,15 +362,37 @@ func (r *Runtime) handleInputStreamMethod(
 				return 0, valueErr
 			}
 		}
+		if offset > arrayLength || count > arrayLength-offset {
+			return 0, r.raiseHostJavaException("java/lang/IndexOutOfBoundsException")
+		}
 		if count == 0 {
 			return 0, nil
 		}
-		read, valueErr := readArray(array, offset, count)
-		if valueErr != nil {
-			return 0, valueErr
-		}
-		if read != count {
-			return r.raiseJavaException("java/io/EOFException", 0)
+		for completed := uint32(0); completed < count; {
+			read, valueErr := readArray(
+				array,
+				offset+completed,
+				count-completed,
+			)
+			if valueErr != nil {
+				return 0, valueErr
+			}
+			if int32(read) < 0 {
+				return r.raiseJavaException("java/io/EOFException", 0)
+			}
+			if read == 0 {
+				return 0, fmt.Errorf(
+					"KTF Java InputStream.read returned zero for a non-empty readFully request",
+				)
+			}
+			if read > count-completed {
+				return 0, fmt.Errorf(
+					"KTF Java InputStream.read returned %d bytes for a %d-byte request",
+					read,
+					count-completed,
+				)
+			}
+			completed += read
 		}
 		return 0, nil
 	case "skipBytes(I)I":
@@ -411,15 +460,22 @@ func decodeKTFModifiedUTF8(data []byte) (string, error) {
 	return string(utf16.Decode(units)), nil
 }
 
-func (r *Runtime) shouldDelegateInputRead(instance uint32) (bool, error) {
+func (r *Runtime) shouldDelegateInputRead(
+	instance uint32,
+	descriptor string,
+) (bool, error) {
 	if instance == 0 {
+		return false, nil
+	}
+	guard := fmt.Sprintf("%08x:read%s", instance, descriptor)
+	if r.redispatchActive[guard] {
 		return false, nil
 	}
 	words, err := r.ReadWords(instance, 2)
 	if err != nil {
 		return false, err
 	}
-	methodAddress, err := r.resolveJavaMethod(words[1], "read", "()I")
+	methodAddress, err := r.resolveJavaMethod(words[1], "read", descriptor)
 	if err != nil {
 		return false, nil
 	}
@@ -432,6 +488,81 @@ func (r *Runtime) shouldDelegateInputRead(instance uint32) (bool, error) {
 	}
 	_, isHostMethod := r.hostCalls[method.Body&^1]
 	return !isHostMethod, nil
+}
+
+func (r *Runtime) invokeDelegatedInputRead(
+	ctx context.Context,
+	instance uint32,
+	descriptor string,
+	args ...uint32,
+) (uint32, error) {
+	guard := fmt.Sprintf("%08x:read%s", instance, descriptor)
+	if r.redispatchActive == nil {
+		r.redispatchActive = make(map[string]bool)
+	}
+	r.redispatchActive[guard] = true
+	value, err := r.invokeJavaVirtual(ctx, instance, "read", descriptor, args...)
+	delete(r.redispatchActive, guard)
+	return value, err
+}
+
+func (r *Runtime) readApplicationInputStreamInto(
+	ctx context.Context,
+	instance, array, offset, count uint32,
+) (uint32, error) {
+	length, err := r.javaArrayLength(array)
+	if err != nil {
+		return 0, err
+	}
+	if offset > length || count > length-offset {
+		return 0, r.raiseHostJavaException("java/lang/IndexOutOfBoundsException")
+	}
+	if count == 0 {
+		return 0, nil
+	}
+	fields, err := r.ReadU32(array)
+	if err != nil {
+		return 0, err
+	}
+	for read := uint32(0); read < count; read++ {
+		value, valueErr := r.invokeDelegatedInputRead(ctx, instance, "()I")
+		if valueErr != nil {
+			if read == 0 {
+				return 0, valueErr
+			}
+			isIOException, matchErr := r.inputReadIOException(valueErr)
+			if matchErr != nil {
+				return 0, matchErr
+			}
+			if !isIOException {
+				return 0, valueErr
+			}
+			return read, nil
+		}
+		if value == ^uint32(0) {
+			if read == 0 {
+				return ^uint32(0), nil
+			}
+			return read, nil
+		}
+		byteValue := []byte{byte(value)}
+		if err := r.CPU.WriteMemory(fields+8+offset+read, byteValue); err != nil {
+			return 0, err
+		}
+	}
+	return count, nil
+}
+
+func (r *Runtime) inputReadIOException(err error) (bool, error) {
+	var exception *ktfUnhandledJavaException
+	if !errors.As(err, &exception) {
+		return false, nil
+	}
+	ioException, classErr := r.EnsureJavaClass("java/io/IOException")
+	if classErr != nil {
+		return false, classErr
+	}
+	return r.javaExceptionMatches(exception.name, ioException)
 }
 
 func (r *Runtime) readInputStreamInto(

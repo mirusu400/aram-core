@@ -1,6 +1,7 @@
 package raptor
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -117,13 +118,24 @@ type Runtime struct {
 	// the physical screen only. A zero value keeps libwipi's client-area
 	// behavior and every offscreen framebuffer uses its allocated height.
 	primaryFramebufferHeight int
+	resourceBytesHelper      uint32
 	// unimplementedNames interns the label for an import ARAM does not
 	// implement. See unimplementedImportName.
 	unimplementedNames map[raptorImportKey]string
-	// javaYieldRequested ends the CPU slice after a Java thread parks itself.
+	// javaYieldRequested ends the CPU slice after a Java thread parks itself or
+	// a resumable callback reaches a cooperative Java safepoint.
 	javaYieldRequested bool
-	Clet               Clet
-	Java               *JavaRuntime
+	// callbackTaskActive is true only while the machine is running one of the
+	// resumable callback tasks from CallbackTasks. Java safepoints may preempt
+	// those tasks, but must not abort synchronous constructor/host callbacks.
+	callbackTaskActive bool
+	// javaSafepoint* tracks a hot module-100 ordinal 85 backedge inside the
+	// current guest slice. See raptor_java_safepoint.go.
+	javaSafepointLR      uint32
+	javaSafepointHits    uint32
+	javaSafepointYielded bool
+	Clet                 Clet
+	Java                 *JavaRuntime
 
 	CallbackTasks []*CallbackTask
 
@@ -162,6 +174,9 @@ type Options struct {
 	// PrimaryFramebufferHeight replaces libwipi's primary-screen client
 	// height when positive and no greater than the physical allocation.
 	PrimaryFramebufferHeight int
+	// ResourceBytesHelper is an exact-title static Thumb function which takes
+	// a Java String in r0 and returns the named packaged resource as byte[].
+	ResourceBytesHelper uint32
 }
 
 type raptorImportKey struct {
@@ -239,6 +254,7 @@ func NewRuntimeWithOptions(
 		Pkg:                      pkg,
 		Clet:                     clet,
 		primaryFramebufferHeight: options.PrimaryFramebufferHeight,
+		resourceBytesHelper:      options.ResourceBytesHelper,
 		resolvedImports:          make(map[raptorImportKey]uint64),
 		importSlotByKey:          make(map[raptorImportKey]uint32),
 	}
@@ -470,7 +486,10 @@ func (r *Runtime) InstallInterfaces() error {
 	if err := r.CPU.WriteMemory(DletBase, dlet); err != nil {
 		return fmt.Errorf("install Raptor dlet interface: %w", err)
 	}
-	return r.installInputMethodModes()
+	if err := r.installInputMethodModes(); err != nil {
+		return err
+	}
+	return r.installResourceBytesHelper()
 }
 
 func (r *Runtime) RestoreImage() error {
@@ -500,6 +519,9 @@ func (r *Runtime) RestoreImage() error {
 	r.ImportTrace = nil
 	r.LastJavaThrow = ""
 	r.pendingJavaThrow = ""
+	r.javaYieldRequested = false
+	r.callbackTaskActive = false
+	r.resetJavaSafepointSlice()
 	r.CallbackTasks = nil
 	return nil
 }
@@ -573,6 +595,15 @@ func (r *Runtime) dispatchImport(
 		r.ImportTrace = append(r.ImportTrace[:keep], call)
 	}
 	if key.Module == 100 {
+		if key.Ordinal == 85 {
+			r.observeJavaSafepoint(call.LR)
+			const name = "RAPTOR.Java.safepoint"
+			r.Public.Stats.APICalls++
+			r.Public.Stats.ImplementedCalls++
+			r.Public.Stats.LastAPI = name
+			r.Public.Observed[name]++
+			return r.Public.ReturnFromTrap(guest.WIPIReturn{})
+		}
 		if class, raises := raptorJavaThrowClasses[key.Ordinal]; raises {
 			r.recordRaptorJavaThrow(class, call.LR)
 			return r.Public.ReturnFromTrap(guest.WIPIReturn{})
@@ -888,7 +919,18 @@ func (r *Runtime) DispatchPrivateImport(
 		}
 		switch ordinal {
 		case 50:
-			return guest.WIPIReturn{Low: framebuffer.Pixels},
+			pixels := framebuffer.Pixels
+			// Raw-pixel callers use the same client-area coordinates as the
+			// reported height. Keep their origin below the handset strip too;
+			// otherwise clipped sprites write before the allocation and corrupt
+			// neighboring heap objects, as 놈ZERO did in issue #284.
+			if framebuffer.Handle == r.Public.ScreenHandle &&
+				r.primaryFramebufferHeight == 0 &&
+				framebuffer.Height > raptorScreenOriginY {
+				bytesPerPixel := framebuffer.BitsPerPixel / 8
+				pixels += uint32(raptorScreenOriginY * framebuffer.Width * bytesPerPixel)
+			}
+			return guest.WIPIReturn{Low: pixels},
 				"RAPTOR.grpGetFrameBufferPixels", true, nil
 		case 51:
 			return guest.WIPIReturn{Low: uint32(framebuffer.Width)},
@@ -972,9 +1014,35 @@ func (r *Runtime) DispatchPrivateImport(
 			return guest.WIPIReturn{Low: result}, "RAPTOR.net", true, nil
 		}
 		return guest.WIPIReturn{}, "", false, nil
+	case 151:
+		// LGT's Raptor runtime exposes the installed program identifier as a
+		// stable C string. 검은방3 obtains a program handle immediately before
+		// this call and formats the returned pointer with "%s"; the result is
+		// compared with its compiled AID before carrier authentication. Return
+		// the package AID only when the module actually carries that exact C
+		// string, rather than inventing guest storage or conflating it with the
+		// independently-versioned .raptor metadata identifier.
+		address := raptorImageStringAddress(r.Pkg.Image, r.Pkg.Descriptor.AID)
+		return guest.WIPIReturn{Low: address}, "RAPTOR.getProgramIdentifier", true, nil
 	default:
 		return guest.WIPIReturn{}, "", false, nil
 	}
+}
+
+func raptorImageStringAddress(image raptorloader.Image, value string) uint32 {
+	if value == "" {
+		return 0
+	}
+	needle := append([]byte(value), 0)
+	for _, section := range image.Sections {
+		if !section.Allocated() || section.ZeroFill() || len(section.Data) < len(needle) {
+			continue
+		}
+		if offset := bytes.Index(section.Data, needle); offset >= 0 {
+			return section.Address + uint32(offset)
+		}
+	}
+	return 0
 }
 
 func raptorWIPIImportName(ordinal uint32) (string, bool) {
@@ -1186,6 +1254,21 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 	// through MC_GRP directly.
 	case 800:
 		return "MC_uicCreateApplicationContext", true
+	// The 900 block is MC_UTIL in firmware-vtable order. 검은방3 calls 901
+	// on its 16-bit server port immediately before MC_netSocketConnect; this
+	// is the Htons slot (0x04), turning the stored 0x2d0c into port 0x0c2d.
+	case 900:
+		return "MC_utilHtonl", true
+	case 901:
+		return "MC_utilHtons", true
+	case 902:
+		return "MC_utilNtohl", true
+	case 903:
+		return "MC_utilNtohs", true
+	case 904:
+		return "MC_utilInetAddrInt", true
+	case 905:
+		return "MC_utilInetAddrStr", true
 	case 1029:
 		return "strcpy", true
 	// The C string family is contiguous from strcpy, so the ordinal between
