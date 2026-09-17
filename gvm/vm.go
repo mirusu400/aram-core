@@ -125,6 +125,44 @@ func (v *VM) BeginDispatch(entry uint32) (started bool, err error) {
 	return true, nil
 }
 
+// BeginSymbolDispatch atomically publishes one LE16 symbol value and prepares a
+// successfully halted VM for an explicit event entry. It is intended for host
+// adapters whose authenticated native wrapper writes a reserved event symbol
+// immediately before guest dispatch. The owner must serialize this with every
+// other VM operation.
+//
+// Validation is fail-closed and completes before mutation. Entry zero still
+// publishes the symbol value but starts no dispatch, matching wrappers that
+// perform their event write before testing an optional callback entry.
+func (v *VM) BeginSymbolDispatch(index uint8, value uint16, entry uint32) (started bool, err error) {
+	if v.fault != nil {
+		return false, v.fault
+	}
+	if !v.halted {
+		return false, ErrDispatchActive
+	}
+	if int(index) >= len(v.symbols) {
+		return false, fmt.Errorf("%w: %d", ErrInvalidSymbol, index)
+	}
+	if len(v.symbols[index]) < 2 {
+		return false, ErrInvalidSymbolRegion
+	}
+	if entry != 0 && uint64(entry) >= uint64(len(v.code)) {
+		return false, fmt.Errorf("%w: entry offset %d", ErrInvalidTarget, entry)
+	}
+
+	binary.LittleEndian.PutUint16(v.symbols[index][:2], value)
+	if entry == 0 {
+		return false, nil
+	}
+	v.pc = int(entry)
+	v.halted = false
+	v.depth = 0
+	v.returnDepth = 0
+	v.savedTopValid = false
+	return true, nil
+}
+
 // Run executes at most budget instructions. Exhaustion is resumable and does
 // not set a fault. A zero budget makes no progress, returning ErrBudget unless
 // the VM has already halted or faulted. Reaching 0xff on the last step succeeds.
