@@ -1371,6 +1371,12 @@ func branchTarget(address uint32) (uint32, cpu.Mode) {
 
 func (r *Runtime) ModuleObject() uint32 { return r.moduleObject }
 
+// FrameStats reports guest IDisplay::Update calls and whether one of those
+// calls committed a changed framebuffer.
+func (r *Runtime) FrameStats() (presentCount uint64, frameValid bool) {
+	return r.updates, r.guestFrame
+}
+
 // EventCount reports successfully completed HandleEvent dispatches by AEEEvent.
 func (r *Runtime) EventCount(event uint32) uint64 { return r.eventCounts[event] }
 

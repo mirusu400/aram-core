@@ -296,6 +296,19 @@ func (m *brewMachine) Framebuffer() image.Image {
 	return snapshot
 }
 
+// BREWFrameStats exposes guest presentation state to integration tooling
+// without exposing the private runtime or treating a diagnostic image as a
+// successful guest frame.
+func (m *brewMachine) BREWFrameStats() (BREWFrameStats, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.runtime == nil {
+		return BREWFrameStats{}, false
+	}
+	presentCount, frameValid := m.runtime.FrameStats()
+	return BREWFrameStats{PresentCount: presentCount, FrameValid: frameValid}, true
+}
+
 func (m *brewMachine) DrainAudio() machinecore.AudioChunk { return machinecore.AudioChunk{} }
 
 func (m *brewMachine) SaveState(io.Writer) error {

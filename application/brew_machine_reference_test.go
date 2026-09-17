@@ -59,6 +59,10 @@ func TestBREWExactArchiveBootstrap(t *testing.T) {
 	if !implementation.guestFrame {
 		t.Fatal("exact BREW frame was not committed by guest IDisplay Update")
 	}
+	stats, present := implementation.BREWFrameStats()
+	if !present || stats.PresentCount == 0 || !stats.FrameValid {
+		t.Fatalf("BREW frame stats = %+v, present=%v", stats, present)
+	}
 	if len(implementation.input) != 0 {
 		t.Fatalf("exact BREW pending input transitions = %#v, want dispatched", implementation.input)
 	}
