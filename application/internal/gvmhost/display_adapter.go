@@ -243,11 +243,14 @@ func (d *DisplayAdapter) DrawGVMText(resource []byte, x, y int16, style gvm.Text
 	if len(terminated) == 0 || style.Primary == 4 {
 		return nil
 	}
-	text, err := d.text.Decode(terminated, shared.EncodingEUCKR)
-	if err != nil {
+	// Enforce the shared service's configured string limit independently from
+	// native tokenization. The reference consumes every high-bit byte as a
+	// two-byte token and substitutes one fallback glyph for invalid pairs.
+	if _, err := d.text.Decode(make([]byte, len(terminated)), shared.EncodingUTF8); err != nil {
 		return err
 	}
 	fontID := d.textFonts[style.Mode]
+	var err error
 	if fontID == 0 {
 		sizes := [...]int32{6, 8, 12, 24}
 		fontID, err = d.text.EnsureFont(d.textOwner, shared.FontDescriptor{
@@ -264,8 +267,7 @@ func (d *DisplayAdapter) DrawGVMText(resource []byte, x, y int16, style gvm.Text
 		height int
 		x      int
 	}
-	runes := []rune(text)
-	units, err := gvmTextUnits(terminated, runes)
+	units, err := gvmTextUnits(d.text, terminated)
 	if err != nil {
 		return err
 	}
@@ -290,7 +292,8 @@ func (d *DisplayAdapter) DrawGVMText(resource []byte, x, y int16, style gvm.Text
 	if err != nil {
 		return err
 	}
-	nativeWidth := cursor
+	cellWidths := [...]int{4, 6, 6, 12}
+	nativeWidth := len(terminated) * cellWidths[style.Mode]
 	originX := int(x)
 	if style.Alignment == 1 {
 		originX -= nativeWidth / 2
@@ -321,23 +324,32 @@ type gvmTextUnit struct {
 	encodedBytes int
 }
 
-func gvmTextUnits(encoded []byte, decoded []rune) ([]gvmTextUnit, error) {
-	units := make([]gvmTextUnit, 0, len(decoded))
-	runeIndex := 0
+func gvmTextUnits(text *shared.Text, encoded []byte) ([]gvmTextUnit, error) {
+	units := make([]gvmTextUnit, 0, len(encoded))
 	for byteIndex := 0; byteIndex < len(encoded); {
-		width := 1
-		if encoded[byteIndex] >= 0x80 {
-			width = 2
+		if encoded[byteIndex]&0x80 == 0 {
+			units = append(units, gvmTextUnit{character: rune(encoded[byteIndex]), encodedBytes: 1})
+			byteIndex++
+			continue
 		}
-		if byteIndex+width > len(encoded) || runeIndex >= len(decoded) {
-			return nil, fmt.Errorf("%w: malformed EUC-KR unit", ErrInvalidDisplayConfig)
+		second := byte(0)
+		if byteIndex+1 < len(encoded) {
+			second = encoded[byteIndex+1]
 		}
-		units = append(units, gvmTextUnit{character: decoded[runeIndex], encodedBytes: width})
-		byteIndex += width
-		runeIndex++
-	}
-	if runeIndex != len(decoded) {
-		return nil, fmt.Errorf("%w: EUC-KR unit count mismatch", ErrInvalidDisplayConfig)
+		pair := uint16(encoded[byteIndex])<<8 | uint16(second)
+		character := rune('?')
+		if (pair >= 0xb0a1 && pair <= 0xc9fe) || (pair >= 0xa1a1 && pair <= 0xacfe) {
+			decoded, err := text.Decode([]byte{encoded[byteIndex], second}, shared.EncodingEUCKR)
+			if err != nil {
+				return nil, err
+			}
+			runes := []rune(decoded)
+			if len(runes) == 1 {
+				character = runes[0]
+			}
+		}
+		units = append(units, gvmTextUnit{character: character, encodedBytes: 2})
+		byteIndex += 2
 	}
 	return units, nil
 }
@@ -349,12 +361,11 @@ func gvmTextGeometry(mode uint8, encodedBytes int) (inkWidth, inkHeight, cellWid
 		cells := [...]int{4, 6, 6, 12}
 		return widths[mode], heights[mode], cells[mode], true
 	}
-	if encodedBytes == 2 && mode >= 2 {
-		scale := 1
-		if mode == 3 {
-			scale = 2
-		}
-		return 11 * scale, 11 * scale, 12 * scale, true
+	if encodedBytes == 2 {
+		widths := [...]int{8, 12, 11, 22}
+		heights := [...]int{6, 8, 11, 22}
+		cells := [...]int{8, 12, 12, 24}
+		return widths[mode], heights[mode], cells[mode], true
 	}
 	return 0, 0, 0, false
 }

@@ -225,7 +225,7 @@ func TestGVMTextGeometryMatchesNativeCellsAndInk(t *testing.T) {
 	}{
 		{0, 1, 3, 5, 4, true}, {1, 1, 5, 7, 6, true},
 		{2, 1, 5, 11, 6, true}, {3, 1, 10, 22, 12, true},
-		{0, 2, 0, 0, 0, false}, {1, 2, 0, 0, 0, false},
+		{0, 2, 8, 6, 8, true}, {1, 2, 12, 8, 12, true},
 		{2, 2, 11, 11, 12, true}, {3, 2, 22, 22, 24, true},
 	}
 	for _, test := range tests {
@@ -297,15 +297,22 @@ func TestDisplayAdapterTextModesAlignClipAndFailAtomically(t *testing.T) {
 	if err := display.FillGVMDisplay(9); err != nil {
 		t.Fatal(err)
 	}
-	before := append([]byte(nil), display.drawing.pixels...)
-	if err := display.DrawGVMText([]byte{0xb0, 0}, 0, 0, gvm.TextDrawStyle{Mode: 2, Primary: 7}); err == nil {
-		t.Fatal("malformed EUC-KR error = nil")
+	if err := display.DrawGVMText([]byte{0xb0, 0}, 0, 0, gvm.TextDrawStyle{Mode: 2, Primary: 7}); err != nil {
+		t.Fatalf("malformed EUC-KR fallback error = %v", err)
 	}
-	for index := range before {
-		if display.drawing.pixels[index] != before[index] {
-			t.Fatalf("malformed text mutated pixel %d", index)
+	changed := false
+	for _, pixel := range display.drawing.pixels {
+		if pixel == 7 {
+			changed = true
 		}
 	}
+	if !changed {
+		t.Fatal("malformed EUC-KR did not draw the native fallback glyph")
+	}
+	if err := display.FillGVMDisplay(9); err != nil {
+		t.Fatal(err)
+	}
+	before := append([]byte(nil), display.drawing.pixels...)
 
 	config := shared.DefaultConfig()
 	config.Limits.Text.MaxStringBytes = 1
