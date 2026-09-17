@@ -415,3 +415,60 @@ Public ordered tests, Windows builds, core portability and official binder
 passed. Official comparisons retain21synthetic and496private rows unchanged.
 Private-all alone exits1 with the same six missing KTF/Raptor prerequisites.
 This does not close complete configured workspace acceptance.
+
+## GVM diagnostic profile and graphics-startup checkpoint
+
+The explicit profile `gvm-kernel-v1/skt/diagnostic` now exposes a bounded
+product-level diagnostic path without changing ordinary format selection. It
+validates the package identity, initializes deterministic clock/random services,
+and reports a typed terminal service boundary. It is deliberately not a
+playability, timer-delivery, rendering, input or save-state profile.
+
+The actual corpus package used for this checkpoint has SHA-256
+`97fe208a02530ca21c6b47d7fa73cd60271aeeddd2305d2a972a217c97a4124f`.
+Through the feature-core-linked public `aram-probe` interface it reaches
+`ok_service_boundary`, stops after 4,611 instructions at PC `0x75`, and emits
+no frame. This public observation is the current acceptance result. It blocks a
+main-branch merge rather than being reclassified as successful startup.
+
+A separate diagnostic callback experiment bypasses the native pre-dispatch
+lifecycle and therefore is not product acceptance. It nevertheless exercises
+the implemented bytecode and service interfaces for 1,000 callback dispatches:
+999 presentation requests, 2,391 sprite requests and four rectangle fills,
+without another unsupported opcode. The sprite calls use types 5, 6, 7 and 8
+with counts 570, 901, 919 and one respectively. The one type-8 resource is
+79 by 42, requires 3,323 bytes, has 3,324 bytes available and has maximum pixel
+index 135. Thus this corpus does not exercise the unresolved type-8 range
+182..255, but this does not establish a general mapping policy.
+
+Static, hash-gated interoperability analysis establishes these sprite layouts:
+
+- common header: type, width, height, signed anchor X and signed anchor Y;
+- type 2: one packed two-color palette byte followed by continuous MSB-first
+  1bpp pixels;
+- types 5, 6 and 7: respectively 2, 4 and 16 raw palette bytes followed by
+  continuous 1bpp, 2bpp and 4bpp pixels;
+- type 8: no embedded palette and continuous 8bpp pixel codes;
+- destination origin is `(x-anchorX, y-anchorY)` and clipping advances the
+  corresponding source coordinate;
+- for palette-backed types, the last palette index is transparent only when
+  its raw palette code is 4; type 8 uses index 4 as transparent.
+
+The operational timer/input lifecycle is still not implementation-ready. The
+outer callback slot has multiple alternate targets, the inner callback slot has
+many state-dependent writers, and the selected startup path still crosses
+unresolved provider/object and reload-mode state. Reserved symbols 0, 3, 4, 5
+and 6 are alias-preserving guest storage views with ordered fresh reads/writes,
+not independent host counters. The callback entry is read from `LE16(B+0x20)`
+after those writes and lookup-state update. Remaining prerequisites include the
+symbol-8 fixed-literal policy, successful full-initializer lifetime, lookup row
+source/configuration, live callback-slot selection, serialized queue/reentrancy
+and failure policy, and the exact key press/release route. Calling the header
+entry directly is therefore not an acceptable product implementation.
+
+Focused GVM tests, the full core test suite, `go vet`, Windows 386 GVM and
+application tests, feature-core-linked emu integration/probe tests and diff
+checks pass. Independent review found no blocker in the implemented opcode and
+service tranche. These checks validate the shipped diagnostic boundary and
+kernel behavior, while the public corpus result above keeps full startup
+acceptance explicitly blocked.
