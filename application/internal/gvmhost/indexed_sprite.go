@@ -58,6 +58,12 @@ func decodeIndexedSprite(data []byte) (indexedSprite, error) {
 	case 2:
 		sprite.bitsPerPixel = 1
 		pixelOffset = 6
+	case 3:
+		sprite.bitsPerPixel = 2
+		pixelOffset = 7
+	case 4:
+		sprite.bitsPerPixel = 4
+		pixelOffset = 5
 	case 5:
 		sprite.bitsPerPixel = 1
 		pixelOffset = 7
@@ -80,12 +86,18 @@ func decodeIndexedSprite(data []byte) (indexedSprite, error) {
 		return indexedSprite{}, errTruncatedSprite
 	}
 
-	if data[0] != 8 {
+	if data[0] != 4 && data[0] != 8 {
 		paletteSize := 1 << sprite.bitsPerPixel
 		sprite.palette = make([]byte, paletteSize)
-		if data[0] == 2 {
-			sprite.palette[0] = data[paletteOffset] >> 4
-			sprite.palette[1] = data[paletteOffset] & 0x0f
+		if data[0] == 2 || data[0] == 3 {
+			for index := range sprite.palette {
+				packed := data[paletteOffset+index/2]
+				if index%2 == 0 {
+					sprite.palette[index] = packed >> 4
+				} else {
+					sprite.palette[index] = packed & 0x0f
+				}
+			}
 		} else {
 			copy(sprite.palette, data[paletteOffset:pixelOffset])
 		}
@@ -98,8 +110,17 @@ func decodeIndexedSprite(data []byte) (indexedSprite, error) {
 
 	sprite.pixels = make([]byte, pixelCount)
 	packed := data[pixelOffset : pixelOffset+requiredPixelBytes]
-	if sprite.bitsPerPixel == 8 {
+	if data[0] == 4 || sprite.bitsPerPixel == 8 {
 		copy(sprite.pixels, packed)
+		if data[0] == 4 {
+			// Type4 pixels are packed 4bpp without a resource palette.
+			mask := byte(0x0f)
+			for index := range sprite.pixels {
+				bitOffset := index * 4
+				shift := 4 - bitOffset%8
+				sprite.pixels[index] = (packed[bitOffset/8] >> shift) & mask
+			}
+		}
 		sprite.transparentIndex = 4
 		return sprite, nil
 	}

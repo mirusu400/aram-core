@@ -17,6 +17,7 @@ var (
 	ErrRandomUnavailable          = errors.New("gvm: random service unavailable")
 	ErrTimerUnavailable           = errors.New("gvm: timer request service unavailable")
 	ErrDisplayClearUnavailable    = errors.New("gvm: display clear service unavailable")
+	ErrDisplayZeroUnavailable     = errors.New("gvm: display zero-clear service unavailable")
 	ErrMappingSelectUnavailable   = errors.New("gvm: mapping selection service unavailable")
 	ErrAudioResetUnavailable      = errors.New("gvm: audio reset service unavailable")
 	ErrMediaLoadUnavailable       = errors.New("gvm: media load service unavailable")
@@ -24,12 +25,14 @@ var (
 	ErrDisplayPresentUnavailable  = errors.New("gvm: display presentation service unavailable")
 	ErrSpriteDrawUnavailable      = errors.New("gvm: sprite draw service unavailable")
 	ErrSpriteTransformUnavailable = errors.New("gvm: transformed sprite draw service unavailable")
+	ErrSpriteBufferUnavailable    = errors.New("gvm: sprite buffer draw service unavailable")
 	ErrDisplayCopyUnavailable     = errors.New("gvm: display buffer copy service unavailable")
 	ErrDisplayFillUnavailable     = errors.New("gvm: display fill service unavailable")
 	ErrColorSelectUnavailable     = errors.New("gvm: drawing color selection service unavailable")
 	ErrRectangleDrawUnavailable   = errors.New("gvm: rectangle outline service unavailable")
 	ErrRectangleFillUnavailable   = errors.New("gvm: rectangle fill service unavailable")
 	ErrTextDrawUnavailable        = errors.New("gvm: text draw service unavailable")
+	ErrDataReadUnavailable        = errors.New("gvm: persistent data read service unavailable")
 )
 
 // DeviceQueryProfile is explicit GVM adapter state, not a detected handset or
@@ -68,6 +71,12 @@ type TimerRequestSink interface {
 // Implementations must complete atomically and must not reenter the VM.
 type DisplayClearSink interface {
 	ClearGVMDisplay() error
+}
+
+// DisplayZeroSink accepts opcode56's raw zero-byte drawing-buffer clear. It is
+// distinct from palette/remap fill and from opcode55's raw 0xff clear.
+type DisplayZeroSink interface {
+	ZeroGVMDisplay() error
 }
 
 // DisplayFillSink accepts opcode57's signed remainder modulo182. The provider
@@ -163,6 +172,13 @@ type SpriteTransformSink interface {
 	DrawGVMTransformedSprite(resource []byte, x, y int16, mirrorHorizontal bool) error
 }
 
+// SpriteBufferSink accepts opcode71's sprite payload and a private full-screen
+// indexed buffer snapshot. It must rasterize atomically without retaining the
+// slices. The VM publishes the returned buffer only after successful completion.
+type SpriteBufferSink interface {
+	DrawGVMSpriteBuffer(resource, buffer []byte, x, y int16) error
+}
+
 // TextDrawStyle is the normalized private drawing state consumed by opcodes
 // 6a..6d. Mode is 0..3, primary and secondary are 0..181 palette selectors,
 // and alignment is 0..2. Opcode6a uses primary only and passes background=false.
@@ -205,10 +221,19 @@ type MediaLoadSink interface {
 	LoadGVMMedia(index uint16, data []byte) error
 }
 
+// DataReadSink supplies opcode98's persistent byte payload. The VM validates the
+// tagged destination and signed word extent before calling it, requires exactly
+// size bytes, then commits the copy and two-word pop atomically. Providers must
+// not retain or mutate the returned slice after the call.
+type DataReadSink interface {
+	ReadGVMData(size uint32) ([]byte, error)
+}
+
 // ServiceConfig opts independently into device query (51), display clear (55),
 // remapped display fill (57), mapping selection (59), drawing-color selection
-// (5e), rectangle outline/fill (62/63), sprite drawing (6f/70), display copies (76/77), presentation (78), media
-// load (90), audio reset (91), civil clock (b9), random range (a1), and timer
+// (5e), rectangle outline/fill (62/63), sprite drawing (6f/70/71), display copies
+// (76/77), presentation (78), media load (90), audio reset (91), persistent
+// data read (98), civil clock (b9), random range (a1), and timer
 // requests (9a).
 // Clock and ClockPolicy must be supplied together. The Clock pointer is borrowed,
 // not copied: the owner must serialize VM execution and clock Advance/Restore.
@@ -232,6 +257,7 @@ type ServiceConfig struct {
 	// DisplayClear is borrowed. Opcode55 requests only a drawing-buffer fill;
 	// it does not publish or validate a frame.
 	DisplayClear DisplayClearSink
+	DisplayZero  DisplayZeroSink
 	// DisplayFill is borrowed. Opcode57 forwards only the normalized selector;
 	// the provider owns remapping and drawing-buffer mutation.
 	DisplayFill DisplayFillSink
@@ -259,6 +285,7 @@ type ServiceConfig struct {
 	// SpriteTransform is borrowed. Opcode70 forwards a copied media payload,
 	// signed coordinates and a raw-zero/nonzero horizontal mirror selection.
 	SpriteTransform SpriteTransformSink
+	SpriteBuffer    SpriteBufferSink
 	// TextDraw is borrowed. Opcode6a forwards a copied text resource and the
 	// current normalized text style without exposing mutable VM state.
 	TextDraw TextDrawSink
@@ -269,6 +296,7 @@ type ServiceConfig struct {
 	// independent payload copy for every opcode90 request.
 	Media     []MediaResource
 	MediaLoad MediaLoadSink
+	DataRead  DataReadSink
 }
 
 type serviceState struct {
@@ -279,6 +307,7 @@ type serviceState struct {
 	randomStream    string
 	timer           TimerRequestSink
 	displayClear    DisplayClearSink
+	displayZero     DisplayZeroSink
 	displayFill     DisplayFillSink
 	displayPresent  DisplayPresentSink
 	displayCopy     DisplayCopySink
@@ -288,10 +317,12 @@ type serviceState struct {
 	rectangleFill   RectangleFillSink
 	spriteDraw      SpriteDrawSink
 	spriteTransform SpriteTransformSink
+	spriteBuffer    SpriteBufferSink
 	textDraw        TextDrawSink
 	audioReset      AudioResetSink
 	media           [][]byte
 	mediaLoad       MediaLoadSink
+	dataRead        DataReadSink
 	textStyle       textStyleState
 }
 
@@ -342,6 +373,7 @@ func NewWithAddressSpaceAndServices(program []byte, entry uint32, space AddressS
 		}
 		state.timer = config.Timer
 		state.displayClear = config.DisplayClear
+		state.displayZero = config.DisplayZero
 		state.displayFill = config.DisplayFill
 		state.displayPresent = config.DisplayPresent
 		state.displayCopy = config.DisplayCopy
@@ -351,9 +383,11 @@ func NewWithAddressSpaceAndServices(program []byte, entry uint32, space AddressS
 		state.rectangleFill = config.RectangleFill
 		state.spriteDraw = config.SpriteDraw
 		state.spriteTransform = config.SpriteTransform
+		state.spriteBuffer = config.SpriteBuffer
 		state.textDraw = config.TextDraw
 		state.audioReset = config.AudioReset
 		state.mediaLoad = config.MediaLoad
+		state.dataRead = config.DataRead
 		if len(config.Media) > math.MaxUint16 {
 			return nil, fmt.Errorf("%w: too many media records", ErrInvalidServiceConfig)
 		}
@@ -390,6 +424,22 @@ func (v *VM) serviceSpan(ref uint16, extent uint64) ([]byte, error) {
 		return nil, ErrInvalidAddress
 	}
 	return region[start : start+extent], nil
+}
+
+func (v *VM) serviceTail(ref uint16) ([]byte, error) {
+	if v.address == nil {
+		return nil, ErrInvalidAddress
+	}
+	region, index := v.address.ram, ref
+	if index&0x4000 != 0 {
+		region = v.address.file
+		index &^= 0x4000
+	}
+	start := uint64(index) * 2
+	if int16(index) < 0 || start >= uint64(len(region)) {
+		return nil, ErrInvalidAddress
+	}
+	return region[start:], nil
 }
 
 func (s *serviceState) deviceQueryWords() ([4]uint16, error) {

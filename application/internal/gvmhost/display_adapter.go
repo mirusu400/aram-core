@@ -92,6 +92,13 @@ func (d *DisplayAdapter) ClearGVMDisplay() error {
 	return nil
 }
 
+func (d *DisplayAdapter) ZeroGVMDisplay() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	clear(d.drawing.pixels)
+	return nil
+}
+
 func (d *DisplayAdapter) FillGVMDisplay(selector int16) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -224,6 +231,25 @@ func (d *DisplayAdapter) DrawGVMTransformedSprite(resource []byte, x, y int16, m
 	} else {
 		rasterizeDecodedSprite(&d.drawing, sprite, mapped, int(x), int(y))
 	}
+	return nil
+}
+
+func (d *DisplayAdapter) DrawGVMSpriteBuffer(resource, buffer []byte, x, y int16) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(buffer) != d.drawing.width*d.drawing.height {
+		return ErrInvalidDisplayConfig
+	}
+	sprite, err := decodeIndexedSprite(resource)
+	if err != nil {
+		return err
+	}
+	mapped, err := d.mapSprite(sprite)
+	if err != nil {
+		return err
+	}
+	surface := indexedSurface{width: d.drawing.width, height: d.drawing.height, pixels: buffer}
+	rasterizeDecodedSprite(&surface, sprite, mapped, int(x), int(y))
 	return nil
 }
 

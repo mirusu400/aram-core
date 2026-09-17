@@ -14,6 +14,18 @@ func TestDecodeIndexedSpriteLayouts(t *testing.T) {
 		pixels  []byte
 	}{
 		{
+			name:    "type 3 nibble palette and continuous 2bpp",
+			data:    []byte{3, 3, 2, 0, 0, 0x12, 0x34, 0x1b, 0x10},
+			palette: []byte{1, 2, 3, 4},
+			pixels:  []byte{0, 1, 2, 3, 0, 1},
+		},
+		{
+			name:    "type 4 direct continuous 4bpp",
+			data:    []byte{4, 3, 2, 0, 0, 0x01, 0x23, 0x45},
+			palette: nil,
+			pixels:  []byte{0, 1, 2, 3, 4, 5},
+		},
+		{
 			name:    "type 2 nibble palette and continuous 1bpp",
 			data:    []byte{2, 3, 2, 0, 0, 0xa4, 0xb4},
 			palette: []byte{10, 4},
@@ -140,6 +152,8 @@ func TestRasterizeIndexedSpriteTransparency(t *testing.T) {
 		want []byte
 	}{
 		{"type 2 last palette index code 4", []byte{2, 2, 1, 0, 0, 0x94, 0x40}, []byte{9, 77}},
+		{"type 3 last palette index code 4", []byte{3, 2, 1, 0, 0, 0x98, 0x74, 0x30}, []byte{9, 77}},
+		{"type 4 direct index 4", []byte{4, 2, 1, 0, 0, 0x94}, []byte{9, 77}},
 		{"type 5 last palette index code 4", []byte{5, 2, 1, 0, 0, 9, 4, 0x40}, []byte{9, 77}},
 		{"type 6 last palette index code 4", []byte{6, 2, 1, 0, 0, 9, 8, 7, 4, 0x30}, []byte{9, 77}},
 		{"type 7 last palette index code 4", append(append([]byte{7, 2, 1, 0, 0}, append(sequence(15), 4)...), 0x0f), []byte{0, 77}},
@@ -169,7 +183,7 @@ func TestRasterizeIndexedSpriteRejectsInvalidInputAtomically(t *testing.T) {
 		err  error
 	}{
 		{"short header", []byte{8, 1, 1}, errTruncatedSprite},
-		{"invalid type", []byte{3, 1, 1, 0, 0, 0}, errInvalidSpriteType},
+		{"invalid type", []byte{9, 1, 1, 0, 0, 0}, errInvalidSpriteType},
 		{"zero width", []byte{8, 0, 1, 0, 0}, errInvalidSpriteDimensions},
 		{"zero height", []byte{8, 1, 0, 0, 0}, errInvalidSpriteDimensions},
 		{"truncated type 2 palette", []byte{2, 1, 1, 0, 0}, errTruncatedSprite},

@@ -27,17 +27,28 @@ const (
 	// GVMKernelProfileID explicitly opts into bounded initial-dispatch diagnostics.
 	// It is not a playability, rendering, input, timer-delivery or save-state profile.
 	GVMKernelProfileID = "gvm-kernel-v1/skt/diagnostic"
-	// GVMOperationalProfileID explicitly opts the one qualified SKT corpus into
-	// event-dispatch execution and presentation. It is not general GNEX support.
-	GVMOperationalProfileID     = "gvm-kernel-v1/skt/operational"
-	GVMOperationalSHA256        = "97fe208a02530ca21c6b47d7fa73cd60271aeeddd2305d2a972a217c97a4124f"
-	defaultGVMWidth             = int32(240)
-	defaultGVMHeight            = int32(240)
-	operationalGVMWidth         = int32(120)
-	operationalGVMHeight        = int32(80)
-	defaultGVMBudget            = uint64(1)
-	defaultGVMOperationalBudget = uint64(1_000_000)
+	// GVMOperationalProfileID opts hash-qualified SKT corpora into event-dispatch
+	// execution and presentation. It is not general GNEX support.
+	GVMOperationalProfileID      = "gvm-kernel-v1/skt/operational"
+	GVMOperationalSHA256         = "97fe208a02530ca21c6b47d7fa73cd60271aeeddd2305d2a972a217c97a4124f"
+	GVMHackSignOperationalSHA256 = "3ddab790645e84c2d91ffb675d3842717da2a2c8c02d012ca800b20a7a55c9c0"
+	defaultGVMWidth              = int32(240)
+	defaultGVMHeight             = int32(240)
+	operationalGVMWidth          = int32(120)
+	operationalGVMHeight         = int32(80)
+	defaultGVMBudget             = uint64(1)
+	defaultGVMOperationalBudget  = uint64(1_000_000)
 )
+
+type gvmOperationalConfig struct {
+	width  int32
+	height int32
+}
+
+var gvmOperationalCorpora = map[string]gvmOperationalConfig{
+	GVMOperationalSHA256:         {width: operationalGVMWidth, height: operationalGVMHeight},
+	GVMHackSignOperationalSHA256: {width: operationalGVMWidth, height: operationalGVMHeight},
+}
 
 var (
 	ErrGVMInputUnavailable = errors.New("application: GVM input delivery is unavailable")
@@ -85,6 +96,9 @@ type gvmDecodedMediaServices struct{}
 
 func (*gvmDecodedMediaServices) LoadGVMMedia(uint16, []byte) error { return nil }
 func (*gvmDecodedMediaServices) ResetGVMAudio(int32) error         { return nil }
+func (*gvmDecodedMediaServices) ReadGVMData(size uint32) ([]byte, error) {
+	return make([]byte, size), nil
+}
 
 // GVMDiagnosticBoundary describes the first host-service boundary reached by
 // the explicit GVM diagnostic profile. It is diagnostic evidence, not delivery.
@@ -107,6 +121,8 @@ type gvmMachine struct {
 	eventEntry      uint32
 	inputEntry      uint32
 	frames          *gvmFramePublisher
+	width           int32
+	height          int32
 	inputDispatches uint64
 	lastInputCode   uint16
 	lastInputResult cpu.Result
@@ -114,7 +130,10 @@ type gvmMachine struct {
 }
 
 func (f Factory) createGVMMachine(ctx context.Context, source machinecore.Source) (machinecore.Machine, bool, error) {
-	if source.ProfileID != GVMKernelProfileID && source.ProfileID != GVMOperationalProfileID {
+	explicit := source.ProfileID == GVMKernelProfileID || source.ProfileID == GVMOperationalProfileID
+	automatic := source.ProfileID == "" &&
+		(source.Format == string(loader.KindGNEX) || source.Format == string(loader.KindJava))
+	if !explicit && !automatic {
 		return nil, false, nil
 	}
 	if err := ctx.Err(); err != nil {
@@ -133,19 +152,26 @@ func (f Factory) createGVMMachine(ctx context.Context, source machinecore.Source
 	if int64(len(data)) != source.Size {
 		return nil, true, fmt.Errorf("read GVM application: %w", io.ErrUnexpectedEOF)
 	}
-	pkg, err := gnex.Inspect(data)
-	if err != nil {
-		return nil, true, fmt.Errorf("inspect GVM application: %w", err)
-	}
 	digest := sha256.Sum256(data)
 	actualSHA256 := hex.EncodeToString(digest[:])
 	if source.SHA256 != "" && !strings.EqualFold(source.SHA256, actualSHA256) {
 		return nil, true, fmt.Errorf("load %q: SHA-256 mismatch: expected %s, got %s", source.Name, source.SHA256, actualSHA256)
 	}
 	source.SHA256 = actualSHA256
-	operational := source.ProfileID == GVMOperationalProfileID
-	if operational && actualSHA256 != GVMOperationalSHA256 {
-		return nil, true, fmt.Errorf("load %q: operational GVM profile requires outer SHA-256 %s, got %s", source.Name, GVMOperationalSHA256, actualSHA256)
+	config, qualified := gvmOperationalCorpora[actualSHA256]
+	if automatic && !qualified {
+		return nil, false, nil
+	}
+	pkg, err := gnex.Inspect(data)
+	if err != nil {
+		return nil, true, fmt.Errorf("inspect GVM application: %w", err)
+	}
+	operational := source.ProfileID == GVMOperationalProfileID || automatic
+	if operational && !qualified {
+		return nil, true, fmt.Errorf("load %q: operational GVM profile does not support outer SHA-256 %s", source.Name, actualSHA256)
+	}
+	if automatic {
+		source.ProfileID = GVMOperationalProfileID
 	}
 	source.Format = string(loader.KindGNEX)
 	budget := f.FrameRunBudget
@@ -164,6 +190,8 @@ func (f Factory) createGVMMachine(ctx context.Context, source machinecore.Source
 		packageSGS:  bytes.Clone(pkg.SGS),
 		budget:      budget,
 		operational: operational,
+		width:       config.width,
+		height:      config.height,
 	}
 	if operational {
 		if len(pkg.SGS) < 0x24 {
@@ -219,7 +247,7 @@ func (m *gvmMachine) resetVMLocked() error {
 	var mediaServices *gvmDecodedMediaServices
 	var media []gvm.MediaResource
 	if m.operational {
-		width, height = operationalGVMWidth, operationalGVMHeight
+		width, height = m.width, m.height
 		m.frames = new(gvmFramePublisher)
 		textServices, textErr := shared.NewServices(shared.DefaultConfig())
 		if textErr != nil {
@@ -250,6 +278,7 @@ func (m *gvmMachine) resetVMLocked() error {
 	}
 	if m.operational {
 		services.DisplayClear = display
+		services.DisplayZero = display
 		services.DisplayFill = display
 		services.DisplayPresent = display
 		services.DisplayCopy = display
@@ -259,10 +288,12 @@ func (m *gvmMachine) resetVMLocked() error {
 		services.RectangleFill = display
 		services.SpriteDraw = display
 		services.SpriteTransform = display
+		services.SpriteBuffer = display
 		services.TextDraw = display
 		services.AudioReset = mediaServices
 		services.Media = media
 		services.MediaLoad = mediaServices
+		services.DataRead = mediaServices
 	}
 	vm, err := gvm.NewWithAddressSpaceAndServices(
 		image.Buffer,

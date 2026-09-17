@@ -56,6 +56,18 @@ func TestDecodeExecutionImage(t *testing.T) {
 	}
 }
 
+func TestDecodeExecutionImageVersion1UsesNormalDescriptorLayout(t *testing.T) {
+	input := executionFixture()
+	input[0] = 1
+	got, err := DecodeExecutionImage(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Header.FormatVersion != 1 || got.Entry != 54 || len(got.Symbols) != 3 || len(got.Media) != 2 {
+		t.Fatalf("version 1 layout = %+v", got)
+	}
+}
+
 func TestExecutionImageVariantsAndBounds(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -63,7 +75,7 @@ func TestExecutionImageVariantsAndBounds(t *testing.T) {
 		unsupported bool
 	}{
 		{"short", func(b []byte) []byte { return b[:40] }, false},
-		{"version", func(b []byte) []byte { b[0] = 1; return b }, true},
+		{"version", func(b []byte) []byte { b[0] = 3; return b }, true},
 		{"compression", func(b []byte) []byte { b[2] = 4; return b }, true},
 		{"mode", func(b []byte) []byte { b[5] = 4; return b }, true},
 		{"header_overlap", func(b []byte) []byte { binary.LittleEndian.PutUint16(b[0x2c:], 48); return b }, false},
