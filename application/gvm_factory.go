@@ -253,6 +253,7 @@ func (m *gvmMachine) resetVMLocked() error {
 		services.RectangleDraw = display
 		services.RectangleFill = display
 		services.SpriteDraw = display
+		services.SpriteTransform = display
 		services.AudioReset = mediaServices
 		services.Media = media
 		services.MediaLoad = mediaServices

@@ -89,8 +89,10 @@ func decodeIndexedSprite(data []byte) (indexedSprite, error) {
 		} else {
 			copy(sprite.palette, data[paletteOffset:pixelOffset])
 		}
-		if sprite.palette[paletteSize-1] == 4 {
-			sprite.transparentIndex = paletteSize - 1
+		for index, selector := range sprite.palette {
+			if selector == 4 {
+				sprite.transparentIndex = index
+			}
 		}
 	}
 

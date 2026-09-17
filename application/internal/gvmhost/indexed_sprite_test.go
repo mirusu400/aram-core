@@ -144,7 +144,8 @@ func TestRasterizeIndexedSpriteTransparency(t *testing.T) {
 		{"type 6 last palette index code 4", []byte{6, 2, 1, 0, 0, 9, 8, 7, 4, 0x30}, []byte{9, 77}},
 		{"type 7 last palette index code 4", append(append([]byte{7, 2, 1, 0, 0}, append(sequence(15), 4)...), 0x0f), []byte{0, 77}},
 		{"type 8 raw index 4", []byte{8, 2, 1, 0, 0, 9, 4}, []byte{9, 77}},
-		{"code 4 at non-last palette index is opaque", []byte{5, 2, 1, 0, 0, 4, 9, 0x40}, []byte{4, 9}},
+		{"code 4 at non-last palette index is transparent", []byte{5, 2, 1, 0, 0, 4, 9, 0x40}, []byte{77, 9}},
+		{"last code 4 occurrence wins", []byte{6, 2, 1, 0, 0, 4, 9, 4, 8, 0x20}, []byte{4, 77}},
 	}
 
 	for _, test := range tests {

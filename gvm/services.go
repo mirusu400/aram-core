@@ -10,24 +10,25 @@ import (
 )
 
 var (
-	ErrInvalidServiceConfig      = errors.New("gvm: invalid service configuration")
-	ErrDeviceQueryUnavailable    = errors.New("gvm: device query service unavailable")
-	ErrClockUnavailable          = errors.New("gvm: clock service unavailable")
-	ErrClockRange                = errors.New("gvm: clock outside supported civil-time range")
-	ErrRandomUnavailable         = errors.New("gvm: random service unavailable")
-	ErrTimerUnavailable          = errors.New("gvm: timer request service unavailable")
-	ErrDisplayClearUnavailable   = errors.New("gvm: display clear service unavailable")
-	ErrMappingSelectUnavailable  = errors.New("gvm: mapping selection service unavailable")
-	ErrAudioResetUnavailable     = errors.New("gvm: audio reset service unavailable")
-	ErrMediaLoadUnavailable      = errors.New("gvm: media load service unavailable")
-	ErrInvalidMediaIndex         = errors.New("gvm: invalid media index")
-	ErrDisplayPresentUnavailable = errors.New("gvm: display presentation service unavailable")
-	ErrSpriteDrawUnavailable     = errors.New("gvm: sprite draw service unavailable")
-	ErrDisplayCopyUnavailable    = errors.New("gvm: display buffer copy service unavailable")
-	ErrDisplayFillUnavailable    = errors.New("gvm: display fill service unavailable")
-	ErrColorSelectUnavailable    = errors.New("gvm: drawing color selection service unavailable")
-	ErrRectangleDrawUnavailable  = errors.New("gvm: rectangle outline service unavailable")
-	ErrRectangleFillUnavailable  = errors.New("gvm: rectangle fill service unavailable")
+	ErrInvalidServiceConfig       = errors.New("gvm: invalid service configuration")
+	ErrDeviceQueryUnavailable     = errors.New("gvm: device query service unavailable")
+	ErrClockUnavailable           = errors.New("gvm: clock service unavailable")
+	ErrClockRange                 = errors.New("gvm: clock outside supported civil-time range")
+	ErrRandomUnavailable          = errors.New("gvm: random service unavailable")
+	ErrTimerUnavailable           = errors.New("gvm: timer request service unavailable")
+	ErrDisplayClearUnavailable    = errors.New("gvm: display clear service unavailable")
+	ErrMappingSelectUnavailable   = errors.New("gvm: mapping selection service unavailable")
+	ErrAudioResetUnavailable      = errors.New("gvm: audio reset service unavailable")
+	ErrMediaLoadUnavailable       = errors.New("gvm: media load service unavailable")
+	ErrInvalidMediaIndex          = errors.New("gvm: invalid media index")
+	ErrDisplayPresentUnavailable  = errors.New("gvm: display presentation service unavailable")
+	ErrSpriteDrawUnavailable      = errors.New("gvm: sprite draw service unavailable")
+	ErrSpriteTransformUnavailable = errors.New("gvm: transformed sprite draw service unavailable")
+	ErrDisplayCopyUnavailable     = errors.New("gvm: display buffer copy service unavailable")
+	ErrDisplayFillUnavailable     = errors.New("gvm: display fill service unavailable")
+	ErrColorSelectUnavailable     = errors.New("gvm: drawing color selection service unavailable")
+	ErrRectangleDrawUnavailable   = errors.New("gvm: rectangle outline service unavailable")
+	ErrRectangleFillUnavailable   = errors.New("gvm: rectangle fill service unavailable")
 )
 
 // DeviceQueryProfile is explicit GVM adapter state, not a detected handset or
@@ -151,6 +152,16 @@ type SpriteDrawSink interface {
 	DrawGVMSprite(resource []byte, x, y int16) error
 }
 
+// SpriteTransformSink accepts opcode70's validated media payload, signed guest
+// coordinates, and raw nonzero horizontal-mirror selection. The exact-build
+// handler at 0x4194b0 calls 0x4107b0, whose zero path matches normal sprite
+// placement and whose nonzero path selects the mirrored type rasterizers.
+// Resource is an independent copy. Implementations must complete atomically and
+// must not reenter the VM.
+type SpriteTransformSink interface {
+	DrawGVMTransformedSprite(resource []byte, x, y int16, mirrorHorizontal bool) error
+}
+
 // AudioResetSink accepts opcode91's provider-selected audio type. The exact-build
 // handler initializes or resets type-specific native audio objects. This request
 // boundary does not model playback, media decoding, device ownership or teardown.
@@ -175,7 +186,7 @@ type MediaLoadSink interface {
 
 // ServiceConfig opts independently into device query (51), display clear (55),
 // remapped display fill (57), mapping selection (59), drawing-color selection
-// (5e), rectangle outline/fill (62/63), sprite drawing (6f), display copies (76/77), presentation (78), media
+// (5e), rectangle outline/fill (62/63), sprite drawing (6f/70), display copies (76/77), presentation (78), media
 // load (90), audio reset (91), civil clock (b9), random range (a1), and timer
 // requests (9a).
 // Clock and ClockPolicy must be supplied together. The Clock pointer is borrowed,
@@ -224,6 +235,9 @@ type ServiceConfig struct {
 	// SpriteDraw is borrowed. Opcode6f forwards a copied media payload and the
 	// two signed coordinates. The provider owns format validation and raster state.
 	SpriteDraw SpriteDrawSink
+	// SpriteTransform is borrowed. Opcode70 forwards a copied media payload,
+	// signed coordinates and a raw-zero/nonzero horizontal mirror selection.
+	SpriteTransform SpriteTransformSink
 	// AudioReset is borrowed. Opcode91 also requires DeviceQuery so the adapter
 	// receives the same explicit AudioType selected for opcode51.
 	AudioReset AudioResetSink
@@ -234,31 +248,32 @@ type ServiceConfig struct {
 }
 
 type serviceState struct {
-	deviceQuery    *DeviceQueryProfile
-	clock          *gruntime.Clock
-	clockPolicy    CivilTimePolicy
-	random         *gruntime.Random
-	randomStream   string
-	timer          TimerRequestSink
-	displayClear   DisplayClearSink
-	displayFill    DisplayFillSink
-	displayPresent DisplayPresentSink
-	displayCopy    DisplayCopySink
-	mappingSelect  MappingSelectSink
-	colorSelect    ColorSelectSink
-	rectangleDraw  RectangleDrawSink
-	rectangleFill  RectangleFillSink
-	spriteDraw     SpriteDrawSink
-	audioReset     AudioResetSink
-	media          [][]byte
-	mediaLoad      MediaLoadSink
+	deviceQuery     *DeviceQueryProfile
+	clock           *gruntime.Clock
+	clockPolicy     CivilTimePolicy
+	random          *gruntime.Random
+	randomStream    string
+	timer           TimerRequestSink
+	displayClear    DisplayClearSink
+	displayFill     DisplayFillSink
+	displayPresent  DisplayPresentSink
+	displayCopy     DisplayCopySink
+	mappingSelect   MappingSelectSink
+	colorSelect     ColorSelectSink
+	rectangleDraw   RectangleDrawSink
+	rectangleFill   RectangleFillSink
+	spriteDraw      SpriteDrawSink
+	spriteTransform SpriteTransformSink
+	audioReset      AudioResetSink
+	media           [][]byte
+	mediaLoad       MediaLoadSink
 }
 
 // NewWithAddressSpaceAndServices explicitly enables service-aware dispatch.
 // Nil config enables no provider and supplies no defaults: valid query operands
 // then report a named unavailable cause inside ExecutionError. Old constructors
 // remain distinguishable and return UnsupportedOpcodeError for
-// 51/55/57/59/5e/62/63/6f/76/77/78/90/91/b9/a1 instead.
+// 51/55/57/59/5e/62/63/6f/70/76/77/78/90/91/b9/a1 instead.
 // Configuration is validated before arena construction, with no clock mutation.
 // Current clock conversion range is checked per query, since its owner can advance
 // or restore the shared clock after construction. Epoch zero can be selected via
@@ -297,6 +312,7 @@ func NewWithAddressSpaceAndServices(program []byte, entry uint32, space AddressS
 		state.rectangleDraw = config.RectangleDraw
 		state.rectangleFill = config.RectangleFill
 		state.spriteDraw = config.SpriteDraw
+		state.spriteTransform = config.SpriteTransform
 		state.audioReset = config.AudioReset
 		state.mediaLoad = config.MediaLoad
 		if len(config.Media) > math.MaxUint16 {

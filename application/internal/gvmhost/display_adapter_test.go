@@ -172,6 +172,23 @@ func TestDisplayAdapterSpriteUsesDecoderMapperAndTransparencyAtomically(t *testi
 	}
 }
 
+func TestDisplayAdapterTransformedSpriteMirrorsUsingNativeAnchorConvention(t *testing.T) {
+	publisher := &frameCollector{}
+	display := newTestDisplay(t, 3, 1, DisplayOrientationDefault, testPalette{failSelector: -1}, publisher)
+	resource := []byte{8, 3, 1, 0, 0, 1, 2, 3}
+	if err := display.DrawGVMTransformedSprite(resource, 3, 0, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := display.PresentGVMDisplay(); err != nil {
+		t.Fatal(err)
+	}
+	for x, want := range []byte{3, 2, 1} {
+		if got := color.RGBAModel.Convert(publisher.frames[0].At(x, 0)).(color.RGBA).R; got != want {
+			t.Fatalf("mirrored pixel %d = %d, want %d", x, got, want)
+		}
+	}
+}
+
 func TestDisplayAdapterPresentPublishesImmutableSnapshots(t *testing.T) {
 	publisher := &frameCollector{}
 	display := newTestDisplay(t, 1, 1, DisplayOrientationDefault, testPalette{failSelector: -1}, publisher)

@@ -191,6 +191,34 @@ func (d *DisplayAdapter) DrawGVMSprite(resource []byte, x, y int16) error {
 	if err != nil {
 		return err
 	}
+	mapped, err := d.mapSprite(sprite)
+	if err != nil {
+		return err
+	}
+	rasterizeDecodedSprite(&d.drawing, sprite, mapped, int(x), int(y))
+	return nil
+}
+
+func (d *DisplayAdapter) DrawGVMTransformedSprite(resource []byte, x, y int16, mirrorHorizontal bool) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	sprite, err := decodeIndexedSprite(resource)
+	if err != nil {
+		return err
+	}
+	mapped, err := d.mapSprite(sprite)
+	if err != nil {
+		return err
+	}
+	if mirrorHorizontal {
+		rasterizeMirroredSprite(&d.drawing, sprite, mapped, int(x), int(y))
+	} else {
+		rasterizeDecodedSprite(&d.drawing, sprite, mapped, int(x), int(y))
+	}
+	return nil
+}
+
+func (d *DisplayAdapter) mapSprite(sprite indexedSprite) ([]byte, error) {
 	mapped := make([]byte, 256)
 	mappedSet := make([]bool, 256)
 	for _, index := range sprite.pixels {
@@ -201,14 +229,14 @@ func (d *DisplayAdapter) DrawGVMSprite(resource []byte, x, y int16) error {
 		if sprite.palette != nil {
 			selector = sprite.palette[index]
 		}
-		mapped[index], err = d.palette.Map(d.mapping, int16(selector))
+		value, err := d.palette.Map(d.mapping, int16(selector))
 		if err != nil {
-			return err
+			return nil, err
 		}
+		mapped[index] = value
 		mappedSet[index] = true
 	}
-	rasterizeDecodedSprite(&d.drawing, sprite, mapped, int(x), int(y))
-	return nil
+	return mapped, nil
 }
 
 func (d *DisplayAdapter) PresentGVMDisplay() error {
@@ -243,10 +271,32 @@ func (d *DisplayAdapter) surface(which gvm.DisplayBuffer) (*indexedSurface, bool
 }
 
 func rasterizeDecodedSprite(surface *indexedSurface, sprite indexedSprite, mapped []byte, x, y int) {
-	originX, originY := x-sprite.anchorX, y-sprite.anchorY
+	originX := int(int16(x - sprite.anchorX))
+	originY := int(int16(y - sprite.anchorY))
 	for sourceY := 0; sourceY < sprite.height; sourceY++ {
 		for sourceX := 0; sourceX < sprite.width; sourceX++ {
 			destinationX, destinationY := originX+sourceX, originY+sourceY
+			if destinationX < 0 || destinationX >= surface.width || destinationY < 0 || destinationY >= surface.height {
+				continue
+			}
+			index := sprite.pixels[sourceY*sprite.width+sourceX]
+			if int(index) != sprite.transparentIndex {
+				surface.pixels[destinationY*surface.width+destinationX] = mapped[index]
+			}
+		}
+	}
+}
+
+func rasterizeMirroredSprite(surface *indexedSurface, sprite indexedSprite, mapped []byte, x, y int) {
+	// Native 0x4107b0 publishes x+anchorX-width and its mirrored rasterizers
+	// start at origin+width-1, then decrement the destination for each source
+	// pixel. Preserve that one-past-anchor convention exactly.
+	originX := int(int16(x + sprite.anchorX - sprite.width))
+	originY := int(int16(y - sprite.anchorY))
+	for sourceY := 0; sourceY < sprite.height; sourceY++ {
+		for sourceX := 0; sourceX < sprite.width; sourceX++ {
+			destinationX := originX + sprite.width - 1 - sourceX
+			destinationY := originY + sourceY
 			if destinationX < 0 || destinationX >= surface.width || destinationY < 0 || destinationY >= surface.height {
 				continue
 			}
@@ -296,13 +346,14 @@ func ordered(a, b int) (int, int) {
 }
 
 var (
-	_ gvm.DisplayClearSink   = (*DisplayAdapter)(nil)
-	_ gvm.DisplayFillSink    = (*DisplayAdapter)(nil)
-	_ gvm.DisplayCopySink    = (*DisplayAdapter)(nil)
-	_ gvm.MappingSelectSink  = (*DisplayAdapter)(nil)
-	_ gvm.ColorSelectSink    = (*DisplayAdapter)(nil)
-	_ gvm.RectangleDrawSink  = (*DisplayAdapter)(nil)
-	_ gvm.RectangleFillSink  = (*DisplayAdapter)(nil)
-	_ gvm.SpriteDrawSink     = (*DisplayAdapter)(nil)
-	_ gvm.DisplayPresentSink = (*DisplayAdapter)(nil)
+	_ gvm.DisplayClearSink    = (*DisplayAdapter)(nil)
+	_ gvm.DisplayFillSink     = (*DisplayAdapter)(nil)
+	_ gvm.DisplayCopySink     = (*DisplayAdapter)(nil)
+	_ gvm.MappingSelectSink   = (*DisplayAdapter)(nil)
+	_ gvm.ColorSelectSink     = (*DisplayAdapter)(nil)
+	_ gvm.RectangleDrawSink   = (*DisplayAdapter)(nil)
+	_ gvm.RectangleFillSink   = (*DisplayAdapter)(nil)
+	_ gvm.SpriteDrawSink      = (*DisplayAdapter)(nil)
+	_ gvm.SpriteTransformSink = (*DisplayAdapter)(nil)
+	_ gvm.DisplayPresentSink  = (*DisplayAdapter)(nil)
 )

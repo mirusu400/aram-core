@@ -602,6 +602,31 @@ func (v *VM) Step() error {
 		}
 		v.depth -= 3
 		clear(v.stack[v.depth : v.depth+3]) // Host hygiene only.
+	case 0x70:
+		// Exact-build order is signed x, signed y, signed media index, then a raw
+		// mirror flag. Handler 0x4194b0 validates the third word, passes the fourth
+		// as a zero/nonzero selection to 0x4107b0, and consumes all four on success.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 4 {
+			return fail(ErrStackUnderflow)
+		}
+		index := int16(v.stack[v.depth-2])
+		if index < 0 || int(index) >= len(v.services.media) {
+			return fail(ErrInvalidMediaIndex)
+		}
+		if v.services.spriteTransform == nil {
+			return fail(ErrSpriteTransformUnavailable)
+		}
+		x, y := int16(v.stack[v.depth-4]), int16(v.stack[v.depth-3])
+		mirror := v.stack[v.depth-1] != 0
+		if err := v.services.spriteTransform.DrawGVMTransformedSprite(bytes.Clone(v.services.media[index]), x, y, mirror); err != nil {
+			return fail(err)
+		}
+		v.depth -= 4
+		clear(v.stack[v.depth : v.depth+4]) // Host hygiene only.
 	case 0x76, 0x77:
 		if v.services == nil {
 			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
