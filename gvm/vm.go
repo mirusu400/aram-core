@@ -329,6 +329,25 @@ func (v *VM) Step() error {
 		v.depth--
 		v.stack[v.depth] = 0
 		v.pc++
+	case 0x9a:
+		// Old constructors remain typed-unsupported. Explicit service-aware VMs
+		// expose only a request boundary, not timer delivery or guest redispatch.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 2 {
+			return fail(ErrStackUnderflow)
+		}
+		if v.services.timer == nil {
+			return fail(ErrTimerUnavailable)
+		}
+		interval, selector := int16(v.stack[v.depth-2]), v.stack[v.depth-1]
+		if err := v.services.timer.RequestGVMTimer(interval, selector); err != nil {
+			return fail(err)
+		}
+		v.depth -= 2
+		clear(v.stack[v.depth : v.depth+2]) // Host hygiene only.
 	case 0xa1:
 		// Preserve ALL legacy constructors' typed unsupported behavior, even
 		// for equal operands or underflow. Only explicit services opt in.

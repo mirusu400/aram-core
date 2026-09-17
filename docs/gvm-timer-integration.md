@@ -1,7 +1,11 @@
 # GVM timer integration evidence
 
-Status: research checkpoint, not an implemented timer service or game-start
-milestone. Opcode `9a` remains unsupported. This note distinguishes authenticated
+Status: request-boundary checkpoint, not an implemented timer service or
+game-start milestone. Opcode `9a` can now forward its authenticated signed16
+interval and raw16 selector to an explicitly supplied atomic sink. The sink does
+not by itself make the kernel install a shared timer, advance time, deliver a
+callback or redispatch the guest. This note distinguishes that narrow kernel
+boundary from authenticated
 static relationships, observed public-library behavior and missing integration.
 
 ## Scope and observed use
@@ -17,6 +21,14 @@ seeds. A public-stack predicate observation for diagnostic seed1 establishes
 depth2, interval at least10, and a positive nonzero second operand. Therefore
 this boundary needs an active timer service, not the short-interval bypass.
 This is still descriptor-only kernel execution, not ordinary product startup.
+
+With the new explicit request sink, the same selected corpus identity forwards
+that request and reaches guest `ff` after4616 completed instructions. Both the
+raw descriptor state and the incomplete scalar-prefix preparation reach the same
+buffer-relative halt at44943, differing by the previously measured six setup
+instructions. The probe sink intentionally performs no installation or delivery,
+so this proves only that the initial bounded dispatch can finish after forwarding
+the request. It is not timer operation, event delivery, a frame or game startup.
 
 ## Authenticated reference relationships
 
@@ -111,9 +123,10 @@ test coalescing, pending-event, replacement and failure rules explicitly.
    ownership, reentrancy, budgets and sticky-fault policy. The bounded
    [BeginDispatch API](../gvm/README.md#explicit-dispatch-re-entry) supplies only
    post-halt kernel mechanics, not those wrapper prerequisites or delivery.
-3. Supply explicit serialized timer state, readiness, virtual-time advancement,
-   cancellation, reset and teardown. A timer request without guest delivery
-   must not be reported as an operational service.
+3. Connect the request sink to explicit serialized timer state, readiness,
+   virtual-time advancement, cancellation, reset and teardown. The implemented
+   request boundary without guest delivery must not be reported as an operational
+   timer service.
 4. Resolve default rendering independently. Normal-orientation component ramps
    are direct byte lookups in writable initialized data; no equivalent formula
    or runtime immutability has been established. Rotated colors or a blank

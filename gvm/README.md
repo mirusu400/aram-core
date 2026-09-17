@@ -63,6 +63,7 @@ Every fetched opcode advances PC before its handler.
 | `4f` | Configured address model only: store raw top16 as LE16 at RAM+2*signed16(next-to-top), pop two, PC=P |
 | `51` | Explicit service constructor only: write four device-query words through a tagged reference and pop once |
 | `96`, `97` | Pop16 argument, call a ret-only native callee in this build, PC=P |
+| `9a` | Explicit service constructor only: forward signed16 interval and raw16 selector to a borrowed timer-request sink, then pop two, PC=P |
 | `a1` | Explicit service constructor only: replace two signed16 bounds with an equal bound or a draw in the half-open signed range, pop once, PC=P |
 | `b4` | Configured address model only: scalar operation on a tagged word array, pop four, PC=P |
 | `b5` | Configured address model only: forward live-source operation on two tagged word arrays, pop four, PC=P |
@@ -76,7 +77,12 @@ bytes before underflow, validate only a taken target, then commit one pop and
 PC update. Native code instead publishes the pop before conditional target reads
 and retains backing. Existing host popped-slot zeroing remains intentional
 hygiene, not reference backing parity; growing `0c` is still unsupported.
-No initialization, presentation or game-start milestone follows from this branch.
+The kernel's `9a` support is deliberately request-only. It does not install a
+shared timer, advance virtual time, deliver a callback or call `BeginDispatch`.
+The sink adapter must preserve the authenticated interval-below-10 bypass and
+define its own
+atomic installation, serialization and delivery policy. No initialization,
+presentation or game-start milestone follows from this branch.
 
 Immediate stores `31/36` and returns do not alter S; `0a` pops its stored value.
 The signed operand top starts at -1, and

@@ -15,6 +15,7 @@ var (
 	ErrClockUnavailable       = errors.New("gvm: clock service unavailable")
 	ErrClockRange             = errors.New("gvm: clock outside supported civil-time range")
 	ErrRandomUnavailable      = errors.New("gvm: random service unavailable")
+	ErrTimerUnavailable       = errors.New("gvm: timer request service unavailable")
 )
 
 // DeviceQueryProfile is explicit GVM adapter state, not a detected handset or
@@ -35,8 +36,19 @@ type CivilTimePolicy uint8
 // It does not reproduce Windows timezone discovery or DST transition behavior.
 const FixedOffsetNoDST CivilTimePolicy = 1
 
+// TimerRequestSink accepts opcode9a's two raw guest arguments after the VM has
+// validated stack state. The sink is an adapter boundary, not timer delivery:
+// it owns mirroring, interval<10 bypass, installation, replacement, cancellation,
+// serialization and eventual guest callback policy. It must return an error
+// without accepting the request when it cannot complete atomically. The owner
+// must serialize calls with VM execution, and implementations must not reenter
+// the VM from RequestGVMTimer.
+type TimerRequestSink interface {
+	RequestGVMTimer(intervalMillis int16, selector uint16) error
+}
+
 // ServiceConfig opts independently into device query (51), civil clock (b9),
-// and random range (a1).
+// random range (a1), and timer requests (9a).
 // Clock and ClockPolicy must be supplied together. The Clock pointer is borrowed,
 // not copied: the owner must serialize VM execution and clock Advance/Restore.
 // GVM never advances, restores or replaces that clock. A nonnil clock alone does
@@ -53,6 +65,9 @@ type ServiceConfig struct {
 	// revalidated on every draw. Equal operands do not consult Random.
 	Random       *gruntime.Random
 	RandomStream string
+	// Timer is borrowed. GVM only forwards authenticated opcode9a requests; it
+	// does not advance time, install shared runtime timers or deliver callbacks.
+	Timer TimerRequestSink
 }
 
 type serviceState struct {
@@ -61,6 +76,7 @@ type serviceState struct {
 	clockPolicy  CivilTimePolicy
 	random       *gruntime.Random
 	randomStream string
+	timer        TimerRequestSink
 }
 
 // NewWithAddressSpaceAndServices explicitly enables service-aware dispatch.
@@ -95,6 +111,7 @@ func NewWithAddressSpaceAndServices(program []byte, entry uint32, space AddressS
 			}
 			state.random, state.randomStream = config.Random, strings.Clone(name)
 		}
+		state.timer = config.Timer
 	}
 	v, err := NewWithAddressSpace(program, entry, space)
 	if err != nil {
