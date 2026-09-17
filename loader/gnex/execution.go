@@ -28,7 +28,7 @@ type ExecutionMedia struct {
 	Data         []byte
 }
 
-// ExecutionImage owns a decoded normal-mode v2 storage layout. It does not
+// ExecutionImage owns a decoded normal-mode v1/v2 storage layout. It does not
 // initialize reserved symbols, decode media, deliver events, or start a game.
 // Buffer and descriptor Data slices belong to the caller and are intentionally
 // mutable. Modifying Buffer updates alias descriptors but not allocated RAM.
@@ -44,7 +44,7 @@ type ExecutionImage struct {
 	SymbolRAM       []byte // contiguous mutable symbol storage, excluding descriptors/media
 }
 
-// DecodeExecutionImage models only the hash-qualified normal, unprefixed v2
+// DecodeExecutionImage models only the hash-qualified normal, unprefixed v1/v2
 // descriptor layout described in docs/gvm-execution-subset.md. Unlike native
 // pointer arithmetic, it rejects malformed spans, incomplete records, file
 // overreads and overlapping descriptor/data regions as emulator safety policy.
@@ -56,7 +56,7 @@ func DecodeExecutionImage(data []byte) (ExecutionImage, error) {
 	if len(data) < 0x34 || len(data) > 128<<10 {
 		return bad(0, "execution image size outside supported bounds")
 	}
-	if data[0] != 2 || data[2] != 12 || data[5] != 1 {
+	if (data[0] != 1 && data[0] != 2) || data[2] != 12 || data[5] != 1 {
 		return ExecutionImage{}, ErrUnsupportedExecutionVariant
 	}
 	header, err := ParseHeader(data)

@@ -3,8 +3,10 @@ package application
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"strings"
@@ -69,6 +71,8 @@ func newOperationalFixture(t *testing.T, data []byte) *gvmMachine {
 		packageSGS:  bytes.Clone(pkg.SGS),
 		budget:      100,
 		operational: true,
+		width:       operationalGVMWidth,
+		height:      operationalGVMHeight,
 		eventEntry:  uint32(binary.LittleEndian.Uint16(pkg.SGS[0x20:0x22])),
 		inputEntry:  uint32(binary.LittleEndian.Uint16(pkg.SGS[0x22:0x24])),
 	}
@@ -97,13 +101,33 @@ func TestGVMFactoryRequiresExplicitDiagnosticProfile(t *testing.T) {
 	}
 }
 
+func TestGVMFactoryAutomaticallySelectsQualifiedOperationalCorpus(t *testing.T) {
+	data := gvmOperationalArchive(t)
+	digest := sha256.Sum256(data)
+	hash := fmt.Sprintf("%x", digest)
+	gvmOperationalCorpora[hash] = gvmOperationalConfig{width: 120, height: 80}
+	t.Cleanup(func() { delete(gvmOperationalCorpora, hash) })
+	machine, err := NewFactory().Create(context.Background(), gvmSource(data, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer machine.Close()
+	provider, ok := machine.(interface{ SourceInfo() machinecore.Source })
+	if !ok {
+		t.Fatalf("automatic machine does not expose SourceInfo: %T", machine)
+	}
+	if provider.SourceInfo().ProfileID != GVMOperationalProfileID || provider.SourceInfo().Format != string(loader.KindGNEX) {
+		t.Fatalf("automatic source = %+v, provider=%v", provider.SourceInfo(), ok)
+	}
+}
+
 func TestGVMOperationalProfileRequiresExactOuterHash(t *testing.T) {
 	if GVMOperationalProfileID == GVMKernelProfileID {
 		t.Fatal("operational profile aliases diagnostic profile")
 	}
 	data := gvmOperationalArchive(t)
 	_, err := NewFactory().Create(context.Background(), gvmSource(data, GVMOperationalProfileID))
-	if err == nil || !strings.Contains(err.Error(), GVMOperationalSHA256) || !strings.Contains(err.Error(), "got ") {
+	if err == nil || !strings.Contains(err.Error(), "does not support outer SHA-256") {
 		t.Fatalf("hash gate error = %v", err)
 	}
 }

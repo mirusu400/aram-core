@@ -1,6 +1,7 @@
 package gvmhost
 
 import (
+	"bytes"
 	"errors"
 	"image"
 	"image/color"
@@ -104,6 +105,28 @@ func TestDisplayAdapterDrawingCopyAndTransparentColor(t *testing.T) {
 		if got := color.RGBAModel.Convert(publisher.frames[0].At(i%3, i/3)).(color.RGBA).R; got != value {
 			t.Fatalf("pixel %d = %d, want %d", i, got, value)
 		}
+	}
+}
+
+func TestDisplayAdapterZeroAndGuestBufferSprite(t *testing.T) {
+	display := newTestDisplay(t, 3, 1, DisplayOrientationDefault, testPalette{failSelector: -1}, &frameCollector{})
+	if err := display.FillGVMDisplay(9); err != nil {
+		t.Fatal(err)
+	}
+	if err := display.ZeroGVMDisplay(); err != nil {
+		t.Fatal(err)
+	}
+	for index, pixel := range display.drawing.pixels {
+		if pixel != 0 {
+			t.Fatalf("zero pixel %d=%d", index, pixel)
+		}
+	}
+	buffer := []byte{7, 7, 7}
+	if err := display.DrawGVMSpriteBuffer([]byte{8, 1, 1, 0, 0, 3}, buffer, 1, 0); err != nil {
+		t.Fatal(err)
+	}
+	if want := []byte{7, 3, 7}; !bytes.Equal(buffer, want) {
+		t.Fatalf("guest buffer=%v want=%v", buffer, want)
 	}
 }
 
