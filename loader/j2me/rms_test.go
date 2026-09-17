@@ -58,6 +58,51 @@ func TestInspectExternalRecordStore(t *testing.T) {
 	}
 }
 
+func TestInspectExternalRecordStoreAllowsOnlyOmittedFinalPadding(t *testing.T) {
+	payload := testExternalRMS(map[uint32][]byte{1: []byte{1, 2, 3}}, 2)
+	withoutPadding := payload[:len(payload)-13]
+	store, err := inspectExternalRecordStore("state.db", withoutPadding)
+	if err != nil {
+		t.Fatalf("documented omitted final padding rejected: %v", err)
+	}
+	if len(store.Records) != 1 || len(store.Records[0].Data) != 3 {
+		t.Fatalf("decoded store = %+v", store)
+	}
+
+	declaredExtraBlock := append([]byte(nil), payload...)
+	logicalEnd := binary.BigEndian.Uint32(declaredExtraBlock[44:]) + 16
+	binary.BigEndian.PutUint32(declaredExtraBlock[56:], 48)
+	binary.BigEndian.PutUint32(declaredExtraBlock[44:], logicalEnd)
+	if _, err := inspectExternalRecordStore("state.db", declaredExtraBlock); err == nil {
+		t.Fatal("external RMS accepted more than 15 omitted final bytes")
+	}
+}
+
+func TestInspectExternalRecordStoreCapsPhysicalBlocks(t *testing.T) {
+	const headerSize = 48
+	data := make([]byte, headerSize+16*(maxExternalRMSBlocks+1))
+	copy(data, lgtRMSMagic)
+	binary.BigEndian.PutUint32(data[20:], 1)
+	binary.BigEndian.PutUint32(data[28:], headerSize)
+	binary.BigEndian.PutUint32(data[40:], headerSize)
+	binary.BigEndian.PutUint32(data[44:], uint32(len(data)))
+	previous := uint32(0)
+	for index := 0; index <= maxExternalRMSBlocks; index++ {
+		offset := headerSize + index*16
+		binary.BigEndian.PutUint32(data[offset:], ^uint32(0))
+		binary.BigEndian.PutUint32(data[offset+4:], previous)
+		binary.BigEndian.PutUint32(data[offset+8:], 16)
+		if index < maxExternalRMSBlocks {
+			binary.BigEndian.PutUint32(data[offset+12:], uint32(offset+16))
+		}
+		previous = uint32(offset)
+	}
+	binary.BigEndian.PutUint32(data[24:], previous)
+	if _, err := inspectExternalRecordStore("many.db", data); err == nil {
+		t.Fatal("external RMS accepted excessive physical block count")
+	}
+}
+
 func TestInspectExternalRecordStoreFreeList(t *testing.T) {
 	payload := testExternalRMS(map[uint32][]byte{1: []byte("one"), 3: []byte("three")}, 4)
 	// Turn the second physical block into a free block and link it from the header.

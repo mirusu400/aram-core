@@ -242,7 +242,7 @@ func Inspect(data []byte) (Package, error) {
 				return Package{}, malformed(name, 0, "class path does not match declared name")
 			}
 			pkg.Classes[className] = payload
-			if pkg.ProfileID == ProfileID && classUsesLGTProfile(payload) {
+			if pkg.ProfileID == ProfileID && classUsesLGTProfile(parsed) {
 				pkg.ProfileID = LGTProfileID
 			}
 		} else {
@@ -256,11 +256,17 @@ func Inspect(data []byte) (Package, error) {
 	return pkg, nil
 }
 
-func classUsesLGTProfile(class []byte) bool {
-	// ParseClass has already authenticated the constant pool before this helper is
-	// called. MMPP class references are the carrier API identity used by LGT
-	// MIDlets whose archival distribution omitted the numeric installer index.
-	return bytes.Contains(class, []byte("mmpp/"))
+func classUsesLGTProfile(class *engine.Class) bool {
+	// MMPP class references are the carrier API identity used by LGT MIDlets
+	// whose archival distribution omitted the numeric installer index. Only
+	// authenticated CONSTANT_Class entries count. A string literal or bytecode
+	// payload containing "mmpp/" must not enable carrier-specific privileges.
+	for _, reference := range class.ClassReferences() {
+		if strings.HasPrefix(reference, "mmpp/") {
+			return true
+		}
+	}
+	return false
 }
 
 func descriptor(properties map[string]string) (Descriptor, error) {

@@ -58,6 +58,39 @@ func testClass() []byte {
 	return b.Bytes()
 }
 
+func testClassWithMMPPConstant(classReference bool) []byte {
+	var b bytes.Buffer
+	u2 := func(v uint16) { _ = binary.Write(&b, binary.BigEndian, v) }
+	_ = binary.Write(&b, binary.BigEndian, uint32(0xcafebabe))
+	u2(3)
+	u2(45)
+	u2(7)
+	for _, s := range []string{"Game", "java/lang/Object"} {
+		b.WriteByte(1)
+		u2(uint16(len(s)))
+		b.WriteString(s)
+		b.WriteByte(7)
+		if s == "Game" {
+			u2(1)
+		} else {
+			u2(3)
+		}
+	}
+	b.WriteByte(1)
+	u2(uint16(len("mmpp/phone/Phone")))
+	b.WriteString("mmpp/phone/Phone")
+	if classReference {
+		b.WriteByte(7)
+	} else {
+		b.WriteByte(8)
+	}
+	u2(5)
+	for _, v := range []uint16{1, 2, 4, 0, 0, 0, 0} {
+		u2(v)
+	}
+	return b.Bytes()
+}
+
 const testManifest = "Manifest-Version: 1.0\r\nMIDlet-Name: Demo\r\nMIDlet-Version: 1.0\r\nMIDlet-Vendor: Test\r\nMIDlet-1: Demo, , Ga\r\n me\r\nMicroEdition-Profile: MIDP-1.0\r\nMicroEdition-Configuration: CLDC-1.0\r\n\r\nName: icon.png\r\nMIDlet-1: Wrong, , Wrong\r\n"
 
 func testJAR(t *testing.T) []byte {
@@ -83,6 +116,31 @@ func TestInspectStandaloneAndJADPair(t *testing.T) {
 				t.Fatal("JAD properties not merged")
 			}
 		}
+	}
+}
+
+func TestInspectInfersLGTOnlyFromClassReferences(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		class       []byte
+		wantProfile string
+	}{
+		{name: "class reference", class: testClassWithMMPPConstant(true), wantProfile: LGTProfileID},
+		{name: "string literal", class: testClassWithMMPPConstant(false), wantProfile: ProfileID},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			jar := testZIP(t, map[string][]byte{
+				"META-INF/MANIFEST.MF": []byte(testManifest),
+				"Game.class":           test.class,
+			})
+			pkg, err := Inspect(jar)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if pkg.ProfileID != test.wantProfile {
+				t.Fatalf("profile = %q, want %q", pkg.ProfileID, test.wantProfile)
+			}
+		})
 	}
 }
 func TestInspectMalformed(t *testing.T) {
@@ -151,15 +209,6 @@ func TestUnclaimedArchives(t *testing.T) {
 		if _, err := Inspect(data); !errors.Is(err, ErrNotPackage) {
 			t.Fatalf("ordinary input claimed: %v", err)
 		}
-	}
-}
-
-func TestClassUsesLGTProfile(t *testing.T) {
-	if !classUsesLGTProfile([]byte("constant:mmpp/media/MediaPlayer")) {
-		t.Fatal("MMPP dependency did not select LGT profile")
-	}
-	if classUsesLGTProfile([]byte("javax/microedition/lcdui/Canvas")) {
-		t.Fatal("standard MIDP dependency selected LGT profile")
 	}
 }
 

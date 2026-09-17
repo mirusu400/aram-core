@@ -12,6 +12,8 @@ import (
 
 var lgtRMSMagic = []byte("midp-rms")
 
+const maxExternalRMSBlocks = MaxArchiveEntries
+
 // inspectExternalRecordStores decodes the LGT MIDP installer database carried
 // beside a JAD/JAR pair. Each record occupies a big-endian block whose declared
 // extent includes its 16-byte header and alignment padding. The final padding is
@@ -66,7 +68,12 @@ func inspectExternalRecordStore(name string, data []byte) (skloader.RecordStore,
 	seen := make(map[uint32]bool, recordCount)
 	freeBlocks := make(map[uint32]uint32)
 	previous := uint32(0)
+	blockCount := 0
 	for cursor < logicalEnd {
+		blockCount++
+		if blockCount > maxExternalRMSBlocks {
+			return skloader.RecordStore{}, malformed(name, int64(cursor), "external RMS block count exceeds limit")
+		}
 		if cursor+16 > uint64(len(data)) {
 			return skloader.RecordStore{}, malformed(name, int64(cursor), "truncated external RMS record header")
 		}
@@ -79,7 +86,8 @@ func inspectExternalRecordStore(name string, data []byte) (skloader.RecordStore,
 		nextBlock := cursor + uint64(blockSize)
 		if previousBlock != previous || blockSize < 16 || blockSize%16 != 0 ||
 			nextBlock <= cursor || nextBlock > logicalEnd ||
-			(nextBlock < logicalEnd && nextBlock > uint64(len(data))) {
+			(nextBlock > uint64(len(data)) &&
+				(nextBlock != logicalEnd || nextBlock-uint64(len(data)) > 15)) {
 			return skloader.RecordStore{}, malformed(name, int64(cursor), "invalid external RMS record")
 		}
 		switch {
