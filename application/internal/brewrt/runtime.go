@@ -103,6 +103,14 @@ const (
 	soundPlayerVTable   = serviceBase + 0xe20
 	soundPlayerTrapBase = serviceBase + 0xf00
 	soundPlayerMethods  = uint32(19)
+	networkServiceBase  = serviceBase + 0x1000
+	netObject           = networkServiceBase + 0x100
+	netVTable           = networkServiceBase + 0x200
+	netTrapBase         = networkServiceBase + 0x300
+	netMethodCount      = uint32(12)
+	imageVTable         = networkServiceBase + 0x400
+	imageTrapBase       = networkServiceBase + 0x500
+	imageMethodCount    = uint32(11)
 
 	bootstrapBudget = uint64(2_000_000)
 	hostCallBudget  = 4096
@@ -134,6 +142,12 @@ type Runtime struct {
 	graphics      graphicsState
 	soundInfo     [5]byte
 	soundVolume   uint16
+	preferences   map[brewPreferenceKey][]byte
+}
+
+type brewPreferenceKey struct {
+	classID uint32
+	version uint16
 }
 
 type brewCallback struct {
@@ -182,6 +196,7 @@ func New(pkg Package) (*Runtime, error) {
 		cpu: backend, heapNext: heapBase, files: pkg.Files,
 		eventCounts: make(map[uint32]uint64), classIDs: classIDs,
 		randomState: 1,
+		preferences: make(map[brewPreferenceKey][]byte),
 	}
 	if err := r.mapImage(pkg.Module); err != nil {
 		_ = backend.Close()
@@ -333,6 +348,28 @@ func (r *Runtime) mapImage(module []byte) error {
 	binary.LittleEndian.PutUint32(services[soundPlayerVTable-serviceBase+4:], releaseTrap|1)
 	if err := r.cpu.WriteMemory(serviceBase, services[:]); err != nil {
 		return fmt.Errorf("write BREW exact-title services: %w", err)
+	}
+	if err := r.cpu.Map(networkServiceBase, 0x1000, cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute); err != nil {
+		return fmt.Errorf("map BREW network services: %w", err)
+	}
+	var network [0x1000]byte
+	binary.LittleEndian.PutUint32(network[netObject-networkServiceBase:], netVTable)
+	for slot := uint32(0); slot < netMethodCount; slot++ {
+		trap := netTrapBase + slot*2
+		binary.LittleEndian.PutUint16(network[trap-networkServiceBase:], 0xbe12)
+		binary.LittleEndian.PutUint32(network[netVTable-networkServiceBase+slot*4:], trap|1)
+	}
+	binary.LittleEndian.PutUint32(network[netVTable-networkServiceBase:], addRefTrap|1)
+	binary.LittleEndian.PutUint32(network[netVTable-networkServiceBase+4:], releaseTrap|1)
+	for slot := uint32(0); slot < imageMethodCount; slot++ {
+		trap := imageTrapBase + slot*2
+		binary.LittleEndian.PutUint16(network[trap-networkServiceBase:], 0xbe13)
+		binary.LittleEndian.PutUint32(network[imageVTable-networkServiceBase+slot*4:], trap|1)
+	}
+	binary.LittleEndian.PutUint32(network[imageVTable-networkServiceBase:], addRefTrap|1)
+	binary.LittleEndian.PutUint32(network[imageVTable-networkServiceBase+4:], releaseTrap|1)
+	if err := r.cpu.WriteMemory(networkServiceBase, network[:]); err != nil {
+		return fmt.Errorf("write BREW network services: %w", err)
 	}
 	// The exact title installs ARM pixel routines into its BREW heap and calls
 	// them through the surface callback at +0x3c. The authenticated bytes begin
@@ -827,6 +864,87 @@ func (r *Runtime) handleAppletMethodTrap(
 			return boundary("ISoundPlayer", slot)
 		}
 	}
+	if breakpoint >= netTrapBase+2 && breakpoint < netTrapBase+netMethodCount*2+2 {
+		slot := (breakpoint - 2 - netTrapBase) / 2
+		switch slot {
+		case 2: // INotifier.SetMask(INetMgr *, const uint32 *)
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 3: // GetHostByName: offline, no asynchronous resolver is available.
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 4: // GetLastError
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 1); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 5: // OpenSocket: offline runtime cannot create host sockets.
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 6: // NetStatus
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 4); err != nil { // NET_PPP_CLOSED
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 7: // GetMyIPAddr
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 8, 9, 10, 11: // Linger/event/options: no offline state to mutate.
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 1); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		default:
+			return boundary("INetMgr", slot)
+		}
+	}
+	if breakpoint >= imageTrapBase+2 && breakpoint < imageTrapBase+imageMethodCount*2+2 {
+		slot := (breakpoint - 2 - imageTrapBase) / 2
+		switch slot {
+		case 2: // Draw(IImage *, int x, int y)
+			if err := r.drawImage(false); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 3: // DrawFrame(IImage *, int frame, int x, int y)
+			if err := r.drawImage(true); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 4: // GetInfo(IImage *, AEEImageInfo *)
+			if err := r.returnImageInfo(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 5: // SetParm
+			if err := r.setImageParameter(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 6: // Start(IImage *, int x, int y)
+			if err := r.drawImage(false); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 7, 8, 10: // Stop, SetStream, Notify
+			return resume()
+		case 9: // HandleEvent
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		default:
+			return boundary("IImage", slot)
+		}
+	}
 	if breakpoint >= shellMethodTrapBase+2 && breakpoint < shellMethodTrapBase+shellMethodCount*2+2 {
 		slot := (breakpoint - 2 - shellMethodTrapBase) / 2
 		switch slot {
@@ -898,10 +1016,25 @@ func (r *Runtime) handleAppletMethodTrap(
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
+		case 19: // LoadResObject(IShell *, const char *, uint16, AEECLSID)
+			if err := r.loadShellResourceObject(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
 		case 20: // FreeResData(IShell *, void *)
 			// Runtime allocations are arena-backed. Reclaiming is deferred until the
 			// machine closes, but the guest-visible ownership contract is complete.
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 23: // GetPrefs
+			if err := r.getPreferences(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 24: // SetPrefs
+			if err := r.setPreferences(); err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
@@ -1900,6 +2033,8 @@ func (r *Runtime) createShellInstance() error {
 		object = graphicsObject
 	case TAPIClassID:
 		object = tapiObject
+	case Net11ClassID:
+		object = netObject
 	default:
 		returnAddress, readErr := r.cpu.ReadRegister(cpu.RegisterLR)
 		if readErr != nil {

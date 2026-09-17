@@ -124,6 +124,146 @@ func (r *Runtime) createNativeBitmap(source image.Image) (uint32, error) {
 	return object, nil
 }
 
+func (r *Runtime) imageBitmap(object uint32) (uint32, error) {
+	var encoded [8]byte
+	if err := r.cpu.ReadMemory(object, encoded[:]); err != nil {
+		return 0, fmt.Errorf("read BREW image object: %w", err)
+	}
+	if binary.LittleEndian.Uint32(encoded[:4]) != imageVTable {
+		return 0, fmt.Errorf("invalid BREW image object")
+	}
+	return binary.LittleEndian.Uint32(encoded[4:]), nil
+}
+
+func (r *Runtime) drawImage(frame bool) error {
+	object, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return err
+	}
+	xRegister, yRegister := uint32(cpu.RegisterR1), uint32(cpu.RegisterR2)
+	if frame {
+		xRegister, yRegister = cpu.RegisterR2, cpu.RegisterR3
+	}
+	x, err := r.cpu.ReadRegister(xRegister)
+	if err != nil {
+		return err
+	}
+	y, err := r.cpu.ReadRegister(yRegister)
+	if err != nil {
+		return err
+	}
+	bitmap, err := r.imageBitmap(object)
+	if err != nil {
+		return err
+	}
+	return r.drawBitmapAt(bitmap, int32(x), int32(y))
+}
+
+func (r *Runtime) returnImageInfo() error {
+	object, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return err
+	}
+	destination, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return err
+	}
+	bitmap, err := r.imageBitmap(object)
+	if err != nil {
+		return err
+	}
+	header := make([]byte, 36)
+	if err := r.cpu.ReadMemory(bitmap, header); err != nil {
+		return fmt.Errorf("read BREW image bitmap: %w", err)
+	}
+	var info [10]byte
+	copy(info[0:4], header[20:24])
+	binary.LittleEndian.PutUint16(info[4:], 1)
+	info[6] = header[28]
+	binary.LittleEndian.PutUint16(info[8:], binary.LittleEndian.Uint16(header[20:22]))
+	if destination != 0 {
+		if err := r.cpu.WriteMemory(destination, info[:]); err != nil {
+			return fmt.Errorf("write BREW image info: %w", err)
+		}
+	}
+	return nil
+}
+
+func (r *Runtime) setImageParameter() error {
+	object, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return err
+	}
+	parameter, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return err
+	}
+	value, err := r.cpu.ReadRegister(cpu.RegisterR2)
+	if err != nil {
+		return err
+	}
+	result, err := r.cpu.ReadRegister(cpu.RegisterR3)
+	if err != nil {
+		return err
+	}
+	status := uint32(1)
+	if parameter == 10 && value != 0 { // IPARM_GETBITMAP
+		bitmap, bitmapErr := r.imageBitmap(object)
+		if bitmapErr != nil {
+			return bitmapErr
+		}
+		var encoded [4]byte
+		binary.LittleEndian.PutUint32(encoded[:], bitmap)
+		if err := r.cpu.WriteMemory(value, encoded[:]); err != nil {
+			return fmt.Errorf("write BREW image bitmap output: %w", err)
+		}
+		status = 0
+	}
+	if result != 0 {
+		var encoded [4]byte
+		binary.LittleEndian.PutUint32(encoded[:], status)
+		if err := r.cpu.WriteMemory(result, encoded[:]); err != nil {
+			return fmt.Errorf("write BREW image parameter status: %w", err)
+		}
+	}
+	return nil
+}
+
+func (r *Runtime) drawBitmapAt(bitmap uint32, destinationX, destinationY int32) error {
+	header := make([]byte, 36)
+	if err := r.cpu.ReadMemory(bitmap, header); err != nil {
+		return fmt.Errorf("read BREW image bitmap: %w", err)
+	}
+	pixels := binary.LittleEndian.Uint32(header[8:])
+	width := uint32(binary.LittleEndian.Uint16(header[20:]))
+	height := uint32(binary.LittleEndian.Uint16(header[22:]))
+	pitch := uint32(binary.LittleEndian.Uint16(header[24:]))
+	if pixels == 0 || pitch < width*2 || header[28] != 16 || header[29] != idibColorScheme565 {
+		return nil
+	}
+	for row := uint32(0); row < height; row++ {
+		targetY := destinationY + int32(row)
+		if targetY < 0 || targetY >= int32(framebufferHeight) {
+			continue
+		}
+		for column := uint32(0); column < width; column++ {
+			targetX := destinationX + int32(column)
+			if targetX < 0 || targetX >= int32(framebufferWidth) {
+				continue
+			}
+			var pixel [2]byte
+			if err := r.cpu.ReadMemory(pixels+row*pitch+column*2, pixel[:]); err != nil {
+				return fmt.Errorf("read BREW image pixel: %w", err)
+			}
+			address := framebufferBase + (uint32(targetY)*framebufferWidth+uint32(targetX))*2
+			if err := r.cpu.WriteMemory(address, pixel[:]); err != nil {
+				return fmt.Errorf("write BREW image pixel: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
 func (r *Runtime) blitDisplayBitmap() error {
 	destinationX, err := r.cpu.ReadRegister(cpu.RegisterR1)
 	if err != nil {

@@ -3,9 +3,12 @@ package brewrt
 import (
 	"bytes"
 	"encoding/binary"
+	"image"
+	"image/color"
 	"testing"
 
 	"github.com/mirusu400/aram-core/cpu"
+	"golang.org/x/image/bmp"
 )
 
 func buildResourceFile(kind, id uint16, payload []byte) []byte {
@@ -117,5 +120,20 @@ func TestLoadShellResourceStringCopiesBoundedUCS2(t *testing.T) {
 	}
 	if !bytes.Equal(got, []byte{'A', 0, 'B', 0, 0, 0}) {
 		t.Fatalf("loaded string = %v", got)
+	}
+}
+
+func TestDecodeBREWResourceImageHonorsBlobOffset(t *testing.T) {
+	source := image.NewRGBA(image.Rect(0, 0, 2, 1))
+	source.SetRGBA(0, 0, color.RGBA{R: 0xff, A: 0xff})
+	var encoded bytes.Buffer
+	if err := bmp.Encode(&encoded, source); err != nil {
+		t.Fatal(err)
+	}
+	resource := append([]byte{12, 0}, []byte("image/bmp\x00")...)
+	resource = append(resource, encoded.Bytes()...)
+	decoded, ok := decodeBREWResourceImage(resource)
+	if !ok || decoded.Bounds() != source.Bounds() {
+		t.Fatalf("decoded=%v ok=%v", decoded, ok)
 	}
 }

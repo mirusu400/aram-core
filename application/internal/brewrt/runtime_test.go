@@ -336,6 +336,99 @@ func TestTAPIStatusUsesStableSyntheticIdentity(t *testing.T) {
 	}
 }
 
+func TestNet11ServiceStaysOfflineWithoutHostNetworkAccess(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	if err := runtime.cpu.WriteRegister(cpu.RegisterLR, returnTrap|1); err != nil {
+		t.Fatal(err)
+	}
+	handled, _, _, err := runtime.handleAppletMethodTrap(netTrapBase + 6*2 + 2)
+	if err != nil || !handled {
+		t.Fatalf("INetMgr NetStatus handled=%v err=%v", handled, err)
+	}
+	if got, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || got != 4 {
+		t.Fatalf("INetMgr NetStatus = %d err=%v, want NET_PPP_CLOSED", got, err)
+	}
+}
+
+func TestMissingBREWPreferencesLeaveCallerBufferUntouched(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	destination, stack := heapBase+0x900, heapBase+0x980
+	want := []byte{0xaa, 0xbb, 0xcc, 0xdd}
+	if err := runtime.cpu.WriteMemory(destination, want); err != nil {
+		t.Fatal(err)
+	}
+	var size [4]byte
+	binary.LittleEndian.PutUint32(size[:], uint32(len(want)))
+	if err := runtime.cpu.WriteMemory(stack, size[:]); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR3: destination,
+		cpu.RegisterSP: stack,
+		cpu.RegisterLR: returnTrap | 1,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handled, _, _, err := runtime.handleAppletMethodTrap(shellMethodTrapBase + 23*2 + 2)
+	if err != nil || !handled {
+		t.Fatalf("IShell GetPrefs handled=%v err=%v", handled, err)
+	}
+	if got, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || got != 1 {
+		t.Fatalf("IShell GetPrefs = %d err=%v, want EFAILED", got, err)
+	}
+	got := make([]byte, len(want))
+	if err := runtime.cpu.ReadMemory(destination, got); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("preference buffer changed: got %x want %x", got, want)
+	}
+}
+
+func TestBREWPreferencesRoundTripWithinRuntime(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	runtime.preferences = make(map[brewPreferenceKey][]byte)
+	buffer, stack := heapBase+0xa00, heapBase+0xb00
+	want := []byte{1, 2, 3, 4, 5}
+	if err := runtime.cpu.WriteMemory(buffer, want); err != nil {
+		t.Fatal(err)
+	}
+	var size [4]byte
+	binary.LittleEndian.PutUint32(size[:], uint32(len(want)))
+	if err := runtime.cpu.WriteMemory(stack, size[:]); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR1: 0x01015391,
+		cpu.RegisterR2: 0x65,
+		cpu.RegisterR3: buffer,
+		cpu.RegisterSP: stack,
+		cpu.RegisterLR: returnTrap | 1,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if handled, _, _, err := runtime.handleAppletMethodTrap(shellMethodTrapBase + 24*2 + 2); err != nil || !handled {
+		t.Fatalf("SetPrefs handled=%v err=%v", handled, err)
+	}
+	if err := runtime.cpu.WriteMemory(buffer, make([]byte, len(want))); err != nil {
+		t.Fatal(err)
+	}
+	if handled, _, _, err := runtime.handleAppletMethodTrap(shellMethodTrapBase + 23*2 + 2); err != nil || !handled {
+		t.Fatalf("GetPrefs handled=%v err=%v", handled, err)
+	}
+	got := make([]byte, len(want))
+	if err := runtime.cpu.ReadMemory(buffer, got); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("preferences = %v, want %v", got, want)
+	}
+}
+
 func TestDecodeSplashUsesEmbeddedBMPContract(t *testing.T) {
 	source := image.NewRGBA(image.Rect(0, 0, 120, 61))
 	for y := 0; y < source.Bounds().Dy(); y++ {
