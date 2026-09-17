@@ -469,7 +469,12 @@ remaining tail, append no NUL, update symbol 0 and select different header
 entries. Because a zero-length callback exposes the original seed and its
 portable meaning or replacement policy is not established, the literal is not
 copied into this implementation and scalar-prefix preparation remains explicitly
-incomplete.
+incomplete. A future safe initializer must remain staged: preparation produces
+an unpublished plan, and one atomic commit validates every dependency before
+publishing runtime readiness. Neither the buffer/header aliases nor partial
+writes are a readiness signal. Remap-row source/extent, actual geometry and
+orientation, normal-color ramps, failure/short-read policy, callback/timer
+lifetime, deterministic services and save-state remain commit prerequisites.
 
 The operational timer/input lifecycle is still not implementation-ready. The
 outer callback slot has multiple alternate targets and the inner callback slot
