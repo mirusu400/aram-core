@@ -454,6 +454,23 @@ Static, hash-gated interoperability analysis establishes these sprite layouts:
 - for palette-backed types, the last palette index is transparent only when
   its raw palette code is 4; type 8 uses index 4 as transparent.
 
+The independently implemented nonzero-orientation presentation path preserves
+the exact packed-byte contract rather than normalizing RGB332 components: red is
+`P & 0xe0`, green is `(P & 0x1c) << 3`, blue is `(P & 3) << 6`, with explicit
+grayscale overrides for `00`, `49`, `92` and `ff`. It rotates the source 90
+degrees counter-clockwise into `height x width` output. Independent review found
+no Blocker or Important issue. The default-orientation color policy remains
+unresolved and this conversion is not yet connected to the diagnostic profile.
+
+Symbol 8 is also not ready for a portable initializer. The exact-build tail
+copies a NUL-inclusive 15-byte opaque startup seed into mutable guest-visible
+storage. Later host callbacks overwrite only a supplied prefix, preserve the
+remaining tail, append no NUL, update symbol 0 and select different header
+entries. Because a zero-length callback exposes the original seed and its
+portable meaning or replacement policy is not established, the literal is not
+copied into this implementation and scalar-prefix preparation remains explicitly
+incomplete.
+
 The operational timer/input lifecycle is still not implementation-ready. The
 outer callback slot has multiple alternate targets and the inner callback slot
 has many state-dependent writers. For this selected corpus, the normal startup
