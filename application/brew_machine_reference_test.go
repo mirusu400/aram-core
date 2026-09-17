@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -44,27 +43,30 @@ func TestBREWExactArchiveBootstrap(t *testing.T) {
 	if err := machine.QueueInput(machinecore.InputEvent{Control: "up", Pressed: false}); err != nil {
 		t.Fatalf("queue BREW key release: %v", err)
 	}
-	err = machine.Start(context.Background())
-	var boundary *brewrt.ExecutionBoundaryError
-	if !errors.As(err, &boundary) || boundary.ClassID != brewrt.FirstUnsupportedClassID {
-		t.Fatalf("start boundary = %v, want shell class 0x%08x", err, brewrt.FirstUnsupportedClassID)
+	if err := machine.Start(context.Background()); err != nil {
+		t.Fatalf("start exact BREW title: %v", err)
 	}
-	if machine.State() != machinecore.StatePaused {
-		t.Fatalf("state after first frame = %s, want paused", machine.State())
+	if machine.State() != machinecore.StateRunning {
+		t.Fatalf("state after first frame = %s, want running", machine.State())
 	}
 	if frameIsUniform(machine.Framebuffer()) {
-		t.Fatal("exact BREW diagnostic splash is uniform")
+		t.Fatal("exact BREW guest framebuffer is uniform")
 	}
 	implementation, ok := machine.(*brewMachine)
 	if !ok || implementation.runtime == nil || implementation.runtime.ModuleObject() == 0 {
 		t.Fatal("exact BREW module entry did not produce a module object")
 	}
-	if len(implementation.input) != 2 || !implementation.input[0].Pressed || implementation.input[1].Pressed {
-		t.Fatalf("exact BREW pending input transitions = %#v", implementation.input)
+	if !implementation.guestFrame {
+		t.Fatal("exact BREW frame was not committed by guest IDisplay Update")
 	}
-	t.Logf(
-		"module object 0x%08x; %v; diagnostic splash non-uniform; key press/release retained but not dispatched",
-		implementation.runtime.ModuleObject(),
-		boundary,
-	)
+	if len(implementation.input) != 0 {
+		t.Fatalf("exact BREW pending input transitions = %#v, want dispatched", implementation.input)
+	}
+	if got := implementation.runtime.EventCount(0x101); got != 1 {
+		t.Fatalf("BREW EVT_KEY_PRESS dispatches = %d, want 1", got)
+	}
+	if got := implementation.runtime.EventCount(0x102); got != 1 {
+		t.Fatalf("BREW EVT_KEY_RELEASE dispatches = %d, want 1", got)
+	}
+	t.Logf("module object 0x%08x; guest framebuffer committed; key press/release dispatched", implementation.runtime.ModuleObject())
 }

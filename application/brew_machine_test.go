@@ -36,6 +36,19 @@ func TestBREWMachineRendersPackageSplashNonUniformly(t *testing.T) {
 	}
 }
 
+func TestBREWMachineDoesNotPublishMIFSplashBeforeGuestUpdate(t *testing.T) {
+	splash := image.NewRGBA(image.Rect(0, 0, 2, 1))
+	splash.SetRGBA(0, 0, color.RGBA{R: 0xff, A: 0xff})
+	splash.SetRGBA(1, 0, color.RGBA{B: 0xff, A: 0xff})
+	machine := newBREWMachine(machinecore.Source{Name: "synthetic.zip"}, brewrt.Package{Splash: splash})
+	if got := machine.Framebuffer().Bounds(); got != image.Rect(0, 0, 120, 160) {
+		t.Fatalf("initial BREW framebuffer bounds = %v", got)
+	}
+	if !frameIsUniform(machine.Framebuffer()) {
+		t.Fatal("MIF splash was published before a guest IDisplay Update")
+	}
+}
+
 func frameIsUniform(frame image.Image) bool {
 	bounds := frame.Bounds()
 	first := color.RGBAModel.Convert(frame.At(bounds.Min.X, bounds.Min.Y)).(color.RGBA)

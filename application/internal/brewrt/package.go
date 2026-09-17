@@ -21,11 +21,15 @@ const (
 	ModulePath    = "32536/kkrh.mod"
 	MIFPath       = "32536.mif"
 
-	ClassID = uint32(0x0103d22a)
-	// FirstUnsupportedClassID is the first shell service requested after the
-	// module factory hands control to the applet constructor. The runtime stops
-	// before this boundary because its vtable contract is not yet known.
-	FirstUnsupportedClassID = uint32(0x01001001)
+	ClassID               = uint32(0x0103d22a)
+	DisplayClassID        = uint32(0x01001001)
+	HeapClassID           = uint32(0x01001002)
+	FileMgrClassID        = uint32(0x01001003)
+	OptionalDeviceClassID = uint32(0x018000fe)
+	SoundClassID          = uint32(0x01002000)
+	// FirstUnsupportedClassID is retained for callers that recorded the original
+	// bootstrap milestone before the display contract was implemented.
+	FirstUnsupportedClassID = DisplayClassID
 
 	mifClassIDOffset = 0x20b4
 	mifSplashOffset  = 0x74
@@ -35,6 +39,7 @@ const (
 type Package struct {
 	Module []byte
 	Splash *image.RGBA
+	Files  map[string][]byte
 }
 
 // Match returns matched=false without parsing for every archive except the
@@ -69,9 +74,14 @@ func Match(data []byte) (pkg Package, matched bool, err error) {
 	if err != nil {
 		return Package{}, true, err
 	}
+	files := make(map[string][]byte, len(inspected.Files))
+	for name, contents := range inspected.Files {
+		files[name] = append([]byte(nil), contents...)
+	}
 	return Package{
 		Module: append([]byte(nil), module...),
 		Splash: splash,
+		Files:  files,
 	}, true, nil
 }
 

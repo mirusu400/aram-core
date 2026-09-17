@@ -21,19 +21,21 @@ import (
 
 const maxBREWInputEvents = 1024
 
-// brewMachine is intentionally a bootstrap machine, not a general BREW host.
-// It executes the authenticated module and applet factories to the first exact
-// ABI boundary. Its package splash is diagnostic output, never claimed as a
-// guest-rendered game frame. Input transitions are retained for that future ABI.
+// brewMachine is an exact-title host, not a general BREW implementation. It
+// executes the authenticated module, applet, timers and researched service
+// contracts. Its package splash remains diagnostic-only; published frames come
+// from the guest RGB565 surface after IDisplay::Update.
 type brewMachine struct {
-	mu      sync.Mutex
-	state   machinecore.State
-	source  machinecore.Source
-	pkg     brewrt.Package
-	runtime *brewrt.Runtime
-	frame   *image.RGBA
-	input   []machinecore.InputEvent
-	closed  bool
+	mu         sync.Mutex
+	state      machinecore.State
+	source     machinecore.Source
+	pkg        brewrt.Package
+	runtime    *brewrt.Runtime
+	frame      *image.RGBA
+	input      []machinecore.InputEvent
+	started    bool
+	guestFrame bool
+	closed     bool
 }
 
 func (f Factory) createBREWMachine(ctx context.Context, source machinecore.Source) (machinecore.Machine, bool, error) {
@@ -64,7 +66,7 @@ func (f Factory) createBREWMachine(ctx context.Context, source machinecore.Sourc
 }
 
 func newBREWMachine(source machinecore.Source, pkg brewrt.Package) *brewMachine {
-	frame := image.NewRGBA(image.Rect(0, 0, 240, 320))
+	frame := image.NewRGBA(image.Rect(0, 0, 120, 160))
 	draw.Draw(frame, frame.Bounds(), image.NewUniform(color.Black), image.Point{}, draw.Src)
 	return &brewMachine{state: machinecore.StateReady, source: source, pkg: pkg, frame: frame}
 }
@@ -108,20 +110,32 @@ func (m *brewMachine) Start(ctx context.Context) error {
 		m.runtime = runtime
 	}
 	m.state = machinecore.StateRunning
-	if err := m.runtime.Bootstrap(ctx); err != nil {
-		m.state = machinecore.StateFaulted
-		return fmt.Errorf("bootstrap authenticated BREW module: %w", err)
-	}
-	m.renderSplash()
-	m.state = machinecore.StatePaused
-	if err := m.runtime.ProbeAppletBoundary(ctx); err != nil {
-		var boundary *brewrt.ExecutionBoundaryError
-		if !errors.As(err, &boundary) {
+	if !m.started {
+		if err := m.runtime.Bootstrap(ctx); err != nil {
 			m.state = machinecore.StateFaulted
+			return fmt.Errorf("bootstrap authenticated BREW module: %w", err)
 		}
-		return err
+		if err := m.runtime.ProbeAppletBoundary(ctx); err != nil {
+			var boundary *brewrt.ExecutionBoundaryError
+			if errors.As(err, &boundary) {
+				m.state = machinecore.StatePaused
+			} else {
+				m.state = machinecore.StateFaulted
+			}
+			return err
+		}
+		handled, err := m.runtime.DispatchEvent(ctx, 0, 0, 0)
+		if err != nil {
+			m.state = machinecore.StateFaulted
+			return fmt.Errorf("dispatch BREW EVT_APP_START: %w", err)
+		}
+		if !handled {
+			m.state = machinecore.StateFaulted
+			return fmt.Errorf("BREW EVT_APP_START was not handled")
+		}
+		m.started = true
 	}
-	return fmt.Errorf("BREW applet probe stopped without an execution boundary")
+	return m.stepLocked(ctx)
 }
 
 func (m *brewMachine) renderSplash() {
@@ -183,13 +197,76 @@ func (m *brewMachine) Reset(ctx context.Context) error {
 		m.runtime = nil
 	}
 	m.input = nil
+	m.started = false
+	m.guestFrame = false
 	draw.Draw(m.frame, m.frame.Bounds(), image.NewUniform(color.Black), image.Point{}, draw.Src)
 	m.state = machinecore.StateReady
 	return nil
 }
 
 func (m *brewMachine) StepFrame(ctx context.Context) error {
-	return m.Start(ctx)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return cpu.ErrClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if m.state != machinecore.StateRunning && m.state != machinecore.StatePaused {
+		return fmt.Errorf("step frame from %s: %w", m.state, ErrInvalidState)
+	}
+	m.state = machinecore.StateRunning
+	return m.stepLocked(ctx)
+}
+
+func (m *brewMachine) stepLocked(ctx context.Context) error {
+	if err := m.runtime.RunCallbacks(ctx); err != nil {
+		m.state = machinecore.StateFaulted
+		return fmt.Errorf("run BREW timer callback: %w", err)
+	}
+	for _, event := range m.input {
+		key, ok := brewKeyCode(event.Control)
+		if !ok {
+			return fmt.Errorf("unsupported BREW control %q", event.Control)
+		}
+		kind := uint32(0x102)
+		if event.Pressed {
+			kind = 0x101
+		}
+		if _, err := m.runtime.DispatchEvent(ctx, kind, key, 0); err != nil {
+			m.state = machinecore.StateFaulted
+			return fmt.Errorf("dispatch BREW input %q: %w", event.Control, err)
+		}
+	}
+	m.input = nil
+	frame, presented, err := m.runtime.Framebuffer()
+	if err != nil {
+		m.state = machinecore.StateFaulted
+		return err
+	}
+	if presented {
+		m.frame = frame
+		m.guestFrame = true
+	}
+	return nil
+}
+
+func brewKeyCode(control string) (uint32, bool) {
+	switch control {
+	case "up":
+		return 2, true
+	case "down":
+		return 3, true
+	case "left":
+		return 4, true
+	case "right":
+		return 5, true
+	case "fire", "select":
+		return 8, true
+	default:
+		return 0, false
+	}
 }
 
 func (m *brewMachine) QueueInput(event machinecore.InputEvent) error {
