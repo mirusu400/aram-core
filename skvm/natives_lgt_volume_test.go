@@ -85,8 +85,12 @@ func TestMMPPVolumeErrorsAreTransactional(t *testing.T) {
 		}
 	}
 	empty := mmppNew(t, v)
-	if _, _, e := call(context.Background(), v, empty, []Value{ReferenceValue(v.NewString("3"))}); e == nil {
-		t.Fatal("volume without a source succeeded")
+	if _, _, e := call(context.Background(), v, empty, []Value{ReferenceValue(v.NewString("3"))}); e != nil {
+		t.Fatalf("pending volume without a source: %v", e)
+	}
+	mmppConstantSource(t, v, empty)
+	if got := mmppInfo(t, v, empty).Volume; got != 60 {
+		t.Fatalf("pending volume applied as %d, want 60", got)
 	}
 	if _, _, e := call(context.Background(), v, r, []Value{ReferenceValue(0)}); e == nil {
 		t.Fatal("null volume succeeded")
@@ -120,8 +124,8 @@ func TestMMPPVolumePreservesClipStateAndSourceTransactions(t *testing.T) {
 	}
 	mmppConstantSource(t, v, r)
 	after := mmppInfo(t, v, r)
-	if after.Volume != 100 || after.Muted || after.Pan != 0 {
-		t.Fatal("new source did not retain ordinary new-clip defaults")
+	if after.Volume != 60 || after.Muted || after.Pan != 0 {
+		t.Fatal("new source did not retain configured player gain")
 	}
 }
 

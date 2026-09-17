@@ -154,7 +154,26 @@ func TestUnclaimedArchives(t *testing.T) {
 	}
 }
 
-func TestStaleRemoteURLAndUnsupportedRMS(t *testing.T) {
+func TestClassUsesLGTProfile(t *testing.T) {
+	if !classUsesLGTProfile([]byte("constant:mmpp/media/MediaPlayer")) {
+		t.Fatal("MMPP dependency did not select LGT profile")
+	}
+	if classUsesLGTProfile([]byte("javax/microedition/lcdui/Canvas")) {
+		t.Fatal("standard MIDP dependency selected LGT profile")
+	}
+}
+
+func TestLegacyJADWhitespaceVariants(t *testing.T) {
+	properties, err := parseProperties("DESC.jad", []byte("MIDlet-Name : Demo\r\r\nMIDlet-Jar-URL:http://example.invalid/game.jar\r\n"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if properties["MIDlet-Name"] != "Demo" || properties["MIDlet-Jar-URL"] != "http://example.invalid/game.jar" {
+		t.Fatalf("legacy JAD properties = %#v", properties)
+	}
+}
+
+func TestStaleRemoteURLAndMalformedRMS(t *testing.T) {
 	jar := testJAR(t)
 	remote := "https://example.invalid/original-name.jar"
 	jad := []byte(fmt.Sprintf("MIDlet-Jar-URL: %s\nMIDlet-Jar-Size: %d\nMIDlet-1: Demo, , Game\n", remote, len(jar)))
@@ -181,12 +200,15 @@ func TestStaleRemoteURLAndUnsupportedRMS(t *testing.T) {
 			t.Fatal("unsafe stale URL exception accepted")
 		}
 	}
-	files["saved.idx"] = []byte("synthetic")
+	files["1.idx"] = []byte("installer index")
+	if _, err = Inspect(testZIP(t, files)); err != nil {
+		t.Fatalf("LGT installer index rejected as RMS: %v", err)
+	}
+	files["saved.db"] = []byte("synthetic")
 	_, err = Inspect(testZIP(t, files))
-	var unsupported *UnsupportedFeatureError
 	var malformed *FormatError
-	if !errors.Is(err, ErrUnsupportedFeature) || !errors.As(err, &unsupported) || errors.As(err, &malformed) {
-		t.Fatalf("RMS should be unsupported, not corrupt: %v", err)
+	if !errors.As(err, &malformed) {
+		t.Fatalf("malformed RMS diagnosis: %v", err)
 	}
 }
 func FuzzInspect(f *testing.F) {
@@ -215,7 +237,7 @@ func TestArchivedFilenameAliasRequiresCompleteIdentity(t *testing.T) {
 	if pkg.Descriptor.JARURL != remote || pkg.JARName != "application/archived.jar" || pkg.Descriptor.MainClass != "Game" {
 		t.Fatal("alias association rewrote identity")
 	}
-	for _, key := range []string{"MIDlet-Name", "MIDlet-Version", "MIDlet-Vendor", "MIDlet-1"} {
+	for _, key := range []string{"MIDlet-Name", "MIDlet-Version", "MIDlet-Vendor"} {
 		value := map[string]string{"MIDlet-Name": "Demo", "MIDlet-Version": "1.0", "MIDlet-Vendor": "Test", "MIDlet-1": "Demo, , Game"}[key]
 		line := key + ": " + value + "\n"
 		for _, replacement := range []string{"", key + ": \n", key + ": Different\n"} {
@@ -231,6 +253,10 @@ func TestArchivedFilenameAliasRequiresCompleteIdentity(t *testing.T) {
 				}
 			})
 		}
+	}
+	withoutJADMain := strings.Replace(jad, "MIDlet-1: Demo, , Game\n", "", 1)
+	if pkg, err := Inspect(pack(withoutJADMain, jar)); err != nil || pkg.Descriptor.MainClass != "Game" {
+		t.Fatalf("manifest-only MIDlet main rejected: pkg=%+v err=%v", pkg.Descriptor, err)
 	}
 	for _, bad := range []string{
 		strings.Replace(jad, fmt.Sprintf("MIDlet-Jar-Size: %d\n", len(jar)), "", 1),
