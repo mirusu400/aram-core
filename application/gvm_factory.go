@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/mirusu400/aram-core/application/internal/guest"
 	"github.com/mirusu400/aram-core/application/internal/gvmhost"
 	machinecore "github.com/mirusu400/aram-core/core"
 	"github.com/mirusu400/aram-core/cpu"
@@ -104,6 +105,7 @@ type gvmMachine struct {
 	lastResult  cpu.Result
 	operational bool
 	eventEntry  uint32
+	inputEntry  uint32
 	frames      *gvmFramePublisher
 	closed      bool
 }
@@ -161,10 +163,11 @@ func (f Factory) createGVMMachine(ctx context.Context, source machinecore.Source
 		operational: operational,
 	}
 	if operational {
-		if len(pkg.SGS) < 0x22 {
-			return nil, true, fmt.Errorf("initialize operational GVM: SGS event entry at 0x20 is unavailable")
+		if len(pkg.SGS) < 0x24 {
+			return nil, true, fmt.Errorf("initialize operational GVM: SGS event entries at 0x20 and 0x22 are unavailable")
 		}
 		machine.eventEntry = uint32(binary.LittleEndian.Uint16(pkg.SGS[0x20:0x22]))
+		machine.inputEntry = uint32(binary.LittleEndian.Uint16(pkg.SGS[0x22:0x24]))
 	}
 	if err := machine.resetVMLocked(); err != nil {
 		return nil, true, err
@@ -439,7 +442,35 @@ func (m *gvmMachine) QueueInput(event machinecore.InputEvent) error {
 	if err := event.Validate(); err != nil {
 		return err
 	}
-	return ErrGVMInputUnavailable
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.operational || m.state != machinecore.StateRunning || m.vm == nil || !m.vm.Halted() {
+		return ErrGVMInputUnavailable
+	}
+	key, known := guest.InputKeyCode(event.Control)
+	if !known {
+		return ErrGVMInputUnavailable
+	}
+	guestCode, supported := gvmhost.SKTNumericGuestCode(key)
+	if !supported {
+		return ErrGVMInputUnavailable
+	}
+	// The selected native path has an authenticated press callback at H+0x22.
+	// Its release path only clears host-side hit state and does not dispatch a
+	// guest callback, so releases are deliberately accepted as no-ops.
+	if !event.Pressed {
+		return nil
+	}
+	started, err := m.vm.BeginSymbolDispatch(0, guestCode, m.inputEntry)
+	if err != nil {
+		m.state = machinecore.StateFaulted
+		return fmt.Errorf("begin operational GVM numeric input dispatch at offset %d: %w", m.inputEntry, err)
+	}
+	if !started {
+		m.lastResult = cpu.Result{Reason: cpu.StopExited, PC: uint32(m.vm.PC())}
+		return nil
+	}
+	return m.runOperationalLocked(context.Background(), false)
 }
 
 func (m *gvmMachine) Framebuffer() image.Image {

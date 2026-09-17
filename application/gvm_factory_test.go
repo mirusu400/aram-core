@@ -38,11 +38,11 @@ func gvmExecutionArchive(t *testing.T, code []byte) []byte {
 
 func gvmOperationalArchive(t *testing.T) []byte {
 	t.Helper()
-	const entry, event, ds, ps, dm = 54, 64, 128, 132, 136
+	const entry, event, input, ds, ps, dm = 54, 64, 72, 128, 132, 136
 	sgs := make([]byte, dm)
 	sgs[0], sgs[2], sgs[5], sgs[10] = 2, 12, 1, 'G'
 	for offset, value := range map[int]uint16{
-		0x1c: entry, 0x20: event, 0x2c: ds, 0x2e: ps, 0x30: dm, 0x32: dm,
+		0x1c: entry, 0x20: event, 0x22: input, 0x2c: ds, 0x2e: ps, 0x30: dm, 0x32: dm,
 	} {
 		binary.LittleEndian.PutUint16(sgs[offset:], value)
 	}
@@ -50,6 +50,8 @@ func gvmOperationalArchive(t *testing.T) []byte {
 	copy(sgs[entry:], []byte{0x06, 0, 10, 0x06, 0x12, 0x34, 0x9a, 0xff})
 	// The selected event fills white, presents one frame, and halts.
 	copy(sgs[event:], []byte{0x05, 0, 0x57, 0x78, 0xff})
+	// Numeric press fills black, presents one frame, and halts.
+	copy(sgs[input:], []byte{0x05, 3, 0x57, 0x78, 0xff})
 	copy(sgs[ds:], []byte{1, 2, 1, 0})
 	copy(sgs[ps:], []byte{1, 2, 3, 4})
 	return testZIP(t, map[string][]byte{"game.sgs": sgs})
@@ -68,6 +70,7 @@ func newOperationalFixture(t *testing.T, data []byte) *gvmMachine {
 		budget:      100,
 		operational: true,
 		eventEntry:  uint32(binary.LittleEndian.Uint16(pkg.SGS[0x20:0x22])),
+		inputEntry:  uint32(binary.LittleEndian.Uint16(pkg.SGS[0x22:0x24])),
 	}
 	if err := m.resetVMLocked(); err != nil {
 		t.Fatal(err)
@@ -146,6 +149,36 @@ func TestGVMOperationalLifecyclePresentationAndReset(t *testing.T) {
 	// Previously published snapshots remain valid and unchanged after reset.
 	if got := color.RGBAModel.Convert(frame.At(0, 0)).(color.RGBA); got.R != 0xff || got.A != 0xff {
 		t.Fatalf("published snapshot changed after reset: %#v", got)
+	}
+}
+
+func TestGVMOperationalNumericPressDispatch(t *testing.T) {
+	machine := newOperationalFixture(t, gvmOperationalArchive(t))
+	defer machine.Close()
+	if err := machine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.StepFrame(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.QueueInput(machinecore.InputEvent{Control: "num5", Pressed: true}); err != nil {
+		t.Fatal(err)
+	}
+	frame := machine.Framebuffer()
+	if got := color.RGBAModel.Convert(frame.At(0, 0)).(color.RGBA); got == (color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}) || got.A != 0xff {
+		t.Fatalf("numeric press did not replace the white frame: %#v", got)
+	}
+	if machine.GVMPresentCount() != 2 || machine.State() != machinecore.StateRunning || !machine.vm.Halted() {
+		t.Fatalf("input state=%s halted=%v presents=%d", machine.State(), machine.vm.Halted(), machine.GVMPresentCount())
+	}
+	if err := machine.QueueInput(machinecore.InputEvent{Control: "num5", Pressed: false}); err != nil {
+		t.Fatalf("release should clear host state without guest dispatch: %v", err)
+	}
+	if machine.GVMPresentCount() != 2 {
+		t.Fatalf("release manufactured a guest dispatch: presents=%d", machine.GVMPresentCount())
+	}
+	if err := machine.QueueInput(machinecore.InputEvent{Control: "up", Pressed: true}); !errors.Is(err, ErrGVMInputUnavailable) {
+		t.Fatalf("unauthenticated directional input = %v", err)
 	}
 }
 
