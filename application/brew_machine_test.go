@@ -1,0 +1,50 @@
+package application
+
+import (
+	"image"
+	"image/color"
+	"testing"
+	"time"
+
+	"github.com/mirusu400/aram-core/application/internal/brewrt"
+	machinecore "github.com/mirusu400/aram-core/core"
+)
+
+func TestBREWMachineQueuesPressAndRelease(t *testing.T) {
+	machine := newBREWMachine(machinecore.Source{Name: "synthetic.zip"}, brewrt.Package{})
+	press := machinecore.InputEvent{Control: "up", Pressed: true, At: time.Millisecond}
+	release := machinecore.InputEvent{Control: "up", Pressed: false, At: 2 * time.Millisecond}
+	if err := machine.QueueInput(release); err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.QueueInput(press); err != nil {
+		t.Fatal(err)
+	}
+	if len(machine.input) != 2 || machine.input[0] != press || machine.input[1] != release {
+		t.Fatalf("queued transitions = %#v, want press then release", machine.input)
+	}
+}
+
+func TestBREWMachineRendersPackageSplashNonUniformly(t *testing.T) {
+	splash := image.NewRGBA(image.Rect(0, 0, 2, 1))
+	splash.SetRGBA(0, 0, color.RGBA{R: 0xff, A: 0xff})
+	splash.SetRGBA(1, 0, color.RGBA{B: 0xff, A: 0xff})
+	machine := newBREWMachine(machinecore.Source{Name: "synthetic.zip"}, brewrt.Package{Splash: splash})
+	machine.renderSplash()
+	if frameIsUniform(machine.Framebuffer()) {
+		t.Fatal("package splash frame is uniform")
+	}
+}
+
+func frameIsUniform(frame image.Image) bool {
+	bounds := frame.Bounds()
+	first := color.RGBAModel.Convert(frame.At(bounds.Min.X, bounds.Min.Y)).(color.RGBA)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			if color.RGBAModel.Convert(frame.At(x, y)).(color.RGBA) != first {
+				return false
+			}
+		}
+	}
+	return true
+}

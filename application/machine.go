@@ -158,6 +158,9 @@ func (f Factory) Create(ctx context.Context, source machinecore.Source) (machine
 	if machine, matched, err := f.createSKVMMachine(ctx, source); matched || err != nil {
 		return machine, err
 	}
+	if machine, matched, err := f.createBREWMachine(ctx, source); matched || err != nil {
+		return machine, err
+	}
 	newCPU := f.NewCPU
 	if newCPU == nil {
 		newCPU = func() cpu.Backend { return interpreter.New() }
