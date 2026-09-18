@@ -789,6 +789,32 @@ func TestLegacySoundAndActiveAppletContracts(t *testing.T) {
 	}
 }
 
+func TestShellCreatesLegacySoftKeyControl(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	out := heapBase + 0xb00
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR1: SoftKeyCtl10ClassID,
+		cpu.RegisterR2: out,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := runtime.createShellInstance(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || got != 0 {
+		t.Fatalf("SoftKeyCtl CreateInstance status=%d err=%v", got, err)
+	}
+	var encoded [4]byte
+	if err := runtime.cpu.ReadMemory(out, encoded[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint32(encoded[:]); got != menuCtlObject {
+		t.Fatalf("SoftKeyCtl object=0x%08x, want menu control 0x%08x", got, menuCtlObject)
+	}
+}
+
 func TestKTFServiceCreateAndSetupContracts(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	out := heapBase + 0xa40
