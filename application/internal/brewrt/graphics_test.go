@@ -69,3 +69,34 @@ func TestGraphicsServiceDrawsAndPresentsGuestFramebuffer(t *testing.T) {
 		t.Fatalf("IGraphics presentation frame=%v updates=%d", runtime.guestFrame, runtime.updates)
 	}
 }
+
+func TestGraphicsServiceDrawCircleHonorsFillAndStroke(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	callGraphicsForTest(t, runtime, 4, 255, 0, 0)
+	callGraphicsForTest(t, runtime, 8, 0, 255, 0)
+	callGraphicsForTest(t, runtime, 6, 1, 0, 0)
+	circle := heapBase + 0x3010
+	data := make([]byte, 6)
+	binary.LittleEndian.PutUint16(data[0:], 10)
+	binary.LittleEndian.PutUint16(data[2:], 12)
+	binary.LittleEndian.PutUint16(data[4:], 3)
+	if err := runtime.cpu.WriteMemory(circle, data); err != nil {
+		t.Fatal(err)
+	}
+	callGraphicsForTest(t, runtime, 23, circle, 0, 0)
+
+	readPixel := func(x, y uint32) uint16 {
+		t.Helper()
+		pixel := make([]byte, 2)
+		if err := runtime.cpu.ReadMemory(framebufferBase+(y*framebufferWidth+x)*2, pixel); err != nil {
+			t.Fatal(err)
+		}
+		return binary.LittleEndian.Uint16(pixel)
+	}
+	if got := readPixel(10, 12); got != 0x07e0 {
+		t.Fatalf("circle center=0x%04x, want fill green", got)
+	}
+	if got := readPixel(13, 12); got != 0xf800 {
+		t.Fatalf("circle edge=0x%04x, want stroke red", got)
+	}
+}

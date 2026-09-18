@@ -146,6 +146,23 @@ func (r *Runtime) handleGraphicsMethod(slot uint32) (bool, error) {
 			}
 		}
 		return returnValue(0)
+	case 23: // DrawCircle
+		pointer, err := argument(cpu.RegisterR1)
+		if err != nil {
+			return true, err
+		}
+		centerX, centerY, radius, err := r.readGraphicsCircle(pointer)
+		if err != nil {
+			return true, err
+		}
+		if err := r.drawGraphicsCircle(
+			centerX+r.graphics.originX,
+			centerY+r.graphics.originY,
+			radius,
+		); err != nil {
+			return true, err
+		}
+		return returnValue(0)
 	case 16:
 		if err := r.fillGraphicsRect(0, 0, int32(framebufferWidth), int32(framebufferHeight), r.graphics.background); err != nil {
 			return true, err
@@ -198,6 +215,15 @@ func (r *Runtime) readGraphicsRect(address uint32) (int32, int32, int32, int32, 
 	}
 	read := func(at int) int32 { return int32(int16(binary.LittleEndian.Uint16(data[at:]))) }
 	return read(0), read(2), read(4), read(6), nil
+}
+
+func (r *Runtime) readGraphicsCircle(address uint32) (int32, int32, int32, error) {
+	data := make([]byte, 6)
+	if err := r.cpu.ReadMemory(address, data); err != nil {
+		return 0, 0, 0, fmt.Errorf("read BREW graphics circle: %w", err)
+	}
+	read := func(at int) int32 { return int32(int16(binary.LittleEndian.Uint16(data[at:]))) }
+	return read(0), read(2), read(4), nil
 }
 
 func (r *Runtime) graphicsSurface() (uint32, uint32, uint32, uint32, error) {
@@ -278,6 +304,49 @@ func (r *Runtime) drawGraphicsRect(x, y, width, height int32, color uint16) erro
 		return err
 	}
 	return r.drawGraphicsLine(x+width-1, y, x+width-1, y+height-1, color)
+}
+
+func (r *Runtime) drawGraphicsCircle(centerX, centerY, radius int32) error {
+	if radius < 0 {
+		return nil
+	}
+	if radius == 0 {
+		return r.writeGraphicsPixel(centerX, centerY, r.graphics.stroke)
+	}
+	x, y := radius, int32(0)
+	errorTerm := int32(1) - radius
+	for x >= y {
+		if r.graphics.fillMode {
+			for _, span := range [][3]int32{
+				{centerX - x, centerX + x, centerY + y},
+				{centerX - x, centerX + x, centerY - y},
+				{centerX - y, centerX + y, centerY + x},
+				{centerX - y, centerX + y, centerY - x},
+			} {
+				if err := r.drawGraphicsLine(span[0], span[2], span[1], span[2], r.graphics.fill); err != nil {
+					return err
+				}
+			}
+		}
+		for _, point := range [][2]int32{
+			{centerX + x, centerY + y}, {centerX + y, centerY + x},
+			{centerX - y, centerY + x}, {centerX - x, centerY + y},
+			{centerX - x, centerY - y}, {centerX - y, centerY - x},
+			{centerX + y, centerY - x}, {centerX + x, centerY - y},
+		} {
+			if err := r.writeGraphicsPixel(point[0], point[1], r.graphics.stroke); err != nil {
+				return err
+			}
+		}
+		y++
+		if errorTerm < 0 {
+			errorTerm += 2*y + 1
+		} else {
+			x--
+			errorTerm += 2*(y-x) + 1
+		}
+	}
+	return nil
 }
 
 func abs32(value int32) int32 {
