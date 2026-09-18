@@ -1047,7 +1047,7 @@ func TestMIFApplicationClassIDRejectsUnboundedOrNonApplicationRecord(t *testing.
 
 func TestLookupGuestFileUsesUniqueRelativeSuffix(t *testing.T) {
 	runtime := &Runtime{files: map[string][]byte{"1234/data.bin": {1, 2, 3}}}
-	data, name, ok := runtime.lookupGuestFile("data.bin")
+	data, name, ok := runtime.lookupGuestFile("Data.BIN")
 	if !ok || name != "1234/data.bin" || !bytes.Equal(data, []byte{1, 2, 3}) {
 		t.Fatalf("relative lookup data=%v name=%q ok=%v", data, name, ok)
 	}

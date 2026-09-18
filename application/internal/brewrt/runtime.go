@@ -2818,7 +2818,8 @@ func (r *Runtime) lookupGuestFile(normalized string) ([]byte, string, bool) {
 	suffix := "/" + normalized
 	var match string
 	for name := range r.files {
-		if strings.HasSuffix(name, suffix) {
+		if strings.EqualFold(name, normalized) ||
+			len(name) >= len(suffix) && strings.EqualFold(name[len(name)-len(suffix):], suffix) {
 			if match != "" {
 				return nil, "", false
 			}
