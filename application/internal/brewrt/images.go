@@ -135,6 +135,111 @@ func (r *Runtime) imageBitmap(object uint32) (uint32, error) {
 	return binary.LittleEndian.Uint32(encoded[4:]), nil
 }
 
+func (r *Runtime) returnBitmapPixel() error {
+	object, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return err
+	}
+	x, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return err
+	}
+	y, err := r.cpu.ReadRegister(cpu.RegisterR2)
+	if err != nil {
+		return err
+	}
+	output, err := r.cpu.ReadRegister(cpu.RegisterR3)
+	if err != nil {
+		return err
+	}
+	var header [30]byte
+	if output == 0 || r.cpu.ReadMemory(object, header[:]) != nil ||
+		binary.LittleEndian.Uint32(header[:4]) != bitmapVTable {
+		return r.cpu.WriteRegister(cpu.RegisterR0, 2)
+	}
+	width := uint32(binary.LittleEndian.Uint16(header[20:22]))
+	height := uint32(binary.LittleEndian.Uint16(header[22:24]))
+	pitch := uint32(binary.LittleEndian.Uint16(header[24:26]))
+	pixels := binary.LittleEndian.Uint32(header[8:12])
+	if x >= width || y >= height || pixels == 0 || pitch < width*2 {
+		return r.cpu.WriteRegister(cpu.RegisterR0, 2)
+	}
+	var pixel [2]byte
+	if err := r.cpu.ReadMemory(pixels+y*pitch+x*2, pixel[:]); err != nil {
+		return fmt.Errorf("read BREW bitmap pixel: %w", err)
+	}
+	var encoded [4]byte
+	binary.LittleEndian.PutUint32(encoded[:], uint32(binary.LittleEndian.Uint16(pixel[:])))
+	if err := r.cpu.WriteMemory(output, encoded[:]); err != nil {
+		return fmt.Errorf("write BREW bitmap pixel result: %w", err)
+	}
+	return r.cpu.WriteRegister(cpu.RegisterR0, 0)
+}
+
+func (r *Runtime) blitBitmapIn() error {
+	destination, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return err
+	}
+	destinationX, _ := r.cpu.ReadRegister(cpu.RegisterR1)
+	destinationY, _ := r.cpu.ReadRegister(cpu.RegisterR2)
+	width, _ := r.cpu.ReadRegister(cpu.RegisterR3)
+	stack, err := r.cpu.ReadRegister(cpu.RegisterSP)
+	if err != nil {
+		return err
+	}
+	var arguments [20]byte
+	if err := r.cpu.ReadMemory(stack, arguments[:]); err != nil {
+		return fmt.Errorf("read BREW bitmap blit arguments: %w", err)
+	}
+	height := binary.LittleEndian.Uint32(arguments[0:4])
+	source := binary.LittleEndian.Uint32(arguments[4:8])
+	sourceX := binary.LittleEndian.Uint32(arguments[8:12])
+	sourceY := binary.LittleEndian.Uint32(arguments[12:16])
+	if destination == 0 || source == 0 || width == 0 || height == 0 {
+		return r.cpu.WriteRegister(cpu.RegisterR0, 2)
+	}
+	var destinationHeader, sourceHeader [30]byte
+	if err := r.cpu.ReadMemory(destination, destinationHeader[:]); err != nil {
+		return fmt.Errorf("read BREW destination bitmap: %w", err)
+	}
+	if err := r.cpu.ReadMemory(source, sourceHeader[:]); err != nil {
+		return fmt.Errorf("read BREW source bitmap: %w", err)
+	}
+	if binary.LittleEndian.Uint32(destinationHeader[:4]) != bitmapVTable ||
+		binary.LittleEndian.Uint32(sourceHeader[:4]) != bitmapVTable {
+		return r.cpu.WriteRegister(cpu.RegisterR0, 2)
+	}
+	destinationPixels := binary.LittleEndian.Uint32(destinationHeader[8:12])
+	destinationWidth := uint32(binary.LittleEndian.Uint16(destinationHeader[20:22]))
+	destinationHeight := uint32(binary.LittleEndian.Uint16(destinationHeader[22:24]))
+	destinationPitch := uint32(binary.LittleEndian.Uint16(destinationHeader[24:26]))
+	sourcePixels := binary.LittleEndian.Uint32(sourceHeader[8:12])
+	sourceWidth := uint32(binary.LittleEndian.Uint16(sourceHeader[20:22]))
+	sourceHeight := uint32(binary.LittleEndian.Uint16(sourceHeader[22:24]))
+	sourcePitch := uint32(binary.LittleEndian.Uint16(sourceHeader[24:26]))
+	if sourceX >= sourceWidth || sourceY >= sourceHeight || destinationX >= destinationWidth || destinationY >= destinationHeight ||
+		destinationPixels == 0 || sourcePixels == 0 || destinationPitch < destinationWidth*2 || sourcePitch < sourceWidth*2 {
+		return r.cpu.WriteRegister(cpu.RegisterR0, 2)
+	}
+	copyWidth := min(width, min(sourceWidth-sourceX, destinationWidth-destinationX))
+	copyHeight := min(height, min(sourceHeight-sourceY, destinationHeight-destinationY))
+	rows := make([]byte, copyWidth*copyHeight*2)
+	for row := uint32(0); row < copyHeight; row++ {
+		span := rows[row*copyWidth*2 : (row+1)*copyWidth*2]
+		if err := r.cpu.ReadMemory(sourcePixels+(sourceY+row)*sourcePitch+sourceX*2, span); err != nil {
+			return fmt.Errorf("read BREW bitmap blit row: %w", err)
+		}
+	}
+	for row := uint32(0); row < copyHeight; row++ {
+		span := rows[row*copyWidth*2 : (row+1)*copyWidth*2]
+		if err := r.cpu.WriteMemory(destinationPixels+(destinationY+row)*destinationPitch+destinationX*2, span); err != nil {
+			return fmt.Errorf("write BREW bitmap blit row: %w", err)
+		}
+	}
+	return r.cpu.WriteRegister(cpu.RegisterR0, 0)
+}
+
 func (r *Runtime) drawImage(frame bool) error {
 	object, err := r.cpu.ReadRegister(cpu.RegisterR0)
 	if err != nil {

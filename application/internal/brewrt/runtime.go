@@ -1061,6 +1061,11 @@ func (r *Runtime) handleAppletMethodTrap(
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
+		case 12: // DrawFrame(IDisplay *, AEERect *, AEEFrameType, RGBVAL)
+			if err := r.drawDisplayFrame(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
 		case 8, 9: // SetAnnunciators, Backlight
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
 				return true, 0, cpu.ModeARM, err
@@ -1150,6 +1155,16 @@ func (r *Runtime) handleAppletMethodTrap(
 			blue := uint32(value & 0x1f)
 			rgb := (red<<3 | red>>2) | (green<<2|green>>4)<<8 | (blue<<3|blue>>2)<<16
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, rgb); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 6: // GetPixel(IBitmap *, unsigned, unsigned, NativeColor *)
+			if err := r.returnBitmapPixel(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 10: // BltIn(IBitmap *, xDst, yDst, dx, dy, IBitmap *, xSrc, ySrc, rop)
+			if err := r.blitBitmapIn(); err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
@@ -1670,6 +1685,8 @@ func (r *Runtime) handleAppletMethodTrap(
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
+			return resume()
+		case 13: // GetVolume, delivered through the registered sound callback.
 			return resume()
 		default:
 			return boundary("ISound", slot)
@@ -3176,6 +3193,35 @@ func (r *Runtime) drawDisplayRect() error {
 	if flags != 0 && flags&2 == 0 {
 		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
 	}
+	if err := r.fillDisplayRectangle(rectPointer, fill); err != nil {
+		return err
+	}
+	if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+		return fmt.Errorf("return BREW DrawRect status: %w", err)
+	}
+	return nil
+}
+
+func (r *Runtime) drawDisplayFrame() error {
+	rectPointer, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW frame rectangle: %w", err)
+	}
+	fill, err := r.cpu.ReadRegister(cpu.RegisterR3)
+	if err != nil {
+		return fmt.Errorf("read BREW frame fill color: %w", err)
+	}
+	if err := r.fillDisplayRectangle(rectPointer, fill); err != nil {
+		return err
+	}
+	if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+		return fmt.Errorf("return BREW DrawFrame status: %w", err)
+	}
+	return nil
+}
+
+func (r *Runtime) fillDisplayRectangle(rectPointer, fill uint32) error {
+	var encoded [8]byte
 	x, y, width, height := int32(0), int32(0), int32(framebufferWidth), int32(framebufferHeight)
 	if rectPointer != 0 {
 		if err := r.cpu.ReadMemory(rectPointer, encoded[:]); err != nil {
@@ -3206,9 +3252,6 @@ func (r *Runtime) drawDisplayRect() error {
 				return fmt.Errorf("write BREW DrawRect row: %w", err)
 			}
 		}
-	}
-	if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
-		return fmt.Errorf("return BREW DrawRect status: %w", err)
 	}
 	return nil
 }
