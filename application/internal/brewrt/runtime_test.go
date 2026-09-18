@@ -106,6 +106,44 @@ func TestWStrCompressEncodesKoreanTextAsEUCKR(t *testing.T) {
 	}
 }
 
+func TestReallocPreservesGuestAllocationContents(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	oldAddress, err := runtime.allocateGuest(8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteMemory(oldAddress, []byte("aramBREW")); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR0: oldAddress,
+		cpu.RegisterR1: 16,
+		cpu.RegisterLR: returnTrap | 1,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handled, _, _, err := runtime.handleAppletMethodTrap(helperMethodTrapBase + helperReallocSlot*2 + 2)
+	if err != nil || !handled {
+		t.Fatalf("realloc handled=%v err=%v", handled, err)
+	}
+	newAddress, err := runtime.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil || newAddress == 0 || newAddress == oldAddress {
+		t.Fatalf("realloc address = 0x%08x err=%v", newAddress, err)
+	}
+	var contents [8]byte
+	if err := runtime.cpu.ReadMemory(newAddress, contents[:]); err != nil {
+		t.Fatal(err)
+	}
+	if string(contents[:]) != "aramBREW" {
+		t.Fatalf("realloc contents = %q", contents)
+	}
+	if _, allocated := runtime.heapAllocated[oldAddress]; allocated {
+		t.Fatal("old realloc block remains allocated")
+	}
+}
+
 func TestRunAppletCodeAllowsLongGuestInitialization(t *testing.T) {
 	// ldr r0,[pc,#8]; subs r0,r0,#1; bne loop; bx lr; .word 1100000
 	// This executes just over 2.2 million instructions, matching real BREW

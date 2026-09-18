@@ -72,6 +72,7 @@ const (
 	helperStrToWStrSlot     = uint32(16)
 	helperWStrToStrSlot     = uint32(17)
 	helperSetupImageSlot    = uint32(25)
+	helperReallocSlot       = uint32(29)
 	helperWStrSizeSlot      = uint32(31)
 	helperWStrNCopyNSlot    = uint32(32)
 	helperAtoiSlot          = uint32(36)
@@ -877,6 +878,11 @@ func (r *Runtime) handleAppletMethodTrap(
 			return resume()
 		case helperSetupImageSlot:
 			if err := r.setupNativeImage(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case helperReallocSlot:
+			if err := r.reallocateGuest(); err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
@@ -3437,6 +3443,48 @@ func (r *Runtime) returnAllocation() error {
 		return fmt.Errorf("return BREW allocation: %w", err)
 	}
 	return nil
+}
+
+func (r *Runtime) reallocateGuest() error {
+	address, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW realloc address: %w", err)
+	}
+	size, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW realloc size: %w", err)
+	}
+	if size == 0 {
+		r.releaseGuest(address)
+		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
+	}
+	if address == 0 {
+		allocated, allocErr := r.allocateGuest(size)
+		if allocErr != nil {
+			allocated = 0
+		}
+		return r.cpu.WriteRegister(cpu.RegisterR0, allocated)
+	}
+	oldSize, ok := r.heapAllocated[address]
+	if !ok {
+		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
+	}
+	allocated, allocErr := r.allocateGuest(size)
+	if allocErr != nil {
+		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
+	}
+	copySize := min(oldSize, size)
+	contents := make([]byte, copySize)
+	if err := r.cpu.ReadMemory(address, contents); err != nil {
+		r.releaseGuest(allocated)
+		return fmt.Errorf("read BREW realloc source: %w", err)
+	}
+	if err := r.cpu.WriteMemory(allocated, contents); err != nil {
+		r.releaseGuest(allocated)
+		return fmt.Errorf("write BREW realloc destination: %w", err)
+	}
+	r.releaseGuest(address)
+	return r.cpu.WriteRegister(cpu.RegisterR0, allocated)
 }
 
 func branchTarget(address uint32) (uint32, cpu.Mode) {
