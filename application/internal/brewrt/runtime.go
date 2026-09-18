@@ -1648,8 +1648,8 @@ func (r *Runtime) handleAppletMethodTrap(
 				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW MessageBoxText result: %w", err)
 			}
 			return resume()
-		case 32: // GetHandler: no dynamically registered external handler.
-			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+		case 32: // GetHandler
+			if err := r.getShellHandler(); err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
@@ -3270,6 +3270,32 @@ func (r *Runtime) createShellInstance() error {
 	}
 	if err := r.cpu.WriteRegister(cpu.RegisterR0, status); err != nil {
 		return fmt.Errorf("return BREW shell creation status: %w", err)
+	}
+	return nil
+}
+
+func (r *Runtime) getShellHandler() error {
+	handlerType, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW handler type: %w", err)
+	}
+	namePointer, err := r.cpu.ReadRegister(cpu.RegisterR2)
+	if err != nil {
+		return fmt.Errorf("read BREW handler name pointer: %w", err)
+	}
+	name, err := r.readCString(namePointer)
+	if err != nil {
+		return fmt.Errorf("read BREW handler name: %w", err)
+	}
+	classID := uint32(0)
+	// HTYPE_VIEWER is zero. WinBMP is the decoder implemented by this runtime,
+	// and legacy titles discover it through the standard MIME handler registry
+	// before attaching an IMemAStream containing BMP bytes.
+	if handlerType == 0 && strings.EqualFold(strings.TrimSpace(name), "image/bmp") {
+		classID = WinBMPClassID
+	}
+	if err := r.cpu.WriteRegister(cpu.RegisterR0, classID); err != nil {
+		return fmt.Errorf("return BREW handler class: %w", err)
 	}
 	return nil
 }

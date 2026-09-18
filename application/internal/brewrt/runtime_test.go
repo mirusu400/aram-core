@@ -990,6 +990,53 @@ func TestLegacySoundAndActiveAppletContracts(t *testing.T) {
 	}
 }
 
+func TestShellGetHandlerReturnsImplementedBMPViewer(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	name := heapBase + 0xa80
+	if err := runtime.cpu.WriteMemory(name, []byte("image/bmp\x00")); err != nil {
+		t.Fatal(err)
+	}
+	call := func(handlerType uint32, pointer uint32) uint32 {
+		t.Helper()
+		for register, value := range map[uint32]uint32{
+			cpu.RegisterR1: handlerType,
+			cpu.RegisterR2: pointer,
+			cpu.RegisterLR: returnTrap | 1,
+		} {
+			if err := runtime.cpu.WriteRegister(register, value); err != nil {
+				t.Fatal(err)
+			}
+		}
+		handled, _, _, err := runtime.handleAppletMethodTrap(shellMethodTrapBase + 32*2 + 2)
+		if err != nil || !handled {
+			t.Fatalf("GetHandler handled=%v err=%v", handled, err)
+		}
+		value, err := runtime.cpu.ReadRegister(cpu.RegisterR0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	if got := call(0, name); got != WinBMPClassID {
+		t.Fatalf("BMP viewer handler = 0x%08x, want WinBMP 0x%08x", got, WinBMPClassID)
+	}
+	if err := runtime.cpu.WriteMemory(name, []byte("IMAGE/BMP\x00")); err != nil {
+		t.Fatal(err)
+	}
+	if got := call(0, name); got != WinBMPClassID {
+		t.Fatalf("case-insensitive BMP viewer handler = 0x%08x", got)
+	}
+	if got := call(1, name); got != 0 {
+		t.Fatalf("sound handler for BMP = 0x%08x, want unsupported", got)
+	}
+	if err := runtime.cpu.WriteMemory(name, []byte("image/png\x00")); err != nil {
+		t.Fatal(err)
+	}
+	if got := call(0, name); got != 0 {
+		t.Fatalf("unimplemented PNG viewer handler = 0x%08x, want unsupported", got)
+	}
+}
+
 func TestShellCreatesLegacySoftKeyControl(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	out := heapBase + 0xb00
