@@ -93,3 +93,33 @@ func TestSetupNativeImagePublishesOwnedRGB565Bitmap(t *testing.T) {
 		t.Fatalf("BitBlt framebuffer pixels=%x", frame)
 	}
 }
+
+func TestImageSetParmTreatsFourthArgumentAsValue(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	bitmap := heapBase + 0x1000
+	object := heapBase + 0x1100
+	bitmapHeader := make([]byte, 36)
+	binary.LittleEndian.PutUint32(bitmapHeader, bitmapVTable)
+	if err := runtime.cpu.WriteMemory(bitmap, bitmapHeader); err != nil {
+		t.Fatal(err)
+	}
+	imageObject := make([]byte, 8)
+	binary.LittleEndian.PutUint32(imageObject, imageVTable)
+	binary.LittleEndian.PutUint32(imageObject[4:], bitmap)
+	if err := runtime.cpu.WriteMemory(object, imageObject); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR0: object,
+		cpu.RegisterR1: 1, // IPARM_SIZE
+		cpu.RegisterR2: 120,
+		cpu.RegisterR3: 9, // height value, not a writable pointer
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := runtime.setImageParameter(); err != nil {
+		t.Fatalf("SetParm with scalar p2 failed: %v", err)
+	}
+}

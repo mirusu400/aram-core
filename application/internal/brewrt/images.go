@@ -202,11 +202,9 @@ func (r *Runtime) setImageParameter() error {
 	if err != nil {
 		return err
 	}
-	result, err := r.cpu.ReadRegister(cpu.RegisterR3)
-	if err != nil {
-		return err
-	}
-	status := uint32(1)
+	// IImage::SetParm is void and its fourth argument is the second parameter
+	// value, not a status output pointer. Legacy games commonly pass small
+	// coordinates, rates, and flags there.
 	if parameter == 10 && value != 0 { // IPARM_GETBITMAP
 		bitmap, bitmapErr := r.imageBitmap(object)
 		if bitmapErr != nil {
@@ -216,14 +214,6 @@ func (r *Runtime) setImageParameter() error {
 		binary.LittleEndian.PutUint32(encoded[:], bitmap)
 		if err := r.cpu.WriteMemory(value, encoded[:]); err != nil {
 			return fmt.Errorf("write BREW image bitmap output: %w", err)
-		}
-		status = 0
-	}
-	if result != 0 {
-		var encoded [4]byte
-		binary.LittleEndian.PutUint32(encoded[:], status)
-		if err := r.cpu.WriteMemory(result, encoded[:]); err != nil {
-			return fmt.Errorf("write BREW image parameter status: %w", err)
 		}
 	}
 	return nil
