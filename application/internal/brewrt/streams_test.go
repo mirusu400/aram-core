@@ -224,6 +224,21 @@ func TestNativeBitmapRejectsUnrepresentableGeometry(t *testing.T) {
 	}
 }
 
+func TestNativeBitmapReleasesObjectWhenPixelAllocationFails(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	start := heapBase + heapSize - 40
+	runtime.heapNext = start
+	if _, err := runtime.createNativeBitmap(image.NewRGBA(image.Rect(0, 0, 2, 2))); err == nil {
+		t.Fatal("createNativeBitmap succeeded without room for its pixel storage")
+	}
+	if runtime.heapNext != start {
+		t.Fatalf("heap next after failed bitmap allocation=0x%08x, want 0x%08x", runtime.heapNext, start)
+	}
+	if len(runtime.heapAllocated) != 0 {
+		t.Fatalf("failed bitmap allocation leaked %d guest blocks", len(runtime.heapAllocated))
+	}
+}
+
 func TestWinBMPDecodesAndRetainsMemAStream(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	streamObject := createSyntheticMemAStream(t, runtime)

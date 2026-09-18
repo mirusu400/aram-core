@@ -105,6 +105,7 @@ func (r *Runtime) createNativeBitmap(source image.Image) (uint32, error) {
 	}
 	pixels, err := r.allocateGuest(pixelsSize)
 	if err != nil {
+		r.releaseGuest(object)
 		return 0, err
 	}
 	data := make([]byte, pixelsSize)
@@ -116,6 +117,8 @@ func (r *Runtime) createNativeBitmap(source image.Image) (uint32, error) {
 		}
 	}
 	if err := r.cpu.WriteMemory(pixels, data); err != nil {
+		r.releaseGuest(pixels)
+		r.releaseGuest(object)
 		return 0, fmt.Errorf("write BREW native bitmap pixels: %w", err)
 	}
 	header := make([]byte, 36)
@@ -127,6 +130,8 @@ func (r *Runtime) createNativeBitmap(source image.Image) (uint32, error) {
 	header[28] = 16
 	header[29] = idibColorScheme565
 	if err := r.cpu.WriteMemory(object, header); err != nil {
+		r.releaseGuest(pixels)
+		r.releaseGuest(object)
 		return 0, fmt.Errorf("write BREW native bitmap header: %w", err)
 	}
 	return object, nil
