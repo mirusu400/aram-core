@@ -112,6 +112,27 @@ func (r *Runtime) drawDisplayText() error {
 			foreground = color.RGBA{0, 0, 0, 255}
 		}
 	}
+	// Some early handset titles set black text but rely on an OEM-owned light
+	// background that is not present in their package. Avoid turning DrawText
+	// into a complete no-op when the emulated destination is uniformly the same
+	// color; use the opposite contrast only for that otherwise invisible span.
+	uniformBackground := true
+	for py := dirty.Min.Y; py < dirty.Max.Y && uniformBackground; py++ {
+		for px := dirty.Min.X; px < dirty.Max.X; px++ {
+			if canvas.RGBAAt(px, py) != canvas.RGBAAt(dirty.Min.X, dirty.Min.Y) {
+				uniformBackground = false
+				break
+			}
+		}
+	}
+	background := canvas.RGBAAt(dirty.Min.X, dirty.Min.Y)
+	if uniformBackground && displayRGB565(foreground) == displayRGB565(background) {
+		if uint32(background.R)*299+uint32(background.G)*587+uint32(background.B)*114 > 128000 {
+			foreground = color.RGBA{0, 0, 0, 255}
+		} else {
+			foreground = color.RGBA{255, 255, 255, 255}
+		}
+	}
 	drawer := font.Drawer{
 		Dst:  canvas.SubImage(clip).(*image.RGBA),
 		Src:  image.NewUniform(foreground),
@@ -132,6 +153,10 @@ func (r *Runtime) drawDisplayText() error {
 		}
 	}
 	return nil
+}
+
+func displayRGB565(value color.RGBA) uint16 {
+	return uint16(value.R>>3)<<11 | uint16(value.G>>2)<<5 | uint16(value.B>>3)
 }
 
 func (r *Runtime) displayTextClip(address uint32) (image.Rectangle, error) {

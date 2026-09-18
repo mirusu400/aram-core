@@ -1092,8 +1092,10 @@ func (r *Runtime) handleAppletMethodTrap(
 			previous := uint32(0)
 			if item < uint32(len(r.displayColors)) {
 				previous = r.displayColors[item]
-				r.displayColors[item] = value
-				r.displayColorSet[item] = true
+				if value != ^uint32(0) { // RGB_NONE queries the current color without changing it.
+					r.displayColors[item] = value
+					r.displayColorSet[item] = true
+				}
 			}
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, previous); err != nil {
 				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW previous color: %w", err)
@@ -3419,9 +3421,9 @@ func (r *Runtime) fillDisplayRectangle(rectPointer, fill uint32) error {
 		width = int32(int16(binary.LittleEndian.Uint16(encoded[4:6])))
 		height = int32(int16(binary.LittleEndian.Uint16(encoded[6:8])))
 	}
-	red := uint16(fill & 0xff)
-	green := uint16((fill >> 8) & 0xff)
-	blue := uint16((fill >> 16) & 0xff)
+	red := uint16((fill >> 8) & 0xff)
+	green := uint16((fill >> 16) & 0xff)
+	blue := uint16((fill >> 24) & 0xff)
 	native := (red>>3)<<11 | (green>>2)<<5 | blue>>3
 	row := make([]byte, framebufferWidth*2)
 	for index := uint32(0); index < framebufferWidth; index++ {

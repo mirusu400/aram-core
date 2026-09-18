@@ -9,6 +9,8 @@ import (
 
 func TestDisplayDrawTextRendersOEMFallback(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
+	runtime.displayColorSet[displayColorText] = true
+	runtime.displayColors[displayColorText] = 0x01010100 // MAKE_RGB(1,1,1), still black in RGB565.
 	textAt := heapBase + 0x200
 	stackAt := heapBase + 0x300
 	if err := runtime.cpu.WriteMemory(textAt, []byte("ARAM\x00")); err != nil {
@@ -52,6 +54,43 @@ func TestDisplayDrawTextRendersOEMFallback(t *testing.T) {
 	}
 	if nonzero == 0 {
 		t.Fatal("DrawText did not rasterize any framebuffer pixels")
+	}
+}
+
+func TestDisplaySetColorRGBNoneOnlyQueries(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR1: displayColorText,
+		cpu.RegisterR2: ^uint32(0),
+		cpu.RegisterLR: returnTrap | 1,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handled, _, _, err := runtime.handleAppletMethodTrap(displayTrapBase + 10*2 + 2)
+	if err != nil || !handled {
+		t.Fatalf("SetColor RGB_NONE handled=%v err=%v", handled, err)
+	}
+	if runtime.displayColorSet[displayColorText] {
+		t.Fatal("SetColor RGB_NONE incorrectly marked the active text color as selected")
+	}
+	if got, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || got != 0 {
+		t.Fatalf("SetColor RGB_NONE returned 0x%08x err=%v, want default color", got, err)
+	}
+}
+
+func TestDisplayRectangleUsesBREWRGBVALLayout(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	if err := runtime.fillDisplayRectangle(0, 0xffffff00); err != nil { // MAKE_RGB(255,255,255)
+		t.Fatal(err)
+	}
+	pixel := make([]byte, 2)
+	if err := runtime.cpu.ReadMemory(framebufferBase, pixel); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint16(pixel); got != 0xffff {
+		t.Fatalf("DrawRect RGB565 pixel = 0x%04x, want white", got)
 	}
 }
 
