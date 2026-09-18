@@ -95,59 +95,62 @@ const (
 	helperStristrSlot       = uint32(58)
 	// The exact title branches explicitly for BREW 1.0, 1.2 and 2.1. Its KTF
 	// handset path is the BREW 2.1 branch.
-	aeeVersion          = uint32(0x02010000)
-	heapBase            = uint32(0x03000000)
-	heapSize            = uint32(0x00800000)
-	stackBase           = uint32(0x04000000)
-	stackSize           = uint32(0x00010000)
-	outputAddr          = stackBase + 0x100
-	framebufferBase     = uint32(0x05000000)
-	framebufferWidth    = uint32(120)
-	framebufferHeight   = uint32(160)
-	framebufferBytes    = framebufferWidth * framebufferHeight * 2
-	framebufferMapSize  = uint32(0x0000a000)
-	serviceBase         = helperBase + 0x1000
-	fileMgrObject       = serviceBase + 0x100
-	fileMgrVTable       = serviceBase + 0x200
-	fileMgrTrapBase     = serviceBase + 0x400
-	fileMgrMethodCount  = uint32(21)
-	fileObject          = serviceBase + 0x500
-	fileVTable          = serviceBase + 0x600
-	fileTrapBase        = serviceBase + 0x700
-	fileMethodCount     = uint32(12)
-	bitmapVTable        = serviceBase + 0x800
-	bitmapTrapBase      = serviceBase + 0x900
-	bitmapMethodCount   = uint32(16)
-	graphicsObject      = serviceBase + 0xa00
-	graphicsVTable      = serviceBase + 0xa20
-	graphicsTrapBase    = serviceBase + 0xb00
-	graphicsMethodCount = uint32(44)
-	tapiObject          = serviceBase + 0xc00
-	tapiVTable          = serviceBase + 0xc20
-	tapiTrapBase        = serviceBase + 0xd00
-	tapiMethodCount     = uint32(12)
-	soundPlayerObject   = serviceBase + 0xe00
-	soundPlayerVTable   = serviceBase + 0xe20
-	soundPlayerTrapBase = serviceBase + 0xf00
-	soundPlayerMethods  = uint32(19)
-	networkServiceBase  = serviceBase + 0x1000
-	netObject           = networkServiceBase + 0x100
-	netVTable           = networkServiceBase + 0x200
-	netTrapBase         = networkServiceBase + 0x300
-	netMethodCount      = uint32(12)
-	imageVTable         = networkServiceBase + 0x400
-	imageTrapBase       = networkServiceBase + 0x500
-	imageMethodCount    = uint32(11)
-	controlServiceBase  = networkServiceBase + 0x1000
-	textCtlObject       = controlServiceBase + 0x100
-	textCtlVTable       = controlServiceBase + 0x200
-	textCtlTrapBase     = controlServiceBase + 0x300
-	textCtlMethodCount  = uint32(28)
-	deviceBitmapObject  = controlServiceBase + 0x500
-	menuCtlObject       = controlServiceBase + 0x600
-	menuCtlVTable       = controlServiceBase + 0x700
-	menuCtlTrapBase     = controlServiceBase + 0x800
-	menuCtlMethodCount  = uint32(38)
+	aeeVersion            = uint32(0x02010000)
+	heapBase              = uint32(0x03000000)
+	heapSize              = uint32(0x00800000)
+	stackBase             = uint32(0x04000000)
+	stackSize             = uint32(0x00010000)
+	outputAddr            = stackBase + 0x100
+	framebufferBase       = uint32(0x05000000)
+	framebufferWidth      = uint32(120)
+	framebufferHeight     = uint32(160)
+	framebufferBytes      = framebufferWidth * framebufferHeight * 2
+	framebufferMapSize    = uint32(0x0000a000)
+	serviceBase           = helperBase + 0x1000
+	fileMgrObject         = serviceBase + 0x100
+	fileMgrVTable         = serviceBase + 0x200
+	fileMgrTrapBase       = serviceBase + 0x400
+	fileMgrMethodCount    = uint32(21)
+	fileObject            = serviceBase + 0x500
+	fileVTable            = serviceBase + 0x600
+	fileTrapBase          = serviceBase + 0x700
+	fileMethodCount       = uint32(12)
+	bitmapVTable          = serviceBase + 0x800
+	bitmapTrapBase        = serviceBase + 0x900
+	bitmapMethodCount     = uint32(16)
+	graphicsObject        = serviceBase + 0xa00
+	graphicsVTable        = serviceBase + 0xa20
+	graphicsTrapBase      = serviceBase + 0xb00
+	graphicsMethodCount   = uint32(44)
+	tapiObject            = serviceBase + 0xc00
+	tapiVTable            = serviceBase + 0xc20
+	tapiTrapBase          = serviceBase + 0xd00
+	tapiMethodCount       = uint32(12)
+	soundPlayerObject     = serviceBase + 0xe00
+	soundPlayerVTable     = serviceBase + 0xe20
+	soundPlayerTrapBase   = serviceBase + 0xf00
+	soundPlayerMethods    = uint32(19)
+	networkServiceBase    = serviceBase + 0x1000
+	netObject             = networkServiceBase + 0x100
+	netVTable             = networkServiceBase + 0x200
+	netTrapBase           = networkServiceBase + 0x300
+	netMethodCount        = uint32(12)
+	imageVTable           = networkServiceBase + 0x400
+	imageTrapBase         = networkServiceBase + 0x500
+	imageMethodCount      = uint32(11)
+	controlServiceBase    = networkServiceBase + 0x1000
+	textCtlObject         = controlServiceBase + 0x100
+	textCtlVTable         = controlServiceBase + 0x200
+	textCtlTrapBase       = controlServiceBase + 0x300
+	textCtlMethodCount    = uint32(28)
+	deviceBitmapObject    = controlServiceBase + 0x500
+	menuCtlObject         = controlServiceBase + 0x600
+	menuCtlVTable         = controlServiceBase + 0x700
+	menuCtlTrapBase       = controlServiceBase + 0x800
+	menuCtlMethodCount    = uint32(38)
+	memAStreamVTable      = controlServiceBase + 0x900
+	memAStreamTrapBase    = controlServiceBase + 0xa00
+	memAStreamMethodCount = uint32(7)
 
 	guestInstructionBudget = uint64(16_000_000)
 	hostCallBudget         = 131_072
@@ -157,34 +160,37 @@ const (
 // portable interpreter. It exposes only implemented service methods; every
 // unknown class or vtable slot remains a typed boundary.
 type Runtime struct {
-	cpu           cpu.Backend
-	moduleObject  uint32
-	appletObject  uint32
-	activeApplet  uint32
-	activeClassID uint32
-	heapNext      uint32
-	heapAllocated map[uint32]uint32
-	heapFree      []brewHeapBlock
-	updates       uint64
-	guestFrame    bool
-	presented     []byte
-	displayColors [16]uint32
-	eventCounts   map[uint32]uint64
-	files         map[string][]byte
-	currentFile   []byte
-	currentPath   string
-	fileOffset    uint32
-	timers        []brewCallback
-	boundary      *ExecutionBoundaryError
-	classIDs      []uint32
-	clock         time.Duration
-	randomState   uint32
-	graphics      graphicsState
-	soundInfo     [5]byte
-	soundVolume   uint16
-	preferences   map[brewPreferenceKey][]byte
-	textControl   brewTextControl
-	menuControl   brewMenuControl
+	cpu              cpu.Backend
+	moduleObject     uint32
+	appletObject     uint32
+	activeApplet     uint32
+	activeClassID    uint32
+	heapNext         uint32
+	heapAllocated    map[uint32]uint32
+	heapFree         []brewHeapBlock
+	updates          uint64
+	guestFrame       bool
+	presented        []byte
+	displayColors    [16]uint32
+	eventCounts      map[uint32]uint64
+	files            map[string][]byte
+	currentFile      []byte
+	currentPath      string
+	fileOffset       uint32
+	timers           []brewCallback
+	cleanupCallbacks []brewCallback
+	boundary         *ExecutionBoundaryError
+	classIDs         []uint32
+	clock            time.Duration
+	randomState      uint32
+	graphics         graphicsState
+	soundInfo        [5]byte
+	soundVolume      uint16
+	preferences      map[brewPreferenceKey][]byte
+	textControl      brewTextControl
+	menuControl      brewMenuControl
+	memAStreams      map[uint32]brewMemAStream
+	imageStreams     map[uint32]uint32
 }
 
 type brewPreferenceKey struct {
@@ -215,6 +221,15 @@ type brewMenuControl struct {
 	selection  uint16
 	items      []brewMenuItem
 	enumIndex  int
+}
+
+type brewMemAStream struct {
+	refs         uint32
+	buffer       uint32
+	size         uint32
+	offset       uint32
+	freeCallback uint32
+	freeContext  uint32
 }
 
 type brewCallback struct {
@@ -268,8 +283,10 @@ func New(pkg Package) (*Runtime, error) {
 		cpu: backend, heapNext: heapBase, files: pkg.Files,
 		heapAllocated: make(map[uint32]uint32),
 		eventCounts:   make(map[uint32]uint64), classIDs: classIDs,
-		randomState: 1,
-		preferences: make(map[brewPreferenceKey][]byte),
+		randomState:  1,
+		preferences:  make(map[brewPreferenceKey][]byte),
+		memAStreams:  make(map[uint32]brewMemAStream),
+		imageStreams: make(map[uint32]uint32),
 	}
 	if err := r.mapImage(pkg.Module); err != nil {
 		_ = backend.Close()
@@ -484,6 +501,11 @@ func (r *Runtime) mapImage(module []byte) error {
 	}
 	binary.LittleEndian.PutUint32(controls[menuCtlVTable-controlServiceBase:], addRefTrap|1)
 	binary.LittleEndian.PutUint32(controls[menuCtlVTable-controlServiceBase+4:], releaseTrap|1)
+	for slot := uint32(0); slot < memAStreamMethodCount; slot++ {
+		trap := memAStreamTrapBase + slot*2
+		binary.LittleEndian.PutUint16(controls[trap-controlServiceBase:], 0xbe16)
+		binary.LittleEndian.PutUint32(controls[memAStreamVTable-controlServiceBase+slot*4:], trap|1)
+	}
 	deviceBitmap := make([]byte, 36)
 	binary.LittleEndian.PutUint32(deviceBitmap[0:], bitmapVTable)
 	binary.LittleEndian.PutUint32(deviceBitmap[8:], framebufferBase)
@@ -743,6 +765,7 @@ func describeHostTrap(pc uint32) string {
 		{"IImage", imageTrapBase, imageMethodCount},
 		{"ITextCtl", textCtlTrapBase, textCtlMethodCount},
 		{"IMenuCtl", menuCtlTrapBase, menuCtlMethodCount},
+		{"IMemAStream", memAStreamTrapBase, memAStreamMethodCount},
 		{"IKTFService", ktfServiceTrapBase, ktfServiceMethodCount},
 	} {
 		if pc >= candidate.base+2 && pc < candidate.base+candidate.count*2+2 {
@@ -1406,7 +1429,12 @@ func (r *Runtime) handleAppletMethodTrap(
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
-		case 7, 8, 10: // Stop, SetStream, Notify
+		case 7, 10: // Stop, Notify
+			return resume()
+		case 8: // SetStream
+			if err := r.setImageStream(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
 			return resume()
 		case 9: // HandleEvent
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
@@ -1436,6 +1464,13 @@ func (r *Runtime) handleAppletMethodTrap(
 			return resume()
 		}
 		return boundary("IMenuCtl", slot)
+	}
+	if breakpoint >= memAStreamTrapBase+2 && breakpoint < memAStreamTrapBase+memAStreamMethodCount*2+2 {
+		slot := (breakpoint - 2 - memAStreamTrapBase) / 2
+		if err := r.handleMemAStream(slot); err != nil {
+			return true, 0, cpu.ModeARM, err
+		}
+		return resume()
 	}
 	if breakpoint >= shellMethodTrapBase+2 && breakpoint < shellMethodTrapBase+shellMethodCount*2+2 {
 		slot := (breakpoint - 2 - shellMethodTrapBase) / 2
@@ -1805,14 +1840,16 @@ func (r *Runtime) handleAppletMethodTrap(
 	return false, 0, cpu.ModeARM, nil
 }
 
-// RunCallbacks advances the cooperative clock by elapsed and executes timers
-// whose requested delay has expired. Callbacks rearmed by a callback remain
-// queued for a later frame.
+// RunCallbacks advances the cooperative clock and executes non-cancelable
+// ownership cleanups before ordinary shell timers. Callbacks rearmed by a
+// callback remain queued for a later frame.
 func (r *Runtime) RunCallbacks(ctx context.Context, elapsed time.Duration) error {
 	if elapsed > 0 {
 		r.clock += elapsed
 	}
-	pending := append([]brewCallback(nil), r.timers...)
+	pending := append([]brewCallback(nil), r.cleanupCallbacks...)
+	r.cleanupCallbacks = r.cleanupCallbacks[:0]
+	pending = append(pending, r.timers...)
 	r.timers = r.timers[:0]
 	for _, callback := range pending {
 		callback.remaining -= elapsed
@@ -3172,6 +3209,11 @@ func (r *Runtime) createShellInstance() error {
 		object = ktfServiceObject
 	case Sound10ClassID:
 		object = soundObject
+	case MemAStreamClassID:
+		object, err = r.createMemAStream()
+		if err != nil {
+			status = 1 // AEE_ENOMEM
+		}
 	case SoundPlayerClassID:
 		object = soundPlayerObject
 	case GraphicsClassID:
@@ -3187,6 +3229,11 @@ func (r *Runtime) createShellInstance() error {
 		// these legacy titles. The headless menu implementation supplies that
 		// stateful prefix and safely rejects control-specific extensions.
 		object = menuCtlObject
+	case WinBMPClassID:
+		object, err = r.createWinBMPImage()
+		if err != nil {
+			status = 1 // AEE_ENOMEM
+		}
 	default:
 		// ISHELL_CreateInstance reports unsupported optional handset services to
 		// the guest. Treating feature discovery as a fatal execution boundary

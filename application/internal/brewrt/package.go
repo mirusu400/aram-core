@@ -30,11 +30,13 @@ const (
 	SoundPlayerClassID    = uint32(0x01002000)
 	GraphicsClassID       = uint32(0x01002001)
 	Sound10ClassID        = uint32(0x0100100b)
+	MemAStreamClassID     = uint32(0x0100100c)
 	TAPIClassID           = uint32(0x01001007)
 	Net11ClassID          = uint32(0x01001105)
 	TextCtl10ClassID      = uint32(0x01003009)
 	IconViewCtl10ClassID  = uint32(0x01003003)
 	SoftKeyCtl10ClassID   = uint32(0x01003001)
+	WinBMPClassID         = uint32(0x01004001)
 	// FirstUnsupportedClassID is retained for callers that recorded the original
 	// bootstrap milestone before the display contract was implemented.
 	FirstUnsupportedClassID = DisplayClassID

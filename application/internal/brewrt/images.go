@@ -89,8 +89,16 @@ func (r *Runtime) setupNativeImage() error {
 func (r *Runtime) createNativeBitmap(source image.Image) (uint32, error) {
 	bounds := source.Bounds()
 	width, height := bounds.Dx(), bounds.Dy()
-	pitch := (width*2 + 3) &^ 3
-	pixelsSize := uint32(pitch * height)
+	if width <= 0 || height <= 0 || width > 0xffff || height > 0xffff {
+		return 0, fmt.Errorf("BREW native bitmap dimensions %dx%d are out of range", width, height)
+	}
+	pitch64 := (uint64(width)*2 + 3) &^ 3
+	pixels64 := pitch64 * uint64(height)
+	if pitch64 > 0xffff || pixels64 > uint64(maxNativeImageBytes) {
+		return 0, fmt.Errorf("BREW native bitmap storage %dx%d is out of range", pitch64, pixels64)
+	}
+	pitch := int(pitch64)
+	pixelsSize := uint32(pixels64)
 	object, err := r.allocateGuest(36)
 	if err != nil {
 		return 0, err
