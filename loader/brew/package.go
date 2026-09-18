@@ -91,6 +91,25 @@ func Inspect(data []byte) (Package, error) {
 	if err != nil {
 		return Package{}, err
 	}
+	pkg, err := inspectFiles(files)
+	if err == nil {
+		return pkg, nil
+	}
+	var formatErr *FormatError
+	if !errors.As(err, &formatErr) || formatErr.Reason != "MIF metadata present but MOD member is missing" {
+		return Package{}, err
+	}
+	flattened, ok, splitErr := flattenSplitPackage(files)
+	if splitErr != nil {
+		return Package{}, splitErr
+	}
+	if !ok {
+		return Package{}, err
+	}
+	return inspectFiles(flattened)
+}
+
+func inspectFiles(files map[string][]byte) (Package, error) {
 	var names []string
 	nameKeys := make(map[string]bool, len(files))
 	known := false
@@ -128,6 +147,92 @@ func Inspect(data []byte) (Package, error) {
 		return Package{}, invalid("archive", -1, "MIF metadata present but MOD member is missing")
 	}
 	return pkg, nil
+}
+
+// flattenSplitPackage recognizes the observed KTF carrier layout where the
+// outer ZIP contains the sole MIF and one nested ZIP contains the signed MOD
+// and resources. It deliberately accepts only one level and one unambiguous
+// application module. The nested ZIP itself is removed from the guest file
+// namespace.
+func flattenSplitPackage(outer map[string][]byte) (map[string][]byte, bool, error) {
+	var nestedName string
+	mifCount := 0
+	for name := range outer {
+		switch strings.ToLower(path.Ext(name)) {
+		case ".mif":
+			mifCount++
+		case ".mod":
+			return nil, false, nil
+		case ".zip":
+			if nestedName != "" {
+				return nil, false, nil
+			}
+			nestedName = name
+		}
+	}
+	if mifCount != 1 || nestedName == "" {
+		return nil, false, nil
+	}
+	inner, err := readZIP(outer[nestedName])
+	if err != nil {
+		return nil, false, invalid(nestedName, -1, "invalid nested ZIP: "+err.Error())
+	}
+	innerModules := 0
+	innerSignatures := make(map[string]bool)
+	for name := range inner {
+		ext := strings.ToLower(path.Ext(name))
+		if ext == ".mif" || ext == ".zip" {
+			return nil, false, nil
+		}
+		if ext == ".mod" {
+			innerModules++
+		}
+		if ext == ".sig" {
+			innerSignatures[strings.ToLower(strings.TrimSuffix(name, path.Ext(name)))] = true
+		}
+	}
+	if innerModules != 1 {
+		return nil, false, nil
+	}
+	for name := range inner {
+		if strings.EqualFold(path.Ext(name), ".mod") && !innerSignatures[strings.ToLower(strings.TrimSuffix(name, path.Ext(name)))] {
+			return nil, false, nil
+		}
+	}
+
+	flattened := make(map[string][]byte, len(outer)+len(inner)-1)
+	keys := make(map[string]bool, len(outer)+len(inner))
+	var expanded uint64
+	add := func(name string, payload []byte) error {
+		key := strings.ToLower(name)
+		if keys[key] {
+			return invalid(name, -1, "split package member collides by case")
+		}
+		if uint64(len(payload)) > MaxExpandedSize-expanded {
+			return invalid("archive", -1, "split package expanded data exceeds limit")
+		}
+		keys[key] = true
+		expanded += uint64(len(payload))
+		flattened[name] = payload
+		return nil
+	}
+	for name, payload := range outer {
+		if name == nestedName {
+			continue
+		}
+		if err := add(name, payload); err != nil {
+			return nil, false, err
+		}
+	}
+	for name, payload := range inner {
+		if err := add(name, payload); err != nil {
+			return nil, false, err
+		}
+	}
+	if len(flattened) > MaxArchiveEntries {
+		return nil, false, invalid("archive", -1, "split package has too many entries")
+	}
+	return flattened, true, nil
 }
 
 func parseMIF(name string, data []byte) (Metadata, error) {

@@ -1449,6 +1449,94 @@ func TestMatchAcceptsGenericSingleModulePackage(t *testing.T) {
 	}
 }
 
+func TestMatchAcceptsGenericSplitPackage(t *testing.T) {
+	module := make([]byte, 8)
+	binary.LittleEndian.PutUint32(module, 0xe92d400e)
+	mif := make([]byte, 64)
+	for offset, value := range map[int]uint32{0: 0x00010011, 4: 0x10001, 8: 32, 12: 8, 16: 40, 20: 1, 24: 48, 28: 16} {
+		binary.LittleEndian.PutUint32(mif[offset:], value)
+	}
+	binary.LittleEndian.PutUint32(mif[40:], 48)
+	binary.LittleEndian.PutUint32(mif[44:], 64)
+	binary.LittleEndian.PutUint32(mif[48:], 0x01023456)
+
+	writeArchive := func(files map[string][]byte) []byte {
+		t.Helper()
+		var archive bytes.Buffer
+		writer := zip.NewWriter(&archive)
+		for name, data := range files {
+			entry, err := writer.Create(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := entry.Write(data); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return archive.Bytes()
+	}
+	inner := writeArchive(map[string][]byte{
+		"bin/game.mod": module,
+		"bin/game.sig": []byte("unverified carrier signature"),
+		"data.bar":     []byte("resource"),
+	})
+	outer := writeArchive(map[string][]byte{
+		"game.mif":    mif,
+		"payload.zip": inner,
+	})
+	pkg, matched, err := Match(outer)
+	if err != nil || !matched {
+		t.Fatalf("split archive matched=%v err=%v", matched, err)
+	}
+	if len(pkg.ClassIDs) != 1 || pkg.ClassIDs[0] != 0x01023456 || !bytes.Equal(pkg.Module, module) {
+		t.Fatalf("split package = %+v", pkg)
+	}
+	if _, ok := pkg.Files["payload.zip"]; ok {
+		t.Fatal("split package retained nested carrier ZIP")
+	}
+}
+
+func TestOEMStrSizeHelperContract(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	address := heapBase + 0xc00
+	call := func(pointer uint32) uint32 {
+		t.Helper()
+		if err := runtime.cpu.WriteRegister(cpu.RegisterR0, pointer); err != nil {
+			t.Fatal(err)
+		}
+		if err := runtime.cpu.WriteRegister(cpu.RegisterLR, returnTrap|1); err != nil {
+			t.Fatal(err)
+		}
+		handled, _, _, err := runtime.handleAppletMethodTrap(helperMethodTrapBase + helperOEMStrSizeSlot*2 + 2)
+		if err != nil || !handled {
+			t.Fatalf("OEMSTRSIZE handled=%v err=%v", handled, err)
+		}
+		value, err := runtime.cpu.ReadRegister(cpu.RegisterR0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	if got := call(0); got != 0 {
+		t.Fatalf("OEMSTRSIZE(NULL)=%d, want 0", got)
+	}
+	if err := runtime.cpu.WriteMemory(address, []byte{0}); err != nil {
+		t.Fatal(err)
+	}
+	if got := call(address); got != 0 {
+		t.Fatalf("OEMSTRSIZE(empty)=%d, want 0", got)
+	}
+	if err := runtime.cpu.WriteMemory(address, []byte("hello\x00")); err != nil {
+		t.Fatal(err)
+	}
+	if got := call(address); got != 6 {
+		t.Fatalf("OEMSTRSIZE(hello)=%d, want 6", got)
+	}
+}
+
 func TestMIFApplicationClassIDAcceptsPrivateIDsAndRejectsServicesOrUnboundedRecords(t *testing.T) {
 	metadata := loaderbrew.Metadata{IndexOffset: 32, IndexCount: 1, DataOffset: 40, DataSize: 8}
 	data := make([]byte, 48)

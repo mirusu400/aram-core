@@ -75,6 +75,7 @@ const (
 	helperReallocSlot       = uint32(29)
 	helperWStrSizeSlot      = uint32(31)
 	helperWStrNCopyNSlot    = uint32(32)
+	helperOEMStrSizeSlot    = uint32(34)
 	helperAtoiSlot          = uint32(36)
 	helperGetAEEVersionSlot = uint32(35)
 	helperDbgPrintfSlot     = uint32(39)
@@ -927,6 +928,11 @@ func (r *Runtime) handleAppletMethodTrap(
 			return resume()
 		case helperWStrNCopyNSlot:
 			if err := r.copyGuestWideStringN(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case helperOEMStrSizeSlot:
+			if err := r.returnOEMStringSize(); err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
@@ -2064,6 +2070,37 @@ func (r *Runtime) returnCStringLength() error {
 		}
 	}
 	return fmt.Errorf("BREW strlen at 0x%08x exceeded %d bytes", address, maxCString)
+}
+
+func (r *Runtime) returnOEMStringSize() error {
+	address, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW OEMSTRSIZE pointer: %w", err)
+	}
+	if address == 0 {
+		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
+	}
+	const maxCString = uint32(1 << 20)
+	var one [1]byte
+	for length := uint32(0); length < maxCString; length++ {
+		if length > ^uint32(0)-address {
+			return fmt.Errorf("BREW OEMSTRSIZE address overflow at 0x%08x", address)
+		}
+		if err := r.cpu.ReadMemory(address+length, one[:]); err != nil {
+			return fmt.Errorf("read BREW OEMSTRSIZE byte at 0x%08x: %w", address+length, err)
+		}
+		if one[0] == 0 {
+			size := uint32(0)
+			if length != 0 {
+				size = length + 1
+			}
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, size); err != nil {
+				return fmt.Errorf("return BREW OEMSTRSIZE result: %w", err)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("BREW OEMSTRSIZE at 0x%08x exceeded %d bytes", address, maxCString)
 }
 
 func (r *Runtime) readCString(address uint32) (string, error) {

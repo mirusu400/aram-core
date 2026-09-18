@@ -107,6 +107,59 @@ func TestInspectRejectsIncompleteInputs(t *testing.T) {
 	}
 }
 
+func TestInspectAcceptsBoundedSplitPackage(t *testing.T) {
+	inner := archive(t,
+		[]string{"app/game.mod", "app/game.sig", "app/data.bar"},
+		[][]byte{{1, 2, 3, 4}, []byte("carrier signature"), []byte("resource")},
+	)
+	data := archive(t,
+		[]string{"game.mif", "payload.zip", "outer.dat"},
+		[][]byte{syntheticMIF(), inner, []byte("outer resource")},
+	)
+	pkg, err := Inspect(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pkg.MIFs) != 1 || len(pkg.Modules) != 1 || pkg.Modules[0].Name != "app/game.mod" || !pkg.Modules[0].SignaturePresent {
+		t.Fatalf("split package metadata = %+v", pkg)
+	}
+	if _, ok := pkg.Files["payload.zip"]; ok {
+		t.Fatal("nested carrier ZIP leaked into flattened guest files")
+	}
+	for _, name := range []string{"game.mif", "outer.dat", "app/game.mod", "app/game.sig", "app/data.bar"} {
+		if _, ok := pkg.Files[name]; !ok {
+			t.Fatalf("flattened package is missing %q", name)
+		}
+	}
+}
+
+func TestInspectRejectsAmbiguousSplitPackages(t *testing.T) {
+	validInner := archive(t, []string{"game.mod", "game.sig"}, [][]byte{{1}, {2}})
+	cases := map[string][]byte{
+		"multiple nested ZIPs": archive(t, []string{"game.mif", "one.zip", "two.zip"}, [][]byte{syntheticMIF(), validInner, validInner}),
+		"nested MIF":           archive(t, []string{"game.mif", "payload.zip"}, [][]byte{syntheticMIF(), archive(t, []string{"game.mod", "game.sig", "inner.mif"}, [][]byte{{1}, {2}, syntheticMIF()})}),
+		"multiple modules":     archive(t, []string{"game.mif", "payload.zip"}, [][]byte{syntheticMIF(), archive(t, []string{"one.mod", "one.sig", "two.mod", "two.sig"}, [][]byte{{1}, {2}, {3}, {4}})}),
+		"missing signature":    archive(t, []string{"game.mif", "payload.zip"}, [][]byte{syntheticMIF(), archive(t, []string{"game.mod"}, [][]byte{{1}})}),
+	}
+	for name, data := range cases {
+		t.Run(name, func(t *testing.T) {
+			var bad *FormatError
+			if _, err := Inspect(data); !errors.As(err, &bad) || bad.Reason != "MIF metadata present but MOD member is missing" {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
+func TestInspectRejectsSplitPackageNameCollision(t *testing.T) {
+	inner := archive(t, []string{"game.mod", "game.sig", "DATA.BAR"}, [][]byte{{1}, {2}, {3}})
+	data := archive(t, []string{"game.mif", "payload.zip", "data.bar"}, [][]byte{syntheticMIF(), inner, {4}})
+	var bad *FormatError
+	if _, err := Inspect(data); !errors.As(err, &bad) || bad.Reason != "split package member collides by case" {
+		t.Fatalf("collision error=%v", err)
+	}
+}
+
 func TestMIFEnvelopeBounds(t *testing.T) {
 	cases := []struct {
 		name   string
