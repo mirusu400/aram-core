@@ -100,6 +100,8 @@ const (
 	heapSize              = uint32(0x00800000)
 	stackBase             = uint32(0x04000000)
 	stackSize             = uint32(0x00010000)
+	stackCallerHeadroom   = uint32(0x00001000)
+	stackEntrySP          = stackBase + stackSize - stackCallerHeadroom
 	outputAddr            = stackBase + 0x100
 	framebufferBase       = uint32(0x05000000)
 	framebufferWidth      = uint32(120)
@@ -557,7 +559,7 @@ func (r *Runtime) ProbeAppletBoundary(ctx context.Context) error {
 			cpu.RegisterR1: shellObject,
 			cpu.RegisterR2: classID,
 			cpu.RegisterR3: outputAddr + 4,
-			cpu.RegisterSP: stackBase + stackSize - 16,
+			cpu.RegisterSP: stackEntrySP,
 			cpu.RegisterLR: returnTrap | 1,
 		} {
 			if err := r.cpu.WriteRegister(register, value); err != nil {
@@ -621,7 +623,7 @@ func (r *Runtime) DispatchEvent(
 		cpu.RegisterR1: event,
 		cpu.RegisterR2: wParam,
 		cpu.RegisterR3: dwParam,
-		cpu.RegisterSP: stackBase + stackSize - 16,
+		cpu.RegisterSP: stackEntrySP,
 		cpu.RegisterLR: returnTrap | 1,
 	} {
 		if err := r.cpu.WriteRegister(register, value); err != nil {
@@ -1859,7 +1861,7 @@ func (r *Runtime) RunCallbacks(ctx context.Context, elapsed time.Duration) error
 		}
 		for register, value := range map[uint32]uint32{
 			cpu.RegisterR0: callback.context,
-			cpu.RegisterSP: stackBase + stackSize - 16,
+			cpu.RegisterSP: stackEntrySP,
 			cpu.RegisterLR: returnTrap | 1,
 		} {
 			if err := r.cpu.WriteRegister(register, value); err != nil {
@@ -1889,7 +1891,7 @@ func (r *Runtime) Bootstrap(ctx context.Context) error {
 		cpu.RegisterR0: shellObject,
 		cpu.RegisterR1: helperBase,
 		cpu.RegisterR2: outputAddr,
-		cpu.RegisterSP: stackBase + stackSize - 16,
+		cpu.RegisterSP: stackEntrySP,
 		cpu.RegisterLR: returnTrap | 1,
 	} {
 		if err := r.cpu.WriteRegister(register, value); err != nil {
@@ -2015,10 +2017,10 @@ func (r *Runtime) moveGuestMemory() error {
 	}
 	data := make([]byte, size)
 	if err := r.cpu.ReadMemory(source, data); err != nil {
-		return fmt.Errorf("read BREW memmove span at 0x%08x: %w", source, err)
+		return fmt.Errorf("read BREW memmove span source=0x%08x destination=0x%08x size=%d: %w", source, destination, size, err)
 	}
 	if err := r.cpu.WriteMemory(destination, data); err != nil {
-		return fmt.Errorf("write BREW memmove span at 0x%08x: %w", destination, err)
+		return fmt.Errorf("write BREW memmove span source=0x%08x destination=0x%08x size=%d: %w", source, destination, size, err)
 	}
 	if err := r.cpu.WriteRegister(cpu.RegisterR0, destination); err != nil {
 		return fmt.Errorf("return BREW memmove destination: %w", err)

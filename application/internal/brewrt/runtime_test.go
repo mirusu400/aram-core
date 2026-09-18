@@ -172,6 +172,134 @@ func TestRunAppletCodeAllowsLongGuestInitialization(t *testing.T) {
 	}
 }
 
+func TestGuestEntryStackReservesCallerFrameHeadroom(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+
+	if got := stackBase + stackSize - stackEntrySP; got != stackCallerHeadroom || got < 0x1000 {
+		t.Fatalf("guest caller-frame headroom = 0x%x, want at least 0x1000", got)
+	}
+	// Real BREW applets copy fixed-size local buffers whose source begins below
+	// the host-provided SP but extends into their caller's frame above it. Keep
+	// that caller-frame area mapped instead of placing SP at the mapping's edge.
+	const localOffset = uint32(0xd8)
+	const copySize = uint32(1024)
+	start := stackEntrySP - localOffset
+	if end := start + copySize; end > stackBase+stackSize {
+		t.Fatalf("guest entry stack copy ends at 0x%08x beyond stack 0x%08x", end, stackBase+stackSize)
+	}
+	data := make([]byte, copySize)
+	if err := runtime.cpu.WriteMemory(start, data); err != nil {
+		t.Fatalf("write guest entry caller-frame span: %v", err)
+	}
+}
+
+func TestHostGuestEntriesUseReservedStack(t *testing.T) {
+	readWord := func(t *testing.T, runtime *Runtime, address uint32) uint32 {
+		t.Helper()
+		var encoded [4]byte
+		if err := runtime.cpu.ReadMemory(address, encoded[:]); err != nil {
+			t.Fatal(err)
+		}
+		return binary.LittleEndian.Uint32(encoded[:])
+	}
+	writeWords := func(t *testing.T, runtime *Runtime, address uint32, words ...uint32) {
+		t.Helper()
+		encoded := make([]byte, len(words)*4)
+		for index, word := range words {
+			binary.LittleEndian.PutUint32(encoded[index*4:], word)
+		}
+		if err := runtime.cpu.WriteMemory(address, encoded); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("bootstrap", func(t *testing.T) {
+		// str sp,[r2,#4]; ldr r0,[pc,#4]; str r0,[r2]; bx lr; moduleObject
+		module := make([]byte, 20)
+		for index, word := range []uint32{0xe582d004, 0xe59f0004, 0xe5820000, 0xe12fff1e, heapBase} {
+			binary.LittleEndian.PutUint32(module[index*4:], word)
+		}
+		runtime, err := New(Package{Module: module})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer runtime.Close()
+		if err := runtime.Bootstrap(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if got := readWord(t, runtime, outputAddr+4); got != stackEntrySP {
+			t.Fatalf("bootstrap SP = 0x%08x, want 0x%08x", got, stackEntrySP)
+		}
+	})
+
+	t.Run("constructor", func(t *testing.T) {
+		// str sp,[r3,#4]; ldr r0,[pc,#4]; str r0,[r3]; bx lr; appletObject
+		module := make([]byte, 20)
+		appletObject := heapBase + 0x40
+		for index, word := range []uint32{0xe583d004, 0xe59f0004, 0xe5830000, 0xe12fff1e, appletObject} {
+			binary.LittleEndian.PutUint32(module[index*4:], word)
+		}
+		runtime, err := New(Package{Module: module})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer runtime.Close()
+		runtime.moduleObject = heapBase
+		writeWords(t, runtime, heapBase, heapBase+0x20)
+		writeWords(t, runtime, heapBase+0x20, 0, 0, moduleBase)
+		if err := runtime.ProbeAppletBoundary(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if got := readWord(t, runtime, outputAddr+8); got != stackEntrySP {
+			t.Fatalf("constructor SP = 0x%08x, want 0x%08x", got, stackEntrySP)
+		}
+	})
+
+	t.Run("event", func(t *testing.T) {
+		// ldr r0,[pc,#12]; str sp,[r0]; mov r0,#1; bx lr; nop; output
+		module := make([]byte, 24)
+		for index, word := range []uint32{0xe59f000c, 0xe580d000, 0xe3a00001, 0xe12fff1e, 0xe1a00000, outputAddr} {
+			binary.LittleEndian.PutUint32(module[index*4:], word)
+		}
+		runtime, err := New(Package{Module: module})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer runtime.Close()
+		runtime.appletObject = heapBase
+		writeWords(t, runtime, heapBase, heapBase+0x20)
+		writeWords(t, runtime, heapBase+0x20, 0, 0, moduleBase)
+		if _, err := runtime.DispatchEvent(context.Background(), 0, 0, 0); err != nil {
+			t.Fatal(err)
+		}
+		if got := readWord(t, runtime, outputAddr); got != stackEntrySP {
+			t.Fatalf("event SP = 0x%08x, want 0x%08x", got, stackEntrySP)
+		}
+	})
+
+	t.Run("timer and cleanup callbacks", func(t *testing.T) {
+		// str sp,[r0]; bx lr
+		module := make([]byte, 8)
+		binary.LittleEndian.PutUint32(module[0:], 0xe580d000)
+		binary.LittleEndian.PutUint32(module[4:], 0xe12fff1e)
+		runtime, err := New(Package{Module: module})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer runtime.Close()
+		runtime.cleanupCallbacks = []brewCallback{{function: moduleBase, context: outputAddr}}
+		runtime.timers = []brewCallback{{function: moduleBase, context: outputAddr + 4}}
+		if err := runtime.RunCallbacks(context.Background(), 0); err != nil {
+			t.Fatal(err)
+		}
+		for _, address := range []uint32{outputAddr, outputAddr + 4} {
+			if got := readWord(t, runtime, address); got != stackEntrySP {
+				t.Fatalf("callback SP at 0x%08x = 0x%08x, want 0x%08x", address, got, stackEntrySP)
+			}
+		}
+	})
+}
+
 func TestRunAppletCodeAllowsManyBoundedHostCalls(t *testing.T) {
 	// Preserve lr, load a 5000-call counter and the AEE_GetUpTimeMS trap, then
 	// repeatedly BLX into the host before returning through the saved lr.
