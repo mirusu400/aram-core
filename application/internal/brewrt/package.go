@@ -22,6 +22,7 @@ const (
 	MIFPath       = "32536.mif"
 
 	ClassID               = uint32(0x0103d22a)
+	ShellClassID          = uint32(0x01001000)
 	DisplayClassID        = uint32(0x01001001)
 	HeapClassID           = uint32(0x01001002)
 	FileMgrClassID        = uint32(0x01001003)
@@ -36,7 +37,11 @@ const (
 	TextCtl10ClassID      = uint32(0x01003009)
 	IconViewCtl10ClassID  = uint32(0x01003003)
 	SoftKeyCtl10ClassID   = uint32(0x01003001)
+	MenuCtl10ClassID      = uint32(0x01003000)
+	DateCtl10ClassID      = uint32(0x01003005)
+	ClockCtl10ClassID     = uint32(0x01003007)
 	WinBMPClassID         = uint32(0x01004001)
+	BitmapClassID         = uint32(0x01001021)
 	// FirstUnsupportedClassID is retained for callers that recorded the original
 	// bootstrap milestone before the display contract was implemented.
 	FirstUnsupportedClassID = DisplayClassID
@@ -138,10 +143,23 @@ func mifApplicationClassID(metadata brew.Metadata, data []byte) (uint32, bool) {
 		return 0, false
 	}
 	classID := binary.LittleEndian.Uint32(data[recordStart : recordStart+4])
-	if classID < 0x01010000 || classID > 0x010fffff {
+	if classID == 0 || runtimeServiceClassID(classID) {
 		return 0, false
 	}
 	return classID, true
+}
+
+func runtimeServiceClassID(classID uint32) bool {
+	switch classID {
+	case ShellClassID, DisplayClassID, HeapClassID, FileMgrClassID, OptionalDeviceClassID,
+		KTFServiceClassID, SoundPlayerClassID, GraphicsClassID, Sound10ClassID,
+		MemAStreamClassID, TAPIClassID, Net11ClassID, TextCtl10ClassID,
+		IconViewCtl10ClassID, SoftKeyCtl10ClassID, MenuCtl10ClassID,
+		DateCtl10ClassID, ClockCtl10ClassID, WinBMPClassID, BitmapClassID:
+		return true
+	default:
+		return false
+	}
 }
 
 func decodeSplash(mif []byte) (*image.RGBA, error) {

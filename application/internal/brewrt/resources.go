@@ -20,7 +20,6 @@ const (
 	brewImageResourceKind = uint16(6)
 	brewViewerHandler     = uint32(0)
 	brewSoundHandler      = uint32(1)
-	brewBitmapClassID     = uint32(0x01001021)
 )
 
 func resourceData(data []byte, kind, id uint16) ([]byte, bool) {
@@ -272,7 +271,7 @@ func (r *Runtime) loadShellResourceObject() error {
 		}
 		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
 	}
-	if classID != brewViewerHandler && classID != brewBitmapClassID {
+	if classID != brewViewerHandler && classID != BitmapClassID {
 		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
 	}
 	data, ok := resourceData(container, brewImageResourceKind, uint16(resourceID))
@@ -291,7 +290,7 @@ func (r *Runtime) loadShellResourceObject() error {
 	if err != nil {
 		return err
 	}
-	if classID == brewBitmapClassID {
+	if classID == BitmapClassID {
 		return r.cpu.WriteRegister(cpu.RegisterR0, bitmap)
 	}
 	object, err := r.allocateGuest(8)

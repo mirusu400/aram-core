@@ -1402,14 +1402,30 @@ func TestMatchAcceptsGenericSingleModulePackage(t *testing.T) {
 	}
 }
 
-func TestMIFApplicationClassIDRejectsUnboundedOrNonApplicationRecord(t *testing.T) {
+func TestMIFApplicationClassIDAcceptsPrivateIDsAndRejectsServicesOrUnboundedRecords(t *testing.T) {
 	metadata := loaderbrew.Metadata{IndexOffset: 32, IndexCount: 1, DataOffset: 40, DataSize: 8}
 	data := make([]byte, 48)
 	binary.LittleEndian.PutUint32(data[32:], 40)
 	binary.LittleEndian.PutUint32(data[36:], 48)
-	binary.LittleEndian.PutUint32(data[40:], DisplayClassID)
-	if _, ok := mifApplicationClassID(metadata, data); ok {
-		t.Fatal("service ClassID was accepted as an application ClassID")
+	serviceClassIDs := []uint32{
+		ShellClassID, DisplayClassID, HeapClassID, FileMgrClassID,
+		OptionalDeviceClassID, KTFServiceClassID, SoundPlayerClassID,
+		GraphicsClassID, Sound10ClassID, MemAStreamClassID, TAPIClassID,
+		Net11ClassID, TextCtl10ClassID, IconViewCtl10ClassID,
+		SoftKeyCtl10ClassID, MenuCtl10ClassID, DateCtl10ClassID,
+		ClockCtl10ClassID, WinBMPClassID, BitmapClassID,
+	}
+	for _, classID := range serviceClassIDs {
+		binary.LittleEndian.PutUint32(data[40:], classID)
+		if _, ok := mifApplicationClassID(metadata, data); ok {
+			t.Fatalf("service ClassID 0x%08x was accepted as an application ClassID", classID)
+		}
+	}
+	for _, classID := range []uint32{0x26001000, 0x00456788} {
+		binary.LittleEndian.PutUint32(data[40:], classID)
+		if got, ok := mifApplicationClassID(metadata, data); !ok || got != classID {
+			t.Fatalf("private ClassID 0x%08x parsed as 0x%08x ok=%v", classID, got, ok)
+		}
 	}
 	binary.LittleEndian.PutUint32(data[40:], 0x01023456)
 	binary.LittleEndian.PutUint32(data[36:], 52)

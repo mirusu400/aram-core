@@ -3214,7 +3214,7 @@ func (r *Runtime) createShellInstance() error {
 	var object uint32
 	status := uint32(0)
 	switch classID {
-	case 0x01001000: // AEECLSID_SHELL
+	case ShellClassID:
 		object = shellObject
 	case DisplayClassID:
 		object = displayObject
@@ -3243,7 +3243,7 @@ func (r *Runtime) createShellInstance() error {
 		object = netObject
 	case TextCtl10ClassID:
 		object = textCtlObject
-	case SoftKeyCtl10ClassID, IconViewCtl10ClassID, 0x01003000, 0x01003005, 0x01003007:
+	case SoftKeyCtl10ClassID, IconViewCtl10ClassID, MenuCtl10ClassID, DateCtl10ClassID, ClockCtl10ClassID:
 		// MenuCtl, DateCtl and ClockCtl share the stable IControl prefix used by
 		// these legacy titles. The headless menu implementation supplies that
 		// stateful prefix and safely rejects control-specific extensions.
