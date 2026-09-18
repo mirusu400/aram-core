@@ -174,6 +174,7 @@ type Runtime struct {
 	guestFrame       bool
 	presented        []byte
 	displayColors    [16]uint32
+	displayColorSet  [16]bool
 	eventCounts      map[uint32]uint64
 	files            map[string][]byte
 	currentFile      []byte
@@ -1064,8 +1065,9 @@ func (r *Runtime) handleAppletMethodTrap(
 			}
 			return resume()
 		case 4: // DrawText(...)
-			// The handset system font is not packaged with the title. BREW accepts
-			// the draw request even when that platform font cannot be rasterized.
+			if err := r.drawDisplayText(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
 				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW DrawText status: %w", err)
 			}
@@ -1091,6 +1093,7 @@ func (r *Runtime) handleAppletMethodTrap(
 			if item < uint32(len(r.displayColors)) {
 				previous = r.displayColors[item]
 				r.displayColors[item] = value
+				r.displayColorSet[item] = true
 			}
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, previous); err != nil {
 				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW previous color: %w", err)
