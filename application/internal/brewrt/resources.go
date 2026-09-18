@@ -117,6 +117,67 @@ func (r *Runtime) loadShellResourceData() error {
 	return nil
 }
 
+func (r *Runtime) loadShellResourceDataEx() error {
+	pathPointer, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW extended resource path pointer: %w", err)
+	}
+	resourceID, err := r.cpu.ReadRegister(cpu.RegisterR2)
+	if err != nil {
+		return fmt.Errorf("read BREW extended resource ID: %w", err)
+	}
+	resourceKind, err := r.cpu.ReadRegister(cpu.RegisterR3)
+	if err != nil {
+		return fmt.Errorf("read BREW extended resource type: %w", err)
+	}
+	sp, err := r.cpu.ReadRegister(cpu.RegisterSP)
+	if err != nil {
+		return fmt.Errorf("read BREW extended resource stack: %w", err)
+	}
+	var stack [8]byte
+	if err := r.cpu.ReadMemory(sp, stack[:]); err != nil {
+		return fmt.Errorf("read BREW extended resource arguments: %w", err)
+	}
+	buffer := binary.LittleEndian.Uint32(stack[0:4])
+	lengthPointer := binary.LittleEndian.Uint32(stack[4:8])
+	container, err := r.resourceContainer(pathPointer)
+	if err != nil {
+		return err
+	}
+	data, ok := resourceData(container, uint16(resourceKind), uint16(resourceID))
+	if !ok {
+		data = nil
+	}
+	capacity := uint32(len(data))
+	if lengthPointer != 0 {
+		var encoded [4]byte
+		if err := r.cpu.ReadMemory(lengthPointer, encoded[:]); err == nil {
+			capacity = binary.LittleEndian.Uint32(encoded[:])
+		}
+		binary.LittleEndian.PutUint32(encoded[:], uint32(len(data)))
+		if err := r.cpu.WriteMemory(lengthPointer, encoded[:]); err != nil {
+			return fmt.Errorf("write BREW extended resource length: %w", err)
+		}
+	}
+	if len(data) == 0 || buffer == ^uint32(0) {
+		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
+	}
+	if buffer == 0 {
+		buffer, err = r.allocateGuest(uint32(len(data)))
+		if err != nil {
+			return err
+		}
+		capacity = uint32(len(data))
+	}
+	count := min(uint32(len(data)), capacity)
+	if count != 0 {
+		if err := r.cpu.WriteMemory(buffer, data[:count]); err != nil {
+			return fmt.Errorf("write BREW extended resource data: %w", err)
+		}
+	}
+	return r.cpu.WriteRegister(cpu.RegisterR0, buffer)
+}
+
 func (r *Runtime) resourceContainer(pathPointer uint32) ([]byte, error) {
 	if pathPointer != 0 {
 		name, err := r.readCString(pathPointer)
@@ -260,12 +321,81 @@ func decodeBREWResourceImage(data []byte) (image.Image, bool) {
 
 func (r *Runtime) allocateGuest(size uint32) (uint32, error) {
 	size = (size + 7) &^ 7
-	if size == 0 || size > heapBase+heapSize-r.heapNext {
+	if size == 0 {
+		return 0, fmt.Errorf("BREW allocation %d exceeds heap", size)
+	}
+	for index, block := range r.heapFree {
+		if block.size < size {
+			continue
+		}
+		address := block.address
+		if block.size == size {
+			r.heapFree = append(r.heapFree[:index], r.heapFree[index+1:]...)
+		} else {
+			r.heapFree[index].address += size
+			r.heapFree[index].size -= size
+		}
+		r.heapAllocated[address] = size
+		return address, nil
+	}
+	if size > heapBase+heapSize-r.heapNext {
 		return 0, fmt.Errorf("BREW allocation %d exceeds heap", size)
 	}
 	address := r.heapNext
 	r.heapNext += size
+	r.heapAllocated[address] = size
 	return address, nil
+}
+
+func (r *Runtime) releaseGuest(address uint32) {
+	if address == 0 {
+		return
+	}
+	size, ok := r.heapAllocated[address]
+	if !ok {
+		return
+	}
+	delete(r.heapAllocated, address)
+	index := 0
+	for index < len(r.heapFree) && r.heapFree[index].address < address {
+		index++
+	}
+	r.heapFree = append(r.heapFree, brewHeapBlock{})
+	copy(r.heapFree[index+1:], r.heapFree[index:])
+	r.heapFree[index] = brewHeapBlock{address: address, size: size}
+	merged := r.heapFree[:0]
+	for _, block := range r.heapFree {
+		if len(merged) != 0 && merged[len(merged)-1].address+merged[len(merged)-1].size == block.address {
+			merged[len(merged)-1].size += block.size
+			continue
+		}
+		merged = append(merged, block)
+	}
+	r.heapFree = merged
+	for len(r.heapFree) != 0 {
+		last := r.heapFree[len(r.heapFree)-1]
+		if last.address+last.size != r.heapNext {
+			break
+		}
+		r.heapNext = last.address
+		r.heapFree = r.heapFree[:len(r.heapFree)-1]
+	}
+}
+
+func (r *Runtime) releaseInterfaceObject(address uint32) {
+	if _, allocated := r.heapAllocated[address]; !allocated {
+		return
+	}
+	var encoded [12]byte
+	if err := r.cpu.ReadMemory(address, encoded[:]); err == nil {
+		switch binary.LittleEndian.Uint32(encoded[0:4]) {
+		case imageVTable:
+			r.releaseInterfaceObject(binary.LittleEndian.Uint32(encoded[4:8]))
+		case bitmapVTable:
+			r.releaseGuest(binary.LittleEndian.Uint32(encoded[8:12]))
+		}
+	}
+	r.releaseGuest(address)
 }
 
 func (r *Runtime) preferenceArguments() (brewPreferenceKey, uint32, uint32, error) {

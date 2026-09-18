@@ -342,6 +342,29 @@ func TestCommonHelperContracts(t *testing.T) {
 	if got := call(helperStristrSlot, source, destination, 0); got != source+7 {
 		t.Fatalf("stristr result = 0x%08x, want 0x%08x", got, source+7)
 	}
+	if err := runtime.cpu.WriteMemory(source, []byte{0xb0, 0xa1, 'A'}); err != nil {
+		t.Fatal(err)
+	}
+	wideExpanded := heapBase + 0x680
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR3, 8); err != nil {
+		t.Fatal(err)
+	}
+	call(helperStrExpandSlot, source, 3, wideExpanded)
+	expanded := make([]byte, 6)
+	if err := runtime.cpu.ReadMemory(wideExpanded, expanded); err != nil {
+		t.Fatal(err)
+	}
+	gotExpanded := []uint16{
+		binary.LittleEndian.Uint16(expanded[0:2]),
+		binary.LittleEndian.Uint16(expanded[2:4]),
+		binary.LittleEndian.Uint16(expanded[4:6]),
+	}
+	wantExpanded := []uint16{'가', 'A', 0}
+	for index := range wantExpanded {
+		if gotExpanded[index] != wantExpanded[index] {
+			t.Fatalf("strexpand unit %d = 0x%04x, want 0x%04x", index, gotExpanded[index], wantExpanded[index])
+		}
+	}
 	if err := runtime.cpu.WriteMemory(destination, []byte("prefix-\x00")); err != nil {
 		t.Fatal(err)
 	}
@@ -372,6 +395,50 @@ func TestCommonHelperContracts(t *testing.T) {
 	}
 	if got := call(helperWStrlenSlot, wideDestination, 0, 0); got != 3 {
 		t.Fatalf("wstrlen = %d, want 3", got)
+	}
+	if got := call(helperWStrcmpSlot, wideSource, wideDestination, 0); got != 0 {
+		t.Fatalf("wstrcmp = %d, want equal", int32(got))
+	}
+	if got := call(helperWStrSizeSlot, wideDestination, 0, 0); got != 8 {
+		t.Fatalf("wstrsize = %d, want 8", got)
+	}
+	if err := runtime.cpu.WriteMemory(source, []byte("path/to/file.txt\x00")); err != nil {
+		t.Fatal(err)
+	}
+	if got := call(helperStrrchrSlot, source, '/', 0); got != source+7 {
+		t.Fatalf("strrchr result = 0x%08x, want 0x%08x", got, source+7)
+	}
+	if err := runtime.cpu.WriteMemory(source, []byte{0xb0, 0xa1, 'A', 0}); err != nil {
+		t.Fatal(err)
+	}
+	convertedWide := heapBase + 0x780
+	if got := call(helperStrToWStrSlot, source, convertedWide, 8); got != convertedWide {
+		t.Fatalf("strtowstr return = 0x%08x, want destination", got)
+	}
+	convertedBack := heapBase + 0x7c0
+	if got := call(helperWStrToStrSlot, convertedWide, convertedBack, 8); got != convertedBack {
+		t.Fatalf("wstrtostr return = 0x%08x, want destination", got)
+	}
+	back := make([]byte, 4)
+	if err := runtime.cpu.ReadMemory(convertedBack, back); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(back, []byte{0xb0, 0xa1, 'A', 0}) {
+		t.Fatalf("wide round trip = %v", back)
+	}
+	shortWide := heapBase + 0x800
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR3, ^uint32(0)); err != nil {
+		t.Fatal(err)
+	}
+	if got := call(helperWStrNCopyNSlot, shortWide, 6, wideSource); got != 2 {
+		t.Fatalf("wstrncopyn copied = %d, want 2", got)
+	}
+	shortData := make([]byte, 6)
+	if err := runtime.cpu.ReadMemory(shortWide, shortData); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(shortData, []byte{'K', 0, 'T', 0, 0, 0}) {
+		t.Fatalf("wstrncopyn bytes = %v", shortData)
 	}
 	if err := runtime.cpu.WriteMemory(heapBase+0x500, []byte(" \t-123tail\x00")); err != nil {
 		t.Fatal(err)
@@ -454,6 +521,27 @@ func TestSprintfSupportsBoundedStringAndIntegerFormats(t *testing.T) {
 	if text != "giftkart-007-2a%" {
 		t.Fatalf("sprintf result = %q, want giftkart-007-2a%%", text)
 	}
+	if err := runtime.cpu.WriteMemory(formatAt, []byte("%c%c\x00")); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR0, destination); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR1, formatAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR2, 'K'); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR3, 'T'); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := runtime.handleAppletMethodTrap(helperMethodTrapBase + helperSprintfSlot*2 + 2); err != nil {
+		t.Fatal(err)
+	}
+	if text, err := runtime.readCString(destination); err != nil || text != "KT" {
+		t.Fatalf("sprintf %%c result = %q err=%v, want KT", text, err)
+	}
 }
 
 func TestLegacyIconViewControlMaintainsItemsAndSelection(t *testing.T) {
@@ -525,6 +613,12 @@ func TestLegacySoundAndActiveAppletContracts(t *testing.T) {
 	if got, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || got != runtime.activeApplet {
 		t.Fatalf("ActiveApplet = 0x%08x err=%v", got, err)
 	}
+	if handled, _, _, err := runtime.handleAppletMethodTrap(shellMethodTrapBase + 28*2 + 2); err != nil || !handled {
+		t.Fatalf("MessageBoxText handled=%v err=%v", handled, err)
+	}
+	if got, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || got != 1 {
+		t.Fatalf("MessageBoxText = %d err=%v, want true", got, err)
+	}
 
 	out := heapBase + 0xa00
 	for register, value := range map[uint32]uint32{
@@ -544,6 +638,63 @@ func TestLegacySoundAndActiveAppletContracts(t *testing.T) {
 	}
 	if got := binary.LittleEndian.Uint32(encoded[:]); got != soundObject {
 		t.Fatalf("Sound10 object = 0x%08x, want 0x%08x", got, soundObject)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR1, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.createShellInstance(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || got != 3 {
+		t.Fatalf("unsupported CreateInstance status = %d err=%v, want AEE_ECLASSNOTSUPPORT", got, err)
+	}
+	if err := runtime.cpu.ReadMemory(out, encoded[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint32(encoded[:]); got != 0 {
+		t.Fatalf("unsupported CreateInstance object = 0x%08x, want null", got)
+	}
+}
+
+func TestKTFServiceCreateAndSetupContracts(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	out := heapBase + 0xa40
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR1: KTFServiceClassID,
+		cpu.RegisterR2: out,
+		cpu.RegisterLR: returnTrap | 1,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := runtime.createShellInstance(); err != nil {
+		t.Fatal(err)
+	}
+	var encoded [4]byte
+	if err := runtime.cpu.ReadMemory(out, encoded[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint32(encoded[:]); got != ktfServiceObject {
+		t.Fatalf("KTF service object = 0x%08x, want 0x%08x", got, ktfServiceObject)
+	}
+	if err := runtime.cpu.ReadMemory(ktfServiceObject, encoded[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint32(encoded[:]); got != ktfServiceVTable {
+		t.Fatalf("KTF service vtable = 0x%08x, want 0x%08x", got, ktfServiceVTable)
+	}
+	for _, slot := range []uint32{2, 3} {
+		if err := runtime.cpu.WriteRegister(cpu.RegisterR0, ktfServiceObject); err != nil {
+			t.Fatal(err)
+		}
+		handled, _, _, err := runtime.handleAppletMethodTrap(ktfServiceTrapBase + slot*2 + 2)
+		if err != nil || !handled {
+			t.Fatalf("IKTFService slot %d handled=%v err=%v", slot, handled, err)
+		}
+		if got, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || got != 0 {
+			t.Fatalf("IKTFService slot %d status=%d err=%v", slot, got, err)
+		}
 	}
 }
 
@@ -609,6 +760,18 @@ func TestHeapMallocAndFreeContracts(t *testing.T) {
 	if err != nil || !handled {
 		t.Fatalf("IHeap Free handled=%v err=%v", handled, err)
 	}
+	if runtime.heapNext != heapBase {
+		t.Fatalf("heap next after free = 0x%08x, want 0x%08x", runtime.heapNext, heapBase)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR1, 17); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := runtime.handleAppletMethodTrap(heapTrapBase + 2*2 + 2); err != nil {
+		t.Fatal(err)
+	}
+	if reused, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || reused != address {
+		t.Fatalf("reused allocation = 0x%08x err=%v, want 0x%08x", reused, err, address)
+	}
 }
 
 func TestHelperMallocReturnsNullForZeroSize(t *testing.T) {
@@ -621,6 +784,31 @@ func TestHelperMallocReturnsNullForZeroSize(t *testing.T) {
 	}
 	if got, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || got != 0 {
 		t.Fatalf("malloc(0) = 0x%08x err=%v, want NULL", got, err)
+	}
+}
+
+func TestReleaseReclaimsImageAndBitmapAllocations(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	object, err := runtime.createNativeBitmap(image.NewRGBA(image.Rect(0, 0, 8, 8)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.heapNext == heapBase {
+		t.Fatal("native bitmap did not allocate guest memory")
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR0: object,
+		cpu.RegisterLR: returnTrap | 1,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := runtime.runAppletCode(context.Background(), releaseTrap, cpu.ModeThumb, "release bitmap"); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.heapNext != heapBase {
+		t.Fatalf("heap next after bitmap release = 0x%08x, want 0x%08x", runtime.heapNext, heapBase)
 	}
 }
 

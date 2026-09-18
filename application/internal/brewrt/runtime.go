@@ -9,9 +9,12 @@ import (
 	"image/color"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	"github.com/mirusu400/aram-core/cpu"
 	"github.com/mirusu400/aram-core/cpu/interpreter"
+	"golang.org/x/text/encoding/korean"
+	"golang.org/x/text/transform"
 )
 
 const (
@@ -38,6 +41,10 @@ const (
 	heapVTable              = helperBase + 0x600
 	deviceModelObject       = helperBase + 0x700
 	deviceModelVTable       = helperBase + 0x720
+	ktfServiceObject        = helperBase + 0x7a0
+	ktfServiceVTable        = helperBase + 0x7b0
+	ktfServiceTrapBase      = helperBase + 0xd60
+	ktfServiceMethodCount   = uint32(4)
 	soundObject             = helperBase + 0x740
 	soundVTable             = helperBase + 0x760
 	displayMethodCount      = uint32(26)
@@ -52,10 +59,17 @@ const (
 	helperStrcmpSlot        = uint32(4)
 	helperStrlenSlot        = uint32(5)
 	helperStrchrSlot        = uint32(6)
+	helperStrrchrSlot       = uint32(7)
 	helperSprintfSlot       = uint32(8)
 	helperWStrcpySlot       = uint32(9)
+	helperWStrcmpSlot       = uint32(11)
 	helperWStrlenSlot       = uint32(12)
+	helperWSprintfSlot      = uint32(15)
+	helperStrToWStrSlot     = uint32(16)
+	helperWStrToStrSlot     = uint32(17)
 	helperSetupImageSlot    = uint32(25)
+	helperWStrSizeSlot      = uint32(31)
+	helperWStrNCopyNSlot    = uint32(32)
 	helperAtoiSlot          = uint32(36)
 	helperGetAEEVersionSlot = uint32(35)
 	helperDbgPrintfSlot     = uint32(39)
@@ -71,12 +85,13 @@ const (
 	helperStricmpSlot       = uint32(52)
 	helperStrstrSlot        = uint32(54)
 	helperMemcmpSlot        = uint32(55)
+	helperStrExpandSlot     = uint32(57)
 	helperStristrSlot       = uint32(58)
 	// The exact title branches explicitly for BREW 1.0, 1.2 and 2.1. Its KTF
 	// handset path is the BREW 2.1 branch.
 	aeeVersion          = uint32(0x02010000)
 	heapBase            = uint32(0x03000000)
-	heapSize            = uint32(0x00100000)
+	heapSize            = uint32(0x00800000)
 	stackBase           = uint32(0x04000000)
 	stackSize           = uint32(0x00010000)
 	outputAddr          = stackBase + 0x100
@@ -129,7 +144,7 @@ const (
 	menuCtlMethodCount  = uint32(38)
 
 	guestInstructionBudget = uint64(16_000_000)
-	hostCallBudget         = 16_384
+	hostCallBudget         = 65_536
 )
 
 // Runtime executes structurally validated module and applet ARM code with the
@@ -141,6 +156,8 @@ type Runtime struct {
 	appletObject  uint32
 	activeApplet  uint32
 	heapNext      uint32
+	heapAllocated map[uint32]uint32
+	heapFree      []brewHeapBlock
 	updates       uint64
 	guestFrame    bool
 	presented     []byte
@@ -199,6 +216,11 @@ type brewCallback struct {
 	remaining time.Duration
 }
 
+type brewHeapBlock struct {
+	address uint32
+	size    uint32
+}
+
 // ExecutionBoundaryError identifies the first unimplemented proprietary ABI
 // request without pretending that a package splash is a guest-rendered frame.
 type ExecutionBoundaryError struct {
@@ -237,7 +259,8 @@ func New(pkg Package) (*Runtime, error) {
 	}
 	r := &Runtime{
 		cpu: backend, heapNext: heapBase, files: pkg.Files,
-		eventCounts: make(map[uint32]uint64), classIDs: classIDs,
+		heapAllocated: make(map[uint32]uint32),
+		eventCounts:   make(map[uint32]uint64), classIDs: classIDs,
 		randomState: 1,
 		preferences: make(map[brewPreferenceKey][]byte),
 	}
@@ -317,6 +340,17 @@ func (r *Runtime) mapImage(module []byte) error {
 	binary.LittleEndian.PutUint32(helper[0x724:], releaseTrap|1)
 	binary.LittleEndian.PutUint32(helper[0x728:], deviceModelTrap|1)
 	binary.LittleEndian.PutUint16(helper[deviceModelTrap-helperBase:], 0xbe0a)
+	// KTF handsets expose an OEM service under class 0x018000fc. The observed
+	// interface has the standard AddRef/Release prefix followed by two setup
+	// operations. Both setup calls are synchronous and report AEE_SUCCESS.
+	binary.LittleEndian.PutUint32(helper[ktfServiceObject-helperBase:], ktfServiceVTable)
+	for slot := uint32(0); slot < ktfServiceMethodCount; slot++ {
+		trap := ktfServiceTrapBase + slot*2
+		binary.LittleEndian.PutUint16(helper[trap-helperBase:], 0xbe12)
+		binary.LittleEndian.PutUint32(helper[ktfServiceVTable-helperBase+slot*4:], trap|1)
+	}
+	binary.LittleEndian.PutUint32(helper[ktfServiceVTable-helperBase:], addRefTrap|1)
+	binary.LittleEndian.PutUint32(helper[ktfServiceVTable-helperBase+4:], releaseTrap|1)
 	// SDK ISound has 15 slots. The exact title first registers its notification
 	// callback through slot 2; every later method remains a typed boundary.
 	binary.LittleEndian.PutUint32(helper[0x740:], soundVTable)
@@ -591,6 +625,11 @@ func (r *Runtime) runAppletCode(
 				r.activeApplet = candidate
 			}
 		case freeTrap + 2:
+			address, err := r.cpu.ReadRegister(cpu.RegisterR0)
+			if err != nil {
+				return 0, fmt.Errorf("read BREW free address: %w", err)
+			}
+			r.releaseGuest(address)
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
 				return 0, fmt.Errorf("return BREW free status: %w", err)
 			}
@@ -598,9 +637,18 @@ func (r *Runtime) runAppletCode(
 			if err := r.createShellInstance(); err != nil {
 				return 0, err
 			}
-		case addRefTrap + 2, releaseTrap + 2:
+		case addRefTrap + 2:
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, 1); err != nil {
 				return 0, fmt.Errorf("return BREW interface reference count: %w", err)
+			}
+		case releaseTrap + 2:
+			address, err := r.cpu.ReadRegister(cpu.RegisterR0)
+			if err != nil {
+				return 0, fmt.Errorf("read BREW released interface: %w", err)
+			}
+			r.releaseInterfaceObject(address)
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+				return 0, fmt.Errorf("return BREW released interface reference count: %w", err)
 			}
 		case returnTrap + 2:
 			value, err := r.cpu.ReadRegister(cpu.RegisterR0)
@@ -658,6 +706,23 @@ func (r *Runtime) handleAppletMethodTrap(
 		}
 		return resume()
 	}
+	if breakpoint >= ktfServiceTrapBase+2 && breakpoint < ktfServiceTrapBase+ktfServiceMethodCount*2+2 {
+		slot := (breakpoint - 2 - ktfServiceTrapBase) / 2
+		switch slot {
+		case 2:
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("return KTF OEM service slot %d status: %w", slot, err)
+			}
+			return resume()
+		case 3:
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("return KTF OEM service slot %d status: %w", slot, err)
+			}
+			return resume()
+		default:
+			return boundary("IKTFService", slot)
+		}
+	}
 
 	if breakpoint >= helperMethodTrapBase+2 && breakpoint < helperMethodTrapBase+helperMethodCount*2+2 {
 		slot := (breakpoint - 2 - helperMethodTrapBase) / 2
@@ -697,6 +762,11 @@ func (r *Runtime) handleAppletMethodTrap(
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
+		case helperStrrchrSlot:
+			if err := r.findLastGuestCStringByte(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
 		case helperSprintfSlot:
 			if err := r.formatResourceName(); err != nil {
 				return true, 0, cpu.ModeARM, err
@@ -707,13 +777,43 @@ func (r *Runtime) handleAppletMethodTrap(
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
+		case helperWStrcmpSlot:
+			if err := r.compareGuestWideStrings(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
 		case helperWStrlenSlot:
 			if err := r.returnGuestWideStringLength(); err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
+		case helperWSprintfSlot:
+			if err := r.formatGuestWideString(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case helperStrToWStrSlot:
+			if err := r.convertGuestStringToWide(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case helperWStrToStrSlot:
+			if err := r.convertGuestWideToString(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
 		case helperSetupImageSlot:
 			if err := r.setupNativeImage(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case helperWStrSizeSlot:
+			if err := r.returnGuestWideStringSize(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case helperWStrNCopyNSlot:
+			if err := r.copyGuestWideStringN(); err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
@@ -780,8 +880,11 @@ func (r *Runtime) handleAppletMethodTrap(
 			}
 			return resume()
 		case helperSysFreeSlot:
-			// The portable runtime uses a bounded arena. Individual frees are safe
-			// no-ops and all storage is reclaimed when the machine closes.
+			address, err := r.cpu.ReadRegister(cpu.RegisterR0)
+			if err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("read BREW sysfree address: %w", err)
+			}
+			r.releaseGuest(address)
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
 				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW sysfree status: %w", err)
 			}
@@ -813,6 +916,11 @@ func (r *Runtime) handleAppletMethodTrap(
 			return resume()
 		case helperMemcmpSlot:
 			if err := r.compareGuestMemory(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case helperStrExpandSlot:
+			if err := r.expandGuestOEMString(); err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
@@ -1289,6 +1397,28 @@ func (r *Runtime) handleAppletMethodTrap(
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
+		case 13: // GetTimerExpiration(IShell *, PFNNOTIFY, void *)
+			function, err := r.cpu.ReadRegister(cpu.RegisterR1)
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			context, err := r.cpu.ReadRegister(cpu.RegisterR2)
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			remaining := uint32(0)
+			for _, timer := range r.timers {
+				if timer.function == function && timer.context == context {
+					if timer.remaining > 0 {
+						remaining = uint32(timer.remaining / time.Millisecond)
+					}
+					break
+				}
+			}
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, remaining); err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW timer expiration: %w", err)
+			}
+			return resume()
 		case 17: // LoadResString(IShell *, const char *, int16, AECHAR *, int)
 			if err := r.loadShellResourceString(); err != nil {
 				return true, 0, cpu.ModeARM, err
@@ -1331,8 +1461,35 @@ func (r *Runtime) handleAppletMethodTrap(
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
+		case 28: // MessageBoxText: acknowledge the modal message in headless mode.
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 1); err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW MessageBoxText result: %w", err)
+			}
+			return resume()
 		case 32: // GetHandler: no dynamically registered external handler.
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 36: // Resume(IShell *, AEECallback *)
+			callback, err := r.cpu.ReadRegister(cpu.RegisterR1)
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			if callback != 0 {
+				data := make([]byte, 24)
+				if err := r.cpu.ReadMemory(callback, data); err != nil {
+					return true, 0, cpu.ModeARM, fmt.Errorf("read BREW callback: %w", err)
+				}
+				function := binary.LittleEndian.Uint32(data[16:20])
+				context := binary.LittleEndian.Uint32(data[20:24])
+				if function != 0 {
+					r.timers = append(r.timers, brewCallback{function: function, context: context})
+				}
+			}
+			return resume()
+		case 41: // LoadResDataEx
+			if err := r.loadShellResourceDataEx(); err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
@@ -1357,8 +1514,11 @@ func (r *Runtime) handleAppletMethodTrap(
 			}
 			return resume()
 		case 4: // Free(IHeap *, void *)
-			// The portable runtime uses an arena. Individual allocations remain valid
-			// until the machine closes, matching the helper allocator contract.
+			address, err := r.cpu.ReadRegister(cpu.RegisterR1)
+			if err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("read BREW heap free address: %w", err)
+			}
+			r.releaseGuest(address)
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
 				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW heap free status: %w", err)
 			}
@@ -1803,6 +1963,341 @@ func (r *Runtime) copyGuestWideString() error {
 	return fmt.Errorf("BREW wstrcpy source at 0x%08x exceeded %d UTF-16 units", source, maxWideStringUnits)
 }
 
+func (r *Runtime) readGuestWideString(address uint32) ([]uint16, error) {
+	const maxWideStringUnits = uint32(1 << 19)
+	units := make([]uint16, 0, 32)
+	var encoded [2]byte
+	for index := uint32(0); index < maxWideStringUnits; index++ {
+		unitAddress := address + index*2
+		if err := r.cpu.ReadMemory(unitAddress, encoded[:]); err != nil {
+			return nil, fmt.Errorf("read BREW wide-string unit at 0x%08x: %w", unitAddress, err)
+		}
+		unit := binary.LittleEndian.Uint16(encoded[:])
+		if unit == 0 {
+			return units, nil
+		}
+		units = append(units, unit)
+	}
+	return nil, fmt.Errorf("BREW wide string at 0x%08x exceeded %d UTF-16 units", address, maxWideStringUnits)
+}
+
+func encodeGuestWideString(units []uint16) []byte {
+	encoded := make([]byte, (len(units)+1)*2)
+	for index, unit := range units {
+		binary.LittleEndian.PutUint16(encoded[index*2:], unit)
+	}
+	return encoded
+}
+
+func (r *Runtime) compareGuestWideStrings() error {
+	leftPointer, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW wstrcmp left pointer: %w", err)
+	}
+	rightPointer, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW wstrcmp right pointer: %w", err)
+	}
+	left, err := r.readGuestWideString(leftPointer)
+	if err != nil {
+		return err
+	}
+	right, err := r.readGuestWideString(rightPointer)
+	if err != nil {
+		return err
+	}
+	limit := len(left)
+	if len(right) < limit {
+		limit = len(right)
+	}
+	result := int32(0)
+	for index := 0; index < limit; index++ {
+		if left[index] != right[index] {
+			result = int32(left[index]) - int32(right[index])
+			break
+		}
+	}
+	if result == 0 && len(left) != len(right) {
+		if len(left) < len(right) {
+			result = -int32(right[len(left)])
+		} else {
+			result = int32(left[len(right)])
+		}
+	}
+	return r.cpu.WriteRegister(cpu.RegisterR0, uint32(result))
+}
+
+func (r *Runtime) convertGuestStringToWide() error {
+	source, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW strtowstr source: %w", err)
+	}
+	destination, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW strtowstr destination: %w", err)
+	}
+	size, err := r.cpu.ReadRegister(cpu.RegisterR2)
+	if err != nil {
+		return fmt.Errorf("read BREW strtowstr destination size: %w", err)
+	}
+	if size > heapSize {
+		return fmt.Errorf("BREW strtowstr destination size %d exceeds runtime limit", size)
+	}
+	if size >= 2 {
+		text, readErr := r.readCString(source)
+		if readErr != nil {
+			return readErr
+		}
+		decoded, _, decodeErr := transform.Bytes(korean.EUCKR.NewDecoder(), []byte(text))
+		if decodeErr != nil {
+			decoded = bytes.ToValidUTF8([]byte(text), []byte("\ufffd"))
+		}
+		units := utf16.Encode([]rune(string(decoded)))
+		capacity := int(size/2) - 1
+		if len(units) > capacity {
+			units = units[:capacity]
+		}
+		if err := r.cpu.WriteMemory(destination, encodeGuestWideString(units)); err != nil {
+			return fmt.Errorf("write BREW strtowstr destination: %w", err)
+		}
+	}
+	return r.cpu.WriteRegister(cpu.RegisterR0, destination)
+}
+
+func (r *Runtime) convertGuestWideToString() error {
+	source, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW wstrtostr source: %w", err)
+	}
+	destination, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW wstrtostr destination: %w", err)
+	}
+	size, err := r.cpu.ReadRegister(cpu.RegisterR2)
+	if err != nil {
+		return fmt.Errorf("read BREW wstrtostr destination size: %w", err)
+	}
+	if size > heapSize {
+		return fmt.Errorf("BREW wstrtostr destination size %d exceeds runtime limit", size)
+	}
+	if size != 0 {
+		units, readErr := r.readGuestWideString(source)
+		if readErr != nil {
+			return readErr
+		}
+		encoded, _, encodeErr := transform.Bytes(korean.EUCKR.NewEncoder(), []byte(string(utf16.Decode(units))))
+		if encodeErr != nil {
+			encoded = []byte(string(utf16.Decode(units)))
+		}
+		capacity := int(size) - 1
+		if len(encoded) > capacity {
+			encoded = encoded[:capacity]
+		}
+		if err := r.cpu.WriteMemory(destination, append(encoded, 0)); err != nil {
+			return fmt.Errorf("write BREW wstrtostr destination: %w", err)
+		}
+	}
+	return r.cpu.WriteRegister(cpu.RegisterR0, destination)
+}
+
+func (r *Runtime) returnGuestWideStringSize() error {
+	address, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW wstrsize pointer: %w", err)
+	}
+	units, err := r.readGuestWideString(address)
+	if err != nil {
+		return err
+	}
+	size := uint32(0)
+	if len(units) != 0 {
+		size = uint32((len(units) + 1) * 2)
+	}
+	return r.cpu.WriteRegister(cpu.RegisterR0, size)
+}
+
+func (r *Runtime) copyGuestWideStringN() error {
+	destination, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW wstrncopyn destination: %w", err)
+	}
+	destinationBytes, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW wstrncopyn destination size: %w", err)
+	}
+	source, err := r.cpu.ReadRegister(cpu.RegisterR2)
+	if err != nil {
+		return fmt.Errorf("read BREW wstrncopyn source: %w", err)
+	}
+	rawSourceLength, err := r.cpu.ReadRegister(cpu.RegisterR3)
+	if err != nil {
+		return fmt.Errorf("read BREW wstrncopyn source length: %w", err)
+	}
+	if destinationBytes > heapSize {
+		return fmt.Errorf("BREW wstrncopyn destination size %d exceeds runtime limit", destinationBytes)
+	}
+	units, err := r.readGuestWideString(source)
+	if err != nil {
+		return err
+	}
+	if sourceLength := int32(rawSourceLength); sourceLength >= 0 && int(sourceLength) < len(units) {
+		units = units[:sourceLength]
+	}
+	capacity := int(destinationBytes / 2)
+	if capacity == 0 {
+		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
+	}
+	if len(units) >= capacity {
+		units = units[:capacity-1]
+	}
+	if err := r.cpu.WriteMemory(destination, encodeGuestWideString(units)); err != nil {
+		return fmt.Errorf("write BREW wstrncopyn destination: %w", err)
+	}
+	return r.cpu.WriteRegister(cpu.RegisterR0, uint32(len(units)))
+}
+
+func (r *Runtime) formatGuestWideString() error {
+	destination, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW wsprintf destination: %w", err)
+	}
+	size, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW wsprintf destination size: %w", err)
+	}
+	formatPointer, err := r.cpu.ReadRegister(cpu.RegisterR2)
+	if err != nil {
+		return fmt.Errorf("read BREW wsprintf format: %w", err)
+	}
+	formatUnits, err := r.readGuestWideString(formatPointer)
+	if err != nil {
+		return err
+	}
+	format := string(utf16.Decode(formatUnits))
+	arg := func(index uint32) (uint32, error) {
+		if index == 0 {
+			return r.cpu.ReadRegister(cpu.RegisterR3)
+		}
+		sp, readErr := r.cpu.ReadRegister(cpu.RegisterSP)
+		if readErr != nil {
+			return 0, readErr
+		}
+		var encoded [4]byte
+		if readErr := r.cpu.ReadMemory(sp+(index-1)*4, encoded[:]); readErr != nil {
+			return 0, readErr
+		}
+		return binary.LittleEndian.Uint32(encoded[:]), nil
+	}
+	values := make([]any, 0, 8)
+	goFormat := []byte(format)
+	argumentIndex := uint32(0)
+	for index := 0; index < len(format); index++ {
+		if format[index] != '%' {
+			continue
+		}
+		if index+1 < len(format) && format[index+1] == '%' {
+			index++
+			continue
+		}
+		end := index + 1
+		for end < len(format) && strings.ContainsRune("-+ #0.123456789", rune(format[end])) {
+			end++
+		}
+		if end >= len(format) || !strings.ContainsRune("cdsuXx", rune(format[end])) {
+			return fmt.Errorf("BREW execution boundary: unsupported wsprintf format %q", format)
+		}
+		value, readErr := arg(argumentIndex)
+		if readErr != nil {
+			return fmt.Errorf("read BREW wsprintf argument %d: %w", argumentIndex, readErr)
+		}
+		switch format[end] {
+		case 'c':
+			values = append(values, rune(uint16(value)))
+		case 's':
+			units, stringErr := r.readGuestWideString(value)
+			if stringErr != nil {
+				return stringErr
+			}
+			values = append(values, string(utf16.Decode(units)))
+		case 'd':
+			values = append(values, int32(value))
+		case 'u':
+			goFormat[end] = 'd'
+			values = append(values, value)
+		case 'x', 'X':
+			values = append(values, value)
+		}
+		argumentIndex++
+		index = end
+	}
+	if size > heapSize {
+		return fmt.Errorf("BREW wsprintf destination size %d exceeds runtime limit", size)
+	}
+	if size < 2 {
+		return nil
+	}
+	units := utf16.Encode([]rune(fmt.Sprintf(string(goFormat), values...)))
+	capacity := int(size/2) - 1
+	if len(units) > capacity {
+		units = units[:capacity]
+	}
+	if err := r.cpu.WriteMemory(destination, encodeGuestWideString(units)); err != nil {
+		return fmt.Errorf("write BREW wsprintf result: %w", err)
+	}
+	return nil
+}
+
+func (r *Runtime) expandGuestOEMString() error {
+	source, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW strexpand source: %w", err)
+	}
+	count, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW strexpand source length: %w", err)
+	}
+	destination, err := r.cpu.ReadRegister(cpu.RegisterR2)
+	if err != nil {
+		return fmt.Errorf("read BREW strexpand destination: %w", err)
+	}
+	size, err := r.cpu.ReadRegister(cpu.RegisterR3)
+	if err != nil {
+		return fmt.Errorf("read BREW strexpand destination size: %w", err)
+	}
+	if count > heapSize || size > heapSize {
+		return fmt.Errorf("BREW strexpand span exceeds runtime limit")
+	}
+	if destination == 0 || size < 2 {
+		return nil
+	}
+	raw := make([]byte, count)
+	if count != 0 {
+		if err := r.cpu.ReadMemory(source, raw); err != nil {
+			return fmt.Errorf("read BREW strexpand source at 0x%08x: %w", source, err)
+		}
+	}
+	if end := bytes.IndexByte(raw, 0); end >= 0 {
+		raw = raw[:end]
+	}
+	decoded, _, decodeErr := transform.Bytes(korean.EUCKR.NewDecoder(), raw)
+	if decodeErr != nil {
+		decoded = bytes.ToValidUTF8(raw, []byte("\ufffd"))
+	}
+	units := utf16.Encode([]rune(string(decoded)))
+	capacity := int(size/2) - 1
+	if len(units) > capacity {
+		units = units[:capacity]
+	}
+	encoded := make([]byte, (len(units)+1)*2)
+	for index, unit := range units {
+		binary.LittleEndian.PutUint16(encoded[index*2:], unit)
+	}
+	if err := r.cpu.WriteMemory(destination, encoded); err != nil {
+		return fmt.Errorf("write BREW strexpand destination at 0x%08x: %w", destination, err)
+	}
+	return nil
+}
+
 func (r *Runtime) returnGuestWideStringLength() error {
 	address, err := r.cpu.ReadRegister(cpu.RegisterR0)
 	if err != nil {
@@ -1930,6 +2425,29 @@ func (r *Runtime) findGuestCStringByte() error {
 	if value == 0 {
 		result = pointer + uint32(len(text))
 	} else if index := strings.IndexByte(text, value); index >= 0 {
+		result = pointer + uint32(index)
+	}
+	return r.cpu.WriteRegister(cpu.RegisterR0, result)
+}
+
+func (r *Runtime) findLastGuestCStringByte() error {
+	pointer, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW strrchr string pointer: %w", err)
+	}
+	rawValue, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW strrchr value: %w", err)
+	}
+	text, err := r.readCString(pointer)
+	if err != nil {
+		return err
+	}
+	result := uint32(0)
+	value := byte(rawValue)
+	if value == 0 {
+		result = pointer + uint32(len(text))
+	} else if index := strings.LastIndexByte(text, value); index >= 0 {
 		result = pointer + uint32(index)
 	}
 	return r.cpu.WriteRegister(cpu.RegisterR0, result)
@@ -2326,7 +2844,7 @@ func (r *Runtime) formatResourceName() error {
 		for end < len(format) && strings.ContainsRune("-+ #0.123456789", rune(format[end])) {
 			end++
 		}
-		if end >= len(format) || !strings.ContainsRune("dsuXx", rune(format[end])) {
+		if end >= len(format) || !strings.ContainsRune("cdsuXx", rune(format[end])) {
 			return fmt.Errorf("BREW execution boundary: unsupported sprintf format %q", format)
 		}
 		value, readErr := arg(argumentIndex)
@@ -2334,6 +2852,8 @@ func (r *Runtime) formatResourceName() error {
 			return fmt.Errorf("read BREW sprintf argument %d: %w", argumentIndex, readErr)
 		}
 		switch format[end] {
+		case 'c':
+			values = append(values, rune(uint8(value)))
 		case 's':
 			text, readErr := r.readCString(uint32(value))
 			if readErr != nil {
@@ -2452,6 +2972,8 @@ func (r *Runtime) createShellInstance() error {
 	var object uint32
 	status := uint32(0)
 	switch classID {
+	case 0x01001000: // AEECLSID_SHELL
+		object = shellObject
 	case DisplayClassID:
 		object = displayObject
 	case HeapClassID:
@@ -2460,6 +2982,8 @@ func (r *Runtime) createShellInstance() error {
 		object = fileMgrObject
 	case OptionalDeviceClassID:
 		object = deviceModelObject
+	case KTFServiceClassID:
+		object = ktfServiceObject
 	case Sound10ClassID:
 		object = soundObject
 	case SoundPlayerClassID:
@@ -2472,18 +2996,16 @@ func (r *Runtime) createShellInstance() error {
 		object = netObject
 	case TextCtl10ClassID:
 		object = textCtlObject
-	case IconViewCtl10ClassID:
+	case IconViewCtl10ClassID, 0x01003000, 0x01003005, 0x01003007:
+		// MenuCtl, DateCtl and ClockCtl share the stable IControl prefix used by
+		// these legacy titles. The headless menu implementation supplies that
+		// stateful prefix and safely rejects control-specific extensions.
 		object = menuCtlObject
 	default:
-		returnAddress, readErr := r.cpu.ReadRegister(cpu.RegisterLR)
-		if readErr != nil {
-			return fmt.Errorf("read BREW shell return address: %w", readErr)
-		}
-		r.boundary = &ExecutionBoundaryError{
-			ClassID:       classID,
-			GuestReturnPC: returnAddress &^ 1,
-		}
-		return r.boundary
+		// ISHELL_CreateInstance reports unsupported optional handset services to
+		// the guest. Treating feature discovery as a fatal execution boundary
+		// prevents applications from taking their documented fallback path.
+		status = 3 // AEE_ECLASSNOTSUPPORT
 	}
 	out, err := r.cpu.ReadRegister(cpu.RegisterR2)
 	if err != nil {
