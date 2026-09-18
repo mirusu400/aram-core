@@ -658,7 +658,7 @@ func (r *Runtime) runAppletCode(
 			if err != nil {
 				return 0, fmt.Errorf("read BREW free address: %w", err)
 			}
-			r.releaseGuest(address)
+			r.releaseInterfaceObject(address)
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
 				return 0, fmt.Errorf("return BREW free status: %w", err)
 			}
@@ -968,7 +968,7 @@ func (r *Runtime) handleAppletMethodTrap(
 			if err != nil {
 				return true, 0, cpu.ModeARM, fmt.Errorf("read BREW sysfree address: %w", err)
 			}
-			r.releaseGuest(address)
+			r.releaseInterfaceObject(address)
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
 				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW sysfree status: %w", err)
 			}
@@ -1625,7 +1625,7 @@ func (r *Runtime) handleAppletMethodTrap(
 			if err != nil {
 				return true, 0, cpu.ModeARM, fmt.Errorf("read BREW heap free address: %w", err)
 			}
-			r.releaseGuest(address)
+			r.releaseInterfaceObject(address)
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
 				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW heap free status: %w", err)
 			}

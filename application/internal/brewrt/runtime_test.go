@@ -917,6 +917,31 @@ func TestReleaseReclaimsImageAndBitmapAllocations(t *testing.T) {
 	}
 }
 
+func TestFreeReclaimsRuntimeOwnedBitmapPixels(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	object, err := runtime.createNativeBitmap(image.NewRGBA(image.Rect(0, 0, 8, 8)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.heapNext == heapBase {
+		t.Fatal("native bitmap did not allocate guest memory")
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR0: object,
+		cpu.RegisterLR: returnTrap | 1,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := runtime.runAppletCode(context.Background(), freeTrap, cpu.ModeThumb, "free bitmap"); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.heapNext != heapBase {
+		t.Fatalf("heap next after bitmap free = 0x%08x, want 0x%08x", runtime.heapNext, heapBase)
+	}
+}
+
 func TestTAPIStatusUsesStableSyntheticIdentity(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	destination := heapBase + 0x700
