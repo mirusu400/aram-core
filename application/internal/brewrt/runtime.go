@@ -144,7 +144,7 @@ const (
 	menuCtlMethodCount  = uint32(38)
 
 	guestInstructionBudget = uint64(16_000_000)
-	hostCallBudget         = 65_536
+	hostCallBudget         = 131_072
 )
 
 // Runtime executes structurally validated module and applet ARM code with the
@@ -1435,8 +1435,11 @@ func (r *Runtime) handleAppletMethodTrap(
 			}
 			return resume()
 		case 20: // FreeResData(IShell *, void *)
-			// Runtime allocations are arena-backed. Reclaiming is deferred until the
-			// machine closes, but the guest-visible ownership contract is complete.
+			address, err := r.cpu.ReadRegister(cpu.RegisterR1)
+			if err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("read BREW resource release address: %w", err)
+			}
+			r.releaseGuest(address)
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
 				return true, 0, cpu.ModeARM, err
 			}

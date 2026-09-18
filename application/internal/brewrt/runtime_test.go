@@ -772,6 +772,16 @@ func TestHeapMallocAndFreeContracts(t *testing.T) {
 	if reused, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || reused != address {
 		t.Fatalf("reused allocation = 0x%08x err=%v, want 0x%08x", reused, err, address)
 	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR1, address); err != nil {
+		t.Fatal(err)
+	}
+	handled, _, _, err = runtime.handleAppletMethodTrap(shellMethodTrapBase + 20*2 + 2)
+	if err != nil || !handled {
+		t.Fatalf("IShell FreeResData handled=%v err=%v", handled, err)
+	}
+	if runtime.heapNext != heapBase {
+		t.Fatalf("heap next after FreeResData = 0x%08x, want 0x%08x", runtime.heapNext, heapBase)
+	}
 }
 
 func TestHelperMallocReturnsNullForZeroSize(t *testing.T) {
