@@ -128,8 +128,8 @@ const (
 	menuCtlTrapBase     = controlServiceBase + 0x800
 	menuCtlMethodCount  = uint32(38)
 
-	bootstrapBudget = uint64(2_000_000)
-	hostCallBudget  = 4096
+	guestInstructionBudget = uint64(16_000_000)
+	hostCallBudget         = 16_384
 )
 
 // Runtime executes structurally validated module and applet ARM code with the
@@ -571,7 +571,7 @@ func (r *Runtime) runAppletCode(
 	operation string,
 ) (uint32, error) {
 	for traps := 0; traps < hostCallBudget; traps++ {
-		result := r.cpu.Run(ctx, pc, mode, bootstrapBudget)
+		result := r.cpu.Run(ctx, pc, mode, guestInstructionBudget)
 		if result.Err != nil {
 			return 0, fmt.Errorf("execute BREW applet %s at PC 0x%08x: %w", operation, result.PC, result.Err)
 		}
@@ -738,7 +738,14 @@ func (r *Runtime) handleAppletMethodTrap(
 			}
 			return resume()
 		case helperGetTimeMSSlot, helperGetUpTimeMSSlot:
-			if err := r.cpu.WriteRegister(cpu.RegisterR0, uint32(r.clock/time.Millisecond)); err != nil {
+			milliseconds := uint32(r.clock / time.Millisecond)
+			// Guest code commonly polls uptime inside a callback. The cooperative
+			// clock normally advances between callbacks, so leaving it frozen here
+			// turns a valid delay loop into an infinite host-call loop. Charge one
+			// deterministic millisecond per observation to model time spent executing
+			// the guest while preserving reproducible runs.
+			r.clock += time.Millisecond
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, milliseconds); err != nil {
 				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW uptime: %w", err)
 			}
 			return resume()
@@ -1563,7 +1570,7 @@ func (r *Runtime) Bootstrap(ctx context.Context) error {
 
 	pc, mode := moduleBase, cpu.ModeARM
 	for traps := 0; traps < hostCallBudget; traps++ {
-		result := r.cpu.Run(ctx, pc, mode, bootstrapBudget)
+		result := r.cpu.Run(ctx, pc, mode, guestInstructionBudget)
 		if result.Err != nil {
 			return fmt.Errorf("execute BREW module entry at PC 0x%08x: %w", result.PC, result.Err)
 		}

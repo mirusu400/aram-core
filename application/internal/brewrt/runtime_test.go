@@ -49,6 +49,66 @@ func TestRuntimeBootstrapsSyntheticARMModule(t *testing.T) {
 	}
 }
 
+func TestRunAppletCodeAllowsLongGuestInitialization(t *testing.T) {
+	// ldr r0,[pc,#8]; subs r0,r0,#1; bne loop; bx lr; .word 1100000
+	// This executes just over 2.2 million instructions, matching real BREW
+	// constructors that legitimately exceeded the former two-million limit.
+	module := make([]byte, 20)
+	for offset, instruction := range []uint32{
+		0xe59f0008, 0xe2500001, 0x1afffffd, 0xe12fff1e, 1_100_000,
+	} {
+		binary.LittleEndian.PutUint32(module[offset*4:], instruction)
+	}
+	runtime, err := New(Package{Module: module})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterSP: stackBase + stackSize - 16,
+		cpu.RegisterLR: returnTrap | 1,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := runtime.runAppletCode(context.Background(), moduleBase, cpu.ModeARM, "long initialization"); err != nil {
+		t.Fatalf("run long guest initialization: %v", err)
+	}
+}
+
+func TestRunAppletCodeAllowsManyBoundedHostCalls(t *testing.T) {
+	// Preserve lr, load a 5000-call counter and the AEE_GetUpTimeMS trap, then
+	// repeatedly BLX into the host before returning through the saved lr.
+	module := make([]byte, 44)
+	for offset, instruction := range []uint32{
+		0xe1a0600e, 0xe59f4018, 0xe59f5018, 0xe12fff35, 0xe2544001,
+		0x1afffffc, 0xe3a00000, 0xe1a0e006, 0xe12fff1e, 5_000,
+		helperMethodTrapBase + helperGetUpTimeMSSlot*2 | 1,
+	} {
+		binary.LittleEndian.PutUint32(module[offset*4:], instruction)
+	}
+	runtime, err := New(Package{Module: module})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterSP: stackBase + stackSize - 16,
+		cpu.RegisterLR: returnTrap | 1,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := runtime.runAppletCode(context.Background(), moduleBase, cpu.ModeARM, "host-call loop"); err != nil {
+		t.Fatalf("run bounded host-call loop: %v", err)
+	}
+	if got, want := runtime.clock, 5_000*time.Millisecond; got != want {
+		t.Fatalf("clock after uptime calls = %v, want %v", got, want)
+	}
+}
+
 func TestDisplayUpdateRequiresChangedFramebufferAndCommitsDetachedSnapshot(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	black := make([]byte, framebufferBytes)
