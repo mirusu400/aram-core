@@ -698,6 +698,7 @@ func TestLegacyIconViewControlMaintainsItemsAndSelection(t *testing.T) {
 func TestLegacySoundAndActiveAppletContracts(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	runtime.activeApplet = heapBase + 0x900
+	runtime.activeClassID = 0x01020304
 	if err := runtime.cpu.WriteRegister(cpu.RegisterLR, returnTrap|1); err != nil {
 		t.Fatal(err)
 	}
@@ -705,8 +706,45 @@ func TestLegacySoundAndActiveAppletContracts(t *testing.T) {
 	if err != nil || !handled {
 		t.Fatalf("ActiveApplet handled=%v err=%v", handled, err)
 	}
+	if got, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || got != runtime.activeClassID {
+		t.Fatalf("ActiveApplet = 0x%08x err=%v, want ClassID 0x%08x", got, err, runtime.activeClassID)
+	}
+	appInfo := heapBase + 0x980
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR1: runtime.activeClassID,
+		cpu.RegisterR2: appInfo,
+		cpu.RegisterLR: returnTrap | 1,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handled, _, _, err = runtime.handleAppletMethodTrap(shellMethodTrapBase + 3*2 + 2)
+	if err != nil || !handled {
+		t.Fatalf("QueryClass handled=%v err=%v", handled, err)
+	}
+	if got, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || got != 1 {
+		t.Fatalf("QueryClass = %d err=%v, want true", got, err)
+	}
+	appInfoData := make([]byte, 20)
+	if err := runtime.cpu.ReadMemory(appInfo, appInfoData); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint32(appInfoData[:4]); got != runtime.activeClassID {
+		t.Fatalf("AEEAppInfo.cls = 0x%08x, want 0x%08x", got, runtime.activeClassID)
+	}
+	if got := binary.LittleEndian.Uint16(appInfoData[18:20]); got != 0x0210 {
+		t.Fatalf("AEEAppInfo.wFlags = 0x%04x, want GAME|RUNNING", got)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterLR, returnTrap|1); err != nil {
+		t.Fatal(err)
+	}
+	handled, _, _, err = runtime.handleAppletMethodTrap(helperMethodTrapBase + helperCurrentAppletSlot*2 + 2)
+	if err != nil || !handled {
+		t.Fatalf("GetAppInstance handled=%v err=%v", handled, err)
+	}
 	if got, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || got != runtime.activeApplet {
-		t.Fatalf("ActiveApplet = 0x%08x err=%v", got, err)
+		t.Fatalf("GetAppInstance = 0x%08x err=%v, want IApplet 0x%08x", got, err, runtime.activeApplet)
 	}
 	if handled, _, _, err := runtime.handleAppletMethodTrap(shellMethodTrapBase + 28*2 + 2); err != nil || !handled {
 		t.Fatalf("MessageBoxText handled=%v err=%v", handled, err)

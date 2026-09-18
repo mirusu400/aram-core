@@ -161,6 +161,7 @@ type Runtime struct {
 	moduleObject  uint32
 	appletObject  uint32
 	activeApplet  uint32
+	activeClassID uint32
 	heapNext      uint32
 	heapAllocated map[uint32]uint32
 	heapFree      []brewHeapBlock
@@ -560,6 +561,7 @@ func (r *Runtime) ProbeAppletBoundary(ctx context.Context) error {
 		if candidate >= heapBase && candidate < heapBase+heapSize {
 			r.appletObject = candidate
 			r.activeApplet = candidate
+			r.activeClassID = classID
 			return nil
 		}
 	}
@@ -1438,6 +1440,31 @@ func (r *Runtime) handleAppletMethodTrap(
 	if breakpoint >= shellMethodTrapBase+2 && breakpoint < shellMethodTrapBase+shellMethodCount*2+2 {
 		slot := (breakpoint - 2 - shellMethodTrapBase) / 2
 		switch slot {
+		case 3: // QueryClass(IShell *, AEECLSID, AEEAppInfo *)
+			classID, err := r.cpu.ReadRegister(cpu.RegisterR1)
+			if err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("read BREW queried ClassID: %w", err)
+			}
+			output, err := r.cpu.ReadRegister(cpu.RegisterR2)
+			if err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("read BREW queried app info output: %w", err)
+			}
+			supported := classID != 0 && classID == r.activeClassID
+			if supported && output != 0 {
+				// ARM AEEAppInfo is 20 bytes: cls, pszMIF, then six uint16 fields.
+				// The current corpus only needs identity and top-visible game flags;
+				// resource metadata remains unavailable without the original MIF path.
+				var info [20]byte
+				binary.LittleEndian.PutUint32(info[0:4], classID)
+				binary.LittleEndian.PutUint16(info[18:20], 0x0010|0x0200) // GAME | RUNNING
+				if err := r.cpu.WriteMemory(output, info[:]); err != nil {
+					return true, 0, cpu.ModeARM, fmt.Errorf("write BREW queried app info: %w", err)
+				}
+			}
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, boolWord(supported)); err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW QueryClass result: %w", err)
+			}
+			return resume()
 		case 4: // GetDeviceInfo(IShell *, AEEDeviceInfo *)
 			if err := r.writeDeviceInfo(); err != nil {
 				return true, 0, cpu.ModeARM, err
@@ -1448,9 +1475,9 @@ func (r *Runtime) handleAppletMethodTrap(
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
-		case 8: // ActiveApplet(IShell *)
-			if err := r.cpu.WriteRegister(cpu.RegisterR0, r.activeApplet); err != nil {
-				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW active applet: %w", err)
+		case 8: // ActiveApplet(IShell *) returns the top-visible applet's ClassID.
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, r.activeClassID); err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW active applet ClassID: %w", err)
 			}
 			return resume()
 		case 11: // SetTimer(IShell *, uint32, PFNNOTIFY, void *)
