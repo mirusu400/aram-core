@@ -283,8 +283,8 @@ func (r *Runtime) loadShellResourceObject() error {
 	if offset < 2 || offset >= len(data) {
 		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
 	}
-	decoded, err := bmp.Decode(bytes.NewReader(data[offset:]))
-	if err != nil {
+	decoded, ok := decodeBREWResourceImage(data)
+	if !ok {
 		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
 	}
 	bitmap, err := r.createNativeBitmap(decoded)
@@ -316,7 +316,19 @@ func decodeBREWResourceImage(data []byte) (image.Image, bool) {
 		return nil, false
 	}
 	decoded, err := bmp.Decode(bytes.NewReader(data[offset:]))
-	return decoded, err == nil
+	if err == nil {
+		return decoded, true
+	}
+	// KTF titles commonly package handset-native SAF animations as image/sis.
+	// A full SAF renderer is not portable yet, but the native BREW shell still
+	// returns a valid IImage for these resources. Preserve that object contract
+	// with a transparent handset-sized surface instead of returning NULL and
+	// letting otherwise compatible applets immediately dereference it.
+	if bytes.Equal(data[2:offset], []byte("image/sis\x00")) &&
+		bytes.HasPrefix(data[offset:], []byte("SAF\x00")) {
+		return image.NewRGBA(image.Rect(0, 0, int(framebufferWidth), int(framebufferHeight))), true
+	}
+	return nil, false
 }
 
 func (r *Runtime) allocateGuest(size uint32) (uint32, error) {

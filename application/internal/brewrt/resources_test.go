@@ -137,3 +137,16 @@ func TestDecodeBREWResourceImageHonorsBlobOffset(t *testing.T) {
 		t.Fatalf("decoded=%v ok=%v", decoded, ok)
 	}
 }
+
+func TestDecodeBREWResourceImageProvidesSAFSurface(t *testing.T) {
+	resource := append([]byte{12, 0}, []byte("image/sis\x00")...)
+	resource = append(resource, []byte("SAF\x00\x02\x01")...)
+	decoded, ok := decodeBREWResourceImage(resource)
+	want := image.Rect(0, 0, int(framebufferWidth), int(framebufferHeight))
+	if !ok || decoded == nil {
+		t.Fatalf("SAF surface=%v ok=%v, want non-nil/true", decoded, ok)
+	}
+	if decoded.Bounds() != want {
+		t.Fatalf("SAF surface bounds=%v, want %v", decoded.Bounds(), want)
+	}
+}

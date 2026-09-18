@@ -18,40 +18,44 @@ import (
 )
 
 const (
-	moduleBase              = uint32(0x01000000)
-	helperBase              = uint32(0x02000000)
-	allocTrap               = helperBase + 0x800
-	returnTrap              = helperBase + 0x802
-	shellTrap               = helperBase + 0x804
-	freeTrap                = helperBase + 0x806
-	addRefTrap              = helperBase + 0x808
-	releaseTrap             = helperBase + 0x80a
-	displayTrapBase         = helperBase + 0x900
-	shellMethodTrapBase     = helperBase + 0xa00
-	heapTrapBase            = helperBase + 0xb00
-	helperMethodTrapBase    = helperBase + 0xc00
-	displayMeasureAnchor    = helperBase + 0xd00
-	deviceModelTrap         = helperBase + 0xd40
-	soundTrapBase           = helperBase + 0xe00
-	shellObject             = helperBase + 0x100
-	shellVTable             = helperBase + 0x200
-	displayObject           = helperBase + 0x300
-	displayVTable           = helperBase + 0x400
-	heapObject              = helperBase + 0x500
-	heapVTable              = helperBase + 0x600
-	deviceModelObject       = helperBase + 0x700
-	deviceModelVTable       = helperBase + 0x720
-	ktfServiceObject        = helperBase + 0x7a0
-	ktfServiceVTable        = helperBase + 0x7b0
-	ktfServiceTrapBase      = helperBase + 0xd60
-	ktfServiceMethodCount   = uint32(4)
-	soundObject             = helperBase + 0x740
-	soundVTable             = helperBase + 0x760
-	displayMethodCount      = uint32(26)
-	shellMethodCount        = uint32(52)
-	heapMethodCount         = uint32(9)
-	soundMethodCount        = uint32(15)
-	helperMethodCount       = uint32(64)
+	moduleBase            = uint32(0x01000000)
+	helperBase            = uint32(0x02000000)
+	helperTableBase       = helperBase + 0x4000
+	allocTrap             = helperBase + 0x800
+	returnTrap            = helperBase + 0x802
+	shellTrap             = helperBase + 0x804
+	freeTrap              = helperBase + 0x806
+	addRefTrap            = helperBase + 0x808
+	releaseTrap           = helperBase + 0x80a
+	displayTrapBase       = helperBase + 0x900
+	shellMethodTrapBase   = helperBase + 0xa00
+	heapTrapBase          = helperBase + 0xb00
+	helperMethodTrapBase  = helperTableBase + 0x400
+	displayMeasureAnchor  = helperBase + 0xd00
+	deviceModelTrap       = helperBase + 0xd40
+	soundTrapBase         = helperBase + 0xe00
+	shellObject           = helperBase + 0x100
+	shellVTable           = helperBase + 0x200
+	displayObject         = helperBase + 0x300
+	displayVTable         = helperBase + 0x400
+	heapObject            = helperBase + 0x500
+	heapVTable            = helperBase + 0x600
+	deviceModelObject     = helperBase + 0x700
+	deviceModelVTable     = helperBase + 0x720
+	ktfServiceObject      = helperBase + 0x7a0
+	ktfServiceVTable      = helperBase + 0x7b0
+	ktfServiceTrapBase    = helperBase + 0xd60
+	ktfServiceMethodCount = uint32(4)
+	soundObject           = helperBase + 0x740
+	soundVTable           = helperBase + 0x760
+	displayMethodCount    = uint32(26)
+	shellMethodCount      = uint32(52)
+	heapMethodCount       = uint32(9)
+	soundMethodCount      = uint32(15)
+	// BREW 4.x exposes well over 64 AEEStdLib entries. Keep the complete table
+	// in its own page so later entries cannot alias the shell object and other
+	// runtime state that historically starts at helperBase+0x100.
+	helperMethodCount       = uint32(160)
 	helperMemmoveSlot       = uint32(0)
 	helperMemsetSlot        = uint32(1)
 	helperStrcpySlot        = uint32(2)
@@ -275,7 +279,7 @@ func (r *Runtime) mapImage(module []byte) error {
 	imageBase := moduleBase - 8
 	imageData := make([]byte, len(module)+8)
 	binary.LittleEndian.PutUint32(imageData[0:4], 0x00010000)
-	binary.LittleEndian.PutUint32(imageData[4:8], helperBase)
+	binary.LittleEndian.PutUint32(imageData[4:8], helperTableBase)
 	copy(imageData[8:], module)
 	if err := r.cpu.Map(imageBase, uint32(len(imageData)), cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute); err != nil {
 		return fmt.Errorf("map BREW module: %w", err)
@@ -286,16 +290,22 @@ func (r *Runtime) mapImage(module []byte) error {
 	if err := r.cpu.Map(helperBase, 0x1000, cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute); err != nil {
 		return fmt.Errorf("map BREW loader helper: %w", err)
 	}
+	if err := r.cpu.Map(helperTableBase, 0x1000, cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute); err != nil {
+		return fmt.Errorf("map BREW stdlib helper table: %w", err)
+	}
 	var helper [0x1000]byte
-	// The second loader-prefix word points at this 64-entry helper table. Unknown
-	// helpers remain distinct typed traps rather than fabricated successes.
+	var helperTable [0x1000]byte
+	// The second loader-prefix word points at this SDK-sized helper table. Unknown
+	// helpers remain distinct typed traps rather than corrupting adjacent objects.
 	for slot := uint32(0); slot < helperMethodCount; slot++ {
 		trap := helperMethodTrapBase + slot*2
-		binary.LittleEndian.PutUint16(helper[trap-helperBase:], 0xbe08)
-		binary.LittleEndian.PutUint32(helper[slot*4:], trap|1)
+		binary.LittleEndian.PutUint16(helperTable[trap-helperTableBase:], 0xbe08)
+		binary.LittleEndian.PutUint32(helperTable[slot*4:], trap|1)
 	}
-	binary.LittleEndian.PutUint32(helper[0x68:], allocTrap|1)
-	binary.LittleEndian.PutUint32(helper[0x6c:], freeTrap|1)
+	// AEEStdLib slots 26 and 27 are malloc and free. They use the dedicated
+	// allocator traps because allocation participates in applet construction.
+	binary.LittleEndian.PutUint32(helperTable[0x68:], allocTrap|1)
+	binary.LittleEndian.PutUint32(helperTable[0x6c:], freeTrap|1)
 	binary.LittleEndian.PutUint16(helper[0x800:], 0xbe00)
 	binary.LittleEndian.PutUint16(helper[0x802:], 0xbe01)
 	binary.LittleEndian.PutUint16(helper[0x804:], 0xbe02)
@@ -368,6 +378,9 @@ func (r *Runtime) mapImage(module []byte) error {
 	binary.LittleEndian.PutUint32(helper[displayMeasureAnchor-helperBase+16:], framebufferBase)
 	if err := r.cpu.WriteMemory(helperBase, helper[:]); err != nil {
 		return fmt.Errorf("write BREW loader helper: %w", err)
+	}
+	if err := r.cpu.WriteMemory(helperTableBase, helperTable[:]); err != nil {
+		return fmt.Errorf("write BREW stdlib helper table: %w", err)
 	}
 	if err := r.cpu.Map(framebufferBase, framebufferMapSize, cpu.PermissionRead|cpu.PermissionWrite); err != nil {
 		return fmt.Errorf("map BREW guest framebuffer: %w", err)
@@ -604,14 +617,28 @@ func (r *Runtime) runAppletCode(
 	mode cpu.Mode,
 	operation string,
 ) (uint32, error) {
+	lastHostCall := ""
 	for traps := 0; traps < hostCallBudget; traps++ {
 		result := r.cpu.Run(ctx, pc, mode, guestInstructionBudget)
 		if result.Err != nil {
+			if lastHostCall != "" {
+				return 0, fmt.Errorf("execute BREW applet %s at PC 0x%08x after %s: %w", operation, result.PC, lastHostCall, result.Err)
+			}
 			return 0, fmt.Errorf("execute BREW applet %s at PC 0x%08x: %w", operation, result.PC, result.Err)
 		}
 		if result.Reason != cpu.StopBreakpoint {
 			return 0, fmt.Errorf("execute BREW applet %s stopped at PC 0x%08x with reason %d", operation, result.PC, result.Reason)
 		}
+		lastHostCall = describeHostTrap(result.PC)
+		var arguments [4]uint32
+		for index := range arguments {
+			arguments[index], _ = r.cpu.ReadRegister(cpu.RegisterR0 + uint32(index))
+		}
+		lastHostCall = fmt.Sprintf(
+			"%s args %08x/%08x/%08x/%08x",
+			lastHostCall,
+			arguments[0], arguments[1], arguments[2], arguments[3],
+		)
 		switch result.PC {
 		case allocTrap + 2:
 			if err := r.returnAllocation(); err != nil {
@@ -674,6 +701,51 @@ func (r *Runtime) runAppletCode(
 		pc, mode = nextPC, nextMode
 	}
 	return 0, fmt.Errorf("BREW applet %s exceeded host-call limit", operation)
+}
+
+func describeHostTrap(pc uint32) string {
+	switch pc {
+	case allocTrap + 2:
+		return "AEEStdLib malloc"
+	case freeTrap + 2:
+		return "AEEStdLib free"
+	case shellTrap + 2:
+		return "IShell CreateInstance"
+	case addRefTrap + 2:
+		return "interface AddRef"
+	case releaseTrap + 2:
+		return "interface Release"
+	case returnTrap + 2:
+		return "guest return"
+	}
+	type trapRange struct {
+		name  string
+		base  uint32
+		count uint32
+	}
+	for _, candidate := range []trapRange{
+		{"AEEStdLib", helperMethodTrapBase, helperMethodCount},
+		{"IShell", shellMethodTrapBase, shellMethodCount},
+		{"IDisplay", displayTrapBase, displayMethodCount},
+		{"IHeap", heapTrapBase, heapMethodCount},
+		{"ISound", soundTrapBase, soundMethodCount},
+		{"IFileMgr", fileMgrTrapBase, fileMgrMethodCount},
+		{"IFile", fileTrapBase, fileMethodCount},
+		{"IBitmap", bitmapTrapBase, bitmapMethodCount},
+		{"IGraphics", graphicsTrapBase, graphicsMethodCount},
+		{"ITAPI", tapiTrapBase, tapiMethodCount},
+		{"ISoundPlayer", soundPlayerTrapBase, soundPlayerMethods},
+		{"INetMgr", netTrapBase, netMethodCount},
+		{"IImage", imageTrapBase, imageMethodCount},
+		{"ITextCtl", textCtlTrapBase, textCtlMethodCount},
+		{"IMenuCtl", menuCtlTrapBase, menuCtlMethodCount},
+		{"IKTFService", ktfServiceTrapBase, ktfServiceMethodCount},
+	} {
+		if pc >= candidate.base+2 && pc < candidate.base+candidate.count*2+2 {
+			return fmt.Sprintf("%s slot %d", candidate.name, (pc-2-candidate.base)/2)
+		}
+	}
+	return fmt.Sprintf("host trap 0x%08x", pc-2)
 }
 
 func (r *Runtime) handleAppletMethodTrap(

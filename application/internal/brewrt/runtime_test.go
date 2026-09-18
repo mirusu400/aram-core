@@ -49,6 +49,29 @@ func TestRuntimeBootstrapsSyntheticARMModule(t *testing.T) {
 	}
 }
 
+func TestStdlibHelperTableDoesNotAliasRuntimeObjects(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	var word [4]byte
+	if err := runtime.cpu.ReadMemory(moduleBase-4, word[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint32(word[:]); got != helperTableBase {
+		t.Fatalf("stdlib table pointer = 0x%08x, want 0x%08x", got, helperTableBase)
+	}
+	if err := runtime.cpu.ReadMemory(helperTableBase+64*4, word[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := binary.LittleEndian.Uint32(word[:]), helperMethodTrapBase+64*2|1; got != want {
+		t.Fatalf("stdlib slot 64 = 0x%08x, want 0x%08x", got, want)
+	}
+	if err := runtime.cpu.ReadMemory(shellObject, word[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint32(word[:]); got != shellVTable {
+		t.Fatalf("shell object vtable = 0x%08x, want 0x%08x", got, shellVTable)
+	}
+}
+
 func TestRunAppletCodeAllowsLongGuestInitialization(t *testing.T) {
 	// ldr r0,[pc,#8]; subs r0,r0,#1; bne loop; bx lr; .word 1100000
 	// This executes just over 2.2 million instructions, matching real BREW
