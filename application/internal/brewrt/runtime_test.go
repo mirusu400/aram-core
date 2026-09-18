@@ -379,6 +379,79 @@ func TestDisplayUpdateRequiresChangedFramebufferAndCommitsDetachedSnapshot(t *te
 	}
 }
 
+func TestCompletedEventCommitsChangedPrimarySurfaceSnapshot(t *testing.T) {
+	// ldr r0,[pc,#8]; mov r1,#1; strh r1,[r0]; bx lr; framebufferBase
+	module := make([]byte, 20)
+	for index, word := range []uint32{0xe59f0008, 0xe3a01001, 0xe1c010b0, 0xe12fff1e, framebufferBase} {
+		binary.LittleEndian.PutUint32(module[index*4:], word)
+	}
+	runtime, err := New(Package{Module: module})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	runtime.appletObject = heapBase
+	var encoded [12]byte
+	binary.LittleEndian.PutUint32(encoded[0:], heapBase+0x20)
+	if err := runtime.cpu.WriteMemory(heapBase, encoded[:4]); err != nil {
+		t.Fatal(err)
+	}
+	binary.LittleEndian.PutUint32(encoded[8:], moduleBase)
+	if err := runtime.cpu.WriteMemory(heapBase+0x20, encoded[:]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.DispatchEvent(context.Background(), 0, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if count, valid := runtime.FrameStats(); count != 1 || !valid {
+		t.Fatalf("implicit frame stats count=%d valid=%v, want 1/true", count, valid)
+	}
+	frame, presented, err := runtime.Framebuffer()
+	if err != nil || !presented {
+		t.Fatalf("implicit framebuffer presented=%v err=%v", presented, err)
+	}
+	committed := frame.RGBAAt(0, 0)
+	if committed.B == 0 {
+		t.Fatalf("implicit framebuffer first pixel = %#v, want changed blue channel", committed)
+	}
+	if _, err := runtime.DispatchEvent(context.Background(), 0, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if count, valid := runtime.FrameStats(); count != 1 || !valid {
+		t.Fatalf("unchanged implicit frame stats count=%d valid=%v, want 1/true", count, valid)
+	}
+
+	if err := runtime.cpu.WriteMemory(framebufferBase, []byte{0, 0}); err != nil {
+		t.Fatal(err)
+	}
+	frame, presented, err = runtime.Framebuffer()
+	if err != nil || !presented || frame.RGBAAt(0, 0) != committed {
+		t.Fatalf("detached implicit frame changed with live surface: pixel=%#v presented=%v err=%v", frame.RGBAAt(0, 0), presented, err)
+	}
+}
+
+func TestCompletedCallbackCommitsChangedPrimarySurfaceSnapshot(t *testing.T) {
+	// ldr r0,[pc,#8]; mov r1,#1; strh r1,[r0]; bx lr; framebufferBase
+	module := make([]byte, 20)
+	for index, word := range []uint32{0xe59f0008, 0xe3a01001, 0xe1c010b0, 0xe12fff1e, framebufferBase} {
+		binary.LittleEndian.PutUint32(module[index*4:], word)
+	}
+	runtime, err := New(Package{Module: module})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	runtime.timers = []brewCallback{{function: moduleBase}}
+
+	if err := runtime.RunCallbacks(context.Background(), 0); err != nil {
+		t.Fatal(err)
+	}
+	if count, valid := runtime.FrameStats(); count != 1 || !valid {
+		t.Fatalf("implicit callback frame stats count=%d valid=%v, want 1/true", count, valid)
+	}
+}
+
 func TestDeviceBitmapGetInfoReportsGuestFramebufferGeometry(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	interfaceAt := heapBase + 0x80

@@ -631,9 +631,15 @@ func (r *Runtime) DispatchEvent(
 		}
 	}
 	pc, mode := branchTarget(handleEvent)
+	updatesBefore := r.updates
 	result, err := r.runAppletCode(ctx, pc, mode, fmt.Sprintf("event 0x%03x", event))
 	if err != nil {
 		return false, err
+	}
+	if r.updates == updatesBefore {
+		if err := r.commitImplicitFramebuffer(); err != nil {
+			return false, err
+		}
 	}
 	r.eventCounts[event]++
 	return result != 0, nil
@@ -1869,8 +1875,14 @@ func (r *Runtime) RunCallbacks(ctx context.Context, elapsed time.Duration) error
 			}
 		}
 		pc, mode := branchTarget(callback.function)
+		updatesBefore := r.updates
 		if _, err := r.runAppletCode(ctx, pc, mode, "timer callback"); err != nil {
 			return err
+		}
+		if r.updates == updatesBefore {
+			if err := r.commitImplicitFramebuffer(); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -3314,6 +3326,36 @@ func (r *Runtime) commitFramebufferUpdate() error {
 	return nil
 }
 
+// commitImplicitFramebuffer supports early BREW titles that draw directly to
+// the primary RGB565 surface without calling IDisplay::Update. A completed
+// event or callback is an atomic guest boundary, so publish a detached snapshot
+// there rather than exposing live surface mutations while guest code is running.
+func (r *Runtime) commitImplicitFramebuffer() error {
+	pixels := make([]byte, framebufferBytes)
+	if err := r.cpu.ReadMemory(framebufferBase, pixels); err != nil {
+		return fmt.Errorf("snapshot BREW direct framebuffer: %w", err)
+	}
+	if len(r.presented) == len(pixels) && bytes.Equal(r.presented, pixels) {
+		return nil
+	}
+	if len(r.presented) == 0 {
+		mutated := false
+		for _, value := range pixels {
+			if value != 0 {
+				mutated = true
+				break
+			}
+		}
+		if !mutated {
+			return nil
+		}
+	}
+	r.updates++
+	r.presented = pixels
+	r.guestFrame = true
+	return nil
+}
+
 func (r *Runtime) drawDisplayRect() error {
 	rectPointer, err := r.cpu.ReadRegister(cpu.RegisterR1)
 	if err != nil {
@@ -3577,8 +3619,8 @@ func branchTarget(address uint32) (uint32, cpu.Mode) {
 
 func (r *Runtime) ModuleObject() uint32 { return r.moduleObject }
 
-// FrameStats reports guest IDisplay::Update calls and whether one of those
-// calls committed a changed framebuffer.
+// FrameStats reports detached guest framebuffer snapshots committed by explicit
+// display updates or completed legacy dispatch boundaries.
 func (r *Runtime) FrameStats() (presentCount uint64, frameValid bool) {
 	return r.updates, r.guestFrame
 }
