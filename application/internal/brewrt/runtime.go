@@ -1285,10 +1285,15 @@ func (r *Runtime) handleAppletMethodTrap(
 				}
 				return resume()
 			}
-			var status [24]byte
+			// ARM BREW applications use the compiler-packed TAPIStatus ABI: the
+			// 16-byte mobile ID and one-byte phone state are followed immediately
+			// by the ten flag bits, then the structure is rounded to 20 bytes.
+			// Writing the host compiler's 24-byte layout corrupts the caller's next
+			// stack local in older games.
+			var status [20]byte
 			copy(status[:16], []byte("000000000000000\x00"))
 			status[16] = 0                                   // AEET_STATE_NONE
-			binary.LittleEndian.PutUint32(status[20:], 1<<6) // registered
+			binary.LittleEndian.PutUint16(status[17:], 1<<6) // bRegistered
 			if err := r.cpu.WriteMemory(destination, status[:]); err != nil {
 				return true, 0, cpu.ModeARM, fmt.Errorf("write BREW telephony status: %w", err)
 			}

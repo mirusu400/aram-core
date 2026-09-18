@@ -920,6 +920,10 @@ func TestReleaseReclaimsImageAndBitmapAllocations(t *testing.T) {
 func TestTAPIStatusUsesStableSyntheticIdentity(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	destination := heapBase + 0x700
+	sentinel := []byte{0xde, 0xad, 0xbe, 0xef}
+	if err := runtime.cpu.WriteMemory(destination+20, sentinel); err != nil {
+		t.Fatal(err)
+	}
 	for register, value := range map[uint32]uint32{
 		cpu.RegisterR1: destination,
 		cpu.RegisterLR: returnTrap | 1,
@@ -932,15 +936,22 @@ func TestTAPIStatusUsesStableSyntheticIdentity(t *testing.T) {
 	if err != nil || !handled {
 		t.Fatalf("ITAPI GetStatus handled=%v err=%v", handled, err)
 	}
-	status := make([]byte, 24)
+	status := make([]byte, 20)
 	if err := runtime.cpu.ReadMemory(destination, status); err != nil {
 		t.Fatal(err)
 	}
 	if got := string(status[:16]); got != "000000000000000\x00" {
 		t.Fatalf("mobile ID = %q", got)
 	}
-	if flags := binary.LittleEndian.Uint32(status[20:]); flags != 1<<6 {
+	if flags := binary.LittleEndian.Uint16(status[17:19]); flags != 1<<6 {
 		t.Fatalf("TAPI flags = 0x%x, want registered", flags)
+	}
+	gotSentinel := make([]byte, len(sentinel))
+	if err := runtime.cpu.ReadMemory(destination+20, gotSentinel); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(gotSentinel, sentinel) {
+		t.Fatalf("TAPI status overwrote caller storage: got %x, want %x", gotSentinel, sentinel)
 	}
 }
 
