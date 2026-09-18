@@ -77,6 +77,7 @@ const (
 	helperAtoiSlot          = uint32(36)
 	helperGetAEEVersionSlot = uint32(35)
 	helperDbgPrintfSlot     = uint32(39)
+	helperWStrCompressSlot  = uint32(40)
 	helperGetRandSlot       = uint32(42)
 	helperGetTimeMSSlot     = uint32(43)
 	helperGetUpTimeMSSlot   = uint32(44)
@@ -907,6 +908,11 @@ func (r *Runtime) handleAppletMethodTrap(
 		case helperDbgPrintfSlot:
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
 				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW helper slot %d result: %w", slot, err)
+			}
+			return resume()
+		case helperWStrCompressSlot:
+			if err := r.compressGuestWideString(); err != nil {
+				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
 		case helperGetTimeMSSlot, helperGetUpTimeMSSlot:
@@ -2386,6 +2392,55 @@ func (r *Runtime) expandGuestOEMString() error {
 	}
 	if err := r.cpu.WriteMemory(destination, encoded); err != nil {
 		return fmt.Errorf("write BREW strexpand destination at 0x%08x: %w", destination, err)
+	}
+	return nil
+}
+
+func (r *Runtime) compressGuestWideString() error {
+	source, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW wstrcompress source: %w", err)
+	}
+	rawCount, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW wstrcompress source length: %w", err)
+	}
+	destination, err := r.cpu.ReadRegister(cpu.RegisterR2)
+	if err != nil {
+		return fmt.Errorf("read BREW wstrcompress destination: %w", err)
+	}
+	size, err := r.cpu.ReadRegister(cpu.RegisterR3)
+	if err != nil {
+		return fmt.Errorf("read BREW wstrcompress destination size: %w", err)
+	}
+	if destination == 0 || size == 0 {
+		return nil
+	}
+	if size > heapSize {
+		return fmt.Errorf("BREW wstrcompress destination size %d exceeds runtime limit", size)
+	}
+	units, err := r.readGuestWideString(source)
+	if err != nil {
+		return err
+	}
+	if int32(rawCount) >= 0 && uint32(len(units)) > rawCount {
+		units = units[:rawCount]
+	}
+	encoded, _, encodeErr := transform.Bytes(korean.EUCKR.NewEncoder(), []byte(string(utf16.Decode(units))))
+	if encodeErr != nil {
+		encoded = []byte(strings.Map(func(value rune) rune {
+			if value <= 0x7f {
+				return value
+			}
+			return '?'
+		}, string(utf16.Decode(units))))
+	}
+	if uint32(len(encoded)) >= size {
+		encoded = encoded[:size-1]
+	}
+	encoded = append(encoded, 0)
+	if err := r.cpu.WriteMemory(destination, encoded); err != nil {
+		return fmt.Errorf("write BREW wstrcompress destination at 0x%08x: %w", destination, err)
 	}
 	return nil
 }

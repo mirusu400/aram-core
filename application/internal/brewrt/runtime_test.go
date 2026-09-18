@@ -72,6 +72,40 @@ func TestStdlibHelperTableDoesNotAliasRuntimeObjects(t *testing.T) {
 	}
 }
 
+func TestWStrCompressEncodesKoreanTextAsEUCKR(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	source := heapBase + 0x100
+	destination := heapBase + 0x120
+	wide := make([]byte, 6)
+	binary.LittleEndian.PutUint16(wide[0:2], 0xac00)
+	binary.LittleEndian.PutUint16(wide[2:4], 'A')
+	if err := runtime.cpu.WriteMemory(source, wide); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR0: source,
+		cpu.RegisterR1: 2,
+		cpu.RegisterR2: destination,
+		cpu.RegisterR3: 8,
+		cpu.RegisterLR: returnTrap | 1,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handled, _, _, err := runtime.handleAppletMethodTrap(helperMethodTrapBase + helperWStrCompressSlot*2 + 2)
+	if err != nil || !handled {
+		t.Fatalf("WSTRCOMPRESS handled=%v err=%v", handled, err)
+	}
+	var compressed [4]byte
+	if err := runtime.cpu.ReadMemory(destination, compressed[:]); err != nil {
+		t.Fatal(err)
+	}
+	if want := [4]byte{0xb0, 0xa1, 'A', 0}; compressed != want {
+		t.Fatalf("WSTRCOMPRESS result = % x, want % x", compressed, want)
+	}
+}
+
 func TestRunAppletCodeAllowsLongGuestInitialization(t *testing.T) {
 	// ldr r0,[pc,#8]; subs r0,r0,#1; bne loop; bx lr; .word 1100000
 	// This executes just over 2.2 million instructions, matching real BREW
