@@ -919,6 +919,34 @@ func TestFileReadNullDestinationReturnsZeroWithoutAdvancing(t *testing.T) {
 	}
 }
 
+func TestSprintfSupportsSignedIntegerAlias(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	destination := heapBase + 0x500
+	format := heapBase + 0x580
+	if err := runtime.cpu.WriteMemory(format, []byte("count=%i\x00")); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR0: destination,
+		cpu.RegisterR1: format,
+		cpu.RegisterR2: ^uint32(16),
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := runtime.formatResourceName(); err != nil {
+		t.Fatal(err)
+	}
+	text, err := runtime.readCString(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "count=-17" {
+		t.Fatalf("sprintf %%i result = %q, want count=-17", text)
+	}
+}
+
 func TestLegacySoundAndActiveAppletContracts(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	runtime.activeApplet = heapBase + 0x900
@@ -1161,6 +1189,19 @@ func TestSoundPlayerSetUsesInputDiscriminator(t *testing.T) {
 	handled, _, _, err := runtime.handleAppletMethodTrap(soundPlayerTrapBase + 3*2 + 2)
 	if err != nil || !handled {
 		t.Fatalf("ISoundPlayer Set handled=%v err=%v", handled, err)
+	}
+}
+
+func TestLegacySoundToneAndVibrationMethodsAreNonblocking(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	if err := runtime.cpu.WriteRegister(cpu.RegisterLR, returnTrap|1); err != nil {
+		t.Fatal(err)
+	}
+	for _, slot := range []uint32{6, 7, 8, 10} {
+		handled, _, _, err := runtime.handleAppletMethodTrap(soundTrapBase + slot*2 + 2)
+		if err != nil || !handled {
+			t.Fatalf("ISound slot %d handled=%v err=%v", slot, handled, err)
+		}
 	}
 }
 

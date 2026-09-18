@@ -1771,6 +1771,11 @@ func (r *Runtime) handleAppletMethodTrap(
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
+		case 6, 7, 8, 10: // PlayTone, PlayToneList, PlayFreqTone, Vibrate
+			// These official ISound calls are void and asynchronous. The emulator has
+			// no tone/vibrator backend, but accepting them preserves the handset ABI
+			// and lets games continue without inventing completion callbacks.
+			return resume()
 		case 12: // SetVolume
 			volume, err := r.cpu.ReadRegister(cpu.RegisterR1)
 			if err != nil {
@@ -2432,7 +2437,7 @@ func (r *Runtime) formatGuestWideString() error {
 		for end < len(format) && strings.ContainsRune("-+ #0.123456789", rune(format[end])) {
 			end++
 		}
-		if end >= len(format) || !strings.ContainsRune("cdsuXx", rune(format[end])) {
+		if end >= len(format) || !strings.ContainsRune("cdisuXx", rune(format[end])) {
 			return fmt.Errorf("BREW execution boundary: unsupported wsprintf format %q", format)
 		}
 		value, readErr := arg(argumentIndex)
@@ -2448,7 +2453,8 @@ func (r *Runtime) formatGuestWideString() error {
 				return stringErr
 			}
 			values = append(values, string(utf16.Decode(units)))
-		case 'd':
+		case 'd', 'i':
+			goFormat[end] = 'd'
 			values = append(values, int32(value))
 		case 'u':
 			goFormat[end] = 'd'
@@ -3123,7 +3129,7 @@ func (r *Runtime) formatResourceName() error {
 		for end < len(format) && strings.ContainsRune("-+ #0.123456789", rune(format[end])) {
 			end++
 		}
-		if end >= len(format) || !strings.ContainsRune("cdsuXx", rune(format[end])) {
+		if end >= len(format) || !strings.ContainsRune("cdisuXx", rune(format[end])) {
 			return fmt.Errorf("BREW execution boundary: unsupported sprintf format %q", format)
 		}
 		value, readErr := arg(argumentIndex)
@@ -3139,7 +3145,8 @@ func (r *Runtime) formatResourceName() error {
 				return readErr
 			}
 			values = append(values, text)
-		case 'd':
+		case 'd', 'i':
+			goFormat[end] = 'd'
 			values = append(values, value)
 		case 'u':
 			goFormat[end] = 'd'
