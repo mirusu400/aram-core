@@ -3,6 +3,7 @@ package brewrt
 import (
 	"encoding/binary"
 	"fmt"
+	"sort"
 
 	"github.com/mirusu400/aram-core/cpu"
 )
@@ -163,6 +164,45 @@ func (r *Runtime) handleGraphicsMethod(slot uint32) (bool, error) {
 			return true, err
 		}
 		return returnValue(0)
+	case 27: // DrawTriangle
+		pointer, err := argument(cpu.RegisterR1)
+		if err != nil {
+			return true, err
+		}
+		points, err := r.readGraphicsPoints(pointer, 3)
+		if err != nil {
+			return true, fmt.Errorf("read BREW graphics triangle: %w", err)
+		}
+		if err := r.drawGraphicsPolygon(points, true); err != nil {
+			return true, err
+		}
+		return returnValue(0)
+	case 28, 29: // DrawPolygon, DrawPolyline
+		pointer, err := argument(cpu.RegisterR1)
+		if err != nil {
+			return true, err
+		}
+		header := make([]byte, 8)
+		if err := r.cpu.ReadMemory(pointer, header); err != nil {
+			return true, fmt.Errorf("read BREW graphics polygon: %w", err)
+		}
+		count := int32(int16(binary.LittleEndian.Uint16(header)))
+		if count < 0 || count > 4096 {
+			return true, fmt.Errorf("BREW graphics polygon has invalid point count %d", count)
+		}
+		points, err := r.readGraphicsPoints(binary.LittleEndian.Uint32(header[4:]), count)
+		if err != nil {
+			return true, fmt.Errorf("read BREW graphics polygon points: %w", err)
+		}
+		if slot == 28 {
+			err = r.drawGraphicsPolygon(points, true)
+		} else {
+			err = r.drawGraphicsPolygon(points, false)
+		}
+		if err != nil {
+			return true, err
+		}
+		return returnValue(0)
 	case 16:
 		if err := r.fillGraphicsRect(0, 0, int32(framebufferWidth), int32(framebufferHeight), r.graphics.background); err != nil {
 			return true, err
@@ -224,6 +264,30 @@ func (r *Runtime) readGraphicsCircle(address uint32) (int32, int32, int32, error
 	}
 	read := func(at int) int32 { return int32(int16(binary.LittleEndian.Uint16(data[at:]))) }
 	return read(0), read(2), read(4), nil
+}
+
+type graphicsPoint struct {
+	x int32
+	y int32
+}
+
+func (r *Runtime) readGraphicsPoints(address uint32, count int32) ([]graphicsPoint, error) {
+	if count == 0 {
+		return nil, nil
+	}
+	data := make([]byte, int(count)*4)
+	if err := r.cpu.ReadMemory(address, data); err != nil {
+		return nil, err
+	}
+	points := make([]graphicsPoint, count)
+	for index := range points {
+		offset := index * 4
+		points[index] = graphicsPoint{
+			x: int32(int16(binary.LittleEndian.Uint16(data[offset:]))),
+			y: int32(int16(binary.LittleEndian.Uint16(data[offset+2:]))),
+		}
+	}
+	return points, nil
 }
 
 func (r *Runtime) graphicsSurface() (uint32, uint32, uint32, uint32, error) {
@@ -345,6 +409,52 @@ func (r *Runtime) drawGraphicsCircle(centerX, centerY, radius int32) error {
 			x--
 			errorTerm += 2*(y-x) + 1
 		}
+	}
+	return nil
+}
+
+func (r *Runtime) drawGraphicsPolygon(points []graphicsPoint, closed bool) error {
+	if len(points) == 0 {
+		return nil
+	}
+	translated := make([]graphicsPoint, len(points))
+	for index, point := range points {
+		translated[index] = graphicsPoint{x: point.x + r.graphics.originX, y: point.y + r.graphics.originY}
+	}
+	if closed && r.graphics.fillMode && len(translated) >= 3 {
+		minimumY, maximumY := translated[0].y, translated[0].y
+		for _, point := range translated[1:] {
+			if point.y < minimumY {
+				minimumY = point.y
+			}
+			if point.y > maximumY {
+				maximumY = point.y
+			}
+		}
+		for y := minimumY; y <= maximumY; y++ {
+			intersections := make([]int32, 0, len(translated))
+			for index, start := range translated {
+				end := translated[(index+1)%len(translated)]
+				if !((start.y <= y && end.y > y) || (end.y <= y && start.y > y)) {
+					continue
+				}
+				intersections = append(intersections, start.x+(y-start.y)*(end.x-start.x)/(end.y-start.y))
+			}
+			sort.Slice(intersections, func(left, right int) bool { return intersections[left] < intersections[right] })
+			for index := 0; index+1 < len(intersections); index += 2 {
+				if err := r.drawGraphicsLine(intersections[index], y, intersections[index+1], y, r.graphics.fill); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	for index := 1; index < len(translated); index++ {
+		if err := r.drawGraphicsLine(translated[index-1].x, translated[index-1].y, translated[index].x, translated[index].y, r.graphics.stroke); err != nil {
+			return err
+		}
+	}
+	if closed && len(translated) > 1 {
+		return r.drawGraphicsLine(translated[len(translated)-1].x, translated[len(translated)-1].y, translated[0].x, translated[0].y, r.graphics.stroke)
 	}
 	return nil
 }

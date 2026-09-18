@@ -100,3 +100,42 @@ func TestGraphicsServiceDrawCircleHonorsFillAndStroke(t *testing.T) {
 		t.Fatalf("circle edge=0x%04x, want stroke red", got)
 	}
 }
+
+func TestGraphicsServiceDrawPolygonHonorsFillStrokeAndPackedLayout(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	callGraphicsForTest(t, runtime, 4, 255, 0, 0)
+	callGraphicsForTest(t, runtime, 8, 0, 255, 0)
+	callGraphicsForTest(t, runtime, 6, 1, 0, 0)
+
+	polygon := heapBase + 0x3010
+	points := heapBase + 0x3020
+	header := make([]byte, 8)
+	binary.LittleEndian.PutUint16(header, 3)
+	binary.LittleEndian.PutUint32(header[4:], points)
+	if err := runtime.cpu.WriteMemory(polygon, header); err != nil {
+		t.Fatal(err)
+	}
+	data := make([]byte, 12)
+	for index, coordinate := range []uint16{10, 10, 16, 10, 13, 16} {
+		binary.LittleEndian.PutUint16(data[index*2:], coordinate)
+	}
+	if err := runtime.cpu.WriteMemory(points, data); err != nil {
+		t.Fatal(err)
+	}
+	callGraphicsForTest(t, runtime, 28, polygon, 0, 0)
+
+	readPixel := func(x, y uint32) uint16 {
+		t.Helper()
+		pixel := make([]byte, 2)
+		if err := runtime.cpu.ReadMemory(framebufferBase+(y*framebufferWidth+x)*2, pixel); err != nil {
+			t.Fatal(err)
+		}
+		return binary.LittleEndian.Uint16(pixel)
+	}
+	if got := readPixel(13, 12); got != 0x07e0 {
+		t.Fatalf("polygon interior=0x%04x, want fill green", got)
+	}
+	if got := readPixel(10, 10); got != 0xf800 {
+		t.Fatalf("polygon edge=0x%04x, want stroke red", got)
+	}
+}
