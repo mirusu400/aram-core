@@ -139,3 +139,21 @@ func TestGraphicsServiceDrawPolygonHonorsFillStrokeAndPackedLayout(t *testing.T)
 		t.Fatalf("polygon edge=0x%04x, want stroke red", got)
 	}
 }
+
+func TestGraphicsServicePolygonFillClipsExtremeTranslatedScanlines(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	runtime.graphics.fillMode = true
+	runtime.graphics.originY = int32(^uint32(0) >> 1)
+	points := []graphicsPoint{{x: 0, y: 0}, {x: 4, y: 0}, {x: 2, y: 0}}
+	if err := runtime.drawGraphicsPolygon(points, true); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGraphicsServiceTranslateUsesSignedInt16Arguments(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	callGraphicsForTest(t, runtime, 33, 0xffff, 0x8000, 0)
+	if runtime.graphics.originX != -1 || runtime.graphics.originY != -32768 {
+		t.Fatalf("translate origin=(%d,%d), want (-1,-32768)", runtime.graphics.originX, runtime.graphics.originY)
+	}
+}

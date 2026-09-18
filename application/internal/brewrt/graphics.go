@@ -224,7 +224,7 @@ func (r *Runtime) handleGraphicsMethod(slot uint32) (bool, error) {
 		if err != nil {
 			return true, err
 		}
-		r.graphics.originX, r.graphics.originY = int32(x), int32(y)
+		r.graphics.originX, r.graphics.originY = int32(int16(x)), int32(int16(y))
 		return returnValue(0)
 	case 38:
 		target, err := argument(cpu.RegisterR1)
@@ -422,6 +422,13 @@ func (r *Runtime) drawGraphicsPolygon(points []graphicsPoint, closed bool) error
 		translated[index] = graphicsPoint{x: point.x + r.graphics.originX, y: point.y + r.graphics.originY}
 	}
 	if closed && r.graphics.fillMode && len(translated) >= 3 {
+		_, surfaceWidth, surfaceHeight, _, err := r.graphicsSurface()
+		if err != nil {
+			return err
+		}
+		if surfaceWidth == 0 || surfaceHeight == 0 {
+			return nil
+		}
 		minimumY, maximumY := translated[0].y, translated[0].y
 		for _, point := range translated[1:] {
 			if point.y < minimumY {
@@ -431,6 +438,8 @@ func (r *Runtime) drawGraphicsPolygon(points []graphicsPoint, closed bool) error
 				maximumY = point.y
 			}
 		}
+		minimumY = max32(minimumY, 0)
+		maximumY = min32(maximumY, int32(surfaceHeight)-1)
 		for y := minimumY; y <= maximumY; y++ {
 			intersections := make([]int32, 0, len(translated))
 			for index, start := range translated {
@@ -438,11 +447,17 @@ func (r *Runtime) drawGraphicsPolygon(points []graphicsPoint, closed bool) error
 				if !((start.y <= y && end.y > y) || (end.y <= y && start.y > y)) {
 					continue
 				}
-				intersections = append(intersections, start.x+(y-start.y)*(end.x-start.x)/(end.y-start.y))
+				x := int64(start.x) + int64(y-start.y)*int64(end.x-start.x)/int64(end.y-start.y)
+				intersections = append(intersections, int32(x))
 			}
 			sort.Slice(intersections, func(left, right int) bool { return intersections[left] < intersections[right] })
 			for index := 0; index+1 < len(intersections); index += 2 {
-				if err := r.drawGraphicsLine(intersections[index], y, intersections[index+1], y, r.graphics.fill); err != nil {
+				startX := max32(intersections[index], 0)
+				endX := min32(intersections[index+1], int32(surfaceWidth)-1)
+				if startX > endX {
+					continue
+				}
+				if err := r.drawGraphicsLine(startX, y, endX, y, r.graphics.fill); err != nil {
 					return err
 				}
 			}
@@ -457,6 +472,20 @@ func (r *Runtime) drawGraphicsPolygon(points []graphicsPoint, closed bool) error
 		return r.drawGraphicsLine(translated[len(translated)-1].x, translated[len(translated)-1].y, translated[0].x, translated[0].y, r.graphics.stroke)
 	}
 	return nil
+}
+
+func min32(left, right int32) int32 {
+	if left < right {
+		return left
+	}
+	return right
+}
+
+func max32(left, right int32) int32 {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 func abs32(value int32) int32 {
