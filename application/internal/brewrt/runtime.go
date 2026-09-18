@@ -3230,6 +3230,13 @@ func (r *Runtime) readGuestFile() error {
 	}
 	remaining := uint32(len(r.currentFile)) - min(r.fileOffset, uint32(len(r.currentFile)))
 	count := min(requested, remaining)
+	// IFILE_Read reports bytes transferred. A null destination for a non-empty
+	// read is an invalid guest request, not a host execution failure. Return zero
+	// and leave the stream position intact so legacy callers can take their
+	// ordinary short-read/error path instead of faulting the emulator.
+	if count != 0 && destination == 0 {
+		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
+	}
 	if count != 0 {
 		data := r.currentFile[r.fileOffset : r.fileOffset+count]
 		if err := r.cpu.WriteMemory(destination, data); err != nil {

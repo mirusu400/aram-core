@@ -896,6 +896,29 @@ func TestLegacyIconViewControlMaintainsItemsAndSelection(t *testing.T) {
 	}
 }
 
+func TestFileReadNullDestinationReturnsZeroWithoutAdvancing(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	runtime.currentFile = []byte("data")
+	runtime.fileOffset = 1
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR1: 0,
+		cpu.RegisterR2: 2,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := runtime.readGuestFile(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || got != 0 {
+		t.Fatalf("null-buffer read result=%d err=%v, want 0", got, err)
+	}
+	if runtime.fileOffset != 1 {
+		t.Fatalf("null-buffer read advanced offset to %d", runtime.fileOffset)
+	}
+}
+
 func TestLegacySoundAndActiveAppletContracts(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	runtime.activeApplet = heapBase + 0x900
