@@ -79,6 +79,47 @@ func TestBREWMachineInputScheduleUsesGuestElapsedTime(t *testing.T) {
 	}
 }
 
+func TestBREWKeyCodesMatchAEEVirtualKeys(t *testing.T) {
+	tests := map[string]uint32{
+		"up":         0xe031,
+		"down":       0xe032,
+		"left":       0xe033,
+		"right":      0xe034,
+		"ok":         0xe035,
+		"fire":       0xe035,
+		"select":     0xe035,
+		"soft-left":  0xe036,
+		"soft-right": 0xe037,
+		"menu":       0xe03e,
+		"back":       0xe030,
+		"clear":      0xe030,
+		"send":       0xe02f,
+		"end":        0xe02e,
+		"star":       0xe02b,
+		"hash":       0xe02c,
+		"pound":      0xe02c,
+		"num0":       0xe021,
+		"num1":       0xe022,
+		"num2":       0xe023,
+		"num3":       0xe024,
+		"num4":       0xe025,
+		"num5":       0xe026,
+		"num6":       0xe027,
+		"num7":       0xe028,
+		"num8":       0xe029,
+		"num9":       0xe02a,
+	}
+	for control, want := range tests {
+		got, ok := brewKeyCode(control)
+		if !ok || got != want {
+			t.Errorf("brewKeyCode(%q) = %#x, %t; want %#x, true", control, got, ok, want)
+		}
+	}
+	if got, ok := brewKeyCode("volume-up"); ok || got != 0 {
+		t.Fatalf("unknown BREW key = %#x, %t; want 0, false", got, ok)
+	}
+}
+
 func TestBREWExecutionBoundaryPausesMachine(t *testing.T) {
 	machine := newBREWMachine(machinecore.Source{Name: "synthetic.zip"}, brewrt.Package{})
 	machine.state = machinecore.StateRunning

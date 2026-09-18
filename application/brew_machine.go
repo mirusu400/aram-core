@@ -24,6 +24,24 @@ const (
 	maxBREWInputEvents = 1024
 	brewFrameDuration  = 16 * time.Millisecond
 	maxBREWArchiveSize = int64(128 << 20)
+
+	// Qualcomm AEEVCodes.h starts handset virtual keys at AEE_AVK_BASE
+	// (0xe020). Keep these values explicit: applets compare EVT_KEY wParam
+	// against the AVK constants, not small keypad ordinals.
+	brewAVK0      = uint32(0xe021)
+	brewAVKStar   = uint32(0xe02b)
+	brewAVKPound  = uint32(0xe02c)
+	brewAVKEnd    = uint32(0xe02e)
+	brewAVKSend   = uint32(0xe02f)
+	brewAVKClear  = uint32(0xe030)
+	brewAVKUp     = uint32(0xe031)
+	brewAVKDown   = uint32(0xe032)
+	brewAVKLeft   = uint32(0xe033)
+	brewAVKRight  = uint32(0xe034)
+	brewAVKSelect = uint32(0xe035)
+	brewAVKSoft1  = uint32(0xe036)
+	brewAVKSoft2  = uint32(0xe037)
+	brewAVKMenu   = uint32(0xe03e)
 )
 
 // brewMachine executes bounded BREW packages through the portable runtime.
@@ -282,15 +300,33 @@ func (m *brewMachine) executionErrorLocked(operation string, err error) error {
 func brewKeyCode(control string) (uint32, bool) {
 	switch control {
 	case "up":
-		return 2, true
+		return brewAVKUp, true
 	case "down":
-		return 3, true
+		return brewAVKDown, true
 	case "left":
-		return 4, true
+		return brewAVKLeft, true
 	case "right":
-		return 5, true
-	case "fire", "select":
-		return 8, true
+		return brewAVKRight, true
+	case "fire", "select", "ok":
+		return brewAVKSelect, true
+	case "soft-left":
+		return brewAVKSoft1, true
+	case "soft-right":
+		return brewAVKSoft2, true
+	case "menu":
+		return brewAVKMenu, true
+	case "back", "clear":
+		return brewAVKClear, true
+	case "send":
+		return brewAVKSend, true
+	case "end":
+		return brewAVKEnd, true
+	case "star":
+		return brewAVKStar, true
+	case "hash", "pound":
+		return brewAVKPound, true
+	case "num0", "num1", "num2", "num3", "num4", "num5", "num6", "num7", "num8", "num9":
+		return brewAVK0 + uint32(control[len(control)-1]-'0'), true
 	default:
 		return 0, false
 	}
