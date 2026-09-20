@@ -35,5 +35,16 @@ func raptorRuntimeOptions(
 	); found {
 		options.ResourceBytesHelper = helper.Address
 	}
+	for _, patch := range quirkdb.LookupRaptorImagePatches(
+		source.SHA256,
+		pkg.Descriptor.AID,
+		pkg.Descriptor.MainClass,
+	) {
+		options.ImagePatches = append(options.ImagePatches, raptorrt.ImagePatch{
+			Address:     patch.Address,
+			Expected:    patch.Expected,
+			Replacement: patch.Replacement,
+		})
+	}
 	return options
 }

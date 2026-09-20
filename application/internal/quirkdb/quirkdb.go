@@ -249,6 +249,47 @@ func LookupRaptorResourceBytesHelper(
 	return RaptorResourceBytesHelper{}, false
 }
 
+// RaptorImagePatch repairs one exact word in a known modified package. The
+// expected value is part of the entry so a different build can never be
+// silently rewritten even if package metadata is reused.
+type RaptorImagePatch struct {
+	Key         RaptorTitleKey
+	Address     uint32
+	Expected    uint32
+	Replacement uint32
+}
+
+var RaptorImagePatches = []RaptorImagePatch{
+	{
+		// The 배틀몬스터1 "0코인+포획률" repack replaced the literal call
+		// target at 0x000cfc98 with the first push instruction from the
+		// intended callee. The call at 0x000cf8ec consequently branches to
+		// 0xe92dd810 during battle. The unmodified 00025C2B module pins the
+		// intended target as 0x000d8640, and the fault report records zero
+		// executable-memory invalidations, so the bad word came from the repack.
+		Key: RaptorTitleKey{
+			PackageSHA256: "b15f57f7aa597159a8495c04de2b987c2bdf72d9e5ae067c714360e2fec973f5",
+			AID:           "00025C2B",
+			MainClass:     "Jp",
+		},
+		Address:     0x000cfc98,
+		Expected:    0xe92dd810,
+		Replacement: 0x000d8640,
+	},
+}
+
+func LookupRaptorImagePatches(
+	packageSHA256, aid, mainClass string,
+) []RaptorImagePatch {
+	var matches []RaptorImagePatch
+	for _, entry := range RaptorImagePatches {
+		if entry.Key.Matches(packageSHA256, aid, mainClass) {
+			matches = append(matches, entry)
+		}
+	}
+	return matches
+}
+
 // SKVMCanvas records the handset canvas one SKT MIDlet build was authored for.
 // An SKT descriptor never declares a display size, and a title that packs its
 // art into opaque resource blobs offers nothing to infer one from, so a build

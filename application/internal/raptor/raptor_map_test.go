@@ -1,6 +1,8 @@
 package raptor
 
 import (
+	"encoding/binary"
+	"strings"
 	"testing"
 
 	"github.com/mirusu400/aram-core/cpu/interpreter"
@@ -52,5 +54,45 @@ func TestMapRaptorImagePadsSectionsToTheMappingGranule(t *testing.T) {
 	}
 	if got := RequiredMemory(image); got < uint64(0x800+0x180+0x280) {
 		t.Fatalf("RequiredMemory = %d does not include the padding", got)
+	}
+}
+
+func TestRaptorImagePatchChecksOriginalAndSurvivesRestore(t *testing.T) {
+	const address = uint32(0x1800)
+	const expected = uint32(0xe92dd810)
+	const replacement = uint32(0x000d8640)
+	data := make([]byte, 4)
+	binary.LittleEndian.PutUint32(data, expected)
+	image := raptorloader.Image{Sections: []raptorloader.Section{{
+		Name: ".text", Flags: testSectionAlloc, Address: address, Size: 4, Data: data,
+	}}}
+	backend := interpreter.New()
+	t.Cleanup(func() { _ = backend.Close() })
+	check(t, MapRaptorImage(backend, image))
+	runtime := &Runtime{
+		CPU: backend,
+		Pkg: raptorloader.Package{Image: image},
+		imagePatches: []ImagePatch{{
+			Address: address, Expected: expected, Replacement: replacement,
+		}},
+	}
+
+	check(t, runtime.applyImagePatches())
+	var encoded [4]byte
+	check(t, backend.ReadMemory(address, encoded[:]))
+	if got := binary.LittleEndian.Uint32(encoded[:]); got != replacement {
+		t.Fatalf("patched word = 0x%08x, want 0x%08x", got, replacement)
+	}
+	check(t, runtime.RestoreImage())
+	check(t, backend.ReadMemory(address, encoded[:]))
+	if got := binary.LittleEndian.Uint32(encoded[:]); got != replacement {
+		t.Fatalf("restored patch = 0x%08x, want 0x%08x", got, replacement)
+	}
+
+	binary.LittleEndian.PutUint32(encoded[:], 0x12345678)
+	check(t, backend.WriteMemory(address, encoded[:]))
+	err := runtime.applyImagePatches()
+	if err == nil || !strings.Contains(err.Error(), "expected 0xe92dd810, got 0x12345678") {
+		t.Fatalf("unexpected original error = %v", err)
 	}
 }
