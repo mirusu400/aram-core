@@ -120,9 +120,9 @@ type Backend struct {
 	// removes the remaining MMU/permission/bus work from precise and Go-JIT ARM.
 	virtualData *virtualDataCache
 	regs        [17]uint32
-	// flags holds condition N/Z/C/V lazily: setNZCV records the defining
-	// operation here instead of writing CPSR, and resolveFlags materializes it
-	// only when a reader actually needs the bits. See pendingFlags.
+	// flags holds condition N/Z/C/V lazily: flag-setting instructions merge
+	// their full or partial writes here instead of materializing CPSR between
+	// consecutive setters. A reader resolves the pending bits. See pendingFlags.
 	flags   pendingFlags
 	mode    cpu.Mode
 	stopped atomic.Bool

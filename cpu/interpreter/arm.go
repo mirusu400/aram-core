@@ -874,10 +874,9 @@ func (b *Backend) setModeFlag() {
 // are dead; deferring skips the CPSR bit-twiddling for them. Materialization is
 // bit-identical to eager evaluation.
 type pendingFlags struct {
-	dirty    bool
-	value    uint32
-	carry    bool
-	overflow bool
+	dirty bool
+	mask  uint32
+	bits  uint32
 }
 
 // resolveFlags writes any deferred N/Z/C/V into CPSR. Idempotent; every path
@@ -888,87 +887,74 @@ func (b *Backend) resolveFlags() {
 		return
 	}
 	b.flags.dirty = false
-	cpsr := b.regs[cpu.RegisterCPSR] &^ (flagN | flagZ | flagC | flagV)
-	if b.flags.value == 0 {
-		cpsr |= flagZ
-	}
-	if b.flags.value&(uint32(1)<<31) != 0 {
-		cpsr |= flagN
-	}
-	if b.flags.carry {
-		cpsr |= flagC
-	}
-	if b.flags.overflow {
-		cpsr |= flagV
-	}
-	b.regs[cpu.RegisterCPSR] = cpsr
+	b.regs[cpu.RegisterCPSR] = b.regs[cpu.RegisterCPSR]&^b.flags.mask |
+		b.flags.bits
+	b.flags.mask = 0
+	b.flags.bits = 0
 }
 
 func (b *Backend) setNZ(value uint32) {
-	// Only C and V survive from whatever set them last; materialize that first,
-	// then overwrite N and Z.
-	b.resolveFlags()
-	b.regs[cpu.RegisterCPSR] &^= flagN | flagZ
+	const mask = flagN | flagZ
+	bits := uint32(0)
 	if value == 0 {
-		b.regs[cpu.RegisterCPSR] |= flagZ
+		bits |= flagZ
 	}
 	if value&(uint32(1)<<31) != 0 {
-		b.regs[cpu.RegisterCPSR] |= flagN
+		bits |= flagN
 	}
+	b.deferFlags(mask, bits)
 }
 
 func (b *Backend) setNZCV(value uint32, carry, overflow bool) {
-	// Defers the whole N/Z/C/V update; it overwrites every flag bit, so any
-	// prior pending update is dead and need not be materialized.
-	b.flags = pendingFlags{dirty: true, value: value, carry: carry, overflow: overflow}
+	const mask = flagN | flagZ | flagC | flagV
+	bits := nzBits(value)
+	if carry {
+		bits |= flagC
+	}
+	if overflow {
+		bits |= flagV
+	}
+	b.flags = pendingFlags{dirty: true, mask: mask, bits: bits}
 }
 
 func (b *Backend) setNZC(value uint32, carry bool) {
-	// V survives from whatever set it last; materialize that, then overwrite
-	// N, Z and C.
-	b.resolveFlags()
-	b.regs[cpu.RegisterCPSR] &^= flagN | flagZ | flagC
-	if value == 0 {
-		b.regs[cpu.RegisterCPSR] |= flagZ
-	}
-	if value&(uint32(1)<<31) != 0 {
-		b.regs[cpu.RegisterCPSR] |= flagN
-	}
+	const mask = flagN | flagZ | flagC
+	bits := nzBits(value)
 	if carry {
-		b.regs[cpu.RegisterCPSR] |= flagC
+		bits |= flagC
 	}
+	b.deferFlags(mask, bits)
+}
+
+func nzBits(value uint32) uint32 {
+	bits := uint32(0)
+	if value == 0 {
+		bits |= flagZ
+	}
+	if value&flagN != 0 {
+		bits |= flagN
+	}
+	return bits
+}
+
+// deferFlags merges a partial flag write into the pending CPSR update. Thumb
+// logical and shift instructions preserve one or both of C/V; keeping those
+// bits pending avoids materializing CPSR between consecutive flag setters.
+func (b *Backend) deferFlags(mask, bits uint32) {
+	if !b.flags.dirty {
+		b.flags = pendingFlags{dirty: true, mask: mask, bits: bits}
+		return
+	}
+	b.flags.dirty = true
+	b.flags.mask |= mask
+	b.flags.bits = b.flags.bits&^mask | bits
 }
 
 func (b *Backend) carry() bool {
-	b.resolveFlags()
+	if b.flags.dirty && b.flags.mask&flagC != 0 {
+		return b.flags.bits&flagC != 0
+	}
 	return b.regs[cpu.RegisterCPSR]&flagC != 0
-}
-
-// thumbFlagsDeadBefore reports that the N/Z/C/V a flag-setting Thumb instruction
-// is about to write are provably dead because the instruction at pc (its
-// sequential successor) unconditionally overwrites all four without reading any.
-// Only the immediate add/sub/compare classes qualify: they always set the full
-// NZCV from their own operands and never read a flag. Because a qualifying
-// successor never reads flags, a chain of them can be skipped safely — the run
-// always reaches a real flag write before any reader, so the earlier writes are
-// genuinely dead. This is a sound one-instruction test needing no control-flow
-// analysis. It peeks only inside the current execute-region slice; if the peek
-// would leave it, it returns false so no executeData refresh (a side effect)
-// happens during the look-ahead.
-func (b *Backend) thumbFlagsDeadBefore(pc uint32) bool {
-	if pc < b.executeAddress {
-		return false
-	}
-	offset := uint64(pc - b.executeAddress)
-	if offset+2 > uint64(len(b.executeData)) {
-		return false
-	}
-	next := uint16(b.executeData[offset]) | uint16(b.executeData[offset+1])<<8
-	switch thumbInstructionClasses[next] {
-	case thumbCompareImmediate, thumbAddImmediate, thumbSubtractImmediate, thumbAddSubtract:
-		return true
-	}
-	return false
 }
 
 func shiftLSL(value uint32, amount uint8, oldCarry bool) (uint32, bool) {
