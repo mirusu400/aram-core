@@ -475,7 +475,7 @@ func (r *Runtime) drawImage(args []uint32) error {
 }
 
 func (r *Runtime) drawArc(fill bool, args []uint32) error {
-	framebuffer, ok := r.Framebuffers[args[0]]
+	framebuffer, ok := r.drawingFramebuffer(args[0])
 	if !ok {
 		return nil
 	}
@@ -600,7 +600,7 @@ func (r *Runtime) drawText(unicode bool, args []uint32) error {
 	top := int(int32(args[2]))
 	// Resolve the target and decode the context once per string, not per
 	// glyph pixel; a missing framebuffer still draws nothing and returns nil.
-	framebuffer, hasFramebuffer := r.Framebuffers[args[0]]
+	framebuffer, hasFramebuffer := r.drawingFramebuffer(args[0])
 	var graphicsContext wipiGraphicsContext
 	if hasFramebuffer {
 		decoded, err := r.context(args[5])
@@ -706,7 +706,7 @@ func (r *Runtime) encodeImage(args []uint32) (uint32, error) {
 			return 0, err
 		}
 	}
-	framebuffer, ok := r.Framebuffers[args[0]]
+	framebuffer, ok := r.drawingFramebuffer(args[0])
 	x, y := int(int32(args[1])), int(int32(args[2]))
 	width, height := int(int32(args[3])), int(int32(args[4]))
 	if !ok || x < 0 || y < 0 || width <= 0 || height <= 0 ||
@@ -717,9 +717,11 @@ func (r *Runtime) encodeImage(args []uint32) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
-	if err := r.syncFramebufferToService(framebuffer); err != nil {
+	physical := r.Framebuffers[framebuffer.Handle]
+	if err := r.syncFramebufferToService(physical); err != nil {
 		return 0, err
 	}
+	y += int(framebuffer.Pixels-physical.Pixels) / (physical.Width * int(physical.bytesPerPixel()))
 	encoded, err := r.Services.Assets.EncodeSurface(
 		r.ServiceOwner,
 		surface,
@@ -752,7 +754,7 @@ func (r *Runtime) encodeImage(args []uint32) (uint32, error) {
 }
 
 func (r *Runtime) drawPolygon(fill bool, args []uint32) error {
-	framebuffer, ok := r.Framebuffers[args[0]]
+	framebuffer, ok := r.drawingFramebuffer(args[0])
 	count := int(int32(args[3]))
 	if !ok || args[1] == 0 || args[2] == 0 || count <= 0 || count > 4096 {
 		return nil

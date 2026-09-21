@@ -182,6 +182,17 @@ func graphicsArgumentCount(name string) (int, bool) {
 	}
 }
 
+// drawingFramebuffer returns a view in the same coordinates as a carrier's
+// raw pixel pointer. The allocation and presentation descriptor stay physical.
+func (r *Runtime) drawingFramebuffer(handle uint32) (Framebuffer, bool) {
+	fb, ok := r.Framebuffers[handle]
+	if ok && handle == r.ScreenHandle && r.ScreenDrawingOriginY > 0 && r.ScreenDrawingOriginY < fb.Height {
+		fb.Pixels += uint32(r.ScreenDrawingOriginY*fb.Width) * fb.bytesPerPixel()
+		fb.Height -= r.ScreenDrawingOriginY
+	}
+	return fb, ok
+}
+
 func (r *Runtime) EnsureScreenFramebuffer() (uint32, error) {
 	if r.ScreenHandle != 0 {
 		return r.ScreenHandle, nil
@@ -581,7 +592,7 @@ func (r *Runtime) putPixelCoverage(
 	if coverage == 0 {
 		return nil
 	}
-	fb, ok := r.Framebuffers[handle]
+	fb, ok := r.drawingFramebuffer(handle)
 	if !ok {
 		return nil
 	}
@@ -939,7 +950,7 @@ func (r *Runtime) blendDevicePixel(destination, source, alpha uint32) uint32 {
 }
 
 func (r *Runtime) drawLine(handle uint32, x1, y1, x2, y2 int, context uint32) error {
-	fb, ok := r.Framebuffers[handle]
+	fb, ok := r.drawingFramebuffer(handle)
 	if !ok {
 		return nil
 	}
@@ -989,7 +1000,7 @@ func (r *Runtime) drawRect(fill bool, args []uint32) error {
 	if width <= 0 || height <= 0 {
 		return nil
 	}
-	fb, ok := r.Framebuffers[handle]
+	fb, ok := r.drawingFramebuffer(handle)
 	if !ok || width > fb.Width*2 || height > fb.Height*2 {
 		return nil
 	}
@@ -1088,7 +1099,7 @@ func (r *Runtime) stringWidth(font, address uint32, length int32, unicode bool) 
 }
 
 func (r *Runtime) getRGBPixels(args []uint32) error {
-	fb, ok := r.Framebuffers[args[0]]
+	fb, ok := r.drawingFramebuffer(args[0])
 	if !ok {
 		return nil
 	}
@@ -1125,7 +1136,7 @@ func (r *Runtime) getRGBPixels(args []uint32) error {
 }
 
 func (r *Runtime) setRGBPixels(args []uint32) error {
-	fb, ok := r.Framebuffers[args[0]]
+	fb, ok := r.drawingFramebuffer(args[0])
 	if !ok {
 		return nil
 	}
@@ -1171,13 +1182,13 @@ func (r *Runtime) copyFramebufferAlpha(
 	args []uint32,
 	alpha *wipiImageAlpha,
 ) error {
-	destination, ok := r.Framebuffers[args[0]]
+	destination, ok := r.drawingFramebuffer(args[0])
 	if !ok {
 		return nil
 	}
 	dx, dy := int(int32(args[1])), int(int32(args[2]))
 	width, height := int(int32(args[3])), int(int32(args[4]))
-	source, ok := r.Framebuffers[args[5]]
+	source, ok := r.drawingFramebuffer(args[5])
 	if !ok {
 		return nil
 	}

@@ -260,6 +260,9 @@ type Runtime struct {
 	// four bytes earlier. A Clet that reads the struct directly needs the
 	// layout its own vendor's runtime wrote.
 	CompactGraphicsContext bool
+	// ScreenDrawingOriginY excludes a carrier's reserved top strip from
+	// drawing and pixel access, while presentation retains the full screen.
+	ScreenDrawingOriginY int
 
 	// DisplayInfoReturnsCount selects LGT Raptor's MC_grpGetDisplayInfo
 	// return value. The Samsung WIPI-C runtime answers M_E_SUCCESS (0) after

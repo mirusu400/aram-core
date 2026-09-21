@@ -277,6 +277,9 @@ func NewRuntimeWithOptions(
 	// A Raptor Clet reads its own MC_GrpContext, and LGT's runtime spells the
 	// struct without the SDK's clip_enabled word.
 	public.CompactGraphicsContext = true
+	if options.PrimaryFramebufferHeight == 0 {
+		public.ScreenDrawingOriginY = raptorScreenOriginY
+	}
 	// LGT's MC_grpGetDisplayInfo answers the display count, not M_E_SUCCESS.
 	public.DisplayInfoReturnsCount = true
 	if err := runtime.applyImagePatches(); err != nil {
