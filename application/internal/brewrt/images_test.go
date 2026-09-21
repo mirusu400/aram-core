@@ -227,6 +227,110 @@ func TestSetupNativeImageExpandsIndexedHeapBufferInPlace(t *testing.T) {
 	}
 }
 
+func TestNativeBitmapRetainsDecodedPixelsAfterSourceReused(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	source := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	source.SetRGBA(0, 0, color.RGBA{R: 255, A: 255})
+	var encoded bytes.Buffer
+	if err := bmp.Encode(&encoded, source); err != nil {
+		t.Fatal(err)
+	}
+	buffer, err := runtime.allocateGuest(uint32(encoded.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteMemory(buffer, encoded.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR1, buffer); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.setupNativeImage(); err != nil {
+		t.Fatal(err)
+	}
+	object, err := runtime.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil || object == 0 {
+		t.Fatalf("bitmap object=0x%08x err=%v", object, err)
+	}
+	if _, ok := runtime.nativeImages[object]; !ok {
+		t.Fatal("expected live native-image source")
+	}
+	runtime.releaseGuest(buffer)
+	if err := runtime.cpu.WriteMemory(buffer, make([]byte, encoded.Len())); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.refreshNativeBitmap(object); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := runtime.nativeImages[object]; ok {
+		t.Fatal("reused encoded source remained live")
+	}
+	var header [12]byte
+	if err := runtime.cpu.ReadMemory(object, header[:]); err != nil {
+		t.Fatal(err)
+	}
+	pixels := binary.LittleEndian.Uint32(header[8:12])
+	var pixel [2]byte
+	if err := runtime.cpu.ReadMemory(pixels, pixel[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint16(pixel[:]); got != 0xf800 {
+		t.Fatalf("decoded pixel=0x%04x, want red", got)
+	}
+}
+
+func TestNativeBitmapStopsRefreshingWhenGuestReshapesIDIB(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	source := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	source.SetRGBA(0, 0, color.RGBA{R: 255, A: 255})
+	var encoded bytes.Buffer
+	if err := bmp.Encode(&encoded, source); err != nil {
+		t.Fatal(err)
+	}
+	buffer, err := runtime.allocateGuest(uint32(encoded.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteMemory(buffer, encoded.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR1, buffer); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.setupNativeImage(); err != nil {
+		t.Fatal(err)
+	}
+	object, err := runtime.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil || object == 0 {
+		t.Fatalf("bitmap object=0x%08x err=%v", object, err)
+	}
+	var header [12]byte
+	if err := runtime.cpu.ReadMemory(object, header[:]); err != nil {
+		t.Fatal(err)
+	}
+	pixels := binary.LittleEndian.Uint32(header[8:12])
+	// The applet adjusts IDIB geometry and writes its own pixel data.
+	if err := runtime.cpu.WriteMemory(object+20, []byte{2, 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteMemory(pixels, []byte{0x1f, 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.refreshNativeBitmap(object); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := runtime.nativeImages[object]; ok {
+		t.Fatal("guest-shaped IDIB remained bound to encoded BMP")
+	}
+	var pixel [2]byte
+	if err := runtime.cpu.ReadMemory(pixels, pixel[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint16(pixel[:]); got != 0x001f {
+		t.Fatalf("guest-owned pixel=0x%04x, want blue", got)
+	}
+}
+
 func TestDrawBitmapTreatsRGB565MagentaAsTransparent(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	source := image.NewRGBA(image.Rect(0, 0, 1, 1))

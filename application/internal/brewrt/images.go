@@ -243,7 +243,12 @@ func (r *Runtime) refreshNativeBitmap(object uint32) error {
 	}
 	span, valid := nativeBMPSpan(encodedHeader[:])
 	if !valid || span != native.span {
-		return fmt.Errorf("live BREW native-image geometry changed")
+		// SetupNativeImage has already copied a decoded bitmap into its own IDIB.
+		// Some applets release or reuse the original encoded buffer immediately;
+		// stop observing it when its BMP identity/geometry disappears, retaining
+		// the last valid pixels rather than decoding unrelated guest memory.
+		delete(r.nativeImages, object)
+		return nil
 	}
 	encoded := make([]byte, span)
 	if err := r.cpu.ReadMemory(native.encoded, encoded); err != nil {
@@ -261,7 +266,11 @@ func (r *Runtime) refreshNativeBitmap(object uint32) error {
 	height := int(binary.LittleEndian.Uint16(bitmapHeader[22:24]))
 	pitch := int(binary.LittleEndian.Uint16(bitmapHeader[24:26]))
 	if decoded.Bounds().Dx() != width || decoded.Bounds().Dy() != height || pitch < width*2 {
-		return fmt.Errorf("live BREW native-image bitmap geometry mismatch")
+		// The applet may reshape the returned IDIB for its own blitter. Its
+		// dimensions and pitch then belong to the guest, not the encoded BMP;
+		// replaying the original pixels would overwrite guest-owned layout.
+		delete(r.nativeImages, object)
+		return nil
 	}
 	pixels := binary.LittleEndian.Uint32(bitmapHeader[8:12])
 	if pixels == 0 {
