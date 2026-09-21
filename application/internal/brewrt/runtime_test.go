@@ -695,6 +695,15 @@ func TestCommonHelperContracts(t *testing.T) {
 	if got := call(helperWStrcmpSlot, wideSource, wideDestination, 0); got != 0 {
 		t.Fatalf("wstrcmp = %d, want equal", int32(got))
 	}
+	if got := call(helperWStrchrSlot, wideDestination, 'T', 0); got != wideDestination+2 {
+		t.Fatalf("wstrchr result = 0x%08x, want 0x%08x", got, wideDestination+2)
+	}
+	if got := call(helperWStrchrSlot, wideDestination, 'X', 0); got != 0 {
+		t.Fatalf("wstrchr missing result = 0x%08x, want null", got)
+	}
+	if got := call(helperWStrchrSlot, wideDestination, 0, 0); got != wideDestination+6 {
+		t.Fatalf("wstrchr terminator result = 0x%08x, want 0x%08x", got, wideDestination+6)
+	}
 	if got := call(helperWStrSizeSlot, wideDestination, 0, 0); got != 8 {
 		t.Fatalf("wstrsize = %d, want 8", got)
 	}

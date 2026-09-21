@@ -7,9 +7,12 @@ import (
 	"image"
 	"path"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/mirusu400/aram-core/cpu"
 	"golang.org/x/image/bmp"
+	"golang.org/x/text/encoding/korean"
+	"golang.org/x/text/transform"
 )
 
 const brewResourceMagic = uint16(0x0011)
@@ -232,18 +235,60 @@ func (r *Runtime) loadShellResourceString() error {
 	if !ok {
 		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
 	}
-	// String resources are stored as UCS-2 bytes. Copy whole code units, reserve
-	// space for the terminating NUL, and return the number of characters copied.
-	count := min(uint32(len(data))&^1, size-2)
-	for count >= 2 && data[count-2] == 0 && data[count-1] == 0 {
-		count -= 2
+	units := decodeBREWResourceString(data)
+	capacity := int(size/2) - 1
+	if len(units) > capacity {
+		units = units[:capacity]
 	}
-	encoded := make([]byte, count+2)
-	copy(encoded, data[:count])
+	encoded := make([]byte, (len(units)+1)*2)
+	for index, unit := range units {
+		binary.LittleEndian.PutUint16(encoded[index*2:], unit)
+	}
 	if err := r.cpu.WriteMemory(destination, encoded); err != nil {
 		return fmt.Errorf("write BREW string resource: %w", err)
 	}
-	return r.cpu.WriteRegister(cpu.RegisterR0, count/2)
+	return r.cpu.WriteRegister(cpu.RegisterR0, uint32(len(units)))
+}
+
+func decodeBREWResourceString(data []byte) []uint16 {
+	if len(data) >= 2 && data[0] == 0xfe && data[1] == 0xfe {
+		payload := data[2:]
+		if terminator := bytes.IndexByte(payload, 0); terminator >= 0 {
+			payload = payload[:terminator]
+		}
+		decoded, _, err := transform.Bytes(korean.EUCKR.NewDecoder(), payload)
+		if err == nil {
+			return trimWideStringTerminator(utf16.Encode([]rune(string(decoded))))
+		}
+		// BREW's STREXPAND fallback widens ASCII bytes and preserves each
+		// double-byte handset character as one AECHAR.
+		var units []uint16
+		for index := 0; index < len(payload); index++ {
+			unit := uint16(payload[index])
+			if payload[index]&0x80 != 0 && index+1 < len(payload) {
+				index++
+				unit |= uint16(payload[index]) << 8
+			}
+			units = append(units, unit)
+		}
+		return trimWideStringTerminator(units)
+	}
+	units := make([]uint16, 0, len(data)/2)
+	for index := 0; index+1 < len(data); index += 2 {
+		unit := binary.LittleEndian.Uint16(data[index:])
+		if unit == 0 {
+			break
+		}
+		units = append(units, unit)
+	}
+	return units
+}
+
+func trimWideStringTerminator(units []uint16) []uint16 {
+	for len(units) > 0 && units[len(units)-1] == 0 {
+		units = units[:len(units)-1]
+	}
+	return units
 }
 
 func (r *Runtime) loadShellResourceObject() error {

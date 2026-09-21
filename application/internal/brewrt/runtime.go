@@ -68,6 +68,7 @@ const (
 	helperWStrcpySlot       = uint32(9)
 	helperWStrcmpSlot       = uint32(11)
 	helperWStrlenSlot       = uint32(12)
+	helperWStrchrSlot       = uint32(13)
 	helperWSprintfSlot      = uint32(15)
 	helperStrToWStrSlot     = uint32(16)
 	helperWStrToStrSlot     = uint32(17)
@@ -893,6 +894,11 @@ func (r *Runtime) handleAppletMethodTrap(
 			return resume()
 		case helperWStrlenSlot:
 			if err := r.returnGuestWideStringLength(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case helperWStrchrSlot:
+			if err := r.findGuestWideStringUnit(); err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
@@ -2599,6 +2605,31 @@ func (r *Runtime) returnGuestWideStringLength() error {
 		}
 	}
 	return fmt.Errorf("BREW wstrlen at 0x%08x exceeded %d UTF-16 units", address, maxWideStringUnits)
+}
+
+func (r *Runtime) findGuestWideStringUnit() error {
+	pointer, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW wstrchr string pointer: %w", err)
+	}
+	rawValue, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW wstrchr value: %w", err)
+	}
+	units, err := r.readGuestWideString(pointer)
+	if err != nil {
+		return err
+	}
+	value := uint16(rawValue)
+	for index, unit := range units {
+		if unit == value {
+			return r.cpu.WriteRegister(cpu.RegisterR0, pointer+uint32(index*2))
+		}
+	}
+	if value == 0 {
+		return r.cpu.WriteRegister(cpu.RegisterR0, pointer+uint32(len(units)*2))
+	}
+	return r.cpu.WriteRegister(cpu.RegisterR0, 0)
 }
 
 func (r *Runtime) compareGuestCStrings() error {
