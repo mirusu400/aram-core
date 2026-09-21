@@ -145,7 +145,7 @@ func (vm *VM) installLGTMediaNatives() {
 		return o.Fields[lgtLoopField], true, nil
 	})
 	vm.RegisterNative(lgtMediaClass, "setPlayBackLoop", "(Z)V", func(_ context.Context, vm *VM, r uint32, a []Value) (Value, bool, error) {
-		o, c, e := vm.lgtMedia(r)
+		o, _, e := vm.lgtMedia(r)
 		if e != nil {
 			return Value{}, false, e
 		}
@@ -153,18 +153,11 @@ func (vm *VM) installLGTMediaNatives() {
 		if e != nil {
 			return Value{}, false, e
 		}
-		if c.clip != 0 {
-			info, e := vm.services.Media.Info(vm.serviceOwner, c.clip)
-			if e != nil {
-				return Value{}, false, e
-			}
-			if info.State != shared.ClipStopped {
-				return Value{}, false, lgtUnsupported("setPlayBackLoop", "changing loop during playback is unspecified")
-			}
-		}
 		if v != 0 {
 			v = 1
 		}
+		// The setting applies when start begins the next clip. Titles may set it
+		// before replacing a still-playing source with setMediaLocation.
 		o.Fields[lgtLoopField] = IntValue(v)
 		return Value{}, false, nil
 	})

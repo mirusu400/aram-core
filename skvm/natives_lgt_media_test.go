@@ -130,6 +130,25 @@ func TestMMPPPCMContinuityLoopReplay(t *testing.T) {
 		t.Fatal("once kept playing")
 	}
 }
+
+func TestMMPPSetLoopBeforeReplacingPlayingClip(t *testing.T) {
+	v := mmppVM(t, NativePolicyLGT)
+	r := mmppNew(t, v)
+	mmppSource(t, v, r)
+	mmppCall(t, v, r, "start")
+	check(t, v.Advance(context.Background(), 20*time.Millisecond, nil))
+	old := mmppInfo(t, v, r)
+	invokeTestNative(t, v, mmppClass, "setPlayBackLoop", "(Z)V", r, IntValue(1))
+	if got := mmppInfo(t, v, r); got != old {
+		t.Fatalf("setting next loop changed playing clip: before=%+v after=%+v", old, got)
+	}
+	mmppSource(t, v, r)
+	mmppCall(t, v, r, "start")
+	check(t, v.Advance(context.Background(), 250*time.Millisecond, nil))
+	if got := mmppInfo(t, v, r); got.State != shared.ClipPlaying || got.RemainingPlays != -1 {
+		t.Fatalf("replacement did not loop: %+v", got)
+	}
+}
 func TestMMPPBoundsMissingUnsupportedAndPolicy(t *testing.T) {
 	v := mmppVM(t, NativePolicyLGT)
 	r := mmppNew(t, v)

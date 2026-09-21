@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"strings"
 
 	machinecore "github.com/mirusu400/aram-core/core"
 	"github.com/mirusu400/aram-core/loader/j2me"
@@ -30,9 +31,33 @@ var ErrUnsupportedProfile = errors.New("unsupported Java profile")
 
 func NewJ2ME(ctx context.Context, source machinecore.Source, pkg j2me.Package,
 	size image.Point, sampleRate uint32, channels uint8) (*Machine, error) {
+	if source.ProfileID == j2me.LGTProfileID {
+		size = inferLGTFramebufferSize(size, pkg.Resources)
+	}
 	return newJavaMachine(ctx, source, Application{MainClass: pkg.Descriptor.MainClass,
 		Properties: pkg.Descriptor.Raw, Classes: pkg.Classes, Resources: pkg.Resources,
 		RecordStores: pkg.RecordStores}, nil, size, sampleRate, channels)
+}
+
+func inferLGTFramebufferSize(fallback image.Point, resources map[string][]byte) image.Point {
+	// Some LGT MIDlets choose imgM below 240 pixels and imgL at 240 pixels.
+	// A package with only imgM assets cannot render at the default 240 width.
+	if fallback.X < 240 {
+		return fallback
+	}
+	hasMedium := false
+	for name := range resources {
+		if strings.HasPrefix(name, "imgL/") {
+			return fallback
+		}
+		if strings.HasPrefix(name, "imgM/") {
+			hasMedium = true
+		}
+	}
+	if hasMedium {
+		return image.Pt(176, 220)
+	}
+	return fallback
 }
 
 func configureJavaIdentity(config *shared.Config, source machinecore.Source, legacy bool) (string, string, engine.NativePolicy, error) {
