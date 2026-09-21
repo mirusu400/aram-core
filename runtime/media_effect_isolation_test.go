@@ -53,3 +53,75 @@ func TestMediaEffectCompletionAndReleasePreserveLoop(t *testing.T) {
 		})
 	}
 }
+
+func TestMediaStoppedLoopCompatibilityPreservesBGMWhileClipIsReused(t *testing.T) {
+	media, bus, clip := newRampMedia(t)
+	media.SetStoppedLoopPreservation(true)
+	check(t, media.Play(1, clip, -1))
+	step := 125 * time.Microsecond
+	check(t, media.Advance(0, step, bus))
+	if got := media.Drain().PCM16; !reflect.DeepEqual(got, []int16{10}) {
+		t.Fatalf("first BGM frame = %v, want [10]", got)
+	}
+
+	check(t, media.Stop(1, clip))
+	check(t, media.Clear(1, clip))
+	_, err := media.Append(1, clip, pcmWave(8_000, 1, []int16{1000}))
+	check(t, err)
+	check(t, media.Play(1, clip, 1))
+	check(t, media.Advance(step, 2*step, bus))
+	if got := media.Drain().PCM16; !reflect.DeepEqual(got, []int16{1020}) {
+		t.Fatalf("BGM/effect frame = %v, want [1020]", got)
+	}
+	if !media.MusicVoiceActive() {
+		t.Fatal("stopped BGM loop was not preserved")
+	}
+
+	check(t, media.Advance(2*step, 3*step, bus))
+	if got := media.Drain().PCM16; !reflect.DeepEqual(got, []int16{30}) {
+		t.Fatalf("post-effect BGM frame = %v, want [30]", got)
+	}
+
+	// Selecting another loop replaces the compatibility voice instead of
+	// mixing two background tracks.
+	check(t, media.Clear(1, clip))
+	_, err = media.Append(1, clip, pcmWave(8_000, 1, []int16{8, 10}))
+	check(t, err)
+	check(t, media.Play(1, clip, -1))
+	check(t, media.Advance(3*step, 4*step, bus))
+	if got := media.Drain().PCM16; !reflect.DeepEqual(got, []int16{8}) {
+		t.Fatalf("replacement BGM frame = %v, want [8]", got)
+	}
+	if media.MusicVoiceActive() {
+		t.Fatal("previous BGM voice survived replacement loop")
+	}
+}
+
+func TestMediaStoppedLoopCompatibilitySurvivesSnapshot(t *testing.T) {
+	media, bus, clip := newRampMedia(t)
+	media.SetStoppedLoopPreservation(true)
+	check(t, media.Play(1, clip, -1))
+	check(t, media.Advance(0, 125*time.Microsecond, bus))
+	_ = media.Drain()
+	check(t, media.Stop(1, clip))
+	state := media.Snapshot()
+	if state.BGMVoice == nil {
+		t.Fatal("snapshot omitted compatibility BGM voice")
+	}
+
+	registry := NewRegistry(32)
+	_, err := registry.Create(1, KindClip)
+	check(t, err)
+	restored, err := NewMedia(registry, state.Limits)
+	check(t, err)
+	restored.SetStoppedLoopPreservation(true)
+	check(t, restored.Restore(state))
+	check(t, restored.Advance(
+		125*time.Microsecond,
+		250*time.Microsecond,
+		NewEventBus(32, 64),
+	))
+	if got := restored.Drain().PCM16; !reflect.DeepEqual(got, []int16{20}) {
+		t.Fatalf("restored BGM frame = %v, want [20]", got)
+	}
+}

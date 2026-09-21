@@ -94,9 +94,11 @@ type MediaState struct {
 	BGMVoice        *BGMVoiceState
 	BGMVoiceSig     uint64
 
-	// Legacy detached-voice fields remain in schema v3 so existing save states
-	// can be decoded and validated. Restore retires them instead of reviving an
-	// unowned audible voice.
+	// BGMVoice carries the opt-in stopped-loop compatibility voice. It remains
+	// detached from the guest-visible registry so a title may reuse its only
+	// clip for an effect without cutting off the loop it just stopped.
+	// BGMVoiceSig and the ended markers are legacy schema-v3 fields retained so
+	// older save states can still be decoded and validated.
 	BGMEndedSig       uint64
 	BGMEndedElapsedNS int64
 	BGMEndedValid     bool
@@ -173,9 +175,14 @@ type Media struct {
 	dropped         uint64
 	outputRevision  uint64
 
-	// mixMode enables simultaneous playback of registered clips. All sounding
-	// voices remain owned by those clips.
+	// mixMode records the user-facing compatibility setting. Registered clips
+	// mix in either mode.
 	mixMode bool
+	// preserveStoppedLoops is an exact-title compatibility policy for games
+	// which stop and reuse their sole clip for one-shot effects. bgmVoice is the
+	// captured infinite loop that continues while the registered clip is reused.
+	preserveStoppedLoops bool
+	bgmVoice             *mediaClip
 
 	voiceIDs      []ServiceID
 	voiceScratch  []*mediaClip
@@ -219,9 +226,23 @@ func (m *Media) SetAudioMixMode(on bool) {
 // voices attached to registered clips.
 func (m *Media) AudioMixMode() bool { return m.mixMode }
 
-// MusicVoiceActive is retained for debug/API compatibility. Detached music
-// voices are no longer created, so it always reports false for new state.
-func (m *Media) MusicVoiceActive() bool { return false }
+// SetStoppedLoopPreservation enables the exact-title compatibility policy for
+// games which stop and reuse their only audio clip for effects. It is not a
+// general mixer setting: callers must select it from verified package identity.
+func (m *Media) SetStoppedLoopPreservation(on bool) {
+	if m.preserveStoppedLoops == on {
+		return
+	}
+	m.preserveStoppedLoops = on
+	if !on && m.bgmVoice != nil {
+		m.bgmVoice = nil
+		m.invalidateOutput()
+	}
+}
+
+// MusicVoiceActive reports whether the title-specific stopped-loop policy is
+// currently preserving a background voice.
+func (m *Media) MusicVoiceActive() bool { return m.bgmVoice != nil }
 
 // playbackVoices lists every sounding registered source in deterministic order.
 func (m *Media) playbackVoices() []*mediaClip {
@@ -233,6 +254,9 @@ func (m *Media) playbackVoices() []*mediaClip {
 	m.voiceScratch = m.voiceScratch[:0]
 	for _, id := range m.voiceIDs {
 		m.voiceScratch = append(m.voiceScratch, m.clips[id])
+	}
+	if m.bgmVoice != nil {
+		m.voiceScratch = append(m.voiceScratch, m.bgmVoice)
 	}
 	return m.voiceScratch
 }
@@ -481,6 +505,12 @@ func (m *Media) Play(owner OwnerID, id ServiceID, plays int32) error {
 	if clip.decoded != nil && clip.position >= clip.decoded.duration {
 		clip.position = 0
 	}
+	// A new loop is a deliberate BGM selection. Retire any voice captured from
+	// the previous loop before the registered clip begins sounding.
+	if plays == -1 && m.bgmVoice != nil {
+		m.bgmVoice = nil
+		m.invalidateOutput()
+	}
 	clip.remainingPlays = plays
 	clip.state = ClipPlaying
 	return nil
@@ -518,6 +548,20 @@ func (m *Media) Stop(owner OwnerID, id ServiceID) error {
 	}
 	if clip.state != ClipPlaying && clip.state != ClipPaused && clip.state != ClipRecording {
 		return fmt.Errorf("%w: stop media clip while %v", ErrInvalidState, clip.state)
+	}
+	if m.preserveStoppedLoops && clip.remainingPlays == -1 &&
+		clip.decoded != nil && clip.decoded.duration > 0 {
+		m.bgmVoice = &mediaClip{
+			mediaType:      clip.mediaType,
+			source:         cloneBytes(clip.source),
+			decoded:        clip.decoded,
+			position:       clip.position,
+			state:          ClipPlaying,
+			volume:         clip.volume,
+			muted:          clip.muted,
+			pan:            clip.pan,
+			remainingPlays: -1,
+		}
 	}
 	clip.state = ClipStopped
 	clip.remainingPlays = 0
@@ -851,6 +895,14 @@ func (m *Media) captureAdvance(destination *mediaAdvanceState) {
 			remainingPlays: clip.remainingPlays,
 		})
 	}
+	if m.bgmVoice != nil {
+		destination.clips = append(destination.clips, mediaClipAdvanceState{
+			clip:           m.bgmVoice,
+			position:       m.bgmVoice.position,
+			state:          m.bgmVoice.state,
+			remainingPlays: m.bgmVoice.remainingPlays,
+		})
+	}
 }
 
 // restoreAdvance puts back what captureAdvance recorded.
@@ -872,6 +924,15 @@ func (m *Media) Snapshot() MediaState {
 		OutputRemainder: m.outputRemainder,
 		QueuedPCM16:     append([]int16(nil), m.queuedPCM16...),
 		AudioMixMode:    m.mixMode,
+	}
+	if m.bgmVoice != nil {
+		state.BGMVoice = &BGMVoiceState{
+			MediaType:  m.bgmVoice.mediaType,
+			Source:     cloneBytes(m.bgmVoice.source),
+			PositionNS: int64(m.bgmVoice.position),
+			Volume:     m.bgmVoice.volume,
+			Pan:        m.bgmVoice.pan,
+		}
 	}
 	for _, id := range m.sortedClipIDs() {
 		clip := m.clips[id]
@@ -962,6 +1023,7 @@ func (m *Media) Restore(state MediaState) error {
 		clips[saved.ID] = clip
 		previous = saved.ID
 	}
+	var bgmVoice *mediaClip
 	if state.BGMVoice != nil {
 		v := state.BGMVoice
 		if len(v.MediaType) > 127 || strings.IndexByte(v.MediaType, 0) >= 0 ||
@@ -981,6 +1043,18 @@ func (m *Media) Restore(state MediaState) error {
 		if decoded != nil && time.Duration(v.PositionNS) > decoded.duration {
 			return fmt.Errorf("%w: media music voice position exceeds duration", ErrInvalidState)
 		}
+		if m.preserveStoppedLoops && decoded != nil && decoded.duration > 0 {
+			bgmVoice = &mediaClip{
+				mediaType:      v.MediaType,
+				source:         cloneBytes(v.Source),
+				decoded:        decoded,
+				position:       time.Duration(v.PositionNS),
+				state:          ClipPlaying,
+				volume:         v.Volume,
+				pan:            v.Pan,
+				remainingPlays: -1,
+			}
+		}
 	}
 	m.limits = state.Limits
 	m.clips = clips
@@ -989,8 +1063,7 @@ func (m *Media) Restore(state MediaState) error {
 	m.outputRemainder = state.OutputRemainder
 	m.queuedPCM16 = append([]int16(nil), state.QueuedPCM16...)
 	m.mixMode = state.AudioMixMode
-	// Legacy detached BGM payloads are validated above, then retired because
-	// they cannot be represented without violating clip ownership.
+	m.bgmVoice = bgmVoice
 	m.outputRevision++
 	return nil
 }

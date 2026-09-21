@@ -57,6 +57,7 @@ type jitBlock struct {
 	arm         []jitInstr
 	thumb       []thumbMicroInstr
 	countedLoop *jitCountedLoop
+	paletteLoop *jitThumbPaletteLoop
 }
 
 const jitMaxBlock = 256
@@ -332,24 +333,52 @@ outer:
 				block, limit-executed, wholeSystem, hasExecutionTraps, traced,
 			)
 		}
-		blockInstructions := len(block.thumb)
-		if remaining := limit - executed; uint64(blockInstructions) > remaining {
-			blockInstructions = int(remaining)
+		if block.paletteLoop != nil {
+			retired, err := b.accelerateThumbPaletteLoop(
+				block.paletteLoop,
+				limit-executed,
+				wholeSystem,
+				hasExecutionTraps,
+				traced,
+			)
+			executed += retired
+			if err != nil {
+				return executed, nil, err
+			}
+			if retired != 0 {
+				continue outer
+			}
 		}
-		retired, branched, reason, err := b.executeThumbMicroBlock(
-			block, blockInstructions, wholeSystem, hasExecutionTraps, traced,
-		)
-		executed += uint64(retired)
-		if err != nil {
-			return executed, nil, err
-		}
-		if reason != nil {
-			return executed, reason, nil
-		}
-		if b.mode != cpu.ModeThumb {
-			return executed, nil, nil
-		}
-		if branched {
+		for {
+			blockInstructions := len(block.thumb)
+			if remaining := limit - executed; uint64(blockInstructions) > remaining {
+				blockInstructions = int(remaining)
+			}
+			retired, branched, reason, err := b.executeThumbMicroBlock(
+				block, blockInstructions, wholeSystem, hasExecutionTraps, traced,
+			)
+			executed += uint64(retired)
+			if err != nil {
+				return executed, nil, err
+			}
+			if reason != nil {
+				return executed, reason, nil
+			}
+			if b.mode != cpu.ModeThumb {
+				return executed, nil, nil
+			}
+			if !branched {
+				break
+			}
+			// Application software spends much of its time in short pixel and
+			// audio loops. A block whose terminal branch returns to its own
+			// start can execute again directly: Backend.Run already caps this
+			// call to one cancellation batch, while avoiding a block-cache
+			// lookup and outer dispatch on every guest loop iteration.
+			if !wholeSystem && executed < limit &&
+				b.regs[cpu.RegisterPC] == block.start {
+				continue
+			}
 			continue outer
 		}
 	}
@@ -475,6 +504,12 @@ func (b *Backend) translateThumbBlock(pc uint32) *jitBlock {
 		return nil
 	}
 	block := &jitBlock{start: pc, end: cur, thumb: instrs}
+	if hasThumbPaletteLoopPrefix(instrs, pc) {
+		block.paletteLoop = b.classifyThumbPaletteLoop(pc)
+	}
+	if block.paletteLoop != nil {
+		block.end = pc + thumbPaletteLoopInstructions*2
+	}
 	if b.loopAcceleration {
 		block.countedLoop = classifyThumbCountedLoop(block)
 	}

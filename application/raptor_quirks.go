@@ -35,5 +35,23 @@ func raptorRuntimeOptions(
 	); found {
 		options.ResourceBytesHelper = helper.Address
 	}
+	for _, patch := range quirkdb.LookupRaptorImagePatches(
+		source.SHA256,
+		pkg.Descriptor.AID,
+		pkg.Descriptor.MainClass,
+	) {
+		options.ImagePatches = append(options.ImagePatches, raptorrt.ImagePatch{
+			Address:     patch.Address,
+			Expected:    patch.Expected,
+			Replacement: patch.Replacement,
+		})
+	}
+	if audio, found := quirkdb.LookupRaptorAudioCompatibility(
+		source.SHA256,
+		pkg.Descriptor.AID,
+		pkg.Descriptor.MainClass,
+	); found {
+		options.PreserveStoppedLoops = audio.PreserveStoppedLoops
+	}
 	return options
 }

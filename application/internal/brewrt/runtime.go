@@ -68,6 +68,7 @@ const (
 	helperWStrcpySlot       = uint32(9)
 	helperWStrcmpSlot       = uint32(11)
 	helperWStrlenSlot       = uint32(12)
+	helperWStrchrSlot       = uint32(13)
 	helperWSprintfSlot      = uint32(15)
 	helperStrToWStrSlot     = uint32(16)
 	helperWStrToStrSlot     = uint32(17)
@@ -894,6 +895,11 @@ func (r *Runtime) handleAppletMethodTrap(
 			return resume()
 		case helperWStrlenSlot:
 			if err := r.returnGuestWideStringLength(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case helperWStrchrSlot:
+			if err := r.findGuestWideStringUnit(); err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
@@ -1772,6 +1778,11 @@ func (r *Runtime) handleAppletMethodTrap(
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
+		case 6, 7, 8, 10: // PlayTone, PlayToneList, PlayFreqTone, Vibrate
+			// These official ISound calls are void and asynchronous. The emulator has
+			// no tone/vibrator backend, but accepting them preserves the handset ABI
+			// and lets games continue without inventing completion callbacks.
+			return resume()
 		case 12: // SetVolume
 			volume, err := r.cpu.ReadRegister(cpu.RegisterR1)
 			if err != nil {
@@ -2486,7 +2497,7 @@ func (r *Runtime) formatGuestWideString() error {
 		for end < len(format) && strings.ContainsRune("-+ #0.123456789", rune(format[end])) {
 			end++
 		}
-		if end >= len(format) || !strings.ContainsRune("cdsuXx", rune(format[end])) {
+		if end >= len(format) || !strings.ContainsRune("cdisuXx", rune(format[end])) {
 			return fmt.Errorf("BREW execution boundary: unsupported wsprintf format %q", format)
 		}
 		value, readErr := arg(argumentIndex)
@@ -2502,7 +2513,8 @@ func (r *Runtime) formatGuestWideString() error {
 				return stringErr
 			}
 			values = append(values, string(utf16.Decode(units)))
-		case 'd':
+		case 'd', 'i':
+			goFormat[end] = 'd'
 			values = append(values, int32(value))
 		case 'u':
 			goFormat[end] = 'd'
@@ -2647,6 +2659,31 @@ func (r *Runtime) returnGuestWideStringLength() error {
 		}
 	}
 	return fmt.Errorf("BREW wstrlen at 0x%08x exceeded %d UTF-16 units", address, maxWideStringUnits)
+}
+
+func (r *Runtime) findGuestWideStringUnit() error {
+	pointer, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW wstrchr string pointer: %w", err)
+	}
+	rawValue, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW wstrchr value: %w", err)
+	}
+	units, err := r.readGuestWideString(pointer)
+	if err != nil {
+		return err
+	}
+	value := uint16(rawValue)
+	for index, unit := range units {
+		if unit == value {
+			return r.cpu.WriteRegister(cpu.RegisterR0, pointer+uint32(index*2))
+		}
+	}
+	if value == 0 {
+		return r.cpu.WriteRegister(cpu.RegisterR0, pointer+uint32(len(units)*2))
+	}
+	return r.cpu.WriteRegister(cpu.RegisterR0, 0)
 }
 
 func (r *Runtime) compareGuestCStrings() error {
@@ -3177,7 +3214,7 @@ func (r *Runtime) formatResourceName() error {
 		for end < len(format) && strings.ContainsRune("-+ #0.123456789", rune(format[end])) {
 			end++
 		}
-		if end >= len(format) || !strings.ContainsRune("cdsuXx", rune(format[end])) {
+		if end >= len(format) || !strings.ContainsRune("cdisuXx", rune(format[end])) {
 			return fmt.Errorf("BREW execution boundary: unsupported sprintf format %q", format)
 		}
 		value, readErr := arg(argumentIndex)
@@ -3193,7 +3230,8 @@ func (r *Runtime) formatResourceName() error {
 				return readErr
 			}
 			values = append(values, text)
-		case 'd':
+		case 'd', 'i':
+			goFormat[end] = 'd'
 			values = append(values, value)
 		case 'u':
 			goFormat[end] = 'd'
@@ -3284,6 +3322,13 @@ func (r *Runtime) readGuestFile() error {
 	}
 	remaining := uint32(len(r.currentFile)) - min(r.fileOffset, uint32(len(r.currentFile)))
 	count := min(requested, remaining)
+	// IFILE_Read reports bytes transferred. A null destination for a non-empty
+	// read is an invalid guest request, not a host execution failure. Return zero
+	// and leave the stream position intact so legacy callers can take their
+	// ordinary short-read/error path instead of faulting the emulator.
+	if count != 0 && destination == 0 {
+		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
+	}
 	if count != 0 {
 		data := r.currentFile[r.fileOffset : r.fileOffset+count]
 		if err := r.cpu.WriteMemory(destination, data); err != nil {

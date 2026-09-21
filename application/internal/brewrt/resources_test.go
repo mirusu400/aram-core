@@ -5,7 +5,9 @@ import (
 	"encoding/binary"
 	"image"
 	"image/color"
+	"slices"
 	"testing"
+	"unicode/utf16"
 
 	"github.com/mirusu400/aram-core/cpu"
 	"golang.org/x/image/bmp"
@@ -120,6 +122,65 @@ func TestLoadShellResourceStringCopiesBoundedUCS2(t *testing.T) {
 	}
 	if !bytes.Equal(got, []byte{'A', 0, 'B', 0, 0, 0}) {
 		t.Fatalf("loaded string = %v", got)
+	}
+}
+
+func TestDecodeBREWResourceStringExpandsKoreanCompressedData(t *testing.T) {
+	// 0xfefe marks BREW's compressed string representation. The payload is the
+	// handset OEM encoding, here EUC-KR, and keeps ASCII delimiters intact.
+	got := decodeBREWResourceString([]byte{0xfe, 0xfe, '[', 0xb9, 0xdd, ']', '@', 0, 'X'})
+	want := utf16.Encode([]rune("[반]@"))
+	if !slices.Equal(got, want) {
+		t.Fatalf("decoded compressed resource=%04x, want %04x", got, want)
+	}
+}
+
+func TestLoadShellResourceStringExpandsCompressedData(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	runtime.files = map[string][]byte{
+		"assets/game.bar": buildResourceFile(brewStringResourceKind, 9, []byte{0xfe, 0xfe, '[', 0xb9, 0xdd, ']', '@', 0, 'X'}),
+	}
+	pathAt, destination := heapBase+0x100, heapBase+0x200
+	if err := runtime.cpu.WriteMemory(pathAt, []byte("assets/game.bar\x00")); err != nil {
+		t.Fatal(err)
+	}
+	sp := heapBase + 0x300
+	if err := runtime.cpu.WriteRegister(cpu.RegisterSP, sp); err != nil {
+		t.Fatal(err)
+	}
+	var size [4]byte
+	binary.LittleEndian.PutUint32(size[:], 12)
+	if err := runtime.cpu.WriteMemory(sp, size[:]); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR1: pathAt,
+		cpu.RegisterR2: 9,
+		cpu.RegisterR3: destination,
+		cpu.RegisterLR: returnTrap | 1,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handled, _, _, err := runtime.handleAppletMethodTrap(shellMethodTrapBase + 17*2 + 2)
+	if err != nil || !handled {
+		t.Fatalf("LoadResString handled=%v err=%v", handled, err)
+	}
+	if got, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || got != 4 {
+		t.Fatalf("LoadResString count=%d err=%v, want 4", got, err)
+	}
+	got := make([]byte, 10)
+	if err := runtime.cpu.ReadMemory(destination, got); err != nil {
+		t.Fatal(err)
+	}
+	wantUnits := append(utf16.Encode([]rune("[반]@")), 0)
+	want := make([]byte, len(wantUnits)*2)
+	for index, unit := range wantUnits {
+		binary.LittleEndian.PutUint16(want[index*2:], unit)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("loaded compressed string = % x, want % x", got, want)
 	}
 }
 

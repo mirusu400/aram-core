@@ -236,11 +236,6 @@ func (b *Backend) runThumbBatch(limit uint64) (uint64, *cpu.StopReason, error) {
 			break
 
 		case thumbCompareImmediate: // CMP Rd, #imm8
-			if b.thumbFlagsDeadBefore(next) {
-				// A compare only sets flags; if they are immediately
-				// overwritten it is a no-op.
-				break
-			}
 			rd := uint32(instruction>>8) & 7
 			result, carry, overflow := addWithCarry(b.regs[rd], ^uint32(instruction&0xff), 1)
 			b.setNZCV(result, carry, overflow)
@@ -248,10 +243,6 @@ func (b *Backend) runThumbBatch(limit uint64) (uint64, *cpu.StopReason, error) {
 
 		case thumbAddImmediate: // ADDS Rd, #imm8
 			rd := uint32(instruction>>8) & 7
-			if b.thumbFlagsDeadBefore(next) {
-				b.regs[rd] += uint32(instruction & 0xff)
-				break
-			}
 			result, carry, overflow := addWithCarry(b.regs[rd], uint32(instruction&0xff), 0)
 			b.regs[rd] = result
 			b.setNZCV(result, carry, overflow)
@@ -259,10 +250,6 @@ func (b *Backend) runThumbBatch(limit uint64) (uint64, *cpu.StopReason, error) {
 
 		case thumbSubtractImmediate: // SUBS Rd, #imm8
 			rd := uint32(instruction>>8) & 7
-			if b.thumbFlagsDeadBefore(next) {
-				b.regs[rd] -= uint32(instruction & 0xff)
-				break
-			}
 			result, carry, overflow := addWithCarry(b.regs[rd], ^uint32(instruction&0xff), 1)
 			b.regs[rd] = result
 			b.setNZCV(result, carry, overflow)
@@ -277,14 +264,6 @@ func (b *Backend) runThumbBatch(limit uint64) (uint64, *cpu.StopReason, error) {
 			right := rnOrImmediate
 			if !immediate {
 				right = b.regs[rnOrImmediate]
-			}
-			if b.thumbFlagsDeadBefore(next) {
-				if subtract {
-					b.regs[rd] = b.regs[rs] - right
-				} else {
-					b.regs[rd] = b.regs[rs] + right
-				}
-				break
 			}
 			var result uint32
 			var carry, overflow bool

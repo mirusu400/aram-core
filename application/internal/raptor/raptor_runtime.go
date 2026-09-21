@@ -119,6 +119,7 @@ type Runtime struct {
 	// behavior and every offscreen framebuffer uses its allocated height.
 	primaryFramebufferHeight int
 	resourceBytesHelper      uint32
+	imagePatches             []ImagePatch
 	// unimplementedNames interns the label for an import ARAM does not
 	// implement. See unimplementedImportName.
 	unimplementedNames map[raptorImportKey]string
@@ -177,6 +178,19 @@ type Options struct {
 	// ResourceBytesHelper is an exact-title static Thumb function which takes
 	// a Java String in r0 and returns the named packaged resource as byte[].
 	ResourceBytesHelper uint32
+	// ImagePatches are exact-package compatibility repairs. Every write first
+	// verifies the word supplied by the package.
+	ImagePatches []ImagePatch
+	// PreserveStoppedLoops keeps a stopped infinite loop audible while an exact
+	// title reuses its sole registered clip for effects.
+	PreserveStoppedLoops bool
+}
+
+// ImagePatch describes one verified replacement in a mapped Raptor image.
+type ImagePatch struct {
+	Address     uint32
+	Expected    uint32
+	Replacement uint32
 }
 
 type raptorImportKey struct {
@@ -255,18 +269,46 @@ func NewRuntimeWithOptions(
 		Clet:                     clet,
 		primaryFramebufferHeight: options.PrimaryFramebufferHeight,
 		resourceBytesHelper:      options.ResourceBytesHelper,
+		imagePatches:             append([]ImagePatch(nil), options.ImagePatches...),
 		resolvedImports:          make(map[raptorImportKey]uint64),
 		importSlotByKey:          make(map[raptorImportKey]uint32),
 	}
+	public.Services.Media.SetStoppedLoopPreservation(options.PreserveStoppedLoops)
 	// A Raptor Clet reads its own MC_GrpContext, and LGT's runtime spells the
 	// struct without the SDK's clip_enabled word.
 	public.CompactGraphicsContext = true
 	// LGT's MC_grpGetDisplayInfo answers the display count, not M_E_SUCCESS.
 	public.DisplayInfoReturnsCount = true
+	if err := runtime.applyImagePatches(); err != nil {
+		return nil, err
+	}
 	if err := runtime.InstallInterfaces(); err != nil {
 		return nil, err
 	}
 	return runtime, nil
+}
+
+func (r *Runtime) applyImagePatches() error {
+	var encoded [4]byte
+	for _, patch := range r.imagePatches {
+		if err := r.CPU.ReadMemory(patch.Address, encoded[:]); err != nil {
+			return fmt.Errorf("read Raptor image patch at 0x%08x: %w", patch.Address, err)
+		}
+		actual := binary.LittleEndian.Uint32(encoded[:])
+		if actual != patch.Expected {
+			return fmt.Errorf(
+				"Raptor image patch at 0x%08x expected 0x%08x, got 0x%08x",
+				patch.Address,
+				patch.Expected,
+				actual,
+			)
+		}
+		binary.LittleEndian.PutUint32(encoded[:], patch.Replacement)
+		if err := r.CPU.WriteMemory(patch.Address, encoded[:]); err != nil {
+			return fmt.Errorf("write Raptor image patch at 0x%08x: %w", patch.Address, err)
+		}
+	}
+	return nil
 }
 
 func inspectRaptorClet(image raptorloader.Image) (Clet, error) {
@@ -510,6 +552,9 @@ func (r *Runtime) RestoreImage() error {
 				return fmt.Errorf("restore Raptor section %q: %w", section.Name, err)
 			}
 		}
+	}
+	if err := r.applyImagePatches(); err != nil {
+		return err
 	}
 	r.ModuleInitialized = false
 	r.Started = false

@@ -754,6 +754,15 @@ func TestCommonHelperContracts(t *testing.T) {
 	if got := call(helperWStrcmpSlot, wideSource, wideDestination, 0); got != 0 {
 		t.Fatalf("wstrcmp = %d, want equal", int32(got))
 	}
+	if got := call(helperWStrchrSlot, wideDestination, 'T', 0); got != wideDestination+2 {
+		t.Fatalf("wstrchr result = 0x%08x, want 0x%08x", got, wideDestination+2)
+	}
+	if got := call(helperWStrchrSlot, wideDestination, 'X', 0); got != 0 {
+		t.Fatalf("wstrchr missing result = 0x%08x, want null", got)
+	}
+	if got := call(helperWStrchrSlot, wideDestination, 0, 0); got != wideDestination+6 {
+		t.Fatalf("wstrchr terminator result = 0x%08x, want 0x%08x", got, wideDestination+6)
+	}
 	if got := call(helperWStrSizeSlot, wideDestination, 0, 0); got != 8 {
 		t.Fatalf("wstrsize = %d, want 8", got)
 	}
@@ -952,6 +961,57 @@ func TestLegacyIconViewControlMaintainsItemsAndSelection(t *testing.T) {
 	}
 	if got := binary.LittleEndian.Uint32(encoded[:]); got != 0x12345678 {
 		t.Fatalf("menu item data = 0x%08x", got)
+	}
+}
+
+func TestFileReadNullDestinationReturnsZeroWithoutAdvancing(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	runtime.currentFile = []byte("data")
+	runtime.fileOffset = 1
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR1: 0,
+		cpu.RegisterR2: 2,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := runtime.readGuestFile(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || got != 0 {
+		t.Fatalf("null-buffer read result=%d err=%v, want 0", got, err)
+	}
+	if runtime.fileOffset != 1 {
+		t.Fatalf("null-buffer read advanced offset to %d", runtime.fileOffset)
+	}
+}
+
+func TestSprintfSupportsSignedIntegerAlias(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	destination := heapBase + 0x500
+	format := heapBase + 0x580
+	if err := runtime.cpu.WriteMemory(format, []byte("count=%i\x00")); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR0: destination,
+		cpu.RegisterR1: format,
+		cpu.RegisterR2: ^uint32(16),
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := runtime.formatResourceName(); err != nil {
+		t.Fatal(err)
+	}
+	text, err := runtime.readCString(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "count=-17" {
+		t.Fatalf("sprintf %%i result = %q, want count=-17", text)
 	}
 }
 
@@ -1197,6 +1257,19 @@ func TestSoundPlayerSetUsesInputDiscriminator(t *testing.T) {
 	handled, _, _, err := runtime.handleAppletMethodTrap(soundPlayerTrapBase + 3*2 + 2)
 	if err != nil || !handled {
 		t.Fatalf("ISoundPlayer Set handled=%v err=%v", handled, err)
+	}
+}
+
+func TestLegacySoundToneAndVibrationMethodsAreNonblocking(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	if err := runtime.cpu.WriteRegister(cpu.RegisterLR, returnTrap|1); err != nil {
+		t.Fatal(err)
+	}
+	for _, slot := range []uint32{6, 7, 8, 10} {
+		handled, _, _, err := runtime.handleAppletMethodTrap(soundTrapBase + slot*2 + 2)
+		if err != nil || !handled {
+			t.Fatalf("ISound slot %d handled=%v err=%v", slot, handled, err)
+		}
 	}
 }
 
