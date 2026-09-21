@@ -452,6 +452,7 @@ func (r *Runtime) releaseInterfaceObject(address uint32) {
 				delete(r.imageStreams, address)
 			}
 		case bitmapVTable:
+			delete(r.nativeImages, address)
 			r.releaseGuest(binary.LittleEndian.Uint32(encoded[8:12]))
 		}
 	}

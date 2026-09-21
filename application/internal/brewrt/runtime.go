@@ -156,6 +156,7 @@ const (
 	memAStreamVTable      = controlServiceBase + 0x900
 	memAStreamTrapBase    = controlServiceBase + 0xa00
 	memAStreamMethodCount = uint32(7)
+	maxPostedEvents       = 1024
 
 	guestInstructionBudget     = uint64(16_000_000)
 	bootstrapInstructionBudget = uint64(256_000_000)
@@ -198,8 +199,10 @@ type Runtime struct {
 	menuControl      brewMenuControl
 	memAStreams      map[uint32]brewMemAStream
 	imageStreams     map[uint32]uint32
+	nativeImages     map[uint32]brewNativeImage
 	textRaster       *shared.Text
 	displayFont      shared.ServiceID
+	postedEvents     []brewPostedEvent
 }
 
 type brewPreferenceKey struct {
@@ -245,6 +248,13 @@ type brewCallback struct {
 	function  uint32
 	context   uint32
 	remaining time.Duration
+}
+
+type brewPostedEvent struct {
+	classID uint32
+	event   uint32
+	wParam  uint32
+	dwParam uint32
 }
 
 type brewHeapBlock struct {
@@ -312,6 +322,7 @@ func New(pkg Package) (*Runtime, error) {
 		preferences:  make(map[brewPreferenceKey][]byte),
 		memAStreams:  make(map[uint32]brewMemAStream),
 		imageStreams: make(map[uint32]uint32),
+		nativeImages: make(map[uint32]brewNativeImage),
 		textRaster:   displayText,
 		displayFont:  displayFont,
 	}
@@ -1657,8 +1668,8 @@ func (r *Runtime) handleAppletMethodTrap(
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
-		case 21: // SendEvent: cross-applet dispatch is unavailable in this runtime.
-			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+		case 21: // PostEventEx(IShell *, flags, AEECLSID, AEEEvent, uint16, uint32)
+			if err := r.postShellEvent(); err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
@@ -1929,7 +1940,46 @@ func (r *Runtime) RunCallbacks(ctx context.Context, elapsed time.Duration) error
 			}
 		}
 	}
+	posted := append([]brewPostedEvent(nil), r.postedEvents...)
+	r.postedEvents = r.postedEvents[:0]
+	for _, event := range posted {
+		if event.classID != 0 && event.classID != r.activeClassID {
+			continue
+		}
+		if _, err := r.DispatchEvent(ctx, event.event, event.wParam, event.dwParam); err != nil {
+			return fmt.Errorf("dispatch BREW posted event 0x%03x: %w", event.event, err)
+		}
+	}
 	return nil
+}
+
+func (r *Runtime) postShellEvent() error {
+	classID, err := r.cpu.ReadRegister(cpu.RegisterR2)
+	if err != nil {
+		return fmt.Errorf("read BREW posted-event ClassID: %w", err)
+	}
+	event, err := r.cpu.ReadRegister(cpu.RegisterR3)
+	if err != nil {
+		return fmt.Errorf("read BREW posted-event code: %w", err)
+	}
+	stack, err := r.cpu.ReadRegister(cpu.RegisterSP)
+	if err != nil {
+		return fmt.Errorf("read BREW posted-event stack: %w", err)
+	}
+	var encoded [8]byte
+	if err := r.cpu.ReadMemory(stack, encoded[:]); err != nil {
+		return fmt.Errorf("read BREW posted-event parameters: %w", err)
+	}
+	if len(r.postedEvents) >= maxPostedEvents {
+		return r.cpu.WriteRegister(cpu.RegisterR0, 1)
+	}
+	r.postedEvents = append(r.postedEvents, brewPostedEvent{
+		classID: classID,
+		event:   event,
+		wParam:  binary.LittleEndian.Uint32(encoded[0:4]),
+		dwParam: binary.LittleEndian.Uint32(encoded[4:8]),
+	})
+	return r.cpu.WriteRegister(cpu.RegisterR0, 0)
 }
 
 // Bootstrap executes the genuine module entry and module factory. A successful

@@ -16,9 +16,15 @@ const (
 	idibColorScheme565   = byte(16)
 )
 
+type brewNativeImage struct {
+	encoded uint32
+	span    uint32
+}
+
 // setupNativeImage implements the BREW AEEHelperFuncs SetupNativeImage contract
-// for bounded BMP inputs. The returned software IBitmap is also an IDIB, so its
-// public fields and owned RGB565 pixel buffer are visible to guest code.
+// for bounded BMP inputs. The returned software IBitmap is also an IDIB. When
+// an indexed caller allocation reserves enough room, conversion happens in
+// place so later guest RGB565 drawing remains visible through the bitmap.
 func (r *Runtime) setupNativeImage() error {
 	buffer, err := r.cpu.ReadRegister(cpu.RegisterR1)
 	if err != nil {
@@ -40,27 +46,19 @@ func (r *Runtime) setupNativeImage() error {
 	if buffer == 0 {
 		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
 	}
-	var header [6]byte
+	var header [54]byte
 	if err := r.cpu.ReadMemory(buffer, header[:]); err != nil {
 		return fmt.Errorf("read BREW native-image header: %w", err)
 	}
-	if string(header[:2]) != "BM" {
+	encodedSize, ok := nativeBMPSpan(header[:])
+	if !ok {
 		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
 	}
-	size := binary.LittleEndian.Uint32(header[2:])
-	if size < 14 || size > maxNativeImageBytes {
-		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
-	}
-	encoded := make([]byte, size)
+	encoded := make([]byte, encodedSize)
 	if err := r.cpu.ReadMemory(buffer, encoded); err != nil {
 		return fmt.Errorf("read BREW native image: %w", err)
 	}
-	config, err := bmp.DecodeConfig(bytes.NewReader(encoded))
-	if err != nil || config.Width <= 0 || config.Height <= 0 ||
-		uint64(config.Width)*uint64(config.Height) > maxNativeImagePixels {
-		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
-	}
-	decoded, err := bmp.Decode(bytes.NewReader(encoded))
+	decoded, err := decodeNativeBMP(encoded, encodedSize)
 	if err != nil {
 		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
 	}
@@ -69,7 +67,7 @@ func (r *Runtime) setupNativeImage() error {
 		return err
 	}
 	if info != 0 {
-		width, height := uint16(config.Width), uint16(config.Height)
+		width, height := uint16(decoded.Bounds().Dx()), uint16(decoded.Bounds().Dy())
 		data := make([]byte, 10)
 		binary.LittleEndian.PutUint16(data[0:], width)
 		binary.LittleEndian.PutUint16(data[2:], height)
@@ -78,12 +76,61 @@ func (r *Runtime) setupNativeImage() error {
 			return fmt.Errorf("write BREW native-image info: %w", err)
 		}
 	}
-	if reallocated != 0 {
-		if err := r.cpu.WriteMemory(reallocated, []byte{1}); err != nil {
-			return fmt.Errorf("write BREW native-image ownership flag: %w", err)
-		}
+	direct, err := r.attachExpandedRGB565Backing(object, buffer, encoded, decoded)
+	if err != nil {
+		return err
 	}
+	if !direct {
+		r.nativeImages[object] = brewNativeImage{encoded: buffer, span: encodedSize}
+	}
+	// The final argument reports whether SetupNativeImage relocated the caller's
+	// encoded buffer. Conversion either happens in place or into separately owned
+	// IDIB storage, so the caller's pointer itself never changes.
 	return r.cpu.WriteRegister(cpu.RegisterR0, object)
+}
+
+func nativeBMPSpan(header []byte) (uint32, bool) {
+	if len(header) < 54 || string(header[:2]) != "BM" {
+		return 0, false
+	}
+	infoSize := binary.LittleEndian.Uint32(header[14:18])
+	if infoSize != 40 && infoSize != 108 && infoSize != 124 {
+		return 0, false
+	}
+	width := int64(int32(binary.LittleEndian.Uint32(header[18:22])))
+	height := int64(int32(binary.LittleEndian.Uint32(header[22:26])))
+	if height < 0 {
+		height = -height
+	}
+	bitsPerPixel := uint64(binary.LittleEndian.Uint16(header[28:30]))
+	compression := binary.LittleEndian.Uint32(header[30:34])
+	if width <= 0 || height <= 0 ||
+		uint64(width)*uint64(height) > maxNativeImagePixels ||
+		compression != 0 ||
+		bitsPerPixel != 1 && bitsPerPixel != 2 && bitsPerPixel != 4 &&
+			bitsPerPixel != 8 && bitsPerPixel != 24 && bitsPerPixel != 32 {
+		return 0, false
+	}
+	pixelOffset := uint64(binary.LittleEndian.Uint32(header[10:14]))
+	metadataEnd := uint64(14) + uint64(infoSize)
+	if pixelOffset < metadataEnd {
+		return 0, false
+	}
+	if bitsPerPixel <= 8 {
+		paletteBytes := pixelOffset - metadataEnd
+		paletteEntries := paletteBytes / 4
+		if paletteBytes%4 != 0 || paletteEntries == 0 || paletteEntries > 1<<bitsPerPixel {
+			return 0, false
+		}
+	} else if pixelOffset != metadataEnd {
+		return 0, false
+	}
+	rowBytes := (uint64(width)*bitsPerPixel + 31) / 32 * 4
+	span := pixelOffset + rowBytes*uint64(height)
+	if span > uint64(maxNativeImageBytes) || span > uint64(^uint32(0)) {
+		return 0, false
+	}
+	return uint32(span), true
 }
 
 func (r *Runtime) createNativeBitmap(source image.Image) (uint32, error) {
@@ -108,14 +155,7 @@ func (r *Runtime) createNativeBitmap(source image.Image) (uint32, error) {
 		r.releaseGuest(object)
 		return 0, err
 	}
-	data := make([]byte, pixelsSize)
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
-			r, g, b, _ := source.At(bounds.Min.X+x, bounds.Min.Y+y).RGBA()
-			value := uint16((r>>11)<<11 | (g>>10)<<5 | b>>11)
-			binary.LittleEndian.PutUint16(data[y*pitch+x*2:], value)
-		}
-	}
+	data := nativeRGB565(source, pitch)
 	if err := r.cpu.WriteMemory(pixels, data); err != nil {
 		r.releaseGuest(pixels)
 		r.releaseGuest(object)
@@ -135,6 +175,123 @@ func (r *Runtime) createNativeBitmap(source image.Image) (uint32, error) {
 		return 0, fmt.Errorf("write BREW native bitmap header: %w", err)
 	}
 	return object, nil
+}
+
+func nativeRGB565(source image.Image, pitch int) []byte {
+	bounds := source.Bounds()
+	data := make([]byte, pitch*bounds.Dy())
+	for y := 0; y < bounds.Dy(); y++ {
+		for x := 0; x < bounds.Dx(); x++ {
+			r, g, b, _ := source.At(bounds.Min.X+x, bounds.Min.Y+y).RGBA()
+			value := uint16((r>>11)<<11 | (g>>10)<<5 | b>>11)
+			binary.LittleEndian.PutUint16(data[y*pitch+x*2:], value)
+		}
+	}
+	return data
+}
+
+func (r *Runtime) attachExpandedRGB565Backing(object, buffer uint32, encoded []byte, decoded image.Image) (bool, error) {
+	// Legacy game engines commonly reserve room for a 16-bit native surface
+	// behind an 8-bit BMP header. The handset helper expands the indexed pixels
+	// there in place; the game then renders RGB565 directly into that storage.
+	if binary.LittleEndian.Uint16(encoded[28:30]) != 8 {
+		return false, nil
+	}
+	var header [30]byte
+	if err := r.cpu.ReadMemory(object, header[:]); err != nil {
+		return false, fmt.Errorf("read expanded RGB565 bitmap header: %w", err)
+	}
+	pixelOffset := binary.LittleEndian.Uint32(encoded[10:14])
+	pitch := uint32(binary.LittleEndian.Uint16(header[24:26]))
+	height := uint32(binary.LittleEndian.Uint16(header[22:24]))
+	allocationSize, allocated := r.heapAllocated[buffer]
+	required := uint64(pixelOffset) + uint64(pitch)*uint64(height)
+	if !allocated || required > uint64(allocationSize) {
+		return false, nil
+	}
+	pixels := buffer + pixelOffset
+	initialPixels := nativeRGB565(decoded, int(pitch))
+	if len(initialPixels) != int(pitch*height) {
+		return false, fmt.Errorf("expanded RGB565 native-image storage mismatch")
+	}
+	if err := r.cpu.WriteMemory(pixels, initialPixels); err != nil {
+		return false, fmt.Errorf("expand RGB565 native image: %w", err)
+	}
+	oldPixels := binary.LittleEndian.Uint32(header[8:12])
+	var pointer [4]byte
+	binary.LittleEndian.PutUint32(pointer[:], pixels)
+	if err := r.cpu.WriteMemory(object+8, pointer[:]); err != nil {
+		return false, fmt.Errorf("attach expanded RGB565 native-image pixels: %w", err)
+	}
+	if oldSize, ok := r.heapAllocated[oldPixels]; ok {
+		if err := r.cpu.WriteMemory(oldPixels, make([]byte, oldSize)); err != nil {
+			return false, fmt.Errorf("clear detached RGB565 native-image pixels: %w", err)
+		}
+	}
+	r.releaseGuest(oldPixels)
+	return true, nil
+}
+
+func (r *Runtime) refreshNativeBitmap(object uint32) error {
+	native, ok := r.nativeImages[object]
+	if !ok {
+		return nil
+	}
+	var encodedHeader [54]byte
+	if err := r.cpu.ReadMemory(native.encoded, encodedHeader[:]); err != nil {
+		return fmt.Errorf("read live BREW native-image header: %w", err)
+	}
+	span, valid := nativeBMPSpan(encodedHeader[:])
+	if !valid || span != native.span {
+		return fmt.Errorf("live BREW native-image geometry changed")
+	}
+	encoded := make([]byte, span)
+	if err := r.cpu.ReadMemory(native.encoded, encoded); err != nil {
+		return fmt.Errorf("read live BREW native image: %w", err)
+	}
+	decoded, err := decodeNativeBMP(encoded, span)
+	if err != nil {
+		return fmt.Errorf("decode live BREW native image: %w", err)
+	}
+	var bitmapHeader [30]byte
+	if err := r.cpu.ReadMemory(object, bitmapHeader[:]); err != nil {
+		return fmt.Errorf("read live BREW bitmap header: %w", err)
+	}
+	width := int(binary.LittleEndian.Uint16(bitmapHeader[20:22]))
+	height := int(binary.LittleEndian.Uint16(bitmapHeader[22:24]))
+	pitch := int(binary.LittleEndian.Uint16(bitmapHeader[24:26]))
+	if decoded.Bounds().Dx() != width || decoded.Bounds().Dy() != height || pitch < width*2 {
+		return fmt.Errorf("live BREW native-image bitmap geometry mismatch")
+	}
+	pixels := binary.LittleEndian.Uint32(bitmapHeader[8:12])
+	if pixels == 0 {
+		return fmt.Errorf("live BREW native-image bitmap has no pixels")
+	}
+	if err := r.cpu.WriteMemory(pixels, nativeRGB565(decoded, pitch)); err != nil {
+		return fmt.Errorf("write live BREW native-image pixels: %w", err)
+	}
+	return nil
+}
+
+func normalizeNativeBMP(encoded []byte, span uint32) {
+	binary.LittleEndian.PutUint32(encoded[2:6], span)
+	bitsPerPixel := binary.LittleEndian.Uint16(encoded[28:30])
+	if bitsPerPixel <= 8 {
+		infoSize := binary.LittleEndian.Uint32(encoded[14:18])
+		pixelOffset := binary.LittleEndian.Uint32(encoded[10:14])
+		paletteEntries := (pixelOffset - (14 + infoSize)) / 4
+		binary.LittleEndian.PutUint32(encoded[46:50], paletteEntries)
+	}
+}
+
+func decodeNativeBMP(encoded []byte, span uint32) (image.Image, error) {
+	// Several handset titles build a full in-memory BMP but leave bfSize at the
+	// size of the header's initial allocation. Some also report one fewer palette
+	// entry than is present before bfOffBits. The handset decoder trusts the
+	// geometry and pixel offset; normalize those redundant fields for the strict
+	// host decoder after the bounded span has been established independently.
+	normalizeNativeBMP(encoded, span)
+	return bmp.Decode(bytes.NewReader(encoded))
 }
 
 func (r *Runtime) imageBitmap(object uint32) (uint32, error) {
@@ -163,6 +320,9 @@ func (r *Runtime) returnBitmapPixel() error {
 	}
 	output, err := r.cpu.ReadRegister(cpu.RegisterR3)
 	if err != nil {
+		return err
+	}
+	if err := r.refreshNativeBitmap(object); err != nil {
 		return err
 	}
 	var header [30]byte
@@ -211,6 +371,9 @@ func (r *Runtime) blitBitmapIn() error {
 	sourceY := binary.LittleEndian.Uint32(arguments[12:16])
 	if destination == 0 || source == 0 || width == 0 || height == 0 {
 		return r.cpu.WriteRegister(cpu.RegisterR0, 2)
+	}
+	if err := r.refreshNativeBitmap(source); err != nil {
+		return err
 	}
 	var destinationHeader, sourceHeader [30]byte
 	if err := r.cpu.ReadMemory(destination, destinationHeader[:]); err != nil {
@@ -338,6 +501,9 @@ func (r *Runtime) setImageParameter() error {
 }
 
 func (r *Runtime) drawBitmapAt(bitmap uint32, destinationX, destinationY int32) error {
+	if err := r.refreshNativeBitmap(bitmap); err != nil {
+		return err
+	}
 	header := make([]byte, 36)
 	if err := r.cpu.ReadMemory(bitmap, header); err != nil {
 		return fmt.Errorf("read BREW image bitmap: %w", err)
@@ -362,6 +528,12 @@ func (r *Runtime) drawBitmapAt(bitmap uint32, destinationX, destinationY int32) 
 			var pixel [2]byte
 			if err := r.cpu.ReadMemory(pixels+row*pitch+column*2, pixel[:]); err != nil {
 				return fmt.Errorf("read BREW image pixel: %w", err)
+			}
+			// Legacy BREW image resources conventionally use RGB565 magenta as
+			// their transparent color key. IImage::Draw composites those pixels;
+			// it does not paint the key color into the destination surface.
+			if binary.LittleEndian.Uint16(pixel[:]) == 0xf81f {
+				continue
 			}
 			address := framebufferBase + (uint32(targetY)*framebufferWidth+uint32(targetX))*2
 			if err := r.cpu.WriteMemory(address, pixel[:]); err != nil {
@@ -399,6 +571,9 @@ func (r *Runtime) blitDisplayBitmap() error {
 	sourceY := binary.LittleEndian.Uint32(args[12:])
 	if bitmap == 0 || width == 0 || height == 0 {
 		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
+	}
+	if err := r.refreshNativeBitmap(bitmap); err != nil {
+		return err
 	}
 	header := make([]byte, 36)
 	if err := r.cpu.ReadMemory(bitmap, header); err != nil {

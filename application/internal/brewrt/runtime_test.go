@@ -391,6 +391,72 @@ func TestRunAppletCodeAllowsManyBoundedHostCalls(t *testing.T) {
 	}
 }
 
+func TestShellPostEventExQueuesCurrentAppletEvent(t *testing.T) {
+	module := make([]byte, 28)
+	for index, word := range []uint32{
+		0xe59f4010, 0xe5841000, 0xe5842004, 0xe5843008,
+		0xe3a00001, 0xe12fff1e, outputAddr,
+	} {
+		binary.LittleEndian.PutUint32(module[index*4:], word)
+	}
+	runtime, err := New(Package{Module: module})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	runtime.appletObject = heapBase
+	runtime.activeClassID = 0x0101ed8f
+	var encoded [12]byte
+	binary.LittleEndian.PutUint32(encoded[0:4], heapBase+0x20)
+	if err := runtime.cpu.WriteMemory(heapBase, encoded[0:4]); err != nil {
+		t.Fatal(err)
+	}
+	binary.LittleEndian.PutUint32(encoded[8:12], moduleBase)
+	if err := runtime.cpu.WriteMemory(heapBase+0x20, encoded[:]); err != nil {
+		t.Fatal(err)
+	}
+	stack := stackBase + 0x400
+	binary.LittleEndian.PutUint32(encoded[0:4], 0x1234)
+	binary.LittleEndian.PutUint32(encoded[4:8], 0x89abcdef)
+	if err := runtime.cpu.WriteMemory(stack, encoded[0:8]); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR1: 0,
+		cpu.RegisterR2: runtime.activeClassID,
+		cpu.RegisterR3: 0x7001,
+		cpu.RegisterSP: stack,
+		cpu.RegisterLR: returnTrap | 1,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handled, _, _, err := runtime.handleAppletMethodTrap(shellMethodTrapBase + 21*2 + 2)
+	if err != nil || !handled {
+		t.Fatalf("PostEventEx handled=%v err=%v", handled, err)
+	}
+	if len(runtime.postedEvents) != 1 {
+		t.Fatalf("posted event count=%d, want 1", len(runtime.postedEvents))
+	}
+	if err := runtime.RunCallbacks(context.Background(), 0); err != nil {
+		t.Fatal(err)
+	}
+	result := make([]byte, 12)
+	if err := runtime.cpu.ReadMemory(outputAddr, result); err != nil {
+		t.Fatal(err)
+	}
+	if event := binary.LittleEndian.Uint32(result[0:4]); event != 0x7001 {
+		t.Fatalf("posted event=0x%08x, want 0x00007001", event)
+	}
+	if wParam := binary.LittleEndian.Uint32(result[4:8]); wParam != 0x1234 {
+		t.Fatalf("posted wParam=0x%08x, want 0x00001234", wParam)
+	}
+	if dwParam := binary.LittleEndian.Uint32(result[8:12]); dwParam != 0x89abcdef {
+		t.Fatalf("posted dwParam=0x%08x, want 0x89abcdef", dwParam)
+	}
+}
+
 func TestDisplayUpdateRequiresChangedFramebufferAndCommitsDetachedSnapshot(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	black := make([]byte, framebufferBytes)
