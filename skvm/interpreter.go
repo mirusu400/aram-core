@@ -153,10 +153,24 @@ func (vm *VM) runFrame(
 	}
 	for {
 		opcodePC := current.pc
+		stackLen := len(current.stack)
 		result, stepErr := vm.step(ctx, current, budget)
 		if stepErr != nil {
 			var yielded *threadYield
 			if errors.As(stepErr, &yielded) {
+				var initializing *classInitYield
+				if errors.As(stepErr, &initializing) {
+					// The class initializer is on the continuation stack, but
+					// the interrupted getstatic/putstatic/new/invokestatic has
+					// not completed. Retry it after that initializer returns.
+					current.pc = opcodePC
+					current.stack = current.stack[:stackLen]
+					current.invokePC = -1
+					if err := vm.rewindThreadContinuation(current); err != nil {
+						return Value{}, false, err
+					}
+					stepErr = yielded
+				}
 				if err := vm.captureThreadContinuation(); err != nil {
 					return Value{}, false, err
 				}
@@ -193,6 +207,25 @@ func (vm *VM) runFrame(
 		}
 		return result.value, true, nil
 	}
+}
+
+func (vm *VM) rewindThreadContinuation(current *frame) error {
+	if vm.runningThread == 0 {
+		return nil
+	}
+	state, err := vm.thread(vm.runningThread)
+	if err != nil {
+		return err
+	}
+	index := len(vm.frames) - vm.threadFrameBase - 1
+	if index < 0 || index >= len(state.continuation) {
+		return fmt.Errorf("SKVM class initializer has no caller continuation")
+	}
+	saved := state.continuation[index]
+	saved.pc = current.pc
+	saved.stack = append(saved.stack[:0], current.stack...)
+	saved.invokePC = -1
+	return nil
 }
 
 func (vm *VM) handleThrown(current *frame, opcodePC int, exception *thrown) bool {
@@ -248,11 +281,28 @@ func (vm *VM) resumeFrames(
 	frames []*frame,
 	index int,
 	budget *uint64,
-) (Value, bool, error) {
+) (value Value, hasValue bool, err error) {
 	if index < 0 || index >= len(frames) {
 		return Value{}, false, fmt.Errorf("SKVM invalid thread continuation")
 	}
 	current := frames[index]
+	if current.method.Name == "<clinit>" && current.method.Descriptor == "()V" {
+		defer func() {
+			runtime := vm.classes[current.class.Name]
+			if runtime == nil || runtime.initState != classInitializing {
+				return
+			}
+			var yielded *threadYield
+			switch {
+			case err == nil:
+				runtime.initState = classInitialized
+			case errors.As(err, &yielded):
+				// Keep the initializer in flight until its next continuation.
+			default:
+				runtime.initState = classFailed
+			}
+		}()
+	}
 	vm.frames = append(vm.frames, current)
 	defer func() {
 		vm.frames = vm.frames[:len(vm.frames)-1]

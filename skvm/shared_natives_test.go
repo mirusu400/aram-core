@@ -1114,6 +1114,41 @@ func TestSKVMThreadsRunCooperativelyOnVirtualTime(t *testing.T) {
 	}
 }
 
+func TestSKVMThreadResumesYieldedClassInitializer(t *testing.T) {
+	vm, err := New(map[string][]byte{"Worker": syntheticThreadClassWithInitializer(t, true)})
+	check(t, err)
+	target, err := vm.allocateObject("Worker")
+	check(t, err)
+	thread := vm.NewObject("java/lang/Thread", nil)
+	invokeTestNative(t, vm, "java/lang/Thread", "<init>", "(Ljava/lang/Runnable;)V", thread, ReferenceValue(target))
+	invokeTestNative(t, vm, "java/lang/Thread", "start", "()V", thread)
+	if got := vm.classes["Worker"].initState; got != classInitializing {
+		t.Fatalf("Worker init state after yield = %d, want initializing", got)
+	}
+	state, err := vm.thread(thread)
+	check(t, err)
+	if !state.active || len(state.continuation) == 0 {
+		t.Fatalf("initializer continuation missing: %+v", state)
+	}
+	saved, err := vm.MarshalBinary()
+	check(t, err)
+	check(t, vm.UnmarshalBinary(saved))
+	check(t, vm.Advance(context.Background(), time.Nanosecond, nil))
+	if got := vm.classes["Worker"].initState; got != classInitialized {
+		t.Fatalf("Worker init state after resume = %d, want initialized", got)
+	}
+	counter := fieldStorageKey("Worker", "counter", "I")
+	value, err := vm.classes["Worker"].static[counter].Int()
+	if err != nil || value != 8 {
+		t.Fatalf("counter after initializer and first run = %d, %v; want 8", value, err)
+	}
+	check(t, vm.Advance(context.Background(), time.Millisecond, nil))
+	value, err = vm.classes["Worker"].static[counter].Int()
+	if err != nil || value != 18 {
+		t.Fatalf("counter after worker resumes = %d, %v; want 18", value, err)
+	}
+}
+
 func TestSKVMThreadPreemptsNonYieldingWorker(t *testing.T) {
 	// Start from the established Runnable fixture, but replace its sleep call
 	// with a branch back to its first instruction. This stays a valid compact
@@ -1200,6 +1235,10 @@ func TestDisplayCallSeriallyDefersRunnable(t *testing.T) {
 }
 
 func syntheticThreadClass(t *testing.T) []byte {
+	return syntheticThreadClassWithInitializer(t, false)
+}
+
+func syntheticThreadClassWithInitializer(t *testing.T, initializer bool) []byte {
 	t.Helper()
 	var output bytes.Buffer
 	u2 := func(value uint16) {
@@ -1228,7 +1267,11 @@ func syntheticThreadClass(t *testing.T) []byte {
 	u4(0xcafebabe)
 	u2(3)
 	u2(45)
-	u2(22)
+	if initializer {
+		u2(23)
+	} else {
+		u2(22)
+	}
 	utf("Worker")           // 1
 	class(1)                // 2
 	utf("java/lang/Object") // 3
@@ -1256,6 +1299,9 @@ func syntheticThreadClass(t *testing.T) []byte {
 	output.WriteByte(constantMethodref)
 	u2(2)
 	u2(20) // 21
+	if initializer {
+		utf("<clinit>") // 22
+	}
 
 	u2(AccessPublic)
 	u2(2)
@@ -1266,7 +1312,11 @@ func syntheticThreadClass(t *testing.T) []byte {
 	u2(8)
 	u2(9)
 	u2(0)
-	u2(2) // methods
+	if initializer {
+		u2(3) // methods
+	} else {
+		u2(2)
+	}
 	writeMethod := func(
 		access, name, descriptor, maxStack, maxLocals uint16,
 		code []byte,
@@ -1304,6 +1354,13 @@ func syntheticThreadClass(t *testing.T) []byte {
 		0xac, // ireturn
 	}
 	writeMethod(AccessPublic|AccessStatic, 18, 19, 2, 0, pauseCode)
+	if initializer {
+		// Cross the worker's 10,000-instruction quantum in a class
+		// initializer before publishing the static counter.
+		code := make([]byte, int(threadInstructionQuantum)+10)
+		code = append(code, 0x10, 7, 0xb3, 0, 11, 0xb1)
+		writeMethod(AccessStatic, 22, 6, 1, 0, code)
+	}
 	u2(0) // class attributes
 	return output.Bytes()
 }

@@ -1056,12 +1056,25 @@ func (vm *VM) ensureInitialized(
 	runtime.initState = classInitializing
 	if runtime.class.SuperName != "" {
 		if err := vm.ensureInitialized(ctx, runtime.class.SuperName, budget); err != nil {
+			var yielded *threadYield
+			if errors.As(err, &yielded) {
+				// The superclass initializer will finish from its worker
+				// continuation. Retry this class from the triggering opcode.
+				runtime.initState = classUninitialized
+				return &classInitYield{cause: yielded}
+			}
 			runtime.initState = classFailed
 			return err
 		}
 	}
 	if initializer, exists := runtime.class.Method("<clinit>", "()V"); exists {
 		if _, _, err := vm.execute(ctx, runtime.class, initializer, 0, nil, budget); err != nil {
+			var yielded *threadYield
+			if errors.As(err, &yielded) {
+				// The worker's continuation still contains the initializer. A
+				// cooperative yield is not a failed Java class initialization.
+				return &classInitYield{cause: yielded}
+			}
 			runtime.initState = classFailed
 			return err
 		}

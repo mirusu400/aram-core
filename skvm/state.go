@@ -780,16 +780,9 @@ func (vm *VM) buildCandidate(
 			if err != nil {
 				return nil, err
 			}
-			if current.invokePC < 0 {
-				return nil, fmt.Errorf(
-					"load SKVM state: thread %d frame %d has no pending invocation",
-					saved.Reference,
-					frameIndex,
-				)
-			}
 			thread.continuation = append(thread.continuation, current)
 		}
-		if err := validateContinuationFrames(thread.continuation); err != nil {
+		if err := candidate.validateContinuationFrames(thread.continuation); err != nil {
 			return nil, fmt.Errorf(
 				"load SKVM state: thread %d continuation: %w",
 				saved.Reference,
@@ -844,11 +837,20 @@ func restoreFrame(vm *VM, saved frameState, label string) (*frame, error) {
 	}, nil
 }
 
-func validateContinuationFrames(frames []*frame) error {
+func (vm *VM) validateContinuationFrames(frames []*frame) error {
 	if len(frames) == 0 {
 		return fmt.Errorf("empty continuation")
 	}
 	for index, current := range frames {
+		if current.invokePC < 0 {
+			if index+1 < len(frames) {
+				if err := vm.validatePendingInitializer(current, frames[index+1]); err != nil {
+					return fmt.Errorf("frame %d: %w", index, err)
+				}
+			}
+			// A quantum may preempt the leaf at any bytecode boundary.
+			continue
+		}
 		reference, result, err := pendingInvocation(current)
 		if err != nil {
 			return fmt.Errorf("frame %d: %w", index, err)
@@ -869,6 +871,40 @@ func validateContinuationFrames(frames []*frame) error {
 		}
 	}
 	return nil
+}
+
+func (vm *VM) validatePendingInitializer(parent, child *frame) error {
+	if child.method.Name != "<clinit>" || child.method.Descriptor != "()V" ||
+		parent.pc < 0 || parent.pc+3 > len(parent.method.Code) {
+		return fmt.Errorf("invalid pending class initializer")
+	}
+	opcode := parent.method.Code[parent.pc]
+	if opcode != 0xb2 && opcode != 0xb3 && opcode != 0xb8 && opcode != 0xbb {
+		return fmt.Errorf("opcode 0x%02x cannot initialize a class", opcode)
+	}
+	index := binary.BigEndian.Uint16(parent.method.Code[parent.pc+1 : parent.pc+3])
+	var className string
+	if opcode == 0xbb {
+		constant, err := parent.class.Constant(index)
+		if err != nil || constant.Kind != ConstantClass {
+			return fmt.Errorf("invalid pending new class")
+		}
+		className = constant.Class
+	} else {
+		reference, err := parent.class.Reference(index)
+		if err != nil || opcode == 0xb8 && reference.Kind != ReferenceMethod ||
+			opcode != 0xb8 && reference.Kind != ReferenceField {
+			return fmt.Errorf("invalid pending static reference")
+		}
+		className = reference.Class
+	}
+	for className != "" {
+		if className == child.class.Name {
+			return nil
+		}
+		className = vm.superName(className)
+	}
+	return fmt.Errorf("initializer %q is unrelated to pending class", child.class.Name)
 }
 
 func pendingInvocation(current *frame) (Reference, valueType, error) {
@@ -1183,7 +1219,7 @@ func (vm *VM) validateReferences() error {
 		if len(state.continuation) == 0 {
 			continue
 		}
-		if err := validateContinuationFrames(state.continuation); err != nil {
+		if err := vm.validateContinuationFrames(state.continuation); err != nil {
 			return fmt.Errorf(
 				"load SKVM state: thread %d continuation: %w",
 				reference,

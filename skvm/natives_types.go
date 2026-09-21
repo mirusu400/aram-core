@@ -40,6 +40,14 @@ type threadYield struct {
 	delay time.Duration
 }
 
+// classInitYield marks the opcode that must be retried after an initializer's
+// suspended worker frame completes. It still unwraps to threadYield for the
+// cooperative scheduler.
+type classInitYield struct{ cause *threadYield }
+
+func (e *classInitYield) Error() string { return e.cause.Error() }
+func (e *classInitYield) Unwrap() error { return e.cause }
+
 // CanvasHeightInset16Quirk models SKT handsets whose MIDP Canvas reported the
 // client area without the 16-pixel system strip even though drawing still
 // targeted the complete framebuffer. Some games deliberately add the strip
