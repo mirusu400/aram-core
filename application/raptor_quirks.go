@@ -46,5 +46,12 @@ func raptorRuntimeOptions(
 			Replacement: patch.Replacement,
 		})
 	}
+	if audio, found := quirkdb.LookupRaptorAudioCompatibility(
+		source.SHA256,
+		pkg.Descriptor.AID,
+		pkg.Descriptor.MainClass,
+	); found {
+		options.PreserveStoppedLoops = audio.PreserveStoppedLoops
+	}
 	return options
 }

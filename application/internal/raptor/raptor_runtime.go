@@ -181,6 +181,9 @@ type Options struct {
 	// ImagePatches are exact-package compatibility repairs. Every write first
 	// verifies the word supplied by the package.
 	ImagePatches []ImagePatch
+	// PreserveStoppedLoops keeps a stopped infinite loop audible while an exact
+	// title reuses its sole registered clip for effects.
+	PreserveStoppedLoops bool
 }
 
 // ImagePatch describes one verified replacement in a mapped Raptor image.
@@ -270,6 +273,7 @@ func NewRuntimeWithOptions(
 		resolvedImports:          make(map[raptorImportKey]uint64),
 		importSlotByKey:          make(map[raptorImportKey]uint32),
 	}
+	public.Services.Media.SetStoppedLoopPreservation(options.PreserveStoppedLoops)
 	// A Raptor Clet reads its own MC_GrpContext, and LGT's runtime spells the
 	// struct without the SDK's clip_enabled word.
 	public.CompactGraphicsContext = true

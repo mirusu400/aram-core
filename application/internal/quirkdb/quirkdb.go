@@ -290,6 +290,39 @@ func LookupRaptorImagePatches(
 	return matches
 }
 
+// RaptorAudioCompatibility records an audio lifetime correction for one exact
+// package. PreserveStoppedLoops is reserved for titles which reuse their only
+// registered clip for effects after explicitly stopping an infinite BGM loop.
+type RaptorAudioCompatibility struct {
+	Key                  RaptorTitleKey
+	PreserveStoppedLoops bool
+}
+
+var RaptorAudioCompatibilities = []RaptorAudioCompatibility{
+	{
+		// MapleStory Pirate stops its looping track, clears the same clip, and
+		// loads a one-shot effect when both in-game sound categories are on.
+		// Preserve that loop as the title's combined-sound option expects.
+		Key: RaptorTitleKey{
+			PackageSHA256: "7f2c396bced5abba51e93cd1509eb06102ba9fec33d8ec96f79258c2ee3b039c",
+			AID:           "0002A4F0",
+			MainClass:     "Clet",
+		},
+		PreserveStoppedLoops: true,
+	},
+}
+
+func LookupRaptorAudioCompatibility(
+	packageSHA256, aid, mainClass string,
+) (RaptorAudioCompatibility, bool) {
+	for _, entry := range RaptorAudioCompatibilities {
+		if entry.Key.Matches(packageSHA256, aid, mainClass) {
+			return entry, true
+		}
+	}
+	return RaptorAudioCompatibility{}, false
+}
+
 // SKVMCanvas records the handset canvas one SKT MIDlet build was authored for.
 // An SKT descriptor never declares a display size, and a title that packs its
 // art into opaque resource blobs offers nothing to infer one from, so a build
