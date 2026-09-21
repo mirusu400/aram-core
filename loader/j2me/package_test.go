@@ -222,6 +222,46 @@ func TestLegacyJADWhitespaceVariants(t *testing.T) {
 	}
 }
 
+func TestLegacyJADBOMAndRootDirectory(t *testing.T) {
+	properties, err := parseProperties("DESC.jad", []byte("\xef\xbb\xbfMIDlet-Name: Demo\n"), false)
+	if err != nil || properties["MIDlet-Name"] != "Demo" {
+		t.Fatalf("BOM JAD: properties=%v err=%v", properties, err)
+	}
+	budget := uint64(MaxExpandedSize)
+	files, err := readZIP(testZIP(t, map[string][]byte{"./": nil, "Game.class": testClass()}), "legacy.jar", &budget)
+	if err != nil || len(files) != 1 {
+		t.Fatalf("root directory marker: files=%v err=%v", files, err)
+	}
+}
+
+func TestLegacyMissingZIPDataDescriptor(t *testing.T) {
+	archive := testZIP(t, map[string][]byte{"payload.txt": []byte("legacy ZIP payload")})
+	descriptor := bytes.Index(archive, []byte("PK\x07\x08"))
+	if descriptor < 0 {
+		t.Fatal("test ZIP has no data descriptor")
+	}
+	archive = append(append([]byte(nil), archive[:descriptor]...), archive[descriptor+16:]...)
+	end := bytes.LastIndex(archive, []byte("PK\x05\x06"))
+	if end < 0 {
+		t.Fatal("test ZIP has no end record")
+	}
+	binary.LittleEndian.PutUint32(archive[end+16:end+20], binary.LittleEndian.Uint32(archive[end+16:end+20])-16)
+	budget := uint64(MaxExpandedSize)
+	files, err := readZIP(archive, "legacy.jar", &budget)
+	if err != nil || string(files["payload.txt"]) != "legacy ZIP payload" {
+		t.Fatalf("missing descriptor: files=%v err=%v", files, err)
+	}
+	central := bytes.Index(archive, []byte("PK\x01\x02"))
+	if central < 0 {
+		t.Fatal("test ZIP has no central directory")
+	}
+	archive[central+16] ^= 0xff
+	budget = uint64(MaxExpandedSize)
+	if _, err := readZIP(archive, "corrupt.jar", &budget); err == nil {
+		t.Fatal("corrupt central CRC accepted")
+	}
+}
+
 func TestStaleRemoteURLAndMalformedRMS(t *testing.T) {
 	jar := testJAR(t)
 	remote := "https://example.invalid/original-name.jar"
@@ -322,5 +362,24 @@ func TestArchivedFilenameAliasRequiresCompleteIdentity(t *testing.T) {
 	}
 	if _, err := Inspect(testZIP(t, map[string][]byte{"renamed.jad": []byte(jad), "first.jar": jar, "second.jar": jar})); err == nil {
 		t.Fatal("alias accepted ambiguous JARs")
+	}
+}
+
+func TestArchivedAliasRecoversStaleMIDletDeclaration(t *testing.T) {
+	manifest := "Manifest-Version: 1.0\nMIDlet-Name: Demo\nMIDlet-Version: 1.0\nMIDlet-Vendor: Test\nMIDlet-1: New Title, , Game\n"
+	jar := testZIP(t, map[string][]byte{"META-INF/MANIFEST.MF": []byte(manifest), "Game.class": testClass()})
+	base := fmt.Sprintf("MIDlet-Jar-URL: https://example.invalid/original.jar\nMIDlet-Jar-Size: %d\nMIDlet-Name: Demo\nMIDlet-Version: 1.0\nMIDlet-Vendor: Test\nMIDlet-1: ", len(jar))
+	for _, jadMain := range []string{"Old Title, , Missing", "New Title,Game"} {
+		pack := testZIP(t, map[string][]byte{"renamed.jad": []byte(base + jadMain + "\n"), "archived.jar": jar})
+		pkg, err := Inspect(pack)
+		if err != nil || pkg.Descriptor.MainClass != "Game" {
+			t.Fatalf("stale declaration %q: class=%q err=%v", jadMain, pkg.Descriptor.MainClass, err)
+		}
+	}
+	for _, jadMain := range []string{"New Title, , Missing", "Old Title, , "} {
+		pack := testZIP(t, map[string][]byte{"renamed.jad": []byte(base + jadMain + "\n"), "archived.jar": jar})
+		if _, err := Inspect(pack); err == nil {
+			t.Fatalf("unsafe stale declaration %q accepted", jadMain)
+		}
 	}
 }

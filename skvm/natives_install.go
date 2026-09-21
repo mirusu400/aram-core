@@ -362,6 +362,12 @@ func (vm *VM) installCoreNatives() {
 		"currentTimeMillis",
 		"()J",
 		func(_ context.Context, vm *VM, _ uint32, _ []Value) (Value, bool, error) {
+			if vm.nativePolicy == NativePolicyLGT {
+				// Approximate CPU time for LGT games that poll the wall clock
+				// inside paint. The host cannot advance a frame's virtual clock
+				// until paint returns, so a fixed clock deadlocks that loop.
+				return LongValue(vm.services.Clock.WallMillis() + int64(vm.Instructions/1000)), true, nil
+			}
 			return LongValue(vm.services.Clock.WallMillis()), true, nil
 		},
 	)
@@ -397,6 +403,14 @@ func (vm *VM) installCoreNatives() {
 				config := vm.services.Device.Config()
 				if vm.nativePolicy != NativePolicySKT {
 					switch name {
+					case "microedition.phone.model":
+						if vm.nativePolicy == NativePolicyLGT {
+							value = config.Model
+							if value == "" {
+								value = "LGT"
+							}
+							ok = true
+						}
 					case "microedition.platform":
 						value, ok = config.ProfileID, true
 					case "microedition.configuration":

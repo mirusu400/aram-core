@@ -24,6 +24,22 @@ func midpPixel(t *testing.T, vm *VM, surface shared.ServiceID, x, y int32) share
 	return color
 }
 
+func TestLGTDrawImageSkipsUninitializedImage(t *testing.T) {
+	for _, policy := range []NativePolicy{NativePolicyLGT, NativePolicyJ2ME} {
+		vm := policyRegressionVM(t, policy)
+		graphics, _ := midpGraphicsSurface(t, vm)
+		_, _, err := nativeDrawImage(context.Background(), vm, graphics, []Value{
+			ReferenceValue(0), IntValue(0), IntValue(0), IntValue(0),
+		})
+		if policy == NativePolicyLGT && err != nil {
+			t.Fatalf("LGT uninitialized image: %v", err)
+		}
+		if policy == NativePolicyJ2ME && err == nil {
+			t.Fatal("standard MIDP accepted a null image")
+		}
+	}
+}
+
 // TestSKVMMIDPGraphicsExposesEveryDrawingEntryPoint guards the whole
 // javax.microedition.lcdui.Graphics surface. A method the class declares but
 // the VM never registered is not a silent no-op: the interpreter faults the

@@ -5,8 +5,10 @@ package j2me
 import (
 	"archive/zip"
 	"bytes"
+	"compress/flate"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"io/fs"
 	"net/url"
@@ -189,10 +191,22 @@ func Inspect(data []byte) (Package, error) {
 			}
 			jadMain := strings.Split(jad["MIDlet-1"], ",")
 			manifestMain := strings.Split(manifest["MIDlet-1"], ",")
-			if len(manifestMain) != 3 || strings.TrimSpace(manifestMain[2]) == "" ||
-				(jad["MIDlet-1"] != "" && (len(jadMain) != 3 || strings.TrimSpace(jadMain[2]) == "" ||
-					strings.TrimSpace(jadMain[2]) != strings.TrimSpace(manifestMain[2]))) {
+			if len(manifestMain) != 3 || strings.TrimSpace(manifestMain[2]) == "" {
 				return Package{}, malformed(pkg.JADName, 0, "archived URL alias requires matching nonempty MIDlet main class")
+			}
+			if jad["MIDlet-1"] != "" && (len(jadMain) != 3 || strings.TrimSpace(jadMain[2]) != strings.TrimSpace(manifestMain[2])) {
+				manifestClass := strings.TrimSpace(manifestMain[2])
+				_, present := files[strings.ReplaceAll(manifestClass, ".", "/")+".class"]
+				legacyTwoPart := len(jadMain) == 2 && strings.TrimSpace(jadMain[1]) == manifestClass
+				staleClass := false
+				if len(jadMain) == 3 && strings.TrimSpace(jadMain[0]) != strings.TrimSpace(manifestMain[0]) && strings.TrimSpace(jadMain[2]) != "" {
+					_, stalePresent := files[strings.ReplaceAll(strings.TrimSpace(jadMain[2]), ".", "/")+".class"]
+					staleClass = !stalePresent
+				}
+				if !present || (!legacyTwoPart && !staleClass) {
+					return Package{}, malformed(pkg.JADName, 0, "archived URL alias requires matching nonempty MIDlet main class")
+				}
+				jad["MIDlet-1"] = manifest["MIDlet-1"]
 			}
 		}
 	}
@@ -289,6 +303,7 @@ func parseProperties(name string, data []byte, manifest bool) (map[string]string
 	if len(data) > MaxDescriptorSize {
 		return nil, malformed(name, 0, "descriptor exceeds byte limit")
 	}
+	data = bytes.TrimPrefix(data, []byte{0xef, 0xbb, 0xbf})
 	result := map[string]string{}
 	previous := ""
 	offset := 0
@@ -355,6 +370,9 @@ func readZIP(data []byte, label string, budget *uint64) (map[string][]byte, erro
 	seen := map[string]bool{}
 	for _, f := range zr.File {
 		off, _ := f.DataOffset()
+		if f.Name == "./" && f.FileInfo().IsDir() {
+			continue
+		}
 		raw := strings.TrimSuffix(f.Name, "/")
 		name, ok := zipname.SafeName(raw)
 		if !ok {
@@ -383,11 +401,60 @@ func readZIP(data []byte, label string, budget *uint64) (map[string][]byte, erro
 		}
 		payload, e := io.ReadAll(io.LimitReader(r, int64(f.UncompressedSize64)+1))
 		closeErr := r.Close()
-		if e != nil || closeErr != nil || uint64(len(payload)) != f.UncompressedSize64 {
-			return nil, malformed(label, off, "invalid member payload or checksum")
+		// Some handset JAR tools set the data-descriptor flag but omit the
+		// descriptor. The central directory still contains the real CRC and
+		// sizes. Accept that layout only when the next ZIP header starts right
+		// after the compressed bytes and an independent CRC check succeeds.
+		if errors.Is(e, zip.ErrChecksum) && f.Flags&8 != 0 &&
+			legacyNextHeader(data, off, f.CompressedSize64) {
+			payload, e = readLegacyMember(f)
+		}
+		if e != nil {
+			return nil, malformed(label, off, "invalid member payload or checksum: "+name+": "+e.Error())
+		}
+		if closeErr != nil {
+			return nil, malformed(label, off, "invalid member payload or checksum: "+name+": "+closeErr.Error())
+		}
+		if uint64(len(payload)) != f.UncompressedSize64 {
+			return nil, malformed(label, off, "invalid member payload size: "+name)
 		}
 		*budget -= uint64(len(payload))
 		files[name] = payload
 	}
 	return files, nil
+}
+
+func legacyNextHeader(data []byte, off int64, compressed uint64) bool {
+	if off < 0 || compressed > uint64(len(data)) || uint64(off) > uint64(len(data))-compressed {
+		return false
+	}
+	end := uint64(off) + compressed
+	if end+4 > uint64(len(data)) {
+		return false
+	}
+	return bytes.Equal(data[end:end+4], []byte("PK\x03\x04")) ||
+		bytes.Equal(data[end:end+4], []byte("PK\x01\x02"))
+}
+
+func readLegacyMember(f *zip.File) ([]byte, error) {
+	raw, err := f.OpenRaw()
+	if err != nil {
+		return nil, err
+	}
+	var reader io.Reader = raw
+	if f.Method == zip.Deflate {
+		inflated := flate.NewReader(raw)
+		defer inflated.Close()
+		reader = inflated
+	} else if f.Method != zip.Store {
+		return nil, zip.ErrAlgorithm
+	}
+	payload, err := io.ReadAll(io.LimitReader(reader, int64(f.UncompressedSize64)+1))
+	if err != nil {
+		return nil, err
+	}
+	if uint64(len(payload)) != f.UncompressedSize64 || crc32.ChecksumIEEE(payload) != f.CRC32 {
+		return nil, zip.ErrChecksum
+	}
+	return payload, nil
 }

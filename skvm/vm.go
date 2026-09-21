@@ -921,12 +921,16 @@ func (vm *VM) Advance(
 			if err != nil {
 				return err
 			}
-			if _, _, err := vm.InvokeVirtual(
-				ctx,
-				taskReference,
-				"run",
-				"()V",
-			); err != nil && !errors.Is(err, ErrMethodNotFound) {
+			if vm.nativePolicy == NativePolicyLGT && timer.Interval == 0 {
+				// A one-shot TimerTask runs on the timer's own thread. Some
+				// LGT titles keep that callback alive as their animation loop;
+				// run it cooperatively so sleep can park it between frames.
+				worker := &threadState{target: taskReference, started: true, active: true, wakeAt: now}
+				workerReference := vm.NewObject("java/lang/Thread", worker)
+				if err := vm.runThread(ctx, workerReference, worker); err != nil {
+					return err
+				}
+			} else if _, _, err := vm.InvokeVirtual(ctx, taskReference, "run", "()V"); err != nil && !errors.Is(err, ErrMethodNotFound) {
 				return err
 			}
 			if timer.Interval == 0 {

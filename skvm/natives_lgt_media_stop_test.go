@@ -66,7 +66,11 @@ func TestMMPPEmptyStopMissingSourceCleanupThenPlayback(t *testing.T) {
 	if !bytes.Equal(before, mmppStopSnapshot(t, v)) {
 		t.Fatal("cleanup mutated state")
 	}
-	for _, name := range []string{"start", "pause", "resume"} {
+	mmppCall(t, v, r, "start")
+	if !bytes.Equal(before, mmppStopSnapshot(t, v)) {
+		t.Fatal("source-less start mutated state")
+	}
+	for _, name := range []string{"pause", "resume"} {
 		_, _, e := v.natives[nativeKey{mmppClass, name, "()V"}](context.Background(), v, r, nil)
 		if e == nil || !strings.Contains(e.Error(), "no source") {
 			t.Fatalf("%s accepted absent source: %v", name, e)

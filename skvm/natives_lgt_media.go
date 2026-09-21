@@ -176,9 +176,10 @@ func (vm *VM) installLGTMediaNatives() {
 				return Value{}, false, e
 			}
 			if c.clip == 0 {
-				// Emulator cleanup identity for a constructed, source-less player.
-				// Do not touch shared media or broaden real-clip transitions.
-				if name == "stop" {
+				// A constructed player can receive a source after startup. A
+				// source-less start has no media to play and must leave that
+				// later source assignment available to the title.
+				if name == "stop" || name == "start" {
 					return Value{}, false, nil
 				}
 				return Value{}, false, lgtUnsupported(name, "no source; handset error unspecified")

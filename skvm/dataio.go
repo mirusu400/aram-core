@@ -434,7 +434,7 @@ func (vm *VM) dataInput(reference uint32) (*inputStreamState, error) {
 			return nil, fmt.Errorf("object %d is not an InputStream", reference)
 		}
 	}
-	return nil, fmt.Errorf("null DataInputStream delegate")
+	return nil, vm.newThrowable("java/lang/NullPointerException", "null DataInputStream delegate")
 }
 
 func (vm *VM) dataInputRead(

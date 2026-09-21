@@ -165,6 +165,9 @@ func nativeDrawImage(
 	if err != nil {
 		return Value{}, false, err
 	}
+	if imageReference == 0 && vm.nativePolicy == NativePolicyLGT {
+		return Value{}, false, nil
+	}
 	source, err := vm.image(imageReference)
 	if err != nil {
 		return Value{}, false, err
