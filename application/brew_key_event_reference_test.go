@@ -91,6 +91,34 @@ func TestBREWIssue314RendersTitleMenuAndGameplay(t *testing.T) {
 	}
 }
 
+func TestBREWIssue313ReachesCombatWithoutBitmapHeapExhaustion(t *testing.T) {
+	const digest = "9d1bf51748ac93d6008d2a55f29a5c26c13d778486b981c258c2c8ef9dedf9ef"
+	path, data := findAuthorizedPackage(t, digest)
+	machine := newBREWReferenceMachine(t, path, data)
+	stepBREWReference(t, machine, 239)
+	checks := map[int]string{
+		1:  "b09d68328a6c7140b04231faec4f17468403f18ba31136ea16352e1b44b62d61", // main menu
+		3:  "697a12d5b4190c21e0a5c8375dd3e914913a6ddf7ba0ce2bd0e95bdb1b8c8e81", // opening story
+		25: "5cc99afac6a5217ee0a9dbb562e690fc234f8c8c045e0910130b7f638df99251", // combat map
+	}
+	for tap := 1; tap <= 100; tap++ {
+		tapBREWReference(t, machine)
+		stepBREWReference(t, machine, 120)
+		if want, ok := checks[tap]; ok {
+			frame := brewFrameHash(machine.Framebuffer())
+			if got := hex.EncodeToString(frame[:]); got != want {
+				t.Fatalf("frame after tap %d = %s, want %s", tap, got, want)
+			}
+		}
+	}
+	before := brewFrameHash(machine.Framebuffer())
+	tapBREWControl(t, machine, "right")
+	stepBREWReference(t, machine, 120)
+	if after := brewFrameHash(machine.Framebuffer()); after == before {
+		t.Fatal("combat map did not respond to directional input")
+	}
+}
+
 func newBREWReferenceMachine(t *testing.T, path string, data []byte) *brewMachine {
 	t.Helper()
 	factory := NewFactory()

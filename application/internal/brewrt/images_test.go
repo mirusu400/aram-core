@@ -97,6 +97,68 @@ func TestSetupNativeImagePublishesOwnedRGB565Bitmap(t *testing.T) {
 	}
 }
 
+func TestSetupNativeImageReusesLiveFullscreenStagingBitmap(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	encode := func(fill color.RGBA) []byte {
+		source := image.NewRGBA(image.Rect(0, 0, int(framebufferWidth), int(framebufferHeight)))
+		for y := 0; y < int(framebufferHeight); y++ {
+			for x := 0; x < int(framebufferWidth); x++ {
+				source.SetRGBA(x, y, fill)
+			}
+		}
+		var output bytes.Buffer
+		if err := bmp.Encode(&output, source); err != nil {
+			t.Fatal(err)
+		}
+		return output.Bytes()
+	}
+	red := encode(color.RGBA{R: 255, A: 255})
+	blue := encode(color.RGBA{B: 255, A: 255})
+	if len(red) != len(blue) {
+		t.Fatal("BMP frame lengths differ")
+	}
+	buffer, err := runtime.allocateGuest(uint32(len(red)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR1, buffer); err != nil {
+		t.Fatal(err)
+	}
+	var first, highWater uint32
+	for iteration := 0; iteration < 250; iteration++ {
+		frame := red
+		if iteration%2 != 0 {
+			frame = blue
+		}
+		if err := runtime.cpu.WriteMemory(buffer, frame); err != nil {
+			t.Fatal(err)
+		}
+		if err := runtime.setupNativeImage(); err != nil {
+			t.Fatal(err)
+		}
+		object, err := runtime.cpu.ReadRegister(cpu.RegisterR0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if iteration == 0 {
+			first, highWater = object, runtime.heapNext
+		} else if object != first || runtime.heapNext != highWater {
+			t.Fatalf("iteration %d: object=0x%x heap=0x%x, want object=0x%x heap=0x%x", iteration, object, runtime.heapNext, first, highWater)
+		}
+	}
+	var header [12]byte
+	if err := runtime.cpu.ReadMemory(first, header[:]); err != nil {
+		t.Fatal(err)
+	}
+	var pixel [2]byte
+	if err := runtime.cpu.ReadMemory(binary.LittleEndian.Uint32(header[8:12]), pixel[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint16(pixel[:]); got != 0x001f {
+		t.Fatalf("last staging pixel=0x%04x, want blue", got)
+	}
+}
+
 func TestSetupNativeImageUsesGeometryWhenIndexedBMPSizeIsStale(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	palette := make(color.Palette, 256)

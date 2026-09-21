@@ -62,9 +62,23 @@ func (r *Runtime) setupNativeImage() error {
 	if err != nil {
 		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
 	}
-	object, err := r.createNativeBitmap(decoded)
-	if err != nil {
-		return err
+	// Some handset games decode the same full-screen staging BMP on every
+	// animation tick without releasing the previous IDIB. Reuse that IDIB's
+	// storage when its source buffer and geometry are unchanged; otherwise a
+	// few seconds of gameplay exhausts the emulated heap with identical-sized
+	// surfaces. Smaller bitmaps retain independent snapshot semantics.
+	object := uint32(0)
+	if decoded.Bounds().Dx() == int(framebufferWidth) && decoded.Bounds().Dy() == int(framebufferHeight) {
+		object, err = r.reuseNativeBitmap(buffer, encodedSize, decoded)
+		if err != nil {
+			return err
+		}
+	}
+	if object == 0 {
+		object, err = r.createNativeBitmap(decoded)
+		if err != nil {
+			return err
+		}
 	}
 	if info != 0 {
 		width, height := uint16(decoded.Bounds().Dx()), uint16(decoded.Bounds().Dy())
@@ -76,17 +90,50 @@ func (r *Runtime) setupNativeImage() error {
 			return fmt.Errorf("write BREW native-image info: %w", err)
 		}
 	}
-	direct, err := r.attachExpandedRGB565Backing(object, buffer, encoded, decoded)
-	if err != nil {
-		return err
-	}
-	if !direct {
-		r.nativeImages[object] = brewNativeImage{encoded: buffer, span: encodedSize}
+	if _, reused := r.nativeImages[object]; !reused {
+		direct, err := r.attachExpandedRGB565Backing(object, buffer, encoded, decoded)
+		if err != nil {
+			return err
+		}
+		if !direct {
+			r.nativeImages[object] = brewNativeImage{encoded: buffer, span: encodedSize}
+		}
 	}
 	// The final argument reports whether SetupNativeImage relocated the caller's
 	// encoded buffer. Conversion either happens in place or into separately owned
 	// IDIB storage, so the caller's pointer itself never changes.
 	return r.cpu.WriteRegister(cpu.RegisterR0, object)
+}
+
+func (r *Runtime) reuseNativeBitmap(buffer, span uint32, decoded image.Image) (uint32, error) {
+	if r.heapAllocated[buffer] < span {
+		return 0, nil
+	}
+	for object, native := range r.nativeImages {
+		if native.encoded != buffer || native.span != span {
+			continue
+		}
+		if _, live := r.heapAllocated[object]; !live {
+			continue
+		}
+		var header [30]byte
+		if err := r.cpu.ReadMemory(object, header[:]); err != nil || binary.LittleEndian.Uint32(header[:4]) != bitmapVTable {
+			continue
+		}
+		width := int(binary.LittleEndian.Uint16(header[20:22]))
+		height := int(binary.LittleEndian.Uint16(header[22:24]))
+		pitch := int(binary.LittleEndian.Uint16(header[24:26]))
+		pixels := binary.LittleEndian.Uint32(header[8:12])
+		if width != decoded.Bounds().Dx() || height != decoded.Bounds().Dy() || pitch < width*2 ||
+			r.heapAllocated[pixels] < uint32(pitch*height) {
+			continue
+		}
+		if err := r.cpu.WriteMemory(pixels, nativeRGB565(decoded, pitch)); err != nil {
+			return 0, fmt.Errorf("reuse BREW native bitmap pixels: %w", err)
+		}
+		return object, nil
+	}
+	return 0, nil
 }
 
 func nativeBMPSpan(header []byte) (uint32, bool) {
