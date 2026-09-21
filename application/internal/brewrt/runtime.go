@@ -13,6 +13,7 @@ import (
 
 	"github.com/mirusu400/aram-core/cpu"
 	"github.com/mirusu400/aram-core/cpu/interpreter"
+	shared "github.com/mirusu400/aram-core/runtime"
 	"golang.org/x/text/encoding/korean"
 	"golang.org/x/text/transform"
 )
@@ -197,6 +198,8 @@ type Runtime struct {
 	menuControl      brewMenuControl
 	memAStreams      map[uint32]brewMemAStream
 	imageStreams     map[uint32]uint32
+	textRaster       *shared.Text
+	displayFont      shared.ServiceID
 }
 
 type brewPreferenceKey struct {
@@ -281,6 +284,22 @@ func New(pkg Package) (*Runtime, error) {
 		return nil, fmt.Errorf("BREW module is empty")
 	}
 	backend := interpreter.New()
+	registry := shared.NewRegistry(0)
+	graphics, err := shared.NewGraphics(registry, shared.GraphicsLimits{})
+	if err != nil {
+		_ = backend.Close()
+		return nil, fmt.Errorf("create BREW text graphics service: %w", err)
+	}
+	displayText, err := shared.NewText(registry, graphics, shared.TextLimits{}, "")
+	if err != nil {
+		_ = backend.Close()
+		return nil, fmt.Errorf("create BREW text service: %w", err)
+	}
+	displayFont, err := displayText.CreateFont(1, shared.FontDescriptor{Size: 13})
+	if err != nil {
+		_ = backend.Close()
+		return nil, fmt.Errorf("create BREW display font: %w", err)
+	}
 	classIDs := append([]uint32(nil), pkg.ClassIDs...)
 	if len(classIDs) == 0 {
 		classIDs = []uint32{ClassID}
@@ -293,6 +312,8 @@ func New(pkg Package) (*Runtime, error) {
 		preferences:  make(map[brewPreferenceKey][]byte),
 		memAStreams:  make(map[uint32]brewMemAStream),
 		imageStreams: make(map[uint32]uint32),
+		textRaster:   displayText,
+		displayFont:  displayFont,
 	}
 	if err := r.mapImage(pkg.Module); err != nil {
 		_ = backend.Close()

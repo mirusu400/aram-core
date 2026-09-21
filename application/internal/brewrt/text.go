@@ -8,6 +8,7 @@ import (
 	"unicode/utf16"
 
 	"github.com/mirusu400/aram-core/cpu"
+	shared "github.com/mirusu400/aram-core/runtime"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/basicfont"
 	"golang.org/x/image/math/fixed"
@@ -61,8 +62,10 @@ func (r *Runtime) drawDisplayText() error {
 	if clip.Empty() {
 		return nil
 	}
-	rendered := basicFontText(text)
-	textWidth := int64(len([]rune(rendered)) * 7)
+	textWidth, err := r.displayTextWidth(text)
+	if err != nil {
+		return err
+	}
 	textHeight := int64(basicfont.Face7x13.Height)
 	drawX, drawY := int64(x), int64(y)
 	switch flags & 0x00f0 {
@@ -137,9 +140,22 @@ func (r *Runtime) drawDisplayText() error {
 		Dst:  canvas.SubImage(clip).(*image.RGBA),
 		Src:  image.NewUniform(foreground),
 		Face: basicfont.Face7x13,
-		Dot:  fixed.P(int(drawX), int(drawY)+basicfont.Face7x13.Ascent),
 	}
-	drawer.DrawString(rendered)
+	cursor := int(drawX)
+	for _, character := range text {
+		if character <= 0xff {
+			drawer.Dot = fixed.P(cursor, int(drawY)+basicfont.Face7x13.Ascent)
+			drawer.DrawString(string(character))
+			cursor += 7
+			continue
+		}
+		glyph, err := r.textRaster.Glyph(1, r.displayFont, character)
+		if err != nil {
+			return fmt.Errorf("rasterize BREW DrawText glyph %U: %w", character, err)
+		}
+		drawDisplayGlyph(canvas, clip, cursor, int(drawY), foreground, glyph)
+		cursor += int(glyph.Advance)
+	}
 	for py := dirty.Min.Y; py < dirty.Max.Y; py++ {
 		for px := dirty.Min.X; px < dirty.Max.X; px++ {
 			value := canvas.RGBAAt(px, py)
@@ -153,6 +169,53 @@ func (r *Runtime) drawDisplayText() error {
 		}
 	}
 	return nil
+}
+
+func (r *Runtime) displayTextWidth(value string) (int64, error) {
+	var width int64
+	for _, character := range value {
+		if character <= 0xff {
+			width += 7
+			continue
+		}
+		glyph, err := r.textRaster.Glyph(1, r.displayFont, character)
+		if err != nil {
+			return 0, fmt.Errorf("measure BREW DrawText glyph %U: %w", character, err)
+		}
+		width += int64(glyph.Advance)
+	}
+	return width, nil
+}
+
+func drawDisplayGlyph(
+	canvas *image.RGBA,
+	clip image.Rectangle,
+	x, y int,
+	foreground color.RGBA,
+	glyph shared.Glyph,
+) {
+	for row := int32(0); row < glyph.Height; row++ {
+		for column := int32(0); column < glyph.Width; column++ {
+			alpha := glyph.Alpha[row*glyph.Width+column]
+			if alpha == 0 {
+				continue
+			}
+			px := x + int(glyph.BearingX+column)
+			py := y + int(glyph.BearingY+row)
+			if !image.Pt(px, py).In(clip) {
+				continue
+			}
+			background := canvas.RGBAAt(px, py)
+			inverse := uint32(255 - alpha)
+			coverage := uint32(alpha)
+			canvas.SetRGBA(px, py, color.RGBA{
+				R: uint8((uint32(foreground.R)*coverage + uint32(background.R)*inverse) / 255),
+				G: uint8((uint32(foreground.G)*coverage + uint32(background.G)*inverse) / 255),
+				B: uint8((uint32(foreground.B)*coverage + uint32(background.B)*inverse) / 255),
+				A: 255,
+			})
+		}
+	}
 }
 
 func displayRGB565(value color.RGBA) uint16 {
@@ -243,14 +306,4 @@ func (r *Runtime) displayText(address, rawCount uint32, oem bool) (string, error
 		}
 	}
 	return string(utf16.Decode(units)), nil
-}
-
-func basicFontText(value string) string {
-	runes := []rune(value)
-	for index, character := range runes {
-		if character > 0xff {
-			runes[index] = '?'
-		}
-	}
-	return string(runes)
 }

@@ -94,7 +94,7 @@ func TestDisplayRectangleUsesBREWRGBVALLayout(t *testing.T) {
 	}
 }
 
-func TestDisplayTextDecodesOEMAndReplacesUnsupportedBasicGlyphs(t *testing.T) {
+func TestDisplayTextDecodesOEMAndMeasuresHangulGlyph(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	textAt := heapBase + 0x200
 	if err := runtime.cpu.WriteMemory(textAt, []byte{0xb0, 0xa1, 0}); err != nil {
@@ -104,11 +104,52 @@ func TestDisplayTextDecodesOEMAndReplacesUnsupportedBasicGlyphs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if text != "가" {
-		t.Fatalf("decoded OEM text=%q, want 가", text)
+	if text != "\uac00" {
+		t.Fatalf("decoded OEM text=%q, want U+AC00", text)
 	}
-	if got := basicFontText(text); got != "?" {
-		t.Fatalf("basic font fallback=%q, want ?", got)
+	if got, err := runtime.displayTextWidth(text); err != nil || got <= 7 {
+		t.Fatalf("Hangul display width=%d err=%v, want wider than ASCII fallback", got, err)
+	}
+}
+
+func TestDisplayDrawTextRasterizesHangulBeyondQuestionMarkCell(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	textAt := heapBase + 0x200
+	stackAt := heapBase + 0x300
+	if err := runtime.cpu.WriteMemory(textAt, []byte{0xb0, 0xa1, 0}); err != nil {
+		t.Fatal(err)
+	}
+	var arguments [16]byte
+	binary.LittleEndian.PutUint32(arguments[12:16], displayTextFormatOEM)
+	if err := runtime.cpu.WriteMemory(stackAt, arguments[:]); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR2: textAt,
+		cpu.RegisterR3: ^uint32(0),
+		cpu.RegisterSP: stackAt,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := runtime.drawDisplayText(); err != nil {
+		t.Fatal(err)
+	}
+	pixels := make([]byte, framebufferBytes)
+	if err := runtime.cpu.ReadMemory(framebufferBase, pixels); err != nil {
+		t.Fatal(err)
+	}
+	paintedBeyondASCII := false
+	for y := uint32(0); y < 13; y++ {
+		for x := uint32(7); x < 13; x++ {
+			if binary.LittleEndian.Uint16(pixels[(y*framebufferWidth+x)*2:]) != 0 {
+				paintedBeyondASCII = true
+			}
+		}
+	}
+	if !paintedBeyondASCII {
+		t.Fatal("Hangul DrawText remained confined to the seven-pixel question-mark cell")
 	}
 }
 
