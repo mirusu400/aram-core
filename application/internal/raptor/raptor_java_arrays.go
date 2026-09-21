@@ -2,6 +2,21 @@ package raptor
 
 import "fmt"
 
+// Ranked primitive-array tokens preserve ordinal 14's rank without allocating
+// guest metadata. Plain descriptor characters remain the rank-one ABI. The
+// marker separates these tokens from guest class pointers and legacy handles.
+const raptorRankedPrimitiveArrayType uint32 = 0x80000000
+
+func raptorPrimitiveArrayRank(element uint32) uint32 {
+	if element&0xffff0000 != raptorRankedPrimitiveArrayType {
+		return 0
+	}
+	if _, primitive := raptorJavaPrimitiveArrayElementSize(element & 0xff); !primitive {
+		return 0
+	}
+	return (element >> 8) & 0xff
+}
+
 // A Raptor Java array exists twice: as the body the AOT code reads and writes
 // with plain loads and stores (obj+8 -> body, body+0 = length, elements from
 // body+4), and as a KTF mirror the shared Java host operates on (instance ->

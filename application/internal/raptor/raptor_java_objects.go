@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"strings"
+
 	ktfrt "github.com/mirusu400/aram-core/application/internal/ktf"
 	wipirt "github.com/mirusu400/aram-core/application/internal/wipi"
 
@@ -274,8 +276,11 @@ func (r *Runtime) newRaptorJavaArray(element, count uint32) (uint32, error) {
 		return 0, err
 	}
 	className := "[Ljava/lang/Object;"
-	if _, primitive := raptorJavaPrimitiveArrayElementSize(element); primitive {
+	_, primitive := raptorJavaPrimitiveArrayElementSize(element)
+	if primitive {
 		className = "[" + string(byte(element))
+	} else if rank := raptorPrimitiveArrayRank(element); rank > 1 {
+		className = strings.Repeat("[", int(rank)) + string(byte(element))
 	}
 	// A failure here is a KTF-side mirror the LGT array will simply run
 	// without, not a reason to discard the array the two allocations above
@@ -287,7 +292,7 @@ func (r *Runtime) newRaptorJavaArray(element, count uint32) (uint32, error) {
 	if mirror, err := java.Host.NewJavaArray(className, count, elementSize); err == nil && mirror != 0 {
 		java.lgtToKTF[instance] = mirror
 		java.ktfToLGT[mirror] = instance
-		if className != "[Ljava/lang/Object;" {
+		if primitive {
 			r.noteRaptorPrimitiveArray(java, mirror, elementSize)
 		}
 	}
@@ -341,12 +346,20 @@ func (r *Runtime) buildRaptorJavaMultiArray(
 	}
 	// Outer levels are object/reference arrays holding the nested arrays. A zero
 	// count leaves an empty outer array, matching the JVM (no inner allocation).
-	outer, err := r.newRaptorJavaArray(0, counts[0])
+	outerElement, innerElement := uint32(0), element
+	if rank := raptorPrimitiveArrayRank(element); rank > 1 {
+		outerElement = element
+		innerElement = element - 1<<8
+		if rank == 2 {
+			innerElement = element & 0xff
+		}
+	}
+	outer, err := r.newRaptorJavaArray(outerElement, counts[0])
 	if err != nil {
 		return 0, err
 	}
 	for index := uint32(0); index < counts[0]; index++ {
-		inner, innerErr := r.buildRaptorJavaMultiArray(element, counts[1:])
+		inner, innerErr := r.buildRaptorJavaMultiArray(innerElement, counts[1:])
 		if innerErr != nil {
 			return 0, innerErr
 		}

@@ -929,6 +929,16 @@ func (r *Runtime) dispatchJavaImport(
 		// array as a 4-byte object array — a byte[] read buffer became 4x too
 		// wide and never lined up with the guest's byte-stride accesses.
 		if elementChar := raptorPrimitiveArrayElementChar(size); elementChar != 0 {
+			rank, rankErr := r.CPU.ReadRegister(cpu.RegisterR0)
+			if rankErr != nil {
+				return guest.WIPIReturn{}, "RAPTOR.Java.arrayType", true, rankErr
+			}
+			// r0 is the array rank. Only rank one stores primitive values;
+			// byte[][] and int[][] store references even when newArray allocates
+			// just their outer dimension (issues #307 and #324).
+			if rank > 1 && rank <= 255 {
+				elementChar = raptorRankedPrimitiveArrayType | rank<<8 | elementChar
+			}
 			return guest.WIPIReturn{Low: elementChar}, "RAPTOR.Java.arrayType", true, nil
 		}
 		address, err := r.Public.Heap.Allocate(size, true)
