@@ -1,6 +1,7 @@
 package brewrt
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"image"
@@ -285,7 +286,7 @@ func (r *Runtime) displayText(address, rawCount uint32, oem bool) (string, error
 			}
 			unit := binary.LittleEndian.Uint16(encoded[:])
 			if unit == 0 {
-				return string(utf16.Decode(units)), nil
+				return decodeBREWAECHAR(units), nil
 			}
 			units = append(units, unit)
 		}
@@ -305,5 +306,38 @@ func (r *Runtime) displayText(address, rawCount uint32, oem bool) (string, error
 			units[index] = binary.LittleEndian.Uint16(raw[index*2:])
 		}
 	}
-	return string(utf16.Decode(units)), nil
+	return decodeBREWAECHAR(units), nil
+}
+
+// STREXPAND on Korean BREW handsets can place one EUC-KR double-byte code in
+// each AECHAR. Many games also pass genuine UTF-16, so only select this path
+// when every non-ASCII unit is a valid-looking Korean pair and the string has
+// evidence it is not ordinary precomposed Hangul. Otherwise leave UTF-16
+// untouched, including surrogate pairs.
+func decodeBREWAECHAR(units []uint16) string {
+	unicodeText := string(utf16.Decode(units))
+	packed := make([]byte, 0, len(units)*2)
+	evidence := false
+	for _, unit := range units {
+		if unit < 0x80 {
+			packed = append(packed, byte(unit))
+			continue
+		}
+		lead, trail := byte(unit), byte(unit>>8)
+		if lead < 0xa1 || trail < 0xa1 {
+			return unicodeText
+		}
+		if unit < 0xac00 || unit > 0xd7a3 || lead < 0xb0 {
+			evidence = true
+		}
+		packed = append(packed, lead, trail)
+	}
+	if !evidence {
+		return unicodeText
+	}
+	decoded, _, err := transform.Bytes(korean.EUCKR.NewDecoder(), packed)
+	if err != nil || bytes.Contains(decoded, []byte("\xef\xbf\xbd")) {
+		return unicodeText
+	}
+	return string(decoded)
 }

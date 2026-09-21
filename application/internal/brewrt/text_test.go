@@ -112,6 +112,22 @@ func TestDisplayTextDecodesOEMAndMeasuresHangulGlyph(t *testing.T) {
 	}
 }
 
+func TestDecodeBREWAECHARPackedKoreanAndUnicode(t *testing.T) {
+	for _, test := range []struct {
+		units []uint16
+		want  string
+	}{
+		{[]uint16{0xccc0, 0xeebe, 0xcfc7, 0xe2b1}, "이어하기"},
+		{[]uint16{0x20, 0xcfa8, 'N', 'C', 'S', 'O', 'F', 'T'}, " ⓒNCSOFT"},
+		{[]uint16{0xac00, 0xb098, 0xb2e4}, "가나다"},
+		{[]uint16{'A', 'R', 'A', 'M'}, "ARAM"},
+	} {
+		if got := decodeBREWAECHAR(test.units); got != test.want {
+			t.Fatalf("decodeBREWAECHAR(%x) = %q, want %q", test.units, got, test.want)
+		}
+	}
+}
+
 func TestDisplayDrawTextRasterizesHangulBeyondQuestionMarkCell(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	textAt := heapBase + 0x200

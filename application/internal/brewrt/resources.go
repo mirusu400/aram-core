@@ -364,12 +364,14 @@ func decodeBREWResourceImage(data []byte) (image.Image, bool) {
 		return decoded, true
 	}
 	// KTF titles commonly package handset-native SAF animations as image/sis.
-	// A full SAF renderer is not portable yet, but the native BREW shell still
-	// returns a valid IImage for these resources. Preserve that object contract
-	// with a transparent handset-sized surface instead of returning NULL and
-	// letting otherwise compatible applets immediately dereference it.
+	// Decode the supported still-frame MLZ subset. For damaged or unsupported
+	// variants, preserve IImage ownership with a transparent surface instead
+	// of returning NULL and letting otherwise compatible applets dereference it.
 	if bytes.Equal(data[2:offset], []byte("image/sis\x00")) &&
 		bytes.HasPrefix(data[offset:], []byte("SAF\x00")) {
+		if decoded, ok := decodeSAFImage(data[offset:]); ok {
+			return decoded, true
+		}
 		width, height := int(framebufferWidth), int(framebufferHeight)
 		saf := data[offset:]
 		if len(saf) >= 16 && saf[12] == 1 && saf[13] == 0x0a && saf[14] != 0 && saf[15] != 0 {
