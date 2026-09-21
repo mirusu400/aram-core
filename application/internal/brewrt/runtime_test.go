@@ -49,6 +49,65 @@ func TestRuntimeBootstrapsSyntheticARMModule(t *testing.T) {
 	}
 }
 
+func TestRuntimeBootstrapDispatchesShellServicesBeforeModuleReturn(t *testing.T) {
+	// The module entry requests IFileMgr through IShell::CreateInstance, then
+	// allocates and returns its module object. Older loader loops rejected the
+	// CreateInstance trap even though the ordinary applet loop implements it.
+	instructions := []uint32{
+		0xe92d4070, 0xe1a04000, 0xe1a06002, 0xe24dd004,
+		0xe5943000, 0xe5933008, 0xe59f101c, 0xe1a0200d,
+		0xe12fff33, 0xe3a00008, 0xe59f3010, 0xe12fff33,
+		0xe5860000, 0xe28dd004, 0xe8bd8070,
+		FileMgrClassID, allocTrap | 1,
+	}
+	module := make([]byte, len(instructions)*4)
+	for offset, instruction := range instructions {
+		binary.LittleEndian.PutUint32(module[offset*4:], instruction)
+	}
+	runtime, err := New(Package{Module: module})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if err := runtime.Bootstrap(context.Background()); err != nil {
+		t.Fatalf("bootstrap module using shell service: %v", err)
+	}
+	if got := runtime.ModuleObject(); got != heapBase {
+		t.Fatalf("module object = 0x%08x, want 0x%08x", got, heapBase)
+	}
+}
+
+func TestRuntimeBootstrapAllowsBoundedLoaderWorkBeyondAppletSlice(t *testing.T) {
+	// Companion-loading veneers can spend more than one ordinary applet slice
+	// decoding their payload before the module object is available. This loop
+	// executes just over 18 million instructions and then returns a valid object.
+	instructions := []uint32{
+		0xe59f3010, // ldr r3, =9000000
+		0xe2533001, // loop: subs r3, r3, #1
+		0x1afffffd, // bne loop
+		0xe59f0008, // ldr r0, =heapBase
+		0xe5820000, // str r0, [r2]
+		0xe12fff1e, // bx lr
+		9_000_000,
+		heapBase,
+	}
+	module := make([]byte, len(instructions)*4)
+	for offset, instruction := range instructions {
+		binary.LittleEndian.PutUint32(module[offset*4:], instruction)
+	}
+	runtime, err := New(Package{Module: module})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if err := runtime.Bootstrap(context.Background()); err != nil {
+		t.Fatalf("bootstrap decoding module: %v", err)
+	}
+	if got := runtime.ModuleObject(); got != heapBase {
+		t.Fatalf("module object = 0x%08x, want 0x%08x", got, heapBase)
+	}
+}
+
 func TestStdlibHelperTableDoesNotAliasRuntimeObjects(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	var word [4]byte
@@ -1446,6 +1505,27 @@ func TestMatchAcceptsGenericSingleModulePackage(t *testing.T) {
 	}
 	if pkg.Authenticated {
 		t.Fatal("generic package was reported as authenticated")
+	}
+}
+
+func TestKnownModuleVeneerAcceptsOnlyBoundedARMBranchStubs(t *testing.T) {
+	module := make([]byte, 0x700)
+	binary.LittleEndian.PutUint32(module, 0xea0001a9) // B module+0x6ac.
+	if !knownModuleVeneer(module) {
+		t.Fatal("bounded ARM branch veneer was rejected")
+	}
+
+	for name, first := range map[string]uint32{
+		"target before module": 0xeafffffd,
+		"target after module":  0xea7fffff,
+		"branch with link":     0xeb000000,
+	} {
+		t.Run(name, func(t *testing.T) {
+			binary.LittleEndian.PutUint32(module, first)
+			if knownModuleVeneer(module) {
+				t.Fatalf("unsafe module veneer %#08x was accepted", first)
+			}
+		})
 	}
 }
 

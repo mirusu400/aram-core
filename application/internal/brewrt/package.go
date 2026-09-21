@@ -115,8 +115,19 @@ func Match(data []byte) (pkg Package, matched bool, err error) {
 }
 
 func knownModuleVeneer(module []byte) bool {
+	if len(module) < 4 {
+		return false
+	}
 	first := binary.LittleEndian.Uint32(module[:4])
-	return first == 0xe92d400e || first == 0xe92d400c || first == 0xe1a0c002
+	if first == 0xe92d400e || first == 0xe92d400c || first == 0xe1a0c002 {
+		return true
+	}
+	if first&0xff000000 != 0xea000000 { // ARM B, excluding BL and conditional branches.
+		return false
+	}
+	delta := int64(int32(first<<8) >> 6) // Sign-extend imm24, then scale by four.
+	target := int64(8) + delta           // ARM branches use PC+8 as their base.
+	return target >= 0 && target+4 <= int64(len(module))
 }
 
 func mifApplicationClassID(metadata brew.Metadata, data []byte) (uint32, bool) {

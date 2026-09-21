@@ -155,8 +155,9 @@ const (
 	memAStreamTrapBase    = controlServiceBase + 0xa00
 	memAStreamMethodCount = uint32(7)
 
-	guestInstructionBudget = uint64(16_000_000)
-	hostCallBudget         = 131_072
+	guestInstructionBudget     = uint64(16_000_000)
+	bootstrapInstructionBudget = uint64(256_000_000)
+	hostCallBudget             = 131_072
 )
 
 // Runtime executes structurally validated module and applet ARM code with the
@@ -1928,7 +1929,7 @@ func (r *Runtime) Bootstrap(ctx context.Context) error {
 
 	pc, mode := moduleBase, cpu.ModeARM
 	for traps := 0; traps < hostCallBudget; traps++ {
-		result := r.cpu.Run(ctx, pc, mode, guestInstructionBudget)
+		result := r.cpu.Run(ctx, pc, mode, bootstrapInstructionBudget)
 		if result.Err != nil {
 			return fmt.Errorf("execute BREW module entry at PC 0x%08x: %w", result.PC, result.Err)
 		}
@@ -1945,6 +1946,52 @@ func (r *Runtime) Bootstrap(ctx context.Context) error {
 				return fmt.Errorf("read BREW allocator return address: %w", err)
 			}
 			pc, mode = branchTarget(lr)
+		case freeTrap + 2:
+			address, err := r.cpu.ReadRegister(cpu.RegisterR0)
+			if err != nil {
+				return fmt.Errorf("read BREW bootstrap free address: %w", err)
+			}
+			r.releaseInterfaceObject(address)
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+				return fmt.Errorf("return BREW bootstrap free status: %w", err)
+			}
+			nextPC, nextMode, err := r.hostReturnTarget()
+			if err != nil {
+				return err
+			}
+			pc, mode = nextPC, nextMode
+		case shellTrap + 2:
+			if err := r.createShellInstance(); err != nil {
+				return err
+			}
+			nextPC, nextMode, err := r.hostReturnTarget()
+			if err != nil {
+				return err
+			}
+			pc, mode = nextPC, nextMode
+		case addRefTrap + 2:
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 1); err != nil {
+				return fmt.Errorf("return BREW bootstrap interface reference count: %w", err)
+			}
+			nextPC, nextMode, err := r.hostReturnTarget()
+			if err != nil {
+				return err
+			}
+			pc, mode = nextPC, nextMode
+		case releaseTrap + 2:
+			address, err := r.cpu.ReadRegister(cpu.RegisterR0)
+			if err != nil {
+				return fmt.Errorf("read BREW bootstrap released interface: %w", err)
+			}
+			r.releaseInterfaceObject(address)
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+				return fmt.Errorf("return BREW bootstrap released interface reference count: %w", err)
+			}
+			nextPC, nextMode, err := r.hostReturnTarget()
+			if err != nil {
+				return err
+			}
+			pc, mode = nextPC, nextMode
 		case returnTrap + 2:
 			var encoded [4]byte
 			if err := r.cpu.ReadMemory(outputAddr, encoded[:]); err != nil {
@@ -1956,7 +2003,14 @@ func (r *Runtime) Bootstrap(ctx context.Context) error {
 			}
 			return nil
 		default:
-			return fmt.Errorf("unexpected BREW bootstrap breakpoint at PC 0x%08x", result.PC-2)
+			handled, nextPC, nextMode, err := r.handleAppletMethodTrap(result.PC)
+			if err != nil {
+				return err
+			}
+			if !handled {
+				return fmt.Errorf("unexpected BREW bootstrap breakpoint at PC 0x%08x", result.PC-2)
+			}
+			pc, mode = nextPC, nextMode
 		}
 	}
 	return fmt.Errorf("BREW bootstrap exceeded host-call limit")
