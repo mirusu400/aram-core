@@ -35,6 +35,10 @@ const (
 	// use this value while deterministic tools can retain DefaultRunBudget or
 	// request another deliberately small slice.
 	DefaultHandsetRunBudget = uint64(750_000)
+	// DefaultRaptorFrameRunBudget lets software-rendered Raptor callbacks
+	// reach their timer/presentation boundaries within a video quantum.
+	// This is a bounded product execution allowance, not a CPU clock model.
+	DefaultRaptorFrameRunBudget = uint64(24_000_000)
 	// DefaultKTFHandsetRunBudget models the application CPU time available on
 	// a mid-2000s ARM9 KTF handset during one 60 Hz video quantum. It is kept
 	// separate from DefaultRunBudget so deterministic tools can still request
@@ -78,10 +82,13 @@ type Factory struct {
 	RunBudget uint64
 	// FrameRunBudget is the generic native-WIPI execution budget for one
 	// presentation quantum. Zero inherits RunBudget.
-	FrameRunBudget  uint64
-	KTFRunBudget    uint64
-	MemoryLimit     uint64
-	FramebufferSize image.Point
+	FrameRunBudget uint64
+	// RaptorFrameRunBudget overrides FrameRunBudget for Raptor callbacks.
+	// Zero inherits FrameRunBudget, including deliberately small debug slices.
+	RaptorFrameRunBudget uint64
+	KTFRunBudget         uint64
+	MemoryLimit          uint64
+	FramebufferSize      image.Point
 	// GuestWidthOverride widens the guest framebuffer to at least this many
 	// pixels (experimental widescreen), keeping each loader's native height. Zero
 	// leaves the native width. Unlike FramebufferSize it survives loaders that
@@ -195,22 +202,23 @@ func (f Factory) Create(ctx context.Context, source machinecore.Source) (machine
 	// override afterward via applyGuestWidthOverride.
 	size.X = applyGuestWidthOverride(size.X, f.GuestWidthOverride)
 	machine := &Machine{
-		cpu:                backend,
-		state:              machinecore.StateEmpty,
-		runBudget:          budget,
-		ktfRunBudget:       f.KTFRunBudget,
-		memoryLimit:        memoryLimit,
-		guestWidthOverride: f.GuestWidthOverride,
-		frame:              image.NewRGBA(image.Rect(0, 0, size.X, size.Y)),
-		initialResources:   guest.CloneSliceMap(f.Resources),
-		frameRunBudget:     frameBudget,
-		raptorNet:          f.RaptorNet,
-		offlineCarrierAuth: f.OfflineCarrierAuth,
-		fallbackFont:       f.FallbackFont,
-		audioMixMode:       f.AudioMixMode,
-		outputSampleRate:   f.OutputSampleRate,
-		outputChannels:     f.OutputChannels,
-		audioGeneration:    1,
+		cpu:                  backend,
+		state:                machinecore.StateEmpty,
+		runBudget:            budget,
+		ktfRunBudget:         f.KTFRunBudget,
+		memoryLimit:          memoryLimit,
+		guestWidthOverride:   f.GuestWidthOverride,
+		frame:                image.NewRGBA(image.Rect(0, 0, size.X, size.Y)),
+		initialResources:     guest.CloneSliceMap(f.Resources),
+		frameRunBudget:       frameBudget,
+		raptorFrameRunBudget: f.RaptorFrameRunBudget,
+		raptorNet:            f.RaptorNet,
+		offlineCarrierAuth:   f.OfflineCarrierAuth,
+		fallbackFont:         f.FallbackFont,
+		audioMixMode:         f.AudioMixMode,
+		outputSampleRate:     f.OutputSampleRate,
+		outputChannels:       f.OutputChannels,
+		audioGeneration:      1,
 	}
 	if err := machine.Load(ctx, source); err != nil {
 		_ = backend.Close()
@@ -311,6 +319,7 @@ type Machine struct {
 	lastResult            cpu.Result
 	runBudget             uint64
 	frameRunBudget        uint64
+	raptorFrameRunBudget  uint64
 	ktfRunBudget          uint64
 	ktfPresentsPerQuantum int
 	memoryLimit           uint64

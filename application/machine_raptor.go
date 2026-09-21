@@ -256,6 +256,9 @@ func (m *Machine) stepRaptorCallbackTask(
 		return fmt.Errorf("resume Raptor callback from %s: %w", state, ErrInvalidState)
 	}
 	budget := max(m.frameRunBudget, uint64(1))
+	if m.raptorFrameRunBudget != 0 {
+		budget = m.raptorFrameRunBudget
+	}
 	presentations := m.wipi.Stats.PresentCount
 	callbackLimit := maxRaptorCallbacksPerFrame
 	if raptorQueueHasInputCallback(m.raptor.CallbackTasks, m.raptor.Clet.HandleEvent) {
