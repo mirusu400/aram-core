@@ -109,3 +109,22 @@ and no fault. A longer 4,096-slice observation reached instruction 43,907 and
 OK input). This bounds the improvement to this alpha/input-response transition.
 It is not a reference-screen comparison or proof of sustained gameplay. The
 remaining media failure is outside this graphics change.
+
+## Region capture
+
+`capture(int,int,int,int)` copies the receiving Graphics surface into a separate
+immutable Image, including image and GameCanvas buffers. Coordinates follow the
+current translation. The complete rectangle must be within the clip and surface;
+nonpositive dimensions and out-of-bounds rectangles throw
+`IllegalArgumentException`, as specified by the linked LGT Javadoc. Bounds are
+checked with widened arithmetic before allocating the image. Capture preserves
+the source drawing state and does not apply its drawing alpha to copied pixels.
+Synthetic tests cover all three surface kinds, translated clip edges, independent
+image contents, invalid rectangles, integer extremes, and carrier policy isolation.
+
+For issue #310, the reported SHA-256
+`7020af2e94879b606426b54ce9dcde6eae23001cecb4e8c528454ea745d1038d`
+under `j2me-1.0/lgt/generic` faults at the missing capture native after 271
+presentations without this registration. With capture, the same five-OK probe
+reaches 5,633 presentations and 10 input events while still running. This checks
+the reported failure transition, not complete gameplay.
