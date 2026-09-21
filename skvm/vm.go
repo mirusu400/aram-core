@@ -207,7 +207,7 @@ func NewWithNativePolicy(classData map[string][]byte, services *shared.Services,
 		// to their native policy even when both VMs share identical services.
 		domain := "j2me-native-policy-v1\x00"
 		if policy == NativePolicyLGT {
-			domain = "lgt-mmpp-native-policy-v2\x00"
+			domain = "lgt-mmpp-native-policy-v3\x00"
 		}
 		vm.classDigest = sha256.Sum256(append([]byte(domain), vm.classDigest[:]...))
 		for class := range vm.hostSupers {
@@ -291,6 +291,7 @@ func NewWithNativePolicy(classData map[string][]byte, services *shared.Services,
 	vm.installCoreNatives()
 	if policy == NativePolicyLGT {
 		vm.installLGTMediaNatives()
+		vm.installLGTVibrationNatives()
 		vm.installLGTBacklightNatives()
 		vm.installLGTMathNatives()
 		vm.installLGTGraphicsTypes()
@@ -457,7 +458,7 @@ func (vm *VM) RegisterStaticField(
 
 func (vm *VM) nativeClassAllowed(class string) bool {
 	return vm.nativePolicy == NativePolicySKT || standardJavaClass(class) ||
-		(vm.nativePolicy == NativePolicyLGT && (class == "mmpp/media/MediaPlayer" || class == "mmpp/media/BackLight" || class == "mmpp/lang/MathFP" || class == lgtGraphicsClass || class == lgtPhoneClass))
+		(vm.nativePolicy == NativePolicyLGT && (class == "mmpp/media/MediaPlayer" || class == "mmpp/media/BackLight" || class == lgtVibrationClass || class == "mmpp/lang/MathFP" || class == lgtGraphicsClass || class == lgtPhoneClass))
 }
 
 func standardJavaClass(class string) bool {
@@ -916,6 +917,10 @@ func (vm *VM) Advance(
 				wallOffset := vm.services.Clock.WallMillis() - vm.services.Clock.Monotonic().Milliseconds()
 				object.Fields["\x00aram-timer-scheduled-wall"] = LongValue(wallOffset + event.At.Milliseconds())
 			}
+			timer, err := vm.services.Timers.Get(event.ServiceID, vm.serviceOwner)
+			if err != nil {
+				return err
+			}
 			if _, _, err := vm.InvokeVirtual(
 				ctx,
 				taskReference,
@@ -923,6 +928,11 @@ func (vm *VM) Advance(
 				"()V",
 			); err != nil && !errors.Is(err, ErrMethodNotFound) {
 				return err
+			}
+			if timer.Interval == 0 {
+				if err := vm.retireOneShotTimer(taskReference, task); err != nil {
+					return err
+				}
 			}
 			continue
 		}

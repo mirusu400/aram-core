@@ -88,4 +88,8 @@ func TestJ2MELGTYeongwoongSeogiIanReachesMenu(t *testing.T) {
 	if menu := frameHash(); menu == title || menu == notice {
 		t.Fatal("select did not advance from the title to the menu")
 	}
+	step(4000)
+	if menu := frameHash(); menu == title || menu == notice {
+		t.Fatal("title left the menu before the 5000-frame milestone")
+	}
 }

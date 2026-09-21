@@ -147,7 +147,7 @@ func TestMMPPBoundsMissingUnsupportedAndPolicy(t *testing.T) {
 	for _, m := range []struct {
 		n, d string
 		a    []Value
-	}{{"getVolumeLevel", "()Ljava/lang/String;", nil}, {"setVolumeLevel", "(Ljava/lang/String;)V", []Value{ReferenceValue(v.NewString("50"))}}} {
+	}{{"setVolumeLevel", "(Ljava/lang/String;)V", []Value{ReferenceValue(v.NewString("50"))}}} {
 		_, _, e = v.natives[nativeKey{mmppClass, m.n, m.d}](context.Background(), v, r, m.a)
 		if e == nil || !strings.Contains(e.Error(), "unsupported") {
 			t.Fatalf("volume guessed: %v", e)
@@ -165,7 +165,7 @@ func TestMMPPBoundsMissingUnsupportedAndPolicy(t *testing.T) {
 		}
 	}
 	for k := range v.natives {
-		if !standardJavaClass(k.class) && k.class != mmppClass && k.class != "mmpp/media/BackLight" && k.class != "mmpp/lang/MathFP" && k.class != "mmpp/microedition/lcdui/GraphicsX" && k.class != lgtPhoneClass {
+		if !standardJavaClass(k.class) && k.class != mmppClass && k.class != "mmpp/media/BackLight" && k.class != lgtVibrationClass && k.class != "mmpp/lang/MathFP" && k.class != "mmpp/microedition/lcdui/GraphicsX" && k.class != lgtPhoneClass {
 			t.Fatalf("OEM leaked: %v", k)
 		}
 	}

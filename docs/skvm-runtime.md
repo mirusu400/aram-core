@@ -82,6 +82,26 @@ The command emits JSON containing:
 The PNG writer is optional. It never requires a window, display server, or
 native image library.
 
+## Run an LGT J2ME archive by frames
+
+The J2ME product adapter accepts the LGT Downtown ZIP layout containing JAD,
+JAR, and optional record stores. It uses the LGT native policy and the shared
+frame clock. Run it through the product factory rather than the SKT-only runner:
+
+```powershell
+go run ./cmd/aram-j2me-run `
+  -frames 5000 `
+  -keys "600:select,760:select" `
+  -screenshot ".\j2me-frame.png" `
+  "C:\path\game.zip"
+```
+
+The key schedule presses and releases the named control before the numbered
+frame. The JSON report records completed frames, machine state, geometry,
+framebuffer hash, and any error. The final framebuffer can be written even
+when the guest faults, for debugging. A completed frame count establishes
+execution progress; inspect the PNG to identify the actual game screen.
+
 ## Library use
 
 ```go

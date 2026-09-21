@@ -5,6 +5,9 @@
 Public API page fetched directly on 2026-09-11:
 https://nikita36078.github.io/J2ME_Docs/docs/LG_MMPP_API/mmpp/media/MediaPlayer.html
 
+The LGT vibration class is documented at
+https://nikita36078.github.io/J2ME_Docs/docs/LG_MMPP_API/mmpp/media/Vibration.html.
+
 This third-party archive does not establish an exact handset or SDK version.
 This is an implementation from public behavioral documentation and synthetic
 fixtures, not copied handset/reference product code. No proprietary bytes or
@@ -27,8 +30,8 @@ Verified by that documentation:
 
 The mirrored Javadoc alone does not specify volume grammar. The setter now has
 an explicitly bounded interoperability implementation, described below. The
-getter remains an explicit host `unsupported` error because "available levels"
-and "current level" are different contracts. Invalid arrays, codecs, lifecycle
+getter returns the player's cached decimal current level under the LGT
+interoperability profile. Invalid arrays, codecs, lifecycle
 transitions and missing-source errors are not mapped to invented handset
 exceptions or successful playback. The source-less cleanup identity is the
 narrow exception described below.
@@ -41,10 +44,8 @@ a cached decimal volume, its constructor uses a preference value, and its
 stop wrapper delegates to MIDlet-scoped shared MIDI ownership. Its setter
 apparently guards the old volume rather than the new argument. These are
 static wrapper observations with unresolved quick-op/native/runtime details,
-not a universal handset specification. They do not silently replace the
-conservative product choices below. In particular, the unsupported getter
-is now a pending implementation/verification boundary, not an absence of
-any evidence for a current-value getter.
+not a universal handset specification. The cached getter is implemented as a
+profile-specific interoperability choice.
 
 ## Emulator choices, not verified handset facts
 
@@ -59,9 +60,10 @@ any evidence for a current-value getter.
   preparation and stopped destruction preserve other players' queued PCM and
   output revision. This preserves the player's old
   source, gain, position and playback state, not the service allocator sequence.
-* Replacement is supported while stopped. Replacement while playing or paused,
-  and changing loop settings during playback, are explicitly unsupported because
-  the page does not define those interactions.
+* Replacement while playing or paused validates a candidate before stopping
+  and retiring the old clip. The new source starts in the stopped state. A
+  failed candidate leaves the previous source and playback untouched. Changing
+  loop settings during playback remains unsupported.
 * Stop on a validated, constructed player with no installed clip (`clip == 0`)
   is an identity, including repeated cleanup. It does not allocate a clip, change
   fields or shared services, clear queued PCM, or affect another active player.
@@ -106,18 +108,21 @@ setter sets volume; it does not settle units, ranges or error behavior.
 ARAM's explicit LGT interoperability subset accepts decimal signed-32-bit
 integer strings whose value is 0 through 5, mapping them to shared clip gains
 0, 20, 40, 60, 80 and 100. Whitespace, lists, fractional values, overflow and
-out-of-range values remain unsupported. The player must have an installed
-source. This does not install a source, start playback, invent a decoder or
-accept an invalid receiver. Existing mute and pan are preserved. Repeating the
+out-of-range values remain unsupported. A player without a source caches the
+selected level for its next source. This does not install a source, start
+playback, invent a decoder or accept an invalid receiver. Existing mute and pan
+are preserved. Repeating the
 same gain leaves queued PCM and output revision unchanged; actual changes use
 the shared service's existing discontinuity behavior. Gain belongs to the
-installed clip and is serialized there. A successful source replacement uses
-the ordinary new-clip defaults, rather than inventing a persistent volume
-String property. Failed source replacement preserves the prior clip and gain.
+installed clip and is serialized there. A successful source replacement carries
+the player's cached level into the new clip. Failed source replacement preserves
+the prior clip and gain.
 
-`getVolumeLevel` remains unsupported: the Javadoc describes available levels,
-whereas that independent implementation returns the current String. ARAM does
-not turn this ambiguity into a guessed getter value or handset exception.
+`getVolumeLevel` returns the cached current level as a decimal String. The
+hash-qualified ROM wrapper analysis and the independent J2ME-Loader
+implementation both support this interpretation. An invalid receiver or cached
+level still fails. This is a bounded interoperability choice, not a universal
+handset contract.
 
 `TestMMPPVolumeLevelsProduceExactPCM` uses a synthetic constant 10000-amplitude
 WAV and checks each positive level produces exact 2000-times-level PCM samples.
@@ -131,19 +136,21 @@ mixing, not merely successful native returns or stored fields.
 
 `NativePolicySKT = 0` and `NativePolicyJ2ME = 1` retain their existing values.
 `NativePolicyLGT = 2` is an explicit opt-in. Generic J2ME and SKT do not acquire
-MMPP. LGT receives standard Java/MIDP plus four exact classes:
-`mmpp/media/MediaPlayer`, `mmpp/media/BackLight`, `mmpp/lang/MathFP`, and
-`mmpp/microedition/lcdui/GraphicsX`. This is not a prefix-wide OEM namespace
-or a claim that every method of those classes is supported. Registries are per-VM. LGT uses generic CLDC/MIDP
+MMPP. LGT receives standard Java/MIDP plus the exact `MediaPlayer`, `BackLight`,
+`Vibration`, `MathFP`, `GraphicsX`, and phone extension classes. `Vibration`
+reports one available level and maps level one to the shared device motor.
+This is an emulator choice where the Javadoc omits level count. The class list
+is not a prefix-wide OEM namespace or a claim that every method is supported.
+Registries are per-VM. LGT uses generic CLDC/MIDP
 system-property fallback and does not expose application metadata as system
 properties. Host profile identity remains the coordinator's existing
 `j2me-1.0/lgt/generic` configuration.
 
 The outer VM save-state format remains version 4. Existing SKT class digests
 remain unmodified. Generic J2ME retains `j2me-native-policy-v1\0`. LGT binds its
-class digest to `lgt-mmpp-native-policy-v2\0`, defining version 2 of this native
-capability/semantic set with idempotent stop cleanup and the bounded volume
-setter. Prior LGT v1 states and
+class digest to `lgt-mmpp-native-policy-v3\0`, defining version 3 of this native
+capability/semantic set with active source replacement, a cached volume getter,
+and LGT vibration and GraphicsX pixel reads/capture. Prior LGT v1/v2 states and
 old LGT sessions hosted under generic J2ME policy are intentionally rejected
 atomically, not silently migrated. Future incompatible
 LGT native semantics must revise this policy domain. No unrelated old-policy
@@ -159,7 +166,7 @@ Cross-policy restores are rejected before replacing the running VM/services.
 Tests in `skvm/natives_lgt_media*_test.go` cover actual nonzero PCM, timeline
 progress, paused-position preservation, resume, repeat versus once, stopped
 replacement, exact source slicing and copying, missing resources, null/bounds/
-empty/undecodable sources, failure preserving a prior clip, unsupported volume
+empty/undecodable sources, failure preserving a prior clip, cached volume
 getter and out-of-subset setter values, deterministic paused replay, independent
 registries, exact OEM
 allowlisting, existing digest stability, and atomic cross-policy rejection.

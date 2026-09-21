@@ -7,7 +7,7 @@ import (
 
 // installLGTVolumeNatives implements the six-step interoperability subset
 // documented in docs/lgt-mmpp.md. It changes real shared clip gain, never
-// pretends to decode/play a source, and leaves the ambiguous getter unsupported.
+// pretends to decode/play a source. The getter returns the player's cached level.
 func (vm *VM) installLGTVolumeNatives() {
 	vm.RegisterNative(lgtMediaClass, "setVolumeLevel", "(Ljava/lang/String;)V", func(_ context.Context, vm *VM, r uint32, a []Value) (Value, bool, error) {
 		o, clip, err := vm.lgtMedia(r)
@@ -36,7 +36,15 @@ func (vm *VM) installLGTVolumeNatives() {
 		}
 		return Value{}, false, err
 	})
-	vm.RegisterNative(lgtMediaClass, "getVolumeLevel", "()Ljava/lang/String;", func(_ context.Context, _ *VM, _ uint32, _ []Value) (Value, bool, error) {
-		return Value{}, false, lgtUnsupported("getVolumeLevel", "available-level versus current-level String contract is undocumented")
+	vm.RegisterNative(lgtMediaClass, "getVolumeLevel", "()Ljava/lang/String;", func(_ context.Context, vm *VM, r uint32, _ []Value) (Value, bool, error) {
+		o, _, err := vm.lgtMedia(r)
+		if err != nil {
+			return Value{}, false, err
+		}
+		level, err := o.Fields[lgtVolumeField].Int()
+		if err != nil || level < 0 || level > 5 {
+			return Value{}, false, lgtUnsupported("getVolumeLevel", "invalid cached level")
+		}
+		return ReferenceValue(vm.NewString(strconv.FormatInt(int64(level), 10))), true, nil
 	})
 }

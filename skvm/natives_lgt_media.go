@@ -36,12 +36,8 @@ func (vm *VM) lgtMediaSource(receiver uint32, data []byte) error {
 		return err
 	}
 	if old.clip != 0 {
-		info, e := vm.services.Media.Info(vm.serviceOwner, old.clip)
-		if e != nil {
+		if _, e := vm.services.Media.Info(vm.serviceOwner, old.clip); e != nil {
 			return e
-		}
-		if info.State != shared.ClipStopped {
-			return lgtUnsupported("setMediaSource", "replacement during playback is unspecified")
 		}
 	}
 	id, err := vm.services.Media.CreateClip(vm.serviceOwner, "", uint64(len(data)))
@@ -67,6 +63,17 @@ func (vm *VM) lgtMediaSource(receiver uint32, data []byte) error {
 		return lgtUnsupported("setMediaSource", err.Error())
 	}
 	if old.clip != 0 {
+		info, err := vm.services.Media.Info(vm.serviceOwner, old.clip)
+		if err != nil {
+			discard()
+			return err
+		}
+		if info.State != shared.ClipStopped {
+			if err = vm.services.Media.Stop(vm.serviceOwner, old.clip); err != nil {
+				discard()
+				return err
+			}
+		}
 		if err = vm.services.Media.DestroyClip(vm.serviceOwner, old.clip, vm.services.Events); err != nil {
 			discard()
 			return err

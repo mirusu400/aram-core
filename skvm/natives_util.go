@@ -838,8 +838,50 @@ func nativeTimerSchedule(
 	task.timer = id
 	taskObject, _ := vm.Object(taskReference)
 	taskObject.Fields["\x00aram-timer-scheduled-wall"] = LongValue(vm.services.Clock.WallMillis() + delay)
+	taskObject.Fields["\x00aram-timer-owner"] = ReferenceValue(receiver)
 	timer.timers = append(timer.timers, id)
 	return Value{}, false, nil
+}
+
+// A one-shot task keeps its scheduledExecutionTime but no longer needs a
+// service timer after its callback. Retire it so a title creating a fresh task
+// every frame does not exhaust the bounded timer table.
+func (vm *VM) retireOneShotTimer(taskReference uint32, task *timerTaskState) error {
+	id := task.timer
+	if id == 0 {
+		return nil
+	}
+	if err := vm.services.Timers.Destroy(id, vm.serviceOwner, vm.services.Events); err != nil {
+		return err
+	}
+	task.timer = 0
+	task.cancelled = true // A TimerTask cannot be scheduled a second time.
+	object, _ := vm.Object(taskReference)
+	ownerValue := object.Fields["\x00aram-timer-owner"]
+	delete(object.Fields, "\x00aram-timer-owner")
+	ownerReference, _ := ownerValue.Reference()
+	if ownerReference != 0 {
+		if owner, err := vm.timerObject(ownerReference); err == nil {
+			owner.timers = removeTimerID(owner.timers, id)
+			return nil
+		}
+	}
+	// Snapshots written before owner tracking may contain live one-shot timers.
+	for _, candidate := range vm.heap {
+		if owner, ok := candidate.Native.(*timerObjectState); ok {
+			owner.timers = removeTimerID(owner.timers, id)
+		}
+	}
+	return nil
+}
+
+func removeTimerID(ids []shared.ServiceID, target shared.ServiceID) []shared.ServiceID {
+	for i, id := range ids {
+		if id == target {
+			return append(ids[:i], ids[i+1:]...)
+		}
+	}
+	return ids
 }
 
 func (vm *VM) vector(reference uint32) (*vectorState, error) {

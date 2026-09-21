@@ -93,8 +93,11 @@ This is alpha support across the existing inherited renderer, not full GraphicsX
 or exact MIDP geometry conformance. Existing `drawRoundRect`/`fillRoundRect`
 render ordinary rectangles and ignore corner radii. DOTTED stroke is remembered
 but not rasterized. Existing fallback fonts and arc rasterization are unchanged.
-GraphicsX capture, pixel access, polygons, XOR and paint-mode extension methods
-remain unsupported and fail explicitly. No proprietary input, title patch, or
+GraphicsX `getPixel` and `capture` now read the graphics surface within its
+translated clip. The captured image is an independent immutable copy. The
+XOR and paint modes are scoped to each graphics context, including save and
+restore. The remaining pixel writes and polygon extension methods remain
+unsupported and fail explicitly. No proprietary input, title patch, or
 private reference bytes are used by these tests. Passing this API does not
 establish gameplay, playability, or complete title support.
 

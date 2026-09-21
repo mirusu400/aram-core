@@ -38,6 +38,7 @@ func (vm *VM) resetScreenGraphics() error {
 	state.font = vm.defaultFont
 	state.color = 0xff000000
 	state.transparency256 = 0
+	state.xorMode = false
 	return vm.services.Graphics.SetDrawState(
 		vm.serviceOwner,
 		state.surface,

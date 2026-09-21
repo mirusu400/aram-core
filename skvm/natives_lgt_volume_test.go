@@ -98,9 +98,21 @@ func TestMMPPVolumeErrorsAreTransactional(t *testing.T) {
 	if _, _, e := call(context.Background(), v, 0, []Value{ReferenceValue(v.NewString("3"))}); e == nil {
 		t.Fatal("invalid receiver succeeded")
 	}
-	// The getter's available-level versus current-level meaning is still unproven.
-	if _, _, e := v.natives[nativeKey{mmppClass, "getVolumeLevel", "()Ljava/lang/String;"}](context.Background(), v, r, nil); e == nil {
-		t.Fatal("guessed volume getter")
+	for _, test := range []struct {
+		receiver uint32
+		want     string
+	}{{r, "5"}, {empty, "3"}} {
+		value := invokeTestNative(t, v, mmppClass, "getVolumeLevel", "()Ljava/lang/String;", test.receiver)
+		ref, e := value.Reference()
+		check(t, e)
+		got, e := v.String(ref)
+		check(t, e)
+		if got != test.want {
+			t.Fatalf("cached volume = %q, want %q", got, test.want)
+		}
+	}
+	if _, _, e := v.natives[nativeKey{mmppClass, "getVolumeLevel", "()Ljava/lang/String;"}](context.Background(), v, 0, nil); e == nil {
+		t.Fatal("getter accepted null receiver")
 	}
 }
 

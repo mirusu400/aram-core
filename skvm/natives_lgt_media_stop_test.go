@@ -175,23 +175,27 @@ func TestMMPPStoppedClipCleanupIdentity(t *testing.T) {
 	}
 }
 
-func TestMMPPOldV1StateRejectedAtomically(t *testing.T) {
-	old := mmppVM(t, NativePolicyLGT)
-	mmppNew(t, old)
-	base := digestClassData(nil)
-	old.classDigest = sha256.Sum256(append([]byte("lgt-mmpp-native-policy-v1\x00"), base[:]...))
-	oldState := mmppStopSnapshot(t, old)
-	v := mmppVM(t, NativePolicyLGT)
-	r := mmppNew(t, v)
-	mmppSource(t, v, r)
-	mmppCall(t, v, r, "start")
-	check(t, v.Advance(context.Background(), 20*time.Millisecond, nil))
-	before := mmppStopSnapshot(t, v)
-	revision := v.services.Media.OutputRevision()
-	if err := v.UnmarshalBinary(oldState); err == nil {
-		t.Fatal("old LGT v1 state accepted")
-	}
-	if !bytes.Equal(before, mmppStopSnapshot(t, v)) || revision != v.services.Media.OutputRevision() {
-		t.Fatal("old state rejection mutated live VM/services")
+func TestMMPPOldLGTStatesRejectedAtomically(t *testing.T) {
+	for _, version := range []string{"v1", "v2"} {
+		t.Run(version, func(t *testing.T) {
+			old := mmppVM(t, NativePolicyLGT)
+			mmppNew(t, old)
+			base := digestClassData(nil)
+			old.classDigest = sha256.Sum256(append([]byte("lgt-mmpp-native-policy-"+version+"\x00"), base[:]...))
+			oldState := mmppStopSnapshot(t, old)
+			v := mmppVM(t, NativePolicyLGT)
+			r := mmppNew(t, v)
+			mmppSource(t, v, r)
+			mmppCall(t, v, r, "start")
+			check(t, v.Advance(context.Background(), 20*time.Millisecond, nil))
+			before := mmppStopSnapshot(t, v)
+			revision := v.services.Media.OutputRevision()
+			if err := v.UnmarshalBinary(oldState); err == nil {
+				t.Fatalf("old LGT %s state accepted", version)
+			}
+			if !bytes.Equal(before, mmppStopSnapshot(t, v)) || revision != v.services.Media.OutputRevision() {
+				t.Fatal("old state rejection mutated live VM/services")
+			}
+		})
 	}
 }

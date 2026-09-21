@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 func TestMMPPSourceTransactionsAndLocation(t *testing.T) {
@@ -60,11 +62,25 @@ func TestMMPPSourceTransactionsAndLocation(t *testing.T) {
 	fail("setMediaSource", "([B)V", ReferenceValue(bad))
 	mmppCall(t, v, r, "pause")
 	original = mmppInfo(t, v, r)
-	fail("setMediaSource", "([B)V", ReferenceValue(a))
+	fail("setMediaSource", "([B)V", ReferenceValue(bad))
 	mmppCall(t, v, r, "resume")
 	check(t, v.Advance(context.Background(), 10*time.Millisecond, nil))
 	if mmppInfo(t, v, r).Position <= original.Position {
-		t.Fatal("replacement failure broke resume")
+		t.Fatal("failed replacement broke resume")
+	}
+	values = make([]Value, len(wav))
+	for i, b := range wav {
+		values[i] = IntValue(int32(int8(b)))
+	}
+	invokeTestNative(t, v, mmppClass, "setMediaSource", "([B)V", r, ReferenceValue(v.newArray("[B", values)))
+	newSource := mmppInfo(t, v, r)
+	if newSource.ID == original.ID || newSource.State != shared.ClipStopped || newSource.Position != 0 {
+		t.Fatalf("active replacement = %+v", newSource)
+	}
+	mmppCall(t, v, r, "start")
+	check(t, v.Advance(context.Background(), 10*time.Millisecond, nil))
+	if mmppInfo(t, v, r).Position == 0 {
+		t.Fatal("replacement did not play")
 	}
 }
 
@@ -77,7 +93,7 @@ func TestMMPPPolicyDigestsAtomicityAndIdentity(t *testing.T) {
 			want = sha256.Sum256(append([]byte("j2me-native-policy-v1\x00"), base[:]...))
 		}
 		if p == NativePolicyLGT {
-			want = sha256.Sum256(append([]byte("lgt-mmpp-native-policy-v2\x00"), base[:]...))
+			want = sha256.Sum256(append([]byte("lgt-mmpp-native-policy-v3\x00"), base[:]...))
 		}
 		if v.classDigest != want {
 			t.Fatalf("policy %d digest changed", p)
@@ -121,7 +137,7 @@ func TestMMPPPolicyDigestsAtomicityAndIdentity(t *testing.T) {
 		}
 	}
 	for name := range v.hostSupers {
-		if !standardJavaClass(name) && name != mmppClass && name != "mmpp/media/BackLight" && name != "mmpp/lang/MathFP" && name != "mmpp/microedition/lcdui/GraphicsX" && name != lgtPhoneClass {
+		if !standardJavaClass(name) && name != mmppClass && name != "mmpp/media/BackLight" && name != lgtVibrationClass && name != "mmpp/lang/MathFP" && name != "mmpp/microedition/lcdui/GraphicsX" && name != lgtPhoneClass {
 			t.Fatalf("host class leaked %s", name)
 		}
 	}
