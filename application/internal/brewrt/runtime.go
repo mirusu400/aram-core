@@ -182,9 +182,7 @@ type Runtime struct {
 	displayColorSet  [16]bool
 	eventCounts      map[uint32]uint64
 	files            map[string][]byte
-	currentFile      []byte
-	currentPath      string
-	fileOffset       uint32
+	fileHandles      map[uint32]*brewFile
 	timers           []brewCallback
 	cleanupCallbacks []brewCallback
 	boundary         *ExecutionBoundaryError
@@ -248,6 +246,11 @@ type brewCallback struct {
 	function  uint32
 	context   uint32
 	remaining time.Duration
+}
+
+type brewFile struct {
+	path   string
+	offset uint32
 }
 
 type brewPostedEvent struct {
@@ -314,10 +317,15 @@ func New(pkg Package) (*Runtime, error) {
 	if len(classIDs) == 0 {
 		classIDs = []uint32{ClassID}
 	}
+	files := pkg.Files
+	if files == nil {
+		files = make(map[string][]byte)
+	}
 	r := &Runtime{
-		cpu: backend, heapNext: heapBase, files: pkg.Files,
+		cpu: backend, heapNext: heapBase, files: files,
 		heapAllocated: make(map[uint32]uint32),
 		eventCounts:   make(map[uint32]uint64), classIDs: classIDs,
+		fileHandles:  make(map[uint32]*brewFile),
 		randomState:  1,
 		preferences:  make(map[brewPreferenceKey][]byte),
 		memAStreams:  make(map[uint32]brewMemAStream),
@@ -3095,6 +3103,10 @@ func (r *Runtime) compareGuestMemory() error {
 }
 
 func (r *Runtime) writeGuestFile() error {
+	file, contents, err := r.openFileHandle()
+	if err != nil {
+		return err
+	}
 	source, err := r.cpu.ReadRegister(cpu.RegisterR1)
 	if err != nil {
 		return fmt.Errorf("read BREW file write source: %w", err)
@@ -3110,20 +3122,18 @@ func (r *Runtime) writeGuestFile() error {
 	if err := r.cpu.ReadMemory(source, data); err != nil {
 		return fmt.Errorf("read BREW file write data: %w", err)
 	}
-	end := r.fileOffset + count
-	if end < r.fileOffset || end > heapSize {
+	end := file.offset + count
+	if end < file.offset || end > heapSize {
 		return fmt.Errorf("BREW file write extent %d exceeds runtime limit", end)
 	}
-	if uint32(len(r.currentFile)) < end {
+	if uint32(len(contents)) < end {
 		grown := make([]byte, end)
-		copy(grown, r.currentFile)
-		r.currentFile = grown
+		copy(grown, contents)
+		contents = grown
 	}
-	copy(r.currentFile[r.fileOffset:end], data)
-	r.fileOffset = end
-	if r.currentPath != "" {
-		r.files[r.currentPath] = r.currentFile
-	}
+	copy(contents[file.offset:end], data)
+	file.offset = end
+	r.files[file.path] = contents
 	return r.cpu.WriteRegister(cpu.RegisterR0, count)
 }
 
@@ -3137,13 +3147,20 @@ func (r *Runtime) openGuestFile() error {
 		return err
 	}
 	normalized := normalizeGuestPath(path)
-	contents, resolved, ok := r.lookupGuestFile(normalized)
+	_, resolved, ok := r.lookupGuestFile(normalized)
 	result := uint32(0)
 	if ok {
-		r.currentFile = contents
-		r.currentPath = resolved
-		r.fileOffset = 0
-		result = fileObject
+		result, err = r.allocateGuest(4)
+		if err != nil {
+			return r.cpu.WriteRegister(cpu.RegisterR0, 0)
+		}
+		var encoded [4]byte
+		binary.LittleEndian.PutUint32(encoded[:], fileVTable)
+		if err := r.cpu.WriteMemory(result, encoded[:]); err != nil {
+			r.releaseGuest(result)
+			return fmt.Errorf("initialize BREW file object: %w", err)
+		}
+		r.fileHandles[result] = &brewFile{path: resolved}
 	}
 	if err := r.cpu.WriteRegister(cpu.RegisterR0, result); err != nil {
 		return fmt.Errorf("return BREW file object: %w", err)
@@ -3325,11 +3342,15 @@ func (r *Runtime) formatResourceName() error {
 }
 
 func (r *Runtime) returnFileInfo() error {
+	_, contents, err := r.openFileHandle()
+	if err != nil {
+		return err
+	}
 	address, err := r.cpu.ReadRegister(cpu.RegisterR1)
 	if err != nil {
 		return fmt.Errorf("read BREW file-info output: %w", err)
 	}
-	if address == 0 || r.currentFile == nil {
+	if address == 0 {
 		return r.cpu.WriteRegister(cpu.RegisterR0, 1)
 	}
 	// This title allocates a 0x4c-byte FileInfo but only authenticates the stable
@@ -3337,7 +3358,7 @@ func (r *Runtime) returnFileInfo() error {
 	data := make([]byte, 12)
 	binary.LittleEndian.PutUint32(data[0:4], 0) // FA_NORMAL
 	binary.LittleEndian.PutUint32(data[4:8], 0) // no fabricated timestamp
-	binary.LittleEndian.PutUint32(data[8:12], uint32(len(r.currentFile)))
+	binary.LittleEndian.PutUint32(data[8:12], uint32(len(contents)))
 	if err := r.cpu.WriteMemory(address, data); err != nil {
 		return fmt.Errorf("write BREW file info: %w", err)
 	}
@@ -3348,6 +3369,10 @@ func (r *Runtime) returnFileInfo() error {
 }
 
 func (r *Runtime) seekGuestFile() error {
+	file, contents, err := r.openFileHandle()
+	if err != nil {
+		return err
+	}
 	origin, err := r.cpu.ReadRegister(cpu.RegisterR1)
 	if err != nil {
 		return fmt.Errorf("read BREW seek origin: %w", err)
@@ -3361,20 +3386,20 @@ func (r *Runtime) seekGuestFile() error {
 	case 0:
 		base = 0
 	case 1:
-		base = int64(len(r.currentFile))
+		base = int64(len(contents))
 	case 2:
-		base = int64(r.fileOffset)
+		base = int64(file.offset)
 	default:
 		return r.cpu.WriteRegister(cpu.RegisterR0, 1)
 	}
 	next := base + int64(int32(rawOffset))
-	if next < 0 || next > int64(len(r.currentFile)) {
+	if next < 0 || next > int64(len(contents)) {
 		return r.cpu.WriteRegister(cpu.RegisterR0, 1)
 	}
-	r.fileOffset = uint32(next)
+	file.offset = uint32(next)
 	result := uint32(0)
 	if origin == 2 && rawOffset == 0 {
-		result = r.fileOffset
+		result = file.offset
 	}
 	if err := r.cpu.WriteRegister(cpu.RegisterR0, result); err != nil {
 		return fmt.Errorf("return BREW seek position: %w", err)
@@ -3383,6 +3408,10 @@ func (r *Runtime) seekGuestFile() error {
 }
 
 func (r *Runtime) readGuestFile() error {
+	file, contents, err := r.openFileHandle()
+	if err != nil {
+		return err
+	}
 	destination, err := r.cpu.ReadRegister(cpu.RegisterR1)
 	if err != nil {
 		return fmt.Errorf("read BREW file destination: %w", err)
@@ -3391,7 +3420,7 @@ func (r *Runtime) readGuestFile() error {
 	if err != nil {
 		return fmt.Errorf("read BREW file byte count: %w", err)
 	}
-	remaining := uint32(len(r.currentFile)) - min(r.fileOffset, uint32(len(r.currentFile)))
+	remaining := uint32(len(contents)) - min(file.offset, uint32(len(contents)))
 	count := min(requested, remaining)
 	// IFILE_Read reports bytes transferred. A null destination for a non-empty
 	// read is an invalid guest request, not a host execution failure. Return zero
@@ -3401,16 +3430,32 @@ func (r *Runtime) readGuestFile() error {
 		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
 	}
 	if count != 0 {
-		data := r.currentFile[r.fileOffset : r.fileOffset+count]
+		data := contents[file.offset : file.offset+count]
 		if err := r.cpu.WriteMemory(destination, data); err != nil {
 			return fmt.Errorf("write BREW file read buffer: %w", err)
 		}
-		r.fileOffset += count
+		file.offset += count
 	}
 	if err := r.cpu.WriteRegister(cpu.RegisterR0, count); err != nil {
 		return fmt.Errorf("return BREW file read count: %w", err)
 	}
 	return nil
+}
+
+func (r *Runtime) openFileHandle() (*brewFile, []byte, error) {
+	object, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read BREW file object: %w", err)
+	}
+	file := r.fileHandles[object]
+	if file == nil {
+		return nil, nil, fmt.Errorf("BREW file object 0x%08x is not open", object)
+	}
+	contents, ok := r.files[file.path]
+	if !ok {
+		return nil, nil, fmt.Errorf("BREW file object 0x%08x has no backing file", object)
+	}
+	return file, contents, nil
 }
 
 func (r *Runtime) createShellInstance() error {

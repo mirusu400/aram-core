@@ -203,6 +203,33 @@ func TestReallocPreservesGuestAllocationContents(t *testing.T) {
 	}
 }
 
+func TestGuestAllocationClearsReusedMemory(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	address, err := runtime.allocateGuest(16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteMemory(address, []byte("stale guest data")); err != nil {
+		t.Fatal(err)
+	}
+	runtime.releaseGuest(address)
+
+	reused, err := runtime.allocateGuest(16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reused != address {
+		t.Fatalf("reused address = 0x%08x, want 0x%08x", reused, address)
+	}
+	contents := make([]byte, 16)
+	if err := runtime.cpu.ReadMemory(reused, contents); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(contents, make([]byte, len(contents))) {
+		t.Fatalf("reused allocation was not zero-filled: %x", contents)
+	}
+}
+
 func TestRunAppletCodeAllowsLongGuestInitialization(t *testing.T) {
 	// ldr r0,[pc,#8]; subs r0,r0,#1; bne loop; bx lr; .word 1100000
 	// This executes just over 2.2 million instructions, matching real BREW
@@ -1032,9 +1059,11 @@ func TestLegacyIconViewControlMaintainsItemsAndSelection(t *testing.T) {
 
 func TestFileReadNullDestinationReturnsZeroWithoutAdvancing(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
-	runtime.currentFile = []byte("data")
-	runtime.fileOffset = 1
+	const file = heapBase + 0x80
+	runtime.files["data.bin"] = []byte("data")
+	runtime.fileHandles[file] = &brewFile{path: "data.bin", offset: 1}
 	for register, value := range map[uint32]uint32{
+		cpu.RegisterR0: file,
 		cpu.RegisterR1: 0,
 		cpu.RegisterR2: 2,
 	} {
@@ -1048,8 +1077,71 @@ func TestFileReadNullDestinationReturnsZeroWithoutAdvancing(t *testing.T) {
 	if got, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || got != 0 {
 		t.Fatalf("null-buffer read result=%d err=%v, want 0", got, err)
 	}
-	if runtime.fileOffset != 1 {
-		t.Fatalf("null-buffer read advanced offset to %d", runtime.fileOffset)
+	if runtime.fileHandles[file].offset != 1 {
+		t.Fatalf("null-buffer read advanced offset to %d", runtime.fileHandles[file].offset)
+	}
+}
+
+func TestOpenFilesKeepIndependentOffsets(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	runtime.files["data.bin"] = []byte("abcd")
+	path := heapBase + 0x100
+	if err := runtime.cpu.WriteMemory(path, []byte("data.bin\x00")); err != nil {
+		t.Fatal(err)
+	}
+	open := func() uint32 {
+		t.Helper()
+		if err := runtime.cpu.WriteRegister(cpu.RegisterR1, path); err != nil {
+			t.Fatal(err)
+		}
+		if err := runtime.openGuestFile(); err != nil {
+			t.Fatal(err)
+		}
+		object, err := runtime.cpu.ReadRegister(cpu.RegisterR0)
+		if err != nil || object == 0 {
+			t.Fatalf("open file object = 0x%08x err=%v", object, err)
+		}
+		return object
+	}
+	first, second := open(), open()
+	if first == second {
+		t.Fatalf("two open files shared object 0x%08x", first)
+	}
+	read := func(object, destination, count uint32) string {
+		t.Helper()
+		for register, value := range map[uint32]uint32{
+			cpu.RegisterR0: object,
+			cpu.RegisterR1: destination,
+			cpu.RegisterR2: count,
+		} {
+			if err := runtime.cpu.WriteRegister(register, value); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := runtime.readGuestFile(); err != nil {
+			t.Fatal(err)
+		}
+		data := make([]byte, count)
+		if err := runtime.cpu.ReadMemory(destination, data); err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	if got := read(first, heapBase+0x200, 1); got != "a" {
+		t.Fatalf("first read = %q, want a", got)
+	}
+	if got := read(second, heapBase+0x210, 2); got != "ab" {
+		t.Fatalf("second read = %q, want ab", got)
+	}
+	if got := read(first, heapBase+0x220, 1); got != "b" {
+		t.Fatalf("first resumed read = %q, want b", got)
+	}
+	runtime.releaseInterfaceObject(first)
+	if runtime.fileHandles[first] != nil {
+		t.Fatal("released file handle remains live")
+	}
+	if runtime.fileHandles[second] == nil {
+		t.Fatal("releasing first file closed second handle")
 	}
 }
 

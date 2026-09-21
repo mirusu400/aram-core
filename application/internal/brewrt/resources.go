@@ -380,26 +380,34 @@ func (r *Runtime) allocateGuest(size uint32) (uint32, error) {
 	if size == 0 {
 		return 0, fmt.Errorf("BREW allocation %d exceeds heap", size)
 	}
+	var address uint32
 	for index, block := range r.heapFree {
 		if block.size < size {
 			continue
 		}
-		address := block.address
+		address = block.address
 		if block.size == size {
 			r.heapFree = append(r.heapFree[:index], r.heapFree[index+1:]...)
 		} else {
 			r.heapFree[index].address += size
 			r.heapFree[index].size -= size
 		}
-		r.heapAllocated[address] = size
-		return address, nil
+		break
 	}
-	if size > heapBase+heapSize-r.heapNext {
-		return 0, fmt.Errorf("BREW allocation %d exceeds heap", size)
+	if address == 0 {
+		if size > heapBase+heapSize-r.heapNext {
+			return 0, fmt.Errorf("BREW allocation %d exceeds heap", size)
+		}
+		address = r.heapNext
+		r.heapNext += size
 	}
-	address := r.heapNext
-	r.heapNext += size
 	r.heapAllocated[address] = size
+	// BREW's MALLOC zero-fills by default. Legacy titles rely on that contract
+	// when a recently freed block is reused for state arrays and scene objects.
+	if err := r.cpu.WriteMemory(address, make([]byte, size)); err != nil {
+		r.releaseGuest(address)
+		return 0, fmt.Errorf("zero BREW allocation: %w", err)
+	}
 	return address, nil
 }
 
@@ -454,6 +462,8 @@ func (r *Runtime) releaseInterfaceObject(address uint32) {
 		case bitmapVTable:
 			delete(r.nativeImages, address)
 			r.releaseGuest(binary.LittleEndian.Uint32(encoded[8:12]))
+		case fileVTable:
+			delete(r.fileHandles, address)
 		}
 	}
 	r.releaseGuest(address)
