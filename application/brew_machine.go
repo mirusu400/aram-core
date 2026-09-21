@@ -258,6 +258,14 @@ func (m *brewMachine) stepLocked(ctx context.Context) error {
 		if !ok {
 			return fmt.Errorf("unsupported BREW control %q", event.Control)
 		}
+		if !event.Pressed {
+			// BREW delivers EVT_KEY after a key is pressed/held and again
+			// immediately before EVT_KEY_RELEASE. Some applets handle only
+			// EVT_KEY, so a short tap must still produce that event.
+			if _, err := m.runtime.DispatchEvent(ctx, 0x100, key, 0); err != nil {
+				return m.executionErrorLocked(fmt.Sprintf("dispatch BREW key %q", event.Control), err)
+			}
+		}
 		kind := uint32(0x102)
 		if event.Pressed {
 			kind = 0x101

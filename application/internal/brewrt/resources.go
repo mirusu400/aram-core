@@ -370,7 +370,15 @@ func decodeBREWResourceImage(data []byte) (image.Image, bool) {
 	// letting otherwise compatible applets immediately dereference it.
 	if bytes.Equal(data[2:offset], []byte("image/sis\x00")) &&
 		bytes.HasPrefix(data[offset:], []byte("SAF\x00")) {
-		return image.NewRGBA(image.Rect(0, 0, int(framebufferWidth), int(framebufferHeight))), true
+		width, height := int(framebufferWidth), int(framebufferHeight)
+		saf := data[offset:]
+		if len(saf) >= 16 && saf[12] == 1 && saf[13] == 0x0a && saf[14] != 0 && saf[15] != 0 {
+			// SAF's canvas record carries the image's own dimensions. A
+			// transparent stand-in must keep those bounds even while its
+			// proprietary compressed pixels remain unsupported.
+			width, height = int(saf[14]), int(saf[15])
+		}
+		return image.NewRGBA(image.Rect(0, 0, width, height)), true
 	}
 	return nil, false
 }

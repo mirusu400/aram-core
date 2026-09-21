@@ -74,6 +74,9 @@ func TestBREWExactArchiveBootstrap(t *testing.T) {
 	if got := implementation.runtime.EventCount(0x101); got != 1 {
 		t.Fatalf("BREW EVT_KEY_PRESS dispatches = %d, want 1", got)
 	}
+	if got := implementation.runtime.EventCount(0x100); got != 1 {
+		t.Fatalf("BREW EVT_KEY dispatches = %d, want 1", got)
+	}
 	if got := implementation.runtime.EventCount(0x102); got != 1 {
 		t.Fatalf("BREW EVT_KEY_RELEASE dispatches = %d, want 1", got)
 	}

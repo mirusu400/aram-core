@@ -211,3 +211,15 @@ func TestDecodeBREWResourceImageProvidesSAFSurface(t *testing.T) {
 		t.Fatalf("SAF surface bounds=%v, want %v", decoded.Bounds(), want)
 	}
 }
+
+func TestDecodeBREWResourceImagePreservesSAFCanvas(t *testing.T) {
+	resource := append([]byte{12, 0}, []byte("image/sis\x00")...)
+	resource = append(resource, []byte{
+		'S', 'A', 'F', 0, 2, 1, 0x3e, 7,
+		0, 2, 0, 0x1d, 1, 0x0a, 104, 32,
+	}...)
+	decoded, ok := decodeBREWResourceImage(resource)
+	if !ok || decoded == nil || decoded.Bounds() != image.Rect(0, 0, 104, 32) {
+		t.Fatalf("SAF declared canvas=%v ok=%v, want 104x32", decoded, ok)
+	}
+}
