@@ -12,6 +12,11 @@ import (
 )
 
 func (vm *VM) installSKTNatives() {
+	// SKT's SKVM exposes a package-private zero-argument Image constructor.
+	// Titles use it for placeholders that are replaced before drawing, so no
+	// surface can be allocated until a later image factory supplies dimensions.
+	vm.RegisterNative("javax/microedition/lcdui/Image", "<init>", "()V", nativeVoid)
+
 	for _, method := range []struct {
 		class, name, descriptor string
 	}{

@@ -83,13 +83,34 @@ func TestJ2MECompatibilityInvocations(t *testing.T) {
 		}
 	}
 	// Every standard registration in the legacy registry must survive, except
-	// the two known handset extensions to standard classes.
+	// the known handset extensions to standard classes.
 	for key := range legacy.natives {
-		if !standardJavaClass(key.class) || key.name == "repaintIM" || key == (nativeKey{"javax/microedition/lcdui/Graphics", "reset", "()V"}) {
+		if !standardJavaClass(key.class) || key.name == "repaintIM" ||
+			key == (nativeKey{"javax/microedition/lcdui/Graphics", "reset", "()V"}) ||
+			key == (nativeKey{"javax/microedition/lcdui/Image", "<init>", "()V"}) {
 			continue
 		}
 		if vm.natives[key] == nil {
 			t.Errorf("standard registration lost: %+v", key)
+		}
+	}
+}
+
+func TestSKTImagePlaceholderConstructorIsPolicyScoped(t *testing.T) {
+	key := nativeKey{"javax/microedition/lcdui/Image", "<init>", "()V"}
+	vm := policyRegressionVM(t, NativePolicySKT)
+	placeholder := vm.NewObject(key.class, nil)
+	value, hasValue, err := vm.natives[key](context.Background(), vm, placeholder, nil)
+	if err != nil || hasValue || value != (Value{}) {
+		t.Fatalf("Image placeholder constructor = (%+v, %v, %v)", value, hasValue, err)
+	}
+	object, ok := vm.Object(placeholder)
+	if !ok || object.Class != key.class || object.Native != nil {
+		t.Fatalf("Image placeholder = %#v, present %v", object, ok)
+	}
+	for _, policy := range []NativePolicy{NativePolicyJ2ME, NativePolicyLGT} {
+		if policyRegressionVM(t, policy).natives[key] != nil {
+			t.Errorf("SKT Image constructor leaked to policy %d", policy)
 		}
 	}
 }

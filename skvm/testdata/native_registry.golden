@@ -895,6 +895,7 @@ javax/microedition/lcdui/Graphics setFont (Ljavax/microedition/lcdui/Font;)V
 javax/microedition/lcdui/Graphics setGrayScale (I)V
 javax/microedition/lcdui/Graphics setStrokeStyle (I)V
 javax/microedition/lcdui/Graphics translate (II)V
+javax/microedition/lcdui/Image <init> ()V
 javax/microedition/lcdui/Image createImage (II)Ljavax/microedition/lcdui/Image;
 javax/microedition/lcdui/Image createImage (Ljava/io/InputStream;)Ljavax/microedition/lcdui/Image;
 javax/microedition/lcdui/Image createImage (Ljava/lang/String;)Ljavax/microedition/lcdui/Image;
