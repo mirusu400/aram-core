@@ -545,6 +545,34 @@ func (vm *VM) fileNameArgument(args []Value, index int) (string, error) {
 	return normalized, nil
 }
 
+const xFileResourceRoot = "/__aram_xfile__"
+
+func xFileResourceName(name string) string {
+	return xFileResourceRoot + "/" + strings.TrimPrefix(name, "/")
+}
+
+func (vm *VM) readXFile(name string) ([]byte, error) {
+	data, err := vm.services.Storage.ReadFile(shared.NamespacePrivate, name)
+	if !errors.Is(err, shared.ErrNotFound) {
+		return data, err
+	}
+	return vm.services.Storage.ReadFile(
+		shared.NamespacePackage,
+		xFileResourceName(name),
+	)
+}
+
+func (vm *VM) statXFile(name string) (shared.FileInfo, error) {
+	info, err := vm.services.Storage.Stat(shared.NamespacePrivate, name)
+	if !errors.Is(err, shared.ErrNotFound) {
+		return info, err
+	}
+	return vm.services.Storage.Stat(
+		shared.NamespacePackage,
+		xFileResourceName(name),
+	)
+}
+
 func (vm *VM) newXFile(args []Value) (*xFileState, error) {
 	name, err := vm.fileNameArgument(args, 0)
 	if err != nil {
@@ -553,7 +581,7 @@ func (vm *VM) newXFile(args []Value) (*xFileState, error) {
 	if _, err := intArgument(args, 1); err != nil {
 		return nil, err
 	}
-	data, err := vm.services.Storage.ReadFile(shared.NamespacePrivate, name)
+	data, err := vm.readXFile(name)
 	if errors.Is(err, shared.ErrNotFound) {
 		if err := vm.services.Storage.WriteFile(
 			shared.NamespacePrivate,

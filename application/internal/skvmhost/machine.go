@@ -5,6 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
+	"strings"
+
 	"github.com/mirusu400/aram-core/application/internal/guest"
 	machinecore "github.com/mirusu400/aram-core/core"
 	skloader "github.com/mirusu400/aram-core/loader/skvm"
@@ -161,6 +164,11 @@ func newJavaMachine(ctx context.Context, source machinecore.Source, app Applicat
 	if err := vm.SetResourcesChecked(app.Resources); err != nil {
 		return nil, fmt.Errorf("mount Java resources: %w", err)
 	}
+	if legacy != nil {
+		if err := vm.SetXFileResourcesChecked(skvmXFileResources(*legacy)); err != nil {
+			return nil, fmt.Errorf("mount SKVM installed files: %w", err)
+		}
+	}
 	vm.SetProperties(app.Properties)
 	if err := services.Coordinator.Transition(
 		owner,
@@ -192,6 +200,38 @@ func newJavaMachine(ctx context.Context, source machinecore.Source, app Applicat
 		return nil, fmt.Errorf("capture initial Java state: %w", err)
 	}
 	return machine, nil
+}
+
+func skvmXFileResources(pkg skloader.Package) map[string][]byte {
+	resources := make(map[string][]byte)
+	packageRoot := path.Dir(path.Clean(strings.ReplaceAll(pkg.JARName, `\`, "/")))
+	excluded := map[string]bool{
+		strings.ToLower(pkg.JARName): true,
+		strings.ToLower(pkg.MSDName): true,
+		strings.ToLower(pkg.MODName): true,
+		strings.ToLower(pkg.WMRName): true,
+	}
+	for archiveName, data := range pkg.Files {
+		name := path.Clean(strings.ReplaceAll(archiveName, `\`, "/"))
+		if excluded[strings.ToLower(name)] {
+			continue
+		}
+		if packageRoot != "." {
+			prefix := packageRoot + "/"
+			if len(name) <= len(prefix) ||
+				!strings.EqualFold(name[:len(prefix)], prefix) {
+				continue
+			}
+			name = name[len(prefix):]
+		}
+		if strings.EqualFold(path.Dir(name), "rs") &&
+			(strings.EqualFold(path.Ext(name), ".sb") ||
+				strings.EqualFold(path.Ext(name), ".db")) {
+			continue
+		}
+		resources[name] = data
+	}
+	return resources
 }
 
 func (m *Machine) Load(context.Context, machinecore.Source) error {

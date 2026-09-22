@@ -226,7 +226,7 @@ func (vm *VM) installSKTNatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
-			_, err = vm.services.Storage.Stat(shared.NamespacePrivate, name)
+			_, err = vm.statXFile(name)
 			return boolValue(err == nil), true, nil
 		},
 	)
@@ -253,7 +253,7 @@ func (vm *VM) installSKTNatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
-			info, err := vm.services.Storage.Stat(shared.NamespacePrivate, name)
+			info, err := vm.statXFile(name)
 			if err != nil {
 				return IntValue(-1), true, nil
 			}
@@ -354,10 +354,7 @@ func (vm *VM) installSKTNatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
-			data, err := vm.services.Storage.ReadFile(
-				shared.NamespacePrivate,
-				name,
-			)
+			data, err := vm.readXFile(name)
 			if err != nil {
 				// A MIDP FileInputStream constructor reports an open
 				// failure (a missing options/save file on first run

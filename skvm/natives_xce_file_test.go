@@ -152,6 +152,49 @@ func TestXCEFileOutputXFileAndWriteBounds(t *testing.T) {
 	requireXCEIOException(t, vm, err)
 }
 
+func TestXCEInstalledFilesUsePackageDefaultsAndPrivateOverrides(t *testing.T) {
+	vm, err := New(map[string][]byte{})
+	check(t, err)
+	check(t, vm.SetXFileResourcesChecked(map[string][]byte{
+		"o": []byte("default"),
+	}))
+	// Importing an older save replaces mutable storage, but installer files
+	// remain available from the immutable package layer.
+	emptySave := vm.services.Storage.ExportPersistence()
+	emptySave.Directories = nil
+	emptySave.Files = nil
+	emptySave.RecordStores = nil
+	check(t, vm.services.Storage.ImportPersistence(emptySave))
+
+	name := ReferenceValue(vm.NewString("/o"))
+	exists := invokeTestNative(t, vm, "com/xce/io/XFile", "exists", "(Ljava/lang/String;)Z", 0, name)
+	if got := mustInt(t, exists); got != 1 {
+		t.Fatalf("installed file exists = %d, want 1", got)
+	}
+	size := invokeTestNative(t, vm, "com/xce/io/XFile", "filesize", "(Ljava/lang/String;)I", 0, name)
+	if got := mustInt(t, size); got != int32(len("default")) {
+		t.Fatalf("installed file size = %d, want %d", got, len("default"))
+	}
+
+	file := vm.NewObject("com/xce/io/XFile", nil)
+	invokeTestNative(t, vm, "com/xce/io/XFile", "<init>", "(Ljava/lang/String;I)V", file, name, IntValue(1))
+	destination := vm.NewByteArray(make([]byte, len("default")))
+	read := invokeTestNative(t, vm, "com/xce/io/XFile", "read", "([BII)I", file, ReferenceValue(destination), IntValue(0), IntValue(int32(len("default"))))
+	if got := mustInt(t, read); got != int32(len("default")) {
+		t.Fatalf("installed file read = %d, want %d", got, len("default"))
+	}
+	data, err := vm.ByteArray(destination)
+	check(t, err)
+	if string(data) != "default" {
+		t.Fatalf("installed file data = %q", data)
+	}
+
+	file = vm.NewObject("com/xce/io/XFile", nil)
+	invokeTestNative(t, vm, "com/xce/io/XFile", "<init>", "(Ljava/lang/String;I)V", file, name, IntValue(1))
+	invokeTestNative(t, vm, "com/xce/io/XFile", "write", "([BII)I", file, ReferenceValue(vm.NewByteArray([]byte("P"))), IntValue(0), IntValue(1))
+	xceStored(t, vm, "/o", "Pefault")
+}
+
 func TestXCEFileOutputSandboxAndFailure(t *testing.T) {
 	vm, err := New(map[string][]byte{})
 	check(t, err)

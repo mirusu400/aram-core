@@ -496,6 +496,17 @@ func (vm *VM) SetResourcesChecked(resources map[string][]byte) error {
 	return nil
 }
 
+// SetXFileResourcesChecked mounts files delivered beside an SKT application's
+// JAR. The handset installer made these files visible through XFile, while JAR
+// resources remain available only through the class loader.
+func (vm *VM) SetXFileResourcesChecked(resources map[string][]byte) error {
+	mounted := make(map[string][]byte, len(resources))
+	for name, data := range resources {
+		mounted[xFileResourceName(name)] = data
+	}
+	return vm.services.Storage.MountPackage(mounted)
+}
+
 func (vm *VM) resource(name string) ([]byte, bool) {
 	data, err := vm.services.Storage.ReadFile(shared.NamespacePackage, name)
 	return data, err == nil
