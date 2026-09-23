@@ -10,6 +10,8 @@ import (
 	shared "github.com/mirusu400/aram-core/runtime"
 )
 
+const midpRepaintPending = "\x00aram-midp-repaint-pending"
+
 func (vm *VM) installMIDletNatives() {
 	vm.RegisterNative("javax/microedition/midlet/MIDlet", "<init>", "()V", nativeVoid)
 	vm.RegisterNative(
@@ -38,6 +40,7 @@ func (vm *VM) installMIDletNatives() {
 }
 
 func (vm *VM) installDisplayNatives() {
+	vm.hostStatic[midpRepaintPending] = IntValue(0)
 	vm.RegisterNative("javax/microedition/lcdui/Canvas", "<init>", "()V", nativeVoid)
 	vm.RegisterNative(
 		"javax/microedition/lcdui/Canvas",
@@ -98,9 +101,25 @@ func (vm *VM) installDisplayNatives() {
 			return IntValue(int32(vm.canvasHeight())), true, nil
 		},
 	)
-	vm.RegisterNative("javax/microedition/lcdui/Canvas", "repaint", "(IIII)V", nativeVoid)
-	vm.RegisterNative("javax/microedition/lcdui/Canvas", "repaint", "()V", nativeVoid)
-	vm.RegisterNative("javax/microedition/lcdui/Canvas", "serviceRepaints", "()V", nativeVoid)
+	requestRepaint := func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+		if receiver != 0 && receiver == vm.currentDisplay {
+			vm.setRepaintPending(true)
+		}
+		return Value{}, false, nil
+	}
+	vm.RegisterNative("javax/microedition/lcdui/Canvas", "repaint", "(IIII)V", requestRepaint)
+	vm.RegisterNative("javax/microedition/lcdui/Canvas", "repaint", "()V", requestRepaint)
+	vm.RegisterNative(
+		"javax/microedition/lcdui/Canvas",
+		"serviceRepaints",
+		"()V",
+		func(ctx context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+			if receiver == 0 || receiver != vm.currentDisplay || !vm.RepaintPending() {
+				return Value{}, false, nil
+			}
+			return Value{}, false, vm.PaintCurrent(ctx)
+		},
+	)
 	vm.RegisterNative(
 		"javax/microedition/lcdui/Display",
 		"getDisplay",
@@ -710,7 +729,12 @@ func (vm *VM) installDisplayCompatibilityNatives() {
 			"javax/microedition/lcdui/Displayable",
 			"repaintIM",
 			"()V",
-			nativeVoid,
+			func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+				if receiver != 0 && receiver == vm.currentDisplay {
+					vm.setRepaintPending(true)
+				}
+				return Value{}, false, nil
+			},
 		)
 	}
 }

@@ -811,7 +811,11 @@ func (vm *VM) PaintCurrent(ctx context.Context) error {
 	if vm.currentDisplay == 0 {
 		return fmt.Errorf("SKVM has no current Displayable")
 	}
+	// Consume the request before entering guest code so repaint() called from
+	// paint() schedules another pass instead of being lost.
+	vm.setRepaintPending(false)
 	if err := vm.resetScreenGraphics(); err != nil {
+		vm.setRepaintPending(true)
 		return fmt.Errorf("reset SKVM paint graphics: %w", err)
 	}
 	_, _, err := vm.InvokeVirtual(
@@ -821,7 +825,24 @@ func (vm *VM) PaintCurrent(ctx context.Context) error {
 		"(Ljavax/microedition/lcdui/Graphics;)V",
 		ReferenceValue(vm.ScreenGraphics()),
 	)
+	if err != nil && !errors.Is(err, ErrMethodNotFound) {
+		vm.setRepaintPending(true)
+	}
 	return err
+}
+
+// RepaintPending reports whether the current Displayable requested a paint.
+// MIDP repaint requests are coalesced until the host dispatches paint().
+func (vm *VM) RepaintPending() bool {
+	if vm.currentDisplay == 0 {
+		return false
+	}
+	pending, err := vm.hostStatic[midpRepaintPending].Int()
+	return err == nil && pending != 0
+}
+
+func (vm *VM) setRepaintPending(pending bool) {
+	vm.hostStatic[midpRepaintPending] = boolValue(pending)
 }
 
 func (vm *VM) KeyEvent(ctx context.Context, key int32, pressed bool) error {

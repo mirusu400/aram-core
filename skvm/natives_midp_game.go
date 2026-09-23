@@ -1029,6 +1029,7 @@ func (vm *VM) setCurrentDisplay(reference uint32) {
 		return
 	}
 	vm.currentDisplay = reference
+	vm.setRepaintPending(reference != 0)
 	if vm.IsInstance(reference, "javax/microedition/lcdui/game/GameCanvas") {
 		object, _ := vm.Object(reference)
 		held, _ := vm.hostStatic[gameCanvasHeldKeys].Int()

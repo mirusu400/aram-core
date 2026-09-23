@@ -620,7 +620,7 @@ func (m *Machine) pumpAndPaintLocked(
 			return err
 		}
 	}
-	if m.vm.CurrentDisplay() != 0 {
+	if m.vm.RepaintPending() {
 		if err := m.vm.PaintCurrent(ctx); err != nil &&
 			!errors.Is(err, skengine.ErrMethodNotFound) {
 			return err

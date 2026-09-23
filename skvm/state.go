@@ -664,6 +664,12 @@ func (vm *VM) buildCandidate(
 		// Existing per-canvas state remains intact until input or a transition.
 		hostStatic[gameCanvasHeldKeys] = IntValue(0)
 	}
+	if _, exists := hostStatic[midpRepaintPending]; !exists {
+		// Older snapshots predate repaint scheduling and were painted once per
+		// host frame. Refresh their visible canvas once after restore without
+		// reviving the former continuous paint callback behavior.
+		hostStatic[midpRepaintPending] = boolValue(state.CurrentDisplay != 0)
+	}
 	if !sameValueMapShape(hostStatic, vm.hostStatic) {
 		return nil, fmt.Errorf("load SKVM state: host static field mismatch")
 	}
