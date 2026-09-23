@@ -276,6 +276,39 @@ var RaptorImagePatches = []RaptorImagePatch{
 		Expected:    0xe92dd810,
 		Replacement: 0x000d8640,
 	},
+	{
+		// SD Korean War's effect-table accessor calls the Raptor
+		// ArrayIndexOutOfBoundsException helper, which never returns on a
+		// handset. ARAM cannot decode this SDK's catch tables, so it resumes at
+		// the guarded load and treats an adjacent heap word as a byte-array
+		// reference. The enemy-attack report reached effect index 165735 while
+		// turning that bogus array into /img/effect_###.png names. Return null
+		// from this exact accessor after the failed check instead of executing
+		// the invalid load. The companion patch below handles that null at the
+		// boundary of the caller which would have propagated the exception.
+		Key: RaptorTitleKey{
+			PackageSHA256: "61ed69520fd34679be0a72029d4bbee25d10799e6c7dfeb9cefd8960a24bcb80",
+			AID:           "0002046B",
+			MainClass:     "Clet",
+		},
+		Address:     0x00032f68,
+		Expected:    0x00ab68a2, // ldr r2,[r4,#8]; lsls r3,r5,#2
+		Replacement: 0xe0012000, // movs r0,#0; b 0x00032f70
+	},
+	{
+		// o.a(I)V receives the null returned by the repaired accessor above.
+		// Its own null check raises another undeliverable exception before a
+		// dereference. End the void method at that check, matching the
+		// observable result of the exception escaping this effect loader.
+		Key: RaptorTitleKey{
+			PackageSHA256: "61ed69520fd34679be0a72029d4bbee25d10799e6c7dfeb9cefd8960a24bcb80",
+			AID:           "0002046B",
+			MainClass:     "Clet",
+		},
+		Address:     0x000150c6,
+		Expected:    0x4b732000, // movs r0,#0; ldr r3,=throw
+		Replacement: 0x46c0e0d7, // b 0x00015278; nop
+	},
 }
 
 func LookupRaptorImagePatches(
