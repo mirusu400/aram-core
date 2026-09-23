@@ -82,6 +82,8 @@ func TestRaptorJavaStringIndexOfVirtualSlots(t *testing.T) {
 	for offset, want := range map[uint32]string{
 		0x58: "indexOf(I)I",
 		0x5c: "indexOf(II)I",
+		0x68: "indexOf(Ljava/lang/String;)I",
+		0x6c: "indexOf(Ljava/lang/String;I)I",
 	} {
 		if got := actual[offset]; got != want {
 			t.Errorf("String slot 0x%02x = %q, want %q", offset, got, want)

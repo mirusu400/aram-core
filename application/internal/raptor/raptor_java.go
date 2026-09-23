@@ -186,6 +186,11 @@ var raptorJavaFixedVirtualMethods = map[string][]raptorJavaFixedVirtualMethod{
 		// 0x5c slot returned zero forever and trapped its startup parser (#286).
 		{offset: 0x58, Name: "indexOf", descriptor: "(I)I"},
 		{offset: 0x5c, Name: "indexOf", descriptor: "(II)I"},
+		// 생과일타이쿤2 splits each script line at its first space with the
+		// String overloads. Leaving these slots on the zero-returning backstop
+		// made every opcode substring empty and overran the command table (#332).
+		{offset: 0x68, Name: "indexOf", descriptor: "(Ljava/lang/String;)I"},
+		{offset: 0x6c, Name: "indexOf", descriptor: "(Ljava/lang/String;I)I"},
 		{offset: 0x74, Name: "substring", descriptor: "(II)Ljava/lang/String;"},
 		// 배틀몬스터's text helper calls slot 0x8c and immediately reads the
 		// result as a char[] (length followed by UTF-16 elements). Leaving the
