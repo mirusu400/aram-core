@@ -208,7 +208,7 @@ func (r *Runtime) dispatchKernel(name string) (guest.WIPIReturn, bool, error) {
 		return guest.WIPIReturn{}, true, r.UnsetTimer(a0, true)
 	case "MC_knlCurrentTime":
 		return wipiU64(
-			uint64(r.Services.Clock.Monotonic() / time.Millisecond),
+			uint64(r.Services.Clock.WallMillis()),
 		), true, nil
 	case "MC_knlGetSystemProperty":
 		return r.getSystemProperty(a0, a1, a2)

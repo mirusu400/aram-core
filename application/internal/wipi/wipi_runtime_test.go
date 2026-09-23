@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mirusu400/aram-core/application/internal/guest"
 	"github.com/mirusu400/aram-core/cpu"
@@ -287,6 +288,18 @@ func TestWIPIRuntimeCStdlibAndKernelPrimitives(t *testing.T) {
 	dispatchPublicAPI(t, runtime, "MC_knlFree", allocation)
 	if runtime.Stats.ImplementedCalls != 3 || runtime.Stats.UnimplementedCalls != 0 {
 		t.Fatalf("stats = %+v", runtime.Stats)
+	}
+}
+
+func TestWIPIRuntimeCurrentTimeUsesUnixEpochMilliseconds(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	check(t, runtime.Services.Clock.Advance(1500*time.Millisecond))
+
+	result := dispatchPublicAPI(t, runtime, "MC_knlCurrentTime")
+	got := uint64(result.Low) | uint64(result.High)<<32
+	want := uint64(shared.DefaultWallEpochMillis + 1500)
+	if got != want {
+		t.Fatalf("MC_knlCurrentTime = %d, want %d", got, want)
 	}
 }
 
