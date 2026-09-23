@@ -70,6 +70,10 @@ const (
 	raptorDletModuleStub  = uint32(0x0110e000)
 	raptorDletResolveStub = uint32(0x0110e004)
 	raptorDletWaitStub    = uint32(0x0110e008)
+	// raptorFramebufferPixelsStub is guest Thumb code rather than a host
+	// breakpoint. Keep it beyond the three dlet traps and before the shared
+	// return sentinel at 0x0110f000.
+	raptorFramebufferPixelsStub = uint32(0x0110e00c)
 
 	raptorCletHeaderSize = uint32(0x30)
 	DependencyDataSlot   = uint32(0x214)
@@ -599,7 +603,7 @@ func (r *Runtime) DispatchTrap(
 			return true, err
 		}
 		key := raptorImportKey{Module: module, Ordinal: ordinal}
-		stub, err := r.importStub(key)
+		stub, err := r.resolvedImportStub(key)
 		if err != nil {
 			return true, err
 		}

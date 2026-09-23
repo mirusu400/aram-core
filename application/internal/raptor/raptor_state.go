@@ -243,6 +243,11 @@ func RestoreState(r *Runtime, backend cpu.Backend, state *SavedState) error {
 		r.resolvedImports[key] = state.resolvedImports[key]
 		r.importSlotByKey[key] = uint32(slot)
 	}
+	if slot, ok := r.importSlotByKey[raptorFramebufferPixelsImport]; ok {
+		if err := r.installFramebufferPixelsStub(raptorImportStubBase + slot*4); err != nil {
+			return err
+		}
+	}
 	r.ImportTrace = append([]raptorImportCall(nil), state.ImportTrace...)
 	r.CallbackTasks = make([]*CallbackTask, len(state.CallbackTasks))
 	for index, saved := range state.CallbackTasks {
