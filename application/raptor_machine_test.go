@@ -670,6 +670,56 @@ func TestRaptorFrameDefersCallbackBatchContainingInput(t *testing.T) {
 	}
 }
 
+// A callback that yields across frames is not necessarily finite: White Day's
+// main callback owns its game loop and presents forever. Input queued strictly
+// behind that suspended callback can therefore never run. Only a saved task is
+// preemptible, preserving the ordinary FIFO behavior covered above.
+func TestRaptorInputPreemptsASuspendedCallback(t *testing.T) {
+	machine := newSyntheticMachine(t)
+	const (
+		code        = uint32(0x04000000)
+		longTask    = code
+		handleEvent = code + 0x100
+	)
+	check(t, machine.cpu.Map(
+		code,
+		0x1000,
+		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
+	))
+	check(t, machine.cpu.WriteMemory(longTask, []byte{
+		0xfe, 0xe7, // loop: b loop
+	}))
+	check(t, machine.cpu.WriteMemory(handleEvent, []byte{
+		0x70, 0x47, // bx lr
+	}))
+	machine.frameRunBudget = 3
+	running := &raptorrt.CallbackTask{
+		Callback: wipirt.GuestCallback{Procedure: longTask | 1},
+	}
+	machine.raptor = &raptorrt.Runtime{
+		CPU:           machine.cpu,
+		Public:        machine.wipi,
+		Started:       true,
+		Clet:          raptorrt.Clet{HandleEvent: handleEvent | 1},
+		CallbackTasks: []*raptorrt.CallbackTask{running},
+	}
+
+	check(t, machine.StepFrame(context.Background()))
+	if !running.HasContext() {
+		t.Fatal("long callback did not yield with a saved context")
+	}
+	input := &raptorrt.CallbackTask{Callback: wipirt.GuestCallback{
+		Procedure: handleEvent | 1,
+		Args:      [4]uint32{502, 0},
+	}}
+	machine.raptor.CallbackTasks = append(machine.raptor.CallbackTasks, input)
+
+	check(t, machine.StepFrame(context.Background()))
+	if tasks := machine.raptor.CallbackTasks; len(tasks) != 1 || tasks[0] != running {
+		t.Fatalf("callback queue after input preemption = %#v, want suspended task", tasks)
+	}
+}
+
 // The drain stops where the frame does. A callback that spends the frame's
 // whole budget still yields with its context preserved, and the callbacks
 // behind it wait for the next frame rather than running past the budget.

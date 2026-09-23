@@ -284,7 +284,11 @@ func (m *Machine) stepRaptorCallbackTask(
 			m.mu.Unlock()
 			break
 		}
-		task := m.raptor.CallbackTasks[0]
+		taskIndex := raptorRunnableCallbackTaskIndex(
+			m.raptor.CallbackTasks,
+			m.raptor.Clet.HandleEvent,
+		)
+		task := m.raptor.CallbackTasks[taskIndex]
 		m.mu.Unlock()
 
 		slice := budget - spent
@@ -300,13 +304,10 @@ func (m *Machine) stepRaptorCallbackTask(
 		spent += result.Instructions
 		if completed {
 			m.mu.Lock()
-			if len(m.raptor.CallbackTasks) != 0 &&
-				m.raptor.CallbackTasks[0] == task {
-				m.raptor.CallbackTasks = m.raptor.CallbackTasks[1:]
-				if len(m.raptor.CallbackTasks) == 0 {
-					m.raptor.CallbackTasks = nil
-				}
-			}
+			m.raptor.CallbackTasks = removeRaptorCallbackTask(
+				m.raptor.CallbackTasks,
+				task,
+			)
 			m.mu.Unlock()
 		}
 		if callErr != nil || !completed || result.Reason == cpu.StopExited {
@@ -329,6 +330,49 @@ func (m *Machine) stepRaptorCallbackTask(
 		return finishErr
 	}
 	return m.stepRaptorJavaAfterSafepoint(ctx)
+}
+
+// raptorRunnableCallbackTaskIndex lets an input edge run between slices of a
+// callback that has already yielded. Some Clets implement their whole game
+// loop inside one callback and return only on exit; keeping strict FIFO behind
+// that suspended task makes every key event unreachable. A callback that has
+// not yielded still keeps handset run-to-completion ordering.
+func raptorRunnableCallbackTaskIndex(
+	tasks []*raptorrt.CallbackTask,
+	handleEvent uint32,
+) int {
+	if len(tasks) == 0 || tasks[0] == nil || !tasks[0].HasContext() {
+		return 0
+	}
+	if raptorrt.IsInputCallback(tasks[0].Callback, handleEvent) {
+		return 0
+	}
+	for index := 1; index < len(tasks); index++ {
+		task := tasks[index]
+		if task != nil && raptorrt.IsInputCallback(task.Callback, handleEvent) {
+			return index
+		}
+	}
+	return 0
+}
+
+func removeRaptorCallbackTask(
+	tasks []*raptorrt.CallbackTask,
+	target *raptorrt.CallbackTask,
+) []*raptorrt.CallbackTask {
+	for index, task := range tasks {
+		if task != target {
+			continue
+		}
+		copy(tasks[index:], tasks[index+1:])
+		tasks[len(tasks)-1] = nil
+		tasks = tasks[:len(tasks)-1]
+		if len(tasks) == 0 {
+			return nil
+		}
+		return tasks
+	}
+	return tasks
 }
 
 func raptorQueueHasInputCallback(
