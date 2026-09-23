@@ -135,25 +135,37 @@ func (r *Runtime) syncRaptorArray(
 // hands a host method is a resource read buffer, well under this.
 const maxRaptorArraySyncElements = 1 << 24
 
-// prepareRaptorStringByteArray repairs both sides of the String byte-slice ABI
+// prepareRaptorStringByteArray repairs both sides of the String byte-array ABI
 // before forwarding it to the shared KTF host. Some Raptor builds pass an end
 // pointer into the AOT array body instead of a scalar count. The Raptor array
 // can also legitimately lack a KTF mirror when its initial mirror allocation
 // failed, or retain a stale mirror after collection. Forwarding either case
-// verbatim makes the KTF handler read heap pointers as the count and length
-// (issue #302).
+// verbatim makes the KTF handler read heap pointers as the count and length,
+// or quietly leaves a whole-array String constructor empty (issues #302 and
+// #333).
 func (r *Runtime) prepareRaptorStringByteArray(
 	java *JavaRuntime,
 	method raptorJavaMethod,
 	arguments []uint32,
 ) error {
-	if method.className != "java/lang/String" || method.Name != "<init>" ||
-		(method.descriptor != "([BII)V" &&
-			method.descriptor != "([BIILjava/lang/String;)V") ||
-		len(arguments) < 4 {
+	if method.className != "java/lang/String" || method.Name != "<init>" {
 		return nil
 	}
-	array, offset, end := arguments[1], arguments[2], arguments[3]
+	sliced := false
+	switch method.descriptor {
+	case "([B)V", "([BLjava/lang/String;)V":
+		if len(arguments) < 2 {
+			return nil
+		}
+	case "([BII)V", "([BIILjava/lang/String;)V":
+		if len(arguments) < 4 {
+			return nil
+		}
+		sliced = true
+	default:
+		return nil
+	}
+	array := arguments[1]
 	if array == 0 {
 		return nil
 	}
@@ -165,12 +177,15 @@ func (r *Runtime) prepareRaptorStringByteArray(
 	if err != nil || length > maxRaptorArraySyncElements {
 		return nil
 	}
-	if offset <= length {
-		data := body + 4
-		start := uint64(data) + uint64(offset)
-		limit := uint64(data) + uint64(length)
-		if uint64(end) >= start && uint64(end) <= limit {
-			arguments[3] = uint32(uint64(end) - start)
+	if sliced {
+		offset, end := arguments[2], arguments[3]
+		if offset <= length {
+			data := body + 4
+			start := uint64(data) + uint64(offset)
+			limit := uint64(data) + uint64(length)
+			if uint64(end) >= start && uint64(end) <= limit {
+				arguments[3] = uint32(uint64(end) - start)
+			}
 		}
 	}
 

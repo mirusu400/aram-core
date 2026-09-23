@@ -258,6 +258,71 @@ func TestRaptorJavaHostCallRebuildsMissingPrimitiveArrayMirror(t *testing.T) {
 	}
 }
 
+// A whole-array String constructor needs the same mirror repair as the sliced
+// forms. Dialogue loaders commonly use new String(byte[]) after filling the
+// array from a resource; forwarding an absent mirror used to leave the String
+// empty after the bridge tolerated the host's invalid-address exception.
+func TestRaptorJavaWholeByteArrayStringRebuildsMissingMirror(t *testing.T) {
+	public := newPublicRuntime(t)
+	runtime := &Runtime{
+		CPU:             public.CPU,
+		Public:          public,
+		resolvedImports: make(map[raptorImportKey]uint64),
+		importSlotByKey: make(map[raptorImportKey]uint32),
+	}
+	java, err := runtime.ensureJavaRuntime()
+	check(t, err)
+
+	array, err := runtime.newRaptorJavaArray('B', 8)
+	check(t, err)
+	body, err := public.ReadU32(array + 8)
+	check(t, err)
+	check(t, public.CPU.WriteMemory(body+4, []byte("dialogue")))
+	oldMirror := java.lgtToKTF[array]
+	delete(java.lgtToKTF, array)
+	delete(java.ktfToLGT, oldMirror)
+	delete(java.primitiveArrays, oldMirror)
+
+	receiver, err := runtime.NewRaptorJavaString("")
+	check(t, err)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, receiver))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, array))
+	_, err = runtime.callJavaHostMethod(context.Background(), raptorJavaMethod{
+		className:  "java/lang/String",
+		Name:       "<init>",
+		descriptor: "([B)V",
+	})
+	check(t, err)
+
+	mirror := java.lgtToKTF[array]
+	if mirror == 0 || mirror == oldMirror {
+		t.Fatalf("rebuilt array mirror = 0x%08x, old 0x%08x", mirror, oldMirror)
+	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, receiver))
+	result, err := runtime.callJavaHostMethod(context.Background(), raptorJavaMethod{
+		className:  "java/lang/String",
+		Name:       "toCharArray",
+		descriptor: "()[C",
+	})
+	check(t, err)
+	charBody, err := public.ReadU32(result.Low + 8)
+	check(t, err)
+	length, err := public.ReadU32(charBody)
+	check(t, err)
+	if length != 8 {
+		t.Fatalf("char[] length = %d, want 8 after whole-array mirror repair", length)
+	}
+	characters := make([]byte, 16)
+	check(t, runtime.CPU.ReadMemory(charBody+4, characters))
+	want := []byte{
+		'd', 0, 'i', 0, 'a', 0, 'l', 0,
+		'o', 0, 'g', 0, 'u', 0, 'e', 0,
+	}
+	if !bytes.Equal(characters, want) {
+		t.Fatalf("char[] bytes = %v, want %v", characters, want)
+	}
+}
+
 func TestRaptorJavaFileWriteAllowsHandledNullArray(t *testing.T) {
 	public := newPublicRuntime(t)
 	runtime := &Runtime{
