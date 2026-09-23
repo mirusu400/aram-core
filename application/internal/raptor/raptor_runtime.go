@@ -74,6 +74,7 @@ const (
 	// breakpoint. Keep it beyond the three dlet traps and before the shared
 	// return sentinel at 0x0110f000.
 	raptorFramebufferPixelsStub = uint32(0x0110e00c)
+	raptorStrcmpStub            = uint32(0x0110e050)
 
 	raptorCletHeaderSize = uint32(0x30)
 	DependencyDataSlot   = uint32(0x214)
@@ -107,12 +108,22 @@ type Clet struct {
 
 type CallbackTask struct {
 	Callback wipirt.GuestCallback
+	// Stack optionally gives a callback which starts while another callback is
+	// suspended its own stack. Ordinary FIFO callbacks leave this zero and
+	// inherit the Clet's main stack as before.
+	Stack uint32
 	// Context is the portable CPU state to resume from, kept current by
 	// SaveContext; execution is the backend's reusable form of the same
 	// state, which RestoreContext prefers (see raptor_task_context.go).
 	Context   []byte
 	execution taskExecutionContext
 }
+
+// CallbackPreemptionStack is the otherwise-unused 128 KiB at the bottom of
+// the shared guest stack mapping. Java task stacks begin immediately above it
+// and the Clet main stack grows down from the top, so an input callback can run
+// here without overwriting the suspended callback's live frames.
+const CallbackPreemptionStack = guest.DefaultStackBase + 0x20000
 
 type Runtime struct {
 	CPU    cpu.Backend

@@ -248,6 +248,11 @@ func RestoreState(r *Runtime, backend cpu.Backend, state *SavedState) error {
 			return err
 		}
 	}
+	if _, ok := r.importSlotByKey[raptorStrcmpImport]; ok {
+		if err := r.installStrcmpStub(); err != nil {
+			return err
+		}
+	}
 	r.ImportTrace = append([]raptorImportCall(nil), state.ImportTrace...)
 	r.CallbackTasks = make([]*CallbackTask, len(state.CallbackTasks))
 	for index, saved := range state.CallbackTasks {

@@ -718,6 +718,10 @@ func TestRaptorInputPreemptsASuspendedCallback(t *testing.T) {
 	if tasks := machine.raptor.CallbackTasks; len(tasks) != 1 || tasks[0] != running {
 		t.Fatalf("callback queue after input preemption = %#v, want suspended task", tasks)
 	}
+	if input.Stack != raptorrt.CallbackPreemptionStack {
+		t.Fatalf("preempting input stack = 0x%08x, want 0x%08x",
+			input.Stack, raptorrt.CallbackPreemptionStack)
+	}
 }
 
 // The drain stops where the frame does. A callback that spends the frame's

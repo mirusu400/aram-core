@@ -6,21 +6,61 @@ import (
 )
 
 var raptorFramebufferPixelsImport = raptorImportKey{Module: 507, Ordinal: 50}
+var raptorStrcmpImport = raptorImportKey{Module: 1, Ordinal: 1033}
 
 // resolvedImportStub returns the public address placed in a Raptor import
-// veneer. Most imports remain host breakpoints. grpGetFrameBufferPixels is
-// different: software renderers call it in their innermost pixel loop, so a
-// host round trip for this descriptor field can consume millions of traps for
-// a few hundred displayed frames.
+// veneer. Most imports remain host breakpoints; selected tiny primitives run
+// as guest helpers when their host round trips dominate a title's frame.
 func (r *Runtime) resolvedImportStub(key raptorImportKey) (uint32, error) {
 	hostStub, err := r.importStub(key)
-	if err != nil || key != raptorFramebufferPixelsImport {
+	if err != nil {
 		return hostStub, err
 	}
-	if err := r.installFramebufferPixelsStub(hostStub); err != nil {
-		return 0, err
+	switch key {
+	case raptorFramebufferPixelsImport:
+		if err := r.installFramebufferPixelsStub(hostStub); err != nil {
+			return 0, err
+		}
+		return raptorFramebufferPixelsStub, nil
+	case raptorStrcmpImport:
+		if err := r.installStrcmpStub(); err != nil {
+			return 0, err
+		}
+		return raptorStrcmpStub, nil
+	default:
+		return hostStub, nil
 	}
-	return raptorFramebufferPixelsStub, nil
+}
+
+// installStrcmpStub keeps the C library's hottest tiny primitive inside the
+// guest. Raptor software renderers compare short material and sprite names in
+// their inner loops; crossing the host boundary for each comparison otherwise
+// captures registers and stack words three times per call.
+func (r *Runtime) installStrcmpStub() error {
+	code := []byte{
+		0x02, 0x78, // loop: ldrb r2, [r0]
+		0x0b, 0x78, // ldrb r3, [r1]
+		0x9a, 0x42, // cmp r2, r3
+		0x04, 0xd1, // bne different
+		0x00, 0x2a, // cmp r2, #0
+		0x09, 0xd0, // beq equal
+		0x01, 0x30, // adds r0, #1
+		0x01, 0x31, // adds r1, #1
+		0xf6, 0xe7, // b loop
+		0x9a, 0x42, // different: cmp r2, r3
+		0x01, 0xd3, // blo less
+		0x01, 0x20, // movs r0, #1
+		0x70, 0x47, // bx lr
+		0x00, 0x20, // less: movs r0, #0
+		0x01, 0x38, // subs r0, #1
+		0x70, 0x47, // bx lr
+		0x00, 0x20, // equal: movs r0, #0
+		0x70, 0x47, // bx lr
+	}
+	if err := r.CPU.WriteMemory(raptorStrcmpStub, code); err != nil {
+		return fmt.Errorf("install Raptor strcmp helper: %w", err)
+	}
+	return nil
 }
 
 func (r *Runtime) installFramebufferPixelsStub(hostStub uint32) error {

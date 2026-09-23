@@ -289,6 +289,9 @@ func (m *Machine) stepRaptorCallbackTask(
 			m.raptor.Clet.HandleEvent,
 		)
 		task := m.raptor.CallbackTasks[taskIndex]
+		if taskIndex != 0 && !task.HasContext() {
+			task.Stack = raptorrt.CallbackPreemptionStack
+		}
 		m.mu.Unlock()
 
 		slice := budget - spent
@@ -405,6 +408,11 @@ func (m *Machine) runRaptorCallbackTask(
 	}()
 
 	if !task.HasContext() {
+		if task.Stack != 0 {
+			if err := m.cpu.WriteRegister(cpu.RegisterSP, task.Stack); err != nil {
+				return cpu.Result{Reason: cpu.StopFault, Err: err}, false, false, err
+			}
+		}
 		for register := cpu.RegisterR0; register <= cpu.RegisterR3; register++ {
 			if err := m.cpu.WriteRegister(register, task.Callback.Args[register]); err != nil {
 				return cpu.Result{Reason: cpu.StopFault, Err: err}, false, false, err
