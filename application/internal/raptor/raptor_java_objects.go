@@ -542,6 +542,16 @@ func (r *Runtime) callJavaHostMethod(
 	if err != nil {
 		return guest.WIPIReturn{}, err
 	}
+	if method.className == "org/kwis/msp/io/File" && method.Name == "write" &&
+		strings.HasPrefix(method.descriptor, "([B") && len(arguments) >= 2 &&
+		arguments[1] == 0 {
+		// A device raises NullPointerException here and lets the title's Java
+		// first-run path handle it. The Raptor bridge cannot unwind a host Java
+		// exception into AOT guest frames, so forwarding the null mirror instead
+		// faults the whole machine before its first frame (issue #339). Match the
+		// handled path with a zero-byte write, narrowly for this File overload.
+		return guest.WIPIReturn{}, nil
+	}
 	if err := r.prepareRaptorStringByteArray(java, method, arguments); err != nil {
 		return guest.WIPIReturn{}, err
 	}

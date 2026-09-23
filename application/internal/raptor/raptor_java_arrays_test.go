@@ -5,6 +5,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/mirusu400/aram-core/application/internal/guest"
 	"github.com/mirusu400/aram-core/cpu"
 )
 
@@ -254,6 +255,28 @@ func TestRaptorJavaHostCallRebuildsMissingPrimitiveArrayMirror(t *testing.T) {
 	check(t, err)
 	if result.Low != 3 {
 		t.Fatalf("String length = %d, want 3 after pointer-range normalization", result.Low)
+	}
+}
+
+func TestRaptorJavaFileWriteAllowsHandledNullArray(t *testing.T) {
+	public := newPublicRuntime(t)
+	runtime := &Runtime{
+		CPU:             public.CPU,
+		Public:          public,
+		resolvedImports: make(map[raptorImportKey]uint64),
+		importSlotByKey: make(map[raptorImportKey]uint32),
+	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, 0x1003fa28))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, 0))
+
+	result, err := runtime.callJavaHostMethod(context.Background(), raptorJavaMethod{
+		className:  "org/kwis/msp/io/File",
+		Name:       "write",
+		descriptor: "([B)I",
+	})
+	check(t, err)
+	if result != (guest.WIPIReturn{}) {
+		t.Fatalf("null File.write result = %+v, want zero bytes", result)
 	}
 }
 
