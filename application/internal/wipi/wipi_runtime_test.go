@@ -318,6 +318,35 @@ func TestWIPIRuntimeReadsCStringEndingAtMappingBoundary(t *testing.T) {
 	}
 }
 
+type readCountingBackend struct {
+	cpu.Backend
+	reads int
+}
+
+func (b *readCountingBackend) ReadMemory(address uint32, destination []byte) error {
+	b.reads++
+	return b.Backend.ReadMemory(address, destination)
+}
+
+func TestWIPIRuntimeReadsLongCStringInBlocks(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	const length = 8192
+	address, err := runtime.Heap.Allocate(length+1, true)
+	check(t, err)
+	want := bytes.Repeat([]byte{'A'}, length)
+	check(t, runtime.CPU.WriteMemory(address, append(append([]byte(nil), want...), 0)))
+	counting := &readCountingBackend{Backend: runtime.CPU}
+	runtime.CPU = counting
+
+	got, err := runtime.ReadCString(address)
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("long C string length = %d, err=%v; want %d", len(got), err, len(want))
+	}
+	if counting.reads > length/256+2 {
+		t.Fatalf("long C string used %d memory reads, want at most %d", counting.reads, length/256+2)
+	}
+}
+
 func TestWIPIRuntimeKernelPrintfFormatsGuestVarargs(t *testing.T) {
 	runtime := newPublicRuntime(t)
 	allocateString := func(value string) uint32 {

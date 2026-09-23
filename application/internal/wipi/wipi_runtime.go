@@ -1,6 +1,7 @@
 package wipi
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -1061,15 +1062,32 @@ func (r *Runtime) ReadCString(address uint32) ([]byte, error) {
 		return nil, nil
 	}
 	result := make([]byte, 0, 64)
-	var current [1]byte
-	for uint32(len(result)) < maxWIPIString {
-		if err := r.CPU.ReadMemory(address+uint32(len(result)), current[:]); err != nil {
-			return nil, err
+	var block [256]byte
+	for offset := uint32(0); offset < maxWIPIString; {
+		count := min(uint32(len(block)), maxWIPIString-offset)
+		current := block[:count]
+		if err := r.CPU.ReadMemory(address+offset, current); err != nil {
+			// The terminator can legally be the last byte of a mapping. A
+			// speculative block read crosses that boundary and fails even though
+			// the string itself is valid, so preserve the old byte-precise
+			// behavior for only the block that could not be read in bulk.
+			for index := uint32(0); index < count; index++ {
+				if err := r.CPU.ReadMemory(address+offset+index, current[:1]); err != nil {
+					return nil, err
+				}
+				if current[0] == 0 {
+					return result, nil
+				}
+				result = append(result, current[0])
+			}
+			offset += count
+			continue
 		}
-		if current[0] == 0 {
-			return result, nil
+		if end := bytes.IndexByte(current, 0); end >= 0 {
+			return append(result, current[:end]...), nil
 		}
-		result = append(result, current[0])
+		result = append(result, current...)
+		offset += count
 	}
 	return nil, fmt.Errorf("string at 0x%08x exceeds %d bytes", address, maxWIPIString)
 }
