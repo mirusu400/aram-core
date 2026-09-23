@@ -380,6 +380,18 @@ var SKVMCanvases = []SKVMCanvas{
 		CanvasHeightInset16: true,
 	},
 	{
+		// This archival ZIP has byte-identical application members to the
+		// Dragon Knight EX package above and differs only in ZIP metadata.
+		Key: SKVMTitleKey{
+			PackageSHA256: "78bd51675574314c33f6bf6202752f6fd65df14fc69f94cfef417b4d8045a172",
+			MainClass:     "PNJDKEx",
+			ProgramName:   "0053597505",
+		},
+		InferredWidth:       120,
+		InferredHeight:      160,
+		CanvasHeightInset16: true,
+	},
+	{
 		// 고래사냥2 (Whale Hunting 2) keeps every image it ships inside an
 		// opaque resource blob, so no package asset reveals the handset. Its
 		// title screen draws a 128-pixel column flush against the right edge

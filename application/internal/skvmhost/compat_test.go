@@ -12,31 +12,41 @@ import (
 )
 
 const (
-	dragonKnightEXSKTSHA256 = "fa1fc7826e4f2dbd10a4793177d9aed3282e5b9812d47863edc2f64761850cc2"
-	whaleHunting2SKTSHA256  = "1367261bc3ee3b7f0afa102a52a7559204d94da60c543969773d47a09c051e79"
-	xMenSKTSHA256           = "f483ba078c14a2ea0e19a0cbe28ce36ffe7e16b6afc6847aa67f4a54f66feb72"
+	dragonKnightEXSKTSHA256         = "fa1fc7826e4f2dbd10a4793177d9aed3282e5b9812d47863edc2f64761850cc2"
+	dragonKnightEXReportedSKTSHA256 = "78bd51675574314c33f6bf6202752f6fd65df14fc69f94cfef417b4d8045a172"
+	whaleHunting2SKTSHA256          = "1367261bc3ee3b7f0afa102a52a7559204d94da60c543969773d47a09c051e79"
+	xMenSKTSHA256                   = "f483ba078c14a2ea0e19a0cbe28ce36ffe7e16b6afc6847aa67f4a54f66feb72"
 )
 
 func TestDragonKnightEXCompatibilityRequiresExactPackageIdentity(t *testing.T) {
-	source := machinecore.Source{SHA256: dragonKnightEXSKTSHA256}
 	pkg := skloader.Package{Descriptor: skloader.Descriptor{
 		MainClass:   "PNJDKEx",
 		ProgramName: "0053597505",
 	}}
 	size := image.Pt(120, 160)
 
-	config := shared.DefaultConfig()
-	applySKVMTitleCompatibility(&config, source, pkg, size)
-	if len(config.Device.Quirks) != 1 ||
-		config.Device.Quirks[0] != (shared.DeviceQuirk{
-			Name:    skengine.CanvasHeightInset16Quirk,
-			Enabled: true,
-		}) {
-		t.Fatalf("compatibility quirks = %+v", config.Device.Quirks)
+	for _, digest := range []string{
+		dragonKnightEXSKTSHA256,
+		dragonKnightEXReportedSKTSHA256,
+	} {
+		t.Run(digest[:8], func(t *testing.T) {
+			source := machinecore.Source{SHA256: digest}
+			config := shared.DefaultConfig()
+			applySKVMTitleCompatibility(&config, source, pkg, size)
+			if len(config.Device.Quirks) != 1 ||
+				config.Device.Quirks[0] != (shared.DeviceQuirk{
+					Name:    skengine.CanvasHeightInset16Quirk,
+					Enabled: true,
+				}) {
+				t.Fatalf("compatibility quirks = %+v", config.Device.Quirks)
+			}
+			if canvas := skvmTitleCanvas(source, pkg, size); canvas != size {
+				t.Fatalf("canvas = %v, want the inferred %v", canvas, size)
+			}
+		})
 	}
-	if canvas := skvmTitleCanvas(source, pkg, size); canvas != size {
-		t.Fatalf("canvas = %v, want the inferred %v", canvas, size)
-	}
+
+	source := machinecore.Source{SHA256: dragonKnightEXReportedSKTSHA256}
 
 	for name, mutate := range map[string]func(
 		*machinecore.Source,
