@@ -937,11 +937,9 @@ func (vm *VM) installRandomNatives() {
 				return Value{}, false, err
 			}
 		}
-		stream := fmt.Sprintf("skvm.java.random.%08x", receiver)
-		if err := vm.services.Random.SetJavaSeed(stream, value); err != nil {
-			return Value{}, false, err
-		}
-		return Value{}, false, vm.setNative(receiver, &randomState{stream: stream})
+		return Value{}, false, vm.setNative(receiver, &randomState{
+			seed: shared.JavaRandomSeed(value),
+		})
 	}
 	vm.RegisterNative("java/util/Random", "<init>", "()V", seed)
 	vm.RegisterNative("java/util/Random", "<init>", "(J)V", seed)
@@ -951,25 +949,12 @@ func (vm *VM) installRandomNatives() {
 		"nextInt",
 		"()I",
 		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
-			object, ok := vm.Object(receiver)
-			if !ok {
-				return Value{}, false, fmt.Errorf("invalid Random receiver")
-			}
-			state, ok := object.Native.(*randomState)
-			if !ok {
-				state = &randomState{
-					stream: fmt.Sprintf("skvm.java.random.%08x", receiver),
-				}
-				if err := vm.services.Random.SetJavaSeed(state.stream, 0); err != nil {
-					return Value{}, false, err
-				}
-				object.Native = state
-			}
-			value, err := vm.services.Random.JavaInt(state.stream)
+			state, err := vm.randomState(receiver)
 			if err != nil {
 				return Value{}, false, err
 			}
-			return IntValue(value), true, nil
+			value, err := state.next(32)
+			return IntValue(int32(value)), err == nil, err
 		},
 	)
 }

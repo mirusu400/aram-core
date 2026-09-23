@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf16"
+
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 const (
@@ -824,7 +826,8 @@ func (vm *VM) randomState(reference uint32) (*randomState, error) {
 	}
 	state, ok := object.Native.(*randomState)
 	if !ok {
-		return nil, fmt.Errorf("invalid Random state")
+		state = &randomState{seed: shared.JavaRandomSeed(0)}
+		object.Native = state
 	}
 	return state, nil
 }
@@ -835,7 +838,7 @@ func (vm *VM) installCLDCRandomExtras() {
 		if err != nil {
 			return Value{}, false, err
 		}
-		bits, err := vm.services.Random.JavaBits(state.stream, 24)
+		bits, err := state.next(24)
 		return FloatValue(float32(bits) / (1 << 24)), err == nil, err
 	})
 	vm.RegisterNative("java/util/Random", "nextDouble", "()D", func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
@@ -843,11 +846,11 @@ func (vm *VM) installCLDCRandomExtras() {
 		if err != nil {
 			return Value{}, false, err
 		}
-		high, err := vm.services.Random.JavaBits(state.stream, 26)
+		high, err := state.next(26)
 		if err != nil {
 			return Value{}, false, err
 		}
-		low, err := vm.services.Random.JavaBits(state.stream, 27)
+		low, err := state.next(27)
 		return DoubleValue(float64((uint64(high)<<27)+uint64(low)) / (1 << 53)), err == nil, err
 	})
 	vm.RegisterNative("java/util/Random", "next", "(I)I", func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
@@ -862,7 +865,7 @@ func (vm *VM) installCLDCRandomExtras() {
 		if err != nil {
 			return Value{}, false, err
 		}
-		value, err := vm.services.Random.JavaBits(state.stream, uint8(bits))
+		value, err := state.next(uint8(bits))
 		return IntValue(int32(value)), err == nil, err
 	})
 	vm.RegisterNative("java/util/Random", "nextBoolean", "()Z", func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
@@ -870,7 +873,7 @@ func (vm *VM) installCLDCRandomExtras() {
 		if err != nil {
 			return Value{}, false, err
 		}
-		value, err := vm.services.Random.JavaBits(state.stream, 1)
+		value, err := state.next(1)
 		return boolValue(value != 0), err == nil, err
 	})
 	vm.RegisterNative("java/util/Random", "nextLong", "()J", func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
@@ -878,11 +881,11 @@ func (vm *VM) installCLDCRandomExtras() {
 		if err != nil {
 			return Value{}, false, err
 		}
-		high, err := vm.services.Random.JavaBits(state.stream, 32)
+		high, err := state.next(32)
 		if err != nil {
 			return Value{}, false, err
 		}
-		low, err := vm.services.Random.JavaBits(state.stream, 32)
+		low, err := state.next(32)
 		return LongValue((int64(int32(high)) << 32) + int64(int32(low))), err == nil, err
 	})
 	vm.RegisterNative("java/util/Random", "nextInt", "(I)I", func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
@@ -898,11 +901,11 @@ func (vm *VM) installCLDCRandomExtras() {
 			return Value{}, false, err
 		}
 		if bound&(bound-1) == 0 {
-			bits, drawErr := vm.services.Random.JavaBits(state.stream, 31)
+			bits, drawErr := state.next(31)
 			return IntValue(int32((int64(bound) * int64(bits)) >> 31)), drawErr == nil, drawErr
 		}
 		for {
-			bits, drawErr := vm.services.Random.JavaBits(state.stream, 31)
+			bits, drawErr := state.next(31)
 			if drawErr != nil {
 				return Value{}, false, drawErr
 			}

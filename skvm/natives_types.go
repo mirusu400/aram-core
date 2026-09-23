@@ -20,7 +20,14 @@ type inputStreamState struct {
 }
 
 type randomState struct {
+	seed uint64
+	// stream is populated only while restoring version-4 states written by
+	// builds that kept every Java Random in the shared named-stream table.
 	stream string
+}
+
+func (state *randomState) next(bits uint8) (uint32, error) {
+	return shared.JavaRandomBits(&state.seed, bits)
 }
 
 type threadState struct {

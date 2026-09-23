@@ -385,7 +385,7 @@ func snapshotNative(
 			Reference: state.connection, Integer: int32(state.mark),
 		}, nil
 	case *randomState:
-		return nativeState{Kind: "random", Text: state.stream}, nil
+		return nativeState{Kind: "random", Long: int64(state.seed)}, nil
 	case *threadState:
 		return nativeState{
 			Kind:      "thread",
@@ -983,10 +983,16 @@ func restoreNative(saved nativeState) (any, nativeLink, error) {
 			connection: saved.Reference,
 		}, nativeLink{}, nil
 	case "random":
-		if strings.TrimSpace(saved.Text) == "" || len(saved.Text) > 64 {
-			return nil, nativeLink{}, fmt.Errorf("invalid random stream")
+		if saved.Text != "" {
+			if strings.TrimSpace(saved.Text) == "" || len(saved.Text) > 64 {
+				return nil, nativeLink{}, fmt.Errorf("invalid random stream")
+			}
+			return &randomState{stream: saved.Text}, nativeLink{}, nil
 		}
-		return &randomState{stream: saved.Text}, nativeLink{}, nil
+		if saved.Long < 0 || uint64(saved.Long) >= uint64(1)<<48 {
+			return nil, nativeLink{}, fmt.Errorf("invalid random state")
+		}
+		return &randomState{seed: uint64(saved.Long)}, nativeLink{}, nil
 	case "thread":
 		if saved.Long < 0 {
 			return nil, nativeLink{}, fmt.Errorf("invalid thread wake time")
@@ -1341,8 +1347,16 @@ func (vm *VM) validateNative(reference uint32, native any) error {
 		}
 		return nil
 	case *randomState:
+		if state.stream == "" {
+			if state.seed >= uint64(1)<<48 {
+				return fmt.Errorf("load SKVM state: object %d random state is invalid", reference)
+			}
+			return nil
+		}
 		for _, stream := range vm.services.Random.Snapshot().Streams {
 			if stream.Name == state.stream && stream.Algorithm == shared.RNGJava48 {
+				state.seed = stream.State[0]
+				state.stream = ""
 				return nil
 			}
 		}

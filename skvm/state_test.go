@@ -51,10 +51,9 @@ func TestVMStateRoundTripPreservesHeapAliasesAndServices(t *testing.T) {
 		"javax/microedition/rms/RecordStore",
 		&recordStoreState{name: "save", id: store},
 	)
-	check(t, machine.services.Random.SetJavaSeed("skvm.java.random.test", 123))
 	machine.NewObject(
 		"java/util/Random",
-		&randomState{stream: "skvm.java.random.test"},
+		&randomState{seed: shared.JavaRandomSeed(123)},
 	)
 	timer, err := machine.services.Timers.Define(machine.serviceOwner, "test")
 	check(t, err)
@@ -97,6 +96,28 @@ func TestVMStateRoundTripPreservesHeapAliasesAndServices(t *testing.T) {
 	restoredGraphics, ok := machine.heap[graphicsReference].Native.(*graphicsState)
 	if !ok || machine.heap[aliasReference].Native != restoredGraphics {
 		t.Fatal("restored Graphics2D did not retain its Graphics alias")
+	}
+}
+
+func TestVMStateConvertsLegacyRandomStreamsToObjectState(t *testing.T) {
+	machine, err := New(map[string][]byte{"Game": syntheticClass(t)})
+	check(t, err)
+	const streamName = "skvm.java.random.legacy"
+	check(t, machine.services.Random.SetJavaSeed(streamName, 123))
+	_, err = machine.services.Random.JavaBits(streamName, 17)
+	check(t, err)
+	streams := machine.services.Random.Snapshot().Streams
+	if len(streams) != 1 {
+		t.Fatalf("legacy streams = %v", streams)
+	}
+
+	native, _, err := restoreNative(nativeState{Kind: "random", Text: streamName})
+	check(t, err)
+	reference := machine.NewObject("java/util/Random", native)
+	check(t, machine.validateNative(reference, native))
+	state := native.(*randomState)
+	if state.stream != "" || state.seed != streams[0].State[0] {
+		t.Fatalf("converted random state = %#v, want seed %#x", state, streams[0].State[0])
 	}
 }
 

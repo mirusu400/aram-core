@@ -50,6 +50,27 @@ func TestCLDCRandomBoundedValues(t *testing.T) {
 	}
 }
 
+func TestCLDCRandomObjectsKeepStateOutsideSharedStreamLimit(t *testing.T) {
+	vm, err := New(map[string][]byte{})
+	check(t, err)
+	for index := range 128 {
+		random := vm.NewObject("java/util/Random", nil)
+		invokeTestNative(
+			t,
+			vm,
+			"java/util/Random",
+			"<init>",
+			"(J)V",
+			random,
+			LongValue(int64(index)),
+		)
+		invokeTestNative(t, vm, "java/util/Random", "nextInt", "()I", random)
+	}
+	if streams := vm.services.Random.Snapshot().Streams; len(streams) != 0 {
+		t.Fatalf("short-lived Random objects allocated shared streams: %v", streams)
+	}
+}
+
 func TestCLDCObjectCloneCopiesArraysAndRejectsOrdinaryObjects(t *testing.T) {
 	vm, err := New(map[string][]byte{})
 	check(t, err)
