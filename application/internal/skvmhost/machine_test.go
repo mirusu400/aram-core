@@ -78,6 +78,28 @@ func TestSKVMKeyCode(t *testing.T) {
 	}
 }
 
+func TestLGTFrontendControlKeyCode(t *testing.T) {
+	tests := []struct {
+		control string
+		want    int32
+	}{
+		{"up", -1}, {"down", -2}, {"left", -3}, {"right", -4},
+		{"select", -5}, {"soft-left", -6}, {"soft-right", -7},
+		{"clear", -8}, {"num7", '7'}, {"star", '*'}, {"hash", '#'},
+	}
+	for _, test := range tests {
+		t.Run(test.control, func(t *testing.T) {
+			key, ok := guest.InputKeyCode(test.control)
+			if !ok {
+				t.Fatalf("control %q has no key code", test.control)
+			}
+			if got := lgtKeyCode(key); got != test.want {
+				t.Fatalf("control %q = %d, want %d", test.control, got, test.want)
+			}
+		})
+	}
+}
+
 func TestInferSKVMFramebufferSize(t *testing.T) {
 	fallback := image.Pt(240, 320)
 	tests := []struct {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/mirusu400/aram-core/application/internal/guest"
 	machinecore "github.com/mirusu400/aram-core/core"
+	"github.com/mirusu400/aram-core/loader/j2me"
 	skloader "github.com/mirusu400/aram-core/loader/skvm"
 	"github.com/mirusu400/aram-core/profile"
 	shared "github.com/mirusu400/aram-core/runtime"
@@ -651,7 +652,11 @@ func (m *Machine) handleEventLocked(
 			return nil
 		}
 		pressed := event.Kind != shared.EventInputRelease
-		return m.vm.KeyEvent(ctx, skvmKeyCode(key), pressed)
+		code := skvmKeyCode(key)
+		if m.services.Config.Device.ProfileID == j2me.LGTProfileID {
+			code = lgtKeyCode(key)
+		}
+		return m.vm.KeyEvent(ctx, code, pressed)
 	default:
 		return nil
 	}
@@ -685,6 +690,32 @@ func skvmKeyCode(key profile.KeyCode) int32 {
 		return 129
 	case profile.KeyClear:
 		return 8
+	default:
+		return int32(key)
+	}
+}
+
+// LGT MIDlets receive the conventional MIDP canvas key codes. In particular,
+// many compare -5 directly for FIRE, while others call getGameAction on the
+// negative directional codes; SKT's positive handset codes break both paths.
+func lgtKeyCode(key profile.KeyCode) int32 {
+	switch key {
+	case profile.KeyUp:
+		return -1
+	case profile.KeyDown:
+		return -2
+	case profile.KeyLeft:
+		return -3
+	case profile.KeyRight:
+		return -4
+	case profile.KeySelect:
+		return -5
+	case profile.KeySoft1:
+		return -6
+	case profile.KeySoft2:
+		return -7
+	case profile.KeyClear:
+		return -8
 	default:
 		return int32(key)
 	}
