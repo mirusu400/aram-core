@@ -356,6 +356,42 @@ func LookupRaptorAudioCompatibility(
 	return RaptorAudioCompatibility{}, false
 }
 
+// LGTCanvas records a handset size when an LGT MIDlet has no display metadata
+// and packs its screen art inside a resource format that image inference cannot
+// inspect. The exact package digest prevents unrelated MIDlets from matching.
+type LGTCanvas struct {
+	PackageSHA256  string
+	MainClass      string
+	InferredWidth  int
+	InferredHeight int
+	Width          int
+	Height         int
+}
+
+var LGTCanvases = []LGTCanvas{
+	{
+		// World Tennis packs 120-pixel-wide title and menu PNGs in .msr
+		// containers. Its missing MIDletX-LCD-Size left a 240x320 canvas,
+		// making the game occupy only the top-left quarter (#342).
+		PackageSHA256:  "c065052a8ea712cbe970ee42e591c1f65189bde57521a24879a0bce8d2ff0837",
+		MainClass:      "WT",
+		InferredWidth:  240,
+		InferredHeight: 320,
+		Width:          120,
+		Height:         160,
+	},
+}
+
+func LookupLGTCanvas(packageSHA256, mainClass string, inferredWidth, inferredHeight int) (LGTCanvas, bool) {
+	for _, entry := range LGTCanvases {
+		if entry.PackageSHA256 == packageSHA256 && entry.MainClass == mainClass &&
+			entry.InferredWidth == inferredWidth && entry.InferredHeight == inferredHeight {
+			return entry, true
+		}
+	}
+	return LGTCanvas{}, false
+}
+
 // SKVMCanvas records the handset canvas one SKT MIDlet build was authored for.
 // An SKT descriptor never declares a display size, and a title that packs its
 // art into opaque resource blobs offers nothing to infer one from, so a build
