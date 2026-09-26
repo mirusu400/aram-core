@@ -47,6 +47,8 @@ func TestRaptorJavaScriptTextVirtualSlots(t *testing.T) {
 		"size", "()I")
 	assertRaptorJavaVirtualMethod(t, runtime, java, vectorClass, 0x50,
 		"indexOf", "(Ljava/lang/Object;)I")
+	assertRaptorJavaVirtualMethod(t, runtime, java, vectorClass, 0x60,
+		"elementAt", "(I)Ljava/lang/Object;")
 	assertRaptorJavaVirtualMethod(t, runtime, java, vectorClass, 0x64,
 		"firstElement", "()Ljava/lang/Object;")
 	assertRaptorJavaVirtualMethod(t, runtime, java, vectorClass, 0x70,
@@ -92,6 +94,15 @@ func TestRaptorJavaScriptTextVirtualSlots(t *testing.T) {
 	check(t, err)
 	if index.Low != 2 {
 		t.Fatalf("Vector.indexOf(third) = %d, want 2", index.Low)
+	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, vector))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, 1))
+	element, err := runtime.callJavaHostMethod(context.Background(), raptorJavaMethod{
+		className: "java/util/Vector", Name: "elementAt", descriptor: "(I)Ljava/lang/Object;",
+	})
+	check(t, err)
+	if element.Low != second {
+		t.Fatalf("Vector.elementAt(1) = 0x%x, want 0x%x", element.Low, second)
 	}
 	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, vector))
 	first, err := runtime.callJavaHostMethod(context.Background(), raptorJavaMethod{
