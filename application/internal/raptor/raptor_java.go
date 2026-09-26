@@ -192,6 +192,9 @@ var raptorJavaFixedVirtualMethods = map[string][]raptorJavaFixedVirtualMethod{
 		{offset: 0x68, Name: "indexOf", descriptor: "(Ljava/lang/String;)I"},
 		{offset: 0x6c, Name: "indexOf", descriptor: "(Ljava/lang/String;I)I"},
 		{offset: 0x74, Name: "substring", descriptor: "(II)Ljava/lang/String;"},
+		// Legend of Master trims each CR-delimited script line through this
+		// slot before storing item names and descriptions (#341).
+		{offset: 0x88, Name: "trim", descriptor: "()Ljava/lang/String;"},
 		// 배틀몬스터's text helper calls slot 0x8c and immediately reads the
 		// result as a char[] (length followed by UTF-16 elements). Leaving the
 		// slot on the no-op backstop returns null, so every label disappears
@@ -273,6 +276,9 @@ var raptorJavaFixedVirtualMethods = map[string][]raptorJavaFixedVirtualMethod{
 		{offset: 0x54, Name: "indexOf", descriptor: "(Ljava/lang/Object;)I"},
 		{offset: 0x58, Name: "copyInto", descriptor: "([Ljava/lang/Object;)V"},
 		{offset: 0x5c, Name: "elements", descriptor: "()Ljava/util/Enumeration;"},
+		// Legend of Master's script loader appends parsed NPC lines here.
+		// The unresolved slot silently discarded them (#341).
+		{offset: 0x78, Name: "addElement", descriptor: "(Ljava/lang/Object;)V"},
 	},
 	// CLDC order: read(), read([B), read([BII), skip, available, close,
 	// mark, markSupported, reset. 체스마스터 calls slot 0x3c on the stream
