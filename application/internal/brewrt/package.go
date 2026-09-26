@@ -60,6 +60,15 @@ type Package struct {
 	Authenticated bool
 }
 
+// DisplaySize selects the handset canvas for the authenticated reference
+// title. Its 120x200 menu artwork is otherwise clipped by the 120x160 default.
+func (p Package) DisplaySize() image.Point {
+	if p.Authenticated {
+		return image.Pt(120, 200)
+	}
+	return image.Pt(int(framebufferWidth), int(framebufferHeight))
+}
+
 // Match validates a bounded BREW container, selects its sole executable module,
 // and derives its application ClassID from bounded MIF metadata. Generic carrier
 // signatures are presence-checked only; Package.Authenticated is reserved for

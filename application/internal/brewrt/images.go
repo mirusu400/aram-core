@@ -69,7 +69,7 @@ func (r *Runtime) setupNativeImage() error {
 	// few seconds of gameplay exhausts the emulated heap with identical-sized
 	// surfaces. Smaller bitmaps retain independent snapshot semantics.
 	object := uint32(0)
-	if decoded.Bounds().Dx() == int(framebufferWidth) && decoded.Bounds().Dy() == int(framebufferHeight) {
+	if decoded.Bounds().Dx() == int(r.screenWidth) && decoded.Bounds().Dy() == int(r.screenHeight) {
 		object, err = r.reuseNativeBitmap(buffer, encodedSize, decoded)
 		if err != nil {
 			return err
@@ -574,12 +574,12 @@ func (r *Runtime) drawBitmapAt(bitmap uint32, destinationX, destinationY int32) 
 	}
 	for row := uint32(0); row < height; row++ {
 		targetY := destinationY + int32(row)
-		if targetY < 0 || targetY >= int32(framebufferHeight) {
+		if targetY < 0 || targetY >= int32(r.screenHeight) {
 			continue
 		}
 		for column := uint32(0); column < width; column++ {
 			targetX := destinationX + int32(column)
-			if targetX < 0 || targetX >= int32(framebufferWidth) {
+			if targetX < 0 || targetX >= int32(r.screenWidth) {
 				continue
 			}
 			var pixel [2]byte
@@ -592,7 +592,7 @@ func (r *Runtime) drawBitmapAt(bitmap uint32, destinationX, destinationY int32) 
 			if binary.LittleEndian.Uint16(pixel[:]) == 0xf81f {
 				continue
 			}
-			address := framebufferBase + (uint32(targetY)*framebufferWidth+uint32(targetX))*2
+			address := framebufferBase + (uint32(targetY)*r.screenWidth+uint32(targetX))*2
 			if err := r.cpu.WriteMemory(address, pixel[:]); err != nil {
 				return fmt.Errorf("write BREW image pixel: %w", err)
 			}
@@ -659,12 +659,12 @@ func (r *Runtime) blitDisplayBitmap() error {
 	dx, dy := int32(destinationX), int32(destinationY)
 	for row := uint32(0); row < copyHeight; row++ {
 		targetY := dy + int32(row)
-		if targetY < 0 || targetY >= int32(framebufferHeight) {
+		if targetY < 0 || targetY >= int32(r.screenHeight) {
 			continue
 		}
 		for column := uint32(0); column < copyWidth; column++ {
 			targetX := dx + int32(column)
-			if targetX < 0 || targetX >= int32(framebufferWidth) {
+			if targetX < 0 || targetX >= int32(r.screenWidth) {
 				continue
 			}
 			var pixel [2]byte
@@ -677,7 +677,7 @@ func (r *Runtime) blitDisplayBitmap() error {
 			if rop == aeeROTransparent && binary.LittleEndian.Uint16(pixel[:]) == 0xf81f {
 				continue
 			}
-			targetAt := framebufferBase + (uint32(targetY)*framebufferWidth+uint32(targetX))*2
+			targetAt := framebufferBase + (uint32(targetY)*r.screenWidth+uint32(targetX))*2
 			if err := r.cpu.WriteMemory(targetAt, pixel[:]); err != nil {
 				return fmt.Errorf("write BREW BitBlt pixel: %w", err)
 			}

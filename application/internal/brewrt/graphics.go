@@ -204,7 +204,7 @@ func (r *Runtime) handleGraphicsMethod(slot uint32) (bool, error) {
 		}
 		return returnValue(0)
 	case 16:
-		if err := r.fillGraphicsRect(0, 0, int32(framebufferWidth), int32(framebufferHeight), r.graphics.background); err != nil {
+		if err := r.fillGraphicsRect(0, 0, int32(r.screenWidth), int32(r.screenHeight), r.graphics.background); err != nil {
 			return true, err
 		}
 		return returnValue(0)
@@ -292,7 +292,7 @@ func (r *Runtime) readGraphicsPoints(address uint32, count int32) ([]graphicsPoi
 
 func (r *Runtime) graphicsSurface() (uint32, uint32, uint32, uint32, error) {
 	if r.graphics.target == 0 {
-		return framebufferBase, framebufferWidth, framebufferHeight, framebufferWidth * 2, nil
+		return framebufferBase, r.screenWidth, r.screenHeight, r.screenWidth * 2, nil
 	}
 	header := make([]byte, 36)
 	if err := r.cpu.ReadMemory(r.graphics.target, header); err != nil {

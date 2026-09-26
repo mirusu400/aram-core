@@ -1,6 +1,9 @@
 package application
 
-import "testing"
+import (
+	"image"
+	"testing"
+)
 
 // The game's loading animation draws narrow frame-only rectangles before it
 // reaches the reported white screen. Preserve that distinct IDisplay behavior
@@ -10,6 +13,9 @@ func TestBREWIssue315LoadingFrameOutline(t *testing.T) {
 	path, data := findAuthorizedPackage(t, digest)
 	machine := newBREWReferenceMachine(t, path, data)
 	stepBREWReference(t, machine, 6)
+	if got, want := machine.Framebuffer().Bounds(), image.Rect(0, 0, 120, 160); got != want {
+		t.Fatalf("generic BREW canvas = %v, want %v", got, want)
+	}
 	stats, present := machine.BREWFrameStats()
 	if !present || stats.PresentCount < 2 {
 		t.Fatalf("BREW frame stats = %+v, present=%t; expected loading frame", stats, present)
