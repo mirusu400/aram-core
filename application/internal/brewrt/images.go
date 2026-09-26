@@ -14,6 +14,7 @@ const (
 	maxNativeImageBytes  = uint32(8 << 20)
 	maxNativeImagePixels = uint64(2_000_000)
 	idibColorScheme565   = byte(16)
+	aeeROTransparent     = uint32(7)
 )
 
 type brewNativeImage struct {
@@ -625,6 +626,7 @@ func (r *Runtime) blitDisplayBitmap() error {
 	bitmap := binary.LittleEndian.Uint32(args[4:])
 	sourceX := binary.LittleEndian.Uint32(args[8:])
 	sourceY := binary.LittleEndian.Uint32(args[12:])
+	rop := binary.LittleEndian.Uint32(args[16:])
 	if bitmap == 0 || width == 0 || height == 0 {
 		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
 	}
@@ -669,6 +671,11 @@ func (r *Runtime) blitDisplayBitmap() error {
 			sourceAt := pixels + (sourceY+row)*pitch + (sourceX+column)*2
 			if err := r.cpu.ReadMemory(sourceAt, pixel[:]); err != nil {
 				return fmt.Errorf("read BREW BitBlt pixel: %w", err)
+			}
+			// AEE_RO_TRANSPARENT composites the RGB565 magenta key over the
+			// existing display. AEE_RO_COPY must still copy magenta literally.
+			if rop == aeeROTransparent && binary.LittleEndian.Uint16(pixel[:]) == 0xf81f {
+				continue
 			}
 			targetAt := framebufferBase + (uint32(targetY)*framebufferWidth+uint32(targetX))*2
 			if err := r.cpu.WriteMemory(targetAt, pixel[:]); err != nil {

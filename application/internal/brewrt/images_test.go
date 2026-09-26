@@ -97,6 +97,60 @@ func TestSetupNativeImagePublishesOwnedRGB565Bitmap(t *testing.T) {
 	}
 }
 
+func TestDisplayBitBltTransparentROPLeavesMagentaKeyOnBackground(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	source := image.NewRGBA(image.Rect(0, 0, 2, 1))
+	source.SetRGBA(0, 0, color.RGBA{R: 255, B: 255, A: 255})
+	source.SetRGBA(1, 0, color.RGBA{R: 255, A: 255})
+	bitmap, err := runtime.createNativeBitmap(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stack := stackBase + 0x400
+	args := make([]byte, 20)
+	binary.LittleEndian.PutUint32(args[0:], 1)
+	binary.LittleEndian.PutUint32(args[4:], bitmap)
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR1: 3, cpu.RegisterR2: 4, cpu.RegisterR3: 2, cpu.RegisterSP: stack,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	frameAt := framebufferBase + (4*framebufferWidth+3)*2
+	background := []byte{0x1f, 0x00, 0x1f, 0x00}
+	if err := runtime.cpu.WriteMemory(frameAt, background); err != nil {
+		t.Fatal(err)
+	}
+	binary.LittleEndian.PutUint32(args[16:], aeeROTransparent)
+	if err := runtime.cpu.WriteMemory(stack, args); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.blitDisplayBitmap(); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, 4)
+	if err := runtime.cpu.ReadMemory(frameAt, got); err != nil {
+		t.Fatal(err)
+	}
+	if want := []byte{0x1f, 0x00, 0x00, 0xf8}; !bytes.Equal(got, want) {
+		t.Fatalf("transparent BitBlt pixels=%x, want %x", got, want)
+	}
+	binary.LittleEndian.PutUint32(args[16:], 0) // AEE_RO_COPY
+	if err := runtime.cpu.WriteMemory(stack, args); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.blitDisplayBitmap(); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.ReadMemory(frameAt, got); err != nil {
+		t.Fatal(err)
+	}
+	if want := []byte{0x1f, 0xf8, 0x00, 0xf8}; !bytes.Equal(got, want) {
+		t.Fatalf("copy BitBlt pixels=%x, want %x", got, want)
+	}
+}
+
 func TestSetupNativeImageReusesLiveFullscreenStagingBitmap(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	encode := func(fill color.RGBA) []byte {
