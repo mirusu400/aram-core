@@ -637,6 +637,9 @@ func (r *Runtime) blitDisplayBitmap() error {
 	if err := r.cpu.ReadMemory(bitmap, header); err != nil {
 		return fmt.Errorf("read BREW BitBlt bitmap: %w", err)
 	}
+	if bytes.Equal(header[:2], []byte("BM")) {
+		return r.blitDisplayBMP(bitmap, destinationX, destinationY, width, height, sourceX, sourceY, rop)
+	}
 	pixels := binary.LittleEndian.Uint32(header[8:])
 	sourceWidth := uint32(binary.LittleEndian.Uint16(header[20:]))
 	sourceHeight := uint32(binary.LittleEndian.Uint16(header[22:]))
@@ -680,6 +683,60 @@ func (r *Runtime) blitDisplayBitmap() error {
 			targetAt := framebufferBase + (uint32(targetY)*r.screenWidth+uint32(targetX))*2
 			if err := r.cpu.WriteMemory(targetAt, pixel[:]); err != nil {
 				return fmt.Errorf("write BREW BitBlt pixel: %w", err)
+			}
+		}
+	}
+	return r.cpu.WriteRegister(cpu.RegisterR0, 0)
+}
+
+// Some KTF applets pass an in-memory indexed BMP directly as the IDisplay
+// BitBlt source. The native handset accepts that surface without a separate
+// IBitmap wrapper; decode it within the same bounded BMP contract used by
+// SetupNativeImage, then copy only the requested source rectangle.
+func (r *Runtime) blitDisplayBMP(bitmap, destinationX, destinationY, width, height, sourceX, sourceY, rop uint32) error {
+	var header [54]byte
+	if err := r.cpu.ReadMemory(bitmap, header[:]); err != nil {
+		return fmt.Errorf("read BREW raw BitBlt BMP header: %w", err)
+	}
+	span, ok := nativeBMPSpan(header[:])
+	if !ok {
+		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
+	}
+	encoded := make([]byte, span)
+	if err := r.cpu.ReadMemory(bitmap, encoded); err != nil {
+		return fmt.Errorf("read BREW raw BitBlt BMP: %w", err)
+	}
+	decoded, err := decodeNativeBMP(encoded, span)
+	if err != nil {
+		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
+	}
+	sourceWidth, sourceHeight := uint32(decoded.Bounds().Dx()), uint32(decoded.Bounds().Dy())
+	if sourceX >= sourceWidth || sourceY >= sourceHeight {
+		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
+	}
+	copyWidth := min(width, sourceWidth-sourceX)
+	copyHeight := min(height, sourceHeight-sourceY)
+	dx, dy := int32(destinationX), int32(destinationY)
+	for row := uint32(0); row < copyHeight; row++ {
+		targetY := dy + int32(row)
+		if targetY < 0 || targetY >= int32(r.screenHeight) {
+			continue
+		}
+		for column := uint32(0); column < copyWidth; column++ {
+			targetX := dx + int32(column)
+			if targetX < 0 || targetX >= int32(r.screenWidth) {
+				continue
+			}
+			red, green, blue, _ := decoded.At(decoded.Bounds().Min.X+int(sourceX+column), decoded.Bounds().Min.Y+int(sourceY+row)).RGBA()
+			native := uint16((red>>11)<<11 | (green>>10)<<5 | blue>>11)
+			if rop == aeeROTransparent && native == 0xf81f {
+				continue
+			}
+			var pixel [2]byte
+			binary.LittleEndian.PutUint16(pixel[:], native)
+			targetAt := framebufferBase + (uint32(targetY)*r.screenWidth+uint32(targetX))*2
+			if err := r.cpu.WriteMemory(targetAt, pixel[:]); err != nil {
+				return fmt.Errorf("write BREW raw BitBlt pixel: %w", err)
 			}
 		}
 	}

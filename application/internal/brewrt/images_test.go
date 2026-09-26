@@ -151,6 +151,76 @@ func TestDisplayBitBltTransparentROPLeavesMagentaKeyOnBackground(t *testing.T) {
 	}
 }
 
+func TestDisplayBitBltAcceptsGuestIndexedBMPAtlas(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	palette := color.Palette{
+		color.RGBA{A: 255},
+		color.RGBA{G: 255, A: 255},
+		color.RGBA{R: 255, A: 255},
+		color.RGBA{R: 255, B: 255, A: 255},
+	}
+	source := image.NewPaletted(image.Rect(0, 0, 32, 16), palette)
+	for index, value := range []uint8{1, 2, 3} {
+		source.SetColorIndex(16+index, 3, value)
+	}
+	var encoded bytes.Buffer
+	if err := bmp.Encode(&encoded, source); err != nil {
+		t.Fatal(err)
+	}
+	if depth := binary.LittleEndian.Uint16(encoded.Bytes()[28:30]); depth != 8 {
+		t.Fatalf("atlas BMP depth = %d, want 8", depth)
+	}
+	bitmap, stack := heapBase+0x1000, stackBase+0x400
+	if err := runtime.cpu.WriteMemory(bitmap, encoded.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	args := make([]byte, 20)
+	binary.LittleEndian.PutUint32(args[0:], 1)
+	binary.LittleEndian.PutUint32(args[4:], bitmap)
+	binary.LittleEndian.PutUint32(args[8:], 16)
+	binary.LittleEndian.PutUint32(args[12:], 3)
+	binary.LittleEndian.PutUint32(args[16:], 4)
+	if err := runtime.cpu.WriteMemory(stack, args); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR1: 4, cpu.RegisterR2: 5, cpu.RegisterR3: 3, cpu.RegisterSP: stack,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := runtime.blitDisplayBitmap(); err != nil {
+		t.Fatal(err)
+	}
+	frameAt := framebufferBase + (5*framebufferWidth+4)*2
+	got := make([]byte, 6)
+	if err := runtime.cpu.ReadMemory(frameAt, got); err != nil {
+		t.Fatal(err)
+	}
+	if want := []byte{0xe0, 0x07, 0x00, 0xf8, 0x1f, 0xf8}; !bytes.Equal(got, want) {
+		t.Fatalf("indexed BMP BitBlt pixels=%x, want %x", got, want)
+	}
+	blue := []byte{0x1f, 0x00}
+	if err := runtime.cpu.WriteMemory(frameAt, blue); err != nil {
+		t.Fatal(err)
+	}
+	binary.LittleEndian.PutUint32(args[8:], 18)
+	binary.LittleEndian.PutUint32(args[16:], aeeROTransparent)
+	if err := runtime.cpu.WriteMemory(stack, args); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.blitDisplayBitmap(); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.ReadMemory(frameAt, got[:2]); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got[:2], blue) {
+		t.Fatalf("transparent indexed BMP changed blue background to %x", got[:2])
+	}
+}
+
 func TestSetupNativeImageReusesLiveFullscreenStagingBitmap(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	encode := func(fill color.RGBA) []byte {
