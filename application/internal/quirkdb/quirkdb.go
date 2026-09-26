@@ -142,6 +142,32 @@ var MenuForegroundOverlays = []MenuForegroundOverlay{
 	},
 }
 
+// KTFJavaImageOrigin shifts screen-image blits for a client whose image
+// coordinates are relative to the centre of its card. Clears and text remain
+// in ordinary card coordinates, so this offset must not affect other Graphics
+// operations or images drawn into an offscreen canvas.
+type KTFJavaImageOrigin struct {
+	Key  TitleKey
+	X, Y int
+}
+
+var KTFJavaImageOrigins = []KTFJavaImageOrigin{
+	{
+		// 수호지무쌍전 paints its 176x200 title around (-88,-102): its
+		// lightning, character and menu sprites are clipped to the top-left
+		// corner unless screen-image blits restore that centre origin (#347).
+		Key: TitleKey{
+			AID:       "01031A53",
+			MainClass: "SuhoziJlet",
+			ClientSHA256: MustHash(
+				"797c8843f08f4a2f375467713d6b474c1d0114a512b1979ed03a5e23dac5b8cb",
+			),
+		},
+		X: 88,
+		Y: 102,
+	},
+}
+
 // SKVMTitleKey identifies one shipped SKT MIDlet package build exactly. The
 // digest is the lowercase hex SHA-256 of the whole distributed package, which
 // is what the SKVM host already carries for the loaded input.

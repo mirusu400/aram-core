@@ -7,8 +7,32 @@ import (
 	"image/draw"
 	"testing"
 
+	"github.com/mirusu400/aram-core/application/internal/quirkdb"
 	"github.com/mirusu400/aram-core/loader/ktf"
 )
+
+func TestKTFJavaImageOriginMatchesOnlySuhoziBuild(t *testing.T) {
+	entry := quirkdb.KTFJavaImageOrigins[0]
+	descriptor := ktf.Descriptor{AID: entry.Key.AID, MainClass: entry.Key.MainClass}
+	if got := resolveKTFJavaImageOrigin(descriptor, entry.Key.ClientSHA256); got != image.Pt(88, 102) {
+		t.Fatalf("Suhozi image origin = %v", got)
+	}
+	for _, changed := range []struct {
+		name string
+		desc ktf.Descriptor
+		hash [sha256.Size]byte
+	}{
+		{name: "aid", desc: ktf.Descriptor{AID: "other", MainClass: descriptor.MainClass}, hash: entry.Key.ClientSHA256},
+		{name: "main class", desc: ktf.Descriptor{AID: descriptor.AID, MainClass: "Other"}, hash: entry.Key.ClientSHA256},
+		{name: "client", desc: descriptor, hash: sha256.Sum256([]byte("different client"))},
+	} {
+		t.Run(changed.name, func(t *testing.T) {
+			if got := resolveKTFJavaImageOrigin(changed.desc, changed.hash); got != (image.Point{}) {
+				t.Fatalf("unrelated title image origin = %v", got)
+			}
+		})
+	}
+}
 
 func TestKTFMenuForegroundCompatibilityReplaysLabelsAboveLogo(t *testing.T) {
 	label := image.NewNRGBA(image.Rect(0, 0, 2, 1))
