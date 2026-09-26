@@ -64,7 +64,7 @@ func TestSetupNativeImagePublishesOwnedRGB565Bitmap(t *testing.T) {
 		t.Fatalf("RGB565 pixels=%x", pixels)
 	}
 	flag := []byte{0xff}
-	if err := runtime.cpu.ReadMemory(reallocated, flag); err != nil || flag[0] != 0 {
+	if err := runtime.cpu.ReadMemory(reallocated, flag); err != nil || flag[0] != 1 {
 		t.Fatalf("reallocated=%v err=%v", flag, err)
 	}
 	stack := stackBase + 0x400

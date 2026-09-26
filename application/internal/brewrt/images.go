@@ -106,9 +106,16 @@ func (r *Runtime) setupNativeImage() error {
 			r.nativeImages[object] = brewNativeImage{encoded: buffer, span: encodedSize}
 		}
 	}
-	// The final argument reports whether SetupNativeImage relocated the caller's
-	// encoded buffer. Conversion either happens in place or into separately owned
-	// IDIB storage, so the caller's pointer itself never changes.
+	// A decoded BMP produces a native bitmap allocation. The ownership flag is
+	// part of the caller's render path: leaving it clear makes some games skip
+	// BitBlt entirely even though the returned bitmap is valid. Caller-backed
+	// RGB565 surfaces above retain the cleared flag because their pixels remain
+	// owned by the original buffer.
+	if reallocated != 0 {
+		if err := r.cpu.WriteMemory(reallocated, []byte{1}); err != nil {
+			return fmt.Errorf("mark BREW native-image allocation: %w", err)
+		}
+	}
 	return r.cpu.WriteRegister(cpu.RegisterR0, object)
 }
 
