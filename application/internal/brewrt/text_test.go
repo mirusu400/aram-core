@@ -94,6 +94,59 @@ func TestDisplayRectangleUsesBREWRGBVALLayout(t *testing.T) {
 	}
 }
 
+func TestDisplayDrawRectHonorsFrameAndFillFlags(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	rectAt, stackAt := heapBase+0x200, heapBase+0x300
+	var rect [8]byte
+	for index, value := range []uint16{1, 1, 3, 3} {
+		binary.LittleEndian.PutUint16(rect[index*2:], value)
+	}
+	if err := runtime.cpu.WriteMemory(rectAt, rect[:]); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR1: rectAt,
+		cpu.RegisterR2: 0x0000ff00, // red frame
+		cpu.RegisterR3: 0xff000000, // blue fill
+		cpu.RegisterSP: stackAt,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pixel := func(x, y uint32) uint16 {
+		t.Helper()
+		var encoded [2]byte
+		if err := runtime.cpu.ReadMemory(framebufferBase+(y*framebufferWidth+x)*2, encoded[:]); err != nil {
+			t.Fatal(err)
+		}
+		return binary.LittleEndian.Uint16(encoded[:])
+	}
+	for _, test := range []struct {
+		flags uint32
+		border, center uint16
+	}{
+		{1, 0xf800, 0},      // IDF_RECT_FRAME leaves the interior untouched.
+		{2, 0x001f, 0x001f}, // IDF_RECT_FILL covers the whole rectangle.
+		{3, 0xf800, 0x001f}, // Both flags fill the interior and retain the frame.
+	} {
+		var flags [4]byte
+		binary.LittleEndian.PutUint32(flags[:], test.flags)
+		if err := runtime.cpu.WriteMemory(stackAt, flags[:]); err != nil {
+			t.Fatal(err)
+		}
+		if err := runtime.drawDisplayRect(); err != nil {
+			t.Fatal(err)
+		}
+		if got := pixel(1, 1); got != test.border {
+			t.Fatalf("flags=%d frame pixel=0x%04x, want 0x%04x", test.flags, got, test.border)
+		}
+		if got := pixel(2, 2); got != test.center {
+			t.Fatalf("flags=%d center pixel=0x%04x, want 0x%04x", test.flags, got, test.center)
+		}
+	}
+}
+
 func TestDisplayTextDecodesOEMAndMeasuresHangulGlyph(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	textAt := heapBase + 0x200

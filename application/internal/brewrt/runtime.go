@@ -3657,11 +3657,30 @@ func (r *Runtime) drawDisplayRect() error {
 		return fmt.Errorf("read BREW DrawRect flags: %w", err)
 	}
 	flags := binary.LittleEndian.Uint32(encoded[:4])
-	if flags != 0 && flags&2 == 0 {
-		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
-	}
-	if err := r.fillDisplayRectangle(rectPointer, fill); err != nil {
+	x, y, width, height, err := r.displayRectangleBounds(rectPointer)
+	if err != nil {
 		return err
+	}
+	if flags == 0 || flags&2 != 0 { // IDF_RECT_FILL
+		if err := r.fillDisplayBounds(x, y, width, height, fill); err != nil {
+			return err
+		}
+	}
+	if flags&1 != 0 { // IDF_RECT_FRAME
+		frame, err := r.cpu.ReadRegister(cpu.RegisterR2)
+		if err != nil {
+			return fmt.Errorf("read BREW display frame color: %w", err)
+		}
+		for _, edge := range [][4]int32{
+			{x, y, width, 1},
+			{x, y + height - 1, width, 1},
+			{x, y + 1, 1, height - 2},
+			{x + width - 1, y + 1, 1, height - 2},
+		} {
+			if err := r.fillDisplayBounds(edge[0], edge[1], edge[2], edge[3], frame); err != nil {
+				return err
+			}
+		}
 	}
 	if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
 		return fmt.Errorf("return BREW DrawRect status: %w", err)
@@ -3688,16 +3707,31 @@ func (r *Runtime) drawDisplayFrame() error {
 }
 
 func (r *Runtime) fillDisplayRectangle(rectPointer, fill uint32) error {
+	x, y, width, height, err := r.displayRectangleBounds(rectPointer)
+	if err != nil {
+		return err
+	}
+	return r.fillDisplayBounds(x, y, width, height, fill)
+}
+
+func (r *Runtime) displayRectangleBounds(rectPointer uint32) (int32, int32, int32, int32, error) {
 	var encoded [8]byte
 	x, y, width, height := int32(0), int32(0), int32(framebufferWidth), int32(framebufferHeight)
 	if rectPointer != 0 {
 		if err := r.cpu.ReadMemory(rectPointer, encoded[:]); err != nil {
-			return fmt.Errorf("read BREW DrawRect bounds: %w", err)
+			return 0, 0, 0, 0, fmt.Errorf("read BREW DrawRect bounds: %w", err)
 		}
 		x = int32(int16(binary.LittleEndian.Uint16(encoded[0:2])))
 		y = int32(int16(binary.LittleEndian.Uint16(encoded[2:4])))
 		width = int32(int16(binary.LittleEndian.Uint16(encoded[4:6])))
 		height = int32(int16(binary.LittleEndian.Uint16(encoded[6:8])))
+	}
+	return x, y, width, height, nil
+}
+
+func (r *Runtime) fillDisplayBounds(x, y, width, height int32, fill uint32) error {
+	if width <= 0 || height <= 0 {
+		return nil
 	}
 	red := uint16((fill >> 8) & 0xff)
 	green := uint16((fill >> 16) & 0xff)
