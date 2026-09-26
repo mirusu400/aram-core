@@ -286,7 +286,7 @@ func (r *Runtime) displayText(address, rawCount uint32, oem bool) (string, error
 			}
 			unit := binary.LittleEndian.Uint16(encoded[:])
 			if unit == 0 {
-				return decodeBREWAECHAR(units), nil
+				return decodeBREWAECHARPreferred(units, r.preferPackedAECHAR), nil
 			}
 			units = append(units, unit)
 		}
@@ -306,7 +306,7 @@ func (r *Runtime) displayText(address, rawCount uint32, oem bool) (string, error
 			units[index] = binary.LittleEndian.Uint16(raw[index*2:])
 		}
 	}
-	return decodeBREWAECHAR(units), nil
+	return decodeBREWAECHARPreferred(units, r.preferPackedAECHAR), nil
 }
 
 // STREXPAND on Korean BREW handsets can place one EUC-KR double-byte code in
@@ -315,9 +315,13 @@ func (r *Runtime) displayText(address, rawCount uint32, oem bool) (string, error
 // evidence it is not ordinary precomposed Hangul. Otherwise leave UTF-16
 // untouched, including surrogate pairs.
 func decodeBREWAECHAR(units []uint16) string {
+	return decodeBREWAECHARPreferred(units, false)
+}
+
+func decodeBREWAECHARPreferred(units []uint16, preferPacked bool) string {
 	unicodeText := string(utf16.Decode(units))
 	packed := make([]byte, 0, len(units)*2)
-	evidence := false
+	evidence := preferPacked
 	for _, unit := range units {
 		if unit < 0x80 {
 			packed = append(packed, byte(unit))

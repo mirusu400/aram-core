@@ -51,6 +51,8 @@ const (
 	maxExecutableModuleSize = 8 << 20
 )
 
+const issue319ArchiveSHA256 = "2cfa3dff0779456f8482ccfbda740436101699186fdd9537b7a9108f8bfcedbf"
+
 // Package contains the inspected executable module and immutable archive data.
 type Package struct {
 	Module        []byte
@@ -58,6 +60,10 @@ type Package struct {
 	Splash        *image.RGBA
 	Files         map[string][]byte
 	Authenticated bool
+
+	// PreferPackedAECHAR resolves ambiguous Hangul-looking EUC-KR pairs in
+	// the exact Dark Slayer archive without changing generic UTF-16 behavior.
+	PreferPackedAECHAR bool
 }
 
 // DisplaySize selects the handset canvas for the authenticated reference
@@ -95,7 +101,8 @@ func Match(data []byte) (pkg Package, matched bool, err error) {
 	var splash *image.RGBA
 	authenticated := false
 	digest := sha256.Sum256(data)
-	if hex.EncodeToString(digest[:]) == ArchiveSHA256 {
+	digestHex := hex.EncodeToString(digest[:])
+	if digestHex == ArchiveSHA256 {
 		moduleDigest := sha256.Sum256(module)
 		if moduleName != ModulePath || hex.EncodeToString(moduleDigest[:]) != ModuleSHA256 {
 			return Package{}, true, fmt.Errorf("authenticated BREW reference module contract mismatch")
@@ -120,6 +127,8 @@ func Match(data []byte) (pkg Package, matched bool, err error) {
 		Splash:        splash,
 		Files:         files,
 		Authenticated: authenticated,
+
+		PreferPackedAECHAR: digestHex == issue319ArchiveSHA256,
 	}, true, nil
 }
 

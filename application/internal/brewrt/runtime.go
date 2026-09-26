@@ -203,6 +203,8 @@ type Runtime struct {
 	textRaster       *shared.Text
 	displayFont      shared.ServiceID
 	postedEvents     []brewPostedEvent
+
+	preferPackedAECHAR bool
 }
 
 type brewPreferenceKey struct {
@@ -337,6 +339,8 @@ func New(pkg Package) (*Runtime, error) {
 		nativeImages: make(map[uint32]brewNativeImage),
 		textRaster:   displayText,
 		displayFont:  displayFont,
+
+		preferPackedAECHAR: pkg.PreferPackedAECHAR,
 	}
 	if err := r.mapImage(pkg.Module); err != nil {
 		_ = backend.Close()

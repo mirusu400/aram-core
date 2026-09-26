@@ -123,7 +123,7 @@ func TestDisplayDrawRectHonorsFrameAndFillFlags(t *testing.T) {
 		return binary.LittleEndian.Uint16(encoded[:])
 	}
 	for _, test := range []struct {
-		flags uint32
+		flags          uint32
 		border, center uint16
 	}{
 		{1, 0xf800, 0},      // IDF_RECT_FRAME leaves the interior untouched.
@@ -178,6 +178,16 @@ func TestDecodeBREWAECHARPackedKoreanAndUnicode(t *testing.T) {
 		if got := decodeBREWAECHAR(test.units); got != test.want {
 			t.Fatalf("decodeBREWAECHAR(%x) = %q, want %q", test.units, got, test.want)
 		}
+	}
+}
+
+func TestDecodeBREWAECHARPrefersPackedIssue319Choice(t *testing.T) {
+	units := []uint16{'1', '.', 0xb9bf, ' ', '2', '.', 0xc6be, 0xcfb4, 0xc0bf}
+	if got, want := decodeBREWAECHAR(units), "1.릿 2.욾쾴삿"; got != want {
+		t.Fatalf("default Unicode choice = %q, want %q", got, want)
+	}
+	if got, want := decodeBREWAECHARPreferred(units, true), "1.예 2.아니오"; got != want {
+		t.Fatalf("packed BREW choice = %q, want %q", got, want)
 	}
 }
 
