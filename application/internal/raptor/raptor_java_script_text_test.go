@@ -43,6 +43,14 @@ func TestRaptorJavaScriptTextVirtualSlots(t *testing.T) {
 	check(t, err)
 	vector, err := runtime.NewRaptorJavaObject(vectorClass.Holder)
 	check(t, err)
+	assertRaptorJavaVirtualMethod(t, runtime, java, vectorClass, 0x40,
+		"size", "()I")
+	assertRaptorJavaVirtualMethod(t, runtime, java, vectorClass, 0x50,
+		"indexOf", "(Ljava/lang/Object;)I")
+	assertRaptorJavaVirtualMethod(t, runtime, java, vectorClass, 0x64,
+		"firstElement", "()Ljava/lang/Object;")
+	assertRaptorJavaVirtualMethod(t, runtime, java, vectorClass, 0x70,
+		"removeElementAt", "(I)V")
 	assertRaptorJavaVirtualMethod(t, runtime, java, vectorClass, 0x78,
 		"addElement", "(Ljava/lang/Object;)V")
 	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, vector))
@@ -54,6 +62,54 @@ func TestRaptorJavaScriptTextVirtualSlots(t *testing.T) {
 	entries := java.Host.Vectors[java.lgtToKTF[vector]]
 	if len(entries) != 1 || entries[0] != java.lgtToKTF[value] {
 		t.Fatalf("Vector script entries = %v, want [%08x]", entries, java.lgtToKTF[value])
+	}
+
+	second, err := runtime.NewRaptorJavaString("second")
+	check(t, err)
+	third, err := runtime.NewRaptorJavaString("third")
+	check(t, err)
+	for _, element := range []uint32{second, third} {
+		check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, vector))
+		check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, element))
+		_, err = runtime.callJavaHostMethod(context.Background(), raptorJavaMethod{
+			className: "java/util/Vector", Name: "addElement", descriptor: "(Ljava/lang/Object;)V",
+		})
+		check(t, err)
+	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, vector))
+	size, err := runtime.callJavaHostMethod(context.Background(), raptorJavaMethod{
+		className: "java/util/Vector", Name: "size", descriptor: "()I",
+	})
+	check(t, err)
+	if size.Low != 3 {
+		t.Fatalf("Vector.size = %d, want 3", size.Low)
+	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, vector))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, third))
+	index, err := runtime.callJavaHostMethod(context.Background(), raptorJavaMethod{
+		className: "java/util/Vector", Name: "indexOf", descriptor: "(Ljava/lang/Object;)I",
+	})
+	check(t, err)
+	if index.Low != 2 {
+		t.Fatalf("Vector.indexOf(third) = %d, want 2", index.Low)
+	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, vector))
+	first, err := runtime.callJavaHostMethod(context.Background(), raptorJavaMethod{
+		className: "java/util/Vector", Name: "firstElement", descriptor: "()Ljava/lang/Object;",
+	})
+	check(t, err)
+	if first.Low != value {
+		t.Fatalf("Vector.firstElement = 0x%x, want 0x%x", first.Low, value)
+	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, vector))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, 0))
+	_, err = runtime.callJavaHostMethod(context.Background(), raptorJavaMethod{
+		className: "java/util/Vector", Name: "removeElementAt", descriptor: "(I)V",
+	})
+	check(t, err)
+	entries = java.Host.Vectors[java.lgtToKTF[vector]]
+	if len(entries) != 2 || entries[0] != java.lgtToKTF[second] {
+		t.Fatalf("Vector entries after removeElementAt(0) = %v, want second then third", entries)
 	}
 }
 
