@@ -2575,7 +2575,8 @@ func (r *Runtime) formatGuestWideString() error {
 		return binary.LittleEndian.Uint32(encoded[:]), nil
 	}
 	values := make([]any, 0, 8)
-	goFormat := []byte(format)
+	goFormat := make([]byte, 0, len(format))
+	cursor := 0
 	argumentIndex := uint32(0)
 	for index := 0; index < len(format); index++ {
 		if format[index] != '%' {
@@ -2589,9 +2590,25 @@ func (r *Runtime) formatGuestWideString() error {
 		for end < len(format) && strings.ContainsRune("-+ #0.123456789", rune(format[end])) {
 			end++
 		}
+		verbStart := end
+		if end < len(format) && format[end] == 'l' {
+			// BREW's 32-bit ARM long occupies one argument word. Go's fmt
+			// has no length modifier, so omit it from the normalized format.
+			end++
+			if end >= len(format) || !strings.ContainsRune("diuXx", rune(format[end])) {
+				return fmt.Errorf("BREW execution boundary: unsupported wsprintf format %q", format)
+			}
+		}
 		if end >= len(format) || !strings.ContainsRune("cdisuXx", rune(format[end])) {
 			return fmt.Errorf("BREW execution boundary: unsupported wsprintf format %q", format)
 		}
+		goFormat = append(goFormat, format[cursor:verbStart]...)
+		goVerb := format[end]
+		if goVerb == 'i' || goVerb == 'u' {
+			goVerb = 'd'
+		}
+		goFormat = append(goFormat, goVerb)
+		cursor = end + 1
 		value, readErr := arg(argumentIndex)
 		if readErr != nil {
 			return fmt.Errorf("read BREW wsprintf argument %d: %w", argumentIndex, readErr)
@@ -2606,10 +2623,8 @@ func (r *Runtime) formatGuestWideString() error {
 			}
 			values = append(values, string(utf16.Decode(units)))
 		case 'd', 'i':
-			goFormat[end] = 'd'
 			values = append(values, int32(value))
 		case 'u':
-			goFormat[end] = 'd'
 			values = append(values, value)
 		case 'x', 'X':
 			values = append(values, value)
@@ -2617,6 +2632,7 @@ func (r *Runtime) formatGuestWideString() error {
 		argumentIndex++
 		index = end
 	}
+	goFormat = append(goFormat, format[cursor:]...)
 	if size > heapSize {
 		return fmt.Errorf("BREW wsprintf destination size %d exceeds runtime limit", size)
 	}
@@ -3301,7 +3317,8 @@ func (r *Runtime) formatResourceName() error {
 		return int32(binary.LittleEndian.Uint32(encoded[:])), nil
 	}
 	values := make([]any, 0, 8)
-	goFormat := []byte(format)
+	goFormat := make([]byte, 0, len(format))
+	cursor := 0
 	argumentIndex := uint32(0)
 	for index := 0; index < len(format); index++ {
 		if format[index] != '%' {
@@ -3315,9 +3332,24 @@ func (r *Runtime) formatResourceName() error {
 		for end < len(format) && strings.ContainsRune("-+ #0.123456789", rune(format[end])) {
 			end++
 		}
+		verbStart := end
+		if end < len(format) && format[end] == 'l' {
+			// A BREW ARM long is 32 bits, not a second variadic word.
+			end++
+			if end >= len(format) || !strings.ContainsRune("diuXx", rune(format[end])) {
+				return fmt.Errorf("BREW execution boundary: unsupported sprintf format %q", format)
+			}
+		}
 		if end >= len(format) || !strings.ContainsRune("cdisuXx", rune(format[end])) {
 			return fmt.Errorf("BREW execution boundary: unsupported sprintf format %q", format)
 		}
+		goFormat = append(goFormat, format[cursor:verbStart]...)
+		goVerb := format[end]
+		if goVerb == 'i' || goVerb == 'u' {
+			goVerb = 'd'
+		}
+		goFormat = append(goFormat, goVerb)
+		cursor = end + 1
 		value, readErr := arg(argumentIndex)
 		if readErr != nil {
 			return fmt.Errorf("read BREW sprintf argument %d: %w", argumentIndex, readErr)
@@ -3332,10 +3364,8 @@ func (r *Runtime) formatResourceName() error {
 			}
 			values = append(values, text)
 		case 'd', 'i':
-			goFormat[end] = 'd'
 			values = append(values, value)
 		case 'u':
-			goFormat[end] = 'd'
 			values = append(values, uint32(value))
 		case 'x', 'X':
 			values = append(values, uint32(value))
@@ -3343,6 +3373,7 @@ func (r *Runtime) formatResourceName() error {
 		argumentIndex++
 		index = end
 	}
+	goFormat = append(goFormat, format[cursor:]...)
 	text := fmt.Sprintf(string(goFormat), values...)
 	data := append([]byte(text), 0)
 	if err := r.cpu.WriteMemory(destination, data); err != nil {
