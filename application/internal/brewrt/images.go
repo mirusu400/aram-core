@@ -53,6 +53,12 @@ func (r *Runtime) setupNativeImage() error {
 	}
 	encodedSize, ok := nativeBMPSpan(header[:])
 	if !ok {
+		if object, handled, err := r.setupPalettelessNativeFramebuffer(buffer, header[:], info); handled || err != nil {
+			if err != nil {
+				return err
+			}
+			return r.cpu.WriteRegister(cpu.RegisterR0, object)
+		}
 		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
 	}
 	encoded := make([]byte, encodedSize)
@@ -104,6 +110,55 @@ func (r *Runtime) setupNativeImage() error {
 	// encoded buffer. Conversion either happens in place or into separately owned
 	// IDIB storage, so the caller's pointer itself never changes.
 	return r.cpu.WriteRegister(cpu.RegisterR0, object)
+}
+
+// Some handset engines pass a BMP-shaped header without an embedded palette,
+// reserving the remainder of the same guest allocation for a live RGB565 IDIB.
+// This is not a decodable BMP: SetupNativeImage must expose that caller-owned
+// pixel storage instead of rejecting the surface and returning a null bitmap.
+func (r *Runtime) setupPalettelessNativeFramebuffer(buffer uint32, header []byte, info uint32) (uint32, bool, error) {
+	if string(header[:2]) != "BM" || binary.LittleEndian.Uint32(header[14:18]) != 40 ||
+		binary.LittleEndian.Uint32(header[10:14]) != 54 || binary.LittleEndian.Uint16(header[26:28]) != 1 ||
+		binary.LittleEndian.Uint16(header[28:30]) != 8 || binary.LittleEndian.Uint32(header[30:34]) != 0 {
+		return 0, false, nil
+	}
+	width := binary.LittleEndian.Uint32(header[18:22])
+	height := binary.LittleEndian.Uint32(header[22:26])
+	if width == 0 || height == 0 || width > 0xffff || height > 0xffff || uint64(width)*uint64(height) > maxNativeImagePixels {
+		return 0, false, nil
+	}
+	pitch := (width*2 + 3) &^ 3
+	span := uint64(54) + uint64(pitch)*uint64(height)
+	if pitch > 0xffff || span > uint64(maxNativeImageBytes) || span > uint64(r.heapAllocated[buffer]) {
+		return 0, false, nil
+	}
+	object, err := r.allocateGuest(36)
+	if err != nil {
+		return 0, true, err
+	}
+	bitmap := make([]byte, 36)
+	binary.LittleEndian.PutUint32(bitmap[0:], bitmapVTable)
+	binary.LittleEndian.PutUint32(bitmap[8:], buffer+54)
+	binary.LittleEndian.PutUint16(bitmap[20:], uint16(width))
+	binary.LittleEndian.PutUint16(bitmap[22:], uint16(height))
+	binary.LittleEndian.PutUint16(bitmap[24:], uint16(pitch))
+	bitmap[28] = 16
+	bitmap[29] = idibColorScheme565
+	if err := r.cpu.WriteMemory(object, bitmap); err != nil {
+		r.releaseGuest(object)
+		return 0, true, fmt.Errorf("write BREW caller-backed bitmap: %w", err)
+	}
+	if info != 0 {
+		data := make([]byte, 10)
+		binary.LittleEndian.PutUint16(data[0:], uint16(width))
+		binary.LittleEndian.PutUint16(data[2:], uint16(height))
+		binary.LittleEndian.PutUint16(data[8:], uint16(width))
+		if err := r.cpu.WriteMemory(info, data); err != nil {
+			r.releaseGuest(object)
+			return 0, true, fmt.Errorf("write BREW caller-backed image info: %w", err)
+		}
+	}
+	return object, true, nil
 }
 
 func (r *Runtime) reuseNativeBitmap(buffer, span uint32, decoded image.Image) (uint32, error) {
