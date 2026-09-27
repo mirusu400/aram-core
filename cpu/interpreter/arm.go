@@ -895,14 +895,7 @@ func (b *Backend) resolveFlags() {
 
 func (b *Backend) setNZ(value uint32) {
 	const mask = flagN | flagZ
-	bits := uint32(0)
-	if value == 0 {
-		bits |= flagZ
-	}
-	if value&(uint32(1)<<31) != 0 {
-		bits |= flagN
-	}
-	b.deferFlags(mask, bits)
+	b.deferFlags(mask, nzBits(value))
 }
 
 func (b *Backend) setNZCV(value uint32, carry, overflow bool) {
@@ -927,12 +920,9 @@ func (b *Backend) setNZC(value uint32, carry bool) {
 }
 
 func nzBits(value uint32) uint32 {
-	bits := uint32(0)
+	bits := value & flagN
 	if value == 0 {
 		bits |= flagZ
-	}
-	if value&flagN != 0 {
-		bits |= flagN
 	}
 	return bits
 }
@@ -1013,10 +1003,10 @@ func shiftROR(value uint32, amount uint8, oldCarry bool) (uint32, bool) {
 func addWithCarry(left, right, carry uint32) (uint32, bool, bool) {
 	unsigned := uint64(left) + uint64(right) + uint64(carry)
 	result := uint32(unsigned)
-	leftSign := left >> 31
-	rightSign := right >> 31
-	resultSign := result >> 31
-	overflow := leftSign == rightSign && leftSign != resultSign
+	// Signed overflow requires both operands to differ in sign from the result.
+	// Keeping it as a bit expression avoids short-circuit branches in the hot
+	// portable ARM/Thumb execution path, including WASM.
+	overflow := (left^result)&(right^result)&flagN != 0
 	return result, unsigned>>32 != 0, overflow
 }
 

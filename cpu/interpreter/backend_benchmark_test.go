@@ -8,7 +8,15 @@ import (
 )
 
 func BenchmarkThumbRun(b *testing.B) {
-	backend := New()
+	benchmarkThumbRun(b, New)
+}
+
+func BenchmarkThumbRunGoJIT(b *testing.B) {
+	benchmarkThumbRun(b, NewJIT)
+}
+
+func benchmarkThumbRun(b *testing.B, create func() *Backend) {
+	backend := create()
 	b.Cleanup(func() { _ = backend.Close() })
 	check(b, backend.Map(
 		0x1000,
