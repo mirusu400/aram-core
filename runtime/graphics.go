@@ -740,9 +740,9 @@ func (g *Graphics) LastFrame() FrameSnapshot {
 // LastFramePresentation identifies the most recently presented frame without
 // materializing its pixels. LastFrame copies the whole surface, which is far
 // too expensive for a driver that only needs to ask, once per host tick,
-// whether the presented frame is the one it already holds. The hash is the one
-// Present already computed, so an unchanged screen is recognized exactly rather
-// than being re-copied and re-uploaded.
+// whether the presented frame is the one it already holds. The digest is
+// computed lazily and cached until a changed commit, so unchanged screens need
+// not be re-copied and re-uploaded.
 func (g *Graphics) LastFramePresentation() (uint64, [sha256.Size]byte) {
 	return g.lastFrame.Sequence, g.hashLastFrame()
 }

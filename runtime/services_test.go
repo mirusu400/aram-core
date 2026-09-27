@@ -22,6 +22,9 @@ func TestServicesSnapshotRestoresCrossComponentState(t *testing.T) {
 	check(t, err)
 	check(t, services.Graphics.SetScreen(3, surface))
 	check(t, services.Graphics.SetPixel(3, surface, 1, 1, RGB(1, 2, 3)))
+	_, err = services.Graphics.PresentCommit(3, surface, Rectangle{})
+	check(t, err)
+	graphicsIdentity := services.Graphics
 	check(t, services.Storage.WriteFile(
 		NamespacePrivate,
 		"save.dat",
@@ -41,6 +44,9 @@ func TestServicesSnapshotRestoresCrossComponentState(t *testing.T) {
 	check(t, services.Storage.WriteFile(NamespacePrivate, "save.dat", nil))
 	check(t, services.AdvanceFrame(3))
 	check(t, services.Restore(before))
+	if services.Graphics != graphicsIdentity {
+		t.Fatal("restore replaced the public Graphics service pointer")
+	}
 	if after := services.Snapshot(); !reflect.DeepEqual(after, before) {
 		t.Fatalf("restored service state differs:\n got %+v\nwant %+v", after, before)
 	}

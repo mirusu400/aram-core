@@ -1,6 +1,7 @@
 package application
 
 import (
+	"crypto/sha256"
 	"image"
 	"image/color"
 	"testing"
@@ -146,5 +147,51 @@ func TestKTFFramePresentationReusesThePreCommitPlaceholder(t *testing.T) {
 	}
 	if got := blank.(*image.RGBA).RGBAAt(0, 0); got.A != 0xff || got.R != 0 {
 		t.Fatalf("placeholder pixel = %+v", got)
+	}
+}
+
+func TestKTFFramePresentationSurvivesDirtyIdenticalCommitsAndRestore(t *testing.T) {
+	machine, graphics, surface := presentedKTFMachine(t)
+	check(t, graphics.SetPixel(1, surface, 0, 0, shared.RGB(255, 0, 0)))
+	_, err := graphics.PresentCommit(1, surface, shared.Rectangle{})
+	check(t, err)
+	first, firstSequence := machine.FramePresentation()
+	saved := graphics.Snapshot()
+	for i := 0; i < 3; i++ {
+		check(t, graphics.SetPixel(1, surface, 0, 0, shared.RGB(255, 0, 0)))
+		_, err = graphics.PresentCommit(1, surface, shared.Rectangle{})
+		check(t, err)
+		if repeated, sequence := machine.FramePresentation(); repeated != first || sequence != firstSequence {
+			t.Fatal("dirty commit of identical pixels replaced the host image")
+		}
+	}
+	check(t, graphics.SetPixel(1, surface, 0, 0, shared.RGB(0, 255, 0)))
+	if unpublished, sequence := machine.FramePresentation(); unpublished != first || sequence != firstSequence {
+		t.Fatal("uncommitted drawing reached the host")
+	}
+	_, err = graphics.PresentCommit(1, surface, shared.Rectangle{})
+	check(t, err)
+	changed, changedSequence := machine.FramePresentation()
+	if changed == first || changedSequence == firstSequence || first.(*image.RGBA).RGBAAt(0, 0).R != 255 {
+		t.Fatal("committed change was missed or rewrote the immutable first image")
+	}
+	check(t, graphics.Restore(saved))
+	restored, restoredSequence := machine.FramePresentation()
+	if restoredSequence == changedSequence || restored.(*image.RGBA).RGBAAt(0, 0).R != 255 {
+		t.Fatal("restored content was hidden by the presentation cache")
+	}
+	if again, sequence := machine.FramePresentation(); again != restored || sequence != restoredSequence {
+		t.Fatal("restored image was materialized repeatedly")
+	}
+	// A different valid saved screen may carry the exact same guest commit
+	// sequence. A host-only cache must not trust that serialized sequence alone.
+	reusedSequence := graphics.Snapshot()
+	reusedSequence.LastFrame.RGBA[0] = 0
+	reusedSequence.LastFrame.RGBA[1] = 255
+	reusedSequence.LastFrame.Hash = sha256.Sum256(reusedSequence.LastFrame.RGBA)
+	check(t, graphics.Restore(reusedSequence))
+	reused, sequence := machine.FramePresentation()
+	if sequence == restoredSequence || reused.(*image.RGBA).RGBAAt(0, 0).G != 255 {
+		t.Fatal("a reused guest commit sequence hid different restored pixels")
 	}
 }
