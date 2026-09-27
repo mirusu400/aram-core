@@ -765,7 +765,7 @@ func (vm *VM) writeOutputStream(state *outputStreamState, data []byte) error {
 			if err != nil {
 				return err
 			}
-			if _, err := vm.services.Network.SocketWrite(
+			if _, err := vm.services.WriteSocketRequest(
 				vm.serviceOwner,
 				open.socket,
 				data,

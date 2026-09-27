@@ -41,7 +41,9 @@ func TestKTF262PublicLoadRejectsAliasBeforeMutation(t *testing.T) {
 	var good bytes.Buffer
 	check(t, m.SaveState(&good))
 	payload := good.Bytes()[:good.Len()-stateChecksumSize]
-	if got := binary.LittleEndian.Uint32(payload[len(payload)-16:]); got != 1 {
+	// Schema 15 appends the empty local-socket binding count after aliases.
+	aliasEnd := len(payload) - 4
+	if got := binary.LittleEndian.Uint32(payload[aliasEnd-16:]); got != 1 {
 		t.Fatalf("retained alias count=%d", got)
 	}
 	check(t, m.LoadState(bytes.NewReader(good.Bytes())))
@@ -50,15 +52,15 @@ func TestKTF262PublicLoadRejectsAliasBeforeMutation(t *testing.T) {
 			raw := append([]byte(nil), payload...)
 			switch kind {
 			case "front":
-				binary.LittleEndian.PutUint32(raw[len(raw)-4:], 4)
+				binary.LittleEndian.PutUint32(raw[aliasEnd-4:], 4)
 			case "array-overflow":
-				binary.LittleEndian.PutUint32(raw[len(raw)-8:], 0xfffffffc)
+				binary.LittleEndian.PutUint32(raw[aliasEnd-8:], 0xfffffffc)
 			case "missing-trailer":
-				raw = raw[:len(raw)-4]
+				raw = append(raw[:aliasEnd-4], raw[aliasEnd:]...)
 			case "duplicate":
-				entry := append([]byte(nil), raw[len(raw)-12:]...)
-				binary.LittleEndian.PutUint32(raw[len(raw)-16:], 2)
-				raw = append(raw, entry...)
+				entry := append([]byte(nil), raw[aliasEnd-12:aliasEnd]...)
+				binary.LittleEndian.PutUint32(raw[aliasEnd-16:], 2)
+				raw = append(append(append([]byte(nil), raw[:aliasEnd]...), entry...), raw[aliasEnd:]...)
 			}
 			sum := sha256.Sum256(raw)
 			raw = append(raw, sum[:]...)
@@ -87,7 +89,7 @@ func TestKTF262PublicLoadRejectsAliasBeforeMutation(t *testing.T) {
 	var reset bytes.Buffer
 	check(t, m.SaveState(&reset))
 	resetPayload := reset.Bytes()[:reset.Len()-stateChecksumSize]
-	if n := binary.LittleEndian.Uint32(resetPayload[len(resetPayload)-4:]); n != 0 {
+	if n := binary.LittleEndian.Uint32(resetPayload[len(resetPayload)-8:]); n != 0 {
 		t.Fatalf("reset retained alias records=%d", n)
 	}
 }

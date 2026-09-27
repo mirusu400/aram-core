@@ -32,6 +32,11 @@ func (r *Runtime) handleInputStreamMethod(
 		}
 		streamInstance = redirected
 	}
+	if name != "<init>" && name != "close" {
+		if err := r.refreshLocalSocketInput(streamInstance); err != nil {
+			return 0, err
+		}
+	}
 	stream := r.inputStreams[streamInstance]
 	fileInstance := r.fileStreamTargets[streamInstance]
 	streamLength := uint32(0)
@@ -220,6 +225,9 @@ func (r *Runtime) handleInputStreamMethod(
 		}
 		return readArray(array, offset, count)
 	case "close()V":
+		if _, local := r.socketServices[streamInstance]; local {
+			return 0, r.closeLocalSocket(streamInstance)
+		}
 		delete(r.inputStreams, streamInstance)
 		delete(r.inputTargets, instance)
 		delete(r.fileStreamTargets, streamInstance)
@@ -255,8 +263,14 @@ func (r *Runtime) handleInputStreamMethod(
 		}
 		return 0, nil
 	case "markSupported()Z":
+		if _, local := r.socketServices[streamInstance]; local {
+			return 0, nil
+		}
 		return 1, nil
 	case "reset()V":
+		if _, local := r.socketServices[streamInstance]; local {
+			return 0, r.raiseHostJavaException("java/io/IOException")
+		}
 		// reset returns to the last mark, not to the start. Rewinding to zero
 		// silently desynchronised every subsequent read for titles that scan
 		// a resource with mark/reset, which then decoded record lengths from
@@ -777,12 +791,7 @@ func (r *Runtime) handleOutputStreamWriterMethod(
 		if encodeErr != nil {
 			return encodeErr
 		}
-		r.outputStreams[target] = append(r.outputStreams[target], data...)
-		if fileInstance := r.fileStreamTargets[target]; fileInstance != 0 {
-			_, writeErr := r.writeKTFFile(fileInstance, data)
-			return writeErr
-		}
-		return nil
+		return r.appendOutputBytes(r.outputStreamTarget(target), data)
 	}
 	switch name + descriptor {
 	case "<init>()V":
@@ -917,11 +926,8 @@ func (r *Runtime) handlePrintStreamMethod(
 		target = redirected
 	}
 	appendBytes := func(data []byte) {
-		r.outputStreams[target] = append(r.outputStreams[target], data...)
-		if fileInstance := r.fileStreamTargets[target]; fileInstance != 0 {
-			if _, writeErr := r.writeKTFFile(fileInstance, data); writeErr != nil {
-				r.printStreamErrors[instance] = true
-			}
+		if err := r.appendOutputBytes(target, data); err != nil {
+			r.printStreamErrors[instance] = true
 		}
 	}
 	appendText := func(value string) {
@@ -1334,17 +1340,9 @@ func (r *Runtime) handleOutputStreamMethod(
 	if err != nil {
 		return 0, err
 	}
-	target := instance
-	if redirected := r.outputTargets[instance]; redirected != 0 {
-		target = redirected
-	}
+	target := r.outputStreamTarget(instance)
 	appendBytes := func(data []byte) error {
-		r.outputStreams[target] = append(r.outputStreams[target], data...)
-		if fileInstance := r.fileStreamTargets[target]; fileInstance != 0 {
-			_, err := r.writeKTFFile(fileInstance, data)
-			return err
-		}
-		return nil
+		return r.appendOutputBytes(target, data)
 	}
 	switch name + descriptor {
 	case "<init>()V":
@@ -1468,7 +1466,12 @@ func (r *Runtime) handleOutputStreamMethod(
 			return 0, valueErr
 		}
 		return 0, appendBytes(data)
-	case "flush()V", "close()V":
+	case "close()V":
+		return 0, r.closeLocalSocket(target)
+	case "flush()V":
+		if id, local := r.socketServices[target]; local && id == 0 {
+			return 0, r.raiseHostJavaException("java/io/IOException")
+		}
 		return 0, nil
 	default:
 		return 0, nil

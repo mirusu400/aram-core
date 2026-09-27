@@ -44,7 +44,8 @@ var requiredServiceComponents = []serviceComponentSpec{
 	// a long non-repeating track becomes the persistent music voice.
 	{"media", 3},
 	{"device", 2},
-	{"network", 2},
+	// network 3 preserves local server parsing and download continuation state.
+	{"network", 3},
 	{"replay", 2},
 	{"coordinator", 2},
 	{"text", 2},
@@ -184,7 +185,8 @@ func DecodeServicesState(data []byte) (ServicesState, error) {
 				fmt.Sprintf("component %d is %q, want %q", index, id, expected.id),
 			)
 		}
-		if version != expected.schema {
+		legacyNetwork := id == "network" && version == 2
+		if version != expected.schema && !legacyNetwork {
 			return ServicesState{}, decoder.fail(
 				fmt.Sprintf("component %q schema %d", id, version),
 			)
@@ -233,6 +235,14 @@ func DecodeServicesState(data []byte) (ServicesState, error) {
 		case "device":
 			target = &state.Device
 		case "network":
+			if legacyNetwork {
+				var err error
+				state.Network, err = decodeLegacyNetworkState(componentPayload)
+				if err != nil {
+					return ServicesState{}, decoder.fail(fmt.Sprintf("decode legacy network: %v", err))
+				}
+				continue
+			}
 			target = &state.Network
 		case "replay":
 			target = &state.Replay

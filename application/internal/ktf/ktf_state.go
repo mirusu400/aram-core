@@ -24,7 +24,8 @@ const (
 	ktfStateSchemaV11    = uint32(11)
 	ktfStateSchemaV12    = uint32(12)
 	ktfStateSchemaV13    = uint32(13)
-	ktfStateSchema       = uint32(14)
+	ktfStateSchemaV14    = uint32(14)
+	ktfStateSchema       = uint32(15)
 	maxKTFStateMetadata  = uint32(64 << 20)
 	maxKTFStateEntries   = 16_384
 	maxKTFStateHostCalls = int(HostSize / 4)
@@ -37,6 +38,7 @@ const (
 type ktfClipBufferSnapshot struct{ Array, Front uint32 }
 
 type SavedState struct {
+	socketServices     map[uint32]shared.ServiceID
 	clipBuffers        map[uint32]ktfClipBufferSnapshot
 	owner              shared.OwnerID
 	name               string
@@ -556,6 +558,9 @@ func WriteState(r *Runtime, backend cpu.Backend, started bool, writer *guest.Sta
 	); err != nil {
 		return fmt.Errorf("validate KTF adapter state: %w", err)
 	}
+	if err := validateKTFLocalSockets(r.Services, r.ServiceOwner, r.socketServices, metadata); err != nil {
+		return fmt.Errorf("validate KTF local sockets: %w", err)
+	}
 	metadataBytes, err := shared.MarshalStateComponent(metadata)
 	if err != nil {
 		return fmt.Errorf("encode KTF adapter metadata: %w", err)
@@ -678,6 +683,11 @@ func WriteState(r *Runtime, backend cpu.Backend, started bool, writer *guest.Sta
 		writer.U32(clip.bufferArray)
 		writer.U32(uint32(clip.bufferFront))
 	}
+	writer.U32(uint32(len(r.socketServices)))
+	for _, object := range guest.SortedUint32Keys(r.socketServices) {
+		writer.U32(object)
+		writer.U64(uint64(r.socketServices[object]))
+	}
 	return nil
 }
 
@@ -716,7 +726,7 @@ func ParseState(r *Runtime,
 		schema != ktfStateSchemaV6 && schema != ktfStateSchemaV7 &&
 		schema != ktfStateSchemaV8 && schema != ktfStateSchemaV9 &&
 		schema != ktfStateSchemaV10 && schema != ktfStateSchemaV11 &&
-		schema != ktfStateSchemaV12 && schema != ktfStateSchemaV13 && schema != ktfStateSchema {
+		schema != ktfStateSchemaV12 && schema != ktfStateSchemaV13 && schema != ktfStateSchemaV14 && schema != ktfStateSchema {
 		return nil, decoder.Fail(fmt.Sprintf("unsupported KTF state schema %d", schema))
 	}
 	owner := shared.OwnerID(decoder.U32())
@@ -981,6 +991,27 @@ func ParseState(r *Runtime,
 			))
 		}
 	}
+	sockets := make(map[uint32]shared.ServiceID)
+	if schema >= 15 {
+		count := decoder.U32()
+		if count > maxKTFStateEntries {
+			return nil, decoder.Fail("KTF socket mapping quota")
+		}
+		var previous uint32
+		for i := uint32(0); i < count; i++ {
+			object, id := decoder.U32(), shared.ServiceID(decoder.U64())
+			if decoder.Err != nil {
+				return nil, decoder.Err
+			}
+			if object == 0 || (i > 0 && object <= previous) {
+				return nil, decoder.Fail("noncanonical KTF socket mappings")
+			}
+			sockets[object], previous = id, object
+		}
+		if err := validateKTFLocalSockets(candidate, owner, sockets, metadata); err != nil {
+			return nil, decoder.Fail("invalid KTF socket mappings")
+		}
+	}
 	resolvedCalls, err := resolveKTFHostCalls(r, metadata.HostCalls)
 	if err != nil {
 		return nil, decoder.Fail(fmt.Sprintf("invalid KTF host-call graph: %v", err))
@@ -989,6 +1020,7 @@ func ParseState(r *Runtime,
 		return nil, decoder.Err
 	}
 	return &SavedState{
+		socketServices:     sockets,
 		clipBuffers:        clipBuffers,
 		owner:              owner,
 		name:               name,

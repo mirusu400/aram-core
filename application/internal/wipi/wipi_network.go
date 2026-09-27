@@ -23,7 +23,10 @@ func (r *Runtime) DeliverSocketRead(serviceID shared.ServiceID) bool {
 			continue
 		}
 		socket := r.sockets[descriptor]
-		if socket == nil || socket.readCallback == 0 {
+		if socket == nil || r.syncSocketRead(socket) != nil || socket.readCallback == 0 {
+			return false
+		}
+		if r.Services != nil && len(socket.readData) == 0 {
 			return false
 		}
 		callback, parameter := socket.readCallback, socket.readParameter
@@ -32,6 +35,36 @@ func (r *Runtime) DeliverSocketRead(serviceID shared.ServiceID) bool {
 		return true
 	}
 	return false
+}
+
+// syncSocketRead moves provider bytes into the WIPI descriptor buffer once.
+// Both callback delivery and polling reads use it; a response may arrive before
+// the guest arms a callback, or the guest may read without one at all.
+func (r *Runtime) syncSocketRead(socket *wipiSocket) error {
+	if r.Services == nil {
+		return nil
+	}
+	id := r.socketServices[socket.descriptor]
+	if id == 0 {
+		return nil
+	}
+	info, err := r.Services.Network.SocketInfo(r.ServiceOwner, id)
+	if err != nil {
+		return err
+	}
+	if len(socket.readData) >= int(maxWIPIString) {
+		return nil
+	}
+	count := min(info.ReadBytes, uint64(maxWIPIString)-uint64(len(socket.readData)))
+	if count == 0 {
+		return nil
+	}
+	data, err := r.Services.Network.SocketRead(r.ServiceOwner, id, count)
+	if err != nil {
+		return err
+	}
+	socket.readData = append(socket.readData, data...)
+	return nil
 }
 
 // answerOfflineCarrier acknowledges an LGT carrier request so an auth-gated
@@ -247,26 +280,29 @@ func (r *Runtime) dispatchNetwork(name string) (guest.WIPIReturn, bool, error) {
 		if err := r.CPU.ReadMemory(arg(1), data); err != nil {
 			return guest.WIPIReturn{}, true, err
 		}
-		socket.writeData = append(socket.writeData, data...)
-		if r.OfflineCarrierAuth {
-			r.answerOfflineCarrier(socket, data)
-		}
 		if name == "MC_netSocketSendTo" {
 			socket.address = arg(3)
 			socket.port = uint16(arg(4))
 		}
-		if _, err := r.Services.Network.SocketWrite(
+		if _, err := r.Services.WriteSocketRequest(
 			r.ServiceOwner,
 			r.socketServices[socket.descriptor],
 			data,
 		); err != nil {
 			return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
 		}
+		socket.writeData = append(socket.writeData, data...)
+		if r.OfflineCarrierAuth && !r.Services.Network.HasLocalSocketServer(r.ServiceOwner, r.socketServices[socket.descriptor]) {
+			r.answerOfflineCarrier(socket, data)
+		}
 		return guest.WIPIReturn{Low: uint32(len(data))}, true, nil
 	case "MC_netSocketRead", "MC_netSocketRcvFrom":
 		socket := r.sockets[int32(arg(0))]
 		length := int32(arg(2))
 		if socket == nil || length < 0 {
+			return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
+		}
+		if err := r.syncSocketRead(socket); err != nil {
 			return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
 		}
 		read := min(len(socket.readData), int(length))
@@ -292,6 +328,9 @@ func (r *Runtime) dispatchNetwork(name string) (guest.WIPIReturn, bool, error) {
 	case "MC_netSetReadCB":
 		socket := r.sockets[int32(arg(0))]
 		if socket == nil {
+			return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
+		}
+		if err := r.syncSocketRead(socket); err != nil {
 			return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
 		}
 		socket.readCallback, socket.readParameter = arg(1), arg(2)

@@ -71,16 +71,18 @@ type SocketInfo struct {
 }
 
 type SocketState struct {
-	ID        ServiceID
-	Owner     OwnerID
-	Domain    int32
-	Type      int32
-	State     ConnectionState
-	Host      string
-	Address   uint32
-	Port      uint16
-	ReadData  []byte
-	WriteData []byte
+	ID          ServiceID
+	Owner       OwnerID
+	Domain      int32
+	Type        int32
+	State       ConnectionState
+	Host        string
+	Address     uint32
+	Port        uint16
+	ReadData    []byte
+	WriteData   []byte
+	LocalCursor uint64
+	LocalFile   string
 }
 
 type HTTPProperty struct {
@@ -130,16 +132,18 @@ type NetworkState struct {
 }
 
 type modeledSocket struct {
-	id         ServiceID
-	owner      OwnerID
-	domain     int32
-	socketType int32
-	state      ConnectionState
-	host       string
-	address    uint32
-	port       uint16
-	readData   []byte
-	writeData  []byte
+	id          ServiceID
+	owner       OwnerID
+	domain      int32
+	socketType  int32
+	state       ConnectionState
+	host        string
+	address     uint32
+	port        uint16
+	readData    []byte
+	writeData   []byte
+	localCursor uint64
+	localFile   string
 }
 
 type modeledHTTP struct {
@@ -645,6 +649,7 @@ func (n *Network) Snapshot() NetworkState {
 			Type: socket.socketType, State: socket.state, Host: socket.host,
 			Address: socket.address, Port: socket.port,
 			ReadData: cloneBytes(socket.readData), WriteData: cloneBytes(socket.writeData),
+			LocalCursor: socket.localCursor, LocalFile: socket.localFile,
 		})
 	}
 	for _, id := range sortedIDs(n.http) {
@@ -697,6 +702,9 @@ func (n *Network) Restore(state NetworkState) error {
 				(len(saved.ReadData) != 0 || len(saved.WriteData) != 0)) ||
 			uint64(len(saved.ReadData)) > state.Limits.MaxBufferBytes ||
 			uint64(len(saved.WriteData)) > state.Limits.MaxBufferBytes ||
+			saved.LocalCursor > uint64(len(saved.WriteData)) ||
+			(localServerKind(saved.Host, saved.Port, saved.Type) == "" && (saved.LocalCursor != 0 || saved.LocalFile != "")) ||
+			(saved.LocalFile != "" && (localServerKind(saved.Host, saved.Port, saved.Type) != "funter" || !validFunterName(saved.LocalFile))) ||
 			n.registry.Validate(saved.ID, saved.Owner, KindSocket) != nil {
 			return fmt.Errorf("%w: invalid socket state %d", ErrInvalidState, index)
 		}
@@ -705,6 +713,7 @@ func (n *Network) Restore(state NetworkState) error {
 			socketType: saved.Type, state: saved.State, host: saved.Host,
 			address: saved.Address, port: saved.Port,
 			readData: cloneBytes(saved.ReadData), writeData: cloneBytes(saved.WriteData),
+			localCursor: saved.LocalCursor, localFile: saved.LocalFile,
 		}
 		previous = saved.ID
 	}

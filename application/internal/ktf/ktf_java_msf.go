@@ -2,7 +2,10 @@ package ktf
 
 import (
 	"net/url"
+	"strconv"
 	"strings"
+
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 // org/kwis/msf/* is the WIPI framework layer: program control, shared
@@ -154,31 +157,51 @@ func (r *Runtime) resizeSharedBuffer(key string, size uint32) (uint32, error) {
 }
 
 // handleMSFSocketMethod covers Socket and HttpSocket references. The host
-// never hands one out (URL.find reports the network as unavailable), so
-// these are terminal defaults for titles that construct their own wrappers.
+// binds supported offline endpoints to shared, serializable network services.
 func (r *Runtime) handleMSFSocketMethod(
 	name, descriptor string,
 ) (uint32, error) {
 	switch name + descriptor {
 	case "getInputStream()Ljava/io/InputStream;":
-		// The handset is offline, so the stream is at end of input from the
-		// start. Answering null instead would only move the guest's null
-		// dereference one call further along.
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		if id, exists := r.socketServices[instance]; exists && (id == 0 || len(r.socketServices) >= maxKTFStateEntries) {
+			return 0, r.raiseHostJavaException("java/io/IOException")
+		}
 		stream, err := r.newJavaInstance("java/io/InputStream", 4)
 		if err != nil {
 			return 0, err
 		}
 		r.inputStreams[stream] = &ktfInputStream{}
+		if id, exists := r.socketServices[instance]; exists {
+			r.socketServices[stream] = id
+		}
 		return stream, nil
 	case "getOutputStream()Ljava/io/OutputStream;":
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		if id, exists := r.socketServices[instance]; exists && (id == 0 || len(r.socketServices) >= maxKTFStateEntries) {
+			return 0, r.raiseHostJavaException("java/io/IOException")
+		}
 		stream, err := r.newJavaInstance("java/io/OutputStream", 4)
 		if err != nil {
 			return 0, err
 		}
 		r.outputStreams[stream] = nil
+		if id, exists := r.socketServices[instance]; exists {
+			r.socketServices[stream] = id
+		}
 		return stream, nil
 	case "close()V":
-		return 0, nil
+		instance, err := r.parameter(1)
+		if err != nil {
+			return 0, err
+		}
+		return 0, r.closeLocalSocket(instance)
 	case "isStream()Z":
 		return 1, nil
 	case "getMessageCount()I":
@@ -371,10 +394,10 @@ func (r *Runtime) msfSocketURL() (*url.URL, error) {
 
 func (r *Runtime) newOfflineMSFSocket(urlAddress uint32) (uint32, error) {
 	rawURL := r.javaStringValue(urlAddress)
-	parsed, _ := url.Parse(rawURL)
+	parsed, parseErr := url.Parse(rawURL)
 	className := "org/kwis/msf/io/Socket"
-	if strings.EqualFold(parsed.Scheme, "http") ||
-		strings.EqualFold(parsed.Scheme, "https") {
+	if parseErr == nil && (strings.EqualFold(parsed.Scheme, "http") ||
+		strings.EqualFold(parsed.Scheme, "https")) {
 		className = "org/kwis/msf/io/HttpSocket"
 	}
 	instance, err := r.NewHostJavaObject(className)
@@ -382,6 +405,28 @@ func (r *Runtime) newOfflineMSFSocket(urlAddress uint32) (uint32, error) {
 		return 0, err
 	}
 	r.lwcComponent(instance).text = urlAddress
+	if parseErr == nil && parsed.Scheme == "socket" {
+		port, portErr := strconv.ParseUint(parsed.Port(), 10, 16)
+		if portErr == nil && shared.IsLocalSocketEndpoint(parsed.Hostname(), uint16(port)) {
+			if len(r.socketServices) >= maxKTFStateEntries {
+				return 0, r.raiseHostJavaException("java/io/IOException")
+			}
+			id, err := r.Services.Network.OpenSocket(r.ServiceOwner, 2, 1)
+			if err == nil {
+				err = r.Services.Network.ConnectSocket(r.ServiceOwner, id, parsed.Hostname(), uint16(port))
+			}
+			if err == nil {
+				err = r.Services.CompleteSocketResponse(r.ServiceOwner, id, true, r.Services.Clock.Monotonic())
+			}
+			if err != nil {
+				if id != 0 {
+					_ = r.Services.Network.CloseSocket(r.ServiceOwner, id, r.Services.Events)
+				}
+				return 0, r.raiseHostJavaException("java/io/IOException")
+			}
+			r.socketServices[instance] = id
+		}
+	}
 	return instance, nil
 }
 

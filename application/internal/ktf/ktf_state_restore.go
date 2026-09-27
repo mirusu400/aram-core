@@ -397,6 +397,7 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	}
 
 	r.Services = saved.Services
+	r.socketServices = guest.CloneMap(saved.socketServices)
 	r.serviceConfig = saved.Services.Config
 	r.ServiceOwner = saved.owner
 	r.serviceName = saved.name

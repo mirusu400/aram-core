@@ -312,6 +312,7 @@ type Runtime struct {
 	// point and clearing on the next append models build->toString->reset->build.
 	stringBuffersConsumed map[uint32]bool
 	inputStreams          map[uint32]*ktfInputStream
+	socketServices        map[uint32]shared.ServiceID
 	inputTargets          map[uint32]uint32
 	outputStreams         map[uint32][]byte
 	outputTargets         map[uint32]uint32

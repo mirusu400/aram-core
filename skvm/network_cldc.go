@@ -192,7 +192,7 @@ func (vm *VM) installCLDCDatagramNatives() {
 		if err != nil {
 			return Value{}, false, err
 		}
-		_, err = vm.services.Network.SocketWrite(vm.serviceOwner, connection.socket, data)
+		_, err = vm.services.WriteSocketRequest(vm.serviceOwner, connection.socket, data)
 		if err != nil {
 			return Value{}, false, vm.newThrowable("java/io/IOException", err.Error())
 		}

@@ -231,6 +231,7 @@ func NewRuntimeForProfile(
 		internedStrings:          make(map[string]uint32),
 		sharedBuffers:            make(map[string]uint32),
 		inputStreams:             make(map[uint32]*ktfInputStream),
+		socketServices:           make(map[uint32]shared.ServiceID),
 		inputTargets:             make(map[uint32]uint32),
 		outputStreams:            make(map[uint32][]byte),
 		outputTargets:            make(map[uint32]uint32),
