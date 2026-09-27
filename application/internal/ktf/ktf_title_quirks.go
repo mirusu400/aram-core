@@ -115,6 +115,19 @@ func newKTFMenuForegroundCompat(pkg ktf.Package) *ktfMenuForegroundCompat {
 	return nil
 }
 
+func newKTFJavaImageOrigin(pkg ktf.Package) image.Point {
+	return resolveKTFJavaImageOrigin(pkg.Descriptor, sha256.Sum256(pkg.Client))
+}
+
+func resolveKTFJavaImageOrigin(descriptor ktf.Descriptor, clientHash [sha256.Size]byte) image.Point {
+	for _, entry := range quirkdb.KTFJavaImageOrigins {
+		if entry.Key.Matches(descriptor.AID, descriptor.MainClass, clientHash) {
+			return image.Pt(entry.X, entry.Y)
+		}
+	}
+	return image.Point{}
+}
+
 func (r *Runtime) drawKTFJavaImage(
 	state *ktfGraphics,
 	imageAddress uint32,

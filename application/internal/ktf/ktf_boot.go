@@ -254,6 +254,7 @@ func NewRuntimeForProfile(
 		blitCaches:               make(map[uint32]*ktfBlitCache),
 		Graphics:                 make(map[uint32]*ktfGraphics),
 		menuForegroundCompat:     newKTFMenuForegroundCompat(pkg),
+		javaImageOrigin:          newKTFJavaImageOrigin(pkg),
 		wipicFramebuffers:        make(map[uint32]*ktfWIPICFramebuffer),
 		wipicImages:              make(map[uint32]*ktfWIPICImage),
 		wipicResources:           make(map[uint32][]byte),

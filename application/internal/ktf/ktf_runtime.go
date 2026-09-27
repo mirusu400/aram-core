@@ -362,6 +362,7 @@ type Runtime struct {
 	graphicsRGBScratch     []byte
 	ScreenGraphics         uint32
 	menuForegroundCompat   *ktfMenuForegroundCompat
+	javaImageOrigin        image.Point
 	wipicFramebuffers      map[uint32]*ktfWIPICFramebuffer
 	WipicScreenFramebuffer uint32
 	WipicScreenPending     bool

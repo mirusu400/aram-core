@@ -525,6 +525,10 @@ func (r *Runtime) handleGraphicsMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
+		if state.image == 0 && state.Target == r.frame {
+			x += r.javaImageOrigin.X
+			y += r.javaImageOrigin.Y
+		}
 		r.noteKTFFullScreenFrame(state, source, x, y)
 		r.drawKTFJavaImage(state, imageAddress, source, x, y, anchor)
 		return 0, nil

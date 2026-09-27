@@ -78,22 +78,26 @@ func (r *Runtime) handleClassMethod(
 				className = class.Name
 			}
 		}
-		resourceName := strings.ReplaceAll(r.javaText(nameAddress), `\`, "/")
-		resourceName = strings.TrimPrefix(resourceName, "/")
-		resourceName = path.Clean(resourceName)
-		if resourceName == "." || resourceName == ".." ||
-			strings.HasPrefix(resourceName, "../") {
+		candidates := javaClassResourceCandidates(className, r.javaText(nameAddress))
+		if len(candidates) == 0 {
 			return 0, nil
 		}
-		data, ok := r.Pkg.Resources[resourceName]
-		if !ok {
-			for candidate, payload := range r.Pkg.Resources {
-				if strings.EqualFold(candidate, resourceName) {
-					resourceName = candidate
-					data = payload
-					ok = true
-					break
+		resourceName := candidates[0]
+		var data []byte
+		var ok bool
+		for _, candidate := range candidates {
+			data, ok = r.Pkg.Resources[candidate]
+			if !ok {
+				for name, payload := range r.Pkg.Resources {
+					if strings.EqualFold(name, candidate) {
+						candidate, data, ok = name, payload, true
+						break
+					}
 				}
+			}
+			if ok {
+				resourceName = candidate
+				break
 			}
 		}
 		r.tracef(
@@ -276,6 +280,24 @@ func (r *Runtime) handleClassMethod(
 	default:
 		return 0, nil
 	}
+}
+
+// Class.getResourceAsStream uses the declaring class's package for a relative
+// name. Keep a root fallback because some WIPI titles omit the leading slash
+// even for resources placed at the JAR root.
+func javaClassResourceCandidates(className, requested string) []string {
+	requested = strings.ReplaceAll(requested, `\`, "/")
+	absolute := strings.HasPrefix(requested, "/")
+	name := path.Clean(strings.TrimPrefix(requested, "/"))
+	if name == "." || name == ".." || strings.HasPrefix(name, "../") {
+		return nil
+	}
+	if !absolute && className != "" {
+		if dir := path.Dir(className); dir != "." {
+			return []string{path.Join(dir, name), name}
+		}
+	}
+	return []string{name}
 }
 
 func (r *Runtime) javaClassObject(classAddress uint32) (uint32, error) {

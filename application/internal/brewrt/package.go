@@ -51,6 +51,9 @@ const (
 	maxExecutableModuleSize = 8 << 20
 )
 
+const issue319ArchiveSHA256 = "2cfa3dff0779456f8482ccfbda740436101699186fdd9537b7a9108f8bfcedbf"
+const issue321ArchiveSHA256 = "4fae0b6a37e501163f6eabbda2b400bdfd4682ae389217bc26a7dbee564cb360"
+
 // Package contains the inspected executable module and immutable archive data.
 type Package struct {
 	Module        []byte
@@ -58,6 +61,25 @@ type Package struct {
 	Splash        *image.RGBA
 	Files         map[string][]byte
 	Authenticated bool
+	// NativeCanvas is an exact package's handset display geometry. Zero keeps
+	// the existing default for that package.
+	NativeCanvas image.Point
+
+	// PreferPackedAECHAR resolves ambiguous Hangul-looking EUC-KR pairs in
+	// the exact Dark Slayer archive without changing generic UTF-16 behavior.
+	PreferPackedAECHAR bool
+}
+
+// DisplaySize selects the handset canvas. Exact-title dimensions override
+// the generic 120x160 canvas so native artwork is not clipped.
+func (p Package) DisplaySize() image.Point {
+	if p.NativeCanvas.X > 0 && p.NativeCanvas.Y > 0 {
+		return p.NativeCanvas
+	}
+	if p.Authenticated {
+		return image.Pt(120, 200)
+	}
+	return image.Pt(int(framebufferWidth), int(framebufferHeight))
 }
 
 // Match validates a bounded BREW container, selects its sole executable module,
@@ -86,7 +108,13 @@ func Match(data []byte) (pkg Package, matched bool, err error) {
 	var splash *image.RGBA
 	authenticated := false
 	digest := sha256.Sum256(data)
-	if hex.EncodeToString(digest[:]) == ArchiveSHA256 {
+	digestHex := hex.EncodeToString(digest[:])
+	nativeCanvas := image.Point{}
+	if digestHex == issue321ArchiveSHA256 {
+		// The exact module BitBlts a 176x202 native frame from a 176-wide IDIB.
+		nativeCanvas = image.Pt(176, 202)
+	}
+	if digestHex == ArchiveSHA256 {
 		moduleDigest := sha256.Sum256(module)
 		if moduleName != ModulePath || hex.EncodeToString(moduleDigest[:]) != ModuleSHA256 {
 			return Package{}, true, fmt.Errorf("authenticated BREW reference module contract mismatch")
@@ -111,6 +139,9 @@ func Match(data []byte) (pkg Package, matched bool, err error) {
 		Splash:        splash,
 		Files:         files,
 		Authenticated: authenticated,
+		NativeCanvas:  nativeCanvas,
+
+		PreferPackedAECHAR: digestHex == issue319ArchiveSHA256,
 	}, true, nil
 }
 

@@ -168,6 +168,8 @@ const (
 // unknown class or vtable slot remains a typed boundary.
 type Runtime struct {
 	cpu              cpu.Backend
+	screenWidth      uint32
+	screenHeight     uint32
 	moduleObject     uint32
 	appletObject     uint32
 	activeApplet     uint32
@@ -201,6 +203,8 @@ type Runtime struct {
 	textRaster       *shared.Text
 	displayFont      shared.ServiceID
 	postedEvents     []brewPostedEvent
+
+	preferPackedAECHAR bool
 }
 
 type brewPreferenceKey struct {
@@ -323,6 +327,8 @@ func New(pkg Package) (*Runtime, error) {
 	}
 	r := &Runtime{
 		cpu: backend, heapNext: heapBase, files: files,
+		screenWidth:   uint32(pkg.DisplaySize().X),
+		screenHeight:  uint32(pkg.DisplaySize().Y),
 		heapAllocated: make(map[uint32]uint32),
 		eventCounts:   make(map[uint32]uint64), classIDs: classIDs,
 		fileHandles:  make(map[uint32]*brewFile),
@@ -333,12 +339,18 @@ func New(pkg Package) (*Runtime, error) {
 		nativeImages: make(map[uint32]brewNativeImage),
 		textRaster:   displayText,
 		displayFont:  displayFont,
+
+		preferPackedAECHAR: pkg.PreferPackedAECHAR,
 	}
 	if err := r.mapImage(pkg.Module); err != nil {
 		_ = backend.Close()
 		return nil, err
 	}
 	return r, nil
+}
+
+func (r *Runtime) screenBytes() uint32 {
+	return r.screenWidth * r.screenHeight * 2
 }
 
 func (r *Runtime) mapImage(module []byte) error {
@@ -448,7 +460,8 @@ func (r *Runtime) mapImage(module []byte) error {
 	if err := r.cpu.WriteMemory(helperTableBase, helperTable[:]); err != nil {
 		return fmt.Errorf("write BREW stdlib helper table: %w", err)
 	}
-	if err := r.cpu.Map(framebufferBase, framebufferMapSize, cpu.PermissionRead|cpu.PermissionWrite); err != nil {
+	mapSize := max(framebufferMapSize, (r.screenBytes()+0xfff)&^uint32(0xfff))
+	if err := r.cpu.Map(framebufferBase, mapSize, cpu.PermissionRead|cpu.PermissionWrite); err != nil {
 		return fmt.Errorf("map BREW guest framebuffer: %w", err)
 	}
 	if err := r.cpu.Map(serviceBase, 0x1000, cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute); err != nil {
@@ -555,9 +568,9 @@ func (r *Runtime) mapImage(module []byte) error {
 	deviceBitmap := make([]byte, 36)
 	binary.LittleEndian.PutUint32(deviceBitmap[0:], bitmapVTable)
 	binary.LittleEndian.PutUint32(deviceBitmap[8:], framebufferBase)
-	binary.LittleEndian.PutUint16(deviceBitmap[20:], uint16(framebufferWidth))
-	binary.LittleEndian.PutUint16(deviceBitmap[22:], uint16(framebufferHeight))
-	binary.LittleEndian.PutUint16(deviceBitmap[24:], uint16(framebufferWidth*2))
+	binary.LittleEndian.PutUint16(deviceBitmap[20:], uint16(r.screenWidth))
+	binary.LittleEndian.PutUint16(deviceBitmap[22:], uint16(r.screenHeight))
+	binary.LittleEndian.PutUint16(deviceBitmap[24:], uint16(r.screenWidth*2))
 	deviceBitmap[28] = 16
 	deviceBitmap[29] = idibColorScheme565
 	copy(controls[deviceBitmapObject-controlServiceBase:], deviceBitmap)
@@ -2125,7 +2138,7 @@ func (r *Runtime) writeDeviceInfo() error {
 	// scalar fields through dwLang. Bitfields and handset-specific extensions are
 	// intentionally left zero rather than guessed.
 	data := make([]byte, 44)
-	for index, value := range []uint16{uint16(framebufferWidth), uint16(framebufferHeight), 0, 0, 8, 1, 0, 16} {
+	for index, value := range []uint16{uint16(r.screenWidth), uint16(r.screenHeight), 0, 0, 8, 1, 0, 16} {
 		binary.LittleEndian.PutUint16(data[index*2:], value)
 	}
 	binary.LittleEndian.PutUint32(data[24:], heapSize)
@@ -2562,7 +2575,8 @@ func (r *Runtime) formatGuestWideString() error {
 		return binary.LittleEndian.Uint32(encoded[:]), nil
 	}
 	values := make([]any, 0, 8)
-	goFormat := []byte(format)
+	goFormat := make([]byte, 0, len(format))
+	cursor := 0
 	argumentIndex := uint32(0)
 	for index := 0; index < len(format); index++ {
 		if format[index] != '%' {
@@ -2576,9 +2590,25 @@ func (r *Runtime) formatGuestWideString() error {
 		for end < len(format) && strings.ContainsRune("-+ #0.123456789", rune(format[end])) {
 			end++
 		}
+		verbStart := end
+		if end < len(format) && format[end] == 'l' {
+			// BREW's 32-bit ARM long occupies one argument word. Go's fmt
+			// has no length modifier, so omit it from the normalized format.
+			end++
+			if end >= len(format) || !strings.ContainsRune("diuXx", rune(format[end])) {
+				return fmt.Errorf("BREW execution boundary: unsupported wsprintf format %q", format)
+			}
+		}
 		if end >= len(format) || !strings.ContainsRune("cdisuXx", rune(format[end])) {
 			return fmt.Errorf("BREW execution boundary: unsupported wsprintf format %q", format)
 		}
+		goFormat = append(goFormat, format[cursor:verbStart]...)
+		goVerb := format[end]
+		if goVerb == 'i' || goVerb == 'u' {
+			goVerb = 'd'
+		}
+		goFormat = append(goFormat, goVerb)
+		cursor = end + 1
 		value, readErr := arg(argumentIndex)
 		if readErr != nil {
 			return fmt.Errorf("read BREW wsprintf argument %d: %w", argumentIndex, readErr)
@@ -2593,10 +2623,8 @@ func (r *Runtime) formatGuestWideString() error {
 			}
 			values = append(values, string(utf16.Decode(units)))
 		case 'd', 'i':
-			goFormat[end] = 'd'
 			values = append(values, int32(value))
 		case 'u':
-			goFormat[end] = 'd'
 			values = append(values, value)
 		case 'x', 'X':
 			values = append(values, value)
@@ -2604,6 +2632,7 @@ func (r *Runtime) formatGuestWideString() error {
 		argumentIndex++
 		index = end
 	}
+	goFormat = append(goFormat, format[cursor:]...)
 	if size > heapSize {
 		return fmt.Errorf("BREW wsprintf destination size %d exceeds runtime limit", size)
 	}
@@ -3288,7 +3317,8 @@ func (r *Runtime) formatResourceName() error {
 		return int32(binary.LittleEndian.Uint32(encoded[:])), nil
 	}
 	values := make([]any, 0, 8)
-	goFormat := []byte(format)
+	goFormat := make([]byte, 0, len(format))
+	cursor := 0
 	argumentIndex := uint32(0)
 	for index := 0; index < len(format); index++ {
 		if format[index] != '%' {
@@ -3302,9 +3332,24 @@ func (r *Runtime) formatResourceName() error {
 		for end < len(format) && strings.ContainsRune("-+ #0.123456789", rune(format[end])) {
 			end++
 		}
+		verbStart := end
+		if end < len(format) && format[end] == 'l' {
+			// A BREW ARM long is 32 bits, not a second variadic word.
+			end++
+			if end >= len(format) || !strings.ContainsRune("diuXx", rune(format[end])) {
+				return fmt.Errorf("BREW execution boundary: unsupported sprintf format %q", format)
+			}
+		}
 		if end >= len(format) || !strings.ContainsRune("cdisuXx", rune(format[end])) {
 			return fmt.Errorf("BREW execution boundary: unsupported sprintf format %q", format)
 		}
+		goFormat = append(goFormat, format[cursor:verbStart]...)
+		goVerb := format[end]
+		if goVerb == 'i' || goVerb == 'u' {
+			goVerb = 'd'
+		}
+		goFormat = append(goFormat, goVerb)
+		cursor = end + 1
 		value, readErr := arg(argumentIndex)
 		if readErr != nil {
 			return fmt.Errorf("read BREW sprintf argument %d: %w", argumentIndex, readErr)
@@ -3319,10 +3364,8 @@ func (r *Runtime) formatResourceName() error {
 			}
 			values = append(values, text)
 		case 'd', 'i':
-			goFormat[end] = 'd'
 			values = append(values, value)
 		case 'u':
-			goFormat[end] = 'd'
 			values = append(values, uint32(value))
 		case 'x', 'X':
 			values = append(values, uint32(value))
@@ -3330,6 +3373,7 @@ func (r *Runtime) formatResourceName() error {
 		argumentIndex++
 		index = end
 	}
+	goFormat = append(goFormat, format[cursor:]...)
 	text := fmt.Sprintf(string(goFormat), values...)
 	data := append([]byte(text), 0)
 	if err := r.cpu.WriteMemory(destination, data); err != nil {
@@ -3570,7 +3614,7 @@ func (r *Runtime) returnDeviceModel() error {
 }
 
 func (r *Runtime) framebufferMutated() (bool, error) {
-	pixels := make([]byte, framebufferBytes)
+	pixels := make([]byte, r.screenBytes())
 	if err := r.cpu.ReadMemory(framebufferBase, pixels); err != nil {
 		return false, fmt.Errorf("read BREW guest framebuffer: %w", err)
 	}
@@ -3586,7 +3630,7 @@ func (r *Runtime) framebufferMutated() (bool, error) {
 // a frame after the native RGB565 surface differs from the last committed
 // surface. An untouched zero-filled framebuffer is not rendering evidence.
 func (r *Runtime) commitFramebufferUpdate() error {
-	pixels := make([]byte, framebufferBytes)
+	pixels := make([]byte, r.screenBytes())
 	if err := r.cpu.ReadMemory(framebufferBase, pixels); err != nil {
 		return fmt.Errorf("snapshot BREW guest framebuffer: %w", err)
 	}
@@ -3614,7 +3658,7 @@ func (r *Runtime) commitFramebufferUpdate() error {
 // event or callback is an atomic guest boundary, so publish a detached snapshot
 // there rather than exposing live surface mutations while guest code is running.
 func (r *Runtime) commitImplicitFramebuffer() error {
-	pixels := make([]byte, framebufferBytes)
+	pixels := make([]byte, r.screenBytes())
 	if err := r.cpu.ReadMemory(framebufferBase, pixels); err != nil {
 		return fmt.Errorf("snapshot BREW direct framebuffer: %w", err)
 	}
@@ -3657,11 +3701,30 @@ func (r *Runtime) drawDisplayRect() error {
 		return fmt.Errorf("read BREW DrawRect flags: %w", err)
 	}
 	flags := binary.LittleEndian.Uint32(encoded[:4])
-	if flags != 0 && flags&2 == 0 {
-		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
-	}
-	if err := r.fillDisplayRectangle(rectPointer, fill); err != nil {
+	x, y, width, height, err := r.displayRectangleBounds(rectPointer)
+	if err != nil {
 		return err
+	}
+	if flags == 0 || flags&2 != 0 { // IDF_RECT_FILL
+		if err := r.fillDisplayBounds(x, y, width, height, fill); err != nil {
+			return err
+		}
+	}
+	if flags&1 != 0 { // IDF_RECT_FRAME
+		frame, err := r.cpu.ReadRegister(cpu.RegisterR2)
+		if err != nil {
+			return fmt.Errorf("read BREW display frame color: %w", err)
+		}
+		for _, edge := range [][4]int32{
+			{x, y, width, 1},
+			{x, y + height - 1, width, 1},
+			{x, y + 1, 1, height - 2},
+			{x + width - 1, y + 1, 1, height - 2},
+		} {
+			if err := r.fillDisplayBounds(edge[0], edge[1], edge[2], edge[3], frame); err != nil {
+				return err
+			}
+		}
 	}
 	if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
 		return fmt.Errorf("return BREW DrawRect status: %w", err)
@@ -3688,33 +3751,48 @@ func (r *Runtime) drawDisplayFrame() error {
 }
 
 func (r *Runtime) fillDisplayRectangle(rectPointer, fill uint32) error {
+	x, y, width, height, err := r.displayRectangleBounds(rectPointer)
+	if err != nil {
+		return err
+	}
+	return r.fillDisplayBounds(x, y, width, height, fill)
+}
+
+func (r *Runtime) displayRectangleBounds(rectPointer uint32) (int32, int32, int32, int32, error) {
 	var encoded [8]byte
-	x, y, width, height := int32(0), int32(0), int32(framebufferWidth), int32(framebufferHeight)
+	x, y, width, height := int32(0), int32(0), int32(r.screenWidth), int32(r.screenHeight)
 	if rectPointer != 0 {
 		if err := r.cpu.ReadMemory(rectPointer, encoded[:]); err != nil {
-			return fmt.Errorf("read BREW DrawRect bounds: %w", err)
+			return 0, 0, 0, 0, fmt.Errorf("read BREW DrawRect bounds: %w", err)
 		}
 		x = int32(int16(binary.LittleEndian.Uint16(encoded[0:2])))
 		y = int32(int16(binary.LittleEndian.Uint16(encoded[2:4])))
 		width = int32(int16(binary.LittleEndian.Uint16(encoded[4:6])))
 		height = int32(int16(binary.LittleEndian.Uint16(encoded[6:8])))
 	}
+	return x, y, width, height, nil
+}
+
+func (r *Runtime) fillDisplayBounds(x, y, width, height int32, fill uint32) error {
+	if width <= 0 || height <= 0 {
+		return nil
+	}
 	red := uint16((fill >> 8) & 0xff)
 	green := uint16((fill >> 16) & 0xff)
 	blue := uint16((fill >> 24) & 0xff)
 	native := (red>>3)<<11 | (green>>2)<<5 | blue>>3
-	row := make([]byte, framebufferWidth*2)
-	for index := uint32(0); index < framebufferWidth; index++ {
+	row := make([]byte, r.screenWidth*2)
+	for index := uint32(0); index < r.screenWidth; index++ {
 		binary.LittleEndian.PutUint16(row[index*2:], native)
 	}
 	left := max(x, 0)
 	top := max(y, 0)
-	right := min(x+width, int32(framebufferWidth))
-	bottom := min(y+height, int32(framebufferHeight))
+	right := min(x+width, int32(r.screenWidth))
+	bottom := min(y+height, int32(r.screenHeight))
 	if right > left {
 		row = row[:uint32(right-left)*2]
 		for py := top; py < bottom; py++ {
-			address := framebufferBase + uint32(py)*framebufferWidth*2 + uint32(left)*2
+			address := framebufferBase + uint32(py)*r.screenWidth*2 + uint32(left)*2
 			if err := r.cpu.WriteMemory(address, row); err != nil {
 				return fmt.Errorf("write BREW DrawRect row: %w", err)
 			}
@@ -3805,17 +3883,17 @@ func (r *Runtime) measureDisplayText() error {
 // surface. presented is true only after guest code mutates and updates it.
 func (r *Runtime) Framebuffer() (frame *image.RGBA, presented bool, err error) {
 	pixels := r.presented
-	frame = image.NewRGBA(image.Rect(0, 0, int(framebufferWidth), int(framebufferHeight)))
-	if len(pixels) != int(framebufferBytes) {
+	frame = image.NewRGBA(image.Rect(0, 0, int(r.screenWidth), int(r.screenHeight)))
+	if len(pixels) != int(r.screenBytes()) {
 		return frame, false, nil
 	}
-	for offset := uint32(0); offset < framebufferBytes; offset += 2 {
+	for offset := uint32(0); offset < r.screenBytes(); offset += 2 {
 		value := binary.LittleEndian.Uint16(pixels[offset:])
 		red := uint8((value >> 11) & 0x1f)
 		green := uint8((value >> 5) & 0x3f)
 		blue := uint8(value & 0x1f)
 		index := offset / 2
-		frame.SetRGBA(int(index%framebufferWidth), int(index/framebufferWidth), color.RGBA{
+		frame.SetRGBA(int(index%r.screenWidth), int(index/r.screenWidth), color.RGBA{
 			R: red<<3 | red>>2,
 			G: green<<2 | green>>4,
 			B: blue<<3 | blue>>2,

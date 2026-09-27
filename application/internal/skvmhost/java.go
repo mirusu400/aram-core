@@ -7,6 +7,7 @@ import (
 	"image"
 	"strings"
 
+	"github.com/mirusu400/aram-core/application/internal/quirkdb"
 	machinecore "github.com/mirusu400/aram-core/core"
 	"github.com/mirusu400/aram-core/loader/j2me"
 	skloader "github.com/mirusu400/aram-core/loader/skvm"
@@ -33,6 +34,9 @@ func NewJ2ME(ctx context.Context, source machinecore.Source, pkg j2me.Package,
 	size image.Point, sampleRate uint32, channels uint8) (*Machine, error) {
 	if source.ProfileID == j2me.LGTProfileID {
 		size = inferLGTFramebufferSize(size, pkg.Resources)
+		if canvas, ok := quirkdb.LookupLGTCanvas(source.SHA256, pkg.Descriptor.MainClass, size.X, size.Y); ok {
+			size = image.Pt(canvas.Width, canvas.Height)
+		}
 	}
 	return newJavaMachine(ctx, source, Application{MainClass: pkg.Descriptor.MainClass,
 		Properties: pkg.Descriptor.Raw, Classes: pkg.Classes, Resources: pkg.Resources,

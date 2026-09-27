@@ -92,7 +92,7 @@ func (f Factory) createBREWMachine(ctx context.Context, source machinecore.Sourc
 }
 
 func newBREWMachine(source machinecore.Source, pkg brewrt.Package) *brewMachine {
-	frame := image.NewRGBA(image.Rect(0, 0, 120, 160))
+	frame := image.NewRGBA(image.Rectangle{Max: pkg.DisplaySize()})
 	draw.Draw(frame, frame.Bounds(), image.NewUniform(color.Black), image.Point{}, draw.Src)
 	return &brewMachine{state: machinecore.StateReady, source: source, pkg: pkg, frame: frame}
 }

@@ -192,6 +192,9 @@ var raptorJavaFixedVirtualMethods = map[string][]raptorJavaFixedVirtualMethod{
 		{offset: 0x68, Name: "indexOf", descriptor: "(Ljava/lang/String;)I"},
 		{offset: 0x6c, Name: "indexOf", descriptor: "(Ljava/lang/String;I)I"},
 		{offset: 0x74, Name: "substring", descriptor: "(II)Ljava/lang/String;"},
+		// Legend of Master trims each CR-delimited script line through this
+		// slot before storing item names and descriptions (#341).
+		{offset: 0x88, Name: "trim", descriptor: "()Ljava/lang/String;"},
 		// 배틀몬스터's text helper calls slot 0x8c and immediately reads the
 		// result as a char[] (length followed by UTF-16 elements). Leaving the
 		// slot on the no-op backstop returns null, so every label disappears
@@ -258,21 +261,29 @@ var raptorJavaFixedVirtualMethods = map[string][]raptorJavaFixedVirtualMethod{
 		},
 	},
 	"java/util/Vector": {
-		// Slot order mirrors the host spec declaration order; 월드장기체스 CCC
-		// constructs Vectors and calls slot 0x44 expecting an int back: size().
+		// These offsets are title ABI slots, not a contiguous host-method order.
+		// 월드장기체스 CCC calls 0x44 as size(); Legend of Master's NPC
+		// renderer calls 0x40 as size(), 0x50 as indexOf(), 0x64 as
+		// firstElement(), and 0x70 as removeElementAt(). Its shop looks up
+		// stock through 0x60 as elementAt(int) (issue #341).
 		{offset: 0x2c, Name: "addElement", descriptor: "(Ljava/lang/Object;)V"},
 		{offset: 0x30, Name: "elementAt", descriptor: "(I)Ljava/lang/Object;"},
 		{offset: 0x34, Name: "setElementAt", descriptor: "(Ljava/lang/Object;I)V"},
 		{offset: 0x38, Name: "removeElementAt", descriptor: "(I)V"},
 		{offset: 0x3c, Name: "removeElement", descriptor: "(Ljava/lang/Object;)Z"},
-		{offset: 0x40, Name: "removeAllElements", descriptor: "()V"},
+		{offset: 0x40, Name: "size", descriptor: "()I"},
 		{offset: 0x44, Name: "size", descriptor: "()I"},
 		{offset: 0x48, Name: "capacity", descriptor: "()I"},
 		{offset: 0x4c, Name: "isEmpty", descriptor: "()Z"},
-		{offset: 0x50, Name: "contains", descriptor: "(Ljava/lang/Object;)Z"},
+		{offset: 0x50, Name: "indexOf", descriptor: "(Ljava/lang/Object;)I"},
 		{offset: 0x54, Name: "indexOf", descriptor: "(Ljava/lang/Object;)I"},
 		{offset: 0x58, Name: "copyInto", descriptor: "([Ljava/lang/Object;)V"},
 		{offset: 0x5c, Name: "elements", descriptor: "()Ljava/util/Enumeration;"},
+		{offset: 0x60, Name: "elementAt", descriptor: "(I)Ljava/lang/Object;"},
+		{offset: 0x64, Name: "firstElement", descriptor: "()Ljava/lang/Object;"},
+		{offset: 0x70, Name: "removeElementAt", descriptor: "(I)V"},
+		// Legend of Master's script loader appends parsed NPC lines here.
+		{offset: 0x78, Name: "addElement", descriptor: "(Ljava/lang/Object;)V"},
 	},
 	// CLDC order: read(), read([B), read([BII), skip, available, close,
 	// mark, markSupported, reset. 체스마스터 calls slot 0x3c on the stream

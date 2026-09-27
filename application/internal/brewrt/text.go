@@ -90,14 +90,14 @@ func (r *Runtime) drawDisplayText() error {
 		return nil
 	}
 
-	pixels := make([]byte, framebufferBytes)
+	pixels := make([]byte, r.screenBytes())
 	if err := r.cpu.ReadMemory(framebufferBase, pixels); err != nil {
 		return fmt.Errorf("read BREW DrawText framebuffer: %w", err)
 	}
-	canvas := image.NewRGBA(image.Rect(0, 0, int(framebufferWidth), int(framebufferHeight)))
-	for py := uint32(0); py < framebufferHeight; py++ {
-		for px := uint32(0); px < framebufferWidth; px++ {
-			native := binary.LittleEndian.Uint16(pixels[(py*framebufferWidth+px)*2:])
+	canvas := image.NewRGBA(image.Rect(0, 0, int(r.screenWidth), int(r.screenHeight)))
+	for py := uint32(0); py < r.screenHeight; py++ {
+		for px := uint32(0); px < r.screenWidth; px++ {
+			native := binary.LittleEndian.Uint16(pixels[(py*r.screenWidth+px)*2:])
 			canvas.SetRGBA(int(px), int(py), color.RGBA{
 				R: uint8((uint32(native>>11) * 255) / 31),
 				G: uint8((uint32((native>>5)&0x3f) * 255) / 63),
@@ -161,10 +161,10 @@ func (r *Runtime) drawDisplayText() error {
 		for px := dirty.Min.X; px < dirty.Max.X; px++ {
 			value := canvas.RGBAAt(px, py)
 			native := uint16(value.R>>3)<<11 | uint16(value.G>>2)<<5 | uint16(value.B>>3)
-			binary.LittleEndian.PutUint16(pixels[(uint32(py)*framebufferWidth+uint32(px))*2:], native)
+			binary.LittleEndian.PutUint16(pixels[(uint32(py)*r.screenWidth+uint32(px))*2:], native)
 		}
-		start := (uint32(py)*framebufferWidth + uint32(dirty.Min.X)) * 2
-		end := (uint32(py)*framebufferWidth + uint32(dirty.Max.X)) * 2
+		start := (uint32(py)*r.screenWidth + uint32(dirty.Min.X)) * 2
+		end := (uint32(py)*r.screenWidth + uint32(dirty.Max.X)) * 2
 		if err := r.cpu.WriteMemory(framebufferBase+start, pixels[start:end]); err != nil {
 			return fmt.Errorf("write BREW DrawText framebuffer: %w", err)
 		}
@@ -224,7 +224,7 @@ func displayRGB565(value color.RGBA) uint16 {
 }
 
 func (r *Runtime) displayTextClip(address uint32) (image.Rectangle, error) {
-	clip := image.Rect(0, 0, int(framebufferWidth), int(framebufferHeight))
+	clip := image.Rect(0, 0, int(r.screenWidth), int(r.screenHeight))
 	if address == 0 {
 		return clip, nil
 	}
@@ -286,7 +286,7 @@ func (r *Runtime) displayText(address, rawCount uint32, oem bool) (string, error
 			}
 			unit := binary.LittleEndian.Uint16(encoded[:])
 			if unit == 0 {
-				return decodeBREWAECHAR(units), nil
+				return decodeBREWAECHARPreferred(units, r.preferPackedAECHAR), nil
 			}
 			units = append(units, unit)
 		}
@@ -306,7 +306,7 @@ func (r *Runtime) displayText(address, rawCount uint32, oem bool) (string, error
 			units[index] = binary.LittleEndian.Uint16(raw[index*2:])
 		}
 	}
-	return decodeBREWAECHAR(units), nil
+	return decodeBREWAECHARPreferred(units, r.preferPackedAECHAR), nil
 }
 
 // STREXPAND on Korean BREW handsets can place one EUC-KR double-byte code in
@@ -315,9 +315,13 @@ func (r *Runtime) displayText(address, rawCount uint32, oem bool) (string, error
 // evidence it is not ordinary precomposed Hangul. Otherwise leave UTF-16
 // untouched, including surrogate pairs.
 func decodeBREWAECHAR(units []uint16) string {
+	return decodeBREWAECHARPreferred(units, false)
+}
+
+func decodeBREWAECHARPreferred(units []uint16, preferPacked bool) string {
 	unicodeText := string(utf16.Decode(units))
 	packed := make([]byte, 0, len(units)*2)
-	evidence := false
+	evidence := preferPacked
 	for _, unit := range units {
 		if unit < 0x80 {
 			packed = append(packed, byte(unit))

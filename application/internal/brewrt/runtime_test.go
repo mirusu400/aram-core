@@ -6,8 +6,10 @@ import (
 	"encoding/binary"
 	"image"
 	"image/color"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf16"
 
 	"bytes"
 	"golang.org/x/image/bmp"
@@ -998,6 +1000,78 @@ func TestSprintfSupportsBoundedStringAndIntegerFormats(t *testing.T) {
 	}
 	if text, err := runtime.readCString(destination); err != nil || text != "KT" {
 		t.Fatalf("sprintf %%c result = %q err=%v, want KT", text, err)
+	}
+}
+
+func TestSprintfSupportsARM32LongArguments(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	destination, formatAt := heapBase+0x500, heapBase+0x300
+	if err := runtime.cpu.WriteMemory(formatAt, []byte(strings.Repeat("%ld,", 16)+"\x00")); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR0: destination,
+		cpu.RegisterR1: formatAt,
+		cpu.RegisterR2: ^uint32(0),
+		cpu.RegisterR3: 2,
+		cpu.RegisterSP: stackBase,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stackArgs := make([]byte, 14*4)
+	for index := 0; index < 14; index++ {
+		binary.LittleEndian.PutUint32(stackArgs[index*4:], uint32(index+3))
+	}
+	if err := runtime.cpu.WriteMemory(stackBase, stackArgs); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.formatResourceName(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := runtime.readCString(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "-1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,"
+	if got != want {
+		t.Fatalf("sprintf 16 %%ld arguments = %q, want %q", got, want)
+	}
+}
+
+func TestWideSprintfSupportsARM32LongArguments(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	destination, formatAt := heapBase+0x700, heapBase+0x800
+	format := encodeGuestWideString(utf16.Encode([]rune("n=%ld u=%lu")))
+	if err := runtime.cpu.WriteMemory(formatAt, format); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR0: destination,
+		cpu.RegisterR1: 128,
+		cpu.RegisterR2: formatAt,
+		cpu.RegisterR3: ^uint32(0),
+		cpu.RegisterSP: stackBase,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var second [4]byte
+	binary.LittleEndian.PutUint32(second[:], 42)
+	if err := runtime.cpu.WriteMemory(stackBase, second[:]); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.formatGuestWideString(); err != nil {
+		t.Fatal(err)
+	}
+	units, err := runtime.readGuestWideString(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(utf16.Decode(units)); got != "n=-1 u=42" {
+		t.Fatalf("wsprintf long arguments = %q, want n=-1 u=42", got)
 	}
 }
 
