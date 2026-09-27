@@ -247,9 +247,19 @@ func privateDataCacheIndex(address uint32, permission cpu.Permissions) uint32 {
 // privateDataHit stays small enough to inline into scalar loads and stores.
 // The page is only a cache index: the cached region's full bounds and access
 // permissions must cover the entire operation, including unaligned accesses.
+// WASM folds two redundant checks for positive scalar widths. Map guarantees
+// address+len(data) <= 2^32,
+// so an address below the region wraps its uint32 offset to at least len(data).
+// The widened end check therefore rejects both ends, and empty slots, without
+// separate lower-bound and nil-slice branches. Keep this private-mapping proof
+// separate from directData, whose slices are supplied by an external bus.
 func (b *Backend) privateDataHit(address uint32, size int, permission cpu.Permissions) ([]byte, int, cpu.Permissions, bool) {
 	entry := &b.privateDataCache[privateDataCacheIndex(address, permission)]
-	if entry.data == nil || entry.perms&permission != permission || address < entry.address {
+	if foldPrivateScalarBounds {
+		if size <= 0 || entry.perms&permission != permission {
+			return nil, 0, 0, false
+		}
+	} else if entry.data == nil || entry.perms&permission != permission || address < entry.address {
 		return nil, 0, 0, false
 	}
 	offset := uint64(address - entry.address)

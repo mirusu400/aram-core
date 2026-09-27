@@ -139,3 +139,68 @@ func TestPrivateDataCacheMatchesColdScalarAccess(t *testing.T) {
 		}
 	}
 }
+
+func TestPrivateDataCacheScalarBoundsMatchWideAddressOracle(t *testing.T) {
+	rng := rand.New(rand.NewSource(931))
+	for _, mapping := range []struct{ address, size uint32 }{
+		{0, 16}, {1, 16}, {0x1000, 32}, {0xffff0000, 4096},
+		{0xfffffff0, 16}, {0xfffffff7, 9}, {0xffffffff, 1},
+	} {
+		b := New()
+		check(t, b.Map(mapping.address, mapping.size, cpu.PermissionRead|cpu.PermissionWrite))
+		mapped := &b.regions[0]
+		addresses := []uint32{0, 1, 0x7fffffff, 0x80000000, 0xfffffffe, 0xffffffff}
+		for delta := int64(-5); delta <= int64(mapping.size)+5; delta++ {
+			addresses = append(addresses, uint32(int64(mapping.address)+delta))
+		}
+		for range 256 {
+			addresses = append(addresses, rng.Uint32())
+		}
+		for _, address := range addresses {
+			for _, width := range []int{1, 2, 4} {
+				for _, permission := range []cpu.Permissions{cpu.PermissionRead, cpu.PermissionWrite, cpu.PermissionExecute} {
+					// Deliberately force an index collision even for an out-of-region
+					// address: the full region bounds, not the page index, decide a hit.
+					b.cacheData(mapped, address, permission)
+					data, offset, perms, hit := b.privateDataHit(address, width, permission)
+					want := mapped.permissions&permission == permission &&
+						uint64(address) >= uint64(mapping.address) &&
+						uint64(address)+uint64(width) <= uint64(mapping.address)+uint64(mapping.size)
+					if hit != want {
+						t.Fatalf("mapping %#x/%d, address %#x width %d permission %d: hit=%v want=%v", mapping.address, mapping.size, address, width, permission, hit, want)
+					}
+					if hit && (offset != int(address-mapping.address) || perms != mapped.permissions || len(data) != int(mapping.size) || &data[0] != &mapped.data[0]) {
+						t.Fatal("cache hit changed the backing region, offset or permissions")
+					}
+				}
+			}
+		}
+		check(t, b.Close())
+	}
+	for _, permission := range []cpu.Permissions{cpu.PermissionRead, cpu.PermissionWrite, cpu.PermissionExecute} {
+		for _, width := range []int{1, 2, 4} {
+			if _, _, _, hit := new(Backend).privateDataHit(0, width, permission); hit {
+				t.Fatal("empty cache produced a scalar hit")
+			}
+		}
+	}
+}
+
+func BenchmarkPrivateScalarMemory(b *testing.B) {
+	backend := New()
+	b.Cleanup(func() { _ = backend.Close() })
+	check(b, backend.Map(0x1000, 4096, cpu.PermissionRead|cpu.PermissionWrite))
+	check(b, backend.write32(0x1001, 0, cpu.PermissionWrite))
+	_, err := backend.read32(0x1001, cpu.PermissionRead)
+	check(b, err)
+	b.ResetTimer()
+	for range b.N {
+		value, err := backend.read32(0x1001, cpu.PermissionRead)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := backend.write32(0x1001, value+1, cpu.PermissionWrite); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
