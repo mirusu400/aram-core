@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"github.com/mirusu400/aram-core/application/internal/guest"
 	"image"
-	"image/color"
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
@@ -506,22 +505,15 @@ func (r *Runtime) presentWIPICFramebuffer(handle uint32) error {
 		return err
 	}
 	bounds := r.frame.Bounds()
+	// Keep the existing snapshot/hash contract, but copy whole overlapping
+	// rows into the host image. Pix starts at Bounds().Min even for a
+	// nonzero-origin subimage, and Stride preserves padding and margins.
 	width := min(int(frame.Width), bounds.Dx())
 	height := min(int(frame.Height), bounds.Dy())
 	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
-			offset := (y*int(frame.Width) + x) * 4
-			r.frame.SetRGBA(
-				bounds.Min.X+x,
-				bounds.Min.Y+y,
-				color.RGBA{
-					R: frame.RGBA[offset+0],
-					G: frame.RGBA[offset+1],
-					B: frame.RGBA[offset+2],
-					A: frame.RGBA[offset+3],
-				},
-			)
-		}
+		source := y * int(frame.Width) * 4
+		destination := y * r.frame.Stride
+		copy(r.frame.Pix[destination:destination+width*4], frame.RGBA[source:source+width*4])
 	}
 	r.WipicScreenPending = false
 	if state := r.Graphics[r.ScreenGraphics]; state != nil {
