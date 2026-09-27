@@ -32,6 +32,7 @@ func (b *Backend) invalidateDirectMemory() {
 
 func (b *Backend) clearDataCaches() {
 	clear(b.dataCache[:])
+	clear(b.privateDataCache[:])
 	clear(b.directDataCacheAlt[:])
 	clear(b.directDataMissCache[:])
 }
@@ -239,17 +240,28 @@ func (b *Backend) dataHit(address uint32, size int, permission cpu.Permissions) 
 	return entry.data, int(offset), entry.perms, true
 }
 
-// cacheData records a region as the most recently accessed for one access
-// permission (Read/Write/Execute), so a read region and a write region can both
-// stay cached. It stores value copies of the region's address/permissions/slice,
-// which stay valid across region re-sorts because regions never overlap and own
-// stable backing arrays; the cache is invalidated wherever executeData is.
-func (b *Backend) cacheData(mapped *region, access cpu.Permissions) {
-	slot := int(access)
-	if slot >= len(b.dataCache) {
-		return
+func privateDataCacheIndex(address uint32, permission cpu.Permissions) uint32 {
+	return (address>>12 ^ address>>20 ^ uint32(permission)) & 63
+}
+
+// privateDataHit stays small enough to inline into scalar loads and stores.
+// The page is only a cache index: the cached region's full bounds and access
+// permissions must cover the entire operation, including unaligned accesses.
+func (b *Backend) privateDataHit(address uint32, size int, permission cpu.Permissions) ([]byte, int, cpu.Permissions, bool) {
+	entry := &b.privateDataCache[privateDataCacheIndex(address, permission)]
+	if entry.data == nil || entry.perms&permission != permission || address < entry.address {
+		return nil, 0, 0, false
 	}
-	b.dataCache[slot] = dataRegionCache{
+	offset := uint64(address - entry.address)
+	if offset+uint64(size) > uint64(len(entry.data)) {
+		return nil, 0, 0, false
+	}
+	return entry.data, int(offset), entry.perms, true
+}
+
+// A region owns stable backing storage; mapping changes clear all entries.
+func (b *Backend) cacheData(mapped *region, address uint32, access cpu.Permissions) {
+	b.privateDataCache[privateDataCacheIndex(address, access)] = dataRegionCache{
 		address: mapped.address,
 		perms:   mapped.permissions,
 		data:    mapped.data,
@@ -278,7 +290,7 @@ func (b *Backend) read16(address uint32, permission cpu.Permissions) (uint16, er
 	if permission == cpu.PermissionExecute {
 		return b.fetch16(address)
 	}
-	if data, offset, perms, ok := b.dataHit(address, 2, permission); ok {
+	if data, offset, perms, ok := b.privateDataHit(address, 2, permission); ok {
 		if b.tlb != nil {
 			b.tlbNote(address, address-uint32(offset), data, perms)
 		}
@@ -289,7 +301,7 @@ func (b *Backend) read16(address uint32, permission cpu.Permissions) (uint16, er
 		return 0, err
 	}
 	if len(mapped.data)-offset >= 2 {
-		b.cacheData(mapped, permission)
+		b.cacheData(mapped, address, permission)
 		if b.tlb != nil {
 			b.tlbNote(address, mapped.address, mapped.data, mapped.permissions)
 		}
@@ -324,7 +336,7 @@ func (b *Backend) read32(address uint32, permission cpu.Permissions) (uint32, er
 	if permission == cpu.PermissionExecute {
 		return b.fetch32(address)
 	}
-	if data, offset, perms, ok := b.dataHit(address, 4, permission); ok {
+	if data, offset, perms, ok := b.privateDataHit(address, 4, permission); ok {
 		if b.tlb != nil {
 			b.tlbNote(address, address-uint32(offset), data, perms)
 		}
@@ -335,7 +347,7 @@ func (b *Backend) read32(address uint32, permission cpu.Permissions) (uint32, er
 		return 0, err
 	}
 	if len(mapped.data)-offset >= 4 {
-		b.cacheData(mapped, permission)
+		b.cacheData(mapped, address, permission)
 		if b.tlb != nil {
 			b.tlbNote(address, mapped.address, mapped.data, mapped.permissions)
 		}
@@ -467,7 +479,7 @@ func (b *Backend) write16(address uint32, value uint16, permission cpu.Permissio
 			return b.recordExternalAbort(address, permission, err)
 		}
 	}
-	if data, offset, perms, ok := b.dataHit(address, 2, permission); ok {
+	if data, offset, perms, ok := b.privateDataHit(address, 2, permission); ok {
 		binary.LittleEndian.PutUint16(data[offset:offset+2], value)
 		if b.jitBlocks != nil || b.nativeBlocks != nil {
 			b.smcInvalidate(address, 2, perms)
@@ -482,7 +494,7 @@ func (b *Backend) write16(address uint32, value uint16, permission cpu.Permissio
 		return err
 	}
 	if len(mapped.data)-offset >= 2 {
-		b.cacheData(mapped, permission)
+		b.cacheData(mapped, address, permission)
 		binary.LittleEndian.PutUint16(mapped.data[offset:offset+2], value)
 		if b.jitBlocks != nil || b.nativeBlocks != nil {
 			b.smcInvalidate(address, 2, mapped.permissions)
@@ -516,7 +528,7 @@ func (b *Backend) write32(address, value uint32, permission cpu.Permissions) err
 			return b.recordExternalAbort(address, permission, err)
 		}
 	}
-	if data, offset, perms, ok := b.dataHit(address, 4, permission); ok {
+	if data, offset, perms, ok := b.privateDataHit(address, 4, permission); ok {
 		binary.LittleEndian.PutUint32(data[offset:offset+4], value)
 		if b.jitBlocks != nil || b.nativeBlocks != nil {
 			b.smcInvalidate(address, 4, perms)
@@ -531,7 +543,7 @@ func (b *Backend) write32(address, value uint32, permission cpu.Permissions) err
 		return err
 	}
 	if len(mapped.data)-offset >= 4 {
-		b.cacheData(mapped, permission)
+		b.cacheData(mapped, address, permission)
 		binary.LittleEndian.PutUint32(mapped.data[offset:offset+4], value)
 		if b.jitBlocks != nil || b.nativeBlocks != nil {
 			b.smcInvalidate(address, 4, mapped.permissions)
@@ -565,7 +577,7 @@ func (b *Backend) read8(address uint32, permission cpu.Permissions) (byte, error
 			return data[0], nil
 		}
 	}
-	if data, offset, perms, ok := b.dataHit(address, 1, permission); ok {
+	if data, offset, perms, ok := b.privateDataHit(address, 1, permission); ok {
 		if b.tlb != nil {
 			b.tlbNote(address, address-uint32(offset), data, perms)
 		}
@@ -575,7 +587,7 @@ func (b *Backend) read8(address uint32, permission cpu.Permissions) (byte, error
 	if err != nil {
 		return 0, err
 	}
-	b.cacheData(mapped, permission)
+	b.cacheData(mapped, address, permission)
 	if b.tlb != nil {
 		b.tlbNote(address, mapped.address, mapped.data, mapped.permissions)
 	}
@@ -601,7 +613,7 @@ func (b *Backend) write8(address uint32, value byte, permission cpu.Permissions)
 			return b.recordExternalAbort(address, permission, err)
 		}
 	}
-	if data, offset, perms, ok := b.dataHit(address, 1, permission); ok {
+	if data, offset, perms, ok := b.privateDataHit(address, 1, permission); ok {
 		data[offset] = value
 		if b.jitBlocks != nil || b.nativeBlocks != nil {
 			b.smcInvalidate(address, 1, perms)
@@ -615,7 +627,7 @@ func (b *Backend) write8(address uint32, value byte, permission cpu.Permissions)
 	if err != nil {
 		return err
 	}
-	b.cacheData(mapped, permission)
+	b.cacheData(mapped, address, permission)
 	mapped.data[offset] = value
 	if b.jitBlocks != nil || b.nativeBlocks != nil {
 		b.smcInvalidate(address, 1, mapped.permissions)

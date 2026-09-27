@@ -93,21 +93,21 @@ type Backend struct {
 	regionHints    [8]int
 	executeAddress uint32
 	executeData    []byte
-	// dataCache caches the most recently accessed data region per access
-	// permission, so a routine that reads one region and writes another - a
-	// software blitter reading source pixels and writing the framebuffer, the
-	// dominant cost of a heavy frame - keeps BOTH on the fast path instead of
-	// thrashing one slot and paying findRegion on every access. Indexed by the
-	// access permission bit (Read=1, Write=2, Execute=4). Each entry is a value
-	// copy of the region's slice/address/permissions and stays valid across
-	// region re-sorts (regions never overlap and their backing arrays are
-	// stable); it is invalidated wherever executeData is.
+	// dataCache retains the most recent whole-system direct-RAM window per
+	// access permission, indexed by the permission bit (Read=1, Write=2).
+	// The bus invalidator clears these borrowed slices when topology or
+	// observer configuration changes.
 	dataCache [8]dataRegionCache
+	// Private mappings use a small page-indexed cache so guest stack, heap,
+	// literals and framebuffer reads do not evict each other on every access.
+	// Entries still cover only one checked, non-overlapping region and are
+	// invalidated alongside the whole-system direct-memory windows.
+	privateDataCache [64]dataRegionCache
 	// directDataCacheAlt retains the previous whole-system RAM region for each
 	// permission. MMU table walks and the translated data they resolve commonly
 	// alternate between two physical RAM regions; this second slot prevents
 	// those misses from taking the system bus mutex every time. Private mappings
-	// keep using dataCache's single-entry hot path.
+	// use the independent page-indexed cache above.
 	directDataCacheAlt [8]dataRegionCache
 	// directDataMissCache remembers physical 1 KiB pages that the attached bus
 	// declined as plain RAM (normally MMIO, ROM, or sparse RAM). Repeated scalar
