@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -32,6 +33,11 @@ const (
 // executes before Run re-polls host cancellation. It matches the previous
 // per-256-instruction poll cadence so interruption latency is unchanged.
 const runBatchInstructions = 256
+
+// Go-WASM needs an explicit scheduler opportunity for runnable host work.
+// Cancellation is still polled every batch; scheduling every 64 batches limits
+// overhead without changing retired instructions or guest time.
+const cooperativeSchedulerBatchInterval = 64
 
 type region struct {
 	address     uint32
@@ -827,7 +833,15 @@ func (b *Backend) Run(ctx context.Context, address uint32, mode cpu.Mode, budget
 	b.stopped.Store(false)
 
 	var executed uint64
+	schedulerBatches := cooperativeSchedulerBatchInterval
 	for budget == 0 || executed < budget {
+		if cooperativeRunScheduler {
+			if schedulerBatches == 0 {
+				runtime.Gosched()
+				schedulerBatches = cooperativeSchedulerBatchInterval
+			}
+			schedulerBatches--
+		}
 		// Poll host cancellation between instruction batches instead of before
 		// every guest instruction. Batches are capped at runBatchInstructions so
 		// cancellation latency stays bounded, matching the previous

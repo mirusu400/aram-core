@@ -311,7 +311,20 @@ outer:
 				return executed, &reason, nil
 			}
 		}
-		block := b.jitBlockAt(pc)
+		var block *jitBlock
+		if inlineThumbDispatchCacheLookup {
+			// Keep the already-translated WASM hot lookup here: jitBlockAt
+			// also owns translation and cannot be inlined. lookup preserves
+			// both ways, negative entries and generation checks.
+			slot := &b.jitCache[int(pc>>1)&(jitCacheSize-1)]
+			var cached bool
+			block, cached = slot.lookup(pc, b.jitGen)
+			if !cached {
+				block = b.jitBlockAt(pc)
+			}
+		} else {
+			block = b.jitBlockAt(pc)
+		}
 		if block == nil {
 			// Untranslatable at pc: interpret exactly one instruction.
 			n, reason, err := b.runThumb(1)

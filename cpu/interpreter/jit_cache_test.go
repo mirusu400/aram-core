@@ -1,6 +1,50 @@
 package interpreter
 
-import "testing"
+import (
+	"context"
+	"testing"
+
+	"github.com/mirusu400/aram-core/cpu"
+)
+
+// Exercise the actual block dispatcher, not only jitBlockAt: alternating PCs
+// collide in one two-way set, then a code write changes its generation.
+func TestThumbDispatchRunCollisionsAndInvalidationMatchInterpreter(t *testing.T) {
+	precise, jit := New(), NewJIT()
+	const firstPC = uint32(0x1000)
+	secondPC := firstPC + 2*jitCacheSize
+	for _, backend := range []*Backend{precise, jit} {
+		t.Cleanup(func() { _ = backend.Close() })
+		for _, pc := range []uint32{firstPC, secondPC} {
+			check(t, backend.Map(pc, 4096, cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute))
+		}
+		check(t, backend.WriteMemory(firstPC, thumbTestCode(0x3001, 0x4708)))  // adds r0,#1; bx r1
+		check(t, backend.WriteMemory(secondPC, thumbTestCode(0x3002, 0x4710))) // adds r0,#2; bx r2
+		check(t, backend.WriteRegister(cpu.RegisterR1, secondPC|1))
+		check(t, backend.WriteRegister(cpu.RegisterR2, firstPC|1))
+	}
+	for phase := 0; phase < 3; phase++ {
+		if phase == 1 {
+			for _, backend := range []*Backend{precise, jit} {
+				check(t, backend.WriteMemory(secondPC, thumbTestCode(0x3003)))
+			}
+		}
+		for _, backend := range []*Backend{precise, jit} {
+			result := backend.Run(context.Background(), firstPC, cpu.ModeThumb, 8)
+			if result.Err != nil || result.Reason != cpu.StopBudget || result.Instructions != 8 {
+				t.Fatalf("phase %d: run = %+v", phase, result)
+			}
+		}
+		for index := uint32(0); index <= cpu.RegisterCPSR; index++ {
+			if immediateMemoryRegisterValue(t, precise, index) != immediateMemoryRegisterValue(t, jit, index) {
+				t.Fatalf("phase %d: architectural register %d differs", phase, index)
+			}
+		}
+	}
+	if got := immediateMemoryRegisterValue(t, jit, cpu.RegisterR0); got != 22 {
+		t.Fatalf("collision/invalidation loop r0 = %d, want 22", got)
+	}
+}
 
 func TestJITDispatchCacheRetainsNegativeTranslation(t *testing.T) {
 	backend := NewJIT()
