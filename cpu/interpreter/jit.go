@@ -58,6 +58,7 @@ type jitBlock struct {
 	thumb       []thumbMicroInstr
 	countedLoop *jitCountedLoop
 	paletteLoop *jitThumbPaletteLoop
+	colorLoop   *jitThumbColorLoop
 }
 
 const jitMaxBlock = 256
@@ -349,6 +350,16 @@ outer:
 				continue outer
 			}
 		}
+		if block.colorLoop != nil {
+			retired := b.accelerateThumbColorLoop(
+				block.colorLoop, limit-executed,
+				wholeSystem, hasExecutionTraps, traced,
+			)
+			executed += retired
+			if retired != 0 {
+				continue outer
+			}
+		}
 		for {
 			blockInstructions := len(block.thumb)
 			if remaining := limit - executed; uint64(blockInstructions) > remaining {
@@ -509,6 +520,13 @@ func (b *Backend) translateThumbBlock(pc uint32) *jitBlock {
 	}
 	if block.paletteLoop != nil {
 		block.end = pc + thumbPaletteLoopInstructions*2
+	}
+	if len(instrs) >= 3 && instrs[0].raw == 0x8832 &&
+		instrs[1].raw&0xff00 == 0x4b00 && instrs[2].raw == 0x4013 {
+		block.colorLoop = b.classifyThumbColorLoop(pc)
+		if block.colorLoop != nil {
+			block.end = pc + thumbColorLoopInstructions*2
+		}
 	}
 	if b.loopAcceleration {
 		block.countedLoop = classifyThumbCountedLoop(block)
