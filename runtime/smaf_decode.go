@@ -47,6 +47,7 @@ const (
 type smafEvent struct {
 	sample  uint64
 	kind    smafEventKind
+	noteID  uint32
 	channel int
 	a, b    int
 }
@@ -669,6 +670,32 @@ func (decoder *smafDecoder) sampleAt(milliseconds float64) uint64 {
 	return uint64(sample)
 }
 
+// A SMAF note carries its own gate rather than a separate MIDI key-off.
+// Preserve that pairing: another note of the same pitch can start before this
+// gate ends, and its gate can even end first. A pitch-only lookup may release
+// the wrong note (or keep releasing an old tail while the new note is held).
+func (decoder *smafDecoder) addGatedNote(
+	on, off uint64,
+	channel, note, velocity int,
+) {
+	if len(decoder.events) > maxSMAFEvents-2 {
+		return
+	}
+	// Event positions are unique across tracks and bounded by maxSMAFEvents.
+	// Zero is reserved for ordinary MIDI messages without an explicit gate.
+	id := uint32(len(decoder.events) + 1)
+	decoder.events = append(decoder.events,
+		smafEvent{
+			sample: on, kind: smafNoteOn, noteID: id,
+			channel: channel, a: note, b: velocity,
+		},
+		smafEvent{
+			sample: off, kind: smafNoteOff, noteID: id,
+			channel: channel, a: note,
+		},
+	)
+}
+
 func (decoder *smafDecoder) decodeMobile(track smafTrack, base int) {
 	data := track.sequence
 	durationBase := smafTimeBase(track.durationBase)
@@ -714,13 +741,7 @@ func (decoder *smafDecoder) decodeMobile(track smafTrack, base int) {
 				continue
 			}
 			off := at + decoder.sampleAt(float64(gate)*gateBase)
-			decoder.addEvent(smafEvent{
-				sample: at, kind: smafNoteOn, channel: channel,
-				a: note, b: currentVelocity,
-			})
-			decoder.addEvent(smafEvent{
-				sample: off, kind: smafNoteOff, channel: channel, a: note,
-			})
+			decoder.addGatedNote(at, off, channel, note, currentVelocity)
 		case 0xa0:
 			offset = min(offset+2, len(data))
 		case 0xb0:
@@ -956,12 +977,7 @@ func (decoder *smafDecoder) decodeHandyPhone(
 			continue
 		}
 		off := on + decoder.sampleAt(float64(gate)*gateBase)
-		decoder.addEvent(smafEvent{
-			sample: on, kind: smafNoteOn, channel: channel, a: note, b: 127,
-		})
-		decoder.addEvent(smafEvent{
-			sample: off, kind: smafNoteOff, channel: channel, a: note,
-		})
+		decoder.addGatedNote(on, off, channel, note, 127)
 	}
 }
 
@@ -1039,8 +1055,9 @@ func (decoder *smafDecoder) fire(event smafEvent) {
 	case smafNoteOff:
 		for index := range decoder.pool {
 			voice := &decoder.pool[index]
-			if voice.active && voice.channel == event.channel &&
-				voice.keyNote == event.a {
+			if voice.active && voice.keyDown &&
+				voice.channel == event.channel && voice.keyNote == event.a &&
+				(event.noteID == 0 || voice.noteID == event.noteID) {
 				voice.noteOff()
 				break
 			}
@@ -1073,6 +1090,7 @@ func (decoder *smafDecoder) fire(event smafEvent) {
 		voice.channel = event.channel
 		voice.note = soundingNote
 		voice.keyNote = event.a
+		voice.noteID = event.noteID
 		voice.volume = channel.volume * channel.expression
 		velocity := float64(event.b)
 		if velocity == 0 {

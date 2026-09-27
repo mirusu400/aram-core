@@ -711,6 +711,8 @@ type smafVoice struct {
 	velocity, volume       float64
 	lfoPhase, lfoStep      float64
 	channel, note, keyNote int
+	noteID                 uint32
+	keyDown                bool
 	pan                    float64
 	panGains               smafPanGains
 	// usesLFO records whether any operator this note plays reads the LFO. A
@@ -727,6 +729,7 @@ func (voice *smafVoice) noteOn(
 	frequency, velocity float64,
 ) {
 	voice.patch = patch
+	voice.keyDown = true
 	voice.velocity = math.Max(0, math.Min(1, velocity))
 	for index := range voice.operators {
 		voice.feedbackMemory[index] = [2]float64{}
@@ -755,6 +758,9 @@ func (voice *smafVoice) noteOn(
 }
 
 func (voice *smafVoice) noteOff() {
+	// A key is released even when an operator's XOF envelope ignores key-off.
+	// Neither that operator nor a release tail can consume the next note's gate.
+	voice.keyDown = false
 	count := 2
 	if voice.patch.fourOp {
 		count = 4

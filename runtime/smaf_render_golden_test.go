@@ -22,8 +22,10 @@ import (
 // music: it plays overlapping notes on two channels, pans them apart so the
 // stereo gains differ per voice, and bends one so a voice retunes mid-note.
 func TestSMAFRenderIsBitStable(t *testing.T) {
-	const wantHash = "35ca156344954641d1597a9346fec1c2" +
-		"369acb8ecf352e69fdb2dae78c2cd8de"
+	// The last 0x80 event is another gated C4, not a MIDI key-off. Its own
+	// gate now releases it instead of repeatedly releasing the first C4's tail.
+	const wantHash = "5529dfc934990216eb72b84e00a8464d" +
+		"74d380a903e743ddb6cadccc95712a5e"
 	sequence := []byte{
 		0x00, 0xb0, 0x07, 0x7f, // channel 0 volume
 		0x00, 0xb0, 0x0a, 0x00, // channel 0 panned hard left
@@ -36,7 +38,7 @@ func TestSMAFRenderIsBitStable(t *testing.T) {
 		0x14, 0xb0, 0x0a, 0x40, // channel 0 re-panned to centre
 		0x0a, 0x90, 64, 100, 90, // E4 on channel 0
 		0x14, 0xe1, 0x00, 0x50, // pitch bend on channel 1
-		0x28, 0x80, 60, 60, // release
+		0x28, 0x80, 60, 60, // another C4, reusing the channel velocity
 		0x28, 0xff, 0x2f, // end of sequence
 	}
 	decoded := decodeSMAFPCM16(smafScore(sequence), 44_100)
