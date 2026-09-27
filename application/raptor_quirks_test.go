@@ -14,6 +14,32 @@ const battleMonsterModRaptorSHA256 = "b15f57f7aa597159a8495c04de2b987c2bdf72d9e5
 const maplePirateRaptorSHA256 = "7f2c396bced5abba51e93cd1509eb06102ba9fec33d8ec96f79258c2ee3b039c"
 const sdKoreanWarRaptorSHA256 = "61ed69520fd34679be0a72029d4bbee25d10799e6c7dfeb9cefd8960a24bcb80"
 
+func TestIMusician2RaptorFullScreenGeometryRequiresExactPackage(t *testing.T) {
+	source := machinecore.Source{SHA256: "3ceae1d40ab7c935e7f57d3851c5516dd7295799d202c7d61196566ce30d56bb"}
+	pkg := raptorloader.Package{Descriptor: raptorloader.Descriptor{AID: "00032548", MainClass: "Clet"}}
+	size := image.Pt(240, 320)
+	if got := raptorRuntimeOptions(source, pkg, size).PrimaryFramebufferHeight; got != 320 {
+		t.Fatalf("full-screen framebuffer height = %d, want 320", got)
+	}
+	for name, mutate := range map[string]func(*machinecore.Source, *raptorloader.Package, *image.Point){
+		"digest": func(s *machinecore.Source, _ *raptorloader.Package, _ *image.Point) { s.SHA256 = hybrid2RaptorSHA256 },
+		"aid":    func(_ *machinecore.Source, p *raptorloader.Package, _ *image.Point) { p.Descriptor.AID = "00000000" },
+		"main class": func(_ *machinecore.Source, p *raptorloader.Package, _ *image.Point) {
+			p.Descriptor.MainClass = "OtherClet"
+		},
+		"width":  func(_ *machinecore.Source, _ *raptorloader.Package, s *image.Point) { s.X = 241 },
+		"height": func(_ *machinecore.Source, _ *raptorloader.Package, s *image.Point) { s.Y = 296 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changedSource, changedPackage, changedSize := source, pkg, size
+			mutate(&changedSource, &changedPackage, &changedSize)
+			if got := raptorRuntimeOptions(changedSource, changedPackage, changedSize).PrimaryFramebufferHeight; got != 0 {
+				t.Fatalf("lookalike framebuffer height = %d, want default", got)
+			}
+		})
+	}
+}
+
 func TestHybrid2RaptorPrimaryFramebufferHeightRequiresExactPackage(t *testing.T) {
 	source := machinecore.Source{SHA256: hybrid2RaptorSHA256}
 	pkg := raptorloader.Package{Descriptor: raptorloader.Descriptor{

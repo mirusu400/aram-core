@@ -185,6 +185,19 @@ type RaptorFramebufferGeometry struct {
 
 var RaptorFramebufferGeometries = []RaptorFramebufferGeometry{
 	{
+		// 아이뮤지션2 copies and filters the full display-info dimensions
+		// through its raw primary pixels. Moving that pointer below the
+		// handset strip overruns the allocation and corrupts sprite tables.
+		Key: RaptorTitleKey{
+			PackageSHA256: "3ceae1d40ab7c935e7f57d3851c5516dd7295799d202c7d61196566ce30d56bb",
+			AID:           "00032548",
+			MainClass:     "Clet",
+		},
+		FramebufferWidth:  240,
+		FramebufferHeight: 320,
+		PrimaryHeight:     320,
+	},
+	{
 		// 하이브리드2 (Hybrid 2) queries its primary raw framebuffer height,
 		// then adds the drawing context's origin before clipping. On the
 		// verified 240x320 LGT handset image, it therefore requires 320,
