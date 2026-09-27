@@ -717,6 +717,20 @@ func (g *ktfGraphics) offset() image.Point {
 // ignored, because the strokes are painted with a color that XORs to a visible
 // value but overwrites to white.
 func (g *ktfGraphics) plot(x, y int) {
+	if target, ok := g.Target.(*image.RGBA); ok {
+		if !g.xorMode {
+			target.SetRGBA(x, y, g.color)
+			return
+		}
+		old := target.RGBAAt(x, y)
+		target.SetRGBA(x, y, color.RGBA{
+			R: old.R ^ g.color.R,
+			G: old.G ^ g.color.G,
+			B: old.B ^ g.color.B,
+			A: 255,
+		})
+		return
+	}
 	if !g.xorMode {
 		g.Target.Set(x, y, g.color)
 		return

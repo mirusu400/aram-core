@@ -718,11 +718,15 @@ const ktfInspectMemoSize = 8
 // runs: the guest itself, and the host handler, which is free to write guest
 // memory. Nothing else may open it.
 type ktfInspectMemo struct {
-	addresses [ktfInspectMemoSize]uint32
-	classes   [ktfInspectMemoSize]JavaClass
-	length    int
-	next      int
-	open      bool
+	addresses      [ktfInspectMemoSize]uint32
+	classes        [ktfInspectMemoSize]JavaClass
+	length         int
+	next           int
+	open           bool
+	receiverObject uint32
+	receiverClass  uint32
+	receiverValid  bool
+	receiverHeader [8]byte
 }
 
 // open starts a resolution window with an empty memo.
@@ -738,6 +742,26 @@ func (m *ktfInspectMemo) reset() {
 	m.open = false
 	m.addresses = [ktfInspectMemoSize]uint32{}
 	m.classes = [ktfInspectMemoSize]JavaClass{}
+	m.receiverObject, m.receiverClass, m.receiverValid = 0, 0, false
+}
+
+// Receiver headers are stable only inside the same read-only resolution
+// window as class parses. Reuse its scratch buffer to avoid allocating two
+// slices for each ReadWords(receiver, 2), and share the read between correction
+// and virtual redispatch. Never retain the header across guest/host writes.
+func (r *Runtime) readHostJavaReceiverClass(object uint32) (uint32, error) {
+	memo := &r.inspectMemo
+	if memo.open && memo.receiverValid && memo.receiverObject == object {
+		return memo.receiverClass, nil
+	}
+	if err := r.CPU.ReadMemory(object, memo.receiverHeader[:]); err != nil {
+		return 0, err
+	}
+	class := binary.LittleEndian.Uint32(memo.receiverHeader[4:])
+	if memo.open {
+		memo.receiverObject, memo.receiverClass, memo.receiverValid = object, class, true
+	}
+	return class, nil
 }
 
 func (m *ktfInspectMemo) lookup(address uint32) (JavaClass, bool) {

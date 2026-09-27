@@ -3,6 +3,7 @@ package ktf
 import (
 	"context"
 	"image"
+	"image/color"
 	"testing"
 
 	"github.com/mirusu400/aram-core/cpu/interpreter"
@@ -29,7 +30,6 @@ func BenchmarkKTFJavaSetRGBPixelsHostCall(b *testing.B) {
 	check(b, runtime.writeWords(fields+8, []uint32{0xff336699}))
 	parameters := allocWords(b, runtime, 13)
 	if err := runtime.writeWords(parameters, []uint32{
-		0,
 		graphics,
 		1,
 		1,
@@ -47,6 +47,15 @@ func BenchmarkKTFJavaSetRGBPixelsHostCall(b *testing.B) {
 		"setRGBPixels",
 		"(IIII[III)V",
 	)
+	// NativeParameterBase starts with the receiver, not the synthetic context
+	// word. Check a real draw so this benchmark cannot silently time a null-
+	// receiver no-op instead of the graphics bridge.
+	if _, err := handler(context.Background(), runtime); err != nil {
+		b.Fatal(err)
+	}
+	if got := runtime.frame.RGBAAt(1, 1); got != (color.RGBA{R: 0x33, G: 0x66, B: 0x99, A: 0xff}) {
+		b.Fatalf("setRGBPixels did not draw: %+v", got)
+	}
 
 	b.ReportAllocs()
 	b.ResetTimer()

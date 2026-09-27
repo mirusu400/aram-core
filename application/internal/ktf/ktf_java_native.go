@@ -706,10 +706,13 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 		descriptor,
 	)
 	var detailedTraceCalls uint64
+	declaredClassName := className
+	declaresHostMethod := ktfHostSpecDeclaresJavaMethod(className, name, descriptor)
 	return func(
 		ctx context.Context,
 		runtime *Runtime,
 	) (value uint32, returnedErr error) {
+		className := declaredClassName
 		argumentWords := uint32(4)
 		if parameters, ok := ktfJavaParameterWords(descriptor); ok {
 			argumentWords = uint32(min(
@@ -745,12 +748,24 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 		// is over. See ktfInspectMemo.
 		runtime.inspectMemo.begin()
 		defer runtime.inspectMemo.reset()
-		className = runtime.correctHostJavaReceiverClass(
-			className,
-			name,
-			descriptor,
-			registers,
-		)
+		// The common case is an exact host-class receiver calling a method
+		// present in that class's host specification. It cannot need receiver
+		// repair or a guest override, so no class/method parsing is necessary.
+		// Subclasses, unrelated cached stubs and non-spec methods still follow
+		// the full live-metadata resolution below.
+		exactHostReceiver := false
+		if declaresHostMethod && !strings.HasPrefix(name, "<") && registers[1] != 0 {
+			declaredAddress := runtime.JavaClasses[className]
+			if runtime.hostJavaClass[declaredAddress] {
+				receiverClass, receiverErr := runtime.readHostJavaReceiverClass(registers[1])
+				exactHostReceiver = receiverErr == nil && receiverClass == declaredAddress
+			}
+		}
+		if !exactHostReceiver {
+			className = runtime.correctHostJavaReceiverClass(
+				className, name, descriptor, registers,
+			)
+		}
 		if className != declaredClass {
 			runtime.tracef(
 				"java_host_receiver_correct:%s.%s%s->%s",
@@ -790,14 +805,12 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 		// receiver's implementation must win over the host model, or the
 		// host silently swallows the call (observed: BaseCanvas.performed
 		// resolving to the LWC no-op, killing the game's timer loop).
-		if value, ok, err := runtime.redispatchGuestJavaMethod(
-			ctx,
-			className,
-			name,
-			descriptor,
-			registers,
-		); ok || err != nil {
-			return value, err
+		if !exactHostReceiver {
+			if value, ok, err := runtime.redispatchGuestJavaMethod(
+				ctx, className, name, descriptor, registers,
+			); ok || err != nil {
+				return value, err
+			}
 		}
 		// The handler below is free to write guest memory, so the resolution
 		// window ends here rather than at the end of the call.
@@ -1361,11 +1374,11 @@ func (r *Runtime) correctHostJavaReceiverClass(
 		method.AccessFlags&0x0008 != 0 {
 		return className
 	}
-	receiverWords, err := r.ReadWords(registers[1], 2)
-	if err != nil || receiverWords[1] == 0 {
+	receiverClass, err := r.readHostJavaReceiverClass(registers[1])
+	if err != nil || receiverClass == 0 {
 		return className
 	}
-	actual, err := r.InspectJavaClass(receiverWords[1])
+	actual, err := r.InspectJavaClass(receiverClass)
 	if err != nil {
 		return className
 	}
@@ -1422,11 +1435,11 @@ func (r *Runtime) redispatchGuestJavaMethod(
 			}
 		}
 	}
-	receiverWords, err := r.ReadWords(registers[1], 2)
+	receiverClass, err := r.readHostJavaReceiverClass(registers[1])
 	if err != nil {
 		return 0, false, nil
 	}
-	actual, err := r.InspectJavaClass(receiverWords[1])
+	actual, err := r.InspectJavaClass(receiverClass)
 	if err != nil || actual.Name == declaredClass || r.hostJavaClass[actual.Address] {
 		return 0, false, nil
 	}
