@@ -59,6 +59,7 @@ type jitBlock struct {
 	countedLoop *jitCountedLoop
 	paletteLoop *jitThumbPaletteLoop
 	colorLoop   *jitThumbColorLoop
+	fillLoop    *jitThumbFillLoop
 }
 
 const jitMaxBlock = 256
@@ -360,6 +361,15 @@ outer:
 				continue outer
 			}
 		}
+		if block.fillLoop != nil {
+			retired := b.accelerateThumbFillLoop(
+				block.fillLoop, limit-executed, wholeSystem, hasExecutionTraps, traced,
+			)
+			executed += retired
+			if retired != 0 {
+				continue outer
+			}
+		}
 		for {
 			blockInstructions := len(block.thumb)
 			if remaining := limit - executed; uint64(blockInstructions) > remaining {
@@ -530,6 +540,14 @@ func (b *Backend) translateThumbBlock(pc uint32) *jitBlock {
 	}
 	if b.loopAcceleration {
 		block.countedLoop = classifyThumbCountedLoop(block)
+	}
+	if instrs[0].raw == 0x4640 {
+		block.fillLoop = b.classifyThumbFillLoop(pc)
+	} else if instrs[0].raw == 0x1843 {
+		block.fillLoop = b.classifyThumbFillLoopTail(pc)
+	}
+	if block.fillLoop != nil {
+		block.end = block.fillLoop.start + thumbFillLoopInstructions*2
 	}
 	return block
 }
