@@ -38,8 +38,11 @@ type FramePublisher interface {
 }
 
 type DisplayConfig struct {
-	Width       int
-	Height      int
+	Width  int
+	Height int
+	// Origin translates the guest's drawing coordinates into framebuffer pixels.
+	OriginX     int
+	OriginY     int
 	Orientation DisplayOrientation
 	Palette     PaletteMapper
 	Publisher   FramePublisher
@@ -59,6 +62,8 @@ type DisplayAdapter struct {
 	mapping     uint8
 	selector    uint8
 	activeColor byte
+	originX     int
+	originY     int
 	text        *shared.Text
 	textOwner   shared.OwnerID
 	textFonts   [4]shared.ServiceID
@@ -80,6 +85,8 @@ func NewDisplayAdapter(config DisplayConfig) (*DisplayAdapter, error) {
 		palette:     config.Palette,
 		publisher:   config.Publisher,
 		activeColor: active,
+		originX:     config.OriginX,
+		originY:     config.OriginY,
 		text:        config.Text,
 		textOwner:   config.TextOwner,
 	}, nil
@@ -153,8 +160,8 @@ func (d *DisplayAdapter) FillGVMRectangle(x1, y1, x2, y2 int16) error {
 	if d.selector == 4 {
 		return nil
 	}
-	left, right := ordered(int(x1), int(x2))
-	top, bottom := ordered(int(y1), int(y2))
+	left, right := ordered(int(x1)+d.originX, int(x2)+d.originX)
+	top, bottom := ordered(int(y1)+d.originY, int(y2)+d.originY)
 	left, top = max(left, 0), max(top, 0)
 	right, bottom = min(right, d.drawing.width-1), min(bottom, d.drawing.height-1)
 	for y := top; y <= bottom; y++ {
@@ -171,8 +178,8 @@ func (d *DisplayAdapter) DrawGVMRectangle(x1, y1, x2, y2 int16) error {
 	if d.selector == 4 {
 		return nil
 	}
-	left, right := ordered(int(x1), int(x2))
-	top, bottom := ordered(int(y1), int(y2))
+	left, right := ordered(int(x1)+d.originX, int(x2)+d.originX)
+	top, bottom := ordered(int(y1)+d.originY, int(y2)+d.originY)
 	d.drawHorizontal(left, right, top)
 	d.drawHorizontal(left, right, bottom)
 	d.drawVertical(top, bottom, left)
@@ -211,7 +218,7 @@ func (d *DisplayAdapter) DrawGVMSprite(resource []byte, x, y int16) error {
 	if err != nil {
 		return err
 	}
-	rasterizeDecodedSprite(&d.drawing, sprite, mapped, int(x), int(y))
+	rasterizeDecodedSprite(&d.drawing, sprite, mapped, int(x)+d.originX, int(y)+d.originY)
 	return nil
 }
 
@@ -227,9 +234,9 @@ func (d *DisplayAdapter) DrawGVMTransformedSprite(resource []byte, x, y int16, m
 		return err
 	}
 	if mirrorHorizontal {
-		rasterizeMirroredSprite(&d.drawing, sprite, mapped, int(x), int(y))
+		rasterizeMirroredSprite(&d.drawing, sprite, mapped, int(x)+d.originX, int(y)+d.originY)
 	} else {
-		rasterizeDecodedSprite(&d.drawing, sprite, mapped, int(x), int(y))
+		rasterizeDecodedSprite(&d.drawing, sprite, mapped, int(x)+d.originX, int(y)+d.originY)
 	}
 	return nil
 }
@@ -248,7 +255,7 @@ func (d *DisplayAdapter) DrawGVMSpriteWithPalette(resource, palette []byte, x, y
 	if err != nil {
 		return err
 	}
-	rasterizeDecodedSprite(&d.drawing, sprite, mapped, int(x), int(y))
+	rasterizeDecodedSprite(&d.drawing, sprite, mapped, int(x)+d.originX, int(y)+d.originY)
 	return nil
 }
 
@@ -325,13 +332,13 @@ func (d *DisplayAdapter) DrawGVMText(resource []byte, x, y int16, style gvm.Text
 	}
 	cellWidths := [...]int{4, 6, 6, 12}
 	nativeWidth := len(terminated) * cellWidths[style.Mode]
-	originX := int(x)
+	originX := int(x) + d.originX
 	if style.Alignment == 1 {
 		originX -= nativeWidth / 2
 	} else if style.Alignment == 2 {
 		originX -= nativeWidth
 	}
-	originY := int(y)
+	originY := int(y) + d.originY
 	for _, positioned := range glyphs {
 		for row := 0; row < positioned.height; row++ {
 			for column := 0; column < positioned.width; column++ {

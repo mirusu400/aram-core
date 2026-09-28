@@ -20,3 +20,20 @@ func TestFormatSignedWordIntoDynamicMediaString(t *testing.T) {
 		t.Fatalf("run=%v formatted=%q stack=%x", err, sink.data, vm.Stack())
 	}
 }
+
+func TestFormatTwoSignedWordsWithWidth(t *testing.T) {
+	sink := new(copiedMedia)
+	program := []byte{
+		0x05, 0, 0x05, 1, 0x05, 90, 0x05, 0x90, 0x8b,
+		0x05, 0, 0x90, 0xff,
+	}
+	vm, err := gvm.NewWithAddressSpaceAndServices(program, 0, gvm.AddressSpace{}, &gvm.ServiceConfig{
+		Media: []gvm.MediaResource{{}, {Data: []byte("ATT.%4d-%d\x00")}}, MediaLoad: sink,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.Run(8); err != nil || !bytes.Equal(sink.data, []byte("ATT.  90--112\x00")) || len(vm.Stack()) != 0 {
+		t.Fatalf("run=%v formatted=%q stack=%x", err, sink.data, vm.Stack())
+	}
+}

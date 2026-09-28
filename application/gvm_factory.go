@@ -42,13 +42,16 @@ const (
 )
 
 type gvmOperationalConfig struct {
-	width  int32
-	height int32
+	width   int32
+	height  int32
+	originX int
+	originY int
 }
 
 var gvmOperationalCorpora = map[string]gvmOperationalConfig{
-	GVMOperationalSHA256:         {width: operationalGVMWidth, height: operationalGVMHeight},
-	GVMHackSignOperationalSHA256: {width: operationalGVMWidth, height: operationalGVMHeight},
+	GVMOperationalSHA256: {width: operationalGVMWidth, height: operationalGVMHeight},
+	// HackSign draws its 120x68 playfield around (0,0), from (-60,-34).
+	GVMHackSignOperationalSHA256: {width: operationalGVMWidth, height: operationalGVMHeight, originX: 60, originY: 34},
 	GVMRagnarokOperationalSHA256: {width: 120, height: 120},
 }
 
@@ -130,6 +133,8 @@ type gvmMachine struct {
 	frames          *gvmFramePublisher
 	width           int32
 	height          int32
+	originX         int
+	originY         int
 	inputDispatches uint64
 	lastInputCode   uint16
 	lastInputResult cpu.Result
@@ -200,6 +205,8 @@ func (f Factory) createGVMMachine(ctx context.Context, source machinecore.Source
 		operational: operational,
 		width:       config.width,
 		height:      config.height,
+		originX:     config.originX,
+		originY:     config.originY,
 	}
 	if operational {
 		if len(pkg.SGS) < 0x24 {
@@ -263,6 +270,7 @@ func (m *gvmMachine) resetVMLocked() error {
 		}
 		display, err = gvmhost.NewDisplayAdapter(gvmhost.DisplayConfig{
 			Width: int(width), Height: int(height),
+			OriginX: m.originX, OriginY: m.originY,
 			Orientation: gvmhost.DisplayOrientationDefault,
 			Palette:     gvmhost.SKTCompatibilityPalette{}, Publisher: m.frames,
 			Text: textServices.Text, TextOwner: 1,

@@ -914,6 +914,38 @@ func (v *VM) Step() error {
 		if err := v.services.displayPresent.PresentGVMDisplay(); err != nil {
 			return fail(err)
 		}
+	case 0x7a:
+		// GVM2X resizes a media record and returns a success word in place
+		// of the index, consuming the requested size. Keep the media records
+		// independent while preserving their existing byte prefix.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 2 {
+			return fail(ErrStackUnderflow)
+		}
+		index := int(int16(v.stack[v.depth-2]))
+		size := int(int16(v.stack[v.depth-1]))
+		result := uint16(0)
+		if index >= 0 && index < len(v.services.media) && size >= 0 {
+			old := v.services.media[index]
+			delta := size - len(old)
+			if delta%2 != 0 {
+				delta++
+			}
+			if delta >= -16 && delta <= 0 {
+				result = 1
+			} else if length := len(old) + delta; length >= 0 && length <= 0xffff && delta <= 16*1024 {
+				resized := make([]byte, length)
+				copy(resized, old)
+				v.services.media[index] = resized
+				result = 1
+			}
+		}
+		v.stack[v.depth-2] = result
+		v.depth--
+		v.stack[v.depth] = 0
 	case 0x7c:
 		if v.services == nil {
 			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
@@ -977,9 +1009,8 @@ func (v *VM) Step() error {
 		v.stack[v.depth-2] = uint16(int16(int8(payload[element])))
 		v.depth--
 		v.stack[v.depth] = 0
-	case 0x8a:
-		// The observed GVM2X formatter writes one signed word through a
-		// single %d placeholder into a dynamic media string.
+	case 0x82:
+		// Store the low byte of a signed word into a media record.
 		if v.services == nil {
 			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
 			return v.fault
@@ -987,8 +1018,32 @@ func (v *VM) Step() error {
 		if v.depth < 3 {
 			return fail(ErrStackUnderflow)
 		}
-		destination := int16(v.stack[v.depth-3])
-		source := int16(v.stack[v.depth-2])
+		index := int(int16(v.stack[v.depth-3]))
+		element := int(int16(v.stack[v.depth-2]))
+		if index < 0 || index >= len(v.services.media) {
+			return fail(ErrInvalidMediaIndex)
+		}
+		if element < 0 || element >= len(v.services.media[index]) {
+			return fail(ErrInvalidElement)
+		}
+		v.services.media[index][element] = byte(v.stack[v.depth-1])
+		v.depth -= 3
+		clear(v.stack[v.depth : v.depth+3])
+	case 0x8a, 0x8b:
+		// GVM2X formats one or two signed words into a media string.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		arguments := 1
+		if op == 0x8b {
+			arguments = 2
+		}
+		if v.depth < 2+arguments {
+			return fail(ErrStackUnderflow)
+		}
+		destination := int16(v.stack[v.depth-2-arguments])
+		source := int16(v.stack[v.depth-1-arguments])
 		if destination < 0 || int(destination) >= len(v.services.media) ||
 			source < 0 || int(source) >= len(v.services.media) {
 			return fail(ErrInvalidMediaIndex)
@@ -999,17 +1054,22 @@ func (v *VM) Step() error {
 			return fail(ErrInvalidMediaResource)
 		}
 		format = format[:end]
-		if bytes.Count(format, []byte{'%'}) != 1 || bytes.Count(format, []byte("%d")) != 1 {
+		if !validGVMDecimalFormat(format, arguments) {
 			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
 			return v.fault
 		}
-		formatted := fmt.Sprintf(string(format), int16(v.stack[v.depth-1]))
+		var formatted string
+		if arguments == 1 {
+			formatted = fmt.Sprintf(string(format), int16(v.stack[v.depth-1]))
+		} else {
+			formatted = fmt.Sprintf(string(format), int16(v.stack[v.depth-2]), int16(v.stack[v.depth-1]))
+		}
 		if len(formatted) >= 256 {
 			return fail(ErrInvalidMediaResource)
 		}
 		v.services.media[destination] = append([]byte(formatted), 0)
-		v.depth -= 3
-		clear(v.stack[v.depth : v.depth+3])
+		v.depth -= 2 + arguments
+		clear(v.stack[v.depth : v.depth+2+arguments])
 	case 0x95:
 		// GVM2X cancels its fixed host timer (ID 0x1003). This opcode
 		// has no operands or stack effect. A host that tracks timer requests
@@ -1413,7 +1473,7 @@ func (v *VM) Step() error {
 		if value < 0 {
 			v.stack[v.depth-1] = uint16(-value)
 		}
-	case 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x1a, 0x1b, 0x1c, 0x1f, 0x20, 0x21:
+	case 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x1a, 0x1b, 0x1c, 0x1f, 0x20, 0x21, 0x22:
 		if v.depth < 2 {
 			return fail(ErrStackUnderflow)
 		}
@@ -1454,6 +1514,10 @@ func (v *VM) Step() error {
 			// Full raw-word equality. Shared pop clearing below is approved
 			// host hygiene, unlike the native handler's retained top word.
 			if a == b {
+				value = 1
+			}
+		case 0x22:
+			if a != b {
 				value = 1
 			}
 		case 0x1f:
@@ -1830,4 +1894,23 @@ func (v *VM) Step() error {
 		return v.fault
 	}
 	return nil
+}
+
+func validGVMDecimalFormat(format []byte, arguments int) bool {
+	count := 0
+	for i := 0; i < len(format); i++ {
+		if format[i] != '%' {
+			continue
+		}
+		count++
+		i++
+		start := i
+		for i < len(format) && format[i] >= '0' && format[i] <= '9' {
+			i++
+		}
+		if i-start > 2 || i >= len(format) || format[i] != 'd' {
+			return false
+		}
+	}
+	return count == arguments
 }
