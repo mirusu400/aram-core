@@ -28,7 +28,9 @@ const (
 	// trailing bytes, so a version-7 state cannot be decoded against the
 	// wider snapshot - it has to be refused by version rather than fail as
 	// a corrupt component.
-	stateVersion       = uint32(8)
+	// Version 9 adds the embedded Java host to Raptor saves.
+	stateVersion       = uint32(9)
+	legacyStateVersion = uint32(8)
 	stateChecksumSize  = 32
 	maxStateInputs     = 1024
 	stateOverheadLimit = uint64(16 << 20)
@@ -52,8 +54,8 @@ func (m *Machine) SaveState(output io.Writer) error {
 	if m.lastResult.Err != nil {
 		return fmt.Errorf("save state with pending execution error: %w", m.lastResult.Err)
 	}
-	if m.raptor != nil && m.raptor.Java != nil {
-		return fmt.Errorf("save state: Raptor Java adapter state is not supported")
+	if err := raptorrt.ValidateJavaState(m.raptor); err != nil {
+		return err
 	}
 	identity := m.cpu.Identity()
 	if err := identity.Validate(); err != nil {
@@ -161,9 +163,6 @@ func (m *Machine) LoadState(input io.Reader) error {
 	if m.state == machinecore.StateRunning || m.state == machinecore.StateEmpty {
 		return fmt.Errorf("load from %s: %w", m.state, ErrInvalidState)
 	}
-	if m.raptor != nil && m.raptor.Java != nil {
-		return fmt.Errorf("load state: Raptor Java adapter state is not supported")
-	}
 	maximum := m.memoryLimit + uint64(len(m.frame.Pix)) + stateOverheadLimit
 	if maximum <= math.MaxUint64-shared.MaxServicesStateBytes {
 		maximum += shared.MaxServicesStateBytes
@@ -257,7 +256,7 @@ func (m *Machine) parseState(data []byte) (parsedState, error) {
 	if magic := decoder.Bytes(len(stateMagic)); string(magic) != stateMagic {
 		return parsedState{}, decoder.Fail("magic mismatch")
 	}
-	if version := decoder.U32(); version != stateVersion {
+	if version := decoder.U32(); version != stateVersion && version != legacyStateVersion {
 		return parsedState{}, decoder.Fail(fmt.Sprintf("unsupported version %d", version))
 	}
 	savedState := machinecore.State(decoder.U8())

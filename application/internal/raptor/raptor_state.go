@@ -3,6 +3,7 @@ package raptor
 import (
 	"fmt"
 	"github.com/mirusu400/aram-core/application/internal/guest"
+	ktfrt "github.com/mirusu400/aram-core/application/internal/ktf"
 	wipirt "github.com/mirusu400/aram-core/application/internal/wipi"
 	"github.com/mirusu400/aram-core/cpu"
 )
@@ -10,7 +11,7 @@ import (
 const (
 	raptorStateSchemaLegacy     = uint32(2)
 	raptorStateSchemaCallbacks  = uint32(3)
-	raptorStateSchema           = uint32(4)
+	raptorStateSchema           = uint32(5)
 	maxRaptorStateSections      = 1024
 	maxRaptorStateCallbackTasks = 1024
 )
@@ -29,6 +30,8 @@ type SavedState struct {
 	ImportTrace       []raptorImportCall
 	CallbackTasks     []*CallbackTask
 	ime               *inputMethod
+	java              *javaState
+	javaHost          *ktfrt.SavedState
 }
 
 func WriteState(r *Runtime, backend cpu.Backend, writer *guest.StateWriter) error {
@@ -98,6 +101,25 @@ func WriteState(r *Runtime, backend cpu.Backend, writer *guest.StateWriter) erro
 		writer.Write(task.Context)
 	}
 	writeInputMethodState(r, writer)
+	if r.Java == nil {
+		writer.U8(0)
+		writer.Write([]byte{0, 0, 0})
+		return nil
+	}
+	encoded, err := marshalJavaState(r.Java)
+	if err != nil {
+		return err
+	}
+	writer.U8(1)
+	writer.Write([]byte{0, 0, 0})
+	writer.U32(uint32(len(encoded)))
+	writer.Write(encoded)
+	publicMedia := r.Java.Host.Services.Media
+	r.Java.Host.Services.Media = r.Java.privateMedia
+	defer func() { r.Java.Host.Services.Media = publicMedia }()
+	if err := ktfrt.WriteEmbeddedJavaState(r.Java.Host, backend, writer); err != nil {
+		return fmt.Errorf("save Raptor Java host: %w", err)
+	}
 	return nil
 }
 
@@ -203,6 +225,30 @@ func ParseState(r *Runtime,
 	if schema >= 4 {
 		state.ime = parseInputMethodState(decoder)
 	}
+	if schema >= 5 {
+		present := decoder.U8()
+		decoder.Reserved(3)
+		if present > 1 || (present == 1) != (r.Java != nil) {
+			return nil, decoder.Fail("Raptor Java state presence mismatch")
+		}
+		if present == 1 {
+			size := decoder.U32()
+			if size > maxRaptorJavaStateMetadata {
+				return nil, decoder.Fail("Raptor Java metadata exceeds limit")
+			}
+			decoded, err := unmarshalJavaState(decoder.Bytes(int(size)))
+			if err != nil {
+				return nil, decoder.Fail(fmt.Sprintf("invalid Raptor Java metadata: %v", err))
+			}
+			state.java = &decoded
+			state.javaHost, err = ktfrt.ParseEmbeddedJavaState(r.Java.Host, decoder)
+			if err != nil {
+				return nil, err
+			}
+		}
+	} else if r.Java != nil {
+		return nil, decoder.Fail("Raptor Java state is absent from legacy save")
+	}
 	if decoder.Err != nil {
 		return nil, decoder.Err
 	}
@@ -263,5 +309,24 @@ func RestoreState(r *Runtime, backend cpu.Backend, state *SavedState) error {
 	}
 	// Older public-memory snapshots can carry the obsolete two-entry /L,/S
 	// table here. Language strings are immutable adapter data, not guest state.
-	return r.installInputMethodModes()
+	if err := r.installInputMethodModes(); err != nil {
+		return err
+	}
+	if state.java != nil {
+		if r.Java == nil || r.Java.Host == nil {
+			return fmt.Errorf("restore Raptor Java state: host is absent")
+		}
+		var started bool
+		if err := ktfrt.RestoreState(r.Java.Host, backend, state.javaHost, &started); err != nil {
+			return fmt.Errorf("restore Raptor Java host: %w", err)
+		}
+		r.Java.privateMedia = r.Java.Host.Services.Media
+		r.Java.Host.Services.Media = r.Public.Services.Media
+		r.Java.Host.Heap.Shared = &r.Public.Heap
+		r.Java.Host.TickMS = r.Public.TickMS
+		if err := restoreJavaState(r.Java, *state.java); err != nil {
+			return err
+		}
+	}
+	return nil
 }

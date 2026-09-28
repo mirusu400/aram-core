@@ -513,6 +513,10 @@ type ktfMetadataSnapshot struct {
 }
 
 func WriteState(r *Runtime, backend cpu.Backend, started bool, writer *guest.StateWriter) error {
+	return writeState(r, backend, started, writer, false)
+}
+
+func writeState(r *Runtime, backend cpu.Backend, started bool, writer *guest.StateWriter, externalClips bool) error {
 	if r == nil {
 		writer.U8(0)
 		writer.Write([]byte{0, 0, 0})
@@ -555,6 +559,7 @@ func WriteState(r *Runtime, backend cpu.Backend, started bool, writer *guest.Sta
 		r.Services,
 		r.ServiceOwner,
 		metadata,
+		externalClips,
 	); err != nil {
 		return fmt.Errorf("validate KTF adapter state: %w", err)
 	}
@@ -691,6 +696,41 @@ func WriteState(r *Runtime, backend cpu.Backend, started bool, writer *guest.Sta
 	return nil
 }
 
+// WriteEmbeddedJavaState serializes a Java host sharing its address space with
+// another adapter. The host scans that adapter's mapped sections for GC roots,
+// but those sections are not heaps managed by KTF. The ordinary KTF state
+// format pairs every scanned region with heap metadata, so add empty metadata
+// for these sections while writing and discard it again afterward.
+func WriteEmbeddedJavaState(r *Runtime, backend cpu.Backend, writer *guest.StateWriter) error {
+	if r == nil {
+		return fmt.Errorf("save embedded Java state: runtime is absent")
+	}
+	original := r.incrementalHeaps
+	originalTick := r.TickMS
+	r.TickMS = uint64(r.Services.Clock.Monotonic() / 1_000_000)
+	defer func() { r.TickMS = originalTick }()
+	withSections := make(map[uint32]*guest.Heap, len(original)+len(r.incrementalMemory))
+	for base, heap := range original {
+		withSections[base] = heap
+	}
+	for _, region := range r.incrementalMemory {
+		if withSections[region.base] == nil {
+			heap := guest.NewHeap(r.CPU, region.base, region.size)
+			withSections[region.base] = &heap
+		}
+	}
+	r.incrementalHeaps = withSections
+	defer func() { r.incrementalHeaps = original }()
+	return writeState(r, backend, false, writer, true)
+}
+
+// EmbeddedHeapBases identifies actual KTF-managed regions. A shared Java host
+// also scans its parent adapter's sections, which WriteEmbeddedJavaState adds
+// as empty placeholder heaps solely to satisfy the KTF state format.
+func (r *Runtime) EmbeddedHeapBases() []uint32 {
+	return guest.SortedUint32Keys(r.incrementalHeaps)
+}
+
 // mirrorlessKTFImages lists, in a stable order, the Images whose pixels no
 // service surface holds.
 func mirrorlessKTFImages(r *Runtime) []uint32 {
@@ -705,6 +745,19 @@ func mirrorlessKTFImages(r *Runtime) []uint32 {
 
 func ParseState(r *Runtime,
 	decoder *guest.StateDecoder,
+) (*SavedState, error) {
+	return parseState(r, decoder, false)
+}
+
+func ParseEmbeddedJavaState(r *Runtime,
+	decoder *guest.StateDecoder,
+) (*SavedState, error) {
+	return parseState(r, decoder, true)
+}
+
+func parseState(r *Runtime,
+	decoder *guest.StateDecoder,
+	externalClips bool,
 ) (*SavedState, error) {
 	present := decoder.U8()
 	decoder.Reserved(3)
@@ -798,7 +851,7 @@ func ParseState(r *Runtime,
 	if err := validateKTFIncrementalMemory(metadata.IncrementalMemory, incremental); err != nil {
 		return nil, decoder.Fail(fmt.Sprintf("invalid KTF incremental memory graph: %v", err))
 	}
-	if err := validateKTFMetadata(r, candidate, owner, metadata); err != nil {
+	if err := validateKTFMetadata(r, candidate, owner, metadata, externalClips); err != nil {
 		return nil, decoder.Fail(fmt.Sprintf("invalid KTF adapter graph: %v", err))
 	}
 	var taskWakeAtMS []uint64

@@ -1342,7 +1342,7 @@ func TestMagicholeReferenceEADSEntryPoint(t *testing.T) {
 	}
 }
 
-func TestRaptorJavaSaveStateFailsBeforeWriting(t *testing.T) {
+func TestRaptorJavaSaveStateRejectsIncompleteAdapterBeforeWriting(t *testing.T) {
 	machine := newSyntheticMachine(t)
 	var valid bytes.Buffer
 	check(t, machine.SaveState(&valid))
@@ -1350,16 +1350,27 @@ func TestRaptorJavaSaveStateFailsBeforeWriting(t *testing.T) {
 
 	var rejected bytes.Buffer
 	err := machine.SaveState(&rejected)
-	if err == nil || !strings.Contains(err.Error(), "Raptor Java adapter") {
+	if err == nil || !strings.Contains(err.Error(), "Raptor Java state") {
 		t.Fatalf("SaveState error = %v", err)
 	}
 	if rejected.Len() != 0 {
 		t.Fatalf("SaveState wrote %d bytes before rejecting Java state", rejected.Len())
 	}
 	err = machine.LoadState(bytes.NewReader(valid.Bytes()))
-	if err == nil || !strings.Contains(err.Error(), "Raptor Java adapter") {
+	if err == nil {
 		t.Fatalf("LoadState error = %v", err)
 	}
+}
+
+func TestLoadStateAcceptsVersion8WithoutJavaAdapter(t *testing.T) {
+	machine := newSyntheticMachine(t)
+	var output bytes.Buffer
+	check(t, machine.SaveState(&output))
+	data := append([]byte(nil), output.Bytes()...)
+	binary.LittleEndian.PutUint32(data[len(stateMagic):], legacyStateVersion)
+	digest := sha256.Sum256(data[:len(data)-stateChecksumSize])
+	copy(data[len(data)-stateChecksumSize:], digest[:])
+	check(t, machine.LoadState(bytes.NewReader(data)))
 }
 
 func newSyntheticMachine(t *testing.T) *Machine {

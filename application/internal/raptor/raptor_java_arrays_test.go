@@ -116,6 +116,47 @@ func TestRaptorNewArraySelectsItsLengthRegisterFromTheComponentOperand(t *testin
 	}
 }
 
+func TestRaptorArrayCopyRejectsOutOfBoundsRanges(t *testing.T) {
+	public := newPublicRuntime(t)
+	runtime := &Runtime{
+		CPU: public.CPU, Public: public,
+		resolvedImports: make(map[raptorImportKey]uint64),
+		importSlotByKey: make(map[raptorImportKey]uint32),
+	}
+	source, err := runtime.newRaptorJavaArray(0, 3)
+	check(t, err)
+	target, err := runtime.newRaptorJavaArray(0, 3)
+	check(t, err)
+	for index := uint32(0); index < 3; index++ {
+		check(t, runtime.storeRaptorJavaArray(source, index, index+1))
+	}
+	java := runtime.Java
+	for _, args := range [][]uint32{
+		{source, 0, target, 0, 4},
+		{source, ^uint32(0), target, 0, 1},
+		{source, 0, target, ^uint32(0), 1},
+	} {
+		check(t, runtime.copyRaptorArrayBodies(java, args))
+	}
+	targetBody, err := public.ReadU32(target + 8)
+	check(t, err)
+	for index := uint32(0); index < 3; index++ {
+		value, err := public.ReadU32(targetBody + 4 + index*4)
+		check(t, err)
+		if value != 0 {
+			t.Fatalf("target[%d] changed after rejected copy: 0x%x", index, value)
+		}
+	}
+	check(t, runtime.copyRaptorArrayBodies(java, []uint32{source, 1, target, 0, 2}))
+	for index := uint32(0); index < 2; index++ {
+		value, err := public.ReadU32(targetBody + 4 + index*4)
+		check(t, err)
+		if value != index+2 {
+			t.Fatalf("target[%d] = %d, want %d", index, value, index+2)
+		}
+	}
+}
+
 // TestSyncRaptorArrayCopiesBothWays pins the array bridge. A Raptor array's
 // elements live twice - in the body the AOT reads and in the KTF mirror the
 // shared Java host writes - and neither side saw the other until a host call

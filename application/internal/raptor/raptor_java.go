@@ -412,7 +412,8 @@ type JavaTask struct {
 type JavaClass = raptorJavaClass
 
 type JavaRuntime struct {
-	Host *ktfrt.Runtime
+	Host         *ktfrt.Runtime
+	privateMedia *shared.Media
 
 	classes     map[uint32]*raptorJavaClass
 	ClassByName map[string]*raptorJavaClass
@@ -547,12 +548,22 @@ func (r *Runtime) ensureJavaRuntime() (*JavaRuntime, error) {
 	// Java Clip playback on the public mixer that the Raptor frame loop advances
 	// and drains. Without this, decoded clips remain at position zero forever and
 	// no PCM reaches the frontend (issue #256).
+	privateMedia := host.Services.Media
 	host.Services.Media = r.Public.Services.Media
 	// Raptor and its Java adapter share one guest address space. Delegate every
 	// host allocation to the public runtime's allocator so copying the heap's
 	// slice header cannot create independently advancing, overlapping free
 	// lists.
 	host.Heap = guest.Heap{CPU: r.CPU, Shared: &r.Public.Heap}
+	// The embedded Java host uses the public CPU and heap, but still needs its
+	// own host-call page when its state is serialized.
+	var hostPage [1]byte
+	if err := r.CPU.ReadMemory(ktfrt.HostBase, hostPage[:]); err != nil {
+		if err := r.CPU.Map(ktfrt.HostBase, ktfrt.HostSize,
+			cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute); err != nil {
+			return nil, fmt.Errorf("map Raptor Java host-call page: %w", err)
+		}
+	}
 	host.Mapped = true
 	host.DeferThreads = false
 	// The shared host's own client image is the one-byte dummy above, since
@@ -580,6 +591,7 @@ func (r *Runtime) ensureJavaRuntime() (*JavaRuntime, error) {
 	}
 	java := &JavaRuntime{
 		Host:             host,
+		privateMedia:     privateMedia,
 		classes:          make(map[uint32]*raptorJavaClass),
 		ClassByName:      make(map[string]*raptorJavaClass),
 		hostMethods:      make(map[uint32]raptorJavaMethod),

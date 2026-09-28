@@ -18,6 +18,7 @@ func validateKTFMetadata(
 	services *shared.Services,
 	owner shared.OwnerID,
 	meta ktfMetadataSnapshot,
+	externalClips bool,
 ) error {
 	counts := []int{
 		len(meta.HostCalls), len(meta.IncrementalMemory),
@@ -153,7 +154,9 @@ func validateKTFMetadata(
 		{"WIPI-C file", meta.WIPICFileServices, shared.KindFile},
 	} {
 		for guest, id := range mapping.values {
-			if guest == 0 || services.Registry.Validate(id, owner, mapping.kind) != nil {
+			if guest == 0 || id == 0 ||
+				!(externalClips && mapping.kind == shared.KindClip) &&
+					services.Registry.Validate(id, owner, mapping.kind) != nil {
 				return fmt.Errorf("%s mapping 0x%08x is invalid", mapping.name, guest)
 			}
 		}
@@ -814,6 +817,24 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 		r.deferredShownCards[r.Tasks[value.Task]] = cards
 	}
 	*started = meta.Started
+	return nil
+}
+
+// PruneEmbeddedJavaHeaps removes the placeholder heap metadata written for a
+// parent adapter's mapped sections. The regions remain registered for GC scans.
+func (r *Runtime) PruneEmbeddedJavaHeaps(real []uint32) error {
+	keep := make(map[uint32]bool, len(real))
+	for _, base := range real {
+		if r.incrementalHeaps[base] == nil || keep[base] {
+			return fmt.Errorf("invalid embedded Java heap base 0x%08x", base)
+		}
+		keep[base] = true
+	}
+	for base := range r.incrementalHeaps {
+		if !keep[base] {
+			delete(r.incrementalHeaps, base)
+		}
+	}
 	return nil
 }
 

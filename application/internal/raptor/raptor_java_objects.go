@@ -489,9 +489,27 @@ func (r *Runtime) copyRaptorArrayBodies(java *JavaRuntime, arguments []uint32) e
 	if err != nil || targetBody == 0 {
 		return nil
 	}
+	sourceLength, err := r.Public.ReadU32(sourceBody)
+	if err != nil {
+		return nil
+	}
+	targetLength, err := r.Public.ReadU32(targetBody)
+	if err != nil {
+		return nil
+	}
+	// Java rejects negative indices and copies extending past either array.
+	// Positions arrive as uint32, so a negative one would otherwise wrap the
+	// address calculation and can write into an adjacent object header.
+	if sourcePos > sourceLength || targetPos > targetLength ||
+		count > sourceLength-sourcePos || count > targetLength-targetPos {
+		return nil
+	}
 	element := uint32(4)
 	if size, sizeErr := java.Host.ArrayElementSize(java.lgtToKTF[target]); sizeErr == nil && size != 0 {
 		element = size
+	}
+	if count > maxRaptorArraySyncElements || uint64(count)*uint64(element) > uint64(^uint32(0)) {
+		return nil
 	}
 	buffer := make([]byte, count*element)
 	if err := r.CPU.ReadMemory(sourceBody+4+sourcePos*element, buffer); err != nil {
