@@ -52,17 +52,18 @@ type jitCountedLoop struct {
 }
 
 type jitBlock struct {
-	start              uint32
-	end                uint32
-	arm                []jitInstr
-	thumb              []thumbMicroInstr
-	countedLoop        *jitCountedLoop
-	paletteLoop        *jitThumbPaletteLoop
-	stackPaletteLoop   *jitThumbStackPaletteLoop
-	indexedPaletteLoop *jitThumbIndexedPaletteLoop
-	halfwordFillLoop   *jitThumbHalfwordFillLoop
-	colorLoop          *jitThumbColorLoop
-	fillLoop           *jitThumbFillLoop
+	start                  uint32
+	end                    uint32
+	arm                    []jitInstr
+	thumb                  []thumbMicroInstr
+	countedLoop            *jitCountedLoop
+	paletteLoop            *jitThumbPaletteLoop
+	stackPaletteLoop       *jitThumbStackPaletteLoop
+	indexedPaletteLoop     *jitThumbIndexedPaletteLoop
+	transparentPaletteLoop *jitThumbTransparentPaletteLoop
+	halfwordFillLoop       *jitThumbHalfwordFillLoop
+	colorLoop              *jitThumbColorLoop
+	fillLoop               *jitThumbFillLoop
 }
 
 const jitMaxBlock = 256
@@ -387,6 +388,16 @@ outer:
 				continue outer
 			}
 		}
+		if block.transparentPaletteLoop != nil {
+			retired := b.accelerateThumbTransparentPaletteLoop(
+				block.transparentPaletteLoop, limit-executed,
+				wholeSystem, hasExecutionTraps, traced,
+			)
+			executed += retired
+			if retired != 0 {
+				continue outer
+			}
+		}
 		if block.halfwordFillLoop != nil {
 			retired := b.accelerateThumbHalfwordFillLoop(
 				block.halfwordFillLoop, limit-executed,
@@ -587,6 +598,12 @@ func (b *Backend) translateThumbBlock(pc uint32) *jitBlock {
 		block.indexedPaletteLoop = b.classifyThumbIndexedPaletteLoop(pc)
 		if block.indexedPaletteLoop != nil {
 			block.end = pc + thumbIndexedPaletteLoopInstructions*2
+		}
+	}
+	if instrs[0].raw == thumbTransparentPaletteLoopWords[0] {
+		block.transparentPaletteLoop = b.classifyThumbTransparentPaletteLoop(pc)
+		if block.transparentPaletteLoop != nil {
+			block.end = pc + thumbTransparentPaletteLoopInstructions*2
 		}
 	}
 	if instrs[0].raw == thumbHalfwordFillLoopWords[0] {
