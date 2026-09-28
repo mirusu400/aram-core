@@ -3203,6 +3203,10 @@ func (r *Runtime) writeGuestFile() error {
 }
 
 func (r *Runtime) openGuestFile() error {
+	mode, err := r.cpu.ReadRegister(cpu.RegisterR2)
+	if err != nil {
+		return fmt.Errorf("read BREW file open mode: %w", err)
+	}
 	pathPointer, err := r.cpu.ReadRegister(cpu.RegisterR1)
 	if err != nil {
 		return fmt.Errorf("read BREW file path pointer: %w", err)
@@ -3213,6 +3217,12 @@ func (r *Runtime) openGuestFile() error {
 	}
 	normalized := normalizeGuestPath(path)
 	_, resolved, ok := r.lookupGuestFile(normalized)
+	const openFileCreate = uint32(4)
+	create := !ok && mode&openFileCreate != 0 && normalized != ""
+	if create {
+		resolved = normalized
+		ok = true
+	}
 	result := uint32(0)
 	if ok {
 		result, err = r.allocateGuest(4)
@@ -3224,6 +3234,9 @@ func (r *Runtime) openGuestFile() error {
 		if err := r.cpu.WriteMemory(result, encoded[:]); err != nil {
 			r.releaseGuest(result)
 			return fmt.Errorf("initialize BREW file object: %w", err)
+		}
+		if create {
+			r.files[resolved] = nil
 		}
 		r.fileHandles[result] = &brewFile{path: resolved}
 	}

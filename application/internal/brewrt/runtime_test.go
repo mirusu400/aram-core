@@ -1237,6 +1237,48 @@ func TestOpenFilesKeepIndependentOffsets(t *testing.T) {
 	}
 }
 
+func TestOpenFileCreateModeMakesMissingGuestFile(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	path := heapBase + 0x100
+	if err := runtime.cpu.WriteMemory(path, []byte("topgun2.tmp\x00")); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR1, path); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR2, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.openGuestFile(); err != nil {
+		t.Fatal(err)
+	}
+	if object, _ := runtime.cpu.ReadRegister(cpu.RegisterR0); object != 0 {
+		t.Fatalf("read-only open of absent file = 0x%08x", object)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR2, 4); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.openGuestFile(); err != nil {
+		t.Fatal(err)
+	}
+	object, err := runtime.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil || object == 0 {
+		t.Fatalf("create-mode open = 0x%08x, %v", object, err)
+	}
+	if contents, found := runtime.files["topgun2.tmp"]; !found || len(contents) != 0 {
+		t.Fatalf("created file found=%v size=%d", found, len(contents))
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR1, path); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.testGuestFile(); err != nil {
+		t.Fatal(err)
+	}
+	if status, _ := runtime.cpu.ReadRegister(cpu.RegisterR0); status != 0 {
+		t.Fatalf("created file test status = %d", status)
+	}
+}
+
 func TestSprintfSupportsSignedIntegerAlias(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	destination := heapBase + 0x500
