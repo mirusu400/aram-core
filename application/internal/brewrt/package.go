@@ -54,6 +54,7 @@ const (
 const issue319ArchiveSHA256 = "2cfa3dff0779456f8482ccfbda740436101699186fdd9537b7a9108f8bfcedbf"
 const issue321ArchiveSHA256 = "4fae0b6a37e501163f6eabbda2b400bdfd4682ae389217bc26a7dbee564cb360"
 const jinJanggiArchiveSHA256 = "06369c8db97fb4e28165297ac2557c0de050dfb6986ea429d3411ffedfa891b9"
+const tengaiArchiveSHA256 = "01f8fe8784138792822df9306127279f038813ea62c00385d256b77b61a025cf"
 
 // Package contains the inspected executable module and immutable archive data.
 type Package struct {
@@ -119,6 +120,11 @@ func Match(data []byte) (pkg Package, matched bool, err error) {
 		// The title's menu/footer art is 176 pixels wide and its splash is
 		// 180 pixels tall. The generic 120x160 canvas clips both and pushes
 		// the game board against the screen edges.
+		nativeCanvas = image.Pt(176, 220)
+	}
+	if digestHex == tengaiArchiveSHA256 {
+		// The PAD's full-screen artwork is 176x204, above a 16-pixel
+		// handset strip. The generic 120x160 canvas clips the title and menu.
 		nativeCanvas = image.Pt(176, 220)
 	}
 	if digestHex == ArchiveSHA256 {
