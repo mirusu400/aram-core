@@ -729,6 +729,24 @@ func (r *Runtime) compositeSpan(
 		return err
 	}
 	serviceID := r.surfaceServices[fb.Handle]
+	if values == nil && transparent == nil && context.pixelOperation == 0 &&
+		!context.xor && context.alpha >= 0xff {
+		// The destination was still read, preserving its permission/error and
+		// memory-mapped side effects. Opaque solid fills do not need to decode
+		// or blend it pixel by pixel.
+		if bytesPerPixel == 2 {
+			pixel := uint16(context.foreground)
+			for offset := 0; offset < len(buffer); offset += 2 {
+				binary.LittleEndian.PutUint16(buffer[offset:], pixel)
+			}
+		} else {
+			pixel := context.foreground & 0xffffff
+			for offset := 0; offset < len(buffer); offset += 4 {
+				binary.LittleEndian.PutUint32(buffer[offset:], pixel)
+			}
+		}
+		return r.writeSpanRun(fb, serviceID, row, first, first, end, buffer)
+	}
 	runStart := -1
 	for column := first; column < end; column++ {
 		if transparent != nil && transparent[column-x] {
