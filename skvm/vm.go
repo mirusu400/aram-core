@@ -811,6 +811,12 @@ func (vm *VM) PaintCurrent(ctx context.Context) error {
 	if vm.currentDisplay == 0 {
 		return fmt.Errorf("SKVM has no current Displayable")
 	}
+	// A worker can yield midway through paint(). Keep its repaint request queued
+	// until that invocation finishes so another thread cannot advance game state
+	// through the same paint cycle.
+	if vm.paintInFlight() {
+		return nil
+	}
 	// Consume the request before entering guest code so repaint() called from
 	// paint() schedules another pass instead of being lost.
 	vm.setRepaintPending(false)
@@ -829,6 +835,31 @@ func (vm *VM) PaintCurrent(ctx context.Context) error {
 		vm.setRepaintPending(true)
 	}
 	return err
+}
+
+func (vm *VM) paintInFlight() bool {
+	const descriptor = "(Ljavax/microedition/lcdui/Graphics;)V"
+	containsPaint := func(frames []*frame) bool {
+		for _, current := range frames {
+			if current.method.Name != "paint" || current.method.Descriptor != descriptor || len(current.locals) == 0 {
+				continue
+			}
+			receiver, err := current.locals[0].Reference()
+			if err == nil && receiver == vm.currentDisplay {
+				return true
+			}
+		}
+		return false
+	}
+	if containsPaint(vm.frames) {
+		return true
+	}
+	for _, object := range vm.heap {
+		if state, ok := object.Native.(*threadState); ok && state.active && containsPaint(state.continuation) {
+			return true
+		}
+	}
+	return false
 }
 
 // RepaintPending reports whether the current Displayable requested a paint.
