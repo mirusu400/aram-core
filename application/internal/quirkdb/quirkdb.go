@@ -438,6 +438,25 @@ var LGTCanvases = []LGTCanvas{
 		Width:          176,
 		Height:         220,
 	},
+	{
+		// Do's JAD declares a 176x200 game area and its menu assets are
+		// 176 pixels wide; the handset adds a 20-pixel command strip.
+		PackageSHA256:  "b7b2e9579545bf8e0ae06c48b57ad05187dcbcb423a4838ef811edf51df58b52",
+		MainClass:      "Do",
+		InferredWidth:  240,
+		InferredHeight: 320,
+		Width:          176,
+		Height:         220,
+	},
+	{
+		// GgoGgoDak's menus and game scenes use 120-pixel-wide images.
+		PackageSHA256:  "5e87f5b649860a6c3e80f794882e5dc2e57a96c268b1e479af7af101d17e0160",
+		MainClass:      "MyMIDlet",
+		InferredWidth:  240,
+		InferredHeight: 320,
+		Width:          120,
+		Height:         160,
+	},
 }
 
 func LookupLGTCanvas(packageSHA256, mainClass string, inferredWidth, inferredHeight int) (LGTCanvas, bool) {
@@ -448,6 +467,34 @@ func LookupLGTCanvas(packageSHA256, mainClass string, inferredWidth, inferredHei
 		}
 	}
 	return LGTCanvas{}, false
+}
+
+// LGTWallEpoch keeps a packaged save's elapsed-time simulation near its
+// original handset date. The package digest confines the adjustment to that
+// exact shipped archive.
+type LGTWallEpoch struct {
+	PackageSHA256 string
+	MainClass     string
+	Millis        int64
+}
+
+var LGTWallEpochs = []LGTWallEpoch{
+	{
+		// Mini Gochi's bundled save starts on 2006-07-01 04:05:27 UTC. The
+		// default 2007 clock makes its startup replay roughly 264,000 minutes.
+		PackageSHA256: "54fce8ed446d8a68affee15ba328c3ecdac5dc367e54828e251c35074cdf6501",
+		MainClass:     "Feel",
+		Millis:        1151726727590,
+	},
+}
+
+func LookupLGTWallEpoch(packageSHA256, mainClass string) (int64, bool) {
+	for _, entry := range LGTWallEpochs {
+		if entry.PackageSHA256 == packageSHA256 && entry.MainClass == mainClass {
+			return entry.Millis, true
+		}
+	}
+	return 0, false
 }
 
 // SKVMCanvas records the handset canvas one SKT MIDlet build was authored for.

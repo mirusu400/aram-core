@@ -1,7 +1,6 @@
 package gvmhost
 
 import (
-	"bytes"
 	"errors"
 	"image"
 	"image/color"
@@ -108,7 +107,7 @@ func TestDisplayAdapterDrawingCopyAndTransparentColor(t *testing.T) {
 	}
 }
 
-func TestDisplayAdapterZeroAndGuestBufferSprite(t *testing.T) {
+func TestDisplayAdapterZeroAndGuestPaletteSprite(t *testing.T) {
 	display := newTestDisplay(t, 3, 1, DisplayOrientationDefault, testPalette{failSelector: -1}, &frameCollector{})
 	if err := display.FillGVMDisplay(9); err != nil {
 		t.Fatal(err)
@@ -121,12 +120,16 @@ func TestDisplayAdapterZeroAndGuestBufferSprite(t *testing.T) {
 			t.Fatalf("zero pixel %d=%d", index, pixel)
 		}
 	}
-	buffer := []byte{7, 7, 7}
-	if err := display.DrawGVMSpriteBuffer([]byte{8, 1, 1, 0, 0, 3}, buffer, 1, 0); err != nil {
+	resource := make([]byte, 22)
+	copy(resource, []byte{7, 1, 1, 0, 0})
+	resource[21] = 0x10
+	palette := make([]byte, 16)
+	palette[1] = 3
+	if err := display.DrawGVMSpriteWithPalette(resource, palette, 1, 0); err != nil {
 		t.Fatal(err)
 	}
-	if want := []byte{7, 3, 7}; !bytes.Equal(buffer, want) {
-		t.Fatalf("guest buffer=%v want=%v", buffer, want)
+	if got := display.drawing.pixels; len(got) != 3 || got[0] != 0 || got[1] != 3 || got[2] != 0 {
+		t.Fatalf("palette sprite pixels=%v", got)
 	}
 }
 

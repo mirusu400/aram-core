@@ -26,6 +26,9 @@ func (vm *VM) installDataIONatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
+			if reference == 0 {
+				return Value{}, false, vm.newThrowable("java/lang/NullPointerException", "")
+			}
 			data, err := vm.ByteArray(reference)
 			if err != nil {
 				return Value{}, false, err

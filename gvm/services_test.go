@@ -420,8 +420,7 @@ func TestServicesInstructionAliases(t *testing.T) {
 		}
 		if op == 0x51 {
 			err := v.Step()
-			var unsupported *gvm.UnsupportedOpcodeError
-			if !errors.As(err, &unsupported) || unsupported.Opcode != 1 || unsupported.Offset != 4 {
+			if !errors.Is(err, gvm.ErrInvalidElement) {
 				t.Fatalf("changed future fetch: %v", err)
 			}
 		} else if err := v.Run(5); err != nil || !v.Halted() || v.PC() != 9 {

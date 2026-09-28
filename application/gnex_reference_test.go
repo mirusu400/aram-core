@@ -3,6 +3,8 @@ package application
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -13,14 +15,14 @@ import (
 	"github.com/mirusu400/aram-core/loader/gnex"
 )
 
-// TestReferenceGNEXPackagesAreRecognizedNotExecuted walks a real GNEX corpus
+// TestReferenceUnqualifiedGNEXPackagesAreRecognizedNotExecuted walks a real GNEX corpus
 // (point ARAM_TEST_DATA at a directory containing GNEX zips, e.g. an
 // aram-test checkout's corpus/gamearchive/SKT/GNEX) and checks that the
-// factory recognizes every title and reports the specific "not yet
+// factory recognizes each unqualified title and reports the specific "not yet
 // executable" error from machine_load.go rather than a generic or
 // container-shaped one. This is a recognition claim, not an execution claim:
 // GVM bytecode is not run.
-func TestReferenceGNEXPackagesAreRecognizedNotExecuted(t *testing.T) {
+func TestReferenceUnqualifiedGNEXPackagesAreRecognizedNotExecuted(t *testing.T) {
 	root := os.Getenv("ARAM_TEST_DATA")
 	if root == "" {
 		t.Skip("ARAM_TEST_DATA is not set")
@@ -40,6 +42,10 @@ func TestReferenceGNEXPackagesAreRecognizedNotExecuted(t *testing.T) {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return err
+		}
+		digest := sha256.Sum256(data)
+		if _, operational := gvmOperationalCorpora[hex.EncodeToString(digest[:])]; operational {
+			return nil
 		}
 		pkg, inspectErr := gnex.Inspect(data)
 		if errors.Is(inspectErr, gnex.ErrNotPackage) {

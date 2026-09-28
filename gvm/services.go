@@ -22,10 +22,11 @@ var (
 	ErrAudioResetUnavailable      = errors.New("gvm: audio reset service unavailable")
 	ErrMediaLoadUnavailable       = errors.New("gvm: media load service unavailable")
 	ErrInvalidMediaIndex          = errors.New("gvm: invalid media index")
+	ErrInvalidMediaResource       = errors.New("gvm: invalid media resource")
 	ErrDisplayPresentUnavailable  = errors.New("gvm: display presentation service unavailable")
 	ErrSpriteDrawUnavailable      = errors.New("gvm: sprite draw service unavailable")
 	ErrSpriteTransformUnavailable = errors.New("gvm: transformed sprite draw service unavailable")
-	ErrSpriteBufferUnavailable    = errors.New("gvm: sprite buffer draw service unavailable")
+	ErrSpritePaletteUnavailable   = errors.New("gvm: sprite palette draw service unavailable")
 	ErrDisplayCopyUnavailable     = errors.New("gvm: display buffer copy service unavailable")
 	ErrDisplayFillUnavailable     = errors.New("gvm: display fill service unavailable")
 	ErrColorSelectUnavailable     = errors.New("gvm: drawing color selection service unavailable")
@@ -172,11 +173,10 @@ type SpriteTransformSink interface {
 	DrawGVMTransformedSprite(resource []byte, x, y int16, mirrorHorizontal bool) error
 }
 
-// SpriteBufferSink accepts opcode71's sprite payload and a private full-screen
-// indexed buffer snapshot. It must rasterize atomically without retaining the
-// slices. The VM publishes the returned buffer only after successful completion.
-type SpriteBufferSink interface {
-	DrawGVMSpriteBuffer(resource, buffer []byte, x, y int16) error
+// SpritePaletteSink accepts opcode71's sprite payload and palette data read
+// from the guest address. It draws to the active display without retaining data.
+type SpritePaletteSink interface {
+	DrawGVMSpriteWithPalette(resource, palette []byte, x, y int16) error
 }
 
 // TextDrawStyle is the normalized private drawing state consumed by opcodes
@@ -285,7 +285,7 @@ type ServiceConfig struct {
 	// SpriteTransform is borrowed. Opcode70 forwards a copied media payload,
 	// signed coordinates and a raw-zero/nonzero horizontal mirror selection.
 	SpriteTransform SpriteTransformSink
-	SpriteBuffer    SpriteBufferSink
+	SpritePalette   SpritePaletteSink
 	// TextDraw is borrowed. Opcode6a forwards a copied text resource and the
 	// current normalized text style without exposing mutable VM state.
 	TextDraw TextDrawSink
@@ -317,7 +317,7 @@ type serviceState struct {
 	rectangleFill   RectangleFillSink
 	spriteDraw      SpriteDrawSink
 	spriteTransform SpriteTransformSink
-	spriteBuffer    SpriteBufferSink
+	spritePalette   SpritePaletteSink
 	textDraw        TextDrawSink
 	audioReset      AudioResetSink
 	media           [][]byte
@@ -383,7 +383,7 @@ func NewWithAddressSpaceAndServices(program []byte, entry uint32, space AddressS
 		state.rectangleFill = config.RectangleFill
 		state.spriteDraw = config.SpriteDraw
 		state.spriteTransform = config.SpriteTransform
-		state.spriteBuffer = config.SpriteBuffer
+		state.spritePalette = config.SpritePalette
 		state.textDraw = config.TextDraw
 		state.audioReset = config.AudioReset
 		state.mediaLoad = config.MediaLoad

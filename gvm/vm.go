@@ -270,6 +270,45 @@ func (v *VM) Step() error {
 		value := v.stack[v.depth-1]
 		v.stack[v.depth] = value
 		v.depth++
+	case 0x10:
+		if v.depth == 0 {
+			return fail(ErrStackUnderflow)
+		}
+		v.stack[v.depth-1] = uint16(-int16(v.stack[v.depth-1]))
+	case 0x11:
+		// GVM2X swaps the two top words without changing stack depth.
+		if v.depth < 2 {
+			return fail(ErrStackUnderflow)
+		}
+		v.stack[v.depth-2], v.stack[v.depth-1] = v.stack[v.depth-1], v.stack[v.depth-2]
+	case 0x01:
+		// Push valueSymbol[indexSymbol[element]], where the three indices
+		// are unsigned immediate bytes.
+		if len(v.code)-v.pc < 3 {
+			return fail(ErrTruncated)
+		}
+		valueSymbol, indexSymbol := int(v.code[v.pc]), int(v.code[v.pc+1])
+		indexElement := int(v.code[v.pc+2])
+		if v.depth >= len(v.stack) {
+			return fail(ErrStackOverflow)
+		}
+		if valueSymbol >= len(v.symbols) || indexSymbol >= len(v.symbols) {
+			return fail(ErrInvalidSymbol)
+		}
+		values, indices := v.symbols[valueSymbol], v.symbols[indexSymbol]
+		if len(values)%2 != 0 || len(values) > 510 || len(indices)%2 != 0 || len(indices) > 510 {
+			return fail(ErrInvalidSymbolRegion)
+		}
+		if indexElement >= len(indices)/2 {
+			return fail(ErrInvalidElement)
+		}
+		element := int16(binary.LittleEndian.Uint16(indices[2*indexElement : 2*indexElement+2]))
+		if element < 0 || int(element) >= len(values)/2 {
+			return fail(ErrInvalidElement)
+		}
+		v.stack[v.depth] = binary.LittleEndian.Uint16(values[2*int(element) : 2*int(element)+2])
+		v.depth++
+		v.pc += 3
 	case 0x02:
 		// Two u8 operands select a value symbol and an index symbol. The first
 		// raw word of the latter is interpreted as a signed element index into
@@ -789,6 +828,63 @@ func (v *VM) Step() error {
 		}
 		v.depth -= 4
 		clear(v.stack[v.depth : v.depth+4]) // Host hygiene only.
+	case 0x58:
+		// The GVM2X point helper rejects offscreen coordinates before
+		// touching its drawing buffer. Its in-bounds path is not modeled.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 3 {
+			return fail(ErrStackUnderflow)
+		}
+		if v.services.deviceQuery == nil {
+			return fail(ErrDeviceQueryUnavailable)
+		}
+		x, y := int16(v.stack[v.depth-3]), int16(v.stack[v.depth-2])
+		if x >= 0 && int32(x) < v.services.deviceQuery.Width &&
+			y >= 0 && int32(y) < v.services.deviceQuery.Height && y != 4 {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		v.depth -= 3
+		clear(v.stack[v.depth : v.depth+3])
+	case 0x60:
+		// The exact GVM2X handler draws a clipped vertical line from the
+		// first two signed words at the x coordinate on top.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 3 {
+			return fail(ErrStackUnderflow)
+		}
+		if v.services.rectangleDraw == nil {
+			return fail(ErrRectangleDrawUnavailable)
+		}
+		y1, y2, x := int16(v.stack[v.depth-3]), int16(v.stack[v.depth-2]), int16(v.stack[v.depth-1])
+		if err := v.services.rectangleDraw.DrawGVMRectangle(x, y1, x, y2); err != nil {
+			return fail(err)
+		}
+		v.depth -= 3
+		clear(v.stack[v.depth : v.depth+3])
+	case 0x61:
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 3 {
+			return fail(ErrStackUnderflow)
+		}
+		if v.services.rectangleDraw == nil {
+			return fail(ErrRectangleDrawUnavailable)
+		}
+		x1, x2, y := int16(v.stack[v.depth-3]), int16(v.stack[v.depth-2]), int16(v.stack[v.depth-1])
+		if err := v.services.rectangleDraw.DrawGVMRectangle(x1, y, x2, y); err != nil {
+			return fail(err)
+		}
+		v.depth -= 3
+		clear(v.stack[v.depth : v.depth+3])
 	case 0x71:
 		if v.services == nil {
 			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
@@ -797,40 +893,27 @@ func (v *VM) Step() error {
 		if v.depth < 4 {
 			return fail(ErrStackUnderflow)
 		}
-		if v.services.spriteBuffer == nil {
-			return fail(ErrSpriteBufferUnavailable)
-		}
-		if v.services.deviceQuery == nil {
-			return fail(ErrDeviceQueryUnavailable)
+		if v.services.spritePalette == nil {
+			return fail(ErrSpritePaletteUnavailable)
 		}
 		x, y := int16(v.stack[v.depth-4]), int16(v.stack[v.depth-3])
 		index := int16(v.stack[v.depth-2])
-		destinationRef := v.stack[v.depth-1]
+		paletteRef := v.stack[v.depth-1]
 		if index < 0 || int(index) >= len(v.services.media) {
 			return fail(ErrInvalidMediaIndex)
 		}
-		extent := uint64(v.services.deviceQuery.Width) * uint64(v.services.deviceQuery.Height)
-		destination, err := v.serviceTail(destinationRef)
+		palette, err := v.serviceTail(paletteRef)
 		if err != nil {
-			return fail(fmt.Errorf("sprite buffer x=%d y=%d media=%d destination=0x%04x extent=%d: %w", x, y, index, destinationRef, extent, err))
+			return fail(fmt.Errorf("sprite palette media=%d ref=0x%04x: %w", index, paletteRef, err))
 		}
-		buffer := make([]byte, int(extent))
-		accessible := min(len(destination), len(buffer))
-		copy(buffer, destination[:accessible])
 		resource := v.services.media[index]
-		if err := v.services.spriteBuffer.DrawGVMSpriteBuffer(bytes.Clone(resource), buffer, x, y); err != nil {
+		if err := v.services.spritePalette.DrawGVMSpriteWithPalette(bytes.Clone(resource), bytes.Clone(palette), x, y); err != nil {
 			typeByte := byte(0)
 			if len(resource) != 0 {
 				typeByte = resource[0]
 			}
-			return fail(fmt.Errorf("draw GVM sprite buffer media %d type 0x%02x: %w", index, typeByte, err))
+			return fail(fmt.Errorf("draw GVM sprite palette media %d type 0x%02x: %w", index, typeByte, err))
 		}
-		for _, value := range buffer[accessible:] {
-			if value != 0 {
-				return fail(fmt.Errorf("sprite buffer write exceeds destination: %w", ErrInvalidAddress))
-			}
-		}
-		copy(destination[:accessible], buffer[:accessible])
 		v.depth -= 4
 		clear(v.stack[v.depth : v.depth+4])
 	case 0x76, 0x77:
@@ -858,6 +941,211 @@ func (v *VM) Step() error {
 		}
 		if err := v.services.displayPresent.PresentGVMDisplay(); err != nil {
 			return fail(err)
+		}
+	case 0x7a:
+		// GVM2X resizes a media record and returns a success word in place
+		// of the index, consuming the requested size. Keep the media records
+		// independent while preserving their existing byte prefix.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 2 {
+			return fail(ErrStackUnderflow)
+		}
+		index := int(int16(v.stack[v.depth-2]))
+		size := int(int16(v.stack[v.depth-1]))
+		result := uint16(0)
+		if resizeGVMMedia(v.services.media, index, size) {
+			result = 1
+		}
+		v.stack[v.depth-2] = result
+		v.depth--
+		v.stack[v.depth] = 0
+	case 0x7e:
+		// Copy a counted substring into a dynamic media record and append NUL.
+		// Operands are destination, source, source offset, byte count.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 4 {
+			return fail(ErrStackUnderflow)
+		}
+		destination := int(int16(v.stack[v.depth-4]))
+		source := int(int16(v.stack[v.depth-3]))
+		start := int(int16(v.stack[v.depth-2]))
+		count := int(int16(v.stack[v.depth-1]))
+		if destination < 0 || destination >= len(v.services.media) || source < 0 || source >= len(v.services.media) {
+			return fail(ErrInvalidMediaIndex)
+		}
+		payload := v.services.media[source]
+		if start < 0 || count < 0 || start > len(payload) || count > len(payload)-start {
+			return fail(ErrInvalidElement)
+		}
+		segment := bytes.Clone(payload[start : start+count])
+		if resizeGVMMedia(v.services.media, destination, count+1) {
+			copy(v.services.media[destination], segment)
+			v.services.media[destination][count] = 0
+		}
+		v.depth -= 4
+		clear(v.stack[v.depth : v.depth+4])
+	case 0x7c:
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth == 0 {
+			return fail(ErrStackUnderflow)
+		}
+		index := int16(v.stack[v.depth-1])
+		if index < 0 || int(index) >= len(v.services.media) {
+			return fail(ErrInvalidMediaIndex)
+		}
+		length := bytes.IndexByte(v.services.media[index], 0)
+		if length < 0 || length > 0xffff {
+			return fail(ErrInvalidMediaResource)
+		}
+		v.stack[v.depth-1] = uint16(length)
+	case 0x7d:
+		// GVM2X copies a NUL-terminated media string into a media slot,
+		// growing a dynamic destination when necessary. An invalid
+		// destination is skipped, but both operands are still consumed.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 2 {
+			return fail(ErrStackUnderflow)
+		}
+		destination := int16(v.stack[v.depth-2])
+		if destination >= 0 && int(destination) < len(v.services.media) {
+			source := int16(v.stack[v.depth-1])
+			if source < 0 || int(source) >= len(v.services.media) {
+				return fail(ErrInvalidMediaIndex)
+			}
+			payload := v.services.media[source]
+			end := bytes.IndexByte(payload, 0)
+			if end < 0 {
+				return fail(ErrInvalidMediaResource)
+			}
+			v.services.media[destination] = bytes.Clone(payload[:end+1])
+		}
+		v.depth -= 2
+		clear(v.stack[v.depth : v.depth+2])
+	case 0x81:
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 2 {
+			return fail(ErrStackUnderflow)
+		}
+		index := int16(v.stack[v.depth-2])
+		element := int16(v.stack[v.depth-1])
+		if index < 0 || int(index) >= len(v.services.media) {
+			return fail(ErrInvalidMediaIndex)
+		}
+		payload := v.services.media[index]
+		if element < 0 || int(element) >= len(payload) {
+			return fail(ErrInvalidElement)
+		}
+		v.stack[v.depth-2] = uint16(int16(int8(payload[element])))
+		v.depth--
+		v.stack[v.depth] = 0
+	case 0x82:
+		// Store the low byte of a signed word into a media record.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 3 {
+			return fail(ErrStackUnderflow)
+		}
+		index := int(int16(v.stack[v.depth-3]))
+		element := int(int16(v.stack[v.depth-2]))
+		if index < 0 || index >= len(v.services.media) {
+			return fail(ErrInvalidMediaIndex)
+		}
+		if element < 0 || element >= len(v.services.media[index]) {
+			return fail(ErrInvalidElement)
+		}
+		v.services.media[index][element] = byte(v.stack[v.depth-1])
+		v.depth -= 3
+		clear(v.stack[v.depth : v.depth+3])
+	case 0x83:
+		// Convert a NUL-terminated media string through native atoi, then
+		// keep the low word of the signed result.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth == 0 {
+			return fail(ErrStackUnderflow)
+		}
+		index := int(int16(v.stack[v.depth-1]))
+		if index < 0 || index >= len(v.services.media) {
+			return fail(ErrInvalidMediaIndex)
+		}
+		payload := v.services.media[index]
+		end := bytes.IndexByte(payload, 0)
+		if end < 0 {
+			return fail(ErrInvalidMediaResource)
+		}
+		v.stack[v.depth-1] = parseGVMDecimal(payload[:end])
+	case 0x8a, 0x8b:
+		// GVM2X formats one or two signed words into a media string.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		arguments := 1
+		if op == 0x8b {
+			arguments = 2
+		}
+		if v.depth < 2+arguments {
+			return fail(ErrStackUnderflow)
+		}
+		destination := int16(v.stack[v.depth-2-arguments])
+		source := int16(v.stack[v.depth-1-arguments])
+		if destination < 0 || int(destination) >= len(v.services.media) ||
+			source < 0 || int(source) >= len(v.services.media) {
+			return fail(ErrInvalidMediaIndex)
+		}
+		format := v.services.media[source]
+		end := bytes.IndexByte(format, 0)
+		if end < 0 {
+			return fail(ErrInvalidMediaResource)
+		}
+		format = format[:end]
+		if !validGVMDecimalFormat(format, arguments) {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		var formatted string
+		if arguments == 1 {
+			formatted = fmt.Sprintf(string(format), int16(v.stack[v.depth-1]))
+		} else {
+			formatted = fmt.Sprintf(string(format), int16(v.stack[v.depth-2]), int16(v.stack[v.depth-1]))
+		}
+		if len(formatted) >= 256 {
+			return fail(ErrInvalidMediaResource)
+		}
+		v.services.media[destination] = append([]byte(formatted), 0)
+		v.depth -= 2 + arguments
+		clear(v.stack[v.depth : v.depth+2+arguments])
+	case 0x95:
+		// GVM2X cancels its fixed host timer (ID 0x1003). This opcode
+		// has no operands or stack effect. A host that tracks timer requests
+		// may discard the pending request here.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if timer, ok := v.services.timer.(interface{ CancelGVMTimer() error }); ok {
+			if err := timer.CancelGVMTimer(); err != nil {
+				return fail(err)
+			}
 		}
 	case 0x91:
 		if v.services == nil {
@@ -1249,7 +1537,7 @@ func (v *VM) Step() error {
 		if value < 0 {
 			v.stack[v.depth-1] = uint16(-value)
 		}
-	case 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x1a, 0x1b, 0x1c, 0x1f, 0x20, 0x21:
+	case 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x1a, 0x1b, 0x1c, 0x1f, 0x20, 0x21, 0x22:
 		if v.depth < 2 {
 			return fail(ErrStackUnderflow)
 		}
@@ -1290,6 +1578,10 @@ func (v *VM) Step() error {
 			// Full raw-word equality. Shared pop clearing below is approved
 			// host hygiene, unlike the native handler's retained top word.
 			if a == b {
+				value = 1
+			}
+		case 0x22:
+			if a != b {
 				value = 1
 			}
 		case 0x1f:
@@ -1475,6 +1767,30 @@ func (v *VM) Step() error {
 		value := binary.LittleEndian.Uint16(words[1])
 		binary.LittleEndian.PutUint16(words[0], value)
 		v.pc += 4
+	case 0x30:
+		// Copy the first word of a source symbol into a fixed element of
+		// a destination symbol. Native operands are destination, element,
+		// source in that order.
+		if len(v.code)-v.pc < 3 {
+			return fail(ErrTruncated)
+		}
+		destination := int(v.code[v.pc])
+		element := int(v.code[v.pc+1])
+		source := int(v.code[v.pc+2])
+		if destination >= len(v.symbols) || source >= len(v.symbols) {
+			return fail(ErrInvalidSymbol)
+		}
+		destinationRegion, sourceRegion := v.symbols[destination], v.symbols[source]
+		if len(destinationRegion)%2 != 0 || len(destinationRegion) > 510 || len(sourceRegion) < 2 {
+			return fail(ErrInvalidSymbolRegion)
+		}
+		if element >= len(destinationRegion)/2 {
+			return fail(ErrInvalidElement)
+		}
+		value := binary.LittleEndian.Uint16(sourceRegion[:2])
+		offset := 2 * element
+		binary.LittleEndian.PutUint16(destinationRegion[offset:offset+2], value)
+		v.pc += 3
 	case 0x29:
 		if len(v.code)-v.pc < 4 {
 			return fail(ErrTruncated)
@@ -1589,7 +1905,7 @@ func (v *VM) Step() error {
 		old := binary.LittleEndian.Uint16(region[offset : offset+2])
 		binary.LittleEndian.PutUint16(region[offset:offset+2], old+uint16(int16(delta)))
 		v.pc += 3
-	case 0x3c, 0x3d, 0x3e, 0x3f, 0x40:
+	case 0x3b, 0x3c, 0x3d, 0x3e, 0x3f, 0x40:
 		// Host safety policy eagerly requires all operands, even on fallthrough,
 		// and validates before committing the pop. These differ from lazy target
 		// reads and a pre-target pop; they are not native error-order claims.
@@ -1600,6 +1916,9 @@ func (v *VM) Step() error {
 			return fail(ErrStackUnderflow)
 		}
 		taken := int16(v.stack[v.depth-1]) < int16(int8(v.code[v.pc]))
+		if op == 0x3b {
+			taken = int16(v.stack[v.depth-1]) > int16(int8(v.code[v.pc]))
+		}
 		if op == 0x3d {
 			taken = int16(v.stack[v.depth-1]) >= int16(int8(v.code[v.pc]))
 		}
@@ -1663,4 +1982,74 @@ func (v *VM) Step() error {
 		return v.fault
 	}
 	return nil
+}
+
+func validGVMDecimalFormat(format []byte, arguments int) bool {
+	count := 0
+	for i := 0; i < len(format); i++ {
+		if format[i] != '%' {
+			continue
+		}
+		count++
+		i++
+		start := i
+		for i < len(format) && format[i] >= '0' && format[i] <= '9' {
+			i++
+		}
+		if i-start > 2 || i >= len(format) || format[i] != 'd' {
+			return false
+		}
+	}
+	return count == arguments
+}
+
+func resizeGVMMedia(media [][]byte, index, size int) bool {
+	if index < 0 || index >= len(media) || size < 0 {
+		return false
+	}
+	old := media[index]
+	delta := size - len(old)
+	if delta%2 != 0 {
+		delta++
+	}
+	// The native allocator leaves small decreases in place and rounds changes
+	// to word alignment. Its temporary growth area is limited to 16 KiB.
+	if delta >= -16 && delta <= 0 {
+		return true
+	}
+	length := len(old) + delta
+	if length < 0 || length > 0xffff || delta > 16*1024 {
+		return false
+	}
+	resized := make([]byte, length)
+	copy(resized, old)
+	media[index] = resized
+	return true
+}
+
+func parseGVMDecimal(value []byte) uint16 {
+	i := 0
+	for i < len(value) {
+		switch value[i] {
+		case ' ', '\t', '\n', '\r', '\v', '\f':
+			i++
+		default:
+			goto number
+		}
+	}
+number:
+	negative := false
+	if i < len(value) && (value[i] == '+' || value[i] == '-') {
+		negative = value[i] == '-'
+		i++
+	}
+	var number uint16
+	for i < len(value) && value[i] >= '0' && value[i] <= '9' {
+		number = number*10 + uint16(value[i]-'0')
+		i++
+	}
+	if negative {
+		return -number
+	}
+	return number
 }

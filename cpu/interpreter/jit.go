@@ -52,14 +52,16 @@ type jitCountedLoop struct {
 }
 
 type jitBlock struct {
-	start       uint32
-	end         uint32
-	arm         []jitInstr
-	thumb       []thumbMicroInstr
-	countedLoop *jitCountedLoop
-	paletteLoop *jitThumbPaletteLoop
-	colorLoop   *jitThumbColorLoop
-	fillLoop    *jitThumbFillLoop
+	start            uint32
+	end              uint32
+	arm              []jitInstr
+	thumb            []thumbMicroInstr
+	countedLoop      *jitCountedLoop
+	paletteLoop      *jitThumbPaletteLoop
+	stackPaletteLoop *jitThumbStackPaletteLoop
+	halfwordFillLoop *jitThumbHalfwordFillLoop
+	colorLoop        *jitThumbColorLoop
+	fillLoop         *jitThumbFillLoop
 }
 
 const jitMaxBlock = 256
@@ -364,6 +366,26 @@ outer:
 				continue outer
 			}
 		}
+		if block.stackPaletteLoop != nil {
+			retired := b.accelerateThumbStackPaletteLoop(
+				block.stackPaletteLoop, limit-executed,
+				wholeSystem, hasExecutionTraps, traced,
+			)
+			executed += retired
+			if retired != 0 {
+				continue outer
+			}
+		}
+		if block.halfwordFillLoop != nil {
+			retired := b.accelerateThumbHalfwordFillLoop(
+				block.halfwordFillLoop, limit-executed,
+				wholeSystem, hasExecutionTraps, traced,
+			)
+			executed += retired
+			if retired != 0 {
+				continue outer
+			}
+		}
 		if block.colorLoop != nil {
 			retired := b.accelerateThumbColorLoop(
 				block.colorLoop, limit-executed,
@@ -543,6 +565,18 @@ func (b *Backend) translateThumbBlock(pc uint32) *jitBlock {
 	}
 	if block.paletteLoop != nil {
 		block.end = pc + thumbPaletteLoopInstructions*2
+	}
+	if instrs[0].raw == thumbStackPaletteLoopWords[0] {
+		block.stackPaletteLoop = b.classifyThumbStackPaletteLoop(pc)
+		if block.stackPaletteLoop != nil {
+			block.end = pc + thumbStackPaletteLoopInstructions*2
+		}
+	}
+	if instrs[0].raw == thumbHalfwordFillLoopWords[0] {
+		block.halfwordFillLoop = b.classifyThumbHalfwordFillLoop(pc)
+		if block.halfwordFillLoop != nil {
+			block.end = pc + thumbHalfwordFillLoopInstructions*2
+		}
 	}
 	if len(instrs) >= 3 && instrs[0].raw == 0x8832 &&
 		instrs[1].raw&0xff00 == 0x4b00 && instrs[2].raw == 0x4013 {

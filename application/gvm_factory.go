@@ -32,6 +32,7 @@ const (
 	GVMOperationalProfileID      = "gvm-kernel-v1/skt/operational"
 	GVMOperationalSHA256         = "97fe208a02530ca21c6b47d7fa73cd60271aeeddd2305d2a972a217c97a4124f"
 	GVMHackSignOperationalSHA256 = "3ddab790645e84c2d91ffb675d3842717da2a2c8c02d012ca800b20a7a55c9c0"
+	GVMRagnarokOperationalSHA256 = "5c73bf6960bea012368232de7398284cb628b8969c74b8ea1311aea740a49f25"
 	defaultGVMWidth              = int32(240)
 	defaultGVMHeight             = int32(240)
 	operationalGVMWidth          = int32(120)
@@ -41,13 +42,17 @@ const (
 )
 
 type gvmOperationalConfig struct {
-	width  int32
-	height int32
+	width   int32
+	height  int32
+	originX int
+	originY int
 }
 
 var gvmOperationalCorpora = map[string]gvmOperationalConfig{
-	GVMOperationalSHA256:         {width: operationalGVMWidth, height: operationalGVMHeight},
-	GVMHackSignOperationalSHA256: {width: operationalGVMWidth, height: operationalGVMHeight},
+	GVMOperationalSHA256: {width: operationalGVMWidth, height: operationalGVMHeight},
+	// HackSign draws its 120x68 playfield around (0,0), from (-60,-34).
+	GVMHackSignOperationalSHA256: {width: operationalGVMWidth, height: operationalGVMHeight, originX: 60, originY: 34},
+	GVMRagnarokOperationalSHA256: {width: 120, height: 120},
 }
 
 var (
@@ -69,6 +74,11 @@ func (s *gvmTimerBoundary) RequestGVMTimer(interval int16, selector uint16) erro
 	if s.terminal {
 		return errGVMTimerBoundary
 	}
+	return nil
+}
+
+func (s *gvmTimerBoundary) CancelGVMTimer() error {
+	s.interval, s.selector, s.reached = 0, 0, false
 	return nil
 }
 
@@ -123,6 +133,8 @@ type gvmMachine struct {
 	frames          *gvmFramePublisher
 	width           int32
 	height          int32
+	originX         int
+	originY         int
 	inputDispatches uint64
 	lastInputCode   uint16
 	lastInputResult cpu.Result
@@ -176,12 +188,13 @@ func (f Factory) createGVMMachine(ctx context.Context, source machinecore.Source
 	source.Format = string(loader.KindGNEX)
 	budget := f.FrameRunBudget
 	if budget == 0 {
-		budget = f.RunBudget
-	}
-	if budget == 0 {
-		budget = defaultGVMBudget
 		if operational {
 			budget = defaultGVMOperationalBudget
+		} else {
+			budget = f.RunBudget
+			if budget == 0 {
+				budget = defaultGVMBudget
+			}
 		}
 	}
 	machine := &gvmMachine{
@@ -192,6 +205,8 @@ func (f Factory) createGVMMachine(ctx context.Context, source machinecore.Source
 		operational: operational,
 		width:       config.width,
 		height:      config.height,
+		originX:     config.originX,
+		originY:     config.originY,
 	}
 	if operational {
 		if len(pkg.SGS) < 0x24 {
@@ -255,6 +270,7 @@ func (m *gvmMachine) resetVMLocked() error {
 		}
 		display, err = gvmhost.NewDisplayAdapter(gvmhost.DisplayConfig{
 			Width: int(width), Height: int(height),
+			OriginX: m.originX, OriginY: m.originY,
 			Orientation: gvmhost.DisplayOrientationDefault,
 			Palette:     gvmhost.SKTCompatibilityPalette{}, Publisher: m.frames,
 			Text: textServices.Text, TextOwner: 1,
@@ -288,7 +304,7 @@ func (m *gvmMachine) resetVMLocked() error {
 		services.RectangleFill = display
 		services.SpriteDraw = display
 		services.SpriteTransform = display
-		services.SpriteBuffer = display
+		services.SpritePalette = display
 		services.TextDraw = display
 		services.AudioReset = mediaServices
 		services.Media = media
