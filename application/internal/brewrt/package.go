@@ -56,6 +56,7 @@ const issue321ArchiveSHA256 = "4fae0b6a37e501163f6eabbda2b400bdfd4682ae389217bc2
 const jinJanggiArchiveSHA256 = "06369c8db97fb4e28165297ac2557c0de050dfb6986ea429d3411ffedfa891b9"
 const tengaiArchiveSHA256 = "01f8fe8784138792822df9306127279f038813ea62c00385d256b77b61a025cf"
 const minibookArchiveSHA256 = "9d17a101d5c9e31e789698f31fb41ba5448b624eb63b37193be13b12fdbb46c0"
+const battleDrumXArchiveSHA256 = "a50f7decb608272daca545a1beca126286cba8eeb8b6e230f14448393b143ca2"
 
 // Package contains the inspected executable module and immutable archive data.
 type Package struct {
@@ -131,6 +132,11 @@ func Match(data []byte) (pkg Package, matched bool, err error) {
 	if digestHex == minibookArchiveSHA256 {
 		// The MBR contains 176x207 full-screen scenes. The default
 		// 120x160 canvas clips the bookcase and its menu artwork.
+		nativeCanvas = image.Pt(176, 220)
+	}
+	if digestHex == battleDrumXArchiveSHA256 {
+		// Multiple SC images in drumx.bar are 176x204, including the
+		// menu background; the generic canvas cuts off its right side.
 		nativeCanvas = image.Pt(176, 220)
 	}
 	if digestHex == ArchiveSHA256 {
