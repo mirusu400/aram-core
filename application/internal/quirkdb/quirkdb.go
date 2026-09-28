@@ -469,6 +469,34 @@ func LookupLGTCanvas(packageSHA256, mainClass string, inferredWidth, inferredHei
 	return LGTCanvas{}, false
 }
 
+// LGTWallEpoch keeps a packaged save's elapsed-time simulation near its
+// original handset date. The package digest confines the adjustment to that
+// exact shipped archive.
+type LGTWallEpoch struct {
+	PackageSHA256 string
+	MainClass     string
+	Millis        int64
+}
+
+var LGTWallEpochs = []LGTWallEpoch{
+	{
+		// Mini Gochi's bundled save starts on 2006-07-01 04:05:27 UTC. The
+		// default 2007 clock makes its startup replay roughly 264,000 minutes.
+		PackageSHA256: "54fce8ed446d8a68affee15ba328c3ecdac5dc367e54828e251c35074cdf6501",
+		MainClass:     "Feel",
+		Millis:        1151726727590,
+	},
+}
+
+func LookupLGTWallEpoch(packageSHA256, mainClass string) (int64, bool) {
+	for _, entry := range LGTWallEpochs {
+		if entry.PackageSHA256 == packageSHA256 && entry.MainClass == mainClass {
+			return entry.Millis, true
+		}
+	}
+	return 0, false
+}
+
 // SKVMCanvas records the handset canvas one SKT MIDlet build was authored for.
 // An SKT descriptor never declares a display size, and a title that packs its
 // art into opaque resource blobs offers nothing to infer one from, so a build

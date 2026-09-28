@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/mirusu400/aram-core/application/internal/guest"
+	"github.com/mirusu400/aram-core/application/internal/quirkdb"
 	machinecore "github.com/mirusu400/aram-core/core"
 	"github.com/mirusu400/aram-core/loader/j2me"
 	skloader "github.com/mirusu400/aram-core/loader/skvm"
@@ -89,6 +90,11 @@ func newJavaMachine(ctx context.Context, source machinecore.Source, app Applicat
 		size = skvmTitleCanvas(source, *legacy, inferred)
 	}
 	config := shared.DefaultConfig()
+	if source.ProfileID == j2me.LGTProfileID {
+		if epoch, ok := quirkdb.LookupLGTWallEpoch(source.SHA256, app.MainClass); ok {
+			config.WallEpochMillis = epoch
+		}
+	}
 	if outputSampleRate != 0 {
 		config.Limits.Media.OutputSampleRate = outputSampleRate
 	}
