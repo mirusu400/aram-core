@@ -21,6 +21,7 @@ func decodeSAFImage(saf []byte) (image.Image, bool) {
 	}
 	var canvasW, canvasH, depth int
 	var paletteType byte
+	var palette []color.RGBA
 	var tree []byte
 	objects := make(map[byte]*safObject)
 	var frame []byte
@@ -44,7 +45,7 @@ func decodeSAFImage(saf []byte) (image.Image, bool) {
 				return nil, false
 			}
 			var ok bool
-			canvasW, canvasH, depth, paletteType, ok = safCanvas(saf[pos : pos+groupSize])
+			canvasW, canvasH, depth, paletteType, palette, ok = safCanvas(saf[pos : pos+groupSize])
 			if !ok {
 				return nil, false
 			}
@@ -87,12 +88,18 @@ func decodeSAFImage(saf []byte) (image.Image, bool) {
 			break
 		}
 	}
-	if !ended || canvasW == 0 || canvasH == 0 || depth != 8 || paletteType != 0 ||
+	if !ended || canvasW == 0 || canvasH == 0 || depth != 8 || (paletteType != 0 && paletteType != 1) ||
 		len(frame) < 2 || len(objects) == 0 {
 		return nil, false
 	}
 	result := image.NewRGBA(image.Rect(0, 0, canvasW, canvasH))
-	background := safRGB332(frame[0])
+	colorForIndex := func(index byte) color.RGBA {
+		if paletteType == 1 {
+			return palette[index]
+		}
+		return safRGB332(index)
+	}
+	background := colorForIndex(frame[0])
 	for y := 0; y < canvasH; y++ {
 		for x := 0; x < canvasW; x++ {
 			result.SetRGBA(x, y, background)
@@ -100,6 +107,12 @@ func decodeSAFImage(saf []byte) (image.Image, bool) {
 	}
 	position := 2
 	for movement := 0; movement < int(frame[1]); movement++ {
+		if position+5 <= len(frame) && bytes.Equal(frame[position:position+5], []byte{0x21, 3, 1, 0, 0}) {
+			// Some SAF still frames place this fixed setup record before
+			// their image movement. It carries no pixel coordinates.
+			position += 5
+			continue
+		}
 		if position+7 > len(frame) || frame[position] != 0 || frame[position+1] != 5 ||
 			frame[position+3] != 0 || frame[position+4]&0xf0 != 0 {
 			return nil, false // transformed/scaled motion is not implemented
@@ -114,7 +127,7 @@ func decodeSAFImage(saf []byte) (image.Image, bool) {
 			for x := 0; x < object.w; x++ {
 				value := object.pixels[y*object.w+x]
 				if !transparent || value != object.key {
-					result.SetRGBA(x0+x, y0+y, safRGB332(value))
+					result.SetRGBA(x0+x, y0+y, colorForIndex(value))
 				}
 			}
 		}
@@ -132,33 +145,50 @@ type safObject struct {
 	pixels []byte
 }
 
-func safCanvas(group []byte) (width, height, depth int, paletteType byte, ok bool) {
+func safCanvas(group []byte) (width, height, depth int, paletteType byte, palette []color.RGBA, ok bool) {
 	pos := 0
 	for pos < len(group) {
+		if paletteType == 1 && pos+1 == len(group) && group[pos] == 0 {
+			break
+		}
 		if pos+2 > len(group) {
-			return 0, 0, 0, 0, false
+			return 0, 0, 0, 0, nil, false
 		}
 		kind, size := group[pos], int(group[pos+1])
 		pos += 2
 		if size > len(group)-pos {
-			return 0, 0, 0, 0, false
+			return 0, 0, 0, 0, nil, false
 		}
 		payload := group[pos : pos+size]
 		pos += size
 		switch kind {
 		case 1:
 			if size < 3 {
-				return 0, 0, 0, 0, false
+				return 0, 0, 0, 0, nil, false
 			}
 			width, height, depth = int(payload[0]), int(payload[1]), int(payload[2])
 		case 2:
 			if size < 2 {
-				return 0, 0, 0, 0, false
+				return 0, 0, 0, 0, nil, false
 			}
 			paletteType = (payload[1] >> 5) & 3
+			if paletteType == 1 {
+				// This SAF form places a 256-entry RGB888 palette after
+				// the color-mode record, before the remaining group data.
+				const colors = 256
+				if len(group)-pos < 5+colors*3 || !bytes.Equal(group[pos:pos+5], []byte{3, 0, 0, 0, 0}) {
+					return 0, 0, 0, 0, nil, false
+				}
+				palette = make([]color.RGBA, colors)
+				for index := range palette {
+					at := pos + 5 + index*3
+					palette[index] = color.RGBA{R: group[at], G: group[at+1], B: group[at+2], A: 255}
+				}
+				pos += 5 + colors*3
+			}
 		}
 	}
-	return width, height, depth, paletteType, width > 0 && height > 0
+	return width, height, depth, paletteType, palette, width > 0 && height > 0 && (paletteType != 1 || len(palette) == 256)
 }
 
 func safRGB332(value byte) color.RGBA {

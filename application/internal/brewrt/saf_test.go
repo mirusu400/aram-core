@@ -66,6 +66,53 @@ func TestDecodeSAFImageMLZ(t *testing.T) {
 			}
 		}
 	}
+	withSetup := append([]byte(nil), saf[:len(saf)-3]...)
+	frameCommand := []byte{6, 0, 9, 0xff, 1, 0, 5, 0, 0, 0, 0, 0}
+	frameAt := bytes.LastIndex(withSetup, frameCommand)
+	if frameAt < 0 {
+		t.Fatal("synthetic SAF frame command missing")
+	}
+	withSetup = append(withSetup[:frameAt], append(safTestCommand(nil, 6, []byte{0xff, 2, 0x21, 3, 1, 0, 0, 0, 5, 0, 0, 0, 0, 0}), withSetup[frameAt+len(frameCommand):]...)...)
+	withSetup = safTestCommand(withSetup, 8, nil)
+	binary.BigEndian.PutUint16(withSetup[5:7], uint16(len(withSetup)))
+	setUpImage, ok := decodeSAFImage(withSetup)
+	if !ok || setUpImage.Bounds() != decoded.Bounds() {
+		t.Fatalf("SAF fixed frame setup = %v, ok=%v", setUpImage, ok)
+	}
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			if got, want := setUpImage.At(x, y), decoded.At(x, y); got != want {
+				t.Fatalf("SAF fixed frame setup pixel (%d,%d) = %v, want %v", x, y, got, want)
+			}
+		}
+	}
+	paletteGroup := []byte{1, 6, width, height, 8, 4, 0, 0, 2, 2, 1, 0x20, 3, 0, 0, 0, 0}
+	for index := range 256 {
+		paletteGroup = append(paletteGroup, byte(index), byte(255-index), byte(index^0x5a))
+	}
+	paletted := []byte{'S', 'A', 'F', 0, 2, 0, 0}
+	paletted = safTestCommand(paletted, 7, []byte{byte(len(paletteGroup) >> 8), byte(len(paletteGroup))})
+	paletted = append(paletted, paletteGroup...)
+	paletted = safTestCommand(paletted, 11, tree)
+	paletted = safTestCommand(paletted, 4, []byte{0, width, height, 1, 0xe3})
+	paletted = binary.BigEndian.AppendUint16(paletted, uint16(len(packed)))
+	paletted = append(paletted, packed...)
+	paletted = safTestCommand(paletted, 6, []byte{0xff, 1, 0, 5, 0, 0, 0, 0, 0})
+	paletted = safTestCommand(paletted, 8, nil)
+	binary.BigEndian.PutUint16(paletted[5:7], uint16(len(paletted)))
+	palettedImage, ok := decodeSAFImage(paletted)
+	if !ok || palettedImage.Bounds() != decoded.Bounds() {
+		t.Fatalf("SAF RGB888 palette = %v, ok=%v", palettedImage, ok)
+	}
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			index := pixels[y*width+x]
+			want := color.RGBA{R: index, G: 255 - index, B: index ^ 0x5a, A: 255}
+			if got := color.RGBAModel.Convert(palettedImage.At(x, y)).(color.RGBA); got != want {
+				t.Fatalf("SAF RGB888 palette pixel (%d,%d) = %v, want %v", x, y, got, want)
+			}
+		}
+	}
 	resource := append([]byte{12, 0}, []byte("image/sis\x00")...)
 	resource = append(resource, saf...)
 	if result, ok := decodeBREWResourceImage(resource); !ok || result.Bounds() != decoded.Bounds() {
