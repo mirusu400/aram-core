@@ -25,7 +25,7 @@ func TestClassifyThumbPaletteLoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	block := backend.translateThumbBlock(0x1000)
-	if block == nil || block.paletteLoop == nil {
+	if block == nil || block.extraLoop == nil || block.extraLoop.kind != jitPaletteLoop {
 		t.Fatalf("palette loop was not classified: block=%+v", block)
 	}
 }

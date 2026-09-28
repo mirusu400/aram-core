@@ -57,6 +57,11 @@ const (
 	jitObjectLookupLoop jitExtraLoopKind = iota
 	jitIndexedPaletteLoop
 	jitTransparentPaletteLoop
+	jitPaletteLoop
+	jitStackPaletteLoop
+	jitHalfwordFillLoop
+	jitColorLoop
+	jitFillLoop
 )
 
 type jitExtraLoop struct {
@@ -64,20 +69,20 @@ type jitExtraLoop struct {
 	objectLookup       jitThumbObjectLookup
 	indexedPalette     jitThumbIndexedPaletteLoop
 	transparentPalette jitThumbTransparentPaletteLoop
+	palette            jitThumbPaletteLoop
+	stackPalette       jitThumbStackPaletteLoop
+	halfwordFill       jitThumbHalfwordFillLoop
+	color              jitThumbColorLoop
+	fill               jitThumbFillLoop
 }
 
 type jitBlock struct {
-	start            uint32
-	end              uint32
-	arm              []jitInstr
-	thumb            []thumbMicroInstr
-	countedLoop      *jitCountedLoop
-	paletteLoop      *jitThumbPaletteLoop
-	stackPaletteLoop *jitThumbStackPaletteLoop
-	extraLoop        *jitExtraLoop
-	halfwordFillLoop *jitThumbHalfwordFillLoop
-	colorLoop        *jitThumbColorLoop
-	fillLoop         *jitThumbFillLoop
+	start       uint32
+	end         uint32
+	arm         []jitInstr
+	thumb       []thumbMicroInstr
+	countedLoop *jitCountedLoop
+	extraLoop   *jitExtraLoop
 }
 
 const jitMaxBlock = 256
@@ -366,10 +371,12 @@ outer:
 				block, limit-executed, wholeSystem, hasExecutionTraps, traced,
 			)
 		}
-		// These three exact Thumb signatures have distinct first words. One
-		// common-path check avoids three cold nil checks on every other game.
+		// Exact Thumb loop signatures are mutually exclusive. Keep the
+		// ordinary block path to one cold nil check regardless of how many
+		// specialized loops have been recognized.
 		if extra := block.extraLoop; extra != nil {
 			var retired uint64
+			var err error
 			switch extra.kind {
 			case jitObjectLookupLoop:
 				retired = b.accelerateThumbObjectLookup(
@@ -386,63 +393,36 @@ outer:
 					&extra.transparentPalette, limit-executed,
 					wholeSystem, hasExecutionTraps, traced,
 				)
+			case jitPaletteLoop:
+				retired, err = b.accelerateThumbPaletteLoop(
+					&extra.palette, limit-executed,
+					wholeSystem, hasExecutionTraps, traced,
+				)
+			case jitStackPaletteLoop:
+				retired = b.accelerateThumbStackPaletteLoop(
+					&extra.stackPalette, limit-executed,
+					wholeSystem, hasExecutionTraps, traced,
+				)
+			case jitHalfwordFillLoop:
+				retired = b.accelerateThumbHalfwordFillLoop(
+					&extra.halfwordFill, limit-executed,
+					wholeSystem, hasExecutionTraps, traced,
+				)
+			case jitColorLoop:
+				retired = b.accelerateThumbColorLoop(
+					&extra.color, limit-executed,
+					wholeSystem, hasExecutionTraps, traced,
+				)
+			case jitFillLoop:
+				retired = b.accelerateThumbFillLoop(
+					&extra.fill, limit-executed,
+					wholeSystem, hasExecutionTraps, traced,
+				)
 			}
-			executed += retired
-			if retired != 0 {
-				continue outer
-			}
-		}
-		if block.paletteLoop != nil {
-			retired, err := b.accelerateThumbPaletteLoop(
-				block.paletteLoop,
-				limit-executed,
-				wholeSystem,
-				hasExecutionTraps,
-				traced,
-			)
 			executed += retired
 			if err != nil {
 				return executed, nil, err
 			}
-			if retired != 0 {
-				continue outer
-			}
-		}
-		if block.stackPaletteLoop != nil {
-			retired := b.accelerateThumbStackPaletteLoop(
-				block.stackPaletteLoop, limit-executed,
-				wholeSystem, hasExecutionTraps, traced,
-			)
-			executed += retired
-			if retired != 0 {
-				continue outer
-			}
-		}
-		if block.halfwordFillLoop != nil {
-			retired := b.accelerateThumbHalfwordFillLoop(
-				block.halfwordFillLoop, limit-executed,
-				wholeSystem, hasExecutionTraps, traced,
-			)
-			executed += retired
-			if retired != 0 {
-				continue outer
-			}
-		}
-		if block.colorLoop != nil {
-			retired := b.accelerateThumbColorLoop(
-				block.colorLoop, limit-executed,
-				wholeSystem, hasExecutionTraps, traced,
-			)
-			executed += retired
-			if retired != 0 {
-				continue outer
-			}
-		}
-		if block.fillLoop != nil {
-			retired := b.accelerateThumbFillLoop(
-				block.fillLoop, limit-executed, wholeSystem, hasExecutionTraps, traced,
-			)
-			executed += retired
 			if retired != 0 {
 				continue outer
 			}
@@ -610,15 +590,15 @@ func (b *Backend) translateThumbBlock(pc uint32) *jitBlock {
 		}
 	}
 	if hasThumbPaletteLoopPrefix(instrs, pc) {
-		block.paletteLoop = b.classifyThumbPaletteLoop(pc)
-	}
-	if block.paletteLoop != nil {
-		block.end = pc + thumbPaletteLoopInstructions*2
+		if loop := b.classifyThumbPaletteLoop(pc); loop != nil {
+			block.end = pc + thumbPaletteLoopInstructions*2
+			block.extraLoop = &jitExtraLoop{kind: jitPaletteLoop, palette: *loop}
+		}
 	}
 	if instrs[0].raw == thumbStackPaletteLoopWords[0] {
-		block.stackPaletteLoop = b.classifyThumbStackPaletteLoop(pc)
-		if block.stackPaletteLoop != nil {
+		if loop := b.classifyThumbStackPaletteLoop(pc); loop != nil {
 			block.end = pc + thumbStackPaletteLoopInstructions*2
+			block.extraLoop = &jitExtraLoop{kind: jitStackPaletteLoop, stackPalette: *loop}
 		}
 	}
 	if instrs[0].raw == thumbIndexedPaletteLoopWords[0] {
@@ -634,28 +614,30 @@ func (b *Backend) translateThumbBlock(pc uint32) *jitBlock {
 		}
 	}
 	if instrs[0].raw == thumbHalfwordFillLoopWords[0] {
-		block.halfwordFillLoop = b.classifyThumbHalfwordFillLoop(pc)
-		if block.halfwordFillLoop != nil {
+		if loop := b.classifyThumbHalfwordFillLoop(pc); loop != nil {
 			block.end = pc + thumbHalfwordFillLoopInstructions*2
+			block.extraLoop = &jitExtraLoop{kind: jitHalfwordFillLoop, halfwordFill: *loop}
 		}
 	}
 	if len(instrs) >= 3 && instrs[0].raw == 0x8832 &&
 		instrs[1].raw&0xff00 == 0x4b00 && instrs[2].raw == 0x4013 {
-		block.colorLoop = b.classifyThumbColorLoop(pc)
-		if block.colorLoop != nil {
+		if loop := b.classifyThumbColorLoop(pc); loop != nil {
 			block.end = pc + thumbColorLoopInstructions*2
+			block.extraLoop = &jitExtraLoop{kind: jitColorLoop, color: *loop}
 		}
 	}
 	if b.loopAcceleration {
 		block.countedLoop = classifyThumbCountedLoop(block)
 	}
+	var fill *jitThumbFillLoop
 	if instrs[0].raw == 0x4640 {
-		block.fillLoop = b.classifyThumbFillLoop(pc)
+		fill = b.classifyThumbFillLoop(pc)
 	} else if instrs[0].raw == 0x1843 {
-		block.fillLoop = b.classifyThumbFillLoopTail(pc)
+		fill = b.classifyThumbFillLoopTail(pc)
 	}
-	if block.fillLoop != nil {
-		block.end = block.fillLoop.start + thumbFillLoopInstructions*2
+	if fill != nil {
+		block.end = fill.start + thumbFillLoopInstructions*2
+		block.extraLoop = &jitExtraLoop{kind: jitFillLoop, fill: *fill}
 	}
 	return block
 }

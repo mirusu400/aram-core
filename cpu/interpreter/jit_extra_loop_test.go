@@ -27,6 +27,30 @@ func TestThumbExtraLoopTranslation(t *testing.T) {
 			kind:    jitTransparentPaletteLoop,
 			length:  thumbTransparentPaletteLoopInstructions,
 		},
+		{
+			name:    "stack palette",
+			backend: func(t *testing.T) *Backend { return newThumbStackPaletteTestBackend(t, NewJIT(), 0x5000) },
+			kind:    jitStackPaletteLoop,
+			length:  thumbStackPaletteLoopInstructions,
+		},
+		{
+			name:    "halfword fill",
+			backend: func(t *testing.T) *Backend { return newThumbHalfwordFillTestBackend(t, NewJIT(), 0x5000) },
+			kind:    jitHalfwordFillLoop,
+			length:  thumbHalfwordFillLoopInstructions,
+		},
+		{
+			name:    "color",
+			backend: func(t *testing.T) *Backend { return newThumbColorTestBackend(t, NewJIT(), 0) },
+			kind:    jitColorLoop,
+			length:  thumbColorLoopInstructions,
+		},
+		{
+			name:    "fill",
+			backend: func(t *testing.T) *Backend { return newThumbFillTestBackend(t, NewJIT(), fillLoopTestCases()[0], 0) },
+			kind:    jitFillLoop,
+			length:  thumbFillLoopInstructions,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			block := tc.backend(t).translateThumbBlock(0x1000)
@@ -44,5 +68,23 @@ func TestThumbExtraLoopTranslation(t *testing.T) {
 	block := plain.translateThumbBlock(0x1000)
 	if block == nil || block.extraLoop != nil {
 		t.Fatal("ordinary Thumb block selected an extra loop")
+	}
+}
+
+func TestThumbExtraLoopFirstWordsDoNotOverlap(t *testing.T) {
+	words := []uint16{
+		thumbObjectLookupWords[0], thumbIndexedPaletteLoopWords[0],
+		thumbTransparentPaletteLoopWords[0], thumbStackPaletteLoopWords[0],
+		thumbHalfwordFillLoopWords[0], 0x8832, 0x4640, 0x1843,
+	}
+	for i, word := range words {
+		if word&0xffc0 == 0x7800 {
+			t.Fatalf("exact loop %d overlaps palette prefix", i)
+		}
+		for j := 0; j < i; j++ {
+			if word == words[j] {
+				t.Fatalf("exact loop %d overlaps %d", i, j)
+			}
+		}
 	}
 }
