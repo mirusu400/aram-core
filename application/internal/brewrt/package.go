@@ -53,7 +53,7 @@ const (
 
 const issue319ArchiveSHA256 = "2cfa3dff0779456f8482ccfbda740436101699186fdd9537b7a9108f8bfcedbf"
 const issue321ArchiveSHA256 = "4fae0b6a37e501163f6eabbda2b400bdfd4682ae389217bc26a7dbee564cb360"
-const issue362ArchiveSHA256 = "06369c8db97fb4e28165297ac2557c0de050dfb6986ea429d3411ffedfa891b9"
+const jinJanggiArchiveSHA256 = "06369c8db97fb4e28165297ac2557c0de050dfb6986ea429d3411ffedfa891b9"
 
 // Package contains the inspected executable module and immutable archive data.
 type Package struct {
@@ -115,6 +115,12 @@ func Match(data []byte) (pkg Package, matched bool, err error) {
 		// The exact module BitBlts a 176x202 native frame from a 176-wide IDIB.
 		nativeCanvas = image.Pt(176, 202)
 	}
+	if digestHex == jinJanggiArchiveSHA256 {
+		// The title's menu/footer art is 176 pixels wide and its splash is
+		// 180 pixels tall. The generic 120x160 canvas clips both and pushes
+		// the game board against the screen edges.
+		nativeCanvas = image.Pt(176, 220)
+	}
 	if digestHex == ArchiveSHA256 {
 		moduleDigest := sha256.Sum256(module)
 		if moduleName != ModulePath || hex.EncodeToString(moduleDigest[:]) != ModuleSHA256 {
@@ -142,7 +148,7 @@ func Match(data []byte) (pkg Package, matched bool, err error) {
 		Authenticated: authenticated,
 		NativeCanvas:  nativeCanvas,
 
-		PreferPackedAECHAR: digestHex == issue319ArchiveSHA256 || digestHex == issue362ArchiveSHA256,
+		PreferPackedAECHAR: digestHex == issue319ArchiveSHA256 || digestHex == jinJanggiArchiveSHA256,
 	}, true, nil
 }
 

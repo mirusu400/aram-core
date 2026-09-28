@@ -14,7 +14,7 @@ func TestBREWIssue362MenuText(t *testing.T) {
 	stepBREWReference(t, machine, 300)
 	tapBREWReference(t, machine)
 	stepBREWReference(t, machine, 120)
-	const want = "1cf352dba69b1d562e3e9ea4e2289c4ec3d96ac56f8e516afcd522854c7e73da"
+	const want = "60a5662e0dae577d7d78e5774434a40b6a7c9b0df31497cbb167e45413711410"
 	if got := fmt.Sprintf("%x", brewFrameHash(machine.Framebuffer())); got != want {
 		t.Fatalf("menu frame hash = %s, want %s", got, want)
 	}
