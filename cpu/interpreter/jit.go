@@ -51,20 +51,33 @@ type jitCountedLoop struct {
 	instructions uint8
 }
 
+type jitExtraLoopKind uint8
+
+const (
+	jitObjectLookupLoop jitExtraLoopKind = iota
+	jitIndexedPaletteLoop
+	jitTransparentPaletteLoop
+)
+
+type jitExtraLoop struct {
+	kind               jitExtraLoopKind
+	objectLookup       jitThumbObjectLookup
+	indexedPalette     jitThumbIndexedPaletteLoop
+	transparentPalette jitThumbTransparentPaletteLoop
+}
+
 type jitBlock struct {
-	start                  uint32
-	end                    uint32
-	arm                    []jitInstr
-	thumb                  []thumbMicroInstr
-	countedLoop            *jitCountedLoop
-	paletteLoop            *jitThumbPaletteLoop
-	stackPaletteLoop       *jitThumbStackPaletteLoop
-	indexedPaletteLoop     *jitThumbIndexedPaletteLoop
-	transparentPaletteLoop *jitThumbTransparentPaletteLoop
-	objectLookup           *jitThumbObjectLookup
-	halfwordFillLoop       *jitThumbHalfwordFillLoop
-	colorLoop              *jitThumbColorLoop
-	fillLoop               *jitThumbFillLoop
+	start            uint32
+	end              uint32
+	arm              []jitInstr
+	thumb            []thumbMicroInstr
+	countedLoop      *jitCountedLoop
+	paletteLoop      *jitThumbPaletteLoop
+	stackPaletteLoop *jitThumbStackPaletteLoop
+	extraLoop        *jitExtraLoop
+	halfwordFillLoop *jitThumbHalfwordFillLoop
+	colorLoop        *jitThumbColorLoop
+	fillLoop         *jitThumbFillLoop
 }
 
 const jitMaxBlock = 256
@@ -353,11 +366,27 @@ outer:
 				block, limit-executed, wholeSystem, hasExecutionTraps, traced,
 			)
 		}
-		if block.objectLookup != nil {
-			retired := b.accelerateThumbObjectLookup(
-				block.objectLookup, limit-executed,
-				wholeSystem, hasExecutionTraps, traced,
-			)
+		// These three exact Thumb signatures have distinct first words. One
+		// common-path check avoids three cold nil checks on every other game.
+		if extra := block.extraLoop; extra != nil {
+			var retired uint64
+			switch extra.kind {
+			case jitObjectLookupLoop:
+				retired = b.accelerateThumbObjectLookup(
+					&extra.objectLookup, limit-executed,
+					wholeSystem, hasExecutionTraps, traced,
+				)
+			case jitIndexedPaletteLoop:
+				retired = b.accelerateThumbIndexedPaletteLoop(
+					&extra.indexedPalette, limit-executed,
+					wholeSystem, hasExecutionTraps, traced,
+				)
+			case jitTransparentPaletteLoop:
+				retired = b.accelerateThumbTransparentPaletteLoop(
+					&extra.transparentPalette, limit-executed,
+					wholeSystem, hasExecutionTraps, traced,
+				)
+			}
 			executed += retired
 			if retired != 0 {
 				continue outer
@@ -382,26 +411,6 @@ outer:
 		if block.stackPaletteLoop != nil {
 			retired := b.accelerateThumbStackPaletteLoop(
 				block.stackPaletteLoop, limit-executed,
-				wholeSystem, hasExecutionTraps, traced,
-			)
-			executed += retired
-			if retired != 0 {
-				continue outer
-			}
-		}
-		if block.indexedPaletteLoop != nil {
-			retired := b.accelerateThumbIndexedPaletteLoop(
-				block.indexedPaletteLoop, limit-executed,
-				wholeSystem, hasExecutionTraps, traced,
-			)
-			executed += retired
-			if retired != 0 {
-				continue outer
-			}
-		}
-		if block.transparentPaletteLoop != nil {
-			retired := b.accelerateThumbTransparentPaletteLoop(
-				block.transparentPaletteLoop, limit-executed,
 				wholeSystem, hasExecutionTraps, traced,
 			)
 			executed += retired
@@ -595,9 +604,9 @@ func (b *Backend) translateThumbBlock(pc uint32) *jitBlock {
 	block := &jitBlock{start: pc, end: cur, thumb: instrs}
 	if len(instrs) >= 3 && instrs[0].raw == thumbObjectLookupWords[0] &&
 		instrs[1].raw == thumbObjectLookupWords[1] && instrs[2].raw == thumbObjectLookupWords[2] {
-		block.objectLookup = b.classifyThumbObjectLookup(pc)
-		if block.objectLookup != nil {
+		if loop := b.classifyThumbObjectLookup(pc); loop != nil {
 			block.end = pc + thumbObjectLookupInstructions*2
+			block.extraLoop = &jitExtraLoop{kind: jitObjectLookupLoop, objectLookup: *loop}
 		}
 	}
 	if hasThumbPaletteLoopPrefix(instrs, pc) {
@@ -613,15 +622,15 @@ func (b *Backend) translateThumbBlock(pc uint32) *jitBlock {
 		}
 	}
 	if instrs[0].raw == thumbIndexedPaletteLoopWords[0] {
-		block.indexedPaletteLoop = b.classifyThumbIndexedPaletteLoop(pc)
-		if block.indexedPaletteLoop != nil {
+		if loop := b.classifyThumbIndexedPaletteLoop(pc); loop != nil {
 			block.end = pc + thumbIndexedPaletteLoopInstructions*2
+			block.extraLoop = &jitExtraLoop{kind: jitIndexedPaletteLoop, indexedPalette: *loop}
 		}
 	}
 	if instrs[0].raw == thumbTransparentPaletteLoopWords[0] {
-		block.transparentPaletteLoop = b.classifyThumbTransparentPaletteLoop(pc)
-		if block.transparentPaletteLoop != nil {
+		if loop := b.classifyThumbTransparentPaletteLoop(pc); loop != nil {
 			block.end = pc + thumbTransparentPaletteLoopInstructions*2
+			block.extraLoop = &jitExtraLoop{kind: jitTransparentPaletteLoop, transparentPalette: *loop}
 		}
 	}
 	if instrs[0].raw == thumbHalfwordFillLoopWords[0] {
