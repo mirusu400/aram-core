@@ -53,6 +53,7 @@ const (
 
 const issue319ArchiveSHA256 = "2cfa3dff0779456f8482ccfbda740436101699186fdd9537b7a9108f8bfcedbf"
 const issue321ArchiveSHA256 = "4fae0b6a37e501163f6eabbda2b400bdfd4682ae389217bc26a7dbee564cb360"
+const issue362ArchiveSHA256 = "06369c8db97fb4e28165297ac2557c0de050dfb6986ea429d3411ffedfa891b9"
 
 // Package contains the inspected executable module and immutable archive data.
 type Package struct {
@@ -66,7 +67,7 @@ type Package struct {
 	NativeCanvas image.Point
 
 	// PreferPackedAECHAR resolves ambiguous Hangul-looking EUC-KR pairs in
-	// the exact Dark Slayer archive without changing generic UTF-16 behavior.
+	// hash-qualified KTF titles without changing generic UTF-16 behavior.
 	PreferPackedAECHAR bool
 }
 
@@ -141,7 +142,7 @@ func Match(data []byte) (pkg Package, matched bool, err error) {
 		Authenticated: authenticated,
 		NativeCanvas:  nativeCanvas,
 
-		PreferPackedAECHAR: digestHex == issue319ArchiveSHA256,
+		PreferPackedAECHAR: digestHex == issue319ArchiveSHA256 || digestHex == issue362ArchiveSHA256,
 	}, true, nil
 }
 
