@@ -61,6 +61,7 @@ type jitBlock struct {
 	stackPaletteLoop       *jitThumbStackPaletteLoop
 	indexedPaletteLoop     *jitThumbIndexedPaletteLoop
 	transparentPaletteLoop *jitThumbTransparentPaletteLoop
+	objectLookup           *jitThumbObjectLookup
 	halfwordFillLoop       *jitThumbHalfwordFillLoop
 	colorLoop              *jitThumbColorLoop
 	fillLoop               *jitThumbFillLoop
@@ -352,6 +353,16 @@ outer:
 				block, limit-executed, wholeSystem, hasExecutionTraps, traced,
 			)
 		}
+		if block.objectLookup != nil {
+			retired := b.accelerateThumbObjectLookup(
+				block.objectLookup, limit-executed,
+				wholeSystem, hasExecutionTraps, traced,
+			)
+			executed += retired
+			if retired != 0 {
+				continue outer
+			}
+		}
 		if block.paletteLoop != nil {
 			retired, err := b.accelerateThumbPaletteLoop(
 				block.paletteLoop,
@@ -582,6 +593,13 @@ func (b *Backend) translateThumbBlock(pc uint32) *jitBlock {
 		return nil
 	}
 	block := &jitBlock{start: pc, end: cur, thumb: instrs}
+	if len(instrs) >= 3 && instrs[0].raw == thumbObjectLookupWords[0] &&
+		instrs[1].raw == thumbObjectLookupWords[1] && instrs[2].raw == thumbObjectLookupWords[2] {
+		block.objectLookup = b.classifyThumbObjectLookup(pc)
+		if block.objectLookup != nil {
+			block.end = pc + thumbObjectLookupInstructions*2
+		}
+	}
 	if hasThumbPaletteLoopPrefix(instrs, pc) {
 		block.paletteLoop = b.classifyThumbPaletteLoop(pc)
 	}
