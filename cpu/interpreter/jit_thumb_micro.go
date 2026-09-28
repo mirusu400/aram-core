@@ -42,8 +42,10 @@ func (b *Backend) executeThumbMicroBlock(
 	blockInstructions int,
 	wholeSystem, hasExecutionTraps, traced bool,
 ) (int, bool, *cpu.StopReason, error) {
-	for index := 0; index < blockInstructions; index++ {
-		in := &block.thumb[index]
+	// Bound the translated prefix once so the hot loop needs no per-op slice check.
+	instructions := block.thumb[:blockInstructions]
+	for index := range instructions {
+		in := &instructions[index]
 		pc := in.pc
 		if wholeSystem {
 			if index != 0 {

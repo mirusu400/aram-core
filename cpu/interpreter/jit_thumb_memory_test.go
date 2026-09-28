@@ -24,6 +24,33 @@ func TestThumbImmediateMemoryTranslationKeepsCompactEncoding(t *testing.T) {
 	}
 }
 
+func TestThumbMicroBlockPreservesInstructionPC(t *testing.T) {
+	code := thumbTestCode(
+		0x2001, // movs r0,#1
+		0x4901, // ldr r1,[pc,#4] reads the word at 0x1008
+		0x3101, // adds r1,#1
+		0xe7fc, // b 0x1002
+		0x5678, 0x1234,
+	)
+	for _, create := range []func() *Backend{New, NewJIT} {
+		backend := create()
+		check(t, backend.Map(0x1000, 4096, cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute))
+		check(t, backend.WriteMemory(0x1000, code))
+		result := backend.Run(context.Background(), 0x1000, cpu.ModeThumb, 4)
+		if result.Err != nil || result.Reason != cpu.StopBudget || result.Instructions != 4 {
+			t.Fatalf("four-instruction block: %+v", result)
+		}
+		for register, want := range map[uint32]uint32{
+			cpu.RegisterR0: 1, cpu.RegisterR1: 0x12345679, cpu.RegisterPC: 0x1002,
+		} {
+			if got := immediateMemoryRegisterValue(t, backend, register); got != want {
+				t.Fatalf("register %d = %#x, want %#x", register, got, want)
+			}
+		}
+		check(t, backend.Close())
+	}
+}
+
 func TestThumbImmediateMemoryAllEncodingsMatchInterpreter(t *testing.T) {
 	precise, jit := New(), NewJIT()
 	for _, backend := range []*Backend{precise, jit} {
