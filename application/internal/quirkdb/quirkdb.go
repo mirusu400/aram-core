@@ -419,6 +419,25 @@ var LGTCanvases = []LGTCanvas{
 		Width:          120,
 		Height:         160,
 	},
+	{
+		// Dark Wind's small build uses 120-pixel-wide screen art, while its
+		// status strip follows Canvas.getHeight and lands at y=300 on 240x320.
+		PackageSHA256:  "553faf5abdea80d63a069e30944b09227a1bad0677fb52ad8b9c4d6f06632580",
+		MainClass:      "DarkWind",
+		InferredWidth:  240,
+		InferredHeight: 320,
+		Width:          120,
+		Height:         160,
+	},
+	{
+		// Dark Wind's large build includes a 176x220 title background.
+		PackageSHA256:  "c1716326874965bf0eec3f9226b0827235b1952559182c46ac7054fd5cd35f82",
+		MainClass:      "DarkWind",
+		InferredWidth:  240,
+		InferredHeight: 320,
+		Width:          176,
+		Height:         220,
+	},
 }
 
 func LookupLGTCanvas(packageSHA256, mainClass string, inferredWidth, inferredHeight int) (LGTCanvas, bool) {
