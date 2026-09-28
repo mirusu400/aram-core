@@ -438,6 +438,16 @@ var LGTCanvases = []LGTCanvas{
 		Width:          176,
 		Height:         220,
 	},
+	{
+		// Do's JAD declares a 176x200 game area and its menu assets are
+		// 176 pixels wide; the handset adds a 20-pixel command strip.
+		PackageSHA256:  "b7b2e9579545bf8e0ae06c48b57ad05187dcbcb423a4838ef811edf51df58b52",
+		MainClass:      "Do",
+		InferredWidth:  240,
+		InferredHeight: 320,
+		Width:          176,
+		Height:         220,
+	},
 }
 
 func LookupLGTCanvas(packageSHA256, mainClass string, inferredWidth, inferredHeight int) (LGTCanvas, bool) {
