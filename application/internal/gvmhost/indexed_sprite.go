@@ -33,6 +33,51 @@ type indexedSprite struct {
 	transparentIndex int
 }
 
+func (sprite *indexedSprite) useGuestPalette(kind byte, source []byte) error {
+	var count int
+	switch kind {
+	case 2, 5:
+		count = 2
+	case 3, 6:
+		count = 4
+	case 7:
+		count = 16
+	case 8:
+		count = 256
+	case 4:
+		return nil
+	default:
+		return errInvalidSpriteType
+	}
+	needed := count
+	if kind == 2 || kind == 3 {
+		needed = count / 2
+	}
+	if len(source) < needed {
+		return errTruncatedSprite
+	}
+	sprite.palette = make([]byte, count)
+	sprite.transparentIndex = -1
+	for index := range sprite.palette {
+		var selector byte
+		if kind == 2 || kind == 3 {
+			packed := source[index/2]
+			if index%2 == 0 {
+				selector = packed >> 4
+			} else {
+				selector = packed & 0x0f
+			}
+		} else {
+			selector = source[index]
+		}
+		sprite.palette[index] = selector
+		if selector == 4 {
+			sprite.transparentIndex = index
+		}
+	}
+	return nil
+}
+
 // decodeIndexedSprite validates and decodes the complete sprite before returning.
 // Type 8 color values are intentionally retained as raw bytes, including values
 // above 181; mapping those values for presentation remains unresolved.

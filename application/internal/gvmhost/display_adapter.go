@@ -234,22 +234,21 @@ func (d *DisplayAdapter) DrawGVMTransformedSprite(resource []byte, x, y int16, m
 	return nil
 }
 
-func (d *DisplayAdapter) DrawGVMSpriteBuffer(resource, buffer []byte, x, y int16) error {
+func (d *DisplayAdapter) DrawGVMSpriteWithPalette(resource, palette []byte, x, y int16) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if len(buffer) != d.drawing.width*d.drawing.height {
-		return ErrInvalidDisplayConfig
-	}
 	sprite, err := decodeIndexedSprite(resource)
 	if err != nil {
+		return err
+	}
+	if err := sprite.useGuestPalette(resource[0], palette); err != nil {
 		return err
 	}
 	mapped, err := d.mapSprite(sprite)
 	if err != nil {
 		return err
 	}
-	surface := indexedSurface{width: d.drawing.width, height: d.drawing.height, pixels: buffer}
-	rasterizeDecodedSprite(&surface, sprite, mapped, int(x), int(y))
+	rasterizeDecodedSprite(&d.drawing, sprite, mapped, int(x), int(y))
 	return nil
 }
 

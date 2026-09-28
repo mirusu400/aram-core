@@ -32,6 +32,7 @@ const (
 	GVMOperationalProfileID      = "gvm-kernel-v1/skt/operational"
 	GVMOperationalSHA256         = "97fe208a02530ca21c6b47d7fa73cd60271aeeddd2305d2a972a217c97a4124f"
 	GVMHackSignOperationalSHA256 = "3ddab790645e84c2d91ffb675d3842717da2a2c8c02d012ca800b20a7a55c9c0"
+	GVMRagnarokOperationalSHA256 = "5c73bf6960bea012368232de7398284cb628b8969c74b8ea1311aea740a49f25"
 	defaultGVMWidth              = int32(240)
 	defaultGVMHeight             = int32(240)
 	operationalGVMWidth          = int32(120)
@@ -48,6 +49,7 @@ type gvmOperationalConfig struct {
 var gvmOperationalCorpora = map[string]gvmOperationalConfig{
 	GVMOperationalSHA256:         {width: operationalGVMWidth, height: operationalGVMHeight},
 	GVMHackSignOperationalSHA256: {width: operationalGVMWidth, height: operationalGVMHeight},
+	GVMRagnarokOperationalSHA256: {width: 120, height: 120},
 }
 
 var (
@@ -69,6 +71,11 @@ func (s *gvmTimerBoundary) RequestGVMTimer(interval int16, selector uint16) erro
 	if s.terminal {
 		return errGVMTimerBoundary
 	}
+	return nil
+}
+
+func (s *gvmTimerBoundary) CancelGVMTimer() error {
+	s.interval, s.selector, s.reached = 0, 0, false
 	return nil
 }
 
@@ -176,12 +183,13 @@ func (f Factory) createGVMMachine(ctx context.Context, source machinecore.Source
 	source.Format = string(loader.KindGNEX)
 	budget := f.FrameRunBudget
 	if budget == 0 {
-		budget = f.RunBudget
-	}
-	if budget == 0 {
-		budget = defaultGVMBudget
 		if operational {
 			budget = defaultGVMOperationalBudget
+		} else {
+			budget = f.RunBudget
+			if budget == 0 {
+				budget = defaultGVMBudget
+			}
 		}
 	}
 	machine := &gvmMachine{
@@ -288,7 +296,7 @@ func (m *gvmMachine) resetVMLocked() error {
 		services.RectangleFill = display
 		services.SpriteDraw = display
 		services.SpriteTransform = display
-		services.SpriteBuffer = display
+		services.SpritePalette = display
 		services.TextDraw = display
 		services.AudioReset = mediaServices
 		services.Media = media
