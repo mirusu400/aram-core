@@ -86,6 +86,9 @@ func TestSMAFOptionalCorpusProbe(t *testing.T) {
 		eventEnd := time.Duration(0)
 		probe := &smafDecoder{rate: 44_100}
 		if probe.parse(data) && probe.buildEvents() && len(probe.events) != 0 {
+			if got, want := newSMAFRenderStream(probe).probeEnd(), uint64(len(decoded.samples)/2); got != want {
+				t.Errorf("%s: silent probe %d frames, full render %d frames", entry.Name, got, want)
+			}
 			eventEnd = time.Duration(
 				probe.events[len(probe.events)-1].sample *
 					uint64(time.Second) / 44_100,
