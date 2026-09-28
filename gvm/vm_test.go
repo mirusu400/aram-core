@@ -98,7 +98,7 @@ func TestFailures(t *testing.T) {
 			}
 		})
 	}
-	for _, op := range []byte{1, 0xf3, 0xfe} {
+	for _, op := range []byte{0xf3, 0xfe} {
 		v := gvm.New([]byte{5, 7, op})
 		err := v.Run(3)
 		var unsupported *gvm.UnsupportedOpcodeError

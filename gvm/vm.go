@@ -281,6 +281,34 @@ func (v *VM) Step() error {
 			return fail(ErrStackUnderflow)
 		}
 		v.stack[v.depth-2], v.stack[v.depth-1] = v.stack[v.depth-1], v.stack[v.depth-2]
+	case 0x01:
+		// Push valueSymbol[indexSymbol[element]], where the three indices
+		// are unsigned immediate bytes.
+		if len(v.code)-v.pc < 3 {
+			return fail(ErrTruncated)
+		}
+		valueSymbol, indexSymbol := int(v.code[v.pc]), int(v.code[v.pc+1])
+		indexElement := int(v.code[v.pc+2])
+		if v.depth >= len(v.stack) {
+			return fail(ErrStackOverflow)
+		}
+		if valueSymbol >= len(v.symbols) || indexSymbol >= len(v.symbols) {
+			return fail(ErrInvalidSymbol)
+		}
+		values, indices := v.symbols[valueSymbol], v.symbols[indexSymbol]
+		if len(values)%2 != 0 || len(values) > 510 || len(indices)%2 != 0 || len(indices) > 510 {
+			return fail(ErrInvalidSymbolRegion)
+		}
+		if indexElement >= len(indices)/2 {
+			return fail(ErrInvalidElement)
+		}
+		element := int16(binary.LittleEndian.Uint16(indices[2*indexElement : 2*indexElement+2]))
+		if element < 0 || int(element) >= len(values)/2 {
+			return fail(ErrInvalidElement)
+		}
+		v.stack[v.depth] = binary.LittleEndian.Uint16(values[2*int(element) : 2*int(element)+2])
+		v.depth++
+		v.pc += 3
 	case 0x02:
 		// Two u8 operands select a value symbol and an index symbol. The first
 		// raw word of the latter is interpreted as a signed element index into
@@ -928,24 +956,40 @@ func (v *VM) Step() error {
 		index := int(int16(v.stack[v.depth-2]))
 		size := int(int16(v.stack[v.depth-1]))
 		result := uint16(0)
-		if index >= 0 && index < len(v.services.media) && size >= 0 {
-			old := v.services.media[index]
-			delta := size - len(old)
-			if delta%2 != 0 {
-				delta++
-			}
-			if delta >= -16 && delta <= 0 {
-				result = 1
-			} else if length := len(old) + delta; length >= 0 && length <= 0xffff && delta <= 16*1024 {
-				resized := make([]byte, length)
-				copy(resized, old)
-				v.services.media[index] = resized
-				result = 1
-			}
+		if resizeGVMMedia(v.services.media, index, size) {
+			result = 1
 		}
 		v.stack[v.depth-2] = result
 		v.depth--
 		v.stack[v.depth] = 0
+	case 0x7e:
+		// Copy a counted substring into a dynamic media record and append NUL.
+		// Operands are destination, source, source offset, byte count.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 4 {
+			return fail(ErrStackUnderflow)
+		}
+		destination := int(int16(v.stack[v.depth-4]))
+		source := int(int16(v.stack[v.depth-3]))
+		start := int(int16(v.stack[v.depth-2]))
+		count := int(int16(v.stack[v.depth-1]))
+		if destination < 0 || destination >= len(v.services.media) || source < 0 || source >= len(v.services.media) {
+			return fail(ErrInvalidMediaIndex)
+		}
+		payload := v.services.media[source]
+		if start < 0 || count < 0 || start > len(payload) || count > len(payload)-start {
+			return fail(ErrInvalidElement)
+		}
+		segment := bytes.Clone(payload[start : start+count])
+		if resizeGVMMedia(v.services.media, destination, count+1) {
+			copy(v.services.media[destination], segment)
+			v.services.media[destination][count] = 0
+		}
+		v.depth -= 4
+		clear(v.stack[v.depth : v.depth+4])
 	case 0x7c:
 		if v.services == nil {
 			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
@@ -1029,6 +1073,26 @@ func (v *VM) Step() error {
 		v.services.media[index][element] = byte(v.stack[v.depth-1])
 		v.depth -= 3
 		clear(v.stack[v.depth : v.depth+3])
+	case 0x83:
+		// Convert a NUL-terminated media string through native atoi, then
+		// keep the low word of the signed result.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth == 0 {
+			return fail(ErrStackUnderflow)
+		}
+		index := int(int16(v.stack[v.depth-1]))
+		if index < 0 || index >= len(v.services.media) {
+			return fail(ErrInvalidMediaIndex)
+		}
+		payload := v.services.media[index]
+		end := bytes.IndexByte(payload, 0)
+		if end < 0 {
+			return fail(ErrInvalidMediaResource)
+		}
+		v.stack[v.depth-1] = parseGVMDecimal(payload[:end])
 	case 0x8a, 0x8b:
 		// GVM2X formats one or two signed words into a media string.
 		if v.services == nil {
@@ -1703,6 +1767,30 @@ func (v *VM) Step() error {
 		value := binary.LittleEndian.Uint16(words[1])
 		binary.LittleEndian.PutUint16(words[0], value)
 		v.pc += 4
+	case 0x30:
+		// Copy the first word of a source symbol into a fixed element of
+		// a destination symbol. Native operands are destination, element,
+		// source in that order.
+		if len(v.code)-v.pc < 3 {
+			return fail(ErrTruncated)
+		}
+		destination := int(v.code[v.pc])
+		element := int(v.code[v.pc+1])
+		source := int(v.code[v.pc+2])
+		if destination >= len(v.symbols) || source >= len(v.symbols) {
+			return fail(ErrInvalidSymbol)
+		}
+		destinationRegion, sourceRegion := v.symbols[destination], v.symbols[source]
+		if len(destinationRegion)%2 != 0 || len(destinationRegion) > 510 || len(sourceRegion) < 2 {
+			return fail(ErrInvalidSymbolRegion)
+		}
+		if element >= len(destinationRegion)/2 {
+			return fail(ErrInvalidElement)
+		}
+		value := binary.LittleEndian.Uint16(sourceRegion[:2])
+		offset := 2 * element
+		binary.LittleEndian.PutUint16(destinationRegion[offset:offset+2], value)
+		v.pc += 3
 	case 0x29:
 		if len(v.code)-v.pc < 4 {
 			return fail(ErrTruncated)
@@ -1913,4 +2001,55 @@ func validGVMDecimalFormat(format []byte, arguments int) bool {
 		}
 	}
 	return count == arguments
+}
+
+func resizeGVMMedia(media [][]byte, index, size int) bool {
+	if index < 0 || index >= len(media) || size < 0 {
+		return false
+	}
+	old := media[index]
+	delta := size - len(old)
+	if delta%2 != 0 {
+		delta++
+	}
+	// The native allocator leaves small decreases in place and rounds changes
+	// to word alignment. Its temporary growth area is limited to 16 KiB.
+	if delta >= -16 && delta <= 0 {
+		return true
+	}
+	length := len(old) + delta
+	if length < 0 || length > 0xffff || delta > 16*1024 {
+		return false
+	}
+	resized := make([]byte, length)
+	copy(resized, old)
+	media[index] = resized
+	return true
+}
+
+func parseGVMDecimal(value []byte) uint16 {
+	i := 0
+	for i < len(value) {
+		switch value[i] {
+		case ' ', '\t', '\n', '\r', '\v', '\f':
+			i++
+		default:
+			goto number
+		}
+	}
+number:
+	negative := false
+	if i < len(value) && (value[i] == '+' || value[i] == '-') {
+		negative = value[i] == '-'
+		i++
+	}
+	var number uint16
+	for i < len(value) && value[i] >= '0' && value[i] <= '9' {
+		number = number*10 + uint16(value[i]-'0')
+		i++
+	}
+	if negative {
+		return -number
+	}
+	return number
 }
