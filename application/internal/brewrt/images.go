@@ -22,6 +22,12 @@ type brewNativeImage struct {
 	span    uint32
 }
 
+type brewImageDraw struct {
+	sourceX, sourceY uint32
+	width, height    uint32
+	sizeSet          bool
+}
+
 // setupNativeImage implements the BREW AEEHelperFuncs SetupNativeImage contract
 // for bounded BMP inputs. The returned software IBitmap is also an IDIB. When
 // an indexed caller allocation reserves enough room, conversion happens in
@@ -556,7 +562,7 @@ func (r *Runtime) drawImage(frame bool) error {
 	if err != nil {
 		return err
 	}
-	return r.drawBitmapAt(bitmap, int32(x), int32(y))
+	return r.drawBitmapRegion(bitmap, int32(x), int32(y), r.imageDraws[object])
 }
 
 func (r *Runtime) returnImageInfo() error {
@@ -602,10 +608,26 @@ func (r *Runtime) setImageParameter() error {
 	if err != nil {
 		return err
 	}
+	value2, err := r.cpu.ReadRegister(cpu.RegisterR3)
+	if err != nil {
+		return err
+	}
 	// IImage::SetParm is void and its fourth argument is the second parameter
 	// value, not a status output pointer. Legacy games commonly pass small
 	// coordinates, rates, and flags there.
-	if parameter == 10 && value != 0 { // IPARM_GETBITMAP
+	switch parameter {
+	case 0: // Draw region size within the source image.
+		state := r.imageDraws[object]
+		state.width, state.height, state.sizeSet = value, value2, true
+		r.imageDraws[object] = state
+	case 1: // Draw region origin within the source image.
+		state := r.imageDraws[object]
+		state.sourceX, state.sourceY = value, value2
+		r.imageDraws[object] = state
+	case 10: // IPARM_GETBITMAP
+		if value == 0 {
+			return nil
+		}
 		bitmap, bitmapErr := r.imageBitmap(object)
 		if bitmapErr != nil {
 			return bitmapErr
@@ -620,6 +642,10 @@ func (r *Runtime) setImageParameter() error {
 }
 
 func (r *Runtime) drawBitmapAt(bitmap uint32, destinationX, destinationY int32) error {
+	return r.drawBitmapRegion(bitmap, destinationX, destinationY, brewImageDraw{})
+}
+
+func (r *Runtime) drawBitmapRegion(bitmap uint32, destinationX, destinationY int32, region brewImageDraw) error {
 	if err := r.refreshNativeBitmap(bitmap); err != nil {
 		return err
 	}
@@ -634,6 +660,15 @@ func (r *Runtime) drawBitmapAt(bitmap uint32, destinationX, destinationY int32) 
 	if pixels == 0 || pitch < width*2 || header[28] != 16 || header[29] != idibColorScheme565 {
 		return nil
 	}
+	if region.sourceX >= width || region.sourceY >= height {
+		return nil
+	}
+	width -= region.sourceX
+	height -= region.sourceY
+	if region.sizeSet {
+		width = min(width, region.width)
+		height = min(height, region.height)
+	}
 	for row := uint32(0); row < height; row++ {
 		targetY := destinationY + int32(row)
 		if targetY < 0 || targetY >= int32(r.screenHeight) {
@@ -645,7 +680,7 @@ func (r *Runtime) drawBitmapAt(bitmap uint32, destinationX, destinationY int32) 
 				continue
 			}
 			var pixel [2]byte
-			if err := r.cpu.ReadMemory(pixels+row*pitch+column*2, pixel[:]); err != nil {
+			if err := r.cpu.ReadMemory(pixels+(row+region.sourceY)*pitch+(column+region.sourceX)*2, pixel[:]); err != nil {
 				return fmt.Errorf("read BREW image pixel: %w", err)
 			}
 			// Legacy BREW image resources conventionally use RGB565 magenta as

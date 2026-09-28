@@ -464,6 +464,7 @@ func (r *Runtime) releaseInterfaceObject(address uint32) {
 	if err := r.cpu.ReadMemory(address, encoded[:]); err == nil {
 		switch binary.LittleEndian.Uint32(encoded[0:4]) {
 		case imageVTable:
+			delete(r.imageDraws, address)
 			r.releaseInterfaceObject(binary.LittleEndian.Uint32(encoded[4:8]))
 			if stream := r.imageStreams[address]; stream != 0 {
 				r.releaseMemAStream(stream)

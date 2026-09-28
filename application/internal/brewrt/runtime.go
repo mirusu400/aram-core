@@ -200,6 +200,7 @@ type Runtime struct {
 	menuControl      brewMenuControl
 	memAStreams      map[uint32]brewMemAStream
 	imageStreams     map[uint32]uint32
+	imageDraws       map[uint32]brewImageDraw
 	nativeImages     map[uint32]brewNativeImage
 	textRaster       *shared.Text
 	displayFont      shared.ServiceID
@@ -337,6 +338,7 @@ func New(pkg Package) (*Runtime, error) {
 		preferences:  make(map[brewPreferenceKey][]byte),
 		memAStreams:  make(map[uint32]brewMemAStream),
 		imageStreams: make(map[uint32]uint32),
+		imageDraws:   make(map[uint32]brewImageDraw),
 		nativeImages: make(map[uint32]brewNativeImage),
 		textRaster:   displayText,
 		displayFont:  displayFont,

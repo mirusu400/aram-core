@@ -681,3 +681,77 @@ func TestImageSetParmTreatsFourthArgumentAsValue(t *testing.T) {
 		t.Fatalf("SetParm with scalar p2 failed: %v", err)
 	}
 }
+
+func TestImageDrawUsesSetParmSourceRegion(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	source := image.NewRGBA(image.Rect(0, 0, 4, 2))
+	source.SetRGBA(1, 0, color.RGBA{R: 255, A: 255})
+	source.SetRGBA(2, 0, color.RGBA{G: 255, A: 255})
+	source.SetRGBA(3, 0, color.RGBA{B: 255, A: 255})
+	bitmap, err := runtime.createNativeBitmap(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	object, err := runtime.allocateGuest(8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var encoded [8]byte
+	binary.LittleEndian.PutUint32(encoded[:4], imageVTable)
+	binary.LittleEndian.PutUint32(encoded[4:], bitmap)
+	if err := runtime.cpu.WriteMemory(object, encoded[:]); err != nil {
+		t.Fatal(err)
+	}
+	setParm := func(parameter, value, value2 uint32) {
+		t.Helper()
+		for register, argument := range map[uint32]uint32{
+			cpu.RegisterR0: object,
+			cpu.RegisterR1: parameter,
+			cpu.RegisterR2: value,
+			cpu.RegisterR3: value2,
+		} {
+			if err := runtime.cpu.WriteRegister(register, argument); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := runtime.setImageParameter(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setParm(1, 1, 0)
+	setParm(0, 2, 1)
+	for register, argument := range map[uint32]uint32{
+		cpu.RegisterR0: object,
+		cpu.RegisterR1: 8,
+		cpu.RegisterR2: 9,
+	} {
+		if err := runtime.cpu.WriteRegister(register, argument); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := runtime.drawImage(false); err != nil {
+		t.Fatal(err)
+	}
+	for _, sample := range []struct {
+		x, y int
+		want uint16
+	}{
+		{8, 9, 0xf800},
+		{9, 9, 0x07e0},
+		{10, 9, 0},
+		{8, 10, 0},
+	} {
+		var pixel [2]byte
+		address := framebufferBase + (uint32(sample.y)*framebufferWidth+uint32(sample.x))*2
+		if err := runtime.cpu.ReadMemory(address, pixel[:]); err != nil {
+			t.Fatal(err)
+		}
+		if got := binary.LittleEndian.Uint16(pixel[:]); got != sample.want {
+			t.Errorf("frame pixel (%d,%d) = 0x%04x, want 0x%04x", sample.x, sample.y, got, sample.want)
+		}
+	}
+	runtime.releaseInterfaceObject(object)
+	if _, ok := runtime.imageDraws[object]; ok {
+		t.Fatal("released IImage retained its draw region")
+	}
+}
