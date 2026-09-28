@@ -52,16 +52,17 @@ type jitCountedLoop struct {
 }
 
 type jitBlock struct {
-	start            uint32
-	end              uint32
-	arm              []jitInstr
-	thumb            []thumbMicroInstr
-	countedLoop      *jitCountedLoop
-	paletteLoop      *jitThumbPaletteLoop
-	stackPaletteLoop *jitThumbStackPaletteLoop
-	halfwordFillLoop *jitThumbHalfwordFillLoop
-	colorLoop        *jitThumbColorLoop
-	fillLoop         *jitThumbFillLoop
+	start              uint32
+	end                uint32
+	arm                []jitInstr
+	thumb              []thumbMicroInstr
+	countedLoop        *jitCountedLoop
+	paletteLoop        *jitThumbPaletteLoop
+	stackPaletteLoop   *jitThumbStackPaletteLoop
+	indexedPaletteLoop *jitThumbIndexedPaletteLoop
+	halfwordFillLoop   *jitThumbHalfwordFillLoop
+	colorLoop          *jitThumbColorLoop
+	fillLoop           *jitThumbFillLoop
 }
 
 const jitMaxBlock = 256
@@ -376,6 +377,16 @@ outer:
 				continue outer
 			}
 		}
+		if block.indexedPaletteLoop != nil {
+			retired := b.accelerateThumbIndexedPaletteLoop(
+				block.indexedPaletteLoop, limit-executed,
+				wholeSystem, hasExecutionTraps, traced,
+			)
+			executed += retired
+			if retired != 0 {
+				continue outer
+			}
+		}
 		if block.halfwordFillLoop != nil {
 			retired := b.accelerateThumbHalfwordFillLoop(
 				block.halfwordFillLoop, limit-executed,
@@ -570,6 +581,12 @@ func (b *Backend) translateThumbBlock(pc uint32) *jitBlock {
 		block.stackPaletteLoop = b.classifyThumbStackPaletteLoop(pc)
 		if block.stackPaletteLoop != nil {
 			block.end = pc + thumbStackPaletteLoopInstructions*2
+		}
+	}
+	if instrs[0].raw == thumbIndexedPaletteLoopWords[0] {
+		block.indexedPaletteLoop = b.classifyThumbIndexedPaletteLoop(pc)
+		if block.indexedPaletteLoop != nil {
+			block.end = pc + thumbIndexedPaletteLoopInstructions*2
 		}
 	}
 	if instrs[0].raw == thumbHalfwordFillLoopWords[0] {
