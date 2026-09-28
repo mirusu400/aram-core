@@ -843,6 +843,24 @@ func TestCommonHelperContracts(t *testing.T) {
 	if !bytes.Equal(copiedWide, wide) {
 		t.Fatalf("wstrcpy bytes = %v, want %v", copiedWide, wide)
 	}
+	wideSuffix := heapBase + 0x780
+	if err := runtime.cpu.WriteMemory(wideSuffix, []byte{'-', 0, 'X', 0, 0, 0}); err != nil {
+		t.Fatal(err)
+	}
+	if got := call(helperWStrcatSlot, wideDestination, wideSuffix, 0); got != wideDestination {
+		t.Fatalf("wstrcat return = 0x%08x, want destination", got)
+	}
+	joinedWide := []byte{'K', 0, 'T', 0, 'F', 0, '-', 0, 'X', 0, 0, 0}
+	joined := make([]byte, len(joinedWide))
+	if err := runtime.cpu.ReadMemory(wideDestination, joined); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(joined, joinedWide) {
+		t.Fatalf("wstrcat bytes = %v, want %v", joined, joinedWide)
+	}
+	if err := runtime.cpu.WriteMemory(wideDestination, wide); err != nil {
+		t.Fatal(err)
+	}
 	if got := call(helperWStrlenSlot, wideDestination, 0, 0); got != 3 {
 		t.Fatalf("wstrlen = %d, want 3", got)
 	}

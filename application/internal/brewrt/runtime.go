@@ -67,6 +67,7 @@ const (
 	helperStrrchrSlot       = uint32(7)
 	helperSprintfSlot       = uint32(8)
 	helperWStrcpySlot       = uint32(9)
+	helperWStrcatSlot       = uint32(10)
 	helperWStrcmpSlot       = uint32(11)
 	helperWStrlenSlot       = uint32(12)
 	helperWStrchrSlot       = uint32(13)
@@ -938,6 +939,11 @@ func (r *Runtime) handleAppletMethodTrap(
 			return resume()
 		case helperWStrcpySlot:
 			if err := r.copyGuestWideString(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case helperWStrcatSlot:
+			if err := r.appendGuestWideString(); err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
@@ -2347,6 +2353,34 @@ func (r *Runtime) copyGuestWideString() error {
 		}
 	}
 	return fmt.Errorf("BREW wstrcpy source at 0x%08x exceeded %d UTF-16 units", source, maxWideStringUnits)
+}
+
+func (r *Runtime) appendGuestWideString() error {
+	destination, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW wstrcat destination: %w", err)
+	}
+	source, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW wstrcat source: %w", err)
+	}
+	prefix, err := r.readGuestWideString(destination)
+	if err != nil {
+		return err
+	}
+	suffix, err := r.readGuestWideString(source)
+	if err != nil {
+		return err
+	}
+	const maxWideStringUnits = 1 << 19
+	if len(prefix)+len(suffix)+1 > maxWideStringUnits {
+		return fmt.Errorf("BREW wstrcat result exceeds runtime limit")
+	}
+	data := encodeGuestWideString(suffix)
+	if err := r.cpu.WriteMemory(destination+uint32(len(prefix))*2, data); err != nil {
+		return fmt.Errorf("write BREW wstrcat destination: %w", err)
+	}
+	return r.cpu.WriteRegister(cpu.RegisterR0, destination)
 }
 
 func (r *Runtime) readGuestWideString(address uint32) ([]uint16, error) {
