@@ -448,6 +448,15 @@ var LGTCanvases = []LGTCanvas{
 		Width:          176,
 		Height:         220,
 	},
+	{
+		// GgoGgoDak's menus and game scenes use 120-pixel-wide images.
+		PackageSHA256:  "5e87f5b649860a6c3e80f794882e5dc2e57a96c268b1e479af7af101d17e0160",
+		MainClass:      "MyMIDlet",
+		InferredWidth:  240,
+		InferredHeight: 320,
+		Width:          120,
+		Height:         160,
+	},
 }
 
 func LookupLGTCanvas(packageSHA256, mainClass string, inferredWidth, inferredHeight int) (LGTCanvas, bool) {
