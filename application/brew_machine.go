@@ -59,6 +59,12 @@ type brewMachine struct {
 	guestFrame bool
 	now        time.Duration
 	closed     bool
+
+	audioGeneration     uint64
+	audioEpochGuestNS   int64
+	audioCursorSample   uint64
+	audioCursorValid    bool
+	mediaOutputRevision uint64
 }
 
 func (f Factory) createBREWMachine(ctx context.Context, source machinecore.Source) (machinecore.Machine, bool, error) {
@@ -94,7 +100,13 @@ func (f Factory) createBREWMachine(ctx context.Context, source machinecore.Sourc
 func newBREWMachine(source machinecore.Source, pkg brewrt.Package) *brewMachine {
 	frame := image.NewRGBA(image.Rectangle{Max: pkg.DisplaySize()})
 	draw.Draw(frame, frame.Bounds(), image.NewUniform(color.Black), image.Point{}, draw.Src)
-	return &brewMachine{state: machinecore.StateReady, source: source, pkg: pkg, frame: frame}
+	return &brewMachine{
+		state:           machinecore.StateReady,
+		source:          source,
+		pkg:             pkg,
+		frame:           frame,
+		audioGeneration: 1,
+	}
 }
 
 func (m *brewMachine) Load(ctx context.Context, source machinecore.Source) error {
@@ -134,6 +146,7 @@ func (m *brewMachine) Start(ctx context.Context) error {
 			return err
 		}
 		m.runtime = runtime
+		m.mediaOutputRevision = runtime.AudioOutputRevision()
 	}
 	m.state = machinecore.StateRunning
 	if !m.started {
@@ -203,6 +216,7 @@ func (m *brewMachine) Stop() error {
 	if m.state == machinecore.StateEmpty {
 		return fmt.Errorf("stop from %s: %w", m.state, ErrInvalidState)
 	}
+	m.resetBREWAudioLocked(m.now)
 	m.state = machinecore.StateStopped
 	return nil
 }
@@ -217,6 +231,7 @@ func (m *brewMachine) Reset(ctx context.Context) error {
 		return err
 	}
 	if m.runtime != nil {
+		m.resetBREWAudioLocked(0)
 		if err := m.runtime.Close(); err != nil {
 			return err
 		}
@@ -380,7 +395,81 @@ func (m *brewMachine) BREWFrameStats() (BREWFrameStats, bool) {
 	return BREWFrameStats{PresentCount: presentCount, FrameValid: frameValid}, true
 }
 
-func (m *brewMachine) DrainAudio() machinecore.AudioChunk { return machinecore.AudioChunk{} }
+func (m *brewMachine) DrainAudio() machinecore.AudioChunk {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.runtime == nil {
+		return machinecore.AudioChunk{}
+	}
+	audio, now, revision := m.runtime.DrainAudio()
+	if audio.SampleRate <= 0 || audio.Channels <= 0 || len(audio.PCM16) == 0 ||
+		len(audio.PCM16)%audio.Channels != 0 {
+		if revision != m.mediaOutputRevision {
+			m.nextBREWAudioGenerationLocked(now)
+			m.mediaOutputRevision = revision
+		}
+		return machinecore.AudioChunk{}
+	}
+	frames := len(audio.PCM16) / audio.Channels
+	duration := time.Duration(int64(frames) * int64(time.Second) / int64(audio.SampleRate))
+	start := max(now-duration, 0)
+	if revision != m.mediaOutputRevision {
+		m.nextBREWAudioGenerationLocked(start)
+		m.mediaOutputRevision = revision
+	}
+	startSample := brewSampleCursor(time.Duration(int64(start)-m.audioEpochGuestNS), audio.SampleRate)
+	if m.audioCursorValid {
+		slack := brewSampleCursor(time.Millisecond, audio.SampleRate)
+		if brewDistanceWithin(startSample, m.audioCursorSample, slack) {
+			startSample = m.audioCursorSample
+		}
+	}
+	chunk := machinecore.AudioChunk{
+		SampleRate:   audio.SampleRate,
+		Channels:     audio.Channels,
+		PCM16:        audio.PCM16,
+		StartGuestNS: int64(start),
+		StartSample:  startSample,
+		Generation:   m.audioGeneration,
+	}
+	m.audioCursorSample = startSample + uint64(frames)
+	m.audioCursorValid = true
+	return chunk
+}
+
+func brewDistanceWithin(left, right, limit uint64) bool {
+	if left >= right {
+		return left-right <= limit
+	}
+	return right-left <= limit
+}
+
+func brewSampleCursor(elapsed time.Duration, sampleRate int) uint64 {
+	if elapsed <= 0 || sampleRate <= 0 {
+		return 0
+	}
+	seconds := uint64(elapsed / time.Second)
+	remainder := uint64(elapsed % time.Second)
+	return seconds*uint64(sampleRate) + remainder*uint64(sampleRate)/uint64(time.Second)
+}
+
+func (m *brewMachine) nextBREWAudioGenerationLocked(epoch time.Duration) {
+	if m.audioGeneration == 0 || m.audioGeneration == ^uint64(0) {
+		m.audioGeneration = 1
+	} else {
+		m.audioGeneration++
+	}
+	m.audioEpochGuestNS = int64(max(epoch, 0))
+	m.audioCursorSample = 0
+	m.audioCursorValid = false
+}
+
+func (m *brewMachine) resetBREWAudioLocked(epoch time.Duration) {
+	if m.runtime != nil {
+		_, _, m.mediaOutputRevision = m.runtime.DrainAudio()
+	}
+	m.nextBREWAudioGenerationLocked(epoch)
+}
 
 func (m *brewMachine) SaveState(io.Writer) error {
 	return fmt.Errorf("BREW bootstrap save state: %w", ErrUnsupportedSource)
@@ -396,6 +485,7 @@ func (m *brewMachine) Close() error {
 	if m.closed {
 		return nil
 	}
+	m.resetBREWAudioLocked(m.now)
 	m.closed = true
 	if m.runtime != nil {
 		return m.runtime.Close()

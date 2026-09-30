@@ -195,6 +195,9 @@ type Runtime struct {
 	graphics         graphicsState
 	soundInfo        [5]byte
 	soundVolume      uint16
+	soundPlayer      brewSoundPlayer
+	media            *shared.Media
+	mediaEvents      *shared.EventBus
 	preferences      map[brewPreferenceKey][]byte
 	textControl      brewTextControl
 	menuControl      brewMenuControl
@@ -319,6 +322,11 @@ func New(pkg Package) (*Runtime, error) {
 		_ = backend.Close()
 		return nil, fmt.Errorf("create BREW display font: %w", err)
 	}
+	media, err := shared.NewMedia(registry, shared.MediaLimits{})
+	if err != nil {
+		_ = backend.Close()
+		return nil, fmt.Errorf("create BREW media service: %w", err)
+	}
 	classIDs := append([]uint32(nil), pkg.ClassIDs...)
 	if len(classIDs) == 0 {
 		classIDs = []uint32{ClassID}
@@ -342,6 +350,9 @@ func New(pkg Package) (*Runtime, error) {
 		nativeImages: make(map[uint32]brewNativeImage),
 		textRaster:   displayText,
 		displayFont:  displayFont,
+		soundVolume:  100,
+		media:        media,
+		mediaEvents:  shared.NewEventBus(0, 0),
 
 		preferPackedAECHAR: pkg.PreferPackedAECHAR,
 	}
@@ -1421,12 +1432,49 @@ func (r *Runtime) handleAppletMethodTrap(
 		slot := (breakpoint - 2 - soundPlayerTrapBase) / 2
 		switch slot {
 		case 2: // RegisterNotify(ISoundPlayer *, PFNSOUNDPLAYERSTATUS, void *)
+			callback, err := r.cpu.ReadRegister(cpu.RegisterR1)
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			context, err := r.cpu.ReadRegister(cpu.RegisterR2)
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			r.soundPlayer.callback = callback
+			r.soundPlayer.context = context
 			return resume()
 		case 3: // Set(ISoundPlayer *, AEESoundPlayerInput, void *)
-			// The second argument is an input discriminator, not an AEESoundInfo
-			// pointer. The resource pointer remains guest-owned until Play.
+			input, err := r.cpu.ReadRegister(cpu.RegisterR1)
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			data, err := r.cpu.ReadRegister(cpu.RegisterR2)
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			if err := r.setSoundPlayerInput(input, data, 0); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
 			return resume()
-		case 4, 5, 6, 7, 8, 9, 10, 11, 14, 15, 16: // playback/state controls
+		case 4: // Play
+			r.playSoundPlayer()
+			return resume()
+		case 5: // Stop
+			r.stopSoundPlayer()
+			return resume()
+		case 6: // Rewind
+			r.seekSoundPlayer(false)
+			return resume()
+		case 7: // FastForward
+			r.seekSoundPlayer(true)
+			return resume()
+		case 8: // Pause
+			r.pauseSoundPlayer()
+			return resume()
+		case 9: // Resume
+			r.resumeSoundPlayer()
+			return resume()
+		case 10, 11, 14, 15, 16: // tempo/tune/query/device/stream controls
 			return resume()
 		case 12: // SetVolume
 			volume, err := r.cpu.ReadRegister(cpu.RegisterR1)
@@ -1434,10 +1482,27 @@ func (r *Runtime) handleAppletMethodTrap(
 				return true, 0, cpu.ModeARM, err
 			}
 			r.soundVolume = uint16(min(volume, 100))
+			r.setSoundPlayerVolume()
 			return resume()
 		case 13: // GetVolume, delivered asynchronously on native BREW
 			return resume()
-		case 17, 18: // BREW 1.1 SetInfo/GetInfo
+		case 17: // BREW 1.1 SetInfo
+			info, err := r.cpu.ReadRegister(cpu.RegisterR1)
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			status := uint32(0)
+			if err := r.setSoundPlayerInfo(info); err != nil {
+				status = 2 // EBADPARM
+			}
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, status); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 18: // BREW 1.1 GetInfo
+			if err := r.getSoundPlayerInfo(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
@@ -1937,6 +2002,9 @@ func (r *Runtime) handleAppletMethodTrap(
 // callback remain queued for a later frame.
 func (r *Runtime) RunCallbacks(ctx context.Context, elapsed time.Duration) error {
 	if elapsed > 0 {
+		if err := r.media.Advance(r.clock, r.clock+elapsed, r.mediaEvents); err != nil {
+			return fmt.Errorf("advance BREW audio: %w", err)
+		}
 		r.clock += elapsed
 	}
 	pending := append([]brewCallback(nil), r.cleanupCallbacks...)

@@ -13,6 +13,79 @@ const nom3RaptorSHA256 = "b475b63996844c2b4108224ec6ddb15f31ba8ac336dffcbebc4985
 const battleMonsterModRaptorSHA256 = "b15f57f7aa597159a8495c04de2b987c2bdf72d9e5ae067c714360e2fec973f5"
 const maplePirateRaptorSHA256 = "7f2c396bced5abba51e93cd1509eb06102ba9fec33d8ec96f79258c2ee3b039c"
 const sdKoreanWarRaptorSHA256 = "61ed69520fd34679be0a72029d4bbee25d10799e6c7dfeb9cefd8960a24bcb80"
+const rhythmStar1RaptorSHA256 = "5dc5d7091c017d3801e32d62814706ccdf4a9f6e4e9cc92bd00ea525da7202a4"
+const zenonia1RaptorSHA256 = "3cc7a9b4cb15818cdd5a66f7e520c7b9b36f1df8d2df096aafa961b1cb2b682c"
+const zenonia2RaptorSHA256 = "601556233e719a97860d38f6d413673c2996b1a7010438504663c98b86ec776c"
+
+func TestRhythmStarRaptorHandsetPropertyRequiresExactPackage(t *testing.T) {
+	pkg := raptorloader.Package{Descriptor: raptorloader.Descriptor{
+		AID: "00025DAF", MainClass: "startClet",
+	}}
+	options := raptorRuntimeOptions(
+		machinecore.Source{SHA256: rhythmStar1RaptorSHA256}, pkg, image.Pt(240, 320),
+	)
+	if got := options.SystemProperties["PHONEMODEL"]; got != "CANU801EX" {
+		t.Fatalf("PHONEMODEL = %q, want CANU801EX", got)
+	}
+
+	wrongDigest := machinecore.Source{SHA256: "0" + rhythmStar1RaptorSHA256[1:]}
+	if got := raptorRuntimeOptions(wrongDigest, pkg, image.Pt(240, 320)).SystemProperties; len(got) != 0 {
+		t.Fatalf("digest lookalike properties = %v, want none", got)
+	}
+	lookalike := pkg
+	lookalike.Descriptor.AID = "00025DAE"
+	if got := raptorRuntimeOptions(
+		machinecore.Source{SHA256: rhythmStar1RaptorSHA256}, lookalike, image.Pt(240, 320),
+	).SystemProperties; len(got) != 0 {
+		t.Fatalf("metadata lookalike properties = %v, want none", got)
+	}
+}
+
+func TestZenoniaRaptorFullScreenGeometryRequiresExactPackage(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		digest string
+		aid    string
+	}{
+		{name: "Zenonia 1", digest: zenonia1RaptorSHA256, aid: "00027BAA"},
+		{name: "Zenonia 2", digest: zenonia2RaptorSHA256, aid: "0002C004"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := machinecore.Source{SHA256: test.digest}
+			pkg := raptorloader.Package{Descriptor: raptorloader.Descriptor{
+				AID:       test.aid,
+				MainClass: "Clet",
+			}}
+			size := image.Pt(240, 320)
+			if got := raptorRuntimeOptions(source, pkg, size).PrimaryFramebufferHeight; got != 320 {
+				t.Fatalf("full-screen framebuffer height = %d, want 320", got)
+			}
+
+			for name, mutate := range map[string]func(*machinecore.Source, *raptorloader.Package, *image.Point){
+				"digest": func(s *machinecore.Source, _ *raptorloader.Package, _ *image.Point) {
+					s.SHA256 = "0000000000000000000000000000000000000000000000000000000000000000"
+				},
+				"aid": func(_ *machinecore.Source, p *raptorloader.Package, _ *image.Point) {
+					p.Descriptor.AID = "00000000"
+				},
+				"main class": func(_ *machinecore.Source, p *raptorloader.Package, _ *image.Point) {
+					p.Descriptor.MainClass = "OtherClet"
+				},
+				"framebuffer": func(_ *machinecore.Source, _ *raptorloader.Package, s *image.Point) {
+					*s = image.Pt(240, 296)
+				},
+			} {
+				t.Run(name, func(t *testing.T) {
+					changedSource, changedPackage, changedSize := source, pkg, size
+					mutate(&changedSource, &changedPackage, &changedSize)
+					if got := raptorRuntimeOptions(changedSource, changedPackage, changedSize).PrimaryFramebufferHeight; got != 0 {
+						t.Fatalf("lookalike framebuffer height = %d, want default", got)
+					}
+				})
+			}
+		})
+	}
+}
 
 func TestIMusician2RaptorFullScreenGeometryRequiresExactPackage(t *testing.T) {
 	source := machinecore.Source{SHA256: "3ceae1d40ab7c935e7f57d3851c5516dd7295799d202c7d61196566ce30d56bb"}

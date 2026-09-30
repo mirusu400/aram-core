@@ -55,6 +55,7 @@ const issue319ArchiveSHA256 = "2cfa3dff0779456f8482ccfbda740436101699186fdd9537b
 const issue321ArchiveSHA256 = "4fae0b6a37e501163f6eabbda2b400bdfd4682ae389217bc26a7dbee564cb360"
 const jinJanggiArchiveSHA256 = "06369c8db97fb4e28165297ac2557c0de050dfb6986ea429d3411ffedfa891b9"
 const tengaiArchiveSHA256 = "01f8fe8784138792822df9306127279f038813ea62c00385d256b77b61a025cf"
+const theSINArchiveSHA256 = "8b33b7b3c20dabfe38cdfc905c482ef179827cf8b55b47c9057f60995bea96aa"
 const minibookArchiveSHA256 = "9d17a101d5c9e31e789698f31fb41ba5448b624eb63b37193be13b12fdbb46c0"
 const battleDrumXArchiveSHA256 = "a50f7decb608272daca545a1beca126286cba8eeb8b6e230f14448393b143ca2"
 const topGun2ArchiveSHA256 = "43392c5a657ac36aca605a3cde727bd817b5672594be55b8470bacdb924468f1"
@@ -172,8 +173,17 @@ func Match(data []byte) (pkg Package, matched bool, err error) {
 		Authenticated: authenticated,
 		NativeCanvas:  nativeCanvas,
 
-		PreferPackedAECHAR: digestHex == issue319ArchiveSHA256 || digestHex == jinJanggiArchiveSHA256,
+		PreferPackedAECHAR: preferPackedAECHARForDigest(digestHex),
 	}, true, nil
+}
+
+func preferPackedAECHARForDigest(digest string) bool {
+	switch digest {
+	case issue319ArchiveSHA256, jinJanggiArchiveSHA256, theSINArchiveSHA256:
+		return true
+	default:
+		return false
+	}
 }
 
 func knownModuleVeneer(module []byte) bool {

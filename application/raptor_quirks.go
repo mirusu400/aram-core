@@ -17,6 +17,13 @@ func raptorRuntimeOptions(
 	framebufferSize image.Point,
 ) raptorrt.Options {
 	options := raptorrt.Options{}
+	if properties, ok := quirkdb.LookupRaptorSystemProperties(
+		source.SHA256,
+		pkg.Descriptor.AID,
+		pkg.Descriptor.MainClass,
+	); ok {
+		options.SystemProperties = properties
+	}
 	geometry, ok := quirkdb.LookupRaptorFramebufferGeometry(
 		source.SHA256,
 		pkg.Descriptor.AID,

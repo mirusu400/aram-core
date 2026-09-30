@@ -135,6 +135,8 @@ type Runtime struct {
 	primaryFramebufferHeight int
 	resourceBytesHelper      uint32
 	imagePatches             []ImagePatch
+	systemProperties         map[string]string
+	preserveStoppedLoops     bool
 	// unimplementedNames interns the label for an import ARAM does not
 	// implement. See unimplementedImportName.
 	unimplementedNames map[raptorImportKey]string
@@ -187,6 +189,9 @@ type Runtime struct {
 // Options contains immutable Raptor compatibility behavior selected while a
 // verified package is loaded.
 type Options struct {
+	// SystemProperties overrides device identity for an exact package whose
+	// bundled compatibility table excludes the generic runtime model.
+	SystemProperties map[string]string
 	// PrimaryFramebufferHeight replaces libwipi's primary-screen client
 	// height when positive and no greater than the physical allocation.
 	PrimaryFramebufferHeight int
@@ -285,10 +290,14 @@ func NewRuntimeWithOptions(
 		primaryFramebufferHeight: options.PrimaryFramebufferHeight,
 		resourceBytesHelper:      options.ResourceBytesHelper,
 		imagePatches:             append([]ImagePatch(nil), options.ImagePatches...),
+		systemProperties:         make(map[string]string, len(options.SystemProperties)),
+		preserveStoppedLoops:     options.PreserveStoppedLoops,
 		resolvedImports:          make(map[raptorImportKey]uint64),
 		importSlotByKey:          make(map[raptorImportKey]uint32),
 	}
-	public.Services.Media.SetStoppedLoopPreservation(options.PreserveStoppedLoops)
+	for name, value := range options.SystemProperties {
+		runtime.systemProperties[name] = value
+	}
 	// A Raptor Clet reads its own MC_GrpContext, and LGT's runtime spells the
 	// struct without the SDK's clip_enabled word.
 	public.CompactGraphicsContext = true
@@ -539,6 +548,10 @@ func MapRaptorImage(backend cpu.Backend, image raptorloader.Image) error {
 }
 
 func (r *Runtime) InstallInterfaces() error {
+	r.Public.Services.Media.SetStoppedLoopPreservation(r.preserveStoppedLoops)
+	for name, value := range r.systemProperties {
+		r.Public.SetSystemProperty(name, value)
+	}
 	dlet := make([]byte, 12)
 	binary.LittleEndian.PutUint32(dlet[0:4], raptorDletModuleStub|1)
 	binary.LittleEndian.PutUint32(dlet[4:8], raptorDletResolveStub|1)
