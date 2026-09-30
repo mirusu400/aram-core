@@ -60,6 +60,15 @@ func TestGNEX32VirusProductSplash(t *testing.T) {
 	}
 }
 
+func TestGNEX32VirusProductBackPersistsUserNV(t *testing.T) {
+	machine := virusProductMachine(t)
+	stepVirusFrames(t, machine, 600)
+	pressVirusKey(t, machine, "select")
+	stepVirusFrames(t, machine, 1200)
+	pressVirusKey(t, machine, "back")
+	stepVirusFrames(t, machine, 1)
+}
+
 func TestGNEX32VirusMenuAndHelp(t *testing.T) {
 	machine := virusProductMachine(t)
 	stepVirusFrames(t, machine, 600)

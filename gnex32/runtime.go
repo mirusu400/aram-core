@@ -410,6 +410,27 @@ func (r *Runtime) service(id uint16, stack []uint32) (ServiceResult, error) {
 			}
 		}
 		return ServiceResult{Pop: 2}, nil
+	case 0x94: // PutUserNV(int[], count)
+		if last < 1 {
+			return ServiceResult{}, ErrStackUnderflow
+		}
+		ref, ok := r.vm.refs[last-1]
+		if !ok {
+			return ServiceResult{}, ErrInvalidLValue
+		}
+		if stack[last] > uint32(len(r.nv)) {
+			return ServiceResult{}, fmt.Errorf("gnex32: user NV write exceeds 16 words")
+		}
+		next := r.nv
+		for i := uint32(0); i < stack[last]; i++ {
+			value, err := r.vm.memory.ReadWord(ref.symbol, ref.element+int(i))
+			if err != nil {
+				return ServiceResult{}, err
+			}
+			next[i] = value
+		}
+		r.nv = next
+		return ServiceResult{Pop: 2}, nil
 	case 0x3a: // ClearWhite
 		r.display.Clear(color.White)
 		return ServiceResult{}, nil
