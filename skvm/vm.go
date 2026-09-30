@@ -580,6 +580,12 @@ func (vm *VM) NewByteArray(data []byte) uint32 {
 }
 
 func (vm *VM) ByteArray(reference uint32) ([]byte, error) {
+	// Native methods share this conversion boundary. A null byte-array argument
+	// is a catchable Java failure, not an invalid host object that should fault
+	// the whole machine.
+	if reference == 0 {
+		return nil, vm.newThrowable("java/lang/NullPointerException", "")
+	}
 	object, ok := vm.Object(reference)
 	if !ok || object.Array == nil || object.Array.Descriptor != "[B" {
 		return nil, fmt.Errorf("object %d is not a byte array", reference)
