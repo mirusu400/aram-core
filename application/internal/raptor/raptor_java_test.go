@@ -227,6 +227,99 @@ func TestNewRaptorJavaObjectSurvivesACollectionBetweenItsTwoAllocations(t *testi
 	}
 }
 
+// A Raptor array is built from two public-heap allocations. When the body does
+// not fit even after collection, keep enough context in the error to distinguish
+// ordinary guest heap pressure from a corrupt array length.
+func TestNewRaptorJavaArrayBodyErrorNamesSizeAndCause(t *testing.T) {
+	public := newPublicRuntime(t)
+	runtime := &Runtime{
+		CPU:             public.CPU,
+		Public:          public,
+		resolvedImports: make(map[raptorImportKey]uint64),
+		importSlotByKey: make(map[raptorImportKey]uint32),
+	}
+	java, err := runtime.ensureJavaRuntime()
+	check(t, err)
+
+	root := public.Heap.Root()
+	if len(root.Free) != 1 {
+		t.Fatalf("heap free list = %#v, want exactly one block for this test", root.Free)
+	}
+	free := root.Free[0].Size
+	if free <= 16 {
+		t.Fatalf("heap only has %d bytes free before the test drains it", free)
+	}
+	drain, err := public.Heap.Allocate(free-16, true)
+	if err != nil || drain == 0 {
+		t.Fatalf("drain heap = 0x%08x, %v", drain, err)
+	}
+	// Keep the drain live across the allocation retry so collection cannot make
+	// room for the 12-byte body (rounded to a 16-byte heap block).
+	java.currentCard = drain
+
+	_, err = runtime.newRaptorJavaArray('I', 2)
+	if err == nil {
+		t.Fatal("newRaptorJavaArray succeeded against an exhausted heap")
+	}
+	if !errors.Is(err, errRaptorGuestHeapExhausted) {
+		t.Fatalf("error %q does not wrap errRaptorGuestHeapExhausted", err)
+	}
+	if !strings.Contains(err.Error(), "12 bytes") {
+		t.Fatalf("error %q does not name the requested 12-byte body", err)
+	}
+}
+
+// The array header is not linked to its body until the second allocation
+// succeeds. A collection triggered by that allocation must not reclaim and
+// reuse the header itself.
+func TestNewRaptorJavaArraySurvivesACollectionBetweenItsTwoAllocations(t *testing.T) {
+	public := newPublicRuntime(t)
+	runtime := &Runtime{
+		CPU:             public.CPU,
+		Public:          public,
+		resolvedImports: make(map[raptorImportKey]uint64),
+		importSlotByKey: make(map[raptorImportKey]uint32),
+	}
+	_, err := runtime.ensureJavaRuntime()
+	check(t, err)
+
+	root := public.Heap.Root()
+	if len(root.Free) != 1 {
+		t.Fatalf("heap free list = %#v, want exactly one block for this test", root.Free)
+	}
+	free := root.Free[0].Size
+	if free <= 16 {
+		t.Fatalf("heap only has %d bytes free before the test drains it", free)
+	}
+	garbage, err := public.Heap.Allocate(free-16, true)
+	if err != nil || garbage == 0 {
+		t.Fatalf("allocate garbage = 0x%08x, %v", garbage, err)
+	}
+
+	array, err := runtime.newRaptorJavaArray('I', 2)
+	check(t, err)
+	if array == 0 {
+		t.Fatal("newRaptorJavaArray returned a null array after collection")
+	}
+	body, err := public.ReadU32(array + 8)
+	check(t, err)
+	if body == array {
+		t.Fatalf("array body 0x%08x aliases the array header", body)
+	}
+	if body != garbage {
+		t.Fatalf("array body = 0x%08x, want collected block 0x%08x", body, garbage)
+	}
+	if got, err := public.ReadU32(body); err != nil || got != 2 {
+		t.Fatalf("array length = %d, %v; want 2", got, err)
+	}
+	if vtable, err := public.ReadU32(array); err != nil || vtable == 0 {
+		t.Fatalf("array vtable = 0x%08x, %v; want a linked vtable", vtable, err)
+	}
+	if root.Allocations[array] == 0 || root.Allocations[body] == 0 {
+		t.Fatalf("heap does not record both the header (0x%08x) and body (0x%08x)", array, body)
+	}
+}
+
 func TestRaptorJavaClassDataIncludesStaticBase(t *testing.T) {
 	public := newPublicRuntime(t)
 	runtime := &Runtime{CPU: public.CPU, Public: public}
