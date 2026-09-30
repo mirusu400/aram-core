@@ -142,6 +142,110 @@ func TestIndexedRGB565Window454647IgnoresVendorRegisterFour(t *testing.T) {
 	}
 }
 
+func TestIndexedRGB565Window4445DecodesPackedBoundsAndCursor(t *testing.T) {
+	panel, err := NewDCSPanelController(DCSPanelConfig{
+		Width: 176, Height: 220, Protocol: ParallelPanelProtocolIndexedRGB565Window4445,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, write := range []struct {
+		command, value uint16
+	}{
+		{0x03, 0x1030}, // Entry mode, not a window register on this controller.
+		{0x42, 0xdb00}, // First-screen drive position.
+		{0x44, 0xaf00}, // Columns 0..175.
+		{0x45, 0xdb00}, // Pages 0..219.
+		{0x21, 0x0101}, // Packed column 1, page 1 cursor.
+		{0x22, 0xf800},
+		{0x22, 0x07e0},
+	} {
+		if err := panel.WriteCommand(write.command); err != nil {
+			t.Fatal(err)
+		}
+		if err := panel.WriteData(write.value); err != nil {
+			t.Fatalf("command %#x data %#x: %v", write.command, write.value, err)
+		}
+	}
+	if got := panel.FrameRGB565(); got[1*176+1] != 0xf800 || got[1*176+2] != 0x07e0 {
+		t.Fatalf("window-4445 frame row = %#v", got[176:352])
+	}
+	columnStart, columnEnd, pageStart, pageEnd := panel.AddressWindow()
+	if window := [4]uint16{columnStart, columnEnd, pageStart, pageEnd}; window != [4]uint16{0, 175, 0, 219} {
+		t.Fatalf("window-4445 address window = %#v", window)
+	}
+}
+
+func TestIndexedRGB565Window210213DecodesSeparateBounds(t *testing.T) {
+	panel, err := NewDCSPanelController(DCSPanelConfig{
+		Width: 3, Height: 2, Protocol: ParallelPanelProtocolIndexedRGB565Window210213,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, write := range []struct {
+		command, value uint16
+	}{
+		{0x03, 0x1031}, // Entry mode, not a window register on this controller.
+		{0x211, 2},
+		{0x210, 1},
+		{0x213, 1},
+		{0x212, 0},
+		{0x200, 1},
+		{0x201, 0},
+		{0x202, 0xf800},
+		{0x202, 0x07e0},
+		{0x202, 0x001f},
+		{0x202, 0xffff},
+	} {
+		if err := panel.WriteCommand(write.command); err != nil {
+			t.Fatal(err)
+		}
+		if err := panel.WriteData(write.value); err != nil {
+			t.Fatalf("command %#x data %#x: %v", write.command, write.value, err)
+		}
+	}
+	if got := panel.FrameRGB565(); len(got) != 6 ||
+		got[1] != 0xf800 || got[2] != 0x07e0 || got[4] != 0x001f || got[5] != 0xffff {
+		t.Fatalf("window-210213 frame = %#v", got)
+	}
+}
+
+func TestIndexedRGB565Window36373839DecodesSeparateBounds(t *testing.T) {
+	panel, err := NewDCSPanelController(DCSPanelConfig{
+		Width: 3, Height: 2, Protocol: ParallelPanelProtocolIndexedRGB565Window36373839,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, write := range []struct {
+		command, value uint16
+	}{
+		{0x03, 0x0201}, // Vendor configuration on this controller, not a window.
+		{0x36, 2},
+		{0x37, 1},
+		{0x38, 1},
+		{0x39, 0},
+		{0x20, 1},
+		{0x21, 0},
+		{0x22, 0xf800},
+		{0x22, 0x07e0},
+		{0x22, 0x001f},
+		{0x22, 0xffff},
+	} {
+		if err := panel.WriteCommand(write.command); err != nil {
+			t.Fatal(err)
+		}
+		if err := panel.WriteData(write.value); err != nil {
+			t.Fatalf("command %#x data %#x: %v", write.command, write.value, err)
+		}
+	}
+	if got := panel.FrameRGB565(); len(got) != 6 ||
+		got[1] != 0xf800 || got[2] != 0x07e0 || got[4] != 0x001f || got[5] != 0xffff {
+		t.Fatalf("window-36373839 frame = %#v", got)
+	}
+}
+
 func TestPackedRGB565Window424ADecodesCommandFIFOAndPixelFIFO(t *testing.T) {
 	config := DCSPanelConfig{
 		Width: 3, Height: 320, Protocol: ParallelPanelProtocolPackedRGB565Window424A,

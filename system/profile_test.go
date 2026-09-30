@@ -763,10 +763,14 @@ func TestLegacyFlatBoardProfilesDeclareExactResetDevices(t *testing.T) {
 	if w450.ID != "samsung.sch-w450" || w450.FirmwareBuildID != "samsung.sch-w450.ck10" ||
 		w450.PlatformID != "qualcomm.arm7-samsung-flat-v1" ||
 		!w450.CPUCompatibility.UserSystemSPSRReadAsCPSR ||
+		w450.NANDReadID != 0x00002079 ||
+		w450.Panel != (DCSPanelConfig{
+			Width: 176, Height: 220, Protocol: ParallelPanelProtocolIndexedRGB565Window4445,
+		}) ||
 		!reflect.DeepEqual(w450.BootControlByteWritableOffsets, []uint32{0x3404}) {
 		t.Fatalf("SCH-W450 reset profile = %+v", w450)
 	}
-	foundResetStatus, foundMixedControl, foundBusWindow := false, false, false
+	foundResetStatus, foundMixedControl, foundBusWindow, foundClockReady := false, false, false, false
 	for _, register := range w450.BootControlReadOnlyRegisters {
 		foundResetStatus = foundResetStatus || register == (QualcommBootReadOnlyRegister{Offset: 0x3400})
 	}
@@ -778,8 +782,24 @@ func TestLegacyFlatBoardProfilesDeclareExactResetDevices(t *testing.T) {
 			ID: "w450-external-bus-control", Address: 0x63800000, Size: 0x400, Width: Width32,
 		})
 	}
-	if !foundResetStatus || !foundMixedControl || !foundBusWindow {
-		t.Fatalf("SCH-W450 reset devices = status:%t mixed:%t bus:%t", foundResetStatus, foundMixedControl, foundBusWindow)
+	for _, register := range w450.PrimaryClockReadOnlyRegisters {
+		foundClockReady = foundClockReady || register == (QualcommPrimaryClockReadOnlyRegister{
+			Offset: 0x0168, Value: 0x01000000,
+		})
+	}
+	wantClockInterrupts := []QualcommPrimaryClockInterruptRegister{{
+		StatusOffset: 0x0244,
+		ClearOffset:  0x024c,
+		Bits: []QualcommPrimaryClockInterruptBit{
+			{Bit: 1, Source: 45},
+			{Bit: 2, Source: 46},
+		},
+	}}
+	if !foundResetStatus || !foundMixedControl || !foundBusWindow || !foundClockReady ||
+		!reflect.DeepEqual(w450.PrimaryClockInterruptRegisters, wantClockInterrupts) {
+		t.Fatalf("SCH-W450 reset devices = status:%t mixed:%t bus:%t clock-ready:%t interrupts:%+v",
+			foundResetStatus, foundMixedControl, foundBusWindow, foundClockReady,
+			w450.PrimaryClockInterruptRegisters)
 	}
 
 	w599 := SCHW599BE30BoardProfile()
@@ -787,6 +807,18 @@ func TestLegacyFlatBoardProfilesDeclareExactResetDevices(t *testing.T) {
 	if w599.ID != "samsung.sch-w599" || w599.FirmwareBuildID != "samsung.sch-w599.be30" ||
 		w599.PlatformID != "intel.pxa27x-samsung-flat-v1" ||
 		w599.NANDReadID != 0x00009879 ||
+		w599.Panel != (DCSPanelConfig{
+			Width: 240, Height: 320, Protocol: ParallelPanelProtocolIndexedRGB565Window36373839,
+		}) ||
+		w599.PanelSelectorPorts == nil ||
+		*w599.PanelSelectorPorts != (ParallelPanelSelectorPortProfile{
+			SelectorAddress: 0x20000000, TransferAddress: 0x20000002,
+			CommandSelect: 0, DataSelect: 1,
+		}) ||
+		!reflect.DeepEqual(w599.NANDRegisterResets, []QualcommNANDRegisterReset{
+			{Offset: 0x0240, Value: 0},
+			{Offset: 0x0260, Value: 0},
+		}) ||
 		!w599.CPUCompatibility.UserSystemSPSRReadAsCPSR {
 		t.Fatalf("SCH-W599 reset profile = %+v", w599)
 	}
@@ -818,6 +850,38 @@ func TestLegacyFlatBoardProfilesDeclareExactResetDevices(t *testing.T) {
 	if !foundRAM || !foundSelectors || !foundResult || !foundStatusAlias {
 		t.Fatalf("SCH-W599 reset devices = ram:%t selectors:%t result:%t irq:%t",
 			foundRAM, foundSelectors, foundResult, foundStatusAlias)
+	}
+}
+
+func TestSPHW4200DC17BoardDeclaresSecondRAMBankAndR61509Panel(t *testing.T) {
+	profile := SPHW4200DC17BoardProfile()
+	if err := profile.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if profile.Panel != (DCSPanelConfig{
+		Width: 240, Height: 432, Protocol: ParallelPanelProtocolIndexedRGB565Window210213,
+	}) || profile.PanelPorts == nil ||
+		*profile.PanelPorts != (ParallelPanelPortProfile{
+			CommandAddress: 0x30005000,
+			DataAddress:    0x30005004,
+		}) {
+		t.Fatalf("SPH-W4200 panel = %+v / %+v", profile.Panel, profile.PanelPorts)
+	}
+	foundSecondRAM, foundBusMode := false, false
+	for _, memory := range profile.Memory {
+		foundSecondRAM = foundSecondRAM || memory == (MemoryRegionProfile{
+			ID: "w4200-ebi-ram-bank-1", Kind: MemorySparseRAM,
+			Address: 0x08000000, Size: 0x08000000,
+		})
+	}
+	for _, register := range profile.LatchedRegisters {
+		foundBusMode = foundBusMode || reflect.DeepEqual(register, LatchedRegisterProfile{
+			ID: "w4200-external-bus-mode", Address: 0x3000202c,
+			Width: Width16, ResetValue: 0,
+		})
+	}
+	if !foundSecondRAM || !foundBusMode {
+		t.Fatalf("SPH-W4200 boot devices = ram:%t bus-mode:%t", foundSecondRAM, foundBusMode)
 	}
 }
 

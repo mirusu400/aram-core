@@ -126,3 +126,66 @@ func TestParallelPanelSparseDataPortDoesNotDuplicateTransportState(t *testing.T)
 		t.Fatal("sparse command-port reset did not clear the shared transport")
 	}
 }
+
+func TestParallelPanelSelectorPortsRouteAndRestoreTransfers(t *testing.T) {
+	panel := NewParallelPanelInterface()
+	selector, transfer, err := NewParallelPanelSelectorPorts(panel, 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := transfer.Write(0, Width16, 0x22); err != nil {
+		t.Fatal(err)
+	}
+	if err := selector.Write(0, Width16, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := transfer.Write(0, Width16, 0x75c4); err != nil {
+		t.Fatal(err)
+	}
+	if panel.CurrentCommand() != 0x22 || panel.LastData() != 0x75c4 {
+		t.Fatalf("selector transport left command %#x data %#x", panel.CurrentCommand(), panel.LastData())
+	}
+	selectorState, err := selector.SaveState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	transferState, err := transfer.SaveState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(transferState) != 16 || len(selectorState) <= 16 {
+		t.Fatalf("selector state sizes = %d/%d", len(selectorState), len(transferState))
+	}
+	restoredPanel := NewParallelPanelInterface()
+	restoredSelector, restoredTransfer, _ := NewParallelPanelSelectorPorts(restoredPanel, 0, 1)
+	if err := restoredSelector.LoadState(selectorState); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoredTransfer.LoadState(transferState); err != nil {
+		t.Fatal(err)
+	}
+	if restoredPanel.CurrentCommand() != 0x22 || restoredPanel.LastData() != 0x75c4 {
+		t.Fatal("selector transport state did not round trip")
+	}
+	if err := restoredTransfer.Write(0, Width16, 0x1234); err != nil {
+		t.Fatal(err)
+	}
+	if restoredPanel.LastData() != 0x1234 {
+		t.Fatal("selector state did not restore the selected data role")
+	}
+	if err := selector.Write(0, Width16, 2); !errors.Is(err, ErrParallelPanelMMIO) {
+		t.Fatalf("unsupported selector error = %v", err)
+	}
+	if _, _, err := NewParallelPanelSelectorPorts(panel, 1, 1); err == nil {
+		t.Fatal("accepted identical command and data selectors")
+	}
+	if err := restoredSelector.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoredTransfer.Write(0, Width16, 0x20); err != nil {
+		t.Fatal(err)
+	}
+	if restoredPanel.CurrentCommand() != 0x20 {
+		t.Fatal("selector reset did not restore the command role")
+	}
+}

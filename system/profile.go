@@ -183,6 +183,16 @@ type ParallelPanelPortProfile struct {
 	DataAddress    uint32
 }
 
+// ParallelPanelSelectorPortProfile describes an indirect 16-bit panel bus:
+// SelectorAddress chooses command or data, then TransferAddress emits the
+// selected word to the panel controller.
+type ParallelPanelSelectorPortProfile struct {
+	SelectorAddress uint32
+	TransferAddress uint32
+	CommandSelect   uint16
+	DataSelect      uint16
+}
+
 // IndexedHalfwordRegisterPortProfile maps a pair of sparse 16-bit external-bus
 // ports. Writing the command port selects a register; the data port then reads
 // or writes the selected register. CommandReadValue is the board-observed
@@ -209,6 +219,16 @@ func (p ParallelPanelPortProfile) validate() error {
 	if p.CommandAddress%uint32(Width16) != 0 || p.DataAddress%uint32(Width16) != 0 ||
 		p.CommandAddress == p.DataAddress || uint64(p.CommandAddress)+uint64(Width16) > 1<<32 ||
 		uint64(p.DataAddress)+uint64(Width16) > 1<<32 {
+		return ErrInvalidRegion
+	}
+	return nil
+}
+
+func (p ParallelPanelSelectorPortProfile) validate() error {
+	if p.SelectorAddress%uint32(Width16) != 0 || p.TransferAddress%uint32(Width16) != 0 ||
+		p.SelectorAddress == p.TransferAddress || p.CommandSelect == p.DataSelect ||
+		uint64(p.SelectorAddress)+uint64(Width16) > 1<<32 ||
+		uint64(p.TransferAddress)+uint64(Width16) > 1<<32 {
 		return ErrInvalidRegion
 	}
 	return nil
@@ -281,6 +301,7 @@ type BoardProfile struct {
 	FirmwareBuildID               string
 	CPUCompatibility              ARMCPUCompatibilityProfile
 	NANDReadID                    uint32
+	NANDRegisterResets            []QualcommNANDRegisterReset
 	NANDSize                      uint64
 	NANDPageSize                  uint32
 	NANDEraseBlockSize            uint32
@@ -334,6 +355,8 @@ type BoardProfile struct {
 	BootControlGPIOInputs                     []QualcommGPIOInputRegister
 	BootControlInterruptStatusAliases         []QualcommInterruptStatusAlias
 	PrimaryClockWritableOffsets               []uint32
+	PrimaryClockReadOnlyRegisters             []QualcommPrimaryClockReadOnlyRegister
+	PrimaryClockInterruptRegisters            []QualcommPrimaryClockInterruptRegister
 	SecondaryClockWritableOffsets             []uint32
 	SecondaryClockReadOnlyRegisters           []QualcommSecondaryClockReadOnlyRegister
 	SparseBusRegisterOffsets                  []uint32
@@ -346,6 +369,7 @@ type BoardProfile struct {
 	Keypad                                    *QualcommGPIOKeypadProfile
 	Panel                                     DCSPanelConfig
 	PanelPorts                                *ParallelPanelPortProfile
+	PanelSelectorPorts                        *ParallelPanelSelectorPortProfile
 	IndexedHalfwordRegisterPorts              []IndexedHalfwordRegisterPortProfile
 	MDP                                       *QualcommMDPProfile
 	LegacyTopVersion                          uint32
@@ -388,6 +412,9 @@ func (p BoardProfile) Validate() error {
 			"board profile %q has invalid NAND geometry size=0x%x page=0x%x erase=0x%x",
 			p.ID, p.NANDSize, p.NANDPageSize, p.NANDEraseBlockSize,
 		)
+	}
+	if err := validateQualcommNANDRegisterResets(p.NANDRegisterResets); err != nil {
+		return fmt.Errorf("board profile %q NAND register profile: %w", p.ID, err)
 	}
 	if _, err := validateQualcommLegacyTopWritableOffsets(p.LegacyTopWritableOffsets); err != nil {
 		return fmt.Errorf("board profile %q legacy top page: %w", p.ID, err)
@@ -491,6 +518,19 @@ func (p BoardProfile) Validate() error {
 	if err := validateQualcommPrimaryClockWritableOffsets(p.PrimaryClockWritableOffsets); err != nil {
 		return fmt.Errorf("board profile %q primary-clock writable offsets: %w", p.ID, err)
 	}
+	if err := validateQualcommPrimaryClockReadOnlyRegisters(
+		p.PrimaryClockWritableOffsets,
+		p.PrimaryClockReadOnlyRegisters,
+	); err != nil {
+		return fmt.Errorf("board profile %q primary-clock read-only registers: %w", p.ID, err)
+	}
+	if err := validateQualcommPrimaryClockInterruptRegisters(
+		p.PrimaryClockWritableOffsets,
+		p.PrimaryClockReadOnlyRegisters,
+		p.PrimaryClockInterruptRegisters,
+	); err != nil {
+		return fmt.Errorf("board profile %q primary-clock interrupt registers: %w", p.ID, err)
+	}
 	if err := validateQualcommSecondaryClockConfig(QualcommSecondaryClockConfig{
 		WritableOffsets:   p.SecondaryClockWritableOffsets,
 		ReadOnlyRegisters: p.SecondaryClockReadOnlyRegisters,
@@ -586,6 +626,14 @@ func (p BoardProfile) Validate() error {
 		}
 		if err := p.PanelPorts.validate(); err != nil {
 			return fmt.Errorf("board profile %q sparse panel ports: %w", p.ID, err)
+		}
+	}
+	if p.PanelSelectorPorts != nil {
+		if p.PanelPorts != nil || p.Panel.Width == 0 || p.Panel.Height == 0 {
+			return fmt.Errorf("board profile %q selector panel ports conflict or have no panel", p.ID)
+		}
+		if err := p.PanelSelectorPorts.validate(); err != nil {
+			return fmt.Errorf("board profile %q selector panel ports: %w", p.ID, err)
 		}
 	}
 	indexedPortIDs := make(map[string]struct{}, len(p.IndexedHalfwordRegisterPorts))
@@ -2214,9 +2262,34 @@ func SCHW420CD16BoardProfile() BoardProfile {
 // SPHW4200DC17BoardProfile selects the KTF sibling's exact firmware and NAND
 // identity while retaining the shared MSM6280 raw-download device contracts.
 func SPHW4200DC17BoardProfile() BoardProfile {
-	return samsungRawDownloadBoardProfile(
+	profile := samsungRawDownloadBoardProfile(
 		"samsung.sph-w4200", "samsung.sph-w4200.dc17", 0x0e600000,
 	)
+	// DC17 clears its second static-data segment at 0x08000000 before the
+	// AMSS handoff. Expose the MSM6280's adjacent EBI chip-select aperture as
+	// page-backed RAM so the complete address window is available without a
+	// second eager 128 MiB host allocation.
+	profile.Memory = append(profile.Memory, MemoryRegionProfile{
+		ID: "w4200-ebi-ram-bank-1", Kind: MemorySparseRAM,
+		Address: 0x08000000, Size: 0x08000000,
+	})
+	// The cold-start hardware table publishes a 16-bit external-bus mode word
+	// through this dedicated register before entering the remaining peripheral
+	// initialisers.
+	profile.LatchedRegisters = append(profile.LatchedRegisters, LatchedRegisterProfile{
+		ID: "w4200-external-bus-mode", Address: 0x3000202c,
+		Width: Width16, ResetValue: 0,
+	})
+	// DC17 drives the main indexed RGB565 controller through a halfword
+	// command/data pair in the same external chip-select aperture.
+	profile.PanelPorts = &ParallelPanelPortProfile{
+		CommandAddress: 0x30005000,
+		DataAddress:    0x30005004,
+	}
+	profile.Panel = DCSPanelConfig{
+		Width: 240, Height: 432, Protocol: ParallelPanelProtocolIndexedRGB565Window210213,
+	}
+	return profile
 }
 
 // SCHW450CK10BoardProfile starts the original MSM6250-era flat boot image at
@@ -2225,6 +2298,14 @@ func SCHW450CK10BoardProfile() BoardProfile {
 	profile := samsungLegacyFlatBoardProfile(
 		"samsung.sch-w450", "samsung.sch-w450.ck10",
 	)
+	// CK10's reset-resident flash table contains one 128 MiB small-page entry,
+	// manufacturer/device 0x20/0x79.
+	profile.NANDReadID = 0x00002079
+	// The main QCIF panel exposes packed 0..175 and 0..219 address bounds in
+	// registers 0x44/0x45 and a packed cursor in register 0x21.
+	profile.Panel = DCSPanelConfig{
+		Width: 176, Height: 220, Protocol: ParallelPanelProtocolIndexedRGB565Window4445,
+	}
 	// The direct reset stub owns the full 32-bit external platform word. Drop
 	// the two inherited read-only halfword straps used by later raw QCSBLs.
 	readOnly := profile.ReadOnlyRegisters[:0]
@@ -2247,7 +2328,54 @@ func SCHW450CK10BoardProfile() BoardProfile {
 	profile.BootControlByteWritableOffsets = append(profile.BootControlByteWritableOffsets, 0x3404)
 	profile.PrimaryClockWritableOffsets = append(
 		profile.PrimaryClockWritableOffsets,
+		0x0108,
+		0x0120, 0x0124, 0x0128, 0x0138, 0x013c, 0x0140,
+		0x0150, 0x0154, 0x0158, 0x015c, 0x0160, 0x0164, 0x016c, 0x0170,
 		0x0174, 0x0178, 0x017c, 0x0180,
+		0x01ec, 0x01f0, 0x01f4, 0x01f8, 0x01fc,
+		0x0204, 0x0208, 0x020c, 0x0210, 0x0214, 0x0218,
+		0x0248, 0x024c, 0x0250, 0x0254, 0x0270, 0x0274,
+		0x02e4, 0x02e8,
+	)
+	profile.PrimaryClockReadOnlyRegisters = append(
+		profile.PrimaryClockReadOnlyRegisters,
+		QualcommPrimaryClockReadOnlyRegister{Offset: 0x0104, Value: 0},
+		// OS memory bring-up requires the ready line at bit 24 while treating
+		// bit 28 as an error indication.
+		QualcommPrimaryClockReadOnlyRegister{Offset: 0x0168, Value: 0x01000000},
+	)
+	profile.PrimaryClockInterruptRegisters = append(
+		profile.PrimaryClockInterruptRegisters,
+		QualcommPrimaryClockInterruptRegister{
+			StatusOffset: 0x0244,
+			ClearOffset:  0x024c,
+			Bits: []QualcommPrimaryClockInterruptBit{
+				{Bit: 1, Source: 45},
+				{Bit: 2, Source: 46},
+			},
+		},
+	)
+	profile.ReadOnlyRegisters = append(profile.ReadOnlyRegisters, ReadOnlyRegisterProfile{
+		// The reset tail samples the low five external-memory status bits before
+		// entering the two bounded RAM-initialisation helpers.
+		ID: "w450-external-memory-status", Address: 0x48000070,
+		Width: Width32, Value: 0,
+	}, ReadOnlyRegisterProfile{
+		// Encoded 0x20/0x79 manufacturer and device selectors used to
+		// choose the matching small-page flash reader from the reset table.
+		ID: "w450-bootstrap-selectors", Address: 0x64000308,
+		Width: Width32, Value: 0x103c8000,
+	}, ReadOnlyRegisterProfile{
+		ID: "w450-bootstrap-result", Address: 0x64000320,
+		Width: Width32, Value: 0x000000ff,
+	})
+	profile.AddressedStorageWindows = append(
+		profile.AddressedStorageWindows,
+		AddressedStorageWindowProfile{
+			ID: "w450-bootstrap-page", Address: 0x64000000, Size: 0x200,
+			CommandID: "w450-bootstrap-page-command", CommandAddress: 0x64000304,
+			CommandWidth: Width32, AddressMask: 0xfffffe00,
+		},
 	)
 	// The reset sequence masks this one clock-domain register before touching
 	// external-memory timing. It is outside the inherited primary clock
@@ -2256,16 +2384,101 @@ func SCHW450CK10BoardProfile() BoardProfile {
 		ID: "w450-clock-domain-mask", Address: 0x84001400,
 		Width: Width32, ResetValue: 0,
 	}, LatchedRegisterProfile{
+		ID: "w450-clock-switch-control", Address: 0x84001304,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w450-clock-hardware-control", Address: 0x84001330,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w450-clock-hardware-divider", Address: 0x84001334,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w450-clock-hardware-source", Address: 0x84001338,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w450-clock-hardware-mode", Address: 0x8400133c,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w450-clock-plan-parameter-0", Address: 0x84001380,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w450-clock-plan-parameter-1", Address: 0x84001384,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w450-clock-plan-commit", Address: 0x84001394,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w450-clock-plan-limit", Address: 0x84001398,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		// The post-memory reset tail publishes its masked bootstrap word through
+		// this exact companion-controller register.
+		ID: "w450-bootstrap-word", Address: 0x6400031c,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w450-bootstrap-control", Address: 0x64000300,
+		Width: Width32, ResetValue: 0,
+		WritePulses: []LatchedRegisterWritePulseProfile{
+			{Mask: 0xffffffff, Value: 1, Sources: []uint8{45}},
+			{Mask: 0xffffffff, Value: 7, Sources: []uint8{45, 46}},
+			{Mask: 0xffffffff, Value: 5, Sources: []uint8{45, 46}},
+			{Mask: 0xffffffff, Value: 6, Sources: []uint8{45}},
+		},
+	}, LatchedRegisterProfile{
 		// Reset reads the full external-memory configuration word, then sets
 		// its low-half enable bit with STRH.
 		ID: "w450-external-memory-configuration", Address: 0x48000000,
 		Width: Width32, AdditionalWidths: []Width{Width16}, ResetValue: 0,
 	}, LatchedRegisterProfile{
+		ID: "w450-external-memory-timing", Address: 0x48000004,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
 		ID: "w450-static-memory-configuration", Address: 0x48000008,
 		Width: Width32, AdditionalWidths: []Width{Width16}, ResetValue: 0,
 	}, LatchedRegisterProfile{
+		ID: "w450-external-memory-mode", Address: 0x4800000c,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w450-external-memory-timing-0", Address: 0x48000020,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w450-external-memory-timing-1", Address: 0x48000024,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w450-external-memory-timing-2", Address: 0x48000028,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w450-external-memory-timing-3", Address: 0x4800002c,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w450-external-memory-control-0", Address: 0x48000030,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w450-external-memory-control-1", Address: 0x48000034,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w450-external-memory-control-2", Address: 0x48000038,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w450-external-memory-control-3", Address: 0x4800003c,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w450-external-memory-bank-control", Address: 0x48000060,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w450-external-memory-bank-timing", Address: 0x48000064,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
 		ID: "w450-external-platform-word", Address: 0x30010000,
 		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		// Early OS bring-up streams one-byte commands through this external
+		// peripheral port before enabling the corresponding control line.
+		ID: "w450-external-serial-command", Address: 0x38000000,
+		Width: Width8, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w450-external-serial-data", Address: 0x38100000,
+		Width: Width8, ResetValue: 0,
 	})
 	profile.LatchedRegisterWindows = append(profile.LatchedRegisterWindows, LatchedRegisterWindowProfile{
 		// Reset configures the external-bus control words in the first half,
@@ -2284,6 +2497,31 @@ func SCHW599BE30BoardProfile() BoardProfile {
 	)
 	profile.PlatformID = "intel.pxa27x-samsung-flat-v1"
 	profile.NANDReadID = 0x00009879
+	// The low-vector display sequence selects commands at chip-select +0 and
+	// streams their 16-bit values through the adjacent +2 halfword. A separate
+	// +6 control line is cleared before programming the panel.
+	profile.PanelSelectorPorts = &ParallelPanelSelectorPortProfile{
+		SelectorAddress: 0x20000000,
+		TransferAddress: 0x20000002,
+		CommandSelect:   0,
+		DataSelect:      1,
+	}
+	profile.Panel.Protocol = ParallelPanelProtocolIndexedRGB565Window36373839
+	profile.NANDRegisterResets = append(
+		profile.NANDRegisterResets,
+		QualcommNANDRegisterReset{Offset: 0x0240, Value: 0},
+		QualcommNANDRegisterReset{Offset: 0x0260, Value: 0},
+	)
+	profile.BootControlWritableOffsets = append(
+		profile.BootControlWritableOffsets,
+		0x0734, 0x0738, 0x073c,
+		0x2200, 0x2208, 0x220c, 0x2214,
+	)
+	profile.BootControlReadOnlyRegisters = append(
+		profile.BootControlReadOnlyRegisters,
+		QualcommBootReadOnlyRegister{Offset: 0x075c, Value: 0},
+		QualcommBootReadOnlyRegister{Offset: 0x2234, Value: 0},
+	)
 	// The high-vector reset stub reads physical flash through its addressed
 	// page aperture and copies the selected payload into the inherited 128 MiB
 	// low-address EBI RAM before transferring control there.
@@ -2301,6 +2539,12 @@ func SCHW599BE30BoardProfile() BoardProfile {
 		// the page and continue toward its bounded device-size limit.
 		ID: "w599-bootstrap-result", Address: 0x64000320,
 		Width: Width32, Value: 0x000000ff,
+	}, ReadOnlyRegisterProfile{
+		// Runtime memory initialisation requires the controller-ready bit before
+		// it accepts the configured bank table. A clear bit enters the handset's
+		// explicit 0x12340000 terminal-error path.
+		ID: "pxa27x-memory-controller-status", Address: 0x48000040,
+		Width: Width32, Value: 0x00004000,
 	})
 	// Bootstrap read commands encode a byte-aligned flash page plus low flag
 	// bits. The controller exposes the selected 512-byte page through a fixed
@@ -2317,7 +2561,18 @@ func SCHW599BE30BoardProfile() BoardProfile {
 	// board drive-strength setting.
 	profile.LatchedRegisters = append(profile.LatchedRegisters, LatchedRegisterProfile{
 		ID: "pxa27x-memory-strength-1", Address: 0x48000050,
+		Width: Width32, AdditionalWidths: []Width{Width16}, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w599-panel-control", Address: 0x20000006,
 		Width: Width16, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		// The low-vector clock bootstrap programs the same source/divider word
+		// into both companion clock domains before peripheral initialisation.
+		ID: "w599-clock-domain-0", Address: 0x50c0000c,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w599-clock-domain-1", Address: 0x58c0000c,
+		Width: Width32, ResetValue: 0,
 	}, LatchedRegisterProfile{
 		// A high-vector helper publishes its masked bootstrap word here before
 		// returning to the reset sequencer.
@@ -2336,7 +2591,41 @@ func SCHW599BE30BoardProfile() BoardProfile {
 		ID: "pxa27x-static-memory-control-0", Address: 0x48000008,
 		Width: Width32, ResetValue: 0,
 	}, LatchedRegisterProfile{
+		ID: "pxa27x-static-memory-control-1", Address: 0x4800000c,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "pxa27x-static-memory-control-2", Address: 0x48000010,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
 		ID: "pxa27x-dynamic-memory-configuration", Address: 0x48000000,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "pxa27x-dynamic-memory-control", Address: 0x48000004,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		// The memory timing table writes its high-numbered entries through this
+		// paired configuration aperture.
+		ID: "pxa27x-memory-timing-index", Address: 0x48000030,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "pxa27x-memory-timing-value", Address: 0x48000034,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		// The runtime's width-aware register writer programs this table-selected
+		// control word one accumulated byte at a time through 32-bit stores.
+		ID: "pxa27x-memory-runtime-control", Address: 0x48000044,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "pxa27x-memory-bank-control-0", Address: 0x48000020,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "pxa27x-memory-bank-control-1", Address: 0x48000024,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "pxa27x-memory-bank-control-2", Address: 0x48000028,
+		Width: Width32, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "pxa27x-memory-bank-control-3", Address: 0x4800002c,
 		Width: Width32, ResetValue: 0,
 	}, LatchedRegisterProfile{
 		// The Thumb reset tail asserts this external bootstrap latch before

@@ -44,6 +44,18 @@ const (
 	// cursor and 0x22 GRAM registers, but defines its address window through
 	// packed columns at 0x45 and page start/end at 0x46/0x47.
 	ParallelPanelProtocolIndexedRGB565Window454647
+	// ParallelPanelProtocolIndexedRGB565Window4445 uses packed start/end
+	// bounds at 0x44/0x45 and a packed column/page cursor at 0x21 before
+	// streaming RGB565 pixels through 0x22.
+	ParallelPanelProtocolIndexedRGB565Window4445
+	// ParallelPanelProtocolIndexedRGB565Window210213 uses 0x0200/0x0201 for
+	// the RAM cursor, 0x0202 for GRAM data, and separate 0x0210..0x0213
+	// column/page bounds.
+	ParallelPanelProtocolIndexedRGB565Window210213
+	// ParallelPanelProtocolIndexedRGB565Window36373839 uses separate 0x36/0x37
+	// column end/start and 0x38/0x39 page end/start registers before the common
+	// 0x20/0x21 cursor and 0x22 GRAM stream.
+	ParallelPanelProtocolIndexedRGB565Window36373839
 	// ParallelPanelProtocolPackedRGB565Window424A is the controller variant
 	// whose command FIFO carries an 8-bit register index in the high byte and
 	// its value in the low byte. Registers 0x42..0x4a select the cursor and
@@ -111,6 +123,9 @@ func validateDCSPanelConfig(config DCSPanelConfig) (uint64, error) {
 	if config.Protocol != ParallelPanelProtocolDCS &&
 		config.Protocol != ParallelPanelProtocolIndexedRGB565 &&
 		config.Protocol != ParallelPanelProtocolIndexedRGB565Window454647 &&
+		config.Protocol != ParallelPanelProtocolIndexedRGB565Window4445 &&
+		config.Protocol != ParallelPanelProtocolIndexedRGB565Window210213 &&
+		config.Protocol != ParallelPanelProtocolIndexedRGB565Window36373839 &&
 		config.Protocol != ParallelPanelProtocolPackedRGB565Window424A {
 		return 0, fmt.Errorf("%w: invalid protocol %d", ErrDCSPanel, config.Protocol)
 	}
@@ -303,10 +318,18 @@ func (p *DCSPanelController) writeIndexedData(value uint16) error {
 		}
 		return p.setIndexedColumnWindow(value, false)
 	case 0x0045:
-		if p.protocol != ParallelPanelProtocolIndexedRGB565Window454647 {
+		if p.protocol == ParallelPanelProtocolIndexedRGB565Window4445 {
+			return p.setIndexedPageWindow(value)
+		}
+		if p.protocol == ParallelPanelProtocolIndexedRGB565Window454647 {
+			return p.setIndexedColumnWindow(value, true)
+		}
+		return nil
+	case 0x0044:
+		if p.protocol != ParallelPanelProtocolIndexedRGB565Window4445 {
 			return nil
 		}
-		return p.setIndexedColumnWindow(value, true)
+		return p.setIndexedColumnWindow(value, false)
 	case 0x0004:
 		if p.protocol != ParallelPanelProtocolIndexedRGB565 {
 			return nil
@@ -327,12 +350,99 @@ func (p *DCSPanelController) writeIndexedData(value uint16) error {
 			return nil
 		}
 		return p.setIndexedPageEnd(value)
+	case 0x0036:
+		if p.protocol != ParallelPanelProtocolIndexedRGB565Window36373839 {
+			return nil
+		}
+		return p.setIndexedColumnEnd(value)
+	case 0x0037:
+		if p.protocol != ParallelPanelProtocolIndexedRGB565Window36373839 {
+			return nil
+		}
+		return p.setIndexedColumnStart(value)
+	case 0x0038:
+		if p.protocol != ParallelPanelProtocolIndexedRGB565Window36373839 {
+			return nil
+		}
+		return p.setIndexedPageEnd(value)
+	case 0x0039:
+		if p.protocol != ParallelPanelProtocolIndexedRGB565Window36373839 {
+			return nil
+		}
+		return p.setIndexedPageStart(value)
+	case 0x0200:
+		if p.protocol != ParallelPanelProtocolIndexedRGB565Window210213 {
+			return nil
+		}
+		if value >= p.width {
+			return fmt.Errorf("%w: indexed column cursor %d", ErrDCSPanel, value)
+		}
+		p.cursorColumn = value
+	case 0x0201:
+		if p.protocol != ParallelPanelProtocolIndexedRGB565Window210213 {
+			return nil
+		}
+		if value >= p.height {
+			return fmt.Errorf("%w: indexed page cursor %d", ErrDCSPanel, value)
+		}
+		p.cursorPage = value
+	case 0x0202:
+		if p.protocol != ParallelPanelProtocolIndexedRGB565Window210213 {
+			return nil
+		}
+		return p.writePixel(value)
+	case 0x0210:
+		if p.protocol != ParallelPanelProtocolIndexedRGB565Window210213 {
+			return nil
+		}
+		if value >= p.width {
+			return fmt.Errorf("%w: indexed column start %d", ErrDCSPanel, value)
+		}
+		p.columnStart = value
+	case 0x0211:
+		if p.protocol != ParallelPanelProtocolIndexedRGB565Window210213 {
+			return nil
+		}
+		if value >= p.width {
+			return fmt.Errorf("%w: indexed column end %d", ErrDCSPanel, value)
+		}
+		p.columnEnd = value
+	case 0x0212:
+		if p.protocol != ParallelPanelProtocolIndexedRGB565Window210213 {
+			return nil
+		}
+		if value >= p.height {
+			return fmt.Errorf("%w: indexed page start %d", ErrDCSPanel, value)
+		}
+		p.pageStart = value
+	case 0x0213:
+		if p.protocol != ParallelPanelProtocolIndexedRGB565Window210213 {
+			return nil
+		}
+		if value >= p.height {
+			return fmt.Errorf("%w: indexed page end %d", ErrDCSPanel, value)
+		}
+		p.pageEnd = value
 	case 0x0020:
+		if p.protocol == ParallelPanelProtocolIndexedRGB565Window4445 {
+			// This controller uses register 0x20 as the RAM write mask.
+			return nil
+		}
+		if p.protocol == ParallelPanelProtocolIndexedRGB565Window210213 {
+			// This extended register bank uses 0x0200 for the RAM cursor.
+			return nil
+		}
 		if value >= p.width {
 			return fmt.Errorf("%w: indexed column cursor %d", ErrDCSPanel, value)
 		}
 		p.cursorColumn = value
 	case 0x0021:
+		if p.protocol == ParallelPanelProtocolIndexedRGB565Window4445 {
+			return p.setIndexedPackedCursor(value)
+		}
+		if p.protocol == ParallelPanelProtocolIndexedRGB565Window210213 {
+			return nil
+		}
 		if value >= p.height {
 			return fmt.Errorf("%w: indexed page cursor %d", ErrDCSPanel, value)
 		}
@@ -343,6 +453,38 @@ func (p *DCSPanelController) writeIndexedData(value uint16) error {
 		// Other indexed registers configure controller-specific power, gamma,
 		// timing, and scan direction. They do not alter the common framebuffer.
 	}
+	return nil
+}
+
+func (p *DCSPanelController) setIndexedPageWindow(value uint16) error {
+	start, end := value&0x00ff, value>>8
+	if start > end || end >= p.height {
+		return fmt.Errorf(
+			"%w: indexed page window %d..%d exceeds %dx%d",
+			ErrDCSPanel,
+			start,
+			end,
+			p.width,
+			p.height,
+		)
+	}
+	p.pageStart, p.pageEnd = start, end
+	return nil
+}
+
+func (p *DCSPanelController) setIndexedPackedCursor(value uint16) error {
+	column, page := value&0x00ff, value>>8
+	if column >= p.width || page >= p.height {
+		return fmt.Errorf(
+			"%w: indexed packed cursor %d,%d exceeds %dx%d",
+			ErrDCSPanel,
+			column,
+			page,
+			p.width,
+			p.height,
+		)
+	}
+	p.cursorColumn, p.cursorPage = column, page
 	return nil
 }
 
@@ -373,6 +515,22 @@ func (p *DCSPanelController) setIndexedPageStart(value uint16) error {
 	return nil
 }
 
+func (p *DCSPanelController) setIndexedColumnStart(value uint16) error {
+	if value >= p.width || value > p.columnEnd {
+		return fmt.Errorf("%w: indexed column start %d", ErrDCSPanel, value)
+	}
+	p.columnStart = value
+	return nil
+}
+
+func (p *DCSPanelController) setIndexedColumnEnd(value uint16) error {
+	if value >= p.width || value < p.columnStart {
+		return fmt.Errorf("%w: indexed column end %d", ErrDCSPanel, value)
+	}
+	p.columnEnd = value
+	return nil
+}
+
 func (p *DCSPanelController) setIndexedPageEnd(value uint16) error {
 	if value >= p.height {
 		return fmt.Errorf("%w: indexed page end %d", ErrDCSPanel, value)
@@ -384,6 +542,9 @@ func (p *DCSPanelController) setIndexedPageEnd(value uint16) error {
 func (p *DCSPanelController) isIndexedRGB565() bool {
 	return p.protocol == ParallelPanelProtocolIndexedRGB565 ||
 		p.protocol == ParallelPanelProtocolIndexedRGB565Window454647 ||
+		p.protocol == ParallelPanelProtocolIndexedRGB565Window4445 ||
+		p.protocol == ParallelPanelProtocolIndexedRGB565Window210213 ||
+		p.protocol == ParallelPanelProtocolIndexedRGB565Window36373839 ||
 		p.protocol == ParallelPanelProtocolPackedRGB565Window424A
 }
 
@@ -472,6 +633,9 @@ func (p *DCSPanelController) isMemoryWriteCommand(command uint16) bool {
 		return true
 	}
 	if p.isIndexedRGB565() {
+		if p.protocol == ParallelPanelProtocolIndexedRGB565Window210213 {
+			return command == 0x0202
+		}
 		return command == 0x0022
 	}
 	return command == dcsWriteMemoryStart || command == dcsWriteMemoryContinue
