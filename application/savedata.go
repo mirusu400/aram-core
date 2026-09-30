@@ -15,8 +15,9 @@ const saveDataMagic = "ARAMSAVE"
 
 // saveDataEnvelope is the on-disk form of a title's restart-persistent storage.
 type saveDataEnvelope struct {
-	Magic   string
-	Storage shared.StoragePersistenceState
+	Magic       string
+	Storage     shared.StoragePersistenceState
+	JavaStorage *shared.StoragePersistenceState
 }
 
 // persistentStorage returns the active backend's storage service, or nil when
@@ -55,9 +56,16 @@ func (m *Machine) ExportSaveData() ([]byte, error) {
 		Magic:   saveDataMagic,
 		Storage: storage.ExportPersistence(),
 	}
+	if m.raptor != nil {
+		envelope.JavaStorage = m.raptor.ExportJavaStorage()
+	}
 	if len(envelope.Storage.Files) == 0 &&
 		len(envelope.Storage.Directories) == 0 &&
-		len(envelope.Storage.RecordStores) == 0 {
+		len(envelope.Storage.RecordStores) == 0 &&
+		(envelope.JavaStorage == nil ||
+			len(envelope.JavaStorage.Files) == 0 &&
+				len(envelope.JavaStorage.Directories) == 0 &&
+				len(envelope.JavaStorage.RecordStores) == 0) {
 		return nil, nil
 	}
 	var buffer bytes.Buffer
@@ -96,7 +104,13 @@ func (m *Machine) ImportSaveData(data []byte) error {
 	// Importing replaces every record store and mints fresh service IDs, so the
 	// backend's own database bookkeeping is stale until it reopens the restored
 	// stores by name.
-	return m.adoptPersistedStorage()
+	if err := m.adoptPersistedStorage(); err != nil {
+		return err
+	}
+	if m.raptor != nil && envelope.JavaStorage != nil {
+		return m.raptor.ImportJavaStorage(*envelope.JavaStorage)
+	}
+	return nil
 }
 
 // adoptPersistedStorage lets the active backend rebuild compatibility mirrors

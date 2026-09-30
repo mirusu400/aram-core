@@ -469,6 +469,10 @@ func newSamsungQualcommMachine(
 	nandConfig.Capacity = board.NANDSize
 	nandConfig.FactoryBadBlocks = append([]uint32(nil), board.NANDFactoryBadBlocks...)
 	nandConfig.ReportErasedECCCodewords = board.NANDReportsErasedECCCodewords
+	nandConfig.RegisterResets = append(
+		[]system.QualcommNANDRegisterReset(nil),
+		board.NANDRegisterResets...,
+	)
 	if nandConfig.PageSize != flashImage.PageSize() ||
 		nandConfig.EraseBlockSize != flashImage.EraseBlockSize() {
 		return fail(fmt.Errorf("%s NAND geometry does not match normalized flash", firmwareProfile.Model))
@@ -590,9 +594,12 @@ func newSamsungQualcommMachine(
 		return fail(fmt.Errorf("create %s secondary clock: %w", firmwareProfile.Model, err))
 	}
 	primaryClock, err := system.NewQualcommPrimaryClockControl(system.QualcommPrimaryClockConfig{
-		Status:          board.PrimaryClockStatus,
-		InputMask:       board.PrimaryClockInputMask,
-		WritableOffsets: board.PrimaryClockWritableOffsets,
+		Status:              board.PrimaryClockStatus,
+		InputMask:           board.PrimaryClockInputMask,
+		WritableOffsets:     board.PrimaryClockWritableOffsets,
+		ReadOnlyRegisters:   board.PrimaryClockReadOnlyRegisters,
+		InterruptRegisters:  board.PrimaryClockInterruptRegisters,
+		InterruptController: legacyInterrupts,
 	})
 	if err != nil {
 		return fail(fmt.Errorf("create %s primary clock: %w", firmwareProfile.Model, err))
@@ -1122,7 +1129,11 @@ func mapSamsungQualcommBoard(
 			return fmt.Errorf("map %s device %q: %w", board.ID, mapping.name, err)
 		}
 	}
-	if board.PanelPorts == nil {
+	if board.PanelSelectorPorts != nil {
+		if err := mapSelectorPanelPorts(bus, "parallel-panel", *board.PanelSelectorPorts, panel); err != nil {
+			return fmt.Errorf("map %s selector panel ports: %w", board.ID, err)
+		}
+	} else if board.PanelPorts == nil {
 		if err := bus.MapMMIO(
 			"parallel-panel",
 			0x20000000,
@@ -1191,6 +1202,36 @@ func mapSparsePanelPorts(
 		ports.DataAddress,
 		uint32(system.Width16),
 		dataPort,
+	)
+}
+
+func mapSelectorPanelPorts(
+	bus *system.Bus,
+	name string,
+	ports system.ParallelPanelSelectorPortProfile,
+	panel *system.ParallelPanelInterface,
+) error {
+	selectorPort, transferPort, err := system.NewParallelPanelSelectorPorts(
+		panel,
+		ports.CommandSelect,
+		ports.DataSelect,
+	)
+	if err != nil {
+		return fmt.Errorf("create selector transport: %w", err)
+	}
+	if err := bus.MapMMIO(
+		name+"-selector",
+		ports.SelectorAddress,
+		uint32(system.Width16),
+		selectorPort,
+	); err != nil {
+		return err
+	}
+	return bus.MapMMIO(
+		name+"-transfer",
+		ports.TransferAddress,
+		uint32(system.Width16),
+		transferPort,
 	)
 }
 

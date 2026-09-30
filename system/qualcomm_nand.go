@@ -40,9 +40,19 @@ const (
 		qualcommNANDStatusOperationError
 	qualcommNANDPreviousStateVersion   = 3
 	qualcommNANDFullBufferStateVersion = 4
-	qualcommNANDStateVersion           = 5
+	qualcommNANDMediaStateVersion      = 5
+	qualcommNANDStateVersion           = 6
 	qualcommNANDLegacyStateVersion     = 2
 )
+
+// QualcommNANDRegisterReset adds a board-evidenced controller latch in the
+// otherwise sparse gap between the SRAM buffer and the standard command bank.
+// It is deliberately profile-scoped so one handset cannot silently broaden
+// every Qualcomm NAND controller.
+type QualcommNANDRegisterReset struct {
+	Offset uint32
+	Value  uint32
+}
 
 type QualcommNANDConfig struct {
 	PageSize         uint32
@@ -61,6 +71,7 @@ type QualcommNANDConfig struct {
 	CommandValidity          uint32
 	ReadID                   uint32
 	Ready                    *StatusSignal
+	RegisterResets           []QualcommNANDRegisterReset
 }
 
 // NANDSpareStorage exposes page-aligned NAND spare/OOB media independently
@@ -145,6 +156,9 @@ type QualcommNAND struct {
 	pageData                 []byte
 	spareData                []byte
 	sparePages               map[uint64][]byte
+	registerOffsets          []uint32
+	registerResets           map[uint32]uint32
+	registers                map[uint32]uint32
 	latchedPage              uint64
 	pageLoaded               bool
 }
@@ -164,6 +178,9 @@ func NewQualcommNAND(storage ReadOnlyStorage, config QualcommNANDConfig) (*Qualc
 		config.CommandValidity == 0 || config.CommandValidity&^uint32(0x7f) != 0 ||
 		config.ReadID == 0 || config.Ready == nil {
 		return nil, ErrInvalidQualcommNAND
+	}
+	if err := validateQualcommNANDRegisterResets(config.RegisterResets); err != nil {
+		return nil, err
 	}
 	capacity := config.Capacity
 	if capacity == 0 {
@@ -196,6 +213,13 @@ func NewQualcommNAND(storage ReadOnlyStorage, config QualcommNANDConfig) (*Qualc
 		}
 		badBlocks[block] = struct{}{}
 	}
+	registerOffsets := make([]uint32, 0, len(config.RegisterResets))
+	registerResets := make(map[uint32]uint32, len(config.RegisterResets))
+	for _, register := range config.RegisterResets {
+		registerOffsets = append(registerOffsets, register.Offset)
+		registerResets[register.Offset] = register.Value
+	}
+	slices.Sort(registerOffsets)
 	device := &QualcommNAND{
 		storage: storage, spareStorage: config.Spare,
 		pageSize: config.PageSize, capacity: capacity, spareSize: config.SpareSize,
@@ -211,6 +235,8 @@ func NewQualcommNAND(storage ReadOnlyStorage, config QualcommNANDConfig) (*Qualc
 		pageData:                 make([]byte, config.PageSize),
 		spareData:                make([]byte, sparePageSize),
 		sparePages:               make(map[uint64][]byte),
+		registerOffsets:          registerOffsets,
+		registerResets:           registerResets,
 	}
 	if err := device.Reset(); err != nil {
 		return nil, err
@@ -227,6 +253,10 @@ func (n *QualcommNAND) Reset() error {
 	n.deviceConfig1 = n.initialDeviceConfig1
 	n.commandValidity = n.initialCommandValidity
 	n.readData = 0xffff
+	n.registers = make(map[uint32]uint32, len(n.registerOffsets))
+	for _, offset := range n.registerOffsets {
+		n.registers[offset] = n.registerResets[offset]
+	}
 	for index := range n.data {
 		n.data[index] = 0xff
 	}
@@ -247,6 +277,9 @@ func (n *QualcommNAND) Read(offset uint32, width Width) (uint32, error) {
 		return n.address, nil
 	}
 	if width == Width32 {
+		if value, ok := n.registers[offset]; ok {
+			return value, nil
+		}
 		switch offset {
 		case qualcommNANDCommandValidityOffset:
 			return n.commandValidity, nil
@@ -273,6 +306,10 @@ func (n *QualcommNAND) Write(offset uint32, width Width, value uint32) error {
 	}
 	if width != Width32 {
 		return fmt.Errorf("%w: write%d at 0x%x", ErrQualcommNANDMMIO, width*8, offset)
+	}
+	if _, ok := n.registers[offset]; ok {
+		n.registers[offset] = value
+		return nil
 	}
 	switch offset {
 	case qualcommNANDAddressOffset:
@@ -382,7 +419,8 @@ func (n *QualcommNAND) Write(offset uint32, width Width, value uint32) error {
 func (n *QualcommNAND) SaveState() ([]byte, error) {
 	const scalarCount = 11
 	dataOffset := 8 + scalarCount*4
-	mediaOffset := dataOffset + len(n.data)
+	registerOffset := dataOffset + len(n.data)
+	mediaOffset := registerOffset + 4 + len(n.registerOffsets)*8
 	pages := make([]uint64, 0, len(n.sparePages))
 	for page := range n.sparePages {
 		pages = append(pages, page)
@@ -405,8 +443,15 @@ func (n *QualcommNAND) SaveState() ([]byte, error) {
 		binary.LittleEndian.PutUint32(output[8+index*4:], value)
 	}
 	copy(output[dataOffset:], n.data[:])
+	binary.LittleEndian.PutUint32(output[registerOffset:], uint32(len(n.registerOffsets)))
+	offset := registerOffset + 4
+	for _, registerOffset := range n.registerOffsets {
+		binary.LittleEndian.PutUint32(output[offset:], registerOffset)
+		binary.LittleEndian.PutUint32(output[offset+4:], n.registers[registerOffset])
+		offset += 8
+	}
 	binary.LittleEndian.PutUint32(output[mediaOffset:], uint32(len(pages)))
-	offset := mediaOffset + 4
+	offset = mediaOffset + 4
 	for _, page := range pages {
 		stored := n.sparePages[page]
 		if len(stored) != int(n.sparePageSize) {
@@ -432,12 +477,39 @@ func (n *QualcommNAND) LoadState(state []byte) error {
 		dataSize = qualcommNANDCodewordDataSize
 	} else if version != qualcommNANDPreviousStateVersion &&
 		version != qualcommNANDFullBufferStateVersion &&
+		version != qualcommNANDMediaStateVersion &&
 		version != qualcommNANDStateVersion {
 		return ErrInvalidState
 	}
 	mediaOffset := dataOffset + dataSize
+	registers := make(map[uint32]uint32, len(n.registerOffsets))
+	if version == qualcommNANDStateVersion {
+		if len(state) < mediaOffset+4 {
+			return ErrInvalidState
+		}
+		count := binary.LittleEndian.Uint32(state[mediaOffset:])
+		if count != uint32(len(n.registerOffsets)) ||
+			uint64(count)*8 > uint64(len(state)-(mediaOffset+4)) {
+			return ErrInvalidState
+		}
+		mediaOffset += 4
+		for index := uint32(0); index < count; index++ {
+			offset := binary.LittleEndian.Uint32(state[mediaOffset:])
+			value := binary.LittleEndian.Uint32(state[mediaOffset+4:])
+			mediaOffset += 8
+			if _, allowed := n.registerResets[offset]; !allowed {
+				return ErrInvalidState
+			}
+			if _, duplicate := registers[offset]; duplicate {
+				return ErrInvalidState
+			}
+			registers[offset] = value
+		}
+	} else if len(n.registerOffsets) != 0 {
+		return ErrInvalidState
+	}
 	sparePages := make(map[uint64][]byte)
-	if version != qualcommNANDStateVersion {
+	if version < qualcommNANDMediaStateVersion {
 		if len(state) != mediaOffset {
 			return ErrInvalidState
 		}
@@ -497,10 +569,31 @@ func (n *QualcommNAND) LoadState(state []byte) error {
 	n.readData = readData
 	n.pageLoaded = false
 	n.sparePages = sparePages
+	n.registers = registers
 	for index := range n.data {
 		n.data[index] = 0xff
 	}
 	copy(n.data[:dataSize], state[dataOffset:])
+	return nil
+}
+
+func validateQualcommNANDRegisterResets(registers []QualcommNANDRegisterReset) error {
+	reserved := map[uint32]struct{}{
+		qualcommNANDAddressOffset: {}, qualcommNANDCommandOffset: {},
+		qualcommNANDStatusOffset: {}, qualcommNANDCommandValidityOffset: {},
+		qualcommNANDReadIDOffset: {}, qualcommNANDReadDataOffset: {},
+		qualcommNANDDeviceConfig0Offset: {}, qualcommNANDDeviceConfig1Offset: {},
+	}
+	for _, register := range registers {
+		if register.Offset < qualcommNANDBufferSize || register.Offset%4 != 0 ||
+			register.Offset >= QualcommNANDWindowSize {
+			return ErrInvalidQualcommNAND
+		}
+		if _, duplicate := reserved[register.Offset]; duplicate {
+			return ErrInvalidQualcommNAND
+		}
+		reserved[register.Offset] = struct{}{}
+	}
 	return nil
 }
 

@@ -361,6 +361,23 @@ func (d *QualcommInterruptController) PulseSource(source uint8) error {
 	return d.updateOutputs()
 }
 
+func (d *QualcommInterruptController) sourcePending(source uint8) bool {
+	if source >= 64 {
+		return false
+	}
+	return d.status[source/32]&(uint32(1)<<(source%32)) != 0
+}
+
+func (d *QualcommInterruptController) acknowledgeSource(source uint8) error {
+	if source >= 64 {
+		return fmt.Errorf("invalid Qualcomm interrupt source %d", source)
+	}
+	bank := source / 32
+	mask := uint32(1) << (source % 32)
+	d.status[bank] &^= mask &^ d.level[bank]
+	return d.updateOutputs()
+}
+
 func (d *QualcommInterruptController) updateOutputs() error {
 	if d.sink == nil {
 		return nil

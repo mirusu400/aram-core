@@ -123,3 +123,87 @@ func TestQualcommPrimaryClockProfilesAdditionalWritableOffsets(t *testing.T) {
 		}
 	}
 }
+
+func TestQualcommPrimaryClockProfilesReadOnlyStatusWords(t *testing.T) {
+	config := QualcommPrimaryClockConfig{
+		ReadOnlyRegisters: []QualcommPrimaryClockReadOnlyRegister{{
+			Offset: 0x0104,
+			Value:  0x55aa33cc,
+		}},
+	}
+	device, err := NewQualcommPrimaryClockControl(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := device.Read(0x0104, Width32)
+	if err != nil || value != 0x55aa33cc {
+		t.Fatalf("profiled primary-clock status = %#x error %v", value, err)
+	}
+	if err := device.Write(0x0104, Width32, 0); !errors.Is(err, ErrQualcommPrimaryClockMMIO) {
+		t.Fatalf("profiled primary-clock status write error = %v", err)
+	}
+	for _, invalid := range [][]QualcommPrimaryClockReadOnlyRegister{
+		{{Offset: 0x0104}, {Offset: 0x0104}},
+		{{Offset: 0x0574}},
+		{{Offset: qualcommPrimaryGPIOInputOffset}},
+		{{Offset: 2}},
+		{{Offset: QualcommPrimaryClockWindowSize}},
+	} {
+		if _, err := NewQualcommPrimaryClockControl(QualcommPrimaryClockConfig{
+			ReadOnlyRegisters: invalid,
+		}); err == nil {
+			t.Fatalf("accepted invalid primary-clock read-only registers %#v", invalid)
+		}
+	}
+}
+
+func TestQualcommPrimaryClockRemapsAndAcknowledgesInterruptSources(t *testing.T) {
+	interrupts := NewQualcommInterruptController(nil)
+	config := QualcommPrimaryClockConfig{
+		WritableOffsets: []uint32{0x024c},
+		InterruptRegisters: []QualcommPrimaryClockInterruptRegister{{
+			StatusOffset: 0x0244,
+			ClearOffset:  0x024c,
+			Bits: []QualcommPrimaryClockInterruptBit{
+				{Bit: 1, Source: 45},
+				{Bit: 2, Source: 46},
+			},
+		}},
+		InterruptController: interrupts,
+	}
+	device, err := NewQualcommPrimaryClockControl(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := interrupts.PulseSource(45); err != nil {
+		t.Fatal(err)
+	}
+	if err := interrupts.PulseSource(46); err != nil {
+		t.Fatal(err)
+	}
+	if value, err := device.Read(0x0244, Width32); err != nil || value != 6 {
+		t.Fatalf("remapped interrupt status = %#x error %v", value, err)
+	}
+	if err := device.Write(0x024c, Width32, 2); err != nil {
+		t.Fatal(err)
+	}
+	if value, _ := device.Read(0x0244, Width32); value != 4 {
+		t.Fatalf("partially acknowledged interrupt status = %#x", value)
+	}
+	if err := device.Write(0x024c, Width32, 4); err != nil {
+		t.Fatal(err)
+	}
+	if value, _ := device.Read(0x0244, Width32); value != 0 {
+		t.Fatalf("acknowledged interrupt status = %#x", value)
+	}
+
+	config.InterruptController = nil
+	if _, err := NewQualcommPrimaryClockControl(config); err == nil {
+		t.Fatal("accepted interrupt mapping without a controller")
+	}
+	config.InterruptController = interrupts
+	config.InterruptRegisters[0].StatusOffset = 0x024c
+	if _, err := NewQualcommPrimaryClockControl(config); err == nil {
+		t.Fatal("accepted writable interrupt status offset")
+	}
+}

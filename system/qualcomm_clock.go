@@ -24,9 +24,35 @@ type QualcommPrimaryClockConfig struct {
 	// at offset 0x588. A set bit is a high line. InputMask defaults to the
 	// original four-line compatibility aperture when omitted; board profiles
 	// can expose additional evidenced lines such as SCH-W830's power-key input.
-	Status          uint32
-	InputMask       uint32
-	WritableOffsets []uint32
+	Status              uint32
+	InputMask           uint32
+	WritableOffsets     []uint32
+	ReadOnlyRegisters   []QualcommPrimaryClockReadOnlyRegister
+	InterruptRegisters  []QualcommPrimaryClockInterruptRegister
+	InterruptController *QualcommInterruptController
+}
+
+// QualcommPrimaryClockReadOnlyRegister is a board-wired status word in the
+// primary clock/GPIO aperture. Profiles opt into exact offsets without making
+// them writable or widening the controller for unrelated handsets.
+type QualcommPrimaryClockReadOnlyRegister struct {
+	Offset uint32
+	Value  uint32
+}
+
+// QualcommPrimaryClockInterruptBit maps one controller source onto the bit
+// position exposed by a companion status/acknowledge register pair.
+type QualcommPrimaryClockInterruptBit struct {
+	Bit    uint8
+	Source uint8
+}
+
+// QualcommPrimaryClockInterruptRegister describes a board-specific remapped
+// view of legacy interrupt sources inside the primary clock/control aperture.
+type QualcommPrimaryClockInterruptRegister struct {
+	StatusOffset uint32
+	ClearOffset  uint32
+	Bits         []QualcommPrimaryClockInterruptBit
 }
 
 // QualcommPrimaryClockControl models the bounded primary control window used
@@ -34,12 +60,16 @@ type QualcommPrimaryClockConfig struct {
 // offset 0x588 and only the writable registers evidenced for a board profile;
 // unrelated registers remain explicit faults.
 type QualcommPrimaryClockControl struct {
-	inputMask       uint32
-	resetStatus     uint32
-	status          uint32
-	writableOffsets []uint32
-	registers       map[uint32]uint32
-	keypad          *QualcommGPIOKeypad
+	inputMask                uint32
+	resetStatus              uint32
+	status                   uint32
+	writableOffsets          []uint32
+	registers                map[uint32]uint32
+	readOnlyRegisters        map[uint32]uint32
+	interruptStatusRegisters map[uint32][]QualcommPrimaryClockInterruptBit
+	interruptClearRegisters  map[uint32][]QualcommPrimaryClockInterruptBit
+	interruptController      *QualcommInterruptController
+	keypad                   *QualcommGPIOKeypad
 }
 
 func NewQualcommPrimaryClockControl(config QualcommPrimaryClockConfig) (*QualcommPrimaryClockControl, error) {
@@ -53,11 +83,45 @@ func NewQualcommPrimaryClockControl(config QualcommPrimaryClockConfig) (*Qualcom
 	if err := validateQualcommPrimaryClockWritableOffsets(config.WritableOffsets); err != nil {
 		return nil, fmt.Errorf("invalid Qualcomm primary-clock writable offsets: %w", err)
 	}
+	if err := validateQualcommPrimaryClockReadOnlyRegisters(
+		config.WritableOffsets,
+		config.ReadOnlyRegisters,
+	); err != nil {
+		return nil, fmt.Errorf("invalid Qualcomm primary-clock read-only registers: %w", err)
+	}
+	if len(config.InterruptRegisters) != 0 && config.InterruptController == nil {
+		return nil, fmt.Errorf("invalid Qualcomm primary-clock interrupt registers: missing interrupt controller")
+	}
+	if err := validateQualcommPrimaryClockInterruptRegisters(
+		config.WritableOffsets,
+		config.ReadOnlyRegisters,
+		config.InterruptRegisters,
+	); err != nil {
+		return nil, fmt.Errorf("invalid Qualcomm primary-clock interrupt registers: %w", err)
+	}
+	readOnlyRegisters := make(map[uint32]uint32, len(config.ReadOnlyRegisters))
+	for _, register := range config.ReadOnlyRegisters {
+		readOnlyRegisters[register.Offset] = register.Value
+	}
+	interruptStatusRegisters := make(map[uint32][]QualcommPrimaryClockInterruptBit, len(config.InterruptRegisters))
+	interruptClearRegisters := make(map[uint32][]QualcommPrimaryClockInterruptBit, len(config.InterruptRegisters))
+	for _, register := range config.InterruptRegisters {
+		interruptStatusRegisters[register.StatusOffset] = append(
+			[]QualcommPrimaryClockInterruptBit(nil), register.Bits...,
+		)
+		interruptClearRegisters[register.ClearOffset] = append(
+			interruptClearRegisters[register.ClearOffset], register.Bits...,
+		)
+	}
 	device := &QualcommPrimaryClockControl{
-		inputMask:       inputMask,
-		resetStatus:     config.Status,
-		status:          config.Status,
-		writableOffsets: mergedQualcommPrimaryClockWritableOffsets(config.WritableOffsets),
+		inputMask:                inputMask,
+		resetStatus:              config.Status,
+		status:                   config.Status,
+		writableOffsets:          mergedQualcommPrimaryClockWritableOffsets(config.WritableOffsets),
+		readOnlyRegisters:        readOnlyRegisters,
+		interruptStatusRegisters: interruptStatusRegisters,
+		interruptClearRegisters:  interruptClearRegisters,
+		interruptController:      config.InterruptController,
 	}
 	_ = device.Reset()
 	return device, nil
@@ -83,6 +147,18 @@ func (d *QualcommPrimaryClockControl) Read(offset uint32, width Width) (uint32, 
 		if value, handled := d.keypad.readPrimaryGPIORegister(offset); handled {
 			return value, nil
 		}
+	}
+	if bits, ok := d.interruptStatusRegisters[offset]; ok && width == Width32 {
+		var value uint32
+		for _, bit := range bits {
+			if d.interruptController.sourcePending(bit.Source) {
+				value |= uint32(1) << bit.Bit
+			}
+		}
+		return value, nil
+	}
+	if value, ok := d.readOnlyRegisters[offset]; ok && width == Width32 {
+		return value, nil
 	}
 	if value, ok := d.registers[offset]; ok && width == Width32 {
 		return value, nil
@@ -144,6 +220,13 @@ func (d *QualcommPrimaryClockControl) Write(offset uint32, width Width, value ui
 	}
 	if _, ok := d.registers[offset]; ok && width == Width32 {
 		d.registers[offset] = value
+		for _, bit := range d.interruptClearRegisters[offset] {
+			if value&(uint32(1)<<bit.Bit) != 0 {
+				if err := d.interruptController.acknowledgeSource(bit.Source); err != nil {
+					return err
+				}
+			}
+		}
 		return nil
 	}
 	return fmt.Errorf(
@@ -288,6 +371,76 @@ func validateQualcommPrimaryClockWritableOffsets(offsets []uint32) error {
 			return fmt.Errorf("duplicate offset 0x%x: %w", offset, ErrInvalidRegion)
 		}
 		seen[offset] = struct{}{}
+	}
+	return nil
+}
+
+func validateQualcommPrimaryClockReadOnlyRegisters(
+	writableOffsets []uint32,
+	registers []QualcommPrimaryClockReadOnlyRegister,
+) error {
+	seen := make(map[uint32]struct{},
+		len(qualcommPrimaryClockWritableOffsets)+len(writableOffsets)+len(registers)+1)
+	seen[qualcommPrimaryGPIOInputOffset] = struct{}{}
+	for _, offset := range mergedQualcommPrimaryClockWritableOffsets(writableOffsets) {
+		seen[offset] = struct{}{}
+	}
+	for _, register := range registers {
+		if register.Offset%4 != 0 || register.Offset >= QualcommPrimaryClockWindowSize {
+			return fmt.Errorf("offset 0x%x: %w", register.Offset, ErrInvalidRegion)
+		}
+		if _, duplicate := seen[register.Offset]; duplicate {
+			return fmt.Errorf("duplicate offset 0x%x: %w", register.Offset, ErrInvalidRegion)
+		}
+		seen[register.Offset] = struct{}{}
+	}
+	return nil
+}
+
+func validateQualcommPrimaryClockInterruptRegisters(
+	writableOffsets []uint32,
+	readOnlyRegisters []QualcommPrimaryClockReadOnlyRegister,
+	registers []QualcommPrimaryClockInterruptRegister,
+) error {
+	writable := make(map[uint32]struct{}, len(qualcommPrimaryClockWritableOffsets)+len(writableOffsets))
+	for _, offset := range mergedQualcommPrimaryClockWritableOffsets(writableOffsets) {
+		writable[offset] = struct{}{}
+	}
+	statusOffsets := make(map[uint32]struct{}, len(readOnlyRegisters)+len(registers)+1)
+	statusOffsets[qualcommPrimaryGPIOInputOffset] = struct{}{}
+	for _, register := range readOnlyRegisters {
+		statusOffsets[register.Offset] = struct{}{}
+	}
+	for _, register := range registers {
+		if register.StatusOffset%4 != 0 || register.StatusOffset >= QualcommPrimaryClockWindowSize ||
+			register.StatusOffset == register.ClearOffset || len(register.Bits) == 0 {
+			return ErrInvalidRegion
+		}
+		if _, duplicate := statusOffsets[register.StatusOffset]; duplicate {
+			return fmt.Errorf("duplicate status offset 0x%x: %w", register.StatusOffset, ErrInvalidRegion)
+		}
+		if _, overlap := writable[register.StatusOffset]; overlap {
+			return fmt.Errorf("writable status offset 0x%x: %w", register.StatusOffset, ErrInvalidRegion)
+		}
+		if _, allowed := writable[register.ClearOffset]; !allowed {
+			return fmt.Errorf("unwritable clear offset 0x%x: %w", register.ClearOffset, ErrInvalidRegion)
+		}
+		statusOffsets[register.StatusOffset] = struct{}{}
+		seenBits := make(map[uint8]struct{}, len(register.Bits))
+		seenSources := make(map[uint8]struct{}, len(register.Bits))
+		for _, bit := range register.Bits {
+			if bit.Bit >= 32 || bit.Source >= 64 {
+				return ErrInvalidRegion
+			}
+			if _, duplicate := seenBits[bit.Bit]; duplicate {
+				return fmt.Errorf("duplicate status bit %d: %w", bit.Bit, ErrInvalidRegion)
+			}
+			if _, duplicate := seenSources[bit.Source]; duplicate {
+				return fmt.Errorf("duplicate interrupt source %d: %w", bit.Source, ErrInvalidRegion)
+			}
+			seenBits[bit.Bit] = struct{}{}
+			seenSources[bit.Source] = struct{}{}
+		}
 	}
 	return nil
 }

@@ -327,6 +327,9 @@ func RestoreState(r *Runtime, backend cpu.Backend, state *SavedState) error {
 		if err := restoreJavaState(r.Java, *state.java); err != nil {
 			return err
 		}
+		if err := r.restoreVectorClearSlot(r.Java); err != nil {
+			return err
+		}
 	}
 	return nil
 }

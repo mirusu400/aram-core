@@ -100,6 +100,61 @@ func TestQualcommNANDReportsReadFailureAndRejectsUnknownCommand(t *testing.T) {
 	}
 }
 
+func TestQualcommNANDProfilesControllerLatches(t *testing.T) {
+	config := Qualcomm2K8BitNANDConfig(0xecaa, NewStatusSignal())
+	config.RegisterResets = []QualcommNANDRegisterReset{{Offset: 0x0240, Value: 7}}
+	device, err := NewQualcommNAND(
+		byteStorage{data: bytes.Repeat([]byte{0xff}, 0x800)},
+		config,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := device.Read(0x0240, Width32)
+	if err != nil || value != 7 {
+		t.Fatalf("profiled NAND register reset = %#x error %v", value, err)
+	}
+	if err := device.Write(0x0240, Width32, 3); err != nil {
+		t.Fatal(err)
+	}
+	state, err := device.SaveState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := device.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	value, _ = device.Read(0x0240, Width32)
+	if value != 7 {
+		t.Fatalf("reset profiled NAND register = %#x", value)
+	}
+	if err := device.LoadState(state); err != nil {
+		t.Fatal(err)
+	}
+	value, _ = device.Read(0x0240, Width32)
+	if value != 3 {
+		t.Fatalf("restored profiled NAND register = %#x", value)
+	}
+	for _, offset := range []uint32{
+		0, qualcommNANDBufferSize - 1, qualcommNANDAddressOffset, QualcommNANDWindowSize,
+	} {
+		invalid := Qualcomm2K8BitNANDConfig(0xecaa, NewStatusSignal())
+		invalid.RegisterResets = []QualcommNANDRegisterReset{{Offset: offset}}
+		if _, err := NewQualcommNAND(
+			byteStorage{data: bytes.Repeat([]byte{0xff}, 0x800)}, invalid,
+		); !errors.Is(err, ErrInvalidQualcommNAND) {
+			t.Fatalf("profiled NAND register offset %#x error = %v", offset, err)
+		}
+	}
+	duplicate := Qualcomm2K8BitNANDConfig(0xecaa, NewStatusSignal())
+	duplicate.RegisterResets = []QualcommNANDRegisterReset{{Offset: 0x0240}, {Offset: 0x0240}}
+	if _, err := NewQualcommNAND(
+		byteStorage{data: bytes.Repeat([]byte{0xff}, 0x800)}, duplicate,
+	); !errors.Is(err, ErrInvalidQualcommNAND) {
+		t.Fatalf("duplicate profiled NAND register error = %v", err)
+	}
+}
+
 func TestQualcommNANDErasesWritableStorageAndReportsWriteEnable(t *testing.T) {
 	base := byteStorage{data: bytes.Repeat([]byte{0}, 2*qualcomm2K8BitNANDEraseBlockSize)}
 	flash, err := NewCOWFlash(base, qualcomm2K8BitNANDEraseBlockSize, "nand-erase-test")

@@ -57,6 +57,22 @@ type ParallelPanelPort struct {
 	data  bool
 }
 
+// ParallelPanelSelectorPort models a two-register panel transport where the
+// first halfword selects command (usually zero) or data (usually one), and a
+// write to the second halfword performs the selected transfer. The selector
+// and transfer aliases share one state object and one logical panel transport.
+type ParallelPanelSelectorPort struct {
+	transport *parallelPanelSelectorTransport
+	transfer  bool
+}
+
+type parallelPanelSelectorTransport struct {
+	panel         *ParallelPanelInterface
+	commandSelect uint16
+	dataSelect    uint16
+	selected      uint16
+}
+
 func NewParallelPanelInterface() *ParallelPanelInterface {
 	return &ParallelPanelInterface{}
 }
@@ -80,6 +96,24 @@ func NewParallelPanelCommandPort(panel *ParallelPanelInterface) (*ParallelPanelP
 
 func NewParallelPanelDataPort(panel *ParallelPanelInterface) (*ParallelPanelPort, error) {
 	return newParallelPanelPort(panel, true)
+}
+
+// NewParallelPanelSelectorPorts creates the paired selector and transfer
+// aliases used by indirect external-bus panel interfaces.
+func NewParallelPanelSelectorPorts(
+	panel *ParallelPanelInterface,
+	commandSelect uint16,
+	dataSelect uint16,
+) (*ParallelPanelSelectorPort, *ParallelPanelSelectorPort, error) {
+	if panel == nil || commandSelect == dataSelect {
+		return nil, nil, fmt.Errorf("invalid parallel-panel selector transport")
+	}
+	transport := &parallelPanelSelectorTransport{
+		panel: panel, commandSelect: commandSelect, dataSelect: dataSelect,
+		selected: commandSelect,
+	}
+	return &ParallelPanelSelectorPort{transport: transport},
+		&ParallelPanelSelectorPort{transport: transport, transfer: true}, nil
 }
 
 func newParallelPanelPort(panel *ParallelPanelInterface, data bool) (*ParallelPanelPort, error) {
@@ -275,8 +309,97 @@ func (p *ParallelPanelPort) LoadState(state []byte) error {
 	return p.panel.LoadState(state[9:])
 }
 
+func (p *ParallelPanelSelectorPort) Reset() error {
+	if p.transfer {
+		return nil
+	}
+	p.transport.selected = p.transport.commandSelect
+	return p.transport.panel.Reset()
+}
+
+func (p *ParallelPanelSelectorPort) Read(offset uint32, width Width) (uint32, error) {
+	return 0, fmt.Errorf(
+		"%w: read%d at selector-port offset 0x%x",
+		ErrParallelPanelMMIO,
+		width*8,
+		offset,
+	)
+}
+
+func (p *ParallelPanelSelectorPort) Write(offset uint32, width Width, value uint32) error {
+	if offset != 0 || width != Width16 || value > 0xffff {
+		return fmt.Errorf(
+			"%w: write%d value 0x%x at selector-port offset 0x%x",
+			ErrParallelPanelMMIO,
+			width*8,
+			value,
+			offset,
+		)
+	}
+	if !p.transfer {
+		selected := uint16(value)
+		if selected != p.transport.commandSelect && selected != p.transport.dataSelect {
+			return fmt.Errorf("%w: unsupported panel selector 0x%x", ErrParallelPanelMMIO, value)
+		}
+		p.transport.selected = selected
+		return nil
+	}
+	panelOffset := uint32(0)
+	if p.transport.selected == p.transport.dataSelect {
+		panelOffset = ParallelPanelDataOffset
+	}
+	return p.transport.panel.Write(panelOffset, width, value)
+}
+
+func (p *ParallelPanelSelectorPort) SaveState() ([]byte, error) {
+	header := make([]byte, 16)
+	copy(header, "PPSL")
+	binary.LittleEndian.PutUint32(header[4:8], 1)
+	binary.LittleEndian.PutUint16(header[10:12], p.transport.commandSelect)
+	binary.LittleEndian.PutUint16(header[12:14], p.transport.dataSelect)
+	if p.transfer {
+		header[8] = 1
+		return header, nil
+	}
+	binary.LittleEndian.PutUint16(header[14:16], p.transport.selected)
+	state, err := p.transport.panel.SaveState()
+	if err != nil {
+		return nil, err
+	}
+	return append(header, state...), nil
+}
+
+func (p *ParallelPanelSelectorPort) LoadState(state []byte) error {
+	wantTransfer := byte(0)
+	if p.transfer {
+		wantTransfer = 1
+	}
+	if len(state) < 16 || string(state[:4]) != "PPSL" ||
+		binary.LittleEndian.Uint32(state[4:8]) != 1 || state[8] != wantTransfer || state[9] != 0 ||
+		binary.LittleEndian.Uint16(state[10:12]) != p.transport.commandSelect ||
+		binary.LittleEndian.Uint16(state[12:14]) != p.transport.dataSelect {
+		return ErrInvalidState
+	}
+	if p.transfer {
+		if len(state) != 16 || binary.LittleEndian.Uint16(state[14:16]) != 0 {
+			return ErrInvalidState
+		}
+		return nil
+	}
+	selected := binary.LittleEndian.Uint16(state[14:16])
+	if selected != p.transport.commandSelect && selected != p.transport.dataSelect {
+		return ErrInvalidState
+	}
+	if err := p.transport.panel.LoadState(state[16:]); err != nil {
+		return err
+	}
+	p.transport.selected = selected
+	return nil
+}
+
 var (
 	_ Device         = (*ParallelPanelInterface)(nil)
 	_ StatefulDevice = (*ParallelPanelInterface)(nil)
 	_ StatefulDevice = (*ParallelPanelPort)(nil)
+	_ StatefulDevice = (*ParallelPanelSelectorPort)(nil)
 )

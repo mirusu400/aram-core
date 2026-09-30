@@ -20,6 +20,10 @@ import (
 
 const raptorJavaHostModule = ^uint32(0)
 
+// Legend of Master's equipment menu calls this Vector slot on two candidate
+// lists before populating them for the newly selected equipment type.
+const raptorJavaVectorClearSlot = uint32(0x80)
+
 // raptorJavaHeapBase is the lowest guest address the shared heap allocates from.
 // A class vtable field below it is the guest's own (unlinked) value rather than
 // a vtable we built, which lives in the heap.
@@ -284,6 +288,7 @@ var raptorJavaFixedVirtualMethods = map[string][]raptorJavaFixedVirtualMethod{
 		{offset: 0x70, Name: "removeElementAt", descriptor: "(I)V"},
 		// Legend of Master's script loader appends parsed NPC lines here.
 		{offset: 0x78, Name: "addElement", descriptor: "(Ljava/lang/Object;)V"},
+		{offset: raptorJavaVectorClearSlot, Name: "removeAllElements", descriptor: "()V"},
 	},
 	// CLDC order: read(), read([B), read([BII), skip, available, close,
 	// mark, markSupported, reset. 체스마스터 calls slot 0x3c on the stream
@@ -670,6 +675,36 @@ func (r *Runtime) ensureJavaRuntime() (*JavaRuntime, error) {
 	return java, nil
 }
 
+// ExportJavaStorage captures the Java adapter's private files and record stores.
+// They live in a separate service graph from the public WIPI storage.
+func (r *Runtime) ExportJavaStorage() *shared.StoragePersistenceState {
+	if r == nil || r.Java == nil || r.Java.Host == nil {
+		return nil
+	}
+	state := r.Java.Host.Services.Storage.ExportPersistence()
+	return &state
+}
+
+// ImportJavaStorage restores the adapter's private storage before guest code
+// can open a file or database. The adapter may not exist yet on a fresh load.
+func (r *Runtime) ImportJavaStorage(state shared.StoragePersistenceState) error {
+	java, err := r.ensureJavaRuntime()
+	if err != nil {
+		return err
+	}
+	state.RecordStores = append([]shared.PersistentRecordStoreState(nil), state.RecordStores...)
+	for index := range state.RecordStores {
+		state.RecordStores[index].Owner = java.Host.ServiceOwner
+	}
+	if err := java.Host.Services.Storage.ImportPersistence(state); err != nil {
+		return fmt.Errorf("import Raptor Java storage: %w", err)
+	}
+	if err := java.Host.AdoptPersistedFiles(); err != nil {
+		return err
+	}
+	return java.Host.AdoptPersistedDatabases()
+}
+
 func (r *Runtime) DestroyRaptorJava() error {
 	if r == nil || r.Java == nil {
 		return nil
@@ -771,6 +806,30 @@ func (r *Runtime) registerJavaHostMethod(method raptorJavaMethod) (uint32, error
 		r.resolvedImports[key] = 1
 	}
 	return stub, err
+}
+
+// restoreVectorClearSlot upgrades saves made while Vector's clear slot was a
+// placeholder. The game's equipment screen calls this slot before rebuilding
+// its candidate lists; leaving the placeholder in a saved vtable retains stale
+// entries even after the fixed class layout is installed.
+func (r *Runtime) restoreVectorClearSlot(java *JavaRuntime) error {
+	class := java.ClassByName["java/util/Vector"]
+	if class == nil || class.vtable == 0 || java.noopStub == 0 {
+		return nil
+	}
+	current, err := r.Public.ReadU32(class.vtable + raptorJavaVectorClearSlot)
+	if err != nil || current != java.noopStub {
+		return err
+	}
+	stub, err := r.registerJavaHostMethod(raptorJavaMethod{
+		className:  "java/util/Vector",
+		Name:       "removeAllElements",
+		descriptor: "()V",
+	})
+	if err != nil {
+		return err
+	}
+	return r.Public.WriteU32(class.vtable+raptorJavaVectorClearSlot, stub|1)
 }
 
 func (r *Runtime) dispatchJavaImport(
