@@ -199,6 +199,45 @@ func (k RaptorTitleKey) Matches(packageSHA256, aid, mainClass string) bool {
 		mainClass == k.MainClass
 }
 
+// RaptorSystemProperty supplies handset identity values for a package which
+// ships an explicit supported-model table. Generic titles keep the runtime's
+// ordinary LGT-era defaults.
+type RaptorSystemProperty struct {
+	Key        RaptorTitleKey
+	Properties map[string]string
+}
+
+var RaptorSystemProperties = []RaptorSystemProperty{
+	{
+		// RhythmStar 1's res/Init/Init.txt contains timing rows only for
+		// CANU801EX and IM-U160L. Its distribution metadata identifies CANU801EX;
+		// an unrelated model falls through to the carrier download-only flow.
+		Key: RaptorTitleKey{
+			PackageSHA256: "5dc5d7091c017d3801e32d62814706ccdf4a9f6e4e9cc92bd00ea525da7202a4",
+			AID:           "00025DAF",
+			MainClass:     "startClet",
+		},
+		Properties: map[string]string{
+			"PHONEMODEL": "CANU801EX",
+		},
+	},
+}
+
+func LookupRaptorSystemProperties(
+	packageSHA256, aid, mainClass string,
+) (map[string]string, bool) {
+	for _, entry := range RaptorSystemProperties {
+		if entry.Key.Matches(packageSHA256, aid, mainClass) {
+			properties := make(map[string]string, len(entry.Properties))
+			for name, value := range entry.Properties {
+				properties[name] = value
+			}
+			return properties, true
+		}
+	}
+	return nil, false
+}
+
 // RaptorFramebufferGeometry records the physical framebuffer and the value
 // one Raptor package expects from its primary framebuffer-height helper.
 // Offscreen framebuffers always retain their allocated height.
@@ -210,6 +249,32 @@ type RaptorFramebufferGeometry struct {
 }
 
 var RaptorFramebufferGeometries = []RaptorFramebufferGeometry{
+	{
+		// Zenonia 1 draws and lays out its UI against the complete 240x320
+		// primary surface. Applying libwipi's separate 24-pixel handset strip
+		// shifts every layer down and clips the bottom HUD.
+		Key: RaptorTitleKey{
+			PackageSHA256: "3cc7a9b4cb15818cdd5a66f7e520c7b9b36f1df8d2df096aafa961b1cb2b682c",
+			AID:           "00027BAA",
+			MainClass:     "Clet",
+		},
+		FramebufferWidth:  240,
+		FramebufferHeight: 320,
+		PrimaryHeight:     320,
+	},
+	{
+		// Zenonia 2 uses the same full-screen primary-surface convention. Its
+		// dialogue panel reaches the last display rows and is clipped when the
+		// generic 24-pixel client-area origin is imposed.
+		Key: RaptorTitleKey{
+			PackageSHA256: "601556233e719a97860d38f6d413673c2996b1a7010438504663c98b86ec776c",
+			AID:           "0002C004",
+			MainClass:     "Clet",
+		},
+		FramebufferWidth:  240,
+		FramebufferHeight: 320,
+		PrimaryHeight:     320,
+	},
 	{
 		// 아이뮤지션2 copies and filters the full display-info dimensions
 		// through its raw primary pixels. Moving that pointer below the

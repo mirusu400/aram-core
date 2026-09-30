@@ -2,16 +2,39 @@ package brewrt
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"image"
 	"image/color"
 	"slices"
 	"testing"
+	"time"
 	"unicode/utf16"
 
 	"github.com/mirusu400/aram-core/cpu"
 	"golang.org/x/image/bmp"
 )
+
+func brewTestWave(samples []int16) []byte {
+	data := make([]byte, 44+len(samples)*2)
+	copy(data[0:4], "RIFF")
+	binary.LittleEndian.PutUint32(data[4:8], uint32(len(data)-8))
+	copy(data[8:12], "WAVE")
+	copy(data[12:16], "fmt ")
+	binary.LittleEndian.PutUint32(data[16:20], 16)
+	binary.LittleEndian.PutUint16(data[20:22], 1)
+	binary.LittleEndian.PutUint16(data[22:24], 1)
+	binary.LittleEndian.PutUint32(data[24:28], 8_000)
+	binary.LittleEndian.PutUint32(data[28:32], 16_000)
+	binary.LittleEndian.PutUint16(data[32:34], 2)
+	binary.LittleEndian.PutUint16(data[34:36], 16)
+	copy(data[36:40], "data")
+	binary.LittleEndian.PutUint32(data[40:44], uint32(len(samples)*2))
+	for index, sample := range samples {
+		binary.LittleEndian.PutUint16(data[44+index*2:], uint16(sample))
+	}
+	return data
+}
 
 func buildResourceFile(kind, id uint16, payload []byte) []byte {
 	const indexOffset = 0x20
@@ -80,6 +103,63 @@ func TestLoadShellResourceDataCopiesOwnedGuestBlock(t *testing.T) {
 	}
 	if !bytes.Equal(got, []byte{1, 2, 3, 4}) {
 		t.Fatalf("loaded resource = %v", got)
+	}
+}
+
+func TestLoadShellSoundResourceProducesPCM(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	samples := make([]int16, 800)
+	for index := range samples {
+		samples[index] = int16(200 + index%31)
+	}
+	resource := append([]byte{12, 0}, []byte("audio/wav\x00")...)
+	resource = append(resource, brewTestWave(samples)...)
+	runtime.files = map[string][]byte{
+		"assets/game.bar": buildResourceFile(brewImageResourceKind, 42, resource),
+	}
+	pathAt := heapBase + 0x100
+	if err := runtime.cpu.WriteMemory(pathAt, []byte("assets/game.bar\x00")); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR1: pathAt,
+		cpu.RegisterR2: 42,
+		cpu.RegisterR3: brewSoundHandler,
+		cpu.RegisterLR: returnTrap | 1,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handled, _, _, err := runtime.handleAppletMethodTrap(shellMethodTrapBase + 19*2 + 2)
+	if err != nil || !handled {
+		t.Fatalf("LoadResObject handled=%v err=%v", handled, err)
+	}
+	if object, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || object != soundPlayerObject {
+		t.Fatalf("sound resource object=0x%08x err=%v", object, err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterLR, returnTrap|1); err != nil {
+		t.Fatal(err)
+	}
+	handled, _, _, err = runtime.handleAppletMethodTrap(soundPlayerTrapBase + 4*2 + 2)
+	if err != nil || !handled {
+		t.Fatalf("Play handled=%v err=%v", handled, err)
+	}
+	if err := runtime.RunCallbacks(context.Background(), 50*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	audio, now, _ := runtime.DrainAudio()
+	if now != 50*time.Millisecond || audio.SampleRate != 44_100 || audio.Channels != 1 || len(audio.PCM16) == 0 {
+		t.Fatalf("audio at %s = rate=%d channels=%d samples=%d", now, audio.SampleRate, audio.Channels, len(audio.PCM16))
+	}
+	nonzero := 0
+	for _, sample := range audio.PCM16 {
+		if sample != 0 {
+			nonzero++
+		}
+	}
+	if nonzero == 0 {
+		t.Fatal("BREW sound resource produced only silence")
 	}
 }
 

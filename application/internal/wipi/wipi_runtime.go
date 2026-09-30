@@ -414,6 +414,16 @@ func (r *Runtime) OutputChannels() uint8 {
 	return r.Services.Config.Limits.Media.OutputChannels
 }
 
+// SetSystemProperty installs a package-selected device property before guest
+// execution begins. Values are copied so runtime state never aliases policy
+// storage owned by the application layer.
+func (r *Runtime) SetSystemProperty(name, value string) {
+	if r == nil || r.properties == nil {
+		return
+	}
+	r.properties[name] = append([]byte(nil), value...)
+}
+
 func NewRuntimeForProfile(
 	backend cpu.Backend,
 	frame *image.RGBA,

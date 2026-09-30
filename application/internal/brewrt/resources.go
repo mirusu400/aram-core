@@ -309,9 +309,17 @@ func (r *Runtime) loadShellResourceObject() error {
 		return err
 	}
 	if classID == brewSoundHandler {
-		// The silent player remains a correctly typed object. Resource ownership is
-		// retained by the immutable package for the runtime lifetime.
-		if data, ok := resourceData(container, brewImageResourceKind, uint16(resourceID)); ok && len(data) != 0 {
+		if data, ok := resourceData(container, brewImageResourceKind, uint16(resourceID)); ok {
+			mediaType, payload, decoded := decodeBREWAudioResource(data)
+			if !decoded {
+				return r.cpu.WriteRegister(cpu.RegisterR0, 0)
+			}
+			r.soundPlayer.input = 2
+			r.soundPlayer.data = 0
+			r.soundPlayer.size = uint32(len(payload))
+			if err := r.replaceSoundPlayerSource(mediaType, payload); err != nil {
+				return err
+			}
 			return r.cpu.WriteRegister(cpu.RegisterR0, soundPlayerObject)
 		}
 		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
