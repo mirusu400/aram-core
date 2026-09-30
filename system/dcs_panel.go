@@ -44,6 +44,11 @@ const (
 	// cursor and 0x22 GRAM registers, but defines its address window through
 	// packed columns at 0x45 and page start/end at 0x46/0x47.
 	ParallelPanelProtocolIndexedRGB565Window454647
+	// ParallelPanelProtocolPackedRGB565Window424A is the controller variant
+	// whose command FIFO carries an 8-bit register index in the high byte and
+	// its value in the low byte. Registers 0x42..0x4a select the cursor and
+	// window; the separate data FIFO carries only RGB565 pixels.
+	ParallelPanelProtocolPackedRGB565Window424A
 	// ParallelPanelProtocolIndexedRGB565Window4445 uses packed start/end
 	// bounds at 0x44/0x45 and a packed column/page cursor at 0x21 before
 	// streaming RGB565 pixels through 0x22.
@@ -56,11 +61,6 @@ const (
 	// column end/start and 0x38/0x39 page end/start registers before the common
 	// 0x20/0x21 cursor and 0x22 GRAM stream.
 	ParallelPanelProtocolIndexedRGB565Window36373839
-	// ParallelPanelProtocolPackedRGB565Window424A is the controller variant
-	// whose command FIFO carries an 8-bit register index in the high byte and
-	// its value in the low byte. Registers 0x42..0x4a select the cursor and
-	// window; the separate data FIFO carries only RGB565 pixels.
-	ParallelPanelProtocolPackedRGB565Window424A
 )
 
 type DCSPanelConfig struct {
@@ -448,6 +448,10 @@ func (p *DCSPanelController) writeIndexedData(value uint16) error {
 		}
 		p.cursorPage = value
 	case 0x0022:
+		if p.protocol == ParallelPanelProtocolIndexedRGB565Window210213 {
+			// This extended register bank streams pixels through 0x0202.
+			return nil
+		}
 		return p.writePixel(value)
 	default:
 		// Other indexed registers configure controller-specific power, gamma,

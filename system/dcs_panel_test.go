@@ -191,6 +191,7 @@ func TestIndexedRGB565Window210213DecodesSeparateBounds(t *testing.T) {
 		{0x210, 1},
 		{0x213, 1},
 		{0x212, 0},
+		{0x22, 0xdead}, // Vendor register, not the extended 0x0202 GRAM port.
 		{0x200, 1},
 		{0x201, 0},
 		{0x202, 0xf800},
@@ -205,7 +206,7 @@ func TestIndexedRGB565Window210213DecodesSeparateBounds(t *testing.T) {
 			t.Fatalf("command %#x data %#x: %v", write.command, write.value, err)
 		}
 	}
-	if got := panel.FrameRGB565(); len(got) != 6 ||
+	if got := panel.FrameRGB565(); len(got) != 6 || got[0] != 0 ||
 		got[1] != 0xf800 || got[2] != 0x07e0 || got[4] != 0x001f || got[5] != 0xffff {
 		t.Fatalf("window-210213 frame = %#v", got)
 	}
@@ -252,6 +253,9 @@ func TestPackedRGB565Window424ADecodesCommandFIFOAndPixelFIFO(t *testing.T) {
 	}
 	controller, err := NewDCSPanelController(config)
 	check(t, err)
+	if uint8(config.Protocol) != 3 {
+		t.Fatalf("packed panel state protocol ID = %d, want 3", config.Protocol)
+	}
 	panel, err := NewParallelPanelInterfaceWithController(controller)
 	check(t, err)
 	for _, command := range []uint16{
