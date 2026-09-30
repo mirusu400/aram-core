@@ -1,5 +1,10 @@
 # GVM execution subset and remaining startup boundary
 
+This document preserves the 2026-09-12 kernel checkpoint. The current
+hash-qualified operational path and its remaining version-4 boundary are
+summarized in [GNEX format](gnex-format.md). Statements below about the
+ordinary product being recognition-only describe the earlier checkpoint.
+
 Date: 2026-09-12. This is implementation progress toward game startup, **not
 completed GVM game execution**. The ordinary product still reports recognition
 without execution until the runtime, media and event contracts are implemented.

@@ -103,17 +103,20 @@ func (m *Machine) Load(ctx context.Context, source machinecore.Source) error {
 	if err != nil || len(container.Images) == 0 {
 		// An SKT GNEX (SinjiSoft GVM) title is a ZIP too, and its .SGS
 		// payload has no ABHS/EADS records for InspectContainer to find, so
-		// it also lands here. GNEX packages are recognized (see
-		// loader/gnex and docs/gnex-format.md) but the GVM bytecode format
-		// they carry has not been reverse engineered far enough to execute,
-		// so say precisely that instead of a generic unsupported-source error.
+		// it also lands here. The factory starts exact-hash GVM 1/2
+		// titles earlier; other packages, including GNEX version 4,
+		// reach this recognition-only fallback.
 		gnexPackage, gnexErr := gnex.Inspect(data)
 		if gnexErr == nil {
+			reason := "ARAM recognizes SinjiSoft GVM packages but does not yet execute GVM bytecode"
+			if gnexPackage.Header.FormatVersion == 4 {
+				reason = "GNEX version-4 bytecode execution is not implemented"
+			}
 			return &UnsupportedPlatformError{
 				Kind:      loader.KindGNEX,
 				ProfileID: "gvm-container-v1/skt/generic",
-				Reason: fmt.Sprintf("%q is an SKT GNEX title (%q); ARAM recognizes SinjiSoft "+
-					"GVM packages but does not yet execute GVM bytecode", source.Name, gnexPackage.Header.Title),
+				Reason: fmt.Sprintf("%q is an SKT GNEX title (%q); %s",
+					source.Name, gnexPackage.Header.Title, reason),
 			}
 		}
 		// An Android package is a ZIP too, so it survives every WIPI loader

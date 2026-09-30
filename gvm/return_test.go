@@ -27,8 +27,7 @@ func TestNonemptyReturn(t *testing.T) {
 	}
 	v = gvm.New([]byte{0x45})
 	err = v.Step()
-	var unsupported *gvm.UnsupportedOpcodeError
-	if !errors.As(err, &unsupported) || unsupported.Opcode != 0x45 || unsupported.Offset != 0 || v.PC() != 1 || v.Halted() {
-		t.Fatalf("empty return sentinel must remain unsupported: %v", err)
+	if err != nil || v.PC() != 1 || !v.Halted() {
+		t.Fatalf("empty return must end the dispatch: %v", err)
 	}
 }

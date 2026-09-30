@@ -12,6 +12,50 @@ import (
 	shared "github.com/mirusu400/aram-core/runtime"
 )
 
+func TestDisplayLineDrawsClippedDiagonal(t *testing.T) {
+	frames := new(frameCollector)
+	d := newTestDisplay(t, 4, 4, DisplayOrientationDefault, testPalette{failSelector: -1}, frames)
+	if err := d.SelectGVMColor(7); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.DrawGVMLine(-1, -1, 3, 3); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		if got := d.drawing.pixels[i*4+i]; got != 7 {
+			t.Fatalf("diagonal pixel %d = %d", i, got)
+		}
+	}
+}
+
+func TestDisplayPointUsesExplicitColorWithoutChangingActiveColor(t *testing.T) {
+	d := newTestDisplay(t, 4, 4, DisplayOrientationDefault, testPalette{failSelector: -1}, new(frameCollector))
+	if err := d.SelectGVMColor(7); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.DrawGVMPoint(2, 1, 3); err != nil {
+		t.Fatal(err)
+	}
+	if d.drawing.pixels[1*4+2] != 3 || d.selector != 7 {
+		t.Fatalf("point=%d selector=%d", d.drawing.pixels[1*4+2], d.selector)
+	}
+}
+
+func TestDisplayEllipsePlotsCardinalPoints(t *testing.T) {
+	d := newTestDisplay(t, 11, 11, DisplayOrientationDefault, testPalette{failSelector: -1}, new(frameCollector))
+	if err := d.SelectGVMColor(7); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.DrawGVMEllipse(5, 5, 3, 2); err != nil {
+		t.Fatal(err)
+	}
+	for _, point := range [][2]int{{2, 5}, {8, 5}, {5, 3}, {5, 7}} {
+		if got := d.drawing.pixels[point[1]*11+point[0]]; got != 7 {
+			t.Fatalf("pixel %v = %d", point, got)
+		}
+	}
+}
+
 type testPalette struct {
 	failSelector int16
 }

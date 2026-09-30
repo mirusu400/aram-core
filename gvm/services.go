@@ -31,9 +31,12 @@ var (
 	ErrDisplayFillUnavailable     = errors.New("gvm: display fill service unavailable")
 	ErrColorSelectUnavailable     = errors.New("gvm: drawing color selection service unavailable")
 	ErrRectangleDrawUnavailable   = errors.New("gvm: rectangle outline service unavailable")
+	ErrLineDrawUnavailable        = errors.New("gvm: line draw service unavailable")
+	ErrEllipseDrawUnavailable     = errors.New("gvm: ellipse outline service unavailable")
 	ErrRectangleFillUnavailable   = errors.New("gvm: rectangle fill service unavailable")
 	ErrTextDrawUnavailable        = errors.New("gvm: text draw service unavailable")
 	ErrDataReadUnavailable        = errors.New("gvm: persistent data read service unavailable")
+	ErrDataWriteUnavailable       = errors.New("gvm: persistent data write service unavailable")
 )
 
 // DeviceQueryProfile is explicit GVM adapter state, not a detected handset or
@@ -63,6 +66,22 @@ const FixedOffsetNoDST CivilTimePolicy = 1
 // the VM from RequestGVMTimer.
 type TimerRequestSink interface {
 	RequestGVMTimer(intervalMillis int16, selector uint16) error
+}
+
+// TimerModeRequestSink handles GVM timer modes 1 and 2, which use the same
+// argument shape as mode 0 but select separate native timer slots.
+type TimerModeRequestSink interface {
+	RequestGVMTimerMode(mode uint8, intervalMillis int16, selector uint16) error
+}
+
+// FixedTimerRequestSink accepts opcode94's single signed argument. The native
+// handler installs a distinct fixed host timer; delivery remains owner policy.
+type FixedTimerRequestSink interface {
+	RequestGVMFixedTimer(interval int16) error
+}
+
+type TimerModeCancelSink interface {
+	CancelGVMTimerMode(mode uint8) error
 }
 
 // DisplayClearSink accepts opcode55's guest-requested drawing-buffer clear.
@@ -153,6 +172,24 @@ type RectangleDrawSink interface {
 	DrawGVMRectangle(x1, y1, x2, y2 int16) error
 }
 
+// LineDrawSink accepts opcode5f's four signed endpoints and draws into the
+// current indexed drawing buffer without publishing a frame.
+type LineDrawSink interface {
+	DrawGVMLine(x1, y1, x2, y2 int16) error
+}
+
+// PointDrawSink accepts opcode58's signed coordinates and color selector
+// reduced modulo 182. It draws into the current buffer without presenting.
+type PointDrawSink interface {
+	DrawGVMPoint(x, y, selector int16) error
+}
+
+// EllipseDrawSink receives the signed center and horizontal/vertical radii
+// forwarded by opcode65. It updates the indexed drawing buffer atomically.
+type EllipseDrawSink interface {
+	DrawGVMEllipse(x, y, radiusX, radiusY int16) error
+}
+
 // SpriteDrawSink accepts opcode6f's validated media payload and signed guest
 // coordinates. The exact-build native callee recognizes private sprite types
 // and applies resource-local anchors before rasterizing through the active remap
@@ -177,6 +214,12 @@ type SpriteTransformSink interface {
 // from the guest address. It draws to the active display without retaining data.
 type SpritePaletteSink interface {
 	DrawGVMSpriteWithPalette(resource, palette []byte, x, y int16) error
+}
+
+// SpriteTransformPaletteSink accepts opcode72's mirrored sprite request with
+// an explicit guest palette. Payloads are owned copies and may not be retained.
+type SpriteTransformPaletteSink interface {
+	DrawGVMTransformedSpriteWithPalette(resource, palette []byte, x, y int16, mirrorHorizontal bool) error
 }
 
 // TextDrawStyle is the normalized private drawing state consumed by opcodes
@@ -212,6 +255,11 @@ type AudioResetSink interface {
 // native audio-type adapter; GVM does not assign it a portable codec name.
 type MediaResource struct {
 	Data []byte
+	// VirtualSuffix exposes one bounded byte immediately after a copied media
+	// record. It is an explicit compatibility policy for guest code that scans
+	// past a NUL-terminated mutable record. Normal resources leave it disabled.
+	VirtualSuffix    byte
+	HasVirtualSuffix bool
 }
 
 // MediaLoadSink accepts an independent copy of one validated media payload.
@@ -227,6 +275,12 @@ type MediaLoadSink interface {
 // not retain or mutate the returned slice after the call.
 type DataReadSink interface {
 	ReadGVMData(size uint32) ([]byte, error)
+}
+
+// DataWriteSink receives an owned copy of opcode99's validated source bytes.
+// Providers must complete atomically and must not reenter the VM.
+type DataWriteSink interface {
+	WriteGVMData(data []byte) error
 }
 
 // ServiceConfig opts independently into device query (51), display clear (55),
@@ -276,6 +330,9 @@ type ServiceConfig struct {
 	// RectangleDraw is borrowed. Opcode62 forwards four signed coordinates; the
 	// provider owns clipped inclusive edge drawing and active color state.
 	RectangleDraw RectangleDrawSink
+	LineDraw      LineDrawSink
+	PointDraw     PointDrawSink
+	EllipseDraw   EllipseDrawSink
 	// RectangleFill is borrowed. Opcode63 forwards four signed coordinates; the
 	// provider owns sorting, clipping, active color and drawing-buffer mutation.
 	RectangleFill RectangleFillSink
@@ -284,8 +341,9 @@ type ServiceConfig struct {
 	SpriteDraw SpriteDrawSink
 	// SpriteTransform is borrowed. Opcode70 forwards a copied media payload,
 	// signed coordinates and a raw-zero/nonzero horizontal mirror selection.
-	SpriteTransform SpriteTransformSink
-	SpritePalette   SpritePaletteSink
+	SpriteTransform        SpriteTransformSink
+	SpritePalette          SpritePaletteSink
+	SpriteTransformPalette SpriteTransformPaletteSink
 	// TextDraw is borrowed. Opcode6a forwards a copied text resource and the
 	// current normalized text style without exposing mutable VM state.
 	TextDraw TextDrawSink
@@ -297,33 +355,41 @@ type ServiceConfig struct {
 	Media     []MediaResource
 	MediaLoad MediaLoadSink
 	DataRead  DataReadSink
+	DataWrite DataWriteSink
 }
 
 type serviceState struct {
-	deviceQuery     *DeviceQueryProfile
-	clock           *gruntime.Clock
-	clockPolicy     CivilTimePolicy
-	random          *gruntime.Random
-	randomStream    string
-	timer           TimerRequestSink
-	displayClear    DisplayClearSink
-	displayZero     DisplayZeroSink
-	displayFill     DisplayFillSink
-	displayPresent  DisplayPresentSink
-	displayCopy     DisplayCopySink
-	mappingSelect   MappingSelectSink
-	colorSelect     ColorSelectSink
-	rectangleDraw   RectangleDrawSink
-	rectangleFill   RectangleFillSink
-	spriteDraw      SpriteDrawSink
-	spriteTransform SpriteTransformSink
-	spritePalette   SpritePaletteSink
-	textDraw        TextDrawSink
-	audioReset      AudioResetSink
-	media           [][]byte
-	mediaLoad       MediaLoadSink
-	dataRead        DataReadSink
-	textStyle       textStyleState
+	deviceQuery            *DeviceQueryProfile
+	clock                  *gruntime.Clock
+	clockPolicy            CivilTimePolicy
+	random                 *gruntime.Random
+	randomStream           string
+	timer                  TimerRequestSink
+	displayClear           DisplayClearSink
+	displayZero            DisplayZeroSink
+	displayFill            DisplayFillSink
+	displayPresent         DisplayPresentSink
+	displayCopy            DisplayCopySink
+	mappingSelect          MappingSelectSink
+	colorSelect            ColorSelectSink
+	rectangleDraw          RectangleDrawSink
+	lineDraw               LineDrawSink
+	pointDraw              PointDrawSink
+	ellipseDraw            EllipseDrawSink
+	rectangleFill          RectangleFillSink
+	spriteDraw             SpriteDrawSink
+	spriteTransform        SpriteTransformSink
+	spritePalette          SpritePaletteSink
+	spriteTransformPalette SpriteTransformPaletteSink
+	textDraw               TextDrawSink
+	audioReset             AudioResetSink
+	media                  [][]byte
+	mediaSuffix            []byte
+	mediaHasSuffix         []bool
+	mediaLoad              MediaLoadSink
+	dataRead               DataReadSink
+	dataWrite              DataWriteSink
+	textStyle              textStyleState
 }
 
 // textStyleState mirrors the four normalized bytes consumed by the exact-build
@@ -380,23 +446,32 @@ func NewWithAddressSpaceAndServices(program []byte, entry uint32, space AddressS
 		state.mappingSelect = config.MappingSelect
 		state.colorSelect = config.ColorSelect
 		state.rectangleDraw = config.RectangleDraw
+		state.lineDraw = config.LineDraw
+		state.pointDraw = config.PointDraw
+		state.ellipseDraw = config.EllipseDraw
 		state.rectangleFill = config.RectangleFill
 		state.spriteDraw = config.SpriteDraw
 		state.spriteTransform = config.SpriteTransform
 		state.spritePalette = config.SpritePalette
+		state.spriteTransformPalette = config.SpriteTransformPalette
 		state.textDraw = config.TextDraw
 		state.audioReset = config.AudioReset
 		state.mediaLoad = config.MediaLoad
 		state.dataRead = config.DataRead
+		state.dataWrite = config.DataWrite
 		if len(config.Media) > math.MaxUint16 {
 			return nil, fmt.Errorf("%w: too many media records", ErrInvalidServiceConfig)
 		}
 		state.media = make([][]byte, len(config.Media))
+		state.mediaSuffix = make([]byte, len(config.Media))
+		state.mediaHasSuffix = make([]bool, len(config.Media))
 		for i, media := range config.Media {
 			if len(media.Data) > math.MaxUint16 {
 				return nil, fmt.Errorf("%w: media %d exceeds 16-bit length", ErrInvalidServiceConfig, i)
 			}
 			state.media[i] = append([]byte(nil), media.Data...)
+			state.mediaSuffix[i] = media.VirtualSuffix
+			state.mediaHasSuffix[i] = media.HasVirtualSuffix
 		}
 	}
 	v, err := NewWithAddressSpace(program, entry, space)

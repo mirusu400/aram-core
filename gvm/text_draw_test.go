@@ -55,6 +55,38 @@ func TestTextDrawForwardsResourceCoordinatesAndStyle(t *testing.T) {
 	}
 }
 
+func TestTextDrawBackgroundVariantForwardsSecondarySelector(t *testing.T) {
+	code := []byte{0x05, 7, 0x05, 8, 0x68, 0x05, 10, 0x05, 20, 0x05, 0, 0x6b}
+	sink := new(textDrawSink)
+	vm, err := gvm.NewWithAddressSpaceAndServices(code, 0, gvm.AddressSpace{},
+		&gvm.ServiceConfig{Media: []gvm.MediaResource{{Data: []byte{'A', 0}}}, TextDraw: sink})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.Run(7); !errors.Is(err, gvm.ErrBudget) {
+		t.Fatal(err)
+	}
+	if len(sink.calls) != 1 || sink.calls[0].style.Secondary != 8 || !sink.calls[0].style.Background || len(vm.Stack()) != 0 {
+		t.Fatalf("background draw: calls=%+v stack=%x", sink.calls, vm.Stack())
+	}
+}
+
+func TestTextDrawFixedModeVariant(t *testing.T) {
+	code := []byte{0x05, 10, 0x05, 20, 0x05, 0, 0x6c}
+	sink := new(textDrawSink)
+	vm, err := gvm.NewWithAddressSpaceAndServices(code, 0, gvm.AddressSpace{},
+		&gvm.ServiceConfig{Media: []gvm.MediaResource{{Data: []byte{'A', 0}}}, TextDraw: sink})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.Run(4); !errors.Is(err, gvm.ErrBudget) {
+		t.Fatal(err)
+	}
+	if len(sink.calls) != 1 || sink.calls[0].style.Mode != 2 || sink.calls[0].style.Background || len(vm.Stack()) != 0 {
+		t.Fatalf("calls=%+v stack=%v", sink.calls, vm.Stack())
+	}
+}
+
 func TestTextDrawFailurePreservesStack(t *testing.T) {
 	providerErr := errors.New("text failed")
 	for _, test := range []struct {

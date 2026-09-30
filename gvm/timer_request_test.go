@@ -15,7 +15,26 @@ type timerRequest struct {
 
 type timerSink struct {
 	requests []timerRequest
+	fixed    []int16
+	modes    []uint8
+	cancels  []uint8
 	err      error
+}
+
+func (s *timerSink) RequestGVMFixedTimer(interval int16) error {
+	if s.err != nil {
+		return s.err
+	}
+	s.fixed = append(s.fixed, interval)
+	return nil
+}
+
+func TestFixedTimerRequestConsumesOneSignedWord(t *testing.T) {
+	sink := new(timerSink)
+	vm := timerVM(t, []byte{0x06, 0xff, 0xff, 0x94, 0xff}, sink)
+	if err := vm.Run(3); err != nil || !vm.Halted() || !reflect.DeepEqual(sink.fixed, []int16{-1}) || len(vm.Stack()) != 0 {
+		t.Fatalf("run=%v fixed=%v stack=%x", err, sink.fixed, vm.Stack())
+	}
 }
 
 func (s *timerSink) RequestGVMTimer(interval int16, selector uint16) error {
@@ -24,6 +43,42 @@ func (s *timerSink) RequestGVMTimer(interval int16, selector uint16) error {
 	}
 	s.requests = append(s.requests, timerRequest{interval: interval, selector: selector})
 	return nil
+}
+
+func (s *timerSink) RequestGVMTimerMode(mode uint8, interval int16, selector uint16) error {
+	if err := s.RequestGVMTimer(interval, selector); err != nil {
+		return err
+	}
+	s.modes = append(s.modes, mode)
+	return nil
+}
+
+func (s *timerSink) CancelGVMTimerMode(mode uint8) error {
+	s.cancels = append(s.cancels, mode)
+	return s.err
+}
+
+func TestTimerModeCancellation(t *testing.T) {
+	sink := new(timerSink)
+	v := timerVM(t, []byte{0x9d, 0x9e, 0x9f, 0xff}, sink)
+	if err := v.Run(4); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(sink.cancels, []uint8{0, 1, 2}) {
+		t.Fatalf("cancel modes = %v", sink.cancels)
+	}
+}
+
+func TestTimerModeRequestsUseSeparateNativeSlots(t *testing.T) {
+	sink := new(timerSink)
+	code := []byte{0x05, 10, 0x05, 1, 0x9b, 0x05, 20, 0x05, 2, 0x9c, 0xff}
+	vm := timerVM(t, code, sink)
+	if err := vm.Run(6); !errors.Is(err, gvm.ErrBudget) {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(sink.modes, []uint8{1, 2}) || !reflect.DeepEqual(sink.requests, []timerRequest{{10, 1}, {20, 2}}) || len(vm.Stack()) != 0 {
+		t.Fatalf("timer modes=%v requests=%v stack=%x", sink.modes, sink.requests, vm.Stack())
+	}
 }
 
 func timerVM(t *testing.T, code []byte, sink gvm.TimerRequestSink) *gvm.VM {

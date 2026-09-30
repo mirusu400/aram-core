@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"math"
 	"sync"
 
 	"github.com/mirusu400/aram-core/gvm"
@@ -187,6 +188,112 @@ func (d *DisplayAdapter) DrawGVMRectangle(x1, y1, x2, y2 int16) error {
 	return nil
 }
 
+func (d *DisplayAdapter) DrawGVMLine(x1, y1, x2, y2 int16) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.selector == 4 {
+		return nil
+	}
+	x, y := int(x1)+d.originX, int(y1)+d.originY
+	endX, endY := int(x2)+d.originX, int(y2)+d.originY
+	dx := endX - x
+	if dx < 0 {
+		dx = -dx
+	}
+	dy := endY - y
+	if dy < 0 {
+		dy = -dy
+	}
+	signX, signY := 1, 1
+	if x > endX {
+		signX = -1
+	}
+	if y > endY {
+		signY = -1
+	}
+	decision := dx - dy
+	for {
+		if x >= 0 && x < d.drawing.width && y >= 0 && y < d.drawing.height {
+			d.drawing.pixels[y*d.drawing.width+x] = d.activeColor
+		}
+		if x == endX && y == endY {
+			break
+		}
+		twice := 2 * decision
+		if twice > -dy {
+			decision -= dy
+			x += signX
+		}
+		if twice < dx {
+			decision += dx
+			y += signY
+		}
+	}
+	return nil
+}
+
+func (d *DisplayAdapter) DrawGVMPoint(x, y, selector int16) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if selector == 4 {
+		return nil
+	}
+	mapped, err := d.palette.Map(d.mapping, selector)
+	if err != nil {
+		return err
+	}
+	px, py := int(x)+d.originX, int(y)+d.originY
+	if px >= 0 && px < d.drawing.width && py >= 0 && py < d.drawing.height {
+		d.drawing.pixels[py*d.drawing.width+px] = mapped
+	}
+	return nil
+}
+
+func (d *DisplayAdapter) DrawGVMEllipse(x, y, radiusX, radiusY int16) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.selector == 4 {
+		return nil
+	}
+	cx, cy := int(x)+d.originX, int(y)+d.originY
+	rx, ry := int(radiusX), int(radiusY)
+	if rx < 0 {
+		rx = -rx
+	}
+	if ry < 0 {
+		ry = -ry
+	}
+	if rx == 0 {
+		d.drawVertical(cy-ry, cy+ry, cx)
+		return nil
+	}
+	if ry == 0 {
+		d.drawHorizontal(cx-rx, cx+rx, cy)
+		return nil
+	}
+	if cx+rx < 0 || cx-rx >= d.drawing.width || cy+ry < 0 || cy-ry >= d.drawing.height {
+		return nil
+	}
+	plot := func(px, py int) {
+		if px >= 0 && px < d.drawing.width && py >= 0 && py < d.drawing.height {
+			d.drawing.pixels[py*d.drawing.width+px] = d.activeColor
+		}
+	}
+	for px := max(cx-rx, 0); px <= min(cx+rx, d.drawing.width-1); px++ {
+		fraction := float64(px-cx) / float64(rx)
+		dy := int(math.Round(float64(ry) * math.Sqrt(max(0, 1-fraction*fraction))))
+		plot(px, cy-dy)
+		plot(px, cy+dy)
+	}
+	for py := max(cy-ry, 0); py <= min(cy+ry, d.drawing.height-1); py++ {
+		fraction := float64(py-cy) / float64(ry)
+		dx := int(math.Round(float64(rx) * math.Sqrt(max(0, 1-fraction*fraction))))
+		plot(cx-dx, py)
+		plot(cx+dx, py)
+	}
+	return nil
+}
+
 func (d *DisplayAdapter) drawHorizontal(x1, x2, y int) {
 	if y < 0 || y >= d.drawing.height || x2 < 0 || x1 >= d.drawing.width {
 		return
@@ -256,6 +363,28 @@ func (d *DisplayAdapter) DrawGVMSpriteWithPalette(resource, palette []byte, x, y
 		return err
 	}
 	rasterizeDecodedSprite(&d.drawing, sprite, mapped, int(x)+d.originX, int(y)+d.originY)
+	return nil
+}
+
+func (d *DisplayAdapter) DrawGVMTransformedSpriteWithPalette(resource, palette []byte, x, y int16, mirrorHorizontal bool) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	sprite, err := decodeIndexedSprite(resource)
+	if err != nil {
+		return err
+	}
+	if err := sprite.useGuestPalette(resource[0], palette); err != nil {
+		return err
+	}
+	mapped, err := d.mapSprite(sprite)
+	if err != nil {
+		return err
+	}
+	if mirrorHorizontal {
+		rasterizeMirroredSprite(&d.drawing, sprite, mapped, int(x)+d.originX, int(y)+d.originY)
+	} else {
+		rasterizeDecodedSprite(&d.drawing, sprite, mapped, int(x)+d.originX, int(y)+d.originY)
+	}
 	return nil
 }
 
@@ -585,15 +714,16 @@ func ordered(a, b int) (int, int) {
 }
 
 var (
-	_ gvm.DisplayClearSink    = (*DisplayAdapter)(nil)
-	_ gvm.DisplayFillSink     = (*DisplayAdapter)(nil)
-	_ gvm.DisplayCopySink     = (*DisplayAdapter)(nil)
-	_ gvm.MappingSelectSink   = (*DisplayAdapter)(nil)
-	_ gvm.ColorSelectSink     = (*DisplayAdapter)(nil)
-	_ gvm.RectangleDrawSink   = (*DisplayAdapter)(nil)
-	_ gvm.RectangleFillSink   = (*DisplayAdapter)(nil)
-	_ gvm.SpriteDrawSink      = (*DisplayAdapter)(nil)
-	_ gvm.SpriteTransformSink = (*DisplayAdapter)(nil)
-	_ gvm.TextDrawSink        = (*DisplayAdapter)(nil)
-	_ gvm.DisplayPresentSink  = (*DisplayAdapter)(nil)
+	_ gvm.DisplayClearSink           = (*DisplayAdapter)(nil)
+	_ gvm.DisplayFillSink            = (*DisplayAdapter)(nil)
+	_ gvm.DisplayCopySink            = (*DisplayAdapter)(nil)
+	_ gvm.MappingSelectSink          = (*DisplayAdapter)(nil)
+	_ gvm.ColorSelectSink            = (*DisplayAdapter)(nil)
+	_ gvm.RectangleDrawSink          = (*DisplayAdapter)(nil)
+	_ gvm.RectangleFillSink          = (*DisplayAdapter)(nil)
+	_ gvm.SpriteDrawSink             = (*DisplayAdapter)(nil)
+	_ gvm.SpriteTransformSink        = (*DisplayAdapter)(nil)
+	_ gvm.SpriteTransformPaletteSink = (*DisplayAdapter)(nil)
+	_ gvm.TextDrawSink               = (*DisplayAdapter)(nil)
+	_ gvm.DisplayPresentSink         = (*DisplayAdapter)(nil)
 )

@@ -16,7 +16,7 @@ func TestSKTCompatibilityPalette(t *testing.T) {
 	if !ok || packed != want {
 		t.Fatalf("Map(3,35) = %02x, want %02x", packed, want)
 	}
-	if _, err := mapper.Map(3, 5); !errors.Is(err, ErrUnsupportedSKTPaletteIndex) {
+	if _, err := mapper.Map(3, 182); !errors.Is(err, ErrUnsupportedSKTPaletteIndex) {
 		t.Fatalf("Map unsupported error = %v", err)
 	}
 	if got := mapper.Color(0xff); got != (color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}) {
@@ -89,13 +89,37 @@ func TestSKTGammaColorFixedColorsAndGamma(t *testing.T) {
 	}
 }
 
+func TestSKTGammaColorInitialBlinkPhase(t *testing.T) {
+	for index, expected := range map[uint8]byte{140: 0, 141: 0xe0, 162: 0, 163: 0xfc, 181: 0xe3} {
+		got, ok := SKTGammaColor(3, index)
+		if !ok || got != expected {
+			t.Fatalf("index %d = (%02x,%v), want (%02x,true)", index, got, ok, expected)
+		}
+	}
+	if got, ok := SKTGammaColor(0, 140); !ok || got != 0xb7 {
+		t.Fatalf("bright blink black = (%02x,%v)", got, ok)
+	}
+}
+
 func TestSKTGammaColorRejectsUnmodeledRanges(t *testing.T) {
-	for _, index := range []uint8{5, 15, 140, 181, 182, 255} {
+	for _, index := range []uint8{182, 255} {
 		if got, ok := SKTGammaColor(3, index); ok {
 			t.Fatalf("index %d unexpectedly mapped to %02x", index, got)
 		}
 	}
 	if got, ok := SKTGammaColor(7, 16); ok {
 		t.Fatalf("gamma 7 unexpectedly mapped to %02x", got)
+	}
+}
+
+func TestSKTGammaColorExtendedGraySelectors(t *testing.T) {
+	for _, tc := range []struct{ selector, gamma, want uint8 }{
+		{5, 3, 0xff}, {6, 3, 0x92}, {7, 3, 0x49}, {10, 3, 0},
+		{11, 3, 0xff}, {12, 3, 0x92}, {13, 3, 0x49}, {14, 3, 0}, {15, 3, 0xff},
+		{11, 4, 0x49}, {11, 6, 0},
+	} {
+		if got, ok := SKTGammaColor(tc.gamma, tc.selector); !ok || got != tc.want {
+			t.Fatalf("gamma %d selector %d = (%02x,%v), want %02x", tc.gamma, tc.selector, got, ok, tc.want)
+		}
 	}
 }

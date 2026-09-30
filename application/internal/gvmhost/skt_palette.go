@@ -2,6 +2,7 @@ package gvmhost
 
 import (
 	"errors"
+	"fmt"
 	"image/color"
 )
 
@@ -14,11 +15,11 @@ type SKTCompatibilityPalette struct{}
 
 func (SKTCompatibilityPalette) Map(mapping uint8, selector int16) (byte, error) {
 	if selector < 0 || selector > 181 {
-		return 0, ErrUnsupportedSKTPaletteIndex
+		return 0, fmt.Errorf("%w: mapping %d selector %d", ErrUnsupportedSKTPaletteIndex, mapping, selector)
 	}
 	packed, ok := SKTGammaColor(mapping, uint8(selector))
 	if !ok {
-		return 0, ErrUnsupportedSKTPaletteIndex
+		return 0, fmt.Errorf("%w: mapping %d selector %d", ErrUnsupportedSKTPaletteIndex, mapping, selector)
 	}
 	return packed, nil
 }
@@ -46,9 +47,9 @@ func (SKTCompatibilityPalette) Color(index byte) color.RGBA {
 // SKTGammaColor converts the public Mobile C palette indices used by the
 // selected SKT corpus into the packed byte consumed by the GVM display path.
 //
-// The supported subset is deliberate: the four documented fixed colors and
-// the 124 normal colors. Gray-blink and color-blink indices remain unsupported
-// until their temporal behavior is modeled. Index 4 is transparent and returns
+// The supported subset includes fixed and normal colors, plus the initial
+// phase of the reference player's blinking colors. The display currently
+// holds that phase steady. Index 4 is transparent and returns
 // a zero byte with ok=true; callers must preserve transparency separately.
 func SKTGammaColor(gamma, index uint8) (packed byte, ok bool) {
 	if gamma > 6 {
@@ -64,14 +65,41 @@ func SKTGammaColor(gamma, index uint8) (packed byte, ok bool) {
 		packed = 0x49
 	case 3, 4: // black, transparent
 		packed = 0
+	case 5, 11, 15:
+		packed = 0xff
+	case 6, 8, 12:
+		packed = 0x92
+	case 7, 9, 13:
+		packed = 0x49
+	case 10, 14:
+		packed = 0
 	default:
-		if index < 16 || index > 139 {
+		switch {
+		case index >= 16 && index <= 139:
+			packed = normalSKTPaletteByte(index)
+		case index >= 140 && index <= 181:
+			packed = initialSKTBlinkColor(index)
+		default:
 			return 0, false
 		}
-		packed = normalSKTPaletteByte(index)
 	}
 
 	return applySKTGamma(gamma, packed), true
+}
+
+// initialSKTBlinkColor returns the RGB332 color selected at the first blink
+// phase. Each three-selector group uses black or one of the standard RGB332
+// primaries and mixtures. Time-dependent palette cycling is separate.
+func initialSKTBlinkColor(index uint8) byte {
+	colors := [...][3]byte{
+		{0, 0xe0, 0x1c}, {0, 0xfc, 0x48}, {0, 0x1c, 0x08},
+		{0, 0x1f, 0x09}, {0, 0x03, 0x01}, {0, 0xe3, 0x41},
+		{0, 0xe0, 0x40}, {0xe0, 0, 0xfc}, {0x48, 0xfd, 0},
+		{0x1c, 0x08, 0x1c}, {0, 0x1f, 0x09}, {0x1f, 0, 0x03},
+		{0x01, 0x03, 0}, {0xe3, 0x41, 0xe3},
+	}
+	offset := index - 140
+	return colors[offset/3][offset%3]
 }
 
 // normalSKTPaletteByte is the compact monotonic form of the documented

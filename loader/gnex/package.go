@@ -4,10 +4,10 @@
 // and an ".SGS"/".sgs" ("Sinji Game Script") payload. It also recognizes
 // standalone SGS payloads, raw or in a ZIP, using a stricter header check.
 //
-// This package recognizes a GNEX archive and decodes the payload's fixed
-// header (format version, title). It does not decode the GVM bytecode or
-// resource body that follows the header - that format has not been reverse
-// engineered. See docs/gnex-format.md for what is and is not known.
+// This package recognizes a GNEX archive and decodes its payload header.
+// It also exposes the supported version-1/2 execution image and the observed
+// version-4 symbol, media, and code layout. Execution belongs to the gvm and
+// gnex32 packages. See docs/gnex-format.md for the current compatibility scope.
 package gnex
 
 import (

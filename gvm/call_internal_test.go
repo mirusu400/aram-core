@@ -6,7 +6,7 @@ import (
 )
 
 // Supplemental internal check: no return/snapshot API is invented merely to
-// expose saved PCs while empty-return sentinel semantics remain deferred.
+// expose saved PCs while keeping the external empty-return sentinel outside guest memory.
 func TestCallStoresPostOperandPC(t *testing.T) {
 	v := New([]byte{0x44, 0, 3, 0x44, 0, 6, 0xff})
 	if err := v.Run(3); err != nil {
