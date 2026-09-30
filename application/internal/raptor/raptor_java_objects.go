@@ -257,22 +257,32 @@ func (r *Runtime) newRaptorJavaArray(element, count uint32) (uint32, error) {
 	if width, primitive := raptorJavaPrimitiveArrayElementSize(element); primitive {
 		elementSize = width
 	}
-	instance, err := r.Public.Heap.Allocate(12, true)
-	if err != nil || instance == 0 {
-		return 0, errors.New("allocate Raptor Java array")
+	java, err := r.ensureJavaRuntime()
+	if err != nil {
+		return 0, err
 	}
-	body, err := r.Public.Heap.Allocate(4+count*elementSize, true)
+	instance, err := java.Host.AllocateJavaHeapBytes(12, true)
+	if err != nil || instance == 0 {
+		if err == nil {
+			err = errRaptorGuestHeapExhausted
+		}
+		return 0, fmt.Errorf("allocate Raptor Java array: %w", err)
+	}
+	// The header is not reachable from guest roots until its body and vtable are
+	// linked. A collection while allocating either one must retain it.
+	java.constructing[instance] = true
+	defer delete(java.constructing, instance)
+	body, err := java.Host.AllocateJavaHeapBytes(4+count*elementSize, true)
 	if err != nil || body == 0 {
-		return 0, errors.New("allocate Raptor Java array body")
+		if err == nil {
+			err = errRaptorGuestHeapExhausted
+		}
+		return 0, fmt.Errorf("allocate Raptor Java array body (%d bytes): %w", 4+count*elementSize, err)
 	}
 	if err := r.Public.WriteU32(instance+8, body); err != nil {
 		return 0, err
 	}
 	if err := r.Public.WriteU32(body, count); err != nil {
-		return 0, err
-	}
-	java, err := r.ensureJavaRuntime()
-	if err != nil {
 		return 0, err
 	}
 	className := "[Ljava/lang/Object;"

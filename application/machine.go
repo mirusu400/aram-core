@@ -551,6 +551,7 @@ func (m *Machine) Reset(ctx context.Context) error {
 		}
 	}
 	if m.raptor != nil {
+		javaStorage := m.raptor.ExportJavaStorage()
 		if err := m.raptor.RestoreImage(); err != nil {
 			m.state = machinecore.StateFaulted
 			return err
@@ -574,6 +575,12 @@ func (m *Machine) Reset(ctx context.Context) error {
 		if err := m.raptor.InstallInterfaces(); err != nil {
 			m.state = machinecore.StateFaulted
 			return err
+		}
+		if javaStorage != nil {
+			if err := m.raptor.ImportJavaStorage(*javaStorage); err != nil {
+				m.state = machinecore.StateFaulted
+				return fmt.Errorf("restore Raptor Java storage for reset: %w", err)
+			}
 		}
 		if err := m.cpu.RestoreContext(m.initialContext); err != nil {
 			m.state = machinecore.StateFaulted
