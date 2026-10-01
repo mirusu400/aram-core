@@ -11,10 +11,11 @@ import (
 )
 
 const (
-	maxNativeImageBytes  = uint32(8 << 20)
-	maxNativeImagePixels = uint64(2_000_000)
-	idibColorScheme565   = byte(16)
-	aeeROTransparent     = uint32(7)
+	maxNativeImageBytes      = uint32(8 << 20)
+	maxNativeImagePixels     = uint64(2_000_000)
+	idibColorScheme565       = byte(16)
+	aeeROTransparent         = uint32(7)
+	nativeBitmapPixelsOffset = uint32(40)
 )
 
 type brewNativeImage struct {
@@ -104,9 +105,16 @@ func (r *Runtime) setupNativeImage() error {
 		}
 	}
 	if _, reused := r.nativeImages[object]; !reused {
-		direct, err := r.attachExpandedRGB565Backing(object, buffer, encoded, decoded)
-		if err != nil {
-			return err
+		direct := false
+		// A true ownership flag permits the caller to immediately free the
+		// original BMP. Never borrow its pixels in that case: the returned
+		// IDIB must own independent storage. Callers that omit the flag retain
+		// their allocation and may request an in-place handset surface.
+		if reallocated == 0 {
+			direct, err = r.attachExpandedRGB565Backing(object, buffer, encoded, decoded)
+			if err != nil {
+				return err
+			}
 		}
 		if !direct {
 			r.nativeImages[object] = brewNativeImage{encoded: buffer, span: encodedSize}
@@ -193,8 +201,12 @@ func (r *Runtime) reuseNativeBitmap(buffer, span uint32, decoded image.Image) (u
 		height := int(binary.LittleEndian.Uint16(header[22:24]))
 		pitch := int(binary.LittleEndian.Uint16(header[24:26]))
 		pixels := binary.LittleEndian.Uint32(header[8:12])
+		capacity := r.heapAllocated[pixels]
+		if pixels == object+nativeBitmapPixelsOffset && r.heapAllocated[object] >= nativeBitmapPixelsOffset {
+			capacity = r.heapAllocated[object] - nativeBitmapPixelsOffset
+		}
 		if width != decoded.Bounds().Dx() || height != decoded.Bounds().Dy() || pitch < width*2 ||
-			r.heapAllocated[pixels] < uint32(pitch*height) {
+			capacity < uint32(pitch*height) {
 			continue
 		}
 		if err := r.cpu.WriteMemory(pixels, nativeRGB565(decoded, pitch)); err != nil {
@@ -262,18 +274,16 @@ func (r *Runtime) createNativeBitmap(source image.Image) (uint32, error) {
 	}
 	pitch := int(pitch64)
 	pixelsSize := uint32(pixels64)
-	object, err := r.allocateGuest(36)
+	// Qualcomm's DIB constructor owns the header and pixel array in one
+	// allocation. Keep their relative layout stable even in a fragmented heap;
+	// legacy handset engines calibrate the native pixel offset using small BMPs.
+	object, err := r.allocateGuest(nativeBitmapPixelsOffset + pixelsSize)
 	if err != nil {
 		return 0, err
 	}
-	pixels, err := r.allocateGuest(pixelsSize)
-	if err != nil {
-		r.releaseGuest(object)
-		return 0, err
-	}
+	pixels := object + nativeBitmapPixelsOffset
 	data := nativeRGB565(source, pitch)
 	if err := r.cpu.WriteMemory(pixels, data); err != nil {
-		r.releaseGuest(pixels)
 		r.releaseGuest(object)
 		return 0, fmt.Errorf("write BREW native bitmap pixels: %w", err)
 	}
@@ -286,7 +296,6 @@ func (r *Runtime) createNativeBitmap(source image.Image) (uint32, error) {
 	header[28] = 16
 	header[29] = idibColorScheme565
 	if err := r.cpu.WriteMemory(object, header); err != nil {
-		r.releaseGuest(pixels)
 		r.releaseGuest(object)
 		return 0, fmt.Errorf("write BREW native bitmap header: %w", err)
 	}

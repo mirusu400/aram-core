@@ -192,6 +192,7 @@ type Runtime struct {
 	files            map[string][]byte
 	fileHandles      map[uint32]*brewFile
 	timers           []brewCallback
+	callbackSerial   uint64
 	cleanupCallbacks []brewCallback
 	boundary         *ExecutionBoundaryError
 	classIDs         []uint32
@@ -257,6 +258,7 @@ type brewMemAStream struct {
 }
 
 type brewCallback struct {
+	serial    uint64
 	function  uint32
 	context   uint32
 	remaining time.Duration
@@ -386,6 +388,11 @@ func (r *Runtime) mapImage(module []byte) error {
 	binary.LittleEndian.PutUint32(imageData[0:4], 0x00010000)
 	binary.LittleEndian.PutUint32(imageData[4:8], helperTableBase)
 	copy(imageData[8:], module)
+	var err error
+	imageData, err = patchBREWModule(module, imageData)
+	if err != nil {
+		return err
+	}
 	if err := r.cpu.Map(imageBase, uint32(len(imageData)), cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute); err != nil {
 		return fmt.Errorf("map BREW module: %w", err)
 	}
@@ -1728,7 +1735,7 @@ func (r *Runtime) handleAppletMethodTrap(
 				}
 			}
 			r.timers = kept
-			r.timers = append(r.timers, brewCallback{
+			r.queueCallback(brewCallback{
 				function:  function,
 				context:   user,
 				remaining: time.Duration(delayMS) * time.Millisecond,
@@ -1782,7 +1789,6 @@ func (r *Runtime) handleAppletMethodTrap(
 					if timer.remaining > 0 {
 						remaining = uint32(timer.remaining / time.Millisecond)
 					}
-					break
 				}
 			}
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, remaining); err != nil {
@@ -1857,7 +1863,7 @@ func (r *Runtime) handleAppletMethodTrap(
 				function := binary.LittleEndian.Uint32(data[16:20])
 				context := binary.LittleEndian.Uint32(data[20:24])
 				if function&^1 != 0 {
-					r.timers = append(r.timers, brewCallback{function: function, context: context})
+					r.queueCallback(brewCallback{function: function, context: context})
 				}
 			}
 			return resume()
@@ -2059,37 +2065,38 @@ func (r *Runtime) RunCallbacks(ctx context.Context, elapsed time.Duration) error
 		}
 		r.clock += elapsed
 	}
-	pending := append([]brewCallback(nil), r.cleanupCallbacks...)
+	cleanup := append([]brewCallback(nil), r.cleanupCallbacks...)
 	r.cleanupCallbacks = r.cleanupCallbacks[:0]
-	pending = append(pending, r.timers...)
-	r.timers = r.timers[:0]
-	for _, callback := range pending {
+	var due []uint64
+	for index := range r.timers {
+		callback := &r.timers[index]
+		if callback.serial == 0 {
+			r.callbackSerial++
+			callback.serial = r.callbackSerial
+		}
 		callback.remaining -= elapsed
-		if callback.remaining > 0 {
-			r.timers = append(r.timers, callback)
-			continue
+		if callback.remaining <= 0 {
+			due = append(due, callback.serial)
 		}
-		for register, value := range map[uint32]uint32{
-			cpu.RegisterR0: callback.context,
-			cpu.RegisterR1: 0,
-			cpu.RegisterR2: 0,
-			cpu.RegisterR3: 0,
-			cpu.RegisterSP: stackEntrySP,
-			cpu.RegisterLR: returnTrap | 1,
-		} {
-			if err := r.cpu.WriteRegister(register, value); err != nil {
-				return fmt.Errorf("initialize BREW callback register r%d: %w", register, err)
+	}
+	for _, callback := range cleanup {
+		if err := r.runCallback(ctx, callback); err != nil {
+			return err
+		}
+	}
+	// Keep due timers in the live queue until they are invoked. Earlier
+	// callbacks may cancel or replace them, including timers due in this frame.
+	// Serial identities distinguish a replacement from the old queued callback.
+	for _, serial := range due {
+		for index, callback := range r.timers {
+			if callback.serial != serial {
+				continue
 			}
-		}
-		pc, mode := branchTarget(callback.function)
-		updatesBefore := r.updates
-		if _, err := r.runAppletCode(ctx, pc, mode, "timer callback"); err != nil {
-			return fmt.Errorf("run BREW callback 0x%08x with context 0x%08x: %w", callback.function, callback.context, err)
-		}
-		if r.updates == updatesBefore {
-			if err := r.commitImplicitFramebuffer(); err != nil {
+			r.timers = append(r.timers[:index], r.timers[index+1:]...)
+			if err := r.runCallback(ctx, callback); err != nil {
 				return err
 			}
+			break
 		}
 	}
 	posted := append([]brewPostedEvent(nil), r.postedEvents...)
@@ -2100,6 +2107,38 @@ func (r *Runtime) RunCallbacks(ctx context.Context, elapsed time.Duration) error
 		}
 		if _, err := r.DispatchEvent(ctx, event.event, event.wParam, event.dwParam); err != nil {
 			return fmt.Errorf("dispatch BREW posted event 0x%03x: %w", event.event, err)
+		}
+	}
+	return nil
+}
+
+func (r *Runtime) queueCallback(callback brewCallback) {
+	r.callbackSerial++
+	callback.serial = r.callbackSerial
+	r.timers = append(r.timers, callback)
+}
+
+func (r *Runtime) runCallback(ctx context.Context, callback brewCallback) error {
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR0: callback.context,
+		cpu.RegisterR1: 0,
+		cpu.RegisterR2: 0,
+		cpu.RegisterR3: 0,
+		cpu.RegisterSP: stackEntrySP,
+		cpu.RegisterLR: returnTrap | 1,
+	} {
+		if err := r.cpu.WriteRegister(register, value); err != nil {
+			return fmt.Errorf("initialize BREW callback register r%d: %w", register, err)
+		}
+	}
+	pc, mode := branchTarget(callback.function)
+	updatesBefore := r.updates
+	if _, err := r.runAppletCode(ctx, pc, mode, "timer callback"); err != nil {
+		return fmt.Errorf("run BREW callback 0x%08x with context 0x%08x: %w", callback.function, callback.context, err)
+	}
+	if r.updates == updatesBefore {
+		if err := r.commitImplicitFramebuffer(); err != nil {
+			return err
 		}
 	}
 	return nil
