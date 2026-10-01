@@ -438,14 +438,41 @@ func (r *Runtime) storeRaptorJavaArray(
 }
 
 func (r *Runtime) checkRaptorJavaType() (guest.WIPIReturn, string, bool, error) {
-	instance, err := r.CPU.ReadRegister(cpu.RegisterR1)
+	const name = "RAPTOR.java.checkType"
+	target, err := r.CPU.ReadRegister(cpu.RegisterR0)
 	if err != nil {
-		return guest.WIPIReturn{}, "RAPTOR.java.checkType", true, err
+		return guest.WIPIReturn{}, name, true, err
 	}
-	if instance == 0 {
-		return guest.WIPIReturn{}, "RAPTOR.java.checkType", true, nil
+	actual, err := r.CPU.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return guest.WIPIReturn{}, name, true, err
 	}
-	return guest.WIPIReturn{Low: 1}, "RAPTOR.java.checkType", true, nil
+	if actual == 0 {
+		return guest.WIPIReturn{}, name, true, nil
+	}
+	if target == 0 || target == actual {
+		return guest.WIPIReturn{Low: 1}, name, true, nil
+	}
+
+	java, err := r.ensureJavaRuntime()
+	if err != nil {
+		return guest.WIPIReturn{}, name, true, err
+	}
+	targetClass := r.raptorJavaClassForObject(java, target)
+	actualClass := r.raptorJavaClassForObject(java, actual)
+	if targetClass == nil || actualClass == nil {
+		// Raptor also uses this ordinal with compact, non-class tokens. Preserve
+		// the historical non-null result when either form cannot be resolved.
+		return guest.WIPIReturn{Low: 1}, name, true, nil
+	}
+	if r.raptorClassImplements(java, actualClass, targetClass.Name) {
+		return guest.WIPIReturn{Low: 1}, name, true, nil
+	}
+
+	// Legend of Master casts the selected inventory entry before assigning it
+	// to an equipment slot. Treating every non-null class token as compatible
+	// allowed sibling types such as potions to replace the selected equipment.
+	return guest.WIPIReturn{}, name, true, nil
 }
 
 // resolveRaptorJavaOverload re-selects an overloaded host method from the actual
