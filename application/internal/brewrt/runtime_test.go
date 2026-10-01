@@ -51,6 +51,50 @@ func TestRuntimeBootstrapsSyntheticARMModule(t *testing.T) {
 	}
 }
 
+func TestRuntimeMapsModuleAtBREWLinkTimeDataAddresses(t *testing.T) {
+	// The code is position independent, but its writable image uses absolute
+	// low addresses. Load a module object through such a data reference.
+	const dataOffset = 0x10010
+	module := make([]byte, dataOffset+4)
+	for offset, instruction := range []uint32{
+		0xe59f3010, // ldr r3, [pc, #16]
+		0xe5930000, // ldr r0, [r3]
+		0xe5820000, // str r0, [r2]
+		0xe3a00000, // mov r0, #0
+		0xe12fff1e, // bx lr
+		0xe1a00000, // nop
+		moduleBase + dataOffset,
+	} {
+		binary.LittleEndian.PutUint32(module[offset*4:], instruction)
+	}
+	binary.LittleEndian.PutUint32(module[dataOffset:], heapBase)
+	runtime, err := New(Package{Module: module})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if err := runtime.Bootstrap(context.Background()); err != nil {
+		t.Fatalf("bootstrap module with absolute data reference: %v", err)
+	}
+	if got := runtime.ModuleObject(); got != heapBase {
+		t.Fatalf("module object = 0x%08x, want 0x%08x", got, heapBase)
+	}
+}
+
+func TestRuntimeMapsLowMemoryReadOnly(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	var low [16]byte
+	if err := runtime.cpu.ReadMemory(0, low[:]); err != nil {
+		t.Fatalf("read low BREW memory: %v", err)
+	}
+	if low != [16]byte{} {
+		t.Fatalf("low BREW memory = %x, want zeroes", low)
+	}
+	if err := runtime.cpu.WriteMemory(0, []byte{1}); err == nil {
+		t.Fatal("write to read-only low BREW memory succeeded")
+	}
+}
+
 func TestRuntimeBootstrapDispatchesShellServicesBeforeModuleReturn(t *testing.T) {
 	// The module entry requests IFileMgr through IShell::CreateInstance, then
 	// allocates and returns its module object. Older loader loops rejected the
@@ -1398,6 +1442,166 @@ func TestLegacySoundAndActiveAppletContracts(t *testing.T) {
 	}
 	if got := binary.LittleEndian.Uint32(encoded[:]); got != 0 {
 		t.Fatalf("unsupported CreateInstance object = 0x%08x, want null", got)
+	}
+}
+
+func TestShellAppletLaunchContracts(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	runtime.activeClassID = 0x01020304
+
+	call := func(slot uint32, classID uint32) uint32 {
+		t.Helper()
+		for register, value := range map[uint32]uint32{
+			cpu.RegisterR1: classID,
+			cpu.RegisterLR: returnTrap | 1,
+		} {
+			if err := runtime.cpu.WriteRegister(register, value); err != nil {
+				t.Fatal(err)
+			}
+		}
+		handled, _, _, err := runtime.handleAppletMethodTrap(shellMethodTrapBase + slot*2 + 2)
+		if err != nil || !handled {
+			t.Fatalf("IShell slot %d handled=%v err=%v", slot, handled, err)
+		}
+		result, err := runtime.cpu.ReadRegister(cpu.RegisterR0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+
+	if got := call(5, runtime.activeClassID); got != 0 {
+		t.Fatalf("StartApplet(active) = %d, want SUCCESS", got)
+	}
+	if got := call(5, 0x01010eb4); got != 3 {
+		t.Fatalf("StartApplet(unsupported) = %d, want AEE_ECLASSNOTSUPPORT", got)
+	}
+	if got := call(7, runtime.activeClassID); got != 1 {
+		t.Fatalf("CanStartApplet(active) = %d, want true", got)
+	}
+	if got := call(7, 0x01010eb4); got != 0 {
+		t.Fatalf("CanStartApplet(unsupported) = %d, want false", got)
+	}
+}
+
+func TestShellTimerExpirationAdvancesDuringGuestPolling(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	callback := moduleBase + 0x40
+	context := heapBase + 0x80
+	runtime.timers = []brewCallback{{
+		function:  callback,
+		context:   context,
+		remaining: 3 * time.Millisecond,
+	}}
+
+	for call, want := range []uint32{2, 1, 0} {
+		for register, value := range map[uint32]uint32{
+			cpu.RegisterR1: callback,
+			cpu.RegisterR2: context,
+			cpu.RegisterLR: returnTrap | 1,
+		} {
+			if err := runtime.cpu.WriteRegister(register, value); err != nil {
+				t.Fatal(err)
+			}
+		}
+		handled, _, _, err := runtime.handleAppletMethodTrap(shellMethodTrapBase + 13*2 + 2)
+		if err != nil || !handled {
+			t.Fatalf("GetTimerExpiration call %d handled=%v err=%v", call, handled, err)
+		}
+		got, err := runtime.cpu.ReadRegister(cpu.RegisterR0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("GetTimerExpiration call %d = %d, want %d", call, got, want)
+		}
+	}
+	if runtime.clock != 3*time.Millisecond {
+		t.Fatalf("clock = %v, want 3ms", runtime.clock)
+	}
+}
+
+func TestShellTimerResetAndWildcardCancellation(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	context := heapBase + 0x80
+	setTimer := func(function uint32, delay uint32) {
+		t.Helper()
+		for register, value := range map[uint32]uint32{
+			cpu.RegisterR1: delay,
+			cpu.RegisterR2: function,
+			cpu.RegisterR3: context,
+			cpu.RegisterLR: returnTrap | 1,
+		} {
+			if err := runtime.cpu.WriteRegister(register, value); err != nil {
+				t.Fatal(err)
+			}
+		}
+		handled, _, _, err := runtime.handleAppletMethodTrap(shellMethodTrapBase + 11*2 + 2)
+		if err != nil || !handled {
+			t.Fatalf("SetTimer handled=%v err=%v", handled, err)
+		}
+	}
+
+	setTimer(1, 10)
+	if len(runtime.timers) != 0 {
+		t.Fatalf("null-derived callback queued timers: %#v", runtime.timers)
+	}
+	setTimer(moduleBase+0x40, 10)
+	setTimer(moduleBase+0x40, 20)
+	if len(runtime.timers) != 1 || runtime.timers[0].remaining != 20*time.Millisecond {
+		t.Fatalf("reset timers = %#v, want one 20ms timer", runtime.timers)
+	}
+	setTimer(moduleBase+0x80, 30)
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR1: 0,
+		cpu.RegisterR2: context,
+		cpu.RegisterLR: returnTrap | 1,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handled, _, _, err := runtime.handleAppletMethodTrap(shellMethodTrapBase + 12*2 + 2)
+	if err != nil || !handled {
+		t.Fatalf("CancelTimer wildcard handled=%v err=%v", handled, err)
+	}
+	if len(runtime.timers) != 0 {
+		t.Fatalf("wildcard cancel left timers: %#v", runtime.timers)
+	}
+}
+
+func TestTimerCallbackClearsUnspecifiedArgumentRegisters(t *testing.T) {
+	module := make([]byte, 16)
+	for offset, instruction := range []uint32{
+		0xe5801000, // str r1, [r0]
+		0xe5802004, // str r2, [r0, #4]
+		0xe5803008, // str r3, [r0, #8]
+		0xe12fff1e, // bx lr
+	} {
+		binary.LittleEndian.PutUint32(module[offset*4:], instruction)
+	}
+	runtime, err := New(Package{Module: module})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	for register := cpu.RegisterR1; register <= cpu.RegisterR3; register++ {
+		if err := runtime.cpu.WriteRegister(register, 0xffffffff); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runtime.timers = []brewCallback{{function: moduleBase, context: outputAddr}}
+	if err := runtime.RunCallbacks(context.Background(), 0); err != nil {
+		t.Fatal(err)
+	}
+	var encoded [12]byte
+	if err := runtime.cpu.ReadMemory(outputAddr, encoded[:]); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 3; index++ {
+		if got := binary.LittleEndian.Uint32(encoded[index*4:]); got != 0 {
+			t.Fatalf("callback r%d = 0x%08x, want zero", index+1, got)
+		}
 	}
 }
 

@@ -224,7 +224,7 @@ func (r *Runtime) clearMemAStream(stream brewMemAStream) {
 	if stream.buffer == 0 {
 		return
 	}
-	if stream.freeCallback != 0 {
+	if stream.freeCallback&^1 != 0 {
 		r.cleanupCallbacks = append(r.cleanupCallbacks, brewCallback{function: stream.freeCallback, context: stream.freeContext})
 		return
 	}

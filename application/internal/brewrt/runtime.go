@@ -19,7 +19,12 @@ import (
 )
 
 const (
-	moduleBase            = uint32(0x01000000)
+	// Qualcomm's elf2mod linker emits position-independent code but keeps the
+	// writable image at its low, link-time addresses. Loading the module at
+	// 0x10000 preserves those absolute data references while leaving room for
+	// the two loader words immediately before the entry veneer.
+	moduleBase            = uint32(0x00010000)
+	moduleBSSSlack        = uint32(1 << 20)
 	helperBase            = uint32(0x02000000)
 	helperTableBase       = helperBase + 0x4000
 	allocTrap             = helperBase + 0x800
@@ -369,7 +374,15 @@ func (r *Runtime) screenBytes() uint32 {
 
 func (r *Runtime) mapImage(module []byte) error {
 	imageBase := moduleBase - 8
-	imageData := make([]byte, len(module)+8)
+	// Original BREW handsets expose low physical memory without an MMU. Some
+	// commercial modules make harmless reads through a null-derived pointer
+	// and expect zero-filled memory rather than a host access violation. Keep
+	// the range non-writable and non-executable so corrupt stores and branches
+	// still fail at the execution boundary.
+	if err := r.cpu.Map(0, imageBase, cpu.PermissionRead); err != nil {
+		return fmt.Errorf("map BREW low memory: %w", err)
+	}
+	imageData := make([]byte, len(module)+8+int(moduleBSSSlack))
 	binary.LittleEndian.PutUint32(imageData[0:4], 0x00010000)
 	binary.LittleEndian.PutUint32(imageData[4:8], helperTableBase)
 	copy(imageData[8:], module)
@@ -791,7 +804,7 @@ func (r *Runtime) runAppletCode(
 		default:
 			handled, nextPC, nextMode, err := r.handleAppletMethodTrap(result.PC)
 			if err != nil {
-				return 0, err
+				return 0, fmt.Errorf("%s: %w", lastHostCall, err)
 			}
 			if !handled {
 				return 0, fmt.Errorf("unexpected BREW applet breakpoint at PC 0x%08x", result.PC-2)
@@ -805,7 +818,7 @@ func (r *Runtime) runAppletCode(
 		}
 		pc, mode = nextPC, nextMode
 	}
-	return 0, fmt.Errorf("BREW applet %s exceeded host-call limit", operation)
+	return 0, fmt.Errorf("BREW applet %s exceeded host-call limit after %s", operation, lastHostCall)
 }
 
 func describeHostTrap(pc uint32) string {
@@ -1657,9 +1670,31 @@ func (r *Runtime) handleAppletMethodTrap(
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
+		case 5: // StartApplet(IShell *, AEECLSID, ...)
+			classID, err := r.cpu.ReadRegister(cpu.RegisterR1)
+			if err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("read BREW start-applet ClassID: %w", err)
+			}
+			status := uint32(3) // AEE_ECLASSNOTSUPPORT
+			if classID != 0 && classID == r.activeClassID {
+				status = 0
+			}
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, status); err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW start-applet status: %w", err)
+			}
+			return resume()
 		case 6: // CloseApplet
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
 				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 7: // CanStartApplet(IShell *, AEECLSID)
+			classID, err := r.cpu.ReadRegister(cpu.RegisterR1)
+			if err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("read BREW startable ClassID: %w", err)
+			}
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, boolWord(classID != 0 && classID == r.activeClassID)); err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW startable result: %w", err)
 			}
 			return resume()
 		case 8: // ActiveApplet(IShell *) returns the top-visible applet's ClassID.
@@ -1680,12 +1715,19 @@ func (r *Runtime) handleAppletMethodTrap(
 			if err != nil {
 				return true, 0, cpu.ModeARM, fmt.Errorf("read BREW timer context: %w", err)
 			}
-			if function == 0 {
+			if function&^1 == 0 {
 				if err := r.cpu.WriteRegister(cpu.RegisterR0, 2); err != nil {
 					return true, 0, cpu.ModeARM, err
 				}
 				return resume()
 			}
+			kept := r.timers[:0]
+			for _, timer := range r.timers {
+				if timer.function != function || timer.context != user {
+					kept = append(kept, timer)
+				}
+			}
+			r.timers = kept
 			r.timers = append(r.timers, brewCallback{
 				function:  function,
 				context:   user,
@@ -1706,7 +1748,9 @@ func (r *Runtime) handleAppletMethodTrap(
 			}
 			kept := r.timers[:0]
 			for _, timer := range r.timers {
-				if timer.function != function || timer.context != context {
+				functionMatches := function == 0 || timer.function == function
+				contextMatches := context == 0 || timer.context == context
+				if !functionMatches || !contextMatches {
 					kept = append(kept, timer)
 				}
 			}
@@ -1724,8 +1768,16 @@ func (r *Runtime) handleAppletMethodTrap(
 			if err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
+			// Guest code can poll an expiration from inside an event or callback.
+			// The cooperative clock otherwise advances only between callbacks,
+			// which would turn that valid wait into an infinite host-call loop.
+			r.clock += time.Millisecond
 			remaining := uint32(0)
-			for _, timer := range r.timers {
+			for index := range r.timers {
+				timer := &r.timers[index]
+				if timer.remaining > 0 {
+					timer.remaining -= min(timer.remaining, time.Millisecond)
+				}
 				if timer.function == function && timer.context == context {
 					if timer.remaining > 0 {
 						remaining = uint32(timer.remaining / time.Millisecond)
@@ -1804,7 +1856,7 @@ func (r *Runtime) handleAppletMethodTrap(
 				}
 				function := binary.LittleEndian.Uint32(data[16:20])
 				context := binary.LittleEndian.Uint32(data[20:24])
-				if function != 0 {
+				if function&^1 != 0 {
 					r.timers = append(r.timers, brewCallback{function: function, context: context})
 				}
 			}
@@ -2019,6 +2071,9 @@ func (r *Runtime) RunCallbacks(ctx context.Context, elapsed time.Duration) error
 		}
 		for register, value := range map[uint32]uint32{
 			cpu.RegisterR0: callback.context,
+			cpu.RegisterR1: 0,
+			cpu.RegisterR2: 0,
+			cpu.RegisterR3: 0,
 			cpu.RegisterSP: stackEntrySP,
 			cpu.RegisterLR: returnTrap | 1,
 		} {
@@ -2029,7 +2084,7 @@ func (r *Runtime) RunCallbacks(ctx context.Context, elapsed time.Duration) error
 		pc, mode := branchTarget(callback.function)
 		updatesBefore := r.updates
 		if _, err := r.runAppletCode(ctx, pc, mode, "timer callback"); err != nil {
-			return err
+			return fmt.Errorf("run BREW callback 0x%08x with context 0x%08x: %w", callback.function, callback.context, err)
 		}
 		if r.updates == updatesBefore {
 			if err := r.commitImplicitFramebuffer(); err != nil {
