@@ -174,6 +174,9 @@ func (m *brewMachine) Start(ctx context.Context) error {
 		}
 		m.started = true
 	}
+	if stopped, err := m.finishCloseRequestLocked(ctx); stopped || err != nil {
+		return err
+	}
 	return m.stepLocked(ctx)
 }
 
@@ -267,6 +270,9 @@ func (m *brewMachine) stepLocked(ctx context.Context) error {
 	if err := m.runtime.RunCallbacks(ctx, brewFrameDuration); err != nil {
 		return m.executionErrorLocked("run BREW timer callback", err)
 	}
+	if stopped, err := m.finishCloseRequestLocked(ctx); stopped || err != nil {
+		return err
+	}
 	due := dueBREWInputCount(m.input, m.now)
 	for _, event := range m.input[:due] {
 		key, ok := brewKeyCode(event.Control)
@@ -275,13 +281,11 @@ func (m *brewMachine) stepLocked(ctx context.Context) error {
 		}
 		if event.Control == "end" {
 			if event.Pressed {
-				closed, err := m.runtime.StopApplet(ctx)
+				closed, err := m.stopAppletLocked(ctx)
 				if err != nil {
-					return m.executionErrorLocked("stop BREW applet", err)
+					return err
 				}
 				if closed {
-					m.input = nil
-					m.state = machinecore.StateStopped
 					return nil
 				}
 			}
@@ -294,6 +298,9 @@ func (m *brewMachine) stepLocked(ctx context.Context) error {
 			if _, err := m.runtime.DispatchEvent(ctx, 0x100, key, 0); err != nil {
 				return m.executionErrorLocked(fmt.Sprintf("dispatch BREW key %q", event.Control), err)
 			}
+			if stopped, err := m.finishCloseRequestLocked(ctx); stopped || err != nil {
+				return err
+			}
 		}
 		kind := uint32(0x102)
 		if event.Pressed {
@@ -301,6 +308,9 @@ func (m *brewMachine) stepLocked(ctx context.Context) error {
 		}
 		if _, err := m.runtime.DispatchEvent(ctx, kind, key, 0); err != nil {
 			return m.executionErrorLocked(fmt.Sprintf("dispatch BREW input %q", event.Control), err)
+		}
+		if stopped, err := m.finishCloseRequestLocked(ctx); stopped || err != nil {
+			return err
 		}
 	}
 	m.input = append(m.input[:0], m.input[due:]...)
@@ -314,6 +324,25 @@ func (m *brewMachine) stepLocked(ctx context.Context) error {
 		m.guestFrame = true
 	}
 	return nil
+}
+
+func (m *brewMachine) finishCloseRequestLocked(ctx context.Context) (bool, error) {
+	if !m.runtime.TakeCloseRequest() {
+		return false, nil
+	}
+	return m.stopAppletLocked(ctx)
+}
+
+func (m *brewMachine) stopAppletLocked(ctx context.Context) (bool, error) {
+	closed, err := m.runtime.StopApplet(ctx)
+	if err != nil {
+		return false, m.executionErrorLocked("stop BREW applet", err)
+	}
+	if closed {
+		m.input = nil
+		m.state = machinecore.StateStopped
+	}
+	return closed, nil
 }
 
 func dueBREWInputCount(input []machinecore.InputEvent, elapsed time.Duration) int {

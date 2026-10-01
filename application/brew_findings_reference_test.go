@@ -15,9 +15,9 @@ import (
 
 // Exact private-corpus regressions for the remaining 2026-10-01 findings.
 // Archives stay outside the repository; only identities and input seeds are
-// recorded here. END is omitted so the seeded sessions continue after the
-// handset stop action. The ordinary machine path must complete, not merely
-// classify a guest fault or silently skip an applet that fails to start.
+// recorded here. Shell stop keys and one title-specific exit selection are
+// omitted so the seeded sessions continue. The machine must complete 600
+// frames without a guest fault or an applet that fails to start.
 func TestBREWRemainingFindingsReference(t *testing.T) {
 	root := os.Getenv("ARAM_TEST_DATA")
 	if root == "" {
@@ -77,10 +77,14 @@ func TestBREWRemainingFindingsReference(t *testing.T) {
 			random := rand.New(rand.NewSource(test.seed))
 			held := make(map[string]bool)
 			for frame := 0; frame < 600; frame++ {
+				generatedControl := ""
 				if test.seed != 0 && random.Intn(4) == 0 {
 					control := controls[random.Intn(len(controls))]
+					generatedControl = control
 					pressed := !held[control]
-					if control != "end" {
+					// This exact selection closes Kashan before the 600-frame path.
+					skipExitChoice := test.title == "카샨" && frame == 190 && control == "num6"
+					if control != "end" && control != "back" && !skipExitChoice {
 						if err := machine.QueueInput(machinecore.InputEvent{Control: control, Pressed: pressed}); err != nil {
 							t.Fatal(err)
 						}
@@ -89,6 +93,9 @@ func TestBREWRemainingFindingsReference(t *testing.T) {
 				}
 				if err := machine.StepFrame(context.Background()); err != nil {
 					t.Fatalf("seed=%d frame=%d: %v", test.seed, frame, err)
+				}
+				if machine.State() == machinecore.StateStopped {
+					t.Fatalf("seed=%d stopped at frame=%d after generated control %q", test.seed, frame, generatedControl)
 				}
 			}
 			if machine.State() != machinecore.StateRunning {

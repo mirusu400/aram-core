@@ -229,6 +229,7 @@ type Runtime struct {
 	textRaster       *shared.Text
 	displayFont      shared.ServiceID
 	postedEvents     []brewPostedEvent
+	closeRequested   bool
 
 	preferPackedAECHAR bool
 }
@@ -717,6 +718,14 @@ func (r *Runtime) StopApplet(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("read BREW stop parameter: %w", err)
 	}
 	return closeFlag[0] != 0, nil
+}
+
+// TakeCloseRequest reports an applet's IShell::CloseApplet request after the
+// current guest event returns, so the shell can deliver EVT_APP_STOP.
+func (r *Runtime) TakeCloseRequest() bool {
+	requested := r.closeRequested
+	r.closeRequested = false
+	return requested
 }
 
 // DispatchEvent invokes the applet's real IApplet::HandleEvent.
@@ -1730,6 +1739,7 @@ func (r *Runtime) handleAppletMethodTrap(
 			}
 			return resume()
 		case 6: // CloseApplet
+			r.closeRequested = true
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
@@ -2151,9 +2161,13 @@ func (r *Runtime) RunCallbacks(ctx context.Context, elapsed time.Duration) error
 			due = append(due, callback.serial)
 		}
 	}
-	for _, callback := range cleanup {
+	for index, callback := range cleanup {
 		if err := r.runCallback(ctx, callback); err != nil {
 			return err
+		}
+		if r.closeRequested {
+			r.cleanupCallbacks = append(append([]brewCallback(nil), cleanup[index+1:]...), r.cleanupCallbacks...)
+			return nil
 		}
 	}
 	// Keep due timers in the live queue until they are invoked. Earlier
@@ -2168,17 +2182,24 @@ func (r *Runtime) RunCallbacks(ctx context.Context, elapsed time.Duration) error
 			if err := r.runCallback(ctx, callback); err != nil {
 				return err
 			}
+			if r.closeRequested {
+				return nil
+			}
 			break
 		}
 	}
 	posted := append([]brewPostedEvent(nil), r.postedEvents...)
 	r.postedEvents = r.postedEvents[:0]
-	for _, event := range posted {
+	for index, event := range posted {
 		if event.classID != 0 && event.classID != r.activeClassID {
 			continue
 		}
 		if _, err := r.DispatchEvent(ctx, event.event, event.wParam, event.dwParam); err != nil {
 			return fmt.Errorf("dispatch BREW posted event 0x%03x: %w", event.event, err)
+		}
+		if r.closeRequested {
+			r.postedEvents = append(append([]brewPostedEvent(nil), posted[index+1:]...), r.postedEvents...)
+			return nil
 		}
 	}
 	return nil

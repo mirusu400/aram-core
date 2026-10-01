@@ -1484,6 +1484,23 @@ func TestShellAppletLaunchContracts(t *testing.T) {
 	}
 }
 
+func TestShellCloseAppletRequestsStop(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	if err := runtime.cpu.WriteRegister(cpu.RegisterLR, returnTrap|1); err != nil {
+		t.Fatal(err)
+	}
+	handled, _, _, err := runtime.handleAppletMethodTrap(shellMethodTrapBase + 6*2 + 2)
+	if err != nil || !handled {
+		t.Fatalf("IShell::CloseApplet handled=%v err=%v", handled, err)
+	}
+	if status, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || status != 0 {
+		t.Fatalf("CloseApplet status=%d err=%v, want success", status, err)
+	}
+	if !runtime.TakeCloseRequest() || runtime.TakeCloseRequest() {
+		t.Fatal("CloseApplet request was not delivered exactly once")
+	}
+}
+
 func TestShellTimerExpirationAdvancesDuringGuestPolling(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	callback := moduleBase + 0x40

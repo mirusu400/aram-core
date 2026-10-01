@@ -13,8 +13,8 @@ import (
 	machinecore "github.com/mirusu400/aram-core/core"
 )
 
-// Replays issue 392's seeded session with END omitted so its database path is
-// reached after the handset stop point. Private bytes remain in the corpus.
+// Replays issue 392's seeded session with END and BACK omitted so its database
+// path continues after the shell stop points. Private bytes remain in the corpus.
 func TestBREWFuzzIssue392Reference(t *testing.T) {
 	root := os.Getenv("ARAM_TEST_DATA")
 	if root == "" {
@@ -65,7 +65,7 @@ func TestBREWFuzzIssue392Reference(t *testing.T) {
 				if test.seed != 0 && random.Intn(4) == 0 {
 					control := controls[random.Intn(len(controls))]
 					pressed := !held[control]
-					if control != "end" {
+					if control != "end" && control != "back" {
 						if err := machine.QueueInput(machinecore.InputEvent{Control: control, Pressed: pressed}); err != nil {
 							t.Fatal(err)
 						}
