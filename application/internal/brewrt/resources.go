@@ -483,6 +483,13 @@ func (r *Runtime) releaseInterfaceObject(address uint32) {
 			r.releaseGuest(binary.LittleEndian.Uint32(encoded[8:12]))
 		case fileVTable:
 			delete(r.fileHandles, address)
+		case databaseVTable:
+			delete(r.databaseHandles, address)
+		case dbRecordVTable:
+			if handle := r.dbRecordHandles[address]; handle != nil {
+				r.releaseGuest(handle.dataAddress)
+				delete(r.dbRecordHandles, address)
+			}
 		}
 	}
 	r.releaseGuest(address)

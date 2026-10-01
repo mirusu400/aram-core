@@ -26,6 +26,7 @@ const (
 	DisplayClassID        = uint32(0x01001001)
 	HeapClassID           = uint32(0x01001002)
 	FileMgrClassID        = uint32(0x01001003)
+	DBMgrClassID          = uint32(0x01001008)
 	OptionalDeviceClassID = uint32(0x018000fe)
 	KTFServiceClassID     = uint32(0x018000fc)
 	SoundPlayerClassID    = uint32(0x01002000)

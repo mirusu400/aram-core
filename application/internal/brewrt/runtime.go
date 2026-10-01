@@ -162,6 +162,17 @@ const (
 	memAStreamVTable      = controlServiceBase + 0x900
 	memAStreamTrapBase    = controlServiceBase + 0xa00
 	memAStreamMethodCount = uint32(7)
+	dbServiceBase         = controlServiceBase + 0x2000
+	dbMgrObject           = dbServiceBase + 0x100
+	dbMgrVTable           = dbServiceBase + 0x200
+	dbMgrTrapBase         = dbServiceBase + 0x300
+	dbMgrMethodCount      = uint32(5)
+	databaseVTable        = dbServiceBase + 0x400
+	databaseTrapBase      = dbServiceBase + 0x500
+	databaseMethodCount   = uint32(7)
+	dbRecordVTable        = dbServiceBase + 0x600
+	dbRecordTrapBase      = dbServiceBase + 0x700
+	dbRecordMethodCount   = uint32(11)
 	maxPostedEvents       = 1024
 
 	guestInstructionBudget     = uint64(16_000_000)
@@ -191,6 +202,10 @@ type Runtime struct {
 	eventCounts      map[uint32]uint64
 	files            map[string][]byte
 	fileHandles      map[uint32]*brewFile
+	databases        map[string]*brewDatabase
+	databaseHandles  map[uint32]*brewDatabaseHandle
+	dbRecordHandles  map[uint32]*brewDBRecordHandle
+	dbServicesMapped bool
 	timers           []brewCallback
 	callbackSerial   uint64
 	cleanupCallbacks []brewCallback
@@ -348,18 +363,21 @@ func New(pkg Package) (*Runtime, error) {
 		screenHeight:  uint32(pkg.DisplaySize().Y),
 		heapAllocated: make(map[uint32]uint32),
 		eventCounts:   make(map[uint32]uint64), classIDs: classIDs,
-		fileHandles:  make(map[uint32]*brewFile),
-		randomState:  1,
-		preferences:  make(map[brewPreferenceKey][]byte),
-		memAStreams:  make(map[uint32]brewMemAStream),
-		imageStreams: make(map[uint32]uint32),
-		imageDraws:   make(map[uint32]brewImageDraw),
-		nativeImages: make(map[uint32]brewNativeImage),
-		textRaster:   displayText,
-		displayFont:  displayFont,
-		soundVolume:  100,
-		media:        media,
-		mediaEvents:  shared.NewEventBus(0, 0),
+		fileHandles:     make(map[uint32]*brewFile),
+		databases:       make(map[string]*brewDatabase),
+		databaseHandles: make(map[uint32]*brewDatabaseHandle),
+		dbRecordHandles: make(map[uint32]*brewDBRecordHandle),
+		randomState:     1,
+		preferences:     make(map[brewPreferenceKey][]byte),
+		memAStreams:     make(map[uint32]brewMemAStream),
+		imageStreams:    make(map[uint32]uint32),
+		imageDraws:      make(map[uint32]brewImageDraw),
+		nativeImages:    make(map[uint32]brewNativeImage),
+		textRaster:      displayText,
+		displayFont:     displayFont,
+		soundVolume:     100,
+		media:           media,
+		mediaEvents:     shared.NewEventBus(0, 0),
 
 		preferPackedAECHAR: pkg.PreferPackedAECHAR,
 	}
@@ -865,6 +883,9 @@ func describeHostTrap(pc uint32) string {
 		{"ITextCtl", textCtlTrapBase, textCtlMethodCount},
 		{"IMenuCtl", menuCtlTrapBase, menuCtlMethodCount},
 		{"IMemAStream", memAStreamTrapBase, memAStreamMethodCount},
+		{"IDBMgr", dbMgrTrapBase, dbMgrMethodCount},
+		{"IDatabase", databaseTrapBase, databaseMethodCount},
+		{"IDBRecord", dbRecordTrapBase, dbRecordMethodCount},
 		{"IKTFService", ktfServiceTrapBase, ktfServiceMethodCount},
 	} {
 		if pc >= candidate.base+2 && pc < candidate.base+candidate.count*2+2 {
@@ -1985,6 +2006,39 @@ func (r *Runtime) handleAppletMethodTrap(
 		default:
 			return boundary("ISound", slot)
 		}
+	}
+	if breakpoint >= dbMgrTrapBase+2 && breakpoint < dbMgrTrapBase+dbMgrMethodCount*2+2 {
+		slot := (breakpoint - 2 - dbMgrTrapBase) / 2
+		switch slot {
+		case 2: // OpenDatabase
+			if err := r.openDatabase(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 3: // Remove
+			if err := r.removeDatabase(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 4: // SetCacheSize is a cache hint; this in-memory implementation needs no cache.
+			return resume()
+		default:
+			return boundary("IDBMgr", slot)
+		}
+	}
+	if breakpoint >= databaseTrapBase+2 && breakpoint < databaseTrapBase+databaseMethodCount*2+2 {
+		slot := (breakpoint - 2 - databaseTrapBase) / 2
+		if err := r.handleDatabase(slot); err != nil {
+			return true, 0, cpu.ModeARM, err
+		}
+		return resume()
+	}
+	if breakpoint >= dbRecordTrapBase+2 && breakpoint < dbRecordTrapBase+dbRecordMethodCount*2+2 {
+		slot := (breakpoint - 2 - dbRecordTrapBase) / 2
+		if err := r.handleDBRecord(slot); err != nil {
+			return true, 0, cpu.ModeARM, err
+		}
+		return resume()
 	}
 	if breakpoint >= fileMgrTrapBase+2 && breakpoint < fileMgrTrapBase+fileMgrMethodCount*2+2 {
 		slot := (breakpoint - 2 - fileMgrTrapBase) / 2
@@ -3729,6 +3783,12 @@ func (r *Runtime) createShellInstance() error {
 		object = heapObject
 	case FileMgrClassID:
 		object = fileMgrObject
+	case DBMgrClassID:
+		if err = r.mapDatabaseServices(); err != nil {
+			status = 1 // AEE_ENOMEM
+		} else {
+			object = dbMgrObject
+		}
 	case OptionalDeviceClassID:
 		object = deviceModelObject
 	case KTFServiceClassID:
