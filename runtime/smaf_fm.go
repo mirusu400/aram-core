@@ -193,6 +193,7 @@ type smafEnvelope struct {
 	decayMultiplier, sustainMultiplier float64
 	releaseMultiplier, sustainLevel    float64
 	ignoreKeyOff                       bool
+	sustaining                         bool
 }
 
 const (
@@ -280,6 +281,7 @@ func (envelope *smafEnvelope) configure(
 		envelope.sustainLevel = math.Pow(10, -3*float64(patch.sl)/20)
 	}
 	envelope.ignoreKeyOff = patch.xof
+	envelope.sustaining = patch.egType
 	envelope.phase = smafEnvelopeIdle
 	envelope.level = 0
 }
@@ -317,7 +319,11 @@ func (envelope *smafEnvelope) advance() float64 {
 		if envelope.level <= envelope.sustainLevel ||
 			envelope.level <= 1.0/32768 {
 			envelope.level = envelope.sustainLevel
-			envelope.phase = smafEnvelopeSustain
+			if envelope.sustaining {
+				envelope.phase = smafEnvelopeSustain
+			} else {
+				envelope.phase = smafEnvelopeRelease
+			}
 			if envelope.level == 0 {
 				envelope.phase = smafEnvelopeIdle
 			}

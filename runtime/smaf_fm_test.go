@@ -12,6 +12,7 @@ func TestSMAFEnvelopeUsesMobileFMLevelAndZeroRateSemantics(t *testing.T) {
 		sr: 0,
 		rr: 0,
 		sl: 6,
+		egType: true,
 	}
 	var envelope smafEnvelope
 	envelope.configure(patch, 44_100, 8)
