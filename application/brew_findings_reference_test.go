@@ -15,8 +15,9 @@ import (
 
 // Exact private-corpus regressions for the remaining 2026-10-01 findings.
 // Archives stay outside the repository; only identities and input seeds are
-// recorded here. The ordinary machine path must complete, not merely classify
-// a guest fault or silently skip an applet that fails to start.
+// recorded here. END is omitted so the seeded sessions continue after the
+// handset stop action. The ordinary machine path must complete, not merely
+// classify a guest fault or silently skip an applet that fails to start.
 func TestBREWRemainingFindingsReference(t *testing.T) {
 	root := os.Getenv("ARAM_TEST_DATA")
 	if root == "" {
@@ -79,10 +80,12 @@ func TestBREWRemainingFindingsReference(t *testing.T) {
 				if test.seed != 0 && random.Intn(4) == 0 {
 					control := controls[random.Intn(len(controls))]
 					pressed := !held[control]
-					if err := machine.QueueInput(machinecore.InputEvent{Control: control, Pressed: pressed}); err != nil {
-						t.Fatal(err)
+					if control != "end" {
+						if err := machine.QueueInput(machinecore.InputEvent{Control: control, Pressed: pressed}); err != nil {
+							t.Fatal(err)
+						}
+						held[control] = pressed
 					}
-					held[control] = pressed
 				}
 				if err := machine.StepFrame(context.Background()); err != nil {
 					t.Fatalf("seed=%d frame=%d: %v", test.seed, frame, err)

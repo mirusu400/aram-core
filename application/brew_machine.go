@@ -273,6 +273,20 @@ func (m *brewMachine) stepLocked(ctx context.Context) error {
 		if !ok {
 			return fmt.Errorf("unsupported BREW control %q", event.Control)
 		}
+		if event.Control == "end" {
+			if event.Pressed {
+				closed, err := m.runtime.StopApplet(ctx)
+				if err != nil {
+					return m.executionErrorLocked("stop BREW applet", err)
+				}
+				if closed {
+					m.input = nil
+					m.state = machinecore.StateStopped
+					return nil
+				}
+			}
+			continue
+		}
 		if !event.Pressed {
 			// BREW delivers EVT_KEY after a key is pressed/held and again
 			// immediately before EVT_KEY_RELEASE. Some applets handle only

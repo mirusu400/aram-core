@@ -701,7 +701,25 @@ func (r *Runtime) ProbeAppletBoundary(ctx context.Context) error {
 	return fmt.Errorf("BREW module rejected %d candidate application ClassIDs", len(r.classIDs))
 }
 
-// DispatchEvent invokes the authenticated applet's real IApplet::HandleEvent.
+// StopApplet delivers the shell's stop event before the host closes the applet.
+// The stop parameter is a writable BREW boolean, as specified by AEEEvent.h.
+func (r *Runtime) StopApplet(ctx context.Context) (bool, error) {
+	var closeFlag [4]byte
+	closeFlag[0] = 1
+	if err := r.cpu.WriteMemory(outputAddr+8, closeFlag[:]); err != nil {
+		return false, fmt.Errorf("initialize BREW stop parameter: %w", err)
+	}
+	_, err := r.DispatchEvent(ctx, 1, 0, outputAddr+8) // EVT_APP_STOP
+	if err != nil {
+		return false, err
+	}
+	if err := r.cpu.ReadMemory(outputAddr+8, closeFlag[:]); err != nil {
+		return false, fmt.Errorf("read BREW stop parameter: %w", err)
+	}
+	return closeFlag[0] != 0, nil
+}
+
+// DispatchEvent invokes the applet's real IApplet::HandleEvent.
 // EVT_APP_START is 0; key press and release are 0x101 and 0x102 respectively.
 func (r *Runtime) DispatchEvent(
 	ctx context.Context,

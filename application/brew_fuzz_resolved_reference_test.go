@@ -13,8 +13,9 @@ import (
 	machinecore "github.com/mirusu400/aram-core/core"
 )
 
-// Replays resolved fuzz reports against exact authorized archives. The private
-// title bytes remain outside the repository.
+// Replays resolved fuzz reports against exact authorized archives. END is
+// omitted so the seeded session can continue after the handset stop action.
+// The private title bytes remain outside the repository.
 func TestBREWResolvedFuzzReportsReference(t *testing.T) {
 	root := os.Getenv("ARAM_TEST_DATA")
 	if root == "" {
@@ -75,17 +76,19 @@ func TestBREWResolvedFuzzReportsReference(t *testing.T) {
 				if test.seed != 0 && random.Intn(4) == 0 {
 					control := controls[random.Intn(len(controls))]
 					pressed := !held[control]
-					if err := machine.QueueInput(machinecore.InputEvent{Control: control, Pressed: pressed}); err != nil {
-						t.Fatal(err)
+					if control != "end" {
+						if err := machine.QueueInput(machinecore.InputEvent{Control: control, Pressed: pressed}); err != nil {
+							t.Fatal(err)
+						}
+						held[control] = pressed
 					}
-					held[control] = pressed
 					presses++
 				}
 				if err := machine.StepFrame(context.Background()); err != nil {
 					t.Fatalf("seed=%d frame=%d presses=%d: %v", test.seed, frame, presses, err)
 				}
 				if frame == test.reportedFrame && presses != test.reportedInputs {
-					t.Fatalf("reported frame %d has %d events, want %d", frame, presses, test.reportedInputs)
+					t.Fatalf("reported frame %d has %d generated actions, want %d", frame, presses, test.reportedInputs)
 				}
 			}
 			if machine.State() != machinecore.StateRunning {
@@ -99,7 +102,7 @@ func TestBREWResolvedFuzzReportsReference(t *testing.T) {
 			if !available || stats.PresentCount == 0 || !stats.FrameValid {
 				t.Fatalf("no guest rendering evidence: stats=%+v available=%v", stats, available)
 			}
-			t.Logf("completed 600 frames with %d events and %d guest presentations", presses, stats.PresentCount)
+			t.Logf("completed 600 frames with %d generated actions and %d guest presentations", presses, stats.PresentCount)
 		})
 	}
 }

@@ -13,8 +13,8 @@ import (
 	machinecore "github.com/mirusu400/aram-core/core"
 )
 
-// Replays issue 392's deterministic input session against its exact archive.
-// The private title bytes remain in the authorized corpus.
+// Replays issue 392's seeded session with END omitted so its database path is
+// reached after the handset stop point. Private bytes remain in the corpus.
 func TestBREWFuzzIssue392Reference(t *testing.T) {
 	root := os.Getenv("ARAM_TEST_DATA")
 	if root == "" {
@@ -65,17 +65,19 @@ func TestBREWFuzzIssue392Reference(t *testing.T) {
 				if test.seed != 0 && random.Intn(4) == 0 {
 					control := controls[random.Intn(len(controls))]
 					pressed := !held[control]
-					if err := machine.QueueInput(machinecore.InputEvent{Control: control, Pressed: pressed}); err != nil {
-						t.Fatal(err)
+					if control != "end" {
+						if err := machine.QueueInput(machinecore.InputEvent{Control: control, Pressed: pressed}); err != nil {
+							t.Fatal(err)
+						}
+						held[control] = pressed
 					}
-					held[control] = pressed
 					presses++
 				}
 				if err := machine.StepFrame(context.Background()); err != nil {
 					t.Fatalf("seed=%d frame=%d presses=%d: %v", test.seed, frame, presses, err)
 				}
 				if frame == 488 && presses != 137 {
-					t.Fatalf("reported frame has %d events, want 137", presses)
+					t.Fatalf("reported frame has %d generated actions, want 137", presses)
 				}
 			}
 			if machine.State() != machinecore.StateRunning {
@@ -89,7 +91,7 @@ func TestBREWFuzzIssue392Reference(t *testing.T) {
 			if !available || stats.PresentCount == 0 || !stats.FrameValid {
 				t.Fatalf("no guest rendering evidence: stats=%+v available=%v", stats, available)
 			}
-			t.Logf("completed 600 frames with %d events and %d guest presentations", presses, stats.PresentCount)
+			t.Logf("completed 600 frames with %d generated actions and %d guest presentations", presses, stats.PresentCount)
 		})
 	}
 }
