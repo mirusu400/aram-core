@@ -483,6 +483,8 @@ func (r *Runtime) releaseInterfaceObject(address uint32) {
 			r.releaseGuest(binary.LittleEndian.Uint32(encoded[8:12]))
 		case fileVTable:
 			delete(r.fileHandles, address)
+		case socketVTable:
+			delete(r.socketHandles, address)
 		case databaseVTable:
 			delete(r.databaseHandles, address)
 		case dbRecordVTable:

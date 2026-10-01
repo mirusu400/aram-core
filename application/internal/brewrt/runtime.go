@@ -146,6 +146,9 @@ const (
 	netVTable             = networkServiceBase + 0x200
 	netTrapBase           = networkServiceBase + 0x300
 	netMethodCount        = uint32(12)
+	socketVTable          = networkServiceBase + 0x700
+	socketTrapBase        = networkServiceBase + 0x800
+	socketMethodCount     = uint32(16)
 	imageVTable           = networkServiceBase + 0x400
 	imageTrapBase         = networkServiceBase + 0x500
 	imageMethodCount      = uint32(11)
@@ -202,6 +205,8 @@ type Runtime struct {
 	eventCounts      map[uint32]uint64
 	files            map[string][]byte
 	fileHandles      map[uint32]*brewFile
+	socketHandles    map[uint32]*brewSocket
+	netLastError     uint32
 	databases        map[string]*brewDatabase
 	databaseHandles  map[uint32]*brewDatabaseHandle
 	dbRecordHandles  map[uint32]*brewDBRecordHandle
@@ -365,6 +370,7 @@ func New(pkg Package) (*Runtime, error) {
 		heapAllocated: make(map[uint32]uint32),
 		eventCounts:   make(map[uint32]uint64), classIDs: classIDs,
 		fileHandles:     make(map[uint32]*brewFile),
+		socketHandles:   make(map[uint32]*brewSocket),
 		databases:       make(map[string]*brewDatabase),
 		databaseHandles: make(map[uint32]*brewDatabaseHandle),
 		dbRecordHandles: make(map[uint32]*brewDBRecordHandle),
@@ -583,6 +589,13 @@ func (r *Runtime) mapImage(module []byte) error {
 	}
 	binary.LittleEndian.PutUint32(network[netVTable-networkServiceBase:], addRefTrap|1)
 	binary.LittleEndian.PutUint32(network[netVTable-networkServiceBase+4:], releaseTrap|1)
+	for slot := uint32(0); slot < socketMethodCount; slot++ {
+		trap := socketTrapBase + slot*2
+		binary.LittleEndian.PutUint16(network[trap-networkServiceBase:], 0xbe14)
+		binary.LittleEndian.PutUint32(network[socketVTable-networkServiceBase+slot*4:], trap|1)
+	}
+	binary.LittleEndian.PutUint32(network[socketVTable-networkServiceBase:], addRefTrap|1)
+	binary.LittleEndian.PutUint32(network[socketVTable-networkServiceBase+4:], releaseTrap|1)
 	for slot := uint32(0); slot < imageMethodCount; slot++ {
 		trap := imageTrapBase + slot*2
 		binary.LittleEndian.PutUint16(network[trap-networkServiceBase:], 0xbe13)
@@ -906,6 +919,7 @@ func describeHostTrap(pc uint32) string {
 		{"ITAPI", tapiTrapBase, tapiMethodCount},
 		{"ISoundPlayer", soundPlayerTrapBase, soundPlayerMethods},
 		{"INetMgr", netTrapBase, netMethodCount},
+		{"ISocket", socketTrapBase, socketMethodCount},
 		{"IImage", imageTrapBase, imageMethodCount},
 		{"ITextCtl", textCtlTrapBase, textCtlMethodCount},
 		{"IMenuCtl", menuCtlTrapBase, menuCtlMethodCount},
@@ -1593,12 +1607,12 @@ func (r *Runtime) handleAppletMethodTrap(
 			}
 			return resume()
 		case 4: // GetLastError
-			if err := r.cpu.WriteRegister(cpu.RegisterR0, 1); err != nil {
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, r.netLastError); err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
-		case 5: // OpenSocket: offline runtime cannot create host sockets.
-			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+		case 5: // OpenSocket creates ISocket before network connection.
+			if err := r.openGuestSocket(); err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
@@ -1620,6 +1634,13 @@ func (r *Runtime) handleAppletMethodTrap(
 		default:
 			return boundary("INetMgr", slot)
 		}
+	}
+	if breakpoint >= socketTrapBase+2 && breakpoint < socketTrapBase+socketMethodCount*2+2 {
+		slot := (breakpoint - 2 - socketTrapBase) / 2
+		if err := r.handleGuestSocketMethod(slot); err != nil {
+			return true, 0, cpu.ModeARM, err
+		}
+		return resume()
 	}
 	if breakpoint >= imageTrapBase+2 && breakpoint < imageTrapBase+imageMethodCount*2+2 {
 		slot := (breakpoint - 2 - imageTrapBase) / 2
