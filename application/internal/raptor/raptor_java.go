@@ -178,6 +178,12 @@ var raptorJavaOutputStreamVirtualMethods = []raptorJavaFixedVirtualMethod{
 }
 
 var raptorJavaFixedVirtualMethods = map[string][]raptorJavaFixedVirtualMethod{
+	"java/lang/Integer": {
+		// Legend of Master reads an inventory position through this CLDC
+		// Integer slot. Leaving it on the no-op stub returns index zero and
+		// removes a different item when equipping a weapon (issue #371).
+		{offset: 0x34, Name: "intValue", descriptor: "()I"},
+	},
 	"java/lang/String": {
 		{offset: 0x10, Name: "equals", descriptor: "(Ljava/lang/Object;)Z"},
 		{offset: 0x2c, Name: "length", descriptor: "()I"},
@@ -285,6 +291,9 @@ var raptorJavaFixedVirtualMethods = map[string][]raptorJavaFixedVirtualMethod{
 		{offset: 0x5c, Name: "elements", descriptor: "()Ljava/util/Enumeration;"},
 		{offset: 0x60, Name: "elementAt", descriptor: "(I)Ljava/lang/Object;"},
 		{offset: 0x64, Name: "firstElement", descriptor: "()Ljava/lang/Object;"},
+		// Legend of Master swaps an equipped weapon back into the inventory
+		// through this slot. A no-op loses the old weapon (issue #371).
+		{offset: 0x6c, Name: "setElementAt", descriptor: "(Ljava/lang/Object;I)V"},
 		{offset: 0x70, Name: "removeElementAt", descriptor: "(I)V"},
 		// Legend of Master's script loader appends parsed NPC lines here.
 		{offset: 0x78, Name: "addElement", descriptor: "(Ljava/lang/Object;)V"},
