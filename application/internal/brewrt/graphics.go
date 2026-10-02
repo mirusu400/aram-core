@@ -165,16 +165,43 @@ func (r *Runtime) handleGraphicsMethod(slot uint32) (bool, error) {
 			return true, err
 		}
 		return returnValue(0)
-	case 24: // DrawEllipse
+	case 24: // DrawArc
 		pointer, err := argument(cpu.RegisterR1)
 		if err != nil {
 			return true, err
 		}
-		x, y, width, height, err := r.readGraphicsRect(pointer)
+		data := make([]byte, 10)
+		if err := r.cpu.ReadMemory(pointer, data); err != nil {
+			return true, fmt.Errorf("read BREW graphics arc: %w", err)
+		}
+		read := func(at int) int32 { return int32(int16(binary.LittleEndian.Uint16(data[at:]))) }
+		centerX, centerY, radius := read(0), read(2), read(4)
+		if radius < 0 {
+			return returnValue(2) // EBADPARM
+		}
+		if radius == 0 || read(8) == 0 {
+			return returnValue(0)
+		}
+		if err := r.drawGraphicsArc(centerX, centerY, radius, read(6), read(8)); err != nil {
+			return true, err
+		}
+		return returnValue(0)
+	case 26: // DrawEllipse
+		pointer, err := argument(cpu.RegisterR1)
 		if err != nil {
 			return true, err
 		}
-		if err := r.drawGraphicsEllipse(x, y, width, height); err != nil {
+		centerX, centerY, radiusX, radiusY, err := r.readGraphicsRect(pointer)
+		if err != nil {
+			return true, err
+		}
+		if radiusX < 0 || radiusY < 0 {
+			return returnValue(2) // EBADPARM
+		}
+		if radiusX == 0 || radiusY == 0 {
+			return returnValue(0)
+		}
+		if err := r.drawGraphicsEllipse(centerX-radiusX, centerY-radiusY, 2*radiusX+1, 2*radiusY+1); err != nil {
 			return true, err
 		}
 		return returnValue(0)
@@ -448,6 +475,25 @@ func (r *Runtime) drawGraphicsEllipse(x, y, width, height int32) error {
 		}
 	}
 	return r.drawGraphicsPolygon(points, true)
+}
+
+func (r *Runtime) drawGraphicsArc(centerX, centerY, radius, startAngle, arcAngle int32) error {
+	if arcAngle >= 360 || arcAngle <= -360 {
+		return r.drawGraphicsEllipse(centerX-radius, centerY-radius, 2*radius+1, 2*radius+1)
+	}
+	segments := max(1, int(math.Ceil(math.Abs(float64(arcAngle))*128/360)))
+	points := make([]graphicsPoint, 0, segments+1)
+	for index := 0; index <= segments; index++ {
+		angle := (float64(startAngle) + float64(arcAngle)*float64(index)/float64(segments)) * math.Pi / 180
+		point := graphicsPoint{
+			x: centerX + int32(math.Round(float64(radius)*math.Cos(angle))),
+			y: centerY - int32(math.Round(float64(radius)*math.Sin(angle))),
+		}
+		if len(points) == 0 || points[len(points)-1] != point {
+			points = append(points, point)
+		}
+	}
+	return r.drawGraphicsPolygon(points, r.graphics.fillMode)
 }
 
 func (r *Runtime) drawGraphicsPolygon(points []graphicsPoint, closed bool) error {

@@ -101,21 +101,21 @@ func TestGraphicsServiceDrawCircleHonorsFillAndStroke(t *testing.T) {
 	}
 }
 
-func TestGraphicsServiceDrawEllipseHonorsRectFillAndStroke(t *testing.T) {
+func TestGraphicsServiceDrawEllipseHonorsCenterRadiiFillAndStroke(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	callGraphicsForTest(t, runtime, 4, 255, 0, 0)
 	callGraphicsForTest(t, runtime, 8, 0, 255, 0)
 	callGraphicsForTest(t, runtime, 6, 1, 0, 0)
 
-	rect := heapBase + 0x3010
+	ellipse := heapBase + 0x3010
 	data := make([]byte, 8)
-	for index, value := range []uint16{10, 12, 21, 11} {
+	for index, value := range []uint16{20, 17, 10, 5} {
 		binary.LittleEndian.PutUint16(data[index*2:], value)
 	}
-	if err := runtime.cpu.WriteMemory(rect, data); err != nil {
+	if err := runtime.cpu.WriteMemory(ellipse, data); err != nil {
 		t.Fatal(err)
 	}
-	if status := callGraphicsForTest(t, runtime, 24, rect, 0, 0); status != 0 {
+	if status := callGraphicsForTest(t, runtime, 26, ellipse, 0, 0); status != 0 {
 		t.Fatalf("DrawEllipse status=%d", status)
 	}
 	readPixel := func(x, y uint32) uint16 {
@@ -134,6 +134,39 @@ func TestGraphicsServiceDrawEllipseHonorsRectFillAndStroke(t *testing.T) {
 	}
 	if got := readPixel(10, 12); got != 0 {
 		t.Fatalf("ellipse bounding corner=0x%04x, want untouched", got)
+	}
+}
+
+func TestGraphicsServiceDrawArcUsesCenterRadiusAndAngles(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	callGraphicsForTest(t, runtime, 4, 255, 0, 0)
+	arc := heapBase + 0x3010
+	data := make([]byte, 10)
+	for index, value := range []uint16{20, 20, 5, 0, 90} {
+		binary.LittleEndian.PutUint16(data[index*2:], value)
+	}
+	if err := runtime.cpu.WriteMemory(arc, data); err != nil {
+		t.Fatal(err)
+	}
+	if status := callGraphicsForTest(t, runtime, 24, arc, 0, 0); status != 0 {
+		t.Fatalf("DrawArc status=%d", status)
+	}
+	readPixel := func(x, y uint32) uint16 {
+		t.Helper()
+		pixel := make([]byte, 2)
+		if err := runtime.cpu.ReadMemory(framebufferBase+(y*framebufferWidth+x)*2, pixel); err != nil {
+			t.Fatal(err)
+		}
+		return binary.LittleEndian.Uint16(pixel)
+	}
+	if got := readPixel(25, 20); got != 0xf800 {
+		t.Fatalf("arc start=0x%04x, want stroke red", got)
+	}
+	if got := readPixel(20, 15); got != 0xf800 {
+		t.Fatalf("arc end=0x%04x, want stroke red", got)
+	}
+	if got := readPixel(15, 20); got != 0 {
+		t.Fatalf("opposite arc side=0x%04x, want untouched", got)
 	}
 }
 
