@@ -143,8 +143,10 @@ mixing, not merely successful native returns or stored fields.
 `NativePolicyLGT = 2` is an explicit opt-in. Generic J2ME and SKT do not acquire
 MMPP. LGT receives standard Java/MIDP plus the exact `MediaPlayer`, `BackLight`,
 `Vibration`, `MathFP`, `GraphicsX`, and phone extension classes. `Vibration`
-reports one available level and maps level one to the shared device motor.
-This is an emulator choice where the Javadoc omits level count. The class list
+reports three available levels and maps levels one through three to 33, 66 and
+100 percent motor strength. A corpus title requests level three for 100 ms;
+the three-level range and intensity mapping are interoperability choices where
+the Javadoc omits the level count. The class list
 is not a prefix-wide OEM namespace or a claim that every method is supported.
 Registries are per-VM. LGT uses generic CLDC/MIDP
 system-property fallback and does not expose application metadata as system

@@ -6,11 +6,12 @@ import (
 )
 
 const lgtVibrationClass = "mmpp/media/Vibration"
+const lgtVibrationLevels int32 = 3
 
 func (vm *VM) installLGTVibrationNatives() {
 	vm.RegisterHostClass(lgtVibrationClass, "java/lang/Object")
 	vm.RegisterNative(lgtVibrationClass, "getLevelNum", "()I", func(_ context.Context, _ *VM, _ uint32, _ []Value) (Value, bool, error) {
-		return IntValue(1), true, nil
+		return IntValue(lgtVibrationLevels), true, nil
 	})
 	vm.RegisterNative(lgtVibrationClass, "start", "(II)V", func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
 		level, err := intArgument(args, 0)
@@ -21,13 +22,10 @@ func (vm *VM) installLGTVibrationNatives() {
 		if err != nil {
 			return Value{}, false, err
 		}
-		if level < 0 || level > 1 || millis < 0 {
+		if level < 0 || level > lgtVibrationLevels || millis < 0 {
 			return Value{}, false, vm.newThrowable("java/lang/IllegalArgumentException", "invalid vibration level or duration")
 		}
-		intensity := uint8(0)
-		if level == 1 {
-			intensity = 100
-		}
+		intensity := uint8(level * 100 / lgtVibrationLevels)
 		return Value{}, false, vm.services.Device.Vibrate(intensity, time.Duration(millis)*time.Millisecond, vm.services.Clock.Monotonic())
 	})
 	vm.RegisterNative(lgtVibrationClass, "stop", "()V", func(_ context.Context, vm *VM, _ uint32, _ []Value) (Value, bool, error) {
