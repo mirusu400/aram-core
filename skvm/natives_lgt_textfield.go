@@ -13,6 +13,7 @@ const (
 	lgtTextWidth      = lgtTextPrefix + "width"
 	lgtTextRows       = lgtTextPrefix + "rows"
 	lgtTextOwner      = lgtTextPrefix + "owner"
+	lgtTextFont       = lgtTextPrefix + "font"
 )
 
 const (
@@ -212,6 +213,50 @@ func (vm *VM) installLGTTextFieldNatives() {
 			value, err := objectField(vm, receiver, midpTextField)
 			return value, true, err
 		})
+	vm.RegisterNative(lgtTextFieldClass, "getCaretPosition", "()I",
+		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+			text, err := vm.textValue(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			return IntValue(int32(len(utf16.Encode([]rune(text))))), true, nil
+		})
+	vm.RegisterNative(lgtTextFieldClass, "getFont", "()Ljavax/microedition/lcdui/Font;",
+		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+			object, ok := vm.Object(receiver)
+			if !ok {
+				return Value{}, false, vm.newThrowable("java/lang/NullPointerException", "")
+			}
+			if stored, exists := object.Fields[lgtTextFont]; exists {
+				reference, err := stored.Reference()
+				if err != nil {
+					return Value{}, false, err
+				}
+				if reference != 0 {
+					return stored, true, nil
+				}
+			}
+			reference := vm.NewObject("javax/microedition/lcdui/Font", &fontState{font: vm.defaultFont})
+			value := ReferenceValue(reference)
+			object.Fields[lgtTextFont] = value
+			return value, true, nil
+		})
+	vm.RegisterNative(lgtTextFieldClass, "setFont", "(Ljavax/microedition/lcdui/Font;)V",
+		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+			reference, err := referenceArgument(args, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			if reference != 0 {
+				if !vm.IsInstance(reference, "javax/microedition/lcdui/Font") {
+					return Value{}, false, vm.newThrowable("java/lang/IllegalArgumentException", "TextFieldX font is not a MIDP Font")
+				}
+				if _, err := vm.font(reference); err != nil {
+					return Value{}, false, err
+				}
+			}
+			return Value{}, false, setObjectField(vm, receiver, lgtTextFont, args[0])
+		})
 	vm.RegisterNative(lgtTextFieldClass, "keyPressed", "(I)V", nativeLGTTextKeyPressed)
 	vm.RegisterNative(lgtTextFieldClass, "keyRepeated", "(I)V", nativeLGTTextKeyPressed)
 	vm.RegisterNative(lgtTextFieldClass, "keyReleased", "(I)V", nativeVoid)
@@ -298,6 +343,17 @@ func nativeLGTTextPaint(ctx context.Context, vm *VM, receiver uint32, args []Val
 	}
 	width := lgtFieldInt(vm, receiver, "width", 0)
 	font := graphics.font
+	if object, ok := vm.Object(receiver); ok {
+		if stored, exists := object.Fields[lgtTextFont]; exists {
+			if reference, referenceErr := stored.Reference(); referenceErr == nil && reference != 0 {
+				selected, fontErr := vm.font(reference)
+				if fontErr != nil {
+					return Value{}, false, fontErr
+				}
+				font = selected.font
+			}
+		}
+	}
 	if font == 0 {
 		font = vm.defaultFont
 	}
@@ -314,6 +370,9 @@ func nativeLGTTextPaint(ctx context.Context, vm *VM, receiver uint32, args []Val
 	if text == "" {
 		return Value{}, false, nil
 	}
+	previousFont := graphics.font
+	graphics.font = font
+	defer func() { graphics.font = previousFont }()
 	return nativeDrawString(ctx, vm, graphicsRef, []Value{
 		ReferenceValue(vm.NewString(text)), IntValue(0), IntValue(0), IntValue(20),
 	})

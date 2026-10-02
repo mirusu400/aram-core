@@ -29,6 +29,22 @@ func TestLGTTextFieldXEditsPaintsAndRestores(t *testing.T) {
 	}
 	call("<init>", "(Ljava/lang/String;Ljava/lang/String;II)V",
 		ReferenceValue(vm.NewString("")), ReferenceValue(vm.NewString("AB")), IntValue(10), IntValue(0))
+	if caret, err := call("getCaretPosition", "()I").Int(); err != nil || caret != 2 {
+		t.Fatalf("initial caret = %d, %v", caret, err)
+	}
+	defaultFont, err := call("getFont", "()Ljavax/microedition/lcdui/Font;").Reference()
+	check(t, err)
+	if !vm.IsInstance(defaultFont, "javax/microedition/lcdui/Font") {
+		t.Fatal("TextFieldX default font is not a MIDP Font")
+	}
+	customValue := invokeTestNative(t, vm, "javax/microedition/lcdui/Font", "getFont",
+		"(III)Ljavax/microedition/lcdui/Font;", 0, IntValue(0), IntValue(1), IntValue(16))
+	customFont, err := customValue.Reference()
+	check(t, err)
+	call("setFont", "(Ljavax/microedition/lcdui/Font;)V", customValue)
+	if got, err := call("getFont", "()Ljavax/microedition/lcdui/Font;").Reference(); err != nil || got != customFont {
+		t.Fatalf("TextFieldX selected font = %d, %v, want %d", got, err, customFont)
+	}
 	if mode, err := call("getInputMode", "()I").Int(); err != nil || mode != lgtModeNone {
 		t.Fatalf("unfocused mode = %d, %v", mode, err)
 	}
@@ -47,14 +63,24 @@ func TestLGTTextFieldXEditsPaintsAndRestores(t *testing.T) {
 	saved, err := vm.MarshalBinary()
 	check(t, err)
 	check(t, vm.UnmarshalBinary(saved))
+	if got, err := call("getFont", "()Ljavax/microedition/lcdui/Font;").Reference(); err != nil || got != customFont {
+		t.Fatalf("restored TextFieldX font = %d, %v, want %d", got, err, customFont)
+	}
 	call("keyPressed", "(I)V", IntValue('2'))
 	if got := read(); got != "ABB" {
 		t.Fatalf("multi-tap after restore = %q", got)
 	}
+	if caret, err := call("getCaretPosition", "()I").Int(); err != nil || caret != 3 {
+		t.Fatalf("restored caret = %d, %v", caret, err)
+	}
 	graphicsRef, graphics := midpGraphicsSurface(t, vm)
+	previousFont := graphics.font
 	check(t, vm.services.Graphics.Clear(vm.serviceOwner, graphics.surface,
 		shared.Color{R: 255, G: 255, B: 255, A: 255}))
 	call("paint", "(Ljavax/microedition/lcdui/Graphics;)V", ReferenceValue(graphicsRef))
+	if graphics.font != previousFont {
+		t.Fatal("TextFieldX paint changed the caller's Graphics font")
+	}
 	changed := false
 	for y := int32(0); y < 20 && !changed; y++ {
 		for x := int32(0); x < 50; x++ {
@@ -66,6 +92,10 @@ func TestLGTTextFieldXEditsPaintsAndRestores(t *testing.T) {
 	}
 	if !changed {
 		t.Fatal("TextFieldX paint did not draw its text")
+	}
+	call("setFont", "(Ljavax/microedition/lcdui/Font;)V", ReferenceValue(0))
+	if got, err := call("getFont", "()Ljavax/microedition/lcdui/Font;").Reference(); err != nil || got == 0 || got == customFont {
+		t.Fatalf("TextFieldX reset font = %d, %v", got, err)
 	}
 	call("setFocus", "(Z)V", IntValue(0))
 	call("keyPressed", "(I)V", IntValue('3'))
