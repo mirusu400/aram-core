@@ -2,7 +2,6 @@ package skvm
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"path"
 	"strings"
@@ -43,34 +42,7 @@ func (vm *VM) installSKTNatives() {
 			return Value{}, false, err
 		},
 	)
-	vm.RegisterNative(
-		"com/skt/m/Device",
-		"invokeWapBrowser",
-		"(Ljava/lang/String;)V",
-		func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
-			target, err := vm.stringArgument(args, 0)
-			if err != nil {
-				return Value{}, false, err
-			}
-			if _, err = vm.services.Device.Request(
-				vm.serviceOwner,
-				shared.RequestBrowser,
-				target,
-				nil,
-				vm.services.Clock.Monotonic(),
-			); err != nil {
-				// The method returns void, so the handset has no way to tell
-				// the title its browser did not open, and a URL the title
-				// built badly is not a reason to stop running it.
-				if errors.Is(err, shared.ErrInvalidArgument) ||
-					errors.Is(err, shared.ErrLimitExceeded) {
-					return Value{}, false, nil
-				}
-				return Value{}, false, err
-			}
-			return Value{}, false, nil
-		},
-	)
+	vm.registerVoidBrowserNative("com/skt/m/Device", "invokeWapBrowser")
 	vm.RegisterNative(
 		"com/skt/m/BackLight",
 		"on",

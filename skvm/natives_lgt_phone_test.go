@@ -3,7 +3,28 @@ package skvm
 import (
 	"context"
 	"testing"
+
+	shared "github.com/mirusu400/aram-core/runtime"
 )
+
+func TestLGTPhoneBrowserRequestIsPolicyScoped(t *testing.T) {
+	vm := policyRegressionVM(t, NativePolicyLGT)
+	const descriptor = "(Ljava/lang/String;)V"
+	if !vm.SupportsNativeReference(lgtPhoneClass, "invokeWAPBrowser", descriptor) {
+		t.Fatal("LGT browser native is unavailable")
+	}
+	invokeTestNative(t, vm, lgtPhoneClass, "invokeWAPBrowser", descriptor, 0, ReferenceValue(vm.NewString("https://example.invalid/")))
+	requests := vm.services.Device.Requests()
+	if len(requests) != 1 || requests[0].Kind != shared.RequestBrowser || requests[0].Target != "https://example.invalid/" {
+		t.Fatalf("browser requests = %+v", requests)
+	}
+	for _, policy := range []NativePolicy{NativePolicyJ2ME, NativePolicySKT} {
+		other := policyRegressionVM(t, policy)
+		if other.SupportsNativeReference(lgtPhoneClass, "invokeWAPBrowser", descriptor) {
+			t.Fatalf("LGT browser native leaked to policy %d", policy)
+		}
+	}
+}
 
 func TestLGTPhonePropertyIsPolicyScoped(t *testing.T) {
 	vm := policyRegressionVM(t, NativePolicyLGT)

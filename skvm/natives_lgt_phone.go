@@ -6,6 +6,7 @@ const lgtPhoneClass = "mmpp/phone/Phone"
 
 func (vm *VM) installLGTPhoneNatives() {
 	vm.RegisterHostClass(lgtPhoneClass, "java/lang/Object")
+	vm.registerVoidBrowserNative(lgtPhoneClass, "invokeWAPBrowser")
 	vm.RegisterNative(
 		lgtPhoneClass,
 		"getProperty",
