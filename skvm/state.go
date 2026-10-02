@@ -387,13 +387,18 @@ func snapshotNative(
 	case *randomState:
 		return nativeState{Kind: "random", Long: int64(state.seed)}, nil
 	case *threadState:
+		var waitReferences []uint32
+		if state.waitingOn != 0 {
+			waitReferences = []uint32{state.waitingOn}
+		}
 		return nativeState{
-			Kind:      "thread",
-			Reference: state.target,
-			Flag:      state.active,
-			Integer:   int32(boolInt(state.started)),
-			Long:      int64(state.wakeAt),
-			Service:   state.blockedClip,
+			Kind:       "thread",
+			Reference:  state.target,
+			Flag:       state.active,
+			Integer:    int32(boolInt(state.started)),
+			Long:       int64(state.wakeAt),
+			Service:    state.blockedClip,
+			References: waitReferences,
 		}, nil
 	case *recordStoreState:
 		return nativeState{Kind: "record-store", Text: state.name, Service: state.id}, nil
@@ -1019,12 +1024,20 @@ func restoreNative(saved nativeState) (any, nativeLink, error) {
 		if saved.Long < 0 {
 			return nil, nativeLink{}, fmt.Errorf("invalid thread wake time")
 		}
+		waitingOn := uint32(0)
+		if len(saved.References) > 1 {
+			return nil, nativeLink{}, fmt.Errorf("invalid thread waiter state")
+		}
+		if len(saved.References) == 1 {
+			waitingOn = saved.References[0]
+		}
 		return &threadState{
 			target:      saved.Reference,
 			started:     saved.Integer != 0 || saved.Flag,
 			active:      saved.Flag,
 			wakeAt:      time.Duration(saved.Long),
 			blockedClip: saved.Service,
+			waitingOn:   waitingOn,
 		}, nativeLink{}, nil
 	case "record-store":
 		return &recordStoreState{name: saved.Text, id: saved.Service}, nativeLink{}, nil
@@ -1400,6 +1413,9 @@ func (vm *VM) validateNative(reference uint32, native any) error {
 					reference,
 				)
 			}
+		}
+		if err := validateRef(state.waitingOn, "thread wait object"); err != nil {
+			return err
 		}
 		return validateRef(state.target, "thread target")
 	case *recordStoreState:

@@ -70,7 +70,7 @@ func (vm *VM) installCLDCObjectExtras() {
 		}
 		return ReferenceValue(clone), true, nil
 	})
-	vm.RegisterNative("java/lang/Object", "wait", "(JI)V", func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
+	vm.RegisterNative("java/lang/Object", "wait", "(JI)V", func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
 		milliseconds, err := args[0].Long()
 		if err != nil {
 			return Value{}, false, err
@@ -87,7 +87,7 @@ func (vm *VM) installCLDCObjectExtras() {
 			delay++
 		}
 		if vm.runningThread != 0 {
-			return Value{}, false, &threadYield{delay: delay}
+			return Value{}, false, &threadYield{delay: delay, waitingOn: receiver}
 		}
 		return Value{}, false, nil
 	})

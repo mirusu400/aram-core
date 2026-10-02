@@ -39,12 +39,15 @@ type threadState struct {
 	// AudioClip.play and loop block the calling thread until the clip stops,
 	// which is why titles start them on a worker thread and close the clip
 	// right after: the close only runs once the sound has finished.
-	blockedClip  shared.ServiceID
+	blockedClip shared.ServiceID
+	// waitingOn is the Object whose notify or timeout can resume this thread.
+	waitingOn    uint32
 	continuation []*frame
 }
 
 type threadYield struct {
-	delay time.Duration
+	delay     time.Duration
+	waitingOn uint32
 }
 
 // classInitYield marks the opcode that must be retried after an initializer's

@@ -137,6 +137,7 @@ func (vm *VM) runThread(
 	previousBase := vm.threadFrameBase
 	previousBudget := vm.threadBudget
 	state.blockedClip = 0
+	state.waitingOn = 0
 	vm.runningThread = reference
 	vm.threadFrameBase = len(vm.frames)
 	vm.threadBudget = threadInstructionQuantum
@@ -158,6 +159,13 @@ func (vm *VM) runThread(
 		if yielded.delay < 0 || yielded.delay > time.Duration(^uint64(0)>>1)-now {
 			state.active = false
 			return fmt.Errorf("invalid thread yield duration %s", yielded.delay)
+		}
+		if yielded.waitingOn != 0 {
+			state.waitingOn = yielded.waitingOn
+			if yielded.delay == 0 {
+				state.wakeAt = time.Duration(^uint64(0) >> 1)
+				return nil
+			}
 		}
 		state.wakeAt = now + yielded.delay
 		return nil
@@ -231,11 +239,33 @@ func (vm *VM) releaseClipWaiters(ctx context.Context, clip shared.ServiceID) err
 // threadBlocked reports whether a parked thread's clip is still playing. A
 // clip that was stopped, ran out, or was destroyed releases its waiter.
 func (vm *VM) threadBlocked(state *threadState) bool {
+	if state.waitingOn != 0 {
+		return state.wakeAt > vm.services.Clock.Monotonic()
+	}
 	if state.blockedClip == 0 {
 		return false
 	}
 	info, err := vm.services.Media.Info(vm.serviceOwner, state.blockedClip)
 	return err == nil && info.State == shared.ClipPlaying
+}
+
+func (vm *VM) notifyObject(reference uint32, all bool) {
+	var waiters []uint32
+	for threadReference, object := range vm.heap {
+		state, ok := object.Native.(*threadState)
+		if ok && state.active && state.waitingOn == reference {
+			waiters = append(waiters, threadReference)
+		}
+	}
+	sort.Slice(waiters, func(i, j int) bool { return waiters[i] < waiters[j] })
+	for _, threadReference := range waiters {
+		state, _ := vm.thread(threadReference)
+		state.waitingOn = 0
+		state.wakeAt = vm.services.Clock.Monotonic()
+		if !all {
+			break
+		}
+	}
 }
 
 func (vm *VM) runReadyThreads(ctx context.Context) error {

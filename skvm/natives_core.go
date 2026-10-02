@@ -62,26 +62,26 @@ func (vm *VM) installExtendedCoreNatives() {
 
 func (vm *VM) installObjectNatives() {
 	for _, method := range []struct {
-		name       string
-		descriptor string
-	}{
-		{"notify", "()V"},
-		{"notifyAll", "()V"},
-	} {
+		name string
+		all  bool
+	}{{"notify", false}, {"notifyAll", true}} {
 		vm.RegisterNative(
 			"java/lang/Object",
 			method.name,
-			method.descriptor,
-			nativeVoid,
+			"()V",
+			func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+				vm.notifyObject(receiver, method.all)
+				return Value{}, false, nil
+			},
 		)
 	}
 	vm.RegisterNative(
 		"java/lang/Object",
 		"wait",
 		"()V",
-		func(_ context.Context, vm *VM, _ uint32, _ []Value) (Value, bool, error) {
+		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
 			if vm.runningThread != 0 {
-				return Value{}, false, &threadYield{delay: time.Nanosecond}
+				return Value{}, false, &threadYield{waitingOn: receiver}
 			}
 			return Value{}, false, nil
 		},
@@ -90,7 +90,7 @@ func (vm *VM) installObjectNatives() {
 		"java/lang/Object",
 		"wait",
 		"(J)V",
-		func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
+		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
 			milliseconds, err := args[0].Long()
 			if err != nil {
 				return Value{}, false, err
@@ -104,10 +104,7 @@ func (vm *VM) installObjectNatives() {
 			}
 			if vm.runningThread != 0 {
 				delay := time.Duration(milliseconds) * time.Millisecond
-				if delay == 0 {
-					delay = time.Nanosecond
-				}
-				return Value{}, false, &threadYield{delay: delay}
+				return Value{}, false, &threadYield{delay: delay, waitingOn: receiver}
 			}
 			return Value{}, false, nil
 		},
