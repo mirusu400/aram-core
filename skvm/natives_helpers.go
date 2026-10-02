@@ -482,6 +482,9 @@ func (vm *VM) inputStream(reference uint32) (*inputStreamState, error) {
 	}
 	state, ok := object.Native.(*inputStreamState)
 	if !ok {
+		if _, wrapped := object.Native.(*dataInputState); wrapped {
+			return vm.dataInput(reference)
+		}
 		return nil, fmt.Errorf("object %d is not an InputStream", reference)
 	}
 	if err := vm.refreshSocketInput(state); err != nil {

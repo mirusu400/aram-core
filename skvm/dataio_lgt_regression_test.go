@@ -48,3 +48,26 @@ func TestNullByteArrayInputStreamSliceThrowsGuestException(t *testing.T) {
 		t.Fatalf("null byte array slice error = %v, want guest NullPointerException", err)
 	}
 }
+
+func TestDataInputStreamCanBeUsedAsInputStreamAfterRestore(t *testing.T) {
+	vm, err := New(nil)
+	check(t, err)
+	data := testPNG(t, 0)
+	inner := vm.NewObject("java/io/ByteArrayInputStream", &inputStreamState{data: data})
+	outer := vm.NewObject("java/io/DataInputStream", &dataInputState{stream: inner})
+	saved, err := vm.MarshalBinary()
+	check(t, err)
+	check(t, vm.UnmarshalBinary(saved))
+	value := invokeTestNative(t, vm, "javax/microedition/lcdui/Image", "createImage",
+		"(Ljava/io/InputStream;)Ljavax/microedition/lcdui/Image;", 0, ReferenceValue(outer))
+	reference, err := value.Reference()
+	check(t, err)
+	if _, err := vm.image(reference); err != nil {
+		t.Fatalf("image from wrapped stream: %v", err)
+	}
+	stream, err := vm.inputStream(inner)
+	check(t, err)
+	if stream.offset != len(data) {
+		t.Fatalf("wrapped stream consumed %d of %d bytes", stream.offset, len(data))
+	}
+}
