@@ -3638,6 +3638,22 @@ func (r *Runtime) returnFileSpace() error {
 	return nil
 }
 
+// BREW sprintf writes narrow characters as single bytes, including values above
+// ASCII. Go's %c would encode those values as UTF-8 and overwrite guest buffers.
+type brewNarrowChar byte
+
+func (char brewNarrowChar) Format(state fmt.State, _ rune) {
+	width, _ := state.Width()
+	padding := bytes.Repeat([]byte{' '}, max(width-1, 0))
+	if !state.Flag('-') {
+		_, _ = state.Write(padding)
+	}
+	_, _ = state.Write([]byte{byte(char)})
+	if state.Flag('-') {
+		_, _ = state.Write(padding)
+	}
+}
+
 func (r *Runtime) formatResourceName() error {
 	destination, err := r.cpu.ReadRegister(cpu.RegisterR0)
 	if err != nil {
@@ -3706,7 +3722,7 @@ func (r *Runtime) formatResourceName() error {
 		}
 		switch format[end] {
 		case 'c':
-			values = append(values, rune(uint8(value)))
+			values = append(values, brewNarrowChar(uint8(value)))
 		case 's':
 			text, readErr := r.readCString(uint32(value))
 			if readErr != nil {

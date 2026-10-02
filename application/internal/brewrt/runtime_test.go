@@ -1065,6 +1065,42 @@ func TestSprintfSupportsBoundedStringAndIntegerFormats(t *testing.T) {
 	}
 }
 
+func TestSprintfNarrowCharactersPreserveAdjacentGuestMemory(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	const destination = heapBase + 0x500
+	const formatAt = heapBase + 0x300
+	if err := runtime.cpu.WriteMemory(formatAt, []byte("%c%c\x00")); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteMemory(destination, []byte{0xaa, 0xaa, 0xaa, 0xaa, 0x28, 0x00, 0x00, 0x03}); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR0: destination,
+		cpu.RegisterR1: formatAt,
+		cpu.RegisterR2: 0xbc,
+		cpu.RegisterR3: 0xad,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := runtime.formatResourceName(); err != nil {
+		t.Fatal(err)
+	}
+	var result [8]byte
+	if err := runtime.cpu.ReadMemory(destination, result[:]); err != nil {
+		t.Fatal(err)
+	}
+	want := [8]byte{0xbc, 0xad, 0x00, 0xaa, 0x28, 0x00, 0x00, 0x03}
+	if result != want {
+		t.Fatalf("sprintf output and adjacent word = %x, want %x", result, want)
+	}
+	if count, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || count != 2 {
+		t.Fatalf("sprintf byte count = %d, err=%v, want 2", count, err)
+	}
+}
+
 func TestSprintfSupportsARM32LongArguments(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	destination, formatAt := heapBase+0x500, heapBase+0x300
