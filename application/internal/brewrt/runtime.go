@@ -85,6 +85,8 @@ const (
 	helperWStrNCopyNSlot    = uint32(32)
 	helperOEMStrSizeSlot    = uint32(34)
 	helperAtoiSlot          = uint32(36)
+	helperFloatOpSlot       = uint32(37)
+	helperFloatCmpSlot      = uint32(38)
 	helperGetAEEVersionSlot = uint32(35)
 	helperDbgPrintfSlot     = uint32(39)
 	helperWStrCompressSlot  = uint32(40)
@@ -1100,6 +1102,11 @@ func (r *Runtime) handleAppletMethodTrap(
 			return resume()
 		case helperAtoiSlot:
 			if err := r.parseGuestInteger(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case helperFloatOpSlot, helperFloatCmpSlot:
+			if err := r.returnGuestFloatHelper(slot); err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
