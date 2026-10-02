@@ -106,9 +106,14 @@ implementation code was copied. The mirrored Javadoc only states that the
 setter sets volume; it does not settle units, ranges or error behavior.
 
 ARAM's explicit LGT interoperability subset accepts decimal signed-32-bit
-integer strings whose value is 0 through 5, mapping them to shared clip gains
-0, 20, 40, 60, 80 and 100. Whitespace, lists, fractional values, overflow and
-out-of-range values remain unsupported. A player without a source caches the
+integer strings whose value is 0 through 100. Levels 0 through 5 map to shared
+clip gains 0, 20, 40, 60, 80 and 100; levels 6 through 100 map directly to
+percentage gain. The latter range is supported because a corpus title passes
+`"60"`, and the independently analyzed LGT ROM setter parses and stores new
+integer values without checking the new value against 0 through 5. The unit
+mapping above five is an interoperability inference, not a verified handset
+conversion rule. Whitespace, lists, fractional values, overflow and values
+outside 0 through 100 remain unsupported. A player without a source caches the
 selected level for its next source. This does not install a source, start
 playback, invent a decoder or accept an invalid receiver. Existing mute and pan
 are preserved. Repeating the

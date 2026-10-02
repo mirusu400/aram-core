@@ -166,7 +166,7 @@ func TestMMPPBoundsMissingUnsupportedAndPolicy(t *testing.T) {
 	for _, m := range []struct {
 		n, d string
 		a    []Value
-	}{{"setVolumeLevel", "(Ljava/lang/String;)V", []Value{ReferenceValue(v.NewString("50"))}}} {
+	}{{"setVolumeLevel", "(Ljava/lang/String;)V", []Value{ReferenceValue(v.NewString("101"))}}} {
 		_, _, e = v.natives[nativeKey{mmppClass, m.n, m.d}](context.Background(), v, r, m.a)
 		if e == nil || !strings.Contains(e.Error(), "unsupported") {
 			t.Fatalf("volume guessed: %v", e)

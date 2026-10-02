@@ -66,12 +66,49 @@ func TestMMPPVolumeLevelsProduceExactPCM(t *testing.T) {
 	}
 }
 
+func TestMMPPVolumePercentLevelPersistsAcrossSourceAndRestore(t *testing.T) {
+	v := mmppVM(t, NativePolicyLGT)
+	r := mmppNew(t, v)
+	mmppConstantSource(t, v, r)
+	invokeTestNative(t, v, mmppClass, "setVolumeLevel", "(Ljava/lang/String;)V",
+		r, ReferenceValue(v.NewString("60")))
+	if got := mmppInfo(t, v, r).Volume; got != 60 {
+		t.Fatalf("percentage gain = %d, want 60", got)
+	}
+	mmppConstantSource(t, v, r)
+	if got := mmppInfo(t, v, r).Volume; got != 60 {
+		t.Fatalf("replacement source gain = %d, want 60", got)
+	}
+	saved, err := v.MarshalBinary()
+	check(t, err)
+	check(t, v.UnmarshalBinary(saved))
+	value := invokeTestNative(t, v, mmppClass, "getVolumeLevel", "()Ljava/lang/String;", r)
+	reference, err := value.Reference()
+	check(t, err)
+	text, err := v.String(reference)
+	check(t, err)
+	if text != "60" {
+		t.Fatalf("restored volume level = %q, want 60", text)
+	}
+	mmppCall(t, v, r, "start")
+	check(t, v.Advance(context.Background(), 10*time.Millisecond, nil))
+	pcm := v.services.Media.Drain().PCM16
+	if len(pcm) == 0 {
+		t.Fatal("percentage volume produced no PCM")
+	}
+	for i, sample := range pcm {
+		if sample != 6000 {
+			t.Fatalf("sample %d = %d, want 6000", i, sample)
+		}
+	}
+}
+
 func TestMMPPVolumeErrorsAreTransactional(t *testing.T) {
 	v := mmppVM(t, NativePolicyLGT)
 	r := mmppNew(t, v)
 	mmppConstantSource(t, v, r)
 	call := v.natives[nativeKey{mmppClass, "setVolumeLevel", "(Ljava/lang/String;)V"}]
-	for _, text := range []string{"", " ", "-1", "6", "50", "1.0", "1,2", "2147483648", "not-a-level"} {
+	for _, text := range []string{"", " ", "-1", "101", "1.0", "1,2", "2147483648", "not-a-level"} {
 		arg := ReferenceValue(v.NewString(text))
 		before, e := v.MarshalBinary()
 		check(t, e)

@@ -58,7 +58,7 @@ func (vm *VM) lgtMediaSource(receiver uint32, data []byte) error {
 		return lgtUnsupported("setMediaSource", err.Error())
 	}
 	level, _ := o.Fields[lgtVolumeField].Int()
-	if err = vm.services.Media.SetClipGain(vm.serviceOwner, id, uint8(level*20), false, 0); err != nil {
+	if err = vm.services.Media.SetClipGain(vm.serviceOwner, id, lgtVolumeGain(level), false, 0); err != nil {
 		discard()
 		return lgtUnsupported("setMediaSource", err.Error())
 	}

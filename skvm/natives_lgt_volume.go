@@ -5,6 +5,13 @@ import (
 	"strconv"
 )
 
+func lgtVolumeGain(level int32) uint8 {
+	if level <= 5 {
+		return uint8(level * 20)
+	}
+	return uint8(level)
+}
+
 // installLGTVolumeNatives implements the six-step interoperability subset
 // documented in docs/lgt-mmpp.md. It changes real shared clip gain, never
 // pretends to decode/play a source. The getter returns the player's cached level.
@@ -19,9 +26,10 @@ func (vm *VM) installLGTVolumeNatives() {
 			return Value{}, false, lgtUnsupported("setVolumeLevel", "invalid volume String; handset error unspecified")
 		}
 		level, err := strconv.ParseInt(text, 10, 32)
-		if err != nil || level < 0 || level > 5 {
-			return Value{}, false, lgtUnsupported("setVolumeLevel", "only decimal levels 0 through 5 are supported")
+		if err != nil || level < 0 || level > 100 {
+			return Value{}, false, lgtUnsupported("setVolumeLevel", "only decimal levels 0 through 100 are supported")
 		}
+		gain := lgtVolumeGain(int32(level))
 		if clip.clip == 0 {
 			o.Fields[lgtVolumeField] = IntValue(int32(level))
 			return Value{}, false, nil
@@ -30,7 +38,7 @@ func (vm *VM) installLGTVolumeNatives() {
 		if err != nil {
 			return Value{}, false, err
 		}
-		err = vm.services.Media.SetClipGain(vm.serviceOwner, clip.clip, uint8(level*20), info.Muted, info.Pan)
+		err = vm.services.Media.SetClipGain(vm.serviceOwner, clip.clip, gain, info.Muted, info.Pan)
 		if err == nil {
 			o.Fields[lgtVolumeField] = IntValue(int32(level))
 		}
@@ -42,7 +50,7 @@ func (vm *VM) installLGTVolumeNatives() {
 			return Value{}, false, err
 		}
 		level, err := o.Fields[lgtVolumeField].Int()
-		if err != nil || level < 0 || level > 5 {
+		if err != nil || level < 0 || level > 100 {
 			return Value{}, false, lgtUnsupported("getVolumeLevel", "invalid cached level")
 		}
 		return ReferenceValue(vm.NewString(strconv.FormatInt(int64(level), 10))), true, nil
