@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/mirusu400/aram-core/internal/ime"
+	"sort"
 )
 
 // installCompatibilityNatives contains the less common APIs exposed by SKT,
@@ -129,6 +130,7 @@ func (vm *VM) installXCECompatibilityNatives() {
 	} {
 		vm.RegisterNative(method.class, method.name, method.descriptor, nativeVoid)
 	}
+	vm.RegisterNative("com/xce/net/Socket", "PPPClose", "()V", nativeXCEPPPClose)
 	vm.RegisterNative(
 		"com/xce/lcdui/XDisplay",
 		"drawImageEx",
@@ -192,6 +194,41 @@ func (vm *VM) installXCECompatibilityNatives() {
 			)
 		},
 	)
+}
+
+// PPPClose tears down the VM's modeled network link. The title calls it after
+// closing its stream connection, so it must also be safe when no link remains.
+func nativeXCEPPPClose(ctx context.Context, vm *VM, _ uint32, _ []Value) (Value, bool, error) {
+	references := make([]uint32, 0)
+	for reference, object := range vm.heap {
+		switch object.Native.(type) {
+		case *socketConnectionState, *httpConnectionState:
+			references = append(references, reference)
+		}
+	}
+	sort.Slice(references, func(i, j int) bool { return references[i] < references[j] })
+	for _, reference := range references {
+		if _, _, err := nativeCloseConnection(ctx, vm, reference, nil); err != nil {
+			return Value{}, false, err
+		}
+	}
+	// Every normal Connector connection has a heap object. Close any network
+	// handle left by an interrupted constructor or an older restored state too.
+	for _, socket := range vm.services.Network.Snapshot().Sockets {
+		if socket.Owner == vm.serviceOwner {
+			if err := vm.services.Network.CloseSocket(vm.serviceOwner, socket.ID, vm.services.Events); err != nil {
+				return Value{}, false, vm.newThrowable("java/io/IOException", err.Error())
+			}
+		}
+	}
+	for _, request := range vm.services.Network.Snapshot().HTTP {
+		if request.Owner == vm.serviceOwner {
+			if err := vm.services.Network.CloseHTTP(vm.serviceOwner, request.ID, vm.services.Events); err != nil {
+				return Value{}, false, vm.newThrowable("java/io/IOException", err.Error())
+			}
+		}
+	}
+	return Value{}, false, nil
 }
 
 func nativeIntegerState(

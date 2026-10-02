@@ -75,6 +75,7 @@ com/xce/lcdui/XTextField paint (Ljavax/microedition/lcdui/Graphics;)V
 com/xce/lcdui/XTextField setBounds (IIII)V
 com/xce/lcdui/XTextField setFocus (Z)V
 com/xce/lcdui/XTextField setText (Ljava/lang/String;)V
+com/xce/net/Socket PPPClose ()V
 com/xce/net/Socket setPPPPreserveTime (I)V
 java/io/ByteArrayInputStream <init> ([B)V
 java/io/ByteArrayInputStream <init> ([BII)V
