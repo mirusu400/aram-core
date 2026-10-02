@@ -207,6 +207,7 @@ type Runtime struct {
 	fileHandles      map[uint32]*brewFile
 	socketHandles    map[uint32]*brewSocket
 	netLastError     uint32
+	netNotifyMask    uint32
 	databases        map[string]*brewDatabase
 	databaseHandles  map[uint32]*brewDatabaseHandle
 	dbRecordHandles  map[uint32]*brewDBRecordHandle
@@ -1917,6 +1918,30 @@ func (r *Runtime) handleAppletMethodTrap(
 			return resume()
 		case 32: // GetHandler
 			if err := r.getShellHandler(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case 34: // RegisterNotify(IShell *, clsNotify, clsType, dwMask)
+			// Register the documented network state notifications. The
+			// offline INetMgr never changes state, so it emits no events.
+			// A zero mask withdraws the registration.
+			recipient, err := r.cpu.ReadRegister(cpu.RegisterR1)
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			notifier, err := r.cpu.ReadRegister(cpu.RegisterR2)
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			mask, err := r.cpu.ReadRegister(cpu.RegisterR3)
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			if recipient != r.activeClassID || notifier != Net11ClassID || mask&^brewNetNotifyStates != 0 {
+				return boundary("IShell", slot)
+			}
+			r.netNotifyMask = mask
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()

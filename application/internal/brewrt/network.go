@@ -12,6 +12,7 @@ const (
 	brewNetSockNotSupported = uint32(0x207)
 	brewNetDown             = uint32(0x216)
 	brewNetNoMemory         = uint32(0x21f)
+	brewNetNotifyStates     = uint32(0x000f) // OPENED, CLOSED, IDLE, ASLEEP
 )
 
 // A BREW socket exists independently of a network connection. In particular,

@@ -1951,6 +1951,48 @@ func TestNet11ServiceStaysOfflineWithoutHostNetworkAccess(t *testing.T) {
 	}
 }
 
+func TestShellDeregistersOfflineNetworkNotifications(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	runtime.activeClassID = 0x010134d9
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR0: shellObject,
+		cpu.RegisterR1: runtime.activeClassID,
+		cpu.RegisterR2: Net11ClassID,
+		cpu.RegisterR3: 0,
+		cpu.RegisterLR: returnTrap | 1,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	trap := shellMethodTrapBase + 34*2 + 2
+	handled, _, _, err := runtime.handleAppletMethodTrap(trap)
+	if err != nil || !handled {
+		t.Fatalf("IShell RegisterNotify mask zero handled=%v err=%v", handled, err)
+	}
+	if got, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || got != 0 {
+		t.Fatalf("IShell RegisterNotify status=%d err=%v, want SUCCESS", got, err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR3, 2); err != nil {
+		t.Fatal(err)
+	}
+	if handled, _, _, err := runtime.handleAppletMethodTrap(trap); err != nil || !handled || runtime.netNotifyMask != 2 {
+		t.Fatalf("register NMASK_CLOSED handled=%v err=%v mask=%d", handled, err, runtime.netNotifyMask)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR3, 0); err != nil {
+		t.Fatal(err)
+	}
+	if handled, _, _, err := runtime.handleAppletMethodTrap(trap); err != nil || !handled || runtime.netNotifyMask != 0 {
+		t.Fatalf("deregister NMASK_CLOSED handled=%v err=%v mask=%d", handled, err, runtime.netNotifyMask)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR3, 0x8000); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := runtime.handleAppletMethodTrap(trap); err == nil || !strings.Contains(err.Error(), "IShell vtable slot 34 is not implemented") {
+		t.Fatalf("unsupported network mask must remain unsupported, got %v", err)
+	}
+}
+
 func TestMissingBREWPreferencesLeaveCallerBufferUntouched(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	destination, stack := heapBase+0x900, heapBase+0x980
