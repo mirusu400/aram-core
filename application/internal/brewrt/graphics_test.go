@@ -101,6 +101,42 @@ func TestGraphicsServiceDrawCircleHonorsFillAndStroke(t *testing.T) {
 	}
 }
 
+func TestGraphicsServiceDrawEllipseHonorsRectFillAndStroke(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	callGraphicsForTest(t, runtime, 4, 255, 0, 0)
+	callGraphicsForTest(t, runtime, 8, 0, 255, 0)
+	callGraphicsForTest(t, runtime, 6, 1, 0, 0)
+
+	rect := heapBase + 0x3010
+	data := make([]byte, 8)
+	for index, value := range []uint16{10, 12, 21, 11} {
+		binary.LittleEndian.PutUint16(data[index*2:], value)
+	}
+	if err := runtime.cpu.WriteMemory(rect, data); err != nil {
+		t.Fatal(err)
+	}
+	if status := callGraphicsForTest(t, runtime, 24, rect, 0, 0); status != 0 {
+		t.Fatalf("DrawEllipse status=%d", status)
+	}
+	readPixel := func(x, y uint32) uint16 {
+		t.Helper()
+		pixel := make([]byte, 2)
+		if err := runtime.cpu.ReadMemory(framebufferBase+(y*framebufferWidth+x)*2, pixel); err != nil {
+			t.Fatal(err)
+		}
+		return binary.LittleEndian.Uint16(pixel)
+	}
+	if got := readPixel(20, 17); got != 0x07e0 {
+		t.Fatalf("ellipse center=0x%04x, want fill green", got)
+	}
+	if got := readPixel(20, 12); got != 0xf800 {
+		t.Fatalf("ellipse top=0x%04x, want stroke red", got)
+	}
+	if got := readPixel(10, 12); got != 0 {
+		t.Fatalf("ellipse bounding corner=0x%04x, want untouched", got)
+	}
+}
+
 func TestGraphicsServiceDrawPolygonHonorsFillStrokeAndPackedLayout(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	callGraphicsForTest(t, runtime, 4, 255, 0, 0)

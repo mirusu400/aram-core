@@ -3,6 +3,7 @@ package brewrt
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 	"sort"
 
 	"github.com/mirusu400/aram-core/cpu"
@@ -161,6 +162,19 @@ func (r *Runtime) handleGraphicsMethod(slot uint32) (bool, error) {
 			centerY+r.graphics.originY,
 			radius,
 		); err != nil {
+			return true, err
+		}
+		return returnValue(0)
+	case 24: // DrawEllipse
+		pointer, err := argument(cpu.RegisterR1)
+		if err != nil {
+			return true, err
+		}
+		x, y, width, height, err := r.readGraphicsRect(pointer)
+		if err != nil {
+			return true, err
+		}
+		if err := r.drawGraphicsEllipse(x, y, width, height); err != nil {
 			return true, err
 		}
 		return returnValue(0)
@@ -411,6 +425,29 @@ func (r *Runtime) drawGraphicsCircle(centerX, centerY, radius int32) error {
 		}
 	}
 	return nil
+}
+
+func (r *Runtime) drawGraphicsEllipse(x, y, width, height int32) error {
+	if width <= 0 || height <= 0 {
+		return nil
+	}
+	centerX := float64(x) + float64(width-1)/2
+	centerY := float64(y) + float64(height-1)/2
+	radiusX := float64(width-1) / 2
+	radiusY := float64(height-1) / 2
+	const segments = 128
+	points := make([]graphicsPoint, 0, segments)
+	for index := 0; index < segments; index++ {
+		angle := 2 * math.Pi * float64(index) / segments
+		point := graphicsPoint{
+			x: int32(math.Round(centerX + radiusX*math.Cos(angle))),
+			y: int32(math.Round(centerY + radiusY*math.Sin(angle))),
+		}
+		if len(points) == 0 || points[len(points)-1] != point {
+			points = append(points, point)
+		}
+	}
+	return r.drawGraphicsPolygon(points, true)
 }
 
 func (r *Runtime) drawGraphicsPolygon(points []graphicsPoint, closed bool) error {
