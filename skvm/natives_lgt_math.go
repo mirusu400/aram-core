@@ -1,6 +1,9 @@
 package skvm
 
-import "context"
+import (
+	"context"
+	"math/big"
+)
 
 const lgtMathClass = "mmpp/lang/MathFP"
 
@@ -42,6 +45,17 @@ func (vm *VM) installLGTMathNatives() {
 			return IntValue(result), true, nil
 		})
 	}
+	vm.RegisterNative(lgtMathClass, "parseFP", "(Ljava/lang/String;)I", func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
+		text, err := vm.stringArgument(args, 0)
+		if err != nil {
+			return Value{}, false, err
+		}
+		value, ok := parseLGTMathDecimal(text)
+		if !ok {
+			return Value{}, false, vm.newThrowable("java/lang/NumberFormatException", "MathFP decimal out of range or malformed")
+		}
+		return IntValue(value), true, nil
+	})
 	for _, name := range []string{"add", "sub", "min", "max", "multiply", "divide"} {
 		name := name
 		vm.RegisterNative(lgtMathClass, name, "(II)I", func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
@@ -86,4 +100,40 @@ func (vm *VM) installLGTMathNatives() {
 			return IntValue(result), true, nil
 		})
 	}
+}
+
+// parseLGTMathDecimal converts a plain signed decimal to a 20.12 word without
+// floating-point rounding. Fractional raw units are discarded toward zero.
+func parseLGTMathDecimal(text string) (int32, bool) {
+	if len(text) == 0 || len(text) > 4096 {
+		return 0, false
+	}
+	start := 0
+	if text[0] == '+' || text[0] == '-' {
+		start = 1
+	}
+	digits, dots := 0, 0
+	for i := start; i < len(text); i++ {
+		switch {
+		case text[i] >= '0' && text[i] <= '9':
+			digits++
+		case text[i] == '.':
+			dots++
+		default:
+			return 0, false
+		}
+	}
+	if digits == 0 || dots > 1 {
+		return 0, false
+	}
+	decimal, ok := new(big.Rat).SetString(text)
+	if !ok {
+		return 0, false
+	}
+	raw := new(big.Rat).Mul(decimal, big.NewRat(4096, 1))
+	if raw.Cmp(new(big.Rat).SetInt64(-2147483648)) < 0 || raw.Cmp(new(big.Rat).SetInt64(2147483647)) > 0 {
+		return 0, false
+	}
+	word := new(big.Int).Quo(raw.Num(), raw.Denom())
+	return int32(word.Int64()), true
 }

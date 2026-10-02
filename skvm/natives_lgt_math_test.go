@@ -100,11 +100,54 @@ func TestLGTMathFPIntegerArithmetic(t *testing.T) {
 	}
 }
 
+func TestLGTMathFPParseString(t *testing.T) {
+	tests := []struct {
+		input     string
+		want      int32
+		exception string
+	}{
+		{"0", 0, ""},
+		{"1.25", 5120, ""},
+		{"-1.234", -5054, ""},
+		{"0.000244140625", 1, ""},
+		{"524287.999755859375", 2147483647, ""},
+		{"-524288", -2147483648, ""},
+		{"524288", 0, "java/lang/NumberFormatException"},
+		{"-524288.000244140625", 0, "java/lang/NumberFormatException"},
+		{"abc", 0, "java/lang/NumberFormatException"},
+		{"1/2", 0, "java/lang/NumberFormatException"},
+		{"", 0, "java/lang/NumberFormatException"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			vm := mathFPVM(t, NativePolicyLGT)
+			value, has, err := vm.InvokeStatic(context.Background(), lgtMathClass, "parseFP", "(Ljava/lang/String;)I", ReferenceValue(vm.NewString(tt.input)))
+			if tt.exception != "" {
+				var thrownError *thrown
+				if !errors.As(err, &thrownError) || thrownError.class != tt.exception {
+					t.Fatalf("want guest %s, got %v", tt.exception, err)
+				}
+				return
+			}
+			if err != nil || !has {
+				t.Fatalf("has=%v err=%v", has, err)
+			}
+			got, err := value.Int()
+			if err != nil || got != tt.want {
+				t.Fatalf("got=%d err=%v want=%d", got, err, tt.want)
+			}
+		})
+	}
+}
+
 func TestLGTMathFPPolicyAndUnsupported(t *testing.T) {
 	for _, p := range []NativePolicy{NativePolicySKT, NativePolicyJ2ME} {
 		vm := mathFPVM(t, p)
 		if _, _, err := vm.InvokeStatic(context.Background(), "mmpp/lang/MathFP", "parseFP", "(I)I", IntValue(1)); err == nil {
 			t.Fatalf("MathFP leaked into policy %d", p)
+		}
+		if _, _, err := vm.InvokeStatic(context.Background(), lgtMathClass, "parseFP", "(Ljava/lang/String;)I", ReferenceValue(vm.NewString("1.25"))); err == nil {
+			t.Fatalf("MathFP string parser leaked into policy %d", p)
 		}
 	}
 	vm := mathFPVM(t, NativePolicy(2))
@@ -112,9 +155,6 @@ func TestLGTMathFPPolicyAndUnsupported(t *testing.T) {
 		if _, _, err := vm.InvokeStatic(context.Background(), "mmpp/lang/MathFP", name, "(I)I", IntValue(0)); err == nil {
 			t.Fatalf("unsupported %s succeeded", name)
 		}
-	}
-	if _, _, err := vm.InvokeStatic(context.Background(), "mmpp/lang/MathFP", "parseFP", "(Ljava/lang/String;)I", ReferenceValue(vm.NewString("1.25"))); err == nil {
-		t.Fatal("unsupported string parsing succeeded")
 	}
 	if _, _, err := vm.InvokeStatic(context.Background(), "mmpp/lang/MathFP", "pow", "(II)I", IntValue(4096), IntValue(4096)); err == nil {
 		t.Fatal("unsupported pow succeeded")

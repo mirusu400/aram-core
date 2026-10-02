@@ -4,7 +4,7 @@
 
 Source: public [LG MMPP MathFP Javadoc](https://nikita36078.github.io/J2ME_Docs/docs/LG_MMPP_API/mmpp/lang/MathFP.html), consulted 2026-09-11. Implementation and synthetic class fixtures are independently authored. No handset/reference implementation source or private class bytes are included.
 
-`mmpp/lang/MathFP` is installed only under `NativePolicyLGT` (serialized policy 2). It is not installed for SKT or generic J2ME. This addresses the observed missing `parseFP(I)I` API cluster, not full handset compatibility, successful game startup, or a verified original-title progression result.
+`mmpp/lang/MathFP` is installed only under `NativePolicyLGT` (serialized policy 2). It is not installed for SKT or generic J2ME. This addresses the observed `parseFP` API cluster, not full handset compatibility, successful game startup, or a verified original-title progression result.
 
 ## Explicit public guarantees implemented
 
@@ -13,6 +13,7 @@ The documentation defines a signed 32-bit word with 20 integer bits (including s
 | API | Implemented behavior |
 | --- | --- |
 | `parseFP(I)I` | Multiply an in-range integer by 4096. Out-of-range input throws guest `java/lang/NumberFormatException`. |
+| `parseFP(String)I` | Convert a plain signed decimal to the 20.12 word. Malformed or out-of-range input throws guest `java/lang/NumberFormatException`. |
 | `toInt(I)I` | Round the fixed value to an integer, rather than truncate it. |
 | `round(I)I` | Round to the nearest integer, returned in fixed-point encoding. |
 | `abs(I)I` | Absolute value of the fixed word, subject to the endpoint choice below. |
@@ -42,10 +43,11 @@ The public page does not supply rounding tie rules, fractional arithmetic quanti
 * Multiplication and division discard fractional raw units toward zero, including negative results. Multiplication checks the exact scaled product against the raw signed-word range **before** quantization, so a fractional excess cannot be hidden by truncation. The precise pre-quantization endpoint treatment is an emulator choice.
 * Addition, subtraction, division overflow, `abs(MIN_VALUE)`, and overflow while re-encoding `round` wrap to the low signed 32 bits. The page specifies no overflow exceptions for these cases. In particular, `round(MAX_VALUE)` and `abs(MIN_VALUE)` produce `MIN_VALUE`. This is a chosen Java-integer-like default, not a claim that the handset behaves this way.
 * `MAX_VALUE` means the full raw signed-word maximum, representing 524287 + 4095/4096. The prose describes the integer range imprecisely as ending at 524287 and does not print a numeric `MAX_VALUE` constant. Using all fractional bits at the upper endpoint is the representation-based emulator interpretation, not recovered constant bytes.
+* `parseFP(String)` accepts plain signed decimal digits with an optional point, rejects exponents and other syntax, and converts exactly without floating-point arithmetic. Fractions smaller than one raw unit are discarded toward zero. The public page gives examples and a range exception but no decimal quantization or complete grammar, so these are emulator choices. Inputs longer than 4096 bytes are rejected to bound parsing work.
 
 ## Deliberately unsupported
 
-`parseFP(String)`, `toString(int)`, `pow`, `sqrt`, `log`, `exp`, and all six trigonometric/inverse-trigonometric functions remain unregistered. Unsupported calls fail instead of returning invented zeroes, floating-point approximations, or guessed string conversions. Constructor semantics are not added.
+`toString(int)`, `pow`, `sqrt`, `log`, `exp`, and all six trigonometric/inverse-trigonometric functions remain unregistered. Unsupported calls fail instead of returning invented zeroes or floating-point approximations. Constructor semantics are not added.
 
 ## Verification
 
