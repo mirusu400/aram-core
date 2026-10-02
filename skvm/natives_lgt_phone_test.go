@@ -9,6 +9,8 @@ import (
 
 func TestLGTPhoneBrowserRequestIsPolicyScoped(t *testing.T) {
 	vm := policyRegressionVM(t, NativePolicyLGT)
+	phone := vm.NewObject(lgtPhoneClass, nil)
+	invokeTestNative(t, vm, lgtPhoneClass, "<init>", "()V", phone)
 	const descriptor = "(Ljava/lang/String;)V"
 	if !vm.SupportsNativeReference(lgtPhoneClass, "invokeWAPBrowser", descriptor) {
 		t.Fatal("LGT browser native is unavailable")
@@ -20,6 +22,9 @@ func TestLGTPhoneBrowserRequestIsPolicyScoped(t *testing.T) {
 	}
 	for _, policy := range []NativePolicy{NativePolicyJ2ME, NativePolicySKT} {
 		other := policyRegressionVM(t, policy)
+		if other.SupportsNativeReference(lgtPhoneClass, "<init>", "()V") {
+			t.Fatalf("LGT Phone constructor leaked to policy %d", policy)
+		}
 		if other.SupportsNativeReference(lgtPhoneClass, "invokeWAPBrowser", descriptor) {
 			t.Fatalf("LGT browser native leaked to policy %d", policy)
 		}

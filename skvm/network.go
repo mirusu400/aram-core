@@ -659,6 +659,11 @@ func (vm *VM) ensureHTTPResponse(state *httpConnectionState) error {
 	if info.State == shared.ConnectionConnected {
 		return nil
 	}
+	// LGT reports an offline radio as a connection failure. A synthetic empty
+	// response would look like a live stream to titles waiting for server data.
+	if vm.nativePolicy == NativePolicyLGT && !vm.services.Device.NetworkAvailable() {
+		return vm.newThrowable("java/io/IOException", "network unavailable")
+	}
 	if info.State == shared.ConnectionNew {
 		if err := vm.services.Network.BeginHTTP(
 			vm.serviceOwner,
