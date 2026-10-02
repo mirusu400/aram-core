@@ -183,7 +183,7 @@ const (
 	guestInstructionBudget     = uint64(16_000_000)
 	bootstrapInstructionBudget = uint64(256_000_000)
 	// A verified applet input returns after 184,323 host calls.
-	hostCallBudget             = 262_144
+	hostCallBudget = 262_144
 )
 
 // Runtime executes structurally validated module and applet ARM code with the
@@ -207,6 +207,7 @@ type Runtime struct {
 	displayColorSet  [16]bool
 	eventCounts      map[uint32]uint64
 	files            map[string][]byte
+	directories      map[string]struct{}
 	fileHandles      map[uint32]*brewFile
 	socketHandles    map[uint32]*brewSocket
 	netLastError     uint32
@@ -373,6 +374,7 @@ func New(pkg Package) (*Runtime, error) {
 		screenHeight:  uint32(pkg.DisplaySize().Y),
 		heapAllocated: make(map[uint32]uint32),
 		eventCounts:   make(map[uint32]uint64), classIDs: classIDs,
+		directories:     make(map[string]struct{}),
 		fileHandles:     make(map[uint32]*brewFile),
 		socketHandles:   make(map[uint32]*brewSocket),
 		databases:       make(map[string]*brewDatabase),
@@ -2142,6 +2144,11 @@ func (r *Runtime) handleAppletMethodTrap(
 				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW remove status: %w", err)
 			}
 			return resume()
+		case 5: // MkDir(IFileMgr *, const char *)
+			if err := r.makeGuestDirectory(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
 		case 7: // Test(IFileMgr *, const char *)
 			if err := r.testGuestFile(); err != nil {
 				return true, 0, cpu.ModeARM, err
@@ -3555,6 +3562,31 @@ func (r *Runtime) openGuestFile() error {
 	return nil
 }
 
+func (r *Runtime) makeGuestDirectory() error {
+	pathPointer, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW directory path pointer: %w", err)
+	}
+	path, err := r.readCString(pathPointer)
+	if err != nil {
+		return err
+	}
+	normalized := strings.TrimSuffix(normalizeGuestPath(path), "/")
+	status := uint32(1)
+	if normalized != "" {
+		_, _, fileExists := r.lookupGuestFile(normalized)
+		_, directoryExists := r.directories[normalized]
+		if !fileExists && !directoryExists {
+			r.directories[normalized] = struct{}{}
+			status = 0
+		}
+	}
+	if err := r.cpu.WriteRegister(cpu.RegisterR0, status); err != nil {
+		return fmt.Errorf("return BREW directory creation status: %w", err)
+	}
+	return nil
+}
+
 func (r *Runtime) testGuestFile() error {
 	pathPointer, err := r.cpu.ReadRegister(cpu.RegisterR1)
 	if err != nil {
@@ -3564,8 +3596,11 @@ func (r *Runtime) testGuestFile() error {
 	if err != nil {
 		return err
 	}
-	normalized := normalizeGuestPath(path)
+	normalized := strings.TrimSuffix(normalizeGuestPath(path), "/")
 	_, _, ok := r.lookupGuestFile(normalized)
+	if !ok {
+		_, ok = r.directories[normalized]
+	}
 	status := uint32(1)
 	if ok {
 		status = 0

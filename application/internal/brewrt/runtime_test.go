@@ -1359,6 +1359,47 @@ func TestOpenFileCreateModeMakesMissingGuestFile(t *testing.T) {
 	}
 }
 
+func TestFileMgrMkDirCreatesDirectoryAndReportsExistingPath(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	path := heapBase + 0x100
+	if err := runtime.cpu.WriteMemory(path, []byte("fs:/~/save\\slots\x00")); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR1: path,
+		cpu.RegisterLR: returnTrap | 1,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mkdir := func(want uint32) {
+		t.Helper()
+		handled, _, _, err := runtime.handleAppletMethodTrap(fileMgrTrapBase + 5*2 + 2)
+		if err != nil || !handled {
+			t.Fatalf("MkDir handled=%v err=%v", handled, err)
+		}
+		if status, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || status != want {
+			t.Fatalf("MkDir status=%d err=%v, want %d", status, err, want)
+		}
+	}
+	mkdir(0)
+	if _, ok := runtime.directories["save/slots"]; !ok {
+		t.Fatal("MkDir did not record the normalized directory")
+	}
+	if err := runtime.testGuestFile(); err != nil {
+		t.Fatal(err)
+	}
+	if status, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || status != 0 {
+		t.Fatalf("Test of directory status=%d err=%v", status, err)
+	}
+	mkdir(1)
+	if err := runtime.cpu.WriteMemory(path, []byte("\x00")); err != nil {
+		t.Fatal(err)
+	}
+	mkdir(1)
+}
+
 func TestSprintfSupportsSignedIntegerAlias(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	destination := heapBase + 0x500
