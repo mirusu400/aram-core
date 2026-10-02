@@ -179,6 +179,14 @@ func (vm *VM) installLGTMediaNatives() {
 			}
 			switch name {
 			case "start":
+				info, err := vm.services.Media.Info(vm.serviceOwner, c.clip)
+							if err != nil {
+								return Value{}, false, err
+							}
+							if info.State == shared.ClipPlaying {
+								// Repeated start leaves playback and queued samples untouched.
+								return Value{}, false, nil
+				}
 				loop, _ := o.Fields[lgtLoopField].Int()
 				plays := int32(1)
 				if loop != 0 {

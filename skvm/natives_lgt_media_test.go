@@ -50,6 +50,40 @@ func mmppInfo(t *testing.T, v *VM, r uint32) shared.ClipInfo {
 	check(t, e)
 	return i
 }
+
+func TestMMPPRepeatedStartPreservesPlayback(t *testing.T) {
+	v := mmppVM(t, NativePolicyLGT)
+	r := mmppNew(t, v)
+	mmppSource(t, v, r)
+	mmppCall(t, v, r, "start")
+	check(t, v.Advance(context.Background(), 20*time.Millisecond, nil))
+	before := mmppInfo(t, v, r)
+	if before.State != shared.ClipPlaying || before.Position != 20*time.Millisecond {
+		t.Fatalf("initial playback = %+v", before)
+	}
+	snapshot, err := v.MarshalBinary()
+	check(t, err)
+	revision := v.services.Media.OutputRevision()
+	for i := 0; i < 3; i++ {
+		mmppCall(t, v, r, "start")
+		if got := mmppInfo(t, v, r); got != before {
+			t.Fatalf("repeated start changed playback: %+v -> %+v", before, got)
+		}
+		if v.services.Media.OutputRevision() != revision {
+			t.Fatal("repeated start invalidated queued audio")
+		}
+		state, err := v.MarshalBinary()
+		check(t, err)
+		if !bytes.Equal(state, snapshot) {
+			t.Fatal("repeated start changed serialized state")
+		}
+	}
+	check(t, v.Advance(context.Background(), 20*time.Millisecond, nil))
+	if got := mmppInfo(t, v, r).Position; got != 40*time.Millisecond {
+		t.Fatalf("playback position after repeated start = %s", got)
+	}
+}
+
 func TestMMPPPCMContinuityLoopReplay(t *testing.T) {
 	v := mmppVM(t, NativePolicyLGT)
 	r := mmppNew(t, v)
