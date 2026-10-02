@@ -111,6 +111,49 @@ func TestLGTTextFieldXEditsPaintsAndRestores(t *testing.T) {
 	}
 }
 
+func TestLGTTextFieldXSetStringResetsComposition(t *testing.T) {
+	vm := policyRegressionVM(t, NativePolicyLGT)
+	field, err := vm.allocateObject(lgtTextFieldClass)
+	check(t, err)
+	call := func(name, descriptor string, args ...Value) Value {
+		t.Helper()
+		return invokeTestNative(t, vm, lgtTextFieldClass, name, descriptor, field, args...)
+	}
+	read := func() string {
+		t.Helper()
+		ref, err := call("getString", "()Ljava/lang/String;").Reference()
+		check(t, err)
+		value, err := vm.String(ref)
+		check(t, err)
+		return value
+	}
+	call("<init>", "(Ljava/lang/String;Ljava/lang/String;II)V",
+		ReferenceValue(vm.NewString("")), ReferenceValue(vm.NewString("AB")), IntValue(3), IntValue(0))
+	call("setFocus", "(Z)V", IntValue(1))
+	call("nextInputMode", "()I")
+	call("keyPressed", "(I)V", IntValue('2'))
+	if got := read(); got != "ABA" {
+		t.Fatalf("composing text = %q", got)
+	}
+	call("setString", "(Ljava/lang/String;)V", ReferenceValue(vm.NewString("XY")))
+	call("keyPressed", "(I)V", IntValue('2'))
+	if got := read(); got != "XYA" {
+		t.Fatalf("text after replacement and key = %q", got)
+	}
+	_, _, err = vm.natives[nativeKey{lgtTextFieldClass, "setString", "(Ljava/lang/String;)V"}](
+		context.Background(), vm, field, []Value{ReferenceValue(vm.NewString("ABCD"))})
+	if err == nil || read() != "XYA" {
+		t.Fatalf("oversized replacement changed text: %q, %v", read(), err)
+	}
+	call("setString", "(Ljava/lang/String;)V", ReferenceValue(0))
+	if got := read(); got != "" {
+		t.Fatalf("null replacement = %q", got)
+	}
+	if caret, err := call("getCaretPosition", "()I").Int(); err != nil || caret != 0 {
+		t.Fatalf("caret after clearing = %d, %v", caret, err)
+	}
+}
+
 func TestLGTTextFieldXDoesNotLeakToOtherPolicies(t *testing.T) {
 	for _, policy := range []NativePolicy{NativePolicySKT, NativePolicyJ2ME} {
 		vm := policyRegressionVM(t, policy)

@@ -213,6 +213,15 @@ func (vm *VM) installLGTTextFieldNatives() {
 			value, err := objectField(vm, receiver, midpTextField)
 			return value, true, err
 		})
+	vm.RegisterNative(lgtTextFieldClass, "setString", "(Ljava/lang/String;)V",
+		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+			if err := vm.setText(receiver, args[0]); err != nil {
+				return Value{}, false, err
+			}
+			mode := lgtFieldInt(vm, receiver, "mode", lgtModeKorean)
+			lgtSaveAutomata(vm, receiver, ime.New(lgtAutomataMode(mode)))
+			return Value{}, false, nil
+		})
 	vm.RegisterNative(lgtTextFieldClass, "getCaretPosition", "()I",
 		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
 			text, err := vm.textValue(receiver)
