@@ -607,6 +607,7 @@ func (vm *VM) buildCandidate(
 		nativePolicy:     vm.nativePolicy,
 		classes:          make(map[string]*runtimeClass, len(vm.classes)),
 		heap:             make(map[uint32]*Object, len(state.Heap)),
+		fontCache:        make(map[fontCacheKey]uint32),
 		nextReference:    state.NextReference,
 		natives:          vm.natives,
 		hostSupers:       vm.hostSupers,
@@ -723,6 +724,27 @@ func (vm *VM) buildCandidate(
 			links[saved.Reference] = link
 		}
 		candidate.heap[saved.Reference] = object
+		// The getFont cache is derived state. Rebuild it from saved Font objects
+		// so repeated save/restore cycles keep sharing the same host font.
+		if _, ok := object.Native.(*fontState); ok &&
+			(saved.Class == "javax/microedition/lcdui/Font" ||
+				saved.Class == "org/kwis/msp/lcdui/Font") {
+			face, hasFace := object.Fields["\x00aram-font-face"]
+			style, hasStyle := object.Fields["\x00aram-font-style"]
+			size, hasSize := object.Fields["\x00aram-font-size"]
+			if hasFace && hasStyle && hasSize &&
+				face.Kind == ValueInt && style.Kind == ValueInt && size.Kind == ValueInt {
+				key := fontCacheKey{
+					class: saved.Class,
+					face:  int32(face.bits),
+					style: int32(style.bits),
+					size:  int32(size.bits),
+				}
+				// Objects are saved in reference order. The newest duplicate
+				// was the instance cached before this snapshot was taken.
+				candidate.fontCache[key] = saved.Reference
+			}
+		}
 		previousReference = saved.Reference
 	}
 	for reference, link := range links {

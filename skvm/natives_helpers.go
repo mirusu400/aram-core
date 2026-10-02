@@ -192,7 +192,7 @@ func (vm *VM) newFontObject(class string, args []Value) (Value, bool, error) {
 		}
 		delete(vm.fontCache, key)
 	}
-	id, err := vm.services.Text.CreateFont(vm.serviceOwner, shared.FontDescriptor{
+	id, err := vm.services.Text.EnsureFont(vm.serviceOwner, shared.FontDescriptor{
 		Family: "aram-fallback",
 		Size:   size,
 		Style:  fontStyle,
