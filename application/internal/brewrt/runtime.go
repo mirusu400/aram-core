@@ -182,7 +182,8 @@ const (
 
 	guestInstructionBudget     = uint64(16_000_000)
 	bootstrapInstructionBudget = uint64(256_000_000)
-	hostCallBudget             = 131_072
+	// A verified applet input returns after 184,323 host calls.
+	hostCallBudget             = 262_144
 )
 
 // Runtime executes structurally validated module and applet ARM code with the
