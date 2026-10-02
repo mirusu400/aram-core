@@ -20,6 +20,14 @@ func (r *Runtime) ensureJavaVTableIndex(
 	if vtableAddress != 0 {
 		r.javaVTableClasses[vtableAddress] = classAddress
 	}
+	if _, registered := r.javaVTables[classAddress]; registered && r.javaClassBridges[classAddress] == 0 {
+		if bridge := r.existingJavaClassBridge(classAddress, vtableAddress); bridge != 0 {
+			if r.javaClassBridges == nil {
+				r.javaClassBridges = make(map[uint32]uint32)
+			}
+			r.javaClassBridges[classAddress] = bridge
+		}
+	}
 	if bridge := r.javaClassBridges[classAddress]; bridge != 0 {
 		if err := r.WriteU32(bridge+12, vtableAddress); err != nil {
 			return 0, err
@@ -40,6 +48,30 @@ func (r *Runtime) ensureJavaVTableIndex(
 		return 0, err
 	}
 	return index, nil
+}
+
+// existingJavaClassBridge recovers the compact object-header target from the
+// persistent vtable-to-class registry. RestoreState clears the derived forward
+// cache, but a late compatibility method can grow a class vtable before another
+// object allocation has had a chance to rebuild that cache.
+func (r *Runtime) existingJavaClassBridge(classAddress, vtableAddress uint32) uint32 {
+	var bridge uint32
+	for candidate, target := range r.javaVTableClasses {
+		if target != classAddress || candidate == vtableAddress {
+			continue
+		}
+		candidateWords, readErr := r.ReadWords(candidate, 3)
+		if readErr != nil || candidateWords[0] != candidate+4 ||
+			candidateWords[2] != candidate+5*4 {
+			continue
+		}
+		parent, readErr := r.ReadU32(candidateWords[2] + 8)
+		if readErr == nil && parent == classAddress &&
+			(bridge == 0 || candidate < bridge) {
+			bridge = candidate
+		}
+	}
+	return bridge
 }
 
 func (r *Runtime) writeJavaVTable(index, address uint32) error {
@@ -110,21 +142,9 @@ func (r *Runtime) ensureJavaClassBridge(class JavaClass) (uint32, error) {
 	}
 	bridge := r.javaClassBridges[class.Address]
 	if bridge == 0 {
-		for candidate, target := range r.javaVTableClasses {
-			if target != class.Address || candidate == classWords[3] {
-				continue
-			}
-			candidateWords, readErr := r.ReadWords(candidate, 3)
-			if readErr != nil || candidateWords[0] != candidate+4 ||
-				candidateWords[2] != candidate+5*4 {
-				continue
-			}
-			parent, readErr := r.ReadU32(candidateWords[2] + 8)
-			if readErr == nil && parent == class.Address {
-				bridge = candidate
-				r.javaClassBridges[class.Address] = bridge
-				break
-			}
+		bridge = r.existingJavaClassBridge(class.Address, classWords[3])
+		if bridge != 0 {
+			r.javaClassBridges[class.Address] = bridge
 		}
 	}
 	created := bridge == 0

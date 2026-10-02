@@ -131,3 +131,48 @@ func TestKTFJavaClassBridgeSurvivesGCAndCachedNativeDispatch(t *testing.T) {
 		t.Fatalf("cached native StringBuffer = %q, want %q", got, "score:5")
 	}
 }
+
+func TestKTFJavaClassBridgeTracksVTableRebuildAfterStateRestore(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+
+	classAddress := ensureClass(t, runtime, "java/lang/StringBuffer")
+	methodAddress, err := runtime.resolveJavaMethod(classAddress, "append", "(I)Ljava/lang/StringBuffer;")
+	check(t, err)
+	class := inspectClass(t, runtime, classAddress)
+	instance, err := runtime.NewJavaInstanceForClass(class)
+	check(t, err)
+	fields := readU32(t, runtime, instance)
+	header := readU32(t, runtime, fields)
+	bridge := runtime.JvmContext + uint32(int32(header)>>5)
+	oldTable := readU32(t, runtime, bridge+12)
+	if oldTable != class.VTable {
+		t.Fatalf("initial bridge vtable = 0x%08x, want 0x%08x", oldTable, class.VTable)
+	}
+
+	var state bytes.Buffer
+	check(t, WriteState(runtime, runtime.CPU, true, guest.NewStateWriter(&state)))
+	decoder := guest.StateDecoder{Reader: bytes.NewReader(state.Bytes())}
+	saved, err := ParseState(runtime, &decoder)
+	check(t, err)
+	started := false
+	check(t, RestoreState(runtime, runtime.CPU, saved, &started))
+	if len(runtime.javaClassBridges) != 0 {
+		t.Fatal("derived bridge cache unexpectedly survived state restore")
+	}
+
+	// A late compatibility method can grow the real vtable before another
+	// object allocation has reconstructed the derived bridge cache.
+	capacity := runtime.javaVTableCapacity[classAddress]
+	if capacity >= uint32(^uint16(0)) {
+		t.Fatal("synthetic vtable has no room to grow")
+	}
+	check(t, runtime.installHostJavaVirtualMethodForClass(classAddress, methodAddress, uint16(capacity)))
+	newTable := readU32(t, runtime, classAddress+12)
+	if newTable == oldTable {
+		t.Fatal("vtable rebuild reused the old table")
+	}
+	if got := readU32(t, runtime, bridge+12); got != newTable {
+		t.Fatalf("restored bridge vtable = 0x%08x, want rebuilt table 0x%08x", got, newTable)
+	}
+}
