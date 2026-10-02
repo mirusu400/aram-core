@@ -7,6 +7,7 @@ com/skt/m/AudioSystem getAudioClip (Ljava/lang/String;)Lcom/skt/m/AudioClip;
 com/skt/m/AudioSystem getMaxVolume (Ljava/lang/String;)I
 com/skt/m/AudioSystem getVolume (Ljava/lang/String;)I
 com/skt/m/AudioSystem setVolume (Ljava/lang/String;I)V
+com/skt/m/BackLight off ()V
 com/skt/m/BackLight on (I)V
 com/skt/m/Device enableRestoreLCD (Z)V
 com/skt/m/Device invokeWapBrowser (Ljava/lang/String;)V

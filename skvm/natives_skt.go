@@ -64,6 +64,18 @@ func (vm *VM) installSKTNatives() {
 		},
 	)
 	vm.RegisterNative(
+		"com/skt/m/BackLight",
+		"off",
+		"()V",
+		func(_ context.Context, vm *VM, _ uint32, _ []Value) (Value, bool, error) {
+			return Value{}, false, vm.services.Device.SetBacklight(
+				false,
+				0,
+				vm.services.Clock.Monotonic(),
+			)
+		},
+	)
+	vm.RegisterNative(
 		"com/skt/m/Vibration",
 		"start",
 		"(II)V",

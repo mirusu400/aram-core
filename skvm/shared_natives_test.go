@@ -153,6 +153,14 @@ func TestSKVMDeviceAndAudioNativesUseSharedServices(t *testing.T) {
 	if !enabled {
 		t.Fatal("SKVM backlight native did not update the device service")
 	}
+	invokeTestNative(t, vm, "com/skt/m/BackLight", "on", "(I)V", 0, IntValue(500))
+	if on, until := vm.services.Device.Backlight(); !on || until != 500*time.Millisecond {
+		t.Fatalf("SKT backlight on = %v until %s", on, until)
+	}
+	invokeTestNative(t, vm, "com/skt/m/BackLight", "off", "()V", 0)
+	if on, until := vm.services.Device.Backlight(); on || until != 0 {
+		t.Fatalf("SKT backlight off = %v until %s", on, until)
+	}
 	invokeTestNative(
 		t,
 		vm,
