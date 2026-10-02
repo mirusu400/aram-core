@@ -34,6 +34,18 @@ const (
 
 func (vm *VM) installConnectionNatives() {
 	vm.RegisterNative(
+		"javax/microedition/io/InputConnection",
+		"openInputStream",
+		"()Ljava/io/InputStream;",
+		nativeOpenConnectionInputStream,
+	)
+	vm.RegisterNative(
+		"javax/microedition/io/InputConnection",
+		"openDataInputStream",
+		"()Ljava/io/DataInputStream;",
+		nativeOpenConnectionDataInputStream,
+	)
+	vm.RegisterNative(
 		"javax/microedition/io/Connector",
 		"open",
 		"(Ljava/lang/String;)Ljavax/microedition/io/Connection;",
@@ -56,19 +68,7 @@ func (vm *VM) installConnectionNatives() {
 		"javax/microedition/io/SocketConnection",
 		"openDataInputStream",
 		"()Ljava/io/DataInputStream;",
-		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
-			if _, err := vm.openSocketConnection(receiver); err != nil {
-				return Value{}, false, err
-			}
-			stream := vm.NewObject(
-				"java/io/InputStream",
-				&inputStreamState{connection: receiver},
-			)
-			return ReferenceValue(vm.NewObject(
-				"java/io/DataInputStream",
-				&dataInputState{stream: stream},
-			)), true, nil
-		},
+		nativeOpenConnectionDataInputStream,
 	)
 	vm.RegisterNative(
 		"javax/microedition/io/SocketConnection",
@@ -474,6 +474,19 @@ func nativeOpenConnectionInputStream(
 		"java/io/InputStream",
 		&inputStreamState{connection: receiver},
 	)), true, nil
+}
+
+func nativeOpenConnectionDataInputStream(
+	_ context.Context,
+	vm *VM,
+	receiver uint32,
+	_ []Value,
+) (Value, bool, error) {
+	if err := vm.ensureOpenConnection(receiver); err != nil {
+		return Value{}, false, err
+	}
+	stream := vm.NewObject("java/io/InputStream", &inputStreamState{connection: receiver})
+	return ReferenceValue(vm.NewObject("java/io/DataInputStream", &dataInputState{stream: stream})), true, nil
 }
 
 func nativeOpenConnectionOutputStream(

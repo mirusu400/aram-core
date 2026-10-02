@@ -681,6 +681,8 @@ javax/microedition/io/HttpConnection setRequestMethod (Ljava/lang/String;)V
 javax/microedition/io/HttpConnection setRequestProperty (Ljava/lang/String;Ljava/lang/String;)V
 javax/microedition/io/HttpsConnection getPort ()I
 javax/microedition/io/HttpsConnection getSecurityInfo ()Ljavax/microedition/io/SecurityInfo;
+javax/microedition/io/InputConnection openDataInputStream ()Ljava/io/DataInputStream;
+javax/microedition/io/InputConnection openInputStream ()Ljava/io/InputStream;
 javax/microedition/io/PushRegistry getFilter (Ljava/lang/String;)Ljava/lang/String;
 javax/microedition/io/PushRegistry getMIDlet (Ljava/lang/String;)Ljava/lang/String;
 javax/microedition/io/PushRegistry listConnections (Z)[Ljava/lang/String;

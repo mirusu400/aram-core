@@ -568,7 +568,7 @@ func TestSKVMConnectorUsesSharedDeterministicNetwork(t *testing.T) {
 	inputValue := invokeTestNative(
 		t,
 		vm,
-		"javax/microedition/io/SocketConnection",
+		"javax/microedition/io/InputConnection",
 		"openDataInputStream",
 		"()Ljava/io/DataInputStream;",
 		connectionReference,
@@ -622,6 +622,13 @@ func TestSKVMConnectorUsesSharedDeterministicNetwork(t *testing.T) {
 	)
 	if !connection.closed || connection.socket != 0 {
 		t.Fatalf("closed connection = %+v", connection)
+	}
+	if _, _, err := vm.natives[nativeKey{
+		"javax/microedition/io/InputConnection",
+		"openDataInputStream",
+		"()Ljava/io/DataInputStream;",
+	}](context.Background(), vm, connectionReference, nil); err == nil {
+		t.Fatal("opened data input stream on closed connection")
 	}
 }
 
