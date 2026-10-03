@@ -365,9 +365,9 @@ func New(pkg Package) (*Runtime, error) {
 	if len(classIDs) == 0 {
 		classIDs = []uint32{ClassID}
 	}
-	files := pkg.Files
-	if files == nil {
-		files = make(map[string][]byte)
+	files := make(map[string][]byte, len(pkg.Files))
+	for name, contents := range pkg.Files {
+		files[name] = bytes.Clone(contents)
 	}
 	r := &Runtime{
 		cpu: backend, heapNext: heapBase, files: files,
@@ -2144,10 +2144,8 @@ func (r *Runtime) handleAppletMethodTrap(
 			}
 			return resume()
 		case 4: // Remove(IFileMgr *, const char *)
-			// The authenticated package is immutable. The exact first request is the
-			// absent transient save "t.sre", so EFAILED is the honest result.
-			if err := r.cpu.WriteRegister(cpu.RegisterR0, 1); err != nil {
-				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW remove status: %w", err)
+			if err := r.removeGuestFile(); err != nil {
+				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
 		case 5: // MkDir(IFileMgr *, const char *)
@@ -3699,6 +3697,34 @@ func (r *Runtime) testGuestFile() error {
 		return fmt.Errorf("return BREW file test status: %w", err)
 	}
 	return nil
+}
+
+func (r *Runtime) removeGuestFile() error {
+	pathPointer, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW removed path pointer: %w", err)
+	}
+	path, err := r.readCString(pathPointer)
+	if err != nil {
+		return err
+	}
+	normalized := normalizeGuestPath(path)
+	_, resolved, found := r.lookupGuestFile(normalized)
+	status := uint32(1)
+	if found {
+		inUse := false
+		for _, file := range r.fileHandles {
+			if file.path == resolved {
+				inUse = true
+				break
+			}
+		}
+		if !inUse {
+			delete(r.files, resolved)
+			status = 0
+		}
+	}
+	return r.cpu.WriteRegister(cpu.RegisterR0, status)
 }
 
 func normalizeGuestPath(path string) string {

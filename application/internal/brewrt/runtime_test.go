@@ -19,17 +19,75 @@ import (
 )
 
 func newSyntheticRuntime(t *testing.T) *Runtime {
+	return newSyntheticRuntimeWithFiles(t, nil)
+}
+
+func newSyntheticRuntimeWithFiles(t *testing.T, files map[string][]byte) *Runtime {
 	t.Helper()
 	module := make([]byte, 20)
 	for offset, instruction := range []uint32{0xe59f0008, 0xe5820000, 0xe3a00000, 0xe12fff1e, heapBase} {
 		binary.LittleEndian.PutUint32(module[offset*4:], instruction)
 	}
-	runtime, err := New(Package{Module: module})
+	runtime, err := New(Package{Module: module, Files: files})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = runtime.Close() })
 	return runtime
+}
+
+func TestFileMgrRemovePackagedFileInGuestFilesystem(t *testing.T) {
+	packaged := map[string][]byte{"23030/ds2.opt": []byte("default")}
+	runtime := newSyntheticRuntimeWithFiles(t, packaged)
+	path := heapBase + 0x100
+	if err := runtime.cpu.WriteMemory(path, []byte("fs:/~/ds2.opt\x00")); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterR1, path); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterLR, returnTrap|1); err != nil {
+		t.Fatal(err)
+	}
+	remove := func(want uint32) {
+		t.Helper()
+		handled, _, _, err := runtime.handleAppletMethodTrap(fileMgrTrapBase + 4*2 + 2)
+		if err != nil || !handled {
+			t.Fatalf("Remove handled=%v err=%v", handled, err)
+		}
+		if status, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || status != want {
+			t.Fatalf("Remove status=%d err=%v, want %d", status, err, want)
+		}
+	}
+	runtime.fileHandles[heapBase+0x200] = &brewFile{path: "23030/ds2.opt"}
+	remove(1) // An open handle keeps its backing file available.
+	delete(runtime.fileHandles, heapBase+0x200)
+	remove(0)
+	if _, _, ok := runtime.lookupGuestFile("ds2.opt"); ok {
+		t.Fatal("removed package file remains visible to the guest")
+	}
+	if got := string(packaged["23030/ds2.opt"]); got != "default" {
+		t.Fatalf("source package contents changed to %q", got)
+	}
+	remove(1) // Missing file remains a failure.
+	runtime.files["ds2.opt"] = []byte("save")
+	remove(0)
+	if _, ok := runtime.files["ds2.opt"]; ok {
+		t.Fatal("guest-created file remains after Remove")
+	}
+}
+
+func TestNewCopiesPackageFileBytes(t *testing.T) {
+	packaged := map[string][]byte{"data.bin": []byte("original")}
+	runtime := newSyntheticRuntimeWithFiles(t, packaged)
+	runtime.files["data.bin"][0] = 'X'
+	runtime.files["added.bin"] = []byte("new")
+	if got := string(packaged["data.bin"]); got != "original" {
+		t.Fatalf("source package bytes changed to %q", got)
+	}
+	if _, ok := packaged["added.bin"]; ok {
+		t.Fatal("runtime file escaped into source package")
+	}
 }
 
 func TestRuntimeBootstrapsSyntheticARMModule(t *testing.T) {
