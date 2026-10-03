@@ -91,11 +91,13 @@ func (r *Runtime) writeJavaVTable(index, address uint32) error {
 // class+8 -> descriptor+8 -> parent. A packed JvmContext vtable slot satisfies
 // the first ABI but aliases neighbouring slots for the second one.
 //
-// Give each real class an independent bridge class instead. Its vtable is the
-// real class's table and its synthetic parent is the real class, so dispatch
-// reads the same methods while type walking enters the genuine hierarchy after
-// one harmless extra hop. The bridge stays host-owned and is never published
-// as the instance's Java class pointer.
+// Give each host-synthesized class an independent bridge instead. Its vtable is
+// the real class's table and its synthetic parent is the real class, so dispatch
+// and type walking both work for host objects. Guest AOT classes retain their
+// original compact vtable index: compiled title code can use that index directly
+// and can already inspect its own class descriptors. Bridging those classes
+// changed guest behavior (issue #206). The bridge is never published as the
+// instance's Java class pointer.
 func (r *Runtime) javaObjectClassHeader(
 	class JavaClass,
 	vtableIndex uint32,
@@ -103,6 +105,9 @@ func (r *Runtime) javaObjectClassHeader(
 	if r.JvmContext == 0 {
 		// Unit-level hosts that do not initialize the guest JVM never decode the
 		// header. Preserve the legacy value for those synthetic runtimes.
+		return (vtableIndex * 4) << 5, nil
+	}
+	if !r.hostJavaClass[class.Address] {
 		return (vtableIndex * 4) << 5, nil
 	}
 	bridge, err := r.ensureJavaClassBridge(class)

@@ -176,3 +176,32 @@ func TestKTFJavaClassBridgeTracksVTableRebuildAfterStateRestore(t *testing.T) {
 		t.Fatalf("restored bridge vtable = 0x%08x, want rebuilt table 0x%08x", got, newTable)
 	}
 }
+
+// A title's compiled class owns its descriptor and uses the compact vtable
+// index directly. Host-created instances of that class must keep the same
+// header shape as instances allocated by the title's own AOT code (#206).
+func TestKTFGuestClassKeepsCompactVTableHeader(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	parent := ensureClass(t, runtime, "java/lang/Object")
+	classAddress := defineGuestSubclass(
+		t, runtime, "test/GuestCounter", parent, "counter", "I",
+	)
+	class := inspectClass(t, runtime, classAddress)
+	instance, err := runtime.NewJavaInstanceForClass(class)
+	check(t, err)
+
+	fields := readU32(t, runtime, instance)
+	header := readU32(t, runtime, fields)
+	index := runtime.javaVTables[classAddress]
+	want := (index * 4) << 5
+	if header != want {
+		t.Fatalf("guest class header = 0x%08x, want compact index 0x%08x", header, want)
+	}
+	if table := readU32(t, runtime, runtime.JvmContext+12+(header>>5)); table != class.VTable {
+		t.Fatalf("guest class vtable = 0x%08x, want 0x%08x", table, class.VTable)
+	}
+	if bridge := runtime.javaClassBridges[classAddress]; bridge != 0 {
+		t.Fatalf("guest class acquired host bridge 0x%08x", bridge)
+	}
+}
