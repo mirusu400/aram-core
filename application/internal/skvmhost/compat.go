@@ -10,6 +10,17 @@ import (
 	skengine "github.com/mirusu400/aram-core/skvm"
 )
 
+const crow2ArchiveSHA256 = "0352c951a2f9cb0ed697211f14517231a0b23803f7bda9342c7eb9b32b9e79ee"
+
+func skvmRunBudget(source machinecore.Source) uint64 {
+	if source.SHA256 == crow2ArchiveSHA256 {
+		// The inventory key handler completes after about 12.1 million guest
+		// instructions when it draws the shipped title's item metadata.
+		return 20_000_000
+	}
+	return defaultSKVMRunBudget
+}
+
 func lookupSKVMTitleCanvas(
 	source machinecore.Source,
 	pkg skloader.Package,

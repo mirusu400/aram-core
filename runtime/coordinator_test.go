@@ -38,6 +38,40 @@ func TestCoordinatorLifecycleBudgetAndScheduling(t *testing.T) {
 	}
 }
 
+func TestCoordinatorRaiseRunBudgetAfterRestore(t *testing.T) {
+	coordinator, err := NewCoordinator(CoordinatorLimits{})
+	check(t, err)
+	owner, err := coordinator.Register("legacy", 10)
+	check(t, err)
+	check(t, coordinator.Transition(owner, LifecycleReady, 0, nil))
+	check(t, coordinator.Transition(owner, LifecycleRunning, 0, nil))
+	_, err = coordinator.BeginQuantum()
+	check(t, err)
+	check(t, coordinator.Consume(owner, 10))
+
+	restored, err := NewCoordinator(CoordinatorLimits{})
+	check(t, err)
+	check(t, restored.Restore(coordinator.Snapshot()))
+	check(t, restored.RaiseRunBudget(owner, 20))
+	check(t, restored.Consume(owner, 10))
+	adapter, err := restored.Adapter(owner)
+	check(t, err)
+	if adapter.RunBudget != 20 || adapter.BudgetUsed != 20 {
+		t.Fatalf("adapter budget after migration = %+v", adapter)
+	}
+	check(t, restored.RaiseRunBudget(owner, 15))
+	if after, err := restored.Adapter(owner); err != nil || after.RunBudget != 20 {
+		t.Fatalf("lower minimum changed budget: %+v, %v", after, err)
+	}
+	before := restored.Snapshot()
+	if err := restored.RaiseRunBudget(owner, before.Limits.MaxRunBudget+1); !errors.Is(err, ErrLimitExceeded) {
+		t.Fatalf("oversized budget error = %v", err)
+	}
+	if !reflect.DeepEqual(restored.Snapshot(), before) {
+		t.Fatal("rejected budget migration mutated coordinator")
+	}
+}
+
 func TestCoordinatorRejectsInvalidTransitionWithoutMutation(t *testing.T) {
 	coordinator, err := NewCoordinator(CoordinatorLimits{})
 	check(t, err)

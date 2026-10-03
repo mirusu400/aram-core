@@ -124,7 +124,7 @@ func newJavaMachine(ctx context.Context, source machinecore.Source, app Applicat
 	if err != nil {
 		return nil, fmt.Errorf("initialize Java shared services: %w", err)
 	}
-	budget := defaultSKVMRunBudget
+	budget := skvmRunBudget(source)
 	owner, err := services.Coordinator.Register(runtimeID, budget)
 	if err != nil {
 		return nil, fmt.Errorf("register Java adapter: %w", err)

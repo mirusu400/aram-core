@@ -123,6 +123,9 @@ func (m *Machine) LoadState(input io.Reader) error {
 	); err != nil {
 		return fmt.Errorf("load Java state: %w", err)
 	}
+	if err := candidate.Services().Coordinator.RaiseRunBudget(m.owner, skvmRunBudget(m.source)); err != nil {
+		return fmt.Errorf("load Java state budget: %w", err)
+	}
 	if parsed.midlet != 0 {
 		if _, ok := candidate.Object(parsed.midlet); !ok {
 			return fmt.Errorf("load Java state: MIDlet reference is missing")
@@ -132,6 +135,9 @@ func (m *Machine) LoadState(input io.Reader) error {
 		return err
 	}
 	m.services = m.vm.Services()
+	if err := m.services.Coordinator.RaiseRunBudget(m.owner, skvmRunBudget(m.source)); err != nil {
+		return fmt.Errorf("restore Java state budget: %w", err)
+	}
 	m.debugFramebuffer = nil
 	m.state = parsed.state
 	m.started = parsed.started

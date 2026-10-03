@@ -126,6 +126,25 @@ func (c *Coordinator) Register(name string, budget uint64) (OwnerID, error) {
 	return owner, nil
 }
 
+// RaiseRunBudget preserves a larger current budget when restoring an older
+// adapter snapshot under a title-specific compatibility policy.
+func (c *Coordinator) RaiseRunBudget(owner OwnerID, minimum uint64) error {
+	adapter, err := c.adapter(owner)
+	if err != nil {
+		return err
+	}
+	if minimum == 0 {
+		return fmt.Errorf("%w: adapter budget must be positive", ErrInvalidArgument)
+	}
+	if minimum > c.limits.MaxRunBudget {
+		return fmt.Errorf("%w: adapter budget %d", ErrLimitExceeded, minimum)
+	}
+	if adapter.RunBudget < minimum {
+		adapter.RunBudget = minimum
+	}
+	return nil
+}
+
 func (c *Coordinator) Unregister(owner OwnerID) error {
 	adapter, err := c.adapter(owner)
 	if err != nil {
