@@ -1,9 +1,12 @@
 package skvm
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	shared "github.com/mirusu400/aram-core/runtime"
@@ -598,6 +601,53 @@ func (vm *VM) newXFile(args []Value) (*xFileState, error) {
 		return nil, err
 	}
 	return &xFileState{name: name, data: data}, nil
+}
+
+// This XCE constructor addresses a member of an archive shipped beside the
+// application JAR, for example XFile("data.jar", "data7.txt").
+func (vm *VM) newXFileArchive(args []Value) (*xFileState, error) {
+	archiveName, err := vm.fileNameArgument(args, 0)
+	if err != nil {
+		return nil, err
+	}
+	entryName, err := vm.fileNameArgument(args, 1)
+	if err != nil {
+		return nil, err
+	}
+	data, err := vm.readXFile(archiveName)
+	if err != nil {
+		return nil, vm.newThrowable("java/io/IOException", err.Error())
+	}
+	archive, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil, vm.newThrowable("java/io/IOException", err.Error())
+	}
+	for _, file := range archive.File {
+		if file.Name != strings.TrimPrefix(entryName, "/") {
+			continue
+		}
+		limit := min(vm.services.Config.Limits.Storage.MaxFileBytes, uint64(int(^uint(0)>>1)-1))
+		if file.UncompressedSize64 > limit {
+			return nil, vm.newThrowable("java/io/IOException", "archive entry exceeds file limit")
+		}
+		reader, err := file.Open()
+		if err != nil {
+			return nil, vm.newThrowable("java/io/IOException", err.Error())
+		}
+		contents, readErr := io.ReadAll(io.LimitReader(reader, int64(limit)+1))
+		closeErr := reader.Close()
+		if readErr != nil {
+			return nil, vm.newThrowable("java/io/IOException", readErr.Error())
+		}
+		if closeErr != nil {
+			return nil, vm.newThrowable("java/io/IOException", closeErr.Error())
+		}
+		if uint64(len(contents)) > limit {
+			return nil, vm.newThrowable("java/io/IOException", "archive entry exceeds file limit")
+		}
+		return &xFileState{data: contents}, nil
+	}
+	return nil, vm.newThrowable("java/io/IOException", "archive entry not found")
 }
 
 func (vm *VM) persistXFile(state *xFileState) error {

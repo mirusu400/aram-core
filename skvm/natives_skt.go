@@ -480,12 +480,27 @@ func (vm *VM) installSKTNatives() {
 	)
 	vm.RegisterNative(
 		"com/xce/io/XFile",
+		"<init>",
+		"(Ljava/lang/String;Ljava/lang/String;)V",
+		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
+			state, err := vm.newXFileArchive(args)
+			if err != nil {
+				return Value{}, false, err
+			}
+			return Value{}, false, vm.setNative(receiver, state)
+		},
+	)
+	vm.RegisterNative(
+		"com/xce/io/XFile",
 		"write",
 		"([BII)I",
 		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
 			state, err := vm.xFile(receiver)
 			if err != nil {
 				return Value{}, false, err
+			}
+			if state.name == "" {
+				return Value{}, false, vm.newThrowable("java/io/IOException", "archive entry is read-only")
 			}
 			data, err := vm.byteSliceArgument(args)
 			if err != nil {
@@ -647,30 +662,30 @@ func (vm *VM) installSKTNatives() {
 					return Value{}, false, err
 				}
 			}
-					created := false
-					if state.clip != 0 {
-						if info, infoErr := vm.services.Media.Info(vm.serviceOwner, state.clip); infoErr == nil && info.State != shared.ClipStopped {
-							if err := vm.services.Media.Stop(vm.serviceOwner, state.clip); err != nil {
-								return Value{}, false, err
-							}
-						}
-						// The resumed worker can close this same AudioClip, clearing
-						// state.clip while open is still in progress.
-						if err := vm.releaseClipWaiters(ctx, state.clip); err != nil {
-							return Value{}, false, err
-						}
+			created := false
+			if state.clip != 0 {
+				if info, infoErr := vm.services.Media.Info(vm.serviceOwner, state.clip); infoErr == nil && info.State != shared.ClipStopped {
+					if err := vm.services.Media.Stop(vm.serviceOwner, state.clip); err != nil {
+						return Value{}, false, err
 					}
-					if state.clip == 0 {
-						state.clip, err = vm.services.Media.CreateClip(
-							vm.serviceOwner,
-							"",
-							0,
-						)
-						if err != nil {
-							return Value{}, false, err
-						}
-						created = true
-					}
+				}
+				// The resumed worker can close this same AudioClip, clearing
+				// state.clip while open is still in progress.
+				if err := vm.releaseClipWaiters(ctx, state.clip); err != nil {
+					return Value{}, false, err
+				}
+			}
+			if state.clip == 0 {
+				state.clip, err = vm.services.Media.CreateClip(
+					vm.serviceOwner,
+					"",
+					0,
+				)
+				if err != nil {
+					return Value{}, false, err
+				}
+				created = true
+			}
 			err = vm.services.Media.ReplaceSource(vm.serviceOwner, state.clip, data)
 			if err != nil && created {
 				_ = vm.services.Media.DestroyClip(

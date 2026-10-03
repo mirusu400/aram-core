@@ -1,12 +1,53 @@
 package skvm
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"errors"
 	"testing"
 
 	shared "github.com/mirusu400/aram-core/runtime"
 )
+
+func TestXFileReadsEntryFromSidecarArchive(t *testing.T) {
+	vm, err := New(map[string][]byte{})
+	check(t, err)
+	var archive bytes.Buffer
+	writer := zip.NewWriter(&archive)
+	entry, err := writer.Create("data7.txt")
+	check(t, err)
+	_, err = entry.Write([]byte("princess data"))
+	check(t, err)
+	check(t, writer.Close())
+	check(t, vm.SetXFileResourcesChecked(map[string][]byte{"data.jar": archive.Bytes()}))
+
+	file := vm.NewObject("com/xce/io/XFile", nil)
+	invokeTestNative(t, vm, "com/xce/io/XFile", "<init>",
+		"(Ljava/lang/String;Ljava/lang/String;)V", file,
+		ReferenceValue(vm.NewString("data.jar")),
+		ReferenceValue(vm.NewString("data7.txt")))
+	available := invokeTestNative(t, vm, "com/xce/io/XFile", "available", "()I", file)
+	if got, _ := available.Int(); got != int32(len("princess data")) {
+		t.Fatalf("available = %d", got)
+	}
+	buffer := vm.NewByteArray(make([]byte, len("princess data")))
+	read := invokeTestNative(t, vm, "com/xce/io/XFile", "read", "([BII)I", file,
+		ReferenceValue(buffer), IntValue(0), IntValue(int32(len("princess data"))))
+	if got, _ := read.Int(); got != int32(len("princess data")) {
+		t.Fatalf("read = %d", got)
+	}
+	object, _ := vm.Object(buffer)
+	for index, letter := range []byte("princess data") {
+		got, _ := object.Array.Elements[index].Int()
+		if byte(got) != letter {
+			t.Fatalf("byte %d = %d, want %d", index, got, letter)
+		}
+	}
+	_, _, err = xceInvoke(t, vm, file, "write", "([BII)I",
+		ReferenceValue(buffer), IntValue(0), IntValue(1))
+	requireXCEIOException(t, vm, err)
+}
 
 func xceOutput(t *testing.T, vm *VM, path string, appendFlag ...int32) uint32 {
 	t.Helper()

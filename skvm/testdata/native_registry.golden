@@ -43,6 +43,7 @@ com/xce/io/FileOutputStream <init> (Ljava/lang/String;)V
 com/xce/io/FileOutputStream <init> (Ljava/lang/String;Z)V
 com/xce/io/FileOutputStream close ()V
 com/xce/io/XFile <init> (Ljava/lang/String;I)V
+com/xce/io/XFile <init> (Ljava/lang/String;Ljava/lang/String;)V
 com/xce/io/XFile available ()I
 com/xce/io/XFile close ()V
 com/xce/io/XFile exists (Ljava/lang/String;)Z
