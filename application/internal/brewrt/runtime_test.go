@@ -1739,7 +1739,7 @@ func TestShellTimerExpirationAdvancesDuringGuestPolling(t *testing.T) {
 	}
 }
 
-func TestShellTimerResetAndWildcardCancellation(t *testing.T) {
+func TestShellTimerDistinctDeadlinesAndWildcardCancellation(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	context := heapBase + 0x80
 	setTimer := func(function uint32, delay uint32) {
@@ -1766,8 +1766,9 @@ func TestShellTimerResetAndWildcardCancellation(t *testing.T) {
 	}
 	setTimer(moduleBase+0x40, 10)
 	setTimer(moduleBase+0x40, 20)
-	if len(runtime.timers) != 1 || runtime.timers[0].remaining != 20*time.Millisecond {
-		t.Fatalf("reset timers = %#v, want one 20ms timer", runtime.timers)
+	setTimer(moduleBase+0x40, 20)
+	if len(runtime.timers) != 2 || runtime.timers[0].remaining != 10*time.Millisecond || runtime.timers[1].remaining != 20*time.Millisecond {
+		t.Fatalf("timers = %#v, want one 10ms and one 20ms timer", runtime.timers)
 	}
 	setTimer(moduleBase+0x80, 30)
 	for register, value := range map[uint32]uint32{

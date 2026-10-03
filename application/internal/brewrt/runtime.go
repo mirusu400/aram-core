@@ -1823,13 +1823,8 @@ func (r *Runtime) handleAppletMethodTrap(
 				}
 				return resume()
 			}
-			kept := r.timers[:0]
-			for _, timer := range r.timers {
-				if timer.function != function || timer.context != user {
-					kept = append(kept, timer)
-				}
-			}
-			r.timers = kept
+			// Preserve timers with distinct deadlines; queueCallback merges
+			// duplicate registrations for the same deadline.
 			r.queueCallback(brewCallback{
 				function:  function,
 				context:   user,
@@ -2279,6 +2274,11 @@ func (r *Runtime) RunCallbacks(ctx context.Context, elapsed time.Duration) error
 }
 
 func (r *Runtime) queueCallback(callback brewCallback) {
+	for _, existing := range r.timers {
+		if existing.function == callback.function && existing.context == callback.context && existing.remaining == callback.remaining {
+			return
+		}
+	}
 	r.callbackSerial++
 	callback.serial = r.callbackSerial
 	r.timers = append(r.timers, callback)

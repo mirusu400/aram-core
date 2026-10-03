@@ -84,7 +84,7 @@ func TestCallbackCanCancelAnotherTimerDueInSameFrame(t *testing.T) {
 	}
 }
 
-func TestCallbackCanReplaceAnotherTimerDueInSameFrame(t *testing.T) {
+func TestCallbackCanAddTimerWhileAnotherDueInSameFrame(t *testing.T) {
 	runtime := timerMutationRuntime(t, true)
 	runtime.timers = []brewCallback{
 		{function: moduleBase, context: outputAddr},
@@ -93,20 +93,20 @@ func TestCallbackCanReplaceAnotherTimerDueInSameFrame(t *testing.T) {
 	if err := runtime.RunCallbacks(context.Background(), 0); err != nil {
 		t.Fatal(err)
 	}
-	if got := callbackCount(t, runtime); got != 0 || len(runtime.timers) != 1 || runtime.timers[0].remaining != 25*time.Millisecond {
-		t.Fatalf("replacement count=%d timers=%+v", got, runtime.timers)
+	if got := callbackCount(t, runtime); got != 1 || len(runtime.timers) != 1 || runtime.timers[0].remaining != 25*time.Millisecond {
+		t.Fatalf("additional timer count=%d timers=%+v", got, runtime.timers)
 	}
 	if err := runtime.RunCallbacks(context.Background(), 24*time.Millisecond); err != nil {
 		t.Fatal(err)
 	}
-	if got := callbackCount(t, runtime); got != 0 {
-		t.Fatalf("replacement fired early: count=%d", got)
+	if got := callbackCount(t, runtime); got != 1 {
+		t.Fatalf("additional timer fired early: count=%d", got)
 	}
 	if err := runtime.RunCallbacks(context.Background(), time.Millisecond); err != nil {
 		t.Fatal(err)
 	}
-	if got := callbackCount(t, runtime); got != 1 || len(runtime.timers) != 0 {
-		t.Fatalf("replacement count=%d pending=%d", got, len(runtime.timers))
+	if got := callbackCount(t, runtime); got != 2 || len(runtime.timers) != 0 {
+		t.Fatalf("additional timer count=%d pending=%d", got, len(runtime.timers))
 	}
 }
 
