@@ -1378,6 +1378,44 @@ func TestFileReadNullDestinationReturnsZeroWithoutAdvancing(t *testing.T) {
 	}
 }
 
+func TestIFileTruncateChangesGuestVisibleContents(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	const file = heapBase + 0x80
+	runtime.files["data.bin"] = []byte("abcdef")
+	runtime.fileHandles[file] = &brewFile{path: "data.bin"}
+	if err := runtime.cpu.WriteRegister(cpu.RegisterLR, returnTrap|1); err != nil {
+		t.Fatal(err)
+	}
+	truncate := func(size, wantStatus uint32) {
+		t.Helper()
+		if err := runtime.cpu.WriteRegister(cpu.RegisterR0, file); err != nil {
+			t.Fatal(err)
+		}
+		if err := runtime.cpu.WriteRegister(cpu.RegisterR1, size); err != nil {
+			t.Fatal(err)
+		}
+		handled, _, _, err := runtime.handleAppletMethodTrap(fileTrapBase + 8*2 + 2)
+		if err != nil || !handled {
+			t.Fatalf("Truncate handled=%v err=%v", handled, err)
+		}
+		if status, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || status != wantStatus {
+			t.Fatalf("Truncate status=%d err=%v, want %d", status, err, wantStatus)
+		}
+	}
+	truncate(3, 0)
+	if got := runtime.files["data.bin"]; !bytes.Equal(got, []byte("abc")) {
+		t.Fatalf("shrunk file = %q", got)
+	}
+	truncate(5, 0)
+	if got := runtime.files["data.bin"]; !bytes.Equal(got, []byte{'a', 'b', 'c', 0, 0}) {
+		t.Fatalf("extended file = %v", got)
+	}
+	truncate(heapSize+1, 1)
+	if got := runtime.files["data.bin"]; len(got) != 5 {
+		t.Fatalf("rejected truncate changed size to %d", len(got))
+	}
+}
+
 func TestOpenFilesKeepIndependentOffsets(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	runtime.files["data.bin"] = []byte("abcd")

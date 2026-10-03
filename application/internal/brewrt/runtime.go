@@ -2204,6 +2204,11 @@ func (r *Runtime) handleAppletMethodTrap(
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
+		case 8: // Truncate(IFile *, uint32)
+			if err := r.truncateGuestFile(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
 		default:
 			return boundary("IFile", slot)
 		}
@@ -4002,6 +4007,29 @@ func (r *Runtime) seekGuestFile() error {
 		return fmt.Errorf("return BREW seek position: %w", err)
 	}
 	return nil
+}
+
+func (r *Runtime) truncateGuestFile() error {
+	file, contents, err := r.openFileHandle()
+	if err != nil {
+		return err
+	}
+	size, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW file truncate size: %w", err)
+	}
+	if size > heapSize {
+		return r.cpu.WriteRegister(cpu.RegisterR0, 1)
+	}
+	if size <= uint32(len(contents)) {
+		contents = contents[:size:size]
+	} else {
+		grown := make([]byte, size)
+		copy(grown, contents)
+		contents = grown
+	}
+	r.files[file.path] = contents
+	return r.cpu.WriteRegister(cpu.RegisterR0, 0)
 }
 
 func (r *Runtime) readGuestFile() error {
