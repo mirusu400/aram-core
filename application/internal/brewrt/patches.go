@@ -9,9 +9,23 @@ import (
 )
 
 const (
-	swordMasterModuleSHA256 = "40344eff584388c6c78187e95f5d16bfbbb1971e59de57b481aeaf673e477645"
-	kashanModuleSHA256      = "ca382383e4654072f6ec7e65225a8270e67d4b10b5f6a4e2bc0687a0f40b2f2e"
+	swordMasterModuleSHA256     = "40344eff584388c6c78187e95f5d16bfbbb1971e59de57b481aeaf673e477645"
+	kashanModuleSHA256          = "ca382383e4654072f6ec7e65225a8270e67d4b10b5f6a4e2bc0687a0f40b2f2e"
+	yeolhyeolganghoModuleSHA256 = "5435150afb92668f8a670cfcc6f7ad18ec1e8ed17d220cbc6a834f24e80d7a86"
+	legendOfEllosModuleSHA256   = "2d4a9519fc7d2df92075a6d1af76990d46844d6462cfb931ff312268389c87bb"
 )
+
+func coalesceDuplicateTimerModule(module []byte) bool {
+	// #396 posts the same timer deadline recursively and otherwise floods the queue.
+	digest := sha256.Sum256(module)
+	return hex.EncodeToString(digest[:]) == yeolhyeolganghoModuleSHA256
+}
+
+func deliverCanceledDueTimerModule(module []byte) bool {
+	// #313 expects an expired callback to run after another callback cancels it.
+	digest := sha256.Sum256(module)
+	return hex.EncodeToString(digest[:]) == legendOfEllosModuleSHA256
+}
 
 // patchBREWModule applies narrowly identified handset compatibility fixes to
 // the loaded copy, never to archive files. Both the complete module digest and

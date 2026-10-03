@@ -238,6 +238,7 @@ type Runtime struct {
 	imageStreams     map[uint32]uint32
 	imageDraws       map[uint32]brewImageDraw
 	nativeImages     map[uint32]brewNativeImage
+	borrowedBitmaps  map[uint32]brewBorrowedBitmap
 	textRaster       *shared.Text
 	displayFont      shared.ServiceID
 	postedEvents     []brewPostedEvent
@@ -245,6 +246,8 @@ type Runtime struct {
 
 	preferPackedAECHAR         bool
 	preferPackedResourceAECHAR bool
+	coalesceIdenticalTimers    bool
+	deliverCanceledDueTimers   bool
 }
 
 type brewPreferenceKey struct {
@@ -389,6 +392,7 @@ func New(pkg Package) (*Runtime, error) {
 		imageStreams:    make(map[uint32]uint32),
 		imageDraws:      make(map[uint32]brewImageDraw),
 		nativeImages:    make(map[uint32]brewNativeImage),
+		borrowedBitmaps: make(map[uint32]brewBorrowedBitmap),
 		textRaster:      displayText,
 		displayFont:     displayFont,
 		soundVolume:     100,
@@ -397,6 +401,8 @@ func New(pkg Package) (*Runtime, error) {
 
 		preferPackedAECHAR:         pkg.PreferPackedAECHAR,
 		preferPackedResourceAECHAR: pkg.PreferPackedResourceAECHAR,
+		coalesceIdenticalTimers:    coalesceDuplicateTimerModule(pkg.Module),
+		deliverCanceledDueTimers:   deliverCanceledDueTimerModule(pkg.Module),
 	}
 	if err := r.mapImage(pkg.Module); err != nil {
 		_ = backend.Close()
@@ -1823,8 +1829,8 @@ func (r *Runtime) handleAppletMethodTrap(
 				}
 				return resume()
 			}
-			// Preserve timers with distinct deadlines; queueCallback merges
-			// duplicate registrations for the same deadline.
+			// Queue one-shot timers independently. A known module that repeatedly
+			// queues the same deadline uses a narrow coalescing compatibility rule.
 			r.queueCallback(brewCallback{
 				function:  function,
 				context:   user,
@@ -2217,7 +2223,7 @@ func (r *Runtime) RunCallbacks(ctx context.Context, elapsed time.Duration) error
 	}
 	cleanup := append([]brewCallback(nil), r.cleanupCallbacks...)
 	r.cleanupCallbacks = r.cleanupCallbacks[:0]
-	var due []uint64
+	var due []brewCallback
 	for index := range r.timers {
 		callback := &r.timers[index]
 		if callback.serial == 0 {
@@ -2226,7 +2232,7 @@ func (r *Runtime) RunCallbacks(ctx context.Context, elapsed time.Duration) error
 		}
 		callback.remaining -= elapsed
 		if callback.remaining <= 0 {
-			due = append(due, callback.serial)
+			due = append(due, *callback)
 		}
 	}
 	for index, callback := range cleanup {
@@ -2241,11 +2247,13 @@ func (r *Runtime) RunCallbacks(ctx context.Context, elapsed time.Duration) error
 	// Keep due timers in the live queue until they are invoked. Earlier
 	// callbacks may cancel or replace them, including timers due in this frame.
 	// Serial identities distinguish a replacement from the old queued callback.
-	for _, serial := range due {
+	for _, expired := range due {
+		found := false
 		for index, callback := range r.timers {
-			if callback.serial != serial {
+			if callback.serial != expired.serial {
 				continue
 			}
+			found = true
 			r.timers = append(r.timers[:index], r.timers[index+1:]...)
 			if err := r.runCallback(ctx, callback); err != nil {
 				return err
@@ -2254,6 +2262,16 @@ func (r *Runtime) RunCallbacks(ctx context.Context, elapsed time.Duration) error
 				return nil
 			}
 			break
+		}
+		if !found && r.deliverCanceledDueTimers {
+			// This applet treats already-expired callbacks as dispatched even
+			// when a preceding callback cancels their timer in the same frame.
+			if err := r.runCallback(ctx, expired); err != nil {
+				return err
+			}
+			if r.closeRequested {
+				return nil
+			}
 		}
 	}
 	posted := append([]brewPostedEvent(nil), r.postedEvents...)
@@ -2274,9 +2292,11 @@ func (r *Runtime) RunCallbacks(ctx context.Context, elapsed time.Duration) error
 }
 
 func (r *Runtime) queueCallback(callback brewCallback) {
-	for _, existing := range r.timers {
-		if existing.function == callback.function && existing.context == callback.context && existing.remaining == callback.remaining {
-			return
+	if r.coalesceIdenticalTimers {
+		for _, existing := range r.timers {
+			if existing.function == callback.function && existing.context == callback.context && existing.remaining == callback.remaining {
+				return
+			}
 		}
 	}
 	r.callbackSerial++

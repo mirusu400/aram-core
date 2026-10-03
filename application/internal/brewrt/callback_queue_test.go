@@ -84,6 +84,21 @@ func TestCallbackCanCancelAnotherTimerDueInSameFrame(t *testing.T) {
 	}
 }
 
+func TestKnownModuleCanDeliverAlreadyDueTimerAfterCancellation(t *testing.T) {
+	runtime := timerMutationRuntime(t, false)
+	runtime.deliverCanceledDueTimers = true
+	runtime.timers = []brewCallback{
+		{function: moduleBase, context: outputAddr},
+		{function: moduleBase + 0x40, context: outputAddr},
+	}
+	if err := runtime.RunCallbacks(context.Background(), 0); err != nil {
+		t.Fatal(err)
+	}
+	if got := callbackCount(t, runtime); got != 1 || len(runtime.timers) != 0 {
+		t.Fatalf("already due callback count=%d pending=%d", got, len(runtime.timers))
+	}
+}
+
 func TestCallbackCanAddTimerWhileAnotherDueInSameFrame(t *testing.T) {
 	runtime := timerMutationRuntime(t, true)
 	runtime.timers = []brewCallback{

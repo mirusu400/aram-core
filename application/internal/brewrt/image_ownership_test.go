@@ -11,7 +11,7 @@ import (
 	"golang.org/x/image/bmp"
 )
 
-func TestNativeImageOwnershipFlagDoesNotLeaveBorrowedPixels(t *testing.T) {
+func TestNativeImageOwnershipFlagDetachesBorrowedPixelsBeforeSourceFree(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	palette := make(color.Palette, 256)
 	for index := range palette {
@@ -53,12 +53,24 @@ func TestNativeImageOwnershipFlagDoesNotLeaveBorrowedPixels(t *testing.T) {
 		t.Fatal(err)
 	}
 	pixels := binary.LittleEndian.Uint32(header[8:12])
-	if pixels >= buffer && pixels < buffer+bufferSize {
-		t.Fatal("owned native bitmap still borrows the source allocation")
+	if pixels < buffer || pixels >= buffer+bufferSize {
+		t.Fatal("native bitmap did not expose the caller's live RGB565 backing")
+	}
+	var green [2]byte
+	binary.LittleEndian.PutUint16(green[:], 0x07e0)
+	if err := runtime.cpu.WriteMemory(pixels, green[:]); err != nil {
+		t.Fatal(err)
 	}
 	// This is the documented caller path after CONVERTBMP reports realloc:
 	// free and reuse the original buffer while retaining the native bitmap.
 	runtime.releaseGuest(buffer)
+	if err := runtime.cpu.ReadMemory(object, header[:]); err != nil {
+		t.Fatal(err)
+	}
+	pixels = binary.LittleEndian.Uint32(header[8:12])
+	if pixels >= buffer && pixels < buffer+bufferSize {
+		t.Fatal("native bitmap still borrows the released source allocation")
+	}
 	reused, err := runtime.allocateGuest(bufferSize)
 	if err != nil || reused != buffer {
 		t.Fatalf("source allocation reuse=%08x err=%v", reused, err)
@@ -70,12 +82,15 @@ func TestNativeImageOwnershipFlagDoesNotLeaveBorrowedPixels(t *testing.T) {
 	if err := runtime.cpu.ReadMemory(pixels, pixel[:]); err != nil {
 		t.Fatal(err)
 	}
-	if got := binary.LittleEndian.Uint16(pixel[:]); got != 0xf800 {
-		t.Fatalf("native pixel after source reuse=%04x, want red", got)
+	if got := binary.LittleEndian.Uint16(pixel[:]); got != 0x07e0 {
+		t.Fatalf("native pixel after source reuse=%04x, want green", got)
 	}
 	runtime.releaseInterfaceObject(object)
 	if _, live := runtime.heapAllocated[object]; live {
 		t.Fatal("native bitmap release retained its owned allocation")
+	}
+	if _, live := runtime.heapAllocated[reused]; !live {
+		t.Fatal("native bitmap release freed the caller's reused allocation")
 	}
 }
 

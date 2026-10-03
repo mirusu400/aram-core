@@ -447,6 +447,27 @@ func (r *Runtime) releaseGuest(address uint32) {
 	if !ok {
 		return
 	}
+	for object, borrowed := range r.borrowedBitmaps {
+		if borrowed.source != address {
+			continue
+		}
+		// Keep the IDIB live if its caller releases the BMP allocation.
+		backup := object + nativeBitmapPixelsOffset
+		pixels := make([]byte, borrowed.size)
+		if r.cpu.ReadMemory(borrowed.pixels, pixels) != nil ||
+			r.cpu.WriteMemory(backup, pixels) != nil {
+			// Retain the source rather than leave the IDIB pointing at freed memory.
+			return
+		}
+		var pointer [4]byte
+		binary.LittleEndian.PutUint32(pointer[:], backup)
+		if r.cpu.WriteMemory(object+8, pointer[:]) != nil {
+			// The source remains live until the pointer can be detached.
+			return
+		}
+		delete(r.borrowedBitmaps, object)
+	}
+	delete(r.borrowedBitmaps, address)
 	delete(r.heapAllocated, address)
 	index := 0
 	for index < len(r.heapFree) && r.heapFree[index].address < address {
@@ -490,6 +511,7 @@ func (r *Runtime) releaseInterfaceObject(address uint32) {
 			}
 		case bitmapVTable:
 			delete(r.nativeImages, address)
+			delete(r.borrowedBitmaps, address)
 			r.releaseGuest(binary.LittleEndian.Uint32(encoded[8:12]))
 		case fileVTable:
 			delete(r.fileHandles, address)

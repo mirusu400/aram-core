@@ -23,6 +23,12 @@ type brewNativeImage struct {
 	span    uint32
 }
 
+type brewBorrowedBitmap struct {
+	source uint32
+	pixels uint32
+	size   uint32
+}
+
 type brewImageDraw struct {
 	sourceX, sourceY uint32
 	width, height    uint32
@@ -105,16 +111,9 @@ func (r *Runtime) setupNativeImage() error {
 		}
 	}
 	if _, reused := r.nativeImages[object]; !reused {
-		direct := false
-		// A true ownership flag permits the caller to immediately free the
-		// original BMP. Never borrow its pixels in that case: the returned
-		// IDIB must own independent storage. Callers that omit the flag retain
-		// their allocation and may request an in-place handset surface.
-		if reallocated == 0 {
-			direct, err = r.attachExpandedRGB565Backing(object, buffer, encoded, decoded)
-			if err != nil {
-				return err
-			}
+		direct, err := r.attachExpandedRGB565Backing(object, buffer, encoded, decoded)
+		if err != nil {
+			return err
 		}
 		if !direct {
 			r.nativeImages[object] = brewNativeImage{encoded: buffer, span: encodedSize}
@@ -355,6 +354,11 @@ func (r *Runtime) attachExpandedRGB565Backing(object, buffer uint32, encoded []b
 	binary.LittleEndian.PutUint32(pointer[:], pixels)
 	if err := r.cpu.WriteMemory(object+8, pointer[:]); err != nil {
 		return false, fmt.Errorf("attach expanded RGB565 native-image pixels: %w", err)
+	}
+	r.borrowedBitmaps[object] = brewBorrowedBitmap{
+		source: buffer,
+		pixels: pixels,
+		size:   pitch * height,
 	}
 	if oldSize, ok := r.heapAllocated[oldPixels]; ok {
 		if err := r.cpu.WriteMemory(oldPixels, make([]byte, oldSize)); err != nil {

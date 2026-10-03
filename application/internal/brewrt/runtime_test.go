@@ -1767,8 +1767,8 @@ func TestShellTimerDistinctDeadlinesAndWildcardCancellation(t *testing.T) {
 	setTimer(moduleBase+0x40, 10)
 	setTimer(moduleBase+0x40, 20)
 	setTimer(moduleBase+0x40, 20)
-	if len(runtime.timers) != 2 || runtime.timers[0].remaining != 10*time.Millisecond || runtime.timers[1].remaining != 20*time.Millisecond {
-		t.Fatalf("timers = %#v, want one 10ms and one 20ms timer", runtime.timers)
+	if len(runtime.timers) != 3 || runtime.timers[0].remaining != 10*time.Millisecond || runtime.timers[1].remaining != 20*time.Millisecond || runtime.timers[2].remaining != 20*time.Millisecond {
+		t.Fatalf("timers = %#v, want 10ms, 20ms, and 20ms timers", runtime.timers)
 	}
 	setTimer(moduleBase+0x80, 30)
 	for register, value := range map[uint32]uint32{
@@ -1786,6 +1786,12 @@ func TestShellTimerDistinctDeadlinesAndWildcardCancellation(t *testing.T) {
 	}
 	if len(runtime.timers) != 0 {
 		t.Fatalf("wildcard cancel left timers: %#v", runtime.timers)
+	}
+	runtime.coalesceIdenticalTimers = true
+	setTimer(moduleBase+0x40, 20)
+	setTimer(moduleBase+0x40, 20)
+	if len(runtime.timers) != 1 {
+		t.Fatalf("coalesced timers = %#v, want one 20ms timer", runtime.timers)
 	}
 }
 
