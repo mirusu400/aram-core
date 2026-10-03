@@ -104,3 +104,57 @@ func TestNativeBitmapLayoutIsStableAfterHeapFragmentation(t *testing.T) {
 		t.Fatalf("contiguous bitmap allocation=%d, want header plus pixels", got)
 	}
 }
+
+func TestClientBitmapPhysicalFrameCopyKeepsNextObjectIntact(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	clientHeight := int(runtime.screenHeight) - 14
+	clientImage := image.NewRGBA(image.Rect(0, 0, int(runtime.screenWidth), clientHeight))
+	source, err := runtime.createNativeBitmap(clientImage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination, err := runtime.createNativeBitmap(clientImage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := runtime.heapAllocated[source] - nativeBitmapPixelsOffset; got < runtime.screenBytes() {
+		t.Fatalf("source pixel backing = %d, want at least %d", got, runtime.screenBytes())
+	}
+	if got := runtime.heapAllocated[destination] - nativeBitmapPixelsOffset; got < runtime.screenBytes() {
+		t.Fatalf("destination pixel backing = %d, want at least %d", got, runtime.screenBytes())
+	}
+	nextObject, err := runtime.allocateGuest(8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sentinel := []byte{0xde, 0xad, 0xbe, 0xef, 0x12, 0x34, 0x56, 0x78}
+	if err := runtime.cpu.WriteMemory(nextObject, sentinel); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR0: destination + nativeBitmapPixelsOffset,
+		cpu.RegisterR1: source + nativeBitmapPixelsOffset,
+		cpu.RegisterR2: runtime.screenBytes(),
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := runtime.moveGuestMemory(); err != nil {
+		t.Fatal(err)
+	}
+	var got [8]byte
+	if err := runtime.cpu.ReadMemory(nextObject, got[:]); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got[:], sentinel) {
+		t.Fatalf("physical-frame copy changed next object: %x", got)
+	}
+	var bitmap [24]byte
+	if err := runtime.cpu.ReadMemory(destination, bitmap[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint16(bitmap[22:24]); int(got) != clientHeight {
+		t.Fatalf("logical bitmap height = %d, want %d", got, clientHeight)
+	}
+}

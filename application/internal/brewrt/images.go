@@ -273,11 +273,19 @@ func (r *Runtime) createNativeBitmap(source image.Image) (uint32, error) {
 		return 0, fmt.Errorf("BREW native bitmap storage %dx%d is out of range", pitch64, pixels64)
 	}
 	pitch := int(pitch64)
-	pixelsSize := uint32(pixels64)
+	backingSize := pixels64
+	// A 120x146 BREW client bitmap can be copied as a 120x160 physical
+	// frame by the applet. Keep the extra status-bar rows in the same DIB
+	// allocation so that copy cannot overwrite the next live object.
+	if uint32(width) == r.screenWidth && uint32(height)+14 == r.screenHeight {
+		if physicalSize := pitch64 * uint64(r.screenHeight); physicalSize <= uint64(maxNativeImageBytes) {
+			backingSize = physicalSize
+		}
+	}
 	// Qualcomm's DIB constructor owns the header and pixel array in one
 	// allocation. Keep their relative layout stable even in a fragmented heap;
 	// legacy handset engines calibrate the native pixel offset using small BMPs.
-	object, err := r.allocateGuest(nativeBitmapPixelsOffset + pixelsSize)
+	object, err := r.allocateGuest(nativeBitmapPixelsOffset + uint32(backingSize))
 	if err != nil {
 		return 0, err
 	}
