@@ -464,6 +464,7 @@ func (vm *VM) installSKTNatives() {
 	vm.RegisterNative("com/xce/lcdui/XTextField", "setBounds", "(IIII)V", nativeXTextFieldSetBounds)
 	vm.RegisterNative("com/xce/lcdui/XTextField", "paint", "(Ljavax/microedition/lcdui/Graphics;)V", nativeXTextFieldPaint)
 	vm.RegisterNative("com/xce/lcdui/XTextField", "keyPressed", "(I)V", nativeXTextFieldKeyPressed)
+	vm.RegisterNative("com/xce/lcdui/XTextField", "inputChar", "(C)V", nativeXTextFieldInputChar)
 	for _, method := range []struct {
 		name       string
 		descriptor string

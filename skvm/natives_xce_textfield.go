@@ -204,6 +204,15 @@ func nativeXTextFieldInsert(
 	return Value{}, false, nil
 }
 
+func nativeXTextFieldInputChar(
+	ctx context.Context, vm *VM, receiver uint32, args []Value,
+) (Value, bool, error) {
+	if _, handler, err := vm.xceTextHandler(); err == nil && handler.component == receiver {
+		handler.automata.Commit()
+	}
+	return nativeXTextFieldInsert(ctx, vm, receiver, args)
+}
+
 func nativeXTextFieldReplace(
 	_ context.Context, vm *VM, receiver uint32, args []Value,
 ) (Value, bool, error) {

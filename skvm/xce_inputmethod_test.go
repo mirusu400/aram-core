@@ -191,6 +191,12 @@ func TestXTextFieldFocusInputAndModeImages(t *testing.T) {
 		t.Fatalf("text after making room = %q, want 12345a", got)
 	}
 	invokeTestNative(t, vm, "com/xce/lcdui/XTextField", "setText", "(Ljava/lang/String;)V",
+		field, ReferenceValue(vm.NewString("12345")))
+	invokeTestNative(t, vm, "com/xce/lcdui/XTextField", "inputChar", "(C)V", field, IntValue('z'))
+	if got := text(); got != "12345z" {
+		t.Fatalf("direct character input = %q, want 12345z", got)
+	}
+	invokeTestNative(t, vm, "com/xce/lcdui/XTextField", "setText", "(Ljava/lang/String;)V",
 		field, ReferenceValue(vm.NewString("123456")))
 	invokeTestNative(t, vm, "com/xce/lcdui/XTextField", "setBounds", "(IIII)V",
 		field, IntValue(20), IntValue(30), IntValue(80), IntValue(16))
