@@ -5,6 +5,7 @@ import (
 	"unicode/utf16"
 
 	"github.com/mirusu400/aram-core/internal/ime"
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 const (
@@ -76,6 +77,30 @@ func lgtFieldInt(vm *VM, receiver uint32, name string, fallback int32) int32 {
 
 func lgtSetFieldInt(vm *VM, receiver uint32, name string, value int32) error {
 	return setObjectField(vm, receiver, lgtTextPrefix+name, IntValue(value))
+}
+
+func lgtSelectedFont(vm *VM, receiver uint32, fallback shared.ServiceID) (shared.ServiceID, error) {
+	object, ok := vm.Object(receiver)
+	if !ok {
+		return 0, vm.newThrowable("java/lang/NullPointerException", "")
+	}
+	if stored, exists := object.Fields[lgtTextFont]; exists {
+		reference, err := stored.Reference()
+		if err != nil {
+			return 0, err
+		}
+		if reference != 0 {
+			selected, err := vm.font(reference)
+			if err != nil {
+				return 0, err
+			}
+			return selected.font, nil
+		}
+	}
+	if fallback != 0 {
+		return fallback, nil
+	}
+	return vm.defaultFont, nil
 }
 
 func lgtTextAutomata(vm *VM, receiver uint32, mode int32) ime.Automata {
@@ -171,6 +196,22 @@ func (vm *VM) installLGTTextFieldNatives() {
 				return Value{}, false, setObjectField(vm, receiver, property.field, IntValue(value))
 			})
 	}
+	vm.RegisterNative(lgtTextFieldClass, "getWidth", "()I",
+		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+			return IntValue(lgtFieldInt(vm, receiver, "width", 0)), true, nil
+		})
+	vm.RegisterNative(lgtTextFieldClass, "getHeight", "()I",
+		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+			font, err := lgtSelectedFont(vm, receiver, 0)
+			if err != nil {
+				return Value{}, false, err
+			}
+			metrics, err := vm.services.Text.Metrics(vm.serviceOwner, font)
+			if err != nil {
+				return Value{}, false, err
+			}
+			return IntValue(lgtFieldInt(vm, receiver, "rows", 1) * metrics.Height), true, nil
+		})
 	vm.RegisterNative(lgtTextFieldClass, "setFocus", "(Z)V",
 		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
 			focus, err := intArgument(args, 0)
@@ -183,6 +224,10 @@ func (vm *VM) installLGTTextFieldNatives() {
 				lgtSaveAutomata(vm, receiver, automata)
 			}
 			return Value{}, false, lgtSetFieldInt(vm, receiver, "focus", int32(boolInt(focus != 0)))
+		})
+	vm.RegisterNative(lgtTextFieldClass, "hasFocus", "()Z",
+		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+			return IntValue(int32(boolInt(lgtFieldInt(vm, receiver, "focus", 0) != 0))), true, nil
 		})
 	vm.RegisterNative(lgtTextFieldClass, "getInputMode", "()I",
 		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
@@ -223,6 +268,14 @@ func (vm *VM) installLGTTextFieldNatives() {
 			return Value{}, false, nil
 		})
 	vm.RegisterNative(lgtTextFieldClass, "getCaretPosition", "()I",
+		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+			text, err := vm.textValue(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			return IntValue(int32(len(utf16.Encode([]rune(text))))), true, nil
+		})
+	vm.RegisterNative(lgtTextFieldClass, "size", "()I",
 		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
 			text, err := vm.textValue(receiver)
 			if err != nil {
@@ -351,20 +404,9 @@ func nativeLGTTextPaint(ctx context.Context, vm *VM, receiver uint32, args []Val
 		text += "|"
 	}
 	width := lgtFieldInt(vm, receiver, "width", 0)
-	font := graphics.font
-	if object, ok := vm.Object(receiver); ok {
-		if stored, exists := object.Fields[lgtTextFont]; exists {
-			if reference, referenceErr := stored.Reference(); referenceErr == nil && reference != 0 {
-				selected, fontErr := vm.font(reference)
-				if fontErr != nil {
-					return Value{}, false, fontErr
-				}
-				font = selected.font
-			}
-		}
-	}
-	if font == 0 {
-		font = vm.defaultFont
+	font, err := lgtSelectedFont(vm, receiver, graphics.font)
+	if err != nil {
+		return Value{}, false, err
 	}
 	for width > 0 && len(text) != 0 {
 		measured, measureErr := vm.services.Text.Measure(vm.serviceOwner, font, text)

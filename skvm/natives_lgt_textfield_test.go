@@ -154,6 +154,74 @@ func TestLGTTextFieldXSetStringResetsComposition(t *testing.T) {
 	}
 }
 
+func TestLGTTextFieldXDimensionsFocusAndSize(t *testing.T) {
+	vm := policyRegressionVM(t, NativePolicyLGT)
+	field, err := vm.allocateObject(lgtTextFieldClass)
+	check(t, err)
+	call := func(name, descriptor string, args ...Value) Value {
+		t.Helper()
+		return invokeTestNative(t, vm, lgtTextFieldClass, name, descriptor, field, args...)
+	}
+	read := func(name, descriptor string) int32 {
+		t.Helper()
+		value, err := call(name, descriptor).Int()
+		check(t, err)
+		return value
+	}
+	call("<init>", "(Ljava/lang/String;Ljava/lang/String;II)V",
+		ReferenceValue(vm.NewString("")), ReferenceValue(vm.NewString("A😀")), IntValue(10), IntValue(0))
+	if got := read("size", "()I"); got != 3 {
+		t.Fatalf("UTF-16 TextFieldX size = %d, want 3", got)
+	}
+	if got := read("hasFocus", "()Z"); got != 0 {
+		t.Fatalf("initial TextFieldX focus = %d, want 0", got)
+	}
+	call("setWidth", "(I)V", IntValue(118))
+	call("setMaxRow", "(I)V", IntValue(2))
+	call("setFocus", "(Z)V", IntValue(1))
+	font := call("getFont", "()Ljavax/microedition/lcdui/Font;")
+	fontReference, err := font.Reference()
+	check(t, err)
+	fontHeight, err := invokeTestNative(t, vm, "javax/microedition/lcdui/Font", "getHeight", "()I", fontReference).Int()
+	check(t, err)
+	if got := read("getWidth", "()I"); got != 118 {
+		t.Fatalf("TextFieldX width = %d, want 118", got)
+	}
+	if got := read("getHeight", "()I"); got != 2*fontHeight {
+		t.Fatalf("TextFieldX height = %d, want %d", got, 2*fontHeight)
+	}
+	customFont := invokeTestNative(t, vm, "javax/microedition/lcdui/Font", "getFont",
+		"(III)Ljavax/microedition/lcdui/Font;", 0, IntValue(0), IntValue(1), IntValue(16))
+	customReference, err := customFont.Reference()
+	check(t, err)
+	customHeight, err := invokeTestNative(t, vm, "javax/microedition/lcdui/Font", "getHeight", "()I", customReference).Int()
+	check(t, err)
+	call("setFont", "(Ljavax/microedition/lcdui/Font;)V", customFont)
+	if got := read("getHeight", "()I"); got != 2*customHeight {
+		t.Fatalf("TextFieldX custom-font height = %d, want %d", got, 2*customHeight)
+	}
+	if got := read("hasFocus", "()Z"); got != 1 {
+		t.Fatalf("focused TextFieldX state = %d, want 1", got)
+	}
+	saved, err := vm.MarshalBinary()
+	check(t, err)
+	check(t, vm.UnmarshalBinary(saved))
+	if got := read("getWidth", "()I"); got != 118 {
+		t.Fatalf("restored TextFieldX width = %d", got)
+	}
+	if got := read("hasFocus", "()Z"); got != 1 {
+		t.Fatalf("restored TextFieldX focus = %d", got)
+	}
+	call("setFocus", "(Z)V", IntValue(0))
+	call("setString", "(Ljava/lang/String;)V", ReferenceValue(vm.NewString("")))
+	if got := read("hasFocus", "()Z"); got != 0 {
+		t.Fatalf("cleared TextFieldX focus = %d", got)
+	}
+	if got := read("size", "()I"); got != 0 {
+		t.Fatalf("cleared TextFieldX size = %d", got)
+	}
+}
+
 func TestLGTTextFieldXDoesNotLeakToOtherPolicies(t *testing.T) {
 	for _, policy := range []NativePolicy{NativePolicySKT, NativePolicyJ2ME} {
 		vm := policyRegressionVM(t, policy)
