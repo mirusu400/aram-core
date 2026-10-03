@@ -107,6 +107,34 @@ func TestSKVMAudioClipRestartOutlivesTheStoppedWorker(t *testing.T) {
 	}
 }
 
+// Reopening a clip also wakes the previous audio worker. Its pending close
+// destroys the old service before open installs the replacement source.
+func TestSKVMAudioClipOpenAfterWorkerClose(t *testing.T) {
+	vm, clip, clipReference := newAudioWorkerVM(t)
+	worker := vm.NewObject("Worker", nil)
+	thread := vm.NewObject("java/lang/Thread", nil)
+	invokeTestNative(t, vm, "java/lang/Thread", "<init>", "(Ljava/lang/Runnable;)V",
+		thread, ReferenceValue(worker))
+	invokeTestNative(t, vm, "java/lang/Thread", "start", "()V", thread)
+	oldClip := clip.clip
+	if oldClip == 0 {
+		t.Fatal("worker did not open the first clip")
+	}
+
+	payload := pcmWaveScore()
+	data := vm.NewByteArray(payload)
+	invokeTestNative(t, vm, "com/skt/m/AudioClip", "open", "([BII)V",
+		clipReference, ReferenceValue(data), IntValue(0), IntValue(int32(len(payload))))
+	if clip.clip == 0 || clip.clip == oldClip {
+		t.Fatalf("replacement clip = %s, want a new service after %s", clip.clip, oldClip)
+	}
+	source, err := vm.services.Media.Source(vm.serviceOwner, clip.clip)
+	check(t, err)
+	if !bytes.Equal(source, payload) {
+		t.Fatalf("replacement source size = %d, want %d", len(source), len(payload))
+	}
+}
+
 // TestSKVMAudioClipPlayStaysSynchronousOffThread keeps a play made from the
 // MIDlet's own callback non-blocking: there is no worker to suspend there, and
 // parking the interpreter itself would stop the title.

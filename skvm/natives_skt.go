@@ -647,27 +647,30 @@ func (vm *VM) installSKTNatives() {
 					return Value{}, false, err
 				}
 			}
-			created := false
-			if state.clip == 0 {
-				state.clip, err = vm.services.Media.CreateClip(
-					vm.serviceOwner,
-					"",
-					0,
-				)
-				if err != nil {
-					return Value{}, false, err
-				}
-				created = true
-			} else {
-				if info, infoErr := vm.services.Media.Info(vm.serviceOwner, state.clip); infoErr == nil && info.State != shared.ClipStopped {
-					if err := vm.services.Media.Stop(vm.serviceOwner, state.clip); err != nil {
-						return Value{}, false, err
+					created := false
+					if state.clip != 0 {
+						if info, infoErr := vm.services.Media.Info(vm.serviceOwner, state.clip); infoErr == nil && info.State != shared.ClipStopped {
+							if err := vm.services.Media.Stop(vm.serviceOwner, state.clip); err != nil {
+								return Value{}, false, err
+							}
+						}
+						// The resumed worker can close this same AudioClip, clearing
+						// state.clip while open is still in progress.
+						if err := vm.releaseClipWaiters(ctx, state.clip); err != nil {
+							return Value{}, false, err
+						}
 					}
-				}
-				if err := vm.releaseClipWaiters(ctx, state.clip); err != nil {
-					return Value{}, false, err
-				}
-			}
+					if state.clip == 0 {
+						state.clip, err = vm.services.Media.CreateClip(
+							vm.serviceOwner,
+							"",
+							0,
+						)
+						if err != nil {
+							return Value{}, false, err
+						}
+						created = true
+					}
 			err = vm.services.Media.ReplaceSource(vm.serviceOwner, state.clip, data)
 			if err != nil && created {
 				_ = vm.services.Media.DestroyClip(
