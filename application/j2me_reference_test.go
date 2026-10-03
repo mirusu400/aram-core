@@ -51,3 +51,32 @@ func TestJ2MELGTExactArchivePresentsFrame(t *testing.T) {
 	}
 	t.Fatalf("exact LGT J2ME title produced no frame: %+v", machine.DebugSnapshot(8))
 }
+
+func TestJ2MELGTArchiveUsesMediumLogoCanvas(t *testing.T) {
+	root := os.Getenv("ARAM_TEST_DATA")
+	if root == "" {
+		t.Skip("ARAM_TEST_DATA is not set")
+	}
+	path := filepath.Join(root, "LGT 다운타운 게임파일", "RPG", "[LGT 다운타운] 삼국쟁패 패왕전기.zip")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := NewFactory().Create(context.Background(), machinecore.Source{
+		Name: filepath.Base(path), Path: path, ReaderAt: bytes.NewReader(data), Size: int64(len(data)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer created.Close()
+	machine, ok := created.(*skvmhost.Machine)
+	if !ok {
+		t.Fatalf("machine type = %T, want SKVM", created)
+	}
+	if got := machine.SourceInfo().ProfileID; got != j2me.LGTProfileID {
+		t.Fatalf("profile = %q, want %q", got, j2me.LGTProfileID)
+	}
+	if got := machine.Framebuffer().Bounds().Size(); got.X != 176 || got.Y != 220 {
+		t.Fatalf("framebuffer = %v, want 176x220", got)
+	}
+}

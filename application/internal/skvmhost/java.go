@@ -44,17 +44,17 @@ func NewJ2ME(ctx context.Context, source machinecore.Source, pkg j2me.Package,
 }
 
 func inferLGTFramebufferSize(fallback image.Point, resources map[string][]byte) image.Point {
-	// Some LGT MIDlets choose imgM below 240 pixels and imgL at 240 pixels.
-	// A package with only imgM assets cannot render at the default 240 width.
+	// Some LGT MIDlets choose medium assets below 240 pixels and large assets
+	// at 240 pixels. A package with only medium assets cannot render at 240.
 	if fallback.X < 240 {
 		return fallback
 	}
 	hasMedium := false
 	for name := range resources {
-		if strings.HasPrefix(name, "imgL/") {
+		if strings.HasPrefix(name, "imgL/") || strings.HasPrefix(name, "logo/l_") {
 			return fallback
 		}
-		if strings.HasPrefix(name, "imgM/") {
+		if strings.HasPrefix(name, "imgM/") || strings.HasPrefix(name, "logo/m_") {
 			hasMedium = true
 		}
 	}

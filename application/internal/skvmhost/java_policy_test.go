@@ -18,7 +18,9 @@ func TestLGTFramebufferUsesAvailableMediumAssets(t *testing.T) {
 		want      image.Point
 	}{
 		{"medium only", map[string][]byte{"imgM/menu.png": {1}}, image.Pt(176, 220)},
+		{"medium logo only", map[string][]byte{"logo/m_ezi.png": {1}, "logo/s_ezi.png": {1}}, image.Pt(176, 220)},
 		{"large available", map[string][]byte{"imgM/menu.png": {1}, "imgL/menu.png": {1}}, fallback},
+		{"large logo available", map[string][]byte{"logo/m_ezi.png": {1}, "logo/l_ezi.png": {1}}, fallback},
 		{"unrelated assets", map[string][]byte{"menu.png": {1}}, fallback},
 	} {
 		t.Run(test.name, func(t *testing.T) {
