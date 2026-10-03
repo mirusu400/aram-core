@@ -153,6 +153,7 @@ func (vm *VM) installXCECompatibilityNatives() {
 	}
 	vm.RegisterNative("com/xce/net/Socket", "PPPClose", "()V", nativeXCEPPPClose)
 	vm.installXCEToolkitImages()
+	vm.RegisterNative("com/xce/lcdui/XDisplay", "clear", "(Ljavax/microedition/lcdui/Graphics;Ljavax/microedition/lcdui/Image;II)V", nativeXCEDisplayClear)
 	vm.RegisterNative(
 		"com/xce/lcdui/XDisplay",
 		"drawImageEx",
@@ -216,6 +217,42 @@ func (vm *VM) installXCECompatibilityNatives() {
 			)
 		},
 	)
+}
+
+func nativeXCEDisplayClear(
+	_ context.Context, vm *VM, _ uint32, args []Value,
+) (Value, bool, error) {
+	graphicsReference, err := referenceArgument(args, 0)
+	if err != nil {
+		return Value{}, false, err
+	}
+	imageReference, err := referenceArgument(args, 1)
+	if err != nil {
+		return Value{}, false, err
+	}
+	x, err := intArgument(args, 2)
+	if err != nil {
+		return Value{}, false, err
+	}
+	y, err := intArgument(args, 3)
+	if err != nil {
+		return Value{}, false, err
+	}
+	graphics, err := vm.graphics(graphicsReference)
+	if err != nil {
+		return Value{}, false, err
+	}
+	if err := fillRectangle(vm, graphics, 0, 0, graphics.width, graphics.height, 0xff000000); err != nil {
+		return Value{}, false, err
+	}
+	if imageReference == 0 {
+		return Value{}, false, nil
+	}
+	image, err := vm.image(imageReference)
+	if err != nil {
+		return Value{}, false, err
+	}
+	return Value{}, false, blit(vm, graphics, image, int(x), int(y), 0, 0, image.width, image.height)
 }
 
 func xceInputMode(mode ime.Mode) int32 {

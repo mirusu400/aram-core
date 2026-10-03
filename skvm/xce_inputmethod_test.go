@@ -243,3 +243,30 @@ func TestXTextFieldFocusInputAndModeImages(t *testing.T) {
 		t.Fatalf("unfocused component = %d, want null", got)
 	}
 }
+
+func TestXCEDisplayClear(t *testing.T) {
+	vm, err := New(nil)
+	check(t, err)
+	graphics := vm.ScreenGraphics()
+	state, err := vm.graphics(graphics)
+	check(t, err)
+	check(t, fillRectangle(vm, state, 0, 0, 40, 40, 0xffffffff))
+	invokeTestNative(t, vm, "com/xce/lcdui/XDisplay", "clear",
+		"(Ljavax/microedition/lcdui/Graphics;Ljavax/microedition/lcdui/Image;II)V", 0,
+		ReferenceValue(graphics), ReferenceValue(0), IntValue(0), IntValue(0))
+	pixel, err := vm.services.Graphics.Pixel(vm.serviceOwner, vm.screenSurface, 10, 10)
+	check(t, err)
+	if pixel.R != 0 || pixel.G != 0 || pixel.B != 0 {
+		t.Fatalf("clear pixel = %#v, want black", pixel)
+	}
+	image := invokeTestNative(t, vm, "com/xce/lcdui/Toolkit", "ueimImg",
+		"()Ljavax/microedition/lcdui/Image;", 0)
+	invokeTestNative(t, vm, "com/xce/lcdui/XDisplay", "clear",
+		"(Ljavax/microedition/lcdui/Graphics;Ljavax/microedition/lcdui/Image;II)V", 0,
+		ReferenceValue(graphics), image, IntValue(20), IntValue(30))
+	pixel, err = vm.services.Graphics.Pixel(vm.serviceOwner, vm.screenSurface, 21, 31)
+	check(t, err)
+	if pixel.R != 0xff || pixel.G != 0xff || pixel.B != 0xff {
+		t.Fatalf("image pixel after clear = %#v, want white", pixel)
+	}
+}
