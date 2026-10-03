@@ -64,6 +64,12 @@ com/xce/lcdui/TextComponentHandler keyPressed (I)Z
 com/xce/lcdui/TextComponentHandler keyReleased (I)Z
 com/xce/lcdui/TextComponentHandler keyRepeated (I)Z
 com/xce/lcdui/TextComponentHandler setTextComponent (Lcom/xce/lcdui/TextComponent;)V
+com/xce/lcdui/Toolkit imHintImg ()Ljavax/microedition/lcdui/Image;
+com/xce/lcdui/Toolkit kimImg ()Ljavax/microedition/lcdui/Image;
+com/xce/lcdui/Toolkit leimImg ()Ljavax/microedition/lcdui/Image;
+com/xce/lcdui/Toolkit nimImg ()Ljavax/microedition/lcdui/Image;
+com/xce/lcdui/Toolkit simImg ()Ljavax/microedition/lcdui/Image;
+com/xce/lcdui/Toolkit ueimImg ()Ljavax/microedition/lcdui/Image;
 com/xce/lcdui/XDisplay copyLCD (Ljavax/microedition/lcdui/Graphics;Ljavax/microedition/lcdui/Image;IIII)V
 com/xce/lcdui/XDisplay drawImageEx (Ljavax/microedition/lcdui/Graphics;Ljavax/microedition/lcdui/Image;IILjavax/microedition/lcdui/Image;IIIII)V
 com/xce/lcdui/XDisplay refresh (IIII)V

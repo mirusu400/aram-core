@@ -89,7 +89,7 @@ func (vm *VM) installXCECompatibilityNatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
-			return IntValue(int32(state.automata.CurrentMode())), true, nil
+			return IntValue(xceInputMode(state.automata.CurrentMode())), true, nil
 		},
 	)
 	vm.RegisterNative(
@@ -152,6 +152,7 @@ func (vm *VM) installXCECompatibilityNatives() {
 		vm.RegisterNative(method.class, method.name, method.descriptor, nativeVoid)
 	}
 	vm.RegisterNative("com/xce/net/Socket", "PPPClose", "()V", nativeXCEPPPClose)
+	vm.installXCEToolkitImages()
 	vm.RegisterNative(
 		"com/xce/lcdui/XDisplay",
 		"drawImageEx",
@@ -215,6 +216,19 @@ func (vm *VM) installXCECompatibilityNatives() {
 			)
 		},
 	)
+}
+
+func xceInputMode(mode ime.Mode) int32 {
+	switch mode {
+	case ime.ModeENUpper:
+		return 1
+	case ime.ModeENLower:
+		return 2
+	case ime.ModeNumeric:
+		return 4
+	default:
+		return 16 // Korean input
+	}
 }
 
 // PPPClose tears down the VM's modeled network link. The title calls it after
@@ -340,6 +354,21 @@ func nativeTextComponentKeyPressed(
 // applyIMEOp turns one automata callback into an InvokeVirtual on the guest
 // TextComponent. Chars ride in an int slot, matching the (C)V descriptors.
 func (vm *VM) applyIMEOp(ctx context.Context, component uint32, op ime.Op) error {
+	if object, ok := vm.Object(component); ok {
+		if _, ok := object.Native.(*xTextFieldState); ok {
+			switch op.Kind {
+			case ime.OpInsert:
+				_, _, err := nativeXTextFieldInsert(ctx, vm, component, []Value{IntValue(int32(op.Char))})
+				return err
+			case ime.OpReplace:
+				_, _, err := nativeXTextFieldReplace(ctx, vm, component, []Value{IntValue(int32(op.Char))})
+				return err
+			case ime.OpDelete:
+				_, _, err := nativeXTextFieldDelete(ctx, vm, component, nil)
+				return err
+			}
+		}
+	}
 	switch op.Kind {
 	case ime.OpInsert:
 		_, _, err := vm.InvokeVirtual(

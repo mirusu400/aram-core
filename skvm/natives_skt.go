@@ -395,7 +395,19 @@ func (vm *VM) installSKTNatives() {
 			if err != nil {
 				return Value{}, false, err
 			}
-			return Value{}, false, vm.setNative(receiver, &xTextFieldState{text: value})
+			maxLength, err := intArgument(args, 1)
+			if err != nil {
+				return Value{}, false, err
+			}
+			if err := vm.setNative(receiver, &xTextFieldState{text: value}); err != nil {
+				return Value{}, false, err
+			}
+			object, _ := vm.Object(receiver)
+			object.Fields[xTextFieldMaxLength] = IntValue(maxLength)
+			object.Fields[xTextFieldBlocked] = IntValue(0)
+			state, _ := vm.xTextField(receiver)
+			state.text = vm.limitXTextField(receiver, state.text)
+			return Value{}, false, nil
 		},
 	)
 	vm.RegisterNative(
@@ -420,6 +432,14 @@ func (vm *VM) installSKTNatives() {
 				return Value{}, false, err
 			}
 			state.text, err = vm.stringArgument(args, 0)
+			if err == nil {
+				state.text = vm.limitXTextField(receiver, state.text)
+				object, _ := vm.Object(receiver)
+				object.Fields[xTextFieldBlocked] = IntValue(0)
+				if _, handler, handlerErr := vm.xceTextHandler(); handlerErr == nil && handler.component == receiver {
+					handler.automata.Commit()
+				}
+			}
 			return Value{}, false, err
 		},
 	)
@@ -439,23 +459,15 @@ func (vm *VM) installSKTNatives() {
 		"com/xce/lcdui/XTextField",
 		"setFocus",
 		"(Z)V",
-		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
-			state, err := vm.xTextField(receiver)
-			if err != nil {
-				return Value{}, false, err
-			}
-			value, err := intArgument(args, 0)
-			state.focus = value != 0
-			return Value{}, false, err
-		},
+		nativeXTextFieldSetFocus,
 	)
+	vm.RegisterNative("com/xce/lcdui/XTextField", "setBounds", "(IIII)V", nativeXTextFieldSetBounds)
+	vm.RegisterNative("com/xce/lcdui/XTextField", "paint", "(Ljavax/microedition/lcdui/Graphics;)V", nativeXTextFieldPaint)
+	vm.RegisterNative("com/xce/lcdui/XTextField", "keyPressed", "(I)V", nativeXTextFieldKeyPressed)
 	for _, method := range []struct {
 		name       string
 		descriptor string
 	}{
-		{"setBounds", "(IIII)V"},
-		{"paint", "(Ljavax/microedition/lcdui/Graphics;)V"},
-		{"keyPressed", "(I)V"},
 		{"keyReleased", "(I)V"},
 		{"keyRepeated", "(I)V"},
 	} {
