@@ -53,6 +53,7 @@ const (
 )
 
 const issue319ArchiveSHA256 = "2cfa3dff0779456f8482ccfbda740436101699186fdd9537b7a9108f8bfcedbf"
+const unlimitedWarArchiveSHA256 = "185d88339b04381697ebfcb31bbc8b6a7eff22f4ad588b1726e0f2708227d545"
 const issue321ArchiveSHA256 = "4fae0b6a37e501163f6eabbda2b400bdfd4682ae389217bc26a7dbee564cb360"
 const jinJanggiArchiveSHA256 = "06369c8db97fb4e28165297ac2557c0de050dfb6986ea429d3411ffedfa891b9"
 const tengaiArchiveSHA256 = "01f8fe8784138792822df9306127279f038813ea62c00385d256b77b61a025cf"
@@ -75,6 +76,9 @@ type Package struct {
 	// PreferPackedAECHAR resolves ambiguous Hangul-looking EUC-KR pairs in
 	// hash-qualified KTF titles without changing generic UTF-16 behavior.
 	PreferPackedAECHAR bool
+	// PreferPackedResourceAECHAR preserves OEM byte pairs in compressed string
+	// resources for titles that read the low byte of each AECHAR directly.
+	PreferPackedResourceAECHAR bool
 }
 
 // DisplaySize selects the handset canvas. Exact-title dimensions override
@@ -174,17 +178,22 @@ func Match(data []byte) (pkg Package, matched bool, err error) {
 		Authenticated: authenticated,
 		NativeCanvas:  nativeCanvas,
 
-		PreferPackedAECHAR: preferPackedAECHARForDigest(digestHex),
+		PreferPackedAECHAR:         preferPackedAECHARForDigest(digestHex),
+		PreferPackedResourceAECHAR: preferPackedResourceAECHARForDigest(digestHex),
 	}, true, nil
 }
 
 func preferPackedAECHARForDigest(digest string) bool {
 	switch digest {
-	case issue319ArchiveSHA256, jinJanggiArchiveSHA256, theSINArchiveSHA256:
+	case issue319ArchiveSHA256, jinJanggiArchiveSHA256, theSINArchiveSHA256, unlimitedWarArchiveSHA256:
 		return true
 	default:
 		return false
 	}
+}
+
+func preferPackedResourceAECHARForDigest(digest string) bool {
+	return digest == unlimitedWarArchiveSHA256
 }
 
 func knownModuleVeneer(module []byte) bool {

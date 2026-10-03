@@ -264,6 +264,49 @@ func TestLoadShellResourceStringExpandsCompressedData(t *testing.T) {
 	}
 }
 
+func TestLoadShellResourceStringPreservesPackedOEMPairWhenSelected(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	runtime.preferPackedResourceAECHAR = true
+	runtime.files = map[string][]byte{
+		"assets/game.bar": buildResourceFile(brewStringResourceKind, 89,
+			[]byte{0xfe, 0xfe, 0xb0, 0xfc, ']', 0}),
+	}
+	pathAt, destination, sp := heapBase+0x100, heapBase+0x200, heapBase+0x300
+	if err := runtime.cpu.WriteMemory(pathAt, []byte("assets/game.bar\x00")); err != nil {
+		t.Fatal(err)
+	}
+	var size [4]byte
+	binary.LittleEndian.PutUint32(size[:], 8)
+	if err := runtime.cpu.WriteMemory(sp, size[:]); err != nil {
+		t.Fatal(err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterSP: sp,
+		cpu.RegisterR1: pathAt,
+		cpu.RegisterR2: 89,
+		cpu.RegisterR3: destination,
+		cpu.RegisterLR: returnTrap | 1,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handled, _, _, err := runtime.handleAppletMethodTrap(shellMethodTrapBase + 17*2 + 2)
+	if err != nil || !handled {
+		t.Fatalf("packed LoadResString handled=%v err=%v", handled, err)
+	}
+	if count, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || count != 2 {
+		t.Fatalf("packed LoadResString count=%d err=%v", count, err)
+	}
+	got := make([]byte, 6)
+	if err := runtime.cpu.ReadMemory(destination, got); err != nil {
+		t.Fatal(err)
+	}
+	if want := []byte{0xb0, 0xfc, ']', 0, 0, 0}; !bytes.Equal(got, want) {
+		t.Fatalf("packed LoadResString=% x, want % x", got, want)
+	}
+}
+
 func TestDecodeBREWResourceImageHonorsBlobOffset(t *testing.T) {
 	source := image.NewRGBA(image.Rect(0, 0, 2, 1))
 	source.SetRGBA(0, 0, color.RGBA{R: 0xff, A: 0xff})

@@ -236,6 +236,9 @@ func (r *Runtime) loadShellResourceString() error {
 		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
 	}
 	units := decodeBREWResourceString(data)
+	if r.preferPackedResourceAECHAR && len(data) >= 2 && data[0] == 0xfe && data[1] == 0xfe {
+		units = decodeBREWPackedResourceString(data[2:])
+	}
 	capacity := int(size/2) - 1
 	if len(units) > capacity {
 		units = units[:capacity]
@@ -262,16 +265,7 @@ func decodeBREWResourceString(data []byte) []uint16 {
 		}
 		// BREW's STREXPAND fallback widens ASCII bytes and preserves each
 		// double-byte handset character as one AECHAR.
-		var units []uint16
-		for index := 0; index < len(payload); index++ {
-			unit := uint16(payload[index])
-			if payload[index]&0x80 != 0 && index+1 < len(payload) {
-				index++
-				unit |= uint16(payload[index]) << 8
-			}
-			units = append(units, unit)
-		}
-		return trimWideStringTerminator(units)
+		return decodeBREWPackedResourceString(payload)
 	}
 	units := make([]uint16, 0, len(data)/2)
 	for index := 0; index+1 < len(data); index += 2 {
@@ -282,6 +276,22 @@ func decodeBREWResourceString(data []byte) []uint16 {
 		units = append(units, unit)
 	}
 	return units
+}
+
+func decodeBREWPackedResourceString(payload []byte) []uint16 {
+	if terminator := bytes.IndexByte(payload, 0); terminator >= 0 {
+		payload = payload[:terminator]
+	}
+	units := make([]uint16, 0, len(payload))
+	for index := 0; index < len(payload); index++ {
+		unit := uint16(payload[index])
+		if payload[index]&0x80 != 0 && index+1 < len(payload) {
+			index++
+			unit |= uint16(payload[index]) << 8
+		}
+		units = append(units, unit)
+	}
+	return trimWideStringTerminator(units)
 }
 
 func trimWideStringTerminator(units []uint16) []uint16 {

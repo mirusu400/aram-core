@@ -243,7 +243,8 @@ type Runtime struct {
 	postedEvents     []brewPostedEvent
 	closeRequested   bool
 
-	preferPackedAECHAR bool
+	preferPackedAECHAR         bool
+	preferPackedResourceAECHAR bool
 }
 
 type brewPreferenceKey struct {
@@ -394,7 +395,8 @@ func New(pkg Package) (*Runtime, error) {
 		media:           media,
 		mediaEvents:     shared.NewEventBus(0, 0),
 
-		preferPackedAECHAR: pkg.PreferPackedAECHAR,
+		preferPackedAECHAR:         pkg.PreferPackedAECHAR,
+		preferPackedResourceAECHAR: pkg.PreferPackedResourceAECHAR,
 	}
 	if err := r.mapImage(pkg.Module); err != nil {
 		_ = backend.Close()
