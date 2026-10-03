@@ -79,6 +79,7 @@ const (
 	helperWSprintfSlot      = uint32(15)
 	helperStrToWStrSlot     = uint32(16)
 	helperWStrToStrSlot     = uint32(17)
+	helperFloatToWStrSlot   = uint32(19)
 	helperSetupImageSlot    = uint32(25)
 	helperReallocSlot       = uint32(29)
 	helperWStrSizeSlot      = uint32(31)
@@ -1076,6 +1077,11 @@ func (r *Runtime) handleAppletMethodTrap(
 			return resume()
 		case helperWStrToStrSlot:
 			if err := r.convertGuestWideToString(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case helperFloatToWStrSlot:
+			if err := r.convertGuestFloatToWide(); err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()

@@ -77,6 +77,59 @@ func TestBREWFloatHelpersUseSoftFloatWords(t *testing.T) {
 	}
 }
 
+func TestBREWFloatToWideUsesSoftFloatValueAndByteCapacity(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		size       uint32
+		wantStatus uint32
+		wantText   string
+	}{
+		{"enough space", 40, 1, "31.076421"},
+		{"exact space", 20, 1, "31.076421"},
+		{"too small", 18, 0, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runtime := newSyntheticRuntime(t)
+			value := math.Float64bits(31.076421335401918)
+			destination := heapBase + 0x100
+			for register, word := range map[uint32]uint32{
+				cpu.RegisterR0: uint32(value),
+				cpu.RegisterR1: uint32(value >> 32),
+				cpu.RegisterR2: destination,
+				cpu.RegisterR3: test.size,
+				cpu.RegisterLR: returnTrap | 1,
+			} {
+				if err := runtime.cpu.WriteRegister(register, word); err != nil {
+					t.Fatal(err)
+				}
+			}
+			handled, _, _, err := runtime.handleAppletMethodTrap(helperMethodTrapBase + helperFloatToWStrSlot*2 + 2)
+			if err != nil || !handled {
+				t.Fatalf("FLOATTOWSTR handled=%v err=%v", handled, err)
+			}
+			status, err := runtime.cpu.ReadRegister(cpu.RegisterR0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status != test.wantStatus {
+				t.Fatalf("status = %d, want %d", status, test.wantStatus)
+			}
+			var encoded [20]byte
+			if err := runtime.cpu.ReadMemory(destination, encoded[:]); err != nil {
+				t.Fatal(err)
+			}
+			for index := 0; index < len(test.wantText); index++ {
+				if got := binary.LittleEndian.Uint16(encoded[index*2:]); got != uint16(test.wantText[index]) {
+					t.Fatalf("unit %d = %q, want %q", index, got, test.wantText[index])
+				}
+			}
+			if got := binary.LittleEndian.Uint16(encoded[len(test.wantText)*2:]); got != 0 {
+				t.Fatalf("terminator = %d, want 0", got)
+			}
+		})
+	}
+}
+
 func TestBREWFloatHelperRejectsUnknownSelector(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	if err := runtime.cpu.WriteRegister(cpu.RegisterSP, stackBase); err != nil {

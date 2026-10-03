@@ -4,9 +4,46 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"strconv"
 
 	"github.com/mirusu400/aram-core/cpu"
 )
+
+// FLOATTOWSTR takes a soft-float double in r0/r1, an AECHAR buffer in r2,
+// and its byte capacity in r3. The SDK describes a sprintf conversion before
+// widening, so use its default six fractional digits and require room for NUL.
+func (r *Runtime) convertGuestFloatToWide() error {
+	low, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW FLOATTOWSTR low word: %w", err)
+	}
+	high, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW FLOATTOWSTR high word: %w", err)
+	}
+	destination, err := r.cpu.ReadRegister(cpu.RegisterR2)
+	if err != nil {
+		return fmt.Errorf("read BREW FLOATTOWSTR destination: %w", err)
+	}
+	size, err := r.cpu.ReadRegister(cpu.RegisterR3)
+	if err != nil {
+		return fmt.Errorf("read BREW FLOATTOWSTR capacity: %w", err)
+	}
+	value := math.Float64frombits(uint64(high)<<32 | uint64(low))
+	formatted := strconv.FormatFloat(value, 'f', 6, 64)
+	bytesNeeded := uint32((len(formatted) + 1) * 2)
+	if size < bytesNeeded || size > heapSize || destination == 0 {
+		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
+	}
+	encoded := make([]byte, bytesNeeded)
+	for index := range formatted {
+		binary.LittleEndian.PutUint16(encoded[index*2:], uint16(formatted[index]))
+	}
+	if err := r.cpu.WriteMemory(destination, encoded); err != nil {
+		return fmt.Errorf("write BREW FLOATTOWSTR destination: %w", err)
+	}
+	return r.cpu.WriteRegister(cpu.RegisterR0, 1)
+}
 
 // AEEStdLib f_op and f_cmp use the ARM soft-float calling convention: the two
 // doubles occupy r0-r3 and the operation selector is the next stack word.
