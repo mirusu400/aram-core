@@ -526,10 +526,23 @@ func (m *Machine) StepFrame(ctx context.Context) error {
 		return m.faultLocked(err)
 	}
 	frameStartedAt := m.services.Clock.Monotonic()
-	if err := m.consumeHaltLocked(
-		m.pumpAndPaintLocked(ctx, m.services.Config.FrameDuration),
-	); err != nil {
-		return m.faultLocked(err)
+	if err := m.pumpAndPaintLocked(ctx, m.services.Config.FrameDuration); err != nil {
+		if !errors.Is(err, skengine.ErrHalted) {
+			return m.faultLocked(err)
+		}
+		// A title can exit while an input callback is running, before this
+		// frame's clock advance and presentation. Finish the frame without
+		// entering guest code again.
+		m.input = nil
+		remaining := frameStartedAt + m.services.Config.FrameDuration - m.services.Clock.Monotonic()
+		if remaining > 0 {
+			if err := m.vm.Advance(ctx, remaining, nil); err != nil {
+				return m.faultLocked(err)
+			}
+		}
+		if err := m.presentFrameLocked(); err != nil {
+			return m.faultLocked(err)
+		}
 	}
 	frameFinishedAt := m.services.Clock.Monotonic()
 	if frameFinishedAt <= frameStartedAt {
@@ -567,6 +580,13 @@ func (m *Machine) pumpAndPaintLocked(
 	ctx context.Context,
 	delta time.Duration,
 ) error {
+	if m.vm.Halted() {
+		m.input = nil
+		if err := m.vm.Advance(ctx, delta, nil); err != nil {
+			return err
+		}
+		return m.presentFrameLocked()
+	}
 	start := m.services.Clock.Monotonic()
 	if delta < 0 || delta > time.Duration(^uint64(0)>>1)-start {
 		return fmt.Errorf("invalid Java frame duration %s", delta)
@@ -633,6 +653,10 @@ func (m *Machine) pumpAndPaintLocked(
 			return err
 		}
 	}
+	return m.presentFrameLocked()
+}
+
+func (m *Machine) presentFrameLocked() error {
 	frame, err := m.services.Graphics.PresentCommit(
 		m.owner,
 		m.vm.ScreenSurface(),
