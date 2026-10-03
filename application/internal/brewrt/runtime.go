@@ -97,6 +97,7 @@ const (
 	helperGetJulianDateSlot = uint32(46)
 	helperSysFreeSlot       = uint32(47)
 	helperCurrentAppletSlot = uint32(0x30)
+	helperStrtoulSlot       = uint32(49)
 	helperStrncpySlot       = uint32(50)
 	helperStrncmpSlot       = uint32(51)
 	helperStricmpSlot       = uint32(52)
@@ -1188,6 +1189,11 @@ func (r *Runtime) handleAppletMethodTrap(
 		case helperCurrentAppletSlot:
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, r.activeApplet); err != nil {
 				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW current applet: %w", err)
+			}
+			return resume()
+		case helperStrtoulSlot:
+			if err := r.parseGuestUnsignedInteger(); err != nil {
+				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
 		case helperStrncpySlot:
@@ -3348,6 +3354,90 @@ sign:
 		value = uint32(-int32(value))
 	}
 	return r.cpu.WriteRegister(cpu.RegisterR0, value)
+}
+
+func (r *Runtime) parseGuestUnsignedInteger() error {
+	pointer, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW strtoul string pointer: %w", err)
+	}
+	endPointer, err := r.cpu.ReadRegister(cpu.RegisterR1)
+	if err != nil {
+		return fmt.Errorf("read BREW strtoul end pointer: %w", err)
+	}
+	baseWord, err := r.cpu.ReadRegister(cpu.RegisterR2)
+	if err != nil {
+		return fmt.Errorf("read BREW strtoul base: %w", err)
+	}
+	text, err := r.readCString(pointer)
+	if err != nil {
+		return err
+	}
+	index := 0
+	for index < len(text) && strings.ContainsRune(" \t\n\r\v\f", rune(text[index])) {
+		index++
+	}
+	negative := false
+	if index < len(text) && (text[index] == '+' || text[index] == '-') {
+		negative = text[index] == '-'
+		index++
+	}
+	base := baseWord
+	if base == 0 {
+		base = 10
+		if index < len(text) && text[index] == '0' {
+			base = 8
+		}
+	}
+	digit := func(character byte) uint32 {
+		switch {
+		case character >= '0' && character <= '9':
+			return uint32(character - '0')
+		case character >= 'a' && character <= 'z':
+			return uint32(character-'a') + 10
+		case character >= 'A' && character <= 'Z':
+			return uint32(character-'A') + 10
+		default:
+			return 36
+		}
+	}
+	if (baseWord == 0 || baseWord == 16) && index+2 < len(text) && text[index] == '0' && (text[index+1] == 'x' || text[index+1] == 'X') && digit(text[index+2]) < 16 {
+		base = 16
+		index += 2
+	}
+	end := pointer
+	var value uint64
+	overflow := false
+	if base >= 2 && base <= 36 {
+		const maxUint32 = uint64(^uint32(0))
+		for index < len(text) {
+			next := digit(text[index])
+			if next >= base {
+				break
+			}
+			if value > (maxUint32-uint64(next))/uint64(base) {
+				overflow = true
+				value = maxUint32
+			} else if !overflow {
+				value = value*uint64(base) + uint64(next)
+			}
+			index++
+			end = pointer + uint32(index)
+		}
+	}
+	if end == pointer {
+		value = 0
+	} else if negative && !overflow {
+		value = uint64(-uint32(value))
+	}
+	if endPointer != 0 {
+		var encoded [4]byte
+		binary.LittleEndian.PutUint32(encoded[:], end)
+		if err := r.cpu.WriteMemory(endPointer, encoded[:]); err != nil {
+			return fmt.Errorf("write BREW strtoul end pointer: %w", err)
+		}
+	}
+	return r.cpu.WriteRegister(cpu.RegisterR0, uint32(value))
 }
 
 func (r *Runtime) fillGuestRandom() error {

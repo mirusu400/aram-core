@@ -1003,6 +1003,72 @@ func TestCommonHelperContracts(t *testing.T) {
 	}
 }
 
+func TestStdlibStrtoulHandlesBasesSignsAndEndPointers(t *testing.T) {
+	runtime := newSyntheticRuntime(t)
+	stringAddress := heapBase + 0x500
+	endAddress := heapBase + 0x600
+	tests := []struct {
+		name       string
+		input      string
+		base       uint32
+		want       uint32
+		endOffset  uint32
+		nullEndPtr bool
+	}{
+		{name: "hex", input: "0x2a", base: 16, want: 42, endOffset: 4},
+		{name: "auto octal", input: "077tail", base: 0, want: 63, endOffset: 3},
+		{name: "signed hex", input: "  -0x1fzzz", base: 0, want: ^uint32(30), endOffset: 7},
+		{name: "explicit octal", input: "0x2a", base: 8, want: 0, endOffset: 1},
+		{name: "binary", input: "1012", base: 2, want: 5, endOffset: 3},
+		{name: "base 36", input: "Z", base: 36, want: 35, endOffset: 1},
+		{name: "overflow", input: "4294967296", base: 10, want: ^uint32(0), endOffset: 10},
+		{name: "no digits", input: "  +xyz", base: 10, want: 0, endOffset: 0},
+		{name: "null end pointer", input: "7f", base: 16, want: 127, nullEndPtr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := runtime.cpu.WriteMemory(stringAddress, append([]byte(test.input), 0)); err != nil {
+				t.Fatal(err)
+			}
+			if err := runtime.cpu.WriteMemory(endAddress, []byte{0xff, 0xff, 0xff, 0xff}); err != nil {
+				t.Fatal(err)
+			}
+			endPointer := endAddress
+			if test.nullEndPtr {
+				endPointer = 0
+			}
+			for register, value := range map[uint32]uint32{
+				cpu.RegisterR0: stringAddress,
+				cpu.RegisterR1: endPointer,
+				cpu.RegisterR2: test.base,
+				cpu.RegisterLR: returnTrap | 1,
+			} {
+				if err := runtime.cpu.WriteRegister(register, value); err != nil {
+					t.Fatal(err)
+				}
+			}
+			handled, _, _, err := runtime.handleAppletMethodTrap(helperMethodTrapBase + helperStrtoulSlot*2 + 2)
+			if err != nil || !handled {
+				t.Fatalf("strtoul handled=%v err=%v", handled, err)
+			}
+			if got, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || got != test.want {
+				t.Fatalf("strtoul result=0x%08x err=%v, want 0x%08x", got, err, test.want)
+			}
+			var encoded [4]byte
+			if err := runtime.cpu.ReadMemory(endAddress, encoded[:]); err != nil {
+				t.Fatal(err)
+			}
+			wantEnd := uint32(0xffffffff)
+			if !test.nullEndPtr {
+				wantEnd = stringAddress + test.endOffset
+			}
+			if got := binary.LittleEndian.Uint32(encoded[:]); got != wantEnd {
+				t.Fatalf("strtoul end pointer=0x%08x, want 0x%08x", got, wantEnd)
+			}
+		})
+	}
+}
+
 func TestSprintfSupportsBoundedStringAndIntegerFormats(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	destination, formatAt, textAt := heapBase+0x100, heapBase+0x200, heapBase+0x300
