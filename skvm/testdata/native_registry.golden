@@ -57,7 +57,9 @@ com/xce/io/XFile write ([BII)I
 com/xce/jam/XBrowser setNetworkMode (I)V
 com/xce/lcdui/TextComponentHandler clear ()V
 com/xce/lcdui/TextComponentHandler getInputMode ()I
+com/xce/lcdui/TextComponentHandler getTextComponent ()Lcom/xce/lcdui/TextComponent;
 com/xce/lcdui/TextComponentHandler getTextComponentHandler ()Lcom/xce/lcdui/TextComponentHandler;
+com/xce/lcdui/TextComponentHandler isLoaded ()Z
 com/xce/lcdui/TextComponentHandler keyPressed (I)Z
 com/xce/lcdui/TextComponentHandler keyReleased (I)Z
 com/xce/lcdui/TextComponentHandler keyRepeated (I)Z

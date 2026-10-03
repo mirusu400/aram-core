@@ -60,6 +60,48 @@ func driveHandler(t *testing.T, keys ...int32) string {
 	return string(runes)
 }
 
+func TestTextComponentHandlerLoadAndCurrentComponent(t *testing.T) {
+	vm, err := New(nil)
+	check(t, err)
+	loaded := invokeTestNative(t, vm,
+		"com/xce/lcdui/TextComponentHandler", "isLoaded", "()Z", 0)
+	loadedValue, err := loaded.Int()
+	check(t, err)
+	if loadedValue != 1 {
+		t.Fatalf("input handler loaded = %d, want 1", loadedValue)
+	}
+	handlerValue := invokeTestNative(t, vm,
+		"com/xce/lcdui/TextComponentHandler", "getTextComponentHandler",
+		"()Lcom/xce/lcdui/TextComponentHandler;", 0)
+	handler, err := handlerValue.Reference()
+	check(t, err)
+	getComponent := func() uint32 {
+		t.Helper()
+		value := invokeTestNative(t, vm,
+			"com/xce/lcdui/TextComponentHandler", "getTextComponent",
+			"()Lcom/xce/lcdui/TextComponent;", handler)
+		reference, err := value.Reference()
+		check(t, err)
+		return reference
+	}
+	if got := getComponent(); got != 0 {
+		t.Fatalf("initial text component = %d, want null", got)
+	}
+	component := vm.NewObject("com/xce/lcdui/TextComponent", nil)
+	invokeTestNative(t, vm,
+		"com/xce/lcdui/TextComponentHandler", "setTextComponent",
+		"(Lcom/xce/lcdui/TextComponent;)V", handler, ReferenceValue(component))
+	if got := getComponent(); got != component {
+		t.Fatalf("current text component = %d, want %d", got, component)
+	}
+	invokeTestNative(t, vm,
+		"com/xce/lcdui/TextComponentHandler", "setTextComponent",
+		"(Lcom/xce/lcdui/TextComponent;)V", handler, ReferenceValue(0))
+	if got := getComponent(); got != 0 {
+		t.Fatalf("cleared text component = %d, want null", got)
+	}
+}
+
 func TestTextComponentHandlerDrivesGuestComponent(t *testing.T) {
 	// The field starts in KO, so ㄴ(5)+ㅣ(1) composes 니 into the guest field.
 	if got := driveHandler(t, '5', '1'); got != "니" {

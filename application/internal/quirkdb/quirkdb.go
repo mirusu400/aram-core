@@ -587,6 +587,19 @@ type SKVMCanvas struct {
 
 var SKVMCanvases = []SKVMCanvas{
 	{
+		// Magical Princess adds the 16-pixel system strip to Canvas.getHeight().
+		// Its 20-row tile map is 320 pixels high; reporting the full framebuffer
+		// as the Canvas height makes the title scroll to -16 and index row -1.
+		Key: SKVMTitleKey{
+			PackageSHA256: "9a2cf5ffc9d30641bb482f952b03cb7e9daf46d7012a69a2ad83db62599a53ac",
+			MainClass:     "Game",
+			ProgramName:   "0048926642",
+		},
+		InferredWidth:       240,
+		InferredHeight:      320,
+		CanvasHeightInset16: true,
+	},
+	{
 		// Monster Boy's clip wrapper passes tile extents 15,15 for a 16x16
 		// tile. Its alternate handset branch adds one to each extent, but
 		// this shipped build selects the inclusive handset branch (#296).

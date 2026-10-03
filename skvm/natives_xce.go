@@ -61,6 +61,27 @@ func (vm *VM) installXCECompatibilityNatives() {
 	)
 	vm.RegisterNative(
 		"com/xce/lcdui/TextComponentHandler",
+		"isLoaded",
+		"()Z",
+		func(context.Context, *VM, uint32, []Value) (Value, bool, error) {
+			// The handset input handler is ready as soon as its singleton exists.
+			return boolValue(true), true, nil
+		},
+	)
+	vm.RegisterNative(
+		"com/xce/lcdui/TextComponentHandler",
+		"getTextComponent",
+		"()Lcom/xce/lcdui/TextComponent;",
+		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+			state, err := vm.textComponentHandler(receiver)
+			if err != nil {
+				return Value{}, false, err
+			}
+			return ReferenceValue(state.component), true, nil
+		},
+	)
+	vm.RegisterNative(
+		"com/xce/lcdui/TextComponentHandler",
 		"getInputMode",
 		"()I",
 		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
