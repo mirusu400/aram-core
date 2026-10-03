@@ -490,13 +490,9 @@ func nativeGraphics2DDrawImage(
 			"invalid Graphics2D draw mode",
 		)
 	}
-	if width < 0 || height < 0 {
-		return Value{}, false, vm.newThrowable(
-			"java/lang/IllegalArgumentException",
-			"negative Graphics2D source size",
-		)
-	}
-	if width == 0 || height == 0 {
+	// A nonpositive source rectangle has no pixels to draw, as in blit below.
+	// Some SKT games pass a negative sprite width after a gauge reaches zero.
+	if width <= 0 || height <= 0 {
 		return Value{}, false, nil
 	}
 	source, err := vm.image(imageReference)
