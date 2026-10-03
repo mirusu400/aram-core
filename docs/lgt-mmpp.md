@@ -7,6 +7,11 @@ https://nikita36078.github.io/J2ME_Docs/docs/LG_MMPP_API/mmpp/media/MediaPlayer.
 
 The LGT vibration class is documented at
 https://nikita36078.github.io/J2ME_Docs/docs/LG_MMPP_API/mmpp/media/Vibration.html.
+The documentation defines `getLevelNum()` as the number of available levels but
+does not fix that number. The emulator's compatibility profile exposes 100
+levels: one observed title calls `start(3, 100)`, while another calls
+`start(100, 100)`. Levels 0 through 100 map to the device's 0 through 100
+intensity; out-of-range levels and negative timeouts raise an argument error.
 
 This third-party archive does not establish an exact handset or SDK version.
 This is an implementation from public behavioral documentation and synthetic
