@@ -97,6 +97,48 @@ func TestMediaStoppedLoopCompatibilityPreservesBGMWhileClipIsReused(t *testing.T
 	}
 }
 
+func TestMediaStoppedLoopReuseKeepsBufferedMusic(t *testing.T) {
+	media, bus, clip := newRampMedia(t)
+	media.SetStoppedLoopPreservation(true)
+	check(t, media.Play(1, clip, -1))
+	step := 125 * time.Microsecond
+	check(t, media.Advance(0, step, bus))
+	revision := media.OutputRevision()
+
+	check(t, media.Stop(1, clip))
+	if media.OutputRevision() != revision {
+		t.Fatal("preserved loop changed the output generation")
+	}
+	check(t, media.Clear(1, clip))
+	if media.OutputRevision() != revision {
+		t.Fatal("clearing the stopped source interrupted the preserved loop")
+	}
+	_, err := media.Append(1, clip, pcmWave(8_000, 1, []int16{1000}))
+	check(t, err)
+	check(t, media.Play(1, clip, 1))
+	check(t, media.Advance(step, 2*step, bus))
+	if got := media.Drain().PCM16; !reflect.DeepEqual(got, []int16{10, 1020}) {
+		t.Fatalf("buffered music and effect = %v, want [10 1020]", got)
+	}
+}
+
+func TestMediaReplaceStoppedEffectKeepsOtherClipOutput(t *testing.T) {
+	media, bus, bgm := newRampMedia(t)
+	fx, err := media.CreateClip(1, "audio/wav", 0)
+	check(t, err)
+	check(t, media.Play(1, bgm, -1))
+	step := 125 * time.Microsecond
+	check(t, media.Advance(0, step, bus))
+	revision := media.OutputRevision()
+	check(t, media.ReplaceSource(1, fx, pcmWave(8_000, 1, []int16{1000})))
+	if media.OutputRevision() != revision {
+		t.Fatal("replacing a stopped effect changed the output generation")
+	}
+	if got := media.Drain().PCM16; !reflect.DeepEqual(got, []int16{10}) {
+		t.Fatalf("buffered music = %v, want [10]", got)
+	}
+}
+
 func TestMediaStoppedLoopCompatibilitySurvivesSnapshot(t *testing.T) {
 	media, bus, clip := newRampMedia(t)
 	media.SetStoppedLoopPreservation(true)

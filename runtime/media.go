@@ -377,7 +377,8 @@ func (m *Media) ReplaceSource(owner OwnerID, id ServiceID, data []byte) error {
 	clip.position = 0
 	clip.remainingPlays = 0
 	clip.waitingForData = false
-	m.invalidateOutput()
+	// The clip is stopped, so replacing its source cannot change samples
+	// already mixed from other clips (or from a preserved background voice).
 	return nil
 }
 
@@ -549,8 +550,12 @@ func (m *Media) Stop(owner OwnerID, id ServiceID) error {
 	if clip.state != ClipPlaying && clip.state != ClipPaused && clip.state != ClipRecording {
 		return fmt.Errorf("%w: stop media clip while %v", ErrInvalidState, clip.state)
 	}
+	preservedOutput := false
 	if m.preserveStoppedLoops && clip.remainingPlays == -1 &&
 		clip.decoded != nil && clip.decoded.duration > 0 {
+		// Transferring the same loop at the same position leaves the mix
+		// continuous unless it replaces an older detached background voice.
+		preservedOutput = m.bgmVoice == nil && clip.state == ClipPlaying
 		m.bgmVoice = &mediaClip{
 			mediaType:      clip.mediaType,
 			source:         cloneBytes(clip.source),
@@ -566,7 +571,9 @@ func (m *Media) Stop(owner OwnerID, id ServiceID) error {
 	clip.state = ClipStopped
 	clip.remainingPlays = 0
 	clip.waitingForData = false
-	m.invalidateOutput()
+	if !preservedOutput {
+		m.invalidateOutput()
+	}
 	return nil
 }
 
