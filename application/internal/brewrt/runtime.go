@@ -51,7 +51,7 @@ const (
 	ktfServiceObject      = helperBase + 0x7a0
 	ktfServiceVTable      = helperBase + 0x7b0
 	ktfServiceTrapBase    = helperBase + 0xd60
-	ktfServiceMethodCount = uint32(4)
+	ktfServiceMethodCount = uint32(6)
 	soundObject           = helperBase + 0x740
 	soundVTable           = helperBase + 0x760
 	displayMethodCount    = uint32(26)
@@ -503,9 +503,9 @@ func (r *Runtime) mapImage(module []byte) error {
 	binary.LittleEndian.PutUint32(helper[0x724:], releaseTrap|1)
 	binary.LittleEndian.PutUint32(helper[0x728:], deviceModelTrap|1)
 	binary.LittleEndian.PutUint16(helper[deviceModelTrap-helperBase:], 0xbe0a)
-	// KTF handsets expose an OEM service under class 0x018000fc. The observed
-	// interface has the standard AddRef/Release prefix followed by two setup
-	// operations. Both setup calls are synchronous and report AEE_SUCCESS.
+	// KTF handsets expose an OEM network service under class 0x018000fc. Its
+	// setup calls receive INet/ISocket and a callback. A later slot sends a
+	// packet to an IP address and port; the offline runtime reports failure.
 	binary.LittleEndian.PutUint32(helper[ktfServiceObject-helperBase:], ktfServiceVTable)
 	for slot := uint32(0); slot < ktfServiceMethodCount; slot++ {
 		trap := ktfServiceTrapBase + slot*2
@@ -993,6 +993,14 @@ func (r *Runtime) handleAppletMethodTrap(
 		case 3:
 			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
 				return true, 0, cpu.ModeARM, fmt.Errorf("return KTF OEM service slot %d status: %w", slot, err)
+			}
+			return resume()
+		case 5:
+			// This OEM transport's send operation returns a byte count, -1,
+			// or -2. The title handles -2 as an unavailable connection.
+			// Reporting failure keeps network traffic out of offline replay.
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, ^uint32(1)); err != nil {
+				return true, 0, cpu.ModeARM, fmt.Errorf("return KTF OEM network failure: %w", err)
 			}
 			return resume()
 		default:

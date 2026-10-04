@@ -1981,6 +1981,29 @@ func TestKTFServiceCreateAndSetupContracts(t *testing.T) {
 			t.Fatalf("IKTFService slot %d status=%d err=%v", slot, got, err)
 		}
 	}
+	if err := runtime.cpu.ReadMemory(ktfServiceVTable+5*4, encoded[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := binary.LittleEndian.Uint32(encoded[:]), ktfServiceTrapBase+5*2|1; got != want {
+		t.Fatalf("KTF network send slot = 0x%08x, want 0x%08x", got, want)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR0: ktfServiceObject,
+		cpu.RegisterR1: heapBase + 0x800,
+		cpu.RegisterR2: 15,
+		cpu.RegisterR3: 0xdc2ae9d3,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handled, pc, mode, err := runtime.handleAppletMethodTrap(ktfServiceTrapBase + 5*2 + 2)
+	if err != nil || !handled || pc != returnTrap || mode != cpu.ModeThumb {
+		t.Fatalf("KTF network send handled=%v pc=0x%08x mode=%v err=%v", handled, pc, mode, err)
+	}
+	if got, err := runtime.cpu.ReadRegister(cpu.RegisterR0); err != nil || got != ^uint32(1) {
+		t.Fatalf("KTF offline send status=0x%08x err=%v, want -2", got, err)
+	}
 }
 
 func TestSoundPlayerSetUsesInputDiscriminator(t *testing.T) {
