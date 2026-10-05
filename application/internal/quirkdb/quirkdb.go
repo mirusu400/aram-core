@@ -106,6 +106,19 @@ var KTFMainThreadLivenessOverrides = []TitleKey{
 	},
 }
 
+// KTFDataInputStreamJavaABIs identifies clients whose AOT calls use the Java
+// method entry for DataInputStream. The default native flag changes the call
+// convention for these clients and leaves their read receivers null.
+var KTFDataInputStreamJavaABIs = []TitleKey{
+	{
+		AID:       "010356DB",
+		MainClass: "ED3",
+		ClientSHA256: MustHash(
+			"a3854ef61a5e81364d9ff8b170c768dd3d5e15c0f684e12475316fc9728ddf8e",
+		),
+	},
+}
+
 // MenuForegroundOverlay describes a title that draws its menu labels before
 // a full-menu overlay image and expects the labels to stay visible: the
 // runtime defers recognized label draws and replays them above the overlay.

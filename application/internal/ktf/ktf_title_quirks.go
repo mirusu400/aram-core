@@ -81,6 +81,23 @@ func resolveMainThreadLivenessCompatibility(
 	return false
 }
 
+func dataInputStreamJavaABI(pkg ktf.Package) bool {
+	return resolveDataInputStreamJavaABI(
+		pkg.Descriptor, sha256.Sum256(pkg.Client),
+	)
+}
+
+func resolveDataInputStreamJavaABI(
+	descriptor ktf.Descriptor, clientHash [sha256.Size]byte,
+) bool {
+	for _, key := range quirkdb.KTFDataInputStreamJavaABIs {
+		if key.Matches(descriptor.AID, descriptor.MainClass, clientHash) {
+			return true
+		}
+	}
+	return false
+}
+
 // ktfMenuForegroundCompat replays recognized menu-label draws above a
 // later-drawn overlay image. It records the current coordinates rather than
 // fixing them in the runtime, so menu rotation and selection animations keep

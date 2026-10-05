@@ -1406,7 +1406,10 @@ func (r *Runtime) addHostJavaMethod(
 				break
 			}
 		}
-		if spec.nativeMethods {
+		// ED3 calls DataInputStream through the Java ABI; ACC_NATIVE shifts
+		// its arguments and makes the read receiver null.
+		if spec.nativeMethods &&
+			!(class.Name == "java/io/DataInputStream" && r.dataInputStreamJavaABI) {
 			accessFlags |= 0x0100
 		}
 	}

@@ -98,3 +98,25 @@ func TestKTFMainThreadLivenessRequiresExactPackageIdentity(t *testing.T) {
 		})
 	}
 }
+
+func TestKTFDataInputStreamJavaABIRequiresExactPackageIdentity(t *testing.T) {
+	key := quirkdb.KTFDataInputStreamJavaABIs[0]
+	descriptor := ktf.Descriptor{AID: key.AID, MainClass: key.MainClass}
+	if !resolveDataInputStreamJavaABI(descriptor, key.ClientSHA256) {
+		t.Fatal("ED3 DataInputStream Java ABI did not match")
+	}
+	for name, changed := range map[string]struct {
+		descriptor ktf.Descriptor
+		hash       [sha256.Size]byte
+	}{
+		"aid":        {ktf.Descriptor{AID: "other", MainClass: key.MainClass}, key.ClientSHA256},
+		"main class": {ktf.Descriptor{AID: key.AID, MainClass: "Other"}, key.ClientSHA256},
+		"client":     {descriptor, sha256.Sum256([]byte("different client"))},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if resolveDataInputStreamJavaABI(changed.descriptor, changed.hash) {
+				t.Fatal("DataInputStream Java ABI matched another package")
+			}
+		})
+	}
+}

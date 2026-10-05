@@ -157,6 +157,7 @@ func NewRuntimeForProfile(
 		CPU:                      backend,
 		Pkg:                      pkg,
 		mainThreadLivenessCompat: mainThreadLivenessCompatibility(pkg),
+		dataInputStreamJavaABI:   dataInputStreamJavaABI(pkg),
 		ImageSz:                  uint32(imageSize),
 		frame:                    frame,
 		Services:                 services,

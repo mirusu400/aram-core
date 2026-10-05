@@ -114,6 +114,7 @@ type Runtime struct {
 	Heap    guest.Heap
 
 	mainThreadLivenessCompat bool
+	dataInputStreamJavaABI   bool
 
 	// gcExtraWeakTables and gcExtraRootWalkers let a runtime that shares this
 	// Java heap (Raptor) extend the collector without this package importing
