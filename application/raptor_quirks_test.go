@@ -60,6 +60,16 @@ func TestZenoniaRaptorFullScreenGeometryRequiresExactPackage(t *testing.T) {
 			if got := raptorRuntimeOptions(source, pkg, size).PrimaryFramebufferHeight; got != 320 {
 				t.Fatalf("full-screen framebuffer height = %d, want 320", got)
 			}
+			if test.digest == zenonia2RaptorSHA256 {
+				for _, width := range []int{320, 480} {
+					if got := raptorRuntimeOptions(source, pkg, image.Pt(width, 320)).PrimaryFramebufferHeight; got != 320 {
+						t.Fatalf("widescreen width %d primary height = %d, want 320", width, got)
+					}
+				}
+				if got := raptorRuntimeOptions(source, pkg, image.Pt(239, 320)).PrimaryFramebufferHeight; got != 0 {
+					t.Fatalf("narrow framebuffer primary height = %d, want default", got)
+				}
+			}
 
 			for name, mutate := range map[string]func(*machinecore.Source, *raptorloader.Package, *image.Point){
 				"digest": func(s *machinecore.Source, _ *raptorloader.Package, _ *image.Point) {

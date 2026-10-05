@@ -280,6 +280,9 @@ type RaptorFramebufferGeometry struct {
 	FramebufferWidth  int
 	FramebufferHeight int
 	PrimaryHeight     int
+	// AllowWiderWidth keeps the same vertical screen convention when the
+	// guest framebuffer is widened by the widescreen setting.
+	AllowWiderWidth bool
 }
 
 var RaptorFramebufferGeometries = []RaptorFramebufferGeometry{
@@ -308,6 +311,7 @@ var RaptorFramebufferGeometries = []RaptorFramebufferGeometry{
 		FramebufferWidth:  240,
 		FramebufferHeight: 320,
 		PrimaryHeight:     320,
+		AllowWiderWidth:   true,
 	},
 	{
 		// 아이뮤지션2 copies and filters the full display-info dimensions
@@ -339,14 +343,16 @@ var RaptorFramebufferGeometries = []RaptorFramebufferGeometry{
 }
 
 // LookupRaptorFramebufferGeometry answers an override only when the exact
-// package and the physical framebuffer shape independently agree.
+// package and the physical framebuffer height agree. A title may opt in to
+// wider guest surfaces without changing its vertical screen convention.
 func LookupRaptorFramebufferGeometry(
 	packageSHA256, aid, mainClass string,
 	framebufferWidth, framebufferHeight int,
 ) (RaptorFramebufferGeometry, bool) {
 	for _, entry := range RaptorFramebufferGeometries {
 		if entry.Key.Matches(packageSHA256, aid, mainClass) &&
-			entry.FramebufferWidth == framebufferWidth &&
+			(entry.FramebufferWidth == framebufferWidth ||
+				entry.AllowWiderWidth && framebufferWidth > entry.FramebufferWidth) &&
 			entry.FramebufferHeight == framebufferHeight {
 			return entry, true
 		}

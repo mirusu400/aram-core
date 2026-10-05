@@ -60,13 +60,17 @@ func TestIssues381And382ZenoniaUseFullPrimaryFramebuffer(t *testing.T) {
 	for _, test := range []struct {
 		name   string
 		digest string
+		width  int
 	}{
 		{name: "issue 381 Zenonia 1", digest: zenonia1RaptorSHA256},
 		{name: "issue 382 Zenonia 2", digest: zenonia2RaptorSHA256},
+		{name: "issue 472 Zenonia 2 widescreen", digest: zenonia2RaptorSHA256, width: 480},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path, data := findAuthorizedPackage(t, test.digest)
-			created, err := NewFactory().Create(context.Background(), machinecore.Source{
+			factory := NewFactory()
+			factory.GuestWidthOverride = test.width
+			created, err := factory.Create(context.Background(), machinecore.Source{
 				Name: filepath.Base(path), Path: path,
 				ReaderAt: bytes.NewReader(data), Size: int64(len(data)),
 			})
@@ -78,6 +82,14 @@ func TestIssues381And382ZenoniaUseFullPrimaryFramebuffer(t *testing.T) {
 				t.Fatalf("machine type = %T, want Raptor", created)
 			}
 			t.Cleanup(func() { _ = machine.Close() })
+			if test.width > 0 {
+				if got := machine.Framebuffer().Bounds().Dx(); got != test.width {
+					t.Fatalf("framebuffer width = %d, want %d", got, test.width)
+				}
+				if got := machine.wipi.ScreenDrawingOriginY; got != 0 {
+					t.Fatalf("screen drawing origin = %d, want 0", got)
+				}
+			}
 			handle, err := machine.wipi.EnsureScreenFramebuffer()
 			if err != nil {
 				t.Fatal(err)
