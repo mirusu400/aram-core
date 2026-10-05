@@ -177,23 +177,16 @@ func TestSCHW830BoardProfileAppliesEvidenceBackedIRAM(t *testing.T) {
 	}}; !reflect.DeepEqual(profile.ClockRegimeComparators, want) {
 		t.Fatalf("SCH-W830 clock-regime comparators = %#v", profile.ClockRegimeComparators)
 	}
+	// DL21 polls its raw-NAND ready bit through the flat boot-control alias at
+	// CHIP_BASE+0x488. Group apertures would shadow that register, so the
+	// shared W830 profile keeps the ungrouped compact VIC.
 	if profile.VectoredInterrupt == nil ||
-		profile.VectoredInterrupt.SourceCount != 49 ||
-		profile.VectoredInterrupt.Bank0Sources != 25 ||
-		!profile.VectoredInterrupt.ReverseSourceOrder ||
-		profile.VectoredInterrupt.GroupCount != 6 {
+		*profile.VectoredInterrupt != (QualcommVectoredInterruptConfig{
+			SourceCount:        49,
+			Bank0Sources:       25,
+			ReverseSourceOrder: true,
+		}) {
 		t.Fatalf("SCH-W830 vectored interrupt profile = %+v", profile.VectoredInterrupt)
-	}
-	wantGroups := [qualcommVICMaximumGroups]QualcommVectoredInterruptGroupConfig{
-		{Source: 11, EnableOffset: 0x10, StatusOffset: 0x84, ValidMask: 0x07},
-		{Source: 14, EnableOffset: 0x14, StatusOffset: 0x88, ValidMask: 0x03},
-		{Source: 17, EnableOffset: 0x18, StatusOffset: 0x8c, ValidMask: 0x3f},
-		{Source: 19, EnableOffset: 0x1c, StatusOffset: 0x90, ValidMask: 0x0f},
-		{Source: 7, EnableOffset: 0x20, StatusOffset: 0x94, ValidMask: 0x0f},
-		{Source: 2, EnableOffset: 0x24, StatusOffset: 0x98, ValidMask: 0x07},
-	}
-	if profile.VectoredInterrupt.Groups != wantGroups {
-		t.Fatalf("SCH-W830 vectored interrupt groups = %+v", profile.VectoredInterrupt.Groups)
 	}
 	if profile.TimeTickClock == nil ||
 		*profile.TimeTickClock != (QualcommTimeTickClockConfig{
@@ -784,6 +777,41 @@ func TestRawSamsungBoardProfilesKeepExactIdentityAndPackagedEnd(t *testing.T) {
 			}) {
 			t.Fatalf("%s sparse-bus profile = %v / %v", test.id,
 				test.profile.SparseBusRegisterOffsets, test.profile.SparseBusRegisterResets)
+		}
+	}
+}
+
+func TestCompactVICGroupsRequireGroupedStatusWiring(t *testing.T) {
+	// A second-level group status word shadows the flat boot-control register
+	// at the same CHIP_BASE offset. Boards that never wire grouped sources must
+	// keep the legacy registers, such as the NAND-ready alias at +0x488 that
+	// the W410/W830/W860 OEMSBL raw-NAND probes poll.
+	grouped := map[string]bool{
+		"samsung.sch-w320": true, "samsung.sch-w340": true,
+		"samsung.sch-w350": true, "samsung.sph-w4200": true,
+	}
+	for _, profile := range []BoardProfile{
+		SCHW830DL21BoardProfile(), SCHW860DA06BoardProfile(), SCHW770DA05BoardProfile(),
+		SCHW210CK12BoardProfile(), SCHW240CL28BoardProfile(), SCHW270CL28BoardProfile(),
+		SCHW290CK10BoardProfile(), SCHW300DA04BoardProfile(), SCHW320DC18BoardProfile(),
+		SCHW330CK06BoardProfile(), SCHW340DC18BoardProfile(), SCHW350CK06BoardProfile(),
+		SCHW390CK11BoardProfile(), SCHW410CL10BoardProfile(), SCHW420CD16BoardProfile(),
+		SCHW450CK10BoardProfile(), SCHW460CC26BoardProfile(), SCHW599BE30BoardProfile(),
+		SCHW850CF11BoardProfile(), SPHW4200DC17BoardProfile(),
+	} {
+		if profile.VectoredInterrupt == nil {
+			continue
+		}
+		groups := profile.VectoredInterrupt.GroupCount
+		if grouped[profile.ID] {
+			if groups != 6 || len(profile.BootControlGroupedStatusResponses) == 0 {
+				t.Fatalf("%s grouped compact VIC = %d groups, %d responses",
+					profile.ID, groups, len(profile.BootControlGroupedStatusResponses))
+			}
+			continue
+		}
+		if groups != 0 {
+			t.Fatalf("%s exposes %d unwired compact-VIC groups", profile.ID, groups)
 		}
 	}
 }

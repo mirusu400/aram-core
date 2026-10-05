@@ -2119,15 +2119,6 @@ func SCHW830DL21BoardProfile() BoardProfile {
 		VectoredInterrupt: &QualcommVectoredInterruptConfig{
 			SourceCount: 49, Bank0Sources: 25,
 			ReverseSourceOrder: true,
-			GroupCount:         6,
-			Groups: [qualcommVICMaximumGroups]QualcommVectoredInterruptGroupConfig{
-				{Source: 11, EnableOffset: 0x10, StatusOffset: 0x84, ValidMask: 0x07},
-				{Source: 14, EnableOffset: 0x14, StatusOffset: 0x88, ValidMask: 0x03},
-				{Source: 17, EnableOffset: 0x18, StatusOffset: 0x8c, ValidMask: 0x3f},
-				{Source: 19, EnableOffset: 0x1c, StatusOffset: 0x90, ValidMask: 0x0f},
-				{Source: 7, EnableOffset: 0x20, StatusOffset: 0x94, ValidMask: 0x0f},
-				{Source: 2, EnableOffset: 0x24, StatusOffset: 0x98, ValidMask: 0x07},
-			},
 		},
 		TimeTickClock: &QualcommTimeTickClockConfig{
 			// Match deltas of 326/327 ticks implement the firmware's 10 ms
@@ -2496,6 +2487,7 @@ func SCHW320DC18BoardProfile() BoardProfile {
 	profile := samsungRawDownloadBoardProfile(
 		"samsung.sch-w320", "samsung.sch-w320.dc18", 0x0a760000,
 	)
+	enableMSM6280VectoredInterruptGroups(&profile)
 	// DC18's OEMSBL samples bit 1 of the primary input word after its board
 	// setup and takes a dedicated boot path only while that active-low line is
 	// asserted.
@@ -2663,6 +2655,7 @@ func SCHW340DC18BoardProfile() BoardProfile {
 	profile := samsungRawDownloadBoardProfile(
 		"samsung.sch-w340", "samsung.sch-w340.dc18", 0x08800000,
 	)
+	enableMSM6280VectoredInterruptGroups(&profile)
 	// DC18 maps the compact VIC's 0x80000400 virtual window onto the
 	// 0xfffff544 physical top-page aperture after enabling its AMSS MMU table.
 	// Keep that aperture connected to the same controller used before the MMU
@@ -3150,6 +3143,7 @@ func SCHW350CK06BoardProfile() BoardProfile {
 	profile := samsungRawDownloadBoardProfile(
 		"samsung.sch-w350", "samsung.sch-w350.ck06", 0x08f80000,
 	)
+	enableMSM6280VectoredInterruptGroups(&profile)
 	// CK06's AMSS clears the second UART configuration words with 32-bit STR
 	// operations. OEMSBL still shares the same controller with narrower
 	// accesses, so expose the evidenced mixed-width aperture.
@@ -3378,6 +3372,7 @@ func SPHW4200DC17BoardProfile() BoardProfile {
 	profile := samsungRawDownloadBoardProfile(
 		"samsung.sph-w4200", "samsung.sph-w4200.dc17", 0x0e600000,
 	)
+	enableMSM6280VectoredInterruptGroups(&profile)
 	// DC17 probes its removable-card SDCC at CHIP_BASE+0x0c00 while TFS4 is
 	// starting. Its native filesystem startup requires a memory card to finish
 	// CMD8/CMD55/ACMD41 discovery; the related W830
@@ -4375,6 +4370,29 @@ func samsungW270CompatibleBoardProfile(id, firmwareBuildID string, packagedEnd u
 		QualcommBootReadOnlyRegister{Offset: 0x53d0, Value: 0},
 	)
 	return profile
+}
+
+// enableMSM6280VectoredInterruptGroups exposes the compact VIC's second-level
+// group enable/status apertures. A group status word shadows the flat
+// boot-control register at the same CHIP_BASE offset -- notably the legacy
+// NAND-ready alias at +0x488 -- so only boards whose grouped sources are wired
+// to their devices may opt in. Boards without that wiring keep the flat
+// registers their OEMSBL raw-NAND probes poll.
+func enableMSM6280VectoredInterruptGroups(profile *BoardProfile) {
+	if profile.VectoredInterrupt == nil {
+		return
+	}
+	interrupts := *profile.VectoredInterrupt
+	interrupts.GroupCount = 6
+	interrupts.Groups = [qualcommVICMaximumGroups]QualcommVectoredInterruptGroupConfig{
+		{Source: 11, EnableOffset: 0x10, StatusOffset: 0x84, ValidMask: 0x07},
+		{Source: 14, EnableOffset: 0x14, StatusOffset: 0x88, ValidMask: 0x03},
+		{Source: 17, EnableOffset: 0x18, StatusOffset: 0x8c, ValidMask: 0x3f},
+		{Source: 19, EnableOffset: 0x1c, StatusOffset: 0x90, ValidMask: 0x0f},
+		{Source: 7, EnableOffset: 0x20, StatusOffset: 0x94, ValidMask: 0x0f},
+		{Source: 2, EnableOffset: 0x24, StatusOffset: 0x98, ValidMask: 0x07},
+	}
+	profile.VectoredInterrupt = &interrupts
 }
 
 func samsungRawDownloadBoardProfile(id, firmwareBuildID string, packagedEnd uint64) BoardProfile {
