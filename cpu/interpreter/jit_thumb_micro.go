@@ -73,14 +73,18 @@ func (b *Backend) executeThumbMicroBlock(
 			b.recordPC(pc)
 		}
 		instruction := in.raw
-		b.instructionRaw = uint32(instruction)
-		resident, residentOK := b.residentInstructionCache16(pc)
-		if traced {
-			b.lastJITResidentRaw = uint32(resident)
-			b.lastJITResident = residentOK
+		if wholeSystem {
+			b.instructionRaw = uint32(instruction)
 		}
-		if wholeSystem && block.instructionCacheEnabled {
-			if residentOK && resident != instruction {
+		// Application blocks never run with an architectural I-cache, so keep
+		// the resident-line probe out of their per-instruction path.
+		if traced || wholeSystem && block.instructionCacheEnabled {
+			resident, residentOK := b.residentInstructionCache16(pc)
+			if traced {
+				b.lastJITResidentRaw = uint32(resident)
+				b.lastJITResident = residentOK
+			}
+			if wholeSystem && block.instructionCacheEnabled && residentOK && resident != instruction {
 				b.dropStaleJITBlock(block.start, block, false)
 				return index, false, nil, nil
 			}
