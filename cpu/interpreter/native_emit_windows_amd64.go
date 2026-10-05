@@ -397,6 +397,7 @@ func (a *x64emitter) movECXR8D() { a.b(0x44, 0x89, 0xC1) }
 func (a *x64emitter) movR8DEAX()        { a.b(0x41, 0x89, 0xC0) }       // mov r8d, eax
 func (a *x64emitter) shrR8Dimm(k uint8) { a.b(0x41, 0xC1, 0xE8, k) }    // shr r8d, k
 func (a *x64emitter) andR8Dimm1()       { a.b(0x41, 0x83, 0xE0, 0x01) } // and r8d, 1
+func (a *x64emitter) rorR8Dcl()         { a.b(0x41, 0xD3, 0xC8) }       // ror r8d, cl
 
 func (a *x64emitter) testECXECX()   { a.b(0x85, 0xC9) }       // test ecx, ecx
 func (a *x64emitter) cmovnzEAXEDX() { a.b(0x0F, 0x45, 0xC2) } // cmovnz eax, edx
@@ -895,10 +896,16 @@ func (a *x64emitter) memory(m memAccess, pc uint32, retired int) {
 		}
 	}
 
+	if m.wordAlign {
+		if !m.store {
+			a.movR8DEAX() // preserve the original byte lane for load rotation
+		}
+		a.b(0x83, 0xE0, 0xFC) // and eax,-4
+	}
 	misses := a.probeTLB(m.store, uint32(m.size))
 
-	// 2. The access itself. Unaligned is fine on x86-64 and matches the
-	// interpreter's deliberately linear unaligned reads.
+	// 2. Halfword and byte accesses remain linear. With CP15.A clear, word
+	// addresses were aligned above and loads rotate by the original byte lane.
 	if m.store {
 		a.b(0x45, 0x8B, 0x43, disp(m.rd)) // mov r8d, [r11+4*rd]
 		switch m.size {
@@ -913,6 +920,11 @@ func (a *x64emitter) memory(m memAccess, pc uint32, retired int) {
 		switch {
 		case m.size == 4:
 			a.b(0x41, 0x8B, 0x04, 0x11) // mov eax, [r9+rdx]
+			if m.wordAlign {
+				a.movECXR8D()
+				a.shlECXimm(3)
+				a.rorEAXcl()
+			}
 		case m.size == 2 && m.signed:
 			a.b(0x41, 0x0F, 0xBF, 0x04, 0x11) // movsx eax, word [r9+rdx]
 		case m.size == 2:
@@ -946,7 +958,16 @@ func (a *x64emitter) multi(m multiAccess, pc uint32, retired int) {
 	} else if m.startOffset > 0 {
 		a.addEAXimm(uint32(m.startOffset))
 	}
+	if m.wordAlign {
+		a.b(0x83, 0xE0, 0xFC) // and eax,-4
+	}
 	misses := a.probeTLB(m.store, span)
+	if m.wordAlign && !m.store {
+		// Capture the lane before an LDM whose list includes the base register
+		// overwrites that guest register. All transfer offsets are word-sized.
+		a.loadECX(m.base)
+		a.shlECXimm(3)
+	}
 	for i, reg := range m.regs {
 		offset := byte(4 * i)
 		if m.store {
@@ -954,14 +975,22 @@ func (a *x64emitter) multi(m multiAccess, pc uint32, retired int) {
 			a.b(0x45, 0x89, 0x44, 0x11, offset) // mov [r9+rdx+off], r8d
 		} else {
 			a.b(0x45, 0x8B, 0x44, 0x11, offset) // mov r8d, [r9+rdx+off]
-			a.b(0x45, 0x89, 0x43, disp(reg))    // mov [r11+4*reg], r8d
+			if m.wordAlign {
+				a.rorR8Dcl()
+			}
+			a.b(0x45, 0x89, 0x43, disp(reg)) // mov [r11+4*reg], r8d
 		}
 	}
 	if m.writeback {
-		if m.writebackOffset < 0 {
-			a.subEAXimm(uint32(-m.writebackOffset))
-		} else if m.writebackOffset > 0 {
-			a.addEAXimm(uint32(m.writebackOffset))
+		delta := m.writebackOffset
+		if m.wordAlign {
+			a.loadEAX(m.base)
+			delta += m.startOffset
+		}
+		if delta < 0 {
+			a.subEAXimm(uint32(-delta))
+		} else if delta > 0 {
+			a.addEAXimm(uint32(delta))
 		}
 		a.storeEAX(m.base)
 	}

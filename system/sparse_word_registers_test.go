@@ -68,3 +68,46 @@ func TestSparseWordRegistersApplyConfiguredResetValues(t *testing.T) {
 		t.Fatal("unsupported reset offset accepted")
 	}
 }
+
+func TestSparseWordRegistersReadClearWords(t *testing.T) {
+	device, err := NewSparseWordRegistersWithConfig(SparseWordRegistersConfig{
+		Offsets:          []uint32{0x380, 0x780},
+		ReadClearOffsets: []uint32{0x380},
+	})
+	check(t, err)
+	check(t, device.Write(0x380, Width32, 3))
+	check(t, device.Write(0x780, Width32, 4))
+	if value, err := device.Read(0x380, Width32); err != nil || value != 3 {
+		t.Fatalf("first read-clear value = %#x, %v", value, err)
+	}
+	if value, _ := device.Read(0x380, Width32); value != 0 {
+		t.Fatalf("cleared value = %#x", value)
+	}
+	if value, _ := device.Read(0x780, Width32); value != 4 {
+		t.Fatalf("ordinary latched value = %#x", value)
+	}
+
+	check(t, device.Write(0x380, Width32, 5))
+	state, err := device.SaveState()
+	check(t, err)
+	restored, _ := NewSparseWordRegistersWithConfig(SparseWordRegistersConfig{
+		Offsets:          []uint32{0x780, 0x380},
+		ReadClearOffsets: []uint32{0x380},
+	})
+	check(t, restored.LoadState(state))
+	if value, _ := restored.Read(0x380, Width32); value != 5 {
+		t.Fatalf("restored read-clear value = %#x", value)
+	}
+
+	mismatched, _ := NewSparseWordRegisters([]uint32{0x380, 0x780})
+	if err := mismatched.LoadState(state); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("mismatched read-clear layout state error = %v", err)
+	}
+	for _, offsets := range [][]uint32{{0x37c}, {0x380, 0x380}} {
+		if _, err := NewSparseWordRegistersWithConfig(SparseWordRegistersConfig{
+			Offsets: []uint32{0x380}, ReadClearOffsets: offsets,
+		}); err == nil {
+			t.Fatalf("accepted read-clear offsets %#v", offsets)
+		}
+	}
+}

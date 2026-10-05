@@ -77,12 +77,109 @@ type jitExtraLoop struct {
 }
 
 type jitBlock struct {
-	start       uint32
-	end         uint32
-	arm         []jitInstr
-	thumb       []thumbMicroInstr
-	countedLoop *jitCountedLoop
-	extraLoop   *jitExtraLoop
+	start                   uint32
+	end                     uint32
+	arm                     []jitInstr
+	thumb                   []thumbMicroInstr
+	countedLoop             *jitCountedLoop
+	extraLoop               *jitExtraLoop
+	instructionCacheEnabled bool
+	instructionCacheGen     uint32
+	instructionCacheGuards  []jitInstructionCacheGuard
+}
+
+type jitInstructionCacheGuard struct {
+	virtualLine uint32
+	tag         uint32
+	serial      uint64
+}
+
+// JITExecutionState describes the last translated instruction executed while
+// PC tracing was enabled. It is diagnostic state and has no guest-visible
+// effect.
+type JITExecutionState struct {
+	RuntimePC               uint32
+	DecodedPC               uint32
+	Raw                     uint32
+	ResidentRaw             uint32
+	Resident                bool
+	CurrentlyPrivileged     bool
+	Index                   uint32
+	BlockStart              uint32
+	BlockEnd                uint32
+	BlockGeneration         uint64
+	MappingGeneration       uint32
+	InstructionCacheEnabled bool
+	InstructionCacheGuards  []JITInstructionCacheGuardState
+}
+
+type JITInstructionCacheGuardState struct {
+	VirtualLine   uint32
+	Tag           uint32
+	Serial        uint64
+	CurrentTag    uint32
+	CurrentSerial uint64
+	CurrentValid  bool
+	Privileged    bool
+}
+
+// CachedThumbInstruction returns the raw instruction retained by a translated
+// Thumb block. It is intended for diagnostics after self-modifying firmware has
+// replaced the backing bytes that originally produced the block.
+func (b *Backend) CachedThumbInstruction(address uint32) (uint16, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, block := range b.jitBlocks {
+		if block == nil {
+			continue
+		}
+		for _, instruction := range block.thumb {
+			if instruction.pc == address {
+				return instruction.raw, true
+			}
+		}
+	}
+	return 0, false
+}
+
+// JITExecutionState returns a copy of the last traced translated instruction.
+func (b *Backend) JITExecutionState() JITExecutionState {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	state := JITExecutionState{
+		RuntimePC:           b.lastJITRuntimePC,
+		DecodedPC:           b.lastJITDecodedPC,
+		Raw:                 b.lastJITRaw,
+		ResidentRaw:         b.lastJITResidentRaw,
+		Resident:            b.lastJITResident,
+		CurrentlyPrivileged: b.currentlyPrivileged(),
+		Index:               b.lastJITIndex,
+		BlockGeneration:     b.jitGen,
+		MappingGeneration:   b.mappingGen,
+	}
+	block := b.lastJITBlock
+	if block == nil {
+		return state
+	}
+	state.BlockStart = block.start
+	state.BlockEnd = block.end
+	state.InstructionCacheEnabled = block.instructionCacheEnabled
+	state.InstructionCacheGuards = make([]JITInstructionCacheGuardState, len(block.instructionCacheGuards))
+	for index, guard := range block.instructionCacheGuards {
+		item := JITInstructionCacheGuardState{
+			VirtualLine: guard.virtualLine,
+			Tag:         guard.tag,
+			Serial:      guard.serial,
+		}
+		if entry := b.instructionCacheEntry(guard.tag); entry != nil {
+			item.CurrentTag = entry.tag
+			item.CurrentSerial = entry.serial
+			item.CurrentValid = entry.valid && entry.gen == b.mappingGen
+			item.Privileged = entry.privileged
+		}
+		state.InstructionCacheGuards[index] = item
+	}
+	return state
 }
 
 const jitMaxBlock = 256
@@ -323,6 +420,9 @@ func (b *Backend) runThumbJIT(limit uint64) (uint64, *cpu.StopReason, error) {
 	traced := b.tracing()
 outer:
 	for executed < limit {
+		if traced && b.stopped.Load() {
+			return executed, nil, nil
+		}
 		pc := b.regs[cpu.RegisterPC]
 		if wholeSystem {
 			if b.takePendingInterrupt() {
@@ -503,9 +603,16 @@ func (set *jitCacheSet) store(pc uint32, gen uint64, block *jitBlock) {
 func (b *Backend) jitBlockAt(pc uint32) *jitBlock {
 	slot := &b.jitCache[int(pc>>1)&(jitCacheSize-1)]
 	if block, ok := slot.lookup(pc, b.jitGen); ok {
-		return block
+		if b.jitInstructionCacheValid(block) {
+			return block
+		}
+		b.dropStaleJITBlock(pc, block, false)
 	}
 	block, ok := b.jitBlocks[pc]
+	if ok && !b.jitInstructionCacheValid(block) {
+		b.dropStaleJITBlock(pc, block, false)
+		block, ok = nil, false
+	}
 	if !ok {
 		block = b.translateThumbBlock(pc)
 		b.cacheJITBlock(pc, block)
@@ -529,6 +636,106 @@ func (b *Backend) jitBlockAt(pc uint32) *jitBlock {
 	}
 	slot.store(pc, b.jitGen, block)
 	return block
+}
+
+func (b *Backend) dropStaleJITBlock(pc uint32, block *jitBlock, arm bool) {
+	if block != nil && b.invalidateJITRange(block.start, block.end-block.start) {
+		return
+	}
+	if arm {
+		delete(b.armJITBlocks, pc)
+	} else {
+		delete(b.jitBlocks, pc)
+	}
+	b.jitGen++
+}
+
+func (b *Backend) captureJITInstructionCacheGuards(start, end uint32) []jitInstructionCacheGuard {
+	if !b.instructionCacheEnabled() || b.instructionCacheTable == nil || end <= start {
+		return nil
+	}
+	privileged := b.currentlyPrivileged()
+	guards := make([]jitInstructionCacheGuard, 0, (end-start+instructionCacheLineSize-1)/instructionCacheLineSize)
+	for virtualLine := start &^ (instructionCacheLineSize - 1); virtualLine < end; virtualLine += instructionCacheLineSize {
+		mvaLine := b.modifiedVirtualAddress(virtualLine) &^ (instructionCacheLineSize - 1)
+		entry := b.instructionCacheEntry(mvaLine)
+		if entry == nil || !entry.valid || entry.gen != b.mappingGen ||
+			entry.tag != mvaLine || entry.privileged != privileged {
+			// A translated block may cross from cacheable into uncacheable
+			// memory. Keep the guards already captured for its resident lines;
+			// discarding the whole slice here would let a later replacement of
+			// one of those lines reuse stale decoded instructions.
+			continue
+		}
+		guards = append(guards, jitInstructionCacheGuard{
+			virtualLine: virtualLine,
+			tag:         mvaLine,
+			serial:      entry.serial,
+		})
+	}
+	return guards
+}
+
+func (b *Backend) jitInstructionCacheValid(block *jitBlock) bool {
+	if block == nil {
+		return true
+	}
+	if block.instructionCacheEnabled != b.instructionCacheEnabled() ||
+		block.instructionCacheGen != b.mappingGen {
+		return false
+	}
+	if len(block.instructionCacheGuards) == 0 {
+		return true
+	}
+	if b.instructionCacheTable == nil {
+		return false
+	}
+	privileged := b.currentlyPrivileged()
+	for _, guard := range block.instructionCacheGuards {
+		mvaLine := b.modifiedVirtualAddress(guard.virtualLine) &^ (instructionCacheLineSize - 1)
+		entry := b.instructionCacheEntry(mvaLine)
+		if mvaLine != guard.tag || entry == nil || !entry.valid ||
+			entry.gen != b.mappingGen || entry.tag != guard.tag ||
+			entry.serial != guard.serial || entry.privileged != privileged {
+			return false
+		}
+	}
+	return b.jitBlockMatchesResidentInstructionCache(block)
+}
+
+func (b *Backend) jitBlockMatchesResidentInstructionCache(block *jitBlock) bool {
+	if block == nil || !b.instructionCacheEnabled() || b.instructionCacheTable == nil {
+		return true
+	}
+	for index := range block.thumb {
+		in := &block.thumb[index]
+		if word, resident := b.residentInstructionCache16(in.pc); resident && word != in.raw {
+			return false
+		}
+	}
+	for index := range block.arm {
+		in := &block.arm[index]
+		low, lowResident := b.residentInstructionCache16(in.pc)
+		high, highResident := b.residentInstructionCache16(in.pc + 2)
+		if lowResident && highResident && uint32(low)|uint32(high)<<16 != in.raw {
+			return false
+		}
+	}
+	return true
+}
+
+func (b *Backend) residentInstructionCache16(address uint32) (uint16, bool) {
+	if !b.instructionCacheEnabled() || b.instructionCacheTable == nil {
+		return 0, false
+	}
+	mvaLine := b.modifiedVirtualAddress(address) &^ (instructionCacheLineSize - 1)
+	entry := b.instructionCacheEntry(mvaLine)
+	if entry == nil || !entry.valid || entry.gen != b.mappingGen ||
+		entry.tag != mvaLine || entry.privileged != b.currentlyPrivileged() {
+		return 0, false
+	}
+	offset := address & (instructionCacheLineSize - 1)
+	return uint16(entry.line[offset]) | uint16(entry.line[offset+1])<<8, true
 }
 
 func (b *Backend) markJITCodePages(address, size uint32) bool {
@@ -638,6 +845,13 @@ func (b *Backend) translateThumbBlock(pc uint32) *jitBlock {
 	if fill != nil {
 		block.end = fill.start + thumbFillLoopInstructions*2
 		block.extraLoop = &jitExtraLoop{kind: jitFillLoop, fill: *fill}
+	}
+	block.instructionCacheEnabled = b.instructionCacheEnabled()
+	block.instructionCacheGen = b.mappingGen
+	block.instructionCacheGuards = b.captureJITInstructionCacheGuards(block.start, block.end)
+	if !b.jitBlockMatchesResidentInstructionCache(block) {
+		b.invalidateInstructionWindow()
+		return nil
 	}
 	return block
 }

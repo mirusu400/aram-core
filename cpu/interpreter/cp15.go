@@ -203,7 +203,6 @@ func (b *Backend) writeCP15(crn, crm, op2 uint8, value uint32) error {
 	switch {
 	case crn == 1 && crm == 0 && op2 == 0:
 		if value != b.cp15.control {
-			b.invalidateTLB()
 			b.executeData = nil
 			b.clearDataCaches()
 		}

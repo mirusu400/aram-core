@@ -22,6 +22,25 @@ type MemoryRegionProfile struct {
 	Size    uint32
 }
 
+// MemoryWriteResponseProfile models an exact coprocessor-owned shared-memory
+// handshake. The guest's request is committed first and then replaced by the
+// response value, matching a coprocessor which consumes the request before the
+// host next polls it. Rules are deliberately scoped to one access width and one
+// value so ordinary RAM traffic retains normal memory semantics.
+type MemoryWriteResponseProfile struct {
+	MemoryID string
+	Offset   uint32
+	Width    Width
+	Request  uint32
+	Writes   []MemoryResponseWriteProfile
+}
+
+type MemoryResponseWriteProfile struct {
+	Offset uint32
+	Width  Width
+	Value  uint32
+}
+
 type ReadOnlyRegisterProfile struct {
 	ID      string
 	Address uint32
@@ -30,12 +49,13 @@ type ReadOnlyRegisterProfile struct {
 }
 
 type LatchedRegisterProfile struct {
-	ID               string
-	Address          uint32
-	Width            Width
-	AdditionalWidths []Width
-	ResetValue       uint32
-	WritePulses      []LatchedRegisterWritePulseProfile
+	ID                  string
+	Address             uint32
+	Width               Width
+	AdditionalWidths    []Width
+	AllowSubwordOffsets bool
+	ResetValue          uint32
+	WritePulses         []LatchedRegisterWritePulseProfile
 }
 
 // LatchedRegisterWritePulseProfile raises one or more interrupt-controller
@@ -119,6 +139,15 @@ type HLEReturn string
 
 const (
 	HLEReturnLinkRegister HLEReturn = "link-register"
+	// HLEReturnNextInstruction resumes immediately after an inline firmware
+	// boundary whose instruction has been fully reproduced by its handler.
+	HLEReturnNextInstruction HLEReturn = "next-instruction"
+	// HLEReturnProgramCounter resumes at the program counter selected by the
+	// handler. The execution mode remains the mode of the trapped call.
+	HLEReturnProgramCounter HLEReturn = "program-counter"
+	// HLEReturnPowerCycle asks the whole-machine owner to reset volatile CPU and
+	// device state while preserving guest-written persistent media.
+	HLEReturnPowerCycle HLEReturn = "power-cycle"
 
 	// HLEContractQualcommPBLVerifiedLoaderState restores the success result
 	// produced by an unavailable mask-ROM PBL after it authenticates the exact
@@ -143,6 +172,146 @@ const (
 	// packaged implementation. It is valid only for an exact, hash-matched
 	// build whose call site ignores the result.
 	HLEContractQualcommResidentBootCallback = "qualcomm.boot.resident-callback-v1"
+	// HLEContractSamsungAMSSFlashEnvironment publishes a handset-specific flash
+	// callback registry after the progressive loader has replaced AMSS data/BSS.
+	HLEContractSamsungAMSSFlashEnvironment = "samsung.amss.flash-environment-v1"
+	// HLEContractSamsungAMSSBulkZero accelerates an exact-build watchdog-aware
+	// zero-fill helper without changing its architectural memory result.
+	HLEContractSamsungAMSSBulkZero = "samsung.amss.bulk-zero-v1"
+	// HLEContractSamsungW350StaticBSSZero accelerates CK06's table-driven
+	// two-range zero-fill constructor without changing its memory result.
+	HLEContractSamsungW350StaticBSSZero = "samsung.w350.static-bss-zero-v1"
+	// HLEContractSamsungW350OperatorProvisioning supplies the retail operator
+	// flag omitted from the downloadable CK06 package. The exact UI call asks
+	// for NV item 0x1301 and consumes one output byte; zero is the provisioned
+	// SKT state also retained by the sibling CL10 build.
+	HLEContractSamsungW350OperatorProvisioning = "samsung.w350.operator-provisioning-v1"
+	// HLEContractSamsungW340DOGStartAcknowledgement supplies DC18's missing
+	// watchdog-task startup acknowledgement at the exact Main Task wait call.
+	// The DOG task itself remains native and continues servicing its timers.
+	HLEContractSamsungW340DOGStartAcknowledgement = "samsung.w340.dog-start-ack-v1"
+	// HLEContractSamsungW340BCXFirmwareIdentity supplies the fixed identity
+	// returned by the handset's external Bluetooth controller. The archived
+	// application processor firmware contains the BCX client but not that
+	// separate controller firmware, so its synchronous 0x0226 request otherwise
+	// remains queued forever during Main Task startup.
+	HLEContractSamsungW340BCXFirmwareIdentity = "samsung.w340.bcx-firmware-identity-v1"
+	// HLEContractSamsungW340UIMClockConfiguration supplies the success result of
+	// DC18's retained UIM clock-calibration boundary. The downloadable AMSS calls
+	// into a platform routine whose implementation is not present in the archived
+	// image; falling through its unresolved dispatch terminates the current task.
+	HLEContractSamsungW340UIMClockConfiguration = "samsung.w340.uim-clock-configuration-v1"
+	// HLEContractSamsungW340ImageResourceOffset publishes the FNT offsets of
+	// DC18's shared UTF, dictionary, and img_out.bin resources. A factory-
+	// provisioned handset resolves the paths through EFS; a freshly formatted
+	// archive image retains the payloads in the FONT partition but has no EFS
+	// aliases for those lookups.
+	HLEContractSamsungW340ImageResourceOffset = "samsung.w340.image-resource-offset-v1"
+	// HLEContractSamsungW340DisplayColor supplies AEEDisp's retained sixteen-entry
+	// system palette. The downloadable display provider leaves its GetColor slot as
+	// EUNSUPPORTED, while the retail loader normally supplies the black/white theme
+	// values before the first screen clear.
+	HLEContractSamsungW340DisplayColor = "samsung.w340.display-color-v1"
+	// HLEContractSamsungW340FontMetrics supplies the retained default-font
+	// metrics used by DC18's display object. The archived downloadable image
+	// contains the display client but not the retail loader's font provider.
+	HLEContractSamsungW340FontMetrics = "samsung.w340.font-metrics-v1"
+	// HLEContractSamsungW340FontDraw implements the retained IFont drawing ABI.
+	HLEContractSamsungW340FontDraw = "samsung.w340.font-draw-v1"
+	// HLEContractSamsungW340FontMeasure implements the retained IFont string
+	// measurement ABI used by AEEDisp's clipping and alignment path.
+	HLEContractSamsungW340FontMeasure = "samsung.w340.font-measure-v1"
+	// HLEContractSamsungW340FontInfo supplies the two signed 16-bit metrics
+	// expected by AEEDisp's native GetFontMetrics and DrawText implementations.
+	HLEContractSamsungW340FontInfo = "samsung.w340.font-info-v1"
+	// HLEContractSamsungW340MGPFrameCounter restores the retail MDSP clock
+	// service behind DC18's dynamically linked frame-counter veneer. The
+	// archived AP/MGP pair publishes the live counter storage but omits the
+	// loader-owned service implementation that advances and returns it.
+	HLEContractSamsungW340MGPFrameCounter = "samsung.w340.mgp-frame-counter-v1"
+	// HLEContractSamsungW340PointerAccessPolicy restores the BREW pointer
+	// validation policy installed by DC18's retail loader. The downloadable
+	// image retains the validator veneer and safe-copy clients, but not the
+	// loader-owned protection-domain state used to approve mapped app memory.
+	HLEContractSamsungW340PointerAccessPolicy = "samsung.w340.pointer-access-policy-v1"
+	// HLEContractSamsungW340ConnectionManager returns the offline connection
+	// manager retained by the retail UI loader. The downloadable image contains
+	// AEE_GetConMgr and all callers, but its loader-owned singleton is absent.
+	HLEContractSamsungW340ConnectionManager = "samsung.w340.connection-manager-v1"
+	// HLEContractSamsungW340MainAppletLifecycle supplies the retained lifecycle
+	// callback that drives class 0x01007002 from its constructed state into the
+	// native idle UI. The archive contains the applet and both event handlers, but
+	// the retail loader's two-function callback table is not part of the dump.
+	HLEContractSamsungW340MainAppletLifecycle = "samsung.w340.main-applet-lifecycle-v1"
+	// HLEContractSamsungW340IdleCarouselLifecycle restores the one-shot retail
+	// loader trigger which constructs IdleApp's native five-panel carousel. The
+	// archived image contains both the constructor and updater, but the external
+	// owner pointer which normally reaches the constructor is not packaged.
+	HLEContractSamsungW340IdleCarouselLifecycle = "samsung.w340.idle-carousel-lifecycle-v1"
+	// HLEContractSamsungW340IdleAppletDependency supplies the retail-loader
+	// service class 0x010127d6 required by IdleApp's SECIA initialiser.
+	HLEContractSamsungW340IdleAppletDependency = "samsung.w340.idle-applet-dependency-v1"
+	// HLEContractSamsungW340IdleSimMainTarget supplies the loader-owned lifecycle
+	// target returned to IdleApp's SIM-main constructor. The archived class manager
+	// accepts the request but cannot publish the retained interface pointer.
+	HLEContractSamsungW340IdleSimMainTarget = "samsung.w340.idle-sim-main-target-v1"
+	// HLEContractSamsungW340IdleSimMainActivation preserves the paired SIM-main
+	// interface across the retained loader's temporary-result release. The native
+	// release clears IdleApp's companion word immediately before it is consumed.
+	HLEContractSamsungW340IdleSimMainActivation = "samsung.w340.idle-sim-main-activation-v1"
+	// HLEContractSamsungW340AnnunciatorStart supplies the retained annunciator
+	// object's quiescent lifecycle method. Its object is present in the archive,
+	// but the loader-owned first vtable slot is absent.
+	HLEContractSamsungW340AnnunciatorStart = "samsung.w340.annunciator-start-v1"
+	// HLEContractSamsungW340IdleExtendedProvider supplies the retained extended
+	// provider used by class 0x0100638f during IdleApp's final initialisation.
+	HLEContractSamsungW340IdleExtendedProvider = "samsung.w340.idle-extended-provider-v1"
+	// HLEContractSamsungW340IdlePrimaryNotification reconnects the retained
+	// foreground notification to IdleApp's primary display path. The archived
+	// loader delivers the secondary notification record but omits the retail
+	// bridge which classifies that record for the foreground applet.
+	HLEContractSamsungW340IdlePrimaryNotification = "samsung.w340.idle-primary-notification-v1"
+	// HLEContractSamsungW340StartupPrimaryInterface supplies the primary startup
+	// interface returned by class 0x0100638f operation 0xb. The archived loader
+	// completes the request without publishing its retained output pointer.
+	HLEContractSamsungW340StartupPrimaryInterface = "samsung.w340.startup-primary-interface-v1"
+	// HLEContractSamsungW340StartupSecondaryInterface supplies the paired startup
+	// interface returned by class 0x0100638f operation 0x13.
+	HLEContractSamsungW340StartupSecondaryInterface = "samsung.w340.startup-secondary-interface-v1"
+	// HLEContractSamsungPowerCycle marks an exact firmware instruction boundary
+	// which requests a hardware restart after committing persistent state.
+	HLEContractSamsungPowerCycle = "samsung.power-cycle-v1"
+	// HLEContractSamsungW340SBITransaction supplies the successful completion of
+	// DC18's retained serial-bus dispatcher. The downloadable image contains the
+	// dispatcher, but its board-driver registry is owned by the absent retail
+	// loader and is cleared by the final progressive ELF BSS segment.
+	HLEContractSamsungW340SBITransaction = "samsung.w340.sbi-transaction-v1"
+	// HLEContractSamsungW340PMICADCConversion supplies a deterministic idle
+	// sample for DC18's synchronous PMIC ADC client. The PMIC conversion
+	// interrupt is generated by hardware outside the archived firmware set.
+	HLEContractSamsungW340PMICADCConversion = "samsung.w340.pmic-adc-conversion-v1"
+	// HLEContractSamsungW340RFSettledDeferred preserves the radio initialiser's
+	// computed state while deferring its final settled marker. On retail hardware
+	// the absent modem companion clears that provisional marker before the UI
+	// startup state machine resumes.
+	HLEContractSamsungW340RFSettledDeferred = "samsung.w340.rf-settled-deferred-v1"
+	// HLEContractSamsungProgressiveAMSSLoad reproduces an exact-build OEMSBL
+	// boundary which copies mapped PT_LOAD segments from NAND into EBI RAM.
+	HLEContractSamsungProgressiveAMSSLoad   = "samsung.amss.progressive-load-v1"
+	HLEContractSamsungSharedDirectoryInit   = "samsung.amss.shared-directory-init-v1"
+	HLEContractSamsungSharedDirectoryAttach = "samsung.amss.shared-directory-attach-v1"
+	// HLEContractSamsungW4200PBLFlashPrepare restores the PBL-owned flash
+	// interface pointer after DC17 has cleared its second EBI bank. The matching
+	// read contract copies one physical OneNAND page for QCSBL's legacy callback.
+	HLEContractSamsungW4200PBLFlashPrepare = "samsung.w4200.pbl-flash-prepare-v1"
+	HLEContractSamsungW4200PBLFlashRead    = "samsung.w4200.pbl-flash-read-v1"
+	HLEContractSamsungW4200TSC2007Write    = "samsung.w4200.tsc2007-write-v1"
+	HLEContractSamsungW4200TSC2007Read     = "samsung.w4200.tsc2007-read-v1"
+	// HLEContractSamsungOptionalPreloadFile reports an absent optional factory
+	// preload to exact firmware which otherwise dereferences a nil file handle.
+	// It substitutes no file contents and preserves the routine's documented
+	// failure return so the caller can take its ordinary empty-state path.
+	HLEContractSamsungOptionalPreloadFile = "samsung.amss.optional-preload-file-v1"
 )
 
 type HLECallProfile struct {
@@ -154,14 +323,16 @@ type HLECallProfile struct {
 }
 
 type OneNANDProfile struct {
-	Address        uint32
-	ManufacturerID uint16
-	DeviceID       uint16
-	VersionID      uint16
-	TechnologyID   uint16
-	DieBlockOffset uint32
-	Capacity       uint64
-	FlexGeometry   *OneNANDFlexGeometry
+	Address                  uint32
+	ManufacturerID           uint16
+	DeviceID                 uint16
+	VersionID                uint16
+	TechnologyID             uint16
+	DieBlockOffset           uint32
+	Capacity                 uint64
+	FlexGeometry             *OneNANDFlexGeometry
+	InitialImageFromFirmware bool
+	InterruptSource          uint8
 }
 
 // QualcommSFlashOneNANDProfile describes a OneNAND device reached through the
@@ -181,6 +352,10 @@ type QualcommSFlashOneNANDProfile struct {
 type ParallelPanelPortProfile struct {
 	CommandAddress uint32
 	DataAddress    uint32
+	// AliasSpan is the number of consecutive byte addresses routed to each
+	// port when low external-bus address lines are not decoded. Zero selects
+	// one exact 16-bit address per port.
+	AliasSpan uint32
 }
 
 // ParallelPanelSelectorPortProfile describes an indirect 16-bit panel bus:
@@ -219,6 +394,13 @@ func (p ParallelPanelPortProfile) validate() error {
 	if p.CommandAddress%uint32(Width16) != 0 || p.DataAddress%uint32(Width16) != 0 ||
 		p.CommandAddress == p.DataAddress || uint64(p.CommandAddress)+uint64(Width16) > 1<<32 ||
 		uint64(p.DataAddress)+uint64(Width16) > 1<<32 {
+		return ErrInvalidRegion
+	}
+	if p.AliasSpan != 0 && (p.AliasSpan < uint32(Width16) ||
+		p.AliasSpan&(p.AliasSpan-1) != 0 ||
+		p.CommandAddress%p.AliasSpan != 0 ||
+		p.DataAddress != p.CommandAddress+p.AliasSpan ||
+		uint64(p.DataAddress)+uint64(p.AliasSpan) > 1<<32) {
 		return ErrInvalidRegion
 	}
 	return nil
@@ -289,7 +471,8 @@ type QualcommPrimaryClockKeyProfile struct {
 func (p HLECallProfile) validate() error {
 	trap := cpu.ExecutionTrap{Address: p.Address, Mode: p.Mode}
 	if !validProfileID(p.ID) || !validProfileID(p.Contract) || !trap.Valid() ||
-		p.Return != HLEReturnLinkRegister {
+		(p.Return != HLEReturnLinkRegister && p.Return != HLEReturnNextInstruction &&
+			p.Return != HLEReturnProgramCounter && p.Return != HLEReturnPowerCycle) {
 		return fmt.Errorf("invalid HLE call profile %q", p.ID)
 	}
 	return nil
@@ -348,9 +531,12 @@ type BoardProfile struct {
 	BootControlRegisterResets                 []QualcommBootRegisterReset
 	BootControlCompletionEvents               []QualcommCompletionEventConfig
 	BootControlLegacyUARTControllers          []uint32
+	BootControlLegacyUARTReceiveData          []QualcommLegacyUARTReceiveData
 	BootControlSBIControllers                 []uint32
 	BootControlSBIReadResponses               []QualcommSBIReadResponse
 	BootControlSBICompletionStatus            uint32
+	BootControlSDCCControllers                []QualcommSDCCControllerConfig
+	BootControlGroupedStatusResponses         []QualcommBootGroupedStatusResponse
 	BootControlWatchdogReadable               bool
 	BootControlGPIOInputs                     []QualcommGPIOInputRegister
 	BootControlInterruptStatusAliases         []QualcommInterruptStatusAlias
@@ -361,12 +547,15 @@ type BoardProfile struct {
 	SecondaryClockReadOnlyRegisters           []QualcommSecondaryClockReadOnlyRegister
 	SparseBusRegisterOffsets                  []uint32
 	SparseBusRegisterResets                   []SparseWordRegisterReset
+	SparseBusRegisterReadClearOffsets         []uint32
 	ClockRegimeSleepControllers               []uint32
 	ClockRegimeCounters                       []QualcommClockRegimeCounterConfig
 	ClockRegimeComparators                    []QualcommClockRegimeComparatorConfig
 	VectoredInterrupt                         *QualcommVectoredInterruptConfig
+	LegacyInterruptCascade                    *QualcommInterruptCascadeProfile
 	TimeTickClock                             *QualcommTimeTickClockConfig
 	Keypad                                    *QualcommGPIOKeypadProfile
+	Touchscreen                               *QualcommTSC2007Profile
 	Panel                                     DCSPanelConfig
 	PanelPorts                                *ParallelPanelPortProfile
 	PanelSelectorPorts                        *ParallelPanelSelectorPortProfile
@@ -375,7 +564,9 @@ type BoardProfile struct {
 	LegacyTopVersion                          uint32
 	LegacyTopIdentification                   uint32
 	LegacyTopWritableOffsets                  []uint32
+	LegacyTopVectoredInterruptOffset          uint32
 	Memory                                    []MemoryRegionProfile
+	MemoryWriteResponses                      []MemoryWriteResponseProfile
 	ReadOnlyRegisters                         []ReadOnlyRegisterProfile
 	LatchedRegisters                          []LatchedRegisterProfile
 	LatchedRegisterWindows                    []LatchedRegisterWindowProfile
@@ -383,6 +574,22 @@ type BoardProfile struct {
 	SamsungMGP                                *SamsungMGPProfile
 	ADSPMailbox                               *QualcommADSPMailboxProfile
 	HLECalls                                  []HLECallProfile
+}
+
+// QualcommInterruptCascadeProfile routes the enabled output of the legacy QIC
+// into the compact VIC. A zero GroupMask connects it directly to VectoredSource;
+// otherwise GroupStatusOffset and GroupMask identify the second-level child bit
+// which the first-level ISR demultiplexes.
+type QualcommInterruptCascadeProfile struct {
+	VectoredSource    uint8
+	GroupStatusOffset uint32
+	GroupMask         uint32
+	// SubInterruptWindowID identifies an optional external status bank between
+	// the legacy QIC and the compact VIC. The cascade drives its profiled child
+	// bit together with VectoredSource.
+	SubInterruptWindowID     string
+	SubInterruptStatusOffset uint32
+	SubInterruptMask         uint32
 }
 
 // ARMCPUCompatibilityProfile records board-selected behavior for instructions
@@ -419,6 +626,16 @@ func (p BoardProfile) Validate() error {
 	if _, err := validateQualcommLegacyTopWritableOffsets(p.LegacyTopWritableOffsets); err != nil {
 		return fmt.Errorf("board profile %q legacy top page: %w", p.ID, err)
 	}
+	if p.LegacyTopVectoredInterruptOffset != 0 &&
+		(p.VectoredInterrupt == nil ||
+			p.LegacyTopVectoredInterruptOffset%4 != 0 ||
+			p.LegacyTopVectoredInterruptOffset+QualcommVectoredInterruptControllerWindowSize > QualcommLegacyTopWindowSize) {
+		return fmt.Errorf(
+			"board profile %q has invalid legacy top compact-VIC alias offset 0x%x",
+			p.ID,
+			p.LegacyTopVectoredInterruptOffset,
+		)
+	}
 	badBlocks := make(map[uint32]struct{}, len(p.NANDFactoryBadBlocks))
 	for _, block := range p.NANDFactoryBadBlocks {
 		if p.NANDSize == 0 || uint64(block) >= p.NANDSize/uint64(p.NANDEraseBlockSize) {
@@ -449,6 +666,15 @@ func (p BoardProfile) Validate() error {
 		if err := p.OneNAND.validate(); err != nil {
 			return fmt.Errorf("board profile %q OneNAND: %w", p.ID, err)
 		}
+		if p.OneNAND.InterruptSource != 0 &&
+			(p.VectoredInterrupt == nil ||
+				p.OneNAND.InterruptSource >= p.VectoredInterrupt.SourceCount) {
+			return fmt.Errorf(
+				"board profile %q OneNAND interrupt source %d exceeds vectored controller",
+				p.ID,
+				p.OneNAND.InterruptSource,
+			)
+		}
 	}
 	if p.SFlashOneNAND != nil {
 		if p.OneNAND != nil {
@@ -456,6 +682,21 @@ func (p BoardProfile) Validate() error {
 		}
 		if err := p.SFlashOneNAND.validate(); err != nil {
 			return fmt.Errorf("board profile %q Qualcomm SFlash OneNAND: %w", p.ID, err)
+		}
+	}
+	if mailbox := p.ADSPMailbox; mailbox != nil {
+		if err := mailbox.validate(); err != nil {
+			return fmt.Errorf("board profile %q ADSP mailbox: %w", p.ID, err)
+		}
+		if periodic := mailbox.PeriodicInterrupt; periodic != nil &&
+			periodic.Interrupt.UseVectoredController &&
+			(p.VectoredInterrupt == nil ||
+				periodic.Interrupt.Source >= p.VectoredInterrupt.SourceCount) {
+			return fmt.Errorf(
+				"board profile %q ADSP periodic interrupt source %d exceeds vectored controller",
+				p.ID,
+				periodic.Interrupt.Source,
+			)
 		}
 	}
 	primaryClockInputMask := p.PrimaryClockInputMask
@@ -503,9 +744,11 @@ func (p BoardProfile) Validate() error {
 		p.BootControlRegisterResets,
 		p.BootControlCompletionEvents,
 		p.BootControlLegacyUARTControllers,
+		p.BootControlLegacyUARTReceiveData,
 		p.BootControlSBIControllers,
 		p.BootControlSBIReadResponses,
 		p.BootControlSBICompletionStatus,
+		p.BootControlSDCCControllers,
 	); err != nil {
 		return fmt.Errorf("board profile %q boot-control register profile: %w", p.ID, err)
 	}
@@ -536,6 +779,16 @@ func (p BoardProfile) Validate() error {
 		ReadOnlyRegisters: p.SecondaryClockReadOnlyRegisters,
 	}); err != nil {
 		return fmt.Errorf("board profile %q secondary-clock registers: %w", p.ID, err)
+	}
+	if len(p.SparseBusRegisterOffsets) != 0 || len(p.SparseBusRegisterResets) != 0 ||
+		len(p.SparseBusRegisterReadClearOffsets) != 0 {
+		if _, err := NewSparseWordRegistersWithConfig(SparseWordRegistersConfig{
+			Offsets:          p.SparseBusRegisterOffsets,
+			Resets:           p.SparseBusRegisterResets,
+			ReadClearOffsets: p.SparseBusRegisterReadClearOffsets,
+		}); err != nil {
+			return fmt.Errorf("board profile %q sparse bus registers: %w", p.ID, err)
+		}
 	}
 	if keypad := p.Keypad; keypad != nil {
 		if err := keypad.validate(); err != nil {
@@ -613,6 +866,43 @@ func (p BoardProfile) Validate() error {
 					p.ID, index, group.InterruptSource,
 				)
 			}
+		}
+	}
+	if touchscreen := p.Touchscreen; touchscreen != nil {
+		if p.Keypad != nil {
+			return fmt.Errorf("board profile %q has both keypad and touchscreen GPIO devices", p.ID)
+		}
+		if err := touchscreen.validate(); err != nil {
+			return fmt.Errorf("board profile %q touchscreen: %w", p.ID, err)
+		}
+		primaryWritable := make(map[uint32]struct{}, len(qualcommPrimaryClockWritableOffsets)+len(p.PrimaryClockWritableOffsets))
+		for _, offset := range mergedQualcommPrimaryClockWritableOffsets(p.PrimaryClockWritableOffsets) {
+			primaryWritable[offset] = struct{}{}
+		}
+		group := touchscreen.InterruptGroup
+		for _, offset := range []uint32{
+			group.ClearOffset, group.EnableOffset, group.DetectOffset, group.PolarityOffset,
+		} {
+			if _, writable := primaryWritable[offset]; !writable {
+				return fmt.Errorf(
+					"board profile %q touchscreen uses unwritable primary-clock offset 0x%x",
+					p.ID, offset,
+				)
+			}
+		}
+		if _, writable := primaryWritable[group.StatusOffset]; writable ||
+			group.StatusOffset == qualcommPrimaryGPIOInputOffset {
+			return fmt.Errorf(
+				"board profile %q touchscreen has invalid status offset 0x%x",
+				p.ID, group.StatusOffset,
+			)
+		}
+		if group.UseVectoredController &&
+			(p.VectoredInterrupt == nil || group.InterruptSource >= p.VectoredInterrupt.SourceCount) {
+			return fmt.Errorf(
+				"board profile %q touchscreen source %d exceeds vectored controller",
+				p.ID, group.InterruptSource,
+			)
 		}
 	}
 	if p.Panel.Width != 0 || p.Panel.Height != 0 {
@@ -703,11 +993,100 @@ func (p BoardProfile) Validate() error {
 			return fmt.Errorf("board profile %q vectored interrupt controller: %w", p.ID, err)
 		}
 	}
+	if err := validateQualcommBootGroupedStatusResponses(
+		p.BootControlGroupedStatusResponses,
+		p.BootControlWritableOffsets,
+	); err != nil {
+		return fmt.Errorf("board profile %q boot-control grouped-status responses: %w", p.ID, err)
+	}
+	for _, response := range p.BootControlGroupedStatusResponses {
+		if p.VectoredInterrupt == nil {
+			return fmt.Errorf("board profile %q grouped-status response has no vectored controller", p.ID)
+		}
+		matched := false
+		for index := uint8(0); index < p.VectoredInterrupt.GroupCount; index++ {
+			group := p.VectoredInterrupt.Groups[index]
+			if group.StatusOffset == response.GroupStatusOffset &&
+				response.GroupMask&^group.ValidMask == 0 {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return fmt.Errorf("board profile %q grouped-status response has no matching vectored group", p.ID)
+		}
+	}
+	for _, controller := range p.BootControlSDCCControllers {
+		if controller.GroupStatusOffset == 0 {
+			continue
+		}
+		if p.VectoredInterrupt == nil {
+			return fmt.Errorf("board profile %q SDCC absent-card interrupt has no vectored controller", p.ID)
+		}
+		matched := false
+		for index := uint8(0); index < p.VectoredInterrupt.GroupCount; index++ {
+			group := p.VectoredInterrupt.Groups[index]
+			if group.StatusOffset == controller.GroupStatusOffset &&
+				controller.GroupMask&^group.ValidMask == 0 {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return fmt.Errorf("board profile %q SDCC absent-card interrupt has no matching vectored group", p.ID)
+		}
+	}
+	if cascade := p.LegacyInterruptCascade; cascade != nil {
+		if p.VectoredInterrupt == nil ||
+			cascade.VectoredSource >= p.VectoredInterrupt.SourceCount ||
+			(cascade.GroupMask == 0 && cascade.GroupStatusOffset != 0) ||
+			(cascade.GroupMask != 0 && cascade.SubInterruptWindowID != "") ||
+			(cascade.SubInterruptWindowID == "" &&
+				(cascade.SubInterruptStatusOffset != 0 || cascade.SubInterruptMask != 0)) {
+			return fmt.Errorf("board profile %q has invalid legacy interrupt cascade", p.ID)
+		}
+		if cascade.GroupMask != 0 {
+			matched := false
+			for index := uint8(0); index < p.VectoredInterrupt.GroupCount; index++ {
+				group := p.VectoredInterrupt.Groups[index]
+				if group.StatusOffset == cascade.GroupStatusOffset &&
+					group.Source == cascade.VectoredSource &&
+					cascade.GroupMask&^group.ValidMask == 0 {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return fmt.Errorf("board profile %q legacy interrupt cascade has no matching vectored group", p.ID)
+			}
+		}
+		if cascade.SubInterruptWindowID != "" {
+			matched := false
+			for _, window := range p.LatchedRegisterWindows {
+				if window.ID != cascade.SubInterruptWindowID {
+					continue
+				}
+				if window.Width != Width8 && window.Width != Width16 && window.Width != Width32 {
+					break
+				}
+				bits := uint32(window.Width) * 8
+				matched = cascade.SubInterruptMask != 0 &&
+					cascade.SubInterruptStatusOffset%uint32(window.Width) == 0 &&
+					uint64(cascade.SubInterruptStatusOffset)+uint64(window.Width) <= uint64(window.Size) &&
+					(bits == 32 || cascade.SubInterruptMask < uint32(1)<<bits)
+				break
+			}
+			if !matched {
+				return fmt.Errorf("board profile %q legacy interrupt cascade has no matching sub-interrupt window", p.ID)
+			}
+		}
+	}
 	if clock := p.TimeTickClock; clock != nil {
 		const maximumClockHz = uint64(1) << 48
 		if clock.InstructionsPerSecond == 0 || clock.TimeTickHz == 0 ||
 			clock.InstructionsPerSecond > maximumClockHz ||
 			clock.TimeTickHz > clock.InstructionsPerSecond ||
+			clock.PeriodicInterruptHz > clock.InstructionsPerSecond ||
 			clock.InterruptSource >= 64 {
 			return fmt.Errorf("board profile %q has invalid timetick clock", p.ID)
 		}
@@ -755,12 +1134,48 @@ func (p BoardProfile) Validate() error {
 		}
 	}
 	memory := append([]MemoryRegionProfile(nil), p.Memory...)
+	memoryByID := make(map[string]MemoryRegionProfile, len(memory))
 	for _, region := range memory {
 		if !validProfileID(region.ID) ||
 			(region.Kind != MemoryRAM && region.Kind != MemorySparseRAM) || region.Size == 0 ||
 			uint64(region.Address)+uint64(region.Size) > 1<<32 {
 			return fmt.Errorf("board profile %q has invalid memory region %q", p.ID, region.ID)
 		}
+		if _, duplicate := memoryByID[region.ID]; duplicate {
+			return fmt.Errorf("board profile %q repeats memory region %q", p.ID, region.ID)
+		}
+		memoryByID[region.ID] = region
+	}
+	type memoryResponseKey struct {
+		memoryID string
+		offset   uint32
+		width    Width
+		request  uint32
+	}
+	responses := make(map[memoryResponseKey]struct{}, len(p.MemoryWriteResponses))
+	for _, response := range p.MemoryWriteResponses {
+		region, known := memoryByID[response.MemoryID]
+		if !known || !validProfileID(response.MemoryID) ||
+			(response.Width != Width8 && response.Width != Width16 && response.Width != Width32) ||
+			response.Offset%uint32(response.Width) != 0 ||
+			uint64(response.Offset)+uint64(response.Width) > uint64(region.Size) ||
+			response.Width < Width32 && response.Request >= uint32(1)<<(uint32(response.Width)*8) ||
+			len(response.Writes) == 0 {
+			return fmt.Errorf("board profile %q has invalid memory response in %q", p.ID, response.MemoryID)
+		}
+		for _, write := range response.Writes {
+			if (write.Width != Width8 && write.Width != Width16 && write.Width != Width32) ||
+				write.Offset%uint32(write.Width) != 0 ||
+				uint64(write.Offset)+uint64(write.Width) > uint64(region.Size) ||
+				write.Width < Width32 && write.Value >= uint32(1)<<(uint32(write.Width)*8) {
+				return fmt.Errorf("board profile %q has invalid memory response write in %q", p.ID, response.MemoryID)
+			}
+		}
+		key := memoryResponseKey{response.MemoryID, response.Offset, response.Width, response.Request}
+		if _, duplicate := responses[key]; duplicate {
+			return fmt.Errorf("board profile %q repeats memory response in %q", p.ID, response.MemoryID)
+		}
+		responses[key] = struct{}{}
 	}
 	sort.Slice(memory, func(i, j int) bool { return memory[i].Address < memory[j].Address })
 	for index := 1; index < len(memory); index++ {
@@ -842,6 +1257,9 @@ func (p BoardProfile) Validate() error {
 		}
 		if len(register.AdditionalWidths) != 0 && len(register.WritePulses) != 0 {
 			return fmt.Errorf("board profile %q mixes pulse and multi-width latched register %q", p.ID, register.ID)
+		}
+		if register.AllowSubwordOffsets && len(register.AdditionalWidths) == 0 {
+			return fmt.Errorf("board profile %q enables subword offsets without mixed widths for latched register %q", p.ID, register.ID)
 		}
 		pulseKeys := make(map[[2]uint32]struct{}, len(register.WritePulses))
 		for _, pulse := range register.WritePulses {
@@ -1126,6 +1544,18 @@ func (p BoardProfile) Validate() error {
 				return fmt.Errorf("board profile %q repeats ADSP control rule at 0x%x value 0x%x", p.ID, rule.Offset, rule.Value)
 			}
 			controlRules[key] = struct{}{}
+			for _, operation := range rule.Copies {
+				source, sourceOK := windowsByID[operation.SourceWindowID]
+				destination, destinationOK := windowsByID[operation.DestinationWindowID]
+				if !sourceOK || !destinationOK || operation.Width != source.Width ||
+					operation.Width != destination.Width ||
+					operation.SourceOffset%uint32(operation.Width) != 0 ||
+					operation.DestinationOffset%uint32(operation.Width) != 0 ||
+					uint64(operation.SourceOffset)+uint64(operation.Width) > uint64(source.Size) ||
+					uint64(operation.DestinationOffset)+uint64(operation.Width) > uint64(destination.Size) {
+					return fmt.Errorf("board profile %q has invalid ADSP control-rule memory copy", p.ID)
+				}
+			}
 			for _, operation := range rule.Writes {
 				window, ok := windowsByID[operation.WindowID]
 				if !ok || operation.Width != window.Width ||
@@ -1232,7 +1662,7 @@ func (p BoardProfile) ApplyAddressedStorageWindows(bus *Bus, storage ReadOnlySto
 }
 
 func (p BoardProfile) ApplyLatchedRegisters(bus *Bus) error {
-	return p.applyLatchedRegisters(bus, nil, nil)
+	return p.applyLatchedRegisters(bus, nil, nil, nil)
 }
 
 // ApplyLatchedRegistersWithInterrupts wires register-window devices whose
@@ -1244,13 +1674,27 @@ func (p BoardProfile) ApplyLatchedRegistersWithInterrupts(
 	interruptController *QualcommInterruptController,
 	vectoredInterruptController *QualcommVectoredInterruptController,
 ) error {
-	return p.applyLatchedRegisters(bus, interruptController, vectoredInterruptController)
+	return p.applyLatchedRegisters(bus, interruptController, vectoredInterruptController, nil)
+}
+
+// ApplyLatchedRegistersWithInterruptsAndExistingWindows is the construction
+// variant for a register window that also participates in board wiring. The
+// supplied devices are treated as already mapped and remain available to the
+// other profiled peripherals that reference the same window IDs.
+func (p BoardProfile) ApplyLatchedRegistersWithInterruptsAndExistingWindows(
+	bus *Bus,
+	interruptController *QualcommInterruptController,
+	vectoredInterruptController *QualcommVectoredInterruptController,
+	existing map[string]*LatchedRegisterWindow,
+) error {
+	return p.applyLatchedRegisters(bus, interruptController, vectoredInterruptController, existing)
 }
 
 func (p BoardProfile) applyLatchedRegisters(
 	bus *Bus,
 	interruptController *QualcommInterruptController,
 	vectoredInterruptController *QualcommVectoredInterruptController,
+	existing map[string]*LatchedRegisterWindow,
 ) error {
 	if bus == nil {
 		return fmt.Errorf("apply board profile %q: nil bus", p.ID)
@@ -1259,7 +1703,16 @@ func (p BoardProfile) applyLatchedRegisters(
 		return err
 	}
 	windows := make(map[string]*LatchedRegisterWindow, len(p.LatchedRegisterWindows))
+	for id, window := range existing {
+		if window == nil {
+			return fmt.Errorf("apply board profile %q register window %q: nil existing device", p.ID, id)
+		}
+		windows[id] = window
+	}
 	for _, spec := range p.LatchedRegisterWindows {
+		if _, ok := windows[spec.ID]; ok {
+			continue
+		}
 		window, err := NewLatchedRegisterWindow(spec.Size, spec.Width)
 		if err != nil {
 			return fmt.Errorf("apply board profile %q register window %q: %w", p.ID, spec.ID, err)
@@ -1275,6 +1728,13 @@ func (p BoardProfile) applyLatchedRegisters(
 			return fmt.Errorf("apply board profile %q ADSP mailbox %q: %w", p.ID, spec.ID, err)
 		}
 		if err := mailbox.configureHostCommand(spec.HostCommand, windows); err != nil {
+			return fmt.Errorf("apply board profile %q ADSP mailbox %q: %w", p.ID, spec.ID, err)
+		}
+		if err := mailbox.configurePeriodicInterrupt(
+			spec.PeriodicInterrupt,
+			interruptController,
+			vectoredInterruptController,
+		); err != nil {
 			return fmt.Errorf("apply board profile %q ADSP mailbox %q: %w", p.ID, spec.ID, err)
 		}
 		if err := mailbox.configureControlRulesWithInterrupts(
@@ -1293,7 +1753,13 @@ func (p BoardProfile) applyLatchedRegisters(
 		var register Device
 		if len(spec.AdditionalWidths) != 0 {
 			widths := append([]Width{spec.Width}, spec.AdditionalWidths...)
-			mixed, err := NewMixedWidthLatchedRegister(widths, spec.ResetValue)
+			var mixed *MixedWidthLatchedRegister
+			var err error
+			if spec.AllowSubwordOffsets {
+				mixed, err = NewMixedWidthLatchedRegisterWithSubwordOffsets(widths, spec.ResetValue)
+			} else {
+				mixed, err = NewMixedWidthLatchedRegister(widths, spec.ResetValue)
+			}
 			if err != nil {
 				return fmt.Errorf("apply board profile %q register %q: %w", p.ID, spec.ID, err)
 			}
@@ -1352,6 +1818,15 @@ func (p BoardProfile) ApplyMemory(bus *Bus) error {
 			if err := bus.MapSparseRAM(region.ID, region.Address, region.Size); err != nil {
 				return fmt.Errorf("apply board profile %q: %w", p.ID, err)
 			}
+		}
+	}
+	responsesByMemory := make(map[string][]MemoryWriteResponseProfile)
+	for _, response := range p.MemoryWriteResponses {
+		responsesByMemory[response.MemoryID] = append(responsesByMemory[response.MemoryID], response)
+	}
+	for memoryID, responses := range responsesByMemory {
+		if err := bus.configureMemoryWriteResponses(memoryID, responses); err != nil {
+			return fmt.Errorf("apply board profile %q memory region %q: %w", p.ID, memoryID, err)
 		}
 	}
 	return nil
@@ -1644,6 +2119,15 @@ func SCHW830DL21BoardProfile() BoardProfile {
 		VectoredInterrupt: &QualcommVectoredInterruptConfig{
 			SourceCount: 49, Bank0Sources: 25,
 			ReverseSourceOrder: true,
+			GroupCount:         6,
+			Groups: [qualcommVICMaximumGroups]QualcommVectoredInterruptGroupConfig{
+				{Source: 11, EnableOffset: 0x10, StatusOffset: 0x84, ValidMask: 0x07},
+				{Source: 14, EnableOffset: 0x14, StatusOffset: 0x88, ValidMask: 0x03},
+				{Source: 17, EnableOffset: 0x18, StatusOffset: 0x8c, ValidMask: 0x3f},
+				{Source: 19, EnableOffset: 0x1c, StatusOffset: 0x90, ValidMask: 0x0f},
+				{Source: 7, EnableOffset: 0x20, StatusOffset: 0x94, ValidMask: 0x0f},
+				{Source: 2, EnableOffset: 0x24, StatusOffset: 0x98, ValidMask: 0x07},
+			},
 		},
 		TimeTickClock: &QualcommTimeTickClockConfig{
 			// Match deltas of 326/327 ticks implement the firmware's 10 ms
@@ -2014,11 +2498,10 @@ func SCHW320DC18BoardProfile() BoardProfile {
 	)
 	// DC18's OEMSBL samples bit 1 of the primary input word after its board
 	// setup and takes a dedicated boot path only while that active-low line is
-	// asserted. Expose the evidenced maintenance/download input without
-	// assigning the unrelated END-key contract used by adjacent handsets.
-	profile.PrimaryClockKeys = []QualcommPrimaryClockKeyProfile{{
-		ID: "download", InputLine: 1, ActiveLow: true,
-	}}
+	// asserted.
+	profile.PrimaryClockKeys = []QualcommPrimaryClockKeyProfile{
+		{ID: "download", InputLine: 1, ActiveLow: true},
+	}
 	// DC18's AMSS clears runtime arenas at 0x09800000 and 0x0a000000 through
 	// its ordinary word-copy loop. Its identity-mapped MMU table covers the
 	// complete second EBI RAM bank; leave adjacent builds on their evidenced
@@ -2030,6 +2513,27 @@ func SCHW320DC18BoardProfile() BoardProfile {
 	// DC18 programs the second UART controller with 32-bit STR operations,
 	// while earlier boot stages retain their narrower accesses.
 	promoteQualcommLegacyUARTToMixedWidth(&profile, 0x4200)
+	// DC18's UIM task programs the intervening controller at +0x4100 with the
+	// same word-wide MSM6280 UART protocol used by DC17. Supply a minimal T=0
+	// card transport: ATR after reset, deterministic successful APDU status,
+	// and the compact-VIC child used by the registered UIM ISR.
+	configureQualcommLegacyUARTWordController(&profile, 0x4100)
+	profile.BootControlLegacyUARTReceiveData = []QualcommLegacyUARTReceiveData{{
+		Controller:      0x4100,
+		InterruptSource: 55,
+		// DC18 polls the UIM status again before the next clocked-device slice.
+		// Publish the ATR in the same RX-enable transaction.
+		DelayInstructions: 0,
+		EchoTransmit:      true,
+		T0Card:            true,
+		Data:              []byte{0x3b, 0x00},
+	}}
+	profile.LegacyInterruptCascade = &QualcommInterruptCascadeProfile{
+		// DC18 registers the UIM transport on child bit 1 in source 17's
+		// second-level group.  The adjacent child bit 3 belongs to a different
+		// handler and must not receive the legacy QIC output.
+		VectoredSource: 17, GroupStatusOffset: 0x8c, GroupMask: 0x02,
+	}
 	// DC18's late GPIO setup resolves its fourth input group through
 	// CHIP_BASE+0x0940. The word is reserved in this INTCTL generation and no
 	// external line is asserted on the deterministic board at reset.
@@ -2037,6 +2541,19 @@ func SCHW320DC18BoardProfile() BoardProfile {
 		profile.BootControlGPIOInputs,
 		QualcommGPIOInputRegister{Offset: 0x40, Value: 0},
 	)
+	// DC18's raw-NAND probe samples compact-VIC group 14 at CHIP_BASE+0x488.
+	// Wire the EBI request and NAND completion lines into that second-level
+	// status aperture; the older flat NAND-ready alias is hidden by the VIC.
+	profile.BootControlGroupedStatusResponses = []QualcommBootGroupedStatusResponse{
+		{
+			Offset: 0x0380, RequestMask: 0x08, NANDReadyMask: 0x02,
+			GroupStatusOffset: 0x88, GroupMask: 0x02,
+		},
+		{
+			Offset: 0x0380, NANDReadyMask: 0x01,
+			GroupStatusOffset: 0x88, GroupMask: 0x01,
+		},
+	}
 	// Unlike the adjacent raw builds, DC18 rechecks a signed loader-state
 	// record that the missing mask-ROM PBL normally leaves behind after QCSBL
 	// authentication. The package registry has already selected the exact
@@ -2045,6 +2562,17 @@ func SCHW320DC18BoardProfile() BoardProfile {
 	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
 		ID: "w320-pbl-verified-loader-state", Contract: HLEContractQualcommPBLVerifiedLoaderState,
 		Address: 0x0010214e, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+	})
+	// DC18's OEMSBL cache-maintenance wrapper calls a second routine supplied by
+	// the preceding boot environment at 0x00102fb2. The archived PBL fragment
+	// contains only the adjacent C++ runtime strings/table at that address, so
+	// executing it as Thumb code falls through into data. The wrapper ignores the
+	// result and performs its own barriers; preserve the resident routine's
+	// returning ABI without patching either firmware image.
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID:       "w320-pbl-cache-maintenance-callback",
+		Contract: HLEContractQualcommResidentBootCallback,
+		Address:  0x00102fb2, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
 	})
 	// DC18's ARM veneer at 0x00e00fb0 calls 0x001138c8, inside the
 	// progressive ELF's entirely zero-filled 0x00100000 program segment. The
@@ -2055,29 +2583,76 @@ func SCHW320DC18BoardProfile() BoardProfile {
 		Contract: HLEContractQualcommResidentBootCallback,
 		Address:  0x001138c8, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
 	})
-	// DC18 uploads its ARM7/MGP image into the same 32 KiB companion-memory
-	// aperture as W340. Its image header publishes the polled ready byte at
-	// +0x29e0.
+	// A late AMSS caller at 0x02300f36 reaches a second entry in the same
+	// zero-filled resident segment. Its interworking link returns to Thumb code,
+	// and the caller consumes no result, matching the preserved-register ABI.
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID:       "w320-late-resident-boot-callback",
+		Contract: HLEContractQualcommResidentBootCallback,
+		Address:  0x00113ea8, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+	})
+	// The downloader archive contains an empty preload table, so it does not
+	// carry mmda/brew/shared/pbook/pbdeleted. DC18's optional phonebook restore
+	// helper assumes that factory file exists and dereferences IFILE_Open's nil
+	// result before it can report failure. Preserve the helper's normal false
+	// result at its ABI boundary; no proprietary phonebook data is fabricated.
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID:       "w320-optional-phonebook-preload",
+		Contract: HLEContractSamsungOptionalPreloadFile,
+		Address:  0x01402864, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+	})
+	// The same empty downloader preload table omits the indexed multimedia
+	// defaults consumed by this sibling reader. Its callers already handle a
+	// false result by retaining compiled-in defaults; avoid its identical nil
+	// IFILE dereference while preserving that result.
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID:       "w320-optional-multimedia-preload",
+		Contract: HLEContractSamsungOptionalPreloadFile,
+		Address:  0x014082ba, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+	})
+	// DC18 uploads its ARM7/MGP image into the 32 KiB companion code bank. Its
+	// image header publishes the polled ready byte at +0x29e0.
 	profile.Memory = append(profile.Memory, MemoryRegionProfile{
 		ID: "samsung-mgp-code-ram", Kind: MemorySparseRAM,
 		Address: 0x90108000, Size: 0x00008000,
+	}, MemoryRegionProfile{
+		// The late AMSS MGP client reads the companion data and scratch banks
+		// from +0x10000 through the halfword interface at +0x1f140.
+		ID: "w320-mgp-data-ram", Kind: MemorySparseRAM,
+		Address: 0x90110000, Size: 0x0000f140,
 	})
 	profile.SamsungMGP = &SamsungMGPProfile{
-		ID: "samsung-mgp-registers", Address: 0x9011f1a0, Size: 0x40,
+		// The active release register is followed by the tail of a 0x240-byte
+		// table copied from 0x9011f000, so retain the final 0xa0-byte block.
+		ID: "samsung-mgp-registers", Address: 0x9011f1a0, Size: 0xa0,
 		ReleaseOffset: 0x0c, SharedMemoryID: "samsung-mgp-code-ram",
 		ReadyOffset: 0x29e0, ReadyValue: 1, ResponseDelayInstructions: 1,
 	}
 	profile.LatchedRegisterWindows = append(
 		profile.LatchedRegisterWindows,
+		// The host and companion also exchange a halfword at +0x20 while the
+		// late AMSS services start, and the adjacent table reaches +0x40, so
+		// retain the complete aperture up to the MGP control block.
 		LatchedRegisterWindowProfile{
 			ID: "samsung-mgp-interface-registers", Address: 0x9011f140,
-			Size: 0x10, Width: Width16,
+			Size: 0x60, Width: Width16,
+		},
+		// DC18's late peripheral initialiser publishes byte commands at offsets
+		// zero and two of this second external chip-select aperture. The values
+		// are retained control latches; no asynchronous device response is
+		// required by the observed boot path.
+		LatchedRegisterWindowProfile{
+			ID: "w320-external-8bit-command-data", Address: 0x38000000,
+			Size: 4, Width: Width8,
 		},
 	)
-	profile.Panel.Protocol = ParallelPanelProtocolIndexedRGB565Window454647
+	// DC18 programs cursor/window bytes as packed 0x42xx..0x4axx command words,
+	// then streams RGB565 pixels through the A7-set FIFO.
+	profile.Panel.Protocol = ParallelPanelProtocolPackedRGB565Window424A
 	profile.PanelPorts = &ParallelPanelPortProfile{
 		CommandAddress: 0x20000000,
 		DataAddress:    0x20000080,
+		AliasSpan:      0x80,
 	}
 	return profile
 }
@@ -2088,34 +2663,482 @@ func SCHW340DC18BoardProfile() BoardProfile {
 	profile := samsungRawDownloadBoardProfile(
 		"samsung.sch-w340", "samsung.sch-w340.dc18", 0x08800000,
 	)
+	// DC18 maps the compact VIC's 0x80000400 virtual window onto the
+	// 0xfffff544 physical top-page aperture after enabling its AMSS MMU table.
+	// Keep that aperture connected to the same controller used before the MMU
+	// transition so grouped enable/status state remains coherent.
+	profile.LegacyTopVectoredInterruptOffset = 0x0544
+	// The MGP host interrupt dispatcher reads the external interrupt-status
+	// word at BUS_BASE+0x380 before walking its registered callbacks.
+	profile.SparseBusRegisterOffsets = append(
+		profile.SparseBusRegisterOffsets,
+		0x0380, 0x0780, 0x0b80, 0x0f80,
+	)
+	profile.SparseBusRegisterReadClearOffsets = []uint32{0x0380, 0x0780, 0x0b80, 0x0f80}
+	// DC18 reads the downloader-owned preload footer as one fixed 0x13ecc-byte
+	// object. The archive stops immediately before it, but a completed handset
+	// download has programmed the whole object (including ECC for otherwise empty
+	// codewords), not merely its header. Materialise the programmed zero padding
+	// so the NAND controller does not report the omitted tail as erased-codeword
+	// failures.
+	//
+	// An entirely empty table cannot finish DC18's native provisioning: its final
+	// step writes the four-byte table version to nvm/preload_ver, but the parent
+	// directory is normally made while walking table entries. Reconstruct the one
+	// generated metadata entry needed for that invariant. Its payload is the
+	// footer's own zero version word, so this does not fabricate an archived
+	// handset asset.
+	preloadFooter := make([]byte, 0x00013ecc)
+	copy(preloadFooter, profile.NANDInitialData[0].Data)
+	preloadFooter[4] = 1 // entry count
+	const preloadRecord = 12
+	copy(preloadFooter[preloadRecord:], "nvm/preload_ver")
+	preloadFooter[preloadRecord+0x80] = 8 // source offset: header version word
+	preloadFooter[preloadRecord+0x84] = 4 // source length
+	profile.NANDInitialData[0].Data = preloadFooter
+	// DC18 opens its internal MMC volume as "mmc1" before TFS4 reports task
+	// startup to Main Task.  The inherited W830 idle-status latch leaves that
+	// asynchronous discovery permanently asleep; publish the MSM6280 SDCC
+	// command completions through logical interrupt 70 instead.
+	for i, register := range profile.BootControlReadOnlyRegisters {
+		if register.Offset == 0x0c34 {
+			profile.BootControlReadOnlyRegisters = append(
+				profile.BootControlReadOnlyRegisters[:i],
+				profile.BootControlReadOnlyRegisters[i+1:]...,
+			)
+			break
+		}
+	}
+	profile.BootControlSDCCControllers = []QualcommSDCCControllerConfig{{
+		Base: 0x0c00, CardPresent: true,
+		GroupStatusOffset: 0x90,
+		GroupMask:         0x01,
+	}}
+	// The provisioned DC18 UI updates the MSM6280 GPIO/output latch at +0x480
+	// with halfword stores while bringing up its late handset peripherals.
+	profile.BootControlHalfwordOffsets = append(profile.BootControlHalfwordOffsets, 0x0480)
+	// DC18's UIM task programs +0x4100 with the same word-wide MSM6280 reset
+	// sequence as SCH-W320 and CK06. Its UART core ISR is registered on logical
+	// IRQ 0x35, which the retained second-level table routes through the compact
+	// VIC rather than exposing as a first-level source.
+	configureQualcommLegacyUARTWordController(&profile, 0x4100)
+	profile.BootControlLegacyUARTReceiveData = []QualcommLegacyUARTReceiveData{{
+		Controller:                0x4100,
+		InterruptSource:           17,
+		UseVectoredController:     true,
+		VectoredGroupStatusOffset: 0x8c,
+		VectoredGroupMask:         0x02,
+		DelayInstructions:         4_000_000,
+		// DC18 asserts BREAK while the UIM reset line is low, waits twenty
+		// REX ticks, and releases it with STOP_BREAK (0x60). Delay the ATR until
+		// that stabilization timer has moved the driver into its TS receive state.
+		// Reads at +0x10 expose interrupt status; the receive FIFO remains at +0x0c.
+		ReceiveCommand:        0x04,
+		ActivationCommand:     0x60,
+		PulseReceiveInterrupt: true,
+		EchoTransmit:          true,
+		T0Card:                true,
+		Data:                  []byte{0x3b, 0x00},
+	}}
+	if profile.TimeTickClock != nil {
+		// DC18 never programs the sleep-clock match register inherited from the
+		// wrapped W830 platform. Its REX idle task instead relies on the legacy
+		// free-running 100 Hz TIME_TICK_INT to dispatch delayed filesystem work.
+		clock := *profile.TimeTickClock
+		clock.PeriodicInterruptHz = 100
+		profile.TimeTickClock = &clock
+	}
+	if profile.VectoredInterrupt != nil {
+		// The raw retail loader leaves TIMETICK_INT (logical source 21) enabled.
+		// With the MSM6280 reverse source packing it occupies second-bank bit 2.
+		interrupts := *profile.VectoredInterrupt
+		// Source 13 is the sleep-clock/alarm event that releases the EFS
+		// startup task; source 21 is the free-running scheduler tick.
+		interrupts.ResetEnabledSources[1] = (1 << 10) | (1 << 2)
+		profile.VectoredInterrupt = &interrupts
+	}
+	// DC18's raw-NAND probe toggles EBI2_CFG0 bit 3 and samples compact-VIC
+	// group 14 child bit 1 at CHIP_BASE+0x488. The status aperture takes
+	// precedence over the legacy flat NAND-ready alias, so connect the exact
+	// request bit to the grouped source used by this OEMSBL.
+	profile.BootControlGroupedStatusResponses = []QualcommBootGroupedStatusResponse{{
+		Offset: 0x0380, RequestMask: 0x08, NANDReadyMask: 0x02,
+		GroupStatusOffset: 0x88, GroupMask: 0x02,
+	}, {
+		// Erase and final program completion use the sibling child bit without
+		// an EBI request-bit handshake.
+		Offset: 0x0380, NANDReadyMask: 0x01,
+		GroupStatusOffset: 0x88, GroupMask: 0x01,
+	}}
+	// DC18's retained PBL verifier reports fatal configuration errors through a
+	// mask-ROM routine just below the archived 0x00101000 PBL fragment. Bind the
+	// non-returning ABI so an invalid host handoff fails at its actual boundary
+	// instead of executing the zero-filled gap up to the next image.
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID:       "w340-pbl-fatal",
+		Contract: HLEContractQualcommPBLFatal,
+		Address:  0x000fff84, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+	})
+	// The downloadable DC18 OEMSBL expands the final AMSS data segment over the
+	// flash-driver registry. A retail boot chain republishes that retained
+	// environment at the loader epilogue; model the same exact-build boundary.
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID: "w340-amss-flash-environment", Contract: HLEContractSamsungAMSSFlashEnvironment,
+		Address: 0x000a1514, Mode: cpu.ModeARM, Return: HLEReturnNextInstruction,
+	})
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID: "w340-amss-bulk-zero", Contract: HLEContractSamsungAMSSBulkZero,
+		Address: 0x0142c3d0, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+	})
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID: "w340-sbi-transaction", Contract: HLEContractSamsungW340SBITransaction,
+		Address: 0x005d39aa, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+	})
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID: "w340-sbi-transaction-buffered", Contract: HLEContractSamsungW340SBITransaction,
+		Address: 0x005d3940, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+	})
+	// The late AMSS radio initialiser uses the relocated synchronous SBI read
+	// wrapper. Its native path waits for a PMIC-controller completion signal;
+	// route that exact-build entry through the same idle-peripheral contract.
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID: "w340-sbi-transaction-late", Contract: HLEContractSamsungW340SBITransaction,
+		Address: 0x01d900c0, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+	})
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID: "w340-pmic-adc-conversion", Contract: HLEContractSamsungW340PMICADCConversion,
+		Address: 0x00505a7a, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+	})
+	// The archived AP and MGP images do not include the retail modem companion
+	// which clears the provisional RF-settled byte before the startup UI checks
+	// it. Intercept only the exact store instruction, retaining all native RF
+	// sampling and its surrounding initialisation side effects.
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID: "w340-rf-settled-deferred", Contract: HLEContractSamsungW340RFSettledDeferred,
+		Address: 0x01a2e598, Mode: cpu.ModeThumb, Return: HLEReturnNextInstruction,
+	})
+	// DOG has already entered its native monitor loop when Main Task publishes
+	// TASK_START_SIG, so its one-shot MC_ACK_SIG never reaches Main. Skip only
+	// that exact wait instruction; all watchdog code and subsequent task-start
+	// handshakes continue to execute natively.
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID:       "w340-dog-start-ack",
+		Contract: HLEContractSamsungW340DOGStartAcknowledgement,
+		Address:  0x01d8d70e, Mode: cpu.ModeThumb, Return: HLEReturnProgramCounter,
+	})
+	// GSDI consumes operator/UIM provisioning supplied by the retail modem
+	// environment before it acknowledges TASK_START_SIG.  The archived AP/MGP
+	// pair has no producer for that state, so skip only Main Task's corresponding
+	// acknowledgement wait and continue starting the remaining native tasks.
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID:       "w340-gsdi-start-ack",
+		Contract: HLEContractSamsungW340DOGStartAcknowledgement,
+		Address:  0x01d8d1d8, Mode: cpu.ModeThumb, Return: HLEReturnProgramCounter,
+	})
+	// GSTK is the SIM Toolkit peer of GSDI and depends on the same unavailable
+	// operator provisioning.  Preserve the subsequent startup sequence by
+	// bypassing only its matching Main Task acknowledgement wait.
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID:       "w340-gstk-start-ack",
+		Contract: HLEContractSamsungW340DOGStartAcknowledgement,
+		Address:  0x01d8d1f2, Mode: cpu.ModeThumb, Return: HLEReturnProgramCounter,
+	})
+	// The retained callback service has no retail companion provider and cannot
+	// publish its one-shot startup acknowledgement.  Its task remains available
+	// for later native callbacks; only Main Task's initial wait is absent here.
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID:       "w340-callback-start-ack",
+		Contract: HLEContractSamsungW340DOGStartAcknowledgement,
+		Address:  0x01d8d4c0, Mode: cpu.ModeThumb, Return: HLEReturnProgramCounter,
+	})
+	// QVP APP is present in the archive but its retail multimedia peer is not;
+	// let Main Task continue after the native start signal without manufacturing
+	// any QVP state or disabling the task itself.
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID:       "w340-qvp-app-start-ack",
+		Contract: HLEContractSamsungW340DOGStartAcknowledgement,
+		Address:  0x01d8d65e, Mode: cpu.ModeThumb, Return: HLEReturnProgramCounter,
+	})
+	// QVPPL is the corresponding playback pipeline and lacks the same retail
+	// multimedia provider.  Its neighbouring QVPIO task acknowledges natively,
+	// so keep this compatibility boundary specific to QVPPL's wait.
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID:       "w340-qvppl-start-ack",
+		Contract: HLEContractSamsungW340DOGStartAcknowledgement,
+		Address:  0x01d8d6a8, Mode: cpu.ModeThumb, Return: HLEReturnProgramCounter,
+	})
+	// QTV's video renderer is another optional multimedia client whose DSP-side
+	// provider is outside the archived pair.  Leave its task intact and bypass
+	// only the one-shot boot acknowledgement wait.
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID:       "w340-qtv-render-start-ack",
+		Contract: HLEContractSamsungW340DOGStartAcknowledgement,
+		Address:  0x01d8d780, Mode: cpu.ModeThumb, Return: HLEReturnProgramCounter,
+	})
+	// QTV audio is the final sibling using that unavailable DSP provider.  Keep
+	// its task and all audio device setup native, skipping only the boot-time ACK
+	// that the missing companion would otherwise complete.
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID:       "w340-qtv-audio-start-ack",
+		Contract: HLEContractSamsungW340DOGStartAcknowledgement,
+		Address:  0x01d8d7a4, Mode: cpu.ModeThumb, Return: HLEReturnProgramCounter,
+	})
+	// QTV_TASK10 is the last optional QTV worker and shares the same absent DSP
+	// service.  The following BCX tasks acknowledge natively through their
+	// retained interface table, so this remains the final multimedia-only gate.
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID:       "w340-qtv-worker-start-ack",
+		Contract: HLEContractSamsungW340DOGStartAcknowledgement,
+		Address:  0x01d8d84e, Mode: cpu.ModeThumb, Return: HLEReturnProgramCounter,
+	})
+	// The empty DC18 preload footer does not contain the optional phonebook
+	// deletion bitmap.  Its helper assumes the file exists and dereferences the
+	// nil IFILE returned by the native manager. Preserve the helper's documented
+	// false result at its own ABI boundary, as on the sibling W320 build.
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID:       "w340-optional-phonebook-preload",
+		Contract: HLEContractSamsungOptionalPreloadFile,
+		Address:  0x00fa88e8, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+	})
+	// The same empty preload footer omits the indexed multimedia defaults read
+	// by this sibling helper.  Native callers already treat a false result as an
+	// absent optional asset; avoid the otherwise unconditional nil IFILE read.
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID:       "w340-optional-multimedia-preload",
+		Contract: HLEContractSamsungOptionalPreloadFile,
+		Address:  0x00fa9b82, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+	})
+	// A later-loaded BREW module contains the same optional indexed-file reader
+	// with its own file-manager singleton.  Its empty-media failure path has the
+	// same unchecked IFILE dereference, and its callers likewise accept false.
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID:       "w340-optional-module-preload",
+		Contract: HLEContractSamsungOptionalPreloadFile,
+		Address:  0x01d291c4, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+	})
+	// The BCX client issues synchronous command 0x0226 and validates the fixed
+	// nine-byte controller identity before allowing Main Task to continue. The
+	// controller image is not part of the archived handset firmware set, so
+	// provide only that hardware-owned identity at the native query boundary.
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID:       "w340-bcx-firmware-identity",
+		Contract: HLEContractSamsungW340BCXFirmwareIdentity,
+		Address:  0x01d8de4a, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+	})
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID:       "w340-uim-clock-configuration",
+		Contract: HLEContractSamsungW340UIMClockConfiguration,
+		Address:  0x010427ba, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+	})
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		// This is the exact `str r0, [r4, #0x18]` publication after the final
+		// native shared-resource lookup. It is also the boundary at which the
+		// earlier UTF and dictionary lookup results are available.
+		ID:       "w340-image-resource-offset",
+		Contract: HLEContractSamsungW340ImageResourceOffset,
+		Address:  0x01041ae8, Mode: cpu.ModeThumb, Return: HLEReturnNextInstruction,
+	})
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		// The downloader provider's GetColor fallback returns EUNSUPPORTED for
+		// selectors 1..16, leaving every AEEDisp system-colour slot black. The
+		// sibling DC18 handset retains the loader-provided palette shown here.
+		ID:       "w340-display-color",
+		Contract: HLEContractSamsungW340DisplayColor,
+		Address:  0x00572fdc, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+	})
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		// AEEDisp resolves built-in font IDs 0x8000..0x8002 through a provider
+		// retained by the retail loader. Without it, DC18 installs the physical
+		// framebuffer in the font slots and reports a zero line height.
+		ID:       "w340-font-metrics",
+		Contract: HLEContractSamsungW340FontMetrics,
+		Address:  0x00058e34, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+	})
+	profile.HLECalls = append(profile.HLECalls,
+		HLECallProfile{
+			ID: "w340-font-draw", Contract: HLEContractSamsungW340FontDraw,
+			Address: 0x07fd1380, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+		},
+		HLECallProfile{
+			ID: "w340-font-measure", Contract: HLEContractSamsungW340FontMeasure,
+			Address: 0x07fd1384, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+		},
+		HLECallProfile{
+			ID: "w340-font-info", Contract: HLEContractSamsungW340FontInfo,
+			Address: 0x07fd1388, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+		},
+	)
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		// BREW's class loader copies registered class records through a checked
+		// memcpy wrapper. In a downloader-only boot the retained access-policy
+		// state is absent, so every mapped source and destination is rejected.
+		ID:       "w340-pointer-access-policy",
+		Contract: HLEContractSamsungW340PointerAccessPolicy,
+		Address:  0x00042b8c, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+	})
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		// AEE_GetConMgr fatals when the loader-retained singleton is null. Publish
+		// the quiescent offline provider at this exact accessor boundary.
+		ID:       "w340-connection-manager",
+		Contract: HLEContractSamsungW340ConnectionManager,
+		Address:  0x0054b0d8, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+	})
+	profile.HLECalls = append(profile.HLECalls,
+		HLECallProfile{
+			// EVT_APP_START reaches this instruction immediately after MainApp has
+			// been selected from the native event table.  The retail loader retains
+			// the lifecycle callback at object+0x28; the downloader image leaves it
+			// zero, which makes the native start handler tear the applet down before
+			// it can create IdleApp.  Publish it before preserving the original
+			// `movs r6, #0` instruction semantics.
+			ID:       "w340-main-applet-lifecycle-prestart",
+			Contract: HLEContractSamsungW340MainAppletLifecycle,
+			Address:  0x012b3692, Mode: cpu.ModeThumb, Return: HLEReturnNextInstruction,
+		},
+		HLECallProfile{
+			// Event 0x7000 reaches this exact state load after constructing MainApp.
+			// Supply the absent retained lifecycle callback while preserving the
+			// rest of the native event handler.
+			ID:       "w340-main-applet-lifecycle-start",
+			Contract: HLEContractSamsungW340MainAppletLifecycle,
+			Address:  0x012b7cd6, Mode: cpu.ModeThumb, Return: HLEReturnNextInstruction,
+		},
+		HLECallProfile{
+			// Event 0x800c repeats the same readiness gate in its update path.
+			ID:       "w340-main-applet-lifecycle-update",
+			Contract: HLEContractSamsungW340MainAppletLifecycle,
+			Address:  0x012b7e7c, Mode: cpu.ModeThumb, Return: HLEReturnNextInstruction,
+		},
+	)
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		// IdleApp calls this native wrapper for every event-0x7000 refresh. On
+		// the first call, enter the otherwise-unreachable native carousel
+		// initializer; subsequent calls enter its native updater directly.
+		ID:       "w340-idle-carousel-lifecycle",
+		Contract: HLEContractSamsungW340IdleCarouselLifecycle,
+		Address:  0x01959ec4, Mode: cpu.ModeThumb, Return: HLEReturnProgramCounter,
+	})
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		// IdleApp requests SECIA class 0x010127d6 here. The native static-table
+		// fallback is present in the archived image, but its index-four provider is
+		// deliberately unsupported by both platform variants; the retail loader
+		// normally supplies the missing implementation. Publish its quiescent
+		// interface at the CreateInstance boundary so the all-or-nothing IdleApp
+		// constructor can finish.
+		ID:       "w340-idle-applet-dependency",
+		Contract: HLEContractSamsungW340IdleAppletDependency,
+		Address:  0x01349f68, Mode: cpu.ModeThumb, Return: HLEReturnNextInstruction,
+	})
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		// The native class-0x0100638f request completes, but the missing retail
+		// lifecycle provider leaves its output word at sp+0x28 null. Emulate the
+		// following load while supplying the quiescent retained interface.
+		ID:       "w340-idle-sim-main-target",
+		Contract: HLEContractSamsungW340IdleSimMainTarget,
+		Address:  0x01351376, Mode: cpu.ModeThumb, Return: HLEReturnNextInstruction,
+	})
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		// The retained loader releases the temporary class-manager result after the
+		// handoff, clearing IdleApp's paired interface at r4+0x18. Restore that
+		// interface while emulating the synthetic target's quiescent activation.
+		ID:       "w340-idle-sim-main-activation",
+		Contract: HLEContractSamsungW340IdleSimMainActivation,
+		Address:  0x01351670, Mode: cpu.ModeThumb, Return: HLEReturnNextInstruction,
+	})
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		// IdleApp has constructed the OEM annunciator object by this point, but
+		// its retained-loader vtable has a null lifecycle entry. The retail
+		// implementation only activates the already-created status-bar object.
+		ID:       "w340-annunciator-start",
+		Contract: HLEContractSamsungW340AnnunciatorStart,
+		Address:  0x004d4b18, Mode: cpu.ModeThumb, Return: HLEReturnNextInstruction,
+	})
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		// The archived class constructor leaves its retained provider at r4+0x28
+		// null. Emulate the following load while publishing the quiescent extended
+		// interface expected through vtable slots +0x4c and +0xc4.
+		ID:       "w340-idle-extended-provider",
+		Contract: HLEContractSamsungW340IdleExtendedProvider,
+		Address:  0x0134edac, Mode: cpu.ModeThumb, Return: HLEReturnNextInstruction,
+	})
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		// The downloader-only loader publishes foreground records as the retained
+		// secondary type 0x01011b98. The retail bridge aliases those records to the
+		// primary 0x010060d2 path before IdleApp evaluates the payload.
+		ID:       "w340-idle-primary-notification",
+		Contract: HLEContractSamsungW340IdlePrimaryNotification,
+		Address:  0x00c67ae2, Mode: cpu.ModeThumb, Return: HLEReturnNextInstruction,
+	})
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		// Class 0x0100638f operation 0xb returns successfully without filling its
+		// output word at sp+0x28. Emulate the following load while publishing the
+		// retained startup interface consumed through vtable slot +0xc4.
+		ID:       "w340-startup-primary-interface",
+		Contract: HLEContractSamsungW340StartupPrimaryInterface,
+		Address:  0x01a22064, Mode: cpu.ModeThumb, Return: HLEReturnNextInstruction,
+	})
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		// The paired operation 0x13 has the same retained-output dependency at
+		// sp+0x24. Supply its quiescent interface while emulating the load.
+		ID:       "w340-startup-secondary-interface",
+		Contract: HLEContractSamsungW340StartupSecondaryInterface,
+		Address:  0x01a220ba, Mode: cpu.ModeThumb, Return: HLEReturnNextInstruction,
+	})
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		// MGPCC samples this dynamically linked MDSP frame counter before and
+		// after programming the host interface. A downloader-only boot resolves
+		// the veneer to an inert retained symbol, leaving the highest-priority
+		// task in a tight equality loop and starving the UI task.
+		ID:       "w340-mgp-frame-counter",
+		Contract: HLEContractSamsungW340MGPFrameCounter,
+		Address:  0x00d58ed0, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+	})
 	// W340 decodes the LCD D/C line at address bit 7: OEMSBL writes 16-bit
 	// register indexes at chip-select +0 and their values at +0x80.
 	profile.PanelPorts = &ParallelPanelPortProfile{
 		CommandAddress: 0x20000000,
 		DataAddress:    0x20000080,
+		AliasSpan:      0x80,
 	}
 	profile.Panel.Protocol = ParallelPanelProtocolIndexedRGB565Window454647
+	// DC18 gives BREW applets the identity-mapped high arena below the MSM6280
+	// clock block. The first 64 KiB remain the boot-control register aperture;
+	// executable heaps and applet stacks occupy the remainder up to 0x84000000.
+	// The shell allocates 32 KiB slots and probes their 64-byte headers (the
+	// first observed probes are 0x807fffc0 and 0x80807fc0).
+	profile.Memory = append(profile.Memory, MemoryRegionProfile{
+		ID: "w340-brew-high-ram", Kind: MemorySparseRAM,
+		Address: 0x80010000, Size: 0x03ff0000,
+	})
 	// The MGP loader copies its ARM7 image into the 32 KiB code/shared-RAM
 	// aperture and exchanges boot pointers in the image header.
 	profile.Memory = append(profile.Memory, MemoryRegionProfile{
 		ID: "samsung-mgp-code-ram", Kind: MemorySparseRAM,
 		Address: 0x90108000, Size: 0x00008000,
+	}, MemoryRegionProfile{
+		// The ARM7's local data/scratch range 0x10000..0x1f140 is visible to
+		// the application processor immediately above the code bank.
+		ID: "w340-mgp-data-ram", Kind: MemorySparseRAM,
+		Address: 0x90110000, Size: 0x0000f140,
 	})
 	// DC18 asserts +0x0c while uploading the companion image, clears it to
 	// release the ARM7, and waits for the image's shared ready byte at +0x29e0.
 	profile.SamsungMGP = &SamsungMGPProfile{
-		ID: "samsung-mgp-registers", Address: 0x9011f1a0, Size: 0x40,
+		// AMSS snapshots the complete 0x240-byte MGP table beginning at
+		// 0x9011f000, so the control tail extends through 0x9011f240.
+		ID: "samsung-mgp-registers", Address: 0x9011f1a0, Size: 0xa0,
 		ReleaseOffset: 0x0c, SharedMemoryID: "samsung-mgp-code-ram",
 		ReadyOffset: 0x29e0, ReadyValue: 1, ResponseDelayInstructions: 1,
 	}
-	// The host-side MGP service initialises a second halfword interface at
-	// +0x00/+0x0c before it publishes its command descriptor. No autonomous
-	// response has been observed in this bounded register subset.
+	// The host-side MGP service initialises the halfword interface at +0x00/+0x0c
+	// before it publishes its command descriptor. Late AMSS startup also reads
+	// the status banks at +0x10/+0x20/+0x40; retain the complete aperture up to
+	// the active MGP control block, as on the sibling DC18 board.
 	profile.LatchedRegisterWindows = append(
 		profile.LatchedRegisterWindows,
 		LatchedRegisterWindowProfile{
 			ID: "samsung-mgp-interface-registers", Address: 0x9011f140,
-			Size: 0x10, Width: Width16,
+			Size: 0x60, Width: Width16,
 		},
 	)
 	return profile
@@ -2131,10 +3154,33 @@ func SCHW350CK06BoardProfile() BoardProfile {
 	// operations. OEMSBL still shares the same controller with narrower
 	// accesses, so expose the evidenced mixed-width aperture.
 	promoteQualcommLegacyUARTToMixedWidth(&profile, 0x4200)
+	// CK06's UIM task uses the intervening MSM6280 controller at +0x4100.
+	// Its traced reset/configuration sequence and word-wide FIFO accesses match
+	// DC18 exactly, including compact-VIC source 17 child bit 1. Attach the
+	// stateful T=0 transport so AMSS can complete ATR and USIM APDU discovery.
+	configureQualcommLegacyUARTWordController(&profile, 0x4100)
+	profile.BootControlLegacyUARTReceiveData = []QualcommLegacyUARTReceiveData{{
+		Controller:        0x4100,
+		InterruptSource:   55,
+		DelayInstructions: 0,
+		EchoTransmit:      true,
+		T0Card:            true,
+		Data:              []byte{0x3b, 0x00},
+	}}
+	profile.LegacyInterruptCascade = &QualcommInterruptCascadeProfile{
+		VectoredSource: 17, GroupStatusOffset: 0x8c, GroupMask: 0x02,
+	}
 	// Late AMSS hardware setup writes its 0x00100203 configuration word to
 	// CHIP_BASE +0x039c. The value is not polled as a completion signal, so a
 	// board-specific latch is sufficient.
 	profile.BootControlWritableOffsets = append(profile.BootControlWritableOffsets, 0x039c)
+	// CK06 selects PMIC slave 0x38 through the controller configuration word and
+	// reads that slave's identification register at address 1. The returned low
+	// six bits must equal 0x38; zero or an address echo restarts hardware setup.
+	profile.BootControlSBIReadResponses = append(
+		profile.BootControlSBIReadResponses,
+		QualcommSBIReadResponse{Controller: 0x5000, Address: 0x01, Value: 0x38},
+	)
 	// CK06 masks the five raw primary inputs during startup and enters its
 	// on-screen UCDMA download mode when the idle 0x1f value becomes 0x1b.
 	// Expose that evidenced active-low boot input without assigning it the
@@ -2154,9 +3200,33 @@ func SCHW350CK06BoardProfile() BoardProfile {
 		Data:   []byte{0},
 	})
 	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID:       "w350-static-bss-zero",
+		Contract: HLEContractSamsungW350StaticBSSZero,
+		Address:  0x000a0040, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+	})
+	// The archived downloader lacks the factory EFS/NV record which identifies
+	// the handset's home operator. Trap only the CK06 UI's NV 0x1301 dispatch;
+	// every other NV request and the complete UIM transaction path stay native.
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID:       "w350-operator-provisioning",
+		Contract: HLEContractSamsungW350OperatorProvisioning,
+		Address:  0x00578d0e, Mode: cpu.ModeThumb, Return: HLEReturnNextInstruction,
+	})
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
 		ID:       "w350-bootstrap-verified-firmware",
 		Contract: HLEContractQualcommBootstrapVerifiedFirmware,
 		Address:  0x00113d30, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+	})
+	// CK06's OEMSBL calls 0x001129a8 from three hardware-transition wrappers
+	// (including the unconditional wrapper at 0x000a092c). The address lies in
+	// the progressive image's zero-filled resident segment, while every caller
+	// ignores its result and continues through LR. Preserve that missing PBL ABI
+	// boundary instead of letting the CPU fall through zeroes into an unrelated
+	// resident helper.
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID:       "w350-resident-thumb-callback",
+		Contract: HLEContractQualcommResidentBootCallback,
+		Address:  0x001129a8, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
 	})
 	// CK06 imports one ARM callback from 0x001478c8, inside its zero-filled
 	// BOOT/NOTUSED program segment. The handset's preceding boot environment
@@ -2167,6 +3237,34 @@ func SCHW350CK06BoardProfile() BoardProfile {
 		ID:       "w350-resident-boot-callback",
 		Contract: HLEContractQualcommResidentBootCallback,
 		Address:  0x001478c8, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+	})
+	// CK06's late AMSS hardware-registration sequence imports two more ARM
+	// callbacks from the same erased BOOT/NOTUSED resident segment. The first is
+	// passed the resident descriptor at 0x00147898 and the second receives zero;
+	// both callers discard the return value before continuing device setup. Keep
+	// the unavailable boot-environment ABI register-transparent, just like the
+	// earlier callback above, instead of executing erased 0xff words as an SVC.
+	profile.HLECalls = append(profile.HLECalls,
+		HLECallProfile{
+			ID:       "w350-resident-registration-callback",
+			Contract: HLEContractQualcommResidentBootCallback,
+			Address:  0x00147968, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+		},
+		HLECallProfile{
+			ID:       "w350-resident-registration-finalize",
+			Contract: HLEContractQualcommResidentBootCallback,
+			Address:  0x00147970, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+		},
+	)
+	// A new CK06 filesystem completes with an NV rebuild and calls the reboot
+	// veneer at 0x013b0078 from this one instruction. Trap the exact call site,
+	// rather than the shared fatal/restart implementation, so genuine AMSS fatal
+	// paths remain visible while the successful provisioning path cold-boots with
+	// its newly committed NAND contents.
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		ID:       "w350-nv-rebuild-power-cycle",
+		Contract: HLEContractSamsungPowerCycle,
+		Address:  0x0131cb38, Mode: cpu.ModeThumb, Return: HLEReturnPowerCycle,
 	})
 	// CK06's OEMSBL samples bit 2 at secondary input +0x440 before it
 	// releases the startup timer path. The adjacent W830 board instead wires
@@ -2189,6 +3287,20 @@ func SCHW350CK06BoardProfile() BoardProfile {
 		profile.BootControlGPIOInputs,
 		QualcommGPIOInputRegister{Offset: 0x40, Value: 0},
 	)
+	// CK06's raw-NAND factory first verifies the reset interface selector in
+	// EBI2_CFG0, then sets bit 3 and requires compact-VIC group 14 child bit 1
+	// at CHIP_BASE+0x488 to follow it. Program/erase completion uses the sibling
+	// child bit, matching the same MSM6280 controller on the adjacent raw builds.
+	profile.BootControlGroupedStatusResponses = []QualcommBootGroupedStatusResponse{
+		{
+			Offset: 0x0380, RequestMask: 0x08, NANDReadyMask: 0x02,
+			GroupStatusOffset: 0x88, GroupMask: 0x02,
+		},
+		{
+			Offset: 0x0380, NANDReadyMask: 0x01,
+			GroupStatusOffset: 0x88, GroupMask: 0x01,
+		},
+	}
 	// CK06 drives its 16-bit LCD command FIFO at external chip-select
 	// 0x38000000 and streams RGB565 payload words through the adjacent +4
 	// data aperture.
@@ -2245,6 +3357,7 @@ func SCHW300DA04BoardProfile() BoardProfile {
 	profile.PanelPorts = &ParallelPanelPortProfile{
 		CommandAddress: 0x20000000,
 		DataAddress:    0x20000080,
+		AliasSpan:      0x80,
 	}
 	profile.Panel.Protocol = ParallelPanelProtocolIndexedRGB565Window454647
 	return profile
@@ -2265,6 +3378,219 @@ func SPHW4200DC17BoardProfile() BoardProfile {
 	profile := samsungRawDownloadBoardProfile(
 		"samsung.sph-w4200", "samsung.sph-w4200.dc17", 0x0e600000,
 	)
+	// DC17 probes its removable-card SDCC at CHIP_BASE+0x0c00 while TFS4 is
+	// starting. Its native filesystem startup requires a memory card to finish
+	// CMD8/CMD55/ACMD41 discovery; the related W830
+	// profile uses +0x0c34 for a different fixed idle-status contract, so
+	// replace that inherited register only on this board.
+	for i, register := range profile.BootControlReadOnlyRegisters {
+		if register.Offset == 0x0c34 {
+			profile.BootControlReadOnlyRegisters = append(
+				profile.BootControlReadOnlyRegisters[:i],
+				profile.BootControlReadOnlyRegisters[i+1:]...,
+			)
+			break
+		}
+	}
+	profile.BootControlSDCCControllers = []QualcommSDCCControllerConfig{{
+		Base: 0x0c00, CardPresent: true,
+		// DC17 registers SDCC_INT as logical interrupt 70. The MSM6280
+		// dispatcher maps IDs 67..70 to compact-VIC source 19's group at
+		// +0x90 in descending bit order, making ID 70 child bit 0.
+		GroupStatusOffset: 0x90,
+		GroupMask:         0x01,
+	}}
+	// DC17 is a full-touch handset. Its TSC2007 module samples the pen level on
+	// GPIO 39 (0x27), bit 0 of MSM6280 GPIO group 2. GPIO 43, bit 4 of the same
+	// group, is a separate board-level external-interrupt aggregate; the pen
+	// callback is registered independently and must therefore publish bit 0.
+	// The panel's bit-banged I2C conversion wrappers are exact-build HLE gates
+	// below; pen level itself remains visible through GPIO_IN_2 bit 0.
+	profile.Touchscreen = &QualcommTSC2007Profile{
+		Width: 240, Height: 432,
+		PenInputOffset: 0x0440, PenInputMask: 0x00000001,
+		InterruptGroup: QualcommGPIOInterruptGroupProfile{
+			ClearOffset: 0x0594, EnableOffset: 0x05a8,
+			DetectOffset: 0x05bc, PolarityOffset: 0x05d0,
+			StatusOffset:    0x05e4,
+			InterruptSource: 5, UseVectoredController: true,
+		},
+		InterruptMask: 0x00000001,
+	}
+	// The shared GPIO ISR scans both hardware groups serviced by VIC source 5.
+	// Touch is on group 2 (+0x5e4); group 3 (+0x5e8) has no asserted external
+	// input on this board but must remain readable while the dispatcher walks it.
+	profile.PrimaryClockReadOnlyRegisters = append(
+		profile.PrimaryClockReadOnlyRegisters,
+		QualcommPrimaryClockReadOnlyRegister{Offset: 0x05e8, Value: 0},
+	)
+	// DC17's UIM transport is the third MSM6280 legacy UART at
+	// CHIP_BASE+0x4100. Unlike the adjacent modem UARTs, its driver uses
+	// word-wide accesses for the configuration registers and FIFO. Preserve
+	// those accesses while exposing the read-side SR/MISR/ISR aliases; in
+	// particular, +0x08 must report transmitter state rather than echoing the
+	// 0xff clock-select value written to the same address.
+	configureQualcommLegacyUARTWordController(&profile, 0x4100)
+	profile.BootControlLegacyUARTReceiveData = []QualcommLegacyUARTReceiveData{{
+		Controller:         0x4100,
+		InterruptSource:    55,
+		DelayInstructions:  65_536,
+		EchoTransmit:       true,
+		TransmitFrameBytes: 5,
+		TransmitResponse:   []byte{0x6d, 0x00},
+		// Minimal direct-convention T=0 ATR. It is delivered after the UIM
+		// transport has completed its reset sequence and entered the scheduler.
+		Data: []byte{0x3b, 0x00},
+	}}
+	// MSM6280 presents the legacy QIC output through compact VIC source 17's
+	// six-way second-level group. UIM is child bit 1; its registered handler is
+	// the 0x2e6d61 transport ISR in DC17.
+	profile.LegacyInterruptCascade = &QualcommInterruptCascadeProfile{
+		VectoredSource: 17, GroupStatusOffset: 0x8c, GroupMask: 0x02,
+	}
+	// The raw-NAND backend probes its EBI chip-select line by toggling bit 3
+	// in EBI2_CFG0. MSM6280 reflects that line in compact-VIC group 14 child
+	// bit 1, at CHIP_BASE+0x488, even while the aggregate interrupt is masked.
+	profile.BootControlGroupedStatusResponses = []QualcommBootGroupedStatusResponse{
+		{
+			Offset: 0x0380, RequestMask: 0x08, NANDReadyMask: 0x02,
+			GroupStatusOffset: 0x88, GroupMask: 0x02,
+		},
+		{
+			// Raw-NAND erase and final program completion use the sibling
+			// write/error-complete child without an EBI control-bit probe.
+			Offset: 0x0380, NANDReadyMask: 0x01,
+			GroupStatusOffset: 0x88, GroupMask: 0x01,
+		},
+	}
+	// DC17's RF backup manager reserves the final five blocks by scanning down
+	// from block 0xfff. The AMSS raw-NAND factory and BML device table identify
+	// that 4-Gbit device as Samsung EC/DC. This controller is separate from the
+	// EC/5C OneNAND which OEMSBL uses to load the progressive image.
+	profile.NANDReadID = 0x0000ecdc
+	profile.NANDSize = 0x20000000
+	// DC17 tests bit 0 of CHIP_BASE+0x274 before choosing its boot path. A set
+	// bit enters the OEMSBL packet downloader at 0x000af9c0; the retail cold
+	// boot path requires the strap clear so control continues into AMSS.
+	profile.BootClockModeStatus = 0
+	// DC17 uses the same PMIC ADC contract as the related MSM6280 handset:
+	// register 0x54 publishes conversion complete, 0x4f retains the selected
+	// 8-bit mode, and 0x53 supplies the completed battery sample.
+	profile.BootControlSBIReadResponses = []QualcommSBIReadResponse{
+		{Controller: 0x5100, Address: 0x4f, Value: 0xc1},
+		{Controller: 0x5100, Address: 0x53, Value: 0xff},
+		{Controller: 0x5100, Address: 0x54, Value: 0x01},
+	}
+	// AMSS samples the PBL-retained word at 0xfffff3a8 during its reset-vector
+	// hardware pass. A cold handset starts with no retained request asserted;
+	// keep the word writable because the same top-page slot is boot scratch RAM.
+	profile.LegacyTopWritableOffsets = append(profile.LegacyTopWritableOffsets, 0x03a8)
+	// qdspmem copies the downloader image into the shared ADSP address space with
+	// its ready-state halfword initialised to 2. On hardware the newly released
+	// DSP consumes that state and publishes zero before qdsptask's first poll.
+	// Model only this exact image-loader handshake; the rest of the 128 MiB DSP
+	// window remains ordinary sparse RAM.
+	profile.MemoryWriteResponses = append(
+		append([]MemoryWriteResponseProfile(nil), profile.MemoryWriteResponses...),
+		MemoryWriteResponseProfile{
+			MemoryID: "adsp-address-space", Offset: 0x00202f3a,
+			Width: Width16, Request: 2,
+			Writes: []MemoryResponseWriteProfile{{
+				Offset: 0x00202f3a, Width: Width16, Value: 0,
+			}},
+		},
+		MemoryWriteResponseProfile{
+			MemoryID: "adsp-address-space", Offset: 0x00202f30,
+			Width: Width16, Request: 0x0100,
+			Writes: []MemoryResponseWriteProfile{
+				{Offset: 0x00202f30, Width: Width16, Value: 0},
+				{Offset: 0x00202f3a, Width: Width16, Value: 1},
+			},
+		},
+	)
+	// DC17's QDSP command queue submits its shared-buffer address through the
+	// mailbox write-control word itself. The mailbox clears the hardware mutex
+	// bit before matching control rules, so 0x80020000 is observed here as
+	// 0x00020000. Complete the event-slot response, publish the module-loader
+	// ready flag, and pulse the registered DSP interrupt after both shared-memory
+	// updates have become visible to the ARM ISR. gl1_hw polls the ready halfword
+	// through its runtime descriptor after the loader callback returns.
+	profile.ADSPMailbox.ControlRules = append(
+		profile.ADSPMailbox.ControlRules,
+		QualcommADSPControlRuleProfile{
+			Offset: 0x08, Value: 0x00020000, ResponseDelayInstructions: 1,
+			Copies: []QualcommADSPMemoryCopyProfile{{
+				SourceWindowID:      "external-32bit-bank-2",
+				SourceOffset:        0x00000570,
+				DestinationWindowID: "external-32bit-bank-2",
+				DestinationOffset:   0x0000056c,
+				Width:               Width32,
+			}},
+			Writes: []QualcommADSPMemoryWriteProfile{
+				{
+					WindowID: "external-16bit-bank-1", Offset: 0x00000bfc,
+					Width: Width16, Value: 0,
+				},
+				{
+					WindowID: "external-16bit-bank-1", Offset: 0x00003e4a,
+					Width: Width16, Value: 1,
+				},
+			},
+			Interrupt: &QualcommADSPInterruptProfile{
+				Source: 33, UseVectoredController: true,
+			},
+			StartPeriodicInterrupt: true,
+		},
+	)
+	// The GSM layer registers GSTMR_INT (compact-VIC source 29) as the DSP
+	// frame-tick dispatcher. Once the module image is ready, hardware raises it
+	// once per 4.615 ms GSM frame; its callback advances gl1_hw's frame counter.
+	profile.ADSPMailbox.PeriodicInterrupt = &QualcommADSPPeriodicInterruptProfile{
+		InstructionsPerSecond: 60_000_000,
+		InterruptHz:           217,
+		Interrupt: QualcommADSPInterruptProfile{
+			Source: 29, UseVectoredController: true,
+		},
+	}
+	// OEMSBL resets and probes the companion OneNAND through the interrupt and
+	// command halfwords at 0x4001e482/0x4001e440 before loading AMSS.
+	profile.OneNAND = &OneNANDProfile{
+		Address: 0x40000000, ManufacturerID: 0x00ec, DeviceID: 0x005c,
+		DieBlockOffset: 0x0800, Capacity: 0x20000000, InitialImageFromFirmware: true,
+	}
+	// DC17's packaged loader descriptor is normally completed by an unavailable
+	// downloader stage. The OEMSBL calls this exact boundary to materialise the
+	// progressive ELF before restoring the AMSS entry context at address zero.
+	profile.HLECalls = append(profile.HLECalls, HLECallProfile{
+		// The downloadable QCSBL/OEMSBL pair starts after mask-ROM PBL. OEMSBL's
+		// bad-block scan is the first consumer of the missing PBL flash interface;
+		// the host has already applied the selected MIBIB and factory-bad-block
+		// layout, so this boundary publishes an empty scan and the retained reader.
+		ID: "w4200-pbl-flash-prepare", Contract: HLEContractSamsungW4200PBLFlashPrepare,
+		Address: 0x000a0b58, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+	}, HLECallProfile{
+		ID: "w4200-pbl-flash-read", Contract: HLEContractSamsungW4200PBLFlashRead,
+		Address: 0xffffda00, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+	}, HLECallProfile{
+		ID: "w4200-progressive-amss-loader", Contract: HLEContractSamsungProgressiveAMSSLoad,
+		Address: 0x00081b9c, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+	}, HLECallProfile{
+		// AMSS clears the progressive image's zero-fill segments before this
+		// routine constructs the record directory consumed by boot_cfg_table.
+		ID: "w4200-shared-directory-init", Contract: HLEContractSamsungSharedDirectoryInit,
+		Address: 0x000a3f4c, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+	}, HLECallProfile{
+		// The relocated runtime performs one final BSS pass before attaching the
+		// fixed descriptor to its Thumb-side global registry.
+		ID: "w4200-shared-directory-attach", Contract: HLEContractSamsungSharedDirectoryAttach,
+		Address: 0x00d60f84, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+	}, HLECallProfile{
+		ID: "w4200-tsc2007-write", Contract: HLEContractSamsungW4200TSC2007Write,
+		Address: 0x01078d44, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+	}, HLECallProfile{
+		ID: "w4200-tsc2007-read", Contract: HLEContractSamsungW4200TSC2007Read,
+		Address: 0x01078ccc, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+	})
 	// DC17 clears its second static-data segment at 0x08000000 before the
 	// AMSS handoff. Expose the MSM6280's adjacent EBI chip-select aperture as
 	// page-backed RAM so the complete address window is available without a
@@ -2272,14 +3598,136 @@ func SPHW4200DC17BoardProfile() BoardProfile {
 	profile.Memory = append(profile.Memory, MemoryRegionProfile{
 		ID: "w4200-ebi-ram-bank-1", Kind: MemorySparseRAM,
 		Address: 0x08000000, Size: 0x08000000,
+	}, MemoryRegionProfile{
+		// DC17's final two progressive-ELF records form the Qualcomm shared
+		// configuration segment at 0x18000000..0x1a5e9900. Keep the bounded,
+		// page-aligned aperture sparse because AMSS reads only selected tables.
+		ID: "w4200-shared-config-segment", Kind: MemorySparseRAM,
+		Address: 0x18000000, Size: 0x02600000,
 	})
-	// The cold-start hardware table publishes a 16-bit external-bus mode word
-	// through this dedicated register before entering the remaining peripheral
-	// initialisers.
+	// AMSS polls bit 1 of this external-bus status word until the controller is
+	// ready. No write to the status address occurs during initialization.
+	profile.ReadOnlyRegisters = append(profile.ReadOnlyRegisters, ReadOnlyRegisterProfile{
+		ID: "w4200-external-bus-ready", Address: 0x30002000,
+		Width: Width32, Value: 0x00000002,
+	})
+	// A late AMSS timing helper exchanges one byte through this independently
+	// decoded external port. The firmware uses paired STRB/LDRB accessors and
+	// retains the most recently published value.
 	profile.LatchedRegisters = append(profile.LatchedRegisters, LatchedRegisterProfile{
-		ID: "w4200-external-bus-mode", Address: 0x3000202c,
-		Width: Width16, ResetValue: 0,
+		ID: "w4200-external-byte-port", Address: 0x38000000,
+		Width: Width8, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w4200-external-byte-control", Address: 0x38010000,
+		Width: Width8, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		// The cold-start GPIO table contains eight byte-wide output ports at
+		// consecutive halfword addresses. The common setter accesses each with
+		// STRB and may sample the retained route bit before a secondary write.
+		ID: "w4200-external-gpio-group-0", Address: 0x38020000,
+		Width: Width8, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w4200-external-gpio-group-1", Address: 0x38020002,
+		Width: Width8, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w4200-external-gpio-group-2", Address: 0x38020004,
+		Width: Width8, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w4200-external-gpio-group-3", Address: 0x38020006,
+		Width: Width8, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w4200-external-gpio-group-4", Address: 0x38020008,
+		Width: Width8, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w4200-external-gpio-group-5", Address: 0x3802000a,
+		Width: Width8, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w4200-external-gpio-group-6", Address: 0x3802000c,
+		Width: Width8, ResetValue: 0,
+	}, LatchedRegisterProfile{
+		ID: "w4200-external-gpio-group-7", Address: 0x3802000e,
+		Width: Width8, ResetValue: 0,
 	})
+	// The cold-start hardware table publishes external-bus control words through
+	// these dedicated registers before entering the remaining peripheral
+	// initialisers. Relocated AMSS later writes the 32-bit control words directly.
+	profile.LatchedRegisters = append(profile.LatchedRegisters,
+		LatchedRegisterProfile{
+			ID: "w4200-external-bus-control", Address: 0x30002004,
+			Width: Width32, ResetValue: 0,
+		},
+		LatchedRegisterProfile{
+			ID: "w4200-external-bus-timing", Address: 0x30002008,
+			Width: Width32, ResetValue: 0,
+		},
+		LatchedRegisterProfile{
+			ID: "w4200-external-bus-chip-select", Address: 0x30002010,
+			Width: Width32, ResetValue: 0,
+		},
+		LatchedRegisterProfile{
+			ID: "w4200-external-bus-control-14", Address: 0x30002014,
+			Width: Width32, ResetValue: 0,
+		},
+		LatchedRegisterProfile{
+			ID: "w4200-external-bus-clock", Address: 0x3000201c,
+			Width: Width32, ResetValue: 0,
+		},
+		LatchedRegisterProfile{
+			ID: "w4200-external-bus-mask", Address: 0x30002020,
+			Width: Width32, ResetValue: 0,
+		},
+		LatchedRegisterProfile{
+			ID: "w4200-external-bus-control-28", Address: 0x30002028,
+			Width: Width32, ResetValue: 0,
+		},
+		LatchedRegisterProfile{
+			ID: "w4200-external-bus-mode", Address: 0x3000202c,
+			Width: Width32, AdditionalWidths: []Width{Width16}, ResetValue: 0,
+		},
+		LatchedRegisterProfile{
+			ID: "w4200-external-bus-control-30", Address: 0x30002030,
+			Width: Width32, ResetValue: 0,
+		},
+		LatchedRegisterProfile{
+			ID: "w4200-indirect-bus-control", Address: 0x30006000,
+			Width: Width16, ResetValue: 0,
+		},
+		LatchedRegisterProfile{
+			ID: "w4200-indirect-bus-address-low", Address: 0x30006008,
+			Width: Width16, ResetValue: 0,
+		},
+		LatchedRegisterProfile{
+			ID: "w4200-indirect-bus-address-high", Address: 0x3000600a,
+			Width: Width16, ResetValue: 0,
+		},
+		LatchedRegisterProfile{
+			ID: "w4200-indirect-bus-data", Address: 0x3000600c,
+			Width: Width32, AdditionalWidths: []Width{Width16}, AllowSubwordOffsets: true, ResetValue: 0,
+		},
+		LatchedRegisterProfile{
+			ID: "w4200-indirect-bus-2-control", Address: 0x30007000,
+			Width: Width16, ResetValue: 0,
+		},
+		LatchedRegisterProfile{
+			ID: "w4200-indirect-bus-2-address-low", Address: 0x30007008,
+			Width: Width16, ResetValue: 0,
+		},
+		LatchedRegisterProfile{
+			ID: "w4200-indirect-bus-2-address-high", Address: 0x3000700a,
+			Width: Width16, ResetValue: 0,
+		},
+		LatchedRegisterProfile{
+			ID: "w4200-indirect-bus-2-data", Address: 0x30007800,
+			Width: Width32, AdditionalWidths: []Width{Width16}, ResetValue: 0,
+		},
+	)
+	// DC17's relocated AMSS installs its interrupt dispatch callbacks in the
+	// three-word CHIP_BASE+0x0d00 control record. The values are retained and
+	// consumed by software; no autonomous side effect is required here.
+	profile.BootControlWritableOffsets = append(
+		profile.BootControlWritableOffsets,
+		0x0d04, 0x0d10, 0x0d14, 0x0d18, 0x0d1c,
+	)
 	// DC17 drives the main indexed RGB565 controller through a halfword
 	// command/data pair in the same external chip-select aperture.
 	profile.PanelPorts = &ParallelPanelPortProfile{
@@ -2975,6 +4423,10 @@ func samsungRawDownloadBoardProfile(id, firmwareBuildID string, packagedEnd uint
 		0x0134,
 		0x0148,
 		0x0248,
+		// The post-QDSP hardware pass publishes its 0x1001 enable word in the
+		// companion control slot before updating the already observed +0xa44
+		// latch.
+		0x0a38,
 		0x0a44,
 		0x0d60,
 		0x0d70,
@@ -3099,6 +4551,35 @@ func promoteQualcommLegacyUARTToMixedWidth(profile *BoardProfile, base uint32) {
 		halfwordOffsets = append(halfwordOffsets, offset)
 	}
 	profile.BootControlHalfwordOffsets = halfwordOffsets
+}
+
+func configureQualcommLegacyUARTWordController(profile *BoardProfile, base uint32) {
+	profile.BootControlLegacyUARTControllers = append(
+		profile.BootControlLegacyUARTControllers, base,
+	)
+	writable := make(map[uint32]struct{}, len(profile.BootControlWritableOffsets))
+	for _, offset := range profile.BootControlWritableOffsets {
+		writable[offset] = struct{}{}
+	}
+	mixed := make(map[uint32]struct{}, len(profile.BootControlMixedWidthOffsets))
+	for _, offset := range profile.BootControlMixedWidthOffsets {
+		mixed[offset] = struct{}{}
+	}
+	registers := append(
+		append([]uint32(nil), qualcommLegacyUARTHalfwordRegisterOffsets[:]...),
+		qualcommLegacyUARTFIFOOffset,
+	)
+	for _, relative := range registers {
+		offset := base + relative
+		if _, ok := writable[offset]; !ok {
+			profile.BootControlWritableOffsets = append(profile.BootControlWritableOffsets, offset)
+			writable[offset] = struct{}{}
+		}
+		if _, ok := mixed[offset]; !ok {
+			profile.BootControlMixedWidthOffsets = append(profile.BootControlMixedWidthOffsets, offset)
+			mixed[offset] = struct{}{}
+		}
+	}
 }
 
 func samsungSCHSparseBusRegisterOffsets() []uint32 {

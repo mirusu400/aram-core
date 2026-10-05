@@ -38,6 +38,28 @@ func TestAttachedSystemBusExecutesCodeAndDispatchesDataAccess(t *testing.T) {
 	}
 }
 
+func TestAttachedSystemBusUsesARMv5UnalignedWordSemantics(t *testing.T) {
+	bus := &testSystemBus{memory: make(map[uint32]byte)}
+	bus.writeU32(0x1000, 0xe5801000) // STR r1, [r0]
+	bus.writeU32(0x1004, 0xe5902000) // LDR r2, [r0]
+
+	backend := New()
+	t.Cleanup(func() { _ = backend.Close() })
+	check(t, backend.AttachSystemBus(bus))
+	check(t, backend.WriteRegister(cpu.RegisterR0, 0x2001))
+	check(t, backend.WriteRegister(cpu.RegisterR1, 0x11223344))
+	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 2)
+	if result.Err != nil || result.Reason != cpu.StopBudget || result.Instructions != 2 {
+		t.Fatalf("unaligned word run = %+v", result)
+	}
+	if got := bus.readU32(0x2000); got != 0x11223344 {
+		t.Fatalf("aligned store word = %#08x", got)
+	}
+	if got := register(t, backend, cpu.RegisterR2); got != 0x44112233 {
+		t.Fatalf("rotated unaligned load = %#08x", got)
+	}
+}
+
 func TestAttachedDirectMemoryBusBypassesDataCallsAfterColdFill(t *testing.T) {
 	bus := &directTestSystemBus{data: make([]byte, 0x2000), base: 0x1000}
 	binary.LittleEndian.PutUint32(bus.data[0x0000:], 0xe5901000) // LDR r1, [r0]

@@ -41,6 +41,242 @@ func TestARM926InstructionCacheRetainsCodeUntilMVAInvalidation(t *testing.T) {
 	}
 }
 
+func TestARM926JITDropsTranslationWhenInstructionCacheLineIsEvicted(t *testing.T) {
+	bus := &testSystemBus{memory: make(map[uint32]byte)}
+	const (
+		first    = uint32(0x1000)
+		conflict = first + instructionCacheSets*instructionCacheLineSize
+	)
+	writeThumb := func(address uint32, instruction uint16) {
+		bus.memory[address] = byte(instruction)
+		bus.memory[address+1] = byte(instruction >> 8)
+		bus.memory[address+2] = 0x00 // BKPT terminates translation.
+		bus.memory[address+3] = 0xbe
+	}
+	writeThumb(first, 0x2001)    // MOVS r0, #1
+	writeThumb(conflict, 0x2107) // MOVS r1, #7; same direct-mapped cache set.
+
+	backend := NewJIT()
+	defer backend.Close()
+	check(t, backend.AttachSystemBus(bus))
+	backend.setCP15Control(1 << 12)
+	if result := backend.Run(context.Background(), first, cpu.ModeThumb, 1); result.Err != nil {
+		t.Fatal(result.Err)
+	}
+
+	// The backing write is hidden by the resident I-cache line. Filling the
+	// conflicting line evicts that line and must also retire its decoded JIT
+	// block, so returning to first observes the replacement instruction.
+	writeThumb(first, 0x2002) // MOVS r0, #2
+	if result := backend.Run(context.Background(), conflict, cpu.ModeThumb, 1); result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	check(t, backend.WriteRegister(cpu.RegisterR0, 0))
+	if result := backend.Run(context.Background(), first, cpu.ModeThumb, 1); result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if got := register(t, backend, cpu.RegisterR0); got != 2 {
+		t.Fatalf("instruction after cache-line eviction = %d, want 2", got)
+	}
+}
+
+func TestARM926JITDropsEvictedTranslationAfterRepeatedCP15ControlWrite(t *testing.T) {
+	bus := &testSystemBus{memory: make(map[uint32]byte)}
+	const (
+		first    = uint32(0x1000)
+		conflict = first + instructionCacheSets*instructionCacheLineSize
+		control  = uint32(1 << 12)
+	)
+	writeThumb := func(address uint32, instruction uint16) {
+		bus.memory[address] = byte(instruction)
+		bus.memory[address+1] = byte(instruction >> 8)
+		bus.memory[address+2] = 0x00
+		bus.memory[address+3] = 0xbe // BKPT terminates translation.
+	}
+	writeThumb(first, 0x2001)    // MOVS r0, #1
+	writeThumb(conflict, 0x2107) // MOVS r1, #7; same direct-mapped cache set.
+
+	backend := NewJIT()
+	defer backend.Close()
+	check(t, backend.AttachSystemBus(bus))
+	backend.setCP15Control(control)
+	if result := backend.Run(context.Background(), first, cpu.ModeThumb, 1); result.Err != nil {
+		t.Fatal(result.Err)
+	}
+
+	writeThumb(first, 0x2002) // MOVS r0, #2 in backing memory only.
+	// Firmware commonly rewrites c1 with the value it just read. This is not
+	// cache maintenance and must not advance the generation independently of
+	// the translated blocks that describe the still-resident I-cache line.
+	check(t, backend.writeCP15(1, 0, 0, control))
+	if result := backend.Run(context.Background(), conflict, cpu.ModeThumb, 1); result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	check(t, backend.WriteRegister(cpu.RegisterR0, 0))
+	if result := backend.Run(context.Background(), first, cpu.ModeThumb, 1); result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if got := register(t, backend, cpu.RegisterR0); got != 2 {
+		t.Fatalf("instruction after repeated-control eviction = %d, want 2", got)
+	}
+}
+
+func TestARM926JITValidatesResidentInstructionCacheGeneration(t *testing.T) {
+	bus := &testSystemBus{memory: make(map[uint32]byte)}
+	const address = uint32(0x1000)
+	writeThumb := func(instruction uint16) {
+		bus.memory[address] = byte(instruction)
+		bus.memory[address+1] = byte(instruction >> 8)
+		bus.memory[address+2] = 0x00
+		bus.memory[address+3] = 0xbe
+	}
+	writeThumb(0x2001) // MOVS r0, #1
+
+	backend := NewJIT()
+	defer backend.Close()
+	check(t, backend.AttachSystemBus(bus))
+	backend.setCP15Control(1 << 12)
+	if result := backend.Run(context.Background(), address, cpu.ModeThumb, 1); result.Err != nil {
+		t.Fatal(result.Err)
+	}
+
+	// Model a line replacement whose eager block-map invalidation was missed.
+	// The dispatch-time cache stamp is the final correctness guard against
+	// executing micro-ops decoded from a different VIVT line generation.
+	writeThumb(0x2002) // MOVS r0, #2
+	entry := backend.instructionCacheEntry(address)
+	entry.line[0], entry.line[1] = 0x02, 0x20
+	backend.instructionCacheSerial++
+	entry.serial = backend.instructionCacheSerial
+	check(t, backend.WriteRegister(cpu.RegisterR0, 0))
+	if result := backend.Run(context.Background(), address, cpu.ModeThumb, 1); result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if got := register(t, backend, cpu.RegisterR0); got != 2 {
+		t.Fatalf("instruction after resident-line replacement = %d, want 2", got)
+	}
+}
+
+func TestARM926JITValidatesResidentInstructionCacheBytes(t *testing.T) {
+	bus := &testSystemBus{memory: make(map[uint32]byte)}
+	const address = uint32(0x1000)
+	bus.memory[address] = 0x01
+	bus.memory[address+1] = 0x20 // MOVS r0, #1
+	bus.memory[address+2] = 0x00
+	bus.memory[address+3] = 0xbe
+
+	backend := NewJIT()
+	defer backend.Close()
+	check(t, backend.AttachSystemBus(bus))
+	backend.setCP15Control(1 << 12)
+	if result := backend.Run(context.Background(), address, cpu.ModeThumb, 1); result.Err != nil {
+		t.Fatal(result.Err)
+	}
+
+	// Model an in-place line mutation that did not advance the replacement
+	// serial. Dispatch must still compare the decoded opcode with resident data.
+	entry := backend.instructionCacheEntry(address)
+	entry.line[0] = 0x02
+	check(t, backend.WriteRegister(cpu.RegisterR0, 0))
+	if result := backend.Run(context.Background(), address, cpu.ModeThumb, 1); result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if got := register(t, backend, cpu.RegisterR0); got != 2 {
+		t.Fatalf("instruction after in-place cache mutation = %d, want 2", got)
+	}
+}
+
+func TestARM926JITRetainsGuardsAcrossUncachedLines(t *testing.T) {
+	backend := NewJIT()
+	defer backend.Close()
+	backend.setCP15Control(1 << 12)
+	backend.instructionCacheTable = new([instructionCacheSets]instructionCacheEntry)
+
+	const first = uint32(0x1000)
+	entry := backend.instructionCacheEntry(first)
+	entry.tag = first
+	entry.serial = 1
+	entry.gen = backend.mappingGen
+	entry.privileged = backend.currentlyPrivileged()
+	entry.valid = true
+
+	guards := backend.captureJITInstructionCacheGuards(first, first+2*instructionCacheLineSize)
+	if len(guards) != 1 {
+		t.Fatalf("guards across uncached line = %d, want 1", len(guards))
+	}
+	block := &jitBlock{
+		start:                   first,
+		end:                     first + 2*instructionCacheLineSize,
+		instructionCacheEnabled: true,
+		instructionCacheGen:     backend.mappingGen,
+		instructionCacheGuards:  guards,
+	}
+	if !backend.jitInstructionCacheValid(block) {
+		t.Fatal("new block guard is invalid")
+	}
+	entry.serial++
+	if backend.jitInstructionCacheValid(block) {
+		t.Fatal("replacement of guarded line retained mixed-cacheability block")
+	}
+}
+
+func TestARM926JITRejectsStaleInstructionWindow(t *testing.T) {
+	bus := &testSystemBus{memory: make(map[uint32]byte)}
+	const address = uint32(0x1000)
+	bus.memory[address] = 0x02
+	bus.memory[address+1] = 0x20 // MOVS r0, #2
+	bus.memory[address+2] = 0x00
+	bus.memory[address+3] = 0xbe // BKPT
+
+	backend := NewJIT()
+	defer backend.Close()
+	check(t, backend.AttachSystemBus(bus))
+	backend.setCP15Control(1 << 12)
+	if _, err := backend.fetch16(address); err != nil {
+		t.Fatal(err)
+	}
+
+	var stale instructionCacheLine
+	stale[0], stale[1] = 0x01, 0x20 // MOVS r0, #1
+	backend.instructionWindow = &stale
+	backend.instructionWindowTag = (address >> instructionCacheLineShift) + 1
+	backend.instructionWindowSerial = backend.instructionCacheEntry(address).serial
+
+	if result := backend.Run(context.Background(), address, cpu.ModeThumb, 1); result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if got := register(t, backend, cpu.RegisterR0); got != 2 {
+		t.Fatalf("instruction through stale window = %d, want 2", got)
+	}
+}
+
+func TestARM926JITRejectsTranslationThatDoesNotMatchResidentLine(t *testing.T) {
+	backend := NewJIT()
+	defer backend.Close()
+	backend.setCP15Control(1 << 12)
+	backend.instructionCacheTable = new([instructionCacheSets]instructionCacheEntry)
+
+	const address = uint32(0x1000)
+	entry := backend.instructionCacheEntry(address)
+	entry.line[0], entry.line[1] = 0x02, 0x20 // MOVS r0, #2
+	entry.tag = address
+	entry.gen = backend.mappingGen
+	entry.privileged = backend.currentlyPrivileged()
+	entry.valid = true
+	block := &jitBlock{
+		start: address,
+		end:   address + 2,
+		thumb: []thumbMicroInstr{{pc: address, raw: 0x2001}},
+	}
+	if backend.jitBlockMatchesResidentInstructionCache(block) {
+		t.Fatal("translation decoded from different bytes matched resident I-cache line")
+	}
+	block.thumb[0].raw = 0x2002
+	if !backend.jitBlockMatchesResidentInstructionCache(block) {
+		t.Fatal("translation decoded from resident bytes did not match")
+	}
+}
+
 func TestARM926InstructionWindowTracksLineAndInvalidatesWithMappings(t *testing.T) {
 	backend := New()
 	check(t, backend.Map(

@@ -44,7 +44,14 @@ func (b *Backend) executeThumbMicroBlock(
 ) (int, bool, *cpu.StopReason, error) {
 	// Bound the translated prefix once so the hot loop needs no per-op slice check.
 	instructions := block.thumb[:blockInstructions]
+	blockGeneration := b.jitGen
 	for index := range instructions {
+		if index != 0 && traced && b.stopped.Load() {
+			return index, false, nil, nil
+		}
+		if index != 0 && b.jitGen != blockGeneration {
+			return index, false, nil, nil
+		}
 		in := &instructions[index]
 		pc := in.pc
 		if wholeSystem {
@@ -66,6 +73,25 @@ func (b *Backend) executeThumbMicroBlock(
 			b.recordPC(pc)
 		}
 		instruction := in.raw
+		b.instructionRaw = uint32(instruction)
+		resident, residentOK := b.residentInstructionCache16(pc)
+		if traced {
+			b.lastJITResidentRaw = uint32(resident)
+			b.lastJITResident = residentOK
+		}
+		if wholeSystem && block.instructionCacheEnabled {
+			if residentOK && resident != instruction {
+				b.dropStaleJITBlock(block.start, block, false)
+				return index, false, nil, nil
+			}
+		}
+		if traced {
+			b.lastJITBlock = block
+			b.lastJITRuntimePC = pc
+			b.lastJITDecodedPC = in.pc
+			b.lastJITRaw = uint32(instruction)
+			b.lastJITIndex = uint32(index)
+		}
 		b.regs[cpu.RegisterPC] = pc + 2
 		switch in.op {
 		case thumbShiftImmediate:

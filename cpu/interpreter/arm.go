@@ -92,6 +92,7 @@ func (b *Backend) runARMInstrumented(limit uint64) (uint64, *cpu.StopReason, err
 	wholeSystem := b.systemBus != nil
 	traced := b.tracing()
 	var executed uint64
+	var faultsWithoutRetirement uint32
 	for executed < limit && b.mode == cpu.ModeARM {
 		if wholeSystem {
 			if b.takePendingInterrupt() {
@@ -112,10 +113,18 @@ func (b *Backend) runARMInstrumented(limit uint64) (uint64, *cpu.StopReason, err
 		reason, err := b.stepARM()
 		if err != nil {
 			if b.handleMMUFault(err, pc) {
+				faultsWithoutRetirement++
+				if faultsWithoutRetirement >= 1024 {
+					return executed, nil, fmt.Errorf(
+						"ARM MMU fault livelock after %d exceptions, last instruction 0x%08x: %v",
+						faultsWithoutRetirement, pc, err,
+					)
+				}
 				continue
 			}
 			return executed, nil, err
 		}
+		faultsWithoutRetirement = 0
 		executed++
 		if reason != nil {
 			return executed, reason, nil

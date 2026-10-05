@@ -76,15 +76,17 @@ var (
 )
 
 type OneNANDConfig struct {
-	ManufacturerID uint16
-	DeviceID       uint16
-	VersionID      uint16
-	TechnologyID   uint16
-	DieBlockOffset uint32
-	Capacity       uint64
-	FlexGeometry   *OneNANDFlexGeometry
-	Storage        ReadOnlyStorage
-	Spare          NANDSpareStorage
+	ManufacturerID      uint16
+	DeviceID            uint16
+	VersionID           uint16
+	TechnologyID        uint16
+	DieBlockOffset      uint32
+	Capacity            uint64
+	FlexGeometry        *OneNANDFlexGeometry
+	Storage             ReadOnlyStorage
+	Spare               NANDSpareStorage
+	InterruptController *QualcommVectoredInterruptController
+	InterruptSource     uint8
 }
 
 // OneNANDFlexGeometry describes the raw FBA geometry exposed by a
@@ -119,16 +121,18 @@ type oneNANDWritableStorage interface {
 // architected interrupt and controller-status bits preserve the polling
 // contract observed by boot firmware.
 type OneNAND struct {
-	storage        ReadOnlyStorage
-	writable       oneNANDWritableStorage
-	spare          NANDSpareStorage
-	manufacturerID uint16
-	deviceID       uint16
-	versionID      uint16
-	technologyID   uint16
-	capacity       uint64
-	densityMask    uint32
-	geometry       oneNANDGeometry
+	storage         ReadOnlyStorage
+	writable        oneNANDWritableStorage
+	spare           NANDSpareStorage
+	manufacturerID  uint16
+	deviceID        uint16
+	versionID       uint16
+	technologyID    uint16
+	capacity        uint64
+	densityMask     uint32
+	geometry        oneNANDGeometry
+	interrupts      *QualcommVectoredInterruptController
+	interruptSource uint8
 
 	addresses        [8]uint16
 	startBuffer      uint16
@@ -196,6 +200,8 @@ func NewOneNAND(config OneNANDConfig) (*OneNAND, error) {
 	if geometryErr != nil || config.Storage == nil || config.Storage.Size() <= 0 ||
 		config.ManufacturerID == 0 || config.DeviceID == 0 ||
 		config.Capacity < uint64(config.Storage.Size()) ||
+		config.InterruptController != nil &&
+			config.InterruptSource >= config.InterruptController.SourceCount() ||
 		config.Spare != nil && config.Spare.SparePageSize() !=
 			geometry.pageSize/oneNANDSectorSize*oneNANDSpareSectorSize {
 		return nil, ErrInvalidOneNAND
@@ -221,6 +227,7 @@ func NewOneNAND(config OneNANDConfig) (*OneNAND, error) {
 		deviceID: config.DeviceID, versionID: config.VersionID,
 		technologyID: config.TechnologyID,
 		capacity:     config.Capacity, densityMask: densityMask, geometry: geometry, spare: config.Spare,
+		interrupts: config.InterruptController, interruptSource: config.InterruptSource,
 		bufferRAM: make([]byte, oneNANDBufferRAMSize),
 	}
 	device.writable, _ = config.Storage.(oneNANDWritableStorage)
@@ -245,7 +252,17 @@ func (d *OneNAND) Reset() error {
 		}
 	}
 	d.resetRegisters(true)
-	return nil
+	return d.updateInterrupt()
+}
+
+func (d *OneNAND) updateInterrupt() error {
+	if d.interrupts == nil {
+		return nil
+	}
+	return d.interrupts.SetSource(
+		d.interruptSource,
+		d.interruptStatus&oneNANDInterruptMaster != 0,
+	)
 }
 
 func (d *OneNAND) resetRegisters(cold bool) {
@@ -322,7 +339,10 @@ func (d *OneNAND) Write(offset uint32, width Width, value uint32) error {
 		return fmt.Errorf("%w: write16 value 0x%x at 0x%x", ErrOneNANDMMIO, value, offset)
 	}
 	if d.bootCommandAccess(offset, width) {
-		return d.writeBootCommand(uint16(value))
+		if err := d.writeBootCommand(uint16(value)); err != nil {
+			return err
+		}
+		return d.updateInterrupt()
 	}
 	if d.bufferAccess(offset, width) {
 		putValue(d.bufferRAM[offset:offset+uint32(width)], value)
@@ -343,7 +363,7 @@ func (d *OneNAND) Write(offset uint32, width Width, value uint32) error {
 		command := uint16(value)
 		d.command = command
 		d.executeCommand()
-		return nil
+		return d.updateInterrupt()
 	case oneNANDSystemConfig1Offset:
 		d.systemConfig1 = uint16(value)
 		return nil
@@ -355,7 +375,7 @@ func (d *OneNAND) Write(offset uint32, width Width, value uint32) error {
 		if d.interruptStatus&oneNANDInterruptMaster == 0 {
 			d.controllerStatus &^= oneNANDStatusErrorMask
 		}
-		return nil
+		return d.updateInterrupt()
 	case oneNANDUnlockStartOffset:
 		d.unlockStart = uint16(value)
 		d.unlockEnd = d.unlockStart
@@ -799,7 +819,7 @@ func (d *OneNAND) LoadState(state []byte) error {
 	d.bootCycle = flags[0] != 0
 	d.otpMode = flags[1] != 0
 	copy(d.bufferRAM, bufferRAM)
-	return nil
+	return d.updateInterrupt()
 }
 
 var (

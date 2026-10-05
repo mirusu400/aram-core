@@ -441,6 +441,7 @@ func (b *Backend) translateOne(e emitter, instruction uint16, pc uint32, retired
 		if !ok || b.tlb == nil {
 			return translateBail, terminator{}
 		}
+		access.wordAlign = access.size == 4 && b.cp15.control&(1<<1) == 0
 		e.memory(access, pc, retired)
 		return translateBody, terminator{}
 	case thumbPush, thumbPop, thumbMultipleTransfer:
@@ -448,6 +449,7 @@ func (b *Backend) translateOne(e emitter, instruction uint16, pc uint32, retired
 		if !ok || b.tlb == nil {
 			return translateBail, terminator{}
 		}
+		access.wordAlign = b.cp15.control&(1<<1) == 0
 		e.multi(access, pc, retired)
 		if access.loadPC {
 			// multi() already branch-exchanged through the loaded PC and

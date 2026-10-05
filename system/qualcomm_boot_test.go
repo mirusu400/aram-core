@@ -419,6 +419,87 @@ func TestQualcommBootControlAllowsOnlyEvidencedEarlyBootRegisters(t *testing.T) 
 	}
 }
 
+func TestQualcommBootControlDrivesProfiledVectoredGroupStatus(t *testing.T) {
+	config := QualcommVectoredInterruptConfig{
+		SourceCount: 49, Bank0Sources: 25, ReverseSourceOrder: true,
+		GroupCount: 1,
+		Groups: [qualcommVICMaximumGroups]QualcommVectoredInterruptGroupConfig{{
+			Source: 14, EnableOffset: 0x14, StatusOffset: 0x88, ValidMask: 0x03,
+		}},
+	}
+	response := QualcommBootGroupedStatusResponse{
+		Offset: 0x0380, RequestMask: 0x08, NANDReadyMask: 0x02,
+		GroupStatusOffset: 0x88, GroupMask: 0x02,
+	}
+	signalOnlyResponse := QualcommBootGroupedStatusResponse{
+		Offset: 0x0380, NANDReadyMask: 0x01,
+		GroupStatusOffset: 0x88, GroupMask: 0x01,
+	}
+	newDevice := func() (*QualcommBootControl, *QualcommVectoredInterruptController, *StatusSignal) {
+		vectored, err := NewQualcommVectoredInterruptController(config, &interruptLineProbe{})
+		check(t, err)
+		ready := NewStatusSignal()
+		device, err := NewQualcommBootControl(QualcommBootControlConfig{
+			HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
+			EBIMemoryConfiguration: 0x5880, ClockModeStatus: 1,
+			NANDReady: ready, VectoredInterruptController: vectored,
+			GroupedStatusResponses: []QualcommBootGroupedStatusResponse{
+				response, signalOnlyResponse,
+			},
+		})
+		check(t, err)
+		return device, vectored, ready
+	}
+
+	device, vectored, ready := newDevice()
+	if status, err := vectored.Read(0x88, Width32); err != nil || status != 0 {
+		t.Fatalf("reset grouped status = %#x error %v", status, err)
+	}
+	ready.Set(2)
+	if status, err := device.Read(0x0488, Width32); err != nil || status != 0 {
+		t.Fatalf("unarmed NAND-ready grouped status = %#x error %v", status, err)
+	}
+	check(t, device.Write(0x0380, Width32, 2|8))
+	if status, err := vectored.Read(0x88, Width32); err != nil || status != 2 {
+		t.Fatalf("asserted grouped status = %#x error %v", status, err)
+	}
+	check(t, device.Write(0x0380, Width32, 2))
+	if status, err := vectored.Read(0x88, Width32); err != nil || status != 0 {
+		t.Fatalf("deasserted grouped status = %#x error %v", status, err)
+	}
+	ready.Set(2)
+	if status, err := device.Read(0x0488, Width32); err != nil || status != 2 {
+		t.Fatalf("NAND-ready grouped status = %#x error %v", status, err)
+	}
+	check(t, device.Write(0x0414, Width32, 2))
+	if status, err := device.Read(0x0488, Width32); err != nil || status != 0 {
+		t.Fatalf("acknowledged NAND-ready grouped status = %#x error %v", status, err)
+	}
+	ready.Set(1)
+	if status, err := device.Read(0x0488, Width32); err != nil || status != 1 {
+		t.Fatalf("signal-only grouped status = %#x error %v", status, err)
+	}
+	check(t, device.Write(0x0414, Width32, 1))
+	if status, err := device.Read(0x0488, Width32); err != nil || status != 0 {
+		t.Fatalf("acknowledged signal-only grouped status = %#x error %v", status, err)
+	}
+	ready.Set(2)
+	if status, err := device.Read(0x0488, Width32); err != nil || status != 2 {
+		t.Fatalf("reasserted NAND-ready grouped status = %#x error %v", status, err)
+	}
+	state, err := device.SaveState()
+	check(t, err)
+	restored, restoredVectored, restoredReady := newDevice()
+	check(t, restored.LoadState(state))
+	if status, err := restoredVectored.Read(0x88, Width32); err != nil || status != 2 {
+		t.Fatalf("restored grouped status = %#x error %v", status, err)
+	}
+	restoredReady.Clear(2)
+	if status, err := restored.Read(0x0488, Width32); err != nil || status != 0 {
+		t.Fatalf("restored armed grouped status = %#x error %v", status, err)
+	}
+}
+
 func TestQualcommBootControlRejectsWrongNANDInterfaceState(t *testing.T) {
 	device, _ := NewQualcommBootControl(QualcommBootControlConfig{
 		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
@@ -495,6 +576,158 @@ func TestQualcommBootControlProfilesAdditionalWritableOffsets(t *testing.T) {
 		if _, err := NewQualcommBootControl(invalid); err == nil {
 			t.Fatalf("accepted invalid boot-control writable offsets %#v", offsets)
 		}
+	}
+}
+
+func TestQualcommBootControlModelsAbsentSDCCCardCommandTimeout(t *testing.T) {
+	config := QualcommBootControlConfig{
+		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
+		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1,
+		WritableOffsets: []uint32{0x0c0c, 0x0c38},
+		SDCCControllers: []QualcommSDCCControllerConfig{{Base: 0x0c00}},
+		NANDReady:       NewStatusSignal(),
+	}
+	device, err := NewQualcommBootControl(config)
+	check(t, err)
+	if status, err := device.Read(0x0c34, Width32); err != nil || status != 0 {
+		t.Fatalf("reset SDCC status = %#x error %v", status, err)
+	}
+	check(t, device.Write(0x0c0c, Width32, 0x00000445))
+	if status, err := device.Read(0x0c34, Width32); err != nil || status != 0x04 {
+		t.Fatalf("absent-card SDCC command status = %#x error %v", status, err)
+	}
+	if err := device.Write(0x0c34, Width32, 0x04); !errors.Is(err, ErrQualcommBootControlMMIO) {
+		t.Fatalf("SDCC status write error = %v", err)
+	}
+	check(t, device.Write(0x0c38, Width32, 0x04))
+	if status, err := device.Read(0x0c34, Width32); err != nil || status != 0 {
+		t.Fatalf("cleared SDCC status = %#x error %v", status, err)
+	}
+	// A command value without CPSM enable is only a configuration latch.
+	check(t, device.Write(0x0c0c, Width32, 0x45))
+	if status, err := device.Read(0x0c34, Width32); err != nil || status != 0 {
+		t.Fatalf("disabled SDCC command status = %#x error %v", status, err)
+	}
+
+	check(t, device.Write(0x0c0c, Width32, 0x00000448))
+	state, err := device.SaveState()
+	check(t, err)
+	restored, err := NewQualcommBootControl(config)
+	check(t, err)
+	check(t, restored.LoadState(state))
+	if status, err := restored.Read(0x0c34, Width32); err != nil || status != 0x04 {
+		t.Fatalf("restored absent-card SDCC status = %#x error %v", status, err)
+	}
+
+	for _, mutate := range []func(*QualcommBootControlConfig){
+		func(config *QualcommBootControlConfig) { config.WritableOffsets = []uint32{0x0c38} },
+		func(config *QualcommBootControlConfig) { config.WritableOffsets = []uint32{0x0c0c} },
+		func(config *QualcommBootControlConfig) {
+			config.ReadOnlyRegisters = []QualcommBootReadOnlyRegister{{Offset: 0x0c34}}
+		},
+		func(config *QualcommBootControlConfig) {
+			config.SDCCControllers = []QualcommSDCCControllerConfig{
+				{Base: 0x0c00}, {Base: 0x0c00},
+			}
+		},
+	} {
+		invalid := config
+		mutate(&invalid)
+		invalid.NANDReady = NewStatusSignal()
+		if _, err := NewQualcommBootControl(invalid); err == nil {
+			t.Fatalf("accepted invalid absent-card SDCC profile: %+v", invalid)
+		}
+	}
+}
+
+func TestQualcommBootControlModelsPresentSDMemoryCardDiscovery(t *testing.T) {
+	config := QualcommBootControlConfig{
+		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
+		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1,
+		WritableOffsets: []uint32{0x0c0c, 0x0c38},
+		SDCCControllers: []QualcommSDCCControllerConfig{{
+			Base: 0x0c00, CardPresent: true,
+		}},
+		NANDReady: NewStatusSignal(),
+	}
+	device, err := NewQualcommBootControl(config)
+	check(t, err)
+
+	// CMD8 carries a short response and must echo the supplied voltage/check
+	// pattern. The native DC17 driver accepts the command through CMDRESPEND.
+	check(t, device.Write(0x0c0c, Width32, 0x00000448))
+	if status, err := device.Read(0x0c34, Width32); err != nil || status != 0x40 {
+		t.Fatalf("present-card CMD8 status = %#x error %v", status, err)
+	}
+	if response, err := device.Read(0x0c14, Width32); err != nil || response != 0x1aa {
+		t.Fatalf("present-card CMD8 response = %#x error %v", response, err)
+	}
+	check(t, device.Write(0x0c38, Width32, 0x40))
+
+	// A memory-only card intentionally times out CMD5 (SDIO), then reports a
+	// powered-up high-capacity OCR through ACMD41.
+	check(t, device.Write(0x0c0c, Width32, 0x00000445))
+	if status, err := device.Read(0x0c34, Width32); err != nil || status != 0x04 {
+		t.Fatalf("present-memory-card CMD5 status = %#x error %v", status, err)
+	}
+	check(t, device.Write(0x0c38, Width32, 0x04))
+	check(t, device.Write(0x0c0c, Width32, 0x00000469))
+	if status, err := device.Read(0x0c34, Width32); err != nil || status != 0x40 {
+		t.Fatalf("present-card ACMD41 status = %#x error %v", status, err)
+	}
+	if response, err := device.Read(0x0c14, Width32); err != nil || response != 0xc0ff8000 {
+		t.Fatalf("present-card ACMD41 response = %#x error %v", response, err)
+	}
+}
+
+func TestQualcommBootControlRoutesAbsentSDCCCardTimeoutThroughVectoredGroup(t *testing.T) {
+	probe := &interruptLineProbe{}
+	vectored, err := NewQualcommVectoredInterruptController(
+		QualcommVectoredInterruptConfig{
+			SourceCount: 49, Bank0Sources: 25, ReverseSourceOrder: true,
+			GroupCount: 1,
+			Groups: [qualcommVICMaximumGroups]QualcommVectoredInterruptGroupConfig{{
+				Source: 19, EnableOffset: 0x1c, StatusOffset: 0x90, ValidMask: 0x01,
+			}},
+		},
+		probe,
+	)
+	check(t, err)
+	device, err := NewQualcommBootControl(QualcommBootControlConfig{
+		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
+		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1,
+		WritableOffsets: []uint32{0x0c0c, 0x0c38, 0x0c3c},
+		SDCCControllers: []QualcommSDCCControllerConfig{{
+			Base: 0x0c00, GroupStatusOffset: 0x90, GroupMask: 0x01,
+		}},
+		NANDReady: NewStatusSignal(), VectoredInterruptController: vectored,
+	})
+	check(t, err)
+
+	// Logical source 19 is reverse-packed as bank 1 bit 4. Firmware enables
+	// the group child when it registers logical SDCC interrupt 70.
+	check(t, device.Write(QualcommVectoredInterruptControllerBaseOffset+0x1c, Width32, 0x01))
+	check(t, device.Write(QualcommVectoredInterruptControllerBaseOffset+qualcommVICEnable1Offset, Width32, 1<<4))
+	check(t, device.Write(0x0c0c, Width32, 0x00000445))
+	if status, err := device.Read(QualcommVectoredInterruptControllerBaseOffset+0x90, Width32); err != nil || status != 0 {
+		t.Fatalf("masked SDCC grouped status = %#x error %v", status, err)
+	}
+	if probe.irq {
+		t.Fatal("masked SDCC command timeout asserted vectored IRQ")
+	}
+	check(t, device.Write(0x0c3c, Width32, 0x04))
+	if status, err := device.Read(QualcommVectoredInterruptControllerBaseOffset+0x90, Width32); err != nil || status != 1 {
+		t.Fatalf("SDCC grouped status = %#x error %v", status, err)
+	}
+	if !probe.irq {
+		t.Fatal("SDCC command timeout did not assert vectored IRQ")
+	}
+	check(t, device.Write(0x0c38, Width32, 0x04))
+	if status, err := device.Read(QualcommVectoredInterruptControllerBaseOffset+0x90, Width32); err != nil || status != 0 {
+		t.Fatalf("cleared SDCC grouped status = %#x error %v", status, err)
+	}
+	if probe.irq {
+		t.Fatal("SDCC CLEAR did not deassert vectored IRQ")
 	}
 }
 
@@ -813,14 +1046,24 @@ func TestQualcommBootControlProfilesMixedWidthLegacyUARTController(t *testing.T)
 		wordOffsets = append(wordOffsets, 0x4200+relative)
 	}
 	wordOffsets = append(wordOffsets, 0x4200+qualcommLegacyUARTFIFOOffset)
-	device, err := NewQualcommBootControl(QualcommBootControlConfig{
+	config := QualcommBootControlConfig{
 		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
 		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1,
 		WritableOffsets:       wordOffsets,
 		MixedWidthOffsets:     wordOffsets,
 		LegacyUARTControllers: []uint32{0x4200},
-		NANDReady:             NewStatusSignal(),
-	})
+		LegacyUARTReceiveData: []QualcommLegacyUARTReceiveData{{
+			Controller:         0x4200,
+			InterruptSource:    55,
+			DelayInstructions:  1,
+			EchoTransmit:       true,
+			TransmitFrameBytes: 1,
+			TransmitResponse:   []byte{0x6d, 0x00},
+			Data:               []byte{0x3b, 0x00},
+		}},
+		NANDReady: NewStatusSignal(),
+	}
+	device, err := NewQualcommBootControl(config)
 	check(t, err)
 	if err := device.Write(0x4238, Width32, 0); err != nil {
 		t.Fatalf("word-wide legacy UART configuration write: %v", err)
@@ -834,13 +1077,369 @@ func TestQualcommBootControlProfilesMixedWidthLegacyUARTController(t *testing.T)
 	if err := device.Write(0x420c, Width32, 0x100); !errors.Is(err, ErrQualcommBootControlMMIO) {
 		t.Fatalf("multi-byte legacy UART FIFO write error = %v", err)
 	}
+	check(t, device.Write(0x4214, Width32, qualcommLegacyUARTInterruptRXStale))
+	if value, err := device.Read(0x4208, Width32); err != nil ||
+		value != qualcommLegacyUARTStatusTXReady|qualcommLegacyUARTStatusTXEmpty {
+		t.Fatalf("word-wide legacy UART pre-enable status = %#x error %v", value, err)
+	}
+	check(t, device.Write(0x4210, Width32, qualcommLegacyUARTCommandRXEnable))
+	if value, err := device.Read(0x4208, Width32); err != nil ||
+		value != qualcommLegacyUARTStatusTXReady|qualcommLegacyUARTStatusTXEmpty {
+		t.Fatalf("word-wide legacy UART armed status = %#x error %v", value, err)
+	}
+	check(t, device.Advance(1))
+	if value, err := device.Read(0x4210, Width32); err != nil ||
+		value != qualcommLegacyUARTInterruptRXStale {
+		t.Fatalf("word-wide legacy UART masked receive status = %#x error %v", value, err)
+	}
+	if value, err := device.Read(0x0958, Width32); err != nil || value != 1<<23 {
+		t.Fatalf("word-wide legacy UART interrupt source = %#x error %v", value, err)
+	}
 	value, err := device.Read(0x4208, Width32)
-	if err != nil || value != qualcommLegacyUARTStatusTXReady|qualcommLegacyUARTStatusTXEmpty {
+	if err != nil || value != qualcommLegacyUARTStatusRXReady|
+		qualcommLegacyUARTStatusTXReady|qualcommLegacyUARTStatusTXEmpty {
 		t.Fatalf("word-wide legacy UART status = %#x error %v", value, err)
+	}
+	if value, err := device.Read(0x420c, Width32); err != nil || value != 0x3b {
+		t.Fatalf("word-wide legacy UART first receive byte = %#x error %v", value, err)
+	}
+	state, err := device.SaveState()
+	check(t, err)
+	if value, err := device.Read(0x420c, Width32); err != nil || value != 0x00 {
+		t.Fatalf("word-wide legacy UART second receive byte = %#x error %v", value, err)
+	}
+	value, err = device.Read(0x4208, Width32)
+	if err != nil || value != qualcommLegacyUARTStatusTXReady|qualcommLegacyUARTStatusTXEmpty {
+		t.Fatalf("word-wide legacy UART drained status = %#x error %v", value, err)
+	}
+	if value, err := device.Read(0x0958, Width32); err != nil || value != 0 {
+		t.Fatalf("word-wide legacy UART drained interrupt source = %#x error %v", value, err)
+	}
+	check(t, device.Write(0x420c, Width32, 0xa5))
+	if value, err := device.Read(0x420c, Width32); err != nil || value != 0xa5 {
+		t.Fatalf("word-wide legacy UART transmit echo = %#x error %v", value, err)
+	}
+	if value, err := device.Read(0x420c, Width32); err != nil || value != 0x6d {
+		t.Fatalf("word-wide legacy UART transmit response status = %#x error %v", value, err)
+	}
+	if value, err := device.Read(0x420c, Width32); err != nil || value != 0x00 {
+		t.Fatalf("word-wide legacy UART transmit response detail = %#x error %v", value, err)
+	}
+	if value, err := device.Read(0x0958, Width32); err != nil || value != 0 {
+		t.Fatalf("word-wide legacy UART drained echo interrupt source = %#x error %v", value, err)
+	}
+	restored, err := NewQualcommBootControl(config)
+	check(t, err)
+	check(t, restored.LoadState(state))
+	if value, err := restored.Read(0x420c, Width32); err != nil || value != 0x00 {
+		t.Fatalf("restored word-wide legacy UART receive byte = %#x error %v", value, err)
 	}
 	if value, err := device.Read(0x4214, Width32); err != nil || value != 0 {
 		t.Fatalf("word-wide legacy UART idle ISR = %#x error %v", value, err)
 	}
+	for _, receiveData := range [][]QualcommLegacyUARTReceiveData{
+		{{Controller: 0x4000, Data: []byte{1}}},
+		{{Controller: 0x4200}},
+		{{Controller: 0x4200, InterruptSource: 64, Data: []byte{1}}},
+		{{Controller: 0x4200, Data: []byte{1}}, {Controller: 0x4200, Data: []byte{2}}},
+	} {
+		invalid := config
+		invalid.LegacyUARTReceiveData = receiveData
+		if _, err := NewQualcommBootControl(invalid); err == nil {
+			t.Fatalf("accepted invalid legacy UART receive data %#v", receiveData)
+		}
+	}
+}
+
+func TestQualcommBootControlModelsT0CardExchange(t *testing.T) {
+	wordOffsets := make([]uint32, 0, len(qualcommLegacyUARTHalfwordRegisterOffsets)+1)
+	for _, relative := range qualcommLegacyUARTHalfwordRegisterOffsets {
+		wordOffsets = append(wordOffsets, 0x4100+relative)
+	}
+	wordOffsets = append(wordOffsets, 0x4100+qualcommLegacyUARTFIFOOffset)
+	config := QualcommBootControlConfig{
+		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
+		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1,
+		WritableOffsets:       wordOffsets,
+		MixedWidthOffsets:     wordOffsets,
+		LegacyUARTControllers: []uint32{0x4100},
+		LegacyUARTReceiveData: []QualcommLegacyUARTReceiveData{{
+			Controller:      0x4100,
+			InterruptSource: 55,
+			EchoTransmit:    true,
+			T0Card:          true,
+			Data:            []byte{0x3b, 0x00},
+		}},
+		NANDReady: NewStatusSignal(),
+	}
+	newDevice := func() *QualcommBootControl {
+		device, err := NewQualcommBootControl(config)
+		check(t, err)
+		return device
+	}
+	readByte := func(device *QualcommBootControl, want byte) {
+		t.Helper()
+		value, err := device.Read(0x410c, Width32)
+		if err != nil || value != uint32(want) {
+			t.Fatalf("T=0 receive byte = %#x error %v, want %#x", value, err, want)
+		}
+	}
+	writeByte := func(device *QualcommBootControl, value byte) {
+		t.Helper()
+		if err := device.Write(0x410c, Width32, uint32(value)); err != nil {
+			t.Fatalf("T=0 transmit byte %#x: %v", value, err)
+		}
+	}
+
+	device := newDevice()
+	check(t, device.Write(0x4114, Width32, qualcommLegacyUARTInterruptRXStale))
+	check(t, device.Write(0x4110, Width32, qualcommLegacyUARTCommandRXEnable))
+	readByte(device, 0x3b)
+	readByte(device, 0x00)
+
+	for _, value := range []byte{0x00, 0xa4, 0x00, 0x04, 0x02} {
+		writeByte(device, value)
+		readByte(device, value)
+	}
+	readByte(device, 0xa4)
+	writeByte(device, 0x3f)
+	readByte(device, 0x3f)
+
+	state, err := device.SaveState()
+	check(t, err)
+	restored := newDevice()
+	check(t, restored.LoadState(state))
+	writeByte(restored, 0x00)
+	readByte(restored, 0x00)
+	readByte(restored, 0x61)
+	readByte(restored, byte(len(legacyUARTT0MasterFileFCP)))
+
+	for _, value := range []byte{0x00, 0xc0, 0x00, 0x00, byte(len(legacyUARTT0MasterFileFCP))} {
+		writeByte(restored, value)
+		readByte(restored, value)
+	}
+	readByte(restored, 0xc0)
+	for _, value := range legacyUARTT0MasterFileFCP {
+		readByte(restored, value)
+	}
+	readByte(restored, 0x90)
+	readByte(restored, 0x00)
+
+	// P2=0x0c selects the file without returning FCI/FCP data.  Samsung DC18
+	// uses this form after its initial ICCID probe and expects an immediate
+	// success status rather than 61xx followed by GET RESPONSE.
+	for _, value := range []byte{0x00, 0xa4, 0x00, 0x0c, 0x02} {
+		writeByte(restored, value)
+		readByte(restored, value)
+	}
+	readByte(restored, 0xa4)
+	for _, value := range []byte{0x3f, 0x00} {
+		writeByte(restored, value)
+		readByte(restored, value)
+	}
+	readByte(restored, 0x90)
+	readByte(restored, 0x00)
+
+	// Optional personalization EFs are absent on the minimal home-network
+	// profile.  Reporting zero-filled GID/DCK files makes Samsung's SIM-lock
+	// layer treat the card as a mismatching service-provider group.
+	for _, value := range []byte{0x00, 0xa4, 0x00, 0x04, 0x02} {
+		writeByte(restored, value)
+		readByte(restored, value)
+	}
+	readByte(restored, 0xa4)
+	for _, value := range []byte{0x6f, 0x3e} {
+		writeByte(restored, value)
+		readByte(restored, value)
+	}
+	readByte(restored, 0x6a)
+	readByte(restored, 0x82)
+}
+
+func TestLegacyUARTT0SKTelecomSubscriberFilesAreCoherent(t *testing.T) {
+	tests := []struct {
+		file uint16
+		want []byte
+	}{
+		{0x2fe2, []byte{0x98, 0x28, 0x50, 0x51, 0x80, 0x31, 0x10, 0x82, 0x88, 0xf8}},
+		{0x6f07, []byte{0x08, 0x94, 0x05, 0x50, 0x21, 0x43, 0x65, 0x87, 0x09}},
+		{0x6fad, []byte{0x00, 0x00, 0x00, 0x02}},
+		{0x6f78, []byte{0x00, 0x01}},
+		{0x6f7b, bytes.Repeat([]byte{0xff}, 12)},
+	}
+	for _, test := range tests {
+		data, ok := legacyUARTT0FileData(test.file)
+		if !ok || !bytes.Equal(data, test.want) {
+			t.Fatalf("USIM file %#04x = %x/%t, want %x", test.file, data, ok, test.want)
+		}
+		if got := legacyUARTT0FileSize(test.file); got != len(test.want) {
+			t.Fatalf("USIM file %#04x size = %d, want %d", test.file, got, len(test.want))
+		}
+		fcp := legacyUARTT0FileFCP(test.file)
+		if len(fcp) < 27 || binary.BigEndian.Uint16(fcp[25:27]) != uint16(len(test.want)) {
+			t.Fatalf("USIM file %#04x FCP = %x", test.file, fcp)
+		}
+	}
+	for _, file := range []uint16{0x6f2c, 0x6f32, 0x6f3e, 0x6f3f} {
+		if !legacyUARTT0FileAbsent(file) {
+			t.Fatalf("optional personalization file %#04x is present", file)
+		}
+	}
+}
+
+func TestQualcommBootControlPublishesImmediateLegacyUARTReceiveData(t *testing.T) {
+	wordOffsets := make([]uint32, 0, len(qualcommLegacyUARTHalfwordRegisterOffsets)+1)
+	for _, relative := range qualcommLegacyUARTHalfwordRegisterOffsets {
+		wordOffsets = append(wordOffsets, 0x4100+relative)
+	}
+	wordOffsets = append(wordOffsets, 0x4100+qualcommLegacyUARTFIFOOffset)
+	device, err := NewQualcommBootControl(QualcommBootControlConfig{
+		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
+		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1,
+		WritableOffsets:       wordOffsets,
+		MixedWidthOffsets:     wordOffsets,
+		LegacyUARTControllers: []uint32{0x4100},
+		LegacyUARTReceiveData: []QualcommLegacyUARTReceiveData{{
+			Controller: 0x4100, InterruptSource: 55,
+			Data: []byte{0x3b, 0x00},
+		}},
+		NANDReady: NewStatusSignal(),
+	})
+	check(t, err)
+	check(t, device.Write(0x4114, Width32, qualcommLegacyUARTInterruptRXStale))
+	check(t, device.Write(0x4110, Width32, qualcommLegacyUARTCommandRXEnable))
+	if value, err := device.Read(0x4108, Width32); err != nil ||
+		value != qualcommLegacyUARTStatusRXReady|qualcommLegacyUARTStatusTXReady|qualcommLegacyUARTStatusTXEmpty {
+		t.Fatalf("immediate legacy UART status = %#x error %v", value, err)
+	}
+	if value, err := device.Read(0x410c, Width32); err != nil || value != 0x3b {
+		t.Fatalf("immediate legacy UART first byte = %#x error %v", value, err)
+	}
+}
+
+func TestQualcommBootControlPublishesLegacyUARTReceiveDataOnProfiledCommand(t *testing.T) {
+	wordOffsets := make([]uint32, 0, len(qualcommLegacyUARTHalfwordRegisterOffsets)+1)
+	for _, relative := range qualcommLegacyUARTHalfwordRegisterOffsets {
+		wordOffsets = append(wordOffsets, 0x4100+relative)
+	}
+	wordOffsets = append(wordOffsets, 0x4100+qualcommLegacyUARTFIFOOffset)
+	device, err := NewQualcommBootControl(QualcommBootControlConfig{
+		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
+		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1,
+		WritableOffsets:       wordOffsets,
+		MixedWidthOffsets:     wordOffsets,
+		LegacyUARTControllers: []uint32{0x4100},
+		LegacyUARTReceiveData: []QualcommLegacyUARTReceiveData{{
+			Controller: 0x4100, InterruptSource: 55,
+			ReceiveCommand: 0x60, Data: []byte{0x3b, 0x00},
+		}},
+		NANDReady: NewStatusSignal(),
+	})
+	check(t, err)
+	check(t, device.Write(0x4110, Width32, qualcommLegacyUARTCommandRXEnable))
+	if value, readErr := device.Read(0x4108, Width32); readErr != nil ||
+		value != qualcommLegacyUARTStatusTXReady|qualcommLegacyUARTStatusTXEmpty {
+		t.Fatalf("pre-trigger legacy UART status = %#x error %v", value, readErr)
+	}
+	check(t, device.Write(0x4110, Width32, 0x60))
+	if value, readErr := device.Read(0x4108, Width32); readErr != nil ||
+		value != qualcommLegacyUARTStatusRXReady|qualcommLegacyUARTStatusTXReady|qualcommLegacyUARTStatusTXEmpty {
+		t.Fatalf("triggered legacy UART status = %#x error %v", value, readErr)
+	}
+}
+
+func TestQualcommBootControlPublishesLegacyUARTReceiveAfterActivation(t *testing.T) {
+	wordOffsets := make([]uint32, 0, len(qualcommLegacyUARTHalfwordRegisterOffsets)+1)
+	for _, relative := range qualcommLegacyUARTHalfwordRegisterOffsets {
+		wordOffsets = append(wordOffsets, 0x4100+relative)
+	}
+	wordOffsets = append(wordOffsets, 0x4100+qualcommLegacyUARTFIFOOffset)
+	config := QualcommBootControlConfig{
+		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
+		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1,
+		WritableOffsets:       wordOffsets,
+		MixedWidthOffsets:     wordOffsets,
+		LegacyUARTControllers: []uint32{0x4100},
+		LegacyUARTReceiveData: []QualcommLegacyUARTReceiveData{{
+			Controller: 0x4100, InterruptSource: 55,
+			ReceiveCommand: 0x04, ActivationCommand: 0x60,
+			DelayInstructions: 2, Data: []byte{0x3b, 0x00},
+		}},
+		NANDReady: NewStatusSignal(),
+	}
+	newDevice := func() *QualcommBootControl {
+		device, err := NewQualcommBootControl(config)
+		check(t, err)
+		return device
+	}
+
+	device := newDevice()
+	check(t, device.Write(0x4114, Width32, qualcommLegacyUARTInterruptRXStale))
+	check(t, device.Write(0x4110, Width32, 0x04))
+	if value, err := device.Read(0x4108, Width32); err != nil ||
+		value != qualcommLegacyUARTStatusTXReady|qualcommLegacyUARTStatusTXEmpty {
+		t.Fatalf("pre-activation legacy UART status = %#x error %v", value, err)
+	}
+
+	check(t, device.Write(0x4110, Width32, 0x60))
+	if value, err := device.Read(0x4108, Width32); err != nil ||
+		value != qualcommLegacyUARTStatusTXReady|qualcommLegacyUARTStatusTXEmpty {
+		t.Fatalf("post-activation legacy UART status = %#x error %v", value, err)
+	}
+	check(t, device.Advance(1))
+
+	state, err := device.SaveState()
+	check(t, err)
+	restored := newDevice()
+	check(t, restored.LoadState(state))
+	check(t, restored.Advance(1))
+	check(t, restored.Write(0x4110, Width32, 0x04))
+	if value, err := restored.Read(0x4108, Width32); err != nil ||
+		value != qualcommLegacyUARTStatusRXReady|qualcommLegacyUARTStatusTXReady|qualcommLegacyUARTStatusTXEmpty {
+		t.Fatalf("activated legacy UART status = %#x error %v", value, err)
+	}
+}
+
+func TestQualcommBootControlSupportsUARTDMReadSideFIFOAlias(t *testing.T) {
+	wordOffsets := make([]uint32, 0, len(qualcommLegacyUARTHalfwordRegisterOffsets)+1)
+	for _, relative := range qualcommLegacyUARTHalfwordRegisterOffsets {
+		wordOffsets = append(wordOffsets, 0x4100+relative)
+	}
+	wordOffsets = append(wordOffsets, 0x4100+qualcommLegacyUARTFIFOOffset)
+	config := QualcommBootControlConfig{
+		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
+		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1,
+		WritableOffsets:       wordOffsets,
+		MixedWidthOffsets:     wordOffsets,
+		LegacyUARTControllers: []uint32{0x4100},
+		LegacyUARTReceiveData: []QualcommLegacyUARTReceiveData{{
+			Controller: 0x4100, InterruptSource: 55,
+			ReceiveFIFOOffset: 0x10, EchoTransmit: true,
+			Data: []byte{0x3b, 0x00},
+		}},
+		NANDReady: NewStatusSignal(),
+	}
+	device, err := NewQualcommBootControl(config)
+	check(t, err)
+	check(t, device.Write(0x4110, Width32, qualcommLegacyUARTCommandRXEnable))
+	for index, want := range []uint32{0x3b, 0x00} {
+		if value, readErr := device.Read(0x4110, Width32); readErr != nil || value != want {
+			t.Fatalf("UARTDM receive byte %d = %#x error %v", index, value, readErr)
+		}
+	}
+	if value, readErr := device.Read(0x4108, Width32); readErr != nil ||
+		value != qualcommLegacyUARTStatusTXReady|qualcommLegacyUARTStatusTXEmpty {
+		t.Fatalf("drained UARTDM status = %#x error %v", value, readErr)
+	}
+	check(t, device.Write(0x410c, Width32, 0xa5))
+	if value, readErr := device.Read(0x4110, Width32); readErr != nil || value != 0xa5 {
+		t.Fatalf("UARTDM transmit echo = %#x error %v", value, readErr)
+	}
+	state, err := device.SaveState()
+	check(t, err)
+	restored, err := NewQualcommBootControl(config)
+	check(t, err)
+	check(t, restored.LoadState(state))
 }
 
 func TestQualcommBootControlProfilesCompletionEvents(t *testing.T) {
@@ -1230,12 +1829,15 @@ func TestQualcommBootControlProfiledSBICompletesAndClearsStatus(t *testing.T) {
 	check(t, device.Write(0x5008, Width32, 0x01020000))
 	state, err := device.SaveState()
 	check(t, err)
-	// Version 17 ended immediately after the empty register-reset list. Keep
-	// accepting those snapshots while version 18 records immutable SBI response
-	// identity for new saves.
+	// Version 17 continued with the writable-register block immediately after
+	// the empty register-reset list. Keep accepting those snapshots while newer
+	// versions insert SBI response, UART, and grouped-status identities there and
+	// append the periodic-tick state at the end.
 	const legacySBIResponseBlockOffset = 75
-	legacyState := append([]byte(nil), state[:legacySBIResponseBlockOffset]...)
-	legacyState = append(legacyState, state[legacySBIResponseBlockOffset+10:]...)
+	stateWithoutPeriodicTick := state[:len(state)-16]
+	legacyState := append([]byte(nil), stateWithoutPeriodicTick[:legacySBIResponseBlockOffset]...)
+	const newerIdentityBlocks = 10 + 4 + 4 // one SBI response, empty UART/group lists
+	legacyState = append(legacyState, stateWithoutPeriodicTick[legacySBIResponseBlockOffset+newerIdentityBlocks:]...)
 	binary.LittleEndian.PutUint32(legacyState[4:8], 17)
 	legacyRestored, _ := NewQualcommBootControl(config)
 	if err := legacyRestored.LoadState(legacyState); err != nil {
@@ -1307,6 +1909,40 @@ func TestQualcommBootControlProfiledSBICompletesAndClearsStatus(t *testing.T) {
 	check(t, err)
 	if err := mismatchedDevice.LoadState(state); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("mismatched SBI response profile state error = %v", err)
+	}
+}
+
+func TestQualcommBootControlRoutesSBICompletionThroughVectoredGroup(t *testing.T) {
+	vectored, err := NewQualcommVectoredInterruptController(
+		QualcommVectoredInterruptConfig{
+			SourceCount: 49, Bank0Sources: 25, ReverseSourceOrder: true,
+			GroupCount: 1,
+			Groups: [qualcommVICMaximumGroups]QualcommVectoredInterruptGroupConfig{{
+				Source: 7, EnableOffset: 0x20, StatusOffset: 0x94, ValidMask: 0x0f,
+			}},
+		},
+		&interruptLineProbe{},
+	)
+	check(t, err)
+	device, err := NewQualcommBootControl(QualcommBootControlConfig{
+		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
+		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1,
+		SBIControllers:              []uint32{0x5000},
+		SBICompletionStatus:         0x0494,
+		NANDReady:                   NewStatusSignal(),
+		VectoredInterruptController: vectored,
+	})
+	check(t, err)
+
+	// Preserve an unrelated child while the SBI transaction asserts and then
+	// read-clears only completion bit zero in the overlapping group-status word.
+	check(t, vectored.SetGroupedSource(0x94, 0x02, true))
+	check(t, device.Write(0x5008, Width32, 0x01010000))
+	if status, err := device.Read(0x0494, Width32); err != nil || status != 0x03 {
+		t.Fatalf("SBI grouped completion status = %#x error %v", status, err)
+	}
+	if status, err := device.Read(0x0494, Width32); err != nil || status != 0x02 {
+		t.Fatalf("cleared SBI grouped completion status = %#x error %v", status, err)
 	}
 }
 
@@ -1427,6 +2063,63 @@ func TestQualcommBootControlRoutesClockedTimeTickThroughVectoredSource(t *testin
 	check(t, err)
 	if err := mismatch.LoadState(state); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("mismatched timetick route state error = %v", err)
+	}
+}
+
+func TestQualcommBootControlRaisesPeriodicLegacyTimeTickWithoutMatch(t *testing.T) {
+	probe := &interruptLineProbe{}
+	controller := NewQualcommInterruptController(probe)
+	config := QualcommBootControlConfig{
+		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
+		EBIMemoryConfiguration: 0x5680, ClockModeStatus: 1,
+		NANDReady: NewStatusSignal(), InterruptController: controller,
+		TimeTickClock: &QualcommTimeTickClockConfig{
+			InstructionsPerSecond: 1_000,
+			TimeTickHz:            100,
+			PeriodicInterruptHz:   10,
+			InterruptSource:       2,
+		},
+	}
+	device, err := NewQualcommBootControl(config)
+	check(t, err)
+	check(t, controller.Write(qualcommIRQEnable0Offset, Width32, 1<<2))
+	check(t, device.Advance(99))
+	if probe.irq {
+		t.Fatal("periodic timetick fired before its first period")
+	}
+	check(t, device.Advance(1))
+	if !probe.irq || probe.fiq {
+		t.Fatalf("periodic timetick outputs IRQ=%v FIQ=%v", probe.irq, probe.fiq)
+	}
+	if tick, readErr := device.Read(0x5408, Width32); readErr != nil || tick != 10 {
+		t.Fatalf("periodic timetick counter = %#x error %v", tick, readErr)
+	}
+	if status, readErr := controller.Read(qualcommInterruptStatus0Offset, Width32); readErr != nil || status != 1<<2 {
+		t.Fatalf("periodic timetick status = %#x error %v", status, readErr)
+	}
+
+	state, err := device.SaveState()
+	check(t, err)
+	restoredController := NewQualcommInterruptController(&interruptLineProbe{})
+	restoredConfig := config
+	restoredConfig.InterruptController = restoredController
+	restored, err := NewQualcommBootControl(restoredConfig)
+	check(t, err)
+	check(t, restored.LoadState(state))
+	check(t, restoredController.Write(qualcommInterruptClear0Offset, Width32, 1<<2))
+	check(t, restored.Advance(99))
+	if status, _ := restoredController.Read(qualcommInterruptStatus0Offset, Width32); status != 0 {
+		t.Fatalf("restored periodic timetick fired early: %#x", status)
+	}
+	if tick, readErr := restored.Read(0x5408, Width32); readErr != nil || tick != 19 {
+		t.Fatalf("restored periodic timetick counter = %#x error %v", tick, readErr)
+	}
+	check(t, restored.Advance(1))
+	if status, _ := restoredController.Read(qualcommInterruptStatus0Offset, Width32); status != 1<<2 {
+		t.Fatalf("restored periodic timetick status = %#x", status)
+	}
+	if tick, readErr := restored.Read(0x5408, Width32); readErr != nil || tick != 20 {
+		t.Fatalf("restored completed periodic timetick counter = %#x error %v", tick, readErr)
 	}
 }
 

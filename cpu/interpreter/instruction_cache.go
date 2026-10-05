@@ -30,6 +30,7 @@ type instructionCacheLine [instructionCacheLineSize]byte
 type instructionCacheEntry struct {
 	line       instructionCacheLine
 	tag        uint32
+	serial     uint64
 	gen        uint32
 	privileged bool
 	valid      bool
@@ -101,6 +102,7 @@ func (b *Backend) loadInstructionCacheLine(address uint32) (*instructionCacheLin
 func (b *Backend) invalidateInstructionWindow() {
 	b.instructionWindow = nil
 	b.instructionWindowTag = 0
+	b.instructionWindowSerial = 0
 }
 
 func (b *Backend) fillInstructionCacheLine(
@@ -120,12 +122,28 @@ func (b *Backend) fillInstructionCacheLine(
 	entry := b.instructionCacheEntry(mvaLine)
 	// A prefetch or conflicting miss can replace the table entry currently held
 	// by the execution window. Retire that pointer before overwriting the entry.
+	// A translated block is another decoded view of the same VIVT line: once
+	// the line is evicted it must go as well, otherwise a later branch can run
+	// the old decoded instruction without performing the cache miss that would
+	// have exposed newly written backing memory.
+	if entry.valid && entry.gen == b.mappingGen {
+		b.invalidateTranslationRange(entry.tag, instructionCacheLineSize)
+		pid := b.cp15.processID & 0xfe000000
+		if pid != 0 && entry.tag&0xfe000000 == pid {
+			b.invalidateTranslationRange(entry.tag&0x01ffffff, instructionCacheLineSize)
+		}
+	}
 	b.invalidateInstructionWindow()
 	virtualLine := address &^ (instructionCacheLineSize - 1)
 	if err := b.readVirtual(virtualLine, entry.line[:], cpu.PermissionExecute); err != nil {
 		entry.valid = false
 		return nil, false, err
 	}
+	b.instructionCacheSerial++
+	if b.instructionCacheSerial == 0 {
+		b.instructionCacheSerial++
+	}
+	entry.serial = b.instructionCacheSerial
 	entry.tag, entry.gen, entry.privileged, entry.valid = mvaLine, b.mappingGen, privileged, true
 	return &entry.line, true, nil
 }
@@ -139,7 +157,8 @@ func (b *Backend) fetchInstructionCache(address uint32, size uint32) ([]byte, er
 	// Zero is the cold sentinel; adding one is safe because a 32-bit byte
 	// address has only 27 line-number bits. Keeping the sentinel in the tag lets
 	// the hot path be a single equality comparison.
-	windowTag := (address >> instructionCacheLineShift) + 1
+	mvaLine := b.modifiedVirtualAddress(address) &^ (instructionCacheLineSize - 1)
+	windowTag := (mvaLine >> instructionCacheLineShift) + 1
 	offset := address & (instructionCacheLineSize - 1)
 	if offset+size > instructionCacheLineSize {
 		// Aligned ARM and Thumb fetches cannot straddle a 32-byte line, so
@@ -151,7 +170,18 @@ func (b *Backend) fetchInstructionCache(address uint32, size uint32) ([]byte, er
 		)
 	}
 	if b.instructionWindowTag == windowTag {
-		return b.instructionWindow[offset : offset+size], nil
+		entry := b.instructionCacheEntry(mvaLine)
+		if entry != nil && entry.valid && entry.gen == b.mappingGen &&
+			entry.tag == mvaLine && entry.privileged == b.currentlyPrivileged() &&
+			entry.serial == b.instructionWindowSerial &&
+			b.instructionWindow == &entry.line {
+			return b.instructionWindow[offset : offset+size], nil
+		}
+		// The fast pointer can outlive the view that installed it across an
+		// FCSE, privilege, restore, or direct-mapped replacement transition.
+		// Fall through to the authoritative table lookup instead of decoding
+		// bytes from that stale view and attaching guards for the new line.
+		b.invalidateInstructionWindow()
 	}
 
 	line, cacheable, err := b.loadInstructionCacheLine(address)
@@ -175,6 +205,9 @@ func (b *Backend) fetchInstructionCache(address uint32, size uint32) ([]byte, er
 	}
 	b.instructionWindow = line
 	b.instructionWindowTag = windowTag
+	if entry := b.instructionCacheEntry(mvaLine); entry != nil {
+		b.instructionWindowSerial = entry.serial
+	}
 	return line[offset : offset+size], nil
 }
 
@@ -230,7 +263,12 @@ func (b *Backend) restoreInstructionCacheLine(mvaLine uint32, line instructionCa
 	}
 	b.invalidateInstructionWindow()
 	entry := b.instructionCacheEntry(mvaLine)
+	b.instructionCacheSerial++
+	if b.instructionCacheSerial == 0 {
+		b.instructionCacheSerial++
+	}
 	entry.line = line
+	entry.serial = b.instructionCacheSerial
 	entry.tag, entry.gen, entry.privileged, entry.valid =
 		mvaLine, b.mappingGen, b.currentlyPrivileged(), true
 }

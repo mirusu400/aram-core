@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math/bits"
 )
 
 var ErrQualcommADSPMailboxMMIO = errors.New("unsupported Qualcomm ADSP mailbox access")
@@ -15,7 +16,8 @@ const (
 	qualcommADSPWriteRequest        = uint32(0x00000000)
 	qualcommADSPWriteDone           = uint32(0x10000000)
 	qualcommADSPWriteReady          = uint32(0x70000000)
-	qualcommADSPMailboxStateVersion = uint32(2)
+	qualcommADSPMailboxStateVersion = uint32(3)
+	qualcommADSPMailboxDelayedState = uint32(2)
 	qualcommADSPMailboxLegacyState  = uint32(1)
 	qualcommADSPMaxPendingResponses = 4096
 )
@@ -31,6 +33,7 @@ type QualcommADSPMailboxProfile struct {
 	WriteControlOffset uint32
 	ControlRules       []QualcommADSPControlRuleProfile
 	HostCommand        *QualcommADSPHostCommandProfile
+	PeriodicInterrupt  *QualcommADSPPeriodicInterruptProfile
 }
 
 // QualcommADSPControlRuleProfile describes a DSP-visible side effect of an
@@ -41,8 +44,10 @@ type QualcommADSPControlRuleProfile struct {
 	Offset                    uint32
 	Value                     uint32
 	ResponseDelayInstructions uint64
+	Copies                    []QualcommADSPMemoryCopyProfile
 	Writes                    []QualcommADSPMemoryWriteProfile
 	Interrupt                 *QualcommADSPInterruptProfile
+	StartPeriodicInterrupt    bool
 }
 
 // QualcommADSPInterruptProfile routes one DSP response event to the host
@@ -52,6 +57,16 @@ type QualcommADSPControlRuleProfile struct {
 type QualcommADSPInterruptProfile struct {
 	Source                uint8
 	UseVectoredController bool
+}
+
+// QualcommADSPPeriodicInterruptProfile describes a DSP-owned periodic event
+// whose host interrupt starts only after a profiled control rule releases the
+// DSP image. Frequencies are derived from retired guest instructions so runs
+// and restored snapshots remain deterministic.
+type QualcommADSPPeriodicInterruptProfile struct {
+	InstructionsPerSecond uint64
+	InterruptHz           uint64
+	Interrupt             QualcommADSPInterruptProfile
 }
 
 type QualcommADSPMemoryWriteProfile struct {
@@ -93,6 +108,21 @@ func (p QualcommADSPMailboxProfile) validate() error {
 		uint64(p.Address)+uint64(p.Size) > 1<<32 {
 		return fmt.Errorf("invalid Qualcomm ADSP mailbox profile %q", p.ID)
 	}
+	if periodic := p.PeriodicInterrupt; periodic != nil {
+		const maximumInstructionRate = uint64(1) << 48
+		if periodic.InstructionsPerSecond == 0 ||
+			periodic.InstructionsPerSecond > maximumInstructionRate ||
+			periodic.InterruptHz == 0 ||
+			periodic.InterruptHz > periodic.InstructionsPerSecond ||
+			periodic.Interrupt.Source >= 64 {
+			return fmt.Errorf("invalid Qualcomm ADSP periodic interrupt profile %q", p.ID)
+		}
+	}
+	for _, rule := range p.ControlRules {
+		if rule.StartPeriodicInterrupt && p.PeriodicInterrupt == nil {
+			return fmt.Errorf("Qualcomm ADSP control rule starts an unconfigured periodic interrupt")
+		}
+	}
 	return nil
 }
 
@@ -108,6 +138,7 @@ type QualcommADSPMailbox struct {
 	controlRules       map[qualcommADSPControlKey]qualcommADSPControlRule
 	pendingResponses   []qualcommADSPPendingResponse
 	hostCommand        *qualcommADSPHostCommand
+	periodicInterrupt  *qualcommADSPPeriodicInterrupt
 }
 
 type qualcommADSPControlKey struct {
@@ -124,8 +155,10 @@ type qualcommADSPMemoryWrite struct {
 
 type qualcommADSPControlRule struct {
 	delayInstructions uint64
+	copies            []qualcommADSPMemoryCopy
 	writes            []qualcommADSPMemoryWrite
 	interrupt         *qualcommADSPInterrupt
+	startPeriodic     bool
 }
 
 type qualcommADSPPendingResponse struct {
@@ -136,6 +169,14 @@ type qualcommADSPPendingResponse struct {
 type qualcommADSPInterrupt struct {
 	source uint8
 	pulser qualcommInterruptSourcePulser
+}
+
+type qualcommADSPPeriodicInterrupt struct {
+	instructionRate uint64
+	interruptHz     uint64
+	phase           uint64
+	active          bool
+	interrupt       qualcommADSPInterrupt
 }
 
 type qualcommInterruptSourcePulser interface {
@@ -175,6 +216,10 @@ func NewQualcommADSPMailbox(size, writeControlOffset uint32) (*QualcommADSPMailb
 func (d *QualcommADSPMailbox) Reset() error {
 	clear(d.data)
 	d.pendingResponses = nil
+	if d.periodicInterrupt != nil {
+		d.periodicInterrupt.phase = 0
+		d.periodicInterrupt.active = false
+	}
 	return nil
 }
 
@@ -244,6 +289,23 @@ func (d *QualcommADSPMailbox) configureControlRulesWithInterrupts(
 		if _, duplicate := rules[key]; duplicate {
 			return fmt.Errorf("duplicate Qualcomm ADSP control rule at 0x%x value 0x%x", profile.Offset, profile.Value)
 		}
+		copies := make([]qualcommADSPMemoryCopy, 0, len(profile.Copies))
+		for _, copyProfile := range profile.Copies {
+			source := windows[copyProfile.SourceWindowID]
+			destination := windows[copyProfile.DestinationWindowID]
+			if source == nil || destination == nil ||
+				!source.validAccess(copyProfile.SourceOffset, copyProfile.Width) ||
+				!destination.validAccess(copyProfile.DestinationOffset, copyProfile.Width) {
+				return fmt.Errorf("invalid Qualcomm ADSP control-rule memory copy")
+			}
+			copies = append(copies, qualcommADSPMemoryCopy{
+				source:            source,
+				sourceOffset:      copyProfile.SourceOffset,
+				destination:       destination,
+				destinationOffset: copyProfile.DestinationOffset,
+				width:             copyProfile.Width,
+			})
+		}
 		writes := make([]qualcommADSPMemoryWrite, 0, len(profile.Writes))
 		for _, writeProfile := range profile.Writes {
 			window := windows[writeProfile.WindowID]
@@ -260,6 +322,7 @@ func (d *QualcommADSPMailbox) configureControlRulesWithInterrupts(
 		}
 		rule := qualcommADSPControlRule{
 			delayInstructions: profile.ResponseDelayInstructions,
+			copies:            copies,
 			writes:            writes,
 		}
 		if profile.Interrupt != nil {
@@ -282,9 +345,53 @@ func (d *QualcommADSPMailbox) configureControlRulesWithInterrupts(
 				pulser: pulser,
 			}
 		}
+		if profile.StartPeriodicInterrupt {
+			if d.periodicInterrupt == nil {
+				return fmt.Errorf("Qualcomm ADSP control rule starts an unconfigured periodic interrupt")
+			}
+			rule.startPeriodic = true
+		}
 		rules[key] = rule
 	}
 	d.controlRules = rules
+	return nil
+}
+
+func (d *QualcommADSPMailbox) configurePeriodicInterrupt(
+	profile *QualcommADSPPeriodicInterruptProfile,
+	interruptController *QualcommInterruptController,
+	vectoredInterruptController *QualcommVectoredInterruptController,
+) error {
+	if profile == nil {
+		d.periodicInterrupt = nil
+		return nil
+	}
+	if profile.InstructionsPerSecond == 0 || profile.InterruptHz == 0 ||
+		profile.InterruptHz > profile.InstructionsPerSecond {
+		return fmt.Errorf("invalid Qualcomm ADSP periodic interrupt timing")
+	}
+	var pulser qualcommInterruptSourcePulser
+	if profile.Interrupt.UseVectoredController {
+		if vectoredInterruptController != nil {
+			pulser = vectoredInterruptController
+		}
+	} else if interruptController != nil {
+		pulser = interruptController
+	}
+	if pulser == nil {
+		return fmt.Errorf(
+			"Qualcomm ADSP periodic interrupt source %d has no attached interrupt controller",
+			profile.Interrupt.Source,
+		)
+	}
+	d.periodicInterrupt = &qualcommADSPPeriodicInterrupt{
+		instructionRate: profile.InstructionsPerSecond,
+		interruptHz:     profile.InterruptHz,
+		interrupt: qualcommADSPInterrupt{
+			source: profile.Interrupt.Source,
+			pulser: pulser,
+		},
+	}
 	return nil
 }
 
@@ -308,10 +415,27 @@ func (d *QualcommADSPMailbox) processControlRule(offset, value uint32) error {
 }
 
 func (d *QualcommADSPMailbox) applyControlRule(rule qualcommADSPControlRule) error {
+	for _, operation := range rule.copies {
+		value, err := operation.source.Read(operation.sourceOffset, operation.width)
+		if err != nil {
+			return fmt.Errorf("read Qualcomm ADSP control-response payload: %w", err)
+		}
+		if err := operation.destination.Write(
+			operation.destinationOffset,
+			operation.width,
+			value,
+		); err != nil {
+			return fmt.Errorf("write Qualcomm ADSP control-response payload: %w", err)
+		}
+	}
 	for _, operation := range rule.writes {
 		if err := operation.window.Write(operation.offset, operation.width, operation.value); err != nil {
 			return fmt.Errorf("write Qualcomm ADSP control response: %w", err)
 		}
+	}
+	if rule.startPeriodic && !d.periodicInterrupt.active {
+		d.periodicInterrupt.phase = 0
+		d.periodicInterrupt.active = true
 	}
 	if rule.interrupt != nil {
 		if err := rule.interrupt.pulser.PulseSource(rule.interrupt.source); err != nil {
@@ -326,21 +450,49 @@ func (d *QualcommADSPMailbox) applyControlRule(rule qualcommADSPControlRule) err
 // limiting delivery to one response prevents multiple queued commands from
 // collapsing into one sticky interrupt and gives the host ISR time to unwind.
 func (d *QualcommADSPMailbox) Advance(retiredInstructions uint64) error {
-	if retiredInstructions == 0 || len(d.pendingResponses) == 0 {
+	if retiredInstructions == 0 {
 		return nil
 	}
-	pending := &d.pendingResponses[0]
-	if retiredInstructions < pending.remainingInstructions {
-		pending.remainingInstructions -= retiredInstructions
+	if len(d.pendingResponses) != 0 {
+		pending := &d.pendingResponses[0]
+		if retiredInstructions < pending.remainingInstructions {
+			pending.remainingInstructions -= retiredInstructions
+		} else {
+			key := pending.key
+			d.pendingResponses = d.pendingResponses[1:]
+			rule, known := d.controlRules[key]
+			if !known || rule.delayInstructions == 0 {
+				return fmt.Errorf("invalid Qualcomm ADSP pending response")
+			}
+			if err := d.applyControlRule(rule); err != nil {
+				return err
+			}
+		}
+	}
+	periodic := d.periodicInterrupt
+	if periodic == nil || !periodic.active {
 		return nil
 	}
-	key := pending.key
-	d.pendingResponses = d.pendingResponses[1:]
-	rule, known := d.controlRules[key]
-	if !known || rule.delayInstructions == 0 {
-		return fmt.Errorf("invalid Qualcomm ADSP pending response")
+	high, low := bits.Mul64(retiredInstructions, periodic.interruptHz)
+	low, carry := bits.Add64(low, periodic.phase, 0)
+	high, carry = bits.Add64(high, 0, carry)
+	if carry != 0 {
+		return fmt.Errorf("Qualcomm ADSP periodic interrupt advance overflow")
 	}
-	return d.applyControlRule(rule)
+	quotientHigh, remainder := bits.Div64(0, high, periodic.instructionRate)
+	quotientLow, remainder := bits.Div64(remainder, low, periodic.instructionRate)
+	periodic.phase = remainder
+	if quotientHigh == 0 && quotientLow == 0 {
+		return nil
+	}
+	if err := periodic.interrupt.pulser.PulseSource(periodic.interrupt.source); err != nil {
+		return fmt.Errorf(
+			"pulse Qualcomm ADSP periodic interrupt source %d: %w",
+			periodic.interrupt.source,
+			err,
+		)
+	}
+	return nil
 }
 
 func (d *QualcommADSPMailbox) configureHostCommand(
@@ -450,12 +602,74 @@ func (d *QualcommADSPMailbox) SaveState() ([]byte, error) {
 		_ = binary.Write(&output, binary.LittleEndian, pending.key.value)
 		_ = binary.Write(&output, binary.LittleEndian, pending.remainingInstructions)
 	}
+	var periodicActive uint32
+	var periodicPhase uint64
+	if d.periodicInterrupt != nil {
+		if d.periodicInterrupt.active {
+			periodicActive = 1
+		}
+		periodicPhase = d.periodicInterrupt.phase
+	}
+	_ = binary.Write(&output, binary.LittleEndian, periodicActive)
+	_ = binary.Write(&output, binary.LittleEndian, uint32(0))
+	_ = binary.Write(&output, binary.LittleEndian, periodicPhase)
 	return output.Bytes(), nil
 }
 
 func (d *QualcommADSPMailbox) LoadState(state []byte) error {
 	if len(state) < 20 || string(state[:4]) != "QAMB" ||
 		binary.LittleEndian.Uint32(state[4:8]) != qualcommADSPMailboxStateVersion ||
+		binary.LittleEndian.Uint32(state[8:12]) != d.writeControlOffset ||
+		binary.LittleEndian.Uint32(state[12:16]) != uint32(len(d.data)) {
+		return ErrInvalidState
+	}
+	dataEnd := 16 + len(d.data)
+	if dataEnd+4 > len(state) {
+		return ErrInvalidState
+	}
+	count := binary.LittleEndian.Uint32(state[dataEnd : dataEnd+4])
+	if count > qualcommADSPMaxPendingResponses ||
+		uint64(dataEnd)+4+uint64(count)*16+16 != uint64(len(state)) {
+		return ErrInvalidState
+	}
+	pendingResponses := make([]qualcommADSPPendingResponse, 0, count)
+	offset := dataEnd + 4
+	for index := uint32(0); index < count; index++ {
+		key := qualcommADSPControlKey{
+			offset: binary.LittleEndian.Uint32(state[offset : offset+4]),
+			value:  binary.LittleEndian.Uint32(state[offset+4 : offset+8]),
+		}
+		remaining := binary.LittleEndian.Uint64(state[offset+8 : offset+16])
+		rule, known := d.controlRules[key]
+		if !known || rule.delayInstructions == 0 || remaining == 0 ||
+			remaining > rule.delayInstructions {
+			return ErrInvalidState
+		}
+		pendingResponses = append(pendingResponses, qualcommADSPPendingResponse{
+			key: key, remainingInstructions: remaining,
+		})
+		offset += 16
+	}
+	periodicActive := binary.LittleEndian.Uint32(state[offset : offset+4])
+	periodicReserved := binary.LittleEndian.Uint32(state[offset+4 : offset+8])
+	periodicPhase := binary.LittleEndian.Uint64(state[offset+8 : offset+16])
+	if periodicActive > 1 || periodicReserved != 0 ||
+		(d.periodicInterrupt == nil && (periodicActive != 0 || periodicPhase != 0)) ||
+		(d.periodicInterrupt != nil && periodicPhase >= d.periodicInterrupt.instructionRate) {
+		return ErrInvalidState
+	}
+	copy(d.data, state[16:dataEnd])
+	d.pendingResponses = pendingResponses
+	if d.periodicInterrupt != nil {
+		d.periodicInterrupt.active = periodicActive != 0
+		d.periodicInterrupt.phase = periodicPhase
+	}
+	return nil
+}
+
+func (d *QualcommADSPMailbox) loadDelayedStateSubset(state []byte) error {
+	if len(state) < 20 || string(state[:4]) != "QAMB" ||
+		binary.LittleEndian.Uint32(state[4:8]) != qualcommADSPMailboxDelayedState ||
 		binary.LittleEndian.Uint32(state[8:12]) != d.writeControlOffset ||
 		binary.LittleEndian.Uint32(state[12:16]) != uint32(len(d.data)) {
 		return ErrInvalidState
@@ -489,6 +703,10 @@ func (d *QualcommADSPMailbox) LoadState(state []byte) error {
 	}
 	copy(d.data, state[16:dataEnd])
 	d.pendingResponses = pendingResponses
+	if d.periodicInterrupt != nil {
+		d.periodicInterrupt.active = false
+		d.periodicInterrupt.phase = 0
+	}
 	return nil
 }
 
@@ -503,7 +721,15 @@ func (d *QualcommADSPMailbox) LoadStateSubset(state []byte) error {
 			binary.LittleEndian.Uint32(state[12:16]) == uint32(len(d.data)) {
 			copy(d.data, state[16:])
 			d.pendingResponses = nil
+			if d.periodicInterrupt != nil {
+				d.periodicInterrupt.active = false
+				d.periodicInterrupt.phase = 0
+			}
 			return nil
+		}
+		if len(state) >= 8 &&
+			binary.LittleEndian.Uint32(state[4:8]) == qualcommADSPMailboxDelayedState {
+			return d.loadDelayedStateSubset(state)
 		}
 		return d.LoadState(state)
 	}
@@ -516,6 +742,10 @@ func (d *QualcommADSPMailbox) LoadStateSubset(state []byte) error {
 	}
 	copy(d.data, state[16:])
 	d.pendingResponses = nil
+	if d.periodicInterrupt != nil {
+		d.periodicInterrupt.active = false
+		d.periodicInterrupt.phase = 0
+	}
 	control := binary.LittleEndian.Uint32(
 		d.data[int(d.writeControlOffset) : int(d.writeControlOffset)+4],
 	)

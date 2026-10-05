@@ -13,6 +13,7 @@ import (
 func (b *Backend) accessAttribution() cpu.MemoryAccessContext {
 	return cpu.MemoryAccessContext{
 		InstructionAddress: b.instructionAddress,
+		Instruction:        b.instructionRaw,
 		LinkAddress:        b.regs[cpu.RegisterLR],
 		StackAddress:       b.regs[cpu.RegisterSP],
 		Mode:               b.mode,
@@ -325,6 +326,18 @@ func (b *Backend) read16(address uint32, permission cpu.Permissions) (uint16, er
 }
 
 func (b *Backend) read32(address uint32, permission cpu.Permissions) (uint32, error) {
+	// ARMv5 treats an unaligned word load as an aligned bus read followed by
+	// a byte-lane rotation when CP15 alignment checking is disabled. Keeping
+	// this at the scalar boundary also makes direct RAM and semantic system-bus
+	// accesses agree.
+	if lane := address & 3; lane != 0 && b.cp15.control&(1<<1) == 0 {
+		value, err := b.read32(address&^3, permission)
+		if err != nil {
+			return 0, err
+		}
+		shift := lane * 8
+		return value>>shift | value<<(32-shift), nil
+	}
 	if b.physicalAccess {
 		data := b.readScratch[:4]
 		if b.mmuEnabled() {
@@ -520,6 +533,12 @@ func (b *Backend) write16(address uint32, value uint16, permission cpu.Permissio
 }
 
 func (b *Backend) write32(address, value uint32, permission cpu.Permissions) error {
+	// With CP15.A clear, ARM9 word stores drive an aligned word transfer; the
+	// low address bits select no byte lane. Real handset firmware relies on
+	// this while updating packed bootstrap records.
+	if address&3 != 0 && b.cp15.control&(1<<1) == 0 {
+		address &^= 3
+	}
 	if b.physicalAccess {
 		data := b.writeScratch[:4]
 		binary.LittleEndian.PutUint32(data, value)

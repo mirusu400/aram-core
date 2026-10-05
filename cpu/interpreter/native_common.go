@@ -83,10 +83,9 @@ func (b *Backend) interruptLinesBase() uintptr {
 }
 
 // memAccess describes one ARM or Thumb single load/store for the emitters'
-// inline software-TLB path. The interpreter's deliberately linear unaligned
-// access is reproduced exactly: the host load/store is unaligned-capable and
-// the emitted page-crossing check sends anything that would straddle two pages
-// back to the interpreter. postIndex leaves the access at the original base;
+// inline software-TLB path. wordAlign selects ARMv5's CP15.A-clear word
+// semantics: align a 32-bit transfer down, and rotate an unaligned load by its
+// original byte lane. postIndex leaves the access at the original base;
 // writeback applies the decoded index/offset only after a successful access.
 type memAccess struct {
 	store          bool   // store rather than load
@@ -103,6 +102,7 @@ type memAccess struct {
 	absolute       bool   // the address is exactly offset (PC-relative literal load)
 	postIndex      bool   // access base, then apply index/offset for writeback
 	writeback      bool   // commit the indexed address to base after a successful access
+	wordAlign      bool   // CP15.A is clear: align words and rotate word loads
 }
 
 // multiAccess describes one ARM or Thumb multi-register transfer for the
@@ -124,6 +124,7 @@ type multiAccess struct {
 	writeback       bool     // write a final address back to base
 	writebackOffset int32    // final base relative to the transfer start
 	loadPC          bool     // final loaded word branches and may switch ARM/Thumb
+	wordAlign       bool     // CP15.A is clear: align each transferred word
 }
 
 // nativeARMDataOp is the decoded subset shared by the x86-64 and AArch64 ARM

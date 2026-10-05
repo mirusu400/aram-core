@@ -31,6 +31,30 @@ func TestMixedWidthLatchedRegisterMergesNarrowWrites(t *testing.T) {
 	}
 }
 
+func TestMixedWidthLatchedRegisterAllowsProfiledSubwordOffsets(t *testing.T) {
+	device, err := NewMixedWidthLatchedRegisterWithSubwordOffsets(
+		[]Width{Width32, Width16},
+		0x12345678,
+	)
+	check(t, err)
+	if got, err := device.Read(2, Width16); err != nil || got != 0x1234 {
+		t.Fatalf("upper halfword = %#x error %v", got, err)
+	}
+	check(t, device.Write(2, Width16, 0xabcd))
+	if got, err := device.Read(0, Width32); err != nil || got != 0xabcd5678 {
+		t.Fatalf("word after upper-half write = %#x error %v", got, err)
+	}
+	if _, err := device.Read(1, Width16); !errors.Is(err, ErrMixedWidthLatchedRegisterMMIO) {
+		t.Fatalf("unaligned halfword read error = %v", err)
+	}
+	state, err := device.SaveState()
+	check(t, err)
+	lowOnly, _ := NewMixedWidthLatchedRegister([]Width{Width32, Width16}, 0x12345678)
+	if err := lowOnly.LoadState(state); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("mismatched subword-offset state error = %v", err)
+	}
+}
+
 func TestMixedWidthLatchedRegisterRejectsInvalidConfiguration(t *testing.T) {
 	for _, widths := range [][]Width{
 		nil,

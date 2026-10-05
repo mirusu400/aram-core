@@ -17,6 +17,7 @@ var ErrSparseWordRegistersMMIO = errors.New("unsupported sparse word register")
 type SparseWordRegisters struct {
 	offsets   []uint32
 	resets    map[uint32]uint32
+	readClear map[uint32]struct{}
 	registers map[uint32]uint32
 }
 
@@ -26,8 +27,9 @@ type SparseWordRegisterReset struct {
 }
 
 type SparseWordRegistersConfig struct {
-	Offsets []uint32
-	Resets  []SparseWordRegisterReset
+	Offsets          []uint32
+	Resets           []SparseWordRegisterReset
+	ReadClearOffsets []uint32
 }
 
 func NewSparseWordRegisters(offsets []uint32) (*SparseWordRegisters, error) {
@@ -57,7 +59,17 @@ func NewSparseWordRegistersWithConfig(config SparseWordRegistersConfig) (*Sparse
 		}
 		resets[reset.Offset] = reset.Value
 	}
-	device := &SparseWordRegisters{offsets: ordered, resets: resets}
+	readClear := make(map[uint32]struct{}, len(config.ReadClearOffsets))
+	for _, offset := range config.ReadClearOffsets {
+		if _, ok := allowed[offset]; !ok {
+			return nil, fmt.Errorf("sparse word read-clear register at unsupported offset 0x%x", offset)
+		}
+		if _, duplicate := readClear[offset]; duplicate {
+			return nil, fmt.Errorf("duplicate sparse word read-clear register at 0x%x", offset)
+		}
+		readClear[offset] = struct{}{}
+	}
+	device := &SparseWordRegisters{offsets: ordered, resets: resets, readClear: readClear}
 	_ = device.Reset()
 	return device, nil
 }
@@ -74,6 +86,9 @@ func (d *SparseWordRegisters) Read(offset uint32, width Width) (uint32, error) {
 	value, ok := d.registers[offset]
 	if width != Width32 || !ok {
 		return 0, fmt.Errorf("%w: read%d at 0x%x", ErrSparseWordRegistersMMIO, width*8, offset)
+	}
+	if _, clear := d.readClear[offset]; clear {
+		d.registers[offset] = 0
 	}
 	return value, nil
 }
@@ -92,11 +107,16 @@ func (d *SparseWordRegisters) Write(offset uint32, width Width, value uint32) er
 func (d *SparseWordRegisters) SaveState() ([]byte, error) {
 	var output bytes.Buffer
 	output.WriteString("SWRF")
-	_ = binary.Write(&output, binary.LittleEndian, uint32(1))
+	_ = binary.Write(&output, binary.LittleEndian, uint32(2))
 	_ = binary.Write(&output, binary.LittleEndian, uint32(len(d.offsets)))
 	for _, offset := range d.offsets {
 		_ = binary.Write(&output, binary.LittleEndian, offset)
 		_ = binary.Write(&output, binary.LittleEndian, d.registers[offset])
+		var flags uint32
+		if _, clear := d.readClear[offset]; clear {
+			flags = 1
+		}
+		_ = binary.Write(&output, binary.LittleEndian, flags)
 	}
 	return output.Bytes(), nil
 }
@@ -106,8 +126,11 @@ func (d *SparseWordRegisters) LoadState(state []byte) error {
 	var magic [4]byte
 	var version, count uint32
 	if _, err := io.ReadFull(reader, magic[:]); err != nil || string(magic[:]) != "SWRF" ||
-		binary.Read(reader, binary.LittleEndian, &version) != nil || version != 1 ||
+		binary.Read(reader, binary.LittleEndian, &version) != nil || version != 1 && version != 2 ||
 		binary.Read(reader, binary.LittleEndian, &count) != nil || int(count) != len(d.offsets) {
+		return ErrInvalidState
+	}
+	if version == 1 && len(d.readClear) != 0 {
 		return ErrInvalidState
 	}
 	registers := make(map[uint32]uint32, len(d.offsets))
@@ -116,6 +139,16 @@ func (d *SparseWordRegisters) LoadState(state []byte) error {
 		if binary.Read(reader, binary.LittleEndian, &offset) != nil || offset != wantOffset ||
 			binary.Read(reader, binary.LittleEndian, &value) != nil {
 			return ErrInvalidState
+		}
+		if version == 2 {
+			var flags uint32
+			if binary.Read(reader, binary.LittleEndian, &flags) != nil || flags&^uint32(1) != 0 {
+				return ErrInvalidState
+			}
+			_, wantReadClear := d.readClear[offset]
+			if (flags&1 != 0) != wantReadClear {
+				return ErrInvalidState
+			}
 		}
 		registers[d.offsets[index]] = value
 	}

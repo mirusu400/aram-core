@@ -256,6 +256,53 @@ func TestSparseRAMStateRejectsNonCanonicalZeroPage(t *testing.T) {
 	}
 }
 
+func TestBusMemoryWriteResponseAcknowledgesExactSharedMemoryRequest(t *testing.T) {
+	bus := NewBus()
+	check(t, bus.MapSparseRAM("adsp", 0x70000000, 0x10000))
+	check(t, bus.configureMemoryWriteResponses("adsp", []MemoryWriteResponseProfile{
+		{
+			MemoryID: "adsp", Offset: 0x2f3a, Width: Width16,
+			Request: 2,
+			Writes: []MemoryResponseWriteProfile{{
+				Offset: 0x2f3a, Width: Width16, Value: 0,
+			}},
+		},
+		{
+			MemoryID: "adsp", Offset: 0x2f30, Width: Width16,
+			Request: 0x0100,
+			Writes: []MemoryResponseWriteProfile{
+				{Offset: 0x2f30, Width: Width16, Value: 0},
+				{Offset: 0x2f3a, Width: Width16, Value: 1},
+			},
+		},
+	}))
+
+	request := []byte{2, 0}
+	check(t, bus.Write(0x70002f3a, request, cpu.PermissionWrite))
+	response := []byte{0xff, 0xff}
+	check(t, bus.Read(0x70002f3a, response, cpu.PermissionRead))
+	if !bytes.Equal(response, []byte{0, 0}) {
+		t.Fatalf("shared-memory response = %x, want 0000", response)
+	}
+	check(t, bus.Write(0x70002f30, []byte{0, 1}, cpu.PermissionWrite))
+	check(t, bus.Read(0x70002f30, response, cpu.PermissionRead))
+	if !bytes.Equal(response, []byte{0, 0}) {
+		t.Fatalf("shared-memory command response = %x, want 0000", response)
+	}
+	check(t, bus.Read(0x70002f3a, response, cpu.PermissionRead))
+	if !bytes.Equal(response, []byte{1, 0}) {
+		t.Fatalf("shared-memory ready response = %x, want 0100", response)
+	}
+
+	unmatched := []byte{3, 0}
+	check(t, bus.Write(0x70002f3a, unmatched, cpu.PermissionWrite))
+	clear(response)
+	check(t, bus.Read(0x70002f3a, response, cpu.PermissionRead))
+	if !bytes.Equal(response, unmatched) {
+		t.Fatalf("unmatched shared-memory write = %x, want %x", response, unmatched)
+	}
+}
+
 func TestBusResetAndStateRoundTripAreDeterministic(t *testing.T) {
 	bus := NewBus()
 	check(t, bus.MapRAM("ram", 0x1000, 0x10))
@@ -397,6 +444,14 @@ func TestBusReadMemoryKeepsHostInspectionOffDevicesAndObservers(t *testing.T) {
 	if observed != 0 {
 		t.Fatalf("host read notified the memory observer %d times", observed)
 	}
+	check(t, bus.WriteMemory(0x1ffc, []byte{8, 7, 6, 5, 4, 3, 2, 1}, cpu.PermissionWrite))
+	check(t, bus.ReadMemory(0x1ffc, span, cpu.PermissionRead))
+	if want := []byte{8, 7, 6, 5, 4, 3, 2, 1}; !bytes.Equal(span, want) {
+		t.Fatalf("region-crossing host write = %v, want %v", span, want)
+	}
+	if observed != 0 {
+		t.Fatalf("host write notified the memory observer %d times", observed)
+	}
 
 	for _, test := range []struct {
 		name    string
@@ -417,6 +472,9 @@ func TestBusReadMemoryKeepsHostInspectionOffDevicesAndObservers(t *testing.T) {
 				t.Fatalf("host read error = %v", err)
 			}
 		})
+	}
+	if err := bus.WriteMemory(0x3000, make([]byte, 4), cpu.PermissionWrite); !errors.Is(err, cpu.ErrInvalidAddress) {
+		t.Fatalf("host write to MMIO error = %v", err)
 	}
 	if device.reads != 0 {
 		t.Fatalf("host read reached the device %d times", device.reads)

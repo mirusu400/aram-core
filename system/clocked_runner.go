@@ -109,4 +109,14 @@ func (r *ClockedRunner) Run(
 	return cpu.Result{Reason: cpu.StopBudget, Instructions: total, PC: address}
 }
 
+func (r *ClockedRunner) ActiveHLEInvocation() (HLEInvocation, bool) {
+	runner, ok := r.runner.(interface {
+		ActiveInvocation() (HLEInvocation, bool)
+	})
+	if !ok {
+		return HLEInvocation{}, false
+	}
+	return runner.ActiveInvocation()
+}
+
 var _ ExecutionRunner = (*ClockedRunner)(nil)
