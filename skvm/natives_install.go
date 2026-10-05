@@ -39,10 +39,17 @@ func (vm *VM) installCoreNatives() {
 			}
 			className, _ := classObject.Native.(string)
 			resourceName := strings.TrimPrefix(strings.ReplaceAll(name, `\`, "/"), "/")
+			rootName := resourceName
 			if !strings.HasPrefix(name, "/") && strings.Contains(className, "/") {
 				resourceName = path.Join(path.Dir(className), resourceName)
 			}
 			data, ok := vm.resource(resourceName)
+			// Handset CLDC titles also use a host class (often Runtime)
+			// to open a resource stored at the JAR root. Keep a real
+			// package-relative resource first when one exists.
+			if !ok && vm.classes[className] == nil && strings.HasPrefix(className, "java/") {
+				data, ok = vm.resource(rootName)
+			}
 			if !ok {
 				return ReferenceValue(0), true, nil
 			}
