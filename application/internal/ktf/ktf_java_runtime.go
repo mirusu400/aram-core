@@ -286,6 +286,9 @@ func (r *Runtime) handleClassMethod(
 // name. Keep a root fallback because some WIPI titles omit the leading slash
 // even for resources placed at the JAR root.
 func javaClassResourceCandidates(className, requested string) []string {
+	// A script may concatenate a NUL-terminated token with a suffix,
+	// producing a name such as "scenario/logo\x00.txt".
+	requested = strings.ReplaceAll(requested, "\x00", "")
 	requested = strings.ReplaceAll(requested, `\`, "/")
 	absolute := strings.HasPrefix(requested, "/")
 	name := path.Clean(strings.TrimPrefix(requested, "/"))

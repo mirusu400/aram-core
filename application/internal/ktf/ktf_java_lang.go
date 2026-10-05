@@ -75,8 +75,9 @@ func (r *Runtime) handleIntegerMethod(
 				"java/lang/NumberFormatException",
 			)
 		}
+		// Some WIPI scripts pass a NUL-terminated numeric token.
 		value, parseErr := strconv.ParseInt(
-			r.javaStringValue(text),
+			strings.TrimRight(r.javaStringValue(text), "\x00"),
 			int(radix),
 			32,
 		)

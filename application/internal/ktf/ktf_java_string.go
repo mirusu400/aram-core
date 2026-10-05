@@ -165,10 +165,9 @@ func (r *Runtime) handleStringMethod(
 			return 0, valueErr
 		}
 		encoding := javaCharsetEncoding(r.javaStringValue(charset))
-		value, valueErr = r.Services.Text.Decode(
-			trimHandsetStringBytes(data, encoding),
-			encoding,
-		)
+		// Scripts built from fixed-size byte buffers locate the NUL
+		// themselves with String.indexOf(0).
+		value, valueErr = r.Services.Text.Decode(data, encoding)
 		if valueErr != nil {
 			return 0, valueErr
 		}

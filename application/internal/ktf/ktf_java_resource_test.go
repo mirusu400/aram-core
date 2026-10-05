@@ -26,6 +26,11 @@ func TestJavaClassResourceCandidates(t *testing.T) {
 			want: []string{"sound/title1.mmf"},
 		},
 		{
+			name:  "NUL in script resource name",
+			class: "GameScript", requested: "scenario/logo\x00.txt",
+			want: []string{"scenario/logo.txt"},
+		},
+		{
 			name:  "escaping root",
 			class: "sook/Utils/CSound", requested: "../secret",
 		},

@@ -88,3 +88,42 @@ func TestKTFStringByteConstructorStopsAtNUL(t *testing.T) {
 		t.Fatalf("UTF-16 constructor produced %q, want %q", got, "AB")
 	}
 }
+
+func TestKTFCharsetStringKeepsNULForScriptLineLength(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	data := []byte{'D', 'R', 'A', 'W', 0, 0}
+	array, err := runtime.NewJavaArray("[B", uint32(len(data)), 1)
+	check(t, err)
+	check(t, runtime.CPU.WriteMemory(readU32(t, runtime, array)+8, data))
+	charset := newJavaString(t, runtime, "KSC5601")
+	instance, err := runtime.newJavaInstance("java/lang/String", 0)
+	check(t, err)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, instance))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, array))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, charset))
+	_, err = runtime.handleStringMethod("<init>", "([BLjava/lang/String;)V")
+	check(t, err)
+	if got := runtime.javaStringValue(instance); got != "DRAW\x00\x00" {
+		t.Fatalf("charset string = %q, want NUL-padded script line", got)
+	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, instance))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 0))
+	end, err := runtime.handleStringMethod("indexOf", "(I)I")
+	check(t, err)
+	if end != 4 {
+		t.Fatalf("script line NUL index = %d, want 4", end)
+	}
+}
+
+func TestKTFIntegerParseIntAcceptsNULTerminatedToken(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	token := newJavaString(t, runtime, "16\x00")
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, token))
+	value, err := runtime.handleIntegerMethod("parseInt", "(Ljava/lang/String;)I")
+	check(t, err)
+	if value != 16 {
+		t.Fatalf("parseInt(16\\0) = %d, want 16", value)
+	}
+}
