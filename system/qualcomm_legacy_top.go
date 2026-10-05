@@ -18,19 +18,23 @@ const (
 var ErrQualcommLegacyTopMMIO = errors.New("unsupported Qualcomm legacy top-page register")
 
 type QualcommLegacyTopConfig struct {
-	Version         uint32
-	Identification  uint32
-	WritableOffsets []uint32
+	Version                   uint32
+	Identification            uint32
+	WritableOffsets           []uint32
+	VectoredInterruptOffset   uint32
+	VectoredInterruptAperture Device
 }
 
 // QualcommLegacyTopPage models the single read-only identification register
 // selected by the legacy MSM chip-family path. Its address is at the top of
 // the 32-bit physical space; all other top-page accesses remain faults.
 type QualcommLegacyTopPage struct {
-	version        uint32
-	identification uint32
-	writable       []uint32
-	values         map[uint32]uint32
+	version                   uint32
+	identification            uint32
+	writable                  []uint32
+	values                    map[uint32]uint32
+	vectoredInterruptOffset   uint32
+	vectoredInterruptAperture Device
 }
 
 func NewQualcommLegacyTopPage(config QualcommLegacyTopConfig) *QualcommLegacyTopPage {
@@ -48,9 +52,27 @@ func NewQualcommLegacyTopPageWithConfig(
 	if err != nil {
 		return nil, err
 	}
+	if config.VectoredInterruptAperture != nil &&
+		(config.VectoredInterruptOffset%4 != 0 ||
+			config.VectoredInterruptOffset+QualcommVectoredInterruptControllerWindowSize > QualcommLegacyTopWindowSize) {
+		return nil, fmt.Errorf(
+			"%w: invalid vectored interrupt alias offset 0x%x",
+			ErrQualcommLegacyTopMMIO,
+			config.VectoredInterruptOffset,
+		)
+	}
+	if config.VectoredInterruptAperture == nil && config.VectoredInterruptOffset != 0 {
+		return nil, fmt.Errorf(
+			"%w: vectored interrupt alias offset 0x%x has no aperture",
+			ErrQualcommLegacyTopMMIO,
+			config.VectoredInterruptOffset,
+		)
+	}
 	page := &QualcommLegacyTopPage{
 		version: config.Version, identification: config.Identification,
 		writable: writable, values: make(map[uint32]uint32, len(writable)),
+		vectoredInterruptOffset:   config.VectoredInterruptOffset,
+		vectoredInterruptAperture: config.VectoredInterruptAperture,
 	}
 	_ = page.Reset()
 	return page, nil
@@ -84,6 +106,14 @@ func (d *QualcommLegacyTopPage) Reset() error {
 }
 
 func (d *QualcommLegacyTopPage) Read(offset uint32, width Width) (uint32, error) {
+	if d.vectoredInterruptAperture != nil &&
+		offset >= d.vectoredInterruptOffset &&
+		offset < d.vectoredInterruptOffset+QualcommVectoredInterruptControllerWindowSize {
+		return d.vectoredInterruptAperture.Read(
+			QualcommVectoredInterruptControllerBaseOffset+offset-d.vectoredInterruptOffset,
+			width,
+		)
+	}
 	if width == Width32 {
 		if value, ok := d.values[offset]; ok {
 			return value, nil
@@ -102,6 +132,15 @@ func (d *QualcommLegacyTopPage) Read(offset uint32, width Width) (uint32, error)
 }
 
 func (d *QualcommLegacyTopPage) Write(offset uint32, width Width, value uint32) error {
+	if d.vectoredInterruptAperture != nil &&
+		offset >= d.vectoredInterruptOffset &&
+		offset < d.vectoredInterruptOffset+QualcommVectoredInterruptControllerWindowSize {
+		return d.vectoredInterruptAperture.Write(
+			QualcommVectoredInterruptControllerBaseOffset+offset-d.vectoredInterruptOffset,
+			width,
+			value,
+		)
+	}
 	if width == Width32 {
 		if _, ok := d.values[offset]; ok {
 			d.values[offset] = value

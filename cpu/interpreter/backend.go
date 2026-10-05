@@ -269,6 +269,7 @@ type Backend struct {
 	// which is cheaper than building the whole attribution per instruction;
 	// see accessAttribution.
 	instructionAddress uint32
+	instructionRaw     uint32
 	// readScratch and writeScratch back the width-sized transfers a bus-backed
 	// access makes. A local array would be handed to an interface method and so
 	// escape to the heap, putting an allocation on every guest load and store.
@@ -283,15 +284,17 @@ type Backend struct {
 	// only while CP15 enables it, which no application machine does. It is a
 	// pointer so an application backend carries eight bytes rather than the
 	// whole table.
-	instructionCacheTable *[instructionCacheSets]instructionCacheEntry
+	instructionCacheTable  *[instructionCacheSets]instructionCacheEntry
+	instructionCacheSerial uint64
 	// instructionWindow is the line currently feeding the execution loops. A
 	// non-zero tag is (virtual PC >> 5) + 1, so a straight ARM run pays one tag
 	// comparison for seven of the eight words in a 32-byte line instead of
 	// repeating the MVA, privilege, set-index, generation, and resident-tag
 	// checks. Every operation that can change those checks invalidates it.
-	instructionWindow    *instructionCacheLine
-	instructionWindowTag uint32
-	mmuTLBTable          *[mmuTLBEntries]mmuTLBEntry
+	instructionWindow       *instructionCacheLine
+	instructionWindowTag    uint32
+	instructionWindowSerial uint64
+	mmuTLBTable             *[mmuTLBEntries]mmuTLBEntry
 	// mappingGen validates both tables above. Every change that could alter a
 	// translation or the permission derived from it -- a TLB flush, an I-cache
 	// flush, the control register, the domain access control, the process ID --
@@ -318,6 +321,13 @@ type Backend struct {
 	cp15ControlHistoryNext         uint64
 	instructionPrefetchHistory     []InstructionCachePrefetchAccess
 	instructionPrefetchHistoryNext uint64
+	lastJITBlock                   *jitBlock
+	lastJITRuntimePC               uint32
+	lastJITDecodedPC               uint32
+	lastJITRaw                     uint32
+	lastJITIndex                   uint32
+	lastJITResidentRaw             uint32
+	lastJITResident                bool
 	executionStatistics            cpu.ExecutionStatistics
 	hostCallScratch                [cpu.MaxHostCallWords * 4]byte
 }
@@ -478,13 +488,17 @@ func (b *Backend) PCRegisterCaptures() []PCRegisterCapture {
 // and the hot summary of it are derived from that word, so keeping the two in
 // one place is what stops them from drifting apart.
 func (b *Backend) setCP15Control(value uint32) {
+	changed := value != b.cp15.control
 	b.cp15.control = value
 	// The system and ROM protection bits feed the permission check that cached
 	// instruction lines record as passed, and the MMU and cache enables change
 	// what a translation means at all.
-	b.mappingGen++
-	b.invalidateInstructionWindow()
-	b.tlbClear()
+	if changed {
+		b.mappingGen++
+		b.invalidateInstructionWindow()
+		b.invalidateTranslations()
+		b.tlbClear()
+	}
 	b.refreshPhysicalAccess()
 }
 

@@ -84,14 +84,40 @@ type QualcommBootControlConfig struct {
 	RegisterResets                 []QualcommBootRegisterReset
 	CompletionEvents               []QualcommCompletionEventConfig
 	LegacyUARTControllers          []uint32
+	LegacyUARTReceiveData          []QualcommLegacyUARTReceiveData
 	SBIControllers                 []uint32
 	SBIReadResponses               []QualcommSBIReadResponse
 	SBICompletionStatus            uint32
+	SDCCControllers                []QualcommSDCCControllerConfig
+	GroupedStatusResponses         []QualcommBootGroupedStatusResponse
 	WatchdogServiceReadable        bool
 	NANDReady                      *StatusSignal
 	InterruptController            *QualcommInterruptController
 	VectoredInterruptController    *QualcommVectoredInterruptController
 	TimeTickClock                  *QualcommTimeTickClockConfig
+}
+
+// QualcommSDCCControllerConfig models one PL180-style removable-card
+// controller. GroupStatusOffset and GroupMask optionally route its sticky
+// status through the compact VIC's second-level interrupt hierarchy.
+type QualcommSDCCControllerConfig struct {
+	Base              uint32
+	CardPresent       bool
+	GroupStatusOffset uint32
+	GroupMask         uint32
+}
+
+// QualcommBootGroupedStatusResponse connects a CHIP control bit and/or a live
+// device signal to one raw child bit in the compact VIC's second-level status
+// groups. A zero RequestMask describes a signal-only child. Some MSM6260-family
+// blocks expose their local handshake status through that shared group window
+// even when the corresponding first-level interrupt is disabled.
+type QualcommBootGroupedStatusResponse struct {
+	Offset            uint32
+	RequestMask       uint32
+	NANDReadyMask     uint32
+	GroupStatusOffset uint32
+	GroupMask         uint32
 }
 
 // QualcommBootReadOnlyRegister describes a profile-specific word register
@@ -153,6 +179,10 @@ type QualcommCompletionHandler interface {
 type QualcommTimeTickClockConfig struct {
 	InstructionsPerSecond uint64
 	TimeTickHz            uint64
+	// PeriodicInterruptHz selects the legacy free-running TIME_TICK_INT
+	// source used by firmware that does not program the sleep-clock match
+	// register. Zero retains match-driven interrupt delivery.
+	PeriodicInterruptHz   uint64
 	InterruptSource       uint8
 	UseVectoredController bool
 }
@@ -408,6 +438,40 @@ func validateQualcommBootControlInterruptWindowWritableOffsets(offsets []uint32)
 	return nil
 }
 
+func validateQualcommBootGroupedStatusResponses(
+	responses []QualcommBootGroupedStatusResponse,
+	writableOffsets []uint32,
+) error {
+	writable := make(map[uint32]struct{}, len(qualcommBootWritableOffsets)+len(writableOffsets))
+	for _, offset := range qualcommBootWritableOffsets {
+		writable[offset] = struct{}{}
+	}
+	for _, offset := range writableOffsets {
+		writable[offset] = struct{}{}
+	}
+	targetMasks := make(map[uint32]uint32, len(responses))
+	for _, response := range responses {
+		if _, ok := writable[response.Offset]; !ok ||
+			response.RequestMask == 0 && response.NANDReadyMask == 0 ||
+			response.NANDReadyMask&^uint32(3) != 0 ||
+			response.GroupStatusOffset%4 != 0 ||
+			response.GroupStatusOffset >= QualcommVectoredInterruptControllerWindowSize ||
+			response.GroupMask == 0 {
+			return fmt.Errorf("invalid Qualcomm grouped-status response at 0x%x: %w", response.Offset, ErrInvalidRegion)
+		}
+		if targetMasks[response.GroupStatusOffset]&response.GroupMask != 0 {
+			return fmt.Errorf(
+				"overlapping Qualcomm grouped-status response at 0x%x/0x%x: %w",
+				response.GroupStatusOffset,
+				response.GroupMask,
+				ErrInvalidRegion,
+			)
+		}
+		targetMasks[response.GroupStatusOffset] |= response.GroupMask
+	}
+	return nil
+}
+
 const (
 	qualcommBootSBICommandOffset  = 0x08
 	qualcommBootSBIResultOffset   = 0x10
@@ -428,9 +492,11 @@ func validateQualcommBootControlConfigurationOffsets(
 	registerResets []QualcommBootRegisterReset,
 	completionEvents []QualcommCompletionEventConfig,
 	legacyUARTControllers []uint32,
+	legacyUARTReceiveData []QualcommLegacyUARTReceiveData,
 	sbiControllers []uint32,
 	sbiReadResponses []QualcommSBIReadResponse,
 	sbiCompletionStatus uint32,
+	sdccControllers []QualcommSDCCControllerConfig,
 ) error {
 	if err := validateQualcommBootControlWritableOffsets(writableOffsets); err != nil {
 		return err
@@ -496,6 +562,35 @@ func validateQualcommBootControlConfigurationOffsets(
 			return fmt.Errorf("duplicate read-only offset 0x%x: %w", offset, ErrInvalidRegion)
 		}
 		seen[offset] = struct{}{}
+	}
+	sdccBases := make(map[uint32]struct{}, len(sdccControllers))
+	for _, controller := range sdccControllers {
+		base := controller.Base
+		if base%4 != 0 || uint64(base)+0x3c > QualcommBootControlWindowSize ||
+			isQualcommBootControlInterruptWindowOffset(base+0x34) ||
+			isQualcommBootControlSpecialOffset(base+0x34) ||
+			(controller.GroupStatusOffset == 0) != (controller.GroupMask == 0) {
+			return fmt.Errorf("SDCC absent-card controller 0x%x: %w", base, ErrInvalidRegion)
+		}
+		if _, duplicate := sdccBases[base]; duplicate {
+			return fmt.Errorf("duplicate SDCC absent-card controller 0x%x: %w", base, ErrInvalidRegion)
+		}
+		sdccBases[base] = struct{}{}
+		for _, offset := range []uint32{base + 0x0c, base + 0x38} {
+			if _, writable := wordWritable[offset]; !writable {
+				return fmt.Errorf(
+					"SDCC absent-card register 0x%x is not writable: %w",
+					offset,
+					ErrInvalidRegion,
+				)
+			}
+		}
+		for _, offset := range []uint32{base + 0x14, base + 0x18, base + 0x1c, base + 0x20, base + 0x34} {
+			if _, duplicate := seen[offset]; duplicate {
+				return fmt.Errorf("duplicate SDCC read-only register 0x%x: %w", offset, ErrInvalidRegion)
+			}
+			seen[offset] = struct{}{}
+		}
 	}
 	resetOffsets := make(map[uint32]struct{}, len(registerResets))
 	for _, reset := range registerResets {
@@ -688,6 +783,33 @@ func validateQualcommBootControlConfigurationOffsets(
 		}
 		uartBases[base] = struct{}{}
 	}
+	uartReceiveControllers := make(map[uint32]struct{}, len(legacyUARTReceiveData))
+	for _, receive := range legacyUARTReceiveData {
+		if _, configured := uartBases[receive.Controller]; !configured ||
+			len(receive.Data) == 0 || receive.InterruptSource >= 64 ||
+			(receive.ReceiveFIFOOffset != 0 &&
+				receive.ReceiveFIFOOffset != qualcommLegacyUARTFIFOOffset &&
+				receive.ReceiveFIFOOffset != qualcommLegacyUARTMISROffset) ||
+			receive.T0Card && (!receive.EchoTransmit ||
+				receive.TransmitFrameBytes != 0 || len(receive.TransmitResponse) != 0) ||
+			!receive.T0Card &&
+				(receive.TransmitFrameBytes == 0) != (len(receive.TransmitResponse) == 0) ||
+			receive.TransmitFrameBytes > 4096 || len(receive.TransmitResponse) > 4096 {
+			return fmt.Errorf(
+				"legacy UART receive data for unconfigured or empty controller 0x%x: %w",
+				receive.Controller,
+				ErrInvalidRegion,
+			)
+		}
+		if _, duplicate := uartReceiveControllers[receive.Controller]; duplicate {
+			return fmt.Errorf(
+				"duplicate legacy UART receive data for controller 0x%x: %w",
+				receive.Controller,
+				ErrInvalidRegion,
+			)
+		}
+		uartReceiveControllers[receive.Controller] = struct{}{}
+	}
 	return nil
 }
 
@@ -709,12 +831,13 @@ func mergedQualcommBootControlWritableOffsets(
 	completionEvents []QualcommCompletionEventConfig,
 	sbiControllers []uint32,
 	sbiCompletionStatus uint32,
+	sdccControllers []QualcommSDCCControllerConfig,
 ) []uint32 {
 	offsets := make(
 		[]uint32,
 		0,
 		len(qualcommBootWritableOffsets)+len(extra)+len(interruptWindowExtra)+len(halfwords)+
-			len(readOnlyRegisters)+len(completionEvents)+
+			len(readOnlyRegisters)+len(completionEvents)+len(sdccControllers)*5+
 			len(sbiControllers)*len(qualcommBootSBIRegisterOffsets),
 	)
 	offsets = append(offsets, qualcommBootWritableOffsets...)
@@ -734,6 +857,11 @@ func mergedQualcommBootControlWritableOffsets(
 	}
 	if sbiCompletionStatus != 0 {
 		offsets = append(offsets, sbiCompletionStatus)
+	}
+	for _, controller := range sdccControllers {
+		for _, relative := range []uint32{0x14, 0x18, 0x1c, 0x20, 0x34} {
+			offsets = append(offsets, controller.Base+relative)
+		}
 	}
 	sort.Slice(offsets, func(left, right int) bool { return offsets[left] < offsets[right] })
 	return offsets
@@ -846,10 +974,24 @@ type QualcommBootControl struct {
 	completionHandlers             map[uint32]QualcommCompletionHandler
 	orderedCompletionHandlers      []QualcommCompletionHandler
 	legacyUARTControllers          map[uint32]struct{}
+	legacyUARTReceiveData          []QualcommLegacyUARTReceiveData
+	legacyUARTReceiveQueues        map[uint32][]byte
+	legacyUARTReceiveIRQPending    map[uint32]bool
+	legacyUARTActivationIRQPending map[uint32]bool
+	legacyUARTReceiveArmed         map[uint32]bool
+	legacyUARTReceivePublished     map[uint32]bool
+	legacyUARTReceiveDelays        map[uint32]uint64
+	legacyUARTTransmitCounts       map[uint32]uint32
+	legacyUARTT0TransmitBuffers    map[uint32][]byte
+	legacyUARTT0PendingResponses   map[uint32][]byte
+	legacyUARTT0SelectedFiles      map[uint32]uint16
+	groupedStatusResponses         []QualcommBootGroupedStatusResponse
+	groupedStatusSignalArmed       []bool
 	sbiControllers                 map[uint32]struct{}
 	sbiReadResponses               []QualcommSBIReadResponse
 	sbiReadResponseValues          map[qualcommSBIReadKey]uint8
 	sbiCompletionStatus            uint32
+	sdccControllers                map[uint32]QualcommSDCCControllerConfig
 	watchdogServiceReadable        bool
 	registers                      map[uint32]uint32
 	watchdogServices               uint64
@@ -861,6 +1003,8 @@ type QualcommBootControl struct {
 	timeTickInterruptSource        uint8
 	timeTickUseVectored            bool
 	timeTickPhase                  uint64
+	timeTickPeriodicHz             uint64
+	timeTickPeriodicPhase          uint64
 	timeTickMatchReady             bool
 	timeTickMatchConfigured        bool
 }
@@ -888,17 +1032,58 @@ func NewQualcommBootControl(config QualcommBootControlConfig) (*QualcommBootCont
 		config.RegisterResets,
 		config.CompletionEvents,
 		config.LegacyUARTControllers,
+		config.LegacyUARTReceiveData,
 		config.SBIControllers,
 		config.SBIReadResponses,
 		config.SBICompletionStatus,
+		config.SDCCControllers,
 	); err != nil {
 		return nil, fmt.Errorf("invalid Qualcomm boot-control register profile: %w", err)
+	}
+	if err := validateQualcommBootGroupedStatusResponses(
+		config.GroupedStatusResponses,
+		config.WritableOffsets,
+	); err != nil {
+		return nil, fmt.Errorf("invalid Qualcomm boot-control grouped-status profile: %w", err)
+	}
+	for _, response := range config.GroupedStatusResponses {
+		if config.VectoredInterruptController == nil {
+			return nil, fmt.Errorf("Qualcomm grouped-status response has no vectored controller")
+		}
+		index, status, ok := config.VectoredInterruptController.groupForOffset(response.GroupStatusOffset)
+		if !ok || !status || response.GroupMask&^config.VectoredInterruptController.config.Groups[index].ValidMask != 0 {
+			return nil, fmt.Errorf(
+				"Qualcomm grouped-status response 0x%x/0x%x has no matching vectored group",
+				response.GroupStatusOffset,
+				response.GroupMask,
+			)
+		}
+	}
+	for _, controller := range config.SDCCControllers {
+		if controller.GroupStatusOffset == 0 {
+			continue
+		}
+		if config.VectoredInterruptController == nil {
+			return nil, fmt.Errorf("Qualcomm SDCC absent-card interrupt has no vectored controller")
+		}
+		index, status, ok := config.VectoredInterruptController.groupForOffset(
+			controller.GroupStatusOffset,
+		)
+		if !ok || !status ||
+			controller.GroupMask&^config.VectoredInterruptController.config.Groups[index].ValidMask != 0 {
+			return nil, fmt.Errorf(
+				"Qualcomm SDCC absent-card interrupt 0x%x/0x%x has no matching vectored group",
+				controller.GroupStatusOffset,
+				controller.GroupMask,
+			)
+		}
 	}
 	if clock := config.TimeTickClock; clock != nil {
 		const maximumClockHz = uint64(1) << 48
 		if clock.InstructionsPerSecond == 0 || clock.TimeTickHz == 0 ||
 			clock.InstructionsPerSecond > maximumClockHz ||
 			clock.TimeTickHz > clock.InstructionsPerSecond ||
+			clock.PeriodicInterruptHz > clock.InstructionsPerSecond ||
 			clock.InterruptSource >= 64 {
 			return nil, fmt.Errorf("invalid Qualcomm timetick clock configuration")
 		}
@@ -921,6 +1106,31 @@ func NewQualcommBootControl(config QualcommBootControlConfig) (*QualcommBootCont
 			return nil, fmt.Errorf("invalid Qualcomm completion interrupt source %d", event.InterruptSource)
 		}
 	}
+	for _, receive := range config.LegacyUARTReceiveData {
+		grouped := receive.VectoredGroupStatusOffset != 0 || receive.VectoredGroupMask != 0
+		if receive.UseVectoredController &&
+			(!receive.PulseReceiveInterrupt || config.VectoredInterruptController == nil ||
+				receive.InterruptSource >= config.VectoredInterruptController.SourceCount()) {
+			return nil, fmt.Errorf(
+				"Qualcomm legacy UART interrupt source %d exceeds vectored controller",
+				receive.InterruptSource,
+			)
+		}
+		if grouped {
+			if !receive.UseVectoredController || !receive.PulseReceiveInterrupt ||
+				config.VectoredInterruptController == nil {
+				return nil, fmt.Errorf("invalid Qualcomm legacy UART grouped interrupt route")
+			}
+			index, status, ok := config.VectoredInterruptController.groupForOffset(
+				receive.VectoredGroupStatusOffset,
+			)
+			if !ok || !status || receive.VectoredGroupMask == 0 ||
+				receive.VectoredGroupMask&^config.VectoredInterruptController.config.Groups[index].ValidMask != 0 ||
+				receive.InterruptSource != config.VectoredInterruptController.config.Groups[index].Source {
+				return nil, fmt.Errorf("invalid Qualcomm legacy UART grouped interrupt source")
+			}
+		}
+	}
 	completionEvents := append([]QualcommCompletionEventConfig(nil), config.CompletionEvents...)
 	sort.Slice(completionEvents, func(left, right int) bool {
 		return completionEvents[left].StartOffset < completionEvents[right].StartOffset
@@ -935,6 +1145,19 @@ func NewQualcommBootControl(config QualcommBootControlConfig) (*QualcommBootCont
 			return sbiReadResponses[left].Controller < sbiReadResponses[right].Controller
 		}
 		return sbiReadResponses[left].Address < sbiReadResponses[right].Address
+	})
+	groupedStatusResponses := append(
+		[]QualcommBootGroupedStatusResponse(nil),
+		config.GroupedStatusResponses...,
+	)
+	sort.Slice(groupedStatusResponses, func(left, right int) bool {
+		if groupedStatusResponses[left].Offset != groupedStatusResponses[right].Offset {
+			return groupedStatusResponses[left].Offset < groupedStatusResponses[right].Offset
+		}
+		if groupedStatusResponses[left].GroupStatusOffset != groupedStatusResponses[right].GroupStatusOffset {
+			return groupedStatusResponses[left].GroupStatusOffset < groupedStatusResponses[right].GroupStatusOffset
+		}
+		return groupedStatusResponses[left].GroupMask < groupedStatusResponses[right].GroupMask
 	})
 	device := &QualcommBootControl{
 		hardwareRevision:            config.HardwareRevision,
@@ -952,6 +1175,7 @@ func NewQualcommBootControl(config QualcommBootControlConfig) (*QualcommBootCont
 			config.CompletionEvents,
 			config.SBIControllers,
 			config.SBICompletionStatus,
+			config.SDCCControllers,
 		),
 		interruptWindowWritableOffsets: make(
 			map[uint32]struct{},
@@ -965,10 +1189,53 @@ func NewQualcommBootControl(config QualcommBootControlConfig) (*QualcommBootCont
 		completionEvents:        completionEvents,
 		completionHandlers:      make(map[uint32]QualcommCompletionHandler),
 		legacyUARTControllers:   make(map[uint32]struct{}, len(config.LegacyUARTControllers)),
-		sbiControllers:          make(map[uint32]struct{}, len(config.SBIControllers)),
-		sbiReadResponses:        sbiReadResponses,
-		sbiReadResponseValues:   make(map[qualcommSBIReadKey]uint8, len(sbiReadResponses)),
-		sbiCompletionStatus:     config.SBICompletionStatus,
+		legacyUARTReceiveQueues: make(map[uint32][]byte, len(config.LegacyUARTReceiveData)),
+		legacyUARTReceiveIRQPending: make(
+			map[uint32]bool,
+			len(config.LegacyUARTReceiveData),
+		),
+		legacyUARTActivationIRQPending: make(
+			map[uint32]bool,
+			len(config.LegacyUARTReceiveData),
+		),
+		legacyUARTReceiveArmed: make(
+			map[uint32]bool,
+			len(config.LegacyUARTReceiveData),
+		),
+		legacyUARTReceivePublished: make(
+			map[uint32]bool,
+			len(config.LegacyUARTReceiveData),
+		),
+		legacyUARTReceiveDelays: make(
+			map[uint32]uint64,
+			len(config.LegacyUARTReceiveData),
+		),
+		legacyUARTTransmitCounts: make(
+			map[uint32]uint32,
+			len(config.LegacyUARTReceiveData),
+		),
+		legacyUARTT0TransmitBuffers: make(
+			map[uint32][]byte,
+			len(config.LegacyUARTReceiveData),
+		),
+		legacyUARTT0PendingResponses: make(
+			map[uint32][]byte,
+			len(config.LegacyUARTReceiveData),
+		),
+		legacyUARTT0SelectedFiles: make(
+			map[uint32]uint16,
+			len(config.LegacyUARTReceiveData),
+		),
+		groupedStatusResponses:   groupedStatusResponses,
+		groupedStatusSignalArmed: make([]bool, len(groupedStatusResponses)),
+		sbiControllers:           make(map[uint32]struct{}, len(config.SBIControllers)),
+		sbiReadResponses:         sbiReadResponses,
+		sbiReadResponseValues:    make(map[qualcommSBIReadKey]uint8, len(sbiReadResponses)),
+		sbiCompletionStatus:      config.SBICompletionStatus,
+		sdccControllers: make(
+			map[uint32]QualcommSDCCControllerConfig,
+			len(config.SDCCControllers),
+		),
 		watchdogServiceReadable: config.WatchdogServiceReadable,
 	}
 	for _, offset := range config.HalfwordOffsets {
@@ -986,11 +1253,41 @@ func NewQualcommBootControl(config QualcommBootControlConfig) (*QualcommBootCont
 	for _, base := range config.LegacyUARTControllers {
 		device.legacyUARTControllers[base] = struct{}{}
 	}
+	device.legacyUARTReceiveData = make(
+		[]QualcommLegacyUARTReceiveData,
+		len(config.LegacyUARTReceiveData),
+	)
+	for index, receive := range config.LegacyUARTReceiveData {
+		device.legacyUARTReceiveData[index] = QualcommLegacyUARTReceiveData{
+			Controller:                receive.Controller,
+			InterruptSource:           receive.InterruptSource,
+			UseVectoredController:     receive.UseVectoredController,
+			VectoredGroupStatusOffset: receive.VectoredGroupStatusOffset,
+			VectoredGroupMask:         receive.VectoredGroupMask,
+			DelayInstructions:         receive.DelayInstructions,
+			ReceiveCommand:            receive.ReceiveCommand,
+			ActivationCommand:         receive.ActivationCommand,
+			ReceiveFIFOOffset:         receive.ReceiveFIFOOffset,
+			PulseReceiveInterrupt:     receive.PulseReceiveInterrupt,
+			EchoTransmit:              receive.EchoTransmit,
+			T0Card:                    receive.T0Card,
+			TransmitFrameBytes:        receive.TransmitFrameBytes,
+			TransmitResponse:          append([]byte(nil), receive.TransmitResponse...),
+			Data:                      append([]byte(nil), receive.Data...),
+		}
+	}
+	sort.Slice(device.legacyUARTReceiveData, func(left, right int) bool {
+		return device.legacyUARTReceiveData[left].Controller <
+			device.legacyUARTReceiveData[right].Controller
+	})
 	for _, register := range config.ReadOnlyRegisters {
 		device.readOnlyRegisters[register.Offset] = register.Value
 	}
 	for _, base := range config.SBIControllers {
 		device.sbiControllers[base] = struct{}{}
+	}
+	for _, controller := range config.SDCCControllers {
+		device.sdccControllers[controller.Base] = controller
 	}
 	for _, response := range sbiReadResponses {
 		device.sbiReadResponseValues[qualcommSBIReadKey{
@@ -1004,6 +1301,7 @@ func NewQualcommBootControl(config QualcommBootControlConfig) (*QualcommBootCont
 		device.timeTickHz = clock.TimeTickHz
 		device.timeTickInterruptSource = clock.InterruptSource
 		device.timeTickUseVectored = clock.UseVectoredController
+		device.timeTickPeriodicHz = clock.PeriodicInterruptHz
 	}
 	if device.interruptController == nil {
 		device.interruptController = NewQualcommInterruptController(nil)
@@ -1040,14 +1338,51 @@ func (d *QualcommBootControl) Reset() error {
 	d.timeTick = 0
 	d.timeTickReadPhase = 0
 	d.timeTickPhase = 0
+	d.timeTickPeriodicPhase = 0
 	d.timeTickMatchReady = true
 	d.timeTickMatchConfigured = false
+	for controller := range d.legacyUARTReceiveQueues {
+		delete(d.legacyUARTReceiveQueues, controller)
+	}
+	for controller := range d.legacyUARTT0TransmitBuffers {
+		delete(d.legacyUARTT0TransmitBuffers, controller)
+	}
+	for controller := range d.legacyUARTT0PendingResponses {
+		delete(d.legacyUARTT0PendingResponses, controller)
+	}
+	for controller := range d.legacyUARTT0SelectedFiles {
+		delete(d.legacyUARTT0SelectedFiles, controller)
+	}
+	for _, receive := range d.legacyUARTReceiveData {
+		d.legacyUARTReceiveIRQPending[receive.Controller] = false
+		d.legacyUARTActivationIRQPending[receive.Controller] = false
+		d.legacyUARTReceiveArmed[receive.Controller] = false
+		d.legacyUARTReceivePublished[receive.Controller] = false
+		d.legacyUARTReceiveDelays[receive.Controller] = 0
+		d.legacyUARTTransmitCounts[receive.Controller] = 0
+	}
 	if err := d.interruptController.Reset(); err != nil {
 		return err
 	}
 	if d.vectoredInterruptController != nil {
 		if err := d.vectoredInterruptController.Reset(); err != nil {
 			return err
+		}
+	}
+	if err := d.syncSDCCInterrupts(); err != nil {
+		return err
+	}
+	for index, response := range d.groupedStatusResponses {
+		d.groupedStatusSignalArmed[index] = response.RequestMask == 0 &&
+			response.NANDReadyMask != 0
+		asserted := response.RequestMask != 0 &&
+			d.registers[response.Offset]&response.RequestMask != 0
+		if err := d.vectoredInterruptController.SetGroupedSource(
+			response.GroupStatusOffset,
+			response.GroupMask,
+			asserted,
+		); err != nil {
+			return fmt.Errorf("reset Qualcomm grouped-status response: %w", err)
 		}
 	}
 	for _, handler := range d.orderedCompletionHandlers {
@@ -1093,10 +1428,41 @@ func (d *QualcommBootControl) Read(offset uint32, width Width) (uint32, error) {
 	if isQualcommBootControlInterruptWindowOffset(offset) && !interruptWindowOverride {
 		return d.interruptController.Read(offset-0x0900, width)
 	}
+	if d.sbiCompletionStatus != 0 && offset == d.sbiCompletionStatus {
+		if width != Width32 {
+			return 0, fmt.Errorf("%w: read%d at SBI completion status 0x%x", ErrQualcommBootControlMMIO, width*8, offset)
+		}
+		if d.vectoredInterruptController != nil &&
+			offset >= QualcommVectoredInterruptControllerBaseOffset {
+			relative := offset - QualcommVectoredInterruptControllerBaseOffset
+			if d.vectoredInterruptController.Handles(relative) {
+				value, err := d.vectoredInterruptController.Read(relative, width)
+				if err != nil {
+					return 0, err
+				}
+				if value&qualcommBootSBICompleteStatus != 0 {
+					if err := d.vectoredInterruptController.SetGroupedSource(
+						relative,
+						qualcommBootSBICompleteStatus,
+						false,
+					); err != nil {
+						return 0, fmt.Errorf("clear Qualcomm SBI completion source: %w", err)
+					}
+				}
+				return value, nil
+			}
+		}
+		value := d.registers[offset]
+		d.registers[offset] = 0
+		return value, nil
+	}
 	if d.vectoredInterruptController != nil &&
 		offset >= QualcommVectoredInterruptControllerBaseOffset &&
 		offset < QualcommVectoredInterruptControllerBaseOffset+
 			QualcommVectoredInterruptControllerWindowSize {
+		if err := d.syncGroupedStatusSignals(); err != nil {
+			return 0, fmt.Errorf("sample Qualcomm grouped-status signal: %w", err)
+		}
 		relative := offset - QualcommVectoredInterruptControllerBaseOffset
 		if d.vectoredInterruptController.Handles(relative) {
 			return d.vectoredInterruptController.Read(relative, width)
@@ -1119,11 +1485,6 @@ func (d *QualcommBootControl) Read(offset uint32, width Width) (uint32, error) {
 	}
 	if width != Width32 {
 		return 0, fmt.Errorf("%w: read%d at 0x%x", ErrQualcommBootControlMMIO, width*8, offset)
-	}
-	if d.sbiCompletionStatus != 0 && offset == d.sbiCompletionStatus {
-		value := d.registers[offset]
-		d.registers[offset] = 0
-		return value, nil
 	}
 	switch offset {
 	case 0x0a40:
@@ -1177,7 +1538,55 @@ func (d *QualcommBootControl) Write(offset uint32, width Width, value uint32) er
 			QualcommVectoredInterruptControllerWindowSize {
 		relative := offset - QualcommVectoredInterruptControllerBaseOffset
 		if d.vectoredInterruptController.Handles(relative) {
-			return d.vectoredInterruptController.Write(relative, width, value)
+			if err := d.vectoredInterruptController.Write(relative, width, value); err != nil {
+				return err
+			}
+			// On MSM6260-family NAND boards the second-level group control
+			// write also acknowledges the corresponding raw device status.
+			// The firmware writes the child mask and immediately verifies that
+			// the paired group-status bit deasserted.
+			for _, response := range d.groupedStatusResponses {
+				if response.NANDReadyMask == 0 || value&response.GroupMask == 0 {
+					continue
+				}
+				index, _, ok := d.vectoredInterruptController.groupForOffset(
+					response.GroupStatusOffset,
+				)
+				if !ok || relative != d.vectoredInterruptController.config.Groups[index].EnableOffset {
+					continue
+				}
+				d.nandReady.Clear(response.NANDReadyMask)
+				if err := d.vectoredInterruptController.SetGroupedSource(
+					response.GroupStatusOffset,
+					response.GroupMask,
+					false,
+				); err != nil {
+					return fmt.Errorf("acknowledge Qualcomm grouped-status response: %w", err)
+				}
+			}
+			return nil
+		}
+	}
+	for base, controller := range d.sdccControllers {
+		switch offset {
+		case base + 0x14, base + 0x18, base + 0x1c, base + 0x20, base + 0x34:
+			return fmt.Errorf(
+				"%w: write%d value 0x%x at read-only SDCC status 0x%x",
+				ErrQualcommBootControlMMIO,
+				width*8,
+				value,
+				offset,
+			)
+		case base + 0x38:
+			if width != Width32 {
+				return fmt.Errorf("%w: write%d at SDCC clear 0x%x", ErrQualcommBootControlMMIO, width*8, offset)
+			}
+			d.registers[offset] = value
+			d.registers[base+0x34] &^= value
+			if err := d.refreshSDCCInterrupt(controller); err != nil {
+				return err
+			}
+			return nil
 		}
 	}
 	for _, event := range d.completionEvents {
@@ -1276,6 +1685,39 @@ func (d *QualcommBootControl) Write(offset uint32, width Width, value uint32) er
 	}
 	previousValue := d.registers[offset]
 	d.registers[offset] = value
+	for base, controller := range d.sdccControllers {
+		if offset == base+0x3c {
+			if err := d.refreshSDCCInterrupt(controller); err != nil {
+				d.registers[offset] = previousValue
+				return err
+			}
+			break
+		}
+		if offset == base+0x0c && value&0x00000400 != 0 {
+			if controller.CardPresent && value&0x3f != 5 {
+				// The PL180 command register carries the command index in bits
+				// 5:0 and the response-present selector in bit 6. Publish the
+				// matching sticky completion bit and the small set of standard
+				// SD responses needed by the native discovery sequence.
+				status := uint32(0x00000080) // CMDSENT
+				if value&0x40 != 0 {
+					status = 0x00000040 // CMDRESPEND
+				}
+				d.registers[base+0x34] |= status
+				d.setSDCCCommandResponse(base, value&0x3f)
+			} else {
+				// SDIO CMD5 times out on a memory-only card. With no card
+				// inserted every enabled command completes this way.
+				d.registers[base+0x34] |= 0x00000004 // CMDTIMEOUT
+			}
+			if err := d.refreshSDCCInterrupt(controller); err != nil {
+				d.registers[offset] = previousValue
+				d.registers[base+0x34] = 0
+				return err
+			}
+			break
+		}
+	}
 	for _, event := range d.completionEvents {
 		if offset != event.StartOffset || value&event.StartMask == 0 {
 			continue
@@ -1304,6 +1746,31 @@ func (d *QualcommBootControl) Write(offset uint32, width Width, value uint32) er
 		}
 		break
 	}
+	for index, response := range d.groupedStatusResponses {
+		if response.Offset != offset || response.RequestMask == 0 {
+			continue
+		}
+		asserted := value&response.RequestMask != 0
+		previousArmed := d.groupedStatusSignalArmed[index]
+		// The raw-NAND probe first drives this grouped status through the
+		// request bit itself. Only after that assert/deassert handshake does
+		// the status become a live sample of the NAND-ready signal.
+		d.groupedStatusSignalArmed[index] = !asserted && response.NANDReadyMask != 0
+		if err := d.vectoredInterruptController.SetGroupedSource(
+			response.GroupStatusOffset,
+			response.GroupMask,
+			asserted,
+		); err != nil {
+			d.registers[offset] = previousValue
+			d.groupedStatusSignalArmed[index] = previousArmed
+			_ = d.vectoredInterruptController.SetGroupedSource(
+				response.GroupStatusOffset,
+				response.GroupMask,
+				previousValue&response.RequestMask != 0,
+			)
+			return fmt.Errorf("signal Qualcomm grouped-status response: %w", err)
+		}
+	}
 	for base := range d.sbiControllers {
 		if offset == base+qualcommBootSBICommandOffset {
 			result := uint32(0)
@@ -1314,6 +1781,21 @@ func (d *QualcommBootControl) Write(offset uint32, width Width, value uint32) er
 				}])
 			}
 			d.registers[base+qualcommBootSBIResultOffset] = result
+			if d.vectoredInterruptController != nil &&
+				d.sbiCompletionStatus >= QualcommVectoredInterruptControllerBaseOffset {
+				relative := d.sbiCompletionStatus - QualcommVectoredInterruptControllerBaseOffset
+				if d.vectoredInterruptController.Handles(relative) {
+					if err := d.vectoredInterruptController.SetGroupedSource(
+						relative,
+						qualcommBootSBICompleteStatus,
+						true,
+					); err != nil {
+						d.registers[offset] = previousValue
+						return fmt.Errorf("signal Qualcomm SBI completion source: %w", err)
+					}
+					return nil
+				}
+			}
 			d.registers[d.sbiCompletionStatus] = qualcommBootSBICompleteStatus
 			return nil
 		}
@@ -1326,10 +1808,83 @@ func (d *QualcommBootControl) Write(offset uint32, width Width, value uint32) er
 		// The write latch is guest-visible immediately; only match expiry and
 		// interrupt delivery advance with the configured sleep clock.
 		d.timeTickMatchReady = true
-	} else if offset == 0x0380 && value&8 != 0 {
-		d.nandReady.Set(d.nandReady.Value() | 2)
+	} else if offset == 0x0380 {
+		if value&8 != 0 {
+			d.nandReady.Set(d.nandReady.Value() | 2)
+		} else {
+			for _, response := range d.groupedStatusResponses {
+				if response.Offset == offset && response.RequestMask&8 != 0 &&
+					response.NANDReadyMask != 0 {
+					d.nandReady.Clear(response.NANDReadyMask)
+				}
+			}
+		}
 	} else if offset == 0x0414 {
 		d.nandReady.Clear(value & 3)
+	}
+	return nil
+}
+
+func (d *QualcommBootControl) syncGroupedStatusSignals() error {
+	for index, response := range d.groupedStatusResponses {
+		if response.NANDReadyMask == 0 || !d.groupedStatusSignalArmed[index] {
+			continue
+		}
+		if err := d.vectoredInterruptController.SetGroupedSource(
+			response.GroupStatusOffset,
+			response.GroupMask,
+			d.nandReady.Value()&response.NANDReadyMask != 0,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (d *QualcommBootControl) setSDCCCommandResponse(base, command uint32) {
+	for _, relative := range []uint32{0x14, 0x18, 0x1c, 0x20} {
+		d.registers[base+relative] = 0
+	}
+	switch command {
+	case 2: // ALL_SEND_CID, deterministic 128-bit identity
+		d.registers[base+0x14] = 0x12345678
+		d.registers[base+0x18] = 0x30303030
+		d.registers[base+0x1c] = 0x534d3030
+		d.registers[base+0x20] = 0x1b000001
+	case 3: // SEND_RELATIVE_ADDR
+		d.registers[base+0x14] = 0x00010000
+	case 8: // SEND_IF_COND
+		d.registers[base+0x14] = 0x000001aa
+	case 9: // SEND_CSD: SDHC, 4 GiB capacity, 512-byte blocks
+		d.registers[base+0x14] = 0x00000000
+		d.registers[base+0x18] = 0x0003ffff
+		d.registers[base+0x1c] = 0x5b590000
+		d.registers[base+0x20] = 0x400e0032
+	case 13, 55: // card ready in transfer state; APP_CMD is accepted
+		d.registers[base+0x14] = 0x00000920
+	case 41: // SD_SEND_OP_COND: powered-up, high-capacity card
+		d.registers[base+0x14] = 0xc0ff8000
+	}
+}
+
+func (d *QualcommBootControl) refreshSDCCInterrupt(
+	controller QualcommSDCCControllerConfig,
+) error {
+	if controller.GroupStatusOffset == 0 {
+		return nil
+	}
+	return d.vectoredInterruptController.SetGroupedSource(
+		controller.GroupStatusOffset,
+		controller.GroupMask,
+		d.registers[controller.Base+0x34]&d.registers[controller.Base+0x3c] != 0,
+	)
+}
+
+func (d *QualcommBootControl) syncSDCCInterrupts() error {
+	for _, controller := range d.sdccControllers {
+		if err := d.refreshSDCCInterrupt(controller); err != nil {
+			return fmt.Errorf("sync Qualcomm SDCC interrupt: %w", err)
+		}
 	}
 	return nil
 }
@@ -1338,6 +1893,23 @@ func (d *QualcommBootControl) Write(offset uint32, width Width, value uint32) er
 // only from retired guest instructions; compatibility profiles retain the older
 // stable-pair read behavior until their clock and interrupt route are known.
 func (d *QualcommBootControl) Advance(retiredInstructions uint64) error {
+	for _, receive := range d.legacyUARTReceiveData {
+		remaining := d.legacyUARTReceiveDelays[receive.Controller]
+		if remaining == 0 {
+			continue
+		}
+		if retiredInstructions < remaining {
+			d.legacyUARTReceiveDelays[receive.Controller] = remaining - retiredInstructions
+			continue
+		}
+		d.legacyUARTReceiveDelays[receive.Controller] = 0
+		d.legacyUARTReceiveQueues[receive.Controller] = append([]byte(nil), receive.Data...)
+		d.legacyUARTReceiveIRQPending[receive.Controller] = len(receive.Data) != 0
+		d.legacyUARTReceivePublished[receive.Controller] = true
+		if err := d.refreshLegacyUARTInterrupt(receive.Controller); err != nil {
+			return err
+		}
+	}
 	if err := d.advanceTimeTick(retiredInstructions); err != nil {
 		return err
 	}
@@ -1353,6 +1925,12 @@ func (d *QualcommBootControl) advanceTimeTick(retiredInstructions uint64) error 
 	if !d.timeTickClocked || retiredInstructions == 0 {
 		return nil
 	}
+	pulseInterrupt := func() error {
+		if d.timeTickUseVectored {
+			return d.vectoredInterruptController.PulseSource(d.timeTickInterruptSource)
+		}
+		return d.interruptController.PulseSource(d.timeTickInterruptSource)
+	}
 	d.timeTickMatchReady = true
 	high, low := bits.Mul64(retiredInstructions, d.timeTickHz)
 	low, carry := bits.Add64(low, d.timeTickPhase, 0)
@@ -1363,12 +1941,35 @@ func (d *QualcommBootControl) advanceTimeTick(retiredInstructions uint64) error 
 	quotientHigh, remainder := bits.Div64(0, high, d.timeTickInstructionRate)
 	quotientLow, remainder := bits.Div64(remainder, low, d.timeTickInstructionRate)
 	d.timeTickPhase = remainder
+	periodicInterrupt := false
+	if d.timeTickPeriodicHz != 0 {
+		interruptHigh, interruptLow := bits.Mul64(retiredInstructions, d.timeTickPeriodicHz)
+		interruptLow, carry = bits.Add64(interruptLow, d.timeTickPeriodicPhase, 0)
+		interruptHigh, carry = bits.Add64(interruptHigh, 0, carry)
+		if carry != 0 {
+			return fmt.Errorf("Qualcomm periodic timetick advance overflow")
+		}
+		periodicHigh, periodicRemainder := bits.Div64(
+			0, interruptHigh, d.timeTickInstructionRate,
+		)
+		periodicLow, periodicRemainder := bits.Div64(
+			periodicRemainder, interruptLow, d.timeTickInstructionRate,
+		)
+		d.timeTickPeriodicPhase = periodicRemainder
+		periodicInterrupt = periodicHigh != 0 || periodicLow != 0
+	}
 	if quotientHigh == 0 && quotientLow == 0 {
+		if periodicInterrupt {
+			return pulseInterrupt()
+		}
 		return nil
 	}
 	previous := d.timeTick
 	d.timeTick += uint32(quotientLow)
 	if !d.timeTickMatchConfigured {
+		if periodicInterrupt {
+			return pulseInterrupt()
+		}
 		return nil
 	}
 	distance := uint64(uint32(d.registers[0x54c4] - previous))
@@ -1376,10 +1977,10 @@ func (d *QualcommBootControl) advanceTimeTick(retiredInstructions uint64) error 
 		distance = uint64(1) << 32
 	}
 	if quotientHigh != 0 || quotientLow >= uint64(1)<<32 || quotientLow >= distance {
-		if d.timeTickUseVectored {
-			return d.vectoredInterruptController.PulseSource(d.timeTickInterruptSource)
-		}
-		return d.interruptController.PulseSource(d.timeTickInterruptSource)
+		return pulseInterrupt()
+	}
+	if periodicInterrupt {
+		return pulseInterrupt()
 	}
 	return nil
 }
@@ -1403,6 +2004,12 @@ func (d *QualcommBootControl) registerAccessWidths(offset uint32) uint8 {
 }
 
 func (d *QualcommBootControl) SaveState() ([]byte, error) {
+	if err := d.syncSDCCInterrupts(); err != nil {
+		return nil, err
+	}
+	if err := d.syncGroupedStatusSignals(); err != nil {
+		return nil, err
+	}
 	interruptState, err := d.interruptController.SaveState()
 	if err != nil {
 		return nil, err
@@ -1417,7 +2024,7 @@ func (d *QualcommBootControl) SaveState() ([]byte, error) {
 	offsets := d.writableOffsets
 	var output bytes.Buffer
 	output.WriteString("QBTC")
-	_ = binary.Write(&output, binary.LittleEndian, uint32(18))
+	_ = binary.Write(&output, binary.LittleEndian, uint32(33))
 	_ = binary.Write(&output, binary.LittleEndian, d.hardwareRevision)
 	_ = binary.Write(&output, binary.LittleEndian, d.nandInterfaceMode)
 	_ = binary.Write(&output, binary.LittleEndian, d.ebiMemoryConfiguration)
@@ -1479,6 +2086,99 @@ func (d *QualcommBootControl) SaveState() ([]byte, error) {
 		_ = output.WriteByte(response.Address)
 		_ = output.WriteByte(response.Value)
 	}
+	_ = binary.Write(&output, binary.LittleEndian, uint32(len(d.legacyUARTReceiveData)))
+	for _, receive := range d.legacyUARTReceiveData {
+		_ = binary.Write(&output, binary.LittleEndian, receive.Controller)
+		_ = output.WriteByte(receive.InterruptSource)
+		useVectored := uint8(0)
+		if receive.UseVectoredController {
+			useVectored = 1
+		}
+		_ = output.WriteByte(useVectored)
+		pulseInterrupt := uint8(0)
+		if receive.PulseReceiveInterrupt {
+			pulseInterrupt = 1
+		}
+		_ = output.WriteByte(pulseInterrupt)
+		_ = binary.Write(&output, binary.LittleEndian, receive.ReceiveCommand)
+		_ = binary.Write(&output, binary.LittleEndian, receive.ActivationCommand)
+		_ = binary.Write(&output, binary.LittleEndian, receive.ReceiveFIFOOffset)
+		_ = binary.Write(&output, binary.LittleEndian, receive.VectoredGroupStatusOffset)
+		_ = binary.Write(&output, binary.LittleEndian, receive.VectoredGroupMask)
+		echoTransmit := uint8(0)
+		if receive.EchoTransmit {
+			echoTransmit = 1
+		}
+		_ = output.WriteByte(echoTransmit)
+		_ = binary.Write(&output, binary.LittleEndian, receive.TransmitFrameBytes)
+		_ = binary.Write(&output, binary.LittleEndian, uint32(len(receive.TransmitResponse)))
+		output.Write(receive.TransmitResponse)
+		_ = binary.Write(
+			&output,
+			binary.LittleEndian,
+			d.legacyUARTTransmitCounts[receive.Controller],
+		)
+		t0Card := uint8(0)
+		if receive.T0Card {
+			t0Card = 1
+		}
+		_ = output.WriteByte(t0Card)
+		t0Buffer := d.legacyUARTT0TransmitBuffers[receive.Controller]
+		_ = binary.Write(&output, binary.LittleEndian, uint32(len(t0Buffer)))
+		output.Write(t0Buffer)
+		_ = binary.Write(
+			&output,
+			binary.LittleEndian,
+			d.legacyUARTT0SelectedFiles[receive.Controller],
+		)
+		pendingResponse := d.legacyUARTT0PendingResponses[receive.Controller]
+		_ = binary.Write(&output, binary.LittleEndian, uint32(len(pendingResponse)))
+		output.Write(pendingResponse)
+		_ = binary.Write(&output, binary.LittleEndian, receive.DelayInstructions)
+		_ = binary.Write(&output, binary.LittleEndian, uint32(len(receive.Data)))
+		output.Write(receive.Data)
+		published := uint8(0)
+		if d.legacyUARTReceivePublished[receive.Controller] {
+			published = 1
+		}
+		_ = output.WriteByte(published)
+		_ = binary.Write(
+			&output,
+			binary.LittleEndian,
+			d.legacyUARTReceiveDelays[receive.Controller],
+		)
+		queue := d.legacyUARTReceiveQueues[receive.Controller]
+		_ = binary.Write(&output, binary.LittleEndian, uint32(len(queue)))
+		output.Write(queue)
+		pending := uint8(0)
+		if d.legacyUARTReceiveIRQPending[receive.Controller] {
+			pending = 1
+		}
+		_ = output.WriteByte(pending)
+		activationPending := uint8(0)
+		if d.legacyUARTActivationIRQPending[receive.Controller] {
+			activationPending = 1
+		}
+		_ = output.WriteByte(activationPending)
+		receiveArmed := uint8(0)
+		if d.legacyUARTReceiveArmed[receive.Controller] {
+			receiveArmed = 1
+		}
+		_ = output.WriteByte(receiveArmed)
+	}
+	_ = binary.Write(&output, binary.LittleEndian, uint32(len(d.groupedStatusResponses)))
+	for index, response := range d.groupedStatusResponses {
+		_ = binary.Write(&output, binary.LittleEndian, response.Offset)
+		_ = binary.Write(&output, binary.LittleEndian, response.RequestMask)
+		_ = binary.Write(&output, binary.LittleEndian, response.NANDReadyMask)
+		_ = binary.Write(&output, binary.LittleEndian, response.GroupStatusOffset)
+		_ = binary.Write(&output, binary.LittleEndian, response.GroupMask)
+		armed := uint8(0)
+		if d.groupedStatusSignalArmed[index] {
+			armed = 1
+		}
+		_ = output.WriteByte(armed)
+	}
 	_ = binary.Write(&output, binary.LittleEndian, uint32(len(offsets)))
 	for _, offset := range offsets {
 		_ = binary.Write(&output, binary.LittleEndian, offset)
@@ -1489,6 +2189,8 @@ func (d *QualcommBootControl) SaveState() ([]byte, error) {
 	output.Write(interruptState)
 	_ = binary.Write(&output, binary.LittleEndian, uint32(len(vectoredInterruptState)))
 	output.Write(vectoredInterruptState)
+	_ = binary.Write(&output, binary.LittleEndian, d.timeTickPeriodicHz)
+	_ = binary.Write(&output, binary.LittleEndian, d.timeTickPeriodicPhase)
 	return output.Bytes(), nil
 }
 
@@ -1513,10 +2215,11 @@ func (d *QualcommBootControl) loadState(state []byte, allowMissingProfileRegiste
 	var timeTick uint32
 	var timeTickReadPhase uint8
 	var clocked, interruptSource, useVectored, matchReady, matchConfigured uint8
-	var instructionRate, timeTickHz, timeTickPhase uint64
-	var completionCount, resetCount, sbiResponseCount, count uint32
+	var instructionRate, timeTickHz, timeTickPhase, periodicHz, periodicPhase uint64
+	var completionCount, resetCount, sbiResponseCount, uartReceiveCount, groupedResponseCount, count uint32
 	if _, err := io.ReadFull(reader, magic[:]); err != nil || string(magic[:]) != "QBTC" ||
-		binary.Read(reader, binary.LittleEndian, &version) != nil || (version != 17 && version != 18) ||
+		binary.Read(reader, binary.LittleEndian, &version) != nil ||
+		(version != 17 && version != 18 && version != 19 && version != 20 && version != 21 && version != 22 && version != 23 && version != 24 && version != 25 && version != 26 && version != 27 && version != 28 && version != 29 && version != 30 && version != 31 && version != 32 && version != 33) ||
 		binary.Read(reader, binary.LittleEndian, &revision) != nil || revision != d.hardwareRevision ||
 		binary.Read(reader, binary.LittleEndian, &nandInterfaceMode) != nil ||
 		nandInterfaceMode != d.nandInterfaceMode ||
@@ -1605,6 +2308,193 @@ func (d *QualcommBootControl) loadState(state []byte, allowMissingProfileRegiste
 			}
 		}
 	}
+	legacyUARTReceiveQueues := make(map[uint32][]byte, len(d.legacyUARTReceiveData))
+	legacyUARTReceiveIRQPending := make(map[uint32]bool, len(d.legacyUARTReceiveData))
+	legacyUARTActivationIRQPending := make(map[uint32]bool, len(d.legacyUARTReceiveData))
+	legacyUARTReceiveArmed := make(map[uint32]bool, len(d.legacyUARTReceiveData))
+	legacyUARTReceivePublished := make(map[uint32]bool, len(d.legacyUARTReceiveData))
+	legacyUARTReceiveDelays := make(map[uint32]uint64, len(d.legacyUARTReceiveData))
+	legacyUARTTransmitCounts := make(map[uint32]uint32, len(d.legacyUARTReceiveData))
+	legacyUARTT0TransmitBuffers := make(map[uint32][]byte, len(d.legacyUARTReceiveData))
+	legacyUARTT0PendingResponses := make(map[uint32][]byte, len(d.legacyUARTReceiveData))
+	legacyUARTT0SelectedFiles := make(map[uint32]uint16, len(d.legacyUARTReceiveData))
+	groupedStatusSignalArmed := make([]bool, len(d.groupedStatusResponses))
+	if version >= 20 {
+		if binary.Read(reader, binary.LittleEndian, &uartReceiveCount) != nil ||
+			uartReceiveCount != uint32(len(d.legacyUARTReceiveData)) {
+			return ErrInvalidState
+		}
+		for index := uint32(0); index < uartReceiveCount; index++ {
+			var controller, transmitFrameBytes, transmitResponseLength, transmitCount uint32
+			var t0BufferLength, pendingResponseLength, initialLength, queueLength uint32
+			var selectedFile uint16
+			var configuredDelay, delay uint64
+			var interruptSource, useVectored, pulseInterrupt, echoTransmit, t0Card, published, pending, activationPending, receiveArmed uint8
+			var receiveCommand, activationCommand, receiveFIFOOffset, vectoredGroupStatusOffset, vectoredGroupMask uint32
+			if binary.Read(reader, binary.LittleEndian, &controller) != nil ||
+				binary.Read(reader, binary.LittleEndian, &interruptSource) != nil ||
+				(version >= 28 && binary.Read(reader, binary.LittleEndian, &useVectored) != nil) ||
+				useVectored > 1 ||
+				(version >= 28 && (useVectored == 1) != d.legacyUARTReceiveData[index].UseVectoredController) ||
+				(version < 28 && d.legacyUARTReceiveData[index].UseVectoredController) ||
+				(version >= 28 && binary.Read(reader, binary.LittleEndian, &pulseInterrupt) != nil) ||
+				pulseInterrupt > 1 ||
+				(version >= 28 && (pulseInterrupt == 1) != d.legacyUARTReceiveData[index].PulseReceiveInterrupt) ||
+				(version < 28 && d.legacyUARTReceiveData[index].PulseReceiveInterrupt) ||
+				(version >= 28 && binary.Read(reader, binary.LittleEndian, &receiveCommand) != nil) ||
+				(version >= 28 && receiveCommand != d.legacyUARTReceiveData[index].ReceiveCommand) ||
+				(version < 28 && d.legacyUARTReceiveData[index].ReceiveCommand != 0) ||
+				(version >= 31 && binary.Read(reader, binary.LittleEndian, &activationCommand) != nil) ||
+				(version >= 31 && activationCommand != d.legacyUARTReceiveData[index].ActivationCommand) ||
+				(version < 31 && d.legacyUARTReceiveData[index].ActivationCommand != 0) ||
+				(version >= 33 && binary.Read(reader, binary.LittleEndian, &receiveFIFOOffset) != nil) ||
+				(version >= 33 && receiveFIFOOffset != d.legacyUARTReceiveData[index].ReceiveFIFOOffset) ||
+				(version < 33 && d.legacyUARTReceiveData[index].ReceiveFIFOOffset != 0) ||
+				(version >= 29 && binary.Read(reader, binary.LittleEndian, &vectoredGroupStatusOffset) != nil) ||
+				(version >= 29 && binary.Read(reader, binary.LittleEndian, &vectoredGroupMask) != nil) ||
+				(version >= 29 && vectoredGroupStatusOffset != d.legacyUARTReceiveData[index].VectoredGroupStatusOffset) ||
+				(version >= 29 && vectoredGroupMask != d.legacyUARTReceiveData[index].VectoredGroupMask) ||
+				(version < 29 && (d.legacyUARTReceiveData[index].VectoredGroupStatusOffset != 0 ||
+					d.legacyUARTReceiveData[index].VectoredGroupMask != 0)) ||
+				(version >= 24 && binary.Read(reader, binary.LittleEndian, &echoTransmit) != nil) ||
+				echoTransmit > 1 ||
+				(version >= 24 && (echoTransmit == 1) != d.legacyUARTReceiveData[index].EchoTransmit) ||
+				(version >= 25 && binary.Read(reader, binary.LittleEndian, &transmitFrameBytes) != nil) ||
+				(version >= 25 && transmitFrameBytes != d.legacyUARTReceiveData[index].TransmitFrameBytes) ||
+				(version >= 25 && binary.Read(reader, binary.LittleEndian, &transmitResponseLength) != nil) ||
+				uint64(transmitResponseLength)+4 > uint64(reader.Len()) {
+				return ErrInvalidState
+			}
+			transmitResponse := make([]byte, transmitResponseLength)
+			if _, err := io.ReadFull(reader, transmitResponse); err != nil ||
+				(version >= 25 && !bytes.Equal(transmitResponse, d.legacyUARTReceiveData[index].TransmitResponse)) ||
+				(version >= 25 && binary.Read(reader, binary.LittleEndian, &transmitCount) != nil) ||
+				transmitCount >= transmitFrameBytes && transmitCount != 0 {
+				return ErrInvalidState
+			}
+			var t0Buffer []byte
+			if version >= 26 {
+				if binary.Read(reader, binary.LittleEndian, &t0Card) != nil || t0Card > 1 ||
+					(t0Card == 1) != d.legacyUARTReceiveData[index].T0Card ||
+					binary.Read(reader, binary.LittleEndian, &t0BufferLength) != nil ||
+					uint64(t0BufferLength) > uint64(reader.Len()) {
+					return ErrInvalidState
+				}
+				t0Buffer = make([]byte, t0BufferLength)
+				if _, err := io.ReadFull(reader, t0Buffer); err != nil ||
+					!validLegacyUARTT0TransmitBuffer(d.legacyUARTReceiveData[index], t0Buffer) {
+					return ErrInvalidState
+				}
+			} else if d.legacyUARTReceiveData[index].T0Card {
+				return ErrInvalidState
+			}
+			var pendingResponse []byte
+			if version >= 27 {
+				if binary.Read(reader, binary.LittleEndian, &selectedFile) != nil ||
+					binary.Read(reader, binary.LittleEndian, &pendingResponseLength) != nil ||
+					pendingResponseLength > 256 ||
+					uint64(pendingResponseLength) > uint64(reader.Len()) ||
+					(!d.legacyUARTReceiveData[index].T0Card &&
+						(selectedFile != 0 || pendingResponseLength != 0)) {
+					return ErrInvalidState
+				}
+				pendingResponse = make([]byte, pendingResponseLength)
+				if _, err := io.ReadFull(reader, pendingResponse); err != nil {
+					return ErrInvalidState
+				}
+			}
+			if (version >= 22 && binary.Read(reader, binary.LittleEndian, &configuredDelay) != nil) ||
+				(version >= 22 && configuredDelay != d.legacyUARTReceiveData[index].DelayInstructions) ||
+				binary.Read(reader, binary.LittleEndian, &initialLength) != nil ||
+				uint64(initialLength)+4 > uint64(reader.Len()) {
+				return ErrInvalidState
+			}
+			initial := make([]byte, initialLength)
+			if _, err := io.ReadFull(reader, initial); err != nil ||
+				controller != d.legacyUARTReceiveData[index].Controller ||
+				interruptSource != d.legacyUARTReceiveData[index].InterruptSource ||
+				!bytes.Equal(initial, d.legacyUARTReceiveData[index].Data) ||
+				(version >= 21 && binary.Read(reader, binary.LittleEndian, &published) != nil) ||
+				published > 1 ||
+				(version >= 22 && binary.Read(reader, binary.LittleEndian, &delay) != nil) ||
+				delay > d.legacyUARTReceiveData[index].DelayInstructions ||
+				binary.Read(reader, binary.LittleEndian, &queueLength) != nil ||
+				uint64(queueLength) > uint64(reader.Len()) {
+				return ErrInvalidState
+			}
+			queue := make([]byte, queueLength)
+			if _, err := io.ReadFull(reader, queue); err != nil {
+				return ErrInvalidState
+			}
+			if version >= 30 {
+				if binary.Read(reader, binary.LittleEndian, &pending) != nil ||
+					pending > 1 || pending == 1 && len(queue) == 0 {
+					return ErrInvalidState
+				}
+			} else if len(queue) != 0 {
+				pending = 1
+			}
+			if version >= 31 {
+				if binary.Read(reader, binary.LittleEndian, &activationPending) != nil ||
+					activationPending > 1 {
+					return ErrInvalidState
+				}
+			}
+			if version >= 32 {
+				if binary.Read(reader, binary.LittleEndian, &receiveArmed) != nil ||
+					receiveArmed > 1 {
+					return ErrInvalidState
+				}
+			}
+			legacyUARTReceiveQueues[controller] = queue
+			legacyUARTReceiveIRQPending[controller] = pending == 1
+			legacyUARTActivationIRQPending[controller] = activationPending == 1
+			legacyUARTReceiveArmed[controller] = receiveArmed == 1
+			if version == 20 {
+				published = 1
+			}
+			if delay != 0 && (published != 0 || queueLength != 0) {
+				return ErrInvalidState
+			}
+			legacyUARTReceivePublished[controller] = published == 1
+			legacyUARTReceiveDelays[controller] = delay
+			legacyUARTTransmitCounts[controller] = transmitCount
+			if len(t0Buffer) != 0 {
+				legacyUARTT0TransmitBuffers[controller] = t0Buffer
+			}
+			if len(pendingResponse) != 0 {
+				legacyUARTT0PendingResponses[controller] = pendingResponse
+			}
+			if selectedFile != 0 {
+				legacyUARTT0SelectedFiles[controller] = selectedFile
+			}
+		}
+	} else if len(d.legacyUARTReceiveData) != 0 {
+		return ErrInvalidState
+	}
+	if version >= 23 {
+		if binary.Read(reader, binary.LittleEndian, &groupedResponseCount) != nil ||
+			groupedResponseCount != uint32(len(d.groupedStatusResponses)) {
+			return ErrInvalidState
+		}
+		for index := uint32(0); index < groupedResponseCount; index++ {
+			var response QualcommBootGroupedStatusResponse
+			var armed uint8
+			if binary.Read(reader, binary.LittleEndian, &response.Offset) != nil ||
+				binary.Read(reader, binary.LittleEndian, &response.RequestMask) != nil ||
+				binary.Read(reader, binary.LittleEndian, &response.NANDReadyMask) != nil ||
+				binary.Read(reader, binary.LittleEndian, &response.GroupStatusOffset) != nil ||
+				binary.Read(reader, binary.LittleEndian, &response.GroupMask) != nil ||
+				binary.Read(reader, binary.LittleEndian, &armed) != nil || armed > 1 ||
+				(armed == 1 && response.NANDReadyMask == 0) ||
+				response != d.groupedStatusResponses[index] {
+				return ErrInvalidState
+			}
+			groupedStatusSignalArmed[index] = armed == 1
+		}
+	} else if len(d.groupedStatusResponses) != 0 {
+		return ErrInvalidState
+	}
 	if binary.Read(reader, binary.LittleEndian, &count) != nil ||
 		count > uint32(len(d.writableOffsets)) ||
 		(!allowMissingProfileRegisters && count != uint32(len(d.writableOffsets))) ||
@@ -1660,13 +2550,30 @@ func (d *QualcommBootControl) loadState(state []byte, allowMissingProfileRegiste
 		return ErrInvalidState
 	}
 	var vectoredInterruptStateLength uint32
+	periodicStateSize := uint64(0)
+	if version >= 19 {
+		periodicStateSize = 16
+	}
 	if binary.Read(reader, binary.LittleEndian, &vectoredInterruptStateLength) != nil ||
-		uint64(vectoredInterruptStateLength) != uint64(reader.Len()) ||
+		uint64(vectoredInterruptStateLength)+periodicStateSize != uint64(reader.Len()) ||
 		(d.vectoredInterruptController == nil) != (vectoredInterruptStateLength == 0) {
 		return ErrInvalidState
 	}
 	vectoredInterruptState := make([]byte, vectoredInterruptStateLength)
-	if _, err := io.ReadFull(reader, vectoredInterruptState); err != nil || reader.Len() != 0 {
+	if _, err := io.ReadFull(reader, vectoredInterruptState); err != nil {
+		return ErrInvalidState
+	}
+	if version >= 19 {
+		if binary.Read(reader, binary.LittleEndian, &periodicHz) != nil ||
+			periodicHz != d.timeTickPeriodicHz ||
+			binary.Read(reader, binary.LittleEndian, &periodicPhase) != nil ||
+			(d.timeTickClocked && periodicPhase >= d.timeTickInstructionRate) {
+			return ErrInvalidState
+		}
+	} else if d.timeTickPeriodicHz != 0 {
+		return ErrInvalidState
+	}
+	if reader.Len() != 0 {
 		return ErrInvalidState
 	}
 	if err := d.interruptController.LoadState(interruptState); err != nil {
@@ -1679,12 +2586,30 @@ func (d *QualcommBootControl) loadState(state []byte, allowMissingProfileRegiste
 	}
 	d.registers = registers
 	d.nandReady.Set(uint32(ready))
+	d.groupedStatusSignalArmed = groupedStatusSignalArmed
+	if err := d.syncSDCCInterrupts(); err != nil {
+		return err
+	}
+	if err := d.syncGroupedStatusSignals(); err != nil {
+		return err
+	}
 	d.watchdogServices = watchdog
 	d.timeTick = timeTick
 	d.timeTickReadPhase = timeTickReadPhase
 	d.timeTickPhase = timeTickPhase
+	d.timeTickPeriodicPhase = periodicPhase
 	d.timeTickMatchReady = matchReady == 1
 	d.timeTickMatchConfigured = matchConfigured == 1
+	d.legacyUARTReceiveQueues = legacyUARTReceiveQueues
+	d.legacyUARTReceiveIRQPending = legacyUARTReceiveIRQPending
+	d.legacyUARTActivationIRQPending = legacyUARTActivationIRQPending
+	d.legacyUARTReceiveArmed = legacyUARTReceiveArmed
+	d.legacyUARTReceivePublished = legacyUARTReceivePublished
+	d.legacyUARTReceiveDelays = legacyUARTReceiveDelays
+	d.legacyUARTTransmitCounts = legacyUARTTransmitCounts
+	d.legacyUARTT0TransmitBuffers = legacyUARTT0TransmitBuffers
+	d.legacyUARTT0PendingResponses = legacyUARTT0PendingResponses
+	d.legacyUARTT0SelectedFiles = legacyUARTT0SelectedFiles
 	return nil
 }
 
@@ -1696,6 +2621,7 @@ type QualcommSecondaryClockControl struct {
 	registers         map[uint32]uint32
 	readOnlyRegisters map[uint32]uint32
 	gpioWriteObserver QualcommGPIOWriteObserver
+	gpioReadObserver  QualcommGPIOReadObserver
 }
 
 func NewQualcommSecondaryClockControl() *QualcommSecondaryClockControl {
@@ -1755,12 +2681,26 @@ func (d *QualcommSecondaryClockControl) AttachGPIOWriteObserver(observer Qualcom
 	return nil
 }
 
+func (d *QualcommSecondaryClockControl) AttachGPIOReadObserver(observer QualcommGPIOReadObserver) error {
+	if observer == nil || d.gpioReadObserver != nil {
+		return fmt.Errorf("attach Qualcomm secondary-clock GPIO read observer: %w", ErrQualcommSecondaryClockMMIO)
+	}
+	d.gpioReadObserver = observer
+	return nil
+}
+
 func (d *QualcommSecondaryClockControl) Read(offset uint32, width Width) (uint32, error) {
 	if width == Width32 {
 		if value, ok := d.readOnlyRegisters[offset]; ok {
+			if d.gpioReadObserver != nil {
+				value = d.gpioReadObserver.ObserveGPIORead(offset, value)
+			}
 			return value, nil
 		}
 		if value, ok := d.registers[offset]; ok {
+			if d.gpioReadObserver != nil {
+				value = d.gpioReadObserver.ObserveGPIORead(offset, value)
+			}
 			return value, nil
 		}
 	}

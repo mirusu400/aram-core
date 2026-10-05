@@ -57,6 +57,52 @@ func TestOneNANDIdentifiesAndLoadsMainData(t *testing.T) {
 	}
 }
 
+func TestOneNANDDrivesCompletionInterruptThroughVectoredController(t *testing.T) {
+	probe := &interruptLineProbe{}
+	vectored, err := NewQualcommVectoredInterruptController(
+		QualcommVectoredInterruptConfig{
+			SourceCount: 49, Bank0Sources: 25,
+			ReverseSourceOrder: true,
+		},
+		probe,
+	)
+	check(t, err)
+	data := bytes.Repeat([]byte{0xff}, oneNANDEraseBlockSize)
+	device, err := NewOneNAND(OneNANDConfig{
+		ManufacturerID:      0x00ec,
+		DeviceID:            0x005c,
+		Capacity:            uint64(len(data)),
+		Storage:             byteStorage{data: data},
+		InterruptController: vectored,
+		InterruptSource:     14,
+	})
+	check(t, err)
+	check(t, vectored.Write(qualcommVICEnable1Offset, Width32, 1<<9))
+	if !probe.irq {
+		t.Fatal("cold OneNAND completion did not assert vectored IRQ")
+	}
+	check(t, device.Write(oneNANDInterruptStatusOffset, Width16, 0))
+	if !probe.irq {
+		t.Fatal("cleared OneNAND level also discarded latched VIC status")
+	}
+	check(t, vectored.Write(qualcommVICAcknowledge1Offset, Width32, 1<<9))
+	if probe.irq {
+		t.Fatal("acknowledged cold completion left vectored IRQ asserted")
+	}
+	check(t, device.Write(oneNANDStartAddress1Offset, Width16, 0))
+	check(t, device.Write(oneNANDStartAddress8Offset, Width16, 0))
+	check(t, device.Write(oneNANDStartBufferOffset, Width16, 0x0800))
+	check(t, device.Write(oneNANDCommandOffset, Width16, oneNANDCommandRead))
+	if !probe.irq {
+		t.Fatal("OneNAND read completion did not assert vectored IRQ")
+	}
+	check(t, device.Write(oneNANDInterruptStatusOffset, Width16, 0))
+	check(t, vectored.Write(qualcommVICAcknowledge1Offset, Width32, 1<<9))
+	if probe.irq {
+		t.Fatal("acknowledged OneNAND read left vectored IRQ asserted")
+	}
+}
+
 func TestOneNANDReportsTechnologyIdentity(t *testing.T) {
 	data := bytes.Repeat([]byte{0xff}, oneNANDEraseBlockSize)
 	device, err := NewOneNAND(OneNANDConfig{

@@ -33,6 +33,41 @@ func translateThumbMicroOp(instruction uint16) (thumbInstructionClass, bool, boo
 	}
 }
 
+// thumbMicroInstructionStale records whole-system access attribution and trace
+// state for one translated instruction. It reports true, after retiring the
+// block, when the resident I-cache line no longer holds the decoded opcode.
+func (b *Backend) thumbMicroInstructionStale(
+	block *jitBlock,
+	index int,
+	pc uint32,
+	in *thumbMicroInstr,
+	wholeSystem, traced bool,
+) bool {
+	instruction := in.raw
+	if wholeSystem {
+		b.instructionRaw = uint32(instruction)
+	}
+	if traced || wholeSystem && block.instructionCacheEnabled {
+		resident, residentOK := b.residentInstructionCache16(pc)
+		if traced {
+			b.lastJITResidentRaw = uint32(resident)
+			b.lastJITResident = residentOK
+		}
+		if wholeSystem && block.instructionCacheEnabled && residentOK && resident != instruction {
+			b.dropStaleJITBlock(block.start, block, false)
+			return true
+		}
+	}
+	if traced {
+		b.lastJITBlock = block
+		b.lastJITRuntimePC = pc
+		b.lastJITDecodedPC = in.pc
+		b.lastJITRaw = uint32(instruction)
+		b.lastJITIndex = uint32(index)
+	}
+	return false
+}
+
 // executeThumbMicroOp executes a pre-classified Thumb instruction. Keeping the
 // raw 16-bit encoding makes translated blocks compact while the class byte
 // removes the decoder and, most importantly, the per-instruction indirect
@@ -44,12 +79,16 @@ func (b *Backend) executeThumbMicroBlock(
 ) (int, bool, *cpu.StopReason, error) {
 	// Bound the translated prefix once so the hot loop needs no per-op slice check.
 	instructions := block.thumb[:blockInstructions]
+	blockGeneration := b.jitGen
 	for index := range instructions {
 		in := &instructions[index]
 		pc := in.pc
 		if wholeSystem {
 			if index != 0 {
-				if b.takePendingInterrupt() {
+				// An earlier instruction may have retired this translation,
+				// for example by evicting its I-cache line.
+				if b.jitGen != blockGeneration ||
+					traced && b.stopped.Load() || b.takePendingInterrupt() {
 					return index, false, nil, nil
 				}
 				pc = b.regs[cpu.RegisterPC]
@@ -63,9 +102,18 @@ func (b *Backend) executeThumbMicroBlock(
 			}
 			b.instructionAddress = pc
 		} else if traced {
+			if index != 0 && b.stopped.Load() {
+				return index, false, nil, nil
+			}
 			b.recordPC(pc)
 		}
 		instruction := in.raw
+		// Application blocks run untraced without an architectural I-cache;
+		// keep their per-instruction path to this single branch.
+		if (wholeSystem || traced) &&
+			b.thumbMicroInstructionStale(block, index, pc, in, wholeSystem, traced) {
+			return index, false, nil, nil
+		}
 		b.regs[cpu.RegisterPC] = pc + 2
 		switch in.op {
 		case thumbShiftImmediate:
@@ -394,7 +442,7 @@ func (b *Backend) executeThumbMicroBlock(
 				count++
 			}
 			start := b.regs[cpu.RegisterSP] - uint32(count*4)
-			address := start
+			address := b.blockTransferAddress(start)
 			for register := uint32(0); register < 8; register++ {
 				if registers&(1<<register) == 0 {
 					continue
@@ -414,7 +462,9 @@ func (b *Backend) executeThumbMicroBlock(
 		case thumbPop:
 			registers := uint16(instruction & 0xff)
 			includePC := instruction&(1<<8) != 0
-			address := b.regs[cpu.RegisterSP]
+			start := b.regs[cpu.RegisterSP]
+			first := b.blockTransferAddress(start)
+			address := first
 			for register := uint32(0); register < 8; register++ {
 				if registers&(1<<register) == 0 {
 					continue
@@ -434,7 +484,7 @@ func (b *Backend) executeThumbMicroBlock(
 				b.branchExchange(value)
 				address += 4
 			}
-			b.regs[cpu.RegisterSP] = address
+			b.regs[cpu.RegisterSP] = start + (address - first)
 			return index + 1, includePC, nil, nil
 
 		case thumbAddPCSP:
@@ -449,7 +499,9 @@ func (b *Backend) executeThumbMicroBlock(
 			load := instruction&(1<<11) != 0
 			rb := uint32(instruction>>8) & 7
 			registers := uint16(instruction & 0xff)
-			address := b.regs[rb]
+			base := b.regs[rb]
+			first := b.blockTransferAddress(base)
+			address := first
 			for register := uint32(0); register < 8; register++ {
 				if registers&(1<<register) == 0 {
 					continue
@@ -466,7 +518,7 @@ func (b *Backend) executeThumbMicroBlock(
 				address += 4
 			}
 			if !load || registers&(1<<rb) == 0 {
-				b.regs[rb] = address
+				b.regs[rb] = base + (address - first)
 			}
 
 		case thumbConditionalBranch:

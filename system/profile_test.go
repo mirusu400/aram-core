@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/mirusu400/aram-core/cpu"
@@ -175,6 +177,9 @@ func TestSCHW830BoardProfileAppliesEvidenceBackedIRAM(t *testing.T) {
 	}}; !reflect.DeepEqual(profile.ClockRegimeComparators, want) {
 		t.Fatalf("SCH-W830 clock-regime comparators = %#v", profile.ClockRegimeComparators)
 	}
+	// DL21 polls its raw-NAND ready bit through the flat boot-control alias at
+	// CHIP_BASE+0x488. Group apertures would shadow that register, so the
+	// shared W830 profile keeps the ungrouped compact VIC.
 	if profile.VectoredInterrupt == nil ||
 		*profile.VectoredInterrupt != (QualcommVectoredInterruptConfig{
 			SourceCount:        49,
@@ -696,18 +701,37 @@ func TestRawSamsungBoardProfilesKeepExactIdentityAndPackagedEnd(t *testing.T) {
 		if err := test.profile.Validate(); err != nil {
 			t.Fatalf("%s: %v", test.id, err)
 		}
+		wantReadID, wantNANDSize := uint32(0x000098ca), uint64(0x10000000)
+		if test.id == "samsung.sph-w4200" {
+			wantReadID, wantNANDSize = 0x0000ecdc, 0x20000000
+		}
+		oneNANDMismatch := test.profile.OneNAND != nil
+		if test.id == "samsung.sph-w4200" {
+			oneNANDMismatch = !reflect.DeepEqual(test.profile.OneNAND, &OneNANDProfile{
+				Address: 0x40000000, ManufacturerID: 0x00ec, DeviceID: 0x005c,
+				DieBlockOffset: 0x0800, Capacity: 0x20000000, InitialImageFromFirmware: true,
+			})
+		}
 		if test.profile.ID != test.id || test.profile.FirmwareBuildID != test.build ||
 			test.profile.PlatformID != "qualcomm.arm9-sch-raw-v1" ||
-			test.profile.NANDReadID != 0x000098ca || test.profile.NANDSize != 0x10000000 ||
+			test.profile.NANDReadID != wantReadID || test.profile.NANDSize != wantNANDSize ||
 			test.profile.NANDPageSize != test.page || test.profile.NANDEraseBlockSize != test.erase ||
 			test.profile.NANDReportsErasedECCCodewords != test.reportErasedECC ||
-			test.profile.OneNAND != nil || test.profile.PBLLegacyFeatureDataAddress != 0xffff6044 {
+			oneNANDMismatch || test.profile.PBLLegacyFeatureDataAddress != 0xffff6044 {
 			t.Fatalf("raw Samsung board profile = %+v", test.profile)
 		}
 		wantInitialData := append([]FlashSeed{{
 			Offset: test.packagedEnd,
 			Data:   []byte{0xff, 0xfe, 0xaf, 0xbe, 0, 0, 0, 0, 0, 0, 0, 0},
 		}}, test.extraInitialData...)
+		if test.id == "samsung.sch-w340" {
+			footer := make([]byte, 0x13ecc)
+			copy(footer, []byte{0xff, 0xfe, 0xaf, 0xbe, 1, 0, 0, 0, 0, 0, 0, 0})
+			copy(footer[12:], "nvm/preload_ver")
+			footer[12+0x80] = 8
+			footer[12+0x84] = 4
+			wantInitialData[0].Data = footer
+		}
 		if !reflect.DeepEqual(test.profile.NANDInitialData, wantInitialData) {
 			t.Fatalf("%s initial NAND data = %+v", test.id, test.profile.NANDInitialData)
 		}
@@ -753,6 +777,41 @@ func TestRawSamsungBoardProfilesKeepExactIdentityAndPackagedEnd(t *testing.T) {
 			}) {
 			t.Fatalf("%s sparse-bus profile = %v / %v", test.id,
 				test.profile.SparseBusRegisterOffsets, test.profile.SparseBusRegisterResets)
+		}
+	}
+}
+
+func TestCompactVICGroupsRequireGroupedStatusWiring(t *testing.T) {
+	// A second-level group status word shadows the flat boot-control register
+	// at the same CHIP_BASE offset. Boards that never wire grouped sources must
+	// keep the legacy registers, such as the NAND-ready alias at +0x488 that
+	// the W410/W830/W860 OEMSBL raw-NAND probes poll.
+	grouped := map[string]bool{
+		"samsung.sch-w320": true, "samsung.sch-w340": true,
+		"samsung.sch-w350": true, "samsung.sph-w4200": true,
+	}
+	for _, profile := range []BoardProfile{
+		SCHW830DL21BoardProfile(), SCHW860DA06BoardProfile(), SCHW770DA05BoardProfile(),
+		SCHW210CK12BoardProfile(), SCHW240CL28BoardProfile(), SCHW270CL28BoardProfile(),
+		SCHW290CK10BoardProfile(), SCHW300DA04BoardProfile(), SCHW320DC18BoardProfile(),
+		SCHW330CK06BoardProfile(), SCHW340DC18BoardProfile(), SCHW350CK06BoardProfile(),
+		SCHW390CK11BoardProfile(), SCHW410CL10BoardProfile(), SCHW420CD16BoardProfile(),
+		SCHW450CK10BoardProfile(), SCHW460CC26BoardProfile(), SCHW599BE30BoardProfile(),
+		SCHW850CF11BoardProfile(), SPHW4200DC17BoardProfile(),
+	} {
+		if profile.VectoredInterrupt == nil {
+			continue
+		}
+		groups := profile.VectoredInterrupt.GroupCount
+		if grouped[profile.ID] {
+			if groups != 6 || len(profile.BootControlGroupedStatusResponses) == 0 {
+				t.Fatalf("%s grouped compact VIC = %d groups, %d responses",
+					profile.ID, groups, len(profile.BootControlGroupedStatusResponses))
+			}
+			continue
+		}
+		if groups != 0 {
+			t.Fatalf("%s exposes %d unwired compact-VIC groups", profile.ID, groups)
 		}
 	}
 }
@@ -858,6 +917,92 @@ func TestSPHW4200DC17BoardDeclaresSecondRAMBankAndR61509Panel(t *testing.T) {
 	if err := profile.Validate(); err != nil {
 		t.Fatal(err)
 	}
+	foundFixedSDCCStatus := false
+	for _, register := range profile.BootControlReadOnlyRegisters {
+		foundFixedSDCCStatus = foundFixedSDCCStatus || register.Offset == 0x0c34
+	}
+	if foundFixedSDCCStatus || !reflect.DeepEqual(
+		profile.BootControlSDCCControllers,
+		[]QualcommSDCCControllerConfig{{
+			Base: 0x0c00, CardPresent: true, GroupStatusOffset: 0x90, GroupMask: 0x01,
+		}},
+	) {
+		t.Fatalf(
+			"SPH-W4200 SDCC absent-card profile = fixed:%t controllers:%+v",
+			foundFixedSDCCStatus,
+			profile.BootControlSDCCControllers,
+		)
+	}
+	if profile.Keypad != nil || profile.Touchscreen == nil ||
+		profile.Touchscreen.Width != 240 || profile.Touchscreen.Height != 432 ||
+		profile.Touchscreen.PenInputOffset != 0x0440 || profile.Touchscreen.PenInputMask != 1 ||
+		profile.Touchscreen.InterruptGroup.StatusOffset != 0x05e4 ||
+		profile.Touchscreen.InterruptGroup.InterruptSource != 5 ||
+		profile.Touchscreen.InterruptMask != 0x01 {
+		t.Fatalf("SPH-W4200 input profile = keypad:%#v touchscreen:%#v", profile.Keypad, profile.Touchscreen)
+	}
+	if !slices.Contains(profile.PrimaryClockReadOnlyRegisters,
+		(QualcommPrimaryClockReadOnlyRegister{Offset: 0x05e8, Value: 0})) {
+		t.Fatalf("SPH-W4200 passive GPIO group status = %#v", profile.PrimaryClockReadOnlyRegisters)
+	}
+	if profile.BootClockModeStatus != 0 {
+		t.Fatalf("SPH-W4200 cold-boot strap = %#08x", profile.BootClockModeStatus)
+	}
+	if want := []QualcommSBIReadResponse{
+		{Controller: 0x5100, Address: 0x4f, Value: 0xc1},
+		{Controller: 0x5100, Address: 0x53, Value: 0xff},
+		{Controller: 0x5100, Address: 0x54, Value: 0x01},
+	}; !reflect.DeepEqual(profile.BootControlSBIReadResponses, want) {
+		t.Fatalf("SPH-W4200 PMIC ADC responses = %+v", profile.BootControlSBIReadResponses)
+	}
+	if !slices.Contains(profile.LegacyTopWritableOffsets, uint32(0x03a8)) {
+		t.Fatalf("SPH-W4200 PBL top-page scratch = %#v", profile.LegacyTopWritableOffsets)
+	}
+	if !slices.Contains(profile.BootControlLegacyUARTControllers, uint32(0x4100)) {
+		t.Fatalf("SPH-W4200 UIM UART controllers = %#v", profile.BootControlLegacyUARTControllers)
+	}
+	if want := []QualcommLegacyUARTReceiveData{{
+		Controller:         0x4100,
+		InterruptSource:    55,
+		DelayInstructions:  65_536,
+		EchoTransmit:       true,
+		TransmitFrameBytes: 5,
+		TransmitResponse:   []byte{0x6d, 0x00},
+		Data:               []byte{0x3b, 0x00},
+	}}; !reflect.DeepEqual(profile.BootControlLegacyUARTReceiveData, want) {
+		t.Fatalf("SPH-W4200 UIM UART receive data = %#v", profile.BootControlLegacyUARTReceiveData)
+	}
+	if profile.LegacyInterruptCascade == nil ||
+		*profile.LegacyInterruptCascade != (QualcommInterruptCascadeProfile{
+			VectoredSource: 17, GroupStatusOffset: 0x8c, GroupMask: 0x02,
+		}) {
+		t.Fatalf("SPH-W4200 legacy interrupt cascade = %+v", profile.LegacyInterruptCascade)
+	}
+	if want := []QualcommBootGroupedStatusResponse{{
+		Offset: 0x0380, RequestMask: 0x08, NANDReadyMask: 0x02,
+		GroupStatusOffset: 0x88, GroupMask: 0x02,
+	}, {
+		Offset: 0x0380, NANDReadyMask: 0x01,
+		GroupStatusOffset: 0x88, GroupMask: 0x01,
+	}}; !reflect.DeepEqual(profile.BootControlGroupedStatusResponses, want) {
+		t.Fatalf(
+			"SPH-W4200 raw-NAND grouped-status responses = %+v",
+			profile.BootControlGroupedStatusResponses,
+		)
+	}
+	for _, relative := range append(
+		append([]uint32(nil), qualcommLegacyUARTHalfwordRegisterOffsets[:]...),
+		qualcommLegacyUARTFIFOOffset,
+	) {
+		offset := uint32(0x4100) + relative
+		if !slices.Contains(profile.BootControlWritableOffsets, offset) ||
+			!slices.Contains(profile.BootControlMixedWidthOffsets, offset) {
+			t.Fatalf(
+				"SPH-W4200 UIM UART register %#x missing word/mixed-width aperture",
+				offset,
+			)
+		}
+	}
 	if profile.Panel != (DCSPanelConfig{
 		Width: 240, Height: 432, Protocol: ParallelPanelProtocolIndexedRGB565Window210213,
 	}) || profile.PanelPorts == nil ||
@@ -867,21 +1012,162 @@ func TestSPHW4200DC17BoardDeclaresSecondRAMBankAndR61509Panel(t *testing.T) {
 		}) {
 		t.Fatalf("SPH-W4200 panel = %+v / %+v", profile.Panel, profile.PanelPorts)
 	}
-	foundSecondRAM, foundBusMode := false, false
+	foundSecondRAM, foundSharedConfig := false, false
+	foundADSPDownloadResponse, foundADSPBIOSResponse, foundADSPCommandResponse := false, false, false
+	foundBusReady, foundBusControl, foundBusTiming, foundBusChipSelect, foundBusControl14, foundBusClock, foundBusMask, foundBusControl28, foundBusMode, foundBusControl30 := false, false, false, false, false, false, false, false, false, false
+	foundIndirectBus := [8]bool{}
+	foundExternalBytePorts := [2]bool{}
+	foundExternalGPIO := [8]bool{}
+	foundAMSSInterruptRegisters := [5]bool{}
 	for _, memory := range profile.Memory {
 		foundSecondRAM = foundSecondRAM || memory == (MemoryRegionProfile{
 			ID: "w4200-ebi-ram-bank-1", Kind: MemorySparseRAM,
 			Address: 0x08000000, Size: 0x08000000,
 		})
-	}
-	for _, register := range profile.LatchedRegisters {
-		foundBusMode = foundBusMode || reflect.DeepEqual(register, LatchedRegisterProfile{
-			ID: "w4200-external-bus-mode", Address: 0x3000202c,
-			Width: Width16, ResetValue: 0,
+		foundSharedConfig = foundSharedConfig || memory == (MemoryRegionProfile{
+			ID: "w4200-shared-config-segment", Kind: MemorySparseRAM,
+			Address: 0x18000000, Size: 0x02600000,
 		})
 	}
-	if !foundSecondRAM || !foundBusMode {
-		t.Fatalf("SPH-W4200 boot devices = ram:%t bus-mode:%t", foundSecondRAM, foundBusMode)
+	for _, response := range profile.MemoryWriteResponses {
+		foundADSPDownloadResponse = foundADSPDownloadResponse || reflect.DeepEqual(response, MemoryWriteResponseProfile{
+			MemoryID: "adsp-address-space", Offset: 0x00202f3a,
+			Width: Width16, Request: 2,
+			Writes: []MemoryResponseWriteProfile{{
+				Offset: 0x00202f3a, Width: Width16, Value: 0,
+			}},
+		})
+		foundADSPBIOSResponse = foundADSPBIOSResponse || reflect.DeepEqual(response, MemoryWriteResponseProfile{
+			MemoryID: "adsp-address-space", Offset: 0x00202f30,
+			Width: Width16, Request: 0x0100,
+			Writes: []MemoryResponseWriteProfile{
+				{Offset: 0x00202f30, Width: Width16, Value: 0},
+				{Offset: 0x00202f3a, Width: Width16, Value: 1},
+			},
+		})
+	}
+	for _, rule := range profile.ADSPMailbox.ControlRules {
+		foundADSPCommandResponse = foundADSPCommandResponse || reflect.DeepEqual(rule, QualcommADSPControlRuleProfile{
+			Offset: 0x08, Value: 0x00020000, ResponseDelayInstructions: 1,
+			Copies: []QualcommADSPMemoryCopyProfile{{
+				SourceWindowID:      "external-32bit-bank-2",
+				SourceOffset:        0x00000570,
+				DestinationWindowID: "external-32bit-bank-2",
+				DestinationOffset:   0x0000056c,
+				Width:               Width32,
+			}},
+			Writes: []QualcommADSPMemoryWriteProfile{
+				{
+					WindowID: "external-16bit-bank-1", Offset: 0x00000bfc,
+					Width: Width16, Value: 0,
+				},
+				{
+					WindowID: "external-16bit-bank-1", Offset: 0x00003e4a,
+					Width: Width16, Value: 1,
+				},
+			},
+			Interrupt: &QualcommADSPInterruptProfile{
+				Source: 33, UseVectoredController: true,
+			},
+			StartPeriodicInterrupt: true,
+		})
+	}
+	if want := (&QualcommADSPPeriodicInterruptProfile{
+		InstructionsPerSecond: 60_000_000,
+		InterruptHz:           217,
+		Interrupt: QualcommADSPInterruptProfile{
+			Source: 29, UseVectoredController: true,
+		},
+	}); !reflect.DeepEqual(profile.ADSPMailbox.PeriodicInterrupt, want) {
+		t.Fatalf("SPH-W4200 ADSP periodic interrupt = %+v", profile.ADSPMailbox.PeriodicInterrupt)
+	}
+	for _, register := range profile.ReadOnlyRegisters {
+		foundBusReady = foundBusReady || reflect.DeepEqual(register, ReadOnlyRegisterProfile{
+			ID: "w4200-external-bus-ready", Address: 0x30002000,
+			Width: Width32, Value: 0x00000002,
+		})
+	}
+	for _, register := range profile.LatchedRegisters {
+		for index, want := range [...]LatchedRegisterProfile{
+			{ID: "w4200-external-byte-port", Address: 0x38000000, Width: Width8},
+			{ID: "w4200-external-byte-control", Address: 0x38010000, Width: Width8},
+		} {
+			foundExternalBytePorts[index] = foundExternalBytePorts[index] || reflect.DeepEqual(register, want)
+		}
+		for index := range foundExternalGPIO {
+			foundExternalGPIO[index] = foundExternalGPIO[index] || reflect.DeepEqual(register, LatchedRegisterProfile{
+				ID:      fmt.Sprintf("w4200-external-gpio-group-%d", index),
+				Address: 0x38020000 + uint32(index)*2,
+				Width:   Width8,
+			})
+		}
+		foundBusControl = foundBusControl || reflect.DeepEqual(register, LatchedRegisterProfile{
+			ID: "w4200-external-bus-control", Address: 0x30002004,
+			Width: Width32, ResetValue: 0,
+		})
+		foundBusTiming = foundBusTiming || reflect.DeepEqual(register, LatchedRegisterProfile{
+			ID: "w4200-external-bus-timing", Address: 0x30002008,
+			Width: Width32, ResetValue: 0,
+		})
+		foundBusChipSelect = foundBusChipSelect || reflect.DeepEqual(register, LatchedRegisterProfile{
+			ID: "w4200-external-bus-chip-select", Address: 0x30002010,
+			Width: Width32, ResetValue: 0,
+		})
+		foundBusControl14 = foundBusControl14 || reflect.DeepEqual(register, LatchedRegisterProfile{
+			ID: "w4200-external-bus-control-14", Address: 0x30002014,
+			Width: Width32, ResetValue: 0,
+		})
+		foundBusClock = foundBusClock || reflect.DeepEqual(register, LatchedRegisterProfile{
+			ID: "w4200-external-bus-clock", Address: 0x3000201c,
+			Width: Width32, ResetValue: 0,
+		})
+		foundBusMask = foundBusMask || reflect.DeepEqual(register, LatchedRegisterProfile{
+			ID: "w4200-external-bus-mask", Address: 0x30002020,
+			Width: Width32, ResetValue: 0,
+		})
+		foundBusControl28 = foundBusControl28 || reflect.DeepEqual(register, LatchedRegisterProfile{
+			ID: "w4200-external-bus-control-28", Address: 0x30002028,
+			Width: Width32, ResetValue: 0,
+		})
+		foundBusMode = foundBusMode || reflect.DeepEqual(register, LatchedRegisterProfile{
+			ID: "w4200-external-bus-mode", Address: 0x3000202c,
+			Width: Width32, AdditionalWidths: []Width{Width16}, ResetValue: 0,
+		})
+		foundBusControl30 = foundBusControl30 || reflect.DeepEqual(register, LatchedRegisterProfile{
+			ID: "w4200-external-bus-control-30", Address: 0x30002030,
+			Width: Width32, ResetValue: 0,
+		})
+		for index, want := range [...]LatchedRegisterProfile{
+			{ID: "w4200-indirect-bus-control", Address: 0x30006000, Width: Width16},
+			{ID: "w4200-indirect-bus-address-low", Address: 0x30006008, Width: Width16},
+			{ID: "w4200-indirect-bus-address-high", Address: 0x3000600a, Width: Width16},
+			{ID: "w4200-indirect-bus-data", Address: 0x3000600c, Width: Width32, AdditionalWidths: []Width{Width16}, AllowSubwordOffsets: true},
+			{ID: "w4200-indirect-bus-2-control", Address: 0x30007000, Width: Width16},
+			{ID: "w4200-indirect-bus-2-address-low", Address: 0x30007008, Width: Width16},
+			{ID: "w4200-indirect-bus-2-address-high", Address: 0x3000700a, Width: Width16},
+			{ID: "w4200-indirect-bus-2-data", Address: 0x30007800, Width: Width32, AdditionalWidths: []Width{Width16}},
+		} {
+			foundIndirectBus[index] = foundIndirectBus[index] || reflect.DeepEqual(register, want)
+		}
+	}
+	for _, offset := range profile.BootControlWritableOffsets {
+		for index, want := range [...]uint32{0x0d04, 0x0d10, 0x0d14, 0x0d18, 0x0d1c} {
+			foundAMSSInterruptRegisters[index] = foundAMSSInterruptRegisters[index] || offset == want
+		}
+	}
+	if !foundSecondRAM || !foundSharedConfig || !foundADSPDownloadResponse || !foundADSPBIOSResponse || !foundADSPCommandResponse || !foundBusReady || !foundBusControl || !foundBusTiming || !foundBusChipSelect || !foundBusControl14 || !foundBusClock || !foundBusMask || !foundBusControl28 || !foundBusMode || !foundBusControl30 ||
+		!foundIndirectBus[0] || !foundIndirectBus[1] || !foundIndirectBus[2] || !foundIndirectBus[3] ||
+		!foundIndirectBus[4] || !foundIndirectBus[5] || !foundIndirectBus[6] || !foundIndirectBus[7] ||
+		!foundExternalBytePorts[0] || !foundExternalBytePorts[1] ||
+		!foundExternalGPIO[0] || !foundExternalGPIO[1] || !foundExternalGPIO[2] || !foundExternalGPIO[3] ||
+		!foundExternalGPIO[4] || !foundExternalGPIO[5] || !foundExternalGPIO[6] || !foundExternalGPIO[7] ||
+		!foundAMSSInterruptRegisters[0] || !foundAMSSInterruptRegisters[1] ||
+		!foundAMSSInterruptRegisters[2] || !foundAMSSInterruptRegisters[3] ||
+		!foundAMSSInterruptRegisters[4] {
+		t.Fatalf(
+			"SPH-W4200 boot devices = ram:%t shared:%t bus-ready:%t bus-control:%t bus-timing:%t bus-chip-select:%t bus-control-14:%t bus-clock:%t bus-mask:%t bus-control-28:%t bus-mode:%t bus-control-30:%t indirect:%v irq:%v",
+			foundSecondRAM, foundSharedConfig, foundBusReady, foundBusControl, foundBusTiming, foundBusChipSelect, foundBusControl14, foundBusClock, foundBusMask, foundBusControl28, foundBusMode, foundBusControl30, foundIndirectBus, foundAMSSInterruptRegisters,
+		)
 	}
 }
 
@@ -964,15 +1250,23 @@ func TestAdditionalSmallPageRawBoardProfilesKeepExactGeometry(t *testing.T) {
 func TestRawSamsungAddressBitSevenPanelsStayProfiled(t *testing.T) {
 	for _, profile := range []BoardProfile{
 		SCHW300DA04BoardProfile(),
-		SCHW320DC18BoardProfile(),
 		SCHW340DC18BoardProfile(),
 	} {
 		if profile.Panel.Protocol != ParallelPanelProtocolIndexedRGB565Window454647 ||
 			profile.PanelPorts == nil ||
 			profile.PanelPorts.CommandAddress != 0x20000000 ||
-			profile.PanelPorts.DataAddress != 0x20000080 {
+			profile.PanelPorts.DataAddress != 0x20000080 ||
+			profile.PanelPorts.AliasSpan != 0x80 {
 			t.Fatalf("%s panel = %+v / %+v", profile.ID, profile.Panel, profile.PanelPorts)
 		}
+	}
+	w320 := SCHW320DC18BoardProfile()
+	if w320.Panel.Protocol != ParallelPanelProtocolPackedRGB565Window424A ||
+		w320.PanelPorts == nil ||
+		w320.PanelPorts.CommandAddress != 0x20000000 ||
+		w320.PanelPorts.DataAddress != 0x20000080 ||
+		w320.PanelPorts.AliasSpan != 0x80 {
+		t.Fatalf("%s packed panel = %+v / %+v", w320.ID, w320.Panel, w320.PanelPorts)
 	}
 }
 
@@ -1071,6 +1365,23 @@ func TestSCHW410UsesDedicatedActiveLowEndKey(t *testing.T) {
 
 func TestSCHW350UsesItsOEMSBLStartupInput(t *testing.T) {
 	profile := SCHW350CK06BoardProfile()
+	if want := []uint32{0x5000, 0x5100, 0x5200}; !reflect.DeepEqual(profile.BootControlSBIControllers, want) ||
+		profile.BootControlSBICompletionStatus != 0x0494 {
+		t.Fatalf(
+			"SCH-W350 SBI profile = controllers %#v completion %#x, want %#v/0x494",
+			profile.BootControlSBIControllers,
+			profile.BootControlSBICompletionStatus,
+			want,
+		)
+	}
+	wantResponse := QualcommSBIReadResponse{Controller: 0x5000, Address: 0x01, Value: 0x38}
+	foundResponse := false
+	for _, response := range profile.BootControlSBIReadResponses {
+		foundResponse = foundResponse || response == wantResponse
+	}
+	if !foundResponse {
+		t.Fatalf("SCH-W350 PMIC ID response = %#v, want %+v", profile.BootControlSBIReadResponses, wantResponse)
+	}
 	if !profile.BootControlWatchdogReadable {
 		t.Fatal("SCH-W350 watchdog service latch remains write-only")
 	}
@@ -1079,6 +1390,23 @@ func TestSCHW350UsesItsOEMSBLStartupInput(t *testing.T) {
 		want,
 	) {
 		t.Fatalf("SCH-W350 legacy GPIO inputs = %+v", profile.BootControlGPIOInputs)
+	}
+	wantGroupedStatus := []QualcommBootGroupedStatusResponse{
+		{
+			Offset: 0x0380, RequestMask: 0x08, NANDReadyMask: 0x02,
+			GroupStatusOffset: 0x88, GroupMask: 0x02,
+		},
+		{
+			Offset: 0x0380, NANDReadyMask: 0x01,
+			GroupStatusOffset: 0x88, GroupMask: 0x01,
+		},
+	}
+	if !reflect.DeepEqual(profile.BootControlGroupedStatusResponses, wantGroupedStatus) {
+		t.Fatalf(
+			"SCH-W350 grouped NAND status = %+v, want %+v",
+			profile.BootControlGroupedStatusResponses,
+			wantGroupedStatus,
+		)
 	}
 	for _, relative := range qualcommLegacyUARTHalfwordRegisterOffsets {
 		wantOffset := uint32(0x4200) + relative
@@ -1089,6 +1417,25 @@ func TestSCHW350UsesItsOEMSBLStartupInput(t *testing.T) {
 		if !found {
 			t.Fatalf("SCH-W350 second UART register 0x%x is not mixed-width", wantOffset)
 		}
+	}
+	if !slices.Contains(profile.BootControlLegacyUARTControllers, uint32(0x4100)) {
+		t.Fatalf("SCH-W350 UIM UART controllers = %#v", profile.BootControlLegacyUARTControllers)
+	}
+	if want := []QualcommLegacyUARTReceiveData{{
+		Controller:        0x4100,
+		InterruptSource:   55,
+		DelayInstructions: 0,
+		EchoTransmit:      true,
+		T0Card:            true,
+		Data:              []byte{0x3b, 0x00},
+	}}; !reflect.DeepEqual(profile.BootControlLegacyUARTReceiveData, want) {
+		t.Fatalf("SCH-W350 UIM UART receive data = %#v", profile.BootControlLegacyUARTReceiveData)
+	}
+	if profile.LegacyInterruptCascade == nil ||
+		*profile.LegacyInterruptCascade != (QualcommInterruptCascadeProfile{
+			VectoredSource: 17, GroupStatusOffset: 0x8c, GroupMask: 0x02,
+		}) {
+		t.Fatalf("SCH-W350 legacy interrupt cascade = %+v", profile.LegacyInterruptCascade)
 	}
 	foundHardwareConfiguration := false
 	for _, offset := range profile.BootControlWritableOffsets {
@@ -1139,14 +1486,44 @@ func TestSCHW350UsesItsOEMSBLStartupInput(t *testing.T) {
 	}
 	wantHLE := []HLECallProfile{
 		{
+			ID:       "w350-static-bss-zero",
+			Contract: HLEContractSamsungW350StaticBSSZero,
+			Address:  0x000a0040, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+		},
+		{
+			ID:       "w350-operator-provisioning",
+			Contract: HLEContractSamsungW350OperatorProvisioning,
+			Address:  0x00578d0e, Mode: cpu.ModeThumb, Return: HLEReturnNextInstruction,
+		},
+		{
 			ID:       "w350-bootstrap-verified-firmware",
 			Contract: HLEContractQualcommBootstrapVerifiedFirmware,
 			Address:  0x00113d30, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
 		},
 		{
+			ID:       "w350-resident-thumb-callback",
+			Contract: HLEContractQualcommResidentBootCallback,
+			Address:  0x001129a8, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+		},
+		{
 			ID:       "w350-resident-boot-callback",
 			Contract: HLEContractQualcommResidentBootCallback,
 			Address:  0x001478c8, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+		},
+		{
+			ID:       "w350-resident-registration-callback",
+			Contract: HLEContractQualcommResidentBootCallback,
+			Address:  0x00147968, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+		},
+		{
+			ID:       "w350-resident-registration-finalize",
+			Contract: HLEContractQualcommResidentBootCallback,
+			Address:  0x00147970, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+		},
+		{
+			ID:       "w350-nv-rebuild-power-cycle",
+			Contract: HLEContractSamsungPowerCycle,
+			Address:  0x0131cb38, Mode: cpu.ModeThumb, Return: HLEReturnPowerCycle,
 		},
 	}
 	if !reflect.DeepEqual(profile.HLECalls, wantHLE) {
@@ -1156,9 +1533,9 @@ func TestSCHW350UsesItsOEMSBLStartupInput(t *testing.T) {
 
 func TestSCHW320RestoresVerifiedPBLLoaderState(t *testing.T) {
 	profile := SCHW320DC18BoardProfile()
-	if want := []QualcommPrimaryClockKeyProfile{{
-		ID: "download", InputLine: 1, ActiveLow: true,
-	}}; !reflect.DeepEqual(profile.PrimaryClockKeys, want) {
+	if want := []QualcommPrimaryClockKeyProfile{
+		{ID: "download", InputLine: 1, ActiveLow: true},
+	}; !reflect.DeepEqual(profile.PrimaryClockKeys, want) {
 		t.Fatalf("SCH-W320 primary keys = %+v, want %+v", profile.PrimaryClockKeys, want)
 	}
 	if want := []QualcommGPIOInputRegister{{Offset: 0x40, Value: 0}}; !reflect.DeepEqual(
@@ -1169,6 +1546,7 @@ func TestSCHW320RestoresVerifiedPBLLoaderState(t *testing.T) {
 	}
 	foundRAM := false
 	foundMGP := false
+	foundMGPData := false
 	for _, region := range profile.Memory {
 		foundRAM = foundRAM || region == (MemoryRegionProfile{
 			ID: "w320-ebi1-ram", Kind: MemorySparseRAM,
@@ -1178,6 +1556,10 @@ func TestSCHW320RestoresVerifiedPBLLoaderState(t *testing.T) {
 			ID: "samsung-mgp-code-ram", Kind: MemorySparseRAM,
 			Address: 0x90108000, Size: 0x00008000,
 		})
+		foundMGPData = foundMGPData || region == (MemoryRegionProfile{
+			ID: "w320-mgp-data-ram", Kind: MemorySparseRAM,
+			Address: 0x90110000, Size: 0x0000f140,
+		})
 	}
 	if !foundRAM {
 		t.Fatal("SCH-W320 profile lacks its second 64 MiB EBI RAM bank")
@@ -1185,8 +1567,11 @@ func TestSCHW320RestoresVerifiedPBLLoaderState(t *testing.T) {
 	if !foundMGP {
 		t.Fatal("SCH-W320 profile lacks MGP code RAM")
 	}
+	if !foundMGPData {
+		t.Fatal("SCH-W320 profile lacks MGP data RAM")
+	}
 	wantMGP := &SamsungMGPProfile{
-		ID: "samsung-mgp-registers", Address: 0x9011f1a0, Size: 0x40,
+		ID: "samsung-mgp-registers", Address: 0x9011f1a0, Size: 0xa0,
 		ReleaseOffset: 0x0c, SharedMemoryID: "samsung-mgp-code-ram",
 		ReadyOffset: 0x29e0, ReadyValue: 1, ResponseDelayInstructions: 1,
 	}
@@ -1194,14 +1579,41 @@ func TestSCHW320RestoresVerifiedPBLLoaderState(t *testing.T) {
 		t.Fatalf("SCH-W320 MGP profile = %+v, want %+v", profile.SamsungMGP, wantMGP)
 	}
 	foundMGPInterface := false
+	foundExternal8Bit := false
 	for _, window := range profile.LatchedRegisterWindows {
 		foundMGPInterface = foundMGPInterface || window == (LatchedRegisterWindowProfile{
 			ID: "samsung-mgp-interface-registers", Address: 0x9011f140,
-			Size: 0x10, Width: Width16,
+			Size: 0x60, Width: Width16,
+		})
+		foundExternal8Bit = foundExternal8Bit || window == (LatchedRegisterWindowProfile{
+			ID: "w320-external-8bit-command-data", Address: 0x38000000,
+			Size: 4, Width: Width8,
 		})
 	}
 	if !foundMGPInterface {
 		t.Fatal("SCH-W320 profile lacks MGP interface registers")
+	}
+	if !foundExternal8Bit {
+		t.Fatal("SCH-W320 profile lacks its second external byte-wide control aperture")
+	}
+	if !slices.Contains(profile.BootControlLegacyUARTControllers, uint32(0x4100)) {
+		t.Fatalf("SCH-W320 UIM UART controllers = %#v", profile.BootControlLegacyUARTControllers)
+	}
+	if want := []QualcommLegacyUARTReceiveData{{
+		Controller:        0x4100,
+		InterruptSource:   55,
+		DelayInstructions: 0,
+		EchoTransmit:      true,
+		T0Card:            true,
+		Data:              []byte{0x3b, 0x00},
+	}}; !reflect.DeepEqual(profile.BootControlLegacyUARTReceiveData, want) {
+		t.Fatalf("SCH-W320 UIM UART receive data = %#v", profile.BootControlLegacyUARTReceiveData)
+	}
+	if profile.LegacyInterruptCascade == nil ||
+		*profile.LegacyInterruptCascade != (QualcommInterruptCascadeProfile{
+			VectoredSource: 17, GroupStatusOffset: 0x8c, GroupMask: 0x02,
+		}) {
+		t.Fatalf("SCH-W320 legacy interrupt cascade = %+v", profile.LegacyInterruptCascade)
 	}
 	for _, offset := range profile.BootControlHalfwordOffsets {
 		if offset >= 0x4200 && offset < 0x423c {
@@ -1224,9 +1636,28 @@ func TestSCHW320RestoresVerifiedPBLLoaderState(t *testing.T) {
 			Address: 0x0010214e, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
 		},
 		{
+			ID: "w320-pbl-cache-maintenance-callback", Contract: HLEContractQualcommResidentBootCallback,
+			Address: 0x00102fb2, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+		},
+		{
 			ID:       "w320-resident-boot-callback",
 			Contract: HLEContractQualcommResidentBootCallback,
 			Address:  0x001138c8, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+		},
+		{
+			ID:       "w320-late-resident-boot-callback",
+			Contract: HLEContractQualcommResidentBootCallback,
+			Address:  0x00113ea8, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+		},
+		{
+			ID:       "w320-optional-phonebook-preload",
+			Contract: HLEContractSamsungOptionalPreloadFile,
+			Address:  0x01402864, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+		},
+		{
+			ID:       "w320-optional-multimedia-preload",
+			Contract: HLEContractSamsungOptionalPreloadFile,
+			Address:  0x014082ba, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
 		},
 	}
 	if !reflect.DeepEqual(profile.HLECalls, want) {
@@ -1236,18 +1667,274 @@ func TestSCHW320RestoresVerifiedPBLLoaderState(t *testing.T) {
 
 func TestSCHW340MapsBoundedMGPRegisters(t *testing.T) {
 	profile := SCHW340DC18BoardProfile()
+	foundFixedSDCCStatus := false
+	for _, register := range profile.BootControlReadOnlyRegisters {
+		foundFixedSDCCStatus = foundFixedSDCCStatus || register.Offset == 0x0c34
+	}
+	if want := []QualcommSDCCControllerConfig{{
+		Base: 0x0c00, CardPresent: true,
+		GroupStatusOffset: 0x90, GroupMask: 0x01,
+	}}; foundFixedSDCCStatus || !reflect.DeepEqual(profile.BootControlSDCCControllers, want) {
+		t.Fatalf(
+			"SCH-W340 SDCC profile = fixed:%t controllers:%+v, want %+v",
+			foundFixedSDCCStatus,
+			profile.BootControlSDCCControllers,
+			want,
+		)
+	}
+	if !slices.Contains(profile.BootControlLegacyUARTControllers, uint32(0x4100)) {
+		t.Fatalf("SCH-W340 UIM UART controllers = %#v", profile.BootControlLegacyUARTControllers)
+	}
+	if !slices.Contains(profile.BootControlHalfwordOffsets, uint32(0x0480)) {
+		t.Fatalf("SCH-W340 late GPIO halfword offsets = %#v", profile.BootControlHalfwordOffsets)
+	}
+	if want := []QualcommLegacyUARTReceiveData{{
+		Controller:                0x4100,
+		InterruptSource:           17,
+		UseVectoredController:     true,
+		VectoredGroupStatusOffset: 0x8c,
+		VectoredGroupMask:         0x02,
+		DelayInstructions:         4_000_000,
+		ReceiveCommand:            0x04,
+		ActivationCommand:         0x60,
+		PulseReceiveInterrupt:     true,
+		EchoTransmit:              true,
+		T0Card:                    true,
+		Data:                      []byte{0x3b, 0x00},
+	}}; !reflect.DeepEqual(profile.BootControlLegacyUARTReceiveData, want) {
+		t.Fatalf("SCH-W340 UIM UART receive data = %#v", profile.BootControlLegacyUARTReceiveData)
+	}
+	if profile.LegacyInterruptCascade != nil {
+		t.Fatalf("SCH-W340 legacy interrupt cascade = %+v", profile.LegacyInterruptCascade)
+	}
+	if profile.VectoredInterrupt == nil ||
+		profile.VectoredInterrupt.Groups[2].Source != 17 ||
+		profile.VectoredInterrupt.ResetEnabledSources[1] != (1<<10)|(1<<2) ||
+		profile.TimeTickClock == nil || profile.TimeTickClock.InterruptSource != 21 {
+		t.Fatalf(
+			"SCH-W340 compact-VIC profile = vic:%+v tick:%+v",
+			profile.VectoredInterrupt,
+			profile.TimeTickClock,
+		)
+	}
+	if want := []QualcommBootGroupedStatusResponse{{
+		Offset: 0x0380, RequestMask: 0x08, NANDReadyMask: 0x02,
+		GroupStatusOffset: 0x88, GroupMask: 0x02,
+	}, {
+		Offset: 0x0380, NANDReadyMask: 0x01,
+		GroupStatusOffset: 0x88, GroupMask: 0x01,
+	}}; !reflect.DeepEqual(profile.BootControlGroupedStatusResponses, want) {
+		t.Fatalf(
+			"SCH-W340 raw-NAND grouped-status response = %+v",
+			profile.BootControlGroupedStatusResponses,
+		)
+	}
+	wantHLE := []HLECallProfile{
+		{
+			ID:       "w340-pbl-fatal",
+			Contract: HLEContractQualcommPBLFatal,
+			Address:  0x000fff84, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+		},
+		{
+			ID: "w340-amss-flash-environment", Contract: HLEContractSamsungAMSSFlashEnvironment,
+			Address: 0x000a1514, Mode: cpu.ModeARM, Return: HLEReturnNextInstruction,
+		},
+		{
+			ID: "w340-amss-bulk-zero", Contract: HLEContractSamsungAMSSBulkZero,
+			Address: 0x0142c3d0, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+		},
+		{
+			ID: "w340-sbi-transaction", Contract: HLEContractSamsungW340SBITransaction,
+			Address: 0x005d39aa, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+		},
+		{
+			ID: "w340-sbi-transaction-buffered", Contract: HLEContractSamsungW340SBITransaction,
+			Address: 0x005d3940, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+		},
+		{
+			ID: "w340-sbi-transaction-late", Contract: HLEContractSamsungW340SBITransaction,
+			Address: 0x01d900c0, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+		},
+		{
+			ID: "w340-pmic-adc-conversion", Contract: HLEContractSamsungW340PMICADCConversion,
+			Address: 0x00505a7a, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+		},
+		{
+			ID: "w340-rf-settled-deferred", Contract: HLEContractSamsungW340RFSettledDeferred,
+			Address: 0x01a2e598, Mode: cpu.ModeThumb, Return: HLEReturnNextInstruction,
+		},
+		{
+			ID: "w340-dog-start-ack", Contract: HLEContractSamsungW340DOGStartAcknowledgement,
+			Address: 0x01d8d70e, Mode: cpu.ModeThumb, Return: HLEReturnProgramCounter,
+		},
+		{
+			ID: "w340-gsdi-start-ack", Contract: HLEContractSamsungW340DOGStartAcknowledgement,
+			Address: 0x01d8d1d8, Mode: cpu.ModeThumb, Return: HLEReturnProgramCounter,
+		},
+		{
+			ID: "w340-gstk-start-ack", Contract: HLEContractSamsungW340DOGStartAcknowledgement,
+			Address: 0x01d8d1f2, Mode: cpu.ModeThumb, Return: HLEReturnProgramCounter,
+		},
+		{
+			ID: "w340-callback-start-ack", Contract: HLEContractSamsungW340DOGStartAcknowledgement,
+			Address: 0x01d8d4c0, Mode: cpu.ModeThumb, Return: HLEReturnProgramCounter,
+		},
+		{
+			ID: "w340-qvp-app-start-ack", Contract: HLEContractSamsungW340DOGStartAcknowledgement,
+			Address: 0x01d8d65e, Mode: cpu.ModeThumb, Return: HLEReturnProgramCounter,
+		},
+		{
+			ID: "w340-qvppl-start-ack", Contract: HLEContractSamsungW340DOGStartAcknowledgement,
+			Address: 0x01d8d6a8, Mode: cpu.ModeThumb, Return: HLEReturnProgramCounter,
+		},
+		{
+			ID: "w340-qtv-render-start-ack", Contract: HLEContractSamsungW340DOGStartAcknowledgement,
+			Address: 0x01d8d780, Mode: cpu.ModeThumb, Return: HLEReturnProgramCounter,
+		},
+		{
+			ID: "w340-qtv-audio-start-ack", Contract: HLEContractSamsungW340DOGStartAcknowledgement,
+			Address: 0x01d8d7a4, Mode: cpu.ModeThumb, Return: HLEReturnProgramCounter,
+		},
+		{
+			ID: "w340-qtv-worker-start-ack", Contract: HLEContractSamsungW340DOGStartAcknowledgement,
+			Address: 0x01d8d84e, Mode: cpu.ModeThumb, Return: HLEReturnProgramCounter,
+		},
+		{
+			ID: "w340-optional-phonebook-preload", Contract: HLEContractSamsungOptionalPreloadFile,
+			Address: 0x00fa88e8, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+		},
+		{
+			ID: "w340-optional-multimedia-preload", Contract: HLEContractSamsungOptionalPreloadFile,
+			Address: 0x00fa9b82, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+		},
+		{
+			ID: "w340-optional-module-preload", Contract: HLEContractSamsungOptionalPreloadFile,
+			Address: 0x01d291c4, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+		},
+		{
+			ID: "w340-bcx-firmware-identity", Contract: HLEContractSamsungW340BCXFirmwareIdentity,
+			Address: 0x01d8de4a, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+		},
+		{
+			ID: "w340-uim-clock-configuration", Contract: HLEContractSamsungW340UIMClockConfiguration,
+			Address: 0x010427ba, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+		},
+		{
+			ID: "w340-image-resource-offset", Contract: HLEContractSamsungW340ImageResourceOffset,
+			Address: 0x01041ae8, Mode: cpu.ModeThumb, Return: HLEReturnNextInstruction,
+		},
+		{
+			ID: "w340-display-color", Contract: HLEContractSamsungW340DisplayColor,
+			Address: 0x00572fdc, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+		},
+		{
+			ID: "w340-font-metrics", Contract: HLEContractSamsungW340FontMetrics,
+			Address: 0x00058e34, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+		},
+		{
+			ID: "w340-font-draw", Contract: HLEContractSamsungW340FontDraw,
+			Address: 0x07fd1380, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+		},
+		{
+			ID: "w340-font-measure", Contract: HLEContractSamsungW340FontMeasure,
+			Address: 0x07fd1384, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+		},
+		{
+			ID: "w340-font-info", Contract: HLEContractSamsungW340FontInfo,
+			Address: 0x07fd1388, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+		},
+		{
+			ID: "w340-pointer-access-policy", Contract: HLEContractSamsungW340PointerAccessPolicy,
+			Address: 0x00042b8c, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+		},
+		{
+			ID: "w340-connection-manager", Contract: HLEContractSamsungW340ConnectionManager,
+			Address: 0x0054b0d8, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
+		},
+		{
+			ID: "w340-main-applet-lifecycle-prestart", Contract: HLEContractSamsungW340MainAppletLifecycle,
+			Address: 0x012b3692, Mode: cpu.ModeThumb, Return: HLEReturnNextInstruction,
+		},
+		{
+			ID: "w340-main-applet-lifecycle-start", Contract: HLEContractSamsungW340MainAppletLifecycle,
+			Address: 0x012b7cd6, Mode: cpu.ModeThumb, Return: HLEReturnNextInstruction,
+		},
+		{
+			ID: "w340-main-applet-lifecycle-update", Contract: HLEContractSamsungW340MainAppletLifecycle,
+			Address: 0x012b7e7c, Mode: cpu.ModeThumb, Return: HLEReturnNextInstruction,
+		},
+		{
+			ID: "w340-idle-carousel-lifecycle", Contract: HLEContractSamsungW340IdleCarouselLifecycle,
+			Address: 0x01959ec4, Mode: cpu.ModeThumb, Return: HLEReturnProgramCounter,
+		},
+		{
+			ID: "w340-idle-applet-dependency", Contract: HLEContractSamsungW340IdleAppletDependency,
+			Address: 0x01349f68, Mode: cpu.ModeThumb, Return: HLEReturnNextInstruction,
+		},
+		{
+			ID: "w340-idle-sim-main-target", Contract: HLEContractSamsungW340IdleSimMainTarget,
+			Address: 0x01351376, Mode: cpu.ModeThumb, Return: HLEReturnNextInstruction,
+		},
+		{
+			ID: "w340-idle-sim-main-activation", Contract: HLEContractSamsungW340IdleSimMainActivation,
+			Address: 0x01351670, Mode: cpu.ModeThumb, Return: HLEReturnNextInstruction,
+		},
+		{
+			ID: "w340-annunciator-start", Contract: HLEContractSamsungW340AnnunciatorStart,
+			Address: 0x004d4b18, Mode: cpu.ModeThumb, Return: HLEReturnNextInstruction,
+		},
+		{
+			ID: "w340-idle-extended-provider", Contract: HLEContractSamsungW340IdleExtendedProvider,
+			Address: 0x0134edac, Mode: cpu.ModeThumb, Return: HLEReturnNextInstruction,
+		},
+		{
+			ID: "w340-idle-primary-notification", Contract: HLEContractSamsungW340IdlePrimaryNotification,
+			Address: 0x00c67ae2, Mode: cpu.ModeThumb, Return: HLEReturnNextInstruction,
+		},
+		{
+			ID: "w340-startup-primary-interface", Contract: HLEContractSamsungW340StartupPrimaryInterface,
+			Address: 0x01a22064, Mode: cpu.ModeThumb, Return: HLEReturnNextInstruction,
+		},
+		{
+			ID: "w340-startup-secondary-interface", Contract: HLEContractSamsungW340StartupSecondaryInterface,
+			Address: 0x01a220ba, Mode: cpu.ModeThumb, Return: HLEReturnNextInstruction,
+		},
+		{
+			ID: "w340-mgp-frame-counter", Contract: HLEContractSamsungW340MGPFrameCounter,
+			Address: 0x00d58ed0, Mode: cpu.ModeARM, Return: HLEReturnLinkRegister,
+		},
+	}
+	if !reflect.DeepEqual(profile.HLECalls, wantHLE) {
+		t.Fatalf("SCH-W340 AMSS environment HLE calls = %+v, want %+v", profile.HLECalls, wantHLE)
+	}
 	foundRAM := false
+	foundDataRAM := false
+	foundBREWHighRAM := false
 	for _, region := range profile.Memory {
 		foundRAM = foundRAM || region == (MemoryRegionProfile{
 			ID: "samsung-mgp-code-ram", Kind: MemorySparseRAM,
 			Address: 0x90108000, Size: 0x00008000,
 		})
+		foundDataRAM = foundDataRAM || region == (MemoryRegionProfile{
+			ID: "w340-mgp-data-ram", Kind: MemorySparseRAM,
+			Address: 0x90110000, Size: 0x0000f140,
+		})
+		foundBREWHighRAM = foundBREWHighRAM || region == (MemoryRegionProfile{
+			ID: "w340-brew-high-ram", Kind: MemorySparseRAM,
+			Address: 0x80010000, Size: 0x03ff0000,
+		})
 	}
 	if !foundRAM {
 		t.Fatal("SCH-W340 profile lacks MGP code RAM")
 	}
+	if !foundDataRAM {
+		t.Fatal("SCH-W340 profile lacks MGP data RAM")
+	}
+	if !foundBREWHighRAM {
+		t.Fatal("SCH-W340 profile lacks the identity-mapped BREW high RAM arena")
+	}
 	want := &SamsungMGPProfile{
-		ID: "samsung-mgp-registers", Address: 0x9011f1a0, Size: 0x40,
+		ID: "samsung-mgp-registers", Address: 0x9011f1a0, Size: 0xa0,
 		ReleaseOffset: 0x0c, SharedMemoryID: "samsung-mgp-code-ram",
 		ReadyOffset: 0x29e0, ReadyValue: 1, ResponseDelayInstructions: 1,
 	}
@@ -1261,7 +1948,7 @@ func TestSCHW340MapsBoundedMGPRegisters(t *testing.T) {
 		}
 		foundInterface = foundInterface || window == (LatchedRegisterWindowProfile{
 			ID: "samsung-mgp-interface-registers", Address: 0x9011f140,
-			Size: 0x10, Width: Width16,
+			Size: 0x60, Width: Width16,
 		})
 	}
 	if !foundInterface {

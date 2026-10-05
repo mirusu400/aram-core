@@ -79,6 +79,26 @@ func (d *LatchedRegisterWindow) Write(offset uint32, width Width, value uint32) 
 	return nil
 }
 
+// SetBits updates a device-driven status field without turning the operation
+// into a guest MMIO access. It is used by profiled interrupt wiring whose raw
+// status register shares an otherwise passive external register window.
+func (d *LatchedRegisterWindow) SetBits(offset uint32, mask uint32, asserted bool) error {
+	if !d.validAccess(offset, d.width) || mask == 0 ||
+		d.width < Width32 && mask >= uint32(1)<<(uint32(d.width)*8) {
+		return fmt.Errorf("%w: set bits 0x%x at 0x%x", ErrLatchedRegisterWindowMMIO, mask, offset)
+	}
+	value, err := d.Read(offset, d.width)
+	if err != nil {
+		return err
+	}
+	if asserted {
+		value |= mask
+	} else {
+		value &^= mask
+	}
+	return d.Write(offset, d.width, value)
+}
+
 func (d *LatchedRegisterWindow) SaveState() ([]byte, error) {
 	state := make([]byte, 16+len(d.data))
 	copy(state, "LRWN")

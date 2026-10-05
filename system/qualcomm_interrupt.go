@@ -180,6 +180,20 @@ func (d *QualcommInterruptController) AttachGPIOWriteObserver(observer QualcommG
 	return nil
 }
 
+// AttachInterruptSink completes board wiring that depends on another MMIO
+// device being constructed after the interrupt controller itself.
+func (d *QualcommInterruptController) AttachInterruptSink(sink InterruptLineSink) error {
+	if sink == nil || d.sink != nil {
+		return fmt.Errorf("attach Qualcomm interrupt sink: %w", ErrQualcommInterruptControllerMMIO)
+	}
+	d.sink = sink
+	if err := d.updateOutputs(); err != nil {
+		d.sink = nil
+		return err
+	}
+	return nil
+}
+
 func (d *QualcommInterruptController) Reset() error {
 	d.irqEnable = [2]uint32{}
 	d.fiqEnable = [2]uint32{}

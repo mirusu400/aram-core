@@ -259,6 +259,7 @@ func (b *Backend) executeARMMicroBlockTransfer(
 			address += 4
 		}
 	}
+	address = b.blockTransferAddress(address)
 	var loadedPC uint32
 	loadedProgramCounter := false
 	direct, directOffset, directOK := b.armBlockTransferPage(

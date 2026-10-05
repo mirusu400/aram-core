@@ -75,6 +75,12 @@ type QualcommGPIOWriteObserver interface {
 	ObserveGPIOWrite(offset, value uint32)
 }
 
+// QualcommGPIOReadObserver may replace input bits in a GPIO-bearing MMIO
+// aperture while preserving every unrelated board-wired bit.
+type QualcommGPIOReadObserver interface {
+	ObserveGPIORead(offset, value uint32) uint32
+}
+
 // QualcommGPIOKeypad turns host key state and guest-selected output rows into
 // the active-low input value sampled by the primary-clock GPIO register.
 type QualcommGPIOKeypad struct {

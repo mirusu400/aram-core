@@ -162,15 +162,28 @@ const (
 )
 
 type region struct {
-	name        string
-	address     uint32
-	size        uint32
-	permissions cpu.Permissions
-	kind        regionKind
-	data        []byte
-	initial     []byte
-	device      Device
-	sparse      *sparseRAM
+	name           string
+	address        uint32
+	size           uint32
+	permissions    cpu.Permissions
+	kind           regionKind
+	data           []byte
+	initial        []byte
+	device         Device
+	sparse         *sparseRAM
+	writeResponses map[memoryWriteResponseKey][]memoryResponseWrite
+}
+
+type memoryWriteResponseKey struct {
+	offset uint32
+	width  Width
+	value  uint32
+}
+
+type memoryResponseWrite struct {
+	offset uint32
+	width  Width
+	value  uint32
 }
 
 func (r *region) end() uint64 {
@@ -325,6 +338,97 @@ func (b *Bus) MapSparseRAM(name string, address, size uint32) error {
 		permissions: cpu.PermissionRead | cpu.PermissionWrite | cpu.PermissionExecute,
 		kind:        regionSparseRAM, sparse: newSparseRAM(),
 	})
+}
+
+// configureMemoryWriteResponses attaches exact shared-memory handshakes to an
+// already mapped ordinary-memory region. Profile validation is repeated here so
+// callers cannot create a rule which escapes its target region.
+func (b *Bus) configureMemoryWriteResponses(
+	name string,
+	profiles []MemoryWriteResponseProfile,
+) error {
+	if len(profiles) == 0 {
+		return nil
+	}
+	b.mu.Lock()
+	var mapped *region
+	for index := range b.regions {
+		if b.regions[index].name == name {
+			mapped = &b.regions[index]
+			break
+		}
+	}
+	if mapped == nil || mapped.kind == regionROM || mapped.kind == regionMMIO {
+		b.mu.Unlock()
+		return ErrInvalidRegion
+	}
+	rules := make(map[memoryWriteResponseKey][]memoryResponseWrite, len(profiles))
+	for _, profile := range profiles {
+		if (profile.Width != Width8 && profile.Width != Width16 && profile.Width != Width32) ||
+			profile.Offset%uint32(profile.Width) != 0 ||
+			uint64(profile.Offset)+uint64(profile.Width) > uint64(mapped.size) ||
+			profile.Width < Width32 && profile.Request >= uint32(1)<<(uint32(profile.Width)*8) ||
+			len(profile.Writes) == 0 {
+			b.mu.Unlock()
+			return ErrInvalidRegion
+		}
+		key := memoryWriteResponseKey{
+			offset: profile.Offset,
+			width:  profile.Width,
+			value:  profile.Request,
+		}
+		if _, duplicate := rules[key]; duplicate {
+			b.mu.Unlock()
+			return ErrInvalidRegion
+		}
+		writes := make([]memoryResponseWrite, 0, len(profile.Writes))
+		for _, profileWrite := range profile.Writes {
+			if (profileWrite.Width != Width8 && profileWrite.Width != Width16 && profileWrite.Width != Width32) ||
+				profileWrite.Offset%uint32(profileWrite.Width) != 0 ||
+				uint64(profileWrite.Offset)+uint64(profileWrite.Width) > uint64(mapped.size) ||
+				profileWrite.Width < Width32 &&
+					profileWrite.Value >= uint32(1)<<(uint32(profileWrite.Width)*8) {
+				b.mu.Unlock()
+				return ErrInvalidRegion
+			}
+			writes = append(writes, memoryResponseWrite{
+				offset: profileWrite.Offset,
+				width:  profileWrite.Width,
+				value:  profileWrite.Value,
+			})
+		}
+		rules[key] = writes
+	}
+	mapped.writeResponses = rules
+	invalidate := b.directMemoryInvalidator
+	b.mu.Unlock()
+	if invalidate != nil {
+		invalidate()
+	}
+	return nil
+}
+
+func applyMemoryWriteResponse(mapped *region, offset uint32, width Width, value uint32) {
+	writes, known := mapped.writeResponses[memoryWriteResponseKey{
+		offset: offset,
+		width:  width,
+		value:  value,
+	}]
+	if !known {
+		return
+	}
+	for _, write := range writes {
+		var encoded [4]byte
+		putValue(encoded[:int(write.width)], write.value)
+		if mapped.kind == regionSparseRAM {
+			mapped.sparse.write(write.offset, encoded[:int(write.width)])
+			continue
+		}
+		copy(
+			mapped.data[int(write.offset):int(write.offset)+int(write.width)],
+			encoded[:int(write.width)],
+		)
+	}
 }
 
 func (b *Bus) MapROM(name string, address uint32, data []byte) error {
@@ -544,6 +648,59 @@ func (b *Bus) ReadMemory(
 	return nil
 }
 
+// WriteMemory copies a host-produced span into ordinary RAM without invoking
+// guest observers or MMIO devices. It is the write counterpart of ReadMemory
+// for loaders and other machine-side state reconstruction.
+func (b *Bus) WriteMemory(
+	address uint32,
+	source []byte,
+	permission cpu.Permissions,
+) error {
+	if len(source) == 0 {
+		return nil
+	}
+	if uint64(address)+uint64(len(source)) > 1<<32 {
+		return &Fault{Address: address, Permission: permission, Err: cpu.ErrInvalidAddress}
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for copied := 0; copied < len(source); {
+		current := address + uint32(copied)
+		index := sort.Search(len(b.regions), func(index int) bool {
+			return uint64(current) < b.regions[index].end()
+		})
+		if index >= len(b.regions) || current < b.regions[index].address {
+			return &Fault{Address: current, Permission: permission, Err: cpu.ErrInvalidAddress}
+		}
+		mapped := &b.regions[index]
+		if mapped.kind == regionMMIO || mapped.kind == regionROM {
+			return &Fault{
+				Region: mapped.name, Address: current,
+				Permission: permission, Err: cpu.ErrInvalidAddress,
+			}
+		}
+		if mapped.permissions&permission != permission {
+			return &Fault{
+				Region: mapped.name, Address: current,
+				Permission: permission, Err: cpu.ErrPermissionDenied,
+			}
+		}
+		chunk := len(source) - copied
+		if available := mapped.end() - uint64(current); uint64(chunk) > available {
+			chunk = int(available)
+		}
+		offset := current - mapped.address
+		if mapped.kind == regionSparseRAM {
+			mapped.sparse.write(offset, source[copied:copied+chunk])
+		} else {
+			start := int(offset)
+			copy(mapped.data[start:start+chunk], source[copied:copied+chunk])
+		}
+		copied += chunk
+	}
+	return nil
+}
+
 // WriteBlock is ReadBlock's counterpart. A ROM region declines, so a write that
 // would be rejected still travels the per-width path and reports its fault.
 func (b *Bus) WriteBlock(
@@ -563,6 +720,9 @@ func (b *Bus) WriteBlock(
 		start := int(offset)
 		copy(mapped.data[start:start+len(source)], source)
 	}
+	if width, exact := widthForSize(len(source)); exact && len(mapped.writeResponses) != 0 {
+		applyMemoryWriteResponse(mapped, offset, width, valueOf(source))
+	}
 	b.mu.Unlock()
 	return true, nil
 }
@@ -578,7 +738,7 @@ func (b *Bus) DirectMemoryRegion(
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	mapped, _, ok := b.resolveBlock(address, size, permission)
-	if !ok || mapped.kind != regionRAM {
+	if !ok || mapped.kind != regionRAM || len(mapped.writeResponses) != 0 {
 		return cpu.DirectMemoryRegion{}, false
 	}
 	return cpu.DirectMemoryRegion{
@@ -640,6 +800,9 @@ func (b *Bus) WriteContext(
 		} else {
 			start := int(offset)
 			copy(mapped.data[start:start+len(source)], source)
+		}
+		if len(mapped.writeResponses) != 0 {
+			applyMemoryWriteResponse(mapped, offset, width, valueOf(source))
 		}
 		if !b.observed {
 			b.mu.Unlock()

@@ -2,12 +2,19 @@ package system
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/mirusu400/aram-core/cpu"
 )
 
 const MaxHLEInvocationsPerRun = 4096
+
+// ErrHLEPowerCycle is returned to a whole-machine runner when an exact profiled
+// firmware boundary requests a hardware restart. It is a control condition, not
+// a guest execution fault; systemmachine consumes it by preserving media and
+// resetting volatile state.
+var ErrHLEPowerCycle = errors.New("HLE requested a power cycle")
 
 type HLECallContext struct {
 	Call HLECallProfile
@@ -48,6 +55,7 @@ type HLERunner struct {
 	gates       map[cpu.ExecutionTrap]HLECallProfile
 	handlers    map[string]HLECallHandler
 	invocations []HLEInvocation
+	active      *HLEInvocation
 }
 
 func NewHLERunner(
@@ -131,22 +139,57 @@ func (r *HLERunner) Run(
 			// into a machine fault.
 			return result
 		}
-		if err := r.handlers[call.Contract].InvokeHLE(HLECallContext{
+		active := HLEInvocation{
+			ID: call.ID, Contract: call.Contract, Address: call.Address,
+		}
+		r.active = &active
+		err := r.handlers[call.Contract].InvokeHLE(HLECallContext{
 			Call: call,
 			CPU:  r.backend,
 			Bus:  r.bus,
-		}); err != nil {
+		})
+		r.active = nil
+		if err != nil {
 			return r.fault(instructions, result.PC, fmt.Errorf("HLE call %q: %w", call.ID, err))
 		}
-		link, linkErr := r.backend.ReadRegister(cpu.RegisterLR)
-		if linkErr != nil {
-			return r.fault(instructions, result.PC, linkErr)
+		if call.Return == HLEReturnPowerCycle {
+			r.invocations = append(r.invocations, HLEInvocation{
+				ID: call.ID, Contract: call.Contract, Address: call.Address,
+			})
+			return r.fault(instructions, result.PC, ErrHLEPowerCycle)
 		}
-		returnMode := cpu.ModeARM
-		returnAddress := link &^ uint32(3)
-		if link&1 != 0 {
-			returnMode = cpu.ModeThumb
-			returnAddress = link &^ uint32(1)
+		returnMode := trapMode
+		returnAddress := call.Address
+		switch call.Return {
+		case HLEReturnLinkRegister:
+			link, linkErr := r.backend.ReadRegister(cpu.RegisterLR)
+			if linkErr != nil {
+				return r.fault(instructions, result.PC, linkErr)
+			}
+			returnMode = cpu.ModeARM
+			returnAddress = link &^ uint32(3)
+			if link&1 != 0 {
+				returnMode = cpu.ModeThumb
+				returnAddress = link &^ uint32(1)
+			}
+		case HLEReturnNextInstruction:
+			returnAddress += 4
+			if returnMode == cpu.ModeThumb {
+				returnAddress = call.Address + 2
+			}
+		case HLEReturnProgramCounter:
+			programCounter, pcErr := r.backend.ReadRegister(cpu.RegisterPC)
+			if pcErr != nil {
+				return r.fault(instructions, result.PC, pcErr)
+			}
+			returnAddress = programCounter
+			if returnMode == cpu.ModeThumb {
+				returnAddress &^= 1
+			} else {
+				returnAddress &^= 3
+			}
+		default:
+			return r.fault(instructions, result.PC, fmt.Errorf("unsupported HLE return %q", call.Return))
 		}
 		if err := r.backend.WriteRegister(cpu.RegisterPC, returnAddress); err != nil {
 			return r.fault(instructions, result.PC, err)
@@ -177,6 +220,13 @@ func (r *HLERunner) Run(
 
 func (r *HLERunner) Invocations() []HLEInvocation {
 	return append([]HLEInvocation(nil), r.invocations...)
+}
+
+func (r *HLERunner) ActiveInvocation() (HLEInvocation, bool) {
+	if r.active == nil {
+		return HLEInvocation{}, false
+	}
+	return *r.active, true
 }
 
 func (r *HLERunner) fault(instructions uint64, pc uint32, err error) cpu.Result {

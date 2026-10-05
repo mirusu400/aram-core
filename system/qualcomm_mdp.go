@@ -12,6 +12,7 @@ const (
 	qualcommMDPMaximumPendingScripts = 16
 	qualcommMDPMaximumScriptWords    = 4096
 	qualcommMDPMaximumScriptDepth    = 16
+	qualcommMDPZeroTailWords         = 4
 )
 
 var ErrQualcommMDP = errors.New("invalid Qualcomm MDP script")
@@ -133,6 +134,7 @@ func (e *QualcommMDPScriptEngine) executeScript(
 	active[address] = struct{}{}
 	defer delete(active, address)
 
+	zeroWords := 0
 	for cursor := address; ; cursor += 4 {
 		word, err := e.readScriptWord(cursor, budget)
 		if err != nil {
@@ -140,6 +142,16 @@ func (e *QualcommMDPScriptEngine) executeScript(
 		}
 		opcode := uint8(word >> 24)
 		switch opcode {
+		case 0x00:
+			// MSM6280's command-list queue carries the list length outside the
+			// guest buffer.  The profiled register interface exposes only the
+			// pointer, so recognize the zero-filled tail used by short setup
+			// lists without mistaking one leading/padding NOP for termination.
+			zeroWords++
+			if zeroWords >= qualcommMDPZeroTailWords {
+				return nil
+			}
+			continue
 		case 0x01, 0x04, 0x06:
 			return nil
 		case 0x03:
@@ -185,6 +197,7 @@ func (e *QualcommMDPScriptEngine) executeScript(
 			// direct RGB565 copy; retain them as bounded no-ops until a profile
 			// selects a format or transform that needs those units.
 		}
+		zeroWords = 0
 	}
 }
 

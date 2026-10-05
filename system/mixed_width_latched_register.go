@@ -11,17 +11,33 @@ var ErrMixedWidthLatchedRegisterMMIO = errors.New("unsupported mixed-width latch
 
 // MixedWidthLatchedRegister is a single word whose profile explicitly allows
 // more than one access width. Narrow writes update only the low addressed
-// bytes; adjacent offsets and undeclared widths remain faults.
+// bytes unless aligned subword offsets are explicitly enabled.
 type MixedWidthLatchedRegister struct {
-	widths     []Width
-	widthMask  uint8
-	resetValue uint32
-	value      uint32
+	widths              []Width
+	widthMask           uint8
+	allowSubwordOffsets bool
+	resetValue          uint32
+	value               uint32
 }
 
 func NewMixedWidthLatchedRegister(
 	widths []Width,
 	resetValue uint32,
+) (*MixedWidthLatchedRegister, error) {
+	return newMixedWidthLatchedRegister(widths, resetValue, false)
+}
+
+func NewMixedWidthLatchedRegisterWithSubwordOffsets(
+	widths []Width,
+	resetValue uint32,
+) (*MixedWidthLatchedRegister, error) {
+	return newMixedWidthLatchedRegister(widths, resetValue, true)
+}
+
+func newMixedWidthLatchedRegister(
+	widths []Width,
+	resetValue uint32,
+	allowSubwordOffsets bool,
 ) (*MixedWidthLatchedRegister, error) {
 	if len(widths) < 2 {
 		return nil, fmt.Errorf("create mixed-width latched register: %w", ErrInvalidRegion)
@@ -41,7 +57,9 @@ func NewMixedWidthLatchedRegister(
 		return nil, fmt.Errorf("create mixed-width latched register: %w", ErrInvalidRegion)
 	}
 	device := &MixedWidthLatchedRegister{
-		widths: normalized, widthMask: widthMask, resetValue: resetValue,
+		widths: normalized, widthMask: widthMask,
+		allowSubwordOffsets: allowSubwordOffsets,
+		resetValue:          resetValue,
 	}
 	_ = device.Reset()
 	return device, nil
@@ -57,8 +75,19 @@ func (d *MixedWidthLatchedRegister) supports(width Width) bool {
 		d.widthMask&(1<<uint8(width)) != 0
 }
 
+func (d *MixedWidthLatchedRegister) validAccess(offset uint32, width Width) bool {
+	if !d.supports(width) || offset%uint32(width) != 0 {
+		return false
+	}
+	if !d.allowSubwordOffsets {
+		return offset == 0
+	}
+	maximum := d.widths[len(d.widths)-1]
+	return uint64(offset)+uint64(width) <= uint64(maximum)
+}
+
 func (d *MixedWidthLatchedRegister) Read(offset uint32, width Width) (uint32, error) {
-	if offset != 0 || !d.supports(width) {
+	if !d.validAccess(offset, width) {
 		return 0, fmt.Errorf(
 			"%w: read%d at 0x%x",
 			ErrMixedWidthLatchedRegisterMMIO,
@@ -66,18 +95,15 @@ func (d *MixedWidthLatchedRegister) Read(offset uint32, width Width) (uint32, er
 			offset,
 		)
 	}
-	switch width {
-	case Width8:
-		return d.value & 0xff, nil
-	case Width16:
-		return d.value & 0xffff, nil
-	default:
+	if width == Width32 {
 		return d.value, nil
 	}
+	mask := uint32(1)<<(uint32(width)*8) - 1
+	return d.value >> (offset * 8) & mask, nil
 }
 
 func (d *MixedWidthLatchedRegister) Write(offset uint32, width Width, value uint32) error {
-	if offset != 0 || !d.supports(width) ||
+	if !d.validAccess(offset, width) ||
 		width < Width32 && value >= uint32(1)<<(uint32(width)*8) {
 		return fmt.Errorf(
 			"%w: write%d value 0x%x at 0x%x",
@@ -87,14 +113,13 @@ func (d *MixedWidthLatchedRegister) Write(offset uint32, width Width, value uint
 			offset,
 		)
 	}
-	switch width {
-	case Width8:
-		d.value = d.value&^0xff | value
-	case Width16:
-		d.value = d.value&^0xffff | value
-	default:
+	if width == Width32 {
 		d.value = value
+		return nil
 	}
+	mask := uint32(1)<<(uint32(width)*8) - 1
+	shift := offset * 8
+	d.value = d.value&^(mask<<shift) | value<<shift
 	return nil
 }
 
@@ -103,6 +128,9 @@ func (d *MixedWidthLatchedRegister) SaveState() ([]byte, error) {
 	copy(state, "MWLR")
 	binary.LittleEndian.PutUint32(state[4:8], 1)
 	state[8] = d.widthMask
+	if d.allowSubwordOffsets {
+		state[9] = 1
+	}
 	binary.LittleEndian.PutUint32(state[12:16], d.resetValue)
 	binary.LittleEndian.PutUint32(state[16:20], d.value)
 	return state, nil
@@ -111,7 +139,7 @@ func (d *MixedWidthLatchedRegister) SaveState() ([]byte, error) {
 func (d *MixedWidthLatchedRegister) LoadState(state []byte) error {
 	if len(state) != 20 || string(state[:4]) != "MWLR" ||
 		binary.LittleEndian.Uint32(state[4:8]) != 1 || state[8] != d.widthMask ||
-		state[9] != 0 || state[10] != 0 || state[11] != 0 ||
+		state[9] != boolByte(d.allowSubwordOffsets) || state[10] != 0 || state[11] != 0 ||
 		binary.LittleEndian.Uint32(state[12:16]) != d.resetValue {
 		return ErrInvalidState
 	}
@@ -122,6 +150,13 @@ func (d *MixedWidthLatchedRegister) LoadState(state []byte) error {
 	}
 	d.value = value
 	return nil
+}
+
+func boolByte(value bool) byte {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 var (

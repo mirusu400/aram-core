@@ -860,10 +860,19 @@ func (e *arm64emitter) memory(m memAccess, pc uint32, retired int) {
 		}
 	}
 
+	if m.wordAlign {
+		if !m.store {
+			e.addImm12(5, 0, 0) // preserve the original byte lane
+			e.lslI(5, 5, 3)     // variable rotate uses the low five bits
+		}
+		e.lsrI(0, 0, 2)
+		e.lslI(0, 0, 2)
+	}
 	misses := e.probeTLB(m.store, uint32(m.size))
 
-	// 2. The access. AArch64 handles unaligned normal memory, matching the
-	// interpreter's deliberately linear unaligned reads. The signed loads use
+	// 2. Halfword and byte accesses remain linear. With CP15.A clear, word
+	// addresses were aligned above and loads rotate by the original byte lane.
+	// The signed loads use
 	// the 64-bit-destination form; only the low word is written back, so it is
 	// the same value the interpreter's int32(int16(...)) produces.
 	if m.store {
@@ -880,6 +889,9 @@ func (e *arm64emitter) memory(m memAccess, pc uint32, retired int) {
 		switch {
 		case m.size == 4:
 			e.w(0xB8606800 | (2 << 16) | (3 << 5)) // ldr   w0,[x3,x2]
+			if m.wordAlign {
+				e.rorV(0, 0, 5)
+			}
 		case m.size == 2 && m.signed:
 			e.w(0x78A06800 | (2 << 16) | (3 << 5)) // ldrsh x0,[x3,x2]
 		case m.size == 2:
@@ -913,6 +925,11 @@ func (e *arm64emitter) multi(m multiAccess, pc uint32, retired int) {
 	} else if m.startOffset > 0 {
 		e.addImm12(0, 0, uint32(m.startOffset))
 	}
+	if m.wordAlign {
+		// LDM/STM ignore address bits [1:0]; the words are not rotated.
+		e.lsrI(0, 0, 2)
+		e.lslI(0, 0, 2)
+	}
 	misses := e.probeTLB(m.store, span)
 	e.addLSL64(3, 3, 2, 0) // x3 = host page + in-page offset
 	for i, reg := range m.regs {
@@ -926,10 +943,15 @@ func (e *arm64emitter) multi(m multiAccess, pc uint32, retired int) {
 		}
 	}
 	if m.writeback {
-		if m.writebackOffset < 0 {
-			e.subImm12(0, 0, uint32(-m.writebackOffset))
-		} else if m.writebackOffset > 0 {
-			e.addImm12(0, 0, uint32(m.writebackOffset))
+		delta := m.writebackOffset
+		if m.wordAlign {
+			e.ldrW(0, m.base)
+			delta += m.startOffset
+		}
+		if delta < 0 {
+			e.subImm12(0, 0, uint32(-delta))
+		} else if delta > 0 {
+			e.addImm12(0, 0, uint32(delta))
 		}
 		e.strW(0, m.base)
 	}

@@ -56,6 +56,7 @@ outer:
 				block, limit-executed, wholeSystem, hasExecutionTraps, traced,
 			)
 		}
+		blockGeneration := b.jitGen
 		blockInstructions := len(block.arm)
 		if remaining := limit - executed; uint64(blockInstructions) > remaining {
 			blockInstructions = int(remaining)
@@ -68,6 +69,11 @@ outer:
 				// instructions still poll individually, so MMIO-raised interrupts
 				// and traps retain instruction-boundary precision.
 				if index != 0 {
+					// An earlier instruction may have retired this translation,
+					// for example by evicting its I-cache line.
+					if b.jitGen != blockGeneration {
+						continue outer
+					}
 					if b.takePendingInterrupt() {
 						continue outer
 					}
@@ -111,9 +117,16 @@ outer:
 func (b *Backend) armJITBlockAt(pc uint32) *jitBlock {
 	slot := &b.armJITCache[int(pc>>2)&(jitCacheSize-1)]
 	if block, ok := slot.lookup(pc, b.jitGen); ok {
-		return block
+		if b.jitInstructionCacheValid(block) {
+			return block
+		}
+		b.dropStaleJITBlock(pc, block, true)
 	}
 	block, ok := b.armJITBlocks[pc]
+	if ok && !b.jitInstructionCacheValid(block) {
+		b.dropStaleJITBlock(pc, block, true)
+		block, ok = nil, false
+	}
 	if !ok {
 		block = b.translateARMBlock(pc)
 		b.cacheARMJITBlock(pc, block)
@@ -161,7 +174,18 @@ func (b *Backend) translateARMBlock(pc uint32) *jitBlock {
 	if len(instrs) == 0 {
 		return nil
 	}
-	block := &jitBlock{start: pc, end: cur, arm: instrs}
+	block := &jitBlock{
+		start:                   pc,
+		end:                     cur,
+		arm:                     instrs,
+		instructionCacheEnabled: b.instructionCacheEnabled(),
+		instructionCacheGen:     b.mappingGen,
+		instructionCacheGuards:  b.captureJITInstructionCacheGuards(pc, cur),
+	}
+	if !b.jitBlockMatchesResidentInstructionCache(block) {
+		b.invalidateInstructionWindow()
+		return nil
+	}
 	if b.loopAcceleration {
 		block.countedLoop = classifyARMCountedLoop(block)
 	}
@@ -1001,6 +1025,7 @@ func (b *Backend) translateARMBlockTransfer(
 				address += 4
 			}
 		}
+		address = b.blockTransferAddress(address)
 		var loadedPC uint32
 		loadedProgramCounter := false
 		direct, directOffset, directOK := b.armBlockTransferPage(

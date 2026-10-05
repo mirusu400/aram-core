@@ -304,10 +304,16 @@ func TestSCHW830PrivateReferenceRunsOriginalFirmwarePastTimeTickSetup(t *testing
 	check(t, err)
 	keypad, err := board.AttachKeypad(primaryClock, secondaryClock, interruptController)
 	check(t, err)
+	var legacyTopVectoredInterruptAperture Device
+	if board.LegacyTopVectoredInterruptOffset != 0 {
+		legacyTopVectoredInterruptAperture = bootControl
+	}
 	legacyTop, err := NewQualcommLegacyTopPageWithConfig(QualcommLegacyTopConfig{
-		Version:         board.LegacyTopVersion,
-		Identification:  board.LegacyTopIdentification,
-		WritableOffsets: board.LegacyTopWritableOffsets,
+		Version:                   board.LegacyTopVersion,
+		Identification:            board.LegacyTopIdentification,
+		WritableOffsets:           board.LegacyTopWritableOffsets,
+		VectoredInterruptOffset:   board.LegacyTopVectoredInterruptOffset,
+		VectoredInterruptAperture: legacyTopVectoredInterruptAperture,
 	})
 	check(t, err)
 	clockRegime, err := NewQualcommClockRegimeWithConfig(QualcommClockRegimeConfig{

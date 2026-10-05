@@ -380,6 +380,7 @@ func (b *Backend) translateOneNativeARM(
 		if !access.store && registerMask&(1<<rn) != 0 {
 			access.writeback = false
 		}
+		access.wordAlign = b.cp15.control&(1<<1) == 0
 		site := e.conditionStart(condition)
 		e.multi(access, pc, retired)
 		e.conditionEnd(site)
@@ -428,6 +429,7 @@ func (b *Backend) translateOneNativeARM(
 		if instruction&(1<<22) != 0 {
 			access.size = 1
 		}
+		access.wordAlign = access.size == 4 && b.cp15.control&(1<<1) == 0
 		if rn == cpu.RegisterPC {
 			address := pc + 8
 			if access.subtract {

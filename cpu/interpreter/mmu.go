@@ -117,6 +117,15 @@ func (b *Backend) translateAddress(address uint32, permission cpu.Permissions) (
 	return physical, err
 }
 
+// PhysicalAddress returns the current physical translation of a virtual
+// address for host diagnostics. It performs the same permission checks as a
+// guest access but does not access the translated memory.
+func (b *Backend) PhysicalAddress(address uint32, permission cpu.Permissions) (uint32, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.translateAddress(address, permission)
+}
+
 func (b *Backend) translateAddressWithAttributes(
 	address uint32,
 	permission cpu.Permissions,

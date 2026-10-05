@@ -895,10 +895,16 @@ func (a *x64emitter) memory(m memAccess, pc uint32, retired int) {
 		}
 	}
 
+	if m.wordAlign {
+		if !m.store {
+			a.movR8DEAX() // preserve the original byte lane for load rotation
+		}
+		a.b(0x83, 0xE0, 0xFC) // and eax,-4
+	}
 	misses := a.probeTLB(m.store, uint32(m.size))
 
-	// 2. The access itself. Unaligned is fine on x86-64 and matches the
-	// interpreter's deliberately linear unaligned reads.
+	// 2. Halfword and byte accesses remain linear. With CP15.A clear, word
+	// addresses were aligned above and loads rotate by the original byte lane.
 	if m.store {
 		a.b(0x45, 0x8B, 0x43, disp(m.rd)) // mov r8d, [r11+4*rd]
 		switch m.size {
@@ -913,6 +919,11 @@ func (a *x64emitter) memory(m memAccess, pc uint32, retired int) {
 		switch {
 		case m.size == 4:
 			a.b(0x41, 0x8B, 0x04, 0x11) // mov eax, [r9+rdx]
+			if m.wordAlign {
+				a.movECXR8D()
+				a.shlECXimm(3)
+				a.rorEAXcl()
+			}
 		case m.size == 2 && m.signed:
 			a.b(0x41, 0x0F, 0xBF, 0x04, 0x11) // movsx eax, word [r9+rdx]
 		case m.size == 2:
@@ -946,6 +957,10 @@ func (a *x64emitter) multi(m multiAccess, pc uint32, retired int) {
 	} else if m.startOffset > 0 {
 		a.addEAXimm(uint32(m.startOffset))
 	}
+	if m.wordAlign {
+		// LDM/STM ignore address bits [1:0]; the words are not rotated.
+		a.b(0x83, 0xE0, 0xFC) // and eax,-4
+	}
 	misses := a.probeTLB(m.store, span)
 	for i, reg := range m.regs {
 		offset := byte(4 * i)
@@ -958,10 +973,15 @@ func (a *x64emitter) multi(m multiAccess, pc uint32, retired int) {
 		}
 	}
 	if m.writeback {
-		if m.writebackOffset < 0 {
-			a.subEAXimm(uint32(-m.writebackOffset))
-		} else if m.writebackOffset > 0 {
-			a.addEAXimm(uint32(m.writebackOffset))
+		delta := m.writebackOffset
+		if m.wordAlign {
+			a.loadEAX(m.base)
+			delta += m.startOffset
+		}
+		if delta < 0 {
+			a.subEAXimm(uint32(-delta))
+		} else if delta > 0 {
+			a.addEAXimm(uint32(delta))
 		}
 		a.storeEAX(m.base)
 	}

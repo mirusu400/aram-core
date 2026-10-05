@@ -38,6 +38,116 @@ func TestAttachedSystemBusExecutesCodeAndDispatchesDataAccess(t *testing.T) {
 	}
 }
 
+func TestAttachedSystemBusUsesARMv5UnalignedWordSemantics(t *testing.T) {
+	bus := &testSystemBus{memory: make(map[uint32]byte)}
+	bus.writeU32(0x1000, 0xe5801000) // STR r1, [r0]
+	bus.writeU32(0x1004, 0xe5902000) // LDR r2, [r0]
+
+	backend := New()
+	t.Cleanup(func() { _ = backend.Close() })
+	check(t, backend.AttachSystemBus(bus))
+	check(t, backend.WriteRegister(cpu.RegisterR0, 0x2001))
+	check(t, backend.WriteRegister(cpu.RegisterR1, 0x11223344))
+	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 2)
+	if result.Err != nil || result.Reason != cpu.StopBudget || result.Instructions != 2 {
+		t.Fatalf("unaligned word run = %+v", result)
+	}
+	if got := bus.readU32(0x2000); got != 0x11223344 {
+		t.Fatalf("aligned store word = %#08x", got)
+	}
+	if got := register(t, backend, cpu.RegisterR2); got != 0x44112233 {
+		t.Fatalf("rotated unaligned load = %#08x", got)
+	}
+}
+
+func TestAttachedSystemBusBlockTransfersIgnoreUnalignedAddressBits(t *testing.T) {
+	// ARMv5 LDM/STM ignore address bits [1:0] with CP15.A clear. Unlike LDR,
+	// loaded words are not rotated, and writeback keeps the original low bits.
+	// Every tier must agree on both the scalar and the direct-page paths.
+	type programCase struct {
+		name string
+		mode cpu.Mode
+		code []byte
+	}
+	arm := func(words ...uint32) []byte {
+		code := make([]byte, 4*len(words))
+		for index, word := range words {
+			binary.LittleEndian.PutUint32(code[index*4:], word)
+		}
+		return code
+	}
+	thumb := func(words ...uint16) []byte {
+		code := make([]byte, 2*len(words))
+		for index, word := range words {
+			binary.LittleEndian.PutUint16(code[index*2:], word)
+		}
+		return code
+	}
+	programs := []programCase{
+		{"arm", cpu.ModeARM, arm(
+			0xe8b00006, // LDMIA r0!, {r1, r2}
+			0xe8830006, // STMIA r3, {r1, r2}
+		)},
+		{"thumb", cpu.ModeThumb, thumb(
+			0xc806, // LDMIA r0!, {r1, r2}
+			0xc306, // STMIA r3!, {r1, r2}
+		)},
+	}
+	backends := []struct {
+		name string
+		make func() *Backend
+	}{{"interpreter", New}, {"jit", NewJIT}}
+	for _, program := range programs {
+		for _, tier := range backends {
+			for _, direct := range []bool{false, true} {
+				name := program.name + "/" + tier.name + "/scalar"
+				if direct {
+					name = program.name + "/" + tier.name + "/direct"
+				}
+				t.Run(name, func(t *testing.T) {
+					var bus cpu.MemoryBus
+					var read32 func(uint32) uint32
+					if direct {
+						direct := &directTestSystemBus{data: make([]byte, 0x3000), base: 0x1000}
+						copy(direct.data, program.code)
+						binary.LittleEndian.PutUint32(direct.data[0x1000:], 0x11223344)
+						binary.LittleEndian.PutUint32(direct.data[0x1004:], 0x55667788)
+						bus = direct
+						read32 = func(address uint32) uint32 {
+							return binary.LittleEndian.Uint32(direct.data[address-direct.base:])
+						}
+					} else {
+						scalar := &testSystemBus{memory: make(map[uint32]byte)}
+						scalar.writeRaw(0x1000, program.code)
+						scalar.writeU32(0x2000, 0x11223344)
+						scalar.writeU32(0x2004, 0x55667788)
+						bus = scalar
+						read32 = scalar.readU32
+					}
+					backend := tier.make()
+					t.Cleanup(func() { _ = backend.Close() })
+					check(t, backend.AttachSystemBus(bus))
+					check(t, backend.WriteRegister(cpu.RegisterR0, 0x2001))
+					check(t, backend.WriteRegister(cpu.RegisterR3, 0x2802))
+					result := backend.Run(context.Background(), 0x1000, program.mode, 2)
+					if result.Err != nil || result.Instructions != 2 {
+						t.Fatalf("block-transfer run = %+v", result)
+					}
+					if r1, r2 := register(t, backend, cpu.RegisterR1), register(t, backend, cpu.RegisterR2); r1 != 0x11223344 || r2 != 0x55667788 {
+						t.Fatalf("LDM loaded %#08x/%#08x, want unrotated aligned words", r1, r2)
+					}
+					if got := register(t, backend, cpu.RegisterR0); got != 0x2009 {
+						t.Fatalf("LDM writeback = %#08x, want 0x2009", got)
+					}
+					if first, second := read32(0x2800), read32(0x2804); first != 0x11223344 || second != 0x55667788 {
+						t.Fatalf("STM stored %#08x/%#08x at the aligned words", first, second)
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestAttachedDirectMemoryBusBypassesDataCallsAfterColdFill(t *testing.T) {
 	bus := &directTestSystemBus{data: make([]byte, 0x2000), base: 0x1000}
 	binary.LittleEndian.PutUint32(bus.data[0x0000:], 0xe5901000) // LDR r1, [r0]

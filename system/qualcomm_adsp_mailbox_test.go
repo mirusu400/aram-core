@@ -109,6 +109,28 @@ func TestQualcommADSPMailboxAppliesProfiledControlRules(t *testing.T) {
 	}
 }
 
+func TestQualcommADSPMailboxCopiesProfiledControlResponsePayload(t *testing.T) {
+	shared, err := NewLatchedRegisterWindow(0x20, Width32)
+	check(t, err)
+	mailbox, err := NewQualcommADSPMailbox(0x10, 0x08)
+	check(t, err)
+	check(t, mailbox.configureControlRules([]QualcommADSPControlRuleProfile{{
+		Offset: 0x08, Value: 0x00020000,
+		Copies: []QualcommADSPMemoryCopyProfile{{
+			SourceWindowID:      "shared",
+			SourceOffset:        0x10,
+			DestinationWindowID: "shared",
+			DestinationOffset:   0x0c,
+			Width:               Width32,
+		}},
+	}}, map[string]*LatchedRegisterWindow{"shared": shared}))
+	check(t, shared.Write(0x10, Width32, 0x003ce5c4))
+	check(t, mailbox.Write(0x08, Width32, 0x80020000))
+	if response, err := shared.Read(0x0c, Width32); err != nil || response != 0x003ce5c4 {
+		t.Fatalf("copied control response = %#x, %v", response, err)
+	}
+}
+
 func TestQualcommADSPMailboxPublishesResponseBeforeInterrupt(t *testing.T) {
 	shared, err := NewLatchedRegisterWindow(0x20, Width16)
 	check(t, err)
@@ -192,6 +214,48 @@ func TestQualcommADSPMailboxDefersAndSerializesProfiledResponses(t *testing.T) {
 	}
 }
 
+func TestQualcommADSPMailboxStartsProfiledPeriodicInterrupt(t *testing.T) {
+	vic, err := NewQualcommVectoredInterruptController(QualcommVectoredInterruptConfig{
+		SourceCount: 49, Bank0Sources: 25, ReverseSourceOrder: true,
+	}, nil)
+	check(t, err)
+	mailbox, err := NewQualcommADSPMailbox(0x10, 0x08)
+	check(t, err)
+	check(t, mailbox.configurePeriodicInterrupt(&QualcommADSPPeriodicInterruptProfile{
+		InstructionsPerSecond: 10,
+		InterruptHz:           2,
+		Interrupt: QualcommADSPInterruptProfile{
+			Source: 29, UseVectoredController: true,
+		},
+	}, nil, vic))
+	check(t, mailbox.configureControlRulesWithInterrupts(
+		[]QualcommADSPControlRuleProfile{{
+			Offset: 4, Value: 1, ResponseDelayInstructions: 1,
+			StartPeriodicInterrupt: true,
+		}},
+		nil,
+		nil,
+		vic,
+	))
+	check(t, mailbox.Advance(10))
+	if pending := vic.PendingStatusBanks(); pending != [2]uint32{} {
+		t.Fatalf("periodic interrupt started before DSP release: %#v", pending)
+	}
+	check(t, mailbox.Write(4, Width32, 1))
+	check(t, mailbox.Advance(1))
+	if !mailbox.periodicInterrupt.active {
+		t.Fatal("periodic interrupt did not start with delayed control response")
+	}
+	check(t, mailbox.Advance(3))
+	if pending := vic.PendingStatusBanks(); pending != [2]uint32{} {
+		t.Fatalf("periodic interrupt fired early: %#v", pending)
+	}
+	check(t, mailbox.Advance(1))
+	if pending := vic.PendingStatusBanks(); pending == [2]uint32{} {
+		t.Fatal("periodic interrupt did not fire at the profiled interval")
+	}
+}
+
 func TestQualcommADSPMailboxRejectsUnwiredInterruptResponse(t *testing.T) {
 	mailbox, err := NewQualcommADSPMailbox(0x10, 0x08)
 	check(t, err)
@@ -267,6 +331,66 @@ func TestQualcommADSPMailboxStateRoundTripPreservesDelayedResponse(t *testing.T)
 	check(t, mailbox.Advance(1))
 	if response, _ := shared.Read(0x0c, Width16); response != 7 {
 		t.Fatalf("restored delayed response = %#x", response)
+	}
+}
+
+func TestQualcommADSPMailboxStateRoundTripPreservesPeriodicInterrupt(t *testing.T) {
+	vic, err := NewQualcommVectoredInterruptController(QualcommVectoredInterruptConfig{
+		SourceCount: 49, Bank0Sources: 25, ReverseSourceOrder: true,
+	}, nil)
+	check(t, err)
+	mailbox, err := NewQualcommADSPMailbox(0x10, 0x08)
+	check(t, err)
+	check(t, mailbox.configurePeriodicInterrupt(&QualcommADSPPeriodicInterruptProfile{
+		InstructionsPerSecond: 10,
+		InterruptHz:           2,
+		Interrupt: QualcommADSPInterruptProfile{
+			Source: 29, UseVectoredController: true,
+		},
+	}, nil, vic))
+	check(t, mailbox.configureControlRulesWithInterrupts(
+		[]QualcommADSPControlRuleProfile{{
+			Offset: 4, Value: 1, StartPeriodicInterrupt: true,
+		}},
+		nil,
+		nil,
+		vic,
+	))
+	check(t, mailbox.Write(4, Width32, 1))
+	check(t, mailbox.Advance(2))
+	state, err := mailbox.SaveState()
+	check(t, err)
+	check(t, mailbox.Reset())
+	check(t, mailbox.LoadState(state))
+	if !mailbox.periodicInterrupt.active || mailbox.periodicInterrupt.phase != 4 {
+		t.Fatalf("restored periodic state = active:%t phase:%d",
+			mailbox.periodicInterrupt.active, mailbox.periodicInterrupt.phase)
+	}
+	check(t, mailbox.Advance(2))
+	if pending := vic.PendingStatusBanks(); pending != [2]uint32{} {
+		t.Fatalf("restored periodic interrupt fired early: %#v", pending)
+	}
+	check(t, mailbox.Advance(1))
+	if pending := vic.PendingStatusBanks(); pending == [2]uint32{} {
+		t.Fatal("restored periodic interrupt did not retain its phase")
+	}
+}
+
+func TestQualcommADSPMailboxMigratesVersionTwoSubset(t *testing.T) {
+	mailbox, err := NewQualcommADSPMailbox(0x10, 0x08)
+	check(t, err)
+	check(t, mailbox.Write(4, Width32, 0x11223344))
+	current, err := mailbox.SaveState()
+	check(t, err)
+	legacy := append([]byte(nil), current[:len(current)-16]...)
+	binary.LittleEndian.PutUint32(legacy[4:8], qualcommADSPMailboxDelayedState)
+	check(t, mailbox.Reset())
+	if err := mailbox.LoadState(legacy); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("strict load accepted version-two state: %v", err)
+	}
+	check(t, mailbox.LoadStateSubset(legacy))
+	if got, _ := mailbox.Read(4, Width32); got != 0x11223344 {
+		t.Fatalf("migrated version-two register = %#x", got)
 	}
 }
 

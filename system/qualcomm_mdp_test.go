@@ -108,6 +108,25 @@ func TestQualcommMDPScriptEngineAcceptsNonImageConfiguration(t *testing.T) {
 	check(t, engine.Advance(1))
 }
 
+func TestQualcommMDPScriptEngineAcceptsZeroPaddedConfigurationTail(t *testing.T) {
+	bus := NewBus()
+	check(t, bus.MapRAM("script", 0, 0x2000))
+	writeTestMDPWords(t, bus, 0x1000, []uint32{
+		0x1f000254, 0x1f010000, 0x1f020331,
+		0, 0, 0, 0,
+		// Adjacent heap data is not part of the externally-sized command list.
+		0x03001234, 0,
+	})
+	engine, err := NewQualcommMDPScriptEngine(bus, newTestMDPPanel(t, 2, 2), QualcommMDPProfile{
+		CompletionStartOffset: 0x0e04,
+		ScriptPointerOffset:   0x0e08,
+		RGB565SourceFormat:    0x20,
+	})
+	check(t, err)
+	check(t, engine.QueueScript(0x1000))
+	check(t, engine.Advance(1))
+}
+
 func newTestMDPPanel(t *testing.T, width, height uint16) *DCSPanelController {
 	t.Helper()
 	panel, err := NewDCSPanelController(DCSPanelConfig{Width: width, Height: height})
