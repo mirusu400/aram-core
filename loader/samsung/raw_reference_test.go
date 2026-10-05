@@ -227,7 +227,7 @@ func logProgressiveLiteralReferences(t *testing.T, image ProgressiveImage, liter
 			base := instructionAddress + 8
 			immediate := instruction & 0xfff
 			loadedAddress := base - immediate
-			if instruction&1<<23 != 0 {
+			if instruction&(1<<23) != 0 { // U: add the offset
 				loadedAddress = base + immediate
 			}
 			if loadedAddress == literalAddress {
