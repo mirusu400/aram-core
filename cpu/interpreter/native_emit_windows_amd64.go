@@ -397,7 +397,6 @@ func (a *x64emitter) movECXR8D() { a.b(0x44, 0x89, 0xC1) }
 func (a *x64emitter) movR8DEAX()        { a.b(0x41, 0x89, 0xC0) }       // mov r8d, eax
 func (a *x64emitter) shrR8Dimm(k uint8) { a.b(0x41, 0xC1, 0xE8, k) }    // shr r8d, k
 func (a *x64emitter) andR8Dimm1()       { a.b(0x41, 0x83, 0xE0, 0x01) } // and r8d, 1
-func (a *x64emitter) rorR8Dcl()         { a.b(0x41, 0xD3, 0xC8) }       // ror r8d, cl
 
 func (a *x64emitter) testECXECX()   { a.b(0x85, 0xC9) }       // test ecx, ecx
 func (a *x64emitter) cmovnzEAXEDX() { a.b(0x0F, 0x45, 0xC2) } // cmovnz eax, edx
@@ -959,15 +958,10 @@ func (a *x64emitter) multi(m multiAccess, pc uint32, retired int) {
 		a.addEAXimm(uint32(m.startOffset))
 	}
 	if m.wordAlign {
+		// LDM/STM ignore address bits [1:0]; the words are not rotated.
 		a.b(0x83, 0xE0, 0xFC) // and eax,-4
 	}
 	misses := a.probeTLB(m.store, span)
-	if m.wordAlign && !m.store {
-		// Capture the lane before an LDM whose list includes the base register
-		// overwrites that guest register. All transfer offsets are word-sized.
-		a.loadECX(m.base)
-		a.shlECXimm(3)
-	}
 	for i, reg := range m.regs {
 		offset := byte(4 * i)
 		if m.store {
@@ -975,10 +969,7 @@ func (a *x64emitter) multi(m multiAccess, pc uint32, retired int) {
 			a.b(0x45, 0x89, 0x44, 0x11, offset) // mov [r9+rdx+off], r8d
 		} else {
 			a.b(0x45, 0x8B, 0x44, 0x11, offset) // mov r8d, [r9+rdx+off]
-			if m.wordAlign {
-				a.rorR8Dcl()
-			}
-			a.b(0x45, 0x89, 0x43, disp(reg)) // mov [r11+4*reg], r8d
+			a.b(0x45, 0x89, 0x43, disp(reg))    // mov [r11+4*reg], r8d
 		}
 	}
 	if m.writeback {

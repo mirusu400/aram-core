@@ -763,6 +763,7 @@ func (b *Backend) stepARM() (*cpu.StopReason, error) {
 				address += 4
 			}
 		}
+		address = b.blockTransferAddress(address)
 		var loadedPC uint32
 		loadedProgramCounter := false
 		for register := uint32(0); register < 16; register++ {

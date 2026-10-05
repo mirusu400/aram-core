@@ -325,6 +325,17 @@ func (b *Backend) read16(address uint32, permission cpu.Permissions) (uint16, er
 	return binary.LittleEndian.Uint16(data[:]), nil
 }
 
+// blockTransferAddress returns the first word an LDM/STM transfers. With
+// CP15.A clear, ARMv5 block transfers ignore address bits [1:0]; unlike a
+// single LDR, the loaded words are never rotated. Callers keep the original
+// base for writeback, which preserves those low bits.
+func (b *Backend) blockTransferAddress(address uint32) uint32 {
+	if b.cp15.control&(1<<1) == 0 {
+		return address &^ 3
+	}
+	return address
+}
+
 func (b *Backend) read32(address uint32, permission cpu.Permissions) (uint32, error) {
 	// ARMv5 treats an unaligned word load as an aligned bus read followed by
 	// a byte-lane rotation when CP15 alignment checking is disabled. Keeping

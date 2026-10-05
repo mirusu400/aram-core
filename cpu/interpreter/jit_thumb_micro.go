@@ -420,7 +420,7 @@ func (b *Backend) executeThumbMicroBlock(
 				count++
 			}
 			start := b.regs[cpu.RegisterSP] - uint32(count*4)
-			address := start
+			address := b.blockTransferAddress(start)
 			for register := uint32(0); register < 8; register++ {
 				if registers&(1<<register) == 0 {
 					continue
@@ -440,7 +440,9 @@ func (b *Backend) executeThumbMicroBlock(
 		case thumbPop:
 			registers := uint16(instruction & 0xff)
 			includePC := instruction&(1<<8) != 0
-			address := b.regs[cpu.RegisterSP]
+			start := b.regs[cpu.RegisterSP]
+			first := b.blockTransferAddress(start)
+			address := first
 			for register := uint32(0); register < 8; register++ {
 				if registers&(1<<register) == 0 {
 					continue
@@ -460,7 +462,7 @@ func (b *Backend) executeThumbMicroBlock(
 				b.branchExchange(value)
 				address += 4
 			}
-			b.regs[cpu.RegisterSP] = address
+			b.regs[cpu.RegisterSP] = start + (address - first)
 			return index + 1, includePC, nil, nil
 
 		case thumbAddPCSP:
@@ -475,7 +477,9 @@ func (b *Backend) executeThumbMicroBlock(
 			load := instruction&(1<<11) != 0
 			rb := uint32(instruction>>8) & 7
 			registers := uint16(instruction & 0xff)
-			address := b.regs[rb]
+			base := b.regs[rb]
+			first := b.blockTransferAddress(base)
+			address := first
 			for register := uint32(0); register < 8; register++ {
 				if registers&(1<<register) == 0 {
 					continue
@@ -492,7 +496,7 @@ func (b *Backend) executeThumbMicroBlock(
 				address += 4
 			}
 			if !load || registers&(1<<rb) == 0 {
-				b.regs[rb] = address
+				b.regs[rb] = base + (address - first)
 			}
 
 		case thumbConditionalBranch:

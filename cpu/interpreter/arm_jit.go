@@ -1023,6 +1023,7 @@ func (b *Backend) translateARMBlockTransfer(
 				address += 4
 			}
 		}
+		address = b.blockTransferAddress(address)
 		var loadedPC uint32
 		loadedProgramCounter := false
 		direct, directOffset, directOK := b.armBlockTransferPage(

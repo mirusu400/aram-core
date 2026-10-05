@@ -545,7 +545,7 @@ func (b *Backend) runThumbBatch(limit uint64) (uint64, *cpu.StopReason, error) {
 				count++
 			}
 			start := b.regs[cpu.RegisterSP] - uint32(count*4)
-			address := start
+			address := b.blockTransferAddress(start)
 			for register := uint32(0); register < 8; register++ {
 				if registers&(1<<register) == 0 {
 					continue
@@ -566,7 +566,9 @@ func (b *Backend) runThumbBatch(limit uint64) (uint64, *cpu.StopReason, error) {
 		case thumbPop: // POP
 			registers := uint16(instruction & 0xff)
 			includePC := instruction&(1<<8) != 0
-			address := b.regs[cpu.RegisterSP]
+			start := b.regs[cpu.RegisterSP]
+			first := b.blockTransferAddress(start)
+			address := first
 			for register := uint32(0); register < 8; register++ {
 				if registers&(1<<register) == 0 {
 					continue
@@ -586,7 +588,7 @@ func (b *Backend) runThumbBatch(limit uint64) (uint64, *cpu.StopReason, error) {
 				b.branchExchange(value)
 				address += 4
 			}
-			b.regs[cpu.RegisterSP] = address
+			b.regs[cpu.RegisterSP] = start + (address - first)
 			break
 
 		case thumbAddPCSP: // ADD Rd, PC/SP, #imm
@@ -605,7 +607,9 @@ func (b *Backend) runThumbBatch(limit uint64) (uint64, *cpu.StopReason, error) {
 			if registers == 0 {
 				return executed, nil, b.unsupportedThumb(pc, instruction)
 			}
-			address := b.regs[rb]
+			base := b.regs[rb]
+			first := b.blockTransferAddress(base)
+			address := first
 			for register := uint32(0); register < 8; register++ {
 				if registers&(1<<register) == 0 {
 					continue
@@ -628,7 +632,7 @@ func (b *Backend) runThumbBatch(limit uint64) (uint64, *cpu.StopReason, error) {
 			// ARMv5 Thumb LDM suppresses writeback when the base register is in
 			// the list; STM always performs writeback for the encodings used here.
 			if !load || registers&(1<<rb) == 0 {
-				b.regs[rb] = address
+				b.regs[rb] = base + (address - first)
 			}
 			break
 

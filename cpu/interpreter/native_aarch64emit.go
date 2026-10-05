@@ -926,10 +926,7 @@ func (e *arm64emitter) multi(m multiAccess, pc uint32, retired int) {
 		e.addImm12(0, 0, uint32(m.startOffset))
 	}
 	if m.wordAlign {
-		if !m.store {
-			e.ldrW(5, m.base)
-			e.lslI(5, 5, 3)
-		}
+		// LDM/STM ignore address bits [1:0]; the words are not rotated.
 		e.lsrI(0, 0, 2)
 		e.lslI(0, 0, 2)
 	}
@@ -942,9 +939,6 @@ func (e *arm64emitter) multi(m multiAccess, pc uint32, retired int) {
 			e.strWoff(4, 3, offset)
 		} else {
 			e.ldrWoff(4, 3, offset)
-			if m.wordAlign {
-				e.rorV(4, 4, 5)
-			}
 			e.strW(4, reg)
 		}
 	}
