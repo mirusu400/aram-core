@@ -2625,16 +2625,8 @@ func samsungQualcommHLEHandlers() map[string]system.HLECallHandler {
 					// the retained lifecycle callback needed later in this handler.
 					return call.CPU.WriteRegister(cpu.RegisterR6, 0)
 				}
-				if call.Call.Address == 0x012b7e7c {
-					// The provisioned retained loader normally commits IdleApp's
-					// theme surface at this final MainApp transition. The downloader
-					// archive omits that loader-owned surface, so restore its exact
-					// board-local panel handoff after native startup has succeeded.
-					if err := renderSamsungW340RetainedHome(call); err != nil {
-						return err
-					}
-				}
-				// Both traps replace `ldr r0, [r4, #0x20]`.
+				// Both traps replace `ldr r0, [r4, #0x20]`. Home-screen pixels must
+				// come from native drawing; this boundary never composes output.
 				return call.CPU.WriteRegister(cpu.RegisterR0, state)
 			},
 		),

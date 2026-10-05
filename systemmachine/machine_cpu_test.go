@@ -932,7 +932,10 @@ func TestSCHW340MainAppletLifecyclePublishesReadyCallback(t *testing.T) {
 	}
 }
 
-func TestSCHW340RetainedHomeCommitsBitmapAndUprightPanelFrame(t *testing.T) {
+func TestSCHW340MainAppFinalTransitionDoesNotSynthesizePanelOutput(t *testing.T) {
+	// Home-screen pixels must come from native firmware drawing. The final
+	// MainApp transition only replaces its trapped state load; it must not
+	// publish a host-composed framebuffer or panel transfer.
 	profile := system.SCHW340DC18BoardProfile()
 	controller, err := system.NewDCSPanelController(profile.Panel)
 	check(t, err)
@@ -943,41 +946,42 @@ func TestSCHW340RetainedHomeCommitsBitmapAndUprightPanelFrame(t *testing.T) {
 	dataPort, err := system.NewParallelPanelDataPort(panel)
 	check(t, err)
 
+	const (
+		framebuffer = uint32(0x02d9fa18)
+		owner       = uint32(0x06100100)
+	)
 	bus := system.NewBus()
-	check(t, bus.MapRAM("w340-retained-framebuffer", 0x02d90000, 0x40000))
-	check(t, bus.MapMMIO("w340-panel-command", samsungW340PanelCommandPort, 0x80, commandPort))
-	check(t, bus.MapMMIO("w340-panel-data", samsungW340PanelDataPort, 0x80, dataPort))
+	check(t, bus.MapRAM("w340-display-bitmap", 0x02d90000, 0x40000))
+	check(t, bus.MapRAM("w340-main-applet", 0x06100000, 0x1000))
+	check(t, bus.MapRAM("w340-main-lifecycle-callbacks", 0x07fd1000, 0x1000))
+	check(t, bus.MapMMIO("w340-panel-command", 0x20000000, 0x80, commandPort))
+	check(t, bus.MapMMIO("w340-panel-data", 0x20000080, 0x80, dataPort))
 	backend := interpreter.New()
 	t.Cleanup(func() { _ = backend.Close() })
 	check(t, backend.AttachSystemBus(bus))
+	object := make([]byte, 0x2c)
+	binary.LittleEndian.PutUint32(object[0x04:], 0x01007002)
+	binary.LittleEndian.PutUint32(object[0x18:], 0x012bac79)
+	binary.LittleEndian.PutUint32(object[0x1c:], 0x012bac15)
+	check(t, backend.WriteMemory(owner, object))
+	check(t, backend.WriteRegister(cpu.RegisterR4, owner))
 
-	check(t, renderSamsungW340RetainedHome(system.HLECallContext{CPU: backend, Bus: bus}))
-	want := samsungW340RetainedHomeFrame()
-	encoded := make([]byte, len(want)*2)
-	for index, value := range want {
-		binary.LittleEndian.PutUint16(encoded[index*2:], value)
+	handler := samsungQualcommHLEHandlers()[system.HLEContractSamsungW340MainAppletLifecycle]
+	check(t, handler.InvokeHLE(system.HLECallContext{
+		Call: system.HLECallProfile{Address: 0x012b7e7c},
+		CPU:  backend,
+		Bus:  bus,
+	}))
+	if got, err := backend.ReadRegister(cpu.RegisterR0); err != nil || got != 7 {
+		t.Fatalf("W340 MainApp final transition r0 = %d, %v; want 7", got, err)
 	}
-	gotBitmap := make([]byte, len(encoded))
-	check(t, backend.ReadMemory(samsungW340DisplayBitmap, gotBitmap))
-	if !bytes.Equal(gotBitmap, encoded) {
-		t.Fatal("W340 retained guest framebuffer differs from composed home")
+	if pixels, updates := controller.WriteCounts(); pixels != 0 || updates != 0 {
+		t.Fatalf("W340 MainApp final transition wrote panel %d/%d", pixels, updates)
 	}
-	gotFrame := controller.FrameRGB565()
-	if len(gotFrame) != len(want) {
-		t.Fatalf("W340 retained panel pixels = %d, want %d", len(gotFrame), len(want))
-	}
-	for index := range want {
-		if gotFrame[index] != want[index] {
-			t.Fatalf("W340 retained panel pixel %d = %#04x, want %#04x", index, gotFrame[index], want[index])
-		}
-	}
-	pixels, updates := controller.WriteCounts()
-	if pixels != samsungW340HomeWidth*samsungW340HomeHeight || updates != 1 {
-		t.Fatalf("W340 retained panel counts = %d/%d", pixels, updates)
-	}
-	if want[10*samsungW340HomeWidth+10] == want[160*samsungW340HomeWidth+120] ||
-		want[160*samsungW340HomeWidth+120] == want[300*samsungW340HomeWidth+10] {
-		t.Fatal("W340 retained home lacks distinct status, carousel, and clock regions")
+	bitmap := make([]byte, 240*320*2)
+	check(t, backend.ReadMemory(framebuffer, bitmap))
+	if !bytes.Equal(bitmap, make([]byte, len(bitmap))) {
+		t.Fatal("W340 MainApp final transition published a host-composed framebuffer")
 	}
 }
 
