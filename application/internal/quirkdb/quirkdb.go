@@ -199,6 +199,40 @@ func (k RaptorTitleKey) Matches(packageSHA256, aid, mainClass string) bool {
 		mainClass == k.MainClass
 }
 
+// RaptorNullDrawCall identifies a title's optional draw dispatch that may
+// encounter an empty sprite slot after loading a PZX resource. ReturnLR is the
+// Thumb return address of the virtual call, not a general permission to run
+// code at address zero.
+type RaptorNullDrawCall struct {
+	Key      RaptorTitleKey
+	ReturnLR uint32
+}
+
+var raptorNullDrawCalls = []RaptorNullDrawCall{
+	{
+		// Hybrid's 0x31bb0 draw dispatcher selects an empty object from its
+		// resource table. The virtual target at 0x31c16 is then zero. The
+		// surrounding drawing continues when that single empty item is skipped.
+		Key: RaptorTitleKey{
+			PackageSHA256: "e68b1c8aef85c584dc6e5e225f0c226641b23f6c523bf0f59eb662151f9cf954",
+			AID:           "0002996E",
+			MainClass:     "Clet",
+		},
+		ReturnLR: 0x00031c1b,
+	},
+}
+
+// LookupRaptorNullDrawCall accepts only a verified package and its observed
+// null virtual-call return address.
+func LookupRaptorNullDrawCall(packageSHA256, aid, mainClass string, returnLR uint32) bool {
+	for _, entry := range raptorNullDrawCalls {
+		if entry.Key.Matches(packageSHA256, aid, mainClass) && entry.ReturnLR == returnLR {
+			return true
+		}
+	}
+	return false
+}
+
 // RaptorSystemProperty supplies handset identity values for a package which
 // ships an explicit supported-model table. Generic titles keep the runtime's
 // ordinary LGT-era defaults.
