@@ -62,9 +62,6 @@ outer:
 			blockInstructions = int(remaining)
 		}
 		for index := 0; index < blockInstructions; index++ {
-			if index != 0 && b.jitGen != blockGeneration {
-				continue outer
-			}
 			in := &block.arm[index]
 			if wholeSystem {
 				// The outer dispatch already checked the first instruction's
@@ -72,6 +69,11 @@ outer:
 				// instructions still poll individually, so MMIO-raised interrupts
 				// and traps retain instruction-boundary precision.
 				if index != 0 {
+					// An earlier instruction may have retired this translation,
+					// for example by evicting its I-cache line.
+					if b.jitGen != blockGeneration {
+						continue outer
+					}
 					if b.takePendingInterrupt() {
 						continue outer
 					}

@@ -33,6 +33,41 @@ func translateThumbMicroOp(instruction uint16) (thumbInstructionClass, bool, boo
 	}
 }
 
+// thumbMicroInstructionStale records whole-system access attribution and trace
+// state for one translated instruction. It reports true, after retiring the
+// block, when the resident I-cache line no longer holds the decoded opcode.
+func (b *Backend) thumbMicroInstructionStale(
+	block *jitBlock,
+	index int,
+	pc uint32,
+	in *thumbMicroInstr,
+	wholeSystem, traced bool,
+) bool {
+	instruction := in.raw
+	if wholeSystem {
+		b.instructionRaw = uint32(instruction)
+	}
+	if traced || wholeSystem && block.instructionCacheEnabled {
+		resident, residentOK := b.residentInstructionCache16(pc)
+		if traced {
+			b.lastJITResidentRaw = uint32(resident)
+			b.lastJITResident = residentOK
+		}
+		if wholeSystem && block.instructionCacheEnabled && residentOK && resident != instruction {
+			b.dropStaleJITBlock(block.start, block, false)
+			return true
+		}
+	}
+	if traced {
+		b.lastJITBlock = block
+		b.lastJITRuntimePC = pc
+		b.lastJITDecodedPC = in.pc
+		b.lastJITRaw = uint32(instruction)
+		b.lastJITIndex = uint32(index)
+	}
+	return false
+}
+
 // executeThumbMicroOp executes a pre-classified Thumb instruction. Keeping the
 // raw 16-bit encoding makes translated blocks compact while the class byte
 // removes the decoder and, most importantly, the per-instruction indirect
@@ -46,17 +81,14 @@ func (b *Backend) executeThumbMicroBlock(
 	instructions := block.thumb[:blockInstructions]
 	blockGeneration := b.jitGen
 	for index := range instructions {
-		if index != 0 && traced && b.stopped.Load() {
-			return index, false, nil, nil
-		}
-		if index != 0 && b.jitGen != blockGeneration {
-			return index, false, nil, nil
-		}
 		in := &instructions[index]
 		pc := in.pc
 		if wholeSystem {
 			if index != 0 {
-				if b.takePendingInterrupt() {
+				// An earlier instruction may have retired this translation,
+				// for example by evicting its I-cache line.
+				if b.jitGen != blockGeneration ||
+					traced && b.stopped.Load() || b.takePendingInterrupt() {
 					return index, false, nil, nil
 				}
 				pc = b.regs[cpu.RegisterPC]
@@ -70,31 +102,17 @@ func (b *Backend) executeThumbMicroBlock(
 			}
 			b.instructionAddress = pc
 		} else if traced {
+			if index != 0 && b.stopped.Load() {
+				return index, false, nil, nil
+			}
 			b.recordPC(pc)
 		}
 		instruction := in.raw
-		if wholeSystem {
-			b.instructionRaw = uint32(instruction)
-		}
-		// Application blocks never run with an architectural I-cache, so keep
-		// the resident-line probe out of their per-instruction path.
-		if traced || wholeSystem && block.instructionCacheEnabled {
-			resident, residentOK := b.residentInstructionCache16(pc)
-			if traced {
-				b.lastJITResidentRaw = uint32(resident)
-				b.lastJITResident = residentOK
-			}
-			if wholeSystem && block.instructionCacheEnabled && residentOK && resident != instruction {
-				b.dropStaleJITBlock(block.start, block, false)
-				return index, false, nil, nil
-			}
-		}
-		if traced {
-			b.lastJITBlock = block
-			b.lastJITRuntimePC = pc
-			b.lastJITDecodedPC = in.pc
-			b.lastJITRaw = uint32(instruction)
-			b.lastJITIndex = uint32(index)
+		// Application blocks run untraced without an architectural I-cache;
+		// keep their per-instruction path to this single branch.
+		if (wholeSystem || traced) &&
+			b.thumbMicroInstructionStale(block, index, pc, in, wholeSystem, traced) {
+			return index, false, nil, nil
 		}
 		b.regs[cpu.RegisterPC] = pc + 2
 		switch in.op {
