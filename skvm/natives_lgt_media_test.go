@@ -76,6 +76,20 @@ func TestMMPPReclaimsUnreachablePlayersAtClipCapacity(t *testing.T) {
 	}
 }
 
+func TestMMPPCollectsPlayingUnreachablePlayer(t *testing.T) {
+	v := mmppVM(t, NativePolicyLGT)
+	player := mmppNew(t, v)
+	mmppSource(t, v, player)
+	mmppCall(t, v, player, "start")
+	if state := mmppInfo(t, v, player).State; state != shared.ClipPlaying {
+		t.Fatalf("clip before collection = %v, want playing", state)
+	}
+	check(t, v.collectGarbage())
+	if got := len(v.services.Media.Snapshot().Clips); got != 0 {
+		t.Fatalf("playing clip retained %d service slots after collection", got)
+	}
+}
+
 func TestMMPPRepeatedStartPreservesPlayback(t *testing.T) {
 	v := mmppVM(t, NativePolicyLGT)
 	r := mmppNew(t, v)

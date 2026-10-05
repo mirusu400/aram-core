@@ -226,6 +226,15 @@ func (vm *VM) collectGarbageWithRoots(extraRoots []uint32) error {
 			}
 		}
 		if state, ok := object.Native.(*audioClipState); ok && state.clip != 0 {
+			info, err := vm.services.Media.Info(vm.serviceOwner, state.clip)
+			if err != nil {
+				return fmt.Errorf("collect SKVM media %d: %w", reference, err)
+			}
+			if info.State != shared.ClipStopped {
+				if err := vm.services.Media.Stop(vm.serviceOwner, state.clip); err != nil {
+					return fmt.Errorf("collect SKVM media %d: %w", reference, err)
+				}
+			}
 			if err := vm.services.Media.DestroyClip(vm.serviceOwner, state.clip, vm.services.Events); err != nil {
 				return fmt.Errorf("collect SKVM media %d: %w", reference, err)
 			}
