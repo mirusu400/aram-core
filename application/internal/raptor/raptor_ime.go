@@ -154,10 +154,16 @@ func (r *Runtime) handleInputMethod() (guest.WIPIReturn, error) {
 		if err != nil {
 			return guest.WIPIReturn{}, err
 		}
+		address := args[2+i*2]
+		if capacity == 0 && lengthAddress > address && lengthAddress-address <= 16 {
+			// Some LGT callers initialize the output size to zero while placing
+			// it immediately after a fixed byte buffer. Use that bounded span as
+			// capacity; never let output overlap the size word.
+			capacity = lengthAddress - address
+		}
 		if capacity > 1<<20 || uint32(len(encoded[i])) > capacity {
 			return guest.WIPIReturn{}, nil
 		}
-		address := args[2+i*2]
 		if len(encoded[i]) > 0 {
 			if address == 0 || uint64(address)+uint64(len(encoded[i])) > 1<<32 {
 				return guest.WIPIReturn{}, nil

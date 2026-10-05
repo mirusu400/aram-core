@@ -147,6 +147,44 @@ func TestRaptorInputMethodRejectsShortBufferWithoutAdvancing(t *testing.T) {
 	}
 }
 
+func TestRaptorInputMethodZeroInitializedAdjacentSizes(t *testing.T) {
+	public := newPublicRuntime(t)
+	r := &Runtime{CPU: public.CPU, Public: public}
+	memory, err := public.Heap.Allocate(128, true)
+	check(t, err)
+	check(t, r.CPU.WriteRegister(cpu.RegisterSP, memory+96))
+	check(t, public.WriteU32(memory+96, memory+16))
+	check(t, public.WriteU32(memory+100, memory+28))
+	check(t, r.CPU.WriteMemory(memory+32, []byte{0xa5, 0xa5}))
+	r.inputMethod().automata.SetMode(ime.ModeKorean)
+	for reg, value := range []uint32{'5', 502, memory, memory + 12} {
+		check(t, r.CPU.WriteRegister(uint32(reg), value))
+	}
+	result, _, handled, err := r.DispatchPrivateImport(304)
+	check(t, err)
+	if !handled || result.Low != 1 {
+		t.Fatalf("zero-initialized sizes: handled=%t, result=%d", handled, result.Low)
+	}
+	if length, err := public.ReadU32(memory + 12); err != nil || length != 0 {
+		t.Fatalf("committed length = %d, %v", length, err)
+	}
+	want, err := public.Services.Text.Encode("ㄴ", shared.EncodingEUCKR)
+	check(t, err)
+	if length, err := public.ReadU32(memory + 28); err != nil || length != uint32(len(want)) {
+		t.Fatalf("preedit length = %d, %v", length, err)
+	}
+	got := make([]byte, len(want))
+	check(t, r.CPU.ReadMemory(memory+16, got))
+	if !bytes.Equal(got, want) {
+		t.Fatalf("preedit = %x, want %x", got, want)
+	}
+	guard := make([]byte, 2)
+	check(t, r.CPU.ReadMemory(memory+32, guard))
+	if !bytes.Equal(guard, []byte{0xa5, 0xa5}) {
+		t.Fatalf("buffer guard changed: %x", guard)
+	}
+}
+
 func TestRaptorInputMethodStateRoundTripAndLegacyModes(t *testing.T) {
 	public := newPublicRuntime(t)
 	r := &Runtime{CPU: public.CPU, Public: public}
