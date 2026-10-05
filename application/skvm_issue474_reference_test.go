@@ -26,7 +26,7 @@ func TestSKVMIssue474MapleStoryMageLoadsRootTable(t *testing.T) {
 	if err := created.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	for frame := 0; frame < 80; frame++ {
+	for frame := 0; frame < 800; frame++ {
 		if err := created.StepFrame(ctx); err != nil {
 			t.Fatalf("frame %d: %v", frame, err)
 		}
@@ -39,5 +39,21 @@ func TestSKVMIssue474MapleStoryMageLoadsRootTable(t *testing.T) {
 	if snapshot.SKVM == nil || snapshot.SKVM.Instructions <= 3926 ||
 		snapshot.SKVM.Framebuffer == nil || snapshot.SKVM.Framebuffer.Sequence == 0 {
 		t.Fatalf("SKVM did not advance past the reported startup fault: %+v", snapshot.SKVM)
+	}
+	// The title's white transition lasts through frame 600. A live title
+	// should render the forest and character rather than stay white.
+	framebuffer := created.Framebuffer()
+	bounds := framebuffer.Bounds()
+	colored := 0
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			red, green, blue, _ := framebuffer.At(x, y).RGBA()
+			if red != 0xffff || green != 0xffff || blue != 0xffff {
+				colored++
+			}
+		}
+	}
+	if colored < 10_000 {
+		t.Fatalf("title remained blank after 800 frames: %d colored pixels", colored)
 	}
 }
