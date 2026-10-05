@@ -544,8 +544,12 @@ func (d *QualcommVectoredInterruptController) LoadState(state []byte) error {
 	if d.config.ReverseSourceOrder {
 		reverse = 1
 	}
+	// Version 2 predates second-level groups and is byte-identical to a
+	// version 3 state with a zero group count, so it loads only into an
+	// ungrouped controller.
 	if len(state) < 40 || string(state[:4]) != "QVIC" ||
-		binary.LittleEndian.Uint32(state[4:8]) != 3 ||
+		binary.LittleEndian.Uint32(state[4:8]) != 3 &&
+			binary.LittleEndian.Uint32(state[4:8]) != 2 ||
 		len(state) != 40+int(d.config.GroupCount)*8 ||
 		state[8] != d.config.SourceCount || state[9] != d.config.Bank0Sources ||
 		state[10] != reverse || state[11] != d.config.VectorOffset ||

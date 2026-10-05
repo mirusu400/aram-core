@@ -1,6 +1,7 @@
 package system
 
 import (
+	"encoding/binary"
 	"errors"
 	"testing"
 )
@@ -191,6 +192,25 @@ func TestQualcommVectoredInterruptControllerPreservesLevelAndState(t *testing.T)
 	}
 	if err := restored.LoadState(state[:len(state)-1]); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("truncated state error = %v", err)
+	}
+	// Version 2 had the same 40-byte layout before second-level groups were
+	// modeled. Snapshots saved by ungrouped boards must keep loading, while a
+	// grouped controller cannot accept a state that lacks its group words.
+	legacy := append([]byte(nil), state...)
+	binary.LittleEndian.PutUint32(legacy[4:8], 2)
+	legacyRestored, _ := NewQualcommVectoredInterruptController(config, &interruptLineProbe{})
+	check(t, legacyRestored.LoadState(legacy))
+	if enabled, _ := legacyRestored.Read(qualcommVICEnable1Offset, Width32); enabled != 0x00ffffff {
+		t.Fatalf("legacy restored second-bank enables = %#x", enabled)
+	}
+	groupedConfig := config
+	groupedConfig.GroupCount = 1
+	groupedConfig.Groups[0] = QualcommVectoredInterruptGroupConfig{
+		Source: 7, EnableOffset: 0x20, StatusOffset: 0x94, ValidMask: 0x0f,
+	}
+	grouped, _ := NewQualcommVectoredInterruptController(groupedConfig, &interruptLineProbe{})
+	if err := grouped.LoadState(legacy); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("grouped controller accepted legacy state: %v", err)
 	}
 	if err := device.PulseSource(49); err == nil {
 		t.Fatal("accepted out-of-range vectored interrupt source")
