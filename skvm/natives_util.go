@@ -2,6 +2,7 @@ package skvm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -653,8 +654,17 @@ func (vm *VM) installTimerNatives() {
 		if err != nil {
 			return Value{}, false, err
 		}
-		for _, id := range state.timers {
-			if err := vm.services.Timers.Cancel(id, vm.serviceOwner); err != nil {
+		for _, id := range append([]shared.ServiceID(nil), state.timers...) {
+			timer, err := vm.services.Timers.Get(id, vm.serviceOwner)
+			if err != nil {
+				return Value{}, false, err
+			}
+			taskReference := uint32(timer.Value)
+			task, err := vm.timerTask(taskReference)
+			if err != nil {
+				return Value{}, false, err
+			}
+			if err := vm.retireTimerTask(taskReference, task); err != nil {
 				return Value{}, false, err
 			}
 		}
@@ -730,10 +740,7 @@ func (vm *VM) installTimerNatives() {
 					return Value{}, false, getErr
 				}
 				wasActive = timer.Active
-				if err := vm.services.Timers.Cancel(
-					state.timer,
-					vm.serviceOwner,
-				); err != nil {
+				if err := vm.retireTimerTask(receiver, state); err != nil {
 					return Value{}, false, err
 				}
 			}
@@ -814,6 +821,15 @@ func nativeTimerSchedule(
 		vm.serviceOwner,
 		fmt.Sprintf("skvm.timer.%08x", taskReference),
 	)
+	if errors.Is(err, shared.ErrLimitExceeded) {
+		if cleanupErr := vm.reapCancelledTimerServices(); cleanupErr != nil {
+			return Value{}, false, cleanupErr
+		}
+		id, err = vm.services.Timers.Define(
+			vm.serviceOwner,
+			fmt.Sprintf("skvm.timer.%08x", taskReference),
+		)
+	}
 	if err != nil {
 		return Value{}, false, err
 	}
@@ -843,10 +859,9 @@ func nativeTimerSchedule(
 	return Value{}, false, nil
 }
 
-// A one-shot task keeps its scheduledExecutionTime but no longer needs a
-// service timer after its callback. Retire it so a title creating a fresh task
-// every frame does not exhaust the bounded timer table.
-func (vm *VM) retireOneShotTimer(taskReference uint32, task *timerTaskState) error {
+// A completed or cancelled task keeps its scheduledExecutionTime but no longer
+// needs a service timer. Remove it from both the shared service and its owner.
+func (vm *VM) retireTimerTask(taskReference uint32, task *timerTaskState) error {
 	id := task.timer
 	if id == 0 {
 		return nil
@@ -870,6 +885,52 @@ func (vm *VM) retireOneShotTimer(taskReference uint32, task *timerTaskState) err
 	for _, candidate := range vm.heap {
 		if owner, ok := candidate.Native.(*timerObjectState); ok {
 			owner.timers = removeTimerID(owner.timers, id)
+		}
+	}
+	return nil
+}
+
+// Older save states can contain cancelled tasks whose service timers were only
+// deactivated. Reclaim those slots when the table fills, leaving due callbacks
+// and tasks currently executing their callback untouched.
+func (vm *VM) reapCancelledTimerServices() error {
+	pending := make(map[shared.ServiceID]bool)
+	for _, event := range vm.services.Events.Snapshot().Events {
+		if event.Kind == shared.EventTimer && event.Owner == vm.serviceOwner {
+			pending[event.ServiceID] = true
+		}
+	}
+	for _, timer := range vm.services.Timers.Snapshot().Timers {
+		if timer.Owner != vm.serviceOwner || timer.Active || pending[timer.ID] {
+			continue
+		}
+		object, exists := vm.Object(uint32(timer.Value))
+		if !exists {
+			if err := vm.services.Timers.Destroy(timer.ID, vm.serviceOwner, vm.services.Events); err != nil {
+				return err
+			}
+			for _, candidate := range vm.heap {
+				if owner, ok := candidate.Native.(*timerObjectState); ok {
+					owner.timers = removeTimerID(owner.timers, timer.ID)
+				}
+			}
+			continue
+		}
+		task, ok := object.Native.(*timerTaskState)
+		if !ok || task.timer != timer.ID {
+			continue
+		}
+		ownerReference, _ := object.Fields["\x00aram-timer-owner"].Reference()
+		ownerObject, _ := vm.Object(ownerReference)
+		ownerCancelled := false
+		if ownerObject != nil {
+			cancelled, _ := ownerObject.Fields["\x00aram-timer-cancelled"].Int()
+			ownerCancelled = cancelled != 0
+		}
+		if task.cancelled || ownerCancelled {
+			if err := vm.retireTimerTask(uint32(timer.Value), task); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

@@ -1004,7 +1004,7 @@ func (vm *VM) Advance(
 				return err
 			}
 			if timer.Interval == 0 {
-				if err := vm.retireOneShotTimer(taskReference, task); err != nil {
+				if err := vm.retireTimerTask(taskReference, task); err != nil {
 					return err
 				}
 			}

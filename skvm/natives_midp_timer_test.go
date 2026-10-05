@@ -64,3 +64,71 @@ func TestMIDPOneShotTimersRetireAfterCallback(t *testing.T) {
 		t.Fatalf("restored completed timers retained %d service slots", got)
 	}
 }
+
+func TestMIDPCancelledTimersReleaseServiceSlots(t *testing.T) {
+	for _, cancelOwner := range []bool{false, true} {
+		name := "task"
+		if cancelOwner {
+			name = "owner"
+		}
+		t.Run(name, func(t *testing.T) {
+			vm, err := New(map[string][]byte{})
+			check(t, err)
+			owner := vm.NewObject("java/util/Timer", nil)
+			invokeTestNative(t, vm, "java/util/Timer", "<init>", "()V", owner)
+			for i := 0; i < 1100; i++ {
+				if cancelOwner && i != 0 {
+					owner = vm.NewObject("java/util/Timer", nil)
+					invokeTestNative(t, vm, "java/util/Timer", "<init>", "()V", owner)
+				}
+				task := vm.NewObject("java/util/TimerTask", nil)
+				invokeTestNative(t, vm, "java/util/TimerTask", "<init>", "()V", task)
+				invokeTestNative(t, vm, "java/util/Timer", "schedule", "(Ljava/util/TimerTask;J)V", owner,
+					ReferenceValue(task), LongValue(60_000))
+				if cancelOwner {
+					invokeTestNative(t, vm, "java/util/Timer", "cancel", "()V", owner)
+				} else {
+					value := invokeTestNative(t, vm, "java/util/TimerTask", "cancel", "()Z", task)
+					if active, err := value.Int(); err != nil || active != 1 {
+						t.Fatalf("cancel task %d = %d, %v", i, active, err)
+					}
+				}
+			}
+			if got := len(vm.services.Timers.Snapshot().Timers); got != 0 {
+				t.Fatalf("cancelled timers retained %d service slots", got)
+			}
+		})
+	}
+}
+
+func TestMIDPLegacyCancelledTimersReapAtCapacity(t *testing.T) {
+	vm, err := New(map[string][]byte{})
+	check(t, err)
+	owner := vm.NewObject("java/util/Timer", nil)
+	invokeTestNative(t, vm, "java/util/Timer", "<init>", "()V", owner)
+	for i := 0; i < 1024; i++ {
+		task := vm.NewObject("java/util/TimerTask", nil)
+		invokeTestNative(t, vm, "java/util/TimerTask", "<init>", "()V", task)
+		invokeTestNative(t, vm, "java/util/Timer", "schedule", "(Ljava/util/TimerTask;J)V", owner,
+			ReferenceValue(task), LongValue(60_000))
+		state, err := vm.timerTask(task)
+		check(t, err)
+		check(t, vm.services.Timers.Cancel(state.timer, vm.serviceOwner))
+		state.cancelled = true // State left by the old TimerTask.cancel implementation.
+	}
+	if got := len(vm.services.Timers.Snapshot().Timers); got != 1024 {
+		t.Fatalf("legacy timer count = %d, want 1024", got)
+	}
+	task := vm.NewObject("java/util/TimerTask", nil)
+	invokeTestNative(t, vm, "java/util/TimerTask", "<init>", "()V", task)
+	invokeTestNative(t, vm, "java/util/Timer", "schedule", "(Ljava/util/TimerTask;J)V", owner,
+		ReferenceValue(task), LongValue(60_000))
+	if got := len(vm.services.Timers.Snapshot().Timers); got != 1 {
+		t.Fatalf("reaped timer count = %d, want 1", got)
+	}
+	ownerState, err := vm.timerObject(owner)
+	check(t, err)
+	if got := len(ownerState.timers); got != 1 {
+		t.Fatalf("reaped owner entries = %d, want 1", got)
+	}
+}
