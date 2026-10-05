@@ -481,20 +481,24 @@ func (m *Machine) loadKTF(
 	}
 	// KTF descriptors normally name the handset screen the title was built for.
 	// Apply only exact-package corrections for known mismatched metadata.
+	guestWidthOverride := m.guestWidthOverride
+	if quirkdb.KTFNativeWidthOnly(source.SHA256) {
+		guestWidthOverride = 0
+	}
 	if width, height := ktfrt.EffectiveDisplaySize(pkg); width > 0 &&
 		height > 0 {
 		// The descriptor resize would otherwise discard an experimental
 		// widescreen override set on the factory, so reapply it here, keeping the
 		// descriptor's native height.
-		width = applyGuestWidthOverride(width, m.guestWidthOverride)
+		width = applyGuestWidthOverride(width, guestWidthOverride)
 		if bounds := m.frame.Bounds(); bounds.Dx() != width || bounds.Dy() != height {
 			m.frame = image.NewRGBA(image.Rect(0, 0, width, height))
 		}
-	} else if m.guestWidthOverride > 0 {
+	} else if guestWidthOverride > 0 {
 		// No descriptor resize happened; widen the frame the factory created.
-		if bounds := m.frame.Bounds(); m.guestWidthOverride > bounds.Dx() {
+		if bounds := m.frame.Bounds(); guestWidthOverride > bounds.Dx() {
 			m.frame = image.NewRGBA(image.Rect(0, 0,
-				applyGuestWidthOverride(bounds.Dx(), m.guestWidthOverride), bounds.Dy()))
+				applyGuestWidthOverride(bounds.Dx(), guestWidthOverride), bounds.Dy()))
 		}
 	}
 	runtime, err := ktfrt.NewRuntimeForProfile(

@@ -360,6 +360,13 @@ func LookupRaptorFramebufferGeometry(
 	return RaptorFramebufferGeometry{}, false
 }
 
+// KTFNativeWidthOnly identifies a verified title whose 240-pixel field renderer
+// produces holes when the experimental guest framebuffer is widened. Keep the
+// title's descriptor width until its wider guest layout is supported.
+func KTFNativeWidthOnly(packageSHA256 string) bool {
+	return packageSHA256 == "dc0d66e4b30063449eff465e2b2f453a4c81892835b5660754cf6c1ae71e4d14"
+}
+
 // RaptorResourceBytesHelper identifies a title-local static helper that takes
 // a java/lang/String resource name and returns the JAR entry as a byte array.
 // Some LGT runtimes implement this helper through carrier-private filesystem
