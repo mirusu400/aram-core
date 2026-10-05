@@ -51,6 +51,31 @@ func mmppInfo(t *testing.T, v *VM, r uint32) shared.ClipInfo {
 	return i
 }
 
+func TestMMPPReclaimsUnreachablePlayersAtClipCapacity(t *testing.T) {
+	v := mmppVM(t, NativePolicyLGT)
+	var first, last uint32
+	for i := 0; i < 257; i++ {
+		player := mmppNew(t, v)
+		if i == 0 {
+			first = player
+		}
+		mmppSource(t, v, player)
+		last = player
+	}
+	if _, exists := v.Object(first); exists {
+		t.Fatal("unreachable first player survived collection")
+	}
+	if _, exists := v.Object(last); !exists {
+		t.Fatal("new player's receiver was collected during source allocation")
+	}
+	if got := len(v.services.Media.Snapshot().Clips); got != 1 {
+		t.Fatalf("media clips after collection = %d, want 1", got)
+	}
+	if info := mmppInfo(t, v, last); info.State != shared.ClipStopped {
+		t.Fatalf("new player clip state = %v, want stopped", info.State)
+	}
+}
+
 func TestMMPPRepeatedStartPreservesPlayback(t *testing.T) {
 	v := mmppVM(t, NativePolicyLGT)
 	r := mmppNew(t, v)

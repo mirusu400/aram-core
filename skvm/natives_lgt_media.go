@@ -40,7 +40,12 @@ func (vm *VM) lgtMediaSource(receiver uint32, data []byte) error {
 			return e
 		}
 	}
-	id, err := vm.services.Media.CreateClip(vm.serviceOwner, "", uint64(len(data)))
+	var id shared.ServiceID
+	err = vm.withCollectRetryPreserving([]uint32{receiver}, func() error {
+		var createErr error
+		id, createErr = vm.services.Media.CreateClip(vm.serviceOwner, "", uint64(len(data)))
+		return createErr
+	})
 	if err != nil {
 		return lgtUnsupported("setMediaSource", err.Error())
 	}
@@ -180,12 +185,12 @@ func (vm *VM) installLGTMediaNatives() {
 			switch name {
 			case "start":
 				info, err := vm.services.Media.Info(vm.serviceOwner, c.clip)
-							if err != nil {
-								return Value{}, false, err
-							}
-							if info.State == shared.ClipPlaying {
-								// Repeated start leaves playback and queued samples untouched.
-								return Value{}, false, nil
+				if err != nil {
+					return Value{}, false, err
+				}
+				if info.State == shared.ClipPlaying {
+					// Repeated start leaves playback and queued samples untouched.
+					return Value{}, false, nil
 				}
 				loop, _ := o.Fields[lgtLoopField].Int()
 				plays := int32(1)

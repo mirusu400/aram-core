@@ -18,11 +18,15 @@ import (
 // as it plays filled the 1024-surface table with images nothing referenced any
 // more and died. A VM allocates, collects, retries, and only then gives up.
 func (vm *VM) withCollectRetry(allocate func() error) error {
+	return vm.withCollectRetryPreserving(nil, allocate)
+}
+
+func (vm *VM) withCollectRetryPreserving(roots []uint32, allocate func() error) error {
 	err := allocate()
 	if err == nil || !errors.Is(err, shared.ErrLimitExceeded) {
 		return err
 	}
-	if collectErr := vm.collectGarbage(); collectErr != nil {
+	if collectErr := vm.collectGarbageWithRoots(roots); collectErr != nil {
 		return collectErr
 	}
 	return allocate()

@@ -11,6 +11,12 @@ import (
 // Java-visible VM roots. Native payloads which contain guest references are
 // traversed explicitly because those edges are not represented by Object.Fields.
 func (vm *VM) collectGarbage() error {
+	return vm.collectGarbageWithRoots(nil)
+}
+
+// Native allocations can request collection while their receiver has already
+// been popped from the Java stack. Keep those arguments live for that collection.
+func (vm *VM) collectGarbageWithRoots(extraRoots []uint32) error {
 	reachable := make(map[uint32]struct{}, len(vm.heap))
 	pending := make([]uint32, 0, len(vm.heap))
 	surfaceImages := make(map[shared.ServiceID][]uint32)
@@ -55,6 +61,9 @@ func (vm *VM) collectGarbage() error {
 		if value.Kind == ValueReference {
 			markReference(uint32(value.bits))
 		}
+	}
+	for _, reference := range extraRoots {
+		markReference(reference)
 	}
 
 	for _, current := range vm.classes {
@@ -215,6 +224,12 @@ func (vm *VM) collectGarbage() error {
 			if err := vm.releaseImage(state); err != nil {
 				return fmt.Errorf("collect SKVM image %d: %w", reference, err)
 			}
+		}
+		if state, ok := object.Native.(*audioClipState); ok && state.clip != 0 {
+			if err := vm.services.Media.DestroyClip(vm.serviceOwner, state.clip, vm.services.Events); err != nil {
+				return fmt.Errorf("collect SKVM media %d: %w", reference, err)
+			}
+			state.clip = 0
 		}
 		if state, ok := object.Native.(*socketConnectionState); ok &&
 			!state.closed && state.socket != 0 {
