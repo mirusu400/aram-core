@@ -522,6 +522,17 @@ var LGTCanvases = []LGTCanvas{
 		Width:          120,
 		Height:         160,
 	},
+	{
+		// Churining declares a 176x200 game area and uses 176-pixel-wide
+		// artwork. At 240x320, its falling-block loop computes row 9 for an
+		// eight-row board and throws ArrayIndexOutOfBoundsException.
+		PackageSHA256:  "cd18ad615cbf2bd2f14c3e711002019582a2512247f2ce10b7b8eef2abb387c3",
+		MainClass:      "Churining",
+		InferredWidth:  240,
+		InferredHeight: 320,
+		Width:          176,
+		Height:         200,
+	},
 }
 
 func LookupLGTCanvas(packageSHA256, mainClass string, inferredWidth, inferredHeight int) (LGTCanvas, bool) {
