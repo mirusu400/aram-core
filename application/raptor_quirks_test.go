@@ -4,6 +4,7 @@ import (
 	"image"
 	"testing"
 
+	"github.com/mirusu400/aram-core/application/internal/quirkdb"
 	machinecore "github.com/mirusu400/aram-core/core"
 	raptorloader "github.com/mirusu400/aram-core/loader/raptor"
 )
@@ -312,6 +313,42 @@ func TestMaplePirateRaptorAudioCompatibilityRequiresExactPackage(t *testing.T) {
 				image.Pt(240, 320),
 			); options.PreserveStoppedLoops {
 				t.Fatal("lookalike package selected stopped-loop preservation")
+			}
+		})
+	}
+}
+
+func TestRaptorJavaCallFallbacksRequireExactPackage(t *testing.T) {
+	for _, entry := range quirkdb.RaptorJavaCallCompatibilities {
+		t.Run(entry.Key.AID, func(t *testing.T) {
+			source := machinecore.Source{SHA256: entry.Key.PackageSHA256}
+			pkg := raptorloader.Package{Descriptor: raptorloader.Descriptor{
+				AID: entry.Key.AID, MainClass: entry.Key.MainClass,
+			}}
+			matched := raptorRuntimeOptions(source, pkg, image.Pt(240, 320))
+			if matched.NullParseIntZero != entry.NullParseIntZero ||
+				matched.NegativeVectorElementNull != entry.NegativeVectorElementNull {
+				t.Fatalf("Java call fallbacks = %+v, want %+v", matched, entry)
+			}
+			for name, mutate := range map[string]func(*machinecore.Source, *raptorloader.Package){
+				"digest": func(source *machinecore.Source, _ *raptorloader.Package) {
+					source.SHA256 = "different"
+				},
+				"aid": func(_ *machinecore.Source, pkg *raptorloader.Package) {
+					pkg.Descriptor.AID = "different"
+				},
+				"main class": func(_ *machinecore.Source, pkg *raptorloader.Package) {
+					pkg.Descriptor.MainClass = "Different"
+				},
+			} {
+				t.Run(name, func(t *testing.T) {
+					changedSource, changedPackage := source, pkg
+					mutate(&changedSource, &changedPackage)
+					options := raptorRuntimeOptions(changedSource, changedPackage, image.Pt(240, 320))
+					if options.NullParseIntZero || options.NegativeVectorElementNull {
+						t.Fatal("Java call fallback matched another package")
+					}
+				})
 			}
 		})
 	}

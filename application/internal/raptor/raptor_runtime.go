@@ -132,11 +132,13 @@ type Runtime struct {
 	// primaryFramebufferHeight is an exact-package compatibility value for
 	// the physical screen only. A zero value keeps libwipi's client-area
 	// behavior and every offscreen framebuffer uses its allocated height.
-	primaryFramebufferHeight int
-	resourceBytesHelper      uint32
-	imagePatches             []ImagePatch
-	systemProperties         map[string]string
-	preserveStoppedLoops     bool
+	primaryFramebufferHeight  int
+	resourceBytesHelper       uint32
+	imagePatches              []ImagePatch
+	systemProperties          map[string]string
+	preserveStoppedLoops      bool
+	nullParseIntZero          bool
+	negativeVectorElementNull bool
 	// unimplementedNames interns the label for an import ARAM does not
 	// implement. See unimplementedImportName.
 	unimplementedNames map[raptorImportKey]string
@@ -203,7 +205,11 @@ type Options struct {
 	ImagePatches []ImagePatch
 	// PreserveStoppedLoops keeps a stopped infinite loop audible while an exact
 	// title reuses its sole registered clip for effects.
-	PreserveStoppedLoops bool
+	PreserveStoppedLoops      bool
+	// NullParseIntZero and NegativeVectorElementNull are exact-package
+	// fallbacks for Java exceptions the Raptor AOT bridge cannot unwind.
+	NullParseIntZero          bool
+	NegativeVectorElementNull bool
 }
 
 // ImagePatch describes one verified replacement in a mapped Raptor image.
@@ -283,17 +289,19 @@ func NewRuntimeWithOptions(
 		return nil, err
 	}
 	runtime := &Runtime{
-		CPU:                      backend,
-		Public:                   public,
-		Pkg:                      pkg,
-		Clet:                     clet,
-		primaryFramebufferHeight: options.PrimaryFramebufferHeight,
-		resourceBytesHelper:      options.ResourceBytesHelper,
-		imagePatches:             append([]ImagePatch(nil), options.ImagePatches...),
-		systemProperties:         make(map[string]string, len(options.SystemProperties)),
-		preserveStoppedLoops:     options.PreserveStoppedLoops,
-		resolvedImports:          make(map[raptorImportKey]uint64),
-		importSlotByKey:          make(map[raptorImportKey]uint32),
+		CPU:                       backend,
+		Public:                    public,
+		Pkg:                       pkg,
+		Clet:                      clet,
+		primaryFramebufferHeight:  options.PrimaryFramebufferHeight,
+		resourceBytesHelper:       options.ResourceBytesHelper,
+		imagePatches:              append([]ImagePatch(nil), options.ImagePatches...),
+		systemProperties:          make(map[string]string, len(options.SystemProperties)),
+		preserveStoppedLoops:      options.PreserveStoppedLoops,
+		nullParseIntZero:          options.NullParseIntZero,
+		negativeVectorElementNull: options.NegativeVectorElementNull,
+		resolvedImports:           make(map[raptorImportKey]uint64),
+		importSlotByKey:           make(map[raptorImportKey]uint32),
 	}
 	for name, value := range options.SystemProperties {
 		runtime.systemProperties[name] = value

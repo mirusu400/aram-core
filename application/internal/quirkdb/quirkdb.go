@@ -224,6 +224,43 @@ func (k RaptorTitleKey) Matches(packageSHA256, aid, mainClass string) bool {
 		mainClass == k.MainClass
 }
 
+// RaptorJavaCallFallbacks covers Java exceptions that the Raptor AOT bridge
+// cannot unwind into guest catch blocks. Each fallback is limited to one
+// observed call shape in an exact package.
+type RaptorJavaCallFallbacks struct {
+	Key                       RaptorTitleKey
+	NullParseIntZero          bool
+	NegativeVectorElementNull bool
+}
+
+var RaptorJavaCallCompatibilities = []RaptorJavaCallFallbacks{
+	{
+		Key: RaptorTitleKey{
+			PackageSHA256: "517ed32c92d60a0c26a14ea913160901bfd5e6da68464b6a12c9c13e2d8f08d2",
+			AID:           "0002AC6E",
+			MainClass:     "SAttack",
+		},
+		NullParseIntZero: true,
+	},
+	{
+		Key: RaptorTitleKey{
+			PackageSHA256: "cc459b651088e7657808bacf65c48bebea1f259d377657d913822db1f6515d56",
+			AID:           "00012640",
+			MainClass:     "ft2Jlet",
+		},
+		NegativeVectorElementNull: true,
+	},
+}
+
+func LookupRaptorJavaCallFallbacks(packageSHA256, aid, mainClass string) RaptorJavaCallFallbacks {
+	for _, entry := range RaptorJavaCallCompatibilities {
+		if entry.Key.Matches(packageSHA256, aid, mainClass) {
+			return entry
+		}
+	}
+	return RaptorJavaCallFallbacks{}
+}
+
 // RaptorNullDrawCall identifies a title's optional draw dispatch that may
 // encounter an empty sprite slot after loading a PZX resource. ReturnLR is the
 // Thumb return address of the virtual call, not a general permission to run

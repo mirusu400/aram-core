@@ -597,6 +597,18 @@ func (r *Runtime) callJavaHostMethod(
 	if err != nil {
 		return guest.WIPIReturn{}, err
 	}
+	// The AOT bridge cannot return a host Java exception to a guest catch block.
+	// These exact clients continue when the observed invalid call returns zero.
+	if r.nullParseIntZero && method.isStatic && method.className == "java/lang/Integer" && method.Name == "parseInt" &&
+		method.descriptor == "(Ljava/lang/String;)I" && len(arguments) == 1 &&
+		arguments[0] == 0 {
+		return guest.WIPIReturn{}, nil
+	}
+	if r.negativeVectorElementNull && !method.isStatic && method.className == "java/util/Vector" && method.Name == "elementAt" &&
+		method.descriptor == "(I)Ljava/lang/Object;" && len(arguments) == 2 &&
+		arguments[1] == ^uint32(0) {
+		return guest.WIPIReturn{}, nil
+	}
 	if method.className == "org/kwis/msp/io/File" && method.Name == "write" &&
 		strings.HasPrefix(method.descriptor, "([B") && len(arguments) >= 2 &&
 		arguments[1] == 0 {

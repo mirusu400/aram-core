@@ -17,6 +17,11 @@ func raptorRuntimeOptions(
 	framebufferSize image.Point,
 ) raptorrt.Options {
 	options := raptorrt.Options{}
+	javaCalls := quirkdb.LookupRaptorJavaCallFallbacks(
+		source.SHA256, pkg.Descriptor.AID, pkg.Descriptor.MainClass,
+	)
+	options.NullParseIntZero = javaCalls.NullParseIntZero
+	options.NegativeVectorElementNull = javaCalls.NegativeVectorElementNull
 	if properties, ok := quirkdb.LookupRaptorSystemProperties(
 		source.SHA256,
 		pkg.Descriptor.AID,
