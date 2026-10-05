@@ -156,6 +156,7 @@ func NewRuntimeForProfile(
 	return &Runtime{
 		CPU:                      backend,
 		Pkg:                      pkg,
+		mainThreadLivenessCompat: mainThreadLivenessCompatibility(pkg),
 		ImageSz:                  uint32(imageSize),
 		frame:                    frame,
 		Services:                 services,

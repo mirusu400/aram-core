@@ -113,6 +113,8 @@ type Runtime struct {
 	Exe     ktfExecutable
 	Heap    guest.Heap
 
+	mainThreadLivenessCompat bool
+
 	// gcExtraWeakTables and gcExtraRootWalkers let a runtime that shares this
 	// Java heap (Raptor) extend the collector without this package importing
 	// that one: Raptor's own class table, current card, and Java thread

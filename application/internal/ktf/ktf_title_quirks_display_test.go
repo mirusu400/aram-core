@@ -76,3 +76,25 @@ func TestKTFPresentationLimitRequiresExactPackageIdentity(t *testing.T) {
 		}
 	}
 }
+
+func TestKTFMainThreadLivenessRequiresExactPackageIdentity(t *testing.T) {
+	key := quirkdb.KTFMainThreadLivenessOverrides[0]
+	descriptor := ktf.Descriptor{AID: key.AID, MainClass: key.MainClass}
+	if !resolveMainThreadLivenessCompatibility(descriptor, key.ClientSHA256) {
+		t.Fatal("MapleStory Archer liveness compatibility did not match")
+	}
+	for name, changed := range map[string]struct {
+		descriptor ktf.Descriptor
+		hash       [sha256.Size]byte
+	}{
+		"aid":        {ktf.Descriptor{AID: "other", MainClass: key.MainClass}, key.ClientSHA256},
+		"main class": {ktf.Descriptor{AID: key.AID, MainClass: "Other"}, key.ClientSHA256},
+		"client":     {descriptor, sha256.Sum256([]byte("different client"))},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if resolveMainThreadLivenessCompatibility(changed.descriptor, changed.hash) {
+				t.Fatal("liveness compatibility matched another package")
+			}
+		})
+	}
+}

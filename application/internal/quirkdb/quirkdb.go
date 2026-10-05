@@ -94,6 +94,18 @@ var KTFPresentationLimits = []KTFPresentationLimit{
 	},
 }
 
+// KTFMainThreadLivenessOverrides contains clients whose rendering worker waits
+// for the startup thread to end while that thread remains in a sleep loop.
+var KTFMainThreadLivenessOverrides = []TitleKey{
+	{
+		AID:       "010100D4",
+		MainClass: "MapleStory",
+		ClientSHA256: MustHash(
+			"7857d4851ddb34e1eab47f00af573e01c217349425f3f57fd1437fe123b280f3",
+		),
+	},
+}
+
 // MenuForegroundOverlay describes a title that draws its menu labels before
 // a full-menu overlay image and expects the labels to stay visible: the
 // runtime defers recognized label draws and replays them above the overlay.

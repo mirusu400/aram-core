@@ -64,6 +64,23 @@ func resolveKTFPresentationLimit(
 	return 0, false
 }
 
+func mainThreadLivenessCompatibility(pkg ktf.Package) bool {
+	return resolveMainThreadLivenessCompatibility(
+		pkg.Descriptor, sha256.Sum256(pkg.Client),
+	)
+}
+
+func resolveMainThreadLivenessCompatibility(
+	descriptor ktf.Descriptor, clientHash [sha256.Size]byte,
+) bool {
+	for _, key := range quirkdb.KTFMainThreadLivenessOverrides {
+		if key.Matches(descriptor.AID, descriptor.MainClass, clientHash) {
+			return true
+		}
+	}
+	return false
+}
+
 // ktfMenuForegroundCompat replays recognized menu-label draws above a
 // later-drawn overlay image. It records the current coordinates rather than
 // fixing them in the runtime, so menu rotation and selection animations keep

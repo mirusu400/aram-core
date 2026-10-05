@@ -636,6 +636,12 @@ func (r *Runtime) handleThreadMethod(
 		if err != nil {
 			return 0, err
 		}
+		// This exact client waits for its sleeping startup task before painting.
+		if r.mainThreadLivenessCompat && len(r.Tasks) != 0 &&
+			r.Tasks[0] != nil && r.Tasks[0].javaThread == thread &&
+			r.activeTask != r.Tasks[0] {
+			return 0, nil
+		}
 		if r.javaThreadAlive(thread) {
 			return 1, nil
 		}
