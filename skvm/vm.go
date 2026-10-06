@@ -21,13 +21,14 @@ const (
 	// voluntarily wait, sleep, or yield. A legacy SKT game may use such a
 	// polling loop for a network manager; it must not consume the MIDlet's
 	// complete startup budget before the cooperative scheduler can return.
-	// Leave enough bytecodes for ordinary game drawing to finish before an
-	// input callback runs between worker slices.
-	threadInstructionQuantum  = uint64(40_000)
-	applicationRootClass      = "javax/microedition/midlet/MIDlet"
-	applicationRootField      = "__aramActiveApplication"
-	applicationRootDescriptor = "Ljava/lang/Object;"
-	callSeriallyEventName     = "skvm.display.callSerially"
+	threadInstructionQuantum = uint64(10_000)
+	// SKT menu workers need to finish drawing before the next key callback.
+	// LGT titles depend on the original shorter scheduling cadence.
+	sktThreadInstructionQuantum = uint64(40_000)
+	applicationRootClass        = "javax/microedition/midlet/MIDlet"
+	applicationRootField        = "__aramActiveApplication"
+	applicationRootDescriptor   = "Ljava/lang/Object;"
+	callSeriallyEventName       = "skvm.display.callSerially"
 )
 
 var (

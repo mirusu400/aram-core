@@ -141,6 +141,9 @@ func (vm *VM) runThread(
 	vm.runningThread = reference
 	vm.threadFrameBase = len(vm.frames)
 	vm.threadBudget = threadInstructionQuantum
+	if vm.nativePolicy == NativePolicySKT {
+		vm.threadBudget = sktThreadInstructionQuantum
+	}
 	var err error
 	if len(state.continuation) != 0 {
 		continuation := state.continuation
