@@ -20,7 +20,8 @@ func (vm *VM) installMIDletLifecycleExtras() {
 		if ok {
 			object.Fields[midletLifecycleField] = IntValue(2)
 		}
-		return Value{}, false, nil
+		vm.halted = true
+		return Value{}, false, ErrHalted
 	})
 	vm.RegisterNative("javax/microedition/midlet/MIDlet", "notifyPaused", "()V", func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
 		object, ok := vm.Object(receiver)
