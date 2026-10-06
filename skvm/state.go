@@ -611,6 +611,7 @@ func (vm *VM) buildCandidate(
 	candidate := &VM{
 		nativePolicy:     vm.nativePolicy,
 		classes:          make(map[string]*runtimeClass, len(vm.classes)),
+		fieldOwners:      make(map[Reference]string),
 		heap:             make(map[uint32]*Object, len(state.Heap)),
 		fontCache:        make(map[fontCacheKey]uint32),
 		nextReference:    state.NextReference,

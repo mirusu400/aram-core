@@ -92,6 +92,7 @@ type nativeKey struct {
 type VM struct {
 	nativePolicy     NativePolicy
 	classes          map[string]*runtimeClass
+	fieldOwners      map[Reference]string
 	heap             map[uint32]*Object
 	nextReference    uint32
 	natives          map[nativeKey]NativeFunc
@@ -188,6 +189,7 @@ func NewWithNativePolicy(classData map[string][]byte, services *shared.Services,
 	vm := &VM{
 		nativePolicy:     policy,
 		classes:          make(map[string]*runtimeClass, len(classData)),
+		fieldOwners:      make(map[Reference]string),
 		heap:             make(map[uint32]*Object),
 		nextReference:    1,
 		natives:          make(map[nativeKey]NativeFunc),
@@ -1333,6 +1335,47 @@ func (vm *VM) throwableMatches(reference uint32, catchType string) bool {
 
 func fieldStorageKey(class, name, descriptor string) string {
 	return class + "\x00" + name + "\x00" + descriptor
+}
+
+// fieldOwner resolves the declaring class of a Fieldref. Java bytecode may
+// name a subclass while the field is stored in its superclass or interface.
+func (vm *VM) fieldOwner(reference Reference) string {
+	if owner, ok := vm.fieldOwners[reference]; ok {
+		return owner
+	}
+	visited := make(map[string]bool)
+	var find func(string) string
+	find = func(name string) string {
+		if name == "" || visited[name] {
+			return ""
+		}
+		visited[name] = true
+		runtime := vm.classes[name]
+		if runtime == nil {
+			return ""
+		}
+		for _, field := range runtime.class.Fields {
+			if field.Name == reference.Name && field.Descriptor == reference.Descriptor {
+				return name
+			}
+		}
+		for _, parent := range runtime.class.Interfaces {
+			if owner := find(parent); owner != "" {
+				return owner
+			}
+		}
+		return find(runtime.class.SuperName)
+	}
+	owner := find(reference.Class)
+	if owner == "" {
+		// Host fields retain their existing reference-class storage key.
+		owner = reference.Class
+	}
+	if vm.fieldOwners == nil {
+		vm.fieldOwners = make(map[Reference]string)
+	}
+	vm.fieldOwners[reference] = owner
+	return owner
 }
 
 func defaultHostSupers() map[string]string {

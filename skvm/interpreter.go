@@ -1252,15 +1252,16 @@ func (vm *VM) step(
 		if err != nil || reference.Kind != ReferenceField {
 			return stepResult{}, fmt.Errorf("SKVM invalid field reference %d", index)
 		}
-		key := fieldStorageKey(reference.Class, reference.Name, reference.Descriptor)
+		owner := vm.fieldOwner(reference)
+		key := fieldStorageKey(owner, reference.Name, reference.Descriptor)
 		switch opcode {
 		case 0xb2: // getstatic
-			if err := vm.ensureInitialized(ctx, reference.Class, budget); err != nil {
+			if err := vm.ensureInitialized(ctx, owner, budget); err != nil {
 				return stepResult{}, err
 			}
 			var value Value
 			var ok bool
-			if runtime, loaded := vm.classes[reference.Class]; loaded {
+			if runtime, loaded := vm.classes[owner]; loaded {
 				value, ok = runtime.static[key]
 			} else {
 				value, ok = vm.hostStatic[key]
@@ -1274,10 +1275,10 @@ func (vm *VM) step(
 			if popErr != nil {
 				return stepResult{}, popErr
 			}
-			if err := vm.ensureInitialized(ctx, reference.Class, budget); err != nil {
+			if err := vm.ensureInitialized(ctx, owner, budget); err != nil {
 				return stepResult{}, err
 			}
-			if runtime, loaded := vm.classes[reference.Class]; loaded {
+			if runtime, loaded := vm.classes[owner]; loaded {
 				runtime.static[key] = value
 			} else if _, registered := vm.hostStatic[key]; registered {
 				vm.hostStatic[key] = value

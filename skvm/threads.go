@@ -148,7 +148,15 @@ func (vm *VM) runThread(
 		budget := vm.remainingBudget()
 		_, _, err = vm.resumeFrames(ctx, continuation, 0, &budget)
 	} else {
-		_, _, err = vm.InvokeVirtual(ctx, state.target, "run", "()V")
+		// Thread subclasses can override run even when their constructor received
+		// a null Runnable. Dispatch the subclass first; otherwise run the target
+		// supplied to the host Thread constructor.
+		object, _ := vm.Object(reference)
+		if _, _, methodErr := vm.resolveVirtualMethod(object.Class, "run", "()V"); methodErr == nil {
+			_, _, err = vm.InvokeVirtual(ctx, reference, "run", "()V")
+		} else if state.target != 0 && state.target != reference {
+			_, _, err = vm.InvokeVirtual(ctx, state.target, "run", "()V")
+		}
 	}
 	vm.runningThread = previous
 	vm.threadFrameBase = previousBase
