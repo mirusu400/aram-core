@@ -14,6 +14,7 @@ const (
 	yeolhyeolganghoModuleSHA256 = "5435150afb92668f8a670cfcc6f7ad18ec1e8ed17d220cbc6a834f24e80d7a86"
 	legendOfEllosModuleSHA256   = "2d4a9519fc7d2df92075a6d1af76990d46844d6462cfb931ff312268389c87bb"
 	blackComicsModuleSHA256     = "529c9ebf20a5ddb019b89b08b4b810cfb67efe5cabbb1d4c3ab56089122791d9"
+	ragnarokKafraModuleSHA256   = "2836e3b795ebe05933e654e736fa81d70b2103b018b31f78bc3fd598530544e1"
 )
 
 func coalesceDuplicateTimerModule(module []byte) bool {
@@ -86,6 +87,28 @@ func patchBREWModuleForDigest(digest string, module, imageData []byte) ([]byte, 
 		}
 		imageData = append(imageData, make([]byte, padding)...)
 		imageData = append(imageData, blackComicsSeedGuard()...)
+	case ragnarokKafraModuleSHA256:
+		// The back-key teardown clears object+0x3c8, then immediately follows
+		// that same pointer and stores through its child. Skip the stale store
+		// only when either pointer is null; preserve the live-object path.
+		padding := (4 - len(imageData)%4) % 4
+		guardAddress := moduleBase - 8 + uint32(len(imageData)+padding)
+		branch, err := brewARMBranch(moduleBase+0x1f0c0, guardAddress)
+		if err != nil {
+			return nil, err
+		}
+		if err := replaceBREWInstructions(module, imageData, 0x1f0c0,
+			[]byte{0x10, 0x00, 0x90, 0xe5}, // ldr r0, [r0, #16]
+			branch,
+		); err != nil {
+			return nil, err
+		}
+		guard, err := ragnarokKafraNullStoreGuard(guardAddress)
+		if err != nil {
+			return nil, err
+		}
+		imageData = append(imageData, make([]byte, padding)...)
+		imageData = append(imageData, guard...)
 	}
 	return imageData, nil
 }
@@ -144,4 +167,32 @@ func blackComicsSeedGuard() []byte {
 	binary.LittleEndian.PutUint32(guard[12:], 0x13579bdf)
 	binary.LittleEndian.PutUint32(guard[16:], 0x00018c94)
 	return guard
+}
+
+func brewARMBranch(source, target uint32) ([]byte, error) {
+	delta := int64(target) - int64(source) - 8
+	if source&3 != 0 || target&3 != 0 || delta < -(1<<25) || delta >= 1<<25 || delta&3 != 0 {
+		return nil, fmt.Errorf("BREW compatibility ARM branch is out of range")
+	}
+	branch := make([]byte, 4)
+	binary.LittleEndian.PutUint32(branch, 0xea000000|uint32(delta>>2)&0x00ffffff)
+	return branch, nil
+}
+
+func ragnarokKafraNullStoreGuard(address uint32) ([]byte, error) {
+	guard := make([]byte, 20)
+	for index, instruction := range []uint32{
+		0xe3500000, // cmp r0, #0
+		0x15900010, // ldrne r0, [r0, #16]
+		0x13500000, // cmpne r0, #0
+		0x15805530, // strne r5, [r0, #0x530]
+	} {
+		binary.LittleEndian.PutUint32(guard[index*4:], instruction)
+	}
+	branch, err := brewARMBranch(address+16, moduleBase+0x1f0c8)
+	if err != nil {
+		return nil, err
+	}
+	copy(guard[16:], branch)
+	return guard, nil
 }

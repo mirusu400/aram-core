@@ -19,6 +19,7 @@ func TestBREWCompatibilityPatchesRequireDigestAndOriginalInstructions(t *testing
 		{"ranking cancellation", swordMasterModuleSHA256, 0x6ac6, []byte{0x0c, 0x49, 0x79, 0x44}},
 		{"key dispatch", kashanModuleSHA256, 0x16a84, []byte{0x01, 0x68, 0x0a, 0x69}},
 		{"zero PRNG seed", blackComicsModuleSHA256, 0x2008, []byte{0x00, 0x6c, 0x11, 0x4b}},
+		{"null teardown store", ragnarokKafraModuleSHA256, 0x1f0c0, []byte{0x10, 0x00, 0x90, 0xe5}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			module := make([]byte, int(test.offset)+4)
@@ -118,6 +119,80 @@ func TestBlackComicsSeedGuardPreservesNonzeroState(t *testing.T) {
 			}
 			if got := binary.LittleEndian.Uint32(word[:]); got != test.initial {
 				t.Fatalf("stored state=%08x, want %08x", got, test.initial)
+			}
+		})
+	}
+}
+
+func TestRagnarokKafraNullStoreGuard(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		parent, child uint32
+		want          uint32
+	}{
+		{"null parent", 0, 0, 0},
+		{"null child", heapBase + 0x100, 0, 0},
+		{"live child", heapBase + 0x100, heapBase + 0x200, 0x12345678},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			backend := interpreter.New()
+			defer backend.Close()
+			for _, mapping := range []struct {
+				address, size uint32
+				permissions   cpu.Permissions
+			}{
+				{moduleBase, 0x20000, cpu.PermissionRead | cpu.PermissionWrite | cpu.PermissionExecute},
+				{heapBase, 4096, cpu.PermissionRead | cpu.PermissionWrite},
+				{returnTrap, 2, cpu.PermissionRead | cpu.PermissionWrite | cpu.PermissionExecute},
+			} {
+				if err := backend.Map(mapping.address, mapping.size, mapping.permissions); err != nil {
+					t.Fatal(err)
+				}
+			}
+			guardAddress := moduleBase + 0x3000
+			branch, err := brewARMBranch(moduleBase+0x1f0c0, guardAddress)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := backend.WriteMemory(moduleBase+0x1f0c0, branch); err != nil {
+				t.Fatal(err)
+			}
+			if err := backend.WriteMemory(moduleBase+0x1f0c8, []byte{0x1e, 0xff, 0x2f, 0xe1}); err != nil { // bx lr
+				t.Fatal(err)
+			}
+			guard, err := ragnarokKafraNullStoreGuard(guardAddress)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := backend.WriteMemory(guardAddress, guard); err != nil {
+				t.Fatal(err)
+			}
+			if err := backend.WriteMemory(returnTrap, []byte{0x00, 0xbe}); err != nil {
+				t.Fatal(err)
+			}
+			var word [4]byte
+			binary.LittleEndian.PutUint32(word[:], test.child)
+			if err := backend.WriteMemory(heapBase+0x110, word[:]); err != nil {
+				t.Fatal(err)
+			}
+			for register, value := range map[uint32]uint32{
+				cpu.RegisterR0: test.parent,
+				cpu.RegisterR5: 0x12345678,
+				cpu.RegisterLR: returnTrap | 1,
+			} {
+				if err := backend.WriteRegister(register, value); err != nil {
+					t.Fatal(err)
+				}
+			}
+			result := backend.Run(context.Background(), moduleBase+0x1f0c0, cpu.ModeARM, 64)
+			if result.Err != nil || result.Reason != cpu.StopBreakpoint || result.PC != returnTrap+2 {
+				t.Fatalf("null-store guard execution=%+v", result)
+			}
+			if err := backend.ReadMemory(heapBase+0x200+0x530, word[:]); err != nil {
+				t.Fatal(err)
+			}
+			if got := binary.LittleEndian.Uint32(word[:]); got != test.want {
+				t.Fatalf("child field=%08x, want %08x", got, test.want)
 			}
 		})
 	}
