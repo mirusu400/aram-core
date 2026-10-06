@@ -1199,8 +1199,8 @@ func TestSKVMThreadPreemptsNonYieldingWorker(t *testing.T) {
 	if !state.active || len(state.continuation) == 0 || state.wakeAt != time.Nanosecond {
 		t.Fatalf("spinning worker was not preempted: %+v", state)
 	}
-	if vm.Instructions != threadInstructionQuantum {
-		t.Fatalf("first worker slice used %d instructions, want %d", vm.Instructions, threadInstructionQuantum)
+	if vm.Instructions != sktThreadInstructionQuantum {
+		t.Fatalf("first worker slice used %d instructions, want %d", vm.Instructions, sktThreadInstructionQuantum)
 	}
 
 	check(t, vm.Advance(context.Background(), time.Nanosecond, nil))
@@ -1208,8 +1208,8 @@ func TestSKVMThreadPreemptsNonYieldingWorker(t *testing.T) {
 	if err != nil || second <= first {
 		t.Fatalf("counter after resumed worker slice = %d, %v; first=%d", second, err, first)
 	}
-	if vm.Instructions != 2*threadInstructionQuantum {
-		t.Fatalf("second worker slice used %d instructions, want %d", vm.Instructions, 2*threadInstructionQuantum)
+	if vm.Instructions != 2*sktThreadInstructionQuantum {
+		t.Fatalf("second worker slice used %d instructions, want %d", vm.Instructions, 2*sktThreadInstructionQuantum)
 	}
 }
 
@@ -1370,9 +1370,9 @@ func syntheticThreadClassWithInitializer(t *testing.T, initializer bool) []byte 
 	}
 	writeMethod(AccessPublic|AccessStatic, 18, 19, 2, 0, pauseCode)
 	if initializer {
-		// Cross the worker's 10,000-instruction quantum in a class
+		// Cross the SKT worker's instruction quantum in a class
 		// initializer before publishing the static counter.
-		code := make([]byte, int(threadInstructionQuantum)+10)
+		code := make([]byte, int(sktThreadInstructionQuantum)+10)
 		code = append(code, 0x10, 7, 0xb3, 0, 11, 0xb1)
 		writeMethod(AccessStatic, 22, 6, 1, 0, code)
 	}
