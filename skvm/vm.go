@@ -21,7 +21,9 @@ const (
 	// voluntarily wait, sleep, or yield. A legacy SKT game may use such a
 	// polling loop for a network manager; it must not consume the MIDlet's
 	// complete startup budget before the cooperative scheduler can return.
-	threadInstructionQuantum  = uint64(10_000)
+	// Leave enough bytecodes for ordinary game drawing to finish before an
+	// input callback runs between worker slices.
+	threadInstructionQuantum  = uint64(40_000)
 	applicationRootClass      = "javax/microedition/midlet/MIDlet"
 	applicationRootField      = "__aramActiveApplication"
 	applicationRootDescriptor = "Ljava/lang/Object;"
