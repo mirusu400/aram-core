@@ -17,6 +17,32 @@ const sdKoreanWarRaptorSHA256 = "61ed69520fd34679be0a72029d4bbee25d10799e6c7dfeb
 const rhythmStar1RaptorSHA256 = "5dc5d7091c017d3801e32d62814706ccdf4a9f6e4e9cc92bd00ea525da7202a4"
 const zenonia1RaptorSHA256 = "3cc7a9b4cb15818cdd5a66f7e520c7b9b36f1df8d2df096aafa961b1cb2b682c"
 const zenonia2RaptorSHA256 = "601556233e719a97860d38f6d413673c2996b1a7010438504663c98b86ec776c"
+const mapleThiefRaptorSHA256 = "1eaa92092bee50e2dc2d7649f9d9e60812f22a67371fdec905215bf7e5d38f20"
+
+func TestMapleThiefScreenPixelGuardRequiresExactPackage(t *testing.T) {
+	source := machinecore.Source{SHA256: mapleThiefRaptorSHA256}
+	pkg := raptorloader.Package{Descriptor: raptorloader.Descriptor{AID: "0002787C", MainClass: "Clet"}}
+	for _, width := range []int{240, 640} {
+		options := raptorRuntimeOptions(source, pkg, image.Pt(width, 320))
+		if options.PrimaryFramebufferHeight != 320 || options.ScreenPixelGuardRows != 24 {
+			t.Fatalf("width %d: height=%d guard=%d, want 320 and 24", width, options.PrimaryFramebufferHeight, options.ScreenPixelGuardRows)
+		}
+	}
+	for name, mutate := range map[string]func(*machinecore.Source, *raptorloader.Package, *image.Point){
+		"digest":     func(s *machinecore.Source, _ *raptorloader.Package, _ *image.Point) { s.SHA256 = "0" + s.SHA256[1:] },
+		"aid":        func(_ *machinecore.Source, p *raptorloader.Package, _ *image.Point) { p.Descriptor.AID = "00000000" },
+		"main class": func(_ *machinecore.Source, p *raptorloader.Package, _ *image.Point) { p.Descriptor.MainClass = "Other" },
+		"height":     func(_ *machinecore.Source, _ *raptorloader.Package, size *image.Point) { size.Y = 296 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changedSource, changedPackage, changedSize := source, pkg, image.Pt(640, 320)
+			mutate(&changedSource, &changedPackage, &changedSize)
+			if got := raptorRuntimeOptions(changedSource, changedPackage, changedSize).ScreenPixelGuardRows; got != 0 {
+				t.Fatalf("lookalike screen guard = %d, want 0", got)
+			}
+		})
+	}
+}
 
 func TestRhythmStarRaptorHandsetPropertyRequiresExactPackage(t *testing.T) {
 	pkg := raptorloader.Package{Descriptor: raptorloader.Descriptor{

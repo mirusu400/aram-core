@@ -215,6 +215,9 @@ func (r *Runtime) newFramebuffer(width, height int, owns bool) (uint32, error) {
 		bytesPerPixel = 4
 	}
 	pixelBytes := uint64(width) * uint64(height) * uint64(bytesPerPixel)
+	if !owns && r.ScreenPixelGuardRows > 0 {
+		pixelBytes += uint64(width) * uint64(min(r.ScreenPixelGuardRows, 4096)) * uint64(bytesPerPixel)
+	}
 	if pixelBytes > uint64(guest.HeapSize) {
 		return 0, nil
 	}

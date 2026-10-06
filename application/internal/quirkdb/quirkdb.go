@@ -345,9 +345,26 @@ type RaptorFramebufferGeometry struct {
 	// AllowWiderWidth keeps the same vertical screen convention when the
 	// guest framebuffer is widened by the widescreen setting.
 	AllowWiderWidth bool
+	// ScreenPixelGuardRows reserves extra guest memory after the visible screen
+	// for titles that write into the handset strip beyond its last pixel row.
+	ScreenPixelGuardRows int
 }
 
 var RaptorFramebufferGeometries = []RaptorFramebufferGeometry{
+	{
+		// MapleStory Thief writes up to 24 rows beyond its 320-row screen.
+		// Reserve those rows so raw guest writes cannot corrupt heap objects.
+		Key: RaptorTitleKey{
+			PackageSHA256: "1eaa92092bee50e2dc2d7649f9d9e60812f22a67371fdec905215bf7e5d38f20",
+			AID:           "0002787C",
+			MainClass:     "Clet",
+		},
+		FramebufferWidth:     240,
+		FramebufferHeight:    320,
+		PrimaryHeight:        320,
+		AllowWiderWidth:      true,
+		ScreenPixelGuardRows: 24,
+	},
 	{
 		// Zenonia 1 draws and lays out its UI against the complete 240x320
 		// primary surface. Applying libwipi's separate 24-pixel handset strip

@@ -197,6 +197,9 @@ type Options struct {
 	// PrimaryFramebufferHeight replaces libwipi's primary-screen client
 	// height when positive and no greater than the physical allocation.
 	PrimaryFramebufferHeight int
+	// ScreenPixelGuardRows reserves guest memory after the primary pixel buffer
+	// while retaining its visible dimensions.
+	ScreenPixelGuardRows int
 	// ResourceBytesHelper is an exact-title static Thumb function which takes
 	// a Java String in r0 and returns the named packaged resource as byte[].
 	ResourceBytesHelper uint32
@@ -315,6 +318,7 @@ func NewRuntimeWithOptions(
 	if options.PrimaryFramebufferHeight == 0 {
 		public.ScreenDrawingOriginY = raptorScreenOriginY
 	}
+	public.ScreenPixelGuardRows = options.ScreenPixelGuardRows
 	// LGT's MC_grpGetDisplayInfo answers the display count, not M_E_SUCCESS.
 	public.DisplayInfoReturnsCount = true
 	public.AllowUnterminatedResourceNames = options.AllowUnterminatedResourceNames

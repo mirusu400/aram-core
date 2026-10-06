@@ -34,6 +34,35 @@ func newPublicRuntime(t *testing.T) *Runtime {
 	return runtime
 }
 
+func TestScreenPixelGuardPreservesVisibleGeometry(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	runtime.Frame = image.NewRGBA(image.Rect(0, 0, 16, 32))
+	runtime.ScreenPixelGuardRows = 24
+	handle, err := runtime.EnsureScreenFramebuffer()
+	check(t, err)
+	screen := runtime.Framebuffers[handle]
+	bytesPerPixel := uint32(screen.BitsPerPixel / 8)
+	wantBytes := uint32(16*(32+24)) * bytesPerPixel
+	if got := runtime.Heap.Allocations[screen.Pixels]; got != wantBytes {
+		t.Fatalf("screen allocation = %d bytes, want %d", got, wantBytes)
+	}
+	if handle != screen.Pixels+wantBytes {
+		t.Fatalf("screen descriptor = 0x%08x, want after guarded pixels", handle)
+	}
+	if screen.Width != 16 || screen.Height != 32 {
+		t.Fatalf("visible screen geometry = %dx%d, want 16x32", screen.Width, screen.Height)
+	}
+	if got, err := runtime.ReadU32(handle + 8); err != nil || got != 32 {
+		t.Fatalf("guest descriptor height = %d, err = %v; want 32", got, err)
+	}
+	offscreen, err := runtime.newFramebuffer(16, 32, true)
+	check(t, err)
+	pixels := runtime.Framebuffers[offscreen].Pixels
+	if got, want := runtime.Heap.Allocations[pixels], uint32(16*32)*bytesPerPixel; got != want {
+		t.Fatalf("offscreen allocation = %d bytes, want %d", got, want)
+	}
+}
+
 func TestUtilityHtonsSwapsPortBytes(t *testing.T) {
 	runtime := newPublicRuntime(t)
 	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, 0x2d0c))

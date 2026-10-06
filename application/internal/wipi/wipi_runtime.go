@@ -264,6 +264,9 @@ type Runtime struct {
 	// ScreenDrawingOriginY excludes a carrier's reserved top strip from
 	// drawing and pixel access, while presentation retains the full screen.
 	ScreenDrawingOriginY int
+	// ScreenPixelGuardRows expands only the guest allocation, not the visible
+	// framebuffer or its descriptor dimensions.
+	ScreenPixelGuardRows int
 
 	// DisplayInfoReturnsCount selects LGT Raptor's MC_grpGetDisplayInfo
 	// return value. The Samsung WIPI-C runtime answers M_E_SUCCESS (0) after
