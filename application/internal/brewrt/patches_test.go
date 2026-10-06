@@ -63,6 +63,37 @@ func TestBREWCompatibilityPatchesRequireDigestAndOriginalInstructions(t *testing
 	}
 }
 
+func TestMusicMatgoAppletCallsRequireBothOriginalInstructions(t *testing.T) {
+	module := make([]byte, 0x1d9c8)
+	original := []byte{0x04, 0x00, 0xa0, 0xe1} // mov r0, r4
+	for _, offset := range []int{0x1d9bc, 0x1d9c4} {
+		copy(module[offset:], original)
+	}
+	imageData := make([]byte, len(module)+8+int(moduleBSSSlack))
+	copy(imageData[8:], module)
+	untouched := bytes.Clone(imageData)
+	if got, err := patchBREWModule(module, imageData); err != nil || !bytes.Equal(got, untouched) {
+		t.Fatalf("unmatched module was patched: %v", err)
+	}
+	patched, err := patchBREWModuleForDigest(musicMatgoModuleSHA256, module, bytes.Clone(imageData))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, offset := range []int{0x1d9bc, 0x1d9c4} {
+		if got := patched[8+offset : 8+offset+4]; !bytes.Equal(got, []byte{0x28, 0x00, 0x84, 0xe2}) {
+			t.Fatalf("call at offset 0x%x = %x", offset, got)
+		}
+		if got := module[offset : offset+4]; !bytes.Equal(got, original) {
+			t.Fatalf("archive code at offset 0x%x changed to %x", offset, got)
+		}
+		bad := bytes.Clone(module)
+		bad[offset] ^= 1
+		if _, err := patchBREWModuleForDigest(musicMatgoModuleSHA256, bad, bytes.Clone(imageData)); err == nil {
+			t.Fatalf("changed call at offset 0x%x was accepted", offset)
+		}
+	}
+}
+
 func TestBlackComicsSeedGuardPreservesNonzeroState(t *testing.T) {
 	for _, test := range []struct {
 		name          string

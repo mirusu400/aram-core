@@ -16,6 +16,7 @@ const (
 	blackComicsModuleSHA256     = "529c9ebf20a5ddb019b89b08b4b810cfb67efe5cabbb1d4c3ab56089122791d9"
 	ragnarokKafraModuleSHA256   = "2836e3b795ebe05933e654e736fa81d70b2103b018b31f78bc3fd598530544e1"
 	mudaeriOmokModuleSHA256     = "30855c99061b1dd3515be32e6dbac518f23dd79a8174a29bc0c314cc877a8173"
+	musicMatgoModuleSHA256      = "ab315ca8ccedf2af13b63b4564c2c4dfe283a37a89b3d320d5c9b2f339ac68b2"
 )
 
 func coalesceDuplicateTimerModule(module []byte) bool {
@@ -128,6 +129,24 @@ func patchBREWModuleForDigest(digest string, module, imageData []byte) ([]byte, 
 		}
 		imageData = append(imageData, make([]byte, padding)...)
 		imageData = append(imageData, mudaeriOmokImageGuard()...)
+	case musicMatgoModuleSHA256:
+		// The menu's module-context branch calls two applet methods with the
+		// module object. For this authenticated build, the 0x28-byte module
+		// allocation is immediately followed by its applet allocation. Pass
+		// the applet object to both methods so their image and network fields
+		// refer to the applet rather than the module's inline vtable.
+		if err := replaceBREWInstructions(module, imageData, 0x1d9bc,
+			[]byte{0x04, 0x00, 0xa0, 0xe1}, // mov r0, r4
+			[]byte{0x28, 0x00, 0x84, 0xe2}, // add r0, r4, #0x28
+		); err != nil {
+			return nil, err
+		}
+		if err := replaceBREWInstructions(module, imageData, 0x1d9c4,
+			[]byte{0x04, 0x00, 0xa0, 0xe1}, // mov r0, r4
+			[]byte{0x28, 0x00, 0x84, 0xe2}, // add r0, r4, #0x28
+		); err != nil {
+			return nil, err
+		}
 	}
 	return imageData, nil
 }
