@@ -393,7 +393,7 @@ func (vm *VM) installStringNatives() {
 		)
 	}
 	stringResult("trim\x00()Ljava/lang/String;", func(value string, _ []Value, _ *VM) (string, error) {
-		return strings.TrimSpace(value), nil
+		return strings.TrimFunc(value, func(char rune) bool { return char <= ' ' }), nil
 	})
 	stringResult("toLowerCase\x00()Ljava/lang/String;", func(value string, _ []Value, _ *VM) (string, error) {
 		return strings.ToLower(value), nil
