@@ -55,7 +55,7 @@ func (m *Machine) Unwrap() machinecore.Machine {
 }
 
 func (m *Machine) Load(ctx context.Context, source machinecore.Source) error {
-	return m.engine.runMachine(
+	return m.engine.runMachineAndResetScan(
 		func() error { return m.machine.Load(ctx, source) },
 		applyAllEnabled,
 	)
@@ -81,11 +81,11 @@ func (m *Machine) Resume() error {
 }
 
 func (m *Machine) Stop() error {
-	return m.engine.runMachine(m.machine.Stop, applyNone)
+	return m.engine.runMachineAndResetScan(m.machine.Stop, applyNone)
 }
 
 func (m *Machine) Reset(ctx context.Context) error {
-	return m.engine.runMachine(
+	return m.engine.runMachineAndResetScan(
 		func() error { return m.machine.Reset(ctx) },
 		applyAllEnabled,
 	)
@@ -121,14 +121,14 @@ func (m *Machine) SaveState(output io.Writer) error {
 }
 
 func (m *Machine) LoadState(input io.Reader) error {
-	return m.engine.runMachine(
+	return m.engine.runMachineAndResetScan(
 		func() error { return m.machine.LoadState(input) },
 		applyAllEnabled,
 	)
 }
 
 func (m *Machine) Close() error {
-	return m.engine.runMachine(m.machine.Close, applyNone)
+	return m.engine.runMachineAndResetScan(m.machine.Close, applyNone)
 }
 
 var _ machinecore.Machine = (*Machine)(nil)

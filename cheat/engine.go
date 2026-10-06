@@ -44,16 +44,19 @@ type storedCode struct {
 	original []byte
 }
 
-type scanCandidate struct {
-	address  uint32
-	region   int
+type scanRegion struct {
+	index    int
+	first    uint64
+	slots    uint64
+	bitmap   []uint64
 	previous []byte
 }
 
 type scanState struct {
-	valueType  ValueType
-	alignment  uint32
-	candidates []scanCandidate
+	valueType ValueType
+	alignment uint32
+	regions   []scanRegion
+	count     int
 }
 
 // Engine owns memory scans and cheat code state. It is safe for concurrent
@@ -556,6 +559,19 @@ const (
 func (e *Engine) runMachine(action func() error, mode applyMode) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	return e.runMachineLocked(action, mode)
+}
+
+func (e *Engine) runMachineAndResetScan(action func() error, mode applyMode) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	// Clear before invoking a lifecycle operation: even a failing restore may
+	// have partially changed guest memory.
+	e.scan = nil
+	return e.runMachineLocked(action, mode)
+}
+
+func (e *Engine) runMachineLocked(action func() error, mode applyMode) error {
 	if err := action(); err != nil {
 		return err
 	}
