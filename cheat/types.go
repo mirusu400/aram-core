@@ -311,3 +311,19 @@ type Match struct {
 	Region  string `json:"region"`
 	Value   Value  `json:"value"`
 }
+
+// ScanSummary describes a scan without materializing its candidates.
+type ScanSummary struct {
+	Type  ValueType
+	Total int
+}
+
+const MaxScanPageSize = 256
+
+// ScanPage contains a bounded set of live values. Reading it does not advance
+// the previous-value baseline used by RefineScan.
+type ScanPage struct {
+	ScanSummary
+	Offset  int
+	Matches []Match
+}
