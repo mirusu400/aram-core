@@ -66,10 +66,7 @@ func (m *Machine) State() machinecore.State {
 }
 
 func (m *Machine) Start(ctx context.Context) error {
-	return m.engine.runMachine(
-		func() error { return m.machine.Start(ctx) },
-		applyFrozen,
-	)
+	return m.runGuest(func() error { return m.machine.Start(ctx) })
 }
 
 func (m *Machine) Pause() error {
@@ -92,10 +89,19 @@ func (m *Machine) Reset(ctx context.Context) error {
 }
 
 func (m *Machine) StepFrame(ctx context.Context) error {
-	return m.engine.runMachine(
-		func() error { return m.machine.StepFrame(ctx) },
-		applyFrozen,
-	)
+	return m.runGuest(func() error { return m.machine.StepFrame(ctx) })
+}
+
+func (m *Machine) runGuest(action func() error) error {
+	return m.engine.runMachine(func() error {
+		err := action()
+		// The engine lock is held here. Frame yields retain the baseline,
+		// but a guest that exits from Start or StepFrame ends its search.
+		if m.machine.State() == machinecore.StateStopped {
+			m.engine.scan = nil
+		}
+		return err
+	}, applyFrozen)
 }
 
 func (m *Machine) QueueInput(event machinecore.InputEvent) error {

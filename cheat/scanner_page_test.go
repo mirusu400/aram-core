@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	machinecore "github.com/mirusu400/aram-core/core"
 )
 
 func TestPagedUnknownScanCovers32MiB(t *testing.T) {
@@ -129,6 +131,49 @@ func TestMachineInvalidatesScanAtLifecycleBoundaries(t *testing.T) {
 		check(t, action())
 		if _, err := machine.Cheats().ScanSummary(); !errors.Is(err, ErrScanNotStarted) {
 			t.Fatalf("scan survives lifecycle: %v", err)
+		}
+	}
+}
+
+type finishingScanMachine struct {
+	*mutatingMachine
+	finishState machinecore.State
+}
+
+func (m *finishingScanMachine) Start(ctx context.Context) error { return m.StepFrame(ctx) }
+func (m *finishingScanMachine) StepFrame(context.Context) error {
+	m.state = m.finishState
+	return nil
+}
+
+func TestMachineInvalidatesScanOnGuestExit(t *testing.T) {
+	for _, state := range []machinecore.State{machinecore.StateStopped, machinecore.StatePaused} {
+		name := "yield"
+		if state == machinecore.StateStopped {
+			name = "exit"
+		}
+		for _, action := range []string{"start", "frame"} {
+			t.Run(name+"/"+action, func(t *testing.T) {
+				memory := newTestMemory(4)
+				target := &finishingScanMachine{mutatingMachine: &mutatingMachine{memory: memory}, finishState: state}
+				machine, err := Wrap(target, memory, testOptions(4))
+				check(t, err)
+				_, err = machine.Cheats().StartScan(ScanRequest{Type: TypeUint8})
+				check(t, err)
+				if action == "start" {
+					check(t, machine.Start(context.Background()))
+				} else {
+					check(t, machine.StepFrame(context.Background()))
+				}
+				summary, err := machine.Cheats().ScanSummary()
+				if state == machinecore.StateStopped {
+					if !errors.Is(err, ErrScanNotStarted) {
+						t.Fatalf("exited guest retained scan: %+v, %v", summary, err)
+					}
+				} else if err != nil || summary.Total != 4 {
+					t.Fatalf("frame yield discarded scan: %+v, %v", summary, err)
+				}
+			})
 		}
 	}
 }
