@@ -25,12 +25,13 @@ func TestCLDCClassIntrospectionForHostTypes(t *testing.T) {
 	}
 }
 
-func TestHostClassResourceLookupFallsBackToJarRoot(t *testing.T) {
+func TestClassResourceLookupFallsBackToJarRoot(t *testing.T) {
 	for _, test := range []struct {
-		name      string
-		className string
-		resources map[string][]byte
-		want      []byte
+		name         string
+		className    string
+		resourceName string
+		resources    map[string][]byte
+		want         []byte
 	}{
 		{
 			name:      "host class root fallback",
@@ -52,13 +53,34 @@ func TestHostClassResourceLookupFallsBackToJarRoot(t *testing.T) {
 			className: "game/Main",
 			resources: map[string][]byte{"table.gft": []byte("root")},
 		},
+		{
+			name:         "guest root path fallback",
+			className:    "common/FontCreator",
+			resourceName: "res/font/lbm/m1.lbm",
+			resources:    map[string][]byte{"res/font/lbm/m1.lbm": []byte("root")},
+			want:         []byte("root"),
+		},
+		{
+			name:         "guest package path takes priority",
+			className:    "common/FontCreator",
+			resourceName: "res/font/lbm/m1.lbm",
+			resources: map[string][]byte{
+				"res/font/lbm/m1.lbm":        []byte("root"),
+				"common/res/font/lbm/m1.lbm": []byte("package"),
+			},
+			want: []byte("package"),
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			vm, err := New(map[string][]byte{})
 			check(t, err)
 			check(t, vm.SetResourcesChecked(test.resources))
 			class := vm.NewObject("java/lang/Class", test.className)
-			name := vm.NewString("table.gft")
+			resourceName := test.resourceName
+			if resourceName == "" {
+				resourceName = "table.gft"
+			}
+			name := vm.NewString(resourceName)
 			result := invokeTestNative(t, vm, "java/lang/Class", "getResourceAsStream",
 				"(Ljava/lang/String;)Ljava/io/InputStream;", class, ReferenceValue(name))
 			stream, err := result.Reference()

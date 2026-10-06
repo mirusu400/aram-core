@@ -44,10 +44,12 @@ func (vm *VM) installCoreNatives() {
 				resourceName = path.Join(path.Dir(className), resourceName)
 			}
 			data, ok := vm.resource(resourceName)
-			// Handset CLDC titles also use a host class (often Runtime)
-			// to open a resource stored at the JAR root. Keep a real
-			// package-relative resource first when one exists.
-			if !ok && vm.classes[className] == nil && strings.HasPrefix(className, "java/") {
+			// Some SKT titles pass a root-relative path such as
+			// "res/font/lbm/m1.lbm" without a leading slash. Keep a real
+			// package-relative resource first when one exists. Host CLDC
+			// classes also use the JAR root for bare resource names.
+			if !ok && (strings.Contains(rootName, "/") ||
+				(vm.classes[className] == nil && strings.HasPrefix(className, "java/"))) {
 				data, ok = vm.resource(rootName)
 			}
 			if !ok {
