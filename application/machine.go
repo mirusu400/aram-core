@@ -327,6 +327,7 @@ type Machine struct {
 	ktfPresentsPerQuantum int
 	memoryLimit           uint64
 	guestWidthOverride    int
+	presentationWidth     int
 	frame                 *image.RGBA
 	presentation          framePresentationCache
 	input                 []machinecore.InputEvent
@@ -702,9 +703,9 @@ func (m *Machine) Framebuffer() image.Image {
 		// most recently submitted frame for exactly this boundary.
 		presented := m.ktf.Services.Graphics.LastFrame()
 		if presented.Sequence != 0 {
-			return presented.Image()
+			return m.presentKTFFrame(presented.Image())
 		}
-		blank := image.NewRGBA(m.frame.Bounds())
+		blank := image.NewRGBA(m.ktfPresentationBounds())
 		draw.Draw(
 			blank,
 			blank.Bounds(),

@@ -73,7 +73,7 @@ func (m *Machine) framePresentationLocked() (image.Image, uint64) {
 		if presented == nil {
 			return m.publishBlankFrame()
 		}
-		return m.publishFrame(presented, hash, true, false)
+		return m.publishFrame(m.presentKTFFrame(presented), hash, true, false)
 	}
 	if m.presentation.image != nil &&
 		!m.presentation.hashed &&
@@ -92,10 +92,10 @@ func (m *Machine) framePresentationLocked() (image.Image, uint64) {
 func (m *Machine) publishBlankFrame() (image.Image, uint64) {
 	if m.presentation.image != nil &&
 		m.presentation.blank &&
-		m.presentation.image.Bounds() == m.frame.Bounds() {
+		m.presentation.image.Bounds() == m.ktfPresentationBounds() {
 		return m.presentation.image, m.presentation.sequence
 	}
-	blank := image.NewRGBA(m.frame.Bounds())
+	blank := image.NewRGBA(m.ktfPresentationBounds())
 	draw.Draw(
 		blank,
 		blank.Bounds(),
@@ -104,6 +104,27 @@ func (m *Machine) publishBlankFrame() (image.Image, uint64) {
 		draw.Src,
 	)
 	return m.publishFrame(blank, [sha256.Size]byte{}, false, true)
+}
+
+// Some titles must keep their native guest geometry even when the host asks for
+// a wider output. Center the committed guest frame in that requested canvas.
+func (m *Machine) ktfPresentationBounds() image.Rectangle {
+	bounds := m.frame.Bounds()
+	if m.ktf != nil && m.presentationWidth > bounds.Dx() {
+		return image.Rect(0, 0, m.presentationWidth, bounds.Dy())
+	}
+	return bounds
+}
+
+func (m *Machine) presentKTFFrame(guest *image.RGBA) *image.RGBA {
+	if guest == nil || m.presentationWidth <= guest.Bounds().Dx() {
+		return guest
+	}
+	output := image.NewRGBA(image.Rect(0, 0, m.presentationWidth, guest.Bounds().Dy()))
+	draw.Draw(output, output.Bounds(), image.NewUniform(color.Black), image.Point{}, draw.Src)
+	left := (m.presentationWidth - guest.Bounds().Dx()) / 2
+	draw.Draw(output, guest.Bounds().Add(image.Pt(left, 0)), guest, guest.Bounds().Min, draw.Src)
+	return output
 }
 
 // publishFrame adopts a newly materialized frame and advances the sequence.

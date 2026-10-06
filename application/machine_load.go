@@ -482,11 +482,15 @@ func (m *Machine) loadKTF(
 	// KTF descriptors normally name the handset screen the title was built for.
 	// Apply only exact-package corrections for known mismatched metadata.
 	guestWidthOverride := m.guestWidthOverride
+	m.presentationWidth = 0
 	if quirkdb.KTFNativeWidthOnly(source.SHA256) {
 		guestWidthOverride = 0
 	}
 	if width, height := ktfrt.EffectiveDisplaySize(pkg); width > 0 &&
 		height > 0 {
+		if quirkdb.KTFNativeWidthOnly(source.SHA256) {
+			m.presentationWidth = applyGuestWidthOverride(width, m.guestWidthOverride)
+		}
 		// The descriptor resize would otherwise discard an experimental
 		// widescreen override set on the factory, so reapply it here, keeping the
 		// descriptor's native height.
