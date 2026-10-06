@@ -734,12 +734,21 @@ func (vm *VM) installSKTNatives() {
 				if state.clip == 0 {
 					return Value{}, false, nil
 				}
-				if err := vm.services.Media.Play(
-					vm.serviceOwner,
-					state.clip,
-					spec.plays,
-				); err != nil {
+				info, err := vm.services.Media.Info(vm.serviceOwner, state.clip)
+				if err != nil {
 					return Value{}, false, err
+				}
+				// Repeated play on the same SKT clip joins its current playback.
+				// The shared media service rejects duplicate starts because other
+				// adapters need that strict state transition.
+				if info.State != shared.ClipPlaying {
+					if err := vm.services.Media.Play(
+						vm.serviceOwner,
+						state.clip,
+						spec.plays,
+					); err != nil {
+						return Value{}, false, err
+					}
 				}
 				// play and loop block the calling thread until the clip
 				// stops. Titles rely on it: their audio worker closes the

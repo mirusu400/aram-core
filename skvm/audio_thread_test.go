@@ -154,6 +154,12 @@ func TestSKVMAudioClipPlayStaysSynchronousOffThread(t *testing.T) {
 	if info.State != shared.ClipPlaying {
 		t.Fatalf("clip state = %v, want playing", info.State)
 	}
+	invokeTestNative(t, vm, "com/skt/m/AudioClip", "play", "()V", clipReference)
+	after, err := vm.services.Media.Info(vm.serviceOwner, clip.clip)
+	check(t, err)
+	if after != info {
+		t.Fatalf("repeated play changed the clip: before=%+v after=%+v", info, after)
+	}
 }
 
 // newAudioWorkerVM builds a VM holding the Worker class below plus an
