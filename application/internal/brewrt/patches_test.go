@@ -18,6 +18,7 @@ func TestBREWCompatibilityPatchesRequireDigestAndOriginalInstructions(t *testing
 	}{
 		{"ranking cancellation", swordMasterModuleSHA256, 0x6ac6, []byte{0x0c, 0x49, 0x79, 0x44}},
 		{"key dispatch", kashanModuleSHA256, 0x16a84, []byte{0x01, 0x68, 0x0a, 0x69}},
+		{"zero PRNG seed", blackComicsModuleSHA256, 0x2008, []byte{0x00, 0x6c, 0x11, 0x4b}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			module := make([]byte, int(test.offset)+4)
@@ -55,6 +56,68 @@ func TestBREWCompatibilityPatchesRequireDigestAndOriginalInstructions(t *testing
 			}
 			if _, err := patchBREWModuleForDigest(test.digest, module[:test.offset], originalImage); err == nil {
 				t.Fatal("truncated module accepted")
+			}
+		})
+	}
+}
+
+func TestBlackComicsSeedGuardPreservesNonzeroState(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		initial, want uint32
+	}{
+		{"zero", 0, 0x13579bdf},
+		{"existing", 0x2468ace0, 0x2468ace0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			backend := interpreter.New()
+			defer backend.Close()
+			for _, mapping := range []struct {
+				address, size uint32
+				permissions   cpu.Permissions
+			}{
+				{moduleBase, 32, cpu.PermissionRead | cpu.PermissionWrite | cpu.PermissionExecute},
+				{heapBase, 256, cpu.PermissionRead | cpu.PermissionWrite},
+				{returnTrap, 2, cpu.PermissionRead | cpu.PermissionWrite | cpu.PermissionExecute},
+			} {
+				if err := backend.Map(mapping.address, mapping.size, mapping.permissions); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := backend.WriteMemory(moduleBase, blackComicsSeedGuard()); err != nil {
+				t.Fatal(err)
+			}
+			if err := backend.WriteMemory(returnTrap, []byte{0x00, 0xbe}); err != nil {
+				t.Fatal(err)
+			}
+			var word [4]byte
+			binary.LittleEndian.PutUint32(word[:], test.initial)
+			if err := backend.WriteMemory(heapBase+0x40, word[:]); err != nil {
+				t.Fatal(err)
+			}
+			for register, value := range map[uint32]uint32{
+				cpu.RegisterR4: heapBase,
+				cpu.RegisterLR: returnTrap | 1,
+			} {
+				if err := backend.WriteRegister(register, value); err != nil {
+					t.Fatal(err)
+				}
+			}
+			result := backend.Run(context.Background(), moduleBase, cpu.ModeThumb, 32)
+			if result.Err != nil || result.Reason != cpu.StopBreakpoint || result.PC != returnTrap+2 {
+				t.Fatalf("seed guard execution=%+v", result)
+			}
+			if got, err := backend.ReadRegister(cpu.RegisterR0); err != nil || got != test.want {
+				t.Fatalf("seed=%08x, want %08x: %v", got, test.want, err)
+			}
+			if got, err := backend.ReadRegister(cpu.RegisterR3); err != nil || got != 0x18c94 {
+				t.Fatalf("multiplier=%08x, want 00018c94: %v", got, err)
+			}
+			if err := backend.ReadMemory(heapBase+0x40, word[:]); err != nil {
+				t.Fatal(err)
+			}
+			if got := binary.LittleEndian.Uint32(word[:]); got != test.initial {
+				t.Fatalf("stored state=%08x, want %08x", got, test.initial)
 			}
 		})
 	}

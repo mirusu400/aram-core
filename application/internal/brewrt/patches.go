@@ -13,6 +13,7 @@ const (
 	kashanModuleSHA256          = "ca382383e4654072f6ec7e65225a8270e67d4b10b5f6a4e2bc0687a0f40b2f2e"
 	yeolhyeolganghoModuleSHA256 = "5435150afb92668f8a670cfcc6f7ad18ec1e8ed17d220cbc6a834f24e80d7a86"
 	legendOfEllosModuleSHA256   = "2d4a9519fc7d2df92075a6d1af76990d46844d6462cfb931ff312268389c87bb"
+	blackComicsModuleSHA256     = "529c9ebf20a5ddb019b89b08b4b810cfb67efe5cabbb1d4c3ab56089122791d9"
 )
 
 func coalesceDuplicateTimerModule(module []byte) bool {
@@ -67,6 +68,24 @@ func patchBREWModuleForDigest(digest string, module, imageData []byte) ([]byte, 
 		}
 		imageData = append(imageData, make([]byte, padding)...)
 		imageData = append(imageData, kashanKeyGuard()...)
+	case blackComicsModuleSHA256:
+		// The title's PRNG leaves a zero seed at zero forever. A later scene
+		// repeatedly requests a nonzero result, so initialize only the zero
+		// state before the original PRNG update.
+		padding := (4 - len(imageData)%4) % 4
+		guardAddress := moduleBase - 8 + uint32(len(imageData)+padding)
+		branch, err := brewThumbBL(moduleBase+0x2008, guardAddress)
+		if err != nil {
+			return nil, err
+		}
+		if err := replaceBREWInstructions(module, imageData, 0x2008,
+			[]byte{0x00, 0x6c, 0x11, 0x4b}, // ldr r0, [r0, #64]; ldr r3, multiplier
+			branch,
+		); err != nil {
+			return nil, err
+		}
+		imageData = append(imageData, make([]byte, padding)...)
+		imageData = append(imageData, blackComicsSeedGuard()...)
 	}
 	return imageData, nil
 }
@@ -107,5 +126,22 @@ func kashanKeyGuard() []byte {
 		binary.LittleEndian.PutUint16(guard[index*2:], instruction)
 	}
 	binary.LittleEndian.PutUint32(guard[16:], moduleBase+0x16afe|1)
+	return guard
+}
+
+func blackComicsSeedGuard() []byte {
+	guard := make([]byte, 20)
+	for index, instruction := range []uint16{
+		0x6c20, // ldr r0, [r4, #64]
+		0x2800, // cmp r0, #0
+		0xd100, // bne load multiplier
+		0x4801, // ldr r0, seed
+		0x4b01, // ldr r3, multiplier
+		0x4770, // bx lr
+	} {
+		binary.LittleEndian.PutUint16(guard[index*2:], instruction)
+	}
+	binary.LittleEndian.PutUint32(guard[12:], 0x13579bdf)
+	binary.LittleEndian.PutUint32(guard[16:], 0x00018c94)
 	return guard
 }
