@@ -204,7 +204,9 @@ func (a *schw830Audio) Advance(retiredInstructions uint64) error {
 	}
 	if a.commandPending {
 		a.commandPending = false
-		a.handlePlaybackCommand()
+		if err := a.handlePlaybackCommand(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -230,7 +232,9 @@ func (a *schw830Audio) renderUntil(end time.Duration) error {
 	}
 	info, err := a.media.Info(schw830AudioOwner, a.clip)
 	if err == nil && info.State == aramruntime.ClipStopped {
-		_ = a.media.DestroyClip(schw830AudioOwner, a.clip, a.events)
+		if err := a.retireClip(a.clip); err != nil {
+			return fmt.Errorf("retire finished SCH-W830 audio clip: %w", err)
+		}
 		a.clip = 0
 	}
 	return nil
@@ -272,39 +276,49 @@ func (a *schw830Audio) gainPollDue(retired uint64) bool {
 	return due
 }
 
-func (a *schw830Audio) handlePlaybackCommand() {
+func (a *schw830Audio) retireClip(clip aramruntime.ServiceID) error {
+	info, err := a.media.Info(schw830AudioOwner, clip)
+	if err != nil {
+		return err
+	}
+	if info.State != aramruntime.ClipStopped {
+		if err := a.media.StopWithoutPreservation(schw830AudioOwner, clip); err != nil {
+			return err
+		}
+	}
+	return a.media.DestroyClip(schw830AudioOwner, clip, a.events)
+}
+
+func (a *schw830Audio) handlePlaybackCommand() error {
 	source, ok := a.readEncodedSource()
 	if !ok {
-		return
+		return nil
 	}
 	signature := sha256.Sum256(source)
 	if a.hasLastSignature && signature == a.lastSignature &&
 		a.now-a.lastTrigger < a.config.duplicateWindow {
-		return
+		return nil
 	}
 
 	clip, err := a.media.CreateClip(schw830AudioOwner, "application/octet-stream", uint64(len(source)))
 	if err != nil {
-		return
-	}
-	discard := func() {
-		_ = a.media.DestroyClip(schw830AudioOwner, clip, a.events)
+		return nil
 	}
 	if _, err := a.media.Append(schw830AudioOwner, clip, source); err != nil {
-		discard()
-		return
+		return a.retireClip(clip)
 	}
 	if err := a.media.Play(schw830AudioOwner, clip, 1); err != nil {
-		discard()
-		return
+		return a.retireClip(clip)
 	}
 	info, err := a.media.Info(schw830AudioOwner, clip)
 	if err != nil || !info.Decoded || info.Duration <= 0 {
-		discard()
-		return
+		return a.retireClip(clip)
 	}
 	if a.clip.Valid() {
-		_ = a.media.DestroyClip(schw830AudioOwner, a.clip, a.events)
+		if err := a.retireClip(a.clip); err != nil {
+			_ = a.retireClip(clip)
+			return fmt.Errorf("retire replaced SCH-W830 audio clip: %w", err)
+		}
 	}
 	a.clip = clip
 	a.mediaNow = a.now
@@ -313,6 +327,7 @@ func (a *schw830Audio) handlePlaybackCommand() {
 	a.lastTrigger = a.now
 	a.gainPoll = 0
 	a.applyFirmwareGain()
+	return nil
 }
 
 func (a *schw830Audio) readEncodedSource() ([]byte, bool) {

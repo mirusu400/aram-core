@@ -131,6 +131,9 @@ func TestSCHW830AudioCoalescesCodecSetupPulseAndResetsTimeline(t *testing.T) {
 	if audio.clip == firstClip {
 		t.Fatal("later playback command did not restart the selected score")
 	}
+	if _, err := audio.media.Info(schw830AudioOwner, firstClip); err == nil {
+		t.Fatal("replaced playback clip is still live")
+	}
 
 	oldGeneration := audio.generation
 	check(t, audio.resetAtInstructions(5*schw830TestClock))
