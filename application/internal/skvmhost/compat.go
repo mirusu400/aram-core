@@ -89,3 +89,42 @@ func applySKVMTitleCompatibility(
 		})
 	}
 }
+
+// reconcileNoticeErrorText carries this title's own offline notice into the
+// array its renderer reads. Its network error branch populates notice[] and
+// selects screen 29, but leaves m_strHelpText[] null before DrawNotice runs.
+func (m *Machine) reconcileNoticeErrorText() {
+	if !quirkdb.SKVMNoticeErrorText(m.source.SHA256) {
+		return
+	}
+	canvas, ok := m.vm.Object(m.vm.CurrentDisplay())
+	if !ok || canvas.Class != "MainCanvas" {
+		return
+	}
+	field := func(name, descriptor string) string {
+		return "MainCanvas\x00" + name + "\x00" + descriptor
+	}
+	current, _ := canvas.Fields[field("mainState", "I")].Int()
+	next, _ := canvas.Fields[field("m_NetNextState", "I")].Int()
+	if current != 29 && next != 29 {
+		return
+	}
+	count, _ := canvas.Fields[field("Notice_No", "I")].Int()
+	if count <= 0 {
+		return
+	}
+	textField := field("m_strHelpText", "[Ljava/lang/String;")
+	notice, _ := canvas.Fields[field("notice", "[Ljava/lang/String;")].Reference()
+	array, ok := m.vm.Object(notice)
+	if !ok || array.Array == nil || array.Array.Descriptor != "[Ljava/lang/String;" ||
+		len(array.Array.Elements) < int(count) {
+		return
+	}
+	if text, _ := canvas.Fields[textField].Reference(); text == 0 {
+		canvas.Fields[textField] = skengine.ReferenceValue(notice)
+	}
+	dateField := field("notice_date", "Ljava/lang/String;")
+	if date, _ := canvas.Fields[dateField].Reference(); date == 0 {
+		canvas.Fields[dateField] = skengine.ReferenceValue(m.vm.NewString("--------"))
+	}
+}

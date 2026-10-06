@@ -202,6 +202,13 @@ type SKVMTitleKey struct {
 	ProgramName   string
 }
 
+// SKVMNoticeErrorText identifies the XSpeed Snowboard build whose offline
+// notice branch fills notice[] while DrawNotice reads m_strHelpText[].
+// Only that exact package may borrow the error text for the notice screen.
+func SKVMNoticeErrorText(packageSHA256 string) bool {
+	return packageSHA256 == "0262a4fe3389fc957b2597e92f71a1c17db91e0728b656042b8a14f7f345c2af"
+}
+
 func (k SKVMTitleKey) Matches(packageSHA256, mainClass, programName string) bool {
 	return packageSHA256 == k.PackageSHA256 &&
 		mainClass == k.MainClass &&
