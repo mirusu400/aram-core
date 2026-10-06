@@ -167,6 +167,24 @@ func (b *EventBus) DropPendingLifecycle(owner OwnerID) int {
 	return dropped
 }
 
+// DropOwner removes events for a title that has ended. An ended VM still
+// advances virtual time to present its last frame, but no longer consumes
+// input, timers, or lifecycle notifications from the bus.
+func (b *EventBus) DropOwner(owner OwnerID) int {
+	kept := b.events[:0]
+	dropped := 0
+	for _, event := range b.events {
+		if event.Owner == owner {
+			dropped++
+			continue
+		}
+		kept = append(kept, event)
+	}
+	clear(b.events[len(kept):])
+	b.events = kept
+	return dropped
+}
+
 func (b *EventBus) Peek() (Event, bool) {
 	if len(b.events) == 0 {
 		return Event{}, false

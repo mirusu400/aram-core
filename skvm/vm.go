@@ -1000,12 +1000,16 @@ func (vm *VM) Advance(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if vm.halted {
+		vm.services.Events.DropOwner(vm.serviceOwner)
+	}
 	if err := vm.services.Advance(vm.serviceOwner, delta); err != nil {
 		return err
 	}
 	if vm.halted {
 		// An ended title runs no more guest code. Virtual time still moves so
 		// the host keeps producing frames of whatever it drew last.
+		vm.services.Events.DropOwner(vm.serviceOwner)
 		return nil
 	}
 	if err := vm.runReadyThreads(ctx); err != nil {

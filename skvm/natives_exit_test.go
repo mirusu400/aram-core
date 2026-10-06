@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 func TestSKVMTitleExitStopsGuestExecution(t *testing.T) {
@@ -35,6 +37,41 @@ func TestSKVMTitleExitStopsGuestExecution(t *testing.T) {
 	object, _ := vm.Object(thread)
 	if state, ok := object.Native.(*threadState); !ok || !state.active {
 		t.Fatal("Advance ran guest threads after the title exited")
+	}
+	// A stopped MIDlet can still have pending input and timers, while the host
+	// continues advancing time to present its final frame. Those events must
+	// never accumulate until the bounded service queue rejects a frame.
+	otherOwner := vm.serviceOwner + 1
+	if _, err := vm.services.Events.Enqueue(shared.Event{
+		Owner: otherOwner, Kind: shared.EventApplication, At: time.Hour,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Older save states can resume with an already full queue. Clear the
+	// ended title's entries before the next services.Advance adds anything.
+	for index := 0; index < 1023; index++ {
+		if _, err := vm.services.Events.Enqueue(shared.Event{
+			Owner: vm.serviceOwner, Kind: shared.EventApplication,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for frame := 0; frame < 1100; frame++ {
+		if frame != 0 {
+			_, err := vm.services.Events.Enqueue(shared.Event{
+				Owner: vm.serviceOwner, Kind: shared.EventInputPress,
+				Control: "ok", At: vm.services.Clock.Monotonic(),
+			})
+			if err != nil {
+				t.Fatalf("enqueue stopped title event at frame %d: %v", frame, err)
+			}
+		}
+		if err := vm.Advance(context.Background(), time.Millisecond, nil); err != nil {
+			t.Fatalf("advance stopped title frame %d: %v", frame, err)
+		}
+		if events := vm.services.Events.Snapshot().Events; len(events) != 1 || events[0].Owner != otherOwner {
+			t.Fatalf("frame %d retained %d events, want only the other owner's event", frame, len(events))
+		}
 	}
 }
 
