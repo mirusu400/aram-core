@@ -15,6 +15,7 @@ const (
 	legendOfEllosModuleSHA256   = "2d4a9519fc7d2df92075a6d1af76990d46844d6462cfb931ff312268389c87bb"
 	blackComicsModuleSHA256     = "529c9ebf20a5ddb019b89b08b4b810cfb67efe5cabbb1d4c3ab56089122791d9"
 	ragnarokKafraModuleSHA256   = "2836e3b795ebe05933e654e736fa81d70b2103b018b31f78bc3fd598530544e1"
+	mudaeriOmokModuleSHA256     = "30855c99061b1dd3515be32e6dbac518f23dd79a8174a29bc0c314cc877a8173"
 )
 
 func coalesceDuplicateTimerModule(module []byte) bool {
@@ -109,6 +110,24 @@ func patchBREWModuleForDigest(digest string, module, imageData []byte) ([]byte, 
 		}
 		imageData = append(imageData, make([]byte, padding)...)
 		imageData = append(imageData, guard...)
+	case mudaeriOmokModuleSHA256:
+		// Teardown writes 0xffffffff as an empty image marker. The draw
+		// helper already skips null images, so include this marker in its
+		// empty-image check before it dereferences the image pointer.
+		padding := (4 - len(imageData)%4) % 4
+		guardAddress := moduleBase - 8 + uint32(len(imageData)+padding)
+		branch, err := brewThumbBL(moduleBase+0xb22e, guardAddress)
+		if err != nil {
+			return nil, err
+		}
+		if err := replaceBREWInstructions(module, imageData, 0xb22e,
+			[]byte{0x00, 0x29, 0x0c, 0x9f}, // cmp r1, #0; ldr r7, [sp, #0x30]
+			branch,
+		); err != nil {
+			return nil, err
+		}
+		imageData = append(imageData, make([]byte, padding)...)
+		imageData = append(imageData, mudaeriOmokImageGuard()...)
 	}
 	return imageData, nil
 }
@@ -195,4 +214,20 @@ func ragnarokKafraNullStoreGuard(address uint32) ([]byte, error) {
 	}
 	copy(guard[16:], branch)
 	return guard, nil
+}
+
+func mudaeriOmokImageGuard() []byte {
+	guard := make([]byte, 14)
+	for index, instruction := range []uint16{
+		0x2900, // cmp r1, #0
+		0xd002, // beq preserve the empty flag
+		0xb401, // push {r0}
+		0x1c48, // adds r0, r1, #1: also flag 0xffffffff as empty
+		0xbc01, // pop {r0}, preserving the flags
+		0x9f0c, // ldr r7, [sp, #0x30]
+		0x4770, // bx lr
+	} {
+		binary.LittleEndian.PutUint16(guard[index*2:], instruction)
+	}
+	return guard
 }
