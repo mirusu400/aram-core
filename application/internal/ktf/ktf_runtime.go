@@ -106,15 +106,17 @@ const (
 )
 
 type Runtime struct {
-	CPU     cpu.Backend
-	Pkg     ktf.Package
-	Mapped  bool
-	ImageSz uint32
-	Exe     ktfExecutable
-	Heap    guest.Heap
+	CPU         cpu.Backend
+	Pkg         ktf.Package
+	Mapped      bool
+	ImageSz     uint32
+	clientImage []byte
+	Exe         ktfExecutable
+	Heap        guest.Heap
 
 	mainThreadLivenessCompat bool
 	dataInputStreamJavaABI   bool
+	makjangCopyGuard         bool
 
 	// gcExtraWeakTables and gcExtraRootWalkers let a runtime that shares this
 	// Java heap (Raptor) extend the collector without this package importing

@@ -215,6 +215,11 @@ func (m *Machine) LoadState(input io.Reader) error {
 	if err := m.restoreKTFState(parsed.ktf); err != nil {
 		return err
 	}
+	if m.ktf != nil {
+		if err := m.ktf.RestoreKnownClientPatches(); err != nil {
+			return fmt.Errorf("restore KTF client compatibility: %w", err)
+		}
+	}
 	copy(m.frame.Pix, parsed.frame)
 	m.input = parsed.input
 	m.lastResult = parsed.lastResult

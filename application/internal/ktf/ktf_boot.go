@@ -55,6 +55,10 @@ func NewRuntimeForProfile(
 	if len(pkg.Client) == 0 {
 		return nil, fmt.Errorf("initialize KTF runtime: client image is empty")
 	}
+	patchedClient, makjangCopyGuard, err := patchKTFClient(pkg.Client)
+	if err != nil {
+		return nil, fmt.Errorf("initialize KTF runtime: %w", err)
+	}
 	imageSize := uint64(len(pkg.Client)) + uint64(pkg.BSSSize)
 	if imageSize > uint64(^uint32(0))-uint64(ImageBase) {
 		return nil, fmt.Errorf("initialize KTF runtime: image range exceeds guest address space")
@@ -156,8 +160,10 @@ func NewRuntimeForProfile(
 	return &Runtime{
 		CPU:                      backend,
 		Pkg:                      pkg,
+		clientImage:              patchedClient,
 		mainThreadLivenessCompat: mainThreadLivenessCompatibility(pkg),
 		dataInputStreamJavaABI:   dataInputStreamJavaABI(pkg),
+		makjangCopyGuard:         makjangCopyGuard,
 		ImageSz:                  uint32(imageSize),
 		frame:                    frame,
 		Services:                 services,
@@ -426,7 +432,7 @@ func (r *Runtime) MapImageAndHost() error {
 	); err != nil {
 		return fmt.Errorf("map KTF client image: %w", err)
 	}
-	if err := r.CPU.WriteMemory(ImageBase, r.Pkg.Client); err != nil {
+	if err := r.CPU.WriteMemory(ImageBase, r.mappedClientImage()); err != nil {
 		return fmt.Errorf("copy KTF client image: %w", err)
 	}
 	if err := r.relocateClientImage(); err != nil {
@@ -494,7 +500,7 @@ func (r *Runtime) ResetMappedMemory() error {
 			return fmt.Errorf("reset KTF %s: %w", region.label, err)
 		}
 	}
-	if err := r.CPU.WriteMemory(ImageBase, r.Pkg.Client); err != nil {
+	if err := r.CPU.WriteMemory(ImageBase, r.mappedClientImage()); err != nil {
 		return fmt.Errorf("restore KTF client image: %w", err)
 	}
 	stubs := make([]byte, HostSize)
