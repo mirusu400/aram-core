@@ -39,10 +39,50 @@ func (r *Runtime) ensureJavaVTableIndex(
 		}
 		return index, nil
 	}
+	// Synthesized platform classes put a bridge in every object header, so
+	// their packed JVM slot can be reused. This also covers classes reclaimed
+	// from an older save: the bridge survives in javaVTableClasses even though
+	// the derived javaClassBridges cache does not.
+	if r.hostJavaClass[classAddress] && !r.imagePointer(classAddress, 20) &&
+		r.existingJavaClassBridge(classAddress, vtableAddress) != 0 {
+		return 0, nil
+	}
 	if len(r.javaVTables) >= 128 {
+		// Older saves assigned slots to platform classes before their bridges
+		// existed. Reclaim one such slot only after checking its live bridge;
+		// guest AOT classes must keep their compact indices (#206).
+		reclaimedClass, reclaimedIndex := uint32(0), uint32(128)
+		for candidate, index := range r.javaVTables {
+			if !r.hostJavaClass[candidate] || r.imagePointer(candidate, 20) ||
+				index >= reclaimedIndex {
+				continue
+			}
+			words, err := r.ReadWords(candidate, 4)
+			if err != nil || r.existingJavaClassBridge(candidate, words[3]) == 0 {
+				continue
+			}
+			reclaimedClass, reclaimedIndex = candidate, index
+		}
+		if reclaimedClass == 0 {
+			return 0, errors.New("KTF Java vtable registry exhausted")
+		}
+		delete(r.javaVTables, reclaimedClass)
+	}
+	// A reclaimed slot can be anywhere in the table. len(javaVTables) is
+	// therefore no longer the next free index.
+	used := [128]bool{}
+	for _, index := range r.javaVTables {
+		if index < 128 {
+			used[index] = true
+		}
+	}
+	index := uint32(0)
+	for index < uint32(len(used)) && used[index] {
+		index++
+	}
+	if index == uint32(len(used)) {
 		return 0, errors.New("KTF Java vtable registry exhausted")
 	}
-	index := uint32(len(r.javaVTables))
 	r.javaVTables[classAddress] = index
 	if err := r.writeJavaVTable(index, vtableAddress); err != nil {
 		return 0, err
@@ -1514,7 +1554,24 @@ func (r *Runtime) installHostJavaVirtualMethod(methodAddress uint32) error {
 			methodAddress,
 		)
 	}
+	classes := make(map[uint32]bool, len(r.javaVTables))
 	for classAddress := range r.javaVTables {
+		classes[classAddress] = true
+	}
+	// Reclaimed platform classes still have live bridges and vtables. A late
+	// compatibility method must update them even without a packed JVM slot.
+	for bridge, classAddress := range r.javaVTableClasses {
+		if !r.hostJavaClass[classAddress] || r.imagePointer(classAddress, 20) {
+			continue
+		}
+		if words, err := r.ReadWords(bridge, 3); err == nil &&
+			words[0] == bridge+4 && words[2] == bridge+5*4 {
+			if parent, err := r.ReadU32(words[2] + 8); err == nil && parent == classAddress {
+				classes[classAddress] = true
+			}
+		}
+	}
+	for classAddress := range classes {
 		if err := r.installHostJavaVirtualMethodForClass(
 			classAddress,
 			methodAddress,

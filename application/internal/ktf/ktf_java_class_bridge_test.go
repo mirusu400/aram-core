@@ -3,6 +3,7 @@ package ktf
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/mirusu400/aram-core/application/internal/guest"
@@ -203,5 +204,105 @@ func TestKTFGuestClassKeepsCompactVTableHeader(t *testing.T) {
 	}
 	if bridge := runtime.javaClassBridges[classAddress]; bridge != 0 {
 		t.Fatalf("guest class acquired host bridge 0x%08x", bridge)
+	}
+}
+
+// An old save can have all 128 packed JVM slots assigned before a title
+// constructs another compiled class. Synthesized host classes already use
+// bridge headers, so their packed slots can be transferred to the guest.
+func TestKTFGuestClassReclaimsBridgedHostSlotAfterRestore(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	hostAddress := ensureClass(t, runtime, "java/lang/Object")
+	host := inspectClass(t, runtime, hostAddress)
+	hostInstance, err := runtime.NewJavaInstanceForClass(host)
+	check(t, err)
+	hostFields := readU32(t, runtime, hostInstance)
+	hostHeader := readU32(t, runtime, hostFields)
+	bridge := runtime.JvmContext + uint32(int32(hostHeader)>>5)
+	hostIndex := runtime.javaVTables[hostAddress]
+	if bridge == runtime.JvmContext+hostIndex*4 {
+		t.Fatal("host object has no class bridge")
+	}
+
+	for len(runtime.javaVTables) < 128 {
+		classAddress := defineGuestSubclass(t, runtime,
+			fmt.Sprintf("test/Registered%d", len(runtime.javaVTables)),
+			hostAddress, "value", "I")
+		class := inspectClass(t, runtime, classAddress)
+		_, err := runtime.ensureJavaVTableIndex(classAddress, class.VTable)
+		check(t, err)
+	}
+	guestAddress := defineGuestSubclass(t, runtime, "test/NewGuest", hostAddress, "value", "I")
+	guestClass := inspectClass(t, runtime, guestAddress)
+
+	var state bytes.Buffer
+	check(t, WriteState(runtime, runtime.CPU, true, guest.NewStateWriter(&state)))
+	decoder := guest.StateDecoder{Reader: bytes.NewReader(state.Bytes())}
+	saved, err := ParseState(runtime, &decoder)
+	check(t, err)
+	started := false
+	check(t, RestoreState(runtime, runtime.CPU, saved, &started))
+	if len(runtime.javaClassBridges) != 0 {
+		t.Fatal("derived bridge cache survived restore")
+	}
+
+	instance, err := runtime.NewJavaInstanceForClass(guestClass)
+	check(t, err)
+	if _, retained := runtime.javaVTables[hostAddress]; retained {
+		t.Fatal("bridged host class kept its packed slot")
+	}
+	if got := runtime.javaVTables[guestAddress]; got != hostIndex {
+		t.Fatalf("new guest slot = %d, want reclaimed host slot %d", got, hostIndex)
+	}
+	fields := readU32(t, runtime, instance)
+	header := readU32(t, runtime, fields)
+	if want := hostIndex * 4 << 5; header != want {
+		t.Fatalf("guest header = 0x%08x, want 0x%08x", header, want)
+	}
+	if got := readU32(t, runtime, runtime.JvmContext+12+hostIndex*4); got != guestClass.VTable {
+		t.Fatalf("guest vtable = 0x%08x, want 0x%08x", got, guestClass.VTable)
+	}
+	hostInstance, err = runtime.NewJavaInstanceForClass(host)
+	check(t, err)
+	if got := readU32(t, runtime, readU32(t, runtime, hostInstance)); got != hostHeader {
+		t.Fatalf("restored host header = 0x%08x, want 0x%08x", got, hostHeader)
+	}
+	if got := readU32(t, runtime, bridge+12); got != host.VTable {
+		t.Fatalf("host bridge vtable = 0x%08x, want 0x%08x", got, host.VTable)
+	}
+	if got := runtime.javaVTables[guestAddress]; got != hostIndex {
+		t.Fatalf("host object stole guest slot %d", got)
+	}
+}
+
+func TestKTFReclaimedHostClassReceivesLateVirtualMethod(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	classAddress := ensureClass(t, runtime, "java/lang/StringBuffer")
+	methodAddress, err := runtime.resolveJavaMethod(
+		classAddress, "append", "(I)Ljava/lang/StringBuffer;")
+	check(t, err)
+	class := inspectClass(t, runtime, classAddress)
+	instance, err := runtime.NewJavaInstanceForClass(class)
+	check(t, err)
+	fields := readU32(t, runtime, instance)
+	bridge := runtime.JvmContext + uint32(int32(readU32(t, runtime, fields))>>5)
+	oldTable := readU32(t, runtime, bridge+12)
+	delete(runtime.javaVTables, classAddress)
+
+	// This compatibility slot is just beyond the currently reserved table.
+	slot := uint16(runtime.javaVTableCapacity[classAddress])
+	runtime.hostJavaVirtualSlots[methodAddress] = slot
+	check(t, runtime.installHostJavaVirtualMethod(methodAddress))
+	newTable := readU32(t, runtime, bridge+12)
+	if newTable == oldTable {
+		t.Fatal("reclaimed host class did not rebuild its bridge vtable")
+	}
+	if got := readU32(t, runtime, newTable+uint32(slot)*4); got != methodAddress {
+		t.Fatalf("late virtual method = 0x%08x, want 0x%08x", got, methodAddress)
+	}
+	if _, restored := runtime.javaVTables[classAddress]; restored {
+		t.Fatal("late method restored an unnecessary packed host slot")
 	}
 }
