@@ -55,6 +55,7 @@ type jitExtraLoopKind uint8
 
 const (
 	jitObjectLookupLoop jitExtraLoopKind = iota
+	jitRecordSearchLoop
 	jitIndexedPaletteLoop
 	jitTransparentPaletteLoop
 	jitPaletteLoop
@@ -67,6 +68,7 @@ const (
 type jitExtraLoop struct {
 	kind               jitExtraLoopKind
 	objectLookup       jitThumbObjectLookup
+	recordSearch       jitThumbRecordSearch
 	indexedPalette     jitThumbIndexedPaletteLoop
 	transparentPalette jitThumbTransparentPaletteLoop
 	palette            jitThumbPaletteLoop
@@ -483,6 +485,11 @@ outer:
 					&extra.objectLookup, limit-executed,
 					wholeSystem, hasExecutionTraps, traced,
 				)
+			case jitRecordSearchLoop:
+				retired = b.accelerateThumbRecordSearch(
+					&extra.recordSearch, limit-executed,
+					wholeSystem, hasExecutionTraps, traced,
+				)
 			case jitIndexedPaletteLoop:
 				retired = b.accelerateThumbIndexedPaletteLoop(
 					&extra.indexedPalette, limit-executed,
@@ -794,6 +801,12 @@ func (b *Backend) translateThumbBlock(pc uint32) *jitBlock {
 		if loop := b.classifyThumbObjectLookup(pc); loop != nil {
 			block.end = pc + thumbObjectLookupInstructions*2
 			block.extraLoop = &jitExtraLoop{kind: jitObjectLookupLoop, objectLookup: *loop}
+		}
+	}
+	if instrs[0].raw == thumbRecordSearchWords[0] {
+		if loop := b.classifyThumbRecordSearch(pc); loop != nil {
+			block.end = pc + thumbRecordSearchInstructions*2
+			block.extraLoop = &jitExtraLoop{kind: jitRecordSearchLoop, recordSearch: *loop}
 		}
 	}
 	if hasThumbPaletteLoopPrefix(instrs, pc) {
