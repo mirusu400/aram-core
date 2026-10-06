@@ -704,6 +704,11 @@ func (m *Machine) handleEventLocked(
 			code = lgtKeyCode(key)
 		}
 		if event.Kind == shared.EventInputRepeat {
+			// The SKT handset reports no Canvas repeat support. Its shared
+			// input service still generates repeats for other runtimes.
+			if m.nativePolicy == skengine.NativePolicySKT {
+				return nil
+			}
 			return m.vm.KeyRepeat(ctx, code)
 		}
 		return m.vm.KeyEvent(ctx, code, event.Kind == shared.EventInputPress)

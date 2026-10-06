@@ -239,6 +239,17 @@ func TestMIDPKeyRepeatUsesRepeatedCallbackAndPreservesHeldState(t *testing.T) {
 	}
 }
 
+func TestSKTCanvasDoesNotAdvertiseKeyRepeats(t *testing.T) {
+	services, err := shared.NewServices(shared.Config{})
+	check(t, err)
+	vm, err := NewWithNativePolicy(nil, services, 1, NativePolicySKT)
+	check(t, err)
+	canvas := vm.NewObject("javax/microedition/lcdui/Canvas", nil)
+	if got := mustInt(t, invokeTestNative(t, vm, "javax/microedition/lcdui/Canvas", "hasRepeatEvents", "()Z", canvas)); got != 0 {
+		t.Fatalf("SKT hasRepeatEvents = %d, want 0", got)
+	}
+}
+
 func TestGameCanvasInputStateCompatibility(t *testing.T) {
 	for _, policy := range []NativePolicy{NativePolicyJ2ME, NativePolicySKT, NativePolicyLGT} {
 		vm := policyRegressionVM(t, policy)

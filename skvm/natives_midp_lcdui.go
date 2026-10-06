@@ -83,7 +83,12 @@ func (vm *VM) installMIDPCanvasImageNatives() {
 	for _, name := range []string{"hasPointerEvents", "hasPointerMotionEvents"} {
 		vm.RegisterNative("javax/microedition/lcdui/Canvas", name, "()Z", func(context.Context, *VM, uint32, []Value) (Value, bool, error) { return IntValue(0), true, nil })
 	}
-	vm.RegisterNative("javax/microedition/lcdui/Canvas", "hasRepeatEvents", "()Z", func(context.Context, *VM, uint32, []Value) (Value, bool, error) { return IntValue(1), true, nil })
+	vm.RegisterNative("javax/microedition/lcdui/Canvas", "hasRepeatEvents", "()Z", func(_ context.Context, vm *VM, _ uint32, _ []Value) (Value, bool, error) {
+		if vm.nativePolicy == NativePolicySKT {
+			return IntValue(0), true, nil
+		}
+		return IntValue(1), true, nil
+	})
 	vm.RegisterNative("javax/microedition/lcdui/Canvas", "isDoubleBuffered", "()Z", nativeReturnOne)
 	vm.RegisterNative("javax/microedition/lcdui/Canvas", "setFullScreenMode", "(Z)V", func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
 		return Value{}, false, setObjectField(vm, receiver, "$midp.fullScreen", args[0])
