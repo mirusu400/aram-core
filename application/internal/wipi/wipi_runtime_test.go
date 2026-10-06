@@ -2184,6 +2184,13 @@ func TestRaptorClearClipDataEmptiesTheSourceBuffer(t *testing.T) {
 	if put([]byte{13}) {
 		t.Fatal("RaptorPutClipData accepted bytes past the clip capacity")
 	}
+	// A rejected put must leave the adapter mirror unchanged. State saving
+	// rebuilds the shared media clip from that mirror and fails if it grew
+	// beyond the capacity while the service rejected the bytes.
+	var saved bytes.Buffer
+	if err := WriteState(runtime, runtime.CPU, guest.NewStateWriter(&saved)); err != nil {
+		t.Fatalf("save after rejected clip data: %v", err)
+	}
 	if !runtime.RaptorClearClipData(handle) {
 		t.Fatal("RaptorClearClipData refused the reused clip")
 	}

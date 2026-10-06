@@ -409,12 +409,12 @@ func (r *Runtime) RaptorPutClipData(handle, source uint32, length int32) bool {
 	if err := r.CPU.ReadMemory(source, data); err != nil {
 		return false
 	}
-	clip.Data = append(clip.Data, data...)
 	if serviceID := r.MediaServices[handle]; serviceID != 0 {
 		if _, err := r.Services.Media.Append(r.ServiceOwner, serviceID, data); err != nil {
 			return false
 		}
 	}
+	clip.Data = append(clip.Data, data...)
 	return true
 }
 
