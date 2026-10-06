@@ -215,6 +215,7 @@ func (r *Runtime) handleMenuControl(slot uint32) (bool, error) {
 	case 9: // GetProperties
 		return true, r.cpu.WriteRegister(cpu.RegisterR0, r.menuControl.properties)
 	case 10: // Reset
+		r.releaseMenuImages()
 		r.menuControl.items = nil
 		r.menuControl.selection = 0
 		r.menuControl.enumIndex = 0
@@ -234,7 +235,7 @@ func (r *Runtime) handleMenuControl(slot uint32) (bool, error) {
 		if err := r.cpu.ReadMemory(sp, encoded[:]); err != nil {
 			return true, fmt.Errorf("read BREW menu item arguments: %w", err)
 		}
-		r.setMenuItem(uint16(id), binary.LittleEndian.Uint32(encoded[4:8]))
+		r.setMenuItem(uint16(id), binary.LittleEndian.Uint32(encoded[4:8]), 0)
 		return true, r.cpu.WriteRegister(cpu.RegisterR0, 1)
 	case 13: // AddItemEx
 		pointer, err := r.cpu.ReadRegister(cpu.RegisterR1)
@@ -248,7 +249,11 @@ func (r *Runtime) handleMenuControl(slot uint32) (bool, error) {
 		if err := r.cpu.ReadMemory(pointer, encoded[:]); err != nil {
 			return true, fmt.Errorf("read BREW extended menu item: %w", err)
 		}
-		r.setMenuItem(binary.LittleEndian.Uint16(encoded[22:24]), binary.LittleEndian.Uint32(encoded[24:28]))
+		image := binary.LittleEndian.Uint32(encoded[4:8])
+		if image != 0 && !r.isMenuImage(image) {
+			return true, r.cpu.WriteRegister(cpu.RegisterR0, 0)
+		}
+		r.setMenuItem(binary.LittleEndian.Uint16(encoded[22:24]), binary.LittleEndian.Uint32(encoded[24:28]), image)
 		return true, r.cpu.WriteRegister(cpu.RegisterR0, 1)
 	case 14: // GetItemData
 		id, err := r.cpu.ReadRegister(cpu.RegisterR1)
@@ -279,12 +284,14 @@ func (r *Runtime) handleMenuControl(slot uint32) (bool, error) {
 		}
 		for index, item := range r.menuControl.items {
 			if item.id == uint16(id) {
+				r.releaseInterfaceObject(item.image)
 				r.menuControl.items = append(r.menuControl.items[:index], r.menuControl.items[index+1:]...)
 				return true, r.cpu.WriteRegister(cpu.RegisterR0, 1)
 			}
 		}
 		return true, r.cpu.WriteRegister(cpu.RegisterR0, 0)
 	case 16: // DeleteAll
+		r.releaseMenuImages()
 		r.menuControl.items = nil
 		r.menuControl.selection = 0
 		return true, r.cpu.WriteRegister(cpu.RegisterR0, 1)
@@ -333,14 +340,43 @@ func (r *Runtime) handleMenuControl(slot uint32) (bool, error) {
 	}
 }
 
-func (r *Runtime) setMenuItem(id uint16, data uint32) {
+func (r *Runtime) isMenuImage(address uint32) bool {
+	if _, allocated := r.heapAllocated[address]; !allocated {
+		return false
+	}
+	var encoded [4]byte
+	return r.cpu.ReadMemory(address, encoded[:]) == nil && binary.LittleEndian.Uint32(encoded[:]) == imageVTable
+}
+
+func (r *Runtime) releaseMenuImages() {
+	for _, item := range r.menuControl.items {
+		if item.image != 0 {
+			r.releaseInterfaceObject(item.image)
+		}
+	}
+}
+
+func (r *Runtime) setMenuItem(id uint16, data uint32, image uint32) {
 	for index := range r.menuControl.items {
 		if r.menuControl.items[index].id == id {
+			old := r.menuControl.items[index].image
+			if old != image {
+				if image != 0 {
+					r.retainInterfaceObject(image)
+				}
+				if old != 0 {
+					r.releaseInterfaceObject(old)
+				}
+			}
 			r.menuControl.items[index].data = data
+			r.menuControl.items[index].image = image
 			return
 		}
 	}
-	r.menuControl.items = append(r.menuControl.items, brewMenuItem{id: id, data: data})
+	if image != 0 {
+		r.retainInterfaceObject(image)
+	}
+	r.menuControl.items = append(r.menuControl.items, brewMenuItem{id: id, data: data, image: image})
 	if len(r.menuControl.items) == 1 {
 		r.menuControl.selection = id
 	}

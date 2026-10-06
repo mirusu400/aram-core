@@ -468,6 +468,7 @@ func (r *Runtime) releaseGuest(address uint32) {
 		delete(r.borrowedBitmaps, object)
 	}
 	delete(r.borrowedBitmaps, address)
+	delete(r.interfaceRefs, address)
 	delete(r.heapAllocated, address)
 	index := 0
 	for index < len(r.heapFree) && r.heapFree[index].address < address {
@@ -495,10 +496,35 @@ func (r *Runtime) releaseGuest(address uint32) {
 	}
 }
 
-func (r *Runtime) releaseInterfaceObject(address uint32) {
+func (r *Runtime) retainInterfaceObject(address uint32) uint32 {
 	if _, allocated := r.heapAllocated[address]; !allocated {
-		return
+		// Static shell and service interfaces are owned by the runtime.
+		return 1
 	}
+	count := r.interfaceRefs[address]
+	if count == 0 {
+		count = 1 // A newly created interface carries its initial reference.
+	}
+	if count != ^uint32(0) {
+		count++
+	}
+	r.interfaceRefs[address] = count
+	return count
+}
+
+func (r *Runtime) releaseInterfaceObject(address uint32) uint32 {
+	if _, allocated := r.heapAllocated[address]; !allocated {
+		return 0
+	}
+	if count := r.interfaceRefs[address]; count > 1 {
+		r.interfaceRefs[address] = count - 1
+		return count - 1
+	}
+	r.destroyInterfaceObject(address)
+	return 0
+}
+
+func (r *Runtime) destroyInterfaceObject(address uint32) {
 	var encoded [12]byte
 	if err := r.cpu.ReadMemory(address, encoded[:]); err == nil {
 		switch binary.LittleEndian.Uint32(encoded[0:4]) {
