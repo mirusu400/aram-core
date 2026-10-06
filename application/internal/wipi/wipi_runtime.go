@@ -819,7 +819,8 @@ func (r *Runtime) RegisterResources(resources map[string][]byte) int32 {
 	if err := r.Services.Storage.ReplacePackage(packageFiles); err != nil {
 		return guest.WIPINoMemory
 	}
-	for name, data := range resources {
+	for _, name := range guest.SortedStringKeys(resources) {
+		data := resources[name]
 		if resource := r.Resources[name]; resource != nil {
 			resource.Data = append(resource.Data[:0], data...)
 			continue

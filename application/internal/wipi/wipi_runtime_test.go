@@ -461,6 +461,32 @@ func TestWIPIRuntimeKernelResources(t *testing.T) {
 	}
 }
 
+func TestWIPIRuntimeBatchResourceIDsAreStable(t *testing.T) {
+	for attempt := 0; attempt < 12; attempt++ {
+		runtime := newPublicRuntime(t)
+		if id := runtime.RegisterResource("existing.dat", []byte{9}); id != 1 {
+			t.Fatalf("existing resource ID = %d", id)
+		}
+		if result := runtime.RegisterResources(map[string][]byte{
+			"zeta.dat":  {3},
+			"alpha.dat": {1},
+			"beta.dat":  {2},
+		}); result != 0 {
+			t.Fatalf("batch registration = %d", result)
+		}
+		for name, want := range map[string]int32{
+			"existing.dat": 1,
+			"alpha.dat":    2,
+			"beta.dat":     3,
+			"zeta.dat":     4,
+		} {
+			if got := runtime.Resources[name].Id; got != want || runtime.ResourceIDs[want] != name {
+				t.Fatalf("attempt %d: %s ID = %d, want %d", attempt, name, got, want)
+			}
+		}
+	}
+}
+
 func TestWIPIRuntimeKernelProgramLifecycle(t *testing.T) {
 	runtime := newPublicRuntime(t)
 	execName, err := runtime.Heap.Allocate(32, true)
