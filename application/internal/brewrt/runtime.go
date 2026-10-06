@@ -222,6 +222,9 @@ type Runtime struct {
 	callbackSerial   uint64
 	cleanupCallbacks []brewCallback
 	boundary         *ExecutionBoundaryError
+	lastRunResult    cpu.Result
+	lastHostCall     string
+	lastHostArgs     [4]uint32
 	classIDs         []uint32
 	clock            time.Duration
 	randomState      uint32
@@ -817,8 +820,10 @@ func (r *Runtime) runAppletCode(
 	operation string,
 ) (uint32, error) {
 	lastHostCall := ""
+	r.lastHostCall = ""
 	for traps := 0; traps < hostCallBudget; traps++ {
 		result := r.cpu.Run(ctx, pc, mode, guestInstructionBudget)
+		r.lastRunResult = result
 		if result.Err != nil {
 			if lastHostCall != "" {
 				return 0, fmt.Errorf("execute BREW applet %s at PC 0x%08x after %s: %w", operation, result.PC, lastHostCall, result.Err)
@@ -838,6 +843,8 @@ func (r *Runtime) runAppletCode(
 			lastHostCall,
 			arguments[0], arguments[1], arguments[2], arguments[3],
 		)
+		r.lastHostCall = lastHostCall
+		r.lastHostArgs = arguments
 		switch result.PC {
 		case allocTrap + 2:
 			if err := r.returnAllocation(); err != nil {
@@ -2402,6 +2409,7 @@ func (r *Runtime) Bootstrap(ctx context.Context) error {
 	pc, mode := moduleBase, cpu.ModeARM
 	for traps := 0; traps < hostCallBudget; traps++ {
 		result := r.cpu.Run(ctx, pc, mode, bootstrapInstructionBudget)
+		r.lastRunResult = result
 		if result.Err != nil {
 			return fmt.Errorf("execute BREW module entry at PC 0x%08x: %w", result.PC, result.Err)
 		}

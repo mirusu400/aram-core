@@ -9,6 +9,7 @@ import (
 	"image"
 	"image/color"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,6 +67,12 @@ func TestBREWMachineQueuesPressAndRelease(t *testing.T) {
 	}
 	if len(machine.input) != 2 || machine.input[0] != press || machine.input[1] != release {
 		t.Fatalf("queued transitions = %#v, want press then release", machine.input)
+	}
+	snapshot := machine.DebugSnapshot(10)
+	if snapshot.HostTrace.Total != 2 || len(snapshot.HostTrace.Entries) != 2 ||
+		!strings.Contains(snapshot.HostTrace.Entries[0], "control=up pressed=false") ||
+		!strings.Contains(snapshot.HostTrace.Entries[1], "control=up pressed=true") {
+		t.Fatalf("BREW input history = %+v", snapshot.HostTrace)
 	}
 }
 
@@ -151,6 +158,43 @@ func TestBREWFactoryRequiresExplicitOptInForUnverifiedPackage(t *testing.T) {
 	machine, matched, err := factory.createBREWMachine(context.Background(), source)
 	if err != nil || !matched || machine == nil {
 		t.Fatalf("opted-in generic BREW machine=%T matched=%v err=%v", machine, matched, err)
+	}
+}
+
+func TestBREWFaultDebugBundleHasCPUAndMemory(t *testing.T) {
+	data := genericBREWArchiveForTest(t)
+	source := machinecore.Source{Name: "generic.zip", ReaderAt: bytes.NewReader(data), Size: int64(len(data))}
+	factory := NewFactory()
+	factory.AllowUntrustedBREW = true
+	created, matched, err := factory.createBREWMachine(context.Background(), source)
+	if err != nil || !matched {
+		t.Fatalf("create BREW machine: matched=%t err=%v", matched, err)
+	}
+	machine := created.(*brewMachine)
+	defer machine.Close()
+	if regions := machine.DebugMemoryRegions(4096); regions != nil {
+		t.Fatalf("unfaulted BREW memory regions = %+v", regions)
+	}
+	if err := machine.Start(context.Background()); err == nil {
+		t.Fatal("synthetic module unexpectedly started")
+	}
+	if machine.State() != machinecore.StateFaulted {
+		t.Fatalf("state = %s, want faulted", machine.State())
+	}
+	snapshot := machine.DebugSnapshot(4)
+	if snapshot.Runtime != "brew" || snapshot.State != "faulted" || snapshot.CPU == nil || snapshot.LastResult == nil {
+		t.Fatalf("BREW fault snapshot lacks CPU or result: %+v", snapshot)
+	}
+	regions := machine.DebugMemoryRegions(4096)
+	if len(regions) == 0 {
+		t.Fatal("BREW fault has no readable debug memory")
+	}
+	readable := 0
+	for _, region := range regions {
+		readable += len(region.Data)
+	}
+	if readable > 4096 {
+		t.Fatalf("BREW fault debug memory = %d bytes, want at most 4096", readable)
 	}
 }
 

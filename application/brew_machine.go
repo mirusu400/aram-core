@@ -16,12 +16,14 @@ import (
 	"time"
 
 	"github.com/mirusu400/aram-core/application/internal/brewrt"
+	"github.com/mirusu400/aram-core/application/internal/guest"
 	machinecore "github.com/mirusu400/aram-core/core"
 	"github.com/mirusu400/aram-core/cpu"
 )
 
 const (
 	maxBREWInputEvents = 1024
+	maxBREWInputTrace  = 4096
 	brewFrameDuration  = 16 * time.Millisecond
 	maxBREWArchiveSize = int64(128 << 20)
 
@@ -48,17 +50,19 @@ const (
 // Package artwork remains diagnostic-only; published frames come from the guest
 // RGB565 surface after IDisplay::Update.
 type brewMachine struct {
-	mu         sync.Mutex
-	state      machinecore.State
-	source     machinecore.Source
-	pkg        brewrt.Package
-	runtime    *brewrt.Runtime
-	frame      *image.RGBA
-	input      []machinecore.InputEvent
-	started    bool
-	guestFrame bool
-	now        time.Duration
-	closed     bool
+	mu                sync.Mutex
+	state             machinecore.State
+	source            machinecore.Source
+	pkg               brewrt.Package
+	runtime           *brewrt.Runtime
+	frame             *image.RGBA
+	input             []machinecore.InputEvent
+	inputTrace        []string
+	inputTraceDropped int
+	started           bool
+	guestFrame        bool
+	now               time.Duration
+	closed            bool
 
 	audioGeneration     uint64
 	audioEpochGuestNS   int64
@@ -241,6 +245,8 @@ func (m *brewMachine) Reset(ctx context.Context) error {
 		m.runtime = nil
 	}
 	m.input = nil
+	m.inputTrace = nil
+	m.inputTraceDropped = 0
 	m.started = false
 	m.guestFrame = false
 	m.now = 0
@@ -414,6 +420,19 @@ func (m *brewMachine) QueueInput(event machinecore.InputEvent) error {
 	m.input = append(m.input, machinecore.InputEvent{})
 	copy(m.input[index+1:], m.input[index:])
 	m.input[index] = event
+	control := event.Control
+	if _, ok := brewKeyCode(control); !ok {
+		control = "unknown"
+	}
+	m.inputTrace = append(m.inputTrace, fmt.Sprintf(
+		"input queued_at=%dms due_at=%dms control=%s pressed=%t",
+		m.now/time.Millisecond, event.At/time.Millisecond, control, event.Pressed,
+	))
+	if len(m.inputTrace) > maxBREWInputTrace {
+		copy(m.inputTrace, m.inputTrace[1:])
+		m.inputTrace = m.inputTrace[:maxBREWInputTrace]
+		m.inputTraceDropped++
+	}
 	return nil
 }
 
@@ -436,6 +455,33 @@ func (m *brewMachine) BREWFrameStats() (BREWFrameStats, bool) {
 	}
 	presentCount, frameValid := m.runtime.FrameStats()
 	return BREWFrameStats{PresentCount: presentCount, FrameValid: frameValid}, true
+}
+
+func (m *brewMachine) DebugSnapshot(maxEntries int) DebugSnapshot {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var snapshot DebugSnapshot
+	if m.runtime == nil {
+		snapshot = DebugSnapshot{Runtime: "brew"}
+	} else {
+		snapshot = m.runtime.DebugSnapshot(maxEntries)
+	}
+	snapshot.State = m.state.String()
+	entries := append([]string(nil), m.inputTrace...)
+	entries = append(entries, snapshot.HostTrace.Entries...)
+	snapshot.HostTrace = guest.NewDebugLogSnapshot(
+		entries, m.inputTraceDropped, guest.NormalizeDebugSnapshotLimit(maxEntries),
+	)
+	return snapshot
+}
+
+func (m *brewMachine) DebugMemoryRegions(limit int) []DebugMemoryRegion {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.state != machinecore.StateFaulted || m.runtime == nil {
+		return nil
+	}
+	return m.runtime.DebugMemoryRegions(limit)
 }
 
 func (m *brewMachine) DrainAudio() machinecore.AudioChunk {
