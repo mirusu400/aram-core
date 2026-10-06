@@ -10,7 +10,10 @@ import (
 	shared "github.com/mirusu400/aram-core/runtime"
 )
 
-const midpRepaintPending = "\x00aram-midp-repaint-pending"
+const (
+	midpRepaintPending = "\x00aram-midp-repaint-pending"
+	midpShownDisplay   = "\x00aram-midp-shown-display"
+)
 
 func (vm *VM) installMIDletNatives() {
 	vm.RegisterNative("javax/microedition/midlet/MIDlet", "<init>", "()V", nativeVoid)
@@ -41,6 +44,7 @@ func (vm *VM) installMIDletNatives() {
 
 func (vm *VM) installDisplayNatives() {
 	vm.hostStatic[midpRepaintPending] = IntValue(0)
+	vm.hostStatic[midpShownDisplay] = ReferenceValue(0)
 	vm.RegisterNative("javax/microedition/lcdui/Canvas", "<init>", "()V", nativeVoid)
 	vm.RegisterNative(
 		"javax/microedition/lcdui/Canvas",

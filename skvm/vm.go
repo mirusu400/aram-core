@@ -807,16 +807,48 @@ func (vm *VM) ShowCurrent(ctx context.Context) error {
 	if vm.currentDisplay == 0 {
 		return fmt.Errorf("SKVM has no current Displayable")
 	}
-	_, _, err := vm.InvokeVirtual(ctx, vm.currentDisplay, "showNotify", "()V")
-	if errors.Is(err, ErrMethodNotFound) {
-		return nil
+	return vm.SyncDisplayLifecycle(ctx)
+}
+
+// SyncDisplayLifecycle delivers visibility callbacks before the next paint.
+// Keeping the shown reference in VM state preserves the callback order across
+// save/load and keeps a hidden Canvas alive until hideNotify has run.
+func (vm *VM) SyncDisplayLifecycle(ctx context.Context) error {
+	const maxTransitions = 16
+	for range maxTransitions {
+		shown, _ := vm.hostStatic[midpShownDisplay].Reference()
+		if shown == vm.currentDisplay {
+			return nil
+		}
+		if shown != 0 {
+			vm.hostStatic[midpShownDisplay] = ReferenceValue(0)
+			_, _, err := vm.InvokeVirtual(ctx, shown, "hideNotify", "()V")
+			if err != nil && !errors.Is(err, ErrMethodNotFound) {
+				return err
+			}
+			continue
+		}
+		if vm.currentDisplay != 0 {
+			current := vm.currentDisplay
+			vm.hostStatic[midpShownDisplay] = ReferenceValue(current)
+			_, _, err := vm.InvokeVirtual(ctx, current, "showNotify", "()V")
+			if err != nil && !errors.Is(err, ErrMethodNotFound) {
+				return err
+			}
+		}
 	}
-	return err
+	return fmt.Errorf("SKVM display visibility did not settle")
 }
 
 func (vm *VM) PaintCurrent(ctx context.Context) error {
 	if vm.currentDisplay == 0 {
 		return fmt.Errorf("SKVM has no current Displayable")
+	}
+	if err := vm.SyncDisplayLifecycle(ctx); err != nil {
+		return err
+	}
+	if vm.currentDisplay == 0 {
+		return nil
 	}
 	// A worker can yield midway through paint(). Keep its repaint request queued
 	// until that invocation finishes so another thread cannot advance game state
