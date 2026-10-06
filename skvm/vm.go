@@ -920,6 +920,26 @@ func (vm *VM) KeyEvent(ctx context.Context, key int32, pressed bool) error {
 			return nil
 		}
 	}
+	return vm.invokeKeyCallback(ctx, method, key)
+}
+
+// KeyRepeat delivers the distinct MIDP keyRepeated callback without changing
+// the physical key state established by the original press.
+func (vm *VM) KeyRepeat(ctx context.Context, key int32) error {
+	if vm.currentDisplay == 0 {
+		return fmt.Errorf("SKVM has no current Displayable")
+	}
+	if vm.IsInstance(vm.currentDisplay, "javax/microedition/lcdui/game/GameCanvas") {
+		object, _ := vm.Object(vm.currentDisplay)
+		suppress, _ := object.Fields["$game.suppressKeyEvents"].Int()
+		if suppress != 0 {
+			return nil
+		}
+	}
+	return vm.invokeKeyCallback(ctx, "keyRepeated", key)
+}
+
+func (vm *VM) invokeKeyCallback(ctx context.Context, method string, key int32) error {
 	_, _, err := vm.InvokeVirtual(
 		ctx,
 		vm.currentDisplay,

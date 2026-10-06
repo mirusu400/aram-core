@@ -699,12 +699,14 @@ func (m *Machine) handleEventLocked(
 		if !ok || m.vm.CurrentDisplay() == 0 {
 			return nil
 		}
-		pressed := event.Kind != shared.EventInputRelease
 		code := skvmKeyCode(key)
 		if m.services.Config.Device.ProfileID == j2me.LGTProfileID {
 			code = lgtKeyCode(key)
 		}
-		return m.vm.KeyEvent(ctx, code, pressed)
+		if event.Kind == shared.EventInputRepeat {
+			return m.vm.KeyRepeat(ctx, code)
+		}
+		return m.vm.KeyEvent(ctx, code, event.Kind == shared.EventInputPress)
 	default:
 		return nil
 	}
