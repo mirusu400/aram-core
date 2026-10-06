@@ -16,7 +16,31 @@ import (
 	"github.com/mirusu400/aram-core/cpu"
 	"github.com/mirusu400/aram-core/cpu/interpreter"
 	shared "github.com/mirusu400/aram-core/runtime"
+	skengine "github.com/mirusu400/aram-core/skvm"
 )
+
+func TestSKVMMachineDoesNotRestartOrDestroyHaltedTitle(t *testing.T) {
+	data := syntheticSKVMPackage(t)
+	created, err := NewFactory().Create(context.Background(), machinecore.Source{
+		Name: "game.zip", ReaderAt: bytes.NewReader(data), Size: int64(len(data)),
+	})
+	check(t, err)
+	machine := created.(*skvmhost.Machine)
+	t.Cleanup(func() { _ = machine.Close() })
+	check(t, machine.Start(context.Background()))
+	_, _, err = machine.VM().InvokeStatic(
+		context.Background(), "java/lang/System", "exit", "(I)V", skengine.IntValue(0),
+	)
+	if !errors.Is(err, skengine.ErrHalted) || !machine.VM().Halted() {
+		t.Fatalf("System.exit = %v, halted=%t", err, machine.VM().Halted())
+	}
+	instructions := machine.VM().Instructions
+	check(t, machine.Resume())
+	check(t, machine.Stop())
+	if got := machine.VM().Instructions; got != instructions {
+		t.Fatalf("halted title ran lifecycle bytecode: instructions %d -> %d", instructions, got)
+	}
+}
 
 func TestFactoryInfersSKVMFramebufferFromResources(t *testing.T) {
 	data := syntheticSKVMPackageWithResources(t, map[string][]byte{

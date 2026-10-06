@@ -92,6 +92,7 @@ type nativeKey struct {
 type VM struct {
 	nativePolicy     NativePolicy
 	classes          map[string]*runtimeClass
+	fieldOwners      map[Reference]string
 	heap             map[uint32]*Object
 	nextReference    uint32
 	natives          map[nativeKey]NativeFunc
@@ -188,6 +189,7 @@ func NewWithNativePolicy(classData map[string][]byte, services *shared.Services,
 	vm := &VM{
 		nativePolicy:     policy,
 		classes:          make(map[string]*runtimeClass, len(classData)),
+		fieldOwners:      make(map[Reference]string),
 		heap:             make(map[uint32]*Object),
 		nextReference:    1,
 		natives:          make(map[nativeKey]NativeFunc),
@@ -807,16 +809,48 @@ func (vm *VM) ShowCurrent(ctx context.Context) error {
 	if vm.currentDisplay == 0 {
 		return fmt.Errorf("SKVM has no current Displayable")
 	}
-	_, _, err := vm.InvokeVirtual(ctx, vm.currentDisplay, "showNotify", "()V")
-	if errors.Is(err, ErrMethodNotFound) {
-		return nil
+	return vm.SyncDisplayLifecycle(ctx)
+}
+
+// SyncDisplayLifecycle delivers visibility callbacks before the next paint.
+// Keeping the shown reference in VM state preserves the callback order across
+// save/load and keeps a hidden Canvas alive until hideNotify has run.
+func (vm *VM) SyncDisplayLifecycle(ctx context.Context) error {
+	const maxTransitions = 16
+	for range maxTransitions {
+		shown, _ := vm.hostStatic[midpShownDisplay].Reference()
+		if shown == vm.currentDisplay {
+			return nil
+		}
+		if shown != 0 {
+			vm.hostStatic[midpShownDisplay] = ReferenceValue(0)
+			_, _, err := vm.InvokeVirtual(ctx, shown, "hideNotify", "()V")
+			if err != nil && !errors.Is(err, ErrMethodNotFound) {
+				return err
+			}
+			continue
+		}
+		if vm.currentDisplay != 0 {
+			current := vm.currentDisplay
+			vm.hostStatic[midpShownDisplay] = ReferenceValue(current)
+			_, _, err := vm.InvokeVirtual(ctx, current, "showNotify", "()V")
+			if err != nil && !errors.Is(err, ErrMethodNotFound) {
+				return err
+			}
+		}
 	}
-	return err
+	return fmt.Errorf("SKVM display visibility did not settle")
 }
 
 func (vm *VM) PaintCurrent(ctx context.Context) error {
 	if vm.currentDisplay == 0 {
 		return fmt.Errorf("SKVM has no current Displayable")
+	}
+	if err := vm.SyncDisplayLifecycle(ctx); err != nil {
+		return err
+	}
+	if vm.currentDisplay == 0 {
+		return nil
 	}
 	// A worker can yield midway through paint(). Keep its repaint request queued
 	// until that invocation finishes so another thread cannot advance game state
@@ -920,6 +954,26 @@ func (vm *VM) KeyEvent(ctx context.Context, key int32, pressed bool) error {
 			return nil
 		}
 	}
+	return vm.invokeKeyCallback(ctx, method, key)
+}
+
+// KeyRepeat delivers the distinct MIDP keyRepeated callback without changing
+// the physical key state established by the original press.
+func (vm *VM) KeyRepeat(ctx context.Context, key int32) error {
+	if vm.currentDisplay == 0 {
+		return fmt.Errorf("SKVM has no current Displayable")
+	}
+	if vm.IsInstance(vm.currentDisplay, "javax/microedition/lcdui/game/GameCanvas") {
+		object, _ := vm.Object(vm.currentDisplay)
+		suppress, _ := object.Fields["$game.suppressKeyEvents"].Int()
+		if suppress != 0 {
+			return nil
+		}
+	}
+	return vm.invokeKeyCallback(ctx, "keyRepeated", key)
+}
+
+func (vm *VM) invokeKeyCallback(ctx context.Context, method string, key int32) error {
 	_, _, err := vm.InvokeVirtual(
 		ctx,
 		vm.currentDisplay,
@@ -1281,6 +1335,47 @@ func (vm *VM) throwableMatches(reference uint32, catchType string) bool {
 
 func fieldStorageKey(class, name, descriptor string) string {
 	return class + "\x00" + name + "\x00" + descriptor
+}
+
+// fieldOwner resolves the declaring class of a Fieldref. Java bytecode may
+// name a subclass while the field is stored in its superclass or interface.
+func (vm *VM) fieldOwner(reference Reference) string {
+	if owner, ok := vm.fieldOwners[reference]; ok {
+		return owner
+	}
+	visited := make(map[string]bool)
+	var find func(string) string
+	find = func(name string) string {
+		if name == "" || visited[name] {
+			return ""
+		}
+		visited[name] = true
+		runtime := vm.classes[name]
+		if runtime == nil {
+			return ""
+		}
+		for _, field := range runtime.class.Fields {
+			if field.Name == reference.Name && field.Descriptor == reference.Descriptor {
+				return name
+			}
+		}
+		for _, parent := range runtime.class.Interfaces {
+			if owner := find(parent); owner != "" {
+				return owner
+			}
+		}
+		return find(runtime.class.SuperName)
+	}
+	owner := find(reference.Class)
+	if owner == "" {
+		// Host fields retain their existing reference-class storage key.
+		owner = reference.Class
+	}
+	if vm.fieldOwners == nil {
+		vm.fieldOwners = make(map[Reference]string)
+	}
+	vm.fieldOwners[reference] = owner
+	return owner
 }
 
 func defaultHostSupers() map[string]string {

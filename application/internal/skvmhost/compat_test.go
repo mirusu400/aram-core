@@ -12,11 +12,34 @@ import (
 )
 
 const (
+	astoniaEP2ReportedSHA256        = "08aa799c11b0d97d4f3b03fc1c2ce7fb28136009227ae6442e0d5ca105fe6ede"
 	dragonKnightEXSKTSHA256         = "fa1fc7826e4f2dbd10a4793177d9aed3282e5b9812d47863edc2f64761850cc2"
 	dragonKnightEXReportedSKTSHA256 = "78bd51675574314c33f6bf6202752f6fd65df14fc69f94cfef417b4d8045a172"
 	whaleHunting2SKTSHA256          = "1367261bc3ee3b7f0afa102a52a7559204d94da60c543969773d47a09c051e79"
 	xMenSKTSHA256                   = "f483ba078c14a2ea0e19a0cbe28ce36ffe7e16b6afc6847aa67f4a54f66feb72"
 )
+
+func TestAstoniaEP2MapEdgeQuirkRequiresExactPackage(t *testing.T) {
+	pkg := skloader.Package{Descriptor: skloader.Descriptor{MainClass: "AstoS2"}}
+	for _, tc := range []struct {
+		name, digest, mainClass string
+		want                    bool
+	}{
+		{"exact", astoniaEP2ReportedSHA256, "AstoS2", true},
+		{"different digest", dragonKnightEXSKTSHA256, "AstoS2", false},
+		{"different main class", astoniaEP2ReportedSHA256, "Other", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pkg.Descriptor.MainClass = tc.mainClass
+			config := shared.DefaultConfig()
+			applySKVMTitleCompatibility(&config, machinecore.Source{SHA256: tc.digest}, pkg, image.Pt(240, 320))
+			got := len(config.Device.Quirks) == 1 && config.Device.Quirks[0].Name == skengine.AstoniaEP2MapEdgeQuirk
+			if got != tc.want {
+				t.Fatalf("quirks = %+v, want map edge quirk %v", config.Device.Quirks, tc.want)
+			}
+		})
+	}
+}
 
 func TestDragonKnightEXCompatibilityRequiresExactPackageIdentity(t *testing.T) {
 	pkg := skloader.Package{Descriptor: skloader.Descriptor{

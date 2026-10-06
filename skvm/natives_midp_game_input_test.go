@@ -51,6 +51,7 @@ func sdkInputProbeClass(name, parent string) []byte {
 	self := cls(name)
 	super := cls(parent)
 	record := ref(cls("javax/microedition/lcdui/Canvas"), "recordKey", "(I)V")
+	recordRepeat := ref(cls("javax/microedition/lcdui/Canvas"), "recordRepeat", "(I)V")
 	display := cls("javax/microedition/lcdui/Display")
 	initSuper := ref(super, "<init>", "(Z)V")
 	initSelf := ref(self, "<init>", "()V")
@@ -67,8 +68,12 @@ func sdkInputProbeClass(name, parent string) []byte {
 	}
 	methods := []method{}
 	add := func(n, d string, flags uint16, c []byte) { methods = append(methods, method{utf(n), utf(d), flags, c}) }
-	for _, method := range []string{"keyPressed", "keyReleased"} {
-		add(method, "(I)V", 1, append(append([]byte{0x1b}, op(0xb8, record)...), 0xb1))
+	for _, method := range []string{"keyPressed", "keyReleased", "keyRepeated"} {
+		target := record
+		if method == "keyRepeated" {
+			target = recordRepeat
+		}
+		add(method, "(I)V", 1, append(append([]byte{0x1b}, op(0xb8, target)...), 0xb1))
 	}
 	add("<init>", "()V", 1, append(append([]byte{0x2a, 0x04}, op(0xb7, initSuper)...), 0xb1))
 	c := append(op(0xbb, self), 0x59)
@@ -181,6 +186,67 @@ func TestGameCanvasDisplayTransitionsAndCallbacks(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestMIDPKeyRepeatUsesRepeatedCallbackAndPreservesHeldState(t *testing.T) {
+	services, err := shared.NewServices(shared.Config{})
+	check(t, err)
+	vm, err := NewWithNativePolicy(map[string][]byte{
+		"SDKGameProbe": sdkGameProbeClass(),
+	}, services, 1, NativePolicyLGT)
+	check(t, err)
+	canvas := vm.NewObject("SDKGameProbe", nil)
+	invokeTestNative(t, vm, "javax/microedition/lcdui/game/GameCanvas", "<init>", "(Z)V", canvas, IntValue(0))
+	invokeTestNative(t, vm, "javax/microedition/lcdui/Display", "setCurrent", "(Ljavax/microedition/lcdui/Displayable;)V", 0, ReferenceValue(canvas))
+	var presses []int32
+	var repeats []int32
+	vm.RegisterNative("javax/microedition/lcdui/Canvas", "recordKey", "(I)V", func(_ context.Context, _ *VM, _ uint32, args []Value) (Value, bool, error) {
+		key, _ := args[0].Int()
+		presses = append(presses, key)
+		return Value{}, false, nil
+	})
+	vm.RegisterNative("javax/microedition/lcdui/Canvas", "recordRepeat", "(I)V", func(_ context.Context, _ *VM, _ uint32, args []Value) (Value, bool, error) {
+		key, _ := args[0].Int()
+		repeats = append(repeats, key)
+		return Value{}, false, nil
+	})
+	if got := mustInt(t, invokeTestNative(t, vm, "javax/microedition/lcdui/Canvas", "hasRepeatEvents", "()Z", canvas)); got != 1 {
+		t.Fatalf("hasRepeatEvents = %d, want 1", got)
+	}
+	check(t, vm.KeyEvent(t.Context(), -1, true))
+	check(t, vm.KeyRepeat(t.Context(), -1))
+	if len(presses) != 1 || presses[0] != -1 || len(repeats) != 1 || repeats[0] != -1 {
+		t.Fatalf("callbacks: presses=%v repeats=%v", presses, repeats)
+	}
+	if got := mustInt(t, invokeTestNative(t, vm, "javax/microedition/lcdui/game/GameCanvas", "getKeyStates", "()I", canvas)); got != 2 {
+		t.Fatalf("held state after repeat = %d, want UP", got)
+	}
+	check(t, vm.KeyEvent(t.Context(), -1, false))
+	if len(presses) != 2 || len(repeats) != 1 {
+		t.Fatalf("callbacks after release: presses=%v repeats=%v", presses, repeats)
+	}
+	suppressed := vm.NewObject("SDKGameProbe", nil)
+	invokeTestNative(t, vm, "javax/microedition/lcdui/game/GameCanvas", "<init>", "(Z)V", suppressed, IntValue(1))
+	invokeTestNative(t, vm, "javax/microedition/lcdui/Display", "setCurrent", "(Ljavax/microedition/lcdui/Displayable;)V", 0, ReferenceValue(suppressed))
+	check(t, vm.KeyEvent(t.Context(), -1, true))
+	check(t, vm.KeyRepeat(t.Context(), -1))
+	if len(repeats) != 1 {
+		t.Fatalf("suppressed GameCanvas received repeat callback: %v", repeats)
+	}
+	if got := mustInt(t, invokeTestNative(t, vm, "javax/microedition/lcdui/game/GameCanvas", "getKeyStates", "()I", suppressed)); got != 2 {
+		t.Fatalf("suppressed held state after repeat = %d, want UP", got)
+	}
+}
+
+func TestSKTCanvasDoesNotAdvertiseKeyRepeats(t *testing.T) {
+	services, err := shared.NewServices(shared.Config{})
+	check(t, err)
+	vm, err := NewWithNativePolicy(nil, services, 1, NativePolicySKT)
+	check(t, err)
+	canvas := vm.NewObject("javax/microedition/lcdui/Canvas", nil)
+	if got := mustInt(t, invokeTestNative(t, vm, "javax/microedition/lcdui/Canvas", "hasRepeatEvents", "()Z", canvas)); got != 0 {
+		t.Fatalf("SKT hasRepeatEvents = %d, want 0", got)
 	}
 }
 

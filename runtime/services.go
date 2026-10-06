@@ -454,7 +454,8 @@ func (s *Services) Restore(state ServicesState) error {
 	if s == nil {
 		return fmt.Errorf("%w: services are nil", ErrInvalidArgument)
 	}
-	candidate, err := servicesFromState(state)
+	preserveStoppedLoops := s.Media != nil && s.Media.StoppedLoopPreservation()
+	candidate, err := servicesFromStateWithMediaPolicy(state, preserveStoppedLoops)
 	if err != nil {
 		return err
 	}
@@ -504,6 +505,10 @@ func (s *Services) Restore(state ServicesState) error {
 }
 
 func servicesFromState(state ServicesState) (*Services, error) {
+	return servicesFromStateWithMediaPolicy(state, false)
+}
+
+func servicesFromStateWithMediaPolicy(state ServicesState, preserveStoppedLoops bool) (*Services, error) {
 	if state.Schema != ServicesSchemaVersion {
 		return nil, fmt.Errorf("%w: unsupported services schema %d", ErrInvalidState, state.Schema)
 	}
@@ -515,6 +520,7 @@ func servicesFromState(state ServicesState) (*Services, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidState, err)
 	}
+	candidate.Media.SetStoppedLoopPreservation(preserveStoppedLoops)
 	if state.Registry.Limit != config.Limits.MaxObjects ||
 		state.Events.MaxEvents != config.Limits.MaxEvents ||
 		state.Events.MaxEventData != config.Limits.MaxEventData ||

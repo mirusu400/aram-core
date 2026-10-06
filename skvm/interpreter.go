@@ -1252,15 +1252,16 @@ func (vm *VM) step(
 		if err != nil || reference.Kind != ReferenceField {
 			return stepResult{}, fmt.Errorf("SKVM invalid field reference %d", index)
 		}
-		key := fieldStorageKey(reference.Class, reference.Name, reference.Descriptor)
+		owner := vm.fieldOwner(reference)
+		key := fieldStorageKey(owner, reference.Name, reference.Descriptor)
 		switch opcode {
 		case 0xb2: // getstatic
-			if err := vm.ensureInitialized(ctx, reference.Class, budget); err != nil {
+			if err := vm.ensureInitialized(ctx, owner, budget); err != nil {
 				return stepResult{}, err
 			}
 			var value Value
 			var ok bool
-			if runtime, loaded := vm.classes[reference.Class]; loaded {
+			if runtime, loaded := vm.classes[owner]; loaded {
 				value, ok = runtime.static[key]
 			} else {
 				value, ok = vm.hostStatic[key]
@@ -1274,10 +1275,10 @@ func (vm *VM) step(
 			if popErr != nil {
 				return stepResult{}, popErr
 			}
-			if err := vm.ensureInitialized(ctx, reference.Class, budget); err != nil {
+			if err := vm.ensureInitialized(ctx, owner, budget); err != nil {
 				return stepResult{}, err
 			}
-			if runtime, loaded := vm.classes[reference.Class]; loaded {
+			if runtime, loaded := vm.classes[owner]; loaded {
 				runtime.static[key] = value
 			} else if _, registered := vm.hostStatic[key]; registered {
 				vm.hostStatic[key] = value
@@ -1787,6 +1788,15 @@ func (vm *VM) popArrayIndex(current *frame) (int, *Array, error) {
 		return 0, nil, fmt.Errorf("SKVM array operation used with non-array")
 	}
 	if indexValue < 0 || int64(indexValue) >= int64(len(object.Array.Elements)) {
+		if vm.services.Device.Quirk(AstoniaEP2MapEdgeQuirk) &&
+			current.class.Name == "b" && current.method.Name == "w" &&
+			current.method.Descriptor == "(I)V" && object.Array.Descriptor == "[B" &&
+			current.pc > 0 && current.pc <= len(current.method.Code) &&
+			current.method.Code[current.pc-1] == 0x33 {
+			// This title probes the four tiles around a sprite even at the map
+			// edge. An absent tile cannot contain its special tile marker (3).
+			return 0, &Array{Descriptor: "[B", Elements: []Value{IntValue(0)}}, nil
+		}
 		return 0, nil, vm.newThrowable("java/lang/ArrayIndexOutOfBoundsException", "")
 	}
 	return int(indexValue), object.Array, nil

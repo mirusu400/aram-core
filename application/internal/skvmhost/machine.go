@@ -338,7 +338,7 @@ func (m *Machine) Pause() error {
 	if err != nil {
 		return m.faultLocked(err)
 	}
-	if m.started && m.midlet != 0 {
+	if m.started && m.midlet != 0 && !m.vm.Halted() {
 		_, _, err = m.vm.InvokeVirtual(
 			context.Background(),
 			m.midlet,
@@ -387,7 +387,7 @@ func (m *Machine) Resume() error {
 	); err != nil {
 		return m.faultLocked(err)
 	}
-	if m.started && m.midlet != 0 {
+	if m.started && m.midlet != 0 && !m.vm.Halted() {
 		_, _, err = m.vm.InvokeVirtual(
 			context.Background(),
 			m.midlet,
@@ -433,7 +433,7 @@ func (m *Machine) Stop() error {
 		return err
 	}
 	var before uint64
-	if m.started && m.midlet != 0 {
+	if m.started && m.midlet != 0 && !m.vm.Halted() {
 		before, err = m.beginExecutionLocked()
 		if err != nil {
 			return m.faultLocked(err)
@@ -665,6 +665,9 @@ func (m *Machine) pumpAndPaintLocked(
 			return err
 		}
 	}
+	if err := m.vm.SyncDisplayLifecycle(ctx); err != nil {
+		return err
+	}
 	if m.vm.RepaintPending() {
 		if err := m.vm.PaintCurrent(ctx); err != nil &&
 			!errors.Is(err, skengine.ErrMethodNotFound) {
@@ -699,12 +702,19 @@ func (m *Machine) handleEventLocked(
 		if !ok || m.vm.CurrentDisplay() == 0 {
 			return nil
 		}
-		pressed := event.Kind != shared.EventInputRelease
 		code := skvmKeyCode(key)
 		if m.services.Config.Device.ProfileID == j2me.LGTProfileID {
 			code = lgtKeyCode(key)
 		}
-		return m.vm.KeyEvent(ctx, code, pressed)
+		if event.Kind == shared.EventInputRepeat {
+			// The SKT handset reports no Canvas repeat support. Its shared
+			// input service still generates repeats for other runtimes.
+			if m.nativePolicy == skengine.NativePolicySKT {
+				return nil
+			}
+			return m.vm.KeyRepeat(ctx, code)
+		}
+		return m.vm.KeyEvent(ctx, code, event.Kind == shared.EventInputPress)
 	default:
 		return nil
 	}

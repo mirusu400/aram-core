@@ -10,7 +10,10 @@ import (
 	skengine "github.com/mirusu400/aram-core/skvm"
 )
 
-const crow2ArchiveSHA256 = "0352c951a2f9cb0ed697211f14517231a0b23803f7bda9342c7eb9b32b9e79ee"
+const (
+	crow2ArchiveSHA256  = "0352c951a2f9cb0ed697211f14517231a0b23803f7bda9342c7eb9b32b9e79ee"
+	astoniaEP2SKTSHA256 = "08aa799c11b0d97d4f3b03fc1c2ce7fb28136009227ae6442e0d5ca105fe6ede"
+)
 
 func skvmRunBudget(source machinecore.Source) uint64 {
 	if source.SHA256 == crow2ArchiveSHA256 {
@@ -61,6 +64,11 @@ func applySKVMTitleCompatibility(
 ) {
 	if config == nil {
 		return
+	}
+	if source.SHA256 == astoniaEP2SKTSHA256 && pkg.Descriptor.MainClass == "AstoS2" {
+		config.Device.Quirks = append(config.Device.Quirks, shared.DeviceQuirk{
+			Name: skengine.AstoniaEP2MapEdgeQuirk, Enabled: true,
+		})
 	}
 	entry, ok := lookupSKVMTitleCanvas(source, pkg, inferred)
 	if !ok {

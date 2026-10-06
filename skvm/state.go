@@ -611,6 +611,7 @@ func (vm *VM) buildCandidate(
 	candidate := &VM{
 		nativePolicy:     vm.nativePolicy,
 		classes:          make(map[string]*runtimeClass, len(vm.classes)),
+		fieldOwners:      make(map[Reference]string),
 		heap:             make(map[uint32]*Object, len(state.Heap)),
 		fontCache:        make(map[fontCacheKey]uint32),
 		nextReference:    state.NextReference,
@@ -669,6 +670,12 @@ func (vm *VM) buildCandidate(
 		// start physical tracking empty rather than inventing pressed keys.
 		// Existing per-canvas state remains intact until input or a transition.
 		hostStatic[gameCanvasHeldKeys] = IntValue(0)
+	}
+	if _, exists := hostStatic[midpShownDisplay]; !exists {
+		// Older snapshots predate visibility tracking. Their current
+		// Displayable may already have received showNotify, so do not
+		// deliver it again just because the snapshot was loaded.
+		hostStatic[midpShownDisplay] = ReferenceValue(state.CurrentDisplay)
 	}
 	if _, exists := hostStatic[midpRepaintPending]; !exists {
 		// Older snapshots predate repaint scheduling and were painted once per
