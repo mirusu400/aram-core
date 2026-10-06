@@ -338,7 +338,7 @@ func (m *Machine) Pause() error {
 	if err != nil {
 		return m.faultLocked(err)
 	}
-	if m.started && m.midlet != 0 {
+	if m.started && m.midlet != 0 && !m.vm.Halted() {
 		_, _, err = m.vm.InvokeVirtual(
 			context.Background(),
 			m.midlet,
@@ -387,7 +387,7 @@ func (m *Machine) Resume() error {
 	); err != nil {
 		return m.faultLocked(err)
 	}
-	if m.started && m.midlet != 0 {
+	if m.started && m.midlet != 0 && !m.vm.Halted() {
 		_, _, err = m.vm.InvokeVirtual(
 			context.Background(),
 			m.midlet,
@@ -433,7 +433,7 @@ func (m *Machine) Stop() error {
 		return err
 	}
 	var before uint64
-	if m.started && m.midlet != 0 {
+	if m.started && m.midlet != 0 && !m.vm.Halted() {
 		before, err = m.beginExecutionLocked()
 		if err != nil {
 			return m.faultLocked(err)
