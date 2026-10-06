@@ -299,6 +299,13 @@ func (r *Runtime) NewJavaArray(
 	count uint32,
 	elementSize uint32,
 ) (uint32, error) {
+	wantSize, err := ktfJavaArrayElementSize(className)
+	if err != nil {
+		return 0, err
+	}
+	if elementSize != wantSize {
+		return 0, fmt.Errorf("KTF Java array %s element size %d, want %d", className, elementSize, wantSize)
+	}
 	if elementSize == 0 || elementSize > 8 {
 		return 0, fmt.Errorf("invalid KTF Java array element size %d", elementSize)
 	}
@@ -1002,8 +1009,10 @@ func (r *Runtime) javaArrayClass(elementType uint32) (string, uint32, error) {
 	case strings.HasPrefix(class.Name, "["):
 		// The KTF multi-array helper passes the full array class for each
 		// recursive level. Unlike anewarray, it does not pass the component
-		// class, so prepending another '[' creates an extra dimension.
-		return class.Name, 4, nil
+		// class, so prepending another '[' creates an extra dimension. A
+		// one-dimensional long or double array still needs eight-byte slots.
+		size, err := ktfJavaArrayElementSize(class.Name)
+		return class.Name, size, err
 	case strings.HasPrefix(class.Name, "L") &&
 		strings.HasSuffix(class.Name, ";"):
 		return "[" + class.Name, 4, nil
