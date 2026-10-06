@@ -164,6 +164,32 @@ func TestHybrid2RaptorPrimaryFramebufferHeightRequiresExactPackage(t *testing.T)
 	}
 }
 
+func TestMapleRaptorPackedResourceNamesRequireExactPackage(t *testing.T) {
+	source := machinecore.Source{SHA256: "1eaa92092bee50e2dc2d7649f9d9e60812f22a67371fdec905215bf7e5d38f20"}
+	pkg := raptorloader.Package{Descriptor: raptorloader.Descriptor{AID: "0002787C", MainClass: "Clet"}}
+	lookup := func(source machinecore.Source, pkg raptorloader.Package) bool {
+		return raptorRuntimeOptions(source, pkg, image.Pt(640, 320)).AllowUnterminatedResourceNames
+	}
+	if !lookup(source, pkg) {
+		t.Fatal("exact package did not enable packed resource names")
+	}
+	changedSource := source
+	changedSource.SHA256 = "0000000000000000000000000000000000000000000000000000000000000000"
+	if lookup(changedSource, pkg) {
+		t.Fatal("different package digest enabled packed resource names")
+	}
+	changedPkg := pkg
+	changedPkg.Descriptor.AID = "00000000"
+	if lookup(source, changedPkg) {
+		t.Fatal("different AID enabled packed resource names")
+	}
+	changedPkg = pkg
+	changedPkg.Descriptor.MainClass = "OtherClet"
+	if lookup(source, changedPkg) {
+		t.Fatal("different main class enabled packed resource names")
+	}
+}
+
 func TestNom3RaptorResourceBytesHelperRequiresExactPackage(t *testing.T) {
 	source := machinecore.Source{SHA256: nom3RaptorSHA256}
 	pkg := raptorloader.Package{Descriptor: raptorloader.Descriptor{

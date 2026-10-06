@@ -37,3 +37,31 @@ func TestGetResourceIDAnswersNoEntryForAMissingResource(t *testing.T) {
 		t.Fatalf("resource size = %d, %v; want 0", got, err)
 	}
 }
+
+func TestGetResourceIDRecoversKnownPackedNamesOnlyWhenEnabled(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	runtime.RegisterResource("png/menu.png", []byte{1})
+	want := runtime.RegisterResource("png/menu.png-extra", []byte{2, 3})
+	name, err := runtime.Heap.Allocate(64, true)
+	check(t, err)
+	check(t, runtime.CPU.WriteMemory(name, []byte("png/menu.png-extra\xae\x1a\x00")))
+	size, err := runtime.Heap.Allocate(4, true)
+	check(t, err)
+	lookup := func() int32 {
+		return int32(dispatchPublicAPI(t, runtime, "MC_knlGetResourceID", name, size).Low)
+	}
+	if got := lookup(); got != -12 {
+		t.Fatalf("default packed-name lookup = %d, want no entry", got)
+	}
+	runtime.AllowUnterminatedResourceNames = true
+	if got := lookup(); got != want {
+		t.Fatalf("packed-name lookup = %d, want longest match %d", got, want)
+	}
+	if got, err := runtime.ReadU32(size); err != nil || got != 2 {
+		t.Fatalf("matched resource size = %d, %v", got, err)
+	}
+	check(t, runtime.CPU.WriteMemory(name, []byte("png/absent.png\xae\x00")))
+	if got := lookup(); got != -12 {
+		t.Fatalf("unknown packed-name lookup = %d, want no entry", got)
+	}
+}

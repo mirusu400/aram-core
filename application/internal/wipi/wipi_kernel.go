@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/mirusu400/aram-core/application/internal/guest"
@@ -103,7 +104,17 @@ func (r *Runtime) dispatchKernel(name string) (guest.WIPIReturn, bool, error) {
 		if err != nil {
 			return guest.WIPIReturn{}, true, err
 		}
-		resource := r.Resources[string(name)]
+		resourceName := string(name)
+		resource := r.Resources[resourceName]
+		if resource == nil && r.AllowUnterminatedResourceNames {
+			longest := 0
+			for candidate, entry := range r.Resources {
+				if len(candidate) > longest && len(candidate) < len(resourceName) &&
+					strings.HasPrefix(resourceName, candidate) {
+					resource, longest = entry, len(candidate)
+				}
+			}
+		}
 		if resource == nil {
 			if err := r.WriteU32(a1, 0); err != nil {
 				return guest.WIPIReturn{}, true, err

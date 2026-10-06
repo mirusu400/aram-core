@@ -273,6 +273,9 @@ type Runtime struct {
 	// graphics setup - never fetching the screen framebuffer - so it flushed an
 	// empty LCD forever and sat on a black screen (issue #126).
 	DisplayInfoReturnsCount bool
+	// AllowUnterminatedResourceNames recovers a known Raptor title's packed
+	// resource names when bytes from the next field follow the filename.
+	AllowUnterminatedResourceNames bool
 
 	Framebuffers     map[uint32]Framebuffer
 	framebufferBits  int

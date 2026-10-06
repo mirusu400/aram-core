@@ -22,6 +22,9 @@ func raptorRuntimeOptions(
 	)
 	options.NullParseIntZero = javaCalls.NullParseIntZero
 	options.NegativeVectorElementNull = javaCalls.NegativeVectorElementNull
+	options.AllowUnterminatedResourceNames = quirkdb.HasRaptorUnterminatedResourceNames(
+		source.SHA256, pkg.Descriptor.AID, pkg.Descriptor.MainClass,
+	)
 	if properties, ok := quirkdb.LookupRaptorSystemProperties(
 		source.SHA256,
 		pkg.Descriptor.AID,

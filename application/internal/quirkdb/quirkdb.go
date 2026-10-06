@@ -429,6 +429,24 @@ func KTFNativeWidthOnly(packageSHA256 string) bool {
 	return packageSHA256 == "dc0d66e4b30063449eff465e2b2f453a4c81892835b5660754cf6c1ae71e4d14"
 }
 
+// This Clet stores resource names in packed fields without a terminating NUL.
+// MC_knlGetResourceID otherwise reads bytes from the following binary field and
+// misses resources that are present in the exact package.
+var RaptorUnterminatedResourceNameTitles = []RaptorTitleKey{{
+	PackageSHA256: "1eaa92092bee50e2dc2d7649f9d9e60812f22a67371fdec905215bf7e5d38f20",
+	AID:           "0002787C",
+	MainClass:     "Clet",
+}}
+
+func HasRaptorUnterminatedResourceNames(packageSHA256, aid, mainClass string) bool {
+	for _, key := range RaptorUnterminatedResourceNameTitles {
+		if key.Matches(packageSHA256, aid, mainClass) {
+			return true
+		}
+	}
+	return false
+}
+
 // RaptorResourceBytesHelper identifies a title-local static helper that takes
 // a java/lang/String resource name and returns the JAR entry as a byte array.
 // Some LGT runtimes implement this helper through carrier-private filesystem

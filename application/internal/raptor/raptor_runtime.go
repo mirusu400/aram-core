@@ -200,12 +200,15 @@ type Options struct {
 	// ResourceBytesHelper is an exact-title static Thumb function which takes
 	// a Java String in r0 and returns the named packaged resource as byte[].
 	ResourceBytesHelper uint32
+	// AllowUnterminatedResourceNames recovers packed resource names in an exact
+	// title whose Clet omits a terminating NUL before adjacent binary data.
+	AllowUnterminatedResourceNames bool
 	// ImagePatches are exact-package compatibility repairs. Every write first
 	// verifies the word supplied by the package.
 	ImagePatches []ImagePatch
 	// PreserveStoppedLoops keeps a stopped infinite loop audible while an exact
 	// title reuses its sole registered clip for effects.
-	PreserveStoppedLoops      bool
+	PreserveStoppedLoops bool
 	// NullParseIntZero and NegativeVectorElementNull are exact-package
 	// fallbacks for Java exceptions the Raptor AOT bridge cannot unwind.
 	NullParseIntZero          bool
@@ -314,6 +317,7 @@ func NewRuntimeWithOptions(
 	}
 	// LGT's MC_grpGetDisplayInfo answers the display count, not M_E_SUCCESS.
 	public.DisplayInfoReturnsCount = true
+	public.AllowUnterminatedResourceNames = options.AllowUnterminatedResourceNames
 	if err := runtime.applyImagePatches(); err != nil {
 		return nil, err
 	}
