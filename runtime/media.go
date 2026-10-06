@@ -566,7 +566,7 @@ func (m *Media) stop(owner OwnerID, id ServiceID, preserveStoppedLoop bool) erro
 		return fmt.Errorf("%w: stop media clip while %v", ErrInvalidState, clip.state)
 	}
 	preservedOutput := false
-	if preserveStoppedLoop && clip.remainingPlays == -1 &&
+	if preserveStoppedLoop && clip.state == ClipPlaying && clip.remainingPlays == -1 &&
 		clip.decoded != nil && clip.decoded.duration > 0 {
 		// Transferring the same loop at the same position leaves the mix
 		// continuous unless it replaces an older detached background voice.
