@@ -1787,6 +1787,15 @@ func (vm *VM) popArrayIndex(current *frame) (int, *Array, error) {
 		return 0, nil, fmt.Errorf("SKVM array operation used with non-array")
 	}
 	if indexValue < 0 || int64(indexValue) >= int64(len(object.Array.Elements)) {
+		if vm.services.Device.Quirk(AstoniaEP2MapEdgeQuirk) &&
+			current.class.Name == "b" && current.method.Name == "w" &&
+			current.method.Descriptor == "(I)V" && object.Array.Descriptor == "[B" &&
+			current.pc > 0 && current.pc <= len(current.method.Code) &&
+			current.method.Code[current.pc-1] == 0x33 {
+			// This title probes the four tiles around a sprite even at the map
+			// edge. An absent tile cannot contain its special tile marker (3).
+			return 0, &Array{Descriptor: "[B", Elements: []Value{IntValue(0)}}, nil
+		}
 		return 0, nil, vm.newThrowable("java/lang/ArrayIndexOutOfBoundsException", "")
 	}
 	return int(indexValue), object.Array, nil
