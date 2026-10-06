@@ -65,6 +65,7 @@ func (e *Engine) startScanLocked(request ScanRequest, resultLimit int) error {
 			slots = (uint64(len(data))-first-size)/uint64(alignment) + 1
 		}
 		part := scanRegion{index: index, first: first, slots: slots, bitmap: make([]uint64, (slots+63)/64), previous: data}
+		before := state.count
 		for slot := uint64(0); slot < slots; slot++ {
 			offset := first + slot*uint64(alignment)
 			current, err := Decode(request.Type, data[offset:offset+size], e.byteOrder)
@@ -83,7 +84,10 @@ func (e *Engine) startScanLocked(request ScanRequest, resultLimit int) error {
 				part.bitmap[slot/64] |= uint64(1) << (slot % 64)
 			}
 		}
-		state.regions = append(state.regions, part)
+		// A region without candidates is never read again; drop its snapshot.
+		if state.count > before {
+			state.regions = append(state.regions, part)
+		}
 	}
 	e.scan = state
 	return nil
@@ -141,6 +145,7 @@ func (e *Engine) refineScanLocked(request NextScanRequest) error {
 	for _, old := range e.scan.regions {
 		data := snapshots[old.index]
 		part := scanRegion{index: old.index, first: old.first, slots: old.slots, bitmap: make([]uint64, len(old.bitmap)), previous: data}
+		before := state.count
 		for wordIndex, word := range old.bitmap {
 			for word != 0 {
 				bit := bits.TrailingZeros64(word)
@@ -166,7 +171,9 @@ func (e *Engine) refineScanLocked(request NextScanRequest) error {
 				word &= word - 1
 			}
 		}
-		state.regions = append(state.regions, part)
+		if state.count > before {
+			state.regions = append(state.regions, part)
+		}
 	}
 	e.scan = state
 	return nil
