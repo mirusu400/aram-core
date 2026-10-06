@@ -198,7 +198,9 @@ func (r *Runtime) createImage(
 		r.Heap.Release(handle)
 		return guest.WIPIInvalid, err
 	}
-	if !descriptor.animated {
+	// A guest can decode several still images from one resource buffer. Only a
+	// whole-buffer decode transfers ownership of that allocation to the image.
+	if !descriptor.animated && offset == 0 && size-uint32(length) < 8 {
 		r.Heap.Release(bufferID)
 	}
 	r.assetServices[handle] = assetID
