@@ -201,6 +201,7 @@ type Runtime struct {
 	activeClassID    uint32
 	heapNext         uint32
 	heapAllocated    map[uint32]uint32
+	interfaceRefs    map[uint32]uint32
 	heapFree         []brewHeapBlock
 	updates          uint64
 	guestFrame       bool
@@ -270,8 +271,9 @@ type brewTextControl struct {
 }
 
 type brewMenuItem struct {
-	id   uint16
-	data uint32
+	id    uint16
+	data  uint32
+	image uint32
 }
 
 type brewMenuControl struct {
@@ -382,6 +384,7 @@ func New(pkg Package) (*Runtime, error) {
 		screenWidth:   uint32(pkg.DisplaySize().X),
 		screenHeight:  uint32(pkg.DisplaySize().Y),
 		heapAllocated: make(map[uint32]uint32),
+		interfaceRefs: make(map[uint32]uint32),
 		eventCounts:   make(map[uint32]uint64), classIDs: classIDs,
 		directories:     make(map[string]struct{}),
 		fileHandles:     make(map[uint32]*brewFile),
@@ -871,7 +874,11 @@ func (r *Runtime) runAppletCode(
 				return 0, err
 			}
 		case addRefTrap + 2:
-			if err := r.cpu.WriteRegister(cpu.RegisterR0, 1); err != nil {
+			address, err := r.cpu.ReadRegister(cpu.RegisterR0)
+			if err != nil {
+				return 0, fmt.Errorf("read BREW retained interface: %w", err)
+			}
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, r.retainInterfaceObject(address)); err != nil {
 				return 0, fmt.Errorf("return BREW interface reference count: %w", err)
 			}
 		case releaseTrap + 2:
@@ -879,8 +886,8 @@ func (r *Runtime) runAppletCode(
 			if err != nil {
 				return 0, fmt.Errorf("read BREW released interface: %w", err)
 			}
-			r.releaseInterfaceObject(address)
-			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+			remaining := r.releaseInterfaceObject(address)
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, remaining); err != nil {
 				return 0, fmt.Errorf("return BREW released interface reference count: %w", err)
 			}
 		case returnTrap + 2:
@@ -2450,7 +2457,11 @@ func (r *Runtime) Bootstrap(ctx context.Context) error {
 			}
 			pc, mode = nextPC, nextMode
 		case addRefTrap + 2:
-			if err := r.cpu.WriteRegister(cpu.RegisterR0, 1); err != nil {
+			address, err := r.cpu.ReadRegister(cpu.RegisterR0)
+			if err != nil {
+				return fmt.Errorf("read BREW bootstrap retained interface: %w", err)
+			}
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, r.retainInterfaceObject(address)); err != nil {
 				return fmt.Errorf("return BREW bootstrap interface reference count: %w", err)
 			}
 			nextPC, nextMode, err := r.hostReturnTarget()
@@ -2463,8 +2474,8 @@ func (r *Runtime) Bootstrap(ctx context.Context) error {
 			if err != nil {
 				return fmt.Errorf("read BREW bootstrap released interface: %w", err)
 			}
-			r.releaseInterfaceObject(address)
-			if err := r.cpu.WriteRegister(cpu.RegisterR0, 0); err != nil {
+			remaining := r.releaseInterfaceObject(address)
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, remaining); err != nil {
 				return fmt.Errorf("return BREW bootstrap released interface reference count: %w", err)
 			}
 			nextPC, nextMode, err := r.hostReturnTarget()
