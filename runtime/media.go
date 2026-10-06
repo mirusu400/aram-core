@@ -240,6 +240,10 @@ func (m *Media) SetStoppedLoopPreservation(on bool) {
 	}
 }
 
+// StoppedLoopPreservation reports the title-specific playback policy that must
+// be reapplied before restoring a media snapshot.
+func (m *Media) StoppedLoopPreservation() bool { return m.preserveStoppedLoops }
+
 // MusicVoiceActive reports whether the title-specific stopped-loop policy is
 // currently preserving a background voice.
 func (m *Media) MusicVoiceActive() bool { return m.bgmVoice != nil }

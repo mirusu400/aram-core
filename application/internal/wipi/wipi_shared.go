@@ -504,6 +504,7 @@ func (r *Runtime) validateSavedServices(saved *SavedState) error {
 	if err != nil {
 		return err
 	}
+	candidate.Media.SetStoppedLoopPreservation(r.Services.Media.StoppedLoopPreservation())
 	if err := candidate.UnmarshalBinary(saved.Services); err != nil {
 		return err
 	}

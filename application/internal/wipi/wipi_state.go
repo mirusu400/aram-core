@@ -572,6 +572,7 @@ func (r *Runtime) RestoreState(saved *SavedState) error {
 		if err != nil {
 			return fmt.Errorf("restore public WIPI shared services: %w", err)
 		}
+		restoredServices.Media.SetStoppedLoopPreservation(r.Services.Media.StoppedLoopPreservation())
 		if err := restoredServices.UnmarshalBinary(saved.Services); err != nil {
 			return fmt.Errorf("restore public WIPI shared services: %w", err)
 		}

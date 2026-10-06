@@ -167,3 +167,34 @@ func TestMediaStoppedLoopCompatibilitySurvivesSnapshot(t *testing.T) {
 		t.Fatalf("restored BGM frame = %v, want [20]", got)
 	}
 }
+
+func TestServicesRestoreKeepsStoppedLoopCompatibilityVoice(t *testing.T) {
+	services, err := NewServices(DefaultConfig())
+	check(t, err)
+	services.Media.SetStoppedLoopPreservation(true)
+	clip, err := services.Media.CreateClip(1, "audio/wav", 0)
+	check(t, err)
+	_, err = services.Media.Append(1, clip, pcmWave(8_000, 1, []int16{10, 20}))
+	check(t, err)
+	check(t, services.Media.Play(1, clip, -1))
+	check(t, services.Media.Stop(1, clip))
+	if !services.Media.MusicVoiceActive() {
+		t.Fatal("test setup did not preserve the stopped loop")
+	}
+
+	state := services.Snapshot()
+	check(t, services.Restore(state))
+	if !services.Media.StoppedLoopPreservation() || !services.Media.MusicVoiceActive() {
+		t.Fatal("Services.Restore lost the title's background voice")
+	}
+
+	encoded, err := services.MarshalBinary()
+	check(t, err)
+	restored, err := NewServices(DefaultConfig())
+	check(t, err)
+	restored.Media.SetStoppedLoopPreservation(true)
+	check(t, restored.UnmarshalBinary(encoded))
+	if !restored.Media.StoppedLoopPreservation() || !restored.Media.MusicVoiceActive() {
+		t.Fatal("Services.UnmarshalBinary lost the title's background voice")
+	}
+}
