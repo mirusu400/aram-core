@@ -23,7 +23,7 @@ func TestCrow2BudgetMigratesAnOldSave(t *testing.T) {
 		t.Fatalf("unrelated title budget = %d", got)
 	}
 	source.SHA256 = crow2ArchiveSHA256
-	m, err := newJavaMachine(context.Background(), source, Application{}, nil, image.Pt(120, 160), 0, 0)
+	m, err := newJavaMachine(context.Background(), source, Application{}, nil, image.Pt(120, 160), 0, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

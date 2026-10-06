@@ -32,6 +32,12 @@ var ErrUnsupportedProfile = errors.New("unsupported Java profile")
 
 func NewJ2ME(ctx context.Context, source machinecore.Source, pkg j2me.Package,
 	size image.Point, sampleRate uint32, channels uint8) (*Machine, error) {
+	return NewJ2MEWithGuestWidth(ctx, source, pkg, size, sampleRate, channels, 0)
+}
+
+// NewJ2MEWithGuestWidth creates a J2ME guest with an optional wider handset canvas.
+func NewJ2MEWithGuestWidth(ctx context.Context, source machinecore.Source, pkg j2me.Package,
+	size image.Point, sampleRate uint32, channels uint8, guestWidthOverride int) (*Machine, error) {
 	if source.ProfileID == j2me.LGTProfileID {
 		size = inferLGTFramebufferSize(size, pkg.Resources)
 		if canvas, ok := quirkdb.LookupLGTCanvas(source.SHA256, pkg.Descriptor.MainClass, size.X, size.Y); ok {
@@ -40,7 +46,7 @@ func NewJ2ME(ctx context.Context, source machinecore.Source, pkg j2me.Package,
 	}
 	return newJavaMachine(ctx, source, Application{MainClass: pkg.Descriptor.MainClass,
 		Properties: pkg.Descriptor.Raw, Classes: pkg.Classes, Resources: pkg.Resources,
-		RecordStores: pkg.RecordStores}, nil, size, sampleRate, channels)
+		RecordStores: pkg.RecordStores}, nil, size, sampleRate, channels, guestWidthOverride)
 }
 
 func inferLGTFramebufferSize(fallback image.Point, resources map[string][]byte) image.Point {

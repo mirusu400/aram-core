@@ -16,7 +16,7 @@ import (
 
 func idleDiagnosticMachine(t *testing.T) *Machine {
 	t.Helper()
-	m, err := newJavaMachine(context.Background(), machinecore.Source{ProfileID: "j2me-1.0/generic/generic", SHA256: strings.Repeat("0", 64)}, Application{}, nil, image.Pt(240, 320), 0, 0)
+	m, err := newJavaMachine(context.Background(), machinecore.Source{ProfileID: "j2me-1.0/generic/generic", SHA256: strings.Repeat("0", 64)}, Application{}, nil, image.Pt(240, 320), 0, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

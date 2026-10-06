@@ -67,16 +67,29 @@ func New(
 	outputSampleRate uint32,
 	outputChannels uint8,
 ) (*Machine, error) {
+	return NewWithGuestWidth(ctx, source, pkg, framebufferSize, outputSampleRate, outputChannels, 0)
+}
+
+// NewWithGuestWidth creates an SKVM guest with an optional wider handset canvas.
+func NewWithGuestWidth(
+	ctx context.Context,
+	source machinecore.Source,
+	pkg skloader.Package,
+	framebufferSize image.Point,
+	outputSampleRate uint32,
+	outputChannels uint8,
+	guestWidthOverride int,
+) (*Machine, error) {
 	app := Application{MainClass: pkg.Descriptor.MainClass, Properties: pkg.Descriptor.Raw,
 		Classes: make(map[string][]byte, len(pkg.Classes)), Resources: pkg.Resources, RecordStores: pkg.RecordStores}
 	for name, class := range pkg.Classes {
 		app.Classes[name] = class.Data
 	}
-	return newJavaMachine(ctx, source, app, &pkg, framebufferSize, outputSampleRate, outputChannels)
+	return newJavaMachine(ctx, source, app, &pkg, framebufferSize, outputSampleRate, outputChannels, guestWidthOverride)
 }
 
 func newJavaMachine(ctx context.Context, source machinecore.Source, app Application, legacy *skloader.Package,
-	framebufferSize image.Point, outputSampleRate uint32, outputChannels uint8) (*Machine, error) {
+	framebufferSize image.Point, outputSampleRate uint32, outputChannels uint8, guestWidthOverride int) (*Machine, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -88,6 +101,11 @@ func newJavaMachine(ctx context.Context, source machinecore.Source, app Applicat
 	if legacy != nil {
 		inferred = inferSKVMFramebufferSize(size, app.Resources)
 		size = skvmTitleCanvas(source, *legacy, inferred)
+	}
+	// Resolve the title's native geometry before widening it. Package canvas
+	// inference and exact-title compatibility still use the native dimensions.
+	if guestWidthOverride > size.X {
+		size.X = min(guestWidthOverride, 4096)
 	}
 	config := shared.DefaultConfig()
 	if source.ProfileID == j2me.LGTProfileID {

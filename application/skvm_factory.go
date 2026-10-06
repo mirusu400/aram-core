@@ -72,13 +72,14 @@ func (f Factory) createSKVMMachine(
 		)
 	}
 	source.SHA256 = actualSHA256
-	machine, err := skvmhost.New(
+	machine, err := skvmhost.NewWithGuestWidth(
 		ctx,
 		source,
 		pkg,
 		f.FramebufferSize,
 		f.OutputSampleRate,
 		f.OutputChannels,
+		f.GuestWidthOverride,
 	)
 	if errors.Is(err, skvmhost.ErrUnsupportedProfile) {
 		return nil, true, fmt.Errorf("%w: %w", ErrUnsupportedSource, err)
