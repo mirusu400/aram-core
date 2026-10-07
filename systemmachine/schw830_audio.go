@@ -82,12 +82,17 @@ type schw830Audio struct {
 	events *aramruntime.EventBus
 	clip   aramruntime.ServiceID
 
-	commandPending bool
-	timeRemainder  uint64
-	now            time.Duration
-	mediaNow       time.Duration
-	epoch          time.Duration
-	generation     uint64
+	commandPending      bool
+	timeRemainder       uint64
+	now                 time.Duration
+	mediaNow            time.Duration
+	epoch               time.Duration
+	generation          uint64
+	mediaOutputRevision uint64
+	generationPending   bool
+	hasPublishedAudio   bool
+	outputSampleRate    int
+	outputChannels      int
 
 	lastSignature    [sha256.Size]byte
 	hasLastSignature bool
@@ -132,6 +137,9 @@ func (a *schw830Audio) resetAtInstructions(instructions uint64) error {
 		return err
 	}
 	a.media = media
+	a.outputSampleRate = int(limits.OutputSampleRate)
+	a.outputChannels = int(limits.OutputChannels)
+	a.mediaOutputRevision = media.OutputRevision()
 	a.events = aramruntime.NewEventBus(32, 64)
 	a.clip = 0
 	a.commandPending = false
@@ -139,6 +147,8 @@ func (a *schw830Audio) resetAtInstructions(instructions uint64) error {
 	a.now = now
 	a.mediaNow = now
 	a.epoch = now
+	a.generationPending = a.generation != 0
+	a.hasPublishedAudio = false
 	if a.generation == 0 || a.generation == math.MaxUint64 {
 		a.generation = 1
 	} else {
@@ -197,9 +207,18 @@ func (a *schw830Audio) Advance(retiredInstructions uint64) error {
 	end := a.now + delta
 	a.timeRemainder = remainder
 	a.now = end
-	if a.clip.Valid() && (a.gainPollDue(retiredInstructions) || a.commandPending) {
-		if err := a.renderUntil(end); err != nil {
-			return err
+	if (a.clip.Valid() || a.hasPublishedAudio || a.generationPending) &&
+		(a.gainPollDue(retiredInstructions) || a.commandPending) {
+		if a.clip.Valid() {
+			if err := a.renderUntil(end); err != nil {
+				return err
+			}
+		} else {
+			// Completed PCM can still be retained here or already transferred
+			// to a host. Poll controls until a revision invalidates that output.
+			a.applyFirmwareGain()
+			a.syncOutputRevision(end)
+			a.mediaNow = end
 		}
 	}
 	if a.commandPending {
@@ -216,6 +235,7 @@ func (a *schw830Audio) renderUntil(end time.Duration) error {
 		return fmt.Errorf("SCH-W830 PCM timeline moved backwards")
 	}
 	a.applyFirmwareGain()
+	a.syncOutputRevision(a.mediaNow)
 	if end == a.mediaNow {
 		return nil
 	}
@@ -327,7 +347,27 @@ func (a *schw830Audio) handlePlaybackCommand() error {
 	a.lastTrigger = a.now
 	a.gainPoll = 0
 	a.applyFirmwareGain()
+	a.syncOutputRevision(a.mediaNow)
 	return nil
+}
+
+func (a *schw830Audio) syncOutputRevision(epoch time.Duration) {
+	revision := a.media.OutputRevision()
+	if revision == a.mediaOutputRevision {
+		return
+	}
+	a.mediaOutputRevision = revision
+	a.generationPending = true
+	a.hasPublishedAudio = false
+	a.epoch = epoch
+	if a.generation == 0 || a.generation == math.MaxUint64 {
+		a.generation = 1
+	} else {
+		a.generation++
+	}
+	a.clearQueuedAudio()
+	a.audioCursor = 0
+	a.cursorValid = false
 }
 
 func (a *schw830Audio) readEncodedSource() ([]byte, bool) {
@@ -427,6 +467,7 @@ func (a *schw830Audio) publish(audio aramruntime.AudioBuffer, start time.Duratio
 		len(audio.PCM16)%audio.Channels != 0 {
 		return
 	}
+	a.hasPublishedAudio = true
 	if start < a.epoch {
 		start = a.epoch
 	}
@@ -516,9 +557,15 @@ func (a *schw830Audio) retainQueuedAudio(sampleRate, channels int) {
 
 func (a *schw830Audio) drain() core.AudioChunk {
 	if a.queuedHead >= len(a.queued) {
+		if a.generationPending {
+			a.generationPending = false
+			return core.AudioChunk{SampleRate: a.outputSampleRate, Channels: a.outputChannels,
+				StartGuestNS: int64(a.epoch), Generation: a.generation}
+		}
 		return core.AudioChunk{}
 	}
 	chunk := a.queued[a.queuedHead]
+	a.generationPending = false
 	a.queued[a.queuedHead] = core.AudioChunk{}
 	a.queuedHead++
 	a.queuedSamples -= len(chunk.PCM16)

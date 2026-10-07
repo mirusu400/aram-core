@@ -256,4 +256,15 @@ func (r *Runtime) DrainAudio() (shared.AudioBuffer, time.Duration, uint64) {
 	return r.media.Drain(), r.clock, r.media.OutputRevision()
 }
 
+// DrainTimedAudio transfers one continuous span with the anchor recorded when
+// it was mixed. With no PCM, the timestamp is the current cooperative clock.
+// This consumes the same queue as DrainAudio; callers choose one consumer.
+func (r *Runtime) DrainTimedAudio() (shared.AudioBuffer, time.Duration, uint64) {
+	audio, start := r.media.DrainTimed()
+	if len(audio.PCM16) == 0 {
+		start = r.clock
+	}
+	return audio, start, r.media.OutputRevision()
+}
+
 func (r *Runtime) AudioOutputRevision() uint64 { return r.media.OutputRevision() }

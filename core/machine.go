@@ -113,11 +113,16 @@ type AudioChunk struct {
 	StartSample uint64
 	// Generation changes whenever reset/load-state or another discontinuity
 	// invalidates audio already buffered by a host.
+	// An empty PCM16 with a nonzero Generation is a discontinuity marker: the
+	// host discards buffered audio from previous generations even when no new
+	// samples are available. Its format and guest timestamp are valid. Producers
+	// report a pending change once, either in new PCM or in an empty marker.
+	// The zero-value chunk means that no audio or control change is available.
 	Generation uint64
 }
 
 func (c AudioChunk) Validate() error {
-	if c.SampleRate == 0 && c.Channels == 0 && len(c.PCM16) == 0 {
+	if c.SampleRate == 0 && c.Channels == 0 && len(c.PCM16) == 0 && c.Generation == 0 {
 		return nil
 	}
 	if c.SampleRate <= 0 {

@@ -32,31 +32,32 @@ const (
 )
 
 type Machine struct {
-	runtimeID           string
-	stateMagic          string
-	nativePolicy        skengine.NativePolicy
-	mu                  sync.Mutex
-	state               machinecore.State
-	source              machinecore.Source
-	mainClass           string
-	classData           map[string][]byte
-	cheatRegions        []classCheatRegion
-	imageSHA256         string
-	vm                  *skengine.VM
-	services            *shared.Services
-	owner               shared.OwnerID
-	started             bool
-	midlet              uint32
-	input               []machinecore.InputEvent
-	initialState        []byte
-	frameQuantum        time.Duration
-	closed              bool
-	audioGeneration     uint64
-	audioEpochGuestNS   int64
-	audioCursorSample   uint64
-	audioCursorValid    bool
-	mediaOutputRevision uint64
-	debugFramebuffer    *debugFramebufferCache
+	runtimeID              string
+	stateMagic             string
+	nativePolicy           skengine.NativePolicy
+	mu                     sync.Mutex
+	state                  machinecore.State
+	source                 machinecore.Source
+	mainClass              string
+	classData              map[string][]byte
+	cheatRegions           []classCheatRegion
+	imageSHA256            string
+	vm                     *skengine.VM
+	services               *shared.Services
+	owner                  shared.OwnerID
+	started                bool
+	midlet                 uint32
+	input                  []machinecore.InputEvent
+	initialState           []byte
+	frameQuantum           time.Duration
+	closed                 bool
+	audioGeneration        uint64
+	audioGenerationPending bool
+	audioEpochGuestNS      int64
+	audioCursorSample      uint64
+	audioCursorValid       bool
+	mediaOutputRevision    uint64
+	debugFramebuffer       *debugFramebufferCache
 }
 
 func New(
@@ -893,7 +894,7 @@ func (m *Machine) DrainAudio() machinecore.AudioChunk {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	revision := m.services.Media.OutputRevision()
-	audio := m.services.Media.Drain()
+	audio, start := m.services.Media.DrainTimed()
 	now := m.services.Clock.Monotonic()
 	if audio.SampleRate <= 0 || audio.Channels <= 0 || len(audio.PCM16) == 0 ||
 		len(audio.PCM16)%audio.Channels != 0 {
@@ -901,14 +902,14 @@ func (m *Machine) DrainAudio() machinecore.AudioChunk {
 			m.nextAudioGenerationLocked(now)
 			m.mediaOutputRevision = revision
 		}
+		if m.audioGenerationPending {
+			m.audioGenerationPending = false
+			return machinecore.AudioChunk{SampleRate: audio.SampleRate, Channels: audio.Channels,
+				StartGuestNS: m.audioEpochGuestNS, Generation: m.audioGeneration}
+		}
 		return machinecore.AudioChunk{}
 	}
 	frames := len(audio.PCM16) / audio.Channels
-	duration := time.Duration(int64(frames) * int64(time.Second) / int64(audio.SampleRate))
-	start := now - duration
-	if start < 0 {
-		start = 0
-	}
 	if revision != m.mediaOutputRevision {
 		m.nextAudioGenerationLocked(start)
 		m.mediaOutputRevision = revision
@@ -930,6 +931,7 @@ func (m *Machine) DrainAudio() machinecore.AudioChunk {
 	}
 	m.audioCursorSample = startSample + uint64(frames)
 	m.audioCursorValid = true
+	m.audioGenerationPending = false
 	return chunk
 }
 
@@ -955,6 +957,7 @@ func (m *Machine) nextAudioGenerationLocked(epoch time.Duration) {
 	} else {
 		m.audioGeneration++
 	}
+	m.audioGenerationPending = true
 	m.audioEpochGuestNS = int64(max(epoch, 0))
 	m.audioCursorSample = 0
 	m.audioCursorValid = false

@@ -232,26 +232,15 @@ func finishLazyScoreDecode(
 			}
 		}
 	}
-	// An FM score's playable length is where its last voice stops sounding,
-	// which is usually well short of stream.end: that is the last event plus a
-	// two-second pad, so a half-second effect would otherwise report two
-	// seconds and a music loop would carry trailing silence around the loop.
-	//
-	// Finding it used to mean rendering the whole score at decode, which is
-	// what Play does synchronously - a freeze of up to 611 ms in the frame a
-	// title starts its music (measured on 메이플스토리). probeEnd walks the
-	// same loop with synthesis switched off and reports the same sample for a
-	// quarter of the cost, so the samples can stay incremental and only the
-	// part actually played is ever synthesized: the worst frame drops to
-	// 196 ms and the mean frame improves too.
-	//
-	// The probe consumes the stream it walks, so it gets its own.
+	// stream.end is a render ceiling with a two-second release allowance.
+	// Looping and completion need the actual last rendered frame, including
+	// scores longer than thirty seconds. The event-driven envelope probe finds
+	// that frame without walking every sample or synthesizing the score at Play.
+	// It consumes its decoder, so the incremental playback stream keeps its own.
 	length := stream.end
-	if stream.end <= uint64(sampleRate)*smafProbedLengthSeconds {
-		if probeDecoder := rebuild(); probeDecoder != nil {
-			if probed := newSMAFRenderStream(probeDecoder).probeEnd(); probed != 0 {
-				length = probed
-			}
+	if probeDecoder := rebuild(); probeDecoder != nil {
+		if probed := newSMAFRenderStream(probeDecoder).probeEnd(); probed != 0 {
+			length = probed
 		}
 	}
 	return &decodedPCM{
@@ -273,12 +262,6 @@ func finishLazyScoreDecode(
 // millisecond. Rendering those whole is strictly better than probing them and
 // synthesizing again during playback, which would do the work twice.
 const smafEagerRenderSeconds = 3
-
-// smafProbedLengthSeconds bounds how long an FM score may be before decode
-// stops looking for its natural end and takes stream.end as the length. The
-// probe is cheap relative to a render but still linear in the score, and a
-// minutes-long menu loop plays to its end anyway, so the two agree there.
-const smafProbedLengthSeconds = 30
 
 func (decoder *smafDecoder) parse(data []byte) bool {
 	if !looksLikeSMAF(data) {
@@ -1205,15 +1188,9 @@ func (stream *smafRenderStream) renderUntil(
 // end, where the last voice's envelopes go idle, which is usually well before
 // the two-second pad in stream.end.
 //
-// A caller that needs the natural length used to have to render the whole score
-// to find it, which froze the emulation for over half a second when a title
-// started its music. The silent pass costs about a quarter of that - it still
-// advances an envelope per operator per sample, but synthesizes no waveform and
-// mixes nothing. It stops on the same sample because the stop condition reads
-// only the event index and whether any voice is still sounding, and a voice
-// retires purely on its envelopes. TestSMAFProbeEndMatchesRender checks the two
-// against each other, and every score in the local corpus probes to exactly the
-// length a full render produces.
+// Voice retirement depends only on envelope state. The FM probe jumps between
+// events and envelope phase transitions, preserving the renderer's retirement
+// sample while avoiding a sample-by-sample pass through a long score.
 //
 // The stream is consumed: probing leaves it at its end, so the caller renders
 // from a fresh one.
@@ -1221,8 +1198,19 @@ func (stream *smafRenderStream) probeEnd() uint64 {
 	if stream == nil || stream.end == 0 {
 		return 0
 	}
-	stream.render(nil, stream.end, true)
-	return stream.cursor
+	// Audio tracks are decoded eagerly. Keep their wave positions on the exact
+	// sample loop; the event-driven walker only needs FM envelope state.
+	for _, event := range stream.decoder.events {
+		if event.kind == smafWaveOn {
+			stream.render(nil, stream.end, true)
+			return stream.cursor
+		}
+	}
+	if stream.cursor != 0 {
+		stream.render(nil, stream.end, true)
+		return stream.cursor
+	}
+	return stream.probeFMEnd()
 }
 
 // render is the shared body. When silent is set it advances exactly the same

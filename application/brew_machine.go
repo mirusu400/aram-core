@@ -64,11 +64,12 @@ type brewMachine struct {
 	now               time.Duration
 	closed            bool
 
-	audioGeneration     uint64
-	audioEpochGuestNS   int64
-	audioCursorSample   uint64
-	audioCursorValid    bool
-	mediaOutputRevision uint64
+	audioGeneration        uint64
+	audioGenerationPending bool
+	audioEpochGuestNS      int64
+	audioCursorSample      uint64
+	audioCursorValid       bool
+	mediaOutputRevision    uint64
 }
 
 func (f Factory) createBREWMachine(ctx context.Context, source machinecore.Source) (machinecore.Machine, bool, error) {
@@ -490,18 +491,21 @@ func (m *brewMachine) DrainAudio() machinecore.AudioChunk {
 	if m.runtime == nil {
 		return machinecore.AudioChunk{}
 	}
-	audio, now, revision := m.runtime.DrainAudio()
+	audio, start, revision := m.runtime.DrainTimedAudio()
 	if audio.SampleRate <= 0 || audio.Channels <= 0 || len(audio.PCM16) == 0 ||
 		len(audio.PCM16)%audio.Channels != 0 {
 		if revision != m.mediaOutputRevision {
-			m.nextBREWAudioGenerationLocked(now)
+			m.nextBREWAudioGenerationLocked(start)
 			m.mediaOutputRevision = revision
+		}
+		if m.audioGenerationPending {
+			m.audioGenerationPending = false
+			return machinecore.AudioChunk{SampleRate: audio.SampleRate, Channels: audio.Channels,
+				StartGuestNS: m.audioEpochGuestNS, Generation: m.audioGeneration}
 		}
 		return machinecore.AudioChunk{}
 	}
 	frames := len(audio.PCM16) / audio.Channels
-	duration := time.Duration(int64(frames) * int64(time.Second) / int64(audio.SampleRate))
-	start := max(now-duration, 0)
 	if revision != m.mediaOutputRevision {
 		m.nextBREWAudioGenerationLocked(start)
 		m.mediaOutputRevision = revision
@@ -523,8 +527,12 @@ func (m *brewMachine) DrainAudio() machinecore.AudioChunk {
 	}
 	m.audioCursorSample = startSample + uint64(frames)
 	m.audioCursorValid = true
+	m.audioGenerationPending = false
 	return chunk
 }
+
+// FrameQuantum reports the cooperative guest time advanced by StepFrame.
+func (*brewMachine) FrameQuantum() time.Duration { return brewFrameDuration }
 
 func brewDistanceWithin(left, right, limit uint64) bool {
 	if left >= right {
@@ -548,6 +556,7 @@ func (m *brewMachine) nextBREWAudioGenerationLocked(epoch time.Duration) {
 	} else {
 		m.audioGeneration++
 	}
+	m.audioGenerationPending = true
 	m.audioEpochGuestNS = int64(max(epoch, 0))
 	m.audioCursorSample = 0
 	m.audioCursorValid = false

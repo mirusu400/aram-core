@@ -63,11 +63,33 @@ func TestPublishAudioFromMediaDropsOldGenerationAfterStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	machine.publishAudioFromMedia(services.Media, 20*time.Millisecond)
-	if stale := machine.DrainPublishedAudio(); len(stale.PCM16) != 0 {
-		t.Fatalf("published audio survived Stop: %d samples", len(stale.PCM16))
+	marker := machine.DrainPublishedAudio()
+	if len(marker.PCM16) != 0 || marker.Generation == 0 || marker.Generation == first.Generation {
+		t.Fatalf("Stop did not expose a discontinuity: %+v", marker)
+	}
+	if err := marker.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if extra := machine.DrainPublishedAudio(); extra.Generation != 0 || len(extra.PCM16) != 0 {
+		t.Fatal("Stop exposed a duplicate discontinuity")
 	}
 	if machine.audioGeneration == first.Generation {
 		t.Fatal("Stop did not advance the frontend generation")
+	}
+}
+
+func TestPublishedAudioNewPCMConveysPendingGeneration(t *testing.T) {
+	machine := &Machine{audioGeneration: 1}
+	machine.publishAudioBuffer(shared.AudioBuffer{SampleRate: 44_100, Channels: 1, PCM16: []int16{1}}, 0)
+	_ = machine.DrainPublishedAudio()
+	machine.beginAudioGeneration(time.Second)
+	machine.publishAudioBuffer(shared.AudioBuffer{SampleRate: 44_100, Channels: 1, PCM16: []int16{2}}, time.Second)
+	chunk := machine.DrainPublishedAudio()
+	if chunk.Generation != 2 || len(chunk.PCM16) != 1 || chunk.PCM16[0] != 2 {
+		t.Fatalf("new PCM was preceded by an unnecessary marker: %+v", chunk)
+	}
+	if extra := machine.DrainPublishedAudio(); extra.Generation != 0 || len(extra.PCM16) != 0 {
+		t.Fatal("new PCM left a duplicate generation marker")
 	}
 }
 

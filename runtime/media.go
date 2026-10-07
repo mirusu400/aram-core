@@ -165,15 +165,17 @@ type mediaClip struct {
 // Media is a deterministic, headless clip timeline and bounded PCM16 mixer.
 // It never opens a host audio device.
 type Media struct {
-	registry        *Registry
-	limits          MediaLimits
-	clips           map[ServiceID]*mediaClip
-	globalVolume    uint8
-	globalMute      bool
-	outputRemainder uint64
-	queuedPCM16     []int16
-	dropped         uint64
-	outputRevision  uint64
+	registry         *Registry
+	limits           MediaLimits
+	clips            map[ServiceID]*mediaClip
+	globalVolume     uint8
+	globalMute       bool
+	outputRemainder  uint64
+	queuedPCM16      []int16
+	queuedAudioSpans []mediaAudioSpan
+	untimedSamples   int
+	dropped          uint64
+	outputRevision   uint64
 
 	// mixMode records the user-facing compatibility setting. Registered clips
 	// mix in either mode.
@@ -619,6 +621,8 @@ func (m *Media) OutputRevision() uint64 { return m.outputRevision }
 
 func (m *Media) invalidateOutput() {
 	m.queuedPCM16 = m.queuedPCM16[:0]
+	m.queuedAudioSpans = m.queuedAudioSpans[:0]
+	m.untimedSamples = 0
 	m.outputRemainder = 0
 	m.outputRevision++
 }
@@ -640,8 +644,15 @@ func (m *Media) SetClipGain(
 	if clip.volume == volume && clip.muted == muted && clip.pan == pan {
 		return nil
 	}
+	changesAudibleOutput := clip.state == ClipPlaying && clip.decoded != nil &&
+		clip.decoded.duration > 0 && !m.globalMute && m.globalVolume != 0 &&
+		((!clip.muted && clip.volume != 0) || (!muted && volume != 0))
 	clip.volume, clip.muted, clip.pan = volume, muted, pan
-	m.invalidateOutput()
+	// Setting up a stopped effect does not change the current mix, including
+	// an exact-title background loop detached from this same clip.
+	if changesAudibleOutput {
+		m.invalidateOutput()
+	}
 	return nil
 }
 
@@ -690,6 +701,8 @@ func (m *Media) Advance(start, end time.Duration, bus *EventBus) error {
 	busBefore := bus.Snapshot()
 	droppedBefore := m.dropped
 	revisionBefore := m.outputRevision
+	spansBefore := append([]mediaAudioSpan(nil), m.queuedAudioSpans...)
+	untimedBefore := m.untimedSamples
 	if err := m.advanceLocked(start, end, bus); err != nil {
 		_ = m.Restore(mediaBefore)
 		_ = bus.Restore(busBefore)
@@ -699,6 +712,8 @@ func (m *Media) Advance(start, end time.Duration, bus *EventBus) error {
 		// state is one; a rollback must not make the host tear down its audio
 		// generation for a tick that never happened.
 		m.outputRevision = revisionBefore
+		m.queuedAudioSpans = spansBefore
+		m.untimedSamples = untimedBefore
 		return err
 	}
 	return nil
@@ -792,7 +807,7 @@ func (m *Media) advanceLocked(start, end time.Duration, bus *EventBus) error {
 		}
 	}
 	m.dropped += firstFrame * uint64(m.limits.OutputChannels)
-	m.queueOutput(mixed)
+	m.queueOutput(mixed, start, end, firstFrame, audible)
 	if activeDecoded {
 		m.outputRemainder = remainder
 	}
@@ -834,26 +849,6 @@ func (m *Media) retainedFrames() uint64 {
 	return uint64(m.limits.MaxQueuedSamples) / uint64(m.limits.OutputChannels)
 }
 
-// queueOutput stores mixed samples, keeping the newest MaxQueuedSamples and
-// discarding whatever no longer fits. A host that stops draining audio - a
-// headless probe, a minimised window, a frontend between presentations - must
-// not be able to fault the guest, so the queue behaves as a bounded ring
-// rather than as a hard limit.
-func (m *Media) queueOutput(mixed []int64) {
-	retention := int(m.limits.MaxQueuedSamples)
-	if len(mixed) >= retention {
-		m.dropped += uint64(len(m.queuedPCM16) + len(mixed) - retention)
-		mixed = mixed[len(mixed)-retention:]
-		m.queuedPCM16 = m.queuedPCM16[:0]
-	} else if overflow := len(m.queuedPCM16) + len(mixed) - retention; overflow > 0 {
-		m.dropped += uint64(overflow)
-		m.queuedPCM16 = append(m.queuedPCM16[:0], m.queuedPCM16[overflow:]...)
-	}
-	for _, sample := range mixed {
-		m.queuedPCM16 = append(m.queuedPCM16, clampInt16(sample))
-	}
-}
-
 // DroppedSamples reports how many mixed samples retention has discarded
 // because the host did not drain them in time.
 func (m *Media) DroppedSamples() uint64 {
@@ -867,6 +862,8 @@ func (m *Media) Drain() AudioBuffer {
 		PCM16:      append([]int16(nil), m.queuedPCM16...),
 	}
 	m.queuedPCM16 = m.queuedPCM16[:0]
+	m.queuedAudioSpans = m.queuedAudioSpans[:0]
+	m.untimedSamples = 0
 	return result
 }
 
@@ -885,9 +882,11 @@ func (m *Media) Drain() AudioBuffer {
 // Restore does not reset it either, so a rolled-back advance leaves the same
 // diagnostic total it always has.
 type mediaAdvanceState struct {
-	outputRemainder uint64
-	queuedPCM16     []int16
-	clips           []mediaClipAdvanceState
+	outputRemainder  uint64
+	queuedPCM16      []int16
+	queuedAudioSpans []mediaAudioSpan
+	untimedSamples   int
+	clips            []mediaClipAdvanceState
 }
 
 // mediaClipAdvanceState is one voice's rollback record. The clip is held by
@@ -908,6 +907,8 @@ func (m *Media) captureAdvance(destination *mediaAdvanceState) {
 		destination.queuedPCM16[:0],
 		m.queuedPCM16...,
 	)
+	destination.queuedAudioSpans = append(destination.queuedAudioSpans[:0], m.queuedAudioSpans...)
+	destination.untimedSamples = m.untimedSamples
 	destination.clips = destination.clips[:0]
 	for _, clip := range m.clips {
 		destination.clips = append(destination.clips, mediaClipAdvanceState{
@@ -931,6 +932,8 @@ func (m *Media) captureAdvance(destination *mediaAdvanceState) {
 func (m *Media) restoreAdvance(saved *mediaAdvanceState) {
 	m.outputRemainder = saved.outputRemainder
 	m.queuedPCM16 = append(m.queuedPCM16[:0], saved.queuedPCM16...)
+	m.queuedAudioSpans = append(m.queuedAudioSpans[:0], saved.queuedAudioSpans...)
+	m.untimedSamples = saved.untimedSamples
 	for _, clip := range saved.clips {
 		clip.clip.position = clip.position
 		clip.clip.state = clip.state
@@ -1084,6 +1087,10 @@ func (m *Media) Restore(state MediaState) error {
 	m.globalMute = state.GlobalMute
 	m.outputRemainder = state.OutputRemainder
 	m.queuedPCM16 = append([]int16(nil), state.QueuedPCM16...)
+	// Presentation anchors are host state, like outputRevision. Keep the
+	// legacy snapshot PCM contract, but never invent timestamps for it.
+	m.queuedAudioSpans = m.queuedAudioSpans[:0]
+	m.untimedSamples = len(m.queuedPCM16)
 	m.mixMode = state.AudioMixMode
 	m.bgmVoice = bgmVoice
 	m.outputRevision++

@@ -107,6 +107,100 @@ func TestSCHW830AudioAppliesFirmwareVolumeAndMute(t *testing.T) {
 	}
 }
 
+func TestSCHW830LiveMuteDiscardsPublishedAudioAndChangesGeneration(t *testing.T) {
+	audio, command := newSCHW830TestAudio(t, 7, 0)
+	installSCHW830TestSource(t, audio.bus, schw830TestSMAF())
+	check(t, command.Write(schw830TestCommand, system.Width16, 1))
+	check(t, audio.Advance(1_000))
+	check(t, audio.Advance(100_000))
+	generation := audio.generation
+	writeSCHW830TestWord(t, audio.bus, schw830TestRingMode, 4)
+	check(t, audio.Advance(10_000))
+	marker := audio.drain()
+	if len(marker.PCM16) != 0 || marker.Generation == 0 || marker.Generation == generation {
+		t.Fatalf("live mute retained %d samples; generation %d -> %d", len(marker.PCM16), generation, marker.Generation)
+	}
+	check(t, marker.Validate())
+	if extra := audio.drain(); extra.Generation != 0 || len(extra.PCM16) != 0 {
+		t.Fatal("live mute exposed a duplicate marker")
+	}
+	mutedGeneration := audio.generation
+	check(t, audio.Advance(10_000))
+	if audio.generation != mutedGeneration {
+		t.Fatal("unchanged mute started another generation")
+	}
+	if extra := audio.drain(); extra.Generation != 0 || len(extra.PCM16) != 0 {
+		t.Fatal("unchanged mute repeated its marker")
+	}
+	writeSCHW830TestWord(t, audio.bus, schw830TestRingMode, 0)
+	check(t, audio.Advance(10_000))
+	chunk := audio.drain()
+	if len(chunk.PCM16) == 0 || schw830AudioPeak(chunk.PCM16) == 0 ||
+		chunk.Generation == mutedGeneration || chunk.Generation != audio.generation ||
+		chunk.StartGuestNS != int64(121*time.Millisecond) || chunk.StartSample != 0 {
+		t.Fatalf("unmute output: frames=%d peak=%d start=%d sample=%d generation=%d", len(chunk.PCM16),
+			schw830AudioPeak(chunk.PCM16), chunk.StartGuestNS, chunk.StartSample, chunk.Generation)
+	}
+	if extra := audio.drain(); extra.Generation != 0 || len(extra.PCM16) != 0 {
+		t.Fatal("unmute PCM left a duplicate marker")
+	}
+}
+
+func TestSCHW830MuteAfterFinishedPlaybackInvalidatesPendingOutput(t *testing.T) {
+	for _, transferred := range []bool{false, true} {
+		audio, command := newSCHW830TestAudio(t, 7, 0)
+		installSCHW830TestSource(t, audio.bus, schw830TestWave())
+		check(t, command.Write(schw830TestCommand, system.Width16, 1))
+		check(t, audio.Advance(1_000))
+		check(t, audio.Advance(1_000_000))
+		if audio.clip.Valid() {
+			t.Fatal("fixture playback did not finish")
+		}
+		if transferred {
+			if chunk := audio.drain(); len(chunk.PCM16) == 0 {
+				t.Fatal("fixture did not transfer finished PCM to the host")
+			}
+		}
+		generation := audio.generation
+		writeSCHW830TestWord(t, audio.bus, schw830TestRingMode, 4)
+		// The first half-poll must leave the control unobserved, then the
+		// complete interval invalidates queued and already-transferred PCM.
+		check(t, audio.Advance(500))
+		if audio.generation != generation {
+			t.Fatal("idle gain polling exceeded its configured rate")
+		}
+		check(t, audio.Advance(500))
+		marker := audio.drain()
+		if len(marker.PCM16) != 0 || marker.Generation == 0 || marker.Generation == generation {
+			t.Fatalf("finished playback mute: transferred=%t marker=%+v", transferred, marker)
+		}
+		check(t, marker.Validate())
+		if extra := audio.drain(); extra.Generation != 0 || len(extra.PCM16) != 0 {
+			t.Fatal("finished playback mute exposed a duplicate marker")
+		}
+	}
+}
+
+func TestSCHW830LiveVolumeChangeDiscardsPreviousGainOutput(t *testing.T) {
+	audio, command := newSCHW830TestAudio(t, 7, 0)
+	installSCHW830TestSource(t, audio.bus, schw830TestSMAF())
+	check(t, command.Write(schw830TestCommand, system.Width16, 1))
+	check(t, audio.Advance(1_000))
+	check(t, audio.Advance(100_000))
+	generation := audio.generation
+	writeSCHW830TestWord(t, audio.bus, schw830TestVolume, 3)
+	check(t, audio.Advance(10_000))
+	chunk := audio.drain()
+	if len(chunk.PCM16) != 441 || schw830AudioPeak(chunk.PCM16) == 0 ||
+		chunk.Generation == generation || chunk.StartGuestNS != int64(101*time.Millisecond) || chunk.StartSample != 0 {
+		t.Fatalf("live volume retained old gain: start=%d sample=%d frames=%d generation=%d", chunk.StartGuestNS, chunk.StartSample, len(chunk.PCM16), chunk.Generation)
+	}
+	check(t, audio.Advance(10_000))
+	if next := audio.drain(); next.Generation != chunk.Generation || next.StartSample != 441 {
+		t.Fatalf("unchanged volume interrupted output: sample=%d generation=%d", next.StartSample, next.Generation)
+	}
+}
+
 func TestSCHW830AudioCoalescesCodecSetupPulseAndResetsTimeline(t *testing.T) {
 	audio, command := newSCHW830TestAudio(t, 7, 0)
 	installSCHW830TestSource(t, audio.bus, schw830TestSMAF())

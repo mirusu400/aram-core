@@ -19,6 +19,33 @@ import (
 
 type panicReaderAt struct{}
 
+func TestBREWFrameQuantumMatchesStepFrameClock(t *testing.T) {
+	machine := newBREWMachine(machinecore.Source{Name: "synthetic.zip"}, brewrt.Package{})
+	if got := machine.FrameQuantum(); got != 16*time.Millisecond {
+		t.Fatalf("BREW frame quantum = %v, want 16ms", got)
+	}
+}
+
+func TestBREWEmptyGenerationChangeEmitsOneMarker(t *testing.T) {
+	runtime, err := brewrt.New(brewrt.Package{Module: make([]byte, 20)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	machine := &brewMachine{runtime: runtime, audioGeneration: 1}
+	machine.resetBREWAudioLocked(time.Second)
+	marker := machine.DrainAudio()
+	if marker.Generation != 2 || len(marker.PCM16) != 0 || marker.StartGuestNS != int64(time.Second) {
+		t.Fatalf("BREW reset did not expose a discontinuity: %+v", marker)
+	}
+	if err := marker.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if extra := machine.DrainAudio(); extra.Generation != 0 || len(extra.PCM16) != 0 {
+		t.Fatal("BREW reset exposed a duplicate discontinuity")
+	}
+}
+
 func genericBREWArchiveForTest(t *testing.T) []byte {
 	t.Helper()
 	module := make([]byte, 8)

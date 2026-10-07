@@ -32,9 +32,20 @@ func (m *Machine) DrainPublishedAudio() machinecore.AudioChunk {
 	m.audioMu.Lock()
 	defer m.audioMu.Unlock()
 	if m.publishedAudioHead >= len(m.publishedAudio) {
+		if m.audioGenerationPending {
+			m.audioGenerationPending = false
+			rate, channels := m.audioSampleRate, m.audioChannels
+			if rate <= 0 || channels <= 0 {
+				limits := shared.DefaultMediaLimits()
+				rate, channels = int(limits.OutputSampleRate), int(limits.OutputChannels)
+			}
+			return machinecore.AudioChunk{SampleRate: rate, Channels: channels,
+				StartGuestNS: m.audioEpochGuestNS, Generation: m.audioGeneration}
+		}
 		return machinecore.AudioChunk{}
 	}
 	chunk := m.publishedAudio[m.publishedAudioHead]
+	m.audioGenerationPending = false
 	m.publishedAudio[m.publishedAudioHead] = machinecore.AudioChunk{}
 	m.publishedAudioHead++
 	m.publishedAudioSamples -= len(chunk.PCM16)
@@ -56,26 +67,35 @@ func (m *Machine) publishAudioFromMedia(media *shared.Media, start time.Duration
 		return
 	}
 	revision := media.OutputRevision()
+	audio := media.Drain()
 	m.audioMu.Lock()
+	defer m.audioMu.Unlock()
 	if revision != m.mediaOutputRevision {
 		m.nextAudioGenerationLocked(start)
 		m.mediaOutputRevision = revision
 	}
-	m.audioMu.Unlock()
-	m.publishAudioBuffer(media.Drain(), start)
+	m.publishAudioBufferLocked(audio, start)
 }
 
 func (m *Machine) publishAudioBuffer(audio shared.AudioBuffer, start time.Duration) {
+	m.audioMu.Lock()
+	defer m.audioMu.Unlock()
+	m.publishAudioBufferLocked(audio, start)
+}
+
+func (m *Machine) publishAudioBufferLocked(audio shared.AudioBuffer, start time.Duration) {
 	if audio.SampleRate <= 0 || audio.Channels <= 0 ||
-		len(audio.PCM16) == 0 || len(audio.PCM16)%audio.Channels != 0 {
+		len(audio.PCM16)%audio.Channels != 0 {
+		return
+	}
+	m.audioSampleRate, m.audioChannels = audio.SampleRate, audio.Channels
+	if len(audio.PCM16) == 0 {
 		return
 	}
 	if start < 0 {
 		start = 0
 	}
 
-	m.audioMu.Lock()
-	defer m.audioMu.Unlock()
 	m.ensureAudioGenerationLocked()
 	startNS := int64(start)
 	if startNS < m.audioEpochGuestNS {
@@ -190,6 +210,7 @@ func (m *Machine) nextAudioGenerationLocked(epoch time.Duration) {
 	} else {
 		m.audioGeneration++
 	}
+	m.audioGenerationPending = true
 	m.audioEpochGuestNS = int64(epoch)
 	m.audioCursorSample = 0
 	m.audioCursorValid = false

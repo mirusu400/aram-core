@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	machinecore "github.com/mirusu400/aram-core/core"
 	shared "github.com/mirusu400/aram-core/runtime"
 )
 
@@ -51,8 +52,15 @@ func TestSKVMAudioCarriesTimelineAndStopGeneration(t *testing.T) {
 	if err := services.Media.Stop(owner, clip); err != nil {
 		t.Fatal(err)
 	}
-	if stale := machine.DrainAudio(); len(stale.PCM16) != 0 {
-		t.Fatalf("SKVM Stop retained %d samples", len(stale.PCM16))
+	marker := machine.DrainAudio()
+	if len(marker.PCM16) != 0 || marker.Generation == 0 || marker.Generation == first.Generation {
+		t.Fatalf("SKVM Stop did not expose a discontinuity: %+v", marker)
+	}
+	if err := marker.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if extra := machine.DrainAudio(); extra.Generation != 0 || len(extra.PCM16) != 0 {
+		t.Fatal("SKVM Stop exposed a duplicate discontinuity")
 	}
 	if machine.audioGeneration == first.Generation {
 		t.Fatal("SKVM Stop did not advance the audio generation")
@@ -82,4 +90,51 @@ func skvmHostTestWave() []byte {
 		binary.LittleEndian.PutUint16(data[44+index*2:], uint16(sample))
 	}
 	return data
+}
+
+func TestSKVMDeferredDrainPreservesSoundAnchorsAndSilentGap(t *testing.T) {
+	services, err := shared.NewServices(shared.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, err := services.Coordinator.Register("skvm-deferred-audio", 1_000_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clip, err := services.Media.CreateClip(owner, "audio/wav", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := services.Media.Append(owner, clip, skvmHostTestWave()); err != nil {
+		t.Fatal(err)
+	}
+	machine := &Machine{services: services, owner: owner, audioGeneration: 1}
+	for _, step := range []struct {
+		play  bool
+		delta time.Duration
+	}{{true, 100 * time.Millisecond}, {false, time.Second}, {true, 100 * time.Millisecond}, {false, time.Second}} {
+		if step.play {
+			if err := services.Media.Play(owner, clip, 1); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := services.Advance(owner, step.delta); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := machine.DrainAudio()
+	second := machine.DrainAudio()
+	for index, chunk := range []struct {
+		start time.Duration
+		audio machinecore.AudioChunk
+	}{{0, first}, {1100 * time.Millisecond, second}} {
+		if len(chunk.audio.PCM16) != 4410 || chunk.audio.StartGuestNS != int64(chunk.start) ||
+			chunk.audio.StartSample != uint64(chunk.start)*44100/uint64(time.Second) || chunk.audio.Generation != 1 {
+			t.Fatalf("deferred chunk %d: start=%d sample=%d frames=%d generation=%d", index,
+				chunk.audio.StartGuestNS, chunk.audio.StartSample, len(chunk.audio.PCM16), chunk.audio.Generation)
+		}
+	}
+	if chunk := machine.DrainAudio(); len(chunk.PCM16) != 0 {
+		t.Fatal("deferred drain returned duplicate audio")
+	}
 }
