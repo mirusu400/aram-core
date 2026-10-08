@@ -508,7 +508,14 @@ func (r *Runtime) canQueueCardKeyEvent() bool {
 		return false
 	}
 	if task := r.PaintTasks[card]; task != nil && !task.Done {
-		return false
+		// Object.wait suspends the paint callback until another task notifies
+		// it or its timeout expires. The card's key handler can supply that
+		// notification, so it must remain dispatchable while paint is waiting.
+		waiting := task.monitorWait != 0 &&
+			(task.WakeAtMS == 0 || task.WakeAtMS > r.TickMS)
+		if !waiting {
+			return false
+		}
 	}
 	return true
 }
