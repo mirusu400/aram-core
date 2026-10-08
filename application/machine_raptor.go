@@ -401,6 +401,9 @@ func (m *Machine) runRaptorCallbackTask(
 		return cpu.Result{Reason: cpu.StopFault, Err: err}, false, false, err
 	}
 	defer func() {
+		if returnedErr != nil && result.Reason == cpu.StopFault {
+			return // Preserve the failed callback's CPU state for crash reports.
+		}
 		if restoreErr := outer.Restore(m.cpu); restoreErr != nil && returnedErr == nil {
 			result = cpu.Result{Reason: cpu.StopFault, Err: restoreErr}
 			completed = false
@@ -593,7 +596,7 @@ func (m *Machine) finishRaptorCall(
 	return nil
 }
 
-func (m *Machine) stepRaptorJavaTask(ctx context.Context) (cpu.Result, bool, error) {
+func (m *Machine) stepRaptorJavaTask(ctx context.Context) (result cpu.Result, ranJava bool, returnedErr error) {
 	runtime := m.raptor
 	if runtime == nil || runtime.Java == nil {
 		return cpu.Result{}, false, nil
@@ -609,7 +612,15 @@ func (m *Machine) stepRaptorJavaTask(ctx context.Context) (cpu.Result, bool, err
 	if err != nil {
 		return cpu.Result{Reason: cpu.StopFault, Err: err}, true, err
 	}
-	defer func() { _ = outer.Restore(m.cpu) }()
+	defer func() {
+		if returnedErr != nil && result.Reason == cpu.StopFault {
+			return // Preserve the failed thread's CPU state for crash reports.
+		}
+		if restoreErr := outer.Restore(m.cpu); restoreErr != nil && returnedErr == nil {
+			result = cpu.Result{Reason: cpu.StopFault, Err: restoreErr}
+			returnedErr = restoreErr
+		}
+	}()
 	if !task.HasContext() {
 		stack := task.Stack
 		if stack == 0 {
@@ -646,7 +657,7 @@ func (m *Machine) stepRaptorJavaTask(ctx context.Context) (cpu.Result, bool, err
 	if status&cpu.StatusThumb != 0 {
 		mode = cpu.ModeThumb
 	}
-	result := m.runWIPISlice(
+	result = m.runWIPISlice(
 		ctx,
 		pc,
 		mode,

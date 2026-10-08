@@ -513,6 +513,11 @@ func (m *Machine) invokeWIPICallback(
 		return cpu.Result{Reason: cpu.StopFault, Err: err}, 0, err
 	}
 	defer func() {
+		// A fault ends execution instead of returning to the interrupted code.
+		// Keep its registers and stack pointer for the crash snapshot.
+		if returnedErr != nil && result.Reason == cpu.StopFault {
+			return
+		}
 		if restoreErr := savedContext.Restore(m.cpu); restoreErr != nil && returnedErr == nil {
 			result = cpu.Result{Reason: cpu.StopFault, Err: restoreErr}
 			returnValue = 0
