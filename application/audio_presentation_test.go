@@ -2,11 +2,44 @@ package application
 
 import (
 	"encoding/binary"
+	"reflect"
 	"testing"
 	"time"
 
 	shared "github.com/mirusu400/aram-core/runtime"
 )
+
+func TestPublishAudioKeepsStoppedClipOnTimeline(t *testing.T) {
+	services, err := shared.NewServices(shared.Config{})
+	check(t, err)
+	owner, err := services.Coordinator.Register("audio-stop-timeline", 1_000_000)
+	check(t, err)
+	clip, err := services.Media.CreateClip(owner, "audio/wav", 0)
+	check(t, err)
+	_, err = services.Media.Append(owner, clip, presentationTestWave())
+	check(t, err)
+	check(t, services.Media.Play(owner, clip, -1))
+	machine := &Machine{audioGeneration: 1}
+	check(t, services.Media.Advance(0, 10*time.Millisecond, services.Events))
+	machine.publishAudioFromMedia(services.Media, 0)
+	// Leave the first chunk in the publisher while the mixer renders the next.
+	want := append([]int16(nil), machine.publishedAudio[0].PCM16...)
+	check(t, services.Media.Advance(10*time.Millisecond, 20*time.Millisecond, services.Events))
+	check(t, services.Media.StopOnTimeline(owner, clip))
+	check(t, services.Media.DestroyClip(owner, clip, services.Events))
+	machine.publishAudioFromMedia(services.Media, 10*time.Millisecond)
+	first, second := machine.DrainPublishedAudio(), machine.DrainPublishedAudio()
+	if !reflect.DeepEqual(first.PCM16, want) || len(second.PCM16) == 0 ||
+		first.Generation != 1 || second.Generation != first.Generation ||
+		second.StartSample != uint64(len(first.PCM16)/first.Channels) || second.StartGuestNS != int64(10*time.Millisecond) {
+		t.Fatalf("clip stop replaced the published timeline: first=%+v second=%+v", first, second)
+	}
+	check(t, services.Media.Advance(20*time.Millisecond, 30*time.Millisecond, services.Events))
+	machine.publishAudioFromMedia(services.Media, 20*time.Millisecond)
+	if extra := machine.DrainPublishedAudio(); extra.Generation != 0 || len(extra.PCM16) != 0 {
+		t.Fatalf("stopped clip published more audio: %+v", extra)
+	}
+}
 
 func TestPublishedAudioCarriesGuestTimeline(t *testing.T) {
 	machine := &Machine{audioGeneration: 3}

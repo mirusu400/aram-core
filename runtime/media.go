@@ -549,17 +549,31 @@ func (m *Media) Resume(owner OwnerID, id ServiceID) error {
 }
 
 func (m *Media) Stop(owner OwnerID, id ServiceID) error {
-	return m.stop(owner, id, m.preserveStoppedLoops)
+	return m.stop(owner, id, m.preserveStoppedLoops, true)
+}
+
+// StopOnTimeline stops future mixing without retracting samples rendered before
+// the current guest time. Use this for per-clip guest stops: clearing the mixed
+// output would also erase other voices and short effects waiting in host buffers.
+// Playback retains the configured loop compatibility policy.
+func (m *Media) StopOnTimeline(owner OwnerID, id ServiceID) error {
+	return m.stop(owner, id, m.preserveStoppedLoops, false)
+}
+
+// StopForRelease stops future mixing before releasing a clip. It keeps already
+// rendered output, but never captures a freed loop as a background voice.
+func (m *Media) StopForRelease(owner OwnerID, id ServiceID) error {
+	return m.stop(owner, id, false, false)
 }
 
 // StopWithoutPreservation stops a loop being freed rather than retaining it as
 // a detached background voice. The title's compatibility policy remains enabled
 // for subsequent stop-and-reuse operations.
 func (m *Media) StopWithoutPreservation(owner OwnerID, id ServiceID) error {
-	return m.stop(owner, id, false)
+	return m.stop(owner, id, false, true)
 }
 
-func (m *Media) stop(owner OwnerID, id ServiceID, preserveStoppedLoop bool) error {
+func (m *Media) stop(owner OwnerID, id ServiceID, preserveStoppedLoop, discardOutput bool) error {
 	clip, err := m.get(owner, id)
 	if err != nil {
 		return err
@@ -588,7 +602,7 @@ func (m *Media) stop(owner OwnerID, id ServiceID, preserveStoppedLoop bool) erro
 	clip.state = ClipStopped
 	clip.remainingPlays = 0
 	clip.waitingForData = false
-	if !preservedOutput {
+	if discardOutput && !preservedOutput {
 		m.invalidateOutput()
 	}
 	return nil

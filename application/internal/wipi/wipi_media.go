@@ -513,7 +513,9 @@ const RaptorClipStoppedCode = uint32(3)
 // RaptorStopClip stops playback and, when free is set, releases the clip and
 // its guest handle. A stop reports the provider's stopped status to the
 // clip's callback, which is how a title learns it may release the handle and
-// load its next track.
+// load its next track. Both operations retain audio rendered before the guest
+// stop time: flushing the mixed output here erases short attack sounds before
+// the host prebuffer can play them (issue #508).
 func (r *Runtime) RaptorStopClip(handle uint32, free bool) {
 	clip := r.MediaClips[handle]
 	if clip == nil {
@@ -528,7 +530,7 @@ func (r *Runtime) RaptorStopClip(handle uint32, free bool) {
 				return
 			}
 			if info.State != shared.ClipStopped {
-				if err := r.Services.Media.StopWithoutPreservation(r.ServiceOwner, serviceID); err != nil {
+				if err := r.Services.Media.StopForRelease(r.ServiceOwner, serviceID); err != nil {
 					return
 				}
 			}
@@ -537,7 +539,7 @@ func (r *Runtime) RaptorStopClip(handle uint32, free bool) {
 			}
 			delete(r.MediaServices, handle)
 		} else {
-			if err := r.Services.Media.Stop(r.ServiceOwner, serviceID); err != nil {
+			if err := r.Services.Media.StopOnTimeline(r.ServiceOwner, serviceID); err != nil {
 				return
 			}
 		}
