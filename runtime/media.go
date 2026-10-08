@@ -544,6 +544,17 @@ func (m *Media) Resume(owner OwnerID, id ServiceID) error {
 }
 
 func (m *Media) Stop(owner OwnerID, id ServiceID) error {
+	return m.stop(owner, id, m.preserveStoppedLoops)
+}
+
+// StopWithoutPreservation stops a loop being freed rather than retaining it as
+// a detached background voice. The title's compatibility policy remains enabled
+// for subsequent stop-and-reuse operations.
+func (m *Media) StopWithoutPreservation(owner OwnerID, id ServiceID) error {
+	return m.stop(owner, id, false)
+}
+
+func (m *Media) stop(owner OwnerID, id ServiceID, preserveStoppedLoop bool) error {
 	clip, err := m.get(owner, id)
 	if err != nil {
 		return err
@@ -551,7 +562,7 @@ func (m *Media) Stop(owner OwnerID, id ServiceID) error {
 	if clip.state != ClipPlaying && clip.state != ClipPaused && clip.state != ClipRecording {
 		return fmt.Errorf("%w: stop media clip while %v", ErrInvalidState, clip.state)
 	}
-	if m.preserveStoppedLoops && clip.remainingPlays == -1 &&
+	if preserveStoppedLoop && clip.state == ClipPlaying && clip.remainingPlays == -1 &&
 		clip.decoded != nil && clip.decoded.duration > 0 {
 		m.bgmVoice = &mediaClip{
 			mediaType:      clip.mediaType,
@@ -620,8 +631,15 @@ func (m *Media) SetClipGain(
 	if clip.volume == volume && clip.muted == muted && clip.pan == pan {
 		return nil
 	}
+	changesAudibleOutput := clip.state == ClipPlaying && clip.decoded != nil &&
+		clip.decoded.duration > 0 && !m.globalMute && m.globalVolume != 0 &&
+		((!clip.muted && clip.volume != 0) || (!muted && volume != 0))
 	clip.volume, clip.muted, clip.pan = volume, muted, pan
-	m.invalidateOutput()
+	// Setting up a stopped effect does not change the current mix, including
+	// an exact-title background loop detached from this same clip.
+	if changesAudibleOutput {
+		m.invalidateOutput()
+	}
 	return nil
 }
 

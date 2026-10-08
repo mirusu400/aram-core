@@ -97,6 +97,21 @@ func TestMediaStoppedLoopCompatibilityPreservesBGMWhileClipIsReused(t *testing.T
 	}
 }
 
+func TestMediaStoppedLoopCompatibilityDoesNotResumePausedMusic(t *testing.T) {
+	media, bus, clip := newRampMedia(t)
+	media.SetStoppedLoopPreservation(true)
+	check(t, media.Play(1, clip, -1))
+	check(t, media.Pause(1, clip))
+	check(t, media.Stop(1, clip))
+	if media.MusicVoiceActive() {
+		t.Fatal("stopping a paused loop resumed it as background music")
+	}
+	check(t, media.Advance(0, 125*time.Microsecond, bus))
+	if got := media.Drain().PCM16; len(got) != 0 {
+		t.Fatalf("paused and stopped loop still produced audio: %v", got)
+	}
+}
+
 func TestMediaStoppedLoopCompatibilitySurvivesSnapshot(t *testing.T) {
 	media, bus, clip := newRampMedia(t)
 	media.SetStoppedLoopPreservation(true)

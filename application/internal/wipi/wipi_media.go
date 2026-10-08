@@ -521,7 +521,11 @@ func (r *Runtime) RaptorStopClip(handle uint32, free bool) {
 	if serviceID := r.MediaServices[handle]; serviceID != 0 {
 		if free {
 			if clip.State != 0 {
-				_ = r.Services.Media.Stop(r.ServiceOwner, serviceID)
+				if clip.Repeat {
+					_ = r.Services.Media.StopWithoutPreservation(r.ServiceOwner, serviceID)
+				} else {
+					_ = r.Services.Media.Stop(r.ServiceOwner, serviceID)
+				}
 			}
 			_ = r.Services.Media.DestroyClip(r.ServiceOwner, serviceID, r.Services.Events)
 			delete(r.MediaServices, handle)
