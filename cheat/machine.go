@@ -55,7 +55,7 @@ func (m *Machine) Unwrap() machinecore.Machine {
 }
 
 func (m *Machine) Load(ctx context.Context, source machinecore.Source) error {
-	return m.engine.runMachine(
+	return m.engine.runMachineAndResetScan(
 		func() error { return m.machine.Load(ctx, source) },
 		applyAllEnabled,
 	)
@@ -66,10 +66,7 @@ func (m *Machine) State() machinecore.State {
 }
 
 func (m *Machine) Start(ctx context.Context) error {
-	return m.engine.runMachine(
-		func() error { return m.machine.Start(ctx) },
-		applyFrozen,
-	)
+	return m.runGuest(func() error { return m.machine.Start(ctx) })
 }
 
 func (m *Machine) Pause() error {
@@ -81,21 +78,30 @@ func (m *Machine) Resume() error {
 }
 
 func (m *Machine) Stop() error {
-	return m.engine.runMachine(m.machine.Stop, applyNone)
+	return m.engine.runMachineAndResetScan(m.machine.Stop, applyNone)
 }
 
 func (m *Machine) Reset(ctx context.Context) error {
-	return m.engine.runMachine(
+	return m.engine.runMachineAndResetScan(
 		func() error { return m.machine.Reset(ctx) },
 		applyAllEnabled,
 	)
 }
 
 func (m *Machine) StepFrame(ctx context.Context) error {
-	return m.engine.runMachine(
-		func() error { return m.machine.StepFrame(ctx) },
-		applyFrozen,
-	)
+	return m.runGuest(func() error { return m.machine.StepFrame(ctx) })
+}
+
+func (m *Machine) runGuest(action func() error) error {
+	return m.engine.runMachine(func() error {
+		err := action()
+		// The engine lock is held here. Frame yields retain the baseline,
+		// but a guest that exits from Start or StepFrame ends its search.
+		if m.machine.State() == machinecore.StateStopped {
+			m.engine.scan = nil
+		}
+		return err
+	}, applyFrozen)
 }
 
 func (m *Machine) QueueInput(event machinecore.InputEvent) error {
@@ -121,14 +127,14 @@ func (m *Machine) SaveState(output io.Writer) error {
 }
 
 func (m *Machine) LoadState(input io.Reader) error {
-	return m.engine.runMachine(
+	return m.engine.runMachineAndResetScan(
 		func() error { return m.machine.LoadState(input) },
 		applyAllEnabled,
 	)
 }
 
 func (m *Machine) Close() error {
-	return m.engine.runMachine(m.machine.Close, applyNone)
+	return m.engine.runMachineAndResetScan(m.machine.Close, applyNone)
 }
 
 var _ machinecore.Machine = (*Machine)(nil)
