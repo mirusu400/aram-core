@@ -132,6 +132,7 @@ func TestKTFMachineQueuesDueInputToDockedCard(t *testing.T) {
 	const display = uint32(0x10004000)
 	runtime.DefaultDisplay = display
 	runtime.DisplayCards[display] = card
+	check(t, runtime.Services.Advance(runtime.ServiceOwner, 32*time.Millisecond))
 	runtime.TickMS = 32
 	machine := &Machine{
 		ktf: runtime,
@@ -147,6 +148,9 @@ func TestKTFMachineQueuesDueInputToDockedCard(t *testing.T) {
 	}
 	if len(runtime.Tasks) != 1 {
 		t.Fatalf("KTF tasks = %d, want 1", len(runtime.Tasks))
+	}
+	if !runtime.Services.Input.Held("ok") || runtime.Services.Input.Held("left") {
+		t.Fatal("due input did not update held state, or future input applied early")
 	}
 	if runtime.Tasks[0].KeyCard != card {
 		t.Fatalf(

@@ -548,6 +548,9 @@ func (s *Storage) Write(owner OwnerID, id ServiceID, data []byte) (int, error) {
 	if current.readOnly {
 		return 0, ErrReadOnly
 	}
+	if len(data) == 0 {
+		return 0, nil
+	}
 	position := handle.position
 	if handle.mode&OpenAppend != 0 {
 		position = uint64(len(current.data))

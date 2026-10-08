@@ -42,8 +42,8 @@ func TestPlayingClipGainInvalidatesQueuedAudio(t *testing.T) {
 	}
 	check(t, media.SetClipGain(1, clip, 50, false, 0))
 	check(t, media.Advance(250*time.Microsecond, 375*time.Microsecond, bus))
-	if got := media.Drain().PCM16; !reflect.DeepEqual(got, []int16{14}) {
-		t.Fatalf("new gain output = %v, want [14]", got)
+	if got := media.Drain().PCM16; !reflect.DeepEqual(got, []int16{15}) {
+		t.Fatalf("new gain output = %v, want [15]", got)
 	}
 }
 

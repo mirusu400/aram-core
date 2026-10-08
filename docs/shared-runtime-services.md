@@ -243,6 +243,11 @@ The shared input service owns:
 - focus and lifecycle gating;
 - event queue limits and ordering.
 
+`Services.QueueInput` anchors late transitions at the current virtual time and
+retains future transitions until `Services.Advance` reaches their timestamp.
+Held-key state and repeat deadlines change at that timestamp. Save states retain
+the pending transitions, including their accepted order at equal timestamps.
+
 The shared event bus also carries:
 
 - timer expiry;
