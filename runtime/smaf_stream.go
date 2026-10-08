@@ -25,19 +25,14 @@ func parseSMAFStreamWaves(data []byte) []smafWave {
 }
 
 func decodeSMAFStreamWave(number int, data []byte) smafWave {
-	// Mono Yamaha 4-bit ADPCM. Other encodings must not be interpreted as
-	// ADPCM or substituted with an FM instrument.
-	if number < 1 || number > 62 || len(data) <= 3 || data[0] != 0x20 {
+	if number < 1 || number > 62 || len(data) <= 3 {
 		return smafWave{}
 	}
 	rate := int(binary.BigEndian.Uint16(data[1:3]))
 	if rate == 0 {
 		return smafWave{}
 	}
-	return smafWave{
-		number: number, sampleRate: rate,
-		pcm: decodeYamahaADPCM(data[3:]),
-	}
+	return decodeSMAFSamples(number, rate, 1+int(data[0]>>7), int(data[0]>>4&7), int(data[0]&15), data[3:])
 }
 
 // Yamaha's MA-3/MA-5 authoring convention assigns bank MSB 125, LSB 0
@@ -68,10 +63,12 @@ func (decoder *smafDecoder) startPCMWave(wave *smafWave) *smafPCMVoice {
 		decoder.nextPCM++
 	}
 	decoder.pcmPool[slot] = smafPCMVoice{
-		pcm:    wave.pcm,
-		kernel: resampleKernelFor(uint32(wave.sampleRate), decoder.rate),
-		step:   float64(wave.sampleRate) / float64(decoder.rate),
-		active: true, volume: 1,
+		pcm:      wave.pcm,
+		channels: max(1, wave.channels),
+		end:      len(wave.pcm) / max(1, wave.channels),
+		kernel:   resampleKernelFor(uint32(wave.sampleRate), decoder.rate),
+		step:     float64(wave.sampleRate) / float64(decoder.rate),
+		active:   true, volume: 1,
 	}
 	if !decoder.pcmListed[slot] {
 		decoder.pcmListed[slot] = true

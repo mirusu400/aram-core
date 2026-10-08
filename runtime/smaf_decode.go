@@ -25,6 +25,7 @@ type smafTrack struct {
 type smafWave struct {
 	number     int
 	sampleRate int
+	channels   int
 	pcm        []int16
 }
 
@@ -49,6 +50,7 @@ type smafEvent struct {
 	kind    smafEventKind
 	noteID  uint32
 	channel int
+	track   int // ATR wave IDs are local to their audio track.
 	a, b    int
 }
 
@@ -78,19 +80,28 @@ type smafDecoder struct {
 }
 
 type smafPCMVoice struct {
-	pcm      []int16
-	kernel   *resampleKernel
-	position float64
-	step     float64
-	pan      float64
-	panGains smafPanGains
-	active   bool
-	channel  int
-	keyNote  int
-	noteID   uint32
-	gated    bool
-	velocity float64
-	volume   float64
+	pcm            []int16
+	channels       int
+	kernel         *resampleKernel
+	position       float64
+	step           float64
+	pan            float64
+	panGains       smafPanGains
+	active         bool
+	channel        int
+	keyNote        int
+	noteID         uint32
+	gated          bool
+	velocity       float64
+	volume         float64
+	sampled        bool
+	keyDown        bool
+	envelope       smafEnvelope
+	totalGain      float64
+	baseRate       float64
+	panFixed       bool
+	loopStart, end int // decoded frame indices; end is exclusive
+	loop, looped   bool
 }
 
 // tick reads one output sample from the wave bank. The banks hold Yamaha ADPCM
@@ -101,45 +112,8 @@ type smafPCMVoice struct {
 // local corpus - the grit percussion in these scores used to have. The mixer's
 // windowed sinc puts them 55 dB down. See media_resample.go.
 func (voice *smafPCMVoice) tick() float64 {
-	if !voice.active || len(voice.pcm) == 0 || voice.kernel == nil ||
-		voice.position >= float64(len(voice.pcm)) {
-		voice.active = false
-		return 0
-	}
-	index := int(voice.position)
-	fraction := voice.position - float64(index)
-	voice.position += voice.step
-	kernel := voice.kernel
-	phase := int(fraction * resamplePhases)
-	if phase < 0 {
-		phase = 0
-	} else if phase >= resamplePhases {
-		phase = resamplePhases - 1
-	}
-	row := kernel.weights[phase*kernel.taps : (phase+1)*kernel.taps]
-	base := index - (kernel.half - 1)
-	value := 0.0
-	// The window sits wholly inside the wave for all but its first and last
-	// few samples, and taking that case without a per-tap clamp is what keeps
-	// the filter affordable on a voice that sounds at the render rate.
-	if base >= 0 && base+len(row) <= len(voice.pcm) {
-		window := voice.pcm[base : base+len(row)]
-		for tap, weight := range row {
-			value += float64(window[tap]) * weight
-		}
-		return value / 32768
-	}
-	last := len(voice.pcm) - 1
-	for tap, weight := range row {
-		at := base + tap
-		if at < 0 {
-			at = 0
-		} else if at > last {
-			at = last
-		}
-		value += float64(voice.pcm[at]) * weight
-	}
-	return value / 32768
+	left, _ := voice.tickStereo()
+	return left
 }
 
 func looksLikeSMAF(data []byte) bool {
@@ -305,28 +279,25 @@ func (decoder *smafDecoder) parse(data []byte) bool {
 }
 
 func (decoder *smafDecoder) parseAudioTrack(data []byte, number int) {
-	if len(data) < 4 {
+	// ATR owns the two-byte WaveType. Its Awa chunks contain only sample data.
+	if len(data) < 6 {
 		return
 	}
 	track := smafTrack{
 		number:       number,
 		format:       data[0],
-		durationBase: data[2],
-		gateBase:     data[2],
+		durationBase: data[4],
+		gateBase:     data[5],
 		audio:        true,
 	}
-	for offset := 4; offset+8 <= len(data); {
-		if !smafChunkIDValid(data[offset:]) {
-			offset++
-			continue
-		}
+	for offset := 6; offset+8 <= len(data); {
 		size := int(binary.BigEndian.Uint32(data[offset+4 : offset+8]))
 		body := offset + 8
 		if size < 0 || body > len(data) {
 			break
 		}
 		if size > len(data)-body {
-			size = len(data) - body
+			return
 		}
 		switch string(data[offset : offset+3]) {
 		case "Ats":
@@ -336,42 +307,46 @@ func (decoder *smafDecoder) parseAudioTrack(data []byte, number int) {
 		case "Awa":
 			if wave := decodeSMAFWave(
 				int(data[offset+3]),
+				data[2:4],
 				data[body:body+size],
 			); len(wave.pcm) != 0 {
 				track.waves = append(track.waves, wave)
 			}
 		}
 		offset = body + size
-		if size == 0 {
-			offset++
-		}
 	}
 	if len(track.sequence) != 0 && len(track.waves) != 0 {
 		decoder.tracks = append(decoder.tracks, track)
 	}
 }
 
-func decodeSMAFWave(number int, data []byte) smafWave {
-	if len(data) <= 2 {
+func decodeSMAFWave(number int, waveType, data []byte) smafWave {
+	if len(waveType) != 2 {
 		return smafWave{}
 	}
 	rates := [...]int{4_000, 8_000, 11_025, 22_050, 44_100}
-	rateCode := int(data[1] & 15)
-	sampleRate := 8_000
-	if rateCode < len(rates) {
-		sampleRate = rates[rateCode]
+	rateCode := int(waveType[0] & 15)
+	if rateCode >= len(rates) {
+		return smafWave{}
 	}
-	return smafWave{
-		number:     number,
-		sampleRate: sampleRate,
-		pcm:        decodeYamahaADPCM(data[2:]),
+	format := int(waveType[0] >> 4 & 7)
+	if format == 1 { // ATR format 1 is Yamaha ADPCM; Mwa format 2 is ADPCM.
+		format = 2
+	} else if format != 0 {
+		return smafWave{}
 	}
+	return decodeSMAFSamples(number, rates[rateCode], 1+int(waveType[0]>>7), format, int(waveType[1]>>4), data)
 }
 
 func decodeYamahaADPCM(data []byte) []int16 {
+	return decodeYamahaADPCMChannels(data, 1)
+}
+
+func decodeYamahaADPCMChannels(data []byte, channels int) []int16 {
 	result := make([]int16, 0, len(data)*2)
-	previous, step := 0, 127
-	decode := func(code byte) int16 {
+	previous, steps := [2]int{}, [2]int{127, 127}
+	decode := func(code byte, channel int) int16 {
+		step := steps[channel]
 		delta := step >> 3
 		if code&1 != 0 {
 			delta += step >> 2
@@ -385,7 +360,7 @@ func decodeYamahaADPCM(data []byte) []int16 {
 		if code&8 != 0 {
 			delta = -delta
 		}
-		previous = max(-32768, min(32767, previous+delta))
+		previous[channel] = max(-32768, min(32767, previous[channel]+delta))
 		switch code & 7 {
 		case 0, 1, 2, 3:
 			step = step * 115 / 128
@@ -399,11 +374,14 @@ func decodeYamahaADPCM(data []byte) []int16 {
 			step = step * 307 / 128
 		}
 		step = max(127, min(24576, step))
-		return int16(previous)
+		steps[channel] = step
+		return int16(previous[channel])
 	}
 	for _, value := range data {
 		// SMAF wave banks use the low nibble first.
-		result = append(result, decode(value&15), decode(value>>4&15))
+		// Stereo packs left in the low nibble and right in the high nibble,
+		// with an independent predictor for each channel.
+		result = append(result, decode(value&15, 0), decode(value>>4&15, channels-1))
 	}
 	return result
 }
@@ -471,14 +449,22 @@ func (decoder *smafDecoder) parseTrack(data []byte, number int) {
 
 func smafTimeBase(value byte) float64 {
 	switch value {
-	case 0, 0x10:
+	case 0:
 		return 1
-	case 1, 0x11:
+	case 1:
 		return 2
-	case 2, 0x12:
+	case 2:
 		return 4
-	case 3, 0x13:
+	case 3:
 		return 5
+	case 0x10:
+		return 10
+	case 0x11:
+		return 20
+	case 0x12:
+		return 40
+	case 0x13:
+		return 50
 	default:
 		return 4
 	}
@@ -561,8 +547,8 @@ func sortSMAFEvents(events []smafEvent) {
 		if left.sample != right.sample {
 			return left.sample < right.sample
 		}
-		leftNote := left.kind == smafNoteOn || left.kind == smafNoteOff
-		rightNote := right.kind == smafNoteOn || right.kind == smafNoteOff
+		leftNote := left.kind == smafNoteOn || left.kind == smafNoteOff || left.kind == smafWaveOn
+		rightNote := right.kind == smafNoteOn || right.kind == smafNoteOff || right.kind == smafWaveOn
 		return !leftNote && rightNote
 	})
 }
@@ -965,17 +951,16 @@ func (decoder *smafDecoder) decodeHandyPhone(
 			continue
 		}
 		on := decoder.sampleAt(milliseconds)
+		off := on + decoder.sampleAt(float64(gate)*gateBase)
 		if waveMode {
-			decoder.addEvent(smafEvent{
-				sample:  on,
-				kind:    smafWaveOn,
-				channel: channel,
-				a:       int(first & 15),
-				b:       127,
-			})
+			index := len(decoder.events)
+			decoder.addGatedNote(on, off, channel, int(first&15), 127)
+			if index < len(decoder.events) {
+				decoder.events[index].kind = smafWaveOn
+				decoder.events[index].track = track.number
+			}
 			continue
 		}
-		off := on + decoder.sampleAt(float64(gate)*gateBase)
 		decoder.addGatedNote(on, off, channel, note, 127)
 	}
 }
@@ -983,7 +968,7 @@ func (decoder *smafDecoder) decodeHandyPhone(
 func (decoder *smafDecoder) resolveVoice(
 	channel smafChannel,
 	note int,
-) (smafPatch, bool) {
+) *smafParsedVoice {
 	var melody *smafParsedVoice
 	for index := range decoder.voices {
 		voice := &decoder.voices[index]
@@ -994,16 +979,16 @@ func (decoder *smafDecoder) resolveVoice(
 		}
 		if voice.key.drumNote != 0 {
 			if voice.key.drumNote == note {
-				return voice.patch, true
+				return voice
 			}
 		} else if melody == nil {
 			melody = voice
 		}
 	}
 	if melody != nil {
-		return melody.patch, true
+		return melody
 	}
-	return smafPatch{}, false
+	return nil
 }
 
 func smafNoteFrequency(note int) float64 {
@@ -1042,7 +1027,7 @@ func (decoder *smafDecoder) fire(event smafEvent) {
 		channel.pan = float64(event.a&0x7f-64) / 64
 		for index := range decoder.pcmPool {
 			voice := &decoder.pcmPool[index]
-			if voice.active && voice.gated && voice.channel == event.channel {
+			if voice.active && voice.gated && !voice.panFixed && voice.channel == event.channel {
 				voice.pan = channel.pan
 			}
 		}
@@ -1059,6 +1044,12 @@ func (decoder *smafDecoder) fire(event smafEvent) {
 					math.Pow(2, channel.bend/12))
 			}
 		}
+		for index := range decoder.pcmPool {
+			voice := &decoder.pcmPool[index]
+			if voice.active && voice.sampled && voice.channel == event.channel {
+				voice.setRate(decoder.rate, channel.bend)
+			}
+		}
 	case smafNoteOff:
 		for index := range decoder.pool {
 			voice := &decoder.pool[index]
@@ -1072,8 +1063,14 @@ func (decoder *smafDecoder) fire(event smafEvent) {
 		for index := range decoder.pcmPool {
 			voice := &decoder.pcmPool[index]
 			if voice.active && voice.gated && voice.channel == event.channel &&
-				voice.keyNote == event.a && (event.noteID == 0 || voice.noteID == event.noteID) {
-				voice.active = false
+				(!voice.sampled || voice.keyDown) && voice.keyNote == event.a &&
+				(event.noteID == 0 || voice.noteID == event.noteID) {
+				if voice.sampled {
+					voice.keyDown = false
+					voice.envelope.keyOff()
+				} else {
+					voice.active = false
+				}
 				break
 			}
 		}
@@ -1084,8 +1081,15 @@ func (decoder *smafDecoder) fire(event smafEvent) {
 				return
 			}
 		}
-		patch, found := decoder.resolveVoice(*channel, event.a)
-		if !found {
+		embedded := decoder.resolveVoice(*channel, event.a)
+		if embedded != nil && embedded.pcm != nil {
+			decoder.startSampledVoice(event, embedded.pcm, embedded.key.drumNote != 0)
+			return
+		}
+		var patch smafPatch
+		if embedded != nil {
+			patch = embedded.patch
+		} else {
 			if channel.rhythm || channel.drum {
 				patch = drumSMAFPatch(event.a)
 			} else {
@@ -1130,6 +1134,9 @@ func (decoder *smafDecoder) fire(event smafEvent) {
 	case smafWaveOn:
 		var wave *smafWave
 		for trackIndex := range decoder.tracks {
+			if !decoder.tracks[trackIndex].audio || decoder.tracks[trackIndex].number != event.track {
+				continue
+			}
 			for waveIndex := range decoder.tracks[trackIndex].waves {
 				candidate := &decoder.tracks[trackIndex].waves[waveIndex]
 				if candidate.number == event.a {
@@ -1144,7 +1151,12 @@ func (decoder *smafDecoder) fire(event smafEvent) {
 		if wave == nil || len(wave.pcm) == 0 {
 			return
 		}
-		decoder.startPCMWave(wave)
+		voice := decoder.startPCMWave(wave)
+		voice.channel, voice.keyNote, voice.noteID = event.channel, event.a, event.noteID
+		voice.gated = true
+		voice.velocity = 1
+		voice.volume = channel.volume * channel.expression
+		voice.pan = channel.pan
 	}
 }
 
@@ -1306,11 +1318,12 @@ func (stream *smafRenderStream) render(
 				continue
 			}
 			active = true
-			value := voice.tick() * voice.volume * 0.32
+			pcmLeft, pcmRight := voice.tickStereo()
 			if !silent {
 				panLeft, panRight := voice.panGains.gains(voice.pan)
-				left += value * panLeft
-				right += value * panRight
+				gain := voice.volume * 0.32
+				left += pcmLeft * gain * panLeft
+				right += pcmRight * gain * panRight
 			}
 			if !voice.active {
 				decoder.pcmListed[index] = false

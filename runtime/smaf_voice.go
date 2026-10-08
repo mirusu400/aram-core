@@ -7,6 +7,7 @@ type smafVoiceKey struct {
 type smafParsedVoice struct {
 	key   smafVoiceKey
 	patch smafPatch
+	pcm   *smafPCMPatch
 	valid bool
 }
 
@@ -24,8 +25,11 @@ func parseSMAFVoice(data []byte) smafParsedVoice {
 			program:  int(data[7]),
 			drumNote: int(data[8]),
 		}
-		// Non-zero voice types reference sampled voices. The FM path safely
-		// ignores them until their associated Mtsp wave bank is available.
+		if data[9] == 1 {
+			voice.pcm = parseSMAFPCMPatch(data[10:])
+			voice.valid = voice.pcm != nil
+			return voice
+		}
 		if data[9] != 0 {
 			return voice
 		}

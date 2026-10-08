@@ -612,3 +612,30 @@ CI/nightly runs should retain minimized failures in the normal Go fuzz corpus.
 The external real-title corpus belongs in the sibling `aram-test` workflow and
 is the remaining validation layer, rather than a reason to weaken the generic
 state and publication invariants in this repository.
+
+## SMAF sampled audio (2026-10-09)
+
+SMAF rendering handles mono/stereo Yamaha ADPCM and signed/offset-binary
+8-bit and big-endian 16-bit PCM in MTR stream wave banks. ATR audio tracks
+take their wave format and rate from the six-byte track header; Awa bodies
+contain samples without an additional wave header. Duration and gate time
+use separate bases, including the 10/20/40/50 ms codes.
+
+MA-3/MA-5 sampled instrument definitions can select embedded RAM waves at a
+C4 playback rate, with musical pitch, drum selection, LP/EP looping, release
+envelopes, and volume/expression/pan/bend controls. RM selects ROM or RAM;
+LP < EP determines looping. Handset ROM sample banks and bulk voice-wave
+SysEx uploads remain unsupported, and unavailable sampled waves do not fall
+back to a different GM/FM instrument. Packed 4/12-bit linear PCM, TwinVQ,
+and SMAF MP3 audio tracks are also unsupported.
+
+The synthetic tests in `runtime/smaf_pcm_test.go` verify exact decoded
+sample values, audible sample frequencies, separate stereo channels,
+waveform changes, overlapping gates, loop/release behavior, bounded malformed
+inputs, track-local ATR wave IDs, and eager/incremental length and PCM parity.
+A nonzero peak alone is insufficient evidence that the intended wave played.
+
+Format references: Yamaha [SMAF 3.05](https://img.atwiki.jp/mmfuta/attach/19/78/SMAF3.05.pdf),
+sections 4.4.2(7) and 4.5; [MA-5 Authoring Tool 1.3.3](https://manuals.plus/m/66bfe529849a714a1d213edf827619a5c58de8170e50de271d0a9ea7e8cb2892.pdf),
+sections 4.18.3-4. The PCM envelope uses ARAM's existing software envelope
+model; these tests do not establish sample-accurate handset output.
