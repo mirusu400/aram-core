@@ -29,6 +29,8 @@ type (
 	DebugKTFTaskSnapshot     = guest.DebugKTFTaskSnapshot
 	DebugRaptorSnapshot      = guest.DebugRaptorSnapshot
 	DebugRaptorImportCall    = guest.DebugRaptorImportCall
+	DebugRaptorAudioCall     = guest.DebugRaptorAudioCall
+	DebugMediaClip           = guest.DebugMediaClip
 	DebugSKVMSnapshot        = guest.DebugSKVMSnapshot
 	DebugMemoryRegion        = guest.DebugMemoryRegion
 )
@@ -223,12 +225,23 @@ func (m *Machine) DebugSnapshot(maxEntries int) DebugSnapshot {
 				LR:      call.LR,
 			})
 		}
+		audioStart := max(0, len(m.raptor.AudioImportTrace)-limit)
+		audioImports := append([]DebugRaptorAudioCall(nil), m.raptor.AudioImportTrace[audioStart:]...)
+		for i := range audioImports {
+			if audioImports[i].Clip != nil {
+				clip := *audioImports[i].Clip
+				audioImports[i].Clip = &clip
+			}
+		}
 		snapshot.Raptor = &DebugRaptorSnapshot{
-			ModuleInitialized: m.raptor.ModuleInitialized,
-			Started:           m.raptor.Started,
-			ImportCalls:       len(m.raptor.ImportTrace),
-			ImportsOmitted:    start,
-			Imports:           imports,
+			ModuleInitialized:   m.raptor.ModuleInitialized,
+			Started:             m.raptor.Started,
+			ImportCalls:         len(m.raptor.ImportTrace),
+			ImportsOmitted:      start,
+			Imports:             imports,
+			AudioImportCalls:    m.raptor.AudioImportCalls,
+			AudioImportsOmitted: m.raptor.AudioImportCalls - uint64(len(audioImports)),
+			AudioImports:        audioImports,
 		}
 	}
 	return snapshot

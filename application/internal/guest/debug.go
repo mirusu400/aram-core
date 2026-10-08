@@ -270,11 +270,41 @@ type DebugKTFTaskSnapshot struct {
 }
 
 type DebugRaptorSnapshot struct {
-	ModuleInitialized bool                    `json:"module_initialized"`
-	Started           bool                    `json:"started"`
-	ImportCalls       int                     `json:"import_calls"`
-	ImportsOmitted    int                     `json:"imports_omitted"`
-	Imports           []DebugRaptorImportCall `json:"imports,omitempty"`
+	ModuleInitialized   bool                    `json:"module_initialized"`
+	Started             bool                    `json:"started"`
+	ImportCalls         int                     `json:"import_calls"`
+	ImportsOmitted      int                     `json:"imports_omitted"`
+	Imports             []DebugRaptorImportCall `json:"imports,omitempty"`
+	AudioImportCalls    uint64                  `json:"audio_import_calls"`
+	AudioImportsOmitted uint64                  `json:"audio_imports_omitted"`
+	AudioImports        []DebugRaptorAudioCall  `json:"audio_imports,omitempty"`
+}
+
+// DebugRaptorAudioCall keeps audio requests separate from graphics-heavy import
+// history. It contains metadata only, never clip source bytes or decoded PCM.
+type DebugRaptorAudioCall struct {
+	DebugRaptorImportCall
+	GuestNS        int64           `json:"guest_ns"`
+	Name           string          `json:"name"`
+	Result         uint32          `json:"result"`
+	Fault          bool            `json:"fault"`
+	OutputRevision uint64          `json:"output_revision"`
+	Clip           *DebugMediaClip `json:"clip,omitempty"`
+}
+
+type DebugMediaClip struct {
+	Handle         uint32 `json:"handle"`
+	State          uint8  `json:"state"`
+	PositionNS     int64  `json:"position_ns"`
+	DurationNS     int64  `json:"duration_ns"`
+	Volume         uint8  `json:"volume"`
+	Muted          bool   `json:"muted"`
+	RemainingPlays int32  `json:"remaining_plays"`
+	Decoded        bool   `json:"decoded"`
+	WaitingForData bool   `json:"waiting_for_data"`
+	// SourceBytes is the buffered encoded audio still available at this call;
+	// consumed playback can report zero before the clip source is cleared.
+	SourceBytes uint64 `json:"source_bytes"`
 }
 
 type DebugRaptorImportCall struct {

@@ -300,6 +300,7 @@ func RestoreState(r *Runtime, backend cpu.Backend, state *SavedState) error {
 		}
 	}
 	r.ImportTrace = append([]raptorImportCall(nil), state.ImportTrace...)
+	r.clearAudioImportTrace()
 	r.CallbackTasks = make([]*CallbackTask, len(state.CallbackTasks))
 	for index, saved := range state.CallbackTasks {
 		r.CallbackTasks[index] = &CallbackTask{

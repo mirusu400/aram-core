@@ -176,6 +176,10 @@ type Runtime struct {
 	importSlots       []raptorImportKey
 	importSlotByKey   map[raptorImportKey]uint32
 	ImportTrace       []raptorImportCall
+	// Audio history is diagnostic only. Graphics imports must not erase the
+	// last playback request before the user can collect a debug bundle.
+	AudioImportTrace []guest.DebugRaptorAudioCall
+	AudioImportCalls uint64
 	// LastJavaThrow names the most recent Java exception the guest raised that
 	// ARAM could not deliver to a handler. It is diagnostic only, so it is not
 	// part of the deterministic machine state.
@@ -609,6 +613,7 @@ func (r *Runtime) RestoreImage() error {
 	r.importSlots = nil
 	r.importSlotByKey = make(map[raptorImportKey]uint32)
 	r.ImportTrace = nil
+	r.clearAudioImportTrace()
 	r.LastJavaThrow = ""
 	r.pendingJavaThrow = ""
 	r.javaYieldRequested = false
@@ -668,7 +673,7 @@ func (r *Runtime) DispatchTrap(
 func (r *Runtime) dispatchImport(
 	ctx context.Context,
 	key raptorImportKey,
-) error {
+) (dispatchErr error) {
 	frame, err := r.pushHostCallFrame()
 	if err != nil {
 		return err
@@ -679,6 +684,10 @@ func (r *Runtime) dispatchImport(
 		call.Args[register] = frame.Registers[register]
 	}
 	call.LR = frame.Registers[cpu.RegisterLR]
+	if (key.Module == 1 || key.Module == 507) && key.Ordinal >= 1200 && key.Ordinal <= 1234 {
+		guestNS := int64(r.Public.Services.Clock.Monotonic())
+		defer func() { r.recordAudioImport(call, guestNS, dispatchErr) }()
+	}
 	if len(r.ImportTrace) < wipirt.MaxSavedEntries {
 		r.ImportTrace = append(r.ImportTrace, call)
 	} else {
