@@ -8,8 +8,10 @@ import (
 )
 
 const (
-	maxSMAFEvents  = 400_000
-	maxSMAFSeconds = 180
+	maxSMAFEvents      = 400_000
+	maxSMAFSeconds     = 180
+	smafATRChannelBase = 128
+	smafChannelCount   = smafATRChannelBase + 256*4
 )
 
 type smafTrack struct {
@@ -43,6 +45,8 @@ const (
 	smafPitchBend
 	smafModulation
 	smafWaveOn
+	smafVoiceChange
+	smafWaveChange
 )
 
 type smafEvent struct {
@@ -61,6 +65,7 @@ type smafChannel struct {
 	octaveShift               int
 	drum, rhythm              bool
 	streamWaves               []smafWave
+	sampledWaves              []smafWave
 }
 
 type smafDecoder struct {
@@ -68,7 +73,9 @@ type smafDecoder struct {
 	tracks       []smafTrack
 	events       []smafEvent
 	voices       []smafParsedVoice
-	channels     [128]smafChannel
+	voiceChanges []smafParsedVoice
+	waveChanges  []smafWave
+	channels     [smafChannelCount]smafChannel
 	pool         [32]smafVoice
 	pcmPool      [16]smafPCMVoice
 	activeVoices []int
@@ -213,7 +220,7 @@ func finishLazyScoreDecode(
 			}
 		}
 	}
-	// stream.end is a render ceiling with a two-second release allowance.
+	// stream.end is a render ceiling, including long sampled release tails.
 	// Looping and completion need the actual last rendered frame, including
 	// scores longer than thirty seconds. The event-driven envelope probe finds
 	// that frame without walking every sample or synthesizing the score at Play.
@@ -222,6 +229,17 @@ func finishLazyScoreDecode(
 	if probeDecoder := rebuild(); probeDecoder != nil {
 		if probed := newSMAFRenderStream(probeDecoder).probeEnd(); probed != 0 {
 			length = probed
+		}
+	}
+	// A sampled score needs a generous ceiling, but most effects still finish
+	// quickly. Retain whole-buffer playback for these short natural lengths.
+	if stream.end == uint64(sampleRate)*maxSMAFSeconds &&
+		stream.decoder.hasPCMWaves() && length <= uint64(sampleRate)*smafEagerRenderSeconds {
+		if samples := stream.renderUntil(nil, length); len(samples) != 0 {
+			return &decodedPCM{
+				sampleRate: sampleRate, channels: 2, samples: samples,
+				duration: time.Duration(uint64(len(samples)/2) * uint64(time.Second) / uint64(sampleRate)),
+			}
 		}
 	}
 	return &decodedPCM{
@@ -477,7 +495,9 @@ func (decoder *smafDecoder) buildEvents() bool {
 	}
 	for _, track := range decoder.tracks {
 		if track.audio {
-			decoder.decodeHandyPhone(track, 120, true)
+			if track.number >= 0 && track.number < 256 {
+				decoder.decodeHandyPhone(track, smafATRChannelBase+track.number*4, true)
+			}
 			continue
 		}
 		base := track.number * 16
@@ -495,7 +515,7 @@ func (decoder *smafDecoder) buildEvents() bool {
 		for channel := base; channel < base+channelCount && channel < len(decoder.channels); channel++ {
 			decoder.channels[channel].streamWaves = track.waves
 		}
-		decoder.collectVoices(track.setup, track.format != 0)
+		decoder.collectVoices(track.setup, track.format != 0, base)
 		switch track.format {
 		case 0:
 			decoder.decodeHandyPhone(track, base, false)
@@ -513,7 +533,7 @@ func (decoder *smafDecoder) buildEvents() bool {
 		return false
 	}
 	setupWindow := uint64(decoder.rate) / 20
-	var seen [128][3]bool
+	var seen [smafChannelCount][3]bool
 	for index := range decoder.events {
 		event := &decoder.events[index]
 		kind := -1
@@ -525,10 +545,10 @@ func (decoder *smafDecoder) buildEvents() bool {
 		case smafProgram:
 			kind = 2
 		}
-		if kind < 0 || seen[event.channel&127][kind] {
+		if kind < 0 || seen[event.channel][kind] {
 			continue
 		}
-		seen[event.channel&127][kind] = true
+		seen[event.channel][kind] = true
 		if event.sample <= setupWindow {
 			event.sample = 0
 		}
@@ -538,18 +558,11 @@ func (decoder *smafDecoder) buildEvents() bool {
 }
 
 // sortSMAFEvents puts the timeline in the order the render loop consumes it.
-// Events that land on the same sample are ordered so a channel's setup - its
-// bank, program, volume, and pan - is in force before a note on that sample
-// reads it.
+// Preserve sequence order within a sample: an exclusive or controller affects
+// notes following it, including those with a zero duration between events.
 func sortSMAFEvents(events []smafEvent) {
 	sort.SliceStable(events, func(i, j int) bool {
-		left, right := events[i], events[j]
-		if left.sample != right.sample {
-			return left.sample < right.sample
-		}
-		leftNote := left.kind == smafNoteOn || left.kind == smafNoteOff || left.kind == smafWaveOn
-		rightNote := right.kind == smafNoteOn || right.kind == smafNoteOff || right.kind == smafWaveOn
-		return !leftNote && rightNote
+		return events[i].sample < events[j].sample
 	})
 }
 
@@ -572,7 +585,11 @@ func (decoder *smafDecoder) applyRhythmChannels(track smafTrack, base int) {
 	}
 }
 
-func (decoder *smafDecoder) collectVoices(data []byte, mobile bool) {
+func (decoder *smafDecoder) collectVoices(data []byte, mobile bool, base int) {
+	count := 4
+	if mobile {
+		count = 16
+	}
 	for offset := 0; offset < len(data); {
 		if data[offset] == 0xff {
 			offset++
@@ -598,9 +615,7 @@ func (decoder *smafDecoder) collectVoices(data []byte, mobile bool) {
 		if payload[len(payload)-1] == 0xf7 {
 			payload = payload[:len(payload)-1]
 		}
-		if voice := parseSMAFVoice(payload); voice.valid {
-			decoder.voices = append(decoder.voices, voice)
-		}
+		decoder.decodeExclusive(payload, base, count, 0, false)
 		offset += length
 	}
 }
@@ -790,9 +805,7 @@ func (decoder *smafDecoder) decodeMobile(track smafTrack, base int) {
 				if payload[len(payload)-1] == 0xf7 {
 					payload = payload[:len(payload)-1]
 				}
-				if voice := parseSMAFVoice(payload); voice.valid {
-					decoder.voices = append(decoder.voices, voice)
-				}
+				decoder.decodeExclusive(payload, base, 16, at, true)
 				offset += length
 			case 0xff:
 				if offset >= len(data) {
@@ -854,9 +867,7 @@ func (decoder *smafDecoder) decodeHandyPhone(
 				if payload[len(payload)-1] == 0xf7 {
 					payload = payload[:len(payload)-1]
 				}
-				if voice := parseSMAFVoice(payload); voice.valid {
-					decoder.voices = append(decoder.voices, voice)
-				}
+				decoder.decodeExclusive(payload, base, 4, decoder.sampleAt(milliseconds), true)
 				offset += length
 				continue
 			}
@@ -954,7 +965,11 @@ func (decoder *smafDecoder) decodeHandyPhone(
 		off := on + decoder.sampleAt(float64(gate)*gateBase)
 		if waveMode {
 			index := len(decoder.events)
-			decoder.addGatedNote(on, off, channel, int(first&15), 127)
+			waveID := int(first & 0x3f)
+			if waveID == 0 || waveID == 0x3f {
+				continue
+			}
+			decoder.addGatedNote(on, off, channel, waveID, 127)
 			if index < len(decoder.events) {
 				decoder.events[index].kind = smafWaveOn
 				decoder.events[index].track = track.number
@@ -996,8 +1011,19 @@ func smafNoteFrequency(note int) float64 {
 }
 
 func (decoder *smafDecoder) fire(event smafEvent) {
-	channel := &decoder.channels[event.channel&127]
+	if event.channel < 0 || event.channel >= len(decoder.channels) {
+		return
+	}
+	channel := &decoder.channels[event.channel]
 	switch event.kind {
+	case smafVoiceChange:
+		if event.a >= 0 && event.a < len(decoder.voiceChanges) {
+			decoder.setVoice(decoder.voiceChanges[event.a])
+		}
+	case smafWaveChange:
+		if event.a >= 0 && event.a < len(decoder.waveChanges) {
+			decoder.setSampledWave(event.channel, event.b, decoder.waveChanges[event.a])
+		}
 	case smafProgram:
 		channel.program = event.a
 	case smafBankMSB:
@@ -1025,6 +1051,12 @@ func (decoder *smafDecoder) fire(event smafEvent) {
 		decoder.updatePCMVolume(event.channel)
 	case smafPan:
 		channel.pan = float64(event.a&0x7f-64) / 64
+		for index := range decoder.pool {
+			voice := &decoder.pool[index]
+			if voice.active && voice.channel == event.channel {
+				voice.pan = channel.pan
+			}
+		}
 		for index := range decoder.pcmPool {
 			voice := &decoder.pcmPool[index]
 			if voice.active && voice.gated && !voice.panFixed && voice.channel == event.channel {
@@ -1185,6 +1217,11 @@ func newSMAFRenderStream(decoder *smafDecoder) *smafRenderStream {
 	last := decoder.events[len(decoder.events)-1].sample
 	maximum := uint64(decoder.rate) * maxSMAFSeconds
 	stream.end = last + uint64(decoder.rate)*2
+	// Sampled envelopes and one-shots can outlive the score by more than the
+	// FM release allowance. Their sample loop still stops at the natural end.
+	if decoder.hasPCMWaves() && decoder.hasSampledVoices() {
+		stream.end = maximum
+	}
 	if stream.end > maximum {
 		stream.end = maximum
 	}
@@ -1213,7 +1250,7 @@ func (stream *smafRenderStream) renderUntil(
 
 // probeEnd reports the sample a full render would stop at: the score's natural
 // end, where the last voice's envelopes go idle, which is usually well before
-// the two-second pad in stream.end.
+// the release ceiling in stream.end.
 //
 // Voice retirement depends only on envelope state. The FM probe jumps between
 // events and envelope phase transitions, preserving the renderer's retirement
@@ -1228,11 +1265,9 @@ func (stream *smafRenderStream) probeEnd() uint64 {
 	// Sampled tracks can trigger PCM through ATR events or ordinary score
 	// notes. Keep their wave positions and gates on the exact sample loop;
 	// the event-driven walker only handles FM envelope state.
-	for _, track := range stream.decoder.tracks {
-		if len(track.waves) != 0 {
-			stream.render(nil, stream.end, true)
-			return stream.cursor
-		}
+	if stream.decoder.hasPCMWaves() {
+		stream.render(nil, stream.end, true)
+		return stream.cursor
 	}
 	if stream.cursor != 0 {
 		stream.render(nil, stream.end, true)
@@ -1265,6 +1300,9 @@ func (stream *smafRenderStream) render(
 	// on every call.
 	if output == nil && !silent {
 		if remaining := target - stream.cursor; remaining > 0 {
+			if stream.end == uint64(decoder.rate)*maxSMAFSeconds {
+				remaining = min(remaining, uint64(decoder.rate)*smafEagerRenderSeconds)
+			}
 			output = make([]int16, 0, int(remaining)*2)
 		}
 	}

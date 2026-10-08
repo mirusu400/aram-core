@@ -26,7 +26,11 @@ func parseSMAFVoice(data []byte) smafParsedVoice {
 			drumNote: int(data[8]),
 		}
 		if data[9] == 1 {
-			voice.pcm = parseSMAFPCMPatch(data[10:])
+			body := data[10:]
+			if data[2] == 0x06 {
+				body = unpackSMAFMA3Bytes(body)
+			}
+			voice.pcm = parseSMAFPCMPatch(body)
 			voice.valid = voice.pcm != nil
 			return voice
 		}

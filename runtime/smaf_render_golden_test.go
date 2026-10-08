@@ -22,10 +22,10 @@ import (
 // music: it plays overlapping notes on two channels, pans them apart so the
 // stereo gains differ per voice, and bends one so a voice retunes mid-note.
 func TestSMAFRenderIsBitStable(t *testing.T) {
-	// The last 0x80 event is another gated C4, not a MIDI key-off. Its own
-	// gate now releases it instead of repeatedly releasing the first C4's tail.
-	const wantHash = "5529dfc934990216eb72b84e00a8464d" +
-		"74d380a903e743ddb6cadccc95712a5e"
+	// Mid-note pan now moves the already sounding C4 to the centre. Its former
+	// output incorrectly remained hard left. Gate identities remain unchanged.
+	const wantHash = "96170a377899427d8a7fb04c792d1a7f" +
+		"8c5739c778c7457b0981f75553919ded"
 	sequence := []byte{
 		0x00, 0xb0, 0x07, 0x7f, // channel 0 volume
 		0x00, 0xb0, 0x0a, 0x00, // channel 0 panned hard left

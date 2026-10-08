@@ -122,7 +122,7 @@ type smafPCMPatch struct {
 }
 
 // Yamaha VM35 PCM parameter bytes (MA-3/MA-5) describe a C4 playback rate,
-// an amplitude envelope, and RAM/ROM wave selection. RM selects RAM; looping
+// an amplitude envelope, and RAM/ROM wave selection. RM=0 selects RAM; looping
 // is enabled by LP < EP. See MA-5 Authoring Tool 1.3.3, sections 4.18.3-4.
 func parseSMAFPCMPatch(body []byte) *smafPCMPatch {
 	if len(body) < 16 {
@@ -131,7 +131,7 @@ func parseSMAFPCMPatch(body []byte) *smafPCMPatch {
 	pan := int(body[2] >> 3)
 	patch := &smafPCMPatch{
 		sampleRate: int(binary.BigEndian.Uint16(body)),
-		waveID:     int(body[15] & 0x7f), ram: body[15]&0x80 != 0,
+		waveID:     int(body[15] & 0x7f), ram: body[15]&0x80 == 0,
 		loopPoint: int(binary.BigEndian.Uint16(body[11:13])),
 		endPoint:  int(binary.BigEndian.Uint16(body[13:15])),
 		panFixed:  body[2]&1 != 0,
@@ -156,9 +156,13 @@ func (decoder *smafDecoder) startSampledVoice(event smafEvent, patch *smafPCMPat
 	if !patch.ram || patch.sampleRate <= 0 {
 		return
 	}
-	channel := &decoder.channels[event.channel&127]
-	for index := range channel.streamWaves {
-		wave := &channel.streamWaves[index]
+	channel := &decoder.channels[event.channel]
+	waves := channel.sampledWaves
+	if len(waves) == 0 {
+		waves = channel.streamWaves
+	}
+	for index := range waves {
+		wave := &waves[index]
 		if wave.number != patch.waveID {
 			continue
 		}

@@ -78,7 +78,7 @@ func (decoder *smafDecoder) startPCMWave(wave *smafWave) *smafPCMVoice {
 }
 
 func (decoder *smafDecoder) startStreamWave(event smafEvent, number int) {
-	channel := &decoder.channels[event.channel&127]
+	channel := &decoder.channels[event.channel]
 	for index := range channel.streamWaves {
 		wave := &channel.streamWaves[index]
 		if wave.number != number {
@@ -96,7 +96,7 @@ func (decoder *smafDecoder) startStreamWave(event smafEvent, number int) {
 }
 
 func (decoder *smafDecoder) updatePCMVolume(channelIndex int) {
-	channel := &decoder.channels[channelIndex&127]
+	channel := &decoder.channels[channelIndex]
 	for index := range decoder.pcmPool {
 		voice := &decoder.pcmPool[index]
 		if voice.active && voice.gated && voice.channel == channelIndex {

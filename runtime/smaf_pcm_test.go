@@ -186,7 +186,7 @@ func TestSMAFSampledMissingAndROMWavesDoNotBecomeFM(t *testing.T) {
 			case "missing":
 				waves = nil
 			case "ROM":
-				voice[25] &^= 0x80
+				voice[25] |= 0x80
 			case "zero-rate":
 				voice[10], voice[11] = 0, 0
 			}
@@ -297,9 +297,9 @@ func TestSMAFAudioTrackControllersApplyBeforeAndDuringWave(t *testing.T) {
 	if !voice.active || voice.volume != 64.0/127 {
 		t.Fatal("initial audio track volume did not apply to its wave")
 	}
-	d.fire(smafEvent{kind: smafVolume, channel: 120, a: 32})
-	d.fire(smafEvent{kind: smafExpression, channel: 120, a: 63})
-	d.fire(smafEvent{kind: smafPan, channel: 120, a: 0})
+	d.fire(smafEvent{kind: smafVolume, channel: voice.channel, a: 32})
+	d.fire(smafEvent{kind: smafExpression, channel: voice.channel, a: 63})
+	d.fire(smafEvent{kind: smafPan, channel: voice.channel, a: 0})
 	if math.Abs(voice.volume-32.0/127*(63.0/127)) > 1e-12 || voice.pan != -1 {
 		t.Fatal("ongoing audio track wave lost its volume, expression, or pan")
 	}
@@ -327,7 +327,7 @@ func smafTestPCMVoice(waveID byte, loopPoint, endPoint int) []byte {
 	body := []byte{
 		0x1f, 0x40, 0, 0, 0, 0xf0, 0xf0, 0,
 		0, 0, 0, byte(loopPoint >> 8), byte(loopPoint), byte(endPoint >> 8), byte(endPoint),
-		0x80 | waveID, 0, 0, 0,
+		waveID, 0, 0, 0,
 	}
 	return append([]byte{0x43, 0x79, 0x07, 0x7f, 1, 0, 0, 0, 0, 1}, body...)
 }

@@ -619,23 +619,47 @@ SMAF rendering handles mono/stereo Yamaha ADPCM and signed/offset-binary
 8-bit and big-endian 16-bit PCM in MTR stream wave banks. ATR audio tracks
 take their wave format and rate from the six-byte track header; Awa bodies
 contain samples without an additional wave header. Duration and gate time
-use separate bases, including the 10/20/40/50 ms codes.
+use separate bases, including the 10/20/40/50 ms codes. ATR wave IDs use all
+six bits (1 through 62). Each ATR track (0 through 255) has four independent
+channels, separate from the score channels.
 
 MA-3/MA-5 sampled instrument definitions can select embedded RAM waves at a
 C4 playback rate, with musical pitch, drum selection, LP/EP looping, release
-envelopes, and volume/expression/pan/bend controls. RM selects ROM or RAM;
-LP < EP determines looping. Handset ROM sample banks and bulk voice-wave
-SysEx uploads remain unsupported, and unavailable sampled waves do not fall
-back to a different GM/FM instrument. Packed 4/12-bit linear PCM, TwinVQ,
-and SMAF MP3 audio tracks are also unsupported.
+envelopes, and volume/expression/pan/bend controls. MA-3 PCM parameters restore
+their MSB bitmap packing; MA-5 parameters use raw bytes. RM=0 selects RAM and
+RM=1 selects ROM; LP < EP determines looping. Native `43 79 device 7f 03`
+wave uploads accept mono Yamaha ADPCM and signed PCM8, using MA-3 packed or
+MA-5 raw bytes. Uploaded instrument waves have a bank separate from stream
+waves, even when their IDs match.
 
-The synthetic tests in `runtime/smaf_pcm_test.go` verify exact decoded
+Sequence voice definitions and wave uploads apply at their event time, in
+sequence order for events on the same sample. Replacing an instrument affects
+subsequent notes. Pan changes also update sounding FM notes. Sampled one-shots
+and release tails can continue past the score's last event until their natural
+end, within the existing 180-second render bound.
+
+Handset ROM sample banks remain unsupported, and unavailable sampled waves do
+not fall back to a different GM/FM instrument. Packed 4/12-bit linear PCM,
+TwinVQ, and SMAF MP3 audio tracks are also unsupported.
+
+The synthetic SMAF PCM, upload, and regression tests verify exact decoded
 sample values, audible sample frequencies, separate stereo channels,
 waveform changes, overlapping gates, loop/release behavior, bounded malformed
-inputs, track-local ATR wave IDs, and eager/incremental length and PCM parity.
+inputs, track-local ATR wave IDs and controls, timed voice/wave replacements,
+MA-3 byte restoration, RAM/ROM selection, separate wave banks, sounding FM pan,
+and eager/incremental length and PCM parity, including long one-shot tails.
 A nonzero peak alone is insufficient evidence that the intended wave played.
+
+A read-only local check of the user-authorized archive (SHA-256
+`320a5360a0f314d096a9ad3f219114b47d2e4e5a36a30f07c36841f797fbf20a`)
+decoded all 46 MMF clips. Its three uploaded-wave clips generated nonzero PCM
+for all 105 RAM instrument note events. This check records only hashes and
+audio metadata; it does not establish physical audio-device playback or
+compatibility with other titles.
 
 Format references: Yamaha [SMAF 3.05](https://img.atwiki.jp/mmfuta/attach/19/78/SMAF3.05.pdf),
 sections 4.4.2(7) and 4.5; [MA-5 Authoring Tool 1.3.3](https://manuals.plus/m/66bfe529849a714a1d213edf827619a5c58de8170e50de271d0a9ea7e8cb2892.pdf),
-sections 4.18.3-4. The PCM envelope uses ARAM's existing software envelope
+sections 4.18.3-4; the RM memory mapping is also documented by
+[vavi-sound's VM35 parameter reader](https://github.com/umjammer/vavi-sound/blob/master/src/main/java/vavi/sound/smaf/vavi/chunk/ExclusiveVoiceChunk.java).
+The PCM envelope uses ARAM's existing software envelope
 model; these tests do not establish sample-accurate handset output.
