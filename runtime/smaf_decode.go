@@ -58,6 +58,7 @@ type smafChannel struct {
 	bend                      float64
 	octaveShift               int
 	drum, rhythm              bool
+	streamWaves               []smafWave
 }
 
 type smafDecoder struct {
@@ -84,6 +85,12 @@ type smafPCMVoice struct {
 	pan      float64
 	panGains smafPanGains
 	active   bool
+	channel  int
+	keyNote  int
+	noteID   uint32
+	gated    bool
+	velocity float64
+	volume   float64
 }
 
 // tick reads one output sample from the wave bank. The banks hold Yamaha ADPCM
@@ -449,6 +456,8 @@ func (decoder *smafDecoder) parseTrack(data []byte, number int) {
 			track.setup = append([]byte(nil), data[body:body+size]...)
 		case "Mtsq":
 			track.sequence = append([]byte(nil), data[body:body+size]...)
+		case "Mtsp":
+			track.waves = parseSMAFStreamWaves(data[body : body+size])
 		}
 		offset = body + size
 		if size == 0 {
@@ -493,6 +502,13 @@ func (decoder *smafDecoder) buildEvents() bool {
 			base = 0
 		}
 		decoder.applyRhythmChannels(track, base)
+		channelCount := 16
+		if track.format == 0 {
+			channelCount = 4
+		}
+		for channel := base; channel < base+channelCount && channel < len(decoder.channels); channel++ {
+			decoder.channels[channel].streamWaves = track.waves
+		}
 		decoder.collectVoices(track.setup, track.format != 0)
 		switch track.format {
 		case 0:
@@ -1012,6 +1028,7 @@ func (decoder *smafDecoder) fire(event smafEvent) {
 				voice.volume = channel.volume * channel.expression
 			}
 		}
+		decoder.updatePCMVolume(event.channel)
 	case smafExpression:
 		channel.expression = float64(event.a&0x7f) / 127
 		for index := range decoder.pool {
@@ -1020,8 +1037,15 @@ func (decoder *smafDecoder) fire(event smafEvent) {
 				voice.volume = channel.volume * channel.expression
 			}
 		}
+		decoder.updatePCMVolume(event.channel)
 	case smafPan:
 		channel.pan = float64(event.a&0x7f-64) / 64
+		for index := range decoder.pcmPool {
+			voice := &decoder.pcmPool[index]
+			if voice.active && voice.gated && voice.channel == event.channel {
+				voice.pan = channel.pan
+			}
+		}
 	case smafModulation:
 		if event.b == 1 {
 			channel.octaveShift = event.a - 1000
@@ -1045,7 +1069,21 @@ func (decoder *smafDecoder) fire(event smafEvent) {
 				break
 			}
 		}
+		for index := range decoder.pcmPool {
+			voice := &decoder.pcmPool[index]
+			if voice.active && voice.gated && voice.channel == event.channel &&
+				voice.keyNote == event.a && (event.noteID == 0 || voice.noteID == event.noteID) {
+				voice.active = false
+				break
+			}
+		}
 	case smafNoteOn:
+		if channel.bankMSB == 125 && channel.bankLSB == 0 {
+			if number := smafStreamWaveNumber(event.a); number != 0 {
+				decoder.startStreamWave(event, number)
+				return
+			}
+		}
 		patch, found := decoder.resolveVoice(*channel, event.a)
 		if !found {
 			if channel.rhythm || channel.drum {
@@ -1106,30 +1144,7 @@ func (decoder *smafDecoder) fire(event smafEvent) {
 		if wave == nil || len(wave.pcm) == 0 {
 			return
 		}
-		slot := -1
-		for index := range decoder.pcmPool {
-			if !decoder.pcmPool[index].active {
-				slot = index
-				break
-			}
-		}
-		if slot < 0 {
-			slot = decoder.nextPCM % len(decoder.pcmPool)
-			decoder.nextPCM++
-		}
-		decoder.pcmPool[slot] = smafPCMVoice{
-			pcm: wave.pcm,
-			kernel: resampleKernelFor(
-				uint32(wave.sampleRate),
-				decoder.rate,
-			),
-			step:   float64(wave.sampleRate) / float64(decoder.rate),
-			active: true,
-		}
-		if !decoder.pcmListed[slot] {
-			decoder.pcmListed[slot] = true
-			decoder.activePCM = append(decoder.activePCM, slot)
-		}
+		decoder.startPCMWave(wave)
 	}
 }
 
@@ -1198,10 +1213,11 @@ func (stream *smafRenderStream) probeEnd() uint64 {
 	if stream == nil || stream.end == 0 {
 		return 0
 	}
-	// Audio tracks are decoded eagerly. Keep their wave positions on the exact
-	// sample loop; the event-driven walker only needs FM envelope state.
-	for _, event := range stream.decoder.events {
-		if event.kind == smafWaveOn {
+	// Sampled tracks can trigger PCM through ATR events or ordinary score
+	// notes. Keep their wave positions and gates on the exact sample loop;
+	// the event-driven walker only handles FM envelope state.
+	for _, track := range stream.decoder.tracks {
+		if len(track.waves) != 0 {
 			stream.render(nil, stream.end, true)
 			return stream.cursor
 		}
@@ -1290,7 +1306,7 @@ func (stream *smafRenderStream) render(
 				continue
 			}
 			active = true
-			value := voice.tick() * 0.32
+			value := voice.tick() * voice.volume * 0.32
 			if !silent {
 				panLeft, panRight := voice.panGains.gains(voice.pan)
 				left += value * panLeft
