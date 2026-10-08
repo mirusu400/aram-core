@@ -114,7 +114,6 @@ func TestMediaStoppedLoopCompatibilitySurvivesSnapshot(t *testing.T) {
 	check(t, err)
 	restored, err := NewMedia(registry, state.Limits)
 	check(t, err)
-	restored.SetStoppedLoopPreservation(true)
 	check(t, restored.Restore(state))
 	check(t, restored.Advance(
 		125*time.Microsecond,

@@ -320,6 +320,12 @@ func (r *Runtime) writeFile(fd int32, source uint32, length int32) (guest.WIPIRe
 	if !ok || !handle.writable || length < 0 {
 		return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
 	}
+	if length == 0 {
+		if _, err := r.Services.Storage.Write(r.ServiceOwner, r.fileServices[fd], nil); err != nil {
+			return guest.WIPIReturn{Low: ^uint32(0)}, true, nil
+		}
+		return guest.WIPIReturn{}, true, nil
+	}
 	if length > wipiFilesystemCapacity ||
 		r.filesystemUsed()-len(r.Files[handle.path])+max(len(r.Files[handle.path]), handle.offset+int(length)) >
 			wipiFilesystemCapacity {

@@ -359,6 +359,7 @@ func (s *Services) Advance(owner OwnerID, delta time.Duration) error {
 	s.Events.SnapshotInto(&s.rbEvents)
 	eventState := s.rbEvents
 	s.rbInput.controls = s.rbInput.controls[:0]
+	s.rbInput.pendingSaved = false
 	s.rbTimers.timers = s.rbTimers.timers[:0]
 	s.Media.captureAdvance(&s.rbMedia)
 	s.Device.captureAdvance(&s.rbDevice)
@@ -552,6 +553,14 @@ func servicesFromState(state ServicesState) (*Services, error) {
 	}
 	if err := candidate.Input.Restore(state.Input); err != nil {
 		return nil, err
+	}
+	if uint64(len(state.Input.Pending)) > uint64(config.Limits.MaxEvents) {
+		return nil, fmt.Errorf("%w: pending input exceeds event limit", ErrInvalidState)
+	}
+	for index, change := range state.Input.Pending {
+		if change.AtNS <= state.Clock.MonotonicNanos {
+			return nil, fmt.Errorf("%w: pending input %d is not in the future", ErrInvalidState, index)
+		}
 	}
 	if err := candidate.Timers.Restore(state.Timers); err != nil {
 		return nil, err
@@ -783,7 +792,7 @@ func (s *Services) QueueInput(
 			return err
 		}
 	}
-	if err := s.Input.Change(s.Events, owner, control, pressed, at); err != nil {
+	if err := s.Input.queueChange(s.Events, owner, control, pressed, at, s.Clock.Monotonic()); err != nil {
 		_ = s.Events.Restore(eventState)
 		_ = s.Input.Restore(inputState)
 		_ = s.Replay.Restore(replayState)

@@ -14,6 +14,16 @@ type InputState struct {
 	RepeatPeriodNS int64
 	Focused        bool
 	Controls       []InputControlState
+	Pending        []InputChangeState
+}
+
+// InputChangeState stores a future transition. Equal timestamps retain the
+// order in which QueueInput accepted them.
+type InputChangeState struct {
+	AtNS    int64
+	Owner   OwnerID
+	Control string
+	Pressed bool
 }
 
 type InputControlState struct {
@@ -28,7 +38,9 @@ type inputControl struct {
 }
 
 type inputAdvanceState struct {
-	controls []inputControlAdvanceState
+	controls     []inputControlAdvanceState
+	pending      []InputChangeState
+	pendingSaved bool
 }
 
 type inputControlAdvanceState struct {
@@ -44,6 +56,7 @@ type Input struct {
 	focused      bool
 	controls     map[string]inputControl
 	dueNames     []string
+	pending      []InputChangeState
 }
 
 func NewInput(maxControls uint32, repeatDelay, repeatPeriod time.Duration) *Input {
@@ -73,9 +86,45 @@ func (i *Input) Held(control string) bool {
 	return i.controls[control].pressed
 }
 
+func validInputControl(control string) bool {
+	return strings.TrimSpace(control) != "" && len(control) <= 255 && strings.IndexByte(control, 0) < 0
+}
+
+// queueChange defers future transitions until Advance reaches their timestamp.
+// Reserving the control now makes control-limit failures atomic at queue time.
+func (i *Input) queueChange(bus *EventBus, owner OwnerID, control string, pressed bool, at, now time.Duration) error {
+	if bus == nil || !validInputControl(control) || at < 0 || now < 0 {
+		return fmt.Errorf("%w: invalid input change", ErrInvalidArgument)
+	}
+	if at <= now {
+		return i.Change(bus, owner, control, pressed, at)
+	}
+	if pressed && at > time.Duration(math.MaxInt64-int64(i.repeatDelay)) {
+		return fmt.Errorf("%w: input repeat deadline overflow", ErrLimitExceeded)
+	}
+	_, exists := i.controls[control]
+	if !exists && uint32(len(i.controls)) >= i.maxControls {
+		return fmt.Errorf("%w: input controls reached %d", ErrLimitExceeded, i.maxControls)
+	}
+	if uint64(len(i.pending)) >= uint64(bus.maxEvents) {
+		return fmt.Errorf("%w: pending input reached %d", ErrLimitExceeded, bus.maxEvents)
+	}
+	index := sort.Search(len(i.pending), func(index int) bool {
+		return i.pending[index].AtNS > int64(at)
+	})
+	i.pending = append(i.pending, InputChangeState{})
+	copy(i.pending[index+1:], i.pending[index:])
+	i.pending[index] = InputChangeState{AtNS: int64(at), Owner: owner, Control: control, Pressed: pressed}
+	if !exists {
+		i.controls[control] = inputControl{}
+	}
+	return nil
+}
+
+// Change applies a transition immediately, using at for its event and repeat
+// timestamps. Use Services.QueueInput to schedule a transition in virtual time.
 func (i *Input) Change(bus *EventBus, owner OwnerID, control string, pressed bool, at time.Duration) error {
-	if bus == nil || strings.TrimSpace(control) == "" || len(control) > 255 ||
-		strings.IndexByte(control, 0) >= 0 || at < 0 {
+	if bus == nil || !validInputControl(control) || at < 0 {
 		return fmt.Errorf("%w: invalid input change", ErrInvalidArgument)
 	}
 	current, exists := i.controls[control]
@@ -118,9 +167,6 @@ func (i *Input) Advance(bus *EventBus, owner OwnerID, now time.Duration) error {
 	if bus == nil || now < 0 {
 		return fmt.Errorf("%w: invalid input advance", ErrInvalidArgument)
 	}
-	if !i.focused {
-		return nil
-	}
 	busBefore := bus.Snapshot()
 	var inputBefore inputAdvanceState
 	if err := i.advanceLocked(bus, owner, now, &inputBefore); err != nil {
@@ -131,9 +177,9 @@ func (i *Input) Advance(bus *EventBus, owner OwnerID, now time.Duration) error {
 	return nil
 }
 
-// advanceLocked emits repeats without taking a full component snapshot. The
-// caller owns the event-bus transaction and may retain saved to undo only the
-// controls whose repeat deadlines changed.
+// advanceLocked applies due transitions and emits repeats without taking a full
+// component snapshot. The caller owns the event-bus transaction and may retain
+// saved to undo changes to controls and the pending queue.
 func (i *Input) advanceLocked(
 	bus *EventBus,
 	owner OwnerID,
@@ -145,7 +191,38 @@ func (i *Input) advanceLocked(
 	}
 	if saved != nil {
 		saved.controls = saved.controls[:0]
+		saved.pendingSaved = false
 	}
+	due := 0
+	for due < len(i.pending) && i.pending[due].AtNS <= int64(now) {
+		change := i.pending[due]
+		if saved != nil && !saved.pendingSaved {
+			saved.pending = append(saved.pending[:0], i.pending...)
+			saved.pendingSaved = true
+		}
+		// A transition wins over a repeat at the same timestamp. Repeats before
+		// it still belong to the previous held state, even in a long advance.
+		if err := i.advanceRepeats(bus, owner, time.Duration(change.AtNS)-1, saved); err != nil {
+			return err
+		}
+		i.captureControl(saved, change.Control)
+		if err := i.Change(bus, change.Owner, change.Control, change.Pressed, time.Duration(change.AtNS)); err != nil {
+			return err
+		}
+		due++
+	}
+	if err := i.advanceRepeats(bus, owner, now, saved); err != nil {
+		return err
+	}
+	if due != 0 {
+		copy(i.pending, i.pending[due:])
+		clear(i.pending[len(i.pending)-due:])
+		i.pending = i.pending[:len(i.pending)-due]
+	}
+	return nil
+}
+
+func (i *Input) advanceRepeats(bus *EventBus, owner OwnerID, now time.Duration, saved *inputAdvanceState) error {
 	if !i.focused {
 		return nil
 	}
@@ -158,12 +235,7 @@ func (i *Input) advanceLocked(
 	sort.Strings(i.dueNames)
 	for _, name := range i.dueNames {
 		control := i.controls[name]
-		if saved != nil {
-			saved.controls = append(saved.controls, inputControlAdvanceState{
-				name:    name,
-				control: control,
-			})
-		}
+		i.captureControl(saved, name)
 		for control.nextRepeat <= now {
 			// Coalesce: a repeat this control has not had delivered yet says
 			// everything a second one would. Without this a title that stops
@@ -193,12 +265,27 @@ func (i *Input) advanceLocked(
 	return nil
 }
 
+func (i *Input) captureControl(saved *inputAdvanceState, name string) {
+	if saved == nil {
+		return
+	}
+	for _, previous := range saved.controls {
+		if previous.name == name {
+			return
+		}
+	}
+	saved.controls = append(saved.controls, inputControlAdvanceState{name: name, control: i.controls[name]})
+}
+
 func (i *Input) restoreAdvance(saved *inputAdvanceState) {
 	if saved == nil {
 		return
 	}
 	for _, change := range saved.controls {
 		i.controls[change.name] = change.control
+	}
+	if saved.pendingSaved {
+		i.pending = append(i.pending[:0], saved.pending...)
 	}
 }
 
@@ -208,6 +295,7 @@ func (i *Input) Snapshot() InputState {
 		RepeatDelayNS:  int64(i.repeatDelay),
 		RepeatPeriodNS: int64(i.repeatPeriod),
 		Focused:        i.focused,
+		Pending:        append([]InputChangeState(nil), i.pending...),
 	}
 	names := make([]string, 0, len(i.controls))
 	for name := range i.controls {
@@ -235,8 +323,7 @@ func (i *Input) Restore(state InputState) error {
 	controls := make(map[string]inputControl, len(state.Controls))
 	previous := ""
 	for index, saved := range state.Controls {
-		if strings.TrimSpace(saved.Name) == "" || len(saved.Name) > 255 ||
-			strings.IndexByte(saved.Name, 0) >= 0 ||
+		if !validInputControl(saved.Name) ||
 			(index != 0 && saved.Name <= previous) ||
 			saved.NextRepeat < 0 ||
 			(saved.Pressed && saved.NextRepeat == 0) ||
@@ -249,10 +336,18 @@ func (i *Input) Restore(state InputState) error {
 		}
 		previous = saved.Name
 	}
+	for index, change := range state.Pending {
+		_, exists := controls[change.Control]
+		if !exists || change.AtNS <= 0 || (index > 0 && change.AtNS < state.Pending[index-1].AtNS) ||
+			(change.Pressed && change.AtNS > math.MaxInt64-state.RepeatDelayNS) {
+			return fmt.Errorf("%w: invalid pending input %d", ErrInvalidState, index)
+		}
+	}
 	i.maxControls = state.MaxControls
 	i.repeatDelay = time.Duration(state.RepeatDelayNS)
 	i.repeatPeriod = time.Duration(state.RepeatPeriodNS)
 	i.focused = state.Focused
 	i.controls = controls
+	i.pending = append([]InputChangeState(nil), state.Pending...)
 	return nil
 }

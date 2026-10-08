@@ -35,14 +35,14 @@ var requiredServiceComponents = []serviceComponentSpec{
 	{"clock", 2},
 	{"random", 2},
 	{"events", 2},
-	{"input", 2},
+	// input 3 retains future transitions without changing the present held state.
+	{"input", 3},
 	{"timers", 2},
 	{"graphics", 2},
 	{"assets", 2},
 	{"storage", 2},
-	// media 3 adds the mixing policy's hand-loop marker, which decides whether
-	// a long non-repeating track becomes the persistent music voice.
-	{"media", 3},
+	// media 4 preserves the stopped-loop policy and the detached voice's mute.
+	{"media", 4},
 	{"device", 2},
 	// network 3 preserves local server parsing and download continuation state.
 	{"network", 3},
@@ -186,7 +186,9 @@ func DecodeServicesState(data []byte) (ServicesState, error) {
 			)
 		}
 		legacyNetwork := id == "network" && version == 2
-		if version != expected.schema && !legacyNetwork {
+		legacyMedia := id == "media" && version == 3
+		legacyInput := id == "input" && version == 2
+		if version != expected.schema && !legacyNetwork && !legacyMedia && !legacyInput {
 			return ServicesState{}, decoder.fail(
 				fmt.Sprintf("component %q schema %d", id, version),
 			)
@@ -221,6 +223,14 @@ func DecodeServicesState(data []byte) (ServicesState, error) {
 		case "events":
 			target = &state.Events
 		case "input":
+			if legacyInput {
+				var err error
+				state.Input, err = decodeLegacyInputState(componentPayload)
+				if err != nil {
+					return ServicesState{}, decoder.fail(fmt.Sprintf("decode legacy input: %v", err))
+				}
+				continue
+			}
 			target = &state.Input
 		case "timers":
 			target = &state.Timers
@@ -231,6 +241,14 @@ func DecodeServicesState(data []byte) (ServicesState, error) {
 		case "storage":
 			target = &state.Storage
 		case "media":
+			if legacyMedia {
+				var err error
+				state.Media, err = decodeLegacyMediaState(componentPayload)
+				if err != nil {
+					return ServicesState{}, decoder.fail(fmt.Sprintf("decode legacy media: %v", err))
+				}
+				continue
+			}
 			target = &state.Media
 		case "device":
 			target = &state.Device

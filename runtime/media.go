@@ -84,15 +84,16 @@ type ClipState struct {
 }
 
 type MediaState struct {
-	Limits          MediaLimits
-	GlobalVolume    uint8
-	GlobalMute      bool
-	OutputRemainder uint64
-	QueuedPCM16     []int16
-	Clips           []ClipState
-	AudioMixMode    bool
-	BGMVoice        *BGMVoiceState
-	BGMVoiceSig     uint64
+	Limits               MediaLimits
+	GlobalVolume         uint8
+	GlobalMute           bool
+	OutputRemainder      uint64
+	QueuedPCM16          []int16
+	Clips                []ClipState
+	AudioMixMode         bool
+	PreserveStoppedLoops bool
+	BGMVoice             *BGMVoiceState
+	BGMVoiceSig          uint64
 
 	// BGMVoice carries the opt-in stopped-loop compatibility voice. It remains
 	// detached from the guest-visible registry so a title may reuse its only
@@ -104,13 +105,14 @@ type MediaState struct {
 	BGMEndedValid     bool
 }
 
-// BGMVoiceState is the legacy schema-v3 detached music payload. New snapshots
-// never populate it.
+// BGMVoiceState preserves the detached music voice used by the title-specific
+// stopped-loop policy.
 type BGMVoiceState struct {
 	MediaType  string
 	Source     []byte
 	PositionNS int64
 	Volume     uint8
+	Muted      bool
 	Pan        int8
 }
 
@@ -762,7 +764,7 @@ func (m *Media) advanceLocked(start, end time.Duration, bus *EventBus) error {
 			)
 			slot := frame - firstFrame
 			if m.limits.OutputChannels == 1 {
-				mixed[slot] += int64(left)/2 + int64(right)/2
+				mixed[slot] += (int64(left) + int64(right)) / 2
 			} else {
 				mixed[slot*2] += int64(left)
 				mixed[slot*2+1] += int64(right)
@@ -918,12 +920,13 @@ func (m *Media) restoreAdvance(saved *mediaAdvanceState) {
 
 func (m *Media) Snapshot() MediaState {
 	state := MediaState{
-		Limits:          m.limits,
-		GlobalVolume:    m.globalVolume,
-		GlobalMute:      m.globalMute,
-		OutputRemainder: m.outputRemainder,
-		QueuedPCM16:     append([]int16(nil), m.queuedPCM16...),
-		AudioMixMode:    m.mixMode,
+		Limits:               m.limits,
+		GlobalVolume:         m.globalVolume,
+		GlobalMute:           m.globalMute,
+		OutputRemainder:      m.outputRemainder,
+		QueuedPCM16:          append([]int16(nil), m.queuedPCM16...),
+		AudioMixMode:         m.mixMode,
+		PreserveStoppedLoops: m.preserveStoppedLoops,
 	}
 	if m.bgmVoice != nil {
 		state.BGMVoice = &BGMVoiceState{
@@ -931,6 +934,7 @@ func (m *Media) Snapshot() MediaState {
 			Source:     cloneBytes(m.bgmVoice.source),
 			PositionNS: int64(m.bgmVoice.position),
 			Volume:     m.bgmVoice.volume,
+			Muted:      m.bgmVoice.muted,
 			Pan:        m.bgmVoice.pan,
 		}
 	}
@@ -956,6 +960,7 @@ func (m *Media) Snapshot() MediaState {
 func (m *Media) Restore(state MediaState) error {
 	if err := state.Limits.Validate(); err != nil ||
 		state.GlobalVolume > 100 ||
+		(state.BGMVoice != nil && !state.PreserveStoppedLoops) ||
 		state.BGMEndedElapsedNS < 0 ||
 		time.Duration(state.BGMEndedElapsedNS) > 750*time.Millisecond ||
 		state.OutputRemainder >= uint64(time.Second) ||
@@ -1043,7 +1048,7 @@ func (m *Media) Restore(state MediaState) error {
 		if decoded != nil && time.Duration(v.PositionNS) > decoded.duration {
 			return fmt.Errorf("%w: media music voice position exceeds duration", ErrInvalidState)
 		}
-		if m.preserveStoppedLoops && decoded != nil && decoded.duration > 0 {
+		if state.PreserveStoppedLoops && decoded != nil && decoded.duration > 0 {
 			bgmVoice = &mediaClip{
 				mediaType:      v.MediaType,
 				source:         cloneBytes(v.Source),
@@ -1051,6 +1056,7 @@ func (m *Media) Restore(state MediaState) error {
 				position:       time.Duration(v.PositionNS),
 				state:          ClipPlaying,
 				volume:         v.Volume,
+				muted:          v.Muted,
 				pan:            v.Pan,
 				remainingPlays: -1,
 			}
@@ -1063,6 +1069,7 @@ func (m *Media) Restore(state MediaState) error {
 	m.outputRemainder = state.OutputRemainder
 	m.queuedPCM16 = append([]int16(nil), state.QueuedPCM16...)
 	m.mixMode = state.AudioMixMode
+	m.preserveStoppedLoops = state.PreserveStoppedLoops
 	m.bgmVoice = bgmVoice
 	m.outputRevision++
 	return nil
