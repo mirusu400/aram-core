@@ -2,6 +2,7 @@ package wipi
 
 import (
 	"github.com/mirusu400/aram-core/application/internal/guest"
+	shared "github.com/mirusu400/aram-core/runtime"
 	"time"
 )
 
@@ -520,14 +521,20 @@ func (r *Runtime) RaptorStopClip(handle uint32, free bool) {
 	}
 	if serviceID := r.MediaServices[handle]; serviceID != 0 {
 		if free {
-			if clip.State != 0 {
-				if clip.Repeat {
-					_ = r.Services.Media.StopWithoutPreservation(r.ServiceOwner, serviceID)
-				} else {
-					_ = r.Services.Media.Stop(r.ServiceOwner, serviceID)
+			// The shared service owns playback. A stale adapter mirror must not
+			// let free drop the only handle to a voice that is still sounding.
+			info, err := r.Services.Media.Info(r.ServiceOwner, serviceID)
+			if err != nil {
+				return
+			}
+			if info.State != shared.ClipStopped {
+				if err := r.Services.Media.StopWithoutPreservation(r.ServiceOwner, serviceID); err != nil {
+					return
 				}
 			}
-			_ = r.Services.Media.DestroyClip(r.ServiceOwner, serviceID, r.Services.Events)
+			if err := r.Services.Media.DestroyClip(r.ServiceOwner, serviceID, r.Services.Events); err != nil {
+				return
+			}
 			delete(r.MediaServices, handle)
 		} else {
 			if err := r.Services.Media.Stop(r.ServiceOwner, serviceID); err != nil {
