@@ -1006,6 +1006,11 @@ func (r *Runtime) hostJavaInstanceFieldValue(
 	if className == "org/kwis/msp/lwc/TextComponent" && name == "imHandler" {
 		return r.sharedHostInputMethodHandler()
 	}
+	if className == "org/kwis/msp/lwc/TextComponent" && name == "m_td" {
+		// Compiled subclasses read this backing array before their first edit.
+		// An empty text component owns an empty array, rather than a null field.
+		return r.NewJavaArray("[C", 0, 2)
+	}
 	return 0, nil
 }
 

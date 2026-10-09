@@ -72,4 +72,18 @@ func TestHybridSkipsEmptyDrawSlot(t *testing.T) {
 	if got := machine.wipi.Stats.PresentCount; got <= 130 {
 		t.Fatalf("only %d frames presented after the draw fault", got)
 	}
+	// Issue 512's white authentication wait can still present frames. Require
+	// an actual coloured game scene rather than accepting presentation alone.
+	coloured := 0
+	for y := 24; y < machine.frame.Bounds().Dy(); y += 4 {
+		for x := 0; x < machine.frame.Bounds().Dx(); x += 4 {
+			pixel := machine.frame.RGBAAt(x, y)
+			if pixel.R != pixel.G || pixel.G != pixel.B {
+				coloured++
+			}
+		}
+	}
+	if coloured < 1000 {
+		t.Fatalf("only %d coloured scene samples; the title remained at authentication", coloured)
+	}
 }

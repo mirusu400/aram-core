@@ -128,6 +128,9 @@ func (r *Runtime) handleLWCMethod(
 	case "org/kwis/msp/lwc/TextFieldComponent":
 		if method == "<init>(Ljava/lang/String;I)V" {
 			state.text = registers[2]
+			if err := r.syncLWCTextData(instance, state.text); err != nil {
+				return 0, err
+			}
 			r.initializeLWCTextSize(state, registers[2], true)
 			return 0, nil
 		}
@@ -743,6 +746,9 @@ func (r *Runtime) handleLWCMethod(
 		case "<init>(Ljava/lang/String;I)V",
 			"<init>(Ljava/lang/String;II)V":
 			state.text = registers[2]
+			if err := r.syncLWCTextData(instance, state.text); err != nil {
+				return 0, err
+			}
 			state.mode = int32(registers[3])
 			r.initializeLWCTextSize(state, registers[2], false)
 			if descriptor == "(Ljava/lang/String;II)V" {
@@ -938,6 +944,11 @@ func (r *Runtime) handleLWCMethod(
 		return uint32(r.lwcMaxLengths[instance]), nil
 	case "setString(Ljava/lang/String;)V", "setLabel(Ljava/lang/String;)V":
 		state.text = registers[2]
+		if ktfLWCTextInputClasses[className] {
+			if err := r.syncLWCTextData(instance, state.text); err != nil {
+				return 0, err
+			}
+		}
 		r.resetLWCTextInput(instance)
 		r.initializeLWCTextSize(
 			state,
@@ -1245,6 +1256,9 @@ func (r *Runtime) handleLWCMethod(
 			return 0, err
 		}
 		state.text = text
+		if err := r.syncLWCTextData(instance, text); err != nil {
+			return 0, err
+		}
 		r.invalidateLWC(instance)
 		return 0, nil
 	case "delete(II)V":
@@ -1263,6 +1277,9 @@ func (r *Runtime) handleLWCMethod(
 			return 0, err
 		}
 		state.text = text
+		if err := r.syncLWCTextData(instance, text); err != nil {
+			return 0, err
+		}
 		r.invalidateLWC(instance)
 		return 0, nil
 	}

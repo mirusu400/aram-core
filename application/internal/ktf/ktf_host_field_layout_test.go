@@ -141,4 +141,17 @@ func TestKTFHostInstanceFieldKeepsSubclassFieldZero(t *testing.T) {
 	if handlerClass.Name != "org/kwis/msp/lcdui/InputMethodHandler" {
 		t.Fatalf("imHandler class = %q", handlerClass.Name)
 	}
+	textData := readU32(t, runtime, fields+4+ktfHostInstanceFieldOffsets[parent.Name+".m_td[C"])
+	if textData == 0 {
+		t.Fatal("TextComponent.m_td is null; compiled text-field code requires an empty char array")
+	}
+	textClass := inspectClass(t, runtime, readWords(t, runtime, textData, 2)[1])
+	if textClass.Name != "[C" {
+		t.Fatalf("m_td class = %q, want [C", textClass.Name)
+	}
+	length, err := runtime.javaArrayLength(textData)
+	check(t, err)
+	if length != 0 {
+		t.Fatalf("initial m_td length = %d, want 0", length)
+	}
 }

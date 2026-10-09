@@ -22,6 +22,21 @@ var ktfLWCTextInputClasses = map[string]bool{
 	"org/kwis/msp/lwc/TextBoxComponent":   true,
 }
 
+// syncLWCTextData keeps the protected text buffer readable by compiled
+// subclasses, which access m_td directly instead of calling getString.
+func (r *Runtime) syncLWCTextData(instance, text uint32) error {
+	value := ""
+	if text != 0 {
+		value = r.javaStringValue(text)
+	}
+	characters, err := r.newJavaCharArray(value)
+	if err != nil {
+		return err
+	}
+	offset := ktfHostInstanceFieldOffsets["org/kwis/msp/lwc/TextComponent.m_td[C"]
+	return r.WriteJavaFieldWord(instance, offset, characters)
+}
+
 // editLWCText runs one keypad press through the field's input method and
 // reports whether the input method consumed it.
 //
@@ -75,6 +90,9 @@ func (r *Runtime) editLWCText(
 		return false, err
 	}
 	state.text = text
+	if err := r.syncLWCTextData(instance, text); err != nil {
+		return false, err
+	}
 	r.initializeLWCTextSize(state, text, true)
 	r.invalidateLWC(instance)
 	r.markLWCRepaint(instance)
