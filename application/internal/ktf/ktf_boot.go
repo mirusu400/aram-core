@@ -59,6 +59,10 @@ func NewRuntimeForProfile(
 	if err != nil {
 		return nil, fmt.Errorf("initialize KTF runtime: %w", err)
 	}
+	patchedClient, astonishiaDecisionLabels, err := patchAstonishiaDecisionLabels(patchedClient)
+	if err != nil {
+		return nil, fmt.Errorf("initialize KTF runtime: %w", err)
+	}
 	imageSize := uint64(len(pkg.Client)) + uint64(pkg.BSSSize)
 	if imageSize > uint64(^uint32(0))-uint64(ImageBase) {
 		return nil, fmt.Errorf("initialize KTF runtime: image range exceeds guest address space")
@@ -164,6 +168,7 @@ func NewRuntimeForProfile(
 		mainThreadLivenessCompat: mainThreadLivenessCompatibility(pkg),
 		dataInputStreamJavaABI:   dataInputStreamJavaABI(pkg),
 		makjangCopyGuard:         makjangCopyGuard,
+		astonishiaDecisionLabels: astonishiaDecisionLabels,
 		ImageSz:                  uint32(imageSize),
 		frame:                    frame,
 		Services:                 services,

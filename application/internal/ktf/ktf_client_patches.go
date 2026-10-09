@@ -52,9 +52,12 @@ func (r *Runtime) mappedClientImage() []byte {
 	return r.Pkg.Client
 }
 
-// RestoreKnownClientPatches also upgrades snapshots saved before the guard was
-// installed. A current snapshot already contains the patched instructions.
+// RestoreKnownClientPatches also upgrades snapshots saved before the title
+// patches were installed. Current snapshots already contain these instructions.
 func (r *Runtime) RestoreKnownClientPatches() error {
+	if err := r.restoreAstonishiaDecisionLabels(); err != nil {
+		return err
+	}
 	if !r.makjangCopyGuard {
 		return nil
 	}

@@ -117,6 +117,7 @@ type Runtime struct {
 	mainThreadLivenessCompat bool
 	dataInputStreamJavaABI   bool
 	makjangCopyGuard         bool
+	astonishiaDecisionLabels bool
 
 	// gcExtraWeakTables and gcExtraRootWalkers let a runtime that shares this
 	// Java heap (Raptor) extend the collector without this package importing
