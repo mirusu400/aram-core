@@ -14,6 +14,7 @@ const (
 	maxNativeImageBytes      = uint32(8 << 20)
 	maxNativeImagePixels     = uint64(2_000_000)
 	idibColorScheme565       = byte(16)
+	aeeROOldTransparent      = uint32(4)
 	aeeROTransparent         = uint32(7)
 	nativeBitmapPixelsOffset = uint32(40)
 )
@@ -795,7 +796,7 @@ func (r *Runtime) blitDisplayBitmap() error {
 			}
 			// AEE_RO_TRANSPARENT composites the RGB565 magenta key over the
 			// existing display. AEE_RO_COPY must still copy magenta literally.
-			if rop == aeeROTransparent && binary.LittleEndian.Uint16(pixel[:]) == 0xf81f {
+			if transparentBitmapROP(rop) && binary.LittleEndian.Uint16(pixel[:]) == 0xf81f {
 				continue
 			}
 			targetAt := framebufferBase + (uint32(targetY)*r.screenWidth+uint32(targetX))*2
@@ -847,7 +848,7 @@ func (r *Runtime) blitDisplayBMP(bitmap, destinationX, destinationY, width, heig
 			}
 			red, green, blue, _ := decoded.At(decoded.Bounds().Min.X+int(sourceX+column), decoded.Bounds().Min.Y+int(sourceY+row)).RGBA()
 			native := uint16((red>>11)<<11 | (green>>10)<<5 | blue>>11)
-			if rop == aeeROTransparent && native == 0xf81f {
+			if transparentBitmapROP(rop) && native == 0xf81f {
 				continue
 			}
 			var pixel [2]byte
@@ -859,4 +860,10 @@ func (r *Runtime) blitDisplayBMP(bitmap, destinationX, destinationY, width, heig
 		}
 	}
 	return r.cpu.WriteRegister(cpu.RegisterR0, 0)
+}
+
+// BREW 1.0 uses AEE_RO_OLDMASK (4) for the same color-key operation that
+// later clients expose as AEE_RO_TRANSPARENT (7).
+func transparentBitmapROP(rop uint32) bool {
+	return rop == aeeROOldTransparent || rop == aeeROTransparent
 }

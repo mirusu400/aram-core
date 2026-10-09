@@ -2,7 +2,9 @@ package brewrt
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -12,16 +14,32 @@ import (
 	shared "github.com/mirusu400/aram-core/runtime"
 )
 
-const brewMediaOwner shared.OwnerID = 1
+const (
+	brewMediaOwner        shared.OwnerID = 1
+	brewSoundPlayCommand  uint32         = 1
+	brewSoundSuccess      uint32         = 1
+	brewSoundAborted      uint32         = 12
+	brewSoundDone         uint32         = 14
+	brewSoundFailure      uint32         = 15
+	maxSoundNotifications                = 1024
+)
+
+type brewSoundNotification struct {
+	callback, context uint32
+	registration      uint64
+	status            uint32
+}
 
 type brewSoundPlayer struct {
-	callback  uint32
-	context   uint32
-	input     uint32
-	data      uint32
-	size      uint32
-	clip      shared.ServiceID
-	mediaType string
+	callback      uint32
+	context       uint32
+	input         uint32
+	data          uint32
+	size          uint32
+	clip          shared.ServiceID
+	mediaType     string
+	registration  uint64
+	notifications []brewSoundNotification
 }
 
 func decodeBREWAudioResource(data []byte) (string, []byte, bool) {
@@ -41,9 +59,8 @@ func decodeBREWAudioResource(data []byte) (string, []byte, bool) {
 
 func (r *Runtime) replaceSoundPlayerSource(mediaType string, data []byte) error {
 	if r.soundPlayer.clip != 0 {
-		if info, err := r.media.Info(brewMediaOwner, r.soundPlayer.clip); err == nil &&
-			(info.State == shared.ClipPlaying || info.State == shared.ClipPaused || info.State == shared.ClipRecording) {
-			_ = r.media.Stop(brewMediaOwner, r.soundPlayer.clip)
+		if err := r.stopSoundPlayer(); err != nil {
+			return err
 		}
 		_ = r.media.DestroyClip(brewMediaOwner, r.soundPlayer.clip, r.mediaEvents)
 		r.soundPlayer.clip = 0
@@ -180,25 +197,104 @@ func (r *Runtime) getSoundPlayerInfo() error {
 	return nil
 }
 
-func (r *Runtime) playSoundPlayer() {
+func (r *Runtime) playSoundPlayer() error {
 	if r.soundPlayer.clip == 0 {
-		return
+		return r.queueSoundNotification(brewSoundFailure)
 	}
 	info, err := r.media.Info(brewMediaOwner, r.soundPlayer.clip)
-	if err != nil || info.State != shared.ClipStopped {
-		return
+	if err != nil {
+		return err
 	}
-	_ = r.media.Play(brewMediaOwner, r.soundPlayer.clip, 1)
+	if info.State != shared.ClipStopped {
+		return r.queueSoundNotification(brewSoundFailure)
+	}
+	if err := r.media.Play(brewMediaOwner, r.soundPlayer.clip, 1); err != nil {
+		// Play is a void BREW method: an unsupported input is reported through
+		// the registered callback, while internal service errors remain faults.
+		if errors.Is(err, shared.ErrMediaUnsupported) {
+			return r.queueSoundNotification(brewSoundFailure)
+		}
+		return err
+	}
+	return r.queueSoundNotification(brewSoundSuccess)
 }
 
-func (r *Runtime) stopSoundPlayer() {
+func (r *Runtime) stopSoundPlayer() error {
 	if r.soundPlayer.clip == 0 {
-		return
+		return nil
 	}
 	info, err := r.media.Info(brewMediaOwner, r.soundPlayer.clip)
-	if err == nil && info.State != shared.ClipStopped {
-		_ = r.media.Stop(brewMediaOwner, r.soundPlayer.clip)
+	if err != nil || info.State == shared.ClipStopped {
+		return err
 	}
+	if err := r.media.Stop(brewMediaOwner, r.soundPlayer.clip); err != nil {
+		return err
+	}
+	return r.queueSoundNotification(brewSoundAborted)
+}
+
+func (r *Runtime) registerSoundPlayerNotify(callback, context uint32) {
+	r.soundPlayer.callback = callback
+	r.soundPlayer.context = context
+	r.soundPlayer.registration++
+	r.soundPlayer.notifications = nil
+}
+
+func (r *Runtime) queueSoundNotification(status uint32) error {
+	if r.soundPlayer.callback == 0 {
+		return nil
+	}
+	if len(r.soundPlayer.notifications) >= maxSoundNotifications {
+		return fmt.Errorf("%w: BREW sound notification queue reached %d", shared.ErrLimitExceeded, maxSoundNotifications)
+	}
+	r.soundPlayer.notifications = append(r.soundPlayer.notifications, brewSoundNotification{
+		callback: r.soundPlayer.callback, context: r.soundPlayer.context,
+		registration: r.soundPlayer.registration, status: status,
+	})
+	return nil
+}
+
+func (r *Runtime) collectSoundNotifications() ([]brewSoundNotification, error) {
+	for {
+		event, ok := r.mediaEvents.PopReady(r.clock)
+		if !ok {
+			break
+		}
+		if event.Kind == shared.EventAudioComplete && event.Owner == brewMediaOwner && event.ServiceID == r.soundPlayer.clip {
+			if err := r.queueSoundNotification(brewSoundDone); err != nil {
+				return nil, err
+			}
+		}
+	}
+	// Detach this turn's work before invoking guest code. A callback can play
+	// another clip; its acceptance notification belongs to the next turn.
+	ready := r.soundPlayer.notifications
+	r.soundPlayer.notifications = nil
+	return ready, nil
+}
+
+func (r *Runtime) runSoundNotification(ctx context.Context, notification brewSoundNotification) error {
+	if notification.registration != r.soundPlayer.registration || r.soundPlayer.callback == 0 {
+		return nil
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterR0: notification.context, cpu.RegisterR1: brewSoundPlayCommand,
+		cpu.RegisterR2: notification.status, cpu.RegisterR3: 0,
+		cpu.RegisterSP: stackEntrySP, cpu.RegisterLR: returnTrap | 1,
+	} {
+		if err := r.cpu.WriteRegister(register, value); err != nil {
+			return fmt.Errorf("initialize BREW sound callback register r%d: %w", register, err)
+		}
+	}
+	pc, mode := branchTarget(notification.callback)
+	updatesBefore := r.updates
+	if _, err := r.runAppletCode(ctx, pc, mode, "sound notification"); err != nil {
+		return fmt.Errorf("run BREW sound callback 0x%08x: %w", notification.callback, err)
+	}
+	if r.updates == updatesBefore {
+		return r.commitImplicitFramebuffer()
+	}
+	return nil
 }
 
 func (r *Runtime) pauseSoundPlayer() {

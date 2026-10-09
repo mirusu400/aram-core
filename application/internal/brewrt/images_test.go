@@ -229,24 +229,27 @@ func TestDisplayBitBltTransparentROPLeavesMagentaKeyOnBackground(t *testing.T) {
 	}
 	frameAt := framebufferBase + (4*framebufferWidth+3)*2
 	background := []byte{0x1f, 0x00, 0x1f, 0x00}
-	if err := runtime.cpu.WriteMemory(frameAt, background); err != nil {
-		t.Fatal(err)
-	}
-	binary.LittleEndian.PutUint32(args[16:], aeeROTransparent)
-	if err := runtime.cpu.WriteMemory(stack, args); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.blitDisplayBitmap(); err != nil {
-		t.Fatal(err)
-	}
 	got := make([]byte, 4)
-	if err := runtime.cpu.ReadMemory(frameAt, got); err != nil {
-		t.Fatal(err)
+	// BREW 1.0 uses 4; later SDKs use 7 for the same color-key operation.
+	for _, rop := range []uint32{4, 7} {
+		if err := runtime.cpu.WriteMemory(frameAt, background); err != nil {
+			t.Fatal(err)
+		}
+		binary.LittleEndian.PutUint32(args[16:], rop)
+		if err := runtime.cpu.WriteMemory(stack, args); err != nil {
+			t.Fatal(err)
+		}
+		if err := runtime.blitDisplayBitmap(); err != nil {
+			t.Fatal(err)
+		}
+		if err := runtime.cpu.ReadMemory(frameAt, got); err != nil {
+			t.Fatal(err)
+		}
+		if want := []byte{0x1f, 0x00, 0x00, 0xf8}; !bytes.Equal(got, want) {
+			t.Fatalf("transparent BitBlt ROP %d pixels=%x, want %x", rop, got, want)
+		}
 	}
-	if want := []byte{0x1f, 0x00, 0x00, 0xf8}; !bytes.Equal(got, want) {
-		t.Fatalf("transparent BitBlt pixels=%x, want %x", got, want)
-	}
-	binary.LittleEndian.PutUint32(args[16:], 0) // AEE_RO_COPY
+	binary.LittleEndian.PutUint32(args[16:], 2) // AEE_RO_COPY
 	if err := runtime.cpu.WriteMemory(stack, args); err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +292,7 @@ func TestDisplayBitBltAcceptsGuestIndexedBMPAtlas(t *testing.T) {
 	binary.LittleEndian.PutUint32(args[4:], bitmap)
 	binary.LittleEndian.PutUint32(args[8:], 16)
 	binary.LittleEndian.PutUint32(args[12:], 3)
-	binary.LittleEndian.PutUint32(args[16:], 4)
+	binary.LittleEndian.PutUint32(args[16:], 2) // AEE_RO_COPY preserves literal magenta.
 	if err := runtime.cpu.WriteMemory(stack, args); err != nil {
 		t.Fatal(err)
 	}

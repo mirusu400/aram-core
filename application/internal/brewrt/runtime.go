@@ -532,8 +532,11 @@ func (r *Runtime) mapImage(module []byte) error {
 	binary.LittleEndian.PutUint32(helper[0x764:], releaseTrap|1)
 	// The KTF-X2000 metadata uses field 3 of the concrete display object as an
 	// OEM anchor, then reads the native surface pointer sixteen bytes into it.
-	// This is separate from IDisplay vtable slot 3, which stays a typed boundary.
+	// This is separate from IDisplay vtable slot 3 (MeasureTextEx).
 	binary.LittleEndian.PutUint32(helper[0x300+3*4:], displayMeasureAnchor)
+	// Native KTF display consumers read this stride in pixels and multiply it
+	// by two for the RGB565 framebuffer. A zero stride aliases every scanline.
+	binary.LittleEndian.PutUint32(helper[0x300+4*4:], r.screenWidth)
 	binary.LittleEndian.PutUint32(helper[displayMeasureAnchor-helperBase+16:], framebufferBase)
 	if err := r.cpu.WriteMemory(helperBase, helper[:]); err != nil {
 		return fmt.Errorf("write BREW loader helper: %w", err)
@@ -1575,8 +1578,7 @@ func (r *Runtime) handleAppletMethodTrap(
 			if err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
-			r.soundPlayer.callback = callback
-			r.soundPlayer.context = context
+			r.registerSoundPlayerNotify(callback, context)
 			return resume()
 		case 3: // Set(ISoundPlayer *, AEESoundPlayerInput, void *)
 			input, err := r.cpu.ReadRegister(cpu.RegisterR1)
@@ -1592,10 +1594,14 @@ func (r *Runtime) handleAppletMethodTrap(
 			}
 			return resume()
 		case 4: // Play
-			r.playSoundPlayer()
+			if err := r.playSoundPlayer(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
 			return resume()
 		case 5: // Stop
-			r.stopSoundPlayer()
+			if err := r.stopSoundPlayer(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
 			return resume()
 		case 6: // Rewind
 			r.seekSoundPlayer(false)
@@ -2248,6 +2254,10 @@ func (r *Runtime) RunCallbacks(ctx context.Context, elapsed time.Duration) error
 		}
 		r.clock += elapsed
 	}
+	soundNotifications, err := r.collectSoundNotifications()
+	if err != nil {
+		return err
+	}
 	cleanup := append([]brewCallback(nil), r.cleanupCallbacks...)
 	r.cleanupCallbacks = r.cleanupCallbacks[:0]
 	var due []brewCallback
@@ -2268,6 +2278,15 @@ func (r *Runtime) RunCallbacks(ctx context.Context, elapsed time.Duration) error
 		}
 		if r.closeRequested {
 			r.cleanupCallbacks = append(append([]brewCallback(nil), cleanup[index+1:]...), r.cleanupCallbacks...)
+			return nil
+		}
+	}
+	for index, notification := range soundNotifications {
+		if err := r.runSoundNotification(ctx, notification); err != nil {
+			return err
+		}
+		if r.closeRequested {
+			r.soundPlayer.notifications = append(soundNotifications[index+1:], r.soundPlayer.notifications...)
 			return nil
 		}
 	}
@@ -4441,7 +4460,7 @@ func (r *Runtime) returnFontMetrics() error {
 }
 
 func (r *Runtime) measureDisplayText() error {
-	text, err := r.cpu.ReadRegister(cpu.RegisterR2)
+	textAt, err := r.cpu.ReadRegister(cpu.RegisterR2)
 	if err != nil {
 		return fmt.Errorf("read BREW measured text: %w", err)
 	}
@@ -4449,20 +4468,9 @@ func (r *Runtime) measureDisplayText() error {
 	if err != nil {
 		return fmt.Errorf("read BREW measured character count: %w", err)
 	}
-	count := uint32(0)
-	if int32(rawCount) >= 0 {
-		count = rawCount
-	} else {
-		var encoded [2]byte
-		for count < 4096 {
-			if err := r.cpu.ReadMemory(text+count*2, encoded[:]); err != nil {
-				return fmt.Errorf("read BREW measured AECHAR: %w", err)
-			}
-			if binary.LittleEndian.Uint16(encoded[:]) == 0 {
-				break
-			}
-			count++
-		}
+	text, err := r.displayText(textAt, rawCount, false)
+	if err != nil {
+		return err
 	}
 	sp, err := r.cpu.ReadRegister(cpu.RegisterSP)
 	if err != nil {
@@ -4473,9 +4481,22 @@ func (r *Runtime) measureDisplayText() error {
 		return fmt.Errorf("read BREW maximum text width: %w", err)
 	}
 	maxWidth := int32(binary.LittleEndian.Uint32(encoded[:]))
-	fits := count
-	if maxWidth >= 0 {
-		fits = min(count, uint32(maxWidth/7))
+	var width int64
+	var fits uint32
+	for _, character := range text {
+		advance, err := r.displayCharacterWidth(character)
+		if err != nil {
+			return err
+		}
+		if maxWidth >= 0 && width+advance > int64(maxWidth) {
+			break
+		}
+		width += advance
+		fits++
+		// pnFits counts AECHAR units, including both halves of a UTF-16 pair.
+		if character > 0xffff {
+			fits++
+		}
 	}
 	if err := r.cpu.ReadMemory(sp+4, encoded[:]); err != nil {
 		return fmt.Errorf("read BREW text-fit output: %w", err)
@@ -4487,7 +4508,7 @@ func (r *Runtime) measureDisplayText() error {
 			return fmt.Errorf("write BREW text-fit count: %w", err)
 		}
 	}
-	if err := r.cpu.WriteRegister(cpu.RegisterR0, fits*7); err != nil {
+	if err := r.cpu.WriteRegister(cpu.RegisterR0, uint32(width)); err != nil {
 		return fmt.Errorf("return BREW measured text width: %w", err)
 	}
 	return nil

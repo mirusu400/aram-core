@@ -175,17 +175,24 @@ func (r *Runtime) drawDisplayText() error {
 func (r *Runtime) displayTextWidth(value string) (int64, error) {
 	var width int64
 	for _, character := range value {
-		if character <= 0xff {
-			width += 7
-			continue
-		}
-		glyph, err := r.textRaster.Glyph(1, r.displayFont, character)
+		advance, err := r.displayCharacterWidth(character)
 		if err != nil {
-			return 0, fmt.Errorf("measure BREW DrawText glyph %U: %w", character, err)
+			return 0, err
 		}
-		width += int64(glyph.Advance)
+		width += advance
 	}
 	return width, nil
+}
+
+func (r *Runtime) displayCharacterWidth(character rune) (int64, error) {
+	if character <= 0xff {
+		return 7, nil
+	}
+	glyph, err := r.textRaster.Glyph(1, r.displayFont, character)
+	if err != nil {
+		return 0, fmt.Errorf("measure BREW DrawText glyph %U: %w", character, err)
+	}
+	return int64(glyph.Advance), nil
 }
 
 func drawDisplayGlyph(
