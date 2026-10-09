@@ -62,6 +62,7 @@ func (r *Runtime) editLWCText(
 		return keyType == ktfLWCKeyReleased && r.lwcTextInputKey(instance, key), nil
 	}
 	automata := r.lwcTextInputAutomata(instance)
+	previousComposition := automata.Snapshot()
 	runes := []rune(ktfLWCFieldText(r, state))
 	updated := runes
 	switch profile.KeyCode(key) {
@@ -83,6 +84,9 @@ func (r *Runtime) editLWCText(
 	// A field that is already full still rotates a multi-tap glyph but cannot
 	// grow; the handset simply ignores the press that would overflow it.
 	if limit := r.lwcMaxLengths[instance]; limit > 0 && int32(len(updated)) > limit {
+		// The rejected glyph must not become the active composition: a repeated
+		// press would otherwise replace the field's last accepted character.
+		automata.Restore(previousComposition)
 		return true, nil
 	}
 	text, err := r.NewJavaString(string(updated))

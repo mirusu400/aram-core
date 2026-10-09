@@ -15,9 +15,18 @@ import (
 func TestIssue511SeoulTycoon2NameInputContinues(t *testing.T) {
 	const digest = "9789fec50f39febc2d75f48ecbb2f8e30dcdfbb7221241af99d0aa559218e299"
 	path, data := findAuthorizedPackage(t, digest)
+	for _, backend := range []string{"native", "precise"} {
+		t.Run(backend, func(t *testing.T) {
+			replayIssue511NameInput(t, path, data, backend)
+		})
+	}
+}
+
+func replayIssue511NameInput(t *testing.T, path string, data []byte, backend string) {
+	t.Helper()
 	factory := NewFactory()
 	var err error
-	factory.NewCPU, err = ResolveCPUBackend("fastest")
+	factory.NewCPU, err = ResolveCPUBackend(backend)
 	check(t, err)
 	factory.RunBudget = DefaultHandsetRunBudget
 	factory.FrameRunBudget = DefaultHandsetRunBudget

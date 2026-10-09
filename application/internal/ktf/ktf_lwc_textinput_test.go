@@ -3,6 +3,7 @@ package ktf
 import (
 	"testing"
 
+	"github.com/mirusu400/aram-core/internal/ime"
 	"github.com/mirusu400/aram-core/profile"
 )
 
@@ -98,5 +99,54 @@ func TestKTFLWCTextFieldHonoursMaxLength(t *testing.T) {
 	}
 	if got := runtime.javaStringValue(state.text); got != "12" {
 		t.Fatalf("field = %q, want %q (the third digit overflows)", got, "12")
+	}
+}
+
+func TestKTFLWCTextFieldOverflowKeepsComposition(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		mode ime.Mode
+		keys []int32
+		want []string
+	}{
+		{
+			name: "English multi-tap",
+			mode: ime.ModeENLower,
+			keys: []int32{'2', '3', '3', '2'},
+			want: []string{"a", "a", "a", "b"},
+		},
+		{
+			name: "Hangul leading consonant",
+			mode: ime.ModeKorean,
+			keys: []int32{'4', '5', '5', '1'},
+			want: []string{"ㄱ", "ㄱ", "ㄱ", "기"},
+		},
+		{
+			name: "Hangul syllable split",
+			mode: ime.ModeKorean,
+			keys: []int32{'4', '1', '2', '5', '1', '5'},
+			want: []string{"ㄱ", "기", "가", "간", "간", "갈"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runtime := newTestRuntime(t)
+			runtime.JvmContext = allocWords(t, runtime, 3+128)
+			instance, err := runtime.newJavaInstance("org/kwis/msp/lwc/TextFieldComponent", 0)
+			check(t, err)
+			state := runtime.lwcComponent(instance)
+			runtime.lwcMaxLengths[instance] = 1
+			runtime.lwcTextInputAutomata(instance).SetMode(test.mode)
+
+			for i, key := range test.keys {
+				handled, err := runtime.editLWCText(instance, state, ktfLWCKeyPressed, key)
+				check(t, err)
+				if !handled {
+					t.Fatalf("press %d (%q) was not consumed", i, key)
+				}
+				if got := ktfLWCFieldText(runtime, state); got != test.want[i] {
+					t.Fatalf("press %d (%q): field = %q, want %q", i, key, got, test.want[i])
+				}
+			}
+		})
 	}
 }
