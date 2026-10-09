@@ -47,6 +47,10 @@ const (
 	smafWaveOn
 	smafVoiceChange
 	smafWaveChange
+	smafHoldPedal
+	smafAllSoundOff
+	smafResetControllers
+	smafAllNotesOff
 )
 
 type smafEvent struct {
@@ -62,6 +66,8 @@ type smafChannel struct {
 	bankMSB, bankLSB, program int
 	volume, expression, pan   float64
 	bend                      float64
+	modulation                float64
+	holdPedal                 bool
 	octaveShift               int
 	drum, rhythm              bool
 	streamWaves               []smafWave
@@ -84,6 +90,7 @@ type smafDecoder struct {
 	pcmListed    [16]bool
 	nextVoice    int
 	nextPCM      int
+	timelineEnd  uint64 // declared rest/NOP/end time, independent of voice tails
 }
 
 type smafPCMVoice struct {
@@ -103,6 +110,8 @@ type smafPCMVoice struct {
 	volume         float64
 	sampled        bool
 	keyDown        bool
+	holdEnabled    bool
+	heldByPedal    bool
 	envelope       smafEnvelope
 	totalGain      float64
 	baseRate       float64
@@ -529,7 +538,7 @@ func (decoder *smafDecoder) buildEvents() bool {
 			decoder.decodeMobile(track, base)
 		}
 	}
-	if len(decoder.events) == 0 {
+	if len(decoder.events) == 0 && decoder.timelineEnd == 0 {
 		return false
 	}
 	setupWindow := uint64(decoder.rate) / 20
@@ -682,7 +691,7 @@ func (decoder *smafDecoder) addGatedNote(
 		return
 	}
 	// Event positions are unique across tracks and bounded by maxSMAFEvents.
-	// Zero is reserved for ordinary MIDI messages without an explicit gate.
+	// Zero is reserved for legacy/manual events without a paired note ID.
 	id := uint32(len(decoder.events) + 1)
 	decoder.events = append(decoder.events,
 		smafEvent{
@@ -701,6 +710,7 @@ func (decoder *smafDecoder) decodeMobile(track smafTrack, base int) {
 	durationBase := smafTimeBase(track.durationBase)
 	gateBase := smafTimeBase(track.gateBase)
 	var velocity [16]byte
+	var hold [16]bool
 	for index := range velocity {
 		velocity[index] = 64
 	}
@@ -750,22 +760,13 @@ func (decoder *smafDecoder) decodeMobile(track smafTrack, base int) {
 			}
 			control, value := data[offset], int(data[offset+1])
 			offset += 2
-			kind := smafEventKind(255)
-			switch control {
-			case 0:
-				kind = smafBankMSB
-			case 0x20:
-				kind = smafBankLSB
-			case 7:
-				kind = smafVolume
-			case 0x0a:
-				kind = smafPan
-			case 0x0b:
-				kind = smafExpression
-			case 1:
-				kind = smafModulation
-			}
-			if kind != 255 {
+			if kind, ok := smafControllerKind(int(control)); ok {
+				if kind == smafResetControllers {
+					velocity[status&15] = 64
+					hold[status&15] = false
+				} else if kind == smafHoldPedal {
+					hold[status&15] = value&0x7f >= 64
+				}
 				decoder.addEvent(smafEvent{
 					sample: at, kind: kind, channel: channel, a: value,
 				})
@@ -814,9 +815,19 @@ func (decoder *smafDecoder) decodeMobile(track smafTrack, base int) {
 				meta := data[offset]
 				offset++
 				if meta == 0 {
+					decoder.timelineEnd = max(decoder.timelineEnd, at)
 					continue
 				}
 				if meta == 0x2f {
+					decoder.timelineEnd = max(decoder.timelineEnd, at)
+					// Lift any unclosed pedal at EOS, allowing ordinary release
+					// tails and XOF one-shots to finish instead of looping to the
+					// render ceiling. Gates still retain their paired key-offs.
+					for index, held := range hold {
+						if held {
+							decoder.addEvent(smafEvent{sample: at, kind: smafHoldPedal, channel: base + index})
+						}
+					}
 					return
 				}
 				if offset >= len(data) {
@@ -856,6 +867,7 @@ func (decoder *smafDecoder) decodeHandyPhone(
 			second := data[offset]
 			offset++
 			if second == 0 {
+				decoder.timelineEnd = max(decoder.timelineEnd, decoder.sampleAt(milliseconds))
 				continue
 			}
 			if second == 0xf0 {
@@ -887,6 +899,7 @@ func (decoder *smafDecoder) decodeHandyPhone(
 			offset++
 			if second == 0 {
 				if offset >= len(data) || data[offset] == 0 {
+					decoder.timelineEnd = max(decoder.timelineEnd, decoder.sampleAt(milliseconds))
 					return
 				}
 				offset++
@@ -1033,27 +1046,15 @@ func (decoder *smafDecoder) fire(event smafEvent) {
 		channel.drum = event.a&0x80 != 0
 	case smafVolume:
 		channel.volume = float64(event.a&0x7f) / 127
-		for index := range decoder.pool {
-			voice := &decoder.pool[index]
-			if voice.active && voice.channel == event.channel {
-				voice.volume = channel.volume * channel.expression
-			}
-		}
-		decoder.updatePCMVolume(event.channel)
+		decoder.updateChannelVolume(event.channel)
 	case smafExpression:
 		channel.expression = float64(event.a&0x7f) / 127
-		for index := range decoder.pool {
-			voice := &decoder.pool[index]
-			if voice.active && voice.channel == event.channel {
-				voice.volume = channel.volume * channel.expression
-			}
-		}
-		decoder.updatePCMVolume(event.channel)
+		decoder.updateChannelVolume(event.channel)
 	case smafPan:
 		channel.pan = float64(event.a&0x7f-64) / 64
 		for index := range decoder.pool {
 			voice := &decoder.pool[index]
-			if voice.active && voice.channel == event.channel {
+			if voice.active && voice.channel == event.channel && !voice.patch.panFixed {
 				voice.pan = channel.pan
 			}
 		}
@@ -1066,29 +1067,30 @@ func (decoder *smafDecoder) fire(event smafEvent) {
 	case smafModulation:
 		if event.b == 1 {
 			channel.octaveShift = event.a - 1000
+		} else {
+			channel.modulation = float64(event.a&0x7f) / 127
 		}
 	case smafPitchBend:
 		channel.bend = float64(event.a) / 8192 * 2
-		for index := range decoder.pool {
-			voice := &decoder.pool[index]
-			if voice.active && voice.channel == event.channel {
-				voice.setFrequency(smafNoteFrequency(voice.note) *
-					math.Pow(2, channel.bend/12))
-			}
-		}
-		for index := range decoder.pcmPool {
-			voice := &decoder.pcmPool[index]
-			if voice.active && voice.sampled && voice.channel == event.channel {
-				voice.setRate(decoder.rate, channel.bend)
-			}
-		}
+		decoder.updateChannelPitch(event.channel)
+	case smafHoldPedal:
+		decoder.setHoldPedal(event.channel, event.a&0x7f >= 64)
+	case smafAllSoundOff:
+		decoder.allSoundOff(event.channel)
+	case smafResetControllers:
+		channel.expression, channel.bend, channel.modulation = 1, 0, 0
+		decoder.setHoldPedal(event.channel, false)
+		decoder.updateChannelVolume(event.channel)
+		decoder.updateChannelPitch(event.channel)
+	case smafAllNotesOff:
+		decoder.allNotesOff(event.channel)
 	case smafNoteOff:
 		for index := range decoder.pool {
 			voice := &decoder.pool[index]
 			if voice.active && voice.keyDown &&
 				voice.channel == event.channel && voice.keyNote == event.a &&
 				(event.noteID == 0 || voice.noteID == event.noteID) {
-				voice.noteOff()
+				voice.noteOffWithPedal(channel.holdPedal)
 				break
 			}
 		}
@@ -1098,8 +1100,7 @@ func (decoder *smafDecoder) fire(event smafEvent) {
 				(!voice.sampled || voice.keyDown) && voice.keyNote == event.a &&
 				(event.noteID == 0 || voice.noteID == event.noteID) {
 				if voice.sampled {
-					voice.keyDown = false
-					voice.envelope.keyOff()
+					voice.noteOffWithPedal(channel.holdPedal)
 				} else {
 					voice.active = false
 				}
@@ -1149,14 +1150,10 @@ func (decoder *smafDecoder) fire(event smafEvent) {
 		voice.keyNote = event.a
 		voice.noteID = event.noteID
 		voice.volume = channel.volume * channel.expression
-		velocity := float64(event.b)
-		if velocity == 0 {
-			velocity = 100
-		}
-		velocity /= 127
+		velocity := float64(event.b&0x7f) / 127
 		voice.noteOn(patch, frequency, velocity*velocity)
 		voice.pan = channel.pan
-		if voice.pan == 0 {
+		if patch.panFixed {
 			voice.pan = patch.panDefault
 		}
 		if !decoder.voiceListed[slot] {
@@ -1208,13 +1205,21 @@ type smafRenderStream struct {
 	finished                        bool
 }
 
+func (decoder *smafDecoder) scoreEnd() uint64 {
+	end := decoder.timelineEnd
+	if len(decoder.events) != 0 {
+		end = max(end, decoder.events[len(decoder.events)-1].sample)
+	}
+	return end
+}
+
 func newSMAFRenderStream(decoder *smafDecoder) *smafRenderStream {
 	stream := &smafRenderStream{decoder: decoder}
-	if len(decoder.events) == 0 {
+	if len(decoder.events) == 0 && decoder.timelineEnd == 0 {
 		stream.finished = true
 		return stream
 	}
-	last := decoder.events[len(decoder.events)-1].sample
+	last := decoder.scoreEnd()
 	maximum := uint64(decoder.rate) * maxSMAFSeconds
 	stream.end = last + uint64(decoder.rate)*2
 	// Sampled envelopes and one-shots can outlive the score by more than the
@@ -1291,7 +1296,7 @@ func (stream *smafRenderStream) render(
 		target = stream.end
 	}
 	decoder := stream.decoder
-	last := decoder.events[len(decoder.events)-1].sample
+	last := decoder.scoreEnd()
 	// A render that starts from nothing - the eager whole-track path - knows
 	// exactly how many samples it will produce, so reserve them instead of
 	// letting append double a multi-megabyte slice a dozen times. An

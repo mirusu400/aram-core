@@ -52,9 +52,18 @@ type smfTimedEvent struct {
 	tempo  uint32
 }
 
-// smfTempoEvent marks a tempo change rather than a channel message. No channel
-// status byte has this value, so it cannot collide with a real message.
-const smfTempoEvent = 0
+// These internal statuses cannot collide with channel messages.
+const (
+	smfTempoEvent      = 0
+	smfEndOfTrackEvent = 1
+)
+
+type smfNoteState struct {
+	// MIDI key-offs pair FIFO with repeated key-ons of the same pitch. IDs
+	// prevent a late key-off for a stolen voice from releasing its replacement.
+	notes [16][128][]uint32
+	hold  [16]bool
+}
 
 func decodeSMFEvents(data []byte, rate uint32) *smafDecoder {
 	if !looksLikeSMF(data) {
@@ -120,7 +129,15 @@ func buildSMFEvents(
 		// An SMPTE division names frames per second in the high byte, as a
 		// negative number, and ticks per frame in the low one. Tempo does not
 		// apply: the timeline is already absolute.
-		frames := float64(-int8(division >> 8))
+		frames := 0.0
+		switch -int8(division >> 8) {
+		case 24, 25, 30:
+			frames = float64(-int8(division >> 8))
+		case 29:
+			frames = 30_000.0 / 1001 // NTSC drop-frame, not 29 frames/second
+		default:
+			return false
+		}
 		ticksPerSecond = frames * float64(division&0xff)
 		if ticksPerSecond <= 0 {
 			return false
@@ -129,7 +146,7 @@ func buildSMFEvents(
 	var (
 		lastTick     uint64
 		milliseconds float64
-		sounding     [16][128]bool
+		sounding     smfNoteState
 		at           uint64
 	)
 	for _, event := range merged {
@@ -150,26 +167,25 @@ func buildSMFEvents(
 			}
 			continue
 		}
+		if event.status == smfEndOfTrackEvent {
+			decoder.timelineEnd = max(decoder.timelineEnd, at)
+			continue
+		}
 		if !applySMFMessage(decoder, event, at, &sounding) {
 			break
 		}
 	}
 	// A file that ends while notes are held would otherwise leave voices
 	// sounding until the render's own ceiling stopped them.
-	for channel := range sounding {
-		for note := range sounding[channel] {
-			if !sounding[channel][note] {
-				continue
-			}
-			decoder.addEvent(smafEvent{
-				sample:  at,
-				kind:    smafNoteOff,
-				channel: channel,
-				a:       note,
-			})
+	for channel := range sounding.notes {
+		releaseSMFChannel(decoder, &sounding, channel, at)
+		// EOF also lifts a pedal that was never released. This ends held tails
+		// at the overall file end, after every track has finished.
+		if sounding.hold[channel] {
+			decoder.addEvent(smafEvent{sample: at, kind: smafHoldPedal, channel: channel})
 		}
 	}
-	if len(decoder.events) == 0 {
+	if len(decoder.events) == 0 && decoder.timelineEnd == 0 {
 		return false
 	}
 	sortSMAFEvents(decoder.events)
@@ -182,35 +198,27 @@ func applySMFMessage(
 	decoder *smafDecoder,
 	event smfTimedEvent,
 	at uint64,
-	sounding *[16][128]bool,
+	sounding *smfNoteState,
 ) bool {
 	channel := int(event.status & 0x0f)
 	note := int(event.data1 & 0x7f)
 	switch event.status & 0xf0 {
 	case 0x80:
-		if !sounding[channel][note] {
-			return true
-		}
-		sounding[channel][note] = false
-		return decoder.addEvent(smafEvent{
-			sample: at, kind: smafNoteOff, channel: channel, a: note,
-		})
+		return releaseSMFNote(decoder, sounding, channel, note, at)
 	case 0x90:
 		// A note on with no velocity is how most files release a note.
 		if event.data2&0x7f == 0 {
-			if !sounding[channel][note] {
-				return true
-			}
-			sounding[channel][note] = false
-			return decoder.addEvent(smafEvent{
-				sample: at, kind: smafNoteOff, channel: channel, a: note,
-			})
+			return releaseSMFNote(decoder, sounding, channel, note, at)
 		}
-		sounding[channel][note] = true
-		return decoder.addEvent(smafEvent{
+		id := uint32(len(decoder.events) + 1)
+		if !decoder.addEvent(smafEvent{
 			sample: at, kind: smafNoteOn, channel: channel,
-			a: note, b: int(event.data2 & 0x7f),
-		})
+			a: note, b: int(event.data2 & 0x7f), noteID: id,
+		}) {
+			return false
+		}
+		sounding.notes[channel][note] = append(sounding.notes[channel][note], id)
+		return true
 	case 0xb0:
 		return applySMFController(decoder, event, at, sounding)
 	case 0xc0:
@@ -232,42 +240,57 @@ func applySMFController(
 	decoder *smafDecoder,
 	event smfTimedEvent,
 	at uint64,
-	sounding *[16][128]bool,
+	sounding *smfNoteState,
 ) bool {
 	channel := int(event.status & 0x0f)
 	value := int(event.data2 & 0x7f)
-	kind := smafEventKind(0)
-	switch event.data1 & 0x7f {
-	case 0:
-		kind = smafBankMSB
-	case 7:
-		kind = smafVolume
-	case 10:
-		kind = smafPan
-	case 11:
-		kind = smafExpression
-	case 32:
-		kind = smafBankLSB
-	case 120, 123:
-		// All sound off and all notes off both silence the channel.
-		for note := range sounding[channel] {
-			if !sounding[channel][note] {
-				continue
-			}
-			sounding[channel][note] = false
-			if !decoder.addEvent(smafEvent{
-				sample: at, kind: smafNoteOff, channel: channel, a: note,
-			}) {
-				return false
-			}
-		}
+	kind, ok := smafControllerKind(int(event.data1 & 0x7f))
+	if !ok {
 		return true
-	default:
-		return true
+	}
+	switch kind {
+	case smafAllNotesOff:
+		return releaseSMFChannel(decoder, sounding, channel, at)
+	case smafAllSoundOff:
+		// Audio stops now, but retain pending key IDs. Their later key-offs
+		// must not consume a new note that reuses the muted pitch.
+	case smafHoldPedal:
+		sounding.hold[channel] = value >= 64
+	case smafResetControllers:
+		sounding.hold[channel] = false
 	}
 	return decoder.addEvent(smafEvent{
 		sample: at, kind: kind, channel: channel, a: value,
 	})
+}
+
+func releaseSMFNote(decoder *smafDecoder, sounding *smfNoteState, channel, note int, at uint64) bool {
+	ids := sounding.notes[channel][note]
+	if len(ids) == 0 {
+		return true
+	}
+	if !decoder.addEvent(smafEvent{
+		sample: at, kind: smafNoteOff, channel: channel, a: note, noteID: ids[0],
+	}) {
+		return false
+	}
+	if len(ids) == 1 {
+		sounding.notes[channel][note] = nil
+	} else {
+		sounding.notes[channel][note] = ids[1:]
+	}
+	return true
+}
+
+func releaseSMFChannel(decoder *smafDecoder, sounding *smfNoteState, channel int, at uint64) bool {
+	for note := range sounding.notes[channel] {
+		for len(sounding.notes[channel][note]) != 0 {
+			if !releaseSMFNote(decoder, sounding, channel, note, at) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // readSMFTrack reads one MTrk chunk into absolute-tick messages, appending to
@@ -283,7 +306,7 @@ func readSMFTrack(
 		order  int
 		status byte
 	)
-	for offset := 0; offset < len(track); {
+	for offset := 0; offset < len(track) && len(out) < maxSMAFEvents; {
 		delta, ok := readSMFVLQ(track, &offset)
 		if !ok || offset >= len(track) {
 			break
@@ -314,6 +337,9 @@ func readSMFTrack(
 			}
 			offset += length
 			if meta == 0x2f {
+				out = append(out, smfTimedEvent{
+					tick: tick, track: index, order: order, status: smfEndOfTrackEvent,
+				})
 				return out
 			}
 			continue

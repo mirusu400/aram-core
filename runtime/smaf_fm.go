@@ -64,7 +64,7 @@ type smafOpPatch struct {
 	multi, tl, ar, dr, sr, rr, sl uint8
 	ksl, ksr, wave, dt, fb        uint8
 	dvb, dam                      uint8
-	am, vib, egType, xof          bool
+	am, vib, egType, xof, sus     bool
 }
 
 type smafPatch struct {
@@ -73,6 +73,7 @@ type smafPatch struct {
 	feedback   uint8
 	noteShift  int
 	panDefault float64
+	panFixed   bool
 	lfo        uint8
 	operators  [4]smafOpPatch
 }
@@ -81,11 +82,11 @@ func defaultSMAFPatch() smafPatch {
 	patch := smafPatch{}
 	patch.operators[0] = smafOpPatch{
 		multi: 2, tl: 20, ar: 15, dr: 6, sr: 2, rr: 7, sl: 4,
-		egType: true,
+		egType: true, sus: true,
 	}
 	patch.operators[1] = smafOpPatch{
 		multi: 1, ar: 15, dr: 4, sr: 1, rr: 7, sl: 2,
-		egType: true,
+		egType: true, sus: true,
 	}
 	return patch
 }
@@ -718,7 +719,9 @@ type smafVoice struct {
 	lfoPhase, lfoStep      float64
 	channel, note, keyNote int
 	noteID                 uint32
+	generation             uint64 // note-on identity for the envelope length probe
 	keyDown                bool
+	heldByPedal            bool
 	pan                    float64
 	panGains               smafPanGains
 	// usesLFO records whether any operator this note plays reads the LFO. A
@@ -735,7 +738,9 @@ func (voice *smafVoice) noteOn(
 	frequency, velocity float64,
 ) {
 	voice.patch = patch
+	voice.generation++
 	voice.keyDown = true
+	voice.heldByPedal = false
 	voice.velocity = math.Max(0, math.Min(1, velocity))
 	for index := range voice.operators {
 		voice.feedbackMemory[index] = [2]float64{}
@@ -764,16 +769,33 @@ func (voice *smafVoice) noteOn(
 }
 
 func (voice *smafVoice) noteOff() {
+	voice.noteOffWithPedal(false)
+}
+
+func (voice *smafVoice) noteOffWithPedal(hold bool) {
 	// A key is released even when an operator's XOF envelope ignores key-off.
 	// Neither that operator nor a release tail can consume the next note's gate.
 	voice.keyDown = false
+	voice.heldByPedal = false
 	count := 2
 	if voice.patch.fourOp {
 		count = 4
 	}
 	for index := 0; index < count; index++ {
-		voice.operators[index].noteOff()
+		operator := &voice.operators[index]
+		if hold && operator.patch.sus {
+			voice.heldByPedal = true
+		} else {
+			operator.noteOff()
+		}
 	}
+}
+
+func (voice *smafVoice) releasePedal() {
+	if voice.keyDown || !voice.heldByPedal {
+		return
+	}
+	voice.noteOff()
 }
 
 func (voice *smafVoice) setFrequency(frequency float64) {

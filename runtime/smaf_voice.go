@@ -144,7 +144,8 @@ func applySMAFVM35Voice(
 	default:
 		patch.noteShift = -24
 	}
-	if body[2]&(1<<5) != 0 {
+	patch.panFixed = body[2]&(1<<5) != 0
+	if patch.panFixed {
 		panpot := int(body[1] >> 3 & 31)
 		switch {
 		case panpot == 15:
@@ -173,6 +174,7 @@ func applySMAFVM35Voice(
 		operator.tl = source[3] >> 2 & 63
 		operator.ksl = source[3] & 3
 		operator.xof = source[0]&8 != 0
+		operator.sus = source[0]&2 != 0
 		operator.am = source[4]>>4&1 != 0
 		operator.dam = source[4] >> 5 & 3
 		operator.vib = source[4]&1 != 0

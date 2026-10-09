@@ -208,34 +208,28 @@ func (stream *smafRenderStream) probeFMEnd() uint64 {
 		for stream.eventIndex < len(decoder.events) &&
 			decoder.events[stream.eventIndex].sample <= stream.cursor {
 			event := decoder.events[stream.eventIndex]
-			slot := -1
-			if event.kind == smafNoteOn {
-				for index := range decoder.pool {
-					if !decoder.pool[index].active {
-						slot = index
-						break
-					}
-				}
-				if slot < 0 {
-					slot = decoder.nextVoice % len(decoder.pool)
-				}
-			} else if event.kind == smafNoteOff {
-				for index := range decoder.pool {
-					voice := &decoder.pool[index]
-					if voice.active && voice.keyDown && voice.channel == event.channel &&
-						voice.keyNote == event.a && (event.noteID == 0 || voice.noteID == event.noteID) {
-						slot = index
-						break
-					}
+			var generations [32]uint64
+			var phases [32][4]uint8
+			for slot := range decoder.pool {
+				voice := &decoder.pool[slot]
+				generations[slot] = voice.generation
+				for index := range voice.operators {
+					phases[slot][index] = voice.operators[index].envelope.phase
 				}
 			}
 			decoder.fire(event)
-			if slot >= 0 {
+			// Pedal release, reset, and channel-mode messages can release several
+			// envelopes. A key-off under the pedal changes no envelope phase yet.
+			for slot := range decoder.pool {
+				voice := &decoder.pool[slot]
+				if !voice.active {
+					continue
+				}
 				for index := range envelopes[slot] {
-					envelope := decoder.pool[slot].operators[index].envelope
-					if event.kind == smafNoteOn {
+					envelope := voice.operators[index].envelope
+					if voice.generation != generations[slot] {
 						envelopes[slot][index] = newSMAFLengthEnvelope(envelope)
-					} else {
+					} else if envelope.phase != phases[slot][index] {
 						envelopes[slot][index].keyOff(envelope)
 					}
 				}
@@ -268,7 +262,7 @@ func (stream *smafRenderStream) probeFMEnd() uint64 {
 		}
 		if stream.eventIndex == len(decoder.events) && lastActive < remaining {
 			// The renderer emits one idle sample after the last active tick.
-			stream.cursor += lastActive + 1
+			stream.cursor = min(stream.end, max(stream.cursor+lastActive, decoder.timelineEnd)+1)
 			stream.finished = true
 			return stream.cursor
 		}

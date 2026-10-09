@@ -634,7 +634,8 @@ waves, even when their IDs match.
 
 Sequence voice definitions and wave uploads apply at their event time, in
 sequence order for events on the same sample. Replacing an instrument affects
-subsequent notes. Pan changes also update sounding FM notes. Sampled one-shots
+subsequent notes. Pan changes also update sounding FM notes whose instrument
+does not enable fixed pan. Sampled one-shots
 and release tails can continue past the score's last event until their natural
 end, within the existing 180-second render bound.
 
@@ -663,3 +664,45 @@ sections 4.18.3-4; the RM memory mapping is also documented by
 [vavi-sound's VM35 parameter reader](https://github.com/umjammer/vavi-sound/blob/master/src/main/java/vavi/sound/smaf/vavi/chunk/ExclusiveVoiceChunk.java).
 The PCM envelope uses ARAM's existing software envelope
 model; these tests do not establish sample-accurate handset output.
+
+## Sequenced audio controls and end timing (2026-10-09)
+
+SMF repeated key-ons of the same channel and pitch receive distinct identities.
+Explicit key-offs, velocity-zero MIDI key-ons, All Notes Off, and file-end
+cleanup release each pending key in FIFO order. A late key-off for a stolen or
+immediately muted voice cannot release its replacement. SMAF velocity zero
+remains silent; it does not imply a default velocity. Mobile Standard Reset All
+Controllers restores the channel's remembered velocity to 64.
+
+Both score decoders translate Hold 1 (CC64), All Sound Off (CC120), Reset All
+Controllers (CC121), and All Notes Off (CC123) into shared channel controls.
+CC120 stops the channel's oscillators, sampled waves, and release/pedal/XOF
+tails immediately. CC123 releases keys through the normal envelope and pedal.
+CC64 values of 64 or more defer key-off; native FM operators and PCM instruments
+honor their SUS flag, and ordinary MIDI melodic patches support the pedal.
+Lifting it releases only notes whose keys have already been released. CC121
+restores expression, pitch bend, modulation state, and the pedal while preserving
+volume, pan, banks, and program. Sounding FM and PCM voices receive the reset
+volume and pitch. Native PE fixed pan, including a fixed centre, takes precedence
+over channel pan at key-on and during subsequent pan changes.
+
+End-of-track/sequence timestamps and SMAF NOP durations preserve trailing rests,
+including entirely silent tracks. Repeats retain the rest before restarting.
+SMF cleanup waits for the overall merged track end, with tempo changes during
+rests applied normally. File end or explicit SMAF EOS lifts an unclosed pedal;
+ordinary release envelopes and sampled one-shots retain their natural tails
+within the 180-second bound. SMPTE divisions accept 24, 25, 29-drop, and 30 fps;
+29-drop uses 30000/1001 fps and ignores tempo messages.
+
+`audio_controls_test.go` and `audio_sequence_test.go` use synthetic scores to
+verify these controls, overlapping/stolen note releases, channel isolation,
+native SUS and PE, rest and loop boundaries, invalid SMPTE divisions, and exact
+eager/incremental PCM and duration parity for FM and PCM at 8 kHz and 44.1 kHz.
+The FM length probe follows releases caused by pedals and channel controls as
+well as explicit note-offs.
+
+Control semantics follow the MIDI Association's
+[MIDI 1.0 message summary](https://midi.org/summary-of-midi-1-0-messages) and
+[control-change definitions](https://midi.org/midi-1-0-control-change-messages),
+Yamaha SMAF 3.05 and MA-5 Authoring Tool 1.3.3, and the documented
+[SMPTE 30-drop rate](https://docs.oracle.com/en/java/javase/25/docs/api/java.desktop/javax/sound/midi/Sequence.html#SMPTE_30DROP).

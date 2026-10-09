@@ -136,7 +136,7 @@ func parseSMAFPCMPatch(body []byte) *smafPCMPatch {
 		endPoint:  int(binary.BigEndian.Uint16(body[13:15])),
 		panFixed:  body[2]&1 != 0,
 		envelope: smafOpPatch{
-			sr: body[4] >> 4, xof: body[4]&8 != 0,
+			sr: body[4] >> 4, xof: body[4]&8 != 0, sus: body[4]&2 != 0,
 			rr: body[5] >> 4, dr: body[5] & 15,
 			ar: body[6] >> 4, sl: body[6] & 15, tl: body[7] >> 2,
 			egType: true, // SR=0 sustains at SL until key-off.
@@ -169,6 +169,7 @@ func (decoder *smafDecoder) startSampledVoice(event smafEvent, patch *smafPCMPat
 		voice := decoder.startPCMWave(wave)
 		voice.channel, voice.keyNote, voice.noteID = event.channel, event.a, event.noteID
 		voice.gated, voice.sampled, voice.keyDown = true, true, true
+		voice.holdEnabled = patch.envelope.sus
 		voice.velocity = math.Pow(float64(event.b&127)/127, 2)
 		voice.volume = voice.velocity * channel.volume * channel.expression
 		voice.totalGain = math.Pow(10, -0.75*float64(patch.envelope.tl)/20)
@@ -190,6 +191,14 @@ func (decoder *smafDecoder) startSampledVoice(event smafEvent, patch *smafPCMPat
 		voice.loopStart = patch.loopPoint
 		voice.loop = voice.loopStart < patch.endPoint && voice.loopStart < voice.end
 		return
+	}
+}
+
+func (voice *smafPCMVoice) noteOffWithPedal(hold bool) {
+	voice.keyDown = false
+	voice.heldByPedal = hold && voice.holdEnabled
+	if !voice.heldByPedal {
+		voice.envelope.keyOff()
 	}
 }
 
