@@ -2,6 +2,7 @@ package raptor
 
 import (
 	"fmt"
+	"image"
 	"sort"
 
 	"github.com/mirusu400/aram-core/application/internal/guest"
@@ -67,10 +68,15 @@ type javaState struct {
 	MainInstance     uint32
 	CurrentCard      uint32
 	DirtyCards       map[uint32]bool
+	DirtyCardRegions map[uint32]javaPaintRegionState
 	ThreadTargets    []uint32
 	Tasks            []javaTaskState
 	NextTask         uint32
 	RealHeapBases    []uint32
+}
+
+type javaPaintRegionState struct {
+	MinX, MinY, MaxX, MaxY int32
 }
 
 func javaMethodToState(method raptorJavaMethod) javaMethodState {
@@ -100,9 +106,13 @@ func captureJavaState(java *JavaRuntime) (javaState, error) {
 		FieldOffsets: java.fieldOffsets, FieldNames: java.fieldNames, FieldCount: java.fieldCount,
 		LaunchRequested: java.LaunchRequested, MainClass: java.MainClass,
 		MainInstance: java.MainInstance, CurrentCard: java.currentCard,
-		DirtyCards:    guest.CloneMap(java.dirtyCards),
-		ThreadTargets: append([]uint32(nil), java.threadTargets...),
-		NextTask:      uint32(java.nextTask), RealHeapBases: java.Host.EmbeddedHeapBases(),
+		DirtyCards:       guest.CloneMap(java.dirtyCards),
+		DirtyCardRegions: make(map[uint32]javaPaintRegionState, len(java.dirtyCardRegions)),
+		ThreadTargets:    append([]uint32(nil), java.threadTargets...),
+		NextTask:         uint32(java.nextTask), RealHeapBases: java.Host.EmbeddedHeapBases(),
+	}
+	for card, region := range java.dirtyCardRegions {
+		state.DirtyCardRegions[card] = javaPaintRegionState{int32(region.Min.X), int32(region.Min.Y), int32(region.Max.X), int32(region.Max.Y)}
 	}
 	for name, class := range java.ClassByName {
 		if class != nil {
@@ -265,6 +275,10 @@ func restoreJavaState(java *JavaRuntime, state javaState) error {
 	java.LaunchRequested, java.MainClass = state.LaunchRequested, state.MainClass
 	java.MainInstance, java.currentCard = state.MainInstance, state.CurrentCard
 	java.dirtyCards = guest.CloneMap(state.DirtyCards)
+	java.dirtyCardRegions = make(map[uint32]image.Rectangle, len(state.DirtyCardRegions))
+	for card, region := range state.DirtyCardRegions {
+		java.dirtyCardRegions[card] = image.Rect(int(region.MinX), int(region.MinY), int(region.MaxX), int(region.MaxY))
+	}
 	java.threadTargets = append([]uint32(nil), state.ThreadTargets...)
 	java.Tasks = make([]*JavaTask, 0, len(state.Tasks))
 	for _, saved := range state.Tasks {

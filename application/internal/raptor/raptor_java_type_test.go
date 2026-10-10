@@ -6,6 +6,9 @@ import (
 	"github.com/mirusu400/aram-core/cpu"
 )
 
+// Raptor's cast/instanceof call site passes the receiver's class from its
+// vtable in r0 and the required class loaded by #12 in r1. In #517 a subclass
+// returned by Vector.elementAt was rejected when these operands were reversed.
 func TestRaptorJavaCheckTypeRejectsSiblingClasses(t *testing.T) {
 	public := newPublicRuntime(t)
 	item := &raptorJavaClass{
@@ -52,8 +55,8 @@ func TestRaptorJavaCheckTypeRejectsSiblingClasses(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, test.target))
-			check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, test.actual))
+			check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, test.actual))
+			check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, test.target))
 			result, name, handled, err := runtime.checkRaptorJavaType()
 			check(t, err)
 			if name != "RAPTOR.java.checkType" || !handled {

@@ -17,6 +17,7 @@ const (
 	ragnarokKafraModuleSHA256   = "2836e3b795ebe05933e654e736fa81d70b2103b018b31f78bc3fd598530544e1"
 	mudaeriOmokModuleSHA256     = "30855c99061b1dd3515be32e6dbac518f23dd79a8174a29bc0c314cc877a8173"
 	musicMatgoModuleSHA256      = "ab315ca8ccedf2af13b63b4564c2c4dfe283a37a89b3d320d5c9b2f339ac68b2"
+	rummikubModuleSHA256        = "a05cab8903da96c29864e0a5af5ff49793274dd497cdfbfe2d88b40906fae442"
 )
 
 func coalesceDuplicateTimerModule(module []byte) bool {
@@ -147,8 +148,45 @@ func patchBREWModuleForDigest(digest string, module, imageData []byte) ([]byte, 
 		); err != nil {
 			return nil, err
 		}
+	case rummikubModuleSHA256:
+		// #518 redraws a cleared selection whose tile code is zero. Subtracting
+		// 'a' produces -97, which the draw helper uses as an image-table index.
+		// Skip that absent tile while preserving the original nonnegative index
+		// comparison and switch, including the existing joker handling.
+		padding := (4 - len(imageData)%4) % 4
+		guardAddress := moduleBase - 8 + uint32(len(imageData)+padding)
+		branch, err := brewThumbBL(moduleBase+0x1eaa, guardAddress)
+		if err != nil {
+			return nil, err
+		}
+		if err := replaceBREWInstructions(module, imageData, 0x1eaa,
+			[]byte{0x1d, 0x1c, 0x10, 0x2d}, // adds r5, r3, #0; cmp r5, #16
+			branch,
+		); err != nil {
+			return nil, err
+		}
+		imageData = append(imageData, make([]byte, padding)...)
+		imageData = append(imageData, rummikubTileGuard()...)
 	}
 	return imageData, nil
+}
+
+func rummikubTileGuard() []byte {
+	guard := make([]byte, 20)
+	for index, instruction := range []uint16{
+		0x1c1d, // adds r5, r3, #0
+		0x2d00, // cmp r5, #0
+		0xda01, // bge original comparison
+		0x4b02, // ldr r3, epilogue
+		0x4718, // bx r3
+		0x2d10, // cmp r5, #16
+		0x4770, // bx lr
+		0x46c0, // alignment
+	} {
+		binary.LittleEndian.PutUint16(guard[index*2:], instruction)
+	}
+	binary.LittleEndian.PutUint32(guard[16:], moduleBase+0x1f34|1)
+	return guard
 }
 
 func replaceBREWInstructions(module, imageData []byte, offset uint32, original, replacement []byte) error {

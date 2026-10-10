@@ -21,6 +21,7 @@ func TestBREWCompatibilityPatchesRequireDigestAndOriginalInstructions(t *testing
 		{"zero PRNG seed", blackComicsModuleSHA256, 0x2008, []byte{0x00, 0x6c, 0x11, 0x4b}},
 		{"null teardown store", ragnarokKafraModuleSHA256, 0x1f0c0, []byte{0x10, 0x00, 0x90, 0xe5}},
 		{"empty image marker", mudaeriOmokModuleSHA256, 0xb22e, []byte{0x00, 0x29, 0x0c, 0x9f}},
+		{"empty tile selection", rummikubModuleSHA256, 0x1eaa, []byte{0x1d, 0x1c, 0x10, 0x2d}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			module := make([]byte, int(test.offset)+4)
@@ -58,6 +59,59 @@ func TestBREWCompatibilityPatchesRequireDigestAndOriginalInstructions(t *testing
 			}
 			if _, err := patchBREWModuleForDigest(test.digest, module[:test.offset], originalImage); err == nil {
 				t.Fatal("truncated module accepted")
+			}
+		})
+	}
+}
+
+func TestRummikubTileGuard(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		tile   uint32
+		absent bool
+	}{
+		{"cleared", 0xffffff9f, true}, {"negative", ^uint32(0), true},
+		{"first", 0, false}, {"joker", 15, false}, {"upper comparison", 16, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			module := make([]byte, 0x1f38)
+			copy(module[0x1eaa:], []byte{0x1d, 0x1c, 0x10, 0x2d})
+			for _, offset := range []int{0x1eae, 0x1f34} {
+				copy(module[offset:], []byte{0x00, 0xbe})
+			}
+			imageData := make([]byte, len(module)+8)
+			copy(imageData[8:], module)
+			imageData, err := patchBREWModuleForDigest(rummikubModuleSHA256, module, imageData)
+			if err != nil {
+				t.Fatal(err)
+			}
+			backend := interpreter.New()
+			defer backend.Close()
+			if err := backend.Map(moduleBase-8, uint32(len(imageData)), cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute); err != nil {
+				t.Fatal(err)
+			}
+			if err := backend.WriteMemory(moduleBase-8, imageData); err != nil {
+				t.Fatal(err)
+			}
+			if err := backend.WriteRegister(cpu.RegisterR3, test.tile); err != nil {
+				t.Fatal(err)
+			}
+			result := backend.Run(context.Background(), moduleBase+0x1eaa, cpu.ModeThumb, 32)
+			wantPC := moduleBase + 0x1eb0
+			if test.absent {
+				wantPC = moduleBase + 0x1f36
+			}
+			if result.Err != nil || result.Reason != cpu.StopBreakpoint || result.PC != wantPC {
+				t.Fatalf("guard execution=%+v, want PC=%08x", result, wantPC)
+			}
+			if got, err := backend.ReadRegister(cpu.RegisterR5); err != nil || got != test.tile {
+				t.Fatalf("tile=%08x: %v", got, err)
+			}
+			if !test.absent {
+				status, err := backend.ReadRegister(cpu.RegisterCPSR)
+				if err != nil || (status&(1<<29) != 0) != (test.tile >= 16) {
+					t.Fatalf("original comparison carry flag=%08x: %v", status, err)
+				}
 			}
 		})
 	}

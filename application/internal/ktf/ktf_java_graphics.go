@@ -130,6 +130,14 @@ func (r *Runtime) ResetScreenGraphics(instance uint32) {
 	state.color = color.RGBA{A: 0xff}
 }
 
+// ClipScreenGraphics limits a paint callback to its damaged region in card
+// coordinates. ResetScreenGraphics must run first to establish the card origin.
+func (r *Runtime) ClipScreenGraphics(instance uint32, region image.Rectangle) {
+	if state := r.Graphics[instance]; state != nil {
+		state.clip = state.clip.Intersect(region.Add(state.offset()))
+	}
+}
+
 // clearOutside blacks out every part of target that falls outside inside.
 func clearOutside(target draw.Image, inside image.Rectangle) {
 	bounds := target.Bounds()

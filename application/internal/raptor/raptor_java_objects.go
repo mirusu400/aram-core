@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"image"
 	"strings"
 
 	ktfrt "github.com/mirusu400/aram-core/application/internal/ktf"
@@ -439,11 +440,14 @@ func (r *Runtime) storeRaptorJavaArray(
 
 func (r *Runtime) checkRaptorJavaType() (guest.WIPIReturn, string, bool, error) {
 	const name = "RAPTOR.java.checkType"
-	target, err := r.CPU.ReadRegister(cpu.RegisterR0)
+	// The AOT caller loads the actual class from the object's vtable into r0,
+	// then resolves the required class into r1. Reversing them rejects valid
+	// subclass-to-parent casts and accepts the invalid parent-to-subclass cast.
+	actual, err := r.CPU.ReadRegister(cpu.RegisterR0)
 	if err != nil {
 		return guest.WIPIReturn{}, name, true, err
 	}
-	actual, err := r.CPU.ReadRegister(cpu.RegisterR1)
+	target, err := r.CPU.ReadRegister(cpu.RegisterR1)
 	if err != nil {
 		return guest.WIPIReturn{}, name, true, err
 	}
@@ -656,7 +660,7 @@ func (r *Runtime) callJavaHostMethod(
 		switch method.className + "." + method.Name + method.descriptor {
 		case "org/kwis/msp/lcdui/Card.repaint()V",
 			"org/kwis/msp/lcdui/Card.repaint(IIII)V":
-			java.dirtyCards[receiver] = true
+			r.queueRaptorJavaCardRepaint(java, receiver, arguments[1:])
 			return guest.WIPIReturn{}, nil
 		case "org/kwis/msp/lcdui/Card.serviceRepaints()V":
 			if !java.dirtyCards[receiver] {
@@ -795,6 +799,37 @@ func (r *Runtime) callJavaHostMethod(
 	return guest.WIPIReturn{Low: value, High: java.Host.JavaReturnHigh}, nil
 }
 
+// An absent region means a full repaint. Partial requests accumulate until paint
+// consumes them; a full request takes precedence. Clamp in wide arithmetic so
+// guest coordinates cannot wrap on 32-bit hosts.
+func (r *Runtime) queueRaptorJavaCardRepaint(java *JavaRuntime, card uint32, arguments []uint32) {
+	if len(arguments) == 4 {
+		x, y := int64(int32(arguments[0])), int64(int32(arguments[1]))
+		width, height := int64(int32(arguments[2])), int64(int32(arguments[3]))
+		if width <= 0 || height <= 0 {
+			return
+		}
+		left, top := max(int64(0), x), max(int64(0), y)
+		right := min(int64(java.Host.DisplayWidth()), x+width)
+		bottom := min(int64(java.Host.ActiveCardHeight()), y+height)
+		if left >= right || top >= bottom {
+			return
+		}
+		region := image.Rect(int(left), int(top), int(right), int(bottom))
+		if previous, partial := java.dirtyCardRegions[card]; partial {
+			java.dirtyCardRegions[card] = previous.Union(region)
+		} else if !java.dirtyCards[card] {
+			if java.dirtyCardRegions == nil {
+				java.dirtyCardRegions = make(map[uint32]image.Rectangle)
+			}
+			java.dirtyCardRegions[card] = region
+		}
+	} else {
+		delete(java.dirtyCardRegions, card)
+	}
+	java.dirtyCards[card] = true
+}
+
 // RepaintDirtyJavaCard paints the card the title has asked to repaint and
 // reports whether it painted one.
 //
@@ -878,6 +913,10 @@ func (r *Runtime) paintRaptorJavaCard(
 		return err
 	}
 	java.Host.ResetScreenGraphics(graphicsMirror)
+	if region, partial := java.dirtyCardRegions[card]; partial {
+		delete(java.dirtyCardRegions, card)
+		java.Host.ClipScreenGraphics(graphicsMirror, region)
+	}
 	graphics, err := r.wrapRaptorJavaObject(java, graphicsMirror)
 	if err != nil {
 		return err

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"image"
 	"strings"
 	"unicode/utf16"
 
@@ -187,6 +188,9 @@ var raptorJavaFixedVirtualMethods = map[string][]raptorJavaFixedVirtualMethod{
 	"java/lang/String": {
 		{offset: 0x10, Name: "equals", descriptor: "(Ljava/lang/Object;)Z"},
 		{offset: 0x2c, Name: "length", descriptor: "()I"},
+		// World Janggi Chess reads each dialog character through this fixed
+		// slot. Returning zero turns its notice into NULs and prevents layout.
+		{offset: 0x30, Name: "charAt", descriptor: "(I)C"},
 		{offset: 0x3c, Name: "getBytes", descriptor: "()[B"},
 		// 월드장기체스 CCC uses slot 0x44 as a string switch: it compares a
 		// String against successive one-character String literals and branches
@@ -248,6 +252,12 @@ var raptorJavaFixedVirtualMethods = map[string][]raptorJavaFixedVirtualMethod{
 	},
 	"java/util/Calendar": {
 		{offset: 0x50, Name: "get", descriptor: "(I)I"},
+	},
+	"java/util/Stack": {
+		// World Janggi Chess pushes a font state at 0x84 and repeatedly reads
+		// it at 0x88 while drawing. A no-op loses the state and yields null.
+		{offset: 0x84, Name: "push", descriptor: "(Ljava/lang/Object;)Ljava/lang/Object;"},
+		{offset: 0x88, Name: "peek", descriptor: "()Ljava/lang/Object;"},
 	},
 	"java/lang/Runtime": {
 		// 체스마스터 SDK glue calls slot 0x38 on the cached Runtime before
@@ -482,13 +492,14 @@ type JavaRuntime struct {
 	// recursing. See the callSerially case in raptorJavaHostCall.
 	callSerially int
 
-	LaunchRequested bool
-	MainClass       string
-	MainInstance    uint32
-	currentCard     uint32
-	dirtyCards      map[uint32]bool
-	threadTargets   []uint32
-	Tasks           []*JavaTask
+	LaunchRequested  bool
+	MainClass        string
+	MainInstance     uint32
+	currentCard      uint32
+	dirtyCards       map[uint32]bool
+	dirtyCardRegions map[uint32]image.Rectangle
+	threadTargets    []uint32
+	Tasks            []*JavaTask
 	// constructing pins a heap block a host allocation call is still in the
 	// middle of building, for exactly as long as NewRaptorJavaObject holds it:
 	// its instance header is not linked to anything (no vtable, no holder, no
@@ -1123,6 +1134,9 @@ func (r *Runtime) dispatchJavaImport(
 		}
 		return guest.WIPIReturn{}, "RAPTOR.java.arrayStore", true,
 			r.storeRaptorJavaArray(array, index, value)
+	case 91, 253:
+		result, name, err := r.raptorJavaLongArrayImport(key.Ordinal)
+		return result, name, true, err
 	case 100:
 		return r.raptorJavaDispatchTable()
 	case 86, 87:

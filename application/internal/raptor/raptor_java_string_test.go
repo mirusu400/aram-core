@@ -8,6 +8,35 @@ import (
 	"github.com/mirusu400/aram-core/cpu"
 )
 
+func TestRaptorJavaStringCharAtVirtualSlot(t *testing.T) {
+	public := newPublicRuntime(t)
+	runtime := &Runtime{CPU: public.CPU, Public: public,
+		resolvedImports: make(map[raptorImportKey]uint64),
+		importSlotByKey: make(map[raptorImportKey]uint32)}
+	java, err := runtime.ensureJavaRuntime()
+	check(t, err)
+	java.flatVirtual = make([]raptorJavaMethod, 3)
+	value, err := runtime.NewRaptorJavaString("\uac00\U0001f9e9Z")
+	check(t, err)
+	class := java.ClassByName["java/lang/String"]
+	slot, err := public.ReadU32(class.vtable + 0x30)
+	check(t, err)
+	if slot == java.noopStub {
+		t.Fatal("String.charAt still resolves to the no-op slot")
+	}
+	key := runtime.importSlots[((slot&^1)-raptorImportStubBase)/4]
+	for index, want := range []uint32{0xac00, 0xd83e, 0xdde9, 'Z'} {
+		check(t, public.CPU.WriteRegister(cpu.RegisterR0, value))
+		check(t, public.CPU.WriteRegister(cpu.RegisterR1, uint32(index)))
+		check(t, runtime.dispatchImport(context.Background(), key))
+		got, err := public.CPU.ReadRegister(cpu.RegisterR0)
+		check(t, err)
+		if got != want {
+			t.Fatalf("charAt(%d) = %04x, want UTF-16 code unit %04x", index, got, want)
+		}
+	}
+}
+
 func TestRaptorJavaStringToCharArrayVirtualSlot(t *testing.T) {
 	public := newPublicRuntime(t)
 	runtime := &Runtime{
