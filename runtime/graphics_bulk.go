@@ -1,5 +1,24 @@
 package runtime
 
+// blitVisibleArea returns offsets into the original destination rectangle,
+// before translation. Keep these offsets when sampling a scaled source so
+// clipping cannot shift its nearest-neighbor mapping. int64 also handles a
+// translation that crosses the int32 coordinate range without wrapping.
+func blitVisibleArea(destination *surface, rectangle Rectangle) Rectangle {
+	originX := int64(rectangle.X) + int64(destination.state.TranslateX)
+	originY := int64(rectangle.Y) + int64(destination.state.TranslateY)
+	clip := destination.state.Clip
+	left := max(originX, max(0, int64(clip.X)))
+	top := max(originY, max(0, int64(clip.Y)))
+	right := min(originX+int64(rectangle.Width), min(int64(destination.descriptor.Width), clip.Right()))
+	bottom := min(originY+int64(rectangle.Height), min(int64(destination.descriptor.Height), clip.Bottom()))
+	if right <= left || bottom <= top {
+		return Rectangle{}
+	}
+	return Rectangle{X: int32(left - originX), Y: int32(top - originY),
+		Width: int32(right - left), Height: int32(bottom - top)}
+}
+
 // Bulk pixel work - a full-screen clear, a sprite blit, a full-frame copy -
 // used to run entirely through drawSurfacePixel, which pays a translate, a
 // bounds test, a clip test, a transparency-key comparison, a raster-operation

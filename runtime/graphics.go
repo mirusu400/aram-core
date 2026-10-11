@@ -544,31 +544,57 @@ func (g *Graphics) ScaledBlit(
 	if count > g.limits.MaxPixels || count > uint64(math.MaxInt/4) {
 		return fmt.Errorf("%w: blit exceeds pixel limit", ErrLimitExceeded)
 	}
-	if blitFastPath(destination, source, destinationRectangle, sourceRectangle) {
-		g.bulkFastPathCalls++
+	visible := blitVisibleArea(destination, destinationRectangle)
+	if visible.Empty() {
 		return nil
 	}
-	colors := make([]Color, int(count))
-	for y := int32(0); y < destinationRectangle.Height; y++ {
-		sourceY := sourceRectangle.Y +
-			int32(int64(y)*int64(sourceRectangle.Height)/int64(destinationRectangle.Height))
-		for x := int32(0); x < destinationRectangle.Width; x++ {
-			sourceX := sourceRectangle.X +
-				int32(int64(x)*int64(sourceRectangle.Width)/int64(destinationRectangle.Width))
-			colors[int64(y)*int64(destinationRectangle.Width)+int64(x)] =
-				decodeSurfaceColor(source, sourceX, sourceY)
+	if destinationRectangle.Width == sourceRectangle.Width &&
+		destinationRectangle.Height == sourceRectangle.Height {
+		// An unscaled copy can restrict its opacity scan and row copies to the
+		// visible source region. Scaling below retains the original mapping.
+		clippedDestination := Rectangle{X: destinationRectangle.X + visible.X,
+			Y: destinationRectangle.Y + visible.Y, Width: visible.Width, Height: visible.Height}
+		clippedSource := Rectangle{X: sourceRectangle.X + visible.X,
+			Y: sourceRectangle.Y + visible.Y, Width: visible.Width, Height: visible.Height}
+		if blitFastPath(destination, source, clippedDestination, clippedSource) {
+			g.bulkFastPathCalls++
+			return nil
 		}
 	}
-	for y := int32(0); y < destinationRectangle.Height; y++ {
-		for x := int32(0); x < destinationRectangle.Width; x++ {
-			color := colors[int64(y)*int64(destinationRectangle.Width)+int64(x)]
+	var colors []Color
+	if source == destination {
+		// Only a self copy needs to preserve source pixels before writing. Read
+		// every visible sample first, including when scaling or translating.
+		colors = make([]Color, int(visible.Width)*int(visible.Height))
+		for y := int32(0); y < visible.Height; y++ {
+			sourceY := sourceRectangle.Y +
+				int32(int64(visible.Y+y)*int64(sourceRectangle.Height)/int64(destinationRectangle.Height))
+			for x := int32(0); x < visible.Width; x++ {
+				sourceX := sourceRectangle.X +
+					int32(int64(visible.X+x)*int64(sourceRectangle.Width)/int64(destinationRectangle.Width))
+				colors[int(y)*int(visible.Width)+int(x)] = decodeSurfaceColor(source, sourceX, sourceY)
+			}
+		}
+	}
+	for y := int32(0); y < visible.Height; y++ {
+		sourceY := sourceRectangle.Y +
+			int32(int64(visible.Y+y)*int64(sourceRectangle.Height)/int64(destinationRectangle.Height))
+		for x := int32(0); x < visible.Width; x++ {
+			var color Color
+			if colors != nil {
+				color = colors[int(y)*int(visible.Width)+int(x)]
+			} else {
+				sourceX := sourceRectangle.X +
+					int32(int64(visible.X+x)*int64(sourceRectangle.Width)/int64(destinationRectangle.Width))
+				color = decodeSurfaceColor(source, sourceX, sourceY)
+			}
 			if source.descriptor.Transparent != nil && color == *source.descriptor.Transparent {
 				continue
 			}
 			if err := drawSurfacePixel(
 				destination,
-				destinationRectangle.X+x,
-				destinationRectangle.Y+y,
+				destinationRectangle.X+visible.X+x,
+				destinationRectangle.Y+visible.Y+y,
 				color,
 			); err != nil {
 				return err

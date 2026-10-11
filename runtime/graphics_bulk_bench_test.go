@@ -150,3 +150,19 @@ func BenchmarkScaledBlitUnscaled(b *testing.B) {
 		))
 	}
 }
+
+// SKVM games draw a large image repeatedly under small sprite clips. The
+// offscreen pixels must not be decoded or held in a full-image color buffer.
+func BenchmarkBlitClippedAtlas(b *testing.B) {
+	graphics, destination, source := benchSurfaces(b, PixelRGBA8888, 240, 320)
+	check(b, graphics.SetDrawState(1, destination, SurfaceDrawState{
+		Clip:        Rectangle{X: 8, Y: 8, Width: 8, Height: 8},
+		GlobalAlpha: 128,
+	}))
+	region := Rectangle{Width: 240, Height: 320}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		check(b, graphics.Blit(1, destination, source, 0, 0, region))
+	}
+}
