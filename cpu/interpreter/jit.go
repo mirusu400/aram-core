@@ -63,6 +63,9 @@ const (
 	jitHalfwordFillLoop
 	jitColorLoop
 	jitFillLoop
+	jitBytePaletteLoop
+	jitNibblePaletteLoop
+	jitMaskedBlendLoop
 )
 
 type jitExtraLoop struct {
@@ -76,6 +79,9 @@ type jitExtraLoop struct {
 	halfwordFill       jitThumbHalfwordFillLoop
 	color              jitThumbColorLoop
 	fill               jitThumbFillLoop
+	bytePalette        jitThumbBytePaletteLoop
+	nibblePalette      jitThumbNibblePaletteLoop
+	maskedBlend        jitThumbMaskedBlendLoop
 }
 
 type jitBlock struct {
@@ -495,6 +501,31 @@ outer:
 					&extra.indexedPalette, limit-executed,
 					wholeSystem, hasExecutionTraps, traced,
 				)
+			case jitBytePaletteLoop:
+				// A store into this loop may replace an instruction that has
+				// not executed yet. Decode each instruction in the remaining
+				// batch rather than using the translated prefix after the store.
+				if !wholeSystem && colorLoopRangesOverlap(
+					b.regs[extra.bytePalette.destination], 2, extra.bytePalette.start, extra.bytePalette.words*2,
+				) {
+					n, reason, err := b.runThumb(limit - executed)
+					return executed + n, reason, err
+				}
+				retired = b.accelerateThumbBytePaletteLoop(
+					&extra.bytePalette, limit-executed, wholeSystem, hasExecutionTraps, traced,
+				)
+			case jitNibblePaletteLoop:
+				if !wholeSystem && b.nibblePaletteCodeAlias(&extra.nibblePalette) {
+					n, reason, err := b.runThumb(limit - executed)
+					return executed + n, reason, err
+				}
+				retired = b.accelerateThumbNibblePaletteLoop(&extra.nibblePalette, limit-executed, wholeSystem, hasExecutionTraps, traced)
+			case jitMaskedBlendLoop:
+				if !wholeSystem && colorLoopRangesOverlap(b.regs[extra.maskedBlend.destination], 2, extra.maskedBlend.start, 32) {
+					n, reason, err := b.runThumb(limit - executed)
+					return executed + n, reason, err
+				}
+				retired = b.accelerateThumbMaskedBlendLoop(&extra.maskedBlend, limit-executed, wholeSystem, hasExecutionTraps, traced)
 			case jitTransparentPaletteLoop:
 				retired = b.accelerateThumbTransparentPaletteLoop(
 					&extra.transparentPalette, limit-executed,
@@ -805,6 +836,24 @@ func (b *Backend) translateThumbBlock(pc uint32) *jitBlock {
 		return nil
 	}
 	block := &jitBlock{start: pc, end: cur, thumb: instrs}
+	if b.systemBus == nil && instrs[0].raw&0xf8ff == 0x2800 {
+		if loop := b.classifyThumbMaskedBlendLoop(pc); loop != nil {
+			block.end = pc + 32
+			block.extraLoop = &jitExtraLoop{kind: jitMaskedBlendLoop, maskedBlend: *loop}
+		}
+	}
+	if b.systemBus == nil && instrs[0].raw&0xffc0 == 0x7800 {
+		if loop := b.classifyThumbBytePaletteLoop(pc); loop != nil {
+			block.end = pc + loop.words*2
+			block.extraLoop = &jitExtraLoop{kind: jitBytePaletteLoop, bytePalette: *loop}
+		}
+	}
+	if b.systemBus == nil && (instrs[0].raw&0xffc0 == 0x0840 || instrs[0].raw&0xffc0 == 0x1c80) {
+		if loop := b.classifyThumbNibblePaletteLoop(pc); loop != nil {
+			block.end = pc + loop.words*2
+			block.extraLoop = &jitExtraLoop{kind: jitNibblePaletteLoop, nibblePalette: *loop}
+		}
+	}
 	if len(instrs) >= 3 && instrs[0].raw == thumbObjectLookupWords[0] &&
 		instrs[1].raw == thumbObjectLookupWords[1] && instrs[2].raw == thumbObjectLookupWords[2] {
 		if loop := b.classifyThumbObjectLookup(pc); loop != nil {
