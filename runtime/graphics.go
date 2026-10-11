@@ -6,6 +6,8 @@ import (
 	"image"
 	"math"
 	"sort"
+
+	"github.com/mirusu400/aram-core/internal/performance"
 )
 
 type PixelFormat uint8
@@ -518,6 +520,9 @@ func (g *Graphics) ScaledBlit(
 	destinationID, sourceID ServiceID,
 	destinationRectangle, sourceRectangle Rectangle,
 ) error {
+	if performance.Enabled {
+		defer performance.Finish(performance.GraphicsBlit, performance.Start())
+	}
 	destination, err := g.get(destinationID, owner)
 	if err != nil {
 		return err
@@ -599,6 +604,7 @@ func (g *Graphics) ScaledBlit(
 		sourceY := sourceRectangle.Y +
 			int32(int64(visible.Y+y)*int64(sourceRectangle.Height)/int64(destinationRectangle.Height))
 		sourceX, remainder := firstX, firstRemainder
+		firstOpaque, lastOpaque := visible.Width, int32(-1)
 		for x := int32(0); x < visible.Width; x++ {
 			var color Color
 			if colors != nil {
@@ -618,7 +624,8 @@ func (g *Graphics) ScaledBlit(
 			if opaqueCopy && color.A == 0xff {
 				// Visibility and translation were resolved once for the blit.
 				encodeSurfaceColor(destination, left+x, top+y, color)
-				markSurfaceDirty(destination, left+x, top+y)
+				firstOpaque = min(firstOpaque, x)
+				lastOpaque = x
 				continue
 			}
 			if err := drawSurfacePixel(
@@ -629,6 +636,9 @@ func (g *Graphics) ScaledBlit(
 			); err != nil {
 				return err
 			}
+		}
+		if lastOpaque >= firstOpaque {
+			destination.dirty = destination.dirty.Union(Rectangle{X: left + firstOpaque, Y: top + y, Width: lastOpaque - firstOpaque + 1, Height: 1})
 		}
 	}
 	return nil
@@ -665,6 +675,9 @@ func (g *Graphics) presentCommit(
 	id ServiceID,
 	requested Rectangle,
 ) (FrameSnapshot, error) {
+	if performance.Enabled {
+		defer performance.Finish(performance.GraphicsPresent, performance.Start())
+	}
 	current, err := g.get(id, owner)
 	if err != nil {
 		return FrameSnapshot{}, err

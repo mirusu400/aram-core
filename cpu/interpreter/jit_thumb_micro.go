@@ -1,3 +1,5 @@
+//go:generate go run ./internal/genappmicro -source jit_thumb_micro.go -output jit_thumb_application_gen.go
+
 package interpreter
 
 import (
@@ -69,7 +71,7 @@ func (b *Backend) thumbMicroInstructionStale(
 	return false
 }
 
-// executeThumbMicroOp executes a pre-classified Thumb instruction. Keeping the
+// executeThumbMicroBlock executes pre-classified Thumb instructions. Keeping the
 // raw 16-bit encoding makes translated blocks compact while the class byte
 // removes the decoder and, most importantly, the per-instruction indirect
 // closure call from runThumbJIT.
@@ -84,6 +86,9 @@ func (b *Backend) executeThumbMicroBlock(
 	for index := range instructions {
 		in := &instructions[index]
 		pc := in.pc
+		if collectThumbMicro {
+			b.recordThumbMicro(in)
+		}
 		if wholeSystem {
 			if index != 0 {
 				// An earlier instruction may have retired this translation,
@@ -341,9 +346,17 @@ func (b *Backend) executeThumbMicroBlock(
 					return index, false, nil, err
 				}
 			case 3:
-				value, err := b.read8(address, cpu.PermissionRead)
-				if err != nil {
-					return index, false, nil, err
+				value, hit := byte(0), false
+				if !b.physicalAccess && b.tlb == nil {
+					entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+					value, hit = cachedJITRead8(entry, address)
+				}
+				if !hit {
+					var err error
+					value, err = b.read8(address, cpu.PermissionRead)
+					if err != nil {
+						return index, false, nil, err
+					}
 				}
 				b.regs[rd] = uint32(int32(int8(value)))
 			case 4:
@@ -361,21 +374,45 @@ func (b *Backend) executeThumbMicroBlock(
 				}
 				b.regs[rd] = value
 			case 5:
-				value, err := b.read16(address, cpu.PermissionRead)
-				if err != nil {
-					return index, false, nil, err
+				value, hit := uint16(0), false
+				if !b.physicalAccess && b.tlb == nil {
+					entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+					value, hit = cachedJITRead16(entry, address)
+				}
+				if !hit {
+					var err error
+					value, err = b.read16(address, cpu.PermissionRead)
+					if err != nil {
+						return index, false, nil, err
+					}
 				}
 				b.regs[rd] = uint32(value)
 			case 6:
-				value, err := b.read8(address, cpu.PermissionRead)
-				if err != nil {
-					return index, false, nil, err
+				value, hit := byte(0), false
+				if !b.physicalAccess && b.tlb == nil {
+					entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+					value, hit = cachedJITRead8(entry, address)
+				}
+				if !hit {
+					var err error
+					value, err = b.read8(address, cpu.PermissionRead)
+					if err != nil {
+						return index, false, nil, err
+					}
 				}
 				b.regs[rd] = uint32(value)
 			case 7:
-				value, err := b.read16(address, cpu.PermissionRead)
-				if err != nil {
-					return index, false, nil, err
+				value, hit := uint16(0), false
+				if !b.physicalAccess && b.tlb == nil {
+					entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+					value, hit = cachedJITRead16(entry, address)
+				}
+				if !hit {
+					var err error
+					value, err = b.read16(address, cpu.PermissionRead)
+					if err != nil {
+						return index, false, nil, err
+					}
 				}
 				b.regs[rd] = uint32(int32(int16(value)))
 			}
@@ -392,9 +429,17 @@ func (b *Backend) executeThumbMicroBlock(
 			address := b.regs[rb] + offset
 			switch {
 			case load && byteTransfer:
-				value, err := b.read8(address, cpu.PermissionRead)
-				if err != nil {
-					return index, false, nil, err
+				value, hit := byte(0), false
+				if !b.physicalAccess && b.tlb == nil {
+					entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+					value, hit = cachedJITRead8(entry, address)
+				}
+				if !hit {
+					var err error
+					value, err = b.read8(address, cpu.PermissionRead)
+					if err != nil {
+						return index, false, nil, err
+					}
 				}
 				b.regs[rd] = uint32(value)
 			case load:
@@ -428,9 +473,17 @@ func (b *Backend) executeThumbMicroBlock(
 			rd := uint32(instruction) & 7
 			address := b.regs[rb] + offset*2
 			if load {
-				value, err := b.read16(address, cpu.PermissionRead)
-				if err != nil {
-					return index, false, nil, err
+				value, hit := uint16(0), false
+				if !b.physicalAccess && b.tlb == nil {
+					entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+					value, hit = cachedJITRead16(entry, address)
+				}
+				if !hit {
+					var err error
+					value, err = b.read16(address, cpu.PermissionRead)
+					if err != nil {
+						return index, false, nil, err
+					}
 				}
 				b.regs[rd] = uint32(value)
 			} else if err := b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); err != nil {
@@ -616,4 +669,24 @@ func cachedJITWord(entry *dataRegionCache, address uint32) (uint32, bool) {
 		return 0, false
 	}
 	return binary.LittleEndian.Uint32(entry.data[int(offset) : int(offset)+4]), true
+}
+
+// cachedJITRead8 handles only private mapped reads. Physical accesses and
+// native TLB bookkeeping remain in the ordinary memory implementation.
+func cachedJITRead8(entry *dataRegionCache, address uint32) (byte, bool) {
+	offset := uint64(address - entry.address)
+	if entry.perms&cpu.PermissionRead == 0 || offset+1 > uint64(len(entry.data)) {
+		return 0, false
+	}
+	return entry.data[int(offset)], true
+}
+
+// cachedJITRead16 handles only private mapped reads. Physical accesses and
+// native TLB bookkeeping remain in the ordinary memory implementation.
+func cachedJITRead16(entry *dataRegionCache, address uint32) (uint16, bool) {
+	offset := uint64(address - entry.address)
+	if entry.perms&cpu.PermissionRead == 0 || offset+2 > uint64(len(entry.data)) {
+		return 0, false
+	}
+	return binary.LittleEndian.Uint16(entry.data[int(offset) : int(offset)+2]), true
 }

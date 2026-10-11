@@ -539,9 +539,18 @@ outer:
 			if remaining := limit - executed; uint64(blockInstructions) > remaining {
 				blockInstructions = int(remaining)
 			}
-			retired, branched, reason, err := b.executeThumbMicroBlock(
-				block, blockInstructions, wholeSystem, hasExecutionTraps, traced,
-			)
+			if collectThumbMicro {
+				b.recordThumbBlock(block)
+			}
+			var retired int
+			var branched bool
+			var reason *cpu.StopReason
+			var err error
+			if !wholeSystem && !traced {
+				retired, branched, reason, err = b.executeThumbApplicationMicroBlock(block, blockInstructions)
+			} else {
+				retired, branched, reason, err = b.executeThumbMicroBlock(block, blockInstructions, wholeSystem, hasExecutionTraps, traced)
+			}
 			executed += uint64(retired)
 			if err != nil {
 				return executed, nil, err

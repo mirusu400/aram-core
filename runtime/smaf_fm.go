@@ -820,6 +820,8 @@ func (voice *smafVoice) modOperator(
 	index int,
 	external, lfo float64,
 ) float64 {
+	// Every algorithm uses only the four operators in this voice.
+	index &= 3
 	feedback := 0.0
 	if voice.operatorFeedback[index] != 0 {
 		memory := voice.feedbackMemory[index]

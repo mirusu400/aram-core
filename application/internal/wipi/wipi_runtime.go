@@ -947,26 +947,7 @@ func (r *Runtime) ReturnFromTrap(result guest.WIPIReturn) error {
 	if r.hostCallDepth != 0 {
 		frame = &r.hostCallScopes[r.hostCallDepth-1].frame
 	}
-	if err := cpu.CaptureHostCallFrame(
-		r.CPU,
-		frame,
-		cpu.HostCallFrameRequest{},
-	); err != nil {
-		return err
-	}
-	lr := frame.Registers[cpu.RegisterLR]
-	cpsr := frame.Registers[cpu.RegisterCPSR]
-	if lr&1 != 0 {
-		cpsr |= cpu.StatusThumb
-	} else {
-		cpsr &^= cpu.StatusThumb
-	}
-	var commit cpu.RegisterCommit
-	_ = commit.Set(cpu.RegisterR0, result.Low)
-	_ = commit.Set(cpu.RegisterR1, result.High)
-	_ = commit.Set(cpu.RegisterPC, lr&^1)
-	_ = commit.Set(cpu.RegisterCPSR, cpsr)
-	return cpu.CommitHostCallRegisters(r.CPU, commit)
+	return cpu.ReturnHostCallFrame(r.CPU, frame, result.Low, result.High)
 }
 
 func (r *Runtime) arg(index int) (uint32, error) {

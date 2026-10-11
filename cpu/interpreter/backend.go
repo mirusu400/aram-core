@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 
 	"github.com/mirusu400/aram-core/cpu"
+	"github.com/mirusu400/aram-core/internal/performance"
 )
 
 const (
@@ -417,7 +418,11 @@ func (b *Backend) PCHits() map[uint32]uint64 {
 func (b *Backend) ExecutionStatistics() cpu.ExecutionStatistics {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.executionStatistics
+	stats := b.executionStatistics
+	if collectThumbMicro {
+		stats.ThumbMicro = cloneThumbMicroStats(stats.ThumbMicro)
+	}
+	return stats
 }
 
 // SetPCHistoryLimit configures a bounded diagnostic ring of instruction
@@ -824,6 +829,9 @@ func (b *Backend) writeRegisterLocked(id, value uint32) error {
 }
 
 func (b *Backend) Run(ctx context.Context, address uint32, mode cpu.Mode, budget uint64) cpu.Result {
+	if performance.Enabled {
+		defer performance.Finish(performance.CPU, performance.Start())
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 

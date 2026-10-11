@@ -348,23 +348,37 @@ func (saved ScopedContext) Restore(backend Backend) error {
 	return backend.RestoreContext(data)
 }
 
+// ThumbMicroStatistics counts actually executed micro-ops in aram_profile_ops
+// builds. Accelerated virtual iterations are reported by the existing loop
+// counters instead. The bounded PC map may omit blocks first seen after 4096
+// distinct starts; UntrackedBlockCalls records that loss explicitly.
+type ThumbMicroStatistics struct {
+	Classes             [24]uint64        `json:"classes"`
+	ALU                 [16]uint64        `json:"alu"`
+	BlockCalls          uint64            `json:"block_calls"`
+	UntrackedBlockCalls uint64            `json:"untracked_block_calls"`
+	Blocks              map[uint32]uint64 `json:"blocks"`
+}
+
 // ExecutionStatistics are cumulative counters for scheduler and translation
 // behavior. Deltas around a frame expose cache-reset and translation costs
 // without enabling per-instruction tracing.
 type ExecutionStatistics struct {
-	SerializedContextSaves      uint64 `json:"serialized_context_saves"`
-	SerializedContextRestores   uint64 `json:"serialized_context_restores"`
-	FastContextSaves            uint64 `json:"fast_context_saves"`
-	FastContextRestores         uint64 `json:"fast_context_restores"`
-	TranslationInvalidations    uint64 `json:"translation_invalidations"`
-	TranslatedBlocks            uint64 `json:"translated_blocks"`
-	TranslatedGuestBytes        uint64 `json:"translated_guest_bytes"`
-	TranslatedHostBytes         uint64 `json:"translated_host_bytes"`
-	NativeArenaResets           uint64 `json:"native_arena_resets"`
-	HostFrameCaptures           uint64 `json:"host_frame_captures"`
-	HostRegisterCommits         uint64 `json:"host_register_commits"`
-	AcceleratedLoopIterations   uint64 `json:"accelerated_loop_iterations"`
-	AcceleratedLoopInstructions uint64 `json:"accelerated_loop_instructions"`
+	SerializedContextSaves      uint64                `json:"serialized_context_saves"`
+	SerializedContextRestores   uint64                `json:"serialized_context_restores"`
+	FastContextSaves            uint64                `json:"fast_context_saves"`
+	FastContextRestores         uint64                `json:"fast_context_restores"`
+	TranslationInvalidations    uint64                `json:"translation_invalidations"`
+	TranslatedBlocks            uint64                `json:"translated_blocks"`
+	TranslatedGuestBytes        uint64                `json:"translated_guest_bytes"`
+	TranslatedHostBytes         uint64                `json:"translated_host_bytes"`
+	NativeArenaResets           uint64                `json:"native_arena_resets"`
+	HostFrameCaptures           uint64                `json:"host_frame_captures"`
+	HostRegisterCommits         uint64                `json:"host_register_commits"`
+	AcceleratedLoopIterations   uint64                `json:"accelerated_loop_iterations"`
+	AcceleratedLoopInstructions uint64                `json:"accelerated_loop_instructions"`
+	ThumbMicro                  *ThumbMicroStatistics `json:"thumb_micro,omitempty"`
+	HostCallReturnBatches       uint64                `json:"host_call_return_batches,omitempty"`
 }
 
 type ExecutionStatisticsBackend interface {
@@ -492,4 +506,39 @@ type Backend interface {
 	SaveContext() ([]byte, error)
 	RestoreContext([]byte) error
 	Close() error
+}
+
+// HostCallReturnBackend optionally captures the current register frame and
+// returns from a host call under one backend lock. The capture precedes the
+// writes, matching CaptureHostCallFrame followed by CommitHostCallRegisters.
+type HostCallReturnBackend interface {
+	ReturnHostCallFrame(destination *HostCallFrame, low, high uint32) error
+}
+
+// ReturnHostCallFrame preserves the current LR, flags and frame snapshot while
+// writing the result and selecting the return instruction set from LR bit 0.
+// Backends without the optional batch operation use the existing public calls.
+func ReturnHostCallFrame(backend Backend, destination *HostCallFrame, low, high uint32) error {
+	if backend == nil || destination == nil {
+		return fmt.Errorf("host-call frame: %w", ErrInvalidAddress)
+	}
+	if bulk, ok := backend.(HostCallReturnBackend); ok {
+		return bulk.ReturnHostCallFrame(destination, low, high)
+	}
+	if err := CaptureHostCallFrame(backend, destination, HostCallFrameRequest{}); err != nil {
+		return err
+	}
+	lr := destination.Registers[RegisterLR]
+	cpsr := destination.Registers[RegisterCPSR]
+	if lr&1 != 0 {
+		cpsr |= StatusThumb
+	} else {
+		cpsr &^= StatusThumb
+	}
+	var commit RegisterCommit
+	_ = commit.Set(RegisterR0, low)
+	_ = commit.Set(RegisterR1, high)
+	_ = commit.Set(RegisterPC, lr&^1)
+	_ = commit.Set(RegisterCPSR, cpsr)
+	return CommitHostCallRegisters(backend, commit)
 }

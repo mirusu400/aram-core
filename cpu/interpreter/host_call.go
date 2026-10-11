@@ -85,3 +85,44 @@ func (b *Backend) CommitHostCallRegisters(commit cpu.RegisterCommit) error {
 	b.executionStatistics.HostRegisterCommits++
 	return nil
 }
+
+// ReturnHostCallFrame keeps the capture and the ordered register writes under
+// one lock. Use writeRegisterLocked for PC alignment, banked state and CPSR
+// transitions exactly as CommitHostCallRegisters does.
+func (b *Backend) ReturnHostCallFrame(destination *cpu.HostCallFrame, low, high uint32) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return cpu.ErrClosed
+	}
+	if destination == nil {
+		return fmt.Errorf("host-call frame request: %w", cpu.ErrInvalidAddress)
+	}
+	b.resolveFlags()
+	destination.Registers = b.regs
+	destination.StackWords = 0
+	destination.ParameterWords = 0
+	b.executionStatistics.HostFrameCaptures++
+	lr := destination.Registers[cpu.RegisterLR]
+	cpsr := destination.Registers[cpu.RegisterCPSR]
+	if lr&1 != 0 {
+		cpsr |= cpu.StatusThumb
+	} else {
+		cpsr &^= cpu.StatusThumb
+	}
+	if err := b.writeRegisterLocked(cpu.RegisterR0, low); err != nil {
+		return err
+	}
+	if err := b.writeRegisterLocked(cpu.RegisterR1, high); err != nil {
+		return err
+	}
+	if err := b.writeRegisterLocked(cpu.RegisterPC, lr&^1); err != nil {
+		return err
+	}
+	if err := b.writeRegisterLocked(cpu.RegisterCPSR, cpsr); err != nil {
+		return err
+	}
+	b.executionStatistics.HostRegisterCommits++
+	b.executionStatistics.HostCallReturnBatches++
+	return nil
+}

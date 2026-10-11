@@ -5,6 +5,8 @@ import (
 	"math"
 	"sort"
 	"time"
+
+	"github.com/mirusu400/aram-core/internal/performance"
 )
 
 const (
@@ -1289,6 +1291,9 @@ func (stream *smafRenderStream) render(
 	target uint64,
 	silent bool,
 ) []int16 {
+	if performance.Enabled {
+		defer performance.Finish(performance.AudioSMAF, performance.Start())
+	}
 	if stream == nil || stream.finished || stream.end == 0 {
 		return output
 	}
