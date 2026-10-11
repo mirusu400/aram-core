@@ -841,6 +841,11 @@ func (vm *VM) buildCandidate(
 	if err := candidate.validateReferences(); err != nil {
 		return nil, err
 	}
+	// Native aliases have been resolved; the index is not serialized and cannot
+	// retain references or payloads from the VM that is being replaced.
+	for reference, object := range candidate.heap {
+		candidate.indexThreadObject(reference, object)
+	}
 	return candidate, nil
 }
 

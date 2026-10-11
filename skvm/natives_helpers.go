@@ -467,6 +467,7 @@ func (vm *VM) setNative(reference uint32, native any) error {
 		return fmt.Errorf("invalid object reference %d", reference)
 	}
 	object.Native = native
+	vm.indexThreadObject(reference, object)
 	return nil
 }
 

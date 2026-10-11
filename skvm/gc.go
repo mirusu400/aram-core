@@ -273,6 +273,7 @@ func (vm *VM) collectGarbageWithRoots(extraRoots []uint32) error {
 			state.serial = 0
 		}
 		delete(vm.heap, reference)
+		delete(vm.threadObjects, reference)
 	}
 	return nil
 }

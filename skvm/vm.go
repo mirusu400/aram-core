@@ -93,10 +93,13 @@ type nativeKey struct {
 }
 
 type VM struct {
-	nativePolicy     NativePolicy
-	classes          map[string]*runtimeClass
-	fieldOwners      map[Reference]string
-	heap             map[uint32]*Object
+	nativePolicy NativePolicy
+	classes      map[string]*runtimeClass
+	fieldOwners  map[Reference]string
+	heap         map[uint32]*Object
+	// threadObjects is a derived index, rebuilt on load and pruned by guest GC.
+	// Scheduler and paint checks must scale with threads, not the entire heap.
+	threadObjects    map[uint32]*Object
 	nextReference    uint32
 	natives          map[nativeKey]NativeFunc
 	hostSupers       map[string]string
@@ -558,6 +561,7 @@ func (vm *VM) NewObject(class string, native any) uint32 {
 		Fields: make(map[string]Value),
 		Native: native,
 	}
+	vm.indexThreadObject(reference, vm.heap[reference])
 	return reference
 }
 
@@ -898,7 +902,7 @@ func (vm *VM) paintInFlight() bool {
 	if containsPaint(vm.frames) {
 		return true
 	}
-	for _, object := range vm.heap {
+	for _, object := range vm.threadObjects {
 		if state, ok := object.Native.(*threadState); ok && state.active && containsPaint(state.continuation) {
 			return true
 		}

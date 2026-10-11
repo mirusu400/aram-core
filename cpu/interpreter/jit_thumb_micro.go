@@ -1,6 +1,7 @@
 package interpreter
 
 import (
+	"encoding/binary"
 	"math/bits"
 
 	"github.com/mirusu400/aram-core/cpu"
@@ -306,9 +307,17 @@ func (b *Backend) executeThumbMicroBlock(
 		case thumbLiteralLoad:
 			rd := uint32(instruction>>8) & 7
 			address := ((pc + 4) &^ uint32(3)) + uint32(instruction&0xff)*4
-			value, err := b.read32(address, cpu.PermissionRead)
-			if err != nil {
-				return index, false, nil, err
+			value, hit := uint32(0), false
+			if !b.physicalAccess && b.tlb == nil {
+				entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+				value, hit = cachedJITWord(entry, address)
+			}
+			if !hit {
+				var err error
+				value, err = b.read32(address, cpu.PermissionRead)
+				if err != nil {
+					return index, false, nil, err
+				}
 			}
 			b.regs[rd] = value
 
@@ -338,9 +347,17 @@ func (b *Backend) executeThumbMicroBlock(
 				}
 				b.regs[rd] = uint32(int32(int8(value)))
 			case 4:
-				value, err := b.read32(address, cpu.PermissionRead)
-				if err != nil {
-					return index, false, nil, err
+				value, hit := uint32(0), false
+				if !b.physicalAccess && b.tlb == nil {
+					entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+					value, hit = cachedJITWord(entry, address)
+				}
+				if !hit {
+					var err error
+					value, err = b.read32(address, cpu.PermissionRead)
+					if err != nil {
+						return index, false, nil, err
+					}
 				}
 				b.regs[rd] = value
 			case 5:
@@ -381,9 +398,17 @@ func (b *Backend) executeThumbMicroBlock(
 				}
 				b.regs[rd] = uint32(value)
 			case load:
-				value, err := b.read32(address, cpu.PermissionRead)
-				if err != nil {
-					return index, false, nil, err
+				value, hit := uint32(0), false
+				if !b.physicalAccess && b.tlb == nil {
+					entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+					value, hit = cachedJITWord(entry, address)
+				}
+				if !hit {
+					var err error
+					value, err = b.read32(address, cpu.PermissionRead)
+					if err != nil {
+						return index, false, nil, err
+					}
 				}
 				b.regs[rd] = value
 			case byteTransfer:
@@ -417,9 +442,17 @@ func (b *Backend) executeThumbMicroBlock(
 			rd := uint32(instruction>>8) & 7
 			address := b.regs[cpu.RegisterSP] + uint32(instruction&0xff)*4
 			if load {
-				value, err := b.read32(address, cpu.PermissionRead)
-				if err != nil {
-					return index, false, nil, err
+				value, hit := uint32(0), false
+				if !b.physicalAccess && b.tlb == nil {
+					entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+					value, hit = cachedJITWord(entry, address)
+				}
+				if !hit {
+					var err error
+					value, err = b.read32(address, cpu.PermissionRead)
+					if err != nil {
+						return index, false, nil, err
+					}
 				}
 				b.regs[rd] = value
 			} else if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
@@ -469,17 +502,33 @@ func (b *Backend) executeThumbMicroBlock(
 				if registers&(1<<register) == 0 {
 					continue
 				}
-				value, err := b.read32(address, cpu.PermissionRead)
-				if err != nil {
-					return index, false, nil, err
+				value, hit := uint32(0), false
+				if !b.physicalAccess && b.tlb == nil {
+					entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+					value, hit = cachedJITWord(entry, address)
+				}
+				if !hit {
+					var err error
+					value, err = b.read32(address, cpu.PermissionRead)
+					if err != nil {
+						return index, false, nil, err
+					}
 				}
 				b.regs[register] = value
 				address += 4
 			}
 			if includePC {
-				value, err := b.read32(address, cpu.PermissionRead)
-				if err != nil {
-					return index, false, nil, err
+				value, hit := uint32(0), false
+				if !b.physicalAccess && b.tlb == nil {
+					entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+					value, hit = cachedJITWord(entry, address)
+				}
+				if !hit {
+					var err error
+					value, err = b.read32(address, cpu.PermissionRead)
+					if err != nil {
+						return index, false, nil, err
+					}
 				}
 				b.branchExchange(value)
 				address += 4
@@ -507,9 +556,17 @@ func (b *Backend) executeThumbMicroBlock(
 					continue
 				}
 				if load {
-					value, err := b.read32(address, cpu.PermissionRead)
-					if err != nil {
-						return index, false, nil, err
+					value, hit := uint32(0), false
+					if !b.physicalAccess && b.tlb == nil {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITWord(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read32(address, cpu.PermissionRead)
+						if err != nil {
+							return index, false, nil, err
+						}
 					}
 					b.regs[register] = value
 				} else if err := b.write32(address, b.regs[register], cpu.PermissionWrite); err != nil {
@@ -546,4 +603,17 @@ func (b *Backend) executeThumbMicroBlock(
 		}
 	}
 	return blockInstructions, false, nil, nil
+}
+
+// cachedJITWord is the small, inlineable private-cache portion of a Thumb word
+// load. Callers retain physical/bus reads and native TLB bookkeeping in read32.
+// Unaligned loads also use read32 so ARM byte-lane rotation stays architectural.
+func cachedJITWord(entry *dataRegionCache, address uint32) (uint32, bool) {
+	offset := uint64(address - entry.address)
+	// Map guarantees address+len(data) <= 2^32. A wrapped offset below the
+	// region cannot pass the widened end check, including an empty cache slot.
+	if address&3 != 0 || entry.perms&cpu.PermissionRead == 0 || offset+4 > uint64(len(entry.data)) {
+		return 0, false
+	}
+	return binary.LittleEndian.Uint32(entry.data[int(offset) : int(offset)+4]), true
 }

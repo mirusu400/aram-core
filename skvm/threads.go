@@ -4,11 +4,24 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
 	"time"
 
 	shared "github.com/mirusu400/aram-core/runtime"
 )
+
+// Native constructors can attach a Thread after allocation. Keep the object
+// rather than its payload so replacing the payload cannot run a stale thread.
+func (vm *VM) indexThreadObject(reference uint32, object *Object) {
+	if _, ok := object.Native.(*threadState); ok {
+		if vm.threadObjects == nil {
+			vm.threadObjects = make(map[uint32]*Object)
+		}
+		vm.threadObjects[reference] = object
+	} else {
+		delete(vm.threadObjects, reference)
+	}
+}
 
 func (vm *VM) installThreadNatives() {
 	vm.RegisterNative("java/lang/Thread", "<init>", "()V", func(
@@ -222,16 +235,14 @@ func (vm *VM) releaseClipWaiters(ctx context.Context, clip shared.ServiceID) err
 		return nil
 	}
 	references := make([]uint32, 0)
-	for reference, object := range vm.heap {
+	for reference, object := range vm.threadObjects {
 		state, ok := object.Native.(*threadState)
 		if ok && state.active && state.blockedClip == clip &&
 			reference != vm.runningThread {
 			references = append(references, reference)
 		}
 	}
-	sort.Slice(references, func(left, right int) bool {
-		return references[left] < references[right]
-	})
+	slices.Sort(references)
 	for _, reference := range references {
 		state, err := vm.thread(reference)
 		if err != nil {
@@ -262,13 +273,13 @@ func (vm *VM) threadBlocked(state *threadState) bool {
 
 func (vm *VM) notifyObject(reference uint32, all bool) {
 	var waiters []uint32
-	for threadReference, object := range vm.heap {
+	for threadReference, object := range vm.threadObjects {
 		state, ok := object.Native.(*threadState)
 		if ok && state.active && state.waitingOn == reference {
 			waiters = append(waiters, threadReference)
 		}
 	}
-	sort.Slice(waiters, func(i, j int) bool { return waiters[i] < waiters[j] })
+	slices.Sort(waiters)
 	for _, threadReference := range waiters {
 		state, _ := vm.thread(threadReference)
 		state.waitingOn = 0
@@ -282,16 +293,14 @@ func (vm *VM) notifyObject(reference uint32, all bool) {
 func (vm *VM) runReadyThreads(ctx context.Context) error {
 	now := vm.services.Clock.Monotonic()
 	references := make([]uint32, 0)
-	for reference, object := range vm.heap {
+	for reference, object := range vm.threadObjects {
 		state, ok := object.Native.(*threadState)
 		if ok && state.active && state.wakeAt <= now &&
 			reference != vm.runningThread && !vm.threadBlocked(state) {
 			references = append(references, reference)
 		}
 	}
-	sort.Slice(references, func(left, right int) bool {
-		return references[left] < references[right]
-	})
+	slices.Sort(references)
 	for _, reference := range references {
 		state, err := vm.thread(reference)
 		if err != nil {
