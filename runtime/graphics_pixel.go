@@ -52,6 +52,13 @@ func drawSurfacePixel(current *surface, x, y int32, color Color) error {
 		color == *current.descriptor.Transparent {
 		return nil
 	}
+	// An opaque copy does not depend on the old destination pixel.
+	if current.state.Raster == RasterCopy && color.A == 0xff &&
+		current.state.GlobalAlpha == 0xff && current.state.GlobalTransparency256 == 0 {
+		encodeSurfaceColor(current, x, y, color)
+		markSurfaceDirty(current, x, y)
+		return nil
+	}
 	destination := decodeSurfaceColor(current, x, y)
 	color = applyRaster(current.state.Raster, destination, color)
 	if current.state.GlobalAlpha != 0xff {

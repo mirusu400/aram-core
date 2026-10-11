@@ -561,6 +561,15 @@ func (g *Graphics) ScaledBlit(
 			return nil
 		}
 	}
+	// Advance the nearest-neighbor sample using an exact quotient/remainder.
+	// This retains floor(x*sourceWidth/destinationWidth), including clipping,
+	// without doing a 64-bit division for every visible pixel.
+	denominator := int64(destinationRectangle.Width)
+	first := int64(visible.X) * int64(sourceRectangle.Width)
+	firstX := sourceRectangle.X + int32(first/denominator)
+	firstRemainder := first % denominator
+	xStep := sourceRectangle.Width / destinationRectangle.Width
+	remainderStep := int64(sourceRectangle.Width % destinationRectangle.Width)
 	var colors []Color
 	if source == destination {
 		// Only a self copy needs to preserve source pixels before writing. Read
@@ -569,26 +578,47 @@ func (g *Graphics) ScaledBlit(
 		for y := int32(0); y < visible.Height; y++ {
 			sourceY := sourceRectangle.Y +
 				int32(int64(visible.Y+y)*int64(sourceRectangle.Height)/int64(destinationRectangle.Height))
+			sourceX, remainder := firstX, firstRemainder
 			for x := int32(0); x < visible.Width; x++ {
-				sourceX := sourceRectangle.X +
-					int32(int64(visible.X+x)*int64(sourceRectangle.Width)/int64(destinationRectangle.Width))
 				colors[int(y)*int(visible.Width)+int(x)] = decodeSurfaceColor(source, sourceX, sourceY)
+				sourceX += xStep
+				remainder += remainderStep
+				if remainder >= denominator {
+					sourceX++
+					remainder -= denominator
+				}
 			}
 		}
 	}
+	opaqueCopy := destination.state.Raster == RasterCopy &&
+		destination.state.GlobalAlpha == 0xff && destination.state.GlobalTransparency256 == 0 &&
+		(!destination.state.Transparency || destination.descriptor.Transparent == nil)
+	left := int32(int64(destinationRectangle.X) + int64(visible.X) + int64(destination.state.TranslateX))
+	top := int32(int64(destinationRectangle.Y) + int64(visible.Y) + int64(destination.state.TranslateY))
 	for y := int32(0); y < visible.Height; y++ {
 		sourceY := sourceRectangle.Y +
 			int32(int64(visible.Y+y)*int64(sourceRectangle.Height)/int64(destinationRectangle.Height))
+		sourceX, remainder := firstX, firstRemainder
 		for x := int32(0); x < visible.Width; x++ {
 			var color Color
 			if colors != nil {
 				color = colors[int(y)*int(visible.Width)+int(x)]
 			} else {
-				sourceX := sourceRectangle.X +
-					int32(int64(visible.X+x)*int64(sourceRectangle.Width)/int64(destinationRectangle.Width))
 				color = decodeSurfaceColor(source, sourceX, sourceY)
+				sourceX += xStep
+				remainder += remainderStep
+				if remainder >= denominator {
+					sourceX++
+					remainder -= denominator
+				}
 			}
 			if source.descriptor.Transparent != nil && color == *source.descriptor.Transparent {
+				continue
+			}
+			if opaqueCopy && color.A == 0xff {
+				// Visibility and translation were resolved once for the blit.
+				encodeSurfaceColor(destination, left+x, top+y, color)
+				markSurfaceDirty(destination, left+x, top+y)
 				continue
 			}
 			if err := drawSurfacePixel(

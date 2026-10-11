@@ -126,7 +126,7 @@ func referenceScaledBlit(
 			if source.descriptor.Transparent != nil && color == *source.descriptor.Transparent {
 				continue
 			}
-			if err := drawSurfacePixel(
+			if err := referenceDrawSurfacePixel(
 				destination,
 				destinationRectangle.X+x,
 				destinationRectangle.Y+y,

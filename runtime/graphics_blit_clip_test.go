@@ -25,6 +25,9 @@ func TestScaledBlitClippedFallbackMatchesReference(t *testing.T) {
 	}{
 		{"translated", Rectangle{X: -3, Y: -2, Width: 7, Height: 6}, SurfaceDrawState{Clip: Rectangle{X: 1, Y: 1, Width: 5, Height: 4}, TranslateX: 2, TranslateY: 1, GlobalAlpha: 255}},
 		{"scaled up", Rectangle{X: -5, Y: -4, Width: 17, Height: 13}, SurfaceDrawState{Clip: Rectangle{X: 2, Y: 1, Width: 4, Height: 5}, GlobalAlpha: 128}},
+		{"opaque scaled up", Rectangle{X: -3, Y: -2, Width: 13, Height: 11}, SurfaceDrawState{Clip: Rectangle{X: 1, Y: 1, Width: 6, Height: 5}, TranslateX: 2, TranslateY: 1, GlobalAlpha: 255}},
+		{"opaque scaled down", Rectangle{X: 2, Y: 1, Width: 3, Height: 2}, SurfaceDrawState{Clip: Rectangle{Width: 8, Height: 7}, GlobalAlpha: 255}},
+		{"zero global alpha", Rectangle{X: -1, Y: -1, Width: 11, Height: 9}, SurfaceDrawState{Clip: Rectangle{Width: 8, Height: 7}}},
 		{"scaled down", Rectangle{X: -1, Y: 2, Width: 4, Height: 3}, SurfaceDrawState{Clip: Rectangle{Width: 8, Height: 7}, Raster: RasterXOR, GlobalAlpha: 255}},
 		{"raster and", Rectangle{X: 4, Y: -1, Width: 7, Height: 6}, SurfaceDrawState{Clip: Rectangle{Width: 8, Height: 7}, Raster: RasterAND, GlobalAlpha: 211}},
 		{"empty clip", Rectangle{Width: 7, Height: 6}, SurfaceDrawState{GlobalAlpha: 255}},
