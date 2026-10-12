@@ -13,6 +13,7 @@ import (
 // retains block-level trap, budget and translation checks.
 func (b *Backend) executeThumbApplicationMicroBlock(block *jitBlock, blockInstructions int) (int, bool, *cpu.StopReason, error) {
 	instructions := block.thumb[:blockInstructions]
+	blockGeneration := b.jitGen
 	for index := range instructions {
 		in := &instructions[index]
 		pc := in.pc
@@ -21,7 +22,7 @@ func (b *Backend) executeThumbApplicationMicroBlock(block *jitBlock, blockInstru
 		}
 		instruction := in.raw
 		b.regs[cpu.RegisterPC] = pc + 2
-		switch in.op {
+		switch in.appOp {
 		case thumbShiftImmediate:
 			op := uint32(instruction>>11) & 3
 			shift := uint32(instruction>>6) & 0x1f
@@ -207,7 +208,9 @@ func (b *Backend) executeThumbApplicationMicroBlock(block *jitBlock, blockInstru
 				}
 				b.branchExchange(target)
 			}
-			return index + 1, true, nil, nil
+			if op == 3 || op != 1 && rd == cpu.RegisterPC {
+				return index + 1, true, nil, nil
+			}
 
 		case thumbLiteralLoad:
 			rd := uint32(instruction>>8) & 7
@@ -237,13 +240,22 @@ func (b *Backend) executeThumbApplicationMicroBlock(block *jitBlock, blockInstru
 				if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
 					return index, false, nil, err
 				}
+				if b.jitGen != blockGeneration {
+					return index + 1, false, nil, nil
+				}
 			case 1:
 				if err := b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); err != nil {
 					return index, false, nil, err
 				}
+				if b.jitGen != blockGeneration {
+					return index + 1, false, nil, nil
+				}
 			case 2:
 				if err := b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); err != nil {
 					return index, false, nil, err
+				}
+				if b.jitGen != blockGeneration {
+					return index + 1, false, nil, nil
 				}
 			case 3:
 				value, hit := byte(0), false
@@ -360,9 +372,15 @@ func (b *Backend) executeThumbApplicationMicroBlock(block *jitBlock, blockInstru
 				if err := b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); err != nil {
 					return index, false, nil, err
 				}
+				if b.jitGen != blockGeneration {
+					return index + 1, false, nil, nil
+				}
 			default:
 				if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
 					return index, false, nil, err
+				}
+				if b.jitGen != blockGeneration {
+					return index + 1, false, nil, nil
 				}
 			}
 
@@ -386,8 +404,13 @@ func (b *Backend) executeThumbApplicationMicroBlock(block *jitBlock, blockInstru
 					}
 				}
 				b.regs[rd] = uint32(value)
-			} else if err := b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); err != nil {
-				return index, false, nil, err
+			} else {
+				if err := b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); err != nil {
+					return index, false, nil, err
+				}
+				if b.jitGen != blockGeneration {
+					return index + 1, false, nil, nil
+				}
 			}
 
 		case thumbStackTransfer:
@@ -408,8 +431,13 @@ func (b *Backend) executeThumbApplicationMicroBlock(block *jitBlock, blockInstru
 					}
 				}
 				b.regs[rd] = value
-			} else if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
-				return index, false, nil, err
+			} else {
+				if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
+					return index, false, nil, err
+				}
+				if b.jitGen != blockGeneration {
+					return index + 1, false, nil, nil
+				}
 			}
 
 		case thumbAdjustStack:
@@ -444,6 +472,9 @@ func (b *Backend) executeThumbApplicationMicroBlock(block *jitBlock, blockInstru
 				}
 			}
 			b.regs[cpu.RegisterSP] = start
+			if b.jitGen != blockGeneration {
+				return index + 1, false, nil, nil
+			}
 
 		case thumbPop:
 			registers := uint16(instruction & 0xff)
@@ -530,6 +561,9 @@ func (b *Backend) executeThumbApplicationMicroBlock(block *jitBlock, blockInstru
 			if !load || registers&(1<<rb) == 0 {
 				b.regs[rb] = base + (address - first)
 			}
+			if !load && b.jitGen != blockGeneration {
+				return index + 1, false, nil, nil
+			}
 
 		case thumbConditionalBranch:
 			condition := uint8(instruction>>8) & 0xf
@@ -538,6 +572,29 @@ func (b *Backend) executeThumbApplicationMicroBlock(block *jitBlock, blockInstru
 				b.regs[cpu.RegisterPC] = uint32(int32(pc+4) + offset)
 				return index + 1, true, nil, nil
 			}
+
+		case thumbLongBranch:
+
+			suffix, err := b.fetch16(pc + 2)
+			if err != nil {
+				return index, false, nil, err
+			}
+			high := int32(instruction & 0x7ff)
+			if high&(1<<10) != 0 {
+				high |= ^int32(0x7ff)
+			}
+			if suffix&0xf801 == 0xe800 {
+				target := uint32(int32((pc+4)&^uint32(3))+(high<<12)) + uint32(suffix&0x7fe)*2
+				b.regs[cpu.RegisterLR] = (pc + 4) | 1
+				b.branchExchange(target)
+				return index + 1, true, nil, nil
+			}
+			if suffix&0xf800 != 0xf800 {
+				return index, false, nil, b.unsupportedThumb(pc, instruction)
+			}
+			b.regs[cpu.RegisterLR] = (pc + 4) | 1
+			b.regs[cpu.RegisterPC] = uint32(int32(pc+4)+(high<<12)) + uint32(suffix&0x7ff)*2
+			return index + 1, true, nil, nil
 
 		case thumbUnconditionalBranch:
 			offset := int32(instruction & 0x7ff)
@@ -553,6 +610,242 @@ func (b *Backend) executeThumbApplicationMicroBlock(block *jitBlock, blockInstru
 
 		default:
 			return index, false, nil, b.unsupportedThumb(pc, instruction)
+		case thumbShiftImmediate + thumbDeadFlagsOffset:
+			const flagsLive = false
+			op := uint32(instruction>>11) & 3
+			shift := uint32(instruction>>6) & 0x1f
+			rs := uint32(instruction>>3) & 7
+			rd := uint32(instruction) & 7
+			value := b.regs[rs]
+			var result uint32
+			var carry bool
+			switch op {
+			case 0:
+				if shift == 0 {
+					result = value
+					carry = b.carry()
+				} else {
+					result = value << shift
+					carry = value&(uint32(1)<<(32-shift)) != 0
+				}
+			case 1:
+				if shift == 0 {
+					result = 0
+					carry = value&flagN != 0
+				} else {
+					result = value >> shift
+					carry = value&(uint32(1)<<(shift-1)) != 0
+				}
+			case 2:
+				if shift == 0 {
+					carry = value&flagN != 0
+					if carry {
+						result = ^uint32(0)
+					}
+				} else {
+					result = uint32(int32(value) >> shift)
+					carry = value&(uint32(1)<<(shift-1)) != 0
+				}
+			default:
+				return index, false, nil, b.unsupportedThumb(pc, instruction)
+			}
+			b.regs[rd] = result
+			if flagsLive {
+				b.setNZC(result, carry)
+			}
+		case thumbMoveImmediate + thumbDeadFlagsOffset:
+			const flagsLive = false
+			rd := uint32(instruction>>8) & 7
+			value := uint32(instruction & 0xff)
+			b.regs[rd] = value
+			if flagsLive {
+				b.setNZ(value)
+			}
+		case thumbCompareImmediate + thumbDeadFlagsOffset:
+			const flagsLive = false
+			rd := uint32(instruction>>8) & 7
+			result, carry, overflow := addWithLiveFlags(b.regs[rd], ^uint32(instruction&0xff), 1, flagsLive)
+			if flagsLive {
+				b.setNZCV(result, carry, overflow)
+			}
+		case thumbAddImmediate + thumbDeadFlagsOffset:
+			const flagsLive = false
+			rd := uint32(instruction>>8) & 7
+			result, carry, overflow := addWithLiveFlags(b.regs[rd], uint32(instruction&0xff), 0, flagsLive)
+			b.regs[rd] = result
+			if flagsLive {
+				b.setNZCV(result, carry, overflow)
+			}
+		case thumbSubtractImmediate + thumbDeadFlagsOffset:
+			const flagsLive = false
+			rd := uint32(instruction>>8) & 7
+			result, carry, overflow := addWithLiveFlags(b.regs[rd], ^uint32(instruction&0xff), 1, flagsLive)
+			b.regs[rd] = result
+			if flagsLive {
+				b.setNZCV(result, carry, overflow)
+			}
+		case thumbAddSubtract + thumbDeadFlagsOffset:
+			const flagsLive = false
+			immediate := instruction&(1<<10) != 0
+			subtract := instruction&(1<<9) != 0
+			rnOrImmediate := uint32(instruction>>6) & 7
+			rs := uint32(instruction>>3) & 7
+			rd := uint32(instruction) & 7
+			right := rnOrImmediate
+			if !immediate {
+				right = b.regs[rnOrImmediate]
+			}
+			var result uint32
+			var carry, overflow bool
+			if subtract {
+				result, carry, overflow = addWithLiveFlags(b.regs[rs], ^right, 1, flagsLive)
+			} else {
+				result, carry, overflow = addWithLiveFlags(b.regs[rs], right, 0, flagsLive)
+			}
+			b.regs[rd] = result
+			if flagsLive {
+				b.setNZCV(result, carry, overflow)
+			}
+		case thumbALU + thumbDeadFlagsOffset:
+			const flagsLive = false
+			op := (instruction >> 6) & 0xf
+			rs := uint32(instruction>>3) & 7
+			rd := uint32(instruction) & 7
+			left, right := b.regs[rd], b.regs[rs]
+			switch op {
+			case 0x0:
+				b.regs[rd] = left & right
+				if flagsLive {
+					b.setNZ(b.regs[rd])
+				}
+			case 0x1:
+				b.regs[rd] = left ^ right
+				if flagsLive {
+					b.setNZ(b.regs[rd])
+				}
+			case 0x2:
+				result, carry := shiftLSL(left, uint8(right), b.carry())
+				b.regs[rd] = result
+				if flagsLive {
+					b.setNZC(result, carry)
+				}
+			case 0x3:
+				result, carry := shiftLSR(left, uint8(right), b.carry())
+				b.regs[rd] = result
+				if flagsLive {
+					b.setNZC(result, carry)
+				}
+			case 0x4:
+				result, carry := shiftASR(left, uint8(right), b.carry())
+				b.regs[rd] = result
+				if flagsLive {
+					b.setNZC(result, carry)
+				}
+			case 0x5:
+				carryIn := uint32(0)
+				if b.carry() {
+					carryIn = 1
+				}
+				result, carry, overflow := addWithLiveFlags(left, right, carryIn, flagsLive)
+				b.regs[rd] = result
+				if flagsLive {
+					b.setNZCV(result, carry, overflow)
+				}
+			case 0x6:
+				carryIn := uint32(0)
+				if b.carry() {
+					carryIn = 1
+				}
+				result, carry, overflow := addWithLiveFlags(left, ^right, carryIn, flagsLive)
+				b.regs[rd] = result
+				if flagsLive {
+					b.setNZCV(result, carry, overflow)
+				}
+			case 0x7:
+				result, carry := shiftROR(left, uint8(right), b.carry())
+				b.regs[rd] = result
+				if flagsLive {
+					b.setNZC(result, carry)
+				}
+			case 0x8:
+				if flagsLive {
+					b.setNZ(left & right)
+				}
+			case 0x9:
+				result, carry, overflow := addWithLiveFlags(0, ^right, 1, flagsLive)
+				b.regs[rd] = result
+				if flagsLive {
+					b.setNZCV(result, carry, overflow)
+				}
+			case 0xa:
+				result, carry, overflow := addWithLiveFlags(left, ^right, 1, flagsLive)
+				if flagsLive {
+					b.setNZCV(result, carry, overflow)
+				}
+			case 0xb:
+				result, carry, overflow := addWithLiveFlags(left, right, 0, flagsLive)
+				if flagsLive {
+					b.setNZCV(result, carry, overflow)
+				}
+			case 0xc:
+				b.regs[rd] = left | right
+				if flagsLive {
+					b.setNZ(b.regs[rd])
+				}
+			case 0xd:
+				b.regs[rd] = left * right
+				if flagsLive {
+					b.setNZ(b.regs[rd])
+				}
+			case 0xe:
+				b.regs[rd] = left &^ right
+				if flagsLive {
+					b.setNZ(b.regs[rd])
+				}
+			case 0xf:
+				b.regs[rd] = ^right
+				if flagsLive {
+					b.setNZ(b.regs[rd])
+				}
+			}
+		case thumbHighRegister + thumbDeadFlagsOffset:
+			const flagsLive = false
+			op := (instruction >> 8) & 3
+			rs := uint32(instruction>>3)&7 | uint32(instruction>>6)&1<<3
+			rd := uint32(instruction)&7 | uint32(instruction>>7)&1<<3
+			switch op {
+			case 0:
+				result := b.readOperandRegister(rd, pc, cpu.ModeThumb) +
+					b.readOperandRegister(rs, pc, cpu.ModeThumb)
+				if rd == cpu.RegisterPC {
+					result &^= 1
+				}
+				b.regs[rd] = result
+			case 1:
+				result, carry, overflow := addWithLiveFlags(
+					b.readOperandRegister(rd, pc, cpu.ModeThumb),
+					^b.readOperandRegister(rs, pc, cpu.ModeThumb), 1, flagsLive,
+				)
+				if flagsLive {
+					b.setNZCV(result, carry, overflow)
+				}
+			case 2:
+				result := b.readOperandRegister(rs, pc, cpu.ModeThumb)
+				if rd == cpu.RegisterPC {
+					result &^= 1
+				}
+				b.regs[rd] = result
+			case 3:
+				target := b.readOperandRegister(rs, pc, cpu.ModeThumb)
+				if instruction&(1<<7) != 0 {
+					b.regs[cpu.RegisterLR] = (pc + 2) | 1
+				}
+				b.branchExchange(target)
+			}
+			if op == 3 || op != 1 && rd == cpu.RegisterPC {
+				return index + 1, true, nil, nil
+			}
+
 		}
 	}
 	return blockInstructions, false, nil, nil

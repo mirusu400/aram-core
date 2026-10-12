@@ -92,11 +92,18 @@ type nativeKey struct {
 	descriptor string
 }
 
+type resolvedField struct {
+	owner string
+	key   string
+}
+
 type VM struct {
-	nativePolicy NativePolicy
-	classes      map[string]*runtimeClass
-	fieldOwners  map[Reference]string
-	heap         map[uint32]*Object
+	nativePolicy      NativePolicy
+	classes           map[string]*runtimeClass
+	fieldOwners       map[Reference]resolvedField
+	methodDescriptors map[string]methodDescriptor
+	framePool         []*frame
+	heap              map[uint32]*Object
 	// threadObjects is a derived index, rebuilt on load and pruned by guest GC.
 	// Scheduler and paint checks must scale with threads, not the entire heap.
 	threadObjects    map[uint32]*Object
@@ -195,7 +202,7 @@ func NewWithNativePolicy(classData map[string][]byte, services *shared.Services,
 	vm := &VM{
 		nativePolicy:     policy,
 		classes:          make(map[string]*runtimeClass, len(classData)),
-		fieldOwners:      make(map[Reference]string),
+		fieldOwners:      make(map[Reference]resolvedField),
 		heap:             make(map[uint32]*Object),
 		nextReference:    1,
 		natives:          make(map[nativeKey]NativeFunc),
@@ -1291,14 +1298,8 @@ func (vm *VM) resolveDeclaredMethod(
 func (vm *VM) resolveVirtualMethod(
 	className, name, descriptor string,
 ) (*Class, Method, error) {
-	for current := className; current != ""; current = vm.superName(current) {
-		runtime, ok := vm.classes[current]
-		if !ok {
-			continue
-		}
-		if method, exists := runtime.class.Method(name, descriptor); exists {
-			return runtime.class, method, nil
-		}
+	if class, method, ok := vm.lookupVirtualMethod(className, name, descriptor); ok {
+		return class, method, nil
 	}
 	return nil, Method{}, fmt.Errorf(
 		"%w: %s.%s%s",
@@ -1307,6 +1308,23 @@ func (vm *VM) resolveVirtualMethod(
 		name,
 		descriptor,
 	)
+}
+
+// Invocation falls back to host natives when no guest method is present.
+// Answer that routine miss without building an error that it would discard.
+func (vm *VM) lookupVirtualMethod(
+	className, name, descriptor string,
+) (*Class, Method, bool) {
+	for current := className; current != ""; current = vm.superName(current) {
+		runtime, ok := vm.classes[current]
+		if !ok {
+			continue
+		}
+		if method, exists := runtime.class.Method(name, descriptor); exists {
+			return runtime.class, method, true
+		}
+	}
+	return nil, Method{}, false
 }
 
 func (vm *VM) superName(className string) string {
@@ -1351,8 +1369,12 @@ func fieldStorageKey(class, name, descriptor string) string {
 // fieldOwner resolves the declaring class of a Fieldref. Java bytecode may
 // name a subclass while the field is stored in its superclass or interface.
 func (vm *VM) fieldOwner(reference Reference) string {
-	if owner, ok := vm.fieldOwners[reference]; ok {
-		return owner
+	return vm.resolveField(reference).owner
+}
+
+func (vm *VM) resolveField(reference Reference) resolvedField {
+	if resolved, ok := vm.fieldOwners[reference]; ok {
+		return resolved
 	}
 	visited := make(map[string]bool)
 	var find func(string) string
@@ -1383,10 +1405,11 @@ func (vm *VM) fieldOwner(reference Reference) string {
 		owner = reference.Class
 	}
 	if vm.fieldOwners == nil {
-		vm.fieldOwners = make(map[Reference]string)
+		vm.fieldOwners = make(map[Reference]resolvedField)
 	}
-	vm.fieldOwners[reference] = owner
-	return owner
+	resolved := resolvedField{owner: owner, key: fieldStorageKey(owner, reference.Name, reference.Descriptor)}
+	vm.fieldOwners[reference] = resolved
+	return resolved
 }
 
 func defaultHostSupers() map[string]string {

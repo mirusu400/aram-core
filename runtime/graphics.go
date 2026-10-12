@@ -230,7 +230,7 @@ type Graphics struct {
 	// frame on each of them spent an eighth of the emulator's CPU on a digest
 	// nobody read.
 	lastFrameHashed bool
-	// bulkFastPathCalls counts the Clear and blit calls served by the row-copy
+	// bulkFastPathCalls counts the Clear, rectangle and blit calls served by the row-copy
 	// paths in graphics_bulk.go. It is diagnostic only and is not part of the
 	// saved state: the two paths write the same bytes, so tests need a counter
 	// rather than an output comparison to tell which one ran.

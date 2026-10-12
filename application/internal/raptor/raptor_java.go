@@ -91,6 +91,40 @@ type raptorJavaMethod struct {
 	Name       string
 	descriptor string
 	isStatic   bool
+	compiled   *raptorJavaMethodPlan
+}
+
+// A linked method's descriptor and handler are immutable. Keep their decoded
+// host-side metadata with the method rather than rebuilding it on every trap.
+// This is a derived cache only; the save format still contains the four fields
+// above and rebuilds the plan on restore.
+type raptorJavaMethodPlan struct {
+	className, name, descriptor string
+	isStatic                    bool
+	signature, callName         string
+	argumentCount               int
+	returnsReference            bool
+	handler                     func(context.Context, *ktfrt.Runtime) (uint32, error)
+}
+
+func (method raptorJavaMethod) compile() raptorJavaMethod {
+	if plan := method.compiled; plan != nil && plan.className == method.className &&
+		plan.name == method.Name && plan.descriptor == method.descriptor && plan.isStatic == method.isStatic {
+		return method
+	}
+	arguments := raptorJavaDescriptorArgumentCount(method.descriptor)
+	if !method.isStatic {
+		arguments++
+	}
+	signature := method.className + "." + method.Name + method.descriptor
+	method.compiled = &raptorJavaMethodPlan{
+		className: method.className, name: method.Name, descriptor: method.descriptor,
+		isStatic: method.isStatic, signature: signature, callName: "RAPTOR.java." + signature,
+		argumentCount:    arguments,
+		returnsReference: raptorJavaDescriptorReturnsReference(method.descriptor),
+		handler:          ktfrt.HostJavaMethod(method.className, method.Name, method.descriptor),
+	}
+	return method
 }
 
 type raptorJavaFixedVirtualMethod struct {
@@ -477,7 +511,10 @@ type JavaRuntime struct {
 	ktfToLGT     map[uint32]uint32
 	initializing map[uint32]bool
 	scratch      uint32
-	jarPath      uint32
+	// WriteMemory consumes this buffer before invoking the host method, so a
+	// nested callback may reuse it without aliasing any caller arguments.
+	callData [16 * 4]byte
+	jarPath  uint32
 
 	// fieldOffsets and fieldNames remember where the linker published the
 	// module's field-offset table and which fields it covers, so a class that
@@ -817,7 +854,7 @@ func (r *Runtime) registerJavaHostMethod(method raptorJavaMethod) (uint32, error
 	}
 	id := java.nextMethod
 	java.nextMethod++
-	java.hostMethods[id] = method
+	java.hostMethods[id] = method.compile()
 	key := raptorImportKey{Module: raptorJavaHostModule, Ordinal: id}
 	stub, err := r.importStub(key)
 	// Synthetic Java methods are part of the resolved trampoline graph even
@@ -870,9 +907,9 @@ func (r *Runtime) dispatchJavaImport(
 			return guest.WIPIReturn{}, "RAPTOR.java.host", true,
 				fmt.Errorf("unknown Java host method %d", key.Ordinal)
 		}
+		method = method.compile()
 		result, err := r.callJavaHostMethod(ctx, method)
-		return result, "RAPTOR.java." + method.className + "." +
-			method.Name + method.descriptor, true, err
+		return result, method.compiled.callName, true, err
 	}
 	if key.Module == 508 || key.Module == 511 || key.Module == 513 {
 		if key.Ordinal == 3 {
@@ -1514,26 +1551,45 @@ func (r *Runtime) inspectRaptorJavaClass(
 
 func (r *Runtime) readRaptorJavaArguments(count int) ([]uint32, error) {
 	arguments := make([]uint32, count)
-	for index := range arguments {
-		if index < 4 {
+	if err := r.readRaptorJavaArgumentsInto(arguments); err != nil {
+		return nil, err
+	}
+	return arguments, nil
+}
+
+func (r *Runtime) readRaptorJavaArgumentsInto(arguments []uint32) error {
+	var stack uint32
+	if r.hostCallDepth != 0 {
+		frame := &r.hostCallFrames[r.hostCallDepth-1]
+		copy(arguments[:min(4, len(arguments))], frame.Registers[:4])
+		stack = frame.Registers[cpu.RegisterSP]
+	} else {
+		for index := 0; index < min(4, len(arguments)); index++ {
 			value, err := r.CPU.ReadRegister(cpu.RegisterR0 + uint32(index))
 			if err != nil {
-				return nil, err
+				return err
 			}
 			arguments[index] = value
-			continue
 		}
-		stack, err := r.CPU.ReadRegister(cpu.RegisterSP)
-		if err != nil {
-			return nil, err
+		if len(arguments) > 4 {
+			var err error
+			stack, err = r.CPU.ReadRegister(cpu.RegisterSP)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	for index := range arguments {
+		if index < 4 {
+			continue
 		}
 		value, err := r.Public.ReadU32(stack + uint32(index-4)*4)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		arguments[index] = value
 	}
-	return arguments, nil
+	return nil
 }
 
 func (r *Runtime) linkRaptorJavaClasses(java *JavaRuntime) error {

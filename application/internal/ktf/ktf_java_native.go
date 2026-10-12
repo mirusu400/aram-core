@@ -708,18 +708,15 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 	var detailedTraceCalls uint64
 	declaredClassName := className
 	declaresHostMethod := ktfHostSpecDeclaresJavaMethod(className, name, descriptor)
+	argumentWords := uint32(4)
+	if parameters, ok := ktfJavaParameterWords(descriptor); ok {
+		argumentWords = uint32(min(int(cpu.RegisterR12+1), max(4, parameters+2)))
+	}
 	return func(
 		ctx context.Context,
 		runtime *Runtime,
 	) (value uint32, returnedErr error) {
 		className := declaredClassName
-		argumentWords := uint32(4)
-		if parameters, ok := ktfJavaParameterWords(descriptor); ok {
-			argumentWords = uint32(min(
-				int(cpu.RegisterR12+1),
-				max(4, parameters+2),
-			))
-		}
 		scope, ownedScope, err := runtime.acquireHostCallScope(argumentWords)
 		if err != nil {
 			return 0, err

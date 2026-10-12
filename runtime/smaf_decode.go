@@ -107,6 +107,7 @@ type smafPCMVoice struct {
 	channel        int
 	keyNote        int
 	noteID         uint32
+	generation     uint64 // note-on identity for the length probe
 	gated          bool
 	velocity       float64
 	volume         float64
@@ -174,27 +175,9 @@ func decodeSMAFLazyPCM16(data []byte, sampleRate uint32) *decodedPCM {
 	if !decoder.parse(data) || !decoder.buildEvents() {
 		return nil
 	}
-	// Sample-only ATR clips are short and cheap to decode. Keeping them eager
-	// gives one-shot effects their exact natural length. FM score tracks are
-	// synthesized incrementally so starting a BGM never stalls the guest.
-	for _, track := range decoder.tracks {
-		if track.audio {
-			stream := newSMAFRenderStream(decoder)
-			samples := stream.renderUntil(nil, stream.end)
-			if len(samples) == 0 {
-				return nil
-			}
-			return &decodedPCM{
-				sampleRate: sampleRate,
-				channels:   2,
-				samples:    samples,
-				duration: time.Duration(
-					uint64(len(samples)/2) * uint64(time.Second) /
-						uint64(sampleRate),
-				),
-			}
-		}
-	}
+	// ATR is also used alongside long FM scores. The presence of an audio
+	// track says nothing about the score's length: use the same bounded eager
+	// path and exact natural-length probe as other scores.
 	return finishLazyScoreDecode(decoder, sampleRate, func() *smafDecoder {
 		probeDecoder := &smafDecoder{rate: sampleRate}
 		if !probeDecoder.parse(data) || !probeDecoder.buildEvents() {
@@ -1259,9 +1242,9 @@ func (stream *smafRenderStream) renderUntil(
 // end, where the last voice's envelopes go idle, which is usually well before
 // the release ceiling in stream.end.
 //
-// Voice retirement depends only on envelope state. The FM probe jumps between
-// events and envelope phase transitions, preserving the renderer's retirement
-// sample while avoiding a sample-by-sample pass through a long score.
+// The probe jumps between events and envelope phase transitions, preserving
+// each voice's retirement sample. Non-looping PCM voices keep the renderer's
+// exact source-position additions, without reconstructing their waveform.
 //
 // The stream is consumed: probing leaves it at its end, so the caller renders
 // from a fresh one.
@@ -1269,18 +1252,11 @@ func (stream *smafRenderStream) probeEnd() uint64 {
 	if stream == nil || stream.end == 0 {
 		return 0
 	}
-	// Sampled tracks can trigger PCM through ATR events or ordinary score
-	// notes. Keep their wave positions and gates on the exact sample loop;
-	// the event-driven walker only handles FM envelope state.
-	if stream.decoder.hasPCMWaves() {
-		stream.render(nil, stream.end, true)
-		return stream.cursor
-	}
 	if stream.cursor != 0 {
 		stream.render(nil, stream.end, true)
 		return stream.cursor
 	}
-	return stream.probeFMEnd()
+	return stream.probeEventEnd()
 }
 
 // render is the shared body. When silent is set it advances exactly the same

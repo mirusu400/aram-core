@@ -78,6 +78,10 @@ func (g *Graphics) Rectangle(
 		if count > g.limits.MaxPixels {
 			return fmt.Errorf("%w: rectangle exceeds raster work limit", ErrLimitExceeded)
 		}
+		if fillRectangleFastPath(current, rectangle, color) {
+			g.bulkFastPathCalls++
+			return nil
+		}
 		for y := int64(rectangle.Y); y < rectangle.Bottom(); y++ {
 			for x := int64(rectangle.X); x < rectangle.Right(); x++ {
 				if x < math.MinInt32 || x > math.MaxInt32 ||

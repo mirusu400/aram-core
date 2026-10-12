@@ -8,6 +8,27 @@ type valueType struct {
 	dimensions int
 }
 
+type methodDescriptor struct {
+	parameters []valueType
+	result     valueType
+	err        error
+}
+
+// Descriptors are immutable strings from the class pool. Their parsed types
+// are derived VM data, so save states need not store this cache and a restored
+// VM rebuilds it as calls resume. Parameters are read-only at all call sites.
+func (vm *VM) methodDescriptor(descriptor string) ([]valueType, valueType, error) {
+	if cached, ok := vm.methodDescriptors[descriptor]; ok {
+		return cached.parameters, cached.result, cached.err
+	}
+	parameters, result, err := parseMethodDescriptor(descriptor)
+	if vm.methodDescriptors == nil {
+		vm.methodDescriptors = make(map[string]methodDescriptor)
+	}
+	vm.methodDescriptors[descriptor] = methodDescriptor{parameters, result, err}
+	return parameters, result, err
+}
+
 func (t valueType) slots() int {
 	if t.dimensions == 0 && (t.kind == 'J' || t.kind == 'D') {
 		return 2

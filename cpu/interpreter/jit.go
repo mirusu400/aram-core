@@ -41,9 +41,10 @@ type jitInstr struct {
 }
 
 type thumbMicroInstr struct {
-	pc  uint32
-	raw uint16
-	op  thumbInstructionClass
+	pc    uint32
+	raw   uint16
+	op    thumbInstructionClass
+	appOp thumbInstructionClass
 }
 
 type jitCountedLoop struct {
@@ -98,6 +99,11 @@ type jitBlock struct {
 	instructionCacheEnabled bool
 	instructionCacheGen     uint32
 	instructionCacheGuards  []jitInstructionCacheGuard
+	// Application successors avoid re-entering the global block dispatcher at
+	// every short branch. The generation covers both code writes and mapping
+	// changes; physical/I-cache execution always uses the guarded dispatcher.
+	successorGen uint64
+	successors   [2]*jitBlock
 }
 
 type jitInstructionCacheGuard struct {
@@ -430,6 +436,7 @@ func (b *Backend) runThumbJIT(limit uint64) (uint64, *cpu.StopReason, error) {
 	wholeSystem := b.systemBus != nil
 	hasExecutionTraps := len(b.executionTraps) != 0
 	traced := b.tracing()
+	chainApplications := !wholeSystem && !traced && !b.physicalAccess
 outer:
 	for executed < limit {
 		if traced && b.stopped.Load() {
@@ -574,6 +581,7 @@ outer:
 			}
 		}
 		for {
+			blockGeneration := b.jitGen
 			blockInstructions := len(block.thumb)
 			if remaining := limit - executed; uint64(blockInstructions) > remaining {
 				blockInstructions = int(remaining)
@@ -585,7 +593,7 @@ outer:
 			var branched bool
 			var reason *cpu.StopReason
 			var err error
-			if !wholeSystem && !traced {
+			if !wholeSystem && !traced && blockInstructions == len(block.thumb) {
 				retired, branched, reason, err = b.executeThumbApplicationMicroBlock(block, blockInstructions)
 			} else {
 				retired, branched, reason, err = b.executeThumbMicroBlock(block, blockInstructions, wholeSystem, hasExecutionTraps, traced)
@@ -600,7 +608,7 @@ outer:
 			if b.mode != cpu.ModeThumb {
 				return executed, nil, nil
 			}
-			if !branched {
+			if !branched && !chainApplications {
 				break
 			}
 			// Application software spends much of its time in short pixel and
@@ -608,14 +616,49 @@ outer:
 			// start can execute again directly: Backend.Run already caps this
 			// call to one cancellation batch, while avoiding a block-cache
 			// lookup and outer dispatch on every guest loop iteration.
-			if !wholeSystem && executed < limit &&
+			if !wholeSystem && executed < limit && b.jitGen == blockGeneration &&
 				b.regs[cpu.RegisterPC] == block.start {
 				continue
+			}
+			if chainApplications && executed < limit {
+				pc := b.regs[cpu.RegisterPC]
+				var successor *jitBlock
+				if block.successorGen == b.jitGen {
+					if next := block.successors[0]; next != nil && next.start == pc {
+						successor = next
+					} else if next := block.successors[1]; next != nil && next.start == pc {
+						successor = next
+					}
+				}
+				if successor == nil {
+					successor = b.thumbApplicationSuccessor(block, pc)
+				}
+				if successor != nil {
+					block = successor
+					continue
+				}
 			}
 			continue outer
 		}
 	}
 	return executed, nil, nil
+}
+
+func (b *Backend) thumbApplicationSuccessor(from *jitBlock, pc uint32) *jitBlock {
+	next := b.jitBlockAt(pc)
+	// Accelerators own their instruction accounting and alias checks in the
+	// outer dispatcher. Never link around them, including when one declined
+	// acceleration for a previous register state.
+	if next == nil || next.countedLoop != nil || next.extraLoop != nil {
+		return nil
+	}
+	if from.successorGen != b.jitGen {
+		from.successors = [2]*jitBlock{}
+		from.successorGen = b.jitGen
+	}
+	from.successors[1] = from.successors[0]
+	from.successors[0] = next
+	return next
 }
 
 // jitBlockAt returns the translated block at pc, translating and caching on a
@@ -711,7 +754,10 @@ func (b *Backend) captureJITInstructionCacheGuards(start, end uint32) []jitInstr
 	}
 	privileged := b.currentlyPrivileged()
 	guards := make([]jitInstructionCacheGuard, 0, (end-start+instructionCacheLineSize-1)/instructionCacheLineSize)
-	for virtualLine := start &^ (instructionCacheLineSize - 1); virtualLine < end; virtualLine += instructionCacheLineSize {
+	// The last 32-byte line advances to 2^32, not back to zero. Keep the
+	// induction wide even when the block's exclusive end is representable.
+	for line := uint64(start &^ (instructionCacheLineSize - 1)); line < uint64(end); line += uint64(instructionCacheLineSize) {
+		virtualLine := uint32(line)
 		mvaLine := b.modifiedVirtualAddress(virtualLine) &^ (instructionCacheLineSize - 1)
 		entry := b.instructionCacheEntry(mvaLine)
 		if entry == nil || !entry.valid || entry.gen != b.mappingGen ||
@@ -834,8 +880,21 @@ func (b *Backend) translateThumbBlock(pc uint32) *jitBlock {
 		if !ok {
 			break
 		}
+		width := uint64(2)
+		if op == thumbLongBranch {
+			width = 4
+		}
+		if uint64(cur)+width >= 1<<32 {
+			// Even an exclusive end exactly at 2^32 is not representable
+			// by jitBlock.end. Leave this instruction to the precise fetch
+			// path so a wrapped span cannot escape code invalidation.
+			break
+		}
 		instrs = append(instrs, thumbMicroInstr{pc: cur, raw: word, op: op})
 		cur += 2
+		if op == thumbLongBranch {
+			cur += 2
+		}
 		if terminates {
 			break
 		}
@@ -844,6 +903,7 @@ func (b *Backend) translateThumbBlock(pc uint32) *jitBlock {
 		return nil
 	}
 	block := &jitBlock{start: pc, end: cur, thumb: instrs}
+	markDeadThumbFlags(instrs)
 	if b.systemBus == nil && len(instrs) == 5 && instrs[0].raw&0xf800 == 0x6800 {
 		if sequence := classifyThumbLoadMaskBranch(block); sequence != nil {
 			block.extraLoop = &jitExtraLoop{kind: jitLoadMaskBranch, loadMask: *sequence}

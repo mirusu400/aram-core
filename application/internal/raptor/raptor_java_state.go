@@ -84,8 +84,8 @@ func javaMethodToState(method raptorJavaMethod) javaMethodState {
 }
 
 func (method javaMethodState) runtimeMethod() raptorJavaMethod {
-	return raptorJavaMethod{className: method.ClassName, Name: method.Name,
-		descriptor: method.Descriptor, isStatic: method.Static}
+	return (raptorJavaMethod{className: method.ClassName, Name: method.Name,
+		descriptor: method.Descriptor, isStatic: method.Static}).compile()
 }
 
 func captureJavaState(java *JavaRuntime) (javaState, error) {

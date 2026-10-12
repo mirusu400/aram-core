@@ -415,7 +415,14 @@ func markValue(
 			return
 		}
 		switch value.Type().Elem().Kind() {
-		case reflect.Uint8, reflect.String, reflect.Bool:
+		case reflect.Uint32, reflect.Pointer, reflect.Interface, reflect.Struct,
+			reflect.Array, reflect.Slice, reflect.Map:
+			// Only these kinds can reach the Uint32 case above. In
+			// particular, Media retains decoded audio as []int16 and the
+			// synthesizer uses floating-point buffers. Walking every PCM
+			// sample only to discard it in this switch made a Java GC
+			// request cost proportional to already decoded music.
+		default:
 			return
 		}
 		for index := 0; index < value.Len(); index++ {

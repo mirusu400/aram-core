@@ -75,35 +75,48 @@ func TestKTFSaveCarriesImagesWithNoMirror(t *testing.T) {
 }
 
 func TestKTFRestoreDropsDerivedBlitCaches(t *testing.T) {
-	runtime := newTestRuntime(t)
-	runtime.JvmContext = allocWords(t, runtime, 3+128)
-	source := image.NewNRGBA(image.Rect(0, 0, 1, 1))
-	source.SetNRGBA(0, 0, color.NRGBA{R: 100, A: 128})
-	object, err := runtime.newJavaImage(source)
-	check(t, err)
-	target := image.NewRGBA(source.Bounds())
-	runtime.drawKTFJavaImageRaw(
-		&ktfGraphics{Target: target, clip: target.Bounds()},
-		object,
-		source,
-		0,
-		0,
-		0,
-	)
-	if len(runtime.blitCaches) != 1 {
-		t.Fatal("fixture did not populate the derived blit cache")
-	}
+	for _, test := range []struct {
+		name   string
+		alpha  uint8
+		opaque bool
+	}{{"partial", 128, false}, {"opaque", 255, true}} {
+		t.Run(test.name, func(t *testing.T) {
+			runtime := newTestRuntime(t)
+			runtime.JvmContext = allocWords(t, runtime, 3+128)
+			source := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+			source.SetNRGBA(0, 0, color.NRGBA{R: 100, A: test.alpha})
+			object, err := runtime.newJavaImage(source)
+			check(t, err)
+			target := image.NewRGBA(source.Bounds())
+			runtime.drawKTFJavaImageRaw(
+				&ktfGraphics{Target: target, clip: target.Bounds()},
+				object, source, 0, 0, 0,
+			)
+			cache := runtime.blitCaches[object]
+			if len(runtime.blitCaches) != 1 || cache == nil || (cache.opaque != nil) != test.opaque {
+				t.Fatal("fixture did not populate the expected derived blit cache")
+			}
 
-	var buffer bytes.Buffer
-	writer := guest.NewStateWriter(&buffer)
-	check(t, WriteState(runtime, runtime.CPU, true, writer))
-	decoder := guest.StateDecoder{Reader: bytes.NewReader(buffer.Bytes())}
-	saved, err := ParseState(runtime, &decoder)
-	check(t, err)
-	started := false
-	check(t, RestoreState(runtime, runtime.CPU, saved, &started))
-	if len(runtime.blitCaches) != 0 {
-		t.Fatalf("restore retained %d derived blit cache entries", len(runtime.blitCaches))
+			var buffer bytes.Buffer
+			writer := guest.NewStateWriter(&buffer)
+			check(t, WriteState(runtime, runtime.CPU, true, writer))
+			decoder := guest.StateDecoder{Reader: bytes.NewReader(buffer.Bytes())}
+			saved, err := ParseState(runtime, &decoder)
+			check(t, err)
+			started := false
+			check(t, RestoreState(runtime, runtime.CPU, saved, &started))
+			if len(runtime.blitCaches) != 0 {
+				t.Fatalf("restore retained %d derived blit cache entries", len(runtime.blitCaches))
+			}
+			restoredTarget := image.NewRGBA(source.Bounds())
+			runtime.drawKTFJavaImageRaw(
+				&ktfGraphics{Target: restoredTarget, clip: restoredTarget.Bounds()},
+				object, runtime.images[object], 0, 0, 0,
+			)
+			if !bytes.Equal(restoredTarget.Pix, target.Pix) {
+				t.Fatal("restored image drew different pixels after dropping its cache")
+			}
+		})
 	}
 }
 

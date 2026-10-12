@@ -797,7 +797,7 @@ func (r *Runtime) drawKTFJavaImageRaw(
 	r.markKTFGraphicsDirty(state)
 }
 
-// ktfBlitCache holds the 16-bit premultiplied intermediate that
+// ktfBlitCache holds opaque RGBA rows or the 16-bit premultiplied intermediate that
 // image/draw.drawNRGBAOver recomputes from an *image.NRGBA source on every
 // single blit (issue #217). That conversion - straight alpha to premultiplied
 // - depends only on the source pixel, so for a sprite nothing has mutated
@@ -812,14 +812,16 @@ func (r *Runtime) drawKTFJavaImageRaw(
 // Every one of those values is <= 0xffff (sa tops out at 255*0x101, and
 // sr/sg/sb are bounded by sa), so uint16 carries them with no truncation:
 // the cache is exact, not an approximation. That is 8 bytes/pixel versus the
-// 4 the *image.NRGBA source itself already costs.
+// 4 the *image.NRGBA source itself already costs. Fully opaque sources only
+// need the four-byte representation in opaque, since no composite remains.
 type ktfBlitCache struct {
-	pix  []uint16
-	w, h int
+	pix    []uint16
+	opaque []byte
+	w, h   int
 }
 
-// newKTFBlitCache runs step 1 of drawNRGBAOver's inner loop - and only step
-// 1 - once per source pixel, mirroring its arithmetic exactly (uint32(c)*
+// newKTFBlitCache copies opaque sources and otherwise runs step 1 of
+// drawNRGBAOver's inner loop once per source pixel (uint32(c)*
 // 0x101*a/0xff, in that order, including the intermediate truncation from
 // integer division) so the composite that reads the cache back stays bit
 // for bit identical to running drawNRGBAOver fresh every frame.
@@ -827,10 +829,21 @@ func newKTFBlitCache(source *image.NRGBA) *ktfBlitCache {
 	bounds := source.Bounds()
 	width, height := bounds.Dx(), bounds.Dy()
 	cache := &ktfBlitCache{
-		pix: make([]uint16, width*height*4),
-		w:   width,
-		h:   height,
+		w: width,
+		h: height,
 	}
+	// An opaque source's NRGBA bytes are already exactly the RGBA result of
+	// draw.Over. Keep that representation to copy rows on every subsequent
+	// draw, using half the storage of the intermediate alpha cache.
+	if source.Opaque() {
+		cache.opaque = make([]byte, width*height*4)
+		for row := 0; row < height; row++ {
+			start := source.PixOffset(bounds.Min.X, bounds.Min.Y+row)
+			copy(cache.opaque[row*width*4:(row+1)*width*4], source.Pix[start:start+width*4])
+		}
+		return cache
+	}
+	cache.pix = make([]uint16, width*height*4)
 	for row := 0; row < height; row++ {
 		srcOffset := source.PixOffset(bounds.Min.X, bounds.Min.Y+row)
 		srcRow := source.Pix[srcOffset : srcOffset+width*4]
@@ -870,6 +883,14 @@ func drawKTFBlitOverCached(
 	cacheOrigin image.Point,
 ) {
 	width := rect.Dx()
+	if cache.opaque != nil {
+		for row := 0; row < rect.Dy(); row++ {
+			dstOffset := dst.PixOffset(rect.Min.X, rect.Min.Y+row)
+			srcOffset := ((cacheOrigin.Y+row)*cache.w + cacheOrigin.X) * 4
+			copy(dst.Pix[dstOffset:dstOffset+width*4], cache.opaque[srcOffset:srcOffset+width*4])
+		}
+		return
+	}
 	for row := 0; row < rect.Dy(); row++ {
 		dstOffset := dst.PixOffset(rect.Min.X, rect.Min.Y+row)
 		dpix := dst.Pix[dstOffset : dstOffset+width*4]
@@ -878,7 +899,14 @@ func drawKTFBlitOverCached(
 		for column := 0; column < width; column++ {
 			s := spix[column*4 : column*4+4 : column*4+4]
 			sr, sg, sb, sa := uint32(s[0]), uint32(s[1]), uint32(s[2]), uint32(s[3])
+			if sa == 0 {
+				continue
+			}
 			d := dpix[column*4 : column*4+4 : column*4+4]
+			if sa == ktfBlitCompositeM {
+				d[0], d[1], d[2], d[3] = uint8(sr>>8), uint8(sg>>8), uint8(sb>>8), 255
+				continue
+			}
 			dr := uint32(d[0])
 			dg := uint32(d[1])
 			db := uint32(d[2])

@@ -22,15 +22,17 @@ func TestSurfaceRGBAFastPathsMatchGeneric(t *testing.T) {
 		PixelRGB565,
 		PixelRGB555,
 		PixelGray8,
+		PixelIndexed8,
 	} {
 		for _, padding := range []int32{0, 3} {
 			stride := int32(width)*int32(format.BytesPerPixel()) + padding
 			current := &surface{
 				descriptor: SurfaceDescriptor{
-					Width:  width,
-					Height: height,
-					Stride: stride,
-					Format: format,
+					Width:   width,
+					Height:  height,
+					Stride:  stride,
+					Format:  format,
+					Palette: bulkPalette(format),
 				},
 				pixels: make([]byte, int(stride)*height),
 			}
@@ -49,7 +51,47 @@ func TestSurfaceRGBAFastPathsMatchGeneric(t *testing.T) {
 					padding,
 				)
 			}
+			for _, band := range [][2]int{{0, height}, {1, 3}, {-4, 2}, {4, 20}, {3, 3}} {
+				top, bottom := max(band[0], 0), min(band[1], height)
+				buffer := make([]byte, width*height*4)
+				rows, err := surfaceRGBARowsInto(current, band[0], band[1], buffer)
+				check(t, err)
+				if !bytes.Equal(rows, want[top*width*4:bottom*width*4]) {
+					t.Fatalf("format %d padding %d band %v differs from generic", format, padding, band)
+				}
+			}
 		}
+	}
+}
+
+func BenchmarkSurfaceRGBAConversion(b *testing.B) {
+	for _, format := range []PixelFormat{PixelBGRX8888, PixelARGB8888, PixelRGB565, PixelIndexed8} {
+		b.Run(string(rune('0'+format)), func(b *testing.B) {
+			current := bulkSurface(b, 240, 320, 7, format)
+			buffer := make([]byte, 240*320*4)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for n := 0; n < b.N; n++ {
+				_, err := surfaceRGBAInto(current, buffer)
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func TestSurfaceRGBAIndexedMissingEntriesStayTransparent(t *testing.T) {
+	current := bulkSurface(t, 7, 5, 3, PixelIndexed8)
+	current.descriptor.Palette = []Color{{R: 30, G: 80, B: 120, A: 129}, RGB(3, 4, 5)}
+	for i := range current.pixels {
+		current.pixels[i] = byte(i % 4)
+	}
+	buffer := bytes.Repeat([]byte{255}, 7*5*4)
+	got, err := surfaceRGBAInto(current, buffer)
+	check(t, err)
+	if !bytes.Equal(got, genericSurfaceRGBA(current)) {
+		t.Fatal("short palette changed missing indices or palette alpha")
 	}
 }
 

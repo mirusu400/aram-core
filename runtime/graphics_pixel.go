@@ -183,6 +183,69 @@ func surfaceRGBARowsInto(
 			copy(rgba[offset:offset+width*4], current.pixels[row:row+width*4])
 		}
 		return rgba, nil
+	case PixelARGB8888, PixelXRGB8888:
+		// Both place RGB in bytes 1..3. XRGB supplies an opaque alpha;
+		// ARGB keeps byte 0. Choose the alpha rule once for the whole band.
+		alphaMask, alphaSet := byte(0), byte(255)
+		if current.descriptor.Format == PixelARGB8888 {
+			alphaMask, alphaSet = 255, 0
+		}
+		for y := top; y < bottom; y++ {
+			row := current.pixels[y*stride : y*stride+width*4]
+			out := rgba[(y-top)*width*4 : (y-top+1)*width*4]
+			for x := 0; x < len(row); x += 4 {
+				s, d := row[x:x+4:x+4], out[x:x+4:x+4]
+				d[0], d[1], d[2], d[3] = s[1], s[2], s[3], s[0]&alphaMask|alphaSet
+			}
+		}
+		return rgba, nil
+	case PixelBGRX8888:
+		for y := top; y < bottom; y++ {
+			row := current.pixels[y*stride : y*stride+width*4]
+			out := rgba[(y-top)*width*4 : (y-top+1)*width*4]
+			for x := 0; x < len(row); x += 4 {
+				s, d := row[x:x+4:x+4], out[x:x+4:x+4]
+				d[0], d[1], d[2], d[3] = s[2], s[1], s[0], 255
+			}
+		}
+		return rgba, nil
+	case PixelRGB555:
+		for y := top; y < bottom; y++ {
+			row := current.pixels[y*stride : y*stride+width*2]
+			out := rgba[(y-top)*width*4 : (y-top+1)*width*4]
+			for x := 0; x < width; x++ {
+				value := binary.LittleEndian.Uint16(row[x*2:])
+				d := out[x*4 : x*4+4 : x*4+4]
+				d[0], d[1], d[2], d[3] = expand5(uint8(value>>10)&31),
+					expand5(uint8(value>>5)&31), expand5(uint8(value)&31), 255
+			}
+		}
+		return rgba, nil
+	case PixelGray8:
+		for y := top; y < bottom; y++ {
+			row := current.pixels[y*stride : y*stride+width]
+			out := rgba[(y-top)*width*4 : (y-top+1)*width*4]
+			for x, value := range row {
+				d := out[x*4 : x*4+4 : x*4+4]
+				d[0], d[1], d[2], d[3] = value, value, value, 255
+			}
+		}
+		return rgba, nil
+	case PixelIndexed8:
+		// Out-of-range indices decode as zero. A full byte-sized table keeps
+		// that behavior while avoiding a palette bound check per pixel.
+		var palette [256]Color
+		copy(palette[:], current.descriptor.Palette)
+		for y := top; y < bottom; y++ {
+			row := current.pixels[y*stride : y*stride+width]
+			out := rgba[(y-top)*width*4 : (y-top+1)*width*4]
+			for x, index := range row {
+				color := palette[index]
+				d := out[x*4 : x*4+4 : x*4+4]
+				d[0], d[1], d[2], d[3] = color.R, color.G, color.B, color.A
+			}
+		}
+		return rgba, nil
 	}
 	for y := top; y < bottom; y++ {
 		for x := 0; x < width; x++ {
@@ -198,59 +261,7 @@ func surfaceRGBARowsInto(
 }
 
 func surfaceRGBAInto(current *surface, destination []byte) ([]byte, error) {
-	pixelCount := uint64(current.descriptor.Width) * uint64(current.descriptor.Height)
-	if pixelCount > uint64(math.MaxInt/4) {
-		return nil, fmt.Errorf("%w: RGBA conversion exceeds host address space", ErrLimitExceeded)
-	}
-	size := int(pixelCount) * 4
-	var rgba []byte
-	if cap(destination) < size {
-		rgba = make([]byte, size)
-	} else {
-		rgba = destination[:size]
-	}
-	width := int(current.descriptor.Width)
-	height := int(current.descriptor.Height)
-	stride := int(current.descriptor.Stride)
-	// The format is a property of the surface, not of the pixel, so it is
-	// decided once here instead of inside decodeSurfaceColor for every pixel of
-	// every presented frame. The two cases below are the ones the handset
-	// profiles use - RGB565 is the KTF screen and RGBA8888 needs no conversion
-	// at all - and both compute exactly what the general loop computed.
-	switch current.descriptor.Format {
-	case PixelRGB565:
-		for y := 0; y < height; y++ {
-			row := y * stride
-			offset := y * width * 4
-			for x := 0; x < width; x++ {
-				value := binary.LittleEndian.Uint16(current.pixels[row+x*2:])
-				rgba[offset+0] = expand5(uint8((value >> 11) & 0x1f))
-				rgba[offset+1] = expand6(uint8((value >> 5) & 0x3f))
-				rgba[offset+2] = expand5(uint8(value & 0x1f))
-				rgba[offset+3] = 0xff
-				offset += 4
-			}
-		}
-		return rgba, nil
-	case PixelRGBA8888:
-		for y := 0; y < height; y++ {
-			row := y * stride
-			offset := y * width * 4
-			copy(rgba[offset:offset+width*4], current.pixels[row:row+width*4])
-		}
-		return rgba, nil
-	}
-	for y := int32(0); y < current.descriptor.Height; y++ {
-		for x := int32(0); x < current.descriptor.Width; x++ {
-			color := decodeSurfaceColor(current, x, y)
-			offset := (int(y)*int(current.descriptor.Width) + int(x)) * 4
-			rgba[offset+0] = color.R
-			rgba[offset+1] = color.G
-			rgba[offset+2] = color.B
-			rgba[offset+3] = color.A
-		}
-	}
-	return rgba, nil
+	return surfaceRGBARowsInto(current, 0, int(current.descriptor.Height), destination)
 }
 
 func decodeSurfaceColor(current *surface, x, y int32) Color {

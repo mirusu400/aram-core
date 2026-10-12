@@ -201,21 +201,73 @@ func smafEnvelopeLevelConstant(envelope smafEnvelope) bool {
 	return false
 }
 
-func (stream *smafRenderStream) probeFMEnd() uint64 {
+// advancePCMLength follows only the state that can retire a sampled voice.
+// Waveform reconstruction, pan and filtering cannot affect retirement. A
+// looping wave is bounded by its amplitude envelope; a one-shot retains the
+// renderer's exact repeated floating-point additions to its source position.
+func advancePCMLength(voice *smafPCMVoice, envelope *smafLengthEnvelope, samples uint64) uint64 {
+	if samples == 0 || !voice.active {
+		return 0
+	}
+	end := voice.end
+	if end == 0 {
+		end = len(voice.pcm) / max(1, voice.channels)
+	}
+	if end <= 0 || voice.kernel == nil {
+		voice.active = false
+		return 1
+	}
+	live := samples
+	if voice.sampled {
+		live = max(uint64(1), envelope.advance(samples))
+		voice.envelope = envelope.envelope
+		if voice.envelope.phase == smafEnvelopeIdle {
+			voice.active = false
+		}
+	}
+	if voice.loop {
+		// Loop position affects the sound but neither gates nor natural length.
+		return live
+	}
+	count := uint64(0)
+	position := voice.position
+	if voice.step == 0 && position < float64(end) {
+		return live
+	}
+	for count < live && position < float64(end) {
+		position += voice.step
+		count++
+	}
+	voice.position = position
+	if count < live {
+		voice.active = false
+		return count + 1
+	}
+	return live
+}
+
+func (stream *smafRenderStream) probeEventEnd() uint64 {
 	decoder := stream.decoder
 	var envelopes [32][4]smafLengthEnvelope
+	var pcmEnvelopes [16]smafLengthEnvelope
 	for stream.cursor < stream.end {
 		for stream.eventIndex < len(decoder.events) &&
 			decoder.events[stream.eventIndex].sample <= stream.cursor {
 			event := decoder.events[stream.eventIndex]
 			var generations [32]uint64
 			var phases [32][4]uint8
+			var pcmGenerations [16]uint64
+			var pcmPhases [16]uint8
 			for slot := range decoder.pool {
 				voice := &decoder.pool[slot]
 				generations[slot] = voice.generation
 				for index := range voice.operators {
 					phases[slot][index] = voice.operators[index].envelope.phase
 				}
+			}
+			for slot := range decoder.pcmPool {
+				voice := &decoder.pcmPool[slot]
+				pcmGenerations[slot], pcmPhases[slot] = voice.generation, voice.envelope.phase
 			}
 			decoder.fire(event)
 			// Pedal release, reset, and channel-mode messages can release several
@@ -232,6 +284,17 @@ func (stream *smafRenderStream) probeFMEnd() uint64 {
 					} else if envelope.phase != phases[slot][index] {
 						envelopes[slot][index].keyOff(envelope)
 					}
+				}
+			}
+			for slot := range decoder.pcmPool {
+				voice := &decoder.pcmPool[slot]
+				if !voice.active {
+					continue
+				}
+				if voice.generation != pcmGenerations[slot] {
+					pcmEnvelopes[slot] = newSMAFLengthEnvelope(voice.envelope)
+				} else if voice.envelope.phase != pcmPhases[slot] {
+					pcmEnvelopes[slot].keyOff(voice.envelope)
 				}
 			}
 			stream.eventIndex++
@@ -259,6 +322,9 @@ func (stream *smafRenderStream) probeFMEnd() uint64 {
 				voice.operators[index].envelope = envelopes[slot][index].envelope
 			}
 			voice.retireIfIdle(count)
+		}
+		for slot := range decoder.pcmPool {
+			lastActive = max(lastActive, advancePCMLength(&decoder.pcmPool[slot], &pcmEnvelopes[slot], remaining))
 		}
 		if stream.eventIndex == len(decoder.events) && lastActive < remaining {
 			// The renderer emits one idle sample after the last active tick.

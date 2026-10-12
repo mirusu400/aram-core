@@ -1,5 +1,7 @@
 package runtime
 
+import "math"
+
 // blitVisibleArea returns offsets into the original destination rectangle,
 // before translation. Keep these offsets when sampling a scaled source so
 // clipping cannot shift its nearest-neighbor mapping. int64 also handles a
@@ -72,13 +74,57 @@ func fillSurface(current *surface, color Color) {
 	rowBytes := width * len(pixel)
 	row := current.pixels[:rowBytes]
 	copy(row, pixel)
-	for filled := len(pixel); filled < rowBytes; filled *= 2 {
-		copy(row[filled:], row[:filled])
+	// Advance by the actual copy size so the final partial copy cannot overflow int.
+	for filled := len(pixel); filled < rowBytes; {
+		filled += copy(row[filled:], row[:filled])
 	}
 	for y := 1; y < height; y++ {
 		offset := y * stride
 		copy(current.pixels[offset:offset+rowBytes], row)
 	}
+}
+
+// fillRectangleFastPath resolves clipping and translation once, then repeats
+// the encoded color a row at a time. Only an opaque copy is independent of the
+// destination; all compositing and raster operations keep their pixel path.
+func fillRectangleFastPath(current *surface, rectangle Rectangle, color Color) bool {
+	if current.state.Raster != RasterCopy || color.A != 0xff ||
+		current.state.GlobalAlpha != 0xff || current.state.GlobalTransparency256 != 0 {
+		return false
+	}
+	if current.state.Transparency && current.descriptor.Transparent != nil &&
+		color == *current.descriptor.Transparent {
+		return true
+	}
+	// The raster loop skips coordinates beyond int32 before translating. A
+	// negative translation must not bring those skipped coordinates back in.
+	translateX, translateY := int64(current.state.TranslateX), int64(current.state.TranslateY)
+	left := max(int64(rectangle.X)+translateX, int64(current.state.Clip.X), 0)
+	top := max(int64(rectangle.Y)+translateY, int64(current.state.Clip.Y), 0)
+	right := min(min(rectangle.Right(), math.MaxInt32+1)+translateX,
+		current.state.Clip.Right(), int64(current.descriptor.Width))
+	bottom := min(min(rectangle.Bottom(), math.MaxInt32+1)+translateY,
+		current.state.Clip.Bottom(), int64(current.descriptor.Height))
+	if right <= left || bottom <= top {
+		return true
+	}
+	pixel := encodedPixel(current, color)
+	stride := int(current.descriptor.Stride)
+	rowBytes := int(right-left) * len(pixel)
+	start := int(top)*stride + int(left)*len(pixel)
+	row := current.pixels[start : start+rowBytes]
+	copy(row, pixel)
+	// Advance by the actual copy size so the final partial copy cannot overflow int.
+	for filled := len(pixel); filled < rowBytes; {
+		filled += copy(row[filled:], row[:filled])
+	}
+	for y := top + 1; y < bottom; y++ {
+		offset := int(y)*stride + int(left)*len(pixel)
+		copy(current.pixels[offset:offset+rowBytes], row)
+	}
+	current.dirty = current.dirty.Union(Rectangle{X: int32(left), Y: int32(top),
+		Width: int32(right - left), Height: int32(bottom - top)})
+	return true
 }
 
 // markSurfaceDirty grows the dirty rectangle to cover one pixel. Once a fill

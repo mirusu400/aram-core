@@ -104,9 +104,8 @@ func BenchmarkBlitRasterXOR(b *testing.B) {
 	}
 }
 
-// BenchmarkRectangleFill measures the per-pixel path on its own: a filled
-// rectangle plots every pixel through drawSurfacePixel, so it is where the
-// dirty-rectangle bookkeeping shows up undiluted.
+// BenchmarkRectangleFill measures the opaque row-fill path shared by the
+// handset adapters, including the clipping and dirty-region update.
 func BenchmarkRectangleFill(b *testing.B) {
 	graphics, destination, _ := benchSurfaces(b, PixelRGBA8888, 1, 1)
 	region := Rectangle{X: 8, Y: 8, Width: 200, Height: 280}

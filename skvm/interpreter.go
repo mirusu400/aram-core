@@ -71,7 +71,7 @@ func (vm *VM) execute(
 	args []Value,
 	budget *uint64,
 ) (Value, bool, error) {
-	parameters, _, err := parseMethodDescriptor(method.Descriptor)
+	parameters, _, err := vm.methodDescriptor(method.Descriptor)
 	if err != nil {
 		return Value{}, false, err
 	}
@@ -93,7 +93,10 @@ func (vm *VM) execute(
 			method.Descriptor,
 		)
 	}
-	locals := make([]Value, method.MaxLocals)
+	current := vm.borrowFrame(int(method.MaxLocals), int(method.MaxStack))
+	defer vm.releaseFrame(current)
+	current.class, current.method = class, method
+	locals := current.locals
 	localIndex := 0
 	if !method.Static() {
 		if len(locals) == 0 {
@@ -120,13 +123,6 @@ func (vm *VM) execute(
 		locals[localIndex] = argument
 		localIndex += parameters[index].slots()
 	}
-	current := &frame{
-		class:    class,
-		method:   method,
-		locals:   locals,
-		stack:    make([]Value, 0, method.MaxStack),
-		invokePC: -1,
-	}
 	return vm.executeFrame(ctx, current, budget)
 }
 
@@ -147,14 +143,15 @@ func (vm *VM) runFrame(
 	current *frame,
 	budget *uint64,
 ) (Value, bool, error) {
-	_, resultType, err := parseMethodDescriptor(current.method.Descriptor)
+	_, resultType, err := vm.methodDescriptor(current.method.Descriptor)
 	if err != nil {
 		return Value{}, false, err
 	}
+	done := ctx.Done()
 	for {
 		opcodePC := current.pc
 		stackLen := len(current.stack)
-		result, stepErr := vm.step(ctx, current, budget)
+		result, stepErr := vm.stepWithDone(ctx, done, current, budget)
 		if stepErr != nil {
 			var yielded *threadYield
 			if errors.As(stepErr, &yielded) {
@@ -337,6 +334,15 @@ func (vm *VM) step(
 	current *frame,
 	budget *uint64,
 ) (stepResult, error) {
+	return vm.stepWithDone(ctx, ctx.Done(), current, budget)
+}
+
+func (vm *VM) stepWithDone(
+	ctx context.Context,
+	done <-chan struct{},
+	current *frame,
+	budget *uint64,
+) (stepResult, error) {
 	if *budget == 0 {
 		return stepResult{}, ErrInstructionLimit
 	}
@@ -355,10 +361,12 @@ func (vm *VM) step(
 			current.method.Descriptor,
 		)
 	}
-	select {
-	case <-ctx.Done():
-		return stepResult{}, ctx.Err()
-	default:
+	if done != nil {
+		select {
+		case <-done:
+			return stepResult{}, ctx.Err()
+		default:
+		}
 	}
 	opcodePC := current.pc
 	opcode := current.method.Code[current.pc]
@@ -1252,8 +1260,8 @@ func (vm *VM) step(
 		if err != nil || reference.Kind != ReferenceField {
 			return stepResult{}, fmt.Errorf("SKVM invalid field reference %d", index)
 		}
-		owner := vm.fieldOwner(reference)
-		key := fieldStorageKey(owner, reference.Name, reference.Descriptor)
+		field := vm.resolveField(reference)
+		owner, key := field.owner, field.key
 		switch opcode {
 		case 0xb2: // getstatic
 			if err := vm.ensureInitialized(ctx, owner, budget); err != nil {
@@ -1642,7 +1650,7 @@ func (vm *VM) invoke(
 	if err != nil {
 		return Value{}, false, err
 	}
-	parameters, result, err := parseMethodDescriptor(reference.Descriptor)
+	parameters, result, err := vm.methodDescriptor(reference.Descriptor)
 	if err != nil {
 		return Value{}, false, err
 	}
@@ -1684,13 +1692,17 @@ func (vm *VM) invoke(
 
 	var class *Class
 	var method Method
+	var found bool
 	switch opcode {
 	case 0xb7, 0xb8:
-		class, method, err = vm.resolveDeclaredMethod(reference.Class, reference.Name, reference.Descriptor)
+		if runtime := vm.classes[reference.Class]; runtime != nil {
+			class = runtime.class
+			method, found = class.Method(reference.Name, reference.Descriptor)
+		}
 	default:
-		class, method, err = vm.resolveVirtualMethod(targetClass, reference.Name, reference.Descriptor)
+		class, method, found = vm.lookupVirtualMethod(targetClass, reference.Name, reference.Descriptor)
 	}
-	if err == nil {
+	if found {
 		return vm.execute(ctx, class, method, receiver, args, budget)
 	}
 

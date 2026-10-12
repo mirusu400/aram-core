@@ -85,7 +85,7 @@ func generate(source, output string, check bool) error {
 		ast.Inspect(stmt, func(node ast.Node) bool {
 			if ident, ok := node.(*ast.Ident); ok {
 				switch ident.Name {
-				case "wholeSystem", "hasExecutionTraps", "traced", "blockGeneration":
+				case "wholeSystem", "hasExecutionTraps", "traced":
 					forbidden = ident.Name
 				case "bits":
 					needsBits = true
@@ -95,6 +95,9 @@ func generate(source, output string, check bool) error {
 		})
 		if forbidden != "" {
 			return fmt.Errorf("instruction body now depends on %s; review mode separation", forbidden)
+		}
+		if err := specializeApplicationFlags(fset, stmt); err != nil {
+			return err
 		}
 		body.WriteString(nodeString(stmt))
 		body.WriteByte('\n')
@@ -110,6 +113,7 @@ func generate(source, output string, check bool) error {
 // retains block-level trap, budget and translation checks.
 func (b *Backend) executeThumbApplicationMicroBlock(block *jitBlock, blockInstructions int) (int, bool, *cpu.StopReason, error) {
 instructions := block.thumb[:blockInstructions]
+blockGeneration := b.jitGen
 for index := range instructions {
 in := &instructions[index]
 pc := in.pc
@@ -133,4 +137,104 @@ instruction := in.raw
 		return nil
 	}
 	return os.WriteFile(output, contents, 0o644)
+}
+
+// Encode dead flag writes as separate compact opcodes. Keeping the normal
+// cases untouched avoids a liveness branch on every ordinary instruction.
+func specializeApplicationFlags(fset *token.FileSet, stmt ast.Stmt) error {
+	dispatch, ok := stmt.(*ast.SwitchStmt)
+	if !ok {
+		return nil
+	}
+	tag, ok := dispatch.Tag.(*ast.SelectorExpr)
+	if !ok || tag.Sel.Name != "op" {
+		return nil
+	}
+	tag.Sel.Name = "appOp"
+	var deadCases []ast.Stmt
+	for _, statement := range dispatch.Body.List {
+		clause := statement.(*ast.CaseClause)
+		if len(clause.List) != 1 {
+			continue
+		}
+		name, ok := clause.List[0].(*ast.Ident)
+		if !ok {
+			continue
+		}
+		switch name.Name {
+		case "thumbShiftImmediate", "thumbMoveImmediate", "thumbCompareImmediate",
+			"thumbAddImmediate", "thumbSubtractImmediate", "thumbAddSubtract", "thumbALU", "thumbHighRegister":
+		default:
+			continue
+		}
+		var text bytes.Buffer
+		if err := format.Node(&text, fset, clause); err != nil {
+			return err
+		}
+		parsed, err := parser.ParseFile(fset, "dead-flags.go", "package interpreter\nfunc deadFlags() { switch in.appOp {"+text.String()+"} }", 0)
+		if err != nil {
+			return err
+		}
+		dead := parsed.Decls[0].(*ast.FuncDecl).Body.List[0].(*ast.SwitchStmt).Body.List[0].(*ast.CaseClause)
+		dead.List[0] = &ast.BinaryExpr{X: ast.NewIdent(name.Name), Op: token.ADD, Y: ast.NewIdent("thumbDeadFlagsOffset")}
+		// omitDeadFlags visits statement lists; wrap the case once so flag
+		// setters directly in its body receive the same transformation.
+		wrapper := &ast.SwitchStmt{Body: &ast.BlockStmt{List: []ast.Stmt{dead}}}
+		omitDeadFlags(wrapper)
+		declaration := &ast.DeclStmt{Decl: &ast.GenDecl{Tok: token.CONST, Specs: []ast.Spec{
+			&ast.ValueSpec{Names: []*ast.Ident{ast.NewIdent("flagsLive")}, Values: []ast.Expr{ast.NewIdent("false")}},
+		}}}
+		dead.Body = append([]ast.Stmt{declaration}, dead.Body...)
+		deadCases = append(deadCases, dead)
+	}
+	dispatch.Body.List = append(dispatch.Body.List, deadCases...)
+	return nil
+}
+
+// Keep architectural instruction bodies in the guarded source. The generated
+// application executor may omit a flag write only when translation proved that
+// a later, non-faulting instruction overwrites it before any observable exit.
+func omitDeadFlags(stmt ast.Stmt) {
+	var lists []*[]ast.Stmt
+	ast.Inspect(stmt, func(node ast.Node) bool {
+		switch item := node.(type) {
+		case *ast.BlockStmt:
+			lists = append(lists, &item.List)
+		case *ast.CaseClause:
+			lists = append(lists, &item.Body)
+		case *ast.CallExpr:
+			if name, ok := item.Fun.(*ast.Ident); ok && name.Name == "addWithCarry" {
+				name.Name = "addWithLiveFlags"
+				item.Args = append(item.Args, ast.NewIdent("flagsLive"))
+			}
+		}
+		return true
+	})
+	for _, list := range lists {
+		for index, statement := range *list {
+			expression, ok := statement.(*ast.ExprStmt)
+			if !ok {
+				continue
+			}
+			call, ok := expression.X.(*ast.CallExpr)
+			if !ok {
+				continue
+			}
+			method, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				continue
+			}
+			receiver, ok := method.X.(*ast.Ident)
+			if !ok || receiver.Name != "b" {
+				continue
+			}
+			switch method.Sel.Name {
+			case "setNZ", "setNZC", "setNZCV":
+				(*list)[index] = &ast.IfStmt{
+					Cond: ast.NewIdent("flagsLive"),
+					Body: &ast.BlockStmt{List: []ast.Stmt{statement}},
+				}
+			}
+		}
+	}
 }

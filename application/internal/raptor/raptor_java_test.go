@@ -558,7 +558,7 @@ func TestScanGuestStringAndWord(t *testing.T) {
 	}
 }
 
-func newPublicRuntime(t *testing.T) *wipirt.Runtime {
+func newPublicRuntime(t testing.TB) *wipirt.Runtime {
 	t.Helper()
 	backend := interpreter.New()
 	t.Cleanup(func() { _ = backend.Close() })

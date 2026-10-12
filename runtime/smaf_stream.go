@@ -62,13 +62,15 @@ func (decoder *smafDecoder) startPCMWave(wave *smafWave) *smafPCMVoice {
 		slot = decoder.nextPCM % len(decoder.pcmPool)
 		decoder.nextPCM++
 	}
+	generation := decoder.pcmPool[slot].generation + 1
 	decoder.pcmPool[slot] = smafPCMVoice{
-		pcm:      wave.pcm,
-		channels: max(1, wave.channels),
-		end:      len(wave.pcm) / max(1, wave.channels),
-		kernel:   resampleKernelFor(uint32(wave.sampleRate), decoder.rate),
-		step:     float64(wave.sampleRate) / float64(decoder.rate),
-		active:   true, volume: 1,
+		generation: generation,
+		pcm:        wave.pcm,
+		channels:   max(1, wave.channels),
+		end:        len(wave.pcm) / max(1, wave.channels),
+		kernel:     resampleKernelFor(uint32(wave.sampleRate), decoder.rate),
+		step:       float64(wave.sampleRate) / float64(decoder.rate),
+		active:     true, volume: 1,
 	}
 	if !decoder.pcmListed[slot] {
 		decoder.pcmListed[slot] = true

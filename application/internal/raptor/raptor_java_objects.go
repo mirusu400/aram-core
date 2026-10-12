@@ -583,7 +583,7 @@ func (r *Runtime) callJavaHostMethod(
 		// specific entry. Return 0 rather than branch through a null slot.
 		return guest.WIPIReturn{}, nil
 	}
-	method = r.resolveRaptorJavaOverload(java, method)
+	method = r.resolveRaptorJavaOverload(java, method).compile()
 	if method.className == "java/lang/Thread" && method.Name == "sleep" &&
 		method.descriptor == "(J)V" {
 		return r.sleepRaptorJavaTask(java)
@@ -593,12 +593,14 @@ func (r *Runtime) callJavaHostMethod(
 			method.descriptor == "(JI)V") {
 		return r.waitRaptorJavaTask(java, method.descriptor)
 	}
-	argumentCount := raptorJavaDescriptorArgumentCount(method.descriptor)
-	if !method.isStatic {
-		argumentCount++
+	var argumentBuffer [16]uint32
+	arguments := argumentBuffer[:]
+	if method.compiled.argumentCount > len(argumentBuffer) {
+		arguments = make([]uint32, method.compiled.argumentCount)
+	} else {
+		arguments = arguments[:method.compiled.argumentCount]
 	}
-	arguments, err := r.readRaptorJavaArguments(argumentCount)
-	if err != nil {
+	if err := r.readRaptorJavaArgumentsInto(arguments); err != nil {
 		return guest.WIPIReturn{}, err
 	}
 	// The AOT bridge cannot return a host Java exception to a guest catch block.
@@ -669,7 +671,7 @@ func (r *Runtime) callJavaHostMethod(
 	}
 	if !method.isStatic && len(arguments) != 0 {
 		receiver := arguments[0]
-		switch method.className + "." + method.Name + method.descriptor {
+		switch method.compiled.signature {
 		case "org/kwis/msp/lcdui/Card.repaint()V",
 			"org/kwis/msp/lcdui/Card.repaint(IIII)V":
 			r.queueRaptorJavaCardRepaint(java, receiver, arguments[1:])
@@ -769,7 +771,12 @@ func (r *Runtime) callJavaHostMethod(
 		}
 	}
 	r.syncRaptorArrayArguments(java, arguments, true)
-	data := make([]byte, len(arguments)*4)
+	data := java.callData[:]
+	if len(arguments)*4 > len(java.callData) {
+		data = make([]byte, len(arguments)*4)
+	} else {
+		data = data[:len(arguments)*4]
+	}
 	for index, value := range arguments {
 		binary.LittleEndian.PutUint32(data[index*4:], value)
 	}
@@ -778,11 +785,12 @@ func (r *Runtime) callJavaHostMethod(
 	}
 	parameterBase := java.Host.NativeParameterBase
 	java.Host.NativeParameterBase = java.scratch
-	value, callErr := ktfrt.HostJavaMethod(
-		method.className,
-		method.Name,
-		method.descriptor,
-	)(ctx, java.Host)
+	handler := method.compiled.handler
+	if java.Host.TraceMode() == ktfrt.KTFTraceFull {
+		// Preserve the old per-invocation detailed trace sampling lifecycle.
+		handler = ktfrt.HostJavaMethod(method.className, method.Name, method.descriptor)
+	}
+	value, callErr := handler(ctx, java.Host)
 	java.Host.NativeParameterBase = parameterBase
 	r.syncRaptorArrayArguments(java, arguments, false)
 	if callErr != nil {
@@ -802,7 +810,7 @@ func (r *Runtime) callJavaHostMethod(
 		}
 		return guest.WIPIReturn{}, callErr
 	}
-	if raptorJavaDescriptorReturnsReference(method.descriptor) && value != 0 {
+	if method.compiled.returnsReference && value != 0 {
 		value, err = r.wrapRaptorJavaObject(java, value)
 		if err != nil {
 			return guest.WIPIReturn{}, err

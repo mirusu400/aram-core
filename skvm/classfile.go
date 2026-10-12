@@ -110,6 +110,11 @@ type Class struct {
 	Fields       []Field
 	Methods      []Method
 	pool         []constantPoolEntry
+	// Parsed constant pools are immutable. Resolve symbolic references once;
+	// the compact index table avoids repeating pool lookups per bytecode
+	// field access or invocation without allocating a Reference for every tag.
+	referenceIndices []uint16
+	references       []Reference
 }
 
 type FormatError struct {
@@ -328,6 +333,7 @@ func ParseClass(path string, data []byte) (*Class, error) {
 	if reader.offset != len(data) {
 		return nil, parseError(path, reader.offset, "trailing bytes after class file")
 	}
+	class.prepareReferences()
 	return class, nil
 }
 
@@ -570,6 +576,42 @@ func (c *Class) References() ([]Reference, error) {
 }
 
 func (c *Class) Reference(index uint16) (Reference, error) {
+	if int(index) < len(c.referenceIndices) {
+		if resolved := c.referenceIndices[index]; resolved != 0 {
+			return c.references[resolved-1], nil
+		}
+	}
+	return c.resolveReference(index)
+}
+
+func (c *Class) prepareReferences() {
+	count := 0
+	for _, entry := range c.pool {
+		if entry.tag == constantFieldref || entry.tag == constantMethodref || entry.tag == constantInterfaceMethodref {
+			count++
+		}
+	}
+	if count == 0 {
+		return
+	}
+	c.referenceIndices = make([]uint16, len(c.pool))
+	c.references = make([]Reference, 0, count)
+	for index, entry := range c.pool {
+		if entry.tag != constantFieldref && entry.tag != constantMethodref && entry.tag != constantInterfaceMethodref {
+			continue
+		}
+		reference, err := c.resolveReference(uint16(index))
+		if err != nil {
+			// Preserve lazy validation: a malformed, unused reference did not
+			// prevent class parsing and still returns its original error when used.
+			continue
+		}
+		c.references = append(c.references, reference)
+		c.referenceIndices[index] = uint16(len(c.references))
+	}
+}
+
+func (c *Class) resolveReference(index uint16) (Reference, error) {
 	entry, err := c.entry(index)
 	if err != nil {
 		return Reference{}, err

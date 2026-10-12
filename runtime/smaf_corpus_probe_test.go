@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -51,6 +52,15 @@ func TestSMAFOptionalCorpusProbe(t *testing.T) {
 		if decoded == nil {
 			t.Errorf("%s: decode returned nil", entry.Name)
 			continue
+		}
+		lazy := decodeSMAFLazyPCM16(data, 44_100)
+		if lazy == nil || lazy.duration != decoded.duration {
+			t.Errorf("%s: incremental duration differs from whole render", entry.Name)
+			continue
+		}
+		lazy.ensureFrame(uint64(len(decoded.samples) / 2))
+		if !slices.Equal(decoded.samples, lazy.samples) {
+			t.Errorf("%s: incremental PCM differs from whole render", entry.Name)
 		}
 		var peak int16
 		for _, sample := range decoded.samples {

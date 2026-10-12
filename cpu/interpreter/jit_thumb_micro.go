@@ -23,7 +23,11 @@ func translateThumbMicroOp(instruction uint16) (thumbInstructionClass, bool, boo
 	case thumbConditionalBranch:
 		condition := uint8(instruction>>8) & 0xf
 		return op, true, condition != 0xe && condition != 0xf
-	case thumbHighRegister, thumbPop, thumbUnconditionalBranch, thumbBreakpoint:
+	case thumbHighRegister:
+		opcode := instruction >> 8 & 3
+		destination := uint32(instruction)&7 | uint32(instruction>>7)&1<<3
+		return op, opcode == 3 || opcode != 1 && destination == cpu.RegisterPC, true
+	case thumbPop, thumbUnconditionalBranch, thumbBreakpoint, thumbLongBranch:
 		return op, true, true
 	case thumbShiftImmediate, thumbMoveImmediate, thumbCompareImmediate,
 		thumbAddImmediate, thumbSubtractImmediate, thumbAddSubtract, thumbALU,
@@ -82,6 +86,9 @@ func (b *Backend) executeThumbMicroBlock(
 ) (int, bool, *cpu.StopReason, error) {
 	// Bound the translated prefix once so the hot loop needs no per-op slice check.
 	instructions := block.thumb[:blockInstructions]
+	// A writer may retire this translation before a later opcode executes.
+	// Poll only after complete writing instructions in the application path;
+	// pure ALU instructions retain their generation-check-free hot loop.
 	blockGeneration := b.jitGen
 	for index := range instructions {
 		in := &instructions[index]
@@ -307,7 +314,9 @@ func (b *Backend) executeThumbMicroBlock(
 				}
 				b.branchExchange(target)
 			}
-			return index + 1, true, nil, nil
+			if op == 3 || op != 1 && rd == cpu.RegisterPC {
+				return index + 1, true, nil, nil
+			}
 
 		case thumbLiteralLoad:
 			rd := uint32(instruction>>8) & 7
@@ -337,13 +346,22 @@ func (b *Backend) executeThumbMicroBlock(
 				if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
 					return index, false, nil, err
 				}
+				if b.jitGen != blockGeneration {
+					return index + 1, false, nil, nil
+				}
 			case 1:
 				if err := b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); err != nil {
 					return index, false, nil, err
 				}
+				if b.jitGen != blockGeneration {
+					return index + 1, false, nil, nil
+				}
 			case 2:
 				if err := b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); err != nil {
 					return index, false, nil, err
+				}
+				if b.jitGen != blockGeneration {
+					return index + 1, false, nil, nil
 				}
 			case 3:
 				value, hit := byte(0), false
@@ -460,9 +478,15 @@ func (b *Backend) executeThumbMicroBlock(
 				if err := b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); err != nil {
 					return index, false, nil, err
 				}
+				if b.jitGen != blockGeneration {
+					return index + 1, false, nil, nil
+				}
 			default:
 				if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
 					return index, false, nil, err
+				}
+				if b.jitGen != blockGeneration {
+					return index + 1, false, nil, nil
 				}
 			}
 
@@ -486,8 +510,13 @@ func (b *Backend) executeThumbMicroBlock(
 					}
 				}
 				b.regs[rd] = uint32(value)
-			} else if err := b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); err != nil {
-				return index, false, nil, err
+			} else {
+				if err := b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); err != nil {
+					return index, false, nil, err
+				}
+				if b.jitGen != blockGeneration {
+					return index + 1, false, nil, nil
+				}
 			}
 
 		case thumbStackTransfer:
@@ -508,8 +537,13 @@ func (b *Backend) executeThumbMicroBlock(
 					}
 				}
 				b.regs[rd] = value
-			} else if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
-				return index, false, nil, err
+			} else {
+				if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
+					return index, false, nil, err
+				}
+				if b.jitGen != blockGeneration {
+					return index + 1, false, nil, nil
+				}
 			}
 
 		case thumbAdjustStack:
@@ -544,6 +578,9 @@ func (b *Backend) executeThumbMicroBlock(
 				}
 			}
 			b.regs[cpu.RegisterSP] = start
+			if b.jitGen != blockGeneration {
+				return index + 1, false, nil, nil
+			}
 
 		case thumbPop:
 			registers := uint16(instruction & 0xff)
@@ -630,6 +667,9 @@ func (b *Backend) executeThumbMicroBlock(
 			if !load || registers&(1<<rb) == 0 {
 				b.regs[rb] = base + (address - first)
 			}
+			if !load && b.jitGen != blockGeneration {
+				return index + 1, false, nil, nil
+			}
 
 		case thumbConditionalBranch:
 			condition := uint8(instruction>>8) & 0xf
@@ -638,6 +678,31 @@ func (b *Backend) executeThumbMicroBlock(
 				b.regs[cpu.RegisterPC] = uint32(int32(pc+4) + offset)
 				return index + 1, true, nil, nil
 			}
+
+		case thumbLongBranch:
+			// A Thumb BL/BLX pair is one architectural instruction. Fetch
+			// its suffix at execution time, just as the precise executor
+			// does: it may fault or come from a replaced I-cache line.
+			suffix, err := b.fetch16(pc + 2)
+			if err != nil {
+				return index, false, nil, err
+			}
+			high := int32(instruction & 0x7ff)
+			if high&(1<<10) != 0 {
+				high |= ^int32(0x7ff)
+			}
+			if suffix&0xf801 == 0xe800 {
+				target := uint32(int32((pc+4)&^uint32(3))+(high<<12)) + uint32(suffix&0x7fe)*2
+				b.regs[cpu.RegisterLR] = (pc + 4) | 1
+				b.branchExchange(target)
+				return index + 1, true, nil, nil
+			}
+			if suffix&0xf800 != 0xf800 {
+				return index, false, nil, b.unsupportedThumb(pc, instruction)
+			}
+			b.regs[cpu.RegisterLR] = (pc + 4) | 1
+			b.regs[cpu.RegisterPC] = uint32(int32(pc+4)+(high<<12)) + uint32(suffix&0x7ff)*2
+			return index + 1, true, nil, nil
 
 		case thumbUnconditionalBranch:
 			offset := int32(instruction & 0x7ff)
