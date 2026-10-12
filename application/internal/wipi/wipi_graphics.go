@@ -1223,6 +1223,22 @@ func (r *Runtime) copyFramebufferAlpha(
 	if err != nil {
 		return err
 	}
+	if (alpha == nil || len(alpha.mask) == 0) &&
+		source.BitsPerPixel == destination.BitsPerPixel &&
+		graphicsContext.pixelOperation == 0 &&
+		!graphicsContext.xor && graphicsContext.alpha >= 0xff {
+		return r.copyFramebufferOpaque(
+			destination,
+			source,
+			dx,
+			dy,
+			width,
+			height,
+			sx,
+			sy,
+			&graphicsContext,
+		)
+	}
 	// Read the whole source rectangle before writing any of it: MC_grpCopyArea
 	// scrolls a framebuffer over itself, so a row read after an earlier row was
 	// written would copy the copy. A source pixel outside its framebuffer reads
@@ -1270,6 +1286,89 @@ func (r *Runtime) copyFramebufferAlpha(
 			&graphicsContext,
 			pixels[row*width:(row+1)*width],
 			transparent,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// copyFramebufferOpaque preserves the full source rectangle before touching the
+// destination, then copies same-format pixels a clipped row at a time. It is the
+// byte spelling of the scalar alpha=255 path: 32-bit padding is cleared, the
+// destination is still read before each write, and the surface mirror receives
+// exactly the touched span.
+func (r *Runtime) copyFramebufferOpaque(
+	destination, source Framebuffer,
+	dx, dy, width, height, sx, sy int,
+	context *wipiGraphicsContext,
+) error {
+	bytesPerPixel := int(source.bytesPerPixel())
+	copyBytes := width * height * bytesPerPixel
+	if cap(r.framebufferCopyScratch) < copyBytes {
+		r.framebufferCopyScratch = make([]byte, copyBytes)
+	}
+	pixels := r.framebufferCopyScratch[:copyBytes]
+	clear(pixels)
+	firstSource, endSource := max(0, sx), min(source.Width, sx+width)
+	if firstSource < endSource {
+		for row := 0; row < height; row++ {
+			sourceY := sy + row
+			if sourceY < 0 || sourceY >= source.Height {
+				continue
+			}
+			firstByte := (row*width + firstSource - sx) * bytesPerPixel
+			rowBytes := pixels[firstByte : firstByte+(endSource-firstSource)*bytesPerPixel]
+			address := source.Pixels +
+				uint32(sourceY*source.Width+firstSource)*uint32(bytesPerPixel)
+			if err := r.CPU.ReadMemory(address, rowBytes); err != nil {
+				return err
+			}
+			if bytesPerPixel == 4 {
+				for offset := 3; offset < len(rowBytes); offset += 4 {
+					rowBytes[offset] = 0
+				}
+			}
+		}
+	}
+	destinationX := dx + context.offsetX
+	serviceID := r.surfaceServices[destination.Handle]
+	for row := 0; row < height; row++ {
+		destinationY := dy + row + context.offsetY
+		if destinationY < 0 || destinationY >= destination.Height {
+			continue
+		}
+		first, end := destinationX, destinationX+width
+		if context.clipEnabled {
+			if destinationY < context.top || destinationY >= context.bottom {
+				continue
+			}
+			first = max(first, context.left)
+			end = min(end, context.right)
+		}
+		first = max(first, 0)
+		end = min(end, destination.Width)
+		if first >= end {
+			continue
+		}
+		firstByte := (row*width + first - destinationX) * bytesPerPixel
+		sourceBytes := pixels[firstByte : firstByte+(end-first)*bytesPerPixel]
+		buffer := r.spanBuffer(len(sourceBytes), false)
+		destinationRow := destinationY * destination.Width
+		address := destination.Pixels +
+			uint32(destinationRow+first)*uint32(bytesPerPixel)
+		if err := r.CPU.ReadMemory(address, buffer); err != nil {
+			return err
+		}
+		copy(buffer, sourceBytes)
+		if err := r.writeSpanRun(
+			destination,
+			serviceID,
+			destinationRow,
+			first,
+			first,
+			end,
+			buffer,
 		); err != nil {
 			return err
 		}

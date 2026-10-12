@@ -357,6 +357,18 @@ func (b *readCountingBackend) ReadMemory(address uint32, destination []byte) err
 	return b.Backend.ReadMemory(address, destination)
 }
 
+type writeCountingBackend struct {
+	cpu.Backend
+	writes int
+	bytes  int
+}
+
+func (b *writeCountingBackend) WriteMemory(address uint32, source []byte) error {
+	b.writes++
+	b.bytes += len(source)
+	return b.Backend.WriteMemory(address, source)
+}
+
 func TestWIPIRuntimeReadsLongCStringInBlocks(t *testing.T) {
 	runtime := newPublicRuntime(t)
 	const length = 8192
@@ -373,6 +385,33 @@ func TestWIPIRuntimeReadsLongCStringInBlocks(t *testing.T) {
 	}
 	if counting.reads > length/256+2 {
 		t.Fatalf("long C string used %d memory reads, want at most %d", counting.reads, length/256+2)
+	}
+}
+
+func TestWIPICStdlibStrcatWritesOnlyTheAppendedSuffix(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	const prefixLength = 8192
+	destination, err := runtime.Heap.Allocate(prefixLength+16, true)
+	check(t, err)
+	prefix := bytes.Repeat([]byte{'A'}, prefixLength)
+	check(t, runtime.CPU.WriteMemory(destination, append(prefix, 0)))
+	source, err := runtime.Heap.Allocate(8, true)
+	check(t, err)
+	check(t, runtime.CPU.WriteMemory(source, []byte("ARAM\x00")))
+	counting := &writeCountingBackend{Backend: runtime.CPU}
+	runtime.CPU = counting
+
+	result := dispatchPublicAPI(t, runtime, "strcat", destination, source)
+	if result.Low != destination {
+		t.Fatalf("strcat returned 0x%08x, want 0x%08x", result.Low, destination)
+	}
+	if counting.writes != 1 || counting.bytes != len("ARAM")+1 {
+		t.Fatalf("strcat writes = %d/%d bytes, want one %d-byte suffix", counting.writes, counting.bytes, len("ARAM")+1)
+	}
+	value, err := runtime.ReadCString(destination)
+	check(t, err)
+	if len(value) != prefixLength+len("ARAM") || string(value[prefixLength:]) != "ARAM" {
+		t.Fatalf("strcat result length/suffix = %d/%q", len(value), value[prefixLength:])
 	}
 }
 
@@ -1234,6 +1273,47 @@ func TestWIPIRuntimeCopyAreaScrollsAnOverlappingRectangle(t *testing.T) {
 			}
 			if pixel := readScreenPixel(t, runtime, screen, x, y); pixel != want {
 				t.Fatalf("pixel (%d,%d) = 0x%08x, want 0x%08x", x, y, pixel, want)
+			}
+		}
+	}
+}
+
+func TestWIPIRuntimeOpaqueFramebufferCopyHonoursClipOffsetAndPadding(t *testing.T) {
+	runtime := newPublicRuntime(t)
+	screen := dispatchPublicAPI(t, runtime, "MC_grpGetScreenFrameBuffer", 0).Low
+	source := dispatchPublicAPI(t, runtime, "MC_grpCreateOffScreenFrameBuffer", 4, 3).Low
+	framebuffer := runtime.Framebuffers[source]
+	for y := 0; y < framebuffer.Height; y++ {
+		for x := 0; x < framebuffer.Width; x++ {
+			check(t, runtime.WriteU32(
+				framebuffer.Pixels+uint32(y*framebuffer.Width+x)*4,
+				0xff000000|uint32((y+1)<<8|x+1),
+			))
+		}
+	}
+	contextAddress := writeGraphicsContext(t, runtime, 2, 2, 5, 4, true, 0, 1, 1)
+	dispatchPublicAPI(
+		t,
+		runtime,
+		"MC_grpCopyFrameBuffer",
+		screen,
+		0,
+		0,
+		4,
+		3,
+		source,
+		0,
+		0,
+		contextAddress,
+	)
+	for y := 0; y < runtime.Framebuffers[screen].Height; y++ {
+		for x := 0; x < runtime.Framebuffers[screen].Width; x++ {
+			want := uint32(0)
+			if x >= 2 && x < 5 && y >= 2 && y < 4 {
+				want = uint32(y<<8 | x)
+			}
+			if got := readScreenPixel(t, runtime, screen, x, y); got != want {
+				t.Fatalf("pixel (%d,%d) = 0x%08x, want 0x%08x", x, y, got, want)
 			}
 		}
 	}

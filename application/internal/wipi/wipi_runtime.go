@@ -216,11 +216,17 @@ type wipiHTTP struct {
 }
 
 type Runtime struct {
-	CPU                cpu.Backend
-	Frame              *image.RGBA
-	Layout             wipicatalog.Layout
-	Heap               guest.Heap
-	framebufferScratch []byte
+	CPU                    cpu.Backend
+	Frame                  *image.RGBA
+	Layout                 wipicatalog.Layout
+	Heap                   guest.Heap
+	framebufferScratch     []byte
+	framebufferCopyScratch []byte
+	// cStringScratch keeps the fixed-size block passed through the CPU
+	// interface from escaping on every C string scan. Runtime calls are
+	// serialized, and no string scan re-enters the guest.
+	cStringScratch [256]byte
+	cStdlibScratch []byte
 	// pixelScratch is the one-pixel staging buffer of the scalar framebuffer
 	// path; a stack array would escape through the CPU interface per pixel.
 	pixelScratch [4]byte
@@ -1060,7 +1066,7 @@ func (r *Runtime) ReadCString(address uint32) ([]byte, error) {
 		return nil, nil
 	}
 	result := make([]byte, 0, 64)
-	var block [256]byte
+	block := r.cStringScratch[:]
 	for offset := uint32(0); offset < maxWIPIString; {
 		count := min(uint32(len(block)), maxWIPIString-offset)
 		current := block[:count]
@@ -1088,6 +1094,45 @@ func (r *Runtime) ReadCString(address uint32) ([]byte, error) {
 		offset += count
 	}
 	return nil, fmt.Errorf("string at 0x%08x exceeds %d bytes", address, maxWIPIString)
+}
+
+func (r *Runtime) cStringLength(address uint32) (uint32, error) {
+	if address == 0 {
+		return 0, nil
+	}
+	block := r.cStringScratch[:]
+	for offset := uint32(0); offset < maxWIPIString; {
+		count := min(uint32(len(block)), maxWIPIString-offset)
+		current := block[:count]
+		if err := r.CPU.ReadMemory(address+offset, current); err != nil {
+			for index := uint32(0); index < count; index++ {
+				if err := r.CPU.ReadMemory(address+offset+index, current[:1]); err != nil {
+					return 0, err
+				}
+				if current[0] == 0 {
+					return offset + index, nil
+				}
+			}
+			offset += count
+			continue
+		}
+		if end := bytes.IndexByte(current, 0); end >= 0 {
+			return offset + uint32(end), nil
+		}
+		offset += count
+	}
+	return 0, fmt.Errorf("string at 0x%08x exceeds %d bytes", address, maxWIPIString)
+}
+
+func (r *Runtime) cStdlibBuffer(size int) []byte {
+	const retainedLimit = 1 << 20
+	if size > retainedLimit {
+		return make([]byte, size)
+	}
+	if cap(r.cStdlibScratch) < size {
+		r.cStdlibScratch = make([]byte, size)
+	}
+	return r.cStdlibScratch[:size]
 }
 
 func (r *Runtime) writeCString(address uint32, value []byte, limit int32) (uint32, error) {

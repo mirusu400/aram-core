@@ -63,7 +63,7 @@ func (r *Runtime) cStdlib(name string) (guest.WIPIReturn, bool, error) {
 		}
 		return guest.WIPIReturn{Low: a0}, true, err
 	case "strcat", "strncat":
-		current, err := r.ReadCString(a0)
+		currentLength, err := r.cStringLength(a0)
 		if err != nil {
 			return guest.WIPIReturn{}, true, err
 		}
@@ -74,8 +74,10 @@ func (r *Runtime) cStdlib(name string) (guest.WIPIReturn, bool, error) {
 		if name == "strncat" && uint32(len(value)) > a2 {
 			value = value[:a2]
 		}
-		combined := append(append([]byte(nil), current...), value...)
-		_, err = r.writeCString(a0, combined, -1)
+		if uint64(a0)+uint64(currentLength) > math.MaxUint32 {
+			return guest.WIPIReturn{}, true, cpu.ErrInvalidAddress
+		}
+		_, err = r.writeCString(a0+currentLength, value, -1)
 		return guest.WIPIReturn{Low: a0}, true, err
 	case "strcmp", "strncmp":
 		left, err := r.ReadCString(a0)
@@ -158,7 +160,7 @@ func (r *Runtime) cStdlib(name string) (guest.WIPIReturn, bool, error) {
 		if err != nil {
 			return guest.WIPIReturn{}, true, err
 		}
-		data := make([]byte, size)
+		data := r.cStdlibBuffer(size)
 		if err := r.CPU.ReadMemory(a1, data); err != nil {
 			return guest.WIPIReturn{}, true, err
 		}
@@ -185,7 +187,7 @@ func (r *Runtime) cStdlib(name string) (guest.WIPIReturn, bool, error) {
 		if err != nil {
 			return guest.WIPIReturn{}, true, err
 		}
-		data := make([]byte, size)
+		data := r.cStdlibBuffer(size)
 		if err := r.CPU.ReadMemory(a0, data); err != nil {
 			return guest.WIPIReturn{}, true, err
 		}
@@ -199,7 +201,10 @@ func (r *Runtime) cStdlib(name string) (guest.WIPIReturn, bool, error) {
 		if err != nil {
 			return guest.WIPIReturn{}, true, err
 		}
-		data := bytes.Repeat([]byte{byte(a1)}, size)
+		data := r.cStdlibBuffer(size)
+		for index := range data {
+			data[index] = byte(a1)
+		}
 		return guest.WIPIReturn{Low: a0}, true, r.CPU.WriteMemory(a0, data)
 	case "atoi", "atoll", "strtol", "strtoul":
 		return r.parseInteger(name, a0, a1, a2)
