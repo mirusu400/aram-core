@@ -358,6 +358,8 @@ type ThumbMicroStatistics struct {
 	BlockCalls          uint64            `json:"block_calls"`
 	UntrackedBlockCalls uint64            `json:"untracked_block_calls"`
 	Blocks              map[uint32]uint64 `json:"blocks"`
+	FusedPrologueBlocks uint64            `json:"fused_prologue_blocks,omitempty"`
+	FusedLoadMaskBlocks uint64            `json:"fused_load_mask_blocks,omitempty"`
 }
 
 // ExecutionStatistics are cumulative counters for scheduler and translation

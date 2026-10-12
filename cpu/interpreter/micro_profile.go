@@ -32,6 +32,19 @@ func (b *Backend) recordThumbBlock(block *jitBlock) {
 	}
 }
 
+func (b *Backend) recordThumbBranchBlock(prologue bool) {
+	stats := b.executionStatistics.ThumbMicro
+	if stats == nil {
+		stats = &cpu.ThumbMicroStatistics{Blocks: make(map[uint32]uint64)}
+		b.executionStatistics.ThumbMicro = stats
+	}
+	if prologue {
+		stats.FusedPrologueBlocks++
+	} else {
+		stats.FusedLoadMaskBlocks++
+	}
+}
+
 func cloneThumbMicroStats(stats *cpu.ThumbMicroStatistics) *cpu.ThumbMicroStatistics {
 	if stats == nil {
 		return nil

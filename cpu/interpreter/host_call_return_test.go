@@ -27,6 +27,11 @@ func TestHostCallReturnMatchesSeparateCaptureAndCommit(t *testing.T) {
 							check(t, b.WriteRegister(cpu.RegisterLR, lr))
 							check(t, b.WriteRegister(cpu.RegisterPC, 0x8000))
 							b.setNZCV(0, true, false)
+							b.instructionWindow = new(instructionCacheLine)
+							b.instructionWindowTag = 17
+							b.instructionWindowSerial = 19
+							b.tlb = newNativeTLB()
+							b.tlb[0] = tlbEntry{tag: 23, victim: 1, host: 0x12345678}
 						}
 						var want, got cpu.HostCallFrame
 						want.Stack[0] = 0x12
@@ -52,6 +57,12 @@ func TestHostCallReturnMatchesSeparateCaptureAndCommit(t *testing.T) {
 							target = hostReturnFallback{actual}
 						}
 						check(t, cpu.ReturnHostCallFrame(target, &got, 0xaabbccdd, 0x11223344))
+						if actual.instructionWindow != nil || actual.instructionWindowTag != 0 || actual.instructionWindowSerial != 0 {
+							t.Fatal("return retained the prior instruction fetch window")
+						}
+						if actual.tlb[0] != (tlbEntry{tag: 23, victim: 1, host: 0x12345678}) {
+							t.Fatal("same-mode return invalidated data translations")
+						}
 						if got != want {
 							t.Fatalf("return frame changed: mode=%x thumb=%x lr=%x fallback=%v", mode, thumb, lr, fallback)
 						}

@@ -96,11 +96,14 @@ type decodedAsset struct {
 // Assets owns bounded image decoding and immutable decoded-frame caches.
 // Encoded guest bytes never remain aliased after Decode returns.
 type Assets struct {
-	registry *Registry
-	graphics *Graphics
-	limits   AssetLimits
-	assets   map[ServiceID]*decodedAsset
-	cache    map[string]ServiceID
+	registry          *Registry
+	graphics          *Graphics
+	limits            AssetLimits
+	assets            map[ServiceID]*decodedAsset
+	cache             map[string]ServiceID
+	decodedPixels     map[assetPixelKey]*assetPixelDecode
+	decodedPixelBytes uint64
+	decodedPixelClock uint64
 }
 
 func NewAssets(
@@ -153,7 +156,7 @@ func (a *Assets) Decode(
 		return 0, fmt.Errorf("%w: asset count reached %d", ErrLimitExceeded, a.limits.MaxAssets)
 	}
 
-	frames, delays, loopCount, mediaType, err := decodeImageAsset(encoded, options, a.limits)
+	decoded, err := a.decodePixelAsset(digest, encoded, options)
 	if err != nil {
 		return 0, err
 	}
@@ -161,18 +164,18 @@ func (a *Assets) Decode(
 	if err != nil {
 		return 0, err
 	}
-	surfaces := make([]ServiceID, 0, len(frames))
+	surfaces := make([]ServiceID, 0, len(decoded.frames))
 	rollback := func() {
 		for _, surface := range surfaces {
 			_ = a.graphics.DestroySurface(owner, surface)
 		}
 		_ = a.registry.Destroy(id, owner, KindImage)
 	}
-	for _, frame := range frames {
-		bounds := frame.Bounds()
+	for index := range decoded.frames {
+		frame := &decoded.frames[index]
 		surface, createErr := a.graphics.CreateSurface(owner, SurfaceDescriptor{
-			Width:  int32(bounds.Dx()),
-			Height: int32(bounds.Dy()),
+			Width:  frame.width,
+			Height: frame.height,
 			Format: PixelRGBA8888,
 		})
 		if createErr != nil {
@@ -180,27 +183,35 @@ func (a *Assets) Decode(
 			return 0, createErr
 		}
 		surfaces = append(surfaces, surface)
-		pixels := rgbaBytes(frame)
-		if replaceErr := a.graphics.ReplacePixels(owner, surface, pixels); replaceErr != nil {
+		if frame.pixels == nil {
+			frame.pixels = rgbaBytes(frame.source)
+			frame.source = nil
+		}
+		if replaceErr := a.graphics.ReplacePixels(owner, surface, frame.pixels); replaceErr != nil {
 			rollback()
 			return 0, replaceErr
+		}
+		if !decoded.cacheable {
+			// Large assets retain the original streaming conversion footprint.
+			frame.pixels = nil
 		}
 	}
 	info := AssetInfo{
 		ID:        id,
 		Owner:     owner,
 		Digest:    digest,
-		MediaType: mediaType,
-		Width:     int32(frames[0].Bounds().Dx()),
-		Height:    int32(frames[0].Bounds().Dy()),
-		LoopCount: loopCount,
+		MediaType: decoded.mediaType,
+		Width:     decoded.frames[0].width,
+		Height:    decoded.frames[0].height,
+		LoopCount: decoded.loopCount,
 		Frames:    make([]AssetFrame, len(surfaces)),
 	}
 	for index, surface := range surfaces {
-		info.Frames[index] = AssetFrame{Surface: surface, Delay: delays[index]}
+		info.Frames[index] = AssetFrame{Surface: surface, Delay: decoded.frames[index].delay}
 	}
 	a.assets[id] = &decodedAsset{info: info, cacheKey: cacheKey, options: options}
 	a.cache[cacheKey] = id
+	a.rememberPixelAsset(assetPixelKey{digest, options.MediaType}, decoded)
 	return id, nil
 }
 
@@ -460,6 +471,9 @@ func (a *Assets) Restore(state AssetsState) error {
 	a.limits = state.Limits
 	a.assets = assets
 	a.cache = cache
+	// Host decoding caches are not guest state; restored limits apply immediately.
+	a.decodedPixels = nil
+	a.decodedPixelBytes, a.decodedPixelClock = 0, 0
 	return nil
 }
 
@@ -486,6 +500,53 @@ func cloneAssetInfo(info AssetInfo) AssetInfo {
 func rgbaBytes(source image.Image) []byte {
 	bounds := source.Bounds()
 	result := make([]byte, bounds.Dx()*bounds.Dy()*4)
+	// Decoders normally return concrete byte-backed images. Read those rows
+	// directly to avoid boxing two color values for every decoded pixel.
+	switch pixels := source.(type) {
+	case *image.NRGBA:
+		for y := 0; y < bounds.Dy(); y++ {
+			start := pixels.PixOffset(bounds.Min.X, bounds.Min.Y+y)
+			copy(result[y*bounds.Dx()*4:], pixels.Pix[start:start+bounds.Dx()*4])
+		}
+		return result
+	case *image.RGBA:
+		for y := 0; y < bounds.Dy(); y++ {
+			start := pixels.PixOffset(bounds.Min.X, bounds.Min.Y+y)
+			row := pixels.Pix[start : start+bounds.Dx()*4]
+			out := result[y*bounds.Dx()*4 : (y+1)*bounds.Dx()*4]
+			for x := 0; x < len(row); x += 4 {
+				a := row[x+3]
+				switch a {
+				case 0:
+					// NRGBAModel discards hidden premultiplied RGB at zero alpha.
+				case 255:
+					copy(out[x:x+4], row[x:x+4])
+				default:
+					// Match color.NRGBAModel's 16-bit unpremultiplication exactly.
+					out[x] = byte((uint32(row[x]) * 0xffff / uint32(a)) >> 8)
+					out[x+1] = byte((uint32(row[x+1]) * 0xffff / uint32(a)) >> 8)
+					out[x+2] = byte((uint32(row[x+2]) * 0xffff / uint32(a)) >> 8)
+					out[x+3] = a
+				}
+			}
+		}
+		return result
+	case *image.Paletted:
+		palette := make([]color.NRGBA, len(pixels.Palette))
+		for index, value := range pixels.Palette {
+			palette[index] = color.NRGBAModel.Convert(value).(color.NRGBA)
+		}
+		for y := 0; y < bounds.Dy(); y++ {
+			start := pixels.PixOffset(bounds.Min.X, bounds.Min.Y+y)
+			for x, index := range pixels.Pix[start : start+bounds.Dx()] {
+				value := palette[index]
+				offset := (y*bounds.Dx() + x) * 4
+				result[offset], result[offset+1] = value.R, value.G
+				result[offset+2], result[offset+3] = value.B, value.A
+			}
+		}
+		return result
+	}
 	for y := 0; y < bounds.Dy(); y++ {
 		for x := 0; x < bounds.Dx(); x++ {
 			value := color.NRGBAModel.Convert(

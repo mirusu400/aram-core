@@ -66,6 +66,8 @@ const (
 	jitBytePaletteLoop
 	jitNibblePaletteLoop
 	jitMaskedBlendLoop
+	jitPrologueBranch
+	jitLoadMaskBranch
 )
 
 type jitExtraLoop struct {
@@ -82,6 +84,8 @@ type jitExtraLoop struct {
 	bytePalette        jitThumbBytePaletteLoop
 	nibblePalette      jitThumbNibblePaletteLoop
 	maskedBlend        jitThumbMaskedBlendLoop
+	prologue           jitThumbPrologueBranch
+	loadMask           jitThumbLoadMaskBranch
 }
 
 type jitBlock struct {
@@ -526,6 +530,10 @@ outer:
 					return executed + n, reason, err
 				}
 				retired = b.accelerateThumbMaskedBlendLoop(&extra.maskedBlend, limit-executed, wholeSystem, hasExecutionTraps, traced)
+			case jitPrologueBranch:
+				retired = b.accelerateThumbPrologueBranch(&extra.prologue, limit-executed, wholeSystem, hasExecutionTraps, traced)
+			case jitLoadMaskBranch:
+				retired = b.accelerateThumbLoadMaskBranch(&extra.loadMask, limit-executed, wholeSystem, hasExecutionTraps, traced)
 			case jitTransparentPaletteLoop:
 				retired = b.accelerateThumbTransparentPaletteLoop(
 					&extra.transparentPalette, limit-executed,
@@ -836,6 +844,16 @@ func (b *Backend) translateThumbBlock(pc uint32) *jitBlock {
 		return nil
 	}
 	block := &jitBlock{start: pc, end: cur, thumb: instrs}
+	if b.systemBus == nil && len(instrs) == 5 && instrs[0].raw&0xf800 == 0x6800 {
+		if sequence := classifyThumbLoadMaskBranch(block); sequence != nil {
+			block.extraLoop = &jitExtraLoop{kind: jitLoadMaskBranch, loadMask: *sequence}
+		}
+	}
+	if b.systemBus == nil && len(instrs) == 5 && instrs[0].op == thumbPush {
+		if prologue := classifyThumbPrologueBranch(block); prologue != nil {
+			block.extraLoop = &jitExtraLoop{kind: jitPrologueBranch, prologue: *prologue}
+		}
+	}
 	if b.systemBus == nil && instrs[0].raw&0xf8ff == 0x2800 {
 		if loop := b.classifyThumbMaskedBlendLoop(pc); loop != nil {
 			block.end = pc + 32

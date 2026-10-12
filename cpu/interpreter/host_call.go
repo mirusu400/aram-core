@@ -87,8 +87,8 @@ func (b *Backend) CommitHostCallRegisters(commit cpu.RegisterCommit) error {
 }
 
 // ReturnHostCallFrame keeps the capture and the ordered register writes under
-// one lock. Use writeRegisterLocked for PC alignment, banked state and CPSR
-// transitions exactly as CommitHostCallRegisters does.
+// one lock. The only CPSR change is the instruction-set bit: the processor
+// mode and register banks are preserved, so no mode decode or TLB flush is needed.
 func (b *Backend) ReturnHostCallFrame(destination *cpu.HostCallFrame, low, high uint32) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -110,18 +110,16 @@ func (b *Backend) ReturnHostCallFrame(destination *cpu.HostCallFrame, low, high 
 	} else {
 		cpsr &^= cpu.StatusThumb
 	}
-	if err := b.writeRegisterLocked(cpu.RegisterR0, low); err != nil {
-		return err
+	b.regs[cpu.RegisterR0] = low
+	b.regs[cpu.RegisterR1] = high
+	b.regs[cpu.RegisterPC] = lr &^ 1
+	b.regs[cpu.RegisterCPSR] = cpsr
+	if cpsr&cpu.StatusThumb != 0 {
+		b.mode = cpu.ModeThumb
+	} else {
+		b.mode = cpu.ModeARM
 	}
-	if err := b.writeRegisterLocked(cpu.RegisterR1, high); err != nil {
-		return err
-	}
-	if err := b.writeRegisterLocked(cpu.RegisterPC, lr&^1); err != nil {
-		return err
-	}
-	if err := b.writeRegisterLocked(cpu.RegisterCPSR, cpsr); err != nil {
-		return err
-	}
+	b.invalidateInstructionWindow()
 	b.executionStatistics.HostRegisterCommits++
 	b.executionStatistics.HostCallReturnBatches++
 	return nil
