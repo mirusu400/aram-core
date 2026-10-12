@@ -61,6 +61,7 @@ const theSINArchiveSHA256 = "8b33b7b3c20dabfe38cdfc905c482ef179827cf8b55b47c9057
 const minibookArchiveSHA256 = "9d17a101d5c9e31e789698f31fb41ba5448b624eb63b37193be13b12fdbb46c0"
 const battleDrumXArchiveSHA256 = "a50f7decb608272daca545a1beca126286cba8eeb8b6e230f14448393b143ca2"
 const topGun2ArchiveSHA256 = "43392c5a657ac36aca605a3cde727bd817b5672594be55b8470bacdb924468f1"
+const milkTycoon2ArchiveSHA256 = "9f7366ca1902b91c359b271ee5721fdccff7e39f1ebda6849454e6f9572a3a4f"
 
 // Package contains the inspected executable module and immutable archive data.
 type Package struct {
@@ -150,6 +151,11 @@ func Match(data []byte) (pkg Package, matched bool, err error) {
 		// The packaged HLB title and background images are 176 pixels wide,
 		// with artwork as tall as 203 pixels.
 		nativeCanvas = image.Pt(176, 220)
+	}
+	if digestHex == milkTycoon2ArchiveSHA256 {
+		// The title's two full-screen BMPs are 176x202. The generic 120x160
+		// canvas exposes only their upper-left corner (issue #522).
+		nativeCanvas = image.Pt(176, 202)
 	}
 	if digestHex == ArchiveSHA256 {
 		moduleDigest := sha256.Sum256(module)

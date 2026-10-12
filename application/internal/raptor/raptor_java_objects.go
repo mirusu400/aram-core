@@ -613,6 +613,18 @@ func (r *Runtime) callJavaHostMethod(
 		arguments[1] == ^uint32(0) {
 		return guest.WIPIReturn{}, nil
 	}
+	if !method.isStatic && method.className == "java/util/Stack" && method.Name == "peek" &&
+		method.descriptor == "()Ljava/lang/Object;" && len(arguments) == 1 {
+		// Empty Stack.peek raises EmptyStackException in Java. Raptor's AOT
+		// bridge cannot unwind a host-side exception into the guest catch block,
+		// so propagating it faults the whole Clet. Returning null matches the
+		// bridge's handled-exception fallback and lets the caller recover
+		// (issues #519 and #520).
+		if mirror := java.lgtToKTF[arguments[0]]; mirror != 0 &&
+			len(java.Host.Vectors[mirror]) == 0 {
+			return guest.WIPIReturn{}, nil
+		}
+	}
 	if method.className == "org/kwis/msp/io/File" && method.Name == "write" &&
 		strings.HasPrefix(method.descriptor, "([B") && len(arguments) >= 2 &&
 		arguments[1] == 0 {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/mirusu400/aram-core/application/internal/guest"
 	"github.com/mirusu400/aram-core/cpu"
 )
 
@@ -38,5 +39,33 @@ func TestRaptorJavaStackPushAndPeekVirtualSlots(t *testing.T) {
 				t.Fatalf("Stack slot %02x returned %08x, want original Raptor reference %08x", offset, got, value)
 			}
 		}
+	}
+}
+
+func TestRaptorJavaEmptyStackPeekReturnsNullAcrossAOTBridge(t *testing.T) {
+	public := newPublicRuntime(t)
+	runtime := &Runtime{CPU: public.CPU, Public: public,
+		resolvedImports: make(map[raptorImportKey]uint64),
+		importSlotByKey: make(map[raptorImportKey]uint32)}
+	java, err := runtime.ensureJavaRuntime()
+	check(t, err)
+	java.flatVirtual = make([]raptorJavaMethod, 4)
+	class, err := runtime.ensureRaptorHostClass(java, "java/util/Stack")
+	check(t, err)
+	stack, err := runtime.NewRaptorJavaObject(class.Holder)
+	check(t, err)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR0, stack))
+
+	result, err := runtime.callJavaHostMethod(context.Background(), raptorJavaMethod{
+		className:  "java/util/Stack",
+		Name:       "peek",
+		descriptor: "()Ljava/lang/Object;",
+	})
+	check(t, err)
+	if result != (guest.WIPIReturn{}) {
+		t.Fatalf("empty Stack.peek result = %+v, want null", result)
+	}
+	if java.Host.LastJavaThrowName != "" {
+		t.Fatalf("empty Stack.peek crossed into host exception path: %q", java.Host.LastJavaThrowName)
 	}
 }
