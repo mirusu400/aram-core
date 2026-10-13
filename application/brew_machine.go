@@ -55,6 +55,8 @@ type brewMachine struct {
 	source            machinecore.Source
 	pkg               brewrt.Package
 	runtime           *brewrt.Runtime
+	persistence       *brewrt.PersistentState
+	hasSaveData       bool
 	frame             *image.RGBA
 	input             []machinecore.InputEvent
 	inputTrace        []string
@@ -152,6 +154,15 @@ func (m *brewMachine) Start(ctx context.Context) error {
 		}
 		m.runtime = runtime
 		m.mediaOutputRevision = runtime.AudioOutputRevision()
+		if m.persistence != nil {
+			if err := runtime.RestorePersistentState(*m.persistence, m.pkg.Files); err != nil {
+				_ = runtime.Close()
+				m.runtime = nil
+				m.state = machinecore.StateFaulted
+				return fmt.Errorf("restore BREW persistence after reset: %w", err)
+			}
+			m.persistence = nil
+		}
 	}
 	m.state = machinecore.StateRunning
 	if !m.started {
@@ -239,10 +250,15 @@ func (m *brewMachine) Reset(ctx context.Context) error {
 		return err
 	}
 	if m.runtime != nil {
+		persistence := m.runtime.CapturePersistentState(m.pkg.Files)
+		if err := persistence.Validate(m.pkg.Files); err != nil {
+			return fmt.Errorf("capture BREW persistence for reset: %w", err)
+		}
 		m.resetBREWAudioLocked(0)
 		if err := m.runtime.Close(); err != nil {
 			return err
 		}
+		m.persistence = &persistence
 		m.runtime = nil
 	}
 	m.input = nil
