@@ -6,6 +6,7 @@ import (
 )
 
 const lgtVibrationClass = "mmpp/media/Vibration"
+
 // The public MMPP API does not prescribe a handset level count. Shipped LGT
 // titles use both level 3 and level 100, so expose the full observed range.
 const lgtVibrationLevels int32 = 100

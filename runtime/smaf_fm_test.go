@@ -7,11 +7,11 @@ import (
 
 func TestSMAFEnvelopeUsesMobileFMLevelAndZeroRateSemantics(t *testing.T) {
 	patch := smafOpPatch{
-		ar: 15,
-		dr: 15,
-		sr: 0,
-		rr: 0,
-		sl: 6,
+		ar:     15,
+		dr:     15,
+		sr:     0,
+		rr:     0,
+		sl:     6,
 		egType: true,
 	}
 	var envelope smafEnvelope

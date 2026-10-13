@@ -30,9 +30,9 @@ func TestSKVMIssue495OfflineNoticeUsesErrorText(t *testing.T) {
 		t.Fatal(err)
 	}
 	events := map[int]machinecore.InputEvent{
-		8: {Control: "back", Pressed: true},
-		15: {Control: "num3", Pressed: true},
-		76: {Control: "num5", Pressed: true},
+		8:   {Control: "back", Pressed: true},
+		15:  {Control: "num3", Pressed: true},
+		76:  {Control: "num5", Pressed: true},
 		111: {Control: "back", Pressed: false},
 		114: {Control: "num4", Pressed: true},
 		125: {Control: "num1", Pressed: true},
