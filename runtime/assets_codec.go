@@ -443,11 +443,20 @@ func decodeBMP(encoded []byte, limits AssetLimits) (*image.NRGBA, error) {
 		// flag is what keeps a sprite's surround from covering the background
 		// with a solid green block. The entry keeps its color and only loses
 		// its alpha: a color-keyed consumer that cannot carry alpha needs to
-		// know which color the key is. An index outside the palette is stale
-		// header noise — the stock KTF Annunciator.bmp carries index 304 for a
-		// 256-entry palette — and leaves the image opaque.
+		// know which color the key is. Invalid indices normally leave the
+		// image opaque: the stock KTF Annunciator.bmp carries index 304
+		// for a 256-entry palette.
 		if binary.LittleEndian.Uint16(encoded[6:8]) != 0 {
 			key := binary.LittleEndian.Uint32(encoded[50:54])
+			// Winds Tale (#524) leaves biClrImportant at the palette
+			// count and reserves magenta entry zero instead. Its sprites
+			// can start with an opaque pixel, so a corner-color fallback
+			// misses the key. Restrict this convention to marked files
+			// with that exact count and first palette color.
+			if key == uint32(len(palette)) &&
+				palette[0] == (color.NRGBA{R: 0xff, B: 0xff, A: 0xff}) {
+				key = 0
+			}
 			if key < uint32(len(palette)) {
 				palette[key].A = 0
 			}
