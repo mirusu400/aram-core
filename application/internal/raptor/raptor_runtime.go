@@ -149,6 +149,7 @@ type Runtime struct {
 	// resumable callback tasks from CallbackTasks. Java safepoints may preempt
 	// those tasks, but must not abort synchronous constructor/host callbacks.
 	callbackTaskActive bool
+	clockPoll          clockPollState
 	// javaSafepoint* tracks a hot module-100 ordinal 85 backedge inside the
 	// current guest slice. See raptor_java_safepoint.go.
 	javaSafepointLR      uint32
@@ -734,6 +735,9 @@ func (r *Runtime) dispatchImport(
 	}
 	if publicName, ok := raptorWIPIImportName(key.Ordinal); ok &&
 		(key.Module == 1 || key.Module == 507) {
+		if key.Ordinal == 125 {
+			r.observeClockPoll(call.LR)
+		}
 		api, found := wipi.Lookup(publicName)
 		if !found {
 			return fmt.Errorf(
@@ -1370,6 +1374,10 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 		return "MC_utilInetAddrInt", true
 	case 905:
 		return "MC_utilInetAddrStr", true
+	// Issue 525's level-data reader passes its NUL-terminated decimal token
+	// to module-1 ordinal 1019 and uses the result to name the next resource.
+	case 1019:
+		return "atoi", true
 	case 1029:
 		return "strcpy", true
 	// The C string family is contiguous from strcpy, so the ordinal between
