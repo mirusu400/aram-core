@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"image"
 	"testing"
 
 	"github.com/mirusu400/aram-core/cpu"
@@ -16,6 +17,7 @@ func TestBREWCompatibilityPatchesRequireDigestAndOriginalInstructions(t *testing
 		offset       uint32
 		original     []byte
 	}{
+		{"native display rows", yongman2ModuleSHA256, 0x147e4, []byte{0x10, 0x40, 0x2d, 0xe9}},
 		{"ranking cancellation", swordMasterModuleSHA256, 0x6ac6, []byte{0x0c, 0x49, 0x79, 0x44}},
 		{"key dispatch", kashanModuleSHA256, 0x16a84, []byte{0x01, 0x68, 0x0a, 0x69}},
 		{"zero PRNG seed", blackComicsModuleSHA256, 0x2008, []byte{0x00, 0x6c, 0x11, 0x4b}},
@@ -61,6 +63,43 @@ func TestBREWCompatibilityPatchesRequireDigestAndOriginalInstructions(t *testing
 				t.Fatal("truncated module accepted")
 			}
 		})
+	}
+}
+
+func TestYongman2NativeRowsUseMappedDisplayAndPreserveOtherSettings(t *testing.T) {
+	for _, width := range []int{120, 176} {
+		module := make([]byte, 0x147f4)
+		for i, word := range []uint32{0xe92d4010, 0xe3a00077, 0xe8bd4010, 0xe12fff1e} {
+			binary.LittleEndian.PutUint32(module[0x147e4+i*4:], word)
+		}
+		r, err := New(Package{Module: module, NativeCanvas: image.Pt(width, 160)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = r.Close() })
+		loaded := make([]byte, len(module)+8)
+		copy(loaded[8:], module)
+		loaded, err = patchBREWModuleForDigest(yongman2ModuleSHA256, module, loaded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := r.cpu.WriteMemory(moduleBase-8, loaded); err != nil {
+			t.Fatal(err)
+		}
+		for setting, want := range []uint32{framebufferBase, framebufferBase + uint32(width*2), 0x77} {
+			if err := r.cpu.WriteRegister(cpu.RegisterR4, 0x12345678); err != nil {
+				t.Fatal(err)
+			}
+			if err := r.runCallback(context.Background(), brewCallback{function: moduleBase + 0x147e4, context: uint32(setting)}); err != nil {
+				t.Fatal(err)
+			}
+			if got, err := r.cpu.ReadRegister(cpu.RegisterR0); err != nil || got != want {
+				t.Fatalf("width=%d setting=%d result=%08x, want %08x: %v", width, setting, got, want, err)
+			}
+			if got, err := r.cpu.ReadRegister(cpu.RegisterR4); err != nil || got != 0x12345678 {
+				t.Fatalf("callee-saved r4=%08x: %v", got, err)
+			}
+		}
 	}
 }
 
