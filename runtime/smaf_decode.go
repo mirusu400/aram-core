@@ -176,8 +176,8 @@ func decodeSMAFLazyPCM16(data []byte, sampleRate uint32) *decodedPCM {
 		return nil
 	}
 	// ATR is also used alongside long FM scores. The presence of an audio
-	// track says nothing about the score's length: use the same bounded eager
-	// path and exact natural-length probe as other scores.
+	// track says nothing about the score's length: use the same incremental
+	// playback and exact natural-length probe as other scores.
 	return finishLazyScoreDecode(decoder, sampleRate, func() *smafDecoder {
 		probeDecoder := &smafDecoder{rate: sampleRate}
 		if !probeDecoder.parse(data) || !probeDecoder.buildEvents() {
@@ -187,11 +187,10 @@ func decodeSMAFLazyPCM16(data []byte, sampleRate uint32) *decodedPCM {
 	})
 }
 
-// finishLazyScoreDecode turns a built score into a decodedPCM. A score short
-// enough that rendering it is not felt is rendered whole here, so playback is
-// an array read and the length is exact; a longer one is left incremental and
-// only its playable length is worked out. rebuild produces a second decoder for
-// the length probe, which consumes the stream it walks.
+// finishLazyScoreDecode determines a score's playable length without synthesizing
+// PCM at Play. Even short effects can take longer to render than the host audio
+// buffer can cover, especially on WASM. All scores render incrementally when
+// playback requests samples. rebuild supplies the length probe's own decoder.
 func finishLazyScoreDecode(
 	decoder *smafDecoder,
 	sampleRate uint32,
@@ -200,19 +199,6 @@ func finishLazyScoreDecode(
 	stream := newSMAFRenderStream(decoder)
 	if stream.end == 0 {
 		return nil
-	}
-	if stream.end <= uint64(sampleRate)*smafEagerRenderSeconds {
-		if samples := stream.renderUntil(nil, stream.end); len(samples) != 0 {
-			return &decodedPCM{
-				sampleRate: sampleRate,
-				channels:   2,
-				samples:    samples,
-				duration: time.Duration(
-					uint64(len(samples)/2) * uint64(time.Second) /
-						uint64(sampleRate),
-				),
-			}
-		}
 	}
 	// stream.end is a render ceiling, including long sampled release tails.
 	// Looping and completion need the actual last rendered frame, including
@@ -225,17 +211,6 @@ func finishLazyScoreDecode(
 			length = probed
 		}
 	}
-	// A sampled score needs a generous ceiling, but most effects still finish
-	// quickly. Retain whole-buffer playback for these short natural lengths.
-	if stream.end == uint64(sampleRate)*maxSMAFSeconds &&
-		stream.decoder.hasPCMWaves() && length <= uint64(sampleRate)*smafEagerRenderSeconds {
-		if samples := stream.renderUntil(nil, length); len(samples) != 0 {
-			return &decodedPCM{
-				sampleRate: sampleRate, channels: 2, samples: samples,
-				duration: time.Duration(uint64(len(samples)/2) * uint64(time.Second) / uint64(sampleRate)),
-			}
-		}
-	}
 	return &decodedPCM{
 		sampleRate: sampleRate,
 		channels:   2,
@@ -246,15 +221,9 @@ func finishLazyScoreDecode(
 	}
 }
 
-// smafEagerRenderSeconds bounds how long an FM score may be while still being
-// rendered whole at decode.
-//
-// It is deliberately just past the two-second pad every score carries, because
-// that pad is what a one-shot effect's stream.end is almost entirely made of:
-// a third-of-a-second hit sound ends at 2.0s and renders in well under a
-// millisecond. Rendering those whole is strictly better than probing them and
-// synthesizing again during playback, which would do the work twice.
-const smafEagerRenderSeconds = 3
+// Bound the initial allocation for an explicit whole-score render. Playback
+// uses finishLazyScoreDecode and does not allocate or synthesize this prefix.
+const smafRenderAllocationSeconds = 3
 
 func (decoder *smafDecoder) parse(data []byte) bool {
 	if !looksLikeSMAF(data) {
@@ -1287,7 +1256,7 @@ func (stream *smafRenderStream) render(
 	if output == nil && !silent {
 		if remaining := target - stream.cursor; remaining > 0 {
 			if stream.end == uint64(decoder.rate)*maxSMAFSeconds {
-				remaining = min(remaining, uint64(decoder.rate)*smafEagerRenderSeconds)
+				remaining = min(remaining, uint64(decoder.rate)*smafRenderAllocationSeconds)
 			}
 			output = make([]int16, 0, int(remaining)*2)
 		}

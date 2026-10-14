@@ -13,22 +13,25 @@ import (
 	"testing"
 )
 
+// Updated after sequence-end timing was corrected. PCM through each former
+// endpoint was verified unchanged; these hashes also cover the retained rest
+// and filter tail through the exact current endpoint.
 var issue350PCMReference = map[string]struct {
 	frames int
 	hash   string
 }{
-	"sound/s01.mmf": {2246453, "91b922177bc596266785dbe180653fe8adfc6fdc9bf099a7248175ccd5a2fa1f"},
-	"sound/s02.mmf": {101077, "87b94e9bfb9fe9877b40905ba18211b2a4a48babc160584c3c12d11191f948f9"},
-	"sound/s03.mmf": {143413, "8227e47a0babed656ea149dbac5e519b1e70dae408b6ecefc09d235a75059b8a"},
-	"sound/s04.mmf": {107427, "b7883b5ed160814370d2f99d795741ae26ab84d2cd26291d0766db6a61908ef7"},
-	"sound/s05.mmf": {112014, "94594a5a59dbcef363eafe058df237001f10efe0220f8f6fcc10d34aac5f5e42"},
-	"sound/s06.mmf": {101253, "6f6710422f978d6859dc6b9bf91595f39335c9fc8837c56dfce49240d9b63f58"},
-	"sound/s07.mmf": {170049, "bfb923da12337f9a44a75abc340f5b0b719250c5820679bae5ae143363a8e3dd"},
-	"sound/s08.mmf": {152056, "c295d32bf1b287d3229124089d7056ebe9e51d6e4a3ebf0b51a9c2dd73d309c1"},
-	"sound/s09.mmf": {1582484, "4a95bedd44060ddb1c2a394de418d29a9abb56e91062a622438c438869883998"},
-	"sound/s10.mmf": {121715, "1bee1078fe4374cb64d08e0732bd158314fdcae9b28ddebd638b7341e1315d5e"},
-	"sound/s11.mmf": {121362, "dc14728e3db28280b2ee6a0dddbbdafc377b0fcb8e9bac687df602aa763b6e64"},
-	"sound/s12.mmf": {97725, "979fcd90bdd4569fd3ba8c0a34ca05dbda7707dfa673c83cf94d5e90bb252665"},
+	"sound/s01.mmf": {2246806, "197247c7587364deb12c27fa3635b2b61dacc38db6d5780a2a9b5939daf05d3d"},
+	"sound/s02.mmf": {101430, "9461078e968afb8fb2604e2151a9193f598e7cec0d9353aea7030c42dc7ba81f"},
+	"sound/s03.mmf": {143766, "5bb8ef415caa5a5a38fb40f54574dd60ca8189b3920a0786353ffbd1eeb1ddc5"},
+	"sound/s04.mmf": {107780, "71a4fba207a70a6e1ce83bacac75385536682453b8feb1a2c113e8d583343c65"},
+	"sound/s05.mmf": {112366, "4df8adcbf09daa95bd65557aea2ab97da807fecaac77dbc9239743ab85116fb2"},
+	"sound/s06.mmf": {101606, "a7f24b3bd1e5aa914398a9a500cdbd25d5752e966df873194576daf786f0cbfa"},
+	"sound/s07.mmf": {170402, "7370bf791e4860ccc3329bc714ebd1c5ab3e9d56a2e5dd14838067a43d5e8419"},
+	"sound/s08.mmf": {152409, "10a4bbe41aa6803ce1e230dc65b9aabd85b604aed5af85f1ce15aafa7f5a1dca"},
+	"sound/s09.mmf": {1582837, "7af5049513effd15830f4fe19398ec105a7ce0b3c97dedd44967279778b2d9cf"},
+	"sound/s10.mmf": {122068, "37f2e3b79182e96af06a1b8363ad79827f63b311dba489bf6e94e080ff8dd1a5"},
+	"sound/s11.mmf": {121716, "6c40562cee8ba6c2c7b1da0a6a8871abd7f689852aedef59fef19e0405211164"},
+	"sound/s12.mmf": {98078, "ab04be6eaa7522163a9ec2012134b9036180bb76d1208685e6ec1d3c1b15f1d2"},
 }
 
 // The exact local #350 archive is optional: no authored game data is checked in.

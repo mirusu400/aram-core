@@ -58,9 +58,8 @@ func TestMediaSMAFPlaysAtItsNaturalLength(t *testing.T) {
 	check(t, err)
 	clip, err := media.CreateClip(owner, "audio/mmf", 0)
 	check(t, err)
-	// Four notes half a second apart, so the score's padded end lands past
-	// smafEagerRenderSeconds and decode takes the probe path rather than
-	// rendering it whole.
+	// Four notes half a second apart exercise natural-length probing and
+	// incremental playback through the ordinary media service.
 	sequence := []byte{
 		0x00, 0xb0, 0x07, 0x7f,
 		0x00, 0xc0, 0x00,
