@@ -359,6 +359,18 @@ type RaptorFramebufferGeometry struct {
 
 var RaptorFramebufferGeometries = []RaptorFramebufferGeometry{
 	{
+		// Anima places its dialogue panel at the bottom of the full 240x320
+		// surface. A second handset strip shifts it down and clips its text.
+		Key: RaptorTitleKey{
+			PackageSHA256: "3ff5948e235e86e9e6f490666b0389c05a5171aefd36729b73639be138875206",
+			AID:           "0003266D",
+			MainClass:     "Clet",
+		},
+		FramebufferWidth:  240,
+		FramebufferHeight: 320,
+		PrimaryHeight:     320,
+	},
+	{
 		// MapleStory Thief writes up to 24 rows beyond its 320-row screen.
 		// Reserve those rows so raw guest writes cannot corrupt heap objects.
 		Key: RaptorTitleKey{

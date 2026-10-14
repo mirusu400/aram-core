@@ -88,6 +88,7 @@ func (r *Runtime) recordRaptorJavaThrow(class string, site uint32) {
 func (r *Runtime) BeginGuestSlice() {
 	r.pendingJavaThrow = ""
 	r.resetJavaSafepointSlice()
+	r.clockPoll = clockPollState{}
 }
 
 // TakeUndeliveredJavaThrow reports the exception raised in the current slice
