@@ -953,7 +953,7 @@ func (r *Runtime) ReturnFromTrap(result guest.WIPIReturn) error {
 	if r.hostCallDepth != 0 {
 		frame = &r.hostCallScopes[r.hostCallDepth-1].frame
 	}
-	return cpu.ReturnHostCallFrame(r.CPU, frame, result.Low, result.High)
+	return guest.ReturnHostCallFrame(r.CPU, frame, result.Low, result.High)
 }
 
 func (r *Runtime) arg(index int) (uint32, error) {
@@ -1004,7 +1004,7 @@ func (r *Runtime) pushHostCallScope() (*wipiHostCallScope, error) {
 		return nil, fmt.Errorf("WIPI host-call nesting limit reached")
 	}
 	scope := &r.hostCallScopes[r.hostCallDepth]
-	if err := cpu.CaptureHostCallFrame(
+	if err := guest.CaptureHostCallFrame(
 		r.CPU,
 		&scope.frame,
 		cpu.HostCallFrameRequest{},
@@ -1031,7 +1031,7 @@ func (r *Runtime) ensureHostCallArguments(
 	if count > 4 {
 		request.StackWords = uint32(count - 4)
 	}
-	if err := cpu.CaptureHostCallFrame(r.CPU, &scope.frame, request); err != nil {
+	if err := guest.CaptureHostCallFrame(r.CPU, &scope.frame, request); err != nil {
 		return err
 	}
 	copy(scope.arguments[:4], scope.frame.Registers[:4])

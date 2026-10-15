@@ -688,6 +688,17 @@ func (r *Runtime) dispatchImport(
 		guestNS := int64(r.Public.Services.Clock.Monotonic())
 		defer func() { r.recordAudioImport(call, guestNS, dispatchErr) }()
 	}
+	return r.dispatchImportBody(ctx, key, call)
+}
+
+// The frame and audio defers belong to the boundary above. Keeping the many
+// dispatch exits here allows that boundary's cleanup to use open-coded defers
+// without changing the active frame, recording order or named error result.
+func (r *Runtime) dispatchImportBody(
+	ctx context.Context,
+	key raptorImportKey,
+	call raptorImportCall,
+) error {
 	if len(r.ImportTrace) < wipirt.MaxSavedEntries {
 		r.ImportTrace = append(r.ImportTrace, call)
 	} else {
@@ -838,7 +849,7 @@ func (r *Runtime) pushHostCallFrame() (*cpu.HostCallFrame, error) {
 		return nil, fmt.Errorf("Raptor host-call nesting limit reached")
 	}
 	frame := &r.hostCallFrames[r.hostCallDepth]
-	if err := cpu.CaptureHostCallFrame(
+	if err := guest.CaptureHostCallFrame(
 		r.CPU,
 		frame,
 		cpu.HostCallFrameRequest{},
