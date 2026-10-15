@@ -22,10 +22,12 @@ import (
 )
 
 const (
-	maxBREWInputEvents = 1024
-	maxBREWInputTrace  = 4096
-	brewFrameDuration  = 16 * time.Millisecond
-	maxBREWArchiveSize = int64(128 << 20)
+	maxBREWInputEvents    = 1024
+	maxBREWInputTrace     = 4096
+	brewFrameDuration     = 16 * time.Millisecond
+	brewKeyRepeatDelay    = 400 * time.Millisecond
+	brewKeyRepeatInterval = 100 * time.Millisecond
+	maxBREWArchiveSize    = int64(128 << 20)
 
 	// Qualcomm AEEVCodes.h starts handset virtual keys at AEE_AVK_BASE
 	// (0xe020). Keep these values explicit: applets compare EVT_KEY wParam
@@ -59,6 +61,7 @@ type brewMachine struct {
 	hasSaveData       bool
 	frame             *image.RGBA
 	input             []machinecore.InputEvent
+	heldKeys          map[uint32]brewHeldKey
 	inputTrace        []string
 	inputTraceDropped int
 	started           bool
@@ -72,6 +75,11 @@ type brewMachine struct {
 	audioCursorSample      uint64
 	audioCursorValid       bool
 	mediaOutputRevision    uint64
+}
+
+type brewHeldKey struct {
+	control    string
+	nextRepeat time.Duration
 }
 
 func (f Factory) createBREWMachine(ctx context.Context, source machinecore.Source) (machinecore.Machine, bool, error) {
@@ -236,6 +244,7 @@ func (m *brewMachine) Stop() error {
 		return fmt.Errorf("stop from %s: %w", m.state, ErrInvalidState)
 	}
 	m.resetBREWAudioLocked(m.now)
+	m.heldKeys = nil
 	m.state = machinecore.StateStopped
 	return nil
 }
@@ -262,6 +271,7 @@ func (m *brewMachine) Reset(ctx context.Context) error {
 		m.runtime = nil
 	}
 	m.input = nil
+	m.heldKeys = nil
 	m.inputTrace = nil
 	m.inputTraceDropped = 0
 	m.started = false
@@ -314,20 +324,18 @@ func (m *brewMachine) stepLocked(ctx context.Context) error {
 			}
 			continue
 		}
-		if !event.Pressed {
-			// BREW delivers EVT_KEY after a key is pressed/held and again
-			// immediately before EVT_KEY_RELEASE. Some applets handle only
-			// EVT_KEY, so a short tap must still produce that event.
-			if _, err := m.runtime.DispatchEvent(ctx, 0x100, key, 0); err != nil {
-				return m.executionErrorLocked(fmt.Sprintf("dispatch BREW key %q", event.Control), err)
-			}
-			if stopped, err := m.finishCloseRequestLocked(ctx); stopped || err != nil {
-				return err
-			}
-		}
 		kind := uint32(0x102)
 		if event.Pressed {
+			if _, held := m.heldKeys[key]; held {
+				continue
+			}
+			if m.heldKeys == nil {
+				m.heldKeys = make(map[uint32]brewHeldKey)
+			}
+			m.heldKeys[key] = brewHeldKey{control: event.Control, nextRepeat: m.now + brewKeyRepeatDelay}
 			kind = 0x101
+		} else {
+			delete(m.heldKeys, key)
 		}
 		if _, err := m.runtime.DispatchEvent(ctx, kind, key, 0); err != nil {
 			return m.executionErrorLocked(fmt.Sprintf("dispatch BREW input %q", event.Control), err)
@@ -335,8 +343,36 @@ func (m *brewMachine) stepLocked(ctx context.Context) error {
 		if stopped, err := m.finishCloseRequestLocked(ctx); stopped || err != nil {
 			return err
 		}
+		if event.Pressed {
+			// Legacy applets handle EVT_KEY rather than EVT_KEY_PRESS. Deliver
+			// it while the key is down, then repeat against deterministic time.
+			if _, err := m.runtime.DispatchEvent(ctx, 0x100, key, 0); err != nil {
+				return m.executionErrorLocked(fmt.Sprintf("dispatch BREW key %q", event.Control), err)
+			}
+			if stopped, err := m.finishCloseRequestLocked(ctx); stopped || err != nil {
+				return err
+			}
+		}
 	}
 	m.input = append(m.input[:0], m.input[due:]...)
+	keys := make([]uint32, 0, len(m.heldKeys))
+	for key, held := range m.heldKeys {
+		if m.now >= held.nextRepeat {
+			keys = append(keys, key)
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+	for _, key := range keys {
+		held := m.heldKeys[key]
+		if _, err := m.runtime.DispatchEvent(ctx, 0x100, key, 0); err != nil {
+			return m.executionErrorLocked(fmt.Sprintf("repeat BREW key %q", held.control), err)
+		}
+		if stopped, err := m.finishCloseRequestLocked(ctx); stopped || err != nil {
+			return err
+		}
+		held.nextRepeat += brewKeyRepeatInterval
+		m.heldKeys[key] = held
+	}
 	frame, presented, err := m.runtime.Framebuffer()
 	if err != nil {
 		m.state = machinecore.StateFaulted
@@ -363,6 +399,7 @@ func (m *brewMachine) stopAppletLocked(ctx context.Context) (bool, error) {
 	}
 	if closed {
 		m.input = nil
+		m.heldKeys = nil
 		m.state = machinecore.StateStopped
 	}
 	return closed, nil

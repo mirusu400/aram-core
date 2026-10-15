@@ -68,12 +68,13 @@ func TestRhythmStarRaptorHandsetPropertyRequiresExactPackage(t *testing.T) {
 	}
 }
 
-func TestZenoniaRaptorFullScreenGeometryRequiresExactPackage(t *testing.T) {
+func TestRaptorFullScreenGeometryRequiresExactPackage(t *testing.T) {
 	for _, test := range []struct {
 		name   string
 		digest string
 		aid    string
 	}{
+		{name: "Anima", digest: "3ff5948e235e86e9e6f490666b0389c05a5171aefd36729b73639be138875206", aid: "0003266D"},
 		{name: "Zenonia 1", digest: zenonia1RaptorSHA256, aid: "00027BAA"},
 		{name: "Zenonia 2", digest: zenonia2RaptorSHA256, aid: "0002C004"},
 	} {

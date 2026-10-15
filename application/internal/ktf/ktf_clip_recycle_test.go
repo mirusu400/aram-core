@@ -36,6 +36,9 @@ func TestKTFClipRecyclerIgnoresTheNullInstance(t *testing.T) {
 		if _, ok := runtime.clipServices[0x1000]; ok {
 			t.Fatalf("attempt %d: recycler kept the oldest real clip", attempt)
 		}
+		// Release this mapped fixture before the next attempt. Retaining all
+		// 64 heaps until test cleanup exceeds a 32-bit host's address space.
+		check(t, runtime.CPU.Close())
 	}
 }
 

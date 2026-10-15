@@ -9,6 +9,7 @@ import (
 )
 
 const (
+	yongman2ModuleSHA256        = "6c655333625da5b0f0ef78bff6ec23533572fb69f695afa3c756b885bef8577d"
 	swordMasterModuleSHA256     = "40344eff584388c6c78187e95f5d16bfbbb1971e59de57b481aeaf673e477645"
 	kashanModuleSHA256          = "ca382383e4654072f6ec7e65225a8270e67d4b10b5f6a4e2bc0687a0f40b2f2e"
 	yeolhyeolganghoModuleSHA256 = "5435150afb92668f8a670cfcc6f7ad18ec1e8ed17d220cbc6a834f24e80d7a86"
@@ -42,6 +43,27 @@ func patchBREWModule(module, imageData []byte) ([]byte, error) {
 
 func patchBREWModuleForDigest(digest string, module, imageData []byte) ([]byte, error) {
 	switch digest {
+	case yongman2ModuleSHA256:
+		// This build derives native row pointers from fixed handset addresses.
+		// Resolve those two configuration values
+		// through the mapped native display layout instead.
+		padding := (4 - len(imageData)%4) % 4
+		address := moduleBase - 8 + uint32(len(imageData)+padding)
+		branch, err := brewARMBranch(moduleBase+0x147e4, address)
+		if err != nil {
+			return nil, err
+		}
+		if err := replaceBREWInstructions(module, imageData, 0x147e4,
+			[]byte{0x10, 0x40, 0x2d, 0xe9}, branch,
+		); err != nil {
+			return nil, err
+		}
+		guard, err := yongman2NativeRows(address)
+		if err != nil {
+			return nil, err
+		}
+		imageData = append(imageData, make([]byte, padding)...)
+		imageData = append(imageData, guard...)
 	case swordMasterModuleSHA256:
 		// Ranking-screen teardown cancels its UI callback (0x16559), but
 		// leaves its network poller (0x166d1) queued with the same context.
@@ -169,6 +191,33 @@ func patchBREWModuleForDigest(digest string, module, imageData []byte) ([]byte, 
 		imageData = append(imageData, rummikubTileGuard()...)
 	}
 	return imageData, nil
+}
+
+func yongman2NativeRows(address uint32) ([]byte, error) {
+	guard := make([]byte, 48)
+	for i, word := range []uint32{
+		0xe3500001, // cmp r0, #1
+		0x8a000007, // bhi original
+		0xe59f1020, // ldr r1, display object
+		0xe591200c, // ldr r2, [r1, #12]
+		0xe5922010, // ldr r2, [r2, #16] ; native pixels
+		0xe3500000, // cmp r0, #0
+		0x15911010, // ldrne r1, [r1, #16] ; stride in pixels
+		0x10820081, // addne r0, r2, r1, lsl #1
+		0x01a00002, // moveq r0, r2
+		0xe12fff1e, // bx lr
+		0xe92d4010, // original: push {r4, lr}
+	} {
+		binary.LittleEndian.PutUint32(guard[i*4:], word)
+	}
+	branch, err := brewARMBranch(address+44, moduleBase+0x147e8)
+	if err != nil {
+		return nil, err
+	}
+	copy(guard[44:], branch)
+	guard = append(guard, 0, 0, 0, 0)
+	binary.LittleEndian.PutUint32(guard[48:], displayObject)
+	return guard, nil
 }
 
 func rummikubTileGuard() []byte {

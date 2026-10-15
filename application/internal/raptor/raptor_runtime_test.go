@@ -110,6 +110,7 @@ func TestRaptorWIPIImportsResolveToPublicCatalog(t *testing.T) {
 		904:   "MC_utilInetAddrInt",
 		905:   "MC_utilInetAddrStr",
 		2000:  "MC_netSocket",
+		1019:  "atoi",
 		1029:  "strcpy",
 		1030:  "strncpy",
 		1031:  "strcat",

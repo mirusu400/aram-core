@@ -207,10 +207,10 @@ func (m *Machine) runWIPISlice(
 				PC:           nextPC,
 			}
 		}
-		if m.raptor != nil && m.raptor.TakeJavaYield() {
-			// A Raptor Java thread parked itself in Thread.sleep. End the
-			// slice so the rest of the budget goes to the other threads and
-			// to the frame instead of spinning inside the sleeping one.
+		if m.raptor != nil && (m.raptor.TakeJavaYield() || m.raptor.TakeClockPollYield()) {
+			// A Java thread parked itself, or a resumable Clet callback is
+			// polling a clock that advances with the next frame. Save its
+			// context and let the frame pump advance virtual time.
 			return cpu.Result{
 				Reason:       cpu.StopBudget,
 				Instructions: instructions,
