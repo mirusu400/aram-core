@@ -950,12 +950,12 @@ func ktfRegisterJavaClass(ctx context.Context, runtime *Runtime) (uint32, error)
 	if err != nil {
 		return 0, err
 	}
-	words, err := runtime.ReadWords(class, 5)
-	if err != nil {
+	var words [5]uint32
+	if err := runtime.readInspectionWords(class, words[:]); err != nil {
 		return 0, err
 	}
-	descriptor, err := runtime.ReadWords(words[2], 9)
-	if err != nil {
+	var descriptor [9]uint32
+	if err := runtime.readInspectionWords(words[2], descriptor[:]); err != nil {
 		return 0, err
 	}
 	name, err := runtime.readCString(descriptor[0], 1024)
@@ -963,7 +963,16 @@ func ktfRegisterJavaClass(ctx context.Context, runtime *Runtime) (uint32, error)
 		return 0, err
 	}
 	runtime.rememberRegisteredJavaClass(name, class)
-	inspected, inspectErr := runtime.InspectJavaClass(class)
+	// Remembering the name must precede method inspection even if the latter
+	// fails. It only changes host bookkeeping, so the headers above are still
+	// current. Keep reading the name afresh on every registration: its bytes
+	// may change without the descriptor's name pointer changing.
+	runtime.ensureJavaInspectionCache()
+	inspected, memoized := runtime.inspectMemo.lookup(class)
+	var inspectErr error
+	if !memoized {
+		inspected, inspectErr = runtime.inspectJavaClassWords(class, &words, &descriptor)
+	}
 	if inspectErr != nil {
 		return 0, inspectErr
 	}

@@ -1034,9 +1034,9 @@ func (r *Runtime) EnsureJavaClass(name string) (uint32, error) {
 		// looks like end to end (descriptor, name string, and all); reuse
 		// that check instead of a narrower one that only catches a zeroed
 		// descriptor and waves a wild one through as "live".
-		if _, err := r.InspectJavaClass(class); err == nil {
+		if inspected, err := r.InspectJavaClass(class); err == nil {
 			if _, ok := HostJavaClassSpecs[name]; ok {
-				if err := r.augmentHostJavaClass(class, name); err != nil {
+				if err := r.augmentHostJavaClass(inspected, name); err != nil {
 					return 0, err
 				}
 			}
@@ -1130,16 +1130,18 @@ func (r *Runtime) EnsureJavaClass(name string) (uint32, error) {
 	return class, nil
 }
 
-func (r *Runtime) augmentHostJavaClass(classAddress uint32, name string) error {
+// class was inspected immediately before this call, with no intervening guest
+// execution or metadata writes. Do not replace that live check with a durable
+// "already augmented" flag: both the guest declarations and host specs can change.
+func (r *Runtime) augmentHostJavaClass(class JavaClass, name string) error {
 	spec, ok := HostJavaClassSpecs[name]
 	if !ok {
 		return nil
 	}
-	class, err := r.InspectJavaClass(classAddress)
-	if err != nil {
-		return err
+	r.hostJavaClass[class.Address] = true
+	if r.hostJavaClassComplete(class, name, spec) {
+		return nil
 	}
-	r.hostJavaClass[classAddress] = true
 	for _, wanted := range spec.methods {
 		if deferKTFHostCompatibilityMethod(spec, wanted) {
 			continue
@@ -1150,8 +1152,11 @@ func (r *Runtime) augmentHostJavaClass(classAddress uint32, name string) error {
 			wanted.descriptor,
 		)
 		if found && (method.Body != 0 || method.NativeBody != 0) {
+			if name != "java/util/Enumeration" {
+				continue
+			}
 			_, bodyIsHost := r.hostCalls[method.Body&^1]
-			if name != "java/util/Enumeration" || bodyIsHost {
+			if bodyIsHost {
 				continue
 			}
 		}
@@ -1162,12 +1167,46 @@ func (r *Runtime) augmentHostJavaClass(classAddress uint32, name string) error {
 		); err != nil {
 			return err
 		}
-		class, err = r.InspectJavaClass(classAddress)
+		inspected, err := r.InspectJavaClass(class.Address)
 		if err != nil {
 			return err
 		}
+		class = inspected
 	}
 	return nil
+}
+
+// Classes constructed by EnsureJavaClass declare the non-deferred spec methods
+// in order. Verify that entire shape on each call to avoid the quadratic lookup
+// loop once construction is complete. Any extra, reordered, missing or bodyless
+// declaration uses the original augmentation path; in particular an extra last
+// duplicate must not be hidden because method lookup gives the last entry priority.
+func (r *Runtime) hostJavaClassComplete(
+	class JavaClass,
+	name string,
+	spec ktfHostJavaClassSpec,
+) bool {
+	index := 0
+	for _, wanted := range spec.methods {
+		if deferKTFHostCompatibilityMethod(spec, wanted) {
+			continue
+		}
+		if index >= len(class.Methods) {
+			return false
+		}
+		method := class.Methods[index]
+		if method.Name != wanted.name || method.Descriptor != wanted.descriptor ||
+			(method.Body == 0 && method.NativeBody == 0) {
+			return false
+		}
+		if name == "java/util/Enumeration" {
+			if _, bodyIsHost := r.hostCalls[method.Body&^1]; !bodyIsHost {
+				return false
+			}
+		}
+		index++
+	}
+	return index == len(class.Methods)
 }
 
 func deferKTFHostCompatibilityMethod(

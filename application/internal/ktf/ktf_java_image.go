@@ -922,11 +922,71 @@ func drawKTFBlitOverCached(
 	}
 }
 
+// drawKTFRGBAOver keeps mutable RGBA images out of the immutable sprite cache.
+// Most pixels in these canvases are opaque or untouched transparent black, so
+// they need no Porter-Duff arithmetic. Partial alpha (including non-premultiplied
+// raw RGBA bytes) keeps drawCopyOver's exact byte results and traversal.
+func drawKTFRGBAOver(dst *image.RGBA, rect image.Rectangle, source *image.RGBA, sourcePoint image.Point) {
+	origin := rect.Min
+	rect = rect.Intersect(dst.Bounds())
+	rect = rect.Intersect(source.Bounds().Add(origin.Sub(sourcePoint)))
+	if rect.Empty() {
+		return
+	}
+	sourcePoint = sourcePoint.Add(rect.Min.Sub(origin))
+	width, height := rect.Dx(), rect.Dy()
+	destinationOffset := dst.PixOffset(rect.Min.X, rect.Min.Y)
+	sourceOffset := source.PixOffset(sourcePoint.X, sourcePoint.Y)
+	destinationStep, sourceStep := dst.Stride, source.Stride
+	first, limit, step := 0, width*4, 4
+	if rect.Min.Y > sourcePoint.Y || rect.Min.Y == sourcePoint.Y && rect.Min.X > sourcePoint.X {
+		// Match image/draw even for overlapping images or distinct subimages
+		// sharing pixels: read and write each pixel in the same direction.
+		destinationOffset += (height - 1) * dst.Stride
+		sourceOffset += (height - 1) * source.Stride
+		destinationStep, sourceStep = -dst.Stride, -source.Stride
+		first, limit, step = (width-1)*4, -4, -4
+	}
+	for row := 0; row < height; row++ {
+		dpix := dst.Pix[destinationOffset : destinationOffset+width*4]
+		spix := source.Pix[sourceOffset : sourceOffset+width*4]
+		for offset := first; offset != limit; offset += step {
+			s := spix[offset : offset+4 : offset+4]
+			if s[3] == 0xff {
+				copy(dpix[offset:offset+4], s)
+				continue
+			}
+			if s[3] == 0 && s[0]|s[1]|s[2] == 0 {
+				continue
+			}
+			// Read all source channels before writing any destination byte:
+			// distinct views can alias even at a non-pixel-aligned offset.
+			sr, sg, sb, sa := s[0], s[1], s[2], s[3]
+			inverse := uint32(255 - sa)
+			d := dpix[offset : offset+4 : offset+4]
+			d[0] = ktfRGBAOverChannel(d[0], sr, inverse)
+			d[1] = ktfRGBAOverChannel(d[1], sg, inverse)
+			d[2] = ktfRGBAOverChannel(d[2], sb, inverse)
+			d[3] = ktfRGBAOverChannel(d[3], sa, inverse)
+		}
+		destinationOffset += destinationStep
+		sourceOffset += sourceStep
+	}
+}
+
+func ktfRGBAOverChannel(destination, source byte, inverse uint32) byte {
+	// drawCopyOver computes floor((floor(d*inverse*257/255)+s*257)/256).
+	// The inner truncation cannot cross an integer boundary of the outer /256,
+	// so this is exactly floor((d*inverse+s*255)*257/(255*256)). The numerator
+	// is at most 130050*257, fitting uint32 even for invalid premultiplied RGB;
+	// the final byte conversion preserves image/draw's wraparound there too.
+	return byte((uint32(destination)*inverse + uint32(source)*255) * 257 / (255 * 256))
+}
+
 // drawKTFJavaImageFast takes over from draw.Draw exactly when it would have
-// reached drawNRGBAOver: an *image.NRGBA source blitted draw.Over onto an
-// *image.RGBA destination, which is what every KTF Java sprite blit is. Any
-// other pairing (a mutable canvas as the source, XOR mode's own draw.Image
-// wrapper, whatever else drawKTFJavaImageRaw might one day be asked to draw)
+// reached drawCopyOver or drawNRGBAOver: an RGBA canvas or NRGBA sprite blitted
+// draw.Over onto an *image.RGBA destination. Any other pairing (XOR mode's own
+// draw.Image wrapper, whatever else drawKTFJavaImageRaw might be asked to draw)
 // returns false and drawKTFJavaImageRaw falls back to the original call
 // unconditionally, rather than risk a half-handled case.
 func (r *Runtime) drawKTFJavaImageFast(
@@ -944,6 +1004,10 @@ func (r *Runtime) drawKTFJavaImageFast(
 	dst, ok := state.Target.(*image.RGBA)
 	if !ok {
 		return false
+	}
+	if rgba, ok := source.(*image.RGBA); ok {
+		drawKTFRGBAOver(dst, clippedRect, rgba, sourcePoint)
+		return true
 	}
 	nrgba, ok := source.(*image.NRGBA)
 	if !ok {

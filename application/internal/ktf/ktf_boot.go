@@ -814,8 +814,15 @@ func (m *ktfInspectMemo) store(address uint32, class JavaClass) {
 // readInspectionWords is readWords without the per-call slice allocations;
 // class and method inspection runs on every host Java bridge call.
 func (r *Runtime) readInspectionWords(address uint32, words []uint32) error {
-	var buffer [36]byte
-	data := buffer[:len(words)*4]
+	var data []byte
+	if r.javaInspectionScratchBusy {
+		var nested [36]byte
+		data = nested[:len(words)*4]
+	} else {
+		r.javaInspectionScratchBusy = true
+		defer func() { r.javaInspectionScratchBusy = false }()
+		data = r.javaInspectionScratch[:len(words)*4]
+	}
 	if err := r.CPU.ReadMemory(address, data); err != nil {
 		return fmt.Errorf("read KTF structure at 0x%08x: %w", address, err)
 	}
@@ -841,9 +848,21 @@ func (r *Runtime) InspectJavaClass(address uint32) (JavaClass, error) {
 	); err != nil {
 		return JavaClass{}, err
 	}
+	return r.inspectJavaClassWords(address, &classWords, &descriptorWords)
+}
+
+// inspectJavaClassWords finishes an inspection using headers read during the
+// same synchronous operation. Its caller has initialized the inspection cache
+// and checked the resolution memo. Reusing registration's headers is safe only
+// before any guest/host code capable of rewriting them is run.
+func (r *Runtime) inspectJavaClassWords(
+	address uint32,
+	classWords *[5]uint32,
+	descriptorWords *[9]uint32,
+) (JavaClass, error) {
 	if cached, ok := r.javaClassInspections[address]; ok &&
-		cached.classWords == classWords &&
-		cached.descriptorWords == descriptorWords {
+		cached.classWords == *classWords &&
+		cached.descriptorWords == *descriptorWords {
 		r.inspectMemo.store(address, cached.class)
 		return cached.class, nil
 	}
@@ -886,8 +905,8 @@ func (r *Runtime) InspectJavaClass(address uint32) (JavaClass, error) {
 			// slice copies instead of writing into the cached array.
 			Methods: methods[:len(methods):len(methods)],
 		},
-		classWords:      classWords,
-		descriptorWords: descriptorWords,
+		classWords:      *classWords,
+		descriptorWords: *descriptorWords,
 	}
 	r.javaClassInspections[address] = entry
 	r.inspectMemo.store(address, entry.class)

@@ -187,6 +187,12 @@ type Runtime struct {
 	nativeSignatures     map[uint32]*ktfNativeSignatureMatches
 	nativeSignatureGen   uint64
 	javaClassInspections map[uint32]*ktfJavaClassInspection
+	// Inspection reads decode their bytes before doing any more runtime work.
+	// Keep that buffer here so passing it to a backend does not allocate on
+	// every read. A backend may re-enter an inspection while reading, so a
+	// nested call uses its own buffer until the outer read releases this one.
+	javaInspectionScratch     [36]byte
+	javaInspectionScratchBusy bool
 	// textSurfaceScratch is the reusable RGBA conversion buffer the text draw
 	// path reads a surface back through.
 	textSurfaceScratch []byte

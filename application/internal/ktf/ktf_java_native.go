@@ -812,539 +812,551 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 		// The handler below is free to write guest memory, so the resolution
 		// window ends here rather than at the end of the call.
 		runtime.inspectMemo.reset()
-		switch className {
-		case "java/lang/Object":
-			switch name + descriptor {
-			case "<init>()V", "finalize()V":
-				return 0, nil
-			case "notify()V":
-				return 0, runtime.notifyJavaObject(registers[1], false)
-			case "notifyAll()V":
-				return 0, runtime.notifyJavaObject(registers[1], true)
-			case "wait()V":
-				return 0, runtime.waitJavaObject(registers[1], 0, 0)
-			case "wait(J)V", "wait(JI)V":
-				millis := int64(uint64(registers[3])<<32 | uint64(registers[2]))
-				nanos := int32(0)
-				if descriptor == "(JI)V" {
-					nanos = int32(registers[4])
-				}
-				return 0, runtime.waitJavaObject(registers[1], millis, nanos)
-			case "getClass()Ljava/lang/Class;":
-				if registers[1] == 0 {
-					return 0, nil
-				}
-				classAddress, err := runtime.ReadU32(registers[1] + 4)
-				if err != nil {
-					return 0, err
-				}
-				return runtime.javaClassObject(classAddress)
-			case "equals(Ljava/lang/Object;)Z":
-				if registers[1] == registers[2] {
-					return 1, nil
-				}
-				return 0, nil
-			case "hashCode()I":
-				return registers[1], nil
-			case "clone()Ljava/lang/Object;":
-				return registers[1], nil
-			case "toString()Ljava/lang/String;":
-				return runtime.NewJavaString(runtime.javaObjectString(registers[1]))
-			}
-		case "java/lang/Class":
-			return runtime.handleClassMethod(ctx, name, descriptor)
-		case "java/io/InputStream", "java/io/ByteArrayInputStream",
-			"java/io/DataInputStream":
-			return runtime.handleInputStreamMethod(ctx, name, descriptor)
-		case "java/io/Reader", "java/io/InputStreamReader":
-			return runtime.handleInputStreamReaderMethod(name, descriptor)
-		case "java/io/ByteArrayOutputStream":
-			return runtime.handleByteArrayOutputStreamMethod(name, descriptor)
-		case "java/io/OutputStream", "java/io/DataOutputStream":
-			return runtime.handleOutputStreamMethod(name, descriptor)
-		case "java/io/PrintStream":
-			return runtime.handlePrintStreamMethod(name, descriptor)
-		case "java/lang/String":
-			return runtime.handleStringMethod(name, descriptor)
-		case "java/lang/StringBuffer":
-			return runtime.handleStringBufferMethod(name, descriptor)
-		case "java/lang/Integer":
-			return runtime.handleIntegerMethod(name, descriptor)
-		case "java/lang/Long":
-			return runtime.handleLongMethod(name, descriptor)
-		case "java/lang/Byte":
-			return runtime.handleByteMethod(name, descriptor)
-		case "java/lang/Boolean":
-			return runtime.handleBooleanMethod(name, descriptor)
-		case "java/lang/Character":
-			return runtime.handleCharacterMethod(name, descriptor)
-		case "java/lang/Short":
-			return runtime.handleShortMethod(name, descriptor)
-		case "java/lang/Float":
-			return runtime.handleFloatMethod(name, descriptor)
-		case "java/lang/Double":
-			return runtime.handleDoubleMethod(name, descriptor)
-		case "java/io/Writer", "java/io/OutputStreamWriter":
-			return runtime.handleOutputStreamWriterMethod(name, descriptor)
-		case "java/lang/Math":
-			return runtime.handleMathMethod(name, descriptor)
-		case "java/lang/Thread":
-			return runtime.handleThreadMethod(ctx, name, descriptor)
-		case "java/lang/System":
-			switch name + descriptor {
-			case "arraycopy(Ljava/lang/Object;ILjava/lang/Object;II)V":
-				return 0, runtime.javaArrayCopy(
-					registers[1],
-					registers[2],
-					registers[3],
-					registers[4],
-					registers[5],
-				)
-			case "currentTimeMillis()J":
-				return runtime.javaLongResult(
-					runtime.wallReadMS(),
-				), nil
-			case "gc()V":
-				runtime.requestJavaHeapCollection()
-				return 0, nil
-			case "getProperty(Ljava/lang/String;)Ljava/lang/String;":
-				if registers[1] == 0 {
-					return 0, runtime.raiseHostJavaException(
-						"java/lang/NullPointerException",
-					)
-				}
-				key := runtime.javaText(registers[1])
-				if key == "" {
-					return 0, runtime.raiseHostJavaException(
-						"java/lang/IllegalArgumentException",
-					)
-				}
-				value, ok := runtime.javaSystemProperty(key)
-				if !ok {
-					return 0, nil
-				}
-				return runtime.NewJavaString(value)
-			case "exit(I)V":
-				runtime.requestJavaTermination(0)
-				return 0, nil
-			case "identityHashCode(Ljava/lang/Object;)I":
-				return registers[1], nil
-			}
-		case "java/lang/Runtime":
-			switch name + descriptor {
-			case "getRuntime()Ljava/lang/Runtime;":
-				return runtime.ensureJavaRuntime()
-			case "freeMemory()J":
-				var free uint64
-				for _, block := range runtime.Heap.Root().Free {
-					free += uint64(block.Size)
-				}
-				return runtime.javaLongResult(free), nil
-			case "totalMemory()J":
-				return runtime.javaLongResult(uint64(guest.HeapSize)), nil
-			case "gc()V":
-				runtime.requestJavaHeapCollection()
-				return 0, nil
-			case "exit(I)V":
-				runtime.requestJavaTermination(0)
-				return 0, nil
-			}
-		case "java/util/Calendar", "java/util/GregorianCalendar":
-			return runtime.handleCalendarMethod(name, descriptor)
-		case "java/util/Random":
-			return runtime.handleRandomMethod(name, descriptor)
-		case "java/util/Date":
-			return runtime.handleDateMethod(name, descriptor)
-		case "java/util/Vector", "java/util/Stack":
-			return runtime.handleVectorMethod(name, descriptor)
-		case "java/util/Hashtable":
-			return runtime.handleHashtableMethod(name, descriptor)
-		case "java/util/Enumeration":
-			return runtime.handleEnumerationMethod(name, descriptor)
-		case "java/util/Timer", "java/util/TimerTask":
-			return runtime.handleTimerMethod(ctx, name, descriptor)
-		case "java/util/TimeZone", "java/util/SimpleTimeZone":
-			return runtime.handleTimeZoneMethod(name, descriptor)
-		case "org/kwis/msp/lcdui/Card":
-			switch name + descriptor {
-			case "<init>()V", "<init>(I)V", "<init>(Z)V":
-				if err := runtime.initializeCard(registers[1], 0); err != nil {
-					return 0, err
-				}
-				if descriptor == "(Z)V" {
-					runtime.lwcComponent(registers[1]).transparent =
-						registers[2] != 0
-				}
-				return 0, nil
-			case "<init>(Lorg/kwis/msp/lcdui/Display;)V":
-				if err := runtime.initializeCard(
-					registers[1],
-					registers[2],
-				); err != nil {
-					return 0, err
-				}
-				return 0, nil
-			case "<init>(IIII)V":
-				return 0, runtime.configureCard(
-					registers[1], 0,
-					registers[2], registers[3], registers[4], registers[5],
-				)
-			case "<init>(Lorg/kwis/msp/lcdui/Display;IIII)V",
-				"<init>(Lorg/kwis/msp/lcdui/Display;IIIIZ)V":
-				if err := runtime.configureCard(
-					registers[1], registers[2],
-					registers[3], registers[4], registers[5], registers[6],
-				); err != nil {
-					return 0, err
-				}
-				if descriptor ==
-					"(Lorg/kwis/msp/lcdui/Display;IIIIZ)V" {
-					runtime.lwcComponent(registers[1]).transparent =
-						registers[7] != 0
-				}
-				return 0, nil
-			case "getDisplay()Lorg/kwis/msp/lcdui/Display;":
-				return runtime.readJavaFieldWord(registers[1], 4)
-			case "getWidth()I":
-				return runtime.readJavaFieldWord(registers[1], 16)
-			case "getHeight()I":
-				return runtime.readJavaFieldWord(registers[1], 20)
-			case "getX()I":
-				return runtime.readJavaFieldWord(registers[1], 8)
-			case "getY()I":
-				return runtime.readJavaFieldWord(registers[1], 12)
-			case "isShown()Z":
-				return 1, nil
-			case "repaint(IIII)V", "repaint()V":
-				card := registers[1]
-				runtime.dirtyCards[card] = true
-				if runtime.DeferThreads && runtime.activeTask != nil {
-					runtime.deferCardPaint(runtime.activeTask, card, false)
-				}
-				return 0, nil
-			case "serviceRepaints()V":
-				return 0, runtime.serviceCardRepaints(ctx, registers[1])
-			case "showNotify(Z)V", "setCanvas(Ljavax/microedition/lcdui/Canvas;)V":
-				return 0, nil
-			case "keyNotify(II)Z", "pointerNotify(III)Z":
-				return 0, nil
-			case "move(II)V":
-				if err := runtime.WriteJavaFieldWord(
-					registers[1],
-					8,
-					registers[2],
-				); err != nil {
-					return 0, err
-				}
-				if err := runtime.WriteJavaFieldWord(
-					registers[1],
-					12,
-					registers[3],
-				); err != nil {
-					return 0, err
-				}
-				return 0, nil
-			case "resize(II)V":
-				if err := runtime.WriteJavaFieldWord(
-					registers[1],
-					16,
-					registers[2],
-				); err != nil {
-					return 0, err
-				}
-				if err := runtime.WriteJavaFieldWord(
-					registers[1],
-					20,
-					registers[3],
-				); err != nil {
-					return 0, err
-				}
-				return 0, nil
-			}
-		case "org/kwis/msp/lcdui/Font":
-			return runtime.handleFontMethod(name, descriptor)
-		case "org/kwis/msp/lcdui/Image":
-			return runtime.handleImageMethod(name, descriptor)
-		case "org/kwis/msp/lcdui/AnimateImage":
-			return runtime.handleAnimateImageMethod(name, descriptor)
-		case "org/kwis/msp/lcdui/Graphics":
-			return runtime.handleGraphicsMethod(name, descriptor)
-		case "org/kwis/msp/media/Volume":
-			return runtime.handleWIPI2VolumeMethod(name, descriptor)
-		case "org/kwis/msf/io/Network":
+		return dispatchKTFHostJavaMethod(ctx, runtime, className, name, descriptor, registers)
+	}
+}
+
+// Keep the cleanup-owning bridge small: a dispatcher with many returns prevents
+// the compiler from open-coding its defers. The body still runs inside the same
+// argument scope, after receiver resolution and its read-only memo have ended.
+func dispatchKTFHostJavaMethod(
+	ctx context.Context,
+	runtime *Runtime,
+	className, name, descriptor string,
+	registers []uint32,
+) (uint32, error) {
+	switch className {
+	case "java/lang/Object":
+		switch name + descriptor {
+		case "<init>()V", "finalize()V":
 			return 0, nil
-		case "org/kwis/msp/media/BaseClip", "org/kwis/msp/media/Clip",
-			"org/kwis/msp/media/Player", "org/kwis/msp/media/Camera",
-			"org/kwis/msp/media/StillClip", "org/kwis/msp/media/VideoClip":
-			return runtime.handleMediaMethodContext(ctx, name, descriptor)
-		case "java/lang/Throwable":
-			return runtime.handleThrowableMethod(name, descriptor)
-		case "org/kwis/msp/handset/HandsetProperty":
-			switch name + descriptor {
-			case "getSystemProperty(Ljava/lang/String;)Ljava/lang/String;":
-				key := runtime.javaStringValue(registers[1])
-				value := runtime.handsetSystemProperty(key)
-				runtime.trace("java_handset_property:" + key + "=" + value)
-				return runtime.NewJavaString(value)
-			case "setSystemProperty(Ljava/lang/String;Ljava/lang/String;)Z":
-				key := strings.ToUpper(strings.TrimSpace(
-					runtime.javaStringValue(registers[1]),
-				))
-				value := runtime.javaStringValue(registers[2])
-				runtime.wipicSystemProperties[key] = value
-				runtime.trace("java_handset_property_set:" + key)
+		case "notify()V":
+			return 0, runtime.notifyJavaObject(registers[1], false)
+		case "notifyAll()V":
+			return 0, runtime.notifyJavaObject(registers[1], true)
+		case "wait()V":
+			return 0, runtime.waitJavaObject(registers[1], 0, 0)
+		case "wait(J)V", "wait(JI)V":
+			millis := int64(uint64(registers[3])<<32 | uint64(registers[2]))
+			nanos := int32(0)
+			if descriptor == "(JI)V" {
+				nanos = int32(registers[4])
+			}
+			return 0, runtime.waitJavaObject(registers[1], millis, nanos)
+		case "getClass()Ljava/lang/Class;":
+			if registers[1] == 0 {
+				return 0, nil
+			}
+			classAddress, err := runtime.ReadU32(registers[1] + 4)
+			if err != nil {
+				return 0, err
+			}
+			return runtime.javaClassObject(classAddress)
+		case "equals(Ljava/lang/Object;)Z":
+			if registers[1] == registers[2] {
 				return 1, nil
 			}
-		case "org/kwis/msp/lcdui/Jlet":
-			return runtime.handleJletMethod(name, descriptor)
-		case "org/kwis/msp/lcdui/EventQueue":
-			return runtime.handleEventQueueMethod(ctx, name, descriptor)
-		case "org/kwis/msp/lcdui/DisplayProxy":
-			return runtime.handleDisplayMethod(ctx, name, descriptor)
-		case "org/kwis/msp/lcdui/InputMethodHandler":
-			return runtime.handleInputMethodHandlerMethod(name, descriptor)
-		case "org/kwis/msp/lcdui/Main":
-			// The host boots titles through startApp directly; the Main
-			// wrapper never has work to do.
 			return 0, nil
-		case "com/ktf/kfc/GForm":
-			return 0, nil
-		case "org/kwis/msp/handset/BackLight":
-			switch name + descriptor {
-			case "alwaysOn()V", "on()V", "on(III)V":
-				return 0, runtime.Services.Device.SetBacklight(
-					true,
-					0,
-					runtime.Services.Clock.Monotonic(),
-				)
-			case "off()V", "before()V":
-				return 0, runtime.Services.Device.SetBacklight(
-					false,
-					0,
-					runtime.Services.Clock.Monotonic(),
-				)
-			}
-			return 0, nil
-		case "org/kwis/msp/handset/LED":
-			switch name + descriptor {
-			case "<init>()V":
-				return 0, nil
-			case "set(I)V", "set(I)I":
-				count := runtime.Services.Device.Config().LEDCount
-				for index := uint8(0); index < count; index++ {
-					value := int32(0)
-					if registers[1]&(uint32(1)<<index) != 0 {
-						value = 1
-					}
-					if err := runtime.Services.Device.SetLED(index, value); err != nil {
-						return 0, err
-					}
-				}
-				if descriptor == "(I)I" {
-					return registers[1], nil
-				}
-				return 0, nil
-			case "get()I":
-				var mask uint32
-				count := runtime.Services.Device.Config().LEDCount
-				for index := uint8(0); index < count; index++ {
-					value, err := runtime.Services.Device.LED(index)
-					if err != nil {
-						return 0, err
-					}
-					if value != 0 {
-						mask |= uint32(1) << index
-					}
-				}
-				return mask, nil
-			case "getCount()I":
-				return uint32(runtime.Services.Device.Config().LEDCount), nil
-			case "getSupportColor(I)[I":
-				if registers[1] >= uint32(runtime.Services.Device.Config().LEDCount) {
-					return 0, runtime.raiseHostJavaException("java/io/IOException")
-				}
-				return runtime.newJavaIntArray([]uint32{
-					0x000000, 0xff0000, 0x00ff00, 0x0000ff, 0xffffff,
-				})
-			case "getColor(I)I":
-				value, err := runtime.Services.Device.LED(uint8(registers[1]))
-				if err != nil {
-					return 0, runtime.raiseHostJavaException("java/io/IOException")
-				}
-				return uint32(value), nil
-			case "setColor(II)I":
-				rgb := registers[2] & 0x00ffffff
-				if err := runtime.Services.Device.SetLED(uint8(registers[1]), int32(rgb)); err != nil {
-					return 0, runtime.raiseHostJavaException("java/io/IOException")
-				}
-				return rgb, nil
-			}
-			return 0, nil
-		case "org/kwis/msp/handset/Call":
-			return runtime.handleCallMethod(name, descriptor)
-		case "org/kwis/msp/handset/Address", "org/kwis/msp/handset/AddressBook":
-			return runtime.handleWIPI2AddressMethod(className, name, descriptor)
-		case "org/kwis/msp/handset/StationLocationInfo",
-			"org/kwis/msp/handset/GPSConfig",
-			"org/kwis/msp/handset/GPSLocationInfo",
-			"org/kwis/msp/handset/GPSProvider":
-			return runtime.handleWIPI2LocationMethod(ctx, className, name, descriptor)
-		case "org/kwis/msp/lwc/Component",
-			"org/kwis/msp/lwc/ContainerComponent",
-			"org/kwis/msp/lwc/ShellComponent",
-			"org/kwis/msp/lwc/FormComponent",
-			"org/kwis/msp/lwc/AnnunciatorComponent",
-			"org/kwis/msp/lwc/TextComponent",
-			"org/kwis/msp/lwc/TextBoxComponent",
-			"org/kwis/msp/lwc/TextFieldComponent",
-			"org/kwis/msp/lwc/LabelComponent",
-			"org/kwis/msp/lwc/ProgressComponent",
-			"org/kwis/msp/lwc/DialogComponent",
-			"org/kwis/msp/lwc/ButtonComponent",
-			"org/kwis/msp/lwc/CheckboxComponent",
-			"org/kwis/msp/lwc/CheckboxGroup",
-			"org/kwis/msp/lwc/ComboComponent",
-			"org/kwis/msp/lwc/Command",
-			"org/kwis/msp/lwc/CommandBarComponent",
-			"org/kwis/msp/lwc/DateFieldComponent",
-			"org/kwis/msp/lwc/ImageComponent",
-			"org/kwis/msp/lwc/ListComponent",
-			"org/kwis/msp/lwc/ListItemComponent",
-			"org/kwis/msp/lwc/ProxyCard",
-			"org/kwis/msp/lwc/ScrollbarComponent",
-			"org/kwis/msp/lwc/TickerComponent",
-			"org/kwis/msp/lwc/TextComponent$ModeViewer":
-			return runtime.handleLWCMethod(
-				ctx,
-				className,
-				name,
-				descriptor,
-				registers,
+		case "hashCode()I":
+			return registers[1], nil
+		case "clone()Ljava/lang/Object;":
+			return registers[1], nil
+		case "toString()Ljava/lang/String;":
+			return runtime.NewJavaString(runtime.javaObjectString(registers[1]))
+		}
+	case "java/lang/Class":
+		return runtime.handleClassMethod(ctx, name, descriptor)
+	case "java/io/InputStream", "java/io/ByteArrayInputStream",
+		"java/io/DataInputStream":
+		return runtime.handleInputStreamMethod(ctx, name, descriptor)
+	case "java/io/Reader", "java/io/InputStreamReader":
+		return runtime.handleInputStreamReaderMethod(name, descriptor)
+	case "java/io/ByteArrayOutputStream":
+		return runtime.handleByteArrayOutputStreamMethod(name, descriptor)
+	case "java/io/OutputStream", "java/io/DataOutputStream":
+		return runtime.handleOutputStreamMethod(name, descriptor)
+	case "java/io/PrintStream":
+		return runtime.handlePrintStreamMethod(name, descriptor)
+	case "java/lang/String":
+		return runtime.handleStringMethod(name, descriptor)
+	case "java/lang/StringBuffer":
+		return runtime.handleStringBufferMethod(name, descriptor)
+	case "java/lang/Integer":
+		return runtime.handleIntegerMethod(name, descriptor)
+	case "java/lang/Long":
+		return runtime.handleLongMethod(name, descriptor)
+	case "java/lang/Byte":
+		return runtime.handleByteMethod(name, descriptor)
+	case "java/lang/Boolean":
+		return runtime.handleBooleanMethod(name, descriptor)
+	case "java/lang/Character":
+		return runtime.handleCharacterMethod(name, descriptor)
+	case "java/lang/Short":
+		return runtime.handleShortMethod(name, descriptor)
+	case "java/lang/Float":
+		return runtime.handleFloatMethod(name, descriptor)
+	case "java/lang/Double":
+		return runtime.handleDoubleMethod(name, descriptor)
+	case "java/io/Writer", "java/io/OutputStreamWriter":
+		return runtime.handleOutputStreamWriterMethod(name, descriptor)
+	case "java/lang/Math":
+		return runtime.handleMathMethod(name, descriptor)
+	case "java/lang/Thread":
+		return runtime.handleThreadMethod(ctx, name, descriptor)
+	case "java/lang/System":
+		switch name + descriptor {
+		case "arraycopy(Ljava/lang/Object;ILjava/lang/Object;II)V":
+			return 0, runtime.javaArrayCopy(
+				registers[1],
+				registers[2],
+				registers[3],
+				registers[4],
+				registers[5],
 			)
-		case "org/kwis/msp/lwc/Decorator":
-			return runtime.handleLWCDecoratorMethod(name, descriptor)
-		case "com/ktf/kfc/GTextListener":
+		case "currentTimeMillis()J":
+			return runtime.javaLongResult(
+				runtime.wallReadMS(),
+			), nil
+		case "gc()V":
+			runtime.requestJavaHeapCollection()
 			return 0, nil
-		case "com/ktf/kfc/GTextField":
-			if name+descriptor ==
-				"getGTextListener()Lcom/ktf/kfc/GTextListener;" {
-				instance := registers[1]
-				if listener := runtime.listeners[instance]; listener != 0 {
-					return listener, nil
-				}
-				listener, err := runtime.NewHostJavaObject(
-					"com/ktf/kfc/GTextListener",
+		case "getProperty(Ljava/lang/String;)Ljava/lang/String;":
+			if registers[1] == 0 {
+				return 0, runtime.raiseHostJavaException(
+					"java/lang/NullPointerException",
 				)
+			}
+			key := runtime.javaText(registers[1])
+			if key == "" {
+				return 0, runtime.raiseHostJavaException(
+					"java/lang/IllegalArgumentException",
+				)
+			}
+			value, ok := runtime.javaSystemProperty(key)
+			if !ok {
+				return 0, nil
+			}
+			return runtime.NewJavaString(value)
+		case "exit(I)V":
+			runtime.requestJavaTermination(0)
+			return 0, nil
+		case "identityHashCode(Ljava/lang/Object;)I":
+			return registers[1], nil
+		}
+	case "java/lang/Runtime":
+		switch name + descriptor {
+		case "getRuntime()Ljava/lang/Runtime;":
+			return runtime.ensureJavaRuntime()
+		case "freeMemory()J":
+			var free uint64
+			for _, block := range runtime.Heap.Root().Free {
+				free += uint64(block.Size)
+			}
+			return runtime.javaLongResult(free), nil
+		case "totalMemory()J":
+			return runtime.javaLongResult(uint64(guest.HeapSize)), nil
+		case "gc()V":
+			runtime.requestJavaHeapCollection()
+			return 0, nil
+		case "exit(I)V":
+			runtime.requestJavaTermination(0)
+			return 0, nil
+		}
+	case "java/util/Calendar", "java/util/GregorianCalendar":
+		return runtime.handleCalendarMethod(name, descriptor)
+	case "java/util/Random":
+		return runtime.handleRandomMethod(name, descriptor)
+	case "java/util/Date":
+		return runtime.handleDateMethod(name, descriptor)
+	case "java/util/Vector", "java/util/Stack":
+		return runtime.handleVectorMethod(name, descriptor)
+	case "java/util/Hashtable":
+		return runtime.handleHashtableMethod(name, descriptor)
+	case "java/util/Enumeration":
+		return runtime.handleEnumerationMethod(name, descriptor)
+	case "java/util/Timer", "java/util/TimerTask":
+		return runtime.handleTimerMethod(ctx, name, descriptor)
+	case "java/util/TimeZone", "java/util/SimpleTimeZone":
+		return runtime.handleTimeZoneMethod(name, descriptor)
+	case "org/kwis/msp/lcdui/Card":
+		switch name + descriptor {
+		case "<init>()V", "<init>(I)V", "<init>(Z)V":
+			if err := runtime.initializeCard(registers[1], 0); err != nil {
+				return 0, err
+			}
+			if descriptor == "(Z)V" {
+				runtime.lwcComponent(registers[1]).transparent =
+					registers[2] != 0
+			}
+			return 0, nil
+		case "<init>(Lorg/kwis/msp/lcdui/Display;)V":
+			if err := runtime.initializeCard(
+				registers[1],
+				registers[2],
+			); err != nil {
+				return 0, err
+			}
+			return 0, nil
+		case "<init>(IIII)V":
+			return 0, runtime.configureCard(
+				registers[1], 0,
+				registers[2], registers[3], registers[4], registers[5],
+			)
+		case "<init>(Lorg/kwis/msp/lcdui/Display;IIII)V",
+			"<init>(Lorg/kwis/msp/lcdui/Display;IIIIZ)V":
+			if err := runtime.configureCard(
+				registers[1], registers[2],
+				registers[3], registers[4], registers[5], registers[6],
+			); err != nil {
+				return 0, err
+			}
+			if descriptor ==
+				"(Lorg/kwis/msp/lcdui/Display;IIIIZ)V" {
+				runtime.lwcComponent(registers[1]).transparent =
+					registers[7] != 0
+			}
+			return 0, nil
+		case "getDisplay()Lorg/kwis/msp/lcdui/Display;":
+			return runtime.readJavaFieldWord(registers[1], 4)
+		case "getWidth()I":
+			return runtime.readJavaFieldWord(registers[1], 16)
+		case "getHeight()I":
+			return runtime.readJavaFieldWord(registers[1], 20)
+		case "getX()I":
+			return runtime.readJavaFieldWord(registers[1], 8)
+		case "getY()I":
+			return runtime.readJavaFieldWord(registers[1], 12)
+		case "isShown()Z":
+			return 1, nil
+		case "repaint(IIII)V", "repaint()V":
+			card := registers[1]
+			runtime.dirtyCards[card] = true
+			if runtime.DeferThreads && runtime.activeTask != nil {
+				runtime.deferCardPaint(runtime.activeTask, card, false)
+			}
+			return 0, nil
+		case "serviceRepaints()V":
+			return 0, runtime.serviceCardRepaints(ctx, registers[1])
+		case "showNotify(Z)V", "setCanvas(Ljavax/microedition/lcdui/Canvas;)V":
+			return 0, nil
+		case "keyNotify(II)Z", "pointerNotify(III)Z":
+			return 0, nil
+		case "move(II)V":
+			if err := runtime.WriteJavaFieldWord(
+				registers[1],
+				8,
+				registers[2],
+			); err != nil {
+				return 0, err
+			}
+			if err := runtime.WriteJavaFieldWord(
+				registers[1],
+				12,
+				registers[3],
+			); err != nil {
+				return 0, err
+			}
+			return 0, nil
+		case "resize(II)V":
+			if err := runtime.WriteJavaFieldWord(
+				registers[1],
+				16,
+				registers[2],
+			); err != nil {
+				return 0, err
+			}
+			if err := runtime.WriteJavaFieldWord(
+				registers[1],
+				20,
+				registers[3],
+			); err != nil {
+				return 0, err
+			}
+			return 0, nil
+		}
+	case "org/kwis/msp/lcdui/Font":
+		return runtime.handleFontMethod(name, descriptor)
+	case "org/kwis/msp/lcdui/Image":
+		return runtime.handleImageMethod(name, descriptor)
+	case "org/kwis/msp/lcdui/AnimateImage":
+		return runtime.handleAnimateImageMethod(name, descriptor)
+	case "org/kwis/msp/lcdui/Graphics":
+		return runtime.handleGraphicsMethod(name, descriptor)
+	case "org/kwis/msp/media/Volume":
+		return runtime.handleWIPI2VolumeMethod(name, descriptor)
+	case "org/kwis/msf/io/Network":
+		return 0, nil
+	case "org/kwis/msp/media/BaseClip", "org/kwis/msp/media/Clip",
+		"org/kwis/msp/media/Player", "org/kwis/msp/media/Camera",
+		"org/kwis/msp/media/StillClip", "org/kwis/msp/media/VideoClip":
+		return runtime.handleMediaMethodContext(ctx, name, descriptor)
+	case "java/lang/Throwable":
+		return runtime.handleThrowableMethod(name, descriptor)
+	case "org/kwis/msp/handset/HandsetProperty":
+		switch name + descriptor {
+		case "getSystemProperty(Ljava/lang/String;)Ljava/lang/String;":
+			key := runtime.javaStringValue(registers[1])
+			value := runtime.handsetSystemProperty(key)
+			runtime.trace("java_handset_property:" + key + "=" + value)
+			return runtime.NewJavaString(value)
+		case "setSystemProperty(Ljava/lang/String;Ljava/lang/String;)Z":
+			key := strings.ToUpper(strings.TrimSpace(
+				runtime.javaStringValue(registers[1]),
+			))
+			value := runtime.javaStringValue(registers[2])
+			runtime.wipicSystemProperties[key] = value
+			runtime.trace("java_handset_property_set:" + key)
+			return 1, nil
+		}
+	case "org/kwis/msp/lcdui/Jlet":
+		return runtime.handleJletMethod(name, descriptor)
+	case "org/kwis/msp/lcdui/EventQueue":
+		return runtime.handleEventQueueMethod(ctx, name, descriptor)
+	case "org/kwis/msp/lcdui/DisplayProxy":
+		return runtime.handleDisplayMethod(ctx, name, descriptor)
+	case "org/kwis/msp/lcdui/InputMethodHandler":
+		return runtime.handleInputMethodHandlerMethod(name, descriptor)
+	case "org/kwis/msp/lcdui/Main":
+		// The host boots titles through startApp directly; the Main
+		// wrapper never has work to do.
+		return 0, nil
+	case "com/ktf/kfc/GForm":
+		return 0, nil
+	case "org/kwis/msp/handset/BackLight":
+		switch name + descriptor {
+		case "alwaysOn()V", "on()V", "on(III)V":
+			return 0, runtime.Services.Device.SetBacklight(
+				true,
+				0,
+				runtime.Services.Clock.Monotonic(),
+			)
+		case "off()V", "before()V":
+			return 0, runtime.Services.Device.SetBacklight(
+				false,
+				0,
+				runtime.Services.Clock.Monotonic(),
+			)
+		}
+		return 0, nil
+	case "org/kwis/msp/handset/LED":
+		switch name + descriptor {
+		case "<init>()V":
+			return 0, nil
+		case "set(I)V", "set(I)I":
+			count := runtime.Services.Device.Config().LEDCount
+			for index := uint8(0); index < count; index++ {
+				value := int32(0)
+				if registers[1]&(uint32(1)<<index) != 0 {
+					value = 1
+				}
+				if err := runtime.Services.Device.SetLED(index, value); err != nil {
+					return 0, err
+				}
+			}
+			if descriptor == "(I)I" {
+				return registers[1], nil
+			}
+			return 0, nil
+		case "get()I":
+			var mask uint32
+			count := runtime.Services.Device.Config().LEDCount
+			for index := uint8(0); index < count; index++ {
+				value, err := runtime.Services.Device.LED(index)
 				if err != nil {
 					return 0, err
 				}
-				runtime.listeners[instance] = listener
-				return listener, nil
-			}
-			return 0, nil
-		case "org/kwis/msp/io/File":
-			return runtime.handleFileMethod(name, descriptor)
-		case "org/kwis/msp/io/FileSystem":
-			return runtime.handleFileSystemMethod(name, descriptor)
-		case "org/kwis/msp/io/IODevice":
-			return runtime.handleWIPI2IODeviceMethod(name, descriptor)
-		case "org/kwis/msp/io/SMS", "org/kwis/msp/io/SMSMessage":
-			return runtime.handleWIPI2SMSMethod(className, name, descriptor)
-		case "org/kwis/msp/io/ResourceGroup":
-			return runtime.handleWIPI2ResourceGroupMethod(name, descriptor)
-		case "org/kwis/msf/core/Kernel":
-			return runtime.handleMSFKernelMethod(name, descriptor)
-		case "org/kwis/msf/core/Shared":
-			return runtime.handleMSFSharedMethod(name, descriptor)
-		case "org/kwis/msf/io/Socket", "org/kwis/msf/io/HttpSocket":
-			return runtime.handleMSFSocketMethod(name, descriptor)
-		case "org/kwis/msf/io/Message":
-			return runtime.handleMSFMessageMethod(name, descriptor)
-		case "org/kwis/msf/io/URL":
-			if name+descriptor ==
-				"find(Ljava/lang/String;)Lorg/kwis/msf/io/Socket;" {
-				url := runtime.javaStringValue(registers[1])
-				// Answering null here is what a handset with no coverage
-				// would do, but a title that looks a URL up at startup does
-				// not check: 마스터오브소드2 resolves
-				// BillSocket://yahoo.yalgem.com:8003/rw/30000 for its billing
-				// check and dereferences the result immediately, so the null
-				// came back as a NullPointerException out of its own g.h()V
-				// and the boot never finished (#147).
-				//
-				// A live handset returns a Socket and the connection fails
-				// afterwards, which is a path the title does handle - and one
-				// the Socket methods here already model, answering 503 and
-				// "Service Unavailable" to every request.
-				socket, socketErr := runtime.newOfflineMSFSocket(registers[1])
-				if socketErr != nil {
-					return 0, socketErr
+				if value != 0 {
+					mask |= uint32(1) << index
 				}
-				runtime.tracef(
-					"java_url_find_offline:%s@0x%08x",
-					url,
-					socket,
-				)
-				return socket, nil
 			}
-		case "wec/OEMDevice":
-			if name+descriptor == "getSYSTheme()Lwec/SYSTheme;" {
-				runtime.trace("java_oem_sys_theme_unavailable")
-				return 0, nil
+			return mask, nil
+		case "getCount()I":
+			return uint32(runtime.Services.Device.Config().LEDCount), nil
+		case "getSupportColor(I)[I":
+			if registers[1] >= uint32(runtime.Services.Device.Config().LEDCount) {
+				return 0, runtime.raiseHostJavaException("java/io/IOException")
 			}
-		case "org/kwis/msp/db/DataBase":
-			return runtime.handleDataBaseMethod(ctx, name, descriptor)
-		case "org/kwis/msp/db/DataComparatorInteger",
-			"org/kwis/msp/db/DataComparatorString",
-			"org/kwis/msp/db/DataFilterInteger":
-			return runtime.handleDataComparatorMethod(
-				className,
-				name,
-				descriptor,
-			)
-		case "org/kwis/msp/lcdui/Display":
-			return runtime.handleDisplayMethod(ctx, name, descriptor)
+			return runtime.newJavaIntArray([]uint32{
+				0x000000, 0xff0000, 0x00ff00, 0x0000ff, 0xffffff,
+			})
+		case "getColor(I)I":
+			value, err := runtime.Services.Device.LED(uint8(registers[1]))
+			if err != nil {
+				return 0, runtime.raiseHostJavaException("java/io/IOException")
+			}
+			return uint32(value), nil
+		case "setColor(II)I":
+			rgb := registers[2] & 0x00ffffff
+			if err := runtime.Services.Device.SetLED(uint8(registers[1]), int32(rgb)); err != nil {
+				return 0, runtime.raiseHostJavaException("java/io/IOException")
+			}
+			return rgb, nil
 		}
-		if strings.HasSuffix(className, "Exception") ||
-			strings.HasSuffix(className, "Error") {
-			// Every host-modeled exception behaves like Throwable: the
-			// constructor stores the optional message and the accessors
-			// read it back.
-			return runtime.handleThrowableMethod(name, descriptor)
-		}
-		if value, ok, err := runtime.redispatchGuestJavaMethod(
+		return 0, nil
+	case "org/kwis/msp/handset/Call":
+		return runtime.handleCallMethod(name, descriptor)
+	case "org/kwis/msp/handset/Address", "org/kwis/msp/handset/AddressBook":
+		return runtime.handleWIPI2AddressMethod(className, name, descriptor)
+	case "org/kwis/msp/handset/StationLocationInfo",
+		"org/kwis/msp/handset/GPSConfig",
+		"org/kwis/msp/handset/GPSLocationInfo",
+		"org/kwis/msp/handset/GPSProvider":
+		return runtime.handleWIPI2LocationMethod(ctx, className, name, descriptor)
+	case "org/kwis/msp/lwc/Component",
+		"org/kwis/msp/lwc/ContainerComponent",
+		"org/kwis/msp/lwc/ShellComponent",
+		"org/kwis/msp/lwc/FormComponent",
+		"org/kwis/msp/lwc/AnnunciatorComponent",
+		"org/kwis/msp/lwc/TextComponent",
+		"org/kwis/msp/lwc/TextBoxComponent",
+		"org/kwis/msp/lwc/TextFieldComponent",
+		"org/kwis/msp/lwc/LabelComponent",
+		"org/kwis/msp/lwc/ProgressComponent",
+		"org/kwis/msp/lwc/DialogComponent",
+		"org/kwis/msp/lwc/ButtonComponent",
+		"org/kwis/msp/lwc/CheckboxComponent",
+		"org/kwis/msp/lwc/CheckboxGroup",
+		"org/kwis/msp/lwc/ComboComponent",
+		"org/kwis/msp/lwc/Command",
+		"org/kwis/msp/lwc/CommandBarComponent",
+		"org/kwis/msp/lwc/DateFieldComponent",
+		"org/kwis/msp/lwc/ImageComponent",
+		"org/kwis/msp/lwc/ListComponent",
+		"org/kwis/msp/lwc/ListItemComponent",
+		"org/kwis/msp/lwc/ProxyCard",
+		"org/kwis/msp/lwc/ScrollbarComponent",
+		"org/kwis/msp/lwc/TickerComponent",
+		"org/kwis/msp/lwc/TextComponent$ModeViewer":
+		return runtime.handleLWCMethod(
 			ctx,
 			className,
 			name,
 			descriptor,
 			registers,
-		); ok || err != nil {
-			return value, err
+		)
+	case "org/kwis/msp/lwc/Decorator":
+		return runtime.handleLWCDecoratorMethod(name, descriptor)
+	case "com/ktf/kfc/GTextListener":
+		return 0, nil
+	case "com/ktf/kfc/GTextField":
+		if name+descriptor ==
+			"getGTextListener()Lcom/ktf/kfc/GTextListener;" {
+			instance := registers[1]
+			if listener := runtime.listeners[instance]; listener != 0 {
+				return listener, nil
+			}
+			listener, err := runtime.NewHostJavaObject(
+				"com/ktf/kfc/GTextListener",
+			)
+			if err != nil {
+				return 0, err
+			}
+			runtime.listeners[instance] = listener
+			return listener, nil
 		}
-		signature := className + "." + name + descriptor
-		receiverClass := ""
-		if len(registers) > 1 && registers[1] != 0 {
-			if receiverWords, receiverErr := runtime.ReadWords(
-				registers[1],
-				2,
-			); receiverErr == nil {
-				if class, classErr := runtime.InspectJavaClass(
-					receiverWords[1],
-				); classErr == nil {
-					receiverClass = class.Name
-				}
+		return 0, nil
+	case "org/kwis/msp/io/File":
+		return runtime.handleFileMethod(name, descriptor)
+	case "org/kwis/msp/io/FileSystem":
+		return runtime.handleFileSystemMethod(name, descriptor)
+	case "org/kwis/msp/io/IODevice":
+		return runtime.handleWIPI2IODeviceMethod(name, descriptor)
+	case "org/kwis/msp/io/SMS", "org/kwis/msp/io/SMSMessage":
+		return runtime.handleWIPI2SMSMethod(className, name, descriptor)
+	case "org/kwis/msp/io/ResourceGroup":
+		return runtime.handleWIPI2ResourceGroupMethod(name, descriptor)
+	case "org/kwis/msf/core/Kernel":
+		return runtime.handleMSFKernelMethod(name, descriptor)
+	case "org/kwis/msf/core/Shared":
+		return runtime.handleMSFSharedMethod(name, descriptor)
+	case "org/kwis/msf/io/Socket", "org/kwis/msf/io/HttpSocket":
+		return runtime.handleMSFSocketMethod(name, descriptor)
+	case "org/kwis/msf/io/Message":
+		return runtime.handleMSFMessageMethod(name, descriptor)
+	case "org/kwis/msf/io/URL":
+		if name+descriptor ==
+			"find(Ljava/lang/String;)Lorg/kwis/msf/io/Socket;" {
+			url := runtime.javaStringValue(registers[1])
+			// Answering null here is what a handset with no coverage
+			// would do, but a title that looks a URL up at startup does
+			// not check: 마스터오브소드2 resolves
+			// BillSocket://yahoo.yalgem.com:8003/rw/30000 for its billing
+			// check and dereferences the result immediately, so the null
+			// came back as a NullPointerException out of its own g.h()V
+			// and the boot never finished (#147).
+			//
+			// A live handset returns a Socket and the connection fails
+			// afterwards, which is a path the title does handle - and one
+			// the Socket methods here already model, answering 503 and
+			// "Service Unavailable" to every request.
+			socket, socketErr := runtime.newOfflineMSFSocket(registers[1])
+			if socketErr != nil {
+				return 0, socketErr
+			}
+			runtime.tracef(
+				"java_url_find_offline:%s@0x%08x",
+				url,
+				socket,
+			)
+			return socket, nil
+		}
+	case "wec/OEMDevice":
+		if name+descriptor == "getSYSTheme()Lwec/SYSTheme;" {
+			runtime.trace("java_oem_sys_theme_unavailable")
+			return 0, nil
+		}
+	case "org/kwis/msp/db/DataBase":
+		return runtime.handleDataBaseMethod(ctx, name, descriptor)
+	case "org/kwis/msp/db/DataComparatorInteger",
+		"org/kwis/msp/db/DataComparatorString",
+		"org/kwis/msp/db/DataFilterInteger":
+		return runtime.handleDataComparatorMethod(
+			className,
+			name,
+			descriptor,
+		)
+	case "org/kwis/msp/lcdui/Display":
+		return runtime.handleDisplayMethod(ctx, name, descriptor)
+	}
+	if strings.HasSuffix(className, "Exception") ||
+		strings.HasSuffix(className, "Error") {
+		// Every host-modeled exception behaves like Throwable: the
+		// constructor stores the optional message and the accessors
+		// read it back.
+		return runtime.handleThrowableMethod(name, descriptor)
+	}
+	if value, ok, err := runtime.redispatchGuestJavaMethod(
+		ctx,
+		className,
+		name,
+		descriptor,
+		registers,
+	); ok || err != nil {
+		return value, err
+	}
+	signature := className + "." + name + descriptor
+	receiverClass := ""
+	if len(registers) > 1 && registers[1] != 0 {
+		if receiverWords, receiverErr := runtime.ReadWords(
+			registers[1],
+			2,
+		); receiverErr == nil {
+			if class, classErr := runtime.InspectJavaClass(
+				receiverWords[1],
+			); classErr == nil {
+				receiverClass = class.Name
 			}
 		}
-		runtime.UnimplementedJava[signature]++
-		runtime.LastUnimplementedJava = signature
-		runtime.tracef(
-			"java_unimplemented:%s:receiver=0x%08x:class=%s",
-			signature,
-			registers[1],
-			receiverClass,
-		)
-		return 0, nil
 	}
+	runtime.UnimplementedJava[signature]++
+	runtime.LastUnimplementedJava = signature
+	runtime.tracef(
+		"java_unimplemented:%s:receiver=0x%08x:class=%s",
+		signature,
+		registers[1],
+		receiverClass,
+	)
+	return 0, nil
 }
 
 // correctHostJavaReceiverClass repairs a KTF AOT cache quirk where an
