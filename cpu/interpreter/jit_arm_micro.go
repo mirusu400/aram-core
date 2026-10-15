@@ -79,7 +79,6 @@ func (b *Backend) executeARMJITInstruction(
 func (b *Backend) executeARMMicroSingleTransfer(
 	instruction, pc uint32,
 ) (bool, *cpu.StopReason, error) {
-	registerOffset := instruction&(1<<25) != 0
 	preIndex := instruction&(1<<24) != 0
 	up := instruction&(1<<23) != 0
 	byteTransfer := instruction&(1<<22) != 0
@@ -87,11 +86,7 @@ func (b *Backend) executeARMMicroSingleTransfer(
 	load := instruction&(1<<20) != 0
 	rn := instruction >> 16 & 0xf
 	rd := instruction >> 12 & 0xf
-	offset := instruction & 0xfff
-	if registerOffset {
-		shifter, _ := decodeARMJITShifter(instruction &^ (1 << 25))
-		offset, _ = shifter.value(b, pc)
-	}
+	offset := b.armSingleTransferOffset(instruction, pc)
 	base := b.readOperandRegister(rn, pc, cpu.ModeARM)
 	indexedAddress := base
 	if up {
@@ -145,6 +140,40 @@ func (b *Backend) executeARMMicroSingleTransfer(
 		b.regs[rn] = indexedAddress
 	}
 	return branched, nil, nil
+}
+
+// Single transfers admit only an immediate shift of Rm, never a register shift.
+// Their offset ignores shifter carry-out; only RRX consumes the old carry flag.
+// Avoid reconstructing the general data-processing shifter on each memory access.
+func (b *Backend) armSingleTransferOffset(instruction, pc uint32) uint32 {
+	if instruction&(1<<25) == 0 {
+		return instruction & 0xfff
+	}
+	value := b.readOperandRegister(instruction&0xf, pc, cpu.ModeARM)
+	amount := instruction >> 7 & 0x1f
+	switch instruction >> 5 & 3 {
+	case 0:
+		return value << amount
+	case 1:
+		if amount == 0 {
+			return 0
+		}
+		return value >> amount
+	case 2:
+		if amount == 0 {
+			amount = 31
+		}
+		return uint32(int32(value) >> amount)
+	default:
+		if amount == 0 {
+			value >>= 1
+			if b.carry() {
+				value |= flagN
+			}
+			return value
+		}
+		return bits.RotateLeft32(value, -int(amount))
+	}
 }
 
 func (b *Backend) executeARMMicroHalfwordTransfer(
@@ -262,13 +291,17 @@ func (b *Backend) executeARMMicroBlockTransfer(
 	address = b.blockTransferAddress(address)
 	var loadedPC uint32
 	loadedProgramCounter := false
-	direct, directOffset, directOK := b.armBlockTransferPage(
-		address, int(count*4), load,
-	)
-	for register := uint32(0); register < 16; register++ {
-		if registers&(1<<register) == 0 {
-			continue
-		}
+	var direct []byte
+	var directOffset int
+	directOK := false
+	if !userOrPSR && registers != 0 && rn != cpu.RegisterPC {
+		direct, directOffset, directOK = b.armPrivateBlockTransferSpan(address, int(count), load)
+	}
+	if !directOK {
+		direct, directOffset, directOK = b.armBlockTransferPage(address, int(count*4), load)
+	}
+	for pendingRegisters := registers; pendingRegisters != 0; pendingRegisters &= pendingRegisters - 1 {
+		register := uint32(bits.TrailingZeros16(pendingRegisters))
 		if load {
 			var value uint32
 			if directOK {

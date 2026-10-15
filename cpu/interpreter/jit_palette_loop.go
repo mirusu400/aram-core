@@ -1,6 +1,10 @@
 package interpreter
 
-import "github.com/mirusu400/aram-core/cpu"
+import (
+	"encoding/binary"
+
+	"github.com/mirusu400/aram-core/cpu"
+)
 
 const thumbPaletteLoopInstructions = uint32(17)
 
@@ -285,8 +289,8 @@ func (b *Backend) privateRegionHit(
 }
 
 func loadLittle32(data []byte, offset int) uint32 {
-	return uint32(data[offset]) |
-		uint32(data[offset+1])<<8 |
-		uint32(data[offset+2])<<16 |
-		uint32(data[offset+3])<<24
+	// A two-index slice may extend to capacity. Retain the original indexing
+	// contract even when the caller's data view has spare backing capacity.
+	data = data[:len(data):len(data)]
+	return binary.LittleEndian.Uint32(data[offset : offset+4])
 }

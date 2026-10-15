@@ -69,6 +69,9 @@ const (
 	jitMaskedBlendLoop
 	jitPrologueBranch
 	jitLoadMaskBranch
+	jitShiftBoundLoop
+	jitBytePairFillLoop
+	jitQuotientRefineLoop
 )
 
 type jitExtraLoop struct {
@@ -87,6 +90,9 @@ type jitExtraLoop struct {
 	maskedBlend        jitThumbMaskedBlendLoop
 	prologue           jitThumbPrologueBranch
 	loadMask           jitThumbLoadMaskBranch
+	shiftBound         jitThumbShiftBoundLoop
+	bytePairFill       jitThumbBytePairFillLoop
+	quotientRefine     jitThumbQuotientRefineLoop
 }
 
 type jitBlock struct {
@@ -96,6 +102,7 @@ type jitBlock struct {
 	thumb                   []thumbMicroInstr
 	countedLoop             *jitCountedLoop
 	extraLoop               *jitExtraLoop
+	compareBranchTail       *jitThumbCompareBranchTail
 	instructionCacheEnabled bool
 	instructionCacheGen     uint32
 	instructionCacheGuards  []jitInstructionCacheGuard
@@ -493,92 +500,35 @@ outer:
 		// Exact Thumb loop signatures are mutually exclusive. Keep the
 		// ordinary block path to one cold nil check regardless of how many
 		// specialized loops have been recognized.
-		if extra := block.extraLoop; extra != nil {
-			var retired uint64
-			var err error
-			switch extra.kind {
-			case jitObjectLookupLoop:
-				retired = b.accelerateThumbObjectLookup(
-					&extra.objectLookup, limit-executed,
-					wholeSystem, hasExecutionTraps, traced,
-				)
-			case jitRecordSearchLoop:
-				retired = b.accelerateThumbRecordSearch(
-					&extra.recordSearch, limit-executed,
-					wholeSystem, hasExecutionTraps, traced,
-				)
-			case jitIndexedPaletteLoop:
-				retired = b.accelerateThumbIndexedPaletteLoop(
-					&extra.indexedPalette, limit-executed,
-					wholeSystem, hasExecutionTraps, traced,
-				)
-			case jitBytePaletteLoop:
-				// A store into this loop may replace an instruction that has
-				// not executed yet. Decode each instruction in the remaining
-				// batch rather than using the translated prefix after the store.
-				if !wholeSystem && colorLoopRangesOverlap(
-					b.regs[extra.bytePalette.destination], 2, extra.bytePalette.start, extra.bytePalette.words*2,
-				) {
-					n, reason, err := b.runThumb(limit - executed)
-					return executed + n, reason, err
-				}
-				retired = b.accelerateThumbBytePaletteLoop(
-					&extra.bytePalette, limit-executed, wholeSystem, hasExecutionTraps, traced,
-				)
-			case jitNibblePaletteLoop:
-				if !wholeSystem && b.nibblePaletteCodeAlias(&extra.nibblePalette) {
-					n, reason, err := b.runThumb(limit - executed)
-					return executed + n, reason, err
-				}
-				retired = b.accelerateThumbNibblePaletteLoop(&extra.nibblePalette, limit-executed, wholeSystem, hasExecutionTraps, traced)
-			case jitMaskedBlendLoop:
-				if !wholeSystem && colorLoopRangesOverlap(b.regs[extra.maskedBlend.destination], 2, extra.maskedBlend.start, 32) {
-					n, reason, err := b.runThumb(limit - executed)
-					return executed + n, reason, err
-				}
-				retired = b.accelerateThumbMaskedBlendLoop(&extra.maskedBlend, limit-executed, wholeSystem, hasExecutionTraps, traced)
-			case jitPrologueBranch:
-				retired = b.accelerateThumbPrologueBranch(&extra.prologue, limit-executed, wholeSystem, hasExecutionTraps, traced)
-			case jitLoadMaskBranch:
-				retired = b.accelerateThumbLoadMaskBranch(&extra.loadMask, limit-executed, wholeSystem, hasExecutionTraps, traced)
-			case jitTransparentPaletteLoop:
-				retired = b.accelerateThumbTransparentPaletteLoop(
-					&extra.transparentPalette, limit-executed,
-					wholeSystem, hasExecutionTraps, traced,
-				)
-			case jitPaletteLoop:
-				retired, err = b.accelerateThumbPaletteLoop(
-					&extra.palette, limit-executed,
-					wholeSystem, hasExecutionTraps, traced,
-				)
-			case jitStackPaletteLoop:
-				retired = b.accelerateThumbStackPaletteLoop(
-					&extra.stackPalette, limit-executed,
-					wholeSystem, hasExecutionTraps, traced,
-				)
-			case jitHalfwordFillLoop:
-				retired = b.accelerateThumbHalfwordFillLoop(
-					&extra.halfwordFill, limit-executed,
-					wholeSystem, hasExecutionTraps, traced,
-				)
-			case jitColorLoop:
-				retired = b.accelerateThumbColorLoop(
-					&extra.color, limit-executed,
-					wholeSystem, hasExecutionTraps, traced,
-				)
-			case jitFillLoop:
-				retired = b.accelerateThumbFillLoop(
-					&extra.fill, limit-executed,
-					wholeSystem, hasExecutionTraps, traced,
-				)
-			}
+		if block.extraLoop != nil {
+			retired, done, reason, err := b.runThumbExtraLoop(block.extraLoop, limit-executed, wholeSystem, hasExecutionTraps, traced)
 			executed += retired
-			if err != nil {
-				return executed, nil, err
+			if done || err != nil {
+				return executed, reason, err
 			}
 			if retired != 0 {
 				continue outer
 			}
+		}
+		if chainApplications && uint64(len(block.thumb)) <= limit-executed {
+			// The generated runner owns full-block successor dispatch and records
+			// each block it actually enters. A short remaining budget returns here
+			// before that block is entered, so the next outer iteration retains
+			// the guarded instruction-by-instruction partial-block contract.
+			retired, reason, err := b.executeThumbApplicationMicroBlocks(block, limit-executed)
+			executed += retired
+			if err != nil {
+				return executed, nil, err
+			}
+			if reason != nil {
+				return executed, reason, nil
+			}
+			if b.mode != cpu.ModeThumb {
+				return executed, nil, nil
+			}
+			// The runner may have executed several successors. Never reuse the
+			// original block's generation or successor tail after returning.
+			continue outer
 		}
 		for {
 			blockGeneration := b.jitGen
@@ -589,15 +539,7 @@ outer:
 			if collectThumbMicro {
 				b.recordThumbBlock(block)
 			}
-			var retired int
-			var branched bool
-			var reason *cpu.StopReason
-			var err error
-			if !wholeSystem && !traced && blockInstructions == len(block.thumb) {
-				retired, branched, reason, err = b.executeThumbApplicationMicroBlock(block, blockInstructions)
-			} else {
-				retired, branched, reason, err = b.executeThumbMicroBlock(block, blockInstructions, wholeSystem, hasExecutionTraps, traced)
-			}
+			retired, branched, reason, err := b.executeThumbMicroBlock(block, blockInstructions, wholeSystem, hasExecutionTraps, traced)
 			executed += uint64(retired)
 			if err != nil {
 				return executed, nil, err
@@ -904,6 +846,25 @@ func (b *Backend) translateThumbBlock(pc uint32) *jitBlock {
 	}
 	block := &jitBlock{start: pc, end: cur, thumb: instrs}
 	markDeadThumbFlags(instrs)
+	block.compareBranchTail = classifyThumbCompareBranchTail(block)
+	if b.systemBus == nil && len(instrs) == 3 && instrs[0].op == thumbAddSubtract {
+		if loop := b.classifyThumbQuotientRefineLoop(block); loop != nil {
+			// Only the first three instructions form this straight-line block,
+			// but all ten decoded words are dependencies of the accelerator.
+			block.end = pc + thumbQuotientRefineWords*2
+			block.extraLoop = &jitExtraLoop{kind: jitQuotientRefineLoop, quotientRefine: *loop}
+		}
+	}
+	if b.systemBus == nil && len(instrs) == 3 && instrs[0].op == thumbShiftImmediate {
+		if loop := classifyThumbShiftBoundLoop(block); loop != nil {
+			block.extraLoop = &jitExtraLoop{kind: jitShiftBoundLoop, shiftBound: *loop}
+		}
+	}
+	if b.systemBus == nil && len(instrs) == 6 && instrs[0].raw&0xffc0 == 0x7000 {
+		if loop := classifyThumbBytePairFillLoop(block); loop != nil {
+			block.extraLoop = &jitExtraLoop{kind: jitBytePairFillLoop, bytePairFill: *loop}
+		}
+	}
 	if b.systemBus == nil && len(instrs) == 5 && instrs[0].raw&0xf800 == 0x6800 {
 		if sequence := classifyThumbLoadMaskBranch(block); sequence != nil {
 			block.extraLoop = &jitExtraLoop{kind: jitLoadMaskBranch, loadMask: *sequence}

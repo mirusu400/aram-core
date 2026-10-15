@@ -19,6 +19,9 @@ func (b *Backend) runARMJIT(limit uint64) (uint64, *cpu.StopReason, error) {
 	wholeSystem := b.systemBus != nil
 	hasExecutionTraps := len(b.executionTraps) != 0
 	traced := b.tracing()
+	if !wholeSystem && !traced && !hasExecutionTraps && !b.physicalAccess && !b.instructionCacheEnabled() {
+		return b.runARMApplicationJIT(limit)
+	}
 	var executed uint64
 outer:
 	for executed < limit && b.mode == cpu.ModeARM {
@@ -106,12 +109,120 @@ outer:
 			if b.mode != cpu.ModeARM {
 				return executed, nil, nil
 			}
+			// A completed store may replace a later instruction in this block.
+			// Refetch only after all transfers and architectural writeback finish.
+			if b.jitGen != blockGeneration {
+				continue outer
+			}
 			if branched {
 				continue outer
 			}
 		}
 	}
 	return executed, nil, nil
+}
+
+// The application path has no per-instruction physical-bus, trap, interrupt or
+// trace work. Keep those checks out of its hot loop and retain two generation-
+// guarded successor edges between ordinary translated blocks. Backend.Run still
+// owns cancellation and exact instruction budgets at its bounded batch boundary.
+func (b *Backend) runARMApplicationJIT(limit uint64) (uint64, *cpu.StopReason, error) {
+	var executed uint64
+	var block *jitBlock
+	for executed < limit {
+		if block == nil {
+			block = b.armJITBlockAt(b.regs[cpu.RegisterPC])
+			if block == nil {
+				n, reason, err := b.runARM(1)
+				executed += n
+				if reason != nil || err != nil || b.mode != cpu.ModeARM {
+					return executed, reason, err
+				}
+				continue
+			}
+		}
+		if block.countedLoop != nil {
+			executed += b.accelerateCountedLoop(block, limit-executed, false, false, false)
+		}
+		generation := b.jitGen
+		count := len(block.arm)
+		if remaining := limit - executed; uint64(count) > remaining {
+			count = int(remaining)
+		}
+		for index := 0; index < count; index++ {
+			in := &block.arm[index]
+			b.regs[cpu.RegisterPC] = in.pc + 4
+			if in.condition < 0xe && !b.conditionPassed(in.condition) {
+				executed++
+				continue
+			}
+			var branched bool
+			var reason *cpu.StopReason
+			var err error
+			switch in.op {
+			case armMicroSingleTransfer:
+				branched, reason, err = b.executeARMMicroSingleTransfer(in.raw, in.pc)
+			case armMicroHalfwordTransfer:
+				branched, reason, err = b.executeARMMicroHalfwordTransfer(in.raw, in.pc)
+			case armMicroBlockTransfer:
+				branched, reason, err = b.executeARMMicroBlockTransfer(in.raw, in.pc)
+			default:
+				branched, reason, err = in.exec(b)
+			}
+			if err != nil {
+				return executed, nil, err
+			}
+			executed++
+			if reason != nil || b.mode != cpu.ModeARM {
+				return executed, reason, nil
+			}
+			if branched && b.instructionCacheEnabled() {
+				// A translated CP15 write can enable the resident I-cache view.
+				// Resume through the fully guarded dispatcher, never linked edges.
+				return executed, nil, nil
+			}
+			// Application reads and pure ALU cannot invalidate code. CP15 and
+			// control-changing closures terminate their blocks already; memory
+			// writers need an immediate exit after successful completion.
+			if branched || in.op != armMicroClosure && in.raw&(1<<20) == 0 && b.jitGen != generation {
+				break
+			}
+		}
+		if executed == limit {
+			break
+		}
+		pc := b.regs[cpu.RegisterPC]
+		if generation == b.jitGen && pc == block.start {
+			continue
+		}
+		var next *jitBlock
+		if block.successorGen == b.jitGen {
+			if cached := block.successors[0]; cached != nil && cached.start == pc {
+				next = cached
+			} else if cached := block.successors[1]; cached != nil && cached.start == pc {
+				next = cached
+			}
+		}
+		if next == nil {
+			next = b.armApplicationSuccessor(block, pc)
+		}
+		block = next
+	}
+	return executed, nil, nil
+}
+
+func (b *Backend) armApplicationSuccessor(from *jitBlock, pc uint32) *jitBlock {
+	next := b.armJITBlockAt(pc)
+	if next == nil || next.countedLoop != nil || next.instructionCacheEnabled {
+		return nil
+	}
+	if from.successorGen != b.jitGen {
+		from.successors = [2]*jitBlock{}
+		from.successorGen = b.jitGen
+	}
+	from.successors[1] = from.successors[0]
+	from.successors[0] = next
+	return next
 }
 
 func (b *Backend) armJITBlockAt(pc uint32) *jitBlock {
@@ -150,6 +261,11 @@ func (b *Backend) translateARMBlock(pc uint32) *jitBlock {
 	instrs := make([]jitInstr, 0, 16)
 	cur := pc
 	for len(instrs) < jitMaxBlock {
+		// The exclusive end must fit in jitBlock.end and its invalidation span.
+		// Let the precise executor handle the final wrapping ARM word.
+		if uint64(cur)+4 >= uint64(1)<<32 {
+			break
+		}
 		instruction, err := b.fetch32(cur)
 		if err != nil {
 			break

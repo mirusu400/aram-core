@@ -68,6 +68,11 @@ func (b *Backend) accelerateThumbColorLoop(
 	// fall back to individual instructions, preserving their access ordering.
 	var stackRegion, pixelRegion, literalRegion *region
 	stackAddress := b.regs[cpu.RegisterSP]
+	// Scalar word spills align down and loads rotate at an unaligned SP.
+	// The direct byte slice represents those accesses only for aligned stacks.
+	if stackAddress&3 != 0 {
+		return 0
+	}
 	stack, offset, stackPerms, ok := b.privateRegionHit(
 		&stackRegion, stackAddress, 52, cpu.PermissionRead|cpu.PermissionWrite,
 	)

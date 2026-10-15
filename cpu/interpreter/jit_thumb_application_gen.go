@@ -8,272 +8,234 @@ import (
 	"github.com/mirusu400/aram-core/cpu"
 )
 
-// executeThumbApplicationMicroBlock runs only without a system bus or tracing.
+// executeThumbApplicationMicroBlocks runs only for private, untraced Thumb execution.
 // Architectural instruction bodies come from executeThumbMicroBlock; the caller
-// retains block-level trap, budget and translation checks.
-func (b *Backend) executeThumbApplicationMicroBlock(block *jitBlock, blockInstructions int) (int, bool, *cpu.StopReason, error) {
-	instructions := block.thumb[:blockInstructions]
-	blockGeneration := b.jitGen
-	for index := range instructions {
-		in := &instructions[index]
-		pc := in.pc
-		if collectThumbMicro {
-			b.recordThumbMicro(in)
+// retains batch cancellation and the guarded partial-block path. Every full block
+// entered here keeps its own generation, retirement and diagnostic boundaries.
+func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint64) (uint64, *cpu.StopReason, error) {
+	var executed uint64
+	privateDataRoute := !b.physicalAccess && b.tlb == nil
+	for executed < limit {
+		blockInstructions := len(block.thumb)
+		if uint64(blockInstructions) > limit-executed {
+			return executed, nil, nil
 		}
-		instruction := in.raw
-		b.regs[cpu.RegisterPC] = pc + 2
-		switch in.appOp {
-		case thumbShiftImmediate:
-			op := uint32(instruction>>11) & 3
-			shift := uint32(instruction>>6) & 0x1f
-			rs := uint32(instruction>>3) & 7
-			rd := uint32(instruction) & 7
-			value := b.regs[rs]
-			var result uint32
-			var carry bool
-			switch op {
-			case 0:
-				if shift == 0 {
-					result = value
-					carry = b.carry()
-				} else {
-					result = value << shift
-					carry = value&(uint32(1)<<(32-shift)) != 0
-				}
-			case 1:
-				if shift == 0 {
-					result = 0
-					carry = value&flagN != 0
-				} else {
-					result = value >> shift
-					carry = value&(uint32(1)<<(shift-1)) != 0
-				}
-			case 2:
-				if shift == 0 {
-					carry = value&flagN != 0
-					if carry {
-						result = ^uint32(0)
+		if collectThumbMicro {
+			b.recordThumbBlock(block)
+		}
+		prefixInstructions := blockInstructions
+		if block.compareBranchTail != nil {
+			prefixInstructions -= 2
+		}
+		instructions := block.thumb[:prefixInstructions]
+		blockGeneration := b.jitGen
+		blockRetired := blockInstructions
+		for index := range instructions {
+			in := &instructions[index]
+			pc := in.pc
+			if collectThumbMicro {
+				b.recordThumbMicro(in)
+			}
+			instruction := in.raw
+			b.regs[cpu.RegisterPC] = pc + 2
+			switch in.appOp {
+			case thumbShiftImmediate:
+				op := uint32(instruction>>11) & 3
+				shift := uint32(instruction>>6) & 0x1f
+				rs := uint32(instruction>>3) & 7
+				rd := uint32(instruction) & 7
+				value := b.regs[rs]
+				var result uint32
+				var carry bool
+				switch op {
+				case 0:
+					if shift == 0 {
+						result = value
+						carry = b.carry()
+					} else {
+						result = value << shift
+						carry = value&(uint32(1)<<(32-shift)) != 0
 					}
+				case 1:
+					if shift == 0 {
+						result = 0
+						carry = value&flagN != 0
+					} else {
+						result = value >> shift
+						carry = value&(uint32(1)<<(shift-1)) != 0
+					}
+				case 2:
+					if shift == 0 {
+						carry = value&flagN != 0
+						if carry {
+							result = ^uint32(0)
+						}
+					} else {
+						result = uint32(int32(value) >> shift)
+						carry = value&(uint32(1)<<(shift-1)) != 0
+					}
+				default:
+					return executed + uint64(index), nil, b.unsupportedThumb(pc, instruction)
+				}
+				b.regs[rd] = result
+				b.setNZC(result, carry)
+
+			case thumbMoveImmediate:
+				rd := uint32(instruction>>8) & 7
+				value := uint32(instruction & 0xff)
+				b.regs[rd] = value
+				b.setNZ(value)
+
+			case thumbCompareImmediate:
+				rd := uint32(instruction>>8) & 7
+				result, carry, overflow := addWithCarry(b.regs[rd], ^uint32(instruction&0xff), 1)
+				b.setNZCV(result, carry, overflow)
+
+			case thumbAddImmediate:
+				rd := uint32(instruction>>8) & 7
+				result, carry, overflow := addWithCarry(b.regs[rd], uint32(instruction&0xff), 0)
+				b.regs[rd] = result
+				b.setNZCV(result, carry, overflow)
+
+			case thumbSubtractImmediate:
+				rd := uint32(instruction>>8) & 7
+				result, carry, overflow := addWithCarry(b.regs[rd], ^uint32(instruction&0xff), 1)
+				b.regs[rd] = result
+				b.setNZCV(result, carry, overflow)
+
+			case thumbAddSubtract:
+				immediate := instruction&(1<<10) != 0
+				subtract := instruction&(1<<9) != 0
+				rnOrImmediate := uint32(instruction>>6) & 7
+				rs := uint32(instruction>>3) & 7
+				rd := uint32(instruction) & 7
+				right := rnOrImmediate
+				if !immediate {
+					right = b.regs[rnOrImmediate]
+				}
+				var result uint32
+				var carry, overflow bool
+				if subtract {
+					result, carry, overflow = addWithCarry(b.regs[rs], ^right, 1)
 				} else {
-					result = uint32(int32(value) >> shift)
-					carry = value&(uint32(1)<<(shift-1)) != 0
+					result, carry, overflow = addWithCarry(b.regs[rs], right, 0)
 				}
-			default:
-				return index, false, nil, b.unsupportedThumb(pc, instruction)
-			}
-			b.regs[rd] = result
-			b.setNZC(result, carry)
-
-		case thumbMoveImmediate:
-			rd := uint32(instruction>>8) & 7
-			value := uint32(instruction & 0xff)
-			b.regs[rd] = value
-			b.setNZ(value)
-
-		case thumbCompareImmediate:
-			rd := uint32(instruction>>8) & 7
-			result, carry, overflow := addWithCarry(b.regs[rd], ^uint32(instruction&0xff), 1)
-			b.setNZCV(result, carry, overflow)
-
-		case thumbAddImmediate:
-			rd := uint32(instruction>>8) & 7
-			result, carry, overflow := addWithCarry(b.regs[rd], uint32(instruction&0xff), 0)
-			b.regs[rd] = result
-			b.setNZCV(result, carry, overflow)
-
-		case thumbSubtractImmediate:
-			rd := uint32(instruction>>8) & 7
-			result, carry, overflow := addWithCarry(b.regs[rd], ^uint32(instruction&0xff), 1)
-			b.regs[rd] = result
-			b.setNZCV(result, carry, overflow)
-
-		case thumbAddSubtract:
-			immediate := instruction&(1<<10) != 0
-			subtract := instruction&(1<<9) != 0
-			rnOrImmediate := uint32(instruction>>6) & 7
-			rs := uint32(instruction>>3) & 7
-			rd := uint32(instruction) & 7
-			right := rnOrImmediate
-			if !immediate {
-				right = b.regs[rnOrImmediate]
-			}
-			var result uint32
-			var carry, overflow bool
-			if subtract {
-				result, carry, overflow = addWithCarry(b.regs[rs], ^right, 1)
-			} else {
-				result, carry, overflow = addWithCarry(b.regs[rs], right, 0)
-			}
-			b.regs[rd] = result
-			b.setNZCV(result, carry, overflow)
-
-		case thumbALU:
-			op := (instruction >> 6) & 0xf
-			rs := uint32(instruction>>3) & 7
-			rd := uint32(instruction) & 7
-			left, right := b.regs[rd], b.regs[rs]
-			switch op {
-			case 0x0:
-				b.regs[rd] = left & right
-				b.setNZ(b.regs[rd])
-			case 0x1:
-				b.regs[rd] = left ^ right
-				b.setNZ(b.regs[rd])
-			case 0x2:
-				result, carry := shiftLSL(left, uint8(right), b.carry())
-				b.regs[rd] = result
-				b.setNZC(result, carry)
-			case 0x3:
-				result, carry := shiftLSR(left, uint8(right), b.carry())
-				b.regs[rd] = result
-				b.setNZC(result, carry)
-			case 0x4:
-				result, carry := shiftASR(left, uint8(right), b.carry())
-				b.regs[rd] = result
-				b.setNZC(result, carry)
-			case 0x5:
-				carryIn := uint32(0)
-				if b.carry() {
-					carryIn = 1
-				}
-				result, carry, overflow := addWithCarry(left, right, carryIn)
 				b.regs[rd] = result
 				b.setNZCV(result, carry, overflow)
-			case 0x6:
-				carryIn := uint32(0)
-				if b.carry() {
-					carryIn = 1
-				}
-				result, carry, overflow := addWithCarry(left, ^right, carryIn)
-				b.regs[rd] = result
-				b.setNZCV(result, carry, overflow)
-			case 0x7:
-				result, carry := shiftROR(left, uint8(right), b.carry())
-				b.regs[rd] = result
-				b.setNZC(result, carry)
-			case 0x8:
-				b.setNZ(left & right)
-			case 0x9:
-				result, carry, overflow := addWithCarry(0, ^right, 1)
-				b.regs[rd] = result
-				b.setNZCV(result, carry, overflow)
-			case 0xa:
-				result, carry, overflow := addWithCarry(left, ^right, 1)
-				b.setNZCV(result, carry, overflow)
-			case 0xb:
-				result, carry, overflow := addWithCarry(left, right, 0)
-				b.setNZCV(result, carry, overflow)
-			case 0xc:
-				b.regs[rd] = left | right
-				b.setNZ(b.regs[rd])
-			case 0xd:
-				b.regs[rd] = left * right
-				b.setNZ(b.regs[rd])
-			case 0xe:
-				b.regs[rd] = left &^ right
-				b.setNZ(b.regs[rd])
-			case 0xf:
-				b.regs[rd] = ^right
-				b.setNZ(b.regs[rd])
-			}
 
-		case thumbHighRegister:
-			op := (instruction >> 8) & 3
-			rs := uint32(instruction>>3)&7 | uint32(instruction>>6)&1<<3
-			rd := uint32(instruction)&7 | uint32(instruction>>7)&1<<3
-			switch op {
-			case 0:
-				result := b.readOperandRegister(rd, pc, cpu.ModeThumb) +
-					b.readOperandRegister(rs, pc, cpu.ModeThumb)
-				if rd == cpu.RegisterPC {
-					result &^= 1
+			case thumbALU:
+				op := (instruction >> 6) & 0xf
+				rs := uint32(instruction>>3) & 7
+				rd := uint32(instruction) & 7
+				left, right := b.regs[rd], b.regs[rs]
+				switch op {
+				case 0x0:
+					b.regs[rd] = left & right
+					b.setNZ(b.regs[rd])
+				case 0x1:
+					b.regs[rd] = left ^ right
+					b.setNZ(b.regs[rd])
+				case 0x2:
+					result, carry := shiftLSL(left, uint8(right), b.carry())
+					b.regs[rd] = result
+					b.setNZC(result, carry)
+				case 0x3:
+					result, carry := shiftLSR(left, uint8(right), b.carry())
+					b.regs[rd] = result
+					b.setNZC(result, carry)
+				case 0x4:
+					result, carry := shiftASR(left, uint8(right), b.carry())
+					b.regs[rd] = result
+					b.setNZC(result, carry)
+				case 0x5:
+					carryIn := uint32(0)
+					if b.carry() {
+						carryIn = 1
+					}
+					result, carry, overflow := addWithCarry(left, right, carryIn)
+					b.regs[rd] = result
+					b.setNZCV(result, carry, overflow)
+				case 0x6:
+					carryIn := uint32(0)
+					if b.carry() {
+						carryIn = 1
+					}
+					result, carry, overflow := addWithCarry(left, ^right, carryIn)
+					b.regs[rd] = result
+					b.setNZCV(result, carry, overflow)
+				case 0x7:
+					result, carry := shiftROR(left, uint8(right), b.carry())
+					b.regs[rd] = result
+					b.setNZC(result, carry)
+				case 0x8:
+					b.setNZ(left & right)
+				case 0x9:
+					result, carry, overflow := addWithCarry(0, ^right, 1)
+					b.regs[rd] = result
+					b.setNZCV(result, carry, overflow)
+				case 0xa:
+					result, carry, overflow := addWithCarry(left, ^right, 1)
+					b.setNZCV(result, carry, overflow)
+				case 0xb:
+					result, carry, overflow := addWithCarry(left, right, 0)
+					b.setNZCV(result, carry, overflow)
+				case 0xc:
+					b.regs[rd] = left | right
+					b.setNZ(b.regs[rd])
+				case 0xd:
+					b.regs[rd] = left * right
+					b.setNZ(b.regs[rd])
+				case 0xe:
+					b.regs[rd] = left &^ right
+					b.setNZ(b.regs[rd])
+				case 0xf:
+					b.regs[rd] = ^right
+					b.setNZ(b.regs[rd])
 				}
-				b.regs[rd] = result
-			case 1:
-				result, carry, overflow := addWithCarry(
-					b.readOperandRegister(rd, pc, cpu.ModeThumb),
-					^b.readOperandRegister(rs, pc, cpu.ModeThumb), 1,
-				)
-				b.setNZCV(result, carry, overflow)
-			case 2:
-				result := b.readOperandRegister(rs, pc, cpu.ModeThumb)
-				if rd == cpu.RegisterPC {
-					result &^= 1
-				}
-				b.regs[rd] = result
-			case 3:
-				target := b.readOperandRegister(rs, pc, cpu.ModeThumb)
-				if instruction&(1<<7) != 0 {
-					b.regs[cpu.RegisterLR] = (pc + 2) | 1
-				}
-				b.branchExchange(target)
-			}
-			if op == 3 || op != 1 && rd == cpu.RegisterPC {
-				return index + 1, true, nil, nil
-			}
 
-		case thumbLiteralLoad:
-			rd := uint32(instruction>>8) & 7
-			address := ((pc + 4) &^ uint32(3)) + uint32(instruction&0xff)*4
-			value, hit := uint32(0), false
-			if !b.physicalAccess && b.tlb == nil {
-				entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
-				value, hit = cachedJITWord(entry, address)
-			}
-			if !hit {
-				var err error
-				value, err = b.read32(address, cpu.PermissionRead)
-				if err != nil {
-					return index, false, nil, err
+			case thumbHighRegister:
+				op := (instruction >> 8) & 3
+				rs := uint32(instruction>>3)&7 | uint32(instruction>>6)&1<<3
+				rd := uint32(instruction)&7 | uint32(instruction>>7)&1<<3
+				switch op {
+				case 0:
+					result := b.readOperandRegister(rd, pc, cpu.ModeThumb) +
+						b.readOperandRegister(rs, pc, cpu.ModeThumb)
+					if rd == cpu.RegisterPC {
+						result &^= 1
+					}
+					b.regs[rd] = result
+				case 1:
+					result, carry, overflow := addWithCarry(
+						b.readOperandRegister(rd, pc, cpu.ModeThumb),
+						^b.readOperandRegister(rs, pc, cpu.ModeThumb), 1,
+					)
+					b.setNZCV(result, carry, overflow)
+				case 2:
+					result := b.readOperandRegister(rs, pc, cpu.ModeThumb)
+					if rd == cpu.RegisterPC {
+						result &^= 1
+					}
+					b.regs[rd] = result
+				case 3:
+					target := b.readOperandRegister(rs, pc, cpu.ModeThumb)
+					if instruction&(1<<7) != 0 {
+						b.regs[cpu.RegisterLR] = (pc + 2) | 1
+					}
+					b.branchExchange(target)
 				}
-			}
-			b.regs[rd] = value
-
-		case thumbRegisterTransfer:
-			op := uint32(instruction>>9) & 7
-			ro := uint32(instruction>>6) & 7
-			rb := uint32(instruction>>3) & 7
-			rd := uint32(instruction) & 7
-			address := b.regs[rb] + b.regs[ro]
-			switch op {
-			case 0:
-				if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
-					return index, false, nil, err
-				}
-				if b.jitGen != blockGeneration {
-					return index + 1, false, nil, nil
-				}
-			case 1:
-				if err := b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); err != nil {
-					return index, false, nil, err
-				}
-				if b.jitGen != blockGeneration {
-					return index + 1, false, nil, nil
-				}
-			case 2:
-				if err := b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); err != nil {
-					return index, false, nil, err
-				}
-				if b.jitGen != blockGeneration {
-					return index + 1, false, nil, nil
-				}
-			case 3:
-				value, hit := byte(0), false
-				if !b.physicalAccess && b.tlb == nil {
-					entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
-					value, hit = cachedJITRead8(entry, address)
-				}
-				if !hit {
-					var err error
-					value, err = b.read8(address, cpu.PermissionRead)
-					if err != nil {
-						return index, false, nil, err
+				if op == 3 || op != 1 && rd == cpu.RegisterPC {
+					{
+						blockRetired = index + 1
+						goto blockDone
 					}
 				}
-				b.regs[rd] = uint32(int32(int8(value)))
-			case 4:
+
+			case thumbLiteralLoad:
+				rd := uint32(instruction>>8) & 7
+				address := ((pc + 4) &^ uint32(3)) + uint32(instruction&0xff)*4
 				value, hit := uint32(0), false
-				if !b.physicalAccess && b.tlb == nil {
+				if privateDataRoute {
 					entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
 					value, hit = cachedJITWord(entry, address)
 				}
@@ -281,267 +243,65 @@ func (b *Backend) executeThumbApplicationMicroBlock(block *jitBlock, blockInstru
 					var err error
 					value, err = b.read32(address, cpu.PermissionRead)
 					if err != nil {
-						return index, false, nil, err
+						return executed + uint64(index), nil, err
 					}
 				}
 				b.regs[rd] = value
-			case 5:
-				value, hit := uint16(0), false
-				if !b.physicalAccess && b.tlb == nil {
-					entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
-					value, hit = cachedJITRead16(entry, address)
-				}
-				if !hit {
-					var err error
-					value, err = b.read16(address, cpu.PermissionRead)
-					if err != nil {
-						return index, false, nil, err
-					}
-				}
-				b.regs[rd] = uint32(value)
-			case 6:
-				value, hit := byte(0), false
-				if !b.physicalAccess && b.tlb == nil {
-					entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
-					value, hit = cachedJITRead8(entry, address)
-				}
-				if !hit {
-					var err error
-					value, err = b.read8(address, cpu.PermissionRead)
-					if err != nil {
-						return index, false, nil, err
-					}
-				}
-				b.regs[rd] = uint32(value)
-			case 7:
-				value, hit := uint16(0), false
-				if !b.physicalAccess && b.tlb == nil {
-					entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
-					value, hit = cachedJITRead16(entry, address)
-				}
-				if !hit {
-					var err error
-					value, err = b.read16(address, cpu.PermissionRead)
-					if err != nil {
-						return index, false, nil, err
-					}
-				}
-				b.regs[rd] = uint32(int32(int16(value)))
-			}
+			case thumbAppRegisterTransferBase + 0:
+				const op = 0
 
-		case thumbImmediateTransfer:
-			byteTransfer := instruction&(1<<12) != 0
-			load := instruction&(1<<11) != 0
-			offset := uint32(instruction>>6) & 0x1f
-			rb := uint32(instruction>>3) & 7
-			rd := uint32(instruction) & 7
-			if !byteTransfer {
-				offset *= 4
-			}
-			address := b.regs[rb] + offset
-			switch {
-			case load && byteTransfer:
-				value, hit := byte(0), false
-				if !b.physicalAccess && b.tlb == nil {
-					entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
-					value, hit = cachedJITRead8(entry, address)
-				}
-				if !hit {
-					var err error
-					value, err = b.read8(address, cpu.PermissionRead)
-					if err != nil {
-						return index, false, nil, err
+				ro := uint32(instruction>>6) & 7
+				rb := uint32(instruction>>3) & 7
+				rd := uint32(instruction) & 7
+				address := b.regs[rb] + b.regs[ro]
+				switch op {
+				case 0:
+					if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
 					}
-				}
-				b.regs[rd] = uint32(value)
-			case load:
-				value, hit := uint32(0), false
-				if !b.physicalAccess && b.tlb == nil {
-					entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
-					value, hit = cachedJITWord(entry, address)
-				}
-				if !hit {
-					var err error
-					value, err = b.read32(address, cpu.PermissionRead)
-					if err != nil {
-						return index, false, nil, err
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
 					}
-				}
-				b.regs[rd] = value
-			case byteTransfer:
-				if err := b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); err != nil {
-					return index, false, nil, err
-				}
-				if b.jitGen != blockGeneration {
-					return index + 1, false, nil, nil
-				}
-			default:
-				if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
-					return index, false, nil, err
-				}
-				if b.jitGen != blockGeneration {
-					return index + 1, false, nil, nil
-				}
-			}
-
-		case thumbHalfwordTransfer:
-			load := instruction&(1<<11) != 0
-			offset := uint32(instruction>>6) & 0x1f
-			rb := uint32(instruction>>3) & 7
-			rd := uint32(instruction) & 7
-			address := b.regs[rb] + offset*2
-			if load {
-				value, hit := uint16(0), false
-				if !b.physicalAccess && b.tlb == nil {
-					entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
-					value, hit = cachedJITRead16(entry, address)
-				}
-				if !hit {
-					var err error
-					value, err = b.read16(address, cpu.PermissionRead)
-					if err != nil {
-						return index, false, nil, err
+				case 1:
+					if err := b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
 					}
-				}
-				b.regs[rd] = uint32(value)
-			} else {
-				if err := b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); err != nil {
-					return index, false, nil, err
-				}
-				if b.jitGen != blockGeneration {
-					return index + 1, false, nil, nil
-				}
-			}
-
-		case thumbStackTransfer:
-			load := instruction&(1<<11) != 0
-			rd := uint32(instruction>>8) & 7
-			address := b.regs[cpu.RegisterSP] + uint32(instruction&0xff)*4
-			if load {
-				value, hit := uint32(0), false
-				if !b.physicalAccess && b.tlb == nil {
-					entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
-					value, hit = cachedJITWord(entry, address)
-				}
-				if !hit {
-					var err error
-					value, err = b.read32(address, cpu.PermissionRead)
-					if err != nil {
-						return index, false, nil, err
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
 					}
-				}
-				b.regs[rd] = value
-			} else {
-				if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
-					return index, false, nil, err
-				}
-				if b.jitGen != blockGeneration {
-					return index + 1, false, nil, nil
-				}
-			}
-
-		case thumbAdjustStack:
-			offset := uint32(instruction&0x7f) * 4
-			if instruction&(1<<7) != 0 {
-				b.regs[cpu.RegisterSP] -= offset
-			} else {
-				b.regs[cpu.RegisterSP] += offset
-			}
-
-		case thumbPush:
-			registers := uint16(instruction & 0xff)
-			includeLR := instruction&(1<<8) != 0
-			count := bits.OnesCount16(registers)
-			if includeLR {
-				count++
-			}
-			start := b.regs[cpu.RegisterSP] - uint32(count*4)
-			address := b.blockTransferAddress(start)
-			for register := uint32(0); register < 8; register++ {
-				if registers&(1<<register) == 0 {
-					continue
-				}
-				if err := b.write32(address, b.regs[register], cpu.PermissionWrite); err != nil {
-					return index, false, nil, err
-				}
-				address += 4
-			}
-			if includeLR {
-				if err := b.write32(address, b.regs[cpu.RegisterLR], cpu.PermissionWrite); err != nil {
-					return index, false, nil, err
-				}
-			}
-			b.regs[cpu.RegisterSP] = start
-			if b.jitGen != blockGeneration {
-				return index + 1, false, nil, nil
-			}
-
-		case thumbPop:
-			registers := uint16(instruction & 0xff)
-			includePC := instruction&(1<<8) != 0
-			start := b.regs[cpu.RegisterSP]
-			first := b.blockTransferAddress(start)
-			address := first
-			for register := uint32(0); register < 8; register++ {
-				if registers&(1<<register) == 0 {
-					continue
-				}
-				value, hit := uint32(0), false
-				if !b.physicalAccess && b.tlb == nil {
-					entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
-					value, hit = cachedJITWord(entry, address)
-				}
-				if !hit {
-					var err error
-					value, err = b.read32(address, cpu.PermissionRead)
-					if err != nil {
-						return index, false, nil, err
+				case 2:
+					if err := b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
 					}
-				}
-				b.regs[register] = value
-				address += 4
-			}
-			if includePC {
-				value, hit := uint32(0), false
-				if !b.physicalAccess && b.tlb == nil {
-					entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
-					value, hit = cachedJITWord(entry, address)
-				}
-				if !hit {
-					var err error
-					value, err = b.read32(address, cpu.PermissionRead)
-					if err != nil {
-						return index, false, nil, err
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
 					}
-				}
-				b.branchExchange(value)
-				address += 4
-			}
-			b.regs[cpu.RegisterSP] = start + (address - first)
-			return index + 1, includePC, nil, nil
-
-		case thumbAddPCSP:
-			rd := uint32(instruction>>8) & 7
-			base := b.regs[cpu.RegisterSP]
-			if instruction&(1<<11) == 0 {
-				base = (pc + 4) &^ uint32(3)
-			}
-			b.regs[rd] = base + uint32(instruction&0xff)*4
-
-		case thumbMultipleTransfer:
-			load := instruction&(1<<11) != 0
-			rb := uint32(instruction>>8) & 7
-			registers := uint16(instruction & 0xff)
-			base := b.regs[rb]
-			first := b.blockTransferAddress(base)
-			address := first
-			for register := uint32(0); register < 8; register++ {
-				if registers&(1<<register) == 0 {
-					continue
-				}
-				if load {
+				case 3:
+					value, hit := byte(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead8(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read8(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(int32(int8(value)))
+				case 4:
 					value, hit := uint32(0), false
-					if !b.physicalAccess && b.tlb == nil {
+					if privateDataRoute {
 						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
 						value, hit = cachedJITWord(entry, address)
 					}
@@ -549,304 +309,1615 @@ func (b *Backend) executeThumbApplicationMicroBlock(block *jitBlock, blockInstru
 						var err error
 						value, err = b.read32(address, cpu.PermissionRead)
 						if err != nil {
-							return index, false, nil, err
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = value
+				case 5:
+					value, hit := uint16(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead16(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read16(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(value)
+				case 6:
+					value, hit := byte(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead8(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read8(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(value)
+				case 7:
+					value, hit := uint16(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead16(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read16(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(int32(int16(value)))
+				}
+			case thumbAppRegisterTransferBase + 1:
+				const op = 1
+
+				ro := uint32(instruction>>6) & 7
+				rb := uint32(instruction>>3) & 7
+				rd := uint32(instruction) & 7
+				address := b.regs[rb] + b.regs[ro]
+				switch op {
+				case 0:
+					if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
+					}
+				case 1:
+					if err := b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
+					}
+				case 2:
+					if err := b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
+					}
+				case 3:
+					value, hit := byte(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead8(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read8(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(int32(int8(value)))
+				case 4:
+					value, hit := uint32(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITWord(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read32(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = value
+				case 5:
+					value, hit := uint16(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead16(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read16(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(value)
+				case 6:
+					value, hit := byte(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead8(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read8(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(value)
+				case 7:
+					value, hit := uint16(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead16(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read16(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(int32(int16(value)))
+				}
+			case thumbAppRegisterTransferBase + 2:
+				const op = 2
+
+				ro := uint32(instruction>>6) & 7
+				rb := uint32(instruction>>3) & 7
+				rd := uint32(instruction) & 7
+				address := b.regs[rb] + b.regs[ro]
+				switch op {
+				case 0:
+					if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
+					}
+				case 1:
+					if err := b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
+					}
+				case 2:
+					if err := b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
+					}
+				case 3:
+					value, hit := byte(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead8(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read8(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(int32(int8(value)))
+				case 4:
+					value, hit := uint32(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITWord(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read32(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = value
+				case 5:
+					value, hit := uint16(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead16(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read16(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(value)
+				case 6:
+					value, hit := byte(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead8(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read8(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(value)
+				case 7:
+					value, hit := uint16(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead16(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read16(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(int32(int16(value)))
+				}
+			case thumbAppRegisterTransferBase + 3:
+				const op = 3
+
+				ro := uint32(instruction>>6) & 7
+				rb := uint32(instruction>>3) & 7
+				rd := uint32(instruction) & 7
+				address := b.regs[rb] + b.regs[ro]
+				switch op {
+				case 0:
+					if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
+					}
+				case 1:
+					if err := b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
+					}
+				case 2:
+					if err := b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
+					}
+				case 3:
+					value, hit := byte(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead8(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read8(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(int32(int8(value)))
+				case 4:
+					value, hit := uint32(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITWord(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read32(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = value
+				case 5:
+					value, hit := uint16(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead16(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read16(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(value)
+				case 6:
+					value, hit := byte(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead8(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read8(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(value)
+				case 7:
+					value, hit := uint16(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead16(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read16(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(int32(int16(value)))
+				}
+			case thumbAppRegisterTransferBase + 4:
+				const op = 4
+
+				ro := uint32(instruction>>6) & 7
+				rb := uint32(instruction>>3) & 7
+				rd := uint32(instruction) & 7
+				address := b.regs[rb] + b.regs[ro]
+				switch op {
+				case 0:
+					if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
+					}
+				case 1:
+					if err := b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
+					}
+				case 2:
+					if err := b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
+					}
+				case 3:
+					value, hit := byte(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead8(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read8(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(int32(int8(value)))
+				case 4:
+					value, hit := uint32(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITWord(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read32(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = value
+				case 5:
+					value, hit := uint16(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead16(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read16(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(value)
+				case 6:
+					value, hit := byte(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead8(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read8(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(value)
+				case 7:
+					value, hit := uint16(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead16(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read16(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(int32(int16(value)))
+				}
+			case thumbAppRegisterTransferBase + 5:
+				const op = 5
+
+				ro := uint32(instruction>>6) & 7
+				rb := uint32(instruction>>3) & 7
+				rd := uint32(instruction) & 7
+				address := b.regs[rb] + b.regs[ro]
+				switch op {
+				case 0:
+					if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
+					}
+				case 1:
+					if err := b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
+					}
+				case 2:
+					if err := b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
+					}
+				case 3:
+					value, hit := byte(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead8(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read8(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(int32(int8(value)))
+				case 4:
+					value, hit := uint32(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITWord(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read32(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = value
+				case 5:
+					value, hit := uint16(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead16(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read16(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(value)
+				case 6:
+					value, hit := byte(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead8(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read8(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(value)
+				case 7:
+					value, hit := uint16(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead16(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read16(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(int32(int16(value)))
+				}
+			case thumbAppRegisterTransferBase + 6:
+				const op = 6
+
+				ro := uint32(instruction>>6) & 7
+				rb := uint32(instruction>>3) & 7
+				rd := uint32(instruction) & 7
+				address := b.regs[rb] + b.regs[ro]
+				switch op {
+				case 0:
+					if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
+					}
+				case 1:
+					if err := b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
+					}
+				case 2:
+					if err := b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
+					}
+				case 3:
+					value, hit := byte(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead8(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read8(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(int32(int8(value)))
+				case 4:
+					value, hit := uint32(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITWord(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read32(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = value
+				case 5:
+					value, hit := uint16(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead16(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read16(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(value)
+				case 6:
+					value, hit := byte(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead8(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read8(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(value)
+				case 7:
+					value, hit := uint16(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead16(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read16(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(int32(int16(value)))
+				}
+			case thumbAppRegisterTransferBase + 7:
+				const op = 7
+
+				ro := uint32(instruction>>6) & 7
+				rb := uint32(instruction>>3) & 7
+				rd := uint32(instruction) & 7
+				address := b.regs[rb] + b.regs[ro]
+				switch op {
+				case 0:
+					if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
+					}
+				case 1:
+					if err := b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
+					}
+				case 2:
+					if err := b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
+					}
+				case 3:
+					value, hit := byte(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead8(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read8(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(int32(int8(value)))
+				case 4:
+					value, hit := uint32(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITWord(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read32(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = value
+				case 5:
+					value, hit := uint16(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead16(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read16(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(value)
+				case 6:
+					value, hit := byte(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead8(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read8(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(value)
+				case 7:
+					value, hit := uint16(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead16(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read16(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(int32(int16(value)))
+				}
+			case thumbAppImmediateTransferBase + 0:
+				const byteTransfer = false
+				const load = false
+
+				offset := uint32(instruction>>6) & 0x1f
+				rb := uint32(instruction>>3) & 7
+				rd := uint32(instruction) & 7
+				if !byteTransfer {
+					offset *= 4
+				}
+				address := b.regs[rb] + offset
+				switch {
+				case load && byteTransfer:
+					value, hit := byte(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead8(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read8(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(value)
+				case load:
+					value, hit := uint32(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITWord(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read32(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = value
+				case byteTransfer:
+					if err := b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
+					}
+				default:
+					if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
+					}
+				}
+			case thumbAppImmediateTransferBase + 1:
+				const byteTransfer = false
+				const load = true
+
+				offset := uint32(instruction>>6) & 0x1f
+				rb := uint32(instruction>>3) & 7
+				rd := uint32(instruction) & 7
+				if !byteTransfer {
+					offset *= 4
+				}
+				address := b.regs[rb] + offset
+				switch {
+				case load && byteTransfer:
+					value, hit := byte(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead8(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read8(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(value)
+				case load:
+					value, hit := uint32(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITWord(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read32(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = value
+				case byteTransfer:
+					if err := b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
+					}
+				default:
+					if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
+					}
+				}
+			case thumbAppImmediateTransferBase + 2:
+				const byteTransfer = true
+				const load = false
+
+				offset := uint32(instruction>>6) & 0x1f
+				rb := uint32(instruction>>3) & 7
+				rd := uint32(instruction) & 7
+				if !byteTransfer {
+					offset *= 4
+				}
+				address := b.regs[rb] + offset
+				switch {
+				case load && byteTransfer:
+					value, hit := byte(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead8(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read8(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(value)
+				case load:
+					value, hit := uint32(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITWord(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read32(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = value
+				case byteTransfer:
+					if err := b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
+					}
+				default:
+					if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
+					}
+				}
+			case thumbAppImmediateTransferBase + 3:
+				const byteTransfer = true
+				const load = true
+
+				offset := uint32(instruction>>6) & 0x1f
+				rb := uint32(instruction>>3) & 7
+				rd := uint32(instruction) & 7
+				if !byteTransfer {
+					offset *= 4
+				}
+				address := b.regs[rb] + offset
+				switch {
+				case load && byteTransfer:
+					value, hit := byte(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead8(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read8(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(value)
+				case load:
+					value, hit := uint32(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITWord(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read32(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = value
+				case byteTransfer:
+					if err := b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
+					}
+				default:
+					if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
+					}
+				}
+
+			case thumbHalfwordTransfer:
+				load := instruction&(1<<11) != 0
+				offset := uint32(instruction>>6) & 0x1f
+				rb := uint32(instruction>>3) & 7
+				rd := uint32(instruction) & 7
+				address := b.regs[rb] + offset*2
+				if load {
+					value, hit := uint16(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITRead16(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read16(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = uint32(value)
+				} else {
+					if err := b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
+					}
+				}
+
+			case thumbStackTransfer:
+				load := instruction&(1<<11) != 0
+				rd := uint32(instruction>>8) & 7
+				address := b.regs[cpu.RegisterSP] + uint32(instruction&0xff)*4
+				if load {
+					value, hit := uint32(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITWord(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read32(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.regs[rd] = value
+				} else {
+					if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					if b.jitGen != blockGeneration {
+						{
+							blockRetired = index + 1
+							goto blockDone
+						}
+					}
+				}
+
+			case thumbAdjustStack:
+				offset := uint32(instruction&0x7f) * 4
+				if instruction&(1<<7) != 0 {
+					b.regs[cpu.RegisterSP] -= offset
+				} else {
+					b.regs[cpu.RegisterSP] += offset
+				}
+
+			case thumbPush:
+				if b.pushPrivateThumbRegisters(instruction) {
+					break
+				}
+				registers := uint16(instruction & 0xff)
+				includeLR := instruction&(1<<8) != 0
+				count := bits.OnesCount16(registers)
+				if includeLR {
+					count++
+				}
+				start := b.regs[cpu.RegisterSP] - uint32(count*4)
+				address := b.blockTransferAddress(start)
+				for register := uint32(0); register < 8; register++ {
+					if registers&(1<<register) == 0 {
+						continue
+					}
+					if err := b.write32(address, b.regs[register], cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					address += 4
+				}
+				if includeLR {
+					if err := b.write32(address, b.regs[cpu.RegisterLR], cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+				}
+				b.regs[cpu.RegisterSP] = start
+				if b.jitGen != blockGeneration {
+					{
+						blockRetired = index + 1
+						goto blockDone
+					}
+				}
+
+			case thumbPop:
+				if b.popPrivateThumbRegisters(instruction) {
+					{
+						blockRetired = index + 1
+						goto blockDone
+					}
+				}
+				registers := uint16(instruction & 0xff)
+				includePC := instruction&(1<<8) != 0
+				start := b.regs[cpu.RegisterSP]
+				first := b.blockTransferAddress(start)
+				address := first
+				for register := uint32(0); register < 8; register++ {
+					if registers&(1<<register) == 0 {
+						continue
+					}
+					value, hit := uint32(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITWord(entry, address)
+					}
+					if !hit {
+						var err error
+						value, err = b.read32(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
 						}
 					}
 					b.regs[register] = value
-				} else if err := b.write32(address, b.regs[register], cpu.PermissionWrite); err != nil {
-					return index, false, nil, err
+					address += 4
 				}
-				address += 4
-			}
-			if !load || registers&(1<<rb) == 0 {
-				b.regs[rb] = base + (address - first)
-			}
-			if !load && b.jitGen != blockGeneration {
-				return index + 1, false, nil, nil
-			}
-
-		case thumbConditionalBranch:
-			condition := uint8(instruction>>8) & 0xf
-			if b.conditionPassed(condition) {
-				offset := int32(int8(instruction&0xff)) << 1
-				b.regs[cpu.RegisterPC] = uint32(int32(pc+4) + offset)
-				return index + 1, true, nil, nil
-			}
-
-		case thumbLongBranch:
-
-			suffix, err := b.fetch16(pc + 2)
-			if err != nil {
-				return index, false, nil, err
-			}
-			high := int32(instruction & 0x7ff)
-			if high&(1<<10) != 0 {
-				high |= ^int32(0x7ff)
-			}
-			if suffix&0xf801 == 0xe800 {
-				target := uint32(int32((pc+4)&^uint32(3))+(high<<12)) + uint32(suffix&0x7fe)*2
-				b.regs[cpu.RegisterLR] = (pc + 4) | 1
-				b.branchExchange(target)
-				return index + 1, true, nil, nil
-			}
-			if suffix&0xf800 != 0xf800 {
-				return index, false, nil, b.unsupportedThumb(pc, instruction)
-			}
-			b.regs[cpu.RegisterLR] = (pc + 4) | 1
-			b.regs[cpu.RegisterPC] = uint32(int32(pc+4)+(high<<12)) + uint32(suffix&0x7ff)*2
-			return index + 1, true, nil, nil
-
-		case thumbUnconditionalBranch:
-			offset := int32(instruction & 0x7ff)
-			if offset&(1<<10) != 0 {
-				offset |= ^int32(0x7ff)
-			}
-			b.regs[cpu.RegisterPC] = uint32(int32(pc+4) + (offset << 1))
-			return index + 1, true, nil, nil
-
-		case thumbBreakpoint:
-			reason := cpu.StopBreakpoint
-			return index + 1, false, &reason, nil
-
-		default:
-			return index, false, nil, b.unsupportedThumb(pc, instruction)
-		case thumbShiftImmediate + thumbDeadFlagsOffset:
-			const flagsLive = false
-			op := uint32(instruction>>11) & 3
-			shift := uint32(instruction>>6) & 0x1f
-			rs := uint32(instruction>>3) & 7
-			rd := uint32(instruction) & 7
-			value := b.regs[rs]
-			var result uint32
-			var carry bool
-			switch op {
-			case 0:
-				if shift == 0 {
-					result = value
-					carry = b.carry()
-				} else {
-					result = value << shift
-					carry = value&(uint32(1)<<(32-shift)) != 0
-				}
-			case 1:
-				if shift == 0 {
-					result = 0
-					carry = value&flagN != 0
-				} else {
-					result = value >> shift
-					carry = value&(uint32(1)<<(shift-1)) != 0
-				}
-			case 2:
-				if shift == 0 {
-					carry = value&flagN != 0
-					if carry {
-						result = ^uint32(0)
+				if includePC {
+					value, hit := uint32(0), false
+					if privateDataRoute {
+						entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+						value, hit = cachedJITWord(entry, address)
 					}
-				} else {
-					result = uint32(int32(value) >> shift)
-					carry = value&(uint32(1)<<(shift-1)) != 0
+					if !hit {
+						var err error
+						value, err = b.read32(address, cpu.PermissionRead)
+						if err != nil {
+							return executed + uint64(index), nil, err
+						}
+					}
+					b.branchExchange(value)
+					address += 4
 				}
-			default:
-				return index, false, nil, b.unsupportedThumb(pc, instruction)
-			}
-			b.regs[rd] = result
-			if flagsLive {
-				b.setNZC(result, carry)
-			}
-		case thumbMoveImmediate + thumbDeadFlagsOffset:
-			const flagsLive = false
-			rd := uint32(instruction>>8) & 7
-			value := uint32(instruction & 0xff)
-			b.regs[rd] = value
-			if flagsLive {
-				b.setNZ(value)
-			}
-		case thumbCompareImmediate + thumbDeadFlagsOffset:
-			const flagsLive = false
-			rd := uint32(instruction>>8) & 7
-			result, carry, overflow := addWithLiveFlags(b.regs[rd], ^uint32(instruction&0xff), 1, flagsLive)
-			if flagsLive {
-				b.setNZCV(result, carry, overflow)
-			}
-		case thumbAddImmediate + thumbDeadFlagsOffset:
-			const flagsLive = false
-			rd := uint32(instruction>>8) & 7
-			result, carry, overflow := addWithLiveFlags(b.regs[rd], uint32(instruction&0xff), 0, flagsLive)
-			b.regs[rd] = result
-			if flagsLive {
-				b.setNZCV(result, carry, overflow)
-			}
-		case thumbSubtractImmediate + thumbDeadFlagsOffset:
-			const flagsLive = false
-			rd := uint32(instruction>>8) & 7
-			result, carry, overflow := addWithLiveFlags(b.regs[rd], ^uint32(instruction&0xff), 1, flagsLive)
-			b.regs[rd] = result
-			if flagsLive {
-				b.setNZCV(result, carry, overflow)
-			}
-		case thumbAddSubtract + thumbDeadFlagsOffset:
-			const flagsLive = false
-			immediate := instruction&(1<<10) != 0
-			subtract := instruction&(1<<9) != 0
-			rnOrImmediate := uint32(instruction>>6) & 7
-			rs := uint32(instruction>>3) & 7
-			rd := uint32(instruction) & 7
-			right := rnOrImmediate
-			if !immediate {
-				right = b.regs[rnOrImmediate]
-			}
-			var result uint32
-			var carry, overflow bool
-			if subtract {
-				result, carry, overflow = addWithLiveFlags(b.regs[rs], ^right, 1, flagsLive)
-			} else {
-				result, carry, overflow = addWithLiveFlags(b.regs[rs], right, 0, flagsLive)
-			}
-			b.regs[rd] = result
-			if flagsLive {
-				b.setNZCV(result, carry, overflow)
-			}
-		case thumbALU + thumbDeadFlagsOffset:
-			const flagsLive = false
-			op := (instruction >> 6) & 0xf
-			rs := uint32(instruction>>3) & 7
-			rd := uint32(instruction) & 7
-			left, right := b.regs[rd], b.regs[rs]
-			switch op {
-			case 0x0:
-				b.regs[rd] = left & right
-				if flagsLive {
-					b.setNZ(b.regs[rd])
+				b.regs[cpu.RegisterSP] = start + (address - first)
+				{
+					blockRetired = index + 1
+					goto blockDone
 				}
-			case 0x1:
-				b.regs[rd] = left ^ right
-				if flagsLive {
-					b.setNZ(b.regs[rd])
-				}
-			case 0x2:
-				result, carry := shiftLSL(left, uint8(right), b.carry())
-				b.regs[rd] = result
-				if flagsLive {
-					b.setNZC(result, carry)
-				}
-			case 0x3:
-				result, carry := shiftLSR(left, uint8(right), b.carry())
-				b.regs[rd] = result
-				if flagsLive {
-					b.setNZC(result, carry)
-				}
-			case 0x4:
-				result, carry := shiftASR(left, uint8(right), b.carry())
-				b.regs[rd] = result
-				if flagsLive {
-					b.setNZC(result, carry)
-				}
-			case 0x5:
-				carryIn := uint32(0)
-				if b.carry() {
-					carryIn = 1
-				}
-				result, carry, overflow := addWithLiveFlags(left, right, carryIn, flagsLive)
-				b.regs[rd] = result
-				if flagsLive {
-					b.setNZCV(result, carry, overflow)
-				}
-			case 0x6:
-				carryIn := uint32(0)
-				if b.carry() {
-					carryIn = 1
-				}
-				result, carry, overflow := addWithLiveFlags(left, ^right, carryIn, flagsLive)
-				b.regs[rd] = result
-				if flagsLive {
-					b.setNZCV(result, carry, overflow)
-				}
-			case 0x7:
-				result, carry := shiftROR(left, uint8(right), b.carry())
-				b.regs[rd] = result
-				if flagsLive {
-					b.setNZC(result, carry)
-				}
-			case 0x8:
-				if flagsLive {
-					b.setNZ(left & right)
-				}
-			case 0x9:
-				result, carry, overflow := addWithLiveFlags(0, ^right, 1, flagsLive)
-				b.regs[rd] = result
-				if flagsLive {
-					b.setNZCV(result, carry, overflow)
-				}
-			case 0xa:
-				result, carry, overflow := addWithLiveFlags(left, ^right, 1, flagsLive)
-				if flagsLive {
-					b.setNZCV(result, carry, overflow)
-				}
-			case 0xb:
-				result, carry, overflow := addWithLiveFlags(left, right, 0, flagsLive)
-				if flagsLive {
-					b.setNZCV(result, carry, overflow)
-				}
-			case 0xc:
-				b.regs[rd] = left | right
-				if flagsLive {
-					b.setNZ(b.regs[rd])
-				}
-			case 0xd:
-				b.regs[rd] = left * right
-				if flagsLive {
-					b.setNZ(b.regs[rd])
-				}
-			case 0xe:
-				b.regs[rd] = left &^ right
-				if flagsLive {
-					b.setNZ(b.regs[rd])
-				}
-			case 0xf:
-				b.regs[rd] = ^right
-				if flagsLive {
-					b.setNZ(b.regs[rd])
-				}
-			}
-		case thumbHighRegister + thumbDeadFlagsOffset:
-			const flagsLive = false
-			op := (instruction >> 8) & 3
-			rs := uint32(instruction>>3)&7 | uint32(instruction>>6)&1<<3
-			rd := uint32(instruction)&7 | uint32(instruction>>7)&1<<3
-			switch op {
-			case 0:
-				result := b.readOperandRegister(rd, pc, cpu.ModeThumb) +
-					b.readOperandRegister(rs, pc, cpu.ModeThumb)
-				if rd == cpu.RegisterPC {
-					result &^= 1
-				}
-				b.regs[rd] = result
-			case 1:
-				result, carry, overflow := addWithLiveFlags(
-					b.readOperandRegister(rd, pc, cpu.ModeThumb),
-					^b.readOperandRegister(rs, pc, cpu.ModeThumb), 1, flagsLive,
-				)
-				if flagsLive {
-					b.setNZCV(result, carry, overflow)
-				}
-			case 2:
-				result := b.readOperandRegister(rs, pc, cpu.ModeThumb)
-				if rd == cpu.RegisterPC {
-					result &^= 1
-				}
-				b.regs[rd] = result
-			case 3:
-				target := b.readOperandRegister(rs, pc, cpu.ModeThumb)
-				if instruction&(1<<7) != 0 {
-					b.regs[cpu.RegisterLR] = (pc + 2) | 1
-				}
-				b.branchExchange(target)
-			}
-			if op == 3 || op != 1 && rd == cpu.RegisterPC {
-				return index + 1, true, nil, nil
-			}
 
+			case thumbAddPCSP:
+				rd := uint32(instruction>>8) & 7
+				base := b.regs[cpu.RegisterSP]
+				if instruction&(1<<11) == 0 {
+					base = (pc + 4) &^ uint32(3)
+				}
+				b.regs[rd] = base + uint32(instruction&0xff)*4
+
+			case thumbMultipleTransfer:
+				load := instruction&(1<<11) != 0
+				rb := uint32(instruction>>8) & 7
+				registers := uint16(instruction & 0xff)
+				base := b.regs[rb]
+				first := b.blockTransferAddress(base)
+				address := first
+				for register := uint32(0); register < 8; register++ {
+					if registers&(1<<register) == 0 {
+						continue
+					}
+					if load {
+						value, hit := uint32(0), false
+						if privateDataRoute {
+							entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+							value, hit = cachedJITWord(entry, address)
+						}
+						if !hit {
+							var err error
+							value, err = b.read32(address, cpu.PermissionRead)
+							if err != nil {
+								return executed + uint64(index), nil, err
+							}
+						}
+						b.regs[register] = value
+					} else if err := b.write32(address, b.regs[register], cpu.PermissionWrite); err != nil {
+						return executed + uint64(index), nil, err
+					}
+					address += 4
+				}
+				if !load || registers&(1<<rb) == 0 {
+					b.regs[rb] = base + (address - first)
+				}
+				if !load && b.jitGen != blockGeneration {
+					{
+						blockRetired = index + 1
+						goto blockDone
+					}
+				}
+
+			case thumbConditionalBranch:
+				condition := uint8(instruction>>8) & 0xf
+				if b.conditionPassed(condition) {
+					offset := int32(int8(instruction&0xff)) << 1
+					b.regs[cpu.RegisterPC] = uint32(int32(pc+4) + offset)
+					{
+						blockRetired = index + 1
+						goto blockDone
+					}
+				}
+
+			case thumbLongBranch:
+
+				suffix, err := b.fetch16(pc + 2)
+				if err != nil {
+					return executed + uint64(index), nil, err
+				}
+				high := int32(instruction & 0x7ff)
+				if high&(1<<10) != 0 {
+					high |= ^int32(0x7ff)
+				}
+				if suffix&0xf801 == 0xe800 {
+					target := uint32(int32((pc+4)&^uint32(3))+(high<<12)) + uint32(suffix&0x7fe)*2
+					b.regs[cpu.RegisterLR] = (pc + 4) | 1
+					b.branchExchange(target)
+					{
+						blockRetired = index + 1
+						goto blockDone
+					}
+				}
+				if suffix&0xf800 != 0xf800 {
+					return executed + uint64(index), nil, b.unsupportedThumb(pc, instruction)
+				}
+				b.regs[cpu.RegisterLR] = (pc + 4) | 1
+				b.regs[cpu.RegisterPC] = uint32(int32(pc+4)+(high<<12)) + uint32(suffix&0x7ff)*2
+				{
+					blockRetired = index + 1
+					goto blockDone
+				}
+
+			case thumbUnconditionalBranch:
+				offset := int32(instruction & 0x7ff)
+				if offset&(1<<10) != 0 {
+					offset |= ^int32(0x7ff)
+				}
+				b.regs[cpu.RegisterPC] = uint32(int32(pc+4) + (offset << 1))
+				{
+					blockRetired = index + 1
+					goto blockDone
+				}
+
+			case thumbBreakpoint:
+				reason := cpu.StopBreakpoint
+				return executed + uint64(index+1), &reason, nil
+
+			default:
+				return executed + uint64(index), nil, b.unsupportedThumb(pc, instruction)
+			case thumbShiftImmediate + thumbDeadFlagsOffset:
+				const flagsLive = false
+				op := uint32(instruction>>11) & 3
+				shift := uint32(instruction>>6) & 0x1f
+				rs := uint32(instruction>>3) & 7
+				rd := uint32(instruction) & 7
+				value := b.regs[rs]
+				var result uint32
+				var carry bool
+				switch op {
+				case 0:
+					if shift == 0 {
+						result = value
+						carry = b.carry()
+					} else {
+						result = value << shift
+						carry = value&(uint32(1)<<(32-shift)) != 0
+					}
+				case 1:
+					if shift == 0 {
+						result = 0
+						carry = value&flagN != 0
+					} else {
+						result = value >> shift
+						carry = value&(uint32(1)<<(shift-1)) != 0
+					}
+				case 2:
+					if shift == 0 {
+						carry = value&flagN != 0
+						if carry {
+							result = ^uint32(0)
+						}
+					} else {
+						result = uint32(int32(value) >> shift)
+						carry = value&(uint32(1)<<(shift-1)) != 0
+					}
+				default:
+					return executed + uint64(index), nil, b.unsupportedThumb(pc, instruction)
+				}
+				b.regs[rd] = result
+				if flagsLive {
+					b.setNZC(result, carry)
+				}
+			case thumbMoveImmediate + thumbDeadFlagsOffset:
+				const flagsLive = false
+				rd := uint32(instruction>>8) & 7
+				value := uint32(instruction & 0xff)
+				b.regs[rd] = value
+				if flagsLive {
+					b.setNZ(value)
+				}
+			case thumbCompareImmediate + thumbDeadFlagsOffset:
+				const flagsLive = false
+				rd := uint32(instruction>>8) & 7
+				result, carry, overflow := addWithLiveFlags(b.regs[rd], ^uint32(instruction&0xff), 1, flagsLive)
+				if flagsLive {
+					b.setNZCV(result, carry, overflow)
+				}
+			case thumbAddImmediate + thumbDeadFlagsOffset:
+				const flagsLive = false
+				rd := uint32(instruction>>8) & 7
+				result, carry, overflow := addWithLiveFlags(b.regs[rd], uint32(instruction&0xff), 0, flagsLive)
+				b.regs[rd] = result
+				if flagsLive {
+					b.setNZCV(result, carry, overflow)
+				}
+			case thumbSubtractImmediate + thumbDeadFlagsOffset:
+				const flagsLive = false
+				rd := uint32(instruction>>8) & 7
+				result, carry, overflow := addWithLiveFlags(b.regs[rd], ^uint32(instruction&0xff), 1, flagsLive)
+				b.regs[rd] = result
+				if flagsLive {
+					b.setNZCV(result, carry, overflow)
+				}
+			case thumbAddSubtract + thumbDeadFlagsOffset:
+				const flagsLive = false
+				immediate := instruction&(1<<10) != 0
+				subtract := instruction&(1<<9) != 0
+				rnOrImmediate := uint32(instruction>>6) & 7
+				rs := uint32(instruction>>3) & 7
+				rd := uint32(instruction) & 7
+				right := rnOrImmediate
+				if !immediate {
+					right = b.regs[rnOrImmediate]
+				}
+				var result uint32
+				var carry, overflow bool
+				if subtract {
+					result, carry, overflow = addWithLiveFlags(b.regs[rs], ^right, 1, flagsLive)
+				} else {
+					result, carry, overflow = addWithLiveFlags(b.regs[rs], right, 0, flagsLive)
+				}
+				b.regs[rd] = result
+				if flagsLive {
+					b.setNZCV(result, carry, overflow)
+				}
+			case thumbALU + thumbDeadFlagsOffset:
+				const flagsLive = false
+				op := (instruction >> 6) & 0xf
+				rs := uint32(instruction>>3) & 7
+				rd := uint32(instruction) & 7
+				left, right := b.regs[rd], b.regs[rs]
+				switch op {
+				case 0x0:
+					b.regs[rd] = left & right
+					if flagsLive {
+						b.setNZ(b.regs[rd])
+					}
+				case 0x1:
+					b.regs[rd] = left ^ right
+					if flagsLive {
+						b.setNZ(b.regs[rd])
+					}
+				case 0x2:
+					result, carry := shiftLSL(left, uint8(right), b.carry())
+					b.regs[rd] = result
+					if flagsLive {
+						b.setNZC(result, carry)
+					}
+				case 0x3:
+					result, carry := shiftLSR(left, uint8(right), b.carry())
+					b.regs[rd] = result
+					if flagsLive {
+						b.setNZC(result, carry)
+					}
+				case 0x4:
+					result, carry := shiftASR(left, uint8(right), b.carry())
+					b.regs[rd] = result
+					if flagsLive {
+						b.setNZC(result, carry)
+					}
+				case 0x5:
+					carryIn := uint32(0)
+					if b.carry() {
+						carryIn = 1
+					}
+					result, carry, overflow := addWithLiveFlags(left, right, carryIn, flagsLive)
+					b.regs[rd] = result
+					if flagsLive {
+						b.setNZCV(result, carry, overflow)
+					}
+				case 0x6:
+					carryIn := uint32(0)
+					if b.carry() {
+						carryIn = 1
+					}
+					result, carry, overflow := addWithLiveFlags(left, ^right, carryIn, flagsLive)
+					b.regs[rd] = result
+					if flagsLive {
+						b.setNZCV(result, carry, overflow)
+					}
+				case 0x7:
+					result, carry := shiftROR(left, uint8(right), b.carry())
+					b.regs[rd] = result
+					if flagsLive {
+						b.setNZC(result, carry)
+					}
+				case 0x8:
+					if flagsLive {
+						b.setNZ(left & right)
+					}
+				case 0x9:
+					result, carry, overflow := addWithLiveFlags(0, ^right, 1, flagsLive)
+					b.regs[rd] = result
+					if flagsLive {
+						b.setNZCV(result, carry, overflow)
+					}
+				case 0xa:
+					result, carry, overflow := addWithLiveFlags(left, ^right, 1, flagsLive)
+					if flagsLive {
+						b.setNZCV(result, carry, overflow)
+					}
+				case 0xb:
+					result, carry, overflow := addWithLiveFlags(left, right, 0, flagsLive)
+					if flagsLive {
+						b.setNZCV(result, carry, overflow)
+					}
+				case 0xc:
+					b.regs[rd] = left | right
+					if flagsLive {
+						b.setNZ(b.regs[rd])
+					}
+				case 0xd:
+					b.regs[rd] = left * right
+					if flagsLive {
+						b.setNZ(b.regs[rd])
+					}
+				case 0xe:
+					b.regs[rd] = left &^ right
+					if flagsLive {
+						b.setNZ(b.regs[rd])
+					}
+				case 0xf:
+					b.regs[rd] = ^right
+					if flagsLive {
+						b.setNZ(b.regs[rd])
+					}
+				}
+			case thumbHighRegister + thumbDeadFlagsOffset:
+				const flagsLive = false
+				op := (instruction >> 8) & 3
+				rs := uint32(instruction>>3)&7 | uint32(instruction>>6)&1<<3
+				rd := uint32(instruction)&7 | uint32(instruction>>7)&1<<3
+				switch op {
+				case 0:
+					result := b.readOperandRegister(rd, pc, cpu.ModeThumb) +
+						b.readOperandRegister(rs, pc, cpu.ModeThumb)
+					if rd == cpu.RegisterPC {
+						result &^= 1
+					}
+					b.regs[rd] = result
+				case 1:
+					result, carry, overflow := addWithLiveFlags(
+						b.readOperandRegister(rd, pc, cpu.ModeThumb),
+						^b.readOperandRegister(rs, pc, cpu.ModeThumb), 1, flagsLive,
+					)
+					if flagsLive {
+						b.setNZCV(result, carry, overflow)
+					}
+				case 2:
+					result := b.readOperandRegister(rs, pc, cpu.ModeThumb)
+					if rd == cpu.RegisterPC {
+						result &^= 1
+					}
+					b.regs[rd] = result
+				case 3:
+					target := b.readOperandRegister(rs, pc, cpu.ModeThumb)
+					if instruction&(1<<7) != 0 {
+						b.regs[cpu.RegisterLR] = (pc + 2) | 1
+					}
+					b.branchExchange(target)
+				}
+				if op == 3 || op != 1 && rd == cpu.RegisterPC {
+					{
+						blockRetired = index + 1
+						goto blockDone
+					}
+				}
+
+			}
 		}
+		if block.compareBranchTail != nil {
+			b.executeThumbCompareBranchTail(block)
+		}
+	blockDone:
+		executed += uint64(blockRetired)
+		if b.mode != cpu.ModeThumb || executed == limit {
+			return executed, nil, nil
+		}
+		if b.jitGen == blockGeneration && b.regs[cpu.RegisterPC] == block.start {
+			continue
+		}
+		pc := b.regs[cpu.RegisterPC]
+		var successor *jitBlock
+		if block.successorGen == b.jitGen {
+			if next := block.successors[0]; next != nil && next.start == pc {
+				successor = next
+			} else if next := block.successors[1]; next != nil && next.start == pc {
+				successor = next
+			}
+		}
+		if successor == nil {
+			successor = b.thumbApplicationSuccessor(block, pc)
+		}
+		if successor == nil {
+			return executed, nil, nil
+		}
+		block = successor
 	}
-	return blockInstructions, false, nil, nil
+	return executed, nil, nil
+}
+
+// executeThumbCompareBranchTail is entered only after a complete ordinary prefix.
+// conditionPassed materializes the final CMP flags before either branch edge.
+func (b *Backend) executeThumbCompareBranchTail(block *jitBlock) {
+	tail := block.compareBranchTail
+	if collectThumbMicro {
+		last := len(block.thumb) - 1
+		b.recordThumbMicro(&block.thumb[last-1])
+		b.recordThumbMicro(&block.thumb[last])
+	}
+	left := b.regs[tail.left]
+	right := tail.right
+	if tail.register {
+		right = b.regs[right]
+	}
+	b.regs[cpu.RegisterPC] = tail.branchPC
+	result, carry, overflow := addWithCarry(left, ^right, 1)
+	b.setNZCV(result, carry, overflow)
+	b.regs[cpu.RegisterPC] = tail.branchPC + 2
+	condition := tail.condition
+	if b.conditionPassed(condition) {
+		b.regs[cpu.RegisterPC] = tail.target
+	}
 }

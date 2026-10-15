@@ -52,3 +52,32 @@ func (b *Backend) pushPrivateThumbRegisters(instruction uint16) bool {
 	b.regs[cpu.RegisterSP] = start
 	return true
 }
+
+func (b *Backend) popPrivateThumbRegisters(instruction uint16) bool {
+	mask := uint32(instruction & 0xff)
+	includePC := instruction&(1<<8) != 0
+	if includePC {
+		mask |= 1 << cpu.RegisterPC
+	}
+	count := bits.OnesCount32(mask)
+	start := b.regs[cpu.RegisterSP]
+	data, hit := b.privateThumbStackSpan(b.blockTransferAddress(start), count, cpu.PermissionRead)
+	if !hit {
+		return false
+	}
+	for offset := 0; mask != 0; offset += 4 {
+		register := bits.TrailingZeros32(mask)
+		value := binary.LittleEndian.Uint32(data[offset : offset+4])
+		if register == int(cpu.RegisterPC) {
+			b.branchExchange(value)
+		} else {
+			b.regs[register] = value
+		}
+		mask &= mask - 1
+	}
+	// Preserve the original base's low bits, even when the accesses were
+	// aligned down with CP15.A clear. The complete span proved every read
+	// infallible before any register or writeback was changed.
+	b.regs[cpu.RegisterSP] = start + uint32(count*4)
+	return true
+}

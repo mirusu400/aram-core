@@ -555,6 +555,9 @@ func (b *Backend) executeThumbMicroBlock(
 			}
 
 		case thumbPush:
+			if b.pushPrivateThumbRegisters(instruction) {
+				break
+			}
 			registers := uint16(instruction & 0xff)
 			includeLR := instruction&(1<<8) != 0
 			count := bits.OnesCount16(registers)
@@ -583,6 +586,9 @@ func (b *Backend) executeThumbMicroBlock(
 			}
 
 		case thumbPop:
+			if b.popPrivateThumbRegisters(instruction) {
+				return index + 1, instruction&(1<<8) != 0, nil, nil
+			}
 			registers := uint16(instruction & 0xff)
 			includePC := instruction&(1<<8) != 0
 			start := b.regs[cpu.RegisterSP]

@@ -528,6 +528,8 @@ func (b *Backend) recordPC(address uint32) {
 	}
 	if b.pcCaptureLimit != 0 && address == b.pcCaptureAddress &&
 		uint32(len(b.pcRegisterCaptures)) < b.pcCaptureLimit {
+		// Captures expose architectural flags, not their lazy storage form.
+		b.resolveFlags()
 		b.pcRegisterCaptures = append(b.pcRegisterCaptures, PCRegisterCapture{
 			Address: address, Registers: b.regs,
 		})

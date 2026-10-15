@@ -14,7 +14,7 @@ func markDeadThumbFlags(instructions []thumbMicroInstr) {
 	live := uint32(all)
 	for index := len(instructions) - 1; index >= 0; index-- {
 		in := &instructions[index]
-		in.appOp = in.op
+		in.appOp = thumbApplicationOpcode(in.op, in.raw)
 		var read, write uint32
 		switch in.op {
 		case thumbMoveImmediate:
