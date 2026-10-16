@@ -879,16 +879,44 @@ func LookupSKVMCanvas(
 }
 
 // EADSTitleRuntime pins a dedicated EADS host runtime to one exact shipped
-// binary. The only entry is the SKT SCH-W830 minigame pack (미니게임천국
-// lineage), whose OEM native service ABI is modeled by internal/minigame.
+// binary or unchanged carved record. The verified Samsung minigame and Bomb
+// Link OEM native service ABIs are modeled by internal/minigame.
 type EADSTitleRuntime struct {
-	ImageName string
-	DatSHA256 string
+	ImageName    string
+	DatSHA256    string
+	RecordSHA256 string
+}
+
+// Matches preserves the source integrity identity while allowing an unchanged,
+// fully bounded EADS record to select the same runtime after extraction or
+// repackaging. The record digest includes its original header and address map.
+func (key EADSTitleRuntime) Matches(imageName, sourceSHA256, recordSHA256 string) bool {
+	return imageName == key.ImageName &&
+		((key.DatSHA256 != "" && sourceSHA256 == key.DatSHA256) ||
+			(key.RecordSHA256 != "" && recordSHA256 == key.RecordSHA256))
 }
 
 var MinigameQVGAOEM = EADSTitleRuntime{
-	ImageName: "MinigameQVGAOEM",
-	DatSHA256: "955a39b3c09d6228224234dab18b3b38fe89da518c0b614a7cba47e6f9f96900",
+	ImageName:    "MinigameQVGAOEM",
+	DatSHA256:    "955a39b3c09d6228224234dab18b3b38fe89da518c0b614a7cba47e6f9f96900",
+	RecordSHA256: "c83d4f4ee9cbf6ba4280b17f8f8a3dd26157ce9f07849583c04a60ebf9c00429",
+}
+
+var MinigameQVGAOEMW860 = EADSTitleRuntime{
+	ImageName:    "MinigameQVGAOEM",
+	RecordSHA256: "6b48455bc86e151967d75ec1b596cdd7a09838e495d3a8a1717bd5d67158ee71",
+}
+
+var MinigameWQVGA = EADSTitleRuntime{
+	ImageName:    "Minigame WQVGA",
+	RecordSHA256: "16f0ccdf370069e2342aee29c05e22fa64577b7ca5e9d7cc87a98d87b50d391f",
+}
+
+// BombLink's original generic image label is shared by unrelated titles.
+// Only the recovered full record selects its direct event ABI.
+var BombLink = EADSTitleRuntime{
+	ImageName:    "Title(Main)",
+	RecordSHA256: "a8c47d3045639b12afd0de213a1c2ef1467f0495c8edad1bb5483a3ab74dc629",
 }
 
 func MustHash(value string) [sha256.Size]byte {

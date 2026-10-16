@@ -88,7 +88,7 @@ func TestBREWResolvedFuzzReportsReference(t *testing.T) {
 					}
 					presses++
 				}
-				if err := machine.StepFrame(context.Background()); err != nil {
+				if err := stepBREWCapturedFrame(context.Background(), machine); err != nil {
 					t.Fatalf("seed=%d frame=%d presses=%d: %v", test.seed, frame, presses, err)
 				}
 				if machine.State() == machinecore.StateStopped {

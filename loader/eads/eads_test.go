@@ -26,6 +26,44 @@ func TestParseSyntheticImage(t *testing.T) {
 	}
 }
 
+func TestParseDirectEventDispatcher(t *testing.T) {
+	// The older direct-event format saves its argument registers with LR instead
+	// of entering through the push-{lr} veneer used by later OEM images.
+	for _, prologue := range []uint16{0xb587, 0xb510} {
+		data := syntheticImage()
+		binary.LittleEndian.PutUint32(data[4:8], 0x00300501)
+		binary.LittleEndian.PutUint16(data[HeaderSize:], prologue)
+		image, err := Parse(data, 0)
+		if err != nil {
+			t.Fatalf("direct-event PUSH %#x: %v", prologue, err)
+		}
+		if image.GuestEntry() != 0xf4000001 {
+			t.Fatalf("entry = %#x", image.GuestEntry())
+		}
+	}
+}
+
+func TestParseRejectsUnverifiedEntryVariants(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		format   uint32
+		prologue uint16
+	}{
+		{"unknown-format", 0x00309901, 0xb587},
+		{"push-without-return-address", 0x00300501, 0xb487},
+		{"non-push", 0x00300501, 0xbf00},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			data := syntheticImage()
+			binary.LittleEndian.PutUint32(data[4:8], test.format)
+			binary.LittleEndian.PutUint16(data[HeaderSize:], test.prologue)
+			if _, err := Parse(data, 0); err == nil {
+				t.Fatal("accepted an unverified entry variant")
+			}
+		})
+	}
+}
+
 func TestParseRejectsOverlappingRanges(t *testing.T) {
 	data := make([]byte, HeaderSize+8)
 	copy(data, Magic)

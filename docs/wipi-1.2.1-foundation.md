@@ -64,8 +64,8 @@ The implemented gate is:
 2. validate its ABHS/EADS records;
 3. map the selected EADS text and zeroed BSS into a 32-bit guest address space;
 4. initialize a separate stack and Thumb entry context;
-5. select the recovered title runtime only for the known DAT SHA-256
-   `955a39b3c09d6228224234dab18b3b38fe89da518c0b614a7cba47e6f9f96900`;
+5. select the recovered title runtime by the verified container or bounded
+   record SHA-256 in `application/internal/quirkdb`;
 6. build deterministic system, trampoline, application-heap, image-heap,
    resource-object, and 13-service table state;
 7. execute bootstrap, setup, start, preload-frame, and visible-frame events

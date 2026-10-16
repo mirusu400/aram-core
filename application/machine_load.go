@@ -165,15 +165,16 @@ func (m *Machine) Load(ctx context.Context, source machinecore.Source) error {
 		return fmt.Errorf("inspect WIPI application: %w", err)
 	}
 	selected := container.Images[0]
-	useMinigameRuntime := selected.Name == quirkdb.MinigameQVGAOEM.ImageName &&
-		actualSHA256 == quirkdb.MinigameQVGAOEM.DatSHA256
+	recordDigest := sha256.Sum256(data[selected.RecordOffset:selected.RecordEnd()])
+	recordSHA256 := hex.EncodeToString(recordDigest[:])
+	nativeProfile, useNativeRuntime := quirkdb.LookupEADSRuntime(selected.Name, actualSHA256, recordSHA256)
 	requiredMemory := uint64(selected.TextSize) +
 		uint64(selected.BSSSize) +
 		uint64(DefaultStackSize) +
 		uint64(wipi.SystemSize) +
 		uint64(wipi.TrampolineSize) +
 		uint64(guest.HeapSize)
-	if useMinigameRuntime {
+	if useNativeRuntime {
 		requiredMemory += uint64(minigame.ImageHeapSize)
 	}
 	if requiredMemory > m.memoryLimit {
@@ -216,12 +217,15 @@ func (m *Machine) Load(ctx context.Context, source machinecore.Source) error {
 	if err := wipirt.MapRuntimeMemory(m.cpu); err != nil {
 		return err
 	}
+	if useNativeRuntime && nativeProfile.Width > 0 && nativeProfile.Height > 0 {
+		m.frame = image.NewRGBA(image.Rect(0, 0, applyGuestWidthOverride(nativeProfile.Width, m.guestWidthOverride), nativeProfile.Height))
+	}
 	profileID := source.ProfileID
 	carrier := "unknown"
 	if profileID == "" {
-		if useMinigameRuntime {
-			profileID = minigame.ProfileID
-			carrier = "skt"
+		if useNativeRuntime {
+			profileID = nativeProfile.ID
+			carrier = nativeProfile.Carrier
 		} else {
 			profileID = DefaultProfileID
 		}
@@ -252,8 +256,15 @@ func (m *Machine) Load(ctx context.Context, source machinecore.Source) error {
 	if err := m.installWIPIResources(); err != nil {
 		return err
 	}
-	if useMinigameRuntime {
-		runtime, runtimeErr := minigame.NewRuntime(
+	if useNativeRuntime {
+		createRuntime := minigame.NewRuntime
+		if nativeProfile.Legacy {
+			createRuntime = minigame.NewLegacyRuntime
+		}
+		if nativeProfile.TimerBootstrap {
+			createRuntime = minigame.NewTimerRuntime
+		}
+		runtime, runtimeErr := createRuntime(
 			m.cpu,
 			m.frame,
 			publicRuntime,
@@ -262,7 +273,10 @@ func (m *Machine) Load(ctx context.Context, source machinecore.Source) error {
 			selected.GuestEntry(),
 		)
 		if runtimeErr != nil {
-			return fmt.Errorf("initialize MinigameQVGAOEM runtime: %w", runtimeErr)
+			return fmt.Errorf("initialize native OEM runtime: %w", runtimeErr)
+		}
+		if nativeProfile.Pointer {
+			runtime.EnablePointerInput()
 		}
 		m.minigame = runtime
 	}

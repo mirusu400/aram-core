@@ -14,7 +14,8 @@ func TestBREWIssue362MenuText(t *testing.T) {
 	stepBREWReference(t, machine, 300)
 	tapBREWReference(t, machine)
 	stepBREWReference(t, machine, 120)
-	const want = "60a5662e0dae577d7d78e5774434a40b6a7c9b0df31497cbb167e45413711410"
+	// MeasureTextEx now agrees with the drawn Hangul advances (53a392b).
+	const want = "783ef33424360052eb270ab5cf80b026a843c91c517c81a551c10d7002431144"
 	if got := fmt.Sprintf("%x", brewFrameHash(machine.Framebuffer())); got != want {
 		t.Fatalf("menu frame hash = %s, want %s", got, want)
 	}

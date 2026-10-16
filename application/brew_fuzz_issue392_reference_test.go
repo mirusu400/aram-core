@@ -73,7 +73,7 @@ func TestBREWFuzzIssue392Reference(t *testing.T) {
 					}
 					presses++
 				}
-				if err := machine.StepFrame(context.Background()); err != nil {
+				if err := stepBREWCapturedFrame(context.Background(), machine); err != nil {
 					t.Fatalf("seed=%d frame=%d presses=%d: %v", test.seed, frame, presses, err)
 				}
 				if frame == 488 && presses != 137 {

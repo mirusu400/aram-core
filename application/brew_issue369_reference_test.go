@@ -17,8 +17,17 @@ func TestBREWIssue369TopGun2StartsAndOpensMenu(t *testing.T) {
 	if got, want := machine.Framebuffer().Bounds(), image.Rect(0, 0, 176, 220); got != want {
 		t.Fatalf("Top Gun 2 canvas = %v, want %v", got, want)
 	}
-	if got, want := fmt.Sprintf("%x", brewFrameHash(machine.Framebuffer())), "549661ce691aaf87979c9042997e4f92b9a4c07a55663ce35f1c54e2846c6fe7"; got != want {
+	// AEE_RO_OLDMASK now removes the RGB565 magenta key (53a392b).
+	if got, want := fmt.Sprintf("%x", brewFrameHash(machine.Framebuffer())), "599581af8306b8ac14a2fa8318c29b7c5ce6f8d4816f1ea390914566b16a641e"; got != want {
 		t.Fatalf("Top Gun 2 menu frame hash=%s, want %s", got, want)
+	}
+	for y := 80; y < 145; y++ {
+		for x := 35; x < 120; x++ {
+			r, g, b, _ := machine.Framebuffer().At(x, y).RGBA()
+			if r == 0xffff && g == 0 && b == 0xffff {
+				t.Fatalf("transparent magenta was copied into menu at %d,%d", x, y)
+			}
+		}
 	}
 	stats, presented := machine.BREWFrameStats()
 	if !presented || !stats.FrameValid || stats.PresentCount < 160 {

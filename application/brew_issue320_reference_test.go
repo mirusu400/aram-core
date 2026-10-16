@@ -1,6 +1,7 @@
 package application
 
 import (
+	"context"
 	"image"
 	"testing"
 
@@ -20,13 +21,17 @@ func TestBREWIssue320MapTilesRender(t *testing.T) {
 		if err := machine.QueueInput(machinecore.InputEvent{Control: control, Pressed: true}); err != nil {
 			t.Fatal(err)
 		}
-		stepBREWReference(t, machine, hold)
+		for range hold {
+			if err := stepBREWCapturedFrame(context.Background(), machine); err != nil {
+				t.Fatal(err)
+			}
+		}
 		if err := machine.QueueInput(machinecore.InputEvent{Control: control, Pressed: false}); err != nil {
 			t.Fatal(err)
 		}
 		stepBREWReference(t, machine, 10)
 	}
-	press("select", 60) // Title to main menu.
+	press("select", 60) // Replay the original hold without newly generated repeats.
 	stepBREWReference(t, machine, 100)
 	press("select", 5) // Start game; the menu is initially open.
 	stepBREWReference(t, machine, 100)

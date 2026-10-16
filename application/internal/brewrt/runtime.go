@@ -347,6 +347,11 @@ func (e *ExecutionBoundaryError) Error() string {
 }
 
 func New(pkg Package) (*Runtime, error) {
+	return NewWithFallbackFont(pkg, "")
+}
+
+// NewWithFallbackFont selects the shared handset face for guest Hangul text.
+func NewWithFallbackFont(pkg Package, fallbackFont string) (*Runtime, error) {
 	if len(pkg.Module) == 0 {
 		return nil, fmt.Errorf("BREW module is empty")
 	}
@@ -357,7 +362,7 @@ func New(pkg Package) (*Runtime, error) {
 		_ = backend.Close()
 		return nil, fmt.Errorf("create BREW text graphics service: %w", err)
 	}
-	displayText, err := shared.NewText(registry, graphics, shared.TextLimits{}, "")
+	displayText, err := shared.NewText(registry, graphics, shared.TextLimits{}, fallbackFont)
 	if err != nil {
 		_ = backend.Close()
 		return nil, fmt.Errorf("create BREW text service: %w", err)

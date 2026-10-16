@@ -80,4 +80,8 @@ func TestEventResultLogStaysWithinTheSaveFormatLimit(t *testing.T) {
 		t.Fatalf("newest result = %d, want %d",
 			newest.Instructions, maxSavedEADSEvents+15)
 	}
+	count := uint64(maxSavedEADSEvents + 16)
+	if got, want := runtime.Stats.TotalInstructions, count*(count-1)/2; got != want {
+		t.Fatalf("rolling event log lost cumulative instructions: %d, want %d", got, want)
+	}
 }

@@ -111,6 +111,19 @@ func (m *Machine) QueueInput(event machinecore.InputEvent) error {
 	)
 }
 
+func (m *Machine) SupportsPointer() bool {
+	pointer, ok := m.machine.(machinecore.PointerInputMachine)
+	return ok && pointer.SupportsPointer()
+}
+
+func (m *Machine) QueuePointer(event machinecore.PointerInputEvent) error {
+	pointer, ok := m.machine.(machinecore.PointerInputMachine)
+	if !ok || !pointer.SupportsPointer() {
+		return fmt.Errorf("loaded title does not support pointer input")
+	}
+	return m.engine.runMachine(func() error { return pointer.QueuePointer(event) }, applyNone)
+}
+
 func (m *Machine) Framebuffer() image.Image {
 	return m.machine.Framebuffer()
 }
@@ -138,3 +151,4 @@ func (m *Machine) Close() error {
 }
 
 var _ machinecore.Machine = (*Machine)(nil)
+var _ machinecore.PointerInputMachine = (*Machine)(nil)
