@@ -169,7 +169,7 @@ func (r *Runtime) collectJavaHeap() int {
 		skip[table.Pointer()] = true
 	}
 	r.markHostRoots(mark, skip)
-	r.markRegionRoots(mark)
+	r.markRegionRoots(mark, lookup.lower, lookup.upper)
 
 	// Transitive closure: a marked block's own words are references too.
 	scratch := make([]byte, 0, 4096)
@@ -187,7 +187,7 @@ func (r *Runtime) collectJavaHeap() int {
 				// A block we cannot read is a block we cannot prove dead.
 				continue
 			}
-			scanWords(buffer, mark)
+			scanWordsInHeapEnvelope(buffer, mark, lookup.lower, lookup.upper)
 		}
 	}
 	drainPending()
@@ -318,7 +318,7 @@ func ScanWords(buffer []byte, mark func(uint32)) {
 // markRegionRoots scans every mapped region that is not the heap itself. The
 // client image holds the title's statics, the stack holds every live frame,
 // and low work RAM is where KTF titles keep their own structures.
-func (r *Runtime) markRegionRoots(mark func(uint32)) {
+func (r *Runtime) markRegionRoots(mark func(uint32), lower, upper uint32) {
 	regions := []ktfIncrementalMemoryRegion{
 		{base: ImageBase, size: r.ImageSz},
 		{base: guest.DefaultStackBase, size: guest.DefaultStackSize},
@@ -336,7 +336,7 @@ func (r *Runtime) markRegionRoots(mark func(uint32)) {
 			if err := r.CPU.ReadMemory(region.base+offset, window); err != nil {
 				break
 			}
-			scanWords(window, mark)
+			scanWordsInHeapEnvelope(window, mark, lower, upper)
 			offset += count
 		}
 	}
@@ -442,6 +442,20 @@ func markValue(
 		for iterator.Next() {
 			markValue(iterator.Key(), mark, seen, depth+1, skip)
 			markValue(iterator.Value(), mark, seen, depth+1, skip)
+		}
+	}
+}
+
+// scanWordsInHeapEnvelope avoids an indirect mark call for words that the
+// collector's immutable allocation snapshot already proves are not pointers.
+// Preserve scanWords for exported/custom root walkers, whose callbacks may have
+// effects even for non-pointers. Collection order and interior pointers are
+// unchanged; the collection's mark closure rejects the same half-open envelope.
+func scanWordsInHeapEnvelope(buffer []byte, mark func(uint32), lower, upper uint32) {
+	for offset := 0; offset+4 <= len(buffer); offset += 4 {
+		address := binary.LittleEndian.Uint32(buffer[offset:])
+		if address >= lower && address < upper {
+			mark(address)
 		}
 	}
 }

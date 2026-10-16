@@ -496,7 +496,7 @@ func (r *Runtime) presentWIPICFramebuffer(handle uint32) error {
 			return err
 		}
 	}
-	frame, err := r.Services.Graphics.Present(
+	presentation, err := r.Services.Graphics.PresentCommit(
 		r.ServiceOwner,
 		presentationSurface,
 		shared.Rectangle{},
@@ -505,15 +505,28 @@ func (r *Runtime) presentWIPICFramebuffer(handle uint32) error {
 		return err
 	}
 	bounds := r.frame.Bounds()
-	// Keep the existing snapshot/hash contract, but copy whole overlapping
-	// rows into the host image. Pix starts at Bounds().Min even for a
-	// nonzero-origin subimage, and Stride preserves padding and margins.
-	width := min(int(frame.Width), bounds.Dx())
-	height := min(int(frame.Height), bounds.Dy())
-	for y := 0; y < height; y++ {
-		source := y * int(frame.Width) * 4
-		destination := y * r.frame.Stride
-		copy(r.frame.Pix[destination:destination+width*4], frame.RGBA[source:source+width*4])
+	width := min(int(presentation.Width), bounds.Dx())
+	height := min(int(presentation.Height), bounds.Dy())
+	rowBytes := int64(presentation.Width) * 4
+	// Copy the committed pixels without a detached intermediate snapshot only
+	// when the complete frame fits. Pix begins at Bounds().Min; padded rows
+	// remain padded. Observers and saved state materialize the existing lazy hash.
+	if presentation.Width > 0 && presentation.Height > 0 &&
+		width == int(presentation.Width) && height == int(presentation.Height) &&
+		int64(r.frame.Stride) >= rowBytes && rowBytes <= int64(len(r.frame.Pix)) &&
+		(height <= 1 || int64(height-1) <= (int64(len(r.frame.Pix))-rowBytes)/int64(r.frame.Stride)) {
+		if err := r.Services.Graphics.CopyLastFrameRGBA(r.frame.Pix, r.frame.Stride); err != nil {
+			return err
+		}
+	} else {
+		// Preserve the original clipping and malformed-storage behavior.
+		// LastFrame snapshots the SAME commit: never present a second time.
+		frame := r.Services.Graphics.LastFrame()
+		for y := 0; y < height; y++ {
+			source := y * int(frame.Width) * 4
+			destination := y * r.frame.Stride
+			copy(r.frame.Pix[destination:destination+width*4], frame.RGBA[source:source+width*4])
+		}
 	}
 	r.WipicScreenPending = false
 	if state := r.Graphics[r.ScreenGraphics]; state != nil {
