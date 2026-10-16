@@ -985,6 +985,7 @@ type Task struct {
 	timerPeriodMS    uint64
 	timerDeadlineMS  uint64
 	timerFixedRate   bool
+	timerStarted     bool
 	// javaThread is the java/lang/Thread this task runs, which is what
 	// Thread.currentThread() has to answer while the task is on the CPU. A
 	// task that is not a started thread - a paint, a key event, a timer -

@@ -250,6 +250,7 @@ type Runtime struct {
 
 	preferPackedAECHAR         bool
 	preferPackedResourceAECHAR bool
+	wideOEMText                bool
 	coalesceIdenticalTimers    bool
 	deliverCanceledDueTimers   bool
 }
@@ -407,6 +408,7 @@ func New(pkg Package) (*Runtime, error) {
 
 		preferPackedAECHAR:         pkg.PreferPackedAECHAR,
 		preferPackedResourceAECHAR: pkg.PreferPackedResourceAECHAR,
+		wideOEMText:                pkg.WideOEMText,
 		coalesceIdenticalTimers:    coalesceDuplicateTimerModule(pkg.Module),
 		deliverCanceledDueTimers:   deliverCanceledDueTimerModule(pkg.Module),
 	}

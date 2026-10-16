@@ -771,6 +771,7 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 			r.Tasks[index].startBlocker = r.Tasks[task.StartBlocker]
 		}
 	}
+	r.restoreJavaTimerState(saved.javaTimers)
 	r.PendingJavaCalls = make(
 		[]ktfPendingJavaCall,
 		len(meta.PendingJavaCalls),
@@ -784,6 +785,10 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 		if index < len(saved.pendingTimers) && saved.pendingTimers[index] != nil {
 			timer := *saved.pendingTimers[index]
 			r.PendingJavaCalls[index].timer = &timer
+			if saved.javaTimers == nil {
+				// Legacy states carry pending schedules, but no status map.
+				r.javaTimerTaskStates[call.Instance] = ktfJavaTimerScheduled
+			}
 		}
 	}
 	r.taskCursor = int(meta.TaskCursor)

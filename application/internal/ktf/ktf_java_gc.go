@@ -491,6 +491,9 @@ func (r *Runtime) weakTables() []reflect.Value {
 		r.timeZones,
 		r.calendarZones,
 		r.randomSeeds,
+		// Completed TimerTask status belongs to the guest object, not a root
+		// retaining every callback ever scheduled. Live tasks remain strong roots.
+		r.javaTimerTaskStates,
 		r.throwableMessages,
 		r.wipi2IODevices,
 		r.wipi2SMSMessages,

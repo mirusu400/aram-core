@@ -49,7 +49,7 @@ func (r *Runtime) drawDisplayText() error {
 	y := int32(binary.LittleEndian.Uint32(arguments[4:8]))
 	clipPointer := binary.LittleEndian.Uint32(arguments[8:12])
 	flags := binary.LittleEndian.Uint32(arguments[12:16])
-	text, err := r.displayText(textAddress, rawCount, flags&displayTextFormatOEM != 0)
+	text, err := r.displayText(textAddress, rawCount, flags&displayTextFormatOEM != 0 && !r.wideOEMText)
 	if err != nil {
 		return err
 	}

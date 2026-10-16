@@ -62,6 +62,7 @@ const minibookArchiveSHA256 = "9d17a101d5c9e31e789698f31fb41ba5448b624eb63b37193
 const battleDrumXArchiveSHA256 = "a50f7decb608272daca545a1beca126286cba8eeb8b6e230f14448393b143ca2"
 const topGun2ArchiveSHA256 = "43392c5a657ac36aca605a3cde727bd817b5672594be55b8470bacdb924468f1"
 const milkTycoon2ArchiveSHA256 = "9f7366ca1902b91c359b271ee5721fdccff7e39f1ebda6849454e6f9572a3a4f"
+const bigFishingArchiveSHA256 = "1e7753773e3afb794d704bc67f3e70bc58336bfd28cb762094da97e057f8914f"
 
 // Package contains the inspected executable module and immutable archive data.
 type Package struct {
@@ -80,6 +81,9 @@ type Package struct {
 	// PreferPackedResourceAECHAR preserves OEM byte pairs in compressed string
 	// resources for titles that read the low byte of each AECHAR directly.
 	PreferPackedResourceAECHAR bool
+	// WideOEMText preserves resource-backed AECHAR labels in an exact title's
+	// menu footer, which passes those strings with IDF_TEXT_FORMAT_OEM.
+	WideOEMText bool
 }
 
 // DisplaySize selects the handset canvas. Exact-title dimensions override
@@ -186,6 +190,7 @@ func Match(data []byte) (pkg Package, matched bool, err error) {
 
 		PreferPackedAECHAR:         preferPackedAECHARForDigest(digestHex),
 		PreferPackedResourceAECHAR: preferPackedResourceAECHARForDigest(digestHex),
+		WideOEMText:                wideOEMTextForDigest(digestHex),
 	}, true, nil
 }
 
@@ -200,6 +205,10 @@ func preferPackedAECHARForDigest(digest string) bool {
 
 func preferPackedResourceAECHARForDigest(digest string) bool {
 	return digest == unlimitedWarArchiveSHA256
+}
+
+func wideOEMTextForDigest(digest string) bool {
+	return digest == bigFishingArchiveSHA256
 }
 
 func knownModuleVeneer(module []byte) bool {

@@ -186,12 +186,13 @@ func TestKTFRestoreAcceptsSaveWithoutTheImageBlock(t *testing.T) {
 	writer := guest.NewStateWriter(&buffer)
 	check(t, WriteState(runtime, runtime.CPU, true, writer))
 	saved := buffer.Bytes()
-	if count := binary.LittleEndian.Uint32(saved[len(saved)-8:]); count != 0 {
+	imageOffset := ktfInputSectionOffsetForTest(t, runtime, saved) - 8
+	if count := binary.LittleEndian.Uint32(saved[imageOffset:]); count != 0 {
 		t.Fatalf("the mirrored image took %d entries in the image block", count)
 	}
-	// A schema-5 save is exactly this one without its image block or the
-	// schema-8 input-mode pointer.
-	older := append([]byte(nil), saved[:len(saved)-8]...)
+	// Trim at the image block boundary: schema 5 has none of the later image,
+	// input, socket or Java timer extensions.
+	older := append([]byte(nil), saved[:imageOffset]...)
 	binary.LittleEndian.PutUint32(older[4:8], ktfStateSchemaV5)
 
 	decoder := guest.StateDecoder{Reader: bytes.NewReader(older)}

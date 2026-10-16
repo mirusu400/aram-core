@@ -248,6 +248,11 @@ func ktfInputSectionOffsetForTest(t *testing.T, r *Runtime, data []byte) int {
 	if schema >= 15 {
 		trailer += 4 + 12*len(saved.socketServices)
 	}
+	if schema >= 16 {
+		timers, err := shared.MarshalStateComponent(*saved.javaTimers)
+		check(t, err)
+		trailer += 4 + len(timers)
+	}
 	if schema < 13 {
 		t.Fatal("state has no C input section")
 	}

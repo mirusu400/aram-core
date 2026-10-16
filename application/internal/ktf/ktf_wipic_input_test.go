@@ -64,7 +64,8 @@ func TestKTFWIPICInputModesSurviveStateRoundTrip(t *testing.T) {
 	}
 
 	// A schema-7 save has the task-thread block but no input-mode pointer.
-	legacy := append([]byte(nil), buffer.Bytes()[:buffer.Len()-4-44]...)
+	inputOffset := ktfInputSectionOffsetForTest(t, runtime, buffer.Bytes())
+	legacy := append([]byte(nil), buffer.Bytes()[:inputOffset-4]...)
 	binary.LittleEndian.PutUint32(legacy[4:8], ktfStateSchemaV7)
 	decoder = guest.StateDecoder{Reader: bytes.NewReader(legacy)}
 	saved, err = ParseState(runtime, &decoder)

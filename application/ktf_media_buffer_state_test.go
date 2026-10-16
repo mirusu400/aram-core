@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	machinecore "github.com/mirusu400/aram-core/core"
 	"github.com/mirusu400/aram-core/cpu"
+	shared "github.com/mirusu400/aram-core/runtime"
 	"testing"
 )
 
@@ -41,8 +42,9 @@ func TestKTF262PublicLoadRejectsAliasBeforeMutation(t *testing.T) {
 	var good bytes.Buffer
 	check(t, m.SaveState(&good))
 	payload := good.Bytes()[:good.Len()-stateChecksumSize]
-	// Schema 15 appends the empty local-socket binding count after aliases.
-	aliasEnd := len(payload) - 4
+	// The synthetic runtime has no Java timers or local sockets. Schema 16
+	// appends their extension after the alias section.
+	aliasEnd := len(payload) - 4 - emptyKTFJavaTimerTrailerSize(t, len(r.Tasks))
 	if got := binary.LittleEndian.Uint32(payload[aliasEnd-16:]); got != 1 {
 		t.Fatalf("retained alias count=%d", got)
 	}
@@ -89,7 +91,21 @@ func TestKTF262PublicLoadRejectsAliasBeforeMutation(t *testing.T) {
 	var reset bytes.Buffer
 	check(t, m.SaveState(&reset))
 	resetPayload := reset.Bytes()[:reset.Len()-stateChecksumSize]
-	if n := binary.LittleEndian.Uint32(resetPayload[len(resetPayload)-8:]); n != 0 {
+	resetAliasEnd := len(resetPayload) - 4 - emptyKTFJavaTimerTrailerSize(t, len(m.ktf.Tasks))
+	if n := binary.LittleEndian.Uint32(resetPayload[resetAliasEnd-4:]); n != 0 {
 		t.Fatalf("reset retained alias records=%d", n)
 	}
+}
+
+func emptyKTFJavaTimerTrailerSize(t *testing.T, taskCount int) int {
+	t.Helper()
+	// Schema-16 timer entries contain two uint32s, two uint64s and two
+	// booleans. All are zero for the non-timer tasks in this synthetic fixture.
+	state := struct {
+		Tasks  [][26]byte
+		States map[uint32]uint8
+	}{make([][26]byte, taskCount), map[uint32]uint8{}}
+	encoded, err := shared.MarshalStateComponent(state)
+	check(t, err)
+	return 4 + len(encoded)
 }

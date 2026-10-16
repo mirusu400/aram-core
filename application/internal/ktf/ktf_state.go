@@ -25,7 +25,8 @@ const (
 	ktfStateSchemaV12    = uint32(12)
 	ktfStateSchemaV13    = uint32(13)
 	ktfStateSchemaV14    = uint32(14)
-	ktfStateSchema       = uint32(15)
+	ktfStateSchemaV15    = uint32(15)
+	ktfStateSchema       = uint32(16)
 	maxKTFStateMetadata  = uint32(64 << 20)
 	maxKTFStateEntries   = 16_384
 	maxKTFStateHostCalls = int(HostSize / 4)
@@ -50,6 +51,7 @@ type SavedState struct {
 	metadata           ktfMetadataSnapshot
 	taskWakeAtMS       []uint64
 	pendingTimers      []*ktfPendingTimer
+	javaTimers         *ktfJavaTimersSnapshot
 	WipicScreenPending bool
 	resolvedHostCalls  map[uint32]ktfHostCall
 	// imagePixels carries the Images no service surface mirrors. A save from
@@ -693,6 +695,9 @@ func writeState(r *Runtime, backend cpu.Backend, started bool, writer *guest.Sta
 		writer.U32(object)
 		writer.U64(uint64(r.socketServices[object]))
 	}
+	if err := r.writeJavaTimerState(writer); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -779,7 +784,7 @@ func parseState(r *Runtime,
 		schema != ktfStateSchemaV6 && schema != ktfStateSchemaV7 &&
 		schema != ktfStateSchemaV8 && schema != ktfStateSchemaV9 &&
 		schema != ktfStateSchemaV10 && schema != ktfStateSchemaV11 &&
-		schema != ktfStateSchemaV12 && schema != ktfStateSchemaV13 && schema != ktfStateSchemaV14 && schema != ktfStateSchema {
+		schema != ktfStateSchemaV12 && schema != ktfStateSchemaV13 && schema != ktfStateSchemaV14 && schema != ktfStateSchemaV15 && schema != ktfStateSchema {
 		return nil, decoder.Fail(fmt.Sprintf("unsupported KTF state schema %d", schema))
 	}
 	owner := shared.OwnerID(decoder.U32())
@@ -1065,6 +1070,13 @@ func parseState(r *Runtime,
 			return nil, decoder.Fail("invalid KTF socket mappings")
 		}
 	}
+	var javaTimers *ktfJavaTimersSnapshot
+	if schema >= 16 {
+		javaTimers, err = readJavaTimerState(decoder, metadata.Tasks)
+		if err != nil {
+			return nil, err
+		}
+	}
 	resolvedCalls, err := resolveKTFHostCalls(r, metadata.HostCalls)
 	if err != nil {
 		return nil, decoder.Fail(fmt.Sprintf("invalid KTF host-call graph: %v", err))
@@ -1085,6 +1097,7 @@ func parseState(r *Runtime,
 		metadata:           metadata,
 		taskWakeAtMS:       taskWakeAtMS,
 		pendingTimers:      pendingTimers,
+		javaTimers:         javaTimers,
 		WipicScreenPending: wipicScreenPending,
 		resolvedHostCalls:  resolvedCalls,
 		imagePixels:        imagePixels,

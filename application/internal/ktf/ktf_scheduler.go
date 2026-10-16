@@ -899,6 +899,9 @@ func (r *Runtime) RunTaskSlice(
 	r.activeTask = task
 	r.ActiveInstructions = 0
 	task.slices++
+	if task.timerOwner != 0 {
+		task.timerStarted = true
+	}
 	defer func() {
 		r.chargeThreadStartGrace(task, r.ActiveInstructions)
 		task.instructions += r.ActiveInstructions
@@ -1510,7 +1513,7 @@ func (r *Runtime) nextRunnableTask() *Task {
 			task.monitorWait = 0
 		}
 		if !task.Done && task.startBlocker == nil && task.joinThread == 0 &&
-			task.monitorWait == 0 && task.WakeAtMS == 0 {
+			task.monitorWait == 0 && task.WakeAtMS == 0 && r.canRunJavaTimerTask(task) {
 			r.taskCursor = (index + 1) % len(r.Tasks)
 			return task
 		}
@@ -1532,7 +1535,7 @@ func (r *Runtime) hasRunnableTask() bool {
 			task.monitorWait = 0
 		}
 		if !task.Done && task.startBlocker == nil && task.joinThread == 0 &&
-			task.monitorWait == 0 && task.WakeAtMS == 0 {
+			task.monitorWait == 0 && task.WakeAtMS == 0 && r.canRunJavaTimerTask(task) {
 			return true
 		}
 	}
@@ -1545,6 +1548,28 @@ func (r *Runtime) hasRunnableTask() bool {
 // may move the clock forward inside a presentation quantum.
 func (r *Runtime) HasRunnableTask() bool {
 	return r.hasRunnableTask()
+}
+
+func (r *Runtime) canRunJavaTimerTask(task *Task) bool {
+	if task.timerOwner == 0 {
+		return true
+	}
+	// A Timer owns one worker. A callback keeps that worker through sleep,
+	// wait and budget yields; scheduling its successor does not start a second
+	// invocation. Among callbacks that have not started, deadlines take priority
+	// over the scheduler's rotating task cursor.
+	var next *Task
+	for _, other := range r.Tasks {
+		if other.Done || other.timerOwner != task.timerOwner {
+			continue
+		}
+		if next == nil ||
+			(other.timerStarted && !next.timerStarted) ||
+			(other.timerStarted == next.timerStarted && other.timerDeadlineMS < next.timerDeadlineMS) {
+			next = other
+		}
+	}
+	return next == task
 }
 
 // NextWakeWithin reports how much guest time has to pass before a sleeping task
@@ -1568,7 +1593,7 @@ func (r *Runtime) NextWakeWithin(limit time.Duration) (time.Duration, bool) {
 	found := false
 	for _, task := range r.Tasks {
 		if task == nil || task.Done || task.startBlocker != nil ||
-			task.joinThread != 0 {
+			task.joinThread != 0 || !r.canRunJavaTimerTask(task) {
 			continue
 		}
 		// A zero deadline is a running task and the maximum is a task parked
