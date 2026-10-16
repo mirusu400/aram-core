@@ -752,7 +752,9 @@ func (r *Runtime) dispatch(call eadsServiceCall) (uint32, error) {
 		r.rngState = args[1] & 0x7fffffff
 		return 0, nil
 	case call.id == 0x153 && call.slot == 0x4c:
-		lower, upper := int32(args[1]), int32(args[2])
+		// The guest wrapper zero-extends signed 16-bit bounds. In particular,
+		// its screen jitter passes -1 as 0xffff, not a 65535-pixel offset.
+		lower, upper := int32(int16(args[1])), int32(int16(args[2]))
 		if lower > upper {
 			lower, upper = upper, lower
 		}
@@ -761,7 +763,9 @@ func (r *Runtime) dispatch(call eadsServiceCall) (uint32, error) {
 		if span < 1 {
 			span = 1
 		}
-		return uint32(int64(lower) + int64(r.rngState)%span), nil
+		// Consecutive low bits of this LCG alternate predictably. Use its
+		// C-style high output bits so coordinate pairs can reach every row.
+		return uint32(int64(lower) + int64(r.rngState>>16)%span), nil
 	case call.id == 0x0a0 && call.slot == 0x0c:
 		if r.palette == 0 {
 			r.palette = eadsPaletteAddress

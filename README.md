@@ -51,6 +51,9 @@ The W770 profile exposes optional guest-coordinate pointer input.
 With `ARAM_NATIVE_EADS_DATA` pointing at authorized extracted records, private
 tests verify boot/input/state for these exact files and two completed rounds,
 audible PCM, and persistent purchases in the first minigame of each pack.
+The egg-grid regression also checks that obstacle placement returns and later
+input still runs: the OEM random service uses signed 16-bit bounds and the high
+output bits of its deterministic LCG, avoiding unreachable grid rows.
 This does not establish completion of every game or support for other OEM records.
 
 ## Portability baseline
