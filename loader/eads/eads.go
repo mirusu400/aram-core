@@ -110,8 +110,12 @@ func Parse(data []byte, recordOffset uint32) (Image, error) {
 	if uint64(image.TextBase) < dataEnd && uint64(image.DataBase) < textEnd {
 		return fail(recordStart+12, "guest ranges overlap")
 	}
-	if !bytes.Equal(data[payload:payload+2], []byte{0x00, 0xb5}) {
-		return fail(payload, "text does not start with a Thumb veneer")
+	entry := binary.LittleEndian.Uint16(data[payload : payload+2])
+	// 0x00300501 images enter their event dispatcher directly and can save
+	// argument registers together with LR. Later images use a push-{lr} veneer.
+	// Keep the additional prologues bound to the observed format revision.
+	if entry != 0xb500 && !(image.FormatWord == 0x00300501 && entry&0xff00 == 0xb500) {
+		return fail(payload, "text does not start with a supported Thumb entry")
 	}
 	return image, nil
 }

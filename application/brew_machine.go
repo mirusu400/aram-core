@@ -59,6 +59,7 @@ type brewMachine struct {
 	runtime           *brewrt.Runtime
 	persistence       *brewrt.PersistentState
 	hasSaveData       bool
+	fallbackFont      string
 	frame             *image.RGBA
 	input             []machinecore.InputEvent
 	heldKeys          map[uint32]brewHeldKey
@@ -109,7 +110,9 @@ func (f Factory) createBREWMachine(ctx context.Context, source machinecore.Sourc
 		return nil, true, fmt.Errorf("load %q: SHA-256 mismatch: expected %s, got %s", source.Name, source.SHA256, actualSHA)
 	}
 	source.SHA256 = actualSHA
-	return newBREWMachine(source, pkg), true, nil
+	machine := newBREWMachine(source, pkg)
+	machine.fallbackFont = f.FallbackFont
+	return machine, true, nil
 }
 
 func newBREWMachine(source machinecore.Source, pkg brewrt.Package) *brewMachine {
@@ -155,7 +158,7 @@ func (m *brewMachine) Start(ctx context.Context) error {
 		return fmt.Errorf("start from %s: %w", m.state, ErrInvalidState)
 	}
 	if m.runtime == nil {
-		runtime, err := brewrt.New(m.pkg)
+		runtime, err := brewrt.NewWithFallbackFont(m.pkg, m.fallbackFont)
 		if err != nil {
 			m.state = machinecore.StateFaulted
 			return err
@@ -336,22 +339,22 @@ func (m *brewMachine) stepLocked(ctx context.Context) error {
 			kind = 0x101
 		} else {
 			delete(m.heldKeys, key)
-		}
-		if _, err := m.runtime.DispatchEvent(ctx, kind, key, 0); err != nil {
-			return m.executionErrorLocked(fmt.Sprintf("dispatch BREW input %q", event.Control), err)
-		}
-		if stopped, err := m.finishCloseRequestLocked(ctx); stopped || err != nil {
-			return err
-		}
-		if event.Pressed {
-			// Legacy applets handle EVT_KEY rather than EVT_KEY_PRESS. Deliver
-			// it while the key is down, then repeat against deterministic time.
+			// BREW sends its legacy EVT_KEY before EVT_KEY_RELEASE. Held keys
+			// also receive EVT_KEY repeats; a press itself sends EVT_KEY_PRESS.
+			// Qualcomm Programming Model for Developers, key event sequence:
+			// https://www.tripleoxygen.net/files/devices/zeebo/doc/Programming_Model_dev.pdf
 			if _, err := m.runtime.DispatchEvent(ctx, 0x100, key, 0); err != nil {
 				return m.executionErrorLocked(fmt.Sprintf("dispatch BREW key %q", event.Control), err)
 			}
 			if stopped, err := m.finishCloseRequestLocked(ctx); stopped || err != nil {
 				return err
 			}
+		}
+		if _, err := m.runtime.DispatchEvent(ctx, kind, key, 0); err != nil {
+			return m.executionErrorLocked(fmt.Sprintf("dispatch BREW input %q", event.Control), err)
+		}
+		if stopped, err := m.finishCloseRequestLocked(ctx); stopped || err != nil {
+			return err
 		}
 	}
 	m.input = append(m.input[:0], m.input[due:]...)

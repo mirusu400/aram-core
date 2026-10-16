@@ -14,7 +14,8 @@ func TestBREWIssue368GunbirdMenuDrawsSAFArtwork(t *testing.T) {
 	stepBREWReference(t, machine, 1000)
 	tapBREWReference(t, machine)
 	stepBREWReference(t, machine, 1000)
-	if got, want := fmt.Sprintf("%x", brewFrameHash(machine.Framebuffer())), "9093867fff7063e5d4fda0f475d0abc11302b8ab383500d958dfd6097cbd1200"; got != want {
+	// MeasureTextEx now agrees with the drawn Hangul advances (53a392b).
+	if got, want := fmt.Sprintf("%x", brewFrameHash(machine.Framebuffer())), "bbe4ce13d08b1e997be4c9eb3fe544e59818e0168e5ee80e2cf0a86542da78a3"; got != want {
 		t.Fatalf("Gunbird+ menu frame hash=%s, want %s", got, want)
 	}
 }
