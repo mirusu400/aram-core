@@ -14,6 +14,7 @@ import (
 // entered here keeps its own generation, retirement and diagnostic boundaries.
 func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint64) (uint64, *cpu.StopReason, error) {
 	var executed uint64
+	var cachedStore41FaultError error
 	privateDataRoute := !b.physicalAccess && b.tlb == nil
 	for executed < limit {
 		blockInstructions := len(block.thumb)
@@ -75,7 +76,8 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						carry = value&(uint32(1)<<(shift-1)) != 0
 					}
 				default:
-					return executed + uint64(index), nil, b.unsupportedThumb(pc, instruction)
+					cachedStore41FaultError = b.unsupportedThumb(pc, instruction)
+					goto cachedStore41Fault
 				}
 				b.regs[rd] = result
 				b.setNZC(result, carry)
@@ -240,10 +242,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 					value, hit = cachedJITWord(entry, address)
 				}
 				if !hit {
-					var err error
-					value, err = b.read32(address, cpu.PermissionRead)
-					if err != nil {
-						return executed + uint64(index), nil, err
+
+					value, cachedStore41FaultError = b.read32(address, cpu.PermissionRead)
+					if cachedStore41FaultError != nil {
+						goto cachedStore41Fault
+
 					}
 				}
 				b.regs[rd] = value
@@ -256,9 +259,21 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 				address := b.regs[rb] + b.regs[ro]
 				switch op {
 				case 0:
-					if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					{
+						if foldPrivateScalarBounds && privateDataRoute {
+							if cachedStore41Perms, cachedStore41Hit := cachedStore32(&b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionWrite)], address, b.regs[rd]); cachedStore41Hit {
+								b.cachedStore41SMC(address, 4, cachedStore41Perms)
+								goto cachedStore41Done0
+							}
+						}
+
+						if cachedStore41FaultError = b.write32(address, b.regs[rd], cpu.PermissionWrite); cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
+						}
+					cachedStore41Done0:
 					}
+
 					if b.jitGen != blockGeneration {
 						{
 							blockRetired = index + 1
@@ -266,8 +281,9 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						}
 					}
 				case 1:
-					if err := b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					if cachedStore41FaultError = b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); cachedStore41FaultError != nil {
+						goto cachedStore41Fault
+
 					}
 					if b.jitGen != blockGeneration {
 						{
@@ -276,8 +292,9 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						}
 					}
 				case 2:
-					if err := b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					if cachedStore41FaultError = b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); cachedStore41FaultError != nil {
+						goto cachedStore41Fault
+
 					}
 					if b.jitGen != blockGeneration {
 						{
@@ -292,10 +309,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead8(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read8(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read8(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(int32(int8(value)))
@@ -306,10 +324,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITWord(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read32(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read32(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = value
@@ -320,10 +339,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead16(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read16(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read16(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(value)
@@ -334,10 +354,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead8(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read8(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read8(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(value)
@@ -348,10 +369,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead16(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read16(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read16(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(int32(int16(value)))
@@ -365,8 +387,9 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 				address := b.regs[rb] + b.regs[ro]
 				switch op {
 				case 0:
-					if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					if cachedStore41FaultError = b.write32(address, b.regs[rd], cpu.PermissionWrite); cachedStore41FaultError != nil {
+						goto cachedStore41Fault
+
 					}
 					if b.jitGen != blockGeneration {
 						{
@@ -375,9 +398,21 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						}
 					}
 				case 1:
-					if err := b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					{
+						if foldPrivateScalarBounds && privateDataRoute {
+							if cachedStore41Perms, cachedStore41Hit := cachedStore16(&b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionWrite)], address, uint16(b.regs[rd])); cachedStore41Hit {
+								b.cachedStore41SMC(address, 2, cachedStore41Perms)
+								goto cachedStore41Done1
+							}
+						}
+
+						if cachedStore41FaultError = b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
+						}
+					cachedStore41Done1:
 					}
+
 					if b.jitGen != blockGeneration {
 						{
 							blockRetired = index + 1
@@ -385,8 +420,9 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						}
 					}
 				case 2:
-					if err := b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					if cachedStore41FaultError = b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); cachedStore41FaultError != nil {
+						goto cachedStore41Fault
+
 					}
 					if b.jitGen != blockGeneration {
 						{
@@ -401,10 +437,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead8(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read8(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read8(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(int32(int8(value)))
@@ -415,10 +452,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITWord(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read32(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read32(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = value
@@ -429,10 +467,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead16(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read16(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read16(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(value)
@@ -443,10 +482,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead8(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read8(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read8(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(value)
@@ -457,10 +497,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead16(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read16(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read16(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(int32(int16(value)))
@@ -474,8 +515,9 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 				address := b.regs[rb] + b.regs[ro]
 				switch op {
 				case 0:
-					if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					if cachedStore41FaultError = b.write32(address, b.regs[rd], cpu.PermissionWrite); cachedStore41FaultError != nil {
+						goto cachedStore41Fault
+
 					}
 					if b.jitGen != blockGeneration {
 						{
@@ -484,8 +526,9 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						}
 					}
 				case 1:
-					if err := b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					if cachedStore41FaultError = b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); cachedStore41FaultError != nil {
+						goto cachedStore41Fault
+
 					}
 					if b.jitGen != blockGeneration {
 						{
@@ -494,9 +537,21 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						}
 					}
 				case 2:
-					if err := b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					{
+						if foldPrivateScalarBounds && privateDataRoute {
+							if cachedStore41Perms, cachedStore41Hit := cachedStore8(&b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionWrite)], address, byte(b.regs[rd])); cachedStore41Hit {
+								b.cachedStore41SMC(address, 1, cachedStore41Perms)
+								goto cachedStore41Done2
+							}
+						}
+
+						if cachedStore41FaultError = b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
+						}
+					cachedStore41Done2:
 					}
+
 					if b.jitGen != blockGeneration {
 						{
 							blockRetired = index + 1
@@ -510,10 +565,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead8(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read8(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read8(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(int32(int8(value)))
@@ -524,10 +580,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITWord(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read32(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read32(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = value
@@ -538,10 +595,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead16(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read16(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read16(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(value)
@@ -552,10 +610,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead8(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read8(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read8(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(value)
@@ -566,10 +625,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead16(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read16(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read16(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(int32(int16(value)))
@@ -583,8 +643,9 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 				address := b.regs[rb] + b.regs[ro]
 				switch op {
 				case 0:
-					if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					if cachedStore41FaultError = b.write32(address, b.regs[rd], cpu.PermissionWrite); cachedStore41FaultError != nil {
+						goto cachedStore41Fault
+
 					}
 					if b.jitGen != blockGeneration {
 						{
@@ -593,8 +654,9 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						}
 					}
 				case 1:
-					if err := b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					if cachedStore41FaultError = b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); cachedStore41FaultError != nil {
+						goto cachedStore41Fault
+
 					}
 					if b.jitGen != blockGeneration {
 						{
@@ -603,8 +665,9 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						}
 					}
 				case 2:
-					if err := b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					if cachedStore41FaultError = b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); cachedStore41FaultError != nil {
+						goto cachedStore41Fault
+
 					}
 					if b.jitGen != blockGeneration {
 						{
@@ -619,10 +682,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead8(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read8(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read8(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(int32(int8(value)))
@@ -633,10 +697,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITWord(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read32(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read32(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = value
@@ -647,10 +712,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead16(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read16(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read16(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(value)
@@ -661,10 +727,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead8(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read8(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read8(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(value)
@@ -675,10 +742,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead16(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read16(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read16(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(int32(int16(value)))
@@ -692,8 +760,9 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 				address := b.regs[rb] + b.regs[ro]
 				switch op {
 				case 0:
-					if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					if cachedStore41FaultError = b.write32(address, b.regs[rd], cpu.PermissionWrite); cachedStore41FaultError != nil {
+						goto cachedStore41Fault
+
 					}
 					if b.jitGen != blockGeneration {
 						{
@@ -702,8 +771,9 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						}
 					}
 				case 1:
-					if err := b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					if cachedStore41FaultError = b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); cachedStore41FaultError != nil {
+						goto cachedStore41Fault
+
 					}
 					if b.jitGen != blockGeneration {
 						{
@@ -712,8 +782,9 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						}
 					}
 				case 2:
-					if err := b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					if cachedStore41FaultError = b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); cachedStore41FaultError != nil {
+						goto cachedStore41Fault
+
 					}
 					if b.jitGen != blockGeneration {
 						{
@@ -728,10 +799,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead8(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read8(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read8(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(int32(int8(value)))
@@ -742,10 +814,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITWord(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read32(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read32(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = value
@@ -756,10 +829,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead16(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read16(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read16(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(value)
@@ -770,10 +844,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead8(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read8(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read8(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(value)
@@ -784,10 +859,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead16(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read16(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read16(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(int32(int16(value)))
@@ -801,8 +877,9 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 				address := b.regs[rb] + b.regs[ro]
 				switch op {
 				case 0:
-					if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					if cachedStore41FaultError = b.write32(address, b.regs[rd], cpu.PermissionWrite); cachedStore41FaultError != nil {
+						goto cachedStore41Fault
+
 					}
 					if b.jitGen != blockGeneration {
 						{
@@ -811,8 +888,9 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						}
 					}
 				case 1:
-					if err := b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					if cachedStore41FaultError = b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); cachedStore41FaultError != nil {
+						goto cachedStore41Fault
+
 					}
 					if b.jitGen != blockGeneration {
 						{
@@ -821,8 +899,9 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						}
 					}
 				case 2:
-					if err := b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					if cachedStore41FaultError = b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); cachedStore41FaultError != nil {
+						goto cachedStore41Fault
+
 					}
 					if b.jitGen != blockGeneration {
 						{
@@ -837,10 +916,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead8(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read8(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read8(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(int32(int8(value)))
@@ -851,10 +931,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITWord(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read32(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read32(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = value
@@ -865,10 +946,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead16(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read16(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read16(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(value)
@@ -879,10 +961,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead8(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read8(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read8(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(value)
@@ -893,10 +976,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead16(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read16(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read16(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(int32(int16(value)))
@@ -910,8 +994,9 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 				address := b.regs[rb] + b.regs[ro]
 				switch op {
 				case 0:
-					if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					if cachedStore41FaultError = b.write32(address, b.regs[rd], cpu.PermissionWrite); cachedStore41FaultError != nil {
+						goto cachedStore41Fault
+
 					}
 					if b.jitGen != blockGeneration {
 						{
@@ -920,8 +1005,9 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						}
 					}
 				case 1:
-					if err := b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					if cachedStore41FaultError = b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); cachedStore41FaultError != nil {
+						goto cachedStore41Fault
+
 					}
 					if b.jitGen != blockGeneration {
 						{
@@ -930,8 +1016,9 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						}
 					}
 				case 2:
-					if err := b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					if cachedStore41FaultError = b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); cachedStore41FaultError != nil {
+						goto cachedStore41Fault
+
 					}
 					if b.jitGen != blockGeneration {
 						{
@@ -946,10 +1033,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead8(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read8(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read8(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(int32(int8(value)))
@@ -960,10 +1048,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITWord(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read32(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read32(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = value
@@ -974,10 +1063,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead16(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read16(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read16(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(value)
@@ -988,10 +1078,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead8(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read8(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read8(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(value)
@@ -1002,10 +1093,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead16(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read16(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read16(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(int32(int16(value)))
@@ -1019,8 +1111,9 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 				address := b.regs[rb] + b.regs[ro]
 				switch op {
 				case 0:
-					if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					if cachedStore41FaultError = b.write32(address, b.regs[rd], cpu.PermissionWrite); cachedStore41FaultError != nil {
+						goto cachedStore41Fault
+
 					}
 					if b.jitGen != blockGeneration {
 						{
@@ -1029,8 +1122,9 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						}
 					}
 				case 1:
-					if err := b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					if cachedStore41FaultError = b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); cachedStore41FaultError != nil {
+						goto cachedStore41Fault
+
 					}
 					if b.jitGen != blockGeneration {
 						{
@@ -1039,8 +1133,9 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						}
 					}
 				case 2:
-					if err := b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					if cachedStore41FaultError = b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); cachedStore41FaultError != nil {
+						goto cachedStore41Fault
+
 					}
 					if b.jitGen != blockGeneration {
 						{
@@ -1055,10 +1150,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead8(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read8(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read8(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(int32(int8(value)))
@@ -1069,10 +1165,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITWord(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read32(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read32(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = value
@@ -1083,10 +1180,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead16(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read16(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read16(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(value)
@@ -1097,10 +1195,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead8(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read8(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read8(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(value)
@@ -1111,10 +1210,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead16(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read16(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read16(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(int32(int16(value)))
@@ -1138,10 +1238,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead8(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read8(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read8(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(value)
@@ -1152,16 +1253,18 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITWord(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read32(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read32(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = value
 				case byteTransfer:
-					if err := b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					if cachedStore41FaultError = b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); cachedStore41FaultError != nil {
+						goto cachedStore41Fault
+
 					}
 					if b.jitGen != blockGeneration {
 						{
@@ -1170,9 +1273,21 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						}
 					}
 				default:
-					if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					{
+						if foldPrivateScalarBounds && privateDataRoute {
+							if cachedStore41Perms, cachedStore41Hit := cachedStore32(&b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionWrite)], address, b.regs[rd]); cachedStore41Hit {
+								b.cachedStore41SMC(address, 4, cachedStore41Perms)
+								goto cachedStore41Done3
+							}
+						}
+
+						if cachedStore41FaultError = b.write32(address, b.regs[rd], cpu.PermissionWrite); cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
+						}
+					cachedStore41Done3:
 					}
+
 					if b.jitGen != blockGeneration {
 						{
 							blockRetired = index + 1
@@ -1199,10 +1314,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead8(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read8(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read8(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(value)
@@ -1213,16 +1329,18 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITWord(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read32(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read32(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = value
 				case byteTransfer:
-					if err := b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					if cachedStore41FaultError = b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); cachedStore41FaultError != nil {
+						goto cachedStore41Fault
+
 					}
 					if b.jitGen != blockGeneration {
 						{
@@ -1231,8 +1349,9 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						}
 					}
 				default:
-					if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					if cachedStore41FaultError = b.write32(address, b.regs[rd], cpu.PermissionWrite); cachedStore41FaultError != nil {
+						goto cachedStore41Fault
+
 					}
 					if b.jitGen != blockGeneration {
 						{
@@ -1260,10 +1379,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead8(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read8(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read8(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(value)
@@ -1274,17 +1394,30 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITWord(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read32(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read32(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = value
 				case byteTransfer:
-					if err := b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					{
+						if foldPrivateScalarBounds && privateDataRoute {
+							if cachedStore41Perms, cachedStore41Hit := cachedStore8(&b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionWrite)], address, byte(b.regs[rd])); cachedStore41Hit {
+								b.cachedStore41SMC(address, 1, cachedStore41Perms)
+								goto cachedStore41Done4
+							}
+						}
+
+						if cachedStore41FaultError = b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
+						}
+					cachedStore41Done4:
 					}
+
 					if b.jitGen != blockGeneration {
 						{
 							blockRetired = index + 1
@@ -1292,8 +1425,9 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						}
 					}
 				default:
-					if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					if cachedStore41FaultError = b.write32(address, b.regs[rd], cpu.PermissionWrite); cachedStore41FaultError != nil {
+						goto cachedStore41Fault
+
 					}
 					if b.jitGen != blockGeneration {
 						{
@@ -1321,10 +1455,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead8(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read8(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read8(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(value)
@@ -1335,16 +1470,18 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITWord(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read32(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read32(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = value
 				case byteTransfer:
-					if err := b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					if cachedStore41FaultError = b.write8(address, byte(b.regs[rd]), cpu.PermissionWrite); cachedStore41FaultError != nil {
+						goto cachedStore41Fault
+
 					}
 					if b.jitGen != blockGeneration {
 						{
@@ -1353,8 +1490,9 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						}
 					}
 				default:
-					if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					if cachedStore41FaultError = b.write32(address, b.regs[rd], cpu.PermissionWrite); cachedStore41FaultError != nil {
+						goto cachedStore41Fault
+
 					}
 					if b.jitGen != blockGeneration {
 						{
@@ -1377,17 +1515,30 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITRead16(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read16(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read16(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = uint32(value)
 				} else {
-					if err := b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					{
+						if foldPrivateScalarBounds && privateDataRoute {
+							if cachedStore41Perms, cachedStore41Hit := cachedStore16(&b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionWrite)], address, uint16(b.regs[rd])); cachedStore41Hit {
+								b.cachedStore41SMC(address, 2, cachedStore41Perms)
+								goto cachedStore41Done5
+							}
+						}
+
+						if cachedStore41FaultError = b.write16(address, uint16(b.regs[rd]), cpu.PermissionWrite); cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
+						}
+					cachedStore41Done5:
 					}
+
 					if b.jitGen != blockGeneration {
 						{
 							blockRetired = index + 1
@@ -1407,17 +1558,30 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITWord(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read32(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read32(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[rd] = value
 				} else {
-					if err := b.write32(address, b.regs[rd], cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					{
+						if foldPrivateScalarBounds && privateDataRoute {
+							if cachedStore41Perms, cachedStore41Hit := cachedStore32(&b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionWrite)], address, b.regs[rd]); cachedStore41Hit {
+								b.cachedStore41SMC(address, 4, cachedStore41Perms)
+								goto cachedStore41Done6
+							}
+						}
+
+						if cachedStore41FaultError = b.write32(address, b.regs[rd], cpu.PermissionWrite); cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
+						}
+					cachedStore41Done6:
 					}
+
 					if b.jitGen != blockGeneration {
 						{
 							blockRetired = index + 1
@@ -1450,14 +1614,16 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 					if registers&(1<<register) == 0 {
 						continue
 					}
-					if err := b.write32(address, b.regs[register], cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					if cachedStore41FaultError = b.write32(address, b.regs[register], cpu.PermissionWrite); cachedStore41FaultError != nil {
+						goto cachedStore41Fault
+
 					}
 					address += 4
 				}
 				if includeLR {
-					if err := b.write32(address, b.regs[cpu.RegisterLR], cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					if cachedStore41FaultError = b.write32(address, b.regs[cpu.RegisterLR], cpu.PermissionWrite); cachedStore41FaultError != nil {
+						goto cachedStore41Fault
+
 					}
 				}
 				b.regs[cpu.RegisterSP] = start
@@ -1490,10 +1656,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITWord(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read32(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read32(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.regs[register] = value
@@ -1506,10 +1673,11 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						value, hit = cachedJITWord(entry, address)
 					}
 					if !hit {
-						var err error
-						value, err = b.read32(address, cpu.PermissionRead)
-						if err != nil {
-							return executed + uint64(index), nil, err
+
+						value, cachedStore41FaultError = b.read32(address, cpu.PermissionRead)
+						if cachedStore41FaultError != nil {
+							goto cachedStore41Fault
+
 						}
 					}
 					b.branchExchange(value)
@@ -1547,15 +1715,17 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 							value, hit = cachedJITWord(entry, address)
 						}
 						if !hit {
-							var err error
-							value, err = b.read32(address, cpu.PermissionRead)
-							if err != nil {
-								return executed + uint64(index), nil, err
+
+							value, cachedStore41FaultError = b.read32(address, cpu.PermissionRead)
+							if cachedStore41FaultError != nil {
+								goto cachedStore41Fault
+
 							}
 						}
 						b.regs[register] = value
-					} else if err := b.write32(address, b.regs[register], cpu.PermissionWrite); err != nil {
-						return executed + uint64(index), nil, err
+					} else if cachedStore41FaultError = b.write32(address, b.regs[register], cpu.PermissionWrite); cachedStore41FaultError != nil {
+						goto cachedStore41Fault
+
 					}
 					address += 4
 				}
@@ -1584,7 +1754,8 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 
 				suffix, err := b.fetch16(pc + 2)
 				if err != nil {
-					return executed + uint64(index), nil, err
+					cachedStore41FaultError = err
+					goto cachedStore41Fault
 				}
 				high := int32(instruction & 0x7ff)
 				if high&(1<<10) != 0 {
@@ -1600,7 +1771,8 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 					}
 				}
 				if suffix&0xf800 != 0xf800 {
-					return executed + uint64(index), nil, b.unsupportedThumb(pc, instruction)
+					cachedStore41FaultError = b.unsupportedThumb(pc, instruction)
+					goto cachedStore41Fault
 				}
 				b.regs[cpu.RegisterLR] = (pc + 4) | 1
 				b.regs[cpu.RegisterPC] = uint32(int32(pc+4)+(high<<12)) + uint32(suffix&0x7ff)*2
@@ -1625,7 +1797,8 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 				return executed + uint64(index+1), &reason, nil
 
 			default:
-				return executed + uint64(index), nil, b.unsupportedThumb(pc, instruction)
+				cachedStore41FaultError = b.unsupportedThumb(pc, instruction)
+				goto cachedStore41Fault
 			case thumbShiftImmediate + thumbDeadFlagsOffset:
 				const flagsLive = false
 				op := uint32(instruction>>11) & 3
@@ -1663,7 +1836,8 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 						carry = value&(uint32(1)<<(shift-1)) != 0
 					}
 				default:
-					return executed + uint64(index), nil, b.unsupportedThumb(pc, instruction)
+					cachedStore41FaultError = b.unsupportedThumb(pc, instruction)
+					goto cachedStore41Fault
 				}
 				b.regs[rd] = result
 				if flagsLive {
@@ -1866,6 +2040,9 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 				}
 
 			}
+			continue
+		cachedStore41Fault:
+			return executed + uint64(index), nil, cachedStore41FaultError
 		}
 		if block.compareBranchTail != nil {
 			b.executeThumbCompareBranchTail(block)

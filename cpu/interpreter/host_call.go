@@ -25,6 +25,12 @@ func (b *Backend) CaptureHostCallFrame(
 	destination.Registers = b.regs
 	destination.StackWords = request.StackWords
 	destination.ParameterWords = request.ParameterWords
+	if foldPrivateScalarBounds && request.StackWords == 0 && request.ParameterWords == 0 {
+		// Both captureHostCallWords calls would return before touching memory.
+		// Keep the same lock, validation, flag resolution, snapshot and counter.
+		b.executionStatistics.HostFrameCaptures++
+		return nil
+	}
 	if err := b.captureHostCallWords(
 		b.regs[cpu.RegisterSP],
 		destination.Stack[:request.StackWords],
