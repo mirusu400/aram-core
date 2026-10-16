@@ -1,1 +1,2 @@
 *.golden -text
+*.go text eol=lf
