@@ -733,31 +733,31 @@ func (b *Backend) executeThumbMicroBlock(
 // load. Callers retain physical/bus reads and native TLB bookkeeping in read32.
 // Unaligned loads also use read32 so ARM byte-lane rotation stays architectural.
 func cachedJITWord(entry *dataRegionCache, address uint32) (uint32, bool) {
-	offset := uint64(address - entry.address)
-	// Map guarantees address+len(data) <= 2^32. A wrapped offset below the
-	// region cannot pass the widened end check, including an empty cache slot.
-	if address&3 != 0 || entry.perms&cpu.PermissionRead == 0 || offset+4 > uint64(len(entry.data)) {
+	end := int(address-entry.address) + 4
+	// On a 32-bit host, negative/wrapped int endpoints cannot describe a
+	// four-byte slice. Prove the same int bounds that the slice expression uses.
+	if address&3 != 0 || entry.perms&cpu.PermissionRead == 0 || end < 4 || end > len(entry.data) {
 		return 0, false
 	}
-	return binary.LittleEndian.Uint32(entry.data[int(offset) : int(offset)+4]), true
+	return binary.LittleEndian.Uint32(entry.data[end-4 : end]), true
 }
 
 // cachedJITRead8 handles only private mapped reads. Physical accesses and
 // native TLB bookkeeping remain in the ordinary memory implementation.
 func cachedJITRead8(entry *dataRegionCache, address uint32) (byte, bool) {
-	offset := uint64(address - entry.address)
-	if entry.perms&cpu.PermissionRead == 0 || offset+1 > uint64(len(entry.data)) {
+	offset := int(address - entry.address)
+	if entry.perms&cpu.PermissionRead == 0 || uint(offset) >= uint(len(entry.data)) {
 		return 0, false
 	}
-	return entry.data[int(offset)], true
+	return entry.data[offset], true
 }
 
 // cachedJITRead16 handles only private mapped reads. Physical accesses and
 // native TLB bookkeeping remain in the ordinary memory implementation.
 func cachedJITRead16(entry *dataRegionCache, address uint32) (uint16, bool) {
-	offset := uint64(address - entry.address)
-	if entry.perms&cpu.PermissionRead == 0 || offset+2 > uint64(len(entry.data)) {
+	end := int(address-entry.address) + 2
+	if entry.perms&cpu.PermissionRead == 0 || end < 2 || end > len(entry.data) {
 		return 0, false
 	}
-	return binary.LittleEndian.Uint16(entry.data[int(offset) : int(offset)+2]), true
+	return binary.LittleEndian.Uint16(entry.data[end-2 : end]), true
 }
