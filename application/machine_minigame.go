@@ -62,6 +62,8 @@ func (m *Machine) stepMinigameFrame(ctx context.Context) error {
 		return fmt.Errorf("execute from %s: %w", state, ErrInvalidState)
 	}
 	runtime := m.minigame
+	now := m.wipi.Services.Clock.Monotonic()
+	runtime.AdvanceClock(now)
 	budget := max(m.frameRunBudget, uint64(1))
 	m.state = machinecore.StateRunning
 	if m.wipi != nil {

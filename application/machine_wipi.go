@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mirusu400/aram-core/application/internal/guest"
+	"github.com/mirusu400/aram-core/application/internal/minigame"
 	machinecore "github.com/mirusu400/aram-core/core"
 	"github.com/mirusu400/aram-core/cpu"
 	shared "github.com/mirusu400/aram-core/runtime"
@@ -327,6 +328,19 @@ func (m *Machine) pumpWIPICallbacks(
 		}
 		switch event.Kind {
 		case shared.EventInputPress, shared.EventInputRelease, shared.EventInputRepeat:
+			if m.minigame != nil {
+				key, known := minigame.InputKeyCode(event.Control)
+				if known && !m.minigame.QueueKeyAt(key, event.Kind != shared.EventInputRelease, event.At) {
+					err := fmt.Errorf("EADS input queue is full")
+					m.state = machinecore.StateFaulted
+					m.lastResult = cpu.Result{Reason: cpu.StopFault, Err: err}
+					_ = m.wipi.FinishServiceExecution(m.state, 0, err.Error())
+					result := m.lastResult
+					m.mu.Unlock()
+					return result, false, err
+				}
+				continue
+			}
 			if m.raptor == nil || !m.raptor.Started {
 				continue
 			}

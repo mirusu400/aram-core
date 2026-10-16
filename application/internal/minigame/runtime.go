@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"sync"
+	"time"
 
 	"github.com/mirusu400/aram-core/application/internal/guest"
 	"github.com/mirusu400/aram-core/cpu"
@@ -66,9 +68,13 @@ type EADSEventResult struct {
 // EADSFrameStats exposes the lifecycle trace used to validate the recovered
 // MinigameQVGAOEM runtime without leaking mutable guest state.
 type EADSFrameStats struct {
-	Events       []EADSEventResult
-	PresentCount uint32
-	TickMS       uint32
+	Events             []EADSEventResult
+	PresentCount       uint32
+	TickMS             uint32
+	TotalInstructions  uint64
+	TotalAPICalls      uint64
+	InputDispatchCount uint64
+	InputReleaseCount  uint64
 }
 
 // WIPIHost is the slice of the public WIPI runtime the EADS minigame layer
@@ -76,6 +82,12 @@ type EADSFrameStats struct {
 type WIPIHost interface {
 	DispatchTrap(ctx context.Context, trap uint32) (bool, error)
 	SharedHeap() *guest.Heap
+	OEMText(pixels uint32, width, height, x, y int, color uint32,
+		text []byte, size int, clip image.Rectangle) (int, error)
+	OEMPlaySMAF(previous, source uint32) (uint32, error)
+	OEMStopClip(handle uint32)
+	OEMClipPlaying(handle uint32) bool
+	OEMFile(slot uint32, args []uint32) (uint32, error)
 }
 
 type Runtime struct {
@@ -90,9 +102,18 @@ type Runtime struct {
 	serviceByStub    map[uint32]eadsServiceCall
 	images           map[uint32]eadsDecodedImage
 
-	dataBase uint32
-	bssSize  uint32
-	entry    uint32
+	dataBase         uint32
+	bssSize          uint32
+	entry            uint32
+	legacy           bool
+	timerBootstrap   bool
+	timerPeriod      uint32
+	nextTick         uint32
+	clockMS          uint32
+	clockNS          time.Duration
+	pointerEnabled   bool
+	timersConfigured bool
+	eventTimers      [2]eventTimer
 
 	screenHandle uint32
 	screenPixels uint32
@@ -120,6 +141,13 @@ type Runtime struct {
 	presentCount uint32
 	enabled      bool
 	stage        int
+	activeEvent  uint32
+	activeKey    uint32
+	inFlight     bool
+	activeInput  bool
+	pendingKeys  []keyEvent
+	inputMu      sync.Mutex
+	audioHandles map[uint32]uint32
 	Stats        EADSFrameStats
 }
 
@@ -131,6 +159,29 @@ func NewRuntime(
 	bssSize uint32,
 	entry uint32,
 ) (*Runtime, error) {
+	return newRuntime(backend, frame, public, dataBase, bssSize, entry, false)
+}
+
+// NewLegacyRuntime implements the direct event dispatcher in Samsung's older
+// OEM images, whose bootstrap receives a flat function table.
+func NewLegacyRuntime(backend cpu.Backend, frame *image.RGBA, public WIPIHost,
+	dataBase, bssSize, entry uint32) (*Runtime, error) {
+	return newRuntime(backend, frame, public, dataBase, bssSize, entry, true)
+}
+
+// NewTimerRuntime follows scheduled initialization events before presenting.
+// Some OEM builds wait indefinitely if a render callback arrives during loading.
+func NewTimerRuntime(backend cpu.Backend, frame *image.RGBA, public WIPIHost,
+	dataBase, bssSize, entry uint32) (*Runtime, error) {
+	runtime, err := newRuntime(backend, frame, public, dataBase, bssSize, entry, false)
+	if runtime != nil {
+		runtime.timerBootstrap = true
+	}
+	return runtime, err
+}
+
+func newRuntime(backend cpu.Backend, frame *image.RGBA, public WIPIHost,
+	dataBase, bssSize, entry uint32, legacy bool) (*Runtime, error) {
 	for _, mapping := range []struct {
 		address     uint32
 		size        uint32
@@ -160,6 +211,7 @@ func NewRuntime(
 		dataBase:         dataBase,
 		bssSize:          bssSize,
 		entry:            entry,
+		legacy:           legacy,
 		width:            frame.Bounds().Dx(),
 		height:           frame.Bounds().Dy(),
 		clipRight:        frame.Bounds().Dx() - 1,
@@ -184,12 +236,16 @@ func NewRuntime(
 }
 
 func (r *Runtime) Reset() error {
+	r.stopMusic()
 	backend := r.cpu
 	frame := r.frame
 	public := r.public
 	dataBase := r.dataBase
 	bssSize := r.bssSize
 	entry := r.entry
+	legacy := r.legacy
+	timerBootstrap := r.timerBootstrap
+	pointerEnabled := r.pointerEnabled
 	width := r.width
 	height := r.height
 
@@ -216,6 +272,9 @@ func (r *Runtime) Reset() error {
 		dataBase:         dataBase,
 		bssSize:          bssSize,
 		entry:            entry,
+		legacy:           legacy,
+		timerBootstrap:   timerBootstrap,
+		pointerEnabled:   pointerEnabled,
 		width:            width,
 		height:           height,
 		clipRight:        width - 1,
@@ -241,6 +300,17 @@ func (r *Runtime) Reset() error {
 
 func (r *Runtime) setupServiceTables() error {
 	var encoded [4]byte
+	if r.legacy {
+		for slot := uint32(0); slot < 0x300; slot += 4 {
+			stub := eadsServiceTrampolineBase + slot
+			r.serviceByStub[stub] = eadsServiceCall{id: legacyServiceID, slot: slot}
+			binary.LittleEndian.PutUint32(encoded[:], stub|1)
+			if err := r.cpu.WriteMemory(eadsServiceTableBase+slot, encoded[:]); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	for tableIndex, serviceID := range eadsServiceIDs {
 		table := eadsServiceTableBase + uint32(tableIndex)*0x100
 		r.serviceAddresses[serviceID] = table
@@ -287,6 +357,9 @@ func (r *Runtime) setupScreenFramebuffer() error {
 }
 
 func (r *Runtime) preallocateResourceObjects() error {
+	if r.legacy {
+		return nil
+	}
 	table := r.dataBase + eadsResourceTableOffset
 	end := uint64(r.dataBase) + uint64(r.bssSize)
 	var encoded [4]byte
@@ -338,6 +411,9 @@ func (r *Runtime) RenderFirstFrame(ctx context.Context) error {
 	if r.stage != 0 {
 		return fmt.Errorf("EADS lifecycle is partially initialized at stage %d", r.stage)
 	}
+	if r.timerBootstrap {
+		return r.renderTimerFirstFrame(ctx)
+	}
 	resolver, callback, err := r.createBootstrap()
 	if err != nil {
 		return fmt.Errorf("create EADS bootstrap: %w", err)
@@ -351,6 +427,11 @@ func (r *Runtime) RenderFirstFrame(ctx context.Context) error {
 		{StartEvent, [4]uint32{StartEvent, 0, 0, 0}},
 		{FrameEvent, [4]uint32{FrameEvent, 0, 0, 0}},
 		{FrameEvent, [4]uint32{FrameEvent, 0, 0, 0}},
+	}
+	if r.legacy {
+		events = events[:2]
+		events[0].event, events[0].args = 0, [4]uint32{0, eadsServiceTableBase}
+		events[1].event, events[1].args = 5, [4]uint32{5}
 	}
 	for index, event := range events {
 		result, completed, runErr := r.runEventSlice(
@@ -375,6 +456,7 @@ func (r *Runtime) RenderFirstFrame(ctx context.Context) error {
 		r.appendEventResult(result)
 		r.stage++
 	}
+	r.stage = 5
 	r.Stats.PresentCount = r.presentCount
 	r.Stats.TickMS = r.tickMS
 	return nil
@@ -393,13 +475,69 @@ func (r *Runtime) StepFrame(
 	if err != nil {
 		return EADSEventResult{}, false, err
 	}
+	initialize := pc == guest.ReturnSentinel && !r.inFlight
+	if initialize {
+		r.inFlight = true
+		r.activeInput = false
+		r.activeEvent, r.activeKey = FrameEvent, 0
+		if next, ready := r.popInput(); ready {
+			r.activeEvent, r.activeKey = next.event, next.key
+			r.activeInput = true
+		} else if r.legacy {
+			if r.timerPeriod == 0 || int32(r.tickMS-r.nextTick) < 0 {
+				r.activeEvent = 0
+				r.inFlight = false
+				return EADSEventResult{}, true, nil
+			}
+			r.activeEvent = 5
+			r.nextTick = r.tickMS + r.timerPeriod
+		} else if r.timersConfigured {
+			found := false
+			for index := range r.eventTimers {
+				timer := &r.eventTimers[index]
+				if timer.enabled && int32(r.clockMS-timer.deadline) >= 0 {
+					timer.enabled = false
+					r.activeEvent = StartEvent + uint32(index)
+					found = true
+					break
+				}
+			}
+			if !found {
+				r.activeEvent = 0
+				r.inFlight = false
+				return EADSEventResult{}, true, nil
+			}
+		}
+	} else if !r.inFlight {
+		// Version 1 snapshots could only suspend frame events.
+		r.activeEvent = FrameEvent
+		r.inFlight = true
+		if r.legacy {
+			r.activeEvent = 5
+		}
+	}
+	args, err := r.inputArgs(initialize)
+	if err != nil {
+		return EADSEventResult{}, false, err
+	}
 	result, completed, err := r.runEventSlice(
 		ctx,
-		FrameEvent,
-		[4]uint32{FrameEvent},
-		pc == guest.ReturnSentinel,
+		args[0],
+		args,
+		initialize,
 		max(instructionLimit, uint64(1)),
 	)
+	if completed {
+		if r.activeInput {
+			if r.legacy && r.activeEvent == 6 || r.activeEvent == 2<<16|pointerEvent {
+				r.Stats.InputReleaseCount++
+			} else {
+				r.Stats.InputDispatchCount++
+			}
+		}
+		r.activeEvent, r.activeKey = 0, 0
+		r.inFlight, r.activeInput = false, false
+	}
 	if err == nil {
 		r.appendEventResult(result)
 		r.Stats.PresentCount = r.presentCount
@@ -414,6 +552,8 @@ func (r *Runtime) StepFrame(
 // records a result per slice, so an unbounded log would grow for as long as a
 // title runs and would eventually make SaveState fail.
 func (r *Runtime) appendEventResult(result EADSEventResult) {
+	r.Stats.TotalInstructions += result.Instructions
+	r.Stats.TotalAPICalls += result.APICalls
 	if len(r.Stats.Events) >= maxSavedEADSEvents {
 		drop := len(r.Stats.Events) - maxSavedEADSEvents + 1
 		r.Stats.Events = append(r.Stats.Events[:0], r.Stats.Events[drop:]...)
@@ -591,6 +731,9 @@ func (r *Runtime) args(count int) ([]uint32, error) {
 }
 
 func (r *Runtime) dispatch(call eadsServiceCall) (uint32, error) {
+	if call.id == legacyServiceID {
+		return r.dispatchLegacy(call.slot)
+	}
 	args, err := r.args(8)
 	if err != nil {
 		return 0, err
@@ -747,8 +890,12 @@ func (r *Runtime) dispatch(call eadsServiceCall) (uint32, error) {
 	case call.id == 0x110 && call.slot == 0x30:
 		return 0, r.drawRectangle(args)
 	case call.id == 0x164 && call.slot == 0x10:
-		return r.tickMS, nil
+		return r.clockMS, nil
 	case call.id == 0x164 && call.slot == 0x0c:
+		if args[1] < uint32(len(r.eventTimers)) {
+			r.timersConfigured = true
+			r.eventTimers[args[1]] = eventTimer{enabled: args[2] != 0, deadline: r.clockMS + args[3]}
+		}
 		return 0, nil
 	case call.id == 0x15d && call.slot == 0x18:
 		r.enabled = args[1] != 0
@@ -764,10 +911,23 @@ func (r *Runtime) dispatch(call eadsServiceCall) (uint32, error) {
 	case call.id == 0x15e && call.slot == 0x0c:
 		copy(r.textSurface[:], args[1:6])
 		return 0, nil
-	case call.id == 0x15e && (call.slot == 0x08 || call.slot == 0x30):
+	case call.id == 0x15e && call.slot == 0x08:
+		text, err := r.readCString(args[1], 1<<20)
+		if err != nil {
+			return 0, err
+		}
+		_, err = r.public.OEMText(r.screenPixels, r.width, r.height, int(int32(args[2])), int(int32(args[3])),
+			args[4], text, 8, image.Rect(r.clipLeft, r.clipTop, r.clipRight+1, r.clipBottom+1))
+		return 0, err
+	case call.id == 0x15e && call.slot == 0x30:
 		return 0, nil
-	case call.id == 0x161 && (call.slot == 0x10 || call.slot == 0x14):
+	case call.id == 0x161 && call.slot == 0x10:
+		return 0, r.playMusic(args[1]&0xffff, args[2])
+	case call.id == 0x161 && call.slot == 0x14:
+		r.stopMusic()
 		return 0, nil
+	case call.id == 0x156 && (call.slot == 0x10 || call.slot == 0x14 || call.slot == 0x18 || call.slot == 0x1c || call.slot == 0x28 || call.slot == 0x48):
+		return r.public.OEMFile(call.slot, args[1:])
 	default:
 		// Constructor/destructor and still-opaque device service slots observed
 		// during lifecycle setup use zero as their ordinary success value.
@@ -997,6 +1157,9 @@ func (r *Runtime) putPixel(x, y int, pixel uint32) error {
 }
 
 func (r *Runtime) ensureResourceObjects() error {
+	if r.legacy {
+		return nil
+	}
 	table := r.dataBase + eadsResourceTableOffset
 	end := uint64(r.dataBase) + uint64(r.bssSize)
 	for resourceID := uint32(0); resourceID < eadsResourceCount; resourceID++ {

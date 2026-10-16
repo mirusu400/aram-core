@@ -1,0 +1,34 @@
+package cheat
+
+import (
+	machinecore "github.com/mirusu400/aram-core/core"
+	"testing"
+	"time"
+)
+
+type pointerMachine struct {
+	machinecore.Machine
+	events []machinecore.PointerInputEvent
+}
+
+func (m *pointerMachine) SupportsPointer() bool { return true }
+func (m *pointerMachine) QueuePointer(e machinecore.PointerInputEvent) error {
+	m.events = append(m.events, e)
+	return nil
+}
+func TestMachineForwardsOptionalPointerInput(t *testing.T) {
+	base := &pointerMachine{}
+	wrapper := &Machine{machine: base, engine: &Engine{}}
+	if !wrapper.SupportsPointer() {
+		t.Fatal("wrapper hid pointer support")
+	}
+	event := machinecore.PointerInputEvent{X: 31, Y: 47, Pressed: true, At: time.Second}
+	check(t, wrapper.QueuePointer(event))
+	if len(base.events) != 1 || base.events[0] != event {
+		t.Fatalf("input=%v", base.events)
+	}
+	wrapper.machine = &mutatingMachine{}
+	if wrapper.SupportsPointer() || wrapper.QueuePointer(event) == nil {
+		t.Fatal("keypad-only target accepted pointer")
+	}
+}
