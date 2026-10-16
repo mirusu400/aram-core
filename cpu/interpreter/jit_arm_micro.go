@@ -112,9 +112,17 @@ func (b *Backend) executeARMMicroSingleTransfer(
 				b.regs[rd] = uint32(value)
 			}
 		} else {
-			value, err := b.read32(address, cpu.PermissionRead)
-			if err != nil {
-				return false, nil, err
+			value, hit := uint32(0), false
+			if foldPrivateScalarBounds && b.systemBus == nil && !b.physicalAccess && b.tlb == nil {
+				entry := &b.privateDataCache[privateDataCacheIndex(address, cpu.PermissionRead)]
+				value, hit = cachedJITWord(entry, address)
+			}
+			if !hit {
+				var err error
+				value, err = b.read32(address, cpu.PermissionRead)
+				if err != nil {
+					return false, nil, err
+				}
 			}
 			if rd == cpu.RegisterPC {
 				b.branchExchange(value)

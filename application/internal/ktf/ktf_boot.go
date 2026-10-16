@@ -751,11 +751,15 @@ func (m *ktfInspectMemo) begin() {
 
 // reset closes the window and forgets everything in it.
 func (m *ktfInspectMemo) reset() {
+	entries := m.length
+	if uint(entries) > ktfInspectMemoSize {
+		entries = ktfInspectMemoSize
+	}
 	m.length = 0
 	m.next = 0
 	m.open = false
-	m.addresses = [ktfInspectMemoSize]uint32{}
-	m.classes = [ktfInspectMemoSize]JavaClass{}
+	clear(m.addresses[:entries])
+	clear(m.classes[:entries])
 	m.receiverObject, m.receiverClass, m.receiverValid = 0, 0, false
 }
 
