@@ -68,7 +68,7 @@ func TestBREWCloseAppletReference(t *testing.T) {
 						held[control] = pressed
 					}
 				}
-				if err := machine.StepFrame(context.Background()); err != nil {
+				if err := stepBREWCapturedFrame(context.Background(), machine); err != nil {
 					t.Fatalf("frame=%d: %v", frame, err)
 				}
 				want := machinecore.StateRunning

@@ -20,7 +20,8 @@ func TestBREWIssue367MinibookBookshelfFitsCanvas(t *testing.T) {
 		tapBREWReference(t, machine)
 		stepBREWReference(t, machine, 1000)
 	}
-	if got, want := fmt.Sprintf("%x", brewFrameHash(machine.Framebuffer())), "57e3570977471af887690a6572cec306d3c21c9482d4defed9e690f04dc828a8"; got != want {
+	// MeasureTextEx now agrees with the drawn Hangul advances (53a392b).
+	if got, want := fmt.Sprintf("%x", brewFrameHash(machine.Framebuffer())), "4d176f419ee8810db986470ab9afba0d91d51b06ebda2e45cb649deb0769b2aa"; got != want {
 		t.Fatalf("Minibook bookshelf frame hash=%s, want %s", got, want)
 	}
 }
