@@ -79,6 +79,11 @@ func cachedStore41WholeFileFingerprint(t *testing.T, raw []byte) string {
 
 func cachedStore41RequireWholeFilePin(t *testing.T, raw []byte, want string) {
 	t.Helper()
+	restored, _, err := restoreIndexedLoadReturnBoundaryForLegacyRoot(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = restored
 	if got := cachedStore41WholeFileFingerprint(t, raw); got != want {
 		t.Fatalf("whole-file historical AST fingerprint changed: got %s want %s", got, want)
 	}

@@ -111,6 +111,8 @@ type jitBlock struct {
 	// changes; physical/I-cache execution always uses the guarded dispatcher.
 	successorGen uint64
 	successors   [2]*jitBlock
+	// Keep optional specialization metadata after the hot successor fields.
+	indexedLoadReturn *jitThumbIndexedLoadReturn
 }
 
 type jitInstructionCacheGuard struct {
@@ -955,6 +957,9 @@ func (b *Backend) translateThumbBlock(pc uint32) *jitBlock {
 	if fill != nil {
 		block.end = fill.start + thumbFillLoopInstructions*2
 		block.extraLoop = &jitExtraLoop{kind: jitFillLoop, fill: *fill}
+	}
+	if b.systemBus == nil && block.extraLoop == nil && block.countedLoop == nil {
+		block.indexedLoadReturn = classifyThumbIndexedLoadReturn(block)
 	}
 	block.instructionCacheEnabled = b.instructionCacheEnabled()
 	block.instructionCacheGen = b.mappingGen

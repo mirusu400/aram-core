@@ -1800,6 +1800,10 @@ func (b *Backend) executeThumbApplicationMicroBlocks(block *jitBlock, limit uint
 				cachedStore41FaultError = b.unsupportedThumb(pc, instruction)
 				goto cachedStore41Fault
 			case thumbShiftImmediate + thumbDeadFlagsOffset:
+				if block.indexedLoadReturn != nil && b.tryThumbApplicationIndexedLoadReturnAfterFirst(block) {
+					goto blockDone
+				}
+
 				const flagsLive = false
 				op := uint32(instruction>>11) & 3
 				shift := uint32(instruction>>6) & 0x1f

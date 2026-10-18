@@ -203,6 +203,10 @@ return executed, nil, nil
 	if err != nil {
 		return err
 	}
+	contents, err = insertApplicationIndexedLoadReturnCaseBoundaryRoot(contents)
+	if err != nil {
+		return err
+	}
 	if check {
 		current, err := os.ReadFile(output)
 		if err != nil {
@@ -469,4 +473,92 @@ func omitDeadFlags(stmt ast.Stmt) {
 			}
 		}
 	}
+}
+
+// Add the indexed-four entry only after flags/transfers/route/store/fault
+// transformations. Their original input contracts and counts stay unchanged.
+func insertApplicationIndexedLoadReturnCaseBoundaryRoot(raw []byte) ([]byte, error) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "indexed-four-case-boundary.go", raw, parser.ParseComments)
+	if err != nil {
+		return nil, err
+	}
+	text := func(node ast.Node) string {
+		var output bytes.Buffer
+		if err := format.Node(&output, fset, node); err != nil {
+			return ""
+		}
+		return strings.Join(strings.Fields(output.String()), "")
+	}
+	var runner *ast.FuncDecl
+	for _, declaration := range file.Decls {
+		if candidate, ok := declaration.(*ast.FuncDecl); ok && candidate.Name.Name == "executeThumbApplicationMicroBlocks" {
+			if runner != nil {
+				return nil, fmt.Errorf("indexed-four case boundary: duplicate application runner")
+			}
+			runner = candidate
+		}
+	}
+	if runner == nil || runner.Body == nil {
+		return nil, fmt.Errorf("indexed-four case boundary: application runner missing")
+	}
+	collision := false
+	ast.Inspect(file, func(node ast.Node) bool {
+		if selector, ok := node.(*ast.SelectorExpr); ok {
+			switch selector.Sel.Name {
+			case "indexedLoadReturn", "tryThumbApplicationIndexedLoadReturn", "tryThumbApplicationIndexedLoadReturnAfterFirst":
+				collision = true
+			}
+		}
+		return true
+	})
+	if collision {
+		return nil, fmt.Errorf("indexed-four case boundary: existing helper/metadata reference")
+	}
+	var dispatch *ast.SwitchStmt
+	ast.Inspect(runner.Body, func(node ast.Node) bool {
+		if candidate, ok := node.(*ast.SwitchStmt); ok && candidate.Init == nil && text(candidate.Tag) == "in.appOp" {
+			if dispatch != nil {
+				collision = true
+			}
+			dispatch = candidate
+		}
+		return true
+	})
+	if collision || dispatch == nil || dispatch.Body == nil {
+		return nil, fmt.Errorf("indexed-four case boundary: unique application switch missing")
+	}
+	var deadShift *ast.CaseClause
+	for _, statement := range dispatch.Body.List {
+		clause, ok := statement.(*ast.CaseClause)
+		if !ok {
+			return nil, fmt.Errorf("indexed-four case boundary: malformed application switch")
+		}
+		if len(clause.List) == 1 && text(clause.List[0]) == "thumbShiftImmediate+thumbDeadFlagsOffset" {
+			if deadShift != nil {
+				return nil, fmt.Errorf("indexed-four case boundary: duplicate dead shift case")
+			}
+			deadShift = clause
+		}
+	}
+	if deadShift == nil || len(deadShift.Body) == 0 || text(deadShift.Body[0]) != "constflagsLive=false" {
+		return nil, fmt.Errorf("indexed-four case boundary: original dead shift case missing")
+	}
+	guardFile, err := parser.ParseFile(fset, "indexed-four-case-call.go", `package interpreter
+func boundary() {
+	if block.indexedLoadReturn != nil && b.tryThumbApplicationIndexedLoadReturnAfterFirst(block) {
+		goto blockDone
+	}
+}
+`, 0)
+	if err != nil {
+		return nil, err
+	}
+	guard := guardFile.Decls[0].(*ast.FuncDecl).Body.List[0]
+	deadShift.Body = append([]ast.Stmt{guard}, deadShift.Body...)
+	var output bytes.Buffer
+	if err := format.Node(&output, fset, file); err != nil {
+		return nil, err
+	}
+	return format.Source(output.Bytes())
 }
