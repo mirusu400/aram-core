@@ -45,9 +45,24 @@ func TestPXOMachineLauncherLifecycle(t *testing.T) {
 	if frame == nil || frame.Bounds() != image.Rect(0, 0, 176, 220) {
 		t.Fatalf("launcher frame = %v", frame)
 	}
+	checkDelivery := func(wantEvent uint32) {
+		t.Helper()
+		var delivered [8]byte
+		if err := backend.ReadMemory(0x70, delivered[:]); err != nil {
+			t.Fatal(err)
+		}
+		if event, key := binary.LittleEndian.Uint32(delivered[:4]), binary.LittleEndian.Uint32(delivered[4:]); event != wantEvent || key != 2 {
+			t.Fatalf("input delivery = event %#x, key %#x; want event %#x, key 2", event, key, wantEvent)
+		}
+	}
+	if err := machine.QueueInput(machinecore.InputEvent{Control: "up", Pressed: true}); err != nil {
+		t.Fatalf("press event: %v", err)
+	}
+	checkDelivery(pxoKeyPressEvent)
 	if err := machine.QueueInput(machinecore.InputEvent{Control: "up", Pressed: false}); err != nil {
 		t.Fatalf("release event: %v", err)
 	}
+	checkDelivery(pxoKeyReleaseEvent)
 	if err := machine.StepFrame(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -105,6 +120,7 @@ func TestPXOGuestCode(t *testing.T) {
 		profile.KeyUp:     2,
 		profile.KeyDown:   3,
 		profile.KeySelect: 0x14,
+		profile.KeySend:   0x0d,
 		profile.KeyClear:  0x0f,
 		profile.KeySoft1:  0x1c,
 		profile.Key1:      '1',
@@ -141,6 +157,11 @@ func syntheticPXOPackage() *pxoloader.Package {
 	} {
 		binary.LittleEndian.PutUint32(image[index*4:], value)
 	}
-	copy(image[0x20:], []byte{0x70, 0x47}) // bx lr
+	// ldr r3, [pc, #8]; str r0, [r3]; str r1, [r3, #4]; bx lr.
+	// The literal points at scratch memory used to observe delivered event args.
+	for offset, instruction := range []uint16{0x4b02, 0x6018, 0x6059, 0x4770} {
+		binary.LittleEndian.PutUint16(image[0x20+offset*2:], instruction)
+	}
+	binary.LittleEndian.PutUint32(image[0x2c:], 0x70)
 	return &pxoloader.Package{Descriptor: descriptor, Image: image}
 }
