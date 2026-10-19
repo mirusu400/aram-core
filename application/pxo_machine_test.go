@@ -113,7 +113,7 @@ func TestPXOFactoryClaimsMalformedPXO1(t *testing.T) {
 	}
 }
 
-func TestPXOGuestCode(t *testing.T) {
+func TestPXOLauncherGuestCode(t *testing.T) {
 	for key, want := range map[profile.KeyCode]uint32{
 		profile.KeyLeft:   0,
 		profile.KeyRight:  1,
@@ -125,13 +125,43 @@ func TestPXOGuestCode(t *testing.T) {
 		profile.KeySoft1:  0x1c,
 		profile.Key1:      '1',
 	} {
-		got, ok := pxoGuestCode(key)
+		got, ok := pxoLauncherGuestCode(key)
 		if !ok || got != want {
-			t.Errorf("pxoGuestCode(%d) = (%#x, %t), want (%#x, true)", key, got, ok, want)
+			t.Errorf("pxoLauncherGuestCode(%d) = (%#x, %t), want (%#x, true)", key, got, ok, want)
 		}
 	}
-	if _, ok := pxoGuestCode(profile.KeySideUp); ok {
+	if _, ok := pxoLauncherGuestCode(profile.KeySideUp); ok {
 		t.Fatal("unsupported side key was accepted")
+	}
+}
+
+func TestPXOGameGuestCode(t *testing.T) {
+	for key, want := range map[profile.KeyCode]uint32{
+		profile.KeyDown:     1,
+		profile.KeyLeft:     2,
+		profile.KeySelect:   3,
+		profile.KeyRight:    4,
+		profile.KeyUp:       5,
+		profile.Key0:        6,
+		profile.Key1:        7,
+		profile.Key9:        15,
+		profile.KeyClear:    16,
+		profile.KeyEnd:      17,
+		profile.KeyAsterisk: 18,
+		profile.KeyPound:    19,
+		profile.KeySend:     20,
+		profile.KeySoft1:    21,
+		profile.KeySoft2:    22,
+		profile.KeySideUp:   23,
+		profile.KeySideDown: 24,
+	} {
+		got, ok := pxoGameGuestCode(key)
+		if !ok || got != want {
+			t.Errorf("pxoGameGuestCode(%d) = (%#x, %t), want (%#x, true)", key, got, ok, want)
+		}
+	}
+	if _, ok := pxoGameGuestCode(profile.KeyPower); ok {
+		t.Fatal("unsupported power key was accepted")
 	}
 }
 

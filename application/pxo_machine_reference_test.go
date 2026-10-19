@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"image"
 	"os"
@@ -77,6 +78,46 @@ func TestReferencePXO1Machine(t *testing.T) {
 				t.Fatalf("frame type = %T, want *image.RGBA", frame)
 			}
 			frames[test.name] = fmt.Sprintf("%x", sha256.Sum256(rgba.Pix))
+			if test.name == "sanakan" {
+				machine := created.(*pxoMachine)
+				// The reference executable records GVM key states in this
+				// 25-entry array: 0 is pressed and 3 is released.
+				const sanakanInputStateBase = uint32(0x11de14)
+				readInternalState := func(index uint32) uint32 {
+					t.Helper()
+					var state [4]byte
+					if err := machine.backend.ReadMemory(sanakanInputStateBase+index*8, state[:]); err != nil {
+						t.Fatal(err)
+					}
+					return binary.LittleEndian.Uint32(state[:])
+				}
+				for _, input := range []struct {
+					control  string
+					internal uint32
+				}{
+					{control: "down", internal: 0},
+					{control: "left", internal: 1},
+					{control: "select", internal: 2},
+					{control: "right", internal: 3},
+					{control: "up", internal: 4},
+				} {
+					if got := readInternalState(input.internal); got != 3 {
+						t.Fatalf("%s internal state %d starts at %d, want released value 3", input.control, input.internal, got)
+					}
+					if err := created.QueueInput(machinecore.InputEvent{Control: input.control, Pressed: true}); err != nil {
+						t.Fatal(err)
+					}
+					if got := readInternalState(input.internal); got != 0 {
+						t.Fatalf("%s reached internal state %d with value %d, want pressed value 0", input.control, input.internal, got)
+					}
+					if err := created.QueueInput(machinecore.InputEvent{Control: input.control, Pressed: false}); err != nil {
+						t.Fatal(err)
+					}
+					if got := readInternalState(input.internal); got != 3 {
+						t.Fatalf("%s internal state %d ended at %d, want released value 3", input.control, input.internal, got)
+					}
+				}
+			}
 		})
 	}
 	if frames["sanakan"] == frames["3d-block"] {
