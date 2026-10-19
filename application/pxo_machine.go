@@ -372,6 +372,11 @@ func (m *pxoMachine) Framebuffer() image.Image {
 func (m *pxoMachine) PXO1PresentCount() uint64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Product diagnostics read the machine outside the backend lock, so a
+	// concurrent Close may already have released the host.
+	if m.host == nil {
+		return 0
+	}
 	return m.host.Presents()
 }
 

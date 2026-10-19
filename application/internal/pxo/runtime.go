@@ -56,7 +56,6 @@ type Runtime struct {
 	CPU        cpu.Backend
 	Package    *pxoloader.Package
 	Dispatcher Dispatcher
-	Calls      []Call
 }
 
 // NewRuntime maps and relocates one validated package.
@@ -223,7 +222,6 @@ func (r *Runtime) dispatchHostCall(ctx context.Context, slot uint32) error {
 		Ordinal: values[slot+1],
 		Args:    append([]uint32(nil), values[:slot]...),
 	}
-	r.Calls = append(r.Calls, call)
 	var value uint32
 	if r.Dispatcher != nil {
 		var err error

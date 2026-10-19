@@ -62,6 +62,29 @@ func TestPXOMachineLauncherLifecycle(t *testing.T) {
 	}
 }
 
+func TestPXOMachineDiagnosticsAfterClose(t *testing.T) {
+	pkg := syntheticPXOPackage()
+	backend := interpreter.New()
+	host := pxort.NewHost(backend)
+	runtime, err := pxort.NewRuntime(backend, pkg, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	machine := &pxoMachine{
+		state:   machinecore.StateReady,
+		pkg:     pkg,
+		backend: backend,
+		runtime: runtime,
+		host:    host,
+	}
+	if err := machine.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := machine.PXO1PresentCount(); got != 0 {
+		t.Fatalf("present count after close = %d, want 0", got)
+	}
+}
+
 func TestPXOFactoryClaimsMalformedPXO1(t *testing.T) {
 	data := []byte("PXO1malformed")
 	_, err := NewFactory().Create(context.Background(), machinecore.Source{
