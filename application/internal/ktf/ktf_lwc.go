@@ -958,6 +958,16 @@ func (r *Runtime) handleLWCMethod(
 		r.invalidateLWC(instance)
 		return 0, nil
 	case "getString()Ljava/lang/String;", "getLabel()Ljava/lang/String;":
+		// TextComponent accepts null input as empty character data. Its
+		// callers must still receive a String they can inspect or edit.
+		if state.text == 0 && method == "getString()Ljava/lang/String;" &&
+			ktfLWCTextInputClasses[className] {
+			text, err := r.NewJavaString("")
+			if err != nil {
+				return 0, err
+			}
+			state.text = text
+		}
 		return state.text, nil
 	case "setStep(I)V":
 		step := int32(registers[2])
