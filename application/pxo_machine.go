@@ -27,8 +27,10 @@ import (
 )
 
 const (
-	pxoInitBudget  = uint64(100_000_000)
-	pxoFrameBudget = uint64(50_000_000)
+	pxoInitBudget      = uint64(100_000_000)
+	pxoFrameBudget     = uint64(50_000_000)
+	pxoKeyPressEvent   = uint32(3)
+	pxoKeyReleaseEvent = uint32(4)
 )
 
 type pxoMachine struct {
@@ -234,9 +236,6 @@ func (m *pxoMachine) QueueInput(event machinecore.InputEvent) error {
 	if m.state != machinecore.StateRunning {
 		return fmt.Errorf("PXO1 input from %s: %w", m.state, ErrInvalidState)
 	}
-	if !event.Pressed {
-		return nil
-	}
 	key, known := guest.InputKeyCode(event.Control)
 	if !known {
 		return ErrGVMInputUnavailable
@@ -250,7 +249,11 @@ func (m *pxoMachine) QueueInput(event machinecore.InputEvent) error {
 	if m.gameActive {
 		handler = 2
 	}
-	if err := m.callHandler(ctx, handler, []uint32{3, code, 0}, m.budget); err != nil {
+	eventID := pxoKeyReleaseEvent
+	if event.Pressed {
+		eventID = pxoKeyPressEvent
+	}
+	if err := m.callHandler(ctx, handler, []uint32{eventID, code, 0}, m.budget); err != nil {
 		return m.fault(fmt.Sprintf("deliver PXO1 key %q", event.Control), err)
 	}
 	if !m.gameActive && m.host.Active() == 2 {
@@ -288,6 +291,8 @@ func pxoGuestCode(key profile.KeyCode) (uint32, bool) {
 		return 3, true
 	case profile.KeySelect:
 		return 0x14, true
+	case profile.KeySend:
+		return 0x0d, true
 	case profile.KeyEnd:
 		return 0x0e, true
 	case profile.KeyClear:

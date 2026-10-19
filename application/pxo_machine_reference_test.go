@@ -58,8 +58,14 @@ func TestReferencePXO1Machine(t *testing.T) {
 				if err := created.QueueInput(machinecore.InputEvent{Control: "down", Pressed: true}); err != nil {
 					t.Fatal(err)
 				}
+				if err := created.QueueInput(machinecore.InputEvent{Control: "down", Pressed: false}); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if err := created.QueueInput(machinecore.InputEvent{Control: "select", Pressed: true}); err != nil {
+				t.Fatal(err)
+			}
+			if err := created.QueueInput(machinecore.InputEvent{Control: "select", Pressed: false}); err != nil {
 				t.Fatal(err)
 			}
 			frame := created.Framebuffer()
