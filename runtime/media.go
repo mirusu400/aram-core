@@ -1288,9 +1288,11 @@ func (decoded *decodedPCM) ensureFrame(frame uint64) {
 	}
 	target := frame + 1
 	current := uint64(len(decoded.samples)) / uint64(decoded.channels)
-	if target < current+2_048 {
-		target = current + 2_048
+	prefetch := decoded.smaf.prefetchFrames
+	if prefetch == 0 {
+		prefetch = smafMaximumPrefetchFrames
 	}
+	target = max(target, current+prefetch)
 	decoded.samples = decoded.smaf.renderUntil(decoded.samples, target)
 }
 

@@ -207,8 +207,10 @@ func finishLazyScoreDecode(
 	// It consumes its decoder, so the incremental playback stream keeps its own.
 	length := stream.end
 	if probeDecoder := rebuild(); probeDecoder != nil {
-		if probed := newSMAFRenderStream(probeDecoder).probeEnd(); probed != 0 {
+		probe := newSMAFRenderStream(probeDecoder)
+		if probed := probe.probeEnd(); probed != 0 {
 			length = probed
+			stream.prefetchFrames = smafPrefetchFramesForWork(probe.peakRenderWork)
 		}
 	}
 	return &decodedPCM{
@@ -1147,6 +1149,8 @@ type smafRenderStream struct {
 	decoder                         *smafDecoder
 	cursor, end                     uint64
 	eventIndex                      int
+	prefetchFrames                  uint64
+	peakRenderWork                  uint64 // conservative per-frame work from the length probe
 	highPassCoefficient             float64
 	highPassInputLeft               float64
 	highPassInputRight              float64
@@ -1157,6 +1161,21 @@ type smafRenderStream struct {
 	filter2Left, filter2Right       float64
 	limiterEnvelope, limiterRelease float64
 	finished                        bool
+}
+
+const (
+	smafMaximumPrefetchFrames = 2048
+	smafMinimumPrefetchFrames = 64
+	// A two-operator note retains the former 2048-frame cache quantum. Busier
+	// scores synthesize less speculative audio per refill. This is a cache-work
+	// estimate, not a guest time or instruction budget: every requested frame is
+	// still rendered, with the same sample arithmetic and event boundaries.
+	smafPrefetchWork = 2 * smafMaximumPrefetchFrames
+)
+
+func smafPrefetchFramesForWork(work uint64) uint64 {
+	return max(smafMinimumPrefetchFrames,
+		min(smafMaximumPrefetchFrames, smafPrefetchWork/max(uint64(1), work)))
 }
 
 func (decoder *smafDecoder) scoreEnd() uint64 {
@@ -1228,6 +1247,25 @@ func (stream *smafRenderStream) probeEnd() uint64 {
 	return stream.probeEventEnd()
 }
 
+// refreshPanGains prepares the gains for the next event-free render interval.
+// Pan can only change when a score event fires, so checking the same memo on
+// every sample of every voice is redundant. Refresh at render entry as well:
+// callers may have advanced or edited the decoder between incremental renders.
+func (decoder *smafDecoder) refreshPanGains() {
+	for _, index := range decoder.activeVoices {
+		voice := &decoder.pool[index]
+		if voice.active {
+			voice.panGains.gains(voice.pan)
+		}
+	}
+	for _, index := range decoder.activePCM {
+		voice := &decoder.pcmPool[index]
+		if voice.active {
+			voice.panGains.gains(voice.pan)
+		}
+	}
+}
+
 // render is the shared body. When silent is set it advances exactly the same
 // decoder, voice, and stream state, but samples no waveform, runs no filter,
 // and produces no output.
@@ -1261,11 +1299,20 @@ func (stream *smafRenderStream) render(
 			output = make([]int16, 0, int(remaining)*2)
 		}
 	}
+	if !silent {
+		decoder.refreshPanGains()
+	}
 	for stream.cursor < target {
-		for stream.eventIndex < len(decoder.events) &&
+		if stream.eventIndex < len(decoder.events) &&
 			decoder.events[stream.eventIndex].sample <= stream.cursor {
-			decoder.fire(decoder.events[stream.eventIndex])
-			stream.eventIndex++
+			for stream.eventIndex < len(decoder.events) &&
+				decoder.events[stream.eventIndex].sample <= stream.cursor {
+				decoder.fire(decoder.events[stream.eventIndex])
+				stream.eventIndex++
+			}
+			if !silent {
+				decoder.refreshPanGains()
+			}
 		}
 		left, right := 0.0, 0.0
 		active := false
@@ -1284,9 +1331,8 @@ func (stream *smafRenderStream) render(
 			active = true
 			value := voice.tick(silent) * 0.32
 			if !silent {
-				panLeft, panRight := voice.panGains.gains(voice.pan)
-				left += value * panLeft
-				right += value * panRight
+				left += value * voice.panGains.left
+				right += value * voice.panGains.right
 			}
 			if !voice.active {
 				decoder.voiceListed[index] = false
@@ -1313,10 +1359,9 @@ func (stream *smafRenderStream) render(
 			active = true
 			pcmLeft, pcmRight := voice.tickStereo()
 			if !silent {
-				panLeft, panRight := voice.panGains.gains(voice.pan)
 				gain := voice.volume * 0.32
-				left += pcmLeft * gain * panLeft
-				right += pcmRight * gain * panRight
+				left += pcmLeft * gain * voice.panGains.left
+				right += pcmRight * gain * voice.panGains.right
 			}
 			if !voice.active {
 				decoder.pcmListed[index] = false

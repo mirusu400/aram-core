@@ -305,6 +305,7 @@ func (stream *smafRenderStream) probeEventEnd() uint64 {
 		}
 		remaining := target - stream.cursor
 		lastActive := uint64(0)
+		renderWork := uint64(0)
 		for slot := range decoder.pool {
 			voice := &decoder.pool[slot]
 			if !voice.active {
@@ -317,6 +318,9 @@ func (stream *smafRenderStream) probeEventEnd() uint64 {
 			if voice.patch.fourOp {
 				count = 4
 			}
+			// The sounding renderer ticks every operator while any sibling is
+			// live, including operators whose own envelopes are already idle.
+			renderWork += uint64(count)
 			for index := 0; index < count; index++ {
 				lastActive = max(lastActive, envelopes[slot][index].advance(remaining))
 				voice.operators[index].envelope = envelopes[slot][index].envelope
@@ -324,8 +328,20 @@ func (stream *smafRenderStream) probeEventEnd() uint64 {
 			voice.retireIfIdle(count)
 		}
 		for slot := range decoder.pcmPool {
-			lastActive = max(lastActive, advancePCMLength(&decoder.pcmPool[slot], &pcmEnvelopes[slot], remaining))
+			voice := &decoder.pcmPool[slot]
+			if voice.active {
+				// Counting each reconstruction tap as a whole FM operator is
+				// deliberately conservative. The cache quantum must also shrink
+				// for high-polyphony stereo or steep-downsampled PCM scores.
+				work := uint64(1)
+				if voice.kernel != nil {
+					work = uint64(voice.kernel.taps * max(1, voice.channels))
+				}
+				renderWork += work
+			}
+			lastActive = max(lastActive, advancePCMLength(voice, &pcmEnvelopes[slot], remaining))
 		}
+		stream.peakRenderWork = max(stream.peakRenderWork, renderWork)
 		if stream.eventIndex == len(decoder.events) && lastActive < remaining {
 			// The renderer emits one idle sample after the last active tick.
 			stream.cursor = min(stream.end, max(stream.cursor+lastActive, decoder.timelineEnd)+1)

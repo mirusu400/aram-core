@@ -475,7 +475,15 @@ func (operator *smafOperator) tick(modulation, lfo float64) float64 {
 	}
 	operator.phase += increment
 	operator.phase -= math.Floor(operator.phase)
-	output := smafWaveform(operator.patch.wave, operator.phase+modulation)
+	var output float64
+	if operator.patch.wave&31 == 0 {
+		// The common sine has exactly the same phase reduction and table
+		// interpolation as smafWaveform's case 0. Calling the small helper
+		// directly lets it inline without the general waveform dispatch.
+		output = smafSine(operator.phase + modulation)
+	} else {
+		output = smafWaveform(operator.patch.wave, operator.phase+modulation)
+	}
 	value := output * operator.totalGain * operator.keyGain * envelope
 	// An operator without tremolo used to finish by multiplying by a constant
 	// 1.0. Skipping that multiply is exact - x*1.0 is x for every float64,
