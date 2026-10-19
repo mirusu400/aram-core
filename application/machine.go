@@ -86,9 +86,12 @@ type Factory struct {
 	// RaptorFrameRunBudget overrides FrameRunBudget for Raptor callbacks.
 	// Zero inherits FrameRunBudget, including deliberately small debug slices.
 	RaptorFrameRunBudget uint64
-	KTFRunBudget         uint64
-	MemoryLimit          uint64
-	FramebufferSize      image.Point
+	// PXOFrameRunBudget bounds one LG PXO1 callback. Zero uses the PXO1
+	// product default; it does not inherit the much smaller WIPI quantum.
+	PXOFrameRunBudget uint64
+	KTFRunBudget      uint64
+	MemoryLimit       uint64
+	FramebufferSize   image.Point
 	// GuestWidthOverride widens the guest framebuffer to at least this many
 	// pixels (experimental widescreen), keeping each loader's native height. Zero
 	// leaves the native width. Unlike FramebufferSize it survives loaders that
@@ -165,6 +168,9 @@ func (f Factory) Create(ctx context.Context, source machinecore.Source) (machine
 		return nil, err
 	}
 	if machine, matched, err := f.createGNEX32Machine(ctx, source); matched || err != nil {
+		return machine, err
+	}
+	if machine, matched, err := f.createPXOMachine(ctx, source); matched || err != nil {
 		return machine, err
 	}
 	if machine, matched, err := f.createGVMMachine(ctx, source); matched || err != nil {

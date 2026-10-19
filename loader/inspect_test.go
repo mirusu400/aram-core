@@ -123,6 +123,14 @@ func TestInspectReportsReadOffset(t *testing.T) {
 	}
 }
 
+func TestInspectRecognizesPXO1ByMagic(t *testing.T) {
+	report, err := InspectBytes("game.bin", []byte("PXO1synthetic"))
+	check(t, err)
+	if report.Kind != KindPXO {
+		t.Fatalf("kind = %q, want %q", report.Kind, KindPXO)
+	}
+}
+
 type countingReaderAt struct {
 	data []byte
 }
