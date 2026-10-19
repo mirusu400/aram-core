@@ -95,11 +95,11 @@ func TestReferencePXO1Machine(t *testing.T) {
 					control  string
 					internal uint32
 				}{
-					{control: "down", internal: 0},
-					{control: "left", internal: 1},
-					{control: "select", internal: 2},
-					{control: "right", internal: 3},
-					{control: "up", internal: 4},
+					{control: "left", internal: 13},
+					{control: "right", internal: 14},
+					{control: "up", internal: 15},
+					{control: "down", internal: 16},
+					{control: "select", internal: 18},
 				} {
 					if got := readInternalState(input.internal); got != 3 {
 						t.Fatalf("%s internal state %d starts at %d, want released value 3", input.control, input.internal, got)
