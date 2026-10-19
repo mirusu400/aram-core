@@ -318,39 +318,40 @@ func pxoLauncherGuestCode(key profile.KeyCode) (uint32, bool) {
 
 // pxoGameGuestCode converts ARAM's canonical handset keys to the dense GVM
 // key table consumed after the PXO launcher activates its game handler. The
-// launcher and embedded game deliberately use different key namespaces.
+// launcher and embedded game deliberately use different key namespaces. GVM
+// places the twelve keypad keys first, followed by handset and navigation keys.
 func pxoGameGuestCode(key profile.KeyCode) (uint32, bool) {
 	switch key {
-	case profile.KeyDown:
-		return 1, true
-	case profile.KeyLeft:
-		return 2, true
-	case profile.KeySelect:
-		return 3, true
-	case profile.KeyRight:
-		return 4, true
-	case profile.KeyUp:
-		return 5, true
 	case profile.Key0, profile.Key1, profile.Key2, profile.Key3, profile.Key4,
 		profile.Key5, profile.Key6, profile.Key7, profile.Key8, profile.Key9:
-		return 6 + uint32(key-profile.Key0), true
-	case profile.KeyClear:
-		return 16, true
-	case profile.KeyEnd:
-		return 17, true
+		return 1 + uint32(key-profile.Key0), true
 	case profile.KeyAsterisk:
-		return 18, true
+		return 11, true
 	case profile.KeyPound:
-		return 19, true
-	case profile.KeySend:
-		return 20, true
-	case profile.KeySoft1:
-		return 21, true
-	case profile.KeySoft2:
-		return 22, true
+		return 12, true
 	case profile.KeySideUp:
-		return 23, true
+		return 13, true
 	case profile.KeySideDown:
+		return 14, true
+	case profile.KeySoft1:
+		return 15, true
+	case profile.KeySoft2:
+		return 16, true
+	case profile.KeySend:
+		return 17, true
+	case profile.KeyClear:
+		return 18, true
+	case profile.KeyEnd:
+		return 19, true
+	case profile.KeySelect:
+		return 20, true
+	case profile.KeyUp:
+		return 21, true
+	case profile.KeyDown:
+		return 22, true
+	case profile.KeyLeft:
+		return 23, true
+	case profile.KeyRight:
 		return 24, true
 	default:
 		return 0, false
