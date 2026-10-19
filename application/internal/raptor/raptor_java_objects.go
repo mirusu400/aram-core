@@ -452,6 +452,16 @@ func (r *Runtime) checkRaptorJavaType() (guest.WIPIReturn, string, bool, error) 
 		return guest.WIPIReturn{}, name, true, err
 	}
 	if actual == 0 {
+		// Raptor array vtables deliberately keep their class-holder slot zero
+		// (see raptorJavaArrayVTable), so the AOT cast sequence passes zero as
+		// the actual class even for a non-null primitive array. Ordinal 14
+		// supplies the target as its compact primitive-array token. Accept that
+		// pair; a real null checked against an ordinary class holder still
+		// follows the false path below.
+		if _, primitive := raptorJavaPrimitiveArrayElementSize(target); primitive ||
+			raptorPrimitiveArrayRank(target) != 0 {
+			return guest.WIPIReturn{Low: 1}, name, true, nil
+		}
 		return guest.WIPIReturn{}, name, true, nil
 	}
 	if target == 0 || target == actual {

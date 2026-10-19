@@ -50,6 +50,12 @@ func TestRaptorJavaCheckTypeRejectsSiblingClasses(t *testing.T) {
 		{name: "item is not equipment", target: equipment.Holder, actual: item.Holder},
 		{name: "potion is not equipment", target: equipment.Holder, actual: potion.Holder},
 		{name: "null actual", target: equipment.Holder},
+		{name: "primitive array vtable holder", target: 'C', want: 1},
+		{
+			name:   "ranked primitive array vtable holder",
+			target: raptorRankedPrimitiveArrayType | 2<<8 | 'B',
+			want:   1,
+		},
 		{name: "legacy null target", actual: 0x43, want: 1},
 		{name: "unresolved compact tokens", target: 0x41, actual: 0x43, want: 1},
 	}
