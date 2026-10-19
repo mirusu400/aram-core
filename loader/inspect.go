@@ -31,6 +31,7 @@ const (
 	KindWBIN     Kind = "samsung-wbin"
 	KindWBT      Kind = "samsung-wbt"
 	KindFont     Kind = "samsung-font"
+	KindPXO      Kind = "lg-pxo1"
 	KindFirmware Kind = "firmware-image"
 )
 
@@ -196,6 +197,8 @@ func detectKind(path string, first []byte, markers []Marker) Kind {
 		return KindEADS
 	case bytes.HasPrefix(first, []byte{0x7f, 'E', 'L', 'F'}):
 		return KindELF
+	case bytes.HasPrefix(first, []byte("PXO1")):
+		return KindPXO
 	case bytes.HasPrefix(first, []byte{'P', 'K', 3, 4}):
 		return KindJava
 	}
