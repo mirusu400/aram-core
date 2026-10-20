@@ -1,10 +1,12 @@
 package gnex
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -49,6 +51,41 @@ func TestReferencePackages(t *testing.T) {
 		}
 		if pkg.Header.ApplicationID != pkg.Header.TitleChecksum {
 			t.Errorf("%s: deprecated application ID alias differs", path)
+		}
+		switch pkg.ManifestKind {
+		case ManifestMOD:
+			descriptor, decodeErr := DecodeMODDescriptor(pkg.Manifest)
+			if decodeErr != nil {
+				return fmt.Errorf("%s: decode MOD: %w", path, decodeErr)
+			}
+			if descriptor.MIMEType != "application/x-gnex-sgs" ||
+				!strings.EqualFold(descriptor.PayloadType, "sgs") || descriptor.Version == "" {
+				t.Errorf("%s: incomplete MOD identity: %+v", path, descriptor)
+			}
+		case ManifestINF:
+			descriptor, decodeErr := DecodeINFDescriptor(pkg.Manifest)
+			if decodeErr != nil {
+				return fmt.Errorf("%s: decode INF: %w", path, decodeErr)
+			}
+			if descriptor.ApplicationKey != pathpkg.Base(pkg.BaseName) {
+				t.Errorf("%s: INF key %q does not match %q", path, descriptor.ApplicationKey, pkg.BaseName)
+			}
+		}
+		if name, ok := findCaseInsensitive(pkg.Files, pkg.BaseName+".res"); ok {
+			icon, decodeErr := DecodeRESIcon(pkg.Files[name])
+			if decodeErr != nil || len(icon.Payload) == 0 {
+				return fmt.Errorf("%s: decode RES: %w", path, decodeErr)
+			}
+		}
+		if name, ok := findCaseInsensitive(pkg.Files, pkg.BaseName+".wmr"); ok {
+			bundle, decodeErr := DecodeWMRBundle(pkg.Files[name])
+			if decodeErr != nil {
+				return fmt.Errorf("%s: decode WMR: %w", path, decodeErr)
+			}
+			if len(bundle.Resources) != 2 || !bytes.HasPrefix(bundle.Resources[0].Data, []byte("BM")) ||
+				!bytes.HasPrefix(bundle.Resources[1].Data, []byte("ABM")) {
+				t.Errorf("%s: unexpected WMR resources: %+v", path, bundle.Resources)
+			}
 		}
 		legacyApplicationIDs := map[string]uint16{
 			".hack//sign": 34064, "놈": 34043, "라그나로크 외전": 34059,
