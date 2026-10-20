@@ -3,6 +3,7 @@ package application
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"image"
 	"image/color"
 	"path/filepath"
@@ -78,15 +79,10 @@ func TestGNEX32VirusProductBackPersistsUserNV(t *testing.T) {
 
 func TestGNEX32VirusMenuAndHelp(t *testing.T) {
 	machine := virusProductMachine(t)
-	stepVirusFrames(t, machine, 600)
-	splash := brewFrameHash(machine.Framebuffer())
-	pressVirusKey(t, machine, "select")
-	stepVirusFrames(t, machine, 1200)
-	if title := brewFrameHash(machine.Framebuffer()); title == splash {
+	splash, title := advanceVirusToMenu(t, machine)
+	if title == splash {
 		t.Fatal("select did not advance from splash to title")
 	}
-	pressVirusKey(t, machine, "select")
-	stepVirusFrames(t, machine, 600)
 	menu := brewFrameHash(machine.Framebuffer())
 	pressVirusKey(t, machine, "down")
 	stepVirusFrames(t, machine, 30)
@@ -97,6 +93,64 @@ func TestGNEX32VirusMenuAndHelp(t *testing.T) {
 	if help := brewFrameHash(machine.Framebuffer()); help == menu {
 		t.Fatal("HELP did not advance from menu")
 	}
+}
+
+func advanceVirusToMenu(t *testing.T, machine machinecore.Machine) ([32]byte, [32]byte) {
+	t.Helper()
+	stepVirusFrames(t, machine, 600)
+	splash := brewFrameHash(machine.Framebuffer())
+	pressVirusKey(t, machine, "select")
+	stepVirusFrames(t, machine, 1200)
+	title := brewFrameHash(machine.Framebuffer())
+	pressVirusKey(t, machine, "select")
+	stepVirusFrames(t, machine, 600)
+	return splash, title
+}
+
+func TestGNEX32VirusMenuBranchProbe(t *testing.T) {
+	selectedFrames := make(map[[32]byte]bool)
+	resultFrames := make(map[[32]byte]bool)
+	reachedServices := make(map[uint16]bool)
+	var firstResult [32]byte
+	for selection := 0; selection <= 6; selection++ {
+		t.Run(fmt.Sprintf("selection-%d", selection), func(t *testing.T) {
+			machine := tracedVirusProductMachine(t)
+			advanceVirusToMenu(t, machine)
+			for move := 0; move < selection; move++ {
+				pressVirusKey(t, machine, "down")
+				stepVirusFrames(t, machine, 30)
+			}
+			selected := brewFrameHash(machine.Framebuffer())
+			pressVirusKey(t, machine, "select")
+			product := machine.(*gnex32Machine)
+			if product.state == machinecore.StateRunning {
+				stepVirusFrames(t, machine, 600)
+			}
+			if product.state != machinecore.StateRunning {
+				t.Fatalf("selection %d ended in %s", selection, product.state)
+			}
+			trace := product.GNEX32ExecutionTrace()
+			result := brewFrameHash(machine.Framebuffer())
+			for _, service := range trace.Services {
+				reachedServices[service.ID] = true
+			}
+			if selection < 6 {
+				selectedFrames[selected] = true
+				resultFrames[result] = true
+			} else if result != firstResult {
+				t.Fatalf("six downward moves did not wrap to first menu branch: %x != %x", result[:4], firstResult[:4])
+			}
+			if selection == 0 {
+				firstResult = result
+			}
+			t.Logf("selection=%d state=%s selected=%x result=%x instructions=%d services=%d",
+				selection, product.state, selected[:4], result[:4], trace.InstructionCount, len(trace.Services))
+		})
+	}
+	if len(selectedFrames) != 6 || len(resultFrames) < 5 {
+		t.Fatalf("menu coverage: selected=%d result branches=%d", len(selectedFrames), len(resultFrames))
+	}
+	t.Logf("menu coverage: entries=%d result branches=%d reached services=%d", len(selectedFrames), len(resultFrames), len(reachedServices))
 }
 
 func advanceVirusToGameplay(t *testing.T, machine machinecore.Machine) {
