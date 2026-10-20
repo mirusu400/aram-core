@@ -564,6 +564,30 @@ func (r *Runtime) service(id uint16, stack []uint32) (ServiceResult, error) {
 			}
 		}
 		return ServiceResult{Pop: 1}, nil
+	case 0x9d: // GetMediaSize(media)
+		if last < 0 {
+			return ServiceResult{}, ErrStackUnderflow
+		}
+		data, _, err := r.vm.media.Read(int(stack[last]))
+		if err != nil {
+			return ServiceResult{}, err
+		}
+		return ServiceResult{Pop: 1, Push: []uint32{uint32(len(data))}}, nil
+	case 0x9e: // SetMediaSize(media, size)
+		if last < 1 {
+			return ServiceResult{}, ErrStackUnderflow
+		}
+		size := int64(int32(stack[last]))
+		status := uint32(0)
+		if size >= 0 {
+			if size&1 != 0 {
+				size++
+			}
+			if int64(int(size)) == size && r.vm.media.Resize(int(stack[last-1]), int(size)) == nil {
+				status = 1
+			}
+		}
+		return ServiceResult{Pop: 2, Push: []uint32{status}}, nil
 	case 0x9f: // StrInit(string, size)
 		if last < 1 {
 			return ServiceResult{}, ErrStackUnderflow
@@ -626,6 +650,26 @@ func (r *Runtime) service(id uint16, stack []uint32) (ServiceResult, error) {
 			return ServiceResult{}, err
 		}
 		return ServiceResult{Pop: 4}, nil
+	case 0xa3: // StrCat(destination, source)
+		if last < 1 {
+			return ServiceResult{}, ErrStackUnderflow
+		}
+		destination, err := r.readString(int(stack[last-1]))
+		if err != nil {
+			return ServiceResult{}, err
+		}
+		source, err := r.readString(int(stack[last]))
+		if err != nil {
+			return ServiceResult{}, err
+		}
+		combined := make([]byte, 0, len(destination)+len(source)+1)
+		combined = append(combined, destination...)
+		combined = append(combined, source...)
+		combined = append(combined, 0)
+		if err := r.vm.media.Replace(int(stack[last-1]), combined); err != nil {
+			return ServiceResult{}, err
+		}
+		return ServiceResult{Pop: 2}, nil
 	case 0xa4: // StrCmp(string, string)
 		if last < 1 {
 			return ServiceResult{}, ErrStackUnderflow
@@ -675,6 +719,143 @@ func (r *Runtime) service(id uint16, stack []uint32) (ServiceResult, error) {
 			return ServiceResult{}, err
 		}
 		return ServiceResult{Pop: 3}, nil
+	case 0xa7: // AsciiToInt(string)
+		if last < 0 {
+			return ServiceResult{}, ErrStackUnderflow
+		}
+		data, err := r.readString(int(stack[last]))
+		if err != nil {
+			return ServiceResult{}, err
+		}
+		return ServiceResult{Pop: 1, Push: []uint32{uint32(parseGNEX32Decimal(data))}}, nil
+	case 0xa8: // IntToAscii(destination, value)
+		if last < 1 {
+			return ServiceResult{}, ErrStackUnderflow
+		}
+		data := terminated(strconv.FormatInt(int64(int32(stack[last])), 10))
+		if err := r.vm.media.Replace(int(stack[last-1]), data); err != nil {
+			return ServiceResult{}, err
+		}
+		return ServiceResult{Pop: 2}, nil
+	case 0xa9: // PutByte(int[], index, value)
+		if last < 2 {
+			return ServiceResult{}, ErrStackUnderflow
+		}
+		ref, ok := r.vm.refs[last-2]
+		if !ok {
+			return ServiceResult{}, ErrInvalidLValue
+		}
+		offset, err := gnex32ByteOffset(ref, stack[last-1])
+		if err != nil {
+			return ServiceResult{}, err
+		}
+		if err := r.vm.memory.WriteBytes(ref.symbol, offset, []byte{byte(stack[last])}); err != nil {
+			return ServiceResult{}, err
+		}
+		return ServiceResult{Pop: 3}, nil
+	case 0xaa: // GetByte(int[], index)
+		if last < 1 {
+			return ServiceResult{}, ErrStackUnderflow
+		}
+		ref, ok := r.vm.refs[last-1]
+		if !ok {
+			return ServiceResult{}, ErrInvalidLValue
+		}
+		offset, err := gnex32ByteOffset(ref, stack[last])
+		if err != nil {
+			return ServiceResult{}, err
+		}
+		data, err := r.vm.memory.ReadBytes(ref.symbol, offset, 1)
+		if err != nil {
+			return ServiceResult{}, err
+		}
+		return ServiceResult{Pop: 2, Push: []uint32{uint32(data[0])}}, nil
+	case 0xab: // PutBytes(int[], index, media, size)
+		if last < 3 {
+			return ServiceResult{}, ErrStackUnderflow
+		}
+		ref, ok := r.vm.refs[last-3]
+		if !ok {
+			return ServiceResult{}, ErrInvalidLValue
+		}
+		offset, err := gnex32ByteOffset(ref, stack[last-2])
+		if err != nil {
+			return ServiceResult{}, err
+		}
+		source, _, err := r.vm.media.Read(int(stack[last-1]))
+		if err != nil {
+			return ServiceResult{}, err
+		}
+		size := int64(int32(stack[last]))
+		if size < 0 || size > int64(len(source)) || int64(int(size)) != size {
+			return ServiceResult{}, fmt.Errorf("gnex32: PutBytes size %d is out of range", size)
+		}
+		if err := r.vm.memory.WriteBytes(ref.symbol, offset, source[:int(size)]); err != nil {
+			return ServiceResult{}, err
+		}
+		return ServiceResult{Pop: 4}, nil
+	case 0xac: // GetBytes(int[], index, destination, size)
+		if last < 3 {
+			return ServiceResult{}, ErrStackUnderflow
+		}
+		ref, ok := r.vm.refs[last-3]
+		if !ok {
+			return ServiceResult{}, ErrInvalidLValue
+		}
+		offset, err := gnex32ByteOffset(ref, stack[last-2])
+		if err != nil {
+			return ServiceResult{}, err
+		}
+		size := int64(int32(stack[last]))
+		if size < 0 || int64(int(size)) != size {
+			return ServiceResult{}, fmt.Errorf("gnex32: GetBytes size %d is out of range", size)
+		}
+		data, err := r.vm.memory.ReadBytes(ref.symbol, offset, int(size))
+		if err != nil {
+			return ServiceResult{}, err
+		}
+		if err := r.vm.media.Replace(int(stack[last-1]), data); err != nil {
+			return ServiceResult{}, err
+		}
+		return ServiceResult{Pop: 4}, nil
+	case 0xad: // MakeStrStr(destination, format, source)
+		if last < 2 {
+			return ServiceResult{}, ErrStackUnderflow
+		}
+		format, err := r.readString(int(stack[last-1]))
+		if err != nil {
+			return ServiceResult{}, err
+		}
+		value, err := r.readString(int(stack[last]))
+		if err != nil {
+			return ServiceResult{}, err
+		}
+		data, err := formatGNEX32String(format, value)
+		if err != nil {
+			return ServiceResult{}, err
+		}
+		if err := r.vm.media.Replace(int(stack[last-2]), data); err != nil {
+			return ServiceResult{}, err
+		}
+		return ServiceResult{Pop: 3}, nil
+	case 0xae, 0xaf, 0xb0, 0xb1, 0xb2: // MakeStr1..MakeStr5(destination, format, values...)
+		count := int(id-0xae) + 1
+		if len(stack) < count+2 {
+			return ServiceResult{}, ErrStackUnderflow
+		}
+		first := len(stack) - count - 2
+		format, err := r.readString(int(stack[first+1]))
+		if err != nil {
+			return ServiceResult{}, err
+		}
+		data, err := formatGNEX32Integers(format, stack[first+2:])
+		if err != nil {
+			return ServiceResult{}, err
+		}
+		if err := r.vm.media.Replace(int(stack[first]), data); err != nil {
+			return ServiceResult{}, err
+		}
+		return ServiceResult{Pop: count + 2}, nil
 	case 0xdd: // ArrayToVar(int[], value, count, operation)
 		if last < 3 {
 			return ServiceResult{}, ErrStackUnderflow

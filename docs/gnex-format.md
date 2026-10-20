@@ -161,6 +161,19 @@ the documented sixteen 32-bit words and leave their destinations unchanged on
 validation failure. `Rand` has deterministic exclusive-upper-bound and signed
 range tests, but its provisional LCG still requires a native GNEX comparison.
 
+The remaining SDK string core is implemented as well. `GetMediaSize` reports
+the allocated byte count and `SetMediaSize` preserves the prefix, zero-fills,
+rounds odd requests to word alignment, and returns the documented 1/0 status.
+`StrCat`, `AsciiToInt`, and `IntToAscii` preserve byte strings. `PutByte`,
+`GetByte`, `PutBytes`, and `GetBytes` address 32-bit integer arrays as bounded
+little-endian byte ranges; the SDK's `260 -> 4, 1` example fixes that byte
+order. `MakeStrStr` and `MakeStr1` through `MakeStr5` support the documented
+`%s`, `%d`, `%x`, `%X`, `%c`, field-width, and literal-percent forms while
+enforcing the GNEX 256-byte result limit. Failed range, format, and destination
+validation is atomic. These registrations remove nine more service IDs from
+the exact Virus static preflight, reducing its remaining service gap from 20
+to 11.
+
 `go run ./cmd/aram-gnex32-inspect <package.zip|title.sgs>` performs a bounded
 static control-flow walk from the main entry and every nonzero header callback.
 It reports each reachable `0x92 <service-id>` and code-relative call site,

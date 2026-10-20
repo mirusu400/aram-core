@@ -73,6 +73,32 @@ func (state *GNEX32SymbolMemory) WriteWord(symbol, element int, value uint32) er
 	return nil
 }
 
+// ReadBytes copies an arbitrary little-endian byte range from one symbol. The
+// offset is relative to the first byte of element zero.
+func (state *GNEX32SymbolMemory) ReadBytes(symbol, offset, size int) ([]byte, error) {
+	if state == nil || symbol < 0 || symbol >= len(state.symbols) {
+		return nil, fmt.Errorf("gnex: GNEX32 symbol index %d out of range", symbol)
+	}
+	data := state.symbols[symbol].data
+	if offset < 0 || size < 0 || offset > len(data) || size > len(data)-offset {
+		return nil, fmt.Errorf("gnex: GNEX32 symbol %d byte range %d:%d out of range", symbol, offset, offset+size)
+	}
+	return bytes.Clone(data[offset : offset+size]), nil
+}
+
+// WriteBytes atomically replaces an arbitrary byte range in one symbol.
+func (state *GNEX32SymbolMemory) WriteBytes(symbol, offset int, value []byte) error {
+	if state == nil || symbol < 0 || symbol >= len(state.symbols) {
+		return fmt.Errorf("gnex: GNEX32 symbol index %d out of range", symbol)
+	}
+	data := state.symbols[symbol].data
+	if offset < 0 || offset > len(data) || len(value) > len(data)-offset {
+		return fmt.Errorf("gnex: GNEX32 symbol %d byte range %d:%d out of range", symbol, offset, offset+len(value))
+	}
+	copy(data[offset:], value)
+	return nil
+}
+
 func (state *GNEX32SymbolMemory) Snapshot() GNEX32SymbolMemoryState {
 	result := GNEX32SymbolMemoryState{Symbols: make([][]byte, len(state.symbols))}
 	for index := range state.symbols {

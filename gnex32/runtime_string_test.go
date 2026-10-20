@@ -189,3 +189,136 @@ func TestStrSubCopiesEucKrBytesAndTerminates(t *testing.T) {
 		t.Fatalf("aliased StrSub destination = %x", got)
 	}
 }
+
+func TestRemainingStringServicesUseDocumentedMediaContracts(t *testing.T) {
+	runtime := newStringRuntime(t, []gnex.GNEX32Media{
+		{Flags: 1, Data: []byte("ab\x00ignored")},
+		{Flags: 0, Data: []byte("cd\x00tail")},
+		{Flags: 1},
+		{Flags: 0, Data: []byte(" \t-42xyz\x00")},
+	})
+
+	result, err := runtime.service(0xa3, []uint32{0, 1})
+	if err != nil || result.Pop != 2 || len(result.Push) != 0 {
+		t.Fatalf("StrCat result = %+v, %v", result, err)
+	}
+	if got := readStringMedia(t, runtime, 0); !bytes.Equal(got, []byte("abcd\x00")) {
+		t.Fatalf("StrCat destination = %q", got)
+	}
+	if _, err := runtime.service(0xa3, []uint32{0, 0}); err != nil {
+		t.Fatal(err)
+	}
+	if got := readStringMedia(t, runtime, 0); !bytes.Equal(got, []byte("abcdabcd\x00")) {
+		t.Fatalf("aliased StrCat destination = %q", got)
+	}
+
+	result, err = runtime.service(0xa7, []uint32{3})
+	if err != nil || result.Pop != 1 || len(result.Push) != 1 || int32(result.Push[0]) != -42 {
+		t.Fatalf("AsciiToInt result = %+v, %v", result, err)
+	}
+	result, err = runtime.service(0xa8, []uint32{2, ^uint32(122)})
+	if err != nil || result.Pop != 2 || len(result.Push) != 0 {
+		t.Fatalf("IntToAscii result = %+v, %v", result, err)
+	}
+	if got := readStringMedia(t, runtime, 2); !bytes.Equal(got, []byte("-123\x00")) {
+		t.Fatalf("IntToAscii destination = %q", got)
+	}
+
+	result, err = runtime.service(0x9d, []uint32{2})
+	if err != nil || result.Pop != 1 || len(result.Push) != 1 || result.Push[0] != 5 {
+		t.Fatalf("GetMediaSize result = %+v, %v", result, err)
+	}
+	result, err = runtime.service(0x9e, []uint32{2, 7})
+	if err != nil || result.Pop != 2 || len(result.Push) != 1 || result.Push[0] != 1 {
+		t.Fatalf("SetMediaSize result = %+v, %v", result, err)
+	}
+	if got := readStringMedia(t, runtime, 2); len(got) != 8 || !bytes.Equal(got[:5], []byte("-123\x00")) {
+		t.Fatalf("rounded SetMediaSize destination = %x", got)
+	}
+	before := readStringMedia(t, runtime, 1)
+	result, err = runtime.service(0x9e, []uint32{1, 10})
+	if err != nil || len(result.Push) != 1 || result.Push[0] != 0 {
+		t.Fatalf("read-only SetMediaSize result = %+v, %v", result, err)
+	}
+	if got := readStringMedia(t, runtime, 1); !bytes.Equal(got, before) {
+		t.Fatal("failed SetMediaSize changed read-only media")
+	}
+}
+
+func TestIntegerArrayByteServicesAreLittleEndianAndAtomic(t *testing.T) {
+	runtime := newStringRuntime(t, []gnex.GNEX32Media{
+		{Flags: 0, Data: []byte("WXYZ")},
+		{Flags: 1},
+	})
+	if err := runtime.vm.memory.WriteWord(0, 0, 0x01020304); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime.vm.refs[0] = gnex32SymbolRef{symbol: 0}
+	result, err := runtime.service(0xaa, []uint32{0, 0})
+	if err != nil || result.Pop != 2 || len(result.Push) != 1 || result.Push[0] != 4 {
+		t.Fatalf("GetByte result = %+v, %v", result, err)
+	}
+	runtime.vm.refs[0] = gnex32SymbolRef{symbol: 0}
+	result, err = runtime.service(0xa9, []uint32{0, 1, 0xaa})
+	if err != nil || result.Pop != 3 || len(result.Push) != 0 {
+		t.Fatalf("PutByte result = %+v, %v", result, err)
+	}
+	if got, _ := runtime.vm.memory.ReadWord(0, 0); got != 0x0102aa04 {
+		t.Fatalf("PutByte word = %#x", got)
+	}
+
+	runtime.vm.refs[0] = gnex32SymbolRef{symbol: 0}
+	result, err = runtime.service(0xab, []uint32{0, 0, 0, 4})
+	if err != nil || result.Pop != 4 {
+		t.Fatalf("PutBytes result = %+v, %v", result, err)
+	}
+	if got, _ := runtime.vm.memory.ReadWord(0, 0); got != 0x5a595857 {
+		t.Fatalf("PutBytes word = %#x", got)
+	}
+	runtime.vm.refs[0] = gnex32SymbolRef{symbol: 0}
+	result, err = runtime.service(0xac, []uint32{0, 0, 1, 4})
+	if err != nil || result.Pop != 4 || !bytes.Equal(readStringMedia(t, runtime, 1), []byte("WXYZ")) {
+		t.Fatalf("GetBytes result = %+v, %v, data %q", result, err, readStringMedia(t, runtime, 1))
+	}
+
+	before, _ := runtime.vm.memory.ReadWord(0, 0)
+	runtime.vm.refs[0] = gnex32SymbolRef{symbol: 0}
+	if _, err := runtime.service(0xab, []uint32{0, 2, 0, 4}); err == nil {
+		t.Fatal("out-of-range PutBytes succeeded")
+	}
+	if after, _ := runtime.vm.memory.ReadWord(0, 0); after != before {
+		t.Fatal("failed PutBytes changed symbol memory")
+	}
+}
+
+func TestMakeStrServicesFormatBoundedByteStrings(t *testing.T) {
+	runtime := newStringRuntime(t, []gnex.GNEX32Media{
+		{Flags: 1},
+		{Flags: 0, Data: []byte("D=%3d x=%04x X=%X c=%c %%\x00")},
+		{Flags: 1},
+		{Flags: 0, Data: []byte("[%s]\x00")},
+		{Flags: 0, Data: []byte{0xb0, 0xa1, 0}},
+		{Flags: 0, Data: []byte("bad=%q\x00")},
+	})
+
+	result, err := runtime.service(0xb1, []uint32{0, 1, 10, 0x2a, 0xbeef, 'A'})
+	if err != nil || result.Pop != 6 || len(result.Push) != 0 {
+		t.Fatalf("MakeStr4 result = %+v, %v", result, err)
+	}
+	if got := readStringMedia(t, runtime, 0); !bytes.Equal(got, []byte("D= 10 x=002a X=BEEF c=A %\x00")) {
+		t.Fatalf("MakeStr4 destination = %q", got)
+	}
+	result, err = runtime.service(0xad, []uint32{2, 3, 4})
+	if err != nil || result.Pop != 3 || !bytes.Equal(readStringMedia(t, runtime, 2), []byte{'[', 0xb0, 0xa1, ']', 0}) {
+		t.Fatalf("MakeStrStr result = %+v, %v, data %x", result, err, readStringMedia(t, runtime, 2))
+	}
+
+	before := readStringMedia(t, runtime, 0)
+	if _, err := runtime.service(0xae, []uint32{0, 5, 1}); err == nil {
+		t.Fatal("MakeStr1 accepted unsupported format")
+	}
+	if got := readStringMedia(t, runtime, 0); !bytes.Equal(got, before) {
+		t.Fatal("failed MakeStr changed destination")
+	}
+}

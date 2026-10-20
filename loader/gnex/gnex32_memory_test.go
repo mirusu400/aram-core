@@ -1,7 +1,9 @@
 package gnex
 
 import (
+	"bytes"
 	"encoding/binary"
+	"reflect"
 	"testing"
 )
 
@@ -77,5 +79,44 @@ func TestGNEX32SymbolMemoryRejectsInvalidAccessAndFlags(t *testing.T) {
 	image.Symbols[0].Data = nil
 	if _, err := image.NewSymbolMemory(); err == nil {
 		t.Fatal("accepted truncated initializer")
+	}
+}
+
+func TestGNEX32SymbolMemoryByteRangesAreLittleEndianAndAtomic(t *testing.T) {
+	image := GNEX32Image{Symbols: []GNEX32Symbol{{Flags: 1, Words: 2, Data: []byte{
+		0x04, 0x03, 0x02, 0x01, 0x08, 0x07, 0x06, 0x05,
+	}}}}
+	state, err := image.NewSymbolMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := state.ReadBytes(0, 1, 5)
+	if err != nil || !bytes.Equal(got, []byte{3, 2, 1, 8, 7}) {
+		t.Fatalf("ReadBytes = %x, %v", got, err)
+	}
+	got[0] = 0xff
+	if word, err := state.ReadWord(0, 0); err != nil || word != 0x01020304 {
+		t.Fatalf("detached read changed word to %#x, %v", word, err)
+	}
+	if err := state.WriteBytes(0, 3, []byte{0xaa, 0xbb, 0xcc}); err != nil {
+		t.Fatal(err)
+	}
+	if first, _ := state.ReadWord(0, 0); first != 0xaa020304 {
+		t.Fatalf("first word = %#x", first)
+	}
+	if second, _ := state.ReadWord(0, 1); second != 0x0506ccbb {
+		t.Fatalf("second word = %#x", second)
+	}
+	before := state.Snapshot()
+	if err := state.WriteBytes(0, 7, []byte{1, 2}); err == nil {
+		t.Fatal("out-of-range WriteBytes succeeded")
+	}
+	if !reflect.DeepEqual(state.Snapshot(), before) {
+		t.Fatal("failed WriteBytes changed memory")
+	}
+	for _, test := range [][3]int{{-1, 0, 0}, {0, -1, 1}, {0, 0, -1}, {0, 8, 1}} {
+		if _, err := state.ReadBytes(test[0], test[1], test[2]); err == nil {
+			t.Fatalf("ReadBytes%v succeeded", test)
+		}
 	}
 }
