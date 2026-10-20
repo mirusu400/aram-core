@@ -398,6 +398,51 @@ func (vm *VM) Step() error {
 		}
 		vm.stack[len(vm.stack)-1]--
 		vm.pc += 2
+	case 0x61: // xseti: X-indexed destination from I-indexed source
+		if len(vm.image.Code)-offset < 12 {
+			return fail(ErrTruncated)
+		}
+		destination := int(binary.LittleEndian.Uint16(vm.image.Code[offset+2:]))
+		destinationIndex := int(binary.LittleEndian.Uint16(vm.image.Code[offset+4:]))
+		destinationIndexElement := int(binary.LittleEndian.Uint16(vm.image.Code[offset+6:]))
+		source := int(binary.LittleEndian.Uint16(vm.image.Code[offset+8:]))
+		sourceIndex := int(binary.LittleEndian.Uint16(vm.image.Code[offset+10:]))
+		di, err := vm.memory.ReadWord(destinationIndex, destinationIndexElement)
+		if err != nil {
+			return fail(err)
+		}
+		si, err := vm.memory.ReadWord(sourceIndex, 0)
+		if err != nil {
+			return fail(err)
+		}
+		value, err := vm.memory.ReadWord(source, int(si))
+		if err != nil {
+			return fail(err)
+		}
+		if err := vm.memory.WriteWord(destination, int(di), value); err != nil {
+			return fail(err)
+		}
+		vm.pc += 12
+	case 0x63: // xsetz: X-indexed destination from scalar source
+		if len(vm.image.Code)-offset < 10 {
+			return fail(ErrTruncated)
+		}
+		destination := int(binary.LittleEndian.Uint16(vm.image.Code[offset+2:]))
+		destinationIndex := int(binary.LittleEndian.Uint16(vm.image.Code[offset+4:]))
+		destinationIndexElement := int(binary.LittleEndian.Uint16(vm.image.Code[offset+6:]))
+		source := int(binary.LittleEndian.Uint16(vm.image.Code[offset+8:]))
+		di, err := vm.memory.ReadWord(destinationIndex, destinationIndexElement)
+		if err != nil {
+			return fail(err)
+		}
+		value, err := vm.memory.ReadWord(source, 0)
+		if err != nil {
+			return fail(err)
+		}
+		if err := vm.memory.WriteWord(destination, int(di), value); err != nil {
+			return fail(err)
+		}
+		vm.pc += 10
 	case 0x74: // candidate direct symbol-word copy, destination then source
 		if len(vm.image.Code)-offset < 6 {
 			return fail(ErrTruncated)
@@ -504,6 +549,67 @@ func (vm *VM) Step() error {
 			return fail(err)
 		}
 		vm.pc += 10
+	case 0x67: // isetn: I-indexed destination from constant-indexed source
+		if len(vm.image.Code)-offset < 10 {
+			return fail(ErrTruncated)
+		}
+		destination := int(binary.LittleEndian.Uint16(vm.image.Code[offset+2:]))
+		destinationIndex := int(binary.LittleEndian.Uint16(vm.image.Code[offset+4:]))
+		source := int(binary.LittleEndian.Uint16(vm.image.Code[offset+6:]))
+		sourceElement := int(binary.LittleEndian.Uint16(vm.image.Code[offset+8:]))
+		di, err := vm.memory.ReadWord(destinationIndex, 0)
+		if err != nil {
+			return fail(err)
+		}
+		value, err := vm.memory.ReadWord(source, sourceElement)
+		if err != nil {
+			return fail(err)
+		}
+		if err := vm.memory.WriteWord(destination, int(di), value); err != nil {
+			return fail(err)
+		}
+		vm.pc += 10
+	case 0x6b: // nsetx: constant-indexed destination from X-indexed source
+		if len(vm.image.Code)-offset < 12 {
+			return fail(ErrTruncated)
+		}
+		destination := int(binary.LittleEndian.Uint16(vm.image.Code[offset+2:]))
+		destinationElement := int(binary.LittleEndian.Uint16(vm.image.Code[offset+4:]))
+		source := int(binary.LittleEndian.Uint16(vm.image.Code[offset+6:]))
+		sourceIndex := int(binary.LittleEndian.Uint16(vm.image.Code[offset+8:]))
+		sourceIndexElement := int(binary.LittleEndian.Uint16(vm.image.Code[offset+10:]))
+		si, err := vm.memory.ReadWord(sourceIndex, sourceIndexElement)
+		if err != nil {
+			return fail(err)
+		}
+		value, err := vm.memory.ReadWord(source, int(si))
+		if err != nil {
+			return fail(err)
+		}
+		if err := vm.memory.WriteWord(destination, destinationElement, value); err != nil {
+			return fail(err)
+		}
+		vm.pc += 12
+	case 0x6c: // nseti: constant-indexed destination from I-indexed source
+		if len(vm.image.Code)-offset < 10 {
+			return fail(ErrTruncated)
+		}
+		destination := int(binary.LittleEndian.Uint16(vm.image.Code[offset+2:]))
+		destinationElement := int(binary.LittleEndian.Uint16(vm.image.Code[offset+4:]))
+		source := int(binary.LittleEndian.Uint16(vm.image.Code[offset+6:]))
+		sourceIndex := int(binary.LittleEndian.Uint16(vm.image.Code[offset+8:]))
+		si, err := vm.memory.ReadWord(sourceIndex, 0)
+		if err != nil {
+			return fail(err)
+		}
+		value, err := vm.memory.ReadWord(source, int(si))
+		if err != nil {
+			return fail(err)
+		}
+		if err := vm.memory.WriteWord(destination, destinationElement, value); err != nil {
+			return fail(err)
+		}
+		vm.pc += 10
 	case 0x6f: // nsetc: constant-indexed symbol assignment from signed immediate
 		if len(vm.image.Code)-offset < 8 {
 			return fail(ErrTruncated)
@@ -546,6 +652,26 @@ func (vm *VM) Step() error {
 			return fail(err)
 		}
 		vm.pc += 8
+	case 0x71: // zsetx: scalar destination from X-indexed source
+		if len(vm.image.Code)-offset < 10 {
+			return fail(ErrTruncated)
+		}
+		destination := int(binary.LittleEndian.Uint16(vm.image.Code[offset+2:]))
+		source := int(binary.LittleEndian.Uint16(vm.image.Code[offset+4:]))
+		sourceIndex := int(binary.LittleEndian.Uint16(vm.image.Code[offset+6:]))
+		sourceIndexElement := int(binary.LittleEndian.Uint16(vm.image.Code[offset+8:]))
+		si, err := vm.memory.ReadWord(sourceIndex, sourceIndexElement)
+		if err != nil {
+			return fail(err)
+		}
+		value, err := vm.memory.ReadWord(source, int(si))
+		if err != nil {
+			return fail(err)
+		}
+		if err := vm.memory.WriteWord(destination, 0, value); err != nil {
+			return fail(err)
+		}
+		vm.pc += 10
 	case 0x75: // candidate direct signed-immediate assignment to a symbol
 		if len(vm.image.Code)-offset < 6 {
 			return fail(ErrTruncated)
@@ -736,7 +862,26 @@ func (vm *VM) Step() error {
 		}
 		vm.stack = vm.stack[:last]
 		vm.pc += 2
-	case 0x8d: // candidate indexed symbol lvalue
+	case 0x8a: // ldri: lvalue indexed by a scalar symbol
+		if len(vm.image.Code)-offset < 6 {
+			return fail(ErrTruncated)
+		}
+		if len(vm.stack) >= 4096 {
+			return fail(ErrStackOverflow)
+		}
+		symbol := int(binary.LittleEndian.Uint16(vm.image.Code[offset+2:]))
+		indexSymbol := int(binary.LittleEndian.Uint16(vm.image.Code[offset+4:]))
+		element, err := vm.memory.ReadWord(indexSymbol, 0)
+		if err != nil {
+			return fail(err)
+		}
+		if _, err := vm.memory.ReadWord(symbol, int(element)); err != nil {
+			return fail(err)
+		}
+		vm.refs[len(vm.stack)] = gnex32SymbolRef{symbol: symbol, element: int(element)}
+		vm.stack = append(vm.stack, 0)
+		vm.pc += 6
+	case 0x8d: // ldrn: lvalue indexed by a constant element
 		if len(vm.image.Code)-offset < 6 {
 			return fail(ErrTruncated)
 		}

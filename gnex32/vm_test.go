@@ -437,6 +437,105 @@ func TestCandidateIndexedSetConstantReadsIndexSymbol(t *testing.T) {
 	}
 }
 
+func TestCompositeIndexedAssignmentOpcodes(t *testing.T) {
+	tests := []struct {
+		name        string
+		words       []uint16
+		destination int
+		element     int
+		want        uint32
+	}{
+		{
+			name: "xseti", words: []uint16{0x61, 0, 1, 1, 2, 3},
+			destination: 0, element: 2, want: 20,
+		},
+		{
+			name: "xsetz", words: []uint16{0x63, 0, 1, 1, 4},
+			destination: 0, element: 2, want: 77,
+		},
+		{
+			name: "isetn", words: []uint16{0x67, 0, 3, 2, 2},
+			destination: 0, element: 1, want: 30,
+		},
+		{
+			name: "nsetx", words: []uint16{0x6b, 0, 1, 2, 1, 0},
+			destination: 0, element: 1, want: 10,
+		},
+		{
+			name: "nseti", words: []uint16{0x6c, 0, 2, 2, 3},
+			destination: 0, element: 2, want: 20,
+		},
+		{
+			name: "zsetx", words: []uint16{0x71, 4, 2, 1, 1},
+			destination: 4, element: 0, want: 30,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			code := make([]byte, 2*(len(test.words)+1))
+			for index, word := range test.words {
+				putWord(code, index*2, word)
+			}
+			putWord(code, len(test.words)*2, 0x86)
+			vm, err := New(gnex.GNEX32Image{
+				Header: gnex.Header{BodyOffset: 160}, Code: code, Entry: 160,
+				Symbols: []gnex.GNEX32Symbol{
+					gnex32TestWords(0, 0, 0),
+					gnex32TestWords(0, 2),
+					gnex32TestWords(10, 20, 30),
+					gnex32TestWords(1),
+					gnex32TestWords(77),
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := vm.Run(2); err != nil || !vm.Halted() {
+				t.Fatalf("run: err=%v pc=%d", err, vm.PC())
+			}
+			got, err := vm.memory.ReadWord(test.destination, test.element)
+			if err != nil || got != test.want {
+				t.Fatalf("destination[%d] = %d, %v; want %d", test.element, got, err, test.want)
+			}
+		})
+	}
+}
+
+func TestLDRIStoresThroughScalarIndexedLValue(t *testing.T) {
+	code := make([]byte, 14)
+	for offset, word := range map[int]uint16{
+		0: 0x8a, 2: 0, 4: 1,
+		6: 0x05, 8: 99,
+		10: 0x90, 12: 0x86,
+	} {
+		putWord(code, offset, word)
+	}
+	vm, err := New(gnex.GNEX32Image{
+		Header: gnex.Header{BodyOffset: 160}, Code: code, Entry: 160,
+		Symbols: []gnex.GNEX32Symbol{
+			gnex32TestWords(0, 0, 0),
+			gnex32TestWords(2),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.Run(4); err != nil || !vm.Halted() || vm.StackDepth() != 0 {
+		t.Fatalf("run: err=%v pc=%d stack=%#v", err, vm.PC(), vm.stack)
+	}
+	if got, err := vm.memory.ReadWord(0, 2); err != nil || got != 99 {
+		t.Fatalf("indexed lvalue = %d, %v", got, err)
+	}
+}
+
+func gnex32TestWords(values ...uint32) gnex.GNEX32Symbol {
+	data := make([]byte, len(values)*4)
+	for index, value := range values {
+		binary.LittleEndian.PutUint32(data[index*4:], value)
+	}
+	return gnex.GNEX32Symbol{Flags: 1, Words: uint16(len(values)), Data: data}
+}
+
 func TestCandidatePopIndexedConstantStoresStackValue(t *testing.T) {
 	code := make([]byte, 14)
 	for offset, word := range map[int]uint16{

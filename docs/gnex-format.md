@@ -167,6 +167,15 @@ callback roots are rejected. The JSON report also includes the complete sorted
 runtime service registry for machine-readable diffs. Static analysis stops a
 path at an unknown opcode; dynamic coverage remains a separate requirement.
 
+The qualified Virus image also exercises seven previously missing members of
+the assignment/lvalue families. `XSETI` (`0x61`), `XSETZ` (`0x63`), `ISETN`
+(`0x67`), `NSETX` (`0x6b`), `NSETI` (`0x6c`), `ZSETX` (`0x71`), and `LDRI`
+(`0x8a`) now use the operand widths and X/I/N/Z addressing combinations found
+in the image. Focused tests cover every destination/source combination and the
+`LDRI`/`STORE` pair. With those instruction sizes in the CFG decoder, the
+static walk of the exact Virus archive reports no reachable unknown opcode;
+dynamic full-playthrough coverage is still outstanding.
+
 The application loader now runs the same analysis as a mandatory GNEX32
 capability preflight before constructing a qualified runtime. Preflight also
 validates bounded symbol/media allocation and the supported storage flags. A
