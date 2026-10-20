@@ -63,7 +63,9 @@
   - main/start, end, timeout, key, receive, serial receive, SMS receive, result, network, serial event를 이름 있는 공통 `DispatchEvent` 경로로 연결하고 `swData..swData3`를 원자적으로 전달한다.
   - machine stop/reset/close는 `EVENT_END`, 자연 사운드 완료는 `EVENT_RESULT(swData=23)`을 전달한다. 외부 producer가 아직 없는 receive/SMS/network/serial 이벤트도 동일한 공개 dispatch 계약으로 호출할 수 있다.
   - SDK에 공개 명칭이 없는 slot 10은 임의 이벤트로 실행하지 않고 진단 가능한 `Extension` 필드로만 보존한다.
-- [ ] press/release 코드, 키 반복, soft/send/end/숫자키 전체를 실제 GNEX32 계약과 대조한다.
+- [x] press/release 코드, 키 반복, soft/send/end/숫자키 전체를 실제 GNEX32 계약과 대조한다.
+  - `EVENT_KEYPRESS/swData`의 숫자/특수/통화/종료/방향/OK/soft 값 1..22와 `SWAP_KEY_RELEASE=0xff`를 이름 있는 상수와 전수 매핑 테스트로 고정한다.
+  - SDK가 명시한 long/release event 위에 guest-time 500 ms/50 ms 반복 정책을 적용하고, release 중단·60 Hz 경계·반복 시 key-tone 미재생을 테스트한다.
 - [x] pause/resume 중 타이머와 오디오 clock 정지/재개 동작을 명시적으로 테스트한다.
 
 ## 4. 그래픽과 텍스트

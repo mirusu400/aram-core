@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/mirusu400/aram-core/application/internal/guest"
-	"github.com/mirusu400/aram-core/application/internal/gvmhost"
 	machinecore "github.com/mirusu400/aram-core/core"
 	"github.com/mirusu400/aram-core/gnex32"
 	"github.com/mirusu400/aram-core/loader"
@@ -326,10 +325,7 @@ func (m *gnex32Machine) QueueInput(event machinecore.InputEvent) error {
 	if !supported {
 		return ErrGVMInputUnavailable
 	}
-	if !event.Pressed {
-		code = 0xff
-	}
-	if err := m.runtime.KeyPressed(code, m.budget); err != nil {
+	if err := m.runtime.QueueKey(code, event.Pressed, event.At, m.budget); err != nil {
 		m.state = machinecore.StateFaulted
 		return fmt.Errorf("deliver GNEX32 key %q at code offset %d: %w", event.Control, m.runtime.PC(), err)
 	}
@@ -338,28 +334,52 @@ func (m *gnex32Machine) QueueInput(event machinecore.InputEvent) error {
 
 func gnex32GuestCode(key profile.KeyCode) (uint16, bool) {
 	switch key {
+	case profile.Key1:
+		return gnex32.Key1, true
+	case profile.Key2:
+		return gnex32.Key2, true
+	case profile.Key3:
+		return gnex32.Key3, true
+	case profile.Key4:
+		return gnex32.Key4, true
+	case profile.Key5:
+		return gnex32.Key5, true
+	case profile.Key6:
+		return gnex32.Key6, true
+	case profile.Key7:
+		return gnex32.Key7, true
+	case profile.Key8:
+		return gnex32.Key8, true
+	case profile.Key9:
+		return gnex32.Key9, true
+	case profile.Key0:
+		return gnex32.Key0, true
+	case profile.KeyAsterisk:
+		return gnex32.KeyAsterisk, true
+	case profile.KeyPound:
+		return gnex32.KeyPound, true
 	case profile.KeyLeft:
-		return 0x10, true
+		return gnex32.KeyLeft, true
 	case profile.KeyRight:
-		return 0x11, true
+		return gnex32.KeyRight, true
 	case profile.KeyUp:
-		return 0x12, true
+		return gnex32.KeyUp, true
 	case profile.KeyDown:
-		return 0x13, true
+		return gnex32.KeyDown, true
 	case profile.KeySelect:
-		return 0x14, true
+		return gnex32.KeyOK, true
 	case profile.KeyClear:
-		return 0x0d, true
+		return gnex32.KeyClear, true
 	case profile.KeySend:
-		return 0x0e, true
+		return gnex32.KeySend, true
 	case profile.KeyEnd:
-		return 0x0f, true
+		return gnex32.KeyEnd, true
 	case profile.KeySoft1:
-		return 0x15, true
+		return gnex32.KeySoft1, true
 	case profile.KeySoft2:
-		return 0x16, true
+		return gnex32.KeySoft2, true
 	default:
-		return gvmhost.SKTNumericGuestCode(key)
+		return 0, false
 	}
 }
 

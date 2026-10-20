@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"strconv"
 	"strings"
 	"time"
 
@@ -37,6 +38,8 @@ const maxGNEX32ScreenPixels = 4096 * 4096
 // Mobile C reports natural sound completion through EVENT_RESULT with
 // swData=23.
 const ResultSoundComplete uint32 = 23
+
+const gnex32InputControlPrefix = "gnex32-key/"
 
 func (p DeviceProfile) Validate() error {
 	if strings.TrimSpace(p.ID) == "" || len(p.ID) > 255 || strings.IndexByte(p.ID, 0) >= 0 {
@@ -236,7 +239,28 @@ func (r *Runtime) StepFrame(budget uint64) error {
 }
 
 func (r *Runtime) KeyPressed(code uint16, budget uint64) error {
-	if code != 0xff && r.keyToneOn {
+	return r.dispatchKey(code, true, budget)
+}
+
+// QueueKey schedules a physical key transition on the shared guest clock.
+// Held keys use the shared 500 ms/50 ms repeat policy; releases are delivered
+// as the Mobile C SWAP_KEY_RELEASE value rather than repeating the press code.
+func (r *Runtime) QueueKey(code uint16, pressed bool, at time.Duration, budget uint64) error {
+	if r == nil || r.closed {
+		return fmt.Errorf("gnex32: cannot queue input on a closed runtime")
+	}
+	if !ValidPhysicalKey(code) {
+		return fmt.Errorf("gnex32: invalid physical key %#x", code)
+	}
+	control := gnex32InputControlPrefix + fmt.Sprintf("%04x", code)
+	if err := r.services.QueueInput(r.owner, control, pressed, at); err != nil {
+		return err
+	}
+	return r.dispatchReadyEvents(budget)
+}
+
+func (r *Runtime) dispatchKey(code uint16, keyTone bool, budget uint64) error {
+	if keyTone && code != KeyRelease && r.keyToneOn {
 		if err := r.playKeyTone(code); err != nil {
 			return err
 		}
@@ -250,33 +274,61 @@ func (r *Runtime) dispatchReadyEvents(budget uint64) error {
 		if !ok {
 			return nil
 		}
-		if event.Owner != r.owner || event.Kind != shared.EventAudioComplete {
-			return fmt.Errorf("gnex32: unsupported shared event %q", event.Kind)
+		if event.Owner != r.owner {
+			return fmt.Errorf("gnex32: shared event %q belongs to owner %d", event.Kind, event.Owner)
 		}
-		switch event.ServiceID {
-		case r.keyToneClip:
-			if err := r.services.Media.DestroyClip(r.owner, r.keyToneClip, r.services.Events); err != nil {
+		switch event.Kind {
+		case shared.EventInputPress, shared.EventInputRelease, shared.EventInputRepeat:
+			code, err := parseGNEX32InputControl(event.Control)
+			if err != nil {
 				return err
 			}
-			r.keyToneClip = 0
-		case r.soundClip:
-			if err := r.services.Media.DestroyClip(r.owner, r.soundClip, r.services.Events); err != nil {
+			if event.Kind == shared.EventInputRelease {
+				code = KeyRelease
+			}
+			if err := r.dispatchKey(code, event.Kind == shared.EventInputPress, budget); err != nil {
 				return err
 			}
-			r.soundClip = 0
-			if r.EventAvailable(gnex.GNEX32EventResult) {
-				if err := r.DispatchEvent(
-					gnex.GNEX32EventResult,
-					EventData{Data: ResultSoundComplete},
-					budget,
-				); err != nil {
+		case shared.EventAudioComplete:
+			switch event.ServiceID {
+			case r.keyToneClip:
+				if err := r.services.Media.DestroyClip(r.owner, r.keyToneClip, r.services.Events); err != nil {
 					return err
 				}
+				r.keyToneClip = 0
+			case r.soundClip:
+				if err := r.services.Media.DestroyClip(r.owner, r.soundClip, r.services.Events); err != nil {
+					return err
+				}
+				r.soundClip = 0
+				if r.EventAvailable(gnex.GNEX32EventResult) {
+					if err := r.DispatchEvent(
+						gnex.GNEX32EventResult,
+						EventData{Data: ResultSoundComplete},
+						budget,
+					); err != nil {
+						return err
+					}
+				}
+			default:
+				return fmt.Errorf("gnex32: audio completion for unknown clip %d", event.ServiceID)
 			}
 		default:
-			return fmt.Errorf("gnex32: audio completion for unknown clip %d", event.ServiceID)
+			return fmt.Errorf("gnex32: unsupported shared event %q", event.Kind)
 		}
 	}
+}
+
+func parseGNEX32InputControl(control string) (uint16, error) {
+	if len(control) != len(gnex32InputControlPrefix)+4 ||
+		!strings.HasPrefix(control, gnex32InputControlPrefix) {
+		return 0, fmt.Errorf("gnex32: invalid shared input control %q", control)
+	}
+	value, err := strconv.ParseUint(control[len(gnex32InputControlPrefix):], 16, 16)
+	if err != nil {
+		return 0, fmt.Errorf("gnex32: invalid shared input control %q", control)
+	}
+	return uint16(value), nil
 }
 
 func (r *Runtime) Frame() image.Image   { return r.display.Frame() }

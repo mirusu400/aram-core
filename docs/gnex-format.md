@@ -117,6 +117,20 @@ one-shot is consumed and the VM fault is retained, later slots do not run, and
 the shared clock does not advance. GNEX32 now configures that shared clock to
 the same `time.Second/60` quantum instead of the generic 16 ms default.
 
+GNEX32 input uses the Mobile C `EVENT_KEYPRESS` values: `1..9`, `0`, `*`, and
+`#` are codes 1 through 12; clear/send/end are 13 through 15;
+left/right/up/down/OK are 16 through 20; and the two soft keys are 21 and 22.
+Every release delivers the SDK's dedicated `SWAP_KEY_RELEASE` sentinel `0xff`.
+The SinjiSoft GNEX material explicitly advertises long-key and release-key
+events and its event example filters `SWAP_KEY_RELEASE` before switching on the
+press value. It does not prescribe a handset repeat cadence, so the host uses a
+deterministic guest-time policy: first repeat after 500 ms, then every 50 ms,
+rounded to the first 60 Hz frame. A physical press alone starts a key tone;
+synthetic repeats do not. Release cancels the repeat deadline, and pausing also
+freezes it because input and media share the same guest clock. Exhaustive map
+tests cover numeric, navigation, clear, send, end, and soft keys, while rejecting
+host controls which Mobile C does not define for this profile.
+
 `FlushPartial(x1, y1, x2, y2)` now follows the SDK's inclusive LCD rectangle:
 only the intersecting working-buffer pixels replace the latest presented frame,
 while pixels outside the rectangle retain their previous presentation. A first
