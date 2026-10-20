@@ -126,6 +126,63 @@ func TestPublishedAudioNewPCMConveysPendingGeneration(t *testing.T) {
 	}
 }
 
+func TestDrainAudioExposesEmptyGenerationMarker(t *testing.T) {
+	machine := &Machine{audioGeneration: 1}
+	machine.beginAudioGeneration(time.Second)
+	marker := machine.DrainAudio()
+	if marker.Generation != 2 || len(marker.PCM16) != 0 ||
+		marker.StartGuestNS != int64(time.Second) {
+		t.Fatalf("DrainAudio swallowed the generation marker: %+v", marker)
+	}
+	if err := marker.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if extra := machine.DrainAudio(); extra.Generation != 0 || len(extra.PCM16) != 0 {
+		t.Fatalf("DrainAudio exposed a duplicate generation marker: %+v", extra)
+	}
+}
+
+func TestPublishedAudioRetentionCompactsDiscardedMetadata(t *testing.T) {
+	const (
+		chunks      = 10_000
+		chunkFrames = 441
+	)
+	machine := &Machine{audioGeneration: 1}
+	pcm := make([]int16, chunkFrames)
+	for index := range chunks {
+		machine.publishAudioBuffer(shared.AudioBuffer{
+			SampleRate: 44_100,
+			Channels:   1,
+			PCM16:      pcm,
+		}, time.Duration(index)*10*time.Millisecond)
+	}
+
+	active := len(machine.publishedAudio) - machine.publishedAudioHead
+	if active != 50 || machine.publishedAudioSamples != active*chunkFrames {
+		t.Fatalf(
+			"retained audio = %d chunks, %d samples; want 50 chunks, %d samples",
+			active, machine.publishedAudioSamples, 50*chunkFrames,
+		)
+	}
+	if len(machine.publishedAudio) > active*2 {
+		t.Fatalf(
+			"audio metadata retained %d slots for %d active chunks",
+			len(machine.publishedAudio), active,
+		)
+	}
+	wantDropped := uint64((chunks - active) * chunkFrames)
+	if machine.publishedAudioDropped != wantDropped {
+		t.Fatalf("dropped samples = %d, want %d", machine.publishedAudioDropped, wantDropped)
+	}
+
+	backing := machine.publishedAudio[:cap(machine.publishedAudio)]
+	for index := len(machine.publishedAudio); index < len(backing); index++ {
+		if backing[index].PCM16 != nil {
+			t.Fatalf("discarded backing slot %d retained PCM", index)
+		}
+	}
+}
+
 func presentationTestWave() []byte {
 	samples := make([]int16, 800)
 	for index := range samples {

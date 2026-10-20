@@ -49,15 +49,32 @@ func (m *Machine) DrainPublishedAudio() machinecore.AudioChunk {
 	m.publishedAudio[m.publishedAudioHead] = machinecore.AudioChunk{}
 	m.publishedAudioHead++
 	m.publishedAudioSamples -= len(chunk.PCM16)
-	if m.publishedAudioHead == len(m.publishedAudio) {
+	m.compactPublishedAudioLocked()
+	return chunk
+}
+
+// compactPublishedAudioLocked removes the consumed prefix once it is large
+// enough to matter. Retention can advance publishedAudioHead even when the host
+// never drains, so compaction must be shared by both the drain and publish
+// paths. Clearing the vacated tail is required as well: reslicing alone would
+// leave duplicate PCM slice references alive in the backing array.
+func (m *Machine) compactPublishedAudioLocked() {
+	if m.publishedAudioHead == 0 {
+		return
+	}
+	if m.publishedAudioHead >= len(m.publishedAudio) {
+		clear(m.publishedAudio)
 		m.publishedAudio = m.publishedAudio[:0]
 		m.publishedAudioHead = 0
-	} else if m.publishedAudioHead >= 32 && m.publishedAudioHead*2 >= len(m.publishedAudio) {
-		copy(m.publishedAudio, m.publishedAudio[m.publishedAudioHead:])
-		m.publishedAudio = m.publishedAudio[:len(m.publishedAudio)-m.publishedAudioHead]
-		m.publishedAudioHead = 0
+		return
 	}
-	return chunk
+	if m.publishedAudioHead < 32 || m.publishedAudioHead*2 < len(m.publishedAudio) {
+		return
+	}
+	active := copy(m.publishedAudio, m.publishedAudio[m.publishedAudioHead:])
+	clear(m.publishedAudio[active:])
+	m.publishedAudio = m.publishedAudio[:active]
+	m.publishedAudioHead = 0
 }
 
 // publishAudioFromMedia is called only by the emulation goroutine after a
@@ -175,6 +192,7 @@ func (m *Machine) retainPublishedAudioLocked(chunk *machinecore.AudioChunk) {
 		m.publishedAudioSamples -= len(dropped.PCM16)
 		m.publishedAudioDropped += uint64(len(dropped.PCM16))
 	}
+	m.compactPublishedAudioLocked()
 }
 
 func (m *Machine) advanceChunkStart(chunk *machinecore.AudioChunk, samples int) {

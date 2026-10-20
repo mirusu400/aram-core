@@ -730,7 +730,7 @@ func (m *Machine) Framebuffer() image.Image {
 }
 
 func (m *Machine) DrainAudio() machinecore.AudioChunk {
-	if published := m.DrainPublishedAudio(); len(published.PCM16) != 0 {
+	if published := m.DrainPublishedAudio(); published.Generation != 0 {
 		return published
 	}
 	m.mu.Lock()
