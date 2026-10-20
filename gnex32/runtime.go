@@ -30,6 +30,7 @@ type DeviceProfile struct {
 	ScreenWidth         int
 	ScreenHeight        int
 	Identity            Identity
+	Platform            string
 	KeyToneEnabled      bool
 	MMIBacklightEnabled bool
 }
@@ -53,6 +54,7 @@ func (p DeviceProfile) Validate() error {
 	}
 	for name, value := range map[string]string{
 		"MIN": p.Identity.MIN, "user ID": p.Identity.UserID,
+		"platform": p.Platform,
 	} {
 		if value == "" || len(value) > 255 || strings.IndexByte(value, 0) >= 0 {
 			return fmt.Errorf("gnex32: invalid profile %s", name)
@@ -602,6 +604,27 @@ func (r *Runtime) service(id uint16, stack []uint32) (ServiceResult, error) {
 			return ServiceResult{}, err
 		}
 		return ServiceResult{Pop: 1, Push: []uint32{0}}, nil
+	case 0x1d8: // GetSysInfo(keyword, info)
+		if last < 1 {
+			return ServiceResult{}, ErrStackUnderflow
+		}
+		keyword, err := r.readString(int(stack[last-1]))
+		if err != nil {
+			return ServiceResult{}, err
+		}
+		var value string
+		switch string(keyword) {
+		case "PLATFORM":
+			value = r.profile.Platform
+		case "VODEX":
+			value = "Not Support"
+		default:
+			return ServiceResult{Pop: 2, Push: []uint32{0}}, nil
+		}
+		if err := r.vm.media.Replace(int(stack[last]), terminated(value)); err != nil {
+			return ServiceResult{}, err
+		}
+		return ServiceResult{Pop: 2, Push: []uint32{1}}, nil
 	case 4, 5: // GetDate/GetTime(int[4])
 		if last < 0 {
 			return ServiceResult{}, ErrStackUnderflow

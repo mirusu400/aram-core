@@ -31,6 +31,7 @@ var gnex32VirusProfile = gnex32.DeviceProfile{
 	ScreenWidth:         120,
 	ScreenHeight:        149,
 	Identity:            gnex32.Identity{MIN: "0111234567", UserID: "98B4970F"},
+	Platform:            "WIPI 1.2",
 	KeyToneEnabled:      true,
 	MMIBacklightEnabled: true,
 }

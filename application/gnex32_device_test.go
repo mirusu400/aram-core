@@ -75,6 +75,7 @@ func newGNEX32DeviceMachine(t *testing.T, code []byte, media []gnex.GNEX32Media)
 	profile := gnex32.DeviceProfile{
 		ID: "gnex32/test/device", ScreenWidth: 120, ScreenHeight: 149,
 		Identity:       gnex32.Identity{MIN: "0111234567", UserID: "TEST"},
+		Platform:       "WIPI 1.2",
 		KeyToneEnabled: true, MMIBacklightEnabled: true,
 	}
 	runtime, err := gnex32.NewRuntime(image, profile)

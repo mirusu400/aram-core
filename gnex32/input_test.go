@@ -150,6 +150,7 @@ func newGNEX32InputRuntime(t *testing.T, keyTone bool) *Runtime {
 	}, DeviceProfile{
 		ID: "gnex32/input-test", ScreenWidth: 120, ScreenHeight: 149,
 		Identity:       Identity{MIN: "0111234567", UserID: "98B49700F"},
+		Platform:       "WIPI 1.2",
 		KeyToneEnabled: keyTone, MMIBacklightEnabled: true,
 	})
 	if err != nil {

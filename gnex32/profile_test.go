@@ -13,6 +13,7 @@ func gnex32TestDeviceProfile() DeviceProfile {
 		ScreenWidth:         120,
 		ScreenHeight:        149,
 		Identity:            Identity{MIN: "0111234567", UserID: "98B4970F"},
+		Platform:            "WIPI 1.2",
 		KeyToneEnabled:      true,
 		MMIBacklightEnabled: true,
 	}
@@ -24,6 +25,7 @@ func TestDeviceProfileSuppliesScreenIdentityAndHandsetDefaults(t *testing.T) {
 		ScreenWidth:         77,
 		ScreenHeight:        99,
 		Identity:            Identity{MIN: "0100000000", UserID: "CUSTOM"},
+		Platform:            "WIPI 2.0",
 		KeyToneEnabled:      false,
 		MMIBacklightEnabled: false,
 	}
@@ -75,11 +77,12 @@ func TestDeviceProfileSuppliesScreenIdentityAndHandsetDefaults(t *testing.T) {
 func TestDeviceProfileValidation(t *testing.T) {
 	valid := gnex32TestDeviceProfile()
 	for name, mutate := range map[string]func(*DeviceProfile){
-		"empty ID":     func(profile *DeviceProfile) { profile.ID = "" },
-		"zero width":   func(profile *DeviceProfile) { profile.ScreenWidth = 0 },
-		"large height": func(profile *DeviceProfile) { profile.ScreenHeight = 4097 },
-		"empty MIN":    func(profile *DeviceProfile) { profile.Identity.MIN = "" },
-		"NUL user ID":  func(profile *DeviceProfile) { profile.Identity.UserID = "bad\x00id" },
+		"empty ID":       func(profile *DeviceProfile) { profile.ID = "" },
+		"zero width":     func(profile *DeviceProfile) { profile.ScreenWidth = 0 },
+		"large height":   func(profile *DeviceProfile) { profile.ScreenHeight = 4097 },
+		"empty MIN":      func(profile *DeviceProfile) { profile.Identity.MIN = "" },
+		"NUL user ID":    func(profile *DeviceProfile) { profile.Identity.UserID = "bad\x00id" },
+		"empty platform": func(profile *DeviceProfile) { profile.Platform = "" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			profile := valid

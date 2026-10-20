@@ -11,6 +11,7 @@ func TestGNEX32CompatibilityRegistrySelectsHashProfile(t *testing.T) {
 	second := gnex32.DeviceProfile{
 		ID: "gnex32/test/second", ScreenWidth: 96, ScreenHeight: 128,
 		Identity: gnex32.Identity{MIN: "0100000000", UserID: "SECOND"},
+		Platform: "WIPI 1.2",
 	}
 	registry, err := newGNEX32CompatibilityRegistry([]gnex32CompatibilityProfile{
 		{SHA256: GNEX32VirusSHA256, Title: "first", Device: gnex32VirusProfile},
