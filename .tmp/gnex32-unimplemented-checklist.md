@@ -101,6 +101,7 @@
 ## 6. VM opcode 완성도
 
 - [ ] 실제 reference image의 도달 가능한 명령을 정적 CFG와 동적 trace로 전부 수집한다.
+- [x] 실제 Virus 정적 CFG에서 누락된 대입/간접 lvalue 명령 `0x61`, `0x63`, `0x67`, `0x6b`, `0x6c`, `0x71`, `0x8a`의 operand 폭과 X/I/N/Z 주소 조합을 구현한다. (`aram-gnex32-inspect`의 reachable unknown opcode 12건 -> 0건; 동적 full-playthrough는 별도 미완료)
 - [ ] 현재 `default`의 `UnsupportedOpcodeError`에 도달하는 경로를 full-playthrough로 찾고 opcode별로 구현한다.
 - [ ] 아래 candidate opcode 의미를 SDK assembler 또는 독립 참조 실행과 대조한다.
   - [ ] `0x03` indexed symbol-word push
@@ -126,11 +127,13 @@
   - `aram-gnex32-inspect`가 main/header callback 전체의 직접 CFG를 따라 call-site를 수집하고, 정렬된 runtime service registry와 unsupported service/unknown opcode 차이를 JSON으로 출력한다.
 - [ ] 동적 full-playthrough trace로 실제 도달 service ID와 인자 stack을 기록한다.
 - [ ] 현재 `default`의 `UnsupportedServiceError`에 도달하는 service를 ID별로 구현한다.
+  - [x] `0x45 DrawRect(x1, y1, x2, y2)`의 inclusive outline, clip, reversed-bound 동작을 구현한다.
+  - [x] 문자열/byte-array 묶음 `0xa3`, `0xa9..0xac`, `0xae..0xb1`을 실제 Virus 호출 스택과 SDK signature에 맞춰 구현한다. 인접 API `0x9d..0x9e`, `0xa7..0xa8`, `0xad`, `0xb2`도 함께 완성했다. (정적 unsupported service 20건 -> 11건)
 - [ ] service별 정확한 pop/push 수와 반환값/오류 sentinel을 SDK 문서 또는 참조 실행과 대조한다.
 - [x] `GetSysMin/GetSysUserID`의 하드코딩 identity를 device profile로 이동한다.
 - [x] `GetDate/GetTime` 배열 배치와 고정 timezone/weekday 규칙을 검증한다.
 - [x] `GetChar`의 음수 index 및 writable media one-past-end에서 0을 반환하는 현재 호환 동작을 검증한다.
-- [x] `StrInit/StrLen/StrCpy/StrSub/StrCmp`의 NUL, CP949, alias/overlap 및 반환값 규칙을 검증한다.
+- [x] `Get/SetMediaSize`, `StrInit/StrLen/StrCpy/StrSub/StrCat/StrCmp`, 숫자 변환, byte-array 접근 및 `MakeStr` 계열의 NUL, CP949, alias/overlap, 크기 제한과 반환값 규칙을 검증한다.
 - [x] `ArrayToVar`의 operation 0..3 의미와 추가 operation 존재 여부를 확인한다.
 - [ ] `RandSeed/Rand`의 LCG, 범위 상한 배제, 음수 범위를 native 결과와 대조한다.
 - [x] `GetUserNV/PutUserNV`의 실제 최대 word 수, 반환값 및 실패 원자성을 확인한다.
