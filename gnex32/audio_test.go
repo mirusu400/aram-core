@@ -36,7 +36,7 @@ func TestGNEX32SoundPayload(t *testing.T) {
 func TestGNEX32PlaySoundProducesTimedAudio(t *testing.T) {
 	runtime, err := NewRuntime(
 		gnex32AudioTestImage([][]byte{gnex32TestWave()}),
-		Identity{MIN: "0111234567", UserID: "98B4970F"},
+		gnex32TestDeviceProfile(),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -68,7 +68,7 @@ func TestGNEX32PlaySoundProducesTimedAudio(t *testing.T) {
 func TestGNEX32StopSoundPreservesRenderedAudioAndStopsFutureMixing(t *testing.T) {
 	runtime, err := NewRuntime(
 		gnex32AudioTestImage([][]byte{gnex32TestWave()}),
-		Identity{MIN: "0111234567", UserID: "98B4970F"},
+		gnex32TestDeviceProfile(),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -102,7 +102,7 @@ func TestGNEX32InvalidReplacementKeepsCurrentSound(t *testing.T) {
 			gnex32TestWave(),
 			[]byte("NOPE"),
 		}),
-		Identity{MIN: "0111234567", UserID: "98B4970F"},
+		gnex32TestDeviceProfile(),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -165,7 +165,7 @@ func TestGNEX32KeyToneFrequenciesAndWave(t *testing.T) {
 func TestGNEX32SetKeyToneValidatesAtomically(t *testing.T) {
 	runtime, err := NewRuntime(
 		gnex32AudioTestImage(nil),
-		Identity{MIN: "0111234567", UserID: "98B4970F"},
+		gnex32TestDeviceProfile(),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -198,7 +198,7 @@ func TestGNEX32SetKeyToneValidatesAtomically(t *testing.T) {
 func TestGNEX32KeyToneMixesWithSoundAndReplacesOnlyItself(t *testing.T) {
 	runtime, err := NewRuntime(
 		gnex32AudioTestImage([][]byte{gnex32TestWave()}),
-		Identity{MIN: "0111234567", UserID: "98B4970F"},
+		gnex32TestDeviceProfile(),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -258,7 +258,7 @@ func TestGNEX32KeyToneMixesWithSoundAndReplacesOnlyItself(t *testing.T) {
 func TestGNEX32RuntimeCloseReleasesSharedResources(t *testing.T) {
 	runtime, err := NewRuntime(
 		gnex32AudioTestImage([][]byte{gnex32TestWave()}),
-		Identity{MIN: "0111234567", UserID: "98B4970F"},
+		gnex32TestDeviceProfile(),
 	)
 	if err != nil {
 		t.Fatal(err)

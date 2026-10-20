@@ -19,7 +19,7 @@ func newStringRuntime(t *testing.T, media []gnex.GNEX32Media) *Runtime {
 		Entry:   160,
 		Symbols: symbols,
 		Media:   media,
-	}, Identity{MIN: "0111234567", UserID: "11234"})
+	}, gnex32TestDeviceProfile())
 	if err != nil {
 		t.Fatal(err)
 	}

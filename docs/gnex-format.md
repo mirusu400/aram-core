@@ -62,6 +62,13 @@ backlight, mirrors the result into the shared device service for host
 inspection, and restores MMI on machine reset. Invalid modes are rejected
 without changing either the policy or the resolved device state.
 
+GNEX32 handset configuration is represented by validated device-profile data.
+The Virus profile owns its 120x149 LCD geometry, `swWidth`/`swHeight` values,
+MIN and user-ID strings, initial key-tone policy, and MMI backlight result.
+Runtime construction, reset, and state loading all reuse that same profile;
+tests also instantiate a non-Virus geometry and identity to prevent those values
+from becoming implicit VM constants again.
+
 GNEX32 machine save states are now versioned, checksummed, size-bounded, and
 bound to the exact source SHA-256. They preserve VM stacks and lvalue
 references, symbol and mutable media memory, timers and drawing state, all

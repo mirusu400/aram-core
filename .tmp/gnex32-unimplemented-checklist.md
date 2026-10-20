@@ -81,7 +81,7 @@
 - [ ] `DrawRectRound/FillRectRound`, clip, inclusive 좌표 규칙을 참조 화면과 대조한다.
 - [ ] EUC-KR 오류 처리, glyph baseline/advance, solid background 높이와 정렬을 원본 폰트와 대조한다.
 - [ ] font size 0..5 외 값의 native fallback/error 동작을 확인한다.
-- [ ] 하드코딩된 120x149 화면과 `swWidth/swHeight`를 장치 profile로 이동한다.
+- [x] 하드코딩된 120x149 화면과 `swWidth/swHeight`를 장치 profile로 이동한다.
 - [ ] frame timestamp/sequence를 오디오와 같은 guest timeline으로 노출하는 presentation 계약을 추가한다.
 
 ## 5. 오디오 후속 작업
@@ -121,7 +121,7 @@
 - [ ] 동적 full-playthrough trace로 실제 도달 service ID와 인자 stack을 기록한다.
 - [ ] 현재 `default`의 `UnsupportedServiceError`에 도달하는 service를 ID별로 구현한다.
 - [ ] service별 정확한 pop/push 수와 반환값/오류 sentinel을 SDK 문서 또는 참조 실행과 대조한다.
-- [ ] `GetSysMin/GetSysUserID`의 하드코딩 identity를 device profile로 이동한다.
+- [x] `GetSysMin/GetSysUserID`의 하드코딩 identity를 device profile로 이동한다.
 - [x] `GetDate/GetTime` 배열 배치와 고정 timezone/weekday 규칙을 검증한다.
 - [x] `GetChar`의 음수 index 및 writable media one-past-end에서 0을 반환하는 현재 호환 동작을 검증한다.
 - [x] `StrInit/StrLen/StrCpy/StrSub/StrCmp`의 NUL, CP949, alias/overlap 및 반환값 규칙을 검증한다.
@@ -147,7 +147,7 @@
 
 - [ ] `createGNEX32Machine`의 단일 SHA-256 허용을 compatibility/profile 판정으로 일반화한다.
 - [ ] 구조적으로 유효하지만 미지원인 GNEX32 패키지에 정확한 capability 진단을 제공한다.
-- [ ] hard-coded Virus identity/display/profile 값을 profile 데이터로 이동한다.
+- [x] hard-coded Virus identity/display/profile 값을 profile 데이터로 이동한다.
 - [ ] `application/machine_load.go`의 오래된 "GNEX v4 미구현" fallback 문구를 현재 상태에 맞춘다.
 - [ ] 다른 GNEX32 hash를 실행하기 전 opcode/service/media capability preflight를 추가한다.
 - [ ] GVM v1/v2 경로와 GNEX32 경로의 공용 palette, input, persistence, audio 계약을 정리한다.

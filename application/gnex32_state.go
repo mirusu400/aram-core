@@ -99,7 +99,7 @@ func (m *gnex32Machine) LoadState(input io.Reader) error {
 	if err != nil {
 		return err
 	}
-	candidate, err := gnex32.NewRuntime(m.image, gnex32VirusIdentity)
+	candidate, err := gnex32.NewRuntime(m.image, m.profile)
 	if err != nil {
 		return err
 	}

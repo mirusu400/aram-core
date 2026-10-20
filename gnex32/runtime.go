@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"strings"
 	"time"
 
 	"github.com/mirusu400/aram-core/loader/gnex"
@@ -17,6 +18,39 @@ import (
 type Identity struct {
 	MIN    string
 	UserID string
+}
+
+// DeviceProfile contains handset-owned values which are visible to GNEX
+// programs. Keeping them together prevents title compatibility data from being
+// scattered through the VM and presentation implementation.
+type DeviceProfile struct {
+	ID                  string
+	ScreenWidth         int
+	ScreenHeight        int
+	Identity            Identity
+	KeyToneEnabled      bool
+	MMIBacklightEnabled bool
+}
+
+const maxGNEX32ScreenPixels = 4096 * 4096
+
+func (p DeviceProfile) Validate() error {
+	if strings.TrimSpace(p.ID) == "" || len(p.ID) > 255 || strings.IndexByte(p.ID, 0) >= 0 {
+		return fmt.Errorf("gnex32: invalid device profile ID")
+	}
+	if p.ScreenWidth <= 0 || p.ScreenHeight <= 0 ||
+		p.ScreenWidth > 4096 || p.ScreenHeight > 4096 ||
+		p.ScreenWidth*p.ScreenHeight > maxGNEX32ScreenPixels {
+		return fmt.Errorf("gnex32: invalid profile screen %dx%d", p.ScreenWidth, p.ScreenHeight)
+	}
+	for name, value := range map[string]string{
+		"MIN": p.Identity.MIN, "user ID": p.Identity.UserID,
+	} {
+		if value == "" || len(value) > 255 || strings.IndexByte(value, 0) >= 0 {
+			return fmt.Errorf("gnex32: invalid profile %s", name)
+		}
+	}
+	return nil
 }
 
 // UserNVWords is the number of 32-bit integers in GNEX user non-volatile
@@ -39,7 +73,7 @@ const (
 type Runtime struct {
 	vm          *VM
 	display     *Display
-	identity    Identity
+	profile     DeviceProfile
 	services    *shared.Services
 	owner       shared.OwnerID
 	soundClip   shared.ServiceID
@@ -86,9 +120,9 @@ type runtimeTimer struct {
 
 var gnex32FontHeights = [...]int32{6, 8, 12, 24, 16, 32}
 
-func NewRuntime(image gnex.GNEX32Image, identity Identity) (*Runtime, error) {
-	if identity.MIN == "" || identity.UserID == "" {
-		return nil, fmt.Errorf("gnex32: handset identity is incomplete")
+func NewRuntime(image gnex.GNEX32Image, profile DeviceProfile) (*Runtime, error) {
+	if err := profile.Validate(); err != nil {
+		return nil, err
 	}
 	config := shared.DefaultConfig()
 	config.FrameDuration = time.Second / 60
@@ -100,11 +134,11 @@ func NewRuntime(image gnex.GNEX32Image, identity Identity) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	runtime := &Runtime{display: NewDisplay(120, 149), identity: identity,
+	runtime := &Runtime{display: NewDisplay(profile.ScreenWidth, profile.ScreenHeight), profile: profile,
 		services: services, owner: owner, text: services.Text,
-		keyToneOn: true, backlight: BacklightMMI,
+		keyToneOn: profile.KeyToneEnabled, backlight: BacklightMMI,
 		fontColor: monoColor(3), fontIndex: 3, fontBack: monoColor(4), fontBackIdx: 4}
-	if err := services.Device.SetBacklight(true, 0, services.Clock.Monotonic()); err != nil {
+	if err := services.Device.SetBacklight(profile.MMIBacklightEnabled, 0, services.Clock.Monotonic()); err != nil {
 		return nil, err
 	}
 	vm, err := NewWithServices(image, runtime.service)
@@ -115,10 +149,10 @@ func NewRuntime(image gnex.GNEX32Image, identity Identity) (*Runtime, error) {
 	// GNEX reserves symbols 4 and 5 for swWidth and swHeight. The handset
 	// supplies these values before main; zero leaves guest layout arithmetic
 	// outside the visible LCD even when the host framebuffer is sized correctly.
-	if err := vm.memory.WriteWord(4, 0, 120); err != nil {
+	if err := vm.memory.WriteWord(4, 0, uint32(profile.ScreenWidth)); err != nil {
 		return nil, err
 	}
-	if err := vm.memory.WriteWord(5, 0, 149); err != nil {
+	if err := vm.memory.WriteWord(5, 0, uint32(profile.ScreenHeight)); err != nil {
 		return nil, err
 	}
 	vm.copyImage = runtime.copyImage
@@ -373,7 +407,7 @@ func (r *Runtime) service(id uint16, stack []uint32) (ServiceResult, error) {
 		if last < 0 {
 			return ServiceResult{}, ErrStackUnderflow
 		}
-		if err := r.vm.media.Replace(int(stack[last]), terminated(r.identity.MIN)); err != nil {
+		if err := r.vm.media.Replace(int(stack[last]), terminated(r.profile.Identity.MIN)); err != nil {
 			return ServiceResult{}, err
 		}
 		return ServiceResult{Pop: 1}, nil
@@ -381,7 +415,7 @@ func (r *Runtime) service(id uint16, stack []uint32) (ServiceResult, error) {
 		if last < 0 {
 			return ServiceResult{}, ErrStackUnderflow
 		}
-		if err := r.vm.media.Replace(int(stack[last]), terminated(r.identity.UserID)); err != nil {
+		if err := r.vm.media.Replace(int(stack[last]), terminated(r.profile.Identity.UserID)); err != nil {
 			return ServiceResult{}, err
 		}
 		return ServiceResult{Pop: 1, Push: []uint32{0}}, nil
@@ -1009,7 +1043,7 @@ func (r *Runtime) setBacklight(mode BacklightMode) error {
 		return fmt.Errorf("gnex32: backlight mode %d is outside 0..2", mode)
 	}
 	if err := r.services.Device.SetBacklight(
-		mode != BacklightOff,
+		r.backlightEnabled(mode),
 		0,
 		r.services.Clock.Monotonic(),
 	); err != nil {
@@ -1017,6 +1051,10 @@ func (r *Runtime) setBacklight(mode BacklightMode) error {
 	}
 	r.backlight = mode
 	return nil
+}
+
+func (r *Runtime) backlightEnabled(mode BacklightMode) bool {
+	return mode == BacklightOn || mode == BacklightMMI && r.profile.MMIBacklightEnabled
 }
 
 // Version-4 flag-0x200 resources normally contain encoded media directly. Some

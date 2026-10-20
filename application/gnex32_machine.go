@@ -25,13 +25,21 @@ const (
 	GNEX32VirusProfileID = "gnex32/skt/virus"
 )
 
-var gnex32VirusIdentity = gnex32.Identity{MIN: "0111234567", UserID: "98B4970F"}
+var gnex32VirusProfile = gnex32.DeviceProfile{
+	ID:                  GNEX32VirusProfileID,
+	ScreenWidth:         120,
+	ScreenHeight:        149,
+	Identity:            gnex32.Identity{MIN: "0111234567", UserID: "98B4970F"},
+	KeyToneEnabled:      true,
+	MMIBacklightEnabled: true,
+}
 
 type gnex32Machine struct {
 	mu      sync.Mutex
 	state   machinecore.State
 	source  machinecore.Source
 	image   gnex.GNEX32Image
+	profile gnex32.DeviceProfile
 	runtime *gnex32.Runtime
 	budget  uint64
 	closed  bool
@@ -84,7 +92,7 @@ func (f Factory) createGNEX32Machine(ctx context.Context, source machinecore.Sou
 	if err != nil {
 		return nil, true, err
 	}
-	runtime, err := gnex32.NewRuntime(image, gnex32VirusIdentity)
+	runtime, err := gnex32.NewRuntime(image, gnex32VirusProfile)
 	if err != nil {
 		return nil, true, err
 	}
@@ -102,6 +110,7 @@ func (f Factory) createGNEX32Machine(ctx context.Context, source machinecore.Sou
 		state:               machinecore.StateReady,
 		source:              source,
 		image:               image,
+		profile:             gnex32VirusProfile,
 		runtime:             runtime,
 		budget:              budget,
 		audioGeneration:     1,
@@ -186,7 +195,7 @@ func (m *gnex32Machine) Reset(ctx context.Context) error {
 	if m.runtime != nil {
 		userNV = m.runtime.CaptureUserNV()
 	}
-	runtime, err := gnex32.NewRuntime(m.image, gnex32VirusIdentity)
+	runtime, err := gnex32.NewRuntime(m.image, m.profile)
 	if err != nil {
 		m.state = machinecore.StateFaulted
 		return err

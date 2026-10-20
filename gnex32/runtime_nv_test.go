@@ -20,7 +20,7 @@ func newNVRuntime(t *testing.T, words int) *Runtime {
 	runtime, err := NewRuntime(gnex.GNEX32Image{
 		Header: gnex.Header{BodyOffset: 160}, Code: []byte{0x86, 0}, Entry: 160,
 		Symbols: symbols,
-	}, Identity{MIN: "0111234567", UserID: "11234"})
+	}, gnex32TestDeviceProfile())
 	if err != nil {
 		t.Fatal(err)
 	}

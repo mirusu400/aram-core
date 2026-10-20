@@ -6,7 +6,7 @@ func TestGNEX32BacklightModesAndResetDefault(t *testing.T) {
 	newRuntime := func() *Runtime {
 		runtime, err := NewRuntime(
 			gnex32AudioTestImage(nil),
-			Identity{MIN: "0111234567", UserID: "98B4970F"},
+			gnex32TestDeviceProfile(),
 		)
 		if err != nil {
 			t.Fatal(err)

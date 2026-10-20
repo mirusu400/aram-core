@@ -194,7 +194,7 @@ func TestGNEX32MachinePauseSaveLoadBufferedPCMContract(t *testing.T) {
 func newApplicationGNEX32AudioMachine(t *testing.T) *gnex32Machine {
 	t.Helper()
 	image := applicationGNEX32AudioImage()
-	runtime, err := gnex32.NewRuntime(image, gnex32VirusIdentity)
+	runtime, err := gnex32.NewRuntime(image, gnex32VirusProfile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,6 +204,7 @@ func newApplicationGNEX32AudioMachine(t *testing.T) *gnex32Machine {
 	machine := &gnex32Machine{
 		state:               machinecore.StateRunning,
 		image:               image,
+		profile:             gnex32VirusProfile,
 		runtime:             runtime,
 		budget:              1,
 		audioGeneration:     1,

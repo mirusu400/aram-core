@@ -16,7 +16,7 @@ import (
 
 func TestGNEX32RuntimeStateRoundTripPreservesCompleteState(t *testing.T) {
 	image := gnex32StateTestImage()
-	runtime, err := NewRuntime(image, Identity{MIN: "0111234567", UserID: "98B4970F"})
+	runtime, err := NewRuntime(image, gnex32TestDeviceProfile())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestGNEX32RuntimeStateRoundTripPreservesCompleteState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	restored, err := NewRuntime(image, Identity{MIN: "0111234567", UserID: "98B4970F"})
+	restored, err := NewRuntime(image, gnex32TestDeviceProfile())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestGNEX32RuntimeStateRoundTripPreservesCompleteState(t *testing.T) {
 
 func TestGNEX32RuntimeStateRejectsCorruptionAtomically(t *testing.T) {
 	image := gnex32StateTestImage()
-	runtime, err := NewRuntime(image, Identity{MIN: "0111234567", UserID: "98B4970F"})
+	runtime, err := NewRuntime(image, gnex32TestDeviceProfile())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestGNEX32RuntimeStateRejectsCorruptionAtomically(t *testing.T) {
 
 	otherImage := image
 	otherImage.Symbols = append(otherImage.Symbols, gnex.GNEX32Symbol{Flags: 1, Words: 1, Data: make([]byte, 4)})
-	other, err := NewRuntime(otherImage, Identity{MIN: "0111234567", UserID: "98B4970F"})
+	other, err := NewRuntime(otherImage, gnex32TestDeviceProfile())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestGNEX32MemoryRestoreIsAtomic(t *testing.T) {
 
 func TestGNEX32SaveLoadReplayDeterminism(t *testing.T) {
 	image := gnex32StateTestImage()
-	runtime, err := NewRuntime(image, Identity{MIN: "0111234567", UserID: "98B4970F"})
+	runtime, err := NewRuntime(image, gnex32TestDeviceProfile())
 	if err != nil {
 		t.Fatal(err)
 	}

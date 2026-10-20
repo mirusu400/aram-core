@@ -21,7 +21,7 @@ const (
 	gnex32RuntimeStateMagic   = "GNX32RT\x00"
 	gnex32RuntimeStateVersion = uint32(1)
 	// Shared state may itself contain the configured 768 MiB maximum. GNEX
-	// symbol/media memory and the three 120x149 LCD buffers need separate room.
+	// symbol/media memory and the three profile-sized LCD buffers need separate room.
 	MaxRuntimeStateBytes = uint64(850 << 20)
 	maxSavedFaultBytes   = uint32(16 << 10)
 )
@@ -281,7 +281,7 @@ func (r *Runtime) UnmarshalBinary(data []byte) error {
 	if err != nil {
 		return err
 	}
-	candidate, err := NewRuntime(r.vm.image, r.identity)
+	candidate, err := NewRuntime(r.vm.image, r.profile)
 	if err != nil {
 		return err
 	}
@@ -334,7 +334,7 @@ func (r *Runtime) validateRestoredState() error {
 		return fmt.Errorf("gnex32: invalid saved drawing or device state")
 	}
 	enabled, _ := r.services.Device.Backlight()
-	if enabled != (r.backlight != BacklightOff) {
+	if enabled != r.backlightEnabled(r.backlight) {
 		return fmt.Errorf("gnex32: saved backlight policy and device state disagree")
 	}
 	if _, err := r.services.Coordinator.Adapter(r.owner); err != nil {

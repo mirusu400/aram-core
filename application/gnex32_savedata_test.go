@@ -185,13 +185,14 @@ func newApplicationGNEX32PersistenceMachine(t *testing.T) *gnex32Machine {
 		Code:    []byte{0x86, 0},
 		Symbols: symbols,
 	}
-	runtime, err := gnex32.NewRuntime(image, gnex32VirusIdentity)
+	runtime, err := gnex32.NewRuntime(image, gnex32VirusProfile)
 	if err != nil {
 		t.Fatal(err)
 	}
 	machine := &gnex32Machine{
 		state:               machinecore.StateReady,
 		image:               image,
+		profile:             gnex32VirusProfile,
 		runtime:             runtime,
 		budget:              1,
 		audioGeneration:     1,
