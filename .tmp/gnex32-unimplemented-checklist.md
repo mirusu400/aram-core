@@ -51,8 +51,9 @@
 
 ## 3. 시간, 타이머, 이벤트
 
-- [ ] `GetDate(4)` / `GetTime(5)`의 `time.Now()` 사용을 shared deterministic clock과 장치 timezone으로 교체한다.
+- [x] `GetDate(4)` / `GetTime(5)`의 `time.Now()` 사용을 shared deterministic clock과 장치 timezone으로 교체한다.
 - [ ] 날짜/시간이 save/load, replay, 동일 입력 재실행에서 결정적인지 테스트한다.
+  - [x] query가 shared clock을 변경하지 않고 동일 clock state에서 결정적인지 확인했다.
 - [ ] `SetTimer0..2`의 60 Hz 반올림, 최초 발화 시점, repeat catch-up 및 동일 tick 순서를 원본과 대조한다.
 - [ ] 여러 타이머가 같은 frame에 만료될 때의 callback 순서와 오류 원자성을 확정한다.
 - [ ] header callback slot 1과 4..10의 의미를 식별하고 필요한 이벤트를 연결한다.
@@ -117,7 +118,7 @@
 - [ ] 현재 `default`의 `UnsupportedServiceError`에 도달하는 service를 ID별로 구현한다.
 - [ ] service별 정확한 pop/push 수와 반환값/오류 sentinel을 SDK 문서 또는 참조 실행과 대조한다.
 - [ ] `GetSysMin/GetSysUserID`의 하드코딩 identity를 device profile로 이동한다.
-- [ ] `GetDate/GetTime` 배열 배치와 timezone/weekday 규칙을 검증한다.
+- [x] `GetDate/GetTime` 배열 배치와 고정 timezone/weekday 규칙을 검증한다.
 - [ ] `GetChar`의 음수 index 및 writable media one-past-end에서 0을 반환하는 현재 호환 동작을 검증한다.
 - [ ] `StrInit/StrLen/StrCpy/StrSub/StrCmp`의 NUL, CP949, alias/overlap 및 반환값 규칙을 검증한다.
 - [ ] `ArrayToVar`의 operation 0..3 의미와 추가 operation 존재 여부를 확인한다.

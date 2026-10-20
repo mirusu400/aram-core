@@ -2,9 +2,12 @@ package gnex32
 
 import (
 	"errors"
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/mirusu400/aram-core/loader/gnex"
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 func newNVRuntime(t *testing.T, words int) *Runtime {
@@ -82,4 +85,50 @@ func TestPutUserNVRejectsInvalidInputWithoutChangingNV(t *testing.T) {
 	if runtime.nv[0] != 7 {
 		t.Fatalf("invalid PutUserNV changed NV to %d", runtime.nv[0])
 	}
+}
+
+func TestDateAndTimeUseDeterministicHandsetClock(t *testing.T) {
+	runtime := newNVRuntime(t, 4)
+	const epoch = int64(1167609600000) // 2007-01-01T00:00:00Z
+	if err := runtime.services.Clock.Restore(shared.ClockState{
+		WallEpochMillis:    epoch,
+		TimezoneOffsetMins: 9 * 60,
+		Locale:             "ko-KR",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runtime.vm.refs[0] = gnex32SymbolRef{symbol: 0}
+
+	if _, err := runtime.service(4, []uint32{0}); err != nil {
+		t.Fatal(err)
+	}
+	if got := gnex32TestSymbolWords(t, runtime, 0, 4); !reflect.DeepEqual(got, []uint32{2007, 1, 1, 1}) {
+		t.Fatalf("GetDate = %v, want 2007-01-01 Monday", got)
+	}
+	if err := runtime.services.Clock.Advance(1234 * time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	before := runtime.services.Clock.Snapshot()
+	if _, err := runtime.service(5, []uint32{0}); err != nil {
+		t.Fatal(err)
+	}
+	if got := gnex32TestSymbolWords(t, runtime, 0, 4); !reflect.DeepEqual(got, []uint32{9, 0, 1, 234}) {
+		t.Fatalf("GetTime = %v, want 09:00:01.234", got)
+	}
+	if after := runtime.services.Clock.Snapshot(); after != before {
+		t.Fatalf("time query mutated clock: before=%+v after=%+v", before, after)
+	}
+}
+
+func gnex32TestSymbolWords(t *testing.T, runtime *Runtime, symbol, words int) []uint32 {
+	t.Helper()
+	values := make([]uint32, words)
+	for index := range values {
+		value, err := runtime.vm.memory.ReadWord(symbol, index)
+		if err != nil {
+			t.Fatal(err)
+		}
+		values[index] = value
+	}
+	return values
 }

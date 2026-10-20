@@ -314,7 +314,10 @@ func (r *Runtime) service(id uint16, stack []uint32) (ServiceResult, error) {
 		if !ok || ref.element != 0 {
 			return ServiceResult{}, ErrInvalidLValue
 		}
-		now := time.Now()
+		// LocalMillis already applies the fixed handset timezone. Interpret it
+		// in UTC to obtain those local civil fields without consulting the host
+		// clock or its timezone database.
+		now := time.UnixMilli(r.services.Clock.LocalMillis()).UTC()
 		values := []uint32{uint32(now.Year()), uint32(now.Month()), uint32(now.Day()), uint32(now.Weekday())}
 		if id == 5 {
 			values = []uint32{uint32(now.Hour()), uint32(now.Minute()), uint32(now.Second()), uint32(now.Nanosecond() / 1_000_000)}
