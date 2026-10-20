@@ -22,6 +22,17 @@ type GNEX32MediaMemory struct {
 	total     uint64
 }
 
+type GNEX32MediaResourceState struct {
+	Flags uint32
+	Data  []byte
+}
+
+// GNEX32MediaMemoryState includes writable strings and palette edits made to
+// otherwise read-only image resources.
+type GNEX32MediaMemoryState struct {
+	Resources []GNEX32MediaResourceState
+}
+
 func (image GNEX32Image) NewMediaMemory() (*GNEX32MediaMemory, error) {
 	state := &GNEX32MediaMemory{resources: make([]gnex32MediaCell, len(image.Media))}
 	for index, resource := range image.Media {
@@ -144,4 +155,41 @@ func (state *GNEX32MediaMemory) SetPaletteColorRGB(index, paletteIndex int, red,
 	offset := 7 + paletteIndex*3
 	data[offset], data[offset+1], data[offset+2] = red, green, blue
 	return true
+}
+
+func (state *GNEX32MediaMemory) Snapshot() GNEX32MediaMemoryState {
+	result := GNEX32MediaMemoryState{Resources: make([]GNEX32MediaResourceState, len(state.resources))}
+	for index, resource := range state.resources {
+		result.Resources[index] = GNEX32MediaResourceState{
+			Flags: resource.flags,
+			Data:  bytes.Clone(resource.data),
+		}
+	}
+	return result
+}
+
+// Restore validates flags, resource count, and the aggregate byte limit before
+// committing any media mutation.
+func (state *GNEX32MediaMemory) Restore(saved GNEX32MediaMemoryState) error {
+	if state == nil || len(saved.Resources) != len(state.resources) {
+		return fmt.Errorf("gnex: GNEX32 media state shape mismatch")
+	}
+	replacement := make([]gnex32MediaCell, len(saved.Resources))
+	var total uint64
+	for index, resource := range saved.Resources {
+		if resource.Flags != state.resources[index].flags {
+			return fmt.Errorf("gnex: GNEX32 media %d state flags mismatch", index)
+		}
+		total += uint64(len(resource.Data))
+		if total > MaxMemberSize {
+			return fmt.Errorf("gnex: GNEX32 media state exceeds size limit")
+		}
+		replacement[index] = gnex32MediaCell{
+			flags: resource.Flags,
+			data:  bytes.Clone(resource.Data),
+		}
+	}
+	state.resources = replacement
+	state.total = total
+	return nil
 }

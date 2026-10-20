@@ -393,9 +393,6 @@ func (m *gnex32Machine) resetGNEX32AudioLocked(epoch time.Duration) error {
 	return nil
 }
 
-func (*gnex32Machine) SaveState(io.Writer) error { return ErrGVMStateUnavailable }
-func (*gnex32Machine) LoadState(io.Reader) error { return ErrGVMStateUnavailable }
-
 func (m *gnex32Machine) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -35,14 +35,14 @@
 
 ## 2. 머신 수명주기와 상태 보존
 
-- [ ] `gnex32Machine.SaveState`를 구현한다.
-- [ ] `gnex32Machine.LoadState`를 구현한다.
-- [ ] VM 상태를 스냅샷한다: PC, halt/fault 상태, value/call/mark stack, lvalue refs.
-- [ ] symbol RAM과 mutable media RAM을 스냅샷한다.
-- [ ] 런타임 상태를 스냅샷한다: tick, timers, presents, PRNG, paint/font, UserNV.
-- [ ] 디스플레이 상태를 스냅샷한다: working/latest/saved LCD와 clip rectangle.
-- [ ] 재생 중인 sound clip, shared clock, queued PCM 및 오디오 generation을 스냅샷한다.
-- [ ] 저장 상태 포맷에 version, bounds, corruption validation 및 cross-process 테스트를 추가한다.
+- [x] `gnex32Machine.SaveState`를 구현한다.
+- [x] `gnex32Machine.LoadState`를 구현한다.
+- [x] VM 상태를 스냅샷한다: PC, halt/fault 상태, value/call/mark stack, lvalue refs.
+- [x] symbol RAM과 mutable media RAM을 스냅샷한다.
+- [x] 런타임 상태를 스냅샷한다: tick, timers, presents, PRNG, paint/font, UserNV.
+- [x] 디스플레이 상태를 스냅샷한다: working/latest/saved LCD와 clip rectangle.
+- [x] 재생 중인 sound clip, shared clock, queued PCM 및 오디오 generation을 스냅샷한다.
+- [x] 저장 상태 포맷에 version, bounds, corruption validation 및 cross-process 테스트를 추가한다.
 - [x] `PutUserNV/GetUserNV`를 reset 및 앱 재실행 뒤에도 유지되는 영속 저장소에 연결한다.
 - [x] ZIP의 `.dat`, `user.dat`, `UserNV.sys`를 초기/기존 UserNV와 연결한다.
 - [x] `Reset`이 UserNV는 보존하고 휘발성 VM/미디어/화면 상태만 초기화하도록 분리한다.
@@ -125,7 +125,7 @@
 - [ ] `ArrayToVar`의 operation 0..3 의미와 추가 operation 존재 여부를 확인한다.
 - [ ] `RandSeed/Rand`의 LCG, 범위 상한 배제, 음수 범위를 native 결과와 대조한다.
 - [ ] `GetUserNV/PutUserNV`의 실제 최대 word 수, 반환값 및 실패 원자성을 확인한다.
-- [ ] `Gamma/Font/KeyTone/BackLight`가 구현될 때 save/load 상태에도 포함한다.
+- [x] `Gamma/Font/KeyTone/BackLight`가 구현될 때 save/load 상태에도 포함한다.
 
 ## 8. loader, 리소스, 포맷 일반화
 

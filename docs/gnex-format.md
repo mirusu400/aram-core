@@ -62,6 +62,16 @@ backlight, mirrors the result into the shared device service for host
 inspection, and restores MMI on machine reset. Invalid modes are rejected
 without changing either the policy or the resolved device state.
 
+GNEX32 machine save states are now versioned, checksummed, size-bounded, and
+bound to the exact source SHA-256. They preserve VM stacks and lvalue
+references, symbol and mutable media memory, timers and drawing state, all
+three LCD buffers, UserNV, handset controls, the shared clock, and active audio
+clip decoder positions. The shared snapshot carries queued PCM, but loading
+publishes a new frontend audio generation and the timed output path discards
+that untimestamped pre-load queue so it cannot be played twice. Restore is
+validated on an isolated runtime before commit, including in a separate-process
+round-trip test.
+
 ## What a GNEX archive looks like
 
 A paired GNEX title ships as a ZIP containing a basename-matched pair:

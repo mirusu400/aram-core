@@ -18,6 +18,13 @@ type GNEX32SymbolMemory struct {
 	symbols []gnex32SymbolCell
 }
 
+// GNEX32SymbolMemoryState is a detached copy of every runtime symbol. The
+// descriptor layout remains owned by the source image and is validated when a
+// state is restored.
+type GNEX32SymbolMemoryState struct {
+	Symbols [][]byte
+}
+
 // NewSymbolMemory creates fresh per-run 32-bit symbol storage. Raw image
 // initializers remain untouched when a guest symbol changes.
 func (image GNEX32Image) NewSymbolMemory() (*GNEX32SymbolMemory, error) {
@@ -63,5 +70,30 @@ func (state *GNEX32SymbolMemory) WriteWord(symbol, element int, value uint32) er
 		return err
 	}
 	binary.LittleEndian.PutUint32(cell.data[offset:], value)
+	return nil
+}
+
+func (state *GNEX32SymbolMemory) Snapshot() GNEX32SymbolMemoryState {
+	result := GNEX32SymbolMemoryState{Symbols: make([][]byte, len(state.symbols))}
+	for index := range state.symbols {
+		result.Symbols[index] = bytes.Clone(state.symbols[index].data)
+	}
+	return result
+}
+
+// Restore replaces symbol values only after the complete shape has been
+// validated, so malformed state cannot partially mutate a running guest.
+func (state *GNEX32SymbolMemory) Restore(saved GNEX32SymbolMemoryState) error {
+	if state == nil || len(saved.Symbols) != len(state.symbols) {
+		return fmt.Errorf("gnex: GNEX32 symbol state shape mismatch")
+	}
+	replacement := make([]gnex32SymbolCell, len(saved.Symbols))
+	for index, data := range saved.Symbols {
+		if len(data) != len(state.symbols[index].data) {
+			return fmt.Errorf("gnex: GNEX32 symbol %d state length mismatch", index)
+		}
+		replacement[index].data = bytes.Clone(data)
+	}
+	state.symbols = replacement
 	return nil
 }
