@@ -164,6 +164,24 @@ func TestResampleKernelHasUnitGain(t *testing.T) {
 	}
 }
 
+func TestDecodedPCMResampleKernelTracksOutputRate(t *testing.T) {
+	decoded := &decodedPCM{sampleRate: 48_000}
+	first := decoded.kernelFor(44_100)
+	if first == nil || decoded.resampleOutputRate != 44_100 {
+		t.Fatalf("first kernel = %p at %d Hz", first, decoded.resampleOutputRate)
+	}
+	if again := decoded.kernelFor(44_100); again != first {
+		t.Fatal("matching output rate did not reuse the decoded PCM kernel")
+	}
+	second := decoded.kernelFor(22_050)
+	if second == nil || second == first || decoded.resampleOutputRate != 22_050 {
+		t.Fatalf(
+			"replacement kernel = %p at %d Hz; first = %p",
+			second, decoded.resampleOutputRate, first,
+		)
+	}
+}
+
 // TestDownsamplingKernelStopsAliases checks the other direction: a clip stored
 // above the output rate has to be band limited to the output's Nyquist on the
 // way down, or content above it folds back into the audible band.
@@ -308,5 +326,55 @@ func TestWaveVoiceSuppressesSourceImages(t *testing.T) {
 				image, decibels,
 			)
 		}
+	}
+}
+
+func BenchmarkMediaResampledAdvance(b *testing.B) {
+	const (
+		sourceRate = 8_000
+		step       = 10 * time.Millisecond
+	)
+	source := make([]int16, sourceRate)
+	for index := range source {
+		source[index] = int16(index)
+	}
+	limits := DefaultMediaLimits()
+	limits.OutputSampleRate = 44_100
+	limits.OutputChannels = 1
+	media, err := NewMedia(NewRegistry(32), limits)
+	if err != nil {
+		b.Fatal(err)
+	}
+	bus := NewEventBus(16, 32)
+	clip, err := media.CreateClip(3, "audio/wav", 0)
+	if err != nil {
+		b.Fatal(err)
+	}
+	if _, err := media.Append(3, clip, pcmWave(sourceRate, 1, source)); err != nil {
+		b.Fatal(err)
+	}
+	if err := media.Play(3, clip, -1); err != nil {
+		b.Fatal(err)
+	}
+
+	// Warm the reusable mixer buffers and the global reconstruction kernel so
+	// the benchmark measures steady-state frame mixing rather than setup.
+	if err := media.advanceLocked(0, step, bus); err != nil {
+		b.Fatal(err)
+	}
+	media.queuedPCM16 = media.queuedPCM16[:0]
+	media.queuedAudioSpans = media.queuedAudioSpans[:0]
+
+	at := step
+	b.SetBytes(441 * 2)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if err := media.advanceLocked(at, at+step, bus); err != nil {
+			b.Fatal(err)
+		}
+		media.queuedPCM16 = media.queuedPCM16[:0]
+		media.queuedAudioSpans = media.queuedAudioSpans[:0]
+		at += step
 	}
 }

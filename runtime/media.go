@@ -123,11 +123,13 @@ type AudioBuffer struct {
 }
 
 type decodedPCM struct {
-	sampleRate uint32
-	channels   uint8
-	samples    []int16
-	duration   time.Duration
-	smaf       *smafRenderStream
+	sampleRate         uint32
+	channels           uint8
+	samples            []int16
+	duration           time.Duration
+	smaf               *smafRenderStream
+	resampleOutputRate uint32
+	resampleKernel     *resampleKernel
 }
 
 type smafDecodeCacheKey struct {
@@ -1267,10 +1269,7 @@ func (m *Media) clipSampleAt(clip *mediaClip, offset time.Duration) (int16, int1
 	}
 	// A rate the mixer does not share has to be reconstructed rather than
 	// held; see media_resample.go for why the held version sounded wrong.
-	kernel := resampleKernelFor(
-		clip.decoded.sampleRate,
-		m.limits.OutputSampleRate,
-	)
+	kernel := clip.decoded.kernelFor(m.limits.OutputSampleRate)
 	clip.decoded.ensureFrame(frame + uint64(kernel.half))
 	frames := uint64(len(clip.decoded.samples)) / uint64(clip.decoded.channels)
 	if frame >= frames {
@@ -1279,6 +1278,20 @@ func (m *Media) clipSampleAt(clip *mediaClip, offset time.Duration) (int16, int1
 	fraction := float64(cursor%uint64(time.Second)) / float64(time.Second)
 	left, right := clip.decoded.resampleAt(kernel, frame, fraction, frames)
 	return left, right, true
+}
+
+// kernelFor returns the reconstruction kernel for this decoded stream and
+// mixer rate. Generic WAV clips used to enter the global, mutex-protected
+// kernel map for every output sample. A decoded stream is owned by one Media
+// timeline, and its source rate is immutable, so retaining the last output-rate
+// lookup removes that lock from the hot loop while still handling a restored
+// state whose output rate differs.
+func (decoded *decodedPCM) kernelFor(outputRate uint32) *resampleKernel {
+	if decoded.resampleKernel == nil || decoded.resampleOutputRate != outputRate {
+		decoded.resampleKernel = resampleKernelFor(decoded.sampleRate, outputRate)
+		decoded.resampleOutputRate = outputRate
+	}
+	return decoded.resampleKernel
 }
 
 func (decoded *decodedPCM) ensureFrame(frame uint64) {
