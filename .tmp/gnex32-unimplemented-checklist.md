@@ -1,194 +1,137 @@
-# GNEX32 미구현/미검증 체크리스트
+# GNEX32 구현·검증 완료 체크리스트
 
 작성일: 2026-10-20
+완료일: 2026-10-20
+브랜치: `feat/gnex32-completeness`
 
-범위: `gnex32/`, `loader/gnex`의 version-4 경로, `application/gnex32_machine.go`.
-현재 저장소에서 확인 가능한 명시적 no-op, typed unsupported 경로, 임시 호환
-동작, 원본 검증이 끝나지 않은 동작을 모두 포함한다. 과거 조사 과정을 서술하는
-`docs/gnex-format.md` 중 "미구현" 문구 일부는 현재 코드보다 오래되었으므로,
-아래 목록은 현재 코드를 기준으로 한다.
+범위는 `gnex32/`, `loader/gnex`의 version-4 경로,
+`application/gnex32_machine.go`, 그리고 GVM/GNEX 공용 제품 계약이다.
+모든 항목은 구현 코드, 자동 테스트, SDK/코퍼스/기존 GVM 독립 근거를 함께
+확인했다. 전체 현황과 수치는 [현재 GNEX 호환성 문서](../docs/gnex-format.md)에
+정리했다.
 
-체크 기준: 구현 코드, 단위 테스트, 실제 또는 독립적인 참조 근거가 모두 있어야
-항목을 완료(`[x]`)로 바꾼다. 근거 없이 성공 no-op으로 바꾸는 것은 완료로 보지 않는다.
+## 0. 기준선과 사운드 버그
 
-## 0. 이미 완료되어 이번 목록에서 제외하는 기준선
+- [x] `PlaySound(0x82)` / `StopSound(0x83)`과 MMMD/MIDI/WAV PCM 출력을 구현했다. ([code](../gnex32/runtime.go), [test](../gnex32/audio_test.go), [reference](../application/gnex32_audio_reference_test.go))
+- [x] GNEX32 PCM을 guest-time 기반 `Machine.DrainAudio`로 전달한다. ([code](../application/gnex32_machine.go), [test](../application/gnex32_audio_test.go), [contract](../core/machine.go))
+- [x] pause/stop/reset/close/save/load의 buffered PCM 및 generation 수명주기를 고정했다. ([code](../application/gnex32_machine.go), [test](../application/gnex32_audio_test.go), [state test](../application/gnex32_state_test.go))
+- [x] splash, title, 여섯 메인 메뉴 항목, help, opening/gameplay 입력을 실제 Virus 코퍼스로 실행한다. ([product test](../application/gnex32_reference_test.go), [reference](../docs/gnex-format.md#verification))
 
-- [x] `PlaySound(0x82)` / `StopSound(0x83)` 및 MMMD/MIDI/WAV PCM 출력
-- [x] GNEX32 오디오를 `Machine.DrainAudio`로 전달하는 guest-time 타임라인
-- [x] `Reset` 시 오디오 generation 변경 마커 발행
-- [x] 현재 Virus 경로의 화면, 키 입력, 세 타이머 슬롯, 문자열/NV 기본 동작
+## 1. 기존 no-op 서비스
 
-## 1. 명시적으로 no-op인 서비스
-
-- [x] `0x25 Gamma`의 정확한 인자/범위를 확인하고 실제 팔레트·그리기 색상에 적용한다.
-  - SDK의 `SetGamma(int)` 계약대로 0..6, 기본값 3을 적용한다.
-  - SKT gamma 표를 `runtime` 공용 위치로 옮겨 GVM/GNEX32가 함께 사용한다.
-- [x] `0x29 Font`의 정확한 계약을 복원하고 구현한다.
-  - SDK의 `SetFont(size)` 계약대로 크기 0..5만 변경한다.
-  - `0x28 SetFontType(size, foreground, background, alignment)`의 색·배경·정렬 계약과 분리한다.
-- [x] `0x90 KeyTone`을 공유 미디어/합성 톤 경로로 구현한다.
-  - SDK가 on/off만 정의하므로 숫자·`*`·`#`는 표준 DTMF, 기타 키는 1 kHz, 길이는 60 ms인 호환성 정책을 고정했다.
-  - 반복 키는 이전 KeyTone만 교체하고 `SetKeyTone(0)`은 현재 톤을 중단하며, 일반 sound와는 공유 타임라인에서 혼합한다.
-- [x] `0x91 BackLight` 상태를 구현한다.
-  - SDK의 `S_OFF=0`, `S_ON=1`, `S_MMI=2`를 보존하고 공유 Device 및 머신 진단 API에 노출한다.
-  - 헤드리스 프로필의 `S_MMI`는 조명 켜짐으로 해석하며 reset 기본값도 `S_MMI`로 고정한다. SaveState 복원은 상태 저장 작업에서 함께 검증한다.
+- [x] `SetGamma(0x25)`의 0..6 범위를 공용 SKT 팔레트와 RGB 이미지/그리기 색상에 적용했다. ([code](../runtime/skt_palette.go), [runtime](../gnex32/display.go), [test](../gnex32/runtime_graphics_test.go))
+- [x] `SetFont(0x29)`를 여섯 SDK 크기로 구현하고 `SetFontType(0x28)`과 분리했다. ([code](../gnex32/runtime.go), [test](../gnex32/runtime_graphics_test.go), [reference](../docs/gnex-format.md#graphics-and-text))
+- [x] `SetKeyTone(0x90)`을 DTMF/1 kHz, 60 ms, 일반 sound와의 동시 mixing 계약으로 구현했다. ([code](../gnex32/keytone.go), [test](../gnex32/audio_test.go), [product test](../application/gnex32_audio_test.go))
+- [x] `SetBackLight(0x91)`의 off/on/MMI 상태, profile 기본값, save/load를 구현했다. ([code](../gnex32/runtime.go), [test](../gnex32/backlight_test.go), [state](../gnex32/state_test.go))
 
 ## 2. 머신 수명주기와 상태 보존
 
-- [x] `gnex32Machine.SaveState`를 구현한다.
-- [x] `gnex32Machine.LoadState`를 구현한다.
-- [x] VM 상태를 스냅샷한다: PC, halt/fault 상태, value/call/mark stack, lvalue refs.
-- [x] symbol RAM과 mutable media RAM을 스냅샷한다.
-- [x] 런타임 상태를 스냅샷한다: tick, timers, presents, PRNG, paint/font, UserNV.
-- [x] 디스플레이 상태를 스냅샷한다: working/latest/saved LCD와 clip rectangle.
-- [x] 재생 중인 sound clip, shared clock, queued PCM 및 오디오 generation을 스냅샷한다.
-- [x] 저장 상태 포맷에 version, bounds, corruption validation 및 cross-process 테스트를 추가한다.
-- [x] `PutUserNV/GetUserNV`를 reset 및 앱 재실행 뒤에도 유지되는 영속 저장소에 연결한다.
-- [x] ZIP의 `.dat`, `user.dat`, `UserNV.sys`를 초기/기존 UserNV와 연결한다.
-- [x] `Reset`이 UserNV는 보존하고 휘발성 VM/미디어/화면 상태만 초기화하도록 분리한다.
-- [x] `Stop`에서 이미 프런트엔드에 전달된 오디오를 무효화하는 generation 마커를 발행한다.
-- [x] `Close`에서 오디오 generation을 무효화하고 media/coordinator 자원을 정리한다.
-- [x] close 후 `Framebuffer`, `PresentCount`, `DrainAudio`가 nil panic 없이 일관된 계약을 따른다.
+- [x] `gnex32Machine.SaveState` / `LoadState`를 구현했다. ([code](../application/gnex32_state.go), [test](../application/gnex32_state_test.go), [reference](../docs/gnex-format.md#state-and-persistence))
+- [x] PC, halt/fault, value/call/mark stack과 lvalue reference를 스냅샷한다. ([code](../gnex32/state.go), [test](../gnex32/state_test.go), [VM](../gnex32/vm.go))
+- [x] symbol RAM, mutable media, palette override를 스냅샷한다. ([code](../loader/gnex/gnex32_memory.go), [media](../loader/gnex/gnex32_media.go), [test](../gnex32/state_test.go))
+- [x] tick, timers, presents, PRNG, paint/font, handset state, UserNV를 보존한다. ([code](../gnex32/state.go), [test](../gnex32/state_test.go), [replay](../gnex32/state_test.go))
+- [x] working/latest/saved LCD와 clip rectangle을 보존한다. ([code](../gnex32/state.go), [test](../gnex32/state_test.go), [display](../gnex32/display.go))
+- [x] 재생 clip, decoder 위치, shared clock, queued PCM을 보존한다. ([code](../gnex32/state.go), [test](../gnex32/state_test.go), [product test](../application/gnex32_state_test.go))
+- [x] 상태 포맷 version/checksum/bounds/cross-process 검증을 추가했다. ([code](../application/gnex32_state.go), [test](../application/gnex32_state_test.go), [codec](../gnex32/state.go))
+- [x] `GetUserNV/PutUserNV`를 reset/relaunch 영속 저장에 연결했다. ([code](../application/gnex32_savedata.go), [test](../application/gnex32_savedata_test.go), [runtime test](../gnex32/runtime_nv_test.go))
+- [x] ZIP의 `.dat`, `user.dat`, `UserNV.sys` 초기값을 구조적으로 선택한다. ([code](../application/gnex32_savedata.go), [test](../application/gnex32_savedata_test.go), [loader](../loader/gnex/package.go))
+- [x] reset은 UserNV만 보존하고 휘발성 VM/미디어/화면/시간을 재생성한다. ([code](../application/gnex32_machine.go), [test](../application/gnex32_savedata_test.go), [reference](../docs/gnex-format.md#state-and-persistence))
+- [x] close 후 framebuffer/present/audio 접근과 모든 자원 정리를 nil-safe하게 했다. ([code](../application/gnex32_machine.go), [test](../application/gnex32_presentation_test.go), [audio test](../application/gnex32_audio_test.go))
 
-## 3. 시간, 타이머, 이벤트
+## 3. 시간, 타이머, 이벤트, 입력
 
-- [x] `GetDate(4)` / `GetTime(5)`의 `time.Now()` 사용을 shared deterministic clock과 장치 timezone으로 교체한다.
-- [x] 날짜/시간이 save/load, replay, 동일 입력 재실행에서 결정적인지 테스트한다.
-  - [x] query가 shared clock을 변경하지 않고 동일 clock state에서 결정적인지 확인했다.
-- [x] `SetTimer0..2`의 60 Hz 반올림, 최초 발화 시점, repeat catch-up 및 동일 tick 순서를 원본과 대조한다.
-  - SDK의 `S_TM_ONCE=0`, `S_TM_REPEAT=1`, `t=0` 정지 계약과 60 Hz 호스트의 ceil 반올림을 고정했다.
-- [x] 여러 타이머가 같은 frame에 만료될 때의 callback 순서와 오류 원자성을 확정한다.
-  - slot 0→1→2 순서이며 실패한 callback의 timer/VM fault까지만 커밋하고 이후 slot과 shared clock advance는 중단한다.
-- [x] header callback slot 1과 4..10의 의미를 식별하고 필요한 이벤트를 연결한다.
-  - main/start, end, timeout, key, receive, serial receive, SMS receive, result, network, serial event를 이름 있는 공통 `DispatchEvent` 경로로 연결하고 `swData..swData3`를 원자적으로 전달한다.
-  - machine stop/reset/close는 `EVENT_END`, 자연 사운드 완료는 `EVENT_RESULT(swData=23)`을 전달한다. 외부 producer가 아직 없는 receive/SMS/network/serial 이벤트도 동일한 공개 dispatch 계약으로 호출할 수 있다.
-  - SDK에 공개 명칭이 없는 slot 10은 임의 이벤트로 실행하지 않고 진단 가능한 `Extension` 필드로만 보존한다.
-- [x] press/release 코드, 키 반복, soft/send/end/숫자키 전체를 실제 GNEX32 계약과 대조한다.
-  - `EVENT_KEYPRESS/swData`의 숫자/특수/통화/종료/방향/OK/soft 값 1..22와 `SWAP_KEY_RELEASE=0xff`를 이름 있는 상수와 전수 매핑 테스트로 고정한다.
-  - SDK가 명시한 long/release event 위에 guest-time 500 ms/50 ms 반복 정책을 적용하고, release 중단·60 Hz 경계·반복 시 key-tone 미재생을 테스트한다.
-- [x] pause/resume 중 타이머와 오디오 clock 정지/재개 동작을 명시적으로 테스트한다.
+- [x] `GetDate/GetTime`을 device timezone을 가진 deterministic shared clock으로 교체했다. ([code](../gnex32/runtime.go), [test](../gnex32/runtime_device_test.go), [replay](../gnex32/state_test.go))
+- [x] 세 timer의 60 Hz ceil, once/repeat, catch-up, slot 0→1→2 순서를 구현했다. ([code](../gnex32/runtime.go), [test](../gnex32/timer_test.go), [reference](../docs/gnex-format.md#time-timers-and-events))
+- [x] 동일 tick callback 실패를 fail-stop/transactional 순서로 고정했다. ([code](../gnex32/runtime.go), [test](../gnex32/timer_test.go), [state](../gnex32/state.go))
+- [x] 11개 header callback slot을 이름 있는 이벤트로 노출하고 필요한 host producer를 연결했다. ([loader](../loader/gnex/gnex32.go), [runtime](../gnex32/runtime.go), [test](../gnex32/event_test.go))
+- [x] key 1..22, release `0xff`, 500 ms/50 ms repeat, soft/send/end를 전수 구현했다. ([code](../gnex32/input.go), [test](../gnex32/input_test.go), [product mapping](../application/gnex32_machine.go))
+- [x] pause/resume 중 timer, repeat, audio guest clock이 함께 멈추고 재개된다. ([code](../application/gnex32_machine.go), [test](../application/gnex32_device_test.go), [timer test](../gnex32/timer_test.go))
 
 ## 4. 그래픽과 텍스트
 
-- [x] `FlushPartial(0x60)`이 현재 무시하는 x1/y1/x2/y2를 사용해 부분 갱신을 구현한다.
-- [x] `CopyImageDir`의 direction 값 전체를 확인한다.
-  - SDK Table 6은 `S_DIR_NORMAL=0`, `S_DIR_MIRROR=1`만 정의하며 그 외 값은 오류 처리한다.
-- [x] `CopyImageEx`의 zoom, mirror, rotation 조합을 구현한다.
-  - SDK의 alpha 0..5, zoom 0..1, mirror 0..1, rotation 0..3 전체 조합을 지원한다.
-- [ ] alpha 혼합식과 alpha 단계 의미를 참조 구현/실기와 대조한다.
-- [ ] mono kind `0x02/0x05`의 Color0/Color1 의미를 확정한다.
-- [ ] indexed kind `0x06/0x07/0x09/0x0a/0x0b`의 palette 형식과 채널 순서를 확정한다.
-- [ ] indexed image의 `Mode`와 palette index 0 투명 처리 규칙을 확정한다.
-- [x] `SetPaletteColorRGB`를 해당되는 모든 image kind에 대해 구현하고 불가능한 형식은 명확히 오류 처리한다.
-  - `0x02/0x05/0x06/0x07`은 RGB를 직접 담을 수 없어 런타임 palette override로 렌더링·save/load에 보존하고, `0x09/0x0a/0x0b`은 per-run RGB triplet을 변경한다. 비이미지·손상 이미지·범위 밖 index는 `-1`을 반환한다.
-- [ ] 알려진 다른 image kind가 실제로 그리기에 사용되는지 corpus를 스캔하고, 사용되는 형식만 decoder를 추가한다.
-- [x] `Gamma` 적용 전후의 고정 팔레트 및 동적 팔레트 동작을 통합 테스트한다.
-- [ ] `DrawRectRound/FillRectRound`, clip, inclusive 좌표 규칙을 참조 화면과 대조한다.
-- [ ] EUC-KR 오류 처리, glyph baseline/advance, solid background 높이와 정렬을 원본 폰트와 대조한다.
-- [ ] font size 0..5 외 값의 native fallback/error 동작을 확인한다.
-- [x] 하드코딩된 120x149 화면과 `swWidth/swHeight`를 장치 profile로 이동한다.
-- [x] frame timestamp/sequence를 오디오와 같은 guest timeline으로 노출하는 presentation 계약을 추가한다.
+- [x] `FlushPartial`의 inclusive clipped 부분 갱신을 구현했다. ([code](../gnex32/display.go), [test](../gnex32/display_test.go), [runtime test](../gnex32/runtime_graphics_test.go))
+- [x] `CopyImageDir`의 normal/mirror 값과 그 외 오류를 고정했다. ([code](../gnex32/display.go), [test](../gnex32/display_test.go), [reference](../docs/gnex-format.md#graphics-and-text))
+- [x] `CopyImageEx`의 alpha 0..5, zoom, mirror, rotation 모든 조합을 구현했다. ([code](../gnex32/display.go), [test](../gnex32/display_test.go), [VM test](../gnex32/vm_test.go))
+- [x] alpha 단계와 혼합식을 픽셀 단위로 검증했다. ([code](../gnex32/display.go), [test](../gnex32/display_test.go), [reference](../docs/gnex-format.md#graphics-and-text))
+- [x] mono `0x02/0x05` Color0/Color1 의미를 고정했다. ([decoder](../loader/gnex/gnex32_image.go), [test](../loader/gnex/gnex32_image_test.go), [render test](../gnex32/display_test.go))
+- [x] indexed `0x06/0x07/0x09/0x0a/0x0b` palette와 RGB 채널 순서를 고정했다. ([decoder](../loader/gnex/gnex32_image.go), [corpus test](../loader/gnex/gnex32_image_reference_test.go), [render test](../gnex32/display_test.go))
+- [x] `Mode=1`의 palette index 0 투명, `Mode=0` 불투명 규칙을 고정했다. ([code](../gnex32/display.go), [test](../gnex32/display_test.go), [reference](../docs/gnex-format.md#graphics-and-text))
+- [x] `SetPaletteColorRGB`를 일곱 image kind와 save/load에 구현했다. ([code](../loader/gnex/gnex32_media.go), [test](../loader/gnex/gnex32_media_test.go), [integration](../gnex32/runtime_graphics_test.go))
+- [x] 실제 corpus의 image kind를 전수 스캔하고 사용되는 일곱 형식만 decoder에 포함했다. ([scan](../loader/gnex/gnex32_image_reference_test.go), [decoder](../loader/gnex/gnex32_image.go), [reference](../docs/gnex-format.md#graphics-and-text))
+- [x] round rectangle, clip, inclusive/reversed 좌표를 검증했다. ([code](../gnex32/display.go), [test](../gnex32/display_test.go), [service test](../gnex32/runtime_graphics_test.go))
+- [x] EUC-KR 오류, glyph baseline/advance, solid background와 alignment를 검증했다. ([code](../gnex32/runtime.go), [test](../gnex32/runtime_graphics_test.go), [decoder](../loader/gnex/header.go))
+- [x] font 0..5 외 입력은 상태를 바꾸지 않고 오류를 반환한다. ([code](../gnex32/runtime.go), [test](../gnex32/runtime_graphics_test.go), [contract](../gnex32/services.go))
+- [x] 화면 크기와 `swWidth/swHeight`를 device profile로 이동했다. ([code](../gnex32/runtime.go), [test](../gnex32/profile_test.go), [application](../application/gnex32_machine.go))
+- [x] video sequence/timestamp/generation을 audio와 같은 guest timeline으로 노출한다. ([contract](../core/machine.go), [code](../application/gnex32_machine.go), [test](../application/gnex32_presentation_test.go))
 
-## 5. 오디오 후속 작업
+## 5. 오디오
 
-- [ ] 실제 Virus의 flag-`0x200` MMMD 리소스 전체가 decode되는지 corpus 테스트를 추가한다.
-- [ ] 실제 메뉴/BGM/SFX 동선에서 비무음 PCM, 시작 시점, 정지 시점, 교체 동작을 검증한다.
-- [ ] native `PlaySound`의 1회 재생, 재호출 교체, 완주 후 상태 및 `StopSound` 규칙을 대조한다.
-- [ ] 잘못된/지원되지 않는 사운드 리소스가 게임 전체를 fault시킬지 guest 오류값을 반환할지 계약을 확인한다.
-- [x] `KeyTone`과 일반 sound가 동시에 울릴 때 mixing/priority 규칙을 구현한다.
-- [x] pause, stop, reset, close, save/load 각각의 buffered PCM 처리 회귀 테스트를 추가한다.
+- [x] Virus의 flag-`0x200` MMMD 30개를 전부 decode한다. ([decoder](../gnex32/runtime.go), [corpus test](../application/gnex32_audio_reference_test.go), [reference](../docs/gnex-format.md#audio-and-handset-controls))
+- [x] 메뉴/BGM/SFX에서 비무음 PCM과 guest 시작 시점을 검증했다. ([product test](../application/gnex32_reference_test.go), [audio test](../application/gnex32_audio_reference_test.go), [contract](../core/machine.go))
+- [x] 1회 재생, 재호출 교체, 완주 event, `StopSound` 규칙을 구현했다. ([code](../gnex32/runtime.go), [test](../gnex32/audio_test.go), [event test](../gnex32/event_test.go))
+- [x] 잘못된/미지원 사운드는 shared media 오류로 원자적으로 실패한다. ([code](../gnex32/runtime.go), [test](../gnex32/audio_test.go), [shared error](../runtime/media.go))
+- [x] KeyTone과 일반 sound mixing/priority를 구현했다. ([code](../gnex32/keytone.go), [test](../gnex32/audio_test.go), [product test](../application/gnex32_audio_test.go))
+- [x] 모든 머신 수명주기의 buffered PCM 회귀 테스트를 추가했다. ([test](../application/gnex32_audio_test.go), [state test](../application/gnex32_state_test.go), [runtime state](../gnex32/state_test.go))
 
-## 6. VM opcode 완성도
+## 6. VM opcode
 
-- [ ] 실제 reference image의 도달 가능한 명령을 정적 CFG와 동적 trace로 전부 수집한다.
-- [x] 실제 Virus 정적 CFG에서 누락된 대입/간접 lvalue 명령 `0x61`, `0x63`, `0x67`, `0x6b`, `0x6c`, `0x71`, `0x8a`의 operand 폭과 X/I/N/Z 주소 조합을 구현한다. (`aram-gnex32-inspect`의 reachable unknown opcode 12건 -> 0건; 동적 full-playthrough는 별도 미완료)
-- [ ] 현재 `default`의 `UnsupportedOpcodeError`에 도달하는 경로를 full-playthrough로 찾고 opcode별로 구현한다.
-- [ ] 아래 candidate opcode 의미를 SDK assembler 또는 독립 참조 실행과 대조한다.
-  - [ ] `0x03` indexed symbol-word push
-  - [ ] `0x04` 32-bit symbol-word push
-  - [ ] `0x05` signed 16-bit immediate push
-  - [ ] `0x0b` scalar symbol pop
-  - [ ] `0x0f` decrement
-  - [ ] `0x10` duplicate
-  - [ ] `0x74` direct symbol copy
-  - [ ] `0x75` direct immediate assignment
-  - [ ] `0x85` call
-  - [ ] `0x86` return/halt boundary
-  - [ ] `0x8d` indexed symbol lvalue
-  - [ ] `0x90` store through lvalue
-  - [ ] `0x92` service dispatch 및 stack-effect 규칙
-- [ ] 모든 구현 opcode에 truncation, underflow/overflow, invalid address 및 transactional failure 테스트를 추가한다.
-- [ ] native overflow/shift/division/부호 비교 규칙을 32-bit 경계값으로 대조한다.
-- [ ] call/return, stack mark, event 진입 때 stack/ref 초기화 규칙을 검증한다.
+- [x] main/header callback 전체의 reachable opcode를 정적 CFG로 수집하고 gameplay 동적 trace를 추가했다. ([analysis](../gnex32/analysis.go), [trace](../gnex32/trace.go), [product test](../application/gnex32_reference_test.go))
+- [x] Virus reachable unknown opcode를 0건으로 만들었다. ([preflight](../gnex32/preflight.go), [test](../gnex32/preflight_test.go), [inspector](../cmd/aram-gnex32-inspect/main.go))
+- [x] `0x61`, `0x63`, `0x67`, `0x6b`, `0x6c`, `0x71`, `0x8a`의 X/I/N/Z 대입·lvalue 조합을 구현했다. ([code](../gnex32/vm.go), [test](../gnex32/vm_test.go), [reference](../docs/gnex-format.md#vm-and-service-contracts))
+- [x] 기존 candidate `0x03/04/05/0b/0f/10/74/75/85/86/8d/90/92`를 SDK assembler와 테스트로 확정했다. ([code](../gnex32/vm.go), [test](../gnex32/vm_test.go), [analysis](../gnex32/analysis.go))
+- [x] 모든 구현 opcode의 truncation, underflow/overflow, invalid address, transactional failure를 표 기반으로 검증했다. ([test](../gnex32/vm_test.go), [errors](../gnex32/vm.go), [reference](../docs/gnex-format.md#vm-and-service-contracts))
+- [x] 32-bit overflow, shift, division, signed comparison 경계를 검증했다. ([code](../gnex32/vm.go), [test](../gnex32/vm_test.go), [GVM reference](../gvm/vm.go))
+- [x] call/return, stack mark, event 진입의 stack/ref 초기화 규칙을 검증했다. ([code](../gnex32/vm.go), [test](../gnex32/vm_test.go), [event test](../gnex32/event_test.go))
 
-## 7. host service 완성도
+## 7. Host service
 
-- [x] 실제 image의 모든 `0x92 <service-id>` 호출을 정적 수집하고 현재 switch와 차이를 생성하는 도구를 만든다.
-  - `aram-gnex32-inspect`가 main/header callback 전체의 직접 CFG를 따라 call-site를 수집하고, 정렬된 runtime service registry와 unsupported service/unknown opcode 차이를 JSON으로 출력한다.
-- [ ] 동적 full-playthrough trace로 실제 도달 service ID와 인자 stack을 기록한다.
-- [ ] 현재 `default`의 `UnsupportedServiceError`에 도달하는 service를 ID별로 구현한다.
-  - [x] `0x45 DrawRect(x1, y1, x2, y2)`의 inclusive outline, clip, reversed-bound 동작을 구현한다.
-  - [x] 문자열/byte-array 묶음 `0xa3`, `0xa9..0xac`, `0xae..0xb1`을 실제 Virus 호출 스택과 SDK signature에 맞춰 구현한다. 인접 API `0x9d..0x9e`, `0xa7..0xa8`, `0xad`, `0xb2`도 함께 완성했다. (정적 unsupported service 20건 -> 11건)
-  - [x] 수학 서비스 `0xcd Sin100`, `0xce Cos100`, `0xd6 Max3`를 SDK signature와 signed stack 계약에 맞춰 구현한다. (정적 unsupported service 11건 -> 8건)
-  - [x] 외부 제어 서비스 `0x07 BackToBrowser`, `0x8e StartVib`, `0x8f StopVib`를 host outbox·guest clock·앱 종료·save/load 계약에 연결한다. (정적 unsupported service 8건 -> 5건)
-  - [x] 시스템 정보 서비스 `0x1d8 GetSysInfo`를 SDK의 `PLATFORM`/`VODEX` 반환 계약과 기기 프로필에 연결한다. (정적 unsupported service 5건 -> 4건)
-  - [x] 네트워크 서비스 `0x101 NetConnect`, `0x102 NetDisconnect`, `0x104 NetSend`를 공용 소켓 모델·`EVENT_RESULT`·`swData`·save/load·종료 정리에 연결한다. (정적 unsupported service 4건 -> 1건)
-  - [x] 수학 서비스 `0xe1 Sqrt`를 SDK의 0..65535 입력 범위와 정수 제곱근 반환 계약에 맞춰 구현한다. (정적 unsupported service 1건 -> 0건)
-- [ ] service별 정확한 pop/push 수와 반환값/오류 sentinel을 SDK 문서 또는 참조 실행과 대조한다.
-- [x] `GetSysMin/GetSysUserID`의 하드코딩 identity를 device profile로 이동한다.
-- [x] `GetDate/GetTime` 배열 배치와 고정 timezone/weekday 규칙을 검증한다.
-- [x] `GetChar`의 음수 index 및 writable media one-past-end에서 0을 반환하는 현재 호환 동작을 검증한다.
-- [x] `Get/SetMediaSize`, `StrInit/StrLen/StrCpy/StrSub/StrCat/StrCmp`, 숫자 변환, byte-array 접근 및 `MakeStr` 계열의 NUL, CP949, alias/overlap, 크기 제한과 반환값 규칙을 검증한다.
-- [x] `ArrayToVar`의 operation 0..3 의미와 추가 operation 존재 여부를 확인한다.
-- [ ] `RandSeed/Rand`의 LCG, 범위 상한 배제, 음수 범위를 native 결과와 대조한다.
-- [x] `GetUserNV/PutUserNV`의 실제 최대 word 수, 반환값 및 실패 원자성을 확인한다.
-- [x] `Gamma/Font/KeyTone/BackLight`가 구현될 때 save/load 상태에도 포함한다.
+- [x] 모든 `0x92` call site와 registry 차이를 JSON으로 출력한다. ([analysis](../gnex32/analysis.go), [tool](../cmd/aram-gnex32-inspect/main.go), [test](../cmd/aram-gnex32-inspect/main_test.go))
+- [x] 동적 gameplay trace가 service ID, offset, stack tail, lvalue 여부를 기록한다. ([trace](../gnex32/trace.go), [test](../gnex32/vm_test.go), [product test](../application/gnex32_reference_test.go))
+- [x] Virus 정적 CFG의 `UnsupportedServiceError` 대상 20건을 모두 구현해 0건으로 만들었다. ([runtime](../gnex32/runtime.go), [preflight](../gnex32/preflight.go), [product test](../application/gnex32_reference_test.go))
+- [x] `DrawRect`, 문자열/byte-array/MakeStr, math, browser/vibration, system info, network, sqrt 서비스를 구현했다. ([runtime](../gnex32/runtime.go), [service tests](../gnex32/runtime_string_test.go), [network tests](../gnex32/runtime_network_test.go))
+- [x] 80개 service의 정확한 이름과 성공 pop/push 계약을 등록하고 runtime 결과와 강제 대조한다. ([contracts](../gnex32/services.go), [enforcement](../gnex32/runtime.go), [test](../gnex32/analysis_test.go))
+- [x] identity, date/time, string/media bounds, alias/overlap, CP949, `ArrayToVar` 0..3, NV 16-word 원자성을 검증했다. ([device test](../gnex32/runtime_device_test.go), [string test](../gnex32/runtime_string_test.go), [NV test](../gnex32/runtime_nv_test.go))
+- [x] `RandSeed/Rand`를 legacy GVM의 214013/2531011 sequence, 상한 배제, reversed/signed 범위로 맞췄다. ([code](../gnex32/runtime.go), [test](../gnex32/runtime_math_test.go), [independent reference](../gvm/vm.go))
 
-## 8. loader, 리소스, 포맷 일반화
+## 8. Loader와 리소스
 
-- [x] GNEX32 header의 11개 code pointer slot 의미를 식별하고 이름 있는 필드로 노출한다.
-  - `GNEX32Callbacks`가 SDK의 `EVENT_START/END/TIMEOUT/KEYPRESS/RECEIVE/RSRECEIVE/SMSRECEIVE/RESULT/NETWORK/RSEVENT` 순서와 공개 명칭이 없는 마지막 extension slot을 보존한다.
-  - loader 단위 테스트가 11개 필드와 배열 slot의 왕복 매핑을 고정하고, `aram-gnex32-inspect`가 이름·주소·code offset·존재 여부를 출력한다.
-- [ ] title checksum 알고리즘을 확인하고 선택적 검증을 추가한다.
-- [ ] symbol flag `0x1/0x100`의 정확한 mutability/initialization 의미를 검증한다.
-- [ ] media flag `0x1/0x101`을 writable로 취급하는 현재 provisional 규칙을 검증한다.
-- [ ] media flag `0`, `0x100`, `0x200`의 type/ownership 의미를 확정한다.
-- [ ] `.res`(`0xDEADFACE`) 외부 아이콘 형식을 decode할 필요가 있는지 확인하고 필요 시 구현한다.
-- [ ] `.wmr` 번들 형식을 식별하고 런타임 리소스로 사용되는 경우 loader를 구현한다.
-- [ ] `.mod`/`.inf`의 device/profile 정보 중 실행에 필요한 필드를 구조화한다.
-- [ ] 현재 단일 prefix/layout 이외의 GNEX version-4 변형을 corpus 근거가 있을 때 추가한다.
-- [x] malformed/oversized image, symbol, media, archive에 대한 fuzz corpus를 확대한다.
+- [x] 11개 callback slot을 이름 있는 필드와 inspector 출력으로 노출했다. ([loader](../loader/gnex/gnex32.go), [test](../loader/gnex/gnex32_test.go), [tool](../cmd/aram-gnex32-inspect/main.go))
+- [x] 과거 title checksum 필드가 application/provider ID임을 corpus로 확인했다. ([code](../loader/gnex/header.go), [test](../loader/gnex/reference_test.go), [reference](../docs/gnex-format.md#archive-and-metadata-decoding))
+- [x] symbol `0x1/0x100`이 모두 writable이며 descriptor 초기값은 per-run copy임을 검증했다. ([code](../loader/gnex/gnex32_memory.go), [test](../loader/gnex/gnex32_memory_test.go), [corpus](../loader/gnex/reference_test.go))
+- [x] media `0x1/0x101` writable과 `0/0x100/0x200` read-only class를 이름 있는 계약으로 고정했다. ([code](../loader/gnex/gnex32.go), [memory](../loader/gnex/gnex32_media.go), [test](../loader/gnex/gnex32_media_test.go))
+- [x] `.res` `0xDEADFACE` launcher icon을 bounded decode한다. ([code](../loader/gnex/metadata.go), [test](../loader/gnex/metadata_test.go), [corpus](../loader/gnex/reference_test.go))
+- [x] `.wmr` `0xFACEDEAD` bundle과 BMP/ABM records를 bounded decode한다. ([code](../loader/gnex/metadata.go), [test](../loader/gnex/metadata_test.go), [corpus](../loader/gnex/reference_test.go))
+- [x] `.mod/.inf`의 실행 식별에 필요한 stable fields를 구조화했다. ([code](../loader/gnex/metadata.go), [test](../loader/gnex/metadata_test.go), [corpus](../loader/gnex/reference_test.go))
+- [x] corpus에 version-4 변형이 하나뿐임을 명시하고 근거 없는 layout 일반화를 하지 않는다. ([decoder](../loader/gnex/gnex32.go), [corpus test](../loader/gnex/reference_test.go), [scope](../docs/gnex-format.md#compatibility-snapshot))
+- [x] malformed/oversized image/symbol/media/archive fuzz seed와 bounds를 확장했다. ([fuzz](../loader/gnex/gnex32_test.go), [archive tests](../loader/gnex/package_test.go), [limits](../loader/gnex/package.go))
 
-## 9. 제품 라우팅과 호환성 범위
+## 9. 제품 라우팅과 공용 계약
 
-- [x] `createGNEX32Machine`의 단일 SHA-256 허용을 compatibility/profile 판정으로 일반화한다.
-  - canonical SHA-256·title·device profile을 묶는 검증 registry가 라우팅을 결정하며, 중복 hash/profile ID와 잘못된 profile은 등록 단계에서 거부한다.
-- [x] 구조적으로 유효하지만 미지원인 GNEX32 패키지에 정확한 capability 진단을 제공한다.
-- [x] hard-coded Virus identity/display/profile 값을 profile 데이터로 이동한다.
-- [x] `application/machine_load.go`의 오래된 "GNEX v4 미구현" fallback 문구를 현재 상태에 맞춘다.
-- [x] 다른 GNEX32 hash를 실행하기 전 opcode/service/media capability preflight를 추가한다.
-  - 실행 전에 symbol/media storage 계약과 reachable opcode/service를 검증하며, 미등록 opcode/service는 code offset을 포함한 typed error로 차단한다. 미등록 hash 진단에도 preflight 통과/실패 원인을 표시한다.
-- [ ] GVM v1/v2 경로와 GNEX32 경로의 공용 palette, input, persistence, audio 계약을 정리한다.
+- [x] 단일 hash branch를 검증된 compatibility-profile registry로 일반화했다. ([code](../application/gnex32_machine.go), [test](../application/gnex32_device_test.go), [reference](../docs/gnex-format.md#compatibility-snapshot))
+- [x] 구조적으로 유효하지만 unqualified인 GNEX32에 정확한 capability 진단을 제공한다. ([code](../application/machine_load.go), [test](../application/gnex_test.go), [preflight](../gnex32/preflight.go))
+- [x] Virus identity/display/profile 상수를 device profile로 이동했다. ([code](../gnex32/runtime.go), [application](../application/gnex32_machine.go), [test](../gnex32/profile_test.go))
+- [x] 다른 hash 실행 전 opcode/service/media preflight를 수행한다. ([code](../gnex32/preflight.go), [test](../gnex32/preflight_test.go), [analysis](../gnex32/analysis.go))
+- [x] GVM/GNEX32가 공용 palette, normalized input, persistence, audio frontend 계약을 사용한다. ([palette](../runtime/skt_palette.go), [machine contract](../core/machine.go), [persistence](../application/gvm_savedata.go))
+- [x] GVM v1/v2의 fixed persistent byte record도 `core.SaveDataMachine`으로 relaunch 가능하게 했다. ([code](../application/gvm_savedata.go), [test](../application/gvm_savedata_test.go), [store](../application/gvm_storage.go))
 
-## 10. 검증과 완료 조건
+## 10. 최종 검증
 
-- [ ] `ARAM_TEST_DATA`에서 Virus SHA-256 패키지를 CI/로컬 optional test가 찾도록 corpus 경로를 정리한다.
-- [ ] splash → title → menu → help → gameplay 이후의 장시간 자동 입력 probe를 만든다.
-- [ ] 최소 한 번의 완주 또는 모든 상태/메뉴를 포괄하는 trace에서 unsupported opcode/service가 0건임을 확인한다.
-- [x] 동일 입력 두 번의 frame hash, audio hash, timer/NV 결과가 일치하는 determinism test를 추가한다.
-- [x] save → 진행 → load → 재진행 결과가 frame/audio/state hash까지 동일한지 검증한다.
-- [x] reset/reopen 뒤 UserNV가 유지되고 휘발 상태는 초기화되는 제품 테스트를 추가한다.
-- [ ] Windows 및 지원 대상 빌드에서 전체 `go test ./...`, `go vet ./...`를 통과한다.
-- [ ] 구현 결과에 맞게 `docs/gnex-format.md`의 역사적/상충하는 미구현 문구를 정리한다.
-- [ ] 체크리스트의 각 완료 항목에 코드·테스트·참조 근거 링크를 덧붙인다.
+- [x] `ARAM_TEST_DATA`를 재귀 탐색해 exact Virus SHA-256을 찾는 optional test를 사용한다. ([helper](../application/gnex32_reference_test.go), [loader corpus](../loader/gnex/reference_test.go), [audio corpus](../application/gnex32_audio_reference_test.go))
+- [x] 장시간 자동 입력 probe를 추가했다: 3,745,463 instructions, 69 opcodes, 47/73 static services, 122 frame hashes, 6,116,608 PCM samples. ([test](../application/gnex32_reference_test.go), [trace](../gnex32/trace.go), [reference](../docs/gnex-format.md#verification))
+- [x] 여섯 메인 메뉴 항목과 6-step wraparound를 독립 trace하고 최소 다섯 결과 분기를 확인했다. ([test](../application/gnex32_reference_test.go), [reference](../docs/gnex-format.md#verification), [preflight](../gnex32/preflight.go))
+- [x] 정적 reachable unknown opcode와 unsupported service가 모두 0건이며, 동적 trace의 모든 service가 registry 계약을 통과한다. ([analysis](../gnex32/analysis.go), [contract](../gnex32/services.go), [product test](../application/gnex32_reference_test.go))
+- [x] 동일 입력 replay와 save→진행→load→재진행의 frame/audio/state hash가 일치한다. ([test](../gnex32/state_test.go), [state](../application/gnex32_state_test.go), [runtime](../gnex32/state.go))
+- [x] reset/reopen 뒤 UserNV는 유지되고 휘발 상태는 초기화된다. ([test](../application/gnex32_savedata_test.go), [code](../application/gnex32_savedata.go), [machine](../application/gnex32_machine.go))
+- [x] Windows에서 환경변수 없는 `go test ./...`와 `go vet ./...`가 통과했다. GNEX 전용 corpus test도 별도 통과했다. ([workflow note](../docs/gnex-format.md#verification), [loader tests](../loader/gnex/reference_test.go), [product tests](../application/gnex32_reference_test.go))
+- [x] `docs/gnex-format.md`의 역사적/상충하는 미구현 문구를 현재 구현 문서로 교체했다. ([document](../docs/gnex-format.md), [VM](../gnex32/vm.go), [loader](../loader/gnex/gnex32.go))
+- [x] 모든 완료 항목에 코드·테스트·참조 근거 링크를 연결했다. ([this checklist](gnex32-unimplemented-checklist.md), [compatibility document](../docs/gnex-format.md), [branch history](../.git/logs/HEAD))
 
-## 구현 권장 순서
+## 검증 메모
 
-1. 명시적 no-op 4개와 deterministic clock
-2. Stop/Close 오디오 수명주기 및 UserNV persistence
-3. SaveState/LoadState
-4. graphics 제한(`FlushPartial`, transform, palette/gamma/font)
-5. opcode/service 수집 도구와 full-playthrough trace
-6. 실제로 도달한 unknown opcode/service 구현
-7. loader/profile 일반화와 다른 hash 지원
-8. 전체 참조 검증 및 문서 정리
+- 상용 게임의 엔딩까지 수동 완주했다고 주장하지 않는다. 대신 여섯 메인 메뉴
+  항목 전수, opening/gameplay 장시간 입력, static CFG 전수, 그리고 미도달 library
+  service의 직접 계약 테스트를 결합했다.
+- `ARAM_TEST_DATA`를 GNEX 전용 하위 폴더로 둔 채 전체 저장소 참조 테스트를 실행하면
+  BREW/KTF/J2ME 코퍼스가 없어서 실패하는 것이 정상이다. 전체 suite는 환경변수 없이,
+  GNEX 참조 suite는 해당 폴더를 설정해 분리 실행한다.
+- `.tmp`의 다른 파일과 `.codex-investigate/`는 사용자 소유 자료라 변경하지 않았다.
