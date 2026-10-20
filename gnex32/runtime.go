@@ -123,6 +123,35 @@ func (r *Runtime) RestoreUserNV(state [UserNVWords]uint32) {
 	r.nv = state
 }
 
+// EnableExecutionTrace starts a fresh diagnostic opcode and service trace.
+func (r *Runtime) EnableExecutionTrace() {
+	if r != nil && r.vm != nil {
+		r.vm.EnableExecutionTrace()
+	}
+}
+
+// DisableExecutionTrace stops and discards diagnostic execution tracing.
+func (r *Runtime) DisableExecutionTrace() {
+	if r != nil && r.vm != nil {
+		r.vm.DisableExecutionTrace()
+	}
+}
+
+// ResetExecutionTrace clears an enabled diagnostic trace.
+func (r *Runtime) ResetExecutionTrace() {
+	if r != nil && r.vm != nil {
+		r.vm.ResetExecutionTrace()
+	}
+}
+
+// ExecutionTrace returns an independent snapshot of diagnostic VM coverage.
+func (r *Runtime) ExecutionTrace() ExecutionTrace {
+	if r == nil || r.vm == nil {
+		return ExecutionTrace{}
+	}
+	return r.vm.ExecutionTrace()
+}
+
 // TakeCloseRequest consumes a BackToBrowser request after the current guest
 // dispatch returns. The application host uses it to stop the title without
 // running another guest callback.

@@ -9,10 +9,11 @@ import (
 	"testing"
 
 	machinecore "github.com/mirusu400/aram-core/core"
+	"github.com/mirusu400/aram-core/gnex32"
 	"github.com/mirusu400/aram-core/loader"
 )
 
-func virusProductMachine(t *testing.T) machinecore.Machine {
+func readyVirusProductMachine(t *testing.T) machinecore.Machine {
 	t.Helper()
 	path, data := findAuthorizedPackage(t, GNEX32VirusSHA256)
 	machine, err := NewFactory().Create(context.Background(), machinecore.Source{
@@ -24,6 +25,12 @@ func virusProductMachine(t *testing.T) machinecore.Machine {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { machine.Close() })
+	return machine
+}
+
+func virusProductMachine(t *testing.T) machinecore.Machine {
+	t.Helper()
+	machine := readyVirusProductMachine(t)
 	if err := machine.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -153,5 +160,76 @@ func TestGNEX32VirusProductGameplayRespondsToDirection(t *testing.T) {
 	stepVirusFrames(t, right, 200)
 	if brewFrameHash(left.Framebuffer()) == brewFrameHash(right.Framebuffer()) {
 		t.Fatal("opposite gameplay directions produced identical frames")
+	}
+}
+
+func TestGNEX32VirusAutomatedInputExecutionTrace(t *testing.T) {
+	t.Run("menu-help", func(t *testing.T) {
+		machine := tracedVirusProductMachine(t)
+		stepVirusFrames(t, machine, 600)
+		pressVirusKey(t, machine, "select")
+		stepVirusFrames(t, machine, 1200)
+		pressVirusKey(t, machine, "select")
+		stepVirusFrames(t, machine, 600)
+		pressVirusKey(t, machine, "down")
+		stepVirusFrames(t, machine, 30)
+		pressVirusKey(t, machine, "down")
+		stepVirusFrames(t, machine, 30)
+		pressVirusKey(t, machine, "select")
+		stepVirusFrames(t, machine, 600)
+		assertVirusExecutionTrace(t, machine)
+	})
+
+	t.Run("gameplay", func(t *testing.T) {
+		machine := tracedVirusProductMachine(t)
+		advanceVirusToGameplay(t, machine)
+		for _, control := range []string{"left", "right", "up", "down", "select"} {
+			pressVirusKey(t, machine, control)
+			stepVirusFrames(t, machine, 120)
+		}
+		assertVirusExecutionTrace(t, machine)
+	})
+}
+
+func tracedVirusProductMachine(t *testing.T) machinecore.Machine {
+	t.Helper()
+	machine := readyVirusProductMachine(t)
+	tracer, ok := machine.(interface{ EnableGNEX32ExecutionTrace() })
+	if !ok {
+		t.Fatalf("GNEX32 machine %T has no execution trace", machine)
+	}
+	tracer.EnableGNEX32ExecutionTrace()
+	if err := machine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	return machine
+}
+
+func assertVirusExecutionTrace(t *testing.T, machine machinecore.Machine) {
+	t.Helper()
+	tracer, ok := machine.(interface{ GNEX32ExecutionTrace() gnex32.ExecutionTrace })
+	if !ok {
+		t.Fatalf("GNEX32 machine %T has no execution trace snapshot", machine)
+	}
+	trace := tracer.GNEX32ExecutionTrace()
+	if trace.InstructionCount < 1000 || len(trace.Opcodes) < 10 || len(trace.Services) < 10 {
+		t.Fatalf("execution trace is unexpectedly small: instructions=%d opcodes=%d services=%d",
+			trace.InstructionCount, len(trace.Opcodes), len(trace.Services))
+	}
+	for _, service := range trace.Services {
+		name, supported := gnex32.ServiceName(service.ID)
+		if !supported || name == "" || service.Name != name {
+			t.Errorf("reached unsupported service %#x (%q)", service.ID, service.Name)
+		}
+		if service.Count == 0 || len(service.Calls) == 0 ||
+			uint64(len(service.Calls))+service.DroppedSamples != service.Count {
+			t.Errorf("service %#x has inconsistent samples: %+v", service.ID, service)
+		}
+		for _, call := range service.Calls {
+			if call.Offset < 0 || call.StackDepth < len(call.Stack) ||
+				call.StackBase != call.StackDepth-len(call.Stack) {
+				t.Errorf("service %#x has invalid stack sample: %+v", service.ID, call)
+			}
+		}
 	}
 }

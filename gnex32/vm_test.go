@@ -856,6 +856,77 @@ func TestCandidateServiceBoundaryRejectsInvalidStackEffect(t *testing.T) {
 	}
 }
 
+func TestExecutionTraceRecordsOpcodeSitesAndServiceStack(t *testing.T) {
+	code := make([]byte, 14)
+	for offset, word := range map[int]uint16{
+		0: 0x8e, 2: 0, // direct lvalue for symbol 0
+		4: 0x05, 6: 7,
+		8: 0x92, 10: 0x25,
+		12: 0x86,
+	} {
+		putWord(code, offset, word)
+	}
+	image := gnex.GNEX32Image{Header: gnex.Header{BodyOffset: 160}, Code: code, Entry: 160,
+		Symbols: []gnex.GNEX32Symbol{{Flags: 1, Words: 1, Data: make([]byte, 4)}}}
+	vm, err := NewWithServices(image, func(id uint16, stack []uint32) (ServiceResult, error) {
+		if id != 0x25 || len(stack) != 2 {
+			t.Fatalf("service %#x stack = %#v", id, stack)
+		}
+		return ServiceResult{Pop: 2}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm.EnableExecutionTrace()
+	if err := vm.Run(4); err != nil {
+		t.Fatal(err)
+	}
+	trace := vm.ExecutionTrace()
+	if trace.InstructionCount != 4 || len(trace.Opcodes) != 4 {
+		t.Fatalf("instruction trace = %+v", trace)
+	}
+	wantOpcodes := []uint16{0x05, 0x86, 0x8e, 0x92}
+	for index, want := range wantOpcodes {
+		if trace.Opcodes[index].Opcode != want || trace.Opcodes[index].Count != 1 {
+			t.Fatalf("opcode[%d] = %+v, want %#x once", index, trace.Opcodes[index], want)
+		}
+	}
+	if len(trace.Services) != 1 || trace.Services[0].ID != 0x25 ||
+		trace.Services[0].Name != "SetGamma" || trace.Services[0].Count != 1 ||
+		len(trace.Services[0].Calls) != 1 {
+		t.Fatalf("service trace = %+v", trace.Services)
+	}
+	call := trace.Services[0].Calls[0]
+	if call.Offset != 8 || call.StackDepth != 2 || call.StackBase != 0 || len(call.Stack) != 2 {
+		t.Fatalf("call = %+v", call)
+	}
+	if !call.Stack[0].Reference || call.Stack[0].Symbol != 0 || call.Stack[0].Element != 0 ||
+		call.Stack[1].Reference || call.Stack[1].Value != 7 {
+		t.Fatalf("captured stack = %+v", call.Stack)
+	}
+
+	trace.Services[0].Calls[0].Stack[1].Value = 99
+	if got := vm.ExecutionTrace().Services[0].Calls[0].Stack[1].Value; got != 7 {
+		t.Fatalf("trace snapshot aliases collector: %d", got)
+	}
+	vm.ResetExecutionTrace()
+	if reset := vm.ExecutionTrace(); reset.InstructionCount != 0 || len(reset.Services) != 0 {
+		t.Fatalf("reset trace = %+v", reset)
+	}
+}
+
+func TestExecutionTraceBoundsServiceSamplesAndKeepsCounts(t *testing.T) {
+	state := newExecutionTraceState()
+	for index := 0; index < traceCallsPerService+3; index++ {
+		state.recordService(index*4, 0x25, []uint32{uint32(index)}, nil)
+	}
+	trace := state.snapshot()
+	if len(trace.Services) != 1 || trace.Services[0].Count != traceCallsPerService+3 ||
+		len(trace.Services[0].Calls) != traceCallsPerService || trace.Services[0].DroppedSamples != 3 {
+		t.Fatalf("bounded service trace = %+v", trace.Services)
+	}
+}
+
 func TestCandidateVMRejectsCallStackOverflow(t *testing.T) {
 	code := make([]byte, 6)
 	putWord(code, 0, 0x85)

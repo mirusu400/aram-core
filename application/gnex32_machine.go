@@ -439,6 +439,25 @@ func (m *gnex32Machine) GNEX32PresentCount() uint64 {
 	return m.runtime.PresentCount()
 }
 
+// EnableGNEX32ExecutionTrace starts a fresh bounded diagnostic trace.
+func (m *gnex32Machine) EnableGNEX32ExecutionTrace() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.runtime != nil {
+		m.runtime.EnableExecutionTrace()
+	}
+}
+
+// GNEX32ExecutionTrace returns a detached snapshot of dynamic VM coverage.
+func (m *gnex32Machine) GNEX32ExecutionTrace() gnex32.ExecutionTrace {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.runtime == nil {
+		return gnex32.ExecutionTrace{}
+	}
+	return m.runtime.ExecutionTrace()
+}
+
 func (m *gnex32Machine) GNEX32BacklightMode() gnex32.BacklightMode {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -89,6 +89,7 @@ type VM struct {
 	marks        []int
 	stack        []uint32
 	refs         map[int]gnex32SymbolRef // candidate lvalues keyed by value-stack slot
+	trace        *executionTraceState
 	halted       bool
 	fault        error
 }
@@ -192,6 +193,9 @@ func (vm *VM) Step() error {
 		return fail(ErrTruncated)
 	}
 	opcode := binary.LittleEndian.Uint16(vm.image.Code[offset:])
+	if vm.trace != nil {
+		vm.trace.recordInstruction(offset, opcode)
+	}
 	switch opcode {
 	case 0xff: // end: SDK assembler's main-program terminator
 		vm.halted = true
@@ -1045,6 +1049,9 @@ func (vm *VM) Step() error {
 			return fail(ErrTruncated)
 		}
 		id := binary.LittleEndian.Uint16(vm.image.Code[offset+2:])
+		if vm.trace != nil {
+			vm.trace.recordService(offset, id, vm.stack, vm.refs)
+		}
 		if vm.service == nil {
 			vm.fault = &UnsupportedServiceError{ID: id, Offset: offset}
 			return vm.fault
