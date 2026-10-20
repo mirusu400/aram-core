@@ -271,6 +271,8 @@ Current evidence includes:
 - static reachable analysis with zero unknown opcodes and zero unsupported
   services;
 - automated menu/help and gameplay traces with service argument samples; and
+- a main-menu branch probe proving six distinct entries, six-step wraparound,
+  and at least five distinct result-frame branches; and
 - a long gameplay probe covering 3,745,463 instructions, 69 opcodes, 47 of 73
   statically reachable service IDs, 122 distinct frame hashes, and 6,116,608
   drained PCM samples without a VM or service fault.
