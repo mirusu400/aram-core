@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -1147,6 +1148,35 @@ func (r *Runtime) service(id uint16, stack []uint32) (ServiceResult, error) {
 			value = -value
 		}
 		return ServiceResult{Pop: 1, Push: []uint32{uint32(value)}}, nil
+	case 0xcd, 0xce: // Sin100/Cos100(degrees)
+		if last < 0 {
+			return ServiceResult{}, ErrStackUnderflow
+		}
+		// Mobile C defines these functions as the nearest integer to the
+		// trigonometric result scaled by 100. Reduce the angle first so the
+		// result stays stable for the entire signed 32-bit input domain.
+		degrees := int32(stack[last]) % 360
+		radians := float64(degrees) * math.Pi / 180
+		value := math.Sin(radians)
+		if id == 0xce {
+			value = math.Cos(radians)
+		}
+		return ServiceResult{
+			Pop:  1,
+			Push: []uint32{uint32(int32(math.Round(value * 100)))},
+		}, nil
+	case 0xd6: // Max3(int, int, int)
+		if last < 2 {
+			return ServiceResult{}, ErrStackUnderflow
+		}
+		value := int32(stack[last-2])
+		if candidate := int32(stack[last-1]); candidate > value {
+			value = candidate
+		}
+		if candidate := int32(stack[last]); candidate > value {
+			value = candidate
+		}
+		return ServiceResult{Pop: 3, Push: []uint32{uint32(value)}}, nil
 	case 0x25: // SetGamma(gamma)
 		if last < 0 {
 			return ServiceResult{}, ErrStackUnderflow

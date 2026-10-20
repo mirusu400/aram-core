@@ -19,7 +19,8 @@ var gnex32ServiceNames = map[uint16]string{
 	0xa6: "PutChar", 0xa7: "AsciiToInt", 0xa8: "IntToAscii", 0xa9: "PutByte",
 	0xaa: "GetByte", 0xab: "PutBytes", 0xac: "GetBytes", 0xad: "MakeStrStr",
 	0xae: "MakeStr1", 0xaf: "MakeStr2", 0xb0: "MakeStr3", 0xb1: "MakeStr4", 0xb2: "MakeStr5",
-	0xc8: "RandSeed", 0xc9: "Rand", 0xcb: "Abs", 0xd8: "Min", 0xdd: "ArrayToVar",
+	0xc8: "RandSeed", 0xc9: "Rand", 0xcb: "Abs", 0xcd: "Sin100", 0xce: "Cos100",
+	0xd6: "Max3", 0xd8: "Min", 0xdd: "ArrayToVar",
 }
 
 // ServiceName reports the SDK-style name of a service implemented by Runtime.
