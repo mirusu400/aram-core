@@ -38,10 +38,15 @@ type Runtime struct {
 	nv          [UserNVWords]uint32
 	randomState uint32
 	paint       color.RGBA
+	paintSource color.RGBA
+	paintIndex  uint8
+	paintMapped bool
 	fontSize    uint32
 	fontColor   color.RGBA
+	fontIndex   uint8
 	fontAlign   uint32
 	fontBack    color.RGBA
+	fontBackIdx uint8
 	text        *shared.Text
 	closed      bool
 }
@@ -79,7 +84,7 @@ func NewRuntime(image gnex.GNEX32Image, identity Identity) (*Runtime, error) {
 	}
 	runtime := &Runtime{display: NewDisplay(120, 149), identity: identity,
 		services: services, owner: owner, text: services.Text,
-		fontColor: monoColor(3), fontBack: monoColor(4)}
+		fontColor: monoColor(3), fontIndex: 3, fontBack: monoColor(4), fontBackIdx: 4}
 	vm, err := NewWithServices(image, runtime.service)
 	if err != nil {
 		return nil, err
@@ -239,6 +244,28 @@ func (r *Runtime) copyImageEx(x, y int32, index int, alpha, direction uint32) er
 		return err
 	}
 	return r.display.CopyImageEx(x, y, resource, alpha, direction)
+}
+
+func (r *Runtime) refreshGammaColors() error {
+	if r.paintMapped {
+		mapped, err := r.display.paletteColor(uint32(r.paintIndex))
+		if err != nil {
+			return err
+		}
+		r.paint = mapped
+	} else {
+		r.paint = r.display.gammaColor(r.paintSource)
+	}
+	fontColor, err := r.display.paletteColor(uint32(r.fontIndex))
+	if err != nil {
+		return err
+	}
+	fontBack, err := r.display.paletteColor(uint32(r.fontBackIdx))
+	if err != nil {
+		return err
+	}
+	r.fontColor, r.fontBack = fontColor, fontBack
+	return nil
 }
 
 func terminated(value string) []byte { return append([]byte(value), 0) }
@@ -520,36 +547,51 @@ func (r *Runtime) service(id uint16, stack []uint32) (ServiceResult, error) {
 		r.nv = next
 		return ServiceResult{Pop: 2}, nil
 	case 0x3a: // ClearWhite
-		r.display.Clear(color.White)
+		fill, _ := r.display.paletteColor(0)
+		r.display.Clear(fill)
 		return ServiceResult{}, nil
 	case 0x3b: // ClearBlack
-		r.display.Clear(color.Black)
+		fill, _ := r.display.paletteColor(3)
+		r.display.Clear(fill)
 		return ServiceResult{}, nil
 	case 0x38: // ClearRGB(red, green, blue)
 		if last < 2 {
 			return ServiceResult{}, ErrStackUnderflow
 		}
-		r.display.Clear(color.RGBA{R: byte(stack[last-2]), G: byte(stack[last-1]), B: byte(stack[last]), A: 255})
+		r.display.Clear(r.display.gammaColor(color.RGBA{R: byte(stack[last-2]), G: byte(stack[last-1]), B: byte(stack[last]), A: 255}))
 		return ServiceResult{Pop: 3}, nil
 	case 0x26: // SetColor(palette index)
 		if last < 0 {
 			return ServiceResult{}, ErrStackUnderflow
 		}
-		r.paint = monoColor(byte(stack[last]))
+		mapped, err := r.display.paletteColor(stack[last])
+		if err != nil {
+			return ServiceResult{}, err
+		}
+		r.paint, r.paintIndex, r.paintMapped = mapped, uint8(stack[last]), true
 		return ServiceResult{Pop: 1}, nil
 	case 0x27: // SetColorRGB(red, green, blue)
 		if last < 2 {
 			return ServiceResult{}, ErrStackUnderflow
 		}
-		r.paint = color.RGBA{R: byte(stack[last-2]), G: byte(stack[last-1]), B: byte(stack[last]), A: 255}
+		r.paintSource = color.RGBA{R: byte(stack[last-2]), G: byte(stack[last-1]), B: byte(stack[last]), A: 255}
+		r.paint, r.paintMapped = r.display.gammaColor(r.paintSource), false
 		return ServiceResult{Pop: 3}, nil
 	case 0x28: // SetFontType(size, foreground, background, alignment)
 		if last < 3 {
 			return ServiceResult{}, ErrStackUnderflow
 		}
+		fontColor, err := r.display.paletteColor(stack[last-2])
+		if err != nil {
+			return ServiceResult{}, err
+		}
+		fontBack, err := r.display.paletteColor(stack[last-1])
+		if err != nil {
+			return ServiceResult{}, err
+		}
 		r.fontSize = stack[last-3]
-		r.fontColor = monoColor(byte(stack[last-2]))
-		r.fontBack = monoColor(byte(stack[last-1]))
+		r.fontColor, r.fontIndex = fontColor, uint8(stack[last-2])
+		r.fontBack, r.fontBackIdx = fontBack, uint8(stack[last-1])
 		r.fontAlign = stack[last]
 		return ServiceResult{Pop: 4}, nil
 	case 0x2f: // SetPaletteColorRGB(image, index, red, green, blue)
@@ -615,7 +657,11 @@ func (r *Runtime) service(id uint16, stack []uint32) (ServiceResult, error) {
 		if last < 0 {
 			return ServiceResult{}, ErrStackUnderflow
 		}
-		r.display.Clear(monoColor(byte(stack[last])))
+		fill, err := r.display.paletteColor(stack[last])
+		if err != nil {
+			return ServiceResult{}, err
+		}
+		r.display.Clear(fill)
 		return ServiceResult{Pop: 1}, nil
 	case 0x22: // SetClip(x1, y1, x2, y2)
 		if last < 3 {
@@ -672,7 +718,21 @@ func (r *Runtime) service(id uint16, stack []uint32) (ServiceResult, error) {
 			value = -value
 		}
 		return ServiceResult{Pop: 1, Push: []uint32{uint32(value)}}, nil
-	case 0x25, 0x29, 0x90, 0x91: // Gamma, Font, KeyTone, BackLight
+	case 0x25: // SetGamma(gamma)
+		if last < 0 {
+			return ServiceResult{}, ErrStackUnderflow
+		}
+		previous := r.display.Gamma()
+		if err := r.display.SetGamma(stack[last]); err != nil {
+			return ServiceResult{}, err
+		}
+		if err := r.refreshGammaColors(); err != nil {
+			_ = r.display.SetGamma(uint32(previous))
+			_ = r.refreshGammaColors()
+			return ServiceResult{}, err
+		}
+		return ServiceResult{Pop: 1}, nil
+	case 0x29, 0x90, 0x91: // Font, KeyTone, BackLight
 		if last < 0 {
 			return ServiceResult{}, ErrStackUnderflow
 		}

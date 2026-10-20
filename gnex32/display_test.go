@@ -97,3 +97,43 @@ func TestDisplayRoundRectClipsCornersAndFillsInterior(t *testing.T) {
 		}
 	}
 }
+
+func TestDisplayGammaMapsFixedAndDynamicImagePalettes(t *testing.T) {
+	fixed := []byte{0x06, 1, 1, 0, 0, 16, 0, 0, 0, 0}
+	dynamic := []byte{0x09, 1, 1, 0, 0, 0, 1, 0xff, 0x80, 0x40, 0, 0}
+
+	neutral := NewDisplay(2, 1)
+	if err := neutral.CopyImage(0, 0, fixed); err != nil {
+		t.Fatal(err)
+	}
+	if err := neutral.CopyImage(1, 0, dynamic); err != nil {
+		t.Fatal(err)
+	}
+	neutralFrame := neutral.Flush()
+	if got := color.RGBAModel.Convert(neutralFrame.At(0, 0)).(color.RGBA); got == (color.RGBA{A: 255}) {
+		t.Fatal("neutral fixed palette unexpectedly rendered black")
+	}
+	if got := color.RGBAModel.Convert(neutralFrame.At(1, 0)).(color.RGBA); got != (color.RGBA{R: 0xff, G: 0x80, B: 0x40, A: 0xff}) {
+		t.Fatalf("neutral dynamic palette = %#v", got)
+	}
+
+	dark := NewDisplay(2, 1)
+	if err := dark.SetGamma(6); err != nil {
+		t.Fatal(err)
+	}
+	if err := dark.CopyImage(0, 0, fixed); err != nil {
+		t.Fatal(err)
+	}
+	if err := dark.CopyImage(1, 0, dynamic); err != nil {
+		t.Fatal(err)
+	}
+	darkFrame := dark.Flush()
+	for x := 0; x < 2; x++ {
+		if got := color.RGBAModel.Convert(darkFrame.At(x, 0)).(color.RGBA); got != (color.RGBA{A: 255}) {
+			t.Fatalf("dark gamma pixel %d = %#v, want black", x, got)
+		}
+	}
+	if err := dark.SetGamma(7); err == nil || dark.Gamma() != 6 {
+		t.Fatalf("invalid gamma result = %v, current %d", err, dark.Gamma())
+	}
+}

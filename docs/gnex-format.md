@@ -40,6 +40,11 @@ which copies the requested byte range into the display string. The game now
 draws the original Korean text from its SGS resources. This bounded probe does
 not prove a complete playthrough.
 
+The GNEX32 `SetGamma` service accepts the documented levels 0 through 6, with
+level 3 as the neutral default. Palette selectors, RGB image palettes, and the
+current drawing and font colors share the same SKT gamma conversion; invalid
+levels fail without changing the active gamma.
+
 ## What a GNEX archive looks like
 
 A paired GNEX title ships as a ZIP containing a basename-matched pair:

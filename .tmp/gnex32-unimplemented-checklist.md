@@ -20,9 +20,9 @@
 
 ## 1. 명시적으로 no-op인 서비스
 
-- [ ] `0x25 Gamma`의 정확한 인자/범위를 확인하고 실제 팔레트·그리기 색상에 적용한다.
-  - 현재: 인자 하나를 pop하고 아무 상태도 바꾸지 않는다.
-  - 참고: `application/internal/gvmhost`의 SKT gamma 표를 공용 위치로 옮겨 재사용할지 결정한다.
+- [x] `0x25 Gamma`의 정확한 인자/범위를 확인하고 실제 팔레트·그리기 색상에 적용한다.
+  - SDK의 `SetGamma(int)` 계약대로 0..6, 기본값 3을 적용한다.
+  - SKT gamma 표를 `runtime` 공용 위치로 옮겨 GVM/GNEX32가 함께 사용한다.
 - [ ] `0x29 Font`의 정확한 계약을 복원하고 구현한다.
   - 현재: 인자 하나를 pop하는 no-op이다.
   - `0x28 SetFontType(size, foreground, background, alignment)`와 역할이 겹치지 않도록 구분한다.
@@ -73,7 +73,7 @@
 - [ ] indexed image의 `Mode`와 palette index 0 투명 처리 규칙을 확정한다.
 - [ ] `SetPaletteColorRGB`를 해당되는 모든 image kind에 대해 구현하고 불가능한 형식은 명확히 오류 처리한다.
 - [ ] 알려진 다른 image kind가 실제로 그리기에 사용되는지 corpus를 스캔하고, 사용되는 형식만 decoder를 추가한다.
-- [ ] `Gamma` 적용 전후의 고정 팔레트 및 동적 팔레트 동작을 통합 테스트한다.
+- [x] `Gamma` 적용 전후의 고정 팔레트 및 동적 팔레트 동작을 통합 테스트한다.
 - [ ] `DrawRectRound/FillRectRound`, clip, inclusive 좌표 규칙을 참조 화면과 대조한다.
 - [ ] EUC-KR 오류 처리, glyph baseline/advance, solid background 높이와 정렬을 원본 폰트와 대조한다.
 - [ ] font size 0..5 외 값의 native fallback/error 동작을 확인한다.

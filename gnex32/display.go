@@ -7,6 +7,7 @@ import (
 	"image/draw"
 
 	"github.com/mirusu400/aram-core/loader/gnex"
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 // Display is the bounded GNEX drawing surface. Drawing coordinates are LCD
@@ -16,11 +17,41 @@ type Display struct {
 	latest  *image.RGBA
 	saved   *image.RGBA
 	clip    image.Rectangle
+	gamma   uint8
 }
 
 func NewDisplay(width, height int) *Display {
 	bounds := image.Rect(0, 0, width, height)
-	return &Display{working: image.NewRGBA(bounds), clip: bounds}
+	return &Display{working: image.NewRGBA(bounds), clip: bounds, gamma: 3}
+}
+
+func (d *Display) SetGamma(gamma uint32) error {
+	if gamma > 6 {
+		return fmt.Errorf("gnex32: gamma %d is outside 0..6", gamma)
+	}
+	d.gamma = uint8(gamma)
+	return nil
+}
+
+func (d *Display) Gamma() uint8 { return d.gamma }
+
+func (d *Display) paletteColor(value uint32) (color.RGBA, error) {
+	if value > 181 {
+		return color.RGBA{}, fmt.Errorf("gnex32: palette selector %d is outside 0..181", value)
+	}
+	if value == 4 {
+		return color.RGBA{}, nil
+	}
+	packed, ok := shared.SKTGammaColor(d.gamma, uint8(value))
+	if !ok {
+		return color.RGBA{}, fmt.Errorf("gnex32: unsupported palette selector %d at gamma %d", value, d.gamma)
+	}
+	return shared.SKTPackedColor(packed), nil
+}
+
+func (d *Display) gammaColor(value color.RGBA) color.RGBA {
+	mapped, _ := shared.SKTGammaRGBA(d.gamma, value)
+	return mapped
 }
 
 func (d *Display) SetClip(x1, y1, x2, y2 int32) {
@@ -183,7 +214,15 @@ func (d *Display) copyImageWithAlpha(x, y int32, data []byte, direction, alpha u
 		}
 		width, anchorX, anchorY = image.Width, image.AnchorX, image.AnchorY
 		pixels = image.Pixels
-		colors = []color.RGBA{monoColor(image.Color0), monoColor(image.Color1)}
+		color0, err := d.paletteColor(uint32(image.Color0))
+		if err != nil {
+			return err
+		}
+		color1, err := d.paletteColor(uint32(image.Color1))
+		if err != nil {
+			return err
+		}
+		colors = []color.RGBA{color0, color1}
 		transparentZero = data[0] == 2
 	case 0x06, 0x07, 0x09, 0x0a, 0x0b:
 		image, err := gnex.DecodeGNEX32IndexedImage(data)
@@ -195,11 +234,18 @@ func (d *Display) copyImageWithAlpha(x, y int32, data []byte, direction, alpha u
 		transparentZero = image.Mode == 1
 		if len(image.PaletteIndices) != 0 {
 			for _, index := range image.PaletteIndices {
-				colors = append(colors, monoColor(index))
+				mapped, err := d.paletteColor(uint32(index))
+				if err != nil {
+					return err
+				}
+				colors = append(colors, mapped)
 			}
 		} else {
 			for i := 0; i < len(image.PaletteTriplets); i += 3 {
-				colors = append(colors, color.RGBA{R: image.PaletteTriplets[i], G: image.PaletteTriplets[i+1], B: image.PaletteTriplets[i+2], A: 255})
+				colors = append(colors, d.gammaColor(color.RGBA{
+					R: image.PaletteTriplets[i], G: image.PaletteTriplets[i+1],
+					B: image.PaletteTriplets[i+2], A: 255,
+				}))
 			}
 		}
 	default:
@@ -240,38 +286,14 @@ func (d *Display) copyImageWithAlpha(x, y int32, data []byte, direction, alpha u
 }
 
 func monoColor(value byte) color.RGBA {
-	switch value {
-	case 0:
-		return color.RGBA{R: 255, G: 255, B: 255, A: 255}
-	case 1:
-		return color.RGBA{R: 192, G: 192, B: 192, A: 255}
-	case 2:
-		return color.RGBA{R: 128, G: 128, B: 128, A: 255}
-	case 3:
-		return color.RGBA{A: 255}
-	case 4:
+	if value == 4 {
 		return color.RGBA{}
 	}
-	if value >= 16 && value <= 139 {
-		packed := int(value) - 15
-		if value >= 47 {
-			packed += 32
-		}
-		if value >= 56 {
-			packed++
-		}
-		if value >= 78 {
-			packed += 32
-		}
-		if value >= 96 {
-			packed++
-		}
-		if value >= 109 {
-			packed += 64
-		}
-		return color.RGBA{R: uint8((packed >> 5) * 255 / 7), G: uint8(((packed >> 2) & 7) * 255 / 7), B: uint8((packed & 3) * 255 / 3), A: 255}
+	packed, ok := shared.SKTGammaColor(3, value)
+	if !ok {
+		return color.RGBA{A: 255}
 	}
-	return color.RGBA{A: 255}
+	return shared.SKTPackedColor(packed)
 }
 
 func (d *Display) Flush() image.Image {
