@@ -32,6 +32,8 @@ type Runtime struct {
 	services    *shared.Services
 	owner       shared.OwnerID
 	soundClip   shared.ServiceID
+	keyToneClip shared.ServiceID
+	keyToneOn   bool
 	tick        uint64
 	timers      [3]runtimeTimer
 	presents    uint64
@@ -86,6 +88,7 @@ func NewRuntime(image gnex.GNEX32Image, identity Identity) (*Runtime, error) {
 	}
 	runtime := &Runtime{display: NewDisplay(120, 149), identity: identity,
 		services: services, owner: owner, text: services.Text,
+		keyToneOn: true,
 		fontColor: monoColor(3), fontIndex: 3, fontBack: monoColor(4), fontBackIdx: 4}
 	vm, err := NewWithServices(image, runtime.service)
 	if err != nil {
@@ -143,6 +146,11 @@ func (r *Runtime) StepFrame(budget uint64) error {
 }
 
 func (r *Runtime) KeyPressed(code uint16, budget uint64) error {
+	if code != 0xff && r.keyToneOn {
+		if err := r.playKeyTone(code); err != nil {
+			return err
+		}
+	}
 	if err := r.vm.BeginEvent(3, uint32(code)); err != nil {
 		return err
 	}
@@ -176,6 +184,9 @@ func (r *Runtime) AudioTime() time.Duration {
 // returned guest time so frontends also discard PCM they already buffered.
 func (r *Runtime) ResetAudioOutput() (time.Duration, uint64, error) {
 	if err := r.stopSound(); err != nil {
+		return 0, r.services.Media.OutputRevision(), err
+	}
+	if err := r.stopKeyTone(); err != nil {
 		return 0, r.services.Media.OutputRevision(), err
 	}
 	_ = r.services.Media.Drain()
@@ -745,7 +756,23 @@ func (r *Runtime) service(id uint16, stack []uint32) (ServiceResult, error) {
 		}
 		r.fontSize = stack[last]
 		return ServiceResult{Pop: 1}, nil
-	case 0x90, 0x91: // KeyTone, BackLight
+	case 0x90: // SetKeyTone(on)
+		if last < 0 {
+			return ServiceResult{}, ErrStackUnderflow
+		}
+		switch stack[last] {
+		case 0:
+			if err := r.stopKeyTone(); err != nil {
+				return ServiceResult{}, err
+			}
+			r.keyToneOn = false
+		case 1:
+			r.keyToneOn = true
+		default:
+			return ServiceResult{}, fmt.Errorf("gnex32: key tone switch %d is outside 0..1", stack[last])
+		}
+		return ServiceResult{Pop: 1}, nil
+	case 0x91: // BackLight
 		if last < 0 {
 			return ServiceResult{}, ErrStackUnderflow
 		}
@@ -848,6 +875,56 @@ func (r *Runtime) stopSound() error {
 		return err
 	}
 	r.soundClip = 0
+	return nil
+}
+
+func (r *Runtime) playKeyTone(code uint16) error {
+	payload := gnex32KeyToneWave(code)
+	clip, err := r.services.Media.CreateClip(r.owner, "audio/wav", uint64(len(payload)))
+	if err != nil {
+		return err
+	}
+	cleanup := func() {
+		_ = r.services.Media.DestroyClip(r.owner, clip, r.services.Events)
+	}
+	if _, err := r.services.Media.Append(r.owner, clip, payload); err != nil {
+		cleanup()
+		return err
+	}
+	if err := r.services.Media.Prepare(r.owner, clip); err != nil {
+		cleanup()
+		return err
+	}
+	if err := r.stopKeyTone(); err != nil {
+		cleanup()
+		return err
+	}
+	if err := r.services.Media.Play(r.owner, clip, 1); err != nil {
+		cleanup()
+		return err
+	}
+	r.keyToneClip = clip
+	return nil
+}
+
+func (r *Runtime) stopKeyTone() error {
+	if r.keyToneClip == 0 {
+		return nil
+	}
+	clip := r.keyToneClip
+	info, err := r.services.Media.Info(r.owner, clip)
+	if err != nil {
+		return err
+	}
+	if info.State == shared.ClipPlaying || info.State == shared.ClipPaused {
+		if err := r.services.Media.StopOnTimeline(r.owner, clip); err != nil {
+			return err
+		}
+	}
+	if err := r.services.Media.DestroyClip(r.owner, clip, r.services.Events); err != nil {
+		return err
+	}
+	r.keyToneClip = 0
 	return nil
 }
 

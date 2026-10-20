@@ -49,6 +49,13 @@ The `SetFont` service changes only the current font size across the six SDK
 sizes (0 through 5). `SetFontType` remains the combined size, foreground,
 background, and alignment operation; both reject an invalid size atomically.
 
+The SDK defines `SetKeyTone` only as an on/off switch and leaves the handset's
+pitch and duration unspecified. The GNEX32 compatibility profile starts with
+key tones enabled, generates standard DTMF for the numeric, `*`, and `#` keys,
+and uses a deterministic 1 kHz beep for other handset controls. Each tone is
+60 ms: a repeated key replaces only the preceding key tone, while ordinary
+game audio continues and is mixed through the shared media timeline.
+
 ## What a GNEX archive looks like
 
 A paired GNEX title ships as a ZIP containing a basename-matched pair:

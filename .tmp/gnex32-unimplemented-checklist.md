@@ -26,8 +26,9 @@
 - [x] `0x29 Font`의 정확한 계약을 복원하고 구현한다.
   - SDK의 `SetFont(size)` 계약대로 크기 0..5만 변경한다.
   - `0x28 SetFontType(size, foreground, background, alignment)`의 색·배경·정렬 계약과 분리한다.
-- [ ] `0x90 KeyTone`을 공유 미디어/합성 톤 경로로 구현한다.
-  - 키 종류, 음높이, 길이, 중첩/교체, mute 및 타임라인 규칙을 근거와 함께 고정한다.
+- [x] `0x90 KeyTone`을 공유 미디어/합성 톤 경로로 구현한다.
+  - SDK가 on/off만 정의하므로 숫자·`*`·`#`는 표준 DTMF, 기타 키는 1 kHz, 길이는 60 ms인 호환성 정책을 고정했다.
+  - 반복 키는 이전 KeyTone만 교체하고 `SetKeyTone(0)`은 현재 톤을 중단하며, 일반 sound와는 공유 타임라인에서 혼합한다.
 - [ ] `0x91 BackLight` 상태를 구현한다.
   - 단순 게스트 상태인지 프런트엔드에 노출할 장치 상태인지 먼저 계약을 정한다.
   - 상태 저장/복원과 reset 기본값을 포함한다.
@@ -86,7 +87,7 @@
 - [ ] 실제 메뉴/BGM/SFX 동선에서 비무음 PCM, 시작 시점, 정지 시점, 교체 동작을 검증한다.
 - [ ] native `PlaySound`의 1회 재생, 재호출 교체, 완주 후 상태 및 `StopSound` 규칙을 대조한다.
 - [ ] 잘못된/지원되지 않는 사운드 리소스가 게임 전체를 fault시킬지 guest 오류값을 반환할지 계약을 확인한다.
-- [ ] `KeyTone`과 일반 sound가 동시에 울릴 때 mixing/priority 규칙을 구현한다.
+- [x] `KeyTone`과 일반 sound가 동시에 울릴 때 mixing/priority 규칙을 구현한다.
 - [ ] pause, stop, reset, close, save/load 각각의 buffered PCM 처리 회귀 테스트를 추가한다.
 
 ## 6. VM opcode 완성도

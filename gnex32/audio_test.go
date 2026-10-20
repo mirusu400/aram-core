@@ -126,6 +126,135 @@ func TestGNEX32InvalidReplacementKeepsCurrentSound(t *testing.T) {
 	}
 }
 
+func TestGNEX32KeyToneFrequenciesAndWave(t *testing.T) {
+	tests := []struct {
+		code      uint16
+		low, high float64
+	}{
+		{code: 1, low: 697, high: 1209},
+		{code: 5, low: 770, high: 1336},
+		{code: 9, low: 852, high: 1477},
+		{code: 10, low: 941, high: 1336},
+		{code: 11, low: 941, high: 1209},
+		{code: 12, low: 941, high: 1477},
+		{code: 0x0d, low: 1000, high: 0},
+	}
+	for _, test := range tests {
+		low, high := gnex32KeyToneFrequencies(test.code)
+		if low != test.low || high != test.high {
+			t.Errorf("key %#x frequencies = %.0f/%.0f, want %.0f/%.0f",
+				test.code, low, high, test.low, test.high)
+		}
+	}
+
+	wave := gnex32KeyToneWave(1)
+	if string(wave[:4]) != "RIFF" || string(wave[8:12]) != "WAVE" {
+		t.Fatalf("key tone header = %q/%q", wave[:4], wave[8:12])
+	}
+	if sampleRate := binary.LittleEndian.Uint32(wave[24:28]); sampleRate != gnex32KeyToneSampleRate {
+		t.Fatalf("key tone sample rate = %d", sampleRate)
+	}
+	if frames := binary.LittleEndian.Uint32(wave[40:44]) / 2; frames != gnex32KeyToneFrames {
+		t.Fatalf("key tone frames = %d, want %d", frames, gnex32KeyToneFrames)
+	}
+	if milliseconds := gnex32KeyToneFrames * 1000 / gnex32KeyToneSampleRate; milliseconds != gnex32KeyToneMillis {
+		t.Fatalf("key tone duration = %d ms", milliseconds)
+	}
+}
+
+func TestGNEX32SetKeyToneValidatesAtomically(t *testing.T) {
+	runtime, err := NewRuntime(
+		gnex32AudioTestImage(nil),
+		Identity{MIN: "0111234567", UserID: "98B4970F"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	if !runtime.keyToneOn {
+		t.Fatal("key tone is disabled by default")
+	}
+	if _, err := runtime.service(0x90, []uint32{2}); err == nil {
+		t.Fatal("SetKeyTone accepted an invalid switch")
+	}
+	if !runtime.keyToneOn {
+		t.Fatal("invalid SetKeyTone changed the current setting")
+	}
+	if _, err := runtime.service(0x90, []uint32{0}); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.keyToneOn {
+		t.Fatal("SetKeyTone(0) did not disable tones")
+	}
+	if _, err := runtime.service(0x90, []uint32{1}); err != nil {
+		t.Fatal(err)
+	}
+	if !runtime.keyToneOn {
+		t.Fatal("SetKeyTone(1) did not enable tones")
+	}
+}
+
+func TestGNEX32KeyToneMixesWithSoundAndReplacesOnlyItself(t *testing.T) {
+	runtime, err := NewRuntime(
+		gnex32AudioTestImage([][]byte{gnex32TestWave()}),
+		Identity{MIN: "0111234567", UserID: "98B4970F"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	if err := runtime.playSound(0); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.playKeyTone(1); err != nil {
+		t.Fatal(err)
+	}
+	soundClip, firstTone := runtime.soundClip, runtime.keyToneClip
+	if soundClip == 0 || firstTone == 0 || soundClip == firstTone {
+		t.Fatalf("independent clips = sound %d tone %d", soundClip, firstTone)
+	}
+	for _, clip := range []shared.ServiceID{soundClip, firstTone} {
+		info, err := runtime.services.Media.Info(runtime.owner, clip)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.State != shared.ClipPlaying {
+			t.Fatalf("clip %d state = %v", clip, info.State)
+		}
+	}
+	if err := runtime.StepFrame(1); err != nil {
+		t.Fatal(err)
+	}
+	if audio, start, _ := runtime.DrainTimedAudio(); len(audio.PCM16) == 0 || start != 0 {
+		t.Fatalf("mixed audio = %d samples at %s", len(audio.PCM16), start)
+	}
+
+	if err := runtime.playKeyTone(2); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.soundClip != soundClip || runtime.keyToneClip == firstTone {
+		t.Fatalf("replacement clips = sound %d tone %d", runtime.soundClip, runtime.keyToneClip)
+	}
+	if _, err := runtime.services.Media.Info(runtime.owner, firstTone); !errors.Is(err, shared.ErrNotFound) {
+		t.Fatalf("replaced key tone remains registered: %v", err)
+	}
+	if info, err := runtime.services.Media.Info(runtime.owner, soundClip); err != nil || info.State != shared.ClipPlaying {
+		t.Fatalf("sound did not survive key-tone replacement: info=%+v err=%v", info, err)
+	}
+
+	if _, err := runtime.service(0x90, []uint32{0}); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.keyToneClip != 0 || runtime.soundClip != soundClip {
+		t.Fatalf("disable clips = sound %d tone %d", runtime.soundClip, runtime.keyToneClip)
+	}
+	if info, err := runtime.services.Media.Info(runtime.owner, soundClip); err != nil || info.State != shared.ClipPlaying {
+		t.Fatalf("sound did not survive key-tone disable: info=%+v err=%v", info, err)
+	}
+}
+
 func TestGNEX32RuntimeCloseReleasesSharedResources(t *testing.T) {
 	runtime, err := NewRuntime(
 		gnex32AudioTestImage([][]byte{gnex32TestWave()}),
