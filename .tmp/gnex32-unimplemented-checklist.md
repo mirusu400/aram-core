@@ -1,0 +1,171 @@
+# GNEX32 미구현/미검증 체크리스트
+
+작성일: 2026-10-20
+
+범위: `gnex32/`, `loader/gnex`의 version-4 경로, `application/gnex32_machine.go`.
+현재 저장소에서 확인 가능한 명시적 no-op, typed unsupported 경로, 임시 호환
+동작, 원본 검증이 끝나지 않은 동작을 모두 포함한다. 과거 조사 과정을 서술하는
+`docs/gnex-format.md` 중 "미구현" 문구 일부는 현재 코드보다 오래되었으므로,
+아래 목록은 현재 코드를 기준으로 한다.
+
+체크 기준: 구현 코드, 단위 테스트, 실제 또는 독립적인 참조 근거가 모두 있어야
+항목을 완료(`[x]`)로 바꾼다. 근거 없이 성공 no-op으로 바꾸는 것은 완료로 보지 않는다.
+
+## 0. 이미 완료되어 이번 목록에서 제외하는 기준선
+
+- [x] `PlaySound(0x82)` / `StopSound(0x83)` 및 MMMD/MIDI/WAV PCM 출력
+- [x] GNEX32 오디오를 `Machine.DrainAudio`로 전달하는 guest-time 타임라인
+- [x] `Reset` 시 오디오 generation 변경 마커 발행
+- [x] 현재 Virus 경로의 화면, 키 입력, 세 타이머 슬롯, 문자열/NV 기본 동작
+
+## 1. 명시적으로 no-op인 서비스
+
+- [ ] `0x25 Gamma`의 정확한 인자/범위를 확인하고 실제 팔레트·그리기 색상에 적용한다.
+  - 현재: 인자 하나를 pop하고 아무 상태도 바꾸지 않는다.
+  - 참고: `application/internal/gvmhost`의 SKT gamma 표를 공용 위치로 옮겨 재사용할지 결정한다.
+- [ ] `0x29 Font`의 정확한 계약을 복원하고 구현한다.
+  - 현재: 인자 하나를 pop하는 no-op이다.
+  - `0x28 SetFontType(size, foreground, background, alignment)`와 역할이 겹치지 않도록 구분한다.
+- [ ] `0x90 KeyTone`을 공유 미디어/합성 톤 경로로 구현한다.
+  - 키 종류, 음높이, 길이, 중첩/교체, mute 및 타임라인 규칙을 근거와 함께 고정한다.
+- [ ] `0x91 BackLight` 상태를 구현한다.
+  - 단순 게스트 상태인지 프런트엔드에 노출할 장치 상태인지 먼저 계약을 정한다.
+  - 상태 저장/복원과 reset 기본값을 포함한다.
+
+## 2. 머신 수명주기와 상태 보존
+
+- [ ] `gnex32Machine.SaveState`를 구현한다.
+- [ ] `gnex32Machine.LoadState`를 구현한다.
+- [ ] VM 상태를 스냅샷한다: PC, halt/fault 상태, value/call/mark stack, lvalue refs.
+- [ ] symbol RAM과 mutable media RAM을 스냅샷한다.
+- [ ] 런타임 상태를 스냅샷한다: tick, timers, presents, PRNG, paint/font, UserNV.
+- [ ] 디스플레이 상태를 스냅샷한다: working/latest/saved LCD와 clip rectangle.
+- [ ] 재생 중인 sound clip, shared clock, queued PCM 및 오디오 generation을 스냅샷한다.
+- [ ] 저장 상태 포맷에 version, bounds, corruption validation 및 cross-process 테스트를 추가한다.
+- [ ] `PutUserNV/GetUserNV`를 reset 및 앱 재실행 뒤에도 유지되는 영속 저장소에 연결한다.
+- [ ] ZIP의 `.dat`, `user.dat`, `UserNV.sys`를 초기/기존 UserNV와 연결한다.
+- [ ] `Reset`이 UserNV는 보존하고 휘발성 VM/미디어/화면 상태만 초기화하도록 분리한다.
+- [ ] `Stop`에서 이미 프런트엔드에 전달된 오디오를 무효화하는 generation 마커를 발행한다.
+- [ ] `Close`에서 오디오 generation을 무효화하고 media/coordinator 자원을 정리한다.
+- [ ] close 후 `Framebuffer`, `PresentCount`, `DrainAudio`가 nil panic 없이 일관된 계약을 따른다.
+
+## 3. 시간, 타이머, 이벤트
+
+- [ ] `GetDate(4)` / `GetTime(5)`의 `time.Now()` 사용을 shared deterministic clock과 장치 timezone으로 교체한다.
+- [ ] 날짜/시간이 save/load, replay, 동일 입력 재실행에서 결정적인지 테스트한다.
+- [ ] `SetTimer0..2`의 60 Hz 반올림, 최초 발화 시점, repeat catch-up 및 동일 tick 순서를 원본과 대조한다.
+- [ ] 여러 타이머가 같은 frame에 만료될 때의 callback 순서와 오류 원자성을 확정한다.
+- [ ] header callback slot 1과 4..10의 의미를 식별하고 필요한 이벤트를 연결한다.
+  - 현재 main은 slot 0, timer는 slot 2, key는 slot 3만 사용한다.
+- [ ] press/release 코드, 키 반복, soft/send/end/숫자키 전체를 실제 GNEX32 계약과 대조한다.
+- [ ] pause/resume 중 타이머와 오디오 clock 정지/재개 동작을 명시적으로 테스트한다.
+
+## 4. 그래픽과 텍스트
+
+- [ ] `FlushPartial(0x60)`이 현재 무시하는 x1/y1/x2/y2를 사용해 부분 갱신을 구현한다.
+- [ ] `CopyImageDir`의 direction 값 전체를 확인하고 현재 0/1 이외의 회전·반전을 구현한다.
+- [ ] `CopyImageEx`의 zoom, mirror, rotation 조합을 구현한다.
+  - 현재: alpha 0..3, zoom=0, rotation=0, mirror 0/1만 허용한다.
+- [ ] alpha 혼합식과 alpha 단계 의미를 참조 구현/실기와 대조한다.
+- [ ] mono kind `0x02/0x05`의 Color0/Color1 의미를 확정한다.
+- [ ] indexed kind `0x06/0x07/0x09/0x0a/0x0b`의 palette 형식과 채널 순서를 확정한다.
+- [ ] indexed image의 `Mode`와 palette index 0 투명 처리 규칙을 확정한다.
+- [ ] `SetPaletteColorRGB`를 해당되는 모든 image kind에 대해 구현하고 불가능한 형식은 명확히 오류 처리한다.
+- [ ] 알려진 다른 image kind가 실제로 그리기에 사용되는지 corpus를 스캔하고, 사용되는 형식만 decoder를 추가한다.
+- [ ] `Gamma` 적용 전후의 고정 팔레트 및 동적 팔레트 동작을 통합 테스트한다.
+- [ ] `DrawRectRound/FillRectRound`, clip, inclusive 좌표 규칙을 참조 화면과 대조한다.
+- [ ] EUC-KR 오류 처리, glyph baseline/advance, solid background 높이와 정렬을 원본 폰트와 대조한다.
+- [ ] font size 0..5 외 값의 native fallback/error 동작을 확인한다.
+- [ ] 하드코딩된 120x149 화면과 `swWidth/swHeight`를 장치 profile로 이동한다.
+- [ ] frame timestamp/sequence를 오디오와 같은 guest timeline으로 노출하는 presentation 계약을 추가한다.
+
+## 5. 오디오 후속 작업
+
+- [ ] 실제 Virus의 flag-`0x200` MMMD 리소스 전체가 decode되는지 corpus 테스트를 추가한다.
+- [ ] 실제 메뉴/BGM/SFX 동선에서 비무음 PCM, 시작 시점, 정지 시점, 교체 동작을 검증한다.
+- [ ] native `PlaySound`의 1회 재생, 재호출 교체, 완주 후 상태 및 `StopSound` 규칙을 대조한다.
+- [ ] 잘못된/지원되지 않는 사운드 리소스가 게임 전체를 fault시킬지 guest 오류값을 반환할지 계약을 확인한다.
+- [ ] `KeyTone`과 일반 sound가 동시에 울릴 때 mixing/priority 규칙을 구현한다.
+- [ ] pause, stop, reset, close, save/load 각각의 buffered PCM 처리 회귀 테스트를 추가한다.
+
+## 6. VM opcode 완성도
+
+- [ ] 실제 reference image의 도달 가능한 명령을 정적 CFG와 동적 trace로 전부 수집한다.
+- [ ] 현재 `default`의 `UnsupportedOpcodeError`에 도달하는 경로를 full-playthrough로 찾고 opcode별로 구현한다.
+- [ ] 아래 candidate opcode 의미를 SDK assembler 또는 독립 참조 실행과 대조한다.
+  - [ ] `0x03` indexed symbol-word push
+  - [ ] `0x04` 32-bit symbol-word push
+  - [ ] `0x05` signed 16-bit immediate push
+  - [ ] `0x0b` scalar symbol pop
+  - [ ] `0x0f` decrement
+  - [ ] `0x10` duplicate
+  - [ ] `0x74` direct symbol copy
+  - [ ] `0x75` direct immediate assignment
+  - [ ] `0x85` call
+  - [ ] `0x86` return/halt boundary
+  - [ ] `0x8d` indexed symbol lvalue
+  - [ ] `0x90` store through lvalue
+  - [ ] `0x92` service dispatch 및 stack-effect 규칙
+- [ ] 모든 구현 opcode에 truncation, underflow/overflow, invalid address 및 transactional failure 테스트를 추가한다.
+- [ ] native overflow/shift/division/부호 비교 규칙을 32-bit 경계값으로 대조한다.
+- [ ] call/return, stack mark, event 진입 때 stack/ref 초기화 규칙을 검증한다.
+
+## 7. host service 완성도
+
+- [ ] 실제 image의 모든 `0x92 <service-id>` 호출을 정적 수집하고 현재 switch와 차이를 생성하는 도구를 만든다.
+- [ ] 동적 full-playthrough trace로 실제 도달 service ID와 인자 stack을 기록한다.
+- [ ] 현재 `default`의 `UnsupportedServiceError`에 도달하는 service를 ID별로 구현한다.
+- [ ] service별 정확한 pop/push 수와 반환값/오류 sentinel을 SDK 문서 또는 참조 실행과 대조한다.
+- [ ] `GetSysMin/GetSysUserID`의 하드코딩 identity를 device profile로 이동한다.
+- [ ] `GetDate/GetTime` 배열 배치와 timezone/weekday 규칙을 검증한다.
+- [ ] `GetChar`의 음수 index 및 writable media one-past-end에서 0을 반환하는 현재 호환 동작을 검증한다.
+- [ ] `StrInit/StrLen/StrCpy/StrSub/StrCmp`의 NUL, CP949, alias/overlap 및 반환값 규칙을 검증한다.
+- [ ] `ArrayToVar`의 operation 0..3 의미와 추가 operation 존재 여부를 확인한다.
+- [ ] `RandSeed/Rand`의 LCG, 범위 상한 배제, 음수 범위를 native 결과와 대조한다.
+- [ ] `GetUserNV/PutUserNV`의 실제 최대 word 수, 반환값 및 실패 원자성을 확인한다.
+- [ ] `Gamma/Font/KeyTone/BackLight`가 구현될 때 save/load 상태에도 포함한다.
+
+## 8. loader, 리소스, 포맷 일반화
+
+- [ ] GNEX32 header의 11개 code pointer slot 의미를 식별하고 이름 있는 필드로 노출한다.
+- [ ] title checksum 알고리즘을 확인하고 선택적 검증을 추가한다.
+- [ ] symbol flag `0x1/0x100`의 정확한 mutability/initialization 의미를 검증한다.
+- [ ] media flag `0x1/0x101`을 writable로 취급하는 현재 provisional 규칙을 검증한다.
+- [ ] media flag `0`, `0x100`, `0x200`의 type/ownership 의미를 확정한다.
+- [ ] `.res`(`0xDEADFACE`) 외부 아이콘 형식을 decode할 필요가 있는지 확인하고 필요 시 구현한다.
+- [ ] `.wmr` 번들 형식을 식별하고 런타임 리소스로 사용되는 경우 loader를 구현한다.
+- [ ] `.mod`/`.inf`의 device/profile 정보 중 실행에 필요한 필드를 구조화한다.
+- [ ] 현재 단일 prefix/layout 이외의 GNEX version-4 변형을 corpus 근거가 있을 때 추가한다.
+- [ ] malformed/oversized image, symbol, media, archive에 대한 fuzz corpus를 확대한다.
+
+## 9. 제품 라우팅과 호환성 범위
+
+- [ ] `createGNEX32Machine`의 단일 SHA-256 허용을 compatibility/profile 판정으로 일반화한다.
+- [ ] 구조적으로 유효하지만 미지원인 GNEX32 패키지에 정확한 capability 진단을 제공한다.
+- [ ] hard-coded Virus identity/display/profile 값을 profile 데이터로 이동한다.
+- [ ] `application/machine_load.go`의 오래된 "GNEX v4 미구현" fallback 문구를 현재 상태에 맞춘다.
+- [ ] 다른 GNEX32 hash를 실행하기 전 opcode/service/media capability preflight를 추가한다.
+- [ ] GVM v1/v2 경로와 GNEX32 경로의 공용 palette, input, persistence, audio 계약을 정리한다.
+
+## 10. 검증과 완료 조건
+
+- [ ] `ARAM_TEST_DATA`에서 Virus SHA-256 패키지를 CI/로컬 optional test가 찾도록 corpus 경로를 정리한다.
+- [ ] splash → title → menu → help → gameplay 이후의 장시간 자동 입력 probe를 만든다.
+- [ ] 최소 한 번의 완주 또는 모든 상태/메뉴를 포괄하는 trace에서 unsupported opcode/service가 0건임을 확인한다.
+- [ ] 동일 입력 두 번의 frame hash, audio hash, timer/NV 결과가 일치하는 determinism test를 추가한다.
+- [ ] save → 진행 → load → 재진행 결과가 frame/audio/state hash까지 동일한지 검증한다.
+- [ ] reset/reopen 뒤 UserNV가 유지되고 휘발 상태는 초기화되는 제품 테스트를 추가한다.
+- [ ] Windows 및 지원 대상 빌드에서 전체 `go test ./...`, `go vet ./...`를 통과한다.
+- [ ] 구현 결과에 맞게 `docs/gnex-format.md`의 역사적/상충하는 미구현 문구를 정리한다.
+- [ ] 체크리스트의 각 완료 항목에 코드·테스트·참조 근거 링크를 덧붙인다.
+
+## 구현 권장 순서
+
+1. 명시적 no-op 4개와 deterministic clock
+2. Stop/Close 오디오 수명주기 및 UserNV persistence
+3. SaveState/LoadState
+4. graphics 제한(`FlushPartial`, transform, palette/gamma/font)
+5. opcode/service 수집 도구와 full-playthrough trace
+6. 실제로 도달한 unknown opcode/service 구현
+7. loader/profile 일반화와 다른 hash 지원
+8. 전체 참조 검증 및 문서 정리

@@ -9,6 +9,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/mirusu400/aram-core/application/internal/guest"
 	"github.com/mirusu400/aram-core/application/internal/gvmhost"
@@ -34,6 +35,13 @@ type gnex32Machine struct {
 	runtime *gnex32.Runtime
 	budget  uint64
 	closed  bool
+
+	audioGeneration        uint64
+	audioGenerationPending bool
+	audioEpochGuestNS      int64
+	audioCursorSample      uint64
+	audioCursorValid       bool
+	mediaOutputRevision    uint64
 }
 
 func (f Factory) createGNEX32Machine(ctx context.Context, source machinecore.Source) (machinecore.Machine, bool, error) {
@@ -83,7 +91,15 @@ func (f Factory) createGNEX32Machine(ctx context.Context, source machinecore.Sou
 	if budget == 0 {
 		budget = 1_000_000
 	}
-	return &gnex32Machine{state: machinecore.StateReady, source: source, image: image, runtime: runtime, budget: budget}, true, nil
+	return &gnex32Machine{
+		state:               machinecore.StateReady,
+		source:              source,
+		image:               image,
+		runtime:             runtime,
+		budget:              budget,
+		audioGeneration:     1,
+		mediaOutputRevision: runtime.AudioOutputRevision(),
+	}, true, nil
 }
 
 func (m *gnex32Machine) Load(context.Context, machinecore.Source) error {
@@ -161,6 +177,8 @@ func (m *gnex32Machine) Reset(ctx context.Context) error {
 		return err
 	}
 	m.runtime = runtime
+	m.mediaOutputRevision = runtime.AudioOutputRevision()
+	m.nextGNEX32AudioGenerationLocked(0)
 	m.state = machinecore.StateReady
 	return nil
 }
@@ -247,9 +265,86 @@ func (m *gnex32Machine) GNEX32PresentCount() uint64 {
 	return m.runtime.PresentCount()
 }
 
-func (*gnex32Machine) DrainAudio() machinecore.AudioChunk { return machinecore.AudioChunk{} }
-func (*gnex32Machine) SaveState(io.Writer) error          { return ErrGVMStateUnavailable }
-func (*gnex32Machine) LoadState(io.Reader) error          { return ErrGVMStateUnavailable }
+func (m *gnex32Machine) DrainAudio() machinecore.AudioChunk {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.runtime == nil {
+		return machinecore.AudioChunk{}
+	}
+	audio, start, revision := m.runtime.DrainTimedAudio()
+	if audio.SampleRate <= 0 || audio.Channels <= 0 || len(audio.PCM16) == 0 ||
+		len(audio.PCM16)%audio.Channels != 0 {
+		if revision != m.mediaOutputRevision {
+			m.nextGNEX32AudioGenerationLocked(start)
+			m.mediaOutputRevision = revision
+		}
+		if m.audioGenerationPending {
+			m.audioGenerationPending = false
+			return machinecore.AudioChunk{
+				SampleRate:   audio.SampleRate,
+				Channels:     audio.Channels,
+				StartGuestNS: m.audioEpochGuestNS,
+				Generation:   m.audioGeneration,
+			}
+		}
+		return machinecore.AudioChunk{}
+	}
+	frames := len(audio.PCM16) / audio.Channels
+	if revision != m.mediaOutputRevision {
+		m.nextGNEX32AudioGenerationLocked(start)
+		m.mediaOutputRevision = revision
+	}
+	startSample := gnex32SampleCursor(time.Duration(int64(start)-m.audioEpochGuestNS), audio.SampleRate)
+	if m.audioCursorValid {
+		slack := gnex32SampleCursor(time.Millisecond, audio.SampleRate)
+		if gnex32DistanceWithin(startSample, m.audioCursorSample, slack) {
+			startSample = m.audioCursorSample
+		}
+	}
+	chunk := machinecore.AudioChunk{
+		SampleRate:   audio.SampleRate,
+		Channels:     audio.Channels,
+		PCM16:        audio.PCM16,
+		StartGuestNS: int64(start),
+		StartSample:  startSample,
+		Generation:   m.audioGeneration,
+	}
+	m.audioCursorSample = startSample + uint64(frames)
+	m.audioCursorValid = true
+	m.audioGenerationPending = false
+	return chunk
+}
+
+func gnex32DistanceWithin(left, right, limit uint64) bool {
+	if left >= right {
+		return left-right <= limit
+	}
+	return right-left <= limit
+}
+
+func gnex32SampleCursor(elapsed time.Duration, sampleRate int) uint64 {
+	if elapsed <= 0 || sampleRate <= 0 {
+		return 0
+	}
+	seconds := uint64(elapsed / time.Second)
+	remainder := uint64(elapsed % time.Second)
+	return seconds*uint64(sampleRate) + remainder*uint64(sampleRate)/uint64(time.Second)
+}
+
+func (m *gnex32Machine) nextGNEX32AudioGenerationLocked(epoch time.Duration) {
+	if m.audioGeneration == 0 || m.audioGeneration == ^uint64(0) {
+		m.audioGeneration = 1
+	} else {
+		m.audioGeneration++
+	}
+	m.audioGenerationPending = true
+	m.audioEpochGuestNS = int64(max(epoch, 0))
+	m.audioCursorSample = 0
+	m.audioCursorValid = false
+}
+
+func (*gnex32Machine) SaveState(io.Writer) error { return ErrGVMStateUnavailable }
+func (*gnex32Machine) LoadState(io.Reader) error { return ErrGVMStateUnavailable }
 
 func (m *gnex32Machine) Close() error {
 	m.mu.Lock()

@@ -25,6 +25,9 @@ type Runtime struct {
 	vm          *VM
 	display     *Display
 	identity    Identity
+	services    *shared.Services
+	owner       shared.OwnerID
+	soundClip   shared.ServiceID
 	tick        uint64
 	timers      [3]runtimeTimer
 	presents    uint64
@@ -53,7 +56,12 @@ func NewRuntime(image gnex.GNEX32Image, identity Identity) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	runtime := &Runtime{display: NewDisplay(120, 149), identity: identity, text: services.Text,
+	owner, err := services.Coordinator.Register("gnex32", 0)
+	if err != nil {
+		return nil, err
+	}
+	runtime := &Runtime{display: NewDisplay(120, 149), identity: identity,
+		services: services, owner: owner, text: services.Text,
 		fontColor: monoColor(3), fontBack: monoColor(4)}
 	vm, err := NewWithServices(image, runtime.service)
 	if err != nil {
@@ -107,7 +115,7 @@ func (r *Runtime) StepFrame(budget uint64) error {
 			return err
 		}
 	}
-	return nil
+	return r.services.AdvanceFrame(r.owner)
 }
 
 func (r *Runtime) KeyPressed(code uint16, budget uint64) error {
@@ -120,6 +128,20 @@ func (r *Runtime) KeyPressed(code uint16, budget uint64) error {
 func (r *Runtime) Frame() image.Image   { return r.display.Frame() }
 func (r *Runtime) PresentCount() uint64 { return r.presents }
 func (r *Runtime) PC() int              { return r.vm.PC() }
+
+// DrainTimedAudio transfers the oldest continuous output span. GNEX media and
+// display time share the Services clock advanced by StepFrame.
+func (r *Runtime) DrainTimedAudio() (shared.AudioBuffer, time.Duration, uint64) {
+	audio, start := r.services.Media.DrainTimed()
+	if len(audio.PCM16) == 0 {
+		start = r.services.Clock.Monotonic()
+	}
+	return audio, start, r.services.Media.OutputRevision()
+}
+
+func (r *Runtime) AudioOutputRevision() uint64 {
+	return r.services.Media.OutputRevision()
+}
 
 func (r *Runtime) advanceSystemFrame() error {
 	r.presents++
@@ -176,15 +198,14 @@ func (r *Runtime) drawStr(x, y int32, mediaIndex int, solid bool) error {
 	if r.fontSize >= uint32(len(sizes)) {
 		return fmt.Errorf("gnex32: unsupported font size %d", r.fontSize)
 	}
-	const textOwner shared.OwnerID = 1
-	fontID, err := r.text.EnsureFont(textOwner, shared.FontDescriptor{Family: "aram-fallback", Size: sizes[r.fontSize]})
+	fontID, err := r.text.EnsureFont(r.owner, shared.FontDescriptor{Family: "aram-fallback", Size: sizes[r.fontSize]})
 	if err != nil {
 		return err
 	}
 	glyphs := make([]shared.Glyph, 0, len(decoded))
 	width := int32(0)
 	for _, character := range string(decoded) {
-		glyph, err := r.text.Glyph(textOwner, fontID, character)
+		glyph, err := r.text.Glyph(r.owner, fontID, character)
 		if err != nil {
 			return err
 		}
@@ -589,14 +610,17 @@ func (r *Runtime) service(id uint16, stack []uint32) (ServiceResult, error) {
 			return ServiceResult{}, ErrStackUnderflow
 		}
 		return ServiceResult{Pop: 1}, nil
-	case 0x82, 0x83: // PlaySound(media), StopSound(); audio output pending
+	case 0x82, 0x83: // PlaySound(media), StopSound()
 		if id == 0x82 {
 			if last < 0 {
 				return ServiceResult{}, ErrStackUnderflow
 			}
+			if err := r.playSound(int(stack[last])); err != nil {
+				return ServiceResult{}, err
+			}
 			return ServiceResult{Pop: 1}, nil
 		}
-		return ServiceResult{}, nil
+		return ServiceResult{}, r.stopSound()
 	case 0x95, 0x96, 0x97: // SetTimer0/1/2(periodMs, onceOrRepeat)
 		if last < 1 {
 			return ServiceResult{}, ErrStackUnderflow
@@ -625,5 +649,87 @@ func (r *Runtime) service(id uint16, stack []uint32) (ServiceResult, error) {
 		return ServiceResult{}, nil
 	default:
 		return ServiceResult{}, &UnsupportedServiceError{ID: id}
+	}
+}
+
+func (r *Runtime) playSound(index int) error {
+	resource, _, err := r.vm.media.Read(index)
+	if err != nil {
+		return err
+	}
+	mediaType, payload, err := gnex32SoundPayload(resource)
+	if err != nil {
+		return fmt.Errorf("gnex32: play sound media %d: %w", index, err)
+	}
+	clip, err := r.services.Media.CreateClip(r.owner, mediaType, uint64(len(payload)))
+	if err != nil {
+		return err
+	}
+	cleanup := func() {
+		_ = r.services.Media.DestroyClip(r.owner, clip, r.services.Events)
+	}
+	if _, err := r.services.Media.Append(r.owner, clip, payload); err != nil {
+		cleanup()
+		return err
+	}
+	if err := r.services.Media.Prepare(r.owner, clip); err != nil {
+		cleanup()
+		return err
+	}
+	if err := r.stopSound(); err != nil {
+		cleanup()
+		return err
+	}
+	if err := r.services.Media.Play(r.owner, clip, 1); err != nil {
+		cleanup()
+		return err
+	}
+	r.soundClip = clip
+	return nil
+}
+
+func (r *Runtime) stopSound() error {
+	if r.soundClip == 0 {
+		return nil
+	}
+	clip := r.soundClip
+	info, err := r.services.Media.Info(r.owner, clip)
+	if err != nil {
+		return err
+	}
+	if info.State == shared.ClipPlaying || info.State == shared.ClipPaused {
+		// Preserve PCM already rendered before the guest's stop time. Removing it
+		// would also erase short sounds before a host prebuffer can play them.
+		if err := r.services.Media.StopOnTimeline(r.owner, clip); err != nil {
+			return err
+		}
+	}
+	if err := r.services.Media.DestroyClip(r.owner, clip, r.services.Events); err != nil {
+		return err
+	}
+	r.soundClip = 0
+	return nil
+}
+
+// Version-4 flag-0x200 resources normally contain encoded media directly. Some
+// GNEX resource exporters retain the older little-endian sound-kind prefix (2),
+// so accept both layouts as well as mutable resources assembled by the guest.
+func gnex32SoundPayload(resource []byte) (string, []byte, error) {
+	payload := resource
+	if len(payload) >= 2 && payload[0] == 2 && payload[1] == 0 {
+		payload = payload[2:]
+	}
+	if len(payload) < 4 {
+		return "", nil, fmt.Errorf("%w: truncated sound resource", shared.ErrMediaUnsupported)
+	}
+	switch string(payload[:4]) {
+	case "MMMD":
+		return "audio/x-smaf", payload, nil
+	case "MThd":
+		return "audio/midi", payload, nil
+	case "RIFF":
+		return "audio/wav", payload, nil
+	default:
+		return "", nil, fmt.Errorf("%w: sound resource has signature %x", shared.ErrMediaUnsupported, payload[:4])
 	}
 }
