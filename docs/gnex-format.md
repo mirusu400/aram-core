@@ -134,6 +134,17 @@ the documented sixteen 32-bit words and leave their destinations unchanged on
 validation failure. `Rand` has deterministic exclusive-upper-bound and signed
 range tests, but its provisional LCG still requires a native GNEX comparison.
 
+`go run ./cmd/aram-gnex32-inspect <package.zip|title.sgs>` performs a bounded
+static control-flow walk from the main entry and every nonzero header callback.
+It reports each reachable `0x92 <service-id>` and code-relative call site,
+compares those IDs with the runtime service registry, and separately lists
+reachable unknown opcodes. Instruction operands are skipped according to the
+VM's decoded layouts, so an immediate word equal to `0x92` is not misreported as
+a service call. Truncated instructions, overlapping branch targets, and invalid
+callback roots are rejected. The JSON report also includes the complete sorted
+runtime service registry for machine-readable diffs. Static analysis stops a
+path at an unknown opcode; dynamic coverage remains a separate requirement.
+
 ## What a GNEX archive looks like
 
 A paired GNEX title ships as a ZIP containing a basename-matched pair:

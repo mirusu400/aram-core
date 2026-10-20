@@ -118,7 +118,8 @@
 
 ## 7. host service 완성도
 
-- [ ] 실제 image의 모든 `0x92 <service-id>` 호출을 정적 수집하고 현재 switch와 차이를 생성하는 도구를 만든다.
+- [x] 실제 image의 모든 `0x92 <service-id>` 호출을 정적 수집하고 현재 switch와 차이를 생성하는 도구를 만든다.
+  - `aram-gnex32-inspect`가 main/header callback 전체의 직접 CFG를 따라 call-site를 수집하고, 정렬된 runtime service registry와 unsupported service/unknown opcode 차이를 JSON으로 출력한다.
 - [ ] 동적 full-playthrough trace로 실제 도달 service ID와 인자 stack을 기록한다.
 - [ ] 현재 `default`의 `UnsupportedServiceError`에 도달하는 service를 ID별로 구현한다.
 - [ ] service별 정확한 pop/push 수와 반환값/오류 sentinel을 SDK 문서 또는 참조 실행과 대조한다.
