@@ -11,22 +11,7 @@ import (
 )
 
 func TestGNEX32MachinePublishesAudioAndResetMarker(t *testing.T) {
-	image := applicationGNEX32AudioImage()
-	runtime, err := gnex32.NewRuntime(image, gnex32VirusIdentity)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.RunMain(3); err != nil {
-		t.Fatal(err)
-	}
-	machine := &gnex32Machine{
-		state:               machinecore.StateRunning,
-		image:               image,
-		runtime:             runtime,
-		budget:              1,
-		audioGeneration:     1,
-		mediaOutputRevision: runtime.AudioOutputRevision(),
-	}
+	machine := newApplicationGNEX32AudioMachine(t)
 
 	if err := machine.StepFrame(context.Background()); err != nil {
 		t.Fatal(err)
@@ -65,6 +50,80 @@ func TestGNEX32MachinePublishesAudioAndResetMarker(t *testing.T) {
 	}
 	if next := machine.DrainAudio(); next.Generation != 0 {
 		t.Fatalf("reset marker repeated: %+v", next)
+	}
+}
+
+func TestGNEX32MachineStopPublishesAudioMarker(t *testing.T) {
+	machine := newApplicationGNEX32AudioMachine(t)
+	if err := machine.StepFrame(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if chunk := machine.DrainAudio(); len(chunk.PCM16) == 0 {
+		t.Fatal("machine produced no audio before stop")
+	}
+	if err := machine.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	marker := machine.DrainAudio()
+	if err := marker.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if marker.Generation != 2 || len(marker.PCM16) != 0 ||
+		marker.SampleRate != 44_100 || marker.Channels != 1 {
+		t.Fatalf("stop audio marker = %+v", marker)
+	}
+	if next := machine.DrainAudio(); next.Generation != 0 {
+		t.Fatalf("stop marker repeated: %+v", next)
+	}
+}
+
+func TestGNEX32MachineClosePublishesAudioMarkerAndKeepsDiagnosticsSafe(t *testing.T) {
+	machine := newApplicationGNEX32AudioMachine(t)
+	if err := machine.StepFrame(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if chunk := machine.DrainAudio(); len(chunk.PCM16) == 0 {
+		t.Fatal("machine produced no audio before close")
+	}
+	if err := machine.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.Close(); err != nil {
+		t.Fatalf("second close = %v", err)
+	}
+	marker := machine.DrainAudio()
+	if err := marker.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if marker.Generation != 2 || len(marker.PCM16) != 0 {
+		t.Fatalf("close audio marker = %+v", marker)
+	}
+	_ = machine.Framebuffer()
+	_ = machine.GNEX32PresentCount()
+
+	empty := &gnex32Machine{}
+	if empty.Framebuffer() != nil || empty.GNEX32PresentCount() != 0 {
+		t.Fatal("empty machine diagnostics are not zero-valued")
+	}
+}
+
+func newApplicationGNEX32AudioMachine(t *testing.T) *gnex32Machine {
+	t.Helper()
+	image := applicationGNEX32AudioImage()
+	runtime, err := gnex32.NewRuntime(image, gnex32VirusIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.RunMain(3); err != nil {
+		t.Fatal(err)
+	}
+	return &gnex32Machine{
+		state:               machinecore.StateRunning,
+		image:               image,
+		runtime:             runtime,
+		budget:              1,
+		audioGeneration:     1,
+		mediaOutputRevision: runtime.AudioOutputRevision(),
 	}
 }
 

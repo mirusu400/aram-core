@@ -39,6 +39,7 @@ type Runtime struct {
 	fontAlign   uint32
 	fontBack    color.RGBA
 	text        *shared.Text
+	closed      bool
 }
 
 type runtimeTimer struct {
@@ -141,6 +142,53 @@ func (r *Runtime) DrainTimedAudio() (shared.AudioBuffer, time.Duration, uint64) 
 
 func (r *Runtime) AudioOutputRevision() uint64 {
 	return r.services.Media.OutputRevision()
+}
+
+func (r *Runtime) AudioTime() time.Duration {
+	return r.services.Clock.Monotonic()
+}
+
+// ResetAudioOutput stops the active GNEX sound and discards PCM that a host has
+// not drained yet. The application publishes a new audio generation at the
+// returned guest time so frontends also discard PCM they already buffered.
+func (r *Runtime) ResetAudioOutput() (time.Duration, uint64, error) {
+	if err := r.stopSound(); err != nil {
+		return 0, r.services.Media.OutputRevision(), err
+	}
+	_ = r.services.Media.Drain()
+	return r.services.Clock.Monotonic(), r.services.Media.OutputRevision(), nil
+}
+
+// Close releases every shared-service object owned by this runtime. Display
+// pixels remain readable for post-close diagnostics.
+func (r *Runtime) Close() error {
+	if r.closed {
+		return nil
+	}
+	if _, _, err := r.ResetAudioOutput(); err != nil {
+		return err
+	}
+	for _, font := range r.text.Snapshot().Fonts {
+		if font.Owner == r.owner {
+			if err := r.text.DestroyFont(r.owner, font.ID); err != nil {
+				return err
+			}
+		}
+	}
+	r.services.Events.DropOwner(r.owner)
+	if err := r.services.Coordinator.Transition(
+		r.owner,
+		shared.LifecycleDestroyed,
+		r.services.Clock.Monotonic(),
+		nil,
+	); err != nil {
+		return err
+	}
+	if err := r.services.Coordinator.Unregister(r.owner); err != nil {
+		return err
+	}
+	r.closed = true
+	return nil
 }
 
 func (r *Runtime) advanceSystemFrame() error {

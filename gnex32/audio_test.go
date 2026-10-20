@@ -126,6 +126,44 @@ func TestGNEX32InvalidReplacementKeepsCurrentSound(t *testing.T) {
 	}
 }
 
+func TestGNEX32RuntimeCloseReleasesSharedResources(t *testing.T) {
+	runtime, err := NewRuntime(
+		gnex32AudioTestImage([][]byte{gnex32TestWave()}),
+		Identity{MIN: "0111234567", UserID: "98B4970F"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.RunMain(3); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.text.EnsureFont(runtime.owner, shared.FontDescriptor{
+		Family: "aram-fallback",
+		Size:   12,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := runtime.services.Registry.Len(); got != 2 {
+		t.Fatalf("registry size before close = %d, want sound and font", got)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatalf("second close = %v", err)
+	}
+	if runtime.soundClip != 0 || runtime.services.Registry.Len() != 0 {
+		t.Fatalf("resources survived close: clip=%d registry=%d",
+			runtime.soundClip, runtime.services.Registry.Len())
+	}
+	if _, err := runtime.services.Coordinator.Adapter(runtime.owner); !errors.Is(err, shared.ErrNotFound) {
+		t.Fatalf("coordinator owner survived close: %v", err)
+	}
+	if audio, _, _ := runtime.DrainTimedAudio(); len(audio.PCM16) != 0 {
+		t.Fatalf("close retained %d queued samples", len(audio.PCM16))
+	}
+}
+
 func gnex32AudioTestImage(media [][]byte) gnex.GNEX32Image {
 	code := make([]byte, 10)
 	putWord(code, 0, 0x06)

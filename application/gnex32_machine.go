@@ -158,6 +158,10 @@ func (m *gnex32Machine) Stop() error {
 	if m.state == machinecore.StateEmpty {
 		return fmt.Errorf("stop from %s: %w", m.state, ErrInvalidState)
 	}
+	if err := m.resetGNEX32AudioLocked(m.runtime.AudioTime()); err != nil {
+		m.state = machinecore.StateFaulted
+		return err
+	}
 	m.state = machinecore.StateStopped
 	return nil
 }
@@ -175,6 +179,13 @@ func (m *gnex32Machine) Reset(ctx context.Context) error {
 	if err != nil {
 		m.state = machinecore.StateFaulted
 		return err
+	}
+	if m.runtime != nil {
+		if err := m.runtime.Close(); err != nil {
+			_ = runtime.Close()
+			m.state = machinecore.StateFaulted
+			return err
+		}
 	}
 	m.runtime = runtime
 	m.mediaOutputRevision = runtime.AudioOutputRevision()
@@ -256,12 +267,18 @@ func gnex32GuestCode(key profile.KeyCode) (uint16, bool) {
 func (m *gnex32Machine) Framebuffer() image.Image {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.runtime == nil {
+		return nil
+	}
 	return m.runtime.Frame()
 }
 
 func (m *gnex32Machine) GNEX32PresentCount() uint64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.runtime == nil {
+		return 0
+	}
 	return m.runtime.PresentCount()
 }
 
@@ -343,15 +360,37 @@ func (m *gnex32Machine) nextGNEX32AudioGenerationLocked(epoch time.Duration) {
 	m.audioCursorValid = false
 }
 
+func (m *gnex32Machine) resetGNEX32AudioLocked(epoch time.Duration) error {
+	if m.runtime != nil {
+		var err error
+		epoch, m.mediaOutputRevision, err = m.runtime.ResetAudioOutput()
+		if err != nil {
+			return err
+		}
+	}
+	m.nextGNEX32AudioGenerationLocked(epoch)
+	return nil
+}
+
 func (*gnex32Machine) SaveState(io.Writer) error { return ErrGVMStateUnavailable }
 func (*gnex32Machine) LoadState(io.Reader) error { return ErrGVMStateUnavailable }
 
 func (m *gnex32Machine) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.closed {
+		return nil
+	}
+	if m.runtime != nil {
+		if err := m.resetGNEX32AudioLocked(m.runtime.AudioTime()); err != nil {
+			return err
+		}
+		if err := m.runtime.Close(); err != nil {
+			return err
+		}
+	}
 	m.closed = true
 	m.state = machinecore.StateStopped
-	m.runtime = nil
 	return nil
 }
 

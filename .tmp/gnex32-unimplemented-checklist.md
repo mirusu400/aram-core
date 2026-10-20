@@ -45,9 +45,9 @@
 - [ ] `PutUserNV/GetUserNV`를 reset 및 앱 재실행 뒤에도 유지되는 영속 저장소에 연결한다.
 - [ ] ZIP의 `.dat`, `user.dat`, `UserNV.sys`를 초기/기존 UserNV와 연결한다.
 - [ ] `Reset`이 UserNV는 보존하고 휘발성 VM/미디어/화면 상태만 초기화하도록 분리한다.
-- [ ] `Stop`에서 이미 프런트엔드에 전달된 오디오를 무효화하는 generation 마커를 발행한다.
-- [ ] `Close`에서 오디오 generation을 무효화하고 media/coordinator 자원을 정리한다.
-- [ ] close 후 `Framebuffer`, `PresentCount`, `DrainAudio`가 nil panic 없이 일관된 계약을 따른다.
+- [x] `Stop`에서 이미 프런트엔드에 전달된 오디오를 무효화하는 generation 마커를 발행한다.
+- [x] `Close`에서 오디오 generation을 무효화하고 media/coordinator 자원을 정리한다.
+- [x] close 후 `Framebuffer`, `PresentCount`, `DrainAudio`가 nil panic 없이 일관된 계약을 따른다.
 
 ## 3. 시간, 타이머, 이벤트
 
