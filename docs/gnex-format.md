@@ -282,9 +282,15 @@ three offsets (`0x1c`, `0x24`, `0x28` after widening); their corresponding code
 starts at absolute offsets 85494, 15206, and 478. This is strong evidence that
 version-4 slots 0, 2, and 3 respectively hold start, timer, and key handler
 addresses. Slots 6 and 7 are also present in the reference image and are exposed
-as the SDK-defined SMS and result handlers. Runtime dispatch currently uses the
-named start, timeout, and key entries; the other host event sources are tracked
-separately from the header-decoding contract.
+as the SDK-defined SMS and result handlers. `Runtime.DispatchEvent` provides one
+typed path for slots 1 through 9 and atomically installs `swData` through
+`swData3` in system symbols 0 through 3 before resetting the callback stacks.
+The application routes stop/reset/close through `EVENT_END`; timer and input use
+their named handlers; and natural sound completion routes to
+`EVENT_RESULT(swData=23)`. Receive, SMS, network, and serial handlers share the
+same public dispatch path, but no event is fabricated while their corresponding
+host producer is absent. Slot 10 stays diagnostic-only until an SDK name or a
+qualified image establishes its contract.
 
 `DecodeAddressInstruction` now captures six recurring address-bearing layouts
 at known code boundaries. In the supplied image, `0x7f` and `0x80` are followed

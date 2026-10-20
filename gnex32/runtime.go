@@ -34,6 +34,10 @@ type DeviceProfile struct {
 
 const maxGNEX32ScreenPixels = 4096 * 4096
 
+// Mobile C reports natural sound completion through EVENT_RESULT with
+// swData=23.
+const ResultSoundComplete uint32 = 23
+
 func (p DeviceProfile) Validate() error {
 	if strings.TrimSpace(p.ID) == "" || len(p.ID) > 255 || strings.IndexByte(p.ID, 0) >= 0 {
 		return fmt.Errorf("gnex32: invalid device profile ID")
@@ -171,6 +175,41 @@ func (r *Runtime) RunMain(budget uint64) error {
 	return nil
 }
 
+// EventAvailable reports whether the image implements a named event handler.
+func (r *Runtime) EventAvailable(event gnex.GNEX32Event) bool {
+	if r == nil || r.vm == nil || event == gnex.GNEX32EventExtension {
+		return false
+	}
+	pointer, valid := r.vm.image.Callbacks.Pointer(event)
+	return valid && pointer != 0
+}
+
+// DispatchEvent invokes a named Mobile C event with swData..swData3. Start is
+// entered through RunMain; the unnamed extension slot is deliberately not a
+// public event source.
+func (r *Runtime) DispatchEvent(event gnex.GNEX32Event, data EventData, budget uint64) error {
+	if r == nil || r.closed {
+		return fmt.Errorf("gnex32: cannot dispatch event on a closed runtime")
+	}
+	if event == gnex.GNEX32EventStart || event == gnex.GNEX32EventExtension ||
+		event >= gnex.GNEX32EventCount {
+		return ErrEventUnavailable
+	}
+	if err := r.vm.BeginEventData(event, data); err != nil {
+		return err
+	}
+	return r.vm.Run(budget)
+}
+
+// End dispatches the optional EVENT_END handler. The application lifecycle
+// decides when a running title ends, so an absent handler is a successful no-op.
+func (r *Runtime) End(budget uint64) error {
+	if !r.EventAvailable(gnex.GNEX32EventEnd) {
+		return nil
+	}
+	return r.DispatchEvent(gnex.GNEX32EventEnd, EventData{}, budget)
+}
+
 // StepFrame advances the host's 60 Hz clock and delivers one due GNEX timer.
 func (r *Runtime) StepFrame(budget uint64) error {
 	r.tick++
@@ -186,14 +225,14 @@ func (r *Runtime) StepFrame(budget uint64) error {
 		} else {
 			timer.active = false
 		}
-		if err := r.vm.BeginEvent(gnex.GNEX32EventTimeout, uint32(slot)); err != nil {
-			return err
-		}
-		if err := r.vm.Run(budget); err != nil {
+		if err := r.DispatchEvent(gnex.GNEX32EventTimeout, EventData{Data: uint32(slot)}, budget); err != nil {
 			return err
 		}
 	}
-	return r.services.AdvanceFrame(r.owner)
+	if err := r.services.AdvanceFrame(r.owner); err != nil {
+		return err
+	}
+	return r.dispatchReadyEvents(budget)
 }
 
 func (r *Runtime) KeyPressed(code uint16, budget uint64) error {
@@ -202,10 +241,42 @@ func (r *Runtime) KeyPressed(code uint16, budget uint64) error {
 			return err
 		}
 	}
-	if err := r.vm.BeginEvent(gnex.GNEX32EventKeyPress, uint32(code)); err != nil {
-		return err
+	return r.DispatchEvent(gnex.GNEX32EventKeyPress, EventData{Data: uint32(code)}, budget)
+}
+
+func (r *Runtime) dispatchReadyEvents(budget uint64) error {
+	for {
+		event, ok := r.services.Events.PopReady(r.services.Clock.Monotonic())
+		if !ok {
+			return nil
+		}
+		if event.Owner != r.owner || event.Kind != shared.EventAudioComplete {
+			return fmt.Errorf("gnex32: unsupported shared event %q", event.Kind)
+		}
+		switch event.ServiceID {
+		case r.keyToneClip:
+			if err := r.services.Media.DestroyClip(r.owner, r.keyToneClip, r.services.Events); err != nil {
+				return err
+			}
+			r.keyToneClip = 0
+		case r.soundClip:
+			if err := r.services.Media.DestroyClip(r.owner, r.soundClip, r.services.Events); err != nil {
+				return err
+			}
+			r.soundClip = 0
+			if r.EventAvailable(gnex.GNEX32EventResult) {
+				if err := r.DispatchEvent(
+					gnex.GNEX32EventResult,
+					EventData{Data: ResultSoundComplete},
+					budget,
+				); err != nil {
+					return err
+				}
+			}
+		default:
+			return fmt.Errorf("gnex32: audio completion for unknown clip %d", event.ServiceID)
+		}
 	}
-	return r.vm.Run(budget)
 }
 
 func (r *Runtime) Frame() image.Image   { return r.display.Frame() }

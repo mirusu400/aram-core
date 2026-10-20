@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"image"
 	"io"
@@ -241,6 +242,10 @@ func (m *gnex32Machine) Stop() error {
 	if m.state == machinecore.StateEmpty {
 		return fmt.Errorf("stop from %s: %w", m.state, ErrInvalidState)
 	}
+	if err := m.endGNEX32Locked(); err != nil {
+		m.state = machinecore.StateFaulted
+		return err
+	}
 	if err := m.resetGNEX32AudioLocked(m.runtime.AudioTime()); err != nil {
 		m.state = machinecore.StateFaulted
 		return err
@@ -256,6 +261,10 @@ func (m *gnex32Machine) Reset(ctx context.Context) error {
 		return fmt.Errorf("GNEX32 machine is closed")
 	}
 	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := m.endGNEX32Locked(); err != nil {
+		m.state = machinecore.StateFaulted
 		return err
 	}
 	var userNV [gnex32.UserNVWords]uint32
@@ -471,23 +480,38 @@ func (m *gnex32Machine) resetGNEX32AudioLocked(epoch time.Duration) error {
 	return nil
 }
 
+func (m *gnex32Machine) endGNEX32Locked() error {
+	if m.runtime == nil ||
+		m.state != machinecore.StateRunning && m.state != machinecore.StatePaused {
+		return nil
+	}
+	if err := m.runtime.End(m.budget); err != nil {
+		return fmt.Errorf("deliver GNEX32 end event at code offset %d: %w", m.runtime.PC(), err)
+	}
+	return nil
+}
+
 func (m *gnex32Machine) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
 		return nil
 	}
+	var result error
 	if m.runtime != nil {
+		if err := m.endGNEX32Locked(); err != nil {
+			result = errors.Join(result, err)
+		}
 		if err := m.resetGNEX32AudioLocked(m.runtime.AudioTime()); err != nil {
-			return err
+			result = errors.Join(result, err)
 		}
 		if err := m.runtime.Close(); err != nil {
-			return err
+			result = errors.Join(result, err)
 		}
 	}
 	m.closed = true
 	m.state = machinecore.StateStopped
-	return nil
+	return result
 }
 
 func (m *gnex32Machine) SourceInfo() machinecore.Source {

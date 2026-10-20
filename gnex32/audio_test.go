@@ -65,6 +65,63 @@ func TestGNEX32PlaySoundProducesTimedAudio(t *testing.T) {
 	t.Fatal("decoded audio is silent")
 }
 
+func TestGNEX32SoundCompletionDispatchesResultAndReleasesClip(t *testing.T) {
+	image := gnex32AudioTestImage([][]byte{gnex32TestWave()})
+	image.Code = append(image.Code, 0x86, 0)
+	image.Callbacks.Result = uint32(image.Header.BodyOffset + 10)
+	runtime, err := NewRuntime(image, gnex32TestDeviceProfile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if err := runtime.RunMain(3); err != nil {
+		t.Fatal(err)
+	}
+	for frame := 0; frame < 20 && runtime.soundClip != 0; frame++ {
+		if err := runtime.StepFrame(1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if runtime.soundClip != 0 {
+		t.Fatal("sound did not complete within 20 frames")
+	}
+	if runtime.services.Registry.Len() != 0 || runtime.services.Events.Len() != 0 {
+		t.Fatalf("completed sound leaked registry/event state: %d/%d",
+			runtime.services.Registry.Len(), runtime.services.Events.Len())
+	}
+	for symbol, want := range []uint32{ResultSoundComplete, 0, 0, 0} {
+		if got, err := runtime.vm.memory.ReadWord(symbol, 0); err != nil || got != want {
+			t.Fatalf("result swData%d = %d, %v; want %d", symbol, got, err, want)
+		}
+	}
+}
+
+func TestGNEX32SoundCompletionWithoutResultHandlerIsOptional(t *testing.T) {
+	runtime, err := NewRuntime(
+		gnex32AudioTestImage([][]byte{gnex32TestWave()}),
+		gnex32TestDeviceProfile(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if err := runtime.RunMain(3); err != nil {
+		t.Fatal(err)
+	}
+	for frame := 0; frame < 20 && runtime.soundClip != 0; frame++ {
+		if err := runtime.StepFrame(1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if runtime.soundClip != 0 {
+		t.Fatal("sound did not complete within 20 frames")
+	}
+	if runtime.services.Registry.Len() != 0 || runtime.services.Events.Len() != 0 {
+		t.Fatalf("optional result cleanup leaked registry/event state: %d/%d",
+			runtime.services.Registry.Len(), runtime.services.Events.Len())
+	}
+}
+
 func TestGNEX32StopSoundPreservesRenderedAudioAndStopsFutureMixing(t *testing.T) {
 	runtime, err := NewRuntime(
 		gnex32AudioTestImage([][]byte{gnex32TestWave()}),

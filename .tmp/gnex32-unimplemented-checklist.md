@@ -59,8 +59,10 @@
   - SDK의 `S_TM_ONCE=0`, `S_TM_REPEAT=1`, `t=0` 정지 계약과 60 Hz 호스트의 ceil 반올림을 고정했다.
 - [x] 여러 타이머가 같은 frame에 만료될 때의 callback 순서와 오류 원자성을 확정한다.
   - slot 0→1→2 순서이며 실패한 callback의 timer/VM fault까지만 커밋하고 이후 slot과 shared clock advance는 중단한다.
-- [ ] header callback slot 1과 4..10의 의미를 식별하고 필요한 이벤트를 연결한다.
-  - 현재 main은 slot 0, timer는 slot 2, key는 slot 3만 사용한다.
+- [x] header callback slot 1과 4..10의 의미를 식별하고 필요한 이벤트를 연결한다.
+  - main/start, end, timeout, key, receive, serial receive, SMS receive, result, network, serial event를 이름 있는 공통 `DispatchEvent` 경로로 연결하고 `swData..swData3`를 원자적으로 전달한다.
+  - machine stop/reset/close는 `EVENT_END`, 자연 사운드 완료는 `EVENT_RESULT(swData=23)`을 전달한다. 외부 producer가 아직 없는 receive/SMS/network/serial 이벤트도 동일한 공개 dispatch 계약으로 호출할 수 있다.
+  - SDK에 공개 명칭이 없는 slot 10은 임의 이벤트로 실행하지 않고 진단 가능한 `Extension` 필드로만 보존한다.
 - [ ] press/release 코드, 키 반복, soft/send/end/숫자키 전체를 실제 GNEX32 계약과 대조한다.
 - [x] pause/resume 중 타이머와 오디오 clock 정지/재개 동작을 명시적으로 테스트한다.
 

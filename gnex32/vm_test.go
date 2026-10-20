@@ -511,8 +511,12 @@ func TestCandidateSavedStackRestoresOnlyValuesAboveMark(t *testing.T) {
 
 func TestCandidateEventDispatchPreservesMemoryAndSetsEventData(t *testing.T) {
 	code := []byte{0xff, 0, 0x04, 0, 0, 0, 0x86, 0}
+	symbols := make([]gnex.GNEX32Symbol, 4)
+	for index := range symbols {
+		symbols[index] = gnex.GNEX32Symbol{Flags: 1, Words: 1, Data: make([]byte, 4)}
+	}
 	image := gnex.GNEX32Image{Header: gnex.Header{BodyOffset: 160}, Code: code, Entry: 160,
-		Symbols: []gnex.GNEX32Symbol{{Flags: 1, Words: 1, Data: make([]byte, 4)}}}
+		Symbols: symbols}
 	image.Callbacks.Timeout = 162
 	vm, err := New(image)
 	if err != nil {
@@ -521,11 +525,50 @@ func TestCandidateEventDispatchPreservesMemoryAndSetsEventData(t *testing.T) {
 	if err := vm.Run(1); err != nil || !vm.Halted() {
 		t.Fatalf("main: err=%v halted=%v", err, vm.Halted())
 	}
-	if err := vm.BeginEvent(gnex.GNEX32EventTimeout, 7); err != nil {
+	data := EventData{Data: 7, Data1: 8, Data2: 9, Data3: 10}
+	if err := vm.BeginEventData(gnex.GNEX32EventTimeout, data); err != nil {
 		t.Fatal(err)
+	}
+	for symbol, want := range data.values() {
+		if got, err := vm.memory.ReadWord(symbol, 0); err != nil || got != want {
+			t.Fatalf("event symbol %d = %d, %v; want %d", symbol, got, err, want)
+		}
 	}
 	if err := vm.Run(2); err != nil || !vm.Halted() || vm.StackTop() != 7 {
 		t.Fatalf("event: err=%v stack=%#v", err, vm.stack)
+	}
+}
+
+func TestCandidateEventDispatchRejectsMissingSystemSymbolAtomically(t *testing.T) {
+	code := []byte{0xff, 0, 0x86, 0}
+	symbols := make([]gnex.GNEX32Symbol, 3)
+	for index := range symbols {
+		data := make([]byte, 4)
+		binary.LittleEndian.PutUint32(data, uint32(100+index))
+		symbols[index] = gnex.GNEX32Symbol{Flags: 1, Words: 1, Data: data}
+	}
+	image := gnex.GNEX32Image{
+		Header: gnex.Header{BodyOffset: 160}, Code: code, Entry: 160,
+		Callbacks: gnex.GNEX32Callbacks{Result: 162}, Symbols: symbols,
+	}
+	vm, err := New(image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.Run(1); err != nil {
+		t.Fatal(err)
+	}
+	beforePC := vm.PC()
+	if err := vm.BeginEventData(gnex.GNEX32EventResult, EventData{Data: 1, Data1: 2, Data2: 3, Data3: 4}); err == nil {
+		t.Fatal("event with a missing swData3 symbol succeeded")
+	}
+	if !vm.Halted() || vm.PC() != beforePC {
+		t.Fatalf("failed event changed control state: halted=%v pc=%d", vm.Halted(), vm.PC())
+	}
+	for symbol, want := range []uint32{100, 101, 102} {
+		if got, err := vm.memory.ReadWord(symbol, 0); err != nil || got != want {
+			t.Fatalf("failed event changed symbol %d to %d, %v", symbol, got, err)
+		}
 	}
 }
 

@@ -51,6 +51,19 @@ type ServiceResult struct {
 	Push []uint32
 }
 
+// EventData contains the four Mobile C system values visible to an event
+// handler as swData through swData3.
+type EventData struct {
+	Data  uint32
+	Data1 uint32
+	Data2 uint32
+	Data3 uint32
+}
+
+func (data EventData) values() [4]uint32 {
+	return [4]uint32{data.Data, data.Data1, data.Data2, data.Data3}
+}
+
 type ServiceHandler func(id uint16, stack []uint32) (ServiceResult, error)
 
 type gnex32SymbolRef struct {
@@ -117,9 +130,16 @@ func (vm *VM) StackTop() uint32 {
 	return vm.stack[len(vm.stack)-1]
 }
 
-// BeginEvent enters one validated header event slot after a completed dispatch.
-// The supplied version-4 image's event callbacks read swData from symbol zero.
+// BeginEvent enters one validated header event slot after a completed dispatch
+// and clears swData1..swData3.
 func (vm *VM) BeginEvent(event gnex.GNEX32Event, eventData uint32) error {
+	return vm.BeginEventData(event, EventData{Data: eventData})
+}
+
+// BeginEventData enters one validated header event slot after a completed
+// dispatch. Event system symbols are validated before any of them or VM control
+// state is changed, so a malformed image cannot observe a partial event.
+func (vm *VM) BeginEventData(event gnex.GNEX32Event, eventData EventData) error {
 	if vm.fault != nil {
 		return vm.fault
 	}
@@ -134,8 +154,16 @@ func (vm *VM) BeginEvent(event gnex.GNEX32Event, eventData uint32) error {
 	if pc < 0 || pc&1 != 0 || pc >= len(vm.image.Code) {
 		return ErrEventUnavailable
 	}
-	if err := vm.memory.WriteWord(0, 0, eventData); err != nil {
-		return err
+	values := eventData.values()
+	for symbol := range values {
+		if _, err := vm.memory.ReadWord(symbol, 0); err != nil {
+			return fmt.Errorf("gnex32: event system symbol %d: %w", symbol, err)
+		}
+	}
+	for symbol, value := range values {
+		if err := vm.memory.WriteWord(symbol, 0, value); err != nil {
+			return fmt.Errorf("gnex32: event system symbol %d: %w", symbol, err)
+		}
 	}
 	vm.pc = pc
 	vm.stack = vm.stack[:0]
