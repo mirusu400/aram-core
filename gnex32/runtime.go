@@ -90,7 +90,9 @@ func NewRuntime(image gnex.GNEX32Image, identity Identity) (*Runtime, error) {
 	if identity.MIN == "" || identity.UserID == "" {
 		return nil, fmt.Errorf("gnex32: handset identity is incomplete")
 	}
-	services, err := shared.NewServices(shared.DefaultConfig())
+	config := shared.DefaultConfig()
+	config.FrameDuration = time.Second / 60
+	services, err := shared.NewServices(config)
 	if err != nil {
 		return nil, err
 	}
@@ -823,6 +825,9 @@ func (r *Runtime) service(id uint16, stack []uint32) (ServiceResult, error) {
 		period := stack[last-1]
 		if period > 60000 {
 			return ServiceResult{}, fmt.Errorf("gnex32: timer period exceeds limit")
+		}
+		if stack[last] > 1 {
+			return ServiceResult{}, fmt.Errorf("gnex32: timer flag %d is outside 0..1", stack[last])
 		}
 		timer := &r.timers[id-0x95]
 		timer.period = period

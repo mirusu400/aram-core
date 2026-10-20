@@ -79,6 +79,15 @@ match; only the deliberately renewed host audio revision differs. At the
 machine boundary, pause rejects frame advancement, leaving both the timer
 callback and shared audio clock stopped until resume.
 
+The three SDK timers accept only `S_TM_ONCE` (0) and `S_TM_REPEAT` (1); a zero
+period disables the selected timer. Millisecond deadlines are rounded up to the
+first 60 Hz frame, simultaneous expirations dispatch slots 0, 1, then 2, and a
+late repeating timer advances its deadline into the future while dispatching
+only once per frame. A failing callback uses fail-stop ordering: its selected
+one-shot is consumed and the VM fault is retained, later slots do not run, and
+the shared clock does not advance. GNEX32 now configures that shared clock to
+the same `time.Second/60` quantum instead of the generic 16 ms default.
+
 ## What a GNEX archive looks like
 
 A paired GNEX title ships as a ZIP containing a basename-matched pair:

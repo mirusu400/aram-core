@@ -55,8 +55,10 @@
 - [x] `GetDate(4)` / `GetTime(5)`의 `time.Now()` 사용을 shared deterministic clock과 장치 timezone으로 교체한다.
 - [x] 날짜/시간이 save/load, replay, 동일 입력 재실행에서 결정적인지 테스트한다.
   - [x] query가 shared clock을 변경하지 않고 동일 clock state에서 결정적인지 확인했다.
-- [ ] `SetTimer0..2`의 60 Hz 반올림, 최초 발화 시점, repeat catch-up 및 동일 tick 순서를 원본과 대조한다.
-- [ ] 여러 타이머가 같은 frame에 만료될 때의 callback 순서와 오류 원자성을 확정한다.
+- [x] `SetTimer0..2`의 60 Hz 반올림, 최초 발화 시점, repeat catch-up 및 동일 tick 순서를 원본과 대조한다.
+  - SDK의 `S_TM_ONCE=0`, `S_TM_REPEAT=1`, `t=0` 정지 계약과 60 Hz 호스트의 ceil 반올림을 고정했다.
+- [x] 여러 타이머가 같은 frame에 만료될 때의 callback 순서와 오류 원자성을 확정한다.
+  - slot 0→1→2 순서이며 실패한 callback의 timer/VM fault까지만 커밋하고 이후 slot과 shared clock advance는 중단한다.
 - [ ] header callback slot 1과 4..10의 의미를 식별하고 필요한 이벤트를 연결한다.
   - 현재 main은 slot 0, timer는 slot 2, key는 slot 3만 사용한다.
 - [ ] press/release 코드, 키 반복, soft/send/end/숫자키 전체를 실제 GNEX32 계약과 대조한다.
