@@ -87,6 +87,12 @@ The product persistence test also advances volatile guest time before reset and
 checks that the fresh runtime returns to zero while all sixteen UserNV words
 survive both save-data relaunch and reset.
 
+GNEX32 also implements the optional core `VideoPresentationMachine` contract.
+It returns an immutable frame snapshot, a content sequence which remains stable
+across identical guest flushes, the current deterministic guest timestamp, and
+the same discontinuity generation used by audio. Load and reset invalidate the
+host snapshot so pixels from an earlier generation cannot be reused.
+
 A deterministic replay regression saves with active sound, then repeats the
 same key input, one-shot timer firing, RNG, UserNV write, time query, drawing,
 and audio drain on both sides of a load. Frame, audio, and final state hashes

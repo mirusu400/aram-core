@@ -153,6 +153,13 @@ type VideoPresentation struct {
 	Generation uint64
 }
 
+// VideoPresentationMachine is an optional zero-copy presentation interface.
+// Sequence identifies immutable pixel content, while GuestNS and Generation
+// let a frontend synchronize it with AudioChunk and discard stale timelines.
+type VideoPresentationMachine interface {
+	VideoPresentation() VideoPresentation
+}
+
 type Machine interface {
 	Load(context.Context, Source) error
 	State() State

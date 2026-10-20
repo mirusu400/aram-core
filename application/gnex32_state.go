@@ -117,6 +117,8 @@ func (m *gnex32Machine) LoadState(input io.Reader) error {
 	m.audioCursorSample = parsed.audioCursorSample
 	m.audioCursorValid = parsed.audioCursorValid
 	m.mediaOutputRevision = candidate.AudioOutputRevision()
+	m.presentation = framePresentationCache{}
+	m.presentationCount = 0
 	// Host buffers may still contain samples from the pre-load timeline. Publish
 	// a generation after the saved one while preserving the restored guest time.
 	m.nextGNEX32AudioGenerationLocked(candidate.AudioTime())

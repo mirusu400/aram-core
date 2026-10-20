@@ -82,7 +82,7 @@
 - [ ] EUC-KR 오류 처리, glyph baseline/advance, solid background 높이와 정렬을 원본 폰트와 대조한다.
 - [ ] font size 0..5 외 값의 native fallback/error 동작을 확인한다.
 - [x] 하드코딩된 120x149 화면과 `swWidth/swHeight`를 장치 profile로 이동한다.
-- [ ] frame timestamp/sequence를 오디오와 같은 guest timeline으로 노출하는 presentation 계약을 추가한다.
+- [x] frame timestamp/sequence를 오디오와 같은 guest timeline으로 노출하는 presentation 계약을 추가한다.
 
 ## 5. 오디오 후속 작업
 

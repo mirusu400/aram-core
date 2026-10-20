@@ -51,6 +51,8 @@ type gnex32Machine struct {
 	audioCursorSample      uint64
 	audioCursorValid       bool
 	mediaOutputRevision    uint64
+	presentation           framePresentationCache
+	presentationCount      uint64
 }
 
 func (f Factory) createGNEX32Machine(ctx context.Context, source machinecore.Source) (machinecore.Machine, bool, error) {
@@ -211,6 +213,8 @@ func (m *gnex32Machine) Reset(ctx context.Context) error {
 	}
 	m.runtime = runtime
 	m.mediaOutputRevision = runtime.AudioOutputRevision()
+	m.presentation = framePresentationCache{}
+	m.presentationCount = 0
 	m.nextGNEX32AudioGenerationLocked(0)
 	m.state = machinecore.StateReady
 	return nil
