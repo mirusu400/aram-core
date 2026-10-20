@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 
 	machinecore "github.com/mirusu400/aram-core/core"
 	"github.com/mirusu400/aram-core/gnex32"
+	"github.com/mirusu400/aram-core/loader/gnex"
 )
 
 func TestGNEX32MachineStateRoundTripAcrossInstances(t *testing.T) {
@@ -175,5 +177,58 @@ func TestGNEX32MachineStateCrossProcess(t *testing.T) {
 	command.Env = append(os.Environ(), helperEnv+"=1", "ARAM_GNEX32_STATE_PATH="+path)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("cross-process restore: %v\n%s", err, output)
+	}
+}
+
+func TestGNEX32PauseStopsTimerAndAudioClockUntilResume(t *testing.T) {
+	code := make([]byte, 16)
+	put := func(offset int, value uint16) { binary.LittleEndian.PutUint16(code[offset:], value) }
+	put(0, 0x05) // pushc period
+	put(2, 16)   // 16 ms rounds to the first 60 Hz frame
+	put(4, 0x05) // pushc one-shot
+	put(6, 0)
+	put(8, 0x92) // service SetTimer0
+	put(10, 0x95)
+	put(12, 0x86) // return from main
+	put(14, 0x86) // timer callback
+	symbols := make([]gnex.GNEX32Symbol, 6)
+	for index := range symbols {
+		symbols[index] = gnex.GNEX32Symbol{Flags: 1, Words: 1, Data: make([]byte, 4)}
+	}
+	image := gnex.GNEX32Image{
+		Header: gnex.Header{BodyOffset: 160}, Entry: 160, Code: code, Symbols: symbols,
+	}
+	image.CodePointers[2] = 174
+	runtime, err := gnex32.NewRuntime(image, gnex32VirusIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	machine := &gnex32Machine{
+		state: machinecore.StateReady, image: image, runtime: runtime, budget: 10,
+		audioGeneration: 1, mediaOutputRevision: runtime.AudioOutputRevision(),
+	}
+	defer machine.Close()
+	if err := machine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	beforeTime, beforePC := machine.runtime.AudioTime(), machine.runtime.PC()
+	if err := machine.Pause(); err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.StepFrame(context.Background()); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("paused StepFrame error = %v", err)
+	}
+	if machine.runtime.AudioTime() != beforeTime || machine.runtime.PC() != beforePC {
+		t.Fatal("paused StepFrame advanced the timer or shared clock")
+	}
+	if err := machine.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.StepFrame(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if machine.runtime.AudioTime() <= beforeTime || machine.runtime.PC() == beforePC {
+		t.Fatalf("resume did not advance timer callback/clock: time=%s pc=%d",
+			machine.runtime.AudioTime(), machine.runtime.PC())
 	}
 }

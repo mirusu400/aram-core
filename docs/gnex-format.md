@@ -72,6 +72,13 @@ that untimestamped pre-load queue so it cannot be played twice. Restore is
 validated on an isolated runtime before commit, including in a separate-process
 round-trip test.
 
+A deterministic replay regression saves with active sound, then repeats the
+same key input, one-shot timer firing, RNG, UserNV write, time query, drawing,
+and audio drain on both sides of a load. Frame, audio, and final state hashes
+match; only the deliberately renewed host audio revision differs. At the
+machine boundary, pause rejects frame advancement, leaving both the timer
+callback and shared audio clock stopped until resume.
+
 ## What a GNEX archive looks like
 
 A paired GNEX title ships as a ZIP containing a basename-matched pair:

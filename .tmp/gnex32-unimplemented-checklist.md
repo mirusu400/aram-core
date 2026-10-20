@@ -53,14 +53,14 @@
 ## 3. 시간, 타이머, 이벤트
 
 - [x] `GetDate(4)` / `GetTime(5)`의 `time.Now()` 사용을 shared deterministic clock과 장치 timezone으로 교체한다.
-- [ ] 날짜/시간이 save/load, replay, 동일 입력 재실행에서 결정적인지 테스트한다.
+- [x] 날짜/시간이 save/load, replay, 동일 입력 재실행에서 결정적인지 테스트한다.
   - [x] query가 shared clock을 변경하지 않고 동일 clock state에서 결정적인지 확인했다.
 - [ ] `SetTimer0..2`의 60 Hz 반올림, 최초 발화 시점, repeat catch-up 및 동일 tick 순서를 원본과 대조한다.
 - [ ] 여러 타이머가 같은 frame에 만료될 때의 callback 순서와 오류 원자성을 확정한다.
 - [ ] header callback slot 1과 4..10의 의미를 식별하고 필요한 이벤트를 연결한다.
   - 현재 main은 slot 0, timer는 slot 2, key는 slot 3만 사용한다.
 - [ ] press/release 코드, 키 반복, soft/send/end/숫자키 전체를 실제 GNEX32 계약과 대조한다.
-- [ ] pause/resume 중 타이머와 오디오 clock 정지/재개 동작을 명시적으로 테스트한다.
+- [x] pause/resume 중 타이머와 오디오 clock 정지/재개 동작을 명시적으로 테스트한다.
 
 ## 4. 그래픽과 텍스트
 
@@ -154,8 +154,8 @@
 - [ ] `ARAM_TEST_DATA`에서 Virus SHA-256 패키지를 CI/로컬 optional test가 찾도록 corpus 경로를 정리한다.
 - [ ] splash → title → menu → help → gameplay 이후의 장시간 자동 입력 probe를 만든다.
 - [ ] 최소 한 번의 완주 또는 모든 상태/메뉴를 포괄하는 trace에서 unsupported opcode/service가 0건임을 확인한다.
-- [ ] 동일 입력 두 번의 frame hash, audio hash, timer/NV 결과가 일치하는 determinism test를 추가한다.
-- [ ] save → 진행 → load → 재진행 결과가 frame/audio/state hash까지 동일한지 검증한다.
+- [x] 동일 입력 두 번의 frame hash, audio hash, timer/NV 결과가 일치하는 determinism test를 추가한다.
+- [x] save → 진행 → load → 재진행 결과가 frame/audio/state hash까지 동일한지 검증한다.
 - [ ] reset/reopen 뒤 UserNV가 유지되고 휘발 상태는 초기화되는 제품 테스트를 추가한다.
 - [ ] Windows 및 지원 대상 빌드에서 전체 `go test ./...`, `go vet ./...`를 통과한다.
 - [ ] 구현 결과에 맞게 `docs/gnex-format.md`의 역사적/상충하는 미구현 문구를 정리한다.

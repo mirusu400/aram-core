@@ -5,9 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	stdimage "image"
 	"image/color"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/mirusu400/aram-core/loader/gnex"
 )
@@ -178,10 +180,102 @@ func TestGNEX32MemoryRestoreIsAtomic(t *testing.T) {
 	}
 }
 
+func TestGNEX32SaveLoadReplayDeterminism(t *testing.T) {
+	image := gnex32StateTestImage()
+	runtime, err := NewRuntime(image, Identity{MIN: "0111234567", UserID: "98B4970F"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if err := runtime.RunMain(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.playSound(1); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := runtime.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type result struct {
+		frame, audio, state [sha256.Size]byte
+		start               time.Duration
+		revision            uint64
+		time                [4]uint32
+		nv                  [UserNVWords]uint32
+		tick                uint64
+		timerActive         bool
+	}
+	exercise := func() result {
+		if err := runtime.KeyPressed(0x14, 1); err != nil {
+			t.Fatal(err)
+		}
+		if err := runtime.KeyPressed(0xff, 1); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := runtime.service(0x95, []uint32{16, 0}); err != nil {
+			t.Fatal(err)
+		}
+		if err := runtime.StepFrame(1); err != nil {
+			t.Fatal(err)
+		}
+		if err := runtime.vm.memory.WriteWord(1, 0, 0x55667788); err != nil {
+			t.Fatal(err)
+		}
+		runtime.vm.refs[0] = gnex32SymbolRef{symbol: 1}
+		if _, err := runtime.service(0x94, []uint32{0, 1}); err != nil {
+			t.Fatal(err)
+		}
+		value, err := runtime.service(0xc9, []uint32{10, 1000})
+		if err != nil {
+			t.Fatal(err)
+		}
+		runtime.display.FillRect(1, 1, 3, 3, color.RGBA{R: byte(value.Push[0]), A: 255})
+		frame := runtime.display.Flush().(*stdimage.RGBA)
+		runtime.vm.refs[0] = gnex32SymbolRef{symbol: 0}
+		if _, err := runtime.service(5, []uint32{0}); err != nil {
+			t.Fatal(err)
+		}
+		timeWords := gnex32TestSymbolWords(t, runtime, 0, 4)
+		audio, start, revision := runtime.DrainTimedAudio()
+		pcm := make([]byte, len(audio.PCM16)*2)
+		for index, sample := range audio.PCM16 {
+			binary.LittleEndian.PutUint16(pcm[index*2:], uint16(sample))
+		}
+		state, err := runtime.MarshalBinary()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result{
+			frame: sha256.Sum256(frame.Pix), audio: sha256.Sum256(pcm), state: sha256.Sum256(state),
+			start: start, revision: revision,
+			time: [4]uint32{timeWords[0], timeWords[1], timeWords[2], timeWords[3]},
+			nv:   runtime.CaptureUserNV(), tick: runtime.tick, timerActive: runtime.timers[0].active,
+		}
+	}
+
+	first := exercise()
+	if err := runtime.UnmarshalBinary(saved); err != nil {
+		t.Fatal(err)
+	}
+	second := exercise()
+	if second.revision != first.revision+1 {
+		t.Fatalf("restored audio revision = %d, want %d", second.revision, first.revision+1)
+	}
+	first.revision, second.revision = 0, 0
+	if first != second {
+		t.Fatalf("save/load replay diverged\nfirst=%+v\nsecond=%+v", first, second)
+	}
+}
+
 func gnex32StateTestImage() gnex.GNEX32Image {
 	image := gnex32AudioTestImage([][]byte{[]byte("initial"), gnex32TestWave()})
-	image.Symbols[0].Words = 2
-	image.Symbols[0].Data = make([]byte, 8)
+	image.Code = []byte{0x86, 0, 0x86, 0, 0x86, 0}
+	image.Symbols[0].Words = 4
+	image.Symbols[0].Data = make([]byte, 16)
 	image.Media[0].Flags = 1
+	image.CodePointers[2] = image.Entry
+	image.CodePointers[3] = image.Entry
 	return image
 }
