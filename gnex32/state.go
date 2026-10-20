@@ -19,7 +19,7 @@ import (
 
 const (
 	gnex32RuntimeStateMagic   = "GNX32RT\x00"
-	gnex32RuntimeStateVersion = uint32(3)
+	gnex32RuntimeStateVersion = uint32(4)
 	// Shared state may itself contain the configured 768 MiB maximum. GNEX
 	// symbol/media memory and the three profile-sized LCD buffers need separate room.
 	MaxRuntimeStateBytes = uint64(850 << 20)
@@ -58,6 +58,7 @@ type runtimeState struct {
 	Services       []byte
 	SoundClip      shared.ServiceID
 	KeyToneClip    shared.ServiceID
+	NetworkSocket  shared.ServiceID
 	KeyToneOn      bool
 	Backlight      BacklightMode
 	Tick           uint64
@@ -204,7 +205,7 @@ func (r *Runtime) snapshotState() (runtimeState, error) {
 	}
 	return runtimeState{
 		VM: r.vm.snapshotState(), Display: r.display.snapshotState(), Services: services,
-		SoundClip: r.soundClip, KeyToneClip: r.keyToneClip,
+		SoundClip: r.soundClip, KeyToneClip: r.keyToneClip, NetworkSocket: r.networkSocket,
 		KeyToneOn: r.keyToneOn, Backlight: r.backlight,
 		Tick: r.tick, Timers: r.timers, Presents: r.presents, NV: r.nv,
 		RandomState: r.randomState,
@@ -235,6 +236,7 @@ func (r *Runtime) MarshalBinary() ([]byte, error) {
 	encodeDisplayState(&output, state.Display)
 	writeStateU64(&output, uint64(state.SoundClip))
 	writeStateU64(&output, uint64(state.KeyToneClip))
+	writeStateU64(&output, uint64(state.NetworkSocket))
 	writeStateBool(&output, state.KeyToneOn)
 	output.WriteByte(byte(state.Backlight))
 	writeStateBool(&output, state.CloseRequested)
@@ -312,6 +314,7 @@ func (r *Runtime) UnmarshalBinary(data []byte) error {
 	}
 	candidate.text = candidate.services.Text
 	candidate.soundClip, candidate.keyToneClip = state.SoundClip, state.KeyToneClip
+	candidate.networkSocket = state.NetworkSocket
 	candidate.keyToneOn, candidate.backlight = state.KeyToneOn, state.Backlight
 	candidate.tick, candidate.timers, candidate.presents = state.Tick, state.Timers, state.Presents
 	candidate.nv, candidate.randomState = state.NV, state.RandomState
@@ -354,6 +357,12 @@ func (r *Runtime) validateRestoredState() error {
 		info, err := r.services.Media.Info(r.owner, clip)
 		if err != nil || info.Owner != r.owner {
 			return fmt.Errorf("gnex32: saved %s clip is invalid", name)
+		}
+	}
+	if r.networkSocket != 0 {
+		info, err := r.services.Network.SocketInfo(r.owner, r.networkSocket)
+		if err != nil || info.Owner != r.owner {
+			return fmt.Errorf("gnex32: saved network socket is invalid")
 		}
 	}
 	return nil
@@ -442,6 +451,7 @@ func decodeRuntimeState(data []byte, template *Runtime) (runtimeState, error) {
 	state.Display = decoder.display(template.display)
 	state.SoundClip = shared.ServiceID(decoder.u64())
 	state.KeyToneClip = shared.ServiceID(decoder.u64())
+	state.NetworkSocket = shared.ServiceID(decoder.u64())
 	state.KeyToneOn = decoder.boolean()
 	state.Backlight = BacklightMode(decoder.u8())
 	state.CloseRequested = decoder.boolean()

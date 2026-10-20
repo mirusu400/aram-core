@@ -132,6 +132,7 @@
   - [x] 수학 서비스 `0xcd Sin100`, `0xce Cos100`, `0xd6 Max3`를 SDK signature와 signed stack 계약에 맞춰 구현한다. (정적 unsupported service 11건 -> 8건)
   - [x] 외부 제어 서비스 `0x07 BackToBrowser`, `0x8e StartVib`, `0x8f StopVib`를 host outbox·guest clock·앱 종료·save/load 계약에 연결한다. (정적 unsupported service 8건 -> 5건)
   - [x] 시스템 정보 서비스 `0x1d8 GetSysInfo`를 SDK의 `PLATFORM`/`VODEX` 반환 계약과 기기 프로필에 연결한다. (정적 unsupported service 5건 -> 4건)
+  - [x] 네트워크 서비스 `0x101 NetConnect`, `0x102 NetDisconnect`, `0x104 NetSend`를 공용 소켓 모델·`EVENT_RESULT`·`swData`·save/load·종료 정리에 연결한다. (정적 unsupported service 4건 -> 1건)
 - [ ] service별 정확한 pop/push 수와 반환값/오류 sentinel을 SDK 문서 또는 참조 실행과 대조한다.
 - [x] `GetSysMin/GetSysUserID`의 하드코딩 identity를 device profile로 이동한다.
 - [x] `GetDate/GetTime` 배열 배치와 고정 timezone/weekday 규칙을 검증한다.

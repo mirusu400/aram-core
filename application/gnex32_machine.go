@@ -257,6 +257,10 @@ func (m *gnex32Machine) Stop() error {
 		m.state = machinecore.StateFaulted
 		return err
 	}
+	if err := m.runtime.StopNetwork(); err != nil {
+		m.state = machinecore.StateFaulted
+		return err
+	}
 	m.state = machinecore.StateStopped
 	return nil
 }
@@ -355,6 +359,10 @@ func (m *gnex32Machine) finishGNEX32CloseRequestLocked() (bool, error) {
 		return false, err
 	}
 	if err := m.runtime.StopVibration(); err != nil {
+		m.state = machinecore.StateFaulted
+		return false, err
+	}
+	if err := m.runtime.StopNetwork(); err != nil {
 		m.state = machinecore.StateFaulted
 		return false, err
 	}

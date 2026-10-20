@@ -88,6 +88,7 @@ type Runtime struct {
 	owner          shared.OwnerID
 	soundClip      shared.ServiceID
 	keyToneClip    shared.ServiceID
+	networkSocket  shared.ServiceID
 	keyToneOn      bool
 	backlight      BacklightMode
 	tick           uint64
@@ -332,6 +333,35 @@ func (r *Runtime) dispatchReadyEvents(budget uint64) error {
 			default:
 				return fmt.Errorf("gnex32: audio completion for unknown clip %d", event.ServiceID)
 			}
+		case shared.EventNetworkReady:
+			var result uint32
+			switch event.Name {
+			case "connect":
+				if event.ServiceID != r.networkSocket {
+					return fmt.Errorf("gnex32: network completion for unknown socket %d", event.ServiceID)
+				}
+				if event.Value != 0 {
+					result = 1
+				} else if err := r.StopNetwork(); err != nil {
+					return err
+				}
+			case "gnex.disconnect":
+				result = uint32(event.Value)
+			case "read":
+				if !r.EventAvailable(gnex.GNEX32EventReceive) {
+					continue
+				}
+				return fmt.Errorf("gnex32: network receive buffer contract is unavailable")
+			default:
+				return fmt.Errorf("gnex32: unsupported network event %q", event.Name)
+			}
+			if r.EventAvailable(gnex.GNEX32EventResult) {
+				if err := r.DispatchEvent(
+					gnex.GNEX32EventResult, EventData{Data: result}, budget,
+				); err != nil {
+					return err
+				}
+			}
 		default:
 			return fmt.Errorf("gnex32: unsupported shared event %q", event.Kind)
 		}
@@ -382,6 +412,21 @@ func (r *Runtime) StopVibration() error {
 	return r.services.Device.Vibrate(0, 0, r.services.Clock.Monotonic())
 }
 
+// StopNetwork closes the single connection owned by the Mobile C network
+// library. GNEX NetConnect exposes one process-wide connection rather than
+// socket handles.
+func (r *Runtime) StopNetwork() error {
+	if r.networkSocket == 0 {
+		return nil
+	}
+	socket := r.networkSocket
+	if err := r.services.Network.CloseSocket(r.owner, socket, r.services.Events); err != nil {
+		return err
+	}
+	r.networkSocket = 0
+	return nil
+}
+
 // ExternalRequests returns a copy of the handset action outbox.
 func (r *Runtime) ExternalRequests() []shared.ExternalRequest {
 	return r.services.Device.Requests()
@@ -423,6 +468,9 @@ func (r *Runtime) Close() error {
 		return err
 	}
 	if err := r.StopVibration(); err != nil {
+		return err
+	}
+	if err := r.StopNetwork(); err != nil {
 		return err
 	}
 	for _, font := range r.text.Snapshot().Fonts {
@@ -588,6 +636,96 @@ func (r *Runtime) service(id uint16, stack []uint32) (ServiceResult, error) {
 		}
 		r.closeRequested = true
 		return ServiceResult{Pop: 1, Halt: true}, nil
+	case 0x101: // NetConnect(IP, Port)
+		if last < 1 {
+			return ServiceResult{}, ErrStackUnderflow
+		}
+		host, err := r.readString(int(stack[last-1]))
+		if err != nil {
+			return ServiceResult{}, err
+		}
+		port := int32(stack[last])
+		if len(host) == 0 || port <= 0 || port > 65535 {
+			return ServiceResult{}, fmt.Errorf("gnex32: invalid NetConnect endpoint %q:%d", host, port)
+		}
+		if err := r.StopNetwork(); err != nil {
+			return ServiceResult{}, err
+		}
+		socket, err := r.services.Network.OpenSocket(r.owner, 2, 1)
+		if err != nil {
+			return ServiceResult{}, err
+		}
+		cleanup := func() { _ = r.services.Network.CloseSocket(r.owner, socket, r.services.Events) }
+		if err := r.services.Network.ConnectSocket(r.owner, socket, string(host), uint16(port)); err != nil {
+			cleanup()
+			return ServiceResult{}, err
+		}
+		r.networkSocket = socket
+		if err := r.services.CompleteSocketResponse(
+			r.owner, socket, r.services.Device.NetworkAvailable(), r.services.Clock.Monotonic(),
+		); err != nil {
+			r.networkSocket = 0
+			cleanup()
+			return ServiceResult{}, err
+		}
+		return ServiceResult{Pop: 2}, nil
+	case 0x102: // NetDisconnect()
+		result := int64(10)
+		connected := r.networkSocket != 0
+		if connected {
+			result = 9
+		}
+		if _, err := r.services.Events.Enqueue(shared.Event{
+			At: r.services.Clock.Monotonic(), Kind: shared.EventNetworkReady,
+			Owner: r.owner, Name: "gnex.disconnect", Value: result,
+		}); err != nil {
+			return ServiceResult{}, err
+		}
+		if connected {
+			if err := r.StopNetwork(); err != nil {
+				return ServiceResult{}, err
+			}
+		}
+		return ServiceResult{}, nil
+	case 0x104: // NetSend(int[], size)
+		if last < 1 {
+			return ServiceResult{}, ErrStackUnderflow
+		}
+		ref, ok := r.vm.refs[last-1]
+		if !ok || ref.element != 0 {
+			return ServiceResult{}, ErrInvalidLValue
+		}
+		size := int64(int32(stack[last]))
+		if size < 0 || size > 1024 {
+			return ServiceResult{}, fmt.Errorf("gnex32: NetSend size %d is outside 0..1024", size)
+		}
+		data, err := r.vm.memory.ReadBytes(ref.symbol, 0, int(size))
+		if err != nil {
+			return ServiceResult{}, err
+		}
+		if _, err := r.vm.memory.ReadWord(0, 0); err != nil {
+			return ServiceResult{}, err
+		}
+		status := uint32(0)
+		if r.networkSocket != 0 {
+			info, infoErr := r.services.Network.SocketInfo(r.owner, r.networkSocket)
+			if infoErr != nil {
+				return ServiceResult{}, infoErr
+			}
+			if info.State == shared.ConnectionConnected {
+				written, writeErr := r.services.WriteSocketRequest(r.owner, r.networkSocket, data)
+				if writeErr != nil {
+					return ServiceResult{}, writeErr
+				}
+				if written == len(data) {
+					status = 1
+				}
+			}
+		}
+		if err := r.vm.memory.WriteWord(0, 0, status); err != nil {
+			return ServiceResult{}, err
+		}
+		return ServiceResult{Pop: 2}, nil
 	case 1: // GetSysMin(string)
 		if last < 0 {
 			return ServiceResult{}, ErrStackUnderflow

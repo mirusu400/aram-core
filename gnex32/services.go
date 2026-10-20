@@ -22,6 +22,7 @@ var gnex32ServiceNames = map[uint16]string{
 	0xae: "MakeStr1", 0xaf: "MakeStr2", 0xb0: "MakeStr3", 0xb1: "MakeStr4", 0xb2: "MakeStr5",
 	0xc8: "RandSeed", 0xc9: "Rand", 0xcb: "Abs", 0xcd: "Sin100", 0xce: "Cos100",
 	0xd6: "Max3", 0xd8: "Min", 0xdd: "ArrayToVar",
+	0x101: "NetConnect", 0x102: "NetDisconnect", 0x104: "NetSend",
 	0x1d8: "GetSysInfo",
 }
 
