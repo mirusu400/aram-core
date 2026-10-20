@@ -23,9 +23,9 @@
 - [x] `0x25 Gamma`의 정확한 인자/범위를 확인하고 실제 팔레트·그리기 색상에 적용한다.
   - SDK의 `SetGamma(int)` 계약대로 0..6, 기본값 3을 적용한다.
   - SKT gamma 표를 `runtime` 공용 위치로 옮겨 GVM/GNEX32가 함께 사용한다.
-- [ ] `0x29 Font`의 정확한 계약을 복원하고 구현한다.
-  - 현재: 인자 하나를 pop하는 no-op이다.
-  - `0x28 SetFontType(size, foreground, background, alignment)`와 역할이 겹치지 않도록 구분한다.
+- [x] `0x29 Font`의 정확한 계약을 복원하고 구현한다.
+  - SDK의 `SetFont(size)` 계약대로 크기 0..5만 변경한다.
+  - `0x28 SetFontType(size, foreground, background, alignment)`의 색·배경·정렬 계약과 분리한다.
 - [ ] `0x90 KeyTone`을 공유 미디어/합성 톤 경로로 구현한다.
   - 키 종류, 음높이, 길이, 중첩/교체, mute 및 타임라인 규칙을 근거와 함께 고정한다.
 - [ ] `0x91 BackLight` 상태를 구현한다.

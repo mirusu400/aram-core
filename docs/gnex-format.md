@@ -45,6 +45,10 @@ level 3 as the neutral default. Palette selectors, RGB image palettes, and the
 current drawing and font colors share the same SKT gamma conversion; invalid
 levels fail without changing the active gamma.
 
+The `SetFont` service changes only the current font size across the six SDK
+sizes (0 through 5). `SetFontType` remains the combined size, foreground,
+background, and alignment operation; both reject an invalid size atomically.
+
 ## What a GNEX archive looks like
 
 A paired GNEX title ships as a ZIP containing a basename-matched pair:

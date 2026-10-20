@@ -70,6 +70,8 @@ type runtimeTimer struct {
 	active bool
 }
 
+var gnex32FontHeights = [...]int32{6, 8, 12, 24, 16, 32}
+
 func NewRuntime(image gnex.GNEX32Image, identity Identity) (*Runtime, error) {
 	if identity.MIN == "" || identity.UserID == "" {
 		return nil, fmt.Errorf("gnex32: handset identity is incomplete")
@@ -285,11 +287,10 @@ func (r *Runtime) drawStr(x, y int32, mediaIndex int, solid bool) error {
 	if err != nil {
 		return err
 	}
-	sizes := [...]int32{6, 8, 12, 24, 16, 32}
-	if r.fontSize >= uint32(len(sizes)) {
+	if r.fontSize >= uint32(len(gnex32FontHeights)) {
 		return fmt.Errorf("gnex32: unsupported font size %d", r.fontSize)
 	}
-	fontID, err := r.text.EnsureFont(r.owner, shared.FontDescriptor{Family: "aram-fallback", Size: sizes[r.fontSize]})
+	fontID, err := r.text.EnsureFont(r.owner, shared.FontDescriptor{Family: "aram-fallback", Size: gnex32FontHeights[r.fontSize]})
 	if err != nil {
 		return err
 	}
@@ -309,7 +310,7 @@ func (r *Runtime) drawStr(x, y int32, mediaIndex int, solid bool) error {
 		x -= width
 	}
 	if solid && r.fontBack.A != 0 && width > 0 {
-		r.display.FillRect(x, y, x+width-1, y+sizes[r.fontSize]-1, r.fontBack)
+		r.display.FillRect(x, y, x+width-1, y+gnex32FontHeights[r.fontSize]-1, r.fontBack)
 	}
 	cursor := x
 	for _, glyph := range glyphs {
@@ -581,6 +582,9 @@ func (r *Runtime) service(id uint16, stack []uint32) (ServiceResult, error) {
 		if last < 3 {
 			return ServiceResult{}, ErrStackUnderflow
 		}
+		if stack[last-3] >= uint32(len(gnex32FontHeights)) {
+			return ServiceResult{}, fmt.Errorf("gnex32: unsupported font size %d", stack[last-3])
+		}
 		fontColor, err := r.display.paletteColor(stack[last-2])
 		if err != nil {
 			return ServiceResult{}, err
@@ -732,7 +736,16 @@ func (r *Runtime) service(id uint16, stack []uint32) (ServiceResult, error) {
 			return ServiceResult{}, err
 		}
 		return ServiceResult{Pop: 1}, nil
-	case 0x29, 0x90, 0x91: // Font, KeyTone, BackLight
+	case 0x29: // SetFont(size)
+		if last < 0 {
+			return ServiceResult{}, ErrStackUnderflow
+		}
+		if stack[last] >= uint32(len(gnex32FontHeights)) {
+			return ServiceResult{}, fmt.Errorf("gnex32: unsupported font size %d", stack[last])
+		}
+		r.fontSize = stack[last]
+		return ServiceResult{Pop: 1}, nil
+	case 0x90, 0x91: // KeyTone, BackLight
 		if last < 0 {
 			return ServiceResult{}, ErrStackUnderflow
 		}

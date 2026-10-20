@@ -1,6 +1,7 @@
 package gnex32
 
 import (
+	"errors"
 	"image/color"
 	"testing"
 )
@@ -53,5 +54,46 @@ func TestSetGammaReappliesTrueColorDrawingState(t *testing.T) {
 	}
 	if runtime.paint != (color.RGBA{A: 255}) {
 		t.Fatalf("dark RGB paint = %#v, want black", runtime.paint)
+	}
+}
+
+func TestSetFontChangesOnlySizeAndValidatesRange(t *testing.T) {
+	runtime := newNVRuntime(t, 4)
+	if _, err := runtime.service(0x28, []uint32{2, 0, 1, 2}); err != nil {
+		t.Fatal(err)
+	}
+	wantColor, wantBack, wantAlign := runtime.fontColor, runtime.fontBack, runtime.fontAlign
+	for size := uint32(0); size < uint32(len(gnex32FontHeights)); size++ {
+		result, err := runtime.service(0x29, []uint32{size})
+		if err != nil {
+			t.Fatalf("SetFont(%d): %v", size, err)
+		}
+		if result.Pop != 1 || len(result.Push) != 0 || runtime.fontSize != size {
+			t.Fatalf("SetFont(%d) result = %+v, stored %d", size, result, runtime.fontSize)
+		}
+		if runtime.fontColor != wantColor || runtime.fontBack != wantBack || runtime.fontAlign != wantAlign {
+			t.Fatalf("SetFont(%d) changed color/background/alignment", size)
+		}
+	}
+	previous := runtime.fontSize
+	if _, err := runtime.service(0x29, []uint32{uint32(len(gnex32FontHeights))}); err == nil {
+		t.Fatal("SetFont accepted an out-of-range size")
+	}
+	if runtime.fontSize != previous {
+		t.Fatal("invalid SetFont changed font size")
+	}
+	if _, err := runtime.service(0x29, nil); !errors.Is(err, ErrStackUnderflow) {
+		t.Fatalf("SetFont underflow error = %v", err)
+	}
+}
+
+func TestSetFontTypeRejectsInvalidSizeAtomically(t *testing.T) {
+	runtime := newNVRuntime(t, 4)
+	beforeSize, beforeColor := runtime.fontSize, runtime.fontColor
+	if _, err := runtime.service(0x28, []uint32{6, 0, 1, 2}); err == nil {
+		t.Fatal("SetFontType accepted an out-of-range size")
+	}
+	if runtime.fontSize != beforeSize || runtime.fontColor != beforeColor {
+		t.Fatal("invalid SetFontType changed font state")
 	}
 }
