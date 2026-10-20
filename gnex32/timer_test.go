@@ -118,7 +118,7 @@ func newGNEX32TimerTestRuntime(t *testing.T, callback []byte) *Runtime {
 	image := gnex.GNEX32Image{
 		Header: gnex.Header{BodyOffset: 160}, Entry: 160, Code: code, Symbols: symbols,
 	}
-	image.CodePointers[2] = 162
+	image.Callbacks.Timeout = 162
 	runtime, err := NewRuntime(image, gnex32TestDeviceProfile())
 	if err != nil {
 		t.Fatal(err)

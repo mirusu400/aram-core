@@ -233,8 +233,29 @@ describes SAL as a one-byte opcode followed by variable operands. The SGS may
 store or widen that stream differently. Do not feed these words to the GVM2X
 bytecode interpreter.
 
-`DecodeGNEX32Image` bounds-checks and exposes the eleven candidate code
-pointers in header slots `0x1c..0x44`, preserving zero as an absent slot. The
+`DecodeGNEX32Image` bounds-checks and exposes the eleven code pointers in
+header slots `0x1c..0x44` as `GNEX32Callbacks`, preserving zero as an absent
+handler. The slot order follows the widened GVM-compatible event table and the
+event-handler set in SinjiSoft's 2004 GNEX programming lecture:
+
+| Slot | Header offset | Exposed field | Mobile C handler |
+|---:|---:|---|---|
+| 0 | `0x1c` | `Start` | `main()` / `EVENT_START()` |
+| 1 | `0x20` | `End` | `EVENT_END()` |
+| 2 | `0x24` | `Timeout` | `EVENT_TIMEOUT()` |
+| 3 | `0x28` | `KeyPress` | `EVENT_KEYPRESS()` |
+| 4 | `0x2c` | `Receive` | `EVENT_RECEIVE()` |
+| 5 | `0x30` | `RSReceive` | `EVENT_RSRECEIVE()` |
+| 6 | `0x34` | `SMSReceive` | `EVENT_SMSRECEIVE()` |
+| 7 | `0x38` | `Result` | `EVENT_RESULT()` |
+| 8 | `0x3c` | `Network` | `EVENT_NETWORK()` |
+| 9 | `0x40` | `RSEvent` | `EVENT_RSEVENT()` |
+| 10 | `0x44` | `Extension` | reserved extension; no public SDK handler name |
+
+The final word remains readable rather than being forced to zero so a later
+format variant can be diagnosed without silently discarding it. The inspector
+reports every slot with this name, its absolute address, code-relative offset,
+and presence flag. The
 fields at relative offsets `0x24`, `0x34`, and `0x38` point to code
 locations whose first aligned word is `0x000c` after adding the 32-byte SGS
 prefix. The unadjusted `0x34` field instead points into a larger apparent
@@ -260,8 +281,10 @@ key presses. The version-4 header has nonzero 32-bit pointer slots at the same
 three offsets (`0x1c`, `0x24`, `0x28` after widening); their corresponding code
 starts at absolute offsets 85494, 15206, and 478. This is strong evidence that
 version-4 slots 0, 2, and 3 respectively hold start, timer, and key handler
-addresses. It does not establish the meanings of slots 6 and 7 (also present in
-this sample), the call convention, or how the version-4 VM dispatches events.
+addresses. Slots 6 and 7 are also present in the reference image and are exposed
+as the SDK-defined SMS and result handlers. Runtime dispatch currently uses the
+named start, timeout, and key entries; the other host event sources are tracked
+separately from the header-decoding contract.
 
 `DecodeAddressInstruction` now captures six recurring address-bearing layouts
 at known code boundaries. In the supplied image, `0x7f` and `0x80` are followed

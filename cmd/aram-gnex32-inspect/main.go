@@ -15,16 +15,25 @@ import (
 )
 
 type report struct {
-	Path                  string          `json:"path"`
-	Title                 string          `json:"title"`
-	FormatVersion         byte            `json:"format_version"`
-	CodeBytes             int             `json:"code_bytes"`
-	Roots                 []int           `json:"roots"`
-	ReachableInstructions int             `json:"reachable_instructions"`
-	ServiceCalls          []serviceCall   `json:"service_calls"`
-	UnsupportedServices   []serviceCall   `json:"unsupported_services,omitempty"`
-	UnknownOpcodes        []opcodeSite    `json:"unknown_opcodes,omitempty"`
-	RuntimeServices       []serviceRecord `json:"runtime_services"`
+	Path                  string           `json:"path"`
+	Title                 string           `json:"title"`
+	FormatVersion         byte             `json:"format_version"`
+	CodeBytes             int              `json:"code_bytes"`
+	Roots                 []int            `json:"roots"`
+	Callbacks             []callbackRecord `json:"callbacks"`
+	ReachableInstructions int              `json:"reachable_instructions"`
+	ServiceCalls          []serviceCall    `json:"service_calls"`
+	UnsupportedServices   []serviceCall    `json:"unsupported_services,omitempty"`
+	UnknownOpcodes        []opcodeSite     `json:"unknown_opcodes,omitempty"`
+	RuntimeServices       []serviceRecord  `json:"runtime_services"`
+}
+
+type callbackRecord struct {
+	Slot       uint8  `json:"slot"`
+	Name       string `json:"name"`
+	Address    uint32 `json:"address"`
+	CodeOffset int    `json:"code_offset"`
+	Present    bool   `json:"present"`
 }
 
 type serviceCall struct {
@@ -116,6 +125,17 @@ func inspectImage(name string, image gnex.GNEX32Image) (report, error) {
 		Path: name, Title: image.Header.Title, FormatVersion: image.Header.FormatVersion,
 		CodeBytes: len(image.Code), Roots: analysis.Roots,
 		ReachableInstructions: analysis.InstructionCount,
+	}
+	for event := gnex.GNEX32EventStart; event < gnex.GNEX32EventCount; event++ {
+		address, _ := image.Callbacks.Pointer(event)
+		offset := -1
+		if address != 0 {
+			offset = int(address) - image.Header.BodyOffset
+		}
+		result.Callbacks = append(result.Callbacks, callbackRecord{
+			Slot: uint8(event), Name: event.String(), Address: address,
+			CodeOffset: offset, Present: address != 0,
+		})
 	}
 	convertCall := func(call gnex32.StaticServiceCall) serviceCall {
 		return serviceCall{

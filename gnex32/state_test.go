@@ -275,7 +275,7 @@ func gnex32StateTestImage() gnex.GNEX32Image {
 	image.Symbols[0].Words = 4
 	image.Symbols[0].Data = make([]byte, 16)
 	image.Media[0].Flags = 1
-	image.CodePointers[2] = image.Entry
-	image.CodePointers[3] = image.Entry
+	image.Callbacks.Timeout = image.Entry
+	image.Callbacks.KeyPress = image.Entry
 	return image
 }

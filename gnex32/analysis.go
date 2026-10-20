@@ -52,7 +52,7 @@ func AnalyzeServices(image gnex.GNEX32Image) (StaticServiceAnalysis, error) {
 	if err := addRoot(image.Entry); err != nil {
 		return StaticServiceAnalysis{}, err
 	}
-	for _, pointer := range image.CodePointers {
+	for _, pointer := range image.Callbacks.Pointers() {
 		if pointer != 0 {
 			if err := addRoot(pointer); err != nil {
 				return StaticServiceAnalysis{}, err

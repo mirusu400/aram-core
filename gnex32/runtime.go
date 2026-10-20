@@ -186,7 +186,7 @@ func (r *Runtime) StepFrame(budget uint64) error {
 		} else {
 			timer.active = false
 		}
-		if err := r.vm.BeginEvent(2, uint32(slot)); err != nil {
+		if err := r.vm.BeginEvent(gnex.GNEX32EventTimeout, uint32(slot)); err != nil {
 			return err
 		}
 		if err := r.vm.Run(budget); err != nil {
@@ -202,7 +202,7 @@ func (r *Runtime) KeyPressed(code uint16, budget uint64) error {
 			return err
 		}
 	}
-	if err := r.vm.BeginEvent(3, uint32(code)); err != nil {
+	if err := r.vm.BeginEvent(gnex.GNEX32EventKeyPress, uint32(code)); err != nil {
 		return err
 	}
 	return r.vm.Run(budget)

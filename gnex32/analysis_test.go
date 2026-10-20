@@ -26,7 +26,7 @@ func TestAnalyzeServicesWalksDirectControlFlow(t *testing.T) {
 	putAnalysisWord(code, 28, 0xbeef)
 	image := gnex.GNEX32Image{
 		Header: gnex.Header{BodyOffset: 160}, Entry: 160, Code: code,
-		CodePointers: [11]uint32{160},
+		Callbacks: gnex.GNEX32Callbacks{Start: 160},
 	}
 
 	got, err := AnalyzeServices(image)

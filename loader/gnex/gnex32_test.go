@@ -39,7 +39,7 @@ func TestDecodeGNEX32Image(t *testing.T) {
 	}
 	if image.Header.FormatVersion != 4 || image.Header.Title != "Test" ||
 		image.EntryField != 0x1007c || image.Entry != 0x1009c || len(image.Symbols) != 1 || len(image.Media) != 1 ||
-		image.CodePointers[0] != image.Entry || image.CodePointers[2] != 0x10098 || image.CodePointers[1] != 0 ||
+		image.Callbacks.Start != image.Entry || image.Callbacks.Timeout != 0x10098 || image.Callbacks.End != 0 ||
 		image.Symbols[0].Flags != 1 || image.Symbols[0].Words != 1 ||
 		image.Media[0].Flags != 0x100 || !bytes.Equal(image.Symbols[0].Data, []byte{1, 2, 3, 4}) {
 		t.Fatalf("decoded layout: %+v", image.Header)
@@ -47,6 +47,37 @@ func TestDecodeGNEX32Image(t *testing.T) {
 	b[0x100a0+24] = 0
 	if image.Media[0].Data[0] != 1 {
 		t.Fatal("input buffer leaked into image")
+	}
+}
+
+func TestGNEX32CallbackSlotsHaveStableNames(t *testing.T) {
+	pointers := [GNEX32EventCount]uint32{}
+	for event := GNEX32EventStart; event < GNEX32EventCount; event++ {
+		pointers[event] = 0x1000 + uint32(event)*4
+	}
+	callbacks := gnex32CallbacksFromPointers(pointers)
+	if got := callbacks.Pointers(); got != pointers {
+		t.Fatalf("callback pointers = %#v, want %#v", got, pointers)
+	}
+	wantNames := []string{
+		"EVENT_START", "EVENT_END", "EVENT_TIMEOUT", "EVENT_KEYPRESS",
+		"EVENT_RECEIVE", "EVENT_RSRECEIVE", "EVENT_SMSRECEIVE", "EVENT_RESULT",
+		"EVENT_NETWORK", "EVENT_RSEVENT", "EXTENSION_10",
+	}
+	for index, want := range wantNames {
+		event := GNEX32Event(index)
+		if got := event.String(); got != want {
+			t.Errorf("event %d name = %q, want %q", index, got, want)
+		}
+		if pointer, ok := callbacks.Pointer(event); !ok || pointer != pointers[index] {
+			t.Errorf("event %d pointer = %#x, %v", index, pointer, ok)
+		}
+	}
+	if pointer, ok := callbacks.Pointer(GNEX32EventCount); ok || pointer != 0 {
+		t.Fatalf("invalid event pointer = %#x, %v", pointer, ok)
+	}
+	if got := GNEX32EventCount.String(); got != "INVALID_EVENT" {
+		t.Fatalf("invalid event name = %q", got)
 	}
 }
 

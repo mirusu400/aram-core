@@ -57,8 +57,8 @@ func TestReferencePackages(t *testing.T) {
 				t.Errorf("%s: unexpected GNEX32 layout", path)
 			}
 			wantPointers := [11]uint32{85494, 0, 15206, 478, 0, 0, 14670, 12882}
-			if image.CodePointers != wantPointers {
-				t.Errorf("%s: unexpected GNEX32 code pointers: %v", path, image.CodePointers)
+			if got := image.Callbacks.Pointers(); got != wantPointers {
+				t.Errorf("%s: unexpected GNEX32 code pointers: %v", path, got)
 			}
 			memory, memoryErr := image.NewSymbolMemory()
 			if memoryErr != nil {
@@ -98,7 +98,7 @@ func TestReferencePackages(t *testing.T) {
 				offset, opcode, word, target, next int
 			}{
 				{entryOffset, 0x85, 0, 0, entryOffset + 6},
-				{int(image.CodePointers[2]) - image.Header.BodyOffset + 8, 0x7f, 0, 15250 - image.Header.BodyOffset, 15222 - image.Header.BodyOffset},
+				{int(image.Callbacks.Timeout) - image.Header.BodyOffset + 8, 0x7f, 0, 15250 - image.Header.BodyOffset, 15222 - image.Header.BodyOffset},
 				{len(image.Code) - 52, 0x81, 0, len(image.Code) - 2, len(image.Code) - 46},
 			} {
 				got, decodeErr := image.DecodeAddressInstruction(tc.offset)

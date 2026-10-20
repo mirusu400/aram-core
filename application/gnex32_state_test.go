@@ -198,7 +198,7 @@ func TestGNEX32PauseStopsTimerAndAudioClockUntilResume(t *testing.T) {
 	image := gnex.GNEX32Image{
 		Header: gnex.Header{BodyOffset: 160}, Entry: 160, Code: code, Symbols: symbols,
 	}
-	image.CodePointers[2] = 174
+	image.Callbacks.Timeout = 174
 	runtime, err := gnex32.NewRuntime(image, gnex32VirusProfile)
 	if err != nil {
 		t.Fatal(err)

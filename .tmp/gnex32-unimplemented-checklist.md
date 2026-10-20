@@ -134,7 +134,9 @@
 
 ## 8. loader, 리소스, 포맷 일반화
 
-- [ ] GNEX32 header의 11개 code pointer slot 의미를 식별하고 이름 있는 필드로 노출한다.
+- [x] GNEX32 header의 11개 code pointer slot 의미를 식별하고 이름 있는 필드로 노출한다.
+  - `GNEX32Callbacks`가 SDK의 `EVENT_START/END/TIMEOUT/KEYPRESS/RECEIVE/RSRECEIVE/SMSRECEIVE/RESULT/NETWORK/RSEVENT` 순서와 공개 명칭이 없는 마지막 extension slot을 보존한다.
+  - loader 단위 테스트가 11개 필드와 배열 slot의 왕복 매핑을 고정하고, `aram-gnex32-inspect`가 이름·주소·code offset·존재 여부를 출력한다.
 - [ ] title checksum 알고리즘을 확인하고 선택적 검증을 추가한다.
 - [ ] symbol flag `0x1/0x100`의 정확한 mutability/initialization 의미를 검증한다.
 - [ ] media flag `0x1/0x101`을 writable로 취급하는 현재 provisional 규칙을 검증한다.

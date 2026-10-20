@@ -119,17 +119,18 @@ func (vm *VM) StackTop() uint32 {
 
 // BeginEvent enters one validated header event slot after a completed dispatch.
 // The supplied version-4 image's event callbacks read swData from symbol zero.
-func (vm *VM) BeginEvent(slot int, eventData uint32) error {
+func (vm *VM) BeginEvent(event gnex.GNEX32Event, eventData uint32) error {
 	if vm.fault != nil {
 		return vm.fault
 	}
 	if !vm.halted {
 		return ErrEventRunning
 	}
-	if slot <= 0 || slot >= len(vm.image.CodePointers) || vm.image.CodePointers[slot] == 0 {
+	pointer, valid := vm.image.Callbacks.Pointer(event)
+	if !valid || event == gnex.GNEX32EventStart || pointer == 0 {
 		return ErrEventUnavailable
 	}
-	pc := int(vm.image.CodePointers[slot]) - vm.image.Header.BodyOffset
+	pc := int(pointer) - vm.image.Header.BodyOffset
 	if pc < 0 || pc&1 != 0 || pc >= len(vm.image.Code) {
 		return ErrEventUnavailable
 	}

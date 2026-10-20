@@ -513,7 +513,7 @@ func TestCandidateEventDispatchPreservesMemoryAndSetsEventData(t *testing.T) {
 	code := []byte{0xff, 0, 0x04, 0, 0, 0, 0x86, 0}
 	image := gnex.GNEX32Image{Header: gnex.Header{BodyOffset: 160}, Code: code, Entry: 160,
 		Symbols: []gnex.GNEX32Symbol{{Flags: 1, Words: 1, Data: make([]byte, 4)}}}
-	image.CodePointers[2] = 162
+	image.Callbacks.Timeout = 162
 	vm, err := New(image)
 	if err != nil {
 		t.Fatal(err)
@@ -521,7 +521,7 @@ func TestCandidateEventDispatchPreservesMemoryAndSetsEventData(t *testing.T) {
 	if err := vm.Run(1); err != nil || !vm.Halted() {
 		t.Fatalf("main: err=%v halted=%v", err, vm.Halted())
 	}
-	if err := vm.BeginEvent(2, 7); err != nil {
+	if err := vm.BeginEvent(gnex.GNEX32EventTimeout, 7); err != nil {
 		t.Fatal(err)
 	}
 	if err := vm.Run(2); err != nil || !vm.Halted() || vm.StackTop() != 7 {

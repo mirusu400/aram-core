@@ -90,7 +90,7 @@ func newApplicationGNEX32PresentationMachine(t *testing.T) *gnex32Machine {
 	image := gnex.GNEX32Image{
 		Header: gnex.Header{BodyOffset: 160}, Entry: 160, Code: code, Symbols: symbols,
 	}
-	image.CodePointers[2] = 186
+	image.Callbacks.Timeout = 186
 	runtime, err := gnex32.NewRuntime(image, gnex32VirusProfile)
 	if err != nil {
 		t.Fatal(err)
