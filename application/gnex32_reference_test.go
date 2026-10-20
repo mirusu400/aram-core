@@ -188,6 +188,7 @@ func TestGNEX32VirusAutomatedInputExecutionTrace(t *testing.T) {
 			stepVirusFrames(t, machine, 120)
 		}
 		assertVirusExecutionTrace(t, machine)
+		assertVirusSoundTrace(t, machine)
 	})
 }
 
@@ -231,5 +232,65 @@ func assertVirusExecutionTrace(t *testing.T, machine machinecore.Machine) {
 				t.Errorf("service %#x has invalid stack sample: %+v", service.ID, call)
 			}
 		}
+	}
+}
+
+func assertVirusSoundTrace(t *testing.T, machine machinecore.Machine) {
+	t.Helper()
+	tracer := machine.(interface{ GNEX32ExecutionTrace() gnex32.ExecutionTrace })
+	trace := tracer.GNEX32ExecutionTrace()
+	played := make(map[uint32]bool)
+	var stops uint64
+	for _, service := range trace.Services {
+		switch service.ID {
+		case 0x82:
+			for _, call := range service.Calls {
+				if call.StackDepth != 1 || len(call.Stack) != 1 || call.Stack[0].Reference {
+					t.Fatalf("PlaySound stack = %+v", call)
+				}
+				played[call.Stack[0].Value] = true
+				product := machine.(*gnex32Machine)
+				index := int(call.Stack[0].Value)
+				if index < 0 || index >= len(product.image.Media) || product.image.Media[index].Flags != 0x200 {
+					t.Fatalf("PlaySound selected non-sound media %d", index)
+				}
+			}
+		case 0x83:
+			stops = service.Count
+		}
+	}
+	if len(played) < 4 || stops == 0 {
+		t.Fatalf("gameplay sound routes = %v, StopSound calls = %d", played, stops)
+	}
+
+	var chunks, samples int
+	var peak int16
+	var previousStart int64 = -1
+	for drain := 0; drain < 128; drain++ {
+		chunk := machine.DrainAudio()
+		if len(chunk.PCM16) == 0 {
+			break
+		}
+		if err := chunk.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		if chunk.StartGuestNS < previousStart {
+			t.Fatalf("audio timestamp moved backward: %d after %d", chunk.StartGuestNS, previousStart)
+		}
+		previousStart = chunk.StartGuestNS
+		chunks++
+		samples += len(chunk.PCM16)
+		for _, sample := range chunk.PCM16 {
+			absolute := sample
+			if absolute < 0 {
+				absolute = -absolute
+			}
+			if absolute > peak {
+				peak = absolute
+			}
+		}
+	}
+	if chunks == 0 || samples == 0 || peak == 0 {
+		t.Fatalf("gameplay audio = chunks %d samples %d peak %d", chunks, samples, peak)
 	}
 }

@@ -183,6 +183,65 @@ func TestGNEX32InvalidReplacementKeepsCurrentSound(t *testing.T) {
 	}
 }
 
+func TestGNEX32PlaySoundReplacesPriorOneShotOnTimeline(t *testing.T) {
+	runtime, err := NewRuntime(
+		gnex32AudioTestImage([][]byte{gnex32TestWave(), gnex32TestWave()}),
+		gnex32TestDeviceProfile(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if err := runtime.playSound(0); err != nil {
+		t.Fatal(err)
+	}
+	first := runtime.soundClip
+	if err := runtime.StepFrame(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.playSound(1); err != nil {
+		t.Fatal(err)
+	}
+	second := runtime.soundClip
+	if second == 0 || second == first {
+		t.Fatalf("replacement clip = %d after %d", second, first)
+	}
+	if _, err := runtime.services.Media.Info(runtime.owner, first); !errors.Is(err, shared.ErrNotFound) {
+		t.Fatalf("replaced clip remains registered: %v", err)
+	}
+	if info, err := runtime.services.Media.Info(runtime.owner, second); err != nil || info.State != shared.ClipPlaying {
+		t.Fatalf("replacement state = %+v, %v", info, err)
+	}
+	if audio, start, _ := runtime.DrainTimedAudio(); len(audio.PCM16) == 0 || start != 0 {
+		t.Fatalf("replacement discarded pre-call PCM: samples=%d start=%s", len(audio.PCM16), start)
+	}
+	if err := runtime.StepFrame(1); err != nil {
+		t.Fatal(err)
+	}
+	if audio, _, _ := runtime.DrainTimedAudio(); len(audio.PCM16) == 0 {
+		t.Fatal("replacement produced no post-call PCM")
+	}
+}
+
+func TestGNEX32PlaySoundRejectsInvalidResourcesWithoutGuestSentinel(t *testing.T) {
+	runtime, err := NewRuntime(
+		gnex32AudioTestImage([][]byte{nil, []byte("MM"), []byte("NOPE")}),
+		gnex32TestDeviceProfile(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	for _, index := range []int{-1, 0, 1, 2, 3} {
+		if err := runtime.playSound(index); err == nil {
+			t.Errorf("playSound(%d) accepted invalid resource", index)
+		}
+		if runtime.soundClip != 0 {
+			t.Fatalf("playSound(%d) retained clip %d", index, runtime.soundClip)
+		}
+	}
+}
+
 func TestGNEX32KeyToneFrequenciesAndWave(t *testing.T) {
 	tests := []struct {
 		code      uint16
