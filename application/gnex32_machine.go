@@ -35,6 +35,59 @@ var gnex32VirusProfile = gnex32.DeviceProfile{
 	MMIBacklightEnabled: true,
 }
 
+type gnex32CompatibilityProfile struct {
+	SHA256 string
+	Title  string
+	Device gnex32.DeviceProfile
+}
+
+type gnex32CompatibilityRegistry map[string]gnex32CompatibilityProfile
+
+var gnex32CompatibilityProfiles = mustGNEX32CompatibilityRegistry([]gnex32CompatibilityProfile{
+	{SHA256: GNEX32VirusSHA256, Title: "바이러스무삭제", Device: gnex32VirusProfile},
+})
+
+func newGNEX32CompatibilityRegistry(entries []gnex32CompatibilityProfile) (gnex32CompatibilityRegistry, error) {
+	registry := make(gnex32CompatibilityRegistry, len(entries))
+	profileIDs := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		digest := strings.ToLower(entry.SHA256)
+		decoded, err := hex.DecodeString(digest)
+		if err != nil || len(decoded) != sha256.Size || digest != entry.SHA256 {
+			return nil, fmt.Errorf("invalid GNEX32 compatibility SHA-256 %q", entry.SHA256)
+		}
+		if strings.TrimSpace(entry.Title) == "" || strings.IndexByte(entry.Title, 0) >= 0 {
+			return nil, fmt.Errorf("GNEX32 compatibility %s has invalid title", digest)
+		}
+		if err := entry.Device.Validate(); err != nil {
+			return nil, fmt.Errorf("GNEX32 compatibility %s: %w", digest, err)
+		}
+		if _, duplicate := registry[digest]; duplicate {
+			return nil, fmt.Errorf("duplicate GNEX32 compatibility SHA-256 %s", digest)
+		}
+		if profileIDs[entry.Device.ID] {
+			return nil, fmt.Errorf("duplicate GNEX32 compatibility profile ID %q", entry.Device.ID)
+		}
+		entry.SHA256 = digest
+		registry[digest] = entry
+		profileIDs[entry.Device.ID] = true
+	}
+	return registry, nil
+}
+
+func mustGNEX32CompatibilityRegistry(entries []gnex32CompatibilityProfile) gnex32CompatibilityRegistry {
+	registry, err := newGNEX32CompatibilityRegistry(entries)
+	if err != nil {
+		panic(err)
+	}
+	return registry
+}
+
+func (registry gnex32CompatibilityRegistry) Lookup(digest string) (gnex32CompatibilityProfile, bool) {
+	profile, ok := registry[strings.ToLower(digest)]
+	return profile, ok
+}
+
 type gnex32Machine struct {
 	mu      sync.Mutex
 	state   machinecore.State
@@ -56,7 +109,8 @@ type gnex32Machine struct {
 }
 
 func (f Factory) createGNEX32Machine(ctx context.Context, source machinecore.Source) (machinecore.Machine, bool, error) {
-	if source.Format != string(loader.KindGNEX) && !strings.EqualFold(source.SHA256, GNEX32VirusSHA256) {
+	_, hashQualified := gnex32CompatibilityProfiles.Lookup(source.SHA256)
+	if source.Format != string(loader.KindGNEX) && !hashQualified {
 		return nil, false, nil
 	}
 	if err := ctx.Err(); err != nil {
@@ -80,7 +134,8 @@ func (f Factory) createGNEX32Machine(ctx context.Context, source machinecore.Sou
 	if source.SHA256 != "" && !strings.EqualFold(source.SHA256, actual) {
 		return nil, true, fmt.Errorf("load %q: SHA-256 mismatch: expected %s, got %s", source.Name, source.SHA256, actual)
 	}
-	if actual != GNEX32VirusSHA256 {
+	compatibility, qualified := gnex32CompatibilityProfiles.Lookup(actual)
+	if !qualified {
 		return nil, false, nil
 	}
 	pkg, err := gnex.Inspect(data)
@@ -95,10 +150,16 @@ func (f Factory) createGNEX32Machine(ctx context.Context, source machinecore.Sou
 	if err != nil {
 		return nil, true, err
 	}
+	if image.Header.Title != compatibility.Title {
+		return nil, true, fmt.Errorf(
+			"GNEX32 compatibility profile %q expects title %q, got %q",
+			compatibility.Device.ID, compatibility.Title, image.Header.Title,
+		)
+	}
 	if _, err := gnex32.Preflight(image); err != nil {
 		return nil, true, fmt.Errorf("preflight GNEX32 compatibility for %q: %w", source.Name, err)
 	}
-	runtime, err := gnex32.NewRuntime(image, gnex32VirusProfile)
+	runtime, err := gnex32.NewRuntime(image, compatibility.Device)
 	if err != nil {
 		return nil, true, err
 	}
@@ -107,7 +168,7 @@ func (f Factory) createGNEX32Machine(ctx context.Context, source machinecore.Sou
 	}
 	source.SHA256 = actual
 	source.Format = string(loader.KindGNEX)
-	source.ProfileID = GNEX32VirusProfileID
+	source.ProfileID = compatibility.Device.ID
 	budget := f.FrameRunBudget
 	if budget == 0 {
 		budget = 1_000_000
@@ -116,7 +177,7 @@ func (f Factory) createGNEX32Machine(ctx context.Context, source machinecore.Sou
 		state:               machinecore.StateReady,
 		source:              source,
 		image:               image,
-		profile:             gnex32VirusProfile,
+		profile:             compatibility.Device,
 		runtime:             runtime,
 		budget:              budget,
 		audioGeneration:     1,

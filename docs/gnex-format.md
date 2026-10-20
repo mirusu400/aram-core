@@ -69,6 +69,14 @@ Runtime construction, reset, and state loading all reuse that same profile;
 tests also instantiate a non-Virus geometry and identity to prevent those values
 from becoming implicit VM constants again.
 
+Product routing uses a validated compatibility-profile registry keyed by a
+canonical SHA-256 rather than an inline Virus-only hash branch. Each entry binds
+the exact digest and decoded title to one validated device profile; duplicate
+hashes, duplicate profile IDs, malformed digests, empty titles, and invalid
+device data are rejected when the registry is built. The current registry still
+contains only the qualified Virus title, but adding another proven title is now
+a data registration followed by the same title check and capability preflight.
+
 GNEX32 machine save states are now versioned, checksummed, size-bounded, and
 bound to the exact source SHA-256. They preserve VM stacks and lvalue
 references, symbol and mutable media memory, timers and drawing state, all

@@ -147,7 +147,8 @@
 
 ## 9. 제품 라우팅과 호환성 범위
 
-- [ ] `createGNEX32Machine`의 단일 SHA-256 허용을 compatibility/profile 판정으로 일반화한다.
+- [x] `createGNEX32Machine`의 단일 SHA-256 허용을 compatibility/profile 판정으로 일반화한다.
+  - canonical SHA-256·title·device profile을 묶는 검증 registry가 라우팅을 결정하며, 중복 hash/profile ID와 잘못된 profile은 등록 단계에서 거부한다.
 - [x] 구조적으로 유효하지만 미지원인 GNEX32 패키지에 정확한 capability 진단을 제공한다.
 - [x] hard-coded Virus identity/display/profile 값을 profile 데이터로 이동한다.
 - [x] `application/machine_load.go`의 오래된 "GNEX v4 미구현" fallback 문구를 현재 상태에 맞춘다.
