@@ -160,6 +160,15 @@ type VideoPresentationMachine interface {
 	VideoPresentation() VideoPresentation
 }
 
+// SaveDataMachine exposes restart-persistent guest data independently from a
+// complete volatile save state. Import is intended before guest execution
+// resumes; implementations reject lifecycle states where an atomic replacement
+// cannot be guaranteed.
+type SaveDataMachine interface {
+	ExportSaveData() ([]byte, error)
+	ImportSaveData([]byte) error
+}
+
 // VibrationMachine exposes guest-requested haptic feedback to a host without
 // making it part of the mandatory machine lifecycle.
 type VibrationMachine interface {

@@ -29,6 +29,8 @@ type gnex32SaveDataEnvelope struct {
 	UserNV  [gnex32.UserNVWords]uint32
 }
 
+var _ machinecore.SaveDataMachine = (*gnex32Machine)(nil)
+
 // ExportSaveData serializes the 64-byte user non-volatile area that survives a
 // GNEX title restart. As with the other application backends, callers snapshot
 // only at a lifecycle boundary where guest execution is not running.
