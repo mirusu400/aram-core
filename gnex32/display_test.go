@@ -293,3 +293,62 @@ func TestDisplayGammaMapsFixedAndDynamicImagePalettes(t *testing.T) {
 		t.Fatalf("invalid gamma result = %v, current %d", err, dark.Gamma())
 	}
 }
+
+func TestDisplayMapsEveryMobileCImagePaletteAndTransparencyKind(t *testing.T) {
+	red := color.RGBA{R: 255, A: 255}
+	green := color.RGBA{G: 255, A: 255}
+	white := color.RGBA{R: 255, G: 255, B: 255, A: 255}
+	black := color.RGBA{A: 255}
+	blue := color.RGBA{B: 255, A: 255}
+	tests := []struct {
+		name  string
+		data  []byte
+		want0 color.RGBA
+		want1 color.RGBA
+	}{
+		{"gray1 transparent zero", []byte{0x02, 2, 1, 0, 0, 3, 0x40, 0}, blue, black},
+		{"color1 opaque zero", []byte{0x05, 2, 1, 0, 0, 0, 3, 0x40}, white, black},
+		{"color2 selectors", []byte{0x06, 2, 1, 0, 0, 0, 3, 2, 1, 0x40}, black, white},
+		{"color4 selectors", []byte{0x07, 2, 1, 0, 0, 0, 3, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x10}, black, white},
+		{"true color1 transparent zero", []byte{0x09, 2, 1, 0, 0, 1, 2, 255, 0, 0, 0, 255, 0, 0x40}, blue, green},
+		{"true color2 RGB opaque zero", []byte{0x0a, 2, 1, 0, 0, 0, 2, 255, 0, 0, 0, 255, 0, 0x10}, red, green},
+		{"true color4 RGB opaque zero", []byte{0x0b, 2, 1, 0, 0, 0, 2, 255, 0, 0, 0, 255, 0, 0x01}, red, green},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			display := NewDisplay(2, 1)
+			display.Clear(blue)
+			if err := display.CopyImage(0, 0, test.data); err != nil {
+				t.Fatal(err)
+			}
+			if got := display.working.RGBAAt(0, 0); got != test.want0 {
+				t.Errorf("pixel zero = %#v, want %#v", got, test.want0)
+			}
+			if got := display.working.RGBAAt(1, 0); got != test.want1 {
+				t.Errorf("pixel one = %#v, want %#v", got, test.want1)
+			}
+		})
+	}
+}
+
+func TestDisplayRoundRectUsesInclusiveCoordinatesAndClip(t *testing.T) {
+	ink := color.RGBA{R: 255, A: 255}
+	display := NewDisplay(6, 6)
+	display.SetClip(2, 2, 4, 4)
+	display.FillRectRound(1, 1, 4, 4, 0, ink)
+	for y := 0; y < 6; y++ {
+		for x := 0; x < 6; x++ {
+			want := color.RGBA{}
+			if x >= 2 && x <= 4 && y >= 2 && y <= 4 {
+				want = ink
+			}
+			if got := display.working.RGBAAt(x, y); got != want {
+				t.Fatalf("pixel (%d,%d) = %#v, want %#v", x, y, got, want)
+			}
+		}
+	}
+	display.DrawRectRound(4, 4, 3, 3, 2, color.RGBA{G: 255, A: 255})
+	if got := display.working.RGBAAt(3, 3); got != ink {
+		t.Fatalf("reversed rounded rectangle changed pixel to %#v", got)
+	}
+}

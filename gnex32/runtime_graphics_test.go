@@ -2,10 +2,12 @@ package gnex32
 
 import (
 	"errors"
+	"image"
 	"image/color"
 	"testing"
 
 	"github.com/mirusu400/aram-core/loader/gnex"
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 func TestSetGammaReappliesSelectedDrawingAndFontColors(t *testing.T) {
@@ -153,6 +155,120 @@ func TestDrawRectServiceDrawsInclusiveClippedOutline(t *testing.T) {
 	if _, err := runtime.service(0x45, []uint32{1, 2, 3}); !errors.Is(err, ErrStackUnderflow) {
 		t.Fatalf("DrawRect underflow error = %v", err)
 	}
+}
+
+func TestDrawStrUsesEUCKRAdvanceAlignmentAndSolidFontCell(t *testing.T) {
+	runtime := newDeviceServiceRuntime(t, []byte{0x86, 0}, []gnex.GNEX32Media{
+		{Flags: 0, Data: []byte{0xb0, 0xa1, 'A', 0}}, // "가A" in EUC-KR
+	})
+	defer runtime.Close()
+	fontID, err := runtime.text.EnsureFont(runtime.owner, shared.FontDescriptor{
+		Family: "aram-fallback", Size: gnex32FontHeights[2],
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hangul, err := runtime.text.Glyph(runtime.owner, fontID, '가')
+	if err != nil {
+		t.Fatal(err)
+	}
+	latin, err := runtime.text.Glyph(runtime.owner, fontID, 'A')
+	if err != nil {
+		t.Fatal(err)
+	}
+	width := hangul.Advance + latin.Advance
+	if width <= 0 {
+		t.Fatalf("text advance = %d", width)
+	}
+
+	for _, test := range []struct {
+		name  string
+		align uint32
+		x     int32
+		left  int32
+	}{
+		{"left", 0, 30, 30},
+		{"center", 1, 30, 30 - width/2},
+		{"right", 2, 30, 30 - width},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runtime.display.Clear(color.RGBA{})
+			if _, err := runtime.service(0x28, []uint32{2, 3, 0, test.align}); err != nil {
+				t.Fatal(err)
+			}
+			if err := runtime.drawStr(test.x, 4, 0, true); err != nil {
+				t.Fatal(err)
+			}
+			want := image.Rect(int(test.left), 4, int(test.left+width), 4+int(gnex32FontHeights[2]))
+			if got := nonTransparentBounds(runtime.display.working); got != want {
+				t.Fatalf("solid text bounds = %v, want %v", got, want)
+			}
+			var foreground, background int
+			for y := want.Min.Y; y < want.Max.Y; y++ {
+				for x := want.Min.X; x < want.Max.X; x++ {
+					switch runtime.display.working.RGBAAt(x, y) {
+					case (color.RGBA{A: 255}):
+						foreground++
+					case (color.RGBA{R: 255, G: 255, B: 255, A: 255}):
+						background++
+					default:
+						t.Fatalf("unexpected text pixel at (%d,%d)", x, y)
+					}
+				}
+			}
+			if foreground == 0 || background == 0 {
+				t.Fatalf("solid text pixels = foreground %d background %d", foreground, background)
+			}
+		})
+	}
+}
+
+func TestDrawStrReplacesMalformedEUCKRDeterministically(t *testing.T) {
+	runtime := newDeviceServiceRuntime(t, []byte{0x86, 0}, []gnex.GNEX32Media{
+		{Flags: 0, Data: []byte{0xb0, 0}},
+	})
+	defer runtime.Close()
+	if _, err := runtime.service(0x28, []uint32{2, 3, 0, 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.drawStr(2, 3, 0, true); err != nil {
+		t.Fatal(err)
+	}
+	fontID, err := runtime.text.EnsureFont(runtime.owner, shared.FontDescriptor{
+		Family: "aram-fallback", Size: gnex32FontHeights[2],
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := runtime.text.Glyph(runtime.owner, fontID, '�')
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := image.Rect(2, 3, 2+int(replacement.Advance), 3+int(gnex32FontHeights[2]))
+	if got := nonTransparentBounds(runtime.display.working); got != want {
+		t.Fatalf("replacement glyph bounds = %v, want %v", got, want)
+	}
+}
+
+func nonTransparentBounds(pixels *image.RGBA) image.Rectangle {
+	bounds := pixels.Bounds()
+	result := image.Rectangle{}
+	found := false
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			if pixels.RGBAAt(x, y).A == 0 {
+				continue
+			}
+			point := image.Pt(x, y)
+			if !found {
+				result = image.Rectangle{Min: point, Max: point.Add(image.Pt(1, 1))}
+				found = true
+			} else {
+				result = result.Union(image.Rectangle{Min: point, Max: point.Add(image.Pt(1, 1))})
+			}
+		}
+	}
+	return result
 }
 
 func TestSetPaletteColorRGBRendersSelectorImagesAndSurvivesSave(t *testing.T) {
