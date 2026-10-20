@@ -47,6 +47,17 @@ func TestReferencePackages(t *testing.T) {
 			t.Errorf("%s: incomplete parsed package", path)
 			return nil
 		}
+		if pkg.Header.ApplicationID != pkg.Header.TitleChecksum {
+			t.Errorf("%s: deprecated application ID alias differs", path)
+		}
+		legacyApplicationIDs := map[string]uint16{
+			".hack//sign": 34064, "놈": 34043, "라그나로크 외전": 34059,
+			"마시마로격투 맞고": 34298, "북벌": 34070, "생과일 타이쿤": 34300,
+			"스트립맞고(여)": 34206, "짜요짜요타이쿤": 34048, "판타지 블루": 34006,
+		}
+		if want, ok := legacyApplicationIDs[pkg.Header.Title]; ok && pkg.Header.ApplicationID != want {
+			t.Errorf("%s: application ID = %d, want %d", path, pkg.Header.ApplicationID, want)
+		}
 		if fmt.Sprintf("%x", sha256.Sum256(data)) == "bf9cd39b1ae14ba2a5f005d66fde5390e53cb400bd36940d4b09dcbfe9f03883" {
 			image, decodeErr := DecodeGNEX32Image(pkg.SGS)
 			if decodeErr != nil {

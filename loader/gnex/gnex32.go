@@ -316,7 +316,11 @@ func DecodeGNEX32Image(data []byte) (GNEX32Image, error) {
 		return bad(prefix+10, "invalid GNEX32 title")
 	}
 	image := GNEX32Image{
-		Header: Header{FormatVersion: 4, TitleChecksum: binary.LittleEndian.Uint16(data[prefix+6:]), Title: title, PrefixOffset: prefix, BodyOffset: codeStart},
+		Header: func() Header {
+			applicationID := binary.LittleEndian.Uint16(data[prefix+6:])
+			return Header{FormatVersion: 4, ApplicationID: applicationID, TitleChecksum: applicationID,
+				Title: title, PrefixOffset: prefix, BodyOffset: codeStart}
+		}(),
 		Buffer: bytes.Clone(data), Entry: codePointers[0], EntryField: entryField,
 		Callbacks: gnex32CallbacksFromPointers(codePointers),
 		Symbols:   make([]GNEX32Symbol, ns), Media: make([]GNEX32Media, nm),
