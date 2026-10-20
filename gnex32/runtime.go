@@ -275,12 +275,12 @@ func (r *Runtime) copyImageDir(x, y int32, index int, direction uint32) error {
 	return r.display.CopyImageDir(x, y, resource, direction)
 }
 
-func (r *Runtime) copyImageEx(x, y int32, index int, alpha, direction uint32) error {
+func (r *Runtime) copyImageEx(x, y int32, index int, alpha, zoom, mirror, rotation uint32) error {
 	resource, _, err := r.vm.media.Read(index)
 	if err != nil {
 		return err
 	}
-	return r.display.CopyImageEx(x, y, resource, alpha, direction)
+	return r.display.CopyImageEx(x, y, resource, alpha, zoom, mirror, rotation)
 }
 
 func (r *Runtime) refreshGammaColors() error {

@@ -181,28 +181,34 @@ func (d *Display) DrawLine(x1, y1, x2, y2 int32, fill color.RGBA) {
 }
 
 func (d *Display) CopyImage(x, y int32, data []byte) error {
-	return d.copyImageWithAlpha(x, y, data, 0, 0)
+	return d.copyImageTransformed(x, y, data, 0, 0, 0, 0)
 }
 
 func (d *Display) CopyImageDir(x, y int32, data []byte, direction uint32) error {
-	return d.copyImageWithAlpha(x, y, data, direction, 0)
+	return d.copyImageTransformed(x, y, data, 0, 0, direction, 0)
 }
 
-func (d *Display) CopyImageEx(x, y int32, data []byte, alpha, direction uint32) error {
-	return d.copyImageWithAlpha(x, y, data, direction, alpha)
+func (d *Display) CopyImageEx(x, y int32, data []byte, alpha, zoom, mirror, rotation uint32) error {
+	return d.copyImageTransformed(x, y, data, alpha, zoom, mirror, rotation)
 }
 
-func (d *Display) copyImageWithAlpha(x, y int32, data []byte, direction, alpha uint32) error {
-	if direction > 1 {
-		return fmt.Errorf("gnex32: unsupported CopyImage direction %d", direction)
+func (d *Display) copyImageTransformed(x, y int32, data []byte, alpha, zoom, mirror, rotation uint32) error {
+	if mirror > 1 {
+		return fmt.Errorf("gnex32: unsupported CopyImage mirror %d", mirror)
 	}
-	if alpha > 3 {
+	if alpha > 5 {
 		return fmt.Errorf("gnex32: unsupported CopyImage alpha %d", alpha)
+	}
+	if zoom > 1 {
+		return fmt.Errorf("gnex32: unsupported CopyImage zoom %d", zoom)
+	}
+	if rotation > 3 {
+		return fmt.Errorf("gnex32: unsupported CopyImage rotation %d", rotation)
 	}
 	if len(data) == 0 {
 		return fmt.Errorf("gnex32: empty CopyImage resource")
 	}
-	var width, anchorX, anchorY int
+	var width, height, anchorX, anchorY int
 	var pixels []byte
 	var colors []color.RGBA
 	transparentZero := false
@@ -212,7 +218,7 @@ func (d *Display) copyImageWithAlpha(x, y int32, data []byte, direction, alpha u
 		if err != nil {
 			return err
 		}
-		width, anchorX, anchorY = image.Width, image.AnchorX, image.AnchorY
+		width, height, anchorX, anchorY = image.Width, image.Height, image.AnchorX, image.AnchorY
 		pixels = image.Pixels
 		color0, err := d.paletteColor(uint32(image.Color0))
 		if err != nil {
@@ -229,7 +235,7 @@ func (d *Display) copyImageWithAlpha(x, y int32, data []byte, direction, alpha u
 		if err != nil {
 			return err
 		}
-		width, anchorX, anchorY = image.Width, image.AnchorX, image.AnchorY
+		width, height, anchorX, anchorY = image.Width, image.Height, image.AnchorX, image.AnchorY
 		pixels = image.Pixels
 		transparentZero = image.Mode == 1
 		if len(image.PaletteIndices) != 0 {
@@ -251,11 +257,12 @@ func (d *Display) copyImageWithAlpha(x, y int32, data []byte, direction, alpha u
 	default:
 		return fmt.Errorf("gnex32: unsupported CopyImage kind %#x", data[0])
 	}
-	baseX := int(x) - anchorX
-	baseY := int(y) - anchorY
-	if direction == 1 {
-		baseX = int(x) - (width - 1 - anchorX)
-	}
+	transformedAnchorX, transformedAnchorY := transformGNEX32ImagePoint(
+		anchorX, anchorY, width, height, mirror, rotation,
+	)
+	scale := int(zoom) + 1
+	baseX := int(x) - transformedAnchorX*scale
+	baseY := int(y) - transformedAnchorY*scale
 	for index, paletteIndex := range pixels {
 		if transparentZero && paletteIndex == 0 {
 			continue
@@ -263,26 +270,55 @@ func (d *Display) copyImageWithAlpha(x, y int32, data []byte, direction, alpha u
 		if colors[paletteIndex].A == 0 {
 			continue
 		}
-		column := index % width
-		if direction == 1 {
-			column = width - 1 - column
-		}
-		destinationX := baseX + column
-		destinationY := baseY + index/width
-		if image.Pt(destinationX, destinationY).In(d.clip) {
-			pixel := colors[paletteIndex]
-			if alpha != 0 {
-				old := d.working.RGBAAt(destinationX, destinationY)
-				pixel = color.RGBA{
-					R: uint8(((4-alpha)*uint32(pixel.R) + alpha*uint32(old.R)) / 4),
-					G: uint8(((4-alpha)*uint32(pixel.G) + alpha*uint32(old.G)) / 4),
-					B: uint8(((4-alpha)*uint32(pixel.B) + alpha*uint32(old.B)) / 4), A: 255,
+		column, row := index%width, index/width
+		column, row = transformGNEX32ImagePoint(column, row, width, height, mirror, rotation)
+		for zoomY := 0; zoomY < scale; zoomY++ {
+			for zoomX := 0; zoomX < scale; zoomX++ {
+				destinationX := baseX + column*scale + zoomX
+				destinationY := baseY + row*scale + zoomY
+				if image.Pt(destinationX, destinationY).In(d.clip) {
+					pixel := blendGNEX32ImagePixel(colors[paletteIndex], d.working.RGBAAt(destinationX, destinationY), alpha)
+					d.working.SetRGBA(destinationX, destinationY, pixel)
 				}
 			}
-			d.working.SetRGBA(destinationX, destinationY, pixel)
 		}
 	}
 	return nil
+}
+
+func transformGNEX32ImagePoint(x, y, width, height int, mirror, rotation uint32) (int, int) {
+	if mirror == 1 {
+		x = width - 1 - x
+	}
+	switch rotation {
+	case 1: // 90 degrees clockwise
+		return height - 1 - y, x
+	case 2:
+		return width - 1 - x, height - 1 - y
+	case 3: // 270 degrees clockwise
+		return y, width - 1 - x
+	default:
+		return x, y
+	}
+}
+
+func blendGNEX32ImagePixel(source, destination color.RGBA, alpha uint32) color.RGBA {
+	switch alpha {
+	case 1, 2, 3:
+		sourceWeight := 4 - alpha
+		return color.RGBA{
+			R: uint8((sourceWeight*uint32(source.R) + alpha*uint32(destination.R)) / 4),
+			G: uint8((sourceWeight*uint32(source.G) + alpha*uint32(destination.G)) / 4),
+			B: uint8((sourceWeight*uint32(source.B) + alpha*uint32(destination.B)) / 4), A: 255,
+		}
+	case 4:
+		return color.RGBA{R: ^source.R, G: ^source.G, B: ^source.B, A: 255}
+	case 5:
+		return color.RGBA{R: source.R ^ destination.R, G: source.G ^ destination.G, B: source.B ^ destination.B, A: 255}
+	default:
+		source.A = 255
+		return source
+	}
 }
 
 func monoColor(value byte) color.RGBA {

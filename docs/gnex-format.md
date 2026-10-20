@@ -93,6 +93,14 @@ only the intersecting working-buffer pixels replace the latest presented frame,
 while pixels outside the rectangle retain their previous presentation. A first
 partial flush starts from a cleared LCD, and reversed rectangles are a no-op.
 
+The SDK direction table defines only normal (0) and horizontal mirror (1) for
+`CopyImageDir`; other direction values are rejected. `CopyImageEx` accepts the
+complete documented parameter ranges: opaque/75%/50%/25%/invert/XOR alpha
+modes, 1x or 2x zoom, optional mirror, and 0/90/180/270-degree clockwise
+rotation. The compatibility renderer mirrors, rotates, then scales while
+keeping the transformed image hotspot at the requested `(x, y)`, and applies
+the existing LCD clip to every expanded pixel.
+
 ## What a GNEX archive looks like
 
 A paired GNEX title ships as a ZIP containing a basename-matched pair:

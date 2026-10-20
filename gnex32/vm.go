@@ -68,7 +68,7 @@ type VM struct {
 	service      ServiceHandler
 	copyImage    func(x, y int32, index int) error
 	copyImageDir func(x, y int32, index int, dir uint32) error
-	copyImageEx  func(x, y int32, index int, alpha, dir uint32) error
+	copyImageEx  func(x, y int32, index int, alpha, zoom, mirror, rotation uint32) error
 	pc           int
 	calls        []int
 	marks        []int
@@ -930,10 +930,13 @@ func (vm *VM) Step() error {
 			return fail(ErrStackUnderflow)
 		}
 		last := len(vm.stack) - 1
-		if vm.copyImageEx == nil || vm.stack[last-3] > 3 || vm.stack[last-2] != 0 || vm.stack[last] != 0 || vm.stack[last-1] > 1 {
-			return fail(fmt.Errorf("unsupported CopyImageEx alpha=%d zoom=%d mirror=%d rotation=%d: %w", vm.stack[last-3], vm.stack[last-2], vm.stack[last-1], vm.stack[last], &UnsupportedOpcodeError{Opcode: opcode, Offset: offset}))
+		if vm.copyImageEx == nil {
+			return fail(&UnsupportedOpcodeError{Opcode: opcode, Offset: offset})
 		}
-		err := vm.copyImageEx(int32(vm.stack[last-6]), int32(vm.stack[last-5]), int(vm.stack[last-4]), vm.stack[last-3], vm.stack[last-1])
+		err := vm.copyImageEx(
+			int32(vm.stack[last-6]), int32(vm.stack[last-5]), int(vm.stack[last-4]),
+			vm.stack[last-3], vm.stack[last-2], vm.stack[last-1], vm.stack[last],
+		)
 		if err != nil {
 			return fail(err)
 		}

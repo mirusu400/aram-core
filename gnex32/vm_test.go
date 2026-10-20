@@ -899,3 +899,32 @@ func TestCandidateStoreUpdatesInitializedSymbolAndPops(t *testing.T) {
 		t.Fatalf("initialized symbol = %d, %v", got, err)
 	}
 }
+
+func TestCopyImageExOpcodeForwardsEveryTransformArgument(t *testing.T) {
+	values := []uint16{10, 20, 2, 5, 1, 1, 3}
+	code := make([]byte, len(values)*4+4)
+	for index, value := range values {
+		putWord(code, index*4, 0x05)
+		putWord(code, index*4+2, value)
+	}
+	putWord(code, len(values)*4, 0x98)
+	putWord(code, len(values)*4+2, 0x86)
+	vm, err := New(gnex.GNEX32Image{Header: gnex.Header{BodyOffset: 160}, Code: code, Entry: 160})
+	if err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	vm.copyImageEx = func(x, y int32, index int, alpha, zoom, mirror, rotation uint32) error {
+		called = true
+		if x != 10 || y != 20 || index != 2 || alpha != 5 || zoom != 1 || mirror != 1 || rotation != 3 {
+			t.Fatalf("CopyImageEx args = %d,%d,%d,%d,%d,%d,%d", x, y, index, alpha, zoom, mirror, rotation)
+		}
+		return nil
+	}
+	if err := vm.Run(uint64(len(values) + 2)); err != nil {
+		t.Fatal(err)
+	}
+	if !called || !vm.Halted() || vm.StackDepth() != 0 {
+		t.Fatalf("CopyImageEx called=%v halted=%v stack=%#v", called, vm.Halted(), vm.stack)
+	}
+}

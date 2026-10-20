@@ -67,9 +67,10 @@
 ## 4. 그래픽과 텍스트
 
 - [x] `FlushPartial(0x60)`이 현재 무시하는 x1/y1/x2/y2를 사용해 부분 갱신을 구현한다.
-- [ ] `CopyImageDir`의 direction 값 전체를 확인하고 현재 0/1 이외의 회전·반전을 구현한다.
-- [ ] `CopyImageEx`의 zoom, mirror, rotation 조합을 구현한다.
-  - 현재: alpha 0..3, zoom=0, rotation=0, mirror 0/1만 허용한다.
+- [x] `CopyImageDir`의 direction 값 전체를 확인한다.
+  - SDK Table 6은 `S_DIR_NORMAL=0`, `S_DIR_MIRROR=1`만 정의하며 그 외 값은 오류 처리한다.
+- [x] `CopyImageEx`의 zoom, mirror, rotation 조합을 구현한다.
+  - SDK의 alpha 0..5, zoom 0..1, mirror 0..1, rotation 0..3 전체 조합을 지원한다.
 - [ ] alpha 혼합식과 alpha 단계 의미를 참조 구현/실기와 대조한다.
 - [ ] mono kind `0x02/0x05`의 Color0/Color1 의미를 확정한다.
 - [ ] indexed kind `0x06/0x07/0x09/0x0a/0x0b`의 palette 형식과 채널 순서를 확정한다.

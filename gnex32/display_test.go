@@ -1,6 +1,7 @@
 package gnex32
 
 import (
+	"image"
 	"image/color"
 	"testing"
 )
@@ -73,6 +74,119 @@ func TestDisplayFirstFlushPartialClipsToLCDAndUsesInclusiveCoordinates(t *testin
 	display.FlushPartial(2, 1, 1, 0)
 	if got := color.RGBAModel.Convert(frame.At(0, 0)).(color.RGBA); got != before {
 		t.Fatal("reversed partial rectangle changed the frame")
+	}
+}
+
+func TestCopyImageDirSupportsDocumentedNormalAndMirrorModes(t *testing.T) {
+	data := gnex32TransformTestImage()
+	red := color.RGBA{R: 255, A: 255}
+	green := color.RGBA{G: 255, A: 255}
+	normal := NewDisplay(12, 12)
+	if err := normal.CopyImageDir(5, 5, data, 0); err != nil {
+		t.Fatal(err)
+	}
+	if normal.working.RGBAAt(5, 5) != red || normal.working.RGBAAt(6, 5) != green {
+		t.Fatal("normal CopyImageDir changed pixel order")
+	}
+	mirrored := NewDisplay(12, 12)
+	if err := mirrored.CopyImageDir(5, 5, data, 1); err != nil {
+		t.Fatal(err)
+	}
+	if mirrored.working.RGBAAt(5, 5) != red || mirrored.working.RGBAAt(4, 5) != green {
+		t.Fatal("mirrored CopyImageDir did not preserve the hotspot")
+	}
+	if err := mirrored.CopyImageDir(5, 5, data, 2); err == nil {
+		t.Fatal("CopyImageDir accepted an undocumented direction")
+	}
+}
+
+func TestCopyImageExCombinesZoomMirrorAndRotation(t *testing.T) {
+	display := NewDisplay(20, 20)
+	if err := display.CopyImageEx(10, 10, gnex32TransformTestImage(), 0, 1, 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	want := map[image.Point]color.RGBA{
+		image.Pt(10, 10): {R: 255, A: 255},
+		image.Pt(10, 8):  {G: 255, A: 255},
+		image.Pt(8, 10):  {B: 255, A: 255},
+		image.Pt(8, 8):   {R: 255, G: 255, B: 255, A: 255},
+	}
+	for point, expected := range want {
+		for dy := 0; dy < 2; dy++ {
+			for dx := 0; dx < 2; dx++ {
+				if got := display.working.RGBAAt(point.X+dx, point.Y+dy); got != expected {
+					t.Fatalf("transformed pixel %v + (%d,%d) = %#v, want %#v", point, dx, dy, got, expected)
+				}
+			}
+		}
+	}
+	for _, args := range [][4]uint32{{6, 0, 0, 0}, {0, 2, 0, 0}, {0, 0, 2, 0}, {0, 0, 0, 4}} {
+		if err := display.CopyImageEx(10, 10, gnex32TransformTestImage(), args[0], args[1], args[2], args[3]); err == nil {
+			t.Fatalf("CopyImageEx accepted alpha/zoom/mirror/rotation %v", args)
+		}
+	}
+}
+
+func TestCopyImageExSupportsInvertAndXORRasterModes(t *testing.T) {
+	data := gnex32TransformTestImage()
+	display := NewDisplay(4, 4)
+	if err := display.CopyImageEx(1, 1, data, 4, 0, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if got := display.working.RGBAAt(1, 1); got != (color.RGBA{G: 255, B: 255, A: 255}) {
+		t.Fatalf("inverted red = %#v", got)
+	}
+	destination := color.RGBA{R: 0x0f, G: 0xf0, B: 0x55, A: 255}
+	display.working.SetRGBA(1, 1, destination)
+	if err := display.CopyImageEx(1, 1, data, 5, 0, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if got := display.working.RGBAAt(1, 1); got != (color.RGBA{R: 0xf0, G: 0xf0, B: 0x55, A: 255}) {
+		t.Fatalf("XOR red = %#v", got)
+	}
+}
+
+func TestCopyImageExRotationAndBlendTables(t *testing.T) {
+	data := gnex32TransformTestImage()
+	green := color.RGBA{G: 255, A: 255}
+	blue := color.RGBA{B: 255, A: 255}
+	for rotation, points := range []struct{ green, blue image.Point }{
+		{green: image.Pt(6, 5), blue: image.Pt(5, 6)},
+		{green: image.Pt(5, 6), blue: image.Pt(4, 5)},
+		{green: image.Pt(4, 5), blue: image.Pt(5, 4)},
+		{green: image.Pt(5, 4), blue: image.Pt(6, 5)},
+	} {
+		display := NewDisplay(12, 12)
+		if err := display.CopyImageEx(5, 5, data, 0, 0, 0, uint32(rotation)); err != nil {
+			t.Fatal(err)
+		}
+		if got := display.working.RGBAAt(points.green.X, points.green.Y); got != green {
+			t.Fatalf("rotation %d green = %#v at %v", rotation, got, points.green)
+		}
+		if got := display.working.RGBAAt(points.blue.X, points.blue.Y); got != blue {
+			t.Fatalf("rotation %d blue = %#v at %v", rotation, got, points.blue)
+		}
+	}
+	for alpha, wantRed := range []uint8{255, 191, 127, 63} {
+		display := NewDisplay(4, 4)
+		display.Clear(color.RGBA{A: 255})
+		if err := display.CopyImageEx(1, 1, data, uint32(alpha), 0, 0, 0); err != nil {
+			t.Fatal(err)
+		}
+		if got := display.working.RGBAAt(1, 1); got != (color.RGBA{R: wantRed, A: 255}) {
+			t.Fatalf("alpha %d red = %#v", alpha, got)
+		}
+	}
+}
+
+func gnex32TransformTestImage() []byte {
+	return []byte{
+		0x0a, 2, 2, 0, 0, 0, 4,
+		255, 0, 0,
+		0, 255, 0,
+		0, 0, 255,
+		255, 255, 255,
+		0x1b,
 	}
 }
 
