@@ -243,7 +243,7 @@ func FuzzDecodeGNEX32Image(f *testing.F) {
 			image.Header.FormatVersion != 4 || image.Entry < uint32(image.Header.BodyOffset) {
 			t.Fatalf("invalid successful decode: header=%+v bytes=%d", image.Header, len(image.Buffer))
 		}
-		// Runtime memory construction applies the provisional flag contracts and
+		// Runtime memory construction applies the supported flag contracts and
 		// must reject arbitrary descriptors without panicking or aliasing input.
 		_, _ = image.NewSymbolMemory()
 		_, _ = image.NewMediaMemory()

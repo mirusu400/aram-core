@@ -188,8 +188,8 @@ func gnex32CallbacksFromPointers(pointers [GNEX32EventCount]uint32) GNEX32Callba
 
 // GNEX32Image owns the structurally decoded 32-bit image. Code, symbols, and
 // media alias Buffer. EntryField preserves the raw header value; Entry adds the
-// observed 32-byte prefix, consistent with the table pointers. Decoding does
-// not infer mutability.
+// observed 32-byte prefix, consistent with the table pointers. Runtime storage
+// constructors interpret and validate the descriptor flags.
 type GNEX32Image struct {
 	Header     Header
 	Buffer     []byte
@@ -213,12 +213,10 @@ type GNEX32AddressInstruction struct {
 	Next    int
 }
 
-// DecodeCodeAddress reads a candidate code address from two little-endian
+// DecodeCodeAddress reads a code address from two little-endian
 // 16-bit words at operandOffset in Code. The high word precedes the low word;
 // the resulting address is relative to the 32-byte SGS prefix. The returned
-// index is relative to Code. This storage order is observed in the version-4
-// sample's repeated control-like sequences; it does not assign an opcode or
-// control-flow meaning to the operand.
+// index is relative to Code.
 func (image GNEX32Image) DecodeCodeAddress(operandOffset int) (int, error) {
 	location := int64(image.Header.BodyOffset) + int64(operandOffset)
 	if operandOffset < 0 || operandOffset > len(image.Code) || len(image.Code)-operandOffset < 4 {
@@ -234,10 +232,9 @@ func (image GNEX32Image) DecodeCodeAddress(operandOffset int) (int, error) {
 	return int(address - codeStartRelative), nil
 }
 
-// DecodeAddressInstruction reads the observed GNEX32 address-bearing layouts
-// at a known instruction boundary. The seven listed opcodes are structural
-// candidates from the version-4 sample; this does not establish their effects
-// or that an arbitrary aligned word is an instruction boundary.
+// DecodeAddressInstruction reads the GNEX32 address-bearing layouts at a known
+// instruction boundary. It reports storage and target information without
+// executing the instruction.
 func (image GNEX32Image) DecodeAddressInstruction(codeOffset int) (GNEX32AddressInstruction, error) {
 	location := int64(image.Header.BodyOffset) + int64(codeOffset)
 	if codeOffset < 0 || codeOffset&1 != 0 || codeOffset > len(image.Code) || len(image.Code)-codeOffset < 2 {

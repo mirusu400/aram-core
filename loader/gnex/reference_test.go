@@ -156,7 +156,7 @@ func TestReferencePackages(t *testing.T) {
 			} else if got, err := memory.ReadWord(0xe4, 0); err != nil || got != 0x12345678 || !bytes.Equal(image.Symbols[0xe4].Data, initializedSource) {
 				t.Errorf("%s: initialized GNEX32 storage = %#x, %v", path, got, err)
 			}
-			// The first two candidate address operands at the entry point
+			// The first two address operands at the entry point
 			// resolve to the first and second code words. A late operand
 			// with nonzero high word resolves to the final code word.
 			entryOffset := int(image.Entry) - image.Header.BodyOffset

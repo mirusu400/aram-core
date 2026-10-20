@@ -85,7 +85,7 @@ func (state *GNEX32MediaMemory) ReadImage(index int) ([]byte, []GNEX32PaletteRGB
 	return bytes.Clone(resource.data), snapshotGNEX32PaletteOverrides(resource.paletteOverrides), nil
 }
 
-// Replace writes one candidate mutable resource, with a bounded total size.
+// Replace writes one mutable resource, with a bounded total size.
 func (state *GNEX32MediaMemory) Replace(index int, data []byte) error {
 	resource, err := state.cell(index)
 	if err != nil {

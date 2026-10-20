@@ -29,7 +29,7 @@ func buildSGS(version byte, prefixZeros int, title []byte, body []byte) []byte {
 	buf.WriteByte(version)                    // byte 0: format version
 	buf.Write([]byte{0xff, 0x0c, 0xff, 0xff}) // bytes 1-4: unmodeled
 	buf.WriteByte(0x01)                       // byte 5: constant
-	buf.Write([]byte{0x00, 0x85})             // bytes 6-7: title checksum (arbitrary)
+	buf.Write([]byte{0x00, 0x85})             // bytes 6-7: application ID (arbitrary)
 	buf.Write([]byte{0x00, 0x00})             // bytes 8-9: unmodeled
 	buf.Write(title)
 	buf.Write([]byte{0x00, 0x00}) // title terminator

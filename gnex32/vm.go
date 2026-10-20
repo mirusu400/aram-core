@@ -1,6 +1,5 @@
-// Package gnex32 executes the observed GNEX version-4 SGS subset. Opcode and
-// service semantics are inferred from SDK assembler output and the Virus image;
-// full gameplay still needs comparison with a reference runtime.
+// Package gnex32 executes the qualified GNEX version-4 SGS instruction and
+// service contracts. Full commercial-title coverage remains corpus-qualified.
 package gnex32
 
 import (
@@ -85,7 +84,7 @@ type VM struct {
 	calls        []int
 	marks        []int
 	stack        []uint32
-	refs         map[int]gnex32SymbolRef // candidate lvalues keyed by value-stack slot
+	refs         map[int]gnex32SymbolRef // lvalues keyed by value-stack slot
 	trace        *executionTraceState
 	halted       bool
 	fault        error
@@ -109,8 +108,8 @@ func New(image gnex.GNEX32Image) (*VM, error) {
 		refs: make(map[int]gnex32SymbolRef)}, nil
 }
 
-// NewWithServices enables explicit, caller-supplied behavior for candidate
-// opcode 0x92. New leaves every service unsupported by default.
+// NewWithServices enables explicit, caller-supplied behavior for service opcode
+// 0x92. New leaves every service unsupported by default.
 func NewWithServices(image gnex.GNEX32Image, service ServiceHandler) (*VM, error) {
 	vm, err := New(image)
 	if err != nil {

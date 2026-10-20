@@ -20,7 +20,7 @@ func syntheticGNEXSGS() []byte {
 	buf.WriteByte(1)                          // format version
 	buf.Write([]byte{0xff, 0x0c, 0xff, 0xff}) // unmodeled
 	buf.WriteByte(0x01)                       // constant
-	buf.Write([]byte{0x00, 0x85})             // title checksum (unmodeled algorithm)
+	buf.Write([]byte{0x00, 0x85})             // application/provider ID
 	buf.Write([]byte{0x00, 0x00})             // unmodeled
 	buf.Write([]byte{0xba, 0xcf, 0xb9, 0xfa}) // cp949 "북벌"
 	buf.Write([]byte{0x00, 0x00})             // title terminator
