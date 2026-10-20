@@ -58,13 +58,30 @@ func TestFactoryReportsUnqualifiedGNEX32Capabilities(t *testing.T) {
 	if unsupported.Kind != loader.KindGNEX || unsupported.ProfileID != GNEX32UnqualifiedProfileID {
 		t.Fatalf("GNEX32 diagnostic identity = %+v", unsupported)
 	}
-	for _, phrase := range []string{"structurally valid GNEX32", "no qualified compatibility profile", "opcode, service, and media capabilities"} {
+	for _, phrase := range []string{
+		"structurally valid GNEX32", "no qualified compatibility profile",
+		"opcode/service/media capability preflight failed", "unknown opcode", "code offset 65528",
+	} {
 		if !strings.Contains(unsupported.Reason, phrase) {
 			t.Fatalf("GNEX32 diagnostic lacks %q: %s", phrase, unsupported.Reason)
 		}
 	}
 	if strings.Contains(unsupported.Reason, "execution is not implemented") {
 		t.Fatalf("GNEX32 diagnostic retained stale implementation claim: %s", unsupported.Reason)
+	}
+}
+
+func TestFactoryReportsPassingGNEX32CapabilityPreflightWithoutProfile(t *testing.T) {
+	data := syntheticApplicationGNEX32SGS()
+	const descriptorStart = 0x100a0
+	data[descriptorStart-8] = 0xff
+	_, err := NewFactory().Create(context.Background(), machinecore.Source{
+		Name: "covered-v4.sgs", ReaderAt: bytes.NewReader(data), Size: int64(len(data)),
+	})
+	var unsupported *UnsupportedPlatformError
+	if !errors.As(err, &unsupported) || !strings.Contains(unsupported.Reason, "capability preflight passed") ||
+		!strings.Contains(unsupported.Reason, "no qualified compatibility profile") {
+		t.Fatalf("covered unqualified diagnostic = %v", err)
 	}
 }
 

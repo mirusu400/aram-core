@@ -21,6 +21,7 @@ import (
 	"github.com/mirusu400/aram-core/application/internal/quirkdb"
 	machinecore "github.com/mirusu400/aram-core/core"
 	"github.com/mirusu400/aram-core/cpu"
+	"github.com/mirusu400/aram-core/gnex32"
 	"github.com/mirusu400/aram-core/loader"
 	"github.com/mirusu400/aram-core/loader/brew"
 	"github.com/mirusu400/aram-core/loader/eads"
@@ -122,16 +123,24 @@ func (m *Machine) Load(ctx context.Context, source machinecore.Source) error {
 		gnexPackage, gnexErr := gnex.Inspect(data)
 		if gnexErr == nil {
 			if gnexPackage.Header.FormatVersion == 4 {
-				if _, decodeErr := gnex.DecodeGNEX32Image(gnexPackage.SGS); decodeErr != nil {
+				image, decodeErr := gnex.DecodeGNEX32Image(gnexPackage.SGS)
+				if decodeErr != nil {
 					return fmt.Errorf("inspect GNEX32 execution image: %w", decodeErr)
+				}
+				_, preflightErr := gnex32.Preflight(image)
+				reason := fmt.Sprintf(
+					"%q is a structurally valid GNEX32 title (%q, SHA-256 %s), but no qualified compatibility profile establishes its device and media behavior",
+					source.Name, gnexPackage.Header.Title, actualSHA256,
+				)
+				if preflightErr != nil {
+					reason += fmt.Sprintf("; opcode/service/media capability preflight failed: %v", preflightErr)
+				} else {
+					reason += "; opcode/service/media capability preflight passed"
 				}
 				return &UnsupportedPlatformError{
 					Kind:      loader.KindGNEX,
 					ProfileID: GNEX32UnqualifiedProfileID,
-					Reason: fmt.Sprintf(
-						"%q is a structurally valid GNEX32 title (%q, SHA-256 %s), but no qualified compatibility profile establishes its opcode, service, and media capabilities",
-						source.Name, gnexPackage.Header.Title, actualSHA256,
-					),
+					Reason:    reason,
 				}
 			}
 			return &UnsupportedPlatformError{

@@ -145,6 +145,15 @@ callback roots are rejected. The JSON report also includes the complete sorted
 runtime service registry for machine-readable diffs. Static analysis stops a
 path at an unknown opcode; dynamic coverage remains a separate requirement.
 
+The application loader now runs the same analysis as a mandatory GNEX32
+capability preflight before constructing a qualified runtime. Preflight also
+validates bounded symbol/media allocation and the supported storage flags. A
+reachable unknown opcode or unregistered service returns a typed diagnostic with
+its code offset; no guest instruction executes. Structurally valid titles with
+an unknown hash remain non-executable, but their unsupported-platform diagnostic
+now states whether opcode/service/media preflight passed or gives the exact first
+failure before noting that no device compatibility profile qualifies the title.
+
 ## What a GNEX archive looks like
 
 A paired GNEX title ships as a ZIP containing a basename-matched pair:

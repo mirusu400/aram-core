@@ -151,7 +151,8 @@
 - [x] 구조적으로 유효하지만 미지원인 GNEX32 패키지에 정확한 capability 진단을 제공한다.
 - [x] hard-coded Virus identity/display/profile 값을 profile 데이터로 이동한다.
 - [x] `application/machine_load.go`의 오래된 "GNEX v4 미구현" fallback 문구를 현재 상태에 맞춘다.
-- [ ] 다른 GNEX32 hash를 실행하기 전 opcode/service/media capability preflight를 추가한다.
+- [x] 다른 GNEX32 hash를 실행하기 전 opcode/service/media capability preflight를 추가한다.
+  - 실행 전에 symbol/media storage 계약과 reachable opcode/service를 검증하며, 미등록 opcode/service는 code offset을 포함한 typed error로 차단한다. 미등록 hash 진단에도 preflight 통과/실패 원인을 표시한다.
 - [ ] GVM v1/v2 경로와 GNEX32 경로의 공용 palette, input, persistence, audio 계약을 정리한다.
 
 ## 10. 검증과 완료 조건

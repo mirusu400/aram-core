@@ -95,6 +95,9 @@ func (f Factory) createGNEX32Machine(ctx context.Context, source machinecore.Sou
 	if err != nil {
 		return nil, true, err
 	}
+	if _, err := gnex32.Preflight(image); err != nil {
+		return nil, true, fmt.Errorf("preflight GNEX32 compatibility for %q: %w", source.Name, err)
+	}
 	runtime, err := gnex32.NewRuntime(image, gnex32VirusProfile)
 	if err != nil {
 		return nil, true, err
