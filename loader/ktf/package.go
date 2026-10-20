@@ -112,6 +112,33 @@ func Inspect(data []byte) (Package, error) {
 			return Package{}, err
 		}
 	}
+	return inspectJAR(jar, descriptor, jarName, files)
+}
+
+// InspectBareJAR validates a KTF application JAR using descriptor metadata
+// recovered by an exact-source compatibility profile. KTF JARs do not carry
+// their AID or main class themselves, so callers must not infer this metadata
+// from a filename or apply the function to otherwise-unidentified archives.
+func InspectBareJAR(data []byte, descriptor Descriptor) (Package, error) {
+	if err := validateDescriptorValue("AID", descriptor.AID, true); err != nil {
+		return Package{}, err
+	}
+	if err := validateDescriptorValue("PID", descriptor.PID, false); err != nil {
+		return Package{}, err
+	}
+	if err := validateDescriptorValue("MClass", descriptor.MainClass, false); err != nil {
+		return Package{}, err
+	}
+	jarName := descriptor.AID + ".jar"
+	return inspectJAR(data, descriptor, jarName, map[string][]byte{jarName: data})
+}
+
+func inspectJAR(
+	jar []byte,
+	descriptor Descriptor,
+	jarName string,
+	files map[string][]byte,
+) (Package, error) {
 	resources, warnings, err := readZIP(jar, jarName, true)
 	if err != nil {
 		return Package{}, err

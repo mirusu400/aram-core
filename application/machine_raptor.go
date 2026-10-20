@@ -463,7 +463,7 @@ func (m *Machine) runRaptorCallbackTask(
 	result = m.runWIPISlice(ctx, pc, mode, max(budget, uint64(1)), true)
 	m.raptor.SetCallbackTaskActive(false)
 	safepointYielded = m.raptor.TakeJavaSafepointYield()
-	m.resumeRaptorNullDraw(&result)
+	m.resumeRaptorInvalidDraw(&result)
 	if result.Err != nil {
 		return result, false, safepointYielded, result.Err
 	}
@@ -494,22 +494,17 @@ func (m *Machine) runRaptorCallbackTask(
 	return result, false, safepointYielded, nil
 }
 
-// resumeRaptorNullDraw treats one verified title's empty sprite entry as a
+// resumeRaptorInvalidDraw treats a verified title's absent sprite entry as a
 // no-op. Its draw dispatcher calls through a zero virtual function pointer;
 // the precise interpreter and native tier both fault at PC zero. The package
-// identity, callsite, and null object registers must all agree before the
-// callback resumes after that call in Thumb mode.
-func (m *Machine) resumeRaptorNullDraw(result *cpu.Result) {
+// identity, callsite, zero method, and observed invalid receiver must all agree
+// before the callback resumes after that call in Thumb mode.
+func (m *Machine) resumeRaptorInvalidDraw(result *cpu.Result) {
 	if result.Err == nil || result.PC != 0 || m.raptor == nil {
 		return
 	}
 	lr, err := m.cpu.ReadRegister(cpu.RegisterLR)
-	if err != nil || !quirkdb.LookupRaptorNullDrawCall(
-		m.source.SHA256,
-		m.raptor.Pkg.Descriptor.AID,
-		m.raptor.Pkg.Descriptor.MainClass,
-		lr,
-	) {
+	if err != nil {
 		return
 	}
 	method, err := m.cpu.ReadRegister(cpu.RegisterR4)
@@ -517,7 +512,13 @@ func (m *Machine) resumeRaptorNullDraw(result *cpu.Result) {
 		return
 	}
 	object, err := m.cpu.ReadRegister(cpu.RegisterR5)
-	if err != nil || object != 0 {
+	if err != nil || !quirkdb.LookupRaptorInvalidDrawCall(
+		m.source.SHA256,
+		m.raptor.Pkg.Descriptor.AID,
+		m.raptor.Pkg.Descriptor.MainClass,
+		lr,
+		object,
+	) {
 		return
 	}
 	status, err := m.cpu.ReadRegister(cpu.RegisterCPSR)

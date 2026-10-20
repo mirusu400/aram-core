@@ -68,6 +68,19 @@ func (m *Machine) Load(ctx context.Context, source machinecore.Source) error {
 		)
 	}
 	source.SHA256 = actualSHA256
+	if profile, ok := quirkdb.LookupKTFBareJARProfile(actualSHA256); ok {
+		ktfPackage, inspectErr := ktf.InspectBareJAR(data, ktf.Descriptor{
+			AID:           profile.AID,
+			PID:           profile.PID,
+			MainClass:     profile.MainClass,
+			DisplayWidth:  profile.DisplayWidth,
+			DisplayHeight: profile.DisplayHeight,
+		})
+		if inspectErr != nil {
+			return fmt.Errorf("inspect recognized bare KTF WIPI JAR: %w", inspectErr)
+		}
+		return m.loadKTF(ctx, source, ktfPackage)
+	}
 	ktfPackage, ktfErr := ktf.Inspect(data)
 	if ktfErr == nil {
 		return m.loadKTF(ctx, source, ktfPackage)

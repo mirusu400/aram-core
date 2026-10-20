@@ -28,6 +28,41 @@ func (k TitleKey) Matches(
 		clientSHA256 == k.ClientSHA256
 }
 
+// KTFBareJARProfile restores descriptor fields for a known distribution JAR
+// that was supplied without its carrier __adf__ wrapper. A KTF JAR has no
+// self-describing AID or main class, so every recovery is pinned to the digest
+// of the complete input rather than its filename or archive contents alone.
+type KTFBareJARProfile struct {
+	PackageSHA256 string
+	AID           string
+	PID           string
+	MainClass     string
+	DisplayWidth  int
+	DisplayHeight int
+}
+
+var ktfBareJARProfiles = []KTFBareJARProfile{
+	{
+		// Survival Diary's issue #534 attachment is byte-for-byte the JAR
+		// from its KTF distribution, with only the outer descriptor omitted.
+		PackageSHA256: "45ed5e7ad00607fe13894b26dc9a5e0657befa811304899f052f84e1b65dc9ef",
+		AID:           "010100D2",
+		PID:           "PD003813",
+		MainClass:     "DeathGame",
+		DisplayWidth:  240,
+		DisplayHeight: 320,
+	},
+}
+
+func LookupKTFBareJARProfile(packageSHA256 string) (KTFBareJARProfile, bool) {
+	for _, profile := range ktfBareJARProfiles {
+		if profile.PackageSHA256 == packageSHA256 {
+			return profile, true
+		}
+	}
+	return KTFBareJARProfile{}, false
+}
+
 // DisplayOverride corrects handset display metadata for a package whose
 // descriptor carries a size from a different build while its client uses a
 // larger fixed coordinate system.
@@ -268,16 +303,17 @@ func LookupRaptorJavaCallFallbacks(packageSHA256, aid, mainClass string) RaptorJ
 	return RaptorJavaCallFallbacks{}
 }
 
-// RaptorNullDrawCall identifies a title's optional draw dispatch that may
-// encounter an empty sprite slot after loading a PZX resource. ReturnLR is the
-// Thumb return address of the virtual call, not a general permission to run
-// code at address zero.
-type RaptorNullDrawCall struct {
+// RaptorInvalidDrawCall identifies a title's optional draw dispatch that may
+// encounter an empty or invalid sprite slot. ReturnLR is the Thumb return
+// address of the virtual call, not a general permission to run code at address
+// zero. Object is the exact bad receiver observed at that callsite.
+type RaptorInvalidDrawCall struct {
 	Key      RaptorTitleKey
 	ReturnLR uint32
+	Object   uint32
 }
 
-var raptorNullDrawCalls = []RaptorNullDrawCall{
+var raptorInvalidDrawCalls = []RaptorInvalidDrawCall{
 	{
 		// Hybrid's 0x31bb0 draw dispatcher selects an empty object from its
 		// resource table. The virtual target at 0x31c16 is then zero. The
@@ -288,14 +324,32 @@ var raptorNullDrawCalls = []RaptorNullDrawCall{
 			MainClass:     "Clet",
 		},
 		ReturnLR: 0x00031c1b,
+		Object:   0,
+	},
+	{
+		// Zenonia 2's ice-boss scene can leave sprite ID 105 in a draw
+		// record whose virtual method slot is empty. The dispatcher calls
+		// through address zero at 0x70eea; skipping that one absent sprite
+		// lets the remainder of the frame continue (#535).
+		Key: RaptorTitleKey{
+			PackageSHA256: "601556233e719a97860d38f6d413673c2996b1a7010438504663c98b86ec776c",
+			AID:           "0002C004",
+			MainClass:     "Clet",
+		},
+		ReturnLR: 0x00070eef,
+		Object:   105,
 	},
 }
 
-// LookupRaptorNullDrawCall accepts only a verified package and its observed
-// null virtual-call return address.
-func LookupRaptorNullDrawCall(packageSHA256, aid, mainClass string, returnLR uint32) bool {
-	for _, entry := range raptorNullDrawCalls {
-		if entry.Key.Matches(packageSHA256, aid, mainClass) && entry.ReturnLR == returnLR {
+// LookupRaptorInvalidDrawCall accepts only a verified package and its observed
+// invalid virtual-call return address and receiver.
+func LookupRaptorInvalidDrawCall(
+	packageSHA256, aid, mainClass string,
+	returnLR, object uint32,
+) bool {
+	for _, entry := range raptorInvalidDrawCalls {
+		if entry.Key.Matches(packageSHA256, aid, mainClass) &&
+			entry.ReturnLR == returnLR && entry.Object == object {
 			return true
 		}
 	}

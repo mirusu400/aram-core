@@ -44,6 +44,42 @@ func TestInspectPackage(t *testing.T) {
 	}
 }
 
+func TestInspectBareJARUsesSuppliedDescriptor(t *testing.T) {
+	jar := makeZIP(t, map[string][]byte{
+		"client.bin4096": {0x04, 0xe0, 0x70, 0x47},
+		"r/icon.png":     {1, 2, 3},
+	})
+	descriptor := Descriptor{
+		AID:           "01020304",
+		PID:           "PD000001",
+		MainClass:     "GameMain",
+		DisplayWidth:  240,
+		DisplayHeight: 320,
+	}
+	pkg, err := InspectBareJAR(jar, descriptor)
+	check(t, err)
+	if pkg.Descriptor != descriptor || pkg.JARName != "01020304.jar" {
+		t.Fatalf("bare JAR identity = %+v, %q", pkg.Descriptor, pkg.JARName)
+	}
+	if pkg.ClientName != "client.bin4096" || pkg.BSSSize != 4096 {
+		t.Fatalf("binary metadata = jar %q client %q bss %d",
+			pkg.JARName, pkg.ClientName, pkg.BSSSize)
+	}
+	if !bytes.Equal(pkg.Resources["r/icon.png"], []byte{1, 2, 3}) {
+		t.Fatalf("resource = %x", pkg.Resources["r/icon.png"])
+	}
+	if !bytes.Equal(pkg.Files[pkg.JARName], jar) {
+		t.Fatal("bare JAR was not retained as its package file")
+	}
+}
+
+func TestInspectBareJARRejectsMissingIdentity(t *testing.T) {
+	jar := makeZIP(t, map[string][]byte{"client.bin64": {0x70, 0x47}})
+	if _, err := InspectBareJAR(jar, Descriptor{MainClass: "Main"}); err == nil {
+		t.Fatal("InspectBareJAR accepted an empty AID")
+	}
+}
+
 func TestInspectWrappedPackage(t *testing.T) {
 	jar := makeZIP(t, map[string][]byte{
 		"client.bin64": {0x70, 0x47},
