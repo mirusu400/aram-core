@@ -264,6 +264,18 @@ mode-`1` images uses that triplet, while one of 50 mode-`0` images also does.
 This suggests a palette-zero transparency key, but does not establish its
 rendering rule. The 30
 flag-`0x200` records carry an `MMMD` audio marker.
+
+`SetPaletteColorRGB` now covers every palette-backed image kind accepted by the
+GNEX32 renderer. Kinds `0x09`, `0x0a`, and `0x0b` contain RGB triplets and are
+changed in their per-run media copy. Mono kinds `0x02`/`0x05` and selector-backed
+kinds `0x06`/`0x07` cannot encode arbitrary RGB values in their source layout,
+so media memory stores a bounded local-palette override that the renderer applies
+through the active gamma table. Those overrides are isolated between runtimes and
+included in save states. A malformed image, a non-palette media kind, an invalid
+media index, or an out-of-range palette index returns the SDK failure value `-1`
+without changing media state. Tests cover all seven supported kinds, each image
+copy service, failure atomicity, and save/load restoration.
+
 The first `0x92` instruction reached by the candidate VM follows a load of
 symbol `0x19`, whose 32-bit initializer is 542. Media record 542 has flag
 `0x1` and zero initial bytes. Other flag-`0x1` records are also mostly empty;

@@ -75,7 +75,8 @@
 - [ ] mono kind `0x02/0x05`의 Color0/Color1 의미를 확정한다.
 - [ ] indexed kind `0x06/0x07/0x09/0x0a/0x0b`의 palette 형식과 채널 순서를 확정한다.
 - [ ] indexed image의 `Mode`와 palette index 0 투명 처리 규칙을 확정한다.
-- [ ] `SetPaletteColorRGB`를 해당되는 모든 image kind에 대해 구현하고 불가능한 형식은 명확히 오류 처리한다.
+- [x] `SetPaletteColorRGB`를 해당되는 모든 image kind에 대해 구현하고 불가능한 형식은 명확히 오류 처리한다.
+  - `0x02/0x05/0x06/0x07`은 RGB를 직접 담을 수 없어 런타임 palette override로 렌더링·save/load에 보존하고, `0x09/0x0a/0x0b`은 per-run RGB triplet을 변경한다. 비이미지·손상 이미지·범위 밖 index는 `-1`을 반환한다.
 - [ ] 알려진 다른 image kind가 실제로 그리기에 사용되는지 corpus를 스캔하고, 사용되는 형식만 decoder를 추가한다.
 - [x] `Gamma` 적용 전후의 고정 팔레트 및 동적 팔레트 동작을 통합 테스트한다.
 - [ ] `DrawRectRound/FillRectRound`, clip, inclusive 좌표 규칙을 참조 화면과 대조한다.

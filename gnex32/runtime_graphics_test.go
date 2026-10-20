@@ -4,6 +4,8 @@ import (
 	"errors"
 	"image/color"
 	"testing"
+
+	"github.com/mirusu400/aram-core/loader/gnex"
 )
 
 func TestSetGammaReappliesSelectedDrawingAndFontColors(t *testing.T) {
@@ -119,5 +121,73 @@ func TestFlushPartialServiceUsesGuestRectangle(t *testing.T) {
 	}
 	if got := color.RGBAModel.Convert(frame.At(9, 20)).(color.RGBA); got != red {
 		t.Fatalf("outside partial = %#v", got)
+	}
+}
+
+func TestSetPaletteColorRGBRendersSelectorImagesAndSurvivesSave(t *testing.T) {
+	data := []byte{0x07, 1, 1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0x10}
+	symbols := make([]gnex.GNEX32Symbol, 10)
+	for index := range symbols {
+		symbols[index] = gnex.GNEX32Symbol{Flags: 1, Words: 1, Data: make([]byte, 4)}
+	}
+	image := gnex.GNEX32Image{
+		Header: gnex.Header{BodyOffset: 160}, Entry: 160, Code: []byte{0x86, 0}, Symbols: symbols,
+		Media: []gnex.GNEX32Media{{Flags: 0x100, Data: data}, {Flags: 0, Data: []byte("not an image")}},
+	}
+	runtime, err := NewRuntime(image, gnex32TestDeviceProfile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	result, err := runtime.service(0x2f, []uint32{0, 1, 25, 144, 38})
+	if err != nil || result.Pop != 5 || len(result.Push) != 1 || result.Push[0] != 0 {
+		t.Fatalf("SetPaletteColorRGB result = %+v, %v", result, err)
+	}
+	for name, draw := range map[string]func() error{
+		"CopyImage":    func() error { return runtime.copyImage(0, 0, 0) },
+		"CopyImageDir": func() error { return runtime.copyImageDir(0, 0, 0, 1) },
+		"CopyImageEx":  func() error { return runtime.copyImageEx(0, 0, 0, 0, 0, 1, 0) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			runtime.display.Clear(color.RGBA{A: 255})
+			if err := draw(); err != nil {
+				t.Fatal(err)
+			}
+			if got := runtime.display.working.RGBAAt(0, 0); got != (color.RGBA{R: 25, G: 144, B: 38, A: 255}) {
+				t.Fatalf("rendered override = %#v", got)
+			}
+		})
+	}
+	for _, stack := range [][]uint32{
+		{0, 16, 1, 2, 3},
+		{0, ^uint32(0), 1, 2, 3},
+		{1, 0, 1, 2, 3},
+		{2, 0, 1, 2, 3},
+	} {
+		result, err := runtime.service(0x2f, stack)
+		if err != nil || len(result.Push) != 1 || result.Push[0] != ^uint32(0) {
+			t.Fatalf("invalid SetPaletteColorRGB(%v) = %+v, %v", stack, result, err)
+		}
+	}
+
+	saved, err := runtime.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := NewRuntime(image, gnex32TestDeviceProfile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	if err := restored.UnmarshalBinary(saved); err != nil {
+		t.Fatal(err)
+	}
+	restored.display.Clear(color.RGBA{A: 255})
+	if err := restored.copyImage(0, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if got := restored.display.working.RGBAAt(0, 0); got != (color.RGBA{R: 25, G: 144, B: 38, A: 255}) {
+		t.Fatalf("restored palette override = %#v", got)
 	}
 }

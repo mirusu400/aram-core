@@ -181,18 +181,18 @@ func (d *Display) DrawLine(x1, y1, x2, y2 int32, fill color.RGBA) {
 }
 
 func (d *Display) CopyImage(x, y int32, data []byte) error {
-	return d.copyImageTransformed(x, y, data, 0, 0, 0, 0)
+	return d.copyImageTransformed(x, y, data, nil, 0, 0, 0, 0)
 }
 
 func (d *Display) CopyImageDir(x, y int32, data []byte, direction uint32) error {
-	return d.copyImageTransformed(x, y, data, 0, 0, direction, 0)
+	return d.copyImageTransformed(x, y, data, nil, 0, 0, direction, 0)
 }
 
 func (d *Display) CopyImageEx(x, y int32, data []byte, alpha, zoom, mirror, rotation uint32) error {
-	return d.copyImageTransformed(x, y, data, alpha, zoom, mirror, rotation)
+	return d.copyImageTransformed(x, y, data, nil, alpha, zoom, mirror, rotation)
 }
 
-func (d *Display) copyImageTransformed(x, y int32, data []byte, alpha, zoom, mirror, rotation uint32) error {
+func (d *Display) copyImageTransformed(x, y int32, data []byte, palette []gnex.GNEX32PaletteRGB, alpha, zoom, mirror, rotation uint32) error {
 	if mirror > 1 {
 		return fmt.Errorf("gnex32: unsupported CopyImage mirror %d", mirror)
 	}
@@ -256,6 +256,14 @@ func (d *Display) copyImageTransformed(x, y int32, data []byte, alpha, zoom, mir
 		}
 	default:
 		return fmt.Errorf("gnex32: unsupported CopyImage kind %#x", data[0])
+	}
+	for _, override := range palette {
+		if int(override.Index) >= len(colors) {
+			return fmt.Errorf("gnex32: palette override %d exceeds image palette", override.Index)
+		}
+		colors[override.Index] = d.gammaColor(color.RGBA{
+			R: override.Red, G: override.Green, B: override.Blue, A: 255,
+		})
 	}
 	transformedAnchorX, transformedAnchorY := transformGNEX32ImagePoint(
 		anchorX, anchorY, width, height, mirror, rotation,

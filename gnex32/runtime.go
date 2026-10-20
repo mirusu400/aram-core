@@ -294,27 +294,27 @@ func (r *Runtime) advanceSystemFrame() error {
 }
 
 func (r *Runtime) copyImage(x, y int32, index int) error {
-	resource, _, err := r.vm.media.Read(index)
+	resource, palette, err := r.vm.media.ReadImage(index)
 	if err != nil {
 		return err
 	}
-	return r.display.CopyImage(x, y, resource)
+	return r.display.copyImageTransformed(x, y, resource, palette, 0, 0, 0, 0)
 }
 
 func (r *Runtime) copyImageDir(x, y int32, index int, direction uint32) error {
-	resource, _, err := r.vm.media.Read(index)
+	resource, palette, err := r.vm.media.ReadImage(index)
 	if err != nil {
 		return err
 	}
-	return r.display.CopyImageDir(x, y, resource, direction)
+	return r.display.copyImageTransformed(x, y, resource, palette, 0, 0, direction, 0)
 }
 
 func (r *Runtime) copyImageEx(x, y int32, index int, alpha, zoom, mirror, rotation uint32) error {
-	resource, _, err := r.vm.media.Read(index)
+	resource, palette, err := r.vm.media.ReadImage(index)
 	if err != nil {
 		return err
 	}
-	return r.display.CopyImageEx(x, y, resource, alpha, zoom, mirror, rotation)
+	return r.display.copyImageTransformed(x, y, resource, palette, alpha, zoom, mirror, rotation)
 }
 
 func (r *Runtime) refreshGammaColors() error {

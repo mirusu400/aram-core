@@ -19,7 +19,7 @@ import (
 
 const (
 	gnex32RuntimeStateMagic   = "GNX32RT\x00"
-	gnex32RuntimeStateVersion = uint32(1)
+	gnex32RuntimeStateVersion = uint32(2)
 	// Shared state may itself contain the configured 768 MiB maximum. GNEX
 	// symbol/media memory and the three profile-sized LCD buffers need separate room.
 	MaxRuntimeStateBytes = uint64(850 << 20)
@@ -382,6 +382,13 @@ func encodeVMState(output *bytes.Buffer, state vmState) {
 		writeStateU32(output, resource.Flags)
 		writeStateU64(output, uint64(len(resource.Data)))
 		output.Write(resource.Data)
+		writeStateU32(output, uint32(len(resource.PaletteOverrides)))
+		for _, override := range resource.PaletteOverrides {
+			output.WriteByte(override.Index)
+			output.WriteByte(override.Red)
+			output.WriteByte(override.Green)
+			output.WriteByte(override.Blue)
+		}
 	}
 }
 
@@ -615,7 +622,22 @@ func (d *stateDecoder) vm(template *VM) vmState {
 			d.err = d.fail("invalid media resource state")
 			return state
 		}
-		state.Media.Resources[index] = gnex.GNEX32MediaResourceState{Flags: flags, Data: d.bytes(int(size))}
+		resource := gnex.GNEX32MediaResourceState{Flags: flags, Data: d.bytes(int(size))}
+		overrideCount := d.u32()
+		if overrideCount > 16 || uint64(overrideCount)*4 > uint64(d.reader.Len()) {
+			d.err = d.fail("invalid media palette override count")
+			return state
+		}
+		resource.PaletteOverrides = make([]gnex.GNEX32PaletteRGB, overrideCount)
+		for overrideIndex := range resource.PaletteOverrides {
+			data := d.bytes(4)
+			if len(data) == 4 {
+				resource.PaletteOverrides[overrideIndex] = gnex.GNEX32PaletteRGB{
+					Index: data[0], Red: data[1], Green: data[2], Blue: data[3],
+				}
+			}
+		}
+		state.Media.Resources[index] = resource
 	}
 	return state
 }
