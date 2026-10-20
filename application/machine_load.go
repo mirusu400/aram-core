@@ -121,15 +121,25 @@ func (m *Machine) Load(ctx context.Context, source machinecore.Source) error {
 		// reach this recognition-only fallback.
 		gnexPackage, gnexErr := gnex.Inspect(data)
 		if gnexErr == nil {
-			reason := "ARAM recognizes SinjiSoft GVM packages but does not yet execute GVM bytecode"
 			if gnexPackage.Header.FormatVersion == 4 {
-				reason = "GNEX version-4 bytecode execution is not implemented"
+				if _, decodeErr := gnex.DecodeGNEX32Image(gnexPackage.SGS); decodeErr != nil {
+					return fmt.Errorf("inspect GNEX32 execution image: %w", decodeErr)
+				}
+				return &UnsupportedPlatformError{
+					Kind:      loader.KindGNEX,
+					ProfileID: GNEX32UnqualifiedProfileID,
+					Reason: fmt.Sprintf(
+						"%q is a structurally valid GNEX32 title (%q, SHA-256 %s), but no qualified compatibility profile establishes its opcode, service, and media capabilities",
+						source.Name, gnexPackage.Header.Title, actualSHA256,
+					),
+				}
 			}
 			return &UnsupportedPlatformError{
 				Kind:      loader.KindGNEX,
 				ProfileID: "gvm-container-v1/skt/generic",
 				Reason: fmt.Sprintf("%q is an SKT GNEX title (%q); %s",
-					source.Name, gnexPackage.Header.Title, reason),
+					source.Name, gnexPackage.Header.Title,
+					"ARAM recognizes SinjiSoft GVM packages but does not yet execute this GVM bytecode"),
 			}
 		}
 		// An Android package is a ZIP too, so it survives every WIPI loader

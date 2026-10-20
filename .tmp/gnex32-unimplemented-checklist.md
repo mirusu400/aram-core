@@ -146,9 +146,9 @@
 ## 9. 제품 라우팅과 호환성 범위
 
 - [ ] `createGNEX32Machine`의 단일 SHA-256 허용을 compatibility/profile 판정으로 일반화한다.
-- [ ] 구조적으로 유효하지만 미지원인 GNEX32 패키지에 정확한 capability 진단을 제공한다.
+- [x] 구조적으로 유효하지만 미지원인 GNEX32 패키지에 정확한 capability 진단을 제공한다.
 - [x] hard-coded Virus identity/display/profile 값을 profile 데이터로 이동한다.
-- [ ] `application/machine_load.go`의 오래된 "GNEX v4 미구현" fallback 문구를 현재 상태에 맞춘다.
+- [x] `application/machine_load.go`의 오래된 "GNEX v4 미구현" fallback 문구를 현재 상태에 맞춘다.
 - [ ] 다른 GNEX32 hash를 실행하기 전 opcode/service/media capability preflight를 추가한다.
 - [ ] GVM v1/v2 경로와 GNEX32 경로의 공용 palette, input, persistence, audio 계약을 정리한다.
 

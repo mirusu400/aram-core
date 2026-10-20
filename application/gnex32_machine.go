@@ -21,8 +21,9 @@ import (
 )
 
 const (
-	GNEX32VirusSHA256    = "bf9cd39b1ae14ba2a5f005d66fde5390e53cb400bd36940d4b09dcbfe9f03883"
-	GNEX32VirusProfileID = "gnex32/skt/virus"
+	GNEX32VirusSHA256          = "bf9cd39b1ae14ba2a5f005d66fde5390e53cb400bd36940d4b09dcbfe9f03883"
+	GNEX32VirusProfileID       = "gnex32/skt/virus"
+	GNEX32UnqualifiedProfileID = "gnex32/skt/unqualified-v1"
 )
 
 var gnex32VirusProfile = gnex32.DeviceProfile{

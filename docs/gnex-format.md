@@ -465,10 +465,14 @@ recognized headers do not establish executable bodies.
 
 ## Where this is wired in
 
-`application/gvm_factory.go` routes supported exact-hash GVM samples into the
-operational VM before `application/machine_load.go`'s generic inspection path.
-For other GNEX archives, `Load` tries `gnex.Inspect` after the KTF, Raptor,
-and ABHS/EADS probes. It returns `UnsupportedPlatformError` with the parsed
-title. This includes the version-4 sample: recognizing and decoding its SGS
-does not establish a working GNEX 32-bit interpreter, event services, or frame
-generation.
+`application/gnex32_machine.go` routes the qualified Virus hash and its device
+profile into the GNEX32 runtime. `application/gvm_factory.go` separately routes
+supported exact-hash GVM version-1/2 samples before
+`application/machine_load.go`'s generic inspection path. For other GNEX
+archives, `Load` tries `gnex.Inspect` after the KTF, Raptor, and ABHS/EADS
+probes. A version-4 title must also pass the execution-image decoder before it
+receives the typed `gnex32/skt/unqualified-v1` diagnostic. That diagnostic says
+that no qualified profile establishes the title's opcode, service, and media
+capabilities; it no longer incorrectly claims that GNEX32 execution itself is
+unimplemented. Structurally invalid images do not receive that compatibility
+identity.
