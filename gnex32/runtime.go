@@ -643,6 +643,24 @@ func (r *Runtime) drawStr(x, y int32, mediaIndex int, solid bool) error {
 }
 
 func (r *Runtime) service(id uint16, stack []uint32) (ServiceResult, error) {
+	result, err := r.executeService(id, stack)
+	if err != nil {
+		return ServiceResult{}, err
+	}
+	contract, ok := ServiceContractFor(id)
+	if !ok {
+		return ServiceResult{}, &UnsupportedServiceError{ID: id}
+	}
+	if result.Pop != contract.Pop || len(result.Push) != contract.Push {
+		return ServiceResult{}, fmt.Errorf(
+			"%w: service %#x %s returned pop=%d push=%d, want pop=%d push=%d",
+			ErrServiceStackEffect, id, contract.Name, result.Pop, len(result.Push), contract.Pop, contract.Push,
+		)
+	}
+	return result, nil
+}
+
+func (r *Runtime) executeService(id uint16, stack []uint32) (ServiceResult, error) {
 	last := len(stack) - 1
 	switch id {
 	case 0x07: // BackToBrowser(url)

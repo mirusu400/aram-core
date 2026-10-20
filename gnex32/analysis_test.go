@@ -101,9 +101,22 @@ func TestServiceRegistryMatchesRuntimeDispatch(t *testing.T) {
 		}
 	}
 	ids := SupportedServiceIDs()
+	if len(ids) != 80 {
+		t.Fatalf("service registry has %d entries, want 80", len(ids))
+	}
 	for index := 1; index < len(ids); index++ {
 		if ids[index-1] >= ids[index] {
 			t.Fatalf("service IDs are not sorted: %v", ids)
+		}
+	}
+	for _, id := range ids {
+		contract, ok := ServiceContractFor(id)
+		if !ok || contract.Name == "" || contract.Pop < 0 || contract.Push < 0 || contract.Push > 1 {
+			t.Fatalf("invalid service contract %#x: %+v, %v", id, contract, ok)
+		}
+		name, ok := ServiceName(id)
+		if !ok || name != contract.Name {
+			t.Fatalf("service name %#x = %q, %v; contract %+v", id, name, ok, contract)
 		}
 	}
 }
