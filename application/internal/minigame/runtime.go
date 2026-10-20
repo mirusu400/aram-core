@@ -139,6 +139,8 @@ type Runtime struct {
 	rngState     uint32
 	tickMS       uint32
 	presentCount uint32
+	clearOnDraw  bool
+	clearFrames  bool
 	enabled      bool
 	stage        int
 	activeEvent  uint32
@@ -483,6 +485,7 @@ func (r *Runtime) StepFrame(
 		if next, ready := r.popInput(); ready {
 			r.activeEvent, r.activeKey = next.event, next.key
 			r.activeInput = true
+			r.beginInputFrame(next.event)
 		} else if r.legacy {
 			if r.timerPeriod == 0 || int32(r.tickMS-r.nextTick) < 0 {
 				r.activeEvent = 0
@@ -807,8 +810,7 @@ func (r *Runtime) dispatch(call eadsServiceCall) (uint32, error) {
 		r.surfaceWork = args[1]
 		return 0, nil
 	case call.id == 0x0a0 && call.slot == 0x74:
-		r.presentCount++
-		r.tickMS += 16
+		r.presentFrame()
 		return 0, nil
 	case call.id == 0x0a0 && call.slot == 0x78:
 		x, y := int(int32(args[1])), int(int32(args[2]))
@@ -918,6 +920,9 @@ func (r *Runtime) dispatch(call eadsServiceCall) (uint32, error) {
 	case call.id == 0x15e && call.slot == 0x08:
 		text, err := r.readCString(args[1], 1<<20)
 		if err != nil {
+			return 0, err
+		}
+		if err := r.prepareDrawingSurface(); err != nil {
 			return 0, err
 		}
 		_, err = r.public.OEMText(r.screenPixels, r.width, r.height, int(int32(args[2])), int(int32(args[3])),
@@ -1157,7 +1162,40 @@ func (r *Runtime) putPixel(x, y int, pixel uint32) error {
 	if x < 0 || y < 0 || x >= r.width || y >= r.height {
 		return nil
 	}
+	if err := r.prepareDrawingSurface(); err != nil {
+		return err
+	}
 	return r.writeU32(r.screenPixels+uint32((y*r.width+x)*4), pixel)
+}
+
+func (r *Runtime) prepareDrawingSurface() error {
+	if !r.clearOnDraw {
+		return nil
+	}
+	if err := r.cpu.WriteMemory(r.screenPixels, make([]byte, r.width*r.height*4)); err != nil {
+		return err
+	}
+	r.clearOnDraw = false
+	return nil
+}
+
+func (r *Runtime) beginInputFrame(event uint32) {
+	if r.legacy || event != clearActionKey {
+		return
+	}
+	// MinigameQVGAOEM uses the clear/soft-key action to leave its retained
+	// help canvas and enter gameplay. Gameplay submits complete draw lists and
+	// expects the OEM backbuffer to be discarded between presentations.
+	r.clearFrames = true
+	r.clearOnDraw = true
+}
+
+func (r *Runtime) presentFrame() {
+	r.presentCount++
+	r.tickMS += 16
+	if r.clearFrames {
+		r.clearOnDraw = true
+	}
 }
 
 func (r *Runtime) ensureResourceObjects() error {

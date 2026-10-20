@@ -26,6 +26,8 @@ type SavedState struct {
 	rngState         uint32
 	tickMS           uint32
 	presentCount     uint32
+	clearOnDraw      bool
+	clearFrames      bool
 	enabled          bool
 	activeEvent      uint32
 	activeKey        uint32
@@ -142,7 +144,17 @@ func (r *Runtime) WriteState(writer *guest.StateWriter) error {
 	} else {
 		writer.U8(0)
 	}
-	writer.Write([]byte{0, 0, 0})
+	if runtime.clearOnDraw {
+		writer.U8(1)
+	} else {
+		writer.U8(0)
+	}
+	if runtime.clearFrames {
+		writer.U8(1)
+	} else {
+		writer.U8(0)
+	}
+	writer.U8(0)
 
 	writer.U32(runtime.screenHandle)
 	writer.U32(runtime.screenPixels)
@@ -300,7 +312,9 @@ func ParseState(r *Runtime, decoder *guest.StateDecoder) (*SavedState, error) {
 	saved.tickMS = decoder.U32()
 	saved.presentCount = decoder.U32()
 	saved.enabled = decoder.U8() != 0
-	decoder.Reserved(3)
+	saved.clearOnDraw = decoder.U8() != 0
+	saved.clearFrames = decoder.U8() != 0
+	decoder.Reserved(1)
 	saved.screenHandle = decoder.U32()
 	saved.screenPixels = decoder.U32()
 	saved.width = int(decoder.U32())
@@ -473,6 +487,8 @@ func (r *Runtime) RestoreState(saved *SavedState) error {
 	r.rngState = saved.rngState
 	r.tickMS = saved.tickMS
 	r.presentCount = saved.presentCount
+	r.clearOnDraw = saved.clearOnDraw
+	r.clearFrames = saved.clearFrames
 	r.enabled = saved.enabled
 	r.clipLeft = saved.clipLeft
 	r.clipTop = saved.clipTop

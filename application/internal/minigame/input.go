@@ -12,6 +12,7 @@ const (
 	maxPendingInput      = 1024
 	pointerEvent         = uint32(0x050e)
 	pointerPacketAddress = eadsPaletteAddress + 1024
+	clearActionKey       = uint32(0x12)
 )
 
 type keyEvent struct {
@@ -47,13 +48,13 @@ func InputKeyCode(control string) (uint32, bool) {
 	case profile.KeySoft1:
 		return 0x11, true
 	case profile.KeySoft2:
-		return 0x12, true
+		return clearActionKey, true
 	case profile.KeySend:
 		return 0x10, true
 	case profile.KeyEnd:
 		return 0x14, true
 	case profile.KeyClear:
-		return 0x12, true
+		return clearActionKey, true
 	}
 	return 0, false
 }
@@ -68,7 +69,7 @@ func (r *Runtime) QueueKeyAt(key uint32, pressed bool, at time.Duration) bool {
 		return false
 	}
 	// Modern OEM dispatchers receive the key itself as r0. They do not
-	// consume a host release as a second key; 0x15 is the handset clear key.
+	// consume a host release as a second key.
 	if !r.legacy && !pressed {
 		return true
 	}

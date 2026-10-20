@@ -1,6 +1,7 @@
 package minigame
 
 import (
+	"bytes"
 	"context"
 	"testing"
 
@@ -8,6 +9,51 @@ import (
 	"github.com/mirusu400/aram-core/cpu"
 	"github.com/mirusu400/aram-core/cpu/interpreter"
 )
+
+func TestClearActionDiscardsGameplayDrawLists(t *testing.T) {
+	backend := interpreter.New()
+	t.Cleanup(func() { _ = backend.Close() })
+	if err := backend.Map(0x1000, 0x1000, cpu.PermissionRead|cpu.PermissionWrite); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.WriteMemory(0x1000, bytes.Repeat([]byte{0x7a}, 16)); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &Runtime{cpu: backend, screenPixels: 0x1000, width: 2, height: 2}
+
+	runtime.beginInputFrame(clearActionKey)
+	runtime.presentFrame()
+	if !runtime.clearFrames || !runtime.clearOnDraw {
+		t.Fatal("clear action did not arm the discard-style gameplay surface")
+	}
+	if err := runtime.putPixel(1, 0, 0x00123456); err != nil {
+		t.Fatal(err)
+	}
+	raw := make([]byte, 16)
+	if err := backend.ReadMemory(0x1000, raw); err != nil {
+		t.Fatal(err)
+	}
+	want := []byte{0, 0, 0, 0, 0x56, 0x34, 0x12, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+	if !bytes.Equal(raw, want) {
+		t.Fatalf("discarded draw list = %x, want %x", raw, want)
+	}
+	if runtime.clearOnDraw {
+		t.Fatal("first gameplay draw did not consume the pending clear")
+	}
+
+	runtime.presentFrame()
+	if !runtime.clearOnDraw || runtime.presentCount != 2 || runtime.tickMS != 32 {
+		t.Fatalf("next presentation did not arm a clear: count=%d tick=%d clear=%t",
+			runtime.presentCount, runtime.tickMS, runtime.clearOnDraw)
+	}
+
+	retained := &Runtime{}
+	retained.beginInputFrame(0x13)
+	retained.presentFrame()
+	if retained.clearFrames || retained.clearOnDraw {
+		t.Fatal("ordinary menu input changed the retained drawing surface")
+	}
+}
 
 func TestFrameEventResumesAfterInstructionBudget(t *testing.T) {
 	backend := interpreter.New()

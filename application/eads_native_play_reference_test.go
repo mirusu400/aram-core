@@ -5,11 +5,69 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/gob"
+	"image"
 	"testing"
 
 	"github.com/mirusu400/aram-core/application/internal/minigame"
 	machinecore "github.com/mirusu400/aram-core/core"
 )
+
+func TestVerifiedNativeMinigameClearsGameplayAnimation(t *testing.T) {
+	machine := openNativeGameReference(t, nativeGameReferences[0])
+	step := func() {
+		check(t, machine.StepFrame(context.Background()))
+		for len(machine.DrainAudio().PCM16) > 0 {
+		}
+	}
+	wait := func(count int) {
+		for range count {
+			step()
+		}
+	}
+	press := func(control string) {
+		check(t, machine.QueueInput(machinecore.InputEvent{Control: control, Pressed: true}))
+		step()
+		check(t, machine.QueueInput(machinecore.InputEvent{Control: control}))
+		step()
+	}
+	nonBlack := func(rect image.Rectangle) int {
+		count := 0
+		rect = rect.Intersect(machine.frame.Bounds())
+		for y := rect.Min.Y; y < rect.Max.Y; y++ {
+			for x := rect.Min.X; x < rect.Max.X; x++ {
+				pixel := machine.frame.RGBAAt(x, y)
+				if pixel.R != 0 || pixel.G != 0 || pixel.B != 0 {
+					count++
+				}
+			}
+		}
+		return count
+	}
+
+	wait(180)
+	for range 4 {
+		press("select")
+		wait(180)
+	}
+	press("left")
+	wait(60)
+	press("select")
+	wait(180)
+	press("select")
+	wait(120)
+	if count := nonBlack(image.Rect(0, 0, 240, 103)); count == 0 {
+		t.Fatal("game help screen was not visible before it was skipped")
+	}
+
+	press("clear")
+	wait(30)
+	if count := nonBlack(image.Rect(0, 0, 240, 103)); count != 0 {
+		t.Fatalf("skipped help or READY animation remained above the bears: %d non-black pixels", count)
+	}
+	if pixel := machine.frame.RGBAAt(10, 250); pixel.R != 0 || pixel.G != 0 || pixel.B != 0 {
+		t.Fatalf("skipped help panel remained at (10,250): %#v", pixel)
+	}
+}
 
 // These observations belong to the exact records in nativeGameReferences.
 // Read-only native counters distinguish a completed round from menu animation.
