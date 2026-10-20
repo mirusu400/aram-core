@@ -19,7 +19,7 @@ import (
 
 const (
 	gnex32RuntimeStateMagic   = "GNX32RT\x00"
-	gnex32RuntimeStateVersion = uint32(2)
+	gnex32RuntimeStateVersion = uint32(3)
 	// Shared state may itself contain the configured 768 MiB maximum. GNEX
 	// symbol/media memory and the three profile-sized LCD buffers need separate room.
 	MaxRuntimeStateBytes = uint64(850 << 20)
@@ -53,28 +53,29 @@ type displayState struct {
 }
 
 type runtimeState struct {
-	VM          vmState
-	Display     displayState
-	Services    []byte
-	SoundClip   shared.ServiceID
-	KeyToneClip shared.ServiceID
-	KeyToneOn   bool
-	Backlight   BacklightMode
-	Tick        uint64
-	Timers      [3]runtimeTimer
-	Presents    uint64
-	NV          [UserNVWords]uint32
-	RandomState uint32
-	Paint       color.RGBA
-	PaintSource color.RGBA
-	PaintIndex  uint8
-	PaintMapped bool
-	FontSize    uint32
-	FontColor   color.RGBA
-	FontIndex   uint8
-	FontAlign   uint32
-	FontBack    color.RGBA
-	FontBackIdx uint8
+	VM             vmState
+	Display        displayState
+	Services       []byte
+	SoundClip      shared.ServiceID
+	KeyToneClip    shared.ServiceID
+	KeyToneOn      bool
+	Backlight      BacklightMode
+	Tick           uint64
+	Timers         [3]runtimeTimer
+	Presents       uint64
+	NV             [UserNVWords]uint32
+	RandomState    uint32
+	Paint          color.RGBA
+	PaintSource    color.RGBA
+	PaintIndex     uint8
+	PaintMapped    bool
+	FontSize       uint32
+	FontColor      color.RGBA
+	FontIndex      uint8
+	FontAlign      uint32
+	FontBack       color.RGBA
+	FontBackIdx    uint8
+	CloseRequested bool
 }
 
 func (vm *VM) snapshotState() vmState {
@@ -210,6 +211,7 @@ func (r *Runtime) snapshotState() (runtimeState, error) {
 		Paint:       r.paint, PaintSource: r.paintSource, PaintIndex: r.paintIndex, PaintMapped: r.paintMapped,
 		FontSize: r.fontSize, FontColor: r.fontColor, FontIndex: r.fontIndex,
 		FontAlign: r.fontAlign, FontBack: r.fontBack, FontBackIdx: r.fontBackIdx,
+		CloseRequested: r.closeRequested,
 	}, nil
 }
 
@@ -235,7 +237,8 @@ func (r *Runtime) MarshalBinary() ([]byte, error) {
 	writeStateU64(&output, uint64(state.KeyToneClip))
 	writeStateBool(&output, state.KeyToneOn)
 	output.WriteByte(byte(state.Backlight))
-	output.Write([]byte{0, 0})
+	writeStateBool(&output, state.CloseRequested)
+	output.WriteByte(0)
 	writeStateU64(&output, state.Tick)
 	for _, timer := range state.Timers {
 		writeStateU64(&output, timer.due)
@@ -316,6 +319,7 @@ func (r *Runtime) UnmarshalBinary(data []byte) error {
 	candidate.paintIndex, candidate.paintMapped = state.PaintIndex, state.PaintMapped
 	candidate.fontSize, candidate.fontColor, candidate.fontIndex = state.FontSize, state.FontColor, state.FontIndex
 	candidate.fontAlign, candidate.fontBack, candidate.fontBackIdx = state.FontAlign, state.FontBack, state.FontBackIdx
+	candidate.closeRequested = state.CloseRequested
 	if err := candidate.validateRestoredState(); err != nil {
 		return err
 	}
@@ -440,7 +444,8 @@ func decodeRuntimeState(data []byte, template *Runtime) (runtimeState, error) {
 	state.KeyToneClip = shared.ServiceID(decoder.u64())
 	state.KeyToneOn = decoder.boolean()
 	state.Backlight = BacklightMode(decoder.u8())
-	decoder.reserved(2)
+	state.CloseRequested = decoder.boolean()
+	decoder.reserved(1)
 	state.Tick = decoder.u64()
 	for index := range state.Timers {
 		state.Timers[index] = runtimeTimer{

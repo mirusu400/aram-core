@@ -211,6 +211,9 @@ func (m *gnex32Machine) Start(ctx context.Context) error {
 		m.state = machinecore.StateFaulted
 		return fmt.Errorf("start GNEX32 image at code offset %d: %w", m.runtime.PC(), err)
 	}
+	if stopped, err := m.finishGNEX32CloseRequestLocked(); stopped || err != nil {
+		return err
+	}
 	m.state = machinecore.StateRunning
 	return nil
 }
@@ -246,6 +249,10 @@ func (m *gnex32Machine) Stop() error {
 		return err
 	}
 	if err := m.resetGNEX32AudioLocked(m.runtime.AudioTime()); err != nil {
+		m.state = machinecore.StateFaulted
+		return err
+	}
+	if err := m.runtime.StopVibration(); err != nil {
 		m.state = machinecore.StateFaulted
 		return err
 	}
@@ -305,6 +312,9 @@ func (m *gnex32Machine) StepFrame(ctx context.Context) error {
 		m.state = machinecore.StateFaulted
 		return fmt.Errorf("step GNEX32 timer at code offset %d: %w", m.runtime.PC(), err)
 	}
+	if _, err := m.finishGNEX32CloseRequestLocked(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -329,7 +339,26 @@ func (m *gnex32Machine) QueueInput(event machinecore.InputEvent) error {
 		m.state = machinecore.StateFaulted
 		return fmt.Errorf("deliver GNEX32 key %q at code offset %d: %w", event.Control, m.runtime.PC(), err)
 	}
+	if _, err := m.finishGNEX32CloseRequestLocked(); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (m *gnex32Machine) finishGNEX32CloseRequestLocked() (bool, error) {
+	if !m.runtime.TakeCloseRequest() {
+		return false, nil
+	}
+	if err := m.resetGNEX32AudioLocked(m.runtime.AudioTime()); err != nil {
+		m.state = machinecore.StateFaulted
+		return false, err
+	}
+	if err := m.runtime.StopVibration(); err != nil {
+		m.state = machinecore.StateFaulted
+		return false, err
+	}
+	m.state = machinecore.StateStopped
+	return true, nil
 }
 
 func gnex32GuestCode(key profile.KeyCode) (uint16, bool) {

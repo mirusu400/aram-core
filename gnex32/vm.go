@@ -44,11 +44,13 @@ func (err *UnsupportedServiceError) Error() string {
 	return fmt.Sprintf("gnex32: unsupported service %d at code offset %d", err.ID, err.Offset)
 }
 
-// ServiceResult describes an explicit stack change by an external service.
+// ServiceResult describes an explicit stack change and optional terminal
+// transfer requested by an external service.
 // The service IDs and their native effects remain unverified.
 type ServiceResult struct {
 	Pop  int
 	Push []uint32
+	Halt bool
 }
 
 // EventData contains the four Mobile C system values visible to an event
@@ -1061,6 +1063,9 @@ func (vm *VM) Step() error {
 		}
 		vm.stack = append(vm.stack[:len(vm.stack)-result.Pop], result.Push...)
 		vm.pc += 4
+		if result.Halt {
+			vm.halted = true
+		}
 	case 0x94: // CopyImage(x, y, image), as emitted by the SDK assembler
 		if vm.copyImage == nil {
 			vm.fault = &UnsupportedOpcodeError{Opcode: opcode, Offset: offset}

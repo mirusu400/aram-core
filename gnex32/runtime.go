@@ -79,32 +79,33 @@ const (
 // Runtime hosts the observed version-4 services and preserves VM and media
 // state across event dispatches.
 type Runtime struct {
-	vm          *VM
-	display     *Display
-	profile     DeviceProfile
-	services    *shared.Services
-	owner       shared.OwnerID
-	soundClip   shared.ServiceID
-	keyToneClip shared.ServiceID
-	keyToneOn   bool
-	backlight   BacklightMode
-	tick        uint64
-	timers      [3]runtimeTimer
-	presents    uint64
-	nv          [UserNVWords]uint32
-	randomState uint32
-	paint       color.RGBA
-	paintSource color.RGBA
-	paintIndex  uint8
-	paintMapped bool
-	fontSize    uint32
-	fontColor   color.RGBA
-	fontIndex   uint8
-	fontAlign   uint32
-	fontBack    color.RGBA
-	fontBackIdx uint8
-	text        *shared.Text
-	closed      bool
+	vm             *VM
+	display        *Display
+	profile        DeviceProfile
+	services       *shared.Services
+	owner          shared.OwnerID
+	soundClip      shared.ServiceID
+	keyToneClip    shared.ServiceID
+	keyToneOn      bool
+	backlight      BacklightMode
+	tick           uint64
+	timers         [3]runtimeTimer
+	presents       uint64
+	nv             [UserNVWords]uint32
+	randomState    uint32
+	paint          color.RGBA
+	paintSource    color.RGBA
+	paintIndex     uint8
+	paintMapped    bool
+	fontSize       uint32
+	fontColor      color.RGBA
+	fontIndex      uint8
+	fontAlign      uint32
+	fontBack       color.RGBA
+	fontBackIdx    uint8
+	text           *shared.Text
+	closeRequested bool
+	closed         bool
 }
 
 // CaptureUserNV returns the restart-persistent handset storage without exposing
@@ -117,6 +118,15 @@ func (r *Runtime) CaptureUserNV() [UserNVWords]uint32 {
 // display, timer and media state are deliberately unaffected.
 func (r *Runtime) RestoreUserNV(state [UserNVWords]uint32) {
 	r.nv = state
+}
+
+// TakeCloseRequest consumes a BackToBrowser request after the current guest
+// dispatch returns. The application host uses it to stop the title without
+// running another guest callback.
+func (r *Runtime) TakeCloseRequest() bool {
+	requested := r.closeRequested
+	r.closeRequested = false
+	return requested
 }
 
 type runtimeTimer struct {
@@ -232,6 +242,9 @@ func (r *Runtime) StepFrame(budget uint64) error {
 		if err := r.DispatchEvent(gnex.GNEX32EventTimeout, EventData{Data: uint32(slot)}, budget); err != nil {
 			return err
 		}
+		if r.closeRequested {
+			return nil
+		}
 	}
 	if err := r.services.AdvanceFrame(r.owner); err != nil {
 		return err
@@ -289,6 +302,9 @@ func (r *Runtime) dispatchReadyEvents(budget uint64) error {
 			}
 			if err := r.dispatchKey(code, event.Kind == shared.EventInputPress, budget); err != nil {
 				return err
+			}
+			if r.closeRequested {
+				return nil
 			}
 		case shared.EventAudioComplete:
 			switch event.ServiceID {
@@ -354,6 +370,26 @@ func (r *Runtime) AudioTime() time.Duration {
 	return r.services.Clock.Monotonic()
 }
 
+// Vibration reports the shared handset motor level and guest-clock deadline.
+func (r *Runtime) Vibration() (uint8, time.Duration) {
+	return r.services.Device.Vibration()
+}
+
+// StopVibration clears transient haptic output on a machine lifecycle boundary.
+func (r *Runtime) StopVibration() error {
+	return r.services.Device.Vibrate(0, 0, r.services.Clock.Monotonic())
+}
+
+// ExternalRequests returns a copy of the handset action outbox.
+func (r *Runtime) ExternalRequests() []shared.ExternalRequest {
+	return r.services.Device.Requests()
+}
+
+// ClearExternalRequests acknowledges handset actions through sequence.
+func (r *Runtime) ClearExternalRequests(through uint64) {
+	r.services.Device.ClearRequests(through)
+}
+
 func (r *Runtime) BacklightMode() BacklightMode { return r.backlight }
 
 func (r *Runtime) BacklightEnabled() bool {
@@ -382,6 +418,9 @@ func (r *Runtime) Close() error {
 		return nil
 	}
 	if _, _, err := r.ResetAudioOutput(); err != nil {
+		return err
+	}
+	if err := r.StopVibration(); err != nil {
 		return err
 	}
 	for _, font := range r.text.Snapshot().Fonts {
@@ -527,6 +566,26 @@ func (r *Runtime) drawStr(x, y int32, mediaIndex int, solid bool) error {
 func (r *Runtime) service(id uint16, stack []uint32) (ServiceResult, error) {
 	last := len(stack) - 1
 	switch id {
+	case 0x07: // BackToBrowser(url)
+		if last < 0 {
+			return ServiceResult{}, ErrStackUnderflow
+		}
+		target, err := r.readString(int(stack[last]))
+		if err != nil {
+			return ServiceResult{}, err
+		}
+		// GNEX/GVM2 titles may pass at most 255 URL bytes.
+		if len(target) == 0 || len(target) > 255 {
+			return ServiceResult{}, fmt.Errorf("gnex32: BackToBrowser URL length %d is outside 1..255", len(target))
+		}
+		if _, err := r.services.Device.Request(
+			r.owner, shared.RequestBrowser, string(target), nil,
+			r.services.Clock.Monotonic(),
+		); err != nil {
+			return ServiceResult{}, err
+		}
+		r.closeRequested = true
+		return ServiceResult{Pop: 1, Halt: true}, nil
 	case 1: // GetSysMin(string)
 		if last < 0 {
 			return ServiceResult{}, ErrStackUnderflow
@@ -1238,6 +1297,25 @@ func (r *Runtime) service(id uint16, stack []uint32) (ServiceResult, error) {
 			return ServiceResult{Pop: 1}, nil
 		}
 		return ServiceResult{}, r.stopSound()
+	case 0x8e: // StartVib(seconds)
+		if last < 0 {
+			return ServiceResult{}, ErrStackUnderflow
+		}
+		seconds := int32(stack[last])
+		if seconds < 0 {
+			return ServiceResult{}, fmt.Errorf("gnex32: negative vibration duration %d", seconds)
+		}
+		if err := r.services.Device.Vibrate(
+			100, time.Duration(seconds)*time.Second, r.services.Clock.Monotonic(),
+		); err != nil {
+			return ServiceResult{}, err
+		}
+		return ServiceResult{Pop: 1}, nil
+	case 0x8f: // StopVib()
+		if err := r.StopVibration(); err != nil {
+			return ServiceResult{}, err
+		}
+		return ServiceResult{}, nil
 	case 0x95, 0x96, 0x97: // SetTimer0/1/2(periodMs, onceOrRepeat)
 		if last < 1 {
 			return ServiceResult{}, ErrStackUnderflow

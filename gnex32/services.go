@@ -3,7 +3,7 @@ package gnex32
 import "sort"
 
 var gnex32ServiceNames = map[uint16]string{
-	0x01: "GetSysMin", 0x02: "GetSysUserID", 0x04: "GetDate", 0x05: "GetTime",
+	0x01: "GetSysMin", 0x02: "GetSysUserID", 0x04: "GetDate", 0x05: "GetTime", 0x07: "BackToBrowser",
 	0x22: "SetClip", 0x23: "ResetClip", 0x25: "SetGamma", 0x26: "SetColor",
 	0x27: "SetColorRGB", 0x28: "SetFontType", 0x29: "SetFont", 0x2f: "SetPaletteColorRGB",
 	0x36: "Clear", 0x38: "ClearRGB", 0x3a: "ClearWhite", 0x3b: "ClearBlack",
@@ -11,6 +11,7 @@ var gnex32ServiceNames = map[uint16]string{
 	0x47: "FillRectEx", 0x48: "DrawRectRound", 0x49: "FillRectRound",
 	0x51: "SaveLCD", 0x52: "RestoreLCD", 0x55: "DrawStr", 0x56: "DrawStrSolid",
 	0x5f: "Flush", 0x60: "FlushPartial", 0x82: "PlaySound", 0x83: "StopSound",
+	0x8e: "StartVib", 0x8f: "StopVib",
 	0x90: "SetKeyTone", 0x91: "SetBackLight", 0x93: "GetUserNV", 0x94: "PutUserNV",
 	0x95: "SetTimer0", 0x96: "SetTimer1", 0x97: "SetTimer2",
 	0x98: "ResetTimer0", 0x99: "ResetTimer1", 0x9a: "ResetTimer2",

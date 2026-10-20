@@ -160,6 +160,36 @@ type VideoPresentationMachine interface {
 	VideoPresentation() VideoPresentation
 }
 
+// VibrationMachine exposes guest-requested haptic feedback to a host without
+// making it part of the mandatory machine lifecycle.
+type VibrationMachine interface {
+	Vibration() (level uint8, remaining time.Duration)
+}
+
+type ExternalRequestKind string
+
+const (
+	ExternalRequestPhone   ExternalRequestKind = "phone"
+	ExternalRequestSMS     ExternalRequestKind = "sms"
+	ExternalRequestBrowser ExternalRequestKind = "browser"
+)
+
+// ExternalRequest is a guest-requested action that must be acknowledged by the
+// host after it has been handled or deliberately ignored.
+type ExternalRequest struct {
+	Sequence uint64
+	GuestNS  int64
+	Kind     ExternalRequestKind
+	Target   string
+	Data     []byte
+}
+
+// ExternalRequestMachine exposes an ordered, persistent host-action outbox.
+type ExternalRequestMachine interface {
+	ExternalRequests() []ExternalRequest
+	ClearExternalRequests(through uint64)
+}
+
 type Machine interface {
 	Load(context.Context, Source) error
 	State() State

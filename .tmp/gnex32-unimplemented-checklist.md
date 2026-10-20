@@ -130,6 +130,7 @@
   - [x] `0x45 DrawRect(x1, y1, x2, y2)`의 inclusive outline, clip, reversed-bound 동작을 구현한다.
   - [x] 문자열/byte-array 묶음 `0xa3`, `0xa9..0xac`, `0xae..0xb1`을 실제 Virus 호출 스택과 SDK signature에 맞춰 구현한다. 인접 API `0x9d..0x9e`, `0xa7..0xa8`, `0xad`, `0xb2`도 함께 완성했다. (정적 unsupported service 20건 -> 11건)
   - [x] 수학 서비스 `0xcd Sin100`, `0xce Cos100`, `0xd6 Max3`를 SDK signature와 signed stack 계약에 맞춰 구현한다. (정적 unsupported service 11건 -> 8건)
+  - [x] 외부 제어 서비스 `0x07 BackToBrowser`, `0x8e StartVib`, `0x8f StopVib`를 host outbox·guest clock·앱 종료·save/load 계약에 연결한다. (정적 unsupported service 8건 -> 5건)
 - [ ] service별 정확한 pop/push 수와 반환값/오류 sentinel을 SDK 문서 또는 참조 실행과 대조한다.
 - [x] `GetSysMin/GetSysUserID`의 하드코딩 identity를 device profile로 이동한다.
 - [x] `GetDate/GetTime` 배열 배치와 고정 timezone/weekday 규칙을 검증한다.
