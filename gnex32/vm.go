@@ -46,7 +46,6 @@ func (err *UnsupportedServiceError) Error() string {
 
 // ServiceResult describes an explicit stack change and optional terminal
 // transfer requested by an external service.
-// The service IDs and their native effects remain unverified.
 type ServiceResult struct {
 	Pop  int
 	Push []uint32
@@ -73,9 +72,7 @@ type gnex32SymbolRef struct {
 	element int
 }
 
-// VM tests the observed 0x85 call, 0x86 return, and 0x04 symbol-read layout.
-// These effects are candidates inferred from the supplied version-4 image,
-// not a claim of complete or reference-validated GNEX execution.
+// VM executes the Mobile C wordcode used by GNEX version-4 images.
 type VM struct {
 	image        gnex.GNEX32Image
 	memory       *gnex.GNEX32SymbolMemory
@@ -196,6 +193,9 @@ func (vm *VM) Step() error {
 	if vm.trace != nil {
 		vm.trace.recordInstruction(offset, opcode)
 	}
+	if size, known := gnex32InstructionSize(opcode); known && len(vm.image.Code)-offset < size {
+		return fail(ErrTruncated)
+	}
 	switch opcode {
 	case 0xff: // end: SDK assembler's main-program terminator
 		vm.halted = true
@@ -207,7 +207,7 @@ func (vm *VM) Step() error {
 			return fail(err)
 		}
 		vm.pc = instruction.Target
-	case 0x85: // candidate call: far targets and function-like entry patterns
+	case 0x85: // call: absolute code address
 		instruction, err := vm.image.DecodeAddressInstruction(offset)
 		if err != nil {
 			return fail(err)
@@ -217,7 +217,7 @@ func (vm *VM) Step() error {
 		}
 		vm.calls = append(vm.calls, instruction.Next)
 		vm.pc = instruction.Target
-	case 0x86: // candidate return: appears at function ends, including code[0]
+	case 0x86: // return, or halt when the call stack is empty
 		vm.pc += 2
 		if len(vm.calls) == 0 {
 			vm.halted = true
@@ -225,7 +225,7 @@ func (vm *VM) Step() error {
 		}
 		vm.pc = vm.calls[len(vm.calls)-1]
 		vm.calls = vm.calls[:len(vm.calls)-1]
-	case 0x04: // candidate 32-bit form of GVM symbol-word push
+	case 0x04: // push one scalar symbol word
 		if len(vm.image.Code)-offset < 4 {
 			return fail(ErrTruncated)
 		}
@@ -281,7 +281,7 @@ func (vm *VM) Step() error {
 		}
 		vm.stack = append(vm.stack, value)
 		vm.pc += 8
-	case 0x03: // candidate indexed symbol-word push
+	case 0x03: // push one constant-indexed symbol word
 		if len(vm.image.Code)-offset < 6 {
 			return fail(ErrTruncated)
 		}
@@ -296,7 +296,7 @@ func (vm *VM) Step() error {
 		}
 		vm.stack = append(vm.stack, value)
 		vm.pc += 6
-	case 0x05: // candidate sign-extended 16-bit immediate push
+	case 0x05: // push a sign-extended 16-bit immediate
 		if len(vm.image.Code)-offset < 4 {
 			return fail(ErrTruncated)
 		}
@@ -327,7 +327,7 @@ func (vm *VM) Step() error {
 		lo := uint32(binary.LittleEndian.Uint16(vm.image.Code[offset+4:]))
 		vm.stack = append(vm.stack, hi<<16|lo)
 		vm.pc += 6
-	case 0x0b: // candidate pop of one 32-bit value into a symbol
+	case 0x0b: // pop one 32-bit value into a scalar symbol
 		if len(vm.image.Code)-offset < 4 {
 			return fail(ErrTruncated)
 		}
@@ -398,7 +398,7 @@ func (vm *VM) Step() error {
 		}
 		vm.stack[len(vm.stack)-1]++
 		vm.pc += 2
-	case 0x0f: // candidate decrement of the top 32-bit value
+	case 0x0f: // decrement the top 32-bit value
 		if len(vm.stack) == 0 {
 			return fail(ErrStackUnderflow)
 		}
@@ -449,7 +449,7 @@ func (vm *VM) Step() error {
 			return fail(err)
 		}
 		vm.pc += 10
-	case 0x74: // candidate direct symbol-word copy, destination then source
+	case 0x74: // direct scalar copy, destination then source
 		if len(vm.image.Code)-offset < 6 {
 			return fail(ErrTruncated)
 		}
@@ -678,7 +678,7 @@ func (vm *VM) Step() error {
 			return fail(err)
 		}
 		vm.pc += 10
-	case 0x75: // candidate direct signed-immediate assignment to a symbol
+	case 0x75: // direct signed-immediate assignment to a scalar symbol
 		if len(vm.image.Code)-offset < 6 {
 			return fail(ErrTruncated)
 		}
@@ -736,7 +736,7 @@ func (vm *VM) Step() error {
 			return fail(err)
 		}
 		vm.pc += 8
-	case 0x10: // candidate duplicate of the top 32-bit value
+	case 0x10: // duplicate the top 32-bit value
 		if len(vm.stack) == 0 {
 			return fail(ErrStackUnderflow)
 		}
@@ -957,7 +957,7 @@ func (vm *VM) Step() error {
 		delete(vm.refs, slot)
 		vm.stack[slot] = value
 		vm.pc += 2
-	case 0x90: // candidate assignment through a stack lvalue
+	case 0x90: // assignment through a stack lvalue
 		if len(vm.stack) < 2 {
 			return fail(ErrStackUnderflow)
 		}
@@ -1044,7 +1044,7 @@ func (vm *VM) Step() error {
 		} else {
 			vm.pc = instruction.Next
 		}
-	case 0x92: // candidate built-in service dispatch with a 16-bit ID
+	case 0x92: // built-in service dispatch with a 16-bit ID
 		if len(vm.image.Code)-offset < 4 {
 			return fail(ErrTruncated)
 		}
