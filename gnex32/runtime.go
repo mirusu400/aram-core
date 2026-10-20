@@ -1383,10 +1383,14 @@ func (r *Runtime) service(id uint16, stack []uint32) (ServiceResult, error) {
 			return ServiceResult{Pop: 2, Push: []uint32{uint32(minimum)}}, nil
 		}
 		if maximum < minimum {
-			return ServiceResult{}, fmt.Errorf("gnex32: invalid Rand bounds %d..%d", minimum, maximum)
+			minimum, maximum = maximum, minimum
 		}
-		r.randomState = r.randomState*1664525 + 1013904223
-		value := minimum + int32(uint32(r.randomState)%uint32(int64(maximum)-int64(minimum)))
+		// GNEX preserves the GVM Mobile C random service. The reference GVM2X
+		// runtime forwards RandSeed/Rand to the Microsoft-compatible C rand
+		// sequence and maps its 15-bit result into the requested signed range.
+		r.randomState = r.randomState*214013 + 2531011
+		draw := (r.randomState >> 16) & 0x7fff
+		value := minimum + int32(draw%uint32(int64(maximum)-int64(minimum)))
 		return ServiceResult{Pop: 2, Push: []uint32{uint32(value)}}, nil
 	case 0xcb: // Abs(value)
 		if last < 0 {
