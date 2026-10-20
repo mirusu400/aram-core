@@ -462,6 +462,14 @@ extension. An SGS extension alone is insufficient. Multiple valid candidates,
 including a paired candidate plus a standalone candidate, are rejected as
 ambiguous. Raw payloads are limited to 64 MiB, and existing ZIP limits remain.
 
+The GNEX loader fuzz corpus now covers the version-4 execution image as well as
+archive recognition. Seeds include truncated code/table boundaries, overflowing
+image and resource lengths, maximum symbol/media descriptor values, unsupported
+runtime flags, truncated ZIP directories, and ZIP members whose declared size
+exceeds the 64 MiB member limit. Successful decodes are checked again against
+the per-member and aggregate expansion bounds and may construct isolated symbol
+and media memories to exercise their independent validation.
+
 `ParseHeader` now rejects invalid character sequences even when the EUC-KR
 decoder silently substitutes a Unicode replacement character. Historical
 paired-descriptor prefix scanning remains available. The checksum algorithm

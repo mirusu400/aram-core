@@ -3,27 +3,36 @@ package gnex
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"testing"
 )
 
 func buildZIP(t *testing.T, files map[string][]byte) []byte {
 	t.Helper()
+	data, err := buildZIPBytes(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func buildZIPBytes(files map[string][]byte) ([]byte, error) {
 	var buf bytes.Buffer
 	writer := zip.NewWriter(&buf)
 	for name, data := range files {
 		entry, err := writer.Create(name)
 		if err != nil {
-			t.Fatalf("create %q: %v", name, err)
+			return nil, err
 		}
 		if _, err := entry.Write(data); err != nil {
-			t.Fatalf("write %q: %v", name, err)
+			return nil, err
 		}
 	}
 	if err := writer.Close(); err != nil {
-		t.Fatalf("close writer: %v", err)
+		return nil, err
 	}
-	return buf.Bytes()
+	return buf.Bytes(), nil
 }
 
 func validSGS(t *testing.T, title string) []byte {
@@ -180,6 +189,48 @@ func FuzzInspectStandaloneSGS(f *testing.F) {
 		pkg, err := Inspect(data)
 		if err == nil && (pkg.Header.BodyOffset >= len(pkg.SGS) || pkg.Header.BodyOffset < 12) {
 			t.Fatal("recognized standalone has invalid body boundary")
+		}
+	})
+}
+
+func FuzzInspectGNEXArchive(f *testing.F) {
+	valid, err := buildZIPBytes(map[string][]byte{
+		"title.sgs": gnex32Fixture(),
+		"title.mod": []byte("descriptor"),
+	})
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Add(valid)
+	f.Add(valid[:len(valid)-8])
+	f.Add([]byte{'P', 'K', 3, 4})
+
+	oversized := bytes.Clone(valid)
+	if central := bytes.Index(oversized, []byte{'P', 'K', 1, 2}); central >= 0 {
+		binary.LittleEndian.PutUint32(oversized[central+24:], uint32(MaxMemberSize+1))
+		f.Add(oversized)
+	} else {
+		f.Fatal("test ZIP has no central directory")
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		pkg, err := Inspect(data)
+		if err != nil {
+			return
+		}
+		if len(pkg.SGS) == 0 || uint64(len(pkg.SGS)) > MaxMemberSize ||
+			pkg.Header.BodyOffset < 12 || pkg.Header.BodyOffset >= len(pkg.SGS) {
+			t.Fatalf("unsafe successful archive decode: header=%+v SGS=%d", pkg.Header, len(pkg.SGS))
+		}
+		var expanded uint64
+		for name, payload := range pkg.Files {
+			if name == "" || uint64(len(payload)) > MaxMemberSize {
+				t.Fatalf("unsafe member %q has %d bytes", name, len(payload))
+			}
+			expanded += uint64(len(payload))
+			if expanded > MaxExpandedSize {
+				t.Fatalf("successful archive exceeds expanded limit: %d", expanded)
+			}
 		}
 	})
 }

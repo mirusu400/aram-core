@@ -183,3 +183,38 @@ func TestDecodeGNEX32ImageRejectsInvalidLayout(t *testing.T) {
 		})
 	}
 }
+
+func FuzzDecodeGNEX32Image(f *testing.F) {
+	valid := gnex32Fixture()
+	f.Add(valid)
+	for _, mutate := range []func([]byte){
+		func(data []byte) { binary.LittleEndian.PutUint32(data[32+0x78:], ^uint32(0)) },
+		func(data []byte) { binary.LittleEndian.PutUint32(data[32+0x48:], ^uint32(0)) },
+		func(data []byte) { binary.LittleEndian.PutUint16(data[0x100a0+2:], ^uint16(0)) },
+		func(data []byte) { binary.LittleEndian.PutUint32(data[0x100a0+12+4:], ^uint32(0)) },
+		func(data []byte) { binary.LittleEndian.PutUint16(data[0x100a0:], 0xffff) },
+		func(data []byte) { binary.LittleEndian.PutUint32(data[0x100a0+12:], 0xffffffff) },
+	} {
+		seed := bytes.Clone(valid)
+		mutate(seed)
+		f.Add(seed)
+	}
+	f.Add(valid[:32+0x80])
+	f.Add(valid[:0x100a0+1])
+	f.Add([]byte("not a GNEX32 image"))
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		image, err := DecodeGNEX32Image(data)
+		if err != nil {
+			return
+		}
+		if len(image.Buffer) != len(data) || uint64(len(image.Buffer)) > MaxMemberSize ||
+			image.Header.FormatVersion != 4 || image.Entry < uint32(image.Header.BodyOffset) {
+			t.Fatalf("invalid successful decode: header=%+v bytes=%d", image.Header, len(image.Buffer))
+		}
+		// Runtime memory construction applies the provisional flag contracts and
+		// must reject arbitrary descriptors without panicking or aliasing input.
+		_, _ = image.NewSymbolMemory()
+		_, _ = image.NewMediaMemory()
+	})
+}

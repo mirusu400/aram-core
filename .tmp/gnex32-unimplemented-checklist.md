@@ -141,7 +141,7 @@
 - [ ] `.wmr` 번들 형식을 식별하고 런타임 리소스로 사용되는 경우 loader를 구현한다.
 - [ ] `.mod`/`.inf`의 device/profile 정보 중 실행에 필요한 필드를 구조화한다.
 - [ ] 현재 단일 prefix/layout 이외의 GNEX version-4 변형을 corpus 근거가 있을 때 추가한다.
-- [ ] malformed/oversized image, symbol, media, archive에 대한 fuzz corpus를 확대한다.
+- [x] malformed/oversized image, symbol, media, archive에 대한 fuzz corpus를 확대한다.
 
 ## 9. 제품 라우팅과 호환성 범위
 
