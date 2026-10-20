@@ -91,7 +91,7 @@
 - [ ] native `PlaySound`의 1회 재생, 재호출 교체, 완주 후 상태 및 `StopSound` 규칙을 대조한다.
 - [ ] 잘못된/지원되지 않는 사운드 리소스가 게임 전체를 fault시킬지 guest 오류값을 반환할지 계약을 확인한다.
 - [x] `KeyTone`과 일반 sound가 동시에 울릴 때 mixing/priority 규칙을 구현한다.
-- [ ] pause, stop, reset, close, save/load 각각의 buffered PCM 처리 회귀 테스트를 추가한다.
+- [x] pause, stop, reset, close, save/load 각각의 buffered PCM 처리 회귀 테스트를 추가한다.
 
 ## 6. VM opcode 완성도
 
@@ -159,7 +159,7 @@
 - [ ] 최소 한 번의 완주 또는 모든 상태/메뉴를 포괄하는 trace에서 unsupported opcode/service가 0건임을 확인한다.
 - [x] 동일 입력 두 번의 frame hash, audio hash, timer/NV 결과가 일치하는 determinism test를 추가한다.
 - [x] save → 진행 → load → 재진행 결과가 frame/audio/state hash까지 동일한지 검증한다.
-- [ ] reset/reopen 뒤 UserNV가 유지되고 휘발 상태는 초기화되는 제품 테스트를 추가한다.
+- [x] reset/reopen 뒤 UserNV가 유지되고 휘발 상태는 초기화되는 제품 테스트를 추가한다.
 - [ ] Windows 및 지원 대상 빌드에서 전체 `go test ./...`, `go vet ./...`를 통과한다.
 - [ ] 구현 결과에 맞게 `docs/gnex-format.md`의 역사적/상충하는 미구현 문구를 정리한다.
 - [ ] 체크리스트의 각 완료 항목에 코드·테스트·참조 근거 링크를 덧붙인다.

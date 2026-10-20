@@ -72,6 +72,14 @@ that untimestamped pre-load queue so it cannot be played twice. Restore is
 validated on an isolated runtime before commit, including in a separate-process
 round-trip test.
 
+Product lifecycle regressions exercise PCM that was deliberately left buffered:
+pause and save preserve it in the current generation, load discards the restored
+untimestamped copy and publishes a new generation before decoder continuation,
+and stop, reset, and close discard it while publishing one empty reset marker.
+The product persistence test also advances volatile guest time before reset and
+checks that the fresh runtime returns to zero while all sixteen UserNV words
+survive both save-data relaunch and reset.
+
 A deterministic replay regression saves with active sound, then repeats the
 same key input, one-shot timer firing, RNG, UserNV write, time query, drawing,
 and audio drain on both sides of a load. Frame, audio, and final state hashes

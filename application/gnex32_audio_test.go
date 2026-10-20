@@ -1,8 +1,10 @@
 package application
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
+	"strings"
 	"testing"
 
 	machinecore "github.com/mirusu400/aram-core/core"
@@ -107,6 +109,88 @@ func TestGNEX32MachineClosePublishesAudioMarkerAndKeepsDiagnosticsSafe(t *testin
 	}
 }
 
+func TestGNEX32MachineLifecycleDiscardsBufferedPCM(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		change func(*gnex32Machine) error
+	}{
+		{"stop", func(machine *gnex32Machine) error { return machine.Stop() }},
+		{"reset", func(machine *gnex32Machine) error { return machine.Reset(context.Background()) }},
+		{"close", func(machine *gnex32Machine) error { return machine.Close() }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			machine := newApplicationGNEX32AudioMachine(t)
+			if err := machine.StepFrame(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			// Do not drain before the lifecycle transition: this is PCM which a
+			// frontend has not received yet and must not leak into the new generation.
+			if err := test.change(machine); err != nil {
+				t.Fatal(err)
+			}
+			marker := machine.DrainAudio()
+			if err := marker.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			if marker.Generation != 2 || len(marker.PCM16) != 0 ||
+				marker.SampleRate != 44_100 || marker.Channels != 1 {
+				t.Fatalf("%s audio marker retained buffered PCM: %+v", test.name, marker)
+			}
+			if next := machine.DrainAudio(); next.Generation != 0 {
+				t.Fatalf("%s marker repeated: %+v", test.name, next)
+			}
+		})
+	}
+}
+
+func TestGNEX32MachinePauseSaveLoadBufferedPCMContract(t *testing.T) {
+	machine := newApplicationGNEX32AudioMachine(t)
+	machine.source.SHA256 = strings.Repeat("a", 64)
+	if err := machine.StepFrame(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.Pause(); err != nil {
+		t.Fatal(err)
+	}
+
+	var saved bytes.Buffer
+	if err := machine.SaveState(&saved); err != nil {
+		t.Fatal(err)
+	}
+	paused := machine.DrainAudio()
+	if err := paused.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if paused.Generation != 1 || len(paused.PCM16) == 0 {
+		t.Fatalf("pause/save did not preserve buffered PCM: %+v", paused)
+	}
+
+	if err := machine.LoadState(bytes.NewReader(saved.Bytes())); err != nil {
+		t.Fatal(err)
+	}
+	marker := machine.DrainAudio()
+	if err := marker.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if marker.Generation != 2 || len(marker.PCM16) != 0 ||
+		marker.StartGuestNS != int64(machine.runtime.AudioTime()) {
+		t.Fatalf("load audio marker replayed snapshot PCM: %+v", marker)
+	}
+	if err := machine.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.StepFrame(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	continued := machine.DrainAudio()
+	if err := continued.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if continued.Generation != 2 || len(continued.PCM16) == 0 {
+		t.Fatalf("restored decoder did not continue in the new generation: %+v", continued)
+	}
+}
+
 func newApplicationGNEX32AudioMachine(t *testing.T) *gnex32Machine {
 	t.Helper()
 	image := applicationGNEX32AudioImage()
@@ -117,7 +201,7 @@ func newApplicationGNEX32AudioMachine(t *testing.T) *gnex32Machine {
 	if err := runtime.RunMain(3); err != nil {
 		t.Fatal(err)
 	}
-	return &gnex32Machine{
+	machine := &gnex32Machine{
 		state:               machinecore.StateRunning,
 		image:               image,
 		runtime:             runtime,
@@ -125,6 +209,8 @@ func newApplicationGNEX32AudioMachine(t *testing.T) *gnex32Machine {
 		audioGeneration:     1,
 		mediaOutputRevision: runtime.AudioOutputRevision(),
 	}
+	t.Cleanup(func() { _ = machine.Close() })
+	return machine
 }
 
 func applicationGNEX32AudioImage() gnex.GNEX32Image {

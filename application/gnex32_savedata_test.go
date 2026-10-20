@@ -34,6 +34,18 @@ func TestGNEX32SaveDataSurvivesRelaunchAndReset(t *testing.T) {
 	if got := second.runtime.CaptureUserNV(); got != want {
 		t.Fatalf("relaunched UserNV = %#v, want %#v", got, want)
 	}
+	if err := second.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.StepFrame(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if second.runtime.AudioTime() == 0 {
+		t.Fatal("test did not establish volatile guest time before reset")
+	}
+	if err := second.Pause(); err != nil {
+		t.Fatal(err)
+	}
 	previousRuntime := second.runtime
 	if err := second.Reset(context.Background()); err != nil {
 		t.Fatal(err)
@@ -46,6 +58,10 @@ func TestGNEX32SaveDataSurvivesRelaunchAndReset(t *testing.T) {
 	}
 	if second.state != machinecore.StateReady {
 		t.Fatalf("reset state = %s, want ready", second.state)
+	}
+	if second.runtime.AudioTime() != 0 || second.runtime.PresentCount() != 0 {
+		t.Fatalf("reset retained volatile time/presents: %s/%d",
+			second.runtime.AudioTime(), second.runtime.PresentCount())
 	}
 }
 
