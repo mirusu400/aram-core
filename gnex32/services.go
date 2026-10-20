@@ -7,7 +7,7 @@ var gnex32ServiceNames = map[uint16]string{
 	0x22: "SetClip", 0x23: "ResetClip", 0x25: "SetGamma", 0x26: "SetColor",
 	0x27: "SetColorRGB", 0x28: "SetFontType", 0x29: "SetFont", 0x2f: "SetPaletteColorRGB",
 	0x36: "Clear", 0x38: "ClearRGB", 0x3a: "ClearWhite", 0x3b: "ClearBlack",
-	0x42: "DrawLine", 0x43: "DrawHLine", 0x44: "DrawVLine", 0x46: "FillRect",
+	0x42: "DrawLine", 0x43: "DrawHLine", 0x44: "DrawVLine", 0x45: "DrawRect", 0x46: "FillRect",
 	0x47: "FillRectEx", 0x48: "DrawRectRound", 0x49: "FillRectRound",
 	0x51: "SaveLCD", 0x52: "RestoreLCD", 0x55: "DrawStr", 0x56: "DrawStrSolid",
 	0x5f: "Flush", 0x60: "FlushPartial", 0x82: "PlaySound", 0x83: "StopSound",

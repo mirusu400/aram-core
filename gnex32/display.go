@@ -180,6 +180,24 @@ func (d *Display) DrawLine(x1, y1, x2, y2 int32, fill color.RGBA) {
 	}
 }
 
+// DrawRect draws the inclusive one-pixel outline used by Mobile C. Reversed
+// coordinates are empty, matching FillRect and the rounded-rectangle helpers.
+func (d *Display) DrawRect(x1, y1, x2, y2 int32, fill color.RGBA) {
+	if x2 < x1 || y2 < y1 {
+		return
+	}
+	d.DrawLine(x1, y1, x2, y1, fill)
+	if y2 != y1 {
+		d.DrawLine(x1, y2, x2, y2, fill)
+	}
+	if y2-y1 > 1 {
+		d.DrawLine(x1, y1+1, x1, y2-1, fill)
+		if x2 != x1 {
+			d.DrawLine(x2, y1+1, x2, y2-1, fill)
+		}
+	}
+}
+
 func (d *Display) CopyImage(x, y int32, data []byte) error {
 	return d.copyImageTransformed(x, y, data, nil, 0, 0, 0, 0)
 }

@@ -144,6 +144,11 @@ rotation. The compatibility renderer mirrors, rotates, then scales while
 keeping the transformed image hotspot at the requested `(x, y)`, and applies
 the existing LCD clip to every expanded pixel.
 
+Service `0x45` is the SDK `DrawRect(x1, y1, x2, y2)` operation between the
+already identified vertical-line and filled-rectangle services. It draws an
+inclusive one-pixel outline, honors the active LCD clip, treats reversed bounds
+as empty, and now removes that service from the Virus preflight gap.
+
 The byte-string services now use the first NUL as the logical end, retain
 CP949 bytes without decoding them, terminate copy/substrings, and support a
 source that aliases the writable destination. `GetChar` retains the observed

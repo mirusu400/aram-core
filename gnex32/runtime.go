@@ -866,6 +866,15 @@ func (r *Runtime) service(id uint16, stack []uint32) (ServiceResult, error) {
 		x := int32(stack[last-2])
 		r.display.DrawLine(x, int32(stack[last-1]), x, int32(stack[last]), r.paint)
 		return ServiceResult{Pop: 3}, nil
+	case 0x45: // DrawRect(x1, y1, x2, y2)
+		if last < 3 {
+			return ServiceResult{}, ErrStackUnderflow
+		}
+		r.display.DrawRect(
+			int32(stack[last-3]), int32(stack[last-2]),
+			int32(stack[last-1]), int32(stack[last]), r.paint,
+		)
+		return ServiceResult{Pop: 4}, nil
 	case 0x47: // FillRectEx(x1, y1, x2, y2, alpha)
 		if last < 4 {
 			return ServiceResult{}, ErrStackUnderflow

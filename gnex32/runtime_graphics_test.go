@@ -124,6 +124,37 @@ func TestFlushPartialServiceUsesGuestRectangle(t *testing.T) {
 	}
 }
 
+func TestDrawRectServiceDrawsInclusiveClippedOutline(t *testing.T) {
+	runtime := newNVRuntime(t, 4)
+	red := color.RGBA{R: 255, A: 255}
+	runtime.paint = red
+	runtime.display.Clear(color.RGBA{A: 255})
+	runtime.display.SetClip(2, 2, 4, 4)
+
+	result, err := runtime.service(0x45, []uint32{1, 1, 4, 4})
+	if err != nil || result.Pop != 4 || len(result.Push) != 0 {
+		t.Fatalf("DrawRect result = %+v, %v", result, err)
+	}
+	for _, point := range [][2]int{{4, 2}, {2, 4}, {3, 4}, {4, 4}} {
+		if got := runtime.display.working.RGBAAt(point[0], point[1]); got != red {
+			t.Fatalf("outline pixel %v = %#v", point, got)
+		}
+	}
+	for _, point := range [][2]int{{2, 2}, {3, 2}, {3, 3}} {
+		if got := runtime.display.working.RGBAAt(point[0], point[1]); got != (color.RGBA{A: 255}) {
+			t.Fatalf("clipped/interior pixel %v = %#v", point, got)
+		}
+	}
+
+	runtime.display.DrawRect(4, 4, 3, 3, color.RGBA{G: 255, A: 255})
+	if got := runtime.display.working.RGBAAt(3, 3); got != (color.RGBA{A: 255}) {
+		t.Fatalf("reversed DrawRect changed interior pixel to %#v", got)
+	}
+	if _, err := runtime.service(0x45, []uint32{1, 2, 3}); !errors.Is(err, ErrStackUnderflow) {
+		t.Fatalf("DrawRect underflow error = %v", err)
+	}
+}
+
 func TestSetPaletteColorRGBRendersSelectorImagesAndSurvivesSave(t *testing.T) {
 	data := []byte{0x07, 1, 1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0x10}
 	symbols := make([]gnex.GNEX32Symbol, 10)
