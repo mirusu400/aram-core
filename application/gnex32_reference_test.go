@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -108,6 +109,9 @@ func advanceVirusToMenu(t *testing.T, machine machinecore.Machine) ([32]byte, [3
 }
 
 func TestGNEX32VirusMenuBranchProbe(t *testing.T) {
+	if os.Getenv("ARAM_TEST_DATA") == "" {
+		t.Skip("ARAM_TEST_DATA is not set")
+	}
 	selectedFrames := make(map[[32]byte]bool)
 	resultFrames := make(map[[32]byte]bool)
 	reachedServices := make(map[uint16]bool)
