@@ -1397,6 +1397,17 @@ func (r *Runtime) service(id uint16, stack []uint32) (ServiceResult, error) {
 			value = candidate
 		}
 		return ServiceResult{Pop: 3, Push: []uint32{uint32(value)}}, nil
+	case 0xe1: // Sqrt(value)
+		if last < 0 {
+			return ServiceResult{}, ErrStackUnderflow
+		}
+		value := int32(stack[last])
+		if value < 0 || value > 65535 {
+			return ServiceResult{}, fmt.Errorf("gnex32: Sqrt value %d is outside 0..65535", value)
+		}
+		return ServiceResult{
+			Pop: 1, Push: []uint32{uint32(math.Sqrt(float64(value)))},
+		}, nil
 	case 0x25: // SetGamma(gamma)
 		if last < 0 {
 			return ServiceResult{}, ErrStackUnderflow
