@@ -439,6 +439,11 @@ func (r *Runtime) service(id uint16, stack []uint32) (ServiceResult, error) {
 		if err != nil {
 			return ServiceResult{}, err
 		}
+		if end := bytes.IndexByte(data, 0); end >= 0 {
+			data = data[:end+1]
+		} else {
+			data = append(data, 0)
+		}
 		if err := r.vm.media.Replace(int(stack[last-1]), data); err != nil {
 			return ServiceResult{}, err
 		}
@@ -522,14 +527,22 @@ func (r *Runtime) service(id uint16, stack []uint32) (ServiceResult, error) {
 			return ServiceResult{}, ErrInvalidLValue
 		}
 		value, count, operation := stack[last-2], stack[last-1], stack[last]
-		if count > 4096 || operation > 3 {
+		if count > 4096 || operation > 11 {
 			return ServiceResult{}, fmt.Errorf("gnex32: unsupported ArrayToVar count or operation")
 		}
+		if (operation == 4 || operation == 5) && value == 0 {
+			return ServiceResult{}, ErrDivisionByZero
+		}
+		oldValues := make([]uint32, count)
 		for i := uint32(0); i < count; i++ {
 			old, err := r.vm.memory.ReadWord(ref.symbol, ref.element+int(i))
 			if err != nil {
 				return ServiceResult{}, err
 			}
+			oldValues[i] = old
+		}
+		nextValues := make([]uint32, count)
+		for i, old := range oldValues {
 			next := value
 			switch operation {
 			case 1:
@@ -538,7 +551,29 @@ func (r *Runtime) service(id uint16, stack []uint32) (ServiceResult, error) {
 				next = old - value
 			case 3:
 				next = old * value
+			case 4:
+				next = uint32(int32(old) / int32(value))
+			case 5:
+				next = uint32(int32(old) % int32(value))
+			case 6:
+				next = old & value
+			case 7:
+				next = old | value
+			case 8:
+				next = 0
+				if value == 0 {
+					next = 1
+				}
+			case 9:
+				next = old ^ value
+			case 10:
+				next = uint32(int32(old) >> value)
+			case 11:
+				next = old << value
 			}
+			nextValues[i] = next
+		}
+		for i, next := range nextValues {
 			if err := r.vm.memory.WriteWord(ref.symbol, ref.element+int(i), next); err != nil {
 				return ServiceResult{}, err
 			}
@@ -554,6 +589,11 @@ func (r *Runtime) service(id uint16, stack []uint32) (ServiceResult, error) {
 		}
 		if stack[last] > uint32(len(r.nv)) {
 			return ServiceResult{}, fmt.Errorf("gnex32: user NV read exceeds 16 words")
+		}
+		if stack[last] != 0 {
+			if _, err := r.vm.memory.ReadWord(ref.symbol, ref.element+int(stack[last])-1); err != nil {
+				return ServiceResult{}, err
+			}
 		}
 		for i := uint32(0); i < stack[last]; i++ {
 			if err := r.vm.memory.WriteWord(ref.symbol, ref.element+int(i), r.nv[i]); err != nil {

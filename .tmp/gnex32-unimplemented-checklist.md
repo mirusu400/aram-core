@@ -123,11 +123,11 @@
 - [ ] service별 정확한 pop/push 수와 반환값/오류 sentinel을 SDK 문서 또는 참조 실행과 대조한다.
 - [ ] `GetSysMin/GetSysUserID`의 하드코딩 identity를 device profile로 이동한다.
 - [x] `GetDate/GetTime` 배열 배치와 고정 timezone/weekday 규칙을 검증한다.
-- [ ] `GetChar`의 음수 index 및 writable media one-past-end에서 0을 반환하는 현재 호환 동작을 검증한다.
-- [ ] `StrInit/StrLen/StrCpy/StrSub/StrCmp`의 NUL, CP949, alias/overlap 및 반환값 규칙을 검증한다.
-- [ ] `ArrayToVar`의 operation 0..3 의미와 추가 operation 존재 여부를 확인한다.
+- [x] `GetChar`의 음수 index 및 writable media one-past-end에서 0을 반환하는 현재 호환 동작을 검증한다.
+- [x] `StrInit/StrLen/StrCpy/StrSub/StrCmp`의 NUL, CP949, alias/overlap 및 반환값 규칙을 검증한다.
+- [x] `ArrayToVar`의 operation 0..3 의미와 추가 operation 존재 여부를 확인한다.
 - [ ] `RandSeed/Rand`의 LCG, 범위 상한 배제, 음수 범위를 native 결과와 대조한다.
-- [ ] `GetUserNV/PutUserNV`의 실제 최대 word 수, 반환값 및 실패 원자성을 확인한다.
+- [x] `GetUserNV/PutUserNV`의 실제 최대 word 수, 반환값 및 실패 원자성을 확인한다.
 - [x] `Gamma/Font/KeyTone/BackLight`가 구현될 때 save/load 상태에도 포함한다.
 
 ## 8. loader, 리소스, 포맷 일반화

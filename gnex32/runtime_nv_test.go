@@ -111,6 +111,44 @@ func TestPutUserNVRejectsInvalidInputWithoutChangingNV(t *testing.T) {
 	}
 }
 
+func TestUserNVMaximumAndFailedReadAreAtomic(t *testing.T) {
+	runtime := newNVRuntime(t, 16)
+	want := make([]uint32, 16)
+	for index := range want {
+		want[index] = uint32(index)*0x1020304 + 7
+	}
+	runtime.nv = [16]uint32(want)
+	runtime.vm.refs[0] = gnex32SymbolRef{symbol: 0}
+	result, err := runtime.service(0x93, []uint32{0, 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Pop != 2 || len(result.Push) != 0 {
+		t.Fatalf("GetUserNV stack result = %+v", result)
+	}
+	if got := gnex32TestSymbolWords(t, runtime, 0, 16); !reflect.DeepEqual(got, want) {
+		t.Fatalf("GetUserNV maximum result = %#v, want %#v", got, want)
+	}
+
+	short := newNVRuntime(t, 4)
+	before := []uint32{11, 22, 33, 44}
+	for index, value := range before {
+		if err := short.vm.memory.WriteWord(0, index, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for index := range short.nv {
+		short.nv[index] = uint32(index + 100)
+	}
+	short.vm.refs[0] = gnex32SymbolRef{symbol: 0}
+	if _, err := short.service(0x93, []uint32{0, 5}); err == nil {
+		t.Fatal("GetUserNV accepted a destination that was too short")
+	}
+	if got := gnex32TestSymbolWords(t, short, 0, 4); !reflect.DeepEqual(got, before) {
+		t.Fatalf("failed GetUserNV changed destination to %v", got)
+	}
+}
+
 func TestDateAndTimeUseDeterministicHandsetClock(t *testing.T) {
 	runtime := newNVRuntime(t, 4)
 	const epoch = int64(1167609600000) // 2007-01-01T00:00:00Z

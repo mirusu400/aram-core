@@ -101,6 +101,18 @@ rotation. The compatibility renderer mirrors, rotates, then scales while
 keeping the transformed image hotspot at the requested `(x, y)`, and applies
 the existing LCD clip to every expanded pixel.
 
+The byte-string services now use the first NUL as the logical end, retain
+CP949 bytes without decoding them, terminate copy/substrings, and support a
+source that aliases the writable destination. `GetChar` retains the observed
+Virus compatibility exceptions: a negative index and a writable resource's
+one-past-end sentinel read as zero; other out-of-range reads fail. The SDK's
+complete `ArrayToVar` table is implemented (operations 0 through 11), using
+signed `int` division, remainder, and right shift, with validation before any
+array element changes. `GetUserNV` and `PutUserNV` are void services capped at
+the documented sixteen 32-bit words and leave their destinations unchanged on
+validation failure. `Rand` has deterministic exclusive-upper-bound and signed
+range tests, but its provisional LCG still requires a native GNEX comparison.
+
 ## What a GNEX archive looks like
 
 A paired GNEX title ships as a ZIP containing a basename-matched pair:
