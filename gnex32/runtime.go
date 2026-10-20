@@ -23,6 +23,17 @@ type Identity struct {
 // storage. The Mobile C contract fixes the storage capacity at 64 bytes.
 const UserNVWords = 16
 
+// BacklightMode is the SetBackLight handset policy documented by the Mobile C
+// SDK. MMI delegates to the handset's normal UI policy; the deterministic
+// headless profile resolves that policy to an enabled backlight.
+type BacklightMode uint8
+
+const (
+	BacklightOff BacklightMode = iota
+	BacklightOn
+	BacklightMMI
+)
+
 // Runtime hosts the observed version-4 services and preserves VM and media
 // state across event dispatches.
 type Runtime struct {
@@ -34,6 +45,7 @@ type Runtime struct {
 	soundClip   shared.ServiceID
 	keyToneClip shared.ServiceID
 	keyToneOn   bool
+	backlight   BacklightMode
 	tick        uint64
 	timers      [3]runtimeTimer
 	presents    uint64
@@ -88,8 +100,11 @@ func NewRuntime(image gnex.GNEX32Image, identity Identity) (*Runtime, error) {
 	}
 	runtime := &Runtime{display: NewDisplay(120, 149), identity: identity,
 		services: services, owner: owner, text: services.Text,
-		keyToneOn: true,
+		keyToneOn: true, backlight: BacklightMMI,
 		fontColor: monoColor(3), fontIndex: 3, fontBack: monoColor(4), fontBackIdx: 4}
+	if err := services.Device.SetBacklight(true, 0, services.Clock.Monotonic()); err != nil {
+		return nil, err
+	}
 	vm, err := NewWithServices(image, runtime.service)
 	if err != nil {
 		return nil, err
@@ -177,6 +192,13 @@ func (r *Runtime) AudioOutputRevision() uint64 {
 
 func (r *Runtime) AudioTime() time.Duration {
 	return r.services.Clock.Monotonic()
+}
+
+func (r *Runtime) BacklightMode() BacklightMode { return r.backlight }
+
+func (r *Runtime) BacklightEnabled() bool {
+	enabled, _ := r.services.Device.Backlight()
+	return enabled
 }
 
 // ResetAudioOutput stops the active GNEX sound and discards PCM that a host has
@@ -772,9 +794,15 @@ func (r *Runtime) service(id uint16, stack []uint32) (ServiceResult, error) {
 			return ServiceResult{}, fmt.Errorf("gnex32: key tone switch %d is outside 0..1", stack[last])
 		}
 		return ServiceResult{Pop: 1}, nil
-	case 0x91: // BackLight
+	case 0x91: // SetBackLight(mode)
 		if last < 0 {
 			return ServiceResult{}, ErrStackUnderflow
+		}
+		if stack[last] > uint32(BacklightMMI) {
+			return ServiceResult{}, fmt.Errorf("gnex32: backlight mode %d is outside 0..2", stack[last])
+		}
+		if err := r.setBacklight(BacklightMode(stack[last])); err != nil {
+			return ServiceResult{}, err
 		}
 		return ServiceResult{Pop: 1}, nil
 	case 0x82, 0x83: // PlaySound(media), StopSound()
@@ -925,6 +953,21 @@ func (r *Runtime) stopKeyTone() error {
 		return err
 	}
 	r.keyToneClip = 0
+	return nil
+}
+
+func (r *Runtime) setBacklight(mode BacklightMode) error {
+	if mode > BacklightMMI {
+		return fmt.Errorf("gnex32: backlight mode %d is outside 0..2", mode)
+	}
+	if err := r.services.Device.SetBacklight(
+		mode != BacklightOff,
+		0,
+		r.services.Clock.Monotonic(),
+	); err != nil {
+		return err
+	}
+	r.backlight = mode
 	return nil
 }
 

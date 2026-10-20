@@ -56,6 +56,12 @@ and uses a deterministic 1 kHz beep for other handset controls. Each tone is
 60 ms: a repeated key replaces only the preceding key tone, while ordinary
 game audio continues and is mixed through the shared media timeline.
 
+`SetBackLight` preserves all three SDK modes: off (0), on (1), and the default
+MMI policy (2). The headless compatibility profile resolves MMI to an enabled
+backlight, mirrors the result into the shared device service for host
+inspection, and restores MMI on machine reset. Invalid modes are rejected
+without changing either the policy or the resolved device state.
+
 ## What a GNEX archive looks like
 
 A paired GNEX title ships as a ZIP containing a basename-matched pair:

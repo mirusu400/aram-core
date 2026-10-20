@@ -294,6 +294,15 @@ func (m *gnex32Machine) GNEX32PresentCount() uint64 {
 	return m.runtime.PresentCount()
 }
 
+func (m *gnex32Machine) GNEX32BacklightMode() gnex32.BacklightMode {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.runtime == nil {
+		return gnex32.BacklightMMI
+	}
+	return m.runtime.BacklightMode()
+}
+
 func (m *gnex32Machine) DrainAudio() machinecore.AudioChunk {
 	m.mu.Lock()
 	defer m.mu.Unlock()
