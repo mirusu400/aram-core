@@ -66,7 +66,7 @@
 
 ## 4. 그래픽과 텍스트
 
-- [ ] `FlushPartial(0x60)`이 현재 무시하는 x1/y1/x2/y2를 사용해 부분 갱신을 구현한다.
+- [x] `FlushPartial(0x60)`이 현재 무시하는 x1/y1/x2/y2를 사용해 부분 갱신을 구현한다.
 - [ ] `CopyImageDir`의 direction 값 전체를 확인하고 현재 0/1 이외의 회전·반전을 구현한다.
 - [ ] `CopyImageEx`의 zoom, mirror, rotation 조합을 구현한다.
   - 현재: alpha 0..3, zoom=0, rotation=0, mirror 0/1만 허용한다.

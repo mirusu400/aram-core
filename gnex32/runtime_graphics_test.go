@@ -97,3 +97,27 @@ func TestSetFontTypeRejectsInvalidSizeAtomically(t *testing.T) {
 		t.Fatal("invalid SetFontType changed font state")
 	}
 }
+
+func TestFlushPartialServiceUsesGuestRectangle(t *testing.T) {
+	runtime := newNVRuntime(t, 4)
+	defer runtime.Close()
+	red := color.RGBA{R: 255, A: 255}
+	blue := color.RGBA{B: 255, A: 255}
+	runtime.display.Clear(red)
+	runtime.display.Flush()
+	runtime.display.Clear(blue)
+	result, err := runtime.service(0x60, []uint32{10, 20, 11, 21})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Pop != 4 || len(result.Push) != 0 || runtime.PresentCount() != 1 {
+		t.Fatalf("FlushPartial result = %+v, presents %d", result, runtime.PresentCount())
+	}
+	frame := runtime.Frame()
+	if got := color.RGBAModel.Convert(frame.At(10, 20)).(color.RGBA); got != blue {
+		t.Fatalf("inside partial = %#v", got)
+	}
+	if got := color.RGBAModel.Convert(frame.At(9, 20)).(color.RGBA); got != red {
+		t.Fatalf("outside partial = %#v", got)
+	}
+}

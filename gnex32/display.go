@@ -302,6 +302,21 @@ func (d *Display) Flush() image.Image {
 	return d.latest
 }
 
+// FlushPartial publishes an inclusive LCD rectangle while preserving the
+// previously presented pixels outside it. A first partial flush starts from a
+// cleared physical LCD.
+func (d *Display) FlushPartial(x1, y1, x2, y2 int32) image.Image {
+	if d.latest == nil {
+		d.latest = image.NewRGBA(d.working.Bounds())
+	}
+	if x2 < x1 || y2 < y1 {
+		return d.latest
+	}
+	rect := image.Rect(int(x1), int(y1), int(x2)+1, int(y2)+1).Intersect(d.working.Bounds())
+	draw.Draw(d.latest, rect, d.working, rect.Min, draw.Src)
+	return d.latest
+}
+
 func (d *Display) SaveLCD() {
 	d.saved = image.NewRGBA(d.working.Bounds())
 	copy(d.saved.Pix, d.working.Pix)

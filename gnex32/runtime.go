@@ -726,7 +726,10 @@ func (r *Runtime) service(id uint16, stack []uint32) (ServiceResult, error) {
 		if last < 3 {
 			return ServiceResult{}, ErrStackUnderflow
 		}
-		r.display.Flush()
+		r.display.FlushPartial(
+			int32(stack[last-3]), int32(stack[last-2]),
+			int32(stack[last-1]), int32(stack[last]),
+		)
 		return ServiceResult{Pop: 4}, r.advanceSystemFrame()
 	case 0xc8: // RandSeed(seed)
 		if last < 0 {

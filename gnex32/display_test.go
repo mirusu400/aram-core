@@ -34,6 +34,48 @@ func TestCandidateDisplayPositionsImageAnchorAndPresentsCopy(t *testing.T) {
 	}
 }
 
+func TestDisplayFlushPartialPreservesPreviouslyPresentedPixels(t *testing.T) {
+	display := NewDisplay(4, 3)
+	red := color.RGBA{R: 255, A: 255}
+	blue := color.RGBA{B: 255, A: 255}
+	display.Clear(red)
+	display.Flush()
+	display.Clear(blue)
+	frame := display.FlushPartial(1, 1, 2, 2)
+	for y := 0; y < 3; y++ {
+		for x := 0; x < 4; x++ {
+			want := red
+			if x >= 1 && x <= 2 && y >= 1 && y <= 2 {
+				want = blue
+			}
+			if got := color.RGBAModel.Convert(frame.At(x, y)).(color.RGBA); got != want {
+				t.Fatalf("partial pixel (%d,%d) = %#v, want %#v", x, y, got, want)
+			}
+		}
+	}
+	display.Clear(color.White)
+	if got := color.RGBAModel.Convert(frame.At(1, 1)).(color.RGBA); got != blue {
+		t.Fatal("published partial frame changed with the working buffer")
+	}
+}
+
+func TestDisplayFirstFlushPartialClipsToLCDAndUsesInclusiveCoordinates(t *testing.T) {
+	display := NewDisplay(3, 2)
+	display.Clear(color.White)
+	frame := display.FlushPartial(-5, 0, 0, 0)
+	if got := color.RGBAModel.Convert(frame.At(0, 0)).(color.RGBA); got != (color.RGBA{255, 255, 255, 255}) {
+		t.Fatalf("included edge pixel = %#v", got)
+	}
+	if got := color.RGBAModel.Convert(frame.At(1, 0)).(color.RGBA); got != (color.RGBA{}) {
+		t.Fatalf("unpublished first-frame pixel = %#v", got)
+	}
+	before := color.RGBAModel.Convert(frame.At(0, 0)).(color.RGBA)
+	display.FlushPartial(2, 1, 1, 0)
+	if got := color.RGBAModel.Convert(frame.At(0, 0)).(color.RGBA); got != before {
+		t.Fatal("reversed partial rectangle changed the frame")
+	}
+}
+
 func TestCandidateDisplayClipLimitsImageWrites(t *testing.T) {
 	display := NewDisplay(120, 80)
 	display.Clear(color.White)

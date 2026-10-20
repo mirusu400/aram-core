@@ -12,7 +12,7 @@ import (
 
 func newNVRuntime(t *testing.T, words int) *Runtime {
 	t.Helper()
-	symbols := make([]gnex.GNEX32Symbol, 6)
+	symbols := make([]gnex.GNEX32Symbol, 10)
 	for index := range symbols {
 		symbols[index] = gnex.GNEX32Symbol{Flags: 1, Words: 1, Data: make([]byte, 4)}
 	}

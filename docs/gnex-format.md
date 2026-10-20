@@ -88,6 +88,11 @@ one-shot is consumed and the VM fault is retained, later slots do not run, and
 the shared clock does not advance. GNEX32 now configures that shared clock to
 the same `time.Second/60` quantum instead of the generic 16 ms default.
 
+`FlushPartial(x1, y1, x2, y2)` now follows the SDK's inclusive LCD rectangle:
+only the intersecting working-buffer pixels replace the latest presented frame,
+while pixels outside the rectangle retain their previous presentation. A first
+partial flush starts from a cleared LCD, and reversed rectangles are a no-op.
+
 ## What a GNEX archive looks like
 
 A paired GNEX title ships as a ZIP containing a basename-matched pair:
