@@ -5,8 +5,9 @@ import (
 	"fmt"
 )
 
-// GNEX32MonoImage is the observed kind-5 one-bit raster layout. Color0 and
-// Color1 preserve two header bytes whose display mapping is still provisional.
+// GNEX32MonoImage is the Mobile C one-bit raster layout. Kind 0x05 stores both
+// local-palette selectors; kind 0x02 omits Color0 because zero bits are the
+// transparent color and stores the selector for one bits in Color1.
 type GNEX32MonoImage struct {
 	Width, Height    int
 	AnchorX, AnchorY int
@@ -41,9 +42,10 @@ func DecodeGNEX32MonoImage(data []byte) (GNEX32MonoImage, error) {
 	return image, nil
 }
 
-// GNEX32IndexedImage is the validated pixel-index and palette-triplet layout
-// observed in version-4 media kinds 0x0a and 0x0b. The order of each palette
-// triplet's color channels and the meaning of Mode remain unverified.
+// GNEX32IndexedImage is the Mobile C indexed raster layout. Kinds 0x06/0x07
+// store 2-bit/4-bit handset palette selectors. Kinds 0x09/0x0a/0x0b store
+// 1-bit/2-bit/4-bit local RGB triplets; Mode 1 makes palette index zero
+// transparent while Mode 0 draws it opaquely.
 type GNEX32IndexedImage struct {
 	Width           int
 	Height          int
@@ -56,9 +58,9 @@ type GNEX32IndexedImage struct {
 	Pixels          []byte
 }
 
-// DecodeGNEX32IndexedImage accepts only the two exact, even-padded layouts
-// supported by the supplied version-4 image corpus. Small unrelated records
-// can begin with the same kind byte, so the complete length is mandatory.
+// DecodeGNEX32IndexedImage accepts only exact, even-padded layouts. Unrelated
+// media records can begin with the same kind byte, so the complete length is
+// mandatory.
 func DecodeGNEX32IndexedImage(data []byte) (GNEX32IndexedImage, error) {
 	if len(data) < 7 {
 		return GNEX32IndexedImage{}, fmt.Errorf("gnex: truncated GNEX32 indexed image header")

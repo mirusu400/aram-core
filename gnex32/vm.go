@@ -1,6 +1,5 @@
-// Package gnex32 executes the observed GNEX version-4 SGS subset. Opcode and
-// service semantics are inferred from SDK assembler output and the Virus image;
-// full gameplay still needs comparison with a reference runtime.
+// Package gnex32 executes the qualified GNEX version-4 SGS instruction and
+// service contracts. Full commercial-title coverage remains corpus-qualified.
 package gnex32
 
 import (
@@ -44,11 +43,25 @@ func (err *UnsupportedServiceError) Error() string {
 	return fmt.Sprintf("gnex32: unsupported service %d at code offset %d", err.ID, err.Offset)
 }
 
-// ServiceResult describes an explicit stack change by an external service.
-// The service IDs and their native effects remain unverified.
+// ServiceResult describes an explicit stack change and optional terminal
+// transfer requested by an external service.
 type ServiceResult struct {
 	Pop  int
 	Push []uint32
+	Halt bool
+}
+
+// EventData contains the four Mobile C system values visible to an event
+// handler as swData through swData3.
+type EventData struct {
+	Data  uint32
+	Data1 uint32
+	Data2 uint32
+	Data3 uint32
+}
+
+func (data EventData) values() [4]uint32 {
+	return [4]uint32{data.Data, data.Data1, data.Data2, data.Data3}
 }
 
 type ServiceHandler func(id uint16, stack []uint32) (ServiceResult, error)
@@ -58,9 +71,7 @@ type gnex32SymbolRef struct {
 	element int
 }
 
-// VM tests the observed 0x85 call, 0x86 return, and 0x04 symbol-read layout.
-// These effects are candidates inferred from the supplied version-4 image,
-// not a claim of complete or reference-validated GNEX execution.
+// VM executes the Mobile C wordcode used by GNEX version-4 images.
 type VM struct {
 	image        gnex.GNEX32Image
 	memory       *gnex.GNEX32SymbolMemory
@@ -68,12 +79,13 @@ type VM struct {
 	service      ServiceHandler
 	copyImage    func(x, y int32, index int) error
 	copyImageDir func(x, y int32, index int, dir uint32) error
-	copyImageEx  func(x, y int32, index int, alpha, dir uint32) error
+	copyImageEx  func(x, y int32, index int, alpha, zoom, mirror, rotation uint32) error
 	pc           int
 	calls        []int
 	marks        []int
 	stack        []uint32
-	refs         map[int]gnex32SymbolRef // candidate lvalues keyed by value-stack slot
+	refs         map[int]gnex32SymbolRef // lvalues keyed by value-stack slot
+	trace        *executionTraceState
 	halted       bool
 	fault        error
 }
@@ -96,8 +108,8 @@ func New(image gnex.GNEX32Image) (*VM, error) {
 		refs: make(map[int]gnex32SymbolRef)}, nil
 }
 
-// NewWithServices enables explicit, caller-supplied behavior for candidate
-// opcode 0x92. New leaves every service unsupported by default.
+// NewWithServices enables explicit, caller-supplied behavior for service opcode
+// 0x92. New leaves every service unsupported by default.
 func NewWithServices(image gnex.GNEX32Image, service ServiceHandler) (*VM, error) {
 	vm, err := New(image)
 	if err != nil {
@@ -117,24 +129,40 @@ func (vm *VM) StackTop() uint32 {
 	return vm.stack[len(vm.stack)-1]
 }
 
-// BeginEvent enters one validated header event slot after a completed dispatch.
-// The supplied version-4 image's event callbacks read swData from symbol zero.
-func (vm *VM) BeginEvent(slot int, eventData uint32) error {
+// BeginEvent enters one validated header event slot after a completed dispatch
+// and clears swData1..swData3.
+func (vm *VM) BeginEvent(event gnex.GNEX32Event, eventData uint32) error {
+	return vm.BeginEventData(event, EventData{Data: eventData})
+}
+
+// BeginEventData enters one validated header event slot after a completed
+// dispatch. Event system symbols are validated before any of them or VM control
+// state is changed, so a malformed image cannot observe a partial event.
+func (vm *VM) BeginEventData(event gnex.GNEX32Event, eventData EventData) error {
 	if vm.fault != nil {
 		return vm.fault
 	}
 	if !vm.halted {
 		return ErrEventRunning
 	}
-	if slot <= 0 || slot >= len(vm.image.CodePointers) || vm.image.CodePointers[slot] == 0 {
+	pointer, valid := vm.image.Callbacks.Pointer(event)
+	if !valid || event == gnex.GNEX32EventStart || pointer == 0 {
 		return ErrEventUnavailable
 	}
-	pc := int(vm.image.CodePointers[slot]) - vm.image.Header.BodyOffset
+	pc := int(pointer) - vm.image.Header.BodyOffset
 	if pc < 0 || pc&1 != 0 || pc >= len(vm.image.Code) {
 		return ErrEventUnavailable
 	}
-	if err := vm.memory.WriteWord(0, 0, eventData); err != nil {
-		return err
+	values := eventData.values()
+	for symbol := range values {
+		if _, err := vm.memory.ReadWord(symbol, 0); err != nil {
+			return fmt.Errorf("gnex32: event system symbol %d: %w", symbol, err)
+		}
+	}
+	for symbol, value := range values {
+		if err := vm.memory.WriteWord(symbol, 0, value); err != nil {
+			return fmt.Errorf("gnex32: event system symbol %d: %w", symbol, err)
+		}
 	}
 	vm.pc = pc
 	vm.stack = vm.stack[:0]
@@ -161,6 +189,12 @@ func (vm *VM) Step() error {
 		return fail(ErrTruncated)
 	}
 	opcode := binary.LittleEndian.Uint16(vm.image.Code[offset:])
+	if vm.trace != nil {
+		vm.trace.recordInstruction(offset, opcode)
+	}
+	if size, known := gnex32InstructionSize(opcode); known && len(vm.image.Code)-offset < size {
+		return fail(ErrTruncated)
+	}
 	switch opcode {
 	case 0xff: // end: SDK assembler's main-program terminator
 		vm.halted = true
@@ -172,7 +206,7 @@ func (vm *VM) Step() error {
 			return fail(err)
 		}
 		vm.pc = instruction.Target
-	case 0x85: // candidate call: far targets and function-like entry patterns
+	case 0x85: // call: absolute code address
 		instruction, err := vm.image.DecodeAddressInstruction(offset)
 		if err != nil {
 			return fail(err)
@@ -182,7 +216,7 @@ func (vm *VM) Step() error {
 		}
 		vm.calls = append(vm.calls, instruction.Next)
 		vm.pc = instruction.Target
-	case 0x86: // candidate return: appears at function ends, including code[0]
+	case 0x86: // return, or halt when the call stack is empty
 		vm.pc += 2
 		if len(vm.calls) == 0 {
 			vm.halted = true
@@ -190,7 +224,7 @@ func (vm *VM) Step() error {
 		}
 		vm.pc = vm.calls[len(vm.calls)-1]
 		vm.calls = vm.calls[:len(vm.calls)-1]
-	case 0x04: // candidate 32-bit form of GVM symbol-word push
+	case 0x04: // push one scalar symbol word
 		if len(vm.image.Code)-offset < 4 {
 			return fail(ErrTruncated)
 		}
@@ -246,7 +280,7 @@ func (vm *VM) Step() error {
 		}
 		vm.stack = append(vm.stack, value)
 		vm.pc += 8
-	case 0x03: // candidate indexed symbol-word push
+	case 0x03: // push one constant-indexed symbol word
 		if len(vm.image.Code)-offset < 6 {
 			return fail(ErrTruncated)
 		}
@@ -261,7 +295,7 @@ func (vm *VM) Step() error {
 		}
 		vm.stack = append(vm.stack, value)
 		vm.pc += 6
-	case 0x05: // candidate sign-extended 16-bit immediate push
+	case 0x05: // push a sign-extended 16-bit immediate
 		if len(vm.image.Code)-offset < 4 {
 			return fail(ErrTruncated)
 		}
@@ -292,7 +326,7 @@ func (vm *VM) Step() error {
 		lo := uint32(binary.LittleEndian.Uint16(vm.image.Code[offset+4:]))
 		vm.stack = append(vm.stack, hi<<16|lo)
 		vm.pc += 6
-	case 0x0b: // candidate pop of one 32-bit value into a symbol
+	case 0x0b: // pop one 32-bit value into a scalar symbol
 		if len(vm.image.Code)-offset < 4 {
 			return fail(ErrTruncated)
 		}
@@ -363,13 +397,58 @@ func (vm *VM) Step() error {
 		}
 		vm.stack[len(vm.stack)-1]++
 		vm.pc += 2
-	case 0x0f: // candidate decrement of the top 32-bit value
+	case 0x0f: // decrement the top 32-bit value
 		if len(vm.stack) == 0 {
 			return fail(ErrStackUnderflow)
 		}
 		vm.stack[len(vm.stack)-1]--
 		vm.pc += 2
-	case 0x74: // candidate direct symbol-word copy, destination then source
+	case 0x61: // xseti: X-indexed destination from I-indexed source
+		if len(vm.image.Code)-offset < 12 {
+			return fail(ErrTruncated)
+		}
+		destination := int(binary.LittleEndian.Uint16(vm.image.Code[offset+2:]))
+		destinationIndex := int(binary.LittleEndian.Uint16(vm.image.Code[offset+4:]))
+		destinationIndexElement := int(binary.LittleEndian.Uint16(vm.image.Code[offset+6:]))
+		source := int(binary.LittleEndian.Uint16(vm.image.Code[offset+8:]))
+		sourceIndex := int(binary.LittleEndian.Uint16(vm.image.Code[offset+10:]))
+		di, err := vm.memory.ReadWord(destinationIndex, destinationIndexElement)
+		if err != nil {
+			return fail(err)
+		}
+		si, err := vm.memory.ReadWord(sourceIndex, 0)
+		if err != nil {
+			return fail(err)
+		}
+		value, err := vm.memory.ReadWord(source, int(si))
+		if err != nil {
+			return fail(err)
+		}
+		if err := vm.memory.WriteWord(destination, int(di), value); err != nil {
+			return fail(err)
+		}
+		vm.pc += 12
+	case 0x63: // xsetz: X-indexed destination from scalar source
+		if len(vm.image.Code)-offset < 10 {
+			return fail(ErrTruncated)
+		}
+		destination := int(binary.LittleEndian.Uint16(vm.image.Code[offset+2:]))
+		destinationIndex := int(binary.LittleEndian.Uint16(vm.image.Code[offset+4:]))
+		destinationIndexElement := int(binary.LittleEndian.Uint16(vm.image.Code[offset+6:]))
+		source := int(binary.LittleEndian.Uint16(vm.image.Code[offset+8:]))
+		di, err := vm.memory.ReadWord(destinationIndex, destinationIndexElement)
+		if err != nil {
+			return fail(err)
+		}
+		value, err := vm.memory.ReadWord(source, 0)
+		if err != nil {
+			return fail(err)
+		}
+		if err := vm.memory.WriteWord(destination, int(di), value); err != nil {
+			return fail(err)
+		}
+		vm.pc += 10
+	case 0x74: // direct scalar copy, destination then source
 		if len(vm.image.Code)-offset < 6 {
 			return fail(ErrTruncated)
 		}
@@ -475,6 +554,67 @@ func (vm *VM) Step() error {
 			return fail(err)
 		}
 		vm.pc += 10
+	case 0x67: // isetn: I-indexed destination from constant-indexed source
+		if len(vm.image.Code)-offset < 10 {
+			return fail(ErrTruncated)
+		}
+		destination := int(binary.LittleEndian.Uint16(vm.image.Code[offset+2:]))
+		destinationIndex := int(binary.LittleEndian.Uint16(vm.image.Code[offset+4:]))
+		source := int(binary.LittleEndian.Uint16(vm.image.Code[offset+6:]))
+		sourceElement := int(binary.LittleEndian.Uint16(vm.image.Code[offset+8:]))
+		di, err := vm.memory.ReadWord(destinationIndex, 0)
+		if err != nil {
+			return fail(err)
+		}
+		value, err := vm.memory.ReadWord(source, sourceElement)
+		if err != nil {
+			return fail(err)
+		}
+		if err := vm.memory.WriteWord(destination, int(di), value); err != nil {
+			return fail(err)
+		}
+		vm.pc += 10
+	case 0x6b: // nsetx: constant-indexed destination from X-indexed source
+		if len(vm.image.Code)-offset < 12 {
+			return fail(ErrTruncated)
+		}
+		destination := int(binary.LittleEndian.Uint16(vm.image.Code[offset+2:]))
+		destinationElement := int(binary.LittleEndian.Uint16(vm.image.Code[offset+4:]))
+		source := int(binary.LittleEndian.Uint16(vm.image.Code[offset+6:]))
+		sourceIndex := int(binary.LittleEndian.Uint16(vm.image.Code[offset+8:]))
+		sourceIndexElement := int(binary.LittleEndian.Uint16(vm.image.Code[offset+10:]))
+		si, err := vm.memory.ReadWord(sourceIndex, sourceIndexElement)
+		if err != nil {
+			return fail(err)
+		}
+		value, err := vm.memory.ReadWord(source, int(si))
+		if err != nil {
+			return fail(err)
+		}
+		if err := vm.memory.WriteWord(destination, destinationElement, value); err != nil {
+			return fail(err)
+		}
+		vm.pc += 12
+	case 0x6c: // nseti: constant-indexed destination from I-indexed source
+		if len(vm.image.Code)-offset < 10 {
+			return fail(ErrTruncated)
+		}
+		destination := int(binary.LittleEndian.Uint16(vm.image.Code[offset+2:]))
+		destinationElement := int(binary.LittleEndian.Uint16(vm.image.Code[offset+4:]))
+		source := int(binary.LittleEndian.Uint16(vm.image.Code[offset+6:]))
+		sourceIndex := int(binary.LittleEndian.Uint16(vm.image.Code[offset+8:]))
+		si, err := vm.memory.ReadWord(sourceIndex, 0)
+		if err != nil {
+			return fail(err)
+		}
+		value, err := vm.memory.ReadWord(source, int(si))
+		if err != nil {
+			return fail(err)
+		}
+		if err := vm.memory.WriteWord(destination, destinationElement, value); err != nil {
+			return fail(err)
+		}
+		vm.pc += 10
 	case 0x6f: // nsetc: constant-indexed symbol assignment from signed immediate
 		if len(vm.image.Code)-offset < 8 {
 			return fail(ErrTruncated)
@@ -517,7 +657,27 @@ func (vm *VM) Step() error {
 			return fail(err)
 		}
 		vm.pc += 8
-	case 0x75: // candidate direct signed-immediate assignment to a symbol
+	case 0x71: // zsetx: scalar destination from X-indexed source
+		if len(vm.image.Code)-offset < 10 {
+			return fail(ErrTruncated)
+		}
+		destination := int(binary.LittleEndian.Uint16(vm.image.Code[offset+2:]))
+		source := int(binary.LittleEndian.Uint16(vm.image.Code[offset+4:]))
+		sourceIndex := int(binary.LittleEndian.Uint16(vm.image.Code[offset+6:]))
+		sourceIndexElement := int(binary.LittleEndian.Uint16(vm.image.Code[offset+8:]))
+		si, err := vm.memory.ReadWord(sourceIndex, sourceIndexElement)
+		if err != nil {
+			return fail(err)
+		}
+		value, err := vm.memory.ReadWord(source, int(si))
+		if err != nil {
+			return fail(err)
+		}
+		if err := vm.memory.WriteWord(destination, 0, value); err != nil {
+			return fail(err)
+		}
+		vm.pc += 10
+	case 0x75: // direct signed-immediate assignment to a scalar symbol
 		if len(vm.image.Code)-offset < 6 {
 			return fail(ErrTruncated)
 		}
@@ -575,7 +735,7 @@ func (vm *VM) Step() error {
 			return fail(err)
 		}
 		vm.pc += 8
-	case 0x10: // candidate duplicate of the top 32-bit value
+	case 0x10: // duplicate the top 32-bit value
 		if len(vm.stack) == 0 {
 			return fail(ErrStackUnderflow)
 		}
@@ -707,7 +867,26 @@ func (vm *VM) Step() error {
 		}
 		vm.stack = vm.stack[:last]
 		vm.pc += 2
-	case 0x8d: // candidate indexed symbol lvalue
+	case 0x8a: // ldri: lvalue indexed by a scalar symbol
+		if len(vm.image.Code)-offset < 6 {
+			return fail(ErrTruncated)
+		}
+		if len(vm.stack) >= 4096 {
+			return fail(ErrStackOverflow)
+		}
+		symbol := int(binary.LittleEndian.Uint16(vm.image.Code[offset+2:]))
+		indexSymbol := int(binary.LittleEndian.Uint16(vm.image.Code[offset+4:]))
+		element, err := vm.memory.ReadWord(indexSymbol, 0)
+		if err != nil {
+			return fail(err)
+		}
+		if _, err := vm.memory.ReadWord(symbol, int(element)); err != nil {
+			return fail(err)
+		}
+		vm.refs[len(vm.stack)] = gnex32SymbolRef{symbol: symbol, element: int(element)}
+		vm.stack = append(vm.stack, 0)
+		vm.pc += 6
+	case 0x8d: // ldrn: lvalue indexed by a constant element
 		if len(vm.image.Code)-offset < 6 {
 			return fail(ErrTruncated)
 		}
@@ -777,7 +956,7 @@ func (vm *VM) Step() error {
 		delete(vm.refs, slot)
 		vm.stack[slot] = value
 		vm.pc += 2
-	case 0x90: // candidate assignment through a stack lvalue
+	case 0x90: // assignment through a stack lvalue
 		if len(vm.stack) < 2 {
 			return fail(ErrStackUnderflow)
 		}
@@ -864,11 +1043,14 @@ func (vm *VM) Step() error {
 		} else {
 			vm.pc = instruction.Next
 		}
-	case 0x92: // candidate built-in service dispatch with a 16-bit ID
+	case 0x92: // built-in service dispatch with a 16-bit ID
 		if len(vm.image.Code)-offset < 4 {
 			return fail(ErrTruncated)
 		}
 		id := binary.LittleEndian.Uint16(vm.image.Code[offset+2:])
+		if vm.trace != nil {
+			vm.trace.recordService(offset, id, vm.stack, vm.refs)
+		}
 		if vm.service == nil {
 			vm.fault = &UnsupportedServiceError{ID: id, Offset: offset}
 			return vm.fault
@@ -887,6 +1069,9 @@ func (vm *VM) Step() error {
 		}
 		vm.stack = append(vm.stack[:len(vm.stack)-result.Pop], result.Push...)
 		vm.pc += 4
+		if result.Halt {
+			vm.halted = true
+		}
 	case 0x94: // CopyImage(x, y, image), as emitted by the SDK assembler
 		if vm.copyImage == nil {
 			vm.fault = &UnsupportedOpcodeError{Opcode: opcode, Offset: offset}
@@ -930,10 +1115,13 @@ func (vm *VM) Step() error {
 			return fail(ErrStackUnderflow)
 		}
 		last := len(vm.stack) - 1
-		if vm.copyImageEx == nil || vm.stack[last-3] > 3 || vm.stack[last-2] != 0 || vm.stack[last] != 0 || vm.stack[last-1] > 1 {
-			return fail(fmt.Errorf("unsupported CopyImageEx alpha=%d zoom=%d mirror=%d rotation=%d: %w", vm.stack[last-3], vm.stack[last-2], vm.stack[last-1], vm.stack[last], &UnsupportedOpcodeError{Opcode: opcode, Offset: offset}))
+		if vm.copyImageEx == nil {
+			return fail(&UnsupportedOpcodeError{Opcode: opcode, Offset: offset})
 		}
-		err := vm.copyImageEx(int32(vm.stack[last-6]), int32(vm.stack[last-5]), int(vm.stack[last-4]), vm.stack[last-3], vm.stack[last-1])
+		err := vm.copyImageEx(
+			int32(vm.stack[last-6]), int32(vm.stack[last-5]), int(vm.stack[last-4]),
+			vm.stack[last-3], vm.stack[last-2], vm.stack[last-1], vm.stack[last],
+		)
 		if err != nil {
 			return fail(err)
 		}

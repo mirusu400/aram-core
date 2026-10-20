@@ -39,7 +39,7 @@ func TestDecodeGNEX32Image(t *testing.T) {
 	}
 	if image.Header.FormatVersion != 4 || image.Header.Title != "Test" ||
 		image.EntryField != 0x1007c || image.Entry != 0x1009c || len(image.Symbols) != 1 || len(image.Media) != 1 ||
-		image.CodePointers[0] != image.Entry || image.CodePointers[2] != 0x10098 || image.CodePointers[1] != 0 ||
+		image.Callbacks.Start != image.Entry || image.Callbacks.Timeout != 0x10098 || image.Callbacks.End != 0 ||
 		image.Symbols[0].Flags != 1 || image.Symbols[0].Words != 1 ||
 		image.Media[0].Flags != 0x100 || !bytes.Equal(image.Symbols[0].Data, []byte{1, 2, 3, 4}) {
 		t.Fatalf("decoded layout: %+v", image.Header)
@@ -47,6 +47,37 @@ func TestDecodeGNEX32Image(t *testing.T) {
 	b[0x100a0+24] = 0
 	if image.Media[0].Data[0] != 1 {
 		t.Fatal("input buffer leaked into image")
+	}
+}
+
+func TestGNEX32CallbackSlotsHaveStableNames(t *testing.T) {
+	pointers := [GNEX32EventCount]uint32{}
+	for event := GNEX32EventStart; event < GNEX32EventCount; event++ {
+		pointers[event] = 0x1000 + uint32(event)*4
+	}
+	callbacks := gnex32CallbacksFromPointers(pointers)
+	if got := callbacks.Pointers(); got != pointers {
+		t.Fatalf("callback pointers = %#v, want %#v", got, pointers)
+	}
+	wantNames := []string{
+		"EVENT_START", "EVENT_END", "EVENT_TIMEOUT", "EVENT_KEYPRESS",
+		"EVENT_RECEIVE", "EVENT_RSRECEIVE", "EVENT_SMSRECEIVE", "EVENT_RESULT",
+		"EVENT_NETWORK", "EVENT_RSEVENT", "EXTENSION_10",
+	}
+	for index, want := range wantNames {
+		event := GNEX32Event(index)
+		if got := event.String(); got != want {
+			t.Errorf("event %d name = %q, want %q", index, got, want)
+		}
+		if pointer, ok := callbacks.Pointer(event); !ok || pointer != pointers[index] {
+			t.Errorf("event %d pointer = %#x, %v", index, pointer, ok)
+		}
+	}
+	if pointer, ok := callbacks.Pointer(GNEX32EventCount); ok || pointer != 0 {
+		t.Fatalf("invalid event pointer = %#x, %v", pointer, ok)
+	}
+	if got := GNEX32EventCount.String(); got != "INVALID_EVENT" {
+		t.Fatalf("invalid event name = %q", got)
 	}
 }
 
@@ -182,4 +213,39 @@ func TestDecodeGNEX32ImageRejectsInvalidLayout(t *testing.T) {
 			}
 		})
 	}
+}
+
+func FuzzDecodeGNEX32Image(f *testing.F) {
+	valid := gnex32Fixture()
+	f.Add(valid)
+	for _, mutate := range []func([]byte){
+		func(data []byte) { binary.LittleEndian.PutUint32(data[32+0x78:], ^uint32(0)) },
+		func(data []byte) { binary.LittleEndian.PutUint32(data[32+0x48:], ^uint32(0)) },
+		func(data []byte) { binary.LittleEndian.PutUint16(data[0x100a0+2:], ^uint16(0)) },
+		func(data []byte) { binary.LittleEndian.PutUint32(data[0x100a0+12+4:], ^uint32(0)) },
+		func(data []byte) { binary.LittleEndian.PutUint16(data[0x100a0:], 0xffff) },
+		func(data []byte) { binary.LittleEndian.PutUint32(data[0x100a0+12:], 0xffffffff) },
+	} {
+		seed := bytes.Clone(valid)
+		mutate(seed)
+		f.Add(seed)
+	}
+	f.Add(valid[:32+0x80])
+	f.Add(valid[:0x100a0+1])
+	f.Add([]byte("not a GNEX32 image"))
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		image, err := DecodeGNEX32Image(data)
+		if err != nil {
+			return
+		}
+		if len(image.Buffer) != len(data) || uint64(len(image.Buffer)) > MaxMemberSize ||
+			image.Header.FormatVersion != 4 || image.Entry < uint32(image.Header.BodyOffset) {
+			t.Fatalf("invalid successful decode: header=%+v bytes=%d", image.Header, len(image.Buffer))
+		}
+		// Runtime memory construction applies the supported flag contracts and
+		// must reject arbitrary descriptors without panicking or aliasing input.
+		_, _ = image.NewSymbolMemory()
+		_, _ = image.NewMediaMemory()
+	})
 }

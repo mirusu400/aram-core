@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -45,7 +46,22 @@ func TestGNEX32ReferenceIndexedImageLayouts(t *testing.T) {
 		var counts, largeCounts [2]int
 		var modes, largeModes [2]int
 		var rejectedSmall int
+		decodedKinds := make(map[byte]int)
 		for index, media := range image.Media {
+			if media.Flags == 0x100 && len(media.Data) != 0 {
+				var decodeErr error
+				switch media.Data[0] {
+				case 0x02, 0x05:
+					_, decodeErr = DecodeGNEX32MonoImage(media.Data)
+				case 0x06, 0x07, 0x09, 0x0a, 0x0b:
+					_, decodeErr = DecodeGNEX32IndexedImage(media.Data)
+				default:
+					continue
+				}
+				if decodeErr == nil {
+					decodedKinds[media.Data[0]]++
+				}
+			}
 			if media.Flags != 0x100 || len(media.Data) < 7 ||
 				(media.Data[0] != 0x0a && media.Data[0] != 0x0b) {
 				continue
@@ -69,6 +85,13 @@ func TestGNEX32ReferenceIndexedImageLayouts(t *testing.T) {
 					t.Errorf("media %d: mode %d and palette-zero key disagree", index, decoded.Mode)
 				}
 			}
+		}
+		wantDecodedKinds := map[byte]int{
+			0x02: 144, 0x05: 99, 0x06: 4, 0x07: 3,
+			0x09: 61, 0x0a: 237, 0x0b: 354,
+		}
+		if !reflect.DeepEqual(decodedKinds, wantDecodedKinds) {
+			t.Errorf("decoded GNEX32 image kinds = %v, want %v", decodedKinds, wantDecodedKinds)
 		}
 		if counts != [2]int{237, 354} || modes != [2]int{50, 541} || rejectedSmall != 23 {
 			t.Errorf("all indexed-image counts = %v modes = %v rejected small = %d; want [237 354], [50 541], 23", counts, modes, rejectedSmall)

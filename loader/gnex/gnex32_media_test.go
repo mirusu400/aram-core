@@ -3,6 +3,8 @@ package gnex
 import (
 	"bytes"
 	"errors"
+	"fmt"
+	"reflect"
 	"testing"
 )
 
@@ -166,5 +168,75 @@ func TestGNEX32MediaPaletteColorRGBOnConstantImage(t *testing.T) {
 	untouched, _, err := second.Read(0)
 	if err != nil || !bytes.Equal(untouched, original) {
 		t.Fatalf("new runtime inherited palette: %x, %v", untouched, err)
+	}
+}
+
+func TestGNEX32MediaPaletteColorRGBSupportsEveryPaletteImageKind(t *testing.T) {
+	images := map[byte][]byte{
+		0x02: {0x02, 1, 1, 0, 0, 3, 0x80, 0},
+		0x05: {0x05, 1, 1, 0, 0, 2, 3, 0x80},
+		0x06: {0x06, 1, 1, 0, 0, 0, 1, 2, 3, 0x40},
+		0x07: {0x07, 1, 1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0x10},
+		0x09: {0x09, 1, 1, 0, 0, 0, 2, 1, 2, 3, 4, 5, 6, 0x80},
+		0x0a: {0x0a, 1, 1, 0, 0, 0, 2, 1, 2, 3, 4, 5, 6, 0x40},
+		0x0b: {0x0b, 1, 1, 0, 0, 0, 2, 1, 2, 3, 4, 5, 6, 0x10},
+	}
+	for kind, data := range images {
+		t.Run(fmt.Sprintf("kind_%02x", kind), func(t *testing.T) {
+			memory, err := (GNEX32Image{Media: []GNEX32Media{{Flags: 0x100, Data: data}}}).NewMediaMemory()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !memory.SetPaletteColorRGB(0, 1, 25, 144, 38) {
+				t.Fatal("valid palette update failed")
+			}
+			payload, overrides, err := memory.ReadImage(0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if kind >= 0x09 {
+				if len(overrides) != 0 || !bytes.Equal(payload[10:13], []byte{25, 144, 38}) {
+					t.Fatalf("RGB palette update = payload %x overrides %+v", payload, overrides)
+				}
+			} else {
+				want := []GNEX32PaletteRGB{{Index: 1, Red: 25, Green: 144, Blue: 38}}
+				if !reflect.DeepEqual(overrides, want) || !bytes.Equal(payload, data) {
+					t.Fatalf("selector palette update = payload %x overrides %+v", payload, overrides)
+				}
+			}
+		})
+	}
+}
+
+func TestGNEX32MediaPaletteOverridesRoundTripAtomically(t *testing.T) {
+	data := []byte{0x07, 1, 1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0x10}
+	image := GNEX32Image{Media: []GNEX32Media{{Flags: 0x100, Data: data}}}
+	memory, err := image.NewMediaMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	memory.SetPaletteColorRGB(0, 3, 30, 31, 32)
+	memory.SetPaletteColorRGB(0, 1, 10, 11, 12)
+	saved := memory.Snapshot()
+	if got := saved.Resources[0].PaletteOverrides; len(got) != 2 || got[0].Index != 1 || got[1].Index != 3 {
+		t.Fatalf("snapshot overrides are not canonical: %+v", got)
+	}
+
+	restored, err := image.NewMediaMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.Restore(saved); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(restored.Snapshot(), saved) {
+		t.Fatal("restored palette overrides differ")
+	}
+	before := restored.Snapshot()
+	bad := restored.Snapshot()
+	bad.Resources[0].PaletteOverrides = append(bad.Resources[0].PaletteOverrides,
+		GNEX32PaletteRGB{Index: 16, Red: 1, Green: 2, Blue: 3})
+	if err := restored.Restore(bad); err == nil || !reflect.DeepEqual(restored.Snapshot(), before) {
+		t.Fatalf("invalid override restore = %v", err)
 	}
 }

@@ -3,6 +3,8 @@ package gnex32
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/mirusu400/aram-core/loader/gnex"
@@ -231,10 +233,15 @@ func TestCandidateArithmeticUsesFullThirtyTwoBitWords(t *testing.T) {
 		{0x13, 0xffffffff, 2, 1},
 		{0x14, 0, 1, 0xffffffff},
 		{0x50, 0x10000, 2, 0x20000},
-		{0x51, 0xfffffff9, 2, 0xfffffffd}, // -7 / 2 = -3
-		{0x52, 0xfffffff9, 2, 0xffffffff}, // -7 % 2 = -1
-		{0x58, 0x12, 8, 0x1200},           // shiftl
-		{0x54, 0x9800, 0xb4, 0x98b4},      // or
+		{0x50, 0x80000000, 2, 0},                   // multiplication wraps to 32 bits
+		{0x51, 0xfffffff9, 2, 0xfffffffd},          // -7 / 2 = -3
+		{0x51, 0x80000000, 0xffffffff, 0x80000000}, // MinInt32 / -1 wraps
+		{0x52, 0xfffffff9, 2, 0xffffffff},          // -7 % 2 = -1
+		{0x57, 0x80000000, 31, 1},                  // logical right shift
+		{0x57, 0xffffffff, 32, 0},                  // shifts use Go/VM 32-bit word semantics
+		{0x58, 0x12, 8, 0x1200},                    // shiftl
+		{0x58, 1, 32, 0},
+		{0x54, 0x9800, 0xb4, 0x98b4}, // or
 	} {
 		code := make([]byte, 4)
 		putWord(code, 0, tc.opcode)
@@ -250,6 +257,26 @@ func TestCandidateArithmeticUsesFullThirtyTwoBitWords(t *testing.T) {
 		if !vm.Halted() || vm.StackDepth() != 1 || vm.StackTop() != tc.want {
 			t.Fatalf("opcode=%#x halt=%v stack=%#v; want %#x", tc.opcode, vm.Halted(), vm.stack, tc.want)
 		}
+	}
+}
+
+func TestDivisionByZeroLeavesOperandsAndPCUnchanged(t *testing.T) {
+	for _, opcode := range []uint16{0x51, 0x52} {
+		t.Run(fmt.Sprintf("%04x", opcode), func(t *testing.T) {
+			code := make([]byte, 2)
+			putWord(code, 0, opcode)
+			vm, err := New(gnex.GNEX32Image{Header: gnex.Header{BodyOffset: 160}, Code: code, Entry: 160})
+			if err != nil {
+				t.Fatal(err)
+			}
+			vm.stack = []uint32{123, 0}
+			if err := vm.Step(); !errors.Is(err, ErrDivisionByZero) {
+				t.Fatalf("division by zero error = %v", err)
+			}
+			if vm.PC() != 0 || !slices.Equal(vm.stack, []uint32{123, 0}) {
+				t.Fatalf("division by zero changed state: pc=%d stack=%v", vm.PC(), vm.stack)
+			}
+		})
 	}
 }
 
@@ -437,6 +464,105 @@ func TestCandidateIndexedSetConstantReadsIndexSymbol(t *testing.T) {
 	}
 }
 
+func TestCompositeIndexedAssignmentOpcodes(t *testing.T) {
+	tests := []struct {
+		name        string
+		words       []uint16
+		destination int
+		element     int
+		want        uint32
+	}{
+		{
+			name: "xseti", words: []uint16{0x61, 0, 1, 1, 2, 3},
+			destination: 0, element: 2, want: 20,
+		},
+		{
+			name: "xsetz", words: []uint16{0x63, 0, 1, 1, 4},
+			destination: 0, element: 2, want: 77,
+		},
+		{
+			name: "isetn", words: []uint16{0x67, 0, 3, 2, 2},
+			destination: 0, element: 1, want: 30,
+		},
+		{
+			name: "nsetx", words: []uint16{0x6b, 0, 1, 2, 1, 0},
+			destination: 0, element: 1, want: 10,
+		},
+		{
+			name: "nseti", words: []uint16{0x6c, 0, 2, 2, 3},
+			destination: 0, element: 2, want: 20,
+		},
+		{
+			name: "zsetx", words: []uint16{0x71, 4, 2, 1, 1},
+			destination: 4, element: 0, want: 30,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			code := make([]byte, 2*(len(test.words)+1))
+			for index, word := range test.words {
+				putWord(code, index*2, word)
+			}
+			putWord(code, len(test.words)*2, 0x86)
+			vm, err := New(gnex.GNEX32Image{
+				Header: gnex.Header{BodyOffset: 160}, Code: code, Entry: 160,
+				Symbols: []gnex.GNEX32Symbol{
+					gnex32TestWords(0, 0, 0),
+					gnex32TestWords(0, 2),
+					gnex32TestWords(10, 20, 30),
+					gnex32TestWords(1),
+					gnex32TestWords(77),
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := vm.Run(2); err != nil || !vm.Halted() {
+				t.Fatalf("run: err=%v pc=%d", err, vm.PC())
+			}
+			got, err := vm.memory.ReadWord(test.destination, test.element)
+			if err != nil || got != test.want {
+				t.Fatalf("destination[%d] = %d, %v; want %d", test.element, got, err, test.want)
+			}
+		})
+	}
+}
+
+func TestLDRIStoresThroughScalarIndexedLValue(t *testing.T) {
+	code := make([]byte, 14)
+	for offset, word := range map[int]uint16{
+		0: 0x8a, 2: 0, 4: 1,
+		6: 0x05, 8: 99,
+		10: 0x90, 12: 0x86,
+	} {
+		putWord(code, offset, word)
+	}
+	vm, err := New(gnex.GNEX32Image{
+		Header: gnex.Header{BodyOffset: 160}, Code: code, Entry: 160,
+		Symbols: []gnex.GNEX32Symbol{
+			gnex32TestWords(0, 0, 0),
+			gnex32TestWords(2),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.Run(4); err != nil || !vm.Halted() || vm.StackDepth() != 0 {
+		t.Fatalf("run: err=%v pc=%d stack=%#v", err, vm.PC(), vm.stack)
+	}
+	if got, err := vm.memory.ReadWord(0, 2); err != nil || got != 99 {
+		t.Fatalf("indexed lvalue = %d, %v", got, err)
+	}
+}
+
+func gnex32TestWords(values ...uint32) gnex.GNEX32Symbol {
+	data := make([]byte, len(values)*4)
+	for index, value := range values {
+		binary.LittleEndian.PutUint32(data[index*4:], value)
+	}
+	return gnex.GNEX32Symbol{Flags: 1, Words: uint16(len(values)), Data: data}
+}
+
 func TestCandidatePopIndexedConstantStoresStackValue(t *testing.T) {
 	code := make([]byte, 14)
 	for offset, word := range map[int]uint16{
@@ -511,9 +637,13 @@ func TestCandidateSavedStackRestoresOnlyValuesAboveMark(t *testing.T) {
 
 func TestCandidateEventDispatchPreservesMemoryAndSetsEventData(t *testing.T) {
 	code := []byte{0xff, 0, 0x04, 0, 0, 0, 0x86, 0}
+	symbols := make([]gnex.GNEX32Symbol, 4)
+	for index := range symbols {
+		symbols[index] = gnex.GNEX32Symbol{Flags: 1, Words: 1, Data: make([]byte, 4)}
+	}
 	image := gnex.GNEX32Image{Header: gnex.Header{BodyOffset: 160}, Code: code, Entry: 160,
-		Symbols: []gnex.GNEX32Symbol{{Flags: 1, Words: 1, Data: make([]byte, 4)}}}
-	image.CodePointers[2] = 162
+		Symbols: symbols}
+	image.Callbacks.Timeout = 162
 	vm, err := New(image)
 	if err != nil {
 		t.Fatal(err)
@@ -521,11 +651,58 @@ func TestCandidateEventDispatchPreservesMemoryAndSetsEventData(t *testing.T) {
 	if err := vm.Run(1); err != nil || !vm.Halted() {
 		t.Fatalf("main: err=%v halted=%v", err, vm.Halted())
 	}
-	if err := vm.BeginEvent(2, 7); err != nil {
+	vm.stack = []uint32{99}
+	vm.calls = []int{0}
+	vm.marks = []int{0}
+	vm.refs[0] = gnex32SymbolRef{symbol: 0}
+	data := EventData{Data: 7, Data1: 8, Data2: 9, Data3: 10}
+	if err := vm.BeginEventData(gnex.GNEX32EventTimeout, data); err != nil {
 		t.Fatal(err)
+	}
+	if len(vm.stack) != 0 || len(vm.calls) != 0 || len(vm.marks) != 0 || len(vm.refs) != 0 {
+		t.Fatalf("event entry retained execution state: stack=%v calls=%v marks=%v refs=%v",
+			vm.stack, vm.calls, vm.marks, vm.refs)
+	}
+	for symbol, want := range data.values() {
+		if got, err := vm.memory.ReadWord(symbol, 0); err != nil || got != want {
+			t.Fatalf("event symbol %d = %d, %v; want %d", symbol, got, err, want)
+		}
 	}
 	if err := vm.Run(2); err != nil || !vm.Halted() || vm.StackTop() != 7 {
 		t.Fatalf("event: err=%v stack=%#v", err, vm.stack)
+	}
+}
+
+func TestCandidateEventDispatchRejectsMissingSystemSymbolAtomically(t *testing.T) {
+	code := []byte{0xff, 0, 0x86, 0}
+	symbols := make([]gnex.GNEX32Symbol, 3)
+	for index := range symbols {
+		data := make([]byte, 4)
+		binary.LittleEndian.PutUint32(data, uint32(100+index))
+		symbols[index] = gnex.GNEX32Symbol{Flags: 1, Words: 1, Data: data}
+	}
+	image := gnex.GNEX32Image{
+		Header: gnex.Header{BodyOffset: 160}, Code: code, Entry: 160,
+		Callbacks: gnex.GNEX32Callbacks{Result: 162}, Symbols: symbols,
+	}
+	vm, err := New(image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.Run(1); err != nil {
+		t.Fatal(err)
+	}
+	beforePC := vm.PC()
+	if err := vm.BeginEventData(gnex.GNEX32EventResult, EventData{Data: 1, Data1: 2, Data2: 3, Data3: 4}); err == nil {
+		t.Fatal("event with a missing swData3 symbol succeeded")
+	}
+	if !vm.Halted() || vm.PC() != beforePC {
+		t.Fatalf("failed event changed control state: halted=%v pc=%d", vm.Halted(), vm.PC())
+	}
+	for symbol, want := range []uint32{100, 101, 102} {
+		if got, err := vm.memory.ReadWord(symbol, 0); err != nil || got != want {
+			t.Fatalf("failed event changed symbol %d to %d, %v", symbol, got, err)
+		}
 	}
 }
 
@@ -714,6 +891,77 @@ func TestCandidateServiceBoundaryRejectsInvalidStackEffect(t *testing.T) {
 	}
 }
 
+func TestExecutionTraceRecordsOpcodeSitesAndServiceStack(t *testing.T) {
+	code := make([]byte, 14)
+	for offset, word := range map[int]uint16{
+		0: 0x8e, 2: 0, // direct lvalue for symbol 0
+		4: 0x05, 6: 7,
+		8: 0x92, 10: 0x25,
+		12: 0x86,
+	} {
+		putWord(code, offset, word)
+	}
+	image := gnex.GNEX32Image{Header: gnex.Header{BodyOffset: 160}, Code: code, Entry: 160,
+		Symbols: []gnex.GNEX32Symbol{{Flags: 1, Words: 1, Data: make([]byte, 4)}}}
+	vm, err := NewWithServices(image, func(id uint16, stack []uint32) (ServiceResult, error) {
+		if id != 0x25 || len(stack) != 2 {
+			t.Fatalf("service %#x stack = %#v", id, stack)
+		}
+		return ServiceResult{Pop: 2}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm.EnableExecutionTrace()
+	if err := vm.Run(4); err != nil {
+		t.Fatal(err)
+	}
+	trace := vm.ExecutionTrace()
+	if trace.InstructionCount != 4 || len(trace.Opcodes) != 4 {
+		t.Fatalf("instruction trace = %+v", trace)
+	}
+	wantOpcodes := []uint16{0x05, 0x86, 0x8e, 0x92}
+	for index, want := range wantOpcodes {
+		if trace.Opcodes[index].Opcode != want || trace.Opcodes[index].Count != 1 {
+			t.Fatalf("opcode[%d] = %+v, want %#x once", index, trace.Opcodes[index], want)
+		}
+	}
+	if len(trace.Services) != 1 || trace.Services[0].ID != 0x25 ||
+		trace.Services[0].Name != "SetGamma" || trace.Services[0].Count != 1 ||
+		len(trace.Services[0].Calls) != 1 {
+		t.Fatalf("service trace = %+v", trace.Services)
+	}
+	call := trace.Services[0].Calls[0]
+	if call.Offset != 8 || call.StackDepth != 2 || call.StackBase != 0 || len(call.Stack) != 2 {
+		t.Fatalf("call = %+v", call)
+	}
+	if !call.Stack[0].Reference || call.Stack[0].Symbol != 0 || call.Stack[0].Element != 0 ||
+		call.Stack[1].Reference || call.Stack[1].Value != 7 {
+		t.Fatalf("captured stack = %+v", call.Stack)
+	}
+
+	trace.Services[0].Calls[0].Stack[1].Value = 99
+	if got := vm.ExecutionTrace().Services[0].Calls[0].Stack[1].Value; got != 7 {
+		t.Fatalf("trace snapshot aliases collector: %d", got)
+	}
+	vm.ResetExecutionTrace()
+	if reset := vm.ExecutionTrace(); reset.InstructionCount != 0 || len(reset.Services) != 0 {
+		t.Fatalf("reset trace = %+v", reset)
+	}
+}
+
+func TestExecutionTraceBoundsServiceSamplesAndKeepsCounts(t *testing.T) {
+	state := newExecutionTraceState()
+	for index := 0; index < traceCallsPerService+3; index++ {
+		state.recordService(index*4, 0x25, []uint32{uint32(index)}, nil)
+	}
+	trace := state.snapshot()
+	if len(trace.Services) != 1 || trace.Services[0].Count != traceCallsPerService+3 ||
+		len(trace.Services[0].Calls) != traceCallsPerService || trace.Services[0].DroppedSamples != 3 {
+		t.Fatalf("bounded service trace = %+v", trace.Services)
+	}
+}
+
 func TestCandidateVMRejectsCallStackOverflow(t *testing.T) {
 	code := make([]byte, 6)
 	putWord(code, 0, 0x85)
@@ -726,6 +974,111 @@ func TestCandidateVMRejectsCallStackOverflow(t *testing.T) {
 	}
 	if err := vm.Run(1025); !errors.Is(err, ErrCallStackOverflow) {
 		t.Fatalf("recursive call = %v", err)
+	}
+}
+
+func TestEveryMultiwordOpcodeRejectsTruncationAtomically(t *testing.T) {
+	for value := 0; value <= 0xffff; value++ {
+		opcode := uint16(value)
+		size, known := gnex32InstructionSize(opcode)
+		if !known || size == 2 {
+			continue
+		}
+		t.Run(fmt.Sprintf("%04x", opcode), func(t *testing.T) {
+			code := make([]byte, size-2)
+			putWord(code, 0, opcode)
+			vm, err := New(gnex.GNEX32Image{
+				Header: gnex.Header{BodyOffset: 160}, Code: code, Entry: 160,
+				Symbols: []gnex.GNEX32Symbol{{Flags: 1, Words: 1, Data: make([]byte, 4)}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			vm.stack = []uint32{11, 22}
+			vm.calls = []int{2}
+			vm.marks = []int{1}
+			vm.refs[0] = gnex32SymbolRef{symbol: 0}
+			if err := vm.Step(); !errors.Is(err, ErrTruncated) {
+				t.Fatalf("truncated opcode %#x error = %v", opcode, err)
+			}
+			if vm.PC() != 0 || !slices.Equal(vm.stack, []uint32{11, 22}) ||
+				!slices.Equal(vm.calls, []int{2}) || !slices.Equal(vm.marks, []int{1}) ||
+				vm.refs[0] != (gnex32SymbolRef{symbol: 0}) {
+				t.Fatalf("truncated opcode %#x changed VM state: pc=%d stack=%v calls=%v marks=%v refs=%v",
+					opcode, vm.PC(), vm.stack, vm.calls, vm.marks, vm.refs)
+			}
+		})
+	}
+}
+
+func TestStackConsumingOpcodesRejectUnderflowAtomically(t *testing.T) {
+	minimumDepth := map[uint16]int{
+		0x09: 1, 0x0a: 1, 0x0b: 1, 0x0e: 1, 0x0f: 1, 0x10: 1, 0x11: 1,
+		0x12: 2, 0x13: 2, 0x14: 2,
+		0x50: 2, 0x51: 2, 0x52: 2, 0x53: 2, 0x54: 2, 0x55: 1,
+		0x56: 2, 0x57: 2, 0x58: 2, 0x59: 2, 0x5a: 2, 0x5b: 2, 0x5c: 2,
+		0x5d: 2, 0x5e: 2, 0x7b: 1, 0x7c: 1, 0x7d: 1, 0x7e: 1,
+		0x7f: 1, 0x80: 1, 0x82: 1, 0x83: 1, 0x8b: 1, 0x8c: 1,
+		0x8f: 1, 0x90: 2, 0x91: 2, 0x94: 3, 0x95: 4, 0x98: 7,
+	}
+	for opcode, depth := range minimumDepth {
+		t.Run(fmt.Sprintf("%04x", opcode), func(t *testing.T) {
+			size, known := gnex32InstructionSize(opcode)
+			if !known {
+				t.Fatalf("opcode %#x has no size", opcode)
+			}
+			code := make([]byte, size)
+			putWord(code, 0, opcode)
+			if opcode >= 0x7b && opcode <= 0x80 {
+				putWord(code, size-2, 0x80)
+			} else if opcode == 0x82 || opcode == 0x83 {
+				putWord(code, size-2, 0x80)
+			}
+			vm, err := New(gnex.GNEX32Image{
+				Header: gnex.Header{BodyOffset: 160}, Code: code, Entry: 160,
+				Symbols: []gnex.GNEX32Symbol{{Flags: 1, Words: 1, Data: make([]byte, 4)}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			vm.stack = make([]uint32, depth-1)
+			before := slices.Clone(vm.stack)
+			vm.copyImage = func(int32, int32, int) error { return nil }
+			vm.copyImageDir = func(int32, int32, int, uint32) error { return nil }
+			vm.copyImageEx = func(int32, int32, int, uint32, uint32, uint32, uint32) error { return nil }
+			if err := vm.Step(); !errors.Is(err, ErrStackUnderflow) {
+				t.Fatalf("opcode %#x underflow = %v", opcode, err)
+			}
+			if vm.PC() != 0 || !slices.Equal(vm.stack, before) {
+				t.Fatalf("opcode %#x underflow changed state: pc=%d stack=%v", opcode, vm.PC(), vm.stack)
+			}
+		})
+	}
+}
+
+func TestStackProducingOpcodesRejectOverflowAtomically(t *testing.T) {
+	for _, opcode := range []uint16{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x10, 0x8a, 0x8d, 0x8e} {
+		t.Run(fmt.Sprintf("%04x", opcode), func(t *testing.T) {
+			size, _ := gnex32InstructionSize(opcode)
+			code := make([]byte, size)
+			putWord(code, 0, opcode)
+			vm, err := New(gnex.GNEX32Image{
+				Header: gnex.Header{BodyOffset: 160}, Code: code, Entry: 160,
+				Symbols: []gnex.GNEX32Symbol{{Flags: 1, Words: 1, Data: make([]byte, 4)}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			vm.stack = make([]uint32, 4096)
+			vm.stack[4095] = 77
+			if err := vm.Step(); !errors.Is(err, ErrStackOverflow) {
+				t.Fatalf("opcode %#x overflow = %v", opcode, err)
+			}
+			if vm.PC() != 0 || len(vm.stack) != 4096 || vm.stack[4095] != 77 {
+				t.Fatalf("opcode %#x overflow changed state: pc=%d depth=%d top=%d",
+					opcode, vm.PC(), len(vm.stack), vm.stack[4095])
+			}
+		})
 	}
 }
 
@@ -897,5 +1250,34 @@ func TestCandidateStoreUpdatesInitializedSymbolAndPops(t *testing.T) {
 	}
 	if got, err := vm.memory.ReadWord(0, 0); err != nil || got != 42 {
 		t.Fatalf("initialized symbol = %d, %v", got, err)
+	}
+}
+
+func TestCopyImageExOpcodeForwardsEveryTransformArgument(t *testing.T) {
+	values := []uint16{10, 20, 2, 5, 1, 1, 3}
+	code := make([]byte, len(values)*4+4)
+	for index, value := range values {
+		putWord(code, index*4, 0x05)
+		putWord(code, index*4+2, value)
+	}
+	putWord(code, len(values)*4, 0x98)
+	putWord(code, len(values)*4+2, 0x86)
+	vm, err := New(gnex.GNEX32Image{Header: gnex.Header{BodyOffset: 160}, Code: code, Entry: 160})
+	if err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	vm.copyImageEx = func(x, y int32, index int, alpha, zoom, mirror, rotation uint32) error {
+		called = true
+		if x != 10 || y != 20 || index != 2 || alpha != 5 || zoom != 1 || mirror != 1 || rotation != 3 {
+			t.Fatalf("CopyImageEx args = %d,%d,%d,%d,%d,%d,%d", x, y, index, alpha, zoom, mirror, rotation)
+		}
+		return nil
+	}
+	if err := vm.Run(uint64(len(values) + 2)); err != nil {
+		t.Fatal(err)
+	}
+	if !called || !vm.Halted() || vm.StackDepth() != 0 {
+		t.Fatalf("CopyImageEx called=%v halted=%v stack=%#v", called, vm.Halted(), vm.stack)
 	}
 }

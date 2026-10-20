@@ -5,36 +5,200 @@ import (
 	"encoding/binary"
 )
 
-// GNEX32Symbol describes one four-byte-word symbol in a GNEX version 4 image.
-// The descriptor flags are retained without assigning their runtime meaning.
+const (
+	// GNEX32SymbolWritable is ordinary writable symbol storage. All records in
+	// the qualified corpus have zero-filled descriptors, but the loader retains
+	// descriptor bytes so other structurally valid images are not narrowed by
+	// that single-corpus observation.
+	GNEX32SymbolWritable uint16 = 0x1
+	// GNEX32SymbolImageInitialized is writable storage initialized from the
+	// descriptor payload.
+	GNEX32SymbolImageInitialized uint16 = 0x100
+)
+
+// GNEX32SymbolFlagsSupported reports whether flags describe one of the two
+// storage classes implemented by the version-4 runtime.
+func GNEX32SymbolFlagsSupported(flags uint16) bool {
+	return flags == GNEX32SymbolWritable || flags == GNEX32SymbolImageInitialized
+}
+
+// GNEX32Symbol describes one writable four-byte-word symbol in a GNEX version
+// 4 image. Both supported classes begin with a detached copy of Data.
 type GNEX32Symbol struct {
 	Flags uint16
 	Words uint16
 	Data  []byte
 }
 
+const (
+	GNEX32MediaReadOnlyData  uint32 = 0x000
+	GNEX32MediaWritableData  uint32 = 0x001
+	GNEX32MediaReadOnlyAsset uint32 = 0x100
+	GNEX32MediaWritableAsset uint32 = 0x101
+	GNEX32MediaReadOnlyAudio uint32 = 0x200
+	gnex32MediaWritableBit   uint32 = 0x001
+)
+
+// GNEX32MediaFlagsSupported reports whether flags describe a known version-4
+// media storage class.
+func GNEX32MediaFlagsSupported(flags uint32) bool {
+	switch flags {
+	case GNEX32MediaReadOnlyData, GNEX32MediaWritableData,
+		GNEX32MediaReadOnlyAsset, GNEX32MediaWritableAsset,
+		GNEX32MediaReadOnlyAudio:
+		return true
+	default:
+		return false
+	}
+}
+
+// GNEX32MediaFlagsWritable reports whether ordinary byte writes and resizing
+// are allowed. Palette services intentionally have their own asset-local write
+// contract and are not governed by this bit.
+func GNEX32MediaFlagsWritable(flags uint32) bool {
+	return GNEX32MediaFlagsSupported(flags) && flags&gnex32MediaWritableBit != 0
+}
+
 // GNEX32Media describes one byte-addressed media record in a GNEX version 4
-// image. The descriptor flags are retained without assigning a resource type.
+// image. The known classes are read-only/writable data, read-only/writable
+// assets, and read-only audio.
 type GNEX32Media struct {
 	Flags uint32
 	Data  []byte
 }
 
+// GNEX32Event identifies one code-pointer slot in a version-4 header. The
+// ordering preserves the older GVM event table and appends the GNEX handlers.
+// Slot 10 has no handler in the contemporary Mobile C event reference and is
+// retained as an extension slot so later images can still be inspected.
+type GNEX32Event uint8
+
+const (
+	GNEX32EventStart GNEX32Event = iota
+	GNEX32EventEnd
+	GNEX32EventTimeout
+	GNEX32EventKeyPress
+	GNEX32EventReceive
+	GNEX32EventRSReceive
+	GNEX32EventSMSReceive
+	GNEX32EventResult
+	GNEX32EventNetwork
+	GNEX32EventRSEvent
+	GNEX32EventExtension
+	GNEX32EventCount
+)
+
+var gnex32EventNames = [...]string{
+	"EVENT_START",
+	"EVENT_END",
+	"EVENT_TIMEOUT",
+	"EVENT_KEYPRESS",
+	"EVENT_RECEIVE",
+	"EVENT_RSRECEIVE",
+	"EVENT_SMSRECEIVE",
+	"EVENT_RESULT",
+	"EVENT_NETWORK",
+	"EVENT_RSEVENT",
+	"EXTENSION_10",
+}
+
+func (event GNEX32Event) String() string {
+	if event >= GNEX32EventCount {
+		return "INVALID_EVENT"
+	}
+	return gnex32EventNames[event]
+}
+
+// GNEX32Callbacks exposes the eleven header code-pointer slots by their Mobile
+// C event names. A zero address means that the title does not implement that
+// handler. Extension preserves the final header slot whose public event name
+// is not present in the available SDK reference.
+type GNEX32Callbacks struct {
+	Start      uint32
+	End        uint32
+	Timeout    uint32
+	KeyPress   uint32
+	Receive    uint32
+	RSReceive  uint32
+	SMSReceive uint32
+	Result     uint32
+	Network    uint32
+	RSEvent    uint32
+	Extension  uint32
+}
+
+// Pointer returns the absolute code address for event and whether event is a
+// valid header slot. A valid slot may still return zero when it is absent.
+func (callbacks GNEX32Callbacks) Pointer(event GNEX32Event) (uint32, bool) {
+	switch event {
+	case GNEX32EventStart:
+		return callbacks.Start, true
+	case GNEX32EventEnd:
+		return callbacks.End, true
+	case GNEX32EventTimeout:
+		return callbacks.Timeout, true
+	case GNEX32EventKeyPress:
+		return callbacks.KeyPress, true
+	case GNEX32EventReceive:
+		return callbacks.Receive, true
+	case GNEX32EventRSReceive:
+		return callbacks.RSReceive, true
+	case GNEX32EventSMSReceive:
+		return callbacks.SMSReceive, true
+	case GNEX32EventResult:
+		return callbacks.Result, true
+	case GNEX32EventNetwork:
+		return callbacks.Network, true
+	case GNEX32EventRSEvent:
+		return callbacks.RSEvent, true
+	case GNEX32EventExtension:
+		return callbacks.Extension, true
+	default:
+		return 0, false
+	}
+}
+
+// Pointers returns the header representation in slot order.
+func (callbacks GNEX32Callbacks) Pointers() [GNEX32EventCount]uint32 {
+	return [GNEX32EventCount]uint32{
+		callbacks.Start,
+		callbacks.End,
+		callbacks.Timeout,
+		callbacks.KeyPress,
+		callbacks.Receive,
+		callbacks.RSReceive,
+		callbacks.SMSReceive,
+		callbacks.Result,
+		callbacks.Network,
+		callbacks.RSEvent,
+		callbacks.Extension,
+	}
+}
+
+func gnex32CallbacksFromPointers(pointers [GNEX32EventCount]uint32) GNEX32Callbacks {
+	return GNEX32Callbacks{
+		Start: pointers[GNEX32EventStart], End: pointers[GNEX32EventEnd],
+		Timeout: pointers[GNEX32EventTimeout], KeyPress: pointers[GNEX32EventKeyPress],
+		Receive: pointers[GNEX32EventReceive], RSReceive: pointers[GNEX32EventRSReceive],
+		SMSReceive: pointers[GNEX32EventSMSReceive], Result: pointers[GNEX32EventResult],
+		Network: pointers[GNEX32EventNetwork], RSEvent: pointers[GNEX32EventRSEvent],
+		Extension: pointers[GNEX32EventExtension],
+	}
+}
+
 // GNEX32Image owns the structurally decoded 32-bit image. Code, symbols, and
 // media alias Buffer. EntryField preserves the raw header value; Entry adds the
-// observed 32-byte prefix, consistent with the table pointers. CodePointers
-// exposes the eleven candidate pointer slots at header offsets 0x1c..0x44;
-// zero denotes an absent slot. Their event meanings and execution have not
-// been validated. Decoding does not infer mutability.
+// observed 32-byte prefix, consistent with the table pointers. Runtime storage
+// constructors interpret and validate the descriptor flags.
 type GNEX32Image struct {
-	Header       Header
-	Buffer       []byte
-	Entry        uint32
-	EntryField   uint32
-	CodePointers [11]uint32
-	Code         []byte
-	Symbols      []GNEX32Symbol
-	Media        []GNEX32Media
+	Header     Header
+	Buffer     []byte
+	Entry      uint32
+	EntryField uint32
+	Callbacks  GNEX32Callbacks
+	Code       []byte
+	Symbols    []GNEX32Symbol
+	Media      []GNEX32Media
 }
 
 // GNEX32AddressInstruction describes the storage of a recognized
@@ -49,12 +213,10 @@ type GNEX32AddressInstruction struct {
 	Next    int
 }
 
-// DecodeCodeAddress reads a candidate code address from two little-endian
+// DecodeCodeAddress reads a code address from two little-endian
 // 16-bit words at operandOffset in Code. The high word precedes the low word;
 // the resulting address is relative to the 32-byte SGS prefix. The returned
-// index is relative to Code. This storage order is observed in the version-4
-// sample's repeated control-like sequences; it does not assign an opcode or
-// control-flow meaning to the operand.
+// index is relative to Code.
 func (image GNEX32Image) DecodeCodeAddress(operandOffset int) (int, error) {
 	location := int64(image.Header.BodyOffset) + int64(operandOffset)
 	if operandOffset < 0 || operandOffset > len(image.Code) || len(image.Code)-operandOffset < 4 {
@@ -70,10 +232,9 @@ func (image GNEX32Image) DecodeCodeAddress(operandOffset int) (int, error) {
 	return int(address - codeStartRelative), nil
 }
 
-// DecodeAddressInstruction reads the observed GNEX32 address-bearing layouts
-// at a known instruction boundary. The seven listed opcodes are structural
-// candidates from the version-4 sample; this does not establish their effects
-// or that an arbitrary aligned word is an instruction boundary.
+// DecodeAddressInstruction reads the GNEX32 address-bearing layouts at a known
+// instruction boundary. It reports storage and target information without
+// executing the instruction.
 func (image GNEX32Image) DecodeAddressInstruction(codeOffset int) (GNEX32AddressInstruction, error) {
 	location := int64(image.Header.BodyOffset) + int64(codeOffset)
 	if codeOffset < 0 || codeOffset&1 != 0 || codeOffset > len(image.Code) || len(image.Code)-codeOffset < 2 {
@@ -144,7 +305,7 @@ func DecodeGNEX32Image(data []byte) (GNEX32Image, error) {
 		return bad(prefix+0x48, "incomplete GNEX32 descriptor")
 	}
 	entryField := word(0x1c)
-	var codePointers [11]uint32
+	var codePointers [GNEX32EventCount]uint32
 	for i := range codePointers {
 		fieldOffset := 0x1c + 4*i
 		field := word(fieldOffset)
@@ -199,10 +360,14 @@ func DecodeGNEX32Image(data []byte) (GNEX32Image, error) {
 		return bad(prefix+10, "invalid GNEX32 title")
 	}
 	image := GNEX32Image{
-		Header: Header{FormatVersion: 4, TitleChecksum: binary.LittleEndian.Uint16(data[prefix+6:]), Title: title, PrefixOffset: prefix, BodyOffset: codeStart},
+		Header: func() Header {
+			applicationID := binary.LittleEndian.Uint16(data[prefix+6:])
+			return Header{FormatVersion: 4, ApplicationID: applicationID, TitleChecksum: applicationID,
+				Title: title, PrefixOffset: prefix, BodyOffset: codeStart}
+		}(),
 		Buffer: bytes.Clone(data), Entry: codePointers[0], EntryField: entryField,
-		CodePointers: codePointers,
-		Symbols:      make([]GNEX32Symbol, ns), Media: make([]GNEX32Media, nm),
+		Callbacks: gnex32CallbacksFromPointers(codePointers),
+		Symbols:   make([]GNEX32Symbol, ns), Media: make([]GNEX32Media, nm),
 	}
 	image.Code = image.Buffer[codeStart:ds]
 	for i, cursor := 0, ps; i < ns; i++ {

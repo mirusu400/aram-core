@@ -35,8 +35,8 @@ const (
 var ErrNotPackage = errors.New("not a GNEX package")
 
 // ManifestKind names which of the two observed descriptor shapes a package's
-// manifest member is. Both are undecoded here beyond confirming they exist
-// alongside the .SGS payload; see docs/gnex-format.md.
+// manifest member is. Inspect retains the raw bytes; callers can use the
+// bounded DecodeMODDescriptor or DecodeINFDescriptor helpers.
 type ManifestKind string
 
 const (
@@ -58,15 +58,15 @@ type Package struct {
 	ManifestKind ManifestKind
 	// Header is the decoded SGS payload header (format version, title).
 	Header Header
-	// SGS is the complete raw .SGS/.sgs payload, header included. Bytes
-	// from Header.BodyOffset onward are the undecoded GVM body.
+	// SGS is the complete raw .SGS/.sgs payload, header included. The generation-
+	// specific image decoders consume the body when execution is requested.
 	SGS []byte
 	// Manifest is the complete raw manifest (.mod or .inf) bytes, or nil for
 	// a standalone SGS.
 	Manifest []byte
 	// Files holds every archive member, for callers that want the
-	// remaining files (e.g. a .wmr resource bundle, a .res icon, save
-	// data) that this package does not otherwise interpret.
+	// remaining files (e.g. a .wmr resource bundle, a .res icon, save data).
+	// Auxiliary decoders are explicit and never attach these files to SGS media.
 	Files map[string][]byte
 }
 

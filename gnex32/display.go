@@ -7,6 +7,7 @@ import (
 	"image/draw"
 
 	"github.com/mirusu400/aram-core/loader/gnex"
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 // Display is the bounded GNEX drawing surface. Drawing coordinates are LCD
@@ -16,11 +17,41 @@ type Display struct {
 	latest  *image.RGBA
 	saved   *image.RGBA
 	clip    image.Rectangle
+	gamma   uint8
 }
 
 func NewDisplay(width, height int) *Display {
 	bounds := image.Rect(0, 0, width, height)
-	return &Display{working: image.NewRGBA(bounds), clip: bounds}
+	return &Display{working: image.NewRGBA(bounds), clip: bounds, gamma: 3}
+}
+
+func (d *Display) SetGamma(gamma uint32) error {
+	if gamma > 6 {
+		return fmt.Errorf("gnex32: gamma %d is outside 0..6", gamma)
+	}
+	d.gamma = uint8(gamma)
+	return nil
+}
+
+func (d *Display) Gamma() uint8 { return d.gamma }
+
+func (d *Display) paletteColor(value uint32) (color.RGBA, error) {
+	if value > 181 {
+		return color.RGBA{}, fmt.Errorf("gnex32: palette selector %d is outside 0..181", value)
+	}
+	if value == 4 {
+		return color.RGBA{}, nil
+	}
+	packed, ok := shared.SKTGammaColor(d.gamma, uint8(value))
+	if !ok {
+		return color.RGBA{}, fmt.Errorf("gnex32: unsupported palette selector %d at gamma %d", value, d.gamma)
+	}
+	return shared.SKTPackedColor(packed), nil
+}
+
+func (d *Display) gammaColor(value color.RGBA) color.RGBA {
+	mapped, _ := shared.SKTGammaRGBA(d.gamma, value)
+	return mapped
 }
 
 func (d *Display) SetClip(x1, y1, x2, y2 int32) {
@@ -149,29 +180,53 @@ func (d *Display) DrawLine(x1, y1, x2, y2 int32, fill color.RGBA) {
 	}
 }
 
+// DrawRect draws the inclusive one-pixel outline used by Mobile C. Reversed
+// coordinates are empty, matching FillRect and the rounded-rectangle helpers.
+func (d *Display) DrawRect(x1, y1, x2, y2 int32, fill color.RGBA) {
+	if x2 < x1 || y2 < y1 {
+		return
+	}
+	d.DrawLine(x1, y1, x2, y1, fill)
+	if y2 != y1 {
+		d.DrawLine(x1, y2, x2, y2, fill)
+	}
+	if y2-y1 > 1 {
+		d.DrawLine(x1, y1+1, x1, y2-1, fill)
+		if x2 != x1 {
+			d.DrawLine(x2, y1+1, x2, y2-1, fill)
+		}
+	}
+}
+
 func (d *Display) CopyImage(x, y int32, data []byte) error {
-	return d.copyImageWithAlpha(x, y, data, 0, 0)
+	return d.copyImageTransformed(x, y, data, nil, 0, 0, 0, 0)
 }
 
 func (d *Display) CopyImageDir(x, y int32, data []byte, direction uint32) error {
-	return d.copyImageWithAlpha(x, y, data, direction, 0)
+	return d.copyImageTransformed(x, y, data, nil, 0, 0, direction, 0)
 }
 
-func (d *Display) CopyImageEx(x, y int32, data []byte, alpha, direction uint32) error {
-	return d.copyImageWithAlpha(x, y, data, direction, alpha)
+func (d *Display) CopyImageEx(x, y int32, data []byte, alpha, zoom, mirror, rotation uint32) error {
+	return d.copyImageTransformed(x, y, data, nil, alpha, zoom, mirror, rotation)
 }
 
-func (d *Display) copyImageWithAlpha(x, y int32, data []byte, direction, alpha uint32) error {
-	if direction > 1 {
-		return fmt.Errorf("gnex32: unsupported CopyImage direction %d", direction)
+func (d *Display) copyImageTransformed(x, y int32, data []byte, palette []gnex.GNEX32PaletteRGB, alpha, zoom, mirror, rotation uint32) error {
+	if mirror > 1 {
+		return fmt.Errorf("gnex32: unsupported CopyImage mirror %d", mirror)
 	}
-	if alpha > 3 {
+	if alpha > 5 {
 		return fmt.Errorf("gnex32: unsupported CopyImage alpha %d", alpha)
+	}
+	if zoom > 1 {
+		return fmt.Errorf("gnex32: unsupported CopyImage zoom %d", zoom)
+	}
+	if rotation > 3 {
+		return fmt.Errorf("gnex32: unsupported CopyImage rotation %d", rotation)
 	}
 	if len(data) == 0 {
 		return fmt.Errorf("gnex32: empty CopyImage resource")
 	}
-	var width, anchorX, anchorY int
+	var width, height, anchorX, anchorY int
 	var pixels []byte
 	var colors []color.RGBA
 	transparentZero := false
@@ -181,35 +236,59 @@ func (d *Display) copyImageWithAlpha(x, y int32, data []byte, direction, alpha u
 		if err != nil {
 			return err
 		}
-		width, anchorX, anchorY = image.Width, image.AnchorX, image.AnchorY
+		width, height, anchorX, anchorY = image.Width, image.Height, image.AnchorX, image.AnchorY
 		pixels = image.Pixels
-		colors = []color.RGBA{monoColor(image.Color0), monoColor(image.Color1)}
+		color0, err := d.paletteColor(uint32(image.Color0))
+		if err != nil {
+			return err
+		}
+		color1, err := d.paletteColor(uint32(image.Color1))
+		if err != nil {
+			return err
+		}
+		colors = []color.RGBA{color0, color1}
 		transparentZero = data[0] == 2
 	case 0x06, 0x07, 0x09, 0x0a, 0x0b:
 		image, err := gnex.DecodeGNEX32IndexedImage(data)
 		if err != nil {
 			return err
 		}
-		width, anchorX, anchorY = image.Width, image.AnchorX, image.AnchorY
+		width, height, anchorX, anchorY = image.Width, image.Height, image.AnchorX, image.AnchorY
 		pixels = image.Pixels
 		transparentZero = image.Mode == 1
 		if len(image.PaletteIndices) != 0 {
 			for _, index := range image.PaletteIndices {
-				colors = append(colors, monoColor(index))
+				mapped, err := d.paletteColor(uint32(index))
+				if err != nil {
+					return err
+				}
+				colors = append(colors, mapped)
 			}
 		} else {
 			for i := 0; i < len(image.PaletteTriplets); i += 3 {
-				colors = append(colors, color.RGBA{R: image.PaletteTriplets[i], G: image.PaletteTriplets[i+1], B: image.PaletteTriplets[i+2], A: 255})
+				colors = append(colors, d.gammaColor(color.RGBA{
+					R: image.PaletteTriplets[i], G: image.PaletteTriplets[i+1],
+					B: image.PaletteTriplets[i+2], A: 255,
+				}))
 			}
 		}
 	default:
 		return fmt.Errorf("gnex32: unsupported CopyImage kind %#x", data[0])
 	}
-	baseX := int(x) - anchorX
-	baseY := int(y) - anchorY
-	if direction == 1 {
-		baseX = int(x) - (width - 1 - anchorX)
+	for _, override := range palette {
+		if int(override.Index) >= len(colors) {
+			return fmt.Errorf("gnex32: palette override %d exceeds image palette", override.Index)
+		}
+		colors[override.Index] = d.gammaColor(color.RGBA{
+			R: override.Red, G: override.Green, B: override.Blue, A: 255,
+		})
 	}
+	transformedAnchorX, transformedAnchorY := transformGNEX32ImagePoint(
+		anchorX, anchorY, width, height, mirror, rotation,
+	)
+	scale := int(zoom) + 1
+	baseX := int(x) - transformedAnchorX*scale
+	baseY := int(y) - transformedAnchorY*scale
 	for index, paletteIndex := range pixels {
 		if transparentZero && paletteIndex == 0 {
 			continue
@@ -217,66 +296,86 @@ func (d *Display) copyImageWithAlpha(x, y int32, data []byte, direction, alpha u
 		if colors[paletteIndex].A == 0 {
 			continue
 		}
-		column := index % width
-		if direction == 1 {
-			column = width - 1 - column
-		}
-		destinationX := baseX + column
-		destinationY := baseY + index/width
-		if image.Pt(destinationX, destinationY).In(d.clip) {
-			pixel := colors[paletteIndex]
-			if alpha != 0 {
-				old := d.working.RGBAAt(destinationX, destinationY)
-				pixel = color.RGBA{
-					R: uint8(((4-alpha)*uint32(pixel.R) + alpha*uint32(old.R)) / 4),
-					G: uint8(((4-alpha)*uint32(pixel.G) + alpha*uint32(old.G)) / 4),
-					B: uint8(((4-alpha)*uint32(pixel.B) + alpha*uint32(old.B)) / 4), A: 255,
+		column, row := index%width, index/width
+		column, row = transformGNEX32ImagePoint(column, row, width, height, mirror, rotation)
+		for zoomY := 0; zoomY < scale; zoomY++ {
+			for zoomX := 0; zoomX < scale; zoomX++ {
+				destinationX := baseX + column*scale + zoomX
+				destinationY := baseY + row*scale + zoomY
+				if image.Pt(destinationX, destinationY).In(d.clip) {
+					pixel := blendGNEX32ImagePixel(colors[paletteIndex], d.working.RGBAAt(destinationX, destinationY), alpha)
+					d.working.SetRGBA(destinationX, destinationY, pixel)
 				}
 			}
-			d.working.SetRGBA(destinationX, destinationY, pixel)
 		}
 	}
 	return nil
 }
 
-func monoColor(value byte) color.RGBA {
-	switch value {
-	case 0:
-		return color.RGBA{R: 255, G: 255, B: 255, A: 255}
-	case 1:
-		return color.RGBA{R: 192, G: 192, B: 192, A: 255}
+func transformGNEX32ImagePoint(x, y, width, height int, mirror, rotation uint32) (int, int) {
+	if mirror == 1 {
+		x = width - 1 - x
+	}
+	switch rotation {
+	case 1: // 90 degrees clockwise
+		return height - 1 - y, x
 	case 2:
-		return color.RGBA{R: 128, G: 128, B: 128, A: 255}
-	case 3:
-		return color.RGBA{A: 255}
+		return width - 1 - x, height - 1 - y
+	case 3: // 270 degrees clockwise
+		return y, width - 1 - x
+	default:
+		return x, y
+	}
+}
+
+func blendGNEX32ImagePixel(source, destination color.RGBA, alpha uint32) color.RGBA {
+	switch alpha {
+	case 1, 2, 3:
+		sourceWeight := 4 - alpha
+		return color.RGBA{
+			R: uint8((sourceWeight*uint32(source.R) + alpha*uint32(destination.R)) / 4),
+			G: uint8((sourceWeight*uint32(source.G) + alpha*uint32(destination.G)) / 4),
+			B: uint8((sourceWeight*uint32(source.B) + alpha*uint32(destination.B)) / 4), A: 255,
+		}
 	case 4:
+		return color.RGBA{R: ^source.R, G: ^source.G, B: ^source.B, A: 255}
+	case 5:
+		return color.RGBA{R: source.R ^ destination.R, G: source.G ^ destination.G, B: source.B ^ destination.B, A: 255}
+	default:
+		source.A = 255
+		return source
+	}
+}
+
+func monoColor(value byte) color.RGBA {
+	if value == 4 {
 		return color.RGBA{}
 	}
-	if value >= 16 && value <= 139 {
-		packed := int(value) - 15
-		if value >= 47 {
-			packed += 32
-		}
-		if value >= 56 {
-			packed++
-		}
-		if value >= 78 {
-			packed += 32
-		}
-		if value >= 96 {
-			packed++
-		}
-		if value >= 109 {
-			packed += 64
-		}
-		return color.RGBA{R: uint8((packed >> 5) * 255 / 7), G: uint8(((packed >> 2) & 7) * 255 / 7), B: uint8((packed & 3) * 255 / 3), A: 255}
+	packed, ok := shared.SKTGammaColor(3, value)
+	if !ok {
+		return color.RGBA{A: 255}
 	}
-	return color.RGBA{A: 255}
+	return shared.SKTPackedColor(packed)
 }
 
 func (d *Display) Flush() image.Image {
 	d.latest = image.NewRGBA(d.working.Bounds())
 	copy(d.latest.Pix, d.working.Pix)
+	return d.latest
+}
+
+// FlushPartial publishes an inclusive LCD rectangle while preserving the
+// previously presented pixels outside it. A first partial flush starts from a
+// cleared physical LCD.
+func (d *Display) FlushPartial(x1, y1, x2, y2 int32) image.Image {
+	if d.latest == nil {
+		d.latest = image.NewRGBA(d.working.Bounds())
+	}
+	if x2 < x1 || y2 < y1 {
+		return d.latest
+	}
+	rect := image.Rect(int(x1), int(y1), int(x2)+1, int(y2)+1).Intersect(d.working.Bounds())
+	draw.Draw(d.latest, rect, d.working, rect.Min, draw.Src)
 	return d.latest
 }
 

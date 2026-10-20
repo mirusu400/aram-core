@@ -37,10 +37,9 @@ const maxTitleBytes = 96
 //     the emulator's "GVM1X"/"GVM2X" self-identification).
 //   - byte 5 is constant 0x01 across every sample; combined with the title
 //     decoding cleanly as cp949, this is the signature ParseHeader scans for.
-//   - bytes 6:8 are a little-endian uint16 that behaves like a checksum of
-//     the title bytes (every sample falls in 0x8400-0x85ff); its exact
-//     algorithm is not reverse-engineered, so it is exposed but not
-//     validated.
+//   - bytes 6:8 are a little-endian decimal application/provider ID. In the
+//     reference corpus values such as 34043 and 34298 also appear as the
+//     leading path component in distributor URLs; they are not title checksums.
 //   - the title string starts at byte 10, is cp949/EUC-KR encoded, and ends
 //     at the first 0x00 0x00 pair (cp949 lead/trail bytes and ASCII text
 //     never produce a bare 0x00, so this terminator is unambiguous).
@@ -51,9 +50,12 @@ const maxTitleBytes = 96
 type Header struct {
 	// FormatVersion is the raw version byte (observed: 1, 2, or 4).
 	FormatVersion byte
-	// TitleChecksum is the raw little-endian bytes 6:8 value. Its checksum
-	// interpretation for legacy GVM is unconfirmed; its meaning in version 4
-	// is unknown. Treat it as informational only.
+	// ApplicationID is the raw little-endian bytes 6:8 application/provider ID.
+	ApplicationID uint16
+	// TitleChecksum is retained as a deprecated source-compatibility alias for
+	// ApplicationID. The field was named before the corpus disproved the
+	// checksum hypothesis.
+	// Deprecated: use ApplicationID.
 	TitleChecksum uint16
 	// Title is the cp949/EUC-KR-decoded title string.
 	Title string
@@ -91,9 +93,11 @@ func ParseHeader(data []byte) (Header, error) {
 		if decodeErr != nil || decoded == "" {
 			continue
 		}
+		applicationID := binary.LittleEndian.Uint16(data[prefix+6 : prefix+8])
 		return Header{
 			FormatVersion: version,
-			TitleChecksum: binary.LittleEndian.Uint16(data[prefix+6 : prefix+8]),
+			ApplicationID: applicationID,
+			TitleChecksum: applicationID,
 			Title:         decoded,
 			PrefixOffset:  prefix,
 			BodyOffset:    end + 2,
