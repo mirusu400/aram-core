@@ -192,6 +192,62 @@ func TestGNEX32VirusAutomatedInputExecutionTrace(t *testing.T) {
 	})
 }
 
+func TestGNEX32VirusLongAutomatedGameplayProbe(t *testing.T) {
+	machine := tracedVirusProductMachine(t)
+	advanceVirusToGameplay(t, machine)
+	product := machine.(*gnex32Machine)
+	analysis, err := gnex32.AnalyzeServices(product.image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(analysis.UnknownOpcodes) != 0 || len(analysis.UnsupportedServices) != 0 {
+		t.Fatalf("static capability gaps: opcodes=%v services=%v", analysis.UnknownOpcodes, analysis.UnsupportedServices)
+	}
+
+	frames := map[[32]byte]bool{brewFrameHash(machine.Framebuffer()): true}
+	controls := []string{"left", "right", "up", "down", "select"}
+	var audioSamples int
+	for cycle := 0; cycle < 160; cycle++ {
+		control := controls[cycle%len(controls)]
+		if err := machine.QueueInput(machinecore.InputEvent{Control: control, Pressed: true}); err != nil {
+			t.Fatalf("cycle %d press %s: %v", cycle, control, err)
+		}
+		stepVirusFrames(t, machine, 45) // includes the deterministic long-key repeat boundary
+		if err := machine.QueueInput(machinecore.InputEvent{Control: control, Pressed: false}); err != nil {
+			t.Fatalf("cycle %d release %s: %v", cycle, control, err)
+		}
+		stepVirusFrames(t, machine, 15)
+		frames[brewFrameHash(machine.Framebuffer())] = true
+		for {
+			chunk := machine.DrainAudio()
+			if len(chunk.PCM16) == 0 {
+				break
+			}
+			if err := chunk.Validate(); err != nil {
+				t.Fatalf("cycle %d audio: %v", cycle, err)
+			}
+			audioSamples += len(chunk.PCM16)
+		}
+	}
+	assertVirusExecutionTrace(t, machine)
+	trace := product.GNEX32ExecutionTrace()
+	reachedServices := make(map[uint16]bool, len(trace.Services))
+	for _, service := range trace.Services {
+		reachedServices[service.ID] = true
+	}
+	missingServices := make([]uint16, 0)
+	for _, service := range analysis.ServiceCalls {
+		if !reachedServices[service.ID] {
+			missingServices = append(missingServices, service.ID)
+		}
+	}
+	if trace.InstructionCount < 1_000_000 || len(frames) < 10 || audioSamples == 0 {
+		t.Fatalf("long probe coverage: instructions=%d frames=%d audio_samples=%d", trace.InstructionCount, len(frames), audioSamples)
+	}
+	t.Logf("long probe: instructions=%d opcodes=%d services=%d/%d missing_services=%#x frames=%d audio_samples=%d",
+		trace.InstructionCount, len(trace.Opcodes), len(trace.Services), len(analysis.ServiceCalls), missingServices, len(frames), audioSamples)
+}
+
 func tracedVirusProductMachine(t *testing.T) machinecore.Machine {
 	t.Helper()
 	machine := readyVirusProductMachine(t)
