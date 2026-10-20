@@ -5,16 +5,63 @@ import (
 	"encoding/binary"
 )
 
-// GNEX32Symbol describes one four-byte-word symbol in a GNEX version 4 image.
-// The descriptor flags are retained without assigning their runtime meaning.
+const (
+	// GNEX32SymbolWritable is ordinary writable symbol storage. All records in
+	// the qualified corpus have zero-filled descriptors, but the loader retains
+	// descriptor bytes so other structurally valid images are not narrowed by
+	// that single-corpus observation.
+	GNEX32SymbolWritable uint16 = 0x1
+	// GNEX32SymbolImageInitialized is writable storage initialized from the
+	// descriptor payload.
+	GNEX32SymbolImageInitialized uint16 = 0x100
+)
+
+// GNEX32SymbolFlagsSupported reports whether flags describe one of the two
+// storage classes implemented by the version-4 runtime.
+func GNEX32SymbolFlagsSupported(flags uint16) bool {
+	return flags == GNEX32SymbolWritable || flags == GNEX32SymbolImageInitialized
+}
+
+// GNEX32Symbol describes one writable four-byte-word symbol in a GNEX version
+// 4 image. Both supported classes begin with a detached copy of Data.
 type GNEX32Symbol struct {
 	Flags uint16
 	Words uint16
 	Data  []byte
 }
 
+const (
+	GNEX32MediaReadOnlyData  uint32 = 0x000
+	GNEX32MediaWritableData  uint32 = 0x001
+	GNEX32MediaReadOnlyAsset uint32 = 0x100
+	GNEX32MediaWritableAsset uint32 = 0x101
+	GNEX32MediaReadOnlyAudio uint32 = 0x200
+	gnex32MediaWritableBit   uint32 = 0x001
+)
+
+// GNEX32MediaFlagsSupported reports whether flags describe a known version-4
+// media storage class.
+func GNEX32MediaFlagsSupported(flags uint32) bool {
+	switch flags {
+	case GNEX32MediaReadOnlyData, GNEX32MediaWritableData,
+		GNEX32MediaReadOnlyAsset, GNEX32MediaWritableAsset,
+		GNEX32MediaReadOnlyAudio:
+		return true
+	default:
+		return false
+	}
+}
+
+// GNEX32MediaFlagsWritable reports whether ordinary byte writes and resizing
+// are allowed. Palette services intentionally have their own asset-local write
+// contract and are not governed by this bit.
+func GNEX32MediaFlagsWritable(flags uint32) bool {
+	return GNEX32MediaFlagsSupported(flags) && flags&gnex32MediaWritableBit != 0
+}
+
 // GNEX32Media describes one byte-addressed media record in a GNEX version 4
-// image. The descriptor flags are retained without assigning a resource type.
+// image. The known classes are read-only/writable data, read-only/writable
+// assets, and read-only audio.
 type GNEX32Media struct {
 	Flags uint32
 	Data  []byte

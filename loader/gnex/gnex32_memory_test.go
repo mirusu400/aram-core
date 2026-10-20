@@ -11,8 +11,8 @@ func TestGNEX32SymbolMemoryCopiesBothInitializerClasses(t *testing.T) {
 	mutable := []byte{1, 0, 0, 0, 2, 0, 0, 0}
 	constant := []byte{3, 0, 0, 0}
 	image := GNEX32Image{Symbols: []GNEX32Symbol{
-		{Flags: 1, Words: 2, Data: mutable},
-		{Flags: 0x100, Words: 1, Data: constant},
+		{Flags: GNEX32SymbolWritable, Words: 2, Data: mutable},
+		{Flags: GNEX32SymbolImageInitialized, Words: 1, Data: constant},
 	}}
 	state, err := image.NewSymbolMemory()
 	if err != nil {
@@ -57,6 +57,38 @@ func TestGNEX32SymbolMemoryCopiesBothInitializerClasses(t *testing.T) {
 	}
 }
 
+func TestGNEX32StorageFlagContracts(t *testing.T) {
+	for _, flags := range []uint16{GNEX32SymbolWritable, GNEX32SymbolImageInitialized} {
+		if !GNEX32SymbolFlagsSupported(flags) {
+			t.Fatalf("symbol flags %#x rejected", flags)
+		}
+	}
+	if GNEX32SymbolFlagsSupported(0) || GNEX32SymbolFlagsSupported(2) {
+		t.Fatal("unknown symbol flags accepted")
+	}
+
+	for _, tc := range []struct {
+		flags    uint32
+		writable bool
+	}{
+		{GNEX32MediaReadOnlyData, false},
+		{GNEX32MediaWritableData, true},
+		{GNEX32MediaReadOnlyAsset, false},
+		{GNEX32MediaWritableAsset, true},
+		{GNEX32MediaReadOnlyAudio, false},
+	} {
+		if !GNEX32MediaFlagsSupported(tc.flags) {
+			t.Fatalf("media flags %#x rejected", tc.flags)
+		}
+		if got := GNEX32MediaFlagsWritable(tc.flags); got != tc.writable {
+			t.Fatalf("media flags %#x writable = %t, want %t", tc.flags, got, tc.writable)
+		}
+	}
+	if GNEX32MediaFlagsSupported(2) || GNEX32MediaFlagsWritable(0x201) {
+		t.Fatal("unknown media flags accepted")
+	}
+}
+
 func TestGNEX32SymbolMemoryRejectsInvalidAccessAndFlags(t *testing.T) {
 	image := GNEX32Image{Symbols: []GNEX32Symbol{{Flags: 1, Words: 1, Data: make([]byte, 4)}}}
 	state, err := image.NewSymbolMemory()
@@ -83,7 +115,7 @@ func TestGNEX32SymbolMemoryRejectsInvalidAccessAndFlags(t *testing.T) {
 }
 
 func TestGNEX32SymbolMemoryByteRangesAreLittleEndianAndAtomic(t *testing.T) {
-	image := GNEX32Image{Symbols: []GNEX32Symbol{{Flags: 1, Words: 2, Data: []byte{
+	image := GNEX32Image{Symbols: []GNEX32Symbol{{Flags: GNEX32SymbolImageInitialized, Words: 2, Data: []byte{
 		0x04, 0x03, 0x02, 0x01, 0x08, 0x07, 0x06, 0x05,
 	}}}}
 	state, err := image.NewSymbolMemory()

@@ -16,9 +16,9 @@ type gnex32MediaCell struct {
 	paletteOverrides map[uint8][3]byte
 }
 
-// GNEX32MediaMemory holds per-run copies of version-4 media resources. Flags
-// 1 and 0x101 are provisionally writable, based on their mostly empty records
-// in the supplied image; the exact native mutation rules are unverified.
+// GNEX32MediaMemory holds per-run copies of version-4 media resources. The two
+// writable storage classes support ordinary byte writes and resizing; all
+// source-image payloads remain immutable.
 type GNEX32MediaMemory struct {
 	resources []gnex32MediaCell
 	total     uint64
@@ -47,9 +47,7 @@ type GNEX32MediaMemoryState struct {
 func (image GNEX32Image) NewMediaMemory() (*GNEX32MediaMemory, error) {
 	state := &GNEX32MediaMemory{resources: make([]gnex32MediaCell, len(image.Media))}
 	for index, resource := range image.Media {
-		switch resource.Flags {
-		case 0, 1, 0x100, 0x101, 0x200:
-		default:
+		if !GNEX32MediaFlagsSupported(resource.Flags) {
 			return nil, fmt.Errorf("gnex: GNEX32 media %d has unsupported flags %#x", index, resource.Flags)
 		}
 		state.total += uint64(len(resource.Data))
@@ -93,7 +91,7 @@ func (state *GNEX32MediaMemory) Replace(index int, data []byte) error {
 	if err != nil {
 		return err
 	}
-	if resource.flags&1 == 0 {
+	if !GNEX32MediaFlagsWritable(resource.flags) {
 		return fmt.Errorf("%w: %d", ErrGNEX32ReadOnlyMedia, index)
 	}
 	newTotal := state.total - uint64(len(resource.data)) + uint64(len(data))
@@ -107,13 +105,13 @@ func (state *GNEX32MediaMemory) Replace(index int, data []byte) error {
 }
 
 // Resize changes a writable resource's byte length, preserving its prefix and
-// zero-filling any new bytes. Native GNEX allocation behavior is not yet known.
+// zero-filling any new bytes.
 func (state *GNEX32MediaMemory) Resize(index, size int) error {
 	resource, err := state.cell(index)
 	if err != nil {
 		return err
 	}
-	if resource.flags&1 == 0 {
+	if !GNEX32MediaFlagsWritable(resource.flags) {
 		return fmt.Errorf("%w: %d", ErrGNEX32ReadOnlyMedia, index)
 	}
 	if size < 0 || uint64(size) > MaxMemberSize ||
@@ -146,7 +144,7 @@ func (state *GNEX32MediaMemory) SetMediaByte(index, offset int, value byte) erro
 	if err != nil {
 		return err
 	}
-	if resource.flags&1 == 0 {
+	if !GNEX32MediaFlagsWritable(resource.flags) {
 		return fmt.Errorf("%w: %d", ErrGNEX32ReadOnlyMedia, index)
 	}
 	if offset < 0 || offset >= len(resource.data) {

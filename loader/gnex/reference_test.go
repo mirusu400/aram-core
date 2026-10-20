@@ -8,6 +8,7 @@ import (
 	"os"
 	pathpkg "path"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -112,22 +113,48 @@ func TestReferencePackages(t *testing.T) {
 			if memoryErr != nil {
 				return memoryErr
 			}
-			var mutable, constant int
+			var zeroInitialized, imageInitialized, nonzeroInitialized int
 			for _, symbol := range image.Symbols {
 				switch symbol.Flags {
-				case 1:
-					mutable++
-				case 0x100:
-					constant++
+				case GNEX32SymbolWritable:
+					zeroInitialized++
+					if !bytes.Equal(symbol.Data, make([]byte, len(symbol.Data))) {
+						t.Errorf("%s: zero-initialized symbol has nonzero descriptor data", path)
+					}
+				case GNEX32SymbolImageInitialized:
+					imageInitialized++
+					if !bytes.Equal(symbol.Data, make([]byte, len(symbol.Data))) {
+						nonzeroInitialized++
+					}
 				}
 			}
-			if mutable != 327 || constant != 152 {
-				t.Errorf("%s: GNEX32 symbol flags: mutable=%d constant=%d", path, mutable, constant)
+			if zeroInitialized != 327 || imageInitialized != 152 || nonzeroInitialized != 146 {
+				t.Errorf("%s: GNEX32 symbol classes: zero=%d image=%d nonzero=%d", path, zeroInitialized, imageInitialized, nonzeroInitialized)
+			}
+			mediaClasses := map[uint32]int{}
+			for _, resource := range image.Media {
+				mediaClasses[resource.Flags]++
+			}
+			wantMediaClasses := map[uint32]int{
+				GNEX32MediaReadOnlyData: 538, GNEX32MediaWritableData: 89,
+				GNEX32MediaReadOnlyAsset: 1575, GNEX32MediaWritableAsset: 1,
+				GNEX32MediaReadOnlyAudio: 30,
+			}
+			if !reflect.DeepEqual(mediaClasses, wantMediaClasses) {
+				t.Errorf("%s: GNEX32 media classes = %#v, want %#v", path, mediaClasses, wantMediaClasses)
 			}
 			if err := memory.WriteWord(0xe9, 0, 42); err != nil {
 				t.Errorf("%s: GNEX32 mutable storage: %v", path, err)
 			} else if got, err := memory.ReadWord(0xe9, 0); err != nil || got != 42 || image.Symbols[0xe9].Data[0] != 0 {
 				t.Errorf("%s: GNEX32 mutable storage = %d, %v", path, got, err)
+			}
+			initializedSource := bytes.Clone(image.Symbols[0xe4].Data)
+			if image.Symbols[0xe4].Flags != GNEX32SymbolImageInitialized {
+				t.Errorf("%s: symbol 0xe4 flags = %#x", path, image.Symbols[0xe4].Flags)
+			} else if err := memory.WriteWord(0xe4, 0, 0x12345678); err != nil {
+				t.Errorf("%s: initialized GNEX32 storage: %v", path, err)
+			} else if got, err := memory.ReadWord(0xe4, 0); err != nil || got != 0x12345678 || !bytes.Equal(image.Symbols[0xe4].Data, initializedSource) {
+				t.Errorf("%s: initialized GNEX32 storage = %#x, %v", path, got, err)
 			}
 			// The first two candidate address operands at the entry point
 			// resolve to the first and second code words. A late operand

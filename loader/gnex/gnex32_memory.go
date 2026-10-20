@@ -10,10 +10,8 @@ type gnex32SymbolCell struct {
 	data []byte
 }
 
-// GNEX32SymbolMemory is independent runtime storage initialized from an image.
-// Both observed descriptor flags are writable at runtime. Flag 0x100 carries
-// initialized values in this image, including symbol 0xe4, which the guest
-// assigns during the title's input handler.
+// GNEX32SymbolMemory is independent writable runtime storage initialized from
+// a detached copy of the image descriptors.
 type GNEX32SymbolMemory struct {
 	symbols []gnex32SymbolCell
 }
@@ -34,11 +32,11 @@ func (image GNEX32Image) NewSymbolMemory() (*GNEX32SymbolMemory, error) {
 			return nil, fmt.Errorf("gnex: GNEX32 symbol %d initializer length mismatch", index)
 		}
 		switch symbol.Flags {
-		case 1, 0x100:
+		case GNEX32SymbolWritable, GNEX32SymbolImageInitialized:
+			state.symbols[index].data = bytes.Clone(symbol.Data)
 		default:
 			return nil, fmt.Errorf("gnex: GNEX32 symbol %d has unsupported flags %#x", index, symbol.Flags)
 		}
-		state.symbols[index].data = bytes.Clone(symbol.Data)
 	}
 	return state, nil
 }
