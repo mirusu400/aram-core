@@ -42,9 +42,9 @@
 - [ ] 디스플레이 상태를 스냅샷한다: working/latest/saved LCD와 clip rectangle.
 - [ ] 재생 중인 sound clip, shared clock, queued PCM 및 오디오 generation을 스냅샷한다.
 - [ ] 저장 상태 포맷에 version, bounds, corruption validation 및 cross-process 테스트를 추가한다.
-- [ ] `PutUserNV/GetUserNV`를 reset 및 앱 재실행 뒤에도 유지되는 영속 저장소에 연결한다.
-- [ ] ZIP의 `.dat`, `user.dat`, `UserNV.sys`를 초기/기존 UserNV와 연결한다.
-- [ ] `Reset`이 UserNV는 보존하고 휘발성 VM/미디어/화면 상태만 초기화하도록 분리한다.
+- [x] `PutUserNV/GetUserNV`를 reset 및 앱 재실행 뒤에도 유지되는 영속 저장소에 연결한다.
+- [x] ZIP의 `.dat`, `user.dat`, `UserNV.sys`를 초기/기존 UserNV와 연결한다.
+- [x] `Reset`이 UserNV는 보존하고 휘발성 VM/미디어/화면 상태만 초기화하도록 분리한다.
 - [x] `Stop`에서 이미 프런트엔드에 전달된 오디오를 무효화하는 generation 마커를 발행한다.
 - [x] `Close`에서 오디오 generation을 무효화하고 media/coordinator 자원을 정리한다.
 - [x] close 후 `Framebuffer`, `PresentCount`, `DrainAudio`가 nil panic 없이 일관된 계약을 따른다.

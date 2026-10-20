@@ -76,6 +76,10 @@ func (f Factory) createGNEX32Machine(ctx context.Context, source machinecore.Sou
 	if err != nil {
 		return nil, true, err
 	}
+	initialUserNV, hasInitialUserNV, err := gnex32ArchiveUserNV(pkg)
+	if err != nil {
+		return nil, true, err
+	}
 	image, err := gnex.DecodeGNEX32Image(pkg.SGS)
 	if err != nil {
 		return nil, true, err
@@ -83,6 +87,9 @@ func (f Factory) createGNEX32Machine(ctx context.Context, source machinecore.Sou
 	runtime, err := gnex32.NewRuntime(image, gnex32VirusIdentity)
 	if err != nil {
 		return nil, true, err
+	}
+	if hasInitialUserNV {
+		runtime.RestoreUserNV(initialUserNV)
 	}
 	source.SHA256 = actual
 	source.Format = string(loader.KindGNEX)
@@ -175,11 +182,16 @@ func (m *gnex32Machine) Reset(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	var userNV [gnex32.UserNVWords]uint32
+	if m.runtime != nil {
+		userNV = m.runtime.CaptureUserNV()
+	}
 	runtime, err := gnex32.NewRuntime(m.image, gnex32VirusIdentity)
 	if err != nil {
 		m.state = machinecore.StateFaulted
 		return err
 	}
+	runtime.RestoreUserNV(userNV)
 	if m.runtime != nil {
 		if err := m.runtime.Close(); err != nil {
 			_ = runtime.Close()

@@ -62,7 +62,10 @@ Some archives also carry a `.res` icon resource (magic `0xDEADFACE`, also
 undecoded), a `.wmr` bundle, a `.dat`/`user.dat`/`UserNV.sys` save-state file,
 and/or a bundled copy of `cr32256_Magic.exe` itself. None of these are needed
 to recognize a title and `loader/gnex` does not interpret them; `Package.Files`
-exposes the raw archive members for callers that want them.
+exposes the raw archive members for callers that want them. The GNEX32
+application path consumes an exact 64-byte save member as sixteen little-endian
+32-bit UserNV words, prefers the explicit `UserNV.sys` and `user.dat` names,
+and carries that state through reset and host save-data export/import.
 
 Neither the `.mod` nor the `.inf` shape is required to be byte-perfect for
 recognition - see "What `loader/gnex` actually validates" below for why.

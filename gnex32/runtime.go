@@ -19,6 +19,10 @@ type Identity struct {
 	UserID string
 }
 
+// UserNVWords is the number of 32-bit integers in GNEX user non-volatile
+// storage. The Mobile C contract fixes the storage capacity at 64 bytes.
+const UserNVWords = 16
+
 // Runtime hosts the observed version-4 services and preserves VM and media
 // state across event dispatches.
 type Runtime struct {
@@ -31,7 +35,7 @@ type Runtime struct {
 	tick        uint64
 	timers      [3]runtimeTimer
 	presents    uint64
-	nv          [16]uint32
+	nv          [UserNVWords]uint32
 	randomState uint32
 	paint       color.RGBA
 	fontSize    uint32
@@ -40,6 +44,18 @@ type Runtime struct {
 	fontBack    color.RGBA
 	text        *shared.Text
 	closed      bool
+}
+
+// CaptureUserNV returns the restart-persistent handset storage without exposing
+// the runtime's mutable backing state.
+func (r *Runtime) CaptureUserNV() [UserNVWords]uint32 {
+	return r.nv
+}
+
+// RestoreUserNV replaces restart-persistent handset storage. Volatile VM,
+// display, timer and media state are deliberately unaffected.
+func (r *Runtime) RestoreUserNV(state [UserNVWords]uint32) {
+	r.nv = state
 }
 
 type runtimeTimer struct {

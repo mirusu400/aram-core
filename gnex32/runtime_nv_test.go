@@ -67,6 +67,30 @@ func TestPutUserNVRoundTripsThroughGetUserNV(t *testing.T) {
 	}
 }
 
+func TestUserNVCaptureRestoreCarriesServiceWritesAcrossRuntimes(t *testing.T) {
+	source := newNVRuntime(t, 4)
+	want := []uint32{0x01020304, 7, 0x80000000, 0xffffffff}
+	for index, value := range want {
+		if err := source.vm.memory.WriteWord(0, index, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	source.vm.refs[0] = gnex32SymbolRef{symbol: 0}
+	if _, err := source.service(0x94, []uint32{want[0], uint32(len(want))}); err != nil {
+		t.Fatal(err)
+	}
+
+	target := newNVRuntime(t, 4)
+	target.RestoreUserNV(source.CaptureUserNV())
+	target.vm.refs[0] = gnex32SymbolRef{symbol: 0}
+	if _, err := target.service(0x93, []uint32{0, uint32(len(want))}); err != nil {
+		t.Fatal(err)
+	}
+	if got := gnex32TestSymbolWords(t, target, 0, len(want)); !reflect.DeepEqual(got, want) {
+		t.Fatalf("restored UserNV = %#v, want %#v", got, want)
+	}
+}
+
 func TestPutUserNVRejectsInvalidInputWithoutChangingNV(t *testing.T) {
 	runtime := newNVRuntime(t, 17)
 	runtime.nv[0] = 7
