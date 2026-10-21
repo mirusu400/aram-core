@@ -338,6 +338,13 @@ func (m *gnex32Machine) QueueInput(event machinecore.InputEvent) error {
 	}
 	code, supported := gnex32GuestCode(key)
 	if !supported {
+		// The backend-neutral menu control is the third WIPI soft key, but the
+		// qualified Mobile C handset only exposes two soft keys. Real hardware
+		// cannot deliver that key to this runtime, so ignore it instead of
+		// faulting an otherwise valid input stream.
+		if key == profile.KeySoft3 {
+			return nil
+		}
 		return ErrGVMInputUnavailable
 	}
 	if err := m.runtime.QueueKey(code, event.Pressed, event.At, m.budget); err != nil {

@@ -1,11 +1,31 @@
 package application
 
 import (
+	"errors"
 	"testing"
 
+	machinecore "github.com/mirusu400/aram-core/core"
 	"github.com/mirusu400/aram-core/gnex32"
 	"github.com/mirusu400/aram-core/profile"
 )
+
+func TestGNEX32MachineIgnoresUnavailableMenuKey(t *testing.T) {
+	machine := &gnex32Machine{state: machinecore.StateRunning}
+	for _, pressed := range []bool{true, false} {
+		if err := machine.QueueInput(machinecore.InputEvent{
+			Control: "menu",
+			Pressed: pressed,
+		}); err != nil {
+			t.Fatalf("menu pressed=%v: %v", pressed, err)
+		}
+	}
+	if err := machine.QueueInput(machinecore.InputEvent{
+		Control: "volume-up",
+		Pressed: true,
+	}); !errors.Is(err, ErrGVMInputUnavailable) {
+		t.Fatalf("unknown control error = %v, want ErrGVMInputUnavailable", err)
+	}
+}
 
 func TestGNEX32GuestCodeCoversMobileCKeySet(t *testing.T) {
 	tests := []struct {
