@@ -558,6 +558,11 @@ func (vm *VM) fileNameArgument(args []Value, index int) (string, error) {
 
 const xFileResourceRoot = "/__aram_xfile__"
 
+const (
+	xFileModeRead      = int32(1)
+	xFileModeReadWrite = int32(3)
+)
+
 func xFileResourceName(name string) string {
 	return xFileResourceRoot + "/" + strings.TrimPrefix(name, "/")
 }
@@ -589,11 +594,18 @@ func (vm *VM) newXFile(args []Value) (*xFileState, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := intArgument(args, 1); err != nil {
+	mode, err := intArgument(args, 1)
+	if err != nil {
 		return nil, err
 	}
 	data, err := vm.readXFile(name)
 	if errors.Is(err, shared.ErrNotFound) {
+		if mode == xFileModeRead {
+			return nil, vm.newThrowable(
+				"java/io/IOException",
+				"file not found",
+			)
+		}
 		if err := vm.services.Storage.WriteFile(
 			shared.NamespacePrivate,
 			name,

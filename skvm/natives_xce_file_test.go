@@ -174,7 +174,7 @@ func TestXCEFileOutputXFileAndWriteBounds(t *testing.T) {
 	vm, err := New(map[string][]byte{})
 	check(t, err)
 	file := vm.NewObject("com/xce/io/XFile", nil)
-	invokeTestNative(t, vm, "com/xce/io/XFile", "<init>", "(Ljava/lang/String;I)V", file, ReferenceValue(vm.NewString("/xfile")), IntValue(1))
+	invokeTestNative(t, vm, "com/xce/io/XFile", "<init>", "(Ljava/lang/String;I)V", file, ReferenceValue(vm.NewString("/xfile")), IntValue(xFileModeReadWrite))
 	out := vm.NewObject("com/xce/io/FileOutputStream", nil)
 	invokeTestNative(t, vm, "com/xce/io/FileOutputStream", "<init>", "(Lcom/xce/io/XFile;)V", out, ReferenceValue(file))
 	xceCall(t, vm, out, "write", "([B)V", ReferenceValue(vm.NewByteArray([]byte("AB"))))
@@ -191,6 +191,29 @@ func TestXCEFileOutputXFileAndWriteBounds(t *testing.T) {
 	check(t, vm.UnmarshalBinary(snapshot))
 	_, _, err = xceInvoke(t, vm, out, "write", "(I)V", IntValue('!'))
 	requireXCEIOException(t, vm, err)
+}
+
+func TestXFileReadModeRejectsMissingFile(t *testing.T) {
+	vm, err := New(map[string][]byte{})
+	check(t, err)
+	name := ReferenceValue(vm.NewString("/missing"))
+	file := vm.NewObject("com/xce/io/XFile", nil)
+	_, _, err = xceInvoke(
+		t,
+		vm,
+		file,
+		"<init>",
+		"(Ljava/lang/String;I)V",
+		name,
+		IntValue(xFileModeRead),
+	)
+	requireXCEIOException(t, vm, err)
+	if _, err := vm.services.Storage.Stat(
+		shared.NamespacePrivate,
+		"/missing",
+	); !errors.Is(err, shared.ErrNotFound) {
+		t.Fatalf("read-only open created a missing file: %v", err)
+	}
 }
 
 func TestXCEInstalledFilesUsePackageDefaultsAndPrivateOverrides(t *testing.T) {

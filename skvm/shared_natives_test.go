@@ -62,7 +62,7 @@ func TestSKVMFileNativesUseSharedStorage(t *testing.T) {
 		"(Ljava/lang/String;I)V",
 		file,
 		ReferenceValue(name),
-		IntValue(1),
+		IntValue(xFileModeReadWrite),
 	)
 	data := vm.NewByteArray([]byte("persistent"))
 	invokeTestNative(
