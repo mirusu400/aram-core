@@ -81,30 +81,3 @@ func TestMax3RejectsShortStack(t *testing.T) {
 		t.Fatalf("Max3 short stack error = %v", err)
 	}
 }
-
-func TestSqrtReturnsTruncatedIntegerRoot(t *testing.T) {
-	runtime := newNVRuntime(t, 1)
-	for value, want := range map[uint32]uint32{
-		0: 0, 1: 1, 2: 1, 63: 7, 64: 8, 65535: 255,
-	} {
-		result, err := runtime.service(0xe1, []uint32{value})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if result.Pop != 1 || len(result.Push) != 1 || result.Push[0] != want {
-			t.Fatalf("Sqrt(%d) = %+v, want %d", value, result, want)
-		}
-	}
-}
-
-func TestSqrtValidatesDocumentedDomain(t *testing.T) {
-	runtime := newNVRuntime(t, 1)
-	if _, err := runtime.service(0xe1, nil); !errors.Is(err, ErrStackUnderflow) {
-		t.Fatalf("Sqrt empty stack error = %v", err)
-	}
-	for _, value := range []uint32{^uint32(0), 65536} {
-		if _, err := runtime.service(0xe1, []uint32{value}); err == nil {
-			t.Fatalf("Sqrt accepted %d", int32(value))
-		}
-	}
-}

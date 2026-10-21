@@ -62,16 +62,51 @@ func TestGNEX32MachineExposesVibration(t *testing.T) {
 	}
 }
 
+func TestGNEX32ExitDispatchesEndBeforeStoppingMachine(t *testing.T) {
+	const endOffset = 6
+	machine := newGNEX32DeviceMachineForImage(t, gnex.GNEX32Image{
+		Header:    gnex.Header{BodyOffset: 160},
+		Entry:     160,
+		Callbacks: gnex.GNEX32Callbacks{End: 160 + endOffset},
+		Code: []byte{
+			0x92, 0x00, 0xe1, 0x00, // Exit
+			0xff, 0x00, // must not execute
+			0x75, 0x00, 0x06, 0x00, 0x2a, 0x00, // EVENT_END: symbol 6 = 42
+			0xff, 0x00,
+		},
+		Symbols: gnex32DeviceTestSymbols(),
+	})
+	defer machine.Close()
+	machine.EnableGNEX32ExecutionTrace()
+
+	if err := machine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if machine.State() != machinecore.StateStopped {
+		t.Fatalf("machine state = %s, want stopped", machine.State())
+	}
+	trace := machine.GNEX32ExecutionTrace()
+	for _, opcode := range trace.Opcodes {
+		for _, offset := range opcode.Offsets {
+			if offset == endOffset {
+				return
+			}
+		}
+	}
+	t.Fatalf("EVENT_END offset %d was not executed: %+v", endOffset, trace.Opcodes)
+}
+
 func newGNEX32DeviceMachine(t *testing.T, code []byte, media []gnex.GNEX32Media) *gnex32Machine {
 	t.Helper()
-	symbols := make([]gnex.GNEX32Symbol, 10)
-	for index := range symbols {
-		symbols[index] = gnex.GNEX32Symbol{Flags: 1, Words: 1, Data: make([]byte, 4)}
-	}
 	image := gnex.GNEX32Image{
 		Header: gnex.Header{BodyOffset: 160}, Entry: 160,
-		Code: code, Symbols: symbols, Media: media,
+		Code: code, Symbols: gnex32DeviceTestSymbols(), Media: media,
 	}
+	return newGNEX32DeviceMachineForImage(t, image)
+}
+
+func newGNEX32DeviceMachineForImage(t *testing.T, image gnex.GNEX32Image) *gnex32Machine {
+	t.Helper()
 	profile := gnex32.DeviceProfile{
 		ID: "gnex32/test/device", ScreenWidth: 120, ScreenHeight: 149,
 		Identity:       gnex32.Identity{MIN: "0111234567", UserID: "TEST"},
@@ -87,4 +122,12 @@ func newGNEX32DeviceMachine(t *testing.T, code []byte, media []gnex.GNEX32Media)
 		runtime: runtime, budget: 100, audioGeneration: 1,
 		mediaOutputRevision: runtime.AudioOutputRevision(),
 	}
+}
+
+func gnex32DeviceTestSymbols() []gnex.GNEX32Symbol {
+	symbols := make([]gnex.GNEX32Symbol, 10)
+	for index := range symbols {
+		symbols[index] = gnex.GNEX32Symbol{Flags: 1, Words: 1, Data: make([]byte, 4)}
+	}
+	return symbols
 }

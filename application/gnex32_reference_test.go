@@ -69,6 +69,39 @@ func TestGNEX32VirusProductSplash(t *testing.T) {
 	}
 }
 
+func TestGNEX32VirusHeldDirectionThenBackExitsCleanly(t *testing.T) {
+	machine := tracedVirusProductMachine(t)
+	for frame := 0; frame < 30; frame++ {
+		if frame == 1 {
+			if err := machine.QueueInput(machinecore.InputEvent{Control: "down", Pressed: true}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := machine.StepFrame(context.Background()); err != nil {
+			t.Fatalf("frame %d: %v", frame, err)
+		}
+	}
+	if err := machine.QueueInput(machinecore.InputEvent{Control: "back", Pressed: true}); err != nil {
+		t.Fatal(err)
+	}
+	if machine.State() != machinecore.StateStopped {
+		t.Fatalf("back-key Exit left machine in %s", machine.State())
+	}
+
+	trace := machine.(interface{ GNEX32ExecutionTrace() gnex32.ExecutionTrace }).GNEX32ExecutionTrace()
+	for _, service := range trace.Services {
+		if service.ID != 0xe1 {
+			continue
+		}
+		if service.Name != "Exit" || service.Count != 1 || len(service.Calls) != 1 ||
+			service.Calls[0].Offset != 5418 || service.Calls[0].StackDepth != 0 {
+			t.Fatalf("Virus Exit trace = %+v", service)
+		}
+		return
+	}
+	t.Fatal("Virus back-key path did not call service 0xe1")
+}
+
 func TestGNEX32VirusProductBackPersistsUserNV(t *testing.T) {
 	machine := virusProductMachine(t)
 	stepVirusFrames(t, machine, 600)

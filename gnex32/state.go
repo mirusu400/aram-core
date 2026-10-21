@@ -77,6 +77,7 @@ type runtimeState struct {
 	FontBack       color.RGBA
 	FontBackIdx    uint8
 	CloseRequested bool
+	ExitRequested  bool
 }
 
 func (vm *VM) snapshotState() vmState {
@@ -212,7 +213,7 @@ func (r *Runtime) snapshotState() (runtimeState, error) {
 		Paint:       r.paint, PaintSource: r.paintSource, PaintIndex: r.paintIndex, PaintMapped: r.paintMapped,
 		FontSize: r.fontSize, FontColor: r.fontColor, FontIndex: r.fontIndex,
 		FontAlign: r.fontAlign, FontBack: r.fontBack, FontBackIdx: r.fontBackIdx,
-		CloseRequested: r.closeRequested,
+		CloseRequested: r.closeRequested, ExitRequested: r.exitRequested,
 	}, nil
 }
 
@@ -240,7 +241,7 @@ func (r *Runtime) MarshalBinary() ([]byte, error) {
 	writeStateBool(&output, state.KeyToneOn)
 	output.WriteByte(byte(state.Backlight))
 	writeStateBool(&output, state.CloseRequested)
-	output.WriteByte(0)
+	writeStateBool(&output, state.ExitRequested)
 	writeStateU64(&output, state.Tick)
 	for _, timer := range state.Timers {
 		writeStateU64(&output, timer.due)
@@ -322,7 +323,7 @@ func (r *Runtime) UnmarshalBinary(data []byte) error {
 	candidate.paintIndex, candidate.paintMapped = state.PaintIndex, state.PaintMapped
 	candidate.fontSize, candidate.fontColor, candidate.fontIndex = state.FontSize, state.FontColor, state.FontIndex
 	candidate.fontAlign, candidate.fontBack, candidate.fontBackIdx = state.FontAlign, state.FontBack, state.FontBackIdx
-	candidate.closeRequested = state.CloseRequested
+	candidate.closeRequested, candidate.exitRequested = state.CloseRequested, state.ExitRequested
 	if err := candidate.validateRestoredState(); err != nil {
 		return err
 	}
@@ -336,6 +337,9 @@ func (r *Runtime) UnmarshalBinary(data []byte) error {
 }
 
 func (r *Runtime) validateRestoredState() error {
+	if r.exitRequested && !r.closeRequested {
+		return fmt.Errorf("gnex32: saved Exit request has no close request")
+	}
 	if r.backlight > BacklightMMI || r.fontSize >= uint32(len(gnex32FontHeights)) ||
 		r.paintIndex > 181 || r.fontIndex > 181 || r.fontBackIdx > 181 {
 		return fmt.Errorf("gnex32: invalid saved drawing or device state")
@@ -455,7 +459,7 @@ func decodeRuntimeState(data []byte, template *Runtime) (runtimeState, error) {
 	state.KeyToneOn = decoder.boolean()
 	state.Backlight = BacklightMode(decoder.u8())
 	state.CloseRequested = decoder.boolean()
-	decoder.reserved(1)
+	state.ExitRequested = decoder.boolean()
 	state.Tick = decoder.u64()
 	for index := range state.Timers {
 		state.Timers[index] = runtimeTimer{

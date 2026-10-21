@@ -61,6 +61,44 @@ func TestBackToBrowserValidatesURLBeforeChangingState(t *testing.T) {
 	}
 }
 
+func TestExitRequestsCloseWithoutBrowserAction(t *testing.T) {
+	runtime := newDeviceServiceRuntime(t, []byte{
+		0x92, 0x00, 0xe1, 0x00, // Exit
+		0xff, 0x00, // must not execute
+	}, nil)
+	defer runtime.Close()
+
+	if err := runtime.RunMain(10); err != nil {
+		t.Fatal(err)
+	}
+	if !runtime.vm.Halted() || runtime.vm.PC() != 4 || runtime.vm.StackDepth() != 0 {
+		t.Fatalf("Exit control state: halted=%v pc=%d stack=%v", runtime.vm.Halted(), runtime.vm.PC(), runtime.vm.stack)
+	}
+	encoded, err := runtime.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := newDeviceServiceRuntime(t, []byte{
+		0x92, 0x00, 0xe1, 0x00,
+		0xff, 0x00,
+	}, nil)
+	defer restored.Close()
+	if err := restored.UnmarshalBinary(encoded); err != nil {
+		t.Fatal(err)
+	}
+	for name, target := range map[string]*Runtime{"original": runtime, "restored": restored} {
+		if !target.TakeCloseRequest() || target.TakeCloseRequest() {
+			t.Fatalf("%s Exit close request was not consumed exactly once", name)
+		}
+		if !target.TakeExitRequest() || target.TakeExitRequest() {
+			t.Fatalf("%s Exit marker was not consumed exactly once", name)
+		}
+	}
+	if requests := runtime.ExternalRequests(); len(requests) != 0 {
+		t.Fatalf("Exit emitted external requests: %+v", requests)
+	}
+}
+
 func TestStartAndStopVibUseSecondsOnGuestClock(t *testing.T) {
 	runtime := newNVRuntime(t, 1)
 	defer runtime.Close()

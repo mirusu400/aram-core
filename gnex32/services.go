@@ -94,7 +94,7 @@ var gnex32ServiceContracts = map[uint16]ServiceContract{
 	0xd6: {"Max3", 3, 1},
 	0xd8: {"Min", 2, 1},
 	0xdd: {"ArrayToVar", 4, 0},
-	0xe1: {"Sqrt", 1, 1},
+	0xe1: {"Exit", 0, 0},
 
 	0x101: {"NetConnect", 2, 0},
 	0x102: {"NetDisconnect", 0, 0},

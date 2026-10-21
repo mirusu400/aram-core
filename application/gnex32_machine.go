@@ -361,6 +361,16 @@ func (m *gnex32Machine) finishGNEX32CloseRequestLocked() (bool, error) {
 	if !m.runtime.TakeCloseRequest() {
 		return false, nil
 	}
+	if m.runtime.TakeExitRequest() {
+		if err := m.runtime.End(m.budget); err != nil {
+			m.state = machinecore.StateFaulted
+			return false, fmt.Errorf("deliver GNEX32 end event at code offset %d: %w", m.runtime.PC(), err)
+		}
+		// EVENT_END may itself request termination. The current shutdown already
+		// owns that request, so do not leave it pending in a stopped machine.
+		m.runtime.TakeCloseRequest()
+		m.runtime.TakeExitRequest()
+	}
 	if err := m.resetGNEX32AudioLocked(m.runtime.AudioTime()); err != nil {
 		m.state = machinecore.StateFaulted
 		return false, err

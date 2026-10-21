@@ -108,6 +108,7 @@ type Runtime struct {
 	fontBackIdx    uint8
 	text           *shared.Text
 	closeRequested bool
+	exitRequested  bool
 	closed         bool
 }
 
@@ -152,12 +153,21 @@ func (r *Runtime) ExecutionTrace() ExecutionTrace {
 	return r.vm.ExecutionTrace()
 }
 
-// TakeCloseRequest consumes a BackToBrowser request after the current guest
+// TakeCloseRequest consumes a terminal service request after the current guest
 // dispatch returns. The application host uses it to stop the title without
 // running another guest callback.
 func (r *Runtime) TakeCloseRequest() bool {
 	requested := r.closeRequested
 	r.closeRequested = false
+	return requested
+}
+
+// TakeExitRequest consumes the marker that distinguishes Exit from another
+// close request. The application host dispatches optional EVENT_END before it
+// stops the title.
+func (r *Runtime) TakeExitRequest() bool {
+	requested := r.exitRequested
+	r.exitRequested = false
 	return requested
 }
 
@@ -1448,17 +1458,10 @@ func (r *Runtime) executeService(id uint16, stack []uint32) (ServiceResult, erro
 			value = candidate
 		}
 		return ServiceResult{Pop: 3, Push: []uint32{uint32(value)}}, nil
-	case 0xe1: // Sqrt(value)
-		if last < 0 {
-			return ServiceResult{}, ErrStackUnderflow
-		}
-		value := int32(stack[last])
-		if value < 0 || value > 65535 {
-			return ServiceResult{}, fmt.Errorf("gnex32: Sqrt value %d is outside 0..65535", value)
-		}
-		return ServiceResult{
-			Pop: 1, Push: []uint32{uint32(math.Sqrt(float64(value)))},
-		}, nil
+	case 0xe1: // Exit()
+		r.closeRequested = true
+		r.exitRequested = true
+		return ServiceResult{Halt: true}, nil
 	case 0x25: // SetGamma(gamma)
 		if last < 0 {
 			return ServiceResult{}, ErrStackUnderflow
