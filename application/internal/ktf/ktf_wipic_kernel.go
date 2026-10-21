@@ -349,6 +349,35 @@ func ktfKernelGetDLLInterface(
 	return address, nil
 }
 
+// ktfKernelGetProgramName implements MC_knlGetProgramName (kernel slot 0x38).
+// KTF packages are launched by their AID-named executable, so the AID is the
+// current program name exposed to native Clets and dynamic providers.
+func ktfKernelGetProgramName(
+	_ context.Context,
+	runtime *Runtime,
+) (uint32, error) {
+	output, err := runtime.parameter(0)
+	if err != nil {
+		return 0, err
+	}
+	capacity, err := runtime.parameter(1)
+	if err != nil {
+		return 0, err
+	}
+	if output == 0 || capacity == 0 {
+		return ktfWIPICErrorInvalid, nil
+	}
+	name := runtime.Pkg.Descriptor.AID
+	if uint64(len(name))+1 > uint64(capacity) {
+		return ktfWIPICErrorShortBuf, nil
+	}
+	if err := runtime.CPU.WriteMemory(output, append([]byte(name), 0)); err != nil {
+		return 0, err
+	}
+	runtime.tracef("wipic_knl_get_program_name:%q", name)
+	return 0, nil
+}
+
 func ktfIncrementalMemoryAdd(
 	_ context.Context,
 	runtime *Runtime,
@@ -1030,7 +1059,7 @@ func ktfGetResourceID(
 	resource, ok := runtime.findKTFResource(name)
 	if !ok {
 		runtime.trace("wipic_resource_missing:" + name)
-		return ^uint32(1), nil
+		return ktfWIPICErrorNoEntry, nil
 	}
 	if err := runtime.WriteU32(sizeAddress, uint32(len(resource))); err != nil {
 		return 0, err
@@ -1073,7 +1102,7 @@ func ktfGetResource(
 	}
 	resource := runtime.wipicResources[id]
 	if resource == nil || output == 0 {
-		return ^uint32(1), nil
+		return ktfWIPICErrorNoEntry, nil
 	}
 	output, size, err = runtime.resolveKTFResourceOutput(output, size)
 	if err != nil {

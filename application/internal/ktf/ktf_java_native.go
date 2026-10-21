@@ -173,7 +173,25 @@ func (r *Runtime) lookupInterface(name string) (uint32, error) {
 		return r.buildJBInterface()
 	case "MXUserMemInterf":
 		return r.buildMXUserMemInterface()
+	case "FastRelay":
+		return r.buildFastRelayInterface()
 	default:
+		return 0, nil
+	}
+}
+
+func ktfFastRelayHandler(slot int) ktfHostHandler {
+	return func(_ context.Context, runtime *Runtime) (uint32, error) {
+		parameters := make([]uint32, 4)
+		for index := range parameters {
+			parameters[index], _ = runtime.parameter(uint32(index))
+		}
+		runtime.tracef("fastrelay_call:%d:args=%08x", slot, parameters)
+		// The startup consumer polls slot 7 until it returns 1, then enters its
+		// offline path. There is no handset relay to wait for in this runtime.
+		if slot == 7 {
+			return 1, nil
+		}
 		return 0, nil
 	}
 }

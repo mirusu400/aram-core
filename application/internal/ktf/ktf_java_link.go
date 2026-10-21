@@ -385,19 +385,25 @@ func (r *Runtime) rebuildHostJavaVTable(classAddress uint32) error {
 	return err
 }
 
+const (
+	ktfKnlInterfaceSlotCount = 65
+	ktfFastRelaySlotCount    = 13
+)
+
 func (r *Runtime) buildKnlInterface() (uint32, error) {
 	if r.knlInterface != 0 {
 		return r.knlInterface, nil
 	}
-	const slotCount = 65
-	slots := make([]uint32, slotCount)
-	for index := range slots {
+	slots := make([]uint32, ktfKnlInterfaceSlotCount+ktfFastRelaySlotCount)
+	for index := range ktfKnlInterfaceSlotCount {
 		handler := ktfNoop
 		switch index {
 		case 1:
 			handler = ktfKernelSprintk
 		case 7:
 			handler = ktfKernelExit
+		case 14:
+			handler = ktfKernelGetProgramName
 		case 20:
 			handler = ktfKernelAllocate(false)
 		case 21:
@@ -434,7 +440,16 @@ func (r *Runtime) buildKnlInterface() (uint32, error) {
 			handler,
 		)
 	}
-	address, err := r.AllocateWords(slotCount)
+	// Keep the dynamic FastRelay provider in the same allocation as the kernel
+	// vector so its address remains derivable from the saved knlInterface
+	// pointer without adding adapter-only save-state metadata.
+	for index := range ktfFastRelaySlotCount {
+		slots[ktfKnlInterfaceSlotCount+index] = r.RegisterHostCall(
+			fmt.Sprintf("fastrelay.%d", index),
+			ktfFastRelayHandler(index),
+		)
+	}
+	address, err := r.AllocateWords(uint32(len(slots)))
 	if err != nil {
 		return 0, err
 	}
@@ -443,6 +458,14 @@ func (r *Runtime) buildKnlInterface() (uint32, error) {
 	}
 	r.knlInterface = address
 	return address, nil
+}
+
+func (r *Runtime) buildFastRelayInterface() (uint32, error) {
+	address, err := r.buildKnlInterface()
+	if err != nil {
+		return 0, err
+	}
+	return address + ktfKnlInterfaceSlotCount*4, nil
 }
 
 func (r *Runtime) buildJBInterface() (uint32, error) {

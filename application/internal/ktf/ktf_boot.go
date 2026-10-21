@@ -86,6 +86,7 @@ func NewRuntimeForProfile(
 	serviceConfig.Device.Carrier = "ktf"
 	serviceConfig.Device.Manufacturer = "LG"
 	serviceConfig.Device.Model = "LG-KH1300"
+	serviceConfig.Device.PhoneNumber = ktfCertificationPhoneNumber(fileData)
 	serviceConfig.Device.ScreenFormat = shared.PixelRGBA8888
 	if frame != nil {
 		serviceConfig.Device.ScreenWidth = int32(frame.Bounds().Dx())
@@ -318,6 +319,41 @@ func loadKTFPrivateFiles(jarName string, files map[string][]byte) map[string][]b
 	}
 	addKTFEmptyFunterPatchFiles(privateFiles)
 	return privateFiles
+}
+
+// ktfCertificationPhoneNumber recovers the subscriber identity bundled by
+// some KTF installers. Those titles compare PHONENUMBER with this private-file
+// snapshot before entering the game, so leaving the device identity unset can
+// strand them on their authentication screen. Only the observed, unambiguous
+// NUL-terminated Korean mobile-number form is accepted.
+func ktfCertificationPhoneNumber(files map[string][]byte) string {
+	var certification []byte
+	found := false
+	for name, data := range files {
+		if !strings.EqualFold(name, "/certification") {
+			continue
+		}
+		if found {
+			return ""
+		}
+		certification = data
+		found = true
+	}
+	if !found || len(certification) < 11 || len(certification) > 12 ||
+		certification[len(certification)-1] != 0 {
+		return ""
+	}
+	number := certification[:len(certification)-1]
+	if (len(number) != 10 && len(number) != 11) ||
+		number[0] != '0' || number[1] != '1' {
+		return ""
+	}
+	for _, digit := range number {
+		if digit < '0' || digit > '9' {
+			return ""
+		}
+	}
+	return string(number)
 }
 
 func addKTFEmptyFunterPatchFiles(files map[string][]byte) {
