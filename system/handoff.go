@@ -95,5 +95,24 @@ func (h BootHandoff) Apply(bus *Bus, backend cpu.Backend) error {
 			return fmt.Errorf("apply boot handoff %q register %d: %w", h.ID, seed.Register, err)
 		}
 	}
+	// Entry and instruction-set mode are part of the architectural handoff too.
+	// Run accepts them explicitly, but keeping the backend context synchronized
+	// makes a snapshot taken before the first instruction (or just after reset)
+	// restore the same next PC instead of the backend's zero-value PC.
+	status, err := backend.ReadRegister(cpu.RegisterCPSR)
+	if err != nil {
+		return fmt.Errorf("apply boot handoff %q status: %w", h.ID, err)
+	}
+	if h.Mode == cpu.ModeThumb {
+		status |= cpu.StatusThumb
+	} else {
+		status &^= cpu.StatusThumb
+	}
+	if err := backend.WriteRegister(cpu.RegisterCPSR, status); err != nil {
+		return fmt.Errorf("apply boot handoff %q status: %w", h.ID, err)
+	}
+	if err := backend.WriteRegister(cpu.RegisterPC, h.Entry); err != nil {
+		return fmt.Errorf("apply boot handoff %q entry: %w", h.ID, err)
+	}
 	return nil
 }

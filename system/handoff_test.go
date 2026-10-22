@@ -29,6 +29,27 @@ func TestBootHandoffSeedsMappedMemoryAndRegisters(t *testing.T) {
 	if err != nil || value != 0xa1b2c3d4 {
 		t.Fatalf("handoff r7 = %#x error %v", value, err)
 	}
+	if value, err := backend.ReadRegister(cpu.RegisterPC); err != nil || value != handoff.Entry {
+		t.Fatalf("handoff PC = %#x error %v", value, err)
+	}
+	if value, err := backend.ReadRegister(cpu.RegisterCPSR); err != nil || value&cpu.StatusThumb != 0 {
+		t.Fatalf("ARM handoff CPSR = %#x error %v", value, err)
+	}
+}
+
+func TestBootHandoffSynchronizesThumbEntryContext(t *testing.T) {
+	bus := NewBus()
+	backend := interpreter.New()
+	check(t, backend.AttachSystemBus(bus))
+	check(t, backend.WriteRegister(cpu.RegisterCPSR, 0x13))
+	handoff := BootHandoff{ID: "test.thumb", Entry: 0x2000, Mode: cpu.ModeThumb}
+	check(t, handoff.Apply(bus, backend))
+	if value, err := backend.ReadRegister(cpu.RegisterPC); err != nil || value != handoff.Entry {
+		t.Fatalf("Thumb handoff PC = %#x error %v", value, err)
+	}
+	if value, err := backend.ReadRegister(cpu.RegisterCPSR); err != nil || value&cpu.StatusThumb == 0 {
+		t.Fatalf("Thumb handoff CPSR = %#x error %v", value, err)
+	}
 }
 
 func TestBootHandoffRejectsOverlapsAndPCSeed(t *testing.T) {
