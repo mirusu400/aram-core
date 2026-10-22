@@ -49,6 +49,54 @@ func NewRuntimeForProfile(
 	outputSampleRate uint32,
 	outputChannels uint8,
 ) (*Runtime, error) {
+	return newRuntimeForProfile(
+		backend,
+		pkg,
+		frame,
+		profileID,
+		fallbackFont,
+		outputSampleRate,
+		outputChannels,
+		true,
+	)
+}
+
+// NewRuntimeForProfileRelaunch recreates a KTF runtime after the title has
+// already completed its first-run provisioning. In particular, exact-title
+// identities that are needed only to create local authentication data are not
+// exposed again: doing so can send an authentication-bypass build back through
+// its retired carrier-server path.
+func NewRuntimeForProfileRelaunch(
+	backend cpu.Backend,
+	pkg ktf.Package,
+	frame *image.RGBA,
+	profileID string,
+	fallbackFont string,
+	outputSampleRate uint32,
+	outputChannels uint8,
+) (*Runtime, error) {
+	return newRuntimeForProfile(
+		backend,
+		pkg,
+		frame,
+		profileID,
+		fallbackFont,
+		outputSampleRate,
+		outputChannels,
+		false,
+	)
+}
+
+func newRuntimeForProfile(
+	backend cpu.Backend,
+	pkg ktf.Package,
+	frame *image.RGBA,
+	profileID string,
+	fallbackFont string,
+	outputSampleRate uint32,
+	outputChannels uint8,
+	initialLaunch bool,
+) (*Runtime, error) {
 	if backend == nil {
 		return nil, fmt.Errorf("initialize KTF runtime: CPU is nil")
 	}
@@ -87,6 +135,9 @@ func NewRuntimeForProfile(
 	serviceConfig.Device.Manufacturer = "LG"
 	serviceConfig.Device.Model = "LG-KH1300"
 	serviceConfig.Device.PhoneNumber = ktfCertificationPhoneNumber(fileData)
+	if initialLaunch && serviceConfig.Device.PhoneNumber == "" {
+		serviceConfig.Device.PhoneNumber = initialPhoneNumberOverride(pkg)
+	}
 	serviceConfig.Device.ScreenFormat = shared.PixelRGBA8888
 	if frame != nil {
 		serviceConfig.Device.ScreenWidth = int32(frame.Bounds().Dx())

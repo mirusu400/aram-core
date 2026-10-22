@@ -494,7 +494,7 @@ func (m *Machine) Reset(ctx context.Context) error {
 		}
 		pkg := m.ktf.Pkg
 		profileID := m.info.ProfileID
-		runtime, err := ktfrt.NewRuntimeForProfile(
+		runtime, err := ktfrt.NewRuntimeForProfileRelaunch(
 			m.cpu,
 			pkg,
 			m.frame,

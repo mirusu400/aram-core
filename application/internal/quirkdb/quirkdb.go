@@ -154,6 +154,31 @@ var KTFDataInputStreamJavaABIs = []TitleKey{
 	},
 }
 
+// KTFInitialPhoneNumberOverrides supplies a deterministic offline handset
+// identity on the first launch of exact authentication-bypass clients. A
+// packaged certification file remains authoritative and takes precedence.
+type KTFInitialPhoneNumberOverride struct {
+	Key         TitleKey
+	PhoneNumber string
+}
+
+var KTFInitialPhoneNumberOverrides = []KTFInitialPhoneNumberOverride{
+	{
+		// Hero's Lore 5's KTF authentication-bypass build needs a subscriber
+		// number to create its first-run data. Relaunch then consumes that data
+		// with the property unavailable; exposing it again selects the retired
+		// carrier path and ends at error 300.
+		Key: TitleKey{
+			AID:       "01042B12",
+			MainClass: "Clet",
+			ClientSHA256: MustHash(
+				"303872f7e970a63cd694e2d67e1662615504fa4e0f9695d14c72e3bfe24e3bbb",
+			),
+		},
+		PhoneNumber: "01000000000",
+	},
+}
+
 // MenuForegroundOverlay describes a title that draws its menu labels before
 // a full-menu overlay image and expects the labels to stay visible: the
 // runtime defers recognized label draws and replays them above the overlay.

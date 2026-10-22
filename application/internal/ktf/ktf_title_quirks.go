@@ -98,6 +98,28 @@ func resolveDataInputStreamJavaABI(
 	return false
 }
 
+func initialPhoneNumberOverride(pkg ktf.Package) string {
+	return resolveInitialPhoneNumberOverride(
+		pkg.Descriptor,
+		sha256.Sum256(pkg.Client),
+	)
+}
+
+func resolveInitialPhoneNumberOverride(
+	descriptor ktf.Descriptor, clientHash [sha256.Size]byte,
+) string {
+	for _, override := range quirkdb.KTFInitialPhoneNumberOverrides {
+		if override.Key.Matches(
+			descriptor.AID,
+			descriptor.MainClass,
+			clientHash,
+		) {
+			return override.PhoneNumber
+		}
+	}
+	return ""
+}
+
 // ktfMenuForegroundCompat replays recognized menu-label draws above a
 // later-drawn overlay image. It records the current coordinates rather than
 // fixing them in the runtime, so menu rotation and selection animations keep
