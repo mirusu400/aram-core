@@ -75,3 +75,26 @@ func TestInputAndAudioValidation(t *testing.T) {
 		t.Fatal("AudioChunk.Validate accepted a negative guest timestamp")
 	}
 }
+
+func TestHostEventValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		event   HostEvent
+		wantErr bool
+	}{
+		{name: "network", event: HostEvent{Kind: HostEventNetworkReceive, Data: []byte{1, 2}}},
+		{name: "serial", event: HostEvent{Kind: HostEventSerialReceive, Words: [4]uint32{1, 2, 3, 4}}},
+		{name: "sms", event: HostEvent{Kind: HostEventSMSReceive, Words: [4]uint32{5}}},
+		{name: "unknown", event: HostEvent{Kind: "carrier-push"}, wantErr: true},
+		{name: "network words", event: HostEvent{Kind: HostEventNetworkReceive, Words: [4]uint32{1}}, wantErr: true},
+		{name: "serial bytes", event: HostEvent{Kind: HostEventSerialReceive, Data: []byte{1}}, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.event.Validate()
+			if (err != nil) != test.wantErr {
+				t.Fatalf("Validate() error = %v, wantErr %t", err, test.wantErr)
+			}
+		})
+	}
+}

@@ -176,8 +176,13 @@ later slots or clock advancement.
 
 Natural sound completion dispatches `EVENT_RESULT` with `swData=23`. Network
 completion uses the shared event/coordinator path. Stop, reset, and close deliver
-`EVENT_END` when applicable. Receive/SMS/serial events are publicly dispatchable
-but are not fabricated without a corresponding host producer.
+`EVENT_END` when applicable. A host injects network, serial, and SMS input
+through the optional `core.HostEventReceiver` contract. The runtime copies a
+connected packet of at most 1024 bytes into compiler symbol 14 (`swRcvBuf`) and
+dispatches `EVENT_RECEIVE` with the byte count in `swData`. Serial and SMS
+events dispatch the four host-supplied `swData..swData3` words. Missing
+callbacks drop these external events rather than inventing guest buffers or
+metadata.
 
 ### Input
 

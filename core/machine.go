@@ -102,6 +102,45 @@ func (e InputEvent) Validate() error {
 	return nil
 }
 
+type HostEventKind string
+
+const (
+	HostEventNetworkReceive HostEventKind = "network-receive"
+	HostEventSerialReceive  HostEventKind = "serial-receive"
+	HostEventSMSReceive     HostEventKind = "sms-receive"
+)
+
+// HostEvent carries data produced by a handset-owned provider into a running
+// guest. Network receive uses Data; serial and SMS notifications expose Words
+// as the guest ABI's four event values.
+type HostEvent struct {
+	Kind  HostEventKind
+	Data  []byte
+	Words [4]uint32
+}
+
+func (e HostEvent) Validate() error {
+	switch e.Kind {
+	case HostEventNetworkReceive:
+		if e.Words != ([4]uint32{}) {
+			return fmt.Errorf("network receive event contains serial/SMS words")
+		}
+	case HostEventSerialReceive, HostEventSMSReceive:
+		if len(e.Data) != 0 {
+			return fmt.Errorf("%s event contains network data", e.Kind)
+		}
+	default:
+		return fmt.Errorf("unknown host event kind %q", e.Kind)
+	}
+	return nil
+}
+
+// HostEventReceiver is an optional synchronous ingress interface. Implementers
+// serialize delivery with guest execution and copy any data they retain.
+type HostEventReceiver interface {
+	ReceiveHostEvent(HostEvent) error
+}
+
 type AudioChunk struct {
 	SampleRate int
 	Channels   int

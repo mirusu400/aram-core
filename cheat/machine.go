@@ -111,6 +111,17 @@ func (m *Machine) QueueInput(event machinecore.InputEvent) error {
 	)
 }
 
+func (m *Machine) ReceiveHostEvent(event machinecore.HostEvent) error {
+	receiver, ok := m.machine.(machinecore.HostEventReceiver)
+	if !ok {
+		return fmt.Errorf("loaded title does not accept host events")
+	}
+	return m.engine.runMachine(
+		func() error { return receiver.ReceiveHostEvent(event) },
+		applyNone,
+	)
+}
+
 func (m *Machine) SupportsPointer() bool {
 	pointer, ok := m.machine.(machinecore.PointerInputMachine)
 	return ok && pointer.SupportsPointer()
@@ -152,3 +163,4 @@ func (m *Machine) Close() error {
 
 var _ machinecore.Machine = (*Machine)(nil)
 var _ machinecore.PointerInputMachine = (*Machine)(nil)
+var _ machinecore.HostEventReceiver = (*Machine)(nil)

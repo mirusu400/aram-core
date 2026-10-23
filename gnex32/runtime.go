@@ -2,6 +2,7 @@ package gnex32
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -42,6 +43,18 @@ const maxGNEX32ScreenPixels = 4096 * 4096
 const ResultSoundComplete uint32 = 23
 
 const gnex32InputControlPrefix = "gnex32-key/"
+
+const (
+	// The Mobile C compiler reserves symbol 14 for swRcvBuf. GNEX exposes a
+	// 1024-byte receive buffer; EVENT_RECEIVE observes its byte count in swData.
+	gnex32ReceiveBufferSymbol = 14
+	maxGNEX32ReceiveBytes     = 1024
+)
+
+var (
+	ErrNetworkReceiveUnavailable = errors.New("gnex32: network receive unavailable")
+	ErrNetworkReceiveTooLarge    = errors.New("gnex32: network receive is too large")
+)
 
 func (p DeviceProfile) Validate() error {
 	if strings.TrimSpace(p.ID) == "" || len(p.ID) > 255 || strings.IndexByte(p.ID, 0) >= 0 {
@@ -298,6 +311,30 @@ func (r *Runtime) KeyPressed(code uint16, budget uint64) error {
 	return r.dispatchKey(code, true, budget)
 }
 
+// InjectSerialReceive delivers one handset serial notification. Mobile C
+// exposes the host-supplied values through swData..swData3; unlike network
+// receive, this event has no compiler-owned packet buffer to populate.
+func (r *Runtime) InjectSerialReceive(data EventData, budget uint64) error {
+	return r.injectExternalEvent(gnex.GNEX32EventRSReceive, data, budget)
+}
+
+// InjectSMSReceive delivers one handset SMS notification. Titles use swData as
+// the notification code and may use the remaining system words for
+// carrier-specific metadata.
+func (r *Runtime) InjectSMSReceive(data EventData, budget uint64) error {
+	return r.injectExternalEvent(gnex.GNEX32EventSMSReceive, data, budget)
+}
+
+func (r *Runtime) injectExternalEvent(event gnex.GNEX32Event, data EventData, budget uint64) error {
+	if r == nil || r.closed {
+		return fmt.Errorf("gnex32: cannot inject event on a closed runtime")
+	}
+	if !r.EventAvailable(event) {
+		return nil
+	}
+	return r.DispatchEvent(event, data, budget)
+}
+
 // QueueKey schedules a physical key transition on the shared guest clock.
 // Held keys use the shared 500 ms/50 ms repeat policy; releases are delivered
 // as the Mobile C SWAP_KEY_RELEASE value rather than repeating the press code.
@@ -387,10 +424,43 @@ func (r *Runtime) dispatchReadyEvents(budget uint64) error {
 			case "gnex.disconnect":
 				result = uint32(event.Value)
 			case "read":
+				if event.ServiceID != r.networkSocket {
+					return fmt.Errorf("gnex32: network receive for unknown socket %d", event.ServiceID)
+				}
+				if event.Value < 0 || event.Value > maxGNEX32ReceiveBytes {
+					return fmt.Errorf("gnex32: network receive size %d is outside 0..%d", event.Value, maxGNEX32ReceiveBytes)
+				}
+				size := int(event.Value)
 				if !r.EventAvailable(gnex.GNEX32EventReceive) {
+					if _, err := r.services.Network.SocketRead(r.owner, event.ServiceID, uint64(size)); err != nil {
+						return err
+					}
 					continue
 				}
-				return fmt.Errorf("gnex32: network receive buffer contract is unavailable")
+				// Validate the compiler-provided swRcvBuf span before consuming
+				// provider bytes, so a malformed image cannot lose queued data.
+				if _, err := r.vm.memory.ReadBytes(gnex32ReceiveBufferSymbol, 0, size); err != nil {
+					return fmt.Errorf("gnex32: swRcvBuf cannot hold %d bytes: %w", size, err)
+				}
+				data, err := r.services.Network.SocketRead(r.owner, event.ServiceID, uint64(size))
+				if err != nil {
+					return err
+				}
+				if len(data) != size {
+					return fmt.Errorf("gnex32: network receive announced %d bytes, read %d", size, len(data))
+				}
+				if err := r.vm.memory.WriteBytes(gnex32ReceiveBufferSymbol, 0, data); err != nil {
+					return err
+				}
+				if err := r.DispatchEvent(
+					gnex.GNEX32EventReceive, EventData{Data: uint32(size)}, budget,
+				); err != nil {
+					return err
+				}
+				if r.closeRequested {
+					return nil
+				}
+				continue
 			default:
 				return fmt.Errorf("gnex32: unsupported network event %q", event.Name)
 			}
@@ -405,6 +475,37 @@ func (r *Runtime) dispatchReadyEvents(budget uint64) error {
 			return fmt.Errorf("gnex32: unsupported shared event %q", event.Kind)
 		}
 	}
+}
+
+// InjectNetworkReceive queues one provider packet at the current guest time and
+// synchronously delivers EVENT_RECEIVE when the guest registered it. The input
+// slice is copied by the shared network service.
+func (r *Runtime) InjectNetworkReceive(data []byte, budget uint64) error {
+	if r == nil || r.closed {
+		return fmt.Errorf("gnex32: cannot receive network data on a closed runtime")
+	}
+	if r.networkSocket == 0 {
+		return fmt.Errorf("%w: no connection", ErrNetworkReceiveUnavailable)
+	}
+	if len(data) > maxGNEX32ReceiveBytes {
+		return fmt.Errorf(
+			"%w: size %d is outside 0..%d",
+			ErrNetworkReceiveTooLarge,
+			len(data),
+			maxGNEX32ReceiveBytes,
+		)
+	}
+	if r.EventAvailable(gnex.GNEX32EventReceive) {
+		if _, err := r.vm.memory.ReadBytes(gnex32ReceiveBufferSymbol, 0, len(data)); err != nil {
+			return fmt.Errorf("gnex32: swRcvBuf cannot hold %d bytes: %w", len(data), err)
+		}
+	}
+	if err := r.services.Network.InjectSocketRead(
+		r.owner, r.networkSocket, data, int64(r.services.Clock.Monotonic()), r.services.Events,
+	); err != nil {
+		return err
+	}
+	return r.dispatchReadyEvents(budget)
 }
 
 func parseGNEX32InputControl(control string) (uint16, error) {

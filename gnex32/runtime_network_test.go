@@ -2,6 +2,7 @@ package gnex32
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 
 	"github.com/mirusu400/aram-core/loader/gnex"
@@ -192,5 +193,67 @@ func TestConnectedNetworkRoundTripsRuntimeState(t *testing.T) {
 	written, err := restored.services.Network.SocketWritten(restored.owner, restored.networkSocket)
 	if err != nil || string(written) != "packet" {
 		t.Fatalf("restored packet = %q, %v", written, err)
+	}
+}
+
+func TestNetworkReceivePopulatesCompilerBufferAndDispatchesEvent(t *testing.T) {
+	symbols := make([]gnex.GNEX32Symbol, gnex32ReceiveBufferSymbol+1)
+	for index := range symbols {
+		symbols[index] = gnex.GNEX32Symbol{Flags: 1, Words: 1, Data: make([]byte, 4)}
+	}
+	symbols[gnex32ReceiveBufferSymbol] = gnex.GNEX32Symbol{
+		Flags: 1, Words: maxGNEX32ReceiveBytes / 4, Data: make([]byte, maxGNEX32ReceiveBytes),
+	}
+	runtime, err := NewRuntime(gnex.GNEX32Image{
+		Header: gnex.Header{BodyOffset: 160}, Entry: 160,
+		Code: []byte{
+			0x86, 0x00, // main return
+			0x04, 0x00, 0x00, 0x00, // push swData
+			0x0b, 0x00, 0x06, 0x00, // save receive length in symbol 6
+			0x86, 0x00,
+		},
+		Symbols:   symbols,
+		Media:     []gnex.GNEX32Media{{Flags: 0, Data: []byte("127.0.0.1\x00")}},
+		Callbacks: gnex.GNEX32Callbacks{Receive: 162, Result: 162},
+	}, gnex32TestDeviceProfile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if err := runtime.RunMain(1); err != nil {
+		t.Fatal(err)
+	}
+	runtime.services.Device.SetNetworkAvailable(true)
+	if _, err := runtime.service(0x101, []uint32{0, 8501}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.dispatchReadyEvents(8); err != nil {
+		t.Fatal(err)
+	}
+
+	want := []byte{0xde, 0xad, 0xbe, 0xef, 0x42}
+	if err := runtime.InjectNetworkReceive(want, 8); err != nil {
+		t.Fatal(err)
+	}
+	if got := networkResult(t, runtime); got != uint32(len(want)) {
+		t.Fatalf("EVENT_RECEIVE swData = %d, want %d", got, len(want))
+	}
+	got, err := runtime.vm.memory.ReadBytes(gnex32ReceiveBufferSymbol, 0, len(want))
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("swRcvBuf = %x, %v", got, err)
+	}
+	info, err := runtime.services.Network.SocketInfo(runtime.owner, runtime.networkSocket)
+	if err != nil || info.ReadBytes != 0 {
+		t.Fatalf("consumed socket = %+v, %v", info, err)
+	}
+	if err := runtime.InjectNetworkReceive(make([]byte, maxGNEX32ReceiveBytes+1), 8); !errors.Is(err, ErrNetworkReceiveTooLarge) {
+		t.Fatalf("oversized receive error = %v", err)
+	}
+}
+
+func TestNetworkReceiveWithoutConnectionReportsProviderError(t *testing.T) {
+	runtime := newNetworkRuntime(t)
+	if err := runtime.InjectNetworkReceive([]byte("early"), 8); !errors.Is(err, ErrNetworkReceiveUnavailable) {
+		t.Fatalf("receive error = %v", err)
 	}
 }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/mirusu400/aram-core/application/internal/guest"
 	machinecore "github.com/mirusu400/aram-core/core"
+	"github.com/mirusu400/aram-core/cpu"
 	"github.com/mirusu400/aram-core/gnex32"
 	"github.com/mirusu400/aram-core/loader"
 	"github.com/mirusu400/aram-core/loader/gnex"
@@ -483,6 +484,84 @@ func (m *gnex32Machine) GNEX32BacklightMode() gnex32.BacklightMode {
 	}
 	return m.runtime.BacklightMode()
 }
+
+// ReceiveHostEvent translates the backend-neutral handset ingress contract to
+// the Mobile C callbacks used by GNEX32 titles.
+func (m *gnex32Machine) ReceiveHostEvent(event machinecore.HostEvent) error {
+	if err := event.Validate(); err != nil {
+		return err
+	}
+	data := gnex32.EventData{
+		Data:  event.Words[0],
+		Data1: event.Words[1],
+		Data2: event.Words[2],
+		Data3: event.Words[3],
+	}
+	switch event.Kind {
+	case machinecore.HostEventNetworkReceive:
+		return m.InjectGNEX32NetworkReceive(event.Data)
+	case machinecore.HostEventSerialReceive:
+		return m.InjectGNEX32SerialReceive(data)
+	case machinecore.HostEventSMSReceive:
+		return m.InjectGNEX32SMSReceive(data)
+	default:
+		panic("validated host event kind is unhandled")
+	}
+}
+
+// InjectGNEX32NetworkReceive is the optional host ingress boundary for a
+// connected Mobile C title. It preserves the machine's execution serialization.
+func (m *gnex32Machine) InjectGNEX32NetworkReceive(data []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return cpu.ErrClosed
+	}
+	if m.state != machinecore.StateRunning {
+		return fmt.Errorf("receive GNEX32 network data from %s: %w", m.state, ErrInvalidState)
+	}
+	if err := m.runtime.InjectNetworkReceive(data, m.budget); err != nil {
+		if errors.Is(err, gnex32.ErrNetworkReceiveUnavailable) ||
+			errors.Is(err, gnex32.ErrNetworkReceiveTooLarge) {
+			return err
+		}
+		m.state = machinecore.StateFaulted
+		return fmt.Errorf("deliver GNEX32 network data at code offset %d: %w", m.runtime.PC(), err)
+	}
+	_, err := m.finishGNEX32CloseRequestLocked()
+	return err
+}
+
+func (m *gnex32Machine) InjectGNEX32SerialReceive(data gnex32.EventData) error {
+	return m.injectGNEX32ExternalEvent("serial", func() error {
+		return m.runtime.InjectSerialReceive(data, m.budget)
+	})
+}
+
+func (m *gnex32Machine) InjectGNEX32SMSReceive(data gnex32.EventData) error {
+	return m.injectGNEX32ExternalEvent("SMS", func() error {
+		return m.runtime.InjectSMSReceive(data, m.budget)
+	})
+}
+
+func (m *gnex32Machine) injectGNEX32ExternalEvent(kind string, dispatch func() error) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return cpu.ErrClosed
+	}
+	if m.state != machinecore.StateRunning {
+		return fmt.Errorf("receive GNEX32 %s event from %s: %w", kind, m.state, ErrInvalidState)
+	}
+	if err := dispatch(); err != nil {
+		m.state = machinecore.StateFaulted
+		return fmt.Errorf("deliver GNEX32 %s event at code offset %d: %w", kind, m.runtime.PC(), err)
+	}
+	_, err := m.finishGNEX32CloseRequestLocked()
+	return err
+}
+
+var _ machinecore.HostEventReceiver = (*gnex32Machine)(nil)
 
 func (m *gnex32Machine) DrainAudio() machinecore.AudioChunk {
 	m.mu.Lock()
