@@ -122,6 +122,47 @@ func (m *Machine) ReceiveHostEvent(event machinecore.HostEvent) error {
 	)
 }
 
+func (m *Machine) NetworkRequests() []machinecore.NetworkRequest {
+	transport, ok := m.machine.(machinecore.NetworkTransportMachine)
+	if !ok {
+		return nil
+	}
+	return transport.NetworkRequests()
+}
+
+func (m *Machine) CompleteNetworkRequest(sequence uint64, success bool) error {
+	transport, ok := m.machine.(machinecore.NetworkTransportMachine)
+	if !ok {
+		return fmt.Errorf("loaded title does not support network transport")
+	}
+	return m.engine.runMachine(
+		func() error { return transport.CompleteNetworkRequest(sequence, success) },
+		applyNone,
+	)
+}
+
+func (m *Machine) ReceiveNetworkData(connection uint64, data []byte) error {
+	transport, ok := m.machine.(machinecore.NetworkTransportMachine)
+	if !ok {
+		return fmt.Errorf("loaded title does not support network transport")
+	}
+	return m.engine.runMachine(
+		func() error { return transport.ReceiveNetworkData(connection, data) },
+		applyNone,
+	)
+}
+
+func (m *Machine) DisconnectNetwork(connection uint64) error {
+	transport, ok := m.machine.(machinecore.NetworkTransportMachine)
+	if !ok {
+		return fmt.Errorf("loaded title does not support network transport")
+	}
+	return m.engine.runMachine(
+		func() error { return transport.DisconnectNetwork(connection) },
+		applyNone,
+	)
+}
+
 func (m *Machine) SupportsPointer() bool {
 	pointer, ok := m.machine.(machinecore.PointerInputMachine)
 	return ok && pointer.SupportsPointer()
@@ -164,3 +205,4 @@ func (m *Machine) Close() error {
 var _ machinecore.Machine = (*Machine)(nil)
 var _ machinecore.PointerInputMachine = (*Machine)(nil)
 var _ machinecore.HostEventReceiver = (*Machine)(nil)
+var _ machinecore.NetworkTransportMachine = (*Machine)(nil)

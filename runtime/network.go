@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"math"
@@ -311,6 +312,28 @@ func (n *Network) SocketWritten(owner OwnerID, id ServiceID) ([]byte, error) {
 		return nil, err
 	}
 	return cloneBytes(socket.writeData), nil
+}
+
+// ConsumeSocketWritten acknowledges an exact prefix after a host provider has
+// written it. Exact matching prevents a stale or out-of-order completion from
+// discarding bytes belonging to another request.
+func (n *Network) ConsumeSocketWritten(owner OwnerID, id ServiceID, data []byte) error {
+	socket, err := n.socket(owner, id)
+	if err != nil {
+		return err
+	}
+	if len(data) == 0 || len(data) > len(socket.writeData) ||
+		!bytes.Equal(socket.writeData[:len(data)], data) {
+		return fmt.Errorf("%w: socket write acknowledgement does not match", ErrInvalidState)
+	}
+	copy(socket.writeData, socket.writeData[len(data):])
+	socket.writeData = socket.writeData[:len(socket.writeData)-len(data)]
+	if socket.localCursor >= uint64(len(data)) {
+		socket.localCursor -= uint64(len(data))
+	} else {
+		socket.localCursor = 0
+	}
+	return nil
 }
 
 func (n *Network) InjectSocketRead(

@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 
@@ -20,6 +21,8 @@ const (
 	gnex32MachineStateVersion  = uint32(1)
 	maxGNEX32MachineStateBytes = gnex32.MaxRuntimeStateBytes + uint64(1<<20)
 )
+
+var ErrGNEX32NetworkStateActive = errors.New("application: GNEX32 live network state is not serializable")
 
 type parsedGNEX32MachineState struct {
 	state                  machinecore.State
@@ -49,6 +52,9 @@ func (m *gnex32Machine) SaveState(output io.Writer) error {
 	digest, err := hex.DecodeString(m.source.SHA256)
 	if err != nil || len(digest) != sha256.Size {
 		return fmt.Errorf("save GNEX32 state: source SHA-256 is unavailable")
+	}
+	if m.runtime.NetworkActive() {
+		return fmt.Errorf("save GNEX32 state: %w", ErrGNEX32NetworkStateActive)
 	}
 	runtimeState, err := m.runtime.MarshalBinary()
 	if err != nil {
@@ -106,6 +112,10 @@ func (m *gnex32Machine) LoadState(input io.Reader) error {
 	if err := candidate.UnmarshalBinary(parsed.runtime); err != nil {
 		_ = candidate.Close()
 		return fmt.Errorf("load GNEX32 runtime: %w", err)
+	}
+	if candidate.NetworkActive() {
+		_ = candidate.Close()
+		return fmt.Errorf("load GNEX32 state: %w", ErrGNEX32NetworkStateActive)
 	}
 	// The old runtime has no external resources; replacing its isolated service
 	// graph lets it be reclaimed without mutating live state before validation.

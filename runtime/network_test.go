@@ -47,6 +47,28 @@ func TestModeledSocketRequiresExplicitResponse(t *testing.T) {
 	}
 }
 
+func TestConsumeSocketWrittenRequiresExactPrefix(t *testing.T) {
+	services, err := NewServices(Config{})
+	check(t, err)
+	socket, err := services.Network.OpenSocket(2, 2, 1)
+	check(t, err)
+	check(t, services.Network.ConnectSocket(2, socket, "localhost", 1234))
+	check(t, services.Network.CompleteSocketConnect(2, socket, true, 0, services.Events))
+	_, err = services.Network.SocketWrite(2, socket, []byte("firstsecond"))
+	check(t, err)
+
+	if err := services.Network.ConsumeSocketWritten(2, socket, []byte("wrong")); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("mismatched acknowledgement error = %v", err)
+	}
+	if err := services.Network.ConsumeSocketWritten(2, socket, []byte("first")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := services.Network.SocketWritten(2, socket)
+	if err != nil || string(got) != "second" {
+		t.Fatalf("remaining write = %q, %v", got, err)
+	}
+}
+
 func TestHTTPCompletionRollsBackWhenEventQueueIsFull(t *testing.T) {
 	registry := NewRegistry(16)
 	network, err := NewNetwork(registry, NetworkLimits{})

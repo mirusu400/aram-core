@@ -49,7 +49,7 @@ func networkResult(t *testing.T, runtime *Runtime) uint32 {
 	return result
 }
 
-func TestNetConnectReportsDeterministicOfflineFailure(t *testing.T) {
+func TestNetConnectWaitsForProviderFailure(t *testing.T) {
 	runtime := newNetworkRuntime(t)
 	result, err := runtime.service(0x101, []uint32{0, 17002})
 	if err != nil {
@@ -59,11 +59,17 @@ func TestNetConnectReportsDeterministicOfflineFailure(t *testing.T) {
 		t.Fatalf("NetConnect result = %+v, socket = %d", result, runtime.networkSocket)
 	}
 	info, err := runtime.services.Network.SocketInfo(runtime.owner, runtime.networkSocket)
-	if err != nil || info.State != shared.ConnectionClosed ||
+	if err != nil || info.State != shared.ConnectionConnecting ||
 		info.Host != "211.233.42.196" || info.Port != 17002 {
-		t.Fatalf("offline socket = %+v, %v", info, err)
+		t.Fatalf("pending socket = %+v, %v", info, err)
 	}
-	if err := runtime.dispatchReadyEvents(8); err != nil {
+	requests := runtime.NetworkRequests()
+	if len(requests) != 1 || requests[0].Kind != NetworkRequestConnect ||
+		requests[0].Host != info.Host || requests[0].Port != info.Port ||
+		requests[0].MaxReceiveBytes != maxGNEX32ReceiveBytes {
+		t.Fatalf("connect requests = %+v", requests)
+	}
+	if err := runtime.CompleteNetworkRequest(requests[0].Sequence, false, 8); err != nil {
 		t.Fatal(err)
 	}
 	if got := networkResult(t, runtime); got != 0 || runtime.networkSocket != 0 {
@@ -73,11 +79,11 @@ func TestNetConnectReportsDeterministicOfflineFailure(t *testing.T) {
 
 func TestNetConnectSendAndDisconnect(t *testing.T) {
 	runtime := newNetworkRuntime(t)
-	runtime.services.Device.SetNetworkAvailable(true)
 	if _, err := runtime.service(0x101, []uint32{0, 17002}); err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.dispatchReadyEvents(8); err != nil {
+	connect := runtime.NetworkRequests()[0]
+	if err := runtime.CompleteNetworkRequest(connect.Sequence, true, 8); err != nil {
 		t.Fatal(err)
 	}
 	if got := networkResult(t, runtime); got != 1 {
@@ -103,6 +109,18 @@ func TestNetConnectSendAndDisconnect(t *testing.T) {
 	if status, _ := runtime.vm.memory.ReadWord(0, 0); status != 1 {
 		t.Fatalf("NetSend swData = %d", status)
 	}
+	requests := runtime.NetworkRequests()
+	if len(requests) != 1 || requests[0].Kind != NetworkRequestWrite ||
+		!bytes.Equal(requests[0].Data, want) {
+		t.Fatalf("write requests = %+v", requests)
+	}
+	if err := runtime.CompleteNetworkRequest(requests[0].Sequence, true, 8); err != nil {
+		t.Fatal(err)
+	}
+	written, err = runtime.services.Network.SocketWritten(runtime.owner, runtime.networkSocket)
+	if err != nil || len(written) != 0 {
+		t.Fatalf("acknowledged packet remains = %x, %v", written, err)
+	}
 
 	if result, err = runtime.service(0x102, nil); err != nil || result.Pop != 0 || len(result.Push) != 0 {
 		t.Fatalf("NetDisconnect result = %+v, %v", result, err)
@@ -115,6 +133,13 @@ func TestNetConnectSendAndDisconnect(t *testing.T) {
 	}
 	if got := networkResult(t, runtime); got != 9 {
 		t.Fatalf("disconnect result = %d", got)
+	}
+	requests = runtime.NetworkRequests()
+	if len(requests) != 1 || requests[0].Kind != NetworkRequestDisconnect {
+		t.Fatalf("disconnect requests = %+v", requests)
+	}
+	if err := runtime.CompleteNetworkRequest(requests[0].Sequence, true, 8); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := runtime.service(0x102, nil); err != nil {
 		t.Fatal(err)
@@ -159,11 +184,11 @@ func TestNetworkServicesValidateArguments(t *testing.T) {
 
 func TestConnectedNetworkRoundTripsRuntimeState(t *testing.T) {
 	source := newNetworkRuntime(t)
-	source.services.Device.SetNetworkAvailable(true)
 	if _, err := source.service(0x101, []uint32{0, 17002}); err != nil {
 		t.Fatal(err)
 	}
-	if err := source.dispatchReadyEvents(8); err != nil {
+	connect := source.NetworkRequests()[0]
+	if err := source.CompleteNetworkRequest(connect.Sequence, true, 8); err != nil {
 		t.Fatal(err)
 	}
 	source.vm.refs[0] = gnex32SymbolRef{symbol: 7}
@@ -194,6 +219,10 @@ func TestConnectedNetworkRoundTripsRuntimeState(t *testing.T) {
 	if err != nil || string(written) != "packet" {
 		t.Fatalf("restored packet = %q, %v", written, err)
 	}
+	requests := restored.NetworkRequests()
+	if len(requests) != 1 || requests[0].Kind != NetworkRequestWrite || string(requests[0].Data) != "packet" {
+		t.Fatalf("restored requests = %+v", requests)
+	}
 }
 
 func TestNetworkReceivePopulatesCompilerBufferAndDispatchesEvent(t *testing.T) {
@@ -223,16 +252,16 @@ func TestNetworkReceivePopulatesCompilerBufferAndDispatchesEvent(t *testing.T) {
 	if err := runtime.RunMain(1); err != nil {
 		t.Fatal(err)
 	}
-	runtime.services.Device.SetNetworkAvailable(true)
 	if _, err := runtime.service(0x101, []uint32{0, 8501}); err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.dispatchReadyEvents(8); err != nil {
+	connect := runtime.NetworkRequests()[0]
+	if err := runtime.CompleteNetworkRequest(connect.Sequence, true, 8); err != nil {
 		t.Fatal(err)
 	}
 
 	want := []byte{0xde, 0xad, 0xbe, 0xef, 0x42}
-	if err := runtime.InjectNetworkReceive(want, 8); err != nil {
+	if err := runtime.InjectNetworkReceiveFor(connect.Connection, want, 8); err != nil {
 		t.Fatal(err)
 	}
 	if got := networkResult(t, runtime); got != uint32(len(want)) {
@@ -255,5 +284,34 @@ func TestNetworkReceiveWithoutConnectionReportsProviderError(t *testing.T) {
 	runtime := newNetworkRuntime(t)
 	if err := runtime.InjectNetworkReceive([]byte("early"), 8); !errors.Is(err, ErrNetworkReceiveUnavailable) {
 		t.Fatalf("receive error = %v", err)
+	}
+}
+
+func TestNetworkWriteFailureDisconnectsAndRejectsStaleData(t *testing.T) {
+	runtime := newNetworkRuntime(t)
+	if _, err := runtime.service(0x101, []uint32{0, 17002}); err != nil {
+		t.Fatal(err)
+	}
+	connect := runtime.NetworkRequests()[0]
+	if err := runtime.CompleteNetworkRequest(connect.Sequence, true, 8); err != nil {
+		t.Fatal(err)
+	}
+	runtime.vm.refs[0] = gnex32SymbolRef{symbol: 7}
+	if err := runtime.vm.memory.WriteBytes(7, 0, []byte("fail")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.service(0x104, []uint32{0, 4}); err != nil {
+		t.Fatal(err)
+	}
+	write := runtime.NetworkRequests()[0]
+	if err := runtime.CompleteNetworkRequest(write.Sequence, false, 8); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.networkSocket != 0 || len(runtime.NetworkRequests()) != 0 || networkResult(t, runtime) != 10 {
+		t.Fatalf("failed write left socket=%d requests=%+v result=%d",
+			runtime.networkSocket, runtime.NetworkRequests(), networkResult(t, runtime))
+	}
+	if err := runtime.InjectNetworkReceiveFor(connect.Connection, []byte("stale"), 8); !errors.Is(err, ErrNetworkReceiveUnavailable) {
+		t.Fatalf("stale receive error = %v", err)
 	}
 }

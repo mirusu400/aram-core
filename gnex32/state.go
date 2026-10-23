@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	gnex32RuntimeStateMagic   = "GNX32RT\x00"
-	gnex32RuntimeStateVersion = uint32(4)
+	gnex32RuntimeStateMagic         = "GNX32RT\x00"
+	gnex32RuntimeStateVersion       = uint32(5)
+	gnex32RuntimeStateLegacyVersion = uint32(4)
 	// Shared state may itself contain the configured 768 MiB maximum. GNEX
 	// symbol/media memory and the three profile-sized LCD buffers need separate room.
 	MaxRuntimeStateBytes = uint64(850 << 20)
@@ -53,31 +54,36 @@ type displayState struct {
 }
 
 type runtimeState struct {
-	VM             vmState
-	Display        displayState
-	Services       []byte
-	SoundClip      shared.ServiceID
-	KeyToneClip    shared.ServiceID
-	NetworkSocket  shared.ServiceID
-	KeyToneOn      bool
-	Backlight      BacklightMode
-	Tick           uint64
-	Timers         [3]runtimeTimer
-	Presents       uint64
-	NV             [UserNVWords]uint32
-	RandomState    uint32
-	Paint          color.RGBA
-	PaintSource    color.RGBA
-	PaintIndex     uint8
-	PaintMapped    bool
-	FontSize       uint32
-	FontColor      color.RGBA
-	FontIndex      uint8
-	FontAlign      uint32
-	FontBack       color.RGBA
-	FontBackIdx    uint8
-	CloseRequested bool
-	ExitRequested  bool
+	VM                    vmState
+	Display               displayState
+	Services              []byte
+	SoundClip             shared.ServiceID
+	KeyToneClip           shared.ServiceID
+	NetworkSocket         shared.ServiceID
+	NetworkConnection     uint64
+	NextNetworkConnection uint64
+	NextNetworkRequest    uint64
+	NetworkRequests       []NetworkRequest
+	LegacyVersion         uint32
+	KeyToneOn             bool
+	Backlight             BacklightMode
+	Tick                  uint64
+	Timers                [3]runtimeTimer
+	Presents              uint64
+	NV                    [UserNVWords]uint32
+	RandomState           uint32
+	Paint                 color.RGBA
+	PaintSource           color.RGBA
+	PaintIndex            uint8
+	PaintMapped           bool
+	FontSize              uint32
+	FontColor             color.RGBA
+	FontIndex             uint8
+	FontAlign             uint32
+	FontBack              color.RGBA
+	FontBackIdx           uint8
+	CloseRequested        bool
+	ExitRequested         bool
 }
 
 func (vm *VM) snapshotState() vmState {
@@ -207,6 +213,8 @@ func (r *Runtime) snapshotState() (runtimeState, error) {
 	return runtimeState{
 		VM: r.vm.snapshotState(), Display: r.display.snapshotState(), Services: services,
 		SoundClip: r.soundClip, KeyToneClip: r.keyToneClip, NetworkSocket: r.networkSocket,
+		NetworkConnection: r.networkConnection, NextNetworkConnection: r.nextNetworkConnection,
+		NextNetworkRequest: r.nextNetworkRequest, NetworkRequests: r.NetworkRequests(),
 		KeyToneOn: r.keyToneOn, Backlight: r.backlight,
 		Tick: r.tick, Timers: r.timers, Presents: r.presents, NV: r.nv,
 		RandomState: r.randomState,
@@ -238,6 +246,21 @@ func (r *Runtime) MarshalBinary() ([]byte, error) {
 	writeStateU64(&output, uint64(state.SoundClip))
 	writeStateU64(&output, uint64(state.KeyToneClip))
 	writeStateU64(&output, uint64(state.NetworkSocket))
+	writeStateU64(&output, state.NetworkConnection)
+	writeStateU64(&output, state.NextNetworkConnection)
+	writeStateU64(&output, state.NextNetworkRequest)
+	writeStateU32(&output, uint32(len(state.NetworkRequests)))
+	for _, request := range state.NetworkRequests {
+		writeStateU64(&output, request.Sequence)
+		writeStateU64(&output, request.Connection)
+		output.WriteByte(byte(request.Kind))
+		output.Write([]byte{0, 0, 0})
+		writeStateString(&output, request.Host)
+		writeStateU32(&output, uint32(request.Port))
+		writeStateU32(&output, request.MaxReceiveBytes)
+		writeStateU32(&output, uint32(len(request.Data)))
+		output.Write(request.Data)
+	}
 	writeStateBool(&output, state.KeyToneOn)
 	output.WriteByte(byte(state.Backlight))
 	writeStateBool(&output, state.CloseRequested)
@@ -316,6 +339,45 @@ func (r *Runtime) UnmarshalBinary(data []byte) error {
 	candidate.text = candidate.services.Text
 	candidate.soundClip, candidate.keyToneClip = state.SoundClip, state.KeyToneClip
 	candidate.networkSocket = state.NetworkSocket
+	candidate.networkConnection = state.NetworkConnection
+	candidate.nextNetworkConnection = state.NextNetworkConnection
+	candidate.nextNetworkRequest = state.NextNetworkRequest
+	candidate.networkRequests = state.NetworkRequests
+	if state.LegacyVersion == gnex32RuntimeStateLegacyVersion {
+		candidate.nextNetworkConnection, candidate.nextNetworkRequest = 1, 1
+		if candidate.networkSocket != 0 &&
+			!candidate.services.Network.HasLocalSocketServer(candidate.owner, candidate.networkSocket) {
+			candidate.networkConnection = 1
+			candidate.nextNetworkConnection = 2
+			info, err := candidate.services.Network.SocketInfo(candidate.owner, candidate.networkSocket)
+			if err != nil {
+				return err
+			}
+			switch info.State {
+			case shared.ConnectionConnecting:
+				if err := candidate.enqueueNetworkRequest(NetworkRequest{
+					Connection: 1, Kind: NetworkRequestConnect, Host: info.Host,
+					Port: info.Port, MaxReceiveBytes: maxGNEX32ReceiveBytes,
+				}); err != nil {
+					return err
+				}
+			case shared.ConnectionConnected:
+				written, err := candidate.services.Network.SocketWritten(candidate.owner, candidate.networkSocket)
+				if err != nil {
+					return err
+				}
+				for len(written) != 0 {
+					size := min(len(written), maxGNEX32ReceiveBytes)
+					if err := candidate.enqueueNetworkRequest(NetworkRequest{
+						Connection: 1, Kind: NetworkRequestWrite, Data: written[:size],
+					}); err != nil {
+						return err
+					}
+					written = written[size:]
+				}
+			}
+		}
+	}
 	candidate.keyToneOn, candidate.backlight = state.KeyToneOn, state.Backlight
 	candidate.tick, candidate.timers, candidate.presents = state.Tick, state.Timers, state.Presents
 	candidate.nv, candidate.randomState = state.NV, state.RandomState
@@ -368,6 +430,9 @@ func (r *Runtime) validateRestoredState() error {
 		if err != nil || info.Owner != r.owner {
 			return fmt.Errorf("gnex32: saved network socket is invalid")
 		}
+	}
+	if err := r.validateNetworkState(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -447,15 +512,47 @@ func decodeRuntimeState(data []byte, template *Runtime) (runtimeState, error) {
 	if magic := decoder.bytes(len(gnex32RuntimeStateMagic)); string(magic) != gnex32RuntimeStateMagic {
 		return runtimeState{}, decoder.fail("magic mismatch")
 	}
-	if version := decoder.u32(); version != gnex32RuntimeStateVersion {
+	version := decoder.u32()
+	if version != gnex32RuntimeStateVersion && version != gnex32RuntimeStateLegacyVersion {
 		return runtimeState{}, decoder.fail(fmt.Sprintf("unsupported version %d", version))
 	}
-	state := runtimeState{}
+	state := runtimeState{LegacyVersion: version}
 	state.VM = decoder.vm(template.vm)
 	state.Display = decoder.display(template.display)
 	state.SoundClip = shared.ServiceID(decoder.u64())
 	state.KeyToneClip = shared.ServiceID(decoder.u64())
 	state.NetworkSocket = shared.ServiceID(decoder.u64())
+	if version >= 5 {
+		state.NetworkConnection = decoder.u64()
+		state.NextNetworkConnection = decoder.u64()
+		state.NextNetworkRequest = decoder.u64()
+		requestCount := decoder.u32()
+		if requestCount > maxGNEX32NetworkRequests {
+			decoder.err = decoder.fail("invalid network request count")
+		} else {
+			state.NetworkRequests = make([]NetworkRequest, requestCount)
+			for index := range state.NetworkRequests {
+				request := &state.NetworkRequests[index]
+				request.Sequence = decoder.u64()
+				request.Connection = decoder.u64()
+				request.Kind = NetworkRequestKind(decoder.u8())
+				decoder.reserved(3)
+				request.Host = decoder.string(4096)
+				port := decoder.u32()
+				if port > 65535 && decoder.err == nil {
+					decoder.err = decoder.fail("invalid network request port")
+				}
+				request.Port = uint16(port)
+				request.MaxReceiveBytes = decoder.u32()
+				size := decoder.u32()
+				if size > maxGNEX32ReceiveBytes || uint64(size) > uint64(decoder.reader.Len()) {
+					decoder.err = decoder.fail("invalid network request data length")
+					break
+				}
+				request.Data = decoder.bytes(int(size))
+			}
+		}
+	}
 	state.KeyToneOn = decoder.boolean()
 	state.Backlight = BacklightMode(decoder.u8())
 	state.CloseRequested = decoder.boolean()

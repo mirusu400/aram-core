@@ -94,35 +94,39 @@ const (
 // Runtime hosts the observed version-4 services and preserves VM and media
 // state across event dispatches.
 type Runtime struct {
-	vm             *VM
-	display        *Display
-	profile        DeviceProfile
-	services       *shared.Services
-	owner          shared.OwnerID
-	soundClip      shared.ServiceID
-	keyToneClip    shared.ServiceID
-	networkSocket  shared.ServiceID
-	keyToneOn      bool
-	backlight      BacklightMode
-	tick           uint64
-	timers         [3]runtimeTimer
-	presents       uint64
-	nv             [UserNVWords]uint32
-	randomState    uint32
-	paint          color.RGBA
-	paintSource    color.RGBA
-	paintIndex     uint8
-	paintMapped    bool
-	fontSize       uint32
-	fontColor      color.RGBA
-	fontIndex      uint8
-	fontAlign      uint32
-	fontBack       color.RGBA
-	fontBackIdx    uint8
-	text           *shared.Text
-	closeRequested bool
-	exitRequested  bool
-	closed         bool
+	vm                    *VM
+	display               *Display
+	profile               DeviceProfile
+	services              *shared.Services
+	owner                 shared.OwnerID
+	soundClip             shared.ServiceID
+	keyToneClip           shared.ServiceID
+	networkSocket         shared.ServiceID
+	networkConnection     uint64
+	nextNetworkConnection uint64
+	nextNetworkRequest    uint64
+	networkRequests       []NetworkRequest
+	keyToneOn             bool
+	backlight             BacklightMode
+	tick                  uint64
+	timers                [3]runtimeTimer
+	presents              uint64
+	nv                    [UserNVWords]uint32
+	randomState           uint32
+	paint                 color.RGBA
+	paintSource           color.RGBA
+	paintIndex            uint8
+	paintMapped           bool
+	fontSize              uint32
+	fontColor             color.RGBA
+	fontIndex             uint8
+	fontAlign             uint32
+	fontBack              color.RGBA
+	fontBackIdx           uint8
+	text                  *shared.Text
+	closeRequested        bool
+	exitRequested         bool
+	closed                bool
 }
 
 // CaptureUserNV returns the restart-persistent handset storage without exposing
@@ -209,6 +213,7 @@ func NewRuntime(image gnex.GNEX32Image, profile DeviceProfile) (*Runtime, error)
 	}
 	runtime := &Runtime{display: NewDisplay(profile.ScreenWidth, profile.ScreenHeight), profile: profile,
 		services: services, owner: owner, text: services.Text,
+		nextNetworkConnection: 1, nextNetworkRequest: 1,
 		keyToneOn: profile.KeyToneEnabled, backlight: BacklightMMI,
 		fontColor: monoColor(3), fontIndex: 3, fontBack: monoColor(4), fontBackIdx: 4}
 	if err := services.Device.SetBacklight(profile.MMIBacklightEnabled, 0, services.Clock.Monotonic()); err != nil {
@@ -418,7 +423,7 @@ func (r *Runtime) dispatchReadyEvents(budget uint64) error {
 				}
 				if event.Value != 0 {
 					result = 1
-				} else if err := r.StopNetwork(); err != nil {
+				} else if err := r.discardNetworkConnection(r.networkConnection); err != nil {
 					return err
 				}
 			case "gnex.disconnect":
@@ -487,6 +492,22 @@ func (r *Runtime) InjectNetworkReceive(data []byte, budget uint64) error {
 	if r.networkSocket == 0 {
 		return fmt.Errorf("%w: no connection", ErrNetworkReceiveUnavailable)
 	}
+	return r.injectNetworkReceive(data, budget)
+}
+
+// InjectNetworkReceiveFor rejects stale provider data from a superseded
+// connection before it reaches the guest receive buffer.
+func (r *Runtime) InjectNetworkReceiveFor(connection uint64, data []byte, budget uint64) error {
+	if r == nil || r.closed {
+		return fmt.Errorf("gnex32: cannot receive network data on a closed runtime")
+	}
+	if connection == 0 || connection != r.networkConnection || r.networkSocket == 0 {
+		return fmt.Errorf("%w: no connection", ErrNetworkReceiveUnavailable)
+	}
+	return r.injectNetworkReceive(data, budget)
+}
+
+func (r *Runtime) injectNetworkReceive(data []byte, budget uint64) error {
 	if len(data) > maxGNEX32ReceiveBytes {
 		return fmt.Errorf(
 			"%w: size %d is outside 0..%d",
@@ -556,14 +577,32 @@ func (r *Runtime) StopVibration() error {
 // library. GNEX NetConnect exposes one process-wide connection rather than
 // socket handles.
 func (r *Runtime) StopNetwork() error {
-	if r.networkSocket == 0 {
+	if r.networkSocket == 0 && r.networkConnection == 0 {
+		r.networkRequests = nil
 		return nil
 	}
-	socket := r.networkSocket
-	if err := r.services.Network.CloseSocket(r.owner, socket, r.services.Events); err != nil {
+	connection := r.networkConnection
+	if err := r.discardNetworkConnection(connection); err != nil {
 		return err
 	}
-	r.networkSocket = 0
+	r.networkRequests = nil
+	return nil
+}
+
+func (r *Runtime) requestNetworkStop() error {
+	if r.networkSocket == 0 && r.networkConnection == 0 {
+		return nil
+	}
+	connection := r.networkConnection
+	if err := r.discardNetworkConnection(connection); err != nil {
+		return err
+	}
+	if connection != 0 {
+		return r.enqueueNetworkRequest(NetworkRequest{
+			Connection: connection,
+			Kind:       NetworkRequestDisconnect,
+		})
+	}
 	return nil
 }
 
@@ -806,7 +845,7 @@ func (r *Runtime) executeService(id uint16, stack []uint32) (ServiceResult, erro
 		if len(host) == 0 || port <= 0 || port > 65535 {
 			return ServiceResult{}, fmt.Errorf("gnex32: invalid NetConnect endpoint %q:%d", host, port)
 		}
-		if err := r.StopNetwork(); err != nil {
+		if err := r.requestNetworkStop(); err != nil {
 			return ServiceResult{}, err
 		}
 		socket, err := r.services.Network.OpenSocket(r.owner, 2, 1)
@@ -819,9 +858,28 @@ func (r *Runtime) executeService(id uint16, stack []uint32) (ServiceResult, erro
 			return ServiceResult{}, err
 		}
 		r.networkSocket = socket
-		if err := r.services.CompleteSocketResponse(
-			r.owner, socket, r.services.Device.NetworkAvailable(), r.services.Clock.Monotonic(),
-		); err != nil {
+		if r.services.Network.HasLocalSocketServer(r.owner, socket) {
+			if err := r.services.CompleteSocketResponse(
+				r.owner, socket, true, r.services.Clock.Monotonic(),
+			); err != nil {
+				r.networkSocket = 0
+				cleanup()
+				return ServiceResult{}, err
+			}
+			return ServiceResult{Pop: 2}, nil
+		}
+		connection, err := r.allocateNetworkConnection()
+		if err != nil {
+			r.networkSocket = 0
+			cleanup()
+			return ServiceResult{}, err
+		}
+		r.networkConnection = connection
+		if err := r.enqueueNetworkRequest(NetworkRequest{
+			Connection: connection, Kind: NetworkRequestConnect,
+			Host: string(host), Port: uint16(port), MaxReceiveBytes: maxGNEX32ReceiveBytes,
+		}); err != nil {
+			r.networkConnection = 0
 			r.networkSocket = 0
 			cleanup()
 			return ServiceResult{}, err
@@ -840,7 +898,7 @@ func (r *Runtime) executeService(id uint16, stack []uint32) (ServiceResult, erro
 			return ServiceResult{}, err
 		}
 		if connected {
-			if err := r.StopNetwork(); err != nil {
+			if err := r.requestNetworkStop(); err != nil {
 				return ServiceResult{}, err
 			}
 		}
@@ -871,12 +929,25 @@ func (r *Runtime) executeService(id uint16, stack []uint32) (ServiceResult, erro
 				return ServiceResult{}, infoErr
 			}
 			if info.State == shared.ConnectionConnected {
+				if len(data) != 0 && r.networkConnection != 0 &&
+					(len(r.networkRequests) >= maxGNEX32NetworkRequests || r.nextNetworkRequest == 0) {
+					return ServiceResult{}, fmt.Errorf("gnex32: network request queue is unavailable")
+				}
 				written, writeErr := r.services.WriteSocketRequest(r.owner, r.networkSocket, data)
 				if writeErr != nil {
 					return ServiceResult{}, writeErr
 				}
 				if written == len(data) {
 					status = 1
+					if len(data) != 0 && r.networkConnection != 0 {
+						if err := r.enqueueNetworkRequest(NetworkRequest{
+							Connection: r.networkConnection,
+							Kind:       NetworkRequestWrite,
+							Data:       data,
+						}); err != nil {
+							return ServiceResult{}, err
+						}
+					}
 				}
 			}
 		}
