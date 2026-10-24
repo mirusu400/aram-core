@@ -1430,6 +1430,24 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 	// faulted while unimplemented (returned 0).
 	case 1056:
 		return "localtime", true
+	// Module-1 ordinal 1061 is the Raptor C++ runtime's fatal abort path. The
+	// title calls it from impossible switch cases and from std::terminate after
+	// an allocation failure, and every call site treats it as noreturn. Letting
+	// the unresolved-import stub return made execution fall through into the
+	// unwinder's next unrelated basic block. MC_knlExit supplies the same
+	// non-returning machine boundary without exposing host-process abort.
+	case 1061:
+		return "MC_knlExit", true
+	// This title's LGT ARM C++ allocation wrapper routes its malloc-like call
+	// through module-1 ordinal 1062. Its callers pass the requested byte count
+	// in r0, test the returned pointer for nil, and enter the C++
+	// allocation-failure path when it is nil.
+	// Leaving the import unresolved therefore made every allocation fail; in
+	// Real Soccer Manager 2009 that reached the unwinder and eventually read a
+	// bogus 0xa0001338 address during Clet startup. Use the same guest heap as
+	// the public WIPI allocation API so the returned pointer is guest-visible.
+	case 1062:
+		return "MC_knlAlloc", true
 	// The LGT mda block runs MC_mdaClipCreate(1200), ClipFree, ClipGetType,
 	// ClipPutData(1203), ClipGetData, ClipAvailableDataSize,
 	// ClipClearData(1206), ClipSetPosition, and then the two libwipi anchors
