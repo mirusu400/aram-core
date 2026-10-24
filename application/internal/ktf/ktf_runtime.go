@@ -116,6 +116,7 @@ type Runtime struct {
 
 	mainThreadLivenessCompat bool
 	dataInputStreamJavaABI   bool
+	cletJavaInputEdges       bool
 	makjangCopyGuard         bool
 	astonishiaDecisionLabels bool
 

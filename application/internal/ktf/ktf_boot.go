@@ -219,6 +219,7 @@ func newRuntimeForProfile(
 		clientImage:              patchedClient,
 		mainThreadLivenessCompat: mainThreadLivenessCompatibility(pkg),
 		dataInputStreamJavaABI:   dataInputStreamJavaABI(pkg),
+		cletJavaInputEdges:       cletJavaInputEdges(pkg),
 		makjangCopyGuard:         makjangCopyGuard,
 		astonishiaDecisionLabels: astonishiaDecisionLabels,
 		ImageSz:                  uint32(imageSize),

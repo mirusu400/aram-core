@@ -154,6 +154,27 @@ var KTFDataInputStreamJavaABIs = []TitleKey{
 	},
 }
 
+// KTFCletJavaInputEdges identifies Clet builds whose generated CletCard
+// forwards the regular KWIS Card edge values (1=press, 2=release) into native
+// code. The older native Clet ABI used by most known builds reverses them.
+var KTFCletJavaInputEdges = []TitleKey{
+	{
+		// Chronos Wing was distributed under two AIDs with the same client.
+		AID:       "010100D2",
+		MainClass: "Clet",
+		ClientSHA256: MustHash(
+			"46d3abafdbb1c7e9f11859b3166ddd23a4bd33c5558d74ac6a242d447c34f7e8",
+		),
+	},
+	{
+		AID:       "010100D5",
+		MainClass: "Clet",
+		ClientSHA256: MustHash(
+			"46d3abafdbb1c7e9f11859b3166ddd23a4bd33c5558d74ac6a242d447c34f7e8",
+		),
+	},
+}
+
 // KTFInitialPhoneNumberOverrides supplies a deterministic offline handset
 // identity on the first launch of exact authentication-bypass clients. A
 // packaged certification file remains authoritative and takes precedence.

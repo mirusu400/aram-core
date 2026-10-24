@@ -579,11 +579,10 @@ func (r *Runtime) QueueKeyEvent(pressed bool, key int32) (bool, error) {
 }
 
 // keyEventType chooses the callback ABI the selected card was compiled for.
-// Regular KWIS Card and LWC handlers use 1 for press and 2 for release. A
-// Clet$CletCard is the Java facade over KTF's native Clet dispatcher, whose
-// two values are reversed: the native Clet treats 2 as a press and 1 as a
-// release. Feeding it the regular Card values can dispatch a press to an
-// inactive native callback slot (issue #237).
+// Regular KWIS Card and LWC handlers use 1 for press and 2 for release. Most
+// known Clet$CletCard builds use the older native ABI with those values
+// reversed (issue #237), but some SDK builds forward the regular Java values
+// into their bundled native dispatcher (issue #547).
 func (r *Runtime) keyEventType(card uint32, pressed bool) (uint32, error) {
 	eventType := KeyReleased
 	if pressed {
@@ -597,7 +596,7 @@ func (r *Runtime) keyEventType(card uint32, pressed bool) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
-	if class.Name == "Clet$CletCard" {
+	if class.Name == "Clet$CletCard" && !r.cletJavaInputEdges {
 		if pressed {
 			return KeyReleased, nil
 		}

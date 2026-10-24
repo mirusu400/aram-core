@@ -98,6 +98,23 @@ func resolveDataInputStreamJavaABI(
 	return false
 }
 
+func cletJavaInputEdges(pkg ktf.Package) bool {
+	return resolveCletJavaInputEdges(
+		pkg.Descriptor, sha256.Sum256(pkg.Client),
+	)
+}
+
+func resolveCletJavaInputEdges(
+	descriptor ktf.Descriptor, clientHash [sha256.Size]byte,
+) bool {
+	for _, key := range quirkdb.KTFCletJavaInputEdges {
+		if key.Matches(descriptor.AID, descriptor.MainClass, clientHash) {
+			return true
+		}
+	}
+	return false
+}
+
 func initialPhoneNumberOverride(pkg ktf.Package) string {
 	return resolveInitialPhoneNumberOverride(
 		pkg.Descriptor,
