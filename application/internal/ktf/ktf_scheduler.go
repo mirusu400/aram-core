@@ -624,9 +624,22 @@ func (r *Runtime) pendingWIPICTimerTask() *Task {
 }
 
 func (r *Runtime) CanAwaitEvents() bool {
-	return !r.terminationRequested &&
-		r.DefaultDisplay != 0 &&
-		r.DisplayCards[r.DefaultDisplay] != 0
+	if r.terminationRequested {
+		return false
+	}
+	if r.DefaultDisplay != 0 && r.DisplayCards[r.DefaultDisplay] != 0 {
+		return true
+	}
+	// A native Clet commonly schedules its game loop, paints its first frame,
+	// and then returns from startClet. The provider must keep the application
+	// alive for that timer just as it does for a Java Card; otherwise the host
+	// mistakes the normal startClet return for application termination.
+	for _, timer := range r.wipicTimers {
+		if timer != nil && timer.active {
+			return true
+		}
+	}
+	return false
 }
 
 // CanAwaitKeyEvent reports whether a physical key still has a Java recipient.
