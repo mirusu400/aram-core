@@ -354,9 +354,11 @@ func LookupRaptorJavaCallFallbacks(packageSHA256, aid, mainClass string) RaptorJ
 // address of the virtual call, not a general permission to run code at address
 // zero. Object is the exact bad receiver observed at that callsite.
 type RaptorInvalidDrawCall struct {
-	Key      RaptorTitleKey
-	ReturnLR uint32
-	Object   uint32
+	Key            RaptorTitleKey
+	ReturnLR       uint32
+	MethodRegister uint32
+	ObjectRegister uint32
+	Object         uint32
 }
 
 var raptorInvalidDrawCalls = []RaptorInvalidDrawCall{
@@ -369,8 +371,10 @@ var raptorInvalidDrawCalls = []RaptorInvalidDrawCall{
 			AID:           "0002996E",
 			MainClass:     "Clet",
 		},
-		ReturnLR: 0x00031c1b,
-		Object:   0,
+		ReturnLR:       0x00031c1b,
+		MethodRegister: 4,
+		ObjectRegister: 5,
+		Object:         0,
 	},
 	{
 		// Zenonia 2's ice-boss scene can leave sprite ID 105 in a draw
@@ -382,24 +386,64 @@ var raptorInvalidDrawCalls = []RaptorInvalidDrawCall{
 			AID:           "0002C004",
 			MainClass:     "Clet",
 		},
-		ReturnLR: 0x00070eef,
-		Object:   105,
+		ReturnLR:       0x00070eef,
+		MethodRegister: 4,
+		ObjectRegister: 5,
+		Object:         105,
+	},
+	{
+		// Real Soccer Manager 2009 leaves one optional transition object empty
+		// after dismissing its usage notice. The following draw/update helpers
+		// call two adjacent virtual slots on that same nil entry; skipping only
+		// these exact calls lets the resource load and title screen continue.
+		Key: RaptorTitleKey{
+			PackageSHA256: "b7699c10dfd1992814d26294e32c1376820802532eb5f70ba959a71ebd31ea45",
+			AID:           "00028DE8",
+			MainClass:     "Clet",
+		},
+		ReturnLR:       0x0011516f,
+		MethodRegister: 3,
+		ObjectRegister: 0,
+		Object:         0,
+	},
+	{
+		Key: RaptorTitleKey{
+			PackageSHA256: "b7699c10dfd1992814d26294e32c1376820802532eb5f70ba959a71ebd31ea45",
+			AID:           "00028DE8",
+			MainClass:     "Clet",
+		},
+		ReturnLR:       0x0011a46b,
+		MethodRegister: 3,
+		ObjectRegister: 1,
+		Object:         0,
+	},
+	{
+		Key: RaptorTitleKey{
+			PackageSHA256: "b7699c10dfd1992814d26294e32c1376820802532eb5f70ba959a71ebd31ea45",
+			AID:           "00028DE8",
+			MainClass:     "Clet",
+		},
+		ReturnLR:       0x0011a477,
+		MethodRegister: 3,
+		ObjectRegister: 4,
+		Object:         0,
 	},
 }
 
 // LookupRaptorInvalidDrawCall accepts only a verified package and its observed
-// invalid virtual-call return address and receiver.
+// invalid virtual-call return address. It returns the registers and receiver
+// value that must also match before the call may be skipped.
 func LookupRaptorInvalidDrawCall(
 	packageSHA256, aid, mainClass string,
-	returnLR, object uint32,
-) bool {
+	returnLR uint32,
+) (methodRegister, objectRegister, object uint32, ok bool) {
 	for _, entry := range raptorInvalidDrawCalls {
 		if entry.Key.Matches(packageSHA256, aid, mainClass) &&
-			entry.ReturnLR == returnLR && entry.Object == object {
-			return true
+			entry.ReturnLR == returnLR {
+			return entry.MethodRegister, entry.ObjectRegister, entry.Object, true
 		}
 	}
-	return false
+	return 0, 0, 0, false
 }
 
 // RaptorSystemProperty supplies handset identity values for a package which

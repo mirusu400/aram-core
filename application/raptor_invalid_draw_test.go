@@ -80,9 +80,12 @@ func TestResumeRaptorInvalidDrawRequiresExactFault(t *testing.T) {
 			check(t, err)
 			object, err := backend.ReadRegister(cpu.RegisterR5)
 			check(t, err)
-			if !quirkdb.LookupRaptorInvalidDrawCall(
-				state.digest, state.aid, state.mainClass, lr, object,
-			) {
+			methodRegister, objectRegister, expectedObject, ok :=
+				quirkdb.LookupRaptorInvalidDrawCall(
+					state.digest, state.aid, state.mainClass, lr,
+				)
+			if !ok || methodRegister != cpu.RegisterR4 ||
+				objectRegister != cpu.RegisterR5 || expectedObject != object {
 				t.Fatalf("exact invalid draw call did not match: lr=%08x object=%d", lr, object)
 			}
 		}

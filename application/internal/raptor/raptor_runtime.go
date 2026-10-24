@@ -732,7 +732,7 @@ func (r *Runtime) dispatchImportBody(
 		r.Public.Observed[name]++
 		return r.Public.ReturnFromTrap(result)
 	}
-	if key.Module == 507 {
+	if key.Module == 507 || (key.Module == 1 && key.Ordinal == 1063) {
 		if result, name, handled, privateErr := r.DispatchPrivateImport(key.Ordinal); handled {
 			if privateErr != nil {
 				return fmt.Errorf("%s: %w", name, privateErr)
@@ -875,6 +875,53 @@ func (r *Runtime) DispatchPrivateImport(
 	ordinal uint32,
 ) (guest.WIPIReturn, string, bool, error) {
 	switch ordinal {
+	case 1063:
+		// The Raptor C++ runtime's realloc wrapper takes (pointer, size). Keep
+		// the original allocation alive on failure, as ISO C requires, and
+		// copy only the bytes owned by both the old and replacement blocks.
+		address, err := r.CPU.ReadRegister(cpu.RegisterR0)
+		if err != nil {
+			return guest.WIPIReturn{}, "", true, err
+		}
+		size, err := r.CPU.ReadRegister(cpu.RegisterR1)
+		if err != nil {
+			return guest.WIPIReturn{}, "", true, err
+		}
+		heap := r.Public.Heap.Root()
+		if address == 0 {
+			replacement, allocErr := heap.Allocate(size, false)
+			return guest.WIPIReturn{Low: replacement}, "RAPTOR.realloc", true, allocErr
+		}
+		if size == 0 {
+			heap.Release(address)
+			return guest.WIPIReturn{}, "RAPTOR.realloc", true, nil
+		}
+		oldSize, allocated := heap.Allocations[address]
+		if !allocated {
+			return guest.WIPIReturn{}, "RAPTOR.realloc", true, nil
+		}
+		if size <= oldSize {
+			return guest.WIPIReturn{Low: address}, "RAPTOR.realloc", true, nil
+		}
+		replacement, err := heap.Allocate(size, false)
+		if err != nil || replacement == 0 {
+			return guest.WIPIReturn{Low: replacement}, "RAPTOR.realloc", true, err
+		}
+		buffer := make([]byte, min(uint32(64<<10), oldSize))
+		for offset := uint32(0); offset < oldSize; {
+			count := min(uint32(len(buffer)), oldSize-offset)
+			if err := r.CPU.ReadMemory(address+offset, buffer[:count]); err != nil {
+				heap.Release(replacement)
+				return guest.WIPIReturn{}, "RAPTOR.realloc", true, err
+			}
+			if err := r.CPU.WriteMemory(replacement+offset, buffer[:count]); err != nil {
+				heap.Release(replacement)
+				return guest.WIPIReturn{}, "RAPTOR.realloc", true, err
+			}
+			offset += count
+		}
+		heap.Release(address)
+		return guest.WIPIReturn{Low: replacement}, "RAPTOR.realloc", true, nil
 	case 1200:
 		// MC_sndCreate(typeName, capacity, completionCallback) → handle.
 		// 제노니아1 creates one clip per sound and shares a single handle
@@ -1448,6 +1495,13 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 	// the public WIPI allocation API so the returned pointer is guest-visible.
 	case 1062:
 		return "MC_knlAlloc", true
+	// Ordinal 1063 is realloc and needs two arguments plus copy-on-success
+	// behavior, so dispatchImportBody routes it through DispatchPrivateImport.
+	// Module-1 ordinal 1064 is the matching free wrapper. Its call sites pass
+	// one allocation pointer and discard the return value; Real Soccer Manager
+	// reaches it while releasing its startup resource-parser buffers.
+	case 1064:
+		return "MC_knlFree", true
 	// The LGT mda block runs MC_mdaClipCreate(1200), ClipFree, ClipGetType,
 	// ClipPutData(1203), ClipGetData, ClipAvailableDataSize,
 	// ClipClearData(1206), ClipSetPosition, and then the two libwipi anchors

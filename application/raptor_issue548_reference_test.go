@@ -13,8 +13,9 @@ import (
 // Real Soccer Manager 2009 constructs its native C++ objects through the LGT
 // runtime's module-1 ordinal 1062. When that allocator import returned the
 // unresolved-import zero, Clet startup entered the allocation-failure unwinder
-// and faulted while reading 0xa0001338.
-func TestRaptorIssue548StartsAndPresents(t *testing.T) {
+// and faulted while reading 0xa0001338. Dismiss the usage notice as well so the
+// resource loader exercises realloc/free and reaches the real title screen.
+func TestRaptorIssue548ReachesTitleWithoutUnimplementedImports(t *testing.T) {
 	path, data := findAuthorizedPackage(t, "b7699c10dfd1992814d26294e32c1376820802532eb5f70ba959a71ebd31ea45")
 
 	for _, backend := range []struct {
@@ -41,6 +42,11 @@ func TestRaptorIssue548StartsAndPresents(t *testing.T) {
 			check(t, machine.Start(ctx))
 
 			for frame := 0; frame < 2400; frame++ {
+				if frame == 600 || frame == 601 {
+					check(t, machine.QueueInput(machinecore.InputEvent{
+						Control: "ok", Pressed: frame == 600,
+					}))
+				}
 				if err := machine.StepFrame(ctx); err != nil {
 					snapshot := machine.DebugSnapshot(32)
 					t.Fatalf(
@@ -64,8 +70,8 @@ func TestRaptorIssue548StartsAndPresents(t *testing.T) {
 					nonBlack++
 				}
 			}
-			if nonBlack == 0 {
-				t.Fatal("game presented only a black frame")
+			if want := machine.frame.Bounds().Dx() * machine.frame.Bounds().Dy() / 4; nonBlack < want {
+				t.Fatalf("title frame has %d non-black pixels, want at least %d", nonBlack, want)
 			}
 		})
 	}

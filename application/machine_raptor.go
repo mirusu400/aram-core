@@ -507,18 +507,22 @@ func (m *Machine) resumeRaptorInvalidDraw(result *cpu.Result) {
 	if err != nil {
 		return
 	}
-	method, err := m.cpu.ReadRegister(cpu.RegisterR4)
+	methodRegister, objectRegister, expectedObject, ok :=
+		quirkdb.LookupRaptorInvalidDrawCall(
+			m.source.SHA256,
+			m.raptor.Pkg.Descriptor.AID,
+			m.raptor.Pkg.Descriptor.MainClass,
+			lr,
+		)
+	if !ok {
+		return
+	}
+	method, err := m.cpu.ReadRegister(methodRegister)
 	if err != nil || method != 0 {
 		return
 	}
-	object, err := m.cpu.ReadRegister(cpu.RegisterR5)
-	if err != nil || !quirkdb.LookupRaptorInvalidDrawCall(
-		m.source.SHA256,
-		m.raptor.Pkg.Descriptor.AID,
-		m.raptor.Pkg.Descriptor.MainClass,
-		lr,
-		object,
-	) {
+	object, err := m.cpu.ReadRegister(objectRegister)
+	if err != nil || object != expectedObject {
 		return
 	}
 	status, err := m.cpu.ReadRegister(cpu.RegisterCPSR)
