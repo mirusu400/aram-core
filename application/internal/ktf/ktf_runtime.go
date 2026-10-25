@@ -40,9 +40,13 @@ const (
 	// a frame's worth. Two titles have proved the bootstrap bound too small
 	// for that: 이노티아연대기2 spends 113.5 million instructions in the one
 	// Clet.handleInput that loads a scenario from its own files (issue
-	// #147), and 투스워즈 spends 122.3 million in the one Java call that
-	// preloads all 39 of its sound resources (issue #163).
-	ktfJavaNativeInstructionMax = uint64(256_000_000)
+	// #147), 투스워즈 spends 122.3 million in the one Java call that
+	// preloads all 39 of its sound resources (issue #163), and KTF
+	// 미니게임천국5 (AID 0104261C) spends more than 282 million in
+	// startClet while unpacking its resources. Keep enough headroom above the
+	// longest measured call without making an accidental infinite loop
+	// effectively unbounded.
+	ktfJavaNativeInstructionMax = uint64(384_000_000)
 	// ktfRelocatableDescriptorWords covers the load descriptor a relocatable
 	// client image begins with, through the slot naming its entry point.
 	ktfRelocatableDescriptorWords = 10

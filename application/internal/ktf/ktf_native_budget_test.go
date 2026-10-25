@@ -28,3 +28,20 @@ func TestKTFJavaNativeBudgetCoversAScenarioLoad(t *testing.T) {
 		)
 	}
 }
+
+// KTF 미니게임천국5 (AID 0104261C) decompresses its complete resource
+// set inside startClet. The exact user-authorized archive crossed 282 million
+// instructions before returning; a 282,000,000-instruction bound still faulted
+// in the decompressor while 283,000,000 completed. Keep the product bound above
+// that measured lower limit with room for backend-independent bookkeeping.
+func TestKTFJavaNativeBudgetCoversMinigameHeaven5Boot(t *testing.T) {
+	const measuredBootLowerLimit = uint64(282_000_000)
+	if ktfJavaNativeInstructionMax <= measuredBootLowerLimit {
+		t.Fatalf(
+			"KTF native budget %d does not cover the greater-than-%d-instruction "+
+				"Minigame Heaven 5 startClet resource load",
+			ktfJavaNativeInstructionMax,
+			measuredBootLowerLimit,
+		)
+	}
+}
