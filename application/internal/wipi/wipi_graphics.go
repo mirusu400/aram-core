@@ -8,6 +8,8 @@ import (
 	shared "github.com/mirusu400/aram-core/runtime"
 )
 
+const wipiFramebufferDescriptorSize = uint32(40)
+
 func (r *Runtime) dispatchGraphics(name string) (guest.WIPIReturn, bool, error) {
 	count, modeled := graphicsArgumentCount(name)
 	if !modeled {
@@ -225,7 +227,7 @@ func (r *Runtime) newFramebuffer(width, height int, owns bool) (uint32, error) {
 	if err != nil || pixels == 0 {
 		return 0, err
 	}
-	handle, err := r.Heap.Allocate(24, true)
+	handle, err := r.Heap.Allocate(wipiFramebufferDescriptorSize, true)
 	if err != nil || handle == 0 {
 		r.Heap.Release(pixels)
 		return 0, err
@@ -241,7 +243,7 @@ func (r *Runtime) newFramebuffer(width, height int, owns bool) (uint32, error) {
 	if owns {
 		values[5] = 1
 	}
-	var descriptor [24]byte
+	var descriptor [wipiFramebufferDescriptorSize]byte
 	for index, value := range values {
 		binary.LittleEndian.PutUint32(descriptor[index*4:], value)
 	}

@@ -1380,6 +1380,26 @@ func TestWIPIRuntimeImageDecodeDrawEncodeAndDestroy(t *testing.T) {
 		"MC_grpGetImageFrameBuffer",
 		handle,
 	).Low
+	// LGT Raptor reads the first MC_GrpImage word directly and treats it as the
+	// framebuffer descriptor. Soul Saver then writes its magenta transparency
+	// key at descriptor offset 0x24; exposing the private WIMG marker here made
+	// that write target WIMG+0x24 and faulted (issue #551).
+	guestFramebuffer, err := runtime.ReadU32(handle)
+	if err != nil || guestFramebuffer != imageFramebuffer {
+		t.Fatalf(
+			"guest image framebuffer = 0x%08x, want 0x%08x: %v",
+			guestFramebuffer,
+			imageFramebuffer,
+			err,
+		)
+	}
+	if size := runtime.Heap.Allocations[imageFramebuffer]; size < wipiFramebufferDescriptorSize {
+		t.Fatalf("framebuffer descriptor size = %d, want at least %d", size, wipiFramebufferDescriptorSize)
+	}
+	check(t, runtime.WriteU32(imageFramebuffer+0x24, 0x00ff00ff))
+	if _, ok, err := runtime.readImage(handle); err != nil || !ok {
+		t.Fatalf("image descriptor invalid after guest transparency write: %v, %v", ok, err)
+	}
 	screen := dispatchPublicAPI(t, runtime, "MC_grpGetScreenFrameBuffer", 0).Low
 	dispatchPublicAPI(
 		t,

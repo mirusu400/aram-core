@@ -37,11 +37,16 @@ func (r *Runtime) readImage(handle uint32) (wipiImageDescriptor, bool, error) {
 	if err := r.CPU.ReadMemory(handle, encoded[:]); err != nil {
 		return wipiImageDescriptor{}, false, err
 	}
-	if binary.LittleEndian.Uint32(encoded[0:4]) != wipiImageMagic {
+	legacyLayout := binary.LittleEndian.Uint32(encoded[0:4]) == wipiImageMagic
+	if !legacyLayout && binary.LittleEndian.Uint32(encoded[4:8]) != wipiImageMagic {
 		return wipiImageDescriptor{}, false, nil
 	}
+	framebufferOffset := 0
+	if legacyLayout {
+		framebufferOffset = 4
+	}
 	descriptor := wipiImageDescriptor{
-		framebuffer: binary.LittleEndian.Uint32(encoded[4:8]),
+		framebuffer: binary.LittleEndian.Uint32(encoded[framebufferOffset : framebufferOffset+4]),
 		bufferID:    binary.LittleEndian.Uint32(encoded[8:12]),
 		offset:      binary.LittleEndian.Uint32(encoded[12:16]),
 		length:      binary.LittleEndian.Uint32(encoded[16:20]),
@@ -70,8 +75,8 @@ func (r *Runtime) readImage(handle uint32) (wipiImageDescriptor, bool, error) {
 func (r *Runtime) writeImage(handle uint32, descriptor wipiImageDescriptor) error {
 	var encoded [wipiImageDescriptorSize]byte
 	values := [...]uint32{
-		wipiImageMagic,
 		descriptor.framebuffer,
+		wipiImageMagic,
 		descriptor.bufferID,
 		descriptor.offset,
 		descriptor.length,
@@ -83,6 +88,15 @@ func (r *Runtime) writeImage(handle uint32, descriptor wipiImageDescriptor) erro
 	}
 	if descriptor.animated {
 		values[7] = 1
+	}
+	// Images created before the guest-visible layout was corrected put the
+	// private marker first. Preserve that spelling while advancing an animated
+	// image restored from an older save state. New images expose the framebuffer
+	// as their first word, matching LGT Raptor's MC_GrpImage ABI.
+	var first [4]byte
+	if err := r.CPU.ReadMemory(handle, first[:]); err == nil &&
+		binary.LittleEndian.Uint32(first[:]) == wipiImageMagic {
+		values[0], values[1] = values[1], values[0]
 	}
 	for index, value := range values {
 		binary.LittleEndian.PutUint32(encoded[index*4:], value)
