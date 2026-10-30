@@ -97,6 +97,27 @@ func TestBREWShortTapDeliversOneLegacyEvent(t *testing.T) {
 	}
 }
 
+func TestBREWLegacyKeyOnPressCompatibilityEdge(t *testing.T) {
+	m := newBREWKeyTestMachine(t)
+	m.pkg.LegacyKeyOnPress = true
+	check(t, m.QueueInput(machinecore.InputEvent{Control: "right", Pressed: true}))
+	stepBREWReference(t, m, 1)
+	if got := m.runtime.EventCount(0x100); got != 1 {
+		t.Fatalf("press-edge EVT_KEY count = %d, want 1", got)
+	}
+	check(t, m.QueueInput(machinecore.InputEvent{Control: "right"}))
+	stepBREWReference(t, m, 1)
+	if got := m.runtime.EventCount(0x100); got != 1 {
+		t.Fatalf("release emitted another press-edge EVT_KEY: %d", got)
+	}
+	if got := m.runtime.EventCount(0x101); got != 1 {
+		t.Fatalf("EVT_KEY_PRESS = %d, want 1", got)
+	}
+	if got := m.runtime.EventCount(0x102); got != 1 {
+		t.Fatalf("EVT_KEY_RELEASE = %d, want 1", got)
+	}
+}
+
 func TestBREWHeldKeysUseGuestTimeAndVirtualKeyAliases(t *testing.T) {
 	m := newBREWKeyTestMachine(t)
 	check(t, m.QueueInput(machinecore.InputEvent{Control: "ok", Pressed: true}))

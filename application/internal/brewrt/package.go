@@ -63,6 +63,9 @@ const battleDrumXArchiveSHA256 = "a50f7decb608272daca545a1beca126286cba8eeb8b6e2
 const topGun2ArchiveSHA256 = "43392c5a657ac36aca605a3cde727bd817b5672594be55b8470bacdb924468f1"
 const milkTycoon2ArchiveSHA256 = "9f7366ca1902b91c359b271ee5721fdccff7e39f1ebda6849454e6f9572a3a4f"
 const bigFishingArchiveSHA256 = "1e7753773e3afb794d704bc67f3e70bc58336bfd28cb762094da97e057f8914f"
+const narniaArchiveSHA256 = "80c23d63c7c177b13ae59a69b8560e3395ac14b3f21348debc9d8bd1f3f041f9"
+const devilOfMindArchiveSHA256 = "c02863ffe4b9d6e7caeb9e0ab55f5d863e3887f91fe3dc654908c652c14b8d88"
+const ragnarokMagicianArchiveSHA256 = "3da1ea7b8e834ef11df146c8a0294577a34659a17b0ce83deefffe4359c65566"
 
 // Package contains the inspected executable module and immutable archive data.
 type Package struct {
@@ -84,6 +87,9 @@ type Package struct {
 	// WideOEMText preserves resource-backed AECHAR labels in an exact title's
 	// menu footer, which passes those strings with IDF_TEXT_FORMAT_OEM.
 	WideOEMText bool
+	// LegacyKeyOnPress selects the pre-BREW-MP handset edge used by exact KTF
+	// titles that act on EVT_KEY while a physical key is still down.
+	LegacyKeyOnPress bool
 }
 
 // DisplaySize selects the handset canvas. Exact-title dimensions override
@@ -126,6 +132,12 @@ func Match(data []byte) (pkg Package, matched bool, err error) {
 	digest := sha256.Sum256(data)
 	digestHex := hex.EncodeToString(digest[:])
 	nativeCanvas := image.Point{}
+	if digestHex == ArchiveSHA256 {
+		// The title and menu compose against the common 176x220 KTF handset.
+		// A 120-pixel surface cuts off the right half of the title treatment and
+		// places the menu against the edge (issue #553).
+		nativeCanvas = image.Pt(176, 220)
+	}
 	if digestHex == issue321ArchiveSHA256 {
 		// The exact module BitBlts a 176x202 native frame from a 176-wide IDIB.
 		nativeCanvas = image.Pt(176, 202)
@@ -191,12 +203,14 @@ func Match(data []byte) (pkg Package, matched bool, err error) {
 		PreferPackedAECHAR:         preferPackedAECHARForDigest(digestHex),
 		PreferPackedResourceAECHAR: preferPackedResourceAECHARForDigest(digestHex),
 		WideOEMText:                wideOEMTextForDigest(digestHex),
+		LegacyKeyOnPress:           legacyKeyOnPressForDigest(digestHex),
 	}, true, nil
 }
 
 func preferPackedAECHARForDigest(digest string) bool {
 	switch digest {
-	case issue319ArchiveSHA256, jinJanggiArchiveSHA256, theSINArchiveSHA256, unlimitedWarArchiveSHA256:
+	case issue319ArchiveSHA256, jinJanggiArchiveSHA256, theSINArchiveSHA256, unlimitedWarArchiveSHA256,
+		narniaArchiveSHA256, ragnarokMagicianArchiveSHA256:
 		return true
 	default:
 		return false
@@ -209,6 +223,15 @@ func preferPackedResourceAECHARForDigest(digest string) bool {
 
 func wideOEMTextForDigest(digest string) bool {
 	return digest == bigFishingArchiveSHA256
+}
+
+func legacyKeyOnPressForDigest(digest string) bool {
+	switch digest {
+	case devilOfMindArchiveSHA256, minibookArchiveSHA256:
+		return true
+	default:
+		return false
+	}
 }
 
 func knownModuleVeneer(module []byte) bool {

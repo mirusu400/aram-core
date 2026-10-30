@@ -339,15 +339,17 @@ func (m *brewMachine) stepLocked(ctx context.Context) error {
 			kind = 0x101
 		} else {
 			delete(m.heldKeys, key)
-			// BREW sends its legacy EVT_KEY before EVT_KEY_RELEASE. Held keys
-			// also receive EVT_KEY repeats; a press itself sends EVT_KEY_PRESS.
-			// Qualcomm Programming Model for Developers, key event sequence:
-			// https://www.tripleoxygen.net/files/devices/zeebo/doc/Programming_Model_dev.pdf
-			if _, err := m.runtime.DispatchEvent(ctx, 0x100, key, 0); err != nil {
-				return m.executionErrorLocked(fmt.Sprintf("dispatch BREW key %q", event.Control), err)
-			}
-			if stopped, err := m.finishCloseRequestLocked(ctx); stopped || err != nil {
-				return err
+			if !m.pkg.LegacyKeyOnPress {
+				// BREW MP sends its legacy EVT_KEY before EVT_KEY_RELEASE. Held
+				// keys also receive EVT_KEY repeats; a press sends EVT_KEY_PRESS.
+				// Earlier KTF handsets delivered the one-shot EVT_KEY on the down
+				// edge; exact titles that require it opt in above.
+				if _, err := m.runtime.DispatchEvent(ctx, 0x100, key, 0); err != nil {
+					return m.executionErrorLocked(fmt.Sprintf("dispatch BREW key %q", event.Control), err)
+				}
+				if stopped, err := m.finishCloseRequestLocked(ctx); stopped || err != nil {
+					return err
+				}
 			}
 		}
 		if _, err := m.runtime.DispatchEvent(ctx, kind, key, 0); err != nil {
@@ -355,6 +357,14 @@ func (m *brewMachine) stepLocked(ctx context.Context) error {
 		}
 		if stopped, err := m.finishCloseRequestLocked(ctx); stopped || err != nil {
 			return err
+		}
+		if event.Pressed && m.pkg.LegacyKeyOnPress {
+			if _, err := m.runtime.DispatchEvent(ctx, 0x100, key, 0); err != nil {
+				return m.executionErrorLocked(fmt.Sprintf("dispatch BREW key %q", event.Control), err)
+			}
+			if stopped, err := m.finishCloseRequestLocked(ctx); stopped || err != nil {
+				return err
+			}
 		}
 	}
 	m.input = append(m.input[:0], m.input[due:]...)
