@@ -29,3 +29,6 @@ Thumbs.db
 # They are scratch by nature - measurements from one machine, live counters,
 # next-step lists - and go stale the moment the work moves on.
 *_HANDOFF.md
+
+# Local scratch space for session runs, probes and logs; never part of the repo.
+/.tmp/
