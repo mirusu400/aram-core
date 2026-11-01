@@ -125,19 +125,23 @@ func (r *Runtime) writeJavaVTable(index, address uint32) error {
 }
 
 // javaObjectClassHeader builds the tagged class reference KTF AOT stores in
-// the first word of an object's field block. Virtual-call helpers decode that
-// word relative to JvmContext and read a vtable at class+12. The inlined
-// instanceof/checkcast helper decodes the same word as a class and follows
-// class+8 -> descriptor+8 -> parent. A packed JvmContext vtable slot satisfies
-// the first ABI but aliases neighbouring slots for the second one.
+// the first word of an object's field block. The runtime helpers compiled
+// into a title decode that word relative to JvmContext as a class object:
+// virtual dispatch reads its vtable at +12, while the checkcast, aastore and
+// protected-field access helpers follow +8 -> descriptor +8 -> parent, and
+// the call-by-name helper hands it to get_java_method as the class to search.
+// A packed JvmContext vtable slot satisfies only the first reader; its +8 and
+// +0 are the neighbouring slots' vtables.
 //
-// Give each host-synthesized class an independent bridge instead. Its vtable is
-// the real class's table and its synthetic parent is the real class, so dispatch
-// and type walking both work for host objects. Guest AOT classes retain their
-// original compact vtable index: compiled title code can use that index directly
-// and can already inspect its own class descriptors. Bridging those classes
-// changed guest behavior (issue #206). The bridge is never published as the
-// instance's Java class pointer.
+// Every class therefore gets an independent bridge, whether the host
+// synthesized it or the title compiled it. Its vtable is the real class's
+// table and its synthetic parent is the real class, so dispatch and type
+// walking both work. 천공의 기사단 walks the receiver's ancestry for a
+// protected field written across packages; the packed slot sent that walk
+// into a vtable and faulted. 생과일타이쿤파이널 calls a method by name on its
+// own card, and the packed slot resolved it against another class, so its
+// first paint threw and the title never drew a frame. The bridge is never
+// published as the instance's Java class pointer.
 func (r *Runtime) javaObjectClassHeader(
 	class JavaClass,
 	vtableIndex uint32,
@@ -145,9 +149,6 @@ func (r *Runtime) javaObjectClassHeader(
 	if r.JvmContext == 0 {
 		// Unit-level hosts that do not initialize the guest JVM never decode the
 		// header. Preserve the legacy value for those synthetic runtimes.
-		return (vtableIndex * 4) << 5, nil
-	}
-	if !r.hostJavaClass[class.Address] {
 		return (vtableIndex * 4) << 5, nil
 	}
 	bridge, err := r.ensureJavaClassBridge(class)

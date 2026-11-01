@@ -178,32 +178,55 @@ func TestKTFJavaClassBridgeTracksVTableRebuildAfterStateRestore(t *testing.T) {
 	}
 }
 
-// A title's compiled class owns its descriptor and uses the compact vtable
-// index directly. Host-created instances of that class must keep the same
-// header shape as instances allocated by the title's own AOT code (#206).
-func TestKTFGuestClassKeepsCompactVTableHeader(t *testing.T) {
+// A title's own runtime helpers read the header of an object of a class the
+// title compiled exactly as they read a host object's. 천공의 기사단 writes a
+// protected field its superclass declares in another package, so its putfield
+// helper walks the receiver's ancestry from the header looking for the
+// writing class. With a packed JvmContext slot for a header that walk read
+// the neighbouring slot's vtable as a descriptor and faulted on
+// "invalid guest address: 0x00bf00c4".
+func TestKTFGuestClassHeaderDecodesToItsClass(t *testing.T) {
 	runtime := newTestRuntime(t)
 	runtime.JvmContext = allocWords(t, runtime, 3+128)
-	parent := ensureClass(t, runtime, "java/lang/Object")
-	classAddress := defineGuestSubclass(
-		t, runtime, "test/GuestCounter", parent, "counter", "I",
+	object := ensureClass(t, runtime, "java/lang/Object")
+	parentAddress := defineGuestSubclass(
+		t, runtime, "common/a", object, "names", "[Ljava/lang/String;",
 	)
+	classAddress := defineGuestSubclass(
+		t, runtime, "game/i", parentAddress, "counter", "I",
+	)
+	// The parent takes the packed slot just below its subclass's, so a
+	// header that still decoded to a packed slot would read the parent's
+	// vtable at +8.
+	parent := inspectClass(t, runtime, parentAddress)
+	_, err := runtime.NewJavaInstanceForClass(parent)
+	check(t, err)
 	class := inspectClass(t, runtime, classAddress)
 	instance, err := runtime.NewJavaInstanceForClass(class)
 	check(t, err)
 
-	fields := readU32(t, runtime, instance)
-	header := readU32(t, runtime, fields)
-	index := runtime.javaVTables[classAddress]
-	want := (index * 4) << 5
-	if header != want {
-		t.Fatalf("guest class header = 0x%08x, want compact index 0x%08x", header, want)
+	header := readU32(t, runtime, readU32(t, runtime, instance))
+	decoded := runtime.JvmContext + uint32(int32(header)>>5)
+	if got := readU32(t, runtime, decoded+12); got != class.VTable {
+		t.Fatalf("decoded class vtable = 0x%08x, want 0x%08x", got, class.VTable)
 	}
-	if table := readU32(t, runtime, runtime.JvmContext+12+(header>>5)); table != class.VTable {
-		t.Fatalf("guest class vtable = 0x%08x, want 0x%08x", table, class.VTable)
+	// The receiver walk of the title's putfield access check.
+	walk := decoded
+	for _, want := range []uint32{classAddress, parentAddress, object} {
+		walk = readU32(t, runtime, readU32(t, runtime, walk+8)+8)
+		if walk != want {
+			t.Fatalf("receiver ancestry reached 0x%08x, want 0x%08x", walk, want)
+		}
 	}
-	if bridge := runtime.javaClassBridges[classAddress]; bridge != 0 {
-		t.Fatalf("guest class acquired host bridge 0x%08x", bridge)
+	// The call-by-name helper passes the decoded header as the class.
+	if got := runtime.javaVTableClasses[decoded]; got != classAddress {
+		t.Fatalf("decoded header resolves to class 0x%08x, want 0x%08x", got, classAddress)
+	}
+	// The packed vtable slot is still assigned and filled as before.
+	if got := readU32(
+		t, runtime, runtime.JvmContext+12+runtime.javaVTables[classAddress]*4,
+	); got != class.VTable {
+		t.Fatalf("packed guest vtable = 0x%08x, want 0x%08x", got, class.VTable)
 	}
 }
 
@@ -257,8 +280,13 @@ func TestKTFGuestClassReclaimsBridgedHostSlotAfterRestore(t *testing.T) {
 	}
 	fields := readU32(t, runtime, instance)
 	header := readU32(t, runtime, fields)
-	if want := hostIndex * 4 << 5; header != want {
-		t.Fatalf("guest header = 0x%08x, want 0x%08x", header, want)
+	guestBridge := runtime.JvmContext + uint32(int32(header)>>5)
+	if got := runtime.javaVTableClasses[guestBridge]; got != guestAddress {
+		t.Fatalf("guest header decodes to 0x%08x of class 0x%08x, want a bridge of 0x%08x",
+			guestBridge, got, guestAddress)
+	}
+	if got := readU32(t, runtime, guestBridge+12); got != guestClass.VTable {
+		t.Fatalf("guest bridge vtable = 0x%08x, want 0x%08x", got, guestClass.VTable)
 	}
 	if got := readU32(t, runtime, runtime.JvmContext+12+hostIndex*4); got != guestClass.VTable {
 		t.Fatalf("guest vtable = 0x%08x, want 0x%08x", got, guestClass.VTable)
