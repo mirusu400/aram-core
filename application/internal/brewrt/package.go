@@ -63,6 +63,7 @@ const minibookArchiveSHA256 = "9d17a101d5c9e31e789698f31fb41ba5448b624eb63b37193
 const battleDrumXArchiveSHA256 = "a50f7decb608272daca545a1beca126286cba8eeb8b6e230f14448393b143ca2"
 const topGun2ArchiveSHA256 = "43392c5a657ac36aca605a3cde727bd817b5672594be55b8470bacdb924468f1"
 const milkTycoon2ArchiveSHA256 = "9f7366ca1902b91c359b271ee5721fdccff7e39f1ebda6849454e6f9572a3a4f"
+const baseball2006ArchiveSHA256 = "79a2b320c46fba8650dc21e2a525f8226d5e2592f47f02b5de77061ba19eac8f"
 const bigFishingArchiveSHA256 = "1e7753773e3afb794d704bc67f3e70bc58336bfd28cb762094da97e057f8914f"
 const narniaArchiveSHA256 = "80c23d63c7c177b13ae59a69b8560e3395ac14b3f21348debc9d8bd1f3f041f9"
 const devilOfMindArchiveSHA256 = "c02863ffe4b9d6e7caeb9e0ab55f5d863e3887f91fe3dc654908c652c14b8d88"
@@ -167,6 +168,14 @@ func Match(data []byte) (pkg Package, matched bool, err error) {
 	if digestHex == topGun2ArchiveSHA256 {
 		// The packaged HLB title and background images are 176 pixels wide,
 		// with artwork as tall as 203 pixels.
+		nativeCanvas = image.Pt(176, 220)
+	}
+	if digestHex == baseball2006ArchiveSHA256 {
+		// 게임빌 2006프로야구 lays its menu and field out for 176x220; on the
+		// generic 120x160 canvas the menu's check marks and OK bar fall off
+		// the right edge, and its own blitter, which clips only a partly
+		// visible sprite, copied a negative row length for one that lay
+		// wholly past the narrower screen (aram-fuzz 160efa4658ded845).
 		nativeCanvas = image.Pt(176, 220)
 	}
 	if digestHex == milkTycoon2ArchiveSHA256 {
