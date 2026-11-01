@@ -10,7 +10,6 @@ import (
 	"unicode/utf16"
 
 	"github.com/mirusu400/aram-core/cpu"
-	"golang.org/x/image/bmp"
 	"golang.org/x/text/encoding/korean"
 	"golang.org/x/text/transform"
 )
@@ -377,7 +376,7 @@ func decodeBREWResourceImage(data []byte) (image.Image, bool) {
 	if offset < 2 || offset >= len(data) {
 		return nil, false
 	}
-	decoded, err := bmp.Decode(bytes.NewReader(data[offset:]))
+	decoded, err := decodeHandsetBMP(data[offset:])
 	if err == nil {
 		return decoded, true
 	}

@@ -7,7 +7,6 @@ import (
 	"image"
 
 	"github.com/mirusu400/aram-core/cpu"
-	"golang.org/x/image/bmp"
 )
 
 const (
@@ -438,7 +437,7 @@ func decodeNativeBMP(encoded []byte, span uint32) (image.Image, error) {
 	// geometry and pixel offset; normalize those redundant fields for the strict
 	// host decoder after the bounded span has been established independently.
 	normalizeNativeBMP(encoded, span)
-	return bmp.Decode(bytes.NewReader(encoded))
+	return decodeHandsetBMP(encoded)
 }
 
 func (r *Runtime) imageBitmap(object uint32) (uint32, error) {

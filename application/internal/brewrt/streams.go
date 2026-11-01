@@ -195,7 +195,7 @@ func (r *Runtime) setImageStream() error {
 	if err != nil || config.Width <= 0 || config.Height <= 0 || uint64(config.Width)*uint64(config.Height) > maxNativeImagePixels {
 		return nil
 	}
-	decoded, err := bmp.Decode(bytes.NewReader(encoded))
+	decoded, err := decodeHandsetBMP(encoded)
 	if err != nil {
 		return nil
 	}
