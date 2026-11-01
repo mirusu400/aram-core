@@ -1432,6 +1432,14 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 		return "MC_utilInetAddrInt", true
 	case 905:
 		return "MC_utilInetAddrStr", true
+	// Module-1 ordinal 1015 is sprintf. 테일즈위버 루시안칼츠편 formats its
+	// login's device-information body with it: (buffer, format, then five %s
+	// arguments in r2, r3 and on the stack), and it frames the request with
+	// the returned length. MC_knlSprintk has the same contract: it writes the
+	// formatted text with its NUL and returns the length without it. Left
+	// unresolved, the import returned 0 and the body went out empty (#568).
+	case 1015:
+		return "MC_knlSprintk", true
 	// Issue 525's level-data reader passes its NUL-terminated decimal token
 	// to module-1 ordinal 1019 and uses the result to name the next resource.
 	case 1019:

@@ -1,6 +1,7 @@
 package wipi
 
 import (
+	"encoding/binary"
 	"testing"
 
 	shared "github.com/mirusu400/aram-core/runtime"
@@ -10,7 +11,8 @@ import (
 // carrier auth responder: an auth-gated title frames each request as
 // [u32 len][u16 0xffff][u16 code][body] and blocks on its connecting screen
 // until the carrier answers. With the servers shut down ARAM synthesizes that
-// answer (a success reply carrying code+1, subtype 0) so the title proceeds.
+// answer (a success reply carrying code+1, status 0 and an empty message) so
+// the title proceeds.
 func TestAnswerOfflineCarrierAcknowledgesCarrierRequests(t *testing.T) {
 	r := &Runtime{}
 	socket := &wipiSocket{descriptor: 3, readCallback: 0x1234, readParameter: 0x5678}
@@ -18,7 +20,7 @@ func TestAnswerOfflineCarrierAcknowledgesCarrierRequests(t *testing.T) {
 	request := []byte{0x30, 0, 0, 0, 0xff, 0xff, 0x11, 0x27, 0x12, 0x00}
 	r.answerOfflineCarrier(socket, request)
 
-	want := []byte{9, 0, 0, 0, 0xff, 0xff, 0x12, 0x27, 0}
+	want := []byte{11, 0, 0, 0, 0xff, 0xff, 0x12, 0x27, 0, 0, 0}
 	if string(socket.readData) != string(want) {
 		t.Fatalf("reply = % x, want % x", socket.readData, want)
 	}
@@ -29,6 +31,68 @@ func TestAnswerOfflineCarrierAcknowledgesCarrierRequests(t *testing.T) {
 	if len(r.PendingCallbacks) != 1 || r.PendingCallbacks[0].Procedure != 0x1234 ||
 		r.PendingCallbacks[0].Args != [4]uint32{3, 0, 0x5678} {
 		t.Fatalf("queued callback = %+v", r.PendingCallbacks)
+	}
+}
+
+// TestAnswerOfflineCarrierRepliesHoldWhatTheParsersRead covers issue #568. The
+// titles that speak this framing allocate exactly the reply's declared length
+// and then read their reply body at fixed offsets, whatever the status byte
+// says: UserAuthentication's reply (0x2712) is [status][u16 message length]
+// [message], and the device-information reply (0x28a1) is [status][11-byte
+// field][u16 message length][message]. A bare 9-byte reply made 테일즈위버
+// 루시안칼츠편 take the message length from heap bytes past its 9-byte
+// allocation; it read 0xf81f and copied 63519 bytes over its own .bss, and a
+// later effect load faulted on the clobbered buffer pointer. Every offset a
+// parser reads, including the message it copies, must lie inside the reply.
+func TestAnswerOfflineCarrierRepliesHoldWhatTheParsersRead(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		request       []byte
+		code          uint16
+		messageLength int // offset of the u16 message length
+	}{
+		{
+			name:          "UserAuthentication",
+			request:       []byte{0x10, 0, 0, 0, 0xff, 0xff, 0x11, 0x27, 0, 0, 0, 0, 0, 0, 0, 0},
+			code:          0x2712,
+			messageLength: 9,
+		},
+		{
+			name:          "device information",
+			request:       []byte{0x0a, 0, 0, 0, 0xff, 0xff, 0xa0, 0x28, 0, 0},
+			code:          0x28a1,
+			messageLength: 0x14,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			r := &Runtime{}
+			socket := &wipiSocket{descriptor: 1}
+			r.answerOfflineCarrier(socket, test.request)
+			reply := socket.readData
+			if len(reply) < 8 {
+				t.Fatalf("reply = % x, want a framed message", reply)
+			}
+			declared := int(binary.LittleEndian.Uint32(reply))
+			if declared != len(reply) {
+				t.Fatalf("declared length %d, reply holds %d bytes", declared, len(reply))
+			}
+			if reply[4] != 0xff || reply[5] != 0xff ||
+				binary.LittleEndian.Uint16(reply[6:8]) != test.code || reply[8] != 0 {
+				t.Fatalf("reply = % x, want code 0x%04x with status 0", reply, test.code)
+			}
+			if test.messageLength+2 > declared {
+				t.Fatalf("message length at 0x%x lies past the %d-byte reply", test.messageLength, declared)
+			}
+			length := int(binary.LittleEndian.Uint16(reply[test.messageLength:]))
+			if end := test.messageLength + 2 + length; end > declared {
+				t.Fatalf("message [0x%x, 0x%x) lies past the %d-byte reply", test.messageLength+2, end, declared)
+			}
+			for offset, value := range reply[9:] {
+				if value != 0 {
+					t.Fatalf("reply body byte %d = 0x%02x, want an empty success body: % x", 9+offset, value, reply)
+				}
+			}
+		})
 	}
 }
 

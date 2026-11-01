@@ -72,16 +72,17 @@ func (r *Runtime) syncSocketRead(socket *wipiSocket) error {
 // [u32 len][u16 0xffff marker][u16 code][body]; a real carrier replies to a
 // request with a matching success message. With the billing servers shut down
 // ARAM cannot complete the exchange, so it synthesizes that acknowledgement:
-// a minimal reply carrying code+1 (the success response code) and subtype 0,
-// which the title's dispatcher accepts to continue past its connecting screen.
+// a reply carrying code+1 (the success response code) and an empty success
+// body, which the title's dispatcher accepts to continue past its connecting
+// screen.
 func (r *Runtime) answerOfflineCarrier(socket *wipiSocket, request []byte) {
 	var reply []byte
 	switch {
 	case len(request) >= 8 && request[4] == 0xff && request[5] == 0xff:
 		// Binary carrier framing [u32 len][u16 0xffff][u16 code][body]: reply with
-		// the matching success code (code+1) and subtype 0.
+		// the matching success code (code+1) and that code's empty success body.
 		code := binary.LittleEndian.Uint16(request[6:8]) + 1
-		reply = []byte{9, 0, 0, 0, 0xff, 0xff, byte(code), byte(code >> 8), 0}
+		reply = offlineCarrierSuccess(code)
 	case bytes.HasPrefix(request, []byte("MIDAS_TESTPHONE_AUTH ")):
 		// MIDAS test-phone authentication expects a one-byte 0x0f success
 		// response. Its receive callback checks that byte directly before
@@ -103,6 +104,37 @@ func (r *Runtime) answerOfflineCarrier(socket *wipiSocket, request []byte) {
 		socket.readCallback, socket.readParameter = 0, 0
 		r.EnqueueCallback(callback, uint32(socket.descriptor), 0, parameter)
 	}
+}
+
+// offlineCarrierDeviceInfoReply answers the device-information request (0x28a0)
+// a title sends right after UserAuthentication succeeds.
+const offlineCarrierDeviceInfoReply = 0x28a1
+
+// offlineCarrierSuccess frames a successful reply to a 0xffff carrier request:
+// status 0 followed by the body the reply code carries, with every field empty.
+//
+// The titles that speak this framing (테일즈위버 막시민편 and 루시안칼츠편,
+// 던전앤파이터 귀검사, 메이플스토리 해적편) allocate exactly the declared
+// length and then read the body at fixed offsets, most of them whatever the
+// status says. Nearly every reply is [status][u16 message length][message];
+// the device-information reply puts an 11-byte field between the status and
+// the message. A bare status byte left the message length outside the reply,
+// so a parser read it from whatever heap bytes followed its allocation:
+// 루시안칼츠편 read 0xf81f there and copied that many bytes over its own .bss
+// (issue #568). A zero-filled body keeps every read inside the reply, and the
+// title shows an empty server message where the live server had its text.
+func offlineCarrierSuccess(code uint16) []byte {
+	const header = 8
+	body := []byte{0} // status: success
+	if code == offlineCarrierDeviceInfoReply {
+		body = append(body, make([]byte, 11)...)
+	}
+	body = append(body, 0, 0) // empty server message
+	reply := make([]byte, header, header+len(body))
+	binary.LittleEndian.PutUint32(reply, uint32(header+len(body)))
+	reply[4], reply[5] = 0xff, 0xff
+	binary.LittleEndian.PutUint16(reply[6:], code)
+	return append(reply, body...)
 }
 
 // isCarrierTextAuth reports whether a socket write is a plaintext/length-prefixed
