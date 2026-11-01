@@ -32,6 +32,7 @@ func TestSKVMFrontendControlKeyCode(t *testing.T) {
 		{control: "num7", want: '7'},
 		{control: "star", want: '*'},
 		{control: "hash", want: '#'},
+		{control: "send", want: 190},
 	}
 	for _, test := range tests {
 		t.Run(test.control, func(t *testing.T) {
@@ -39,15 +40,44 @@ func TestSKVMFrontendControlKeyCode(t *testing.T) {
 			if !ok {
 				t.Fatalf("control %q has no WIPI key code", test.control)
 			}
-			if got := skvmKeyCode(key); got != test.want {
+			got, delivered := skvmKeyCode(key)
+			if !delivered || got != test.want {
 				t.Fatalf(
-					"control %q = %d, want %d",
+					"control %q = %d (delivered %t), want %d",
 					test.control,
 					got,
+					delivered,
 					test.want,
 				)
 			}
 		})
+	}
+}
+
+// TestSKVMFrontendControlWithoutSKTCode keeps the controls an SKT handset has
+// no MIDlet key code for away from the title. 코인마스터 indexes a 200-entry
+// key table with the code it receives, so a negative WIPI spelling such as
+// END's -11 or MENU's -8 threw ArrayIndexOutOfBoundsException straight out of
+// keyPressed.
+func TestSKVMFrontendControlWithoutSKTCode(t *testing.T) {
+	for _, control := range []string{"end", "menu"} {
+		t.Run(control, func(t *testing.T) {
+			key, ok := guest.InputKeyCode(control)
+			if !ok {
+				t.Fatalf("control %q has no WIPI key code", control)
+			}
+			if code, delivered := skvmKeyCode(key); delivered {
+				t.Fatalf("control %q delivered SKT key code %d", control, code)
+			}
+		})
+	}
+	for _, key := range []profile.KeyCode{
+		profile.KeyPower, profile.KeySideUp, profile.KeySideDown,
+		profile.KeySideSel, profile.KeyFlipDown, profile.KeyFlipUp,
+	} {
+		if code, delivered := skvmKeyCode(key); delivered {
+			t.Fatalf("WIPI key %d delivered SKT key code %d", key, code)
+		}
 	}
 }
 
@@ -68,11 +98,13 @@ func TestSKVMKeyCode(t *testing.T) {
 		{name: "left soft key", key: profile.KeySoft1, want: 131},
 		{name: "right soft key", key: profile.KeySoft2, want: 129},
 		{name: "clear", key: profile.KeyClear, want: 8},
+		{name: "send", key: profile.KeySend, want: 190},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := skvmKeyCode(test.key); got != test.want {
-				t.Fatalf("skvmKeyCode(%d) = %d, want %d", test.key, got, test.want)
+			got, delivered := skvmKeyCode(test.key)
+			if !delivered || got != test.want {
+				t.Fatalf("skvmKeyCode(%d) = %d (delivered %t), want %d", test.key, got, delivered, test.want)
 			}
 		})
 	}

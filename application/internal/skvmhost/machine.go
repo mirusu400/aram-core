@@ -704,9 +704,12 @@ func (m *Machine) handleEventLocked(
 		if !ok || m.vm.CurrentDisplay() == 0 {
 			return nil
 		}
-		code := skvmKeyCode(key)
+		code, ok := skvmKeyCode(key)
 		if m.services.Config.Device.ProfileID == j2me.LGTProfileID {
-			code = lgtKeyCode(key)
+			code, ok = lgtKeyCode(key), true
+		}
+		if !ok {
+			return nil
 		}
 		if event.Kind == shared.EventInputRepeat {
 			// The SKT handset reports no Canvas repeat support. Its shared
@@ -724,34 +727,47 @@ func (m *Machine) handleEventLocked(
 
 // skvmKeyCode translates a WIPI handset key to the SKT keypad code an SKVM
 // MIDlet reads in keyPressed. Only the digits, '*' and '#' share the WIPI
-// spelling; every function key has its own SKT code, and a title that never
-// sees it simply ignores the press. The non-obvious codes were read out of the
-// SKT corpus: 129 is always tested next to 8 on the paths that back out of a
-// screen, and 131 is always tested next to 148 on the paths that confirm. The
+// spelling; every function key has its own SKT code. The non-obvious codes
+// were read out of the SKT corpus: 129 is always tested next to 8 on the paths
+// that back out of a screen, 131 is always tested next to 148 on the paths
+// that confirm, and SEND is 190 (코인마스터 declares KeyPad.SEND = 190 beside
+// VOL_UP 194 and VOL_DN 195, 바운티블루스 switches on 190 next to the same
+// side keys, and 닥터K accepts 190 alongside the digits).
+//
+// A key the SKT handset has no MIDlet code for is not delivered at all
+// (ok=false). Passing the negative WIPI spelling through is not harmless:
+// titles such as 코인마스터 index a 200-entry key table with the code, so
+// SEND as -10 threw ArrayIndexOutOfBoundsException. END belongs to the phone,
+// no SKT title in the corpus reads a code for END or a third soft key, and the
 // side keys (194 up, 195 down, read off 드래곤나이트EX turning them straight
-// into AudioSystem volume steps) have no case here on purpose: the volume
-// rocker belongs to the phone, so the host only routes it to a whole-phone
-// firmware session and an application title never sees one.
-func skvmKeyCode(key profile.KeyCode) int32 {
+// into AudioSystem volume steps) are routed only to a whole-phone firmware
+// session, so an application title never sees any of them.
+func skvmKeyCode(key profile.KeyCode) (int32, bool) {
 	switch key {
 	case profile.KeyUp:
-		return 141
+		return 141, true
 	case profile.KeyLeft:
-		return 142
+		return 142, true
 	case profile.KeyRight:
-		return 145
+		return 145, true
 	case profile.KeyDown:
-		return 146
+		return 146, true
 	case profile.KeySelect:
-		return 148
+		return 148, true
 	case profile.KeySoft1:
-		return 131
+		return 131, true
 	case profile.KeySoft2:
-		return 129
+		return 129, true
 	case profile.KeyClear:
-		return 8
+		return 8, true
+	case profile.KeySend:
+		return 190, true
+	case profile.Key0, profile.Key1, profile.Key2, profile.Key3, profile.Key4,
+		profile.Key5, profile.Key6, profile.Key7, profile.Key8, profile.Key9,
+		profile.KeyAsterisk, profile.KeyPound:
+		return int32(key), true
 	default:
-		return int32(key)
+		return 0, false
 	}
 }
 
