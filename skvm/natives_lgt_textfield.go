@@ -28,6 +28,24 @@ const (
 
 var lgtInputModes = [...]int32{lgtModeKorean, lgtModeCaps, lgtModeSmall, lgtModeNumeric, lgtModeSymbol}
 
+// TextFieldX takes MIDP TextField constraints: the low 16 bits name the input
+// class and the high bits carry modifiers such as PASSWORD.
+const (
+	lgtConstraintMask    int32 = 0xFFFF
+	lgtConstraintNumeric int32 = 2
+)
+
+// lgtNumericOnly reports a NUMERIC field. Such a field is pinned to the numeric
+// mode and takes digits only; titles hand its text straight to parseInt.
+func lgtNumericOnly(vm *VM, receiver uint32) bool {
+	value, err := objectField(vm, receiver, midpConstraintsField)
+	if err != nil {
+		return false
+	}
+	constraints, err := value.Int()
+	return err == nil && constraints&lgtConstraintMask == lgtConstraintNumeric
+}
+
 var lgtIMEFields = [...]string{
 	"ime.mode", "ime.key", "ime.index", "ime.cho", "ime.jung", "ime.jong",
 	"ime.composing", "ime.lastKey", "ime.lastIndex",
@@ -162,9 +180,13 @@ func (vm *VM) installLGTTextFieldNatives() {
 			if err := vm.setText(receiver, args[1]); err != nil {
 				return Value{}, false, err
 			}
-			_ = lgtSetFieldInt(vm, receiver, "mode", lgtModeKorean)
+			mode := lgtModeKorean
+			if lgtNumericOnly(vm, receiver) {
+				mode = lgtModeNumeric
+			}
+			_ = lgtSetFieldInt(vm, receiver, "mode", mode)
 			_ = lgtSetFieldInt(vm, receiver, "rows", 1)
-			lgtSaveAutomata(vm, receiver, ime.New(ime.ModeKorean))
+			lgtSaveAutomata(vm, receiver, ime.New(lgtAutomataMode(mode)))
 			return Value{}, false, nil
 		})
 	vm.RegisterNative(lgtTextFieldClass, "setOwner", "(Ljavax/microedition/lcdui/Canvas;)V",
@@ -240,6 +262,9 @@ func (vm *VM) installLGTTextFieldNatives() {
 		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
 			if lgtFieldInt(vm, receiver, "focus", 0) == 0 {
 				return IntValue(lgtModeNone), true, nil
+			}
+			if lgtNumericOnly(vm, receiver) {
+				return IntValue(lgtModeNumeric), true, nil
 			}
 			current := lgtFieldInt(vm, receiver, "mode", lgtModeKorean)
 			next := lgtInputModes[0]
@@ -345,6 +370,13 @@ func nativeLGTTextKeyPressed(_ context.Context, vm *VM, receiver uint32, args []
 			runes = runes[:len(runes)-1]
 		}
 		automata.Commit()
+	} else if lgtNumericOnly(vm, receiver) {
+		// The mode key must not leave the numeric mode and the space key must
+		// not insert a blank: neither belongs in a NUMERIC field.
+		if key >= '0' && key <= '9' {
+			runes = append(runes, rune(key))
+		}
+		mode = lgtModeNumeric
 	} else if mode == lgtModeSymbol {
 		symbols := map[int32]rune{'0': ' ', '1': '.', '2': ',', '3': '?', '4': '!', '5': '@', '6': '#', '7': '$', '8': '%', '9': '&'}
 		if symbol, ok := symbols[key]; ok {
