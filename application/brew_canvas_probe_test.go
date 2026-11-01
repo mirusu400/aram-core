@@ -43,7 +43,7 @@ func TestBREWCanvasDecisionShrinksOnlyOnEvidence(t *testing.T) {
 		{"artwork within 120 columns", 400_000, 8_000, 0.05, 0.6, small},
 		{"artwork past column 120", 400_000, 120_000, 0.5, 0.6, large},
 		{"artwork just over the line", 400_000, 40_000, 0.05, 0.6, large},
-		{"narrow artwork, busy right edge", 400_000, 8_000, 0.2, 0.6, large},
+		{"narrow artwork, dialog centred on the screen", 400_000, 8_000, 0.2, 0.6, small},
 		{"some artwork within 120 columns", 24_000, 500, 0.03, 0.8, small},
 		{"some artwork, buttons past column 120", 46_000, 3_900, 0.07, 0.2, large},
 		{"directly painted, corner only", 1_000, 0, 0.01, 0.4, small},

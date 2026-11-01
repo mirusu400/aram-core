@@ -22,18 +22,20 @@ import (
 // canvas only on clear evidence that the title keeps within the small
 // handset's 120 columns, and the less artwork a title has drawn, the stricter
 // that evidence has to be. Across the 350 unpinned packages of the KTF BREW
-// dump this misjudged no large-handset title and gave 57 of the 148
-// small-handset builds their own canvas.
+// dump this kept every title that needs 176 columns on the large canvas and
+// gave 74 small-handset layouts their own canvas: 72 of the dump's 148 "(작화)"
+// builds, plus 대물낚시광 and 단군왕검전기, whose unmarked builds draw for 120
+// columns too.
 const (
 	brewCanvasProbeFrames   = 600
 	brewCanvasProbeTapEvery = 100
 	brewCanvasProbeBudget   = 3 * time.Second
 	// With this much image area, a small-handset title keeps all but a tenth
-	// of it in the first 120 columns, and the screen right of them stays
-	// mostly one colour (the varied fraction of any sampled frame).
+	// of it in the first 120 columns. The screen right of them is no evidence
+	// here: small-handset titles centre their dialogs and footers on the
+	// screen width (대물낚시광).
 	brewCanvasProbeRichArea       = 50_000
 	brewCanvasProbeRichImageRight = 0.10
-	brewCanvasProbeRichFrameRight = 0.15
 	// With less, text and painted pixels weigh more: large-handset titles of
 	// this kind still put 8% or more of their images right of column 120.
 	brewCanvasProbeSomeArea       = 10_000
@@ -94,7 +96,7 @@ func brewCanvasDecision(probe brewrt.CanvasProbe, frameRight, frameCorner float6
 	var small bool
 	switch {
 	case probe.ImageArea >= brewCanvasProbeRichArea:
-		small = probe.Right() < brewCanvasProbeRichImageRight && frameRight < brewCanvasProbeRichFrameRight
+		small = probe.Right() < brewCanvasProbeRichImageRight
 	case probe.ImageArea >= brewCanvasProbeSomeArea:
 		small = probe.Right() < brewCanvasProbeSomeImageRight && frameRight < brewCanvasProbeSomeFrameRight
 	default:
