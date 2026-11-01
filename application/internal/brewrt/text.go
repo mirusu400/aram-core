@@ -319,8 +319,117 @@ func (r *Runtime) displayText(address, rawCount uint32, oem bool) (string, error
 		for index := range units {
 			units[index] = binary.LittleEndian.Uint16(raw[index*2:])
 		}
+		if text, ok := decodeBREWCountedEUCKRByteStream(raw, int(rawCount)); ok {
+			return text, nil
+		}
 	}
 	return decodeBREWAECHARPreferred(units, r.preferPackedAECHAR), nil
+}
+
+// decodeBREWCountedEUCKRByteStream handles the counted form of an EUC-KR char
+// string passed as AECHAR text: the count is the string's character count, so
+// the bytes read for that many AECHARs hold the whole string and its NUL.
+// 드래곤판타지(작화) draws "OFF" this way with a count of 3; read as UTF-16
+// those units are "䙏F" and an embedded NUL. Besides the byte-stream evidence,
+// the string must end after exactly count characters.
+func decodeBREWCountedEUCKRByteStream(raw []byte, count int) (string, bool) {
+	if count <= 0 || bytes.IndexByte(raw, 0) < 0 {
+		return "", false
+	}
+	text, characters, _, ok := parseBREWEUCKRByteStream(raw)
+	if !ok || characters != count {
+		return "", false
+	}
+	return text, true
+}
+
+// decodeBREWEUCKRByteStream recognizes an EUC-KR char string passed where an
+// AECHAR string belongs. Some Korean titles hand DrawText and MeasureText their
+// raw text buffers; a single-byte ASCII character then shifts every later
+// Korean pair across an AECHAR boundary, which the per-AECHAR packed reading
+// below cannot undo.
+func decodeBREWEUCKRByteStream(units []uint16) (string, bool) {
+	raw := make([]byte, 0, len(units)*2)
+	for _, unit := range units {
+		raw = append(raw, byte(unit), byte(unit>>8))
+	}
+	// Without a count, a pure-ASCII reading is too weak: a lone Hanja in
+	// UTF-16 can be two printable bytes.
+	text, _, paired, ok := parseBREWEUCKRByteStream(raw)
+	return text, ok && paired
+}
+
+// parseBREWEUCKRByteStream reads raw as a NUL-terminated EUC-KR string. It
+// accepts the reading only when every byte before the NUL is printable ASCII
+// or a KS X 1001 pair, at least one pair is Korean, and some AECHAR before the
+// NUL visibly straddles a character boundary: an ASCII byte beside a Korean
+// byte, two ASCII bytes, or a Korean byte followed by the NUL. Only the units
+// before the NUL count. A genuine UTF-16 line has its first NUL byte at its
+// first ASCII character; the Hangul units before that sit aligned and can read
+// as KS pairs, and units after it can look straddled. Bytes after the NUL are
+// ignored, because titles reuse line buffers that still hold older text.
+func parseBREWEUCKRByteStream(raw []byte) (text string, characters int, paired, ok bool) {
+	// One EUC-KR code per AECHAR, with ASCII in units of their own, is the
+	// packing the per-AECHAR reading handles; it puts a NUL byte after every
+	// ASCII character, so a byte reading would stop at the first one.
+	perUnit := true
+	for index := 0; index+1 < len(raw); index += 2 {
+		low, high := raw[index], raw[index+1]
+		if !(low == 0 && high == 0) && !(high == 0 && isBREWTextASCII(low)) &&
+			!(low >= 0xa1 && high >= 0xa1) {
+			perUnit = false
+			break
+		}
+	}
+	if perUnit {
+		return "", 0, false, false
+	}
+	end := bytes.IndexByte(raw, 0)
+	if end < 0 {
+		end = len(raw)
+	}
+	straddles := false
+	for index := 0; index < end; index += 2 {
+		low, high := raw[index], byte(0)
+		if index+1 < len(raw) {
+			high = raw[index+1]
+		}
+		if (isBREWTextASCII(low) && (high >= 0xa1 || isBREWTextASCII(high))) ||
+			(low >= 0xa1 && (high == 0 || isBREWTextASCII(high))) {
+			straddles = true
+		}
+		// An aligned KS pair is evidence too when, read as UTF-16, it is not
+		// a Hangul syllable: "비" is 0xf1ba, a private-use code point.
+		if unit := uint16(high)<<8 | uint16(low); low >= 0xa1 && high >= 0xa1 &&
+			(unit < 0xac00 || unit > 0xd7a3) {
+			straddles = true
+		}
+	}
+	if !straddles {
+		return "", 0, false, false
+	}
+	body := raw[:end]
+	for index := 0; index < len(body); characters++ {
+		switch value := body[index]; {
+		case isBREWTextASCII(value):
+			index++
+		case value >= 0xa1 && value <= 0xfe && index+1 < len(body) &&
+			body[index+1] >= 0xa1 && body[index+1] <= 0xfe:
+			paired = true
+			index += 2
+		default:
+			return "", 0, false, false
+		}
+	}
+	decoded, _, err := transform.Bytes(korean.EUCKR.NewDecoder(), body)
+	if err != nil || characters == 0 || bytes.Contains(decoded, []byte("\xef\xbf\xbd")) {
+		return "", 0, false, false
+	}
+	return string(decoded), characters, paired, true
+}
+
+func isBREWTextASCII(value byte) bool {
+	return value == '\t' || value == '\n' || value == '\r' || (value >= 0x20 && value < 0x7f)
 }
 
 // STREXPAND on Korean BREW handsets can place one EUC-KR double-byte code in
@@ -333,6 +442,9 @@ func decodeBREWAECHAR(units []uint16) string {
 }
 
 func decodeBREWAECHARPreferred(units []uint16, preferPacked bool) string {
+	if text, ok := decodeBREWEUCKRByteStream(units); ok {
+		return text
+	}
 	unicodeText := string(utf16.Decode(units))
 	packed := make([]byte, 0, len(units)*2)
 	evidence := preferPacked
