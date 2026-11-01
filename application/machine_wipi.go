@@ -248,7 +248,15 @@ func (m *Machine) runWIPISlice(
 }
 
 const (
-	raptorCallbackInstructionLimit = uint64(256_000_000)
+	// raptorCallbackInstructionLimit bounds one synchronous guest call: the
+	// Clet initializer, a Jlet constructor or startApp, and a Java Card's
+	// paint(). None of them is resumable - each runs to completion inside the
+	// host call that entered it - so the bound has to cover the longest single
+	// piece of work a title does in one, not a frame. LGT 월드장기체스 spends
+	// up to 342,812,803 instructions in a single Card.paint() call (a couple
+	// of seconds on a 200 MHz ARM926 handset), which faulted the old 256M
+	// bound. Runaways still fault, four times later than before.
+	raptorCallbackInstructionLimit = uint64(1_024_000_000)
 )
 
 func (m *Machine) pumpWIPICallbacks(
