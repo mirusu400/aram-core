@@ -258,8 +258,9 @@ func (vm *VM) releaseClipWaiters(ctx context.Context, clip shared.ServiceID) err
 	return nil
 }
 
-// threadBlocked reports whether a parked thread's clip is still playing. A
-// clip that was stopped, ran out, or was destroyed releases its waiter.
+// threadBlocked reports whether a parked thread's clip is still playing or
+// paused. A clip that was stopped, ran out, or was destroyed releases its
+// waiter; a paused one keeps it parked until playback resumes and ends.
 func (vm *VM) threadBlocked(state *threadState) bool {
 	if state.waitingOn != 0 {
 		return state.wakeAt > vm.services.Clock.Monotonic()
@@ -268,7 +269,8 @@ func (vm *VM) threadBlocked(state *threadState) bool {
 		return false
 	}
 	info, err := vm.services.Media.Info(vm.serviceOwner, state.blockedClip)
-	return err == nil && info.State == shared.ClipPlaying
+	return err == nil &&
+		(info.State == shared.ClipPlaying || info.State == shared.ClipPaused)
 }
 
 func (vm *VM) notifyObject(reference uint32, all bool) {

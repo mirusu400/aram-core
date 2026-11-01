@@ -692,6 +692,60 @@ func (vm *VM) installGraphicsNatives() {
 			)), true, nil
 		},
 	)
+	vm.RegisterNative(
+		"com/skt/m/Graphics2D",
+		"invertRect",
+		"(IIII)V",
+		nativeGraphics2DInvertRect,
+	)
+}
+
+// nativeGraphics2DInvertRect inverts every colour channel inside the
+// rectangle, honouring the receiver's translation and clip. It is an XOR fill
+// with white, independent of the receiver's current colour, raster mode and
+// alpha, all of which are restored afterwards.
+func nativeGraphics2DInvertRect(
+	_ context.Context,
+	vm *VM,
+	receiver uint32,
+	args []Value,
+) (Value, bool, error) {
+	state, err := vm.graphics(receiver)
+	if err != nil {
+		return Value{}, false, err
+	}
+	x, y, width, height, err := rectangleArguments(args)
+	if err != nil {
+		return Value{}, false, err
+	}
+	if width <= 0 || height <= 0 {
+		return Value{}, false, nil
+	}
+	original, err := vm.services.Graphics.DrawState(vm.serviceOwner, state.surface)
+	if err != nil {
+		return Value{}, false, err
+	}
+	inverting := original
+	inverting.Raster = shared.RasterXOR
+	inverting.GlobalAlpha = 0xff
+	inverting.GlobalTransparency256 = 0
+	if err := vm.services.Graphics.SetDrawState(
+		vm.serviceOwner,
+		state.surface,
+		inverting,
+	); err != nil {
+		return Value{}, false, err
+	}
+	fillErr := fillRectangle(vm, state, x, y, width, height, 0xffffffff)
+	restoreErr := vm.services.Graphics.SetDrawState(
+		vm.serviceOwner,
+		state.surface,
+		original,
+	)
+	if fillErr != nil {
+		return Value{}, false, fillErr
+	}
+	return Value{}, false, restoreErr
 }
 
 func (vm *VM) installDisplayCompatibilityNatives() {

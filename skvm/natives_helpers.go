@@ -739,6 +739,13 @@ func intArgument(args []Value, index int) (int32, error) {
 	return args[index].Int()
 }
 
+func longArgument(args []Value, index int) (int64, error) {
+	if index < 0 || index >= len(args) {
+		return 0, fmt.Errorf("native argument %d is missing", index)
+	}
+	return args[index].Long()
+}
+
 func (vm *VM) byteSliceArgument(args []Value) ([]byte, error) {
 	reference, err := referenceArgument(args, 0)
 	if err != nil {

@@ -22,9 +22,23 @@ func (vm *VM) installSKTNatives() {
 		{"com/skt/m/Device", "setColorMode", "(I)V"},
 		{"com/skt/m/Device", "setKeyToneEnabled", "(Z)V"},
 		{"com/skt/m/Device", "enableRestoreLCD", "(Z)V"},
+		// The host owns key-repeat cadence; the requested delay and
+		// interval have no handset hardware to program.
+		{"com/skt/m/Device", "setKeyRepeatTime", "(II)V"},
 	} {
 		vm.RegisterNative(method.class, method.name, method.descriptor, nativeVoid)
 	}
+	// setMelody installs a ringtone or alarm melody on the handset. There is
+	// no handset melody store to write, so report that nothing was installed.
+	vm.RegisterNative(
+		"com/skt/m/Device",
+		"setMelody",
+		"(ILjava/lang/String;[B)Z",
+		func(_ context.Context, _ *VM, _ uint32, _ []Value) (Value, bool, error) {
+			return boolValue(false), true, nil
+		},
+	)
+	vm.installSKTMathNatives()
 	vm.RegisterNative(
 		"com/skt/m/Device",
 		"setBacklightEnabled",
@@ -781,6 +795,42 @@ func (vm *VM) installSKTNatives() {
 			return Value{}, false, vm.releaseClipWaiters(ctx, state.clip)
 		},
 	)
+	// pause and resume only move a clip between playing and paused. Either
+	// call on a clip in any other state, or on a closed clip, changes nothing.
+	// A thread parked in play or loop stays parked while the clip is paused.
+	for _, method := range []struct {
+		name  string
+		from  shared.ClipPlaybackState
+		apply func(*shared.Media, shared.OwnerID, shared.ServiceID) error
+	}{
+		{name: "pause", from: shared.ClipPlaying, apply: (*shared.Media).Pause},
+		{name: "resume", from: shared.ClipPaused, apply: (*shared.Media).Resume},
+	} {
+		spec := method
+		vm.RegisterNative(
+			"com/skt/m/AudioClip",
+			spec.name,
+			"()V",
+			func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
+				state, err := vm.audioClip(receiver)
+				if err != nil {
+					return Value{}, false, err
+				}
+				if state.clip == 0 {
+					return Value{}, false, nil
+				}
+				info, err := vm.services.Media.Info(vm.serviceOwner, state.clip)
+				if err != nil || info.State != spec.from {
+					return Value{}, false, err
+				}
+				return Value{}, false, spec.apply(
+					vm.services.Media,
+					vm.serviceOwner,
+					state.clip,
+				)
+			},
+		)
+	}
 	vm.RegisterNative(
 		"com/skt/m/AudioClip",
 		"close",
