@@ -55,7 +55,8 @@ func TestKTFTimerWorkerSurvivesSaveRestore(t *testing.T) {
 	// Use the original bytes' snapshot, before mutating task completion.
 	r.Tasks[0].Done = false
 	check(t, r.writeJavaTimerState(guest.NewStateWriter(&extension)))
-	legacy := bytes.Clone(output.Bytes()[:output.Len()-extension.Len()])
+	// Version 17's serial-order section follows it, one word per task.
+	legacy := bytes.Clone(output.Bytes()[:output.Len()-extension.Len()-4*len(r.Tasks)])
 	binary.LittleEndian.PutUint32(legacy[4:8], ktfStateSchemaV15)
 	decoder = guest.StateDecoder{Reader: bytes.NewReader(legacy)}
 	_, err = ParseState(r, &decoder)

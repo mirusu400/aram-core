@@ -1031,6 +1031,20 @@ type Task struct {
 	layoutOnReturn  uint32
 	startBlocker    *Task
 	childStartGrace uint64
+	// serialAfter is the card paint a Display.callSerially Runnable waits
+	// for. The handset runs that Runnable on its event thread after the
+	// pending repaint, so it cannot start while the paint is still running,
+	// even when the paint is asleep in Thread.sleep.
+	serialAfter *Task
+}
+
+// waitsForSerialPaint reports whether task is a callSerially Runnable whose
+// paint has not returned yet.
+func (t *Task) waitsForSerialPaint() bool {
+	if t.serialAfter != nil && t.serialAfter.Done {
+		t.serialAfter = nil
+	}
+	return t.serialAfter != nil
 }
 
 func (t *Task) Instructions() uint64 {

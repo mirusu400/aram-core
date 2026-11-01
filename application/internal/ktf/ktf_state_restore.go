@@ -777,6 +777,11 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 			r.Tasks[index].startBlocker = r.Tasks[task.StartBlocker]
 		}
 	}
+	for index, after := range saved.taskSerialAfter {
+		if after >= 0 && index < len(r.Tasks) {
+			r.Tasks[index].serialAfter = r.Tasks[after]
+		}
+	}
 	r.restoreJavaTimerState(saved.javaTimers)
 	r.PendingJavaCalls = make(
 		[]ktfPendingJavaCall,

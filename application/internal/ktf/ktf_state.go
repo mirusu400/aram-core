@@ -26,7 +26,8 @@ const (
 	ktfStateSchemaV13    = uint32(13)
 	ktfStateSchemaV14    = uint32(14)
 	ktfStateSchemaV15    = uint32(15)
-	ktfStateSchema       = uint32(16)
+	ktfStateSchemaV16    = uint32(16)
+	ktfStateSchema       = uint32(17)
 	maxKTFStateMetadata  = uint32(64 << 20)
 	maxKTFStateEntries   = 16_384
 	maxKTFStateHostCalls = int(HostSize / 4)
@@ -65,6 +66,9 @@ type SavedState struct {
 	taskMonitorWait []uint32
 	wipicInputModes uint32
 	wipicInput      ktfWIPICInputState
+	// taskSerialAfter is each task's serialAfter as a task index, -1 for
+	// none. An older save has none.
+	taskSerialAfter []int32
 }
 
 type ktfPersistentState struct {
@@ -698,7 +702,25 @@ func writeState(r *Runtime, backend cpu.Backend, started bool, writer *guest.Sta
 	if err := r.writeJavaTimerState(writer); err != nil {
 		return err
 	}
+	// A callSerially Runnable still waiting for its paint.
+	for _, task := range r.Tasks {
+		writer.U32(uint32(r.taskIndexOf(task.serialAfter)))
+	}
 	return nil
+}
+
+// taskIndexOf names a task something still waits on by its slot in the task
+// table, or -1 once it has finished or left the table.
+func (r *Runtime) taskIndexOf(task *Task) int32 {
+	if task == nil || task.Done {
+		return -1
+	}
+	for index, candidate := range r.Tasks {
+		if candidate == task {
+			return int32(index)
+		}
+	}
+	return -1
 }
 
 // WriteEmbeddedJavaState serializes a Java host sharing its address space with
@@ -784,7 +806,8 @@ func parseState(r *Runtime,
 		schema != ktfStateSchemaV6 && schema != ktfStateSchemaV7 &&
 		schema != ktfStateSchemaV8 && schema != ktfStateSchemaV9 &&
 		schema != ktfStateSchemaV10 && schema != ktfStateSchemaV11 &&
-		schema != ktfStateSchemaV12 && schema != ktfStateSchemaV13 && schema != ktfStateSchemaV14 && schema != ktfStateSchemaV15 && schema != ktfStateSchema {
+		schema != ktfStateSchemaV12 && schema != ktfStateSchemaV13 && schema != ktfStateSchemaV14 && schema != ktfStateSchemaV15 && schema != ktfStateSchemaV16 &&
+		schema != ktfStateSchema {
 		return nil, decoder.Fail(fmt.Sprintf("unsupported KTF state schema %d", schema))
 	}
 	owner := shared.OwnerID(decoder.U32())
@@ -1077,6 +1100,21 @@ func parseState(r *Runtime,
 			return nil, err
 		}
 	}
+	var taskSerialAfter []int32
+	if schema >= 17 {
+		taskSerialAfter = make([]int32, len(metadata.Tasks))
+		for index := range taskSerialAfter {
+			after := int32(decoder.U32())
+			if after < -1 || after >= int32(len(metadata.Tasks)) ||
+				after == int32(index) {
+				return nil, decoder.Fail("invalid KTF serial task order")
+			}
+			taskSerialAfter[index] = after
+		}
+		if decoder.Err != nil {
+			return nil, decoder.Err
+		}
+	}
 	resolvedCalls, err := resolveKTFHostCalls(r, metadata.HostCalls)
 	if err != nil {
 		return nil, decoder.Fail(fmt.Sprintf("invalid KTF host-call graph: %v", err))
@@ -1104,6 +1142,7 @@ func parseState(r *Runtime,
 		taskThreads:        taskThreads,
 		taskJoinThreads:    taskJoinThreads,
 		taskMonitorWait:    taskMonitorWait,
+		taskSerialAfter:    taskSerialAfter,
 		wipicInputModes:    wipicInputModes,
 		wipicInput:         input,
 	}, nil

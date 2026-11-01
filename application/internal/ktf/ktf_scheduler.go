@@ -307,6 +307,26 @@ func (r *Runtime) QueueJavaVirtual(
 	return err
 }
 
+// queueSerialRunnable queues the Runnable handed to Display.callSerially. A
+// handset runs it on the event thread once the pending repaint cycle is
+// over, so it cannot start while the shown card's paint is still running.
+// 천공의 기사단 calls callSerially from paint and then sleeps inside that
+// paint; started early, its Runnable's repaint() landed on the paint still
+// in flight and was coalesced away, and the loading screen never advanced.
+func (r *Runtime) queueSerialRunnable(runnable uint32) error {
+	paint := r.PaintTasks[r.DisplayCards[r.DefaultDisplay]]
+	if paint == nil || paint.Done || !r.hasBackgroundJavaTaskCapacity() {
+		return r.QueueJavaVirtual(runnable, "run", "()V")
+	}
+	task, err := r.queueJavaVirtualTask(runnable, "run", "()V")
+	if err != nil {
+		return err
+	}
+	task.serialAfter = paint
+	r.tracef("java_serial_after_paint:card=0x%08x", paint.paintCard)
+	return nil
+}
+
 func (r *Runtime) ActivatePendingJavaCalls() error {
 	for len(r.PendingJavaCalls) != 0 && r.hasBackgroundJavaTaskCapacity() {
 		call := r.PendingJavaCalls[0]
@@ -1526,7 +1546,8 @@ func (r *Runtime) nextRunnableTask() *Task {
 			task.monitorWait = 0
 		}
 		if !task.Done && task.startBlocker == nil && task.joinThread == 0 &&
-			task.monitorWait == 0 && task.WakeAtMS == 0 && r.canRunJavaTimerTask(task) {
+			task.monitorWait == 0 && task.WakeAtMS == 0 && !task.waitsForSerialPaint() &&
+			r.canRunJavaTimerTask(task) {
 			r.taskCursor = (index + 1) % len(r.Tasks)
 			return task
 		}
@@ -1548,7 +1569,8 @@ func (r *Runtime) hasRunnableTask() bool {
 			task.monitorWait = 0
 		}
 		if !task.Done && task.startBlocker == nil && task.joinThread == 0 &&
-			task.monitorWait == 0 && task.WakeAtMS == 0 && r.canRunJavaTimerTask(task) {
+			task.monitorWait == 0 && task.WakeAtMS == 0 && !task.waitsForSerialPaint() &&
+			r.canRunJavaTimerTask(task) {
 			return true
 		}
 	}

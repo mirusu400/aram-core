@@ -809,7 +809,7 @@ func (r *Runtime) handleDisplayMethod(
 			return 0, nil
 		}
 		if r.DeferThreads {
-			return 0, r.QueueJavaVirtual(runnable, "run", "()V")
+			return 0, r.queueSerialRunnable(runnable)
 		}
 		return r.invokeJavaVirtual(ctx, runnable, "run", "()V")
 	case "getGameAction(I)I":
