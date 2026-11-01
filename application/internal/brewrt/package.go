@@ -60,6 +60,7 @@ const jinJanggiArchiveSHA256 = "06369c8db97fb4e28165297ac2557c0de050dfb6986ea429
 const tengaiArchiveSHA256 = "01f8fe8784138792822df9306127279f038813ea62c00385d256b77b61a025cf"
 const theSINArchiveSHA256 = "8b33b7b3c20dabfe38cdfc905c482ef179827cf8b55b47c9057f60995bea96aa"
 const minibookArchiveSHA256 = "9d17a101d5c9e31e789698f31fb41ba5448b624eb63b37193be13b12fdbb46c0"
+const minigame2005ArchiveSHA256 = "0622f4c830832e04d310c3496680df8307060fa74f4f63a9ee9c09ae16300e5c"
 const battleDrumXArchiveSHA256 = "a50f7decb608272daca545a1beca126286cba8eeb8b6e230f14448393b143ca2"
 const topGun2ArchiveSHA256 = "43392c5a657ac36aca605a3cde727bd817b5672594be55b8470bacdb924468f1"
 const milkTycoon2ArchiveSHA256 = "9f7366ca1902b91c359b271ee5721fdccff7e39f1ebda6849454e6f9572a3a4f"
@@ -155,10 +156,22 @@ func Match(data []byte) (pkg Package, matched bool, err error) {
 		// handset strip. The generic 120x160 canvas clips the title and menu.
 		nativeCanvas = image.Pt(176, 220)
 	}
+	if digestHex == minigame2005ArchiveSHA256 {
+		// The small-screen build of the same engine: its full-screen scenes
+		// are 120x146, and a 120x160 canvas lands in the 176x207 layout
+		// class, so the menu overruns the footer and screens leave the
+		// title's version strip behind.
+		nativeCanvas = image.Pt(120, 146)
+	}
 	if digestHex == minibookArchiveSHA256 {
-		// The MBR contains 176x207 full-screen scenes. The default
-		// 120x160 canvas clips the bookcase and its menu artwork.
-		nativeCanvas = image.Pt(176, 220)
+		// The MBR's full-screen scenes are 176x207, the KTF handset's
+		// application area. The module picks its layout from cyScreen:
+		// up to 120, 150 or 210 are the handsets it was built for, and
+		// anything taller is treated as a QVGA screen whose menus double
+		// every sprite. A 220-pixel canvas therefore drew each menu item
+		// two labels tall over 1x artwork, so every highlight covered two
+		// entries (issue #558).
+		nativeCanvas = image.Pt(176, 207)
 	}
 	if digestHex == battleDrumXArchiveSHA256 {
 		// Multiple SC images in drumx.bar are 176x204, including the
