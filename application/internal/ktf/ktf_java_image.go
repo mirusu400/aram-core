@@ -128,7 +128,10 @@ func (r *Runtime) handleFontMethod(name, descriptor string) (uint32, error) {
 		if err != nil {
 			return 0, err
 		}
-		text, err := r.readJavaCharArrayRange(array, offset, count)
+		text, err := r.javaCharArrayArgument(
+			array, offset, count,
+			"java/lang/ArrayIndexOutOfBoundsException",
+		)
 		if err != nil {
 			return 0, err
 		}

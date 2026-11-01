@@ -471,7 +471,10 @@ func (r *Runtime) handleGraphicsMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		text, valueErr := r.readJavaCharArrayRange(array, offset, count)
+		text, valueErr := r.javaCharArrayArgument(
+			array, offset, count,
+			"java/lang/ArrayIndexOutOfBoundsException",
+		)
 		if valueErr != nil {
 			return 0, valueErr
 		}

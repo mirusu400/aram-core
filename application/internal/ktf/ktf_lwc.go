@@ -1250,7 +1250,10 @@ func (r *Runtime) handleLWCMethod(
 		offset := registers[3]
 		count := registers[4]
 		index := int(int32(registers[5]))
-		inserted, err := r.readJavaCharArrayRange(array, offset, count)
+		inserted, err := r.javaCharArrayArgument(
+			array, offset, count,
+			"java/lang/StringIndexOutOfBoundsException",
+		)
 		if err != nil {
 			return 0, err
 		}

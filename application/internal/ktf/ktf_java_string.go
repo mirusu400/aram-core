@@ -80,7 +80,10 @@ func (r *Runtime) handleStringMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		text, valueErr := r.readJavaCharArrayRange(instance, offset, count)
+		text, valueErr := r.javaCharArrayArgument(
+			instance, offset, count,
+			"java/lang/StringIndexOutOfBoundsException",
+		)
 		if valueErr != nil {
 			return 0, valueErr
 		}
@@ -232,7 +235,10 @@ func (r *Runtime) handleStringMethod(
 		if valueErr != nil {
 			return 0, valueErr
 		}
-		text, valueErr := r.readJavaCharArrayRange(array, offset, count)
+		text, valueErr := r.javaCharArrayArgument(
+			array, offset, count,
+			"java/lang/StringIndexOutOfBoundsException",
+		)
 		if valueErr != nil {
 			return 0, valueErr
 		}
@@ -916,7 +922,10 @@ func (r *Runtime) handleStringBufferMethod(
 				return 0, valueErr
 			}
 		}
-		value, valueErr := r.readJavaCharArrayRange(array, offset, count)
+		value, valueErr := r.javaCharArrayArgument(
+			array, offset, count,
+			"java/lang/ArrayIndexOutOfBoundsException",
+		)
 		if valueErr != nil {
 			return 0, valueErr
 		}
@@ -1308,6 +1317,31 @@ func (r *Runtime) javaObjectString(instance uint32) string {
 		return fmt.Sprintf("Object@%08x", instance)
 	}
 	return fmt.Sprintf("%s@%08x", class.Name, instance)
+}
+
+// javaCharArrayArgument reads the chars a Java API was handed as (array,
+// offset, count). Getting the range wrong is the title's to handle: a handset
+// throws NullPointerException for a null array and the API's own index
+// exception for a range outside it, and the title may catch either.
+// 무한의통통 builds a String from six chars of a five-char array; failing the
+// host call instead stopped the whole title.
+func (r *Runtime) javaCharArrayArgument(
+	array, offset, count uint32,
+	outOfBounds string,
+) (string, error) {
+	if array == 0 {
+		return "", r.raiseHostJavaException("java/lang/NullPointerException")
+	}
+	length, err := r.javaArrayLength(array)
+	if err != nil {
+		return "", err
+	}
+	// offset and count are Java ints; a negative one is a huge uint32 here
+	// and fails the same comparison.
+	if offset > length || count > length-offset {
+		return "", r.raiseHostJavaException(outOfBounds)
+	}
+	return r.readJavaCharArrayRange(array, offset, count)
 }
 
 func (r *Runtime) readJavaCharArrayRange(
