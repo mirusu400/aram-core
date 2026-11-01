@@ -111,10 +111,14 @@ func decodeImageAsset(
 }
 
 // decodeLBMP decodes the little-endian LCD bitmap format used by SKVM.
-// Pixels immediately follow the 24-byte header. Optional mask bytes are stored
-// in eight-row pages: each page contains one byte per x coordinate, and each
-// byte's low-to-high bits cover the page's y coordinates. Fixed-size guest
-// buffers may contain additional trailing padding.
+// The header's type field is the pixel depth. Pixels immediately follow the
+// 24-byte header: one RGB332 byte or one RGB565 word per pixel in row order
+// for depths 8 and 16. Depth 2 is four-level gray, white to black, held as
+// two bit planes, high bit first, each laid out like the mask; its header
+// size names one plane. Optional mask bytes are stored in eight-row pages:
+// each page contains one byte per x coordinate, and each byte's low-to-high
+// bits cover the page's y coordinates; a set bit is transparent. Fixed-size
+// guest buffers may contain additional trailing padding.
 func decodeLBMP(encoded []byte, limits AssetLimits) (*image.NRGBA, error) {
 	const headerSize = 24
 	if len(encoded) < headerSize || string(encoded[:4]) != "LBMP" {
@@ -125,13 +129,7 @@ func decodeLBMP(encoded []byte, limits AssetLimits) (*image.NRGBA, error) {
 	height := binary.LittleEndian.Uint32(encoded[12:16])
 	declaredSize := binary.LittleEndian.Uint32(encoded[16:20])
 	hasMask := binary.LittleEndian.Uint32(encoded[20:24]) != 0
-	var bytesPerPixel uint64
-	switch pixelType {
-	case 8:
-		bytesPerPixel = 1
-	case 16:
-		bytesPerPixel = 2
-	default:
+	if pixelType != 2 && pixelType != 8 && pixelType != 16 {
 		return nil, fmt.Errorf(
 			"%w: unsupported LBMP pixel type %d",
 			ErrInvalidArgument,
@@ -144,20 +142,27 @@ func decodeLBMP(encoded []byte, limits AssetLimits) (*image.NRGBA, error) {
 	if err := validateDecodedGeometry(int(width), int(height), 1, limits); err != nil {
 		return nil, err
 	}
+	// Width and height are within the decoded-pixel limit, so neither a pixel
+	// count nor a page-plane size can overflow below.
 	pixelCount := uint64(width) * uint64(height)
-	if pixelCount > math.MaxUint64/bytesPerPixel {
-		return nil, fmt.Errorf("%w: LBMP pixel size overflows", ErrLimitExceeded)
+	pagePlaneBytes := uint64(width) * ((uint64(height) + 7) / 8)
+	var pixelBytes, wantDeclared uint64
+	switch pixelType {
+	case 2:
+		pixelBytes, wantDeclared = 2*pagePlaneBytes, pagePlaneBytes
+	case 8:
+		pixelBytes, wantDeclared = pixelCount, pixelCount
+	case 16:
+		pixelBytes, wantDeclared = 2*pixelCount, 2*pixelCount
 	}
-	pixelBytes := pixelCount * bytesPerPixel
-	if uint64(declaredSize) != pixelBytes || pixelBytes > uint64(len(encoded)-headerSize) {
+	if uint64(declaredSize) != wantDeclared || pixelBytes > uint64(len(encoded)-headerSize) {
 		return nil, fmt.Errorf("%w: invalid LBMP pixel payload", ErrInvalidArgument)
 	}
 	var mask []byte
 	var maskPageStride uint64
 	if hasMask {
 		maskPageStride = uint64(width)
-		maskPages := (uint64(height) + 7) / 8
-		maskBytes := maskPageStride * maskPages
+		maskBytes := pagePlaneBytes
 		remaining := uint64(len(encoded)-headerSize) - pixelBytes
 		if maskBytes > remaining {
 			return nil, fmt.Errorf("%w: truncated LBMP mask", ErrInvalidArgument)
@@ -168,12 +173,29 @@ func decodeLBMP(encoded []byte, limits AssetLimits) (*image.NRGBA, error) {
 	payload := encoded[headerSize : headerSize+int(pixelBytes)]
 	for index := uint64(0); index < pixelCount; index++ {
 		destination := int(index) * 4
-		if pixelType == 8 {
+		x := index % uint64(width)
+		y := index / uint64(width)
+		pageIndex := (y/8)*uint64(width) + x
+		pageBit := byte(1) << uint(y%8)
+		switch pixelType {
+		case 2:
+			level := byte(0)
+			if payload[pageIndex]&pageBit != 0 {
+				level |= 2
+			}
+			if payload[pagePlaneBytes+pageIndex]&pageBit != 0 {
+				level |= 1
+			}
+			gray := 0xff - level*0x55
+			decoded.Pix[destination] = gray
+			decoded.Pix[destination+1] = gray
+			decoded.Pix[destination+2] = gray
+		case 8:
 			value := payload[index]
 			decoded.Pix[destination] = ((value >> 5) & 0x07) * 36
 			decoded.Pix[destination+1] = ((value >> 2) & 0x07) * 36
 			decoded.Pix[destination+2] = (value & 0x03) * 85
-		} else {
+		default:
 			source := int(index) * 2
 			value := binary.LittleEndian.Uint16(payload[source : source+2])
 			decoded.Pix[destination] = expand5(uint8((value >> 11) & 0x1f))
@@ -181,13 +203,8 @@ func decodeLBMP(encoded []byte, limits AssetLimits) (*image.NRGBA, error) {
 			decoded.Pix[destination+2] = expand5(uint8(value & 0x1f))
 		}
 		alpha := byte(0xff)
-		if hasMask {
-			x := index % uint64(width)
-			y := index / uint64(width)
-			maskIndex := (y/8)*maskPageStride + x
-			if mask[maskIndex]&(1<<uint(y%8)) != 0 {
-				alpha = 0
-			}
+		if hasMask && mask[(y/8)*maskPageStride+x]&pageBit != 0 {
+			alpha = 0
 		}
 		decoded.Pix[destination+3] = alpha
 	}

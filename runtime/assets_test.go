@@ -255,6 +255,49 @@ func TestAssetsDecodeSKVMLBMP(t *testing.T) {
 	}
 }
 
+// testLBMP2 builds a 2-bit LBMP. Its header names the size of one plane,
+// unlike the 8- and 16-bit forms, whose size covers every pixel byte.
+func testLBMP2(width, height uint32, high, low []byte, masks ...[]byte) []byte {
+	encoded := testLBMP(2, width, height, append(append([]byte(nil), high...), low...), masks...)
+	binary.LittleEndian.PutUint32(encoded[16:20], uint32(len(high)))
+	return encoded
+}
+
+// Issue #572: 더팜 draws its menu labels from 2-bit LBMPs. The decoder
+// rejected the type, the VM answered a blank 1x1 image, and the labels
+// vanished from their buttons.
+func TestAssetsDecodeSKVMTwoBitLBMP(t *testing.T) {
+	// Four columns by nine rows: two eight-row pages. Row 0 holds levels
+	// 0..3 from left to right and row 8 holds 3..0. The first plane is the
+	// high bit. Column 3, row 4 is masked out.
+	high := []byte{0x00, 0x00, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00}
+	low := []byte{0x00, 0x01, 0x00, 0x01, 0x01, 0x00, 0x01, 0x00}
+	mask := []byte{0, 0, 0, 0x10, 0, 0, 0, 0}
+	services, err := NewServices(Config{})
+	check(t, err)
+	asset, err := services.Assets.Decode(7, testLBMP2(4, 9, high, low, mask), DecodeOptions{})
+	check(t, err)
+	info, err := services.Assets.Info(7, asset)
+	check(t, err)
+	if info.Width != 4 || info.Height != 9 || info.MediaType != "image/x-lbmp" {
+		t.Fatalf("decoded LBMP = %+v", info)
+	}
+	pixels, err := services.Graphics.RGBA(7, info.Frames[0].Surface)
+	check(t, err)
+	gray := func(value byte, alpha byte) []byte { return []byte{value, value, value, alpha} }
+	want := bytes.Repeat(gray(0xff, 0xff), 4*9)
+	copy(want[0:16], bytes.Join([][]byte{
+		gray(0xff, 0xff), gray(0xaa, 0xff), gray(0x55, 0xff), gray(0x00, 0xff),
+	}, nil))
+	copy(want[(4*4+3)*4:], gray(0xff, 0))
+	copy(want[8*4*4:], bytes.Join([][]byte{
+		gray(0x00, 0xff), gray(0x55, 0xff), gray(0xaa, 0xff), gray(0xff, 0xff),
+	}, nil))
+	if !bytes.Equal(pixels, want) {
+		t.Fatalf("decoded pixels = % x; want % x", pixels, want)
+	}
+}
+
 func TestAssetsRejectMalformedSKVMLBMP(t *testing.T) {
 	wrongSize := testLBMP(8, 2, 1, []byte{0xe0})
 	truncated := testLBMP(8, 2, 1, []byte{0xe0, 0x1c})[:25]
@@ -267,6 +310,15 @@ func TestAssetsRejectMalformedSKVMLBMP(t *testing.T) {
 		{name: "truncated header", encoded: []byte("LBMP")},
 		{name: "unsupported pixel type", encoded: testLBMP(24, 1, 1, []byte{0, 0, 0})},
 		{name: "mismatched size", encoded: wrongSize},
+		{
+			// A 2-bit header that counts both planes does not describe one.
+			name:    "2-bit size names both planes",
+			encoded: testLBMP(2, 2, 1, []byte{0, 0, 0, 0}),
+		},
+		{
+			name:    "2-bit low plane truncated",
+			encoded: testLBMP2(2, 1, []byte{0, 0}, []byte{0, 0})[:27],
+		},
 		{name: "truncated pixels", encoded: truncated},
 		{name: "truncated mask", encoded: truncatedMask},
 	} {
