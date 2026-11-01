@@ -63,6 +63,7 @@ type brewMachine struct {
 	frame             *image.RGBA
 	input             []machinecore.InputEvent
 	heldKeys          map[uint32]brewHeldKey
+	keyPresses        uint64 // numbers presses; the latest held key repeats
 	inputTrace        []string
 	inputTraceDropped int
 	started           bool
@@ -81,6 +82,7 @@ type brewMachine struct {
 type brewHeldKey struct {
 	control    string
 	nextRepeat time.Duration
+	pressOrder uint64
 }
 
 func (f Factory) createBREWMachine(ctx context.Context, source machinecore.Source) (machinecore.Machine, bool, error) {
@@ -335,10 +337,25 @@ func (m *brewMachine) stepLocked(ctx context.Context) error {
 			if m.heldKeys == nil {
 				m.heldKeys = make(map[uint32]brewHeldKey)
 			}
-			m.heldKeys[key] = brewHeldKey{control: event.Control, nextRepeat: m.now + brewKeyRepeatDelay}
+			m.keyPresses++
+			m.heldKeys[key] = brewHeldKey{
+				control:    event.Control,
+				nextRepeat: m.now + brewKeyRepeatDelay,
+				pressOrder: m.keyPresses,
+			}
 			kind = 0x101
 		} else {
+			repeating, wasRepeating := m.repeatingBREWKey()
 			delete(m.heldKeys, key)
+			if wasRepeating && repeating == key {
+				// Releasing the repeating key hands repetition back to the
+				// most recent key still down, after a fresh initial delay.
+				if next, ok := m.repeatingBREWKey(); ok {
+					held := m.heldKeys[next]
+					held.nextRepeat = m.now + brewKeyRepeatDelay
+					m.heldKeys[next] = held
+				}
+			}
 			if !m.pkg.LegacyKeyOnPress {
 				// BREW MP sends its legacy EVT_KEY before EVT_KEY_RELEASE. Held
 				// keys also receive EVT_KEY repeats; a press sends EVT_KEY_PRESS.
@@ -368,14 +385,12 @@ func (m *brewMachine) stepLocked(ctx context.Context) error {
 		}
 	}
 	m.input = append(m.input[:0], m.input[due:]...)
-	keys := make([]uint32, 0, len(m.heldKeys))
-	for key, held := range m.heldKeys {
-		if m.now >= held.nextRepeat {
-			keys = append(keys, key)
-		}
-	}
-	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
-	for _, key := range keys {
+	// Only the most recently pressed key auto-repeats, as on a handset keypad
+	// or a PC keyboard: pressing another key stops the first one's repeat.
+	// Repeating every held key at once let an older key's EVT_KEY arrive right
+	// after a newer key had changed the screen - 커맨드 앤 컨트롤 then called
+	// the menu it had just released (#564).
+	if key, ok := m.repeatingBREWKey(); ok && m.now >= m.heldKeys[key].nextRepeat {
 		held := m.heldKeys[key]
 		if _, err := m.runtime.DispatchEvent(ctx, 0x100, key, 0); err != nil {
 			return m.executionErrorLocked(fmt.Sprintf("repeat BREW key %q", held.control), err)
@@ -383,8 +398,10 @@ func (m *brewMachine) stepLocked(ctx context.Context) error {
 		if stopped, err := m.finishCloseRequestLocked(ctx); stopped || err != nil {
 			return err
 		}
-		held.nextRepeat += brewKeyRepeatInterval
-		m.heldKeys[key] = held
+		if held, ok = m.heldKeys[key]; ok {
+			held.nextRepeat += brewKeyRepeatInterval
+			m.heldKeys[key] = held
+		}
 	}
 	frame, presented, err := m.runtime.Framebuffer()
 	if err != nil {
@@ -396,6 +413,22 @@ func (m *brewMachine) stepLocked(ctx context.Context) error {
 		m.guestFrame = true
 	}
 	return nil
+}
+
+// repeatingBREWKey names the held key that auto-repeats: the one pressed
+// last.
+func (m *brewMachine) repeatingBREWKey() (uint32, bool) {
+	var (
+		key   uint32
+		order uint64
+		found bool
+	)
+	for candidate, held := range m.heldKeys {
+		if !found || held.pressOrder > order || held.pressOrder == order && candidate < key {
+			key, order, found = candidate, held.pressOrder, true
+		}
+	}
+	return key, found
 }
 
 func (m *brewMachine) finishCloseRequestLocked(ctx context.Context) (bool, error) {

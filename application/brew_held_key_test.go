@@ -128,8 +128,10 @@ func TestBREWHeldKeysUseGuestTimeAndVirtualKeyAliases(t *testing.T) {
 		t.Fatalf("input repeated before its guest-time deadline: %d, want 0", got)
 	}
 	stepBREWReference(t, m, 1)
-	if got := m.runtime.EventCount(0x100); got != 2 {
-		t.Fatalf("independently held keys did not repeat: %d, want 2", got)
+	// Only the key pressed last (left) repeats; ok stopped repeating when
+	// left went down, as on a keypad.
+	if got := m.runtime.EventCount(0x100); got != 1 {
+		t.Fatalf("held keys repeated %d times at the deadline, want only the latest key once", got)
 	}
 	check(t, m.QueueInput(machinecore.InputEvent{Control: "fire"}))
 	stepBREWReference(t, m, 25)
@@ -141,5 +143,41 @@ func TestBREWHeldKeysUseGuestTimeAndVirtualKeyAliases(t *testing.T) {
 	stepBREWReference(t, m, 60)
 	if got := m.runtime.EventCount(0x100); got != 0 {
 		t.Fatalf("reset repeated a stale held key: %d", got)
+	}
+}
+
+// A keypad repeats only the key pressed last. 커맨드 앤 컨트롤 (#564) and
+// 탐정학원 (#563) faulted when an older held key's EVT_KEY repeat reached a
+// screen that a newer key had just torn down.
+func TestBREWOnlyTheLatestHeldKeyRepeats(t *testing.T) {
+	m := newBREWKeyTestMachine(t)
+	keys := func() uint64 { return m.runtime.EventCount(0x100) }
+	check(t, m.QueueInput(machinecore.InputEvent{Control: "right", Pressed: true}))
+	stepBREWReference(t, m, 10)
+	check(t, m.QueueInput(machinecore.InputEvent{Control: "left", Pressed: true}))
+	// 60 frames is 960ms: left repeats at 400ms, then every 100ms.
+	stepBREWReference(t, m, 60)
+	if got := keys(); got < 5 || got > 7 {
+		t.Fatalf("EVT_KEY count with right and left held = %d, want left's repeats alone", got)
+	}
+	// Releasing left sends its own EVT_KEY; right resumes only after a fresh
+	// initial delay, not on the next frame.
+	check(t, m.QueueInput(machinecore.InputEvent{Control: "left"}))
+	stepBREWReference(t, m, 1)
+	afterRelease := keys()
+	stepBREWReference(t, m, 20)
+	if got := keys(); got != afterRelease {
+		t.Fatalf("right repeated %d times within the initial delay", got-afterRelease)
+	}
+	stepBREWReference(t, m, 10)
+	if got := keys(); got != afterRelease+1 {
+		t.Fatalf("right did not resume repeating after left's release: %d -> %d", afterRelease, got)
+	}
+	check(t, m.QueueInput(machinecore.InputEvent{Control: "right"}))
+	stepBREWReference(t, m, 1)
+	released := keys()
+	stepBREWReference(t, m, 60)
+	if got := keys(); got != released {
+		t.Fatalf("a key repeated with nothing held: %d -> %d", released, got)
 	}
 }
