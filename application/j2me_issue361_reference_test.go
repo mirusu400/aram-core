@@ -25,7 +25,8 @@ func TestJ2MEIssue361MiniGochiEntersGameFromBundledSave(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer machine.Close()
-	if got, want := machine.Framebuffer().Bounds().Size(), image.Pt(240, 320); got != want {
+	// The JAD declares MIDletX-LCD-Size: 176,200.
+	if got, want := machine.Framebuffer().Bounds().Size(), image.Pt(176, 200); got != want {
 		t.Fatalf("handset canvas = %v, want %v", got, want)
 	}
 	if err := machine.Start(ctx); err != nil {
@@ -46,7 +47,7 @@ func TestJ2MEIssue361MiniGochiEntersGameFromBundledSave(t *testing.T) {
 			t.Fatalf("frame %d: %v", frame, err)
 		}
 	}
-	const gameHash = "32b795cd7cbc3686372b1b5f465943fcb014a3da2598520adc00841888244f60"
+	const gameHash = "a5e835918463e3f7579c73e44c3625b60e67428ab082cba6c1bbfa57e5f7d627"
 	if got := fmt.Sprintf("%x", brewFrameHash(machine.Framebuffer())); got != gameHash {
 		t.Fatalf("game frame hash = %s, want %s", got, gameHash)
 	}

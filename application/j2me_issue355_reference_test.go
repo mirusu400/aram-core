@@ -36,7 +36,9 @@ func TestJ2MEIssue355GradiusNeoPassesLoadingIntoMenu(t *testing.T) {
 			t.Fatalf("frame %d: %v", frame, err)
 		}
 	}
-	const menuFrame = "436ed153bc6e130680be913d091d396ed635ebd7f4465efafadafb42cd809642"
+	// The JAD declares MIDletX-LCD-Size: 176,200; the menu is the same
+	// six-item KONAMI menu the 240x320 canvas showed, laid out for 176x200.
+	const menuFrame = "14fddb91c0f2099d5860d38dca680cb8b86485a93a1e71d87a5bf6194fcb89f7"
 	if got := fmt.Sprintf("%x", brewFrameHash(machine.Framebuffer())); got != menuFrame {
 		t.Fatalf("main menu frame = %s, want %s", got, menuFrame)
 	}

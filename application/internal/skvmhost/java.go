@@ -39,14 +39,55 @@ func NewJ2ME(ctx context.Context, source machinecore.Source, pkg j2me.Package,
 func NewJ2MEWithGuestWidth(ctx context.Context, source machinecore.Source, pkg j2me.Package,
 	size image.Point, sampleRate uint32, channels uint8, guestWidthOverride int) (*Machine, error) {
 	if source.ProfileID == j2me.LGTProfileID {
-		size = inferLGTFramebufferSize(size, pkg.Resources)
-		if canvas, ok := quirkdb.LookupLGTCanvas(source.SHA256, pkg.Descriptor.MainClass, size.X, size.Y); ok {
-			size = image.Pt(canvas.Width, canvas.Height)
-		}
+		size = lgtCanvas(source.SHA256, pkg, size)
 	}
 	return newJavaMachine(ctx, source, Application{MainClass: pkg.Descriptor.MainClass,
 		Properties: pkg.Descriptor.Raw, Classes: pkg.Classes, Resources: pkg.Resources,
 		RecordStores: pkg.RecordStores}, nil, size, sampleRate, channels, guestWidthOverride)
+}
+
+// lgtCanvas picks an LGT MIDlet's canvas: package asset inference first,
+// then an exact-package entry, then the display size the JAD declares.
+func lgtCanvas(packageSHA256 string, pkg j2me.Package, size image.Point) image.Point {
+	inferred := inferLGTFramebufferSize(size, pkg.Resources)
+	if canvas, ok := quirkdb.LookupLGTCanvas(packageSHA256, pkg.Descriptor.MainClass, inferred.X, inferred.Y); ok {
+		return image.Pt(canvas.Width, canvas.Height)
+	}
+	// MIDletX-LCD-Size names the display area the MIDlet was built for. 75
+	// of the 105 LGT titles in the corpus declare 176,200, and on the
+	// default 240x320 canvas they pick assets they do not ship or lay out
+	// past their own tables: 테트리스2005 asks for intro2_2.png, its
+	// 240x320 variant, finds nothing and draws a null image as soon as a
+	// key starts the game; 화재진압119 stops at "Bad Download.". Only a
+	// declaration narrower than the canvas inference left is applied, so a
+	// title the inference or an exact entry already sized keeps its canvas.
+	if declared, ok := lgtDeclaredLCDSize(pkg.Descriptor.Raw); ok && declared.X < inferred.X {
+		return declared
+	}
+	return inferred
+}
+
+// lgtDeclaredLCDSize reads the JAD's "MIDletX-LCD-Size: width,height".
+func lgtDeclaredLCDSize(properties map[string]string) (image.Point, bool) {
+	value, ok := properties["MIDletX-LCD-Size"]
+	if !ok {
+		return image.Point{}, false
+	}
+	parts := strings.Split(value, ",")
+	if len(parts) != 2 {
+		return image.Point{}, false
+	}
+	var width, height int
+	if _, err := fmt.Sscan(strings.TrimSpace(parts[0]), &width); err != nil {
+		return image.Point{}, false
+	}
+	if _, err := fmt.Sscan(strings.TrimSpace(parts[1]), &height); err != nil {
+		return image.Point{}, false
+	}
+	if width < 96 || width > 480 || height < 96 || height > 640 {
+		return image.Point{}, false
+	}
+	return image.Pt(width, height), true
 }
 
 func inferLGTFramebufferSize(fallback image.Point, resources map[string][]byte) image.Point {
