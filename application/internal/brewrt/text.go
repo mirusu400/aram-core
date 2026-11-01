@@ -60,7 +60,14 @@ func (r *Runtime) drawDisplayText() error {
 	if err != nil {
 		return err
 	}
-	if clip.Empty() {
+	return r.renderDisplayText(text, x, y, clip, flags)
+}
+
+// renderDisplayText draws one line of decoded text into the native
+// framebuffer the way IDisplay::DrawText does, aligned inside clip by the
+// IDF_ALIGN_* bits of flags.
+func (r *Runtime) renderDisplayText(text string, x, y int32, clip image.Rectangle, flags uint32) error {
+	if text == "" || clip.Empty() {
 		return nil
 	}
 	textWidth, err := r.displayTextWidth(text)

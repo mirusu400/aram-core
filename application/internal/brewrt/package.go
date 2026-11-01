@@ -33,6 +33,7 @@ const (
 	GraphicsClassID       = uint32(0x01002001)
 	Sound10ClassID        = uint32(0x0100100b)
 	MemAStreamClassID     = uint32(0x0100100c)
+	StaticClassID         = uint32(0x0100100a) // IStatic text control
 	TAPIClassID           = uint32(0x01001007)
 	Net11ClassID          = uint32(0x01001105)
 	TextCtl10ClassID      = uint32(0x01003009)
@@ -284,7 +285,7 @@ func runtimeServiceClassID(classID uint32) bool {
 	switch classID {
 	case ShellClassID, DisplayClassID, HeapClassID, FileMgrClassID, OptionalDeviceClassID,
 		KTFServiceClassID, SoundPlayerClassID, GraphicsClassID, Sound10ClassID,
-		MemAStreamClassID, TAPIClassID, Net11ClassID, TextCtl10ClassID,
+		MemAStreamClassID, StaticClassID, TAPIClassID, Net11ClassID, TextCtl10ClassID,
 		IconViewCtl10ClassID, SoftKeyCtl10ClassID, MenuCtl10ClassID,
 		DateCtl10ClassID, ClockCtl10ClassID, WinBMPClassID, BitmapClassID:
 		return true

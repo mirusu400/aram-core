@@ -169,6 +169,9 @@ const (
 	memAStreamVTable      = controlServiceBase + 0x900
 	memAStreamTrapBase    = controlServiceBase + 0xa00
 	memAStreamMethodCount = uint32(7)
+	staticCtlVTable       = controlServiceBase + 0xb00
+	staticCtlTrapBase     = controlServiceBase + 0xc00
+	staticCtlMethodCount  = uint32(16)
 	dbServiceBase         = controlServiceBase + 0x2000
 	dbMgrObject           = dbServiceBase + 0x100
 	dbMgrVTable           = dbServiceBase + 0x200
@@ -239,6 +242,7 @@ type Runtime struct {
 	textControl      brewTextControl
 	menuControl      brewMenuControl
 	memAStreams      map[uint32]brewMemAStream
+	staticControls   map[uint32]*brewStaticControl
 	imageStreams     map[uint32]uint32
 	imageDraws       map[uint32]brewImageDraw
 	nativeImages     map[uint32]brewNativeImage
@@ -401,6 +405,7 @@ func NewWithFallbackFont(pkg Package, fallbackFont string) (*Runtime, error) {
 		randomState:     1,
 		preferences:     make(map[brewPreferenceKey][]byte),
 		memAStreams:     make(map[uint32]brewMemAStream),
+		staticControls:  make(map[uint32]*brewStaticControl),
 		imageStreams:    make(map[uint32]uint32),
 		imageDraws:      make(map[uint32]brewImageDraw),
 		nativeImages:    make(map[uint32]brewNativeImage),
@@ -662,6 +667,13 @@ func (r *Runtime) mapImage(module []byte) error {
 		trap := memAStreamTrapBase + slot*2
 		binary.LittleEndian.PutUint16(controls[trap-controlServiceBase:], 0xbe16)
 		binary.LittleEndian.PutUint32(controls[memAStreamVTable-controlServiceBase+slot*4:], trap|1)
+	}
+	// IStatic instances carry their own reference count, so AddRef and
+	// Release stay on the control's traps like IMemAStream's.
+	for slot := uint32(0); slot < staticCtlMethodCount; slot++ {
+		trap := staticCtlTrapBase + slot*2
+		binary.LittleEndian.PutUint16(controls[trap-controlServiceBase:], 0xbe17)
+		binary.LittleEndian.PutUint32(controls[staticCtlVTable-controlServiceBase+slot*4:], trap|1)
 	}
 	deviceBitmap := make([]byte, 36)
 	binary.LittleEndian.PutUint32(deviceBitmap[0:], bitmapVTable)
@@ -964,6 +976,7 @@ func describeHostTrap(pc uint32) string {
 		{"ITextCtl", textCtlTrapBase, textCtlMethodCount},
 		{"IMenuCtl", menuCtlTrapBase, menuCtlMethodCount},
 		{"IMemAStream", memAStreamTrapBase, memAStreamMethodCount},
+		{"IStatic", staticCtlTrapBase, staticCtlMethodCount},
 		{"IDBMgr", dbMgrTrapBase, dbMgrMethodCount},
 		{"IDatabase", databaseTrapBase, databaseMethodCount},
 		{"IDBRecord", dbRecordTrapBase, dbRecordMethodCount},
@@ -1771,6 +1784,16 @@ func (r *Runtime) handleAppletMethodTrap(
 			return resume()
 		}
 		return boundary("IMenuCtl", slot)
+	}
+	if breakpoint >= staticCtlTrapBase+2 && breakpoint < staticCtlTrapBase+staticCtlMethodCount*2+2 {
+		slot := (breakpoint - 2 - staticCtlTrapBase) / 2
+		if handled, err := r.handleStaticControl(slot); handled || err != nil {
+			if err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		}
+		return boundary("IStatic", slot)
 	}
 	if breakpoint >= memAStreamTrapBase+2 && breakpoint < memAStreamTrapBase+memAStreamMethodCount*2+2 {
 		slot := (breakpoint - 2 - memAStreamTrapBase) / 2
@@ -4166,6 +4189,11 @@ func (r *Runtime) createShellInstance() error {
 		object = soundObject
 	case MemAStreamClassID:
 		object, err = r.createMemAStream()
+		if err != nil {
+			status = 1 // AEE_ENOMEM
+		}
+	case StaticClassID:
+		object, err = r.createStaticControl()
 		if err != nil {
 			status = 1 // AEE_ENOMEM
 		}
