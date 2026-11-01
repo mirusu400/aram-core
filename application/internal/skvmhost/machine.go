@@ -1027,3 +1027,19 @@ func (m *Machine) Owner() shared.OwnerID { return m.owner }
 
 // VM exposes the underlying Java interpreter for tests and diagnostics.
 func (m *Machine) VM() *skengine.VM { return m.vm }
+
+// UncaughtGuestExceptions reports how many exceptions the title let escape an
+// event callback or a thread, and the text of the most recent one. The title
+// kept running past each of them, as it would on a handset; a tool that wants
+// to stop at one, the way the session used to end there, compares the count
+// between frames. The text is the fault the session used to end with, so a
+// report keyed on it keeps matching the same defect.
+func (m *Machine) UncaughtGuestExceptions() (uint64, string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.vm == nil {
+		return 0, ""
+	}
+	count, last, _ := m.vm.UncaughtExceptions()
+	return count, last.Text
+}

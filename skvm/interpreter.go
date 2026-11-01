@@ -181,6 +181,7 @@ func (vm *VM) runFrame(
 			if vm.handleThrown(current, opcodePC, exception) {
 				continue
 			}
+			exception.noteEscape(current, opcodePC)
 			return Value{}, false, stepErr
 		}
 		if !result.returned {
@@ -309,8 +310,11 @@ func (vm *VM) resumeFrames(
 		value, hasValue, err := vm.resumeFrames(ctx, frames, index+1, budget)
 		if err != nil {
 			var exception *thrown
-			if !AsThrown(err, &exception) ||
-				!vm.handleThrown(current, current.invokePC, exception) {
+			if !AsThrown(err, &exception) {
+				return Value{}, false, err
+			}
+			if !vm.handleThrown(current, current.invokePC, exception) {
+				exception.noteEscape(current, current.invokePC)
 				return Value{}, false, err
 			}
 		} else if hasValue {

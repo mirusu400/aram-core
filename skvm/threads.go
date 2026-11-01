@@ -199,7 +199,9 @@ func (vm *VM) runThread(
 	if errors.Is(err, ErrMethodNotFound) {
 		return nil
 	}
-	return err
+	// An exception escaping run() ends this thread and nothing else; the
+	// thread that started it, or the scheduler, carries on.
+	return vm.absorbUncaught("Thread.run", err)
 }
 
 // blockThreadOnClip parks the running thread until the clip stops. It reports

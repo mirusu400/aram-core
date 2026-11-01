@@ -138,6 +138,10 @@ type VM struct {
 	// presenting the last frame the title drew, the way the KTF runtime
 	// treats its own termination request, rather than reporting a fault.
 	halted bool
+	// uncaught records the exceptions the title let escape an event callback
+	// or a thread (see absorbUncaught). It is diagnostics only - the title
+	// carries on without them - so it is not part of the saved machine.
+	uncaught uncaughtLog
 }
 
 type frame struct {
@@ -153,6 +157,16 @@ type thrown struct {
 	reference uint32
 	class     string
 	message   string
+	// escapedFrom names the innermost frame the exception left without a
+	// matching handler, so a report can say where an uncaught one came from.
+	escapedFrom *frameSite
+}
+
+type frameSite struct {
+	class      string
+	method     string
+	descriptor string
+	pc         int
 }
 
 func (e *thrown) Error() string {
@@ -839,6 +853,7 @@ func (vm *VM) SyncDisplayLifecycle(ctx context.Context) error {
 		if shown != 0 {
 			vm.hostStatic[midpShownDisplay] = ReferenceValue(0)
 			_, _, err := vm.InvokeVirtual(ctx, shown, "hideNotify", "()V")
+			err = vm.absorbUncaught("hideNotify", err)
 			if err != nil && !errors.Is(err, ErrMethodNotFound) {
 				return err
 			}
@@ -848,6 +863,7 @@ func (vm *VM) SyncDisplayLifecycle(ctx context.Context) error {
 			current := vm.currentDisplay
 			vm.hostStatic[midpShownDisplay] = ReferenceValue(current)
 			_, _, err := vm.InvokeVirtual(ctx, current, "showNotify", "()V")
+			err = vm.absorbUncaught("showNotify", err)
 			if err != nil && !errors.Is(err, ErrMethodNotFound) {
 				return err
 			}
@@ -886,6 +902,9 @@ func (vm *VM) PaintCurrent(ctx context.Context) error {
 		"(Ljavax/microedition/lcdui/Graphics;)V",
 		ReferenceValue(vm.ScreenGraphics()),
 	)
+	// A paint that throws has still consumed its request, as on a handset:
+	// only a repaint() the title makes again schedules another pass.
+	err = vm.absorbUncaught("paint", err)
 	if err != nil && !errors.Is(err, ErrMethodNotFound) {
 		vm.setRepaintPending(true)
 	}
@@ -998,7 +1017,7 @@ func (vm *VM) invokeKeyCallback(ctx context.Context, method string, key int32) e
 	if errors.Is(err, ErrMethodNotFound) {
 		return nil
 	}
-	return err
+	return vm.absorbUncaught(method, err)
 }
 
 // Advance is the SKVM adapter's explicit coordinator operation. It advances
@@ -1073,7 +1092,9 @@ func (vm *VM) Advance(
 					return err
 				}
 			} else if _, _, err := vm.InvokeVirtual(ctx, taskReference, "run", "()V"); err != nil && !errors.Is(err, ErrMethodNotFound) {
-				return err
+				if err := vm.absorbUncaught("TimerTask.run", err); err != nil {
+					return err
+				}
 			}
 			if timer.Interval == 0 {
 				if err := vm.retireTimerTask(taskReference, task); err != nil {
@@ -1093,7 +1114,9 @@ func (vm *VM) Advance(
 				"run",
 				"()V",
 			); err != nil {
-				return err
+				if err := vm.absorbUncaught("callSerially", err); err != nil {
+					return err
+				}
 			}
 			continue
 		}
@@ -1116,7 +1139,9 @@ func (vm *VM) Advance(
 				}
 				data := ReferenceValue(vm.newWrapper("java/lang/Long", LongValue(position)))
 				if err := vm.notifyPlayerListeners(ctx, reference, "endOfMedia", data); err != nil {
-					return err
+					if err := vm.absorbUncaught("playerUpdate", err); err != nil {
+						return err
+					}
 				}
 				break
 			}
