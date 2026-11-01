@@ -43,7 +43,7 @@ func NewJ2MEWithGuestWidth(ctx context.Context, source machinecore.Source, pkg j
 	}
 	return newJavaMachine(ctx, source, Application{MainClass: pkg.Descriptor.MainClass,
 		Properties: pkg.Descriptor.Raw, Classes: pkg.Classes, Resources: pkg.Resources,
-		RecordStores: pkg.RecordStores}, nil, size, sampleRate, channels, guestWidthOverride)
+		RecordStores: pkg.RecordStores}, nil, size, sampleRate, channels, guestWidthOverride, false)
 }
 
 // lgtCanvas picks an LGT MIDlet's canvas: package asset inference first,

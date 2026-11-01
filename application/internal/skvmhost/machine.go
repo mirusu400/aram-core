@@ -86,11 +86,15 @@ func NewWithGuestWidth(
 	for name, class := range pkg.Classes {
 		app.Classes[name] = class.Data
 	}
-	return newJavaMachine(ctx, source, app, &pkg, framebufferSize, outputSampleRate, outputChannels, guestWidthOverride)
+	return newJavaMachine(ctx, source, app, &pkg, framebufferSize, outputSampleRate, outputChannels, guestWidthOverride, true)
 }
 
+// newJavaMachine creates a Java guest. For an SKT package, probeCanvas lets a
+// throwaway run decide the canvas when nothing in the package names one; the
+// probe's own machine is created with it off.
 func newJavaMachine(ctx context.Context, source machinecore.Source, app Application, legacy *skloader.Package,
-	framebufferSize image.Point, outputSampleRate uint32, outputChannels uint8, guestWidthOverride int) (*Machine, error) {
+	framebufferSize image.Point, outputSampleRate uint32, outputChannels uint8, guestWidthOverride int,
+	probeCanvas bool) (*Machine, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -100,8 +104,12 @@ func newJavaMachine(ctx context.Context, source machinecore.Source, app Applicat
 	}
 	inferred := size
 	if legacy != nil {
-		inferred = inferSKVMFramebufferSize(size, app.Resources)
+		var named bool
+		inferred, named = inferSKVMFramebufferSizeFromAssets(size, app.Resources)
 		size = skvmTitleCanvas(source, *legacy, inferred)
+		if probeCanvas && !named && skvmCanvasNeedsProbe(source, *legacy, inferred, size) {
+			size = skvmProbedCanvas(source, app, *legacy, size)
+		}
 	}
 	// Resolve the title's native geometry before widening it. Package canvas
 	// inference and exact-title compatibility still use the native dimensions.
@@ -801,6 +809,16 @@ func inferSKVMFramebufferSize(
 	fallback image.Point,
 	resources map[string][]byte,
 ) image.Point {
+	size, _ := inferSKVMFramebufferSizeFromAssets(fallback, resources)
+	return size
+}
+
+// inferSKVMFramebufferSizeFromAssets also reports whether a package asset
+// named the canvas, as opposed to the fallback being returned unchanged.
+func inferSKVMFramebufferSizeFromAssets(
+	fallback image.Point,
+	resources map[string][]byte,
+) (image.Point, bool) {
 	// SKT descriptors do not consistently declare a display size. Full-screen
 	// images commonly omit only a small handset status/soft-key strip, so use
 	// those package assets to select the matching legacy canvas geometry.
@@ -834,9 +852,9 @@ func inferSKVMFramebufferSize(
 		}
 	}
 	if best < 0 {
-		return fallback
+		return fallback, false
 	}
-	return candidates[best]
+	return candidates[best], true
 }
 
 func (m *Machine) consumeInstructionsLocked(before uint64) error {

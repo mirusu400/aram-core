@@ -875,7 +875,9 @@ type SKVMCanvas struct {
 	Height int
 	// CanvasHeightInset16 reports Canvas.getHeight() 16 pixels short of the
 	// framebuffer, matching an SKT handset that reserved a system strip while
-	// drawing still covered the complete display.
+	// drawing still covered the complete display. The host also enables it,
+	// without an entry, for any package whose bytecode computes
+	// `getHeight() + 16` (aram-core #573).
 	CanvasHeightInset16 bool
 	// InclusiveSetClip interprets nonnegative setClip extents as inclusive
 	// offsets, matching selected pre-MIDP-2 handset implementations.

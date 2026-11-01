@@ -52,10 +52,12 @@ func skvmTitleCanvas(
 	return image.Pt(entry.Width, entry.Height)
 }
 
-// applySKVMTitleCompatibility adds only compatibility behavior that is tied to
-// an exact shipped package and its expected metadata. It takes the geometry
-// inferSKVMFramebufferSize chose rather than the canvas skvmTitleCanvas
-// answered with, so an entry that replaces the canvas still matches itself.
+// applySKVMTitleCompatibility adds compatibility behavior tied to an exact
+// shipped package and its expected metadata, plus the canvas-height inset for
+// any package whose own bytecode adds the SKT system strip back to
+// Canvas.getHeight(). It takes the geometry inferSKVMFramebufferSize chose
+// rather than the canvas skvmTitleCanvas answered with, so an entry that
+// replaces the canvas still matches itself.
 func applySKVMTitleCompatibility(
 	config *shared.Config,
 	source machinecore.Source,
@@ -71,18 +73,15 @@ func applySKVMTitleCompatibility(
 		})
 	}
 	entry, ok := lookupSKVMTitleCanvas(source, pkg, inferred)
-	if !ok {
-		return
-	}
 	// DeviceConfig requires quirk names in strictly increasing order.
 	// A title may need both the canvas and clipping handset contracts.
-	if entry.CanvasHeightInset16 {
+	if (ok && entry.CanvasHeightInset16) || skvmPackageRestoresSystemStrip(pkg) {
 		config.Device.Quirks = append(config.Device.Quirks, shared.DeviceQuirk{
 			Name:    skengine.CanvasHeightInset16Quirk,
 			Enabled: true,
 		})
 	}
-	if entry.InclusiveSetClip {
+	if ok && entry.InclusiveSetClip {
 		config.Device.Quirks = append(config.Device.Quirks, shared.DeviceQuirk{
 			Name:    skengine.InclusiveSetClipQuirk,
 			Enabled: true,
