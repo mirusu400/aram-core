@@ -690,6 +690,7 @@ func (r *Runtime) drawBitmapRegion(bitmap uint32, destinationX, destinationY int
 		width = min(width, region.width)
 		height = min(height, region.height)
 	}
+	r.probeImageDraw(destinationX, destinationY, int32(width), int32(height))
 	for row := uint32(0); row < height; row++ {
 		targetY := destinationY + int32(row)
 		if targetY < 0 || targetY >= int32(r.screenHeight) {
@@ -778,6 +779,7 @@ func (r *Runtime) blitDisplayBitmap() error {
 		copyHeight = sourceHeight - sourceY
 	}
 	dx, dy := int32(destinationX), int32(destinationY)
+	r.probeImageDraw(dx, dy, int32(copyWidth), int32(copyHeight))
 	for row := uint32(0); row < copyHeight; row++ {
 		targetY := dy + int32(row)
 		if targetY < 0 || targetY >= int32(r.screenHeight) {
@@ -835,6 +837,7 @@ func (r *Runtime) blitDisplayBMP(bitmap, destinationX, destinationY, width, heig
 	copyWidth := min(width, sourceWidth-sourceX)
 	copyHeight := min(height, sourceHeight-sourceY)
 	dx, dy := int32(destinationX), int32(destinationY)
+	r.probeImageDraw(dx, dy, int32(copyWidth), int32(copyHeight))
 	for row := uint32(0); row < copyHeight; row++ {
 		targetY := dy + int32(row)
 		if targetY < 0 || targetY >= int32(r.screenHeight) {

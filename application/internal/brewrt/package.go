@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"image"
 	"image/draw"
-	"strings"
 
 	"github.com/mirusu400/aram-core/loader/brew"
 	"golang.org/x/image/bmp"
@@ -96,26 +95,13 @@ type Package struct {
 	LegacyKeyOnPress bool
 }
 
-// KTF shipped most BREW titles twice: a 작화 build for its 120x160-class
-// handsets and a build for the 176x220-class handsets, and the package itself
-// records neither. The circulating KTF BREW dump names the small builds
-// "(작화)"; a whole-dump audit (359 packages) found 201 of the 209 unmarked
-// packages drawing 176-pixel-wide screens, while the remaining eight centre
-// their art and still fit the larger canvas. So an unmarked package defaults
-// to the large handset, and a 작화 name keeps the small one.
+// KTF shipped most BREW titles twice, for its 120x160-class handsets and for
+// its 176x220-class handsets, and the package records neither. A package
+// without an exact canvas policy is measured instead; see CanvasProbe.
 var (
-	smallHandsetCanvas = image.Pt(int(framebufferWidth), int(framebufferHeight))
-	largeHandsetCanvas = image.Pt(176, 220)
+	SmallHandsetCanvas = image.Pt(int(framebufferWidth), int(framebufferHeight))
+	LargeHandsetCanvas = image.Pt(176, 220)
 )
-
-// DefaultCanvasForName picks the handset class for a package without an exact
-// canvas policy from its file name.
-func DefaultCanvasForName(name string) image.Point {
-	if strings.Contains(name, "작화") {
-		return smallHandsetCanvas
-	}
-	return largeHandsetCanvas
-}
 
 // DisplaySize selects the handset canvas. Exact-title dimensions override
 // the generic 120x160 canvas so native artwork is not clipped.

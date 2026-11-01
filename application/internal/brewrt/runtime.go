@@ -197,6 +197,7 @@ const (
 // portable interpreter. It exposes only implemented service methods; every
 // unknown class or vtable slot remains a typed boundary.
 type Runtime struct {
+	canvasProbe      *CanvasProbe
 	cpu              cpu.Backend
 	screenWidth      uint32
 	screenHeight     uint32

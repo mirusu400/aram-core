@@ -10,7 +10,6 @@ import (
 	"image/color"
 	"image/draw"
 	"io"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -114,11 +113,7 @@ func (f Factory) createBREWMachine(ctx context.Context, source machinecore.Sourc
 	}
 	source.SHA256 = actualSHA
 	if pkg.NativeCanvas == (image.Point{}) && !pkg.Authenticated {
-		name := source.Name
-		if name == "" {
-			name = filepath.Base(source.Path)
-		}
-		pkg.NativeCanvas = brewrt.DefaultCanvasForName(name)
+		pkg.NativeCanvas = brewProbedCanvas(source, pkg, actualSHA, f.FallbackFont)
 	}
 	machine := newBREWMachine(source, pkg)
 	machine.fallbackFont = f.FallbackFont
