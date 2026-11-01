@@ -2176,6 +2176,9 @@ func TestKTFObjectWaitYieldsDeferredThread(t *testing.T) {
 	if task.monitorWait != object {
 		t.Fatalf("Object.wait() monitor = 0x%08x, want 0x%08x", task.monitorWait, object)
 	}
+	// wait(JI)V reads its nanosecond word from the caller's stack, so give the
+	// call a real one: address 0 is handset ROM, not a zero.
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterSP, guest.DefaultStackBase+guest.DefaultStackSize-0x100))
 	for _, descriptor := range []string{"(J)V", "(JI)V", "()V"} {
 		runtime.yieldRequested = false
 		task.monitorWait = 0

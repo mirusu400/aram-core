@@ -109,6 +109,22 @@ const (
 	ktfJavaEnvironmentWords = 11
 )
 
+// LowROM stands in for the boot ROM a KTF handset maps at address 0. The
+// SPH-W8300 memory dump shows the ARM exception vectors there, followed by more
+// ROM, so native code that reads through a null pointer gets nonzero ROM words
+// back rather than an abort. 질주쾌감 스케쳐 (상위버전) releases a sound handle
+// by loading the handle word through every slot's pointer, null ones included,
+// and relies on that read matching nothing. The page is never executable, so a
+// branch through a null pointer still faults.
+const (
+	LowROMBase = uint32(0)
+	LowROMSize = uint32(0x1000)
+	// lowROMWord fills the page. The real ROM bytes are firmware and cannot
+	// ship, so every word is the generic ARM vector "ldr pc, [pc, #0x18]":
+	// titles depend on reading a nonzero ROM word, not a particular one.
+	lowROMWord = uint32(0xe59ff018)
+)
+
 type Runtime struct {
 	CPU         cpu.Backend
 	Pkg         ktf.Package

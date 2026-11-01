@@ -566,12 +566,32 @@ func (r *Runtime) MapImageAndHost() error {
 	); err != nil {
 		return fmt.Errorf("map KTF low work RAM: %w", err)
 	}
+	// Host writes honour guest permissions, so the page is writable only to
+	// let the ROM image be installed; ResetMappedMemory reinstalls it.
+	if err := r.CPU.Map(
+		LowROMBase,
+		LowROMSize,
+		cpu.PermissionRead|cpu.PermissionWrite,
+	); err != nil {
+		return fmt.Errorf("map KTF low ROM: %w", err)
+	}
+	if err := r.CPU.WriteMemory(LowROMBase, lowROMImage()); err != nil {
+		return fmt.Errorf("install KTF low ROM: %w", err)
+	}
 	r.Heap = guest.NewHeap(r.CPU, guest.HeapBase, guest.HeapSize)
 	r.javaHeapCollected = 0
 	r.javaHeapExplicitCollected = 0
 	r.javaHeapExplicitReady = false
 	r.Mapped = true
 	return nil
+}
+
+func lowROMImage() []byte {
+	image := make([]byte, LowROMSize)
+	for offset := 0; offset < len(image); offset += 4 {
+		binary.LittleEndian.PutUint32(image[offset:], lowROMWord)
+	}
+	return image
 }
 
 // resetMappedMemory installs a pristine KTF image into mappings already owned
@@ -602,6 +622,9 @@ func (r *Runtime) ResetMappedMemory() error {
 	}
 	if err := r.CPU.WriteMemory(HostBase, stubs); err != nil {
 		return fmt.Errorf("restore KTF host-call stubs: %w", err)
+	}
+	if err := r.CPU.WriteMemory(LowROMBase, lowROMImage()); err != nil {
+		return fmt.Errorf("restore KTF low ROM: %w", err)
 	}
 	r.Heap = guest.NewHeap(r.CPU, guest.HeapBase, guest.HeapSize)
 	r.javaHeapCollected = 0
