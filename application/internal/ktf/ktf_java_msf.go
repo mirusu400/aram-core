@@ -23,7 +23,7 @@ func (r *Runtime) handleMSFKernelMethod(
 		return 0, nil
 	case "getAccessLevel()I":
 		// Every access-request mask is granted.
-		return 0xff, nil
+		return ktfProgramAccessLevel, nil
 	case "getPrgName()Ljava/lang/String;":
 		return r.NewJavaString(r.Pkg.Descriptor.AID)
 	case "getPrgInfo()[I":

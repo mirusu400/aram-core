@@ -349,6 +349,22 @@ func ktfKernelGetDLLInterface(
 	return address, nil
 }
 
+// ktfProgramAccessLevel is the access level of the one program ARAM runs: every
+// access-request bit is granted. MC_knlGetAccessLevel and the Java framework's
+// MsfKernel.getAccessLevel() report the same program, so they answer alike.
+const ktfProgramAccessLevel = uint32(0xff)
+
+// ktfKernelGetAccessLevel implements MC_knlGetAccessLevel (kernel slot 0x34).
+// Titles gate their start-up on it: 슈퍼액션히어로2 requires the 0xbc bits and
+// otherwise stops on its "인증 과정에 에러가 발생했습니다" (error 1001) screen.
+func ktfKernelGetAccessLevel(
+	_ context.Context,
+	runtime *Runtime,
+) (uint32, error) {
+	runtime.tracef("wipic_knl_get_access_level:0x%02x", ktfProgramAccessLevel)
+	return ktfProgramAccessLevel, nil
+}
+
 // ktfKernelGetProgramName implements MC_knlGetProgramName (kernel slot 0x38).
 // KTF packages are launched by their AID-named executable, so the AID is the
 // current program name exposed to native Clets and dynamic providers.

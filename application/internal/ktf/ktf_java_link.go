@@ -402,6 +402,8 @@ func (r *Runtime) buildKnlInterface() (uint32, error) {
 			handler = ktfKernelSprintk
 		case 7:
 			handler = ktfKernelExit
+		case 13:
+			handler = ktfKernelGetAccessLevel
 		case 14:
 			handler = ktfKernelGetProgramName
 		case 20:
