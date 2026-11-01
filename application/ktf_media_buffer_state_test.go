@@ -43,8 +43,10 @@ func TestKTF262PublicLoadRejectsAliasBeforeMutation(t *testing.T) {
 	check(t, m.SaveState(&good))
 	payload := good.Bytes()[:good.Len()-stateChecksumSize]
 	// The synthetic runtime has no Java timers or local sockets. Schema 16
-	// appends their extension after the alias section.
-	aliasEnd := len(payload) - 4 - emptyKTFJavaTimerTrailerSize(t, len(r.Tasks))
+	// appends their extension after the alias section, and schema 17 one
+	// serial-order word per task after that.
+	aliasEnd := len(payload) - 4 - emptyKTFJavaTimerTrailerSize(t, len(r.Tasks)) -
+		4*len(r.Tasks)
 	if got := binary.LittleEndian.Uint32(payload[aliasEnd-16:]); got != 1 {
 		t.Fatalf("retained alias count=%d", got)
 	}
@@ -91,7 +93,8 @@ func TestKTF262PublicLoadRejectsAliasBeforeMutation(t *testing.T) {
 	var reset bytes.Buffer
 	check(t, m.SaveState(&reset))
 	resetPayload := reset.Bytes()[:reset.Len()-stateChecksumSize]
-	resetAliasEnd := len(resetPayload) - 4 - emptyKTFJavaTimerTrailerSize(t, len(m.ktf.Tasks))
+	resetAliasEnd := len(resetPayload) - 4 -
+		emptyKTFJavaTimerTrailerSize(t, len(m.ktf.Tasks)) - 4*len(m.ktf.Tasks)
 	if n := binary.LittleEndian.Uint32(resetPayload[resetAliasEnd-4:]); n != 0 {
 		t.Fatalf("reset retained alias records=%d", n)
 	}
