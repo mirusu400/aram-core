@@ -97,9 +97,9 @@ func TestBREWIssue313ReachesCombatWithoutBitmapHeapExhaustion(t *testing.T) {
 	machine := newBREWReferenceMachine(t, path, data)
 	stepBREWReference(t, machine, 239)
 	checks := map[int]string{
-		1:  "b09d68328a6c7140b04231faec4f17468403f18ba31136ea16352e1b44b62d61", // main menu
-		3:  "697a12d5b4190c21e0a5c8375dd3e914913a6ddf7ba0ce2bd0e95bdb1b8c8e81", // opening story
-		25: "5cc99afac6a5217ee0a9dbb562e690fc234f8c8c045e0910130b7f638df99251", // combat map
+		1:  "3e201f3d71de2cf254333fbbc580540a44900cd11553d4965aebaf82f06df1bd", // main menu
+		3:  "b9ede93fca29f9efd2f2541016be78c5b367ea0d58958dfaee68c669ecc34ec6", // opening story
+		25: "a6b3590005e52939c34419622b6998fd8eae088a6f510e0ea5bcfbc56f98b3bd", // combat map
 	}
 	for tap := 1; tap <= 100; tap++ {
 		tapBREWReference(t, machine)

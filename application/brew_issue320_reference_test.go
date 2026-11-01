@@ -41,7 +41,7 @@ func TestBREWIssue320MapTilesRender(t *testing.T) {
 	press("select", 5) // Blue arrow returns to the map.
 	stepBREWReference(t, machine, 300)
 	frame := machine.Framebuffer()
-	if got, want := frame.Bounds(), image.Rect(0, 0, 120, 160); got != want {
+	if got, want := frame.Bounds(), image.Rect(0, 0, 176, 220); got != want {
 		t.Fatalf("map canvas = %v, want %v", got, want)
 	}
 	stats, present := machine.BREWFrameStats()

@@ -54,7 +54,10 @@ func TestBREWIssue317ReachesTitleAndMenu(t *testing.T) {
 	if title == logo {
 		t.Fatal("opening logo never advanced to the title")
 	}
-	r, g, b, _ := machine.Framebuffer().At(60, 40).RGBA()
+	// The 176x220 title opens with a white logo banner; probe its artwork at
+	// the centre of the screen instead.
+	center := machine.Framebuffer().Bounds().Size().Div(2)
+	r, g, b, _ := machine.Framebuffer().At(center.X, center.Y).RGBA()
 	if r > 0xeeee && g > 0xeeee && b > 0xeeee {
 		t.Fatal("title artwork is absent where the logo had a white background")
 	}

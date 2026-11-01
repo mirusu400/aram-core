@@ -16,7 +16,8 @@ func TestBREWIssue315LoadingFrameOutline(t *testing.T) {
 	path, data := findAuthorizedPackage(t, digest)
 	machine := newBREWReferenceMachine(t, path, data)
 	stepBREWReference(t, machine, 6)
-	if got, want := machine.Framebuffer().Bounds(), image.Rect(0, 0, 120, 160); got != want {
+	// An unmarked KTF BREW package runs on the 176x220 handset canvas.
+	if got, want := machine.Framebuffer().Bounds(), image.Rect(0, 0, 176, 220); got != want {
 		t.Fatalf("generic BREW canvas = %v, want %v", got, want)
 	}
 	stats, present := machine.BREWFrameStats()
@@ -36,7 +37,7 @@ func TestBREWIssue315NativeBitmapTitleAndMenu(t *testing.T) {
 	path, data := findAuthorizedPackage(t, digest)
 	machine := newBREWReferenceMachine(t, path, data)
 	stepBREWReference(t, machine, 3000)
-	if got, want := fmt.Sprintf("%x", brewFrameHash(machine.Framebuffer())), "ac8d3c4e0010dec79e2630dbfd1cde3a17da46db7f5ec707450c16b2ec2fbfa7"; got != want {
+	if got, want := fmt.Sprintf("%x", brewFrameHash(machine.Framebuffer())), "43e721043df2463e7d7ec6a86322d7e4375aaf88d532fdf6f51c31105b1fdbd1"; got != want {
 		t.Fatalf("MR 2004 title frame hash=%s, want %s", got, want)
 	}
 	if err := machine.QueueInput(machinecore.InputEvent{Control: "select", Pressed: true}); err != nil {
@@ -47,7 +48,7 @@ func TestBREWIssue315NativeBitmapTitleAndMenu(t *testing.T) {
 		t.Fatal(err)
 	}
 	stepBREWReference(t, machine, 100)
-	if got, want := fmt.Sprintf("%x", brewFrameHash(machine.Framebuffer())), "826f5ab41646202899231b2975e9ea1a069fe17b2af929c9b513bff03ca4c03f"; got != want {
+	if got, want := fmt.Sprintf("%x", brewFrameHash(machine.Framebuffer())), "25ace1f0f9d0071a780accdd108ce159e2b2273ddb6f606752e382de21a8d933"; got != want {
 		t.Fatalf("MR 2004 car menu frame hash=%s, want %s", got, want)
 	}
 }

@@ -23,7 +23,7 @@ func TestBREWIssue554NarniaDecodesPackedSceneLabel(t *testing.T) {
 	})
 	stepBREWReference(t, machine, 1297)
 	got := brewFrameHash(machine.Framebuffer())
-	if encoded := hex.EncodeToString(got[:]); encoded != "6923f4d7b9489455ee8c6c1fe90ac28634443b2c9aea423174acec1da17a2dd3" {
+	if encoded := hex.EncodeToString(got[:]); encoded != "a7cf9dd55deb3f465e5d8574c8cf63fd5fd0a8aa7d0c4c599d90edb5f8ab8dde" {
 		t.Fatalf("corrected Narnia scene frame hash = %s", encoded)
 	}
 }
@@ -66,7 +66,7 @@ func TestBREWIssue556MagicianDecodesShortPackedLabel(t *testing.T) {
 	})
 	stepBREWReference(t, machine, 1381)
 	got := brewFrameHash(machine.Framebuffer())
-	if encoded := hex.EncodeToString(got[:]); encoded != "dfc76acfc2a454d6e315bab138fc811a1af1be52976b14be0d3adba893b06c17" {
+	if encoded := hex.EncodeToString(got[:]); encoded != "2afa257cfe5ef94040a55ea4242d5bb6717665161806634a9fcdfe54ede26f10" {
 		t.Fatalf("corrected Magician tip frame hash = %s", encoded)
 	}
 }
