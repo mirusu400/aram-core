@@ -81,9 +81,11 @@ const (
 	helperWStrToStrSlot     = uint32(17)
 	helperFloatToWStrSlot   = uint32(19)
 	helperSetupImageSlot    = uint32(25)
+	helperWStrDupSlot       = uint32(28)
 	helperReallocSlot       = uint32(29)
 	helperWStrSizeSlot      = uint32(31)
 	helperWStrNCopyNSlot    = uint32(32)
+	helperOEMStrLenSlot     = uint32(33)
 	helperOEMStrSizeSlot    = uint32(34)
 	helperAtoiSlot          = uint32(36)
 	helperFloatOpSlot       = uint32(37)
@@ -1143,6 +1145,11 @@ func (r *Runtime) handleAppletMethodTrap(
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
+		case helperWStrDupSlot:
+			if err := r.duplicateGuestWideString(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
 		case helperReallocSlot:
 			if err := r.reallocateGuest(); err != nil {
 				return true, 0, cpu.ModeARM, err
@@ -1155,6 +1162,11 @@ func (r *Runtime) handleAppletMethodTrap(
 			return resume()
 		case helperWStrNCopyNSlot:
 			if err := r.copyGuestWideStringN(); err != nil {
+				return true, 0, cpu.ModeARM, err
+			}
+			return resume()
+		case helperOEMStrLenSlot:
+			if err := r.returnOEMStringLength(); err != nil {
 				return true, 0, cpu.ModeARM, err
 			}
 			return resume()
@@ -2878,6 +2890,35 @@ func (r *Runtime) compareGuestWideStrings() error {
 	return r.cpu.WriteRegister(cpu.RegisterR0, uint32(result))
 }
 
+// returnOEMStringLength is AEEStdLib OEMSTRLEN: the number of characters in
+// a handset-charset (EUC-KR) string, which is the number of AECHARs
+// STRTOWSTR produces from it. 컴온베이비2 sizes its conversion buffer as
+// (OEMSTRLEN + 1) * 2 bytes, so the two must count the same way.
+func (r *Runtime) returnOEMStringLength() error {
+	source, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW OEMSTRLEN pointer: %w", err)
+	}
+	if source == 0 {
+		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
+	}
+	text, err := r.readCString(source)
+	if err != nil {
+		return err
+	}
+	return r.cpu.WriteRegister(cpu.RegisterR0, uint32(len(handsetStringUnits(text))))
+}
+
+// handsetStringUnits decodes a handset-charset string into the AECHARs
+// STRTOWSTR writes for it.
+func handsetStringUnits(text string) []uint16 {
+	decoded, _, err := transform.Bytes(korean.EUCKR.NewDecoder(), []byte(text))
+	if err != nil {
+		decoded = bytes.ToValidUTF8([]byte(text), []byte("�"))
+	}
+	return utf16.Encode([]rune(string(decoded)))
+}
+
 func (r *Runtime) convertGuestStringToWide() error {
 	source, err := r.cpu.ReadRegister(cpu.RegisterR0)
 	if err != nil {
@@ -2899,11 +2940,7 @@ func (r *Runtime) convertGuestStringToWide() error {
 		if readErr != nil {
 			return readErr
 		}
-		decoded, _, decodeErr := transform.Bytes(korean.EUCKR.NewDecoder(), []byte(text))
-		if decodeErr != nil {
-			decoded = bytes.ToValidUTF8([]byte(text), []byte("\ufffd"))
-		}
-		units := utf16.Encode([]rune(string(decoded)))
+		units := handsetStringUnits(text)
 		capacity := int(size/2) - 1
 		if len(units) > capacity {
 			units = units[:capacity]
@@ -4597,6 +4634,35 @@ func (r *Runtime) returnAllocation() error {
 		return fmt.Errorf("return BREW allocation: %w", err)
 	}
 	return nil
+}
+
+// duplicateGuestWideString is AEEStdLib WSTRDUP, the slot between FREE and
+// REALLOC: a copy of an AECHAR string on the applet heap, so the applet's own
+// FREE releases it. 모바일 IQ테스트 keeps such a copy as a text item's label
+// and later hands it to IDisplay::DrawText. A null source or an exhausted heap
+// answers NULL, as MALLOC does.
+func (r *Runtime) duplicateGuestWideString() error {
+	source, err := r.cpu.ReadRegister(cpu.RegisterR0)
+	if err != nil {
+		return fmt.Errorf("read BREW WSTRDUP source: %w", err)
+	}
+	if source == 0 {
+		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
+	}
+	units, err := r.readGuestWideString(source)
+	if err != nil {
+		return err
+	}
+	encoded := encodeGuestWideString(units)
+	copied, err := r.allocateGuest(uint32(len(encoded)))
+	if err != nil {
+		return r.cpu.WriteRegister(cpu.RegisterR0, 0)
+	}
+	if err := r.cpu.WriteMemory(copied, encoded); err != nil {
+		r.releaseGuest(copied)
+		return fmt.Errorf("write BREW WSTRDUP copy: %w", err)
+	}
+	return r.cpu.WriteRegister(cpu.RegisterR0, copied)
 }
 
 func (r *Runtime) reallocateGuest() error {
