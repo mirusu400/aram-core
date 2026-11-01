@@ -114,6 +114,7 @@ func TestRaptorWIPIImportsResolveToPublicCatalog(t *testing.T) {
 		1029:  "strcpy",
 		1030:  "strncpy",
 		1031:  "strcat",
+		1032:  "strncat",
 		1040:  "strstr",
 		1041:  "strlen",
 		1044:  "memcpy",

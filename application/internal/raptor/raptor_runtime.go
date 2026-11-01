@@ -1445,9 +1445,13 @@ func raptorWIPIImportName(ordinal uint32) (string, bool) {
 	case 1031:
 		return "strcat", true
 	// The block keeps following string.h declaration order: strncat sits at
-	// 1032, then the comparison pair. 제노니아1 pins 1033/1034 from its call
-	// sites — it compares the handset model property against "SPH-V6900",
-	// "SCH-B590", and the "PT-S" prefix during startup.
+	// 1032, then the comparison pair. 냐옹타이쿤2's name entry appends each
+	// committed syllable and the IME's preedit with 1032(dst, src, count);
+	// left unresolved, every name stayed empty (aram-emu#19). 제노니아1 pins
+	// 1033/1034 from its call sites — it compares the handset model property
+	// against "SPH-V6900", "SCH-B590", and the "PT-S" prefix during startup.
+	case 1032:
+		return "strncat", true
 	case 1033:
 		return "strcmp", true
 	case 1034:
