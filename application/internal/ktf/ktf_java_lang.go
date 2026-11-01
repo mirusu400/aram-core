@@ -1093,11 +1093,49 @@ func (r *Runtime) ensureKTFVectorCapacity(instance uint32, minimum int) {
 	r.vectorCapacities[instance] = capacity
 }
 
+// javaHashtableKey names a key the way the handset's Hashtable matches it:
+// through equals(). A String, and the boxed primitive wrappers the host
+// models, compare by value, so two distinct new Byte((byte)1) objects find the
+// same entry. Any other object keeps identity, which is Object.equals.
 func (r *Runtime) javaHashtableKey(instance uint32) string {
 	if value, ok := r.JavaStrings[instance]; ok {
 		return "string:" + value
 	}
+	if key, ok := r.javaBoxedHashtableKey(instance); ok {
+		return key
+	}
 	return fmt.Sprintf("object:%08x", instance)
+}
+
+// javaBoxedHashtableKey is the value-equality key of a host-modelled wrapper.
+// The class name is part of it because Java's wrappers are only equal to their
+// own type: new Byte(1) and new Integer(1) are different keys.
+func (r *Runtime) javaBoxedHashtableKey(instance uint32) (string, bool) {
+	narrow, isNarrow := r.integerValues[instance]
+	wide, isWide := r.longValues[instance]
+	if !isNarrow && !isWide {
+		return "", false
+	}
+	words, err := r.ReadWords(instance, 2)
+	if err != nil {
+		return "", false
+	}
+	class, err := r.InspectJavaClass(words[1])
+	if err != nil {
+		return "", false
+	}
+	switch className := class.Name; className {
+	case "java/lang/Boolean", "java/lang/Byte", "java/lang/Character",
+		"java/lang/Short", "java/lang/Integer", "java/lang/Float":
+		if isNarrow {
+			return className + ":" + strconv.FormatInt(int64(narrow), 10), true
+		}
+	case "java/lang/Long", "java/lang/Double":
+		if isWide {
+			return className + ":" + strconv.FormatInt(wide, 10), true
+		}
+	}
+	return "", false
 }
 
 func (r *Runtime) handleHashtableMethod(

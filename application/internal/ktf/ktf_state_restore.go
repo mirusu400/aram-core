@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -531,8 +533,12 @@ func RestoreState(r *Runtime, backend cpu.Backend, saved *SavedState, started *b
 	)
 	for instance, table := range meta.Hashtables {
 		restored := make(map[string]ktfHashtableEntry, len(table))
-		for key, entry := range table {
-			restored[key] = ktfHashtableEntry{
+		// The saved name is re-derived from the key object, because a save
+		// written before boxed keys compared by value named them by address.
+		// Sorted order keeps the survivor of two such keys deterministic.
+		for _, name := range slices.Sorted(maps.Keys(table)) {
+			entry := table[name]
+			restored[r.javaHashtableKey(entry.Key)] = ktfHashtableEntry{
 				key: entry.Key, value: entry.Value,
 			}
 		}
